@@ -2,7 +2,7 @@ import path from 'node:path';
 
 import fs from 'fs-extra';
 
-import type { Scope, SkillTriggerPreference } from '../src/types.js';
+import type { Scope } from '../src/types.js';
 
 export const PLUGIN_EVAL_SCHEMA_VERSION = 1 as const;
 
@@ -13,7 +13,6 @@ export interface PluginEvalProfile {
   id: string;
   scope: Scope;
   config: Record<string, unknown>;
-  triggerPreference: SkillTriggerPreference;
   runModel: boolean;
   requiredForRelease: boolean;
 }
@@ -160,6 +159,18 @@ function expectRecord(value: unknown, label: string): Record<string, unknown> {
     throw new Error(`${label} must be an object.`);
   }
   return value;
+}
+
+function expectOnlyKeys(
+  value: Record<string, unknown>,
+  allowedKeys: readonly string[],
+  label: string,
+): void {
+  const allowed = new Set(allowedKeys);
+  const unknownKey = Object.keys(value).find((key) => !allowed.has(key));
+  if (unknownKey) {
+    throw new Error(`${label} has unknown field "${unknownKey}".`);
+  }
 }
 
 function expectString(value: unknown, label: string): string {
@@ -321,6 +332,11 @@ export function validatePluginEvalConversationCaseDocument(
 
 function parseProfile(value: unknown, index: number): PluginEvalProfile {
   const row = expectRecord(value, `profiles[${index}]`);
+  expectOnlyKeys(
+    row,
+    ['id', 'scope', 'config', 'runModel', 'requiredForRelease'],
+    `profiles[${index}]`,
+  );
   const id = expectString(row.id, `profiles[${index}].id`);
   if (!/^[a-z0-9][a-z0-9-]*$/u.test(id)) {
     throw new Error(`profiles[${index}].id must use lowercase kebab-case.`);
@@ -329,15 +345,10 @@ function parseProfile(value: unknown, index: number): PluginEvalProfile {
   if (scope !== 'user' && scope !== 'project') {
     throw new Error(`profiles[${index}].scope must be user or project.`);
   }
-  const triggerPreference = row.triggerPreference ?? 'default';
-  if (!['default', 'auto', 'manual'].includes(String(triggerPreference))) {
-    throw new Error(`profiles[${index}].triggerPreference must be default, auto, or manual.`);
-  }
   return {
     id,
     scope,
     config: row.config === undefined ? {} : expectRecord(row.config, `profiles[${index}].config`),
-    triggerPreference: triggerPreference as SkillTriggerPreference,
     runModel: expectBoolean(row.runModel, `profiles[${index}].runModel`),
     requiredForRelease: expectBoolean(
       row.requiredForRelease,

@@ -1,6 +1,6 @@
 # Skill 设计指南
 
-创建新的 skill、重写现有 `SKILL.md`，或改变 skill 的职责、输入输出和触发边界时先读本文。字段如何映射到 Claude、Codex 和 AW 内建触发配置，继续查看 `references/skills-and-triggers.md`。
+创建新的 skill、重写现有 `SKILL.md`，或改变 skill 的职责、输入输出和触发边界时先读本文。字段如何映射到 Claude 和 Codex 的平台原生调用元数据，继续查看 `references/skills-and-triggers.md`。
 
 本指南采用 Agent Skills 的渐进式披露模型：启动时只暴露 `name` 和 `description`，触发后加载完整 `SKILL.md`，其它 reference、script 和 asset 再按任务需要读取。
 

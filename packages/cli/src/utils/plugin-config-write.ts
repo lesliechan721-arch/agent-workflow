@@ -12,34 +12,23 @@ import { assertAgentVersionsForWriteTargets } from '../commands/common.js';
 import { createArtifactConfigDigest } from './artifact-plan.js';
 import {
   findConfigFieldEntry,
-  isBuiltInConfigKey,
-  parseBuiltInSkillTriggerKey,
   assertSafePluginConfigSegment,
   collectProjectArtifactConfigBoundaryIssues,
   coercePluginConfigUpdates,
   patchPluginConfigStore,
   resolveConfigReadV2,
   readPluginConfigStore,
-  resolveAwProjectRoot,
   resolvePluginConfigSchemaAccess,
-  resolveEffectiveSkillTriggerPreferences,
   resetPluginConfigStore,
   resolveEffectivePluginConfig,
   resolveProjectArtifactRenderConfig,
   summarizeEffectivePluginConfig,
-  toBuiltInSkillTriggerLogicalKey,
-  writePluginConfigStore,
 } from './plugin-config.js';
 import { resolveArtifactRendererTarget } from './artifact-renderer.js';
 import {
   calculateFileDigest,
   calculatePluginBundleFingerprint,
 } from './plugin-scripts.js';
-import {
-  commitMaterializedSkillTriggerPreference,
-  materializeSkillTriggerPreference,
-  resolveSkillTriggerConfigEntries,
-} from './skill-trigger-preferences.js';
 import { getTrackingRecord, readTrackingManifest } from './tracking.js';
 import { collectInstallEvidence, type CurrentCatalogEvidenceInput } from '../install-state/evidence.js';
 import {
@@ -94,7 +83,6 @@ import {
   resolveCodexPaths,
   resolveCodexProjectKey,
 } from './paths.js';
-import { assertTestWritablePath } from './test-path-fence.js';
 
 export interface PluginConfigWriteRequest {
   updates?: Record<string, unknown>;
@@ -129,18 +117,6 @@ export interface ResetPluginConfigWriteReceipt {
   warnings: ProjectBoundaryWarning[];
 }
 
-export interface BuiltInConfigWriteReceipt {
-  plugin: string;
-  scope: Scope;
-  projectLayer: 'shared' | 'local';
-  schema?: ConfigSchemaEvidenceV2;
-  existed?: boolean;
-  deleted?: boolean;
-  affectedFields: ConfigReceiptFieldEntryV2[];
-  targetResults: ReceiptTargetResult[];
-  warnings: ProjectBoundaryWarning[];
-}
-
 interface ConfigRuntimeReplayReceipt {
   artifactRefresh: ArtifactRefreshReceipt;
   targetResults: ReceiptTargetResult[];
@@ -150,12 +126,7 @@ interface ConfigRuntimeImpact {
   applyTargets: ReceiptTargetIdentity[];
   gateTargets: ReceiptTargetIdentity[];
   dynamicRefreshTargets: ReceiptTargetIdentity[];
-  builtInApplyTargets: ReceiptTargetIdentity[];
   configRefreshSkippedReason?: 'projectLocalOverride' | 'adoptExistingRequired' | 'noRefreshTarget';
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function uniqueInOrder(values: string[]): string[] {
@@ -172,17 +143,7 @@ function createSkippedRefreshReceipt(triggerKeys: string[] = []): ArtifactRefres
 }
 
 function collectRemovedConfigKeys(values: Record<string, unknown>): string[] {
-  const removedKeys = Object.keys(values).filter((key) => key !== '$aw');
-  const awNamespace = values.$aw;
-  if (
-    isRecord(awNamespace) &&
-    isRecord(awNamespace.skillTriggers)
-  ) {
-    for (const skillName of Object.keys(awNamespace.skillTriggers)) {
-      removedKeys.push(toBuiltInSkillTriggerLogicalKey(skillName));
-    }
-  }
-  return uniqueInOrder(removedKeys);
+  return uniqueInOrder(Object.keys(values));
 }
 
 function uniqueSorted(values: Iterable<string>): string[] {
@@ -353,14 +314,6 @@ function artifactRefreshTargetMessage(receipt: ArtifactRefreshReceipt): string {
   return '当前 target 没有需要刷新的 dynamic artifact。';
 }
 
-function resolveProjectCodexSkillRuntimeRoot(cwd: string): string {
-  return assertTestWritablePath(
-    path.join(resolveAwProjectRoot(cwd), '.agents', 'skills'),
-    'Codex project skill runtime (.agents/skills)',
-    '用 withSafeTestCwd() 切到测试可写 cwd，或通过 registerWritableStateRoot() 登记 project fixture 根。',
-  );
-}
-
 function buildDynamicRefreshRawTargetResults(options: {
   plugin: PluginMeta;
   scope: Scope;
@@ -473,13 +426,6 @@ function collapseConfigApplyTargetResults(options: {
   });
 }
 
-function toConfigStoreLayer(scope: Scope, projectLayer: 'shared' | 'local'): 'user' | 'project' | 'local' {
-  if (scope === 'user') {
-    return 'user';
-  }
-  return projectLayer === 'local' ? 'local' : 'project';
-}
-
 function buildReceiptFieldEntry(options: {
   key: string;
   title: string;
@@ -502,151 +448,12 @@ function buildReceiptFieldEntry(options: {
   };
 }
 
-function normalizeBuiltInNamespace(values: Record<string, unknown>): Record<string, unknown> {
-  const nextValues = structuredClone(values);
-  const awNamespace = typeof nextValues.$aw === 'object' && nextValues.$aw !== null && !Array.isArray(nextValues.$aw)
-    ? nextValues.$aw as Record<string, unknown>
-    : {};
-  const skillTriggers = typeof awNamespace.skillTriggers === 'object' && awNamespace.skillTriggers !== null && !Array.isArray(awNamespace.skillTriggers)
-    ? awNamespace.skillTriggers as Record<string, unknown>
-    : {};
-  nextValues.$aw = awNamespace;
-  awNamespace.skillTriggers = skillTriggers;
-  return nextValues;
-}
-
-function pruneBuiltInNamespace(values: Record<string, unknown>): Record<string, unknown> {
-  const nextValues = structuredClone(values);
-  const awNamespace = nextValues.$aw;
-  if (typeof awNamespace !== 'object' || awNamespace === null || Array.isArray(awNamespace)) {
-    return nextValues;
-  }
-  const awRecord = awNamespace as Record<string, unknown>;
-  const skillTriggers = awRecord.skillTriggers;
-  if (
-    typeof skillTriggers === 'object'
-    && skillTriggers !== null
-    && !Array.isArray(skillTriggers)
-    && Object.keys(skillTriggers as Record<string, unknown>).length === 0
-  ) {
-    delete awRecord.skillTriggers;
-  }
-  if (Object.keys(awRecord).length === 0) {
-    delete nextValues.$aw;
-  }
-  return nextValues;
-}
-
-async function applyBuiltInSkillTriggerRuntime(options: {
-  plugin: PluginMeta;
-  scope: Scope;
-  cwd: string;
-  env: NodeJS.ProcessEnv;
-  applyTargets?: ReceiptTargetIdentity[];
-}): Promise<ReceiptTargetResult[]> {
-  const targetResults: ReceiptTargetResult[] = [];
-  const applyTargets = options.applyTargets && options.applyTargets.length > 0
-    ? dedupeReceiptTargets(options.applyTargets)
-    : await resolveDefaultConfigApplyTargets({
-        plugin: options.plugin,
-        scope: options.scope,
-        cwd: options.cwd,
-        env: options.env,
-      });
-  const runtimeTargets = await filterBuiltInApplyTargets({
-    plugin: options.plugin,
-    targets: applyTargets,
-  });
-
-  for (const { platform, scope, projectKey } of runtimeTargets) {
-    try {
-      const skillTriggerPreferences = await resolveEffectiveSkillTriggerPreferences({
-        plugin: options.plugin,
-        platform,
-        scope,
-        cwd: options.cwd,
-        env: options.env,
-      });
-      const materialization = await materializeSkillTriggerPreference({
-        pluginName: options.plugin.manifest.name,
-        platform,
-        resolvedOptions: {
-          skillTriggerPreference: 'default',
-          skillTriggerPreferences,
-        },
-        embeddedRoot: path.dirname(path.dirname(options.plugin.rootDir)),
-        policyPlugin: options.plugin,
-        sourcePluginRoot: options.plugin.rootDir,
-        ...(platform === 'codex' && scope === 'project'
-          ? {
-              target: {
-                platform: 'codex' as const,
-                scope: 'project' as const,
-                kind: 'repoSkill' as const,
-                root: resolveProjectCodexSkillRuntimeRoot(options.cwd),
-              },
-            }
-          : {
-              marketplaceRootOrStagingRoot: options.env.AW_HOME ?? process.env.AW_HOME ?? '',
-            }),
-        mode: 'bestEffortReplay',
-      });
-      await commitMaterializedSkillTriggerPreference(materialization.rollbackHandle);
-      targetResults.push({
-        target: {
-          pluginName: options.plugin.manifest.name,
-          platform,
-          scope,
-          ...(projectKey ? { projectKey } : {}),
-        },
-        action: 'builtInApply',
-        state: 'completed',
-      });
-    } catch (error) {
-      targetResults.push({
-        target: {
-          pluginName: options.plugin.manifest.name,
-          platform,
-          scope,
-          ...(projectKey ? { projectKey } : {}),
-        },
-        action: 'builtInApply',
-        state: 'failed',
-        message: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
-
-  return targetResults;
-}
-
-export async function replayBuiltInConfigRuntime(options: {
-  plugin: PluginMeta;
-  scope: Scope;
-  cwd: string;
-  env?: NodeJS.ProcessEnv;
-  applyTargets?: ReceiptTargetIdentity[];
-}): Promise<ReceiptTargetResult[]> {
-  const entries = await resolveSkillTriggerConfigEntries(options.plugin);
-  if (entries.length === 0) {
-    return [];
-  }
-  return applyBuiltInSkillTriggerRuntime({
-    plugin: options.plugin,
-    scope: options.scope,
-    cwd: options.cwd,
-    env: options.env ?? process.env,
-    applyTargets: options.applyTargets,
-  });
-}
-
 export async function replayConfigRuntimeWrites(options: {
   plugin: PluginMeta;
   scope: Scope;
   cwd: string;
   env?: NodeJS.ProcessEnv;
   applyTargets?: ReceiptTargetIdentity[];
-  includeBuiltIn?: boolean;
   includeDynamicArtifacts?: boolean;
   nativeCliRunner?: NativeCliRunner;
 }): Promise<ConfigRuntimeReplayReceipt> {
@@ -659,7 +466,6 @@ export async function replayConfigRuntimeWrites(options: {
     env,
     changedKeys: [],
     resetAllTrackedKeys: true,
-    includeBuiltIn: options.includeBuiltIn !== false,
     includeDynamicArtifacts: options.includeDynamicArtifacts !== false,
     applyTargets: options.applyTargets,
   });
@@ -672,15 +478,6 @@ export async function replayConfigRuntimeWrites(options: {
   });
   const applyTargets = impact.applyTargets;
 
-  const builtInRawResults = options.includeBuiltIn === false
-    ? []
-    : await replayBuiltInConfigRuntime({
-        plugin: options.plugin,
-        scope: options.scope,
-        cwd: options.cwd,
-        env,
-        applyTargets,
-      });
   const artifactRefresh = options.includeDynamicArtifacts === false
     ? createSkippedRefreshReceipt()
     : await reapplyConfigRefresh({
@@ -703,52 +500,9 @@ export async function replayConfigRuntimeWrites(options: {
     targetResults: collapseConfigApplyTargetResults({
       pluginName: options.plugin.manifest.name,
       applyTargets,
-      rawTargetResults: [...builtInRawResults, ...dynamicRawResults],
+      rawTargetResults: dynamicRawResults,
     }),
   };
-}
-
-async function upsertBuiltInSkillTriggerStoreValue(options: {
-  pluginName: string;
-  scope: Scope;
-  projectLayer: 'shared' | 'local';
-  cwd: string;
-  env?: NodeJS.ProcessEnv;
-  skillName: string;
-  trigger?: 'manual' | 'auto';
-}): Promise<boolean> {
-  const store = await readPluginConfigStore({
-    pluginName: options.pluginName,
-    scope: options.scope,
-    cwd: options.cwd,
-    env: options.env,
-    ...(options.scope === 'project' ? { projectLayer: options.projectLayer } : {}),
-  });
-  const nextValues = normalizeBuiltInNamespace(store.values);
-  const skillTriggers = (((nextValues.$aw as Record<string, unknown>).skillTriggers) as Record<string, unknown>);
-  const existed = typeof skillTriggers[options.skillName] === 'object'
-    && skillTriggers[options.skillName] !== null
-    && !Array.isArray(skillTriggers[options.skillName]);
-
-  if (options.trigger) {
-    skillTriggers[options.skillName] = {
-      ...(existed ? skillTriggers[options.skillName] as Record<string, unknown> : {}),
-      trigger: options.trigger,
-    };
-  } else {
-    delete skillTriggers[options.skillName];
-  }
-
-  await writePluginConfigStore({
-    pluginName: options.pluginName,
-    scope: options.scope,
-    cwd: options.cwd,
-    env: options.env,
-    values: pruneBuiltInNamespace(nextValues),
-    ...(options.scope === 'project' ? { projectLayer: options.projectLayer } : {}),
-  });
-
-  return existed;
 }
 
 function toInstallRecordArtifacts(
@@ -1060,8 +814,7 @@ function isCleanProjectPrewriteCandidate(
     && !evidence.residualEvidence.repoVisibleArtifactPresent
     && !evidence.residualEvidence.sharedIdentityPresent
     && !evidence.residualEvidence.historicalLifecyclePresent
-    && !evidence.residualEvidence.nativeMarkerPresent
-    && !evidence.residualEvidence.sharedOwnerPresent;
+    && !evidence.residualEvidence.nativeMarkerPresent;
 }
 
 async function resolveCodexDynamicRefreshImpact(options: {
@@ -1404,17 +1157,6 @@ async function resolveDynamicRefreshImpact(options: Parameters<typeof resolveCod
   };
 }
 
-async function filterBuiltInApplyTargets(options: {
-  plugin: PluginMeta;
-  targets: ReceiptTargetIdentity[];
-}): Promise<ReceiptTargetIdentity[]> {
-  const skillEntries = await resolveSkillTriggerConfigEntries(options.plugin);
-  if (skillEntries.length === 0) {
-    return [];
-  }
-  return dedupeReceiptTargets(options.targets);
-}
-
 async function analyzeConfigRuntimeImpact(options: {
   plugin: PluginMeta;
   scope: Scope;
@@ -1423,7 +1165,6 @@ async function analyzeConfigRuntimeImpact(options: {
   env: NodeJS.ProcessEnv;
   changedKeys: string[];
   resetAllTrackedKeys?: boolean;
-  includeBuiltIn: boolean;
   includeDynamicArtifacts: boolean;
   applyTargets?: ReceiptTargetIdentity[];
 }): Promise<ConfigRuntimeImpact> {
@@ -1435,7 +1176,6 @@ async function analyzeConfigRuntimeImpact(options: {
       applyTargets,
       gateTargets: [],
       dynamicRefreshTargets: [],
-      builtInApplyTargets: [],
       configRefreshSkippedReason: 'projectLocalOverride',
     };
   }
@@ -1463,28 +1203,14 @@ async function analyzeConfigRuntimeImpact(options: {
     ...defaultApplyTargets,
     ...dynamicRefresh.targets,
   ]);
-  const builtInApplyTargets = options.includeBuiltIn
-    ? defaultApplyTargets
-    : [];
-  const actionableBuiltInTargets = options.includeBuiltIn
-    ? await filterBuiltInApplyTargets({
-        plugin: options.plugin,
-        targets: builtInApplyTargets,
-      })
-    : [];
   const gateTargetMap = new Map<string, ReceiptTargetIdentity>();
   for (const target of dynamicRefresh.targets) {
     gateTargetMap.set(targetKey(target), target);
   }
-  for (const target of actionableBuiltInTargets) {
-    gateTargetMap.set(targetKey(target), target);
-  }
-
   return {
     applyTargets,
     gateTargets: [...gateTargetMap.values()],
     dynamicRefreshTargets: dynamicRefresh.targets,
-    builtInApplyTargets: actionableBuiltInTargets,
     ...(dynamicRefresh.configRefreshSkippedReason
       ? { configRefreshSkippedReason: dynamicRefresh.configRefreshSkippedReason }
       : options.includeDynamicArtifacts && options.changedKeys.length > 0 && dynamicRefresh.targets.length === 0
@@ -1772,7 +1498,6 @@ export async function applyPluginConfigWrite(options: {
       cwd: options.cwd,
       env,
       changedKeys: triggerKeys,
-      includeBuiltIn: false,
       includeDynamicArtifacts: true,
       applyTargets: options.applyTargets,
     });
@@ -1947,7 +1672,6 @@ export async function resetPluginConfigWithHelper(options: {
       cwd: options.cwd,
       env,
       changedKeys: removedKeys,
-      includeBuiltIn: true,
       includeDynamicArtifacts: true,
       applyTargets: options.applyTargets,
     });
@@ -2006,27 +1730,15 @@ export async function resetPluginConfigWithHelper(options: {
             env: options.env ?? process.env,
           });
     }
-    const builtInRawResults = options.scope === 'project' && projectLayer === 'local'
-      ? []
-      : await replayBuiltInConfigRuntime({
-          plugin: schemaAccess.plugin,
-          scope: options.scope,
-          cwd: options.cwd,
-          env: options.env,
-          applyTargets,
-        });
     targetResults = collapseConfigApplyTargetResults({
       pluginName,
       applyTargets,
-      rawTargetResults: [
-        ...builtInRawResults,
-        ...buildDynamicRefreshRawTargetResults({
-          plugin: schemaAccess.plugin,
-          scope: options.scope,
-          artifactRefresh,
-          applyTargets,
-        }),
-      ],
+      rawTargetResults: buildDynamicRefreshRawTargetResults({
+        plugin: schemaAccess.plugin,
+        scope: options.scope,
+        artifactRefresh,
+        applyTargets,
+      }),
     });
   }
 
@@ -2042,164 +1754,6 @@ export async function resetPluginConfigWithHelper(options: {
     targetResults,
     ...(configRefreshSkippedReason ? { configRefreshSkippedReason } : {}),
     warnings,
-  };
-}
-
-export async function applyBuiltInConfigWrite(options: {
-  pluginName: string;
-  plugin?: PluginMeta | null;
-  pluginError?: Error | null;
-  scope: Scope;
-  projectLayer?: 'shared' | 'local';
-  cwd: string;
-  env?: NodeJS.ProcessEnv;
-  applyTargets?: ReceiptTargetIdentity[];
-  nativeCliRunner?: NativeCliRunner;
-  key: string;
-  action: 'set' | 'unset';
-  value?: 'manual' | 'auto';
-}): Promise<BuiltInConfigWriteReceipt> {
-  const pluginName = assertSafePluginConfigSegment(options.pluginName);
-  const projectLayer = options.scope === 'project' ? (options.projectLayer ?? 'shared') : 'shared';
-  const schemaAccess = await resolvePluginConfigSchemaAccess({
-    pluginName,
-    currentPlugin: options.plugin ?? null,
-    currentPluginError: options.pluginError,
-    scope: options.scope,
-    projectLayer,
-    cwd: options.cwd,
-    env: options.env,
-  });
-  const parsedKey = parseBuiltInSkillTriggerKey(options.key);
-  if (!parsedKey) {
-    throw new Error(`Unknown config key "${options.key}".`);
-  }
-  if (options.scope === 'project' && projectLayer === 'local') {
-    throw new Error('project local 层不支持 SkillTrigger 内建字段；请改用 `--scope project` 或整层 reset 清理误写入值。');
-  }
-  if (options.action === 'set' && options.value !== 'manual' && options.value !== 'auto') {
-    throw new Error(`Unsupported skill trigger preference "${String(options.value)}". Expected one of: manual, auto.`);
-  }
-
-  const resolved = await resolveConfigReadV2({
-    pluginName,
-    plugin: schemaAccess.plugin,
-    scope: options.scope,
-    projectLayer,
-    cwd: options.cwd,
-    env: options.env,
-  });
-  const field = findConfigFieldEntry(resolved.fields, options.key);
-  if (options.action === 'set') {
-    if (!schemaAccess.plugin) {
-      throw new Error(`configSchemaUnavailable: Unknown plugin "${pluginName}".`);
-    }
-    if (!field) {
-      throw new Error(`Unknown config key "${options.key}".`);
-    }
-    if (!field.writable) {
-      throw new Error(`${options.key} 当前是 ${field.valueState} 字段，不能写入新值。`);
-    }
-  }
-  if (options.action === 'unset') {
-    if (!field && !schemaAccess.plugin) {
-      const store = await readPluginConfigStore({
-        pluginName,
-        scope: options.scope,
-        cwd: options.cwd,
-        env: options.env,
-        ...(options.scope === 'project' ? { projectLayer } : {}),
-      });
-      if (!isBuiltInConfigKey(options.key) || !Object.keys(store.values).includes('$aw')) {
-        throw new Error(`configSchemaUnavailable: Unknown plugin "${pluginName}".`);
-      }
-    }
-    if (field && field.storedSourceLayer && field.storedSourceLayer !== toConfigStoreLayer(options.scope, projectLayer)) {
-      throw new Error(`${options.key} 只能在 ${field.storedSourceLayer} 层清理。`);
-    }
-    if (field && field.valueState === 'default' && field.storedSourceLayer === undefined) {
-      throw new Error(`${options.key} 当前没有可清理的存量值。`);
-    }
-  }
-
-  let applyTargets: ReceiptTargetIdentity[] = [];
-  if (schemaAccess.plugin) {
-    const env = options.env ?? process.env;
-    const impact = await analyzeConfigRuntimeImpact({
-      plugin: schemaAccess.plugin,
-      scope: options.scope,
-      projectLayer,
-      cwd: options.cwd,
-      env,
-      changedKeys: [options.key],
-      includeBuiltIn: true,
-      includeDynamicArtifacts: true,
-      applyTargets: options.applyTargets,
-    });
-    await assertConfigRuntimeImpactAgentVersions({
-      impact,
-      command: 'config',
-      cwd: options.cwd,
-      env,
-      nativeCliRunner: options.nativeCliRunner,
-    });
-    applyTargets = impact.applyTargets;
-  }
-
-  const existed = await upsertBuiltInSkillTriggerStoreValue({
-    pluginName,
-    scope: options.scope,
-    projectLayer,
-    cwd: options.cwd,
-    env: options.env,
-    skillName: parsedKey.skillName,
-    ...(options.action === 'set' ? { trigger: options.value } : {}),
-  });
-
-  const nextRead = await resolveConfigReadV2({
-    pluginName,
-    plugin: schemaAccess.plugin,
-    scope: options.scope,
-    projectLayer,
-    cwd: options.cwd,
-    env: options.env,
-  });
-  const nextField = findConfigFieldEntry(nextRead.fields, options.key);
-  const affectedFields: ConfigReceiptFieldEntryV2[] = [
-    buildReceiptFieldEntry({
-      key: options.key,
-      title: nextField?.title ?? field?.title ?? `${parsedKey.skillName} 触发方式`,
-      kind: 'builtIn',
-      reserved: true,
-      action: options.action,
-      scope: options.scope,
-      projectLayer,
-      valueState: nextField?.valueState ?? field?.valueState,
-    }),
-  ];
-  const env = options.env ?? process.env;
-  const targetResults = schemaAccess.plugin
-    ? (await replayConfigRuntimeWrites({
-        plugin: schemaAccess.plugin,
-        scope: options.scope,
-        cwd: options.cwd,
-        env,
-        applyTargets,
-        includeBuiltIn: true,
-        includeDynamicArtifacts: true,
-        nativeCliRunner: options.nativeCliRunner,
-      })).targetResults
-    : [];
-
-  return {
-    plugin: pluginName,
-    scope: options.scope,
-    projectLayer,
-    ...(schemaAccess.schema ? { schema: schemaAccess.schema } : {}),
-    affectedFields,
-    targetResults,
-    ...(options.action === 'unset' ? { existed, deleted: existed } : {}),
-    warnings: [],
   };
 }
 
@@ -2247,8 +1801,8 @@ export async function describeResetAffectedFields(options: {
       buildReceiptFieldEntry({
         key,
         title: key,
-        kind: isBuiltInConfigKey(key) ? 'builtIn' : 'manifest',
-        reserved: isBuiltInConfigKey(key),
+        kind: 'manifest',
+        reserved: false,
         action: 'reset',
         scope: options.scope,
         projectLayer,

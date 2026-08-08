@@ -27,12 +27,6 @@ async function createStaticEvalPlugin(): Promise<string> {
       aw: { minVersion: '0.0.0' },
     },
     skills: './skills',
-    skillTriggers: {
-      'eval-fixture': {
-        defaultTrigger: 'manual',
-        allowDynamicTrigger: true,
-      },
-    },
     marketplace: {
       category: 'workflow',
       strict: true,
@@ -49,6 +43,8 @@ async function createStaticEvalPlugin(): Promise<string> {
       '---',
       'name: eval-fixture',
       'description: Use only for the static plugin eval fixture.',
+      'disable-model-invocation: true',
+      'user-invocable: true',
       '---',
       '',
       '# Eval Fixture',
@@ -82,18 +78,16 @@ async function createStaticEvalPlugin(): Promise<string> {
     plugin: 'eval-fixture',
     profiles: [
       {
-        id: 'project-auto',
+        id: 'project-runtime',
         scope: 'project',
         config: {},
-        triggerPreference: 'auto',
         runModel: true,
         requiredForRelease: true,
       },
       {
-        id: 'user-auto',
+        id: 'user-runtime',
         scope: 'user',
         config: {},
-        triggerPreference: 'auto',
         runModel: false,
         requiredForRelease: true,
       },
@@ -107,7 +101,7 @@ async function createStaticEvalPlugin(): Promise<string> {
         observeSpawnAgent: false,
         isolation: 'standard',
         strictNegativeSplits: ['validation'],
-        profiles: ['project-auto'],
+        profiles: ['project-runtime'],
         defaultRuns: 1,
         releaseSplits: ['validation'],
         requiredForRelease: true,
@@ -139,8 +133,8 @@ describe('plugin eval contract and materialization', () => {
 
     expect(subjects).toHaveLength(2);
     expect(subjects.map((subject) => [subject.profile, subject.evidenceLevel])).toEqual([
-      ['project-auto', 'runtime-project'],
-      ['user-auto', 'materialized-user'],
+      ['project-runtime', 'runtime-project'],
+      ['user-runtime', 'materialized-user'],
     ]);
     expect(subjects[0].bundleDigest).toBe(subjects[1].bundleDigest);
     for (const subject of subjects) {
@@ -155,7 +149,7 @@ describe('plugin eval contract and materialization', () => {
           path.join(outputRoot, subject.root, '.agents', 'skills', 'eval-fixture', 'agents', 'openai.yaml'),
           'utf8',
         ),
-      ).resolves.toContain('allow_implicit_invocation: true');
+      ).resolves.toContain('allow_implicit_invocation: false');
       expect(subject.artifacts.some((artifact) => artifact.path.includes('/evals/'))).toBe(false);
     }
   });
@@ -179,7 +173,7 @@ describe('plugin eval contract and materialization', () => {
       kind: 'conversation',
       skill: 'eval-fixture',
       cases: './evals/conversation-cases.json',
-      profiles: ['project-auto'],
+      profiles: ['project-runtime'],
       defaultRuns: 1,
       releaseSplits: ['validation'],
       requiredForRelease: true,
@@ -202,6 +196,38 @@ describe('plugin eval contract and materialization', () => {
     await expect(readPluginEvalManifest(pluginRoot, 'eval-fixture')).rejects.toThrow(
       'does not allow real model execution for user-scope profiles',
     );
+  });
+
+  it('rejects unknown eval profile fields', async () => {
+    const pluginRoot = await createStaticEvalPlugin();
+    const manifestPath = path.join(pluginRoot, 'evals', 'manifest.json');
+    const manifest = await fs.readJson(manifestPath);
+    manifest.profiles[0].unsupportedField = true;
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+
+    await expect(readPluginEvalManifest(pluginRoot, 'eval-fixture')).rejects.toThrow(
+      'profiles[0] has unknown field "unsupportedField"',
+    );
+  });
+
+  it('rejects invalid native invocation metadata before eval materialization', async () => {
+    const pluginRoot = await createStaticEvalPlugin();
+    await fs.writeFile(
+      path.join(pluginRoot, 'skills', 'eval-fixture', 'agents', 'openai.yaml'),
+      'policy:\n  allow_implicit_invocation: "false"\n',
+      'utf8',
+    );
+    const plugin = await readPluginManifest(pluginRoot);
+    const manifest = await readPluginEvalManifest(pluginRoot, 'eval-fixture');
+    const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-eval-output-'));
+    tempDirs.push(outputRoot);
+
+    await expect(materializePluginEvalSubjects({
+      plugin,
+      manifest,
+      outputRoot,
+      env: process.env,
+    })).rejects.toThrow('policy.allow_implicit_invocation 必须是 boolean');
   });
 
   it('rejects trigger cases that do not match the suite observation contract', async () => {

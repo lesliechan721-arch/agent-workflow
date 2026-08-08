@@ -11,7 +11,6 @@ import {
   createHistoricalLifecycleRuntimePaths,
   getGlobalDependencyIndexPath,
   getNativeTransactionMarkerPath,
-  getSharedSkillTriggerRuntimeOwnerPath,
 } from '../../src/install-state/paths.js';
 import { createDependencyIndexPruneToken } from '../../src/install-state/transactions.js';
 import {
@@ -236,16 +235,6 @@ describe('cleanup command (P9)', () => {
     expect(getNativeTransactionMarkerPath('cleanup-fixture', process.env)).toBe(
       path.join(isolation.layout.awHomeDir, 'native-recovery', 'codex', 'user', 'cleanup-fixture@aw.json'),
     );
-    expect(getSharedSkillTriggerRuntimeOwnerPath({
-      pluginName: 'cleanup-fixture',
-      platform: 'codex',
-      env: process.env,
-    })).toContain(path.join(isolation.layout.awHomeDir, 'shared-runtime-owners', 'codex'));
-    expect(getSharedSkillTriggerRuntimeOwnerPath({
-      pluginName: 'cleanup-fixture',
-      platform: 'codex',
-      env: process.env,
-    })).toMatch(/cleanup-fixture.*\.json$/);
     expect(lifecyclePaths.runtimeRoot).toContain(
       path.join(isolation.layout.awHomeDir, 'lifecycle-runtimes', 'codex', 'user'),
     );
@@ -407,6 +396,7 @@ describe('cleanup command (P9)', () => {
     await builder.writeDependencyIndex([{ target, record }]);
     await refreshDependencyIndexDigestsForP2(path.join(builder.paths.awHome, 'dependency-index', 'index.json'));
     await ensureRepoPlugin(builder.paths.repoRoot, 'git-commit', 'fallback-cleanup-should-not-run.txt');
+    await fs.remove(lifecycle.manifestPath);
 
     const claude = new FakeAdapter();
     const result = await cleanupCommand(
@@ -585,83 +575,6 @@ describe('cleanup command (P9)', () => {
     const index = await fs.readJson(path.join(builder.paths.awHome, 'dependency-index', 'index.json'));
     expect(index.records).toEqual([]);
     expect(codex.uninstallPluginCalls).toEqual(['git-commit']);
-  });
-
-  it('requires --force before cleaning a shared runtime owner when the embedded bundle is unavailable', async () => {
-    const builder = await makeBuilder();
-    const target = builder.createTarget({ pluginName: 'git-commit', platform: 'codex', scope: 'user' });
-    const recordPath = path.join(
-      builder.paths.codexHome,
-      '.agent-workflows',
-      'records',
-      `${target.recordId}.json`,
-    );
-    const ownerPath = path.join(
-      builder.paths.awHome,
-      'shared-runtime-owners',
-      'codex',
-      `${target.pluginSlug}.${target.pluginHash}.json`,
-    );
-
-    await builder.writeRepoArtifact(target);
-    const lifecycle = await builder.writeHistoricalLifecycleRuntime(target);
-    const record = await builder.writeInstallRecord(target, lifecycle);
-    await rewriteSanitizedInstallRecordForP2(recordPath);
-    await builder.writeNativeMarker(target, 'install');
-    await builder.writeSharedRuntimeOwner(target, recordPath);
-    await builder.writeDependencyIndex([{ target, record }]);
-    await refreshDependencyIndexDigestsForP2(path.join(builder.paths.awHome, 'dependency-index', 'index.json'));
-    await ensureRepoPlugin(builder.paths.repoRoot, 'git-commit');
-
-    setEmbeddedPluginsRootOverrideForTests(path.join(builder.paths.repoRoot, 'missing-plugins-dist'));
-
-    const runtime = {
-      env: {
-        ...process.env,
-        AW_HOME: builder.paths.awHome,
-        AW_CODEX_HOME: builder.paths.codexHome,
-        AW_CLAUDE_HOME: builder.paths.claudeHome,
-      },
-      p9TargetResolver: async () => {
-        throw new Error('synthetic target resolution failure');
-      },
-      adapters: {
-        codex: new FakeAdapter(),
-        claude: new FakeAdapter(),
-      } satisfies Record<PlatformName, PlatformAdapter>,
-    };
-
-    const preview = await cleanupCommand(
-      ['git-commit'],
-      {
-        cwd: builder.paths.repoRoot,
-        scope: 'user',
-        platform: 'codex',
-      },
-      runtime,
-    );
-    expect(preview.payload).toMatchObject({
-      command: 'cleanup',
-      dependencyIndex: false,
-      overallState: 'succeeded',
-      residueItems: [],
-    });
-    await expect(fs.pathExists(ownerPath)).resolves.toBe(false);
-    await expect(fs.pathExists(recordPath)).resolves.toBe(false);
-
-    const result = await cleanupCommand(
-      ['git-commit'],
-      {
-        cwd: builder.paths.repoRoot,
-        scope: 'user',
-        platform: 'codex',
-        force: true,
-      },
-      runtime,
-    );
-
-    await expect(fs.pathExists(ownerPath)).resolves.toBe(false);
-    await expect(fs.pathExists(recordPath)).resolves.toBe(false);
   });
 
   it('prunes stale dependency-index entries without deleting project files', async () => {

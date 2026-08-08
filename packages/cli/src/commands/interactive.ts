@@ -810,7 +810,6 @@ export async function createInteractiveInstallPlan(
     cwd: candidate.executionCwd,
     platform: candidate.platform,
     scope: candidate.scope,
-    requestedSkillTrigger: options.requestedSkillTrigger,
   }));
 
   const usedPrompt =
@@ -1072,7 +1071,6 @@ export async function createInteractiveUpgradePlan(
             platform: platformResolution.platformFilter ?? options.platform,
             scope: scopeResolution.scope,
             all: true,
-            requestedSkillTrigger: options.requestedSkillTrigger,
           },
           candidates,
         }],
@@ -1096,7 +1094,6 @@ export async function createInteractiveUpgradePlan(
     platform: candidate.platform,
     scope: candidate.scope,
     all: false,
-    requestedSkillTrigger: options.requestedSkillTrigger,
   }));
 
   const usedPrompt =

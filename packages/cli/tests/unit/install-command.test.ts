@@ -23,7 +23,6 @@ import type {
   PlatformAdapter,
   PlatformName,
   PluginMeta,
-  ResolvedInstallOptions,
   Scope,
   StatusReport,
 } from '../../src/types.js';
@@ -601,13 +600,6 @@ class FakeClaudeAdapter implements PlatformAdapter {
   }
 }
 
-function resolvedInstallOptions(): ResolvedInstallOptions {
-  return {
-    applicability: 'none',
-    ledgerTrust: 'available',
-  };
-}
-
 afterEach(async () => {
   vi.restoreAllMocks();
   clearCurrentCatalogResolutionMemoForTests();
@@ -616,99 +608,6 @@ afterEach(async () => {
 });
 
 describe('install command P6 install-state semantics', () => {
-  it('applies prewritten mixed SkillTrigger config during install and upgrade', async () => {
-    const { repoRoot, env } = await makeWorkspace();
-    const sourceManifestPath = path.join(
-      repoRoot,
-      'plugins',
-      'git-commit',
-      '.agents-plugin',
-      'plugin.json',
-    );
-    const sourceManifest = await fs.readJson(sourceManifestPath);
-    sourceManifest.skillTriggers.review = {
-      defaultTrigger: 'auto',
-      allowDynamicTrigger: true,
-    };
-    await fs.writeJson(sourceManifestPath, sourceManifest, { spaces: 2 });
-    const reviewSource = path.join(repoRoot, 'plugins', 'git-commit', 'skills', 'review');
-    await fs.outputFile(
-      path.join(reviewSource, 'SKILL.md'),
-      '---\nname: review\ndescription: Review changes.\n---\nReview\n',
-    );
-    await fs.outputFile(
-      path.join(reviewSource, 'agents', 'openai.yaml'),
-      'policy:\n  allow_implicit_invocation: true\n',
-    );
-    const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
-    registerCliEmbeddedRoot(embeddedRoot);
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
-    const plugin = await readPluginManifest(
-      path.join(embeddedRoot, 'plugins', 'git-commit'),
-      { mode: 'bundle' },
-    );
-    await writePluginConfigStore({
-      pluginName: plugin.manifest.name,
-      scope: 'user',
-      cwd: repoRoot,
-      env,
-      values: {
-        $aw: {
-          skillTriggers: {
-            commit: { trigger: 'manual' },
-            review: { trigger: 'auto' },
-          },
-        },
-      },
-    });
-    const receivedPreferences: Array<Record<string, string> | undefined> = [];
-    const codex = new FakeCodexAdapter(env, {
-      onInstallExtensions: async (_currentPlugin, _scope, options) => {
-        receivedPreferences.push(options?.skillTriggerPreferences);
-        return [];
-      },
-    });
-    const runtime = {
-      env,
-      adapters: {
-        codex,
-        claude: new FakeClaudeAdapter(),
-      },
-      resolveInstallOptions: () => ({
-        applicability: 'overridable' as const,
-        ledgerTrust: 'available' as const,
-        skillTriggerPreference: 'default' as const,
-        skillTriggerSource: 'default' as const,
-      }),
-      skipConfigPreflight: true,
-      skipWriteSafetyPreflight: true,
-    };
-    const target = createResolvedTarget(plugin);
-    const commandOptions = {
-      cwd: repoRoot,
-      scope: 'user' as const,
-      platform: 'codex' as const,
-    };
-
-    await installTargetsOnPlatforms(
-      [target],
-      ['codex'],
-      commandOptions,
-      runtime,
-    );
-    await installTargetsOnPlatforms(
-      [target],
-      ['codex'],
-      commandOptions,
-      { ...runtime, operation: 'upgrade' },
-    );
-
-    expect(receivedPreferences).toEqual([
-      { commit: 'manual', review: 'auto' },
-      { commit: 'manual', review: 'auto' },
-    ]);
-  });
-
   it('pins only the selected current catalog plugins for local marketplace rebuilds', async () => {
     const { env } = await makeWorkspace();
     const sourceCatalogRoot = path.join(
@@ -828,7 +727,6 @@ describe('install command P6 install-state semantics', () => {
           codex,
           claude: new FakeClaudeAdapter(),
         },
-        resolveInstallOptions: () => resolvedInstallOptions(),
         skipConfigPreflight: true,
         skipWriteSafetyPreflight: true,
       },
@@ -900,7 +798,6 @@ describe('install command P6 install-state semantics', () => {
             codex,
             claude: new FakeClaudeAdapter(),
           },
-          resolveInstallOptions: () => resolvedInstallOptions(),
           skipConfigPreflight: true,
           skipWriteSafetyPreflight: true,
         },
@@ -970,7 +867,6 @@ describe('install command P6 install-state semantics', () => {
             codex,
             claude: new FakeClaudeAdapter(),
           },
-          resolveInstallOptions: () => resolvedInstallOptions(),
           skipConfigPreflight: true,
           skipWriteSafetyPreflight: true,
         },
@@ -1110,13 +1006,6 @@ describe('install command P6 install-state semantics', () => {
 
   it('keeps Codex user dynamic skill installs on the rebuilt local marketplace when plugins-dist is unavailable', async () => {
     const { repoRoot, env, embeddedRoot } = await makeWorkspace((pluginManifest) => {
-      pluginManifest.skillTriggers = {
-        ...pluginManifest.skillTriggers,
-        'generated-commit': {
-          defaultTrigger: 'auto',
-          allowDynamicTrigger: true,
-        },
-      };
       pluginManifest.artifacts = {
         targets: [{
           id: 'generated-commit-skill',
@@ -1457,7 +1346,7 @@ describe('install command P6 install-state semantics', () => {
     });
   });
 
-  it('surfaces receipt file categories and suppresses shared-owner takeover copy for Codex repo-local triggers', () => {
+  it('surfaces receipt file categories for Codex repo-local installs', () => {
     const rawReceipt = {
       result: {
         platforms: ['codex'],
@@ -1494,12 +1383,6 @@ describe('install command P6 install-state semantics', () => {
             },
             recordPath: '/tmp/workspace/.codex/.agent-workflows/records/git-commit.json',
           }],
-          sharedSkillTriggerOwner: {
-            present: true,
-            needsTakeover: false,
-            ownerConflict: false,
-            suppressedOwnerConflict: true,
-          },
         },
       },
       groups: [{
@@ -1540,10 +1423,6 @@ describe('install command P6 install-state semantics', () => {
       staleProjectReferences: [{
         recordPath: '/tmp/workspace/.codex/.agent-workflows/records/git-commit.json',
       }],
-      sharedSkillTriggerOwner: {
-        suppressedOwnerConflict: true,
-        needsTakeover: false,
-      },
     });
     expect(receipt).not.toHaveProperty('legacyNextSteps');
     expect(receipt.nativeTransactionMarker).not.toHaveProperty('recoveryCommand');
@@ -1555,12 +1434,10 @@ describe('install command P6 install-state semantics', () => {
     expect(human).toContain('已更新团队共享配置。');
     expect(human).toContain('已更新共享身份文件。');
     expect(human).toContain('已更新 AW 本地状态。');
-    expect(human).toContain('当前项目的 repo-local skill trigger 已按本地项目路径处理');
     expect(human).not.toContain('takeoverRequired');
     expect(human).not.toContain('ownerConflict');
     expect(human).not.toContain('aw repair');
     expect(human).not.toContain('repair');
-    expect(human).not.toContain('--takeover-shared-runtime');
   });
 
   it('keeps explicit single-platform installs scoped to requested targets, without letting dependencies widen the platform set', async () => {
@@ -2086,7 +1963,6 @@ describe('install command P6 install-state semantics', () => {
           codex,
           claude: new FakeClaudeAdapter(),
         },
-        resolveInstallOptions: () => resolvedInstallOptions(),
         skipConfigPreflight: true,
         skipWriteSafetyPreflight: true,
       },
@@ -2206,7 +2082,6 @@ describe('install command P6 install-state semantics', () => {
           codex: new FakeCodexAdapter(env),
           claude,
         },
-        resolveInstallOptions: () => resolvedInstallOptions(),
         skipConfigPreflight: true,
         skipWriteSafetyPreflight: true,
       },
@@ -2329,7 +2204,6 @@ describe('install command P6 install-state semantics', () => {
             codex: new FakeCodexAdapter(env),
             claude: new FakeClaudeAdapter(),
           },
-          resolveInstallOptions: () => resolvedInstallOptions(),
           skipConfigPreflight: true,
           skipWriteSafetyPreflight: true,
         },
@@ -2421,7 +2295,6 @@ describe('install command P6 install-state semantics', () => {
             codex: new FakeCodexAdapter(env),
             claude: new FakeClaudeAdapter(),
           },
-          resolveInstallOptions: () => resolvedInstallOptions(),
           skipConfigPreflight: true,
           skipWriteSafetyPreflight: true,
         },

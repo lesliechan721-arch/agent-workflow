@@ -4,7 +4,6 @@ import type {
   PlatformName,
   PluginVersion,
   Scope,
-  SkillTriggerPreference,
   TrackedHookGroupIdentity,
 } from '../types.js';
 
@@ -64,7 +63,6 @@ export interface InstallRecordDependencyEdge {
     target?: {
       scope?: Scope;
     };
-    inheritInstallOptions?: boolean;
     when?: {
       platforms?: PlatformName[];
     };
@@ -101,9 +99,6 @@ export interface InstallRecord {
     bundleFingerprint: string;
   };
   installSource: InstallRecordInstallSource;
-  options?: {
-    skillTriggerPreference?: SkillTriggerPreference;
-  };
   native?: {
     pluginId: string;
     installedByAw: boolean;
@@ -212,17 +207,6 @@ export interface NativeTransactionMarker {
   createdAt: string;
   updatedAt: string;
   lastError?: string;
-}
-
-export interface SharedSkillTriggerRuntimeOwner {
-  version: 1;
-  pluginName: string;
-  platform: PlatformName;
-  owner: PluginLocation;
-  ownerRecordPath: string;
-  ownerRecordDigest: string;
-  preference?: SkillTriggerPreference;
-  updatedAt: string;
 }
 
 export interface HistoricalLifecycleRuntimePathSet {

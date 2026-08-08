@@ -163,7 +163,6 @@ export interface CommandCandidate {
     autoInstalled: boolean;
     unusedDependencyHint: boolean;
     dependencyProtected: boolean;
-    ownerConflict: boolean;
   };
   agentVersion?: AgentVersionDiagnosticProjection;
 }
@@ -1037,8 +1036,6 @@ async function resolveCandidateInstallState(options: {
       autoInstalled: projection.autoInstalled,
       unusedDependencyHint: projection.unusedDependencyHint,
       dependencyProtected: projection.dependents.length > 0,
-      ownerConflict: projection.diagnostics.some((entry) => entry.code === 'sharedRuntimeOwnerResidue')
-        && !(options.target.platform === 'codex' && options.target.scope === 'project'),
     };
   } catch {
     return undefined;

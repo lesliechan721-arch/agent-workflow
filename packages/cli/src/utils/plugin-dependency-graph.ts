@@ -50,7 +50,6 @@ function normalizeDeclaration(
     target: declaration.target?.scope
       ? { scope: declaration.target.scope }
       : undefined,
-    inheritInstallOptions: declaration.inheritInstallOptions === true ? true : undefined,
     when: normalizePlatforms(declaration.when?.platforms)
       ? { platforms: normalizePlatforms(declaration.when?.platforms) }
       : undefined,
@@ -65,10 +64,6 @@ function compareDeclarations(
     compareStrings(left.name, right.name) ||
     compareStrings(left.minVersion ?? '', right.minVersion ?? '') ||
     compareStrings(left.target?.scope ?? '', right.target?.scope ?? '') ||
-    compareStrings(
-      left.inheritInstallOptions === true ? 'true' : '',
-      right.inheritInstallOptions === true ? 'true' : '',
-    ) ||
     compareStrings(
       JSON.stringify(left.when?.platforms ?? []),
       JSON.stringify(right.when?.platforms ?? []),

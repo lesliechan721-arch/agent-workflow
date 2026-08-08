@@ -6,7 +6,6 @@
       "id": "project-default",
       "scope": "project",
       "config": {},
-      "triggerPreference": "default",
       "runModel": true,
       "requiredForRelease": true
     },
@@ -14,7 +13,6 @@
       "id": "user-default",
       "scope": "user",
       "config": {},
-      "triggerPreference": "default",
       "runModel": false,
       "requiredForRelease": true
     },
@@ -30,7 +28,6 @@
         "deepReasoningEffort": "max",
         "minimumInitialWaitMinutes": 2
       },
-      "triggerPreference": "default",
       "runModel": false,
       "requiredForRelease": true
     },
@@ -46,7 +43,6 @@
         "deepReasoningEffort": "max",
         "minimumInitialWaitMinutes": 2
       },
-      "triggerPreference": "default",
       "runModel": false,
       "requiredForRelease": true
     }

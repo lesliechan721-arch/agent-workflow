@@ -367,9 +367,6 @@ async function isPlannedRemovalStillPresent(
     case 'project-artifact-identity':
       return evidence.projectSharedIdentity.read?.status === 'ok'
         || (item.path ? await fs.pathExists(item.path) : false);
-    case 'shared-runtime-owner':
-      return evidence.sharedRuntimeOwner.read.status === 'ok'
-        || (item.path ? await fs.pathExists(item.path) : false);
     case 'historical-lifecycle-runtime':
       return evidence.historicalLifecycle.path !== null
         || (item.path ? await fs.pathExists(item.path) : false);
@@ -425,8 +422,7 @@ function isPureCodexUserNativeResidue(evidence: InstallEvidence): boolean {
     && !evidence.residualEvidence.repoVisibleArtifactPresent
     && !evidence.residualEvidence.sharedIdentityPresent
     && !evidence.residualEvidence.historicalLifecyclePresent
-    && !evidence.residualEvidence.nativeMarkerPresent
-    && !evidence.residualEvidence.sharedOwnerPresent;
+    && !evidence.residualEvidence.nativeMarkerPresent;
 }
 
 function classifyCleanupTargetType(
@@ -547,12 +543,6 @@ function collectCleanupScopeItems(options: {
     kind: 'project-artifact-identity',
     label: 'project artifact shared identity',
     path: evidence.projectSharedIdentity.read?.path,
-  });
-  maybeAddPathRemoval(items, {
-    exists: evidence.sharedRuntimeOwner.read.status !== 'missing',
-    kind: 'shared-runtime-owner',
-    label: 'shared runtime owner',
-    path: evidence.sharedRuntimeOwner.read.path,
   });
   maybeAddPathRemoval(items, {
     exists: evidence.historicalLifecycle.residuePresent,

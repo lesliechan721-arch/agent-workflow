@@ -274,12 +274,6 @@ describe('local-plugin generator', () => {
     const repoRoot = await makeTempRepo();
     const manifest = await readFixturePluginManifest(repoRoot);
     delete manifest.skills;
-    manifest.skillTriggers = {
-      'dynamic-explore': {
-        defaultTrigger: 'auto',
-        allowDynamicTrigger: true,
-      },
-    };
     manifest.config = {
       schema: {
         explorerModel: {

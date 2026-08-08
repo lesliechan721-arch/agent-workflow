@@ -15,7 +15,7 @@
     "registry": "https://packages.aliyun.com/5fa510142f8cc15c287b3dcd/npm/npm-registry/"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && node dist/scripts/bundle-plugins.js",
+    "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node dist/scripts/bundle-plugins.js",
     "test": "vitest run",
     "test:unit": "vitest run tests/unit",
     "test:integration": "vitest run tests/integration",

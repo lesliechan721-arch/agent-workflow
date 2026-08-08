@@ -8,12 +8,6 @@
     }
   },
   "skills": "./skills",
-  "skillTriggers": {
-    "commit": {
-      "defaultTrigger": "auto",
-      "allowDynamicTrigger": true
-    }
-  },
   "marketplace": {
     "category": "workflow",
     "tags": ["git", "commit"],

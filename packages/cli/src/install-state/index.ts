@@ -3,4 +3,4 @@ export * from './ids.js';
 export * from './paths.js';
 export * from './schema.js';
 export * from './facade.js';
-export * from './shared-runtime-owner.js';
+export * from './historical-bundle.js';

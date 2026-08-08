@@ -1268,30 +1268,6 @@ describe('upgrade command dependency graph', () => {
     expect(claude.installOrder).toEqual([claudeOnly.manifest.name]);
   });
 
-  it('rejects removed upgrade --all takeover flag before any write', async () => {
-    const { repoRoot, env } = await makeWorkspace();
-
-    await expect(
-      upgradeCommand(
-        [],
-        {
-          all: true,
-          takeoverSharedRuntime: true,
-          cwd: repoRoot,
-          scope: 'user',
-          platform: 'codex',
-        },
-        {
-          env,
-          adapters: {
-            codex: new UpgradeTestAdapter('codex', repoRoot, env),
-            claude: new UpgradeTestAdapter('claude', repoRoot, env),
-          },
-        },
-      ),
-    ).rejects.toThrow('`upgrade` 不再接受 `--takeover-shared-runtime`');
-  });
-
   it('fails upgrade --all --platform both before any marketplace write when either platform version is blocked', async () => {
     const { repoRoot, env } = await makeWorkspace();
     const plugin = await writeSyntheticPlugin(repoRoot, createDependencyPluginManifest({

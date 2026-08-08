@@ -37,7 +37,6 @@ function toPlannerState(
         dependency: edge.dependency,
         declaration: edge.declaration,
       })),
-      installOptions: record.installOptions,
       snapshotManifest: record.snapshotManifest,
     })),
     healthRecords: fixture.health.records,
@@ -542,55 +541,6 @@ describe('plugin dependency planner', () => {
       }),
     ]);
     expect(plan.edges.filter((edge) => edge.dependency.plugin === shared.name)).toHaveLength(2);
-  });
-
-  it('detects inherited install option conflicts for a shared missing dependency', () => {
-    const shared = createDependencyPluginManifest({
-      name: 'shared-trigger',
-    });
-    const parentA = createDependencyPluginManifest({
-      name: 'trigger-parent-a',
-      dependencies: [{
-        name: shared.name,
-        inheritInstallOptions: true,
-      }],
-    });
-    const parentB = createDependencyPluginManifest({
-      name: 'trigger-parent-b',
-      dependencies: [{
-        name: shared.name,
-        inheritInstallOptions: true,
-      }],
-    });
-
-    expect(() => planPluginDependencyWrites({
-      mode: 'install',
-      state: toPlannerState(createDependencyPlannerFixture({
-        currentCatalog: [parentA, parentB, shared],
-      })),
-      targets: [
-        {
-          location: createDependencyPluginLocation({
-            plugin: parentA.name,
-            platform: 'codex',
-            scope: 'user',
-          }),
-          installOptions: {
-            skillTriggerPreference: 'manual',
-          },
-        },
-        {
-          location: createDependencyPluginLocation({
-            plugin: parentB.name,
-            platform: 'codex',
-            scope: 'user',
-          }),
-          installOptions: {
-            skillTriggerPreference: 'auto',
-          },
-        },
-      ],
-    })).toThrow(/冲突的安装选项/);
   });
 
   it('exposes graph-level preflight inputs for every write node', () => {

@@ -8,12 +8,6 @@
     }
   },
   "skills": "./skills",
-  "skillTriggers": {
-    "commit": {
-      "defaultTrigger": "auto",
-      "allowDynamicTrigger": true
-    }
-  },
   "mcpServers": "./.mcp.json",
   "apps": "./.app.json",
   "marketplace": {

@@ -289,7 +289,6 @@ describe('console entry', () => {
         platform: options.platforms[0] ?? 'codex',
         scope: 'user',
         requested: true,
-        resolvedInstallOptions: undefined,
       })),
     }));
     const installCommand = vi.fn().mockResolvedValue({
@@ -410,53 +409,5 @@ describe('console entry', () => {
     expect(legacyBlock).toContain('配置残留');
     expect(legacyBlock).not.toContain('主操作：安装');
     expect(legacyBlock).not.toContain('主操作：升级');
-  });
-
-  it('shows orphaned built-in config placeholders on bare-aw home', async () => {
-    const workspace = await makeWorkspace();
-    setEmbeddedPluginsRootOverrideForTests(workspace.embeddedRoot);
-    vi.doUnmock('../../src/commands/status.js');
-    vi.doUnmock('../../src/commands/common.js');
-    vi.doUnmock('../../src/commands/console-wizard.js');
-    vi.doUnmock('../../src/commands/install.js');
-    await fs.outputJson(
-      path.join(workspace.awHome, 'plugin-config', 'missing-plugin', 'config.json'),
-      {
-        $aw: {
-          skillTriggers: {
-            retired: {
-              trigger: 'manual',
-            },
-          },
-        },
-      },
-      { spaces: 2 },
-    );
-
-    const prompt = createFakePrompt([
-      { method: 'select', value: '__exit' },
-    ]);
-    const consoleDriver = createFakeConsoleDriver();
-    const capture = createCapturedCliIo();
-    const { runCli } = await import('../../src/index.js');
-
-    const exitCode = await runCli([], {
-      cwd: workspace.repoRoot,
-      env: workspace.env,
-      io: capture.io,
-      prompt,
-      consoleDriver,
-    });
-
-    expect(exitCode, capture.readStderr()).toBe(0);
-    const homeView = consoleDriver.views[0];
-    expect(homeView).toBeDefined();
-    expect(homeView!.lines.some((line) => line.startsWith('异常（'))).toBe(true);
-    const legacyIndex = homeView!.lines.findIndex((line) => line.includes('! missing-plugin'));
-    expect(legacyIndex).toBeGreaterThanOrEqual(0);
-    const legacyBlock = homeView!.lines
-      .slice(legacyIndex, legacyIndex + 8)
-      .join('\n');
-    expect(legacyBlock).toContain('配置残留');
   });
 });

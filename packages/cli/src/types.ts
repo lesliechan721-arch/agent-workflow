@@ -25,10 +25,8 @@ export type AgentVersionReasonCode =
   | 'agentVersionTooLow';
 export type InstalledVersion = string;
 export type CatalogChannel = 'latest' | 'beta';
-export type SkillTriggerPreference = 'default' | 'manual' | 'auto';
-export type SkillTriggerApplicability = 'none' | 'fixed' | 'overridable';
-export type ConfigFieldKind = 'manifest' | 'builtIn';
-export type ConfigValueState = 'default' | 'configured' | 'fixed' | 'ignored' | 'orphaned' | 'invalid';
+export type ConfigFieldKind = 'manifest';
+export type ConfigValueState = 'default' | 'configured' | 'invalid';
 export type NativePluginsByPlatform = Partial<Record<PlatformName, string[]>>;
 export type NextStepKind = 'uiAction' | 'cliCommand' | 'manual';
 export type ManualNextStepKind = 'guidance' | 'blocker' | 'documentation';
@@ -102,9 +100,6 @@ export interface ConfigFieldEntryV2 {
   sourceLayer: 'default' | 'user' | 'project' | 'local' | null;
   storedValue?: unknown;
   storedSourceLayer?: 'user' | 'project' | 'local';
-  ignoredReason?: 'fixedSkillTrigger';
-  orphanedReason?: 'pluginRemoved' | 'skillRemoved';
-  invalidReason?: 'unsupportedProjectLocalLayer';
 }
 
 export interface ConfigReceiptFieldEntryV2 {
@@ -464,11 +459,6 @@ export type ArtifactPlanArtifact =
   | CodexSkillArtifact
   | ClaudeSkillArtifact;
 
-export interface SkillTriggerPolicy {
-  defaultTrigger: Exclude<SkillTriggerPreference, 'default'>;
-  allowDynamicTrigger: boolean;
-}
-
 export interface PluginCompatibility {
   aw: {
     minVersion: CliVersion;
@@ -487,7 +477,6 @@ export interface PluginDependencyEntry {
   name: string;
   minVersion?: DependencyVersion;
   target?: PluginDependencyTarget;
-  inheritInstallOptions?: boolean;
   when?: PluginDependencyWhen;
 }
 
@@ -502,7 +491,6 @@ export interface PluginManifestSource {
   compatibility?: PluginCompatibility;
   skills?: string;
   slashCommands?: string;
-  skillTriggers?: Record<string, SkillTriggerPolicy>;
   mcpServers?: string;
   apps?: string;
   marketplace: PluginMarketplaceMeta;
@@ -1022,13 +1010,6 @@ export interface PluginStatusReport {
   generatedArtifacts: GeneratedArtifactStatus[];
   managedArtifacts?: ManagedArtifactStatus[];
   driftWarnings: string[];
-  installOptions?: InstalledScopeInstallOptions;
-  skillTriggerApplicability?: SkillTriggerApplicability;
-  skillTriggerPreference?: SkillTriggerPreference;
-  skillTriggerPreferences?: Record<string, Exclude<SkillTriggerPreference, 'default'>>;
-  skillTriggerRuntimeMatches?: SkillTriggerPreference[];
-  skillTriggerRuntimeState?: 'matched' | 'mixed' | 'unknown';
-  skillTriggerDrift?: 'yes' | 'no' | 'unknown';
   ledgerStateStatus?: LedgerStateStatus;
   ledgerStateReason?: LedgerStateReason | null;
   scopeInitialized?: ScopeInitializedState;
@@ -1067,13 +1048,11 @@ export interface CommandOptions extends CatalogSelectionOptions {
 }
 
 export interface InstallCommandOptions extends CommandOptions {
-  requestedSkillTrigger?: SkillTriggerPreference;
   adoptExisting?: boolean;
 }
 
 export interface UpgradeCommandOptions extends CommandOptions {
   all?: boolean;
-  requestedSkillTrigger?: SkillTriggerPreference;
 }
 
 export type SkippedUpgradeCode =
@@ -1088,7 +1067,6 @@ export type SkippedUpgradeCode =
   | 'externalOwnershipPresent'
   | 'roleNameConflict'
   | 'trackingIntegrityError'
-  | 'installOptionsUnavailable'
   | 'catalogNotCurrent'
   | 'catalogNotProjectInstallable'
   | 'projectConfigUnreadable'
@@ -1163,33 +1141,6 @@ export type StatusScriptHealth =
   | 'missing-from-bundle'
   | 'unsupported-on-current-os';
 
-export type ResolvedInstallOptionsSource = 'cli' | 'ledger' | 'default';
-export type ResolvedInstallOptionsLedgerTrust = 'available' | 'degraded';
-
-export interface ResolvedInstallOptionsBase {
-  applicability: SkillTriggerApplicability;
-  ledgerTrust: ResolvedInstallOptionsLedgerTrust;
-}
-
-export interface ResolvedInstallOptionsNone extends ResolvedInstallOptionsBase {
-  applicability: 'none';
-}
-
-export interface ResolvedInstallOptionsFixed extends ResolvedInstallOptionsBase {
-  applicability: 'fixed';
-}
-
-export interface ResolvedInstallOptionsOverridable extends ResolvedInstallOptionsBase {
-  applicability: 'overridable';
-  skillTriggerPreference: SkillTriggerPreference;
-  skillTriggerSource: ResolvedInstallOptionsSource;
-}
-
-export type ResolvedInstallOptions =
-  | ResolvedInstallOptionsNone
-  | ResolvedInstallOptionsFixed
-  | ResolvedInstallOptionsOverridable;
-
 export class CommandWarningError extends Error {
   readonly warnings: string[];
   readonly exitCode: number;
@@ -1253,8 +1204,6 @@ export interface PlatformAdapter {
       event?: 'install' | 'upgrade' | 'refresh';
       changedConfigKeys?: string[];
       dynamicOnly?: boolean;
-      skillTriggerPreference?: SkillTriggerPreference;
-      skillTriggerPreferences?: Record<string, SkillTriggerPreference>;
       previousArtifacts?: GeneratedArtifact[];
     },
   ): Promise<GeneratedArtifact[]>;
@@ -1318,10 +1267,6 @@ export interface CodexCapabilitySnapshot {
   managedKinds?: CodexProjectManagedKind[];
 }
 
-export interface InstalledScopeInstallOptions {
-  skillTriggerPreference?: SkillTriggerPreference;
-}
-
 export interface LifecycleConfigSnapshotMetadata {
   snapshotRoot: string;
   bundleRoot: string;
@@ -1358,7 +1303,6 @@ export interface InstalledDependencyEdgeDeclaration {
   target?: {
     scope?: Scope;
   };
-  inheritInstallOptions?: boolean;
   when?: {
     platforms?: PlatformName[];
   };
@@ -1377,8 +1321,6 @@ export interface InstalledScopeRecord<TCapabilitySnapshot> {
   projectKey?: string;
   installSource?: InstalledScopeInstallSource;
   dependencyEdges?: InstalledDependencyEdge[];
-  installOptions?: InstalledScopeInstallOptions;
-  skillTriggerWriteOrder?: number;
   lifecycleConfigSnapshot?: LifecycleConfigSnapshotMetadata;
 }
 

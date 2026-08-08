@@ -135,12 +135,6 @@ function report(overrides: Partial<PluginStatusReport> & {
       : overrides.currentCatalog ?? undefined,
     activeLocalBundle: overrides.activeLocalBundle,
     artifactsInitialized: overrides.artifactsInitialized ?? true,
-    installOptions: overrides.installOptions,
-    skillTriggerApplicability: overrides.skillTriggerApplicability,
-    skillTriggerPreference: overrides.skillTriggerPreference,
-    skillTriggerRuntimeMatches: overrides.skillTriggerRuntimeMatches,
-    skillTriggerRuntimeState: overrides.skillTriggerRuntimeState,
-    skillTriggerDrift: overrides.skillTriggerDrift,
     projectManagedKinds: overrides.projectManagedKinds,
     dependencies: overrides.dependencies,
   };
@@ -180,10 +174,6 @@ function installState(overrides: Partial<StatusMatrixInstallState> = {}): Status
     upgradeAvailable: false,
     dynamicDiagnosticUnavailable: false,
     nativeTransactionKind: 'none',
-    sharedRuntimeOwnerPresent: false,
-    sharedRuntimeParticipatesInOwner: false,
-    sharedRuntimeSemanticDelta: 'noChange',
-    sharedRuntimeOwnerConflict: false,
     ...overrides,
   };
 }
@@ -212,65 +202,14 @@ function configProjection(
         scope: 'effective',
         projectLayer: 'shared',
         fields: [{
-          key: 'aw.skillTriggers.commit.trigger',
-          title: 'commit 触发方式',
-          kind: 'builtIn',
-          reserved: true,
+          key: 'mode',
+          title: '运行模式',
+          kind: 'manifest',
+          reserved: false,
           writable: true,
           valueState: 'configured',
-          effectiveValue: 'manual',
+          effectiveValue: 'safe',
           sourceLayer: 'user',
-        }],
-        legacyConfigStores: [],
-      },
-      {
-        scope: 'user',
-        projectLayer: 'shared',
-        fields: [
-          {
-            key: 'aw.skillTriggers.review.trigger',
-            title: 'review 触发方式',
-            kind: 'builtIn',
-            reserved: true,
-            writable: false,
-            valueState: 'ignored',
-            effectiveValue: 'auto',
-            sourceLayer: 'default',
-            storedValue: 'manual',
-            storedSourceLayer: 'user',
-            ignoredReason: 'fixedSkillTrigger',
-          },
-          {
-            key: 'aw.skillTriggers.retired.trigger',
-            title: 'retired 触发方式',
-            kind: 'builtIn',
-            reserved: true,
-            writable: false,
-            valueState: 'orphaned',
-            effectiveValue: null,
-            sourceLayer: null,
-            storedValue: 'auto',
-            storedSourceLayer: 'user',
-            orphanedReason: 'skillRemoved',
-          },
-        ],
-        legacyConfigStores: [],
-      },
-      {
-        scope: 'project',
-        projectLayer: 'shared',
-        fields: [{
-          key: 'aw.skillTriggers.commit.trigger',
-          title: 'commit 触发方式',
-          kind: 'builtIn',
-          reserved: true,
-          writable: false,
-          valueState: 'invalid',
-          effectiveValue: 'auto',
-          sourceLayer: 'default',
-          storedValue: 'manual',
-          storedSourceLayer: 'local',
-          invalidReason: 'unsupportedProjectLocalLayer',
         }],
         legacyConfigStores: [],
       },
@@ -881,68 +820,6 @@ describe('console-model', () => {
     expect(publicJson).not.toContain('confirmText');
   });
 
-  it('projects built-in SkillTrigger config with config V2 semantics on public summaries', () => {
-    const projection = configProjection();
-    const summary = createPluginConsoleItems(matrix([
-      cell({
-        report: report({
-          scopeInitialized: 'yes',
-          scopeManagedEvidence: { ledger: true },
-        }),
-      }),
-    ]), {
-      configProjectionByPluginName: {
-        'demo-plugin': projection,
-      },
-    })[0]!;
-
-    expect(summary.config).toEqual(projection);
-    expect(summary.config?.views).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        scope: 'effective',
-        projectLayer: 'shared',
-        fields: expect.arrayContaining([
-          expect.objectContaining({
-            key: 'aw.skillTriggers.commit.trigger',
-            kind: 'builtIn',
-            reserved: true,
-            valueState: 'configured',
-            effectiveValue: 'manual',
-            sourceLayer: 'user',
-          }),
-        ]),
-      }),
-      expect.objectContaining({
-        scope: 'user',
-        projectLayer: 'shared',
-        fields: expect.arrayContaining([
-          expect.objectContaining({
-            key: 'aw.skillTriggers.review.trigger',
-            valueState: 'ignored',
-            ignoredReason: 'fixedSkillTrigger',
-          }),
-          expect.objectContaining({
-            key: 'aw.skillTriggers.retired.trigger',
-            valueState: 'orphaned',
-            orphanedReason: 'skillRemoved',
-          }),
-        ]),
-      }),
-      expect.objectContaining({
-        scope: 'project',
-        projectLayer: 'shared',
-        fields: expect.arrayContaining([
-          expect.objectContaining({
-            key: 'aw.skillTriggers.commit.trigger',
-            valueState: 'invalid',
-            storedSourceLayer: 'local',
-            invalidReason: 'unsupportedProjectLocalLayer',
-          }),
-        ]),
-      }),
-    ]));
-  });
-
   it('derives page model fields without leaking them into JSON summaries', () => {
     const controller = createConsoleControllerItems(matrix([reasonFixture('requiredConfigMissing')]), {
       configProjectionByPluginName: {
@@ -1050,7 +927,7 @@ describe('console-model', () => {
     }
   });
 
-  it('projects adopt-existing and takeover flows as features plus controller-only commands', () => {
+  it('projects adopt-existing flows as features plus controller-only commands', () => {
     const adoptable = singleController(cell({
       scope: 'project',
       projectKey: '/workspace',
@@ -1067,24 +944,8 @@ describe('console-model', () => {
       }),
       report: undefined,
     }));
-    const ownerConflict = singleController(cell({
-      installState: installState({
-        kind: 'installed',
-        summary: '共享触发策略当前由另一个安装位置控制。',
-        issueCodes: ['artifactMissing'],
-        sharedRuntimeOwnerPresent: true,
-        sharedRuntimeParticipatesInOwner: true,
-        sharedRuntimeSemanticDelta: 'change',
-        sharedRuntimeOwnerConflict: true,
-      }),
-      report: undefined,
-    }));
-
     expect(adoptable.summary.features.map((feature) => feature.kind)).toContain('adoptExisting');
     expect(adoptable.locations[0]!.actions.find((entry) => entry.label === '认领现有安装')?.kind).toBe('runAdoptExisting');
-
-    expect(ownerConflict.summary.features.map((feature) => feature.kind)).not.toContain('takeoverSharedRuntime');
-    expect(ownerConflict.summary.features.map((feature) => feature.kind)).toContain('reinstall');
   });
 
   it('keeps public feature payload free of target, confirmText and command details', () => {
@@ -1098,7 +959,7 @@ describe('console-model', () => {
     }
   });
 
-  it('marks ordinary cross-platform features as multi-target but keeps takeover single-target', () => {
+  it('marks ordinary cross-platform features as multi-target and adoption as single-target', () => {
     const controller = createConsoleControllerItems(matrix([
       cell({
         platform: 'codex',
@@ -1128,27 +989,12 @@ describe('console-model', () => {
         }),
         report: undefined,
       }),
-      cell({
-        pluginName: 'takeover-plugin',
-        platform: 'codex',
-        installState: installState({
-          kind: 'installed',
-          issueCodes: ['artifactMissing'],
-          sharedRuntimeOwnerPresent: true,
-          sharedRuntimeParticipatesInOwner: true,
-          sharedRuntimeSemanticDelta: 'change',
-          sharedRuntimeOwnerConflict: true,
-        }),
-        report: undefined,
-      }),
     ]));
 
     const demo = controller.find((entry) => entry.summary.pluginName === 'demo-plugin');
     const adoptable = controller.find((entry) => entry.summary.pluginName === 'adoptable-plugin');
-    const takeover = controller.find((entry) => entry.summary.pluginName === 'takeover-plugin');
     expect(demo?.summary.features.find((feature) => feature.kind === 'uninstall')?.targetSelection).toBe('multiTargetAllowed');
     expect(adoptable?.summary.features.find((feature) => feature.kind === 'adoptExisting')?.targetSelection).toBe('singleTargetOnly');
-    expect(takeover?.summary.features.find((feature) => feature.kind === 'takeoverSharedRuntime')).toBeUndefined();
   });
 
   it('keeps detail target options empty until a feature is chosen', () => {

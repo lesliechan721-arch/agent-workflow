@@ -193,50 +193,6 @@ describe('cli entry', () => {
     expect(readStderr()).toBe('');
   });
 
-  it('rejects deprecated --skill-trigger at the entry layer', async () => {
-    const { io, readStderr } = createCapturedIo();
-    const { runCli } = await import('../../src/index.js');
-
-    const exitCode = await runCli(
-      ['install', 'git-commit', '--skill-trigger', 'sometimes'],
-      {
-        cwd: '/tmp/workspace',
-        env: {} as NodeJS.ProcessEnv,
-        io,
-      },
-    );
-
-    expect(exitCode).toBe(1);
-    expect(readStderr()).toContain('`install` 不再接受 `--skill-trigger` / `-t`');
-  });
-
-  it('rejects install --skill-trigger before dispatching installCommand', async () => {
-    const installCommand = vi.fn(async () => ({
-      plugins: ['git-commit'],
-      platforms: ['codex'],
-      warnings: [],
-    }));
-    vi.doMock('../../src/commands/install.js', () => ({
-      installCommand,
-    }));
-
-    const { io } = createCapturedIo();
-    const env = {} as NodeJS.ProcessEnv;
-    const { runCli } = await import('../../src/index.js');
-
-    const exitCode = await runCli(
-      ['install', 'git-commit', '--platform', 'codex', '--skill-trigger', 'manual'],
-      {
-        cwd: '/tmp/workspace',
-        env,
-        io,
-      },
-    );
-
-    expect(exitCode).toBe(1);
-    expect(installCommand).not.toHaveBeenCalled();
-  });
-
   it('prints a readable install receipt without English warning prefixes', async () => {
     const { cwd, awHome, env } = currentReceiptTestPaths();
     const installCommand = vi.fn(async () => ({
@@ -412,12 +368,16 @@ describe('cli entry', () => {
 
   it.each([
     'scopeNotInitialized',
+    'repairRequired',
+    'cleanupRequired',
+    'notInstalled',
+    'dependencySkipped',
+    'capabilityChanged',
     'codexProjectUserConfigUnreadable',
     'externalOwnershipUnknown',
     'externalOwnershipPresent',
     'roleNameConflict',
     'trackingIntegrityError',
-    'installOptionsUnavailable',
     'catalogNotCurrent',
     'catalogNotProjectInstallable',
     'projectConfigUnreadable',
@@ -664,33 +624,6 @@ describe('cli entry', () => {
     );
   });
 
-  it('rejects upgrade --skill-trigger before dispatching upgradeCommand', async () => {
-    const upgradeCommand = vi.fn(async () => ({
-      plugins: ['git-commit'],
-      platforms: ['claude'],
-      warnings: [],
-    }));
-    vi.doMock('../../src/commands/upgrade.js', () => ({
-      upgradeCommand,
-    }));
-
-    const { io } = createCapturedIo();
-    const env = {} as NodeJS.ProcessEnv;
-    const { runCli } = await import('../../src/index.js');
-
-    const exitCode = await runCli(
-      ['upgrade', 'git-commit', '--platform', 'claude', '--skill-trigger', 'auto'],
-      {
-        cwd: '/tmp/workspace',
-        env,
-        io,
-      },
-    );
-
-    expect(exitCode).toBe(1);
-    expect(upgradeCommand).not.toHaveBeenCalled();
-  });
-
   it('passes --script-timeout to install, upgrade, and uninstall handlers', async () => {
     const installCommand = vi.fn(async () => ({
       plugins: ['git-commit'],
@@ -867,24 +800,6 @@ describe('cli entry', () => {
     expect(exitCode).toBe(0);
     expect(readStdout()).toContain('--dependency-index');
     expect(readStdout()).not.toContain('repair');
-    expect(readStderr()).toBe('');
-  });
-
-  it.each([
-    ['install'],
-    ['upgrade'],
-    ['reinstall'],
-  ])('does not list --skill-trigger in %s help output', async (commandName) => {
-    const { io, readStdout, readStderr } = createCapturedIo();
-    const { runCli } = await import('../../src/index.js');
-
-    const exitCode = await runCli(
-      [commandName, '--help'],
-      { cwd: '/tmp/workspace', env: {} as NodeJS.ProcessEnv, io },
-    );
-
-    expect(exitCode).toBe(0);
-    expect(readStdout()).not.toContain('skill-trigger');
     expect(readStderr()).toBe('');
   });
 
@@ -2471,34 +2386,6 @@ describe('cli entry', () => {
     expect(stderr.indexOf('注意：rebuild replay skipped')).toBeLessThan(
       stderr.indexOf('fatal upgrade error'),
     );
-  });
-
-  it('translates degraded skill-trigger warnings for users', async () => {
-    vi.doMock('../../src/commands/uninstall.js', () => ({
-      uninstallCommand: vi.fn(async () => ({
-        plugins: ['git-commit'],
-        platforms: ['codex'],
-        warnings: ['[codex/git-commit] installed.json 处于 degraded 状态，跳过卸载后的 skill trigger 重选。'],
-      })),
-    }));
-
-    const { io, readStderr } = createCapturedIo();
-    const { runCli } = await import('../../src/index.js');
-
-    const exitCode = await runCli(
-      ['uninstall', 'git-commit', '--platform', 'codex'],
-      {
-        cwd: '/tmp/workspace',
-        env: {} as NodeJS.ProcessEnv,
-        io,
-      },
-    );
-
-    expect(exitCode).toBe(0);
-    expect(readStderr()).toContain('本地安装记录处于异常恢复状态');
-    expect(readStderr()).toContain('配置管理维护 skill trigger 偏好');
-    expect(readStderr()).not.toContain('[codex/git-commit]');
-    expect(readStderr()).not.toContain('Warning:');
   });
 
   it('writes and redacts debug logs while keeping status JSON stdout clean', async () => {

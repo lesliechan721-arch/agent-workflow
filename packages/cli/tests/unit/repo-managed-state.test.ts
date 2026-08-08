@@ -72,9 +72,6 @@ function createLedger(): InstalledLedger {
                   requiresNativePlugin: false,
                   hasRepoManagedArtifacts: true,
                 },
-                installOptions: {
-                  skillTriggerPreference: 'manual',
-                },
               },
             },
           },

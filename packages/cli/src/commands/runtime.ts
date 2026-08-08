@@ -168,10 +168,6 @@ export interface CliPrompt {
     canUpgradeAll: boolean;
     candidates: CliPromptCandidate[];
   }) => Promise<'all' | 'select' | string>;
-  selectSkillTrigger?: (options: {
-    defaultValue?: 'default' | 'manual' | 'auto';
-    allowSkip?: boolean;
-  }) => Promise<'default' | 'manual' | 'auto' | 'skip' | string>;
   configurePlugin?: (options: CliConfigPromptOptions) => Promise<CliConfigPromptResult>;
 }
 
@@ -369,7 +365,6 @@ function createUnavailablePrompt(): CliPrompt {
     selectScope: unavailable,
     selectPlugins: unavailable,
     selectUpgradeMode: unavailable,
-    selectSkillTrigger: unavailable,
     configurePlugin: unavailable,
   };
 }
@@ -916,17 +911,6 @@ export function createReadlinePrompt(options: ReadlinePromptOptions = {}): CliPr
         ],
         defaultValue: canUpgradeAll ? 'all' : 'select',
       })),
-    selectSkillTrigger: async ({ defaultValue = 'default', allowSkip = true }) =>
-      unwrapPromptResult(await select({
-        message: '选择 skill 触发偏好',
-        choices: [
-          { value: 'default', label: 'default' },
-          { value: 'manual', label: 'manual' },
-          { value: 'auto', label: 'auto' },
-          ...(allowSkip ? [{ value: 'skip', label: '跳过' }] : []),
-        ],
-        defaultValue,
-      })),
     configurePlugin: async (configOptions) => {
       const selectedScope = configOptions.allowedScopes.length > 1
         ? unwrapPromptResult(await select({
@@ -1241,17 +1225,6 @@ export function createInquirerPrompt(options: InquirerPromptOptions = {}): CliPr
           { value: 'select', label: '手动选择插件' },
         ],
         defaultValue: canUpgradeAll ? 'all' : 'select',
-      })),
-    selectSkillTrigger: async ({ defaultValue = 'default', allowSkip = true }) =>
-      unwrapPromptResult(await select({
-        message: '选择 skill 触发偏好',
-        choices: [
-          { value: 'default', label: 'default' },
-          { value: 'manual', label: 'manual' },
-          { value: 'auto', label: 'auto' },
-          ...(allowSkip ? [{ value: 'skip', label: '跳过' }] : []),
-        ],
-        defaultValue,
       })),
     configurePlugin: fallback?.configurePlugin,
   };

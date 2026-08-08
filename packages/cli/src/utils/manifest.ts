@@ -44,7 +44,6 @@ import type {
   PluginMarketplaceMeta,
   PluginMeta,
   PluginScriptsConfig,
-  SkillTriggerPolicy,
   TemplateVarByPlatform,
 } from '../types.js';
 import { readJsonFile } from './json.js';
@@ -744,7 +743,7 @@ function normalizePluginDependencyEntry(
   fieldName: string,
 ): PluginDependencyEntry {
   const input = assertObject(value, fieldName);
-  assertAllowedKeys(input, fieldName, ['name', 'minVersion', 'target', 'inheritInstallOptions', 'when']);
+  assertAllowedKeys(input, fieldName, ['name', 'minVersion', 'target', 'when']);
 
   const dependencyName = ensurePluginName(input.name, `${fieldName}.name`);
   if (dependencyName === pluginName) {
@@ -769,13 +768,6 @@ function normalizePluginDependencyEntry(
     }
 
     entry.target = { scope };
-  }
-
-  if (input.inheritInstallOptions !== undefined) {
-    if (typeof input.inheritInstallOptions !== 'boolean') {
-      throw new Error(`Invalid ${fieldName}.inheritInstallOptions: expected a boolean.`);
-    }
-    entry.inheritInstallOptions = input.inheritInstallOptions;
   }
 
   if (input.when !== undefined) {
@@ -832,35 +824,6 @@ function normalizePluginDependencies(
   validateOverlappingPluginDependencies(plugins, `${fieldName}.plugins`);
 
   return { plugins };
-}
-
-function normalizeSkillTriggerPolicies(
-  value: unknown,
-  fieldName: string,
-): Record<string, SkillTriggerPolicy> {
-  const input = assertObject(value, fieldName);
-  const policies: Record<string, SkillTriggerPolicy> = {};
-
-  for (const [skillName, entry] of Object.entries(input)) {
-    const policyFieldName = `${fieldName}.${skillName}`;
-    const policy = assertObject(entry, policyFieldName);
-    assertAllowedKeys(policy, policyFieldName, ['defaultTrigger', 'allowDynamicTrigger']);
-
-    const defaultTrigger = ensureString(policy.defaultTrigger, `${policyFieldName}.defaultTrigger`);
-    if (defaultTrigger !== 'manual' && defaultTrigger !== 'auto') {
-      throw new Error(`Invalid ${policyFieldName}.defaultTrigger: expected "manual" or "auto".`);
-    }
-    if (typeof policy.allowDynamicTrigger !== 'boolean') {
-      throw new Error(`Invalid ${policyFieldName}.allowDynamicTrigger: expected a boolean.`);
-    }
-
-    policies[skillName] = {
-      defaultTrigger,
-      allowDynamicTrigger: policy.allowDynamicTrigger,
-    };
-  }
-
-  return policies;
 }
 
 function normalizeTemplateVarByPlatform(
@@ -2325,7 +2288,6 @@ export function validatePluginManifest(
     'compatibility',
     'skills',
     'slashCommands',
-    'skillTriggers',
     'mcpServers',
     'apps',
     'marketplace',
@@ -2413,19 +2375,6 @@ export function validatePluginManifest(
     manifest.artifacts = normalizeArtifacts(pluginRoot, input.artifacts, 'artifacts', manifest.config);
   }
 
-  if (input.skillTriggers !== undefined) {
-    const hasDynamicSkill = manifest.artifacts?.targets?.some(
-      (target) => target.target === 'codex.skill' || target.target === 'claude.skill',
-    ) ?? false;
-    if (manifest.skills === undefined && !hasDynamicSkill) {
-      throw new Error(
-        'Invalid plugin manifest: "skillTriggers" requires a declared "skills" directory or dynamic skill artifact.',
-      );
-    }
-
-    manifest.skillTriggers = normalizeSkillTriggerPolicies(input.skillTriggers, 'skillTriggers');
-  }
-
   assertManifestPlatformSupport(manifest.name, manifest);
 
   return manifest;
@@ -2495,7 +2444,7 @@ async function validateDeclaredAssetPathsExist(
   );
 }
 
-async function validateSourceSkillTriggerPolicies(
+async function validateSourceSkillInventory(
   pluginRoot: string,
   manifest: PluginManifestSource,
 ): Promise<void> {
@@ -2518,60 +2467,21 @@ async function validateSourceSkillTriggerPolicies(
   for (const skillName of dynamicSkillNames) {
     if (staticSkillNameSet.has(skillName)) {
       throw new Error(
-        `Invalid skillTriggers.${skillName}: duplicate skillKey "${skillName}" is declared by both "skills/${skillName}" and a codex.skill artifact.`,
+        `Invalid skill inventory: duplicate skillKey "${skillName}" is declared by both "skills/${skillName}" and a dynamic skill artifact.`,
       );
     }
   }
 
-  const slashCommandNames = manifest.slashCommands
-    ? (await resolveSlashCommands(pluginRoot, manifest, {
-        targetPlatforms: resolveSupportedPlatforms(manifest),
-      }))?.commands
-      .map((command) => command.name)
-      .sort() ?? []
-    : [];
-  const slashCommandNameSet = new Set(slashCommandNames);
-  const explicitSkillTriggers = manifest.skillTriggers ?? {};
-  const explicitKeys = Object.keys(explicitSkillTriggers).sort();
-
-  for (const skillName of explicitKeys) {
-    if (slashCommandNameSet.has(skillName)) {
-      throw new Error(
-        `Invalid skillTriggers.${skillName}: slashCommands "${skillName}" uses an implicit fixed/manual trigger entry and must not be declared explicitly.`,
-      );
-    }
-    if (!staticSkillNameSet.has(skillName) && !dynamicSkillNameSet.has(skillName)) {
-      throw new Error(
-        `Invalid skillTriggers.${skillName}: expected a declared static skill or dynamic skill artifact.`,
-      );
-    }
+  if (!manifest.slashCommands) {
+    return;
   }
-
-  for (const skillName of staticSkillNames) {
-    if (!Object.hasOwn(explicitSkillTriggers, skillName)) {
+  const slashCommands = await resolveSlashCommands(pluginRoot, manifest, {
+    targetPlatforms: resolveSupportedPlatforms(manifest),
+  });
+  for (const command of slashCommands?.commands ?? []) {
+    if (staticSkillNameSet.has(command.name) || dynamicSkillNameSet.has(command.name)) {
       throw new Error(
-        `Invalid plugin manifest: static skill "${skillName}" must declare skillTriggers.${skillName}.`,
-      );
-    }
-  }
-
-  for (const skillName of dynamicSkillNames) {
-    if (!Object.hasOwn(explicitSkillTriggers, skillName)) {
-      throw new Error(
-        `Invalid plugin manifest: dynamic skill "${skillName}" must declare skillTriggers.${skillName}.`,
-      );
-    }
-  }
-
-  for (const skillName of staticSkillNames) {
-    if (!skillsRoot) {
-      continue;
-    }
-    const skillDir = path.join(skillsRoot, skillName);
-    const stats = await fs.stat(skillDir).catch(() => null);
-    if (!stats?.isDirectory()) {
-      throw new Error(
-        `Invalid skillTriggers.${skillName}: expected a skill directory at "${path.relative(pluginRoot, skillDir).split(path.sep).join('/')}".`,
+        `Invalid skill inventory: slash command "${command.name}" conflicts with a declared skill of the same name.`,
       );
     }
   }
@@ -2637,7 +2547,7 @@ export async function validateSourcePluginManifest(
   await Promise.all([
     validateSourceJsonNativeAsset(pluginRoot, manifest, 'mcpServers'),
     validateSourceJsonNativeAsset(pluginRoot, manifest, 'apps'),
-    validateSourceSkillTriggerPolicies(pluginRoot, manifest),
+    validateSourceSkillInventory(pluginRoot, manifest),
   ]);
   return manifest;
 }
@@ -3165,9 +3075,6 @@ export function createBundleSourceManifest(plugin: PluginMeta): PluginManifestSo
       : createPluginCompatibility(DEFAULT_SOURCE_PLUGIN_AW_MIN_VERSION),
     dependencies: plugin.manifest.dependencies
       ? structuredClone(plugin.manifest.dependencies)
-      : undefined,
-    skillTriggers: plugin.manifest.skillTriggers
-      ? structuredClone(plugin.manifest.skillTriggers)
       : undefined,
     extensions: plugin.manifest.extensions
       ? {

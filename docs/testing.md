@@ -16,7 +16,7 @@
 ## Focus Areas
 
 - CLI 命令入口：`tests/integration/cli-entry.test.ts` 覆盖 commander 参数、stdout/stderr 和退出码
-- 命令编排与平台行为：`tests/integration/cli.test.ts`、`upgrade-command.test.ts`、`skill-trigger-command.test.ts`
+- 命令编排与平台行为：`tests/integration/cli.test.ts`、`upgrade-command.test.ts`、`codex-explore-plugin.test.ts`
 - 作者工具：`tests/integration/authoring-tools.test.ts` 覆盖脚手架、校验脚本和作者文档关键约定
 - 插件依赖：`plugin-dependency-fixtures.test.ts`、`plugin-dependency-graph.test.ts`、`plugin-dependency-planner.test.ts`、`status-dependencies.test.ts` 和相关命令测试覆盖 manifest 合同、install record edge、dependency index、location-aware planner、自动安装、升级、卸载保护和 status 投影
 - 版本管理与 catalog：`manifest.test.ts`、`plugin-catalog.test.ts`、`plugin-catalog-resolvers.test.ts`、`local-marketplace.test.ts`、`command-options.test.ts`、`command-receipt.test.ts`、`status-command.test.ts`、`config-write.test.ts` 和 smoke 矩阵覆盖 CLI / catalog / plugin 三套版本身份、sidecar/full manifest 一致性、history、selector、cache fallback、latest blocked、active view、historical runtime 和 config schema source
@@ -41,9 +41,9 @@ zero-write snapshot 只用于事后证明“这条命令不应写状态”。`ca
 
 CLI entry 测试优先通过 `runCliEntry()` 或 `runSafeCli()` 注入 fake native runner、fake adapters、fake prompt、reporter 和 debug logger。不要为了普通集成测试依赖真实 `codex` 或 `claude` 可执行文件；只有明确验证 PATH 查找时才创建 stub binary。
 
-install-state fixture 要能按 location 单独构造 record v2、dynamic diagnostic cache、project artifact identity、dependency index、historical lifecycle runtime、native transaction marker 和 shared runtime owner。损坏矩阵至少覆盖：单条 record 损坏不影响同 scope 其它插件、diagnostic cache 损坏只降低动态 artifact 诊断确定性、identity metadata 损坏阻止 `install --adopt-existing`、dependency index unreadable / stale 时删除默认 fail closed、Codex user scope 只剩 enabled config 且没有 cache/record/marker 时允许 cleanup 收口、historical lifecycle runtime 缺失时普通卸载需要明确诊断、native marker-only 可以被 cleanup 收口或由重试 install 重新走写入链路、shared owner record digest 不匹配时不自动重选 owner。project private state 和 project local config fixture 必须默认被 ignore；project shared config 和 project artifact identity fixture 不能默认 ignore。
+install-state fixture 要能按 location 单独构造 record v2、dynamic diagnostic cache、project artifact identity、dependency index、historical lifecycle runtime 和 native transaction marker。损坏矩阵至少覆盖：单条 record 损坏不影响同 scope 其它插件、diagnostic cache 损坏只降低动态 artifact 诊断确定性、identity metadata 损坏阻止 `install --adopt-existing`、dependency index unreadable / stale 时删除默认 fail closed、Codex user scope 只剩 enabled config 且没有 cache/record/marker 时允许 cleanup 收口、historical lifecycle runtime 缺失时普通卸载需要明确诊断、native marker-only 可以被 cleanup 收口或由重试 install 重新走写入链路。project private state 和 project local config fixture 必须默认被 ignore；project shared config 和 project artifact identity fixture 不能默认 ignore。
 
-插件依赖测试优先从纯函数层锁住行为，再接命令层。manifest 和作者工具 parity fixture 要覆盖合法 `dependencies.plugins[].minVersion`、未知字段、自依赖、非法 `when.platforms`、同名依赖平台条件重叠、非法 `target.scope`、`target.platform` 拒绝、`inheritInstallOptions` 类型、旧式 `version` / `range` 拒绝，以及 catalog-level dependency reference validator。build smoke 需要断言 runtime `.agents-plugin/plugin.json` 保留 `dependencies`，`.claude-plugin/plugin.json`、`.codex-plugin/plugin.json` 和平台 marketplace manifest 不包含 `dependencies`。
+插件依赖测试优先从纯函数层锁住行为，再接命令层。manifest 和作者工具 parity fixture 要覆盖合法 `dependencies.plugins[].minVersion`、未知字段、自依赖、非法 `when.platforms`、同名依赖平台条件重叠、非法 `target.scope`、`target.platform` 拒绝、旧式 `version` / `range` 拒绝，以及 catalog-level dependency reference validator。build smoke 需要断言 runtime `.agents-plugin/plugin.json` 保留 `dependencies`，`.claude-plugin/plugin.json`、`.codex-plugin/plugin.json` 和平台 marketplace manifest 不包含 `dependencies`。
 
 版本管理回归必须覆盖这些矩阵：
 
@@ -62,7 +62,7 @@ location-aware scope 规则要有专门矩阵：user 父插件只能被 user sco
 
 install record 依赖图测试要断言只持久化 outgoing `dependencyEdges` 和 `installSource`。incoming dependents index、`dependents`、ref-count 和 `autoRemovable` 都必须从 records / dependency index 现算，不能落盘。重复 install、重复 upgrade、install 后 upgrade 要确认同一 dependent location + dependency location 只保留 canonical edge；显式安装一个 auto dependency 后要把 explicit 保留标记写回，父插件卸载不能自动删除它。record 损坏、缺少 dependency metadata、edge 不完整、dependency index 不可信或 project artifact identity 损坏时，删除类命令默认必须 fail closed；但 Codex user scope 的 config-only 原生残留 cleanup 是例外，需要单独锁住。
 
-写命令测试要覆盖拓扑顺序和失败收口：`install` 先完成 graph-level preflight，再依赖优先写入；已满足依赖不重复安装但刷新父插件 edge；缺 required config 的自动依赖要指向依赖插件和 key；`inheritInstallOptions: true` 只影响自动安装依赖，冲突时 fail fast；父插件失败时未被成功 edge 引用的新 auto dependency 要回滚，已被其它成功 dependent 引用的不能误删。`upgrade <plugin>` 必须先处理依赖再升级父插件；`upgrade --all` 只以 explicit 保留安装为根，不把孤立 auto dependency 当根，旧 edge 中已不需要的 auto dependency 不阻塞父插件升级。
+写命令测试要覆盖拓扑顺序和失败收口：`install` 先完成 graph-level preflight，再依赖优先写入；已满足依赖不重复安装但刷新父插件 edge；缺 required config 的自动依赖要指向依赖插件和 key；父插件失败时未被成功 edge 引用的新 auto dependency 要回滚，已被其它成功 dependent 引用的不能误删。`upgrade <plugin>` 必须先处理依赖再升级父插件；`upgrade --all` 只以 explicit 保留安装为根，不把孤立 auto dependency 当根，旧 edge 中已不需要的 auto dependency 不阻塞父插件升级。
 
 uninstall 依赖测试要覆盖仍有 incoming dependent 时拒绝卸载、同命令卸载完整 dependent 集合、父插件卸载后反向拓扑清理引用归零的 auto dependency、explicit 保留的自动依赖不清理，以及 cleanup action 在 receipt 中使用 `uninstallAutoDependency`。跨 scope 和跨 platform 场景要断言 Codex / Claude、user / 当前 project / 历史 project 互不串线。
 
@@ -70,15 +70,13 @@ status 和控制台依赖投影测试要保持只读：不得创建 `~/.aw`、�
 
 主控制台测试默认必须使用 fake prompt / fake console driver，且断言不会访问真实 stdin。窄例外只允许放在专门验证 readline prompt harness、TTY sink 或隐藏敏感输入的测试里；这类测试必须显式隔离 stdin/stdout/stderr，并证明 `--json` stdout 仍是单一可解析 JSON。`runCli([])` 在 TTY 环境进入控制台；非 TTY、`CI=true` 或 prompt 不可用时不能挂起，必须返回清晰错误、可复制命令示例和 `--json` 提示。子命令即使注入 fake prompt 也不能 prompt。
 
-主控制台安装、升级、配置、卸载、取消和状态流程都要通过 fake prompt 覆盖。prompt adapter 要覆盖 `select`、`confirm`、`input`、`password`、滚动列表、返回和取消结果；非法 candidate id、过期 token、候选外插件名、skip/空值或非法 SkillTrigger 配置值都要在 runtime 层拒绝。配置向导 fake prompt 要返回 `selectedScope`、`updates`、`removeKeys`、`updatedKeys`、`removedKeys` 和 `cancelled`；显式位置不能被 prompt 改写到另一层。切换写入层时只 patch dirty key，不能把 effective config 的整份 values 写入目标 store；取消时不能创建或修改任何 store。
+主控制台安装、升级、配置、卸载、取消和状态流程都要通过 fake prompt 覆盖。prompt adapter 要覆盖 `select`、`confirm`、`input`、`password`、滚动列表、返回和取消结果；非法 candidate id、过期 token、候选外插件名、skip 或空值都要在 runtime 层拒绝。配置向导 fake prompt 要返回 `selectedScope`、`updates`、`removeKeys`、`updatedKeys`、`removedKeys` 和 `cancelled`；显式位置不能被 prompt 改写到另一层。切换写入层时只 patch dirty key，不能把 effective config 的整份 values 写入目标 store；取消时不能创建或修改任何 store。
 
 主控制台安装向导需要覆盖平台兼容性和可安装性：`marketplace.policy.products` 过滤、`both` 下单平台插件禁用、显式多插件名共同兼容平台交集、无共同兼容平台时 dispatch 前失败，以及 fake prompt 返回不兼容平台时的拒绝。`Codex + project scope` 还要覆盖 repo-visible 候选过滤、空态、显式插件名早失败和正向可选插件；skills-only、mcp-only、slashCommands-only 应可选，apps-only 不进入候选，apps-mixed disabled 且指向 user scope 或拆分插件。
 
 主控制台 Codex project scope 测试不能只依赖“是否有 repo-visible surface”。写动作必须先通过 Codex `>= 0.145.0` 版本门禁；PATH 缺少 `codex`、版本不可解析或低于 `0.145.0` 时，安装、升级、卸载、cleanup、reinstall 和会刷新 artifact 的配置动作都不能写 repo-visible artifacts，也不能创建 record、marker 或用户级 native 状态。只读发现和状态页面可以展示 Codex project 候选或已有 project evidence，但必须把版本阻断作为写入前提展示。
 
-SkillTrigger 回归要覆盖 manifest 默认策略、AW 内建配置、built-in apply pipeline、公开 JSON 投影和作者工具同步。`aw install`、`aw upgrade`、`aw reinstall` 的 help 不展示 `-t` 或 `--skill-trigger`，传入这些旧参数时确定性失败并引导到 `aw config` 或主控制台配置页。
-
-SkillTrigger 内建字段要覆盖 `defaultTrigger`、`allowDynamicTrigger`、fixed 只读、ignored 历史覆盖、orphaned 旧配置、project local invalid 存量值和 config 写 receipt。`aw config list/get --json` 顶层必须包含 `configSchemaVersion: 2` 并以 `fields` 为主结构；`aw config set/unset/reset --json` 顶层必须包含 `receiptSchemaVersion: 2` 和 `affectedFields`。runtime 与 effective 配置不一致时，状态和 next steps 指向配置页或重新应用配置，不能提示 `--skill-trigger`。
+Skill 原生调用元数据回归要覆盖静态和动态文件树。Codex `agents/openai.yaml` 必须显式提供 boolean `policy.allow_implicit_invocation`；Claude `SKILL.md` 中的 `disable-model-invocation` 和 `user-invocable` 如有声明必须是 boolean。安装、升级、刷新、eval materialization 和作者工具校验都必须保留源码或 renderer 的最终值，不能根据 AW 配置改写。模型隐式调用关闭时，显式调用仍要可用。
 
 Codex native marketplace 测试使用 fake native runner 断言 invocation 精确为 `codex plugin marketplace add <canonical AW_HOME>` / `codex plugin marketplace list` / `codex plugin marketplace remove`。source 必须是 marketplace 根目录，不是 `.agents/plugins/marketplace.json`；local source 不带 `--ref`、`--sparse`，也不要求 `.tmp/marketplaces/aw` 存在。失败分支要覆盖 stderr、空输出、timeout、`ENOENT` 和 PATH 异常。marketplace add 或 verify 失败时，不能继续执行 `codex plugin add`。
 
@@ -102,11 +100,9 @@ repo 子目录回归要分别覆盖 discovery、status、主控制台 `uninstall
 
 historical placeholder 回归要覆盖 discovery、默认 status、主控制台 `uninstall/upgrade` 候选。只有粗略 project 归属线索时，不能恢复 hook、instruction、permission、agent 等具体 kind；install record 或 project artifact identity 明确记录 `kind: "hook"` 或 hook identity 时，才允许恢复 hook 能力。
 
-status 测试要把默认、verbose、JSON、debug 通道分开锁住。默认 `aw status` 只展示友好摘要、位置和下一步，不泄露内部禁词；`aw status -j`、`aw status -j --verbose`、`aw status -j --debug`、`aw status -j --verbose --debug` 的 stdout 都必须用 `JSON.parse` 验证纯度，并断言新增 `statusSchemaVersion: 2`、`consoleItemsSchemaVersion: 3`、`ok`、`command`、`friendlySummaries`、`consoleItems` 都可用；verbose/debug 人类诊断只能出现在 stderr 或 debug log。`statusSchemaVersion: 2` 管理 status envelope 和 verbose JSON 详细状态，`consoleItemsSchemaVersion: 3` 管理本轮 `consoleItems` summary shape、结构化 `nextSteps` 和 SkillTrigger 公共投影；`consoleItems` 不得泄露旧 action kind、旧 reason code、`statusIcon`、`statusTone`、`platformBadges`、`primaryActionLabel`、`targetOptions` 或 `availableTargets`。unknown plugin 在 status 中应是 `notInstalled`，但执行型命令仍应报 `Unknown plugin`。
+status 测试要把默认、verbose、JSON、debug 通道分开锁住。默认 `aw status` 只展示友好摘要、位置和下一步，不泄露内部禁词；`aw status -j`、`aw status -j --verbose`、`aw status -j --debug`、`aw status -j --verbose --debug` 的 stdout 都必须用 `JSON.parse` 验证纯度，并断言 `statusSchemaVersion: 2`、`consoleItemsSchemaVersion: 3`、`ok`、`command`、`friendlySummaries`、`consoleItems` 都可用；verbose/debug 人类诊断只能出现在 stderr 或 debug log。`statusSchemaVersion: 2` 管理 status envelope 和 verbose JSON 详细状态，`consoleItemsSchemaVersion: 3` 管理本轮 `consoleItems` summary shape 和结构化 `nextSteps`；`consoleItems` 不得泄露旧 action kind、旧 reason code、`statusIcon`、`statusTone`、`platformBadges`、`primaryActionLabel`、`targetOptions` 或 `availableTargets`。unknown plugin 在 status 中应是 `notInstalled`，但执行型命令仍应报 `Unknown plugin`。
 
-status SkillTrigger 状态矩阵要覆盖 matched、fixed、ignored、orphaned、drift、missing runtime 和 historical fallback，并分别断言默认视图不暴露旧安装偏好字段、verbose 可读展开、JSON 使用统一 `SkillTriggerPublicView` 投影。
-
-友好状态投影测试要覆盖四态顶层状态、首页 `异常/可升级/已安装/未安装` 分组、稳定 reason/diagnostic、跨位置汇总、状态优先级、保守升级判定、Codex enabled-only / cache-only / marker-only、native marker、无归属 native residue、project adopt-existing、shared owner conflict、dependency index untrusted、dynamic artifact refresh failed、disabled by config 和 session visibility。action 安全不变量必须锁住：公开 `PluginConsoleSummary.features` 只表达功能和目标选择策略，不包含 target、confirmText、command 或页面字段；执行层 `PluginConsoleExecutableAction` 只能在控制台完成功能和目标选择后生成，所有写动作都有完整 target，project 动作需要时带 `projectKey`；删除、覆盖和 cleanup 动作都有 `destructive: true` 和 `confirmText`；只有 `runCleanup` 可以生成 `force: true`；disabled 功能带 `disabledReason`。
+友好状态投影测试要覆盖四态顶层状态、首页 `异常/可升级/已安装/未安装` 分组、稳定 reason/diagnostic、跨位置汇总、状态优先级、保守升级判定、Codex enabled-only / cache-only / marker-only、native marker、无归属 native residue、project adopt-existing、dependency index untrusted、dynamic artifact refresh failed、disabled by config 和 session visibility。action 安全不变量必须锁住：公开 `PluginConsoleSummary.features` 只表达功能和目标选择策略，不包含 target、confirmText、command 或页面字段；执行层 `PluginConsoleExecutableAction` 只能在控制台完成功能和目标选择后生成，所有写动作都有完整 target，project 动作需要时带 `projectKey`；删除、覆盖和 cleanup 动作都有 `destructive: true` 和 `confirmText`；只有 `runCleanup` 可以生成 `force: true`；disabled 功能带 `disabledReason`。
 
 stale 本地 marketplace / catalog cache 回归要断言 status 完全只读：`~/.aw` 缺失、旧 `sourceVersion + bundleFingerprint` 元数据、cache 布局损坏、install record 损坏或 dependency index 不可信时，status 不能回退 embedded catalog，也不能修复 `~/.aw`。`--verbose` / `--json` 要展示 catalog unavailable、legacy catalog metadata、selector、latest blocked 或 cache fallback 证据；测试要用文件存在性、mtime 或内容快照确认不会创建插件目录、改写 record、diagnostic cache、project artifact identity 或平台配置。
 
@@ -130,7 +126,7 @@ lifecycle 回归要覆盖 install/upgrade/uninstall 执行时机、失败阻断�
 
 公共 `slashCommands` 测试要同时覆盖 build、validate 和作者工具文档：合法双平台示例生成 Claude `commands/*.md` 与 Codex manual-only skill；单平台插件只生成支持平台的命令产物；Codex 生成的 `agents/openai.yaml` 固定 `policy.allow_implicit_invocation: false`；`./assets/...` 图标只复制被引用资源；嵌套命令目录、非法图标路径、支持 Codex 时 Codex 渲染残留 `$ARGUMENTS` / `$1` / 命令结果填充语法都必须失败，Claude-only 插件不受 Codex forbidden syntax 限制。
 
-`upgrade --all` CLI entry 和 direct command 都要覆盖 skipped 合同。稳定 code（`scopeNotInitialized`、`codexProjectUserConfigUnreadable`、`externalOwnershipUnknown`、`externalOwnershipPresent`、`projectArtifactIdentityError`、`installOptionsUnavailable`、`catalogNotCurrent`、`catalogNotProjectInstallable`、`projectConfigUnreadable`、`unmanagedRepoArtifactConflict`、`dependencyIndexUntrusted`、`sharedRuntimeOwnerConflict`）必须有 direct 返回值断言、人类 receipt 断言和退出码断言；部分成功部分 skipped 退出 `0`，全部 skipped 且无成功升级退出 `1`。
+`upgrade --all` CLI entry 和 direct command 都要覆盖 skipped 合同。稳定 code（`scopeNotInitialized`、`repairRequired`、`cleanupRequired`、`notInstalled`、`dependencySkipped`、`capabilityChanged`、`codexProjectUserConfigUnreadable`、`externalOwnershipUnknown`、`externalOwnershipPresent`、`roleNameConflict`、`trackingIntegrityError`、`catalogNotCurrent`、`catalogNotProjectInstallable`、`projectConfigUnreadable`、`unmanagedRepoArtifactConflict`）必须有 direct 返回值断言、人类 receipt 断言和退出码断言；部分成功部分 skipped 退出 `0`，全部 skipped 且无成功升级退出 `1`。
 
 ## Pre-commit Checklist
 

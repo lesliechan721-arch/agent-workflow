@@ -8,12 +8,6 @@
     }
   },
   "skills": "./skills",
-  "skillTriggers": {
-    "repo-check": {
-      "defaultTrigger": "auto",
-      "allowDynamicTrigger": true
-    }
-  },
   "scripts": {
     "artifacts": {
       "render": {

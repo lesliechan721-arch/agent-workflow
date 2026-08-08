@@ -190,16 +190,6 @@ async function addConfigSchemaWithFileToGitCommit(repoRoot: string): Promise<voi
   await fs.writeJson(manifestPath, manifest, { spaces: 2 });
 }
 
-async function makeGitCommitSkillTriggerFixed(repoRoot: string): Promise<void> {
-  const manifestPath = path.join(repoRoot, 'plugins', 'git-commit', '.agents-plugin', 'plugin.json');
-  const manifest = await fs.readJson(manifestPath);
-  manifest.skillTriggers.commit = {
-    defaultTrigger: 'auto',
-    allowDynamicTrigger: false,
-  };
-  await fs.writeJson(manifestPath, manifest, { spaces: 2 });
-}
-
 async function removeAppsFromGitCommit(repoRoot: string): Promise<void> {
   const manifestPath = path.join(repoRoot, 'plugins', 'git-commit', '.agents-plugin', 'plugin.json');
   const manifest = await fs.readJson(manifestPath);
@@ -762,279 +752,6 @@ describe('cli entry integration', () => {
     )).resolves.toBe(false);
   });
 
-  it('supports built-in SkillTrigger config for plugins without ordinary config schema', async () => {
-    const workspace = await makeWorkspace();
-    activateCliEmbeddedRoot(workspace.embeddedRoot, 'cli entry embedded root');
-    let capture = createCapturedIo();
-
-    let exitCode = await runCli(
-      ['config', 'set', 'git-commit', 'aw.skillTriggers.commit.trigger', 'manual', '--json'],
-      {
-        cwd: workspace.repoRoot,
-        env: workspace.env,
-        io: capture.io,
-      },
-    );
-
-    expect(exitCode, capture.readStderr()).toBe(0);
-    expect(JSON.parse(capture.readStdout())).toMatchObject({
-      ok: true,
-      receiptSchemaVersion: 2,
-      command: 'config:set',
-      plugin: 'git-commit',
-      scope: 'user',
-      affectedFields: [{
-        key: 'aw.skillTriggers.commit.trigger',
-        title: 'commit 触发方式',
-        kind: 'builtIn',
-        reserved: true,
-        action: 'set',
-        scope: 'user',
-      }],
-    });
-    await expect(fs.readJson(
-      path.join(workspace.awHome, 'plugin-config', 'git-commit', 'config.json'),
-    )).resolves.toMatchObject({
-      $aw: {
-        skillTriggers: {
-          commit: {
-            trigger: 'manual',
-          },
-        },
-      },
-    });
-
-    capture = createCapturedIo();
-    exitCode = await runCli(
-      ['config', 'get', 'git-commit', 'aw.skillTriggers.commit.trigger', '--scope', 'user', '--json'],
-      {
-        cwd: workspace.repoRoot,
-        env: workspace.env,
-        io: capture.io,
-      },
-    );
-
-    expect(exitCode, capture.readStderr()).toBe(0);
-    expect(JSON.parse(capture.readStdout())).toMatchObject({
-      ok: true,
-      configSchemaVersion: 2,
-      command: 'config:get',
-      plugin: 'git-commit',
-      key: 'aw.skillTriggers.commit.trigger',
-      scope: 'user',
-      fields: [{
-        key: 'aw.skillTriggers.commit.trigger',
-        title: 'commit 触发方式',
-        kind: 'builtIn',
-        reserved: true,
-        writable: true,
-        valueState: 'configured',
-        effectiveValue: 'manual',
-        sourceLayer: 'user',
-      }],
-    });
-
-    capture = createCapturedIo();
-    exitCode = await runCli(
-      ['config', 'unset', 'git-commit', 'aw.skillTriggers.commit.trigger', '--json'],
-      {
-        cwd: workspace.repoRoot,
-        env: workspace.env,
-        io: capture.io,
-      },
-    );
-
-    expect(exitCode, capture.readStderr()).toBe(0);
-    expect(JSON.parse(capture.readStdout())).toMatchObject({
-      ok: true,
-      receiptSchemaVersion: 2,
-      command: 'config:unset',
-      plugin: 'git-commit',
-      affectedFields: [{
-        key: 'aw.skillTriggers.commit.trigger',
-        title: 'commit 触发方式',
-        kind: 'builtIn',
-        reserved: true,
-        action: 'unset',
-        scope: 'user',
-      }],
-    });
-  });
-
-  it('treats fixed and orphaned SkillTrigger entries as built-in config fields', async () => {
-    const workspace = await makeWorkspaceWithMutator(makeGitCommitSkillTriggerFixed);
-    activateCliEmbeddedRoot(workspace.embeddedRoot, 'cli entry embedded root');
-    await fs.outputJson(
-      path.join(workspace.awHome, 'plugin-config', 'git-commit', 'config.json'),
-      {
-        $aw: {
-          skillTriggers: {
-            commit: {
-              trigger: 'manual',
-            },
-            retired: {
-              trigger: 'auto',
-            },
-          },
-        },
-      },
-      { spaces: 2 },
-    );
-
-    let capture = createCapturedIo();
-    let exitCode = await runCli(
-      ['config', 'list', 'git-commit', '--scope', 'user', '--json'],
-      {
-        cwd: workspace.repoRoot,
-        env: workspace.env,
-        io: capture.io,
-      },
-    );
-
-    expect(exitCode, capture.readStderr()).toBe(0);
-    expect(JSON.parse(capture.readStdout())).toMatchObject({
-      ok: true,
-      configSchemaVersion: 2,
-      command: 'config:list',
-      plugin: 'git-commit',
-      scope: 'user',
-      fields: expect.arrayContaining([
-        {
-          key: 'aw.skillTriggers.commit.trigger',
-          title: 'commit 触发方式',
-          kind: 'builtIn',
-          reserved: true,
-          writable: false,
-          valueState: 'ignored',
-          effectiveValue: 'auto',
-          sourceLayer: 'default',
-          storedValue: 'manual',
-          storedSourceLayer: 'user',
-          ignoredReason: 'fixedSkillTrigger',
-        },
-        {
-          key: 'aw.skillTriggers.retired.trigger',
-          title: 'retired 触发方式',
-          kind: 'builtIn',
-          reserved: true,
-          writable: false,
-          valueState: 'orphaned',
-          effectiveValue: null,
-          sourceLayer: null,
-          storedValue: 'auto',
-          storedSourceLayer: 'user',
-          orphanedReason: 'skillRemoved',
-        },
-      ]),
-    });
-
-    capture = createCapturedIo();
-    exitCode = await runCli(
-      ['config', 'set', 'git-commit', 'aw.skillTriggers.commit.trigger', 'manual', '--json'],
-      {
-        cwd: workspace.repoRoot,
-        env: workspace.env,
-        io: capture.io,
-      },
-    );
-
-    expect(exitCode).toBe(1);
-    expect(capture.readStderr()).toContain('ignored');
-  });
-
-  it('rejects project-local SkillTrigger reads and writes while surfacing invalid stored values in project scope', async () => {
-    const workspace = await makeWorkspace();
-    activateCliEmbeddedRoot(workspace.embeddedRoot, 'cli entry embedded root');
-    const localStorePath = path.join(
-      workspace.repoRoot,
-      '.agent-workflows',
-      'plugin-config.local',
-      'git-commit',
-      'config.json',
-    );
-    await fs.outputJson(
-      localStorePath,
-      {
-        $aw: {
-          skillTriggers: {
-            commit: {
-              trigger: 'manual',
-            },
-          },
-        },
-      },
-      { spaces: 2 },
-    );
-
-    let capture = createCapturedIo();
-    let exitCode = await runCli(
-      ['config', 'get', 'git-commit', 'aw.skillTriggers.commit.trigger', '--scope', 'project', '--json'],
-      {
-        cwd: workspace.repoRoot,
-        env: workspace.env,
-        io: capture.io,
-      },
-    );
-
-    expect(exitCode, capture.readStderr()).toBe(0);
-    expect(JSON.parse(capture.readStdout())).toMatchObject({
-      ok: true,
-      configSchemaVersion: 2,
-      command: 'config:get',
-      plugin: 'git-commit',
-      key: 'aw.skillTriggers.commit.trigger',
-      scope: 'project',
-      fields: [{
-        key: 'aw.skillTriggers.commit.trigger',
-        title: 'commit 触发方式',
-        kind: 'builtIn',
-        reserved: true,
-        writable: false,
-        valueState: 'invalid',
-        effectiveValue: 'auto',
-        sourceLayer: 'default',
-        storedValue: 'manual',
-        storedSourceLayer: 'local',
-        invalidReason: 'unsupportedProjectLocalLayer',
-      }],
-    });
-
-    capture = createCapturedIo();
-    exitCode = await runCli(
-      ['config', 'get', 'git-commit', 'aw.skillTriggers.commit.trigger', '--scope', 'project', '--local', '--json'],
-      {
-        cwd: workspace.repoRoot,
-        env: workspace.env,
-        io: capture.io,
-      },
-    );
-
-    expect(exitCode).toBe(1);
-    expect(capture.readStderr()).toContain('project local');
-
-    capture = createCapturedIo();
-    exitCode = await runCli(
-      ['config', 'set', 'git-commit', 'aw.skillTriggers.commit.trigger', 'auto', '--scope', 'project', '--local', '--json'],
-      {
-        cwd: workspace.repoRoot,
-        env: workspace.env,
-        io: capture.io,
-      },
-    );
-
-    expect(exitCode).toBe(1);
-    expect(capture.readStderr()).toContain('project local');
-    await expect(fs.readJson(localStorePath)).resolves.toMatchObject({
-      $aw: {
-        skillTriggers: {
-          commit: {
-            trigger: 'manual',
-          },
-        },
-      },
-    });
-  });
-
   it('rejects removed config configure subcommand', async () => {
     const workspace = await makeWorkspaceWithMutator(addConfigSchemaToGitCommit);
     activateCliEmbeddedRoot(workspace.embeddedRoot, 'cli entry embedded root');
@@ -1273,64 +990,6 @@ describe('cli entry integration', () => {
     expect(capture.readStdout()).toContain('aw config set git-commit workspaceFile <value> -s project');
   });
 
-  it('rejects deprecated --skill-trigger at the source entry', async () => {
-    const workspace = await makeWorkspace();
-    activateCliEmbeddedRoot(workspace.embeddedRoot, 'cli entry embedded root');
-    const { io, readStderr } = createCapturedIo();
-
-    const exitCode = await runCli(
-      ['install', 'git-commit', '--platform', 'codex', '--skill-trigger', 'sometimes'],
-      {
-        cwd: workspace.repoRoot,
-        env: workspace.env,
-        io,
-      },
-    );
-
-    expect(exitCode).toBe(1);
-    expect(readStderr()).toContain('`install` 不再接受 `--skill-trigger` / `-t`');
-  });
-
-  it('rejects install --skill-trigger before writing runtime state', async () => {
-    const workspace = await makeWorkspace();
-    activateCliEmbeddedRoot(workspace.embeddedRoot, 'cli entry embedded root');
-    const nativeCalls: NativeCliInvocation[] = [];
-    const { io, readStderr } = createCapturedIo();
-    const codexRuntime = createCodexNativeCliRuntime(workspace, nativeCalls);
-    const exitCode = await runCli(
-      [
-        'install',
-        'git-commit',
-        '--scope',
-        'user',
-        '--platform',
-        'codex',
-        '--skill-trigger',
-        'manual',
-      ],
-      {
-        cwd: workspace.repoRoot,
-        env: workspace.env,
-        io,
-        ...codexRuntime.runtime,
-      },
-    );
-
-    expect(exitCode).toBe(1);
-    expect(readStderr()).toContain('`install` 不再接受 `--skill-trigger` / `-t`');
-    expect(nativeCalls).toEqual([]);
-    expect(await fs.pathExists(path.join(
-      workspace.awHome,
-      'plugins',
-      'git-commit',
-      'codex',
-      'skills',
-      'commit',
-      'agents',
-      'openai.yaml',
-    ))).toBe(false);
-  });
-
   it('uses the injected native runner for Codex marketplace add failures in runCli', async () => {
     const workspace = await makeWorkspace();
     activateCliEmbeddedRoot(workspace.embeddedRoot, 'cli entry embedded root');
@@ -1555,7 +1214,6 @@ describe('cli entry integration', () => {
     expect(readStderr()).toContain('options:normalized');
     expect(readStderr()).toContain('catalog:resolved');
     expect(readStderr()).toContain('platform:resolved');
-    expect(readStderr()).toContain('skill-trigger:resolved');
     expect(readStderr()).toContain('native:marketplace');
     expect(readStderr()).toContain('native:rpc');
     expect(readStderr()).toContain('native:post-check');
@@ -1735,63 +1393,6 @@ describe('cli entry integration', () => {
     );
   });
 
-  it('rejects explicit upgrade --skill-trigger before rewriting installed runtime', async () => {
-    const workspace = await makeWorkspace();
-    activateCliEmbeddedRoot(workspace.embeddedRoot, 'cli entry embedded root');
-    await writeInstalledLedger(createAvailableLedger(), workspace.env);
-    const capture = createCapturedIo();
-    const codexRuntime = createCodexNativeCliRuntime(workspace);
-    const exitCode = await runCli(
-      [
-        'upgrade',
-        'git-commit',
-        '--scope',
-        'user',
-        '--platform',
-        'codex',
-        '--skill-trigger',
-        'auto',
-      ],
-      {
-        cwd: workspace.repoRoot,
-        env: workspace.env,
-        io: capture.io,
-        ...codexRuntime.runtime,
-      },
-    );
-
-    expect(exitCode).toBe(1);
-    expect(capture.readStderr()).toContain('`upgrade` 不再接受 `--skill-trigger` / `-t`');
-    expect(await fs.pathExists(path.join(
-      workspace.awHome,
-      'plugins',
-      'git-commit',
-      'codex',
-      'skills',
-      'commit',
-      'agents',
-      'openai.yaml',
-    ))).toBe(false);
-  });
-
-  it('rejects upgrade --all --skill-trigger at the entry layer', async () => {
-    const workspace = await makeWorkspace();
-    activateCliEmbeddedRoot(workspace.embeddedRoot, 'cli entry embedded root');
-    const { io, readStderr } = createCapturedIo();
-
-    const exitCode = await runCli(
-      ['upgrade', '--all', '--platform', 'codex', '--skill-trigger', 'manual'],
-      {
-        cwd: workspace.repoRoot,
-        env: workspace.env,
-        io,
-      },
-    );
-
-    expect(exitCode).toBe(1);
-    expect(readStderr()).toContain('`upgrade` 不再接受 `--skill-trigger` / `-t`');
-  });
-
   it('fails upgrade --all on degraded ledger before local catalog repair warnings', async () => {
     const workspace = await makeWorkspace();
     activateCliEmbeddedRoot(workspace.embeddedRoot, 'cli entry embedded root');
@@ -1817,58 +1418,9 @@ describe('cli entry integration', () => {
 
     const stderr = capture.readStderr();
     expect(exitCode).toBe(1);
-    expect(stderr).toContain('跳过 skill 触发偏好回放');
     expect(stderr).toContain('`upgrade --all` 在 installed.json 处于 degraded 状态时不可执行');
     expect(stderr).not.toContain('本地插件目录');
     expect(stderr).not.toContain('config.json 无法读取或 schema 不受支持');
-  });
-
-  it('prints degraded replay warnings before explicit upgrade inheritance errors', async () => {
-    const workspace = await makeWorkspace();
-    activateCliEmbeddedRoot(workspace.embeddedRoot, 'cli entry embedded root');
-
-    let capture = createCapturedIo();
-    expect(await runCli(
-      ['init', '--force'],
-      { cwd: workspace.repoRoot, env: workspace.env, io: capture.io },
-    )).toBe(0);
-
-    const degraded = createDegradedLedger();
-    degraded.plugins['git-commit'] = {
-      lastResolvedVersion: '0.1.0',
-      platforms: {
-        codex: {
-          userScope: {
-            managed: true,
-            updatedAt: '2026-04-28T00:00:00.000Z',
-            resolvedVersion: '0.1.0',
-            capabilitySnapshot: {
-              requiresNativePlugin: true,
-            },
-            installOptions: {
-              skillTriggerPreference: 'manual',
-            },
-          },
-        },
-      },
-    };
-    await writeInstalledLedger(degraded, workspace.env);
-    await fs.writeFile(path.join(workspace.awHome, 'config.json'), '{"version":', 'utf8');
-
-    capture = createCapturedIo();
-    const exitCode = await runCli(
-      ['upgrade', 'git-commit', '--scope', 'user', '--platform', 'codex'],
-      {
-        cwd: workspace.repoRoot,
-        env: workspace.env,
-        io: capture.io,
-      },
-    );
-
-    const stderr = capture.readStderr();
-    expect(exitCode).toBe(1);
-    expect(stderr).toContain('无法从 degraded installed.json 安全恢复');
-    expect(stderr).toMatch(/skill trigger 偏好/);
   });
 
   it('prints preparation warnings once for init and install entry flows', async () => {
@@ -1893,9 +1445,6 @@ describe('cli entry integration', () => {
             capabilitySnapshot: {
               requiresNativePlugin: true,
             },
-            installOptions: {
-              skillTriggerPreference: 'manual',
-            },
           },
         },
       },
@@ -1907,7 +1456,6 @@ describe('cli entry integration', () => {
       ['init', '--force'],
       { cwd: workspace.repoRoot, env: workspace.env, io: capture.io },
     )).toBe(0);
-    expect(capture.readStderr()).not.toContain('跳过 skill 触发偏好回放');
 
     await writeInstalledLedger(createAvailableLedger(), workspace.env);
     await fs.writeFile(path.join(workspace.awHome, 'config.json'), '{"version":', 'utf8');
@@ -1932,7 +1480,6 @@ describe('cli entry integration', () => {
     expect(exitCode).toBe(1);
     expect(capture.readStderr()).toContain('config.json 无法读取或 schema 不受支持');
     expect(capture.readStderr()).toContain('非交互环境不会自动覆盖');
-    expect(capture.readStderr().match(/跳过 skill trigger 偏好 replay/g)).toBeNull();
   });
 
   it.each([
@@ -2187,7 +1734,7 @@ describe('cli entry integration', () => {
     expect(logEntries.some((entry) => entry.event.type === 'ledger:written')).toBe(true);
   });
 
-  it('prints Codex project repo-managed install, status, and uninstall without native marketplace as the main diagnosis, and upgrade falls back to config guidance when trigger preferences cannot be recovered', async () => {
+  it('prints Codex project repo-managed install, status, upgrade, and uninstall without native marketplace as the main diagnosis', async () => {
     const workspace = await makeWorkspaceWithMutator((repoRoot) =>
       addCodexProjectFixturePlugins(repoRoot, ['skills-mcp']),
     );
@@ -2238,9 +1785,8 @@ describe('cli entry integration', () => {
         io: capture.io,
         nativeCliRunner: createCodexMarketplaceAddRunner(workspace, nativeCalls),
       },
-    ), capture.readStderr()).toBe(1);
-    expect(capture.readStderr()).toContain('请改用配置管理维护 skill trigger 偏好后再重试');
-    expect(capture.readStdout()).toBe('');
+    ), capture.readStderr()).toBe(0);
+    expect(capture.readStdout()).toContain('skills-mcp');
 
     capture = createCapturedIo();
     expect(await runCli(

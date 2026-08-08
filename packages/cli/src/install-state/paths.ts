@@ -17,7 +17,6 @@ import {
   createHistoricalLifecycleRuntimePathSet,
   createRecordId,
   createSharedIdentityId,
-  getSharedRuntimeOwnerFileName,
 } from './ids.js';
 import {
   isPathInside,
@@ -176,22 +175,6 @@ export function getNativeTransactionMarkerPath(
   return assertAwHomeStatePathForTests(
     getCodexNativeRecoveryBreadcrumbPath(pluginNameOrId, env),
     'native transaction marker',
-  );
-}
-
-export function getSharedSkillTriggerRuntimeOwnerPath(options: {
-  pluginName: string;
-  platform: PluginLocation['platform'];
-  env?: NodeJS.ProcessEnv;
-}): string {
-  return assertAwHomeStatePathForTests(
-    path.join(
-      resolveAwHome(options.env),
-      'shared-runtime-owners',
-      options.platform,
-      getSharedRuntimeOwnerFileName(options.pluginName),
-    ),
-    'shared runtime owner',
   );
 }
 

@@ -607,7 +607,7 @@ describe('artifact plan validation', () => {
     })).toThrow('expected a string');
   });
 
-  it('builds codex.skill expected trees from renderer content plus trigger preference patch', async () => {
+  it('builds codex.skill expected trees without changing native invocation metadata', async () => {
     const validated = validateArtifactPlan({
       manifest: createSkillManifest(),
       plan: {
@@ -629,28 +629,14 @@ describe('artifact plan validation', () => {
     });
     const artifact = validated.artifacts[0]!;
 
-    const defaultTree = await createCodexSkillExpectedTree({
-      artifact,
-      preference: 'default',
-    });
-    const autoTree = await createCodexSkillExpectedTree({
-      artifact,
-      preference: 'auto',
-    });
-    const manualTree = await createCodexSkillExpectedTree({
-      artifact,
-      preference: 'manual',
-    });
+    const tree = await createCodexSkillExpectedTree({ artifact });
 
-    expect(defaultTree.files['SKILL.md']?.toString('utf8')).toBe('# Codex Explore\n');
-    expect(defaultTree.files['agents/openai.yaml']?.toString('utf8')).toContain('allow_implicit_invocation: true');
-    expect(autoTree.files['agents/openai.yaml']?.toString('utf8')).toContain('allow_implicit_invocation: true');
-    expect(manualTree.files['agents/openai.yaml']?.toString('utf8')).toContain('allow_implicit_invocation: false');
-    expect(createCodexSkillStagingTreeContentDigest(defaultTree)).toBe(
-      createCodexSkillStagingTreeContentDigest(autoTree),
+    expect(tree.files['SKILL.md']?.toString('utf8')).toBe('# Codex Explore\n');
+    expect(tree.files['agents/openai.yaml']?.toString('utf8')).toContain(
+      'allow_implicit_invocation: false',
     );
-    expect(createCodexSkillStagingTreeContentDigest(manualTree)).not.toBe(
-      createCodexSkillStagingTreeContentDigest(defaultTree),
+    expect(createCodexSkillStagingTreeContentDigest(tree)).toBe(
+      createCodexSkillStagingTreeContentDigest(await createCodexSkillExpectedTree({ artifact })),
     );
   });
 

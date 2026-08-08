@@ -3,7 +3,6 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import fs from 'fs-extra';
-import YAML from 'yaml';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -33,7 +32,6 @@ import {
 import * as pluginCatalogModule from '../../src/utils/plugin-catalog.js';
 import { CatalogResolutionError } from '../../src/utils/plugin-catalog.js';
 import { readJsonFile } from '../../src/utils/json.js';
-import { writePluginConfigStore } from '../../src/utils/plugin-config.js';
 import { setCatalogPackageSourceForTests } from '../../src/utils/marketplace.js';
 import { resolveCurrentCatalogCacheEntryDir, setEmbeddedPluginsRootOverrideForTests } from '../../src/utils/paths.js';
 import type { CatalogSelector, InstalledLedger } from '../../src/types.js';
@@ -87,6 +85,55 @@ async function makeWorkspace(
   return { repoRoot, awHome, embeddedRoot };
 }
 
+async function writeCodexUserDynamicSkillRecord(options: {
+  codexHome: string;
+  skillRoot: string;
+  contentDigest?: string;
+}): Promise<void> {
+  const location: PluginLocation = {
+    plugin: 'git-commit',
+    platform: 'codex',
+    scope: 'user',
+  };
+  const recordId = createRecordId(location);
+  const recordFile: InstallRecordFile = {
+    version: 2,
+    recordId,
+    record: {
+      pluginName: location.plugin,
+      platform: location.platform,
+      scope: location.scope,
+      installedAt: '2026-04-28T00:00:00.000Z',
+      updatedAt: '2026-04-28T00:00:00.000Z',
+      source: {
+        pluginVersion: '0.1.0',
+        manifestDigest: 'sha256:generated-manifest',
+        bundleFingerprint: 'sha256:generated-bundle',
+      },
+      installSource: {
+        kind: 'explicit',
+        explicitlyRequested: true,
+      },
+      artifacts: [{
+        kind: 'skill',
+        platform: 'codex',
+        path: options.skillRoot,
+        artifactKey: 'generated-commit',
+        id: 'commit-skill',
+        target: 'codex.skill',
+        state: 'present',
+        ...(options.contentDigest ? { contentDigest: options.contentDigest } : {}),
+      }],
+      dependencyEdges: [],
+    },
+  };
+  await fs.outputJson(
+    path.join(options.codexHome, '.agent-workflows', 'records', `${recordId}.json`),
+    recordFile,
+    { spaces: 2 },
+  );
+}
+
 function createStaticCatalogPackageSource(options: {
   manifest: Record<string, unknown>;
   sidecarRoot: string;
@@ -129,68 +176,6 @@ function createStaticCatalogPackageSource(options: {
       dispose: async () => {},
     }),
   };
-}
-
-async function writeUserSkillTriggerConfig(
-  awHome: string,
-  trigger: 'manual' | 'auto' = 'manual',
-): Promise<void> {
-  await writePluginConfigStore({
-    pluginName: 'git-commit',
-    scope: 'user',
-    cwd: process.cwd(),
-    env: { ...process.env, AW_HOME: awHome },
-    values: {
-      $aw: {
-        skillTriggers: {
-          commit: { trigger },
-        },
-      },
-    },
-  });
-}
-
-function codexOpenAiYamlPath(rootDir: string, pluginName = 'git-commit'): string {
-  return path.join(
-    rootDir,
-    'plugins',
-    pluginName,
-    'codex',
-    'skills',
-    'commit',
-    'agents',
-    'openai.yaml',
-  );
-}
-
-async function readCodexAllowImplicitInvocation(rootDir: string): Promise<boolean> {
-  const parsed = YAML.parse(await fs.readFile(codexOpenAiYamlPath(rootDir), 'utf8')) as {
-    policy?: { allow_implicit_invocation?: boolean };
-  };
-  return parsed.policy?.allow_implicit_invocation === true;
-}
-
-async function writeCodexAllowImplicitInvocation(rootDir: string, value: boolean): Promise<void> {
-  await fs.writeFile(
-    codexOpenAiYamlPath(rootDir),
-    YAML.stringify({ policy: { allow_implicit_invocation: value } }),
-    'utf8',
-  );
-}
-
-async function listSkillBackupDirs(
-  rootDir: string,
-  pluginName = 'git-commit',
-  platform = 'codex',
-): Promise<string[]> {
-  const platformRoot = path.join(rootDir, 'plugins', pluginName, platform);
-  if (!(await fs.pathExists(platformRoot))) {
-    return [];
-  }
-
-  return (await fs.readdir(platformRoot))
-    .filter((entry) => entry.startsWith('.skills-backup-'))
-    .sort();
 }
 
 async function readLocalMarketplaceCatalogSelector(awHome: string): Promise<CatalogSelector> {
@@ -1269,24 +1254,6 @@ describe('local marketplace', () => {
         'runtime',
         'utf8',
       ),
-      fs.outputJson(
-        path.join(awHome, 'shared-runtime-owners', 'codex', 'git-commit.123456789abc.json'),
-        {
-          version: 1,
-          pluginName: 'git-commit',
-          platform: 'codex',
-          owner: {
-            plugin: 'git-commit',
-            platform: 'codex',
-            scope: 'user',
-          },
-          ownerRecordPath: '/tmp/record.json',
-          ownerRecordDigest: 'sha256:record',
-          preference: 'manual',
-          updatedAt: '2026-05-07T00:00:00.000Z',
-        },
-        { spaces: 2 },
-      ),
     ]);
 
     await fs.writeFile(
@@ -1305,12 +1272,6 @@ describe('local marketplace', () => {
       path.join(awHome, 'lifecycle-runtimes', 'codex', 'user', 'user', 'git-commit.123456789abc', 'runtime-a', 'bundle', 'marker.txt'),
       'utf8',
     )).resolves.toBe('runtime');
-    await expect(fs.readJson(
-      path.join(awHome, 'shared-runtime-owners', 'codex', 'git-commit.123456789abc.json'),
-    )).resolves.toMatchObject({
-      pluginName: 'git-commit',
-      preference: 'manual',
-    });
   });
 
   it('preserves native recovery breadcrumbs during ensureLocalMarketplace refreshes', async () => {
@@ -1506,24 +1467,6 @@ describe('local marketplace', () => {
         'runtime changed\n',
         'utf8',
       ),
-      fs.outputJson(
-        path.join(awHome, 'shared-runtime-owners', 'codex', 'git-commit.123456789abc.json'),
-        {
-          version: 1,
-          pluginName: 'git-commit',
-          platform: 'codex',
-          owner: {
-            plugin: 'git-commit',
-            platform: 'codex',
-            scope: 'user',
-          },
-          ownerRecordPath: '/tmp/record.json',
-          ownerRecordDigest: 'sha256:record',
-          preference: 'manual',
-          updatedAt: '2026-05-07T00:00:00.000Z',
-        },
-        { spaces: 2 },
-      ),
     ]);
 
     await expect(calculateBundleFingerprint(awHome)).resolves.toBe(before);
@@ -1555,154 +1498,15 @@ describe('local marketplace', () => {
         'runtime',
         'utf8',
       ),
-      fs.outputJson(
-        path.join(awHome, 'shared-runtime-owners', 'codex', 'git-commit.123456789abc.json'),
-        {
-          version: 1,
-          pluginName: 'git-commit',
-          platform: 'codex',
-          owner: {
-            plugin: 'git-commit',
-            platform: 'codex',
-            scope: 'user',
-          },
-          ownerRecordPath: '/tmp/record.json',
-          ownerRecordDigest: 'sha256:record',
-          preference: 'manual',
-          updatedAt: '2026-05-07T00:00:00.000Z',
-        },
-        { spaces: 2 },
-      ),
     ]);
 
     await expect(validateLocalMarketplaceLayout(awHome)).resolves.toBeUndefined();
-  });
-
-  it('replays available ledger skill trigger preferences during force rebuild', async () => {
-    const { awHome, embeddedRoot } = await makeWorkspace();
-    process.env.AW_HOME = awHome;
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
-
-    await initializeLocalMarketplace({ force: true, env: process.env });
-    await writeUserSkillTriggerConfig(awHome);
-    const ledger = createAvailableLedger();
-    ledger.plugins['git-commit'] = {
-      lastResolvedVersion: '0.1.0',
-      platforms: {
-        codex: {
-          userScope: {
-            managed: true,
-            updatedAt: '2026-04-28T00:00:00.000Z',
-            resolvedVersion: '0.1.0',
-            capabilitySnapshot: {
-              requiresNativePlugin: true,
-            },
-            installOptions: {
-              skillTriggerPreference: 'manual',
-            },
-            skillTriggerWriteOrder: 1,
-          },
-        },
-      },
-    };
-    await writeInstalledLedger(ledger, process.env);
-    await writeCodexAllowImplicitInvocation(awHome, true);
-    const localManifestPath = path.join(awHome, 'plugins', 'git-commit', '.agents-plugin', 'plugin.json');
-    const localManifest = await fs.readJson(localManifestPath);
-    localManifest.skillTriggers.commit.allowDynamicTrigger = false;
-    await fs.writeJson(localManifestPath, localManifest, { spaces: 2 });
-
-    const result = await initializeLocalMarketplace({ force: true, env: process.env });
-
-    expect(result.warnings.join('\n')).not.toContain('degraded');
-    expect(await readCodexAllowImplicitInvocation(awHome)).toBe(false);
-    expect(await listSkillBackupDirs(awHome)).toEqual([]);
-    await expect(readInstalledLedger(process.env)).resolves.toMatchObject({
-      ledgerState: {
-        status: 'available',
-      },
-    });
-  });
-
-  it('does not replay manifest-declared codex.skill entries back into ~/.aw during rebuild', async () => {
-    const { awHome, embeddedRoot } = await makeWorkspace((manifest) => {
-      manifest.skillTriggers = {
-        ...manifest.skillTriggers,
-        'generated-commit': {
-          defaultTrigger: 'auto',
-          allowDynamicTrigger: true,
-        },
-      };
-      manifest.artifacts = {
-        targets: [{
-          id: 'commit-skill',
-          platform: 'codex',
-          scopes: ['user', 'project'],
-          target: 'codex.skill',
-          projectManagedKind: 'skill',
-          states: ['present'],
-          refreshKeys: [],
-          skillKey: 'generated-commit',
-        }],
-      };
-    });
-    process.env.AW_HOME = awHome;
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
-
-    await initializeLocalMarketplace({ force: true, env: process.env });
-    await writeUserSkillTriggerConfig(awHome);
-    const ledger = createAvailableLedger();
-    ledger.plugins['git-commit'] = {
-      lastResolvedVersion: '0.1.0',
-      platforms: {
-        codex: {
-          userScope: {
-            managed: true,
-            updatedAt: '2026-04-28T00:00:00.000Z',
-            resolvedVersion: '0.1.0',
-            capabilitySnapshot: {
-              requiresNativePlugin: false,
-              hasRepoManagedArtifacts: true,
-              projectManagedKinds: ['skill'],
-            },
-            installOptions: {
-              skillTriggerPreference: 'manual',
-            },
-            skillTriggerWriteOrder: 1,
-          },
-        },
-      },
-    };
-    await writeInstalledLedger(ledger, process.env);
-    await writeCodexAllowImplicitInvocation(awHome, true);
-
-    const result = await initializeLocalMarketplace({ force: true, env: process.env });
-
-    expect(await readCodexAllowImplicitInvocation(awHome)).toBe(false);
-    await expect(fs.pathExists(path.join(
-      awHome,
-      'plugins',
-      'git-commit',
-      'codex',
-      'skills',
-      'generated-commit',
-      'agents',
-      'openai.yaml',
-    ))).resolves.toBe(false);
-    expect(await listSkillBackupDirs(awHome)).toEqual([]);
-    expect(result.warnings.join('\n')).not.toContain('跳过 skill trigger 偏好 replay');
   });
 
   it('does not add a Codex skills declaration when staging dynamic-only plugins without runtime skills', async () => {
     const { awHome, embeddedRoot } = await makeWorkspace(
       (manifest) => {
         delete manifest.skills;
-        manifest.skillTriggers = {
-          'generated-commit': {
-            defaultTrigger: 'auto',
-            allowDynamicTrigger: true,
-          },
-        };
         manifest.artifacts = {
           targets: [{
             id: 'commit-skill',
@@ -1748,12 +1552,6 @@ describe('local marketplace', () => {
     const { awHome, embeddedRoot } = await makeWorkspace(
       (manifest) => {
         delete manifest.skills;
-        manifest.skillTriggers = {
-          'generated-commit': {
-            defaultTrigger: 'auto',
-            allowDynamicTrigger: true,
-          },
-        };
         manifest.artifacts = {
           targets: [{
             id: 'commit-skill',
@@ -1821,12 +1619,6 @@ describe('local marketplace', () => {
     await fs.writeJson(sourceManifestPath, {
       ...sourceManifest,
       skills: './custom-skills',
-      skillTriggers: {
-        'generated-commit': {
-          defaultTrigger: 'auto',
-          allowDynamicTrigger: true,
-        },
-      },
     }, { spaces: 2 });
 
     const staticSourceSkillRoot = path.join(pluginRoot, 'custom-skills', 'generated-commit');
@@ -1869,12 +1661,6 @@ describe('local marketplace', () => {
     const { awHome, embeddedRoot } = await makeWorkspace(
       (manifest) => {
         delete manifest.skills;
-        manifest.skillTriggers = {
-          'generated-commit': {
-            defaultTrigger: 'auto',
-            allowDynamicTrigger: true,
-          },
-        };
         manifest.artifacts = {
           targets: [{
             id: 'commit-skill',
@@ -1963,15 +1749,75 @@ describe('local marketplace', () => {
     ).resolves.not.toHaveProperty('skills');
   });
 
+  it.each([
+    {
+      name: 'invalid native metadata',
+      metadata: 'policy:\n  allow_implicit_invocation: "true"\n',
+      contentDigest: undefined,
+      warning: 'runtime skill git-commit/generated-commit 无效',
+    },
+    {
+      name: 'recorded content drift',
+      metadata: 'policy:\n  allow_implicit_invocation: true\n',
+      contentDigest: `sha256:${'0'.repeat(64)}`,
+      warning: 'runtime skill git-commit/generated-commit 内容与 install record 不一致',
+    },
+  ])('skips retained Codex user dynamic skills with $name', async ({
+    metadata,
+    contentDigest,
+    warning,
+  }) => {
+    const { awHome, embeddedRoot } = await makeWorkspace((manifest) => {
+      delete manifest.skills;
+      manifest.artifacts = {
+        targets: [{
+          id: 'commit-skill',
+          platform: 'codex',
+          scopes: ['user'],
+          target: 'codex.skill',
+          projectManagedKind: 'skill',
+          states: ['present'],
+          refreshKeys: [],
+          skillKey: 'generated-commit',
+        }],
+      };
+    }, async (repoRoot) => {
+      await fs.remove(path.join(repoRoot, 'plugins', 'git-commit', 'skills'));
+    });
+    const codexHome = path.join(path.dirname(awHome), 'codex-home');
+    process.env.AW_HOME = awHome;
+    process.env.AW_CODEX_HOME = codexHome;
+    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+
+    await initializeLocalMarketplace({ force: true, env: process.env });
+    const dynamicSkillRoot = path.join(
+      awHome,
+      'plugins',
+      'git-commit',
+      'codex',
+      'skills',
+      'generated-commit',
+    );
+    await fs.outputFile(path.join(dynamicSkillRoot, 'SKILL.md'), '# Generated\n', 'utf8');
+    await fs.outputFile(
+      path.join(dynamicSkillRoot, 'agents', 'openai.yaml'),
+      metadata,
+      'utf8',
+    );
+    await writeCodexUserDynamicSkillRecord({
+      codexHome,
+      skillRoot: dynamicSkillRoot,
+      contentDigest,
+    });
+
+    const result = await initializeLocalMarketplace({ force: true, env: process.env });
+
+    expect(result.warnings.join('\n')).toContain(warning);
+    await expect(fs.pathExists(dynamicSkillRoot)).resolves.toBe(false);
+  });
+
   it('replays retained Codex user dynamic skills into custom Codex skills roots during rebuild', async () => {
     const { awHome, embeddedRoot } = await makeWorkspace((manifest) => {
-      manifest.skillTriggers = {
-        ...manifest.skillTriggers,
-        'generated-commit': {
-          defaultTrigger: 'auto',
-          allowDynamicTrigger: true,
-        },
-      };
       manifest.artifacts = {
         targets: [{
           id: 'commit-skill',
@@ -2161,13 +2007,6 @@ describe('local marketplace', () => {
 
   it('skips retained Codex user dynamic skills removed from the current catalog manifest', async () => {
     const { repoRoot, awHome, embeddedRoot } = await makeWorkspace((manifest) => {
-      manifest.skillTriggers = {
-        ...manifest.skillTriggers,
-        'generated-commit': {
-          defaultTrigger: 'auto',
-          allowDynamicTrigger: true,
-        },
-      };
       manifest.artifacts = {
         targets: [{
           id: 'commit-skill',
@@ -2246,7 +2085,6 @@ describe('local marketplace', () => {
 
     await updateFixturePluginManifest(repoRoot, (manifest) => {
       delete manifest.artifacts;
-      delete manifest.skillTriggers['generated-commit'];
     });
     const nextEmbeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
     tempDirs.push(nextEmbeddedRoot);
@@ -2262,13 +2100,6 @@ describe('local marketplace', () => {
 
   it('skips retained Codex user dynamic skills when the current catalog keeps them project-only', async () => {
     const { repoRoot, awHome, embeddedRoot } = await makeWorkspace((manifest) => {
-      manifest.skillTriggers = {
-        ...manifest.skillTriggers,
-        'generated-commit': {
-          defaultTrigger: 'auto',
-          allowDynamicTrigger: true,
-        },
-      };
       manifest.artifacts = {
         targets: [{
           id: 'commit-skill',
@@ -2360,293 +2191,4 @@ describe('local marketplace', () => {
     await expect(fs.pathExists(path.join(dynamicSkillRoot, 'SKILL.md'))).resolves.toBe(false);
   });
 
-  it('ignores Codex project scope records when replaying the shared runtime winner', async () => {
-    const { awHome, embeddedRoot } = await makeWorkspace();
-    process.env.AW_HOME = awHome;
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
-
-    await initializeLocalMarketplace({ force: true, env: process.env });
-    await writeUserSkillTriggerConfig(awHome);
-    const ledger = createAvailableLedger();
-    ledger.plugins['git-commit'] = {
-      lastResolvedVersion: '0.1.0',
-      platforms: {
-        codex: {
-          userScope: {
-            managed: true,
-            updatedAt: '2026-04-28T00:00:00.000Z',
-            resolvedVersion: '0.1.0',
-            capabilitySnapshot: {
-              requiresNativePlugin: true,
-            },
-            installOptions: {
-              skillTriggerPreference: 'manual',
-            },
-            skillTriggerWriteOrder: 1,
-          },
-          projectScopes: {
-            'project-a': {
-              managed: true,
-              updatedAt: '2026-04-28T00:00:00.000Z',
-              resolvedVersion: '0.1.0',
-              capabilitySnapshot: {
-                requiresNativePlugin: true,
-              },
-              installOptions: {
-                skillTriggerPreference: 'auto',
-              },
-              skillTriggerWriteOrder: 2,
-            },
-          },
-        },
-      },
-    };
-    await writeInstalledLedger(ledger, process.env);
-    await writeCodexAllowImplicitInvocation(awHome, false);
-
-    const result = await initializeLocalMarketplace({ force: true, env: process.env });
-
-    expect(await readCodexAllowImplicitInvocation(awHome)).toBe(false);
-    expect(result.warnings.join('\n')).not.toContain('project-a');
-  });
-
-  it('uses the stable scope identity fallback when replaying old ledgers without write order', async () => {
-    const { awHome, embeddedRoot } = await makeWorkspace();
-    process.env.AW_HOME = awHome;
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
-
-    await initializeLocalMarketplace({ force: true, env: process.env });
-    await writeUserSkillTriggerConfig(awHome);
-    const ledger = createAvailableLedger();
-    ledger.plugins['git-commit'] = {
-      lastResolvedVersion: '0.1.0',
-      platforms: {
-        codex: {
-          userScope: {
-            managed: true,
-            updatedAt: '2026-04-28T00:00:00.000Z',
-            resolvedVersion: '0.1.0',
-            capabilitySnapshot: {
-              requiresNativePlugin: true,
-            },
-            installOptions: {
-              skillTriggerPreference: 'manual',
-            },
-          },
-          projectScopes: {
-            alpha: {
-              managed: true,
-              updatedAt: '2026-04-28T00:00:00.000Z',
-              resolvedVersion: '0.1.0',
-              capabilitySnapshot: {
-                requiresNativePlugin: true,
-              },
-              installOptions: {
-                skillTriggerPreference: 'auto',
-              },
-            },
-          },
-        },
-      },
-    };
-    await writeInstalledLedger(ledger, process.env);
-    await writeCodexAllowImplicitInvocation(awHome, false);
-
-    await initializeLocalMarketplace({ force: true, env: process.env });
-
-    expect(await readCodexAllowImplicitInvocation(awHome)).toBe(false);
-  });
-
-  it('does not replay Codex project-only preferences into ~/.aw during rebuild', async () => {
-    const { repoRoot, awHome, embeddedRoot } = await makeWorkspace();
-    process.env.AW_HOME = awHome;
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
-
-    await initializeLocalMarketplace({ force: true, env: process.env });
-    const projectKey = await fs.realpath(repoRoot);
-    const ledger = createAvailableLedger();
-    ledger.plugins['git-commit'] = {
-      lastResolvedVersion: '0.1.0',
-      platforms: {
-        codex: {
-          projectScopes: {
-            [projectKey]: {
-              managed: true,
-              updatedAt: '2026-04-28T00:00:00.000Z',
-              resolvedVersion: '0.1.0',
-              projectKey,
-              capabilitySnapshot: {
-                requiresNativePlugin: false,
-                hasRepoManagedArtifacts: true,
-                projectManagedKinds: ['skill'],
-              },
-              installOptions: {
-                skillTriggerPreference: 'manual',
-              },
-              skillTriggerWriteOrder: 3,
-            },
-          },
-        },
-      },
-    };
-    await writeInstalledLedger(ledger, process.env);
-    await writeCodexAllowImplicitInvocation(awHome, true);
-
-    await initializeLocalMarketplace({ force: true, env: process.env });
-
-    expect(await readCodexAllowImplicitInvocation(awHome)).toBe(true);
-  });
-
-  it('replays skill trigger preferences during non-force stale and bundle refreshes', async () => {
-    const { awHome, embeddedRoot } = await makeWorkspace();
-    process.env.AW_HOME = awHome;
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
-
-    await initializeLocalMarketplace({ force: true, env: process.env });
-    await writeUserSkillTriggerConfig(awHome);
-    const ledger = createAvailableLedger();
-    ledger.plugins['git-commit'] = {
-      lastResolvedVersion: '0.1.0',
-      platforms: {
-        codex: {
-          userScope: {
-            managed: true,
-            updatedAt: '2026-04-28T00:00:00.000Z',
-            resolvedVersion: '0.1.0',
-            capabilitySnapshot: {
-              requiresNativePlugin: true,
-            },
-            installOptions: {
-              skillTriggerPreference: 'manual',
-            },
-            skillTriggerWriteOrder: 1,
-          },
-        },
-      },
-    };
-    await writeInstalledLedger(ledger, process.env);
-
-    await writeCodexAllowImplicitInvocation(awHome, true);
-    await fs.writeFile(path.join(awHome, 'config.json'), '{"version":', 'utf8');
-    await initializeLocalMarketplace({
-      force: false,
-      env: process.env,
-      gate: {
-        interactive: true,
-        confirmOverwrite: async () => true,
-      },
-    });
-    expect(await readCodexAllowImplicitInvocation(awHome)).toBe(false);
-
-    await writeCodexAllowImplicitInvocation(awHome, true);
-    await fs.writeFile(
-      path.join(
-        embeddedRoot,
-        '.catalog',
-        'full',
-        'plugins',
-        'git-commit',
-        'claude',
-        'skills',
-        'commit',
-        'README.md',
-      ),
-      'fingerprint changed\n',
-      'utf8',
-    );
-    await initializeLocalMarketplace({ force: false, env: process.env });
-    expect(await readCodexAllowImplicitInvocation(awHome)).toBe(false);
-  });
-
-  it('skips replay for degraded ledgers and keeps the pristine bundle', async () => {
-    const { awHome, embeddedRoot } = await makeWorkspace();
-    process.env.AW_HOME = awHome;
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
-
-    await initializeLocalMarketplace({ force: true, env: process.env });
-    await writeInstalledLedger(
-      {
-        version: 1,
-        ledgerState: {
-          status: 'degraded',
-          degradedAt: '2026-04-28T00:00:00.000Z',
-          reason: 'operation_interrupted_after_native_write',
-        },
-        plugins: {
-          'git-commit': {
-            lastResolvedVersion: '0.1.0',
-            platforms: {
-              codex: {
-                userScope: {
-                  managed: true,
-                  updatedAt: '2026-04-28T00:00:00.000Z',
-                  resolvedVersion: '0.1.0',
-                  capabilitySnapshot: {
-                    requiresNativePlugin: true,
-                  },
-                  installOptions: {
-                    skillTriggerPreference: 'manual',
-                  },
-                },
-              },
-            },
-          },
-        },
-      },
-      process.env,
-    );
-    await writeCodexAllowImplicitInvocation(awHome, false);
-
-    const result = await initializeLocalMarketplace({ force: true, env: process.env });
-
-    expect(result.warnings.join('\n')).toContain('跳过 skill trigger 偏好 replay');
-    expect(await readCodexAllowImplicitInvocation(awHome)).toBe(true);
-    await expect(readInstalledLedger(process.env)).resolves.toMatchObject({
-      ledgerState: {
-        status: 'degraded',
-        reason: 'operation_interrupted_after_native_write',
-      },
-    });
-  });
-
-  it('keeps rebuild best-effort when replay sees malformed pristine skill files', async () => {
-    const { awHome, embeddedRoot } = await makeWorkspace();
-    process.env.AW_HOME = awHome;
-    setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
-
-    await initializeLocalMarketplace({ force: true, env: process.env });
-    await writeUserSkillTriggerConfig(awHome);
-    const ledger = createAvailableLedger();
-    ledger.plugins['git-commit'] = {
-      lastResolvedVersion: '0.1.0',
-      platforms: {
-        codex: {
-          userScope: {
-            managed: true,
-            updatedAt: '2026-04-28T00:00:00.000Z',
-            resolvedVersion: '0.1.0',
-            capabilitySnapshot: {
-              requiresNativePlugin: true,
-            },
-            installOptions: {
-              skillTriggerPreference: 'manual',
-            },
-            skillTriggerWriteOrder: 1,
-          },
-        },
-      },
-    };
-    await writeInstalledLedger(ledger, process.env);
-    await fs.writeFile(
-      codexOpenAiYamlPath(path.join(embeddedRoot, '.catalog', 'full')),
-      'policy: [',
-      'utf8',
-    );
-
-    const result = await initializeLocalMarketplace({ force: true, env: process.env });
-
-    expect(result.warnings.join('\n')).toContain('偏好跳过覆盖');
-    await expect(fs.readFile(codexOpenAiYamlPath(awHome), 'utf8')).resolves.toBe('policy: [');
-    await expect(validateLocalMarketplaceLayout(awHome)).resolves.toBeUndefined();
-  });
 });

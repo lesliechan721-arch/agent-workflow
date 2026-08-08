@@ -9,12 +9,6 @@
   },
   "skills": "./review-skills",
   "slashCommands": "./slash-commands",
-  "skillTriggers": {
-    "review-workflow": {
-      "defaultTrigger": "manual",
-      "allowDynamicTrigger": true
-    }
-  },
   "mcpServers": "./.mcp.json",
   "dependencies": {
     "plugins": [
@@ -25,8 +19,7 @@
         },
         "when": {
           "platforms": ["codex"]
-        },
-        "inheritInstallOptions": true
+        }
       }
     ]
   },

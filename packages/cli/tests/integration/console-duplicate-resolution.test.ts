@@ -232,7 +232,6 @@ async function seedLegacyCodexUserHealthySiblingInstall(workspace: {
       cwd: sibling.repoRoot,
       scope: 'user',
       platform: 'codex',
-      requestedSkillTrigger: 'manual',
     },
     {
       adapters: createAdapters(env),
@@ -294,7 +293,6 @@ describe('console duplicate resolution integration', () => {
         cwd: workspace.repoRoot,
         scope: 'project',
         platform: 'codex',
-        requestedSkillTrigger: 'auto',
       },
       {
         adapters: createAdapters(env),

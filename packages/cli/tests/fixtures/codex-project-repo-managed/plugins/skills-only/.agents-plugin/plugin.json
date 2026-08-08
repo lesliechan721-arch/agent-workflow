@@ -8,12 +8,6 @@
     }
   },
   "skills": "./skills",
-  "skillTriggers": {
-    "repo-check": {
-      "defaultTrigger": "auto",
-      "allowDynamicTrigger": true
-    }
-  },
   "marketplace": {
     "category": "workflow",
     "tags": ["codex-project", "skills"],

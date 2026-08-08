@@ -6,7 +6,7 @@
 
 | Fixture | Plugin name | Coverage |
 | --- | --- | --- |
-| `skills-only` | `skills-only` | 只有显式 skill；用于验证 repo `.agents/skills`、`overridable` skill trigger 和 skills-only 不触达 project `.codex/config.toml`。 |
+| `skills-only` | `skills-only` | 只有显式 skill；用于验证 repo `.agents/skills`、原生调用元数据和 skills-only 不触达 project `.codex/config.toml`。 |
 | `mcp-only` | `mcp-only` | 只有 MCP；包含 quoted key server `acme.tools v1` 和 sibling server `sibling-server`。 |
 | `slashCommands-only` | `slash-commands-only` | 只有公共 `slashCommands`；覆盖 `claude` / `codex` 分平台 frontmatter、模板渲染和合法 `./assets/...` icon。 |
 | `extensions-only` | `extensions-only` | 只有 repo-managed extensions：instructions、permissions、hooks、agents。 |

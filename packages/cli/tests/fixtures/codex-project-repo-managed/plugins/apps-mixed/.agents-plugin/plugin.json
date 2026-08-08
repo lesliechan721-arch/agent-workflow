@@ -8,12 +8,6 @@
     }
   },
   "skills": "./skills",
-  "skillTriggers": {
-    "app-helper": {
-      "defaultTrigger": "auto",
-      "allowDynamicTrigger": true
-    }
-  },
   "apps": "./.app.json",
   "marketplace": {
     "category": "workflow",

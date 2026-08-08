@@ -419,9 +419,6 @@ async function seedCodexProjectManagedEvidence(
           bundleFingerprint: 'seeded-bundle-fingerprint',
         },
         installSource: createInstallRecordInstallSource('explicit'),
-        options: {
-          skillTriggerPreference: 'manual',
-        },
         artifacts: [installArtifact],
         dependencyEdges: [],
       },

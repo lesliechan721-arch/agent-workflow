@@ -19,7 +19,6 @@ import type {
   EnvironmentDetection,
   GeneratedArtifact,
   HookDefinition,
-  InstallCommandOptions,
   InstalledLedger,
   InstalledScopeRecord,
   InstructionDefinition,
@@ -30,10 +29,8 @@ import type {
   PluginArtifactTargetDefinition,
   PermissionDefinition,
   PluginStatusReport,
-  ResolvedInstallOptions,
   Scope,
   StatusReport,
-  UpgradeCommandOptions,
 } from '../types.js';
 import { AgentVersionGateError } from '../types.js';
 import {
@@ -69,7 +66,6 @@ import {
   getTrackingRecord,
   readTrackingManifest,
 } from '../utils/tracking.js';
-import { resolveSkillTriggerApplicabilityForPlugin } from '../utils/skill-trigger-preferences.js';
 import {
   resolveEmbeddedPluginsRoot,
   resolveClaudePaths,
@@ -81,7 +77,6 @@ import {
   resolveActiveLocalBundle,
   resolveCurrentCatalog,
 } from '../utils/plugin-catalog.js';
-import { serializePluginLocation } from '../utils/plugin-dependency-location.js';
 import {
   formatMarketplaceProductsForError,
   formatSupportedPlatforms,
@@ -675,23 +670,6 @@ async function resolveScopeKeys(
   };
 }
 
-function getScopeIdentity(
-  platform: PlatformName,
-  scope: Scope,
-  scopeKeys: Record<PlatformName, string | undefined>,
-): string {
-  if (scope === 'user') {
-    return 'user';
-  }
-
-  const scopeKey = scopeKeys[platform];
-  if (!scopeKey) {
-    throw new Error(`无法解析 ${platform} 的 project scope key。`);
-  }
-
-  return `project:${scopeKey}`;
-}
-
 function getInstalledScopeRecordForTarget(
   ledger: InstalledLedger,
   pluginName: string,
@@ -712,58 +690,6 @@ function getInstalledScopeRecordForTarget(
   return scopeKey
     ? platformRecord.projectScopes?.[scopeKey] as InstalledScopeRecord<Record<string, unknown>> | undefined
     : undefined;
-}
-
-export function createResolvedInstallOptionsKey(
-  platform: PlatformName,
-  pluginName: string,
-  scopeIdentity: string,
-): string {
-  return `${platform}:${pluginName}:${scopeIdentity}`;
-}
-
-function resolveLedgerBackedPreference(
-  scopeRecord: InstalledScopeRecord<Record<string, unknown>> | undefined,
-): Pick<Extract<ResolvedInstallOptions, { applicability: 'overridable' }>, 'skillTriggerPreference' | 'skillTriggerSource'> {
-  const ledgerPreference = scopeRecord?.installOptions?.skillTriggerPreference;
-  return ledgerPreference
-    ? {
-        skillTriggerPreference: ledgerPreference,
-        skillTriggerSource: 'ledger',
-      }
-    : {
-        skillTriggerPreference: 'default',
-        skillTriggerSource: 'default',
-      };
-}
-
-function hasRecoverableLedgerSkillTriggerPreference(
-  scopeRecord: InstalledScopeRecord<Record<string, unknown>> | undefined,
-): boolean {
-  return scopeRecord?.managed === true && typeof scopeRecord.installOptions?.skillTriggerPreference === 'string';
-}
-
-function renderSkillTriggerConfigGuidance(
-  pluginName: string,
-  platform: PlatformName,
-  scope: Scope,
-  reason: string,
-): string {
-  return `${pluginName} 在 ${platform} (${scope}) ${reason}；请改用配置管理维护 skill trigger 偏好后再重试。`;
-}
-
-async function hasTrackingManagedEvidenceForTarget(
-  cwd: string,
-  scope: Scope,
-  platform: PlatformName,
-  pluginName: string,
-  env: NodeJS.ProcessEnv,
-): Promise<boolean> {
-  const trackingDir = platform === 'claude'
-    ? resolveClaudePaths(cwd, scope, env).trackingDir
-    : resolveCodexPaths(cwd, scope, env).trackingDir;
-  const manifest = await readTrackingManifest(trackingDir);
-  return Boolean(getTrackingRecord(manifest, pluginName));
 }
 
 async function prepareCatalogState(
@@ -875,245 +801,6 @@ export async function listManagedPluginNamesForPreparedLedger(
       getInstalledScopeRecordForTarget(ledger, pluginName, platform, scope, scopeKeys)?.managed === true,
     )
     .sort();
-}
-
-export async function resolveInstallOptionsForTargets(
-  mode: 'install' | 'upgrade' | 'upgrade-all',
-  targets: ResolvedPluginTarget[],
-  platforms: PlatformName[],
-  options: Pick<InstallCommandOptions | UpgradeCommandOptions, 'cwd' | 'scope' | 'requestedSkillTrigger'> & {
-    env?: NodeJS.ProcessEnv;
-  },
-  ledger: InstalledLedger,
-): Promise<Map<string, ResolvedInstallOptions>> {
-  const scopeKeys = await resolveScopeKeys(options.cwd, options.scope);
-  const resolved = new Map<string, ResolvedInstallOptions>();
-  const env = options.env ?? process.env;
-  const ledgerTrust: ResolvedInstallOptions['ledgerTrust'] =
-    ledger.ledgerState.status === 'available' ? 'available' : 'degraded';
-
-  for (const platform of platforms) {
-    const scopeIdentity = getScopeIdentity(platform, options.scope, scopeKeys);
-
-    for (const target of targets) {
-      const nextOptions = await resolveInstallOptionsForResolvedTarget({
-        mode,
-        target,
-        platform,
-        scope: options.scope,
-        requestedSkillTrigger: options.requestedSkillTrigger,
-        cwd: options.cwd,
-        env,
-        ledger,
-        scopeKeys,
-        ledgerTrust,
-      });
-      resolved.set(
-        createResolvedInstallOptionsKey(platform, target.pluginName, scopeIdentity),
-        nextOptions,
-      );
-    }
-  }
-
-  return resolved;
-}
-
-export interface ResolvedInstallOptionsLocationRequest {
-  location: {
-    plugin: string;
-    platform: PlatformName;
-    scope: Scope;
-    projectKey: string | null;
-  };
-  target: ResolvedPluginTarget;
-  requestedSkillTrigger?: InstallCommandOptions['requestedSkillTrigger'];
-}
-
-async function resolveInstallOptionsForResolvedTarget(options: {
-  mode: 'install' | 'upgrade' | 'upgrade-all';
-  target: ResolvedPluginTarget;
-  platform: PlatformName;
-  scope: Scope;
-  requestedSkillTrigger?: InstallCommandOptions['requestedSkillTrigger'];
-  cwd: string;
-  env: NodeJS.ProcessEnv;
-  ledger: InstalledLedger;
-  scopeKeys: Record<PlatformName, string | undefined>;
-  ledgerTrust: ResolvedInstallOptions['ledgerTrust'];
-}): Promise<ResolvedInstallOptions> {
-  const skillTriggerPlugin = options.target.embeddedPlugin ?? options.target.currentPlugin ?? options.target.plugin;
-  const applicability = await resolveSkillTriggerApplicabilityForPlugin(
-    skillTriggerPlugin,
-    options.platform,
-  );
-  const scopeRecord = getInstalledScopeRecordForTarget(
-    options.ledger,
-    options.target.pluginName,
-    options.platform,
-    options.scope,
-    options.scopeKeys,
-  );
-  const isManagedTarget = scopeRecord?.managed === true;
-  const trackingManagedEvidence = options.platform === 'codex' && options.scope === 'project'
-    ? await hasTrackingManagedEvidenceForTarget(
-        options.cwd,
-        options.scope,
-        options.platform,
-        options.target.pluginName,
-        options.env,
-      )
-    : false;
-
-  if (applicability === 'none' || applicability === 'fixed') {
-    return {
-      applicability,
-      ledgerTrust: options.ledgerTrust,
-    };
-  }
-
-  if (options.requestedSkillTrigger) {
-    return {
-      applicability: 'overridable',
-      skillTriggerPreference: options.requestedSkillTrigger,
-      skillTriggerSource: 'cli',
-      ledgerTrust: options.ledgerTrust,
-    };
-  }
-
-  if (options.platform === 'codex' && options.scope === 'project') {
-    if (options.ledger.ledgerState.status === 'available' && hasRecoverableLedgerSkillTriggerPreference(scopeRecord)) {
-      return {
-        applicability: 'overridable',
-        skillTriggerPreference: scopeRecord!.installOptions!.skillTriggerPreference!,
-        skillTriggerSource: 'ledger',
-        ledgerTrust: options.ledgerTrust,
-      };
-    }
-    if (isManagedTarget || trackingManagedEvidence) {
-      const message = options.ledger.ledgerState.status === 'available'
-        ? renderSkillTriggerConfigGuidance(
-            options.target.pluginName,
-            options.platform,
-            options.scope,
-            '的 skill trigger 偏好无法从当前 scope ledger 安全恢复，tracking 只能证明 repo artifact 归属',
-          )
-        : renderSkillTriggerConfigGuidance(
-            options.target.pluginName,
-            options.platform,
-            options.scope,
-            '已受管，installed.json 处于 degraded 状态时不能隐式继承旧的 skill trigger 偏好',
-          );
-      throw new CommandWarningError(message);
-    }
-    return {
-      applicability: 'overridable',
-      skillTriggerPreference: 'default',
-      skillTriggerSource: 'default',
-      ledgerTrust: options.ledgerTrust,
-    };
-  }
-
-  if (options.mode === 'install') {
-    if (options.ledger.ledgerState.status === 'available') {
-      return {
-        applicability: 'overridable',
-        ...resolveLedgerBackedPreference(scopeRecord),
-        ledgerTrust: options.ledgerTrust,
-      };
-    }
-    if (isManagedTarget) {
-      throw new CommandWarningError(
-        renderSkillTriggerConfigGuidance(
-          options.target.pluginName,
-          options.platform,
-          options.scope,
-          '已受管，installed.json 处于 degraded 状态时不能隐式继承旧的 skill trigger 偏好',
-        ),
-      );
-    }
-    return {
-      applicability: 'overridable',
-      skillTriggerPreference: 'default',
-      skillTriggerSource: 'default',
-      ledgerTrust: options.ledgerTrust,
-    };
-  }
-
-  if (options.ledger.ledgerState.status === 'available') {
-    return {
-      applicability: 'overridable',
-      ...resolveLedgerBackedPreference(scopeRecord),
-      ledgerTrust: options.ledgerTrust,
-    };
-  }
-
-  throw new CommandWarningError(
-    renderSkillTriggerConfigGuidance(
-      options.target.pluginName,
-      options.platform,
-      options.scope,
-      '的 skill trigger 偏好无法从 degraded installed.json 安全恢复',
-    ),
-  );
-}
-
-export async function resolveInstallOptionsForLocationTargets(
-  mode: 'install' | 'upgrade' | 'upgrade-all',
-  requests: ResolvedInstallOptionsLocationRequest[],
-  options: {
-    cwd: string;
-    env?: NodeJS.ProcessEnv;
-  },
-  ledger: InstalledLedger,
-): Promise<Map<string, ResolvedInstallOptions>> {
-  const env = options.env ?? process.env;
-  const ledgerTrust: ResolvedInstallOptions['ledgerTrust'] =
-    ledger.ledgerState.status === 'available' ? 'available' : 'degraded';
-  const scopeKeysByScope = new Map<Scope, Record<PlatformName, string | undefined>>();
-  const resolved = new Map<string, ResolvedInstallOptions>();
-
-  for (const request of requests) {
-    const scopeKeys = scopeKeysByScope.get(request.location.scope) ??
-      await resolveScopeKeys(options.cwd, request.location.scope);
-    scopeKeysByScope.set(request.location.scope, scopeKeys);
-    const nextOptions = await resolveInstallOptionsForResolvedTarget({
-      mode,
-      target: request.target,
-      platform: request.location.platform,
-      scope: request.location.scope,
-      requestedSkillTrigger: request.requestedSkillTrigger,
-      cwd: options.cwd,
-      env,
-      ledger,
-      scopeKeys,
-      ledgerTrust,
-    });
-    resolved.set(serializePluginLocation(request.location), nextOptions);
-  }
-
-  return resolved;
-}
-
-export async function createResolvedInstallOptionsResolver(
-  resolvedOptionsByKey: Map<string, ResolvedInstallOptions>,
-  cwd: string,
-  scope: Scope,
-): Promise<(platform: PlatformName, target: ResolvedPluginTarget) => ResolvedInstallOptions> {
-  const scopeKeys = await resolveScopeKeys(cwd, scope);
-
-  return (platform: PlatformName, target: ResolvedPluginTarget): ResolvedInstallOptions => {
-    const scopeIdentity = getScopeIdentity(platform, scope, scopeKeys);
-    const resolved = resolvedOptionsByKey.get(
-      createResolvedInstallOptionsKey(platform, target.pluginName, scopeIdentity),
-    );
-    if (!resolved) {
-      throw new Error(
-        `缺少 ${platform}/${target.pluginName} (${scopeIdentity}) 的 resolved install options。`,
-      );
-    }
-
-    return resolved;
-  };
 }
 
 interface LoadedPluginTargetsForCommand {
@@ -1616,27 +1303,6 @@ export function filterPostCommandDriftWarnings(driftWarnings: string[]): {
   };
 }
 
-function formatSkillTriggerRuntime(plugin: PluginStatusReport): string {
-  if (plugin.skillTriggerRuntimeState === 'unknown') {
-    return 'unknown';
-  }
-
-  if (plugin.skillTriggerRuntimeState === 'mixed') {
-    return 'mixed';
-  }
-
-  const matches = plugin.skillTriggerRuntimeMatches ?? [];
-  if (matches.length === 1) {
-    return matches[0];
-  }
-
-  if (matches.length > 1) {
-    return `matches(${matches.join(',')})`;
-  }
-
-  return 'mixed';
-}
-
 export function formatStatusReports(reports: StatusReport[]): string {
   const lines: string[] = [];
   for (const report of reports) {
@@ -1730,18 +1396,6 @@ export function formatStatusReports(reports: StatusReport[]): string {
         lines.push(
           `      managedEvidence=ledger:${plugin.scopeManagedEvidence.ledger ? 'yes' : 'no'},tracking:${plugin.scopeManagedEvidence.tracking ? 'yes' : 'no'},sharedNativeRef:${plugin.scopeManagedEvidence.sharedNativeRef ? 'yes' : 'no'}`,
         );
-      }
-      if (plugin.skillTriggerApplicability) {
-        lines.push(`      skillTriggerApplicability=${plugin.skillTriggerApplicability}`);
-      }
-      if (plugin.skillTriggerPreference) {
-        lines.push(`      skillTriggerLedger=${plugin.skillTriggerPreference}`);
-      }
-      if (plugin.skillTriggerRuntimeState) {
-        lines.push(`      skillTriggerRuntime=${formatSkillTriggerRuntime(plugin)}`);
-      }
-      if (plugin.skillTriggerDrift) {
-        lines.push(`      skillTriggerDrift=${plugin.skillTriggerDrift}`);
       }
       if (plugin.currentCatalog) {
         lines.push(

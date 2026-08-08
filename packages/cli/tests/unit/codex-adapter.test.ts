@@ -52,7 +52,6 @@ import {
 } from '../../src/utils/paths.js';
 import { getInstallRecordPath } from '../../src/install-state/paths.js';
 import { writePluginConfigStore } from '../../src/utils/plugin-config.js';
-import { patchCodexOpenAiYaml } from '../../src/utils/skill-trigger-preferences.js';
 import {
   removeTrackingRecordFromManifest,
   readTrackingManifest,
@@ -822,7 +821,6 @@ describe('CodexAdapter', () => {
       path.join(refreshedEmbeddedRoot, 'plugins', 'skills-only', 'codex', 'skills', 'repo-check'),
       skillPath,
     );
-    await patchCodexOpenAiYaml(path.join(skillPath, 'agents', 'openai.yaml'), 'auto');
     await upsertTrackingRecord(paths.trackingDir, plugin.manifest.name, [{
       path: skillPath,
       kind: 'skill',
@@ -845,9 +843,6 @@ describe('CodexAdapter', () => {
                 requiresNativePlugin: false,
                 hasRepoManagedArtifacts: true,
                 projectManagedKinds: ['skill'],
-              },
-              installOptions: {
-                skillTriggerPreference: 'default',
               },
             },
           },
@@ -2325,19 +2320,61 @@ describe('CodexAdapter', () => {
     });
   });
 
+  it('rejects invalid native Skill metadata before using an explicit marketplace', async () => {
+    const { repoRoot, cwd, env } = await makeWorkspace();
+    await initializeLocalMarketplace({ force: true, env });
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
+    const historicalMarketplaceRoot = path.join(repoRoot, 'historical-aw');
+    const historicalMarketplacePath = path.join(
+      historicalMarketplaceRoot,
+      '.agents',
+      'plugins',
+      'marketplace.json',
+    );
+    await fs.outputJson(historicalMarketplacePath, { name: 'historical-aw' }, { spaces: 2 });
+    await fs.outputFile(
+      path.join(
+        historicalMarketplaceRoot,
+        'plugins',
+        'git-commit',
+        'codex',
+        'skills',
+        'commit',
+        'SKILL.md',
+      ),
+      '# Commit\n',
+      'utf8',
+    );
+    await fs.outputFile(
+      path.join(
+        historicalMarketplaceRoot,
+        'plugins',
+        'git-commit',
+        'codex',
+        'skills',
+        'commit',
+        'agents',
+        'openai.yaml',
+      ),
+      'policy:\n  allow_implicit_invocation: "false"\n',
+      'utf8',
+    );
+    const nativeCliRunner = vi.fn(createCodexMarketplaceAddRunner(cwd, env));
+    const adapter = new CodexAdapter(cwd, nativeCliRunner, env);
+
+    await expect(adapter.installPluginFromMarketplace(plugin, 'user', {
+      marketplacePath: historicalMarketplacePath,
+    })).rejects.toThrow('policy.allow_implicit_invocation 必须是 boolean');
+
+    expect(nativeCliRunner).not.toHaveBeenCalled();
+  });
+
   it('stages user dynamic Codex skills under the manifest skills root for native install', async () => {
     const { repoRoot, cwd, env } = await makeWorkspace();
     await initializeLocalMarketplace({ force: true, env });
 
     const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
     plugin.manifest.skills = './custom-skills';
-    plugin.manifest.skillTriggers = {
-      ...(plugin.manifest.skillTriggers ?? {}),
-      'generated-commit': {
-        defaultTrigger: 'auto',
-        allowDynamicTrigger: true,
-      },
-    };
     plugin.manifest.artifacts = {
       targets: [{
         id: 'generated-commit-skill',
@@ -2490,12 +2527,6 @@ describe('CodexAdapter', () => {
 
     const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
     plugin.manifest.skills = './custom-skills';
-    plugin.manifest.skillTriggers = {
-      'generated-commit': {
-        defaultTrigger: 'auto',
-        allowDynamicTrigger: true,
-      },
-    };
     delete plugin.manifest.artifacts;
 
     const awPluginRoot = path.join(env.AW_HOME!, 'plugins', plugin.manifest.name);
@@ -2504,12 +2535,6 @@ describe('CodexAdapter', () => {
     await fs.writeJson(sourceManifestPath, {
       ...sourceManifest,
       skills: './custom-skills',
-      skillTriggers: {
-        'generated-commit': {
-          defaultTrigger: 'auto',
-          allowDynamicTrigger: true,
-        },
-      },
     }, { spaces: 2 });
 
     const codexManifestPath = path.join(awPluginRoot, '.codex-plugin', 'plugin.json');

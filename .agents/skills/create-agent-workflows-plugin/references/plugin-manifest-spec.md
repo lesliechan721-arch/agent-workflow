@@ -12,7 +12,6 @@
 | `compatibility` | object | 是 | 目前只支持 `compatibility.aw.minVersion`，声明插件 artifact 需要的最低 `@yiliang/aw` CLI 版本；不要声明最低 Codex 或 Claude Code 版本 |
 | `skills` | string | 否 | 单个路径，`./` 开头，指向 skills 目录 |
 | `slashCommands` | string | 否 | 单个路径，`./` 开头，指向公共 slash command 源目录；首版只接受根目录直属 `*.md` 和保留 `assets/` |
-| `skillTriggers` | object | 否 | 按 skill 声明 AW 内建默认触发策略，以及是否允许通过 AW config 动态调整 |
 | `mcpServers` | string | 否 | 单个路径，`./` 开头，指向 `.mcp.json` |
 | `apps` | string | 否 | 单个路径，`./` 开头，指向 `.app.json` |
 | `marketplace` | object | 是 | 见下方 marketplace block |
@@ -85,8 +84,7 @@ AW 版本管理里有三套身份，不能混用：
         },
         "when": {
           "platforms": ["codex"]
-        },
-        "inheritInstallOptions": true
+        }
       }
     ]
   }
@@ -97,14 +95,13 @@ AW 版本管理里有三套身份，不能混用：
 
 - `dependencies` 存在时只允许 `plugins` 字段。
 - `dependencies.plugins` 必须是数组。空数组等价于无依赖，但构建和作者工具会提示删除空 block。
-- 每个 entry 只允许 `name`、`minVersion`、`target`、`inheritInstallOptions`、`when`。
+- 每个 entry 只允许 `name`、`minVersion`、`target`、`when`。
 - `name` 必须使用和 manifest `name` 一样的小写短横线格式，且不能依赖自己。
 - `minVersion` 可选，表示依赖插件的最低可接受版本，必须是严格 SemVer。它不是 range，不支持上界、`^`、`~` 或比较器组合。
 - 不支持旧式 `version`、`range`、`platform`、`marketplace`、`source`、`optional`、`dev`、`peer` 等字段；`target.platform` 也不允许。作者工具和发布门禁会拒绝这些字段，而不是忽略。
 - `target` 存在时只允许 `scope`，值只能是 `user` 或 `project`。
 - `when` 存在时只允许 `platforms`，值必须是非空数组，元素只能是 `codex` 或 `claude`，且不能重复。
 - 省略 `when` 等价于依赖同时对 `codex` 和 `claude` 生效。
-- `inheritInstallOptions` 只能是 boolean；省略时按 `false` 处理。
 - 同一 manifest 内，同名直接依赖的平台条件不能重叠；例如一个 entry 省略 `when` 后，不能再为同名插件追加 `codex` 或 `claude` 条目。
 - dependency `name` 必须能在当前 AW catalog 中解析到插件。这个检查发生在 catalog 解析完成后，不要求单个 manifest normalizer 持有全 catalog 上下文。
 
@@ -114,7 +111,6 @@ AW 版本管理里有三套身份，不能混用：
 - `target.scope` 只约束依赖 location。父插件安装到 `user` scope 时，只能依赖同 platform 的 `user` scope 健康安装；如果生效 entry 写了 `target.scope: "project"`，命令会在写入前失败。
 - 父插件安装到 `project` scope 且 entry 省略 `target.scope` 时，AW 优先选择当前 project scope；当前 project 缺失或不健康时，可复用健康的 user scope 安装。
 - 显式 `target.scope: "user"` 只检查 / 安装 user scope；显式 `target.scope: "project"` 只检查 / 安装当前 project scope，不 fallback 到 user scope，也不会扫描其它历史 project。
-- `inheritInstallOptions: true` 只用于自动安装依赖时继承父插件本次插件级安装选项，例如允许覆盖的 skill trigger 偏好；省略或 `false` 不继承。多个父插件给同一自动依赖传入冲突选项时，本次命令 fail fast。
 - `aw install` 会自动安装缺失依赖；显式 `aw upgrade <plugin>` 会先安装缺失依赖、升级低于 `minVersion` 的已安装依赖，再升级父插件；`aw upgrade --all` 只以用户显式保留的安装为根；`aw uninstall` 会保护仍被依赖的插件，并在父插件卸载后自动清理引用归零且未显式保留的 auto dependency。
 - `aw status --json` 中的 `dependencies` 是只读投影，展示 `declared`、`resolved`、`satisfied`、`missing`、`dependents`、`autoInstalled`、`autoRemovable`、`catalogDrift`、声明的 `minVersion`、已安装版本、current catalog 候选版本和版本比较结果。这些都是从 install record 的 `installSource` / `dependencyEdges`、全局 dependency index 和 current catalog 推导出来的诊断结果，不是 manifest 字段，也不会写进 install record。
 
@@ -280,7 +276,7 @@ AW 版本管理里有三套身份，不能混用：
 - `requiresCodexProjectConfig: true` 表示 project scope 写路径需要进入 Codex project config safety preflight。`codex.skill` 不需要该字段，因为它写 `.agents/skills/<skillKey>`，不依赖 `.codex/config.toml`。
 - `codex.skill` 和 `claude.skill` 必须静态声明合法 `skillKey`，并可声明 `sourceDirs`。每个 source directory 必须是插件内存在的 `./` 相对目录，不能重复。AW 按数组顺序合并完整目录；后面的源覆盖前面的同名文件。静态文件按字节复制，符号链接和非普通文件失败。
 - Skill artifact 的 V2 `present` content 只能包含 `files`。`files` 是 POSIX 相对路径到 UTF-8 字符串的映射，并在所有 `sourceDirs` 之后覆盖同名文件。path 不能是绝对路径，不能含反斜杠、`.`、`..`，也不能产生文件/目录前缀冲突。
-- 最终 `codex.skill` 必须包含 `SKILL.md` 和 `agents/openai.yaml`；AW 按 effective SkillTrigger 配置 patch `policy.allow_implicit_invocation`。project target 的 `projectManagedKind` 必须是 `skill`，且不需要 `requiresCodexProjectConfig`。最终 `claude.skill` 必须包含 `SKILL.md`；AW patch Claude frontmatter，写入独立的 user/project Claude Skill 目录。Claude target 不接受 `projectManagedKind` 或 `requiresCodexProjectConfig`。
+- 最终 `codex.skill` 必须包含 `SKILL.md` 和 `agents/openai.yaml`，且 `policy.allow_implicit_invocation` 必须是 boolean。project target 的 `projectManagedKind` 必须是 `skill`，且不需要 `requiresCodexProjectConfig`。最终 `claude.skill` 必须包含带合法 YAML frontmatter 的 `SKILL.md`；`disable-model-invocation` 和 `user-invocable` 出现时必须是 boolean。AW 校验并原样写入这些原生字段。Claude target 不接受 `projectManagedKind` 或 `requiresCodexProjectConfig`。
 - `codex.developerInstructionsBlock` 的 `projectManagedKind` 必须是 `instruction`，renderer `present` content 是 instruction 字符串。一个插件可以声明多个 instruction artifact；AW 会按 `artifact.id` 稳定排序后合成为同一个 managed block。`disabled` 只省略该 artifact 的 fragment；只有同一插件没有任何 present instruction artifact 时，AW 才移除或跳过 managed block。
 - `codex.agentRole` 的 `projectManagedKind` 必须是 `agent`，且必须静态声明合法 `roleKey`。renderer plan 里的 `roleKey` 和 `roleFile.name` 必须与静态 metadata 完全一致；`registration.config_file` 由 AW 生成，renderer 不能提供。
 
@@ -355,36 +351,16 @@ codex:
 
 构建后只为支持平台生成命令产物：支持 Claude 时得到 generated `claude/commands/<name>.md`；支持 Codex 时得到 generated `codex/skills/<name>/SKILL.md`、`agents/openai.yaml` 和被引用的 `assets/`。Codex project scope 安装这些命令时，会把 generated skill 复制到当前仓库 `.agents/skills/<name>`，并在 install record / project artifact shared identity 中以 `kind: "skill"` + `artifactKey: "<name>"` 记录最小 artifact identity。
 
-## skillTriggers block
+## Skill 原生调用元数据
 
-`skillTriggers` 是 AW 受管 SkillTrigger 内建配置的长期真值：`defaultTrigger` 声明默认策略，`allowDynamicTrigger` 决定用户能否通过 AW config 调整。平台文件提供 runtime 表达，并在 apply 时按当前 effective 值对齐：
+平台原生元数据是唯一真值。Skill 的调用行为不在插件 manifest 中重复声明，也不由 AW 配置覆盖：
 
-- Codex：`skills/<skill>/agents/openai.yaml` 的 `policy.allow_implicit_invocation`
-- Claude Code：`skills/<skill>/SKILL.md` frontmatter 的 `disable-model-invocation` 和 `user-invocable`
+- Codex 使用 `skills/<skill>/agents/openai.yaml` 的 `policy.allow_implicit_invocation`。
+- Claude Code 使用 `skills/<skill>/SKILL.md` frontmatter 的 `disable-model-invocation` 与 `user-invocable`。
 
-示例：
+面向 Codex 的静态或动态 Skill 必须提供 `agents/openai.yaml`，并把 `policy.allow_implicit_invocation` 写成 boolean。Claude 字段出现时也必须是 boolean。AW 在 build、materialization、安装、升级和配置刷新中校验并保留这些字段，不改变其值。显式调用仍按平台原生规则工作。
 
-```json
-{
-  "skills": "./skills",
-  "skillTriggers": {
-    "review": {
-      "defaultTrigger": "manual",
-      "allowDynamicTrigger": true
-    }
-  }
-}
-```
-
-规则：
-
-- 静态 `skills/<skill>` 子目录以及动态 `codex.skill` / `claude.skill` 的 `skillKey` 必须有对应 `skillTriggers.<skill>` entry。
-- `skillTriggers` 的 key 必须对应作者显式声明的受管 skill；未知 key、重复 key，或公共 `slashCommands` 生成 skill 的重复声明都会失败。
-- 每个 entry 只允许 `defaultTrigger` 和 `allowDynamicTrigger`。
-- `defaultTrigger` 必须是 `manual` 或 `auto`，表示未写入 AW 内建配置时的默认触发策略。
-- `allowDynamicTrigger` 必须是 boolean；`true` 表示用户可以通过 `aw config` 或主控制台配置页修改 `aw.skillTriggers.<skill>.trigger`，`false` 表示 fixed 只读。
-- 公共 `slashCommands` 生成的 Codex manual-only skill 不要求作者补 entry；AW 会注入 `defaultTrigger: "manual"`、`allowDynamicTrigger: false`。
-- 旧的安装期覆盖字段不再是有效 manifest 合同；出现这类字段时 build/validate 必须失败。
+公共 `slashCommands` 生成的 Codex 入口 Skill 固定写入 `policy.allow_implicit_invocation: false`，因为它本身是显式命令入口。要改变其它 Skill 的调用行为，作者必须修改 Skill 源码或动态 renderer 输出，并发布新的插件版本。
 
 ## marketplace block
 
@@ -539,12 +515,6 @@ project scope 还会写两类项目共享文件：`.agent-workflows/plugin-confi
   },
   "description": "自动化代码审查插件。",
   "skills": "./skills",
-  "skillTriggers": {
-    "review-workflow": {
-      "defaultTrigger": "manual",
-      "allowDynamicTrigger": true
-    }
-  },
   "mcpServers": "./.mcp.json",
   "marketplace": {
     "category": "workflow",

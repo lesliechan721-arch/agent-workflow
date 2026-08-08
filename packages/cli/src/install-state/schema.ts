@@ -5,7 +5,6 @@ import type {
   ArtifactTarget,
   PlatformName,
   Scope,
-  SkillTriggerPreference,
   TrackedHookGroupIdentity,
 } from '../types.js';
 import { getStrictSemVerValidationIssue } from '../utils/manifest.js';
@@ -14,7 +13,6 @@ import {
   createHistoricalLifecycleScopeKey,
   createRecordId,
   createSharedIdentityId,
-  getSharedRuntimeOwnerFileName,
 } from './ids.js';
 import {
   ensureOnlyKeys,
@@ -44,12 +42,10 @@ import type {
   ProjectArtifactIdentityFile,
   ProjectArtifactSharedLocator,
   RepoManagedArtifactKind,
-  SharedSkillTriggerRuntimeOwner,
 } from './types.js';
 
 const VALID_PLATFORMS = new Set<PlatformName>(['codex', 'claude']);
 const VALID_SCOPES = new Set<Scope>(['user', 'project']);
-const VALID_SKILL_TRIGGER_PREFERENCES = new Set<SkillTriggerPreference>(['default', 'manual', 'auto']);
 const VALID_ARTIFACT_TARGETS = new Set<ArtifactTarget>([
   'codex.developerInstructionsBlock',
   'codex.agentRole',
@@ -78,7 +74,6 @@ const BANNED_RECORD_FIELDS = new Set([
   'lastRequestedScope',
   'lastRequestedAt',
   'sharedNativeRefs',
-  'skillTriggerWriteOrder',
   'dependents',
   'refCount',
   'autoRemovable',
@@ -125,19 +120,6 @@ function validateScope(value: unknown, context: string): ValidationResult<Scope>
     return fail('invalidScope', `Invalid ${context}: expected "user" or "project".`);
   }
   return ok(value as Scope);
-}
-
-function validateSkillTriggerPreference(
-  value: unknown,
-  context: string,
-): ValidationResult<SkillTriggerPreference> {
-  if (!VALID_SKILL_TRIGGER_PREFERENCES.has(value as SkillTriggerPreference)) {
-    return fail(
-      'invalidSkillTriggerPreference',
-      `Invalid ${context}: expected "default", "manual", or "auto".`,
-    );
-  }
-  return ok(value as SkillTriggerPreference);
 }
 
 function validateHookGroupIdentity(
@@ -246,7 +228,7 @@ function validateInstallDependencyEdge(
   }
   const declarationKeys = ensureOnlyKeys(
     value.declaration,
-    ['name', 'minVersion', 'target', 'inheritInstallOptions', 'when'],
+    ['name', 'minVersion', 'target', 'when'],
     `${context}.declaration`,
   );
   if (!declarationKeys.ok) {
@@ -278,15 +260,6 @@ function validateInstallDependencyEdge(
         return scope;
       }
     }
-  }
-  if (
-    value.declaration.inheritInstallOptions !== undefined &&
-    typeof value.declaration.inheritInstallOptions !== 'boolean'
-  ) {
-    return fail(
-      'invalidDependencyEdge',
-      `Invalid ${context}.declaration.inheritInstallOptions: expected a boolean.`,
-    );
   }
   if (value.declaration.when !== undefined) {
     if (!isRecord(value.declaration.when)) {
@@ -684,7 +657,6 @@ function validateInstallRecord(
       'updatedAt',
       'source',
       'installSource',
-      'options',
       'native',
       'lifecycle',
       'artifacts',
@@ -736,24 +708,6 @@ function validateInstallRecord(
   const installSource = validateInstallSource(value.installSource, `${context}.installSource`);
   if (!installSource.ok) {
     return installSource;
-  }
-  if (value.options !== undefined) {
-    if (!isRecord(value.options)) {
-      return fail('invalidInstallRecord', `Invalid ${context}.options: expected an object.`);
-    }
-    const optionKeys = ensureOnlyKeys(value.options, ['skillTriggerPreference'], `${context}.options`);
-    if (!optionKeys.ok) {
-      return optionKeys;
-    }
-    if (value.options.skillTriggerPreference !== undefined) {
-      const preference = validateSkillTriggerPreference(
-        value.options.skillTriggerPreference,
-        `${context}.options.skillTriggerPreference`,
-      );
-      if (!preference.ok) {
-        return preference;
-      }
-    }
   }
   if (value.native !== undefined) {
     if (!isRecord(value.native)) {
@@ -1254,58 +1208,4 @@ export function validateNativeTransactionMarker(
     return fail('invalidNativeMarker', 'Invalid native transaction marker.pluginId: expected an @aw id.');
   }
   return ok(value as unknown as NativeTransactionMarker);
-}
-
-export function validateSharedSkillTriggerRuntimeOwner(
-  value: unknown,
-  options: { expectedPath?: string } = {},
-): ValidationResult<SharedSkillTriggerRuntimeOwner> {
-  if (!isRecord(value)) {
-    return fail('invalidSharedOwner', 'Invalid shared runtime owner file: expected an object.');
-  }
-  const allowedKeys = ensureOnlyKeys(
-    value,
-    ['version', 'pluginName', 'platform', 'owner', 'ownerRecordPath', 'ownerRecordDigest', 'preference', 'updatedAt'],
-    'shared runtime owner file',
-  );
-  if (!allowedKeys.ok) {
-    return allowedKeys;
-  }
-  if (
-    value.version !== 1 ||
-    !isNonEmptyString(value.pluginName) ||
-    !isNonEmptyString(value.ownerRecordPath) ||
-    !path.isAbsolute(value.ownerRecordPath) ||
-    !isNonEmptyString(value.ownerRecordDigest) ||
-    !isNonEmptyString(value.updatedAt)
-  ) {
-    return fail('invalidSharedOwner', 'Invalid shared runtime owner file payload.');
-  }
-  const platform = validatePlatform(value.platform, 'shared runtime owner file.platform');
-  if (!platform.ok) {
-    return platform;
-  }
-  const owner = validatePluginLocation(value.owner, 'shared runtime owner file.owner');
-  if (!owner.ok) {
-    return owner;
-  }
-  if (owner.value.plugin !== value.pluginName || owner.value.platform !== value.platform) {
-    return fail('invalidSharedOwner', 'Invalid shared runtime owner file: owner location must match pluginName and platform.');
-  }
-  if (value.preference !== undefined) {
-    const preference = validateSkillTriggerPreference(value.preference, 'shared runtime owner file.preference');
-    if (!preference.ok) {
-      return preference;
-    }
-  }
-  if (options.expectedPath) {
-    const expectedFileName = getSharedRuntimeOwnerFileName(value.pluginName);
-    if (path.basename(options.expectedPath) !== expectedFileName) {
-      return fail(
-        'sharedOwnerFileNameMismatch',
-        `Invalid shared runtime owner file path: expected "${expectedFileName}".`,
-      );
-    }
-  }
-  return ok(value as unknown as SharedSkillTriggerRuntimeOwner);
 }

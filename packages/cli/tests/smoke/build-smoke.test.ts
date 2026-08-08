@@ -66,9 +66,18 @@ describe('build smoke', () => {
 
   it('runs pnpm build and produces plugins-dist through the compiled bundle script', async () => {
     const outputRoot = builtPluginsDistRoot;
+    const staleDistPath = path.join(
+      root,
+      'packages',
+      'cli',
+      'dist',
+      'stale-build-sentinel.js',
+    );
+    await fs.outputFile(staleDistPath, 'export const stale = true;\n', 'utf8');
 
     await ensureBuiltCli(root);
 
+    await expect(fs.pathExists(staleDistPath)).resolves.toBe(false);
     await expect(
       fs.pathExists(path.join(outputRoot, '.claude-plugin', 'marketplace.json')),
     ).resolves.toBe(true);
@@ -81,12 +90,7 @@ describe('build smoke', () => {
     await expect(
       fs.readJson(path.join(outputRoot, 'plugins', 'git-commit', '.agents-plugin', 'plugin.json')),
     ).resolves.toMatchObject({
-      skillTriggers: {
-        commit: {
-          defaultTrigger: 'auto',
-          allowDynamicTrigger: true,
-        },
-      },
+      name: 'git-commit',
     });
     await expect(
       fs.readJson(path.join(outputRoot, 'plugins', 'ask-me', '.agents-plugin', 'plugin.json')),
@@ -95,16 +99,6 @@ describe('build smoke', () => {
         category: 'workflow',
         policy: {
           authentication: 'NONE',
-        },
-      },
-      skillTriggers: {
-        'requirements-clarifier': {
-          defaultTrigger: 'auto',
-          allowDynamicTrigger: true,
-        },
-        'decision-grill': {
-          defaultTrigger: 'auto',
-          allowDynamicTrigger: true,
         },
       },
       extensions: {
@@ -539,20 +533,6 @@ describe('build smoke', () => {
       }),
     ).resolves.toMatchObject({
       stdout: `${packageJson.version}\n`,
-    });
-
-    await expect(
-      execFileAsync(
-        'node',
-        ['packages/cli/dist/index.js', 'install', 'git-commit', '--skill-trigger', 'sometimes'],
-        {
-          cwd: root,
-          env: process.env,
-          maxBuffer: 10 * 1024 * 1024,
-        },
-      ),
-    ).rejects.toMatchObject({
-      stderr: expect.stringContaining('不再接受 `--skill-trigger` / `-t`'),
     });
 
     const tempRoot = await createSmokeTempRoot('aw-dist-entry-', 'build smoke dist entry temp root');

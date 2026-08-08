@@ -668,9 +668,6 @@ function collectInstallStateReasonCodes(cell: StatusMatrixCell): PluginConsoleRe
   if (installState.reasonCodes.includes('claimableProjectArtifacts')) {
     reasons.add('claimableProjectArtifacts');
   }
-  if (installState.sharedRuntimeOwnerConflict) {
-    reasons.add('foreignOwnershipConflict');
-  }
   if (
     installState.dependents.length > 0
     || installState.issueCodes.includes('dependencyMissing')
@@ -2320,12 +2317,6 @@ function summarizeLegacyConfigProjection(
       ...detailHints,
       ...projection.views.flatMap((view) =>
         view.fields.flatMap((field) => {
-          if (field.valueState === 'orphaned') {
-            return [`${field.title} 只剩旧配置残留，可以在配置页清理。`];
-          }
-          if (field.valueState === 'ignored') {
-            return [`${field.title} 存在已忽略的旧配置，可以在配置页清理。`];
-          }
           if (field.valueState === 'invalid' && field.storedSourceLayer === 'local') {
             return [`${field.title} 在项目本地层存在无效旧值，只能整层清理。`];
           }

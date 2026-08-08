@@ -292,8 +292,6 @@ async function testStaticManifestContract() {
   }
   assert.equal(manifest.config.schema.minimumInitialWaitMinutes.default, 10);
   assert.match(manifest.config.schema.minimumInitialWaitMinutes.title, /存活探测/);
-  assert.equal(manifest.skillTriggers['codex-explore'].defaultTrigger, 'auto');
-  assert.equal(manifest.skillTriggers['codex-explore'].allowDynamicTrigger, true);
   assert.deepEqual(manifest.marketplace.policy.products, ['CODEX']);
   assert.equal(manifest.interface.capabilities.includes('Agents'), true);
   assert.match(manifest.extensions.instructions[0].content, /Gate 通过/);

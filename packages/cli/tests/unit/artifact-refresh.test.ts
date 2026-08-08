@@ -46,7 +46,7 @@ import {
   refreshArtifactsAfterConfigWrite,
 } from '../../src/utils/artifact-refresh.js';
 import { preflightCodexProjectWriteSafety } from '../../src/commands/codex-project-safety.js';
-import type { GeneratedArtifact, PluginMeta, SkillTriggerPreference } from '../../src/types.js';
+import type { GeneratedArtifact, PluginMeta } from '../../src/types.js';
 import type { InstallRecordFile, PluginLocation } from '../../src/install-state/types.js';
 import {
   getDiagnosticCachePath,
@@ -154,7 +154,6 @@ async function writeHistoricalInstallRecord(options: {
   artifacts: GeneratedArtifact[];
   platform?: 'codex' | 'claude';
   historicalVersion?: string;
-  skillTriggerPreference?: SkillTriggerPreference;
   prepareBundle?: (sourceBundleRoot: string) => Promise<void>;
 }): Promise<string> {
   const platform = options.platform ?? 'codex';
@@ -230,9 +229,6 @@ async function writeHistoricalInstallRecord(options: {
         kind: 'explicit',
         explicitlyRequested: true,
       },
-      ...(options.skillTriggerPreference
-        ? { options: { skillTriggerPreference: options.skillTriggerPreference } }
-        : {}),
       lifecycle: runtimeStage.runtimeRef,
       artifacts: options.artifacts.map((artifact) => ({
         kind: artifact.kind,
@@ -622,10 +618,6 @@ describe('artifact refresh reapply helper', () => {
         },
       },
     };
-    plugin.manifest.skillTriggers = {
-      'static-skill': { defaultTrigger: 'auto', allowDynamicTrigger: true },
-      'codex-explore': { defaultTrigger: 'auto', allowDynamicTrigger: true },
-    };
     plugin.manifest.artifacts = {
       targets: [{
         id: 'codex-explore-skill',
@@ -754,10 +746,6 @@ describe('artifact refresh reapply helper', () => {
           type: 'string',
         },
       },
-    };
-    plugin.manifest.skillTriggers = {
-      'static-skill': { defaultTrigger: 'auto', allowDynamicTrigger: true },
-      'refreshed-skill': { defaultTrigger: 'auto', allowDynamicTrigger: true },
     };
     plugin.manifest.artifacts = {
       targets: [{
@@ -922,11 +910,6 @@ describe('artifact refresh reapply helper', () => {
         },
       },
     };
-    plugin.manifest.skillTriggers = {
-      'static-skill': { defaultTrigger: 'auto', allowDynamicTrigger: true },
-      'legacy-skill': { defaultTrigger: 'auto', allowDynamicTrigger: true },
-      'refreshed-skill': { defaultTrigger: 'auto', allowDynamicTrigger: true },
-    };
     plugin.manifest.artifacts = {
       targets: [{
         id: 'refreshed-skill-artifact',
@@ -1089,8 +1072,8 @@ describe('artifact refresh reapply helper', () => {
     expect(codexAdapterInstallPluginFromMarketplace).toHaveBeenCalledTimes(1);
   });
 
-  it('preserves bundled Codex skill trigger materialization in the staged historical marketplace', async () => {
-    const root = await makeTempRoot('aw-artifact-refresh-user-trigger-');
+  it('preserves bundled Codex native skill metadata in the staged historical marketplace', async () => {
+    const root = await makeTempRoot('aw-artifact-refresh-user-skill-metadata-');
     const repoRoot = path.join(root, 'repo');
     const env = {
       AW_HOME: path.join(root, 'aw-home'),
@@ -1106,10 +1089,6 @@ describe('artifact refresh reapply helper', () => {
         },
       },
     };
-    plugin.manifest.skillTriggers = {
-      'static-skill': { defaultTrigger: 'auto', allowDynamicTrigger: true },
-      'codex-explore': { defaultTrigger: 'auto', allowDynamicTrigger: true },
-    };
     plugin.manifest.artifacts = {
       targets: [{
         id: 'codex-explore-skill',
@@ -1122,20 +1101,6 @@ describe('artifact refresh reapply helper', () => {
         skillKey: 'codex-explore',
       }],
     };
-    await writePluginConfigStore({
-      pluginName: plugin.manifest.name,
-      scope: 'user',
-      cwd: repoRoot,
-      env,
-      values: {
-        $aw: {
-          skillTriggers: {
-            'static-skill': { trigger: 'manual' },
-            'codex-explore': { trigger: 'manual' },
-          },
-        },
-      },
-    });
     const codexPaths = resolveCodexPaths(repoRoot, 'user', env);
     const artifactPath = path.join(env.AW_HOME!, 'plugins', plugin.manifest.name, 'codex', 'skills', 'codex-explore');
     await fs.outputFile(path.join(artifactPath, 'agents', 'openai.yaml'), 'policy:\n  allow_implicit_invocation: true\n');
@@ -1158,7 +1123,6 @@ describe('artifact refresh reapply helper', () => {
       scope: 'user',
       artifacts: [trackedArtifact],
       historicalVersion: '0.0.7',
-      skillTriggerPreference: 'manual',
       prepareBundle: async (bundleRoot) => {
         await fs.outputFile(
           path.join(bundleRoot, 'codex', 'skills', 'static-skill', 'SKILL.md'),
@@ -1205,10 +1169,10 @@ describe('artifact refresh reapply helper', () => {
       const stagedPluginRoot = path.join(stagedRoot, 'plugins', plugin.manifest.name);
       await expect(
         fs.readFile(path.join(stagedPluginRoot, 'codex', 'skills', 'static-skill', 'agents', 'openai.yaml'), 'utf8'),
-      ).resolves.toContain('allow_implicit_invocation: false');
+      ).resolves.toContain('allow_implicit_invocation: true');
       await expect(
         fs.readFile(path.join(stagedPluginRoot, 'codex', 'skills', 'codex-explore', 'agents', 'openai.yaml'), 'utf8'),
-      ).resolves.toContain('allow_implicit_invocation: false');
+      ).resolves.toContain('allow_implicit_invocation: true');
       await expect(
         fs.readFile(path.join(stagedPluginRoot, 'codex', 'skills', 'codex-explore', 'SKILL.md'), 'utf8'),
       ).resolves.toBe('dynamic refreshed skill\n');
@@ -1426,129 +1390,6 @@ describe('artifact refresh reapply helper', () => {
     expect(codexAdapterInstallExtensions).not.toHaveBeenCalled();
   });
 
-  it('passes the effective built-in preference to tracked Claude skill refresh', async () => {
-    const root = await makeTempRoot('aw-artifact-refresh-claude-skill-');
-    const repoRoot = path.join(root, 'repo');
-    const env = {
-      AW_HOME: path.join(root, 'aw-home'),
-      AW_CLAUDE_HOME: path.join(root, 'claude-home'),
-    } as NodeJS.ProcessEnv;
-    await fs.ensureDir(path.join(repoRoot, '.git'));
-    const plugin = createPlugin('dynamic-claude');
-    plugin.manifest.marketplace.policy.products = ['CLAUDE'];
-    plugin.manifest.skillTriggers = {
-      'dynamic-claude': { defaultTrigger: 'auto', allowDynamicTrigger: true },
-    };
-    plugin.manifest.config = {
-      schema: {
-        mode: { type: 'string' },
-      },
-    };
-    plugin.manifest.artifacts = {
-      targets: [{
-        id: 'dynamic-claude-skill',
-        platform: 'claude',
-        scopes: ['project'],
-        target: 'claude.skill',
-        kind: 'skill',
-        states: ['present'],
-        refreshKeys: [],
-        skillKey: 'dynamic-claude',
-      }],
-    };
-    await writePluginConfigStore({
-      pluginName: plugin.manifest.name,
-      scope: 'project',
-      projectLayer: 'shared',
-      cwd: repoRoot,
-      env,
-      values: {
-        $aw: {
-          skillTriggers: {
-            'dynamic-claude': { trigger: 'manual' },
-          },
-        },
-      },
-    });
-    const claudePaths = resolveClaudePaths(repoRoot, 'project', env);
-    const artifactPath = path.join(claudePaths.configDir, 'skills', 'dynamic-claude');
-    await fs.outputFile(path.join(artifactPath, 'SKILL.md'), '---\nname: dynamic-claude\ndescription: Dynamic Claude skill.\n---\nBody\n');
-    const trackedArtifact: GeneratedArtifact = {
-      path: artifactPath,
-      paths: [path.join(artifactPath, 'SKILL.md')],
-      kind: 'skill',
-      platform: 'claude',
-      artifactKey: 'dynamic-claude',
-      id: 'dynamic-claude-skill',
-      target: 'claude.skill',
-      state: 'present',
-      refreshKeys: [],
-      contentDigest: 'sha256:old-content',
-      configDigest: 'sha256:old-config',
-    };
-    const historicalBundleRoot = await writeHistoricalInstallRecord({
-      root,
-      repoRoot,
-      env,
-      plugin,
-      platform: 'claude',
-      scope: 'project',
-      artifacts: [trackedArtifact],
-      historicalVersion: '0.0.9',
-    });
-    await writeTrackingManifest(claudePaths.trackingDir, {
-      version: 1,
-      plugins: {
-        [plugin.manifest.name]: {
-          name: plugin.manifest.name,
-          generatedAt: '2026-05-05T00:00:00.000Z',
-          artifacts: [trackedArtifact],
-        },
-      },
-    });
-    let expectedPreference: SkillTriggerPreference = 'manual';
-    claudeAdapterInstallExtensions.mockImplementation(async (refreshPlugin: PluginMeta, _scope, options: {
-      skillTriggerPreference?: SkillTriggerPreference;
-      skillTriggerPreferences?: Record<string, SkillTriggerPreference>;
-    }) => {
-      expect(refreshPlugin.rootDir).toBe(historicalBundleRoot);
-      expect(options.skillTriggerPreferences?.['dynamic-claude']).toBe(expectedPreference);
-      return [{
-        ...trackedArtifact,
-        contentDigest: 'sha256:new-content',
-        configDigest: 'sha256:new-config',
-      }];
-    });
-
-    const receipt = await reapplyConfigRefresh({
-      plugin,
-      commandScope: 'project',
-      cwd: repoRoot,
-      env,
-    });
-
-    expect(receipt.status, receipt.error).toBe('succeeded');
-    expect(claudeAdapterInstallExtensions).toHaveBeenCalledTimes(1);
-
-    expectedPreference = 'auto';
-    await writePluginConfigStore({
-      pluginName: plugin.manifest.name,
-      scope: 'project',
-      projectLayer: 'shared',
-      cwd: repoRoot,
-      env,
-      values: {},
-    });
-    const resetReceipt = await reapplyConfigRefresh({
-      plugin,
-      commandScope: 'project',
-      cwd: repoRoot,
-      env,
-    });
-    expect(resetReceipt.status, resetReceipt.error).toBe('succeeded');
-    expect(claudeAdapterInstallExtensions).toHaveBeenCalledTimes(2);
-  });
-
   it.each([
     { surface: 'tracking', error: 'injected tracking failure' },
     { surface: 'install-state', error: 'injected install-state failure' },
@@ -1562,8 +1403,10 @@ describe('artifact refresh reapply helper', () => {
     await fs.ensureDir(path.join(repoRoot, '.git'));
     const plugin = createPlugin('transactional-claude');
     plugin.manifest.marketplace.policy.products = ['CLAUDE'];
-    plugin.manifest.skillTriggers = {
-      'transactional-claude': { defaultTrigger: 'auto', allowDynamicTrigger: true },
+    plugin.manifest.config = {
+      schema: {
+        mode: { type: 'string' },
+      },
     };
     plugin.manifest.artifacts = {
       targets: [{
@@ -1573,7 +1416,7 @@ describe('artifact refresh reapply helper', () => {
         target: 'claude.skill',
         kind: 'skill',
         states: ['present'],
-        refreshKeys: [],
+        refreshKeys: ['mode'],
         skillKey: 'transactional-claude',
       }],
     };
@@ -1591,7 +1434,7 @@ describe('artifact refresh reapply helper', () => {
       id: 'transactional-claude-skill',
       target: 'claude.skill',
       state: 'present',
-      refreshKeys: [],
+      refreshKeys: ['mode'],
       contentDigest: 'sha256:old-content',
       configDigest: 'sha256:old-config',
     };
@@ -1634,7 +1477,7 @@ describe('artifact refresh reapply helper', () => {
       env,
     });
 
-    expect(receipt.status).toBe('failed');
+    expect(receipt.status, JSON.stringify(receipt)).toBe('failed');
     expect(receipt.error).toContain(error);
     await expect(fs.readFile(path.join(artifactPath, 'SKILL.md'), 'utf8')).resolves.toBe(oldSkill);
     const trackingManifest = await readTrackingManifest(claudePaths.trackingDir);
@@ -1675,9 +1518,6 @@ describe('artifact refresh reapply helper', () => {
     } as NodeJS.ProcessEnv;
     await fs.ensureDir(path.join(repoRoot, '.git'));
     const plugin = createPlugin();
-    plugin.manifest.skillTriggers = {
-      'codex-explore': { defaultTrigger: 'auto', allowDynamicTrigger: true },
-    };
     plugin.manifest.config = {
       schema: {
         explorerModel: { type: 'string' },
@@ -1696,20 +1536,6 @@ describe('artifact refresh reapply helper', () => {
         skillKey: 'codex-explore',
       }],
     };
-    await writePluginConfigStore({
-      pluginName: plugin.manifest.name,
-      scope: 'project',
-      projectLayer: 'shared',
-      cwd: repoRoot,
-      env,
-      values: {
-        $aw: {
-          skillTriggers: {
-            'codex-explore': { trigger: 'manual' },
-          },
-        },
-      },
-    });
     const codexPaths = resolveCodexPaths(repoRoot, 'project', env);
     const artifactPath = path.join(repoRoot, '.agents', 'skills', 'codex-explore');
     await fs.ensureDir(artifactPath);
@@ -1746,13 +1572,10 @@ describe('artifact refresh reapply helper', () => {
 
     codexAdapterInstallExtensions.mockImplementation(async (refreshPlugin: PluginMeta, _scope, options: {
       changedConfigKeys?: string[];
-      skillTriggerPreference?: SkillTriggerPreference;
-      skillTriggerPreferences?: Record<string, SkillTriggerPreference>;
     }) => {
       expect(refreshPlugin.rootDir).toBe(historicalBundleRoot);
       expect(refreshPlugin.manifest.version).toBe('0.0.8');
       expect(options.changedConfigKeys).toEqual(['explorerModel']);
-      expect(options.skillTriggerPreferences?.['codex-explore']).toBe('manual');
       return [
         createTrackedDynamicSkillArtifact({
           artifactPath,

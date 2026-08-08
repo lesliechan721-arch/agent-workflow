@@ -118,7 +118,6 @@ describe('public docs', () => {
     expect(publicDocs).not.toContain('aw repair');
     expect(publicDocs).not.toContain('repair --dependency-index');
     expect(publicDocs).not.toContain('cleanup --plan');
-    expect(publicDocs).not.toContain('--takeover-shared-runtime');
     expect(publicDocs).not.toContain('status/diagnose/repair');
     expect(publicDocs).not.toContain('status / diagnose / repair');
     expect(publicDocs).not.toContain('`status` / `diagnose`');
@@ -129,7 +128,7 @@ describe('public docs', () => {
     expect(publicDocs).toContain('aw reinstall');
   });
 
-  it('documents the SkillTrigger author contract without install-time override fields', async () => {
+  it('documents native skill invocation metadata as the author contract', async () => {
     const authorDocs = [
       'docs/plugin-authoring.md',
       '.agents/skills/create-agent-workflows-plugin/SKILL.md',
@@ -140,11 +139,9 @@ describe('public docs', () => {
 
     const combined = (await Promise.all(authorDocs.map((file) => readRepoFile(file)))).join('\n');
 
-    expect(combined).toContain('defaultTrigger');
-    expect(combined).toContain('allowDynamicTrigger');
-    expect(combined).not.toContain('allowInstallOverride');
-    expect(combined).not.toContain('--skill-trigger');
-    expect(combined).not.toContain('skillTriggerPreference');
+    expect(combined).toContain('allow_implicit_invocation');
+    expect(combined).toContain('disable-model-invocation');
+    expect(combined).toContain('user-invocable');
   });
 
   it('documents authoring version contracts and scaffold catalog gate inputs', async () => {

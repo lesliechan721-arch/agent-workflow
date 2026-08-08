@@ -33,7 +33,6 @@ import {
   readInstallRecordForLocation,
   readNativeTransactionMarker,
   readProjectArtifactIdentityForLocator,
-  readSharedSkillTriggerRuntimeOwner,
 } from './facade.js';
 import {
   createHistoricalLifecycleScopeKey,
@@ -59,7 +58,6 @@ import type {
   ProjectArtifactIdentityArtifact,
   ProjectArtifactIdentityFile,
   RepoManagedArtifactKind,
-  SharedSkillTriggerRuntimeOwner,
 } from './types.js';
 
 export interface CurrentCatalogSource {
@@ -216,13 +214,6 @@ export interface HistoricalLifecycleEvidence {
   residuePresent: boolean;
 }
 
-export interface SharedOwnerEvidence {
-  read: InstallStateReadResult<SharedSkillTriggerRuntimeOwner>;
-  ownerMatchesTarget: boolean;
-  ownerRecordDigestVerified: boolean;
-  needsTakeover: boolean;
-}
-
 export interface NativeTransactionEvidence {
   read: InstallStateReadResult<NativeTransactionMarker>;
   present: boolean;
@@ -291,7 +282,6 @@ export interface InstallEvidence {
     inspection: GlobalDependencyIndexInspection;
     projection: DependencyProjectionEvidence;
   };
-  sharedRuntimeOwner: SharedOwnerEvidence;
   nativeTransaction: NativeTransactionEvidence;
   platform: {
     codexNative: CodexNativeEvidence | null;
@@ -309,7 +299,6 @@ export interface InstallEvidence {
     sharedIdentityPresent: boolean;
     historicalLifecyclePresent: boolean;
     nativeMarkerPresent: boolean;
-    sharedOwnerPresent: boolean;
   };
 }
 
@@ -394,10 +383,6 @@ function resolveLocationCwd(location: PluginLocation, fallbackCwd: string): stri
     return location.projectKey ?? fallbackCwd;
   }
   return fallbackCwd;
-}
-
-function sharedRuntimeOwnerCountsAsProjectPrivateState(location: PluginLocation): boolean {
-  return !(location.platform === 'codex' && location.scope === 'project');
 }
 
 async function inspectFile(filePath: string): Promise<ArtifactFileEvidence> {
@@ -1028,18 +1013,6 @@ function sameLocation(left: PluginLocation, right: PluginLocation): boolean {
   });
 }
 
-async function verifyOwnerDigest(
-  readResult: InstallStateReadResult<SharedSkillTriggerRuntimeOwner>,
-): Promise<boolean> {
-  if (readResult.status !== 'ok') {
-    return false;
-  }
-  if (!(await fs.pathExists(readResult.value.ownerRecordPath))) {
-    return false;
-  }
-  return sha256Hex(await fs.readFile(readResult.value.ownerRecordPath)) === readResult.value.ownerRecordDigest;
-}
-
 async function inspectNativeTransaction(options: {
   location: PluginLocation;
   env: NodeJS.ProcessEnv;
@@ -1185,15 +1158,6 @@ export async function collectInstallEvidence(
     record: installRecord,
     inspection: dependencyInspection,
   });
-  const sharedRuntimeOwnerRead = await readSharedSkillTriggerRuntimeOwner({
-    pluginName: options.location.plugin,
-    platform: options.location.platform,
-    env,
-  });
-  const ownerRecordDigestVerified = await verifyOwnerDigest(sharedRuntimeOwnerRead);
-  const ownerMatchesTarget = sharedRuntimeOwnerRead.status === 'ok'
-    ? sameLocation(sharedRuntimeOwnerRead.value.owner, options.location)
-    : false;
   const nativeTransaction = await inspectNativeTransaction({
     location: options.location,
     env,
@@ -1250,13 +1214,10 @@ export async function collectInstallEvidence(
 
   const dynamicDiagnosticUnavailable = dynamicDiagnosticRead.status !== 'ok';
   const dynamicUnavailableReason = dynamicDiagnosticUnavailable ? dynamicDiagnosticRead.code : null;
-  const sharedOwnerCountsAsPrivateState = sharedRuntimeOwnerCountsAsProjectPrivateState(options.location);
-
   const privateStatePresent = Boolean(
     installRecordRead.status !== 'missing'
     || dynamicDiagnosticRead.status !== 'unavailable'
-    || nativeTransaction.present
-    || (sharedOwnerCountsAsPrivateState && sharedRuntimeOwnerRead.status === 'ok'),
+    || nativeTransaction.present,
   );
   const repoVisibleArtifactPresent = identityArtifacts.some((artifact) => artifact.file.exists)
     || catalogArtifacts.some((artifact) => artifact.file.exists);
@@ -1275,9 +1236,6 @@ export async function collectInstallEvidence(
     }
     if (dynamicDiagnosticRead.status !== 'unavailable') {
       adoptableBlockers.push('privateStateResidual');
-    }
-    if (sharedOwnerCountsAsPrivateState && sharedRuntimeOwnerRead.status === 'ok') {
-      adoptableBlockers.push('sharedOwnerResidual');
     }
     if (projectSharedIdentityRead && projectSharedIdentityRead.status !== 'missing' && projectSharedIdentityRead.status !== 'ok') {
       adoptableBlockers.push('invalidSharedIdentity');
@@ -1335,12 +1293,6 @@ export async function collectInstallEvidence(
       inspection: dependencyInspection,
       projection: dependencyProjection,
     },
-    sharedRuntimeOwner: {
-      read: sharedRuntimeOwnerRead,
-      ownerMatchesTarget,
-      ownerRecordDigestVerified,
-      needsTakeover: sharedRuntimeOwnerRead.status === 'ok' && !ownerMatchesTarget,
-    },
     nativeTransaction,
     platform: {
       codexNative,
@@ -1358,7 +1310,6 @@ export async function collectInstallEvidence(
       sharedIdentityPresent: Boolean(projectIdentityPresent),
       historicalLifecyclePresent: historicalLifecycle.residuePresent,
       nativeMarkerPresent: nativeTransaction.present,
-      sharedOwnerPresent: sharedOwnerCountsAsPrivateState && sharedRuntimeOwnerRead.status === 'ok',
     },
   };
 }

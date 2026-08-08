@@ -7,8 +7,6 @@ import YAML from 'yaml';
 import type {
   ClaudeSkillArtifact,
   CodexSkillArtifact,
-  SkillTriggerPolicy,
-  SkillTriggerPreference,
 } from '../types.js';
 
 export const SKILL_FILE_PATH = 'SKILL.md';
@@ -47,24 +45,10 @@ function normalizeYamlError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function resolveEffectiveTriggerPreference(
-  policy: SkillTriggerPolicy | undefined,
-  preference: SkillTriggerPreference,
-): Exclude<SkillTriggerPreference, 'default'> {
-  const defaultTrigger = policy?.defaultTrigger ?? 'auto';
-  if (preference === 'default' || policy?.allowDynamicTrigger === false) {
-    return defaultTrigger;
-  }
-  return preference;
-}
-
-export function renderCodexOpenAiYamlWithAllowImplicitInvocation(options: {
-  rawContent: string;
-  allowImplicitInvocation: boolean;
-}): string {
+export function validateCodexOpenAiYaml(rawContent: string): void {
   let parsed: unknown;
   try {
-    parsed = YAML.parse(options.rawContent);
+    parsed = YAML.parse(rawContent);
   } catch (error) {
     throw new Error(`openai.yaml YAML 解析失败：${normalizeYamlError(error)}`);
   }
@@ -72,24 +56,17 @@ export function renderCodexOpenAiYamlWithAllowImplicitInvocation(options: {
   if (!isRecord(parsed)) {
     throw new Error('openai.yaml 根节点必须是 object。');
   }
-  if (parsed.policy === undefined) {
-    parsed.policy = {};
-  } else if (!isRecord(parsed.policy)) {
+  if (!isRecord(parsed.policy)) {
     throw new Error('openai.yaml 的 policy 必须是 object。');
   }
   const policy = parsed.policy;
-  if (!isRecord(policy)) {
-    throw new Error('openai.yaml 的 policy 必须是 object。');
+  if (typeof policy.allow_implicit_invocation !== 'boolean') {
+    throw new Error('openai.yaml 的 policy.allow_implicit_invocation 必须是 boolean。');
   }
-  policy.allow_implicit_invocation = options.allowImplicitInvocation;
-  return YAML.stringify(parsed);
 }
 
-function renderClaudeSkillWithPreference(options: {
-  rawContent: string;
-  preference: Exclude<SkillTriggerPreference, 'default'>;
-}): string {
-  const normalized = options.rawContent.replace(/\r\n/g, '\n');
+export function validateClaudeSkillFrontmatter(rawContent: string): void {
+  const normalized = rawContent.replace(/\r\n/g, '\n');
   if (!normalized.startsWith('---\n')) {
     throw new Error('SKILL.md 缺少 YAML frontmatter。');
   }
@@ -101,7 +78,6 @@ function renderClaudeSkillWithPreference(options: {
 
   const yamlEndIndex = closingAtEof ? normalized.length - '\n---'.length : closingIndex;
   const yamlContent = normalized.slice(4, yamlEndIndex);
-  const body = closingAtEof ? '' : normalized.slice(yamlEndIndex + '\n---\n'.length);
   let frontmatter: unknown;
   try {
     frontmatter = YAML.parse(yamlContent);
@@ -112,13 +88,11 @@ function renderClaudeSkillWithPreference(options: {
     throw new Error('SKILL.md frontmatter 根节点必须是 object。');
   }
 
-  if (options.preference === 'manual') {
-    frontmatter['disable-model-invocation'] = true;
-    frontmatter['user-invocable'] = true;
-  } else {
-    frontmatter['disable-model-invocation'] = false;
+  for (const field of ['disable-model-invocation', 'user-invocable']) {
+    if (frontmatter[field] !== undefined && typeof frontmatter[field] !== 'boolean') {
+      throw new Error(`SKILL.md frontmatter 的 ${field} 必须是 boolean。`);
+    }
   }
-  return `---\n${YAML.stringify(frontmatter).trimEnd()}\n---\n${body}`;
 }
 
 function assertNoFileDirectoryConflicts(files: Record<string, Buffer>): void {
@@ -158,11 +132,72 @@ async function collectDirectoryFiles(rootDir: string): Promise<Record<string, Bu
   return files;
 }
 
+function validatePresentSkillTree(options: {
+  target: CodexSkillArtifact['target'] | ClaudeSkillArtifact['target'];
+  skillKey: string;
+  files: Record<string, Buffer>;
+}): void {
+  assertNoFileDirectoryConflicts(options.files);
+  const skillFile = options.files[SKILL_FILE_PATH];
+  if (!skillFile || skillFile.toString('utf8').trim() === '') {
+    throw new Error(`${options.target} "${options.skillKey}" 缺少 SKILL.md 内容。`);
+  }
+  if (options.target === 'codex.skill') {
+    const openaiYaml = options.files[CODEX_OPENAI_YAML_PATH];
+    if (!openaiYaml || openaiYaml.toString('utf8').trim() === '') {
+      throw new Error(`codex.skill "${options.skillKey}" 缺少 agents/openai.yaml 内容。`);
+    }
+    validateCodexOpenAiYaml(openaiYaml.toString('utf8'));
+    return;
+  }
+  validateClaudeSkillFrontmatter(skillFile.toString('utf8'));
+}
+
+export async function validateSkillDirectory(
+  rootDir: string,
+  target: CodexSkillArtifact['target'] | ClaudeSkillArtifact['target'],
+): Promise<DynamicSkillTree> {
+  const rootStats = await fs.lstat(rootDir).catch(() => null);
+  if (!rootStats || rootStats.isSymbolicLink() || !rootStats.isDirectory()) {
+    throw new Error(`Skill 根路径必须是真实目录：${rootDir}`);
+  }
+  const tree = {
+    skillKey: path.basename(rootDir),
+    files: await collectDirectoryFiles(rootDir),
+  };
+  validatePresentSkillTree({
+    target,
+    skillKey: tree.skillKey,
+    files: tree.files,
+  });
+  return tree;
+}
+
+export async function validateSkillDirectoriesRoot(
+  rootDir: string,
+  target: CodexSkillArtifact['target'] | ClaudeSkillArtifact['target'],
+): Promise<DynamicSkillTree[]> {
+  const rootStats = await fs.lstat(rootDir).catch(() => null);
+  if (!rootStats || rootStats.isSymbolicLink() || !rootStats.isDirectory()) {
+    throw new Error(`Skills 根路径必须是真实目录：${rootDir}`);
+  }
+  const entries = await fs.readdir(rootDir, { withFileTypes: true });
+  const trees: DynamicSkillTree[] = [];
+  for (const entry of entries.sort((left, right) => compareSkillPaths(left.name, right.name))) {
+    if (entry.isSymbolicLink()) {
+      throw new Error(`Skills 根目录不支持符号链接：${entry.name}`);
+    }
+    if (!entry.isDirectory()) {
+      continue;
+    }
+    trees.push(await validateSkillDirectory(path.join(rootDir, entry.name), target));
+  }
+  return trees;
+}
+
 export async function createDynamicSkillExpectedTree(options: {
   artifact: Pick<CodexSkillArtifact | ClaudeSkillArtifact, 'target' | 'skillKey' | 'state' | 'content'>;
   sourceDirs?: string[];
-  preference: SkillTriggerPreference;
-  policy?: SkillTriggerPolicy;
 }): Promise<DynamicSkillTree> {
   const skillKey = options.artifact.skillKey?.trim();
   if (!skillKey) {
@@ -179,34 +214,11 @@ export async function createDynamicSkillExpectedTree(options: {
   for (const [relativePath, content] of Object.entries(options.artifact.content?.files ?? {})) {
     files[relativePath] = Buffer.from(content, 'utf8');
   }
-  assertNoFileDirectoryConflicts(files);
-
-  const skillFile = files[SKILL_FILE_PATH];
-  if (!skillFile || skillFile.toString('utf8').trim() === '') {
-    throw new Error(`${options.artifact.target} "${skillKey}" 缺少 SKILL.md 内容。`);
-  }
-  const preference = resolveEffectiveTriggerPreference(options.policy, options.preference);
-  if (options.artifact.target === 'codex.skill') {
-    const openaiYaml = files[CODEX_OPENAI_YAML_PATH];
-    if (!openaiYaml || openaiYaml.toString('utf8').trim() === '') {
-      throw new Error(`codex.skill "${skillKey}" 缺少 agents/openai.yaml 内容。`);
-    }
-    files[CODEX_OPENAI_YAML_PATH] = Buffer.from(
-      renderCodexOpenAiYamlWithAllowImplicitInvocation({
-        rawContent: openaiYaml.toString('utf8'),
-        allowImplicitInvocation: preference === 'auto',
-      }),
-      'utf8',
-    );
-  } else {
-    files[SKILL_FILE_PATH] = Buffer.from(
-      renderClaudeSkillWithPreference({
-        rawContent: skillFile.toString('utf8'),
-        preference,
-      }),
-      'utf8',
-    );
-  }
+  validatePresentSkillTree({
+    target: options.artifact.target,
+    skillKey,
+    files,
+  });
 
   return { skillKey, files };
 }
@@ -338,5 +350,11 @@ export async function readDynamicSkillTree(
   if (!files[SKILL_FILE_PATH] || (target === 'codex.skill' && !files[CODEX_OPENAI_YAML_PATH])) {
     return null;
   }
-  return { skillKey: path.basename(rootDir), files };
+  const tree = { skillKey: path.basename(rootDir), files };
+  validatePresentSkillTree({
+    target,
+    skillKey: tree.skillKey,
+    files,
+  });
+  return tree;
 }

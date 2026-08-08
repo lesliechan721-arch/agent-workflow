@@ -5,7 +5,6 @@ import type {
   PlatformName,
   PlatformSelection,
   Scope,
-  SkillTriggerPreference,
   StatusCommandOptions,
   UpgradeCommandOptions,
 } from '../types.js';
@@ -29,14 +28,10 @@ export type RawCommandOptions = {
 };
 
 export type RawInstallCommandOptions = RawCommandOptions & {
-  requestedSkillTrigger?: SkillTriggerPreference | string;
-  skillTrigger?: SkillTriggerPreference | string;
   adoptExisting?: boolean;
 };
 
 export type RawUpgradeCommandOptions = RawCommandOptions & {
-  requestedSkillTrigger?: SkillTriggerPreference | string;
-  skillTrigger?: SkillTriggerPreference | string;
   all?: boolean;
 };
 
@@ -86,8 +81,6 @@ export interface CleanupCommandOptions extends CommandOptions {
 }
 
 export type RawReinstallCommandOptions = RawCommandOptions & {
-  requestedSkillTrigger?: SkillTriggerPreference | string;
-  skillTrigger?: SkillTriggerPreference | string;
   json?: boolean;
 };
 
@@ -113,19 +106,6 @@ export const CONFIG_WRITE_DEFAULT_SCOPE: Scope = 'user';
 export type ConfigReadResolution = Scope | 'effective';
 export const CONFIG_READ_DEFAULT_RESOLUTION: ConfigReadResolution = 'effective';
 
-export function assertNoDeprecatedSkillTriggerOption(
-  raw: Pick<RawInstallCommandOptions, 'requestedSkillTrigger' | 'skillTrigger'>,
-  commandName: 'install' | 'upgrade' | 'reinstall',
-): void {
-  if (raw.requestedSkillTrigger === undefined && raw.skillTrigger === undefined) {
-    return;
-  }
-
-  throw new Error(
-    `\`${commandName}\` 不再接受 \`--skill-trigger\` / \`-t\`；请改用配置管理维护 skill trigger 偏好后再重试。`,
-  );
-}
-
 function renderUnsupportedValue(value: unknown): string {
   return typeof value === 'string' ? value : String(value);
 }
@@ -145,18 +125,6 @@ export function parsePlatformValue(platform: unknown): PlatformSelection {
 
   throw new Error(
     `Unsupported platform "${renderUnsupportedValue(platform)}". Expected one of: codex, claude, both.`,
-  );
-}
-
-export function parseSkillTriggerPreference(
-  preference: unknown,
-): SkillTriggerPreference {
-  if (preference === 'default' || preference === 'manual' || preference === 'auto') {
-    return preference;
-  }
-
-  throw new Error(
-    `Unsupported skill trigger preference "${renderUnsupportedValue(preference)}". Expected one of: default, manual, auto.`,
   );
 }
 
@@ -298,30 +266,10 @@ export function normalizeCommandOptions(
   };
 }
 
-function normalizeRequestedSkillTrigger(
-  raw: RawInstallCommandOptions,
-): SkillTriggerPreference | undefined {
-  const value = raw.requestedSkillTrigger ?? raw.skillTrigger;
-  return value === undefined ? undefined : parseSkillTriggerPreference(value);
-}
-
-function assertNoRemovedTakeoverOption(
-  raw: { takeoverSharedRuntime?: boolean } | Record<string, unknown>,
-  commandName: 'install' | 'upgrade' | 'reinstall',
-): void {
-  if ((raw as { takeoverSharedRuntime?: boolean }).takeoverSharedRuntime !== true) {
-    return;
-  }
-  throw new Error(
-    `\`${commandName}\` 不再接受 \`--takeover-shared-runtime\`；shared runtime owner 冲突现在只会作为 blocker 暴露。`,
-  );
-}
-
 export function normalizeInstallCommandOptions(
   raw: RawInstallCommandOptions = {},
   defaults: NormalizeCommandOptionsDefaults = {},
 ): InstallCommandOptions {
-  assertNoRemovedTakeoverOption(raw as RawInstallCommandOptions & { takeoverSharedRuntime?: boolean }, 'install');
   if (raw.adoptExisting === true && raw.scope !== 'project') {
     throw new Error('`install --adopt-existing` 只允许 `--scope project`。');
   }
@@ -332,7 +280,6 @@ export function normalizeInstallCommandOptions(
       missingPlatformMessage: 'install 命令需要显式指定 `--platform codex|claude|both`。',
       ...defaults,
     }),
-    requestedSkillTrigger: normalizeRequestedSkillTrigger(raw),
     adoptExisting: raw.adoptExisting === true,
   };
   if (normalized.adoptExisting && normalized.scope !== 'project') {
@@ -345,7 +292,6 @@ export function normalizeUpgradeCommandOptions(
   raw: RawUpgradeCommandOptions = {},
   defaults: NormalizeCommandOptionsDefaults = {},
 ): UpgradeCommandOptions {
-  assertNoRemovedTakeoverOption(raw as RawUpgradeCommandOptions & { takeoverSharedRuntime?: boolean }, 'upgrade');
   return {
     ...normalizeCommandOptions(raw, {
       defaultScope: 'user',
@@ -354,7 +300,6 @@ export function normalizeUpgradeCommandOptions(
       ...defaults,
     }),
     all: raw.all,
-    requestedSkillTrigger: normalizeRequestedSkillTrigger(raw),
   };
 }
 
@@ -457,7 +402,6 @@ export function normalizeReinstallCommandOptions(
   raw: RawReinstallCommandOptions = {},
   defaults: NormalizeCommandOptionsDefaults = {},
 ): ReinstallCommandOptions {
-  assertNoRemovedTakeoverOption(raw as RawReinstallCommandOptions & { takeoverSharedRuntime?: boolean }, 'reinstall');
   return {
     ...normalizeInstallCommandOptions(raw, {
       defaultScope: 'user',

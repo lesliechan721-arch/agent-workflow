@@ -37,8 +37,6 @@ import type {
   PluginStatusDependencies,
   PlatformName,
   Scope,
-  SkillTriggerPolicy,
-  SkillTriggerPreference,
   StatusCommandOptions,
 } from '../types.js';
 import {
@@ -81,7 +79,6 @@ import {
   createDynamicSkillExpectedTree,
   createDynamicSkillTreeContentDigest,
 } from '../utils/dynamic-skill-tree.js';
-import { resolveEffectiveSkillTriggerPreferences } from '../utils/plugin-config.js';
 import type { CodexAppServerProcessRunner } from '../utils/codex-app-server-client.js';
 
 export interface RawDiagnoseCommandOptions extends RawStatusCommandOptions {
@@ -145,7 +142,6 @@ export interface DeepDiagnoseResult {
     configDigest: string;
     contentDigest: string;
     artifactPath?: string;
-    triggerPreference?: SkillTriggerPreference;
     actualDigest?: string | null;
     drift: boolean;
     driftReasons?: string[];
@@ -171,7 +167,6 @@ export interface CollectedLocationState {
     required: boolean;
     backupItems: ForceCleanupBackupItem[];
   };
-  effectiveSkillTriggerPreferences?: Record<string, Exclude<SkillTriggerPreference, 'default'>>;
 }
 
 export interface StatusJsonLocation {
@@ -206,8 +201,6 @@ export interface StatusJsonLocation {
     available: boolean;
     unavailableReason: string | null;
     unavailable: boolean;
-    triggerPreference: SkillTriggerPreference | null;
-    skillTriggerPreferences?: Record<string, Exclude<SkillTriggerPreference, 'default'>>;
     entries: DynamicArtifactDiagnosticEntry[];
   };
   legacyDynamicTracking: Array<{
@@ -248,22 +241,6 @@ export interface StatusJsonLocation {
         : never
       : never;
     sourceDrift: boolean;
-  };
-  sharedOwner: {
-    present: boolean;
-    readStatus: InstallEvidence['sharedRuntimeOwner']['read']['status'];
-    ownerMatchesTarget: boolean;
-    ownerRecordDigestVerified: boolean;
-    needsTakeover: boolean;
-  };
-  sharedSkillTriggerOwner: {
-    present: boolean;
-    readStatus: InstallEvidence['sharedRuntimeOwner']['read']['status'];
-    ownerMatchesTarget: boolean;
-    ownerRecordDigestVerified: boolean;
-    needsTakeover: boolean;
-    ownerConflict: boolean;
-    suppressedOwnerConflict: boolean;
   };
   nativeState: {
     transactionPresent: boolean;
@@ -541,9 +518,6 @@ function collectConsoleReasonCodes(state: CollectedLocationState): PluginConsole
   if (state.projection.kind === 'external') {
     reasons.add(cleanupActionAvailable(state) ? 'residueDetected' : 'foreignOwnershipConflict');
   }
-  if (state.evidence.sharedRuntimeOwner.needsTakeover && !shouldSuppressSharedOwnerConflict(state.location)) {
-    reasons.add('foreignOwnershipConflict');
-  }
   if (
     state.projection.nativeTransactionKind === 'recordInstallResidual' ||
     state.projection.nativeTransactionKind === 'markerOnlyInstall'
@@ -636,10 +610,6 @@ function renderStateLabelForLocation(state: CollectedLocationState): string {
   return (state.projection.nativeTransactionKind !== 'none' || isNativeResidueAttentionState(state))
     ? '需要处理'
     : renderStateLabel(state.projection.kind);
-}
-
-function shouldSuppressSharedOwnerConflict(location: PluginLocation): boolean {
-  return location.platform === 'codex' && location.scope === 'project';
 }
 
 function buildNativeTransactionMarkerSummary(
@@ -838,16 +808,12 @@ async function buildBaseCurrentCatalog(
 
 async function mapArtifactContentDigest(
   artifact: ValidatedArtifactPlanArtifact,
-  preference: 'default' | 'manual' | 'auto',
   sourceDirs: string[],
-  policy: SkillTriggerPolicy | undefined,
 ): Promise<string> {
   if (artifact.target === 'codex.skill' || artifact.target === 'claude.skill') {
     return createDynamicSkillTreeContentDigest(await createDynamicSkillExpectedTree({
       artifact,
       sourceDirs,
-      preference,
-      policy,
     }));
   }
 
@@ -1003,7 +969,6 @@ async function buildDeepDiagnoseResult(options: {
   evidence: InstallEvidence;
   currentCatalog: CurrentCatalogEvidenceInput | null;
   runtime: P7RuntimeOverrides;
-  effectiveSkillTriggerPreferences: Record<string, Exclude<SkillTriggerPreference, 'default'>>;
 }): Promise<DeepDiagnoseResult> {
   if (!options.currentPlugin) {
     return {
@@ -1054,12 +1019,6 @@ async function buildDeepDiagnoseResult(options: {
   });
 
   const artifacts = await Promise.all(validated.artifacts.map(async (artifact) => {
-    const skillKey = artifact.target === 'codex.skill' || artifact.target === 'claude.skill'
-      ? artifact.skillKey
-      : undefined;
-    const triggerPreference: SkillTriggerPreference = skillKey
-      ? options.effectiveSkillTriggerPreferences[skillKey] ?? 'default'
-      : 'default';
     const matchedRecordArtifact = options.evidence.installRecord.artifacts.find((entry) =>
       entry.artifact.id === artifact.id
       && entry.artifact.target === artifact.target,
@@ -1068,11 +1027,7 @@ async function buildDeepDiagnoseResult(options: {
       entry.id === artifact.id && entry.target === artifact.target)?.sourceDirs ?? [];
     const contentDigest = await mapArtifactContentDigest(
       artifact,
-      triggerPreference,
       sourceDirs,
-      artifact.declaration.skillKey
-        ? currentPlugin.manifest.skillTriggers?.[artifact.declaration.skillKey]
-        : undefined,
     );
     let actualDigest = mapActualArtifactDigest(matchedRecordArtifact);
     let drift = actualDigest !== null && actualDigest !== contentDigest;
@@ -1092,10 +1047,6 @@ async function buildDeepDiagnoseResult(options: {
       const expectedTree = await createDynamicSkillExpectedTree({
         artifact,
         sourceDirs,
-        preference: triggerPreference,
-        policy: artifact.skillKey
-          ? currentPlugin.manifest.skillTriggers?.[artifact.skillKey]
-          : undefined,
       });
       const comparison = diffSkillTrees({
         expectedFiles: expectedTree.files,
@@ -1124,9 +1075,6 @@ async function buildDeepDiagnoseResult(options: {
       configDigest: artifact.configDigest,
       contentDigest,
       ...(matchedRecordArtifact?.files[0]?.path ? { artifactPath: matchedRecordArtifact.files[0].path } : {}),
-      ...(artifact.target === 'codex.skill' || artifact.target === 'claude.skill'
-        ? { triggerPreference }
-        : {}),
       actualDigest,
       drift,
       ...(driftReasons.length > 0 ? { driftReasons } : {}),
@@ -1197,15 +1145,6 @@ async function collectWithDefaultEvidence(options: {
   });
   const dependencyIndexActions = await collectDependencyIndexActions(evidence);
   const forceCleanup = createForceCleanupHint(evidence, projection);
-  const effectiveSkillTriggerPreferences = options.target.currentPlugin
-    ? await resolveEffectiveSkillTriggerPreferences({
-      plugin: options.target.currentPlugin,
-      platform: location.platform,
-      scope: location.scope,
-      cwd: options.cwd,
-      env: options.env,
-    })
-    : {};
   const deepDiagnose = options.deep
     ? await buildDeepDiagnoseResult({
       currentPlugin: options.target.currentPlugin,
@@ -1215,7 +1154,6 @@ async function collectWithDefaultEvidence(options: {
       evidence,
       currentCatalog,
       runtime: options.runtime,
-      effectiveSkillTriggerPreferences,
     })
     : {
       attempted: false,
@@ -1254,7 +1192,6 @@ async function collectWithDefaultEvidence(options: {
     findings,
     dependencyIndexActions,
     forceCleanup,
-    effectiveSkillTriggerPreferences,
   };
 }
 
@@ -1493,9 +1430,6 @@ function createFindings(options: {
       .filter((value): value is string => Boolean(value));
     findings.push(`依赖边仍指向缺失或不健康的位置：${uniqueStrings(dependencies).join('、')}。`);
   }
-  if (evidence.sharedRuntimeOwner.needsTakeover && !shouldSuppressSharedOwnerConflict(evidence.location)) {
-    findings.push('共享 skill trigger owner 指向了别的位置。');
-  }
   if (projection.autoInstalled && projection.unusedDependencyHint) {
     findings.push('这个目标是自动装上的依赖，现在看起来已经没人再依赖它了。');
   }
@@ -1581,13 +1515,6 @@ function createNextSteps(options: {
   }
   if (forceCleanup.required) {
     steps.push(`aw cleanup ${args} --force`);
-  }
-  if (
-    evidence.sharedRuntimeOwner.needsTakeover &&
-    !shouldSuppressSharedOwnerConflict(location) &&
-    projection.kind !== 'external'
-  ) {
-    steps.push(`aw status ${args} --verbose`);
   }
   for (const action of dependencyIndexActions) {
     if (action.command) {
@@ -1874,15 +1801,9 @@ function toStatusJsonLocation(
     cleanup: DiagnosedCleanupPath;
   },
 ): StatusJsonLocation {
-  const suppressOwnerConflict = shouldSuppressSharedOwnerConflict(state.location);
   const staleProjectReferences = state.dependencyIndexActions.filter((action) =>
     action.type === 'staleProjectReference');
-  const sharedOwnerNeedsTakeover = suppressOwnerConflict
-    ? false
-    : state.evidence.sharedRuntimeOwner.needsTakeover;
   const dependencyIndexRecoveryMessage = buildDependencyIndexRecoveryMessage(state.projection);
-  const effectiveSkillTriggerPreferences = state.effectiveSkillTriggerPreferences ?? {};
-  const effectiveTriggerValues = new Set(Object.values(effectiveSkillTriggerPreferences));
 
   return {
     plugin: state.location.plugin,
@@ -1914,10 +1835,6 @@ function toStatusJsonLocation(
       available: state.evidence.dynamicDiagnostic.available,
       unavailableReason: state.evidence.dynamicDiagnostic.unavailableReason,
       unavailable: state.projection.dynamicDiagnosticUnavailable,
-      triggerPreference: effectiveTriggerValues.size === 1
-        ? [...effectiveTriggerValues][0]!
-        : null,
-      skillTriggerPreferences: effectiveSkillTriggerPreferences,
       entries: state.evidence.dynamicDiagnostic.entries.map((entry) => entry.entry),
     },
     legacyDynamicTracking: collectLegacyDynamicTracking(state.evidence),
@@ -1962,22 +1879,6 @@ function toStatusJsonLocation(
       present: state.evidence.projectSharedIdentity.present,
       readStatus: state.evidence.projectSharedIdentity.read?.status ?? 'missing',
       sourceDrift: state.evidence.projectSharedIdentity.sourceDrift,
-    },
-    sharedOwner: {
-      present: state.evidence.sharedRuntimeOwner.read.status === 'ok',
-      readStatus: state.evidence.sharedRuntimeOwner.read.status,
-      ownerMatchesTarget: state.evidence.sharedRuntimeOwner.ownerMatchesTarget,
-      ownerRecordDigestVerified: state.evidence.sharedRuntimeOwner.ownerRecordDigestVerified,
-      needsTakeover: sharedOwnerNeedsTakeover,
-    },
-    sharedSkillTriggerOwner: {
-      present: state.evidence.sharedRuntimeOwner.read.status === 'ok',
-      readStatus: state.evidence.sharedRuntimeOwner.read.status,
-      ownerMatchesTarget: state.evidence.sharedRuntimeOwner.ownerMatchesTarget,
-      ownerRecordDigestVerified: state.evidence.sharedRuntimeOwner.ownerRecordDigestVerified,
-      needsTakeover: sharedOwnerNeedsTakeover,
-      ownerConflict: sharedOwnerNeedsTakeover,
-      suppressedOwnerConflict: suppressOwnerConflict && state.evidence.sharedRuntimeOwner.needsTakeover,
     },
     nativeState: {
       transactionPresent: state.projection.nativeTransactionPresent,

@@ -13,7 +13,6 @@ import {
 } from './diagnose.js';
 import {
   normalizeCommandOptions,
-  parseSkillTriggerPreference,
   type RawCommandOptions,
 } from './options.js';
 import { createCommandExecutionContext, type CommandExecutionContextInput } from './runtime.js';
@@ -44,16 +43,12 @@ import {
   type ProjectBoundaryWarning,
 } from '../install-state/project-boundary.js';
 import { stageHistoricalLifecycleRuntime } from '../install-state/runtime-state.js';
-import {
-  loadVerifiedHistoricalBundlePlugin,
-  preflightSharedSkillTriggerRuntimeOwnerUpsert,
-} from '../install-state/shared-runtime-owner.js';
+import { loadVerifiedHistoricalBundlePlugin } from '../install-state/historical-bundle.js';
 import {
   createDynamicArtifactDiagnosticCacheWriteStage,
   createInstallRecordWriteStage,
   createNativeTransactionMarkerDeletePostCommitAction,
   createProjectArtifactIdentityWriteStage,
-  createSharedRuntimeOwnerWriteStage,
   runInstallStateGraphRecordTransaction,
   runInstallStateTransaction,
   type InstallStateReceiptWarning,
@@ -80,29 +75,23 @@ import type {
   PluginLifecycleEvent,
   PluginMeta,
   Scope,
-  SkillTriggerPreference,
 } from '../types.js';
 import { requiresCodexNativePlugin } from '../utils/codex-project-surface.js';
-import { resolveEffectiveSkillTriggerPreferences } from '../utils/plugin-config.js';
 import { calculateFileDigest, calculatePluginBundleFingerprint, runLifecycleScript } from '../utils/plugin-scripts.js';
-import { getLocalMarketplaceCodexSkillRoot } from '../utils/local-marketplace.js';
-import { resolveAwHome, resolveEmbeddedPluginsRoot } from '../utils/paths.js';
+import { mergeGeneratedArtifacts } from '../utils/generated-artifacts.js';
+import { collectBundledCodexProjectSkillArtifacts } from '../utils/native-skill-materialization.js';
+import { validateSkillDirectory } from '../utils/dynamic-skill-tree.js';
 
 interface RawRepairCommandOptions extends RawCommandOptions {
   adoptExisting?: boolean;
   dependencyIndex?: boolean;
   json?: boolean;
-  requestedSkillTrigger?: SkillTriggerPreference | string;
-  skillTrigger?: SkillTriggerPreference | string;
-  takeoverSharedRuntime?: boolean;
 }
 
 interface RepairCommandOptions extends CommandOptions {
   adoptExisting: boolean;
   dependencyIndex: boolean;
   json?: boolean;
-  requestedSkillTrigger?: SkillTriggerPreference;
-  takeoverSharedRuntime?: boolean;
 }
 
 interface RepairDependencyIndexCoverage {
@@ -142,7 +131,6 @@ interface RepairLocationPayload {
   dependencyIndexVerifiedLocations: PluginLocation[];
   dependencyIndexRevisitLocations: PluginLocation[];
   dependencyIndexRecoveryMessage: string | null;
-  triggerPreferenceApplied: SkillTriggerPreference | null;
   dynamicArtifacts: Array<{
     id: string;
     target: string;
@@ -153,12 +141,6 @@ interface RepairLocationPayload {
     configDigest?: string;
     contentDigest?: string;
   }>;
-  sharedSkillTriggerOwner: {
-    present: boolean;
-    needsTakeover: boolean;
-    ownerConflict: boolean;
-    suppressedOwnerConflict: boolean;
-  };
   nativeTransactionMarker: {
     present: boolean;
     status: CollectedLocationState['projection']['nativeTransactionKind'];
@@ -200,7 +182,7 @@ interface RepairDependencyIndexPayload {
 
 export interface InstallAdoptExistingMigrationOptions extends Pick<
   RawRepairCommandOptions,
-  'cwd' | 'scope' | 'platform' | 'requestedSkillTrigger' | 'skillTrigger' | 'scriptTimeoutMs'
+  'cwd' | 'scope' | 'platform' | 'scriptTimeoutMs'
 > {}
 
 export interface InstallAdoptExistingMigrationResult {
@@ -237,16 +219,11 @@ function normalizeRepairCommandOptions(
     missingPlatformMessage: 'repair 命令需要显式指定 `--platform codex|claude|both`。',
     ...(raw.dependencyIndex ? { defaultPlatform: 'both' as const } : {}),
   });
-  const requestedSkillTrigger = raw.requestedSkillTrigger ?? raw.skillTrigger;
   return {
     ...base,
     adoptExisting: raw.adoptExisting === true,
     dependencyIndex: raw.dependencyIndex === true,
     json: raw.json === true,
-    takeoverSharedRuntime: raw.takeoverSharedRuntime,
-    ...(requestedSkillTrigger === undefined
-      ? {}
-      : { requestedSkillTrigger: parseSkillTriggerPreference(requestedSkillTrigger) }),
   };
 }
 
@@ -279,55 +256,6 @@ function buildRepairTargetResults(locations: RepairLocationPayload[]): ReceiptTa
   }));
 }
 
-function createSkillTriggerMaterializationTarget(
-  platform: PlatformName,
-  scope: Scope,
-  cwd: string,
-  env: NodeJS.ProcessEnv,
-): {
-  platform: 'codex';
-  scope: 'user';
-  kind: 'localMarketplaceRuntime';
-  root: string;
-} | {
-  platform: 'codex';
-  scope: 'project';
-  kind: 'repoSkill';
-  root: string;
-} | {
-  platform: 'claude';
-  scope: Scope;
-  kind: 'localMarketplaceRuntime';
-  root: string;
-} {
-  if (platform === 'codex' && scope === 'project') {
-    return {
-      platform: 'codex',
-      scope: 'project',
-      kind: 'repoSkill',
-      root: path.join(resolveProjectScopeRepoRoot(cwd), '.agents', 'skills'),
-    };
-  }
-  if (platform === 'codex') {
-    return {
-      platform: 'codex',
-      scope: 'user',
-      kind: 'localMarketplaceRuntime',
-      root: resolveAwHome(env),
-    };
-  }
-  return {
-    platform: 'claude',
-    scope,
-    kind: 'localMarketplaceRuntime',
-    root: resolveAwHome(env),
-  };
-}
-
-function shouldSuppressSharedOwnerConflict(location: PluginLocation): boolean {
-  return location.platform === 'codex' && location.scope === 'project';
-}
-
 function hasClaimableProjectArtifacts(state: Pick<CollectedLocationState, 'projection' | 'evidence'>): boolean {
   return state.projection.reasonCodes?.includes('claimableProjectArtifacts') === true
     || (
@@ -343,13 +271,9 @@ function buildRepairLocationDetails(state: CollectedLocationState): Pick<
   | 'dependencyIndexVerifiedLocations'
   | 'dependencyIndexRevisitLocations'
   | 'dependencyIndexRecoveryMessage'
-  | 'triggerPreferenceApplied'
   | 'dynamicArtifacts'
-  | 'sharedSkillTriggerOwner'
   | 'nativeTransactionMarker'
 > {
-  const suppressOwnerConflict = shouldSuppressSharedOwnerConflict(state.location);
-  const needsTakeover = suppressOwnerConflict ? false : state.evidence.sharedRuntimeOwner.needsTakeover;
   const args = `${state.location.plugin} -p ${state.location.platform} -s ${state.location.scope}`;
   const markerStatus = state.projection.nativeTransactionKind;
   return {
@@ -366,9 +290,6 @@ function buildRepairLocationDetails(state: CollectedLocationState): Pick<
         : state.projection.dependencyIndexRecoverySuggestion === 'revisitRelatedProjects'
           ? '请回到可能相关的仓库重新运行 status --verbose。'
           : `依赖索引覆盖仍不完整：${state.projection.dependencyIndexCoverageReasons.join('、') || 'unknown'}。`,
-    triggerPreferenceApplied: state.evidence.installRecord.read.status === 'ok'
-      ? state.evidence.installRecord.read.value.record.options?.skillTriggerPreference ?? null
-      : null,
     dynamicArtifacts: state.evidence.dynamicDiagnostic.entries.map(({ entry }) => ({
       id: entry.id,
       target: entry.target,
@@ -379,12 +300,6 @@ function buildRepairLocationDetails(state: CollectedLocationState): Pick<
       ...(entry.configDigest ? { configDigest: entry.configDigest } : {}),
       ...(entry.contentDigest ? { contentDigest: entry.contentDigest } : {}),
     })),
-    sharedSkillTriggerOwner: {
-      present: state.evidence.sharedRuntimeOwner.read.status === 'ok',
-      needsTakeover,
-      ownerConflict: needsTakeover,
-      suppressedOwnerConflict: suppressOwnerConflict && state.evidence.sharedRuntimeOwner.needsTakeover,
-    },
     nativeTransactionMarker: {
       present: state.projection.nativeTransactionPresent,
       status: markerStatus,
@@ -447,39 +362,6 @@ function shouldRefreshCodexUserNativeAfterArtifactRepair(options: {
     options.location.scope === 'user' &&
     options.generatedArtifacts.some((artifact) => artifact.target === 'codex.skill')
   );
-}
-
-async function inferCodexUserDynamicSkillPreferenceFromRuntime(options: {
-  pluginName: string;
-  artifacts: readonly InstallRecordArtifact[];
-  env: NodeJS.ProcessEnv;
-}): Promise<SkillTriggerPreference | undefined> {
-  for (const artifact of options.artifacts) {
-    if (artifact.target !== 'codex.skill' || !artifact.artifactKey) {
-      continue;
-    }
-    const metadataPath = path.join(
-      getLocalMarketplaceCodexSkillRoot(
-        resolveAwHome(options.env),
-        options.pluginName,
-        artifact.artifactKey,
-      ),
-      'agents',
-      'openai.yaml',
-    );
-    if (!(await fs.pathExists(metadataPath))) {
-      continue;
-    }
-    const content = await fs.readFile(metadataPath, 'utf8');
-    if (content.includes('allow_implicit_invocation: false')) {
-      return 'manual';
-    }
-    if (content.includes('allow_implicit_invocation: true')) {
-      return 'default';
-    }
-  }
-
-  return undefined;
 }
 
 function sourceEqualsRecord(source: CurrentCatalogSource, record: InstallRecordFile): boolean {
@@ -730,6 +612,32 @@ function createProjectIdentityFile(options: {
   };
 }
 
+async function collectClaimedCodexProjectSkillArtifacts(options: {
+  plugin: PluginMeta;
+  repoRoot: string;
+  identity: ProjectArtifactIdentityFile;
+}): Promise<GeneratedArtifact[]> {
+  const identitySkillKeys = new Set(options.identity.artifacts
+    .filter((artifact) => artifact.kind === 'skill' && artifact.platform === 'codex')
+    .map((artifact) => [
+      path.resolve(options.repoRoot, artifact.path.split('/').join(path.sep)),
+      artifact.artifactKey ?? '',
+    ].join('\0')));
+  const claimed: GeneratedArtifact[] = [];
+  for (const artifact of await collectBundledCodexProjectSkillArtifacts({
+    plugin: options.plugin,
+    repoRoot: options.repoRoot,
+  })) {
+    const identityKey = [path.resolve(artifact.path), artifact.artifactKey ?? ''].join('\0');
+    if (!identitySkillKeys.has(identityKey)) {
+      continue;
+    }
+    await validateSkillDirectory(artifact.path, 'codex.skill');
+    claimed.push(artifact);
+  }
+  return claimed;
+}
+
 function createRecordFile(options: {
   location: PluginLocation;
   source: CurrentCatalogSource;
@@ -738,7 +646,6 @@ function createRecordFile(options: {
   updatedAt: string;
   installedAt?: string;
   lifecycle?: InstallRecordFile['record']['lifecycle'];
-  requestedSkillTrigger?: SkillTriggerPreference;
 }): InstallRecordFile {
   const previous = options.previousRecord;
   const recordId = previous?.recordId ?? createRecordId(options.location);
@@ -758,11 +665,6 @@ function createRecordFile(options: {
       installSource: previous?.record.installSource ?? {
         kind: 'explicit',
         explicitlyRequested: true,
-      },
-      options: {
-        skillTriggerPreference: options.requestedSkillTrigger
-          ?? previous?.record.options?.skillTriggerPreference
-          ?? 'default',
       },
       ...(previous?.record.native
         ? { native: previous.record.native }
@@ -870,7 +772,6 @@ async function upsertDependencyInstallSource(options: {
   cwd: string;
   location: PluginLocation;
   env: NodeJS.ProcessEnv;
-  requestedSkillTrigger?: SkillTriggerPreference;
 }): Promise<void> {
   const read = await readInstallRecordForLocation({
     cwd: options.cwd,
@@ -885,12 +786,6 @@ async function upsertDependencyInstallSource(options: {
     kind: 'dependency',
     explicitlyRequested: false,
   };
-  if (options.requestedSkillTrigger) {
-    nextRecord.record.options = {
-      ...(nextRecord.record.options ?? {}),
-      skillTriggerPreference: options.requestedSkillTrigger,
-    };
-  }
   await runInstallStateTransaction({
     stages: [
       await createInstallRecordWriteStage({
@@ -1138,7 +1033,6 @@ async function runDependencyIndexRepair(options: {
 async function ensureDependencyLocationHealthy(options: {
   cwd: string;
   location: PluginLocation;
-  parentPreference?: SkillTriggerPreference;
   runtime: RepairRuntimeOverrides;
   env: NodeJS.ProcessEnv;
 }): Promise<InstallStateReceiptWarning[]> {
@@ -1197,7 +1091,6 @@ async function ensureDependencyLocationHealthy(options: {
     options.location.scope,
     {
       event: refreshEvent,
-      skillTriggerPreference: options.parentPreference ?? 'default',
     },
   );
 
@@ -1218,7 +1111,6 @@ async function ensureDependencyLocationHealthy(options: {
       : previousRecord?.record.artifacts as never as GeneratedArtifact[] ?? [],
     updatedAt: new Date().toISOString(),
     lifecycle: runtimeStage?.runtimeRef ?? previousRecord?.record.lifecycle,
-    requestedSkillTrigger: options.parentPreference,
   });
   nextRecord.record.installSource = {
     kind: 'dependency',
@@ -1289,35 +1181,13 @@ async function repairMissingDependenciesForRecord(options: {
   env: NodeJS.ProcessEnv;
 }): Promise<InstallStateReceiptWarning[]> {
   const warnings: InstallStateReceiptWarning[] = [];
-  const edgesByLocation = new Map(
-    options.record.record.dependencyEdges.map((edge) => [
-      JSON.stringify([
-        edge.dependency.plugin,
-        edge.dependency.platform,
-        edge.dependency.scope,
-        edge.dependency.projectKey ?? null,
-      ]),
-      edge,
-    ]),
-  );
-
   for (const dependency of options.state.evidence.dependencyIndex.projection.dependencyHealth) {
     if (dependency.status === 'ok') {
       continue;
     }
-    const edge = edgesByLocation.get(JSON.stringify([
-      dependency.dependency.plugin,
-      dependency.dependency.platform,
-      dependency.dependency.scope,
-      dependency.dependency.projectKey ?? null,
-    ]));
-    const parentPreference = edge?.declaration.inheritInstallOptions === true
-      ? options.record.record.options?.skillTriggerPreference
-      : undefined;
     warnings.push(...await ensureDependencyLocationHealthy({
       cwd: options.repairOptions.cwd,
       location: dependency.dependency,
-      parentPreference,
       runtime: options.runtime,
       env: options.env,
     }));
@@ -1327,7 +1197,6 @@ async function repairMissingDependenciesForRecord(options: {
         : options.repairOptions.cwd,
       location: dependency.dependency,
       env: options.env,
-      requestedSkillTrigger: parentPreference,
     });
   }
   return warnings;
@@ -1363,101 +1232,6 @@ async function maybeExecuteInstallLifecycle(options: {
   return {
     executed: true,
     reason: 'adoptExistingFirstLocalRecord',
-  };
-}
-
-async function maybeCreateSharedRuntimeOwnerStage(options: {
-  location: PluginLocation;
-  recordFile: InstallRecordFile;
-  recordPath: string;
-  preference: SkillTriggerPreference;
-  skillTriggerPreferences: Record<string, SkillTriggerPreference>;
-  repairOptions: RepairCommandOptions;
-  env: NodeJS.ProcessEnv;
-}): Promise<Awaited<ReturnType<typeof createSharedRuntimeOwnerWriteStage>> | null> {
-  const plan = await preflightSharedSkillTriggerRuntimeOwnerUpsert({
-    location: options.location,
-    embeddedRoot: await resolveEmbeddedPluginsRoot(),
-    target: createSkillTriggerMaterializationTarget(
-      options.location.platform,
-      options.location.scope,
-      options.repairOptions.cwd,
-      options.env,
-    ),
-    preference: options.preference,
-    skillTriggerPreferences: options.skillTriggerPreferences,
-    command: 'install',
-    targetCount: 1,
-    env: options.env,
-  });
-  if (plan.status !== 'ok') {
-    throw new Error(plan.takeoverRequired.message);
-  }
-  if (!plan.shouldWriteOwner) {
-    return null;
-  }
-  return createSharedRuntimeOwnerWriteStage({
-    recordFile: options.recordFile,
-    recordPath: options.recordPath,
-    env: options.env,
-  });
-}
-
-async function preflightRepairSharedRuntimeOwner(options: {
-  location: PluginLocation;
-  preference: SkillTriggerPreference;
-  skillTriggerPreferences: Record<string, SkillTriggerPreference>;
-  repairOptions: RepairCommandOptions;
-  env: NodeJS.ProcessEnv;
-}): Promise<void> {
-  const plan = await preflightSharedSkillTriggerRuntimeOwnerUpsert({
-    location: options.location,
-    embeddedRoot: await resolveEmbeddedPluginsRoot(),
-    target: createSkillTriggerMaterializationTarget(
-      options.location.platform,
-      options.location.scope,
-      options.repairOptions.cwd,
-      options.env,
-    ),
-    preference: options.preference,
-    skillTriggerPreferences: options.skillTriggerPreferences,
-    command: 'install',
-    targetCount: 1,
-    env: options.env,
-  });
-  if (plan.status !== 'ok') {
-    throw new Error(plan.takeoverRequired.message);
-  }
-}
-
-async function resolveRepairSkillTriggerOptions(options: {
-  plugin: PluginMeta;
-  location: PluginLocation;
-  repairOptions: RepairCommandOptions;
-  env: NodeJS.ProcessEnv;
-}): Promise<{
-  preference: SkillTriggerPreference;
-  skillTriggerPreferences: Record<string, SkillTriggerPreference>;
-}> {
-  const skillTriggerPreferences = await resolveEffectiveSkillTriggerPreferences({
-    plugin: options.plugin,
-    platform: options.location.platform,
-    scope: options.location.scope,
-    cwd: options.repairOptions.cwd,
-    env: options.env,
-  });
-  const requested = options.repairOptions.requestedSkillTrigger;
-  if (requested === 'manual' || requested === 'auto') {
-    for (const skillKey of Object.keys(skillTriggerPreferences)) {
-      if (options.plugin.manifest.skillTriggers?.[skillKey]?.allowDynamicTrigger === true) {
-        skillTriggerPreferences[skillKey] = requested;
-      }
-    }
-  }
-  const effectiveValues = new Set(Object.values(skillTriggerPreferences));
-  return {
-    preference: requested ?? (effectiveValues.size === 1 ? [...effectiveValues][0]! : 'default'),
-    skillTriggerPreferences,
   };
 }
 
@@ -1601,27 +1375,11 @@ async function repairInstalledLocation(options: {
   if (needsNativeInstall) {
     await adapters.codex.installPlugin(repairPlugin, location.scope);
   }
-  const triggerOptions = await resolveRepairSkillTriggerOptions({
-    plugin: repairPlugin,
-    location,
-    repairOptions: options.repairOptions,
-    env: options.env,
-  });
-  const effectiveSkillTriggerPreference = triggerOptions.preference;
-  await preflightRepairSharedRuntimeOwner({
-    location,
-    preference: effectiveSkillTriggerPreference,
-    skillTriggerPreferences: triggerOptions.skillTriggerPreferences,
-    repairOptions: options.repairOptions,
-    env: options.env,
-  });
   const generatedArtifacts = await adapters[location.platform].installExtensions(
     repairPlugin,
     location.scope,
     {
       event: 'upgrade',
-      skillTriggerPreference: effectiveSkillTriggerPreference,
-      skillTriggerPreferences: triggerOptions.skillTriggerPreferences,
     },
   );
   let nativeInstallReplayed = needsNativeInstall;
@@ -1645,7 +1403,6 @@ async function repairInstalledLocation(options: {
     artifacts: generatedArtifacts.length > 0 ? generatedArtifacts : record.record.artifacts as never as GeneratedArtifact[],
     updatedAt: new Date().toISOString(),
     lifecycle: runtimeStage?.runtimeRef ?? record.record.lifecycle,
-    requestedSkillTrigger: effectiveSkillTriggerPreference,
   });
   const recordPath = state.evidence.installRecord.read.path;
   const stages = [];
@@ -1692,19 +1449,6 @@ async function repairInstalledLocation(options: {
     value: nextRecord,
     env: options.env,
   }));
-  const sharedRuntimeOwnerStage = await maybeCreateSharedRuntimeOwnerStage({
-    location,
-    recordFile: nextRecord,
-    recordPath,
-    preference: effectiveSkillTriggerPreference,
-    skillTriggerPreferences: triggerOptions.skillTriggerPreferences,
-    repairOptions: options.repairOptions,
-    env: options.env,
-  });
-  if (sharedRuntimeOwnerStage) {
-    stages.push(sharedRuntimeOwnerStage);
-  }
-
   const result = await runInstallStateGraphRecordTransaction({
     mode: 'upsert',
     stages,
@@ -1737,7 +1481,6 @@ async function repairInstalledLocation(options: {
       lifecycleExecuted: false,
     },
     ...buildRepairLocationDetails(state),
-    triggerPreferenceApplied: nextRecord.record.options?.skillTriggerPreference ?? null,
     dynamicArtifacts: summarizeDynamicArtifacts(generatedArtifacts),
     warnings: [...warnings, ...result.warnings],
   };
@@ -1769,27 +1512,11 @@ async function repairMarkerOnlyLocation(options: {
   if (!nativeSatisfied) {
     await adapters.codex.installPlugin(currentPlugin, location.scope);
   }
-  const triggerOptions = await resolveRepairSkillTriggerOptions({
-    plugin: currentPlugin,
-    location,
-    repairOptions: options.repairOptions,
-    env: options.env,
-  });
-  const requestedPreference = triggerOptions.preference;
-  await preflightRepairSharedRuntimeOwner({
-    location,
-    preference: requestedPreference,
-    skillTriggerPreferences: triggerOptions.skillTriggerPreferences,
-    repairOptions: options.repairOptions,
-    env: options.env,
-  });
   const generatedArtifacts = await adapters[location.platform].installExtensions(
     currentPlugin,
     location.scope,
     {
       event: 'install',
-      skillTriggerPreference: requestedPreference,
-      skillTriggerPreferences: triggerOptions.skillTriggerPreferences,
     },
   );
   let nativeInstallReplayed = !nativeSatisfied;
@@ -1811,7 +1538,6 @@ async function repairMarkerOnlyLocation(options: {
     artifacts: generatedArtifacts,
     updatedAt: new Date().toISOString(),
     lifecycle: runtimeStage?.runtimeRef,
-    requestedSkillTrigger: options.repairOptions.requestedSkillTrigger,
   });
   const stages = [];
   if (runtimeStage) {
@@ -1841,18 +1567,6 @@ async function repairMarkerOnlyLocation(options: {
     options.env,
     'write',
   );
-  const sharedRuntimeOwnerStage = await maybeCreateSharedRuntimeOwnerStage({
-    location,
-    recordFile,
-    recordPath,
-    preference: recordFile.record.options?.skillTriggerPreference ?? 'default',
-    skillTriggerPreferences: triggerOptions.skillTriggerPreferences,
-    repairOptions: options.repairOptions,
-    env: options.env,
-  });
-  if (sharedRuntimeOwnerStage) {
-    stages.push(sharedRuntimeOwnerStage);
-  }
   const result = await runInstallStateGraphRecordTransaction({
     mode: 'upsert',
     stages,
@@ -1881,7 +1595,6 @@ async function repairMarkerOnlyLocation(options: {
       lifecycleExecuted: false,
     },
     ...buildRepairLocationDetails(state),
-    triggerPreferenceApplied: recordFile.record.options?.skillTriggerPreference ?? null,
     dynamicArtifacts: summarizeDynamicArtifacts(generatedArtifacts),
     warnings: result.warnings,
   };
@@ -1903,9 +1616,9 @@ async function adoptExistingLocation(options: {
       `${location.plugin} 当前已经有本机 install record，install --adopt-existing 不适用。`,
     );
   }
+  const identityRead = state.evidence.projectSharedIdentity.read;
   const claimableProjectArtifacts = hasClaimableProjectArtifacts(state);
   if (!claimableProjectArtifacts) {
-    const identityRead = state.evidence.projectSharedIdentity.read;
     if (identityRead && identityRead.status !== 'ok' && identityRead.status !== 'missing') {
       throw new Error(
         `${location.plugin} 的 project artifact shared identity 已损坏，install --adopt-existing 不会覆盖共享文件。请先运行 aw status --verbose、aw cleanup 或 aw reinstall。`,
@@ -1941,33 +1654,29 @@ async function adoptExistingLocation(options: {
     location,
     env: options.env,
   });
+  if (!identityRead || identityRead.status !== 'ok') {
+    throw new Error(`${location.plugin} 缺少可验证的 project artifact shared identity。`);
+  }
+  const repoRoot = resolveProjectScopeRepoRoot(options.repairOptions.cwd);
+  const claimedStaticSkills = location.platform === 'codex'
+    ? await collectClaimedCodexProjectSkillArtifacts({
+        plugin: currentPlugin,
+        repoRoot,
+        identity: identityRead.value,
+      })
+    : [];
   const adapters = createAdapters(
     options.repairOptions.cwd,
     createCommandExecutionContext(options.runtime),
   );
-  const triggerOptions = await resolveRepairSkillTriggerOptions({
-    plugin: currentPlugin,
-    location,
-    repairOptions: options.repairOptions,
-    env: options.env,
-  });
-  const requestedPreference = triggerOptions.preference;
-  await preflightRepairSharedRuntimeOwner({
-    location,
-    preference: requestedPreference,
-    skillTriggerPreferences: triggerOptions.skillTriggerPreferences,
-    repairOptions: options.repairOptions,
-    env: options.env,
-  });
-  const generatedArtifacts = await adapters[location.platform].installExtensions(
+  const reappliedArtifacts = await adapters[location.platform].installExtensions(
     currentPlugin,
     location.scope,
     {
       event: 'install',
-      skillTriggerPreference: requestedPreference,
-      skillTriggerPreferences: triggerOptions.skillTriggerPreferences,
     },
   );
+  const generatedArtifacts = mergeGeneratedArtifacts(reappliedArtifacts, claimedStaticSkills);
   const lifecycleResult = await maybeExecuteInstallLifecycle({
     plugin: currentPlugin,
     location,
@@ -1989,9 +1698,7 @@ async function adoptExistingLocation(options: {
     artifacts: generatedArtifacts,
     updatedAt: new Date().toISOString(),
     lifecycle: runtimeStage?.runtimeRef,
-    requestedSkillTrigger: options.repairOptions.requestedSkillTrigger,
   });
-  const repoRoot = resolveProjectScopeRepoRoot(options.repairOptions.cwd);
   const projectRoot = resolveProjectArtifactProjectRoot(options.repairOptions.cwd, location);
   const stages = [];
   if (runtimeStage) {
@@ -2038,18 +1745,6 @@ async function adoptExistingLocation(options: {
     value: recordFile,
     env: options.env,
   }));
-  const sharedRuntimeOwnerStage = await maybeCreateSharedRuntimeOwnerStage({
-    location,
-    recordFile,
-    recordPath,
-    preference: recordFile.record.options?.skillTriggerPreference ?? 'default',
-    skillTriggerPreferences: triggerOptions.skillTriggerPreferences,
-    repairOptions: options.repairOptions,
-    env: options.env,
-  });
-  if (sharedRuntimeOwnerStage) {
-    stages.push(sharedRuntimeOwnerStage);
-  }
   const result = await runInstallStateGraphRecordTransaction({
     mode: 'upsert',
     stages,
@@ -2075,7 +1770,6 @@ async function adoptExistingLocation(options: {
       lifecycleExecuted: lifecycleResult.executed,
     },
     ...buildRepairLocationDetails(state),
-    triggerPreferenceApplied: recordFile.record.options?.skillTriggerPreference ?? null,
     dynamicArtifacts: summarizeDynamicArtifacts(generatedArtifacts),
     ...(lifecycleResult.reason === 'adoptExistingFirstLocalRecord'
       ? { adoptExistingLifecycleReason: 'adoptExistingFirstLocalRecord' as const }
@@ -2095,15 +1789,11 @@ function normalizeInstallAdoptExistingMigrationOptions(
     requirePlatform: true,
     missingPlatformMessage: 'install --adopt-existing 需要显式指定 `--platform codex|claude|both`。',
   });
-  const requestedSkillTrigger = raw.requestedSkillTrigger ?? raw.skillTrigger;
   return {
     ...base,
     adoptExisting: true,
     dependencyIndex: false,
     json: false,
-    ...(requestedSkillTrigger === undefined
-      ? {}
-      : { requestedSkillTrigger: parseSkillTriggerPreference(requestedSkillTrigger) }),
   };
 }
 

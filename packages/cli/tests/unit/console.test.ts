@@ -36,7 +36,6 @@ const createInstallWizardDecision = vi.fn();
 const createConsoleConfigFormIdentity = vi.fn(async () => 'git-commit\0codex\0token');
 const planConsoleGraphWriteTargets = vi.fn();
 const applyPluginConfigWrite = vi.fn();
-const applyBuiltInConfigWrite = vi.fn();
 const replayConfigRuntimeWrites = vi.fn();
 const resetPluginConfigWithHelper = vi.fn();
 const resolveEffectivePluginConfig = vi.fn();
@@ -57,7 +56,6 @@ planConsoleGraphWriteTargets.mockImplementation(async (options: {
     platform: options.platforms[0] ?? 'codex',
     scope: 'user',
     requested: true,
-    resolvedInstallOptions: undefined,
   })),
 }));
 
@@ -75,7 +73,6 @@ vi.mock('../../src/commands/console-wizard.js', () => ({
 }));
 vi.mock('../../src/utils/plugin-config-write.js', () => ({
   applyPluginConfigWrite,
-  applyBuiltInConfigWrite,
   replayConfigRuntimeWrites,
   resetPluginConfigWithHelper,
 }));
@@ -907,7 +904,7 @@ describe('console controller stage 8', () => {
     expectNoForbiddenTuiText(consoleDriver, prompt);
   });
 
-  it('selects install targets in platform-then-scope order and never shows skill-trigger steps', async () => {
+  it('selects install targets in platform-then-scope order', async () => {
     const installItem = item({
       summary: {
         status: 'notInstalled',
@@ -948,7 +945,6 @@ describe('console controller stage 8', () => {
       .filter((call) => call.method === 'select')
       .map((call) => (call.options as { message?: string }).message);
     expect(messages).toEqual(expect.arrayContaining(['选择平台', '选择位置']));
-    expect(messages).not.toEqual(expect.arrayContaining(['选择 SkillTrigger', 'selectSkillTrigger']));
     expectNoForbiddenTuiText(consoleDriver, prompt);
   });
 

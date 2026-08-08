@@ -305,6 +305,81 @@ describe('bundle layout validation', () => {
     );
   });
 
+  it('rejects Codex skills with invalid native invocation metadata', async () => {
+    const { embeddedRoot } = await createEmbeddedRootFromFixture();
+
+    await fs.writeFile(
+      path.join(
+        embeddedRoot,
+        'plugins',
+        'git-commit',
+        'codex',
+        'skills',
+        'commit',
+        'agents',
+        'openai.yaml',
+      ),
+      'policy:\n  allow_implicit_invocation: "false"\n',
+      'utf8',
+    );
+
+    await expect(validateBundleLayout(embeddedRoot)).rejects.toThrow(
+      'policy.allow_implicit_invocation 必须是 boolean',
+    );
+  });
+
+  it('rejects Claude skills with invalid native invocation metadata', async () => {
+    const { embeddedRoot } = await createEmbeddedRootFromFixture();
+    const skillPath = path.join(
+      embeddedRoot,
+      'plugins',
+      'git-commit',
+      'claude',
+      'skills',
+      'commit',
+      'SKILL.md',
+    );
+    const skillContent = await fs.readFile(skillPath, 'utf8');
+    await fs.writeFile(
+      skillPath,
+      skillContent.replace('user-invocable: true', 'user-invocable: "true"'),
+      'utf8',
+    );
+
+    await expect(validateBundleLayout(embeddedRoot)).rejects.toThrow(
+      'user-invocable 必须是 boolean',
+    );
+  });
+
+  it.runIf(process.platform !== 'win32')(
+    'rejects symbolic links inside bundled Skills roots',
+    async () => {
+      const { repoRoot, embeddedRoot } = await createEmbeddedRootFromFixture();
+      const outsideSkill = path.join(repoRoot, 'outside-skill');
+      await fs.outputFile(path.join(outsideSkill, 'SKILL.md'), '# Linked\n', 'utf8');
+      await fs.outputFile(
+        path.join(outsideSkill, 'agents', 'openai.yaml'),
+        'policy:\n  allow_implicit_invocation: "false"\n',
+        'utf8',
+      );
+      await replaceFileWithSymlink(
+        path.join(
+          embeddedRoot,
+          'plugins',
+          'git-commit',
+          'codex',
+          'skills',
+          'commit',
+        ),
+        outsideSkill,
+      );
+
+      await expect(validateBundleLayout(embeddedRoot)).rejects.toThrow(
+        'symbolic links are not supported',
+      );
+    },
+  );
+
   it('rejects unexpected Claude bundle manifests for unsupported plugins', async () => {
     const { embeddedRoot } = await createEmbeddedRootFromFixture((manifest) => {
       manifest.marketplace.policy.products = ['CODEX'];
@@ -462,33 +537,6 @@ describe('bundle layout validation', () => {
     await expect(validateBundleLayout(embeddedRoot)).rejects.toThrow(
       'Invalid Claude marketplace entries',
     );
-  });
-
-  it('accepts bundle source manifests with skillTriggers without requiring a source skills directory', async () => {
-    const repoRoot = await makeTempRepo();
-    const manifestPath = path.join(
-      repoRoot,
-      'plugins',
-      'git-commit',
-      '.agents-plugin',
-      'plugin.json',
-    );
-    const manifest = await fs.readJson(manifestPath);
-    manifest.skillTriggers = {
-      commit: {
-        defaultTrigger: 'auto',
-        allowDynamicTrigger: true,
-      },
-    };
-    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
-
-    const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
-    tempDirs.push(embeddedRoot);
-
-    await expect(
-      fs.pathExists(path.join(embeddedRoot, 'plugins', 'git-commit', 'skills')),
-    ).resolves.toBe(false);
-    await expect(validateBundleLayout(embeddedRoot)).resolves.toBeUndefined();
   });
 
   it('rejects bundle source manifests whose dependencies cannot be resolved in the current catalog', async () => {

@@ -7,7 +7,6 @@ import { readJsonFileIfExists, writeJsonFile } from '../utils/json.js';
 import {
   getNativeTransactionMarkerPath,
   getProjectArtifactSharedIdentityPath,
-  getSharedSkillTriggerRuntimeOwnerPath,
 } from './paths.js';
 import {
   validateDynamicArtifactDiagnosticCache,
@@ -15,7 +14,6 @@ import {
   validateInstallRecordFile,
   validateNativeTransactionMarker,
   validateProjectArtifactIdentityFile,
-  validateSharedSkillTriggerRuntimeOwner,
 } from './schema.js';
 import { sha256Hex } from './internal.js';
 import { serializePluginLocation } from './ids.js';
@@ -33,7 +31,6 @@ import type {
   PluginLocation,
   ProjectArtifactIdentityFile,
   ProjectArtifactSharedLocator,
-  SharedSkillTriggerRuntimeOwner,
 } from './types.js';
 import { getGlobalDependencyIndexPath, getInstallRecordPath, getDiagnosticCachePath } from './paths.js';
 
@@ -633,46 +630,6 @@ export async function writeNativeTransactionMarker(
     throw new Error(validated.error);
   }
   await writeJsonFile(getNativeTransactionMarkerPath(value.pluginId, env), validated.value);
-}
-
-export async function readSharedSkillTriggerRuntimeOwner(
-  options: {
-    pluginName: string;
-    platform: PluginLocation['platform'];
-    env?: NodeJS.ProcessEnv;
-  },
-): Promise<InstallStateReadResult<SharedSkillTriggerRuntimeOwner>> {
-  const ownerPath = getSharedSkillTriggerRuntimeOwnerPath(options);
-  let value: unknown;
-  try {
-    value = await readJsonFileIfExists<unknown>(ownerPath);
-  } catch (error) {
-    return invalid(ownerPath, 'invalidJson', error instanceof Error ? error.message : String(error));
-  }
-  if (value === null) {
-    return { status: 'missing', path: ownerPath, code: 'missing', error: 'Shared runtime owner file does not exist.' };
-  }
-  const validated = validateSharedSkillTriggerRuntimeOwner(value, { expectedPath: ownerPath });
-  if (!validated.ok) {
-    return invalid(ownerPath, validated.code, validated.error);
-  }
-  return { status: 'ok', path: ownerPath, value: validated.value };
-}
-
-export async function writeSharedSkillTriggerRuntimeOwner(
-  options: {
-    pluginName: string;
-    platform: PluginLocation['platform'];
-    value: SharedSkillTriggerRuntimeOwner;
-    env?: NodeJS.ProcessEnv;
-  },
-): Promise<void> {
-  const ownerPath = getSharedSkillTriggerRuntimeOwnerPath(options);
-  const validated = validateSharedSkillTriggerRuntimeOwner(options.value, { expectedPath: ownerPath });
-  if (!validated.ok) {
-    throw new Error(validated.error);
-  }
-  await writeJsonFile(ownerPath, validated.value);
 }
 
 export async function detectLegacyInstalledLedger(

@@ -18,8 +18,8 @@ compatibility: Requires the agent-workflows repository, Node.js 20+, and install
 
 | 任务 | 必读 | 条件性补充 |
 |------|------|------------|
-| 新建或重写 skill | `references/skill-design.md`、`references/skills-and-triggers.md`、`references/plugin-manifest-spec.md` 的基础字段与 `skillTriggers` | skill 内含脚本时读 `references/skill-scripts.md`；完成前读 `references/skill-evaluation.md` |
-| 只调整 skill metadata / 触发策略 | `references/skills-and-triggers.md` | 改 description 时读 `references/skill-design.md` 和 `references/skill-evaluation.md` |
+| 新建或重写 skill | `references/skill-design.md`、`references/skills-and-triggers.md`、`references/plugin-manifest-spec.md` 的基础字段与平台原生调用元数据 | skill 内含脚本时读 `references/skill-scripts.md`；完成前读 `references/skill-evaluation.md` |
+| 设计或调整 Skill 原生调用元数据 | `references/skills-and-triggers.md` | 改 description 时读 `references/skill-design.md` 和 `references/skill-evaluation.md` |
 | Extensions | `references/extensions-spec.md`、manifest 对应章节 | — |
 | MCP / Apps | `references/mcp-and-apps.md`、manifest 对应章节 | — |
 | 公共 slashCommands | `references/slash-commands.md` | 复杂工作流仍放 skill，并读 skill 设计文档 |
@@ -86,7 +86,7 @@ node .agents/skills/create-agent-workflows-plugin/scripts/init_plugin.mjs <plugi
 
 运行 `node .agents/skills/create-agent-workflows-plugin/scripts/init_plugin.mjs --help` 查看完整参数。
 
-- 默认创建带 skill 的最小插件，并为该 skill 生成 fixed/manual 的 `skillTriggers` entry
+- 默认创建带 skill 的最小插件，并在平台文件中生成明确的原生调用元数据
 - `--skill-short-description` 只控制初始 skill 的 UI metadata，必须为 25–64 字符；省略时兼容回退到 `--skill-description`，再回退到插件 UI 摘要，回退值也必须满足同一长度约束
 - `--no-skills` 创建不含 skill 的插件
 - `--with-mcp` / `--with-apps` 只在确实需要时使用
@@ -105,7 +105,7 @@ node .agents/skills/create-agent-workflows-plugin/scripts/init_plugin.mjs <plugi
 - `marketplace.policy.products` 同时约束 build 裁剪、平台 marketplace、安装/升级门禁和 `pnpm plugin:test` 平台选择。
 - `skills`、`mcpServers`、`apps`、`slashCommands` 使用单个 `./` 相对路径，且路径必须存在。
 - 面向 Codex 的静态 skill 必须带 `agents/openai.yaml`，并显式声明 `policy.allow_implicit_invocation`。
-- 每个静态 skill 以及动态 `codex.skill` / `claude.skill` 都必须有对应 `skillTriggers` entry；公共 `slashCommands` 生成的 manual-only skill 不需要作者声明。
+- Skill 的调用方式是 Skill 设计的一部分。Codex 使用 `agents/openai.yaml` 的 `policy.allow_implicit_invocation`；Claude 使用 `SKILL.md` frontmatter 的 `disable-model-invocation` 与 `user-invocable`。AW 原样保留这些字段。
 - Agent Skills portable core 与 Claude/Codex 扩展要明确区分；默认 AW validator 接受目标平台的已知扩展，`--strict-agent-skills` 只接受 portable core。
 - `dependencies.plugins` 只指向当前 catalog 内插件；版本门槛使用 `minVersion`，不写 range 或外部来源。
 - lifecycle 和 renderer 要可重试、幂等；renderer V2 只返回 plan，不直接写 Codex/Claude Skill runtime、config、install record 或 diagnostic cache。完整静态 Skill 树用 target `sourceDirs`，动态 UTF-8 覆盖用 `content.files`。
@@ -137,7 +137,7 @@ pnpm plugin:eval <plugin> --suite trigger --split validation --runs 1 --output-d
 - 没有手改生成目录、runtime cache 或 marketplace 产物
 - `validate_plugin.mjs` 通过，相关确定性测试通过
 - 新建或重大修改的 Skill 有明确完成标准、验证循环、插件根 eval manifest 和小型用例
-- Codex/Claude 动态 Skill 的 default/non-default、project/user final artifacts 已 materialize；真实模型未运行时明确列为未验证
+- Codex/Claude 动态 Skill 的 project/user final artifacts 已 materialize，并保留作者声明的原生调用元数据；真实模型未运行时明确列为未验证
 - 最终回复列出改动、验证结果和未完成项
 
 ## 参考文档索引
@@ -147,7 +147,7 @@ pnpm plugin:eval <plugin> --suite trigger --split validation --runs 1 --output-d
 | `references/skill-design.md` | 创建/重写 skill，定义职责、description、正文和资源布局 |
 | `references/skill-scripts.md` | skill 内需要可执行脚本 |
 | `references/skill-evaluation.md` | 优化触发或验证模型输出质量 |
-| `references/skills-and-triggers.md` | 平台 metadata、触发开关和 AW `skillTriggers` |
+| `references/skills-and-triggers.md` | 平台 metadata、原生调用开关和显式调用规则 |
 | `references/plugin-manifest-spec.md` | 查询 plugin.json 字段、分发和 manifest 示例 |
 | `references/extensions-spec.md` | instructions / permissions / hooks / agents |
 | `references/build-config-spec.md` | templates / fileRules / manifestOverrides |

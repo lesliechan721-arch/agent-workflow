@@ -227,15 +227,6 @@ async function preflightReinstallLocation(options: {
       `${options.pluginName} 当前仍有 shared native refs 保护其它 project consumer，reinstall 不会删除这些共享原生条目后重装。`,
     );
   }
-  if (projectionState.cleanupSafety.sharedRuntimeOwnerConflict) {
-    const owner = projectionState.evidence.sharedRuntimeOwner.read.status === 'ok'
-      ? renderReinstallLocation(projectionState.evidence.sharedRuntimeOwner.read.value.owner)
-      : 'unknown owner';
-    throw new Error(
-      `${options.pluginName} 当前的 shared runtime 仍由 ${owner} 对应的有效安装控制；请先卸载、cleanup，或调整该 owner 对应的安装后再重试 reinstall。`,
-    );
-  }
-
   const resolvedTarget = await resolveCleanupTarget({
     pluginName: options.pluginName,
     scope: options.location.scope,

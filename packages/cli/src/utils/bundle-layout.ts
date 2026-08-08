@@ -26,6 +26,7 @@ import {
 } from './rendered-contract.js';
 import { scanNodeImportContract } from './plugin-script-contract.js';
 import { getArtifactSourceBundleRelativePath } from './artifact-sources.js';
+import { validateSkillDirectory } from './dynamic-skill-tree.js';
 
 const NODE_RUNTIME_EXTENSIONS = new Set(['.js', '.mjs', '.cjs']);
 export const CATALOG_STAGING_DIRNAME = '.catalog';
@@ -348,6 +349,12 @@ async function validateCodexManifest(
 
 async function listSkillDirectories(rootDir: string): Promise<string[]> {
   const entries = await fs.readdir(rootDir, { withFileTypes: true }).catch(() => []);
+  const symbolicLink = entries.find((entry) => entry.isSymbolicLink());
+  if (symbolicLink) {
+    throw new Error(
+      `Invalid skills root: symbolic links are not supported: "${symbolicLink.name}".`,
+    );
+  }
   return entries
     .filter((entry) => entry.isDirectory())
     .map((entry) => entry.name)
@@ -378,6 +385,7 @@ async function validateClaudeSkillsTree(
   for (const skillName of await listSkillDirectories(skillsRoot)) {
     const skillRoot = path.join(skillsRoot, skillName);
     await assertSkillEntryExists(skillRoot, skillName, 'SKILL.md', 'claude.skills');
+    await validateSkillDirectory(skillRoot, 'claude.skill');
   }
 }
 
@@ -400,6 +408,7 @@ async function validateCodexSkillsTree(
       path.join('agents', 'openai.yaml'),
       'codex.skills',
     );
+    await validateSkillDirectory(skillRoot, 'codex.skill');
   }
 }
 

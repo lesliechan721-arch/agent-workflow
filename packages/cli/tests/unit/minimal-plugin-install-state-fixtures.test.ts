@@ -124,7 +124,7 @@ describe('minimal plugin install state fixtures', () => {
     }
   });
 
-  it('can express per-plugin record, diagnostic cache, shared identity, dependency index, lifecycle, marker, and shared owner without real user directories', async () => {
+  it('can express per-plugin record, diagnostic cache, shared identity, dependency index, lifecycle, and marker without real user directories', async () => {
     const builder = await createMinimalPluginInstallStateFixtureBuilder(await makeRootDir());
     const projectTarget = builder.createTarget({ pluginName: 'git-commit', scope: 'project', platform: 'codex' });
     const userTarget = builder.createTarget({ pluginName: 'git-commit', scope: 'user', platform: 'codex' });
@@ -145,14 +145,7 @@ describe('minimal plugin install state fixtures', () => {
     await builder.writeRepoArtifact(userTarget);
     const userLifecycle = await builder.writeHistoricalLifecycleRuntime(userTarget);
     const userRecord = await builder.writeInstallRecord(userTarget, userLifecycle);
-    const userRecordPath = path.join(
-      builder.paths.codexHome,
-      '.agent-workflows',
-      'records',
-      `${userTarget.recordId}.json`,
-    );
     await builder.writeNativeMarker(userTarget, 'install');
-    await builder.writeSharedRuntimeOwner(userTarget, userRecordPath);
     await builder.writeDependencyIndex([
       { target: projectTarget, record: projectRecord },
       { target: userTarget, record: userRecord },
@@ -164,7 +157,6 @@ describe('minimal plugin install state fixtures', () => {
     await expect(fs.pathExists(path.join(builder.paths.awHome, 'dependency-index', 'index.json'))).resolves.toBe(true);
     await expect(fs.pathExists(path.join(builder.paths.awHome, 'lifecycle-runtimes', 'codex', 'project'))).resolves.toBe(true);
     await expect(fs.pathExists(path.join(builder.paths.awHome, 'native-recovery', 'codex', 'user', `${userTarget.pluginId}.json`))).resolves.toBe(true);
-    await expect(fs.pathExists(path.join(builder.paths.awHome, 'shared-runtime-owners', 'codex', `${userTarget.pluginSlug}.${userTarget.pluginHash}.json`))).resolves.toBe(true);
   });
 
   it('creates the fresh-clone project fixture as external claimable shared artifacts without a local record', async () => {

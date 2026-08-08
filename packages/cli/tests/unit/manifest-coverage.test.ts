@@ -129,12 +129,6 @@ describe('manifest coverage', () => {
       description: 'demo plugin',
       skills: './skills',
       slashCommands: './slash-commands',
-      skillTriggers: {
-        commit: {
-          defaultTrigger: 'auto',
-          allowDynamicTrigger: true,
-        },
-      },
       mcpServers: './.mcp.json',
       apps: './.app.json',
       marketplace: {
@@ -159,7 +153,6 @@ describe('manifest coverage', () => {
             target: {
               scope: 'user',
             },
-            inheritInstallOptions: true,
             when: {
               platforms: ['codex'],
             },
@@ -276,12 +269,6 @@ describe('manifest coverage', () => {
     expect(manifest).toMatchObject({
       skills: './skills',
       slashCommands: './slash-commands',
-      skillTriggers: {
-        commit: {
-          defaultTrigger: 'auto',
-          allowDynamicTrigger: true,
-        },
-      },
       mcpServers: './.mcp.json',
       apps: './.app.json',
       marketplace: {
@@ -302,7 +289,6 @@ describe('manifest coverage', () => {
             target: {
               scope: 'user',
             },
-            inheritInstallOptions: true,
             when: {
               platforms: ['codex'],
             },
@@ -549,12 +535,6 @@ describe('manifest coverage', () => {
         version: '0.3.0',
         description: 'bundle demo',
         skills: './skills',
-        skillTriggers: {
-          review: {
-            defaultTrigger: 'auto',
-            allowDynamicTrigger: true,
-          },
-        },
         marketplace: {
           category: 'workflow',
           strict: true,
@@ -633,9 +613,6 @@ describe('manifest coverage', () => {
       event: 'Stop',
       command: 'echo stop',
     });
-    if (bundleSource.skillTriggers?.review) {
-      bundleSource.skillTriggers.review.allowDynamicTrigger = false;
-    }
     if (bundleSource.dependencies?.plugins[0]) {
       bundleSource.dependencies.plugins[0].name = 'mutated-helper';
     }
@@ -693,12 +670,6 @@ describe('manifest coverage', () => {
         },
       ],
     });
-    expect(plugin.manifest.skillTriggers).toEqual({
-      review: {
-        defaultTrigger: 'auto',
-        allowDynamicTrigger: true,
-      },
-    });
     expect(plugin.manifest.dependencies).toEqual({
       plugins: [
         {
@@ -712,12 +683,6 @@ describe('manifest coverage', () => {
           name: 'mutated-helper',
         },
       ],
-    });
-    expect(bundleSource.skillTriggers).toEqual({
-      review: {
-        defaultTrigger: 'auto',
-        allowDynamicTrigger: false,
-      },
     });
     expect(noExtensionsBundle.extensions).toBeUndefined();
     expect(createPlatformManifestBase(plugin)).toMatchObject({

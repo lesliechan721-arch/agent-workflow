@@ -37,7 +37,6 @@ export const pluginDependencyValidatorParityCases: PluginDependencyValidatorPari
             target: {
               scope: 'user',
             },
-            inheritInstallOptions: true,
             when: {
               platforms: ['codex'],
             },

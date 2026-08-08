@@ -563,14 +563,6 @@ async function addGitCommitReviewSkill(repoRoot: string): Promise<void> {
     path.join(pluginRoot, 'skills', 'commit'),
     path.join(pluginRoot, 'skills', 'review'),
   );
-  const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
-  const manifest = await fs.readJson(manifestPath);
-  manifest.skillTriggers ??= {};
-  manifest.skillTriggers.review = {
-    defaultTrigger: 'auto',
-    allowDynamicTrigger: true,
-  };
-  await fs.writeJson(manifestPath, manifest, { spaces: 2 });
 }
 
 async function addGitCommitReviewMcp(repoRoot: string): Promise<void> {
@@ -604,10 +596,6 @@ async function resolveCatalogFixtureRoot(rootDir: string): Promise<string> {
 async function removeEmbeddedGitCommitReviewSkill(embeddedRoot: string): Promise<void> {
   const catalogRoot = await resolveCatalogFixtureRoot(embeddedRoot);
   await updateEmbeddedGitCommitManifest(embeddedRoot, (manifest) => {
-    const skillTriggers = manifest.skillTriggers as Record<string, unknown> | undefined;
-    if (skillTriggers) {
-      delete skillTriggers.review;
-    }
     manifest.version = '0.2.0';
   });
   await fs.remove(path.join(catalogRoot, 'plugins', 'git-commit', 'skills', 'review'));
@@ -1693,7 +1681,6 @@ describe('CLI integration', () => {
         cwd: repoRoot,
         scope: 'project',
         platform: 'codex',
-        requestedSkillTrigger: 'default',
       },
     );
 
@@ -2675,7 +2662,6 @@ describe('CLI integration', () => {
         cwd: repoRoot,
         scope: 'project',
         platform: 'codex',
-        requestedSkillTrigger: 'default',
       },
     );
 
@@ -2940,7 +2926,6 @@ describe('CLI integration', () => {
         cwd: subdir,
         scope: 'project',
         platform: 'codex',
-        requestedSkillTrigger: 'default',
       },
     );
 

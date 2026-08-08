@@ -198,7 +198,6 @@ async function removeFixturePluginSkills(
 ): Promise<void> {
   await mutateFixturePluginManifest(repoRoot, pluginName, (manifest) => {
     delete manifest.skills;
-    delete manifest.skillTriggers;
   });
   await fs.remove(path.join(repoRoot, 'plugins', pluginName, 'skills'));
 }
@@ -348,12 +347,6 @@ async function configureProjectDynamicSkillPlugin(
         refreshKeys: ['explorerModel', 'modelReasoningEffort'],
         skillKey: 'repo-check',
       }],
-    };
-    manifest.skillTriggers = {
-      'repo-check': {
-        defaultTrigger: 'auto',
-        allowDynamicTrigger: true,
-      },
     };
     delete manifest.skills;
     delete manifest.extensions;
@@ -848,7 +841,6 @@ describe('Codex project safety preflight', () => {
         cwd: workspace.repoRoot,
         scope: 'project',
         platform: 'codex',
-        requestedSkillTrigger: 'manual',
       },
       {
         env: workspace.env,
@@ -1380,7 +1372,7 @@ describe('Codex project safety preflight', () => {
     ).rejects.toThrow('项目级 Codex 配置');
   });
 
-  it('installs repo-managed skills into .agents/skills with project-local trigger materialization', async () => {
+  it('installs repo-managed skills into .agents/skills with native invocation metadata', async () => {
     const workspace = await makeCodexWorkspace({
       pluginDirs: ['skills-only'],
     });
@@ -1392,7 +1384,6 @@ describe('Codex project safety preflight', () => {
           cwd: workspace.repoRoot,
           scope: 'project',
           platform: 'codex',
-          requestedSkillTrigger: 'manual',
         },
         {
           env: workspace.env,
@@ -1405,7 +1396,7 @@ describe('Codex project safety preflight', () => {
 
     const trackedSkillPath = repoSkillRoot(workspace.repoRoot, 'repo-check');
     await expect(fs.pathExists(path.join(trackedSkillPath, 'SKILL.md'))).resolves.toBe(true);
-    await expect(readRepoSkillAllowImplicitInvocation(workspace.repoRoot, 'repo-check')).resolves.toBe(false);
+    await expect(readRepoSkillAllowImplicitInvocation(workspace.repoRoot, 'repo-check')).resolves.toBe(true);
     await expect(
       fs.pathExists(path.join(workspace.env.AW_HOME!, 'plugins', 'skills-only')),
     ).resolves.toBe(false);
@@ -1499,7 +1490,7 @@ describe('Codex project safety preflight', () => {
     ).rejects.toThrow('other-plugin');
   });
 
-  it('keeps slashCommands-generated repo skills manual-only and allows fixed-target refresh without ledger preferences', async () => {
+  it('keeps slashCommands-generated repo skill metadata and allows refresh without an installed ledger', async () => {
     const workspace = await makeCodexWorkspace({
       pluginDirs: ['slashCommands-only'],
     });
@@ -1511,7 +1502,6 @@ describe('Codex project safety preflight', () => {
           cwd: workspace.repoRoot,
           scope: 'project',
           platform: 'codex',
-          requestedSkillTrigger: 'auto',
         },
         {
           env: workspace.env,
@@ -1561,7 +1551,6 @@ describe('Codex project safety preflight', () => {
           cwd: trackingFailure.repoRoot,
           scope: 'project',
           platform: 'codex',
-          requestedSkillTrigger: 'manual',
         },
         {
           env: trackingFailure.env,
@@ -1592,7 +1581,6 @@ describe('Codex project safety preflight', () => {
           cwd: ledgerFailure.repoRoot,
           scope: 'project',
           platform: 'codex',
-          requestedSkillTrigger: 'manual',
         },
         {
           env: ledgerFailure.env,

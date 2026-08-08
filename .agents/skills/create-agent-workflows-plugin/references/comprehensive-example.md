@@ -37,7 +37,7 @@ code-review/
 |------|--------------|
 | Skills | `review-skills/review-workflow/` — 源码 skill 承载实际工作流 |
 | Skill Evals | `evals/evals.json` — 插件根作者期真实 prompt、预期结果和输入 fixture |
-| Skill Triggers | `skillTriggers.review-workflow.{defaultTrigger, allowDynamicTrigger}` — 声明默认触发策略，并允许用户通过 AW 配置改为 `manual` / `auto` |
+| Native invocation metadata | Codex `policy.allow_implicit_invocation` 与 Claude `disable-model-invocation` / `user-invocable` — 直接声明各平台调用行为 |
 | Instructions | `extensions.instructions` — 审查标准，限定 `src/**` 和 `lib/**` 路径 |
 | Permissions | `extensions.permissions` — git 操作权限（allow/ask/deny） |
 | Hooks | `extensions.hooks` — 公共 session_start 加载配置 + before_tool 写入检查（agentOverrides 排除 Codex） |
@@ -74,15 +74,14 @@ code-review/
         "name": "git-commit",
         "minVersion": "0.3.0",
         "target": { "scope": "user" },
-        "when": { "platforms": ["codex"] },
-        "inheritInstallOptions": true
+        "when": { "platforms": ["codex"] }
       }
     ]
   }
 }
 ```
 
-这表示 `code-review` artifact 需要 `@yiliang/aw >= 0.8.0`，安装或升级到 Codex 时需要 `git-commit >= 0.3.0`，并且依赖位置固定为 user scope；Claude 安装不会展开这条依赖。若用户安装 `code-review -p codex -s project`，AW 会优先写当前项目的 `code-review`，同时自动确保 Codex user scope 下的 `git-commit` 健康且版本满足最低要求。`inheritInstallOptions: true` 只影响自动安装 `git-commit` 时可继承的插件级安装选项；如果用户已经显式安装过该依赖，父插件卸载不会自动删除它。
+这表示 `code-review` artifact 需要 `@yiliang/aw >= 0.8.0`，安装或升级到 Codex 时需要 `git-commit >= 0.3.0`，并且依赖位置固定为 user scope；Claude 安装不会展开这条依赖。若用户安装 `code-review -p codex -s project`，AW 会优先写当前项目的 `code-review`，同时自动确保 Codex user scope 下的 `git-commit` 健康且版本满足最低要求。如果用户已经显式安装过该依赖，父插件卸载不会自动删除它。
 
 ## 构建产物预览
 
@@ -120,4 +119,4 @@ code-review/
 
 **Project shared/local config 与 ignore**：`aw config set code-review --scope project` 写 `.agent-workflows/plugin-config/code-review/config.json`，这是可提交的 shared config；`--scope project --local` 写 `.agent-workflows/plugin-config.local/code-review/config.json`，默认忽略，只影响本机 helper/lifecycle。模板和示例应默认忽略 private state / local config，不要默认忽略 `.agent-workflows/plugin-config/` 或 `.agent-workflows/project-artifacts/`。
 
-**Dynamic artifact 刷新和位置安全**：配置保存命中 `refreshKeys` 后，AW 会通过统一 apply 路径刷新当前命令能定位到的 target，并把 accepted state、digest、`lastRefresh` / `refreshReach` 写入 dynamic diagnostic cache。配置驱动的 Skill 应声明 `codex.skill` 或 `claude.skill`、静态 `skillKey` 和可选的完整目录 `sourceDirs`；renderer V2 只返回 `content.files` UTF-8 覆盖，由 AW apply 合并静态字节树、写平台 Skill runtime，并 patch 当前 effective SkillTrigger。不要用 lifecycle 直接改 Skill 文件。config refresh 和重新应用配置会从 install record 的 historical bundle 执行 renderer，不从 current local marketplace 的可变 runtime 目录读取模板。重新应用配置只重放已有配置，不改 config store；成功、失败和 skipped 都会进入 receipt，后续 `aw status --json` / `aw status --verbose` 也能读到最近一次结果。project-scope repo-visible artifact 只使用 project shared config 中可共享的非路径 key；user store、project local store 和 `file` / `directory` key 不触发 project artifact refresh。示例或测试中若同一插件出现在多个位置，状态可以汇总展示，但写动作必须先选定明确的 platform / scope / project root，不能隐式批量写多个位置。
+**Dynamic artifact 刷新和位置安全**：配置保存命中 `refreshKeys` 后，AW 会通过统一 apply 路径刷新当前命令能定位到的 target，并把 accepted state、digest、`lastRefresh` / `refreshReach` 写入 dynamic diagnostic cache。配置驱动的 Skill 应声明 `codex.skill` 或 `claude.skill`、静态 `skillKey` 和可选的完整目录 `sourceDirs`；renderer V2 只返回 `content.files` UTF-8 覆盖，由 AW apply 合并静态字节树、校验并写入平台 Skill runtime。最终树中的平台原生调用元数据会原样保留。不要用 lifecycle 直接改 Skill 文件。config refresh 和重新应用配置会从 install record 的 historical bundle 执行 renderer，不从 current local marketplace 的可变 runtime 目录读取模板。重新应用配置只重放已有配置，不改 config store；成功、失败和 skipped 都会进入 receipt，后续 `aw status --json` / `aw status --verbose` 也能读到最近一次结果。project-scope repo-visible artifact 只使用 project shared config 中可共享的非路径 key；user store、project local store 和 `file` / `directory` key 不触发 project artifact refresh。示例或测试中若同一插件出现在多个位置，状态可以汇总展示，但写动作必须先选定明确的 platform / scope / project root，不能隐式批量写多个位置。

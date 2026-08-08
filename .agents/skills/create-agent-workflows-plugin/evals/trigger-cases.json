@@ -47,7 +47,7 @@
     {
       "id": "install_existing_plugin",
       "split": "train",
-      "query": "把 codex-explore 插件安装到我当前项目，并把触发策略改成 auto。",
+      "query": "把 codex-explore 插件安装到我当前项目。",
       "should_load_skill": false,
       "tags": ["near-miss", "installation"]
     },
@@ -101,11 +101,11 @@
       "tags": ["implicit", "maintain", "claude-only"]
     },
     {
-      "id": "migrate_plugin_trigger_contract",
+      "id": "maintain_native_invocation_metadata",
       "split": "validation",
-      "query": "维护 plugins/code-review：把 skill 触发声明迁移到当前 defaultTrigger 和 allowDynamicTrigger 合同，保留现有手动行为。",
+      "query": "维护 plugins/code-review：核对 Codex 和 Claude 的原生调用元数据，保留现有显式手动调用行为。",
       "should_load_skill": true,
-      "tags": ["implicit", "maintain", "trigger"]
+      "tags": ["implicit", "maintain", "native-metadata"]
     },
     {
       "id": "nested_plugin_delivery",

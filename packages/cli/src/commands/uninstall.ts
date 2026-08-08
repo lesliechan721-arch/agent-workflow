@@ -62,7 +62,6 @@ import {
   runLifecycleScript,
 } from '../utils/plugin-scripts.js';
 import {
-  getEmbeddedPluginsRootCandidate,
   resolveAwHome,
   resolveClaudePaths,
   resolveClaudeProjectKey,
@@ -70,13 +69,6 @@ import {
   resolveCodexProjectKey,
   resolveRepoRoot,
 } from '../utils/paths.js';
-import {
-  commitMaterializedSkillTriggerPreference,
-  rematerializeSkillTriggerPreferenceAfterUninstall,
-  rollbackMaterializedSkillTriggerPreference,
-  selectEffectiveSkillTriggerRecord,
-  type SkillTriggerMaterializationRollbackHandle,
-} from '../utils/skill-trigger-preferences.js';
 import { mergeGeneratedArtifacts } from '../utils/generated-artifacts.js';
 import { assertTestWritablePath } from '../utils/test-path-fence.js';
 import {
@@ -116,7 +108,6 @@ import {
 import { readInstallStateProjection, tryUninstallUsingInstallState } from './install-state-removal.js';
 import {
   resetPluginConfigStore,
-  resolveEffectiveSkillTriggerPreferences,
   resolvePluginConfigStorePath,
 } from '../utils/plugin-config.js';
 import { buildGeneratedName } from '../generators/shared.js';
@@ -663,9 +654,6 @@ async function collectUninstallPlannerState(options: {
       dependencyEdges: record.dependencyEdges
         ? structuredClone(record.dependencyEdges)
         : undefined,
-      installOptions: record.installOptions
-        ? structuredClone(record.installOptions)
-        : undefined,
       },
     ]),
   );
@@ -684,9 +672,6 @@ async function collectUninstallPlannerState(options: {
       resolvedVersion: installRecord.value.record.source.pluginVersion,
       installSource: toPlannerInstallSource(installRecord.value.record.installSource),
       dependencyEdges: toPlannerDependencyEdges(installRecord.value.record.dependencyEdges),
-      installOptions: installRecord.value.record.options
-        ? structuredClone(installRecord.value.record.options)
-        : undefined,
     });
   }
   const installedRecords = [...installedRecordsByLocation.values()];
@@ -844,19 +829,6 @@ function didUninstallWriteNativeState(
   }
 
   return pluginStatus.native.pluginInstalled;
-}
-
-function shouldRematerializeSkillTriggersAfterUninstall(
-  platform: PlatformName,
-  scope: CommandOptions['scope'],
-  target: ResolvedPluginTarget,
-): boolean {
-  if (platform === 'codex' && scope === 'project') {
-    return false;
-  }
-
-  const skillTriggerPolicyPlugin = target.embeddedPlugin ?? target.currentPlugin ?? target.plugin;
-  return target.source === 'currentCatalog' && Boolean(skillTriggerPolicyPlugin.manifest.skills);
 }
 
 function normalizeGeneratedArtifactForUninstall(
@@ -1303,9 +1275,6 @@ async function uninstallTargetOnPlatform(
   let nativeWritten = false;
   let artifactsWritten = false;
   let trackingWriteAttempted = false;
-  let materializationCommitted = false;
-  let materializationRollbackFailed = false;
-  let materializationRollbackHandle: SkillTriggerMaterializationRollbackHandle | undefined;
 
   try {
     if (!runtime.skipLifecycle) {
@@ -1344,41 +1313,6 @@ async function uninstallTargetOnPlatform(
         baselineLedger,
         await applyUninstallLedger(platform, baselineLedger, target, options),
       );
-      if (shouldRematerializeSkillTriggersAfterUninstall(platform, options.scope, target)) {
-        const effectiveRecord = selectEffectiveSkillTriggerRecord({
-          ledger: nextLedger,
-          pluginName: target.pluginName,
-          platform,
-        });
-        const policyPlugin = target.embeddedPlugin ?? target.currentPlugin ?? target.plugin;
-        const effectiveScope = effectiveRecord?.scopeIdentity === 'user' ? 'user' : 'project';
-        const effectiveCwd = effectiveScope === 'project'
-          ? effectiveRecord?.scopeIdentity.slice('project:'.length) || options.cwd
-          : options.cwd;
-        const skillTriggerPreferences = effectiveRecord
-          ? await resolveEffectiveSkillTriggerPreferences({
-              plugin: policyPlugin,
-              platform,
-              scope: effectiveScope,
-              cwd: effectiveCwd,
-              env,
-            })
-          : {};
-        const rematerialization = await rematerializeSkillTriggerPreferenceAfterUninstall({
-          pluginName: target.pluginName,
-          platform,
-          ledgerAfterUninstall: nextLedger,
-          embeddedRoot: getEmbeddedPluginsRootCandidate(),
-          marketplaceRoot: resolveAwHome(env),
-          policyPlugin,
-          fallbackSourcePluginRoot: target.currentPlugin?.rootDir,
-          skillTriggerPreferences,
-          force: options.force === true,
-        });
-        warnings.push(...rematerialization.warnings);
-        materializationCommitted = rematerialization.materialization?.committed === true;
-        materializationRollbackHandle = rematerialization.materialization?.rollbackHandle;
-      }
       await writeInstalledLedger(nextLedger, env);
       if (!runtime.skipLifecycleSnapshotGc) {
         await garbageCollectLifecycleConfigSnapshots({ ledger: nextLedger, env });
@@ -1397,22 +1331,6 @@ async function uninstallTargetOnPlatform(
       trackedArtifacts,
       rollbackState,
     );
-
-    if (materializationCommitted && materializationRollbackHandle) {
-      try {
-        await rollbackMaterializedSkillTriggerPreference(materializationRollbackHandle);
-        materializationCommitted = false;
-      } catch (rollbackError) {
-        materializationRollbackFailed = true;
-        appendRollbackIssue(
-          rollbackIssues,
-          rollbackSurfaces,
-          'skill trigger 回滚失败',
-          rollbackError,
-          artifactSurfaceHints,
-        );
-      }
-    }
 
     if (artifactsWritten) {
       try {
@@ -1451,11 +1369,11 @@ async function uninstallTargetOnPlatform(
       }
     }
 
-    if (nativeWritten || materializationRollbackFailed || artifactsWritten || trackingWriteAttempted) {
+    if (nativeWritten || artifactsWritten || trackingWriteAttempted) {
       try {
         await writeDegradedLedger(
           baselineLedger,
-          nativeWritten || materializationRollbackFailed
+          nativeWritten
             ? 'operation_interrupted_after_native_write'
             : 'operation_interrupted_after_artifact_write',
           env,
@@ -1474,16 +1392,6 @@ async function uninstallTargetOnPlatform(
     throw createRollbackFailureError(error, rollbackIssues, rollbackSurfaces);
   } finally {
     await disposeArtifactRollbackState(rollbackState);
-  }
-
-  if (materializationRollbackHandle) {
-    try {
-      await commitMaterializedSkillTriggerPreference(materializationRollbackHandle);
-      materializationCommitted = false;
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      warnings.push(`[${platform}/${target.pluginName}] skill trigger 备份目录清理失败：${detail}`);
-    }
   }
 
   const postStatus = await adapters[platform].status(target.plugin, options.scope);

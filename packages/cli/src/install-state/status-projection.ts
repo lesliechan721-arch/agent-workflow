@@ -20,8 +20,7 @@ export type ProjectInstallStateReasonCode =
   | 'nativeTransactionPresent'
   | 'awOwnedResiduePresent'
   | 'historicalRuntimeResidue'
-  | 'dependencyIndexReferenceResidue'
-  | 'sharedRuntimeOwnerResidue';
+  | 'dependencyIndexReferenceResidue';
 
 export interface ProjectInstallStateReason {
   code: ProjectInstallStateReasonCode;
@@ -43,7 +42,6 @@ export interface ProjectInstallStateDiagnostic {
     | 'projectSharedIdentityUnavailable'
     | 'dynamicDiagnosticUnavailable'
     | 'dependencyIndexCoverageUntrusted'
-    | 'sharedRuntimeOwnerResidue'
     | 'nativeEvidenceMissing'
     | 'catalogVersionMismatch'
     | 'catalogVersionNonCompliant'
@@ -112,8 +110,7 @@ export function isCodexUserNativeResidueCleanupCandidate(
     !evidence.residualEvidence.repoVisibleArtifactPresent &&
     !evidence.residualEvidence.sharedIdentityPresent &&
     !evidence.residualEvidence.historicalLifecyclePresent &&
-    !evidence.residualEvidence.nativeMarkerPresent &&
-    !evidence.residualEvidence.sharedOwnerPresent
+    !evidence.residualEvidence.nativeMarkerPresent
   );
 }
 
@@ -462,17 +459,6 @@ function collectInstalledDiagnostics(evidence: InstallEvidence): ProjectInstallS
     });
   }
 
-  if (
-    evidence.sharedRuntimeOwner.read.status === 'ok'
-    && !evidence.sharedRuntimeOwner.ownerMatchesTarget
-  ) {
-    diagnostics.push({
-      code: 'sharedRuntimeOwnerResidue',
-      detail: evidence.sharedRuntimeOwner.read.value.ownerRecordPath,
-      path: evidence.sharedRuntimeOwner.read.path,
-    });
-  }
-
   return diagnostics;
 }
 
@@ -686,33 +672,6 @@ export function projectInstallState(
       }
     }
 
-    const sharedOwnerResidual = evidence.sharedRuntimeOwner.read.status !== 'missing'
-      && (
-        evidence.residualEvidence.sharedOwnerPresent
-        || evidence.sharedRuntimeOwner.read.status !== 'ok'
-      );
-    if (sharedOwnerResidual) {
-      const detail = evidence.sharedRuntimeOwner.read.status === 'ok'
-        ? evidence.sharedRuntimeOwner.read.value.ownerRecordPath
-        : evidence.sharedRuntimeOwner.read.code;
-      if (kind !== 'external') {
-        kind = 'cleanupRequired';
-        pushReason(
-          reasons,
-          'sharedRuntimeOwnerResidue',
-          detail,
-          evidence.sharedRuntimeOwner.read.path,
-        );
-      } else {
-        pushDiagnosticFromReason(
-          diagnostics,
-          'sharedRuntimeOwnerResidue',
-          detail,
-          evidence.sharedRuntimeOwner.read.path,
-        );
-      }
-    }
-
     if (kind === 'notInstalled' && evidence.adoptable.possible) {
       kind = 'external';
       pushReason(
@@ -774,16 +733,6 @@ export function projectInstallState(
           'dependencyIndexReferenceResidue',
           evidence.dependencyIndex.projection.currentLocationReferenceStatuses.join(','),
           evidence.dependencyIndex.inspection.path,
-        );
-      }
-      if (sharedOwnerResidual) {
-        pushDiagnosticFromReason(
-          diagnostics,
-          'sharedRuntimeOwnerResidue',
-          evidence.sharedRuntimeOwner.read.status === 'ok'
-            ? evidence.sharedRuntimeOwner.read.value.ownerRecordPath
-            : evidence.sharedRuntimeOwner.read.code,
-          evidence.sharedRuntimeOwner.read.path,
         );
       }
     }

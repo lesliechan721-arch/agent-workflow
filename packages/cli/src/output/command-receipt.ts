@@ -137,13 +137,6 @@ export interface ReceiptDependencyIndexSummary {
   }>;
 }
 
-export interface ReceiptSharedSkillTriggerOwnerSummary {
-  present: boolean;
-  needsTakeover?: boolean;
-  ownerConflict?: boolean;
-  suppressedOwnerConflict?: boolean;
-}
-
 export interface CliCommandReceiptDetails {
   privateStateFiles?: ReceiptFileEntry[];
   ignoredStateFiles?: ReceiptFileEntry[];
@@ -156,7 +149,6 @@ export interface CliCommandReceiptDetails {
   nativeTransactionMarker?: ReceiptNativeTransactionMarker;
   dependencyIndex?: ReceiptDependencyIndexSummary;
   staleProjectReferences?: ReceiptProjectReferenceEntry[];
-  sharedSkillTriggerOwner?: ReceiptSharedSkillTriggerOwnerSummary;
   adoptExistingLifecycleReason?: 'adoptExistingFirstLocalRecord';
   reinstall?: {
     configPreserved: boolean;
@@ -230,7 +222,6 @@ interface ReceiptJsonBase {
   nativeTransactionMarker?: ReceiptNativeTransactionMarker;
   dependencyIndex?: ReceiptDependencyIndexSummary;
   staleProjectReferences?: ReceiptProjectReferenceEntry[];
-  sharedSkillTriggerOwner?: ReceiptSharedSkillTriggerOwnerSummary;
   adoptExistingLifecycleReason?: 'adoptExistingFirstLocalRecord';
   reinstall?: CliCommandReceiptDetails['reinstall'];
 }
@@ -613,9 +604,6 @@ function buildReceiptDetails(result: CliCommandResult): ReceiptJsonDetails {
       : {}),
     ...(result.receiptDetails.staleProjectReferences?.length
       ? { staleProjectReferences: result.receiptDetails.staleProjectReferences }
-      : {}),
-    ...(result.receiptDetails.sharedSkillTriggerOwner
-      ? { sharedSkillTriggerOwner: result.receiptDetails.sharedSkillTriggerOwner }
       : {}),
     ...(result.receiptDetails.adoptExistingLifecycleReason
       ? { adoptExistingLifecycleReason: result.receiptDetails.adoptExistingLifecycleReason }
@@ -1000,7 +988,6 @@ export function renderCommandReceipt(
     || (payload.ignoredStateFiles?.length ?? 0) > 0
     || (payload.projectLocalConfigFiles?.length ?? 0) > 0;
   const markerNeedsAttention = payload.nativeTransactionMarker?.needsAttention === true;
-  const sharedOwnerSuppressed = payload.sharedSkillTriggerOwner?.suppressedOwnerConflict === true;
   const headlineVariant = options.headlineVariant ?? payload.command;
 
   if (payload.command === 'upgrade') {
@@ -1032,9 +1019,6 @@ export function renderCommandReceipt(
     }
     if ((payload.staleProjectReferences?.length ?? 0) > 0) {
       lines.push(`另有 ${payload.staleProjectReferences!.length} 条项目引用需要你显式清理。`);
-    }
-    if (sharedOwnerSuppressed) {
-      lines.push('当前项目的 repo-local skill trigger 已按本地项目路径处理，没有改写 shared runtime owner。');
     }
     lines.push(`下一步：${formatNextStepForHuman(payload.nextSteps[0]!)}`);
     if (payload.skipped.length > 0) {
@@ -1110,9 +1094,6 @@ export function renderCommandReceipt(
   }
   if ((payload.staleProjectReferences?.length ?? 0) > 0) {
     lines.push(`另有 ${payload.staleProjectReferences!.length} 条项目引用需要你显式清理。`);
-  }
-  if (sharedOwnerSuppressed) {
-    lines.push('当前项目的 repo-local skill trigger 已按本地项目路径处理，没有改写 shared runtime owner。');
   }
   if (headlineVariant === 'reinstall' && payload.reinstall) {
     const cleanupCompleted = payload.reinstall.cleanupStage.targets.filter((target) => target.state === 'completed').length;

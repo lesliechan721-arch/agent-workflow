@@ -19,7 +19,6 @@ import {
 } from '../install-state/facade.js';
 import type {
   DependencyIndexReferenceInspection,
-  HistoricalLifecycleRuntimeRef,
   InstallRecordArtifact,
   InstallRecordFile,
   PluginLocation,
@@ -35,7 +34,6 @@ import {
   createNativeTransactionMarkerDeleteStage,
   createPathDeleteStage,
   createProjectArtifactIdentityDeleteStage,
-  createSharedRuntimeOwnerDeleteStage,
   InstallStateTransactionError,
   runInstallStateGraphRecordTransaction,
   runInstallStateTransaction,
@@ -43,15 +41,7 @@ import {
   type InstallStateTransactionPostCommitAction,
   type InstallStateTransactionStage,
 } from '../install-state/transactions.js';
-import {
-  createSharedSkillTriggerRuntimeMaterializationStage,
-  createSharedSkillTriggerRuntimeRemovalStages,
-  inspectSharedSkillTriggerRuntimeOwner,
-  loadVerifiedHistoricalBundlePlugin,
-  planSharedSkillTriggerRuntimeOwnerRemoval,
-  readDerivedSharedSkillTriggerRuntimeOwner,
-  type SharedSkillTriggerRuntimeStageBundle,
-} from '../install-state/shared-runtime-owner.js';
+import { loadVerifiedHistoricalBundlePlugin } from '../install-state/historical-bundle.js';
 import {
   buildHistoricalLifecycleRuntimeCoverage,
   garbageCollectHistoricalLifecycleRuntimes,
@@ -65,7 +55,6 @@ import {
   getGlobalDependencyIndexPath,
   getInstallRecordPath,
   getInstallStatePrivateRoot,
-  resolveProjectScopeRepoRoot,
 } from '../install-state/paths.js';
 import type {
   CommandOptions,
@@ -82,7 +71,6 @@ import {
   resolveClaudeProjectKey,
   resolveCodexPaths,
   resolveCodexProjectKey,
-  tryResolveEmbeddedPluginsRoot,
 } from '../utils/paths.js';
 import {
   getTrackingRecord,
@@ -95,7 +83,6 @@ import {
   readInstalledLedger,
 } from '../utils/local-marketplace.js';
 import { serializePluginLocation } from '../utils/plugin-dependency-location.js';
-import { resolveSkillTriggerPolicies } from '../utils/skill-trigger-preferences.js';
 import { readCodexConfigFile } from '../utils/codex-config.js';
 import { sha256Hex } from '../install-state/internal.js';
 
@@ -157,7 +144,6 @@ export interface InstallStateCleanupSafety {
   protectedCodexUserNativeCleanup: boolean;
   skipExternalNativeItems: boolean;
   skipClaimableProjectArtifacts: boolean;
-  sharedRuntimeOwnerConflict: boolean;
 }
 
 interface ProtectedRecordEntry {
@@ -200,8 +186,7 @@ function isPureCodexUserNativeResidueForCleanup(evidence: InstallEvidence): bool
     && !evidence.residualEvidence.repoVisibleArtifactPresent
     && !evidence.residualEvidence.sharedIdentityPresent
     && !evidence.residualEvidence.historicalLifecyclePresent
-    && !evidence.residualEvidence.nativeMarkerPresent
-    && !evidence.residualEvidence.sharedOwnerPresent;
+    && !evidence.residualEvidence.nativeMarkerPresent;
 }
 
 function dedupeLocations(locations: PluginLocation[]): PluginLocation[] {
@@ -216,39 +201,6 @@ function renderLocation(location: PluginLocation): string {
   return location.scope === 'project'
     ? `${location.platform}/${location.plugin}/project:${location.projectKey ?? '(missing-project-key)'}`
     : `${location.platform}/${location.plugin}/user`;
-}
-
-function createMaterializationTarget(
-  platform: PlatformName,
-  scope: Scope,
-  cwd: string,
-  env: NodeJS.ProcessEnv,
-):
-  | { platform: 'codex'; scope: 'user'; kind: 'localMarketplaceRuntime'; root: string }
-  | { platform: 'codex'; scope: 'project'; kind: 'repoSkill'; root: string }
-  | { platform: 'claude'; scope: Scope; kind: 'localMarketplaceRuntime'; root: string } {
-  if (platform === 'codex' && scope === 'project') {
-    return {
-      platform: 'codex',
-      scope: 'project',
-      kind: 'repoSkill',
-      root: path.join(resolveProjectScopeRepoRoot(cwd), '.agents', 'skills'),
-    };
-  }
-  if (platform === 'codex') {
-    return {
-      platform: 'codex',
-      scope: 'user',
-      kind: 'localMarketplaceRuntime',
-      root: resolveAwHome(env),
-    };
-  }
-  return {
-    platform: 'claude',
-    scope,
-    kind: 'localMarketplaceRuntime',
-    root: resolveAwHome(env),
-  };
 }
 
 function resolveTrackingDir(
@@ -710,196 +662,6 @@ async function createLocationForTarget(options: {
   };
 }
 
-type DefaultReplaySourceValidationResult =
-  | {
-    status: 'ok';
-    sourcePluginRoot: string;
-    plugin: PluginMeta;
-  }
-  | {
-    status: 'noReplayRequired';
-    reason: string;
-  }
-  | {
-    status: 'invalid';
-    reason: string;
-  };
-
-async function validateHistoricalLifecycleBundleForDefaultReplay(options: {
-  location: PluginLocation;
-  lifecycle?: HistoricalLifecycleRuntimeRef;
-  currentPlugin?: PluginMeta;
-}): Promise<DefaultReplaySourceValidationResult> {
-  if (!options.lifecycle) {
-    return {
-      status: 'invalid',
-      reason: '缺少 historical lifecycle bundle',
-    };
-  }
-
-  const verified = await loadVerifiedHistoricalBundlePlugin({
-    pluginName: options.location.plugin,
-    pluginVersion: options.lifecycle.pluginVersion,
-    runtimeRoot: options.lifecycle.runtimeRoot,
-    bundleRoot: options.lifecycle.bundleRoot,
-    manifestPath: options.lifecycle.manifestPath,
-    sourceManifestDigest: options.lifecycle.sourceManifestDigest,
-    bundleFingerprint: options.lifecycle.bundleFingerprint,
-  });
-  if (verified.status !== 'ok') {
-    return verified;
-  }
-
-  if (!options.currentPlugin) {
-    return {
-      status: 'invalid',
-      reason: '缺少当前 bundle 参照，无法判断 historical lifecycle bundle 是否过期',
-    };
-  }
-
-  if (
-    options.currentPlugin.manifest.name !== options.location.plugin ||
-    options.currentPlugin.manifest.version !== options.lifecycle.pluginVersion
-  ) {
-    return {
-      status: 'invalid',
-      reason: `historical lifecycle version ${options.lifecycle.pluginVersion} 与当前 bundle version ${options.currentPlugin.manifest.version} 不一致`,
-    };
-  }
-
-  let policyCount: number;
-  try {
-    const policyResolution = await resolveSkillTriggerPolicies({
-      embeddedRoot: verified.bundleRoot,
-      pluginName: options.location.plugin,
-      platform: options.location.platform,
-      policyPlugin: verified.plugin,
-      sourcePluginRoot: verified.bundleRoot,
-    });
-    policyCount = policyResolution.policies.length;
-  } catch (error) {
-    return {
-      status: 'invalid',
-      reason: `historical lifecycle bundle 的 skill trigger policy 不可解析：${formatCommandError(error)}`,
-    };
-  }
-
-  if (policyCount === 0) {
-    return {
-      status: 'noReplayRequired',
-      reason: `historical lifecycle bundle 没有 ${options.location.platform} shared skill trigger runtime 需要重放`,
-    };
-  }
-
-  if (!(await fs.pathExists(path.join(verified.bundleRoot, options.location.platform, 'skills')))) {
-    return {
-      status: 'invalid',
-      reason: `historical lifecycle bundle 缺少 ${options.location.platform} skill source 子树`,
-    };
-  }
-
-  return {
-    status: 'ok',
-    sourcePluginRoot: verified.bundleRoot,
-    plugin: verified.plugin,
-  };
-}
-
-async function createBestEffortSharedRuntimeRemovalStagesWithoutEmbeddedRoot(options: {
-  location: PluginLocation;
-  target:
-    | { platform: 'codex'; scope: 'user'; kind: 'localMarketplaceRuntime'; root: string }
-    | { platform: 'codex'; scope: 'project'; kind: 'repoSkill'; root: string }
-    | { platform: 'claude'; scope: Scope; kind: 'localMarketplaceRuntime'; root: string };
-  env: NodeJS.ProcessEnv;
-  lifecycle?: HistoricalLifecycleRuntimeRef;
-  currentPlugin?: PluginMeta;
-  force?: boolean;
-  error?: string;
-}): Promise<SharedSkillTriggerRuntimeStageBundle> {
-  const ownerInspection = await inspectSharedSkillTriggerRuntimeOwner({
-    pluginName: options.location.plugin,
-    platform: options.location.platform,
-    env: options.env,
-  });
-  const ownerMatchesTarget = ownerInspection.read.status === 'ok'
-    && sameLocation(ownerInspection.read.value.owner, options.location);
-
-  if (!ownerMatchesTarget) {
-    return {
-      ownerAction: 'none',
-      warnings: [],
-      stages: [],
-    };
-  }
-
-  const defaultReplaySource = await validateHistoricalLifecycleBundleForDefaultReplay({
-    location: options.location,
-    lifecycle: options.lifecycle,
-    currentPlugin: options.currentPlugin,
-  });
-  const replayWarningPrefix =
-    `[${renderLocation(options.location)}] embedded bundle 不可用，无法安全重放 shared skill trigger runtime default`;
-
-  if (defaultReplaySource.status === 'noReplayRequired') {
-    return {
-      ownerAction: 'release',
-      warnings: [],
-      stages: [createSharedRuntimeOwnerDeleteStage({
-        pluginName: options.location.plugin,
-        platform: options.location.platform,
-        env: options.env,
-      })],
-    };
-  }
-
-  if (defaultReplaySource.status !== 'ok') {
-    const detail = `${replayWarningPrefix}：${defaultReplaySource.reason}.${options.error ? ` ${options.error}` : ''}`;
-    if (options.force !== true) {
-      throw new Error(`${detail} 如需跳过 runtime 重放并强制清理 owner，请加 --force。`);
-    }
-
-    return {
-      ownerAction: 'release',
-      warnings: [`${detail} 已因 --force 仅清理 owner。`],
-      stages: [createSharedRuntimeOwnerDeleteStage({
-        pluginName: options.location.plugin,
-        platform: options.location.platform,
-        env: options.env,
-      })],
-    };
-  }
-
-  const materialization = await createSharedSkillTriggerRuntimeMaterializationStage({
-    pluginName: options.location.plugin,
-    platform: options.location.platform,
-    preference: 'default',
-    embeddedRoot: defaultReplaySource.sourcePluginRoot,
-    sourcePluginRoot: defaultReplaySource.sourcePluginRoot,
-    target: options.target,
-    mode: 'bestEffortReplay',
-  });
-  const replayWarning =
-    `[${renderLocation(options.location)}] embedded bundle 不可用，已使用 historical lifecycle bundle 重放 shared skill trigger runtime default.`
-    + (options.error ? ` ${options.error}` : '');
-
-  return {
-    ownerAction: 'release',
-    warnings: [
-      replayWarning,
-      ...materialization.warnings,
-    ],
-    stages: [
-      materialization.stage,
-      createSharedRuntimeOwnerDeleteStage({
-        pluginName: options.location.plugin,
-        platform: options.location.platform,
-        env: options.env,
-      }),
-    ],
-  };
-}
-
 function deriveLocationRuntimeRoot(
   location: PluginLocation,
   env: NodeJS.ProcessEnv,
@@ -1014,40 +776,6 @@ export async function tryUninstallUsingInstallState(options: {
     );
   }
 
-  const removalTarget = createMaterializationTarget(
-    location.platform,
-    location.scope,
-    options.commandOptions.cwd,
-    context.env,
-  );
-  const embeddedRootAttempt = await tryResolveEmbeddedPluginsRoot();
-  const removalStages = embeddedRootAttempt.root
-    ? await (async () => {
-        const removalPlan = await planSharedSkillTriggerRuntimeOwnerRemoval({
-          location,
-          embeddedRoot: embeddedRootAttempt.root!,
-          target: removalTarget,
-          cwd: options.commandOptions.cwd,
-          env: context.env,
-        });
-        return createSharedSkillTriggerRuntimeRemovalStages({
-          plan: removalPlan,
-          pluginName: location.plugin,
-          platform: location.platform,
-          embeddedRoot: embeddedRootAttempt.root!,
-          target: removalTarget,
-          env: context.env,
-        });
-      })()
-    : await createBestEffortSharedRuntimeRemovalStagesWithoutEmbeddedRoot({
-        location,
-        target: removalTarget,
-        env: context.env,
-        lifecycle: recordRead.value.record.lifecycle,
-        currentPlugin: options.target.currentPlugin ?? options.target.embeddedPlugin,
-        force: options.commandOptions.force === true,
-        error: embeddedRootAttempt.error,
-      });
   const runtimeRoot = recordRead.value.record.lifecycle?.runtimeRoot;
   await runInstallStateGraphRecordTransaction({
     mode: 'delete',
@@ -1055,7 +783,6 @@ export async function tryUninstallUsingInstallState(options: {
     recordPath: recordRead.path,
     env: context.env,
     stages: [
-      ...removalStages.stages,
       ...(evidence.projectSharedIdentity.read?.status === 'ok'
         ? [createProjectArtifactIdentityDeleteStage({ filePath: evidence.projectSharedIdentity.read.path })]
         : []),
@@ -1089,7 +816,7 @@ export async function tryUninstallUsingInstallState(options: {
     );
   }
 
-  const warnings = [...removalStages.warnings];
+  const warnings: string[] = [];
   const gcWarning = await removeLifecycleRuntimeGc({ env: context.env });
   if (gcWarning) {
     warnings.push(`[${renderLocation(location)}] lifecycle runtime GC 已 fail closed：${gcWarning}`);
@@ -1208,18 +935,6 @@ async function collectSkippedCleanupItems(options: {
         detail,
       });
     }
-  }
-
-  if (
-    options.evidence.sharedRuntimeOwner.read.status === 'ok'
-    && !options.evidence.sharedRuntimeOwner.ownerMatchesTarget
-  ) {
-    items.push({
-      kind: 'shared-runtime-owner',
-      label: 'shared runtime owner',
-      path: options.evidence.sharedRuntimeOwner.read.path,
-      detail: `shared runtime owner 当前属于 ${renderLocation(options.evidence.sharedRuntimeOwner.read.value.owner)}，cleanup 未删除该 owner 文件。`,
-    });
   }
 
   return uniqueCleanupExecutionItems(items);
@@ -1446,21 +1161,6 @@ export async function cleanupInstallStateTarget(options: {
     ?? (recordRead.status === 'ok' ? recordRead.value.record.lifecycle?.runtimeRoot : null)
     ?? deriveLocationRuntimeRoot(options.location, context.env);
   const deleteGroups: CleanupDeleteStageGroup[] = [];
-
-  if (
-    evidence.sharedRuntimeOwner.read.status !== 'missing'
-    && !(evidence.sharedRuntimeOwner.read.status === 'ok' && !evidence.sharedRuntimeOwner.ownerMatchesTarget)
-  ) {
-    deleteGroups.push({
-      label: 'shared runtime owner',
-      stages: [createSharedRuntimeOwnerDeleteStage({ filePath: evidence.sharedRuntimeOwner.read.path })],
-      items: [{
-        kind: 'shared-runtime-owner',
-        label: 'shared runtime owner',
-        path: evidence.sharedRuntimeOwner.read.path,
-      }],
-    });
-  }
 
   if (!skipClaimableProjectArtifacts) {
     for (const artifact of evidence.projectSharedIdentity.artifacts) {
@@ -1733,12 +1433,6 @@ export async function readInstallStateProjection(options: {
         ledger?.plugins[options.location.plugin]?.platforms.codex?.sharedNativeRefs,
       )
     : null;
-  const derivedSharedRuntimeOwner = await readDerivedSharedSkillTriggerRuntimeOwner({
-    pluginName: options.location.plugin,
-    platform: options.location.platform,
-    env: options.env,
-    cwd: options.cwd,
-  });
   const cleanupSafety: InstallStateCleanupSafety = {
     protectedCodexUserNativeCleanup: Boolean(
       codexSharedNativeRefs?.user === true || (codexSharedNativeRefs?.projects.length ?? 0) > 0,
@@ -1746,10 +1440,6 @@ export async function readInstallStateProjection(options: {
     skipExternalNativeItems:
       projection.kind === 'external' && !isPureCodexUserNativeResidueForCleanup(evidence),
     skipClaimableProjectArtifacts: evidence.adoptable.possible,
-    sharedRuntimeOwnerConflict:
-      derivedSharedRuntimeOwner !== null
-      && !(options.location.platform === 'codex' && options.location.scope === 'project')
-      && !sameLocation(derivedSharedRuntimeOwner, options.location),
   };
   return {
     evidence,

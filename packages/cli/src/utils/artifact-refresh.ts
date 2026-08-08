@@ -26,7 +26,6 @@ import type {
   PluginMeta,
   PlatformName,
   Scope,
-  SkillTriggerPreference,
   TrackingManifest,
   TrackingPluginRecord,
 } from '../types.js';
@@ -37,11 +36,6 @@ import {
   materializeStagedMarketplaceCodexDynamicSkills,
   readInstalledLedger,
 } from './local-marketplace.js';
-import {
-  commitMaterializedSkillTriggerPreference,
-  materializeSkillTriggerPreference,
-  patchCodexOpenAiYaml,
-} from './skill-trigger-preferences.js';
 import {
   captureCodexNativePluginRollbackBaseline,
   disposeCodexNativePluginRollbackBaseline,
@@ -78,7 +72,6 @@ import {
   resolveCodexPaths,
   resolveCodexProjectKey,
 } from './paths.js';
-import { resolveEffectiveSkillTriggerPreferences } from './plugin-config.js';
 import { readPluginManifest } from './manifest.js';
 import {
   calculateFileDigest,
@@ -318,32 +311,6 @@ function assertArtifactRefreshStagingPathForTests(
   );
 }
 
-async function inferCodexUserDynamicSkillPreferenceFromRuntime(options: {
-  pluginName: string;
-  artifactKeys: string[];
-  env: NodeJS.ProcessEnv;
-}): Promise<'manual' | 'default' | undefined> {
-  for (const artifactKey of options.artifactKeys) {
-    const metadataPath = `${getLocalMarketplaceCodexSkillRoot(
-      resolveAwHome(options.env),
-      options.pluginName,
-      artifactKey,
-    )}/agents/openai.yaml`;
-    if (!(await fs.pathExists(metadataPath))) {
-      continue;
-    }
-    const content = await fs.readFile(metadataPath, 'utf8');
-    if (content.includes('allow_implicit_invocation: false')) {
-      return 'manual';
-    }
-    if (content.includes('allow_implicit_invocation: true')) {
-      return 'default';
-    }
-  }
-
-  return undefined;
-}
-
 function summarizeArtifacts(
   platform: PlatformName,
   scope: Scope,
@@ -533,8 +500,6 @@ async function stageCodexUserNativeHistoricalMarketplace(options: {
   plugin: PluginMeta;
   refreshedArtifacts: readonly GeneratedArtifact[];
   previousArtifacts?: readonly InstallRecordArtifact[];
-  skillTriggerPreference?: SkillTriggerPreference;
-  skillTriggerPreferences?: Record<string, SkillTriggerPreference>;
   env: NodeJS.ProcessEnv;
 }): Promise<{ rootDir: string; marketplacePath: string }> {
   const stagingRoot = await fs.mkdtemp(
@@ -553,24 +518,6 @@ async function stageCodexUserNativeHistoricalMarketplace(options: {
       overwrite: true,
       errorOnExist: false,
     });
-
-    if (options.skillTriggerPreference || options.skillTriggerPreferences) {
-      const materialization = await materializeSkillTriggerPreference({
-        pluginName,
-        platform: 'codex',
-        resolvedOptions: {
-          skillTriggerPreference: options.skillTriggerPreference ?? 'default',
-          ...(options.skillTriggerPreferences
-            ? { skillTriggerPreferences: options.skillTriggerPreferences }
-            : {}),
-        },
-        embeddedRoot: stagingRoot,
-        marketplaceRootOrStagingRoot: stagingRoot,
-        mode: 'bestEffortReplay',
-      });
-      await commitMaterializedSkillTriggerPreference(materialization.rollbackHandle)
-        .catch(() => undefined);
-    }
 
     for (const artifact of options.refreshedArtifacts) {
       if (artifact.target !== 'codex.skill') {
@@ -771,14 +718,7 @@ async function collectRefreshUnitsForReapply(options: {
       const trackedRefreshKeys = uniqueSorted(
         dynamicArtifacts.flatMap((artifact) => artifact.refreshKeys ?? []),
       );
-      let triggerKeys = failedRefreshKeys.length > 0 ? failedRefreshKeys : trackedRefreshKeys;
-      if (triggerKeys.length === 0) {
-        triggerKeys = uniqueSorted(dynamicArtifacts
-          .filter((artifact) =>
-            (artifact.target === 'codex.skill' || artifact.target === 'claude.skill') &&
-            Boolean(artifact.artifactKey))
-          .map((artifact) => `aw.skillTriggers.${artifact.artifactKey}.trigger`));
-      }
+      const triggerKeys = failedRefreshKeys.length > 0 ? failedRefreshKeys : trackedRefreshKeys;
       if (triggerKeys.length === 0) {
         continue;
       }
@@ -939,79 +879,13 @@ async function executeRefreshUnit(options: {
         options.env,
       );
     }
-    const ledger = await readInstalledLedger(options.env);
-    let skillTriggerPreference =
-      installRecordRead.status === 'ok'
-        ? installRecordRead.value.record.options?.skillTriggerPreference
-        : options.unit.scope === 'user'
-          ? ledger.plugins[options.plugin.manifest.name]?.platforms[platform]?.userScope?.installOptions?.skillTriggerPreference
-          : undefined;
-    const refreshesDynamicSkill = options.unit.dynamicArtifacts.some((artifact) =>
-      artifact.target === 'codex.skill' || artifact.target === 'claude.skill');
-    const skillTriggerPreferences = refreshesDynamicSkill
-      ? await resolveEffectiveSkillTriggerPreferences({
-        plugin: refreshPlugin,
-        platform,
-        scope: options.unit.scope,
-        cwd: options.cwd,
-        env: options.env,
-      })
-      : {};
-    if (Object.keys(skillTriggerPreferences).length > 0) {
-      skillTriggerPreference = 'default';
-    }
-    if (refreshesCodexUserDynamicSkill && Object.keys(skillTriggerPreferences).length === 0) {
-      const runtimeSkillTriggerPreference = await inferCodexUserDynamicSkillPreferenceFromRuntime({
-        pluginName: options.plugin.manifest.name,
-        artifactKeys: uniqueSorted(
-          options.unit.dynamicArtifacts
-            .filter((artifact) => artifact.target === 'codex.skill' && Boolean(artifact.artifactKey))
-            .map((artifact) => artifact.artifactKey as string),
-        ),
-        env: options.env,
-      });
-      if (
-        runtimeSkillTriggerPreference === 'manual' &&
-        skillTriggerPreference !== 'manual'
-      ) {
-        skillTriggerPreference = 'manual';
-      } else if (!skillTriggerPreference) {
-        skillTriggerPreference = runtimeSkillTriggerPreference;
-      }
-    }
     const refreshedArtifacts = (await adapter.installExtensions(refreshPlugin, options.unit.scope, {
       event: 'refresh',
       changedConfigKeys: options.unit.triggerKeys,
       dynamicOnly: true,
-      skillTriggerPreference,
-      skillTriggerPreferences,
       previousArtifacts: options.unit.trackingRecord.artifacts,
     })).filter((artifact): artifact is GeneratedArtifact & { id: string; target: ArtifactTarget; state: ArtifactState } =>
       artifact.platform === platform && isTrackedDynamicArtifact(artifact));
-    if (refreshesCodexUserDynamicSkill) {
-      for (const artifact of refreshedArtifacts) {
-        if (artifact.target !== 'codex.skill' || !artifact.artifactKey || artifact.state !== 'present') {
-          continue;
-        }
-        const artifactPreference: SkillTriggerPreference | undefined = Object.hasOwn(
-          skillTriggerPreferences,
-          artifact.artifactKey,
-        )
-          ? skillTriggerPreferences[artifact.artifactKey]
-          : skillTriggerPreference;
-        if (!artifactPreference || artifactPreference === 'default') {
-          continue;
-        }
-        await patchCodexOpenAiYaml(
-          `${getLocalMarketplaceCodexSkillRoot(
-            resolveAwHome(options.env),
-            options.plugin.manifest.name,
-            artifact.artifactKey,
-          )}/agents/openai.yaml`,
-          artifactPreference,
-        );
-      }
-    }
     if (refreshesCodexUserDynamicSkill) {
       const stagedMarketplace = await stageCodexUserNativeHistoricalMarketplace({
         plugin: refreshPlugin,
@@ -1019,8 +893,6 @@ async function executeRefreshUnit(options: {
         previousArtifacts: installRecordRead.status === 'ok'
           ? installRecordRead.value.record.artifacts
           : [],
-        ...(skillTriggerPreference ? { skillTriggerPreference } : {}),
-        ...(Object.keys(skillTriggerPreferences).length > 0 ? { skillTriggerPreferences } : {}),
         env: options.env,
       });
       try {

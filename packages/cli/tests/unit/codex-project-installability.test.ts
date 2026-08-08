@@ -753,10 +753,6 @@ describe('Codex project installability', () => {
         {
           env: workspace.env,
           adapters: { codex, claude },
-          resolveInstallOptions: () => ({
-            applicability: 'none',
-            ledgerTrust: 'available',
-          }),
           reporter: {
             async event(event) {
               if (!threwAfterLedger && event.type === 'ledger:written') {

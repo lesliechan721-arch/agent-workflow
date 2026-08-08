@@ -6,7 +6,6 @@ import fs from 'fs-extra';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { initCommand } from '../../src/commands/init.js';
-import * as commonModule from '../../src/commands/common.js';
 import { upgradeCommand } from '../../src/commands/upgrade.js';
 import * as localMarketplaceModule from '../../src/utils/local-marketplace.js';
 import * as pluginScriptsModule from '../../src/utils/plugin-scripts.js';
@@ -284,7 +283,6 @@ async function removeProjectManagedKindsFromGitCommit(repoRoot: string): Promise
   const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
   const manifest = await fs.readJson(manifestPath);
   delete manifest.skills;
-  delete manifest.skillTriggers;
   delete manifest.mcpServers;
   delete manifest.extensions;
   await fs.writeJson(manifestPath, manifest, { spaces: 2 });
@@ -549,9 +547,6 @@ async function writeCodexProjectManagedLedgerRecord(options: {
   repoRoot: string;
   pluginName?: string;
   capabilitySnapshot?: Record<string, unknown>;
-  installOptions?: {
-    skillTriggerPreference?: 'default' | 'manual' | 'auto';
-  };
 }): Promise<void> {
   const projectKey = await resolveCodexProjectKey(options.repoRoot);
   const ledger = createAvailableLedger();
@@ -568,9 +563,6 @@ async function writeCodexProjectManagedLedgerRecord(options: {
               requiresNativePlugin: true,
               hasRepoManagedArtifacts: true,
               ...(options.capabilitySnapshot ?? {}),
-            },
-            installOptions: options.installOptions ?? {
-              skillTriggerPreference: 'default',
             },
             installSource: createInstallSource('explicit'),
             dependencyEdges: [],
@@ -667,7 +659,6 @@ describe('upgrade command coverage', () => {
     });
     const readOnlyCatalogSpy = vi.spyOn(localMarketplaceModule, 'resolveReadOnlyCatalogResolution')
       .mockRejectedValue(new Error('HTTP 404 Not Found'));
-    const resolveInstallOptionsSpy = vi.spyOn(commonModule, 'resolveInstallOptionsForTargets');
     const lifecycleSpy = vi.spyOn(pluginScriptsModule, 'runLifecycleScript');
 
     await expect(
@@ -691,14 +682,14 @@ describe('upgrade command coverage', () => {
     );
 
     expect(readOnlyCatalogSpy).not.toHaveBeenCalled();
-    expect(resolveInstallOptionsSpy).not.toHaveBeenCalled();
     expect(lifecycleSpy).not.toHaveBeenCalled();
     expect(codex.installCalls).toEqual([]);
     expect(codex.extensionInstallCalls).toEqual([]);
   });
 
   it('ignores breadcrumb-only Codex user candidates during upgrade --all root selection', async () => {
-    const { repoRoot, awHome, codexHome } = await makeWorkspace();
+    const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspace();
+    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
     const env = {
       ...process.env,
       AW_HOME: awHome,
@@ -904,9 +895,6 @@ describe('upgrade command coverage', () => {
               capabilitySnapshot: {
                 requiresNativePlugin: true,
                 hasRepoManagedArtifacts: true,
-              },
-              installOptions: {
-                skillTriggerPreference: 'default',
               },
               installSource: createInstallSource('explicit'),
               dependencyEdges: [],
@@ -1268,9 +1256,6 @@ describe('upgrade command coverage', () => {
                 requiresNativePlugin: true,
                 hasRepoManagedArtifacts: true,
               },
-              installOptions: {
-                skillTriggerPreference: 'default',
-              },
               installSource: createInstallSource('explicit'),
               dependencyEdges: [],
             },
@@ -1387,9 +1372,6 @@ describe('upgrade command coverage', () => {
                 requiresNativePlugin: true,
                 hasRepoManagedArtifacts: true,
               },
-              installOptions: {
-                skillTriggerPreference: 'default',
-              },
               installSource: createInstallSource('explicit'),
               dependencyEdges: [],
             },
@@ -1504,9 +1486,6 @@ describe('upgrade command coverage', () => {
               capabilitySnapshot: {
                 requiresNativePlugin: true,
                 hasRepoManagedArtifacts: true,
-              },
-              installOptions: {
-                skillTriggerPreference: 'default',
               },
               installSource: createInstallSource('explicit'),
               dependencyEdges: [],
@@ -1627,9 +1606,6 @@ describe('upgrade command coverage', () => {
                 requiresNativePlugin: true,
                 hasRepoManagedArtifacts: true,
               },
-              installOptions: {
-                skillTriggerPreference: 'default',
-              },
               installSource: createInstallSource('explicit'),
               dependencyEdges: [],
             },
@@ -1730,9 +1706,6 @@ describe('upgrade command coverage', () => {
               capabilitySnapshot: {
                 requiresNativePlugin: true,
                 hasRepoManagedArtifacts: true,
-              },
-              installOptions: {
-                skillTriggerPreference: 'default',
               },
               installSource: createInstallSource('explicit'),
               dependencyEdges: [],
@@ -2073,41 +2046,4 @@ describe('upgrade command coverage', () => {
     ]);
   });
 
-  it('rejects upgrade --all takeover before evaluating roots', async () => {
-    const { repoRoot, awHome, embeddedRoot, codexHome } = await makeWorkspace();
-    activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
-
-    await initCommand({ force: true });
-    await writeInstalledLedger(createAvailableLedger(), process.env);
-
-    const codex = new FakeAdapter('codex', repoRoot, {
-      'git-commit': {
-        currentCatalogAvailable: true,
-        nativeInstalled: true,
-        scopeInitialized: 'yes',
-      },
-    });
-
-    await expect(
-      upgradeCommand(
-        [],
-        {
-          all: true,
-          takeoverSharedRuntime: true,
-          cwd: repoRoot,
-          scope: 'user',
-          platform: 'codex',
-        },
-        {
-          adapters: {
-            codex,
-            claude: new FakeAdapter('claude', repoRoot, {}),
-          },
-        },
-      ),
-    ).rejects.toThrow('`upgrade` 不再接受 `--takeover-shared-runtime`');
-
-    expect(codex.installCalls).toEqual([]);
-    expect(codex.extensionInstallCalls).toEqual([]);
-  });
 });

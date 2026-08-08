@@ -465,7 +465,6 @@ describe('manifest utils', () => {
     );
     const manifest = await fs.readJson(manifestPath);
     delete manifest.skills;
-    delete manifest.skillTriggers;
     await fs.writeJson(manifestPath, manifest, { spaces: 2 });
 
     await expect(
@@ -484,31 +483,6 @@ describe('manifest utils', () => {
     await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
       'skills points to "./missing-skills" but path does not exist',
     );
-  });
-
-  it('accepts valid skillTriggers declared against source skills', async () => {
-    const repoRoot = await makeTempRepo();
-    const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
-    const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
-    const manifest = await fs.readJson(manifestPath);
-    manifest.skillTriggers = {
-      commit: {
-        defaultTrigger: 'auto',
-        allowDynamicTrigger: true,
-      },
-    };
-    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
-
-    await expect(readPluginManifest(pluginRoot)).resolves.toMatchObject({
-      manifest: {
-        skillTriggers: {
-          commit: {
-            defaultTrigger: 'auto',
-            allowDynamicTrigger: true,
-          },
-        },
-      },
-    });
   });
 
   it('accepts scripts and config manifest contracts and strips dev-only script fields from bundle manifests', async () => {
@@ -1063,16 +1037,6 @@ describe('manifest utils', () => {
         },
       ],
     };
-    manifest.skillTriggers = {
-      commit: {
-        defaultTrigger: 'auto',
-        allowDynamicTrigger: true,
-      },
-      'codex-explore': {
-        defaultTrigger: 'auto',
-        allowDynamicTrigger: true,
-      },
-    };
     await writeFixturePluginManifest(repoRoot, manifest);
     await expect(readPluginManifest(pluginRoot)).resolves.toMatchObject({
       manifest: {
@@ -1342,108 +1306,6 @@ describe('manifest utils', () => {
     ]);
   });
 
-  it('rejects skillTriggers without skills or codex.skill artifacts and rejects unknown fields', async () => {
-    const repoRoot = await makeTempRepo();
-    const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
-    const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
-    const manifest = await fs.readJson(manifestPath);
-
-    delete manifest.skills;
-    manifest.skillTriggers = {
-      commit: {
-        defaultTrigger: 'auto',
-        allowDynamicTrigger: true,
-      },
-    };
-    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
-    await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
-      '"skillTriggers" requires a declared "skills" directory or dynamic skill artifact',
-    );
-
-    manifest.skills = './skills';
-    manifest.skillTriggers = {
-      commit: {
-        defaultTrigger: 'auto',
-        allowDynamicTrigger: true,
-        mode: 'manual',
-      },
-    };
-    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
-    await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
-      'unknown field "mode"',
-    );
-
-    manifest.skillTriggers = {
-      commit: {
-        defaultTrigger: 'yes',
-        allowDynamicTrigger: true,
-      },
-    };
-    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
-    await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
-      'defaultTrigger: expected "manual" or "auto"',
-    );
-  });
-
-  it('accepts skillTriggers declared only for dynamic codex.skill artifacts', async () => {
-    const repoRoot = await makeTempRepo();
-    const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
-    const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
-    const manifest = await fs.readJson(manifestPath);
-    delete manifest.skills;
-    await fs.remove(path.join(pluginRoot, 'skills'));
-    manifest.artifacts = {
-      targets: [
-        {
-          id: 'dynamic-review',
-          platform: 'codex',
-          scopes: ['project'],
-          target: 'codex.skill',
-          projectManagedKind: 'skill',
-          states: ['present'],
-          refreshKeys: [],
-          skillKey: 'dynamic-review',
-        },
-      ],
-    };
-    manifest.skillTriggers = {
-      'dynamic-review': {
-        defaultTrigger: 'manual',
-        allowDynamicTrigger: false,
-      },
-    };
-    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
-
-    await expect(readPluginManifest(pluginRoot)).resolves.toMatchObject({
-      manifest: {
-        skillTriggers: {
-          'dynamic-review': {
-            defaultTrigger: 'manual',
-            allowDynamicTrigger: false,
-          },
-        },
-      },
-    });
-  });
-
-  it('rejects skillTriggers entries that do not match a source skill directory', async () => {
-    const repoRoot = await makeTempRepo();
-    const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
-    const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
-    const manifest = await fs.readJson(manifestPath);
-    manifest.skillTriggers = {
-      missing: {
-        defaultTrigger: 'auto',
-        allowDynamicTrigger: true,
-      },
-    };
-    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
-
-    await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
-      'Invalid skillTriggers.missing: expected a declared static skill or dynamic skill artifact.',
-    );
-  });
-
   it('rejects undeclared default MCP manifest', async () => {
     const repoRoot = await makeTempRepo();
     const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
@@ -1521,7 +1383,6 @@ describe('manifest utils', () => {
       },
     };
     delete manifest.skills;
-    delete manifest.skillTriggers;
     await fs.writeJson(
       path.join(bundlePluginRoot, '.agents-plugin', 'plugin.json'),
       manifest,
@@ -1537,45 +1398,6 @@ describe('manifest utils', () => {
     ).resolves.toMatchObject({
       manifest: {
         name: 'git-commit',
-      },
-    });
-  });
-
-  it('preserves skillTriggers in bundle mode without requiring a source skills directory', async () => {
-    const repoRoot = await makeTempRepo();
-    const sourcePluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
-    const bundlePluginRoot = path.join(repoRoot, 'bundle', 'plugins', 'git-commit');
-    await fs.ensureDir(path.join(bundlePluginRoot, '.agents-plugin'));
-    const manifest = await fs.readJson(
-      path.join(sourcePluginRoot, '.agents-plugin', 'plugin.json'),
-    );
-    manifest.compatibility = {
-      aw: {
-        minVersion: '0.0.0',
-      },
-    };
-    manifest.skillTriggers = {
-      commit: {
-        defaultTrigger: 'auto',
-        allowDynamicTrigger: true,
-      },
-    };
-    await fs.writeJson(
-      path.join(bundlePluginRoot, '.agents-plugin', 'plugin.json'),
-      manifest,
-      { spaces: 2 },
-    );
-
-    await expect(
-      readPluginManifest(bundlePluginRoot, { mode: 'bundle' }),
-    ).resolves.toMatchObject({
-      manifest: {
-        skillTriggers: {
-          commit: {
-            defaultTrigger: 'auto',
-            allowDynamicTrigger: true,
-          },
-        },
       },
     });
   });

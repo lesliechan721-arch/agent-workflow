@@ -6,7 +6,10 @@ import fs from 'fs-extra';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { installCommand } from '../../src/commands/install.js';
-import { readDynamicArtifactDiagnosticCacheAt } from '../../src/install-state/facade.js';
+import {
+  readDynamicArtifactDiagnosticCacheAt,
+  readInstallRecordFileAt,
+} from '../../src/install-state/facade.js';
 import type {
   GeneratedArtifact,
   PlatformAdapter,
@@ -188,6 +191,23 @@ describe('install --adopt-existing migration', () => {
       pluginName: fixture.target.location.plugin,
       installLifecycleExitCode: 0,
     });
+    const skillKey = 'commit';
+    const bundledSkillRoot = path.join(plugin.rootDir, 'codex', 'skills', skillKey);
+    const projectSkillRoot = path.join(fixture.paths.repoRoot, '.agents', 'skills', skillKey);
+    const nativeMetadata = 'policy:\n  allow_implicit_invocation: false\n';
+    await fs.outputFile(path.join(bundledSkillRoot, 'SKILL.md'), '# Commit\n');
+    await fs.outputFile(path.join(bundledSkillRoot, 'agents', 'openai.yaml'), nativeMetadata);
+    await fs.outputFile(path.join(projectSkillRoot, 'SKILL.md'), '# Commit\n');
+    await fs.outputFile(path.join(projectSkillRoot, 'agents', 'openai.yaml'), nativeMetadata);
+    const identityBeforeAdopt = await fs.readJson(fixture.files.projectIdentityPath);
+    identityBeforeAdopt.artifacts.push({
+      kind: 'skill',
+      platform: 'codex',
+      path: path.relative(fixture.paths.repoRoot, projectSkillRoot).split(path.sep).join('/'),
+      artifactKey: skillKey,
+      ownershipMarker: skillKey,
+    });
+    await fs.writeJson(fixture.files.projectIdentityPath, identityBeforeAdopt, { spaces: 2 });
     await alignFixtureSourceToPlugin({
       projectIdentityPath: fixture.files.projectIdentityPath,
       plugin,
@@ -266,6 +286,27 @@ describe('install --adopt-existing migration', () => {
       },
     });
     expect(JSON.stringify(cacheRead)).not.toContain('repair');
+    const recordRead = await readInstallRecordFileAt(fixture.files.installRecordPath, {
+      env: createInstallStateFixtureEnv(fixture.paths),
+    });
+    expect(recordRead).toMatchObject({
+      status: 'ok',
+      value: {
+        record: {
+          artifacts: expect.arrayContaining([
+            expect.objectContaining({
+              kind: 'skill',
+              platform: 'codex',
+              path: projectSkillRoot,
+              artifactKey: skillKey,
+            }),
+          ]),
+        },
+      },
+    });
+    await expect(
+      fs.readFile(path.join(projectSkillRoot, 'agents', 'openai.yaml'), 'utf8'),
+    ).resolves.toBe(nativeMetadata);
   });
 
   it('fails install --adopt-existing outside project scope before writing local state', async () => {

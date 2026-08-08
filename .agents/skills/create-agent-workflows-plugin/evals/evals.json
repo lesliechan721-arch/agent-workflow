@@ -4,7 +4,7 @@
     {
       "id": "plan-minimal-plugin",
       "prompt": "使用 $create-agent-workflows-plugin，在不修改文件的前提下检查当前仓库，并给出新建双平台 release-notes 插件的最小实施方案。它只包含一个允许自动发现的 skill，根据当前分支提交生成结构化发布说明；不要添加 MCP、hooks 或 lifecycle。",
-      "expected_output": "只选择 skill 能力；读取 skill 设计、触发、manifest 与评估 reference；计划创建最小源码、skillTriggers 和作者期 eval，并列出 build、validator、materialization 与相关测试，不修改 marketplace 或生成目录。",
+      "expected_output": "只选择 skill 能力；读取 skill 设计、平台原生调用元数据、manifest 与评估 reference；计划创建最小源码和作者期 eval，并列出 build、validator、materialization 与相关测试，不修改 marketplace 或生成目录。",
       "files": [],
       "scripted_replies": [],
       "review": {
@@ -14,7 +14,7 @@
         "checks": [
           "trace 读取 skill-design、skills-and-triggers、plugin-manifest-spec 和 skill-evaluation",
           "方案只选择一个 skill，不增加 MCP、hooks、lifecycle 或其它未请求能力",
-          "方案包含 skillTriggers、作者校验、materialization 和相关测试",
+          "方案包含 Codex 与 Claude 原生调用元数据、作者校验、materialization 和相关测试",
           "方案不修改 marketplace-source、平台 manifest、plugins-dist 或 runtime cache"
         ]
       }

@@ -160,7 +160,6 @@ const PLUGIN_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const PLUGIN_DEPENDENCY_PLATFORMS = new Set(['codex', 'claude']);
 const PLUGIN_EVAL_SCHEMA_VERSION = 1;
 const PLUGIN_EVAL_SCOPES = new Set(['user', 'project']);
-const PLUGIN_EVAL_TRIGGER_PREFERENCES = new Set(['default', 'auto', 'manual']);
 const PLUGIN_EVAL_SPLITS = new Set(['train', 'validation', 'sanity', 'all']);
 const PLUGIN_EVAL_TRIGGER_CASE_SPLITS = new Set(['train', 'validation', 'sanity']);
 const PLUGIN_EVAL_COMMAND_SUPPORTS = new Set([
@@ -378,7 +377,6 @@ async function tryLoadCliManifestTools() {
   );
   if (!fs.existsSync(modulePath)) return null;
   const moduleSource = fs.readFileSync(modulePath, 'utf8');
-  if (!moduleSource.includes('skillTriggers')) return null;
   if (!moduleSource.includes('validatePluginDependencyReferences')) return null;
   try {
     const mod = await import(pathToFileURL(modulePath).href);
@@ -490,7 +488,6 @@ function validateManifestLightweight(manifest) {
     'compatibility',
     'skills',
     'slashCommands',
-    'skillTriggers',
     'mcpServers',
     'apps',
     'marketplace',
@@ -584,7 +581,7 @@ function validateManifestDependenciesLightweight(pluginName, dependencies) {
     const fieldName = `dependencies.plugins[${index}]`;
     const entry = expectRecord(rawEntry, fieldName);
     if (!entry) return;
-  validateAllowedKeys(entry, fieldName, ['name', 'minVersion', 'target', 'inheritInstallOptions', 'when']);
+  validateAllowedKeys(entry, fieldName, ['name', 'minVersion', 'target', 'when']);
   let platformsForOverlap = ['codex', 'claude'];
 
     const name = validateManifestString(entry.name, `${fieldName}.name`);
@@ -607,10 +604,6 @@ function validateManifestDependenciesLightweight(pluginName, dependencies) {
           error(`${fieldName}.target.scope must be "user" or "project"`);
         }
       }
-    }
-
-    if (entry.inheritInstallOptions !== undefined && typeof entry.inheritInstallOptions !== 'boolean') {
-      error(`${fieldName}.inheritInstallOptions must be a boolean`);
     }
 
     if (entry.when !== undefined) {
@@ -1293,6 +1286,11 @@ function validatePluginEvalManifest(pluginDir, pluginManifest) {
     const fieldName = `evals/manifest.json.profiles[${index}]`;
     const profile = expectRecord(value, fieldName);
     if (!profile) return;
+    validateAllowedKeys(
+      profile,
+      fieldName,
+      ['id', 'scope', 'config', 'runModel', 'requiredForRelease'],
+    );
     const id = validateNonEmptyString(profile.id, `${fieldName}.id`);
     if (id && !PLUGIN_NAME_PATTERN.test(id)) {
       error(`${fieldName}.id must use lowercase kebab-case`);
@@ -1306,10 +1304,6 @@ function validatePluginEvalManifest(pluginDir, pluginManifest) {
     }
     if (profile.config !== undefined && !isRecord(profile.config)) {
       error(`${fieldName}.config must be an object`);
-    }
-    const triggerPreference = profile.triggerPreference ?? 'default';
-    if (!PLUGIN_EVAL_TRIGGER_PREFERENCES.has(triggerPreference)) {
-      error(`${fieldName}.triggerPreference must be default, auto, or manual`);
     }
     if (typeof profile.runModel !== 'boolean') {
       error(`${fieldName}.runModel must be boolean`);
@@ -1409,8 +1403,8 @@ function validatePluginEvalManifest(pluginDir, pluginManifest) {
       const skill = validateNonEmptyString(suite.skill, `${fieldName}.skill`);
       if (skill && !PLUGIN_NAME_PATTERN.test(skill)) {
         error(`${fieldName}.skill must use lowercase kebab-case`);
-      } else if (skill && !isRecord(pluginManifest.skillTriggers?.[skill])) {
-        error(`${fieldName}.skill must reference a declared skillTriggers entry`);
+      } else if (skill && !collectDeclaredSkillNames(pluginDir, pluginManifest).all.has(skill)) {
+        error(`${fieldName}.skill must reference a declared static or dynamic skill`);
       }
       if (suite.kind === 'conversation') {
         if (Array.isArray(suite.releaseSplits) && suite.releaseSplits.length > 0) {
@@ -1838,7 +1832,7 @@ function validatePluginVersionContracts(manifest, options) {
   }
 }
 
-function validateSkillTriggers(pluginDir, manifest) {
+function collectDeclaredSkillNames(pluginDir, manifest) {
   const skillsRoot =
     typeof manifest.skills === 'string'
       ? path.join(pluginDir, manifest.skills)
@@ -1866,78 +1860,21 @@ function validateSkillTriggers(pluginDir, manifest) {
     .sort();
   const dynamicSkillNameSet = new Set(dynamicSkillNames);
 
-  const slashCommandNames = [];
-  if (typeof manifest.slashCommands === 'string') {
-    const slashCommandsRoot = path.join(pluginDir, manifest.slashCommands);
-    const stats = fs.statSync(slashCommandsRoot, { throwIfNoEntry: false });
-    if (stats?.isDirectory()) {
-      for (const entry of fs.readdirSync(slashCommandsRoot, { withFileTypes: true })) {
-        if (entry.isFile() && path.posix.extname(entry.name) === '.md') {
-          slashCommandNames.push(path.posix.basename(entry.name, '.md'));
-        }
-      }
-      slashCommandNames.sort();
-    }
-  }
-  const slashCommandNameSet = new Set(slashCommandNames);
+  return {
+    static: staticSkillNameSet,
+    dynamic: dynamicSkillNameSet,
+    all: new Set([...staticSkillNames, ...dynamicSkillNames]),
+  };
+}
 
-  const explicitSkillTriggers = manifest.skillTriggers === undefined
-    ? {}
-    : expectRecord(manifest.skillTriggers, 'skillTriggers');
-  if (manifest.skillTriggers !== undefined && !explicitSkillTriggers) {
-    return;
-  }
+function validateSkillInventory(pluginDir, manifest) {
+  const declared = collectDeclaredSkillNames(pluginDir, manifest);
 
-  if (
-    manifest.skillTriggers !== undefined
-    && staticSkillNames.length === 0
-    && dynamicSkillNames.length === 0
-  ) {
-    error('skillTriggers requires a declared "skills" directory or dynamic skill artifact');
-  }
-
-  for (const skillName of dynamicSkillNames) {
-    if (staticSkillNameSet.has(skillName)) {
+  for (const skillName of declared.dynamic) {
+    if (declared.static.has(skillName)) {
       error(
-        `Invalid skillTriggers.${skillName}: duplicate skillKey "${skillName}" is declared by both "skills/${skillName}" and a dynamic skill artifact.`,
+        `Invalid skill inventory: duplicate skillKey "${skillName}" is declared by both "skills/${skillName}" and a dynamic skill artifact.`,
       );
-    }
-  }
-
-  for (const [skillName, rawPolicy] of Object.entries(explicitSkillTriggers)) {
-    const fieldName = `skillTriggers.${skillName}`;
-    if (slashCommandNameSet.has(skillName)) {
-      error(
-        `Invalid ${fieldName}: slashCommands "${skillName}" uses an implicit fixed/manual trigger entry and must not be declared explicitly.`,
-      );
-      continue;
-    }
-    if (!staticSkillNameSet.has(skillName) && !dynamicSkillNameSet.has(skillName)) {
-      error(`Invalid ${fieldName}: expected a declared static skill or dynamic skill artifact.`);
-      continue;
-    }
-
-    const policy = expectRecord(rawPolicy, fieldName);
-    if (!policy) continue;
-    validateAllowedKeys(policy, fieldName, ['defaultTrigger', 'allowDynamicTrigger']);
-
-    if (policy.defaultTrigger !== 'manual' && policy.defaultTrigger !== 'auto') {
-      error(`${fieldName}.defaultTrigger: expected "manual" or "auto"`);
-    }
-    if (typeof policy.allowDynamicTrigger !== 'boolean') {
-      error(`${fieldName}.allowDynamicTrigger must be a boolean`);
-    }
-  }
-
-  for (const skillName of staticSkillNames) {
-    if (!Object.prototype.hasOwnProperty.call(explicitSkillTriggers, skillName)) {
-      error(`Invalid plugin manifest: static skill "${skillName}" must declare skillTriggers.${skillName}.`);
-    }
-  }
-
-  for (const skillName of dynamicSkillNames) {
-    if (!Object.prototype.hasOwnProperty.call(explicitSkillTriggers, skillName)) {
-      error(`Invalid plugin manifest: dynamic skill "${skillName}" must declare skillTriggers.${skillName}.`);
     }
   }
 }
@@ -3818,7 +3755,7 @@ async function validatePluginDir(pluginDir, options) {
   validateDeclaredNativeAssets(pluginDir, manifest);
   validatePluginVersionContracts(manifest, options);
   validateCatalogDependencyReferences(pluginDir, manifest);
-  validateSkillTriggers(pluginDir, manifest);
+  validateSkillInventory(pluginDir, manifest);
   validatePluginEvalManifest(pluginDir, manifest);
   const artifactRenderEntry = validateScriptsLightweight(pluginDir, manifest);
   validateDynamicArtifactsLightweight(pluginDir, manifest, artifactRenderEntry);

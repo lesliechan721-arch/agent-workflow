@@ -1,6 +1,5 @@
 import type {
   InstalledDependencyEdge,
-  InstalledScopeInstallOptions,
   InstalledScopeInstallSource,
   PlatformName,
   PluginDependencyEntry,
@@ -85,7 +84,6 @@ export interface PluginDependencyPlannerInstalledRecord {
   resolvedVersion?: string;
   installSource?: InstalledScopeInstallSource;
   dependencyEdges?: InstalledDependencyEdge[];
-  installOptions?: InstalledScopeInstallOptions;
   snapshotManifest?: PluginManifestSource;
 }
 
@@ -104,7 +102,6 @@ export interface PluginDependencyPlannerState {
 
 export interface PluginDependencyPlannerTarget {
   location: PluginLocation;
-  installOptions?: InstalledScopeInstallOptions;
 }
 
 export interface PluginDependencyEdgePlan {
@@ -121,7 +118,6 @@ export interface PluginDependencyNodePlan {
   reason: PluginDependencyNodeReason;
   requested: boolean;
   dependencyOf: PluginLocation[];
-  installOptions?: InstalledScopeInstallOptions;
 }
 
 export interface PluginDependencyPlannerPreflight {
@@ -258,8 +254,6 @@ interface InternalPlannerNode {
   requested: boolean;
   action: PluginDependencyNodeAction;
   reason: PluginDependencyNodeReason;
-  targetInstallOptions?: InstalledScopeInstallOptions;
-  effectiveInstallOptions?: InstalledScopeInstallOptions;
   dependencyOfKeys: Set<string>;
 }
 
@@ -272,12 +266,6 @@ interface PlannerResolution {
 
 function clone<T>(value: T): T {
   return structuredClone(value);
-}
-
-function stableStringifyInstallOptions(
-  value: InstalledScopeInstallOptions | undefined,
-): string {
-  return JSON.stringify(value ?? null);
 }
 
 function normalizeManifestProductToken(value: string): string {
@@ -299,7 +287,6 @@ function normalizeDependencyEntry(entry: PluginDependencyEntry): PluginDependenc
     target: entry.target?.scope
       ? { scope: entry.target.scope }
       : undefined,
-    inheritInstallOptions: entry.inheritInstallOptions === true ? true : undefined,
     when: platforms ? { platforms } : undefined,
   };
 }
@@ -317,7 +304,6 @@ function normalizeDependencyDeclaration(
     target: declaration.target?.scope
       ? { scope: declaration.target.scope }
       : undefined,
-    inheritInstallOptions: declaration.inheritInstallOptions === true ? true : undefined,
     when: platforms ? { platforms } : undefined,
   };
 }
@@ -328,7 +314,6 @@ function serializeDependencyEntry(entry: PluginDependencyEntry): string {
     name: normalized.name,
     minVersion: normalized.minVersion ?? null,
     targetScope: normalized.target?.scope ?? null,
-    inheritInstallOptions: normalized.inheritInstallOptions === true,
     platforms: normalized.when?.platforms ?? [],
   });
 }
@@ -343,7 +328,6 @@ function dependencySignature(manifest: PluginManifestSource | undefined): string
       name: entry.name,
       minVersion: entry.minVersion ?? null,
       targetScope: entry.target?.scope ?? null,
-      inheritInstallOptions: entry.inheritInstallOptions === true,
       platforms: [...(entry.when?.platforms ?? [])].sort(),
     })),
   );
@@ -355,7 +339,6 @@ function dependencySignatureFromEntries(entries: PluginDependencyEntry[]): strin
       name: entry.name,
       minVersion: entry.minVersion ?? null,
       targetScope: entry.target?.scope ?? null,
-      inheritInstallOptions: entry.inheritInstallOptions === true,
       platforms: [...(entry.when?.platforms ?? [])].sort(),
     })),
   );
@@ -462,7 +445,6 @@ function buildPlannerIndexes(state: PluginDependencyPlannerState): PlannerIndexe
       location,
       dependencyEdges: normalizedEdges,
       snapshotManifest: record.snapshotManifest ? clone(record.snapshotManifest) : undefined,
-      installOptions: record.installOptions ? clone(record.installOptions) : undefined,
       installSource: record.installSource ? clone(record.installSource) : undefined,
     });
 
@@ -535,13 +517,6 @@ function validateManifestDependencyStructure(
     if (entry.target && entry.target.scope !== 'user' && entry.target.scope !== 'project') {
       throw new Error(`插件 ${pluginName} 的依赖 ${entry.name} 使用了非法 target.scope。`);
     }
-    if (
-      entry.inheritInstallOptions !== undefined &&
-      typeof entry.inheritInstallOptions !== 'boolean'
-    ) {
-      throw new Error(`插件 ${pluginName} 的依赖 ${entry.name} 使用了非法 inheritInstallOptions。`);
-    }
-
     const effectivePlatforms = new Set<PlatformName>();
     const platforms = entry.when?.platforms ?? [...ALL_PLATFORMS];
     if (platforms.length === 0) {
@@ -853,7 +828,6 @@ function createDependencyNodePlan(
       .map((key) => nodesByKey.get(key)?.location)
       .filter((location): location is PluginLocation => Boolean(location))
       .sort(comparePluginLocations),
-    installOptions: node.effectiveInstallOptions ? clone(node.effectiveInstallOptions) : undefined,
   };
 }
 
@@ -940,7 +914,6 @@ function createWritePlan(options: {
     requested: boolean;
     action: PluginDependencyNodeAction;
     reason: PluginDependencyNodeReason;
-    targetInstallOptions?: InstalledScopeInstallOptions;
   }): InternalPlannerNode {
     const key = serializePluginLocation(input.location);
     const existing = nodesByKey.get(key);
@@ -949,9 +922,6 @@ function createWritePlan(options: {
         existing.requested = true;
         existing.action = resolveRootAction(options.mode);
         existing.reason = 'requested';
-        existing.targetInstallOptions = input.targetInstallOptions
-          ? clone(input.targetInstallOptions)
-          : existing.targetInstallOptions;
       } else if (actionPriority(input.action) > actionPriority(existing.action)) {
         existing.action = input.action;
         existing.reason = input.reason;
@@ -965,8 +935,6 @@ function createWritePlan(options: {
       requested: input.requested,
       action: input.action,
       reason: input.reason,
-      targetInstallOptions: input.targetInstallOptions ? clone(input.targetInstallOptions) : undefined,
-      effectiveInstallOptions: input.targetInstallOptions ? clone(input.targetInstallOptions) : undefined,
       dependencyOfKeys: new Set<string>(),
     };
     nodesByKey.set(key, node);
@@ -1064,57 +1032,13 @@ function createWritePlan(options: {
       requested: true,
       action: resolveRootAction(options.mode),
       reason: 'requested',
-      targetInstallOptions: target.installOptions,
     });
-    if (!node.effectiveInstallOptions && target.installOptions) {
-      node.effectiveInstallOptions = clone(target.installOptions);
-    }
     visit(location, manifest, node);
   }
 
   const topologicalOrder = completionOrder
     .map((key) => nodesByKey.get(key)?.location)
     .filter((location): location is PluginLocation => Boolean(location));
-  const reverseTopologicalOrder = [...topologicalOrder].reverse();
-
-  const inheritedInstallOptionsByKey = new Map<string, InstalledScopeInstallOptions | undefined>();
-  for (const key of reverseTopologicalOrder.map((location) => serializePluginLocation(location))) {
-    const node = nodesByKey.get(key);
-    if (!node) {
-      continue;
-    }
-    const installedRecord = options.indexes.installedByLocation.get(key);
-    if (!node.effectiveInstallOptions && installedRecord?.installOptions) {
-      node.effectiveInstallOptions = clone(installedRecord.installOptions);
-    }
-
-    const nodeEdges = edges.filter((edge) => serializePluginLocation(edge.dependent) === key);
-    for (const edge of nodeEdges) {
-      if (edge.declaration.inheritInstallOptions !== true) {
-        continue;
-      }
-      const dependencyKey = serializePluginLocation(edge.dependency);
-      const dependencyNode = nodesByKey.get(dependencyKey);
-      if (!dependencyNode || dependencyNode.action !== 'installDependency') {
-        continue;
-      }
-
-      const nextValue = node.effectiveInstallOptions ? clone(node.effectiveInstallOptions) : undefined;
-      const previousValue = inheritedInstallOptionsByKey.get(dependencyKey);
-      if (
-        inheritedInstallOptionsByKey.has(dependencyKey) &&
-        stableStringifyInstallOptions(previousValue) !== stableStringifyInstallOptions(nextValue)
-      ) {
-        throw new Error(
-          `依赖插件 ${dependencyNode.location.plugin} 收到冲突的安装选项；请先显式安装 ${dependencyNode.location.plugin}，或拆分本次 install 命令。`,
-        );
-      }
-
-      inheritedInstallOptionsByKey.set(dependencyKey, nextValue);
-      dependencyNode.effectiveInstallOptions = nextValue ? clone(nextValue) : undefined;
-    }
-  }
-
   const writeOrder = topologicalOrder.filter((location) => {
     const node = nodesByKey.get(serializePluginLocation(location));
     return node?.action !== 'none';
@@ -1295,7 +1219,6 @@ export function planPluginDependencyUpgradeAll(
       .filter((location) => !initialSkipsByKey.has(serializePluginLocation(location)))
       .map((location) => ({
         location,
-        installOptions: indexes.installedByLocation.get(serializePluginLocation(location))?.installOptions,
       })),
   });
 
@@ -1547,7 +1470,6 @@ export function projectPluginDependencyStatus(options: {
         name: declaration.name,
         minVersion: declaration.minVersion,
         ...(declaration.target?.scope ? { target: { scope: declaration.target.scope } } : {}),
-        ...(declaration.inheritInstallOptions === true ? { inheritInstallOptions: true } : {}),
         ...(declaration.when?.platforms ? { when: { platforms: declaration.when.platforms } } : {}),
       } satisfies PluginDependencyEntry;
     });

@@ -142,7 +142,7 @@ function assertBehaviorCorpus(document, skillName, expectedIds) {
 
 const context = await resolveContext();
 
-test('manifest declares two automatic skills and the global quality gate', async () => {
+test('manifest declares two skills and the global quality gate', async () => {
   const manifest = await readJson(
     path.join(context.sourceRoot, '.agents-plugin', 'plugin.json'),
   );
@@ -150,16 +150,6 @@ test('manifest declares two automatic skills and the global quality gate', async
   assert.equal(manifest.name, 'ask-me');
   assert.equal(manifest.version, pluginVersion);
   assert.equal(manifest.skills, './skills');
-  assert.deepEqual(manifest.skillTriggers, {
-    'requirements-clarifier': {
-      defaultTrigger: 'auto',
-      allowDynamicTrigger: true,
-    },
-    'decision-grill': {
-      defaultTrigger: 'auto',
-      allowDynamicTrigger: true,
-    },
-  });
   assert.deepEqual(manifest.marketplace, {
     category: 'workflow',
     strict: true,
@@ -273,7 +263,6 @@ test('eval manifest delegates both skills to central trigger and conversation dr
       id: 'project-default',
       scope: 'project',
       config: {},
-      triggerPreference: 'default',
       runModel: true,
       requiredForRelease: true,
     },
@@ -281,7 +270,6 @@ test('eval manifest delegates both skills to central trigger and conversation dr
       id: 'user-default',
       scope: 'user',
       config: {},
-      triggerPreference: 'default',
       runModel: false,
       requiredForRelease: true,
     },

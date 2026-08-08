@@ -38,12 +38,6 @@ export function createSharedIdentityId(locator: ProjectArtifactSharedLocator): s
   return `${getPluginSlug(locator.plugin)}.${sha256Hex(serializeProjectArtifactSharedLocator(locator)).slice(0, 12)}`;
 }
 
-export function getSharedRuntimeOwnerFileName(
-  pluginName: string,
-): string {
-  return `${getPluginSlug(pluginName)}.${sha256Hex(pluginName).slice(0, 12)}.json`;
-}
-
 export function createHistoricalLifecycleScopeKey(
   location: PluginLocation,
 ): string {

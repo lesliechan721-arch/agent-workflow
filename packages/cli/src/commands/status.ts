@@ -57,16 +57,8 @@ import {
   resolvePluginConfigStorePath,
   type PluginConfigIssue,
 } from '../utils/plugin-config.js';
-import {
-  assessSharedSkillTriggerRuntimeSemantics,
-  type SharedSkillTriggerRuntimeSemanticsAssessment,
-  type SkillTriggerMaterializationTarget,
-} from '../utils/skill-trigger-preferences.js';
-import {
-} from '../utils/plugin-scripts.js';
-import { resolveAwHome } from '../utils/paths.js';
 import { resolveLifecycleScriptForOs } from '../utils/plugin-script-contract.js';
-import { loadVerifiedHistoricalBundlePlugin } from '../install-state/shared-runtime-owner.js';
+import { loadVerifiedHistoricalBundlePlugin } from '../install-state/historical-bundle.js';
 import {
   createAdapters,
   formatStatusOutput,
@@ -181,10 +173,6 @@ export interface StatusMatrixInstallState {
     | 'markerOnlyUninstall'
     | 'recordUninstallResidual'
     | 'invalid';
-  sharedRuntimeOwnerPresent: boolean;
-  sharedRuntimeParticipatesInOwner: boolean;
-  sharedRuntimeSemanticDelta: 'change' | 'noChange' | 'unknown';
-  sharedRuntimeOwnerConflict: boolean;
 }
 
 export interface StatusSummary {
@@ -553,30 +541,6 @@ function healthLabel(health: StatusHealth): string {
   }[health];
 }
 
-function formatSkillTriggerRuntime(plugin: PluginStatusReport): string | undefined {
-  if (!plugin.skillTriggerRuntimeState) {
-    return undefined;
-  }
-
-  if (plugin.skillTriggerRuntimeState === 'unknown') {
-    return 'unknown';
-  }
-
-  if (plugin.skillTriggerRuntimeState === 'mixed') {
-    return 'mixed';
-  }
-
-  const matches = plugin.skillTriggerRuntimeMatches ?? [];
-  if (matches.length === 1) {
-    return matches[0];
-  }
-  if (matches.length > 1) {
-    return `matches(${matches.join(',')})`;
-  }
-
-  return 'mixed';
-}
-
 function hasRuntimeEvidence(plugin: PluginStatusReport): boolean {
   return (
     plugin.native.pluginInstalled ||
@@ -657,7 +621,6 @@ function isReadySkillsOnlyProjectStatus(plugin: PluginStatusReport): boolean {
     plugin.projectManagedKinds.every((kind) => kind === 'skill') &&
     getRepoManagedProjectItems(plugin).length > 0 &&
     getRepoManagedProjectItems(plugin).every((item) => item.kind === 'skill' && item.state === 'visible') &&
-    plugin.skillTriggerDrift === 'no' &&
     plugin.externalOwnership?.checkState !== 'unknown';
 }
 
@@ -684,7 +647,6 @@ function hasGeneralHealthDowngrade(plugin: PluginStatusReport): boolean {
     (plugin.ledgerStateStatus === 'degraded' && !isReadySkillsOnlyProjectStatus(plugin)) ||
     plugin.catalogCompatibility === 'missing' ||
     plugin.catalogCompatibility === 'capabilityChanged' ||
-    plugin.skillTriggerDrift === 'yes' ||
     hasMissingArtifacts(plugin) ||
     plugin.currentCatalog?.available === false
   );
@@ -704,7 +666,7 @@ function resolveCodexUserNativeHealth(plugin: PluginStatusReport): StatusHealth 
     return 'needsAttention';
   }
 
-  if (hasRepoManagedUnknownItems(plugin) || plugin.skillTriggerDrift === 'unknown') {
+  if (hasRepoManagedUnknownItems(plugin)) {
     return 'unknown';
   }
 
@@ -765,10 +727,7 @@ function resolvePluginHealth(
     return 'needsAttention';
   }
 
-  if (
-    hasRepoManagedUnknownItems(plugin) ||
-    plugin.skillTriggerDrift === 'unknown'
-  ) {
+  if (hasRepoManagedUnknownItems(plugin)) {
     return 'unknown';
   }
 
@@ -974,7 +933,6 @@ async function resolveDependencyStatusByLocation(options: {
         resolvedVersion: record.resolvedVersion,
         installSource: record.installSource,
         dependencyEdges: record.dependencyEdges,
-        installOptions: record.installOptions,
       })),
       healthRecords: ledgerRecords.map(({ location, record }) => {
         const collected = collectedByKey.get(serializePluginLocation(location));
@@ -1134,19 +1092,6 @@ function describeNative(
   }
 
   return undefined;
-}
-
-function describeSkillTrigger(plugin: PluginStatusReport | undefined): string | undefined {
-  if (!plugin?.skillTriggerPreference && !plugin?.skillTriggerRuntimeState) {
-    return undefined;
-  }
-
-  const parts = [
-    plugin.skillTriggerPreference ? `账本偏好 ${plugin.skillTriggerPreference}` : undefined,
-    formatSkillTriggerRuntime(plugin) ? `运行时 ${formatSkillTriggerRuntime(plugin)}` : undefined,
-    plugin.skillTriggerDrift ? `漂移 ${plugin.skillTriggerDrift}` : undefined,
-  ].filter(Boolean);
-  return `skill trigger：${parts.join('，')}`;
 }
 
 function formatRepoManagedItemLabel(
@@ -1317,7 +1262,6 @@ function describeCell(cell: StatusMatrixCell): string {
     describeCatalog(cell.report),
     describeRuntimeHealth(cell),
     describeDependencies(cell.report),
-    describeSkillTrigger(cell.report),
   ].filter(Boolean);
 
   if (cell.report.driftWarnings.length > 0) {
@@ -1453,19 +1397,6 @@ function nextStepForCell(cell: StatusMatrixCell): NextStepInstruction | undefine
     );
   }
   if (
-    cell.report?.ledgerStateStatus === 'degraded' &&
-    cell.report.skillTriggerApplicability === 'overridable' &&
-    (
-      cell.report.skillTriggerDrift === 'unknown' ||
-      !cell.report.skillTriggerPreference
-    )
-  ) {
-    return createManualNextStep(
-      '显式指定 skill trigger',
-      '本机安装账本处于 degraded 状态；下一次 install 或 upgrade 时，请显式指定 skill trigger。',
-    );
-  }
-  if (
     cell.platform === 'codex' &&
     cell.report?.native.marketplaceRegistered === false &&
     cell.report.driftWarnings.some((warning) => warning.includes('Codex marketplace'))
@@ -1480,22 +1411,6 @@ function nextStepForCell(cell: StatusMatrixCell): NextStepInstruction | undefine
       }),
     );
   }
-  if (cell.report?.skillTriggerDrift === 'yes') {
-    return cell.report.skillTriggerApplicability === 'overridable'
-      ? createUiActionNextStep(
-        '重新应用 skill trigger 偏好',
-        '可以进入升级流程，重新把当前 skill trigger 偏好应用到运行时产物。',
-        'runUpgrade',
-        upgradeCommandForCell(cell),
-      )
-      : createUiActionNextStep(
-        '刷新当前 skill runtime',
-        '可以进入升级流程，重新刷新当前 skill 的运行时内容。',
-        'runUpgrade',
-        upgradeCommandForCell(cell),
-      );
-  }
-
   return undefined;
 }
 
@@ -2061,105 +1976,11 @@ function statusHealthForCollectedState(
   return statusHealthFromProjectionKind(installState.kind);
 }
 
-function createSkillTriggerMaterializationTargetForStatus(options: {
-  platform: PlatformName;
-  scope: Scope;
-  executionCwd: string;
-  env: NodeJS.ProcessEnv;
-}): SkillTriggerMaterializationTarget {
-  if (options.platform === 'codex' && options.scope === 'project') {
-    return {
-      platform: 'codex',
-      scope: 'project',
-      kind: 'repoSkill',
-      root: path.join(options.executionCwd, '.agents', 'skills'),
-    };
-  }
-
-  if (options.platform === 'codex') {
-    return {
-      platform: 'codex',
-      scope: 'user',
-      kind: 'localMarketplaceRuntime',
-      root: resolveAwHome(options.env),
-    };
-  }
-
-  return {
-    platform: 'claude',
-    scope: options.scope,
-    kind: 'localMarketplaceRuntime',
-    root: resolveAwHome(options.env),
-  };
-}
-
-async function resolveSharedRuntimeAssessmentForState(options: {
-  location: {
-    plugin: string;
-    platform: PlatformName;
-    scope: Scope;
-    projectKey?: string | null;
-  };
-  executionCwd: string;
-  currentPlugin?: PluginMeta;
-  recordPreference?: string;
-  skillTriggerPreferences?: Record<string, 'manual' | 'auto'>;
-  env: NodeJS.ProcessEnv;
-}): Promise<SharedSkillTriggerRuntimeSemanticsAssessment | null> {
-  if (!options.currentPlugin) {
-    return null;
-  }
-
-  try {
-    return await assessSharedSkillTriggerRuntimeSemantics({
-      pluginName: options.location.plugin,
-      platform: options.location.platform,
-      locationScope: options.location.scope,
-      preference: options.recordPreference === 'manual' || options.recordPreference === 'auto'
-        ? options.recordPreference
-        : 'default',
-      skillTriggerPreferences: options.skillTriggerPreferences,
-      embeddedRoot: path.dirname(options.currentPlugin.rootDir),
-      target: createSkillTriggerMaterializationTargetForStatus({
-        platform: options.location.platform,
-        scope: options.location.scope,
-        executionCwd: options.executionCwd,
-        env: options.env,
-      }),
-    });
-  } catch {
-    return null;
-  }
-}
-
 async function createInstallStateForCell(options: {
   state: Awaited<ReturnType<typeof collectP7Locations>>['locations'][number];
   env: NodeJS.ProcessEnv;
 }): Promise<StatusMatrixInstallState> {
-  const { state, env } = options;
-  const location = normalizePluginLocation({
-    plugin: state.location.plugin,
-    platform: state.location.platform,
-    scope: state.location.scope,
-    projectKey: state.location.projectKey ?? null,
-  });
-  const recordPreference = state.evidence.installRecord.read.status === 'ok'
-    ? state.evidence.installRecord.read.value.record.options?.skillTriggerPreference
-    : undefined;
-  const sharedRuntimeAssessment = await resolveSharedRuntimeAssessmentForState({
-    location,
-    executionCwd: state.target.executionCwd,
-    currentPlugin: state.target.currentPlugin,
-    recordPreference,
-    skillTriggerPreferences: state.effectiveSkillTriggerPreferences,
-    env,
-  });
-  const sharedRuntimeOwnerConflict = Boolean(
-    state.evidence.sharedRuntimeOwner.needsTakeover &&
-    sharedRuntimeAssessment?.participatesInSharedRuntimeOwner === true &&
-    sharedRuntimeAssessment.semanticDelta !== 'noChange',
-  );
-
+  const { state } = options;
   return {
     kind: state.projection.kind,
     summary: state.summary,
@@ -2183,10 +2004,6 @@ async function createInstallStateForCell(options: {
     upgradeAvailable: state.projection.upgradeAvailable,
     dynamicDiagnosticUnavailable: state.projection.dynamicDiagnosticUnavailable,
     nativeTransactionKind: state.projection.nativeTransactionKind,
-    sharedRuntimeOwnerPresent: state.evidence.sharedRuntimeOwner.read.status === 'ok',
-    sharedRuntimeParticipatesInOwner: sharedRuntimeAssessment?.participatesInSharedRuntimeOwner === true,
-    sharedRuntimeSemanticDelta: sharedRuntimeAssessment?.semanticDelta ?? 'unknown',
-    sharedRuntimeOwnerConflict,
   };
 }
 
@@ -3099,10 +2916,6 @@ function fallbackNotInstalledState(): StatusMatrixInstallState {
     upgradeAvailable: false,
     dynamicDiagnosticUnavailable: true,
     nativeTransactionKind: 'none',
-    sharedRuntimeOwnerPresent: false,
-    sharedRuntimeParticipatesInOwner: false,
-    sharedRuntimeSemanticDelta: 'unknown',
-    sharedRuntimeOwnerConflict: false,
   };
 }
 
@@ -3186,7 +2999,6 @@ function createCandidateInstallState(candidate: CommandCandidate): StatusMatrixI
     unusedDependencyHint: candidate.installState.unusedDependencyHint,
     cleanupAvailable: candidate.installState.kind === 'cleanupRequired',
     currentCatalogAvailable: Boolean(candidate.target.currentPlugin),
-    sharedRuntimeOwnerConflict: candidate.installState.ownerConflict,
     issueCodes: candidate.installState.kind === 'cleanupRequired'
       ? ['installRecordInvalid']
       : [],
@@ -3456,11 +3268,6 @@ export async function statusCommand(
         available: state.evidence.dynamicDiagnostic.available,
         unavailableReason: state.evidence.dynamicDiagnostic.unavailableReason,
         unavailable: state.projection.dynamicDiagnosticUnavailable,
-        triggerPreference: (() => {
-          const values = new Set(Object.values(state.effectiveSkillTriggerPreferences ?? {}));
-          return values.size === 1 ? [...values][0]! : null;
-        })(),
-        skillTriggerPreferences: state.effectiveSkillTriggerPreferences ?? {},
         entries: state.evidence.dynamicDiagnostic.entries.map((entry) => entry.entry),
       },
       legacyDynamicTracking: state.evidence.installRecord.artifacts
@@ -3524,22 +3331,6 @@ export async function statusCommand(
         present: state.evidence.projectSharedIdentity.present,
         readStatus: state.evidence.projectSharedIdentity.read?.status ?? 'missing',
         sourceDrift: state.evidence.projectSharedIdentity.sourceDrift,
-      },
-      sharedOwner: {
-        present: state.evidence.sharedRuntimeOwner.read.status === 'ok',
-        readStatus: state.evidence.sharedRuntimeOwner.read.status,
-        ownerMatchesTarget: state.evidence.sharedRuntimeOwner.ownerMatchesTarget,
-        ownerRecordDigestVerified: state.evidence.sharedRuntimeOwner.ownerRecordDigestVerified,
-        needsTakeover: installState.sharedRuntimeOwnerConflict,
-      },
-      sharedSkillTriggerOwner: {
-        present: state.evidence.sharedRuntimeOwner.read.status === 'ok',
-        readStatus: state.evidence.sharedRuntimeOwner.read.status,
-        ownerMatchesTarget: state.evidence.sharedRuntimeOwner.ownerMatchesTarget,
-        ownerRecordDigestVerified: state.evidence.sharedRuntimeOwner.ownerRecordDigestVerified,
-        needsTakeover: installState.sharedRuntimeOwnerConflict,
-        ownerConflict: installState.sharedRuntimeOwnerConflict,
-        suppressedOwnerConflict: state.evidence.sharedRuntimeOwner.needsTakeover && !installState.sharedRuntimeOwnerConflict,
       },
       nativeState: {
         transactionPresent: state.projection.nativeTransactionPresent,

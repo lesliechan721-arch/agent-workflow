@@ -1,5 +1,7 @@
 # `aw` 版本管理需求 Spec
 
+> 历史说明：本文中涉及 Skill 调用行为的手动覆盖、配置、接管或运行时重写设计已废弃，不是当前合同。Skill 是否被平台调用只由 Skill 自身的原生元数据决定。当前合同见 `docs/plugin-authoring.md` 和 `docs/plugin-installation.md`。
+
 日期：2026-05-18
 状态：需求确认稿（前置基线校准）
 基线需求：`docs/dev/specs/aw-tui-ux-polish-followup.md`、`docs/dev/plans/aw-tui-ux-polish-followup-plan.md` 已实施结果

@@ -36,7 +36,6 @@ plugins/<name>/
       "id": "project-default",
       "scope": "project",
       "config": {},
-      "triggerPreference": "default",
       "runModel": true,
       "requiredForRelease": true
     },
@@ -44,7 +43,6 @@ plugins/<name>/
       "id": "user-default",
       "scope": "user",
       "config": {},
-      "triggerPreference": "default",
       "runModel": false,
       "requiredForRelease": true
     }

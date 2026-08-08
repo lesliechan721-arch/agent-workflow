@@ -1254,9 +1254,6 @@ describe('diagnose P7', () => {
         skillKey: 'codex-explore',
       }],
     };
-    currentPlugin.manifest.skillTriggers = {
-      'codex-explore': { defaultTrigger: 'auto', allowDynamicTrigger: true },
-    };
     await fs.writeJson(currentPlugin.manifestPath, currentPlugin.manifest, { spaces: 2 });
     await alignFixtureSourceToPlugin({ fixture, currentPlugin });
     await stripFixtureLifecycle(fixture);
@@ -1265,7 +1262,6 @@ describe('diagnose P7', () => {
       recordId: string;
       record: {
         artifacts: Array<Record<string, unknown>>;
-        options?: Record<string, unknown>;
       };
     };
     record.record.artifacts = [{
@@ -1279,10 +1275,6 @@ describe('diagnose P7', () => {
         path.join(fixture.paths.repoRoot, '.agents', 'skills', 'codex-explore', 'agents', 'openai.yaml'),
       ],
     }];
-    record.record.options = {
-      ...(record.record.options ?? {}),
-      skillTriggerPreference: 'manual',
-    };
     await fs.writeJson(fixture.files.installRecordPath, record, { spaces: 2 });
     await refreshDependencyIndexDigestsForP2(fixture.files.dependencyIndexPath);
 
@@ -1364,16 +1356,11 @@ describe('diagnose P7', () => {
     const payload = JSON.parse(result.output) as {
       locations: Array<{
         findings: string[];
-        dynamicDiagnostic: {
-          triggerPreference: string | null;
-          skillTriggerPreferences?: Record<string, string>;
-        };
         deepDiagnose: {
           artifacts: Array<{
             id: string;
             target: string;
             artifactKey?: string;
-            triggerPreference?: string;
             drift?: boolean;
             driftReasons?: string[];
             fileDiffs?: Array<{ path: string; reason: string }>;
@@ -1387,13 +1374,6 @@ describe('diagnose P7', () => {
       target: 'codex.skill',
       artifactKey: 'codex-explore',
       drift: true,
-    });
-    expect(artifact?.triggerPreference).toBe('auto');
-    expect(payload.locations[0]?.dynamicDiagnostic).toMatchObject({
-      triggerPreference: 'auto',
-      skillTriggerPreferences: {
-        'codex-explore': 'auto',
-      },
     });
     expect(artifact?.driftReasons?.some((reason) => reason.includes('SKILL.md'))).toBe(true);
     expect(artifact?.fileDiffs?.some((entry) => entry.path === 'SKILL.md')).toBe(true);

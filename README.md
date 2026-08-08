@@ -50,12 +50,11 @@ aw config reset codex-explore -s user --yes
 aw config set codex-subagent-guide planningReviewTaskModel gpt-5.6-sol -s user
 aw config set codex-subagent-guide planningReviewTaskReasoningEffort xhigh -s user
 aw config set codex-subagent-guide minimumInitialWaitMinutes 15 -s user
-aw config set git-commit aw.skillTriggers.commit.trigger manual -s user
 ```
 
 `aw cleanup` 会直接清理 AW 能证明归属的异常状态和残留；默认保留 AW 自管配置，也不会运行 uninstall lifecycle。`--remove-config` 只用于 `uninstall` / `cleanup` 主体成功后删除当前 target 的 AW 自管配置；只想删除配置时使用 `aw config reset`。dependency index stale reference 的唯一显式维护入口是 `aw cleanup --dependency-index --prune-stale <token> --yes`。
 
-触发策略不再是安装、升级或重装参数。作者在 manifest 里声明每个 skill 的 `defaultTrigger` 和 `allowDynamicTrigger` 后，用户通过 `aw config` 或主控制台配置页调整 `aw.skillTriggers.<skill>.trigger`；如果 runtime 与当前配置不一致，在主控制台详情页使用“重新应用配置”重放当前配置。
+Skill 的触发行为只由平台原生元数据决定。Codex 使用 `agents/openai.yaml` 的 `policy.allow_implicit_invocation`；Claude Code 使用 `SKILL.md` frontmatter 的 `disable-model-invocation` 和 `user-invocable`。AW 在安装、升级和动态刷新时校验并保留这些值，不提供 CLI、配置页或 manifest 覆盖项。显式调用入口不受影响。
 
 ## 当前插件
 
@@ -155,7 +154,7 @@ make release CLI_VERSION=1.0.0 CATALOG_VERSION=1.2.0
 ## 文档
 
 - `docs/plugin-installation.md`：安装、升级、状态检查和排障
-- `docs/plugin-authoring.md`：插件 manifest、hooks、skill trigger 与 scope 语义
+- `docs/plugin-authoring.md`：插件 manifest、hooks、Skill 原生调用元数据与 scope 语义
 - `docs/architecture.md`：CLI 源码布局和三层分发模型
 - `docs/coding-conventions.md`：TypeScript 风格、边界和关键类型
 - `docs/testing.md`：测试分层和提交前检查

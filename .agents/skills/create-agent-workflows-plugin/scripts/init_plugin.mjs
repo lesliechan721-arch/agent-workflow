@@ -151,14 +151,6 @@ function buildPluginManifest(pluginName, version, minVersion, description, displ
 
   if (!opts.noSkills) {
     manifest.skills = './skills';
-    if (opts.initialSkillName) {
-      manifest.skillTriggers = {
-        [opts.initialSkillName]: {
-          defaultTrigger: 'manual',
-          allowDynamicTrigger: false,
-        },
-      };
-    }
   }
 
   if (opts.withMcp) {
@@ -425,9 +417,7 @@ Options:
   -h, --help                    Show this help message.
 
 Note:
-  New skill scaffolds generate a matching skillTriggers entry:
-  { defaultTrigger: "manual", allowDynamicTrigger: false }.
-  If you want a configurable trigger, edit plugin.json and update that skill entry explicitly.
+  New skill scaffolds use native manual-trigger metadata in SKILL.md and agents/openai.yaml.
 `);
 }
 

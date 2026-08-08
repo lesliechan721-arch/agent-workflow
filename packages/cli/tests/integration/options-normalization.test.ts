@@ -244,7 +244,7 @@ describe('command option normalization', () => {
     ).rejects.toThrow('Unsupported platform "workspace".');
   });
 
-  it('rejects adopt-existing scope misuse and removed public flags before platform writes', async () => {
+  it('rejects adopt-existing scope misuse and removed cleanup flags before platform writes', async () => {
     const workspace = await makeWorkspace();
     const codex = new RecordingAdapter('codex');
     const adapters = createAdapters(codex);
@@ -272,18 +272,6 @@ describe('command option normalization', () => {
         { env: workspace.env, adapters },
       ),
     ).rejects.toThrow('`cleanup --plan` 已移除');
-
-    await expect(
-      reinstallCommand(
-        ['git-commit'],
-        {
-          cwd: workspace.repoRoot,
-          platform: 'codex',
-          takeoverSharedRuntime: true,
-        } as any,
-        { env: workspace.env, adapters },
-      ),
-    ).rejects.toThrow('`reinstall` 不再接受 `--takeover-shared-runtime`');
 
     expect(codex.scopes).toEqual([]);
   });

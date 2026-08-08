@@ -84,6 +84,8 @@ describe('pack smoke', () => {
     const packageJson = await fs.readJson(path.join(packageRoot, 'package.json'));
     expect(packageJson.files).toEqual(['dist/']);
     expect(packageJson.scripts.prepack).toBe('pnpm build');
+    const staleDistPath = path.join(packageRoot, 'dist', 'stale-build-sentinel.js');
+    await fs.outputFile(staleDistPath, 'export const stale = true;\n', 'utf8');
 
     await execFileAsync(
       'pnpm',
@@ -99,8 +101,10 @@ describe('pack smoke', () => {
     expect(tarballs).toHaveLength(1);
     const unpackedPackageRoot = await unpackSingleTarball(packDir, unpackDir);
     const unpackedFiles = await listFilesRecursively(unpackedPackageRoot);
+    await expect(fs.pathExists(staleDistPath)).resolves.toBe(false);
     await expect(fs.pathExists(path.join(unpackedPackageRoot, 'dist', 'index.js'))).resolves.toBe(true);
     await expect(fs.pathExists(path.join(unpackedPackageRoot, 'plugins-dist'))).resolves.toBe(false);
+    expect(unpackedFiles).not.toContain('dist/stale-build-sentinel.js');
     expect(unpackedFiles.some((file) => file.startsWith('plugins-dist/'))).toBe(false);
     await expect(fs.readJson(path.join(unpackedPackageRoot, 'package.json'))).resolves.toMatchObject({
       name: '@yiliang/aw',

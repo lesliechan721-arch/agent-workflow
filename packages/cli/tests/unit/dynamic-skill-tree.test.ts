@@ -10,6 +10,7 @@ import {
   createDynamicSkillExpectedTree,
   createDynamicSkillTreeContentDigest,
   readDynamicSkillTree,
+  validateSkillDirectoriesRoot,
   writeDynamicSkillTree,
 } from '../../src/utils/dynamic-skill-tree.js';
 
@@ -54,7 +55,6 @@ describe('dynamic skill tree', () => {
     const tree = await createDynamicSkillExpectedTree({
       artifact,
       sourceDirs: [common, codex],
-      preference: 'manual',
     });
 
     expect(tree.files['SKILL.md']?.toString()).toBe('# rendered\n');
@@ -66,13 +66,13 @@ describe('dynamic skill tree', () => {
     );
   });
 
-  it('patches Claude frontmatter and writes and reads the complete tree atomically', async () => {
+  it('preserves Claude frontmatter and writes and reads the complete tree atomically', async () => {
     const root = await makeTempRoot();
     const source = path.join(root, 'source');
     const target = path.join(root, 'runtime', 'example');
     await fs.outputFile(
       path.join(source, 'SKILL.md'),
-      '---\nname: example\ndescription: Example skill\n---\nBody\n',
+      '---\nname: example\ndescription: Example skill\ndisable-model-invocation: true\nuser-invocable: true\n---\nBody\n',
     );
     await fs.outputFile(path.join(source, 'scripts', 'helper.sh'), '#!/bin/sh\n');
 
@@ -85,7 +85,6 @@ describe('dynamic skill tree', () => {
     const tree = await createDynamicSkillExpectedTree({
       artifact,
       sourceDirs: [source],
-      preference: 'manual',
     });
     expect(tree.files['SKILL.md']?.toString()).toContain('disable-model-invocation: true');
     expect(tree.files['SKILL.md']?.toString()).toContain('user-invocable: true');
@@ -114,7 +113,6 @@ describe('dynamic skill tree', () => {
         content: { files: { 'references/item.md': 'item\n' } },
       },
       sourceDirs: [source],
-      preference: 'default',
     })).rejects.toThrow('文件路径冲突');
   });
 
@@ -212,6 +210,25 @@ describe('dynamic skill tree', () => {
     await expect(readDynamicSkillTree(linkedRoot, 'claude.skill'))
       .rejects.toThrow('根路径必须是真实目录');
   });
+
+  it.runIf(process.platform !== 'win32')(
+    'rejects symbolic links inside a Skills root before reading linked metadata',
+    async () => {
+      const root = await makeTempRoot();
+      const skillsRoot = path.join(root, 'skills');
+      const outsideSkill = path.join(root, 'outside-skill');
+      await fs.outputFile(path.join(outsideSkill, 'SKILL.md'), '# linked\n');
+      await fs.outputFile(
+        path.join(outsideSkill, 'agents', 'openai.yaml'),
+        'policy:\n  allow_implicit_invocation: "false"\n',
+      );
+      await fs.ensureDir(skillsRoot);
+      await fs.symlink(outsideSkill, path.join(skillsRoot, 'linked'), 'dir');
+
+      await expect(validateSkillDirectoriesRoot(skillsRoot, 'codex.skill'))
+        .rejects.toThrow('Skills 根目录不支持符号链接：linked');
+    },
+  );
 
   it('rejects non-file runtime entries such as Unix sockets', async () => {
     const root = await fs.mkdtemp('/tmp/aw-dst-');

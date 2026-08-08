@@ -315,7 +315,6 @@ describe('plugin lifecycle command integration', () => {
         scope: 'project',
         platform: 'codex',
         scriptTimeoutMs: 46000,
-        skillTrigger: 'default',
       },
       { env: workspace.env, adapters: createAdapters(codex, workspace.repoRoot) },
     );

@@ -139,26 +139,6 @@ describe('command options normalization', () => {
     })).toThrow('`cleanup --plan` 已移除；请直接运行 `aw cleanup`，或先用 `aw status --verbose` 查看当前状态。');
   });
 
-  it('rejects removed takeover flags for install, upgrade, and reinstall', () => {
-    expect(() => normalizeInstallCommandOptions({
-      cwd: '/tmp/workspace',
-      platform: 'codex',
-      takeoverSharedRuntime: true,
-    } as any)).toThrow('`install` 不再接受 `--takeover-shared-runtime`');
-
-    expect(() => normalizeUpgradeCommandOptions({
-      cwd: '/tmp/workspace',
-      all: true,
-      takeoverSharedRuntime: true,
-    } as any)).toThrow('`upgrade` 不再接受 `--takeover-shared-runtime`');
-
-    expect(() => normalizeReinstallCommandOptions({
-      cwd: '/tmp/workspace',
-      platform: 'codex',
-      takeoverSharedRuntime: true,
-    } as any)).toThrow('`reinstall` 不再接受 `--takeover-shared-runtime`');
-  });
-
   it('normalizes catalog selector options and keeps them independent from platform defaults', () => {
     expect(normalizeInstallCommandOptions({
       cwd: '/tmp/workspace',

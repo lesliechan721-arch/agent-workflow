@@ -9,14 +9,12 @@ import {
   createProjectArtifactSharedLocator,
   createRecordId,
   createSharedIdentityId,
-  getSharedRuntimeOwnerFileName,
   validateDynamicArtifactDiagnosticCache,
   validateInstallRecordArtifact,
   validateInstallRecordFile,
   validateProjectArtifactIdentityArtifact,
   validateProjectArtifactIdentityFile,
   validateProjectArtifactSharedLocator,
-  validateSharedSkillTriggerRuntimeOwner,
 } from '../../src/install-state/index.js';
 import { readInstallRecordFileAt } from '../../src/install-state/facade.js';
 import type {
@@ -25,7 +23,6 @@ import type {
   NativeTransactionMarker,
   PluginLocation,
   ProjectArtifactIdentityFile,
-  SharedSkillTriggerRuntimeOwner,
 } from '../../src/install-state/index.js';
 
 const tempDirs: string[] = [];
@@ -76,9 +73,6 @@ function makeInstallRecordFile(overrides: Partial<InstallRecordFile['record']> =
         kind: 'explicit',
         explicitlyRequested: true,
       },
-      options: {
-        skillTriggerPreference: 'manual',
-      },
       artifacts: [{
         kind: 'instruction',
         platform: location.platform,
@@ -93,7 +87,7 @@ function makeInstallRecordFile(overrides: Partial<InstallRecordFile['record']> =
 }
 
 describe('install-state schema', () => {
-  it('accepts a valid install record and option preference', async () => {
+  it('accepts a valid install record', async () => {
     const filePath = path.join(await makeTempDir('aw-install-state-schema-'), `${createRecordId(makeLocation())}.json`);
     const record = makeInstallRecordFile();
     await fs.writeJson(filePath, record, { spaces: 2 });
@@ -102,19 +96,7 @@ describe('install-state schema', () => {
     expect(validated.ok).toBe(true);
   });
 
-  it('rejects invalid options, missing installSource, missing dependencyEdges, and file name mismatches', async () => {
-    const invalidPreference = makeInstallRecordFile({
-      options: {
-        // @ts-expect-error test invalid input
-        skillTriggerPreference: 'later',
-      },
-    });
-    const invalidPreferenceResult = validateInstallRecordFile(invalidPreference);
-    expect(invalidPreferenceResult.ok).toBe(false);
-    if (!invalidPreferenceResult.ok) {
-      expect(invalidPreferenceResult.code).toBe('invalidSkillTriggerPreference');
-    }
-
+  it('rejects missing installSource, missing dependencyEdges, and file name mismatches', async () => {
     const missingInstallSource = makeInstallRecordFile();
     delete (missingInstallSource.record as Record<string, unknown>).installSource;
     const missingInstallSourceResult = validateInstallRecordFile(missingInstallSource);
@@ -169,7 +151,6 @@ describe('install-state schema', () => {
       { name: 'lastRequestedScope', mutate: (record) => { (record.record as Record<string, unknown>).lastRequestedScope = 'project'; } },
       { name: 'lastRequestedAt', mutate: (record) => { (record.record as Record<string, unknown>).lastRequestedAt = '2026-05-07T00:00:00.000Z'; } },
       { name: 'sharedNativeRefs', mutate: (record) => { (record.record as Record<string, unknown>).sharedNativeRefs = {}; } },
-      { name: 'skillTriggerWriteOrder', mutate: (record) => { (record.record as Record<string, unknown>).skillTriggerWriteOrder = 1; } },
       { name: 'dependents', mutate: (record) => { (record.record as Record<string, unknown>).dependents = []; } },
       { name: 'refCount', mutate: (record) => { (record.record as Record<string, unknown>).refCount = 0; } },
       { name: 'autoRemovable', mutate: (record) => { (record.record as Record<string, unknown>).autoRemovable = true; } },
@@ -312,7 +293,7 @@ describe('install-state schema', () => {
     }
   });
 
-  it('keeps recordId, sharedIdentityId, and shared owner filenames stable across slug collisions and path-like plugin names', () => {
+  it('keeps recordId and sharedIdentityId stable across slug collisions and path-like plugin names', () => {
     const cases = [
       '@OpenAI/Docs',
       '@openai docs',
@@ -321,7 +302,6 @@ describe('install-state schema', () => {
     ];
 
     const recordIds = new Set(cases.map((plugin) => createRecordId(makeLocation({ plugin }))));
-    const ownerFiles = new Set(cases.map((plugin) => getSharedRuntimeOwnerFileName(plugin)));
     const identityIds = new Set(cases.map((plugin) => createSharedIdentityId({
       plugin,
       platform: 'codex',
@@ -330,9 +310,7 @@ describe('install-state schema', () => {
     })));
 
     expect(recordIds.size).toBe(cases.length);
-    expect(ownerFiles.size).toBe(cases.length);
     expect(identityIds.size).toBe(cases.length);
-    expect(getSharedRuntimeOwnerFileName('@OpenAI/Docs')).toBe(getSharedRuntimeOwnerFileName('@OpenAI/Docs'));
   });
 
   it('builds lifecycle runtime paths without leaking absolute project keys and keeps runtime ids unique per nonce', async () => {
@@ -541,32 +519,6 @@ describe('install-state schema', () => {
       expectedLocation: cache.location,
       currentRecord: record,
     }).ok).toBe(true);
-  });
-
-  it('validates shared owner payloads and filename rules', () => {
-    const owner: SharedSkillTriggerRuntimeOwner = {
-      version: 1,
-      pluginName: 'git-commit',
-      platform: 'codex',
-      owner: {
-        plugin: 'git-commit',
-        platform: 'codex',
-        scope: 'user',
-      },
-      ownerRecordPath: '/tmp/git-commit.json',
-      ownerRecordDigest: 'sha256:digest',
-      preference: 'manual',
-      updatedAt: '2026-05-07T00:00:01.000Z',
-    };
-
-    expect(validateSharedSkillTriggerRuntimeOwner(owner, {
-      expectedPath: `/tmp/${getSharedRuntimeOwnerFileName('git-commit')}`,
-    }).ok).toBe(true);
-
-    const invalidOwner = validateSharedSkillTriggerRuntimeOwner(owner, {
-      expectedPath: '/tmp/wrong.json',
-    });
-    expect(invalidOwner.ok).toBe(false);
   });
 
   it('validates project identity file against its derived shared identity id', () => {

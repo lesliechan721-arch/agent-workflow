@@ -3,6 +3,11 @@ import path from 'node:path';
 
 import fs from 'fs-extra';
 
+import {
+  calculateFileDigest,
+  calculatePluginBundleFingerprint,
+} from '../../src/utils/plugin-scripts.js';
+
 export type PlatformName = 'codex' | 'claude';
 export type Scope = 'user' | 'project';
 
@@ -67,7 +72,6 @@ export interface InstallRecordDependencyEdge {
     target?: {
       scope?: Scope;
     };
-    inheritInstallOptions?: boolean;
     when?: {
       platforms?: PlatformName[];
     };
@@ -103,9 +107,6 @@ export interface InstallRecord {
     bundleFingerprint: string;
   };
   installSource: InstallRecordInstallSource;
-  options?: {
-    skillTriggerPreference?: 'default' | 'manual' | 'auto';
-  };
   native?: {
     pluginId: string;
     installedByAw: boolean;
@@ -215,17 +216,6 @@ export interface NativeTransactionMarker {
   lastError?: string;
 }
 
-export interface SharedSkillTriggerRuntimeOwner {
-  version: 1;
-  pluginName: string;
-  platform: PlatformName;
-  owner: PluginLocation;
-  ownerRecordPath: string;
-  ownerRecordDigest: string;
-  preference: 'default' | 'manual' | 'auto';
-  updatedAt: string;
-}
-
 export interface MinimalPluginInstallStatePaths {
   rootDir: string;
   repoRoot: string;
@@ -271,7 +261,6 @@ export interface MinimalFixtureResult {
     dependencyIndexPath: string;
     lifecycleRuntimeRoot: string;
     nativeMarkerPath: string;
-    sharedOwnerPath: string;
     externalNativeConfigPath: string;
     externalNativeCachePath: string;
   };
@@ -411,16 +400,10 @@ export const LEGACY_FIELD_DISPOSITIONS: LegacyFieldDisposition[] = [
   { legacyField: 'lastRequestedScope', disposition: 'deleted' },
   { legacyField: 'lastRequestedAt', disposition: 'deleted' },
   { legacyField: 'sharedNativeRefs', disposition: 'deleted' },
-  { legacyField: 'skillTriggerWriteOrder', disposition: 'deleted' },
   {
     legacyField: 'lastResolvedVersion',
     disposition: 'installRecord',
     targetField: 'record.source.pluginVersion',
-  },
-  {
-    legacyField: 'installOptions.skillTriggerPreference',
-    disposition: 'installRecord',
-    targetField: 'record.options.skillTriggerPreference',
   },
   {
     legacyField: 'native.installedByAw',
@@ -638,15 +621,6 @@ function getNativeMarkerPath(paths: MinimalPluginInstallStatePaths, target: Mini
   );
 }
 
-function getSharedOwnerPath(paths: MinimalPluginInstallStatePaths, target: MinimalFixtureTarget): string {
-  return path.join(
-    paths.awHome,
-    'shared-runtime-owners',
-    target.location.platform,
-    `${target.pluginSlug}.${target.pluginHash}.json`,
-  );
-}
-
 function getExternalNativeConfigPath(paths: MinimalPluginInstallStatePaths): string {
   return path.join(paths.codexHome, 'config.toml');
 }
@@ -750,29 +724,41 @@ async function writeHistoricalLifecycleRuntime(
 ): Promise<HistoricalLifecycleRuntimeRef> {
   const runtimeRoot = getLifecycleRuntimeRoot(paths, target);
   const bundleRoot = path.join(runtimeRoot, 'bundle');
-  const manifestPath = path.join(bundleRoot, 'plugin.json');
-  await fs.ensureDir(bundleRoot);
-  await fs.writeJson(
+  const manifestPath = path.join(bundleRoot, '.agents-plugin', 'plugin.json');
+  await fs.outputJson(
     manifestPath,
     {
       name: target.location.plugin,
       version: target.source.pluginVersion,
+      description: `Historical lifecycle fixture for ${target.location.plugin}.`,
       compatibility: {
         aw: {
           minVersion: '0.0.0',
         },
       },
-      artifacts: [createProjectIdentityArtifact(target)],
+      marketplace: {
+        category: 'test',
+        strict: true,
+        policy: {
+          installation: 'AVAILABLE',
+          authentication: 'NONE',
+          products: [target.location.platform === 'codex' ? 'CODEX' : 'CLAUDE'],
+        },
+      },
     },
     { spaces: 2 },
   );
+  const sourceManifestDigest = await calculateFileDigest(manifestPath);
+  const bundleFingerprint = await calculatePluginBundleFingerprint(bundleRoot);
+  target.source.manifestDigest = sourceManifestDigest;
+  target.source.bundleFingerprint = bundleFingerprint;
   return {
     runtimeRoot,
     bundleRoot,
     manifestPath,
     pluginVersion: target.source.pluginVersion,
-    sourceManifestDigest: target.source.manifestDigest,
-    bundleFingerprint: target.source.bundleFingerprint,
+    sourceManifestDigest,
+    bundleFingerprint,
     events: ['install', 'upgrade', 'uninstall'],
     createdAt: target.timestamps.createdAt,
   };
@@ -798,9 +784,6 @@ function createInstallRecord(
       installSource: {
         kind: 'explicit',
         explicitlyRequested: true,
-      },
-      options: {
-        skillTriggerPreference: 'manual',
       },
       ...(target.location.scope === 'user' && target.location.platform === 'codex'
         ? {
@@ -932,25 +915,6 @@ async function writeNativeMarker(
   return marker;
 }
 
-async function writeSharedRuntimeOwner(
-  paths: MinimalPluginInstallStatePaths,
-  target: MinimalFixtureTarget,
-  recordPath: string,
-): Promise<SharedSkillTriggerRuntimeOwner> {
-  const owner: SharedSkillTriggerRuntimeOwner = {
-    version: 1,
-    pluginName: target.location.plugin,
-    platform: target.location.platform,
-    owner: target.location,
-    ownerRecordPath: recordPath,
-    ownerRecordDigest: sha256(await fs.readFile(recordPath)),
-    preference: 'manual',
-    updatedAt: target.timestamps.updatedAt,
-  };
-  await fs.outputJson(getSharedOwnerPath(paths, target), owner, { spaces: 2 });
-  return owner;
-}
-
 async function writeExternalNativeEvidence(
   paths: MinimalPluginInstallStatePaths,
   target: MinimalFixtureTarget,
@@ -975,7 +939,6 @@ function fixtureFiles(paths: MinimalPluginInstallStatePaths, target: MinimalFixt
     dependencyIndexPath: getDependencyIndexPath(paths),
     lifecycleRuntimeRoot: getLifecycleRuntimeRoot(paths, target),
     nativeMarkerPath: getNativeMarkerPath(paths, target),
-    sharedOwnerPath: getSharedOwnerPath(paths, target),
     externalNativeConfigPath: getExternalNativeConfigPath(paths),
     externalNativeCachePath: getExternalNativeCachePath(paths, target.pluginId),
   };
@@ -1063,10 +1026,6 @@ export async function createMinimalPluginInstallStateFixtureBuilder(
     target: MinimalFixtureTarget,
     operation?: 'install' | 'uninstall',
   ) => Promise<NativeTransactionMarker>;
-  writeSharedRuntimeOwner: (
-    target: MinimalFixtureTarget,
-    recordPath: string,
-  ) => Promise<SharedSkillTriggerRuntimeOwner>;
   writeExternalNativeEvidence: (target: MinimalFixtureTarget) => Promise<void>;
   readScopedInstallRecordDirectory: (options: {
     platform: PlatformName;
@@ -1085,7 +1044,6 @@ export async function createMinimalPluginInstallStateFixtureBuilder(
     writeDependencyIndex: (records) => writeDependencyIndex(paths, records),
     writeHistoricalLifecycleRuntime: (target) => writeHistoricalLifecycleRuntime(paths, target),
     writeNativeMarker: (target, operation) => writeNativeMarker(paths, target, operation),
-    writeSharedRuntimeOwner: (target, recordPath) => writeSharedRuntimeOwner(paths, target, recordPath),
     writeExternalNativeEvidence: (target) => writeExternalNativeEvidence(paths, target),
     readScopedInstallRecordDirectory: (options) => readScopedInstallRecordDirectory(paths, options),
   };
@@ -1299,7 +1257,6 @@ export async function writeMinimalPluginInstallStateFixture(options: {
       await builder.writeDiagnosticCache(userTarget);
       await builder.writeDependencyIndex([{ target: userTarget, record }]);
       await builder.writeNativeMarker(userTarget, 'install');
-      await builder.writeSharedRuntimeOwner(userTarget, getRecordPath(builder.paths, userTarget));
       return {
         scenario: 'recordAndInstallMarkerResidual',
         state: projectFixtureState('recordAndInstallMarkerResidual'),

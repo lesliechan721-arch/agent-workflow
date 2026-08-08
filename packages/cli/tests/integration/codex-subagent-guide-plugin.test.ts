@@ -112,7 +112,7 @@ describe('codex-subagent-guide dynamic artifacts', () => {
     expect(skill).not.toContain('status=progress');
     expect(metadata).toContain('allow_implicit_invocation: true');
     expect(metadata).toContain(
-      'short_description: 子代理任务分类、参数选择、上下文继承、等待与清理原则',
+      'short_description: "子代理任务分类、参数选择、上下文继承、等待与清理原则"',
     );
 
     const roleContents = new Map<string, string>();

@@ -232,7 +232,6 @@ async function writeInstalledProjectRecord(options: {
     declaration: {
       name: string;
       target?: { scope?: 'user' | 'project' };
-      inheritInstallOptions?: boolean;
       when?: { platforms?: Array<'codex' | 'claude'> };
     };
   }>;

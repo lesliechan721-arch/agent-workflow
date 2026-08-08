@@ -10,21 +10,19 @@ import {
   readDynamicArtifactDiagnosticCacheAt,
   writeNativeTransactionMarker,
 } from './facade.js';
-import { sha256Hex, stableStringify } from './internal.js';
+import { stableStringify } from './internal.js';
 import {
   getDiagnosticCachePath,
   getGlobalDependencyIndexPath,
   getInstallRecordPath,
   getNativeTransactionMarkerPath,
   getProjectArtifactSharedIdentityPath,
-  getSharedSkillTriggerRuntimeOwnerPath,
 } from './paths.js';
 import {
   validateDynamicArtifactDiagnosticCache,
   validateInstallRecordFile,
   validateNativeTransactionMarker,
   validateProjectArtifactIdentityFile,
-  validateSharedSkillTriggerRuntimeOwner,
 } from './schema.js';
 import type {
   DynamicArtifactDiagnosticCache,
@@ -34,7 +32,6 @@ import type {
   PluginLocation,
   ProjectArtifactIdentityFile,
   ProjectArtifactSharedLocator,
-  SharedSkillTriggerRuntimeOwner,
 } from './types.js';
 
 export interface InstallStateReceiptWarning {
@@ -373,39 +370,6 @@ function validateNativeMarkerOrThrow(value: unknown): void {
   }
 }
 
-function validateSharedRuntimeOwnerOrThrow(value: unknown, filePath: string): void {
-  const validated = validateSharedSkillTriggerRuntimeOwner(value, { expectedPath: filePath });
-  if (!validated.ok) {
-    throw new Error(validated.error);
-  }
-}
-
-async function buildSharedRuntimeOwnerFromRecord(options: {
-  recordFile: InstallRecordFile;
-  recordPath: string;
-  updatedAt?: string;
-}): Promise<SharedSkillTriggerRuntimeOwner> {
-  const location: PluginLocation = {
-    plugin: options.recordFile.record.pluginName,
-    platform: options.recordFile.record.platform,
-    scope: options.recordFile.record.scope,
-    ...(options.recordFile.record.scope === 'project'
-      ? { projectKey: options.recordFile.record.projectKey }
-      : {}),
-  };
-
-  return {
-    version: 1,
-    pluginName: options.recordFile.record.pluginName,
-    platform: options.recordFile.record.platform,
-    owner: location,
-    ownerRecordPath: options.recordPath,
-    ownerRecordDigest: sha256Hex(await fs.readFile(options.recordPath)),
-    preference: options.recordFile.record.options?.skillTriggerPreference ?? 'default',
-    updatedAt: options.updatedAt ?? options.recordFile.record.updatedAt,
-  };
-}
-
 function diagnosticEntryKey(entry: Pick<DynamicArtifactDiagnosticEntry, 'id' | 'target' | 'artifactKey' | 'roleKey'>): string {
   return stableStringify({
     id: entry.id,
@@ -650,113 +614,6 @@ export function createNativeTransactionMarkerDeleteStage(options: {
     filePath: getNativeTransactionMarkerPath(options.pluginNameOrId, options.env),
     rollbackWarningCode: 'nativeMarkerRollbackFailed',
     finalizeWarningCode: 'nativeMarkerFinalizeFailed',
-  });
-}
-
-export function createSharedRuntimeOwnerWriteStage(options: {
-  recordFile: InstallRecordFile;
-  recordPath: string;
-  env?: NodeJS.ProcessEnv;
-}): Promise<InstallStateTransactionStage> {
-  return (async () => {
-    const ownerPath = assertTestWritablePath(
-      getSharedSkillTriggerRuntimeOwnerPath({
-        pluginName: options.recordFile.record.pluginName,
-        platform: options.recordFile.record.platform,
-        env: options.env,
-      }),
-      'shared runtime owner',
-      '用 createIsolatedTestEnv() 生成默认 AW_HOME，或通过 registerWritableStateRoot() 登记 shared runtime owner 目标路径。',
-    );
-    const stagingPath = createTempPath(ownerPath, 'aw-staging');
-    const backupPath = createTempPath(ownerPath, 'aw-backup');
-    let committed = false;
-
-    return {
-      label: 'shared runtime owner',
-      async commit() {
-        if (committed) {
-          return;
-        }
-        const value = await buildSharedRuntimeOwnerFromRecord({
-          recordFile: options.recordFile,
-          recordPath: options.recordPath,
-        });
-        validateSharedRuntimeOwnerOrThrow(value, ownerPath);
-        await fs.ensureDir(path.dirname(ownerPath));
-        await writeJsonFile(stagingPath, value);
-        if (await fs.pathExists(ownerPath)) {
-          await fs.move(ownerPath, backupPath, { overwrite: true });
-        }
-        await fs.move(stagingPath, ownerPath, { overwrite: true });
-        committed = true;
-      },
-      async rollback() {
-        try {
-          if (committed) {
-            if (await fs.pathExists(backupPath)) {
-              await removePathIfExists(ownerPath);
-              await fs.move(backupPath, ownerPath, { overwrite: true });
-            } else {
-              await removePathIfExists(ownerPath);
-            }
-          } else {
-            await removePathIfExists(stagingPath);
-          }
-          return undefined;
-        } catch (error) {
-          return createWarning(
-            'sharedRuntimeOwnerRollbackFailed',
-            'Shared runtime owner rollback failed.',
-            ownerPath,
-            error,
-          );
-        }
-      },
-      async finalize() {
-        try {
-          await Promise.all([
-            removePathIfExists(stagingPath),
-            removePathIfExists(backupPath),
-          ]);
-          return undefined;
-        } catch (error) {
-          return createWarning(
-            'sharedRuntimeOwnerFinalizeFailed',
-            'Shared runtime owner finalize failed.',
-            ownerPath,
-            error,
-          );
-        }
-      },
-    };
-  })();
-}
-
-export function createSharedRuntimeOwnerDeleteStage(options: {
-  pluginName: string;
-  platform: PluginLocation['platform'];
-  env?: NodeJS.ProcessEnv;
-}): InstallStateTransactionStage;
-export function createSharedRuntimeOwnerDeleteStage(options: {
-  filePath: string;
-}): InstallStateTransactionStage;
-export function createSharedRuntimeOwnerDeleteStage(options: {
-  pluginName?: string;
-  platform?: PluginLocation['platform'];
-  env?: NodeJS.ProcessEnv;
-  filePath?: string;
-}): InstallStateTransactionStage {
-  const filePath = options.filePath ?? getSharedSkillTriggerRuntimeOwnerPath({
-    pluginName: options.pluginName!,
-    platform: options.platform!,
-    env: options.env,
-  });
-  return createAtomicDeleteStage({
-    label: 'shared runtime owner',
-    filePath,
-    rollbackWarningCode: 'sharedRuntimeOwnerRollbackFailed',
-    finalizeWarningCode: 'sharedRuntimeOwnerFinalizeFailed',
   });
 }
 

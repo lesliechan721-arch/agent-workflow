@@ -7,7 +7,7 @@
 - `extensions.*`（`instructions`/`permissions`/公共 `hooks`/`nativeHooks`/`agents`）用于声明简单静态产物，不新增顶层 `claude` block
 - 路径字段（`skills`、`slashCommands`、`mcpServers`、`apps`）必须以 `./` 开头，单个字符串形式
 - 公共 `slashCommands` 是唯一的跨平台斜杠命令源码入口；`slash-commands/` 目录只允许根目录直属 `*.md` 命令文件和保留 `assets/`
-- `skillTriggers` 为每个显式受管 skill 声明 `defaultTrigger` 和 `allowDynamicTrigger`；静态 `skills/<skill>` 以及动态 `codex.skill` / `claude.skill` 必须有对应 entry，公共 `slashCommands` 生成的 Codex manual-only skill 由 AW 注入 fixed/manual 字段
+- Skill 的触发行为只由平台原生元数据决定；Codex Skill 必须在 `agents/openai.yaml` 显式声明 `policy.allow_implicit_invocation`，Claude Skill 使用 `SKILL.md` frontmatter 的 `disable-model-invocation` 和 `user-invocable`
 - `buildConfig` 控制 build 阶段 bundle 生成，不是平台私有字段出口
 - `scripts` / `config` 是 AW CLI 自管运行时能力：声明 lifecycle、动态 artifact renderer、标准配置 helper、Node package/test 入口，以及 `aw config` 使用的 schema；没有声明 `scripts.lifecycle` 或 `config.schema` 只是表示插件没有这些能力，不会被 status 当作默认问题
 - `artifacts.targets` 声明动态 artifact 的静态能力面；安装、升级、status、project preflight 和 install record artifact identity 都以它作为 renderer 执行前的真值；没有声明动态 target 的静态插件不会因此产生 artifact 缺失或刷新失败诊断
@@ -99,8 +99,7 @@ AW-managed `scripts` / `config` 不会写入平台 manifest。build 会在隔离
         "name": "review-shared-tools",
         "minVersion": "0.4.0",
         "target": { "scope": "user" },
-        "when": { "platforms": ["codex"] },
-        "inheritInstallOptions": true
+        "when": { "platforms": ["codex"] }
       }
     ]
   }
@@ -110,12 +109,11 @@ AW-managed `scripts` / `config` 不会写入平台 manifest。build 会在隔离
 字段规则：
 
 - `dependencies` 只允许 `plugins`；`dependencies.plugins` 必须是数组，空数组等价于无依赖但会收到作者工具 warning。
-- 每个 entry 只允许 `name`、`minVersion`、`target`、`inheritInstallOptions`、`when`。
+- 每个 entry 只允许 `name`、`minVersion`、`target`、`when`。
 - `name` 使用和插件名相同的小写短横线格式，不能指向自己，且必须能在当前 AW catalog 中解析。
 - `minVersion` 可选，表示依赖插件的最低可接受版本，必须是严格 SemVer；它不是 range，不支持上界、`^`、`~` 或比较器组合。
 - `when.platforms` 只允许非空的 `codex` / `claude` 数组；省略 `when` 表示两个平台都生效。同一 manifest 内，同名依赖的平台条件不能重叠。
 - `target.scope` 只允许 `user` 或 `project`。不支持 `target.platform`，依赖永远跟随父插件本次安装或升级时已经确定的平台。
-- `inheritInstallOptions` 只能是 boolean。省略或 `false` 时，依赖不会继承父插件的插件级安装选项；设为 `true` 时只对需要自动安装的依赖生效，多个父插件给同一依赖传入冲突选项会 fail fast。SkillTrigger 已迁移为 AW 内建配置，不通过依赖安装选项传递。
 - 不支持旧式 `version`、`range`、`marketplace`、`source`、`optional`、`dev`、`peer`、跨 marketplace 依赖、外部 URL/npm/git/local path 依赖或 dependency entry 覆盖 platform。这些字段会被作者工具和发布门禁拒绝。
 
 scope 选择是 location-aware 的。父插件安装到 `user` scope 时，只能依赖同平台的 `user` scope 健康安装；如果当前平台生效的依赖写了 `target.scope: "project"`，命令会在写入前失败。父插件安装到 `project` scope 且依赖省略 `target.scope` 时，AW 会优先选择当前 project，当前 project 缺失或不健康时可复用 user scope；显式 `target.scope: "user"` 只看 user，显式 `target.scope: "project"` 只看当前 project，不做 fallback。
@@ -231,12 +229,6 @@ renderer 的 stdout 必须只输出 JSON `ArtifactPlan`，stderr 只作为失败
 ```json
 {
   "skills": "./skills",
-  "skillTriggers": {
-    "codex-explore": {
-      "defaultTrigger": "manual",
-      "allowDynamicTrigger": true
-    }
-  },
   "artifacts": {
     "targets": [
       {
@@ -268,7 +260,7 @@ renderer 的 stdout 必须只输出 JSON `ArtifactPlan`，stderr 只作为失败
 
 renderer 用 `content.files` 返回需要动态生成或覆盖的 UTF-8 文本。key 是 Skill 根目录内的 POSIX 相对文件路径；不接受绝对路径、反斜杠、`.`、`..` 或路径前缀冲突。AW 在所有 `sourceDirs` 合并后覆盖这些文件。renderer 不需要重复返回未变化的静态文件。
 
-最终 `codex.skill` 必须有 `SKILL.md` 和 `agents/openai.yaml`。AW 会按 effective SkillTrigger 配置 patch `agents/openai.yaml`：`auto` 设置 `policy.allow_implicit_invocation: true`，`manual` 设置为 `false`。project scope 写 `.agents/skills/<skillKey>`；user scope 写 Codex 用户 Skill runtime。最终 `claude.skill` 必须有 `SKILL.md`。AW 会 patch `SKILL.md` frontmatter 中的 Claude 调用策略，并写入 `~/.claude/skills/<skillKey>` 或项目 `.claude/skills/<skillKey>`。Claude Skill 不使用插件 namespace；同名未受管目录会阻断写入。
+最终 `codex.skill` 必须有 `SKILL.md` 和 `agents/openai.yaml`，且 `policy.allow_implicit_invocation` 必须是 boolean。project scope 写 `.agents/skills/<skillKey>`；user scope 写 Codex 用户 Skill runtime。最终 `claude.skill` 必须有 `SKILL.md`，其中 `disable-model-invocation` 和 `user-invocable` 如有声明必须是 boolean。AW 校验合并后的最终文件树，并原样保留这些平台原生元数据。Claude Skill 不使用插件 namespace；同名未受管目录会阻断写入。
 
 renderer plan 示例：
 
@@ -331,7 +323,7 @@ pnpm plugin:test --all
 - matcherless 原生事件不要写 `matcher`；`agentOverrides` 只用于公共 extension 条目，不用于 `nativeHooks`。
 - 公共 `session_stop` 已移除；Claude `Stop` / `SessionEnd`、Codex `Stop` 都应写到对应平台的 `nativeHooks`。
 
-## Skill Trigger Rules（两平台不共享开关）
+## Skill 原生调用元数据（两平台不共享开关）
 
 - **Codex 自动触发**：取决于 `agents/openai.yaml` 的 `policy.allow_implicit_invocation`
 - **Codex 显式触发**：用 `$skill-name` 或结构化 skill mention
@@ -339,23 +331,9 @@ pnpm plugin:test --all
 - **Claude 用户手动触发**：取决于 `SKILL.md` frontmatter 的 `user-invocable`
 - **Claude 模型自动调用**：取决于 `SKILL.md` frontmatter 的 `disable-model-invocation`
 
-`.agents-plugin/plugin.json` 里的 `skillTriggers` 为显式受管 skill 定义默认触发策略，以及用户是否可以通过 AW 配置动态修改。例如：
+平台原生元数据是唯一真值。作者直接在 Skill 源码中设计模型是否可以自动调用，以及用户是否可以显式调用。AW 不在插件 manifest、安装参数、`aw config` 或主控制台中提供覆盖入口，也不会在安装、升级、刷新或重放时改写这些值。
 
-```json
-{
-  "skills": "./skills",
-  "skillTriggers": {
-    "commit": {
-      "defaultTrigger": "manual",
-      "allowDynamicTrigger": true
-    }
-  }
-}
-```
-
-`defaultTrigger` 只允许 `manual` 或 `auto`。`manual` 禁止模型自动触发但保留显式调用入口；`auto` 允许模型自动触发。`allowDynamicTrigger: true` 表示用户可以通过 `aw config set <plugin> aw.skillTriggers.<skill>.trigger manual|auto` 或主控制台配置页修改该 skill；`allowDynamicTrigger: false` 表示字段固定只读，effective 值永远等于 `defaultTrigger`。旧的安装期覆盖字段不再是有效合同，新 manifest 中不能继续使用。
-
-静态 `skills/<skill>` 子目录以及动态 `codex.skill` / `claude.skill` 的 `skillKey` 必须有 `skillTriggers.<skill>` entry。公共 `slashCommands` 在 Codex 侧生成的 manual-only skill 不要求作者补 entry；AW 会注入 `defaultTrigger: "manual"`、`allowDynamicTrigger: false` 的 fixed built-in 字段。SkillTrigger 内建配置存储在 AW 保留 namespace `$aw.skillTriggers` 下，不进入插件作者的普通 `config.schema`，JSON 读命令会把字段标记为 `kind: "builtIn"`、`reserved: true`。
+静态 Skill 和动态 Skill 都按最终文件树校验。Codex 的 `policy.allow_implicit_invocation: false` 只关闭模型隐式调用，仍可通过 `$skill-name` 显式调用。Claude 是否保留显式入口由 `user-invocable` 决定，与 `disable-model-invocation` 独立。公共 `slashCommands` 在 Codex 侧生成的 manual-only Skill 使用 `policy.allow_implicit_invocation: false`，不要求作者手写 `agents/openai.yaml`。
 
 详见 `.agents/skills/create-agent-workflows-plugin/references/skills-and-triggers.md`。
 
@@ -366,7 +344,6 @@ pnpm plugin:test --all
 - **Codex project scope**：不启用 user native plugin，不写用户级 `[marketplaces]` 或 `[plugins]`，也不调用 Codex native CLI / app-server；只写当前仓库 `.agents/skills`、`.codex/config.toml`、`.codex/hooks.json`、`.codex/rules/`、`.codex/agents/` 和 `.agent-workflows/project-artifacts/`。写入前仍要求本机 Codex `>= 0.145.0`，通过门禁后不能产生用户级 native 副作用。
 - **Apps 与 Codex project installability**：`apps` 是 Codex 能力，`products=["CLAUDE"] + apps` 是矛盾配置，会在 manifest/build 校验时失败。包含 `apps` 的 Codex 插件在 project scope 会 fail fast；纯 native-only 插件也不能以 project scope 安装。面向项目安装的插件至少要提供 repo-visible surface，例如 skills、MCP、slashCommands、instructions、permissions、hooks、nativeHooks 或 agents。
 - **Project key**：Claude project scope 以当前工作目录的真实路径为 key；Codex project scope 会先解析仓库根目录，再以真实路径为 key。
-- **共享 runtime owner**：`~/.aw` 对同一用户共享。Codex user scope 和 Claude native runtime 的同一 plugin/platform 同时只有一个 owner 可以控制 shared skill trigger runtime；owner 冲突只作为写命令 blocker、diagnostic 或状态详情展示。用户需要卸载、cleanup 或调整 owner 对应的有效安装后重试原写命令。Codex project scope 不参与 shared runtime owner 合同，只改当前仓库 repo skill。
 - **Project artifact identity**：project scope 会维护 `.agent-workflows/project-artifacts/<platform>/<sharedIdentityId>.json`。它是可提交的共享身份线索，不能保存本机绝对路径、`projectKey` 或 record id；fresh clone 后通过它和 repo-visible artifacts 进入“可认领”状态。`kind: "skill"` 和 `kind: "mcpServer"` 必须写 `artifactKey`。MCP `artifactKey` 使用 rendered `.mcp.json` 的原始 server key，包含点号、空格或 Unicode 时仍按 TOML quoted key 写入 `.codex/config.toml`，例如 `[mcp_servers."acme.tools v1"]`。
 
 Codex user native 安装失败时，作者和用户会在 `aw status --json` 里看到更细的诊断：`native.pluginInstalled` 表示 cache installed，`native.pluginEnabled` 表示 config enabled，native transaction marker 表示 native 写入已发生但 AW record 尚未提交。插件 lifecycle 应保持幂等，因为 Codex CLI 写入成功后如果 lifecycle、artifact apply、diagnostic cache 或 record commit 失败，用户可能重试同一条 `aw install`，或在状态进入 `cleanupRequired` 后运行 cleanup 收口；marker-only cleanup 不会运行 uninstall lifecycle。

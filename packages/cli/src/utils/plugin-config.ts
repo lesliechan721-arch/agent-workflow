@@ -18,7 +18,6 @@ import type {
   PluginManifestSource,
   PluginMeta,
   Scope,
-  SkillTriggerPreference,
 } from '../types.js';
 import { readInstallRecordForLocation } from '../install-state/facade.js';
 import type { InstallRecordFile, PluginLocation } from '../install-state/types.js';
@@ -27,7 +26,6 @@ import {
   calculateFileDigest,
   calculatePluginBundleFingerprint,
 } from './plugin-scripts.js';
-import { resolveSkillTriggerConfigEntries } from './skill-trigger-preferences.js';
 import {
   assertTestReadablePath,
   assertTestWritablePath,
@@ -236,8 +234,6 @@ export interface ResolvedPluginConfigSchemaAccess {
 
 const CONFIG_DIR = 'plugin-config';
 const CONFIG_FILE = 'config.json';
-const RESERVED_AW_NAMESPACE = '$aw';
-const BUILT_IN_SKILL_TRIGGER_PREFIX = 'aw.skillTriggers.';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -446,86 +442,8 @@ async function collectInstalledConfigSchemaConsumers(options: {
   return consumers;
 }
 
-export function isBuiltInConfigKey(key: string): boolean {
-  return parseBuiltInSkillTriggerKey(key) !== null;
-}
-
-export function parseBuiltInSkillTriggerKey(
-  key: string,
-): { skillName: string } | null {
-  if (!key.startsWith(BUILT_IN_SKILL_TRIGGER_PREFIX) || !key.endsWith('.trigger')) {
-    return null;
-  }
-  const skillName = key.slice(
-    BUILT_IN_SKILL_TRIGGER_PREFIX.length,
-    key.length - '.trigger'.length,
-  ).trim();
-  return skillName === '' ? null : { skillName };
-}
-
-export function toBuiltInSkillTriggerLogicalKey(skillName: string): string {
-  return `${BUILT_IN_SKILL_TRIGGER_PREFIX}${skillName}.trigger`;
-}
-
-function getNonReservedStoreEntries(values: Record<string, unknown>): Record<string, unknown> {
-  return Object.fromEntries(
-    Object.entries(values).filter(([key]) => key !== RESERVED_AW_NAMESPACE),
-  );
-}
-
-function storeContainsOnlyBuiltInData(values: Record<string, unknown>): boolean {
-  if (Object.keys(getNonReservedStoreEntries(values)).length > 0) {
-    return false;
-  }
-  const awNamespace = values[RESERVED_AW_NAMESPACE];
-  if (awNamespace === undefined) {
-    return true;
-  }
-  if (!isRecord(awNamespace)) {
-    return false;
-  }
-  const keys = Object.keys(awNamespace);
-  if (keys.some((key) => key !== 'skillTriggers')) {
-    return false;
-  }
-  if (awNamespace.skillTriggers === undefined) {
-    return true;
-  }
-  return typeof awNamespace.skillTriggers === 'object'
-    && awNamespace.skillTriggers !== null
-    && !Array.isArray(awNamespace.skillTriggers);
-}
-
-interface StoredSkillTriggerValue {
-  skillName: string;
-  trigger: Exclude<SkillTriggerPreference, 'default'>;
-}
-
-function readStoredSkillTriggers(values: Record<string, unknown>): StoredSkillTriggerValue[] {
-  const awNamespace = values[RESERVED_AW_NAMESPACE];
-  if (!isRecord(awNamespace)) {
-    return [];
-  }
-  const skillTriggers = awNamespace.skillTriggers;
-  if (!isRecord(skillTriggers)) {
-    return [];
-  }
-
-  const stored: StoredSkillTriggerValue[] = [];
-  for (const [skillName, entry] of Object.entries(skillTriggers)) {
-    if (!isRecord(entry)) {
-      continue;
-    }
-    const trigger = entry.trigger;
-    if (trigger !== 'manual' && trigger !== 'auto') {
-      continue;
-    }
-    stored.push({
-      skillName,
-      trigger,
-    });
-  }
-  return stored.sort((left, right) => left.skillName.localeCompare(right.skillName));
+function getStoreEntries(values: Record<string, unknown>): Record<string, unknown> {
+  return { ...values };
 }
 
 export function assertSafePluginConfigSegment(pluginName: string): string {
@@ -1076,7 +994,7 @@ export async function resolveEffectivePluginConfig(options: {
     ['project', projectStore, 'shared'],
     ['project', projectLocalStore, 'local'],
   ] as const) {
-    const plainEntries = getNonReservedStoreEntries(store.values);
+    const plainEntries = getStoreEntries(store.values);
     for (const key of Object.keys(plainEntries)) {
       if (!schemaKeys.has(key)) {
         ignoredUnknownKeys.push({
@@ -1307,9 +1225,9 @@ export async function resolveProjectArtifactRenderConfig(options: {
     sources[key] = 'missing';
   }
 
-  const projectPlainEntries = getNonReservedStoreEntries(projectStore.values);
-  const userPlainEntries = getNonReservedStoreEntries(userStore.values);
-  const projectLocalPlainEntries = getNonReservedStoreEntries(projectLocalStore.values);
+  const projectPlainEntries = getStoreEntries(projectStore.values);
+  const userPlainEntries = getStoreEntries(userStore.values);
+  const projectLocalPlainEntries = getStoreEntries(projectLocalStore.values);
 
   for (const key of Object.keys(projectPlainEntries)) {
     if (!schemaKeys.has(key)) {
@@ -1422,7 +1340,7 @@ export async function resolveProjectLocalPluginConfigView(options: {
 
   for (const [key, field] of Object.entries(effective.schema)) {
     sources[key] = 'missing';
-    const localPlainEntries = getNonReservedStoreEntries(effective.stores.projectLocal.values);
+    const localPlainEntries = getStoreEntries(effective.stores.projectLocal.values);
     if (!Object.hasOwn(localPlainEntries, key)) {
       continue;
     }
@@ -1532,7 +1450,7 @@ export async function resolveProjectScopedPluginConfigView(options: {
       }
     }
 
-    const userPlainEntries = getNonReservedStoreEntries(effective.stores.user.values);
+    const userPlainEntries = getStoreEntries(effective.stores.user.values);
     if (Object.hasOwn(userPlainEntries, key)) {
       const resolvedUser = await resolveRedactedLayerValue({
         key,
@@ -1546,7 +1464,7 @@ export async function resolveProjectScopedPluginConfigView(options: {
       }
     }
 
-    const projectPlainEntries = getNonReservedStoreEntries(effective.stores.project.values);
+    const projectPlainEntries = getStoreEntries(effective.stores.project.values);
     if (Object.hasOwn(projectPlainEntries, key)) {
       const resolvedProject = await resolveRedactedLayerValue({
         key,
@@ -1560,7 +1478,7 @@ export async function resolveProjectScopedPluginConfigView(options: {
       }
     }
 
-    const localPlainEntries = getNonReservedStoreEntries(effective.stores.projectLocal.values);
+    const localPlainEntries = getStoreEntries(effective.stores.projectLocal.values);
     if (Object.hasOwn(localPlainEntries, key)) {
       const resolvedLocal = await resolveRedactedLayerValue({
         key,
@@ -1639,7 +1557,7 @@ function buildLegacyConfigStoreEntries(options: {
     if (options.scope === 'project' && options.projectLayer === 'local' && storeKind !== 'projectLocal') {
       continue;
     }
-    const plainEntries = getNonReservedStoreEntries(store.values);
+    const plainEntries = getStoreEntries(store.values);
     const hasLegacyPlainKeys = Object.keys(plainEntries).some((key) => !schemaKeys.has(key));
     if (!hasLegacyPlainKeys) {
       continue;
@@ -1690,9 +1608,9 @@ async function buildManifestFieldEntries(options: {
       env: options.env,
     }),
   ]);
-  const userPlainEntries = getNonReservedStoreEntries(userStore.values);
-  const projectPlainEntries = getNonReservedStoreEntries(projectStore.values);
-  const localPlainEntries = getNonReservedStoreEntries(projectLocalStore.values);
+  const userPlainEntries = getStoreEntries(userStore.values);
+  const projectPlainEntries = getStoreEntries(projectStore.values);
+  const localPlainEntries = getStoreEntries(projectLocalStore.values);
   const effective = await resolveEffectivePluginConfig({
     pluginName: options.plugin.manifest.name,
     manifest: options.plugin.manifest,
@@ -1815,10 +1733,6 @@ async function buildManifestFieldEntries(options: {
   }
 
   return fields;
-}
-
-function createBuiltInFieldTitle(skillName: string): string {
-  return `${skillName} 触发方式`;
 }
 
 export async function resolvePluginConfigSchemaAccess(options: {
@@ -1964,179 +1878,12 @@ export async function resolveConfigReadV2(options: {
       })
     : [];
 
-  const knownSkillEntries = schemaAccess.plugin
-    ? await resolveSkillTriggerConfigEntries(schemaAccess.plugin)
-    : [];
-  const knownSkillMap = new Map(knownSkillEntries.map((entry) => [entry.skillName, entry]));
-  const userStored = new Map(readStoredSkillTriggers(userStore.values).map((entry) => [entry.skillName, entry.trigger]));
-  const projectStored = new Map(readStoredSkillTriggers(projectStore.values).map((entry) => [entry.skillName, entry.trigger]));
-  const localStored = new Map(readStoredSkillTriggers(projectLocalStore.values).map((entry) => [entry.skillName, entry.trigger]));
-  const builtInFields: ConfigFieldEntryV2[] = [];
-
-  for (const entry of knownSkillEntries) {
-    const base = {
-      key: toBuiltInSkillTriggerLogicalKey(entry.skillName),
-      title: createBuiltInFieldTitle(entry.skillName),
-      kind: 'builtIn' as const,
-      reserved: true,
-    };
-
-    if (options.projectLayer === 'local') {
-      const storedLocalValue = localStored.get(entry.skillName);
-      if (storedLocalValue) {
-        builtInFields.push({
-          ...base,
-          writable: false,
-          valueState: 'invalid',
-          effectiveValue: entry.defaultTrigger,
-          sourceLayer: 'default',
-          storedValue: storedLocalValue,
-          storedSourceLayer: 'local',
-          invalidReason: 'unsupportedProjectLocalLayer',
-        });
-      }
-      continue;
-    }
-
-    if (options.scope === 'user') {
-      const storedValue = userStored.get(entry.skillName);
-      if (!entry.allowDynamicTrigger) {
-        builtInFields.push({
-          ...base,
-          writable: false,
-          valueState: storedValue ? 'ignored' : 'fixed',
-          effectiveValue: entry.defaultTrigger,
-          sourceLayer: 'default',
-          ...(storedValue
-            ? {
-                storedValue,
-                storedSourceLayer: 'user' as const,
-                ignoredReason: 'fixedSkillTrigger' as const,
-              }
-            : {}),
-        });
-        continue;
-      }
-      builtInFields.push({
-        ...base,
-        writable: true,
-        valueState: storedValue ? 'configured' : 'default',
-        effectiveValue: storedValue ?? entry.defaultTrigger,
-        sourceLayer: storedValue ? 'user' : 'default',
-      });
-      continue;
-    }
-
-    if (options.scope === 'project') {
-      const storedProjectValue = projectStored.get(entry.skillName);
-      const storedLocalValue = localStored.get(entry.skillName);
-      if (storedLocalValue) {
-        builtInFields.push({
-          ...base,
-          writable: false,
-          valueState: 'invalid',
-          effectiveValue: storedProjectValue ?? entry.defaultTrigger,
-          sourceLayer: storedProjectValue ? 'project' : 'default',
-          storedValue: storedLocalValue,
-          storedSourceLayer: 'local',
-          invalidReason: 'unsupportedProjectLocalLayer',
-        });
-        continue;
-      }
-      if (!entry.allowDynamicTrigger) {
-        builtInFields.push({
-          ...base,
-          writable: false,
-          valueState: storedProjectValue ? 'ignored' : 'fixed',
-          effectiveValue: entry.defaultTrigger,
-          sourceLayer: 'default',
-          ...(storedProjectValue
-            ? {
-                storedValue: storedProjectValue,
-                storedSourceLayer: 'project' as const,
-                ignoredReason: 'fixedSkillTrigger' as const,
-              }
-            : {}),
-        });
-        continue;
-      }
-      builtInFields.push({
-        ...base,
-        writable: true,
-        valueState: storedProjectValue ? 'configured' : 'default',
-        effectiveValue: storedProjectValue ?? entry.defaultTrigger,
-        sourceLayer: storedProjectValue ? 'project' : 'default',
-      });
-      continue;
-    }
-
-    const storedProjectValue = projectStored.get(entry.skillName);
-    const storedUserValue = userStored.get(entry.skillName);
-    if (!entry.allowDynamicTrigger) {
-      const storedValue = storedProjectValue ?? storedUserValue;
-      const storedSourceLayer = storedProjectValue ? 'project' : storedUserValue ? 'user' : undefined;
-      builtInFields.push({
-        ...base,
-        writable: false,
-        valueState: storedValue ? 'ignored' : 'fixed',
-        effectiveValue: entry.defaultTrigger,
-        sourceLayer: 'default',
-        ...(storedValue && storedSourceLayer
-          ? {
-              storedValue,
-              storedSourceLayer,
-              ignoredReason: 'fixedSkillTrigger' as const,
-            }
-          : {}),
-      });
-      continue;
-    }
-    builtInFields.push({
-      ...base,
-      writable: true,
-      valueState: storedProjectValue || storedUserValue ? 'configured' : 'default',
-      effectiveValue: storedProjectValue ?? storedUserValue ?? entry.defaultTrigger,
-      sourceLayer: storedProjectValue ? 'project' : storedUserValue ? 'user' : 'default',
-    });
-  }
-
-  for (const [storeKind, storedMap] of [
-    ['user', userStored],
-    ['project', projectStored],
-    ['local', localStored],
-  ] as const) {
-    for (const [skillName, storedValue] of storedMap.entries()) {
-      if (knownSkillMap.has(skillName)) {
-        continue;
-      }
-      builtInFields.push({
-        key: toBuiltInSkillTriggerLogicalKey(skillName),
-        title: createBuiltInFieldTitle(skillName),
-        kind: 'builtIn',
-        reserved: true,
-        writable: false,
-        valueState: storeKind === 'local' ? 'invalid' : 'orphaned',
-        effectiveValue: storeKind === 'local' ? null : null,
-        sourceLayer: null,
-        storedValue,
-        storedSourceLayer: storeKind,
-        ...(storeKind === 'local'
-          ? { invalidReason: 'unsupportedProjectLocalLayer' as const }
-          : { orphanedReason: schemaAccess.plugin ? 'skillRemoved' as const : 'pluginRemoved' as const }),
-      });
-    }
-  }
-
-  const dedupedBuiltInFields = [...new Map(
-    builtInFields.map((field) => [field.key, field]),
-  ).values()].sort((left, right) => left.key.localeCompare(right.key));
-
   return {
     pluginName,
     scope: options.scope,
     projectLayer: options.projectLayer,
     ...(schemaAccess.schema ? { schema: schemaAccess.schema } : {}),
-    fields: [...manifestFields, ...dedupedBuiltInFields],
+    fields: manifestFields,
     legacyConfigStores,
   };
 }
@@ -2150,57 +1897,6 @@ export function findConfigFieldEntry(
 
 export function hasConfigReadV2Content(result: ResolvedConfigReadV2): boolean {
   return result.fields.length > 0 || result.legacyConfigStores.length > 0;
-}
-
-export async function resolveUniformSkillTriggerPreference(options: {
-  plugin: PluginMeta;
-  platform: 'codex' | 'claude';
-  scope: Scope;
-  cwd: string;
-  env?: NodeJS.ProcessEnv;
-}): Promise<SkillTriggerPreference> {
-  const preferences = await resolveEffectiveSkillTriggerPreferences(options);
-  const effectivePreferences = new Set(Object.values(preferences));
-  if (effectivePreferences.size === 1) {
-    return [...effectivePreferences][0]!;
-  }
-  if (effectivePreferences.size === 0) {
-    return 'default';
-  }
-  throw new Error(
-    `${options.plugin.manifest.name} 在 ${options.platform}/${options.scope} 下包含多个不同的 SkillTrigger effective 值，当前调用方要求单一偏好。`,
-  );
-}
-
-export async function resolveEffectiveSkillTriggerPreferences(options: {
-  plugin: PluginMeta;
-  platform: 'codex' | 'claude';
-  scope: Scope;
-  cwd: string;
-  env?: NodeJS.ProcessEnv;
-}): Promise<Record<string, Exclude<SkillTriggerPreference, 'default'>>> {
-  const entries = (await resolveSkillTriggerConfigEntries(options.plugin))
-    .filter((entry) => entry.platforms.includes(options.platform));
-  if (entries.length === 0) {
-    return {};
-  }
-
-  const store = await readPluginConfigStore({
-    pluginName: options.plugin.manifest.name,
-    scope: options.scope,
-    cwd: options.cwd,
-    env: options.env,
-    ...(options.scope === 'project' ? { projectLayer: 'shared' as const } : {}),
-  });
-  const stored = new Map(
-    readStoredSkillTriggers(store.values).map((entry) => [entry.skillName, entry.trigger]),
-  );
-  return Object.fromEntries(entries.map((entry) => [
-    entry.skillName,
-    entry.allowDynamicTrigger
-      ? (stored.get(entry.skillName) ?? entry.defaultTrigger)
-      : entry.defaultTrigger,
-  ]));
 }
 
 export function summarizeEffectivePluginConfig(

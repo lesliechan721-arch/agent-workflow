@@ -1,5 +1,7 @@
 # 开发工作流插件 Spec
 
+> 历史说明：本文中涉及 Skill 调用行为的手动覆盖、配置、接管或运行时重写设计已废弃，不是当前合同。Skill 是否被平台调用只由 Skill 自身的原生元数据决定。当前合同见 `docs/plugin-authoring.md` 和 `docs/plugin-installation.md`。
+
 > 状态：关键产品决策已确认，基线评估已按 2026-04-30 当前仓库能力更新，可进入执行计划。
 > 已确认：插件名 `dev-workflow`；首版只使用 source skills 作为入口；文档按单 workflow 目录归档；默认手动触发；首版声明并行实现所需子代理。
 

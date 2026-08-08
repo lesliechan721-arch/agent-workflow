@@ -39,12 +39,13 @@ import { validateBundleLayout } from './bundle-layout.js';
 import {
   assertStrictSemVer,
   compareStrictSemVer,
-  readPluginManifest,
   tryParseStrictSemVer,
 } from './manifest.js';
-import { resolveEffectiveSkillTriggerPreferences } from './plugin-config.js';
-import { replaySkillTriggerPreferencesFromLedger } from './skill-trigger-preferences.js';
 import { assertTestWritablePath } from './test-path-fence.js';
+import {
+  createDynamicSkillTreeContentDigest,
+  validateSkillDirectory,
+} from './dynamic-skill-tree.js';
 
 function resolveCliPackageJsonPath(): string {
   return path.join(resolveCliPackageRoot(), 'package.json');
@@ -98,9 +99,6 @@ function resolveCodexManifestSkillsRoot(pluginRoot: string, manifestSkills: stri
 }
 
 function getDeclaredCodexDynamicSkillKeys(sourceManifest: Record<string, unknown>): Set<string> {
-  const skillTriggers = isRecord(sourceManifest.skillTriggers)
-    ? sourceManifest.skillTriggers
-    : {};
   const artifacts = isRecord(sourceManifest.artifacts) && Array.isArray(sourceManifest.artifacts.targets)
     ? sourceManifest.artifacts.targets
     : [];
@@ -113,21 +111,8 @@ function getDeclaredCodexDynamicSkillKeys(sourceManifest: Record<string, unknown
         artifact.target === 'codex.skill' &&
         Array.isArray(artifact.scopes) &&
         artifact.scopes.includes('user') &&
-        typeof artifact.skillKey === 'string' &&
-        Object.hasOwn(skillTriggers, artifact.skillKey.trim()))
+        typeof artifact.skillKey === 'string')
       .map((artifact) => (artifact.skillKey as string).trim()),
-  );
-}
-
-function getDeclaredSkillTriggerKeys(sourceManifest: Record<string, unknown>): Set<string> {
-  if (!isRecord(sourceManifest.skillTriggers)) {
-    return new Set<string>();
-  }
-
-  return new Set(
-    Object.keys(sourceManifest.skillTriggers)
-      .map((skillKey) => skillKey.trim())
-      .filter((skillKey) => skillKey !== ''),
   );
 }
 
@@ -200,7 +185,6 @@ async function syncLocalMarketplaceCodexDynamicSkillsInternal(
     path.join(pluginRoot, '.agents-plugin', 'plugin.json'),
   );
   const declaredDynamicSkillKeys = getDeclaredCodexDynamicSkillKeys(sourceManifest);
-  const declaredSkillTriggerKeys = getDeclaredSkillTriggerKeys(sourceManifest);
   const sourceManifestSkillsRoot = resolveSourceManifestSkillsRoot(pluginRoot, sourceManifest);
 
   const runtimeSkillsRoot = getLocalMarketplaceCodexSkillsRoot(options.rootDir, options.pluginName);
@@ -218,8 +202,9 @@ async function syncLocalMarketplaceCodexDynamicSkillsInternal(
         : path.join(sourceManifestSkillsRoot, skillKey);
       if (!(await fs.pathExists(sourceSkillRoot))) {
         // Historical user dynamic skills can migrate to bundled static skills with the same key.
-        const currentStaticSkillDeclared = declaredSkillTriggerKeys.has(skillKey) &&
-          !declaredDynamicSkillKeys.has(skillKey);
+        const currentStaticSkillDeclared = bundledStaticSkillRoot !== null &&
+          !declaredDynamicSkillKeys.has(skillKey) &&
+          await pathIsDirectory(bundledStaticSkillRoot);
         if (currentStaticSkillDeclared) {
           if (
             bundledStaticSkillRoot !== null &&
@@ -662,10 +647,6 @@ function serializeCatalogSelectorForReuse(selector: CatalogSelector): string {
   });
 }
 
-function isSkillTriggerPreference(value: unknown): boolean {
-  return value === 'default' || value === 'manual' || value === 'auto';
-}
-
 function isScope(value: unknown): value is Scope {
   return value === 'user' || value === 'project';
 }
@@ -680,22 +661,6 @@ function isUniquePlatformNameArray(value: unknown): value is PlatformName[] {
     value.length > 0 &&
     value.every((entry) => isPlatformName(entry)) &&
     new Set(value).size === value.length
-  );
-}
-
-function isInstalledScopeInstallOptions(value: unknown): boolean {
-  if (!isRecord(value)) {
-    return false;
-  }
-
-  const allowedKeys = new Set(['skillTriggerPreference']);
-  if (Object.keys(value).some((key) => !allowedKeys.has(key))) {
-    return false;
-  }
-
-  return (
-    value.skillTriggerPreference === undefined ||
-    isSkillTriggerPreference(value.skillTriggerPreference)
   );
 }
 
@@ -733,7 +698,7 @@ function isInstalledDependencyEdgeDeclaration(value: unknown): boolean {
     return false;
   }
 
-  const allowedKeys = new Set(['name', 'minVersion', 'target', 'inheritInstallOptions', 'when']);
+  const allowedKeys = new Set(['name', 'minVersion', 'target', 'when']);
   if (Object.keys(value).some((key) => !allowedKeys.has(key))) {
     return false;
   }
@@ -756,8 +721,7 @@ function isInstalledDependencyEdgeDeclaration(value: unknown): boolean {
   return (
     (value.minVersion === undefined || typeof value.minVersion === 'string') &&
     validTarget &&
-    validWhen &&
-    (value.inheritInstallOptions === undefined || typeof value.inheritInstallOptions === 'boolean')
+    validWhen
   );
 }
 
@@ -819,8 +783,6 @@ function isInstalledScopeRecord(
     'projectKey',
     'installSource',
     'dependencyEdges',
-    'installOptions',
-    'skillTriggerWriteOrder',
     'lifecycleConfigSnapshot',
   ]);
   if (Object.keys(value).some((key) => !allowedKeys.has(key))) {
@@ -833,10 +795,6 @@ function isInstalledScopeRecord(
     typeof value.resolvedVersion !== 'string' ||
     !isRecord(value.capabilitySnapshot)
   ) {
-    return false;
-  }
-
-  if (value.installOptions !== undefined && !isInstalledScopeInstallOptions(value.installOptions)) {
     return false;
   }
 
@@ -863,14 +821,7 @@ function isInstalledScopeRecord(
     return false;
   }
 
-  return (
-    value.skillTriggerWriteOrder === undefined ||
-    (
-      typeof value.skillTriggerWriteOrder === 'number' &&
-      Number.isInteger(value.skillTriggerWriteOrder) &&
-      value.skillTriggerWriteOrder >= 0
-    )
-  );
+  return true;
 }
 
 function isClaudePlatformRecord(
@@ -1431,14 +1382,10 @@ async function isFreshLocalMarketplace(
 
 async function readPreservedLedger(
   awHome: string,
-): Promise<{ ledger: InstalledLedger; ledgerFileExists: boolean }> {
+): Promise<InstalledLedger> {
   const ledgerPath = path.join(awHome, 'installed.json');
-  const ledgerFileExists = await fs.pathExists(ledgerPath);
   const rawLedger = await readJsonFileIfExistsSafe<unknown>(ledgerPath);
-  return {
-    ledger: validateInstalledLedger(rawLedger) ?? createDegradedLedger('rebuilt_from_missing_or_invalid'),
-    ledgerFileExists,
-  };
+  return validateInstalledLedger(rawLedger) ?? createDegradedLedger('rebuilt_from_missing_or_invalid');
 }
 
 async function preserveLocalRuntimeStateDirectories(sourceRoot: string, targetRoot: string): Promise<void> {
@@ -1546,6 +1493,25 @@ async function replayCodexUserDynamicSkillsToMarketplace(options: {
       if (!(await fs.pathExists(sourceSkillRoot))) {
         warnings.push(
           `跳过 user dynamic skill replay：缺少 runtime skill ${recordFile.record.pluginName}/${artifact.artifactKey}（${sourceSkillRoot}）。`,
+        );
+        await Promise.all(targetSkillRoots.map((targetSkillRoot) => fs.remove(targetSkillRoot)));
+        continue;
+      }
+
+      let sourceTree;
+      try {
+        sourceTree = await validateSkillDirectory(sourceSkillRoot, 'codex.skill');
+      } catch (error) {
+        warnings.push(
+          `跳过 user dynamic skill replay：runtime skill ${recordFile.record.pluginName}/${artifact.artifactKey} 无效（${error instanceof Error ? error.message : String(error)}）。`,
+        );
+        await Promise.all(targetSkillRoots.map((targetSkillRoot) => fs.remove(targetSkillRoot)));
+        continue;
+      }
+      const sourceContentDigest = createDynamicSkillTreeContentDigest(sourceTree);
+      if (artifact.contentDigest && artifact.contentDigest !== sourceContentDigest) {
+        warnings.push(
+          `跳过 user dynamic skill replay：runtime skill ${recordFile.record.pluginName}/${artifact.artifactKey} 内容与 install record 不一致。`,
         );
         await Promise.all(targetSkillRoots.map((targetSkillRoot) => fs.remove(targetSkillRoot)));
         continue;
@@ -1775,32 +1741,8 @@ export async function initializeLocalMarketplace(
 
   try {
     await copyBundleToStaging(inspection.embeddedRoot, stagingDir);
-    const { ledger, ledgerFileExists } = await readPreservedLedger(inspection.awHome);
+    const ledger = await readPreservedLedger(inspection.awHome);
     await preserveLocalRuntimeStateDirectories(inspection.awHome, stagingDir);
-    const replay = await replaySkillTriggerPreferencesFromLedger({
-      ledger,
-      marketplaceRoot: stagingDir,
-      embeddedRoot: inspection.embeddedRoot,
-      previousMarketplaceRoot: inspection.awHome,
-      warnOnDegraded: ledgerFileExists,
-      resolveSkillTriggerPreferences: async ({ pluginName, platform, effectiveRecord }) => {
-        const plugin = await readPluginManifest(
-          path.join(inspection.embeddedRoot, 'plugins', pluginName),
-          { mode: 'bundle' },
-        );
-        const scope = effectiveRecord.scopeIdentity === 'user' ? 'user' : 'project';
-        return resolveEffectiveSkillTriggerPreferences({
-          plugin,
-          platform,
-          scope,
-          cwd: scope === 'project'
-            ? effectiveRecord.scopeIdentity.slice('project:'.length)
-            : process.cwd(),
-          env,
-        });
-      },
-    });
-    warnings.push(...replay.warnings);
     const dynamicSkillReplay = await replayCodexUserDynamicSkillsToMarketplace({
       previousMarketplaceRoot: inspection.awHome,
       marketplaceRoot: stagingDir,

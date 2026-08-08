@@ -8,10 +8,7 @@ import { CodexAdapter } from '../src/adapters/codex.js';
 import { bundleLocalPlugin, prepareLocalPluginBundleSource } from '../src/generators/local-plugin.js';
 import type { PluginMeta } from '../src/types.js';
 import { writePluginConfigStore } from '../src/utils/plugin-config.js';
-import {
-  commitMaterializedSkillTriggerPreference,
-  materializeSkillTriggerPreference,
-} from '../src/utils/skill-trigger-preferences.js';
+import { validateSkillDirectoriesRoot } from '../src/utils/dynamic-skill-tree.js';
 import {
   PLUGIN_EVAL_SCHEMA_VERSION,
   type MaterializedPluginEvalArtifact,
@@ -178,6 +175,7 @@ async function copyUserMaterializedArtifacts(options: {
     'skills',
   );
   if (await fs.pathExists(runtimeSkillsRoot)) {
+    await validateSkillDirectoriesRoot(runtimeSkillsRoot, 'codex.skill');
     await fs.ensureDir(skillsRoot);
     await fs.copy(runtimeSkillsRoot, skillsRoot, { overwrite: true, dereference: false });
   }
@@ -199,31 +197,22 @@ async function materializeStaticCodexSkills(options: {
   projectRoot: string;
   env: NodeJS.ProcessEnv;
 }): Promise<void> {
-  const materialization = await materializeSkillTriggerPreference({
-    pluginName: options.prepared.plugin.manifest.name,
-    platform: 'codex',
-    resolvedOptions: {
-      skillTriggerPreference: options.profile.triggerPreference,
-    },
-    embeddedRoot: options.prepared.bundleRoot,
-    policyPlugin: options.prepared.plugin,
-    sourcePluginRoot: options.prepared.bundleRoot,
-    target: options.profile.scope === 'project'
-      ? {
-          platform: 'codex',
-          scope: 'project',
-          kind: 'repoSkill',
-          root: path.join(options.projectRoot, '.agents', 'skills'),
-        }
-      : {
-          platform: 'codex',
-          scope: 'user',
-          kind: 'localMarketplaceRuntime',
-          root: options.env.AW_HOME!,
-        },
-    mode: 'strictExplicit',
-  });
-  await commitMaterializedSkillTriggerPreference(materialization.rollbackHandle);
+  const sourceRoot = path.join(options.prepared.bundleRoot, 'codex', 'skills');
+  if (!(await fs.pathExists(sourceRoot))) {
+    return;
+  }
+  await validateSkillDirectoriesRoot(sourceRoot, 'codex.skill');
+  const targetRoot = options.profile.scope === 'project'
+    ? path.join(options.projectRoot, '.agents', 'skills')
+    : path.join(
+        options.env.AW_HOME!,
+        'plugins',
+        options.prepared.plugin.manifest.name,
+        'codex',
+        'skills',
+      );
+  await fs.ensureDir(targetRoot);
+  await fs.copy(sourceRoot, targetRoot, { overwrite: true, dereference: false });
 }
 
 async function materializeProfile(options: {
@@ -264,7 +253,6 @@ async function materializeProfile(options: {
   const adapter = new CodexAdapter(projectRoot, env);
   await adapter.installExtensions(options.prepared.plugin, options.profile.scope, {
     event: 'install',
-    skillTriggerPreference: options.profile.triggerPreference,
   });
 
   const subjectRoot = options.profile.scope === 'project'

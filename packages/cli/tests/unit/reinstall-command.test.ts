@@ -46,6 +46,13 @@ async function seedRepoPlugin(repoRoot: string): Promise<void> {
   );
 }
 
+async function seedCurrentCatalog(repoRoot: string): Promise<void> {
+  await seedRepoPlugin(repoRoot);
+  const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
+  tempDirs.push(embeddedRoot);
+  setEmbeddedPluginsRootOverrideForTests(embeddedRoot);
+}
+
 class FakeAdapter implements PlatformAdapter {
   async detect(): Promise<boolean> {
     return true;
@@ -305,6 +312,7 @@ describe('reinstall command (P9)', () => {
       scenario: 'freshCloneProject',
     });
     tempDirs.push(fixture.paths.rootDir);
+    await seedCurrentCatalog(fixture.paths.repoRoot);
     const installSpy = vi.fn<typeof import('../../src/commands/install.js').installCommand>();
 
     await expect(
@@ -336,6 +344,7 @@ describe('reinstall command (P9)', () => {
 
   it('rebuilds dependency protection from valid records before reinstalling a healthy target', async () => {
     const builder = await makeBuilder();
+    await seedCurrentCatalog(builder.paths.repoRoot);
     const target = builder.createTarget({ pluginName: 'git-commit', platform: 'codex', scope: 'user' });
 
     await builder.writeRepoArtifact(target);
@@ -389,6 +398,7 @@ describe('reinstall command (P9)', () => {
       scenario: 'recordAndInstallMarkerResidual',
     });
     tempDirs.push(fixture.paths.rootDir);
+    await seedCurrentCatalog(fixture.paths.repoRoot);
     await rewriteSanitizedInstallRecordForP2(fixture.files.installRecordPath);
     await fs.remove(path.join(fixture.paths.awHome, 'dependency-index'));
 
@@ -428,7 +438,7 @@ describe('reinstall command (P9)', () => {
 
   it('prefers install --adopt-existing over deleting claimable project artifacts, even when dependents still reference them', async () => {
     const builder = await makeBuilder();
-    await seedRepoPlugin(builder.paths.repoRoot);
+    await seedCurrentCatalog(builder.paths.repoRoot);
     const projectKey = await fs.realpath(builder.paths.repoRoot);
     const target = builder.createTarget({
       pluginName: 'git-commit',
@@ -453,7 +463,6 @@ describe('reinstall command (P9)', () => {
       `${target.recordId}.json`,
     );
     await builder.writeInstallRecord(target);
-    await builder.writeSharedRuntimeOwner(target, targetRecordPath);
     await fs.remove(targetRecordPath);
 
     const dependentRecord = await builder.writeInstallRecord(dependent);

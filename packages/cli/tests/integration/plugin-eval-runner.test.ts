@@ -93,9 +93,6 @@ async function writeCommandPlugin(
     description: 'Exercise the central command suite contract.',
     compatibility: { aw: { minVersion: '0.0.0' } },
     skills: './skills',
-    skillTriggers: {
-      [options.name]: { defaultTrigger: 'manual', allowDynamicTrigger: false },
-    },
     marketplace: {
       category: 'workflow',
       strict: true,
@@ -108,6 +105,8 @@ async function writeCommandPlugin(
       '---',
       `name: ${options.name}`,
       'description: Use only to test the central command suite contract.',
+      'disable-model-invocation: true',
+      'user-invocable: true',
       '---',
       '',
       '# Timeout Demo',
@@ -131,7 +130,6 @@ async function writeCommandPlugin(
       id: 'project-default',
       scope: 'project',
       config: {},
-      triggerPreference: 'default',
       runModel: true,
       requiredForRelease: true,
     }],

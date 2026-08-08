@@ -385,12 +385,6 @@ async function configureCodexExploreSingleSkillArtifact(options: {
 }): Promise<void> {
   await mutateCodexExploreManifest(options.rootDir, (manifest) => {
     addLegacyModelConfigSchema(manifest);
-    manifest.skillTriggers = {
-      [options.skillKey]: {
-        defaultTrigger: 'auto',
-        allowDynamicTrigger: true,
-      },
-    };
     manifest.artifacts = {
       targets: [{
         id: options.id,
@@ -1041,7 +1035,6 @@ async function seedLegacyCodexExploreUserHealthySiblingInstall(options: {
   codexHome: string;
   embeddedRoot: string;
   homeDir?: string;
-  requestedSkillTrigger?: 'manual' | 'auto' | 'default';
 }): Promise<void> {
   const sibling = await makeWorkspaceWithCodexExplore();
   activateWorkspaceEnv(options);
@@ -1051,9 +1044,6 @@ async function seedLegacyCodexExploreUserHealthySiblingInstall(options: {
       cwd: sibling.repoRoot,
       scope: 'user',
       platform: 'codex',
-      ...(options.requestedSkillTrigger
-        ? { requestedSkillTrigger: options.requestedSkillTrigger }
-        : {}),
     },
       createCodexExploreRuntime(sibling.repoRoot, process.env),
   );
@@ -1239,22 +1229,6 @@ function findIssueCodes(location: StatusLocation, issueCode: string): Array<NonN
   return (location.issues ?? []).filter((issue) => issue.code === issueCode);
 }
 
-async function readInstallRecordOptionsFromLocation(
-  location: StatusLocation,
-): Promise<{
-  skillTriggerPreference?: 'default' | 'manual' | 'auto';
-}> {
-  expect(location.record?.path).toBeTruthy();
-  const record = await fs.readJson(location.record!.path!) as {
-    record?: {
-      options?: {
-        skillTriggerPreference?: 'default' | 'manual' | 'auto';
-      };
-    };
-  };
-  return record.record?.options ?? {};
-}
-
 function parseVerboseStatusPayload(output: string): StatusPayload {
   const marker = '\n\n详细信息\n';
   const index = output.indexOf(marker);
@@ -1348,7 +1322,7 @@ describe('codex-explore integration acceptance', () => {
     expect(rawConfig).toContain('[plugins."codex-explore@aw"]');
     expect(rawConfig).toContain('enabled = true');
     expect(rawConfig).toContain('[agents.codex-explorer]');
-    expect(await readAllowImplicitInvocation(userSkillMetadataPath(awHome))).toBe(false);
+    expect(await readAllowImplicitInvocation(userSkillMetadataPath(awHome))).toBe(true);
     expect(config.snapshot.developerInstructions.managedBlocks['codex-explore']?.value).toContain(
       'Codex 内置 `explorer` role',
     );
@@ -1596,7 +1570,7 @@ describe('codex-explore integration acceptance', () => {
     ).resolves.toMatchObject({ skills: './codex/skills' });
   });
 
-  it('refreshes Codex user dynamic skill and native cache while preserving manual trigger preference', async () => {
+  it('refreshes Codex user dynamic skill and native cache while preserving native invocation metadata', async () => {
     const { repoRoot, awHome, codexHome } = await makeWorkspaceWithCodexExplore();
     await configureCodexExploreSkillOnlyArtifact(repoRoot);
     await writeCodexExploreSkillOnlyRenderer(repoRoot);
@@ -1808,7 +1782,6 @@ describe('codex-explore integration acceptance', () => {
         cwd: repoRoot,
         scope: 'project',
         platform: 'codex',
-        requestedSkillTrigger: 'auto',
       },
       createCodexExploreRuntime(repoRoot, process.env),
     );
@@ -1817,7 +1790,6 @@ describe('codex-explore integration acceptance', () => {
       awHome,
       codexHome,
       embeddedRoot,
-      requestedSkillTrigger: 'auto',
     });
     installCodexExploreRefreshAppServerOverride(repoRoot, process.env);
 
@@ -1962,7 +1934,6 @@ describe('codex-explore integration acceptance', () => {
         cwd: repoRoot,
         scope: 'user',
         platform: 'codex',
-        requestedSkillTrigger: 'manual',
       },
       createCodexExploreRuntime(repoRoot, process.env),
     );
@@ -2072,7 +2043,6 @@ describe('codex-explore integration acceptance', () => {
         cwd: repoRoot,
         scope: 'user',
         platform: 'codex',
-        requestedSkillTrigger: 'manual',
       },
       createCodexExploreRuntime(repoRoot, process.env),
     );
@@ -2134,7 +2104,6 @@ describe('codex-explore integration acceptance', () => {
             id: string;
             target: string;
             artifactKey?: string;
-            triggerPreference?: string;
             drift?: boolean;
             driftReasons?: string[];
             fileDiffs?: Array<{ path: string; reason: string }>;
@@ -2149,7 +2118,6 @@ describe('codex-explore integration acceptance', () => {
       artifactKey: 'codex-explore',
       drift: true,
     });
-    expect(deepSkill?.triggerPreference).toEqual(expect.any(String));
     expect(deepSkill?.driftReasons).toContain('文件内容已漂移 SKILL.md');
     expect(deepSkill?.fileDiffs).toEqual(
       expect.arrayContaining([
@@ -2184,7 +2152,7 @@ describe('codex-explore integration acceptance', () => {
     });
   }, 15_000);
 
-  it('reinstall re-renders codex.skill from current config and current built-in trigger resolution, and prunes stale native cache runtime files', async () => {
+  it('reinstall re-renders codex.skill from current config and native metadata, and prunes stale native cache runtime files', async () => {
     const { repoRoot, awHome, codexHome } = await makeWorkspaceWithCodexExplore();
     await configureCodexExploreSkillOnlyArtifact(repoRoot);
     await writeCodexExploreSkillOnlyRenderer(repoRoot);
@@ -2208,7 +2176,6 @@ describe('codex-explore integration acceptance', () => {
         cwd: repoRoot,
         scope: 'user',
         platform: 'codex',
-        requestedSkillTrigger: 'manual',
       },
       createCodexExploreRuntime(repoRoot, process.env),
     );
@@ -2269,7 +2236,7 @@ describe('codex-explore integration acceptance', () => {
     });
   });
 
-  it('reinstall applies built-in auto trigger policy for Codex user dynamic skill', async () => {
+  it('reinstall preserves native automatic invocation metadata for a Codex user dynamic skill', async () => {
     const { repoRoot, awHome, codexHome } = await makeWorkspaceWithCodexExplore();
     await configureCodexExploreSkillOnlyArtifact(repoRoot);
     await writeCodexExploreSkillOnlyRenderer(repoRoot);
@@ -2283,7 +2250,6 @@ describe('codex-explore integration acceptance', () => {
         cwd: repoRoot,
         scope: 'user',
         platform: 'codex',
-        requestedSkillTrigger: 'auto',
       },
       createCodexExploreRuntime(repoRoot, process.env),
     );
@@ -2317,14 +2283,12 @@ describe('codex-explore integration acceptance', () => {
       platform: 'codex',
       scope: 'user',
     });
-    const recordOptions = await readInstallRecordOptionsFromLocation(location);
-
-    expect(recordOptions.skillTriggerPreference).toBe('default');
+    expect(location.record?.present).toBe(true);
     await expect(readAllowImplicitInvocation(userSkillMetadataPath(awHome))).resolves.toBe(true);
     await expect(readAllowImplicitInvocation(cachedDynamicSkillMetadataPath(process.env))).resolves.toBe(true);
   });
 
-  it('project reinstall fails with duplicateInstall in a legacy dual-healthy sibling state and leaves trigger preferences untouched', async () => {
+  it('project reinstall fails with duplicateInstall in a legacy dual-healthy sibling state and leaves native metadata untouched', async () => {
     const { repoRoot, awHome, codexHome } = await makeWorkspaceWithCodexExplore();
     await configureCodexExploreSkillOnlyArtifact(repoRoot);
     await writeCodexExploreSkillOnlyRenderer(repoRoot);
@@ -2338,7 +2302,6 @@ describe('codex-explore integration acceptance', () => {
         cwd: repoRoot,
         scope: 'project',
         platform: 'codex',
-        requestedSkillTrigger: 'auto',
       },
       createCodexExploreRuntime(repoRoot, process.env),
     );
@@ -2347,10 +2310,9 @@ describe('codex-explore integration acceptance', () => {
       awHome,
       codexHome,
       embeddedRoot,
-      requestedSkillTrigger: 'manual',
     });
 
-    expect(await readAllowImplicitInvocation(userSkillMetadataPath(awHome))).toBe(false);
+    expect(await readAllowImplicitInvocation(userSkillMetadataPath(awHome))).toBe(true);
     expect(await readAllowImplicitInvocation(projectSkillMetadataPath(repoRoot))).toBe(true);
 
     await expect(reinstallCommand(
@@ -2380,11 +2342,9 @@ describe('codex-explore integration acceptance', () => {
       platform: 'codex',
       scope: 'project',
     });
-    const recordOptions = await readInstallRecordOptionsFromLocation(location);
-
-    expect(recordOptions.skillTriggerPreference).toBe('auto');
+    expect(location.record?.present).toBe(true);
     expect(await readAllowImplicitInvocation(projectSkillMetadataPath(repoRoot))).toBe(true);
-    expect(await readAllowImplicitInvocation(userSkillMetadataPath(awHome))).toBe(false);
+    expect(await readAllowImplicitInvocation(userSkillMetadataPath(awHome))).toBe(true);
   });
 
   it('uninstalls only the AW-owned Codex user dynamic skill, restores bundled templates, and can reinstall cleanly', async () => {
@@ -2401,7 +2361,6 @@ describe('codex-explore integration acceptance', () => {
         cwd: repoRoot,
         scope: 'user',
         platform: 'codex',
-        requestedSkillTrigger: 'manual',
       },
       createCodexExploreRuntime(repoRoot, process.env),
     );
@@ -2447,14 +2406,13 @@ describe('codex-explore integration acceptance', () => {
         cwd: repoRoot,
         scope: 'user',
         platform: 'codex',
-        requestedSkillTrigger: 'manual',
       },
       createCodexExploreRuntime(repoRoot, process.env),
     );
 
     await expect(fs.readFile(userDynamicSkillPath(awHome), 'utf8')).resolves.toContain('Dynamic Explore');
     await expect(fs.readFile(cachedDynamicSkillPath(process.env), 'utf8')).resolves.toContain('Dynamic Explore');
-    await expect(readAllowImplicitInvocation(userSkillMetadataPath(awHome))).resolves.toBe(false);
+    await expect(readAllowImplicitInvocation(userSkillMetadataPath(awHome))).resolves.toBe(true);
   });
 
   it('prunes stale Codex user dynamic skills by identity during upgrade and leaves foreign same-name skills untouched', async () => {
@@ -2480,7 +2438,6 @@ describe('codex-explore integration acceptance', () => {
         cwd: repoRoot,
         scope: 'user',
         platform: 'codex',
-        requestedSkillTrigger: 'manual',
       },
       createCodexExploreRuntime(repoRoot, process.env),
     );
@@ -2523,7 +2480,6 @@ describe('codex-explore integration acceptance', () => {
         cwd: repoRoot,
         scope: 'user',
         platform: 'codex',
-        requestedSkillTrigger: 'manual',
       },
       createCodexExploreRuntime(repoRoot, process.env),
     );
@@ -2556,7 +2512,7 @@ describe('codex-explore integration acceptance', () => {
     await expect(fs.readFile(cachedDynamicSkillPath(process.env, 'codex-explore-v2'), 'utf8')).resolves.toContain(
       'Dynamic Explore V2',
     );
-    await expect(readAllowImplicitInvocation(userSkillMetadataPath(awHome, 'codex-explore-v2'))).resolves.toBe(false);
+    await expect(readAllowImplicitInvocation(userSkillMetadataPath(awHome, 'codex-explore-v2'))).resolves.toBe(true);
     await expect(fs.readFile(foreignCachedSkillPath, 'utf8')).resolves.toBe('# foreign cache\n');
     expect(trackingArtifacts.find((artifact) => artifact.id === 'codex-explore-skill-v2')).toMatchObject({
       id: 'codex-explore-skill-v2',
@@ -2590,7 +2546,6 @@ describe('codex-explore integration acceptance', () => {
         cwd: repoRoot,
         scope: 'project',
         platform: 'codex',
-        requestedSkillTrigger: 'manual',
       },
       createCodexExploreRuntime(repoRoot, process.env),
     );
@@ -2872,7 +2827,6 @@ process.stdout.write(\`\${JSON.stringify(plan, null, 2)}\\n\`);
         cwd: repoRoot,
         scope: 'project',
         platform: 'codex',
-        requestedSkillTrigger: 'default',
       },
       createCodexExploreRuntime(repoRoot, process.env),
     );
@@ -2895,7 +2849,6 @@ process.stdout.write(\`\${JSON.stringify(plan, null, 2)}\\n\`);
         cwd: repoRoot,
         scope: 'project',
         platform: 'codex',
-        requestedSkillTrigger: 'default',
       },
       createCodexExploreRuntime(repoRoot, process.env),
     );
@@ -2938,7 +2891,6 @@ process.stdout.write(\`\${JSON.stringify(plan, null, 2)}\\n\`);
         cwd: repoRoot,
         scope: 'project',
         platform: 'codex',
-        requestedSkillTrigger: 'default',
       },
       createCodexExploreRuntime(repoRoot, process.env),
     );
@@ -2997,7 +2949,6 @@ process.stdout.write(\`\${JSON.stringify(plan, null, 2)}\\n\`);
         cwd: repoRoot,
         scope: 'project',
         platform: 'codex',
-        requestedSkillTrigger: 'default',
       },
       createCodexExploreRuntime(repoRoot, process.env),
     );
@@ -3039,7 +2990,6 @@ process.stdout.write(\`\${JSON.stringify(plan, null, 2)}\\n\`);
         cwd: repoRoot,
         scope: 'project',
         platform: 'codex',
-        requestedSkillTrigger: 'default',
       },
       createCodexExploreRuntime(repoRoot, process.env),
     );
@@ -3117,7 +3067,6 @@ process.stdout.write(\`\${JSON.stringify(plan, null, 2)}\\n\`);
             cwd: repoRoot,
             scope: 'user',
             platform: 'codex',
-            requestedSkillTrigger: 'auto',
           },
           {
             ...createCodexExploreRuntime(repoRoot, process.env, nativeCalls),
@@ -3145,7 +3094,7 @@ process.stdout.write(\`\${JSON.stringify(plan, null, 2)}\\n\`);
     await expect(fs.pathExists(path.join(awHome, 'lifecycle.log'))).resolves.toBe(false);
   });
 
-  it('keeps $codex-explore auto-triggerable under the default built-in trigger policy on project install', async () => {
+  it('keeps $codex-explore automatically invocable through native metadata on project install', async () => {
     const { repoRoot, awHome, codexHome, embeddedRoot } = await makeWorkspaceWithCodexExplore();
     activateWorkspaceEnv({ awHome, codexHome, embeddedRoot });
 
@@ -3434,7 +3383,6 @@ process.stdout.write(\`\${JSON.stringify(plan, null, 2)}\\n\`);
         cwd: repoRoot,
         scope: 'user',
         platform: 'codex',
-        requestedSkillTrigger: 'default',
       },
       createCodexExploreRuntime(repoRoot, process.env),
     );
@@ -3513,7 +3461,6 @@ process.stdout.write(\`\${JSON.stringify(plan, null, 2)}\\n\`);
             cwd: repoRoot,
             scope: 'user',
             platform: 'codex',
-            requestedSkillTrigger: 'default',
           },
           {
             ...createCodexExploreRuntime(repoRoot, process.env, nativeCalls),
@@ -3608,7 +3555,6 @@ process.stdout.write(\`\${JSON.stringify(plan, null, 2)}\\n\`);
         cwd: repoRoot,
         scope: 'project',
         platform: 'codex',
-        requestedSkillTrigger: 'default',
       },
       createCodexExploreRuntime(repoRoot, process.env),
     );
@@ -5441,7 +5387,6 @@ process.stdout.write(\`\${JSON.stringify(plan, null, 2)}\\n\`);
 
     await mutateCodexExploreManifest(repoRoot, (manifest) => {
       delete manifest.skills;
-      delete manifest.skillTriggers;
       manifest.artifacts = {
         targets: [
           {
@@ -5513,7 +5458,6 @@ process.stdout.write(\`\${JSON.stringify(plan, null, 2)}\\n\`);
         cwd: repoRoot,
         scope: 'project',
         platform: 'codex',
-        requestedSkillTrigger: 'default',
       },
       createCodexExploreRuntime(repoRoot, process.env),
     );

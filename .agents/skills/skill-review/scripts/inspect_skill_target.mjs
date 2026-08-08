@@ -1177,7 +1177,6 @@ async function inspectPlugin(root, options) {
       manifest: manifestPath,
       products: manifest.marketplace?.policy?.products ?? ['CODEX', 'CLAUDE'],
       static_skills_root: manifest.skills ?? null,
-      skill_triggers: manifest.skillTriggers ?? {},
       dynamic_targets: manifest.artifacts?.targets ?? [],
     },
     package: {

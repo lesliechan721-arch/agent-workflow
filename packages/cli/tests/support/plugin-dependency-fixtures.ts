@@ -1,5 +1,4 @@
 import type {
-  InstalledScopeInstallOptions,
   PlatformName,
   PluginManifestSource,
   Scope,
@@ -25,7 +24,6 @@ export interface DependencyFixtureDependency {
   target?: {
     scope?: Scope;
   };
-  inheritInstallOptions?: boolean;
   when?: {
     platforms?: PlatformName[];
   };
@@ -56,7 +54,6 @@ export interface DependencyFixtureLedgerRecord {
     dependency: DependencyFixtureLocation;
     declaration: DependencyFixtureDependency;
   }>;
-  installOptions?: InstalledScopeInstallOptions;
   snapshotManifest?: DependencyFixtureManifest;
 }
 
@@ -121,7 +118,6 @@ function dependencySignature(manifest?: DependencyFixtureManifest): string {
     name: entry.name,
     minVersion: entry.minVersion ?? null,
     targetScope: entry.target?.scope ?? null,
-    inheritInstallOptions: entry.inheritInstallOptions ?? null,
     platforms: [...(entry.when?.platforms ?? [])],
   }));
   return JSON.stringify(entries);
@@ -213,7 +209,6 @@ export function createDependencyLedgerFixture(entries: Array<{
     dependency: DependencyFixtureLocation;
     declaration: DependencyFixtureDependency;
   }>;
-  installOptions?: InstalledScopeInstallOptions;
   snapshotManifest?: DependencyFixtureManifest;
 }>): DependencyFixtureLedger {
   const records = entries.map((entry) => ({
@@ -224,7 +219,6 @@ export function createDependencyLedgerFixture(entries: Array<{
       dependency: clone(edge.dependency),
       declaration: clone(edge.declaration),
     })) ?? [],
-    installOptions: entry.installOptions ? clone(entry.installOptions) : undefined,
     snapshotManifest: entry.snapshotManifest ? clone(entry.snapshotManifest) : undefined,
   }));
 
@@ -267,7 +261,6 @@ export function createDependencyPlannerFixture(options: {
       dependency: DependencyFixtureLocation;
       declaration: DependencyFixtureDependency;
     }>;
-    installOptions?: InstalledScopeInstallOptions;
     snapshotManifest?: DependencyFixtureManifest;
   }>;
   health?: Array<{

@@ -1,4 +1,3 @@
-import os from 'node:os';
 import path from 'node:path';
 
 import fs from 'fs-extra';
@@ -42,10 +41,8 @@ import type {
   RepoManagedProjectItemReport,
   RepoManagedProjectItemState,
   RepoManagedProjectKindSummary,
-  ResolvedInstallOptions,
   Scope,
   ScopeInitializedState,
-  SkillTriggerPreference,
   StatusReport,
   TrackedHookGroupIdentity,
   TrackingManifest,
@@ -115,7 +112,6 @@ import {
 } from '../utils/codex-roles.js';
 import { writeJsonFile } from '../utils/json.js';
 import { readPluginManifest } from '../utils/manifest.js';
-import { resolveEffectiveSkillTriggerPreferences } from '../utils/plugin-config.js';
 import { readMarketplaceManifest } from '../utils/marketplace.js';
 import {
   resolveActiveLocalBundle,
@@ -151,7 +147,11 @@ import {
   createCodexSkillStagingTreeContentDigest,
   type CodexSkillStagingTree,
 } from '../utils/codex-skill-staging.js';
-import { readDynamicSkillTree, writeDynamicSkillTree } from '../utils/dynamic-skill-tree.js';
+import {
+  readDynamicSkillTree,
+  validateSkillDirectoriesRoot,
+  writeDynamicSkillTree,
+} from '../utils/dynamic-skill-tree.js';
 import { assertCanonicalTrackedCodexArtifactMainPaths } from '../utils/codex-artifact-paths.js';
 import {
   parseCodexSharedHooksFile,
@@ -161,13 +161,6 @@ import {
   trackedHookGroupsContainAll,
 } from '../utils/hooks-contract.js';
 import { resolvePlatformEntries } from '../utils/platform-entries.js';
-import {
-  getNextSkillTriggerWriteOrder,
-  patchCodexOpenAiYaml,
-  resolveSkillTriggerPolicies,
-  resolveSkillTriggerStatusReportFields,
-  type SkillTriggerPolicyEntry,
-} from '../utils/skill-trigger-preferences.js';
 import {
   CODEX_REPO_MANAGED_ITEM_KIND_ORDER,
   codexCapabilitySnapshotsEqual,
@@ -771,17 +764,7 @@ async function compareCodexRepoSkillToPristine(options: {
   pluginName: string;
   skillName: string;
   actualSkillRoot: string;
-  preference: SkillTriggerPreference;
-  policy: SkillTriggerPolicyEntry;
 }): Promise<{ drifted: boolean; reason?: string }> {
-  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-codex-repo-skill-compare-'));
-  const expectedSkillRoot = path.join(
-    tempRoot,
-    options.pluginName,
-    'codex',
-    'skills',
-    options.skillName,
-  );
   const pristineSkillRoot = path.join(
     options.embeddedRoot,
     'plugins',
@@ -791,22 +774,10 @@ async function compareCodexRepoSkillToPristine(options: {
     options.skillName,
   );
 
-  try {
-    await fs.copy(pristineSkillRoot, expectedSkillRoot, { overwrite: true });
-    if (options.preference !== 'default' && options.policy.allowInstallOverride) {
-      await patchCodexOpenAiYaml(
-        path.join(expectedSkillRoot, 'agents', 'openai.yaml'),
-        options.preference,
-      );
-    }
-
-    return compareCodexSkillTrees({
-      expectedFiles: await collectCodexSkillTreeFileContents(expectedSkillRoot),
-      actualFiles: await collectCodexSkillTreeFileContents(options.actualSkillRoot),
-    });
-  } finally {
-    await fs.remove(tempRoot).catch(() => undefined);
-  }
+  return compareCodexSkillTrees({
+    expectedFiles: await collectCodexSkillTreeFileContents(pristineSkillRoot),
+    actualFiles: await collectCodexSkillTreeFileContents(options.actualSkillRoot),
+  });
 }
 
 async function compareCodexRepoSkillToExpectedTree(options: {
@@ -915,7 +886,6 @@ function upsertCodexScopeLedger(
   plugin: PluginMeta,
   scope: Scope,
   projectKey: string | undefined,
-  resolvedInstallOptions?: ResolvedInstallOptions,
 ): InstalledLedger {
   const nextLedger = readMutableLedger(ledger);
   const timestamp = new Date().toISOString();
@@ -943,19 +913,6 @@ function upsertCodexScopeLedger(
   if (scope === 'project' && projectKey) {
     scopeRecord.projectKey = projectKey;
   }
-  if (resolvedInstallOptions?.applicability === 'overridable') {
-    scopeRecord.installOptions = {
-      skillTriggerPreference: resolvedInstallOptions.skillTriggerPreference,
-    };
-    if (ledger.ledgerState.status === 'available') {
-      scopeRecord.skillTriggerWriteOrder = getNextSkillTriggerWriteOrder({
-        ledger,
-        pluginName: plugin.manifest.name,
-        platform: 'codex',
-      });
-    }
-  }
-
   if (scope === 'user') {
     pluginRecord.platforms.codex.userScope = scopeRecord;
   } else if (projectKey) {
@@ -978,10 +935,9 @@ export async function applyCodexInstallLedger(
   plugin: PluginMeta,
   scope: Scope,
   cwd: string,
-  resolvedInstallOptions?: ResolvedInstallOptions,
 ): Promise<InstalledLedger> {
   const projectKey = scope === 'project' ? await resolveCodexProjectKey(cwd) : undefined;
-  return upsertCodexScopeLedger(ledger, plugin, scope, projectKey, resolvedInstallOptions);
+  return upsertCodexScopeLedger(ledger, plugin, scope, projectKey);
 }
 
 function removeCodexScopeLedger(
@@ -2158,47 +2114,10 @@ async function assertCodexProjectSkillPathOwnedByAw(options: {
   );
 }
 
-async function readResolvedInstallOptionsFromLedger(options: {
-  cwd: string;
-  pluginName: string;
-  scope: Scope;
-  env: NodeJS.ProcessEnv;
-}): Promise<InstalledScopeRecord<Record<string, unknown>>['installOptions'] | undefined> {
-  const location = options.scope === 'user'
-    ? {
-        plugin: options.pluginName,
-        platform: 'codex' as const,
-        scope: 'user' as const,
-      }
-    : {
-        plugin: options.pluginName,
-        platform: 'codex' as const,
-        scope: 'project' as const,
-        projectKey: await resolveCodexProjectKey(options.cwd),
-      };
-  const recordRead = await readInstallRecordForLocation({
-    cwd: options.cwd,
-    location,
-    env: options.env,
-  });
-  if (recordRead.status === 'ok') {
-    return recordRead.value.record.options;
-  }
-
-  const ledger = await readInstalledLedger(options.env);
-  if (options.scope === 'user') {
-    return ledger.plugins[options.pluginName]?.platforms.codex?.userScope?.installOptions;
-  }
-
-  const projectKey = await resolveCodexProjectKey(options.cwd);
-  return ledger.plugins[options.pluginName]?.platforms.codex?.projectScopes?.[projectKey]?.installOptions;
-}
-
 async function buildExpectedCodexSkillTreeForStatus(options: {
   plugin: PluginMeta;
   scope: Scope;
   skillName: string;
-  preference: SkillTriggerPreference;
   cwd: string;
   env: NodeJS.ProcessEnv;
 }): Promise<CodexSkillStagingTree | null> {
@@ -2241,8 +2160,6 @@ async function buildExpectedCodexSkillTreeForStatus(options: {
   return createCodexSkillExpectedTree({
     artifact,
     sourceDirs,
-    preference: options.preference,
-    policy: options.plugin.manifest.skillTriggers?.[options.skillName],
   });
 }
 
@@ -3316,6 +3233,30 @@ export class CodexAdapter implements PlatformAdapter {
       throw new Error(externalOwnership.details ?? '同名插件已由外部 marketplace 管理。');
     }
 
+    const activeSkillsRoot = path.join(
+      awHome,
+      'plugins',
+      plugin.manifest.name,
+      'codex',
+      'skills',
+    );
+    if (await fs.pathExists(activeSkillsRoot)) {
+      await validateSkillDirectoriesRoot(activeSkillsRoot, 'codex.skill');
+    }
+    if (options.marketplacePath && await fs.pathExists(options.marketplacePath)) {
+      const marketplaceRoot = path.dirname(path.dirname(path.dirname(options.marketplacePath)));
+      const stagedSkillsRoot = path.join(
+        marketplaceRoot,
+        'plugins',
+        plugin.manifest.name,
+        'codex',
+        'skills',
+      );
+      if (await fs.pathExists(stagedSkillsRoot)) {
+        await validateSkillDirectoriesRoot(stagedSkillsRoot, 'codex.skill');
+      }
+    }
+
     if (!isCodexMarketplaceRegistered(userConfig.snapshot.marketplaces[MARKETPLACE_NAME], awHome)) {
       await this.emitNativeMarketplaceEvent({
         plugin: plugin.manifest.name,
@@ -3447,6 +3388,10 @@ export class CodexAdapter implements PlatformAdapter {
           }
         }
       }
+    }
+
+    if (await fs.pathExists(activeSkillsRoot)) {
+      await validateSkillDirectoriesRoot(activeSkillsRoot, 'codex.skill');
     }
 
     const marketplacePath = awHome;
@@ -3885,8 +3830,6 @@ export class CodexAdapter implements PlatformAdapter {
       event?: 'install' | 'upgrade' | 'refresh';
       changedConfigKeys?: string[];
       dynamicOnly?: boolean;
-      skillTriggerPreference?: SkillTriggerPreference;
-      skillTriggerPreferences?: Record<string, SkillTriggerPreference>;
       previousArtifacts?: GeneratedArtifact[];
     },
   ): Promise<GeneratedArtifact[]> {
@@ -3997,15 +3940,6 @@ export class CodexAdapter implements PlatformAdapter {
           };
         }),
       });
-      const installOptions = await readResolvedInstallOptionsFromLedger({
-        cwd: this.cwd,
-        pluginName: plugin.manifest.name,
-        scope,
-        env: this.env,
-      });
-      const dynamicSkillPreference = options?.skillTriggerPreference ??
-        installOptions?.skillTriggerPreference ??
-        'default';
       const dynamicSkillSourceDirs = (artifact: ValidatedArtifactPlanArtifact): string[] =>
         dynamicRenderResult?.context.artifactSources.find((entry) =>
           entry.id === artifact.id && entry.target === artifact.target)?.sourceDirs ?? [];
@@ -4031,8 +3965,6 @@ export class CodexAdapter implements PlatformAdapter {
           const expectedTree = await createCodexSkillExpectedTree({
             artifact,
             sourceDirs: dynamicSkillSourceDirs(artifact),
-            preference: options?.skillTriggerPreferences?.[skillKey] ?? dynamicSkillPreference,
-            policy: plugin.manifest.skillTriggers?.[skillKey],
           });
           const writtenPaths = artifact.state === 'disabled'
             ? (await fs.remove(skillPath), [] as string[])
@@ -4078,8 +4010,6 @@ export class CodexAdapter implements PlatformAdapter {
           const expectedTree = await createCodexSkillExpectedTree({
             artifact,
             sourceDirs: dynamicSkillSourceDirs(artifact),
-            preference: options?.skillTriggerPreferences?.[skillKey] ?? dynamicSkillPreference,
-            policy: plugin.manifest.skillTriggers?.[skillKey],
           });
           const managedPaths = Object.keys(expectedTree.files).map((relativePath) =>
             path.join(skillPath, relativePath.split('/').join(path.sep)));
@@ -4893,35 +4823,6 @@ export class CodexAdapter implements PlatformAdapter {
       projectTrust,
     });
 
-    const effectiveSkillTriggerPreferences = await resolveEffectiveSkillTriggerPreferences({
-      plugin,
-      platform: 'codex',
-      scope,
-      cwd: this.cwd,
-      env: this.env,
-    }).catch(() => ({}));
-    const skillTriggerStatus = await resolveSkillTriggerStatusReportFields({
-      pluginName: plugin.manifest.name,
-      platform: 'codex',
-      scope,
-      projectKey,
-      ledger,
-      currentCatalog,
-      currentCatalogAvailable,
-      embeddedRoot: sourceCatalogRoot,
-      skillTriggerPreferences: effectiveSkillTriggerPreferences,
-      ...(scope === 'project'
-        ? {
-            runtimeTarget: {
-              platform: 'codex' as const,
-              scope: 'project' as const,
-              kind: 'repoSkill' as const,
-              root: getRepoSkillsRoot(repoRoot),
-            },
-          }
-        : {}),
-    });
-
     const artifactsInitialized = generatedArtifacts.every((artifact) =>
       artifact.state === 'disabled' || artifact.exists) &&
       managedArtifacts.every((artifact) =>
@@ -4959,9 +4860,6 @@ export class CodexAdapter implements PlatformAdapter {
       driftWarnings.push(marketplaceHealth.warning);
     }
     driftWarnings.push(...repoManagedSessionState.diagnostics);
-    if (skillTriggerStatus) {
-      driftWarnings.push(...skillTriggerStatus.warnings);
-    }
 
     let repoManagedSessionItems: RepoManagedProjectItemReport[] | undefined;
     let repoManagedSkillsSummary: RepoManagedProjectKindSummary | undefined;
@@ -4990,22 +4888,6 @@ export class CodexAdapter implements PlatformAdapter {
           ? await collectDeclaredCodexProjectSkillKeys(plugin)
           : trackedCodexSkillKeys(trackingRecord),
       );
-      let skillPoliciesByName = new Map<string, SkillTriggerPolicyEntry>();
-      if (currentCatalogAvailable) {
-        try {
-          const resolution = await resolveSkillTriggerPolicies({
-            embeddedRoot: sourceCatalogRoot,
-            pluginName: plugin.manifest.name,
-            platform: 'codex',
-          });
-          skillPoliciesByName = new Map(
-            resolution.policies.map((policy) => [policy.skillName, policy]),
-          );
-        } catch {
-          // Skill trigger warnings already surface policy read failures.
-        }
-      }
-
       for (const skillName of [...new Set([
         ...trackedSkillKeys,
         ...declaredSkillKeys,
@@ -5038,9 +4920,6 @@ export class CodexAdapter implements PlatformAdapter {
                   plugin,
                   scope,
                   skillName,
-                  preference: skillTriggerStatus?.skillTriggerPreferences?.[skillName]
-                    ?? skillTriggerStatus?.skillTriggerPreference
-                    ?? 'default',
                   cwd: this.cwd,
                   env: this.env,
                 });
@@ -5070,26 +4949,12 @@ export class CodexAdapter implements PlatformAdapter {
                 diagnostics.push(comparison.reason ?? '动态 skill 内容与 tracking 记录不一致。');
               }
             } else {
-              const policy = skillPoliciesByName.get(skillName);
-              const canCompare =
-                currentCatalogAvailable &&
-                Boolean(policy) &&
-                (
-                  policy?.allowInstallOverride !== true ||
-                  skillTriggerStatus?.skillTriggerApplicability === 'fixed' ||
-                  typeof skillTriggerStatus?.skillTriggerPreferences?.[skillName] === 'string' ||
-                  typeof skillTriggerStatus?.skillTriggerPreference === 'string'
-                );
-              if (policy && canCompare) {
+              if (currentCatalogAvailable) {
                 const comparison = await compareCodexRepoSkillToPristine({
                   embeddedRoot: sourceCatalogRoot,
                   pluginName: plugin.manifest.name,
                   skillName,
                   actualSkillRoot: skillPath,
-                  preference: skillTriggerStatus?.skillTriggerPreferences?.[skillName]
-                    ?? skillTriggerStatus?.skillTriggerPreference
-                    ?? 'default',
-                  policy,
                 });
                 if (comparison.drifted) {
                   state = 'drifted';
@@ -5433,17 +5298,6 @@ export class CodexAdapter implements PlatformAdapter {
       },
       artifactsInitialized,
       repoManagedSessionState: enrichedRepoManagedSessionState,
-      ...(skillTriggerStatus
-        ? {
-            skillTriggerApplicability: skillTriggerStatus.skillTriggerApplicability,
-            installOptions: skillTriggerStatus.installOptions,
-            skillTriggerPreference: skillTriggerStatus.skillTriggerPreference,
-            skillTriggerPreferences: skillTriggerStatus.skillTriggerPreferences,
-            skillTriggerRuntimeMatches: skillTriggerStatus.skillTriggerRuntimeMatches,
-            skillTriggerRuntimeState: skillTriggerStatus.skillTriggerRuntimeState,
-            skillTriggerDrift: skillTriggerStatus.skillTriggerDrift,
-          }
-        : {}),
     };
 
     return {

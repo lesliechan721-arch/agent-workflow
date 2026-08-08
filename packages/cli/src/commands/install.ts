@@ -30,10 +30,8 @@ import type {
   PluginStatusReport,
   ReceiptOverallState,
   ReceiptTargetResult,
-  ResolvedInstallOptions,
   Scope,
   TrackingManifest,
-  UpgradeCommandOptions,
 } from '../types.js';
 import {
   ensureLocalMarketplace,
@@ -48,7 +46,6 @@ import {
   resolveClaudeProjectKey,
   resolveCodexPaths,
   resolveCodexProjectKey,
-  resolveRepoRoot,
 } from '../utils/paths.js';
 import { assertTestWritablePath } from '../utils/test-path-fence.js';
 import {
@@ -70,18 +67,13 @@ import {
 import {
   createPluginConfigSchemaIdentity,
   preflightRequiredPluginConfigs,
-  resolveEffectiveSkillTriggerPreferences,
 } from '../utils/plugin-config.js';
 import {
-  buildSkillTriggerMaterializationSignature,
-  commitMaterializedSkillTriggerPreference,
-  collectSkillTriggerSiblingConflictWarnings,
-  materializeSkillTriggerPreference,
-  readCurrentSkillTriggerRuntimeSignature,
-  rollbackMaterializedSkillTriggerPreference,
-  type SkillTriggerMaterializationRollbackHandle,
-  type SkillTriggerSignatureResult,
-} from '../utils/skill-trigger-preferences.js';
+  commitCodexProjectSkills,
+  materializeCodexProjectSkills,
+  rollbackCodexProjectSkills,
+  type CodexProjectSkillMaterialization,
+} from '../utils/native-skill-materialization.js';
 import {
   getTrackingRecord,
   getTrackingManifestPath,
@@ -125,9 +117,6 @@ import {
   stageHistoricalLifecycleRuntime,
 } from '../install-state/runtime-state.js';
 import {
-  preflightSharedSkillTriggerRuntimeOwnerUpsert,
-} from '../install-state/shared-runtime-owner.js';
-import {
   createDependencyIndexRefreshPostCommitAction,
   createDynamicArtifactDiagnosticCacheWriteStage,
   createDiagnosticCacheDeletePostCommitAction,
@@ -135,7 +124,6 @@ import {
   createInstallRecordWriteStage,
   createNativeTransactionMarkerDeletePostCommitAction,
   createProjectArtifactIdentityWriteStage,
-  createSharedRuntimeOwnerWriteStage,
   runInstallStateTransaction,
   type InstallStateTransactionStage,
 } from '../install-state/transactions.js';
@@ -169,8 +157,6 @@ import {
   prepareCommandEnvironment,
   preparePluginTargetsForCommand,
   resolveCurrentCatalogWriteTargetPairs,
-  resolveInstallOptionsForLocationTargets,
-  resolveInstallOptionsForTargets,
   wrapCommandErrorWithWarnings,
   type PreparedMarketplaceState,
   type ResolvedPluginTarget,
@@ -220,10 +206,6 @@ import {
 } from './install-adopt-existing.js';
 
 type InstallCommandRuntime = CommandExecutionContextInput & {
-  resolveInstallOptions?: (
-    platform: PlatformName,
-    target: ResolvedPluginTarget,
-  ) => ResolvedInstallOptions;
   operation?: 'install' | 'upgrade';
   skipConfigPreflight?: boolean;
   skipWriteSafetyPreflight?: boolean;
@@ -534,9 +516,6 @@ function toPlannerInstalledRecordFromInstallRecord(
       }),
       declaration: structuredClone(edge.declaration),
     })),
-    installOptions: recordFile.record.options
-      ? structuredClone(recordFile.record.options)
-      : undefined,
   };
 }
 
@@ -699,51 +678,6 @@ function createNativeInstallTransactionMarker(
     createdAt: now,
     updatedAt: now,
     ...(lastError ? { lastError } : {}),
-  };
-}
-
-function createSkillTriggerMaterializationTarget(
-  platform: PlatformName,
-  scope: Scope,
-  cwd: string,
-  env: NodeJS.ProcessEnv,
-): {
-  platform: 'codex';
-  scope: 'user';
-  kind: 'localMarketplaceRuntime';
-  root: string;
-} | {
-  platform: 'codex';
-  scope: 'project';
-  kind: 'repoSkill';
-  root: string;
-} | {
-  platform: 'claude';
-  scope: Scope;
-  kind: 'localMarketplaceRuntime';
-  root: string;
-} {
-  if (platform === 'codex' && scope === 'project') {
-    return {
-      platform: 'codex',
-      scope: 'project',
-      kind: 'repoSkill',
-      root: path.join(resolveProjectScopeRepoRoot(cwd), '.agents', 'skills'),
-    };
-  }
-  if (platform === 'codex') {
-    return {
-      platform: 'codex',
-      scope: 'user',
-      kind: 'localMarketplaceRuntime',
-      root: resolveAwHome(env),
-    };
-  }
-  return {
-    platform: 'claude',
-    scope,
-    kind: 'localMarketplaceRuntime',
-    root: resolveAwHome(env),
   };
 }
 
@@ -939,7 +873,6 @@ function resolveInstallRollbackLedgerReason(
   nativeWritten: boolean,
   recoveryBreadcrumbPersisted: boolean,
   ledgerWritten: boolean,
-  materializationRollbackFailed: boolean,
   artifactsWritten: boolean,
   trackingWriteAttempted: boolean,
   artifactsRollbackFailed: boolean,
@@ -954,20 +887,19 @@ function resolveInstallRollbackLedgerReason(
   if (
     plannedNativeWrite &&
     !recoveryBreadcrumbPersisted &&
-    (nativeWritten || materializationRollbackFailed || artifactsWritten || trackingWriteAttempted)
+    (nativeWritten || artifactsWritten || trackingWriteAttempted)
   ) {
     return 'operation_interrupted_after_native_write';
   }
 
   if (recoveredCodexUserNative) {
-    return materializationRollbackFailed || artifactsRollbackFailed || trackingRestoreFailed
+    return artifactsRollbackFailed || trackingRestoreFailed
       ? 'operation_interrupted_after_artifact_write'
       : null;
   }
 
   if (
     ledgerWritten ||
-    materializationRollbackFailed ||
     artifactsWritten ||
     trackingWriteAttempted ||
     artifactsRollbackFailed ||
@@ -1036,19 +968,14 @@ async function applyInstallLedger(
   ledger: InstalledLedger,
   target: ResolvedPluginTarget,
   options: InstallCommandOptions,
-  resolvedInstallOptions: ResolvedInstallOptions,
 ): Promise<InstalledLedger> {
   if (!target.currentPlugin) {
     throw new Error(`Unknown plugin "${target.pluginName}".`);
   }
 
-  const overridableInstallOptions = resolvedInstallOptions.applicability === 'overridable'
-    ? resolvedInstallOptions
-    : undefined;
-
   return platform === 'claude'
-    ? applyClaudeInstallLedger(ledger, target.currentPlugin, options.scope, options.cwd, overridableInstallOptions)
-    : applyCodexInstallLedger(ledger, target.currentPlugin, options.scope, options.cwd, overridableInstallOptions);
+    ? applyClaudeInstallLedger(ledger, target.currentPlugin, options.scope, options.cwd)
+    : applyCodexInstallLedger(ledger, target.currentPlugin, options.scope, options.cwd);
 }
 
 async function setLifecycleConfigSnapshotOnLedger(
@@ -1329,56 +1256,6 @@ function recordNativePlugin(
   }
 }
 
-function shouldMaterializeSkillTriggers(
-  platform: PlatformName,
-  _scope: InstallCommandOptions['scope'],
-  resolvedInstallOptions: ResolvedInstallOptions,
-): boolean {
-  return resolvedInstallOptions.applicability !== 'none';
-}
-
-function resolveMaterializationMode(
-  resolvedInstallOptions: ResolvedInstallOptions,
-): 'strictExplicit' | 'bestEffortReplay' {
-  return resolvedInstallOptions.applicability === 'overridable' &&
-    resolvedInstallOptions.skillTriggerSource === 'cli' &&
-    resolvedInstallOptions.skillTriggerPreference !== 'default'
-    ? 'strictExplicit'
-    : 'bestEffortReplay';
-}
-
-function shouldCollectSharedRuntimeConflictWarnings(
-  platform: PlatformName,
-  scope: InstallCommandOptions['scope'],
-  resolvedInstallOptions: ResolvedInstallOptions,
-): boolean {
-  return platform !== 'codex' || scope !== 'project'
-    ? resolvedInstallOptions.applicability === 'overridable'
-    : false;
-}
-
-function resolveMaterializationPreference(
-  resolvedInstallOptions: ResolvedInstallOptions,
-): 'default' | 'manual' | 'auto' {
-  return resolvedInstallOptions.applicability === 'overridable'
-    ? resolvedInstallOptions.skillTriggerPreference
-    : 'default';
-}
-
-async function resolveScopeIdentityForTarget(
-  platform: PlatformName,
-  options: CommandOptions,
-): Promise<string> {
-  if (options.scope === 'user') {
-    return 'user';
-  }
-
-  const projectKey = platform === 'claude'
-    ? await resolveClaudeProjectKey(options.cwd)
-    : await resolveCodexProjectKey(options.cwd);
-  return `project:${projectKey}`;
-}
-
 async function preflightInstallConfigs(
   targets: ResolvedPluginTarget[],
   options: InstallCommandOptions,
@@ -1503,34 +1380,6 @@ async function installTargetOnPlatform(
   }
 
   const baselineLedger = await readInstalledLedger(env);
-  const resolvedInstallOptions = runtime.resolveInstallOptions?.(platform, target) ?? (
-    await resolveInstallOptionsForTargets(
-      'install',
-      [target],
-      [platform],
-      {
-        cwd: options.cwd,
-        scope: options.scope,
-        requestedSkillTrigger: options.requestedSkillTrigger,
-        env,
-      },
-      baselineLedger,
-    )
-  ).values().next().value as ResolvedInstallOptions;
-  const skillTriggerPreferences = await resolveEffectiveSkillTriggerPreferences({
-    plugin: target.currentPlugin,
-    platform,
-    scope: options.scope,
-    cwd: options.cwd,
-    env,
-  });
-  if (options.requestedSkillTrigger === 'manual' || options.requestedSkillTrigger === 'auto') {
-    for (const skillKey of Object.keys(skillTriggerPreferences)) {
-      if (target.currentPlugin.manifest.skillTriggers?.[skillKey]?.allowDynamicTrigger === true) {
-        skillTriggerPreferences[skillKey] = options.requestedSkillTrigger;
-      }
-    }
-  }
   const trackingDir = resolveTrackingDir(options.cwd, platform, options.scope, env);
   const baselineTracking = await readTrackingManifest(trackingDir);
   const previousTrackedArtifacts =
@@ -1574,37 +1423,19 @@ async function installTargetOnPlatform(
         degradedReasonOnRestoreFailure: 'operation_interrupted_after_artifact_write',
       }
     : undefined;
-  const materializeSkillTriggers = shouldMaterializeSkillTriggers(
-    platform,
-    options.scope,
-    resolvedInstallOptions,
-  );
-  const materializationPreference = options.requestedSkillTrigger
-    ?? resolveMaterializationPreference(resolvedInstallOptions);
-  let materializationSourceCatalogRoot = materializeSkillTriggers
-    ? resolveCatalogRootFromPlugin(target.currentPlugin)
-    : undefined;
   const pinnedSourceCatalogRoot = usesCodexUserDynamicSkillFlow
     ? await pinCurrentCatalogTargetForLocalMarketplaceRebuild(target, env)
     : undefined;
-  if (pinnedSourceCatalogRoot) {
-    materializationSourceCatalogRoot = pinnedSourceCatalogRoot;
-  }
   let nativeWritten = false;
   let artifactsWritten = false;
   let trackingWritten = false;
   let trackingWriteAttempted = false;
   let ledgerWritten = false;
   let plannedNativeWrite = false;
-  let materializationCommitted = false;
-  let materializationRollbackFailed = false;
-  let materializationRollbackHandle: SkillTriggerMaterializationRollbackHandle | undefined;
-  let runtimeSignatureBefore: SkillTriggerSignatureResult | undefined;
-  let plannedRuntimeSignatureAfter: SkillTriggerSignatureResult | undefined;
-  let writtenScopeIdentity: string | undefined;
   let generatedArtifacts: GeneratedArtifact[] = [];
-  let materializedArtifacts: GeneratedArtifact[] = [];
+  let projectSkillArtifacts: GeneratedArtifact[] = [];
   let trackedArtifacts: GeneratedArtifact[] = [];
+  let projectSkillMaterialization: CodexProjectSkillMaterialization | undefined;
   let preparedLifecycleConfigSnapshot: PreparedLifecycleConfigSnapshot | undefined;
   let lifecycleConfigSnapshot: LifecycleConfigSnapshotMetadata | undefined;
   let recoveryBreadcrumbPersisted = false;
@@ -1705,66 +1536,12 @@ async function installTargetOnPlatform(
       const localMarketplace = await ensureLocalMarketplace(env);
       warnings.push(...(localMarketplace.warnings ?? []));
     }
-
-    if (materializeSkillTriggers) {
-      const sourceCatalogRoot = materializationSourceCatalogRoot
-        ?? resolveCatalogRootFromPlugin(target.currentPlugin!);
-      const writtenScope = await resolveScopeIdentityForTarget(platform, options);
-      const marketplaceRoot = resolveAwHome(env);
-      const materializationTarget = platform === 'codex' && options.scope === 'project'
-        ? {
-            platform: 'codex' as const,
-            scope: 'project' as const,
-            kind: 'repoSkill' as const,
-            root: path.join(await resolveRepoRoot(options.cwd), '.agents', 'skills'),
-          }
-        : undefined;
-      writtenScopeIdentity = writtenScope;
-
-      if (
-        baselineLedger.ledgerState.status === 'available' &&
-        resolvedInstallOptions.ledgerTrust === 'available' &&
-        shouldCollectSharedRuntimeConflictWarnings(platform, options.scope, resolvedInstallOptions)
-      ) {
-        runtimeSignatureBefore = await readCurrentSkillTriggerRuntimeSignature({
-          pluginName: target.pluginName,
-          platform,
-          marketplaceRoot,
-          embeddedRoot: sourceCatalogRoot,
-        });
-      }
-
-      const materialization = await materializeSkillTriggerPreference({
-        pluginName: target.pluginName,
-        platform,
-        resolvedOptions: {
-          skillTriggerPreference: materializationPreference,
-          skillTriggerPreferences,
-        },
-        embeddedRoot: sourceCatalogRoot,
-        ...(materializationTarget
-          ? { target: materializationTarget }
-          : { marketplaceRootOrStagingRoot: marketplaceRoot }),
-        mode: resolveMaterializationMode(resolvedInstallOptions),
+    if (platform === 'codex' && options.scope === 'project') {
+      projectSkillMaterialization = await materializeCodexProjectSkills({
+        plugin: target.currentPlugin,
+        repoRoot: resolveProjectScopeRepoRoot(options.cwd),
       });
-      materializationCommitted = materialization.committed;
-      materializationRollbackHandle = materialization.rollbackHandle;
-      materializedArtifacts = materialization.generatedArtifacts;
-      warnings.push(...materialization.warnings);
-
-      if (
-        baselineLedger.ledgerState.status === 'available' &&
-        resolvedInstallOptions.ledgerTrust === 'available' &&
-        shouldCollectSharedRuntimeConflictWarnings(platform, options.scope, resolvedInstallOptions)
-      ) {
-        plannedRuntimeSignatureAfter = await buildSkillTriggerMaterializationSignature({
-          pluginName: target.pluginName,
-          platform,
-          preference: materializationPreference,
-          skillTriggerPreferences,
-          embeddedRoot: sourceCatalogRoot,
-        });
-      }
+      projectSkillArtifacts = projectSkillMaterialization.artifacts;
     }
 
     plannedNativeWrite = mayWriteNativeState(platform, target, options.scope);
@@ -1840,10 +1617,8 @@ async function installTargetOnPlatform(
     });
     generatedArtifacts = await adapters[platform].installExtensions(target.currentPlugin, options.scope, {
       event: operation,
-      skillTriggerPreference: options.requestedSkillTrigger ?? resolveMaterializationPreference(resolvedInstallOptions),
-      skillTriggerPreferences,
     });
-    trackedArtifacts = mergeGeneratedArtifacts(materializedArtifacts, generatedArtifacts);
+    trackedArtifacts = mergeGeneratedArtifacts(projectSkillArtifacts, generatedArtifacts);
     repoManagedArtifacts = mergeGeneratedArtifacts(repoManagedArtifacts, trackedArtifacts);
     artifactsWritten = trackedArtifacts.length > 0;
     await emitCommandEvent(context, {
@@ -1938,7 +1713,6 @@ async function installTargetOnPlatform(
         baselineLedger,
         target,
         options,
-        resolvedInstallOptions,
       ),
       {
         platform,
@@ -1953,33 +1727,6 @@ async function installTargetOnPlatform(
       options,
       lifecycleConfigSnapshot,
     );
-    const pendingConflictWarnings: string[] = [];
-    if (
-      materializeSkillTriggers &&
-      baselineLedger.ledgerState.status === 'available' &&
-      nextLedger.ledgerState.status === 'available' &&
-      resolvedInstallOptions.ledgerTrust === 'available' &&
-      shouldCollectSharedRuntimeConflictWarnings(platform, options.scope, resolvedInstallOptions) &&
-      runtimeSignatureBefore &&
-      plannedRuntimeSignatureAfter &&
-      writtenScopeIdentity
-    ) {
-      const conflictResult = await collectSkillTriggerSiblingConflictWarnings({
-        ledgerBefore: baselineLedger,
-        ledgerAfter: nextLedger,
-        pluginName: target.pluginName,
-        platform,
-        writtenScopeIdentity,
-        runtimeSignatureBefore,
-        plannedRuntimeSignatureAfter,
-        embeddedRoot: resolveCatalogRootFromPlugin(target.currentPlugin!),
-      });
-      pendingConflictWarnings.push(
-        ...conflictResult.warnings,
-        ...conflictResult.diagnostics.filter(Boolean),
-      );
-    }
-
     const projectKey = options.scope === 'project'
       ? platform === 'claude'
         ? await resolveClaudeProjectKey(options.cwd)
@@ -2027,9 +1774,6 @@ async function installTargetOnPlatform(
           bundleFingerprint: lifecycleConfigSnapshot.bundleFingerprint,
         },
         installSource: toInstallRecordInstallSource('explicit'),
-        ...(toInstalledScopeInstallOptions(resolvedInstallOptions)
-          ? { options: toInstalledScopeInstallOptions(resolvedInstallOptions) }
-          : {}),
         ...(plannedNativeWrite
           ? {
               native: {
@@ -2108,28 +1852,6 @@ async function installTargetOnPlatform(
         }));
       }
     }
-    if (materializeSkillTriggers) {
-      const sharedOwnerPreflight = await preflightSharedSkillTriggerRuntimeOwnerUpsert({
-        location: toInstallStateLocation(location),
-        embeddedRoot: resolveCatalogRootFromPlugin(target.currentPlugin!),
-        target: createSkillTriggerMaterializationTarget(platform, options.scope, options.cwd, env),
-        preference: materializationPreference,
-        skillTriggerPreferences,
-        command: operation === 'upgrade' ? 'upgrade' : 'install',
-        targetCount: 1,
-        env,
-      });
-      if (sharedOwnerPreflight.status !== 'ok') {
-        throw new Error(normalizeSharedRuntimeOwnerBlockMessage(sharedOwnerPreflight.takeoverRequired.message));
-      }
-      if (sharedOwnerPreflight.status === 'ok' && sharedOwnerPreflight.shouldWriteOwner) {
-        transactionStages.push(await createSharedRuntimeOwnerWriteStage({
-          recordFile,
-          recordPath,
-          env,
-        }));
-      }
-    }
     const transactionResult = await runInstallStateTransaction({
       stages: transactionStages,
       postCommit: [
@@ -2149,7 +1871,6 @@ async function installTargetOnPlatform(
           : []),
       ],
     });
-    warnings.push(...pendingConflictWarnings);
     for (const warning of transactionResult.warnings) {
       if (warning.code === 'nativeMarkerDeleteFailed') {
         throw new PostInstallCleanupError(
@@ -2211,14 +1932,13 @@ async function installTargetOnPlatform(
         nativeWritten,
         artifactsWritten,
         trackingWritten,
-        materializationCommitted,
       },
     });
     generatedArtifacts = mergeGeneratedArtifacts(
       generatedArtifacts,
       getGeneratedArtifactsFromError(error),
     );
-    trackedArtifacts = mergeGeneratedArtifacts(materializedArtifacts, generatedArtifacts);
+    trackedArtifacts = mergeGeneratedArtifacts(projectSkillArtifacts, generatedArtifacts);
     artifactsWritten = artifactsWritten || trackedArtifacts.length > 0;
     const rollbackIssues: string[] = [];
     const rollbackSurfaces = new Set<string>();
@@ -2232,23 +1952,7 @@ async function installTargetOnPlatform(
       trackedArtifacts,
     );
 
-    if (materializationCommitted && materializationRollbackHandle) {
-      try {
-        await rollbackMaterializedSkillTriggerPreference(materializationRollbackHandle);
-        materializationCommitted = false;
-      } catch (rollbackError) {
-        materializationRollbackFailed = true;
-        appendRollbackIssue(
-          rollbackIssues,
-          rollbackSurfaces,
-          'repo-managed skill rollback 失败',
-          rollbackError,
-          artifactSurfaceHints,
-        );
-      }
-    }
-
-    if (artifactsWritten) {
+    if (generatedArtifacts.length > 0) {
       try {
         if (usesDynamicSkillFlow && dynamicSkillArtifactRollbackState) {
           await restoreTrackedArtifactRollbackState(
@@ -2278,6 +1982,20 @@ async function installTargetOnPlatform(
         );
       }
     }
+    if (projectSkillMaterialization?.active) {
+      try {
+        await rollbackCodexProjectSkills(projectSkillMaterialization);
+      } catch (rollbackError) {
+        artifactsRollbackFailed = true;
+        appendRollbackIssue(
+          rollbackIssues,
+          rollbackSurfaces,
+          'Codex 项目 skill 回滚失败',
+          rollbackError,
+          projectSkillArtifacts.map((artifact) => artifact.path),
+        );
+      }
+    }
 
     if (nativeWritten && nativeRollbackBaseline) {
       try {
@@ -2287,7 +2005,7 @@ async function installTargetOnPlatform(
         appendRollbackIssue(
           rollbackIssues,
           rollbackSurfaces,
-          'Codex native materialized cache 回滚失败',
+          'Codex native cache 回滚失败',
           rollbackError,
           [nativeRollbackBaseline.configPath, nativeRollbackBaseline.cacheRootPath],
         );
@@ -2343,8 +2061,7 @@ async function installTargetOnPlatform(
       (
         nativeWritten ||
         artifactsWritten ||
-        trackingWriteAttempted ||
-        materializationCommitted
+        trackingWriteAttempted
       ),
     );
     if (shouldAttemptUpgradeBaselineRestore && upgradeRollbackBaseline) {
@@ -2405,7 +2122,6 @@ async function installTargetOnPlatform(
           nativeWritten,
           recoveryBreadcrumbPersisted,
           ledgerWritten,
-          materializationRollbackFailed,
           artifactsWritten,
           trackingWriteAttempted,
           artifactsRollbackFailed,
@@ -2466,14 +2182,14 @@ async function installTargetOnPlatform(
     throw rollbackFailure;
   }
 
-  if (materializationRollbackHandle) {
+  if (projectSkillMaterialization?.active) {
     try {
-      await commitMaterializedSkillTriggerPreference(materializationRollbackHandle);
-      materializationCommitted = false;
+      await commitCodexProjectSkills(projectSkillMaterialization);
     } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
       warnings.push(
-        `[${platform}/${target.currentPlugin.manifest.name}] skill trigger 备份目录清理失败：${detail}`,
+        `[codex/${target.currentPlugin.manifest.name}] 项目 skill 备份目录清理失败：${
+          error instanceof Error ? error.message : String(error)
+        }`,
       );
     }
   }
@@ -2646,16 +2362,6 @@ function createScopedInstallOptions(
     platform: location.platform,
     scope: location.scope,
   };
-}
-
-export function toInstalledScopeInstallOptions(
-  resolvedInstallOptions: ResolvedInstallOptions | undefined,
-): InstalledScopeRecord<Record<string, unknown>>['installOptions'] {
-  return resolvedInstallOptions?.applicability === 'overridable'
-    ? {
-        skillTriggerPreference: resolvedInstallOptions.skillTriggerPreference,
-      }
-    : undefined;
 }
 
 function getInstalledScopeRecordForLocation(
@@ -3290,7 +2996,6 @@ export async function buildInstallPlannerContext(options: {
       resolvedVersion: scopeRecord.resolvedVersion,
       installSource: scopeRecord.installSource,
       dependencyEdges: scopeRecord.dependencyEdges,
-      installOptions: scopeRecord.installOptions,
     });
   }
 
@@ -3326,75 +3031,9 @@ export function requiresRuntimeWritableMarketplaceForGraphNodes(
   });
 }
 
-function applyPlannedInstallOptionOverrides(
-  resolvedInstallOptions: ResolvedInstallOptions,
-  node: PluginDependencyNodePlan,
-): ResolvedInstallOptions {
-  const plannedPreference = node.installOptions?.skillTriggerPreference;
-  if (
-    !plannedPreference ||
-    resolvedInstallOptions.applicability !== 'overridable' ||
-    resolvedInstallOptions.skillTriggerPreference === plannedPreference
-  ) {
-    return resolvedInstallOptions;
-  }
-
-  return {
-    applicability: 'overridable',
-    skillTriggerPreference: plannedPreference,
-    skillTriggerSource: node.requested ? resolvedInstallOptions.skillTriggerSource : 'default',
-    ledgerTrust: resolvedInstallOptions.ledgerTrust,
-  };
-}
-
-export async function resolveGraphInstallOptionsByLocation(options: {
-  mode: 'install' | 'upgrade' | 'upgrade-all';
-  plan: PluginDependencyWritePlan;
-  graphContext: InstallLocationGraphContext;
-  commandOptions: Pick<InstallCommandOptions | UpgradeCommandOptions, 'cwd' | 'requestedSkillTrigger'>;
-  ledger: InstalledLedger;
-  env: NodeJS.ProcessEnv;
-}): Promise<Map<string, ResolvedInstallOptions>> {
-  const requests = options.plan.writeOrder.map((location) => {
-    const target = options.graphContext.targetByPlugin.get(location.plugin);
-    if (!target) {
-      throw new Error(`插件 ${location.plugin} 在 current catalog 中不存在。`);
-    }
-    const node = options.plan.nodesByLocation[serializePluginLocation(location)];
-    return {
-      location,
-      target,
-      requestedSkillTrigger: node?.requested ? options.commandOptions.requestedSkillTrigger : undefined,
-    };
-  });
-  const baseResolvedByLocation = await resolveInstallOptionsForLocationTargets(
-    options.mode,
-    requests,
-    {
-      cwd: options.commandOptions.cwd,
-      env: options.env,
-    },
-    options.ledger,
-  );
-
-  const resolvedByLocation = new Map<string, ResolvedInstallOptions>();
-  for (const location of options.plan.writeOrder) {
-    const key = serializePluginLocation(location);
-    const baseResolved = baseResolvedByLocation.get(key);
-    const node = options.plan.nodesByLocation[key];
-    if (!baseResolved || !node) {
-      throw new Error(`缺少 ${location.platform}/${location.plugin} (${location.scope}) 的 resolved install options。`);
-    }
-    resolvedByLocation.set(key, applyPlannedInstallOptionOverrides(baseResolved, node));
-  }
-
-  return resolvedByLocation;
-}
-
 async function preflightInstallGraphWrites(options: {
   plan: PluginDependencyWritePlan;
   graphContext: InstallLocationGraphContext;
-  resolvedInstallOptionsByLocation: Map<string, ResolvedInstallOptions>;
   commandOptions: InstallCommandOptions;
   runtime: InstallCommandRuntime;
   env: NodeJS.ProcessEnv;
@@ -3413,9 +3052,6 @@ async function preflightInstallGraphWrites(options: {
 
   for (const { location, target } of writeTargets) {
     assertPluginsSupportPlatforms([target.currentPlugin!], [location.platform]);
-    if (!options.resolvedInstallOptionsByLocation.has(serializePluginLocation(location))) {
-      throw new Error(`缺少 ${location.platform}/${location.plugin} (${location.scope}) 的 resolved install options。`);
-    }
   }
 
   for (const scope of ['user', 'project'] as const satisfies readonly Scope[]) {
@@ -3457,7 +3093,6 @@ async function preflightInstallGraphWrites(options: {
 
   for (const { location, target, status } of writeTargets) {
     const locationKey = serializePluginLocation(location);
-    const resolvedInstallOptions = options.resolvedInstallOptionsByLocation.get(locationKey);
     const installedRecord = options.graphContext.installedRecordByLocation.get(locationKey);
     if (
       status?.externalOwnership?.present &&
@@ -3532,33 +3167,6 @@ async function preflightInstallGraphWrites(options: {
       }
     }
 
-    if (resolvedInstallOptions && shouldMaterializeSkillTriggers(location.platform, location.scope, resolvedInstallOptions)) {
-      const skillTriggerPreferences = await resolveEffectiveSkillTriggerPreferences({
-        plugin: target.currentPlugin!,
-        platform: location.platform,
-        scope: location.scope,
-        cwd: options.commandOptions.cwd,
-        env: options.env,
-      });
-      const sharedOwnerPreflight = await preflightSharedSkillTriggerRuntimeOwnerUpsert({
-        location: toInstallStateLocation(location),
-        embeddedRoot: resolveCatalogRootFromPlugin(target.currentPlugin!),
-        target: createSkillTriggerMaterializationTarget(
-          location.platform,
-          location.scope,
-          options.commandOptions.cwd,
-          options.env,
-        ),
-        preference: resolveMaterializationPreference(resolvedInstallOptions),
-        skillTriggerPreferences,
-        command: 'install',
-        targetCount: options.plan.requestedRoots.length,
-        env: options.env,
-      });
-      if (sharedOwnerPreflight.status !== 'ok') {
-        throw new Error(normalizeSharedRuntimeOwnerBlockMessage(sharedOwnerPreflight.takeoverRequired.message));
-      }
-    }
   }
 }
 
@@ -3656,12 +3264,8 @@ function withEarlyDegradedLedgerWarning(
   }
 
   return [
-    `installed.json 处于 degraded 状态（${ledger.ledgerState.reason ?? 'unknown'}），跳过 skill trigger 偏好 replay，保留 embedded pristine 默认策略。`,
+    `installed.json 处于 degraded 状态（${ledger.ledgerState.reason ?? 'unknown'}）。`,
   ];
-}
-
-function normalizeSharedRuntimeOwnerBlockMessage(message: string): string {
-  return message;
 }
 
 function toInstallAdoptWarnings(
@@ -3692,20 +3296,12 @@ async function runInstallAdoptExisting(
       cwd: options.cwd,
       scope: options.scope,
       platform: options.platform,
-      ...(options.requestedSkillTrigger === undefined
-        ? {}
-        : { requestedSkillTrigger: options.requestedSkillTrigger }),
       ...(options.scriptTimeoutMs === undefined
         ? {}
         : { scriptTimeoutMs: options.scriptTimeoutMs }),
     }, repairRuntime);
   } catch (error) {
-    const normalized = error instanceof Error
-      ? normalizeSharedRuntimeOwnerBlockMessage(error.message)
-      : String(error);
-    throw error instanceof Error && normalized === error.message
-      ? error
-      : new Error(normalized);
+    throw error;
   }
 
   const locations = adoptResult.locations;
@@ -3869,31 +3465,7 @@ export async function installCommand(
         scope: options.scope,
         projectKeysByPlatform,
       }));
-    const rootInstallOptionsByLocation = await resolveInstallOptionsForLocationTargets(
-      'install',
-      requestedLocations.map((location) => {
-        const target = targetByPlugin.get(location.plugin);
-        if (!target) {
-          throw new Error(`插件 ${location.plugin} 在 current catalog 中不存在。`);
-        }
-        return {
-          location,
-          target,
-          requestedSkillTrigger: options.requestedSkillTrigger,
-        };
-      }),
-      {
-        cwd: options.cwd,
-        env,
-      },
-      prepared.ledger,
-    );
-    const plannerTargets = requestedLocations.map((location) => ({
-      location,
-      installOptions: toInstalledScopeInstallOptions(
-        rootInstallOptionsByLocation.get(serializePluginLocation(location)),
-      ),
-    }));
+    const plannerTargets = requestedLocations.map((location) => ({ location }));
     const { plannerState, graphContext } = await buildInstallPlannerContext({
       requestedLocations,
       targetByPlugin,
@@ -3943,30 +3515,6 @@ export async function installCommand(
       ...prepared.warnings,
       ...preparedForExecution.warnings,
     ];
-    const resolvedInstallOptionsByLocation = await resolveGraphInstallOptionsByLocation({
-      mode: 'install',
-      plan: graphPlan,
-      graphContext,
-      commandOptions: options,
-      ledger: preparedForExecution.ledger,
-      env,
-    });
-    await emitCommandEvent(context, {
-      type: 'skill-trigger:resolved',
-      data: {
-        entries: [...resolvedInstallOptionsByLocation.entries()].map(([key, value]) => ({
-          key,
-          applicability: value.applicability,
-          ...(value.applicability === 'overridable'
-            ? {
-                preference: value.skillTriggerPreference,
-                source: value.skillTriggerSource,
-              }
-            : {}),
-          ledgerTrust: value.ledgerTrust,
-        })),
-      },
-    });
     const executorNodes = buildGraphWriteExecutorNodes({
       plan: graphPlan,
       graphContext,
@@ -3977,7 +3525,6 @@ export async function installCommand(
         await preflightInstallGraphWrites({
           plan: graphPlan,
           graphContext,
-          resolvedInstallOptionsByLocation,
           commandOptions: options,
           runtime: context,
           env,
@@ -3986,8 +3533,7 @@ export async function installCommand(
       executeNode: async (node) => {
         const key = serializePluginLocation(node.location);
         const target = graphContext.targetByPlugin.get(node.location.plugin);
-        const resolvedInstallOptions = resolvedInstallOptionsByLocation.get(key);
-        if (!target || !resolvedInstallOptions) {
+        if (!target) {
           throw new Error(`缺少 ${node.location.platform}/${node.location.plugin} (${node.location.scope}) 的 graph install 上下文。`);
         }
         const result = await installTargetOnPlatform(
@@ -3997,7 +3543,6 @@ export async function installCommand(
           {
             ...context,
             adapters,
-            resolveInstallOptions: () => resolvedInstallOptions,
             skipConfigPreflight: true,
             skipWriteSafetyPreflight: true,
           },

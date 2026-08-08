@@ -53,7 +53,6 @@ import {
 import {
   findConfigFieldEntry,
   hasConfigReadV2Content,
-  isBuiltInConfigKey,
   coercePluginConfigValue,
   createPluginConfigSchemaIdentity,
   createPluginConfigFormModel,
@@ -66,7 +65,6 @@ import {
   type PluginConfigValue,
 } from '../utils/plugin-config.js';
 import {
-  applyBuiltInConfigWrite,
   applyPluginConfigWrite,
   replayConfigRuntimeWrites,
   resetPluginConfigWithHelper,
@@ -2161,16 +2159,8 @@ function configFieldValueStateLabel(field: ConfigFieldEntryV2): string {
       return field.effectiveValue === null
         ? '未配置'
         : `默认值：${String(field.effectiveValue)}`;
-    case 'fixed':
-      return `固定为 ${String(field.effectiveValue)}`;
-    case 'ignored':
-      return '旧配置已忽略';
-    case 'orphaned':
-      return '旧配置可清理';
     case 'invalid':
-      return field.invalidReason === 'unsupportedProjectLocalLayer'
-        ? '本地层旧值无效'
-        : '当前值无效';
+      return '当前值无效';
   }
 }
 
@@ -2305,9 +2295,6 @@ function canUpdateConfigField(
   if (target.scope === 'effective') {
     return false;
   }
-  if (field.kind === 'builtIn') {
-    return field.writable;
-  }
   return field.writable;
 }
 
@@ -2317,13 +2304,6 @@ function canClearConfigField(
 ): boolean {
   if (target.scope === 'effective') {
     return false;
-  }
-  if (field.kind === 'builtIn') {
-    if (target.projectLayer === 'local') {
-      return false;
-    }
-    return targetMatchesLayer(target, field.storedSourceLayer)
-      && (field.valueState === 'configured' || field.valueState === 'ignored' || field.valueState === 'orphaned');
   }
   return targetMatchesLayer(target, field.sourceLayer);
 }
@@ -2784,25 +2764,6 @@ async function promptConfigFieldWriteValue(options: {
   field: ConfigFieldEntryV2;
   required: boolean;
 }): Promise<PluginConfigValue | null> {
-  if (options.field.kind === 'builtIn') {
-    const selection = await selectValue(options.context, {
-      message: options.field.title,
-      choices: [
-        { value: 'manual', label: '手动' },
-        { value: 'auto', label: '自动' },
-        { value: 'built-in-back', label: '返回', role: 'back' },
-      ],
-      defaultValue: options.field.effectiveValue === 'auto' ? 'auto' : 'manual',
-    });
-    if (isPromptAction(selection, 'back') || isPromptAction(selection, 'cancel')) {
-      return null;
-    }
-    if (isPromptAction(selection, 'exit')) {
-      return null;
-    }
-    return selectedPromptValue(selection) as PluginConfigValue;
-  }
-
   const schemaField = options.plugin.manifest.config?.schema?.[options.field.key];
   if (!schemaField) {
     throw new Error(`Unknown config key "${options.field.key}".`);
@@ -2886,35 +2847,6 @@ async function runConfigFieldWriteAction(options: {
     }
 
     try {
-      if (options.field.kind === 'builtIn') {
-        const receipt = await applyBuiltInConfigWrite({
-          pluginName: options.item.summary.pluginName,
-          plugin,
-          scope: options.viewTarget.scope as Scope,
-          projectLayer: options.viewTarget.projectLayer,
-          cwd: options.context.cwd,
-          env: options.context.env,
-          nativeCliRunner: options.context.nativeCliRunner,
-          applyTargets: group.applyTargets,
-          key: options.field.key,
-          action: options.mode,
-          ...(options.mode === 'set' ? { value: value as 'manual' | 'auto' } : {}),
-        });
-        resultSections.push(...groupResultLines(group, [
-          options.mode === 'set'
-            ? `已更新 ${options.field.title}。`
-            : receipt.deleted === false
-              ? `${options.field.title} 当前没有可清理的存量值。`
-              : `已清理 ${options.field.title} 的旧配置。`,
-          ...(receipt.targetResults.length === 0 ? ['没有需要应用的 runtime 写入。'] : []),
-        ]), '');
-        recentTargetResults.push(...receipt.targetResults);
-        if (receipt.targetResults.length === 0) {
-          summaryLines.push(`- ${group.label} · 没有需要应用的 runtime 写入。`);
-        }
-        continue;
-      }
-
       const receipt = await applyPluginConfigWrite({
         plugin: plugin!,
         pluginName: options.item.summary.pluginName,
@@ -3090,7 +3022,6 @@ async function runConfigReapplyAction(options: {
       env: options.context.env,
       nativeCliRunner: options.context.nativeCliRunner,
       applyTargets: group.applyTargets,
-      includeBuiltIn: true,
       includeDynamicArtifacts: true,
     });
     lines.push(...groupResultLines(group, replay.targetResults.length > 0
@@ -3379,7 +3310,6 @@ async function runInstallLikeAction(options: {
     platform: firstLocation.platform,
     scope: firstLocation.scope,
     requested: true,
-    resolvedInstallOptions: undefined,
   }));
 
   const decision = await createInstallWizardDecision({
@@ -3390,17 +3320,6 @@ async function runInstallLikeAction(options: {
     cwd: context.cwd,
     scope: firstLocation.scope,
     env: context.env,
-    resolvedInstallOptions: graphPlan
-      ? writeTargets
-        .map((entry) => entry.resolvedInstallOptions
-          ? {
-              platform: entry.platform,
-              pluginName: entry.target.pluginName,
-              options: entry.resolvedInstallOptions,
-            }
-          : null)
-        .filter((entry): entry is NonNullable<typeof entry> => entry !== null)
-      : [],
   });
 
   if (decision.blockedReason) {
@@ -3947,7 +3866,6 @@ async function runReapplyAction(
       scope: location.scope,
       ...(location.projectKey ? { projectKey: location.projectKey } : {}),
     }],
-    includeBuiltIn: false,
     includeDynamicArtifacts: true,
   });
   const lines = replay.artifactRefresh.status === 'succeeded'

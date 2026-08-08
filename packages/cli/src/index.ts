@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { Command, CommanderError, Option } from 'commander';
+import { Command, CommanderError } from 'commander';
 
 import { initCommand } from './commands/init.js';
 import { installCommand } from './commands/install.js';
@@ -32,7 +32,6 @@ import {
   resolveConfigReadResolution,
   resolveConfigProjectLayer,
   resolveConfigWriteScope,
-  assertNoDeprecatedSkillTriggerOption,
   applyCatalogSelectorEnv,
   normalizeCommandOptions,
   normalizeInstallCommandOptions,
@@ -61,8 +60,6 @@ import {
   coercePluginConfigValue,
   findConfigFieldEntry,
   hasConfigReadV2Content,
-  isBuiltInConfigKey,
-  parseBuiltInSkillTriggerKey,
   readPluginConfigStore,
   renderPluginConfigValueForDisplay,
   resolveConfigReadV2,
@@ -73,7 +70,6 @@ import {
   type PluginConfigIssue,
 } from './utils/plugin-config.js';
 import {
-  applyBuiltInConfigWrite,
   applyPluginConfigWrite,
   describeResetAffectedFields,
   resetPluginConfigWithHelper,
@@ -82,33 +78,7 @@ import { assertStrictSemVer } from './utils/manifest.js';
 import type { ConfigFieldEntryV2, PluginManifestSource, PluginMeta, Scope } from './types.js';
 
 export type { CliIo } from './commands/runtime.js';
-export { parseSkillTriggerPreference } from './commands/options.js';
-
 export type CliRuntimeOptions = CliExecutionContextInput;
-
-function createDeprecatedSkillTriggerOption(): Option {
-  return new Option('-t, --skill-trigger <preference>').hideHelp();
-}
-
-function assertNoDeprecatedSkillTriggerArgv(argv: string[]): void {
-  const commandName = argv.find((token) => !token.startsWith('-'));
-  if (
-    commandName !== 'install' &&
-    commandName !== 'upgrade' &&
-    commandName !== 'reinstall'
-  ) {
-    return;
-  }
-
-  for (let index = 0; index < argv.length; index += 1) {
-    const token = argv[index];
-    if (token === '-t' || token === '--skill-trigger' || token?.startsWith('--skill-trigger=')) {
-      throw new Error(
-        `\`${commandName}\` 不再接受 \`--skill-trigger\` / \`-t\`；请改用配置管理维护 skill trigger 偏好后再重试。`,
-      );
-    }
-  }
-}
 
 function extractLegacyDiagnosePlugins(argv: string[]): string[] {
   const plugins: string[] = [];
@@ -911,7 +881,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .argument('[plugins...]')
     .option('-s, --scope <scope>', 'project or user')
     .option('-p, --platform <platform>', 'codex | claude | both')
-    .addOption(createDeprecatedSkillTriggerOption())
     .option('--adopt-existing', 'adopt existing project-scope shared artifacts', false)
     .option('--script-timeout <ms>', 'override plugin lifecycle script timeout in milliseconds')
     .option('-j, --json', 'print receipt as JSON', false)
@@ -926,7 +895,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           platform?: string;
           catalogChannel?: string;
           catalogVersion?: string;
-          skillTrigger?: string;
           adoptExisting?: boolean;
           scriptTimeout?: string;
           json?: boolean;
@@ -937,7 +905,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           context,
           async () => {
             assertInstallPluginsProvided(plugins ?? []);
-            assertNoDeprecatedSkillTriggerOption(rawOptions, 'install');
             const commandOptions = normalizeInstallCommandOptions({
               cwd,
               ...rawOptions,
@@ -1039,7 +1006,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('-a, --all', 'upgrade all plugins', false)
     .option('-s, --scope <scope>', 'project or user')
     .option('-p, --platform <platform>', 'codex | claude | both')
-    .addOption(createDeprecatedSkillTriggerOption())
     .option('--script-timeout <ms>', 'override plugin lifecycle script timeout in milliseconds')
     .option('-j, --json', 'print receipt as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
@@ -1054,7 +1020,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           platform?: string;
           catalogChannel?: string;
           catalogVersion?: string;
-          skillTrigger?: string;
           scriptTimeout?: string;
           json?: boolean;
         } & RawDiagnosticsOptions,
@@ -1064,7 +1029,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           context,
           async () => {
             assertUpgradeRequestProvided(plugins ?? [], rawOptions.all === true);
-            assertNoDeprecatedSkillTriggerOption(rawOptions, 'upgrade');
             const commandOptions = normalizeUpgradeCommandOptions({
               cwd,
               ...rawOptions,
@@ -1165,7 +1129,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .argument('[plugins...]')
     .option('-s, --scope <scope>', 'project or user')
     .option('-p, --platform <platform>', 'codex | claude | both')
-    .addOption(createDeprecatedSkillTriggerOption())
     .option('--script-timeout <ms>', 'override plugin lifecycle script timeout in milliseconds')
     .option('-j, --json', 'print receipt as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
@@ -1178,7 +1141,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         platform?: string;
         catalogChannel?: string;
         catalogVersion?: string;
-        skillTrigger?: string;
         scriptTimeout?: string;
         json?: boolean;
       } & RawDiagnosticsOptions,
@@ -1187,7 +1149,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       const receipt = await runActionWithContext(
         context,
         async () => {
-          assertNoDeprecatedSkillTriggerOption(rawOptions, 'reinstall');
           const commandOptions = normalizeReinstallCommandOptions({
             cwd,
             ...rawOptions,
@@ -1301,9 +1262,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       const context = createActionContext('config:get', rawOptions);
       const resolved = await runActionWithContext(context, async () => {
         const projectLayer = resolveConfigProjectLayer(rawOptions);
-        if (key && rawOptions.local && isBuiltInConfigKey(key)) {
-          throw new Error('project local 层不支持按字段读取 SkillTrigger 内建值；请改用 `--scope project` 查看生效值，或整层 reset 清理误写入值。');
-        }
         const { plugin, error } = await loadConfigPluginLookup(pluginName, context);
         const result = await resolveConfigReadV2({
           pluginName,
@@ -1330,15 +1288,12 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             fields: [field],
           };
         }
-        if (result.legacyConfigStores.length > 0 && !parseBuiltInSkillTriggerKey(key)) {
+        if (result.legacyConfigStores.length > 0) {
           throw new Error(
             `${pluginName} 只剩 storeOnly 旧配置，不能按字段读取普通 raw value。` +
               `请运行 \`aw config reset ${pluginName} -s user --yes\` 或 ` +
               `\`aw config reset ${pluginName} -s project --yes\` 清理对应 store。`,
           );
-        }
-        if (parseBuiltInSkillTriggerKey(key)) {
-          throw new Error(`Unknown config key "${key}".`);
         }
         if (plugin?.manifest.config?.schema?.[key] === undefined) {
           throw new Error(`Unknown config key "${key}".`);
@@ -1391,27 +1346,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         const projectLayer = resolveConfigProjectLayer(rawOptions);
         const { plugin, error } = await loadConfigPluginLookup(pluginName, context);
         const inputValue = rawOptions.valueJson ? JSON.parse(rawValue) : rawValue;
-        if (isBuiltInConfigKey(key)) {
-          const writeReceipt = await applyBuiltInConfigWrite({
-            pluginName,
-            plugin,
-            ...(error ? { pluginError: error } : {}),
-            scope,
-            projectLayer,
-            cwd: context.cwd,
-            env: context.env,
-            nativeCliRunner: context.nativeCliRunner,
-            key,
-            action: 'set',
-            value: inputValue,
-          });
-          return {
-            ok: true,
-            receiptSchemaVersion: 2,
-            command: 'config:set',
-            ...writeReceipt,
-          };
-        }
         const writeReceipt = await applyPluginConfigWrite({
           plugin,
           ...(error ? { pluginError: error } : {}),
@@ -1470,28 +1404,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         const scope = resolveConfigWriteScope(rawOptions.scope);
         const projectLayer = resolveConfigProjectLayer(rawOptions);
         const { plugin, error } = await loadConfigPluginLookup(pluginName, context);
-        if (isBuiltInConfigKey(key)) {
-          const writeReceipt = await applyBuiltInConfigWrite({
-            pluginName,
-            plugin,
-            ...(error ? { pluginError: error } : {}),
-            scope,
-            projectLayer,
-            cwd: context.cwd,
-            env: context.env,
-            nativeCliRunner: context.nativeCliRunner,
-            key,
-            action: 'unset',
-          });
-          return {
-            ok: true,
-            receiptSchemaVersion: 2,
-            command: 'config:unset',
-            ...writeReceipt,
-            removedKey: key,
-            existed: writeReceipt.existed ?? false,
-          };
-        }
         if (plugin && !plugin.manifest.config?.schema?.[key]) {
           throw new Error(`Unknown config key "${key}".`);
         }
@@ -1708,7 +1620,6 @@ export async function runCli(
       }
       return await runActionWithContext(context, () => runConsoleController(context));
     }
-    assertNoDeprecatedSkillTriggerArgv(argv);
     const diagnoseMigrationError = createDiagnoseMigrationError(argv);
     if (diagnoseMigrationError) {
       throw diagnoseMigrationError;

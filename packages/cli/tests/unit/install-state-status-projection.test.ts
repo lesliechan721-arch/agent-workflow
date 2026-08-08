@@ -10,7 +10,6 @@ import {
   createProjectArtifactSharedLocator,
   createSharedIdentityId,
   getProjectArtifactSharedIdentityPath,
-  getSharedSkillTriggerRuntimeOwnerPath,
 } from '../../src/install-state/index.js';
 import type { InstallRecordFile } from '../../src/install-state/index.js';
 import { projectInstallState } from '../../src/install-state/status-projection.js';
@@ -500,7 +499,7 @@ describe('projectInstallState phase 1 four-state projection', () => {
     }));
   });
 
-  it('projects cleanupRequired for invalid record, native marker, historical runtime residue, dependency-index residue, and shared owner residue without a valid record', async () => {
+  it('projects cleanupRequired for invalid record, native marker, historical runtime residue, and dependency-index residue without a valid record', async () => {
     const corruptedRecord = await collectProjectionForScenario('corruptedRecord');
     expect(corruptedRecord.projection.kind).toBe('cleanupRequired');
     expect(corruptedRecord.projection.reasonCodes).toContain('invalidInstallRecord');
@@ -514,29 +513,11 @@ describe('projectInstallState phase 1 four-state projection', () => {
     expect(staleIndex.projection.reasonCodes).toContain('dependencyIndexReferenceResidue');
 
     const builder = await createMinimalPluginInstallStateFixtureBuilder(
-      await makeTempDir('aw-install-state-runtime-and-owner-residue-'),
+      await makeTempDir('aw-install-state-runtime-residue-'),
     );
     const target = builder.createTarget({ pluginName: 'git-commit', platform: 'codex', scope: 'user' });
     const lifecycle = await builder.writeHistoricalLifecycleRuntime(target);
     const env = createInstallStateFixtureEnv(builder.paths);
-    await fs.outputJson(
-      getSharedSkillTriggerRuntimeOwnerPath({
-        pluginName: target.location.plugin,
-        platform: target.location.platform,
-        env,
-      }),
-      {
-        version: 1,
-        pluginName: target.location.plugin,
-        platform: target.location.platform,
-        owner: target.location,
-        ownerRecordPath: path.join(builder.paths.awHome, 'missing-record.json'),
-        ownerRecordDigest: 'missing',
-        preference: 'manual',
-        updatedAt: target.timestamps.updatedAt,
-      },
-      { spaces: 2 },
-    );
 
     const projection = projectInstallState(await collectInstallEvidence({
       cwd: builder.paths.repoRoot,
@@ -545,10 +526,7 @@ describe('projectInstallState phase 1 four-state projection', () => {
       currentCatalog: createCurrentCatalogForTarget(target),
     }));
     expect(projection.kind).toBe('cleanupRequired');
-    expect(projection.reasonCodes).toEqual(expect.arrayContaining([
-      'historicalRuntimeResidue',
-      'sharedRuntimeOwnerResidue',
-    ]));
+    expect(projection.reasonCodes).toContain('historicalRuntimeResidue');
     expect(projection.reasons.find((reason) => reason.code === 'historicalRuntimeResidue')?.path).toBe(lifecycle.runtimeRoot);
   });
 
@@ -1202,64 +1180,6 @@ describe('projectInstallState phase 1 four-state projection', () => {
     });
     expect(cacheOnly.projection.kind).toBe('external');
     expect(cacheOnly.projection.cleanupAvailable).toBe(false);
-  });
-
-  it('does not let a foreign shared-runtime owner block claimable project artifacts', async () => {
-    const builder = await createMinimalPluginInstallStateFixtureBuilder(
-      await makeTempDir('aw-install-state-project-owner-foreign-'),
-    );
-    const projectTarget = builder.createTarget({
-      pluginName: 'codex-explore',
-      platform: 'codex',
-      scope: 'project',
-      projectKey: builder.paths.repoRoot,
-    });
-    const userTarget = builder.createTarget({
-      pluginName: 'codex-explore',
-      platform: 'codex',
-      scope: 'user',
-    });
-    await builder.writeRepoArtifact(projectTarget);
-    await builder.writeProjectIdentity(projectTarget);
-    const userRecord = sanitizeInstallRecordForP2(await builder.writeInstallRecord(userTarget));
-    const userRecords = await builder.readScopedInstallRecordDirectory({
-      platform: 'codex',
-      scope: 'user',
-    });
-    const userRecordPath = userRecords.successes.find((entry) => entry.recordId === userTarget.recordId)?.path;
-    if (!userRecordPath) {
-      throw new Error(`missing fixture record for ${userTarget.recordId}`);
-    }
-    await fs.writeJson(userRecordPath, userRecord, { spaces: 2 });
-    const env = createInstallStateFixtureEnv(builder.paths);
-    await fs.outputJson(
-      getSharedSkillTriggerRuntimeOwnerPath({
-        pluginName: projectTarget.location.plugin,
-        platform: projectTarget.location.platform,
-        env,
-      }),
-      {
-        version: 1,
-        pluginName: projectTarget.location.plugin,
-        platform: projectTarget.location.platform,
-        owner: userTarget.location,
-        ownerRecordPath: userRecordPath,
-        ownerRecordDigest: 'mismatch',
-        preference: 'manual',
-        updatedAt: userRecord.record.updatedAt,
-      },
-      { spaces: 2 },
-    );
-
-    const projection = projectInstallState(await collectInstallEvidence({
-      cwd: builder.paths.repoRoot,
-      location: projectTarget.location,
-      env,
-      currentCatalog: createCurrentCatalogForTarget(projectTarget),
-    }));
-
-    expect(projection.kind).toBe('external');
-    expect(projection.reasonCodes).toEqual(['claimableProjectArtifacts']);
   });
 
   it('uses the Claude project subdirectory when reading project artifact shared identity', async () => {

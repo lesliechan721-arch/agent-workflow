@@ -19,7 +19,6 @@ export const AW_RUNTIME_STATE_PRESERVE_DIRS = [
   'dependency-index',
   'lifecycle-runtimes',
   'native-recovery',
-  'shared-runtime-owners',
 ] as const;
 
 export const AW_RUNTIME_STATE_PRESERVE_DIR_SET = new Set<string>(AW_RUNTIME_STATE_PRESERVE_DIRS);

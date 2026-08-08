@@ -118,12 +118,6 @@ async function createDynamicClaudePlugin(
         products: ['CLAUDE'],
       },
     },
-    skillTriggers: {
-      'dynamic-claude': {
-        defaultTrigger: 'auto',
-        allowDynamicTrigger: true,
-      },
-    },
     scripts: {
       artifacts: {
         render: {
@@ -172,7 +166,7 @@ async function createDynamicClaudePlugin(
   );
   await fs.outputFile(
     path.join(sourceRoot, 'templates', 'common', 'SKILL.md'),
-    '---\nname: dynamic-claude\ndescription: Dynamic Claude skill\n---\nCommon\n',
+    '---\nname: dynamic-claude\ndescription: Dynamic Claude skill\ndisable-model-invocation: false\nuser-invocable: true\n---\nCommon\n',
   );
   await fs.outputFile(
     path.join(sourceRoot, 'templates', 'common', 'references', 'shared.md'),
@@ -250,7 +244,7 @@ describe('ClaudeAdapter', () => {
     const refreshedArtifacts = await adapter.installExtensions(plugin, 'project', {
       event: 'refresh',
       dynamicOnly: true,
-      changedConfigKeys: ['aw.skillTriggers.dynamic-claude.trigger'],
+      changedConfigKeys: ['mode'],
       previousArtifacts: initialArtifacts,
     });
     expect(refreshedArtifacts).toEqual([
@@ -277,9 +271,7 @@ describe('ClaudeAdapter', () => {
     const adapter = new ClaudeAdapter(repoRoot, undefined, env);
     const paths = resolveClaudePaths(repoRoot, 'project', env);
 
-    const artifacts = await adapter.installExtensions(plugin, 'project', {
-      skillTriggerPreference: 'manual',
-    });
+    const artifacts = await adapter.installExtensions(plugin, 'project');
     const skill = artifacts.find((artifact) => artifact.target === 'claude.skill');
     expect(skill).toMatchObject({
       platform: 'claude',
@@ -295,7 +287,7 @@ describe('ClaudeAdapter', () => {
     await expect(fs.readFile(path.join(skillRoot, 'assets', 'icon.bin')))
       .resolves.toEqual(Buffer.from([0, 255, 1]));
     await expect(fs.readFile(path.join(skillRoot, 'SKILL.md'), 'utf8'))
-      .resolves.toContain('disable-model-invocation: true');
+      .resolves.toContain('disable-model-invocation: false');
 
     await upsertTrackingRecord(paths.trackingDir, plugin.manifest.name, artifacts);
     await setupLocalMarketplace(repoRoot, env);
@@ -416,9 +408,6 @@ describe('ClaudeAdapter', () => {
         installSource: {
           kind: 'explicit',
           explicitlyRequested: true,
-        },
-        options: {
-          skillTriggerPreference: 'default',
         },
         artifacts: [{
           kind: 'skill',

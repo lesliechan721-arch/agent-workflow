@@ -8,16 +8,6 @@
     }
   },
   "skills": "./skills",
-  "skillTriggers": {
-    "requirements-clarifier": {
-      "defaultTrigger": "auto",
-      "allowDynamicTrigger": true
-    },
-    "decision-grill": {
-      "defaultTrigger": "auto",
-      "allowDynamicTrigger": true
-    }
-  },
   "marketplace": {
     "category": "workflow",
     "strict": true,

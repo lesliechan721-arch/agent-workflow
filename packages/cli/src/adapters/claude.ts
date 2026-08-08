@@ -14,10 +14,8 @@ import type {
   PlatformAdapter,
   PluginMeta,
   PluginStatusReport,
-  ResolvedInstallOptions,
   Scope,
   ScopeInitializedState,
-  SkillTriggerPreference,
   StatusReport,
 } from '../types.js';
 import type { ValidatedArtifactPlanArtifact } from '../utils/artifact-plan.js';
@@ -54,15 +52,11 @@ import {
   createDynamicSkillExpectedTree,
   createDynamicSkillTreeContentDigest,
   readDynamicSkillTree,
+  validateSkillDirectoriesRoot,
   writeDynamicSkillTree,
 } from '../utils/dynamic-skill-tree.js';
 import { resolvePlatformHookDefinitions } from '../utils/hooks-contract.js';
 import { resolvePlatformEntries } from '../utils/platform-entries.js';
-import { resolveEffectiveSkillTriggerPreferences } from '../utils/plugin-config.js';
-import {
-  getNextSkillTriggerWriteOrder,
-  resolveSkillTriggerStatusReportFields,
-} from '../utils/skill-trigger-preferences.js';
 import {
   readInstallRecordForLocation,
   readProjectArtifactIdentityForLocator,
@@ -281,7 +275,6 @@ function upsertClaudeScopeLedger(
   plugin: PluginMeta,
   scope: Scope,
   projectKey: string | undefined,
-  resolvedInstallOptions?: ResolvedInstallOptions,
 ): InstalledLedger {
   const nextLedger = readMutableLedger(ledger);
   const timestamp = new Date().toISOString();
@@ -304,19 +297,6 @@ function upsertClaudeScopeLedger(
       managedExtensions: getClaudeManagedExtensions(plugin),
     } satisfies ClaudeCapabilitySnapshot,
   };
-  if (resolvedInstallOptions?.applicability === 'overridable') {
-    scopeRecord.installOptions = {
-      skillTriggerPreference: resolvedInstallOptions.skillTriggerPreference,
-    };
-    if (ledger.ledgerState.status === 'available') {
-      scopeRecord.skillTriggerWriteOrder = getNextSkillTriggerWriteOrder({
-        ledger,
-        pluginName: plugin.manifest.name,
-        platform: 'claude',
-      });
-    }
-  }
-
   if (scope === 'user') {
     pluginRecord.platforms.claude.userScope = scopeRecord;
   } else if (projectKey) {
@@ -333,10 +313,9 @@ export async function applyClaudeInstallLedger(
   plugin: PluginMeta,
   scope: Scope,
   cwd: string,
-  resolvedInstallOptions?: ResolvedInstallOptions,
 ): Promise<InstalledLedger> {
   const projectKey = scope === 'project' ? await resolveClaudeProjectKey(cwd) : undefined;
-  return upsertClaudeScopeLedger(ledger, plugin, scope, projectKey, resolvedInstallOptions);
+  return upsertClaudeScopeLedger(ledger, plugin, scope, projectKey);
 }
 
 function removeClaudeScopeLedger(
@@ -612,6 +591,16 @@ export class ClaudeAdapter implements PlatformAdapter {
 
     await ensureLocalMarketplace(this.env);
     const awHome = resolveAwHome(this.env);
+    const activeSkillsRoot = path.join(
+      awHome,
+      'plugins',
+      plugin.manifest.name,
+      'claude',
+      'skills',
+    );
+    if (await fs.pathExists(activeSkillsRoot)) {
+      await validateSkillDirectoriesRoot(activeSkillsRoot, 'claude.skill');
+    }
     const knownMarketplaces = await readKnownMarketplaceState(paths.knownMarketplacesPath);
     const declaredSource = normalizeLocalPath(getClaudeMarketplaceSource(settings, MARKETPLACE_NAME));
     const materializedInstallLocation = normalizeLocalPath(
@@ -669,8 +658,6 @@ export class ClaudeAdapter implements PlatformAdapter {
       event?: 'install' | 'upgrade' | 'refresh';
       changedConfigKeys?: string[];
       dynamicOnly?: boolean;
-      skillTriggerPreference?: SkillTriggerPreference;
-      skillTriggerPreferences?: Record<string, SkillTriggerPreference>;
       previousArtifacts?: GeneratedArtifact[];
     },
   ): Promise<GeneratedArtifact[]> {
@@ -732,14 +719,6 @@ export class ClaudeAdapter implements PlatformAdapter {
           }).artifacts.filter((artifact) => artifact.target === 'claude.skill')
         : [];
 
-      const ledger = await readInstalledLedger(this.env);
-      const projectKey = scope === 'project' ? await resolveClaudeProjectKey(this.cwd) : undefined;
-      const installedPreference = scope === 'user'
-        ? ledger.plugins[plugin.manifest.name]?.platforms.claude?.userScope?.installOptions?.skillTriggerPreference
-        : projectKey
-          ? ledger.plugins[plugin.manifest.name]?.platforms.claude?.projectScopes?.[projectKey]?.installOptions?.skillTriggerPreference
-          : undefined;
-      const skillTriggerPreference = _options?.skillTriggerPreference ?? installedPreference ?? 'default';
       const sourceDirsFor = (artifact: ValidatedArtifactPlanArtifact): string[] =>
         renderResult?.context.artifactSources.find((entry) =>
           entry.id === artifact.id && entry.target === artifact.target)?.sourceDirs ?? [];
@@ -753,8 +732,6 @@ export class ClaudeAdapter implements PlatformAdapter {
         const expectedTree = await createDynamicSkillExpectedTree({
           artifact,
           sourceDirs: sourceDirsFor(artifact),
-          preference: _options?.skillTriggerPreferences?.[skillKey] ?? skillTriggerPreference,
-          policy: plugin.manifest.skillTriggers?.[skillKey],
         });
         let writtenPaths: string[] = [];
         if (artifact.state === 'disabled') {
@@ -1066,28 +1043,6 @@ export class ClaudeAdapter implements PlatformAdapter {
     ) {
       driftWarnings.push('currentCatalog 与 activeLocalBundle 指向的 bundle 不一致。');
     }
-    const effectiveSkillTriggerPreferences = await resolveEffectiveSkillTriggerPreferences({
-      plugin,
-      platform: 'claude',
-      scope,
-      cwd: this.cwd,
-      env: this.env,
-    }).catch(() => ({}));
-    const skillTriggerStatus = await resolveSkillTriggerStatusReportFields({
-      pluginName: plugin.manifest.name,
-      platform: 'claude',
-      scope,
-      projectKey,
-      ledger,
-      currentCatalog,
-      currentCatalogAvailable,
-      embeddedRoot: currentCatalog.rootDir,
-      skillTriggerPreferences: effectiveSkillTriggerPreferences,
-    });
-    if (skillTriggerStatus) {
-      driftWarnings.push(...skillTriggerStatus.warnings);
-    }
-
     const pluginInstalled = isClaudePluginEnabledForScope(
       settings,
       plugin.manifest.name,
@@ -1148,17 +1103,6 @@ export class ClaudeAdapter implements PlatformAdapter {
         agents: 'not_applicable',
         diagnostics: [],
       },
-      ...(skillTriggerStatus
-        ? {
-            skillTriggerApplicability: skillTriggerStatus.skillTriggerApplicability,
-            installOptions: skillTriggerStatus.installOptions,
-            skillTriggerPreference: skillTriggerStatus.skillTriggerPreference,
-            skillTriggerPreferences: skillTriggerStatus.skillTriggerPreferences,
-            skillTriggerRuntimeMatches: skillTriggerStatus.skillTriggerRuntimeMatches,
-            skillTriggerRuntimeState: skillTriggerStatus.skillTriggerRuntimeState,
-            skillTriggerDrift: skillTriggerStatus.skillTriggerDrift,
-          }
-        : {}),
     };
 
     return {

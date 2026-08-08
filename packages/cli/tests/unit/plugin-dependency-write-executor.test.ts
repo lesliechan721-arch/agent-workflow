@@ -71,12 +71,12 @@ describe('plugin dependency write executor', () => {
     await expect(executePluginDependencyWriteGraph({
       nodes: [makeNode({ location: makeLocation('git-commit') })],
       preflight: async () => {
-        throw new Error('dependency install options conflict');
+        throw new Error('dependency preflight failed');
       },
       executeNode,
       commitNodeEdges,
       rollbackNode,
-    })).rejects.toThrow('dependency install options conflict');
+    })).rejects.toThrow('dependency preflight failed');
 
     expect(executeNode).not.toHaveBeenCalled();
     expect(commitNodeEdges).not.toHaveBeenCalled();

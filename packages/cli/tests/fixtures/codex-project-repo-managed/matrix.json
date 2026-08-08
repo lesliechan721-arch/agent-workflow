@@ -6,8 +6,7 @@
       "pluginName": "skills-only",
       "path": "plugins/skills-only",
       "projectManagedKinds": ["skill"],
-      "projectInstallability": "allowed",
-      "skillTriggerApplicability": "overridable"
+      "projectInstallability": "allowed"
     },
     {
       "name": "mcp-only",
@@ -15,48 +14,42 @@
       "path": "plugins/mcp-only",
       "projectManagedKinds": ["mcpServer"],
       "projectInstallability": "allowed",
-      "mcpServers": ["acme.tools v1", "sibling-server"],
-      "skillTriggerApplicability": "none"
+      "mcpServers": ["acme.tools v1", "sibling-server"]
     },
     {
       "name": "slashCommands-only",
       "pluginName": "slash-commands-only",
       "path": "plugins/slashCommands-only",
       "projectManagedKinds": ["skill"],
-      "projectInstallability": "allowed",
-      "skillTriggerApplicability": "fixed"
+      "projectInstallability": "allowed"
     },
     {
       "name": "extensions-only",
       "pluginName": "extensions-only",
       "path": "plugins/extensions-only",
       "projectManagedKinds": ["instruction", "permission", "hook", "agent"],
-      "projectInstallability": "allowed",
-      "skillTriggerApplicability": "none"
+      "projectInstallability": "allowed"
     },
     {
       "name": "skills+MCP",
       "pluginName": "skills-mcp",
       "path": "plugins/skills-mcp",
       "projectManagedKinds": ["skill", "mcpServer"],
-      "projectInstallability": "allowed",
-      "skillTriggerApplicability": "overridable"
+      "projectInstallability": "allowed"
     },
     {
       "name": "dynamic-artifacts",
       "pluginName": "dynamic-artifacts",
       "path": "plugins/dynamic-artifacts",
       "projectManagedKinds": ["skill", "instruction", "agent"],
-      "projectInstallability": "allowed",
-      "skillTriggerApplicability": "fixed"
+      "projectInstallability": "allowed"
     },
     {
       "name": "instructions+MCP",
       "pluginName": "instructions-mcp",
       "path": "plugins/instructions-mcp",
       "projectManagedKinds": ["instruction", "mcpServer"],
-      "projectInstallability": "allowed",
-      "skillTriggerApplicability": "none"
+      "projectInstallability": "allowed"
     },
     {
       "name": "multi-MCP",
@@ -64,8 +57,7 @@
       "path": "plugins/multi-mcp",
       "projectManagedKinds": ["mcpServer"],
       "projectInstallability": "allowed",
-      "mcpServers": ["acme.tools v1", "sibling-server", "nested/object server"],
-      "skillTriggerApplicability": "none"
+      "mcpServers": ["acme.tools v1", "sibling-server", "nested/object server"]
     },
     {
       "name": "apps-only",

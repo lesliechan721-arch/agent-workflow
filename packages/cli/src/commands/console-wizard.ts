@@ -4,23 +4,19 @@ import type {
   PlatformName,
   PluginManifestSource,
   PluginMeta,
-  ResolvedInstallOptions,
   Scope,
-  SkillTriggerPreference,
 } from '../types.js';
 import {
   createPluginConfigFormModel,
   createPluginConfigSchemaIdentity,
   resolvePluginConfigStorePath,
   resolveEffectivePluginConfig,
-  toBuiltInSkillTriggerLogicalKey,
   type PluginConfigFormModel,
   type ResolvedEffectivePluginConfig,
 } from '../utils/plugin-config.js';
 import {
   createAdapters,
   loadPluginTargetsForCommand,
-  resolveInstallOptionsForLocationTargets,
   type ResolvedPluginTarget,
 } from './common.js';
 import type { PluginConsoleActionKind } from './console-model.js';
@@ -28,9 +24,7 @@ import { getCodexProjectInstallability } from './codex-project-installability.js
 import {
   buildInstallPlannerContext,
   createPluginLocationForPlatform,
-  resolveGraphInstallOptionsByLocation,
   resolveProjectKeysByPlatform,
-  toInstalledScopeInstallOptions,
   type InstallLocationGraphContext,
 } from './install.js';
 import {
@@ -43,7 +37,6 @@ import {
   type PluginDependencyWritePlan,
 } from '../utils/plugin-dependency-planner.js';
 import { serializePluginLocation } from '../utils/plugin-dependency-location.js';
-import { resolveSkillTriggerConfigEntries } from '../utils/skill-trigger-preferences.js';
 import { getAgentVersionRequirement } from '../utils/agent-version.js';
 
 export type ConsoleWriteWizardOperation = 'install' | 'upgrade';
@@ -88,17 +81,6 @@ export interface ConsoleRequiredConfigPrompt {
   targets: ConsoleScopedTarget[];
 }
 
-export interface ConsoleSkillTriggerOption {
-  value: SkillTriggerPreference;
-  label: '默认' | '手动' | '自动';
-}
-
-export interface ConsoleSkillTriggerDecision {
-  show: boolean;
-  selected: SkillTriggerPreference;
-  options: ConsoleSkillTriggerOption[];
-}
-
 export type ConsoleWizardStepStatus = 'completed' | 'ready' | 'blocked' | 'skipped';
 
 export interface ConsoleWizardStep {
@@ -123,7 +105,6 @@ export interface ConsoleInstallWizardDecision {
   notes: string[];
   shouldPromptConfig: boolean;
   configPrompts: ConsoleRequiredConfigPrompt[];
-  skillTrigger: ConsoleSkillTriggerDecision;
 }
 
 export type ConsoleWriteActionPlan =
@@ -177,7 +158,6 @@ export interface ConsoleScopedTarget {
   scope: Scope;
   projectKey?: string;
   requested: boolean;
-  resolvedInstallOptions?: ResolvedInstallOptions;
 }
 
 export interface ConsoleGraphWritePlan {
@@ -196,7 +176,6 @@ export interface PlanConsoleGraphWriteTargetsOptions {
   scope: Scope;
   ledger: InstalledLedger;
   env?: NodeJS.ProcessEnv;
-  requestedSkillTrigger?: SkillTriggerPreference;
 }
 
 export interface CreateInstallWizardDecisionOptions {
@@ -208,11 +187,6 @@ export interface CreateInstallWizardDecisionOptions {
   scope: Scope;
   env?: NodeJS.ProcessEnv;
   detection?: EnvironmentDetection;
-  resolvedInstallOptions?: Array<{
-    platform: PlatformName;
-    pluginName: string;
-    options: ResolvedInstallOptions;
-  }>;
   preparePreflight?: (
     options: PrepareConsoleWritePreflightOptions,
   ) => Promise<ConsoleWritePreflightResult>;
@@ -236,12 +210,6 @@ export interface ExecuteInstallWizardDecisionResult<T> {
   decision: ConsoleInstallWizardDecision;
   commandResult?: T;
 }
-
-const SKILL_TRIGGER_OPTIONS: ConsoleSkillTriggerOption[] = [
-  { value: 'default', label: '默认' },
-  { value: 'manual', label: '手动' },
-  { value: 'auto', label: '自动' },
-];
 
 export function resolveConsoleWriteActionPlan(
   options: ResolveConsoleWriteActionPlanOptions,
@@ -532,17 +500,10 @@ export async function createConsoleConfigFormIdentity(options: {
   platform: PlatformName;
 }): Promise<string> {
   const schemaSourceIdentity = createPluginConfigSchemaIdentity(options.plugin.manifest);
-  const builtInFieldKeys = options.scope === 'project' && options.projectLayer === 'local'
-    ? []
-    : (await resolveSkillTriggerConfigEntries(options.plugin))
-      .filter((entry) => entry.platforms.includes(options.platform))
-      .map((entry) => toBuiltInSkillTriggerLogicalKey(entry.skillName))
-      .sort();
   return [
     schemaSourceIdentity,
     [...options.form.fields.map((field) => field.key)].sort().join(','),
     [...options.form.requiredKeys].sort().join(','),
-    builtInFieldKeys.join(','),
   ].join('\0');
 }
 
@@ -649,31 +610,7 @@ export async function planConsoleGraphWriteTargets(
       projectKeysByPlatform,
     })),
   );
-  const rootInstallOptionsByLocation = await resolveInstallOptionsForLocationTargets(
-    options.operation,
-    requestedLocations.map((location) => {
-      const target = targetByPlugin.get(location.plugin);
-      if (!target) {
-        throw new Error(`插件 ${location.plugin} 在 current catalog 中不存在。`);
-      }
-      return {
-        location,
-        target,
-        requestedSkillTrigger: options.requestedSkillTrigger,
-      };
-    }),
-    {
-      cwd: options.cwd,
-      env,
-    },
-    options.ledger,
-  );
-  const plannerTargets = requestedLocations.map((location) => ({
-    location,
-    installOptions: toInstalledScopeInstallOptions(
-      rootInstallOptionsByLocation.get(serializePluginLocation(location)),
-    ),
-  }));
+  const plannerTargets = requestedLocations.map((location) => ({ location }));
   const { plannerState, graphContext } = await buildInstallPlannerContext({
     requestedLocations,
     targetByPlugin,
@@ -690,17 +627,6 @@ export async function planConsoleGraphWriteTargets(
     state: plannerState,
     targets: plannerTargets,
   });
-  const resolvedInstallOptionsByLocation = await resolveGraphInstallOptionsByLocation({
-    mode: options.operation,
-    plan: dependencyPlan,
-    graphContext,
-    commandOptions: {
-      cwd: options.cwd,
-      requestedSkillTrigger: options.requestedSkillTrigger,
-    },
-    ledger: options.ledger,
-    env,
-  });
   const requestedLocationKeys = new Set(requestedLocations.map((location) => serializePluginLocation(location)));
 
   return {
@@ -716,7 +642,6 @@ export async function planConsoleGraphWriteTargets(
         scope: location.scope,
         ...(location.projectKey ? { projectKey: location.projectKey } : {}),
         requested: true,
-        resolvedInstallOptions: resolvedInstallOptionsByLocation.get(serializePluginLocation(location)),
       } satisfies ConsoleScopedTarget;
     }),
     writeTargets: dependencyPlan.writeOrder.map((location) => {
@@ -730,7 +655,6 @@ export async function planConsoleGraphWriteTargets(
         scope: location.scope,
         ...(location.projectKey ? { projectKey: location.projectKey } : {}),
         requested: requestedLocationKeys.has(serializePluginLocation(location)),
-        resolvedInstallOptions: resolvedInstallOptionsByLocation.get(serializePluginLocation(location)),
       } satisfies ConsoleScopedTarget;
     }),
     dependencyPlan,
@@ -738,37 +662,7 @@ export async function planConsoleGraphWriteTargets(
   };
 }
 
-function createSkillTriggerDecision(
-  resolvedInstallOptions: CreateInstallWizardDecisionOptions['resolvedInstallOptions'],
-): ConsoleSkillTriggerDecision {
-  const overridable = (resolvedInstallOptions ?? [])
-    .map((entry) => entry.options)
-    .filter((entry): entry is Extract<ResolvedInstallOptions, { applicability: 'overridable' }> =>
-      entry.applicability === 'overridable',
-    );
-
-  if (overridable.length === 0) {
-    return {
-      show: false,
-      selected: 'default',
-      options: [...SKILL_TRIGGER_OPTIONS],
-    };
-  }
-
-  const selected = uniqueStrings(
-    overridable.map((entry) => entry.skillTriggerPreference),
-  );
-
-  return {
-    show: false,
-    selected: selected.length === 1
-      ? selected[0] as SkillTriggerPreference
-      : 'default',
-    options: [...SKILL_TRIGGER_OPTIONS],
-  };
-}
-
-function createBaseSteps(_skillTrigger: ConsoleSkillTriggerDecision): ConsoleWizardStep[] {
+function createBaseSteps(): ConsoleWizardStep[] {
   return [
     { kind: 'selectPlugin', status: 'completed' },
     { kind: 'selectPlatform', status: 'completed' },
@@ -789,11 +683,7 @@ export async function createInstallWizardDecision(
       operation: options.intent === 'upgrade' ? 'upgrade' : 'install',
       commandAction: 'uninstall',
       steps: [
-        ...createBaseSteps({
-          show: false,
-          selected: 'default',
-          options: [...SKILL_TRIGGER_OPTIONS],
-        }),
+        ...createBaseSteps(),
         { kind: 'readOnlyPreflight', status: 'blocked', detail: actionPlan.message },
         { kind: 'requiredConfig', status: 'skipped' },
         { kind: 'runCommand', status: 'skipped' },
@@ -803,11 +693,6 @@ export async function createInstallWizardDecision(
       notes: [],
       shouldPromptConfig: false,
       configPrompts: [],
-      skillTrigger: {
-        show: false,
-        selected: 'default',
-        options: [...SKILL_TRIGGER_OPTIONS],
-      },
     };
   }
 
@@ -815,8 +700,7 @@ export async function createInstallWizardDecision(
     throw new Error(`Unsupported action plan kind "${actionPlan.kind}" for install wizard.`);
   }
 
-  const skillTrigger = createSkillTriggerDecision(options.resolvedInstallOptions);
-  const steps = createBaseSteps(skillTrigger);
+  const steps = createBaseSteps();
   const preflight = await (options.preparePreflight ?? prepareConsoleWritePreflight)({
     intent: options.intent,
     targets: options.targets,
@@ -844,7 +728,6 @@ export async function createInstallWizardDecision(
       notes: [...preflight.notes],
       shouldPromptConfig: false,
       configPrompts: [],
-      skillTrigger,
     };
   }
 
@@ -874,7 +757,6 @@ export async function createInstallWizardDecision(
     notes: [...preflight.notes],
     shouldPromptConfig: configPrompts.length > 0,
     configPrompts,
-    skillTrigger,
   };
 }
 
@@ -904,22 +786,6 @@ export async function executeInstallWizardDecision<T>(
     promptedConfig,
     decision: options.decision,
     commandResult,
-  };
-}
-
-export function createResolvedInstallOptionEntry(
-  platform: PlatformName,
-  plugin: PluginMeta,
-  options: ResolvedInstallOptions,
-): {
-  platform: PlatformName;
-  pluginName: string;
-  options: ResolvedInstallOptions;
-} {
-  return {
-    platform,
-    pluginName: plugin.manifest.name,
-    options,
   };
 }
 

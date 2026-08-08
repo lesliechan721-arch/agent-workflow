@@ -1,5 +1,7 @@
 # 插件状态简化执行计划
 
+> 历史说明：本文中涉及 Skill 调用行为的手动覆盖、配置、接管或运行时重写设计已废弃，不是当前合同。Skill 是否被平台调用只由 Skill 自身的原生元数据决定。当前合同见 `docs/plugin-authoring.md` 和 `docs/plugin-installation.md`。
+
 日期：2026-05-22
 需求来源：`docs/dev/specs/plugin-state-simplification.md`
 关联规格：`docs/dev/specs/plugin-state-and-tui-simplification.md`

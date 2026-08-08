@@ -62,21 +62,6 @@ export function formatNotice(notice: CommandNotice): string {
   return `${warningPrefix(notice.level)}${source}${message}`;
 }
 
-function translateDegradedReplay(message: string): string | null {
-  const replayMatch = message.match(
-    /^installed\.json 处于 degraded 状态（(.+?)），跳过 skill trigger 偏好 replay，保留 embedded pristine 默认策略。$/,
-  );
-  if (replayMatch) {
-    return `本地安装记录处于异常恢复状态（${replayMatch[1]}），本次跳过 skill 触发偏好回放，保留插件内置默认策略。`;
-  }
-
-  if (message === 'installed.json 处于 degraded 状态，跳过卸载后的 skill trigger 重选。') {
-    return '本地安装记录处于异常恢复状态，本次没有自动重选 skill 触发偏好。如需调整，请改用配置管理维护 skill trigger 偏好。';
-  }
-
-  return null;
-}
-
 function translateTrustWarning(message: string): string | null {
   if (
     message === '当前 repo trust 状态未知，project scope 会话可见性无法确定。' ||
@@ -100,19 +85,15 @@ export function formatWarningText(warning: string): string {
   if (sourceMatch) {
     const [, platform, pluginName, rawMessage] = sourceMatch;
     const translated =
-      translateDegradedReplay(rawMessage) ??
       translateTrustWarning(rawMessage) ??
       rawMessage
-        .replaceAll('skill trigger', 'skill 触发')
         .replaceAll('installed.json', '本地安装记录');
     return sanitizeHumanText(`${PLATFORM_LABELS[platform] ?? platform} / ${pluginName}：${translated}`);
   }
 
   return sanitizeHumanText(
-    translateDegradedReplay(warning) ??
     translateTrustWarning(warning) ??
     warning
-      .replaceAll('skill trigger', 'skill 触发')
       .replaceAll('plugin / marketplace', '插件 / 插件目录')
   );
 }
