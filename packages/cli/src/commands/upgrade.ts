@@ -2,6 +2,7 @@ import {
   isCommandWarningError,
 } from '../types.js';
 import type {
+  CatalogResolution,
   CodexCapabilitySnapshot,
   GeneratedArtifact,
   InstalledLedger,
@@ -48,7 +49,9 @@ import {
   ensureRollbackRemovedDependencyLocation,
   initializeInstalledScopeDependencyMetadata,
   installTargetsOnPlatforms,
+  pinCatalogResolutionForLocalMarketplaceRebuild,
   pinCurrentCatalogTargetsForLocalMarketplaceRebuild,
+  retargetCurrentCatalogTargetToCatalogRoot,
   resolveGraphInstallOptionsByLocation,
   resolveProjectKeysByPlatform,
   toInstalledScopeInstallOptions,
@@ -126,11 +129,47 @@ import { readInstallRecordForLocation } from '../install-state/facade.js';
 import type { InstallRecordFile } from '../install-state/types.js';
 
 type UpgradeCommandRuntime = CommandExecutionContextInput & {
+  catalogResolution?: CatalogResolution;
+  marketplacePrepared?: boolean;
   resolveInstallOptions?: (
     platform: PlatformName,
     target: ResolvedPluginTarget,
   ) => ResolvedInstallOptions;
 };
+
+function bindCatalogResolutionToAdapters(
+  adapters: Record<PlatformName, PlatformAdapter>,
+  catalogResolution: CatalogResolution,
+): Record<PlatformName, PlatformAdapter> {
+  return Object.fromEntries(
+    (Object.entries(adapters) as Array<[PlatformName, PlatformAdapter]>).map(([platform, adapter]) => [
+      platform,
+      {
+        name: adapter.name,
+        detect: (cwd) => adapter.detect(cwd),
+        installPlugin: (plugin, scope, options) => adapter.installPlugin(plugin, scope, {
+          ...options,
+          catalogResolution,
+        }),
+        uninstallPlugin: (plugin, scope) => adapter.uninstallPlugin(plugin, scope),
+        installExtensions: (plugin, scope, options) => adapter.installExtensions(plugin, scope, {
+          ...options,
+          catalogResolution,
+        }),
+        uninstallExtensions: (plugin, scope, generatedArtifacts) =>
+          adapter.uninstallExtensions(plugin, scope, generatedArtifacts),
+        upgradePlugin: (plugin, scope, options) => adapter.upgradePlugin(plugin, scope, {
+          ...options,
+          catalogResolution,
+        }),
+        status: (plugin, scope, options) => adapter.status(plugin, scope, {
+          ...options,
+          catalogResolution,
+        }),
+      } satisfies PlatformAdapter,
+    ]),
+  ) as Record<PlatformName, PlatformAdapter>;
+}
 
 function withEarlyDegradedLedgerWarning(
   warnings: string[],
@@ -609,8 +648,11 @@ async function readUpgradeTargetStatus(
   platform: PlatformName,
   target: ResolvedPluginTarget,
   scope: Scope,
+  catalogResolution: CatalogResolution,
 ): Promise<PluginStatusReport> {
-  const status = await adapters[platform].status(target.currentPlugin ?? target.plugin, scope);
+  const status = await adapters[platform].status(target.currentPlugin ?? target.plugin, scope, {
+    catalogResolution,
+  });
   return getOnlyPluginStatus(status, platform, target.pluginName);
 }
 
@@ -620,6 +662,7 @@ async function preflightExplicitUpgradeTargets(
   options: UpgradeCommandOptions,
   adapters: Record<PlatformName, PlatformAdapter>,
   env: NodeJS.ProcessEnv,
+  catalogResolution: CatalogResolution,
 ): Promise<void> {
   for (const location of requestedLocations) {
     const target = targetByPlugin.get(location.plugin);
@@ -631,6 +674,7 @@ async function preflightExplicitUpgradeTargets(
       location.platform,
       target,
       options.scope,
+      catalogResolution,
     );
 
     if (
@@ -743,6 +787,7 @@ async function prepareExplicitUpgradeGraph(options: {
   adapters: Record<PlatformName, PlatformAdapter>;
   env: NodeJS.ProcessEnv;
   ledger: InstalledLedger;
+  catalogResolution: CatalogResolution;
 }): Promise<PreparedExplicitUpgradeGraph> {
   const allCatalogTargets = await loadPluginTargetsForCommand(
     options.commandOptions.cwd,
@@ -752,6 +797,7 @@ async function prepareExplicitUpgradeGraph(options: {
       catalogMode: 'readOnly',
       allowHistoricalFallback: false,
       env: options.env,
+      catalogResolution: options.catalogResolution,
     },
   );
   const targetByPlugin = new Map<string, ResolvedPluginTarget>(
@@ -803,6 +849,7 @@ async function prepareExplicitUpgradeGraph(options: {
     ledger: options.ledger,
     projectKeysByPlatform,
     readStatusForRequestedLocations: true,
+    catalogResolution: options.catalogResolution,
   });
   for (const location of requestedLocations) {
     const key = serializePluginLocation(location);
@@ -1082,6 +1129,7 @@ async function evaluateUpgradeAllTarget(options: {
   scopeKeys: Record<PlatformName, string | undefined>;
   trackingManifests: Partial<Record<PlatformName, { manifest?: TrackingManifest; readError?: string }>>;
   commandOptions: UpgradeCommandOptions;
+  catalogResolution: CatalogResolution;
 }): Promise<{
   ready?: UpgradeAllReadyTarget;
   resolvedInstallOptions?: ResolvedInstallOptions;
@@ -1174,7 +1222,13 @@ async function evaluateUpgradeAllTarget(options: {
     }
   }
 
-  const pluginStatus = await readUpgradeTargetStatus(adapters, platform, target, scope);
+  const pluginStatus = await readUpgradeTargetStatus(
+    adapters,
+    platform,
+    target,
+    scope,
+    options.catalogResolution,
+  );
 
   if (platform === 'codex' && scope === 'project') {
     if (
@@ -1450,6 +1504,7 @@ async function preflightUpgradeGraphWrites(options: {
           location.platform,
           target,
           location.scope,
+          options.runtime.catalogResolution!,
         ),
         location.scope,
         location.platform,
@@ -1553,6 +1608,8 @@ async function executeUpgradeGraphPlan(options: {
         runtime: {
           ...context,
           adapters,
+          catalogResolution: options.runtime.catalogResolution,
+          marketplacePrepared: options.runtime.marketplacePrepared,
         },
         env,
       });
@@ -1586,6 +1643,8 @@ async function executeUpgradeGraphPlan(options: {
           adapters,
           resolveInstallOptions: () => resolvedInstallOptions,
           operation,
+          catalogResolution: options.runtime.catalogResolution,
+          marketplacePrepared: options.runtime.marketplacePrepared,
           skipConfigPreflight: true,
           skipWriteSafetyPreflight: true,
         },
@@ -1703,6 +1762,7 @@ async function runExplicitUpgrade(
       adapters,
       env,
       ledger: preparedLedger,
+      catalogResolution: runtime.catalogResolution!,
     });
   })();
   const graphPlan = prepared.plan;
@@ -1757,6 +1817,7 @@ async function runUpgradeAll(
   options: UpgradeCommandOptions,
   runtime: UpgradeCommandRuntime,
   preparedLedger: Awaited<ReturnType<typeof prepareCommandEnvironment>>['ledger'],
+  currentCatalogTargets: ResolvedPluginTarget[],
 ): Promise<{
   warnings: string[];
   plugins: string[];
@@ -1797,28 +1858,6 @@ async function runUpgradeAll(
     };
   }
 
-  let currentCatalogTargets: ResolvedPluginTarget[];
-  try {
-    currentCatalogTargets = await loadPluginTargetsForCommand(
-      options.cwd,
-      options.scope,
-      undefined,
-      {
-        catalogMode: 'readOnly',
-        allowHistoricalFallback: false,
-        env,
-      },
-    );
-  } catch (error) {
-    if (
-      error instanceof Error &&
-      error.message.includes('没有发现可用插件')
-    ) {
-      currentCatalogTargets = [];
-    } else {
-      throw error;
-    }
-  }
   const targetByPlugin = new Map(currentCatalogTargets.map((target) => [target.pluginName, target]));
   const rootSkips: PluginDependencyUpgradeAllSkipInput[] = [];
   const readyRootLocations: PluginLocation[] = [];
@@ -1850,6 +1889,7 @@ async function runUpgradeAll(
       ledger: preparedLedger,
       scopeKeys,
       trackingManifests,
+      catalogResolution: runtime.catalogResolution!,
       commandOptions: {
         ...options,
         scope: location.scope,
@@ -1914,6 +1954,7 @@ async function runUpgradeAll(
     env,
     ledger: preparedLedger,
     projectKeysByPlatform,
+    catalogResolution: runtime.catalogResolution,
   });
   let graphPlan = planPluginDependencyUpgradeAll({
     state: plannerState,
@@ -2209,8 +2250,11 @@ export async function upgradeCommand(
       catalogMode: 'readOnly',
       env,
       context,
+      catalogResolution: runtime.catalogResolution,
     });
+    let commandCatalog = prepared.catalog;
     let commandWarnings = prepared.warnings;
+    const pinnedCatalogRoots: string[] = [];
     try {
       if (prepared.ledger.ledgerState.status === 'degraded') {
         throw new Error('`upgrade --all` 在 installed.json 处于 degraded 状态时不可执行，请先处理异常记录。');
@@ -2239,10 +2283,54 @@ export async function upgradeCommand(
         env,
         nativeCliRunner: context.nativeCliRunner,
       });
+      let currentCatalogTargets: ResolvedPluginTarget[];
+      try {
+        currentCatalogTargets = await loadPluginTargetsForCommand(
+          options.cwd,
+          options.scope,
+          undefined,
+          {
+            catalogMode: 'readOnly',
+            allowHistoricalFallback: false,
+            env,
+            catalogResolution: commandCatalog,
+          },
+        );
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          error.message.includes('没有发现可用插件')
+        ) {
+          currentCatalogTargets = [];
+        } else {
+          throw error;
+        }
+      }
+      const pinnedCatalogResolution = await pinCatalogResolutionForLocalMarketplaceRebuild(
+        commandCatalog,
+        env,
+      );
+      if (pinnedCatalogResolution) {
+        commandCatalog = pinnedCatalogResolution.catalogResolution;
+        pinnedCatalogRoots.push(pinnedCatalogResolution.pinnedRoot);
+        for (const target of currentCatalogTargets) {
+          await retargetCurrentCatalogTargetToCatalogRoot(
+            target,
+            pinnedCatalogResolution.pinnedRoot,
+          );
+        }
+      } else {
+        pinnedCatalogRoots.push(...await pinCurrentCatalogTargetsForLocalMarketplaceRebuild({
+          targets: currentCatalogTargets,
+          env,
+        }));
+      }
+      const catalogAdapters = bindCatalogResolutionToAdapters(adapters, commandCatalog);
       const preparedForExecution = await prepareCommandEnvironment({
         catalogMode: 'runtimeWritable',
         env,
         context,
+        catalogResolution: commandCatalog,
       });
       const executionWarnings = preparedForExecution === prepared
         ? []
@@ -2253,8 +2341,10 @@ export async function upgradeCommand(
       ];
       const result = await runUpgradeAll(platforms, options, {
         ...context,
-        adapters,
-      }, preparedForExecution.ledger);
+        adapters: catalogAdapters,
+        catalogResolution: commandCatalog,
+        marketplacePrepared: true,
+      }, preparedForExecution.ledger, currentCatalogTargets);
 
       return {
         platforms,
@@ -2276,6 +2366,8 @@ export async function upgradeCommand(
         error,
         withEarlyDegradedLedgerWarning(commandWarnings, prepared.ledger),
       );
+    } finally {
+      await Promise.all(pinnedCatalogRoots.map((rootDir) => disposePinnedCatalogRoot(rootDir)));
     }
   }
 
@@ -2293,8 +2385,11 @@ export async function upgradeCommand(
       catalogMode: 'readOnly',
       allowHistoricalFallback: true,
       env,
+      catalogResolution: runtime.catalogResolution,
     },
   );
+  let commandCatalog = prepared.catalog;
+  let catalogAdapters = bindCatalogResolutionToAdapters(adapters, commandCatalog);
   let commandWarnings = prepared.warnings;
   const pinnedCatalogRoots: string[] = [];
   await emitCommandEvent(context, {
@@ -2315,7 +2410,7 @@ export async function upgradeCommand(
       options.cwd,
       options.scope,
       prepared.targets,
-      adapters,
+      catalogAdapters,
       env,
     );
     const platforms = [...new Set(requestedPlatformPairs.map((entry) => entry.platform))];
@@ -2362,15 +2457,17 @@ export async function upgradeCommand(
       requestedLocations,
       targetByPlugin,
       options,
-      adapters,
+      catalogAdapters,
       env,
+      commandCatalog,
     );
     const preparedGraph = await prepareExplicitUpgradeGraph({
       requestedLocations,
       commandOptions: options,
-      adapters,
+      adapters: catalogAdapters,
       env,
       ledger: prepared.ledger,
+      catalogResolution: commandCatalog,
     });
     await assertNoDuplicateInstalls({
       cwd: options.cwd,
@@ -2388,16 +2485,34 @@ export async function upgradeCommand(
       options,
       context,
     );
-    pinnedCatalogRoots.push(...await pinCurrentCatalogTargetsForLocalMarketplaceRebuild({
-      targets: preparedGraph.plan.writeOrder
-        .map((location) => preparedGraph.graphContext.targetByPlugin.get(location.plugin))
-        .filter((target): target is ResolvedPluginTarget => Boolean(target)),
+    const graphTargets = preparedGraph.plan.writeOrder
+      .map((location) => preparedGraph.graphContext.targetByPlugin.get(location.plugin))
+      .filter((target): target is ResolvedPluginTarget => Boolean(target));
+    const pinnedCatalogResolution = await pinCatalogResolutionForLocalMarketplaceRebuild(
+      commandCatalog,
       env,
-    }));
+    );
+    if (pinnedCatalogResolution) {
+      commandCatalog = pinnedCatalogResolution.catalogResolution;
+      pinnedCatalogRoots.push(pinnedCatalogResolution.pinnedRoot);
+      for (const target of preparedGraph.graphContext.targetByPlugin.values()) {
+        await retargetCurrentCatalogTargetToCatalogRoot(
+          target,
+          pinnedCatalogResolution.pinnedRoot,
+        );
+      }
+    } else {
+      pinnedCatalogRoots.push(...await pinCurrentCatalogTargetsForLocalMarketplaceRebuild({
+        targets: graphTargets,
+        env,
+      }));
+    }
+    catalogAdapters = bindCatalogResolutionToAdapters(adapters, commandCatalog);
     const preparedForExecution = await prepareCommandEnvironment({
       catalogMode: 'runtimeWritable',
       env,
       context,
+      catalogResolution: commandCatalog,
     });
     const executionWarnings = preparedForExecution === prepared
       ? []
@@ -2412,7 +2527,9 @@ export async function upgradeCommand(
       options,
       {
         ...context,
-        adapters,
+        adapters: catalogAdapters,
+        catalogResolution: commandCatalog,
+        marketplacePrepared: true,
       },
       preparedForExecution.ledger,
       preparedGraph,

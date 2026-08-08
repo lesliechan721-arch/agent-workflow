@@ -5,6 +5,7 @@ import fs from 'fs-extra';
 
 import type {
   CatalogChannel,
+  CatalogFreshnessPolicy,
   CatalogResolution,
   CatalogResolutionFailure,
   CatalogSelector,
@@ -1908,13 +1909,17 @@ async function inspectLocalMarketplaceState(
 
 async function resolveCurrentCatalogBundleRoot(
   env: NodeJS.ProcessEnv,
+  catalogResolution?: CatalogResolution,
 ): Promise<{
   rootDir: string;
   selector: CatalogSelector | undefined;
   resolvedCatalog: NonNullable<LocalMarketplaceConfig['resolvedCatalog']> | null;
 }> {
-  const { resolveCurrentCatalog } = await import('./plugin-catalog.js');
-  const catalog = await resolveCurrentCatalog(env);
+  let catalog = catalogResolution;
+  if (!catalog) {
+    const { resolveCurrentCatalog } = await import('./plugin-catalog.js');
+    catalog = await resolveCurrentCatalog(env);
+  }
   await validateBundleLayout(catalog.rootDir);
   return {
     rootDir: catalog.rootDir,
@@ -1957,14 +1962,25 @@ async function tryReuseExistingLocalMarketplace(
 
 export async function resolveReadOnlyCatalogResolution(
   env: NodeJS.ProcessEnv = process.env,
+  options: {
+    freshnessPolicy?: CatalogFreshnessPolicy;
+    catalogResolution?: CatalogResolution;
+  } = {},
 ): Promise<CatalogResolution> {
+  if (options.catalogResolution) {
+    await validateBundleLayout(options.catalogResolution.rootDir);
+    return options.catalogResolution;
+  }
+
   const hasSelectorOverride = hasCatalogSelectorOverride(env);
   const { isCatalogResolutionError, resolveCurrentCatalog } = await import('./plugin-catalog.js');
   let currentCatalogError: unknown = null;
   let fallbackSelector: CatalogSelector | null = null;
   let fallbackResolvedCatalog: NonNullable<LocalMarketplaceConfig['resolvedCatalog']> | null = null;
   try {
-    return await resolveCurrentCatalog(env);
+    return options.freshnessPolicy === undefined
+      ? await resolveCurrentCatalog(env)
+      : await resolveCurrentCatalog(env, { freshnessPolicy: options.freshnessPolicy });
   } catch (error) {
     if (!isCatalogResolutionError(error) || error.resolution.reasonCode !== 'catalogUnavailable') {
       throw error;
@@ -2271,12 +2287,18 @@ export interface EnsureLocalMarketplaceResult {
 export async function ensureLocalMarketplace(
   env: NodeJS.ProcessEnv = process.env,
   gate?: LocalMarketplaceGateOptions,
+  catalogResolution?: CatalogResolution,
 ): Promise<EnsureLocalMarketplaceResult> {
-  return initializeLocalMarketplace({ force: false, env, gate });
+  return initializeLocalMarketplace({ force: false, env, gate, catalogResolution });
 }
 
 export async function initializeLocalMarketplace(
-  options: { force: boolean; env?: NodeJS.ProcessEnv; gate?: LocalMarketplaceGateOptions },
+  options: {
+    force: boolean;
+    env?: NodeJS.ProcessEnv;
+    gate?: LocalMarketplaceGateOptions;
+    catalogResolution?: CatalogResolution;
+  },
 ): Promise<EnsureLocalMarketplaceResult> {
   const env = options.env ?? process.env;
   let bundleRootOverride: string | undefined;
@@ -2285,7 +2307,7 @@ export async function initializeLocalMarketplace(
   const resolveCurrentCatalogWithLocalFallback = async (): Promise<EnsureLocalMarketplaceResult | null> => {
     const { isCatalogResolutionError } = await import('./plugin-catalog.js');
     try {
-      const resolved = await resolveCurrentCatalogBundleRoot(env);
+      const resolved = await resolveCurrentCatalogBundleRoot(env, options.catalogResolution);
       bundleRootOverride = resolved.rootDir;
       resolvedCatalogSelector = resolved.selector;
       resolvedCatalog = resolved.resolvedCatalog;

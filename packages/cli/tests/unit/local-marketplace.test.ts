@@ -41,7 +41,7 @@ import { readJsonFile } from '../../src/utils/json.js';
 import { writePluginConfigStore } from '../../src/utils/plugin-config.js';
 import { setCatalogPackageSourceForTests } from '../../src/utils/marketplace.js';
 import { resolveCurrentCatalogCacheEntryDir, setEmbeddedPluginsRootOverrideForTests } from '../../src/utils/paths.js';
-import type { CatalogSelector, InstalledLedger } from '../../src/types.js';
+import type { CatalogResolution, CatalogSelector, InstalledLedger } from '../../src/types.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
 import { TestPathFenceError } from '../helpers/test-isolation.js';
 import {
@@ -307,6 +307,84 @@ afterEach(async () => {
 });
 
 describe('local marketplace', () => {
+  it('reuses a supplied catalog resolution without calling the current catalog resolver', async () => {
+    const { awHome, embeddedRoot } = await makeWorkspace();
+    const env = {
+      ...process.env,
+      AW_HOME: awHome,
+    };
+    const packageInfo = await readCliPackageInfo();
+    const catalogResolution: CatalogResolution = {
+      rootDir: embeddedRoot,
+      source: 'remote',
+      selector: {
+        kind: 'default',
+        cliVersion: packageInfo.version,
+        defaultChannel: packageInfo.version.includes('-') ? 'beta' : 'latest',
+      },
+      channel: packageInfo.version.includes('-') ? 'beta' : 'latest',
+      catalogVersion: packageInfo.version,
+      minAwVersion: packageInfo.version,
+      historySchemaVersion: 1,
+    };
+    const resolveCurrentCatalog = vi.spyOn(pluginCatalogModule, 'resolveCurrentCatalog');
+
+    await expect(resolveReadOnlyCatalogResolution(env, { catalogResolution }))
+      .resolves.toBe(catalogResolution);
+    await expect(ensureLocalMarketplace(env, undefined, catalogResolution)).resolves.toMatchObject({
+      rootDir: awHome,
+      changed: true,
+    });
+
+    expect(resolveCurrentCatalog).not.toHaveBeenCalled();
+    await expect(readJsonFile(path.join(awHome, 'config.json'))).resolves.toMatchObject({
+      catalogSelector: catalogResolution.selector,
+      resolvedCatalog: {
+        channel: catalogResolution.channel,
+        catalogVersion: catalogResolution.catalogVersion,
+        minAwVersion: catalogResolution.minAwVersion,
+        historySchemaVersion: catalogResolution.historySchemaVersion,
+      },
+    });
+  });
+
+  it('validates the layout of a supplied catalog resolution', async () => {
+    const { awHome, repoRoot } = await makeWorkspace();
+    const env = {
+      ...process.env,
+      AW_HOME: awHome,
+    };
+    const catalogResolution: CatalogResolution = {
+      rootDir: path.join(repoRoot, 'missing-catalog'),
+      source: 'remote',
+    };
+    const resolveCurrentCatalog = vi.spyOn(pluginCatalogModule, 'resolveCurrentCatalog');
+
+    await expect(resolveReadOnlyCatalogResolution(env, { catalogResolution })).rejects.toThrow();
+    await expect(ensureLocalMarketplace(env, undefined, catalogResolution)).rejects.toThrow();
+    expect(resolveCurrentCatalog).not.toHaveBeenCalled();
+  });
+
+  it('passes the requested freshness policy to current catalog resolution', async () => {
+    const { awHome, embeddedRoot } = await makeWorkspace();
+    const env = {
+      ...process.env,
+      AW_HOME: awHome,
+    };
+    const catalogResolution: CatalogResolution = {
+      rootDir: embeddedRoot,
+      source: 'cache',
+    };
+    const resolveCurrentCatalog = vi.spyOn(pluginCatalogModule, 'resolveCurrentCatalog')
+      .mockResolvedValue(catalogResolution);
+
+    await expect(resolveReadOnlyCatalogResolution(env, { freshnessPolicy: 'cacheFirst' }))
+      .resolves.toBe(catalogResolution);
+    expect(resolveCurrentCatalog).toHaveBeenCalledWith(env, {
+      freshnessPolicy: 'cacheFirst',
+    });
+  });
+
   it('blocks local marketplace writes when AW_HOME points at a read-only fixture root', async () => {
     const { embeddedRoot } = await makeWorkspace();
     const repositoryCwd = path.resolve(getSourceTestRepositoryCwd(), '..', '..');

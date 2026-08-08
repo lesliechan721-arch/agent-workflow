@@ -23,6 +23,7 @@ import {
   initializeLocalMarketplace,
   writeInstalledLedger,
 } from '../../src/utils/local-marketplace.js';
+import * as localMarketplaceModule from '../../src/utils/local-marketplace.js';
 import {
   applyCodexConfigTransactionFile,
   readCodexConfigFile,
@@ -39,6 +40,8 @@ import {
 import * as codexNativeRecoveryModule from '../../src/utils/codex-native-recovery.js';
 import * as codexConfigModule from '../../src/utils/codex-config.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
+import * as pluginCatalogModule from '../../src/utils/plugin-catalog.js';
+import type { CatalogResolution, StatusReport } from '../../src/types.js';
 import {
   NativeCliError,
   type NativeCliInvocation,
@@ -356,6 +359,29 @@ function createCodexMarketplaceAddRunner(
   };
 }
 
+function createCodexStatusReport(
+  catalogCompatibility?: 'current' | 'missing' | 'capabilityChanged',
+): StatusReport {
+  return {
+    platform: 'codex',
+    scope: 'user',
+    initialized: true,
+    plugins: [
+      {
+        pluginName: 'git-commit',
+        native: {
+          marketplaceRegistered: true,
+          pluginAvailable: true,
+          pluginInstalled: true,
+        },
+        generatedArtifacts: [],
+        driftWarnings: [],
+        catalogCompatibility,
+      },
+    ],
+  };
+}
+
 afterEach(async () => {
   vi.restoreAllMocks();
   setEmbeddedPluginsRootOverrideForTests(null);
@@ -365,6 +391,198 @@ afterEach(async () => {
 });
 
 describe('CodexAdapter', () => {
+  it('reuses an explicit catalog resolution for Codex status', async () => {
+    const { repoRoot, cwd, env } = await makeWorkspace();
+    await initializeLocalMarketplace({ force: true, env });
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
+    const adapter = new CodexAdapter(cwd, env);
+    const catalogResolution = await pluginCatalogModule.resolveCurrentCatalog(env);
+    const resolveCurrentCatalogSpy = vi.spyOn(pluginCatalogModule, 'resolveCurrentCatalog');
+
+    const legacyReport = await adapter.status(plugin, 'project');
+    expect(resolveCurrentCatalogSpy).toHaveBeenCalledTimes(1);
+
+    resolveCurrentCatalogSpy.mockClear();
+    const explicitReport = await adapter.status(plugin, 'project', { catalogResolution });
+
+    expect(resolveCurrentCatalogSpy).not.toHaveBeenCalled();
+    expect(explicitReport.plugins[0]?.catalogCompatibility).toBe(
+      legacyReport.plugins[0]?.catalogCompatibility,
+    );
+    expect(explicitReport.plugins[0]?.currentCatalog).toEqual(
+      legacyReport.plugins[0]?.currentCatalog,
+    );
+  });
+
+  it('honors prepared Codex marketplaces and preserves direct initialization', async () => {
+    const { repoRoot, cwd, env } = await makeWorkspace();
+    await initializeLocalMarketplace({ force: true, env });
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
+    const adapter = new CodexAdapter(cwd, createCodexMarketplaceAddRunner(cwd, env), env);
+    const catalogResolution: CatalogResolution = {
+      rootDir: env.AW_HOME!,
+      source: 'local',
+    };
+    const ensureLocalMarketplaceSpy = vi.spyOn(localMarketplaceModule, 'ensureLocalMarketplace');
+    const resolveCurrentCatalogSpy = vi.spyOn(pluginCatalogModule, 'resolveCurrentCatalog');
+
+    await adapter.installPlugin(plugin, 'user', {
+      catalogResolution,
+      marketplacePrepared: true,
+    });
+
+    expect(ensureLocalMarketplaceSpy).not.toHaveBeenCalled();
+    expect(resolveCurrentCatalogSpy).not.toHaveBeenCalled();
+
+    ensureLocalMarketplaceSpy.mockClear();
+    resolveCurrentCatalogSpy.mockClear();
+    await adapter.installPlugin(plugin, 'user', { catalogResolution });
+
+    expect(ensureLocalMarketplaceSpy).toHaveBeenCalledWith(env, undefined, catalogResolution);
+    expect(resolveCurrentCatalogSpy).not.toHaveBeenCalled();
+
+    ensureLocalMarketplaceSpy.mockClear();
+    resolveCurrentCatalogSpy.mockClear();
+    await adapter.installPlugin(plugin, 'user');
+
+    expect(ensureLocalMarketplaceSpy).toHaveBeenCalledWith(env, undefined, undefined);
+    expect(resolveCurrentCatalogSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('passes the same catalog resolution through Codex upgrade operations', async () => {
+    const { repoRoot, cwd, env } = await makeWorkspace();
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
+    const adapter = new CodexAdapter(cwd, env);
+    const catalogResolution: CatalogResolution = {
+      rootDir: '/catalog',
+      source: 'embedded',
+    };
+    const options = { catalogResolution, marketplacePrepared: true };
+    const statusSpy = vi.spyOn(adapter, 'status')
+      .mockResolvedValue(createCodexStatusReport('capabilityChanged'));
+    const uninstallPluginSpy = vi.spyOn(adapter, 'uninstallPlugin').mockResolvedValue();
+    const uninstallExtensionsSpy = vi.spyOn(adapter, 'uninstallExtensions').mockResolvedValue();
+    const installPluginSpy = vi.spyOn(adapter, 'installPlugin').mockResolvedValue();
+    const installExtensionsSpy = vi.spyOn(adapter, 'installExtensions').mockResolvedValue([]);
+
+    await expect(adapter.upgradePlugin(plugin, 'user', options)).resolves.toBeUndefined();
+
+    expect(statusSpy).toHaveBeenCalledWith(plugin, 'user', options);
+    expect(uninstallPluginSpy).toHaveBeenCalledWith(plugin, 'user');
+    expect(uninstallExtensionsSpy).toHaveBeenCalledWith(plugin, 'user');
+    expect(installPluginSpy).toHaveBeenCalledWith(plugin, 'user', options);
+    expect(installExtensionsSpy).toHaveBeenCalledWith(plugin, 'user', {
+      event: 'upgrade',
+      catalogResolution,
+      marketplacePrepared: true,
+    });
+  });
+
+  it('rewrites tracked project hooks from the explicit catalog during install and upgrade', async () => {
+    const { repoRoot, cwd, env } = await makeWorkspace();
+    await fs.outputJson(
+      path.join(repoRoot, 'plugins', 'tracked-hooks', '.agents-plugin', 'plugin.json'),
+      {
+        name: 'tracked-hooks',
+        version: '0.1.0',
+        description: 'Tracked hook catalog fixture',
+        compatibility: { aw: { minVersion: '0.0.0' } },
+        marketplace: {
+          category: 'test',
+          strict: true,
+          policy: {
+            installation: 'AVAILABLE',
+            authentication: 'NONE',
+          },
+        },
+        extensions: {
+          hooks: [{
+            event: 'before_tool',
+            matcher: 'Read',
+            command: 'echo tracked hook',
+          }],
+        },
+      },
+      { spaces: 2 },
+    );
+    const explicitEmbeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
+    tempDirs.push(explicitEmbeddedRoot);
+    setEmbeddedPluginsRootOverrideForTests(explicitEmbeddedRoot);
+    const catalogResolution: CatalogResolution = {
+      rootDir: getCatalogFullPackageRoot(explicitEmbeddedRoot),
+      source: 'embedded',
+    };
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
+    const adapter = new CodexAdapter(cwd, env);
+    const paths = resolveCodexPaths(cwd, 'project', env);
+
+    await upsertTrackingRecord(paths.trackingDir, 'tracked-hooks', [{
+      path: paths.hooksPath,
+      kind: 'hook',
+      platform: 'codex',
+    }]);
+    await fs.outputJson(paths.hooksPath, {
+      hooks: {
+        PreToolUse: [{
+          matcher: 'Read',
+          hooks: [{ type: 'command', command: 'echo tracked hook' }],
+        }],
+      },
+    }, { spaces: 2 });
+    const resolveCatalogPluginsSpy = vi.spyOn(pluginCatalogModule, 'resolveCatalogPlugins');
+
+    const installedArtifacts = await adapter.installExtensions(plugin, 'project', {
+      event: 'install',
+      catalogResolution,
+      marketplacePrepared: true,
+    });
+
+    expect(resolveCatalogPluginsSpy).not.toHaveBeenCalled();
+    await expect(fs.readJson(paths.hooksPath)).resolves.toMatchObject({
+      hooks: {
+        PreToolUse: expect.arrayContaining([
+          {
+            matcher: 'Read',
+            hooks: [{ type: 'command', command: 'echo tracked hook' }],
+          },
+          {
+            matcher: 'Bash',
+            hooks: [{ type: 'command', command: 'echo git hook' }],
+          },
+        ]),
+      },
+    });
+
+    await upsertTrackingRecord(
+      paths.trackingDir,
+      plugin.manifest.name,
+      installedArtifacts,
+    );
+    resolveCatalogPluginsSpy.mockClear();
+
+    await adapter.installExtensions(plugin, 'project', {
+      event: 'upgrade',
+      catalogResolution,
+      marketplacePrepared: true,
+    });
+
+    expect(resolveCatalogPluginsSpy).not.toHaveBeenCalled();
+    await expect(fs.readJson(paths.hooksPath)).resolves.toMatchObject({
+      hooks: {
+        PreToolUse: expect.arrayContaining([
+          {
+            matcher: 'Read',
+            hooks: [{ type: 'command', command: 'echo tracked hook' }],
+          },
+          {
+            matcher: 'Bash',
+            hooks: [{ type: 'command', command: 'echo git hook' }],
+          },
+        ]),
+      },
+    });
+  });
+
   it('preserves foreign and unresolved historical shared hook groups while rerendering the current plugin', async () => {
     const { repoRoot, cwd, env } = await makeWorkspace();
     const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));

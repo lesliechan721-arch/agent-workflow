@@ -39,14 +39,16 @@ export async function initCommand(
     selectorOverrideSource?: CatalogSelector['overrideSource'];
   } & CatalogSelectionOptions = {},
 ): Promise<{ rootDir: string; changed: boolean; warnings: string[]; catalog: CatalogResolution }> {
+  const force = options.force === true;
   const result = await resolveCurrentCatalog(options.env, {
     ...(options.catalogChannel === undefined ? {} : { channel: options.catalogChannel }),
     ...(options.catalogVersion === undefined ? {} : { catalogVersion: options.catalogVersion }),
-    forceRefresh: options.force === true,
+    freshnessPolicy: force ? 'forceRemote' : 'requireRemote',
+    forceRefresh: force,
   });
   const catalog = withSelectorOverrideSource(result, options.selectorOverrideSource);
 
-  if (options.force === true && catalog.source === 'cache') {
+  if (force && catalog.source === 'cache') {
     const detail = catalog.reason?.trim()
       ? `远程 current catalog 不可用：${catalog.reason}`
       : '远程 current catalog 不可用。';
@@ -55,7 +57,7 @@ export async function initCommand(
 
   return {
     rootDir: catalog.rootDir,
-    changed: options.force === true || catalog.source !== 'cache',
+    changed: force || catalog.source !== 'cache',
     warnings: [],
     catalog,
   };

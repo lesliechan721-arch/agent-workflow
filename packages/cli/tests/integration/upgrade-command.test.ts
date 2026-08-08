@@ -9,9 +9,11 @@ import { initCommand } from '../../src/commands/init.js';
 import * as commonModule from '../../src/commands/common.js';
 import { upgradeCommand } from '../../src/commands/upgrade.js';
 import * as localMarketplaceModule from '../../src/utils/local-marketplace.js';
+import * as pluginCatalogModule from '../../src/utils/plugin-catalog.js';
 import * as pluginScriptsModule from '../../src/utils/plugin-scripts.js';
 import type {
   AgentVersionGateErrorPayload,
+  CatalogResolution,
   GeneratedArtifact,
   NativeRecoveryState,
   PlatformAdapter,
@@ -19,6 +21,7 @@ import type {
   PluginMeta,
   StatusReport,
 } from '../../src/types.js';
+import { clearCurrentCatalogResolutionMemoForTests } from '../../src/utils/plugin-catalog.js';
 import type { NativeCliRunner } from '../../src/utils/native-cli.js';
 import { writeCodexNativeRecoveryBreadcrumb } from '../../src/utils/codex-native-recovery.js';
 import { createAvailableLedger, writeInstalledLedger } from '../../src/utils/local-marketplace.js';
@@ -381,6 +384,9 @@ class FakeAdapter implements PlatformAdapter {
   readonly uninstallCalls: string[] = [];
   readonly extensionInstallCalls: string[] = [];
   readonly extensionUninstallCalls: string[] = [];
+  readonly catalogResolutions: Array<CatalogResolution | undefined> = [];
+  readonly marketplacePreparedValues: Array<boolean | undefined> = [];
+  readonly statusArtifactStates: boolean[] = [];
 
   constructor(
     name: PlatformName,
@@ -399,7 +405,13 @@ class FakeAdapter implements PlatformAdapter {
     return true;
   }
 
-  async installPlugin(plugin: PluginMeta): Promise<void> {
+  async installPlugin(
+    plugin: PluginMeta,
+    _scope: 'project' | 'user',
+    options?: Parameters<PlatformAdapter['installPlugin']>[2],
+  ): Promise<void> {
+    this.catalogResolutions.push(options?.catalogResolution);
+    this.marketplacePreparedValues.push(options?.marketplacePrepared);
     this.installCalls.push(plugin.manifest.name);
     this.getState(plugin.manifest.name).nativeInstalled = true;
   }
@@ -409,7 +421,13 @@ class FakeAdapter implements PlatformAdapter {
     this.getState(plugin.manifest.name).nativeInstalled = false;
   }
 
-  async installExtensions(plugin: PluginMeta, scope: 'project' | 'user'): Promise<GeneratedArtifact[]> {
+  async installExtensions(
+    plugin: PluginMeta,
+    scope: 'project' | 'user',
+    options?: Parameters<PlatformAdapter['installExtensions']>[2],
+  ): Promise<GeneratedArtifact[]> {
+    this.catalogResolutions.push(options?.catalogResolution);
+    this.marketplacePreparedValues.push(options?.marketplacePrepared);
     this.extensionInstallCalls.push(plugin.manifest.name);
     const state = this.getState(plugin.manifest.name);
     const artifactPath = path.join(
@@ -444,13 +462,23 @@ class FakeAdapter implements PlatformAdapter {
     state.scopeInitialized = 'no';
   }
 
-  async upgradePlugin(plugin: PluginMeta, scope: 'project' | 'user'): Promise<void> {
-    await this.installPlugin(plugin, scope);
-    await this.installExtensions(plugin, scope);
+  async upgradePlugin(
+    plugin: PluginMeta,
+    scope: 'project' | 'user',
+    options?: Parameters<PlatformAdapter['upgradePlugin']>[2],
+  ): Promise<void> {
+    await this.installPlugin(plugin, scope, options);
+    await this.installExtensions(plugin, scope, options);
   }
 
-  async status(plugin: PluginMeta, scope: 'project' | 'user'): Promise<StatusReport> {
+  async status(
+    plugin: PluginMeta,
+    scope: 'project' | 'user',
+    options?: Parameters<PlatformAdapter['status']>[2],
+  ): Promise<StatusReport> {
+    this.catalogResolutions.push(options?.catalogResolution);
     const state = this.getState(plugin.manifest.name);
+    this.statusArtifactStates.push(Boolean(state.artifactPath));
     const generatedArtifacts = state.artifactPath
       ? [{
           path: state.artifactPath,
@@ -542,6 +570,7 @@ class FakeAdapter implements PlatformAdapter {
 
 afterEach(async () => {
   vi.restoreAllMocks();
+  clearCurrentCatalogResolutionMemoForTests();
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
 
@@ -855,6 +884,9 @@ describe('upgrade command coverage', () => {
         catalogCompatibility: 'capabilityChanged',
       },
     });
+    clearCurrentCatalogResolutionMemoForTests();
+    const resolveCatalogSpy = vi.spyOn(pluginCatalogModule, 'resolveCurrentCatalog');
+    const ensureLocalMarketplaceSpy = vi.spyOn(localMarketplaceModule, 'ensureLocalMarketplace');
 
     await expect(
       upgradeCommand(
@@ -880,6 +912,14 @@ describe('upgrade command coverage', () => {
     expect(codex.extensionUninstallCalls).toEqual([]);
     expect(codex.installCalls).toEqual([]);
     expect(codex.extensionInstallCalls).toEqual(['git-commit']);
+    expect(resolveCatalogSpy).toHaveBeenCalledTimes(1);
+    const catalog = await resolveCatalogSpy.mock.results[0]!.value;
+    expect(codex.catalogResolutions.length).toBeGreaterThanOrEqual(4);
+    expect(codex.catalogResolutions.every((resolution) => resolution === catalog)).toBe(true);
+    expect(codex.marketplacePreparedValues).toEqual([true]);
+    expect(ensureLocalMarketplaceSpy).toHaveBeenCalledTimes(1);
+    expect(codex.statusArtifactStates.at(0)).toBe(false);
+    expect(codex.statusArtifactStates.at(-1)).toBe(true);
   });
 
   it('preflights missing required config during upgrade, rejects without prompting, and avoids config/native writes', async () => {
@@ -1906,6 +1946,9 @@ describe('upgrade command coverage', () => {
         catalogCompatibility: 'current',
       },
     });
+    clearCurrentCatalogResolutionMemoForTests();
+    const resolveCatalogSpy = vi.spyOn(pluginCatalogModule, 'resolveCurrentCatalog');
+    const ensureLocalMarketplaceSpy = vi.spyOn(localMarketplaceModule, 'ensureLocalMarketplace');
 
     const result = await upgradeCommand(
       [],
@@ -1946,6 +1989,15 @@ describe('upgrade command coverage', () => {
       'reachable-auto-dep',
       'upgrade-all-root',
     ]);
+    expect(resolveCatalogSpy).toHaveBeenCalledTimes(1);
+    const catalog = await resolveCatalogSpy.mock.results[0]!.value;
+    expect(codex.catalogResolutions.length).toBeGreaterThanOrEqual(12);
+    expect(codex.catalogResolutions.every((resolution) => resolution === catalog)).toBe(true);
+    expect(codex.marketplacePreparedValues.length).toBeGreaterThan(0);
+    expect(codex.marketplacePreparedValues.every((prepared) => prepared === true)).toBe(true);
+    expect(ensureLocalMarketplaceSpy).toHaveBeenCalledTimes(1);
+    expect(codex.statusArtifactStates.at(0)).toBe(false);
+    expect(codex.statusArtifactStates.at(-1)).toBe(true);
   });
 
   it('upgrades capability-changed dependencies during upgrade --all without forcing explicit parent repair', async () => {

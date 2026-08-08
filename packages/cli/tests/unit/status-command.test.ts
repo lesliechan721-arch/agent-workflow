@@ -5,8 +5,16 @@ import fs from 'fs-extra';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { loadConsoleItemsResult, statusCommand } from '../../src/commands/status.js';
+import { discoverManagedPluginNames } from '../../src/commands/discovery.js';
 import { CatalogResolutionError } from '../../src/utils/plugin-catalog.js';
 import * as pluginCatalogModule from '../../src/utils/plugin-catalog.js';
+import * as detectModule from '../../src/utils/detect.js';
+import * as localMarketplaceModule from '../../src/utils/local-marketplace.js';
+import * as installStateFacadeModule from '../../src/install-state/facade.js';
+import * as installEvidenceModule from '../../src/install-state/evidence.js';
+import * as codexNativeStateModule from '../../src/utils/codex-native-state.js';
+import * as codexNativeRecoveryModule from '../../src/utils/codex-native-recovery.js';
+import * as manifestModule from '../../src/utils/manifest.js';
 import type { NativeCliRunner } from '../../src/utils/native-cli.js';
 import { createInstallStateFixtureEnv } from '../helpers/install-state-projection-fixtures.js';
 import { createFakeCodexAppServerHarness } from '../helpers/fake-codex-app-server.js';
@@ -462,12 +470,204 @@ describe('status command P8', () => {
   it('marks console catalogUnavailable when current catalog is unavailable and no plugin rows are present', async () => {
     mockCurrentCatalogUnavailable();
 
-    await expect(loadConsoleItemsResult(
+    const result = await loadConsoleItemsResult(
       { includeCatalogOnly: true },
       { env: process.env },
-    )).resolves.toEqual({
+    );
+    expect(result).toMatchObject({
       items: [],
       catalogUnavailable: true,
     });
+    expect(result.catalog.reasonCode).toBe('catalogUnavailable');
+    expect(pluginCatalogModule.resolveCurrentCatalog).toHaveBeenCalledTimes(1);
+    expect(pluginCatalogModule.resolveCurrentCatalog).toHaveBeenCalledWith(
+      expect.anything(),
+      { freshnessPolicy: 'cacheFirst' },
+    );
+  });
+
+  it('preserves an injected catalog and performs no catalog resolution', async () => {
+    const resolveCatalog = vi.spyOn(pluginCatalogModule, 'resolveCurrentCatalog');
+    const resolveCatalogPlugins = vi.spyOn(pluginCatalogModule, 'resolveCatalogPlugins');
+    const catalog = {
+      rootDir: process.cwd(),
+      source: 'remote',
+      reason: 'injected unavailable catalog',
+      reasonCode: 'catalogUnavailable',
+      cacheState: {
+        state: 'stale',
+        validatedAt: '2026-08-09T00:00:00.000Z',
+        ageMs: 60_001,
+        ttlMs: 60_000,
+      },
+    } as const;
+
+    const result = await statusCommand([], { json: true }, {
+      env: process.env,
+      catalogResolution: catalog,
+      p7Targets: [],
+    } as never);
+
+    expect(result.catalog).toBe(catalog);
+    expect(JSON.parse(result.output)).toMatchObject({
+      catalog: { cacheState: catalog.cacheState },
+    });
+    expect(resolveCatalog).not.toHaveBeenCalled();
+    expect(resolveCatalogPlugins).not.toHaveBeenCalled();
+  });
+
+  it('keeps one legacy catalog resolution when discovery receives no catalog', async () => {
+    const fixture = await createStatusFixture('aw-status-discovery-legacy-catalog-');
+    const env = createInstallStateFixtureEnv(fixture.paths);
+    const plugin = {
+      rootDir: path.join(fixture.paths.rootDir, 'legacy-catalog-plugin'),
+      manifestPath: path.join(fixture.paths.rootDir, 'legacy-catalog-plugin', '.agents-plugin', 'plugin.json'),
+      manifest: {
+        name: 'legacy-catalog-plugin',
+        version: '1.0.0',
+        description: 'legacy catalog plugin',
+        marketplace: {
+          category: 'workflow',
+          strict: true,
+          policy: {
+            installation: 'AVAILABLE',
+            authentication: 'NONE',
+          },
+        },
+      },
+    } as const;
+    const catalog = {
+      rootDir: fixture.paths.rootDir,
+      source: 'embedded',
+    } as const;
+    const legacyResolver = vi.spyOn(pluginCatalogModule, 'resolveCatalogPlugins')
+      .mockResolvedValue({ catalog, plugins: [plugin] } as never);
+    const directParser = vi.spyOn(manifestModule, 'resolvePluginsFromCatalog');
+
+    const records = await discoverManagedPluginNames({
+      cwd: fixture.paths.repoRoot,
+      env,
+      pluginNames: [plugin.manifest.name],
+      includeCurrentCatalog: true,
+    });
+
+    expect(legacyResolver).toHaveBeenCalledTimes(1);
+    expect(legacyResolver).toHaveBeenCalledWith(undefined, env);
+    expect(directParser).not.toHaveBeenCalled();
+    expect(records[0]?.currentCatalog).toMatchObject({
+      catalog,
+      currentPlugin: plugin,
+    });
+  });
+
+  it('reuses global reads within one status call and rereads them for the next call', async () => {
+    const fixture = await createCodexUserStatusFixture('aw-status-read-snapshot-');
+    const env = createInstallStateFixtureEnv(fixture.paths);
+    mockCurrentCatalogUnavailable();
+    const ledger = vi.spyOn(localMarketplaceModule, 'readInstalledLedger');
+    const detection = vi.spyOn(detectModule, 'detectEnvironment');
+    const dependencyIndex = vi.spyOn(installStateFacadeModule, 'inspectGlobalDependencyIndex');
+    const nativeEvidence = vi.spyOn(installEvidenceModule, 'inspectCodexNativeEvidence');
+    const nativeState = vi.spyOn(codexNativeStateModule, 'readCodexNativePluginState');
+    const nativeRecovery = vi.spyOn(codexNativeRecoveryModule, 'readCodexNativeRecoveryBreadcrumb');
+    const versionCalls: string[] = [];
+    const nativeCliRunner: NativeCliRunner = async (invocation) => {
+      versionCalls.push(invocation.command);
+      return {
+        exitCode: 0,
+        stdout: invocation.command === 'codex' ? 'codex-cli 0.145.0' : '2.1.88 (Claude Code)',
+        stderr: '',
+      };
+    };
+    const runtime = {
+      env,
+      nativeCliRunner,
+      p7Targets: [0, 1].map(() => ({
+        pluginName: fixture.target.location.plugin,
+        platform: fixture.target.location.platform,
+        scope: fixture.target.location.scope,
+        executionCwd: fixture.paths.repoRoot,
+      })),
+    } as never;
+
+    await statusCommand([fixture.target.location.plugin], {
+      cwd: fixture.paths.repoRoot,
+      platform: 'codex',
+      scope: 'user',
+      json: true,
+    }, runtime);
+
+    expect(ledger).toHaveBeenCalledTimes(1);
+    expect(detection).toHaveBeenCalledTimes(1);
+    expect(dependencyIndex).toHaveBeenCalledTimes(1);
+    expect(nativeEvidence).toHaveBeenCalledTimes(1);
+    expect(nativeState).toHaveBeenCalledTimes(1);
+    expect(nativeRecovery).toHaveBeenCalledTimes(1);
+    expect(versionCalls.filter((command) => command === 'codex')).toHaveLength(1);
+    expect(versionCalls.filter((command) => command === 'claude')).toHaveLength(1);
+
+    await statusCommand([fixture.target.location.plugin], {
+      cwd: fixture.paths.repoRoot,
+      platform: 'codex',
+      scope: 'user',
+      json: true,
+    }, runtime);
+
+    expect(ledger).toHaveBeenCalledTimes(2);
+    expect(detection).toHaveBeenCalledTimes(2);
+    expect(dependencyIndex).toHaveBeenCalledTimes(2);
+    expect(nativeEvidence).toHaveBeenCalledTimes(2);
+    expect(nativeState).toHaveBeenCalledTimes(2);
+    expect(nativeRecovery).toHaveBeenCalledTimes(2);
+  });
+
+  it('reuses the injected catalog and status snapshot for catalog-only console candidates', async () => {
+    const fixture = await createStatusFixture('aw-status-catalog-only-snapshot-');
+    const env = createInstallStateFixtureEnv(fixture.paths);
+    const plugin = {
+      rootDir: path.join(fixture.paths.rootDir, 'catalog-plugin'),
+      manifestPath: path.join(fixture.paths.rootDir, 'catalog-plugin', '.agents-plugin', 'plugin.json'),
+      manifest: {
+        name: 'catalog-only-plugin',
+        version: '1.0.0',
+        description: 'catalog only plugin',
+        marketplace: {
+          category: 'workflow',
+          strict: true,
+          policy: {
+            installation: 'AVAILABLE',
+            authentication: 'NONE',
+          },
+        },
+      },
+    } as const;
+    const resolvePlugins = vi.spyOn(manifestModule, 'resolvePluginsFromCatalog')
+      .mockResolvedValue([plugin] as never);
+    const resolveCatalog = vi.spyOn(pluginCatalogModule, 'resolveCurrentCatalog');
+    const ledger = vi.spyOn(localMarketplaceModule, 'readInstalledLedger');
+    const detection = vi.spyOn(detectModule, 'detectEnvironment');
+    const dependencyIndex = vi.spyOn(installStateFacadeModule, 'inspectGlobalDependencyIndex');
+    const catalog = {
+      rootDir: fixture.paths.rootDir,
+      source: 'embedded',
+    } as const;
+
+    const result = await loadConsoleItemsResult({
+      cwd: fixture.paths.repoRoot,
+      includeCatalogOnly: true,
+    }, {
+      env,
+      catalogResolution: catalog,
+      nativeCliRunner: createAgentVersionRunner(),
+    } as never);
+
+    expect(result.catalog).toBe(catalog);
+    expect(result.items.some((item) => item.summary.pluginName === plugin.manifest.name)).toBe(true);
+    expect(resolveCatalog).not.toHaveBeenCalled();
+    expect(resolvePlugins).toHaveBeenCalledTimes(1);
+    expect(resolvePlugins).toHaveBeenCalledWith(catalog.rootDir, undefined);
+    expect(ledger).toHaveBeenCalledTimes(1);
+    expect(detection).toHaveBeenCalledTimes(1);
+    expect(dependencyIndex).toHaveBeenCalledTimes(1);
   });
 });

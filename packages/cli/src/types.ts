@@ -1244,7 +1244,14 @@ export function isAgentVersionGateError(error: unknown): error is AgentVersionGa
 export interface PlatformAdapter {
   name: PlatformName;
   detect(cwd: string): Promise<boolean>;
-  installPlugin(plugin: PluginMeta, scope: Scope): Promise<void>;
+  installPlugin(
+    plugin: PluginMeta,
+    scope: Scope,
+    options?: {
+      catalogResolution?: CatalogResolution;
+      marketplacePrepared?: boolean;
+    },
+  ): Promise<void>;
   uninstallPlugin(plugin: PluginMeta, scope: Scope): Promise<void>;
   installExtensions(
     plugin: PluginMeta,
@@ -1256,6 +1263,8 @@ export interface PlatformAdapter {
       skillTriggerPreference?: SkillTriggerPreference;
       skillTriggerPreferences?: Record<string, SkillTriggerPreference>;
       previousArtifacts?: GeneratedArtifact[];
+      catalogResolution?: CatalogResolution;
+      marketplacePrepared?: boolean;
     },
   ): Promise<GeneratedArtifact[]>;
   uninstallExtensions(
@@ -1263,11 +1272,21 @@ export interface PlatformAdapter {
     scope: Scope,
     generatedArtifacts?: GeneratedArtifact[],
   ): Promise<void>;
-  upgradePlugin(plugin: PluginMeta, scope: Scope): Promise<void>;
+  upgradePlugin(
+    plugin: PluginMeta,
+    scope: Scope,
+    options?: {
+      catalogResolution?: CatalogResolution;
+      marketplacePrepared?: boolean;
+    },
+  ): Promise<void>;
   status(
     plugin: PluginMeta,
     scope: Scope,
-    options?: { previousArtifacts?: GeneratedArtifact[] },
+    options?: {
+      previousArtifacts?: GeneratedArtifact[];
+      catalogResolution?: CatalogResolution;
+    },
   ): Promise<StatusReport>;
 }
 
@@ -1506,6 +1525,8 @@ export interface CatalogCacheStateEvidence {
   ageMs: number;
   ttlMs: number;
 }
+
+export type CatalogFreshnessPolicy = 'cacheFirst' | 'requireRemote' | 'forceRemote';
 
 export interface CatalogResolution {
   rootDir: string;

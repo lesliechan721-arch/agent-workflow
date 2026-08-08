@@ -8,16 +8,22 @@ import fs from 'fs-extra';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import * as commonModule from '../../src/commands/common.js';
+import type { ResolvedPluginTarget } from '../../src/commands/common.js';
+import * as manifestModule from '../../src/utils/manifest.js';
+import * as pluginCatalogModule from '../../src/utils/plugin-catalog.js';
+import * as pluginScriptsModule from '../../src/utils/plugin-scripts.js';
 import * as projectBoundaryModule from '../../src/install-state/project-boundary.js';
 import {
   disposePinnedCatalogRoot,
   installCommand,
   installTargetsOnPlatforms,
+  pinCatalogResolutionForLocalMarketplaceRebuild,
   pinCurrentCatalogTargetsForLocalMarketplaceRebuild,
 } from '../../src/commands/install.js';
 import { buildCommandReceiptJson, renderCommandReceipt } from '../../src/output/command-receipt.js';
 import type {
   AgentVersionGateErrorPayload,
+  CatalogResolution,
   GeneratedArtifact,
   InstalledLedger,
   PlatformAdapter,
@@ -49,6 +55,7 @@ import {
   resolveClaudeProjectKey,
   resolveCodexProjectKey,
   resolveCodexPaths,
+  resolveCliTempRoot,
   setEmbeddedPluginsRootOverrideForTests,
 } from '../../src/utils/paths.js';
 import {
@@ -83,7 +90,10 @@ function fixturePath(...segments: string[]): string {
 }
 
 async function makeWorkspace(
-  manifestUpdater?: (manifest: Record<string, any>) => void,
+  manifestUpdater?: (
+    manifest: Record<string, any>,
+    repoRoot: string,
+  ) => Promise<void> | void,
 ): Promise<{
   repoRoot: string;
   env: NodeJS.ProcessEnv;
@@ -99,7 +109,7 @@ async function makeWorkspace(
       ? async (repoRoot) => {
         const manifestPath = path.join(repoRoot, 'plugins', 'git-commit', '.agents-plugin', 'plugin.json');
         const manifest = await fs.readJson(manifestPath);
-        manifestUpdater(manifest);
+        await manifestUpdater(manifest, repoRoot);
         await fs.writeJson(manifestPath, manifest, { spaces: 2 });
       }
       : undefined,
@@ -135,6 +145,59 @@ function createResolvedTarget(plugin: PluginMeta) {
     embeddedPlugin: undefined,
     source: 'currentCatalog' as const,
   };
+}
+
+function makeCodexUserDynamicManifest(pluginManifest: Record<string, any>): void {
+  pluginManifest.skillTriggers = {
+    ...pluginManifest.skillTriggers,
+    'generated-commit': {
+      defaultTrigger: 'auto',
+      allowDynamicTrigger: true,
+    },
+  };
+  pluginManifest.artifacts = {
+    targets: [{
+      id: 'generated-commit-skill',
+      platform: 'codex',
+      scopes: ['user'],
+      target: 'codex.skill',
+      projectManagedKind: 'skill',
+      states: ['present'],
+      refreshKeys: [],
+      skillKey: 'generated-commit',
+    }],
+  };
+}
+
+async function createAwHomeDynamicTarget(options: {
+  repoRoot: string;
+  env: NodeJS.ProcessEnv;
+}): Promise<ResolvedPluginTarget> {
+  const sourcePluginRoot = path.join(options.repoRoot, 'plugins', 'git-commit');
+  const catalogRoot = path.join(
+    String(options.env.AW_HOME),
+    'catalog-cache',
+    'entries',
+    'dynamic',
+    'catalog',
+  );
+  const targetPluginRoot = path.join(catalogRoot, 'plugins', 'git-commit');
+  await fs.copy(sourcePluginRoot, targetPluginRoot);
+  return createResolvedTarget(await readPluginManifest(targetPluginRoot));
+}
+
+function capturePinnedCatalogRoots(env: NodeJS.ProcessEnv): string[] {
+  const captured: string[] = [];
+  const pinnedParent = path.join(resolveCliTempRoot(env), 'current-catalog-sources');
+  const originalMkdtemp = fs.mkdtemp.bind(fs);
+  vi.spyOn(fs, 'mkdtemp').mockImplementation(async (prefix) => {
+    const created = await originalMkdtemp(prefix);
+    if (path.dirname(created) === pinnedParent) {
+      captured.push(created);
+    }
+    return created;
+  });
+  return captured;
 }
 
 async function readInstallRecord(options: {
@@ -531,6 +594,9 @@ class FakeCodexAdapter implements PlatformAdapter {
 class FakeClaudeAdapter implements PlatformAdapter {
   readonly name: PlatformName = 'claude';
   nativeInstalled = false;
+  readonly catalogResolutions: Array<CatalogResolution | undefined> = [];
+  readonly marketplacePreparedValues: Array<boolean | undefined> = [];
+  readonly statusNativeStates: boolean[] = [];
 
   constructor(
     private readonly options: {
@@ -543,20 +609,38 @@ class FakeClaudeAdapter implements PlatformAdapter {
     return true;
   }
 
-  async installPlugin(plugin: PluginMeta): Promise<void> {
+  async installPlugin(
+    plugin: PluginMeta,
+    _scope: Scope,
+    options?: Parameters<PlatformAdapter['installPlugin']>[2],
+  ): Promise<void> {
+    this.catalogResolutions.push(options?.catalogResolution);
+    this.marketplacePreparedValues.push(options?.marketplacePrepared);
     await this.options.onInstallPlugin?.(plugin);
     this.nativeInstalled = true;
   }
 
   async uninstallPlugin(): Promise<void> {}
 
-  async installExtensions(plugin: PluginMeta): Promise<GeneratedArtifact[]> {
+  async installExtensions(
+    plugin: PluginMeta,
+    _scope: Scope,
+    options?: Parameters<PlatformAdapter['installExtensions']>[2],
+  ): Promise<GeneratedArtifact[]> {
+    this.catalogResolutions.push(options?.catalogResolution);
+    this.marketplacePreparedValues.push(options?.marketplacePrepared);
     return await this.options.onInstallExtensions?.(plugin) ?? [];
   }
 
   async uninstallExtensions(): Promise<void> {}
   async upgradePlugin(): Promise<void> {}
-  async status(plugin: PluginMeta, scope: Scope): Promise<StatusReport> {
+  async status(
+    plugin: PluginMeta,
+    scope: Scope,
+    options?: Parameters<PlatformAdapter['status']>[2],
+  ): Promise<StatusReport> {
+    this.catalogResolutions.push(options?.catalogResolution);
+    this.statusNativeStates.push(this.nativeInstalled);
     return {
       platform: 'claude',
       scope,
@@ -773,6 +857,156 @@ describe('install command P6 install-state semantics', () => {
     } finally {
       await disposePinnedCatalogRoot(pinnedRoot);
     }
+  });
+
+  it('creates a private pinned catalog resolution without mutating shared consumers', async () => {
+    const { env, embeddedRoot } = await makeWorkspace();
+    const sourceCatalogRoot = path.join(
+      String(env.AW_HOME),
+      'catalog-cache',
+      'entries',
+      'shared',
+      'catalog',
+    );
+    await fs.copy(path.join(embeddedRoot, '.catalog', 'full'), sourceCatalogRoot);
+    const sharedCatalog: CatalogResolution = {
+      rootDir: sourceCatalogRoot,
+      source: 'remote',
+      catalogVersion: '1.0.0',
+    };
+    const firstConsumer = sharedCatalog;
+    const secondConsumer = sharedCatalog;
+
+    const [pinned, secondConsumerRoot] = await Promise.all([
+      pinCatalogResolutionForLocalMarketplaceRebuild(firstConsumer, env),
+      Promise.resolve(secondConsumer.rootDir),
+    ]);
+
+    expect(pinned).toBeDefined();
+    expect(firstConsumer.rootDir).toBe(sourceCatalogRoot);
+    expect(secondConsumer.rootDir).toBe(sourceCatalogRoot);
+    expect(secondConsumerRoot).toBe(sourceCatalogRoot);
+    expect(pinned?.catalogResolution).not.toBe(sharedCatalog);
+    expect(pinned?.catalogResolution).toMatchObject({
+      source: 'remote',
+      catalogVersion: '1.0.0',
+      rootDir: pinned?.pinnedRoot,
+    });
+    await expect(fs.pathExists(pinned!.pinnedRoot)).resolves.toBe(true);
+    await expect(fs.pathExists(sourceCatalogRoot)).resolves.toBe(true);
+    await disposePinnedCatalogRoot(pinned?.pinnedRoot);
+  });
+
+  it('cleans the single-target pin when retargeting fails', async () => {
+    const { repoRoot, env } = await makeWorkspace(makeCodexUserDynamicManifest);
+    await writeInstalledLedger(createAvailableLedger(), env);
+    const target = await createAwHomeDynamicTarget({ repoRoot, env });
+    const capturedRoots = capturePinnedCatalogRoots(env);
+    const originalReadPluginManifest = manifestModule.readPluginManifest;
+    vi.spyOn(manifestModule, 'readPluginManifest').mockImplementation(async (...args) => {
+      if (String(args[0]).includes('.aw-current-catalog-source-')) {
+        throw new Error('retarget sentinel');
+      }
+      return originalReadPluginManifest(...args);
+    });
+
+    await expect(installTargetsOnPlatforms(
+      [target],
+      ['codex'],
+      {
+        cwd: repoRoot,
+        scope: 'user',
+        platform: 'codex',
+      },
+      {
+        env,
+        adapters: {
+          codex: new FakeCodexAdapter(env),
+          claude: new FakeClaudeAdapter(),
+        },
+        resolveInstallOptions: resolvedInstallOptions,
+        skipConfigPreflight: true,
+        skipWriteSafetyPreflight: true,
+        marketplacePrepared: true,
+      },
+    )).rejects.toThrow('retarget sentinel');
+
+    expect(capturedRoots).toHaveLength(1);
+    await expect(fs.pathExists(capturedRoots[0]!)).resolves.toBe(false);
+  });
+
+  it('cleans prior pins when a later source-root copy fails', async () => {
+    const { env } = await makeWorkspace();
+    const firstCatalogRoot = path.join(String(env.AW_HOME), 'catalog-cache', 'first', 'catalog');
+    const secondCatalogRoot = path.join(String(env.AW_HOME), 'catalog-cache', 'second', 'catalog');
+    const firstPlugin = await writeSyntheticPlugin(firstCatalogRoot, {
+      ...createDependencyPluginManifest({ name: 'first-plugin' }),
+      compatibility: { aw: { minVersion: '0.0.0' } },
+    });
+    const secondPlugin = await writeSyntheticPlugin(secondCatalogRoot, {
+      ...createDependencyPluginManifest({ name: 'second-plugin' }),
+      compatibility: { aw: { minVersion: '0.0.0' } },
+    });
+    const capturedRoots = capturePinnedCatalogRoots(env);
+    const originalCopy = fs.copy.bind(fs);
+    vi.spyOn(fs, 'copy').mockImplementation(async (...args) => {
+      if (path.resolve(String(args[0])) === path.resolve(secondPlugin.rootDir)) {
+        throw new Error('second copy sentinel');
+      }
+      return originalCopy(...args);
+    });
+
+    await expect(pinCurrentCatalogTargetsForLocalMarketplaceRebuild({
+      targets: [createResolvedTarget(firstPlugin), createResolvedTarget(secondPlugin)],
+      env,
+    })).rejects.toThrow('second copy sentinel');
+
+    expect(capturedRoots).toHaveLength(2);
+    await Promise.all(capturedRoots.map(async (rootDir) => {
+      await expect(fs.pathExists(rootDir)).resolves.toBe(false);
+    }));
+  });
+
+  it('cleans the single-target pin when post-status fails after writes', async () => {
+    const { repoRoot, env } = await makeWorkspace(makeCodexUserDynamicManifest);
+    await writeInstalledLedger(createAvailableLedger(), env);
+    const target = await createAwHomeDynamicTarget({ repoRoot, env });
+    const capturedRoots = capturePinnedCatalogRoots(env);
+    const codex = new FakeCodexAdapter(env);
+    const readStatus = codex.status.bind(codex);
+    let statusReadCount = 0;
+    vi.spyOn(codex, 'status').mockImplementation(async (...args) => {
+      statusReadCount += 1;
+      if (statusReadCount === 2) {
+        throw new Error('post-status sentinel');
+      }
+      return readStatus(...args);
+    });
+
+    await expect(installTargetsOnPlatforms(
+      [target],
+      ['codex'],
+      {
+        cwd: repoRoot,
+        scope: 'user',
+        platform: 'codex',
+      },
+      {
+        env,
+        adapters: {
+          codex,
+          claude: new FakeClaudeAdapter(),
+        },
+        resolveInstallOptions: resolvedInstallOptions,
+        skipConfigPreflight: true,
+        skipWriteSafetyPreflight: true,
+        marketplacePrepared: true,
+      },
+    )).rejects.toThrow('post-status sentinel');
+
+    expect(statusReadCount).toBe(2);
+    expect(capturedRoots).toHaveLength(1);
+    await expect(fs.pathExists(capturedRoots[0]!)).resolves.toBe(false);
   });
 
   it('repairs a marker-backed Codex user install without creating snapshots before native write, then clears the marker and native-write degraded ledger', async () => {
@@ -1106,6 +1340,83 @@ describe('install command P6 install-state semantics', () => {
       changed: true,
     });
     await expect(validateLocalMarketplaceLayout(String(env.AW_HOME))).resolves.toBeUndefined();
+  });
+
+  it('resolves the catalog once and reuses its identity through adapter, lifecycle, and post-status reads', async () => {
+    const { repoRoot, env, embeddedRoot } = await makeWorkspace(async (pluginManifest, workspaceRoot) => {
+      pluginManifest.dependencies = {
+        plugins: [{ name: 'ask-me' }],
+      };
+      await writeSyntheticPlugin(workspaceRoot, createDependencyPluginManifest({
+        name: 'ask-me',
+        products: ['claude'],
+      }));
+    });
+    const sidecarRoot = path.join(embeddedRoot, '.catalog', 'sidecar');
+    const fullRoot = path.join(embeddedRoot, '.catalog', 'full');
+    const manifest = await fs.readJson(path.join(sidecarRoot, 'catalog-manifest.json')) as {
+      channel: 'latest' | 'beta';
+      catalogVersion: string;
+    };
+    setCatalogPackageSourceForTests(createStaticCatalogPackageSource({
+      manifest,
+      sidecarRoot,
+      fullRoot,
+      channel: manifest.channel,
+      version: manifest.catalogVersion,
+    }));
+    setEmbeddedPluginsRootOverrideForTests(path.join(repoRoot, 'missing-plugins-dist'));
+    await writeInstalledLedger(createAvailableLedger(), env);
+
+    const resolveCatalog = vi.spyOn(pluginCatalogModule, 'resolveCurrentCatalog');
+    const prepareLifecycle = vi.spyOn(pluginScriptsModule, 'prepareLifecycleConfigSnapshot');
+    const claude = new FakeClaudeAdapter();
+
+    const result = await installCommand(
+      ['git-commit'],
+      {
+        cwd: repoRoot,
+        scope: 'project',
+        platform: 'claude',
+      },
+      {
+        env,
+        adapters: {
+          codex: new FakeCodexAdapter(env),
+          claude,
+        },
+      },
+    );
+
+    expect(resolveCatalog).toHaveBeenCalledTimes(1);
+    const catalogResolution = await resolveCatalog.mock.results[0]!.value;
+    expect(claude.catalogResolutions.length).toBeGreaterThanOrEqual(5);
+    expect(claude.catalogResolutions[0]).toBe(catalogResolution);
+    const commandCatalog = claude.catalogResolutions[1];
+    expect(commandCatalog).toBeDefined();
+    expect(commandCatalog).not.toBe(catalogResolution);
+    expect(
+      claude.catalogResolutions.slice(1).every((catalog) => catalog === commandCatalog),
+    ).toBe(true);
+    expect(catalogResolution.rootDir).toContain(`${path.sep}catalog-cache${path.sep}`);
+    expect(catalogResolution.rootDir).not.toContain('current-catalog-resolution');
+    expect(claude.marketplacePreparedValues.every((value) => value === true)).toBe(true);
+    expect(prepareLifecycle).toHaveBeenCalledTimes(2);
+    expect(
+      prepareLifecycle.mock.calls.every(
+        ([options]) => options.catalogResolution === commandCatalog,
+      ),
+    ).toBe(true);
+    expect(result.marketplace?.catalog).not.toBe(commandCatalog);
+    expect(result.marketplace?.catalog).toMatchObject({
+      rootDir: String(env.AW_HOME),
+      source: 'local',
+    });
+    await expect(fs.pathExists(result.marketplace!.catalog.rootDir)).resolves.toBe(true);
+    await expect(validateLocalMarketplaceLayout(result.marketplace!.catalog.rootDir))
+      .resolves.toBeUndefined();
+    expect(claude.statusNativeStates.at(0)).toBe(false);
+    expect(claude.statusNativeStates.at(-1)).toBe(true);
   });
 
   it('keeps Codex user dynamic skill installs on the rebuilt local marketplace when plugins-dist is unavailable', async () => {

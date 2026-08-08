@@ -13,6 +13,7 @@ import {
   pruneCodexTrackedArtifacts,
 } from '../adapters/codex.js';
 import type {
+  CatalogResolution,
   CommandOptions,
   GeneratedArtifact,
   InstallCommandOptions,
@@ -220,6 +221,9 @@ import {
 } from './install-adopt-existing.js';
 
 type InstallCommandRuntime = CommandExecutionContextInput & {
+  catalogResolution?: CatalogResolution;
+  p7Catalog?: CatalogResolution;
+  marketplacePrepared?: boolean;
   resolveInstallOptions?: (
     platform: PlatformName,
     target: ResolvedPluginTarget,
@@ -383,7 +387,7 @@ function shouldRetargetCatalogRootToLocalMarketplace(
   return isPathInsideRoot(resolveAwHome(env), sourceCatalogRoot);
 }
 
-async function retargetCurrentCatalogTargetToCatalogRoot(
+export async function retargetCurrentCatalogTargetToCatalogRoot(
   target: ResolvedPluginTarget,
   catalogRoot: string,
 ): Promise<void> {
@@ -423,6 +427,46 @@ async function pinCatalogRootForLocalMarketplaceRebuild(
   return pinnedRoot;
 }
 
+export async function pinCatalogResolutionForLocalMarketplaceRebuild(
+  catalogResolution: CatalogResolution | undefined,
+  env: NodeJS.ProcessEnv,
+): Promise<{
+  pinnedRoot: string;
+  catalogResolution: CatalogResolution;
+} | undefined> {
+  if (
+    !catalogResolution ||
+    !shouldRetargetCatalogRootToLocalMarketplace(catalogResolution.rootDir, env)
+  ) {
+    return undefined;
+  }
+
+  const sourceCatalogRoot = catalogResolution.rootDir;
+  const tempRoot = assertTestWritablePath(
+    path.join(resolveCliTempRoot(env), 'current-catalog-sources'),
+    'current catalog local marketplace rebuild temp root',
+    '用 createIsolatedTestEnv() 生成默认 TMPDIR，或通过 registerWritableStateRoot() 登记 current catalog rebuild 临时目录根。',
+  );
+  await fs.ensureDir(tempRoot);
+  const pinnedRoot = await fs.mkdtemp(path.join(tempRoot, '.aw-current-catalog-resolution-'));
+  try {
+    await fs.copy(sourceCatalogRoot, pinnedRoot, {
+      overwrite: true,
+      errorOnExist: false,
+    });
+  } catch (error) {
+    await fs.remove(pinnedRoot).catch(() => undefined);
+    throw error;
+  }
+  return {
+    pinnedRoot,
+    catalogResolution: {
+      ...catalogResolution,
+      rootDir: pinnedRoot,
+    },
+  };
+}
+
 async function pinCurrentCatalogTargetForLocalMarketplaceRebuild(
   target: ResolvedPluginTarget,
   env: NodeJS.ProcessEnv,
@@ -440,7 +484,12 @@ async function pinCurrentCatalogTargetForLocalMarketplaceRebuild(
     [target.pluginName],
     env,
   );
-  await retargetCurrentCatalogTargetToCatalogRoot(target, pinnedRoot);
+  try {
+    await retargetCurrentCatalogTargetToCatalogRoot(target, pinnedRoot);
+  } catch (error) {
+    await disposePinnedCatalogRoot(pinnedRoot);
+    throw error;
+  }
   return pinnedRoot;
 }
 
@@ -463,16 +512,21 @@ export async function pinCurrentCatalogTargetsForLocalMarketplaceRebuild(options
     targetsBySourceRoot.set(sourceCatalogRoot, bucket);
   }
 
-  for (const [sourceCatalogRoot, targets] of targetsBySourceRoot.entries()) {
-    const pinnedRoot = await pinCatalogRootForLocalMarketplaceRebuild(
-      sourceCatalogRoot,
-      targets.map((target) => target.pluginName),
-      options.env,
-    );
-    pinnedRoots.push(pinnedRoot);
-    for (const target of targets) {
-      await retargetCurrentCatalogTargetToCatalogRoot(target, pinnedRoot);
+  try {
+    for (const [sourceCatalogRoot, targets] of targetsBySourceRoot.entries()) {
+      const pinnedRoot = await pinCatalogRootForLocalMarketplaceRebuild(
+        sourceCatalogRoot,
+        targets.map((target) => target.pluginName),
+        options.env,
+      );
+      pinnedRoots.push(pinnedRoot);
+      for (const target of targets) {
+        await retargetCurrentCatalogTargetToCatalogRoot(target, pinnedRoot);
+      }
     }
+  } catch (error) {
+    await Promise.all(pinnedRoots.map((rootDir) => disposePinnedCatalogRoot(rootDir)));
+    throw error;
   }
   return pinnedRoots;
 }
@@ -1432,7 +1486,9 @@ async function installTargetOnPlatform(
   const nativePlugins: NativePluginsByPlatform = {};
   let repoManagedArtifacts: GeneratedArtifact[] = [];
 
-  const status = await adapters[platform].status(target.currentPlugin, options.scope);
+  const status = await adapters[platform].status(target.currentPlugin, options.scope, {
+    catalogResolution: runtime.catalogResolution,
+  });
   const pluginStatus = status.plugins[0];
   if (
     pluginStatus?.externalOwnership?.present &&
@@ -1618,6 +1674,7 @@ async function installTargetOnPlatform(
     trackingWriteAttempted: false,
     ledgerWriteAttempted: false,
   };
+  let installWriteCompleted = false;
   const pruneUpgradeStaleArtifacts = async (): Promise<void> => {
     const staleArtifacts = diffGeneratedArtifacts(previousTrackedArtifacts, trackedArtifacts)
       .filter((artifact) => platform !== 'claude' || artifact.target === 'claude.skill');
@@ -1679,6 +1736,7 @@ async function installTargetOnPlatform(
       scope: options.scope,
       cwd: options.cwd,
       env,
+      catalogResolution: runtime.catalogResolution,
     });
 
     if (
@@ -1702,8 +1760,14 @@ async function installTargetOnPlatform(
         target.currentPlugin.manifest.name,
         env,
       );
-      const localMarketplace = await ensureLocalMarketplace(env);
-      warnings.push(...(localMarketplace.warnings ?? []));
+      if (!runtime.marketplacePrepared) {
+        const localMarketplace = await ensureLocalMarketplace(
+          env,
+          undefined,
+          runtime.catalogResolution,
+        );
+        warnings.push(...(localMarketplace.warnings ?? []));
+      }
     }
 
     if (materializeSkillTriggers) {
@@ -1796,7 +1860,10 @@ async function installTargetOnPlatform(
     });
 
     if (plannedNativeWrite && !usesCodexUserDynamicSkillFlow) {
-      await adapters[platform].installPlugin(target.currentPlugin, options.scope);
+      await adapters[platform].installPlugin(target.currentPlugin, options.scope, {
+        catalogResolution: runtime.catalogResolution,
+        marketplacePrepared: runtime.marketplacePrepared,
+      });
     }
     nativeWritten = plannedNativeWrite && !usesCodexUserDynamicSkillFlow;
     if (nativeWritten) {
@@ -1842,6 +1909,8 @@ async function installTargetOnPlatform(
       event: operation,
       skillTriggerPreference: options.requestedSkillTrigger ?? resolveMaterializationPreference(resolvedInstallOptions),
       skillTriggerPreferences,
+      catalogResolution: runtime.catalogResolution,
+      marketplacePrepared: runtime.marketplacePrepared,
     });
     trackedArtifacts = mergeGeneratedArtifacts(materializedArtifacts, generatedArtifacts);
     repoManagedArtifacts = mergeGeneratedArtifacts(repoManagedArtifacts, trackedArtifacts);
@@ -1864,7 +1933,10 @@ async function installTargetOnPlatform(
     }
 
     if (plannedNativeWrite && usesCodexUserDynamicSkillFlow) {
-      await adapters[platform].installPlugin(target.currentPlugin, options.scope);
+      await adapters[platform].installPlugin(target.currentPlugin, options.scope, {
+        catalogResolution: runtime.catalogResolution,
+        marketplacePrepared: runtime.marketplacePrepared,
+      });
       nativeWritten = true;
       recordNativePlugin(nativePlugins, platform, target.currentPlugin.manifest.name);
       if (isCodexUserNativeInstall(platform, target, options.scope)) {
@@ -2180,9 +2252,9 @@ async function installTargetOnPlatform(
         ledgerState: 'available',
       },
     });
+    installWriteCompleted = true;
   } catch (error) {
     if (error instanceof PostInstallCleanupError && error.skipRollback) {
-      await disposePinnedCatalogRoot(pinnedSourceCatalogRoot);
       throw error;
     }
 
@@ -2388,7 +2460,6 @@ async function installTargetOnPlatform(
       }
 
       if (baselineRestored) {
-        await disposePinnedCatalogRoot(pinnedSourceCatalogRoot);
         throw new Error(`${normalizeErrorMessage(error)}；upgrade 未完成，已恢复旧安装。`);
       }
     } else if (upgradeRollbackBaseline?.artifactRollbackState) {
@@ -2455,7 +2526,6 @@ async function installTargetOnPlatform(
     nativeRollbackBaseline = undefined;
 
     const rollbackFailure = createRollbackFailureError(error, rollbackIssues, rollbackSurfaces);
-    await disposePinnedCatalogRoot(pinnedSourceCatalogRoot);
     if (isCodexUserNativeInstall(platform, target, options.scope) && nativeWritten) {
       throw wrapCodexNativeInstallFailure(
         target.currentPlugin.manifest.name,
@@ -2464,51 +2534,60 @@ async function installTargetOnPlatform(
       );
     }
     throw rollbackFailure;
-  }
-
-  if (materializationRollbackHandle) {
-    try {
-      await commitMaterializedSkillTriggerPreference(materializationRollbackHandle);
-      materializationCommitted = false;
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      warnings.push(
-        `[${platform}/${target.currentPlugin.manifest.name}] skill trigger 备份目录清理失败：${detail}`,
-      );
+  } finally {
+    if (!installWriteCompleted) {
+      await disposePinnedCatalogRoot(pinnedSourceCatalogRoot);
     }
   }
 
-  const postStatus = await adapters[platform].status(target.currentPlugin, options.scope);
-  const drift = filterPostCommandDriftWarnings(postStatus.plugins[0]?.driftWarnings ?? []);
-  for (const warning of drift.visible) {
-    warnings.push(`[${platform}/${target.currentPlugin.manifest.name}] ${warning}`);
-  }
-  if (drift.diagnostics.length > 0) {
-    await emitCommandEvent(context, {
-      type: 'drift:suppressed',
-      data: {
-        platform,
-        plugin: target.currentPlugin.manifest.name,
-        warnings: drift.diagnostics,
-      },
+  try {
+    if (materializationRollbackHandle) {
+      try {
+        await commitMaterializedSkillTriggerPreference(materializationRollbackHandle);
+        materializationCommitted = false;
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        warnings.push(
+          `[${platform}/${target.currentPlugin.manifest.name}] skill trigger 备份目录清理失败：${detail}`,
+        );
+      }
+    }
+
+    const postStatus = await adapters[platform].status(target.currentPlugin, options.scope, {
+      catalogResolution: runtime.catalogResolution,
     });
-  }
+    const drift = filterPostCommandDriftWarnings(postStatus.plugins[0]?.driftWarnings ?? []);
+    for (const warning of drift.visible) {
+      warnings.push(`[${platform}/${target.currentPlugin.manifest.name}] ${warning}`);
+    }
+    if (drift.diagnostics.length > 0) {
+      await emitCommandEvent(context, {
+        type: 'drift:suppressed',
+        data: {
+          platform,
+          plugin: target.currentPlugin.manifest.name,
+          warnings: drift.diagnostics,
+        },
+      });
+    }
 
-  if (upgradeRollbackBaseline?.artifactRollbackState) {
-    await disposeArtifactRollbackState(upgradeRollbackBaseline.artifactRollbackState)
-      .catch(() => undefined);
-  }
-  if (dynamicSkillArtifactRollbackState) {
-    await disposeArtifactRollbackState(dynamicSkillArtifactRollbackState).catch(() => undefined);
-  }
-  await disposeCodexNativePluginRollbackBaseline(nativeRollbackBaseline).catch(() => undefined);
-  await disposePinnedCatalogRoot(pinnedSourceCatalogRoot);
+    if (upgradeRollbackBaseline?.artifactRollbackState) {
+      await disposeArtifactRollbackState(upgradeRollbackBaseline.artifactRollbackState)
+        .catch(() => undefined);
+    }
+    if (dynamicSkillArtifactRollbackState) {
+      await disposeArtifactRollbackState(dynamicSkillArtifactRollbackState).catch(() => undefined);
+    }
+    await disposeCodexNativePluginRollbackBaseline(nativeRollbackBaseline).catch(() => undefined);
 
-  return {
-    warnings,
-    nativePlugins,
-    repoManagedArtifacts,
-  };
+    return {
+      warnings,
+      nativePlugins,
+      repoManagedArtifacts,
+    };
+  } finally {
+    await disposePinnedCatalogRoot(pinnedSourceCatalogRoot);
+  }
 }
 
 export async function installTargetsOnPlatforms(
@@ -3198,6 +3277,7 @@ export async function buildInstallPlannerContext(options: {
   ledger: InstalledLedger;
   projectKeysByPlatform: Record<PlatformName, string | null>;
   readStatusForRequestedLocations?: boolean;
+  catalogResolution?: CatalogResolution;
 }): Promise<{
   plannerState: PluginDependencyPlannerState;
   graphContext: InstallLocationGraphContext;
@@ -3258,7 +3338,9 @@ export async function buildInstallPlannerContext(options: {
       });
       continue;
     }
-    const status = await options.adapters[location.platform].status(target.currentPlugin, location.scope);
+    const status = await options.adapters[location.platform].status(target.currentPlugin, location.scope, {
+      catalogResolution: options.catalogResolution,
+    });
     const pluginStatus = status.plugins[0];
     if (!pluginStatus) {
       throw new Error(`无法读取 ${location.platform}/${location.plugin} (${location.scope}) 的状态。`);
@@ -3687,6 +3769,19 @@ async function runInstallAdoptExisting(
     ...runtime,
     env: applyCatalogSelectorEnv(runtime.env ?? process.env, options),
   };
+  const prepared = await preparePluginTargetsForCommand(
+    options.cwd,
+    options.scope,
+    pluginNames,
+    {
+      catalogMode: 'readOnly',
+      allowHistoricalFallback: false,
+      env: repairRuntime.env,
+      catalogResolution: repairRuntime.catalogResolution,
+    },
+  );
+  repairRuntime.catalogResolution = prepared.catalog;
+  repairRuntime.p7Catalog = prepared.catalog;
   try {
     adoptResult = await runInstallAdoptExistingMigration(pluginNames, {
       cwd: options.cwd,
@@ -3779,6 +3874,7 @@ export async function installCommand(
         catalogMode: 'readOnly',
         allowHistoricalFallback: false,
         env,
+        catalogResolution: runtime.catalogResolution,
       },
     );
   } catch (error) {
@@ -3818,6 +3914,7 @@ export async function installCommand(
   try {
     const adapters = createAdapters(options.cwd, context);
     installAdapters = adapters;
+    let commandCatalog = prepared.catalog;
     const requestedPlatformPairs = await resolveCurrentCatalogWriteTargetPairs(
       'install',
       options.platform,
@@ -3851,6 +3948,7 @@ export async function installCommand(
         catalogMode: 'readOnly',
         allowHistoricalFallback: false,
         env,
+        catalogResolution: prepared.catalog,
       },
     );
     const targetByPlugin = new Map<string, ResolvedPluginTarget>(
@@ -3904,6 +4002,7 @@ export async function installCommand(
       ledger: prepared.ledger,
       projectKeysByPlatform,
       readStatusForRequestedLocations: true,
+      catalogResolution: prepared.catalog,
     });
     const graphPlan = planPluginDependencyWrites({
       mode: 'install',
@@ -3927,17 +4026,34 @@ export async function installCommand(
       targetByPlugin,
     );
     if (runtimeWritableMarketplace) {
-      pinnedCatalogRoots.push(...await pinCurrentCatalogTargetsForLocalMarketplaceRebuild({
-        targets: graphPlan.writeOrder
-          .map((location) => targetByPlugin.get(location.plugin))
-          .filter((target): target is ResolvedPluginTarget => Boolean(target)),
+      const graphTargets = graphPlan.writeOrder
+        .map((location) => targetByPlugin.get(location.plugin))
+        .filter((target): target is ResolvedPluginTarget => Boolean(target));
+      const pinnedCatalogResolution = await pinCatalogResolutionForLocalMarketplaceRebuild(
+        prepared.catalog,
         env,
-      }));
+      );
+      if (pinnedCatalogResolution) {
+        commandCatalog = pinnedCatalogResolution.catalogResolution;
+        pinnedCatalogRoots.push(pinnedCatalogResolution.pinnedRoot);
+        for (const target of graphTargets) {
+          await retargetCurrentCatalogTargetToCatalogRoot(
+            target,
+            pinnedCatalogResolution.pinnedRoot,
+          );
+        }
+      } else {
+        pinnedCatalogRoots.push(...await pinCurrentCatalogTargetsForLocalMarketplaceRebuild({
+          targets: graphTargets,
+          env,
+        }));
+      }
     }
     const preparedForExecution = await prepareCommandEnvironment({
       catalogMode: runtimeWritableMarketplace ? 'runtimeWritable' : 'readOnly',
       env,
       context,
+      catalogResolution: commandCatalog,
     });
     commandWarnings = [
       ...prepared.warnings,
@@ -3997,6 +4113,8 @@ export async function installCommand(
           {
             ...context,
             adapters,
+            catalogResolution: commandCatalog,
+            marketplacePrepared: runtimeWritableMarketplace,
             resolveInstallOptions: () => resolvedInstallOptions,
             skipConfigPreflight: true,
             skipWriteSafetyPreflight: true,

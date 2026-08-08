@@ -1,6 +1,7 @@
 import type {
   ConfigFieldEntryV2,
   ConfigStoreRemovalResult,
+  CatalogResolution,
   LegacyConfigStoreEntryV2,
   PlatformSelection,
   PlatformName,
@@ -42,6 +43,7 @@ import { reinstallCommand } from './reinstall.js';
 import {
   loadConsoleItemsResult,
 } from './status.js';
+import { resolveCurrentCatalog } from '../utils/plugin-catalog.js';
 import { uninstallCommand } from './uninstall.js';
 import { upgradeCommand } from './upgrade.js';
 import { formatWarnings } from '../output/reporter.js';
@@ -76,7 +78,14 @@ type ConsoleNavigation = 'back' | 'reload' | 'exit' | 'stay';
 
 interface ConsoleHomeState {
   items: ConsoleControllerItem[];
+  catalog: CatalogResolution;
   banner?: string;
+  catalogNotice?: string;
+}
+
+interface PendingCatalogRefresh {
+  catalogResolution?: CatalogResolution;
+  notice?: string;
 }
 
 interface ScopedFieldState {
@@ -371,7 +380,8 @@ function findLocation(
 function buildHomeLines(state: ConsoleHomeState): string[] {
   return joinNonEmpty([
     state.banner,
-    ...(state.banner ? [''] : []),
+    state.catalogNotice,
+    ...(state.banner || state.catalogNotice ? [''] : []),
     ...groupHomeItems(state.items).flatMap((section, sectionIndex) => [
       ...(sectionIndex > 0 ? [''] : []),
       `${section.title}（${section.items.length}）`,
@@ -416,19 +426,87 @@ function inheritedCatalogSelectorOptions(
 
 async function loadConsoleHomeState(
   context: CliExecutionContext,
-  options: { verbose?: boolean } = {},
+  options: { verbose?: boolean; catalogResolution?: CatalogResolution } = {},
 ): Promise<ConsoleHomeState> {
+  const runtime = options.catalogResolution
+    ? { ...context, catalogResolution: options.catalogResolution }
+    : context;
   const result = await loadConsoleItemsResult({
     cwd: context.cwd,
     includeCatalogOnly: true,
     ...(options.verbose ? { verbose: true } : {}),
     ...inheritedCatalogSelectorOptions(context),
-  }, context);
+  }, runtime);
+  const catalogNotice = catalogNoticeForResolution(result.catalog);
   return {
     items: result.items,
+    catalog: result.catalog,
     ...(result.catalogUnavailable
       ? { banner: '插件目录不可用，仅显示已发现安装；恢复后可安装或升级。' }
       : {}),
+    ...(catalogNotice ? { catalogNotice } : {}),
+  };
+}
+
+function catalogNoticeForResolution(catalog: CatalogResolution): string | undefined {
+  switch (catalog.cacheState?.state) {
+    case 'stale':
+      return '插件目录缓存已过期，正在后台更新。';
+    case 'refreshFailed':
+      return '插件目录更新失败，当前显示缓存；可选择“刷新”重试。';
+    default:
+      return undefined;
+  }
+}
+
+function catalogRefreshIdentity(catalog: CatalogResolution): string {
+  return JSON.stringify({
+    selector: catalog.selector ?? null,
+    catalogVersion: catalog.catalogVersion ?? null,
+    validatedAt: catalog.cacheState?.validatedAt ?? null,
+    rootDir: catalog.rootDir,
+  });
+}
+
+function catalogRefreshFailed(pending: PendingCatalogRefresh): boolean {
+  return !pending.catalogResolution ||
+    pending.catalogResolution.cacheState?.state === 'stale' ||
+    pending.catalogResolution.cacheState?.state === 'refreshFailed';
+}
+
+async function refreshConsoleCatalog(
+  context: CliExecutionContext,
+): Promise<PendingCatalogRefresh> {
+  try {
+    return {
+      catalogResolution: await resolveCurrentCatalog(context.env, {
+        freshnessPolicy: 'requireRemote',
+      }),
+    };
+  } catch {
+    return {
+      notice: '插件目录更新失败，当前显示缓存；可选择“刷新”重试。',
+    };
+  }
+}
+
+async function applyPendingCatalogRefresh(
+  context: CliExecutionContext,
+  homeState: ConsoleHomeState,
+  pending: PendingCatalogRefresh,
+): Promise<ConsoleHomeState> {
+  if (!pending.catalogResolution) {
+    return {
+      ...homeState,
+      ...(pending.notice ? { catalogNotice: pending.notice } : {}),
+    };
+  }
+  const refreshed = await loadConsoleHomeState(context, {
+    catalogResolution: pending.catalogResolution,
+  });
+  return {
+    ...refreshed,
+    ...(pending.notice ? { catalogNotice: pending.notice } : {}),
   };
 }
 
@@ -4281,8 +4359,69 @@ export async function runConsoleController(
   context: CliExecutionContext,
 ): Promise<number> {
   const recentResults = new Map<string, ConsoleRecentResult>();
+  const catalogRefreshes = new Map<string, Promise<PendingCatalogRefresh>>();
+  const failedCatalogRefreshes = new Set<string>();
+  let pendingCatalogRefresh: PendingCatalogRefresh | undefined;
+  let homeState = await loadConsoleHomeState(context);
+  let initialHomeRendered = false;
+
+  const applySessionCatalogNotice = (state: ConsoleHomeState): ConsoleHomeState => {
+    const key = catalogRefreshIdentity(state.catalog);
+    if (failedCatalogRefreshes.has(key)) {
+      return {
+        ...state,
+        catalogNotice: '插件目录更新失败，当前显示缓存；可选择“刷新”重试。',
+      };
+    }
+    if (
+      state.catalog.cacheState?.state === 'stale' &&
+      initialHomeRendered &&
+      !catalogRefreshes.has(key)
+    ) {
+      const { catalogNotice: _catalogNotice, ...stateWithoutCatalogNotice } = state;
+      return stateWithoutCatalogNotice;
+    }
+    return state;
+  };
+
+  const startCatalogRefresh = (catalog: CatalogResolution): Promise<PendingCatalogRefresh> => {
+    const key = catalogRefreshIdentity(catalog);
+    const existing = catalogRefreshes.get(key);
+    if (existing) {
+      return existing;
+    }
+    const refresh = refreshConsoleCatalog(context);
+    catalogRefreshes.set(key, refresh);
+    void refresh.then((pending) => {
+      if (catalogRefreshFailed(pending)) {
+        failedCatalogRefreshes.add(key);
+        if (pending.catalogResolution) {
+          failedCatalogRefreshes.add(catalogRefreshIdentity(pending.catalogResolution));
+        }
+      } else {
+        failedCatalogRefreshes.delete(key);
+      }
+      pendingCatalogRefresh = pending;
+    }).finally(() => {
+      if (catalogRefreshes.get(key) === refresh) {
+        catalogRefreshes.delete(key);
+      }
+    });
+    return refresh;
+  };
+
+  const applyPendingRefresh = async (): Promise<void> => {
+    const pending = pendingCatalogRefresh;
+    if (!pending) {
+      return;
+    }
+    pendingCatalogRefresh = undefined;
+    homeState = applySessionCatalogNotice(
+      await applyPendingCatalogRefresh(context, homeState, pending),
+    );
+  };
+
   while (true) {
-    const homeState = await loadConsoleHomeState(context);
     if (homeState.items.length === 0) {
       await renderView(context, 'AW 控制台', [
         '当前没有可展示的插件。',
@@ -4291,6 +4430,12 @@ export async function runConsoleController(
       return 0;
     }
     await renderView(context, 'AW 控制台', buildHomeLines(homeState));
+    if (!initialHomeRendered) {
+      initialHomeRendered = true;
+      if (homeState.catalog.cacheState?.state === 'stale') {
+        void startCatalogRefresh(homeState.catalog);
+      }
+    }
     const selection = await selectValue(context, {
       message: '选择插件',
       choices: buildHomeChoices(homeState.items),
@@ -4300,8 +4445,20 @@ export async function runConsoleController(
       return 0;
     }
     if (selectedPromptValue(selection) === 'home-refresh') {
+      if (pendingCatalogRefresh) {
+        await applyPendingRefresh();
+        continue;
+      }
+      const refresh = await startCatalogRefresh(homeState.catalog);
+      if (pendingCatalogRefresh === refresh) {
+        pendingCatalogRefresh = undefined;
+      }
+      homeState = applySessionCatalogNotice(
+        await applyPendingCatalogRefresh(context, homeState, refresh),
+      );
       continue;
     }
+    await applyPendingRefresh();
     const item = homeState.items.find((entry) => entry.summary.pluginName === selectedPromptValue(selection));
     if (!item) {
       continue;
@@ -4309,6 +4466,11 @@ export async function runConsoleController(
     const result = await browseItem(context, item, recentResults);
     if (result === 'exit') {
       return 0;
+    }
+    if (pendingCatalogRefresh) {
+      await applyPendingRefresh();
+    } else {
+      homeState = applySessionCatalogNotice(await loadConsoleHomeState(context));
     }
   }
 }

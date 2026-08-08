@@ -24,6 +24,7 @@ import { createCommandExecutionContext } from './runtime.js';
 import { buildCommandCandidates } from './discovery.js';
 import type { DiscoveryEvidenceSummary } from './discovery.js';
 import {
+  applyCatalogSelectorEnv,
   normalizeCleanupCommandOptions,
   normalizeStatusCommandOptions,
   type RawStatusCommandOptions,
@@ -83,6 +84,11 @@ import {
 } from '../utils/dynamic-skill-tree.js';
 import { resolveEffectiveSkillTriggerPreferences } from '../utils/plugin-config.js';
 import type { CodexAppServerProcessRunner } from '../utils/codex-app-server-client.js';
+import { resolveCurrentCatalog } from '../utils/plugin-catalog.js';
+import {
+  createStatusReadSnapshot,
+  type StatusReadSnapshot,
+} from './status-read-snapshot.js';
 
 export interface RawDiagnoseCommandOptions extends RawStatusCommandOptions {
   deep?: boolean;
@@ -106,6 +112,8 @@ interface InstallStateTarget {
 
 interface P7RuntimeOverrides {
   p7Catalog?: CatalogResolution;
+  catalogResolution?: CatalogResolution;
+  statusReadSnapshot?: StatusReadSnapshot;
   p7Targets?: InstallStateTarget[];
   p7Collect?: (options: {
     cwd: string;
@@ -699,6 +707,7 @@ async function discoverTargets(
   options: DiagnoseCommandOptions,
   env: NodeJS.ProcessEnv,
   runtime: P7RuntimeOverrides,
+  detection: Awaited<ReturnType<typeof detectEnvironment>>,
 ): Promise<InstallStateTarget[]> {
   if (runtime.p7Targets) {
     return runtime.p7Targets;
@@ -711,7 +720,10 @@ async function discoverTargets(
     platformFilter: options.platform,
     pluginNames: pluginNames.length > 0 ? pluginNames : undefined,
     env,
-    includeCurrentCatalog: runtime.p7Catalog?.reasonCode === undefined,
+    includeCurrentCatalog: (runtime.p7Catalog ?? runtime.catalogResolution)?.reasonCode === undefined,
+    catalogResolution: runtime.p7Catalog ?? runtime.catalogResolution,
+    readSnapshot: runtime.statusReadSnapshot,
+    detection,
     nativeCliRunner: (runtime as CommandExecutionContextInput).nativeCliRunner,
   });
   const seen = new Set<string>();
@@ -1160,6 +1172,7 @@ async function collectWithDefaultEvidence(options: {
     location,
     env: options.env,
     currentCatalog,
+    readSnapshot: options.runtime.statusReadSnapshot,
     codexNativeViewDiagnostic: options.deep && location.platform === 'codex' && location.scope === 'user'
       ? {
           enabled: true,
@@ -1183,6 +1196,7 @@ async function collectWithDefaultEvidence(options: {
       location,
       env: options.env,
       currentCatalog,
+      readSnapshot: options.runtime.statusReadSnapshot,
       codexNativeViewDiagnostic: options.deep && location.platform === 'codex' && location.scope === 'user'
         ? {
             enabled: true,
@@ -2024,7 +2038,17 @@ export async function collectP7Locations(
   const context = createCommandExecutionContext(runtime);
   const env = context.env;
   const overrides = runtime as CommandExecutionContextInput & P7RuntimeOverrides;
-  const targets = await discoverTargets(pluginNames, options, env, overrides);
+  const detection = overrides.statusReadSnapshot
+    ? await overrides.statusReadSnapshot.detectEnvironment({
+      cwd: options.cwd,
+      env,
+      nativeCliRunner: context.nativeCliRunner,
+    })
+    : await detectEnvironment(options.cwd, env, {
+      includeAgentVersions: true,
+      nativeCliRunner: context.nativeCliRunner,
+    });
+  const targets = await discoverTargets(pluginNames, options, env, overrides, detection);
   const locations = await Promise.all(targets.map((target) =>
     overrides.p7Collect
       ? overrides.p7Collect({
@@ -2042,10 +2066,7 @@ export async function collectP7Locations(
       })
   ));
   return {
-    detection: await detectEnvironment(options.cwd, env, {
-      includeAgentVersions: true,
-      nativeCliRunner: context.nativeCliRunner,
-    }),
+    detection,
     options,
     locations,
   };
@@ -2199,10 +2220,24 @@ export async function diagnoseCommand(
   payload: DiagnoseJsonPayload;
   pageModels: DiagnosePageModel[];
 }> {
-  const collected = await collectP7Locations(pluginNames, rawOptions, runtime);
+  const normalizedOptions = normalizeDiagnoseCommandOptions(rawOptions);
+  const overrides = runtime as CommandExecutionContextInput & P7RuntimeOverrides;
+  const env = applyCatalogSelectorEnv(runtime.env ?? process.env, normalizedOptions);
+  const catalog = overrides.p7Catalog ?? overrides.catalogResolution ?? (
+    overrides.p7Targets
+      ? undefined
+      : await resolveCurrentCatalog(env, { freshnessPolicy: 'requireRemote' })
+  );
+  const preparedRuntime = {
+    ...runtime,
+    env,
+    ...(catalog ? { p7Catalog: catalog, catalogResolution: catalog } : {}),
+    statusReadSnapshot: overrides.statusReadSnapshot ?? createStatusReadSnapshot(),
+  } as CommandExecutionContextInput & P7RuntimeOverrides;
+  const collected = await collectP7Locations(pluginNames, rawOptions, preparedRuntime);
   const locationInputs = await Promise.all(collected.locations.map(async (state) => {
     const supplementalCommands = createSupplementalCommands(state);
-    const cleanup = await evaluateCleanupPath(state, runtime);
+    const cleanup = await evaluateCleanupPath(state, preparedRuntime);
     return {
       state,
       cleanup,

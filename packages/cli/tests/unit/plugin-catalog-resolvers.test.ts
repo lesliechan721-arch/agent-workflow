@@ -7,13 +7,14 @@ import fs from 'fs-extra';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { stageCatalogArtifacts } from '../../scripts/plugin-staging.js';
-import type { CatalogChannel } from '../../src/types.js';
+import type { CatalogChannel, CatalogResolution } from '../../src/types.js';
 import { resolvePluginsFromCatalog } from '../../src/utils/manifest.js';
 import {
   clearCurrentCatalogResolutionMemoForTests,
   resolveCurrentCatalog,
   resolveCatalogPlugins,
 } from '../../src/utils/plugin-catalog.js';
+import * as pluginCatalogModule from '../../src/utils/plugin-catalog.js';
 import {
   calculateCatalogEntryDigestsFromRoot,
 } from '../../src/utils/catalog-digests.js';
@@ -1795,6 +1796,48 @@ describe('plugin catalog resolvers', () => {
 
     const directResolution = await resolveCurrentCatalog(env, { channel: 'latest' });
     expect(directResolution.selector?.overrideSource).toBe('option:catalog-channel');
+  });
+
+  it('resolves ordinary init with requireRemote exactly once', async () => {
+    const { env } = await makeRepoWorkspace();
+    const catalog: CatalogResolution = {
+      rootDir: '/tmp/catalog',
+      source: 'remote',
+    };
+    const resolver = vi.spyOn(pluginCatalogModule, 'resolveCurrentCatalog')
+      .mockResolvedValue(catalog);
+
+    await expect(initCommand({ env })).resolves.toMatchObject({
+      rootDir: catalog.rootDir,
+      catalog,
+    });
+
+    expect(resolver).toHaveBeenCalledTimes(1);
+    expect(resolver).toHaveBeenCalledWith(env, {
+      freshnessPolicy: 'requireRemote',
+      forceRefresh: false,
+    });
+  });
+
+  it('resolves forced init with forceRemote exactly once while keeping forceRefresh compatibility', async () => {
+    const { env } = await makeRepoWorkspace();
+    const catalog: CatalogResolution = {
+      rootDir: '/tmp/catalog',
+      source: 'remote',
+    };
+    const resolver = vi.spyOn(pluginCatalogModule, 'resolveCurrentCatalog')
+      .mockResolvedValue(catalog);
+
+    await expect(initCommand({ env, force: true })).resolves.toMatchObject({
+      rootDir: catalog.rootDir,
+      catalog,
+    });
+
+    expect(resolver).toHaveBeenCalledTimes(1);
+    expect(resolver).toHaveBeenCalledWith(env, {
+      freshnessPolicy: 'forceRemote',
+      forceRefresh: true,
+    });
   });
 
   it('uses a matching cache entry after resolving catalog identity and before downloading full catalog', async () => {

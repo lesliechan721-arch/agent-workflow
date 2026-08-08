@@ -10,6 +10,7 @@ import {
 } from '../constants.js';
 import type {
   CatalogChannel,
+  CatalogFreshnessPolicy,
   CatalogManifest,
   CatalogResolution,
   CatalogResolutionFailure,
@@ -62,7 +63,7 @@ export interface ResolveCurrentCatalogOptions {
   channel?: CatalogChannel;
   catalogVersion?: CatalogVersion;
   forceRefresh?: boolean;
-  freshnessPolicy?: 'cacheFirst' | 'requireRemote' | 'forceRemote';
+  freshnessPolicy?: CatalogFreshnessPolicy;
 }
 
 interface ResolveCurrentCatalogRuntimeOptions extends ResolveCurrentCatalogOptions {

@@ -72,6 +72,7 @@ import type {
   ProjectArtifactIdentityFile,
 } from '../install-state/types.js';
 import type {
+  CatalogResolution,
   CommandOptions,
   PluginLocation as CommandPluginLocation,
   ReceiptTargetResult,
@@ -214,6 +215,8 @@ interface MutableRepairState {
 }
 
 interface RepairRuntimeOverrides extends CommandExecutionContextInput {
+  catalogResolution?: CatalogResolution;
+  p7Catalog?: CatalogResolution;
   p8CurrentPluginsByName?: Record<string, PluginMeta>;
 }
 
@@ -571,6 +574,7 @@ async function resolveCurrentPluginForRepair(options: {
       catalogMode: 'readOnly',
       allowHistoricalFallback: false,
       env: options.env,
+      catalogResolution: options.runtime.catalogResolution,
     },
   );
   return targets.find((target) => target.pluginName === options.pluginName)?.currentPlugin;
@@ -1189,7 +1193,9 @@ async function ensureDependencyLocationHealthy(options: {
     createCommandExecutionContext(options.runtime),
   );
   if (options.location.platform === 'codex' && requiresCodexNativePlugin(dependencyPlugin, options.location.scope)) {
-    await adapters.codex.installPlugin(dependencyPlugin, options.location.scope);
+    await adapters.codex.installPlugin(dependencyPlugin, options.location.scope, {
+      catalogResolution: options.runtime.catalogResolution,
+    });
   }
   const refreshEvent: DynamicDiagnosticLastRefreshEvent = previousRecord ? 'upgrade' : 'install';
   const generatedArtifacts = await adapters[options.location.platform].installExtensions(
@@ -1198,6 +1204,7 @@ async function ensureDependencyLocationHealthy(options: {
     {
       event: refreshEvent,
       skillTriggerPreference: options.parentPreference ?? 'default',
+      catalogResolution: options.runtime.catalogResolution,
     },
   );
 
@@ -1599,7 +1606,9 @@ async function repairInstalledLocation(options: {
     && !state.evidence.platform.codexNative.minimumSatisfied,
   );
   if (needsNativeInstall) {
-    await adapters.codex.installPlugin(repairPlugin, location.scope);
+    await adapters.codex.installPlugin(repairPlugin, location.scope, {
+      catalogResolution: options.runtime.catalogResolution,
+    });
   }
   const triggerOptions = await resolveRepairSkillTriggerOptions({
     plugin: repairPlugin,
@@ -1622,11 +1631,14 @@ async function repairInstalledLocation(options: {
       event: 'upgrade',
       skillTriggerPreference: effectiveSkillTriggerPreference,
       skillTriggerPreferences: triggerOptions.skillTriggerPreferences,
+      catalogResolution: options.runtime.catalogResolution,
     },
   );
   let nativeInstallReplayed = needsNativeInstall;
   if (shouldRefreshCodexUserNativeAfterArtifactRepair({ location, generatedArtifacts })) {
-    await adapters.codex.installPlugin(repairPlugin, location.scope);
+    await adapters.codex.installPlugin(repairPlugin, location.scope, {
+      catalogResolution: options.runtime.catalogResolution,
+    });
     nativeInstallReplayed = true;
   }
 
@@ -1767,7 +1779,9 @@ async function repairMarkerOnlyLocation(options: {
   );
   const nativeSatisfied = state.evidence.platform.codexNative?.minimumSatisfied === true;
   if (!nativeSatisfied) {
-    await adapters.codex.installPlugin(currentPlugin, location.scope);
+    await adapters.codex.installPlugin(currentPlugin, location.scope, {
+      catalogResolution: options.runtime.catalogResolution,
+    });
   }
   const triggerOptions = await resolveRepairSkillTriggerOptions({
     plugin: currentPlugin,
@@ -1790,11 +1804,14 @@ async function repairMarkerOnlyLocation(options: {
       event: 'install',
       skillTriggerPreference: requestedPreference,
       skillTriggerPreferences: triggerOptions.skillTriggerPreferences,
+      catalogResolution: options.runtime.catalogResolution,
     },
   );
   let nativeInstallReplayed = !nativeSatisfied;
   if (shouldRefreshCodexUserNativeAfterArtifactRepair({ location, generatedArtifacts })) {
-    await adapters.codex.installPlugin(currentPlugin, location.scope);
+    await adapters.codex.installPlugin(currentPlugin, location.scope, {
+      catalogResolution: options.runtime.catalogResolution,
+    });
     nativeInstallReplayed = true;
   }
   const runtimeStage = await maybeStageHistoricalLifecycle({
@@ -1966,6 +1983,7 @@ async function adoptExistingLocation(options: {
       event: 'install',
       skillTriggerPreference: requestedPreference,
       skillTriggerPreferences: triggerOptions.skillTriggerPreferences,
+      catalogResolution: options.runtime.catalogResolution,
     },
   );
   const lifecycleResult = await maybeExecuteInstallLifecycle({

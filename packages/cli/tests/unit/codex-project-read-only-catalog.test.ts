@@ -5,7 +5,10 @@ import { fileURLToPath } from 'node:url';
 import fs from 'fs-extra';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { preparePluginTargetsForCommand } from '../../src/commands/common.js';
+import {
+  prepareCommandEnvironment,
+  preparePluginTargetsForCommand,
+} from '../../src/commands/common.js';
 import { createHistoricalPluginTarget } from '../../src/commands/common.js';
 import { statusCommand } from '../../src/commands/status.js';
 import { upgradeCommand } from '../../src/commands/upgrade.js';
@@ -20,6 +23,7 @@ import { setCatalogPackageSourceForTests } from '../../src/utils/marketplace.js'
 import { getCodexProjectManagedKinds } from '../../src/utils/codex-project-surface.js';
 import { resolveCodexPaths } from '../../src/utils/paths.js';
 import { setEmbeddedPluginsRootOverrideForTests } from '../../src/utils/paths.js';
+import type { CatalogResolution } from '../../src/types.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
 import {
   runWithZeroWriteSnapshot,
@@ -215,6 +219,52 @@ afterEach(async () => {
   setCatalogPackageSourceForTests(null);
   setEmbeddedPluginsRootOverrideForTests(null);
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
+});
+
+it('preserves a supplied catalog resolution through read-only and runtime-writable preparation', async () => {
+  const workspace = await makeWorkspace(['mcp-only']);
+  const catalogResolution: CatalogResolution = {
+    rootDir: workspace.embeddedRoot,
+    source: 'embedded',
+  };
+
+  const readOnlyPrepared = await preparePluginTargetsForCommand(
+    workspace.repoRoot,
+    'project',
+    ['mcp-only'],
+    {
+      catalogMode: 'readOnly',
+      catalogResolution,
+      env: workspace.env,
+    },
+  );
+  const readOnlyEnvironment = await prepareCommandEnvironment({
+    catalogMode: 'readOnly',
+    catalogResolution,
+    env: workspace.env,
+  });
+  const runtimePrepared = await preparePluginTargetsForCommand(
+    workspace.repoRoot,
+    'project',
+    ['mcp-only'],
+    {
+      catalogMode: 'runtimeWritable',
+      catalogResolution,
+      env: workspace.env,
+    },
+  );
+
+  expect(readOnlyPrepared.catalog).toBe(catalogResolution);
+  expect(readOnlyPrepared.marketplace?.catalog).toBe(catalogResolution);
+  expect(readOnlyEnvironment.catalog).toBe(catalogResolution);
+  expect(readOnlyEnvironment.marketplace?.catalog).toBe(catalogResolution);
+  expect(runtimePrepared.catalog).toBe(catalogResolution);
+  expect(runtimePrepared.marketplace?.catalog).not.toBe(catalogResolution);
+  expect(runtimePrepared.marketplace?.catalog).toMatchObject({
+    rootDir: workspace.awHome,
+    source: 'local',
+  });
+  expect(runtimePrepared.marketplace?.rootDir).toBe(workspace.awHome);
 });
 
 it('reuses a healthy rebuilt local marketplace for read-only target preparation when the registry is offline', async () => {
