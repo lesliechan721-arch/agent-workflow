@@ -8,6 +8,7 @@ import fs from 'fs-extra';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { registerCurrentTestWritableStateRoot } from '../setup/test-isolation.js';
+import { execPnpmForTest } from '../helpers/pnpm.js';
 
 const execFileAsync = promisify(execFile);
 const tempDirs: string[] = [];
@@ -93,8 +94,7 @@ describe('catalog pack smoke', () => {
       fs.ensureDir(fullUnpackDir),
     ]);
 
-    await execFileAsync(
-      'pnpm',
+    await execPnpmForTest(
       ['pack', '--pack-destination', sidecarPackDir],
       {
         cwd: path.join(outputRoot, '.catalog', 'sidecar'),
@@ -102,8 +102,7 @@ describe('catalog pack smoke', () => {
         maxBuffer: 20 * 1024 * 1024,
       },
     );
-    await execFileAsync(
-      'pnpm',
+    await execPnpmForTest(
       ['pack', '--pack-destination', fullPackDir],
       {
         cwd: path.join(outputRoot, '.catalog', 'full'),

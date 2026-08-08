@@ -5,6 +5,7 @@
 ## Test Layers
 
 - **`unit/` 和 `integration/`** — 保持 build-free，不依赖预先存在的 `plugins-dist`；需要 runtime bundle 输入时，用 `tests/helpers/embedded-root.ts` 生成临时 synthetic embedded root
+- **`pnpm test:unit:fast`** — 运行显式 allowlist 中的纯逻辑 unit 文件，用于开发中的快速反馈；它不启动 child process、package manager 或 native CLI，也不构造大规模 artifact tree
 - **`smoke/`** — 专门验证真实 `pnpm build`、CLI pack、sidecar/full catalog pack 和 catalog fetch 产物，不进入常规 `pnpm test`
 - **`pnpm plugin:test <plugin>`** — 插件作者脚本测试入口，先 compile CLI，再运行已编译的 `packages/cli/scripts/test-plugin-scripts.js`；它使用 build 后 staging manifest 判定支持平台，并准备临时 bundle，但不是 `aw` 客户端子命令
 - **`pnpm plugin:eval <plugin>`** — Codex 插件 Skill 作者 eval 入口，按插件根 `evals/manifest.json` 经过真实 staging/renderer/adapter materialize project/user 制品；中央 native trigger driver 统一负责触发评测，领域专用 command runner 也只能消费最终制品；默认运行 release-required 模型 suite，`--materialize-only` 不调用模型
@@ -25,7 +26,9 @@
 
 ## Test Isolation
 
-`unit/`、`integration/` 和 `smoke/` 默认加载统一测试隔离 setup。每个用例开始前都会生成安全 env，覆盖 `HOME`、`USERPROFILE`、`AW_HOME`、`AW_CODEX_HOME`、`AW_CLAUDE_HOME`、XDG、npm userconfig、`TMPDIR` / `TEMP` / `TMP` 和 debug log 路径，并把全局 `process.cwd()` 切到安全 `fixture-cwd`。未显式 stub 的 `fetch` 默认失败；catalog source、embedded root、catalog memo、fetch stub、env/cwd overlay、native guard 和 app-server guard 会在用例间统一恢复。常规测试不要手写保存/恢复 `process.env`、`process.chdir()`、catalog override 或 embedded root override；只清理测试自己创建的业务状态。
+`unit/`、`integration/` 和 `smoke/` 默认加载统一测试隔离 setup。每个用例开始前都会生成唯一安全 root 和 env，覆盖 `HOME`、`USERPROFILE`、`AW_HOME`、`AW_CODEX_HOME`、`AW_CLAUDE_HOME`、XDG、npm userconfig、`TMPDIR` / `TEMP` / `TMP` 和 debug log 路径，并把全局 `process.cwd()` 切到安全 `fixture-cwd`。setup 只预建运行前必需的 `fixture-cwd`、临时目录和 npm user config；其它状态目录由业务代码在需要时创建。未显式 stub 的 `fetch` 默认失败；catalog source、embedded root、catalog memo、fetch stub、env/cwd overlay、native guard 和 app-server guard 会在用例间统一恢复。常规测试不要手写保存/恢复 `process.env`、`process.chdir()`、catalog override 或 embedded root override；只清理测试自己创建的业务状态。
+
+smoke 内的真实 pnpm 子进程通过当前测试进程的 `npm_execpath` 启动，即 `process.execPath <npm_execpath> ...`。它不调用 PATH 中的 `pnpm` 或 Corepack shim，因此不会因 Corepack 在线下载而阻断；缺少 `npm_execpath` 时会立即报错，并提示通过 pnpm 运行测试。
 
 CLI 测试优先使用安全入口。CLI entry 用 `runCliEntry()`，直接调用 CLI runtime 用 `runSafeCli()` 或 `createSafeCliRuntimeOptions()`，命令上下文用 `createSafeCommandExecutionContext()` / `createSafeCliExecutionContext()`。这些 helper 会注入安全 env/cwd、捕获 IO、默认 native guard 和默认 app-server guard；显式传入 env、cwd 或 runner 时仍会走 fence / guard 校验。只有专门验证生产默认值时才直接调用 `runCli()`、`createCommandExecutionContext()` 或 `createCliExecutionContext()`，并在测试名和断言里说清楚原因。
 
@@ -133,6 +136,8 @@ lifecycle 回归要覆盖 install/upgrade/uninstall 执行时机、失败阻断�
 `upgrade --all` CLI entry 和 direct command 都要覆盖 skipped 合同。稳定 code（`scopeNotInitialized`、`codexProjectUserConfigUnreadable`、`externalOwnershipUnknown`、`externalOwnershipPresent`、`projectArtifactIdentityError`、`installOptionsUnavailable`、`catalogNotCurrent`、`catalogNotProjectInstallable`、`projectConfigUnreadable`、`unmanagedRepoArtifactConflict`、`dependencyIndexUntrusted`、`sharedRuntimeOwnerConflict`）必须有 direct 返回值断言、人类 receipt 断言和退出码断言；部分成功部分 skipped 退出 `0`，全部 skipped 且无成功升级退出 `1`。
 
 ## Pre-commit Checklist
+
+`pnpm test:unit:fast` 只用于局部开发反馈。提交前仍必须运行完整 `pnpm test:unit`；fast lane 不能替代完整 unit 门禁。
 
 - 改命令分支、catalog 判定、账本、bundle 生成或打包行为 → 至少运行相关测试
 - 改 build 或 tarball 行为 → 补跑 `pnpm test:smoke:build`，必要时再跑 `pnpm test:smoke:pack`

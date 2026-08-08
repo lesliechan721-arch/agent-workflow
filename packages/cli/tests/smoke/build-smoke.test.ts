@@ -8,6 +8,7 @@ import fs from 'fs-extra';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { registerCurrentTestWritableStateRoot } from '../setup/test-isolation.js';
+import { execPnpmForTest } from '../helpers/pnpm.js';
 import { installCurrentSmokeDistIsolationBridge } from '../setup/test-isolation-smoke.js';
 import { writeNodeScriptFixture } from '../support/plugin-scripts-node-fixture.js';
 import {
@@ -43,7 +44,7 @@ async function createSmokeTempRoot(prefix: string, source: string): Promise<stri
 }
 
 async function buildCli(root: string): Promise<void> {
-  await execFileAsync('pnpm', ['build'], {
+  await execPnpmForTest(['build'], {
     cwd: root,
     env: process.env,
     maxBuffer: 10 * 1024 * 1024,

@@ -1,16 +1,14 @@
-import { execFile } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
-import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 
 import fs from 'fs-extra';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { registerCurrentTestWritableStateRoot } from '../setup/test-isolation.js';
+import { execPnpmForTest } from '../helpers/pnpm.js';
 import { writeNodeScriptFixture } from '../support/plugin-scripts-node-fixture.js';
 
-const execFileAsync = promisify(execFile);
 const tempDirs: string[] = [];
 
 function repoRoot(): string {
@@ -62,8 +60,7 @@ describe('plugin scripts staging smoke', () => {
     const tempRepo = await makeTempRepo();
     await writeNodeScriptFixture(tempRepo);
 
-    const result = await execFileAsync(
-      'pnpm',
+    const result = await execPnpmForTest(
       ['plugin:test', 'git-commit', '--test-name', 'staged smoke generated test'],
       {
         cwd: root,

@@ -104,18 +104,8 @@ function buildIsolatedEnv(
 
 async function ensureIsolationLayout(layout: TestIsolationLayout): Promise<void> {
   await Promise.all([
-    fs.ensureDir(layout.homeDir),
-    fs.ensureDir(layout.awHomeDir),
-    fs.ensureDir(layout.localMarketplaceStagingRoot),
-    fs.ensureDir(layout.localMarketplaceBackupRoot),
-    fs.ensureDir(layout.codexHomeDir),
-    fs.ensureDir(layout.claudeHomeDir),
-    fs.ensureDir(layout.xdgConfigHomeDir),
-    fs.ensureDir(layout.xdgCacheHomeDir),
-    fs.ensureDir(layout.xdgStateHomeDir),
     fs.ensureDir(layout.npmDir),
     fs.ensureDir(layout.tmpDir),
-    fs.ensureDir(layout.debugLogsDir),
     fs.ensureDir(layout.fixtureCwd),
     fs.ensureFile(layout.npmUserConfigPath),
   ]);

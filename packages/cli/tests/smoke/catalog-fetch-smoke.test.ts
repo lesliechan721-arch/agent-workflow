@@ -1,7 +1,5 @@
 import os from 'node:os';
 import path from 'node:path';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import fs from 'fs-extra';
@@ -9,8 +7,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { registerCurrentTestWritableStateRoot } from '../setup/test-isolation.js';
 import { installCurrentSmokeDistIsolationBridge } from '../setup/test-isolation-smoke.js';
+import { execPnpmForTest } from '../helpers/pnpm.js';
 
-const execFileAsync = promisify(execFile);
 const tempDirs: string[] = [];
 let cliBuildPromise: Promise<void> | null = null;
 
@@ -174,7 +172,7 @@ async function createSmokeTempRoot(prefix: string, source: string): Promise<stri
 }
 
 async function buildCli(root: string): Promise<void> {
-  await execFileAsync('pnpm', ['build'], {
+  await execPnpmForTest(['build'], {
     cwd: root,
     env: process.env,
     maxBuffer: 20 * 1024 * 1024,

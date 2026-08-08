@@ -2,6 +2,7 @@
   "name": "agent-workflows",
   "private": true,
   "version": "1.0.0-beta.30",
+  "packageManager": "pnpm@10.33.0",
   "engines": {
     "node": ">=20"
   },
@@ -9,6 +10,7 @@
     "build": "pnpm --filter @yiliang/aw build",
     "test": "pnpm --filter @yiliang/aw test",
     "test:unit": "pnpm --filter @yiliang/aw test:unit",
+    "test:unit:fast": "pnpm --filter @yiliang/aw test:unit:fast",
     "test:integration": "pnpm --filter @yiliang/aw test:integration",
     "test:coverage": "pnpm --filter @yiliang/aw test:coverage",
     "test:smoke": "pnpm --filter @yiliang/aw test:smoke",

@@ -17,6 +17,14 @@ async function readPackageJson(relativePath: string): Promise<Record<string, unk
 }
 
 describe('package metadata', () => {
+  it('pins the workspace package manager version', async () => {
+    const rootPackageJson = await readPackageJson('package.json');
+
+    expect(rootPackageJson).toMatchObject({
+      packageManager: 'pnpm@10.33.0',
+    });
+  });
+
   it('declares Node.js >=20 for the published CLI package and the workspace root', async () => {
     const [rootPackageJson, cliPackageJson] = await Promise.all([
       readPackageJson('package.json'),

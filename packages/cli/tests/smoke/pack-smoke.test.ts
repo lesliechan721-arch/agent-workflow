@@ -8,6 +8,7 @@ import fs from 'fs-extra';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { registerCurrentTestWritableStateRoot } from '../setup/test-isolation.js';
+import { execPnpmForTest } from '../helpers/pnpm.js';
 
 const execFileAsync = promisify(execFile);
 const tempDirs: string[] = [];
@@ -85,8 +86,7 @@ describe('pack smoke', () => {
     expect(packageJson.files).toEqual(['dist/']);
     expect(packageJson.scripts.prepack).toBe('pnpm build');
 
-    await execFileAsync(
-      'pnpm',
+    await execPnpmForTest(
       ['pack:cli', '--pack-destination', packDir],
       {
         cwd: root,
@@ -132,8 +132,7 @@ describe('pack smoke', () => {
       path.join(tempRepo, 'plugins', 'slash-commands-only'),
     );
 
-    await execFileAsync(
-      'pnpm',
+    await execPnpmForTest(
       ['pack:cli', '--pack-destination', packDir],
       {
         cwd: root,
