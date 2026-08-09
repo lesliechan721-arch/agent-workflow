@@ -326,6 +326,56 @@ describe('native-cli', () => {
     }
   });
 
+  it('keeps the deadline after root exit and does not signal a potentially reused PID', async () => {
+    vi.useFakeTimers();
+    try {
+      const stdout = new PassThrough();
+      const stderr = new PassThrough();
+      const child = Object.assign(new EventEmitter(), {
+        pid: 321,
+        exitCode: null as number | null,
+        signalCode: null as NodeJS.Signals | null,
+        kill: vi.fn(() => true),
+        stdout,
+        stderr,
+      });
+      const terminate = vi.fn(async () => {});
+      const runner = createExecFileNativeCliRunner({
+        execFile: () => child,
+        terminateProcessTree: terminate,
+      });
+
+      const promise = runner({
+        command: 'codex',
+        args: [],
+        timeoutMs: 100,
+      });
+      const errorPromise = promise.catch((error: unknown) => error);
+      child.emit('spawn');
+      stdout.write('partial');
+      stderr.write('warning');
+      child.exitCode = 0;
+      child.emit('exit');
+
+      expect(vi.getTimerCount()).toBe(1);
+      await vi.advanceTimersByTimeAsync(100);
+
+      await expect(errorPromise).resolves.toMatchObject<Partial<NativeCliError>>({
+        exitCode: 124,
+        reason: 'timeout',
+        stdout: 'partial',
+        stderr: 'warning',
+      });
+      expect(terminate).not.toHaveBeenCalled();
+      expect(child.kill).not.toHaveBeenCalled();
+      expect(stdout.destroyed).toBe(true);
+      expect(stderr.destroyed).toBe(true);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('settles spawn errors without starting a timeout timer', async () => {
     vi.useFakeTimers();
     try {

@@ -64,6 +64,7 @@ export interface ResolveCurrentCatalogOptions {
   catalogVersion?: CatalogVersion;
   forceRefresh?: boolean;
   freshnessPolicy?: CatalogFreshnessPolicy;
+  signal?: AbortSignal;
 }
 
 interface ResolveCurrentCatalogRuntimeOptions extends ResolveCurrentCatalogOptions {
@@ -180,7 +181,12 @@ function buildCacheState(
 
 function throwIfRemoteAborted(signal?: AbortSignal): void {
   if (signal?.aborted) {
-    throw signal.reason instanceof Error ? signal.reason : new Error('Catalog remote resolution aborted.');
+    if (signal.reason instanceof Error) {
+      throw signal.reason;
+    }
+    const error = new Error('Catalog remote resolution aborted.');
+    error.name = 'AbortError';
+    throw error;
   }
 }
 
@@ -1969,54 +1975,58 @@ async function resolveCurrentCatalogWithRemoteDeadline(
   options: ResolveCurrentCatalogRuntimeOptions,
   timeoutMs: number,
 ): Promise<CatalogResolution> {
-  if (timeoutMs === 0) {
-    try {
-      return await resolveCurrentCatalogUncached(selector, env, options);
-    } catch (error) {
-      const fallback = await resolveCatalogFailureFromSelectorCache(
-        selector,
-        env,
-        options.cacheTtlMs,
-        error,
-      );
-      if (fallback) {
-        return fallback;
-      }
-      throw error;
-    }
-  }
-
   const controller = new AbortController();
-  let rejectDeadline!: (error: Error) => void;
-  const deadline = new Promise<never>((_resolve, reject) => {
-    rejectDeadline = reject;
+  let rejectCancellation!: (error: Error) => void;
+  const cancellation = new Promise<never>((_resolve, reject) => {
+    rejectCancellation = reject;
   });
-  const timer = setTimeout(() => {
-    const error = new CatalogRemoteDeadlineError(timeoutMs);
-    controller.abort(error);
-    rejectDeadline(error);
-  }, timeoutMs);
-  timer.unref?.();
+  const abortFromExternalSignal = () => {
+    try {
+      throwIfRemoteAborted(options.signal);
+    } catch (error) {
+      const abortError = error instanceof Error ? error : new Error(String(error));
+      controller.abort(abortError);
+      rejectCancellation(abortError);
+    }
+  };
+  if (options.signal?.aborted) {
+    abortFromExternalSignal();
+  } else {
+    options.signal?.addEventListener('abort', abortFromExternalSignal, { once: true });
+  }
+  const timer = timeoutMs === 0
+    ? undefined
+    : setTimeout(() => {
+      const error = new CatalogRemoteDeadlineError(timeoutMs);
+      controller.abort(error);
+      rejectCancellation(error);
+    }, timeoutMs);
+  timer?.unref?.();
 
   try {
     const work = resolveCurrentCatalogUncached(selector, env, options, controller.signal);
     void work.catch(() => {});
     try {
-      return await Promise.race([work, deadline]);
+      return await Promise.race([work, cancellation]);
     } catch (error) {
+      throwIfRemoteAborted(options.signal);
       const fallback = await resolveCatalogFailureFromSelectorCache(
         selector,
         env,
         options.cacheTtlMs,
         error,
       );
+      throwIfRemoteAborted(options.signal);
       if (fallback) {
         return fallback;
       }
       throw error;
     }
   } finally {
-    clearTimeout(timer);
+    if (timer) {
+      clearTimeout(timer);
+    }
+    options.signal?.removeEventListener('abort', abortFromExternalSignal);
   }
 }
 
@@ -2058,6 +2068,20 @@ export async function resolveCurrentCatalog(
       requiredCapability === 'cacheOnly' || observed.capability === 'remoteChecked'
     );
     if (observed && capabilityMatches) {
+      if (
+        runtimePolicy.freshnessPolicy === 'cacheFirst' &&
+        !observed.settled &&
+        observed.capability === 'remoteChecked'
+      ) {
+        const cached = await tryResolveCacheFirstCatalog(
+          selector,
+          env,
+          runtimePolicy.cacheTtlMs,
+        );
+        if (cached) {
+          return cached;
+        }
+      }
       const memoized = await readCurrentCatalogMemoEntry(
         normalMemoKey,
         observed,

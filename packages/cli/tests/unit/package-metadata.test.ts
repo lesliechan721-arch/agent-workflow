@@ -45,6 +45,26 @@ describe('package metadata', () => {
     });
   });
 
+  it('keeps the formal test gates on the bounded default Vitest pool', async () => {
+    const [rootPackageJson, cliPackageJson, vitestConfig] = await Promise.all([
+      readPackageJson('package.json'),
+      readPackageJson('packages/cli/package.json'),
+      fs.readFile(path.join(repoRoot, 'packages', 'cli', 'vitest.config.ts'), 'utf8'),
+    ]);
+    const rootScripts = rootPackageJson.scripts as Record<string, string>;
+    const cliScripts = cliPackageJson.scripts as Record<string, string>;
+
+    expect(rootScripts.test).toBe('pnpm --filter @yiliang/aw test');
+    expect(rootScripts['test:unit']).toBe('pnpm --filter @yiliang/aw test:unit');
+    expect(rootScripts['release:verify:cli']).toMatch(/^pnpm test &&/);
+    expect(cliScripts.test).toBe('vitest run');
+    expect(cliScripts['test:unit']).toBe('vitest run tests/unit');
+    expect(vitestConfig).toContain('maxWorkers: 3');
+    expect(vitestConfig).toContain('minWorkers: 2');
+    expect(vitestConfig).toContain('testTimeout: 15_000');
+    expect(vitestConfig).toContain('hookTimeout: 15_000');
+  });
+
   it('routes reusable build and release entry points through build:ensure', async () => {
     const [rootPackageJson, cliPackageJson, packCatalogSource, packReleaseSource] = await Promise.all([
       readPackageJson('package.json'),

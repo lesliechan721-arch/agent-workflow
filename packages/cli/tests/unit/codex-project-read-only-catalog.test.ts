@@ -267,7 +267,7 @@ it('preserves a supplied catalog resolution through read-only and runtime-writab
   expect(runtimePrepared.marketplace?.rootDir).toBe(workspace.awHome);
 });
 
-it('reuses a healthy rebuilt local marketplace for read-only target preparation when the registry is offline', async () => {
+it('reuses the validated catalog cache for read-only target preparation when the registry is offline', async () => {
   const workspace = await makeWorkspace(['mcp-only']);
   const missingEmbeddedRoot = path.join(workspace.root, 'missing-plugins-dist');
   const sidecarRoot = path.join(workspace.embeddedRoot, '.catalog', 'sidecar');
@@ -300,16 +300,29 @@ it('reuses a healthy rebuilt local marketplace for read-only target preparation 
   );
 
   expect(prepared.marketplace).toMatchObject({
-    rootDir: workspace.awHome,
-    source: 'local',
+    source: 'cache',
     changed: false,
     mode: 'readOnly',
+    catalog: {
+      cacheFallback: {
+        used: true,
+        source: 'currentCatalogCache',
+        blockingCode: 'catalogUnavailable',
+      },
+      cacheState: { state: 'refreshFailed' },
+    },
   });
+  expect(prepared.marketplace?.rootDir).toBe(prepared.catalog.rootDir);
+  expect(prepared.marketplace?.rootDir.startsWith(
+    `${path.join(workspace.awHome, 'catalog-cache', 'entries')}${path.sep}`,
+  )).toBe(true);
   expect(prepared.targets).toMatchObject([{
     pluginName: 'mcp-only',
     source: 'currentCatalog',
   }]);
-  expect(prepared.targets[0]?.currentPlugin?.rootDir).toBe(path.join(workspace.awHome, 'plugins', 'mcp-only'));
+  expect(prepared.targets[0]?.currentPlugin?.rootDir).toBe(
+    path.join(prepared.catalog.rootDir, 'plugins', 'mcp-only'),
+  );
 });
 
 it('prefers the resolved current catalog over a healthy local marketplace snapshot', async () => {

@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -178,9 +179,16 @@ export function resolveCurrentCatalogCacheSelectorIndexPath(
 export function resolveCurrentCatalogCacheStagingDir(
   env: NodeJS.ProcessEnv = process.env,
 ): string {
-  return assertWritableCatalogCachePathForTests(
-    path.join(resolveCurrentCatalogCacheRoot(env), 'staging'),
+  const awHome = resolveAwHome(env);
+  const identity = crypto.createHash('sha256').update(path.resolve(awHome)).digest('hex').slice(0, 16);
+  return assertTestWritablePath(
+    path.join(
+      path.dirname(awHome),
+      '.aw-local-marketplace-staging',
+      `catalog-cache-${identity}`,
+    ),
     'current catalog cache staging',
+    '用 createIsolatedTestEnv() 生成默认 AW_HOME，或登记 AW_HOME 同盘 sibling staging 根。',
   );
 }
 

@@ -476,14 +476,20 @@ function catalogRefreshFailed(pending: PendingCatalogRefresh): boolean {
 
 async function refreshConsoleCatalog(
   context: CliExecutionContext,
+  freshnessPolicy: 'requireRemote' | 'forceRemote',
+  signal: AbortSignal,
 ): Promise<PendingCatalogRefresh> {
   try {
     return {
       catalogResolution: await resolveCurrentCatalog(context.env, {
-        freshnessPolicy: 'requireRemote',
+        freshnessPolicy,
+        signal,
       }),
     };
-  } catch {
+  } catch (error) {
+    if (signal.aborted) {
+      throw error;
+    }
     return {
       notice: '插件目录更新失败，当前显示缓存；可选择“刷新”重试。',
     };
@@ -4359,7 +4365,10 @@ export async function runConsoleController(
   context: CliExecutionContext,
 ): Promise<number> {
   const recentResults = new Map<string, ConsoleRecentResult>();
-  const catalogRefreshes = new Map<string, Promise<PendingCatalogRefresh>>();
+  const catalogRefreshes = new Map<string, {
+    promise: Promise<PendingCatalogRefresh>;
+    controller: AbortController;
+  }>();
   const failedCatalogRefreshes = new Set<string>();
   let pendingCatalogRefresh: PendingCatalogRefresh | undefined;
   let homeState = await loadConsoleHomeState(context);
@@ -4384,14 +4393,19 @@ export async function runConsoleController(
     return state;
   };
 
-  const startCatalogRefresh = (catalog: CatalogResolution): Promise<PendingCatalogRefresh> => {
+  const startCatalogRefresh = (
+    catalog: CatalogResolution,
+    freshnessPolicy: 'requireRemote' | 'forceRemote',
+  ): Promise<PendingCatalogRefresh> => {
     const key = catalogRefreshIdentity(catalog);
     const existing = catalogRefreshes.get(key);
     if (existing) {
-      return existing;
+      return existing.promise;
     }
-    const refresh = refreshConsoleCatalog(context);
-    catalogRefreshes.set(key, refresh);
+    const controller = new AbortController();
+    const refresh = refreshConsoleCatalog(context, freshnessPolicy, controller.signal);
+    const activeRefresh = { promise: refresh, controller };
+    catalogRefreshes.set(key, activeRefresh);
     void refresh.then((pending) => {
       if (catalogRefreshFailed(pending)) {
         failedCatalogRefreshes.add(key);
@@ -4402,12 +4416,23 @@ export async function runConsoleController(
         failedCatalogRefreshes.delete(key);
       }
       pendingCatalogRefresh = pending;
+    }, () => {
+      // Session cancellation must not create a refresh-failed notice.
     }).finally(() => {
-      if (catalogRefreshes.get(key) === refresh) {
+      if (catalogRefreshes.get(key) === activeRefresh) {
         catalogRefreshes.delete(key);
       }
     });
     return refresh;
+  };
+
+  const stopCatalogRefreshes = async (): Promise<void> => {
+    const activeRefreshes = [...new Set(catalogRefreshes.values())];
+    for (const refresh of activeRefreshes) {
+      refresh.controller.abort(new DOMException('AW console closed.', 'AbortError'));
+    }
+    await Promise.allSettled(activeRefreshes.map((refresh) => refresh.promise));
+    pendingCatalogRefresh = undefined;
   };
 
   const applyPendingRefresh = async (): Promise<void> => {
@@ -4421,56 +4446,60 @@ export async function runConsoleController(
     );
   };
 
-  while (true) {
-    if (homeState.items.length === 0) {
-      await renderView(context, 'AW 控制台', [
-        '当前没有可展示的插件。',
-        '请先检查当前环境和插件目录是否可用。',
-      ]);
-      return 0;
-    }
-    await renderView(context, 'AW 控制台', buildHomeLines(homeState));
-    if (!initialHomeRendered) {
-      initialHomeRendered = true;
-      if (homeState.catalog.cacheState?.state === 'stale') {
-        void startCatalogRefresh(homeState.catalog);
+  try {
+    while (true) {
+      if (homeState.items.length === 0) {
+        await renderView(context, 'AW 控制台', [
+          '当前没有可展示的插件。',
+          '请先检查当前环境和插件目录是否可用。',
+        ]);
+        return 0;
       }
-    }
-    const selection = await selectValue(context, {
-      message: '选择插件',
-      choices: buildHomeChoices(homeState.items),
-      defaultValue: homeState.items[0]?.summary.pluginName,
-    });
-    if (isPromptAction(selection, 'exit') || isPromptAction(selection, 'cancel')) {
-      return 0;
-    }
-    if (selectedPromptValue(selection) === 'home-refresh') {
-      if (pendingCatalogRefresh) {
-        await applyPendingRefresh();
+      await renderView(context, 'AW 控制台', buildHomeLines(homeState));
+      if (!initialHomeRendered) {
+        initialHomeRendered = true;
+        if (homeState.catalog.cacheState?.state === 'stale') {
+          void startCatalogRefresh(homeState.catalog, 'requireRemote');
+        }
+      }
+      const selection = await selectValue(context, {
+        message: '选择插件',
+        choices: buildHomeChoices(homeState.items),
+        defaultValue: homeState.items[0]?.summary.pluginName,
+      });
+      if (isPromptAction(selection, 'exit') || isPromptAction(selection, 'cancel')) {
+        return 0;
+      }
+      if (selectedPromptValue(selection) === 'home-refresh') {
+        if (pendingCatalogRefresh) {
+          await applyPendingRefresh();
+          continue;
+        }
+        const refresh = await startCatalogRefresh(homeState.catalog, 'forceRemote');
+        if (pendingCatalogRefresh === refresh) {
+          pendingCatalogRefresh = undefined;
+        }
+        homeState = applySessionCatalogNotice(
+          await applyPendingCatalogRefresh(context, homeState, refresh),
+        );
         continue;
       }
-      const refresh = await startCatalogRefresh(homeState.catalog);
-      if (pendingCatalogRefresh === refresh) {
-        pendingCatalogRefresh = undefined;
-      }
-      homeState = applySessionCatalogNotice(
-        await applyPendingCatalogRefresh(context, homeState, refresh),
-      );
-      continue;
-    }
-    await applyPendingRefresh();
-    const item = homeState.items.find((entry) => entry.summary.pluginName === selectedPromptValue(selection));
-    if (!item) {
-      continue;
-    }
-    const result = await browseItem(context, item, recentResults);
-    if (result === 'exit') {
-      return 0;
-    }
-    if (pendingCatalogRefresh) {
       await applyPendingRefresh();
-    } else {
-      homeState = applySessionCatalogNotice(await loadConsoleHomeState(context));
+      const item = homeState.items.find((entry) => entry.summary.pluginName === selectedPromptValue(selection));
+      if (!item) {
+        continue;
+      }
+      const result = await browseItem(context, item, recentResults);
+      if (result === 'exit') {
+        return 0;
+      }
+      if (pendingCatalogRefresh) {
+        await applyPendingRefresh();
+      } else {
+        homeState = applySessionCatalogNotice(await loadConsoleHomeState(context));
+      }
     }
+  } finally {
+    await stopCatalogRefreshes();
   }
 }

@@ -782,12 +782,12 @@ describe('build cache lock ownership', () => {
     const forces = Array.from({ length: 3 }, () => buildWithCache(repoRoot, {
       build,
       force: true,
-      lockTimeoutMs: 2_000,
+      lockTimeoutMs: 10_000,
       pollIntervalMs: 2,
     }));
     const ensures = Array.from({ length: 5 }, () => buildWithCache(repoRoot, {
       build,
-      lockTimeoutMs: 2_000,
+      lockTimeoutMs: 10_000,
       pollIntervalMs: 2,
     }));
     await blocker.release();

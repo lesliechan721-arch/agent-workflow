@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -25,6 +26,7 @@ import {
   getCurrentSourceTestIsolation,
   getSourceTestRepositoryCwd,
   registerCurrentTestReadonlyFixtureRoot,
+  registerCurrentTestWritableStateRoot,
 } from '../setup/test-isolation.js';
 
 const tempDirs: string[] = [];
@@ -45,8 +47,41 @@ describe('project key paths', () => {
     expect(resolveCurrentCatalogCacheEntryDir('cache-key', process.env)).toBe(path.join(isolation.layout.awHomeDir, 'catalog-cache', 'entries', 'cache-key'));
     expect(resolveCurrentCatalogCacheSelectorsDir(process.env)).toBe(path.join(isolation.layout.awHomeDir, 'catalog-cache', 'selectors'));
     expect(resolveCurrentCatalogCacheSelectorIndexPath('selector-hash', process.env)).toBe(path.join(isolation.layout.awHomeDir, 'catalog-cache', 'selectors', 'selector-hash.json'));
-    expect(resolveCurrentCatalogCacheStagingDir(process.env)).toBe(path.join(isolation.layout.awHomeDir, 'catalog-cache', 'staging'));
+    const stagingIdentity = crypto.createHash('sha256')
+      .update(path.resolve(isolation.layout.awHomeDir))
+      .digest('hex')
+      .slice(0, 16);
+    expect(resolveCurrentCatalogCacheStagingDir(process.env)).toBe(path.join(
+      path.dirname(isolation.layout.awHomeDir),
+      '.aw-local-marketplace-staging',
+      `catalog-cache-${stagingIdentity}`,
+    ));
     expect(resolveCliTempRoot(process.env)).toBe(path.join(isolation.layout.tmpDir, 'aw-cli'));
+  });
+
+  it('isolates stable catalog staging siblings by absolute AW_HOME identity', () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const isolationRoot = path.dirname(isolation.layout.awHomeDir);
+    const firstAwHome = registerCurrentTestWritableStateRoot(
+      path.join(isolationRoot, 'first-aw-home'),
+      'first AW_HOME staging identity',
+    );
+    const secondAwHome = registerCurrentTestWritableStateRoot(
+      path.join(isolationRoot, 'second-aw-home'),
+      'second AW_HOME staging identity',
+    );
+    const first = resolveCurrentCatalogCacheStagingDir({
+      ...process.env,
+      AW_HOME: firstAwHome,
+    });
+    const second = resolveCurrentCatalogCacheStagingDir({
+      ...process.env,
+      AW_HOME: secondAwHome,
+    });
+
+    expect(path.dirname(first)).toBe(path.join(path.dirname(firstAwHome), '.aw-local-marketplace-staging'));
+    expect(path.dirname(second)).toBe(path.join(path.dirname(secondAwHome), '.aw-local-marketplace-staging'));
+    expect(first).not.toBe(second);
   });
 
   it('blocks real-home fallbacks and read-only home overrides while the test fence is installed', () => {

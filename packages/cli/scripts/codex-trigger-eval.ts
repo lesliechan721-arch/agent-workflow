@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import path from 'node:path';
 import readline from 'node:readline';
@@ -10,8 +10,10 @@ import fs from 'fs-extra';
 
 import {
   assertProcessTreeInspectionAvailable,
+  CODEX_EVAL_PROCESS_TREE_ID_ENV,
+  createChildProcessTreeMonitor,
+  processTreeCleanupIsUnconfirmed,
   releaseChildProcessHandles,
-  terminateChildProcessTree,
 } from './codex-eval-process-tree.js';
 import {
   assertCodexEvalCanStartWork,
@@ -58,6 +60,7 @@ const PROTECTED_ENV = new Set([
   'TEMP',
   'TMP',
   'PATH',
+  CODEX_EVAL_PROCESS_TREE_ID_ENV,
 ]);
 
 interface TriggerFixtureContext {
@@ -563,6 +566,10 @@ async function runTriggerOnce(options: {
   const eventTrace: unknown[] = [];
   let finalMessage: string | null = null;
   let usage: unknown = null;
+  const processTreeId = randomUUID();
+  const withoutProcessTreeId = <T>(value: T): T => JSON.parse(
+    JSON.stringify(value).replaceAll(processTreeId, '[process-tree-id]'),
+  ) as T;
   try {
     await assertProcessTreeInspectionAvailable();
     await fs.copy(options.subjectRoot, workspaceRoot, { dereference: false });
@@ -635,10 +642,13 @@ async function runTriggerOnce(options: {
     }>((resolve, reject) => {
       const child = spawn(executable, args, {
         cwd: workspaceRoot,
-        env,
+        env: { ...env, [CODEX_EVAL_PROCESS_TREE_ID_ENV]: processTreeId },
         shell: false,
         detached: process.platform !== 'win32',
         stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      const processTreeMonitor = createChildProcessTreeMonitor(child, {
+        treeId: processTreeId,
       });
       let stderr = '';
       let stopReason: string | null = null;
@@ -650,7 +660,7 @@ async function runTriggerOnce(options: {
       let terminationPromise: Promise<string[]> | undefined;
       let recordedTerminationPromise: Promise<void> | undefined;
       const terminateTree = (): Promise<string[]> => {
-        terminationPromise ??= terminateChildProcessTree(child);
+        terminationPromise ??= processTreeMonitor.terminate();
         return terminationPromise;
       };
       const terminateTreeAndRecord = (): Promise<void> => {
@@ -733,11 +743,13 @@ async function runTriggerOnce(options: {
       rolloutTimer.unref();
       child.stderr.setEncoding('utf8');
       child.stderr.on('data', (chunk: string) => {
-        stderr = `${stderr}${chunk}`.slice(-32_000);
+        stderr = `${stderr}${chunk.replaceAll(processTreeId, '[process-tree-id]')}`.slice(-32_000);
       });
       const lines = readline.createInterface({ input: child.stdout });
       lines.on('line', (line) => {
-        const event = parseTriggerExecEventLine(line);
+        const event = parseTriggerExecEventLine(
+          line.replaceAll(processTreeId, '[process-tree-id]'),
+        );
         if (!event) {
           return;
         }
@@ -772,7 +784,9 @@ async function runTriggerOnce(options: {
         removeInterruptHandlers();
         unregisterSignalCleanup();
         lines.close();
-        reject(new Error(`Failed to start ${executable}: ${error.message}`));
+        void terminateTreeAndRecord().finally(() => {
+          reject(new Error(`Failed to start ${executable}: ${error.message}`));
+        });
       });
       child.once('close', async (exitCode, signal) => {
         if (settled) {
@@ -783,14 +797,12 @@ async function runTriggerOnce(options: {
         clearInterval(rolloutTimer);
         removeInterruptHandlers();
         lines.close();
-        if (terminationPromise) {
-          try {
-            await terminateTreeAndRecord();
-          } catch (error) {
-            unregisterSignalCleanup();
-            reject(error instanceof Error ? error : new Error(String(error)));
-            return;
-          }
+        try {
+          await terminateTreeAndRecord();
+        } catch (error) {
+          unregisterSignalCleanup();
+          reject(error instanceof Error ? error : new Error(String(error)));
+          return;
         }
         unregisterSignalCleanup();
         if (options.suite.observeSpawnAgent) {
@@ -845,7 +857,8 @@ async function runTriggerOnce(options: {
       !fixtureUnchanged ||
       (observed.spawned && processResult.spawnCalls.length === 0) ||
       diagnostics.some((entry) => entry.startsWith('Failed to read'));
-    return {
+    const cleanupUnconfirmed = processTreeCleanupIsUnconfirmed(diagnostics);
+    return withoutProcessTreeId({
       loaded: observed.loaded,
       spawned: observed.spawned,
       load_evidence: observed.loadEvidence,
@@ -854,7 +867,7 @@ async function runTriggerOnce(options: {
       termination: processResult.termination,
       exit_code: processResult.exitCode,
       signal: processResult.signal,
-      execution_error: executionError,
+      execution_error: executionError || cleanupUnconfirmed,
       fixture_unchanged: fixtureUnchanged,
       ...(processResult.stderr ? { stderr: processResult.stderr } : {}),
       final_message: finalMessage,
@@ -862,9 +875,9 @@ async function runTriggerOnce(options: {
       usage,
       event_trace: eventTrace,
       diagnostics,
-    };
+    });
   } catch (error) {
-    return {
+    return withoutProcessTreeId({
       loaded: false,
       spawned: false,
       load_evidence: null,
@@ -880,7 +893,7 @@ async function runTriggerOnce(options: {
       usage,
       event_trace: eventTrace,
       diagnostics: [error instanceof Error ? error.stack ?? error.message : String(error)],
-    };
+    });
   } finally {
     await temporaryRoot.cleanup();
   }

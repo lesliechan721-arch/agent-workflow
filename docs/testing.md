@@ -58,11 +58,12 @@ CLI pack 从 `snapshot.cliPackageRoot` 生成 tarball。组合 pack 和组合 pu
 | 预算 | 样本与指标 | 上限 |
 |------|------------|------|
 | `catalog-cache-first-warm` | 已验证磁盘 cache 的 warm `cacheFirst` 解析 P95 | `150 ms` |
+| `catalog-cache-first-after-marketplace-rebuild` | marketplace 重建后首次 `cacheFirst` 解析；必须为零远程调用 | `500 ms` |
 | `console-warm-load` | 主控制台/status 真实 warm load chain P95 | `500 ms` |
 | `catalog-remote-deadline` | `AW_CATALOG_REMOTE_TIMEOUT_MS=100` 时单次挂起远程解析的最大耗时 | `500 ms` |
 | `unit-fast-wall` | `test:unit:fast` 单次 wall time，由 gate 编排器测量 | `30000 ms` |
 
-前三项由 `pnpm test:perf` 执行。`unit-fast-wall` 由 `pnpm test:perf:gate` 在性能 Vitest 通过后执行。gate 还有独立 hard timeout，用于终止异常挂起；hard timeout 不是性能预算。进程树清理的 POSIX 和 Windows 路径分别有可注入回归，覆盖正常退出和 timeout 清理。
+前四项由 `pnpm test:perf` 执行。`unit-fast-wall` 由 `pnpm test:perf:gate` 在性能 Vitest 通过后执行。gate 还有独立 hard timeout，用于终止异常挂起；hard timeout 不是性能预算。进程树清理的 POSIX 和 Windows 路径分别有可注入回归，覆盖正常退出和 timeout 清理。
 
 ## Focus Areas
 

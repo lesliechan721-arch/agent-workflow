@@ -7,6 +7,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 
 import { loadConsoleItemsResult } from '../../src/commands/status.js';
 import { clearAgentVersionProbeCacheForTests } from '../../src/utils/agent-version.js';
+import { initializeLocalMarketplace } from '../../src/utils/local-marketplace.js';
 import {
   clearCurrentCatalogResolutionMemoForTests,
   resolveCurrentCatalog,
@@ -18,6 +19,7 @@ import {
   createFixtureCatalogPackageSource,
   createPerfCatalogFixture,
   createUnexpectedRemoteCatalogSource,
+  writePerfInstalledEvidence,
   type PerfCatalogFixture,
 } from './catalog-fixture.js';
 import { createPerfSummary, printPerfSummary } from './perf-metrics.js';
@@ -25,6 +27,7 @@ import { createPerfSummary, printPerfSummary } from './perf-metrics.js';
 const CATALOG_WARMUP_SAMPLES = 5;
 const CATALOG_MEASURED_SAMPLES = 25;
 const CATALOG_CACHE_FIRST_P95_BUDGET_MS = 150;
+const POST_REBUILD_CACHE_FIRST_BUDGET_MS = 500;
 const CONSOLE_WARMUP_SAMPLES = 3;
 const CONSOLE_MEASURED_SAMPLES = 15;
 const CONSOLE_WARM_LOAD_P95_BUDGET_MS = 500;
@@ -91,6 +94,7 @@ describe('performance budgets', () => {
   let caseRoot: string;
   let fixture: PerfCatalogFixture;
   let env: NodeJS.ProcessEnv;
+  let workspace: string;
   let unexpectedRemoteCalls = 0;
   let caseIndex = 0;
 
@@ -106,11 +110,18 @@ describe('performance budgets', () => {
     unexpectedRemoteCalls = 0;
     caseRoot = path.join(suiteRoot, `case-${caseIndex}`);
     caseIndex += 1;
+    const installedEvidence = await writePerfInstalledEvidence({
+      rootDir: path.join(caseRoot, 'runtime'),
+      pluginNames: fixture.pluginNames,
+    });
     env = {
       ...isolatedEnv(path.join(caseRoot, 'runtime')),
+      AW_HOME: installedEvidence.awHome,
+      AW_CODEX_HOME: installedEvidence.codexHome,
+      AW_CLAUDE_HOME: installedEvidence.claudeHome,
       AW_CLI_VERSION: fixture.cliVersion,
     };
-    await fs.ensureDir(path.join(caseRoot, 'workspace'));
+    workspace = installedEvidence.workspace;
 
     setCatalogPackageSourceForTests(createFixtureCatalogPackageSource(fixture));
     const seededCatalog = await resolveCurrentCatalog(env);
@@ -166,9 +177,40 @@ describe('performance budgets', () => {
     ).toBeLessThanOrEqual(summary.budgetMs);
   });
 
+  it('keeps the first cache-first read after a marketplace rebuild within its independent budget', async () => {
+    const cachedCatalog = await resolveCurrentCatalog(env, { freshnessPolicy: 'cacheFirst' });
+    expect(cachedCatalog.source).toBe('cache');
+    await initializeLocalMarketplace({
+      force: true,
+      env,
+      catalogResolution: cachedCatalog,
+    });
+
+    clearCurrentCatalogResolutionMemoForTests();
+    const startedAt = performance.now();
+    const resolved = await resolveCurrentCatalog(env, { freshnessPolicy: 'cacheFirst' });
+    const elapsedMs = performance.now() - startedAt;
+    const summary = createPerfSummary(
+      'catalog-cache-first-after-marketplace-rebuild',
+      [elapsedMs],
+      POST_REBUILD_CACHE_FIRST_BUDGET_MS,
+    );
+    printPerfSummary(summary);
+
+    expect(resolved).toMatchObject({
+      source: 'cache',
+      catalogVersion: fixture.catalogVersion,
+      cacheState: { state: 'fresh' },
+    });
+    expect(unexpectedRemoteCalls, 'post-rebuild cache-first read must not access the remote source').toBe(0);
+    expect(
+      summary.maxMs,
+      `catalog-cache-first-after-marketplace-rebuild ${summary.maxMs}ms exceeded ${summary.budgetMs}ms`,
+    ).toBeLessThanOrEqual(summary.budgetMs);
+  });
+
   it('keeps the real warm console/status load chain within its P95 budget', async () => {
     const nativeCliRunner = createFakeNativeRunner();
-    const workspace = path.join(caseRoot, 'workspace');
     const expectedPluginNames = [...fixture.pluginNames].sort();
 
     const durations = await runSamples({
@@ -194,6 +236,7 @@ describe('performance budgets', () => {
         expect(result.catalog.cacheState?.state).toBe('fresh');
         expect(result.catalogUnavailable).toBe(false);
         expect(actualPluginNames).toEqual(expectedPluginNames);
+        expect(result.items.every((item) => item.summary.status !== 'notInstalled')).toBe(true);
       },
     });
     const summary = createPerfSummary(

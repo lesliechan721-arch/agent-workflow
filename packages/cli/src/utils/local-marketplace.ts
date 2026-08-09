@@ -1,5 +1,7 @@
 import crypto from 'node:crypto';
+import { execFile } from 'node:child_process';
 import path from 'node:path';
+import { promisify } from 'node:util';
 
 import fs from 'fs-extra';
 
@@ -403,6 +405,458 @@ type CurrentCatalogCacheSelectorIndexRecord =
   | CurrentCatalogCacheSelectorIndexRecordV1
   | CurrentCatalogCacheSelectorIndexRecordV2;
 
+const CURRENT_CATALOG_CONCURRENT_INDEX_WAIT_MS = 250;
+const CURRENT_CATALOG_CONCURRENT_INDEX_POLL_MS = 5;
+const CURRENT_CATALOG_LOCK_TIMEOUT_MS = 5_000;
+const CURRENT_CATALOG_LOCK_POLL_MS = 10;
+const CURRENT_CATALOG_LOCK_STALE_MS = 30_000;
+const CURRENT_CATALOG_LOCK_HEARTBEAT_MS = 1_000;
+const execFileAsync = promisify(execFile);
+const CURRENT_PROCESS_INSTANCE_TOKEN = crypto.randomUUID();
+let currentProcessStartIdentity: Promise<string | null> | null = null;
+
+export interface CurrentCatalogCacheLockOwner {
+  version: 1;
+  token: string;
+  pid: number;
+  processStartIdentity: string | null;
+  acquiredAt: string;
+}
+
+export interface CurrentCatalogCacheLease {
+  lockPath: string;
+  owner: CurrentCatalogCacheLockOwner;
+  release: () => Promise<boolean>;
+}
+
+function resolveCurrentCatalogCacheLockPath(env: NodeJS.ProcessEnv): string {
+  const awHome = resolveAwHome(env);
+  const identity = crypto.createHash('sha256').update(path.resolve(awHome)).digest('hex').slice(0, 16);
+  return assertTestWritablePath(
+    path.join(
+      path.dirname(awHome),
+      '.aw-local-marketplace-staging',
+      `.catalog-cache-${identity}.lock`,
+    ),
+    'current catalog cache writer lock',
+    '用 createIsolatedTestEnv() 生成默认 AW_HOME，或登记 AW_HOME 同盘 sibling lock 路径。',
+  );
+}
+
+function isCurrentCatalogCacheLockOwner(value: unknown): value is CurrentCatalogCacheLockOwner {
+  return isRecord(value) &&
+    value.version === 1 &&
+    typeof value.token === 'string' &&
+    isPublicationId(value.token) &&
+    typeof value.pid === 'number' &&
+    Number.isSafeInteger(value.pid) &&
+    value.pid > 0 &&
+    (value.processStartIdentity === null || typeof value.processStartIdentity === 'string') &&
+    typeof value.acquiredAt === 'string';
+}
+
+async function readCurrentCatalogCacheLockOwner(lockPath: string): Promise<CurrentCatalogCacheLockOwner | null> {
+  const owner = await readJsonFileIfExistsSafe<unknown>(path.join(lockPath, 'owner.json'));
+  return isCurrentCatalogCacheLockOwner(owner) ? owner : null;
+}
+
+function processIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+async function readOsProcessStartIdentity(pid: number): Promise<string | null> {
+  if (process.platform === 'linux') {
+    const stat = await fs.readFile(`/proc/${pid}/stat`, 'utf8').catch(() => null);
+    if (!stat) {
+      return null;
+    }
+    const closeParen = stat.lastIndexOf(')');
+    const fields = closeParen === -1 ? [] : stat.slice(closeParen + 2).split(' ');
+    const startTicks = fields[19];
+    return startTicks ? `linux:${startTicks}` : null;
+  }
+  if (process.platform === 'darwin') {
+    let result: Awaited<ReturnType<typeof execFileAsync>> | null = null;
+    try {
+      result = await execFileAsync('/bin/ps', ['-o', 'lstart=', '-p', String(pid)], {
+        timeout: 1_000,
+      });
+    } catch {
+      return null;
+    }
+    const value = result === null ? '' : String(result.stdout).trim();
+    return value ? `darwin:${value}` : null;
+  }
+  if (process.platform === 'win32') {
+    const powershell = path.join(
+      process.env.SystemRoot ?? 'C:\\Windows',
+      'System32',
+      'WindowsPowerShell',
+      'v1.0',
+      'powershell.exe',
+    );
+    let result: Awaited<ReturnType<typeof execFileAsync>> | null = null;
+    try {
+      result = await execFileAsync(powershell, [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        `(Get-Process -Id ${pid}).StartTime.ToUniversalTime().Ticks`,
+      ], { timeout: 1_000 });
+    } catch {
+      return null;
+    }
+    const value = result === null ? '' : String(result.stdout).trim();
+    return value && /^\d+$/.test(value) ? `win32:${value}` : null;
+  }
+  return null;
+}
+
+function getCurrentProcessStartIdentity(): Promise<string | null> {
+  currentProcessStartIdentity ??= readOsProcessStartIdentity(process.pid).then((identity) =>
+    identity ?? `instance:${CURRENT_PROCESS_INSTANCE_TOKEN}`);
+  return currentProcessStartIdentity;
+}
+
+async function readProcessStartIdentity(pid: number): Promise<string | null> {
+  return pid === process.pid
+    ? getCurrentProcessStartIdentity()
+    : readOsProcessStartIdentity(pid);
+}
+
+async function waitForCurrentCatalogCacheLockPoll(
+  milliseconds: number,
+  signal?: AbortSignal,
+): Promise<void> {
+  signal?.throwIfAborted();
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, milliseconds);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal?.reason instanceof Error ? signal.reason : new Error('Catalog cache lock wait aborted.'));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+async function restoreCurrentCatalogCacheOwnerClaim(
+  claimPath: string,
+  ownerPath: string,
+  afterOwnerRestore?: () => Promise<void>,
+): Promise<boolean> {
+  try {
+    await fs.link(claimPath, ownerPath);
+    await afterOwnerRestore?.();
+    await fs.remove(claimPath);
+    return true;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'EEXIST') {
+      return false;
+    }
+    if (code !== 'EPERM' && code !== 'ENOSYS' && code !== 'ENOTSUP' && code !== 'EOPNOTSUPP') {
+      throw error;
+    }
+  }
+  try {
+    await fs.copyFile(claimPath, ownerPath, fs.constants.COPYFILE_EXCL);
+    await afterOwnerRestore?.();
+    await fs.remove(claimPath);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+      return false;
+    }
+    throw error;
+  }
+}
+
+async function claimOwnedCurrentCatalogCacheLock(options: {
+  lockPath: string;
+  ownerToken: string;
+  purpose: 'release' | 'stale';
+  beforeClaim?: () => Promise<void>;
+  afterClaim?: () => Promise<void>;
+  afterMismatchOwnerRestore?: () => Promise<void>;
+}): Promise<boolean> {
+  const owner = await readCurrentCatalogCacheLockOwner(options.lockPath);
+  if (owner?.token !== options.ownerToken) {
+    return false;
+  }
+  await options.beforeClaim?.();
+  const ownerPath = path.join(options.lockPath, 'owner.json');
+  const claimPath = path.join(
+    options.lockPath,
+    `${options.purpose}-${options.ownerToken}.json`,
+  );
+  try {
+    await fs.rename(ownerPath, claimPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return false;
+    }
+    throw error;
+  }
+  await options.afterClaim?.();
+  const claimedOwner = await readJsonFileIfExistsSafe<unknown>(claimPath);
+  if (!isCurrentCatalogCacheLockOwner(claimedOwner) || claimedOwner.token !== options.ownerToken) {
+    await restoreCurrentCatalogCacheOwnerClaim(
+      claimPath,
+      ownerPath,
+      options.afterMismatchOwnerRestore,
+    );
+    return false;
+  }
+  await fs.remove(claimPath);
+  try {
+    await fs.rmdir(options.lockPath);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return true;
+    }
+    return false;
+  }
+}
+
+async function releaseCurrentCatalogCacheLock(
+  lockPath: string,
+  ownerToken: string,
+): Promise<boolean> {
+  const startedAt = Date.now();
+  while (true) {
+    if (!(await fs.pathExists(lockPath))) {
+      return true;
+    }
+    const owner = await readCurrentCatalogCacheLockOwner(lockPath);
+    if (owner) {
+      if (owner.token !== ownerToken) {
+        return false;
+      }
+      if (await claimOwnedCurrentCatalogCacheLock({
+        lockPath,
+        ownerToken,
+        purpose: 'release',
+      })) {
+        return true;
+      }
+    } else {
+      const claim = await findCurrentCatalogCacheOwnerClaim(lockPath);
+      if (claim && claim.owner.token !== ownerToken) {
+        return false;
+      }
+      if (!claim) {
+        try {
+          await fs.rmdir(lockPath);
+          return true;
+        } catch (error) {
+          const code = (error as NodeJS.ErrnoException).code;
+          if (code === 'ENOENT') {
+            return true;
+          }
+          if (code !== 'ENOTEMPTY' && code !== 'EEXIST') {
+            throw error;
+          }
+        }
+      }
+    }
+    if (Date.now() - startedAt >= CURRENT_CATALOG_LOCK_TIMEOUT_MS) {
+      throw new Error(
+        `Timed out releasing current catalog cache lock ${lockPath} for owner ${ownerToken}.`,
+      );
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, CURRENT_CATALOG_LOCK_POLL_MS));
+  }
+}
+
+async function ownerIsRecoverable(owner: CurrentCatalogCacheLockOwner): Promise<boolean> {
+  if (!processIsAlive(owner.pid)) {
+    return true;
+  }
+  const liveStartIdentity = await readProcessStartIdentity(owner.pid);
+  return liveStartIdentity !== null &&
+    owner.processStartIdentity !== null &&
+    liveStartIdentity !== owner.processStartIdentity;
+}
+
+async function findCurrentCatalogCacheOwnerClaim(lockPath: string): Promise<{
+  path: string;
+  owner: CurrentCatalogCacheLockOwner;
+} | null> {
+  const entries = await fs.readdir(lockPath).catch(() => [] as string[]);
+  for (const entryName of entries.sort()) {
+    if (!/^(?:release|stale)-[a-f0-9-]{36}\.json$/.test(entryName)) {
+      continue;
+    }
+    const claimPath = path.join(lockPath, entryName);
+    const owner = await readJsonFileIfExistsSafe<unknown>(claimPath);
+    if (isCurrentCatalogCacheLockOwner(owner)) {
+      return { path: claimPath, owner };
+    }
+  }
+  return null;
+}
+
+async function tryRecoverStaleCurrentCatalogCacheLock(options: {
+  lockPath: string;
+  staleMs: number;
+  beforeClaim?: () => Promise<void>;
+  afterClaim?: () => Promise<void>;
+  afterMismatchOwnerRestore?: () => Promise<void>;
+}): Promise<boolean> {
+  const [owner, stats] = await Promise.all([
+    readCurrentCatalogCacheLockOwner(options.lockPath),
+    fs.stat(options.lockPath).catch(() => null),
+  ]);
+  if (!stats) {
+    return false;
+  }
+  const ageMs = Date.now() - stats.mtimeMs;
+  if (ageMs < options.staleMs) {
+    return false;
+  }
+  if (!owner) {
+    const claim = await findCurrentCatalogCacheOwnerClaim(options.lockPath);
+    if (!claim) {
+      const entries = await fs.readdir(options.lockPath).catch(() => [] as string[]);
+      if (entries.length === 0) {
+        await fs.rmdir(options.lockPath).catch(() => {});
+        return !(await fs.pathExists(options.lockPath));
+      }
+      return false;
+    }
+    const claimStats = await fs.stat(claim.path).catch(() => null);
+    if (!claimStats || Date.now() - claimStats.mtimeMs < options.staleMs) {
+      return false;
+    }
+    if (!(await ownerIsRecoverable(claim.owner))) {
+      const restored = await restoreCurrentCatalogCacheOwnerClaim(
+        claim.path,
+        path.join(options.lockPath, 'owner.json'),
+      );
+      if (!restored) {
+        const currentOwner = await readCurrentCatalogCacheLockOwner(options.lockPath);
+        if (currentOwner?.token === claim.owner.token) {
+          await fs.remove(claim.path).catch(() => {});
+        }
+      }
+      return false;
+    }
+    await fs.remove(claim.path);
+    await fs.rmdir(options.lockPath).catch(() => {});
+    return !(await fs.pathExists(options.lockPath));
+  }
+  if (!(await ownerIsRecoverable(owner))) {
+    return false;
+  }
+  return claimOwnedCurrentCatalogCacheLock({
+    lockPath: options.lockPath,
+    ownerToken: owner.token,
+    purpose: 'stale',
+    beforeClaim: options.beforeClaim,
+    afterClaim: options.afterClaim,
+    afterMismatchOwnerRestore: options.afterMismatchOwnerRestore,
+  });
+}
+
+export async function acquireCurrentCatalogCacheLease(
+  env: NodeJS.ProcessEnv = process.env,
+  options: {
+    timeoutMs?: number;
+    pollMs?: number;
+    staleMs?: number;
+    __testBeforeStaleClaim?: () => Promise<void>;
+    __testAfterStaleClaim?: () => Promise<void>;
+    __testAfterMismatchOwnerRestore?: () => Promise<void>;
+    signal?: AbortSignal;
+  } = {},
+): Promise<CurrentCatalogCacheLease> {
+  const lockPath = resolveCurrentCatalogCacheLockPath(env);
+  const timeoutMs = options.timeoutMs ?? CURRENT_CATALOG_LOCK_TIMEOUT_MS;
+  const pollMs = options.pollMs ?? CURRENT_CATALOG_LOCK_POLL_MS;
+  const staleMs = options.staleMs ?? CURRENT_CATALOG_LOCK_STALE_MS;
+  const startedAt = Date.now();
+  await fs.ensureDir(path.dirname(lockPath));
+
+  while (true) {
+    options.signal?.throwIfAborted();
+    const owner: CurrentCatalogCacheLockOwner = {
+      version: 1,
+      token: crypto.randomUUID(),
+      pid: process.pid,
+      processStartIdentity: await getCurrentProcessStartIdentity(),
+      acquiredAt: new Date().toISOString(),
+    };
+    try {
+      await fs.mkdir(lockPath);
+      try {
+        fs.writeFileSync(
+          path.join(lockPath, 'owner.json'),
+          `${JSON.stringify(owner, null, 2)}\n`,
+          { flag: 'wx' },
+        );
+      } catch (error) {
+        await fs.remove(lockPath);
+        throw error;
+      }
+      let released = false;
+      const heartbeat = setInterval(() => {
+        void (async () => {
+          const current = await readCurrentCatalogCacheLockOwner(lockPath);
+          if (current?.token === owner.token) {
+            const now = new Date();
+            await fs.utimes(lockPath, now, now).catch(() => {});
+          }
+        })();
+      }, CURRENT_CATALOG_LOCK_HEARTBEAT_MS);
+      heartbeat.unref();
+      return {
+        lockPath,
+        owner,
+        async release() {
+          if (released) {
+            return false;
+          }
+          const releaseResult = await releaseCurrentCatalogCacheLock(lockPath, owner.token);
+          released = true;
+          clearInterval(heartbeat);
+          return releaseResult;
+        },
+      };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
+        throw error;
+      }
+    }
+
+    if (await tryRecoverStaleCurrentCatalogCacheLock({
+      lockPath,
+      staleMs,
+      beforeClaim: options.__testBeforeStaleClaim,
+      afterClaim: options.__testAfterStaleClaim,
+      afterMismatchOwnerRestore: options.__testAfterMismatchOwnerRestore,
+    })) {
+      continue;
+    }
+    if (Date.now() - startedAt >= timeoutMs) {
+      const owner = await readCurrentCatalogCacheLockOwner(lockPath);
+      throw new Error(
+        `Timed out after ${timeoutMs}ms waiting for current catalog cache lock ${lockPath}. ` +
+        `Owner token: ${owner?.token ?? 'unknown'}; pid: ${owner?.pid ?? 'unknown'}.`,
+      );
+    }
+    await waitForCurrentCatalogCacheLockPoll(pollMs, options.signal);
+  }
+}
+
 function createSha256Digest(value: Buffer | string): string {
   return `sha256:${crypto.createHash('sha256').update(value).digest('hex')}`;
 }
@@ -789,50 +1243,6 @@ function createCurrentCatalogCacheSelectorIndexRecord(
       };
 }
 
-async function writeCurrentCatalogCacheSelectorIndexIfAbsent(
-  entry: Pick<CurrentCatalogCacheEntry, 'cacheKey' | 'selectorKey' | 'metadata' | 'observation'>,
-  validatedAt: string,
-  env: NodeJS.ProcessEnv,
-): Promise<boolean> {
-  const selectorsDir = resolveCurrentCatalogCacheSelectorsDir(env);
-  const selectorHash = crypto.createHash('sha256').update(entry.selectorKey).digest('hex');
-  const indexPath = resolveCurrentCatalogCacheSelectorIndexPath(selectorHash, env);
-  await fs.ensureDir(selectorsDir);
-  const stagedIndexPath = path.join(
-    selectorsDir,
-    `.${selectorHash}-${crypto.randomUUID()}.tmp`,
-  );
-  try {
-    await writeJsonFile(
-      stagedIndexPath,
-      createCurrentCatalogCacheSelectorIndexRecord(entry, validatedAt),
-    );
-    try {
-      await fs.link(stagedIndexPath, indexPath);
-      return true;
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code === 'EEXIST') {
-        return false;
-      }
-      if (code !== 'EPERM' && code !== 'ENOSYS' && code !== 'ENOTSUP' && code !== 'EOPNOTSUPP') {
-        throw error;
-      }
-    }
-    try {
-      await fs.copyFile(stagedIndexPath, indexPath, fs.constants.COPYFILE_EXCL);
-      return true;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
-        return false;
-      }
-      throw error;
-    }
-  } finally {
-    await fs.remove(stagedIndexPath);
-  }
-}
-
 async function writeCurrentCatalogCacheSelectorIndex(
   entry: Pick<CurrentCatalogCacheEntry, 'cacheKey' | 'selectorKey' | 'metadata' | 'observation'>,
   validatedAt: string,
@@ -893,9 +1303,9 @@ async function writeCurrentCatalogCacheSelectorIndex(
   }
 }
 
-export async function markCurrentCatalogCacheEntryValidated(
+async function markCurrentCatalogCacheEntryValidatedWithLease(
   entry: CurrentCatalogCacheEntry,
-  env: NodeJS.ProcessEnv = process.env,
+  env: NodeJS.ProcessEnv,
   validatedAt = new Date().toISOString(),
   observation = entry.observation,
   signal?: AbortSignal,
@@ -911,22 +1321,57 @@ export async function markCurrentCatalogCacheEntryValidated(
     : { ...unobservedEntry, validatedAt };
 }
 
+export async function markCurrentCatalogCacheEntryValidated(
+  entry: CurrentCatalogCacheEntry,
+  env: NodeJS.ProcessEnv = process.env,
+  validatedAt = new Date().toISOString(),
+  observation = entry.observation,
+  signal?: AbortSignal,
+): Promise<CurrentCatalogCacheEntry> {
+  const lease = await acquireCurrentCatalogCacheLease(env, { signal });
+  try {
+    return await markCurrentCatalogCacheEntryValidatedWithLease(
+      entry,
+      env,
+      validatedAt,
+      observation,
+      signal,
+    );
+  } finally {
+    await lease.release();
+  }
+}
+
 async function readConcurrentCurrentCatalogCacheSelectorIndex(
   selectorKey: string,
   indexPath: string,
   env: NodeJS.ProcessEnv,
 ): Promise<CurrentCatalogCacheEntry | null> {
-  for (let attempt = 0; attempt < 4; attempt += 1) {
+  const deadline = Date.now() + CURRENT_CATALOG_CONCURRENT_INDEX_WAIT_MS;
+  while (true) {
     const index = await readJsonFileIfExistsSafe<unknown>(indexPath);
     const entry = await readCurrentCatalogCacheEntryFromSelectorIndex(selectorKey, index, env);
     if (entry) {
       return entry;
     }
-    if (attempt < 3) {
-      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) {
+      return null;
     }
+    await new Promise<void>((resolve) => setTimeout(
+      resolve,
+      Math.min(CURRENT_CATALOG_CONCURRENT_INDEX_POLL_MS, remainingMs),
+    ));
   }
-  return null;
+}
+
+async function hasCurrentCatalogCacheSelectorDisplacementMarker(
+  selectorHash: string,
+  env: NodeJS.ProcessEnv,
+): Promise<boolean> {
+  const entries = await fs.readdir(resolveCurrentCatalogCacheSelectorsDir(env)).catch(() => [] as string[]);
+  return entries.some((entryName) =>
+    parseCurrentCatalogCacheSelectorDisplacementMarker(entryName)?.selectorHash === selectorHash);
 }
 
 export async function readCurrentCatalogCacheEntryBySelector(
@@ -959,18 +1404,16 @@ export async function readCurrentCatalogCacheEntryBySelector(
     }
   }
   if (!newest) {
-    return null;
-  }
+    if (await hasCurrentCatalogCacheSelectorDisplacementMarker(selectorHash, env)) {
+      return readConcurrentCurrentCatalogCacheSelectorIndex(selectorKey, indexPath, env);
+    }
 
-  if (await writeCurrentCatalogCacheSelectorIndexIfAbsent(newest, newest.validatedAt, env)) {
-    return newest;
+    // A publisher can remove its displacement marker immediately after it
+    // publishes the replacement index. Re-read once before reporting a miss.
+    const currentIndex = await readJsonFileIfExistsSafe<unknown>(indexPath);
+    return readCurrentCatalogCacheEntryFromSelectorIndex(selectorKey, currentIndex, env);
   }
-
-  return readConcurrentCurrentCatalogCacheSelectorIndex(
-    selectorKey,
-    indexPath,
-    env,
-  );
+  return newest;
 }
 
 export async function readCurrentCatalogCacheEntry(
@@ -1006,7 +1449,7 @@ export async function readCurrentCatalogCacheEntry(
     (entry.metadata.version === 1 ? entry : null);
 }
 
-export async function writeCurrentCatalogCacheEntry(
+async function writeCurrentCatalogCacheEntryWithLease(
   options: CurrentCatalogCacheIdentity & {
     sourceRoot: string;
     env?: NodeJS.ProcessEnv;
@@ -1068,7 +1511,7 @@ export async function writeCurrentCatalogCacheEntry(
           existing,
           options.validateExisting,
         )) {
-          return markCurrentCatalogCacheEntryValidated(
+          return markCurrentCatalogCacheEntryValidatedWithLease(
             existing,
             env,
             new Date().toISOString(),
@@ -1112,7 +1555,7 @@ export async function writeCurrentCatalogCacheEntry(
       validatedAt: metadata.createdAt,
       ...(options.observation ? { observation: options.observation } : {}),
     };
-    return markCurrentCatalogCacheEntryValidated(
+    return markCurrentCatalogCacheEntryValidatedWithLease(
       entry,
       env,
       metadata.createdAt,
@@ -1121,6 +1564,24 @@ export async function writeCurrentCatalogCacheEntry(
     );
   } finally {
     await fs.remove(stagingDir);
+  }
+}
+
+export async function writeCurrentCatalogCacheEntry(
+  options: CurrentCatalogCacheIdentity & {
+    sourceRoot: string;
+    env?: NodeJS.ProcessEnv;
+    observation?: CurrentCatalogCacheObservation;
+    signal?: AbortSignal;
+    validateExisting?: (rootDir: string) => Promise<boolean>;
+  },
+): Promise<CurrentCatalogCacheEntry> {
+  const env = options.env ?? process.env;
+  const lease = await acquireCurrentCatalogCacheLease(env, { signal: options.signal });
+  try {
+    return await writeCurrentCatalogCacheEntryWithLease(options);
+  } finally {
+    await lease.release();
   }
 }
 
@@ -1625,6 +2086,11 @@ export function createAvailableLedger(): InstalledLedger {
 
 const LOCAL_MARKETPLACE_RUNTIME_STATE_DIRS = new Set([
   ...AW_RUNTIME_STATE_PRESERVE_DIR_SET,
+  'catalog-cache',
+]);
+
+const LOCAL_MARKETPLACE_ALREADY_STAGED_STATE_DIRS = new Set([
+  'catalog-cache',
 ]);
 
 export function getInstalledLedgerPath(
@@ -2057,8 +2523,15 @@ async function readPreservedLedger(
   };
 }
 
-async function preserveLocalRuntimeStateDirectories(sourceRoot: string, targetRoot: string): Promise<void> {
+async function preserveLocalRuntimeStateDirectories(
+  sourceRoot: string,
+  targetRoot: string,
+  options: { skip?: ReadonlySet<string> } = {},
+): Promise<void> {
   for (const directoryName of LOCAL_MARKETPLACE_RUNTIME_STATE_DIRS) {
+    if (options.skip?.has(directoryName)) {
+      continue;
+    }
     const sourceDir = path.join(sourceRoot, directoryName);
     if (!(await fs.pathExists(sourceDir))) {
       continue;
@@ -2069,6 +2542,45 @@ async function preserveLocalRuntimeStateDirectories(sourceRoot: string, targetRo
       errorOnExist: false,
     });
   }
+}
+
+function parseCurrentCatalogCacheSelectorDisplacementMarker(
+  entryName: string,
+): { selectorHash: string } | null {
+  const match = /^\.([a-f0-9]{64})-([a-f0-9-]{36})\.tmp\.old$/.exec(entryName);
+  return match && isPublicationId(match[2]!)
+    ? { selectorHash: match[1]! }
+    : null;
+}
+
+async function restoreStagedCurrentCatalogCacheSelectorIndexes(stagingRoot: string): Promise<void> {
+  const selectorsDir = path.join(stagingRoot, 'catalog-cache', 'selectors');
+  const entries = await fs.readdir(selectorsDir).catch(() => [] as string[]);
+  for (const entryName of entries) {
+    const marker = parseCurrentCatalogCacheSelectorDisplacementMarker(entryName);
+    if (!marker) {
+      continue;
+    }
+
+    const markerPath = path.join(selectorsDir, entryName);
+    const indexPath = path.join(selectorsDir, `${marker.selectorHash}.json`);
+    if (!(await fs.pathExists(indexPath))) {
+      await fs.copyFile(markerPath, indexPath, fs.constants.COPYFILE_EXCL);
+    }
+    await fs.remove(markerPath);
+  }
+}
+
+async function preserveLocalCatalogCache(sourceRoot: string, stagingRoot: string): Promise<void> {
+  const sourceDir = path.join(sourceRoot, 'catalog-cache');
+  if (!(await fs.pathExists(sourceDir))) {
+    return;
+  }
+  await fs.copy(sourceDir, path.join(stagingRoot, 'catalog-cache'), {
+    overwrite: true,
+    errorOnExist: false,
+  });
+  await restoreStagedCurrentCatalogCacheSelectorIndexes(stagingRoot);
 }
 
 async function replayCodexUserDynamicSkillsToMarketplace(options: {
@@ -2209,6 +2721,10 @@ async function replaceDirectoryAtomically(
   stagingDir: string,
 ): Promise<void> {
   const backupDir = createLocalMarketplaceBackupDirPath(targetDir);
+  const failedTargetDir = path.join(
+    path.dirname(backupDir),
+    `.aw-failed-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+  );
   const targetExists = await fs.pathExists(targetDir);
   await fs.ensureDir(path.dirname(backupDir));
 
@@ -2219,12 +2735,26 @@ async function replaceDirectoryAtomically(
 
     await fs.move(stagingDir, targetDir, { overwrite: true });
     if (targetExists) {
-      await preserveLocalRuntimeStateDirectories(backupDir, targetDir);
+      await preserveLocalRuntimeStateDirectories(backupDir, targetDir, {
+        skip: LOCAL_MARKETPLACE_ALREADY_STAGED_STATE_DIRS,
+      });
       await fs.remove(backupDir);
     }
   } catch (error) {
-    if (targetExists && !(await fs.pathExists(targetDir)) && (await fs.pathExists(backupDir))) {
-      await fs.move(backupDir, targetDir, { overwrite: true });
+    try {
+      if (targetExists && await fs.pathExists(backupDir)) {
+        if (await fs.pathExists(targetDir)) {
+          await fs.move(targetDir, failedTargetDir, { overwrite: false });
+        }
+        await fs.move(backupDir, targetDir, { overwrite: true });
+        await fs.remove(failedTargetDir);
+      }
+    } catch (rollbackError) {
+      throw new AggregateError(
+        [error, rollbackError],
+        error instanceof Error ? error.message : String(error),
+        { cause: error },
+      );
     }
     throw error;
   }
@@ -2398,7 +2928,9 @@ export async function initializeLocalMarketplace(
   try {
     await copyBundleToStaging(inspection.embeddedRoot, stagingDir);
     const { ledger, ledgerFileExists } = await readPreservedLedger(inspection.awHome);
-    await preserveLocalRuntimeStateDirectories(inspection.awHome, stagingDir);
+    await preserveLocalRuntimeStateDirectories(inspection.awHome, stagingDir, {
+      skip: LOCAL_MARKETPLACE_ALREADY_STAGED_STATE_DIRS,
+    });
     const replay = await replaySkillTriggerPreferencesFromLedger({
       ledger,
       marketplaceRoot: stagingDir,
@@ -2440,7 +2972,13 @@ export async function initializeLocalMarketplace(
       bundleFingerprint: inspection.bundleFingerprint,
     } satisfies LocalMarketplaceConfig);
     await validateLocalMarketplaceLayout(stagingDir);
-    await replaceDirectoryAtomically(inspection.awHome, stagingDir);
+    const catalogCacheLease = await acquireCurrentCatalogCacheLease(env);
+    try {
+      await preserveLocalCatalogCache(inspection.awHome, stagingDir);
+      await replaceDirectoryAtomically(inspection.awHome, stagingDir);
+    } finally {
+      await catalogCacheLease.release();
+    }
   } catch (error) {
     await fs.remove(stagingDir);
     throw error;

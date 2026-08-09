@@ -1,10 +1,16 @@
+import type { ChildProcess } from 'node:child_process';
+import { EventEmitter } from 'node:events';
 import os from 'node:os';
 import path from 'node:path';
+import { PassThrough } from 'node:stream';
 
 import fs from 'fs-extra';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { runCodexConversationSuite } from '../../scripts/codex-eval-app-server.js';
+import {
+  runCodexConversationSuite,
+  settleAppServerProcessCleanup,
+} from '../../scripts/codex-eval-app-server.js';
 import { resolveCodexEvalRuntimeConfig } from '../../scripts/codex-eval-runtime-config.js';
 
 const tempDirs: string[] = [];
@@ -25,6 +31,36 @@ afterEach(async () => {
 });
 
 describe('Codex app-server eval driver', () => {
+  it('releases open handles before reporting unconfirmed cleanup', async () => {
+    const stdin = new PassThrough();
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+    const unref = vi.fn();
+    const child = Object.assign(new EventEmitter(), {
+      stdin,
+      stdout,
+      stderr,
+      unref,
+    }) as unknown as ChildProcess;
+    const waitForClose = vi.fn(async () => false);
+
+    await expect(settleAppServerProcessCleanup({
+      child,
+      processTreeMonitor: {
+        terminate: async () => [
+          'Could not confirm process-tree cleanup: token scan unavailable.',
+        ],
+      },
+      waitForClose,
+    })).rejects.toThrow('token scan unavailable');
+
+    expect(waitForClose).toHaveBeenCalledWith(1_000);
+    expect(stdin.destroyed).toBe(true);
+    expect(stdout.destroyed).toBe(true);
+    expect(stderr.destroyed).toBe(true);
+    expect(unref).toHaveBeenCalledOnce();
+  });
+
   it('answers dynamic request_user_input ids and preserves baseline evidence', async () => {
     const subjectRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-app-server-subject-'));
     const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-app-server-report-'));
@@ -150,7 +186,8 @@ describe('Codex app-server eval driver', () => {
       "const readline = require('node:readline');",
       "if (process.env.UNRELATED_SECRET || process.env.OPENAI_API_KEY) process.exit(9);",
       "if (!process.argv.some((value) => value.includes('CUSTOM_TOKEN'))) process.exit(10);",
-      "process.stderr.write(`${process.env.CUSTOM_TOKEN} https://private.invalid/v1\\n`);",
+      "process.stderr.write(`${process.env.CUSTOM_TOKEN} https://private.invalid/v1\\n${process.env.AW_CODEX_EVAL_PROCESS_TREE_ID.slice(0, 12)}`);",
+      "const finishTreeStderr = () => process.stderr.write(`${process.env.AW_CODEX_EVAL_PROCESS_TREE_ID.slice(12)}\\n`);",
       "const input = readline.createInterface({ input: process.stdin });",
       "const send = (frame) => process.stdout.write(JSON.stringify(frame) + '\\n');",
       "input.on('line', (line) => {",
@@ -159,8 +196,10 @@ describe('Codex app-server eval driver', () => {
       "  else if (frame.method === 'thread/start') send({ id: frame.id, result: { thread: { id: 'thread-1' } } });",
       "  else if (frame.method === 'turn/start') {",
       "    send({ id: frame.id, result: { turn: { id: 'turn-1' } } });",
-      "    send({ method: 'item/completed', params: { item: { type: 'agentMessage', id: 'message-1', text: `${process.env.CUSTOM_TOKEN} https://private.invalid/v1` } } });",
-      "    send({ method: 'turn/completed', params: { turn: { id: 'turn-1', status: 'completed' } } });",
+      "    const message = JSON.stringify({ method: 'item/completed', params: { item: { [process.env.AW_CODEX_EVAL_PROCESS_TREE_ID]: true, type: 'agentMessage', id: 'message-1', text: `${process.env.CUSTOM_TOKEN} https://private.invalid/v1 ${process.env.AW_CODEX_EVAL_PROCESS_TREE_ID}` } } }) + '\\n';",
+      "    const splitAt = message.indexOf(process.env.AW_CODEX_EVAL_PROCESS_TREE_ID) + 12;",
+      "    process.stdout.write(message.slice(0, splitAt));",
+      "    setImmediate(() => { finishTreeStderr(); process.stdout.write(message.slice(splitAt)); send({ method: 'turn/completed', params: { turn: { id: 'turn-1', status: 'completed' } } }); });",
       "  }",
       "});",
     ].join('\n'), 'utf8');
@@ -201,7 +240,14 @@ describe('Codex app-server eval driver', () => {
     const persisted = await fs.readFile(reportPath, 'utf8');
     expect(persisted).not.toContain('conversation-token');
     expect(persisted).not.toContain('https://private.invalid/v1');
+    expect(persisted).not.toMatch(
+      /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/u,
+    );
     expect(persisted).toContain('[redacted]');
+    expect(persisted).toContain('[process-tree-id]');
+    const evidence = JSON.parse(persisted);
+    expect(evidence.results[0].runs[0].with_skill.stderr).toContain('[process-tree-id]');
+    expect(evidence.results[0].runs[0].without_skill.stderr).toContain('[process-tree-id]');
   });
 
   it('terminates an app-server descendant before accepting a completed conversation', async () => {
@@ -292,6 +338,70 @@ describe('Codex app-server eval driver', () => {
       }
     }
   }, 10_000);
+
+  it('cleans a detached descendant after the app-server root exits immediately', async () => {
+    const subjectRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-app-server-early-exit-'));
+    const descendantPidsPath = path.join(subjectRoot, 'descendant-pids.txt');
+    tempDirs.push(subjectRoot);
+    await fs.ensureDir(path.join(subjectRoot, '.agents', 'skills', 'ask-me'));
+    await fs.writeFile(
+      path.join(subjectRoot, '.agents', 'skills', 'ask-me', 'SKILL.md'),
+      '# Ask Me\n',
+      'utf8',
+    );
+    const descendantScript = [
+      'process.on("SIGTERM", () => {});',
+      'setInterval(() => {}, 1000);',
+    ].join('\n');
+    await fs.writeFile(path.join(subjectRoot, 'app-server'), [
+      "const { spawn } = require('node:child_process');",
+      "const fs = require('node:fs');",
+      `const child = spawn(process.execPath, ['-e', ${JSON.stringify(descendantScript)}], { detached: true, stdio: 'ignore' });`,
+      'child.unref();',
+      `fs.appendFileSync(${JSON.stringify(descendantPidsPath)}, String(child.pid) + '\\n');`,
+      'process.exit(0);',
+    ].join('\n'), 'utf8');
+    const casesPath = path.join(subjectRoot, 'cases.json');
+    await fs.writeJson(casesPath, {
+      skill_name: 'ask-me',
+      evals: [behaviorCase('early-exit')],
+    });
+    let descendantPids: number[] = [];
+    const processExists = (pid: number): boolean => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch (error) {
+        return (error as NodeJS.ErrnoException).code !== 'ESRCH';
+      }
+    };
+    try {
+      await expect(runCodexConversationSuite({
+        suiteId: 'behavior',
+        skillName: 'ask-me',
+        casesPath,
+        subjectRoot,
+        profile: 'project-default',
+        runs: 1,
+        codexBin: process.execPath,
+        timeoutMs: 2_000,
+        sourceEnv: process.env,
+      })).resolves.toMatchObject({ complete: false, mechanicalPassed: false });
+      descendantPids = (await fs.readFile(descendantPidsPath, 'utf8'))
+        .trim()
+        .split('\n')
+        .map(Number);
+      expect(descendantPids.filter(processExists)).toEqual([]);
+    } finally {
+      for (const pid of descendantPids) {
+        try {
+          process.kill(pid, 'SIGKILL');
+        } catch {
+          // Best-effort test cleanup.
+        }
+      }
+    }
+  });
 
   it.each([
     {

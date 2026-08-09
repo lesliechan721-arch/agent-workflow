@@ -140,10 +140,13 @@ function isTimeoutLikeError(error: unknown, timeoutMs: number | undefined): bool
 interface NativeCliOutputStream {
   on: (event: 'data', listener: (chunk: unknown) => void) => unknown;
   removeListener?: (event: 'data', listener: (chunk: unknown) => void) => unknown;
+  destroy?: () => unknown;
 }
 
 interface NativeCliChildProcess {
   readonly pid?: number;
+  readonly exitCode?: number | null;
+  readonly signalCode?: NodeJS.Signals | null;
   kill: (signal: 'SIGTERM' | 'SIGKILL') => boolean;
   once: (event: 'spawn' | 'exit', listener: () => void) => unknown;
   stdout?: NativeCliOutputStream | null;
@@ -176,6 +179,11 @@ function settleNativeCliTerminationCleanup(
   child: NativeCliChildProcess,
   terminateProcessTreeImpl: typeof terminateProcessTree,
 ): Promise<void> {
+  if (child.exitCode != null || child.signalCode != null) {
+    child.stdout?.destroy?.();
+    child.stderr?.destroy?.();
+    return Promise.resolve();
+  }
   let directKillAttempted = false;
   const killDirectChild = (): void => {
     if (directKillAttempted) {
@@ -408,13 +416,6 @@ export function createExecFileNativeCliRunner(
           timeout.unref();
         });
       }
-
-      child.once('exit', () => {
-        if (!terminationReason && timeout) {
-          clearTimeout(timeout);
-          timeout = undefined;
-        }
-      });
 
       invocation.signal?.addEventListener('abort', abortListener, { once: true });
       if (invocation.signal?.aborted) {

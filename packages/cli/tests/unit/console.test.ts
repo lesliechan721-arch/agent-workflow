@@ -482,9 +482,10 @@ describe('console controller stage 8', () => {
     expect(consoleDriver.views).toHaveLength(1);
     expect(consoleDriver.views[0]?.lines).toContain('插件目录缓存已过期，正在后台更新。');
     expect(homeChoices.map((choice) => choice.label)).toContain('Cached Plugin');
-    expect(resolveCurrentCatalog).toHaveBeenCalledWith(context.env, {
+    expect(resolveCurrentCatalog).toHaveBeenCalledWith(context.env, expect.objectContaining({
       freshnessPolicy: 'requireRemote',
-    });
+      signal: expect.any(AbortSignal),
+    }));
 
     refresh.resolve(freshCatalog);
     await vi.waitFor(() => expect(resolveCurrentCatalog).toHaveBeenCalledTimes(1));
@@ -498,6 +499,73 @@ describe('console controller stage 8', () => {
       expect.anything(),
       expect.objectContaining({ catalogResolution: freshCatalog }),
     );
+  });
+
+  it.each([
+    ['exit', 'the default deadline', {}],
+    ['cancel', 'no internal deadline', { AW_CATALOG_REMOTE_TIMEOUT_MS: '0' }],
+  ] as const)('aborts a pending stale background refresh on %s with %s', async (action, _label, env) => {
+    mockHomeStates({
+      items: [item()],
+      catalog: catalog('stale'),
+      catalogUnavailable: false,
+    });
+    let refreshSignal: AbortSignal | undefined;
+    let sourceCleanedUp = false;
+    resolveCurrentCatalog.mockImplementation(async (
+      _env: NodeJS.ProcessEnv,
+      options: { signal?: AbortSignal },
+    ) => {
+      refreshSignal = options.signal;
+      return await new Promise<CatalogResolution>((_resolve, reject) => {
+        options.signal?.addEventListener('abort', () => {
+          sourceCleanedUp = true;
+          reject(options.signal?.reason);
+        }, { once: true });
+      });
+    });
+    const { runConsoleController } = await import('../../src/commands/console.js');
+    const { context } = createContext([{ method: 'select', action }]);
+    context.env = env;
+
+    const startedAt = performance.now();
+    await expect(runConsoleController(context)).resolves.toBe(0);
+
+    expect(performance.now() - startedAt).toBeLessThan(1_000);
+    expect(refreshSignal?.aborted).toBe(true);
+    expect(sourceCleanedUp).toBe(true);
+  });
+
+  it('aborts a pending stale background refresh when the home prompt throws', async () => {
+    mockHomeStates({
+      items: [item()],
+      catalog: catalog('stale'),
+      catalogUnavailable: false,
+    });
+    let refreshSignal: AbortSignal | undefined;
+    let sourceCleanedUp = false;
+    resolveCurrentCatalog.mockImplementation(async (
+      _env: NodeJS.ProcessEnv,
+      options: { signal?: AbortSignal },
+    ) => {
+      refreshSignal = options.signal;
+      return await new Promise<CatalogResolution>((_resolve, reject) => {
+        options.signal?.addEventListener('abort', () => {
+          sourceCleanedUp = true;
+          reject(options.signal?.reason);
+        }, { once: true });
+      });
+    });
+    const promptError = new Error('prompt failed');
+    const { runConsoleController } = await import('../../src/commands/console.js');
+    const { context } = createContext([]);
+    context.prompt.select = vi.fn(async () => {
+      throw promptError;
+    });
+
+    await expect(runConsoleController(context)).rejects.toBe(promptError);
+    expect(refreshSignal?.aborted).toBe(true);
+    expect(sourceCleanedUp).toBe(true);
   });
 
   it.each([
@@ -626,6 +694,58 @@ describe('console controller stage 8', () => {
 
     await expect(runConsoleController(context)).resolves.toBe(0);
     expect(resolveCurrentCatalog).toHaveBeenCalledTimes(1);
+    expect(resolveCurrentCatalog).toHaveBeenCalledWith(context.env, expect.objectContaining({
+      freshnessPolicy: 'forceRemote',
+      signal: expect.any(AbortSignal),
+    }));
+    expect(loadConsoleItemsResult).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.objectContaining({ catalogResolution: refreshedCatalog }),
+    );
+  });
+
+  it('forces a second explicit refresh after a fresh-cache fallback so it can recover', async () => {
+    const initialCatalog = catalog('fresh');
+    const fallbackCatalog = catalog('refreshFailed');
+    const refreshedCatalog = catalog('fresh', {
+      source: 'remote',
+      rootDir: '/synthetic/catalog-refreshed',
+      catalogVersion: '1.1.0',
+    });
+    loadConsoleItemsResult.mockImplementation(async (
+      _options: unknown,
+      runtime: { catalogResolution?: CatalogResolution },
+    ) => ({
+      items: [item()],
+      catalog: runtime.catalogResolution ?? initialCatalog,
+      catalogUnavailable: false,
+    }));
+    resolveCurrentCatalog
+      .mockResolvedValueOnce(fallbackCatalog)
+      .mockResolvedValueOnce(refreshedCatalog);
+    const { runConsoleController } = await import('../../src/commands/console.js');
+    const { context, consoleDriver } = createContext([
+      { method: 'select', value: 'home-refresh' },
+      { method: 'select', value: 'home-refresh' },
+      { method: 'select', action: 'exit' },
+    ]);
+
+    await expect(runConsoleController(context)).resolves.toBe(0);
+    expect(resolveCurrentCatalog).toHaveBeenCalledTimes(2);
+    expect(resolveCurrentCatalog).toHaveBeenNthCalledWith(1, context.env, expect.objectContaining({
+      freshnessPolicy: 'forceRemote',
+      signal: expect.any(AbortSignal),
+    }));
+    expect(resolveCurrentCatalog).toHaveBeenNthCalledWith(2, context.env, expect.objectContaining({
+      freshnessPolicy: 'forceRemote',
+      signal: expect.any(AbortSignal),
+    }));
+    expect(consoleDriver.views[1]?.lines).toContain(
+      '插件目录更新失败，当前显示缓存；可选择“刷新”重试。',
+    );
+    expect(consoleDriver.views[2]?.lines).not.toContain(
+      '插件目录更新失败，当前显示缓存；可选择“刷新”重试。',
+    );
     expect(loadConsoleItemsResult).toHaveBeenLastCalledWith(
       expect.anything(),
       expect.objectContaining({ catalogResolution: refreshedCatalog }),
