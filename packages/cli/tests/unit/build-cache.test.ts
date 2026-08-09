@@ -160,6 +160,25 @@ describe('build cache input and environment identity', () => {
     expect(await computeBuildInputDigest(repoRoot)).not.toBe(nestedDigest);
   });
 
+  it('binds registered input symlinks to referent bytes during a build', async () => {
+    const repoRoot = await createRepo();
+    const referentPath = path.join(repoRoot, 'external-runtime.md');
+    const linkPath = path.join(repoRoot, 'plugins', 'demo', 'runtime.md');
+    await fs.writeFile(referentPath, 'referent-one\n');
+    await fs.symlink(referentPath, linkPath);
+
+    const firstDigest = await computeBuildInputDigest(repoRoot);
+    await fs.writeFile(referentPath, 'referent-two\n');
+    await expect(computeBuildInputDigest(repoRoot)).resolves.not.toBe(firstDigest);
+
+    await expect(buildWithCache(repoRoot, {
+      build: async () => {
+        await writeBuildOutputs(repoRoot);
+        await fs.writeFile(referentPath, 'referent-three\n');
+      },
+    })).rejects.toThrow('Build identity inputDigest changed');
+  });
+
   it('uses the Node executable with npm_execpath and fails fast without it', () => {
     expect(resolvePnpmInvocation({ npm_execpath: '/tmp/pnpm.cjs' })).toEqual({
       command: process.execPath,
@@ -898,6 +917,28 @@ describe('build snapshots', () => {
         await fs.cp(source, target, options);
         if (source.endsWith(path.join('packages', 'cli', 'dist'))) {
           await fs.writeFile(path.join(repoRoot, 'plugins', 'demo', 'SKILL.md'), 'changed\n');
+        }
+      },
+    })).rejects.toThrow('Build inputs changed while snapshot generation');
+    await expect(fs.readdir(snapshotsRoot).catch(() => [])).resolves.toEqual([]);
+  });
+
+  it('rejects a symlink referent change during snapshot copy and cleans', async () => {
+    const repoRoot = await createRepo();
+    const referentPath = path.join(repoRoot, 'external-runtime.md');
+    await fs.writeFile(referentPath, 'referent-one\n');
+    await fs.symlink(
+      referentPath,
+      path.join(repoRoot, 'plugins', 'demo', 'runtime.md'),
+    );
+    const snapshotsRoot = path.join(repoRoot, '.release', 'build-snapshots');
+
+    await expect(createBuildSnapshot(repoRoot, {
+      build: () => writeBuildOutputs(repoRoot),
+      __testCopyPath: async (source: string, target: string, options?: { recursive?: boolean }) => {
+        await fs.cp(source, target, options);
+        if (source.endsWith(path.join('packages', 'cli', 'dist'))) {
+          await fs.writeFile(referentPath, 'referent-two\n');
         }
       },
     })).rejects.toThrow('Build inputs changed while snapshot generation');

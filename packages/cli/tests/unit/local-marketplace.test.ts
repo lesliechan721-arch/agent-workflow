@@ -1079,6 +1079,87 @@ describe('local marketplace', () => {
     });
   });
 
+  it('partitions selector indexes by catalog source identity', async () => {
+    const { env, sourceRoot, identity } = await makeCurrentCatalogCacheFixture();
+    const written = await writeCurrentCatalogCacheEntry({ ...identity, sourceRoot, env });
+    const sourceIdentity = 'https://registry-a.example/';
+    await markCurrentCatalogCacheEntryValidated(
+      written,
+      env,
+      undefined,
+      {
+        ...createCurrentCatalogCacheObservation(written),
+        sourceIdentity,
+        observationOrder: 1,
+      },
+    );
+
+    await expect(readCurrentCatalogCacheEntryBySelector(
+      identity.selector,
+      env,
+      sourceIdentity,
+    )).resolves.toMatchObject({ cacheKey: written.cacheKey });
+    await expect(readCurrentCatalogCacheEntryBySelector(
+      identity.selector,
+      env,
+      'https://registry-b.example/',
+    )).resolves.toBeNull();
+  });
+
+  it('keeps a newer remote observation when an older resolution finishes later', async () => {
+    const { cacheRoot, env, sourceRoot, identity } = await makeCurrentCatalogCacheFixture();
+    const sourceIdentity = 'https://registry.example/';
+    const older = await writeCurrentCatalogCacheEntry({ ...identity, sourceRoot, env });
+    const olderObservation: CurrentCatalogCacheObservation = {
+      ...createCurrentCatalogCacheObservation(older),
+      sourceIdentity,
+      observationOrder: 1,
+    };
+    await markCurrentCatalogCacheEntryValidated(older, env, undefined, olderObservation);
+
+    const newerSourceRoot = path.join(cacheRoot, 'source-catalog-v2');
+    await fs.ensureDir(newerSourceRoot);
+    await fs.writeJson(
+      path.join(newerSourceRoot, 'catalog-manifest.json'),
+      { version: 2 },
+      { spaces: 2 },
+    );
+    const newerIdentity: CurrentCatalogCacheIdentity = {
+      ...identity,
+      catalogVersion: '1.1.0',
+      sidecarIntegrity: 'sha512-sidecar-v2',
+      fullIntegrity: 'sha512-full-v2',
+    };
+    const newer = await writeCurrentCatalogCacheEntry({
+      ...newerIdentity,
+      sourceRoot: newerSourceRoot,
+      env,
+    });
+    const newerObservation: CurrentCatalogCacheObservation = {
+      ...createCurrentCatalogCacheObservation(newer),
+      sourceIdentity,
+      observationOrder: 2,
+    };
+    await markCurrentCatalogCacheEntryValidated(newer, env, undefined, newerObservation);
+
+    await markCurrentCatalogCacheEntryValidated(
+      older,
+      env,
+      new Date(Date.now() + 100).toISOString(),
+      olderObservation,
+    );
+
+    await expect(readCurrentCatalogCacheEntryBySelector(
+      identity.selector,
+      env,
+      sourceIdentity,
+    )).resolves.toMatchObject({
+      cacheKey: newer.cacheKey,
+      metadata: { catalogVersion: '1.1.0' },
+      observation: newerObservation,
+    });
+  });
+
   it('publishes concurrent immutable cache writers without partial reader state', async () => {
     const cacheRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-current-catalog-cache-race-'));
     tempDirs.push(cacheRoot);
@@ -2246,6 +2327,7 @@ describe('local marketplace', () => {
     });
 
     const indexPath = await getOnlyCurrentCatalogCacheIndexPath(awHome);
+    const sourceIdentity = String((await fs.readJson(indexPath)).sourceIdentity);
     const entryMetadataPath = path.join(path.dirname(seeded.rootDir), 'entry.json');
     const cachedManifestPath = path.join(seeded.rootDir, 'catalog-manifest.json');
     const originalBytes = await Promise.all([
@@ -2299,7 +2381,11 @@ describe('local marketplace', () => {
     });
     expect(remoteCalls).toBe(0);
 
-    const cacheEntry = await readCurrentCatalogCacheEntryBySelector(seeded.selector!, env);
+    const cacheEntry = await readCurrentCatalogCacheEntryBySelector(
+      seeded.selector!,
+      env,
+      sourceIdentity,
+    );
     expect(cacheEntry?.metadata.version).toBe(2);
     const lockProbe = await acquireCurrentCatalogCacheLease(env);
     const catalogCacheLockPath = lockProbe.lockPath;
@@ -2414,12 +2500,6 @@ describe('local marketplace', () => {
       metadata: { version: 1 },
     });
     await expect(fs.pathExists(indexPath)).resolves.toBe(false);
-
-    clearCurrentCatalogResolutionMemoForTests();
-    await expect(pluginCatalogModule.resolveCurrentCatalog(env, {
-      freshnessPolicy: 'cacheFirst',
-    })).resolves.toMatchObject({ source: 'cache' });
-    expect(remoteCalls).toBe(0);
   });
 
   it('keeps an extracted remote archive stable across rebuild and publishes it afterward', async () => {

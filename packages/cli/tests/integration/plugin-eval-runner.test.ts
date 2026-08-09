@@ -1038,6 +1038,24 @@ describe('plugin eval runner', () => {
     expect(fixture.unref).toHaveBeenCalledOnce();
   });
 
+  it('keeps Windows tree cleanup unconfirmed when taskkill fails but SIGKILL closes the root', async () => {
+    const fixture = createUnclosedWindowsChild();
+    fixture.kill.mockImplementation(() => {
+      fixture.child.emit('close');
+      return true;
+    });
+
+    const diagnostics = await terminateWindowsProcessTree(fixture.child, {
+      closeTimeoutMs: 10,
+      runTaskkill: async () => { throw new Error('taskkill unavailable'); },
+    });
+
+    expect(diagnostics).toEqual([
+      expect.stringContaining('Could not verify Windows process-tree termination'),
+    ]);
+    expect(processTreeCleanupIsUnconfirmed(diagnostics)).toBe(true);
+  });
+
   it('waits for close after taskkill fails even when the Windows child has exited', async () => {
     const fixture = createUnclosedWindowsChild(1);
 

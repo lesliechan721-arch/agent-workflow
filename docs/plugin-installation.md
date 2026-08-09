@@ -43,7 +43,7 @@ aw init [-f|--force] [--catalog-channel <dist-tag>|--catalog-version <semver>]
 
 稳定版 CLI 默认解析 `@yiliang/aw-plugins-manifest@latest`，prerelease / beta CLI 默认解析 `@yiliang/aw-plugins-manifest@beta`。`latest` catalog 只接受 stable catalog version 和 stable 插件 version；`beta` catalog version 必须是 prerelease，且可包含 stable 或 prerelease 插件 version。
 
-如果 latest catalog 的最低 CLI 版本高于当前 `aw`，CLI 不会写入这个不兼容 catalog，而是按 sidecar manifest 的 history 查询同一轨道里仍支持当前 CLI 的最新历史 catalog。history 不可用、schema 不支持或内容非法时返回 `catalogHistoryUnavailable`；有效 history 确认没有兼容 catalog 时返回 `awVersionTooLow`。解析出合法 catalog identity 后，匹配 cache 可以作为快路径使用；普通远程校验失败时，匹配 cache 也可以作为 fallback。`forceRemote` resolver 会跳过 cache 快路径；远程失败时，它仍可返回 selector 精确匹配且完整性、identity 和兼容性严格验证通过的 cache fallback，并标记 `cacheState.state=refreshFailed`。公开 `aw init --force` 随后会拒绝这个 cache 结果并报错。远程不可用且没有允许使用的匹配 cache 时，需要 current catalog 的命令返回 `catalogUnavailable`。这些场景都不会回退到 CLI 包内 embedded catalog。
+如果 latest catalog 的最低 CLI 版本高于当前 `aw`，CLI 不会写入这个不兼容 catalog，而是按 sidecar manifest 的 history 查询同一轨道里仍支持当前 CLI 的最新历史 catalog。history 不可用、schema 不支持或内容非法时返回 `catalogHistoryUnavailable`；有效 history 确认没有兼容 catalog 时返回 `awVersionTooLow`。解析出合法 catalog identity 后，匹配 cache 可以作为快路径使用；普通远程校验失败时，匹配 cache 也可以作为 fallback。selector cache 还必须属于当前规范化 npm registry；切换 registry 后不会使用其它 registry 或旧的无来源记录作为 fallback。`forceRemote` resolver 会跳过 cache 快路径；远程失败时，它仍可返回 selector 精确匹配且完整性、identity 和兼容性严格验证通过的 cache fallback，并标记 `cacheState.state=refreshFailed`。公开 `aw init --force` 随后会拒绝这个 cache 结果并报错。远程不可用且没有允许使用的匹配 cache 时，需要 current catalog 的命令返回 `catalogUnavailable`。这些场景都不会回退到 CLI 包内 embedded catalog。
 
 不同命令使用不同 freshness 策略：
 

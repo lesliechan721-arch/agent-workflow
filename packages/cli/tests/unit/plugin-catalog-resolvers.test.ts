@@ -359,7 +359,7 @@ describe('plugin catalog resolvers', () => {
     expect(operations).toEqual([]);
   });
 
-  it('reads a valid v1 cache entry without rebuilding its missing selector index', async () => {
+  it('does not use a source-less v1 entry for registry selector fallback', async () => {
     const { repoRoot, env } = await makeRepoWorkspace();
     const catalogPackage = await createValidCatalogPackage({
       repoRoot,
@@ -380,11 +380,15 @@ describe('plugin catalog resolvers', () => {
 
     const operations: string[] = [];
     setCatalogPackageSourceForTests(createFakeCatalogPackageSource({ operations }));
-    await expect(resolveCurrentCatalog(env, { freshnessPolicy: 'cacheFirst' })).resolves.toMatchObject({
-      source: 'cache',
-      cacheState: { state: 'fresh' },
+    await expect(resolveCurrentCatalog(env, { freshnessPolicy: 'cacheFirst' })).rejects.toMatchObject({
+      resolution: {
+        cacheFallback: { used: false },
+        remoteFailure: { stage: 'sidecarMetadata' },
+      },
     });
-    expect(operations).toEqual([]);
+    expect(operations).toEqual([
+      'identity:@yiliang/aw-plugins-manifest:latest',
+    ]);
     await expect(fs.pathExists(path.join(String(env.AW_HOME), 'catalog-cache', 'selectors')))
       .resolves.toBe(false);
   });
@@ -583,6 +587,212 @@ describe('plugin catalog resolvers', () => {
       source: 'remote',
       catalogVersion: '1.0.0',
     });
+  });
+
+  it('cancels memo waiters independently without aborting shared remote catalog work', async () => {
+    const { repoRoot, env } = await makeRepoWorkspace();
+    const catalogPackage = await createValidCatalogPackage({
+      repoRoot,
+      catalogVersion: '1.0.0',
+      channel: 'latest',
+      minAwVersion: '1.0.0',
+    });
+    const baseSource = createSingleVersionCatalogPackageSource({ catalogPackage });
+    let identityCalls = 0;
+    let sharedSignalAborted = false;
+    let identityStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      identityStarted = resolve;
+    });
+    let releaseIdentity!: () => void;
+    const identityReleased = new Promise<void>((resolve) => {
+      releaseIdentity = resolve;
+    });
+    setCatalogPackageSourceForTests({
+      ...baseSource,
+      resolveIdentityByDistTag: async (...args) => {
+        identityCalls += 1;
+        const signal = args[3];
+        signal?.addEventListener('abort', () => {
+          sharedSignalAborted = true;
+        }, { once: true });
+        identityStarted();
+        await identityReleased;
+        signal?.throwIfAborted();
+        return baseSource.resolveIdentityByDistTag(...args);
+      },
+    });
+    const catalogEnv = {
+      ...env,
+      AW_CATALOG_REMOTE_TIMEOUT_MS: '0',
+      AW_NPM_REGISTRY_URL: 'https://registry.example',
+    };
+    const firstController = new AbortController();
+    const first = resolveCurrentCatalog(catalogEnv, { signal: firstController.signal });
+    await started;
+    const secondController = new AbortController();
+    const second = resolveCurrentCatalog(catalogEnv, { signal: secondController.signal });
+    const survivor = resolveCurrentCatalog(catalogEnv);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const secondReason = new DOMException('Second catalog waiter stopped.', 'AbortError');
+    secondController.abort(secondReason);
+
+    await expect(second).rejects.toBe(secondReason);
+    expect(sharedSignalAborted).toBe(false);
+
+    const firstReason = new DOMException('First catalog waiter stopped.', 'AbortError');
+    firstController.abort(firstReason);
+
+    await expect(first).rejects.toBe(firstReason);
+    expect(sharedSignalAborted).toBe(false);
+    releaseIdentity();
+    await expect(survivor).resolves.toMatchObject({
+      source: 'remote',
+      catalogVersion: '1.0.0',
+    });
+    expect(identityCalls).toBe(1);
+  });
+
+  it('keeps a cache-first handoff alive when the remote initiator aborts', async () => {
+    const { repoRoot, env } = await makeRepoWorkspace();
+    const catalogPackage = await createValidCatalogPackage({
+      repoRoot,
+      catalogVersion: '1.0.0',
+      channel: 'latest',
+      minAwVersion: '1.0.0',
+    });
+    const baseSource = createSingleVersionCatalogPackageSource({ catalogPackage });
+    const readSelectorCache = localMarketplaceModule.readCurrentCatalogCacheEntryBySelector;
+    let cacheReadStarted!: () => void;
+    const cacheReadStart = new Promise<void>((resolve) => {
+      cacheReadStarted = resolve;
+    });
+    let releaseCacheRead!: () => void;
+    const cacheReadReleased = new Promise<void>((resolve) => {
+      releaseCacheRead = resolve;
+    });
+    let cacheReadFinished!: () => void;
+    const cacheReadFinish = new Promise<void>((resolve) => {
+      cacheReadFinished = resolve;
+    });
+    vi.spyOn(localMarketplaceModule, 'readCurrentCatalogCacheEntryBySelector').mockImplementationOnce(
+      async (...args) => {
+        cacheReadStarted();
+        await cacheReadReleased;
+        const result = await readSelectorCache(...args);
+        cacheReadFinished();
+        return result;
+      },
+    );
+    let identityCalls = 0;
+    let sharedSignalAborted = false;
+    let identityStarted!: () => void;
+    const identityStart = new Promise<void>((resolve) => {
+      identityStarted = resolve;
+    });
+    let releaseIdentity!: () => void;
+    const identityReleased = new Promise<void>((resolve) => {
+      releaseIdentity = resolve;
+    });
+    setCatalogPackageSourceForTests({
+      ...baseSource,
+      resolveIdentityByDistTag: async (...args) => {
+        identityCalls += 1;
+        const signal = args[3];
+        signal?.addEventListener('abort', () => {
+          sharedSignalAborted = true;
+        }, { once: true });
+        identityStarted();
+        await identityReleased;
+        signal?.throwIfAborted();
+        return baseSource.resolveIdentityByDistTag(...args);
+      },
+    });
+    const catalogEnv = {
+      ...env,
+      AW_CATALOG_REMOTE_TIMEOUT_MS: '0',
+      AW_NPM_REGISTRY_URL: 'https://registry.example',
+    };
+
+    const cacheFirst = resolveCurrentCatalog(catalogEnv, { freshnessPolicy: 'cacheFirst' });
+    await cacheReadStart;
+    const remoteController = new AbortController();
+    const remote = resolveCurrentCatalog(catalogEnv, {
+      freshnessPolicy: 'requireRemote',
+      signal: remoteController.signal,
+    });
+    await identityStart;
+    releaseCacheRead();
+    await cacheReadFinish;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const reason = new DOMException('Remote initiator stopped.', 'AbortError');
+    remoteController.abort(reason);
+
+    await expect(remote).rejects.toBe(reason);
+    const signalAbortedBeforeRelease = sharedSignalAborted;
+    releaseIdentity();
+    await expect(cacheFirst).resolves.toMatchObject({
+      source: 'remote',
+      catalogVersion: '1.0.0',
+    });
+    expect(signalAbortedBeforeRelease).toBe(false);
+    expect(identityCalls).toBe(1);
+  });
+
+  it('starts fresh memo work immediately after its last waiter aborts', async () => {
+    const { repoRoot, env } = await makeRepoWorkspace();
+    const catalogPackage = await createValidCatalogPackage({
+      repoRoot,
+      catalogVersion: '1.0.0',
+      channel: 'latest',
+      minAwVersion: '1.0.0',
+    });
+    const baseSource = createSingleVersionCatalogPackageSource({ catalogPackage });
+    let identityCalls = 0;
+    let firstSignalAborted!: () => void;
+    const firstSignalAbort = new Promise<void>((resolve) => {
+      firstSignalAborted = resolve;
+    });
+    setCatalogPackageSourceForTests({
+      ...baseSource,
+      resolveIdentityByDistTag: async (...args) => {
+        identityCalls += 1;
+        if (identityCalls !== 1) {
+          return baseSource.resolveIdentityByDistTag(...args);
+        }
+        const signal = args[3];
+        return new Promise((_resolve, reject) => {
+          signal?.addEventListener('abort', () => {
+            firstSignalAborted();
+            reject(signal.reason);
+          }, { once: true });
+        });
+      },
+    });
+    const catalogEnv = {
+      ...env,
+      AW_CATALOG_REMOTE_TIMEOUT_MS: '0',
+      AW_NPM_REGISTRY_URL: 'https://registry.example',
+    };
+    const controller = new AbortController();
+    const first = resolveCurrentCatalog(catalogEnv, { signal: controller.signal });
+    await vi.waitFor(() => expect(identityCalls).toBe(1));
+    let second: Promise<CatalogResolution> | undefined;
+    controller.signal.addEventListener('abort', () => {
+      second = resolveCurrentCatalog(catalogEnv);
+    }, { once: true });
+    const reason = new DOMException('Only catalog waiter stopped.', 'AbortError');
+
+    controller.abort(reason);
+
+    await firstSignalAbort;
+    await expect(first).rejects.toBe(reason);
+    expect(second).toBeDefined();
+    await expect(second!).resolves.toMatchObject({
+      source: 'remote',
+      catalogVersion: '1.0.0',
+    });
+    expect(identityCalls).toBe(2);
   });
 
   it('falls back for early remote stages and classifies deadline failures', async () => {
@@ -1363,6 +1573,118 @@ describe('plugin catalog resolvers', () => {
     ]);
   });
 
+  it('does not use a selector fallback cached for another registry', async () => {
+    const { repoRoot, env } = await makeRepoWorkspace();
+    const catalogPackage = await createValidCatalogPackage({
+      repoRoot,
+      catalogVersion: '1.0.0',
+      channel: 'latest',
+      minAwVersion: '1.0.0',
+    });
+    const registryAEnv = {
+      ...env,
+      AW_NPM_REGISTRY_URL: 'https://registry-a.example',
+    };
+    const registryBEnv = {
+      ...env,
+      AW_NPM_REGISTRY_URL: 'https://registry-b.example',
+    };
+    setCatalogPackageSourceForTests(createSingleVersionCatalogPackageSource({ catalogPackage }));
+    await expect(resolveCurrentCatalog(registryAEnv)).resolves.toMatchObject({
+      source: 'remote',
+      catalogVersion: '1.0.0',
+    });
+
+    clearCurrentCatalogResolutionMemoForTests();
+    setCatalogPackageSourceForTests(createFakeCatalogPackageSource({
+      manifestPackages: {},
+      fullPackages: {},
+    }));
+
+    await expect(resolveCurrentCatalog(registryBEnv)).rejects.toMatchObject({
+      resolution: {
+        cacheFallback: { used: false },
+        remoteFailure: { stage: 'sidecarMetadata' },
+      },
+    });
+    await expect(resolveCurrentCatalog(registryAEnv)).resolves.toMatchObject({
+      source: 'cache',
+      cacheFallback: { used: true },
+      catalogVersion: '1.0.0',
+    });
+  });
+
+  it('keeps a newer dist-tag observation and memo when the registry rolls back', async () => {
+    const { repoRoot, env } = await makeRepoWorkspace();
+    const catalogV1 = await createValidCatalogPackage({
+      repoRoot,
+      catalogVersion: '1.0.0',
+      channel: 'latest',
+      minAwVersion: '1.0.0',
+    });
+    const catalogV2 = await createValidCatalogPackage({
+      repoRoot,
+      catalogVersion: '1.1.0',
+      channel: 'latest',
+      minAwVersion: '1.0.0',
+    });
+    const sourceV1 = createSingleVersionCatalogPackageSource({
+      catalogPackage: catalogV1,
+      catalogVersion: '1.0.0',
+    });
+    const sourceV2 = createSingleVersionCatalogPackageSource({
+      catalogPackage: catalogV2,
+      catalogVersion: '1.1.0',
+    });
+    let distTagCalls = 0;
+    let olderDownloadStarted!: () => void;
+    const olderDownload = new Promise<void>((resolve) => {
+      olderDownloadStarted = resolve;
+    });
+    let releaseOlderDownload!: () => void;
+    const olderDownloadReleased = new Promise<void>((resolve) => {
+      releaseOlderDownload = resolve;
+    });
+    const sourceForVersion = (version: string): CatalogPackageSource =>
+      version === '1.0.0' ? sourceV1 : sourceV2;
+    setCatalogPackageSourceForTests({
+      resolveIdentityByDistTag: async (...args) => {
+        distTagCalls += 1;
+        return (distTagCalls === 1 ? sourceV2 : sourceV1)
+          .resolveIdentityByDistTag(...args);
+      },
+      resolveIdentityByVersion: async (packageName, version, ...args) =>
+        sourceForVersion(version).resolveIdentityByVersion(packageName, version, ...args),
+      downloadArchive: async (identity, ...args) => {
+        if (
+          identity.packageName === '@yiliang/aw-plugins-manifest' &&
+          identity.version === '1.1.0'
+        ) {
+          olderDownloadStarted();
+          await olderDownloadReleased;
+        }
+        return sourceForVersion(identity.version).downloadArchive(identity, ...args);
+      },
+    });
+
+    const older = resolveCurrentCatalog(env, { freshnessPolicy: 'forceRemote' });
+    await olderDownload;
+    await expect(resolveCurrentCatalog(env, {
+      freshnessPolicy: 'forceRemote',
+    })).resolves.toMatchObject({ catalogVersion: '1.0.0' });
+    releaseOlderDownload();
+    await expect(older).resolves.toMatchObject({ catalogVersion: '1.1.0' });
+
+    const distTagCallsBeforeCacheRead = distTagCalls;
+    await expect(resolveCurrentCatalog(env, {
+      freshnessPolicy: 'cacheFirst',
+    })).resolves.toMatchObject({
+      source: 'cache',
+      catalogVersion: '1.0.0',
+    });
+    expect(distTagCalls).toBe(distTagCallsBeforeCacheRead);
+  });
+
   it('refreshes a process memo when the current catalog dist-tag moves', async () => {
     const { repoRoot, env } = await makeRepoWorkspace();
     const catalogV1 = await createValidCatalogPackage({
@@ -1775,7 +2097,7 @@ describe('plugin catalog resolvers', () => {
     ]);
   });
 
-  it('updates the ordinary process memo after a successful force refresh', async () => {
+  it('invalidates the ordinary process memo after a successful force refresh', async () => {
     const { repoRoot, env } = await makeRepoWorkspace();
     const catalogV1 = await createValidCatalogPackage({
       repoRoot,
@@ -1853,6 +2175,13 @@ describe('plugin catalog resolvers', () => {
       operations,
     }));
 
+    const staleMemo = await resolveCurrentCatalog(env, { freshnessPolicy: 'cacheFirst' });
+    expect(staleMemo).toMatchObject({
+      source: 'cache',
+      catalogVersion: '1.0.0',
+    });
+    expect(operations).toEqual([]);
+
     const refreshed = await resolveCurrentCatalog(env, { forceRefresh: true });
     expect(refreshed).toMatchObject({
       source: 'remote',
@@ -1866,7 +2195,13 @@ describe('plugin catalog resolvers', () => {
     ]);
 
     operations.length = 0;
-    await expect(resolveCurrentCatalog(env)).resolves.toBe(refreshed);
+    const selected = await resolveCurrentCatalog(env, { freshnessPolicy: 'cacheFirst' });
+    expect(selected).not.toBe(staleMemo);
+    expect(selected).not.toBe(refreshed);
+    expect(selected).toMatchObject({
+      source: 'cache',
+      catalogVersion: '2.0.0',
+    });
     expect(operations).toEqual([]);
   });
 
@@ -2075,7 +2410,13 @@ describe('plugin catalog resolvers', () => {
     ]);
 
     operations.length = 0;
-    await expect(resolveCurrentCatalog(env)).resolves.toBe(forcedFallback);
+    const afterForce = await resolveCurrentCatalog(env, { freshnessPolicy: 'cacheFirst' });
+    expect(afterForce).not.toBe(forcedFallback);
+    expect(afterForce).toMatchObject({
+      source: 'cache',
+      cacheFallback: { used: false },
+      cacheState: { state: 'fresh' },
+    });
     expect(operations).toEqual([]);
 
     setCatalogPackageSourceForTests(createFakeCatalogPackageSource({

@@ -605,7 +605,7 @@ async function readCliPublishRegistry(): Promise<string | null> {
   }
 }
 
-async function resolveCatalogRegistryUrl(
+export async function resolveCatalogRegistryUrl(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<string> {
   const fromEnv = env.AW_NPM_REGISTRY_URL || env.npm_config_registry || env.NPM_CONFIG_REGISTRY;

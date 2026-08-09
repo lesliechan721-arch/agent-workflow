@@ -60,7 +60,7 @@ describe('package metadata', () => {
     expect(cliScripts.test).toBe('vitest run');
     expect(cliScripts['test:unit']).toBe('vitest run tests/unit');
     expect(vitestConfig).toContain('maxWorkers: 3');
-    expect(vitestConfig).toContain('minWorkers: 2');
+    expect(vitestConfig).not.toContain('minWorkers');
     expect(vitestConfig).toContain('testTimeout: 15_000');
     expect(vitestConfig).toContain('hookTimeout: 15_000');
   });

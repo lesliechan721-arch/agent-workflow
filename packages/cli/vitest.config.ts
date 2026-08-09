@@ -6,7 +6,6 @@ export default defineConfig({
     include: ['tests/unit/**/*.ts', 'tests/integration/**/*.ts'],
     setupFiles: ['tests/setup/test-isolation.ts'],
     maxWorkers: 3,
-    minWorkers: 2,
     testTimeout: 15_000,
     hookTimeout: 15_000,
     coverage: {

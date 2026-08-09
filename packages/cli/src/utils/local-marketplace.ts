@@ -383,6 +383,8 @@ export interface CurrentCatalogCacheObservation {
   latestCatalogBlocked?: CatalogResolution['latestCatalogBlocked'];
   historySchemaVersion: number | null;
   resolutionSource: NonNullable<NonNullable<CatalogResolution['fullCatalog']>['resolutionSource']>;
+  sourceIdentity?: string;
+  observationOrder?: number;
 }
 
 interface CurrentCatalogCacheSelectorIndexRecordV1 {
@@ -398,6 +400,7 @@ interface CurrentCatalogCacheSelectorIndexRecordV2 {
   cacheKey: string;
   publicationId: string;
   validatedAt: string;
+  sourceIdentity?: string;
   observation?: CurrentCatalogCacheObservation;
 }
 
@@ -895,11 +898,26 @@ export function buildCurrentCatalogCacheKey(
     .digest('hex');
 }
 
-function buildCurrentCatalogSelectorHash(selector: CatalogSelector): string {
+function buildCurrentCatalogSelectorHashFromKey(
+  selectorKey: string,
+  sourceIdentity?: string,
+): string {
   return crypto
     .createHash('sha256')
-    .update(serializeCatalogSelectorForCache(selector))
+    .update(sourceIdentity === undefined
+      ? selectorKey
+      : JSON.stringify({ selectorKey, sourceIdentity }))
     .digest('hex');
+}
+
+function buildCurrentCatalogSelectorHash(
+  selector: CatalogSelector,
+  sourceIdentity?: string,
+): string {
+  return buildCurrentCatalogSelectorHashFromKey(
+    serializeCatalogSelectorForCache(selector),
+    sourceIdentity,
+  );
 }
 
 function getCurrentCatalogCacheMetadataPath(entryDir: string): string {
@@ -958,10 +976,15 @@ function isCurrentCatalogCacheSelectorIndexRecord(
     return false;
   }
   if (value.version === 1) {
-    return value.publicationId === undefined && value.observation === undefined;
+    return value.publicationId === undefined &&
+      value.observation === undefined &&
+      value.sourceIdentity === undefined;
   }
   return value.version === 2 &&
-    isPublicationId(value.publicationId);
+    isPublicationId(value.publicationId) &&
+    (value.sourceIdentity === undefined || (
+      typeof value.sourceIdentity === 'string' && value.sourceIdentity.trim() !== ''
+    ));
 }
 
 function isCatalogLatestEvidence(value: unknown): boolean {
@@ -990,6 +1013,12 @@ function isCurrentCatalogCacheObservation(value: unknown): value is CurrentCatal
       isStrictSemVerString(value.latestCatalogBlocked.minAwVersion)
     )) &&
     (value.historySchemaVersion === null || Number.isInteger(value.historySchemaVersion)) &&
+    ((value.sourceIdentity === undefined && value.observationOrder === undefined) || (
+      typeof value.sourceIdentity === 'string' && value.sourceIdentity.trim() !== '' &&
+      typeof value.observationOrder === 'number' &&
+      Number.isSafeInteger(value.observationOrder) &&
+      value.observationOrder > 0
+    )) &&
     (value.resolutionSource === 'requestedCatalog' || value.resolutionSource === 'historyCompatibleCatalog');
 }
 
@@ -1128,11 +1157,14 @@ async function restoreQuarantinedCurrentCatalogCacheEntry(
 function applyCurrentCatalogCacheSelectorIndex(
   entry: CurrentCatalogCacheEntry,
   index: unknown,
+  sourceIdentity?: string,
 ): CurrentCatalogCacheEntry | null {
   if (
     !isCurrentCatalogCacheSelectorIndexRecord(index) ||
     index.selectorKey !== entry.selectorKey ||
     index.cacheKey !== entry.cacheKey ||
+    (index.version === 1 && sourceIdentity !== undefined) ||
+    (index.version === 2 && index.sourceIdentity !== sourceIdentity) ||
     (entry.metadata.version === 2 && (
       index.version !== 2 ||
       index.publicationId !== entry.metadata.publicationId
@@ -1151,7 +1183,9 @@ function applyCurrentCatalogCacheSelectorIndex(
   return {
     ...entry,
     validatedAt: index.validatedAt,
-    ...(index.version === 2 && isCurrentCatalogCacheObservationForEntry(index.observation, entry)
+    ...(index.version === 2 &&
+      isCurrentCatalogCacheObservationForEntry(index.observation, entry) &&
+      index.observation.sourceIdentity === index.sourceIdentity
       ? { observation: index.observation }
       : {}),
   };
@@ -1161,6 +1195,7 @@ async function readCurrentCatalogCacheEntryFromSelectorIndex(
   selectorKey: string,
   index: unknown,
   env: NodeJS.ProcessEnv,
+  sourceIdentity?: string,
 ): Promise<CurrentCatalogCacheEntry | null> {
   if (
     !isCurrentCatalogCacheSelectorIndexRecord(index) ||
@@ -1169,7 +1204,88 @@ async function readCurrentCatalogCacheEntryFromSelectorIndex(
     return null;
   }
   const entry = await readCurrentCatalogCacheEntryByKey(index.cacheKey, selectorKey, env);
-  return entry === null ? null : applyCurrentCatalogCacheSelectorIndex(entry, index);
+  return entry === null
+    ? null
+    : applyCurrentCatalogCacheSelectorIndex(entry, index, sourceIdentity);
+}
+
+function readCurrentCatalogObservationOrderFromIndex(
+  index: unknown,
+  selectorKey: string,
+  sourceIdentity: string,
+): number {
+  if (
+    !isCurrentCatalogCacheSelectorIndexRecord(index) ||
+    index.version !== 2 ||
+    index.selectorKey !== selectorKey ||
+    index.sourceIdentity !== sourceIdentity ||
+    !isCurrentCatalogCacheObservation(index.observation) ||
+    index.observation.sourceIdentity !== sourceIdentity ||
+    index.observation.observationOrder === undefined
+  ) {
+    return 0;
+  }
+  return index.observation.observationOrder;
+}
+
+export async function reserveCurrentCatalogCacheObservationOrder(
+  selector: CatalogSelector,
+  sourceIdentity: string,
+  env: NodeJS.ProcessEnv = process.env,
+  signal?: AbortSignal,
+): Promise<number> {
+  const lease = await acquireCurrentCatalogCacheLease(env, { signal });
+  try {
+    signal?.throwIfAborted();
+    const selectorKey = serializeCatalogSelectorForCache(selector);
+    const selectorHash = buildCurrentCatalogSelectorHashFromKey(
+      selectorKey,
+      sourceIdentity,
+    );
+    const observationsDir = path.join(
+      path.dirname(resolveCurrentCatalogCacheSelectorsDir(env)),
+      'observations',
+      selectorHash,
+    );
+    await fs.ensureDir(observationsDir);
+    signal?.throwIfAborted();
+
+    const entryNames = await fs.readdir(observationsDir);
+    let highestOrder = 0;
+    for (const entryName of entryNames) {
+      if (!/^[1-9]\d*$/.test(entryName)) {
+        throw new Error(`Invalid current catalog observation order entry ${entryName}.`);
+      }
+      const order = Number(entryName);
+      if (!Number.isSafeInteger(order)) {
+        throw new Error(`Invalid current catalog observation order entry ${entryName}.`);
+      }
+      highestOrder = Math.max(highestOrder, order);
+    }
+
+    const indexPath = resolveCurrentCatalogCacheSelectorIndexPath(selectorHash, env);
+    const currentIndex = await readJsonFileIfExistsSafe<unknown>(indexPath);
+    highestOrder = Math.max(
+      highestOrder,
+      readCurrentCatalogObservationOrderFromIndex(
+        currentIndex,
+        selectorKey,
+        sourceIdentity,
+      ),
+    );
+    const observationOrder = highestOrder + 1;
+    if (!Number.isSafeInteger(observationOrder)) {
+      throw new Error('Current catalog observation order is exhausted.');
+    }
+
+    await fs.mkdir(path.join(observationsDir, String(observationOrder)));
+    signal?.throwIfAborted();
+    await Promise.all(entryNames.map((entryName) =>
+      fs.remove(path.join(observationsDir, entryName))));
+    return observationOrder;
+  } finally {
+    await lease.release();
+  }
 }
 
 async function restoreDisplacedCurrentCatalogCacheSelectorIndex(
@@ -1177,13 +1293,19 @@ async function restoreDisplacedCurrentCatalogCacheSelectorIndex(
   indexPath: string,
   selectorKey: string,
   env: NodeJS.ProcessEnv,
+  sourceIdentity?: string,
 ): Promise<void> {
   const removeDisplacedIndex = async (): Promise<void> => {
     await fs.remove(displacedIndexPath);
   };
   const keepValidPublishedIndex = async (): Promise<boolean> => {
     const current = await readJsonFileIfExistsSafe<unknown>(indexPath);
-    return await readCurrentCatalogCacheEntryFromSelectorIndex(selectorKey, current, env) !== null;
+    return await readCurrentCatalogCacheEntryFromSelectorIndex(
+      selectorKey,
+      current,
+      env,
+      sourceIdentity,
+    ) !== null;
   };
 
   try {
@@ -1233,6 +1355,9 @@ function createCurrentCatalogCacheSelectorIndexRecord(
         cacheKey: entry.cacheKey,
         publicationId: entry.metadata.publicationId,
         validatedAt,
+        ...(entry.observation?.sourceIdentity
+          ? { sourceIdentity: entry.observation.sourceIdentity }
+          : {}),
         ...(entry.observation ? { observation: entry.observation } : {}),
       }
     : {
@@ -1243,6 +1368,18 @@ function createCurrentCatalogCacheSelectorIndexRecord(
       };
 }
 
+function shouldKeepNewerCurrentCatalogObservation(
+  current: CurrentCatalogCacheEntry,
+  candidate: Pick<CurrentCatalogCacheEntry, 'metadata' | 'observation'>,
+): boolean {
+  const currentOrder = current.observation?.observationOrder;
+  const candidateOrder = candidate.observation?.observationOrder;
+  if (currentOrder === undefined || candidateOrder === undefined) {
+    return false;
+  }
+  return currentOrder >= candidateOrder;
+}
+
 async function writeCurrentCatalogCacheSelectorIndex(
   entry: Pick<CurrentCatalogCacheEntry, 'cacheKey' | 'selectorKey' | 'metadata' | 'observation'>,
   validatedAt: string,
@@ -1251,10 +1388,24 @@ async function writeCurrentCatalogCacheSelectorIndex(
 ): Promise<void> {
   signal?.throwIfAborted();
   const selectorsDir = resolveCurrentCatalogCacheSelectorsDir(env);
-  const selectorHash = crypto.createHash('sha256').update(entry.selectorKey).digest('hex');
+  const sourceIdentity = entry.observation?.sourceIdentity;
+  const selectorHash = buildCurrentCatalogSelectorHashFromKey(
+    entry.selectorKey,
+    sourceIdentity,
+  );
   const indexPath = resolveCurrentCatalogCacheSelectorIndexPath(selectorHash, env);
   await fs.ensureDir(selectorsDir);
   signal?.throwIfAborted();
+  const currentIndex = await readJsonFileIfExistsSafe<unknown>(indexPath);
+  const currentEntry = await readCurrentCatalogCacheEntryFromSelectorIndex(
+    entry.selectorKey,
+    currentIndex,
+    env,
+    sourceIdentity,
+  );
+  if (currentEntry && shouldKeepNewerCurrentCatalogObservation(currentEntry, entry)) {
+    return;
+  }
   const stagedIndexPath = path.join(
     selectorsDir,
     `.${selectorHash}-${crypto.randomUUID()}.tmp`,
@@ -1291,6 +1442,7 @@ async function writeCurrentCatalogCacheSelectorIndex(
         indexPath,
         entry.selectorKey,
         env,
+        sourceIdentity,
       );
       displacedIndex = false;
     }
@@ -1346,11 +1498,17 @@ async function readConcurrentCurrentCatalogCacheSelectorIndex(
   selectorKey: string,
   indexPath: string,
   env: NodeJS.ProcessEnv,
+  sourceIdentity?: string,
 ): Promise<CurrentCatalogCacheEntry | null> {
   const deadline = Date.now() + CURRENT_CATALOG_CONCURRENT_INDEX_WAIT_MS;
   while (true) {
     const index = await readJsonFileIfExistsSafe<unknown>(indexPath);
-    const entry = await readCurrentCatalogCacheEntryFromSelectorIndex(selectorKey, index, env);
+    const entry = await readCurrentCatalogCacheEntryFromSelectorIndex(
+      selectorKey,
+      index,
+      env,
+      sourceIdentity,
+    );
     if (entry) {
       return entry;
     }
@@ -1377,41 +1535,55 @@ async function hasCurrentCatalogCacheSelectorDisplacementMarker(
 export async function readCurrentCatalogCacheEntryBySelector(
   selector: CatalogSelector,
   env: NodeJS.ProcessEnv = process.env,
+  sourceIdentity?: string,
 ): Promise<CurrentCatalogCacheEntry | null> {
   const selectorKey = serializeCatalogSelectorForCache(selector);
-  const selectorHash = buildCurrentCatalogSelectorHash(selector);
+  const selectorHash = buildCurrentCatalogSelectorHash(selector, sourceIdentity);
   const indexPath = resolveCurrentCatalogCacheSelectorIndexPath(selectorHash, env);
   const index = await readJsonFileIfExistsSafe<unknown>(indexPath);
   const indexedEntry = await readCurrentCatalogCacheEntryFromSelectorIndex(
     selectorKey,
     index,
     env,
+    sourceIdentity,
   );
   if (indexedEntry) {
     return indexedEntry;
   }
 
-  const entriesDir = resolveCurrentCatalogCacheEntriesDir(env);
-  const entries = await fs.readdir(entriesDir).catch(() => [] as string[]);
   let newest: CurrentCatalogCacheEntry | null = null;
-  for (const cacheKey of entries) {
-    const candidate = await readCurrentCatalogCacheEntryByKey(cacheKey, selectorKey, env);
-    if (
-      candidate?.metadata.version === 1 &&
-      (!newest || Date.parse(candidate.metadata.createdAt) > Date.parse(newest.metadata.createdAt))
-    ) {
-      newest = candidate;
+  if (sourceIdentity === undefined) {
+    const entriesDir = resolveCurrentCatalogCacheEntriesDir(env);
+    const entries = await fs.readdir(entriesDir).catch(() => [] as string[]);
+    for (const cacheKey of entries) {
+      const candidate = await readCurrentCatalogCacheEntryByKey(cacheKey, selectorKey, env);
+      if (
+        candidate?.metadata.version === 1 &&
+        (!newest || Date.parse(candidate.metadata.createdAt) > Date.parse(newest.metadata.createdAt))
+      ) {
+        newest = candidate;
+      }
     }
   }
   if (!newest) {
     if (await hasCurrentCatalogCacheSelectorDisplacementMarker(selectorHash, env)) {
-      return readConcurrentCurrentCatalogCacheSelectorIndex(selectorKey, indexPath, env);
+      return readConcurrentCurrentCatalogCacheSelectorIndex(
+        selectorKey,
+        indexPath,
+        env,
+        sourceIdentity,
+      );
     }
 
     // A publisher can remove its displacement marker immediately after it
     // publishes the replacement index. Re-read once before reporting a miss.
     const currentIndex = await readJsonFileIfExistsSafe<unknown>(indexPath);
-    return readCurrentCatalogCacheEntryFromSelectorIndex(selectorKey, currentIndex, env);
+    return readCurrentCatalogCacheEntryFromSelectorIndex(
+      selectorKey,
+      currentIndex,
+      env,
+      sourceIdentity,
+    );
   }
   return newest;
 }
@@ -1419,6 +1591,7 @@ export async function readCurrentCatalogCacheEntryBySelector(
 export async function readCurrentCatalogCacheEntry(
   identity: CurrentCatalogCacheIdentity,
   env: NodeJS.ProcessEnv = process.env,
+  sourceIdentity?: string,
 ): Promise<CurrentCatalogCacheEntry | null> {
   const selectorKey = serializeCatalogSelectorForCache(identity.selector);
   const cacheKey = buildCurrentCatalogCacheKey(identity);
@@ -1443,10 +1616,13 @@ export async function readCurrentCatalogCacheEntry(
   }
 
   const selectorIndex = await readJsonFileIfExistsSafe<unknown>(
-    resolveCurrentCatalogCacheSelectorIndexPath(buildCurrentCatalogSelectorHash(identity.selector), env),
+    resolveCurrentCatalogCacheSelectorIndexPath(
+      buildCurrentCatalogSelectorHash(identity.selector, sourceIdentity),
+      env,
+    ),
   );
-  return applyCurrentCatalogCacheSelectorIndex(entry, selectorIndex) ??
-    (entry.metadata.version === 1 ? entry : null);
+  return applyCurrentCatalogCacheSelectorIndex(entry, selectorIndex, sourceIdentity) ??
+    (entry.metadata.version === 1 && sourceIdentity === undefined ? entry : null);
 }
 
 async function writeCurrentCatalogCacheEntryWithLease(

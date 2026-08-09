@@ -42,7 +42,8 @@ export function processTreeCleanupIsUnconfirmed(diagnostics: readonly string[]):
   return diagnostics.some((entry) =>
     entry.startsWith(PROCESS_TREE_CLEANUP_UNCONFIRMED_PREFIX) ||
     entry.startsWith('Could not confirm process-tree termination') ||
-    entry.startsWith('Could not confirm Windows process-tree termination')
+    entry.startsWith('Could not confirm Windows process-tree termination') ||
+    entry.startsWith('Could not verify Windows process-tree termination')
   );
 }
 

@@ -96,12 +96,50 @@ function isExcludedInputPath(relativePath) {
   return /^plugins\/[^/]+\/evals(?:\/|$)/.test(normalizedPath);
 }
 
-async function collectEntries(repoRoot, relativePath, entries, exclude = () => false) {
+async function computeSymlinkReferentDigest(
+  absolutePath,
+  repoRoot,
+  relativePath,
+  exclude,
+  ancestorRealPaths,
+) {
+  let referentPath;
+  try {
+    referentPath = await fs.realpath(absolutePath);
+  } catch (error) {
+    if (error?.code === 'ENOENT' || error?.code === 'ELOOP') {
+      return `unresolved:${error.code}`;
+    }
+    throw error;
+  }
+  if (ancestorRealPaths.has(referentPath)) {
+    return 'cycle';
+  }
+
+  const entries = [];
+  await collectEntries(
+    repoRoot,
+    relativePath,
+    entries,
+    exclude,
+    { absolutePath: referentPath, ancestorRealPaths },
+  );
+  return digestEntries(entries);
+}
+
+async function collectEntries(
+  repoRoot,
+  relativePath,
+  entries,
+  exclude = () => false,
+  traversal = {},
+) {
   if (exclude(relativePath)) {
     return;
   }
 
-  const absolutePath = path.join(repoRoot, relativePath);
+  const absolutePath = traversal.absolutePath ?? path.join(repoRoot, relativePath);
+  const ancestorRealPaths = traversal.ancestorRealPaths ?? new Set();
   let stats;
   try {
     stats = await fs.lstat(absolutePath);
@@ -119,15 +157,32 @@ async function collectEntries(repoRoot, relativePath, entries, exclude = () => f
       kind: 'symlink',
       mode: stats.mode & 0o777,
       path: normalizedPath,
+      referentDigest: await computeSymlinkReferentDigest(
+        absolutePath,
+        repoRoot,
+        relativePath,
+        exclude,
+        ancestorRealPaths,
+      ),
       target: await fs.readlink(absolutePath),
     });
     return;
   }
   if (stats.isDirectory()) {
     entries.push({ kind: 'directory', mode: stats.mode & 0o777, path: normalizedPath });
-    const childNames = (await fs.readdir(absolutePath)).sort();
-    for (const childName of childNames) {
-      await collectEntries(repoRoot, path.join(relativePath, childName), entries, exclude);
+    const nextAncestorRealPaths = new Set(ancestorRealPaths);
+    nextAncestorRealPaths.add(await fs.realpath(absolutePath));
+    for (const childName of (await fs.readdir(absolutePath)).sort()) {
+      await collectEntries(
+        repoRoot,
+        path.join(relativePath, childName),
+        entries,
+        exclude,
+        {
+          absolutePath: path.join(absolutePath, childName),
+          ancestorRealPaths: nextAncestorRealPaths,
+        },
+      );
     }
     return;
   }
@@ -156,6 +211,7 @@ function digestEntries(entries) {
     } else if (entry.kind === 'symlink') {
       updateLengthPrefixed(entryHash, String(entry.mode));
       updateLengthPrefixed(entryHash, entry.target);
+      updateLengthPrefixed(entryHash, entry.referentDigest);
     } else if (entry.kind === 'directory' || entry.kind === 'other') {
       updateLengthPrefixed(entryHash, String(entry.mode));
     }
