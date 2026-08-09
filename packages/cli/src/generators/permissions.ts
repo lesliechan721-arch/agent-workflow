@@ -56,6 +56,7 @@ export function generateCodexPermissionArtifacts(
   permissions: PermissionDefinition[],
 ): GeneratedTextArtifact[] {
   return permissions.map((permission) => {
+    const generatedName = buildGeneratedName(pluginName, permission.name);
     const lines = [
       `# ${pluginName}/${permission.name}`,
       '',
@@ -66,7 +67,8 @@ export function generateCodexPermissionArtifacts(
     ];
 
     return {
-      relativePath: `rules/${buildGeneratedName(pluginName, permission.name)}.rules`,
+      relativePath: `rules/${generatedName}.rules`,
+      artifactKey: generatedName,
       content: lines.join('\n'),
     };
   });

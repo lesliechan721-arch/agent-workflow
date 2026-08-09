@@ -224,6 +224,7 @@ async function assertClaudeHooksArtifact(
 async function validateClaudeManifest(
   pluginRoot: string,
   manifest: PlatformPluginManifest,
+  ownerMarkerPolicy: 'reject' | 'ignore',
 ): Promise<void> {
   const input = manifest as unknown as Record<string, unknown>;
   for (const key of Object.keys(input)) {
@@ -251,7 +252,7 @@ async function validateClaudeManifest(
 
   if (manifest.skills) {
     await assertBundlePathExists(pluginRoot, manifest.skills, 'claude.skills', './claude/');
-    await validateClaudeSkillsTree(pluginRoot, manifest.skills);
+    await validateClaudeSkillsTree(pluginRoot, manifest.skills, ownerMarkerPolicy);
   }
   if (manifest.commands) {
     await assertBundlePathExists(pluginRoot, manifest.commands, 'claude.commands', './claude/');
@@ -309,6 +310,7 @@ async function validateClaudeManifest(
 async function validateCodexManifest(
   pluginRoot: string,
   manifest: PlatformPluginManifest,
+  ownerMarkerPolicy: 'reject' | 'ignore',
 ): Promise<void> {
   const input = manifest as unknown as Record<string, unknown>;
   for (const key of Object.keys(input)) {
@@ -331,7 +333,7 @@ async function validateCodexManifest(
 
   if (manifest.skills) {
     await assertBundlePathExists(pluginRoot, manifest.skills, 'codex.skills', './codex/');
-    await validateCodexSkillsTree(pluginRoot, manifest.skills);
+    await validateCodexSkillsTree(pluginRoot, manifest.skills, ownerMarkerPolicy);
   }
   if (manifest.mcpServers) {
     await assertMcpArtifact(pluginRoot, manifest.mcpServers, 'codex.mcpServers', './codex/');
@@ -375,6 +377,7 @@ async function assertSkillEntryExists(
 async function validateClaudeSkillsTree(
   pluginRoot: string,
   relativePath: string,
+  ownerMarkerPolicy: 'reject' | 'ignore',
 ): Promise<void> {
   const skillsRoot = await resolveExistingBundlePath(
     pluginRoot,
@@ -385,13 +388,14 @@ async function validateClaudeSkillsTree(
   for (const skillName of await listSkillDirectories(skillsRoot)) {
     const skillRoot = path.join(skillsRoot, skillName);
     await assertSkillEntryExists(skillRoot, skillName, 'SKILL.md', 'claude.skills');
-    await validateSkillDirectory(skillRoot, 'claude.skill');
+    await validateSkillDirectory(skillRoot, 'claude.skill', { ownerMarkerPolicy });
   }
 }
 
 async function validateCodexSkillsTree(
   pluginRoot: string,
   relativePath: string,
+  ownerMarkerPolicy: 'reject' | 'ignore',
 ): Promise<void> {
   const skillsRoot = await resolveExistingBundlePath(
     pluginRoot,
@@ -408,7 +412,7 @@ async function validateCodexSkillsTree(
       path.join('agents', 'openai.yaml'),
       'codex.skills',
     );
-    await validateSkillDirectory(skillRoot, 'codex.skill');
+    await validateSkillDirectory(skillRoot, 'codex.skill', { ownerMarkerPolicy });
   }
 }
 
@@ -834,7 +838,11 @@ async function validateCatalogStagingLayout(rootDir: string): Promise<void> {
   await validateBundleLayout(fullPackageRoot);
 }
 
-export async function validateBundleLayout(rootDir: string): Promise<void> {
+export async function validateBundleLayout(
+  rootDir: string,
+  options?: { ownerMarkerPolicy?: 'reject' | 'ignore' },
+): Promise<void> {
+  const ownerMarkerPolicy = options?.ownerMarkerPolicy ?? 'reject';
   const [claudeMarketplace, codexMarketplace, bundledPluginNames] = await Promise.all([
     readMarketplaceManifestFromBundle(rootDir, 'claude'),
     readMarketplaceManifestFromBundle(rootDir, 'codex'),
@@ -883,9 +891,9 @@ export async function validateBundleLayout(rootDir: string): Promise<void> {
 
         const platformManifest = await readJsonFile<PlatformPluginManifest>(manifestPath);
         if (platform === 'claude') {
-          await validateClaudeManifest(pluginRoot, platformManifest);
+          await validateClaudeManifest(pluginRoot, platformManifest, ownerMarkerPolicy);
         } else {
-          await validateCodexManifest(pluginRoot, platformManifest);
+          await validateCodexManifest(pluginRoot, platformManifest, ownerMarkerPolicy);
         }
         continue;
       }

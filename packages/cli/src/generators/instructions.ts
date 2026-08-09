@@ -4,6 +4,7 @@ import { buildGeneratedName } from './shared.js';
 export interface GeneratedTextArtifact {
   relativePath: string;
   content: string;
+  artifactKey?: string;
 }
 
 export interface CodexInstructionBundle {
@@ -90,9 +91,13 @@ export function generateInstructionArtifacts(
     ];
   }
 
-  return instructions.map((instruction) => ({
-    relativePath: `rules/${buildGeneratedName(pluginName, instruction.name)}.md`,
-    content:
-      `${renderClaudePathsFrontmatter(instruction.paths)}# ${instruction.title}\n\n${instruction.content.trim()}\n`,
-  }));
+  return instructions.map((instruction) => {
+    const generatedName = buildGeneratedName(pluginName, instruction.name);
+    return {
+      relativePath: `rules/${generatedName}.md`,
+      artifactKey: generatedName,
+      content:
+        `${renderClaudePathsFrontmatter(instruction.paths)}# ${instruction.title}\n\n${instruction.content.trim()}\n`,
+    };
+  });
 }

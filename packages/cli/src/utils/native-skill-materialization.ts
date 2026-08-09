@@ -7,6 +7,12 @@ import {
   createCodexSkillExpectedTree,
   type CodexSkillStagingTree,
 } from './codex-skill-staging.js';
+import {
+  assertOwnedSkillPath,
+  createSkillOwnerMarkerContent,
+  SKILL_OWNER_MARKER,
+  type OwnerIdentity,
+} from './ownership.js';
 
 interface CodexProjectSkillOperation {
   targetRoot: string;
@@ -85,7 +91,13 @@ async function stageSkillTree(
   targetRoot: string,
   tree: CodexSkillStagingTree,
   operations: CodexProjectSkillOperation[],
+  ownership: { allowedRoot: string; identity: OwnerIdentity },
 ): Promise<void> {
+  await assertOwnedSkillPath({
+    skillRoot: targetRoot,
+    allowedRoot: ownership.allowedRoot,
+    identity: ownership.identity,
+  });
   const targetParent = path.dirname(targetRoot);
   await fs.ensureDir(targetParent);
   const stagingRoot = await fs.mkdtemp(
@@ -101,6 +113,11 @@ async function stageSkillTree(
         content,
       );
     }
+    await fs.writeFile(
+      path.join(stagingRoot, SKILL_OWNER_MARKER),
+      createSkillOwnerMarkerContent(ownership.identity),
+      'utf8',
+    );
     if (targetExists) {
       await fs.move(targetRoot, backupRoot, { overwrite: false });
     }
@@ -139,7 +156,16 @@ export async function materializeCodexProjectSkills(options: {
     for (const tree of await collectBundledCodexSkillTrees(options.plugin)) {
       const artifact = createCodexProjectSkillArtifact(options.repoRoot, tree);
       const targetRoot = artifact.path;
-      await stageSkillTree(targetRoot, tree, materialization.operations);
+      await stageSkillTree(targetRoot, tree, materialization.operations, {
+        allowedRoot: path.dirname(targetRoot),
+        identity: {
+          owner: 'agent-workflows',
+          plugin: options.plugin.manifest.name,
+          artifactKey: tree.skillKey,
+          platform: 'codex',
+          scope: 'project',
+        },
+      });
       materialization.artifacts.push(artifact);
     }
     materialization.active = materialization.operations.length > 0;

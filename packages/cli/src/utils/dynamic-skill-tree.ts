@@ -8,6 +8,12 @@ import type {
   ClaudeSkillArtifact,
   CodexSkillArtifact,
 } from '../types.js';
+import {
+  assertOwnedSkillPath,
+  createSkillOwnerMarkerContent,
+  type OwnerIdentity,
+  SKILL_OWNER_MARKER,
+} from './ownership.js';
 
 export const SKILL_FILE_PATH = 'SKILL.md';
 export const CODEX_OPENAI_YAML_PATH = 'agents/openai.yaml';
@@ -106,13 +112,20 @@ function assertNoFileDirectoryConflicts(files: Record<string, Buffer>): void {
   }
 }
 
-async function collectDirectoryFiles(rootDir: string): Promise<Record<string, Buffer>> {
+async function collectDirectoryFiles(
+  rootDir: string,
+  ownerMarkerPolicy: 'reject' | 'ignore',
+): Promise<Record<string, Buffer>> {
   const files: Record<string, Buffer> = {};
 
   const visit = async (currentDir: string, parentPath: string): Promise<void> => {
     const entries = await fs.readdir(currentDir, { withFileTypes: true });
     for (const entry of entries.sort((left, right) => compareSkillPaths(left.name, right.name))) {
       const relativePath = parentPath ? `${parentPath}/${entry.name}` : entry.name;
+      if (relativePath === SKILL_OWNER_MARKER) {
+        if (ownerMarkerPolicy === 'ignore') continue;
+        throw new Error(`Skill source tree 不能声明保留文件 ${SKILL_OWNER_MARKER}。`);
+      }
       const absolutePath = path.join(currentDir, entry.name);
       if (entry.isSymbolicLink()) {
         throw new Error(`Skill 静态源不支持符号链接：${relativePath}`);
@@ -156,6 +169,7 @@ function validatePresentSkillTree(options: {
 export async function validateSkillDirectory(
   rootDir: string,
   target: CodexSkillArtifact['target'] | ClaudeSkillArtifact['target'],
+  options?: { ownerMarkerPolicy?: 'reject' | 'ignore' },
 ): Promise<DynamicSkillTree> {
   const rootStats = await fs.lstat(rootDir).catch(() => null);
   if (!rootStats || rootStats.isSymbolicLink() || !rootStats.isDirectory()) {
@@ -163,7 +177,7 @@ export async function validateSkillDirectory(
   }
   const tree = {
     skillKey: path.basename(rootDir),
-    files: await collectDirectoryFiles(rootDir),
+    files: await collectDirectoryFiles(rootDir, options?.ownerMarkerPolicy ?? 'reject'),
   };
   validatePresentSkillTree({
     target,
@@ -190,7 +204,9 @@ export async function validateSkillDirectoriesRoot(
     if (!entry.isDirectory()) {
       continue;
     }
-    trees.push(await validateSkillDirectory(path.join(rootDir, entry.name), target));
+    trees.push(await validateSkillDirectory(path.join(rootDir, entry.name), target, {
+      ownerMarkerPolicy: 'ignore',
+    }));
   }
   return trees;
 }
@@ -209,9 +225,12 @@ export async function createDynamicSkillExpectedTree(options: {
 
   const files: Record<string, Buffer> = {};
   for (const sourceDir of options.sourceDirs ?? []) {
-    Object.assign(files, await collectDirectoryFiles(sourceDir));
+    Object.assign(files, await collectDirectoryFiles(sourceDir, 'reject'));
   }
   for (const [relativePath, content] of Object.entries(options.artifact.content?.files ?? {})) {
+    if (relativePath === SKILL_OWNER_MARKER) {
+      throw new Error(`Skill renderer 不能声明保留文件 ${SKILL_OWNER_MARKER}。`);
+    }
     files[relativePath] = Buffer.from(content, 'utf8');
   }
   validatePresentSkillTree({
@@ -291,8 +310,19 @@ async function createEmptyStagingTree(
 export async function writeDynamicSkillTree(
   rootDir: string,
   tree: DynamicSkillTree,
+  ownership?: {
+    allowedRoot: string;
+    identity: OwnerIdentity;
+  },
 ): Promise<string[]> {
   const entries = sortedSkillFileEntries(tree.files);
+  if (ownership) {
+    await assertOwnedSkillPath({
+      skillRoot: rootDir,
+      allowedRoot: ownership.allowedRoot,
+      identity: ownership.identity,
+    });
+  }
   await fs.ensureDir(path.dirname(rootDir));
   const stagingRoot = await fs.mkdtemp(path.join(path.dirname(rootDir), `.${path.basename(rootDir)}-staging-`));
   const backupRoot = `${stagingRoot}-backup`;
@@ -306,6 +336,13 @@ export async function writeDynamicSkillTree(
       const targetPath = path.join(stagingRoot, relativePath.split('/').join(path.sep));
       await fs.writeFile(targetPath, content);
       writtenPaths.push(path.join(rootDir, relativePath.split('/').join(path.sep)));
+    }
+    if (ownership) {
+      await fs.writeFile(
+        path.join(stagingRoot, SKILL_OWNER_MARKER),
+        createSkillOwnerMarkerContent(ownership.identity),
+        'utf8',
+      );
     }
     if (targetExists) {
       await fs.move(rootDir, backupRoot, { overwrite: false });
@@ -346,7 +383,7 @@ export async function readDynamicSkillTree(
   if (rootStats.isSymbolicLink() || !rootStats.isDirectory()) {
     throw new Error(`Skill runtime 根路径必须是真实目录：${rootDir}`);
   }
-  const files = await collectDirectoryFiles(rootDir);
+  const files = await collectDirectoryFiles(rootDir, 'ignore');
   if (!files[SKILL_FILE_PATH] || (target === 'codex.skill' && !files[CODEX_OPENAI_YAML_PATH])) {
     return null;
   }

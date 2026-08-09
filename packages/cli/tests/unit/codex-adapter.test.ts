@@ -62,6 +62,10 @@ import {
   writeTrackingManifest,
 } from '../../src/utils/tracking.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
+import {
+  OWNED_TEXT_HEADER_PREFIX,
+  SKILL_OWNER_MARKER,
+} from '../../src/utils/ownership.js';
 
 const tempDirs: string[] = [];
 
@@ -1320,6 +1324,35 @@ describe('CodexAdapter', () => {
     tempDirs.push(refreshedEmbeddedRoot);
     setEmbeddedPluginsRootOverrideForTests(refreshedEmbeddedRoot);
     const acceptedRoleContent = await fs.readFile(roleFilePath, 'utf8');
+    const foreignRoleHeader = acceptedRoleContent.replace(
+      '"plugin":"dynamic-artifacts"',
+      '"plugin":"foreign-plugin"',
+    );
+    await fs.writeFile(roleFilePath, foreignRoleHeader, 'utf8');
+    const headerDriftStatus = await adapter.status(plugin, 'project', {
+      previousArtifacts: artifacts,
+    });
+    expect(headerDriftStatus.plugins[0]?.managedArtifacts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'codex-explorer-role',
+        health: 'contentDrift',
+      }),
+    ]));
+    await fs.writeFile(
+      roleFilePath,
+      acceptedRoleContent.replace(OWNED_TEXT_HEADER_PREFIX, `${OWNED_TEXT_HEADER_PREFIX}{invalid`),
+      'utf8',
+    );
+    const invalidHeaderStatus = await adapter.status(plugin, 'project', {
+      previousArtifacts: artifacts,
+    });
+    expect(invalidHeaderStatus.plugins[0]?.managedArtifacts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'codex-explorer-role',
+        health: 'contentDrift',
+      }),
+    ]));
+    await fs.writeFile(roleFilePath, acceptedRoleContent, 'utf8');
     await fs.appendFile(roleFilePath, '\n# user drift\n');
     const driftStatus = await adapter.status(plugin, 'project', {
       previousArtifacts: artifacts,
@@ -1369,6 +1402,7 @@ describe('CodexAdapter', () => {
     await expect(fs.readFile(roleFilePath, 'utf8')).resolves.toContain(
       'model_reasoning_effort = "medium"',
     );
+    expect((await fs.readFile(roleFilePath, 'utf8')).startsWith(OWNED_TEXT_HEADER_PREFIX)).toBe(true);
   });
 
   it('removes disabled rendered instruction blocks without leaving stale prompt text', async () => {
@@ -2642,6 +2676,19 @@ describe('CodexAdapter', () => {
     await expect(
       fs.readFile(path.join(cacheVersionPath, 'codex', 'custom-skills', 'generated-commit', 'SKILL.md'), 'utf8'),
     ).resolves.toBe('# Dynamic Commit\n');
+    await expect(fs.readJson(path.join(
+      cacheVersionPath,
+      'codex',
+      'custom-skills',
+      'generated-commit',
+      SKILL_OWNER_MARKER,
+    ))).resolves.toMatchObject({
+      owner: 'agent-workflows',
+      plugin: plugin.manifest.name,
+      artifactKey: 'generated-commit',
+      platform: 'codex',
+      scope: 'user',
+    });
   });
 
   it('cleans stale mirrored dynamic Codex skills from custom roots before direct native install', async () => {
@@ -3681,6 +3728,28 @@ describe('CodexAdapter', () => {
     expect(permissionArtifact?.path).toBeTruthy();
     expect(agentArtifact?.path).toBeTruthy();
     expect(hookArtifact?.path).toBeTruthy();
+    expect((await fs.readFile(permissionArtifact!.path, 'utf8')).startsWith(OWNED_TEXT_HEADER_PREFIX)).toBe(true);
+    expect((await fs.readFile(agentArtifact!.path, 'utf8')).startsWith(OWNED_TEXT_HEADER_PREFIX)).toBe(true);
+    const permissionContent = await fs.readFile(permissionArtifact!.path, 'utf8');
+    const agentContent = await fs.readFile(agentArtifact!.path, 'utf8');
+    await upsertTrackingRecord(paths.trackingDir, plugin.manifest.name, artifacts);
+    await fs.writeFile(
+      permissionArtifact!.path,
+      permissionContent.replace('"plugin":"git-commit"', '"plugin":"foreign-plugin"'),
+      'utf8',
+    );
+    await fs.writeFile(
+      agentArtifact!.path,
+      agentContent.replace('"plugin":"git-commit"', '"plugin":"foreign-plugin"'),
+      'utf8',
+    );
+    const headerDriftStatus = await adapter.status(plugin, 'project');
+    expect(headerDriftStatus.plugins[0].repoManagedSessionState?.items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'permission', state: 'drifted' }),
+      expect.objectContaining({ kind: 'agent', state: 'drifted' }),
+    ]));
+    await fs.writeFile(permissionArtifact!.path, permissionContent, 'utf8');
+    await fs.writeFile(agentArtifact!.path, agentContent, 'utf8');
     await expect(readCodexConfigFile(paths.configTomlPath)).resolves.toMatchObject({
       snapshot: {
         developerInstructions: {

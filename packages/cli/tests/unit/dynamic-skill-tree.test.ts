@@ -13,6 +13,7 @@ import {
   validateSkillDirectoriesRoot,
   writeDynamicSkillTree,
 } from '../../src/utils/dynamic-skill-tree.js';
+import { SKILL_OWNER_MARKER } from '../../src/utils/ownership.js';
 
 const tempDirs: string[] = [];
 
@@ -89,13 +90,61 @@ describe('dynamic skill tree', () => {
     expect(tree.files['SKILL.md']?.toString()).toContain('disable-model-invocation: true');
     expect(tree.files['SKILL.md']?.toString()).toContain('user-invocable: true');
 
-    const written = await writeDynamicSkillTree(target, tree);
+    const written = await writeDynamicSkillTree(target, tree, {
+      allowedRoot: path.dirname(target),
+      identity: {
+        owner: 'agent-workflows',
+        plugin: 'dynamic-tree-test',
+        artifactKey: 'example',
+        platform: 'claude',
+        scope: 'user',
+      },
+    });
     expect(written).toContain(path.join(target, 'scripts', 'helper.sh'));
+    expect(written).not.toContain(path.join(target, SKILL_OWNER_MARKER));
+    await expect(fs.pathExists(path.join(target, SKILL_OWNER_MARKER))).resolves.toBe(true);
     const actual = await readDynamicSkillTree(target, 'claude.skill');
     expect(actual).not.toBeNull();
+    expect(actual!.files).not.toHaveProperty(SKILL_OWNER_MARKER);
     expect(createDynamicSkillTreeContentDigest(actual!)).toBe(
       createDynamicSkillTreeContentDigest(tree),
     );
+  });
+
+  it('rejects the reserved owner marker from source directories and renderer output', async () => {
+    const root = await makeTempRoot();
+    const source = path.join(root, 'source');
+    await fs.outputFile(path.join(source, 'SKILL.md'), '# skill\n');
+    await fs.outputFile(
+      path.join(source, 'agents', 'openai.yaml'),
+      'policy:\n  allow_implicit_invocation: true\n',
+    );
+    await fs.outputFile(path.join(source, SKILL_OWNER_MARKER), '{}\n');
+
+    await expect(createDynamicSkillExpectedTree({
+      artifact: {
+        target: 'codex.skill',
+        skillKey: 'example',
+        state: 'present',
+        content: { files: {} },
+      },
+      sourceDirs: [source],
+    })).rejects.toThrow(`不能声明保留文件 ${SKILL_OWNER_MARKER}`);
+
+    await expect(createDynamicSkillExpectedTree({
+      artifact: {
+        target: 'codex.skill',
+        skillKey: 'example',
+        state: 'present',
+        content: {
+          files: {
+            'SKILL.md': '# skill\n',
+            'agents/openai.yaml': 'policy:\n  allow_implicit_invocation: true\n',
+            [SKILL_OWNER_MARKER]: '{}\n',
+          },
+        },
+      },
+    })).rejects.toThrow(`不能声明保留文件 ${SKILL_OWNER_MARKER}`);
   });
 
   it('rejects final file and directory path conflicts', async () => {

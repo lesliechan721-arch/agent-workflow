@@ -54,6 +54,7 @@ import {
   createDynamicSkillTreeContentDigest,
   validateSkillDirectory,
 } from './dynamic-skill-tree.js';
+import { writeSkillOwnerMarker } from './ownership.js';
 
 function resolveCliPackageJsonPath(): string {
   return path.join(resolveCliPackageRoot(), 'package.json');
@@ -251,6 +252,23 @@ async function syncLocalMarketplaceCodexDynamicSkillsInternal(
       ...manifest,
       skills: manifestSkills,
     });
+  }
+
+  for (const skillKey of [...new Set(options.skillKeys)].sort()) {
+    const skillRoot = path.join(manifestSkillsRoot, skillKey);
+    if (await pathIsDirectory(skillRoot) && await fs.pathExists(path.join(skillRoot, 'SKILL.md'))) {
+      await writeSkillOwnerMarker({
+        skillRoot,
+        allowedRoot: manifestSkillsRoot,
+        identity: {
+          owner: 'agent-workflows',
+          plugin: options.pluginName,
+          artifactKey: skillKey,
+          platform: 'codex',
+          scope: 'user',
+        },
+      });
+    }
   }
 }
 
@@ -2359,7 +2377,7 @@ export async function calculateBundleFingerprint(rootDir: string): Promise<strin
 }
 
 export async function validateLocalMarketplaceLayout(rootDir: string): Promise<void> {
-  await validateBundleLayout(rootDir);
+  await validateBundleLayout(rootDir, { ownerMarkerPolicy: 'ignore' });
 }
 
 async function copyBundleToStaging(embeddedRoot: string, stagingRoot: string): Promise<void> {
@@ -2804,7 +2822,9 @@ async function replayCodexUserDynamicSkillsToMarketplace(options: {
 
       let sourceTree;
       try {
-        sourceTree = await validateSkillDirectory(sourceSkillRoot, 'codex.skill');
+        sourceTree = await validateSkillDirectory(sourceSkillRoot, 'codex.skill', {
+          ownerMarkerPolicy: 'ignore',
+        });
       } catch (error) {
         warnings.push(
           `跳过 user dynamic skill replay：runtime skill ${recordFile.record.pluginName}/${artifact.artifactKey} 无效（${error instanceof Error ? error.message : String(error)}）。`,

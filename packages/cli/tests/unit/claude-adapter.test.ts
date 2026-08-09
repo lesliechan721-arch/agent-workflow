@@ -46,6 +46,10 @@ import {
 } from '../../src/install-state/paths.js';
 import type { PluginLocation } from '../../src/install-state/types.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
+import {
+  OWNED_TEXT_HEADER_PREFIX,
+  SKILL_OWNER_MARKER,
+} from '../../src/utils/ownership.js';
 
 const tempDirs: string[] = [];
 
@@ -360,6 +364,14 @@ describe('ClaudeAdapter', () => {
       .resolves.toEqual(Buffer.from([0, 255, 1]));
     await expect(fs.readFile(path.join(skillRoot, 'SKILL.md'), 'utf8'))
       .resolves.toContain('disable-model-invocation: false');
+    await expect(fs.readJson(path.join(skillRoot, SKILL_OWNER_MARKER))).resolves.toMatchObject({
+      schemaVersion: 1,
+      owner: 'agent-workflows',
+      plugin: plugin.manifest.name,
+      artifactKey: 'dynamic-claude',
+      platform: 'claude',
+      scope: 'project',
+    });
 
     await upsertTrackingRecord(paths.trackingDir, plugin.manifest.name, artifacts);
     await setupLocalMarketplace(repoRoot, env);
@@ -726,6 +738,9 @@ describe('ClaudeAdapter', () => {
     const instructionArtifact = artifacts.find((artifact) => artifact.kind === 'instruction');
     expect(instructionArtifact?.path).toBeTruthy();
     await expect(fs.pathExists(instructionArtifact!.path)).resolves.toBe(true);
+    await expect(fs.readFile(instructionArtifact!.path, 'utf8')).resolves.toContain(
+      OWNED_TEXT_HEADER_PREFIX,
+    );
 
     await expect(fs.readJson(paths.settingsPath)).resolves.toMatchObject({
       permissions: {

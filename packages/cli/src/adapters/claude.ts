@@ -59,6 +59,7 @@ import {
 } from '../utils/dynamic-skill-tree.js';
 import { resolvePlatformHookDefinitions } from '../utils/hooks-contract.js';
 import { resolvePlatformEntries } from '../utils/platform-entries.js';
+import { writeOwnedTextFile } from '../utils/ownership.js';
 import {
   readInstallRecordForLocation,
   readProjectArtifactIdentityForLocator,
@@ -735,7 +736,6 @@ export class ClaudeAdapter implements PlatformAdapter {
       const sourceDirsFor = (artifact: ValidatedArtifactPlanArtifact): string[] =>
         renderResult?.context.artifactSources.find((entry) =>
           entry.id === artifact.id && entry.target === artifact.target)?.sourceDirs ?? [];
-
       for (const artifact of dynamicArtifacts) {
         const skillKey = artifact.skillKey?.trim();
         if (!skillKey) {
@@ -770,7 +770,16 @@ export class ClaudeAdapter implements PlatformAdapter {
             pluginName: plugin.manifest.name,
             trackingManifest,
           });
-          writtenPaths = await writeDynamicSkillTree(skillPath, expectedTree);
+          writtenPaths = await writeDynamicSkillTree(skillPath, expectedTree, {
+            allowedRoot: path.dirname(skillPath),
+            identity: {
+              owner: 'agent-workflows',
+              plugin: plugin.manifest.name,
+              artifactKey: skillKey,
+              platform: 'claude',
+              scope,
+            },
+          });
         }
         artifacts.push({
           path: skillPath,
@@ -795,8 +804,21 @@ export class ClaudeAdapter implements PlatformAdapter {
           'claude',
         )) {
           const artifactPath = path.join(paths.configDir, artifact.relativePath);
-          await fs.ensureDir(path.dirname(artifactPath));
-          await fs.writeFile(artifactPath, artifact.content, 'utf8');
+          if (!artifact.artifactKey) {
+            throw new Error(`Claude rule ${artifact.relativePath} 缺少 artifactKey。`);
+          }
+          await writeOwnedTextFile({
+            path: artifactPath,
+            allowedRoot: paths.configDir,
+            identity: {
+              owner: 'agent-workflows',
+              plugin: plugin.manifest.name,
+              artifactKey: artifact.artifactKey,
+              platform: 'claude',
+              scope,
+            },
+            content: artifact.content,
+          });
           artifacts.push({ path: artifactPath, kind: 'instruction', platform: 'claude' });
         }
       }

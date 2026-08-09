@@ -154,6 +154,11 @@ import {
   validateSkillDirectoriesRoot,
   writeDynamicSkillTree,
 } from '../utils/dynamic-skill-tree.js';
+import {
+  parseOwnedTextHeader,
+  writeOwnedTextFile,
+  type OwnerIdentity,
+} from '../utils/ownership.js';
 import { assertCanonicalTrackedCodexArtifactMainPaths } from '../utils/codex-artifact-paths.js';
 import {
   parseCodexSharedHooksFile,
@@ -633,11 +638,29 @@ async function writeTextArtifact(
   baseDir: string,
   relativePath: string,
   content: string,
+  identity?: OwnerIdentity,
 ): Promise<string> {
   const targetPath = path.join(baseDir, relativePath);
-  await fs.ensureDir(path.dirname(targetPath));
-  await fs.writeFile(targetPath, content, 'utf8');
+  if (identity) {
+    await writeOwnedTextFile({
+      path: targetPath,
+      allowedRoot: baseDir,
+      identity,
+      content,
+    });
+  } else {
+    await fs.ensureDir(path.dirname(targetPath));
+    await fs.writeFile(targetPath, content, 'utf8');
+  }
   return targetPath;
+}
+
+function ownedTextPayload(content: string, expectedIdentity: OwnerIdentity): string | null {
+  try {
+    return parseOwnedTextHeader(content, expectedIdentity)?.content ?? content;
+  } catch {
+    return null;
+  }
 }
 
 function renderCodexRoleTomlString(value: string): string {
@@ -795,8 +818,12 @@ async function compareCodexRepoSkillToExpectedTree(options: {
 async function writeCodexSkillTree(
   rootDir: string,
   tree: CodexSkillStagingTree,
+  identity: OwnerIdentity,
 ): Promise<string[]> {
-  return writeDynamicSkillTree(rootDir, tree);
+  return writeDynamicSkillTree(rootDir, tree, {
+    allowedRoot: path.dirname(rootDir),
+    identity,
+  });
 }
 
 function findTrackedCodexDynamicSkillArtifact(
@@ -2777,7 +2804,13 @@ async function buildCodexManagedArtifactStatuses(options: {
         registration: {
           description: registration.description?.trim(),
         },
-        roleFile: roleFileContent,
+        roleFile: ownedTextPayload(roleFileContent, {
+          owner: 'agent-workflows',
+          plugin: options.plugin.manifest.name,
+          artifactKey: roleKey,
+          platform: 'codex',
+          scope: options.scope,
+        }) ?? roleFileContent,
       });
       const descriptionMismatch = namespaceRole
         ? getCodexRoleDescriptionMismatch(namespaceRole)
@@ -3867,6 +3900,13 @@ export class CodexAdapter implements PlatformAdapter {
   ): Promise<GeneratedArtifact[]> {
     const paths = resolveCodexPaths(this.cwd, scope, this.env);
     const artifacts: GeneratedArtifact[] = [];
+    const ownerIdentity = (artifactKey: string): OwnerIdentity => ({
+      owner: 'agent-workflows',
+      plugin: plugin.manifest.name,
+      artifactKey,
+      platform: 'codex',
+      scope,
+    });
     const roleFileRollbackBaselines = new Map<string, TextFileRollbackBaseline>();
     let codexConfigRollbackBaseline: { path: string; content: string | null } | undefined;
 
@@ -4000,7 +4040,13 @@ export class CodexAdapter implements PlatformAdapter {
           });
           const writtenPaths = artifact.state === 'disabled'
             ? (await fs.remove(skillPath), [] as string[])
-            : await writeCodexSkillTree(skillPath, expectedTree);
+            : await writeCodexSkillTree(skillPath, expectedTree, {
+                owner: 'agent-workflows',
+                plugin: plugin.manifest.name,
+                artifactKey: skillKey,
+                platform: 'codex',
+                scope: 'user',
+              });
 
           artifacts.push({
             path: skillPath,
@@ -4067,7 +4113,13 @@ export class CodexAdapter implements PlatformAdapter {
             continue;
           }
 
-          const writtenPaths = await writeCodexSkillTree(skillPath, expectedTree);
+          const writtenPaths = await writeCodexSkillTree(skillPath, expectedTree, {
+            owner: 'agent-workflows',
+            plugin: plugin.manifest.name,
+            artifactKey: skillKey,
+            platform: 'codex',
+            scope: 'project',
+          });
           artifacts.push({
             path: skillPath,
             paths: writtenPaths,
@@ -4204,6 +4256,7 @@ export class CodexAdapter implements PlatformAdapter {
             paths.configDir,
             normalizeCodexRelativePath(path.relative(paths.configDir, managedRoleLayerPath)),
             renderedRoleFile,
+            ownerIdentity(roleKey),
           );
           artifacts.push({
             path: artifactPath,
@@ -4345,7 +4398,15 @@ export class CodexAdapter implements PlatformAdapter {
         resolvePlatformEntries(plugin.manifest.extensions?.permissions, 'codex'),
       )) {
         validateRenderedCodexRules(artifact.content);
-        const artifactPath = await writeTextArtifact(paths.configDir, artifact.relativePath, artifact.content);
+        if (!artifact.artifactKey) {
+          throw new Error(`Codex permission ${artifact.relativePath} 缺少 artifactKey。`);
+        }
+        const artifactPath = await writeTextArtifact(
+          paths.configDir,
+          artifact.relativePath,
+          artifact.content,
+          ownerIdentity(artifact.artifactKey),
+        );
         artifacts.push({ path: artifactPath, kind: 'permission', platform: 'codex' });
       }
 
@@ -4373,7 +4434,15 @@ export class CodexAdapter implements PlatformAdapter {
         resolvePlatformEntries(plugin.manifest.extensions?.agents, 'codex'),
         'codex',
       )) {
-        const artifactPath = await writeTextArtifact(paths.configDir, artifact.relativePath, artifact.content);
+        if (!artifact.artifactKey) {
+          throw new Error(`Codex agent ${artifact.relativePath} 缺少 artifactKey。`);
+        }
+        const artifactPath = await writeTextArtifact(
+          paths.configDir,
+          artifact.relativePath,
+          artifact.content,
+          ownerIdentity(artifact.artifactKey),
+        );
         artifacts.push({ path: artifactPath, kind: 'agent', platform: 'codex' });
       }
 
@@ -5089,14 +5158,28 @@ export class CodexAdapter implements PlatformAdapter {
         }));
       }
 
-      const expectedPermissionContents = currentCatalogAvailable
+      const expectedPermissionContents: Map<string, { content: string; identity: OwnerIdentity }> = currentCatalogAvailable
         ? new Map(
-            generateCodexPermissionArtifacts(plugin.manifest.name, codexPermissions).map((artifact) => [
-              path.join(scopePaths.configDir, artifact.relativePath),
-              artifact.content,
-            ]),
+            generateCodexPermissionArtifacts(plugin.manifest.name, codexPermissions).map((artifact) => {
+              if (!artifact.artifactKey) {
+                throw new Error(`Codex permission ${artifact.relativePath} 缺少 artifactKey。`);
+              }
+              return [
+                path.join(scopePaths.configDir, artifact.relativePath),
+                {
+                  content: artifact.content,
+                  identity: {
+                    owner: 'agent-workflows' as const,
+                    plugin: plugin.manifest.name,
+                    artifactKey: artifact.artifactKey,
+                    platform: 'codex' as const,
+                    scope,
+                  },
+                },
+              ] as const;
+            }),
           )
-        : new Map<string, string>();
+        : new Map();
       const trackedPermissionArtifacts = (trackingRecord?.artifacts ?? [])
         .filter((artifact) => artifact.kind === 'permission')
         .sort((left, right) => left.path.localeCompare(right.path));
@@ -5109,7 +5192,8 @@ export class CodexAdapter implements PlatformAdapter {
           state = 'missing';
         } else if (expectedPermissionContents.has(artifact.path)) {
           const content = await fs.readFile(artifact.path, 'utf8');
-          state = content === expectedPermissionContents.get(artifact.path) ? 'visible' : 'drifted';
+          const expected = expectedPermissionContents.get(artifact.path)!;
+          state = ownedTextPayload(content, expected.identity) === expected.content ? 'visible' : 'drifted';
         } else {
           state = 'visible';
         }
@@ -5173,18 +5257,32 @@ export class CodexAdapter implements PlatformAdapter {
         }));
       }
 
-      const expectedAgentContents = currentCatalogAvailable
+      const expectedAgentContents: Map<string, { content: string; identity: OwnerIdentity }> = currentCatalogAvailable
         ? new Map(
             generateAgentArtifacts(
               plugin.manifest.name,
               codexAgents,
               'codex',
-            ).map((artifact) => [
-              path.join(scopePaths.configDir, artifact.relativePath),
-              artifact.content,
-            ]),
+            ).map((artifact) => {
+              if (!artifact.artifactKey) {
+                throw new Error(`Codex agent ${artifact.relativePath} 缺少 artifactKey。`);
+              }
+              return [
+                path.join(scopePaths.configDir, artifact.relativePath),
+                {
+                  content: artifact.content,
+                  identity: {
+                    owner: 'agent-workflows' as const,
+                    plugin: plugin.manifest.name,
+                    artifactKey: artifact.artifactKey,
+                    platform: 'codex' as const,
+                    scope,
+                  },
+                },
+              ] as const;
+            }),
           )
-        : new Map<string, string>();
+        : new Map();
       const trackedAgentArtifacts = (trackingRecord?.artifacts ?? [])
         .filter((artifact) => artifact.kind === 'agent' && artifact.target === undefined)
         .sort((left, right) => left.path.localeCompare(right.path));
@@ -5197,7 +5295,8 @@ export class CodexAdapter implements PlatformAdapter {
           state = 'missing';
         } else if (expectedAgentContents.has(artifact.path)) {
           const content = await fs.readFile(artifact.path, 'utf8');
-          state = content === expectedAgentContents.get(artifact.path) ? 'visible' : 'drifted';
+          const expected = expectedAgentContents.get(artifact.path)!;
+          state = ownedTextPayload(content, expected.identity) === expected.content ? 'visible' : 'drifted';
         } else {
           state = 'visible';
         }

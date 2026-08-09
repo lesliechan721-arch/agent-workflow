@@ -24,6 +24,7 @@ export function generateAgentArtifacts(
     if (platform === 'codex') {
       return {
         relativePath: `agents/${generatedName}.toml`,
+        artifactKey: generatedName,
         content: [
           `name = ${renderTomlString(agent.name)}`,
           `description = ${renderTomlString(agent.description)}`,
@@ -47,6 +48,7 @@ export function generateAgentArtifacts(
     ];
     return {
       relativePath: `agents/${generatedName}.md`,
+      artifactKey: generatedName,
       content: lines.join('\n'),
     };
   });

@@ -636,7 +636,7 @@ async function collectClaimedCodexProjectSkillArtifacts(options: {
     if (!identitySkillKeys.has(identityKey)) {
       continue;
     }
-    await validateSkillDirectory(artifact.path, 'codex.skill');
+    await validateSkillDirectory(artifact.path, 'codex.skill', { ownerMarkerPolicy: 'ignore' });
     claimed.push(artifact);
   }
   return claimed;

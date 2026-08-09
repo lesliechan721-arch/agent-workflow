@@ -9,6 +9,7 @@ import {
   materializeCodexProjectSkills,
   rollbackCodexProjectSkills,
 } from '../../src/utils/native-skill-materialization.js';
+import { SKILL_OWNER_MARKER } from '../../src/utils/ownership.js';
 
 const tempDirs: string[] = [];
 
@@ -76,6 +77,14 @@ describe('native Codex project skill materialization', () => {
     await expect(
       fs.readFile(path.join(targetSkillRoot, 'assets', 'icon.bin')),
     ).resolves.toEqual(Buffer.from([0, 255, 1]));
+    await expect(fs.readJson(path.join(targetSkillRoot, SKILL_OWNER_MARKER))).resolves.toMatchObject({
+      schemaVersion: 1,
+      owner: 'agent-workflows',
+      plugin: 'native-skill-test',
+      artifactKey: 'review',
+      platform: 'codex',
+      scope: 'project',
+    });
 
     await rollbackCodexProjectSkills(materialization);
 

@@ -3017,6 +3017,22 @@ describe('local marketplace', () => {
     await expect(
       fs.readJson(path.join(awHome, 'plugins', 'git-commit', '.codex-plugin', 'plugin.json')),
     ).resolves.toMatchObject({ skills: './codex/skills' });
+    await expect(fs.readJson(path.join(
+      awHome,
+      'plugins',
+      'git-commit',
+      'codex',
+      'skills',
+      'generated-commit',
+      '.agent-workflows-owner.json',
+    ))).resolves.toMatchObject({
+      schemaVersion: 1,
+      owner: 'agent-workflows',
+      plugin: 'git-commit',
+      artifactKey: 'generated-commit',
+      platform: 'codex',
+      scope: 'user',
+    });
     await expect(validateLocalMarketplaceLayout(awHome)).resolves.toBeUndefined();
   });
 
