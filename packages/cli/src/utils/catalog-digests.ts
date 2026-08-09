@@ -8,7 +8,7 @@ import {
   normalizeManifestDigestInput,
   readPluginManifest,
 } from './manifest.js';
-import { calculateFileDigest } from './plugin-scripts.js';
+import { calculateFileDigest } from './bundle-integrity.js';
 
 function stableStringify(value: unknown): string {
   if (Array.isArray(value)) {

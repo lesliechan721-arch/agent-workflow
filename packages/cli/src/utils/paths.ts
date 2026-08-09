@@ -12,6 +12,26 @@ import {
 import type { PlatformName, Scope } from '../types.js';
 import { validateBundleLayout } from './bundle-layout.js';
 import { assertTestWritablePath } from './test-path-fence.js';
+import {
+  getClaudeHome,
+  getCodexHome,
+  resolveAwHome,
+  resolveAwHomeCanonical,
+  resolveClaudeProjectKey,
+  resolveCodexProjectKey,
+  resolveRepoRoot,
+  resolveRepoRootSync,
+} from './state-paths.js';
+export {
+  getClaudeHome,
+  getCodexHome,
+  resolveAwHome,
+  resolveAwHomeCanonical,
+  resolveClaudeProjectKey,
+  resolveCodexProjectKey,
+  resolveRepoRoot,
+  resolveRepoRootSync,
+} from './state-paths.js';
 
 let embeddedPluginsRootOverride: string | null = null;
 const validatedEmbeddedPluginRoots = new Set<string>();
@@ -102,33 +122,6 @@ export function getEmbeddedPluginsRootOverrideForTests(): string | null {
   return embeddedPluginsRootOverride;
 }
 
-export function getClaudeHome(env: NodeJS.ProcessEnv = process.env): string {
-  const home = env.AW_CLAUDE_HOME || path.join(os.homedir(), '.claude');
-  return assertWritableHomePathForTests(
-    home,
-    env.AW_CLAUDE_HOME ? 'AW_CLAUDE_HOME' : 'AW_CLAUDE_HOME fallback (os.homedir())',
-    '用 createIsolatedTestEnv() 生成默认 AW_CLAUDE_HOME，或通过 registerWritableStateRoot() 登记显式覆盖的 Claude home。',
-  );
-}
-
-export function getCodexHome(env: NodeJS.ProcessEnv = process.env): string {
-  const home = env.AW_CODEX_HOME || path.join(os.homedir(), '.codex');
-  return assertWritableHomePathForTests(
-    home,
-    env.AW_CODEX_HOME ? 'AW_CODEX_HOME' : 'AW_CODEX_HOME fallback (os.homedir())',
-    '用 createIsolatedTestEnv() 生成默认 AW_CODEX_HOME，或通过 registerWritableStateRoot() 登记显式覆盖的 Codex home。',
-  );
-}
-
-export function resolveAwHome(env: NodeJS.ProcessEnv = process.env): string {
-  const home = env.AW_HOME || path.join(os.homedir(), '.aw');
-  return assertWritableHomePathForTests(
-    home,
-    env.AW_HOME ? 'AW_HOME' : 'AW_HOME fallback (os.homedir())',
-    '用 createIsolatedTestEnv() 生成默认 AW_HOME，或通过 registerWritableStateRoot() 登记显式覆盖的 AW home。',
-  );
-}
-
 export function resolveCurrentCatalogCacheRoot(
   env: NodeJS.ProcessEnv = process.env,
 ): string {
@@ -207,12 +200,6 @@ export function resolveCliTempRoot(
     path.join(assertWritableTempPathForTests(tempDir, source), 'aw-cli'),
     'CLI temporary state root',
   );
-}
-
-export async function resolveAwHomeCanonical(
-  env: NodeJS.ProcessEnv = process.env,
-): Promise<string> {
-  return realpathOrResolved(resolveAwHome(env));
 }
 
 export function resolveClaudePluginsDir(env: NodeJS.ProcessEnv = process.env): string {
@@ -325,44 +312,4 @@ export function getMarketplaceManifestPaths(
     claude: getMarketplaceManifestPath(catalogRoot, 'claude'),
     codex: getMarketplaceManifestPath(catalogRoot, 'codex'),
   };
-}
-
-async function realpathOrResolved(inputPath: string): Promise<string> {
-  const resolved = path.resolve(inputPath);
-  try {
-    return await fs.realpath(resolved);
-  } catch {
-    return resolved;
-  }
-}
-
-export function resolveRepoRootSync(cwd: string): string {
-  let currentDir = path.resolve(cwd);
-
-  while (true) {
-    const gitDir = path.join(currentDir, '.git');
-    const workspaceFile = path.join(currentDir, 'pnpm-workspace.yaml');
-    if (fs.pathExistsSync(gitDir) || fs.pathExistsSync(workspaceFile)) {
-      return currentDir;
-    }
-
-    const parentDir = path.dirname(currentDir);
-    if (parentDir === currentDir) {
-      return path.resolve(cwd);
-    }
-    currentDir = parentDir;
-  }
-}
-
-export async function resolveRepoRoot(cwd: string): Promise<string> {
-  return resolveRepoRootSync(cwd);
-}
-
-export async function resolveClaudeProjectKey(cwd: string): Promise<string> {
-  return realpathOrResolved(cwd);
-}
-
-export async function resolveCodexProjectKey(cwd: string): Promise<string> {
-  const repoRoot = await resolveRepoRoot(cwd);
-  return realpathOrResolved(repoRoot);
 }

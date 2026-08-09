@@ -38,6 +38,14 @@ import { resolveCatalogPlugins, resolveCurrentCatalog } from './plugin-catalog.j
 import { resolveEffectivePluginConfig } from './plugin-config.js';
 import { redactString } from '../output/redact.js';
 import { assertTestWritablePath } from './test-path-fence.js';
+export {
+  calculateFileDigest,
+  calculatePluginBundleFingerprint,
+} from './bundle-integrity.js';
+import {
+  calculateFileDigest,
+  calculatePluginBundleFingerprint,
+} from './bundle-integrity.js';
 
 export const PLUGIN_INSTALL_SNAPSHOTS_DIR = 'plugin-install-snapshots';
 
@@ -189,12 +197,6 @@ function assertLifecycleStagingPathForTests(
   );
 }
 
-export async function calculateFileDigest(filePath: string): Promise<string> {
-  const hash = crypto.createHash('sha256');
-  hash.update(await fs.readFile(filePath));
-  return `sha256:${hash.digest('hex')}`;
-}
-
 export async function resolveBundledPluginFilePath(options: {
   bundleRoot: string;
   pluginRelativePath: string;
@@ -209,37 +211,6 @@ export async function resolveBundledPluginFilePath(options: {
   }
 
   return resolvedPath;
-}
-
-async function listFilesRecursively(rootDir: string): Promise<string[]> {
-  const entries = await fs.readdir(rootDir, { withFileTypes: true }).catch(() => []);
-  const files: string[] = [];
-
-  for (const entry of entries) {
-    const entryPath = path.join(rootDir, entry.name);
-    if (entry.isDirectory()) {
-      const nestedFiles = await listFilesRecursively(entryPath);
-      files.push(...nestedFiles.map((filePath) => path.join(entry.name, filePath).split(path.sep).join('/')));
-      continue;
-    }
-    files.push(entry.name);
-  }
-
-  return files.sort();
-}
-
-export async function calculatePluginBundleFingerprint(bundleRoot: string): Promise<string> {
-  const hash = crypto.createHash('sha256');
-  const files = await listFilesRecursively(bundleRoot);
-
-  for (const relativePath of files) {
-    hash.update(relativePath);
-    hash.update('\0');
-    hash.update(await fs.readFile(path.join(bundleRoot, relativePath)));
-    hash.update('\0');
-  }
-
-  return `sha256:${hash.digest('hex')}`;
 }
 
 async function resolveSnapshotScopeIdentity(
