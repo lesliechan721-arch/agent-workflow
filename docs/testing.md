@@ -7,7 +7,7 @@
 - **`unit/` 和 `integration/`** — 保持 build-free，不依赖预先存在的 `plugins-dist`；需要 runtime bundle 输入时，用 `tests/helpers/embedded-root.ts` 生成临时 synthetic embedded root
 - **`pnpm test:unit:fast`** — 运行显式 allowlist 中的纯逻辑 unit 文件，用于开发中的快速反馈；它不启动 child process、package manager 或 native CLI，也不构造大规模 artifact tree
 - **`pnpm test:perf`** — 只运行 `tests/perf/` 下的独立性能预算和 gate 回归；它不进入普通 unit、integration 或 `pnpm test`
-- **`pnpm test:perf:gate`** — 先运行性能 Vitest，再运行 `test:unit:fast` 并检查 fast lane 的 wall time；用于性能门禁
+- **`pnpm test:perf:gate`** — 先运行性能 Vitest，再运行 `test:unit:fast` 并检查 fast lane 的 wall time；由 CLI 发布验证入口执行
 - **`smoke/`** — 专门验证 CLI build、CLI pack、sidecar/full catalog pack 和 catalog fetch 产物；这些入口通过 `build:ensure` 取得已验证构建，不进入常规 `pnpm test`
 - **`pnpm plugin:test <plugin>`** — 插件作者脚本测试入口，先 compile CLI，再运行已编译的 `packages/cli/scripts/test-plugin-scripts.js`；它使用 build 后 staging manifest 判定支持平台，并准备临时 bundle，但不是 `aw` 客户端子命令
 - **`pnpm plugin:eval <plugin>`** — Codex 插件 Skill 作者 eval 入口，按插件根 `evals/manifest.json` 经过真实 staging/renderer/adapter materialize project/user 制品；中央 native trigger driver 统一负责触发评测，领域专用 command runner 也只能消费最终制品；默认运行 release-required 模型 suite，`--materialize-only` 不调用模型
@@ -63,7 +63,7 @@ CLI pack 从 `snapshot.cliPackageRoot` 生成 tarball。组合 pack 和组合 pu
 | `catalog-remote-deadline` | `AW_CATALOG_REMOTE_TIMEOUT_MS=100` 时单次挂起远程解析的最大耗时 | `500 ms` |
 | `unit-fast-wall` | `test:unit:fast` 单次 wall time，由 gate 编排器测量 | `30000 ms` |
 
-前四项由 `pnpm test:perf` 执行。`unit-fast-wall` 由 `pnpm test:perf:gate` 在性能 Vitest 通过后执行。gate 还有独立 hard timeout，用于终止异常挂起；hard timeout 不是性能预算。进程树清理的 POSIX 和 Windows 路径分别有可注入回归，覆盖正常退出和 timeout 清理。
+前四项由 `pnpm test:perf` 执行。`unit-fast-wall` 由 `pnpm test:perf:gate` 在性能 Vitest 通过后执行。`release:verify:cli` 会运行该 gate，因此 CLI-only 和组合发布验证都会检查这些预算。gate 还有独立 hard timeout，用于终止异常挂起；hard timeout 不是性能预算。进程树清理的 POSIX 和 Windows 路径分别有可注入回归，覆盖正常退出和 timeout 清理。
 
 ## Focus Areas
 

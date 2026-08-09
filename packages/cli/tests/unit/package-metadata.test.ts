@@ -56,7 +56,9 @@ describe('package metadata', () => {
 
     expect(rootScripts.test).toBe('pnpm --filter @yiliang/aw test');
     expect(rootScripts['test:unit']).toBe('pnpm --filter @yiliang/aw test:unit');
-    expect(rootScripts['release:verify:cli']).toMatch(/^pnpm test &&/);
+    expect(rootScripts['release:verify:cli']).toMatch(
+      /^pnpm test && pnpm test:perf:gate &&/,
+    );
     expect(cliScripts.test).toBe('vitest run');
     expect(cliScripts['test:unit']).toBe('vitest run tests/unit');
     expect(vitestConfig).toContain('maxWorkers: 3');
@@ -79,6 +81,9 @@ describe('package metadata', () => {
     expect(rootScripts['build:ensure']).toBe('node scripts/build/ensure-build.mjs');
     expect(rootScripts['pack:cli']).toBe('node scripts/release/pack-cli.mjs');
     expect(rootScripts['release:pack:cli']).toBe(rootScripts['pack:cli']);
+    expect(rootScripts['release:local']).toBe(
+      'pnpm run release:verify:cli && pnpm run release:install:local',
+    );
     expect(rootScripts['release:verify:catalog']).toMatch(/^pnpm build:ensure &&/);
     expect(cliScripts.prepack).toBe('pnpm --dir ../.. build:ensure');
     expect(packCatalogSource).toContain('withReleaseBuildSnapshot(');

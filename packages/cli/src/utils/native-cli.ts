@@ -1,12 +1,18 @@
 import { execFile } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 
-import { terminateProcessTree } from './process-tree.js';
+import {
+  observeProcessTree,
+  terminateProcessTree,
+  type ProcessTreeObservation,
+} from './process-tree.js';
 
 const NATIVE_CLI_TIMEOUT_ENV = 'AW_NATIVE_CLI_TIMEOUT_MS';
 const DEFAULT_NATIVE_CLI_TIMEOUT_MS = 60_000;
 const MIN_NATIVE_CLI_TIMEOUT_MS = 1_000;
 const MAX_NATIVE_CLI_TIMEOUT_MS = 600_000;
-const NATIVE_CLI_CLEANUP_TIMEOUT_MS = 1_500;
+const NATIVE_CLI_CLEANUP_TIMEOUT_MS = 4_500;
+const NATIVE_CLI_PROCESS_MARKER_ENV = 'AW_NATIVE_CLI_PROCESS_MARKER';
 
 export interface NativeCliInvocation {
   command: string;
@@ -29,10 +35,17 @@ export interface NativeCliErrorOptions {
   stdout: string;
   stderr: string;
   cause?: unknown;
+  cleanupError?: Error;
   reason?: NativeCliErrorReason;
 }
 
 export type NativeCliErrorReason = 'aborted' | 'exit' | 'timeout';
+
+function renderNativeCliCleanupError(error: Error): string {
+  return error.message
+    .replace(/^Native CLI cleanup unconfirmed:\s*/u, '')
+    .replace(/AW_NATIVE_CLI_PROCESS_MARKER=[^\s]+/gu, '[redacted process marker]');
+}
 
 export class NativeCliError extends Error {
   readonly invocation: NativeCliInvocation;
@@ -40,6 +53,7 @@ export class NativeCliError extends Error {
   readonly stdout: string;
   readonly stderr: string;
   readonly reason: NativeCliErrorReason;
+  readonly cleanupError?: Error;
 
   constructor(options: NativeCliErrorOptions) {
     const renderedArgs = options.invocation.args.join(' ');
@@ -47,13 +61,17 @@ export class NativeCliError extends Error {
       options.stderr.trim() ||
       options.stdout.trim() ||
       `Command exited with code ${options.exitCode}.`;
-    super(`${options.invocation.command}${renderedArgs ? ` ${renderedArgs}` : ''}: ${detail}`);
+    const cleanupDetail = options.cleanupError
+      ? ` cleanup unconfirmed: ${renderNativeCliCleanupError(options.cleanupError)}`
+      : '';
+    super(`${options.invocation.command}${renderedArgs ? ` ${renderedArgs}` : ''}: ${detail}${cleanupDetail}`);
     this.name = 'NativeCliError';
     this.invocation = options.invocation;
     this.exitCode = options.exitCode;
     this.stdout = options.stdout;
     this.stderr = options.stderr;
     this.reason = options.reason ?? 'exit';
+    this.cleanupError = options.cleanupError;
     this.cause = options.cause;
   }
 }
@@ -109,7 +127,15 @@ export function isNativeCliTimeoutError(error: unknown): error is NativeCliError
 
 export function summarizeNativeCliFailure(error: unknown): string {
   if (error instanceof NativeCliError) {
-    return error.stderr.trim() || error.stdout.trim() || error.message;
+    const output = error.stderr.trim() || error.stdout.trim();
+    if (!output) {
+      return error.message;
+    }
+    if (!error.cleanupError) {
+      return output;
+    }
+    const cleanupDetail = renderNativeCliCleanupError(error.cleanupError);
+    return `${output} cleanup unconfirmed: ${cleanupDetail}`;
   }
   if (error instanceof Error) {
     return error.message;
@@ -165,6 +191,7 @@ interface ExecFileNativeCliRunnerDependencies {
     },
     callback: (error: unknown, stdout: string, stderr: string) => void,
   ) => NativeCliChildProcess;
+  observeProcessTree?: typeof observeProcessTree;
   terminateProcessTree?: typeof terminateProcessTree;
 }
 
@@ -178,18 +205,18 @@ const defaultNativeCliExecFile: NonNullable<
 function settleNativeCliTerminationCleanup(
   child: NativeCliChildProcess,
   terminateProcessTreeImpl: typeof terminateProcessTree,
-): Promise<void> {
-  if (child.exitCode != null || child.signalCode != null) {
-    child.stdout?.destroy?.();
-    child.stderr?.destroy?.();
-    return Promise.resolve();
-  }
+  observation: ProcessTreeObservation | undefined,
+  requireConfirmedCleanup: boolean,
+): Promise<Error | undefined> {
   let directKillAttempted = false;
   const killDirectChild = (): void => {
     if (directKillAttempted) {
       return;
     }
     directKillAttempted = true;
+    if (child.exitCode != null || child.signalCode != null) {
+      return;
+    }
     try {
       child.kill('SIGKILL');
     } catch {
@@ -199,24 +226,33 @@ function settleNativeCliTerminationCleanup(
 
   if (child.pid === undefined) {
     killDirectChild();
-    return Promise.resolve();
+    return Promise.resolve(
+      requireConfirmedCleanup
+        ? new Error('Native CLI cleanup unconfirmed: child PID is unavailable.')
+        : undefined,
+    );
   }
   const childPid = child.pid;
 
   return new Promise((resolve) => {
     let settled = false;
-    const finish = (cleanupSucceeded: boolean): void => {
+    const finish = (cleanupError?: Error): void => {
       if (settled) {
         return;
       }
       settled = true;
       clearTimeout(timeout);
-      if (!cleanupSucceeded) {
+      child.stdout?.destroy?.();
+      child.stderr?.destroy?.();
+      if (cleanupError) {
         killDirectChild();
       }
-      resolve();
+      resolve(cleanupError);
     };
-    const timeout = setTimeout(() => finish(false), NATIVE_CLI_CLEANUP_TIMEOUT_MS);
+    const timeout = setTimeout(
+      () => finish(new Error('Native CLI cleanup unconfirmed: cleanup timed out.')),
+      NATIVE_CLI_CLEANUP_TIMEOUT_MS,
+    );
     timeout.unref();
 
     let cleanup: Promise<void>;
@@ -224,14 +260,20 @@ function settleNativeCliTerminationCleanup(
       cleanup = terminateProcessTreeImpl(
         childPid,
         () => killDirectChild(),
+        {},
+        { observation, requireConfirmedCleanup },
       );
-    } catch {
-      finish(false);
+    } catch (error) {
+      finish(error instanceof Error
+        ? error
+        : new Error('Native CLI cleanup unconfirmed: cleanup threw.'));
       return;
     }
     Promise.resolve(cleanup).then(
-      () => finish(true),
-      () => finish(false),
+      () => finish(),
+      (error: unknown) => finish(error instanceof Error
+        ? error
+        : new Error('Native CLI cleanup unconfirmed: cleanup rejected.')),
     );
   });
 }
@@ -256,6 +298,8 @@ export function createExecFileNativeCliRunner(
   dependencies: ExecFileNativeCliRunnerDependencies = {},
 ): NativeCliRunner {
   const execFileImpl = dependencies.execFile ?? defaultNativeCliExecFile;
+  const observeProcessTreeImpl = dependencies.observeProcessTree ??
+    (dependencies.terminateProcessTree ? undefined : observeProcessTree);
   const terminateProcessTreeImpl = dependencies.terminateProcessTree ?? terminateProcessTree;
 
   return async (invocation) => {
@@ -272,6 +316,7 @@ export function createExecFileNativeCliRunner(
       let streamedStdout = '';
       let streamedStderr = '';
       let timeout: NodeJS.Timeout | undefined;
+      let processTreeObservation: ProcessTreeObservation | undefined;
       let detachOutputListeners = (): void => {};
       const abortListener = (): void => {
         startTermination('aborted', invocation.signal?.reason);
@@ -284,6 +329,7 @@ export function createExecFileNativeCliRunner(
         }
         invocation.signal?.removeEventListener('abort', abortListener);
         detachOutputListeners();
+        processTreeObservation?.dispose();
       };
 
       const resolveOnce = (result: NativeCliResult): void => {
@@ -305,7 +351,7 @@ export function createExecFileNativeCliRunner(
       };
 
       let child: NativeCliChildProcess;
-      const finishTermination = (): void => {
+      const finishTermination = (cleanupError?: Error): void => {
         if (!terminationReason) {
           return;
         }
@@ -325,6 +371,7 @@ export function createExecFileNativeCliRunner(
                 ? `Command timed out after ${invocation.timeoutMs} ms.`
                 : 'Command was aborted.',
             ),
+          cleanupError,
           reason: terminationReason,
         }));
       };
@@ -343,16 +390,25 @@ export function createExecFileNativeCliRunner(
           timeout = undefined;
         }
         Promise.resolve()
-          .then(() => settleNativeCliTerminationCleanup(child, terminateProcessTreeImpl))
+          .then(() => settleNativeCliTerminationCleanup(
+            child,
+            terminateProcessTreeImpl,
+            processTreeObservation,
+            (child.exitCode != null || child.signalCode != null) && callbackOutput === undefined,
+          ))
           .then(finishTermination);
       }
 
+      const processMarker = randomUUID();
       child = execFileImpl(
         invocation.command,
         invocation.args,
         {
           cwd: invocation.cwd,
-          env: invocation.env,
+          env: {
+            ...(invocation.env ?? process.env),
+            [NATIVE_CLI_PROCESS_MARKER_ENV]: processMarker,
+          },
           windowsHide: true,
         },
         (error, stdout, stderr) => {
@@ -391,6 +447,9 @@ export function createExecFileNativeCliRunner(
           }));
         },
       );
+      if (child.pid !== undefined) {
+        processTreeObservation = observeProcessTreeImpl?.(child.pid, processMarker);
+      }
 
       const stdoutListener = (chunk: unknown): void => {
         streamedStdout += renderNativeCliOutputChunk(chunk);

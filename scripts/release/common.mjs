@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -246,6 +247,32 @@ export function combineReleaseErrors(primaryError, additionalError, context) {
   );
 }
 
+async function withOwnedTemporaryDirectory(prefix, callback, cleanupContext) {
+  const temporaryDirectory = await fs.mkdtemp(prefix);
+  let callbackError = null;
+
+  try {
+    return await callback(temporaryDirectory);
+  } catch (error) {
+    callbackError = error;
+    throw error;
+  } finally {
+    try {
+      await fs.rm(temporaryDirectory, {
+        recursive: true,
+        force: true,
+        maxRetries: 3,
+        retryDelay: 50,
+      });
+    } catch (cleanupError) {
+      if (callbackError) {
+        throw combineReleaseErrors(callbackError, cleanupError, cleanupContext);
+      }
+      throw cleanupError;
+    }
+  }
+}
+
 export async function createCatalogReleaseStaging(options = {}) {
   const sourceRoot = options.sourceRoot;
   if (!sourceRoot) {
@@ -341,16 +368,50 @@ export async function assertRepoAndCliPackageVersions() {
 
 async function packCliFromSnapshot(snapshot, destination) {
   const targetDir = path.resolve(repoRoot, destination);
-  await cleanTarballs(targetDir);
-  await runCommand('pnpm', [
-    '--config.ignore-scripts=true',
-    'pack',
-    '--pack-destination',
-    targetDir,
-  ], {
-    cwd: snapshot.cliPackageRoot,
-  });
-  return findLatestTarball(targetDir);
+  await ensureDirectory(targetDir);
+
+  return withOwnedTemporaryDirectory(
+    path.join(os.tmpdir(), 'aw-cli-pack-'),
+    async (packDirectory) => {
+      await runCommand('pnpm', [
+        '--config.ignore-scripts=true',
+        'pack',
+        '--pack-destination',
+        packDirectory,
+      ], {
+        cwd: snapshot.cliPackageRoot,
+      });
+
+      const tarballs = await listTarballs(packDirectory);
+      if (tarballs.length !== 1) {
+        throw new Error(
+          `Expected pnpm pack to produce exactly one tarball, found ${tarballs.length}.`,
+        );
+      }
+
+      const sourcePath = tarballs[0];
+      const fileName = path.basename(sourcePath);
+      const targetPath = path.join(targetDir, fileName);
+      return withOwnedTemporaryDirectory(
+        path.join(targetDir, '.aw-cli-pack-'),
+        async (publishDirectory) => {
+          const stagedPath = path.join(publishDirectory, fileName);
+          try {
+            await fs.rename(sourcePath, stagedPath);
+          } catch (error) {
+            if (error?.code !== 'EXDEV') {
+              throw error;
+            }
+            await fs.copyFile(sourcePath, stagedPath);
+          }
+          await fs.rename(stagedPath, targetPath);
+          return targetPath;
+        },
+        'CLI tarball publish staging cleanup also failed',
+      );
+    },
+    'CLI tarball pack staging cleanup also failed',
+  );
 }
 
 export async function packCli({ destination = tarballDir, snapshot } = {}) {

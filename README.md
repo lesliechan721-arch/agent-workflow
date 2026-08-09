@@ -92,7 +92,7 @@ make test
 - `pnpm plugin:eval <plugin> --materialize-only`：生成并核验 Codex project/user 最终 Skill 制品，不调用模型
 - `pnpm plugin:eval <plugin> --output-dir /tmp/aw-eval`：本地显式运行该插件 release-required Codex eval；不进入常规 CI
 - `node .agents/skills/skill-review/scripts/run_static_skill_evals.mjs <skill> --validate-only`：校验当前仓库静态 Skill eval 定义；真实模型运行使用同一脚本和显式 `--output-dir`
-- `make verify-local`：校验 CLI 本地发布链路（常规测试、build smoke、CLI pack smoke、catalog fetch smoke）
+- `make verify-local`：校验 CLI 本地发布链路（常规测试、性能门禁、build smoke、CLI pack smoke、catalog fetch smoke）
 - `make verify-cli`：校验 CLI-only 发布链路
 - `make verify-catalog`：校验 catalog-only 发布链路
 - `make verify-release`：校验 CLI + catalog 组合发布链路

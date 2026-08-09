@@ -513,6 +513,58 @@ describe('build cache output binding', () => {
     expect(buildCount).toBe(4);
   });
 
+  it('refuses warm reuse when inputs change during cache inspection', async () => {
+    const repoRoot = await createRepo();
+    let generation = 0;
+    const build = async () => {
+      generation += 1;
+      await writeBuildOutputs(repoRoot, generation);
+    };
+    await buildWithCache(repoRoot, { build });
+
+    const inputInspection = await inspectBuildCache(repoRoot, {
+      __testBeforeFinalInputCheck: async () => {
+        await fs.writeFile(path.join(repoRoot, 'plugins', 'demo', 'SKILL.md'), 'changed\n');
+      },
+    });
+    expect(inputInspection).toMatchObject({
+      reusable: false,
+      reason: 'inputDigest changed',
+    });
+
+    await buildWithCache(repoRoot, { build });
+    const cliPackageInspection = await inspectBuildCache(repoRoot, {
+      __testBeforeFinalInputCheck: async () => {
+        await fs.writeFile(
+          path.join(repoRoot, 'packages', 'cli', 'package.json'),
+          JSON.stringify({ name: '@yiliang/aw', type: 'module', version: '9.9.9' }),
+        );
+      },
+    });
+    expect(cliPackageInspection).toMatchObject({
+      reusable: false,
+      reason: 'cliPackageDigest changed',
+    });
+  });
+
+  it('refuses warm reuse when outputs change during final cache inspection', async () => {
+    const repoRoot = await createRepo();
+    await buildWithCache(repoRoot, { build: () => writeBuildOutputs(repoRoot) });
+
+    const inspection = await inspectBuildCache(repoRoot, {
+      __testBeforeFinalOutputCheck: async () => {
+        await fs.writeFile(
+          path.join(repoRoot, 'packages', 'cli', 'dist', 'src', 'nonrequired.js'),
+          'export const changedDuringInspection = true;\n',
+        );
+      },
+    });
+    expect(inspection).toMatchObject({
+      reusable: false,
+      reason: 'outputDigest changed',
+    });
+  });
+
   it('forces a new build and refreshes a warm stamp', async () => {
     const repoRoot = await createRepo();
     let buildCount = 0;

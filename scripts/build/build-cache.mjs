@@ -476,7 +476,7 @@ async function validateRequiredOutputs(repoRoot) {
   return { valid: true };
 }
 
-export async function inspectBuildCache(repoRoot) {
+export async function inspectBuildCache(repoRoot, options = {}) {
   const expected = await readExpectedStampIdentity(repoRoot);
   const outputSymlink = await findRegisteredSymlink(repoRoot, OUTPUT_ROOTS);
   if (outputSymlink) {
@@ -519,6 +519,45 @@ export async function inspectBuildCache(repoRoot) {
   }
   const outputDigest = await computeBuildOutputDigest(repoRoot);
   if (stamp.outputDigest !== outputDigest) {
+    return { reusable: false, reason: 'outputDigest changed', expected };
+  }
+
+  // Internal test seam for changing an input at the final reuse boundary.
+  // Production callers must not set it.
+  await options.__testBeforeFinalInputCheck?.();
+  const [finalExpected, finalCliPackageDigest] = await Promise.all([
+    readExpectedStampIdentity(repoRoot),
+    computeCliPackageDigest(repoRoot),
+  ]);
+  if (
+    finalCliPackageDigest !== cliPackageDigest ||
+    finalCliPackageDigest !== stamp.cliPackageDigest
+  ) {
+    return { reusable: false, reason: 'cliPackageDigest changed', expected };
+  }
+  for (const key of STAMP_IDENTITY_KEYS) {
+    if (finalExpected[key] !== expected[key] || finalExpected[key] !== stamp[key]) {
+      return { reusable: false, reason: `${key} changed`, expected };
+    }
+  }
+
+  // Internal test seam for changing an output at the final reuse boundary.
+  // Production callers must not set it.
+  await options.__testBeforeFinalOutputCheck?.();
+  const finalOutputSymlink = await findRegisteredSymlink(repoRoot, OUTPUT_ROOTS);
+  if (finalOutputSymlink) {
+    return {
+      reusable: false,
+      reason: `registered output contains unsupported symlink ${finalOutputSymlink}`,
+      expected,
+    };
+  }
+  const finalOutputs = await validateRequiredOutputs(repoRoot);
+  if (!finalOutputs.valid) {
+    return { reusable: false, reason: finalOutputs.reason, expected };
+  }
+  const finalOutputDigest = await computeBuildOutputDigest(repoRoot);
+  if (finalOutputDigest !== outputDigest || finalOutputDigest !== stamp.outputDigest) {
     return { reusable: false, reason: 'outputDigest changed', expected };
   }
   return {

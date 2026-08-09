@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { fileURLToPath } from 'node:url';
 import { PassThrough } from 'node:stream';
 
 import { describe, expect, it, vi } from 'vitest';
@@ -195,6 +196,34 @@ describe('native-cli', () => {
     });
   });
 
+  it('overwrites a caller-supplied process marker with a per-run UUID', async () => {
+    let receivedEnv: NodeJS.ProcessEnv | undefined;
+    const child = Object.assign(new EventEmitter(), {
+      kill: vi.fn(() => true),
+    });
+    const runner = createExecFileNativeCliRunner({
+      execFile: (_command, _args, options, callback) => {
+        receivedEnv = options.env;
+        callback(null, '', '');
+        return child;
+      },
+    });
+
+    await runner({
+      command: 'tar',
+      args: [],
+      env: {
+        AW_NATIVE_CLI_PROCESS_MARKER: 'caller-value',
+        KEEP_ME: 'yes',
+      },
+    });
+
+    expect(receivedEnv).toMatchObject({ KEEP_ME: 'yes' });
+    expect(receivedEnv?.AW_NATIVE_CLI_PROCESS_MARKER).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
+    );
+  });
+
   it('converts non-zero exits into NativeCliError', async () => {
     await expect(
       execFileNativeCliRunner({
@@ -267,7 +296,12 @@ describe('native-cli', () => {
       child.emit('spawn');
       expect(vi.getTimerCount()).toBe(1);
       await vi.advanceTimersByTimeAsync(100);
-      expect(terminate).toHaveBeenCalledWith(321, expect.any(Function));
+      expect(terminate).toHaveBeenCalledWith(
+        321,
+        expect.any(Function),
+        {},
+        { observation: undefined, requireConfirmedCleanup: false },
+      );
 
       callback!(new Error('terminated'), 'callback partial', 'callback warning');
       finishCleanup!();
@@ -326,7 +360,7 @@ describe('native-cli', () => {
     }
   });
 
-  it('keeps the deadline after root exit and does not signal a potentially reused PID', async () => {
+  it('runs observed cleanup after root exit without signaling the root PID', async () => {
     vi.useFakeTimers();
     try {
       const stdout = new PassThrough();
@@ -340,8 +374,10 @@ describe('native-cli', () => {
         stderr,
       });
       const terminate = vi.fn(async () => {});
+      const observation = { pid: 321, dispose: vi.fn() };
       const runner = createExecFileNativeCliRunner({
         execFile: () => child,
+        observeProcessTree: vi.fn(() => observation),
         terminateProcessTree: terminate,
       });
 
@@ -366,7 +402,12 @@ describe('native-cli', () => {
         stdout: 'partial',
         stderr: 'warning',
       });
-      expect(terminate).not.toHaveBeenCalled();
+      expect(terminate).toHaveBeenCalledWith(
+        321,
+        expect.any(Function),
+        {},
+        { observation, requireConfirmedCleanup: true },
+      );
       expect(child.kill).not.toHaveBeenCalled();
       expect(stdout.destroyed).toBe(true);
       expect(stderr.destroyed).toBe(true);
@@ -439,7 +480,7 @@ describe('native-cli', () => {
 
       child.emit('spawn');
       await vi.advanceTimersByTimeAsync(100);
-      await vi.advanceTimersByTimeAsync(1_500);
+      await vi.advanceTimersByTimeAsync(4_500);
 
       await expect(errorPromise).resolves.toMatchObject<Partial<NativeCliError>>({
         exitCode: 124,
@@ -451,11 +492,46 @@ describe('native-cli', () => {
       if (expectedDirectKills > 0) {
         expect(child.kill).toHaveBeenCalledWith('SIGKILL');
       }
+      const error = await errorPromise as NativeCliError;
+      if (_label === 'resolved') {
+        expect(error.cleanupError).toBeUndefined();
+      } else {
+        expect(error.cleanupError).toBeInstanceOf(Error);
+        expect(error.message).toContain('cleanup unconfirmed');
+      }
       expect(vi.getTimerCount()).toBe(0);
     } finally {
       vi.useRealTimers();
     }
   });
+
+  it.skipIf(process.platform === 'win32')(
+    'terminates a detached inherited-output descendant after the root exits',
+    async () => {
+      let descendantPid: number | undefined;
+      try {
+        const promise = execFileNativeCliRunner({
+          command: process.execPath,
+          args: [fileURLToPath(new URL('../fixtures/native-cli-detached-descendant.mjs', import.meta.url))],
+          timeoutMs: 200,
+        });
+        const error = await promise.catch((cause: unknown) => cause) as NativeCliError;
+        expect(error).toMatchObject({ exitCode: 124, reason: 'timeout' });
+        expect(error.cleanupError).toBeUndefined();
+        descendantPid = Number.parseInt(error.stdout.trim(), 10);
+        expect(descendantPid).toBeGreaterThan(0);
+        expect(() => process.kill(descendantPid!, 0)).toThrow();
+      } finally {
+        if (descendantPid !== undefined) {
+          try {
+            process.kill(descendantPid, 'SIGKILL');
+          } catch {
+            // The cleanup under test already terminated the descendant.
+          }
+        }
+      }
+    },
+  );
 
   it('does not start an already-aborted invocation', async () => {
     const controller = new AbortController();
@@ -551,5 +627,27 @@ describe('native-cli', () => {
         stderr: '',
       })),
     ).toBe('partial output');
+  });
+
+  it('includes unconfirmed cleanup details in native CLI failure summaries', () => {
+    const error = new NativeCliError({
+      invocation: {
+        command: 'codex',
+        args: ['plugin', 'list'],
+      },
+      exitCode: 124,
+      stdout: 'partial output',
+      stderr: 'warning output already says cleanup unconfirmed',
+      cleanupError: new Error(
+        'Native CLI cleanup unconfirmed: Windows process identity lookup failed for AW_NATIVE_CLI_PROCESS_MARKER=secret-value.',
+      ),
+      reason: 'timeout',
+    });
+
+    expect(summarizeNativeCliFailure(error)).toBe(
+      'warning output already says cleanup unconfirmed cleanup unconfirmed: Windows process identity lookup failed for [redacted process marker]',
+    );
+    expect(summarizeNativeCliFailure(error)).not.toContain('AW_NATIVE_CLI_PROCESS_MARKER');
+    expect(summarizeNativeCliFailure(error)).not.toContain('secret-value');
   });
 });
