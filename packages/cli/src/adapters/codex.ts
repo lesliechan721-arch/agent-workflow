@@ -18,6 +18,7 @@ import type {
 } from '../output/model.js';
 import type {
   CatalogCompatibility,
+  CatalogResolution,
   CodexNativeCacheStatus,
   CodexCapabilitySnapshot,
   CodexSkillArtifact,
@@ -111,8 +112,8 @@ import {
   resolveCodexRoleNamespace,
 } from '../utils/codex-roles.js';
 import { writeJsonFile } from '../utils/json.js';
-import { readPluginManifest } from '../utils/manifest.js';
-import { readMarketplaceManifest } from '../utils/marketplace.js';
+import { readPluginManifest, resolvePluginsFromCatalog } from '../utils/manifest.js';
+import { readMarketplaceManifestAtPath } from '../utils/marketplace.js';
 import {
   resolveActiveLocalBundle,
   resolveCatalogPlugins,
@@ -125,6 +126,7 @@ import {
   resolveCodexProjectKey,
   resolveEmbeddedPluginsRoot,
   resolveRepoRoot,
+  getMarketplaceManifestPath,
 } from '../utils/paths.js';
 import {
   validateRenderedCodexRules,
@@ -1412,10 +1414,14 @@ async function writeCodexSharedHookGroups(
 async function resolveTrackedPlugin(
   pluginName: string,
   env: NodeJS.ProcessEnv,
+  catalogResolution?: CatalogResolution,
 ): Promise<PluginMeta> {
+  if (catalogResolution) {
+    return (await resolvePluginsFromCatalog(catalogResolution.rootDir, [pluginName]))[0];
+  }
+
   try {
-    const { plugins } = await resolveCatalogPlugins([pluginName], env);
-    return plugins[0];
+    return (await resolveCatalogPlugins([pluginName], env)).plugins[0];
   } catch (error) {
     if (!(error instanceof Error) || error.message !== `Unknown plugin "${pluginName}".`) {
       throw error;
@@ -1447,6 +1453,7 @@ async function resolveTrackedCodexHookRewrite(
   plugin: PluginMeta,
   trackingManifest: TrackingManifest,
   env: NodeJS.ProcessEnv,
+  catalogResolution?: CatalogResolution,
 ): Promise<ResolvedTrackedCodexHookRewrite> {
   const currentTrackingRecord = getTrackingRecord(trackingManifest, plugin.manifest.name);
   const currentHookIdentities = extractCodexHookGroups(
@@ -1473,7 +1480,11 @@ async function resolveTrackedCodexHookRewrite(
     }
 
     try {
-      const trackedPlugin = await resolveTrackedPlugin(trackedPluginName, env);
+      const trackedPlugin = await resolveTrackedPlugin(
+        trackedPluginName,
+        env,
+        catalogResolution,
+      );
       const resolvedHookGroups = extractCodexHookGroups(
         resolvePlatformHookDefinitions(trackedPlugin.manifest, 'codex'),
       );
@@ -1500,9 +1511,15 @@ async function syncCodexHooks(
   plugin: PluginMeta,
   trackingManifest: TrackingManifest,
   env: NodeJS.ProcessEnv,
+  catalogResolution?: CatalogResolution,
 ): Promise<string | undefined> {
   const parsedHooks = await readParsedCodexSharedHooksFile(hooksPath);
-  const rewritePlan = await resolveTrackedCodexHookRewrite(plugin, trackingManifest, env);
+  const rewritePlan = await resolveTrackedCodexHookRewrite(
+    plugin,
+    trackingManifest,
+    env,
+    catalogResolution,
+  );
   const updatePlan = planCodexSharedHooksUpdate(parsedHooks, {
     rerenderedIdentities: rewritePlan.previousTrackedIdentities,
     historicalIdentities: rewritePlan.historicalTrackedIdentities,
@@ -3194,14 +3211,25 @@ export class CodexAdapter implements PlatformAdapter {
     return detection.codex.available;
   }
 
-  async installPlugin(plugin: PluginMeta, scope: Scope): Promise<void> {
-    await this.installPluginFromMarketplace(plugin, scope);
+  async installPlugin(
+    plugin: PluginMeta,
+    scope: Scope,
+    options?: {
+      catalogResolution?: CatalogResolution;
+      marketplacePrepared?: boolean;
+    },
+  ): Promise<void> {
+    await this.installPluginFromMarketplace(plugin, scope, options);
   }
 
   async installPluginFromMarketplace(
     plugin: PluginMeta,
     scope: Scope,
-    options: { marketplacePath?: string } = {},
+    options: {
+      marketplacePath?: string;
+      catalogResolution?: CatalogResolution;
+      marketplacePrepared?: boolean;
+    } = {},
   ): Promise<void> {
     if (scope === 'project') {
       if (plugin.manifest.apps) {
@@ -3220,7 +3248,9 @@ export class CodexAdapter implements PlatformAdapter {
       return;
     }
 
-    await ensureLocalMarketplace(this.env);
+    if (!options.marketplacePrepared) {
+      await ensureLocalMarketplace(this.env, undefined, options.catalogResolution);
+    }
     const awHome = await resolveAwHomeCanonical(this.env);
     const userPaths = resolveCodexPaths(this.cwd, 'user', this.env);
     const userConfig = await readCodexConfigFile(userPaths.configTomlPath);
@@ -3831,6 +3861,8 @@ export class CodexAdapter implements PlatformAdapter {
       changedConfigKeys?: string[];
       dynamicOnly?: boolean;
       previousArtifacts?: GeneratedArtifact[];
+      catalogResolution?: CatalogResolution;
+      marketplacePrepared?: boolean;
     },
   ): Promise<GeneratedArtifact[]> {
     const paths = resolveCodexPaths(this.cwd, scope, this.env);
@@ -4324,6 +4356,7 @@ export class CodexAdapter implements PlatformAdapter {
           plugin,
           trackingManifest,
           this.env,
+          options?.catalogResolution,
         );
         if (hooks.length > 0 && hooksPath) {
           artifacts.push({
@@ -4389,8 +4422,15 @@ export class CodexAdapter implements PlatformAdapter {
     });
   }
 
-  async upgradePlugin(plugin: PluginMeta, scope: Scope): Promise<void> {
-    const status = await this.status(plugin, scope);
+  async upgradePlugin(
+    plugin: PluginMeta,
+    scope: Scope,
+    options?: {
+      catalogResolution?: CatalogResolution;
+      marketplacePrepared?: boolean;
+    },
+  ): Promise<void> {
+    const status = await this.status(plugin, scope, options);
     const pluginStatus = status.plugins[0];
     if (pluginStatus?.catalogCompatibility === 'missing') {
       throw new Error(`${plugin.manifest.name} 当前 catalog 已缺失，请先执行 uninstall。`);
@@ -4401,24 +4441,27 @@ export class CodexAdapter implements PlatformAdapter {
       await this.uninstallExtensions(plugin, scope);
     }
 
-    await this.installPlugin(plugin, scope);
-    await this.installExtensions(plugin, scope, { event: 'upgrade' });
+    await this.installPlugin(plugin, scope, options);
+    await this.installExtensions(plugin, scope, { event: 'upgrade', ...options });
   }
 
   async status(
     plugin: PluginMeta,
     scope: Scope,
-    options?: { previousArtifacts?: GeneratedArtifact[] },
+    options?: {
+      previousArtifacts?: GeneratedArtifact[];
+      catalogResolution?: CatalogResolution;
+    },
   ): Promise<StatusReport> {
     const userPaths = resolveCodexPaths(this.cwd, 'user', this.env);
     const scopePaths = resolveCodexPaths(this.cwd, scope, this.env);
-    const [ledger, trackedGeneratedArtifacts, currentCatalog, projectKey, repoRoot, awHome] =
+    const currentCatalog = options?.catalogResolution ?? await resolveCurrentCatalog(this.env);
+    const [ledger, trackedGeneratedArtifacts, projectKey, repoRoot, awHome] =
       await Promise.all([
         readInstalledLedger(this.env),
         options?.previousArtifacts === undefined
           ? collectGeneratedArtifacts(plugin.manifest.name, scopePaths.trackingDir)
           : collectGeneratedArtifactStatuses(options.previousArtifacts),
-        resolveCurrentCatalog(this.env),
         resolveCodexProjectKey(this.cwd),
         resolveRepoRoot(this.cwd),
         resolveAwHomeCanonical(this.env),
@@ -4486,8 +4529,11 @@ export class CodexAdapter implements PlatformAdapter {
           ? { ...ownership, checkState: 'known' as const }
           : { present: false, checkState: 'known' as const };
       })();
-    const currentMarketplace = await readMarketplaceManifest(this.cwd, 'codex', this.env);
-    const currentCatalogAvailable = currentMarketplace.manifest.plugins.some(
+    const currentMarketplace = await readMarketplaceManifestAtPath(
+      getMarketplaceManifestPath(currentCatalog.rootDir, 'codex'),
+      'codex marketplace manifest',
+    );
+    const currentCatalogAvailable = currentMarketplace.plugins.some(
       (entry) => entry.name === plugin.manifest.name,
     );
     const sourceCatalogRoot = currentCatalog.rootDir;

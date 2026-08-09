@@ -6,6 +6,7 @@ import fs from 'fs-extra';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { installCommand } from '../../src/commands/install.js';
+import * as commonModule from '../../src/commands/common.js';
 import {
   readDynamicArtifactDiagnosticCacheAt,
   readInstallRecordFileAt,
@@ -214,6 +215,22 @@ describe('install --adopt-existing migration', () => {
     });
 
     const adapter = new FakeRepairAdapter();
+    const catalogResolution = {
+      rootDir: path.dirname(plugin.rootDir),
+      source: 'embedded' as const,
+    };
+    const prepareTargets = vi.spyOn(commonModule, 'preparePluginTargetsForCommand')
+      .mockResolvedValue({
+        ledger: {} as never,
+        targets: [{
+          pluginName: plugin.manifest.name,
+          plugin,
+          currentPlugin: plugin,
+          source: 'currentCatalog',
+        }],
+        warnings: [],
+        catalog: catalogResolution,
+      });
     adapter.installExtensions.mockImplementation(async () => {
       await fs.outputFile(fixture.target.repoArtifactPath, fixture.target.repoArtifactContent, 'utf8');
       return [{
@@ -253,6 +270,8 @@ describe('install --adopt-existing migration', () => {
     );
 
     expect(result.receiptDetails?.adoptExistingLifecycleReason).toBe('adoptExistingFirstLocalRecord');
+    expect(prepareTargets).toHaveBeenCalledTimes(1);
+    expect(adapter.installExtensions.mock.calls[0]![2]?.catalogResolution).toBe(catalogResolution);
     expect(result.receiptTargets).toEqual([
       expect.objectContaining({
         plugin: fixture.target.location.plugin,

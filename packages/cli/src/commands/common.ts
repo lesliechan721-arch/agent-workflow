@@ -128,6 +128,7 @@ export interface PreparedPluginCommandContext {
   ledger: InstalledLedger;
   targets: ResolvedPluginTarget[];
   warnings: string[];
+  catalog: CatalogResolution;
   marketplace?: PreparedMarketplaceState;
 }
 
@@ -199,16 +200,19 @@ function createReadOnlyMarketplaceState(catalog: CatalogResolution): PreparedMar
 
 function createRuntimeWritableMarketplaceState(
   ensuredMarketplace: Awaited<ReturnType<typeof ensureLocalMarketplace>>,
+  catalog: CatalogResolution,
 ): PreparedMarketplaceState {
+  const localCatalogView: CatalogResolution = {
+    ...catalog,
+    rootDir: ensuredMarketplace.rootDir,
+    source: 'local',
+  };
   return {
     rootDir: ensuredMarketplace.rootDir,
     source: 'local',
     changed: ensuredMarketplace.changed,
     mode: 'runtimeWritable',
-    catalog: {
-      rootDir: ensuredMarketplace.rootDir,
-      source: 'local',
-    },
+    catalog: localCatalogView,
   };
 }
 
@@ -696,23 +700,21 @@ async function prepareCatalogState(
   mode: CatalogPreparationMode,
   env: NodeJS.ProcessEnv,
   context?: CommandExecutionContext,
+  catalogResolution?: CatalogResolution,
 ): Promise<PreparedCatalogState> {
+  const catalog = await resolveReadOnlyCatalogResolution(env, { catalogResolution });
   if (mode === 'runtimeWritable') {
     const ensuredMarketplace = await ensureLocalMarketplace(
       env,
       createLocalMarketplaceGate(context),
+      catalog,
     );
     return {
-      catalog: {
-        rootDir: ensuredMarketplace.rootDir,
-        source: 'local',
-      },
-      marketplace: createRuntimeWritableMarketplaceState(ensuredMarketplace),
+      catalog,
+      marketplace: createRuntimeWritableMarketplaceState(ensuredMarketplace, catalog),
       warnings: ensuredMarketplace.warnings ?? [],
     };
   }
-
-  const catalog = await resolveReadOnlyCatalogResolution(env);
 
   return {
     catalog,
@@ -729,6 +731,7 @@ export async function preparePluginTargetsForCommand(
     catalogMode?: CatalogPreparationMode;
     ensureLocalMarketplace?: boolean;
     allowHistoricalFallback?: boolean;
+    catalogResolution?: CatalogResolution;
     env?: NodeJS.ProcessEnv;
     context?: CommandExecutionContext;
   } = {},
@@ -736,7 +739,12 @@ export async function preparePluginTargetsForCommand(
   const env = options.env ?? process.env;
   const catalogMode = resolveCatalogPreparationMode(options);
   const ledger = await readInstalledLedger(env);
-  const catalogState = await prepareCatalogState(catalogMode, env, options.context);
+  const catalogState = await prepareCatalogState(
+    catalogMode,
+    env,
+    options.context,
+    options.catalogResolution,
+  );
   const loadedTargets = await loadPluginTargetsForCommandWithCatalog(cwd, scope, pluginNames, {
     catalog: catalogState.catalog,
     allowHistoricalFallback: options.allowHistoricalFallback,
@@ -747,6 +755,7 @@ export async function preparePluginTargetsForCommand(
     ledger,
     targets: loadedTargets.targets,
     warnings: dedupeWarnings(catalogState.warnings),
+    catalog: catalogState.catalog,
     marketplace: catalogState.marketplace,
   };
 }
@@ -755,18 +764,25 @@ export async function prepareCommandEnvironment(
   options: {
     catalogMode?: CatalogPreparationMode;
     ensureLocalMarketplace?: boolean;
+    catalogResolution?: CatalogResolution;
     env?: NodeJS.ProcessEnv;
     context?: CommandExecutionContext;
   } = {},
-): Promise<Pick<PreparedPluginCommandContext, 'ledger' | 'warnings' | 'marketplace'>> {
+): Promise<Pick<PreparedPluginCommandContext, 'ledger' | 'warnings' | 'catalog' | 'marketplace'>> {
   const env = options.env ?? process.env;
   const catalogMode = resolveCatalogPreparationMode(options);
   const ledger = await readInstalledLedger(env);
-  const catalogState = await prepareCatalogState(catalogMode, env, options.context);
+  const catalogState = await prepareCatalogState(
+    catalogMode,
+    env,
+    options.context,
+    options.catalogResolution,
+  );
 
   return {
     ledger,
     warnings: dedupeWarnings(catalogState.warnings),
+    catalog: catalogState.catalog,
     marketplace: catalogState.marketplace,
   };
 }
@@ -811,17 +827,15 @@ interface LoadedPluginTargetsForCommand {
 async function loadPluginTargetsForCommandWithCatalog(
   cwd: string,
   scope: Scope,
-  pluginNames?: string[],
+  pluginNames: string[] | undefined,
   options: {
-    catalog?: CatalogResolution;
+    catalog: CatalogResolution;
     allowHistoricalFallback?: boolean;
     env?: NodeJS.ProcessEnv;
-  } = {},
+  },
 ): Promise<LoadedPluginTargetsForCommand> {
   const env = options.env ?? process.env;
-  const catalog = options.catalog
-    ? await Promise.resolve(options.catalog)
-    : await resolveCurrentCatalog(env);
+  const catalog = options.catalog;
   const catalogPlugins = await resolvePluginsFromCatalog(catalog.rootDir, undefined);
   if (!pluginNames || pluginNames.length === 0) {
     if (catalogPlugins.length === 0) {
@@ -884,6 +898,7 @@ export async function loadPluginTargetsForCommand(
     catalogMode?: CatalogPreparationMode;
     ensureLocalMarketplace?: boolean;
     allowHistoricalFallback?: boolean;
+    catalogResolution?: CatalogResolution;
     env?: NodeJS.ProcessEnv;
     context?: CommandExecutionContext;
   } = {},
@@ -893,7 +908,12 @@ export async function loadPluginTargetsForCommand(
   const ledger = catalogMode === 'readOnly'
     ? await readInstalledLedger(env)
     : undefined;
-  const catalogState = await prepareCatalogState(catalogMode, env, options.context);
+  const catalogState = await prepareCatalogState(
+    catalogMode,
+    env,
+    options.context,
+    options.catalogResolution,
+  );
 
   return (await loadPluginTargetsForCommandWithCatalog(cwd, scope, pluginNames, {
     catalog: catalogState.catalog,

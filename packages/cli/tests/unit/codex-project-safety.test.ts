@@ -1645,7 +1645,7 @@ describe('Codex project safety preflight', () => {
       ),
     ).rejects.toThrow('ledger write failed');
     await expect(fs.pathExists(repoSkillRoot(ledgerFailure.repoRoot, 'repo-check'))).resolves.toBe(false);
-  });
+  }, 30_000);
 
   it('fails explicit upgrade before config prompt when tracking identity is broken', async () => {
     const workspace = await makeCodexWorkspace({

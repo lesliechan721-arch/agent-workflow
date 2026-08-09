@@ -111,6 +111,16 @@ export interface CollectInstallEvidenceOptions {
     clientName?: string;
     clientVersion?: string;
   };
+  readSnapshot?: InstallEvidenceReadSnapshot;
+}
+
+export interface InstallEvidenceReadSnapshot {
+  inspectGlobalDependencyIndex(env: NodeJS.ProcessEnv): Promise<GlobalDependencyIndexInspection>;
+  inspectCodexNativeEvidence(options: {
+    pluginName: string;
+    pluginIdHint?: string;
+    env: NodeJS.ProcessEnv;
+  }): Promise<CodexNativeEvidence>;
 }
 
 async function readTrackingRecordSafely(options: {
@@ -800,6 +810,7 @@ async function inspectDependencyLocation(options: {
   cwd: string;
   location: PluginLocation;
   env: NodeJS.ProcessEnv;
+  readSnapshot?: InstallEvidenceReadSnapshot;
 }): Promise<DependencyHealthEvidence> {
   const recordPath = path.join(
     getInstallStatePrivateRoot(resolveLocationCwd(options.location, options.cwd), options.location, options.env),
@@ -854,7 +865,13 @@ async function inspectDependencyLocation(options: {
     && readResult.value.record.platform === 'codex'
     && readResult.value.record.native?.installedByAw
   ) {
-    const native = await inspectCodexNativeEvidence(options.location.plugin, readResult.value.record.native.pluginId, options.env);
+    const native = options.readSnapshot
+      ? await options.readSnapshot.inspectCodexNativeEvidence({
+        pluginName: options.location.plugin,
+        pluginIdHint: readResult.value.record.native.pluginId,
+        env: options.env,
+      })
+      : await inspectCodexNativeEvidence(options.location.plugin, readResult.value.record.native.pluginId, options.env);
     if (!native.minimumSatisfied) {
       return {
         dependency: options.location,
@@ -878,12 +895,14 @@ async function buildDependencyProjection(options: {
   env: NodeJS.ProcessEnv;
   record: InstallRecordFile | null;
   inspection: GlobalDependencyIndexInspection;
+  readSnapshot?: InstallEvidenceReadSnapshot;
 }): Promise<DependencyProjectionEvidence> {
   const dependencyHealth = options.record
     ? await Promise.all(options.record.record.dependencyEdges.map((edge) => inspectDependencyLocation({
       cwd: options.cwd,
       location: edge.dependency,
       env: options.env,
+      readSnapshot: options.readSnapshot,
     })))
     : [];
 
@@ -1041,7 +1060,7 @@ async function inspectNativeTransaction(options: {
   };
 }
 
-async function inspectCodexNativeEvidence(
+export async function inspectCodexNativeEvidence(
   pluginName: string,
   pluginIdHint: string | undefined,
   env: NodeJS.ProcessEnv,
@@ -1150,13 +1169,16 @@ export async function collectInstallEvidence(
       location: options.location,
       env,
     });
-  const dependencyInspection = await inspectGlobalDependencyIndex(env);
+  const dependencyInspection = options.readSnapshot
+    ? await options.readSnapshot.inspectGlobalDependencyIndex(env)
+    : await inspectGlobalDependencyIndex(env);
   const dependencyProjection = await buildDependencyProjection({
     cwd: options.cwd,
     location: options.location,
     env,
     record: installRecord,
     inspection: dependencyInspection,
+    readSnapshot: options.readSnapshot,
   });
   const nativeTransaction = await inspectNativeTransaction({
     location: options.location,
@@ -1164,11 +1186,17 @@ export async function collectInstallEvidence(
     hasRecord: installRecord !== null,
   });
   const codexNative = options.location.platform === 'codex' && options.location.scope === 'user'
-    ? await inspectCodexNativeEvidence(
-      options.location.plugin,
-      installRecord?.record.native?.pluginId,
-      env,
-    )
+    ? options.readSnapshot
+      ? await options.readSnapshot.inspectCodexNativeEvidence({
+        pluginName: options.location.plugin,
+        pluginIdHint: installRecord?.record.native?.pluginId,
+        env,
+      })
+      : await inspectCodexNativeEvidence(
+        options.location.plugin,
+        installRecord?.record.native?.pluginId,
+        env,
+      )
     : null;
   const codexNativeView = options.location.platform === 'codex' &&
     options.location.scope === 'user' &&

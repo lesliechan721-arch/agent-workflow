@@ -11,13 +11,20 @@ import {
   applyClaudeUninstallLedger,
   pruneClaudeTrackedArtifacts,
 } from '../../src/adapters/claude.js';
-import type { InstalledLedger, PluginMeta, StatusReport } from '../../src/types.js';
+import type {
+  CatalogResolution,
+  InstalledLedger,
+  PluginMeta,
+  StatusReport,
+} from '../../src/types.js';
 import {
   createAvailableLedger,
   initializeLocalMarketplace,
   writeInstalledLedger,
 } from '../../src/utils/local-marketplace.js';
+import * as localMarketplaceModule from '../../src/utils/local-marketplace.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
+import * as pluginCatalogModule from '../../src/utils/plugin-catalog.js';
 import { bundleLocalPlugin } from '../../src/generators/local-plugin.js';
 import {
   resolveClaudePaths,
@@ -235,6 +242,71 @@ function createStatusReport(catalogCompatibility?: 'current' | 'missing' | 'capa
 }
 
 describe('ClaudeAdapter', () => {
+  it('reuses an explicit catalog resolution for Claude status', async () => {
+    const { repoRoot, env } = await makeWorkspace();
+    env.AW_HOME = path.join(path.dirname(repoRoot), 'aw-home');
+    await setupLocalMarketplace(repoRoot, env);
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
+    const adapter = new ClaudeAdapter(repoRoot, undefined, env);
+    const catalogResolution = await pluginCatalogModule.resolveCurrentCatalog(env);
+    const resolveCurrentCatalogSpy = vi.spyOn(pluginCatalogModule, 'resolveCurrentCatalog');
+
+    const legacyReport = await adapter.status(plugin, 'project');
+    expect(resolveCurrentCatalogSpy).toHaveBeenCalledTimes(1);
+
+    resolveCurrentCatalogSpy.mockClear();
+    const explicitReport = await adapter.status(plugin, 'project', { catalogResolution });
+
+    expect(resolveCurrentCatalogSpy).not.toHaveBeenCalled();
+    expect(explicitReport.plugins[0]?.catalogCompatibility).toBe(
+      legacyReport.plugins[0]?.catalogCompatibility,
+    );
+    expect(explicitReport.plugins[0]?.currentCatalog).toEqual(
+      legacyReport.plugins[0]?.currentCatalog,
+    );
+  });
+
+  it('honors prepared Claude marketplaces and preserves direct initialization', async () => {
+    const { repoRoot, env } = await makeWorkspace();
+    env.AW_HOME = path.join(path.dirname(repoRoot), 'aw-home');
+    await setupLocalMarketplace(repoRoot, env);
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
+    const nativeCliRunner = vi.fn(async () => ({
+      exitCode: 0,
+      stdout: '',
+      stderr: '',
+    }));
+    const adapter = new ClaudeAdapter(repoRoot, nativeCliRunner, env);
+    const catalogResolution: CatalogResolution = {
+      rootDir: env.AW_HOME,
+      source: 'local',
+    };
+    const ensureLocalMarketplaceSpy = vi.spyOn(localMarketplaceModule, 'ensureLocalMarketplace');
+    const resolveCurrentCatalogSpy = vi.spyOn(pluginCatalogModule, 'resolveCurrentCatalog');
+
+    await adapter.installPlugin(plugin, 'project', {
+      catalogResolution,
+      marketplacePrepared: true,
+    });
+
+    expect(ensureLocalMarketplaceSpy).not.toHaveBeenCalled();
+    expect(resolveCurrentCatalogSpy).not.toHaveBeenCalled();
+
+    ensureLocalMarketplaceSpy.mockClear();
+    resolveCurrentCatalogSpy.mockClear();
+    await adapter.installPlugin(plugin, 'project', { catalogResolution });
+
+    expect(ensureLocalMarketplaceSpy).toHaveBeenCalledWith(env, undefined, catalogResolution);
+    expect(resolveCurrentCatalogSpy).not.toHaveBeenCalled();
+
+    ensureLocalMarketplaceSpy.mockClear();
+    resolveCurrentCatalogSpy.mockClear();
+    await adapter.installPlugin(plugin, 'project');
+
+    expect(ensureLocalMarketplaceSpy).toHaveBeenCalledWith(env, undefined, undefined);
+    expect(resolveCurrentCatalogSpy).toHaveBeenCalledTimes(1);
+  });
+
   it('uses recovered artifacts for refresh renderer context, ownership, and drift status', async () => {
     const { repoRoot, env } = await makeWorkspace();
     const plugin = await createDynamicClaudePlugin(path.dirname(repoRoot));
@@ -773,11 +845,21 @@ describe('ClaudeAdapter', () => {
     const uninstallExtensionsSpy = vi.spyOn(adapter, 'uninstallExtensions').mockResolvedValue();
     const installPluginSpy = vi.spyOn(adapter, 'installPlugin').mockResolvedValue();
     const installExtensionsSpy = vi.spyOn(adapter, 'installExtensions').mockResolvedValue([]);
+    const catalogResolution: CatalogResolution = {
+      rootDir: '/catalog',
+      source: 'embedded',
+    };
+    const options = { catalogResolution, marketplacePrepared: true };
 
-    await expect(adapter.upgradePlugin(plugin, 'project')).resolves.toBeUndefined();
+    await expect(adapter.upgradePlugin(plugin, 'project', options)).resolves.toBeUndefined();
+    expect(adapter.status).toHaveBeenLastCalledWith(plugin, 'project', options);
     expect(uninstallExtensionsSpy).toHaveBeenCalledWith(plugin, 'project');
-    expect(installPluginSpy).toHaveBeenCalledWith(plugin, 'project');
-    expect(installExtensionsSpy).toHaveBeenCalledWith(plugin, 'project', { event: 'upgrade' });
+    expect(installPluginSpy).toHaveBeenCalledWith(plugin, 'project', options);
+    expect(installExtensionsSpy).toHaveBeenCalledWith(plugin, 'project', {
+      event: 'upgrade',
+      catalogResolution,
+      marketplacePrepared: true,
+    });
   });
 
   it('keeps available ledgers unchanged when adding Claude scope records', async () => {

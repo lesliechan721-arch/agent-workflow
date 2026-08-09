@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import type { Readable, Writable } from 'node:stream';
 
@@ -7,8 +7,12 @@ import fs from 'fs-extra';
 
 import {
   assertProcessTreeInspectionAvailable,
+  CODEX_EVAL_PROCESS_TREE_ID_ENV,
+  createChildProcessTreeMonitor,
+  type ChildProcessTreeMonitor,
+  processTreeCleanupIsUnconfirmed,
   releaseChildProcessHandles,
-  terminateChildProcessTree,
+  scrubProcessTreeId,
 } from './codex-eval-process-tree.js';
 import {
   assertCodexEvalCanStartWork,
@@ -89,6 +93,22 @@ interface PendingRequest {
 
 interface AppServerFrameHandler {
   (frame: Record<string, unknown>): Promise<void> | void;
+}
+
+export async function settleAppServerProcessCleanup(options: {
+  child: ChildProcess;
+  processTreeMonitor: ChildProcessTreeMonitor;
+  waitForClose: (timeoutMs: number) => Promise<boolean>;
+}): Promise<void> {
+  const diagnostics = await options.processTreeMonitor.terminate();
+  const cleanupUnconfirmed = processTreeCleanupIsUnconfirmed(diagnostics);
+  const closed = await options.waitForClose(1_000);
+  if (!closed) releaseChildProcessHandles(options.child);
+  if (cleanupUnconfirmed) throw new Error(diagnostics.join(' '));
+  if (closed) return;
+  throw new Error(
+    `Could not confirm Codex app-server process-tree termination. ${diagnostics.join(' ')}`.trim(),
+  );
 }
 
 const PASSTHROUGH_ENV = new Set([
@@ -177,6 +197,8 @@ function diffSnapshots(before: Map<string, string>, after: Map<string, string>):
 
 class EvalAppServerSession {
   private readonly process: AppServerProcess;
+  private readonly processTreeId = randomUUID();
+  private readonly processTreeMonitor: ChildProcessTreeMonitor;
   private readonly pending = new Map<string, PendingRequest>();
   private readonly handlers = new Set<AppServerFrameHandler>();
   private readonly failureHandlers = new Set<(error: Error) => void>();
@@ -216,18 +238,30 @@ class EvalAppServerSession {
       `model_provider=${JSON.stringify(options.modelProvider)}`,
     ], {
       cwd: options.cwd,
-      env: options.env,
+      env: {
+        ...options.env,
+        [CODEX_EVAL_PROCESS_TREE_ID_ENV]: this.processTreeId,
+      },
       shell: false,
       detached: process.platform !== 'win32',
       stdio: ['pipe', 'pipe', 'pipe'],
     }) as unknown as AppServerProcess;
+    this.processTreeMonitor = createChildProcessTreeMonitor(
+      this.process as unknown as ChildProcess,
+      { treeId: this.processTreeId },
+    );
     this.process.stdout.setEncoding?.('utf8');
     this.process.stderr.setEncoding?.('utf8');
     this.process.stdout.on('data', (chunk: string | Buffer) => {
-      this.handleChunk(typeof chunk === 'string' ? chunk : chunk.toString('utf8'));
+      this.handleChunk(
+        (typeof chunk === 'string' ? chunk : chunk.toString('utf8'))
+          .replaceAll(this.processTreeId, '[process-tree-id]'),
+      );
     });
     this.process.stderr.on('data', (chunk: string | Buffer) => {
-      this.stderrBuffer = `${this.stderrBuffer}${String(chunk)}`.slice(-32_000);
+      this.stderrBuffer = `${this.stderrBuffer}${String(chunk)}`
+        .replaceAll(this.processTreeId, '[process-tree-id]')
+        .slice(-32_000);
     });
     this.process.once('error', (error) => this.fail(error));
     this.process.once('close', (code, signal) => {
@@ -303,21 +337,22 @@ class EvalAppServerSession {
     }
     this.pending.clear();
     try {
-      const diagnostics = await terminateChildProcessTree(
-        this.process as unknown as ChildProcess,
-      );
-      if (await this.waitForClose(1_000)) return;
-      releaseChildProcessHandles(this.process as unknown as ChildProcess);
-      throw new Error(
-        `Could not confirm Codex app-server process-tree termination. ${diagnostics.join(' ')}`.trim(),
-      );
+      await settleAppServerProcessCleanup({
+        child: this.process as unknown as ChildProcess,
+        processTreeMonitor: this.processTreeMonitor,
+        waitForClose: (timeoutMs) => this.waitForClose(timeoutMs),
+      });
     } finally {
       this.unregisterSignalCleanup();
     }
   }
 
   get stderr(): string {
-    return this.stderrBuffer;
+    return this.stderrBuffer.replaceAll(this.processTreeId, '[process-tree-id]');
+  }
+
+  scrub<T>(value: T): T {
+    return scrubProcessTreeId(value, this.processTreeId);
   }
 
   private async waitForClose(timeoutMs: number): Promise<boolean> {
@@ -544,6 +579,7 @@ async function runConversationOnce(options: {
       turnResolve = resolve;
       turnReject = reject;
     });
+    void turnDone.catch(() => undefined);
     removeFailureHandler = session.onFailure((error) => turnReject?.(error));
     turnTimer = setTimeout(() => {
       turnReject?.(new Error(`conversation turn timed out after ${options.timeoutMs}ms.`));
@@ -655,7 +691,7 @@ async function runConversationOnce(options: {
     if (options.evalCase.workspaceUnchanged && workspaceChanges.length > 0) {
       diagnostics.push(`Workspace changed: ${workspaceChanges.join(', ')}`);
     }
-    return {
+    return session.scrub({
       variant: options.variant,
       complete: completed.complete,
       mechanicalPassed: completed.complete && diagnostics.length === 0,
@@ -667,9 +703,9 @@ async function runConversationOnce(options: {
       diagnostics,
       eventTrace,
       ...(session.stderr.trim() ? { stderr: session.stderr.trim() } : {}),
-    };
+    });
   } catch (error) {
-    return {
+    const evidence: AppServerRunEvidence = {
       variant: options.variant,
       complete: false,
       mechanicalPassed: false,
@@ -682,6 +718,7 @@ async function runConversationOnce(options: {
       eventTrace,
       ...(session?.stderr.trim() ? { stderr: session.stderr.trim() } : {}),
     };
+    return session ? session.scrub(evidence) : evidence;
   } finally {
     if (turnTimer) {
       clearTimeout(turnTimer);

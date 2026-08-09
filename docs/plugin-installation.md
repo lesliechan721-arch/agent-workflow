@@ -36,16 +36,37 @@ aw status
 aw init [-f|--force] [--catalog-channel <dist-tag>|--catalog-version <semver>]
 ```
 
-- `-f, --force`：绕过已匹配的 cache 快路径，强制重新拉取和重建匹配 selector 的 catalog/cache，但不会删除仍被安装位置或恢复证据引用的 historical runtime
+- `-f, --force`：绕过已匹配的 cache 快路径并强制尝试重新拉取和重建匹配 selector 的 catalog/cache；resolver 远程失败时仍会严格检查匹配 cache fallback，但公开命令会拒绝 cache 结果并报错；命令不会删除仍被安装位置或恢复证据引用的 historical runtime
 - `--catalog-channel <dist-tag>`：本次预热使用显式 dist-tag；`aw init --channel <dist-tag>` 是兼容别名
 - `--catalog-version <semver>`：本次预热使用显式 exact catalog version；与 `--catalog-channel` 互斥
 - selector 只影响本次命令，不修改持久默认 channel，也不会污染其它 channel 或 exact version 的离线 fallback
 
 稳定版 CLI 默认解析 `@yiliang/aw-plugins-manifest@latest`，prerelease / beta CLI 默认解析 `@yiliang/aw-plugins-manifest@beta`。`latest` catalog 只接受 stable catalog version 和 stable 插件 version；`beta` catalog version 必须是 prerelease，且可包含 stable 或 prerelease 插件 version。
 
-如果 latest catalog 的最低 CLI 版本高于当前 `aw`，CLI 不会写入这个不兼容 catalog，而是按 sidecar manifest 的 history 查询同一轨道里仍支持当前 CLI 的最新历史 catalog。history 不可用、schema 不支持或内容非法时返回 `catalogHistoryUnavailable`；有效 history 确认没有兼容 catalog 时返回 `awVersionTooLow`。解析出合法 catalog identity 后，匹配 cache 会作为快路径使用；如果强制刷新或远程校验失败，匹配 cache 仍可作为 fallback。远程不可用且没有匹配 cache 时，需要 current catalog 的命令返回 `catalogUnavailable`。这些场景都不会回退到 CLI 包内 embedded catalog。
+如果 latest catalog 的最低 CLI 版本高于当前 `aw`，CLI 不会写入这个不兼容 catalog，而是按 sidecar manifest 的 history 查询同一轨道里仍支持当前 CLI 的最新历史 catalog。history 不可用、schema 不支持或内容非法时返回 `catalogHistoryUnavailable`；有效 history 确认没有兼容 catalog 时返回 `awVersionTooLow`。解析出合法 catalog identity 后，匹配 cache 可以作为快路径使用；普通远程校验失败时，匹配 cache 也可以作为 fallback。selector cache 还必须属于当前规范化 npm registry；切换 registry 后不会使用其它 registry 或旧的无来源记录作为 fallback。`forceRemote` resolver 会跳过 cache 快路径；远程失败时，它仍可返回 selector 精确匹配且完整性、identity 和兼容性严格验证通过的 cache fallback，并标记 `cacheState.state=refreshFailed`。公开 `aw init --force` 随后会拒绝这个 cache 结果并报错。远程不可用且没有允许使用的匹配 cache 时，需要 current catalog 的命令返回 `catalogUnavailable`。这些场景都不会回退到 CLI 包内 embedded catalog。
+
+不同命令使用不同 freshness 策略：
+
+| 入口 | Catalog 行为 |
+|------|--------------|
+| `aw status` | 优先读取合法 cache，不做后台刷新 |
+| `aw` 主控制台首页 | 优先显示合法 cache；cache 过期时在后台检查远程 catalog，并在下一次导航时应用结果 |
+| `install`、`upgrade`、普通 `init` | 要求一次远程检查；失败时可以使用严格匹配的合法 cache fallback |
+| `init --force` | resolver 跳过 cache 快路径并强制尝试远程刷新；如果 resolver 返回严格验证的 cache fallback，命令层拒绝该结果并报错 |
+
+主控制台的写动作完成后会重读本地状态。它不会把这次状态重读变成另一轮远程 catalog 请求。诊断中的 `cacheState` 可为 `fresh`、`stale` 或 `refreshFailed`：分别表示 cache 仍新鲜、合法 cache 已超过 TTL、远程刷新失败后使用了合法 fallback。
 
 同一组 catalog selector 也用于 `aw install`、`aw upgrade`、`aw reinstall`、`aw status`、发现类入口，以及未安装或未消费 store 上需要 current catalog schema 的 `aw config list/get/set/unset`。直接命令的 JSON / verbose 输出会展示请求 selector、实际 catalog identity、latest blocked 状态，以及 cache source 或 fallback 证据。
+
+### Catalog 与原生命令环境变量
+
+| 环境变量 | 默认值 | 合法值 | 说明 |
+|----------|--------|--------|------|
+| `AW_CATALOG_CACHE_TTL_MS` | `300000` | 整数 `0..86400000` | `0` 关闭 settled cache 快路径，但保留持久 cache 和合法 fallback |
+| `AW_CATALOG_REMOTE_TIMEOUT_MS` | `5000` | `0` 或整数 `100..60000` | catalog 远程 deadline；`0` 禁用 deadline |
+| `AW_NATIVE_CLI_TIMEOUT_MS` | `60000` | `0` 或整数 `1000..600000` | 只用于 basename 为 `codex` 或 `claude` 的命令；`0` 禁用默认超时 |
+
+这些变量只接受严格的非负十进制整数。不接受小数、正负号、空白或指数格式。非法值会立即报错。原生命令显式传入的 invocation timeout 优先于 `AW_NATIVE_CLI_TIMEOUT_MS`，但非法环境值仍会报错。
 
 ---
 
@@ -483,6 +504,16 @@ Codex project scope 安装 / 显式升级时，如果用户级 `~/.codex/config.
 ### Codex native CLI 或 native view 诊断失败
 
 `aw install <plugin> -p codex -s user` 和 `aw uninstall <plugin> -p codex -s user` 需要 Codex `>= 0.145.0` 提供 `codex plugin add/remove` 和 `codex plugin marketplace add/list/remove`。如果 CLI 不可用、命令失败、marketplace 未指向当前 canonical `AW_HOME`，或写后本地证据无法证明 plugin 已安装/已移除，命令会失败并给出可行动建议。AW 不会退回到只写 enabled config 或只删 config；请先升级/修复 Codex CLI 或 workspace policy，再重试同一条 `aw install` / `aw uninstall`。`codex app-server` 只影响 verbose/native view 只读诊断，RPC 不可用会显示 `nativeViewUnknown`，不会阻断 Codex CLI 写入主链路。
+
+Codex 和 Claude 原生命令默认在 `60000` 毫秒后超时。AW 会在 POSIX 和 Windows 上有界清理对应进程树，且不会自动重试。原生命令可能在超时前已经产生部分写入，因此请先运行 `aw status --verbose`，再按 marker、post-check 和状态建议选择 `cleanup` 或 `reinstall`。
+
+如果机器或网络稳定但原生命令持续超过默认值，可以只为当前命令调大上限，例如：
+
+```bash
+AW_NATIVE_CLI_TIMEOUT_MS=180000 aw install git-commit -p codex
+```
+
+也可以设置 `AW_NATIVE_CLI_TIMEOUT_MS=0` 禁用默认超时。禁用后，挂起的原生命令可以无限等待；CI 和无人值守脚本不建议这样配置。catalog 远程请求可用 `AW_CATALOG_REMOTE_TIMEOUT_MS` 调整，或设为 `0` 禁用 deadline。远程 deadline 禁用后，离线或异常 registry 也可能让命令长时间等待。
 
 排查时建议加 `--verbose` 或 `--debug`。debug event 会区分：
 

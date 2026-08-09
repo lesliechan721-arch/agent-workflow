@@ -223,6 +223,11 @@ describe('console entry', () => {
       }]);
     const loadConsoleItemsResult = vi.fn(async (...args: Parameters<typeof loadConsoleItems>) => ({
       items: await loadConsoleItems(...args),
+      catalog: {
+        rootDir: workspace.embeddedRoot,
+        source: 'embedded' as const,
+        catalogVersion: '1.0.0',
+      },
       catalogUnavailable: false,
     }));
     const statusCommand = vi.fn()
@@ -327,7 +332,7 @@ describe('console entry', () => {
       consoleDriver,
     });
 
-    expect(exitCode).toBe(0);
+    expect(exitCode, capture.readStderr()).toBe(0);
     expect(installCommand).toHaveBeenCalledWith(
       ['git-commit'],
       expect.objectContaining({

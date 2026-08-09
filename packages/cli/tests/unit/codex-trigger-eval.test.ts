@@ -2,7 +2,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import fs from 'fs-extra';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   inspectTriggerExecEvent,
@@ -12,6 +12,11 @@ import {
   type TriggerRunEvidence,
 } from '../../scripts/codex-trigger-eval.js';
 import { resolveCodexEvalRuntimeConfig } from '../../scripts/codex-eval-runtime-config.js';
+import {
+  createPosixProcessTreeMonitor,
+  processTreeCleanupIsUnconfirmed,
+  terminatePosixProcessTree,
+} from '../../scripts/codex-eval-process-tree.js';
 import type {
   PluginEvalTriggerCase,
   PluginEvalTriggerSuite,
@@ -61,19 +66,19 @@ function runEvidence(overrides: Partial<TriggerRunEvidence>): TriggerRunEvidence
 async function createFixture(options: {
   protectedEnv?: boolean;
   detachedDescendant?: boolean;
+  stdoutEvidence?: boolean;
+  rootExitDelayMs?: number;
 } = {}): Promise<{
   pluginRoot: string;
   subjectRoot: string;
   codexBin: string;
   descendantPidPath: string;
-  descendantSurvivalPath: string;
 }> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-trigger-driver-test-'));
   tempDirs.push(root);
   const pluginRoot = path.join(root, 'plugin');
   const subjectRoot = path.join(root, 'subject');
   const descendantPidPath = path.join(root, 'descendant-pid.txt');
-  const descendantSurvivalPath = path.join(root, 'descendant-survived.txt');
   await fs.ensureDir(path.join(pluginRoot, 'evals'));
   await fs.ensureDir(path.join(subjectRoot, '.agents', 'skills', 'eval-fixture'));
   await fs.ensureDir(path.join(subjectRoot, '.git'));
@@ -115,7 +120,7 @@ async function createFixture(options: {
     ...(options.detachedDescendant ? [
       "const { spawn } = require('node:child_process');",
       `const descendant = spawn(process.execPath, ['-e', ${JSON.stringify(
-        `process.on("SIGTERM", () => {}); setTimeout(() => require("node:fs").writeFileSync(${JSON.stringify(descendantSurvivalPath)}, "alive"), 2500); setInterval(() => {}, 1000);`,
+        'process.on("SIGTERM", () => {}); setInterval(() => {}, 1000);',
       )}], { detached: true, stdio: 'ignore' });`,
       'descendant.unref();',
       `fs.writeFileSync(${JSON.stringify(descendantPidPath)}, String(descendant.pid));`,
@@ -129,11 +134,15 @@ async function createFixture(options: {
     "  payload: { type: 'function_call', name: 'spawn_agent', namespace: 'collaboration', arguments: JSON.stringify({ agent_type: 'worker', message: 'inspect' }), call_id: 'spawn-1' },",
     "}) + '\\n');",
     'const send = (value) => process.stdout.write(JSON.stringify(value) + "\\n");',
-    'send({ type: "item.completed", item: { type: "command_execution", status: "completed", exit_code: 0, command: "cat .agents/skills/eval-fixture/SKILL.md" } });',
-    'send({ type: "item.completed", item: { type: "collab_tool_call", tool: "spawn_agent", prompt: "inspect" } });',
-    'send({ type: "turn.completed", usage: { total_tokens: 7 } });',
+    ...(options.stdoutEvidence === false ? [
+      'send({ type: "item.completed", item: { type: "command_execution", status: "completed", exit_code: 0, command: "cat .agents/skills/eval-fixture/SKILL.md" } });',
+    ] : [
+      'send({ type: "item.completed", item: { type: "command_execution", status: "completed", exit_code: 0, command: "cat .agents/skills/eval-fixture/SKILL.md" } });',
+      'send({ type: "item.completed", item: { type: "collab_tool_call", tool: "spawn_agent", prompt: "inspect" } });',
+      'send({ type: "turn.completed", usage: { total_tokens: 7 } });',
+    ]),
     'process.on("SIGTERM", () => process.exit(0));',
-    'setTimeout(() => process.exit(0), 100);',
+    `setTimeout(() => process.exit(0), ${options.rootExitDelayMs ?? 100});`,
     'void cwd;',
   ].join('\n'), 'utf8');
   await fs.chmod(codexBin, 0o755);
@@ -142,7 +151,6 @@ async function createFixture(options: {
     subjectRoot,
     codexBin,
     descendantPidPath,
-    descendantSurvivalPath,
   };
 }
 
@@ -253,10 +261,673 @@ describe('Codex native trigger eval driver', () => {
     },
   );
 
+  it('continues a root after the initial monitor snapshot settles during cleanup', async () => {
+    const rootPid = 51_000;
+    let resolveInitial: ((table: Map<number, {
+      ppid: number;
+      state: string;
+      startTime: string;
+    }>) => void) | undefined;
+    const initialSnapshot = new Promise<Map<number, {
+      ppid: number;
+      state: string;
+      startTime: string;
+    }>>((resolve) => {
+      resolveInitial = resolve;
+    });
+    let lookup = 0;
+    const readProcessTable = vi.fn(() => {
+      lookup += 1;
+      return lookup === 1 ? initialSnapshot : Promise.resolve(new Map());
+    });
+    const kill = vi.fn((pid: number, signal: NodeJS.Signals | 0) => {
+      if (pid === -rootPid && signal === 0) {
+        throw Object.assign(new Error('process group is gone'), { code: 'ESRCH' });
+      }
+      return true;
+    });
+
+    const monitor = createPosixProcessTreeMonitor(rootPid, { readProcessTable, kill });
+    const termination = monitor.terminate();
+    expect(kill).toHaveBeenCalledWith(rootPid, 'SIGSTOP');
+    expect(kill).not.toHaveBeenCalledWith(rootPid, 'SIGCONT');
+
+    resolveInitial!(new Map());
+    await termination;
+
+    const continueIndex = kill.mock.calls.findIndex((call) =>
+      call[0] === rootPid && call[1] === 'SIGCONT'
+    );
+    const groupKillIndex = kill.mock.calls.findIndex((call) =>
+      call[0] === -rootPid && call[1] === 'SIGKILL'
+    );
+    expect(continueIndex).toBeGreaterThanOrEqual(0);
+    expect(groupKillIndex).toBeGreaterThan(continueIndex);
+  });
+
+  it('continues a root and reports an initial monitor snapshot failure', async () => {
+    const rootPid = 52_000;
+    let lookup = 0;
+    const readProcessTable = vi.fn(() => {
+      lookup += 1;
+      if (lookup === 1) throw new Error('initial ps failed');
+      return Promise.resolve(new Map());
+    });
+    const kill = vi.fn((pid: number, signal: NodeJS.Signals | 0) => {
+      if (pid === -rootPid && signal === 0) {
+        throw Object.assign(new Error('process group is gone'), { code: 'ESRCH' });
+      }
+      return true;
+    });
+
+    const diagnostics = await createPosixProcessTreeMonitor(rootPid, {
+      readProcessTable,
+      kill,
+    }).terminate();
+
+    expect(kill).toHaveBeenCalledWith(rootPid, 'SIGSTOP');
+    expect(kill).toHaveBeenCalledWith(rootPid, 'SIGCONT');
+    expect(diagnostics).toContainEqual(expect.stringContaining('initial ps failed'));
+  });
+
+  it('does not bind or signal a reused root PID after the initial stop misses', async () => {
+    const rootPid = 52_100;
+    const reusedTable = new Map([
+      [rootPid, { ppid: 1, state: 'S', startTime: 'reused-start' }],
+    ]);
+    let initialStop = true;
+    const kill = vi.fn((pid: number, signal: NodeJS.Signals | 0) => {
+      if (initialStop && pid === rootPid && signal === 'SIGSTOP') {
+        initialStop = false;
+        throw Object.assign(new Error('original root exited'), { code: 'ESRCH' });
+      }
+      return true;
+    });
+    const diagnostics = await createPosixProcessTreeMonitor(rootPid, {
+      treeId: 'tree-token',
+      canUseProcessGroup: () => false,
+      readProcessTable: async () => new Map(reusedTable),
+      readTaggedProcessTable: async () => new Map(),
+      kill,
+    }).terminate();
+
+    expect(processTreeCleanupIsUnconfirmed(diagnostics)).toBe(true);
+    expect(kill.mock.calls).toEqual([[rootPid, 'SIGSTOP']]);
+  });
+
+  it('bounds a pending process-tree token scan and uses fallback cleanup', async () => {
+    vi.useFakeTimers();
+    try {
+      const rootPid = 53_000;
+      const kill = vi.fn((pid: number, signal: NodeJS.Signals | 0) => {
+        if (pid === -rootPid && signal === 0) {
+          throw Object.assign(new Error('process group is gone'), { code: 'ESRCH' });
+        }
+        return true;
+      });
+      const monitor = createPosixProcessTreeMonitor(rootPid, {
+        treeId: 'tree-token',
+        readProcessTable: async () => new Map(),
+        readTaggedProcessTable: async () => new Promise(() => {}),
+        kill,
+      });
+
+      const termination = monitor.terminate();
+      await vi.advanceTimersByTimeAsync(3_000);
+
+      await expect(termination).resolves.toContainEqual(expect.stringContaining(
+        'process-tree token scan exceeded 1000ms',
+      ));
+      expect(kill).toHaveBeenCalledWith(-rootPid, 'SIGKILL');
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('allows a slow token scan to freeze a live root within the cleanup budget', async () => {
+    vi.useFakeTimers();
+    try {
+      const rootPid = 53_100;
+      const processes = new Map([
+        [rootPid, { ppid: 1, state: 'S', startTime: 'root-start' }],
+      ]);
+      const kill = vi.fn((pid: number, signal: NodeJS.Signals | 0) => {
+        const entry = processes.get(pid);
+        if (signal === 'SIGSTOP' && entry) {
+          processes.set(pid, { ...entry, state: 'T' });
+        }
+        if (signal === 'SIGCONT' && entry) {
+          processes.set(pid, { ...entry, state: 'S' });
+        }
+        if (signal === 'SIGKILL') processes.delete(pid);
+        return true;
+      });
+      const readTaggedProcessTable = vi.fn(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 600));
+        return new Map(processes);
+      });
+      const monitor = createPosixProcessTreeMonitor(rootPid, {
+        treeId: 'tree-token',
+        canUseProcessGroup: () => false,
+        readProcessTable: async () => new Map(processes),
+        readTaggedProcessTable,
+        kill,
+      });
+
+      const termination = monitor.terminate();
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(600);
+      const diagnostics = await termination;
+
+      expect(readTaggedProcessTable).toHaveBeenCalledOnce();
+      expect(processTreeCleanupIsUnconfirmed(diagnostics)).toBe(false);
+      expect(kill).toHaveBeenCalledWith(rootPid, 'SIGSTOP');
+      expect(kill).toHaveBeenCalledWith(rootPid, 'SIGKILL');
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('rescans the token after freezing a root that immediately reparents a child', async () => {
+    vi.useFakeTimers();
+    try {
+      const rootPid = 53_200;
+      const childPid = 53_201;
+      const processes = new Map([
+        [rootPid, { ppid: 1, state: 'S', startTime: 'root-start' }],
+      ]);
+      const kill = vi.fn((pid: number, signal: NodeJS.Signals | 0) => {
+        const entry = processes.get(pid);
+        if (signal === 'SIGSTOP' && entry) {
+          processes.set(pid, { ...entry, state: 'T' });
+        }
+        if (signal === 'SIGCONT' && entry) {
+          processes.set(pid, { ...entry, state: 'S' });
+          if (pid === rootPid) {
+            processes.set(childPid, {
+              ppid: 1,
+              state: 'S',
+              startTime: 'child-start',
+            });
+          }
+        }
+        if (signal === 'SIGKILL') processes.delete(pid);
+        return true;
+      });
+      const readTaggedProcessTable = vi.fn(async () => new Map(processes));
+      const monitor = createPosixProcessTreeMonitor(rootPid, {
+        treeId: 'tree-token',
+        canUseProcessGroup: () => false,
+        readProcessTable: async () => new Map(processes),
+        readTaggedProcessTable,
+        kill,
+      });
+
+      const termination = monitor.terminate();
+      await vi.advanceTimersByTimeAsync(250);
+      const diagnostics = await termination;
+
+      expect(readTaggedProcessTable.mock.calls.length).toBeGreaterThanOrEqual(2);
+      expect(processTreeCleanupIsUnconfirmed(diagnostics)).toBe(false);
+      expect(kill).toHaveBeenCalledWith(childPid, 'SIGSTOP');
+      expect(kill).toHaveBeenCalledWith(childPid, 'SIGKILL');
+      expect(processes.has(childPid)).toBe(false);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('freezes the root before accepting an empty token snapshot', async () => {
+    vi.useFakeTimers();
+    try {
+      const rootPid = 53_250;
+      const childPid = 53_251;
+      const processes = new Map([
+        [rootPid, { ppid: 1, state: 'S', startTime: 'root-start' }],
+      ]);
+      const kill = vi.fn((pid: number, signal: NodeJS.Signals | 0) => {
+        const entry = processes.get(pid);
+        if (signal === 'SIGSTOP' && entry) {
+          processes.set(pid, { ...entry, state: 'T' });
+        }
+        if (signal === 'SIGCONT' && entry) {
+          processes.set(pid, { ...entry, state: 'S' });
+        }
+        if (signal === 'SIGKILL') processes.delete(pid);
+        return true;
+      });
+      const readTaggedProcessTable = vi.fn(async () => {
+        if (processes.get(rootPid)?.state === 'S') {
+          processes.set(childPid, {
+            ppid: 1,
+            state: 'S',
+            startTime: 'child-start',
+          });
+        }
+        return new Map();
+      });
+      const monitor = createPosixProcessTreeMonitor(rootPid, {
+        treeId: 'tree-token',
+        canUseProcessGroup: () => false,
+        readProcessTable: async () => new Map(processes),
+        readTaggedProcessTable,
+        kill,
+      });
+
+      const termination = monitor.terminate();
+      const diagnostics = await termination;
+
+      expect(readTaggedProcessTable).toHaveBeenCalledOnce();
+      expect(processTreeCleanupIsUnconfirmed(diagnostics)).toBe(false);
+      expect(processes.has(childPid)).toBe(false);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('bounds slow token, lineage, and confirmation scans by one deadline', async () => {
+    vi.useFakeTimers();
+    try {
+      const rootPid = 53_300;
+      const rootTable = () => new Map([
+        [rootPid, { ppid: 1, state: 'S', startTime: 'root-start' }],
+      ]);
+      let ordinaryReads = 0;
+      const readProcessTable = vi.fn(async () => {
+        ordinaryReads += 1;
+        if (ordinaryReads === 1) return rootTable();
+        if (ordinaryReads >= 4) return new Map();
+        await new Promise((resolve) => setTimeout(resolve, 900));
+        return rootTable();
+      });
+      const readTaggedProcessTable = vi.fn(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 900));
+        return rootTable();
+      });
+      const kill = vi.fn(() => true);
+      const monitor = createPosixProcessTreeMonitor(rootPid, {
+        treeId: 'tree-token',
+        canUseProcessGroup: () => false,
+        readProcessTable,
+        readTaggedProcessTable,
+        kill,
+      });
+
+      const startedAt = Date.now();
+      const termination = monitor.terminate();
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(900);
+      await vi.advanceTimersByTimeAsync(900);
+      await vi.advanceTimersByTimeAsync(900);
+      await vi.advanceTimersByTimeAsync(300);
+      const diagnostics = await termination;
+
+      expect(Date.now() - startedAt).toBe(3_000);
+      expect(processTreeCleanupIsUnconfirmed(diagnostics)).toBe(true);
+      expect(diagnostics).toContainEqual(expect.stringContaining(
+        'process-tree token scan exceeded 300ms',
+      ));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('bounds a pending pre-frozen kill confirmation and ignores its late result', async () => {
+    vi.useFakeTimers();
+    try {
+      const rootPid = 53_400;
+      const processes = new Map([
+        [rootPid, { ppid: 1, state: 'S', startTime: 'root-start' }],
+      ]);
+      let ordinaryReads = 0;
+      let resolveLateRead: ((table: Map<number, {
+        ppid: number;
+        state: string;
+        startTime: string;
+      }>) => void) | undefined;
+      const lateRead = new Promise<Map<number, {
+        ppid: number;
+        state: string;
+        startTime: string;
+      }>>((resolve) => {
+        resolveLateRead = resolve;
+      });
+      const readProcessTable = vi.fn(async () => {
+        ordinaryReads += 1;
+        return ordinaryReads <= 3 ? new Map(processes) : lateRead;
+      });
+      const kill = vi.fn((pid: number, signal: NodeJS.Signals | 0) => {
+        const entry = processes.get(pid);
+        if (signal === 'SIGSTOP' && entry) {
+          processes.set(pid, { ...entry, state: 'T' });
+        }
+        if (signal === 'SIGCONT' && entry) {
+          processes.set(pid, { ...entry, state: 'S' });
+        }
+        return true;
+      });
+      const monitor = createPosixProcessTreeMonitor(rootPid, {
+        treeId: 'tree-token',
+        canUseProcessGroup: () => false,
+        readProcessTable,
+        readTaggedProcessTable: async () => new Map(processes),
+        kill,
+      });
+
+      const startedAt = Date.now();
+      const termination = monitor.terminate();
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(2_000);
+      const diagnostics = await termination;
+
+      expect(Date.now() - startedAt).toBe(2_000);
+      expect(processTreeCleanupIsUnconfirmed(diagnostics)).toBe(true);
+      expect(diagnostics).toContainEqual(expect.stringContaining(
+        'kill-confirmation scan exceeded 2000ms',
+      ));
+      resolveLateRead!(new Map());
+      await Promise.resolve();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('bounds a pending ordinary freeze snapshot', async () => {
+    vi.useFakeTimers();
+    try {
+      const rootPid = 53_500;
+      let ordinaryReads = 0;
+      let resolveLateRead: ((table: Map<number, {
+        ppid: number;
+        state: string;
+        startTime: string;
+      }>) => void) | undefined;
+      const lateRead = new Promise<Map<number, {
+        ppid: number;
+        state: string;
+        startTime: string;
+      }>>((resolve) => {
+        resolveLateRead = resolve;
+      });
+      const readProcessTable = vi.fn(async () => {
+        ordinaryReads += 1;
+        if (ordinaryReads === 1) {
+          return new Map([
+            [rootPid, { ppid: 1, state: 'S', startTime: 'root-start' }],
+          ]);
+        }
+        return lateRead;
+      });
+      const kill = vi.fn(() => true);
+
+      const startedAt = Date.now();
+      const termination = terminatePosixProcessTree(rootPid, {
+        canUseProcessGroup: () => false,
+        readProcessTable,
+        kill,
+      });
+      await vi.advanceTimersByTimeAsync(1_000);
+      const diagnostics = await termination;
+
+      expect(Date.now() - startedAt).toBe(1_000);
+      expect(processTreeCleanupIsUnconfirmed(diagnostics)).toBe(true);
+      expect(diagnostics).toContainEqual(expect.stringContaining(
+        'lineage scan exceeded 1000ms',
+      ));
+      resolveLateRead!(new Map());
+      await Promise.resolve();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('includes a pending initial snapshot in the ordinary freeze deadline', async () => {
+    vi.useFakeTimers();
+    try {
+      const rootPid = 53_600;
+      let resolveLateRead: ((table: Map<number, {
+        ppid: number;
+        state: string;
+        startTime: string;
+      }>) => void) | undefined;
+      const lateRead = new Promise<Map<number, {
+        ppid: number;
+        state: string;
+        startTime: string;
+      }>>((resolve) => {
+        resolveLateRead = resolve;
+      });
+
+      const startedAt = Date.now();
+      const termination = terminatePosixProcessTree(rootPid, {
+        canUseProcessGroup: () => false,
+        readProcessTable: async () => lateRead,
+        kill: vi.fn(() => true),
+      });
+      await vi.advanceTimersByTimeAsync(1_000);
+      const diagnostics = await termination;
+
+      expect(Date.now() - startedAt).toBe(1_000);
+      expect(processTreeCleanupIsUnconfirmed(diagnostics)).toBe(true);
+      expect(diagnostics).toContainEqual(expect.stringContaining(
+        'initial scan exceeded 1000ms',
+      ));
+      resolveLateRead!(new Map());
+      await Promise.resolve();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not restart the deadline for group fallback after kill confirmation stalls', async () => {
+    vi.useFakeTimers();
+    try {
+      const rootPid = 53_700;
+      let ordinaryReads = 0;
+      let resolveLateRead: ((table: Map<number, {
+        ppid: number;
+        state: string;
+        startTime: string;
+      }>) => void) | undefined;
+      const lateRead = new Promise<Map<number, {
+        ppid: number;
+        state: string;
+        startTime: string;
+      }>>((resolve) => {
+        resolveLateRead = resolve;
+      });
+      const readProcessTable = vi.fn(async () => {
+        ordinaryReads += 1;
+        if (ordinaryReads === 1) {
+          return new Map([
+            [rootPid, { ppid: 1, state: 'S', startTime: 'root-start' }],
+          ]);
+        }
+        if (ordinaryReads === 2) {
+          return new Map([
+            [rootPid, { ppid: 1, state: 'T', startTime: 'root-start' }],
+          ]);
+        }
+        return lateRead;
+      });
+      const kill = vi.fn(() => true);
+
+      const startedAt = Date.now();
+      const termination = terminatePosixProcessTree(rootPid, {
+        canUseProcessGroup: () => true,
+        readProcessTable,
+        kill,
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(1_000);
+      const diagnostics = await termination;
+
+      expect(Date.now() - startedAt).toBe(1_000);
+      expect(processTreeCleanupIsUnconfirmed(diagnostics)).toBe(true);
+      expect(kill).toHaveBeenCalledWith(rootPid, 'SIGKILL');
+      expect(kill.mock.calls.some(([pid]) => (pid as number) < 0)).toBe(false);
+      resolveLateRead!(new Map());
+      await Promise.resolve();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('repeats token scans until newly detached tagged descendants are frozen', async () => {
+    const rootPid = 54_000;
+    const taggedParentPid = 54_001;
+    const taggedChildPid = 54_002;
+    const processes = new Map([
+      [rootPid, { ppid: 1, state: 'S', startTime: 'root-start' }],
+      [taggedParentPid, { ppid: rootPid, state: 'S', startTime: 'parent-start' }],
+    ]);
+    const kill = vi.fn((pid: number, signal: NodeJS.Signals | 0) => {
+      const entry = processes.get(pid);
+      if (signal === 'SIGSTOP' && entry) {
+        processes.set(pid, { ...entry, state: 'T' });
+        if (pid === taggedParentPid && !processes.has(taggedChildPid)) {
+          processes.set(taggedChildPid, {
+            ppid: 1,
+            state: 'S',
+            startTime: 'child-start',
+          });
+        }
+      }
+      if (signal === 'SIGKILL') processes.delete(pid);
+      return true;
+    });
+    const readTaggedProcessTable = vi.fn(async () => new Map(
+      [...processes].filter(([pid]) => pid !== rootPid),
+    ));
+    const monitor = createPosixProcessTreeMonitor(rootPid, {
+      treeId: 'tree-token',
+      canUseProcessGroup: () => false,
+      readProcessTable: async () => new Map(processes),
+      readTaggedProcessTable,
+      kill,
+    });
+
+    await monitor.terminate();
+
+    expect(readTaggedProcessTable.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(kill).toHaveBeenCalledWith(taggedParentPid, 'SIGSTOP');
+    expect(kill).toHaveBeenCalledWith(taggedChildPid, 'SIGSTOP');
+    expect(kill).toHaveBeenCalledWith(taggedParentPid, 'SIGKILL');
+    expect(kill).toHaveBeenCalledWith(taggedChildPid, 'SIGKILL');
+  });
+
+  it('does not stop a tagged PID that was reused before fresh validation', async () => {
+    const rootPid = 55_000;
+    const reusedPid = 55_001;
+    const reusedTable = new Map([
+      [reusedPid, { ppid: 1, state: 'S', startTime: 'reused-start' }],
+    ]);
+    let initialLookup = true;
+    const kill = vi.fn((pid: number, signal: NodeJS.Signals | 0) => {
+      if (pid === -rootPid && signal === 0) {
+        throw Object.assign(new Error('process group is gone'), { code: 'ESRCH' });
+      }
+      return true;
+    });
+    const monitor = createPosixProcessTreeMonitor(rootPid, {
+      treeId: 'tree-token',
+      canUseProcessGroup: () => false,
+      readProcessTable: async () => {
+        if (initialLookup) {
+          initialLookup = false;
+          return new Map();
+        }
+        return new Map(reusedTable);
+      },
+      readTaggedProcessTable: async () => new Map([
+        [reusedPid, { ppid: rootPid, state: 'S', startTime: 'old-start' }],
+      ]),
+      kill,
+    });
+
+    const diagnostics = await monitor.terminate();
+
+    expect(kill).not.toHaveBeenCalledWith(reusedPid, 'SIGSTOP');
+    expect(kill).not.toHaveBeenCalledWith(reusedPid, 'SIGKILL');
+    expect(kill.mock.calls.every(([pid]) => (pid as number) >= 0)).toBe(true);
+    expect(diagnostics).toContainEqual(expect.stringContaining(
+      'root identity and process-group ownership',
+    ));
+  });
+
+  it('kills a tagged reparented descendant when the root identity was not observed', async () => {
+    const rootPid = 56_000;
+    const descendantPid = 56_001;
+    const processes = new Map([
+      [descendantPid, { ppid: 1, state: 'S', startTime: 'descendant-start' }],
+    ]);
+    let initialLookup = true;
+    const kill = vi.fn((pid: number, signal: NodeJS.Signals | 0) => {
+      const entry = processes.get(pid);
+      if (signal === 'SIGSTOP' && entry) {
+        processes.set(pid, { ...entry, state: 'T' });
+      }
+      if (signal === 'SIGKILL') processes.delete(pid);
+      return true;
+    });
+    const monitor = createPosixProcessTreeMonitor(rootPid, {
+      treeId: 'tree-token',
+      canUseProcessGroup: () => false,
+      readProcessTable: async () => {
+        if (initialLookup) {
+          initialLookup = false;
+          throw new Error('initial ps failed');
+        }
+        return new Map(processes);
+      },
+      readTaggedProcessTable: async () => new Map(processes),
+      kill,
+    });
+
+    const diagnostics = await monitor.terminate();
+
+    expect(kill).toHaveBeenCalledWith(descendantPid, 'SIGSTOP');
+    expect(kill).toHaveBeenCalledWith(descendantPid, 'SIGKILL');
+    expect(kill.mock.calls.every(([pid]) => (pid as number) >= 0)).toBe(true);
+    expect(diagnostics.some((entry) => entry.startsWith(
+      'Could not confirm process-tree cleanup',
+    ))).toBe(false);
+  });
+
+  it('reports unconfirmed cleanup without a blind group signal when token scans fail', async () => {
+    const rootPid = 57_000;
+    const kill = vi.fn(() => true);
+    const diagnostics = await createPosixProcessTreeMonitor(rootPid, {
+      treeId: 'secret-tree-token',
+      canUseProcessGroup: () => false,
+      readProcessTable: async () => new Map(),
+      readTaggedProcessTable: async () => {
+        throw new Error('tag scan unavailable');
+      },
+      kill,
+    }).terminate();
+
+    expect(processTreeCleanupIsUnconfirmed(diagnostics)).toBe(true);
+    expect(kill.mock.calls.every(([pid]) => (pid as number) >= 0)).toBe(true);
+    expect(diagnostics.join('\n')).not.toContain('secret-tree-token');
+  });
+
   it.runIf(process.platform !== 'win32')(
-    'waits for early-stop process-tree cleanup before completing the trigger run',
+    'cleans an observed detached descendant after the root exits before evidence processing',
     async () => {
-      const fixture = await createFixture({ detachedDescendant: true });
+      const fixture = await createFixture({
+        detachedDescendant: true,
+        stdoutEvidence: false,
+        rootExitDelayMs: 100,
+      });
       let descendantPid: number | undefined;
       const processExists = (pid: number): boolean => {
         try {
@@ -267,7 +938,7 @@ describe('Codex native trigger eval driver', () => {
         }
       };
       try {
-        await expect(runCodexTriggerSuite({
+        const report = await runCodexTriggerSuite({
           suite: suite(),
           split: 'validation',
           subjectRoot: fixture.subjectRoot,
@@ -276,14 +947,14 @@ describe('Codex native trigger eval driver', () => {
           runs: 1,
           codexBin: fixture.codexBin,
           sourceEnv: process.env,
-        })).resolves.toMatchObject({
+        });
+        expect(report).toMatchObject({
           outcome: 'passed',
           complete: true,
           mechanicalPassed: true,
         });
         descendantPid = Number(await fs.readFile(fixture.descendantPidPath, 'utf8'));
-        await new Promise((resolve) => setTimeout(resolve, 1_500));
-        await expect(fs.pathExists(fixture.descendantSurvivalPath)).resolves.toBe(false);
+        expect(processExists(descendantPid)).toBe(false);
       } finally {
         if (descendantPid && processExists(descendantPid)) {
           try {

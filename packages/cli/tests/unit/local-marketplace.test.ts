@@ -14,13 +14,16 @@ import { createRecordId } from '../../src/install-state/ids.js';
 import type { InstallRecordFile, PluginLocation } from '../../src/install-state/types.js';
 import {
   buildCurrentCatalogCacheKey,
+  acquireCurrentCatalogCacheLease,
   calculateBundleFingerprint,
   createAvailableLedger,
   ensureLocalMarketplace,
   hasInstalledLedgerDependencyMetadata,
   initializeLocalMarketplace,
+  markCurrentCatalogCacheEntryValidated,
   materializeStagedMarketplaceCodexDynamicSkills,
   readCurrentCatalogCacheEntry,
+  readCurrentCatalogCacheEntryBySelector,
   readCliPackageInfo,
   readInstalledLedger,
   resolveReadOnlyCatalogResolution,
@@ -28,13 +31,23 @@ import {
   validateLocalMarketplaceLayout,
   writeCurrentCatalogCacheEntry,
   writeInstalledLedger,
+  type CurrentCatalogCacheEntry,
+  type CurrentCatalogCacheIdentity,
+  type CurrentCatalogCacheObservation,
 } from '../../src/utils/local-marketplace.js';
 import * as pluginCatalogModule from '../../src/utils/plugin-catalog.js';
-import { CatalogResolutionError } from '../../src/utils/plugin-catalog.js';
+import {
+  CatalogResolutionError,
+  clearCurrentCatalogResolutionMemoForTests,
+} from '../../src/utils/plugin-catalog.js';
 import { readJsonFile } from '../../src/utils/json.js';
 import { setCatalogPackageSourceForTests } from '../../src/utils/marketplace.js';
-import { resolveCurrentCatalogCacheEntryDir, setEmbeddedPluginsRootOverrideForTests } from '../../src/utils/paths.js';
-import type { CatalogSelector, InstalledLedger } from '../../src/types.js';
+import {
+  resolveCurrentCatalogCacheEntryDir,
+  resolveCurrentCatalogCacheStagingDir,
+  setEmbeddedPluginsRootOverrideForTests,
+} from '../../src/utils/paths.js';
+import type { CatalogResolution, CatalogSelector, InstalledLedger } from '../../src/types.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
 import { TestPathFenceError } from '../helpers/test-isolation.js';
 import {
@@ -196,6 +209,72 @@ function createCatalogUnavailableError(selector: CatalogSelector): CatalogResolu
   });
 }
 
+async function makeCurrentCatalogCacheFixture(options?: {
+  selector?: CatalogSelector;
+  catalogVersion?: string;
+  minAwVersion?: string;
+}): Promise<{
+  cacheRoot: string;
+  env: NodeJS.ProcessEnv;
+  sourceRoot: string;
+  identity: CurrentCatalogCacheIdentity;
+}> {
+  const cacheRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-current-catalog-cache-'));
+  tempDirs.push(cacheRoot);
+  const env = { ...process.env, AW_HOME: cacheRoot };
+  const sourceRoot = path.join(cacheRoot, 'source-catalog');
+  await fs.ensureDir(sourceRoot);
+  await fs.writeJson(path.join(sourceRoot, 'catalog-manifest.json'), { version: 1 }, { spaces: 2 });
+  return {
+    cacheRoot,
+    env,
+    sourceRoot,
+    identity: {
+      selector: options?.selector ?? {
+        kind: 'distTag',
+        cliVersion: '1.0.0',
+        defaultChannel: 'latest',
+        requestedChannel: 'latest',
+      },
+      channel: 'latest',
+      catalogVersion: options?.catalogVersion ?? '1.0.0',
+      minAwVersion: options?.minAwVersion ?? '1.0.0',
+      schemaVersion: 1,
+      historySchemaVersion: 1,
+      sidecarIntegrity: 'sha512-sidecar',
+      fullIntegrity: 'sha512-full',
+    },
+  };
+}
+
+function createCurrentCatalogCacheObservation(
+  entry: CurrentCatalogCacheEntry,
+): CurrentCatalogCacheObservation {
+  return {
+    sidecarManifestPackage: {
+      source: '@yiliang/aw-plugins-manifest',
+      version: entry.metadata.catalogVersion,
+      channel: entry.metadata.channel,
+      npmIntegrity: entry.metadata.sidecarIntegrity,
+      manifestDigest: entry.metadata.manifestDigest,
+    },
+    latestCatalog: {
+      channel: entry.metadata.channel,
+      catalogVersion: entry.metadata.catalogVersion,
+      minAwVersion: entry.metadata.minAwVersion,
+      blocked: false,
+    },
+    historySchemaVersion: entry.metadata.historySchemaVersion,
+    resolutionSource: 'requestedCatalog',
+  };
+}
+
+async function getOnlyCurrentCatalogCacheIndexPath(cacheRoot: string): Promise<string> {
+  const selectorsDir = path.join(cacheRoot, 'catalog-cache', 'selectors');
+  const [indexName] = await fs.readdir(selectorsDir);
+  return path.join(selectorsDir, indexName!);
+}
+
 async function writeLocalMarketplaceResolvedCatalog(
   awHome: string,
   resolvedCatalog: {
@@ -221,6 +300,84 @@ afterEach(async () => {
 });
 
 describe('local marketplace', () => {
+  it('reuses a supplied catalog resolution without calling the current catalog resolver', async () => {
+    const { awHome, embeddedRoot } = await makeWorkspace();
+    const env = {
+      ...process.env,
+      AW_HOME: awHome,
+    };
+    const packageInfo = await readCliPackageInfo();
+    const catalogResolution: CatalogResolution = {
+      rootDir: embeddedRoot,
+      source: 'remote',
+      selector: {
+        kind: 'default',
+        cliVersion: packageInfo.version,
+        defaultChannel: packageInfo.version.includes('-') ? 'beta' : 'latest',
+      },
+      channel: packageInfo.version.includes('-') ? 'beta' : 'latest',
+      catalogVersion: packageInfo.version,
+      minAwVersion: packageInfo.version,
+      historySchemaVersion: 1,
+    };
+    const resolveCurrentCatalog = vi.spyOn(pluginCatalogModule, 'resolveCurrentCatalog');
+
+    await expect(resolveReadOnlyCatalogResolution(env, { catalogResolution }))
+      .resolves.toBe(catalogResolution);
+    await expect(ensureLocalMarketplace(env, undefined, catalogResolution)).resolves.toMatchObject({
+      rootDir: awHome,
+      changed: true,
+    });
+
+    expect(resolveCurrentCatalog).not.toHaveBeenCalled();
+    await expect(readJsonFile(path.join(awHome, 'config.json'))).resolves.toMatchObject({
+      catalogSelector: catalogResolution.selector,
+      resolvedCatalog: {
+        channel: catalogResolution.channel,
+        catalogVersion: catalogResolution.catalogVersion,
+        minAwVersion: catalogResolution.minAwVersion,
+        historySchemaVersion: catalogResolution.historySchemaVersion,
+      },
+    });
+  });
+
+  it('validates the layout of a supplied catalog resolution', async () => {
+    const { awHome, repoRoot } = await makeWorkspace();
+    const env = {
+      ...process.env,
+      AW_HOME: awHome,
+    };
+    const catalogResolution: CatalogResolution = {
+      rootDir: path.join(repoRoot, 'missing-catalog'),
+      source: 'remote',
+    };
+    const resolveCurrentCatalog = vi.spyOn(pluginCatalogModule, 'resolveCurrentCatalog');
+
+    await expect(resolveReadOnlyCatalogResolution(env, { catalogResolution })).rejects.toThrow();
+    await expect(ensureLocalMarketplace(env, undefined, catalogResolution)).rejects.toThrow();
+    expect(resolveCurrentCatalog).not.toHaveBeenCalled();
+  });
+
+  it('passes the requested freshness policy to current catalog resolution', async () => {
+    const { awHome, embeddedRoot } = await makeWorkspace();
+    const env = {
+      ...process.env,
+      AW_HOME: awHome,
+    };
+    const catalogResolution: CatalogResolution = {
+      rootDir: embeddedRoot,
+      source: 'cache',
+    };
+    const resolveCurrentCatalog = vi.spyOn(pluginCatalogModule, 'resolveCurrentCatalog')
+      .mockResolvedValue(catalogResolution);
+
+    await expect(resolveReadOnlyCatalogResolution(env, { freshnessPolicy: 'cacheFirst' }))
+      .resolves.toBe(catalogResolution);
+    expect(resolveCurrentCatalog).toHaveBeenCalledWith(env, {
+      freshnessPolicy: 'cacheFirst',
+    });
+  });
+
   it('blocks local marketplace writes when AW_HOME points at a read-only fixture root', async () => {
     const { embeddedRoot } = await makeWorkspace();
     const repositoryCwd = path.resolve(getSourceTestRepositoryCwd(), '..', '..');
@@ -896,6 +1053,834 @@ describe('local marketplace', () => {
         catalogVersion: '1.0.0',
       },
     });
+
+    const selectorsDir = path.join(cacheRoot, 'catalog-cache', 'selectors');
+    const [indexName] = await fs.readdir(selectorsDir);
+    const indexPath = path.join(selectorsDir, indexName!);
+    const index = await fs.readJson(indexPath) as Record<string, unknown>;
+    await fs.writeJson(indexPath, { ...index, validatedAt: '2000-01-01T00:00:00.000Z' });
+    await expect(readCurrentCatalogCacheEntry(identity, env)).resolves.toMatchObject({
+      validatedAt: written.metadata.createdAt,
+    });
+  });
+
+  it('partitions selector indexes by catalog source identity', async () => {
+    const { env, sourceRoot, identity } = await makeCurrentCatalogCacheFixture();
+    const written = await writeCurrentCatalogCacheEntry({ ...identity, sourceRoot, env });
+    const sourceIdentity = 'https://registry-a.example/';
+    await markCurrentCatalogCacheEntryValidated(
+      written,
+      env,
+      undefined,
+      {
+        ...createCurrentCatalogCacheObservation(written),
+        sourceIdentity,
+        observationOrder: 1,
+      },
+    );
+
+    await expect(readCurrentCatalogCacheEntryBySelector(
+      identity.selector,
+      env,
+      sourceIdentity,
+    )).resolves.toMatchObject({ cacheKey: written.cacheKey });
+    await expect(readCurrentCatalogCacheEntryBySelector(
+      identity.selector,
+      env,
+      'https://registry-b.example/',
+    )).resolves.toBeNull();
+  });
+
+  it('keeps a newer remote observation when an older resolution finishes later', async () => {
+    const { cacheRoot, env, sourceRoot, identity } = await makeCurrentCatalogCacheFixture();
+    const sourceIdentity = 'https://registry.example/';
+    const older = await writeCurrentCatalogCacheEntry({ ...identity, sourceRoot, env });
+    const olderObservation: CurrentCatalogCacheObservation = {
+      ...createCurrentCatalogCacheObservation(older),
+      sourceIdentity,
+      observationOrder: 1,
+    };
+    await markCurrentCatalogCacheEntryValidated(older, env, undefined, olderObservation);
+
+    const newerSourceRoot = path.join(cacheRoot, 'source-catalog-v2');
+    await fs.ensureDir(newerSourceRoot);
+    await fs.writeJson(
+      path.join(newerSourceRoot, 'catalog-manifest.json'),
+      { version: 2 },
+      { spaces: 2 },
+    );
+    const newerIdentity: CurrentCatalogCacheIdentity = {
+      ...identity,
+      catalogVersion: '1.1.0',
+      sidecarIntegrity: 'sha512-sidecar-v2',
+      fullIntegrity: 'sha512-full-v2',
+    };
+    const newer = await writeCurrentCatalogCacheEntry({
+      ...newerIdentity,
+      sourceRoot: newerSourceRoot,
+      env,
+    });
+    const newerObservation: CurrentCatalogCacheObservation = {
+      ...createCurrentCatalogCacheObservation(newer),
+      sourceIdentity,
+      observationOrder: 2,
+    };
+    await markCurrentCatalogCacheEntryValidated(newer, env, undefined, newerObservation);
+
+    await markCurrentCatalogCacheEntryValidated(
+      older,
+      env,
+      new Date(Date.now() + 100).toISOString(),
+      olderObservation,
+    );
+
+    await expect(readCurrentCatalogCacheEntryBySelector(
+      identity.selector,
+      env,
+      sourceIdentity,
+    )).resolves.toMatchObject({
+      cacheKey: newer.cacheKey,
+      metadata: { catalogVersion: '1.1.0' },
+      observation: newerObservation,
+    });
+  });
+
+  it('publishes concurrent immutable cache writers without partial reader state', async () => {
+    const cacheRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-current-catalog-cache-race-'));
+    tempDirs.push(cacheRoot);
+    const env = { ...process.env, AW_HOME: cacheRoot };
+    const sourceRoot = path.join(cacheRoot, 'source-catalog');
+    await fs.ensureDir(sourceRoot);
+    await fs.writeJson(path.join(sourceRoot, 'catalog-manifest.json'), { version: 1 }, { spaces: 2 });
+    const identity = {
+      selector: {
+        kind: 'default' as const,
+        cliVersion: '1.0.0',
+        defaultChannel: 'latest' as const,
+      },
+      channel: 'latest' as const,
+      catalogVersion: '1.0.0',
+      minAwVersion: '1.0.0',
+      schemaVersion: 1,
+      historySchemaVersion: 1,
+      sidecarIntegrity: 'sha512-sidecar',
+      fullIntegrity: 'sha512-full',
+    };
+
+    const writers = [1, 2, 3].map(() => writeCurrentCatalogCacheEntry({
+      ...identity,
+      sourceRoot,
+      env,
+    }));
+    const readers = [1, 2, 3, 4].map(() => readCurrentCatalogCacheEntry(identity, env));
+    const [written, observed] = await Promise.all([
+      Promise.all(writers),
+      Promise.all(readers),
+    ]);
+
+    expect(new Set(written.map((entry) => entry.rootDir)).size).toBe(1);
+    expect(observed.every((entry) => entry === null || entry.cacheKey === written[0]!.cacheKey)).toBe(true);
+    await expect(readCurrentCatalogCacheEntry(identity, env)).resolves.toMatchObject({
+      cacheKey: written[0]!.cacheKey,
+    });
+  });
+
+  it('bounds catalog cache lock waits and never releases a different owner token', async () => {
+    const { env } = await makeCurrentCatalogCacheFixture();
+    const lease = await acquireCurrentCatalogCacheLease(env);
+    expect(path.resolve(lease.lockPath).startsWith(`${path.resolve(String(env.AW_HOME))}${path.sep}`))
+      .toBe(false);
+    await expect(acquireCurrentCatalogCacheLease(env, {
+      timeoutMs: 20,
+      pollMs: 5,
+      staleMs: 60_000,
+    })).rejects.toThrow('Timed out after 20ms');
+    await expect(fs.readJson(path.join(lease.lockPath, 'owner.json'))).resolves.toMatchObject({
+      token: lease.owner.token,
+    });
+
+    const controller = new AbortController();
+    const aborted = new Error('aborted catalog cache lock wait');
+    const waitingLease = acquireCurrentCatalogCacheLease(env, {
+      timeoutMs: 5_000,
+      pollMs: 1_000,
+      staleMs: 60_000,
+      signal: controller.signal,
+    });
+    controller.abort(aborted);
+    await expect(waitingLease).rejects.toBe(aborted);
+    await expect(fs.readJson(path.join(lease.lockPath, 'owner.json'))).resolves.toMatchObject({
+      token: lease.owner.token,
+    });
+
+    const mismatchedToken = '00000000-0000-4000-8000-000000000001';
+    await fs.writeJson(path.join(lease.lockPath, 'owner.json'), {
+      ...lease.owner,
+      token: mismatchedToken,
+    });
+    await expect(lease.release()).resolves.toBe(false);
+    await expect(fs.readJson(path.join(lease.lockPath, 'owner.json'))).resolves.toMatchObject({
+      token: mismatchedToken,
+    });
+    await fs.remove(lease.lockPath);
+  });
+
+  it('removes its catalog cache lock when synchronous owner metadata writing fails', async () => {
+    const { env } = await makeCurrentCatalogCacheFixture();
+    const failure = new Error('injected synchronous owner write failure');
+    const realWriteFileSync: typeof fs.writeFileSync = fs.writeFileSync.bind(fs);
+    const writeSpy = vi.spyOn(fs, 'writeFileSync').mockImplementation((...args) => {
+      if (path.basename(String(args[0])) === 'owner.json') {
+        throw failure;
+      }
+      return realWriteFileSync(...args);
+    });
+
+    await expect(acquireCurrentCatalogCacheLease(env)).rejects.toBe(failure);
+    writeSpy.mockRestore();
+    const lockRoot = path.join(path.dirname(String(env.AW_HOME)), '.aw-local-marketplace-staging');
+    const siblingEntries = await fs.readdir(lockRoot).catch(() => [] as string[]);
+    expect(siblingEntries.filter((entry) => entry.startsWith('.catalog-cache-'))).toEqual([]);
+  });
+
+  it('recovers stale dead, PID-reused, and ownerless catalog cache locks without residue', async () => {
+    const { env } = await makeCurrentCatalogCacheFixture();
+    const staleOwners = [
+      { pid: 999_999, processStartIdentity: 'dead-process' },
+      { pid: process.pid, processStartIdentity: 'reused-process-start' },
+      null,
+    ] as const;
+
+    for (const staleOwner of staleOwners) {
+      const staleLease = await acquireCurrentCatalogCacheLease(env);
+      const ownerPath = path.join(staleLease.lockPath, 'owner.json');
+      if (staleOwner === null) {
+        await fs.remove(ownerPath);
+      } else {
+        await fs.writeJson(ownerPath, { ...staleLease.owner, ...staleOwner });
+      }
+      const oldTime = new Date(Date.now() - 60_000);
+      await fs.utimes(staleLease.lockPath, oldTime, oldTime);
+
+      const recovered = await acquireCurrentCatalogCacheLease(env, {
+        timeoutMs: 100,
+        pollMs: 2,
+        staleMs: 0,
+      });
+      await expect(staleLease.release()).resolves.toBe(false);
+      await expect(recovered.release()).resolves.toBe(true);
+      await expect(fs.pathExists(recovered.lockPath)).resolves.toBe(false);
+    }
+  });
+
+  it('never recovers an invalid stale owner automatically under competing waiters', async () => {
+    const { env } = await makeCurrentCatalogCacheFixture();
+    const invalidOwnerLease = await acquireCurrentCatalogCacheLease(env);
+    const ownerPath = path.join(invalidOwnerLease.lockPath, 'owner.json');
+    await fs.writeFile(ownerPath, '{invalid owner', 'utf8');
+    const oldTime = new Date(Date.now() - 60_000);
+    await fs.utimes(invalidOwnerLease.lockPath, oldTime, oldTime);
+
+    const waiters = [0, 1, 2, 3].map(() => acquireCurrentCatalogCacheLease(env, {
+      timeoutMs: 25,
+      pollMs: 2,
+      staleMs: 0,
+    }).then(
+      (lease) => ({ lease }),
+      (error: unknown) => ({ error }),
+    ));
+    const results = await Promise.all(waiters);
+    expect(results.every((result) => 'error' in result)).toBe(true);
+    await expect(fs.readFile(ownerPath, 'utf8')).resolves.toBe('{invalid owner');
+    await fs.writeJson(ownerPath, invalidOwnerLease.owner);
+    await expect(invalidOwnerLease.release()).resolves.toBe(true);
+  });
+
+  it('keeps the canonical lock closed to later contenders when a stale claim observes a new owner', async () => {
+    const { env } = await makeCurrentCatalogCacheFixture();
+    const ownerA = await acquireCurrentCatalogCacheLease(env);
+    await fs.writeJson(path.join(ownerA.lockPath, 'owner.json'), {
+      ...ownerA.owner,
+      pid: 999_999,
+      processStartIdentity: 'dead-owner-a',
+    });
+    const oldTime = new Date(Date.now() - 60_000);
+    await fs.utimes(ownerA.lockPath, oldTime, oldTime);
+
+    let staleClaimReady!: () => void;
+    const staleClaimObservedOwnerA = new Promise<void>((resolve) => {
+      staleClaimReady = resolve;
+    });
+    let releaseStaleClaim!: () => void;
+    const staleClaimReleased = new Promise<void>((resolve) => {
+      releaseStaleClaim = resolve;
+    });
+    const staleContenderResult = acquireCurrentCatalogCacheLease(env, {
+      timeoutMs: 40,
+      pollMs: 2,
+      staleMs: 0,
+      __testBeforeStaleClaim: async () => {
+        staleClaimReady();
+        await staleClaimReleased;
+      },
+    }).then(
+      (lease) => ({ lease }),
+      (error: unknown) => ({ error }),
+    );
+    await staleClaimObservedOwnerA;
+    await expect(ownerA.release()).resolves.toBe(true);
+    const ownerB = await acquireCurrentCatalogCacheLease(env);
+    const thirdContenderResult = acquireCurrentCatalogCacheLease(env, {
+      timeoutMs: 30,
+      pollMs: 2,
+      staleMs: 60_000,
+    }).then(
+      (lease) => ({ lease }),
+      (error: unknown) => ({ error }),
+    );
+    const fourthContenderResult = acquireCurrentCatalogCacheLease(env, {
+      timeoutMs: 30,
+      pollMs: 2,
+      staleMs: 0,
+    }).then(
+      (lease) => ({ lease }),
+      (error: unknown) => ({ error }),
+    );
+
+    releaseStaleClaim();
+    const [staleContender, thirdContender, fourthContender] = await Promise.all([
+      staleContenderResult,
+      thirdContenderResult,
+      fourthContenderResult,
+    ]);
+    expect(staleContender).toHaveProperty('error');
+    expect(thirdContender).toHaveProperty('error');
+    expect(fourthContender).toHaveProperty('error');
+    await expect(fs.readJson(path.join(ownerB.lockPath, 'owner.json'))).resolves.toMatchObject({
+      token: ownerB.owner.token,
+    });
+    await expect(ownerB.release()).resolves.toBe(true);
+    await expect(fs.pathExists(ownerB.lockPath)).resolves.toBe(false);
+  });
+
+  it('lets a new owner release after a stale claimant temporarily claims its owner file', async () => {
+    const { env } = await makeCurrentCatalogCacheFixture();
+    const ownerA = await acquireCurrentCatalogCacheLease(env);
+    await fs.writeJson(path.join(ownerA.lockPath, 'owner.json'), {
+      ...ownerA.owner,
+      pid: 999_999,
+      processStartIdentity: 'dead-owner-a',
+    });
+    const oldTime = new Date(Date.now() - 60_000);
+    await fs.utimes(ownerA.lockPath, oldTime, oldTime);
+
+    let beforeClaimReady!: () => void;
+    const staleReadOwnerA = new Promise<void>((resolve) => {
+      beforeClaimReady = resolve;
+    });
+    let releaseBeforeClaim!: () => void;
+    const beforeClaimReleased = new Promise<void>((resolve) => {
+      releaseBeforeClaim = resolve;
+    });
+    let afterClaimReady!: () => void;
+    const staleClaimedOwnerB = new Promise<void>((resolve) => {
+      afterClaimReady = resolve;
+    });
+    let releaseAfterClaim!: () => void;
+    const afterClaimReleased = new Promise<void>((resolve) => {
+      releaseAfterClaim = resolve;
+    });
+    let mismatchRestoreReady!: () => void;
+    const mismatchOwnerRestored = new Promise<void>((resolve) => {
+      mismatchRestoreReady = resolve;
+    });
+    let releaseMismatchRestore!: () => void;
+    const mismatchRestoreReleased = new Promise<void>((resolve) => {
+      releaseMismatchRestore = resolve;
+    });
+    const staleContenderResult = acquireCurrentCatalogCacheLease(env, {
+      timeoutMs: 100,
+      pollMs: 2,
+      staleMs: 0,
+      __testBeforeStaleClaim: async () => {
+        beforeClaimReady();
+        await beforeClaimReleased;
+      },
+      __testAfterStaleClaim: async () => {
+        afterClaimReady();
+        await afterClaimReleased;
+      },
+      __testAfterMismatchOwnerRestore: async () => {
+        mismatchRestoreReady();
+        await mismatchRestoreReleased;
+      },
+    }).then(
+      (lease) => ({ lease }),
+      (error: unknown) => ({ error }),
+    );
+
+    await staleReadOwnerA;
+    await expect(ownerA.release()).resolves.toBe(true);
+    const ownerB = await acquireCurrentCatalogCacheLease(env);
+    releaseBeforeClaim();
+    await staleClaimedOwnerB;
+    let ownerBReleaseSettled = false;
+    const ownerBRelease = ownerB.release().finally(() => {
+      ownerBReleaseSettled = true;
+    });
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    expect(ownerBReleaseSettled).toBe(false);
+
+    releaseAfterClaim();
+    await mismatchOwnerRestored;
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    expect(ownerBReleaseSettled).toBe(false);
+    releaseMismatchRestore();
+    await expect(ownerBRelease).resolves.toBe(true);
+    const staleContender = await staleContenderResult;
+    if ('lease' in staleContender) {
+      await staleContender.lease.release();
+    }
+    await expect(fs.pathExists(ownerB.lockPath)).resolves.toBe(false);
+  });
+
+  it('waits for a v2 selector index displaced during Windows replacement', async () => {
+    const { cacheRoot, env, sourceRoot, identity } = await makeCurrentCatalogCacheFixture();
+    const written = await writeCurrentCatalogCacheEntry({ ...identity, sourceRoot, env });
+    expect(written.metadata.version).toBe(2);
+    const indexPath = await getOnlyCurrentCatalogCacheIndexPath(cacheRoot);
+
+    let displacementSeen!: () => void;
+    const indexDisplaced = new Promise<void>((resolve) => {
+      displacementSeen = resolve;
+    });
+    let releasePublication!: () => void;
+    const publicationReleased = new Promise<void>((resolve) => {
+      releasePublication = resolve;
+    });
+    let readerPolling!: () => void;
+    const readerEnteredBoundedPoll = new Promise<void>((resolve) => {
+      readerPolling = resolve;
+    });
+    let stagedPublishAttempts = 0;
+    const realRename: typeof fs.rename = fs.rename.bind(fs);
+    const renameSpy = vi.spyOn(fs, 'rename').mockImplementation(async (...args) => {
+      const source = String(args[0]);
+      const target = String(args[1]);
+      if (target === indexPath && source.endsWith('.tmp')) {
+        stagedPublishAttempts += 1;
+        if (stagedPublishAttempts === 1) {
+          const error = new Error('injected Windows replace path') as NodeJS.ErrnoException;
+          error.code = 'EPERM';
+          throw error;
+        }
+      }
+      if (source === indexPath && target.endsWith('.tmp.old')) {
+        const result = await realRename(...args);
+        displacementSeen();
+        await publicationReleased;
+        return result;
+      }
+      return realRename(...args);
+    });
+    const realPathExists: typeof fs.pathExists = fs.pathExists.bind(fs);
+    let missingIndexReads = 0;
+    const pathExistsSpy = vi.spyOn(fs, 'pathExists').mockImplementation(async (...args) => {
+      const exists = await realPathExists(...args);
+      if (String(args[0]) === indexPath && !exists) {
+        missingIndexReads += 1;
+        if (missingIndexReads === 2) {
+          readerPolling();
+        }
+      }
+      return exists;
+    });
+
+    const writer = markCurrentCatalogCacheEntryValidated(written, env);
+    await indexDisplaced;
+    const reader = readCurrentCatalogCacheEntryBySelector(identity.selector, env);
+    await readerEnteredBoundedPoll;
+    releasePublication();
+    const [selected] = await Promise.all([reader, writer]);
+    renameSpy.mockRestore();
+    pathExistsSpy.mockRestore();
+
+    expect(selected).toMatchObject({
+      cacheKey: written.cacheKey,
+      metadata: { version: 2 },
+    });
+  });
+
+  it('ignores v1 selector index observations and reads the immutable v1 entry without migration', async () => {
+    const { cacheRoot, env, sourceRoot, identity } = await makeCurrentCatalogCacheFixture();
+    const written = await writeCurrentCatalogCacheEntry({ ...identity, sourceRoot, env });
+    const metadata = await fs.readJson(written.metadataPath) as Record<string, unknown>;
+    delete metadata.publicationId;
+    await fs.writeJson(written.metadataPath, { ...metadata, version: 1 }, { spaces: 2 });
+
+    const indexPath = await getOnlyCurrentCatalogCacheIndexPath(cacheRoot);
+    const index = await fs.readJson(indexPath) as Record<string, unknown>;
+    await fs.writeJson(indexPath, {
+      version: 1,
+      selectorKey: index.selectorKey,
+      cacheKey: index.cacheKey,
+      validatedAt: index.validatedAt,
+      observation: createCurrentCatalogCacheObservation(written),
+    }, { spaces: 2 });
+
+    await expect(readCurrentCatalogCacheEntryBySelector(identity.selector, env)).resolves.toMatchObject({
+      cacheKey: written.cacheKey,
+      metadata: { version: 1 },
+    });
+    await expect(fs.readJson(indexPath)).resolves.toHaveProperty('observation');
+  });
+
+  it('does not scan v1 entry metadata that carries an observation field', async () => {
+    const { cacheRoot, env, sourceRoot, identity } = await makeCurrentCatalogCacheFixture();
+    const written = await writeCurrentCatalogCacheEntry({ ...identity, sourceRoot, env });
+    await fs.remove(await getOnlyCurrentCatalogCacheIndexPath(cacheRoot));
+    const metadata = await fs.readJson(written.metadataPath) as Record<string, unknown>;
+    delete metadata.publicationId;
+    await fs.writeJson(written.metadataPath, {
+      ...metadata,
+      version: 1,
+      observation: { forged: true },
+    }, { spaces: 2 });
+
+    await expect(readCurrentCatalogCacheEntryBySelector(identity.selector, env)).resolves.toBeNull();
+  });
+
+  it('does not scan a v2 orphan disguised as v1 while publicationId remains', async () => {
+    const { cacheRoot, env, sourceRoot, identity } = await makeCurrentCatalogCacheFixture();
+    const written = await writeCurrentCatalogCacheEntry({ ...identity, sourceRoot, env });
+    await fs.remove(await getOnlyCurrentCatalogCacheIndexPath(cacheRoot));
+    await fs.writeJson(written.metadataPath, {
+      ...await fs.readJson(written.metadataPath),
+      version: 1,
+    }, { spaces: 2 });
+
+    await expect(readCurrentCatalogCacheEntryBySelector(identity.selector, env)).resolves.toBeNull();
+    await expect(fs.readdir(path.join(cacheRoot, 'catalog-cache', 'selectors'))).resolves.toEqual([]);
+  });
+
+  it('does not write a selector index while reading a legacy v1 entry', async () => {
+    const { cacheRoot, env, sourceRoot, identity } = await makeCurrentCatalogCacheFixture();
+    const legacy = await writeCurrentCatalogCacheEntry({ ...identity, sourceRoot, env });
+    const metadata = await fs.readJson(legacy.metadataPath) as Record<string, unknown>;
+    delete metadata.publicationId;
+    await fs.writeJson(legacy.metadataPath, { ...metadata, version: 1 }, { spaces: 2 });
+    const indexPath = await getOnlyCurrentCatalogCacheIndexPath(cacheRoot);
+    await fs.remove(indexPath);
+    const linkSpy = vi.spyOn(fs, 'link');
+    const copySpy = vi.spyOn(fs, 'copyFile');
+
+    await expect(readCurrentCatalogCacheEntryBySelector(identity.selector, env)).resolves.toMatchObject({
+      cacheKey: legacy.cacheKey,
+      metadata: { version: 1 },
+    });
+    expect(linkSpy).not.toHaveBeenCalled();
+    expect(copySpy).not.toHaveBeenCalled();
+    linkSpy.mockRestore();
+    copySpy.mockRestore();
+    await expect(fs.pathExists(indexPath)).resolves.toBe(false);
+  });
+
+  it('drops conflicting v2 requested-catalog observations but keeps the committed entry', async () => {
+    const { cacheRoot, env, sourceRoot, identity } = await makeCurrentCatalogCacheFixture();
+    const written = await writeCurrentCatalogCacheEntry({ ...identity, sourceRoot, env });
+    const validObservation = createCurrentCatalogCacheObservation(written);
+    await markCurrentCatalogCacheEntryValidated(written, env, undefined, validObservation);
+    const indexPath = await getOnlyCurrentCatalogCacheIndexPath(cacheRoot);
+    const validIndex = await fs.readJson(indexPath) as Record<string, unknown>;
+    const conflicts: Array<(observation: CurrentCatalogCacheObservation) => void> = [
+      (observation) => { observation.sidecarManifestPackage.source = '@example/forged'; },
+      (observation) => { observation.sidecarManifestPackage.version = '1.0.1'; },
+      (observation) => { observation.sidecarManifestPackage.channel = 'beta'; },
+      (observation) => { observation.sidecarManifestPackage.manifestDigest = `sha256:${'0'.repeat(64)}`; },
+      (observation) => { observation.sidecarManifestPackage.npmIntegrity = 'sha512-other'; },
+      (observation) => { observation.historySchemaVersion = 2; },
+      (observation) => { observation.resolutionSource = 'historyCompatibleCatalog'; },
+      (observation) => { observation.latestCatalog!.blocked = true; },
+      (observation) => {
+        observation.latestCatalogBlocked = {
+          channel: 'latest',
+          catalogVersion: '2.0.0',
+          minAwVersion: '2.0.0',
+        };
+      },
+    ];
+
+    for (const mutate of conflicts) {
+      const observation = structuredClone(validObservation);
+      mutate(observation);
+      await fs.writeJson(indexPath, { ...validIndex, observation }, { spaces: 2 });
+      const cached = await readCurrentCatalogCacheEntryBySelector(identity.selector, env);
+      expect(cached).toMatchObject({ cacheKey: written.cacheKey });
+      expect(cached).not.toHaveProperty('observation');
+    }
+  });
+
+  it('accepts only selector-compatible blocked history observations', async () => {
+    const { cacheRoot, env, sourceRoot, identity } = await makeCurrentCatalogCacheFixture();
+    const written = await writeCurrentCatalogCacheEntry({ ...identity, sourceRoot, env });
+    const blockedObservation: CurrentCatalogCacheObservation = {
+      ...createCurrentCatalogCacheObservation(written),
+      latestCatalog: {
+        channel: 'latest',
+        catalogVersion: '2.0.0',
+        minAwVersion: '2.0.0',
+        blocked: true,
+      },
+      latestCatalogBlocked: {
+        channel: 'latest',
+        catalogVersion: '2.0.0',
+        minAwVersion: '2.0.0',
+      },
+      resolutionSource: 'historyCompatibleCatalog',
+    };
+    await markCurrentCatalogCacheEntryValidated(written, env, undefined, blockedObservation);
+    await expect(readCurrentCatalogCacheEntryBySelector(identity.selector, env)).resolves.toMatchObject({
+      observation: blockedObservation,
+    });
+
+    const indexPath = await getOnlyCurrentCatalogCacheIndexPath(cacheRoot);
+    const validIndex = await fs.readJson(indexPath) as Record<string, unknown>;
+    const conflicts: Array<(observation: CurrentCatalogCacheObservation) => void> = [
+      (observation) => { observation.latestCatalogBlocked!.catalogVersion = '2.0.1'; },
+      (observation) => { observation.latestCatalog!.catalogVersion = identity.catalogVersion; },
+      (observation) => { observation.latestCatalog!.minAwVersion = identity.selector.cliVersion; },
+      (observation) => { observation.latestCatalog!.blocked = false; },
+      (observation) => { observation.historySchemaVersion = null; },
+    ];
+    for (const mutate of conflicts) {
+      const observation = structuredClone(blockedObservation);
+      mutate(observation);
+      await fs.writeJson(indexPath, { ...validIndex, observation }, { spaces: 2 });
+      expect(await readCurrentCatalogCacheEntryBySelector(identity.selector, env)).not.toHaveProperty('observation');
+    }
+  });
+
+  it('does not scan an aborted orphan v2 entry and lets another writer adopt it', async () => {
+    const { env, sourceRoot, identity } = await makeCurrentCatalogCacheFixture();
+    const controller = new AbortController();
+    const finalEntryDir = resolveCurrentCatalogCacheEntryDir(buildCurrentCatalogCacheKey(identity), env);
+    const realRename: typeof fs.rename = fs.rename.bind(fs);
+    const renameSpy = vi.spyOn(fs, 'rename').mockImplementation(async (...args) => {
+      const result = await realRename(...args);
+      if (path.resolve(String(args[1])) === path.resolve(finalEntryDir)) {
+        controller.abort();
+      }
+      return result;
+    });
+
+    await expect(writeCurrentCatalogCacheEntry({
+      ...identity,
+      sourceRoot,
+      env,
+      signal: controller.signal,
+    })).rejects.toMatchObject({ name: 'AbortError' });
+    renameSpy.mockRestore();
+
+    await expect(readCurrentCatalogCacheEntryBySelector(identity.selector, env)).resolves.toBeNull();
+    await expect(readCurrentCatalogCacheEntry(identity, env)).resolves.toBeNull();
+    const adopted = await writeCurrentCatalogCacheEntry({ ...identity, sourceRoot, env });
+    await expect(readCurrentCatalogCacheEntryBySelector(identity.selector, env)).resolves.toMatchObject({
+      cacheKey: adopted.cacheKey,
+      metadata: { publicationId: adopted.metadata.version === 2 ? adopted.metadata.publicationId : '' },
+    });
+  });
+
+  it('serializes a second writer while isolating a corrupt entry', async () => {
+    const { env, sourceRoot, identity } = await makeCurrentCatalogCacheFixture();
+    const finalEntryDir = resolveCurrentCatalogCacheEntryDir(buildCurrentCatalogCacheKey(identity), env);
+    await fs.ensureDir(finalEntryDir);
+    await fs.writeJson(path.join(finalEntryDir, 'entry.json'), { version: 'corrupt' });
+
+    let releaseQuarantine!: () => void;
+    const quarantineReleased = new Promise<void>((resolve) => {
+      releaseQuarantine = resolve;
+    });
+    let quarantineStarted!: () => void;
+    const quarantined = new Promise<void>((resolve) => {
+      quarantineStarted = resolve;
+    });
+    const realRename: typeof fs.rename = fs.rename.bind(fs);
+    const renameSpy = vi.spyOn(fs, 'rename').mockImplementation(async (...args) => {
+      const result = await realRename(...args);
+      if (
+        path.resolve(String(args[0])) === path.resolve(finalEntryDir) &&
+        path.basename(String(args[1])).startsWith('corrupt-')
+      ) {
+        quarantineStarted();
+        await quarantineReleased;
+      }
+      return result;
+    });
+
+    const firstWriter = writeCurrentCatalogCacheEntry({ ...identity, sourceRoot, env });
+    await quarantined;
+    const secondWriterPromise = writeCurrentCatalogCacheEntry({ ...identity, sourceRoot, env });
+    releaseQuarantine();
+    const [firstResult, secondWriter] = await Promise.all([firstWriter, secondWriterPromise]);
+    renameSpy.mockRestore();
+
+    expect(firstResult.metadata).toMatchObject({
+      version: 2,
+      publicationId: secondWriter.metadata.version === 2
+        ? secondWriter.metadata.publicationId
+        : '',
+    });
+    await expect(readCurrentCatalogCacheEntry(identity, env)).resolves.toMatchObject({
+      metadata: {
+        version: 2,
+        publicationId: secondWriter.metadata.version === 2
+          ? secondWriter.metadata.publicationId
+          : '',
+      },
+    });
+  });
+
+  it.each([
+    ['second rename failure', false],
+    ['abort after displacement', true],
+  ])('restores the old Windows selector index after %s', async (_label, abortAfterDisplacement) => {
+    const { cacheRoot, env, sourceRoot, identity } = await makeCurrentCatalogCacheFixture();
+    const written = await writeCurrentCatalogCacheEntry({ ...identity, sourceRoot, env });
+    const indexPath = await getOnlyCurrentCatalogCacheIndexPath(cacheRoot);
+    const oldIndex = await fs.readJson(indexPath);
+    const controller = new AbortController();
+    const realRename: typeof fs.rename = fs.rename.bind(fs);
+    let stagedPublishAttempts = 0;
+    const renameSpy = vi.spyOn(fs, 'rename').mockImplementation(async (...args) => {
+      const source = String(args[0]);
+      const target = String(args[1]);
+      if (target === indexPath && source.endsWith('.tmp')) {
+        stagedPublishAttempts += 1;
+        const error = new Error('injected Windows rename failure') as NodeJS.ErrnoException;
+        error.code = stagedPublishAttempts === 1 ? 'EPERM' : 'EIO';
+        throw error;
+      }
+      const result = await realRename(...args);
+      if (target.endsWith('.old') && abortAfterDisplacement) {
+        controller.abort();
+      }
+      return result;
+    });
+
+    await expect(markCurrentCatalogCacheEntryValidated(
+      written,
+      env,
+      new Date(Date.now() + 100).toISOString(),
+      undefined,
+      controller.signal,
+    )).rejects.toBeDefined();
+    renameSpy.mockRestore();
+
+    await expect(fs.readJson(indexPath)).resolves.toEqual(oldIndex);
+    await expect(readCurrentCatalogCacheEntryBySelector(identity.selector, env)).resolves.toMatchObject({
+      cacheKey: written.cacheKey,
+    });
+  });
+
+  it.each([
+    ['restores with exclusive copy when no new index exists', false, 'ENOTSUP'],
+    ['keeps a valid concurrent index', true, 'EOPNOTSUPP'],
+  ])('handles unsupported hard links and %s', async (_label, publishConcurrentIndex, linkErrorCode) => {
+    const { cacheRoot, env, sourceRoot, identity } = await makeCurrentCatalogCacheFixture();
+    const written = await writeCurrentCatalogCacheEntry({ ...identity, sourceRoot, env });
+    const indexPath = await getOnlyCurrentCatalogCacheIndexPath(cacheRoot);
+    const oldIndex = await fs.readJson(indexPath) as Record<string, unknown>;
+    const concurrentIndex = {
+      ...oldIndex,
+      validatedAt: new Date().toISOString(),
+    };
+    const realRename: typeof fs.rename = fs.rename.bind(fs);
+    let stagedPublishAttempts = 0;
+    const renameSpy = vi.spyOn(fs, 'rename').mockImplementation(async (...args) => {
+      const source = String(args[0]);
+      const target = String(args[1]);
+      if (target === indexPath && source.endsWith('.tmp')) {
+        stagedPublishAttempts += 1;
+        if (stagedPublishAttempts === 1) {
+          const error = new Error('injected Windows rename failure') as NodeJS.ErrnoException;
+          error.code = 'EPERM';
+          throw error;
+        }
+        if (publishConcurrentIndex) {
+          await fs.writeJson(indexPath, concurrentIndex, { spaces: 2 });
+        }
+        const error = new Error('injected second rename failure') as NodeJS.ErrnoException;
+        error.code = 'EIO';
+        throw error;
+      }
+      return realRename(...args);
+    });
+    const realLink: typeof fs.link = fs.link.bind(fs);
+    const linkSpy = vi.spyOn(fs, 'link').mockImplementation(async (...args) => {
+      if (String(args[0]).endsWith('.old')) {
+        const error = new Error('hard links unsupported') as NodeJS.ErrnoException;
+        error.code = linkErrorCode;
+        throw error;
+      }
+      return realLink(...args);
+    });
+
+    await expect(markCurrentCatalogCacheEntryValidated(
+      written,
+      env,
+      new Date(Date.now() + 100).toISOString(),
+    )).rejects.toMatchObject({ code: 'EIO' });
+    renameSpy.mockRestore();
+    linkSpy.mockRestore();
+
+    await expect(fs.readJson(indexPath)).resolves.toEqual(
+      publishConcurrentIndex ? concurrentIndex : oldIndex,
+    );
+    const selectorsDir = path.dirname(indexPath);
+    expect((await fs.readdir(selectorsDir)).filter((name) => name.endsWith('.old'))).toEqual([]);
+  });
+
+  it('keeps the displaced index when all ownership-safe restore methods fail', async () => {
+    const { cacheRoot, env, sourceRoot, identity } = await makeCurrentCatalogCacheFixture();
+    const written = await writeCurrentCatalogCacheEntry({ ...identity, sourceRoot, env });
+    const indexPath = await getOnlyCurrentCatalogCacheIndexPath(cacheRoot);
+    const oldIndex = await fs.readJson(indexPath);
+    const realRename: typeof fs.rename = fs.rename.bind(fs);
+    let stagedPublishAttempts = 0;
+    const renameSpy = vi.spyOn(fs, 'rename').mockImplementation(async (...args) => {
+      const source = String(args[0]);
+      const target = String(args[1]);
+      if (target === indexPath && source.endsWith('.tmp')) {
+        stagedPublishAttempts += 1;
+        const error = new Error('injected rename failure') as NodeJS.ErrnoException;
+        error.code = stagedPublishAttempts === 1 ? 'EPERM' : 'EIO';
+        throw error;
+      }
+      return realRename(...args);
+    });
+    const linkSpy = vi.spyOn(fs, 'link').mockImplementation(async () => {
+      const error = new Error('hard links unsupported') as NodeJS.ErrnoException;
+      error.code = 'ENOSYS';
+      throw error;
+    });
+    const copySpy = vi.spyOn(fs, 'copyFile').mockImplementation(async () => {
+      const error = new Error('exclusive copy unavailable') as NodeJS.ErrnoException;
+      error.code = 'EACCES';
+      throw error;
+    });
+
+    await expect(markCurrentCatalogCacheEntryValidated(written, env)).rejects.toMatchObject({
+      code: 'EACCES',
+    });
+    renameSpy.mockRestore();
+    linkSpy.mockRestore();
+    copySpy.mockRestore();
+
+    await expect(fs.pathExists(indexPath)).resolves.toBe(false);
+    const selectorsDir = path.dirname(indexPath);
+    const displacedNames = (await fs.readdir(selectorsDir)).filter((name) => name.endsWith('.old'));
+    expect(displacedNames).toHaveLength(1);
+    await expect(fs.readJson(path.join(selectorsDir, displacedNames[0]!))).resolves.toEqual(oldIndex);
   });
 
   it('keeps current catalog cache partitioned by selector and channel', async () => {
@@ -1272,6 +2257,436 @@ describe('local marketplace', () => {
       path.join(awHome, 'lifecycle-runtimes', 'codex', 'user', 'user', 'git-commit.123456789abc', 'runtime-a', 'bundle', 'marker.txt'),
       'utf8',
     )).resolves.toBe('runtime');
+  });
+
+  it('preserves a validated catalog cache across a real ensureLocalMarketplace rebuild without a second cache copy', async () => {
+    const { awHome, embeddedRoot } = await makeWorkspace();
+    const sidecarRoot = path.join(embeddedRoot, '.catalog', 'sidecar');
+    const fullRoot = path.join(embeddedRoot, '.catalog', 'full');
+    const manifest = await fs.readJson(path.join(sidecarRoot, 'catalog-manifest.json')) as {
+      channel: 'latest' | 'beta';
+      catalogVersion: string;
+    };
+    const env = {
+      ...process.env,
+      AW_HOME: awHome,
+      AW_CLI_VERSION: manifest.catalogVersion,
+    };
+    setCatalogPackageSourceForTests(createStaticCatalogPackageSource({
+      manifest,
+      sidecarRoot,
+      fullRoot,
+      channel: manifest.channel,
+      version: manifest.catalogVersion,
+    }));
+    const seeded = await pluginCatalogModule.resolveCurrentCatalog(env);
+    expect(seeded.source).toBe('remote');
+    await ensureLocalMarketplace(env, undefined, {
+      ...seeded,
+      rootDir: embeddedRoot,
+      source: 'embedded',
+    });
+
+    const indexPath = await getOnlyCurrentCatalogCacheIndexPath(awHome);
+    const sourceIdentity = String((await fs.readJson(indexPath)).sourceIdentity);
+    const entryMetadataPath = path.join(path.dirname(seeded.rootDir), 'entry.json');
+    const cachedManifestPath = path.join(seeded.rootDir, 'catalog-manifest.json');
+    const originalBytes = await Promise.all([
+      fs.readFile(indexPath),
+      fs.readFile(entryMetadataPath),
+      fs.readFile(cachedManifestPath),
+    ]);
+    const initialConfig = await readJsonFile<{ bundleFingerprint: string }>(
+      path.join(awHome, 'config.json'),
+    );
+    expect(initialConfig.bundleFingerprint).not.toBe(await calculateBundleFingerprint(seeded.rootDir));
+
+    const copiedCacheSources: string[] = [];
+    const realCopy: typeof fs.copy = fs.copy.bind(fs);
+    const copySpy = vi.spyOn(fs, 'copy').mockImplementation(async (...args) => {
+      if (path.basename(String(args[0])) === 'catalog-cache') {
+        copiedCacheSources.push(String(args[0]));
+      }
+      return realCopy(...args);
+    });
+    await expect(ensureLocalMarketplace(env, undefined, seeded)).resolves.toMatchObject({
+      rootDir: awHome,
+      changed: true,
+    });
+    copySpy.mockRestore();
+
+    expect(copiedCacheSources).toEqual([path.join(awHome, 'catalog-cache')]);
+    await expect(Promise.all([
+      fs.readFile(indexPath),
+      fs.readFile(entryMetadataPath),
+      fs.readFile(cachedManifestPath),
+    ])).resolves.toEqual(originalBytes);
+
+    let remoteCalls = 0;
+    const failRemote = async (): Promise<never> => {
+      remoteCalls += 1;
+      throw new Error('catalog cache regression unexpectedly accessed remote');
+    };
+    setCatalogPackageSourceForTests({
+      resolveIdentityByDistTag: failRemote,
+      resolveIdentityByVersion: failRemote,
+      downloadArchive: failRemote,
+    });
+    clearCurrentCatalogResolutionMemoForTests();
+    await expect(pluginCatalogModule.resolveCurrentCatalog(env, {
+      freshnessPolicy: 'cacheFirst',
+    })).resolves.toMatchObject({
+      source: 'cache',
+      catalogVersion: manifest.catalogVersion,
+      cacheState: { state: 'fresh' },
+    });
+    expect(remoteCalls).toBe(0);
+
+    const cacheEntry = await readCurrentCatalogCacheEntryBySelector(
+      seeded.selector!,
+      env,
+      sourceIdentity,
+    );
+    expect(cacheEntry?.metadata.version).toBe(2);
+    const lockProbe = await acquireCurrentCatalogCacheLease(env);
+    const catalogCacheLockPath = lockProbe.lockPath;
+    await lockProbe.release();
+    let cacheCopyFinished!: () => void;
+    const cacheCopied = new Promise<void>((resolve) => {
+      cacheCopyFinished = resolve;
+    });
+    let releaseRebuild!: () => void;
+    const rebuildReleased = new Promise<void>((resolve) => {
+      releaseRebuild = resolve;
+    });
+    const cacheCopySpy = vi.spyOn(fs, 'copy').mockImplementation(async (...args) => {
+      const result = await realCopy(...args);
+      if (path.basename(String(args[0])) === 'catalog-cache') {
+        cacheCopyFinished();
+        await rebuildReleased;
+      }
+      return result;
+    });
+    const rebuild = initializeLocalMarketplace({ force: true, env, catalogResolution: seeded });
+    await cacheCopied;
+
+    let writerWaited!: () => void;
+    const writerObservedHeldLock = new Promise<void>((resolve) => {
+      writerWaited = resolve;
+    });
+    const realMkdir: typeof fs.mkdir = fs.mkdir.bind(fs);
+    const mkdirSpy = vi.spyOn(fs, 'mkdir').mockImplementation(async (...args) => {
+      try {
+        return await realMkdir(...args);
+      } catch (error) {
+        if (
+          (error as NodeJS.ErrnoException).code === 'EEXIST' &&
+          path.resolve(String(args[0])) === path.resolve(catalogCacheLockPath)
+        ) {
+          writerWaited();
+        }
+        throw error;
+      }
+    });
+    const writers = Array.from({ length: 3 }, (_, index) => writeCurrentCatalogCacheEntry({
+      selector: cacheEntry!.metadata.selector,
+      channel: cacheEntry!.metadata.channel,
+      catalogVersion: cacheEntry!.metadata.catalogVersion,
+      minAwVersion: cacheEntry!.metadata.minAwVersion,
+      schemaVersion: cacheEntry!.metadata.schemaVersion,
+      historySchemaVersion: cacheEntry!.metadata.historySchemaVersion,
+      sidecarIntegrity: cacheEntry!.metadata.sidecarIntegrity,
+      fullIntegrity: `${cacheEntry!.metadata.fullIntegrity}-after-copy-${index}`,
+      sourceRoot: cacheEntry!.rootDir,
+      env,
+    }));
+    await writerObservedHeldLock;
+    releaseRebuild();
+    await rebuild;
+    const writtenAfterCopy = await Promise.all(writers);
+    cacheCopySpy.mockRestore();
+    mkdirSpy.mockRestore();
+
+    expect(new Set(writtenAfterCopy.map((entry) => entry.cacheKey)).size).toBe(3);
+    await expect(Promise.all(writtenAfterCopy.map((entry) => fs.pathExists(entry.rootDir))))
+      .resolves.toEqual([true, true, true]);
+    const selectedAfterCopy = await readCurrentCatalogCacheEntryBySelector(seeded.selector!, env);
+    expect(writtenAfterCopy.map((entry) => entry.cacheKey)).toContain(selectedAfterCopy?.cacheKey);
+
+    clearCurrentCatalogResolutionMemoForTests();
+    await expect(pluginCatalogModule.resolveCurrentCatalog(env, {
+      freshnessPolicy: 'cacheFirst',
+    })).resolves.toMatchObject({
+      source: 'cache',
+      catalogVersion: manifest.catalogVersion,
+    });
+    expect(remoteCalls).toBe(0);
+
+    const legacyMetadata = await fs.readJson(selectedAfterCopy!.metadataPath) as Record<string, unknown>;
+    delete legacyMetadata.publicationId;
+    await fs.writeJson(
+      selectedAfterCopy!.metadataPath,
+      { ...legacyMetadata, version: 1 },
+      { spaces: 2 },
+    );
+    await fs.remove(indexPath);
+    let legacyCopyFinished!: () => void;
+    const legacyCacheCopied = new Promise<void>((resolve) => {
+      legacyCopyFinished = resolve;
+    });
+    let releaseLegacyRebuild!: () => void;
+    const legacyRebuildReleased = new Promise<void>((resolve) => {
+      releaseLegacyRebuild = resolve;
+    });
+    const legacyCopySpy = vi.spyOn(fs, 'copy').mockImplementation(async (...args) => {
+      const result = await realCopy(...args);
+      if (path.basename(String(args[0])) === 'catalog-cache') {
+        legacyCopyFinished();
+        await legacyRebuildReleased;
+      }
+      return result;
+    });
+    const legacyRebuild = initializeLocalMarketplace({ force: true, env, catalogResolution: seeded });
+    await legacyCacheCopied;
+    await expect(readCurrentCatalogCacheEntryBySelector(seeded.selector!, env)).resolves.toMatchObject({
+      cacheKey: selectedAfterCopy!.cacheKey,
+      metadata: { version: 1 },
+    });
+    await expect(fs.pathExists(indexPath)).resolves.toBe(false);
+    releaseLegacyRebuild();
+    await legacyRebuild;
+    legacyCopySpy.mockRestore();
+    await expect(readCurrentCatalogCacheEntryBySelector(seeded.selector!, env)).resolves.toMatchObject({
+      cacheKey: selectedAfterCopy!.cacheKey,
+      metadata: { version: 1 },
+    });
+    await expect(fs.pathExists(indexPath)).resolves.toBe(false);
+  });
+
+  it('keeps an extracted remote archive stable across rebuild and publishes it afterward', async () => {
+    const { awHome, embeddedRoot } = await makeWorkspace();
+    const sidecarRoot = path.join(embeddedRoot, '.catalog', 'sidecar');
+    const fullRoot = path.join(embeddedRoot, '.catalog', 'full');
+    const manifest = await fs.readJson(path.join(sidecarRoot, 'catalog-manifest.json')) as {
+      channel: 'latest' | 'beta';
+      catalogVersion: string;
+    };
+    const env = {
+      ...process.env,
+      AW_HOME: awHome,
+      AW_CLI_VERSION: manifest.catalogVersion,
+    };
+    await initializeLocalMarketplace({
+      force: true,
+      env,
+      catalogResolution: { rootDir: embeddedRoot, source: 'embedded' },
+    });
+
+    let extractedArchiveReady!: (paths: { tempRoot: string; packageRoot: string }) => void;
+    const extractedArchive = new Promise<{ tempRoot: string; packageRoot: string }>((resolve) => {
+      extractedArchiveReady = resolve;
+    });
+    let releaseArchive!: () => void;
+    const archiveReleased = new Promise<void>((resolve) => {
+      releaseArchive = resolve;
+    });
+    setCatalogPackageSourceForTests({
+      resolveIdentityByDistTag: async (packageName: string) => ({
+        packageName,
+        version: manifest.catalogVersion,
+        integrity: packageName === '@yiliang/aw-plugins-manifest'
+          ? 'sha512-sidecar-extracted'
+          : 'sha512-full-extracted',
+        requestedDistTag: manifest.channel,
+      }),
+      resolveIdentityByVersion: async (packageName: string) => ({
+        packageName,
+        version: manifest.catalogVersion,
+        integrity: 'sha512-full-extracted',
+      }),
+      downloadArchive: async (identity: { packageName: string }) => {
+        const sourceRoot = identity.packageName === '@yiliang/aw-plugins-manifest'
+          ? sidecarRoot
+          : fullRoot;
+        if (identity.packageName === '@yiliang/aw-plugins-manifest') {
+          return {
+            identity,
+            manifestText: await fs.readFile(path.join(sourceRoot, 'catalog-manifest.json'), 'utf8'),
+            rawManifest: manifest,
+            packageRoot: sourceRoot,
+            materialize: async () => {},
+            dispose: async () => {},
+          };
+        }
+
+        const stagingParent = resolveCurrentCatalogCacheStagingDir(env);
+        await fs.ensureDir(stagingParent);
+        const tempRoot = await fs.mkdtemp(path.join(stagingParent, 'package-'));
+        const packageRoot = path.join(tempRoot, 'extract', 'package');
+        await fs.copy(sourceRoot, packageRoot);
+        extractedArchiveReady({ tempRoot, packageRoot });
+        await archiveReleased;
+        return {
+          identity,
+          manifestText: await fs.readFile(path.join(packageRoot, 'catalog-manifest.json'), 'utf8'),
+          rawManifest: manifest,
+          packageRoot,
+          materialize: async (targetRoot: string) => fs.copy(packageRoot, targetRoot),
+          dispose: async () => fs.remove(tempRoot),
+        };
+      },
+    });
+
+    clearCurrentCatalogResolutionMemoForTests();
+    const remoteResolution = pluginCatalogModule.resolveCurrentCatalog(env);
+    const extracted = await extractedArchive;
+    expect(path.dirname(resolveCurrentCatalogCacheStagingDir(env))).toBe(path.join(
+      path.dirname(awHome),
+      '.aw-local-marketplace-staging',
+    ));
+    expect(extracted.tempRoot.startsWith(`${awHome}${path.sep}`)).toBe(false);
+
+    await initializeLocalMarketplace({
+      force: true,
+      env,
+      catalogResolution: { rootDir: embeddedRoot, source: 'embedded' },
+    });
+    await expect(fs.pathExists(extracted.packageRoot)).resolves.toBe(true);
+    releaseArchive();
+    const published = await remoteResolution;
+    await expect(fs.pathExists(published.rootDir)).resolves.toBe(true);
+
+    for (let attempt = 0; attempt < 20 && await fs.pathExists(extracted.tempRoot); attempt += 1) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 5));
+    }
+    await expect(fs.pathExists(extracted.tempRoot)).resolves.toBe(false);
+    await expect(fs.readdir(resolveCurrentCatalogCacheStagingDir(env))).resolves.toEqual([]);
+  });
+
+  it('allows marketplace rebuilds when catalog cache state is missing or damaged', async () => {
+    const { awHome, embeddedRoot } = await makeWorkspace();
+    const env = { ...process.env, AW_HOME: awHome };
+    const packageInfo = await readCliPackageInfo();
+    const catalogResolution: CatalogResolution = {
+      rootDir: embeddedRoot,
+      source: 'embedded',
+      selector: {
+        kind: 'default',
+        cliVersion: packageInfo.version,
+        defaultChannel: packageInfo.version.includes('-') ? 'beta' : 'latest',
+      },
+    };
+
+    await initializeLocalMarketplace({ force: true, env, catalogResolution });
+    await fs.remove(path.join(awHome, 'catalog-cache'));
+    await expect(initializeLocalMarketplace({ force: true, env, catalogResolution }))
+      .resolves.toMatchObject({ changed: true });
+    await expect(fs.pathExists(path.join(awHome, 'catalog-cache'))).resolves.toBe(false);
+
+    const damagedPath = path.join(awHome, 'catalog-cache', 'selectors', 'damaged.json');
+    await fs.outputFile(damagedPath, '{invalid json', 'utf8');
+    await expect(initializeLocalMarketplace({ force: true, env, catalogResolution }))
+      .resolves.toMatchObject({ changed: true });
+    await expect(fs.readFile(damagedPath, 'utf8')).resolves.toBe('{invalid json');
+  });
+
+  it('restores the original catalog cache when atomic marketplace replacement rolls back', async () => {
+    const { awHome, embeddedRoot } = await makeWorkspace();
+    const env = { ...process.env, AW_HOME: awHome };
+    const packageInfo = await readCliPackageInfo();
+    const catalogResolution: CatalogResolution = {
+      rootDir: embeddedRoot,
+      source: 'embedded',
+      selector: {
+        kind: 'default',
+        cliVersion: packageInfo.version,
+        defaultChannel: packageInfo.version.includes('-') ? 'beta' : 'latest',
+      },
+    };
+    await initializeLocalMarketplace({ force: true, env, catalogResolution });
+    const cacheMarkerPath = path.join(awHome, 'catalog-cache', 'rollback-marker.bin');
+    const cacheMarker = Buffer.from([0, 1, 2, 3, 255]);
+    await fs.outputFile(cacheMarkerPath, cacheMarker);
+
+    const realMove: typeof fs.move = fs.move.bind(fs);
+    const moveSpy = vi.spyOn(fs, 'move').mockImplementation(async (...args) => {
+      const source = String(args[0]);
+      const target = String(args[1]);
+      if (source.includes(`${path.sep}.aw-local-marketplace-staging${path.sep}`) && target === awHome) {
+        throw new Error('injected marketplace publish failure');
+      }
+      return realMove(...args);
+    });
+
+    await expect(initializeLocalMarketplace({ force: true, env, catalogResolution }))
+      .rejects.toThrow('injected marketplace publish failure');
+    moveSpy.mockRestore();
+    await expect(fs.readFile(cacheMarkerPath)).resolves.toEqual(cacheMarker);
+    await expect(validateLocalMarketplaceLayout(awHome)).resolves.toBeUndefined();
+  });
+
+  it('restores the complete original marketplace when post-publish runtime preservation fails', async () => {
+    const { awHome, embeddedRoot } = await makeWorkspace();
+    const env = { ...process.env, AW_HOME: awHome };
+    const packageInfo = await readCliPackageInfo();
+    const catalogResolution: CatalogResolution = {
+      rootDir: embeddedRoot,
+      source: 'embedded',
+      selector: {
+        kind: 'default',
+        cliVersion: packageInfo.version,
+        defaultChannel: packageInfo.version.includes('-') ? 'beta' : 'latest',
+      },
+    };
+    await initializeLocalMarketplace({ force: true, env, catalogResolution });
+    const cacheMarkerPath = path.join(awHome, 'catalog-cache', 'rollback-marker.bin');
+    const runtimeMarkerPath = path.join(awHome, 'plugin-config', 'rollback', 'marker.bin');
+    const pluginPath = path.join(
+      awHome,
+      'plugins',
+      'git-commit',
+      'codex',
+      'skills',
+      'commit',
+      'SKILL.md',
+    );
+    const originalPluginBytes = await fs.readFile(pluginPath);
+    await fs.outputFile(cacheMarkerPath, Buffer.from('catalog-before-failure'));
+    await fs.outputFile(runtimeMarkerPath, Buffer.from('runtime-before-failure'));
+    await fs.writeFile(
+      path.join(embeddedRoot, 'plugins', 'git-commit', 'codex', 'skills', 'commit', 'SKILL.md'),
+      '# replacement that must roll back\n',
+      'utf8',
+    );
+
+    const failure = new Error('injected post-publish runtime copy failure');
+    const realCopy: typeof fs.copy = fs.copy.bind(fs);
+    const copySpy = vi.spyOn(fs, 'copy').mockImplementation(async (...args) => {
+      const source = String(args[0]);
+      if (
+        source.includes(`${path.sep}.aw-local-marketplace-backups${path.sep}`) &&
+        path.basename(source) === 'plugin-config'
+      ) {
+        throw failure;
+      }
+      return realCopy(...args);
+    });
+
+    await expect(initializeLocalMarketplace({ force: true, env, catalogResolution }))
+      .rejects.toBe(failure);
+    copySpy.mockRestore();
+
+    await expect(fs.readFile(cacheMarkerPath, 'utf8')).resolves.toBe('catalog-before-failure');
+    await expect(fs.readFile(runtimeMarkerPath, 'utf8')).resolves.toBe('runtime-before-failure');
+    await expect(fs.readFile(pluginPath)).resolves.toEqual(originalPluginBytes);
+    await expect(validateLocalMarketplaceLayout(awHome)).resolves.toBeUndefined();
+    const backupRoot = path.join(path.dirname(awHome), '.aw-local-marketplace-backups');
+    await expect(fs.readdir(backupRoot)).resolves.toEqual([]);
+    const stagingRoot = path.join(path.dirname(awHome), '.aw-local-marketplace-staging');
+    await expect(fs.readdir(stagingRoot)).resolves.toEqual([]);
+    const leaseAfterRollback = await acquireCurrentCatalogCacheLease(env, { timeoutMs: 50 });
+    await expect(leaseAfterRollback.release()).resolves.toBe(true);
+    await expect(fs.pathExists(leaseAfterRollback.lockPath)).resolves.toBe(false);
   });
 
   it('preserves native recovery breadcrumbs during ensureLocalMarketplace refreshes', async () => {

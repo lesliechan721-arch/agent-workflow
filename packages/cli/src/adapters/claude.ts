@@ -6,6 +6,7 @@ import { generateInstructionArtifacts } from '../generators/instructions.js';
 import { mergeClaudePermissions } from '../generators/permissions.js';
 import type {
   CatalogCompatibility,
+  CatalogResolution,
   ClaudeCapabilitySnapshot,
   GeneratedArtifact,
   GeneratedArtifactStatus,
@@ -25,13 +26,14 @@ import {
   readInstalledLedger,
   resolveScopeInitialized,
 } from '../utils/local-marketplace.js';
-import { readMarketplaceManifest } from '../utils/marketplace.js';
+import { readMarketplaceManifestAtPath } from '../utils/marketplace.js';
 import { runNativeCli, type NativeCliRunner } from '../utils/native-cli.js';
 import { resolveCurrentCatalog } from '../utils/plugin-catalog.js';
 import {
   resolveAwHome,
   resolveClaudePaths,
   resolveClaudeProjectKey,
+  getMarketplaceManifestPath,
 } from '../utils/paths.js';
 import { validateRenderedClaudePermissions } from '../utils/rendered-contract.js';
 import {
@@ -573,7 +575,14 @@ export class ClaudeAdapter implements PlatformAdapter {
     return detection.claude.available;
   }
 
-  async installPlugin(plugin: PluginMeta, scope: Scope): Promise<void> {
+  async installPlugin(
+    plugin: PluginMeta,
+    scope: Scope,
+    options?: {
+      catalogResolution?: CatalogResolution;
+      marketplacePrepared?: boolean;
+    },
+  ): Promise<void> {
     const paths = resolveClaudePaths(this.cwd, scope, this.env);
     const settings = await readClaudeSettings(paths.settingsPath);
     const installedPlugins = await readClaudeInstalledPluginsState(paths.installedPluginsPath);
@@ -589,7 +598,9 @@ export class ClaudeAdapter implements PlatformAdapter {
       throw new Error(externalOwnership.details ?? '同名插件已由外部 marketplace 管理。');
     }
 
-    await ensureLocalMarketplace(this.env);
+    if (!options?.marketplacePrepared) {
+      await ensureLocalMarketplace(this.env, undefined, options?.catalogResolution);
+    }
     const awHome = resolveAwHome(this.env);
     const activeSkillsRoot = path.join(
       awHome,
@@ -659,6 +670,8 @@ export class ClaudeAdapter implements PlatformAdapter {
       changedConfigKeys?: string[];
       dynamicOnly?: boolean;
       previousArtifacts?: GeneratedArtifact[];
+      catalogResolution?: CatalogResolution;
+      marketplacePrepared?: boolean;
     },
   ): Promise<GeneratedArtifact[]> {
     const paths = resolveClaudePaths(this.cwd, scope, this.env);
@@ -865,8 +878,15 @@ export class ClaudeAdapter implements PlatformAdapter {
     await writeClaudeSettings(paths.settingsPath, settings);
   }
 
-  async upgradePlugin(plugin: PluginMeta, scope: Scope): Promise<void> {
-    const status = await this.status(plugin, scope);
+  async upgradePlugin(
+    plugin: PluginMeta,
+    scope: Scope,
+    options?: {
+      catalogResolution?: CatalogResolution;
+      marketplacePrepared?: boolean;
+    },
+  ): Promise<void> {
+    const status = await this.status(plugin, scope, options);
     const pluginStatus = status.plugins[0];
     if (pluginStatus?.catalogCompatibility === 'missing') {
       throw new Error(`${plugin.manifest.name} 当前 catalog 已缺失，请先执行 uninstall。`);
@@ -876,18 +896,22 @@ export class ClaudeAdapter implements PlatformAdapter {
       await this.uninstallExtensions(plugin, scope);
     }
 
-    await this.installPlugin(plugin, scope);
-    await this.installExtensions(plugin, scope, { event: 'upgrade' });
+    await this.installPlugin(plugin, scope, options);
+    await this.installExtensions(plugin, scope, { event: 'upgrade', ...options });
   }
 
   async status(
     plugin: PluginMeta,
     scope: Scope,
-    options?: { previousArtifacts?: GeneratedArtifact[] },
+    options?: {
+      previousArtifacts?: GeneratedArtifact[];
+      catalogResolution?: CatalogResolution;
+    },
   ): Promise<StatusReport> {
     const paths = resolveClaudePaths(this.cwd, scope, this.env);
     const projectKey = scope === 'project' ? await resolveClaudeProjectKey(this.cwd) : undefined;
-    const [settings, knownMarketplaces, installedPlugins, ledger, generatedArtifacts, currentCatalog] =
+    const currentCatalog = options?.catalogResolution ?? await resolveCurrentCatalog(this.env);
+    const [settings, knownMarketplaces, installedPlugins, ledger, generatedArtifacts] =
       await Promise.all([
         readClaudeSettings(paths.settingsPath),
         readKnownMarketplaceState(paths.knownMarketplacesPath),
@@ -896,11 +920,13 @@ export class ClaudeAdapter implements PlatformAdapter {
         options?.previousArtifacts === undefined
           ? collectGeneratedArtifacts(plugin.manifest.name, paths.trackingDir)
           : collectGeneratedArtifactStatuses(options.previousArtifacts),
-        resolveCurrentCatalog(this.env),
       ]);
 
-    const currentMarketplace = await readMarketplaceManifest(this.cwd, 'claude', this.env);
-    const currentCatalogAvailable = currentMarketplace.manifest.plugins.some(
+    const currentMarketplace = await readMarketplaceManifestAtPath(
+      getMarketplaceManifestPath(currentCatalog.rootDir, 'claude'),
+      'claude marketplace manifest',
+    );
+    const currentCatalogAvailable = currentMarketplace.plugins.some(
       (entry) => entry.name === plugin.manifest.name,
     );
     const declaredSource = getClaudeMarketplaceSource(settings, MARKETPLACE_NAME);

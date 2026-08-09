@@ -10,6 +10,7 @@ import type { NativeCliRunner } from '../../src/utils/native-cli.js';
 import { createArtifactConfigDigest } from '../../src/utils/artifact-plan.js';
 import { resolveArtifactRenderConfig, resolveArtifactRendererTarget } from '../../src/utils/artifact-renderer.js';
 import { calculateFileDigest, calculatePluginBundleFingerprint } from '../../src/utils/plugin-scripts.js';
+import * as pluginCatalogModule from '../../src/utils/plugin-catalog.js';
 import {
   createInstallStateFixtureEnv,
   refreshDependencyIndexDigestsForP2,
@@ -386,6 +387,51 @@ afterEach(async () => {
 });
 
 describe('diagnose P7', () => {
+  it('requires remote catalog validation by default and skips resolution for an injected catalog', async () => {
+    const fixture = await writeMinimalPluginInstallStateFixture({
+      rootDir: await makeTempDir('aw-diagnose-catalog-policy-'),
+      scenario: 'installed',
+    });
+    const env = createInstallStateFixtureEnv(fixture.paths);
+    const catalog = {
+      rootDir: fixture.paths.rootDir,
+      source: 'cache',
+      reason: 'test catalog unavailable',
+      reasonCode: 'catalogUnavailable',
+      cacheState: {
+        state: 'stale',
+        validatedAt: '2026-08-09T00:00:00.000Z',
+        ageMs: 60_001,
+        ttlMs: 60_000,
+      },
+    } as const;
+    const resolver = vi.spyOn(pluginCatalogModule, 'resolveCurrentCatalog')
+      .mockResolvedValue(catalog as never);
+
+    await diagnoseCommand([], {
+      cwd: fixture.paths.repoRoot,
+      json: true,
+    }, {
+      env,
+      nativeCliRunner: createAgentVersionRunner(),
+    });
+
+    expect(resolver).toHaveBeenCalledTimes(1);
+    expect(resolver).toHaveBeenCalledWith(env, { freshnessPolicy: 'requireRemote' });
+
+    resolver.mockClear();
+    await diagnoseCommand([], {
+      cwd: fixture.paths.repoRoot,
+      json: true,
+    }, {
+      env,
+      p7Catalog: catalog,
+      p7Targets: [],
+      nativeCliRunner: createAgentVersionRunner(),
+    } as never);
+    expect(resolver).not.toHaveBeenCalled();
+  });
+
   it('includes structured agent version diagnostics in diagnose JSON', async () => {
     const fixture = await writeMinimalPluginInstallStateFixture({
       rootDir: await makeTempDir('aw-diagnose-agent-version-'),

@@ -3,6 +3,11 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import {
+  createBuildSnapshot,
+  withBuildSnapshot,
+} from '../build/build-cache.mjs';
+
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const semverPattern =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|(?:[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))(?:\.(?:0|[1-9]\d*|(?:[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)))*)?)?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
@@ -15,10 +20,11 @@ export const cliPackageJsonPath = path.join(repoRoot, 'packages', 'cli', 'packag
 export const cliPackageRoot = path.join(repoRoot, 'packages', 'cli');
 export const cliDistRoot = path.join(cliPackageRoot, 'dist');
 export const defaultCatalogOutputRoot = path.join(cliPackageRoot, 'plugins-dist');
+export const catalogReleaseStagingRoot = path.join(releaseRoot, 'catalog-staging');
 export const sidecarCatalogPackageName = '@yiliang/aw-plugins-manifest';
 export const fullCatalogPackageName = '@yiliang/aw-plugins';
 
-let cachedCatalogModules = null;
+const cachedCatalogModules = new Map();
 
 export function relativeToRepo(targetPath) {
   return path.relative(repoRoot, path.resolve(repoRoot, targetPath)) || '.';
@@ -84,8 +90,16 @@ export async function syncRepoVersion(version) {
 }
 
 export async function runCommand(command, args, options = {}) {
+  const inheritedPnpmExecPath = process.env.npm_execpath?.trim();
+  const useInheritedPnpm = command === 'pnpm'
+    && process.env.npm_config_user_agent?.startsWith('pnpm/')
+    && inheritedPnpmExecPath;
+  const resolvedCommand = useInheritedPnpm ? process.execPath : command;
+  const resolvedArgs = useInheritedPnpm
+    ? [path.resolve(inheritedPnpmExecPath), ...args]
+    : args;
   await new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
+    const child = spawn(resolvedCommand, resolvedArgs, {
       cwd: options.cwd ?? repoRoot,
       env: {
         ...process.env,
@@ -212,6 +226,73 @@ export async function cleanTarballs(directoryPath) {
   );
 }
 
+export function combineReleaseErrors(primaryError, additionalError, context) {
+  const primary = primaryError instanceof Error
+    ? primaryError
+    : new Error(String(primaryError));
+  const additional = additionalError instanceof Error
+    ? additionalError
+    : new Error(String(additionalError));
+  const errors = primary instanceof AggregateError
+    ? [...primary.errors, additional]
+    : [primary, additional];
+  const cause = primary instanceof AggregateError && primary.cause
+    ? primary.cause
+    : primary;
+  return new AggregateError(
+    errors,
+    `${cause.message}\n${context}: ${additional.message}`,
+    { cause },
+  );
+}
+
+export async function createCatalogReleaseStaging(options = {}) {
+  const sourceRoot = options.sourceRoot;
+  if (!sourceRoot) {
+    throw new Error('Catalog release staging requires a build snapshot source root.');
+  }
+  await fs.access(sourceRoot).catch(() => {
+    throw new Error(
+      `Catalog release staging requires ${relativeToRepo(sourceRoot)}. Run \`pnpm build\` first.`,
+    );
+  });
+  await ensureDirectory(catalogReleaseStagingRoot);
+  const outputRoot = await fs.mkdtemp(path.join(catalogReleaseStagingRoot, 'catalog-'));
+  let cleaned = false;
+  const cleanup = async () => {
+    if (cleaned) {
+      return;
+    }
+    await fs.rm(outputRoot, {
+      recursive: true,
+      force: true,
+      maxRetries: 3,
+      retryDelay: 50,
+    });
+    cleaned = true;
+  };
+
+  try {
+    await fs.cp(sourceRoot, outputRoot, { recursive: true });
+  } catch (error) {
+    try {
+      await cleanup();
+    } catch (cleanupError) {
+      throw combineReleaseErrors(
+        error,
+        cleanupError,
+        'Catalog release staging cleanup also failed',
+      );
+    }
+    throw error;
+  }
+
+  return {
+    outputRoot,
+    cleanup,
+  };
+}
+
 export async function listTarballs(directoryPath = tarballDir) {
   await ensureDirectory(directoryPath);
   const entries = await fs.readdir(directoryPath, { withFileTypes: true });
@@ -258,23 +339,49 @@ export async function assertRepoAndCliPackageVersions() {
   };
 }
 
-export async function packCli({ destination = tarballDir } = {}) {
-  await assertRepoAndCliPackageVersions();
+async function packCliFromSnapshot(snapshot, destination) {
   const targetDir = path.resolve(repoRoot, destination);
   await cleanTarballs(targetDir);
-  await runCommand('pnpm', ['pack:cli', '--pack-destination', targetDir]);
+  await runCommand('pnpm', [
+    '--config.ignore-scripts=true',
+    'pack',
+    '--pack-destination',
+    targetDir,
+  ], {
+    cwd: snapshot.cliPackageRoot,
+  });
   return findLatestTarball(targetDir);
 }
 
-export async function loadCatalogModules() {
-  if (cachedCatalogModules) {
-    return cachedCatalogModules;
+export async function packCli({ destination = tarballDir, snapshot } = {}) {
+  await assertRepoAndCliPackageVersions();
+  if (snapshot) {
+    return packCliFromSnapshot(snapshot, destination);
+  }
+  return withBuildSnapshot(repoRoot, (ownedSnapshot) =>
+    packCliFromSnapshot(ownedSnapshot, destination)
+  );
+}
+
+export function createReleaseBuildSnapshot(options = {}) {
+  return createBuildSnapshot(repoRoot, options);
+}
+
+export function withReleaseBuildSnapshot(callback, options = {}) {
+  return withBuildSnapshot(repoRoot, callback, options);
+}
+
+export async function loadCatalogModules(compiledCliDistRoot = cliDistRoot) {
+  const resolvedCliDistRoot = path.resolve(compiledCliDistRoot);
+  const cached = cachedCatalogModules.get(resolvedCliDistRoot);
+  if (cached) {
+    return cached;
   }
 
-  const pluginStagingPath = path.join(cliDistRoot, 'scripts', 'plugin-staging.js');
-  const bundleLayoutPath = path.join(cliDistRoot, 'src', 'utils', 'bundle-layout.js');
-  const manifestPath = path.join(cliDistRoot, 'src', 'utils', 'manifest.js');
-  const marketplacePath = path.join(cliDistRoot, 'src', 'utils', 'marketplace.js');
+  const pluginStagingPath = path.join(resolvedCliDistRoot, 'scripts', 'plugin-staging.js');
+  const bundleLayoutPath = path.join(resolvedCliDistRoot, 'src', 'utils', 'bundle-layout.js');
+  const manifestPath = path.join(resolvedCliDistRoot, 'src', 'utils', 'manifest.js');
+  const marketplacePath = path.join(resolvedCliDistRoot, 'src', 'utils', 'marketplace.js');
   await Promise.all([
     fs.access(pluginStagingPath),
     fs.access(bundleLayoutPath),
@@ -284,7 +391,7 @@ export async function loadCatalogModules() {
     throw new Error('Catalog release helpers require compiled CLI artifacts. Run `pnpm build` first.');
   });
 
-  cachedCatalogModules = await Promise.all([
+  const catalogModules = await Promise.all([
     import(pathToFileURL(pluginStagingPath).href),
     import(pathToFileURL(bundleLayoutPath).href),
     import(pathToFileURL(manifestPath).href),
@@ -296,11 +403,12 @@ export async function loadCatalogModules() {
     marketplace,
   }));
 
-  return cachedCatalogModules;
+  cachedCatalogModules.set(resolvedCliDistRoot, catalogModules);
+  return catalogModules;
 }
 
-async function resolveCatalogModules(catalogModules = null) {
-  return catalogModules ?? loadCatalogModules();
+async function resolveCatalogModules(catalogModules = null, compiledCliDistRoot = cliDistRoot) {
+  return catalogModules ?? loadCatalogModules(compiledCliDistRoot);
 }
 
 function deepClone(value) {
@@ -381,15 +489,27 @@ function packageNameForKind(kind) {
   return sidecarCatalogPackageName;
 }
 
-async function resolveRegistryUrl() {
-  const fromEnv = process.env.AW_NPM_REGISTRY_URL || process.env.npm_config_registry;
-  if (typeof fromEnv === 'string' && fromEnv.trim() !== '') {
-    return fromEnv.trim();
+function normalizeRegistryUrl(registryUrl) {
+  const normalized = registryUrl.trim();
+  return normalized.endsWith('/') ? normalized : `${normalized}/`;
+}
+
+export async function resolveRegistryUrl(
+  packageJsonPath = cliPackageJsonPath,
+  env = process.env,
+) {
+  const fromEnv = [
+    env.AW_NPM_REGISTRY_URL,
+    env.npm_config_registry,
+    env.NPM_CONFIG_REGISTRY,
+  ].find((value) => typeof value === 'string' && value.trim() !== '');
+  if (fromEnv !== undefined) {
+    return normalizeRegistryUrl(fromEnv);
   }
 
-  const cliPackageJson = await readCliPackageJson();
+  const cliPackageJson = await readPackageJson(packageJsonPath);
   if (typeof cliPackageJson.publishConfig?.registry === 'string' && cliPackageJson.publishConfig.registry.trim() !== '') {
-    return cliPackageJson.publishConfig.registry.trim();
+    return normalizeRegistryUrl(cliPackageJson.publishConfig.registry);
   }
 
   return 'https://registry.npmjs.org/';
@@ -477,7 +597,10 @@ function findHighestVersion(compareStrictSemVer, releases, pluginName) {
 
 export async function readCatalogStage(options = {}) {
   const outputRoot = options.outputRoot ?? defaultCatalogOutputRoot;
-  const { pluginStaging, bundleLayout } = await resolveCatalogModules(options.catalogModules);
+  const { pluginStaging, bundleLayout } = await resolveCatalogModules(
+    options.catalogModules,
+    options.cliDistRoot,
+  );
   await bundleLayout.validateBundleLayout(outputRoot);
   return {
     outputRoot,
@@ -495,7 +618,7 @@ export async function validateCatalogReleaseCandidate(options = {}) {
     targetHistoryManifest = null,
     officialHistoryManifests = {},
   } = options;
-  const { manifest } = await resolveCatalogModules(options.catalogModules);
+  const { manifest } = await resolveCatalogModules(options.catalogModules, options.cliDistRoot);
   const { validateCatalogManifest, compareStrictSemVer } = manifest;
   const candidateManifest = validateCatalogManifest(deepClone(stagedManifest));
   const channel = normalizeChannel(
@@ -653,11 +776,12 @@ export async function prepareCatalogRelease(options = {}) {
     targetHistoryManifest = null,
     officialHistoryManifests = {},
   } = options;
+  const sourceRepoRoot = options.sourceRepoRoot ?? repoRoot;
   const [{ pluginStaging, bundleLayout }, stagedCandidate] = await Promise.all([
-    resolveCatalogModules(options.catalogModules),
-    resolveCatalogModules(options.catalogModules).then(({ pluginStaging }) =>
+    resolveCatalogModules(options.catalogModules, options.cliDistRoot),
+    resolveCatalogModules(options.catalogModules, options.cliDistRoot).then(({ pluginStaging }) =>
       pluginStaging.stageCatalogArtifacts({
-        repoRoot,
+        repoRoot: sourceRepoRoot,
         outputRoot,
         ...(catalogVersion ? { catalogVersion } : {}),
         ...(channel ? { channel } : {}),
@@ -669,10 +793,11 @@ export async function prepareCatalogRelease(options = {}) {
     targetHistoryManifest,
     officialHistoryManifests,
     catalogModules: options.catalogModules,
+    cliDistRoot: options.cliDistRoot,
   });
 
   const staged = await pluginStaging.stageCatalogArtifacts({
-    repoRoot,
+    repoRoot: sourceRepoRoot,
     outputRoot,
     catalogVersion: stagedCandidate.manifest.catalogVersion,
     channel: validation.channel,
@@ -692,7 +817,10 @@ export async function packCatalogPackage(options = {}) {
     throw new Error('Catalog package kind must be "sidecar" or "full".');
   }
 
-  const { pluginStaging } = await resolveCatalogModules(options.catalogModules);
+  const { pluginStaging } = await resolveCatalogModules(
+    options.catalogModules,
+    options.cliDistRoot,
+  );
   const packageRoot = kind === 'sidecar'
     ? pluginStaging.getCatalogSidecarPackageRoot(outputRoot)
     : pluginStaging.getCatalogFullPackageRoot(outputRoot);
@@ -705,16 +833,27 @@ export async function packCatalogPackage(options = {}) {
 }
 
 export async function createCatalogRegistryAdapter(options = {}) {
-  const registryUrl = options.registryUrl ?? await resolveRegistryUrl();
-  const marketplace = options.marketplace ?? (await loadCatalogModules()).marketplace;
+  const registryUrl = options.registryUrl === undefined || options.registryUrl === null
+    ? await resolveRegistryUrl(options.cliPackageJsonPath)
+    : normalizeRegistryUrl(options.registryUrl);
+  const registryEnv = {
+    ...process.env,
+    AW_NPM_REGISTRY_URL: registryUrl,
+    npm_config_registry: registryUrl,
+    NPM_CONFIG_REGISTRY: registryUrl,
+  };
+  const marketplace = options.marketplace
+    ?? (await loadCatalogModules(options.cliDistRoot)).marketplace;
+  const commandRunner = options.runCommand ?? runCommand;
 
   return {
+    registryUrl,
     async readChannelManifest(channel) {
       try {
         const archive = await marketplace.resolveCatalogPackageByDistTag(
           sidecarCatalogPackageName,
           channel,
-          process.env,
+          registryEnv,
         );
         try {
           return {
@@ -742,9 +881,9 @@ export async function createCatalogRegistryAdapter(options = {}) {
         const identity = await marketplace.resolveCatalogPackageIdentityByVersion(
           packageName,
           context.version,
-          process.env,
+          registryEnv,
         );
-        const archive = await marketplace.downloadCatalogPackageArchive(identity, process.env);
+        const archive = await marketplace.downloadCatalogPackageArchive(identity, registryEnv);
         try {
           const comparison = await comparePackageDirectories(context.packageRoot, archive.packageRoot);
           return comparison.ok
@@ -761,19 +900,28 @@ export async function createCatalogRegistryAdapter(options = {}) {
       }
     },
     async publishPackage(_kind, context) {
-      await runCommand('pnpm', ['publish', '--tag', context.channel], {
+      await commandRunner('pnpm', [
+        'publish',
+        '--tag',
+        context.channel,
+        '--registry',
+        registryUrl,
+      ], {
         cwd: context.packageRoot,
+        env: registryEnv,
       });
     },
     async ensureDistTag(kind, context) {
-      await runCommand('npm', [
+      await commandRunner('npm', [
         'dist-tag',
         'add',
         `${packageNameForKind(kind)}@${context.version}`,
         context.channel,
         '--registry',
         registryUrl,
-      ]);
+      ], {
+        env: registryEnv,
+      });
     },
   };
 }
@@ -872,37 +1020,116 @@ async function ensureCatalogPackageDistTag(kind, publishContext) {
   });
 }
 
-export async function preflightCatalogRelease(options = {}) {
-  const { outputRoot = defaultCatalogOutputRoot, registry = {} } = options;
+async function stageCatalogReleasePreflight(options = {}) {
+  const snapshot = options.snapshot;
+  if (!snapshot) {
+    throw new Error('Catalog release preflight requires a build snapshot.');
+  }
+  const catalogModules = options.catalogModules
+    ?? await loadCatalogModules(snapshot.cliDistRoot);
+  const registry = options.registry ?? await createCatalogRegistryAdapter({
+    cliDistRoot: snapshot.cliDistRoot,
+    cliPackageJsonPath: path.join(snapshot.cliPackageRoot, 'package.json'),
+    marketplace: catalogModules.marketplace,
+  });
   await assertRepoAndCliPackageVersions();
-  const stagedCatalogVersion = options.catalogVersion
-    ?? (await readCatalogStage({ outputRoot, catalogModules: options.catalogModules })).manifest.catalogVersion;
-  const channel = normalizeChannel(options.channel, stagedCatalogVersion);
-  assertVersionKind(stagedCatalogVersion, channel === 'beta' ? 'prerelease' : 'stable');
-  const historyInputs = await resolveChannelHistoryManifests({
-    channel,
-    registry,
-    targetHistoryManifest: options.targetHistoryManifest,
-    officialHistoryManifests: options.officialHistoryManifests,
+  const releaseStaging = await createCatalogReleaseStaging({
+    sourceRoot: snapshot.catalogOutputRoot,
   });
-  const staged = await prepareCatalogRelease({
-    outputRoot,
-    catalogVersion: stagedCatalogVersion,
-    channel,
-    targetHistoryManifest: historyInputs.targetHistoryManifest,
-    officialHistoryManifests: historyInputs.officialHistoryManifests,
-    catalogModules: options.catalogModules,
-  });
+  const outputRoot = releaseStaging.outputRoot;
+  try {
+    const stagedCatalogVersion = options.catalogVersion
+      ?? (await readCatalogStage({
+        outputRoot,
+        catalogModules,
+        cliDistRoot: snapshot.cliDistRoot,
+      })).manifest.catalogVersion;
+    const channel = normalizeChannel(options.channel, stagedCatalogVersion);
+    assertVersionKind(stagedCatalogVersion, channel === 'beta' ? 'prerelease' : 'stable');
+    const historyInputs = await resolveChannelHistoryManifests({
+      channel,
+      registry,
+      targetHistoryManifest: options.targetHistoryManifest,
+      officialHistoryManifests: options.officialHistoryManifests,
+    });
+    const staged = await prepareCatalogRelease({
+      outputRoot,
+      catalogVersion: stagedCatalogVersion,
+      channel,
+      targetHistoryManifest: historyInputs.targetHistoryManifest,
+      officialHistoryManifests: historyInputs.officialHistoryManifests,
+      catalogModules,
+      cliDistRoot: snapshot.cliDistRoot,
+      sourceRepoRoot: snapshot.root,
+    });
 
+    return {
+      channel,
+      registry,
+      snapshot,
+      staged,
+      cleanup: releaseStaging.cleanup,
+    };
+  } catch (error) {
+    try {
+      await releaseStaging.cleanup();
+    } catch (cleanupError) {
+      throw combineReleaseErrors(
+        error,
+        cleanupError,
+        'Catalog release preflight cleanup also failed',
+      );
+    }
+    throw error;
+  }
+}
+
+function createCatalogReleaseMetadata(preflight) {
+  const catalogVersion = preflight.staged.manifest.catalogVersion;
   return {
-    channel,
-    registry,
-    staged,
+    channel: preflight.channel,
+    catalogVersion,
+    generationId: preflight.snapshot.generationId,
+    outputDigest: preflight.snapshot.outputDigest,
+    manifest: preflight.staged.manifest,
+    packages: {
+      sidecar: {
+        name: sidecarCatalogPackageName,
+        version: catalogVersion,
+      },
+      full: {
+        name: fullCatalogPackageName,
+        version: catalogVersion,
+      },
+    },
+    staged: {
+      manifest: preflight.staged.manifest,
+    },
   };
 }
 
-export async function publishCatalogRelease(options = {}) {
-  const preflight = await preflightCatalogRelease(options);
+async function preflightCatalogReleaseFromSnapshot(options, snapshot) {
+  const preflight = await stageCatalogReleasePreflight({ ...options, snapshot });
+  await preflight.cleanup();
+  return {
+    ...createCatalogReleaseMetadata(preflight),
+    registry: preflight.registry,
+  };
+}
+
+export async function preflightCatalogRelease(options = {}) {
+  if (options.snapshot) {
+    return preflightCatalogReleaseFromSnapshot(options, options.snapshot);
+  }
+  return withBuildSnapshot(
+    repoRoot,
+    (snapshot) => preflightCatalogReleaseFromSnapshot(options, snapshot),
+    options.snapshotOptions,
+  );
+}
+
+async function publishCatalogReleaseFromSnapshot(options, snapshot) {
+  const preflight = await stageCatalogReleasePreflight({ ...options, snapshot });
 
   const publishContext = {
     channel: preflight.channel,
@@ -912,21 +1139,56 @@ export async function publishCatalogRelease(options = {}) {
     registry: preflight.registry,
   };
 
+  let result;
+  let publishError;
   try {
-    await verifyOrPublishCatalogPackage('full', publishContext);
-    await ensureCatalogPackageDistTag('full', publishContext);
+    try {
+      await verifyOrPublishCatalogPackage('full', publishContext);
+      await ensureCatalogPackageDistTag('full', publishContext);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(`Catalog full package phase failed: ${detail}`);
+    }
+
+    try {
+      await verifyOrPublishCatalogPackage('sidecar', publishContext);
+      await ensureCatalogPackageDistTag('sidecar', publishContext);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(`Catalog sidecar package phase failed: ${detail}`);
+    }
+
+    result = createCatalogReleaseMetadata(preflight);
   } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    throw new Error(`Catalog full package phase failed: ${detail}`);
+    publishError = error;
   }
 
   try {
-    await verifyOrPublishCatalogPackage('sidecar', publishContext);
-    await ensureCatalogPackageDistTag('sidecar', publishContext);
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    throw new Error(`Catalog sidecar package phase failed: ${detail}`);
+    await preflight.cleanup();
+  } catch (cleanupError) {
+    if (publishError) {
+      throw combineReleaseErrors(
+        publishError,
+        cleanupError,
+        'Catalog publish staging cleanup also failed',
+      );
+    }
+    throw cleanupError;
   }
 
-  return preflight.staged;
+  if (publishError) {
+    throw publishError;
+  }
+  return result;
+}
+
+export async function publishCatalogRelease(options = {}) {
+  if (options.snapshot) {
+    return publishCatalogReleaseFromSnapshot(options, options.snapshot);
+  }
+  return withBuildSnapshot(
+    repoRoot,
+    (snapshot) => publishCatalogReleaseFromSnapshot(options, snapshot),
+    options.snapshotOptions,
+  );
 }

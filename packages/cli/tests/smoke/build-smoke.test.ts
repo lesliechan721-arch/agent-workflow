@@ -5,11 +5,18 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
 import fs from 'fs-extra';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
 import { registerCurrentTestWritableStateRoot } from '../setup/test-isolation.js';
-import { installCurrentSmokeDistIsolationBridge } from '../setup/test-isolation-smoke.js';
+import { execPnpmForTest } from '../helpers/pnpm.js';
 import { writeNodeScriptFixture } from '../support/plugin-scripts-node-fixture.js';
+import {
+  activateSmokeBuildSnapshot,
+  cleanupSmokeBuildSnapshot,
+  createSmokeBuildSnapshot,
+  importSmokeSnapshotModule,
+  type SmokeBuildSnapshot,
+} from '../support/smoke-build-snapshot.js';
 import {
   createSmokeStagingRunner,
   type SmokeStagingRunner,
@@ -17,7 +24,7 @@ import {
 
 const execFileAsync = promisify(execFile);
 const tempDirs: string[] = [];
-let cliBuildPromise: Promise<void> | null = null;
+let buildSnapshot: SmokeBuildSnapshot | null = null;
 
 function repoRoot(): string {
   return path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
@@ -42,19 +49,21 @@ async function createSmokeTempRoot(prefix: string, source: string): Promise<stri
   return registerSmokeWritableRoot(rootPath, source);
 }
 
-async function buildCli(root: string): Promise<void> {
-  await execFileAsync('pnpm', ['build'], {
-    cwd: root,
-    env: process.env,
-    maxBuffer: 10 * 1024 * 1024,
-  });
+async function requireBuildSnapshot(): Promise<SmokeBuildSnapshot> {
+  if (!buildSnapshot) {
+    throw new Error('Build smoke snapshot is not initialized.');
+  }
+  return activateSmokeBuildSnapshot(buildSnapshot);
 }
 
-async function ensureBuiltCli(root: string): Promise<void> {
-  cliBuildPromise ??= buildCli(root);
-  await cliBuildPromise;
-  await installCurrentSmokeDistIsolationBridge();
-}
+beforeAll(async () => {
+  buildSnapshot = await createSmokeBuildSnapshot(repoRoot());
+});
+
+afterAll(async () => {
+  await cleanupSmokeBuildSnapshot(buildSnapshot);
+  buildSnapshot = null;
+});
 
 afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
@@ -62,22 +71,18 @@ afterEach(async () => {
 
 describe('build smoke', () => {
   const root = repoRoot();
-  const builtPluginsDistRoot = path.join(root, 'packages', 'cli', 'plugins-dist');
 
-  it('runs pnpm build and produces plugins-dist through the compiled bundle script', async () => {
-    const outputRoot = builtPluginsDistRoot;
-    const staleDistPath = path.join(
-      root,
-      'packages',
-      'cli',
-      'dist',
-      'stale-build-sentinel.js',
-    );
-    await fs.outputFile(staleDistPath, 'export const stale = true;\n', 'utf8');
+  it('ensures the build and produces plugins-dist through the compiled bundle script', async () => {
+    const snapshot = await requireBuildSnapshot();
+    const outputRoot = snapshot.catalogOutputRoot;
 
-    await ensureBuiltCli(root);
+    expect(outputRoot).toBe(path.join(snapshot.root, 'packages', 'cli', 'plugins-dist'));
+    await expect(fs.readJson(path.join(root, '.release', 'cache', 'build-stamp.json')))
+      .resolves.toMatchObject({
+        generationId: snapshot.generationId,
+        outputDigest: snapshot.outputDigest,
+      });
 
-    await expect(fs.pathExists(staleDistPath)).resolves.toBe(false);
     await expect(
       fs.pathExists(path.join(outputRoot, '.claude-plugin', 'marketplace.json')),
     ).resolves.toBe(true);
@@ -509,14 +514,35 @@ describe('build smoke', () => {
     ).resolves.toBe(true);
   });
 
+  it('reuses a warm build without changing key output mtimes', async () => {
+    await requireBuildSnapshot();
+    const keyOutputs = [
+      path.join(root, 'packages', 'cli', 'dist', 'index.js'),
+      path.join(root, 'packages', 'cli', 'dist', 'scripts', 'bundle-plugins.js'),
+      path.join(root, 'packages', 'cli', 'plugins-dist', '.catalog', 'catalog-manifest.json'),
+    ];
+    const before = await Promise.all(keyOutputs.map((outputPath) => fs.stat(outputPath)));
+
+    const { stdout } = await execPnpmForTest(['build:ensure'], {
+      cwd: root,
+      env: process.env,
+      maxBuffer: 10 * 1024 * 1024,
+    });
+
+    expect(stdout).toContain('Build reused:');
+    const after = await Promise.all(keyOutputs.map((outputPath) => fs.stat(outputPath)));
+    expect(after.map((stats) => stats.mtimeMs)).toEqual(before.map((stats) => stats.mtimeMs));
+  });
+
   it('starts the real dist entry and reads the bundled plugins-dist', async () => {
-    const packageJson = await fs.readJson(path.join(root, 'packages', 'cli', 'package.json')) as {
+    const snapshot = await requireBuildSnapshot();
+    const packageJson = await fs.readJson(path.join(snapshot.cliPackageRoot, 'package.json')) as {
       version: string;
     };
-    await ensureBuiltCli(root);
+    const cliEntry = path.join(snapshot.cliDistRoot, 'index.js');
 
     await expect(
-      execFileAsync('node', ['packages/cli/dist/index.js', '--help'], {
+      execFileAsync('node', [cliEntry, '--help'], {
         cwd: root,
         env: process.env,
         maxBuffer: 10 * 1024 * 1024,
@@ -526,7 +552,7 @@ describe('build smoke', () => {
     });
 
     await expect(
-      execFileAsync('node', ['packages/cli/dist/index.js', '--version'], {
+      execFileAsync('node', [cliEntry, '--version'], {
         cwd: root,
         env: process.env,
         maxBuffer: 10 * 1024 * 1024,
@@ -535,11 +561,25 @@ describe('build smoke', () => {
       stdout: `${packageJson.version}\n`,
     });
 
+    await expect(
+      execFileAsync(
+        'node',
+        [cliEntry, 'install', 'git-commit', '--skill-trigger', 'sometimes'],
+        {
+          cwd: root,
+          env: process.env,
+          maxBuffer: 10 * 1024 * 1024,
+        },
+      ),
+    ).rejects.toMatchObject({
+      stderr: expect.stringContaining("unknown option '--skill-trigger'"),
+    });
+
     const tempRoot = await createSmokeTempRoot('aw-dist-entry-', 'build smoke dist entry temp root');
     const awHome = path.join(tempRoot, 'aw-home');
     registerSmokeWritableRoot(awHome, 'build smoke dist entry AW_HOME');
     await expect(
-      execFileAsync('node', ['packages/cli/dist/index.js', 'init', '--force'], {
+      execFileAsync('node', [cliEntry, 'init', '--force'], {
         cwd: root,
         env: {
           ...process.env,
@@ -553,7 +593,7 @@ describe('build smoke', () => {
   });
 
   it('bundles declared MCP, app and native hook assets through the compiled bundle script', async () => {
-    await ensureBuiltCli(root);
+    const snapshot = await requireBuildSnapshot();
 
     const tempRoot = await createSmokeTempRoot('aw-smoke-assets-', 'build smoke assets temp root');
     const tempRepo = path.join(tempRoot, 'repo');
@@ -629,9 +669,9 @@ describe('build smoke', () => {
       { spaces: 2 },
     );
 
-    const { bundlePlugins } = (await import(
-      '../../dist/scripts/bundle-plugins.js'
-    )) as { bundlePlugins: (options: { repoRoot: string; outputRoot: string }) => Promise<unknown> };
+    const { bundlePlugins } = await importSmokeSnapshotModule<{
+      bundlePlugins: (options: { repoRoot: string; outputRoot: string }) => Promise<unknown>;
+    }>(path.join(snapshot.cliDistRoot, 'scripts', 'bundle-plugins.js'));
     await bundlePlugins({ repoRoot: tempRepo, outputRoot });
 
     await expect(
@@ -720,7 +760,7 @@ describe('build smoke', () => {
   });
 
   it('bundles public slashCommands through the compiled bundler without shipping raw source directories', async () => {
-    await ensureBuiltCli(root);
+    const snapshot = await requireBuildSnapshot();
 
     const tempRoot = await createSmokeTempRoot(
       'aw-smoke-slash-commands-',
@@ -736,9 +776,9 @@ describe('build smoke', () => {
       path.join(tempRepo, 'plugins', 'slash-commands-only'),
     );
 
-    const { bundlePlugins } = (await import(
-      '../../dist/scripts/bundle-plugins.js'
-    )) as { bundlePlugins: (options: { repoRoot: string; outputRoot: string }) => Promise<unknown> };
+    const { bundlePlugins } = await importSmokeSnapshotModule<{
+      bundlePlugins: (options: { repoRoot: string; outputRoot: string }) => Promise<unknown>;
+    }>(path.join(snapshot.cliDistRoot, 'scripts', 'bundle-plugins.js'));
     await bundlePlugins({ repoRoot: tempRepo, outputRoot });
 
     const pluginRoot = path.join(outputRoot, 'plugins', 'slash-commands-only');
@@ -773,7 +813,7 @@ describe('build smoke', () => {
   });
 
   it('bundles scripts.node plugins through the compiled staging bundle path', async () => {
-    await ensureBuiltCli(root);
+    const snapshot = await requireBuildSnapshot();
 
     const tempRoot = await createSmokeTempRoot(
       'aw-smoke-scripts-node-',
@@ -786,16 +826,14 @@ describe('build smoke', () => {
     await fs.copy(fixturePath('repo-template'), tempRepo);
     await writeNodeScriptFixture(tempRepo);
 
-    const { bundlePlugins } = (await import(
-      '../../dist/scripts/bundle-plugins.js'
-    )) as {
+    const { bundlePlugins } = await importSmokeSnapshotModule<{
       bundlePlugins: (options: {
         repoRoot: string;
         outputRoot: string;
         buildMode: 'staging';
         stagingRunner?: SmokeStagingRunner;
       }) => Promise<unknown>;
-    };
+    }>(path.join(snapshot.cliDistRoot, 'scripts', 'bundle-plugins.js'));
     await bundlePlugins({
       repoRoot: tempRepo,
       outputRoot,

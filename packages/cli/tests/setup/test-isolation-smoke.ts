@@ -1,38 +1,33 @@
 import path from 'node:path';
 
-import { afterEach, beforeEach } from 'vitest';
+import { afterEach } from 'vitest';
 
 import {
   getCurrentSourceTestRootRegistry,
-  getSourceTestRepositoryCwd,
   registerCurrentTestReadonlyFixtureRoot,
+  runWithCurrentRepositoryCwdAsReadOnly,
 } from './test-isolation.js';
 import {
   installDistStateForTests,
   resetDistStateForTests,
 } from './reset-dist-state.js';
 
-function registerSmokeReadonlyFixtureRoots(): void {
-  const cliPackageRoot = path.join(getSourceTestRepositoryCwd(), 'packages', 'cli');
-
+export async function installCurrentSmokeDistIsolationBridge(
+  cliPackageRoot: string,
+): Promise<void> {
   registerCurrentTestReadonlyFixtureRoot(
     path.join(cliPackageRoot, 'dist'),
-    'smoke compiled dist root',
+    'smoke consumer compiled dist root',
   );
   registerCurrentTestReadonlyFixtureRoot(
     path.join(cliPackageRoot, 'plugins-dist'),
-    'smoke compiled plugins-dist root',
+    'smoke consumer compiled plugins-dist root',
+  );
+  await runWithCurrentRepositoryCwdAsReadOnly(
+    () => installDistStateForTests(getCurrentSourceTestRootRegistry(), cliPackageRoot),
+    { source: 'smoke dist isolation bridge repository cwd' },
   );
 }
-
-export async function installCurrentSmokeDistIsolationBridge(): Promise<void> {
-  await installDistStateForTests(getCurrentSourceTestRootRegistry());
-}
-
-beforeEach(async () => {
-  registerSmokeReadonlyFixtureRoots();
-  await installCurrentSmokeDistIsolationBridge();
-});
 
 afterEach(async () => {
   await resetDistStateForTests();

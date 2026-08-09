@@ -1,4 +1,11 @@
-import { execFile, spawn } from 'node:child_process';
+import {
+  execFile,
+  spawn,
+  type ChildProcess,
+  type ChildProcessWithoutNullStreams,
+  type SpawnOptions,
+} from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import os from 'node:os';
@@ -11,8 +18,12 @@ import { resolveCliPackageRoot } from '../src/utils/paths.js';
 import { runCodexConversationSuite } from './codex-eval-app-server.js';
 import {
   assertProcessTreeInspectionAvailable,
+  CODEX_EVAL_PROCESS_TREE_ID_ENV,
+  createChildProcessTreeMonitor,
+  type ChildProcessTreeMonitor,
+  processTreeCleanupIsUnconfirmed,
   releaseChildProcessHandles,
-  terminateChildProcessTree,
+  scrubProcessTreeId,
   terminatePosixProcessTree,
   terminateWindowsProcessTree,
 } from './codex-eval-process-tree.js';
@@ -78,6 +89,7 @@ interface ChildResult {
   stdout: string;
   stderr: string;
   timedOut: boolean;
+  processTreeId: string;
 }
 
 export { terminatePosixProcessTree, terminateWindowsProcessTree };
@@ -263,26 +275,40 @@ export async function runChild(
     stderr: (text: string) => void;
     redact?: (text: string) => string;
     timeoutMs: number;
+    spawnChild?: (
+      command: string,
+      args: string[],
+      options: SpawnOptions,
+    ) => ChildProcessWithoutNullStreams;
+    createProcessTreeMonitor?: (
+      child: ChildProcess,
+      treeId: string,
+    ) => ChildProcessTreeMonitor;
   },
 ): Promise<ChildResult> {
   await assertProcessTreeInspectionAvailable();
   assertCodexEvalCanStartWork();
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
+    const processTreeId = randomUUID();
+    const child = (options.spawnChild ?? spawn)(command, args, {
       cwd: options.cwd,
-      env: options.env,
+      env: { ...options.env, [CODEX_EVAL_PROCESS_TREE_ID_ENV]: processTreeId },
       shell: false,
       detached: process.platform !== 'win32',
       stdio: ['ignore', 'pipe', 'pipe'],
-    });
+    }) as ChildProcessWithoutNullStreams;
+    const processTreeMonitor = options.createProcessTreeMonitor
+      ? options.createProcessTreeMonitor(child, processTreeId)
+      : createChildProcessTreeMonitor(child, { treeId: processTreeId });
     let stdout = '';
     let stderr = '';
     let timedOut = false;
+    let executionClosed = false;
     let settled = false;
     let closeResult: Pick<ChildResult, 'exitCode' | 'signal'> | undefined;
     let terminationPromise: Promise<string[]> | undefined;
     const terminateTree = (): Promise<string[]> => {
-      terminationPromise ??= terminateChildProcessTree(child);
+      terminationPromise ??= processTreeMonitor.terminate();
       return terminationPromise;
     };
     const unregisterSignalCleanup = registerCodexEvalSignalCleanup(async () => {
@@ -298,6 +324,7 @@ export async function runChild(
       }
     });
     const timeoutTimer = setTimeout(() => {
+      if (executionClosed) return;
       timedOut = true;
       const message = `Suite exceeded central timeout of ${options.timeoutMs}ms.`;
       stderr += `${message}\n`;
@@ -329,11 +356,20 @@ export async function runChild(
       if (settled) return;
       settled = true;
       cleanup();
-      if (stderr) {
-        const rendered = options.redact ? options.redact(stderr) : stderr;
+      const safeStdout = stdout.replaceAll(processTreeId, '[process-tree-id]');
+      const safeStderr = stderr.replaceAll(processTreeId, '[process-tree-id]');
+      if (safeStderr) {
+        const rendered = options.redact ? options.redact(safeStderr) : safeStderr;
         options.stderr(rendered.endsWith('\n') ? rendered : `${rendered}\n`);
       }
-      resolve({ exitCode, signal, stdout, stderr, timedOut });
+      resolve({
+        exitCode,
+        signal,
+        stdout: safeStdout,
+        stderr: safeStderr,
+        timedOut,
+        processTreeId,
+      });
     };
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
@@ -348,12 +384,37 @@ export async function runChild(
         stderr += `${error.message}\n`;
         return;
       }
+      if (settled) return;
+      settled = true;
       cleanup();
-      reject(error);
+      void terminateTree().then(
+        () => reject(error),
+        () => reject(error),
+      );
     });
     child.once('close', (exitCode, signal) => {
       closeResult = { exitCode, signal };
-      if (!timedOut) finish(exitCode, signal);
+      if (timedOut) return;
+      executionClosed = true;
+      clearTimeout(timeoutTimer);
+      void terminateTree().then((terminationDiagnostics) => {
+        if (timedOut) return;
+        if (terminationDiagnostics.length > 0) {
+          stderr += `${terminationDiagnostics.join('\n')}\n`;
+        }
+        finish(
+          processTreeCleanupIsUnconfirmed(terminationDiagnostics) && exitCode === 0
+            ? 1
+            : exitCode,
+          signal,
+        );
+      }, (error: unknown) => {
+        if (timedOut) return;
+        stderr += `Failed to terminate command suite process tree after close: ${
+          error instanceof Error ? error.message : String(error)
+        }\n`;
+        finish(exitCode === 0 ? 1 : exitCode, signal);
+      });
     });
   });
 }
@@ -365,11 +426,16 @@ function supports(
   return suite.supports.includes(capability);
 }
 
-function parseCommandReport(stdout: string, reportPath: string): Record<string, unknown> {
+function parseCommandReport(
+  stdout: string,
+  reportPath: string,
+  processTreeId: string,
+): Record<string, unknown> {
   let candidate = stdout.trim();
   if (fs.pathExistsSync(reportPath)) {
     candidate = fs.readFileSync(reportPath, 'utf8').trim();
   }
+  candidate = candidate.replaceAll(processTreeId, '[process-tree-id]');
   try {
     const parsed: unknown = JSON.parse(candidate);
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
@@ -473,7 +539,10 @@ async function runCommandSuite(options: {
   }
   try {
     const report = redactCodexEvalValue(
-      parseCommandReport(result.stdout, rawReportPath),
+      scrubProcessTreeId(
+        parseCommandReport(result.stdout, rawReportPath, result.processTreeId),
+        result.processTreeId,
+      ),
       options.codexRuntime,
     );
     await fs.writeJson(reportPath, report, { spaces: 2 });

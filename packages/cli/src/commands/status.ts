@@ -27,10 +27,6 @@ import type {
   NativePluginStatus,
 } from '../types.js';
 import type { PluginLocation as InstallStatePluginLocation } from '../install-state/types.js';
-import { readCodexNativeRecoveryBreadcrumb } from '../utils/codex-native-recovery.js';
-import { readCodexNativePluginState } from '../utils/codex-native-state.js';
-import { detectEnvironment } from '../utils/detect.js';
-import { readInstalledLedger } from '../utils/local-marketplace.js';
 import { compareStrictSemVerFields } from '../utils/manifest.js';
 import { isCatalogResolutionError, resolveCurrentCatalog } from '../utils/plugin-catalog.js';
 import {
@@ -111,8 +107,15 @@ import {
   projectAgentVersionDiagnostic,
   type AgentVersionDiagnosticProjection,
 } from '../output/model.js';
+import {
+  createStatusReadSnapshot,
+  type StatusReadSnapshot,
+} from './status-read-snapshot.js';
 
-type StatusCommandRuntime = CommandExecutionContextInput;
+type StatusCommandRuntime = CommandExecutionContextInput & {
+  catalogResolution?: CatalogResolution;
+  statusReadSnapshot?: StatusReadSnapshot;
+};
 
 export type StatusHealth =
   | 'ready'
@@ -908,9 +911,9 @@ async function resolveDependencyStatusByLocation(options: {
   locations: Awaited<ReturnType<typeof collectP7Locations>>['locations'];
   catalog: CatalogResolution;
   env: NodeJS.ProcessEnv;
+  ledger: InstalledLedger;
 }): Promise<Record<string, PluginStatusDependencies>> {
-  const ledger = await readInstalledLedger(options.env);
-  const ledgerRecords = iterateInstalledScopeRecords(ledger);
+  const ledgerRecords = iterateInstalledScopeRecords(options.ledger);
   const collectedByKey = new Map(
     options.locations.map((state) => [
       serializePluginLocation(normalizePluginLocation({
@@ -2062,25 +2065,12 @@ function catalogResolutionFromError(
   };
 }
 
-async function resolveStatusCatalog(
-  env: NodeJS.ProcessEnv,
-  locations: Awaited<ReturnType<typeof collectP7Locations>>['locations'],
-): Promise<CatalogResolution> {
-  try {
-    return await resolveCurrentCatalog(env);
-  } catch (error) {
-    const fallbackRoot = locations.find((state) => state.target.currentPlugin)?.target.currentPlugin?.rootDir
-      ?? process.cwd();
-    return catalogResolutionFromError(error, path.dirname(fallbackRoot));
-  }
-}
-
 async function resolveStatusCatalogForProjection(
   cwd: string,
   env: NodeJS.ProcessEnv,
 ): Promise<CatalogResolution> {
   try {
-    return await resolveCurrentCatalog(env);
+    return await resolveCurrentCatalog(env, { freshnessPolicy: 'cacheFirst' });
   } catch (error) {
     return catalogResolutionFromError(error, cwd);
   }
@@ -2131,6 +2121,7 @@ async function createCompatNativeStatus(options: {
   platform: PlatformName;
   scope: Scope;
   env: NodeJS.ProcessEnv;
+  readSnapshot: StatusReadSnapshot;
 }): Promise<NativePluginStatus> {
   const base: NativePluginStatus = {
     marketplaceRegistered: false,
@@ -2151,7 +2142,10 @@ async function createCompatNativeStatus(options: {
   }
 
   try {
-    const native = await readCodexNativePluginState(options.pluginName, options.env);
+    const native = await options.readSnapshot.readCodexNativePluginState({
+      pluginName: options.pluginName,
+      env: options.env,
+    });
     base.configPath = native.configPath;
     base.configEntryPresent = native.configEntryPresent;
     base.pluginEnabled = native.pluginEnabled;
@@ -2171,7 +2165,10 @@ async function createCompatNativeStatus(options: {
     return base;
   }
 
-  const recovery = await readCodexNativeRecoveryBreadcrumb(options.pluginName, options.env);
+  const recovery = await options.readSnapshot.readCodexNativeRecoveryBreadcrumb({
+    pluginName: options.pluginName,
+    env: options.env,
+  });
   if (recovery) {
     base.recovery = {
       present: true,
@@ -2189,6 +2186,7 @@ async function createCompatibilityReports(options: {
   locations: Awaited<ReturnType<typeof collectP7Locations>>['locations'];
   env: NodeJS.ProcessEnv;
   catalog: CatalogResolution;
+  readSnapshot: StatusReadSnapshot;
 }): Promise<StatusReport[]> {
   const reports = new Map<string, StatusReport>();
   for (const state of options.locations) {
@@ -2212,6 +2210,7 @@ async function createCompatibilityReports(options: {
         platform: state.location.platform,
         scope: state.location.scope,
         env: options.env,
+        readSnapshot: options.readSnapshot,
       }),
       generatedArtifacts: [],
       managedArtifacts,
@@ -3083,14 +3082,18 @@ export async function statusCommand(
   configProjectionByPluginName: Record<string, PluginConsoleConfigProjection>;
 }> {
   const normalizedOptions = normalizeStatusCommandOptions(rawOptions);
-  const earlyCatalog = await resolveStatusCatalogForProjection(
+  const envWithSelector = applyCatalogSelectorEnv(runtime.env ?? process.env, normalizedOptions);
+  const catalog = runtime.catalogResolution ?? await resolveStatusCatalogForProjection(
     normalizedOptions.cwd,
-    applyCatalogSelectorEnv(runtime.env ?? process.env, normalizedOptions),
+    envWithSelector,
   );
+  const readSnapshot = runtime.statusReadSnapshot ?? createStatusReadSnapshot();
   const runtimeWithSelector = {
     ...runtime,
-    env: applyCatalogSelectorEnv(runtime.env ?? process.env, normalizedOptions),
-    p7Catalog: earlyCatalog,
+    env: envWithSelector,
+    catalogResolution: catalog,
+    p7Catalog: catalog,
+    statusReadSnapshot: readSnapshot,
   } as StatusCommandRuntime & { p7Catalog: CatalogResolution };
   const collected = await collectP7Locations(pluginNames, {
     ...normalizedOptions,
@@ -3099,22 +3102,22 @@ export async function statusCommand(
   const options = collected.options;
   const context = createCommandExecutionContext(runtimeWithSelector);
   const env = context.env;
+  const ledger = await readSnapshot.readInstalledLedger(env);
   const requestedPlugins = pluginNames.length > 0 ? pluginNames : undefined;
   const installStates = await Promise.all(collected.locations.map((state) =>
     createInstallStateForCell({ state, env }),
   ));
-  const catalog = earlyCatalog.reasonCode === 'catalogUnavailable'
-    ? await resolveStatusCatalog(env, collected.locations)
-    : earlyCatalog;
   const dependencyStatusByLocation = await resolveDependencyStatusByLocation({
     locations: collected.locations,
     catalog,
     env,
+    ledger,
   });
   const compatibilityReports = await createCompatibilityReports({
     locations: collected.locations,
     env,
     catalog,
+    readSnapshot,
   });
   const cells: StatusMatrixCell[] = collected.locations.map((state, index) => ({
     ...(() => {
@@ -3407,6 +3410,7 @@ const CONSOLE_SUMMARY_PRIORITY: Record<PluginConsoleStatus, number> = {
 
 export interface ConsoleItemsLoadResult {
   items: ConsoleControllerItem[];
+  catalog: CatalogResolution;
   catalogUnavailable: boolean;
 }
 
@@ -3442,6 +3446,9 @@ async function buildConsoleItemsFromStatusResult(options: {
         env: context.env,
         includeCatalogOnly: true,
         nativeCliRunner: context.nativeCliRunner,
+        catalogResolution: base.catalog,
+        readSnapshot: runtimeWithSelector.statusReadSnapshot,
+        detection: base.matrix.detection,
       });
   const discoveredNames = new Set(base.consoleItems.map((item) => item.pluginName));
   const baseCellKeys = new Set(base.matrix.cells.map((cell) => createPluginConsoleLocationKey(cell)));
@@ -3508,9 +3515,11 @@ export async function loadConsoleItemsResult(
   runtime: StatusCommandRuntime = {},
 ): Promise<ConsoleItemsLoadResult> {
   const options = normalizeStatusCommandOptions(rawOptions);
+  const readSnapshot = runtime.statusReadSnapshot ?? createStatusReadSnapshot();
   const runtimeWithSelector = {
     ...runtime,
     env: applyCatalogSelectorEnv(runtime.env ?? process.env, options),
+    statusReadSnapshot: readSnapshot,
   } satisfies StatusCommandRuntime;
   const base = await statusCommand([], {
     ...rawOptions,
@@ -3523,6 +3532,7 @@ export async function loadConsoleItemsResult(
       normalizedOptions: options,
       runtimeWithSelector,
     }),
+    catalog: base.catalog,
     catalogUnavailable: isConsoleCatalogUnavailable(base),
   };
 }

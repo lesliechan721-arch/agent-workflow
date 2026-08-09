@@ -10,6 +10,7 @@ import {
 } from '../constants.js';
 import type {
   CatalogChannel,
+  CatalogFreshnessPolicy,
   CatalogManifest,
   CatalogResolution,
   CatalogResolutionFailure,
@@ -21,8 +22,12 @@ import {
   buildCurrentCatalogCacheKey,
   type CurrentCatalogCacheEntry,
   type CurrentCatalogCacheIdentity,
+  type CurrentCatalogCacheObservation,
+  markCurrentCatalogCacheEntryValidated,
   readCliPackageInfo,
   readCurrentCatalogCacheEntry,
+  readCurrentCatalogCacheEntryBySelector,
+  reserveCurrentCatalogCacheObservationOrder,
   serializeCatalogSelectorForCache,
   writeCurrentCatalogCacheEntry,
 } from './local-marketplace.js';
@@ -36,7 +41,9 @@ import {
 } from './manifest.js';
 import {
   downloadCatalogPackageArchive,
+  getCatalogPackageSourceRevisionForTests,
   hasCatalogPackageSourceOverrideForTests,
+  resolveCatalogRegistryUrl,
   resolveCatalogPackageIdentityByDistTag,
   resolveCatalogPackageIdentityByVersion,
   type CatalogPackageArchive,
@@ -58,6 +65,15 @@ export interface ResolveCurrentCatalogOptions {
   channel?: CatalogChannel;
   catalogVersion?: CatalogVersion;
   forceRefresh?: boolean;
+  freshnessPolicy?: CatalogFreshnessPolicy;
+  signal?: AbortSignal;
+}
+
+interface ResolveCurrentCatalogRuntimeOptions extends ResolveCurrentCatalogOptions {
+  freshnessPolicy: NonNullable<ResolveCurrentCatalogOptions['freshnessPolicy']>;
+  cacheTtlMs: number;
+  remoteTimeoutMs: number;
+  sourceIdentity: string;
 }
 
 interface PartialCatalogSummary {
@@ -82,13 +98,103 @@ interface ResolvedCatalogTarget {
   manifestText: string;
   sidecarIdentity: CatalogPackageArchiveIdentity;
   sidecarManifestPackage: NonNullable<CatalogResolution['sidecarManifestPackage']>;
-  latestCatalog: NonNullable<CatalogResolution['latestCatalog']>;
+  latestCatalog?: CatalogResolution['latestCatalog'];
   latestCatalogBlocked?: CatalogResolution['latestCatalogBlocked'];
   historySchemaVersion: number | null;
-  resolutionSource: NonNullable<CatalogResolution['fullCatalog']>['resolutionSource'];
+  resolutionSource?: NonNullable<CatalogResolution['fullCatalog']>['resolutionSource'];
+  observationOrder?: number;
 }
 
-const currentCatalogResolutionMemo = new Map<string, Promise<CatalogResolution>>();
+interface CurrentCatalogResolutionMemoEntry {
+  promise: Promise<CatalogResolution>;
+  settled: boolean;
+  validatedAtMs?: number;
+  capability: 'cacheOnly' | 'remoteChecked';
+  controller: AbortController;
+  waiterCount: number;
+}
+
+const currentCatalogResolutionMemo = new Map<string, CurrentCatalogResolutionMemoEntry>();
+
+const DEFAULT_CATALOG_CACHE_TTL_MS = 300_000;
+const MAX_CATALOG_CACHE_TTL_MS = 86_400_000;
+const DEFAULT_CATALOG_REMOTE_TIMEOUT_MS = 5_000;
+
+function readCatalogEnvironmentInteger(
+  env: NodeJS.ProcessEnv,
+  name: 'AW_CATALOG_CACHE_TTL_MS' | 'AW_CATALOG_REMOTE_TIMEOUT_MS',
+  defaultValue: number,
+  isValid: (value: number) => boolean,
+  range: string,
+): number {
+  const rawValue = env[name];
+  if (rawValue === undefined) {
+    return defaultValue;
+  }
+  if (!/^(?:0|[1-9]\d*)$/.test(rawValue)) {
+    throw new Error(`Invalid ${name}="${rawValue}": expected ${range}.`);
+  }
+  const value = Number(rawValue);
+  if (!Number.isSafeInteger(value) || !isValid(value)) {
+    throw new Error(`Invalid ${name}="${rawValue}": expected ${range}.`);
+  }
+  return value;
+}
+
+function readCatalogRuntimePolicy(
+  env: NodeJS.ProcessEnv,
+  options: ResolveCurrentCatalogOptions,
+): {
+  freshnessPolicy: NonNullable<ResolveCurrentCatalogOptions['freshnessPolicy']>;
+  cacheTtlMs: number;
+  remoteTimeoutMs: number;
+} {
+  const cacheTtlMs = readCatalogEnvironmentInteger(
+    env,
+    'AW_CATALOG_CACHE_TTL_MS',
+    DEFAULT_CATALOG_CACHE_TTL_MS,
+    (value) => value >= 0 && value <= MAX_CATALOG_CACHE_TTL_MS,
+    'an integer in range 0..86400000',
+  );
+  const remoteTimeoutMs = readCatalogEnvironmentInteger(
+    env,
+    'AW_CATALOG_REMOTE_TIMEOUT_MS',
+    DEFAULT_CATALOG_REMOTE_TIMEOUT_MS,
+    (value) => value === 0 || (value >= 100 && value <= 60_000),
+    '0 or an integer in range 100..60000',
+  );
+  return {
+    freshnessPolicy: options.forceRefresh === true
+      ? 'forceRemote'
+      : options.freshnessPolicy ?? 'requireRemote',
+    cacheTtlMs,
+    remoteTimeoutMs,
+  };
+}
+
+function buildCacheState(
+  state: NonNullable<CatalogResolution['cacheState']>['state'],
+  validatedAt: string,
+  ttlMs: number,
+): NonNullable<CatalogResolution['cacheState']> {
+  return {
+    state,
+    validatedAt,
+    ageMs: Math.max(0, Date.now() - Date.parse(validatedAt)),
+    ttlMs,
+  };
+}
+
+function throwIfRemoteAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    if (signal.reason instanceof Error) {
+      throw signal.reason;
+    }
+    const error = new Error('Catalog remote resolution aborted.');
+    error.name = 'AbortError';
+    throw error;
+  }
+}
 
 function calculateManifestTextDigest(manifestText: string): string {
   return `sha256:${crypto.createHash('sha256').update(manifestText).digest('hex')}`;
@@ -230,6 +336,13 @@ function normalizeErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+class CatalogRemoteDeadlineError extends Error {
+  constructor(timeoutMs: number) {
+    super(`Catalog remote resolution exceeded AW_CATALOG_REMOTE_TIMEOUT_MS=${timeoutMs}.`);
+    this.name = 'CatalogRemoteDeadlineError';
+  }
+}
+
 function readSelectorOverrides(
   env: NodeJS.ProcessEnv,
   options: ResolveCurrentCatalogOptions,
@@ -282,18 +395,20 @@ async function resolveEffectiveCatalogSelector(
 function buildCurrentCatalogMemoKey(
   selector: CatalogSelector,
   env: NodeJS.ProcessEnv,
-  options: ResolveCurrentCatalogOptions,
+  options: ResolveCurrentCatalogRuntimeOptions,
 ): string {
   const payload = {
     selector: serializeCatalogSelectorForCache(selector),
     overrideSource: selector.overrideSource ?? null,
     awHome: resolveAwHome(env),
-    registry: env.AW_NPM_REGISTRY_URL || env.npm_config_registry || env.NPM_CONFIG_REGISTRY || null,
+    sourceIdentity: options.sourceIdentity,
     npmUserConfig: env.npm_config_userconfig || env.NPM_CONFIG_USERCONFIG || null,
     cwd: path.resolve(process.cwd()),
     home: env.HOME || null,
     userprofile: env.USERPROFILE || null,
     embeddedOverrideRoot: getEmbeddedPluginsRootOverrideForTests(),
+    catalogPackageSourceRevision: getCatalogPackageSourceRevisionForTests(),
+    remoteTimeoutMs: options.remoteTimeoutMs,
     forceRefresh: Boolean(options.forceRefresh),
   };
   return crypto
@@ -302,10 +417,15 @@ function buildCurrentCatalogMemoKey(
     .digest('hex');
 }
 
+function buildCatalogSourceIdentity(registryUrl: string): string {
+  return `registry-sha256:${crypto.createHash('sha256').update(registryUrl).digest('hex')}`;
+}
+
 async function resolveCurrentCatalogUncached(
   selector: CatalogSelector,
   env: NodeJS.ProcessEnv,
-  options: ResolveCurrentCatalogOptions,
+  options: ResolveCurrentCatalogRuntimeOptions,
+  signal?: AbortSignal,
 ): Promise<CatalogResolution> {
   if (!hasCatalogPackageSourceOverrideForTests()) {
     const fixtureCatalog = await tryResolveFixtureCatalogOverride(selector);
@@ -314,67 +434,15 @@ async function resolveCurrentCatalogUncached(
     }
   }
 
-  const target = await resolveCatalogTarget(selector, env);
-  return await resolveValidatedCatalogRoot(selector, target, env, options);
-}
-
-function catalogLatestEvidenceMatches(
-  left: CatalogResolution['latestCatalog'],
-  right: CatalogResolution['latestCatalog'],
-): boolean {
-  if (!left || !right) {
-    return left === right;
-  }
-
-  return (
-    left.channel === right.channel &&
-    left.catalogVersion === right.catalogVersion &&
-    left.minAwVersion === right.minAwVersion &&
-    left.blocked === right.blocked
+  throwIfRemoteAborted(signal);
+  const target = await resolveCatalogTarget(
+    selector,
+    options.sourceIdentity,
+    env,
+    signal,
   );
-}
-
-function catalogLatestBlockedEvidenceMatches(
-  left: CatalogResolution['latestCatalogBlocked'],
-  right: CatalogResolution['latestCatalogBlocked'],
-): boolean {
-  if (!left || !right) {
-    return left === right;
-  }
-
-  return (
-    left.channel === right.channel &&
-    left.catalogVersion === right.catalogVersion &&
-    left.minAwVersion === right.minAwVersion
-  );
-}
-
-function canReuseCurrentCatalogMemoAfterTargetFailure(error: unknown): boolean {
-  return isCatalogResolutionError(error) && error.resolution.reasonCode === 'catalogUnavailable';
-}
-
-function memoizedResolutionMatchesTarget(
-  resolved: CatalogResolution,
-  target: ResolvedCatalogTarget,
-): boolean {
-  const sidecarManifestPackage = resolved.sidecarManifestPackage;
-  if (!sidecarManifestPackage) {
-    return false;
-  }
-
-  return (
-    resolved.channel === target.manifest.channel &&
-    resolved.catalogVersion === target.manifest.catalogVersion &&
-    resolved.minAwVersion === target.manifest.compatibility.aw.minVersion &&
-    resolved.historySchemaVersion === target.historySchemaVersion &&
-    sidecarManifestPackage.source === target.sidecarManifestPackage.source &&
-    sidecarManifestPackage.version === target.sidecarManifestPackage.version &&
-    sidecarManifestPackage.channel === target.sidecarManifestPackage.channel &&
-    sidecarManifestPackage.npmIntegrity === target.sidecarManifestPackage.npmIntegrity &&
-    sidecarManifestPackage.manifestDigest === target.sidecarManifestPackage.manifestDigest &&
-    catalogLatestEvidenceMatches(resolved.latestCatalog, target.latestCatalog) &&
-    catalogLatestBlockedEvidenceMatches(resolved.latestCatalogBlocked, target.latestCatalogBlocked)
-  );
+  throwIfRemoteAborted(signal);
+  return await resolveValidatedCatalogRoot(selector, target, env, options, signal);
 }
 
 async function validateMemoizedCatalogResolutionRoot(
@@ -435,84 +503,143 @@ async function validateMemoizedCatalogResolutionRoot(
   }
 }
 
-async function readCurrentCatalogMemo(
+async function readCurrentCatalogMemoEntry(
   memoKey: string,
-  selector: CatalogSelector,
-  env: NodeJS.ProcessEnv,
-): Promise<{
-  resolution: CatalogResolution | null;
-  target?: ResolvedCatalogTarget;
-}> {
-  const memoized = currentCatalogResolutionMemo.get(memoKey);
-  if (!memoized) {
-    return {
-      resolution: null,
-    };
+  memoized: CurrentCatalogResolutionMemoEntry,
+  cacheTtlMs: number,
+  signal?: AbortSignal,
+): Promise<CatalogResolution | null> {
+  signal?.throwIfAborted();
+  if (!memoized.settled) {
+    return waitForCurrentCatalogMemoEntry(memoKey, memoized, signal);
   }
-
   try {
-    const resolved = await memoized;
+    if (
+      cacheTtlMs === 0 ||
+      memoized.validatedAtMs === undefined ||
+      Date.now() - memoized.validatedAtMs > cacheTtlMs
+    ) {
+      if (currentCatalogResolutionMemo.get(memoKey) === memoized) {
+        currentCatalogResolutionMemo.delete(memoKey);
+      }
+      return null;
+    }
+
+    const resolved = await memoized.promise;
     if (!(await fs.pathExists(resolved.rootDir))) {
-      currentCatalogResolutionMemo.delete(memoKey);
-      return {
-        resolution: null,
-      };
-    }
-
-    if (resolved.source === 'local' || selector.kind === 'exactVersion') {
-      if (!(await validateMemoizedCatalogResolutionRoot(resolved))) {
+      if (currentCatalogResolutionMemo.get(memoKey) === memoized) {
         currentCatalogResolutionMemo.delete(memoKey);
-        return {
-          resolution: null,
-        };
       }
-      return {
-        resolution: resolved,
-      };
+      return null;
     }
-
-    let target: ResolvedCatalogTarget;
-    try {
-      target = await resolveCatalogTarget(selector, env);
-    } catch (error) {
-      if (!canReuseCurrentCatalogMemoAfterTargetFailure(error)) {
+    if (!(await validateMemoizedCatalogResolutionRoot(resolved))) {
+      if (currentCatalogResolutionMemo.get(memoKey) === memoized) {
         currentCatalogResolutionMemo.delete(memoKey);
-        throw error;
       }
-      if (!(await validateMemoizedCatalogResolutionRoot(resolved))) {
-        currentCatalogResolutionMemo.delete(memoKey);
-        return {
-          resolution: null,
-        };
-      }
-      currentCatalogResolutionMemo.delete(memoKey);
-      return {
-        resolution: resolved,
-      };
+      return null;
     }
-
-    if (memoizedResolutionMatchesTarget(resolved, target)) {
-      if (!(await validateMemoizedCatalogResolutionRoot(resolved, target))) {
-        currentCatalogResolutionMemo.delete(memoKey);
-        return {
-          resolution: null,
-          target,
-        };
-      }
-      return {
-        resolution: resolved,
-      };
-    }
-
-    currentCatalogResolutionMemo.delete(memoKey);
-    return {
-      resolution: null,
-      target,
-    };
+    return resolved;
   } catch (error) {
-    currentCatalogResolutionMemo.delete(memoKey);
+    if (currentCatalogResolutionMemo.get(memoKey) === memoized) {
+      currentCatalogResolutionMemo.delete(memoKey);
+    }
     throw error;
   }
+}
+
+function waitForCurrentCatalogMemoEntry(
+  memoKey: string,
+  entry: CurrentCatalogResolutionMemoEntry,
+  signal?: AbortSignal,
+): Promise<CatalogResolution> {
+  signal?.throwIfAborted();
+  entry.waiterCount += 1;
+
+  return new Promise<CatalogResolution>((resolve, reject) => {
+    let finished = false;
+    const finish = (
+      result: { resolution: CatalogResolution } | { error: unknown },
+      abortReason?: unknown,
+    ): void => {
+      if (finished) return;
+      finished = true;
+      signal?.removeEventListener('abort', onAbort);
+      entry.waiterCount -= 1;
+      if (
+        abortReason !== undefined &&
+        entry.waiterCount === 0 &&
+        !entry.settled &&
+        !entry.controller.signal.aborted
+      ) {
+        if (currentCatalogResolutionMemo.get(memoKey) === entry) {
+          currentCatalogResolutionMemo.delete(memoKey);
+        }
+        entry.controller.abort(abortReason);
+      }
+      if ('resolution' in result) resolve(result.resolution);
+      else reject(result.error);
+    };
+    const onAbort = (): void => {
+      const reason = signal?.reason ?? new DOMException('Catalog resolution aborted.', 'AbortError');
+      finish({ error: reason }, reason);
+    };
+
+    signal?.addEventListener('abort', onAbort, { once: true });
+    entry.promise.then(
+      (resolution) => finish({ resolution }),
+      (error) => finish({ error }),
+    );
+    if (signal?.aborted) {
+      onAbort();
+    }
+  });
+}
+
+function reserveCurrentCatalogResolutionMemo(
+  memoKey: string,
+  expected: CurrentCatalogResolutionMemoEntry | undefined,
+  capability: CurrentCatalogResolutionMemoEntry['capability'],
+  task: (entry: CurrentCatalogResolutionMemoEntry) => Promise<CatalogResolution>,
+): CurrentCatalogResolutionMemoEntry | null {
+  if (currentCatalogResolutionMemo.get(memoKey) !== expected) {
+    return null;
+  }
+  let resolvePromise!: (resolution: CatalogResolution) => void;
+  let rejectPromise!: (error: unknown) => void;
+  const promise = new Promise<CatalogResolution>((resolve, reject) => {
+    resolvePromise = resolve;
+    rejectPromise = reject;
+  });
+  const entry: CurrentCatalogResolutionMemoEntry = {
+    promise,
+    settled: false,
+    capability,
+    controller: new AbortController(),
+    waiterCount: 0,
+  };
+  currentCatalogResolutionMemo.set(memoKey, entry);
+  queueMicrotask(() => {
+    void task(entry).then(
+      (resolution) => {
+        entry.settled = true;
+        if (resolution.source === 'remote' || resolution.cacheFallback?.used === true) {
+          entry.capability = 'remoteChecked';
+        }
+        entry.validatedAtMs = resolution.cacheState
+          ? Date.parse(resolution.cacheState.validatedAt)
+          : Date.now();
+        resolvePromise(resolution);
+      },
+      (error) => {
+        entry.settled = true;
+        if (currentCatalogResolutionMemo.get(memoKey) === entry) {
+          currentCatalogResolutionMemo.delete(memoKey);
+        }
+        rejectPromise(error);
+      },
+    );
+  });
+  return entry;
 }
 
 export function clearCurrentCatalogResolutionMemoForTests(): void {
@@ -614,19 +741,50 @@ function parseCatalogHistory(
 async function resolveArchiveByIdentity(
   identity: CatalogPackageArchiveIdentity,
   env: NodeJS.ProcessEnv,
+  signal?: AbortSignal,
 ): Promise<CatalogPackageArchive> {
-  return downloadCatalogPackageArchive(identity, env);
+  return downloadCatalogPackageArchive(identity, env, signal);
+}
+
+function startCatalogArchiveDispose(archive: CatalogPackageArchive): Promise<void> {
+  const disposal = Promise.resolve().then(() => archive.dispose());
+  void disposal.catch(() => {});
+  return disposal.catch(() => {});
+}
+
+async function disposeCatalogArchiveBounded(
+  archive: CatalogPackageArchive | null,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (!archive) {
+    return;
+  }
+  const disposal = startCatalogArchiveDispose(archive);
+  if (signal?.aborted) {
+    return;
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const bound = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, 250);
+    timer.unref?.();
+  });
+  await Promise.race([disposal, bound]);
+  if (timer) {
+    clearTimeout(timer);
+  }
 }
 
 async function resolveRequestedSidecarIdentity(
   selector: CatalogSelector,
   env: NodeJS.ProcessEnv,
+  signal?: AbortSignal,
 ): Promise<CatalogPackageArchiveIdentity> {
   if (selector.kind === 'exactVersion') {
     return resolveCatalogPackageIdentityByVersion(
       CURRENT_CATALOG_MANIFEST_PACKAGE,
       selector.requestedCatalogVersion!,
       env,
+      signal,
     );
   }
 
@@ -634,16 +792,48 @@ async function resolveRequestedSidecarIdentity(
     CURRENT_CATALOG_MANIFEST_PACKAGE,
     getRequestedCatalogChannel(selector)!,
     env,
+    signal,
   );
 }
 
 async function validateResolvedCatalogArchive(
   archive: CatalogPackageArchive,
 ): Promise<{ manifest: CatalogManifest; manifestText: string }> {
+  const manifest = validateCatalogManifest(archive.rawManifest);
+  validateCatalogPackageEnvelope(manifest);
   return {
-    manifest: validateCatalogManifest(archive.rawManifest),
+    manifest,
     manifestText: archive.manifestText,
   };
+}
+
+function validateCatalogPackageEnvelope(manifest: CatalogManifest): void {
+  const expectedManifestPath = `./${CURRENT_CATALOG_MANIFEST_FILE}`;
+  const latestHistoryRelease = manifest.history.releases[manifest.history.releases.length - 1];
+  if (
+    !latestHistoryRelease ||
+    manifest.history.channel !== manifest.channel ||
+    latestHistoryRelease.catalogVersion !== manifest.catalogVersion ||
+    latestHistoryRelease.minAwVersion !== manifest.compatibility.aw.minVersion
+  ) {
+    throw new Error('catalog history latest release does not match the sidecar summary.');
+  }
+  if (
+    manifest.packages.sidecar.name !== CURRENT_CATALOG_MANIFEST_PACKAGE ||
+    manifest.packages.sidecar.version !== manifest.catalogVersion ||
+    manifest.packages.sidecar.channel !== manifest.channel ||
+    manifest.packages.sidecar.manifestPath !== undefined
+  ) {
+    throw new Error('catalog packages.sidecar does not match the sidecar package identity.');
+  }
+  if (
+    manifest.packages.full.name !== CURRENT_CATALOG_FULL_PACKAGE ||
+    manifest.packages.full.version !== manifest.catalogVersion ||
+    manifest.packages.full.channel !== manifest.channel ||
+    manifest.packages.full.manifestPath !== expectedManifestPath
+  ) {
+    throw new Error(`catalog packages.full must match the full package identity and ${expectedManifestPath}.`);
+  }
 }
 
 function buildSidecarManifestPackageEvidence(
@@ -672,11 +862,28 @@ function selectLatestCompatibleHistoryRelease(
 
 async function resolveCatalogTarget(
   selector: CatalogSelector,
+  sourceIdentity: string,
   env: NodeJS.ProcessEnv,
+  signal?: AbortSignal,
 ): Promise<ResolvedCatalogTarget> {
   let requestedSidecarIdentity: CatalogPackageArchiveIdentity;
   try {
-    requestedSidecarIdentity = await resolveRequestedSidecarIdentity(selector, env);
+    requestedSidecarIdentity = await resolveRequestedSidecarIdentity(selector, env, signal);
+    if (requestedSidecarIdentity.packageName !== CURRENT_CATALOG_MANIFEST_PACKAGE) {
+      throw new Error(`sidecar identity package ${requestedSidecarIdentity.packageName} is invalid.`);
+    }
+    if (
+      selector.kind === 'exactVersion' &&
+      requestedSidecarIdentity.version !== selector.requestedCatalogVersion
+    ) {
+      throw new Error(`sidecar identity version ${requestedSidecarIdentity.version} does not match exact selector ${selector.requestedCatalogVersion}.`);
+    }
+    if (
+      selector.kind !== 'exactVersion' &&
+      requestedSidecarIdentity.requestedDistTag !== getRequestedCatalogChannel(selector)
+    ) {
+      throw new Error(`sidecar identity dist-tag ${requestedSidecarIdentity.requestedDistTag ?? '<missing>'} does not match selector channel ${getRequestedCatalogChannel(selector)}.`);
+    }
   } catch (error) {
     throwCatalogResolutionFailure({
       selector,
@@ -697,11 +904,22 @@ async function resolveCatalogTarget(
       reasonCode: 'catalogUnavailable',
     });
   }
+  let observationOrder: number | undefined;
+  try {
+    observationOrder = await reserveCurrentCatalogCacheObservationOrder(
+      selector,
+      sourceIdentity,
+      env,
+      signal,
+    );
+  } catch {
+    throwIfRemoteAborted(signal);
+  }
 
   let requestedSidecarArchive: CatalogPackageArchive | null = null;
   try {
     try {
-      requestedSidecarArchive = await resolveArchiveByIdentity(requestedSidecarIdentity, env);
+      requestedSidecarArchive = await resolveArchiveByIdentity(requestedSidecarIdentity, env, signal);
     } catch (error) {
       throwCatalogResolutionFailure({
         selector,
@@ -728,6 +946,15 @@ async function resolveCatalogTarget(
     let requestedSummary: PartialCatalogSummary;
     try {
       requestedSummary = parseCatalogSummary(requestedSidecarArchive.rawManifest);
+      if (requestedSummary.catalogVersion !== requestedSidecarIdentity.version) {
+        throw new Error(`sidecar manifest version ${requestedSummary.catalogVersion} does not match identity ${requestedSidecarIdentity.version}.`);
+      }
+      if (
+        selector.kind !== 'exactVersion' &&
+        requestedSummary.channel !== getRequestedCatalogChannel(selector)
+      ) {
+        throw new Error(`sidecar manifest channel ${requestedSummary.channel} does not match selector channel ${getRequestedCatalogChannel(selector)}.`);
+      }
     } catch (error) {
       throwCatalogResolutionFailure({
         selector,
@@ -786,6 +1013,7 @@ async function resolveCatalogTarget(
           },
           historySchemaVersion: validated.manifest.history.schemaVersion,
           resolutionSource: 'requestedCatalog',
+          ...(observationOrder === undefined ? {} : { observationOrder }),
         };
       } catch (error) {
         throwCatalogResolutionFailure({
@@ -832,6 +1060,7 @@ async function resolveCatalogTarget(
           },
           historySchemaVersion: validated.manifest.history.schemaVersion,
           resolutionSource: 'requestedCatalog',
+          ...(observationOrder === undefined ? {} : { observationOrder }),
         };
       } catch (error) {
         throwCatalogResolutionFailure({
@@ -862,6 +1091,13 @@ async function resolveCatalogTarget(
     let history: ParsedCatalogHistory;
     try {
       history = parseCatalogHistory(requestedSidecarArchive.rawManifest, requestedChannel);
+      const latestHistoryRelease = history.releases[history.releases.length - 1]!;
+      if (
+        latestHistoryRelease.catalogVersion !== requestedSummary.catalogVersion ||
+        latestHistoryRelease.minAwVersion !== requestedSummary.minAwVersion
+      ) {
+        throw new Error('catalog history latest release does not match the latest sidecar summary.');
+      }
     } catch (error) {
       throwCatalogResolutionFailure({
         selector,
@@ -918,7 +1154,14 @@ async function resolveCatalogTarget(
         CURRENT_CATALOG_MANIFEST_PACKAGE,
         compatibleHistoryRelease.catalogVersion,
         env,
+        signal,
       );
+      if (
+        fallbackSidecarIdentity.packageName !== CURRENT_CATALOG_MANIFEST_PACKAGE ||
+        fallbackSidecarIdentity.version !== compatibleHistoryRelease.catalogVersion
+      ) {
+        throw new Error(`history fallback identity ${fallbackSidecarIdentity.packageName}@${fallbackSidecarIdentity.version} does not match ${compatibleHistoryRelease.catalogVersion}.`);
+      }
     } catch (error) {
       throwCatalogResolutionFailure({
         selector,
@@ -950,7 +1193,7 @@ async function resolveCatalogTarget(
     let fallbackSidecarArchive: CatalogPackageArchive | null = null;
     try {
       try {
-        fallbackSidecarArchive = await resolveArchiveByIdentity(fallbackSidecarIdentity, env);
+        fallbackSidecarArchive = await resolveArchiveByIdentity(fallbackSidecarIdentity, env, signal);
       } catch (error) {
         throwCatalogResolutionFailure({
           selector,
@@ -981,8 +1224,12 @@ async function resolveCatalogTarget(
       }
 
       const validated = await validateResolvedCatalogArchive(fallbackSidecarArchive);
-      if (!isCompatibleWithCliVersion(selector.cliVersion, validated.manifest.compatibility.aw.minVersion)) {
-        throw new Error(`catalog ${validated.manifest.catalogVersion} is still incompatible with CLI ${selector.cliVersion}.`);
+      if (
+        validated.manifest.catalogVersion !== compatibleHistoryRelease.catalogVersion ||
+        validated.manifest.compatibility.aw.minVersion !== compatibleHistoryRelease.minAwVersion ||
+        validated.manifest.channel !== requestedChannel
+      ) {
+        throw new Error(`history fallback catalog ${validated.manifest.catalogVersion} does not match the selected history release.`);
       }
 
       return {
@@ -1007,6 +1254,7 @@ async function resolveCatalogTarget(
         },
         historySchemaVersion: history.schemaVersion,
         resolutionSource: 'historyCompatibleCatalog',
+        ...(observationOrder === undefined ? {} : { observationOrder }),
       };
     } catch (error) {
       if (isCatalogResolutionError(error)) {
@@ -1040,10 +1288,10 @@ async function resolveCatalogTarget(
         reasonCode: 'catalogUnavailable',
       });
     } finally {
-      await fallbackSidecarArchive?.dispose();
+      await disposeCatalogArchiveBounded(fallbackSidecarArchive, signal);
     }
   } finally {
-    await requestedSidecarArchive?.dispose();
+    await disposeCatalogArchiveBounded(requestedSidecarArchive, signal);
   }
 
   throw new Error('resolveCatalogTarget reached an unreachable state.');
@@ -1055,38 +1303,63 @@ async function validateMaterializedCatalog(
     sidecarManifestText: string;
     rootDir: string;
   },
+  signal?: AbortSignal,
 ): Promise<void> {
+  throwIfRemoteAborted(signal);
   const manifestPath = path.join(options.rootDir, CURRENT_CATALOG_MANIFEST_FILE);
   const fullManifestText = await fs.readFile(manifestPath, 'utf8');
   if (fullManifestText !== options.sidecarManifestText) {
-    throw new Error('sidecar manifest and full catalog manifest differ.');
+    throw new CatalogContentValidationError(
+      'fullManifest',
+      'sidecar manifest and full catalog manifest differ.',
+    );
   }
 
   for (const entry of options.manifest.entries) {
+    throwIfRemoteAborted(signal);
     const pluginRoot = path.join(options.rootDir, entry.source);
     const {
       manifestDigest,
       artifactDigest,
     } = await calculateCatalogEntryDigestsFromRoot(pluginRoot);
+    throwIfRemoteAborted(signal);
     if (manifestDigest !== entry.manifestDigest) {
-      throw new Error(
+      throw new CatalogContentValidationError(
+        'fullManifest',
         `plugin "${entry.name}" manifestDigest mismatch: expected ${entry.manifestDigest}, got ${manifestDigest}.`,
       );
     }
 
     if (artifactDigest !== entry.artifactDigest) {
-      throw new Error(
+      throw new CatalogContentValidationError(
+        'artifactDigest',
         `plugin "${entry.name}" artifactDigest mismatch: expected ${entry.artifactDigest}, got ${artifactDigest}.`,
       );
     }
   }
 }
 
+class CatalogContentValidationError extends Error {
+  readonly stage: 'fullManifest' | 'artifactDigest';
+
+  constructor(stage: CatalogContentValidationError['stage'], message: string) {
+    super(message);
+    this.name = 'CatalogContentValidationError';
+    this.stage = stage;
+  }
+}
+
+function classifyCatalogContentValidationStage(
+  error: unknown,
+): CatalogContentValidationError['stage'] {
+  return error instanceof CatalogContentValidationError ? error.stage : 'fullManifest';
+}
+
 function buildFullCatalogEvidence(
   resolution: Pick<CatalogResolution, 'source'>,
   manifest: CatalogManifest,
   revision: string,
-  resolutionSource: ResolvedCatalogTarget['resolutionSource'],
+  resolutionSource: NonNullable<ResolvedCatalogTarget['resolutionSource']>,
 ): NonNullable<CatalogResolution['fullCatalog']> {
   return {
     source: resolution.source,
@@ -1105,6 +1378,27 @@ function buildFullCatalogEvidence(
   };
 }
 
+function buildCurrentCatalogCacheObservation(
+  target: ResolvedCatalogTarget,
+  sourceIdentity: string,
+): CurrentCatalogCacheObservation | null {
+  if (!target.resolutionSource) {
+    throw new Error('Current catalog target is missing resolutionSource.');
+  }
+  if (target.observationOrder === undefined) {
+    return null;
+  }
+  return {
+    sidecarManifestPackage: target.sidecarManifestPackage,
+    ...(target.latestCatalog ? { latestCatalog: target.latestCatalog } : {}),
+    ...(target.latestCatalogBlocked ? { latestCatalogBlocked: target.latestCatalogBlocked } : {}),
+    historySchemaVersion: target.historySchemaVersion,
+    resolutionSource: target.resolutionSource,
+    sourceIdentity,
+    observationOrder: target.observationOrder,
+  };
+}
+
 function buildCatalogResolutionFromCache(options: {
   selector: CatalogSelector;
   target: ResolvedCatalogTarget;
@@ -1112,25 +1406,28 @@ function buildCatalogResolutionFromCache(options: {
   cacheFallback?: CatalogResolution['cacheFallback'];
   remoteFailure?: CatalogResolution['remoteFailure'];
   reason?: string;
+  cacheState?: CatalogResolution['cacheState'];
 }): CatalogResolution {
-  const matchedCatalog = buildFullCatalogEvidence(
-    { source: 'cache' },
-    options.target.manifest,
-    options.cacheEntry.metadata.manifestDigest,
-    options.target.resolutionSource,
-  );
+  const matchedCatalog = options.target.resolutionSource
+    ? buildFullCatalogEvidence(
+      { source: 'cache' },
+      options.target.manifest,
+      options.cacheEntry.metadata.manifestDigest,
+      options.target.resolutionSource,
+    )
+    : undefined;
 
   return {
     rootDir: options.cacheEntry.rootDir,
     source: 'cache',
     selector: options.selector,
     sidecarManifestPackage: options.target.sidecarManifestPackage,
-    fullCatalog: matchedCatalog,
+    ...(matchedCatalog ? { fullCatalog: matchedCatalog } : {}),
     channel: options.target.manifest.channel,
     catalogVersion: options.target.manifest.catalogVersion,
     minAwVersion: options.target.manifest.compatibility.aw.minVersion,
-    latestCatalog: options.target.latestCatalog,
-    latestCatalogBlocked: options.target.latestCatalogBlocked,
+    ...(options.target.latestCatalog ? { latestCatalog: options.target.latestCatalog } : {}),
+    ...(options.target.latestCatalogBlocked ? { latestCatalogBlocked: options.target.latestCatalogBlocked } : {}),
     historySchemaVersion: options.target.historySchemaVersion,
     cacheFallback: options.cacheFallback ?? {
       used: false,
@@ -1138,6 +1435,7 @@ function buildCatalogResolutionFromCache(options: {
       selectorKey: options.cacheEntry.selectorKey,
     },
     ...(options.remoteFailure ? { remoteFailure: options.remoteFailure } : {}),
+    ...(options.cacheState ? { cacheState: options.cacheState } : {}),
     ...(options.reason ? { reason: options.reason } : {}),
   };
 }
@@ -1146,8 +1444,9 @@ async function readValidatedCurrentCatalogCacheEntry(
   identity: CurrentCatalogCacheIdentity,
   target: ResolvedCatalogTarget,
   env: NodeJS.ProcessEnv,
+  sourceIdentity: string,
 ): Promise<CurrentCatalogCacheEntry | null> {
-  const cacheEntry = await readCurrentCatalogCacheEntry(identity, env);
+  const cacheEntry = await readCurrentCatalogCacheEntry(identity, env, sourceIdentity);
   if (!cacheEntry) {
     return null;
   }
@@ -1164,16 +1463,204 @@ async function readValidatedCurrentCatalogCacheEntry(
   }
 }
 
+async function readValidatedCurrentCatalogCacheEntryBySelector(
+  selector: CatalogSelector,
+  env: NodeJS.ProcessEnv,
+  sourceIdentity: string,
+): Promise<{
+  cacheEntry: CurrentCatalogCacheEntry;
+  target: ResolvedCatalogTarget;
+} | null> {
+  const cacheEntry = await readCurrentCatalogCacheEntryBySelector(
+    selector,
+    env,
+    sourceIdentity,
+  );
+  if (!cacheEntry) {
+    return null;
+  }
+
+  try {
+    const manifestPath = path.join(cacheEntry.rootDir, CURRENT_CATALOG_MANIFEST_FILE);
+    const manifestText = await fs.readFile(manifestPath, 'utf8');
+    const manifest = validateCatalogManifest(JSON.parse(manifestText) as unknown);
+    validateCatalogPackageEnvelope(manifest);
+    if (
+      manifest.channel !== cacheEntry.metadata.channel ||
+      manifest.catalogVersion !== cacheEntry.metadata.catalogVersion ||
+      manifest.compatibility.aw.minVersion !== cacheEntry.metadata.minAwVersion ||
+      manifest.schemaVersion !== cacheEntry.metadata.schemaVersion ||
+      manifest.history.schemaVersion !== cacheEntry.metadata.historySchemaVersion ||
+      cacheEntry.metadata.sidecarIntegrity.trim() === '' ||
+      cacheEntry.metadata.fullIntegrity.trim() === ''
+    ) {
+      return null;
+    }
+    if (
+      (selector.kind === 'exactVersion' && manifest.catalogVersion !== selector.requestedCatalogVersion) ||
+      (selector.kind !== 'exactVersion' && manifest.channel !== getRequestedCatalogChannel(selector))
+    ) {
+      return null;
+    }
+    await validateMaterializedCatalog({
+      manifest,
+      sidecarManifestText: manifestText,
+      rootDir: cacheEntry.rootDir,
+    });
+
+    const sidecarIdentity: CatalogPackageArchiveIdentity = {
+      packageName: CURRENT_CATALOG_MANIFEST_PACKAGE,
+      version: manifest.catalogVersion,
+      integrity: cacheEntry.metadata.sidecarIntegrity,
+      ...(selector.kind === 'exactVersion'
+        ? {}
+        : { requestedDistTag: getRequestedCatalogChannel(selector)! }),
+    };
+    return {
+      cacheEntry,
+      target: {
+        manifest,
+        manifestText,
+        sidecarIdentity,
+        sidecarManifestPackage: cacheEntry.observation?.sidecarManifestPackage ??
+          buildSidecarManifestPackageEvidence(sidecarIdentity, manifest, manifestText),
+        ...(cacheEntry.observation?.latestCatalog
+          ? { latestCatalog: cacheEntry.observation.latestCatalog }
+          : {}),
+        ...(cacheEntry.observation?.latestCatalogBlocked
+          ? { latestCatalogBlocked: cacheEntry.observation.latestCatalogBlocked }
+          : {}),
+        historySchemaVersion: cacheEntry.observation?.historySchemaVersion ?? manifest.history.schemaVersion,
+        ...(cacheEntry.observation?.resolutionSource
+          ? { resolutionSource: cacheEntry.observation.resolutionSource }
+          : {}),
+      },
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function tryResolveCacheFirstCatalog(
+  selector: CatalogSelector,
+  env: NodeJS.ProcessEnv,
+  cacheTtlMs: number,
+  sourceIdentity: string,
+): Promise<CatalogResolution | null> {
+  const cached = await readValidatedCurrentCatalogCacheEntryBySelector(
+    selector,
+    env,
+    sourceIdentity,
+  );
+  if (!cached) {
+    return null;
+  }
+  const ageMs = Math.max(0, Date.now() - Date.parse(cached.cacheEntry.validatedAt));
+  return buildCatalogResolutionFromCache({
+    selector,
+    target: cached.target,
+    cacheEntry: cached.cacheEntry,
+    cacheState: buildCacheState(
+      cacheTtlMs > 0 && ageMs <= cacheTtlMs ? 'fresh' : 'stale',
+      cached.cacheEntry.validatedAt,
+      cacheTtlMs,
+    ),
+  });
+}
+
+function classifyRemoteCatalogFailure(
+  selector: CatalogSelector,
+  error: unknown,
+): CatalogResolutionFailure | null {
+  if (isCatalogResolutionError(error)) {
+    if (
+      error.resolution.reasonCode === 'explicitCatalogIncompatible' ||
+      error.resolution.reasonCode === 'awVersionTooLow'
+    ) {
+      return null;
+    }
+    return error.resolution;
+  }
+  if (!(error instanceof CatalogRemoteDeadlineError)) {
+    return null;
+  }
+  const message = normalizeErrorMessage(error);
+  return {
+    selector,
+    channel: getRequestedCatalogChannel(selector) ?? undefined,
+    cacheFallback: { used: false },
+    remoteFailure: createRemoteFailure('deadline', message),
+    reason: message,
+    reasonCode: 'catalogUnavailable',
+  };
+}
+
+async function resolveCatalogFailureFromSelectorCache(
+  selector: CatalogSelector,
+  env: NodeJS.ProcessEnv,
+  cacheTtlMs: number,
+  sourceIdentity: string,
+  error: unknown,
+): Promise<CatalogResolution | null> {
+  const failure = classifyRemoteCatalogFailure(selector, error);
+  if (!failure) {
+    return null;
+  }
+  const cached = await readValidatedCurrentCatalogCacheEntryBySelector(
+    selector,
+    env,
+    sourceIdentity,
+  );
+  if (!cached) {
+    if (isCatalogResolutionError(error)) {
+      throw error;
+    }
+    throw new CatalogResolutionError(failure);
+  }
+  const matchedCatalog = cached.target.resolutionSource
+    ? buildFullCatalogEvidence(
+      { source: 'cache' },
+      cached.target.manifest,
+      cached.cacheEntry.metadata.manifestDigest,
+      cached.target.resolutionSource,
+    )
+    : undefined;
+  return buildCatalogResolutionFromCache({
+    selector,
+    target: cached.target,
+    cacheEntry: cached.cacheEntry,
+    cacheFallback: {
+      used: true,
+      source: 'currentCatalogCache',
+      cacheKey: cached.cacheEntry.cacheKey,
+      selectorKey: cached.cacheEntry.selectorKey,
+      blockingCode: failure.reasonCode,
+      matchedSelector: selector,
+      ...(matchedCatalog ? { matchedCatalog } : {}),
+    },
+    remoteFailure: failure.remoteFailure,
+    cacheState: buildCacheState(
+      'refreshFailed',
+      cached.cacheEntry.validatedAt,
+      cacheTtlMs,
+    ),
+    reason: failure.reason,
+  });
+}
+
 async function materializeRetainedCatalogRoot(
   archive: CatalogPackageArchive,
   env: NodeJS.ProcessEnv,
+  signal?: AbortSignal,
 ): Promise<string> {
+  throwIfRemoteAborted(signal);
   const stagingParent = resolveCurrentCatalogCacheStagingDir(env);
   await fs.ensureDir(stagingParent);
   const retainedRoot = await fs.mkdtemp(path.join(stagingParent, 'validated-remote-'));
 
   try {
-    await archive.materialize(retainedRoot);
+    await archive.materialize(retainedRoot, signal);
+    throwIfRemoteAborted(signal);
     return retainedRoot;
   } catch (error) {
     await fs.remove(retainedRoot);
@@ -1185,7 +1672,8 @@ async function resolveValidatedCatalogRoot(
   selector: CatalogSelector,
   target: ResolvedCatalogTarget,
   env: NodeJS.ProcessEnv,
-  options: ResolveCurrentCatalogOptions,
+  options: ResolveCurrentCatalogRuntimeOptions,
+  signal?: AbortSignal,
 ): Promise<CatalogResolution> {
   let fullIdentity: CatalogPackageArchiveIdentity;
   try {
@@ -1193,7 +1681,14 @@ async function resolveValidatedCatalogRoot(
       CURRENT_CATALOG_FULL_PACKAGE,
       target.manifest.catalogVersion,
       env,
+      signal,
     );
+    if (
+      fullIdentity.packageName !== CURRENT_CATALOG_FULL_PACKAGE ||
+      fullIdentity.version !== target.manifest.catalogVersion
+    ) {
+      throw new Error(`full catalog identity ${fullIdentity.packageName}@${fullIdentity.version} does not match ${CURRENT_CATALOG_FULL_PACKAGE}@${target.manifest.catalogVersion}.`);
+    }
   } catch (error) {
     throwCatalogResolutionFailure({
       selector,
@@ -1228,25 +1723,50 @@ async function resolveValidatedCatalogRoot(
     sidecarIntegrity: target.sidecarIdentity.integrity,
     fullIntegrity: fullIdentity.integrity,
   } as const;
+  const cacheObservation = buildCurrentCatalogCacheObservation(
+    target,
+    options.sourceIdentity,
+  );
 
   let fullArchive: CatalogPackageArchive | null = null;
   let cacheEntry = null as Awaited<ReturnType<typeof readCurrentCatalogCacheEntry>> | null;
   try {
-    if (options.forceRefresh !== true) {
-      cacheEntry = await readValidatedCurrentCatalogCacheEntry(cacheIdentity, target, env);
+    if (options.freshnessPolicy !== 'forceRemote' && options.forceRefresh !== true) {
+      cacheEntry = await readValidatedCurrentCatalogCacheEntry(
+        cacheIdentity,
+        target,
+        env,
+        options.sourceIdentity,
+      );
       if (cacheEntry) {
+        if (cacheObservation) {
+          cacheEntry = await markCurrentCatalogCacheEntryValidated(
+            cacheEntry,
+            env,
+            new Date().toISOString(),
+            cacheObservation,
+            signal,
+          );
+        }
         return buildCatalogResolutionFromCache({
           selector,
           target,
           cacheEntry,
+          cacheState: buildCacheState('fresh', cacheEntry.validatedAt, options.cacheTtlMs),
         });
       }
     }
 
     try {
-      fullArchive = await resolveArchiveByIdentity(fullIdentity, env);
+      throwIfRemoteAborted(signal);
+      fullArchive = await resolveArchiveByIdentity(fullIdentity, env, signal);
     } catch (error) {
-      cacheEntry = await readValidatedCurrentCatalogCacheEntry(cacheIdentity, target, env);
+      cacheEntry = await readValidatedCurrentCatalogCacheEntry(
+        cacheIdentity,
+        target,
+        env,
+        options.sourceIdentity,
+      );
       if (cacheEntry) {
         const remoteFailure = createRemoteFailure(
           'fullTarball',
@@ -1272,10 +1792,15 @@ async function resolveValidatedCatalogRoot(
               { source: 'cache' },
               target.manifest,
               cacheEntry.metadata.manifestDigest,
-              target.resolutionSource,
+              target.resolutionSource!,
             ),
           },
           remoteFailure,
+          cacheState: buildCacheState(
+            'refreshFailed',
+            cacheEntry.validatedAt,
+            options.cacheTtlMs,
+          ),
           reason: normalizeErrorMessage(error),
         });
       }
@@ -1306,6 +1831,7 @@ async function resolveValidatedCatalogRoot(
 
     try {
       const validatedFullManifest = validateCatalogManifest(fullArchive.rawManifest);
+      validateCatalogPackageEnvelope(validatedFullManifest);
       if (validatedFullManifest.catalogVersion !== target.manifest.catalogVersion) {
         throw new Error(`full catalog version ${validatedFullManifest.catalogVersion} does not match sidecar ${target.manifest.catalogVersion}.`);
       }
@@ -1314,14 +1840,17 @@ async function resolveValidatedCatalogRoot(
         manifest: target.manifest,
         sidecarManifestText: target.manifestText,
         rootDir: fullArchive.packageRoot,
-      });
+      }, signal);
     } catch (error) {
-      cacheEntry = await readValidatedCurrentCatalogCacheEntry(cacheIdentity, target, env);
+      cacheEntry = await readValidatedCurrentCatalogCacheEntry(
+        cacheIdentity,
+        target,
+        env,
+        options.sourceIdentity,
+      );
       if (cacheEntry) {
         const remoteFailure = createRemoteFailure(
-          error instanceof Error && error.message.includes('artifactDigest mismatch')
-            ? 'artifactDigest'
-            : 'fullManifest',
+          classifyCatalogContentValidationStage(error),
           normalizeErrorMessage(error),
           {
             packageName: fullIdentity.packageName,
@@ -1344,10 +1873,15 @@ async function resolveValidatedCatalogRoot(
               { source: 'cache' },
               target.manifest,
               cacheEntry.metadata.manifestDigest,
-              target.resolutionSource,
+              target.resolutionSource!,
             ),
           },
           remoteFailure,
+          cacheState: buildCacheState(
+            'refreshFailed',
+            cacheEntry.validatedAt,
+            options.cacheTtlMs,
+          ),
           reason: normalizeErrorMessage(error),
         });
       }
@@ -1363,9 +1897,7 @@ async function resolveValidatedCatalogRoot(
           used: false,
         },
         remoteFailure: createRemoteFailure(
-          error instanceof Error && error.message.includes('artifactDigest mismatch')
-            ? 'artifactDigest'
-            : 'fullManifest',
+          classifyCatalogContentValidationStage(error),
           normalizeErrorMessage(error),
           {
             packageName: fullIdentity.packageName,
@@ -1379,13 +1911,52 @@ async function resolveValidatedCatalogRoot(
     }
 
     try {
-      const cacheResult = await writeCurrentCatalogCacheEntry({
-        ...cacheIdentity,
-        sourceRoot: fullArchive.packageRoot,
+      throwIfRemoteAborted(signal);
+      const existingCacheEntry = await readValidatedCurrentCatalogCacheEntry(
+        cacheIdentity,
+        target,
         env,
-      });
-      await fullArchive.dispose();
+        options.sourceIdentity,
+      );
+      let cacheResult: CurrentCatalogCacheEntry;
+      if (existingCacheEntry) {
+        cacheResult = cacheObservation
+          ? await markCurrentCatalogCacheEntryValidated(
+            existingCacheEntry,
+            env,
+            new Date().toISOString(),
+            cacheObservation,
+            signal,
+          )
+          : existingCacheEntry;
+      } else {
+        if (!cacheObservation) {
+          throw new Error('Current catalog observation order is unavailable.');
+        }
+        cacheResult = await writeCurrentCatalogCacheEntry({
+          ...cacheIdentity,
+          sourceRoot: fullArchive.packageRoot,
+          env,
+          observation: cacheObservation,
+          signal,
+          validateExisting: async (rootDir) => {
+            try {
+              await validateMaterializedCatalog({
+                manifest: target.manifest,
+                sidecarManifestText: target.manifestText,
+                rootDir,
+              }, signal);
+              return true;
+            } catch {
+              throwIfRemoteAborted(signal);
+              return false;
+            }
+          },
+        });
+      }
+      const publishedArchive = fullArchive;
       fullArchive = null;
+      void startCatalogArchiveDispose(publishedArchive);
 
       return {
         rootDir: cacheResult.rootDir,
@@ -1396,7 +1967,7 @@ async function resolveValidatedCatalogRoot(
           { source: 'remote' },
           target.manifest,
           cacheResult.metadata.manifestDigest,
-          target.resolutionSource,
+          target.resolutionSource!,
         ),
         channel: target.manifest.channel,
         catalogVersion: target.manifest.catalogVersion,
@@ -1409,12 +1980,17 @@ async function resolveValidatedCatalogRoot(
           cacheKey: cacheResult.cacheKey,
           selectorKey: cacheResult.selectorKey,
         },
+        cacheState: buildCacheState(
+          'fresh',
+          cacheResult.validatedAt,
+          options.cacheTtlMs,
+        ),
       };
     } catch (error) {
       if (!fullArchive) {
         throw new Error('full catalog archive is unavailable after validation.');
       }
-      const retainedRoot = await materializeRetainedCatalogRoot(fullArchive, env);
+      const retainedRoot = await materializeRetainedCatalogRoot(fullArchive, env, signal);
 
       return {
         rootDir: retainedRoot,
@@ -1425,7 +2001,7 @@ async function resolveValidatedCatalogRoot(
           { source: 'remote' },
           target.manifest,
           calculateManifestTextDigest(target.manifestText),
-          target.resolutionSource,
+          target.resolutionSource!,
         ),
         channel: target.manifest.channel,
         catalogVersion: target.manifest.catalogVersion,
@@ -1441,7 +2017,7 @@ async function resolveValidatedCatalogRoot(
       };
     }
   } finally {
-    await fullArchive?.dispose();
+    await disposeCatalogArchiveBounded(fullArchive, signal);
   }
 }
 
@@ -1511,37 +2087,189 @@ async function tryResolveFixtureCatalogOverride(
   };
 }
 
+async function resolveCurrentCatalogWithRemoteDeadline(
+  selector: CatalogSelector,
+  env: NodeJS.ProcessEnv,
+  options: ResolveCurrentCatalogRuntimeOptions,
+  timeoutMs: number,
+): Promise<CatalogResolution> {
+  const controller = new AbortController();
+  let rejectCancellation!: (error: Error) => void;
+  const cancellation = new Promise<never>((_resolve, reject) => {
+    rejectCancellation = reject;
+  });
+  const abortFromExternalSignal = () => {
+    try {
+      throwIfRemoteAborted(options.signal);
+    } catch (error) {
+      const abortError = error instanceof Error ? error : new Error(String(error));
+      controller.abort(abortError);
+      rejectCancellation(abortError);
+    }
+  };
+  if (options.signal?.aborted) {
+    abortFromExternalSignal();
+  } else {
+    options.signal?.addEventListener('abort', abortFromExternalSignal, { once: true });
+  }
+  const timer = timeoutMs === 0
+    ? undefined
+    : setTimeout(() => {
+      const error = new CatalogRemoteDeadlineError(timeoutMs);
+      controller.abort(error);
+      rejectCancellation(error);
+    }, timeoutMs);
+  timer?.unref?.();
+
+  try {
+    const work = resolveCurrentCatalogUncached(selector, env, options, controller.signal);
+    void work.catch(() => {});
+    try {
+      return await Promise.race([work, cancellation]);
+    } catch (error) {
+      throwIfRemoteAborted(options.signal);
+      const fallback = await resolveCatalogFailureFromSelectorCache(
+        selector,
+        env,
+        options.cacheTtlMs,
+        options.sourceIdentity,
+        error,
+      );
+      throwIfRemoteAborted(options.signal);
+      if (fallback) {
+        return fallback;
+      }
+      throw error;
+    }
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+    options.signal?.removeEventListener('abort', abortFromExternalSignal);
+  }
+}
+
 export async function resolveCurrentCatalog(
   env: NodeJS.ProcessEnv = process.env,
   options: ResolveCurrentCatalogOptions = {},
 ): Promise<CatalogResolution> {
-  const selector = await resolveEffectiveCatalogSelector(env, options);
-  if (options.forceRefresh === true) {
-    const resolved = await resolveCurrentCatalogUncached(selector, env, options);
-    if (resolved.source !== 'cache') {
-      currentCatalogResolutionMemo.set(
-        buildCurrentCatalogMemoKey(selector, env, { ...options, forceRefresh: false }),
-        Promise.resolve(resolved),
-      );
+  options.signal?.throwIfAborted();
+  const runtimePolicy = readCatalogRuntimePolicy(env, options);
+  const [selector, registryUrl] = await Promise.all([
+    resolveEffectiveCatalogSelector(env, options),
+    resolveCatalogRegistryUrl(env),
+  ]);
+  const sourceIdentity = buildCatalogSourceIdentity(registryUrl);
+  options.signal?.throwIfAborted();
+  const effectiveOptions: ResolveCurrentCatalogRuntimeOptions = {
+    ...options,
+    freshnessPolicy: runtimePolicy.freshnessPolicy,
+    cacheTtlMs: runtimePolicy.cacheTtlMs,
+    remoteTimeoutMs: runtimePolicy.remoteTimeoutMs,
+    sourceIdentity,
+  };
+  const normalMemoKey = buildCurrentCatalogMemoKey(
+    selector,
+    env,
+    { ...effectiveOptions, forceRefresh: false },
+  );
+
+  if (runtimePolicy.freshnessPolicy === 'forceRemote') {
+    const ordinaryMemoBeforeForce = currentCatalogResolutionMemo.get(normalMemoKey);
+    const resolved = await resolveCurrentCatalogWithRemoteDeadline(
+      selector,
+      env,
+      effectiveOptions,
+      runtimePolicy.remoteTimeoutMs,
+    );
+    if (currentCatalogResolutionMemo.get(normalMemoKey) === ordinaryMemoBeforeForce) {
+      currentCatalogResolutionMemo.delete(normalMemoKey);
     }
     return resolved;
   }
 
-  const memoKey = buildCurrentCatalogMemoKey(selector, env, options);
-  const memoized = await readCurrentCatalogMemo(memoKey, selector, env);
-  if (memoized.resolution) {
-    return memoized.resolution;
-  }
+  const requiredCapability = runtimePolicy.freshnessPolicy === 'cacheFirst'
+    ? 'cacheOnly'
+    : 'remoteChecked';
+  while (true) {
+    const observed = currentCatalogResolutionMemo.get(normalMemoKey);
+    const capabilityMatches = observed !== undefined && (
+      requiredCapability === 'cacheOnly' || observed.capability === 'remoteChecked'
+    );
+    if (observed && capabilityMatches) {
+      if (
+        runtimePolicy.freshnessPolicy === 'cacheFirst' &&
+        !observed.settled &&
+        observed.capability === 'remoteChecked'
+      ) {
+        const cached = await tryResolveCacheFirstCatalog(
+          selector,
+          env,
+          runtimePolicy.cacheTtlMs,
+          effectiveOptions.sourceIdentity,
+        );
+        if (cached) {
+          return cached;
+        }
+      }
+      const memoized = await readCurrentCatalogMemoEntry(
+        normalMemoKey,
+        observed,
+        runtimePolicy.cacheTtlMs,
+        options.signal,
+      );
+      if (memoized) {
+        return memoized;
+      }
+      if (currentCatalogResolutionMemo.get(normalMemoKey) !== observed) {
+        continue;
+      }
+    }
 
-  const resolution = memoized.target
-    ? resolveValidatedCatalogRoot(selector, memoized.target, env, options)
-    : resolveCurrentCatalogUncached(selector, env, options);
-  currentCatalogResolutionMemo.set(memoKey, resolution);
-  try {
-    return await resolution;
-  } catch (error) {
-    currentCatalogResolutionMemo.delete(memoKey);
-    throw error;
+    const expected = currentCatalogResolutionMemo.get(normalMemoKey);
+    if (expected !== observed) {
+      continue;
+    }
+    const reserved = reserveCurrentCatalogResolutionMemo(
+      normalMemoKey,
+      expected,
+      requiredCapability,
+      async (entry) => {
+        const sharedOptions: ResolveCurrentCatalogRuntimeOptions = {
+          ...effectiveOptions,
+          signal: entry.controller.signal,
+        };
+        if (runtimePolicy.freshnessPolicy === 'cacheFirst') {
+          const cached = await tryResolveCacheFirstCatalog(
+            selector,
+            env,
+            runtimePolicy.cacheTtlMs,
+            effectiveOptions.sourceIdentity,
+          );
+          if (cached) {
+            return cached;
+          }
+          const current = currentCatalogResolutionMemo.get(normalMemoKey);
+          if (current !== entry && current?.capability === 'remoteChecked') {
+            return waitForCurrentCatalogMemoEntry(
+              normalMemoKey,
+              current,
+              entry.controller.signal,
+            );
+          }
+          entry.capability = 'remoteChecked';
+        }
+        return resolveCurrentCatalogWithRemoteDeadline(
+          selector,
+          env,
+          sharedOptions,
+          runtimePolicy.remoteTimeoutMs,
+        );
+      },
+    );
+    if (reserved) {
+      return waitForCurrentCatalogMemoEntry(normalMemoKey, reserved, options.signal);
+    }
   }
 }
 

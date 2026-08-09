@@ -37,7 +37,7 @@ afterEach(async () => {
 });
 
 describe('test isolation helpers', () => {
-  it('creates the stage 1 safe root layout and env overlay', async () => {
+  it('creates required paths and leaves business state paths lazy', async () => {
     const isolated = await createIsolatedTestEnv();
     cleanupTasks.push(isolated.cleanup);
 
@@ -77,11 +77,26 @@ describe('test isolation helpers', () => {
     expect(isolated.env.TEMP).toBe(isolated.layout.tmpDir);
     expect(isolated.env.TMP).toBe(isolated.layout.tmpDir);
 
+    await expect(fs.pathExists(isolated.layout.rootDir)).resolves.toBe(true);
+    await expect(fs.pathExists(isolated.layout.npmDir)).resolves.toBe(true);
     await expect(fs.pathExists(isolated.layout.npmUserConfigPath)).resolves.toBe(true);
-    await expect(fs.pathExists(isolated.layout.localMarketplaceStagingRoot)).resolves.toBe(true);
-    await expect(fs.pathExists(isolated.layout.localMarketplaceBackupRoot)).resolves.toBe(true);
-    await expect(fs.pathExists(isolated.layout.debugLogsDir)).resolves.toBe(true);
+    await expect(fs.pathExists(isolated.layout.tmpDir)).resolves.toBe(true);
     await expect(fs.pathExists(isolated.layout.fixtureCwd)).resolves.toBe(true);
+
+    for (const lazyPath of [
+      isolated.layout.homeDir,
+      isolated.layout.awHomeDir,
+      isolated.layout.localMarketplaceStagingRoot,
+      isolated.layout.localMarketplaceBackupRoot,
+      isolated.layout.codexHomeDir,
+      isolated.layout.claudeHomeDir,
+      isolated.layout.xdgConfigHomeDir,
+      isolated.layout.xdgCacheHomeDir,
+      isolated.layout.xdgStateHomeDir,
+      isolated.layout.debugLogsDir,
+    ]) {
+      await expect(fs.pathExists(lazyPath)).resolves.toBe(false);
+    }
 
     expect(() => assertIsolatedTestEnv(isolated.env, isolated.rootRegistry)).not.toThrow();
     expect(() => assertPathWithinWritableRoots(isolated.rootRegistry, {

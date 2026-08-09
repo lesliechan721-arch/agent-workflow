@@ -1,4 +1,4 @@
-import type { ChildProcess } from 'node:child_process';
+import type { ChildProcess, ChildProcessWithoutNullStreams } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import os from 'node:os';
 import path from 'node:path';
@@ -15,6 +15,11 @@ import {
   terminateWindowsProcessTree,
 } from '../../scripts/eval-plugin-skills.js';
 import { resetCodexEvalSignalShutdownForTests } from '../../scripts/codex-eval-runtime-config.js';
+import {
+  assertProcessTreeInspectionAvailable,
+  createWindowsChildProcessTreeMonitor,
+  processTreeCleanupIsUnconfirmed,
+} from '../../scripts/codex-eval-process-tree.js';
 import {
   registerCurrentTestReadonlyFixtureRoot,
   registerCurrentTestWritableStateRoot,
@@ -428,12 +433,15 @@ describe('plugin eval runner', () => {
     await writeCommandPlugin(root, {
       name: 'redaction-demo',
       script: [
-        "import { readFile } from 'node:fs/promises';",
+        "import { mkdir, readFile, writeFile } from 'node:fs/promises';",
         "import path from 'node:path';",
         "if (process.env.UNRELATED_SECRET || process.env.OPENAI_API_KEY) process.exit(9);",
         "const config = await readFile(path.join(process.env.CODEX_HOME, 'config.toml'), 'utf8');",
         "const endpoint = config.match(/base_url = \\\"([^\\\"]+)/)?.[1];",
         "process.stderr.write(`${process.env.CUSTOM_TOKEN} ${endpoint}\\n`);",
+        "const output = process.argv[process.argv.indexOf('--output') + 1];",
+        "await mkdir(path.dirname(output), { recursive: true });",
+        "await writeFile(output, JSON.stringify({ complete: true, passed: true, summary: { token: process.env.CUSTOM_TOKEN, endpoint, owner: process.env.AW_CODEX_EVAL_PROCESS_TREE_ID } }));",
         "process.stdout.write(JSON.stringify({ complete: true, passed: true, summary: { token: process.env.CUSTOM_TOKEN, endpoint } }));",
       ].join('\n'),
       defaultRuns: 1,
@@ -491,7 +499,11 @@ describe('plugin eval runner', () => {
     );
     expect(persistedReport).not.toContain('command-token');
     expect(persistedReport).not.toContain('https://private.invalid/v1');
+    expect(persistedReport).not.toMatch(
+      /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/u,
+    );
     expect(persistedReport).toContain('[redacted]');
+    expect(persistedReport).toContain('[process-tree-id]');
   });
 
   it('isolates raw command reports for plugins with the same suite identity', async () => {
@@ -618,6 +630,162 @@ describe('plugin eval runner', () => {
   );
 
   it.runIf(process.platform !== 'win32')(
+    'cleans a detached descendant after a successful command closes',
+    async () => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-eval-success-tree-'));
+      tempDirs.push(root);
+      const marker = path.join(root, 'descendant-survived');
+      const pidPath = path.join(root, 'descendant-pid');
+      const descendantScript = [
+        'process.on("SIGTERM", () => {});',
+        `setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'alive'), 300);`,
+        'setInterval(() => {}, 1000);',
+      ].join('\n');
+      const rootScript = [
+        "const { spawn } = require('node:child_process');",
+        "const fs = require('node:fs');",
+        `const child = spawn(process.execPath, ['-e', ${JSON.stringify(descendantScript)}], { detached: true, stdio: 'ignore' });`,
+        'child.unref();',
+        `fs.writeFileSync(${JSON.stringify(pidPath)}, String(child.pid));`,
+        'process.exit(0);',
+      ].join('\n');
+      let descendantPid: number | undefined;
+      let cleanupStderr = '';
+      try {
+        await expect(runChild(process.execPath, ['-e', rootScript], {
+          cwd: root,
+          env: process.env,
+          stderr: (text) => { cleanupStderr += text; },
+          timeoutMs: 2_000,
+        })).resolves.toMatchObject({ exitCode: 0, timedOut: false });
+        descendantPid = Number(await fs.readFile(pidPath, 'utf8'));
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        expect(await fs.pathExists(marker), cleanupStderr).toBe(false);
+      } finally {
+        if (descendantPid) {
+          try {
+            process.kill(descendantPid, 'SIGKILL');
+          } catch {
+            // Best-effort test cleanup.
+          }
+        }
+      }
+    },
+  );
+
+  it.runIf(process.platform !== 'win32')(
+    'keeps the process-tree token out of command output',
+    async () => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-eval-tree-token-'));
+      tempDirs.push(root);
+      let renderedStderr = '';
+      const result = await runChild(process.execPath, ['-e', [
+        "const value = process.env.AW_CODEX_EVAL_PROCESS_TREE_ID;",
+        'process.stdout.write(value);',
+        'process.stderr.write(value);',
+      ].join('\n')], {
+        cwd: root,
+        env: process.env,
+        stderr: (text) => { renderedStderr += text; },
+        timeoutMs: 2_000,
+      });
+
+      expect(result.stdout).toBe('[process-tree-id]');
+      expect(result.stderr).toBe('[process-tree-id]');
+      expect(renderedStderr.trim()).toBe('[process-tree-id]');
+    },
+  );
+
+  it.runIf(process.platform !== 'win32')(
+    'uses the deadline when an exited root leaves inherited pipes open',
+    async () => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-eval-open-pipe-'));
+      tempDirs.push(root);
+      const marker = path.join(root, 'descendant-survived');
+      const pidPath = path.join(root, 'descendant-pid');
+      const descendantScript = [
+        'process.on("SIGTERM", () => {});',
+        `setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'alive'), 2500);`,
+        'setInterval(() => {}, 1000);',
+      ].join('\n');
+      const rootScript = [
+        "const { spawn } = require('node:child_process');",
+        "const fs = require('node:fs');",
+        `const child = spawn(process.execPath, ['-e', ${JSON.stringify(descendantScript)}], { detached: true, stdio: ['ignore', 'inherit', 'inherit'] });`,
+        'child.unref();',
+        `fs.writeFileSync(${JSON.stringify(pidPath)}, String(child.pid));`,
+        'setTimeout(() => process.exit(0), 100);',
+      ].join('\n');
+      let descendantPid: number | undefined;
+      try {
+        await expect(runChild(process.execPath, ['-e', rootScript], {
+          cwd: root,
+          env: process.env,
+          stderr: () => undefined,
+          timeoutMs: 400,
+        })).resolves.toMatchObject({ timedOut: true });
+        descendantPid = Number(await fs.readFile(pidPath, 'utf8'));
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        await expect(fs.pathExists(marker)).resolves.toBe(false);
+      } finally {
+        if (descendantPid) {
+          try {
+            process.kill(descendantPid, 'SIGKILL');
+          } catch {
+            // Best-effort test cleanup.
+          }
+        }
+      }
+    },
+  );
+
+  it.runIf(process.platform !== 'win32')(
+    'does not time out a child that closes before cleanup crosses the deadline',
+    async () => {
+      await assertProcessTreeInspectionAvailable();
+      const stdout = new PassThrough();
+      const stderr = new PassThrough();
+      const child = Object.assign(new EventEmitter(), {
+        pid: 42_424,
+        exitCode: null as number | null,
+        signalCode: null as NodeJS.Signals | null,
+        stdin: null,
+        stdout,
+        stderr,
+        kill: vi.fn(() => true),
+        unref: vi.fn(),
+      }) as unknown as ChildProcessWithoutNullStreams;
+      const spawnChild = vi.fn(() => {
+        setTimeout(() => {
+          Object.assign(child, { exitCode: 0 });
+          stdout.end();
+          stderr.end();
+          child.emit('close', 0, null);
+        }, 99);
+        return child;
+      });
+      const terminate = vi.fn(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        return [];
+      });
+
+      await expect(runChild('fake-command', [], {
+        cwd: process.cwd(),
+        env: process.env,
+        stderr: () => undefined,
+        timeoutMs: 100,
+        spawnChild,
+        createProcessTreeMonitor: () => ({ terminate }),
+      })).resolves.toMatchObject({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+      });
+      expect(terminate).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.runIf(process.platform !== 'win32')(
     'terminates an active command suite and prevents the next suite before re-emitting SIGTERM',
     async () => {
       const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-eval-signal-'));
@@ -650,7 +818,7 @@ describe('plugin eval runner', () => {
         signalHandler!();
 
         await expect(childResult).resolves.toMatchObject({
-          signal: 'SIGTERM',
+          signal: 'SIGKILL',
           timedOut: false,
         });
         await vi.waitFor(() => {
@@ -690,8 +858,13 @@ describe('plugin eval runner', () => {
       const startedAt = Date.now();
 
       try {
-        await expect(terminatePosixProcessTree(fakePid)).resolves.toContainEqual(
-          expect.stringContaining('Could not confirm process-tree termination'),
+        await expect(terminatePosixProcessTree(fakePid, {
+          readProcessTable: async () => {
+            throw new Error('ps unavailable');
+          },
+          kill: (pid, signal) => killSpy(pid, signal),
+        })).resolves.toContainEqual(
+          expect.stringContaining('Could not confirm process-tree cleanup'),
         );
         expect(Date.now() - startedAt).toBeLessThan(4_000);
       } finally {
@@ -699,6 +872,116 @@ describe('plugin eval runner', () => {
       }
     },
   );
+
+  it.runIf(process.platform !== 'win32')(
+    'freezes the root before discovering a descendant created at termination',
+    async () => {
+      const rootPid = 41_000;
+      const descendantPid = 41_001;
+      const processes = new Map([
+        [rootPid, { ppid: 1, state: 'S', startTime: 'root-start' }],
+      ]);
+      const readProcessTable = vi.fn(async () => new Map(processes));
+      let descendantCreated = false;
+      const kill = vi.fn((pid: number, signal: NodeJS.Signals | 0) => {
+        if (pid === -rootPid) {
+          if (signal === 0) {
+            throw Object.assign(new Error('process group is gone'), { code: 'ESRCH' });
+          }
+          return true;
+        }
+        if (pid === rootPid && signal === 'SIGSTOP' && !descendantCreated) {
+          descendantCreated = true;
+          processes.set(rootPid, { ppid: 1, state: 'T', startTime: 'root-start' });
+          processes.set(descendantPid, {
+            ppid: rootPid,
+            state: 'S',
+            startTime: 'descendant-start',
+          });
+        }
+        if (pid === rootPid && signal === 'SIGTERM') {
+          processes.delete(rootPid);
+          const descendant = processes.get(descendantPid);
+          if (descendant) processes.set(descendantPid, { ...descendant, ppid: 1 });
+        }
+        if (pid === descendantPid && signal === 'SIGSTOP') {
+          const descendant = processes.get(descendantPid);
+          if (descendant) processes.set(descendantPid, { ...descendant, state: 'T' });
+        }
+        if (signal === 'SIGKILL') processes.delete(pid);
+        return true;
+      });
+
+      await terminatePosixProcessTree(rootPid, { readProcessTable, kill });
+
+      expect(kill).toHaveBeenCalledWith(rootPid, 'SIGSTOP');
+      expect(kill).toHaveBeenCalledWith(descendantPid, 'SIGKILL');
+    },
+  );
+
+  it('uses the process group when the POSIX root is missing or already a zombie', async () => {
+    const rootPid = 42_000;
+    for (const rootEntry of [undefined, { ppid: 1, state: 'Z', startTime: 'root-start' }]) {
+      let processGroupRunning = true;
+      const kill = vi.fn((pid: number, signal: NodeJS.Signals | 0) => {
+        if (pid !== -rootPid) return true;
+        if (signal === 'SIGKILL') processGroupRunning = false;
+        if (signal === 0 && !processGroupRunning) {
+          throw Object.assign(new Error('process group is gone'), { code: 'ESRCH' });
+        }
+        return true;
+      });
+      const table = new Map<number, { ppid: number; state: string; startTime: string }>();
+      if (rootEntry) table.set(rootPid, rootEntry);
+
+      await expect(terminatePosixProcessTree(rootPid, {
+        readProcessTable: async () => table,
+        kill,
+      })).resolves.toEqual([]);
+
+      expect(kill).toHaveBeenCalledWith(-rootPid, 'SIGKILL');
+      expect(kill).not.toHaveBeenCalledWith(rootPid, 'SIGSTOP');
+    }
+  });
+
+  it('does not terminate a reused POSIX descendant PID', async () => {
+    const rootPid = 43_000;
+    const descendantPid = 43_001;
+    const processes = new Map([
+      [rootPid, { ppid: 1, state: 'S', startTime: 'root-start' }],
+      [descendantPid, { ppid: rootPid, state: 'S', startTime: 'old-start' }],
+    ]);
+    const kill = vi.fn((pid: number, signal: NodeJS.Signals | 0) => {
+      if (pid === rootPid && signal === 'SIGSTOP') {
+        processes.set(rootPid, { ppid: 1, state: 'T', startTime: 'root-start' });
+      }
+      if (pid === descendantPid && signal === 'SIGSTOP') {
+        processes.set(descendantPid, {
+          ppid: rootPid,
+          state: 'S',
+          startTime: 'reused-start',
+        });
+      }
+      if (pid === rootPid && signal === 'SIGKILL') {
+        processes.delete(rootPid);
+        processes.set(descendantPid, {
+          ppid: 1,
+          state: 'S',
+          startTime: 'reused-start',
+        });
+      }
+      return true;
+    });
+
+    await terminatePosixProcessTree(rootPid, {
+      readProcessTable: async () => new Map(processes),
+      kill,
+    });
+
+    expect(kill).toHaveBeenCalledWith(descendantPid, 'SIGSTOP');
+    expect(kill).not.toHaveBeenCalledWith(descendantPid, 'SIGKILL');
+    expect(kill).toHaveBeenCalledWith(rootPid, 'SIGKILL');
+  });
 
   function createUnclosedWindowsChild(exitCode: number | null = null): {
     child: ChildProcess;
@@ -753,6 +1036,24 @@ describe('plugin eval runner', () => {
     expect(fixture.unref).toHaveBeenCalledOnce();
   });
 
+  it('keeps Windows tree cleanup unconfirmed when taskkill fails but SIGKILL closes the root', async () => {
+    const fixture = createUnclosedWindowsChild();
+    fixture.kill.mockImplementation(() => {
+      fixture.child.emit('close');
+      return true;
+    });
+
+    const diagnostics = await terminateWindowsProcessTree(fixture.child, {
+      closeTimeoutMs: 10,
+      runTaskkill: async () => { throw new Error('taskkill unavailable'); },
+    });
+
+    expect(diagnostics).toEqual([
+      expect.stringContaining('Could not verify Windows process-tree termination'),
+    ]);
+    expect(processTreeCleanupIsUnconfirmed(diagnostics)).toBe(true);
+  });
+
   it('waits for close after taskkill fails even when the Windows child has exited', async () => {
     const fixture = createUnclosedWindowsChild(1);
 
@@ -767,6 +1068,38 @@ describe('plugin eval runner', () => {
     expect(fixture.stdout.destroyed).toBe(true);
     expect(fixture.stderr.destroyed).toBe(true);
     expect(fixture.unref).toHaveBeenCalledOnce();
+  });
+
+  it('does not taskkill an exited Windows root PID', async () => {
+    const fixture = createUnclosedWindowsChild(0);
+    const runTaskkill = vi.fn(async () => undefined);
+
+    const diagnostics = await createWindowsChildProcessTreeMonitor(fixture.child, {
+      closeTimeoutMs: 10,
+      runTaskkill,
+    }).terminate();
+
+    expect(runTaskkill).not.toHaveBeenCalled();
+    expect(fixture.kill).not.toHaveBeenCalled();
+    expect(processTreeCleanupIsUnconfirmed(diagnostics)).toBe(false);
+    expect(diagnostics).toContainEqual(expect.stringContaining(
+      'potentially reused PID',
+    ));
+  });
+
+  it('taskkills a Windows root that is still running', async () => {
+    const fixture = createUnclosedWindowsChild();
+    const runTaskkill = vi.fn(async () => {
+      fixture.child.emit('close');
+    });
+
+    await expect(createWindowsChildProcessTreeMonitor(fixture.child, {
+      closeTimeoutMs: 10,
+      runTaskkill,
+    }).terminate()).resolves.toEqual([]);
+
+    expect(runTaskkill).toHaveBeenCalledOnce();
+    expect(runTaskkill).toHaveBeenCalledWith(4242);
   });
 
   it('marks every debug coverage selector as incomplete evidence', async () => {

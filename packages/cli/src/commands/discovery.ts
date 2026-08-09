@@ -8,6 +8,7 @@ import type {
   ClaudeCapabilitySnapshot,
   CodexCapabilitySnapshot,
   CodexProjectManagedKind,
+  EnvironmentDetection,
   GeneratedArtifact,
   InstalledLedger,
   InstalledLedgerPluginRecord,
@@ -35,6 +36,7 @@ import {
   canAutoCleanupScopeRecord,
 } from '../utils/plugin-dependency-graph.js';
 import { serializePluginLocation } from '../utils/plugin-dependency-location.js';
+import { resolvePluginsFromCatalog } from '../utils/manifest.js';
 import { resolveCatalogPlugins } from '../utils/plugin-catalog.js';
 import {
   resolveClaudePaths,
@@ -59,6 +61,7 @@ import {
 } from './common.js';
 import { collectInstallEvidence } from '../install-state/evidence.js';
 import { projectInstallState } from '../install-state/status-projection.js';
+import type { StatusReadSnapshot } from './status-read-snapshot.js';
 
 const MARKETPLACE_NAME = 'aw';
 
@@ -176,6 +179,10 @@ export interface DiscoveryOptions {
   env?: NodeJS.ProcessEnv;
   includeCurrentCatalog?: boolean;
   nativeCliRunner?: NativeCliRunner;
+  catalogResolution?: CatalogResolution;
+  readSnapshot?: StatusReadSnapshot;
+  ledger?: InstalledLedger;
+  detection?: EnvironmentDetection;
 }
 
 export interface ResolveDiscoveredPluginTargetsOptions extends DiscoveryOptions {
@@ -723,11 +730,11 @@ function applyReadErrors(
 }
 
 async function attachCurrentCatalog(
-  env: NodeJS.ProcessEnv,
+  catalog: CatalogResolution,
+  plugins: PluginMeta[],
   records: Map<string, DiscoveredPluginName>,
   pluginNames: string[] | undefined,
 ): Promise<void> {
-  const { catalog, plugins } = await resolveCatalogPlugins(undefined, env);
   const requested = pluginNames ? new Set(pluginNames) : undefined;
 
   for (const plugin of plugins) {
@@ -764,7 +771,10 @@ export async function discoverManagedPluginNames(
   options: DiscoveryOptions,
 ): Promise<DiscoveredPluginName[]> {
   const context = await createDiscoveryContext(options);
-  const ledger = await readInstalledLedger(context.env);
+  const ledger = options.ledger
+    ?? (options.readSnapshot
+      ? await options.readSnapshot.readInstalledLedger(context.env)
+      : await readInstalledLedger(context.env));
   const records = new Map<string, DiscoveredPluginName>();
   const pluginNames = options.pluginNames ?? options.names;
 
@@ -779,8 +789,17 @@ export async function discoverManagedPluginNames(
     getOrCreateDiscoveryRecord(records, pluginName);
   }
 
+  const catalog = options.catalogResolution;
   if (options.includeCurrentCatalog !== false) {
-    await attachCurrentCatalog(context.env, records, pluginNames);
+    if (catalog?.reasonCode === undefined && catalog) {
+      const plugins = options.readSnapshot
+        ? await options.readSnapshot.resolveCatalogPlugins(catalog)
+        : await resolvePluginsFromCatalog(catalog.rootDir, undefined);
+      await attachCurrentCatalog(catalog, plugins, records, pluginNames);
+    } else if (!catalog) {
+      const resolved = await resolveCatalogPlugins(undefined, context.env);
+      await attachCurrentCatalog(resolved.catalog, resolved.plugins, records, pluginNames);
+    }
   }
   applyReadErrors(context, ledger, records, readErrors, pluginNames);
 
@@ -1014,6 +1033,7 @@ async function resolveCandidateInstallState(options: {
   cwd: string;
   env: NodeJS.ProcessEnv;
   target: Pick<CommandCandidate, 'pluginName' | 'platform' | 'scope' | 'projectKey'>;
+  readSnapshot?: StatusReadSnapshot;
 }): Promise<CommandCandidate['installState']> {
   try {
     const location = {
@@ -1027,6 +1047,7 @@ async function resolveCandidateInstallState(options: {
       location,
       env: options.env,
       currentCatalog: null,
+      readSnapshot: options.readSnapshot,
     });
     const projection = projectInstallState(evidence);
 
@@ -1054,7 +1075,14 @@ async function resolveCandidatePlatformsForCurrentCatalog(
     return ['codex', 'claude'];
   }
 
-  const detection = await detectEnvironment(options.cwd, options.env ?? process.env);
+  const detection = options.detection
+    ?? (options.readSnapshot
+      ? await options.readSnapshot.detectEnvironment({
+        cwd: options.cwd,
+        env: options.env ?? process.env,
+        nativeCliRunner: options.nativeCliRunner,
+      })
+      : await detectEnvironment(options.cwd, options.env ?? process.env));
   const available = listDetectedPlatforms(detection);
   const platforms = new Set<PlatformName>([
     ...available,
@@ -1076,7 +1104,11 @@ export async function resolveDiscoveredPluginTargets(
   options: ResolveDiscoveredPluginTargetsOptions,
 ): Promise<DiscoveredPluginTarget[]> {
   const context = await createDiscoveryContext(options);
-  const records = await discoverManagedPluginNames(options);
+  const ledger = options.ledger
+    ?? (options.readSnapshot
+      ? await options.readSnapshot.readInstalledLedger(context.env)
+      : await readInstalledLedger(context.env));
+  const records = await discoverManagedPluginNames({ ...options, ledger });
   const targets: DiscoveredPluginTarget[] = [];
 
   for (const record of records) {
@@ -1117,7 +1149,6 @@ export async function resolveDiscoveredPluginTargets(
           record,
           new Set(),
         );
-        const ledger = await readInstalledLedger(context.env);
         for (const platform of syntheticPlatforms) {
           if (!context.platforms.includes(platform)) {
             continue;
@@ -1164,7 +1195,7 @@ export async function resolveDiscoveredPluginTargets(
         if (emittedKeys.has(key)) {
           continue;
         }
-        const evidence = createEmptyEvidence(identity, await readInstalledLedger(context.env));
+        const evidence = createEmptyEvidence(identity, ledger);
         targets.push({
           pluginName: record.pluginName,
           platform,
@@ -1214,14 +1245,27 @@ function createCandidateId(
 export async function buildCommandCandidates(
   options: BuildCommandCandidatesOptions,
 ): Promise<CommandCandidate[]> {
+  const env = options.env ?? process.env;
+  const ledger = options.ledger
+    ?? (options.readSnapshot
+      ? await options.readSnapshot.readInstalledLedger(env)
+      : await readInstalledLedger(env));
+  const detection = options.detection
+    ?? (options.readSnapshot
+      ? await options.readSnapshot.detectEnvironment({
+        cwd: options.cwd,
+        env,
+        nativeCliRunner: options.nativeCliRunner,
+      })
+      : await detectEnvironment(options.cwd, env, {
+        includeAgentVersions: true,
+        nativeCliRunner: options.nativeCliRunner,
+      }));
   const discoveredTargets = await resolveDiscoveredPluginTargets({
     ...options,
     includeCurrentCatalog: options.includeCurrentCatalog ?? true,
-  });
-  const ledger = await readInstalledLedger(options.env ?? process.env);
-  const detection = await detectEnvironment(options.cwd, options.env ?? process.env, {
-    includeAgentVersions: true,
-    nativeCliRunner: options.nativeCliRunner,
+    ledger,
+    detection,
   });
   const candidates: CommandCandidate[] = [];
   const requestedNames = options.pluginNames ?? options.names;
@@ -1268,6 +1312,7 @@ export async function buildCommandCandidates(
         scope: discovered.scope,
         projectKey: discovered.projectKey,
       },
+      readSnapshot: options.readSnapshot,
     });
     const candidate: CommandCandidate = {
       id: createCandidateId(options.command, discovered),

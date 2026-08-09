@@ -67,14 +67,15 @@ const distStateModulePaths = {
   testPathFence: 'src/utils/test-path-fence.js',
 } as const;
 
-const cliPackageRoot = path.resolve(
+const defaultCliPackageRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   '..',
   '..',
 );
-let cachedDistStateModules: CachedDistStateModules | null = null;
+const cachedDistStateModules = new Map<string, CachedDistStateModules>();
 
 async function importDistModule<T>(
+  cliPackageRoot: string,
   relativePath: string,
 ): Promise<T | null> {
   const modulePath = path.join(cliPackageRoot, 'dist', relativePath);
@@ -85,7 +86,10 @@ async function importDistModule<T>(
   return import(pathToFileURL(modulePath).href) as Promise<T>;
 }
 
-async function resolveDistModuleCacheToken(relativePath: string): Promise<string> {
+async function resolveDistModuleCacheToken(
+  cliPackageRoot: string,
+  relativePath: string,
+): Promise<string> {
   const modulePath = path.join(cliPackageRoot, 'dist', relativePath);
   if (!await fs.pathExists(modulePath)) {
     return `${relativePath}:missing`;
@@ -105,29 +109,30 @@ function hasFunctionExport(
   );
 }
 
-async function loadDistStateModules(): Promise<DistStateModules> {
+async function loadDistStateModules(cliPackageRoot: string): Promise<DistStateModules> {
   const moduleEntries = Object.entries(distStateModulePaths) as Array<
     [keyof typeof distStateModulePaths, string]
   >;
   const cacheTokens = await Promise.all(
-    moduleEntries.map(([, relativePath]) => resolveDistModuleCacheToken(relativePath)),
+    moduleEntries.map(([, relativePath]) => resolveDistModuleCacheToken(cliPackageRoot, relativePath)),
   );
   const cacheKey = cacheTokens.join('|');
+  const cached = cachedDistStateModules.get(cliPackageRoot);
 
-  if (cachedDistStateModules?.cacheKey === cacheKey) {
-    return cachedDistStateModules.modules;
+  if (cached?.cacheKey === cacheKey) {
+    return cached.modules;
   }
 
-  if (cachedDistStateModules) {
+  if (cached) {
     vi.resetModules();
   }
 
-  const rawPaths = await importDistModule<DistPathsModule>(distStateModulePaths.paths);
-  const rawMarketplace = await importDistModule<DistMarketplaceModule>(distStateModulePaths.marketplace);
-  const rawPluginCatalog = await importDistModule<DistPluginCatalogModule>(distStateModulePaths.pluginCatalog);
-  const rawNativeCli = await importDistModule<DistNativeCliModule>(distStateModulePaths.nativeCli);
-  const rawCodexAppServer = await importDistModule<DistCodexAppServerModule>(distStateModulePaths.codexAppServer);
-  const rawTestPathFence = await importDistModule<DistTestPathFenceModule>(distStateModulePaths.testPathFence);
+  const rawPaths = await importDistModule<DistPathsModule>(cliPackageRoot, distStateModulePaths.paths);
+  const rawMarketplace = await importDistModule<DistMarketplaceModule>(cliPackageRoot, distStateModulePaths.marketplace);
+  const rawPluginCatalog = await importDistModule<DistPluginCatalogModule>(cliPackageRoot, distStateModulePaths.pluginCatalog);
+  const rawNativeCli = await importDistModule<DistNativeCliModule>(cliPackageRoot, distStateModulePaths.nativeCli);
+  const rawCodexAppServer = await importDistModule<DistCodexAppServerModule>(cliPackageRoot, distStateModulePaths.codexAppServer);
+  const rawTestPathFence = await importDistModule<DistTestPathFenceModule>(cliPackageRoot, distStateModulePaths.testPathFence);
 
   const modules = {
     paths: hasFunctionExport(rawPaths, 'setEmbeddedPluginsRootOverrideForTests') ? rawPaths : null,
@@ -139,12 +144,12 @@ async function loadDistStateModules(): Promise<DistStateModules> {
   };
 
   if (Object.values(modules).some((entry) => entry !== null)) {
-    cachedDistStateModules = {
+    cachedDistStateModules.set(cliPackageRoot, {
       cacheKey,
       modules,
-    };
+    });
   } else {
-    cachedDistStateModules = null;
+    cachedDistStateModules.delete(cliPackageRoot);
   }
 
   return modules;
@@ -173,8 +178,9 @@ function createDistPathFenceHook(
 
 export async function installDistStateForTests(
   rootRegistry: TestRootRegistry,
+  cliPackageRoot = defaultCliPackageRoot,
 ): Promise<void> {
-  const modules = await loadDistStateModules();
+  const modules = await loadDistStateModules(cliPackageRoot);
 
   modules.paths?.setEmbeddedPluginsRootOverrideForTests(null);
   modules.marketplace?.setCatalogPackageSourceForTests(null);
@@ -191,15 +197,12 @@ export async function installDistStateForTests(
 }
 
 export async function resetDistStateForTests(): Promise<void> {
-  const modules = cachedDistStateModules?.modules;
-  if (!modules) {
-    return;
+  for (const { modules } of cachedDistStateModules.values()) {
+    modules.paths?.setEmbeddedPluginsRootOverrideForTests(null);
+    modules.marketplace?.setCatalogPackageSourceForTests(null);
+    modules.pluginCatalog?.clearCurrentCatalogResolutionMemoForTests();
+    modules.nativeCli?.setNativeCliRunnerOverrideForTests(null);
+    modules.codexAppServer?.setCodexAppServerProcessRunnerOverrideForTests(null);
+    modules.testPathFence?.setTestPathFenceHookForTests(null);
   }
-
-  modules.paths?.setEmbeddedPluginsRootOverrideForTests(null);
-  modules.marketplace?.setCatalogPackageSourceForTests(null);
-  modules.pluginCatalog?.clearCurrentCatalogResolutionMemoForTests();
-  modules.nativeCli?.setNativeCliRunnerOverrideForTests(null);
-  modules.codexAppServer?.setCodexAppServerProcessRunnerOverrideForTests(null);
-  modules.testPathFence?.setTestPathFenceHookForTests(null);
 }

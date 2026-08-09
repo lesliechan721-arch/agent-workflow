@@ -7,6 +7,7 @@ import fs from 'fs-extra';
 
 import type { CommandExecutionContext } from '../commands/runtime.js';
 import type {
+  CatalogResolution,
   GeneratedArtifact,
   InstalledLedger,
   InstalledScopeRecord,
@@ -48,6 +49,7 @@ export interface CreateLifecycleConfigSnapshotOptions {
   scope: Scope;
   cwd: string;
   env?: NodeJS.ProcessEnv;
+  catalogResolution?: CatalogResolution;
 }
 
 export interface PreparedLifecycleConfigSnapshot {
@@ -317,7 +319,9 @@ export async function prepareLifecycleConfigSnapshot(
   const manifestPath = path.join(options.plugin.rootDir, SOURCE_MANIFEST_PATH);
   const [pluginManifestDigest, catalog, scopeIdentity] = await Promise.all([
     calculateFileDigest(manifestPath),
-    resolveCurrentCatalog(env).catch(() => undefined),
+    options.catalogResolution === undefined
+      ? resolveCurrentCatalog(env).catch(() => undefined)
+      : Promise.resolve(options.catalogResolution),
     resolveSnapshotScopeIdentity(options.platform, options.scope, options.cwd),
   ]);
   const {

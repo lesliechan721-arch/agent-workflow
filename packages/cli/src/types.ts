@@ -1195,7 +1195,14 @@ export function isAgentVersionGateError(error: unknown): error is AgentVersionGa
 export interface PlatformAdapter {
   name: PlatformName;
   detect(cwd: string): Promise<boolean>;
-  installPlugin(plugin: PluginMeta, scope: Scope): Promise<void>;
+  installPlugin(
+    plugin: PluginMeta,
+    scope: Scope,
+    options?: {
+      catalogResolution?: CatalogResolution;
+      marketplacePrepared?: boolean;
+    },
+  ): Promise<void>;
   uninstallPlugin(plugin: PluginMeta, scope: Scope): Promise<void>;
   installExtensions(
     plugin: PluginMeta,
@@ -1205,6 +1212,8 @@ export interface PlatformAdapter {
       changedConfigKeys?: string[];
       dynamicOnly?: boolean;
       previousArtifacts?: GeneratedArtifact[];
+      catalogResolution?: CatalogResolution;
+      marketplacePrepared?: boolean;
     },
   ): Promise<GeneratedArtifact[]>;
   uninstallExtensions(
@@ -1212,11 +1221,21 @@ export interface PlatformAdapter {
     scope: Scope,
     generatedArtifacts?: GeneratedArtifact[],
   ): Promise<void>;
-  upgradePlugin(plugin: PluginMeta, scope: Scope): Promise<void>;
+  upgradePlugin(
+    plugin: PluginMeta,
+    scope: Scope,
+    options?: {
+      catalogResolution?: CatalogResolution;
+      marketplacePrepared?: boolean;
+    },
+  ): Promise<void>;
   status(
     plugin: PluginMeta,
     scope: Scope,
-    options?: { previousArtifacts?: GeneratedArtifact[] },
+    options?: {
+      previousArtifacts?: GeneratedArtifact[];
+      catalogResolution?: CatalogResolution;
+    },
   ): Promise<StatusReport>;
 }
 
@@ -1417,7 +1436,8 @@ export interface CatalogRemoteFailureEvidence {
     | 'fullMetadata'
     | 'fullTarball'
     | 'fullManifest'
-    | 'artifactDigest';
+    | 'artifactDigest'
+    | 'deadline';
   packageName?: string;
   packageVersion?: CatalogVersion;
   integrity?: string;
@@ -1441,6 +1461,15 @@ export interface CatalogResolutionFailure {
     | 'explicitCatalogIncompatible';
 }
 
+export interface CatalogCacheStateEvidence {
+  state: 'fresh' | 'stale' | 'refreshFailed';
+  validatedAt: string;
+  ageMs: number;
+  ttlMs: number;
+}
+
+export type CatalogFreshnessPolicy = 'cacheFirst' | 'requireRemote' | 'forceRemote';
+
 export interface CatalogResolution {
   rootDir: string;
   source: 'local' | 'embedded' | 'remote' | 'cache';
@@ -1455,6 +1484,7 @@ export interface CatalogResolution {
   historySchemaVersion?: number | null;
   cacheFallback?: CatalogCacheFallbackEvidence;
   remoteFailure?: CatalogRemoteFailureEvidence;
+  cacheState?: CatalogCacheStateEvidence;
   reason?: string;
   reasonCode?:
     | 'localCatalogMissing'

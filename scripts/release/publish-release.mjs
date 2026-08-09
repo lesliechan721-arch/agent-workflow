@@ -2,11 +2,13 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
-  createCatalogRegistryAdapter,
   preflightCatalogRelease,
+  publishCatalogRelease,
   readCliPackageJson,
   runCommand,
+  withReleaseBuildSnapshot,
 } from './common.mjs';
+import { publishCli } from './publish-cli.mjs';
 
 export function parseArgs(argv) {
   const args = [...argv];
@@ -54,6 +56,19 @@ export async function runReleasePreflight() {
   await runCommand('pnpm', ['run', 'release:verify:catalog']);
 }
 
+function assertReleaseSnapshot(label, releaseResult, snapshot) {
+  if (releaseResult.generationId !== snapshot.generationId) {
+    throw new Error(
+      `${label} build generation mismatch: expected ${snapshot.generationId}, found ${releaseResult.generationId}.`,
+    );
+  }
+  if (releaseResult.outputDigest !== snapshot.outputDigest) {
+    throw new Error(
+      `${label} build output mismatch: expected ${snapshot.outputDigest}, found ${releaseResult.outputDigest}.`,
+    );
+  }
+}
+
 export async function publishRelease(argv = process.argv.slice(2)) {
   const { mode, cliVersion, catalogVersion } = parseArgs(argv);
   const cliPackageJson = await readCliPackageJson();
@@ -70,49 +85,60 @@ export async function publishRelease(argv = process.argv.slice(2)) {
   };
 
   await runReleasePreflight();
-  const catalogRegistry = await createCatalogRegistryAdapter();
-  await preflightCatalogRelease({
-    channel: mode,
-    catalogVersion,
-    registry: catalogRegistry,
-  });
-
-  try {
-    await runCommand('node', ['scripts/release/publish-cli.mjs', mode]);
-    status.cli = `published (${currentCliVersion})`;
-  } catch (error) {
-    status.cli = `failed (${currentCliVersion})`;
-    throw error;
-  }
-
-  try {
-    await runCommand('node', [
-      'scripts/release/publish-catalog.mjs',
-      mode,
-      '--catalog-version',
+  return withReleaseBuildSnapshot(async (snapshot) => {
+    const catalogPreflight = await preflightCatalogRelease({
+      channel: mode,
       catalogVersion,
-    ]);
-    status.catalog = `published (${catalogVersion})`;
-  } catch (error) {
-    status.catalog = `failed (${catalogVersion})`;
-    const detail = error instanceof Error ? error.message : String(error);
-    throw new Error(
-      `Combined release failed after CLI publish.\nCLI: ${status.cli}\nCatalog: ${status.catalog}\nRe-run catalog only: pnpm run release:publish:catalog:${mode} -- --catalog-version ${catalogVersion}\nDetails: ${detail}`,
-    );
-  }
+      snapshot,
+    });
+    assertReleaseSnapshot('Catalog preflight', catalogPreflight, snapshot);
 
-  return {
-    mode,
-    currentCliVersion,
-    catalogVersion,
-  };
+    let cliPublished;
+    try {
+      cliPublished = await publishCli([mode], {
+        expectedVersion: currentCliVersion,
+        skipVerify: true,
+        snapshot,
+      });
+      assertReleaseSnapshot('CLI publish', cliPublished, snapshot);
+      status.cli = `published (${currentCliVersion})`;
+    } catch (error) {
+      status.cli = `failed (${currentCliVersion})`;
+      throw error;
+    }
+
+    let catalogPublished;
+    try {
+      catalogPublished = await publishCatalogRelease({
+        channel: mode,
+        catalogVersion,
+        snapshot,
+      });
+      assertReleaseSnapshot('Catalog publish', catalogPublished, snapshot);
+      status.catalog = `published (${catalogVersion})`;
+    } catch (error) {
+      status.catalog = `failed (${catalogVersion})`;
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `Combined release failed after CLI publish.\nCLI: ${status.cli}\nCatalog: ${status.catalog}\nRe-run catalog only: pnpm run release:publish:catalog:${mode} -- --catalog-version ${catalogVersion}\nDetails: ${detail}`,
+      );
+    }
+
+    return {
+      mode,
+      currentCliVersion,
+      catalogVersion,
+      generationId: snapshot.generationId,
+      outputDigest: snapshot.outputDigest,
+    };
+  });
 }
 
 export async function main(argv = process.argv.slice(2)) {
   try {
-    const { mode, currentCliVersion, catalogVersion } = await publishRelease(argv);
+    const { mode, currentCliVersion, catalogVersion, generationId } = await publishRelease(argv);
     console.log(
-      `Published CLI ${currentCliVersion} and catalog ${catalogVersion} to ${mode}.`,
+      `Published CLI ${currentCliVersion} and catalog ${catalogVersion} to ${mode} from build generation ${generationId}.`,
     );
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));

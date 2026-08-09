@@ -77,6 +77,7 @@ npm Registry
 - `Makefile` — 本地开发安装、测试版发布和正式版发布的统一入口
 - `package.json` — repo root 统一脚本入口，包含 `build`、`test`、`release:*`、`publish:cli`
 - `scripts/release/*.mjs` — 版本同步、tarball 打包、本地 `npm install -g` 和发布编排脚本
+- `scripts/build/*.mjs` — 强制 build、可复用 build、绑定输入/输出/CLI package 摘要的 generation stamp、并发 build lock 和私有 build snapshot
 - `packages/cli/scripts/bundle-plugins.ts` — build 时把源码插件打成 catalog staging / runtime bundle
 - `packages/cli/scripts/eval-plugin-skills.ts`、`plugin-eval-contract.ts`、`plugin-eval-materializer.ts`、`codex-eval-runtime-config.ts`、`codex-trigger-eval.ts` — Codex 插件 eval manifest、最终制品 materialization、过滤后的 model/provider runtime capsule、中央 suite 执行和 `EvaluationBundle`
 - `packages/cli/scripts/codex-eval-app-server.ts` — 需要 `request_user_input` 的 Codex 多轮行为 eval driver
@@ -101,6 +102,35 @@ npm Registry
 - Codex project scope：不调用 `codex plugin marketplace add/list/remove`，不调用 app-server RPC，不写用户级 `[marketplaces]` / `[plugins]`，全部收敛为当前仓库 repo-visible artifacts：`.agents/skills/<skill>`（包含静态 skill、公共 slashCommands manual-only skill 和动态 `codex.skill`）、`.codex/config.toml [mcp_servers.*]` / managed instructions、`.codex/hooks.json`、`.codex/rules/*.rules`、`.codex/agents/*.toml`，以及 `.agent-workflows/project-artifacts/<platform>/<sharedIdentityId>.json`。动态 `codex.skill` 不要求 `.codex/config.toml` preflight；`codex.developerInstructionsBlock` 和 `codex.agentRole` 仍是 config-backed target。project scope 写入前仍要求 Codex `>= 0.145.0`，通过版本门禁后不能产生用户级 native side effect。纯 native-only 插件和 `apps` 首版在 project scope fail fast。
 - 每个平台/scope/plugin/location 都有独立 install record v2，位置分别落在 `~/.claude/.agent-workflows/records/`、`<project>/.claude/.agent-workflows/records/`、`~/.codex/.agent-workflows/records/` 或 `<repo>/.codex/.agent-workflows/records/`。record 是 AW 的安装真值，只保存 ownership、安装来源和 canonical outgoing dependency edges。Skill 调用行为只由安装文件中的平台原生元数据决定，不进入 record。健康状态从 current catalog、平台现场、project artifact identity、dynamic diagnostic cache、historical runtime、dependency index 和 native marker 推导。
 - project private state / local config 默认忽略：`.claude/.agent-workflows/`、`.codex/.agent-workflows/`、`.agent-workflows/plugin-config.local/`。project shared config 和 project artifact identity 是可提交输入，`.agent-workflows/plugin-config/`、`.agent-workflows/project-artifacts/` 不能被默认忽略。
+
+### Catalog freshness 与超时
+
+旧的 catalog 读取路径会在每次解析时访问远程 metadata 和 tarball，并重新计算完整 artifact digest。status、主控制台和 adapter 的嵌套调用还可能重复解析同一个 catalog。当前实现用进程内 settled cache、持久 cache 的 freshness 状态和每个命令的 freshness policy 减少重复工作，但不降低 selector、integrity、manifest 或 artifact digest 的校验要求。
+
+| 入口 | freshness policy | 行为 |
+|------|------------------|------|
+| `aw status` | `cacheFirst` | 优先返回合法的本地 cache；不在后台刷新 |
+| 主控制台首页 | `cacheFirst` | 优先显示合法 cache；如果状态为 `stale`，后台运行一次 `requireRemote`，并在用户下一次导航时应用结果 |
+| `install`、`upgrade`、普通 `init` | `requireRemote` | 同一解析链路执行一次远程检查；远程失败时只允许回退到 selector 和 identity 都匹配的合法 cache |
+| `init --force` | `forceRemote` | resolver 跳过 cache 快路径并强制尝试远程刷新；远程失败时 resolver 可返回严格验证的 cache fallback 和 `cacheState.state=refreshFailed`，但公开命令层会拒绝 cache 结果并报错 |
+
+主控制台在写动作完成后重读本地状态，使页面反映刚完成的写入。这个重读不隐式发起另一轮 catalog 远程刷新。`aw status` 也不启动后台任务，因此命令退出后没有延迟刷新。
+
+`CatalogResolution.cacheState.state` 有三个公开诊断值：
+
+- `fresh`：cache 在 TTL 内，或本次远程检查已经确认并更新其验证时间。
+- `stale`：`cacheFirst` 返回了合法但超过 TTL 的 cache。调用方可以决定是否刷新。
+- `refreshFailed`：远程检查或 deadline 失败，但有允许使用的合法 cache fallback。
+
+相关环境变量都使用严格的非负十进制整数校验。不接受小数、符号、空白、指数格式或越界值。
+
+| 环境变量 | 默认值 | 合法值 | `0` 的含义 |
+|----------|--------|--------|--------------|
+| `AW_CATALOG_CACHE_TTL_MS` | `300000` | `0..86400000` | 关闭 settled cache 快路径；不删除持久 cache，也不取消 cache fallback |
+| `AW_CATALOG_REMOTE_TIMEOUT_MS` | `5000` | `0` 或 `100..60000` | 禁用 catalog 远程 deadline |
+| `AW_NATIVE_CLI_TIMEOUT_MS` | `60000` | `0` 或 `1000..600000` | 禁用 Codex/Claude 原生命令的默认超时 |
+
+catalog 远程 deadline 到期后，本次远程解析失败。若 freshness policy 允许 fallback，解析器再检查匹配 selector、identity、schema、integrity 和 CLI 兼容性的 cache；否则返回 catalog 错误。`AW_NATIVE_CLI_TIMEOUT_MS` 只应用于可执行文件 basename 为 `codex` 或 `claude` 的调用，并兼容 Windows 可执行文件后缀。单次 invocation 的显式 `timeoutMs` 优先于环境变量，但环境变量仍会先校验；非法环境值不会因显式 timeout 而被忽略。
 
 ## Plugin Scripts and Config
 
@@ -131,6 +161,8 @@ install record 对依赖只持久化两类事实：`installSource` 表示 explic
 ## Command Runtime
 
 CLI entry 和 direct command 共用 `CommandExecutionContext`。所有会影响外部世界的能力都从这里进入：`env`、adapter factory、native CLI runner、prompt、reporter、debug logger 和 diagnostics。新增 helper 时必须继续消费 context 里的 `env`，不能退回 `process.env`；测试也应该通过同一条 context 注入 fake runner、fake prompt 或 fake adapters。
+
+Codex 和 Claude 原生命令以前没有统一的默认上限。现在默认 runner 在 timeout 或 abort 后清理整个进程树：POSIX 枚举并终止后代进程，Windows 使用 `taskkill /T /F`，并用有界清理等待和直接子进程 fallback 防止清理本身无限等待。超时结果不会自动重试，因为原生命令可能已经产生部分外部写入；调用方按既有 transaction marker、post-check 和恢复流程处理不确定状态。
 
 `aw` 主命令是唯一交互入口。TTY 下由 `commands/console.ts` 通过 prompt adapter 驱动控制台；非 TTY、CI 或交互不可用时不会挂起，会输出清晰说明、可复制脚本命令和 `--json` 提示。prompt adapter 提供 `select`、`confirm`、`input`、`password`、滚动列表、返回和取消结果，默认实现基于 inquirer，并保留可注入 fake prompt / console driver 供测试使用。
 

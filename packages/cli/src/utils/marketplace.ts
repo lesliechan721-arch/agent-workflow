@@ -53,7 +53,7 @@ export interface CatalogPackageArchive {
   manifestText: string;
   rawManifest: unknown;
   packageRoot: string;
-  materialize: (targetRoot: string) => Promise<void>;
+  materialize: (targetRoot: string, signal?: AbortSignal) => Promise<void>;
   dispose: () => Promise<void>;
 }
 
@@ -62,19 +62,23 @@ export interface CatalogPackageSource {
     packageName: string,
     distTag: CatalogChannel,
     env?: NodeJS.ProcessEnv,
+    signal?: AbortSignal,
   ) => Promise<CatalogPackageArchiveIdentity>;
   resolveIdentityByVersion: (
     packageName: string,
     version: CatalogVersion,
     env?: NodeJS.ProcessEnv,
+    signal?: AbortSignal,
   ) => Promise<CatalogPackageArchiveIdentity>;
   downloadArchive: (
     identity: CatalogPackageArchiveIdentity,
     env?: NodeJS.ProcessEnv,
+    signal?: AbortSignal,
   ) => Promise<CatalogPackageArchive>;
 }
 
 let catalogPackageSourceOverride: CatalogPackageSource | null = null;
+let catalogPackageSourceRevision = 0;
 
 function assertObject(value: unknown, fieldName: string): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -601,7 +605,7 @@ async function readCliPublishRegistry(): Promise<string | null> {
   }
 }
 
-async function resolveCatalogRegistryUrl(
+export async function resolveCatalogRegistryUrl(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<string> {
   const fromEnv = env.AW_NPM_REGISTRY_URL || env.npm_config_registry || env.NPM_CONFIG_REGISTRY;
@@ -620,31 +624,72 @@ async function resolveCatalogRegistryUrl(
 async function fetchJson(
   url: string,
   env: NodeJS.ProcessEnv = process.env,
+  signal?: AbortSignal,
 ): Promise<unknown> {
-  const response = await fetch(url, {
+  return fetchWithRetry(url, {
     headers: await buildRegistryRequestHeaders(url, env, {
       accept: 'application/json',
     }),
-  });
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status} ${response.statusText}`);
-  }
-
-  return response.json();
+    signal,
+  }, (response) => response.json());
 }
 
 async function fetchBuffer(
   url: string,
   env: NodeJS.ProcessEnv = process.env,
+  signal?: AbortSignal,
 ): Promise<Buffer> {
-  const response = await fetch(url, {
+  const body = await fetchWithRetry(url, {
     headers: await buildRegistryRequestHeaders(url, env),
-  });
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status} ${response.statusText}`);
-  }
+    signal,
+  }, (response) => response.arrayBuffer());
 
-  return Buffer.from(await response.arrayBuffer());
+  return Buffer.from(body);
+}
+
+class CatalogRegistryHttpError extends Error {
+  readonly status: number;
+
+  constructor(response: Response) {
+    super(`HTTP ${response.status} ${response.statusText}`);
+    this.name = 'CatalogRegistryHttpError';
+    this.status = response.status;
+  }
+}
+
+function isRetryableCatalogFetchError(error: unknown): boolean {
+  if (error instanceof CatalogRegistryHttpError) {
+    return error.status === 408
+      || error.status === 429
+      || (error.status >= 500 && error.status <= 599);
+  }
+  return !(
+    error instanceof SyntaxError
+    || (error instanceof Error && error.name === 'AbortError')
+  );
+}
+
+async function fetchWithRetry<T>(
+  url: string,
+  init: RequestInit,
+  consumeBody: (response: Response) => Promise<T>,
+): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const response = await fetch(url, init);
+      if (!response.ok) {
+        throw new CatalogRegistryHttpError(response);
+      }
+      return await consumeBody(response);
+    } catch (error) {
+      lastError = error;
+      if (attempt > 0 || !isRetryableCatalogFetchError(error) || init.signal?.aborted) {
+        throw error;
+      }
+    }
+  }
+  throw lastError;
 }
 
 function verifyPackageIntegrity(buffer: Buffer, integrity: string): void {
@@ -672,44 +717,56 @@ function verifyPackageIntegrity(buffer: Buffer, integrity: string): void {
 async function extractPackageArchive(
   archiveBuffer: Buffer,
   env: NodeJS.ProcessEnv,
+  signal?: AbortSignal,
 ): Promise<{ tempRoot: string; packageRoot: string }> {
+  signal?.throwIfAborted();
   const stagingParent = resolveCurrentCatalogCacheStagingDir(env);
   await fs.ensureDir(stagingParent);
-
+  signal?.throwIfAborted();
   const tempRoot = await fs.mkdtemp(path.join(stagingParent, 'package-'));
-  const tarballPath = path.join(tempRoot, 'archive.tgz');
-  const extractRoot = path.join(tempRoot, 'extract');
-  await fs.ensureDir(extractRoot);
-  await fs.writeFile(tarballPath, archiveBuffer);
+  try {
+    const tarballPath = path.join(tempRoot, 'archive.tgz');
+    const extractRoot = path.join(tempRoot, 'extract');
+    await fs.ensureDir(extractRoot);
+    await fs.writeFile(tarballPath, archiveBuffer);
+    signal?.throwIfAborted();
 
-  await runNativeCli({
-    command: 'tar',
-    args: ['-xzf', tarballPath, '-C', extractRoot],
-  });
+    await runNativeCli({
+      command: 'tar',
+      args: ['-xzf', tarballPath, '-C', extractRoot],
+      signal,
+    });
+    signal?.throwIfAborted();
 
-  const packageRoot = path.join(extractRoot, 'package');
-  if (!(await fs.pathExists(packageRoot))) {
-    throw new Error('npm tarball does not contain a package/ root.');
+    const packageRoot = path.join(extractRoot, 'package');
+    if (!(await fs.pathExists(packageRoot))) {
+      throw new Error('npm tarball does not contain a package/ root.');
+    }
+
+    return {
+      tempRoot,
+      packageRoot,
+    };
+  } catch (error) {
+    await fs.remove(tempRoot);
+    throw error;
   }
-
-  return {
-    tempRoot,
-    packageRoot,
-  };
 }
 
 async function resolveRegistryPackageArchive(
   identity: CatalogPackageArchiveIdentity,
   env: NodeJS.ProcessEnv,
+  signal?: AbortSignal,
 ): Promise<CatalogPackageArchive> {
   if (!identity.tarballUrl) {
     throw new Error(`Package ${identity.packageName}@${identity.version} is missing dist.tarball.`);
   }
 
-  const archiveBuffer = await fetchBuffer(identity.tarballUrl, env);
+  const archiveBuffer = await fetchBuffer(identity.tarballUrl, env, signal);
   verifyPackageIntegrity(archiveBuffer, identity.integrity);
 
-  const extracted = await extractPackageArchive(archiveBuffer, env);
+  signal?.throwIfAborted();
+  const extracted = await extractPackageArchive(archiveBuffer, env, signal);
   const manifestPath = path.join(extracted.packageRoot, CURRENT_CATALOG_MANIFEST_FILE);
   const manifestText = await fs.readFile(manifestPath, 'utf8');
   const rawManifest = JSON.parse(manifestText) as unknown;
@@ -719,10 +776,15 @@ async function resolveRegistryPackageArchive(
     manifestText,
     rawManifest,
     packageRoot: extracted.packageRoot,
-    materialize: async (targetRoot: string) => {
+    materialize: async (targetRoot: string, materializeSignal?: AbortSignal) => {
+      materializeSignal?.throwIfAborted();
       await fs.remove(targetRoot);
       await fs.ensureDir(path.dirname(targetRoot));
       await fs.copy(extracted.packageRoot, targetRoot);
+      if (materializeSignal?.aborted) {
+        await fs.remove(targetRoot);
+        materializeSignal.throwIfAborted();
+      }
     },
     dispose: async () => {
       await fs.remove(extracted.tempRoot);
@@ -734,11 +796,13 @@ async function resolvePackageIdentityByDistTag(
   packageName: string,
   distTag: CatalogChannel,
   env: NodeJS.ProcessEnv,
+  signal?: AbortSignal,
 ): Promise<CatalogPackageArchiveIdentity> {
   const registryUrl = await resolveCatalogRegistryUrl(env);
   const metadata = await fetchJson(
     `${registryUrl}${encodeURIComponent(packageName)}`,
     env,
+    signal,
   ) as RegistryPackageMetadata;
 
   const version = metadata['dist-tags']?.[distTag];
@@ -767,11 +831,13 @@ async function resolvePackageIdentityByVersion(
   packageName: string,
   version: CatalogVersion,
   env: NodeJS.ProcessEnv,
+  signal?: AbortSignal,
 ): Promise<CatalogPackageArchiveIdentity> {
   const registryUrl = await resolveCatalogRegistryUrl(env);
   const metadata = await fetchJson(
     `${registryUrl}${encodeURIComponent(packageName)}`,
     env,
+    signal,
   ) as RegistryPackageMetadata;
 
   const versionMetadata = metadata.versions?.[version];
@@ -791,12 +857,12 @@ async function resolvePackageIdentityByVersion(
 }
 
 const defaultCatalogPackageSource: CatalogPackageSource = {
-  resolveIdentityByDistTag: async (packageName, distTag, env = process.env) =>
-    resolvePackageIdentityByDistTag(packageName, distTag, env),
-  resolveIdentityByVersion: async (packageName, version, env = process.env) =>
-    resolvePackageIdentityByVersion(packageName, version, env),
-  downloadArchive: async (identity, env = process.env) =>
-    resolveRegistryPackageArchive(identity, env),
+  resolveIdentityByDistTag: async (packageName, distTag, env = process.env, signal) =>
+    resolvePackageIdentityByDistTag(packageName, distTag, env, signal),
+  resolveIdentityByVersion: async (packageName, version, env = process.env, signal) =>
+    resolvePackageIdentityByVersion(packageName, version, env, signal),
+  downloadArchive: async (identity, env = process.env, signal) =>
+    resolveRegistryPackageArchive(identity, env, signal),
 };
 
 function getCatalogPackageSource(): CatalogPackageSource {
@@ -807,10 +873,15 @@ export function setCatalogPackageSourceForTests(
   source: CatalogPackageSource | null,
 ): void {
   catalogPackageSourceOverride = source;
+  catalogPackageSourceRevision += 1;
 }
 
 export function hasCatalogPackageSourceOverrideForTests(): boolean {
   return catalogPackageSourceOverride !== null;
+}
+
+export function getCatalogPackageSourceRevisionForTests(): number {
+  return catalogPackageSourceRevision;
 }
 
 export async function resolveCatalogPackageByDistTag(
@@ -837,23 +908,26 @@ export async function resolveCatalogPackageIdentityByDistTag(
   packageName: string,
   distTag: CatalogChannel,
   env: NodeJS.ProcessEnv = process.env,
+  signal?: AbortSignal,
 ): Promise<CatalogPackageArchiveIdentity> {
-  return getCatalogPackageSource().resolveIdentityByDistTag(packageName, distTag, env);
+  return getCatalogPackageSource().resolveIdentityByDistTag(packageName, distTag, env, signal);
 }
 
 export async function resolveCatalogPackageIdentityByVersion(
   packageName: string,
   version: CatalogVersion,
   env: NodeJS.ProcessEnv = process.env,
+  signal?: AbortSignal,
 ): Promise<CatalogPackageArchiveIdentity> {
-  return getCatalogPackageSource().resolveIdentityByVersion(packageName, version, env);
+  return getCatalogPackageSource().resolveIdentityByVersion(packageName, version, env, signal);
 }
 
 export async function downloadCatalogPackageArchive(
   identity: CatalogPackageArchiveIdentity,
   env: NodeJS.ProcessEnv = process.env,
+  signal?: AbortSignal,
 ): Promise<CatalogPackageArchive> {
-  return getCatalogPackageSource().downloadArchive(identity, env);
+  return getCatalogPackageSource().downloadArchive(identity, env, signal);
 }
 
 export async function readMarketplaceManifestAtPath(

@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import * as commonModule from '../../src/commands/common.js';
 import * as localMarketplaceModule from '../../src/utils/local-marketplace.js';
+import * as pluginScriptsModule from '../../src/utils/plugin-scripts.js';
 import { upgradeCommand } from '../../src/commands/upgrade.js';
 import { buildCommandReceiptJson } from '../../src/output/command-receipt.js';
 import type {
@@ -16,6 +17,7 @@ import type {
   PlatformAdapter,
   PlatformName,
   PluginMeta,
+  CatalogResolution,
   ResolvedPluginTarget,
   Scope,
   StatusReport,
@@ -108,38 +110,48 @@ function mockCatalogTargets(options: {
   allTargets: ResolvedPluginTarget[];
   ledger: InstalledLedger;
   catalogRoot?: string;
-}): void {
+}): CatalogResolution {
   const catalogRoot = options.catalogRoot ?? '/synthetic';
-  vi.spyOn(commonModule, 'preparePluginTargetsForCommand').mockResolvedValue({
-    ledger: options.ledger,
-    warnings: [],
-    targets: options.explicitTargets,
-  });
+  const catalog: CatalogResolution = {
+    rootDir: catalogRoot,
+    source: 'embedded',
+  };
+  vi.spyOn(commonModule, 'preparePluginTargetsForCommand').mockImplementation(
+    async (_cwd, _scope, _pluginNames, prepareOptions = {}) => ({
+      ledger: options.ledger,
+      warnings: [],
+      targets: options.explicitTargets,
+      catalog: prepareOptions.catalogResolution ?? catalog,
+    }),
+  );
   vi.spyOn(commonModule, 'loadPluginTargetsForCommand').mockResolvedValue(
     options.allTargets,
   );
-  vi.spyOn(localMarketplaceModule, 'resolveReadOnlyCatalogResolution').mockResolvedValue({
-    rootDir: catalogRoot,
-    source: 'embedded',
-  });
+  vi.spyOn(localMarketplaceModule, 'resolveReadOnlyCatalogResolution').mockResolvedValue(catalog);
   vi.spyOn(commonModule, 'prepareCommandEnvironment').mockImplementation(async (prepareOptions = {}) => {
     const mode = prepareOptions.catalogMode ?? (prepareOptions.ensureLocalMarketplace ? 'runtimeWritable' : 'readOnly');
     const source = mode === 'runtimeWritable' ? 'local' : 'embedded';
+    const commandCatalog = prepareOptions.catalogResolution ?? catalog;
     return {
       ledger: options.ledger,
       warnings: [],
+      catalog: commandCatalog,
       marketplace: {
         rootDir: catalogRoot,
         source,
         changed: mode === 'runtimeWritable',
         mode,
-        catalog: {
-          rootDir: catalogRoot,
-          source,
-        },
+        catalog: mode === 'runtimeWritable'
+          ? {
+              ...commandCatalog,
+              rootDir: catalogRoot,
+              source: 'local',
+            }
+          : commandCatalog,
       },
     };
   });
+  return catalog;
 }
 
 function createInstallSource(kind: 'explicit' | 'dependency') {
@@ -267,6 +279,7 @@ interface UpgradeAdapterState {
 class UpgradeTestAdapter implements PlatformAdapter {
   readonly installOrder: string[] = [];
   readonly uninstallOrder: string[] = [];
+  readonly catalogResolutions: Array<CatalogResolution | undefined> = [];
 
   constructor(
     readonly name: PlatformName,
@@ -293,7 +306,12 @@ class UpgradeTestAdapter implements PlatformAdapter {
     return true;
   }
 
-  async installPlugin(plugin: PluginMeta): Promise<void> {
+  async installPlugin(
+    plugin: PluginMeta,
+    _scope: Scope,
+    options?: Parameters<PlatformAdapter['installPlugin']>[2],
+  ): Promise<void> {
+    this.catalogResolutions.push(options?.catalogResolution);
     const state = this.stateFor(plugin.manifest.name);
     state.nativeInstalled = true;
     state.marketplaceRegistered = true;
@@ -303,7 +321,12 @@ class UpgradeTestAdapter implements PlatformAdapter {
     this.stateFor(plugin.manifest.name).nativeInstalled = false;
   }
 
-  async installExtensions(plugin: PluginMeta, scope: Scope): Promise<GeneratedArtifact[]> {
+  async installExtensions(
+    plugin: PluginMeta,
+    scope: Scope,
+    options?: Parameters<PlatformAdapter['installExtensions']>[2],
+  ): Promise<GeneratedArtifact[]> {
+    this.catalogResolutions.push(options?.catalogResolution);
     const state = this.stateFor(plugin.manifest.name);
     this.installOrder.push(plugin.manifest.name);
     if (state.failInstallExtensions) {
@@ -339,12 +362,21 @@ class UpgradeTestAdapter implements PlatformAdapter {
     state.scopeInitialized = 'no';
   }
 
-  async upgradePlugin(plugin: PluginMeta, scope: Scope): Promise<void> {
-    await this.installPlugin(plugin);
-    await this.installExtensions(plugin, scope);
+  async upgradePlugin(
+    plugin: PluginMeta,
+    scope: Scope,
+    options?: Parameters<PlatformAdapter['upgradePlugin']>[2],
+  ): Promise<void> {
+    await this.installPlugin(plugin, scope, options);
+    await this.installExtensions(plugin, scope, options);
   }
 
-  async status(plugin: PluginMeta, scope: Scope): Promise<StatusReport> {
+  async status(
+    plugin: PluginMeta,
+    scope: Scope,
+    options?: Parameters<PlatformAdapter['status']>[2],
+  ): Promise<StatusReport> {
+    this.catalogResolutions.push(options?.catalogResolution);
     const state = this.stateFor(plugin.manifest.name);
     const generatedArtifacts = state.artifactPath
       ? [{
@@ -407,11 +439,34 @@ class UpgradeTestAdapter implements PlatformAdapter {
 
 class RootCheckingUpgradeAdapter extends UpgradeTestAdapter {
   readonly upgradedBundleRoots: string[] = [];
+  readonly catalogRootsDuringUse: string[] = [];
 
-  async installExtensions(plugin: PluginMeta, scope: Scope): Promise<GeneratedArtifact[]> {
+  private async recordCatalogRoot(
+    catalogResolution: CatalogResolution | undefined,
+  ): Promise<void> {
+    expect(catalogResolution).toBeDefined();
+    expect(await fs.pathExists(catalogResolution!.rootDir)).toBe(true);
+    this.catalogRootsDuringUse.push(catalogResolution!.rootDir);
+  }
+
+  async installExtensions(
+    plugin: PluginMeta,
+    scope: Scope,
+    options?: Parameters<PlatformAdapter['installExtensions']>[2],
+  ): Promise<GeneratedArtifact[]> {
+    await this.recordCatalogRoot(options?.catalogResolution);
     this.upgradedBundleRoots.push(plugin.rootDir);
     expect(await fs.pathExists(path.join(plugin.rootDir, '.agents-plugin', 'plugin.json'))).toBe(true);
-    return super.installExtensions(plugin, scope);
+    return super.installExtensions(plugin, scope, options);
+  }
+
+  async status(
+    plugin: PluginMeta,
+    scope: Scope,
+    options?: Parameters<PlatformAdapter['status']>[2],
+  ): Promise<StatusReport> {
+    await this.recordCatalogRoot(options?.catalogResolution);
+    return super.status(plugin, scope, options);
   }
 }
 
@@ -426,9 +481,20 @@ describe('upgrade command dependency graph', () => {
     const catalogRoot = path.join(String(env.AW_HOME), 'catalog-cache', 'entries', 'current', 'package');
     await fs.ensureDir(path.join(catalogRoot, '.claude-plugin'));
     await fs.ensureDir(path.join(catalogRoot, '.agents'));
+    const child = await writeSyntheticPlugin(catalogRoot, {
+      ...createDependencyPluginManifest({
+        name: 'cache-backed-upgrade-child',
+      }),
+      compatibility: {
+        aw: {
+          minVersion: '0.0.0',
+        },
+      },
+    });
     const plugin = await writeSyntheticPlugin(catalogRoot, {
       ...createDependencyPluginManifest({
         name: 'cache-backed-upgrade',
+        dependencies: [{ name: child.manifest.name }],
       }),
       compatibility: {
         aw: {
@@ -460,17 +526,21 @@ describe('upgrade command dependency graph', () => {
 
     const target = createResolvedTarget(plugin);
     const preparedLedger = await readInstalledLedger(env);
-    mockCatalogTargets({
+    const injectedCatalog = mockCatalogTargets({
       explicitTargets: [target],
-      allTargets: [target],
+      allTargets: [target, createResolvedTarget(child)],
       ledger: preparedLedger,
       catalogRoot,
     });
-    vi.spyOn(commonModule, 'prepareCommandEnvironment').mockImplementation(async () => {
+    vi.spyOn(commonModule, 'prepareCommandEnvironment').mockImplementation(async (prepareOptions = {}) => {
+      expect(prepareOptions.catalogResolution).not.toBe(injectedCatalog);
+      expect(prepareOptions.catalogResolution?.rootDir).toContain('.aw-current-catalog-resolution-');
+      expect(await fs.pathExists(prepareOptions.catalogResolution!.rootDir)).toBe(true);
       await fs.remove(path.join(String(env.AW_HOME), 'catalog-cache'));
       return {
         ledger: preparedLedger,
         warnings: [],
+        catalog: prepareOptions.catalogResolution!,
         marketplace: {
           rootDir: String(env.AW_HOME),
           source: 'local' as const,
@@ -491,8 +561,16 @@ describe('upgrade command dependency graph', () => {
         marketplaceRegistered: true,
       },
     });
+    const prepareLifecycleConfigSnapshot = pluginScriptsModule.prepareLifecycleConfigSnapshot;
+    const lifecycleCatalogRoots: string[] = [];
+    vi.spyOn(pluginScriptsModule, 'prepareLifecycleConfigSnapshot').mockImplementation(async (options) => {
+      expect(options.catalogResolution).toBeDefined();
+      expect(await fs.pathExists(options.catalogResolution!.rootDir)).toBe(true);
+      lifecycleCatalogRoots.push(options.catalogResolution!.rootDir);
+      return prepareLifecycleConfigSnapshot(options);
+    });
 
-    await upgradeCommand(
+    const result = await upgradeCommand(
       [plugin.manifest.name],
       {
         cwd: repoRoot,
@@ -501,6 +579,7 @@ describe('upgrade command dependency graph', () => {
       },
       {
         env,
+        catalogResolution: injectedCatalog,
         adapters: {
           codex,
           claude: new UpgradeTestAdapter('claude', repoRoot, env),
@@ -508,10 +587,30 @@ describe('upgrade command dependency graph', () => {
       },
     );
 
-    expect(codex.upgradedBundleRoots).toHaveLength(1);
-    expect(codex.upgradedBundleRoots[0]).toContain('.aw-current-catalog-source-');
-    expect(codex.upgradedBundleRoots[0]).toContain(
-      path.join(String(env.TMPDIR), 'aw-cli', 'current-catalog-sources'),
+    expect(codex.upgradedBundleRoots).toHaveLength(2);
+    expect(codex.upgradedBundleRoots.every((rootDir) =>
+      rootDir.includes('.aw-current-catalog-resolution-'))).toBe(true);
+    expect(codex.upgradedBundleRoots.every((rootDir) =>
+      !rootDir.includes('.aw-current-catalog-source-'))).toBe(true);
+    expect(codex.upgradedBundleRoots.every((rootDir) =>
+      rootDir.includes(path.join(String(env.TMPDIR), 'aw-cli', 'current-catalog-sources')))).toBe(true);
+    expect(codex.catalogRootsDuringUse.some((rootDir) =>
+      rootDir.includes('.aw-current-catalog-resolution-'))).toBe(true);
+    expect(lifecycleCatalogRoots).toHaveLength(2);
+    expect(new Set(lifecycleCatalogRoots)).toEqual(new Set([lifecycleCatalogRoots[0]!]));
+    expect(lifecycleCatalogRoots[0]).toContain('.aw-current-catalog-resolution-');
+    expect(codex.upgradedBundleRoots.every((rootDir) =>
+      path.dirname(path.dirname(rootDir)) === lifecycleCatalogRoots[0])).toBe(true);
+    expect(injectedCatalog.rootDir).toBe(catalogRoot);
+    expect(await fs.pathExists(lifecycleCatalogRoots[0]!)).toBe(false);
+    expect(result.marketplace?.catalog.rootDir).toBe(String(env.AW_HOME));
+    expect(await fs.pathExists(result.marketplace!.catalog.rootDir)).toBe(true);
+    expect(localMarketplaceModule.resolveReadOnlyCatalogResolution).not.toHaveBeenCalled();
+    expect(commonModule.preparePluginTargetsForCommand).toHaveBeenCalledWith(
+      repoRoot,
+      'user',
+      [plugin.manifest.name],
+      expect.objectContaining({ catalogResolution: injectedCatalog }),
     );
   });
 
@@ -1382,7 +1481,7 @@ describe('upgrade command dependency graph', () => {
     });
 
     const target = createResolvedTarget(plugin);
-    mockCatalogTargets({
+    const injectedCatalog = mockCatalogTargets({
       explicitTargets: [target],
       allTargets: [target],
       ledger: await readInstalledLedger(env),
@@ -1407,6 +1506,7 @@ describe('upgrade command dependency graph', () => {
       },
       {
         env,
+        catalogResolution: injectedCatalog,
         adapters: {
           codex,
           claude: new UpgradeTestAdapter('claude', repoRoot, env),
@@ -1415,6 +1515,15 @@ describe('upgrade command dependency graph', () => {
     );
 
     expect(codex.installOrder).toEqual([]);
+    expect(localMarketplaceModule.resolveReadOnlyCatalogResolution).not.toHaveBeenCalled();
+    expect(commonModule.prepareCommandEnvironment).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ catalogResolution: injectedCatalog }),
+    );
+    expect(codex.catalogResolutions.length).toBeGreaterThan(0);
+    expect(codex.catalogResolutions.every((catalog) => catalog === injectedCatalog)).toBe(true);
+    expect(injectedCatalog.rootDir).toBe(repoRoot);
+    expect(await fs.pathExists(result.marketplace!.catalog.rootDir)).toBe(true);
     expect(result.plugins).toEqual([]);
     expect(result.skipped).toEqual([
       expect.objectContaining({
