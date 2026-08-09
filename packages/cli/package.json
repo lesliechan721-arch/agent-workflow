@@ -21,6 +21,7 @@
     "test:unit:fast": "vitest run --config vitest.fast.config.ts",
     "test:integration": "vitest run tests/integration",
     "test:coverage": "vitest run --coverage",
+    "test:perf": "vitest run --config vitest.perf.config.ts",
     "test:smoke": "vitest run --config vitest.smoke.config.ts",
     "test:smoke:build": "vitest run --config vitest.smoke.config.ts tests/smoke/build-smoke.test.ts",
     "test:smoke:pack:cli": "vitest run --config vitest.smoke.config.ts tests/smoke/pack-smoke.test.ts",
@@ -30,7 +31,7 @@
     "plugin:test": "tsc -p tsconfig.json && node dist/scripts/test-plugin-scripts.js",
     "plugin:eval": "tsc -p tsconfig.json && node dist/scripts/eval-plugin-skills.js",
     "test:smoke:plugin-scripts": "vitest run --config vitest.smoke.config.ts tests/smoke/plugin-scripts-staging-smoke.test.ts",
-    "prepack": "pnpm build"
+    "prepack": "pnpm --dir ../.. build:ensure"
   },
   "dependencies": {
     "@inquirer/prompts": "^7.8.4",

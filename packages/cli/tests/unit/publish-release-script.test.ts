@@ -1,52 +1,80 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-interface RunCommandCall {
-  type: 'command';
-  command: string;
-  args: string[];
-}
+type ReleaseCall =
+  | { type: 'command'; command: string; args: string[] }
+  | { type: 'catalog-preflight'; snapshot: unknown; catalogVersion: string }
+  | { type: 'cli-publish'; snapshot: unknown; skipVerify: boolean; expectedVersion: string }
+  | { type: 'catalog-publish'; snapshot: unknown; catalogVersion: string };
 
-interface CatalogPreflightCall {
-  type: 'catalog-preflight';
-  channel: 'beta' | 'latest';
-  catalogVersion: string;
-}
-
-interface CatalogPreflightArgs {
-  channel: 'beta' | 'latest';
-  catalogVersion: string;
-  registry: unknown;
+interface SnapshotFixture {
+  root: string;
+  generationId: string;
+  outputDigest: string;
+  cliPackageRoot: string;
+  cliDistRoot: string;
+  catalogOutputRoot: string;
 }
 
 async function loadPublishReleaseHarness(
   options: {
     cliVersion?: string;
     runCommandImpl?: (command: string, args: string[]) => Promise<void> | void;
-    preflightImpl?: (args: CatalogPreflightArgs) => Promise<void> | void;
+    preflightImpl?: (args: Record<string, unknown>) => Promise<void> | void;
+    publishCliImpl?: (args: Record<string, unknown>) => Promise<void> | void;
+    publishCatalogImpl?: (args: Record<string, unknown>) => Promise<void> | void;
   } = {},
 ) {
-  const calls: Array<RunCommandCall | CatalogPreflightCall> = [];
+  const calls: ReleaseCall[] = [];
+  const snapshots: SnapshotFixture[] = [
+    {
+      root: '/tmp/build-generation-a',
+      generationId: 'generation-a',
+      outputDigest: 'digest-a',
+      cliPackageRoot: '/tmp/build-generation-a/packages/cli',
+      cliDistRoot: '/tmp/build-generation-a/packages/cli/dist',
+      catalogOutputRoot: '/tmp/build-generation-a/packages/cli/plugins-dist',
+    },
+    {
+      root: '/tmp/build-generation-b',
+      generationId: 'generation-b',
+      outputDigest: 'digest-b',
+      cliPackageRoot: '/tmp/build-generation-b/packages/cli',
+      cliDistRoot: '/tmp/build-generation-b/packages/cli/dist',
+      catalogOutputRoot: '/tmp/build-generation-b/packages/cli/plugins-dist',
+    },
+  ];
+  let nextSnapshotIndex = 0;
+  let snapshotRequests = 0;
+  let snapshotCleanups = 0;
+
   vi.doMock('../../../../scripts/release/common.mjs', () => ({
-    createCatalogRegistryAdapter: vi.fn(async () => ({
-      kind: 'mock-registry',
-    })),
-    preflightCatalogRelease: vi.fn(async (args: CatalogPreflightArgs) => {
+    preflightCatalogRelease: vi.fn(async (args: Record<string, unknown>) => {
+      const snapshot = args.snapshot as SnapshotFixture;
       calls.push({
         type: 'catalog-preflight',
-        channel: args.channel,
-        catalogVersion: args.catalogVersion,
+        snapshot,
+        catalogVersion: String(args.catalogVersion),
       });
       await options.preflightImpl?.(args);
       return {
         channel: args.channel,
-        registry: args.registry,
-        staged: {
-          manifest: {
-            catalogVersion: args.catalogVersion,
-          },
-          sidecarPackageRoot: '/tmp/sidecar',
-          fullPackageRoot: '/tmp/full',
-        },
+        catalogVersion: args.catalogVersion,
+        generationId: snapshot.generationId,
+        outputDigest: snapshot.outputDigest,
+      };
+    }),
+    publishCatalogRelease: vi.fn(async (args: Record<string, unknown>) => {
+      const snapshot = args.snapshot as SnapshotFixture;
+      calls.push({
+        type: 'catalog-publish',
+        snapshot,
+        catalogVersion: String(args.catalogVersion),
+      });
+      await options.publishCatalogImpl?.(args);
+      return {
+        catalogVersion: args.catalogVersion,
+        generationId: snapshot.generationId,
+        outputDigest: snapshot.outputDigest,
       };
     }),
     readCliPackageJson: vi.fn(async () => ({
@@ -56,6 +84,38 @@ async function loadPublishReleaseHarness(
       calls.push({ type: 'command', command, args });
       await options.runCommandImpl?.(command, args);
     }),
+    withReleaseBuildSnapshot: vi.fn(async (
+      callback: (snapshot: SnapshotFixture) => Promise<unknown>,
+    ) => {
+      snapshotRequests += 1;
+      const snapshot = snapshots[nextSnapshotIndex] ?? snapshots.at(-1)!;
+      try {
+        return await callback(snapshot);
+      } finally {
+        snapshotCleanups += 1;
+      }
+    }),
+  }));
+  vi.doMock('../../../../scripts/release/publish-cli.mjs', () => ({
+    publishCli: vi.fn(async (
+      _argv: string[],
+      publishOptions: Record<string, unknown>,
+    ) => {
+      const snapshot = publishOptions.snapshot as SnapshotFixture;
+      calls.push({
+        type: 'cli-publish',
+        snapshot,
+        skipVerify: Boolean(publishOptions.skipVerify),
+        expectedVersion: String(publishOptions.expectedVersion),
+      });
+      await options.publishCliImpl?.(publishOptions);
+      return {
+        version: publishOptions.expectedVersion,
+        tarballPath: '/tmp/aw.tgz',
+        generationId: snapshot.generationId,
+        outputDigest: snapshot.outputDigest,
+      };
+    }),
   }));
 
   const module = await import(
@@ -64,10 +124,22 @@ async function loadPublishReleaseHarness(
 
   return {
     calls,
+    snapshots,
+    advanceSnapshotSource() {
+      nextSnapshotIndex = Math.min(nextSnapshotIndex + 1, snapshots.length - 1);
+    },
+    get snapshotRequests() {
+      return snapshotRequests;
+    },
+    get snapshotCleanups() {
+      return snapshotCleanups;
+    },
     publishRelease: module.publishRelease as (argv?: string[]) => Promise<{
       mode: 'beta' | 'latest';
       currentCliVersion: string;
       catalogVersion: string;
+      generationId: string;
+      outputDigest: string;
     }>,
   };
 }
@@ -79,10 +151,8 @@ afterEach(() => {
 });
 
 describe('publish-release script', () => {
-  it('runs catalog-specific preflight before publishing CLI', async () => {
-    const harness = await loadPublishReleaseHarness({
-      cliVersion: '1.0.0',
-    });
+  it('publishes CLI then catalog from one snapshot after catalog preflight', async () => {
+    const harness = await loadPublishReleaseHarness({ cliVersion: '1.0.0' });
 
     await expect(harness.publishRelease([
       'latest',
@@ -94,38 +164,66 @@ describe('publish-release script', () => {
       mode: 'latest',
       currentCliVersion: '1.0.0',
       catalogVersion: '2.0.0',
+      generationId: 'generation-a',
+      outputDigest: 'digest-a',
     });
 
     expect(harness.calls).toEqual([
-      {
-        type: 'command',
-        command: 'pnpm',
-        args: ['run', 'release:verify:cli'],
-      },
-      {
-        type: 'command',
-        command: 'pnpm',
-        args: ['run', 'release:verify:catalog'],
-      },
+      { type: 'command', command: 'pnpm', args: ['run', 'release:verify:cli'] },
+      { type: 'command', command: 'pnpm', args: ['run', 'release:verify:catalog'] },
       {
         type: 'catalog-preflight',
-        channel: 'latest',
+        snapshot: harness.snapshots[0],
         catalogVersion: '2.0.0',
       },
       {
-        type: 'command',
-        command: 'node',
-        args: ['scripts/release/publish-cli.mjs', 'latest'],
+        type: 'cli-publish',
+        snapshot: harness.snapshots[0],
+        skipVerify: true,
+        expectedVersion: '1.0.0',
       },
       {
-        type: 'command',
-        command: 'node',
-        args: ['scripts/release/publish-catalog.mjs', 'latest', '--catalog-version', '2.0.0'],
+        type: 'catalog-publish',
+        snapshot: harness.snapshots[0],
+        catalogVersion: '2.0.0',
       },
     ]);
+    expect(harness.snapshotRequests).toBe(1);
+    expect(harness.snapshotCleanups).toBe(1);
   });
 
-  it('stops before CLI publish when catalog verify fails', async () => {
+  it('keeps one generation when force changes the available source after preflight and CLI publish', async () => {
+    let harness: Awaited<ReturnType<typeof loadPublishReleaseHarness>>;
+    harness = await loadPublishReleaseHarness({
+      preflightImpl: async () => {
+        harness.advanceSnapshotSource();
+      },
+      publishCliImpl: async () => {
+        harness.advanceSnapshotSource();
+      },
+    });
+
+    await expect(harness.publishRelease([
+      'beta',
+      '--catalog-version',
+      '2.0.0-beta.1',
+    ])).resolves.toMatchObject({ generationId: 'generation-a' });
+
+    const releaseContexts = harness.calls.filter((call) =>
+      call.type === 'catalog-preflight' ||
+      call.type === 'cli-publish' ||
+      call.type === 'catalog-publish'
+    );
+    expect(releaseContexts.map((call) => call.snapshot)).toEqual([
+      harness.snapshots[0],
+      harness.snapshots[0],
+      harness.snapshots[0],
+    ]);
+    expect(harness.snapshotRequests).toBe(1);
+    expect(harness.snapshotCleanups).toBe(1);
+  });
+
+  it('stops before snapshot allocation when catalog verify fails', async () => {
     const harness = await loadPublishReleaseHarness({
       runCommandImpl: async (_command, args) => {
         if (args[1] === 'release:verify:catalog') {
@@ -139,54 +237,15 @@ describe('publish-release script', () => {
       '--catalog-version',
       '2.0.0-beta.1',
     ])).rejects.toThrow('catalog verify failed');
-
     expect(harness.calls).toEqual([
-      {
-        type: 'command',
-        command: 'pnpm',
-        args: ['run', 'release:verify:cli'],
-      },
-      {
-        type: 'command',
-        command: 'pnpm',
-        args: ['run', 'release:verify:catalog'],
-      },
+      { type: 'command', command: 'pnpm', args: ['run', 'release:verify:cli'] },
+      { type: 'command', command: 'pnpm', args: ['run', 'release:verify:catalog'] },
     ]);
+    expect(harness.snapshotRequests).toBe(0);
+    expect(harness.snapshotCleanups).toBe(0);
   });
 
-  it('stops before CLI publish when catalog version kind preflight fails', async () => {
-    const harness = await loadPublishReleaseHarness({
-      preflightImpl: async ({ catalogVersion }) => {
-        throw new Error(`Expected a stable version, received prerelease version "${catalogVersion}".`);
-      },
-    });
-
-    await expect(harness.publishRelease([
-      'latest',
-      '--catalog-version',
-      '2.0.0-beta.1',
-    ])).rejects.toThrow('Expected a stable version');
-
-    expect(harness.calls).toEqual([
-      {
-        type: 'command',
-        command: 'pnpm',
-        args: ['run', 'release:verify:cli'],
-      },
-      {
-        type: 'command',
-        command: 'pnpm',
-        args: ['run', 'release:verify:catalog'],
-      },
-      {
-        type: 'catalog-preflight',
-        channel: 'latest',
-        catalogVersion: '2.0.0-beta.1',
-      },
-    ]);
-  });
-
-  it('stops before CLI publish when catalog history preflight fails', async () => {
+  it('cleans the shared snapshot when catalog preflight fails before CLI publish', async () => {
     const harness = await loadPublishReleaseHarness({
       preflightImpl: async () => {
         throw new Error('Unable to read target beta catalog history. registry offline');
@@ -198,55 +257,50 @@ describe('publish-release script', () => {
       '--catalog-version',
       '2.0.0-beta.1',
     ])).rejects.toThrow('Unable to read target beta catalog history');
-
-    expect(harness.calls).toEqual([
-      {
-        type: 'command',
-        command: 'pnpm',
-        args: ['run', 'release:verify:cli'],
-      },
-      {
-        type: 'command',
-        command: 'pnpm',
-        args: ['run', 'release:verify:catalog'],
-      },
-      {
-        type: 'catalog-preflight',
-        channel: 'beta',
-        catalogVersion: '2.0.0-beta.1',
-      },
-    ]);
+    expect(harness.calls.some((call) => call.type === 'cli-publish')).toBe(false);
+    expect(harness.snapshotRequests).toBe(1);
+    expect(harness.snapshotCleanups).toBe(1);
   });
 
-  it('stops before CLI publish when catalog history metadata is malformed', async () => {
+  it('keeps the catalog-only retry guidance and cleans snapshot after CLI succeeds', async () => {
     const harness = await loadPublishReleaseHarness({
-      preflightImpl: async () => {
-        throw new Error('Registry metadata for @yiliang/aw-plugins-manifest@2.0.0 is missing dist.integrity or dist.tarball.');
+      publishCatalogImpl: async () => {
+        throw new Error('catalog registry failed');
       },
     });
 
     await expect(harness.publishRelease([
-      'latest',
+      'beta',
       '--catalog-version',
-      '2.0.0',
-    ])).rejects.toThrow('missing dist.integrity or dist.tarball');
-
-    expect(harness.calls).toEqual([
-      {
-        type: 'command',
-        command: 'pnpm',
-        args: ['run', 'release:verify:cli'],
-      },
-      {
-        type: 'command',
-        command: 'pnpm',
-        args: ['run', 'release:verify:catalog'],
-      },
-      {
-        type: 'catalog-preflight',
-        channel: 'latest',
-        catalogVersion: '2.0.0',
-      },
+      '2.0.0-beta.1',
+    ])).rejects.toThrow(
+      'Re-run catalog only: pnpm run release:publish:catalog:beta -- --catalog-version 2.0.0-beta.1',
+    );
+    expect(harness.calls.map((call) => call.type)).toEqual([
+      'command',
+      'command',
+      'catalog-preflight',
+      'cli-publish',
+      'catalog-publish',
     ]);
+    expect(harness.snapshotRequests).toBe(1);
+    expect(harness.snapshotCleanups).toBe(1);
+  });
+
+  it('stops before catalog publish and cleans snapshot when CLI tarball publish fails', async () => {
+    const harness = await loadPublishReleaseHarness({
+      publishCliImpl: async () => {
+        throw new Error('CLI tarball publish failed');
+      },
+    });
+
+    await expect(harness.publishRelease([
+      'beta',
+      '--catalog-version',
+      '2.0.0-beta.1',
+    ])).rejects.toThrow('CLI tarball publish failed');
+    expect(harness.calls.some((call) => call.type === 'catalog-publish')).toBe(false);
+    expect(harness.snapshotRequests).toBe(1);
+    expect(harness.snapshotCleanups).toBe(1);
   });
 });

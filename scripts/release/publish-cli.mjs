@@ -4,10 +4,13 @@ import { fileURLToPath } from 'node:url';
 import {
   assertVersionKind,
   packCli,
+  readPackageJson,
   readCliPackageJson,
   relativeToRepo,
+  resolveRegistryUrl,
   resolveCliPublishGitCheckArgs,
   runCommand,
+  withReleaseBuildSnapshot,
 } from './common.mjs';
 
 const publishModes = {
@@ -34,37 +37,91 @@ export function parseArgs(argv) {
   };
 }
 
-export async function publishCli(argv = process.argv.slice(2)) {
-  const { mode, publishMode } = parseArgs(argv);
-  const cliPackageJson = await readCliPackageJson();
-  const version = String(cliPackageJson.version);
+async function publishCliFromSnapshot(
+  mode,
+  publishMode,
+  snapshot,
+  expectedVersion,
+  gitCheckArgs,
+) {
+  const snapshotPackageJsonPath = path.join(snapshot.cliPackageRoot, 'package.json');
+  const [snapshotPackageJson, registryUrl] = await Promise.all([
+    readPackageJson(snapshotPackageJsonPath),
+    resolveRegistryUrl(snapshotPackageJsonPath, process.env),
+  ]);
+  const version = String(snapshotPackageJson.version);
+  if (version !== expectedVersion) {
+    throw new Error(
+      `CLI snapshot version mismatch: expected ${expectedVersion}, found ${version} in snapshot package.json.`,
+    );
+  }
   assertVersionKind(version, publishMode.versionKind);
 
-  await runCommand('pnpm', ['run', 'release:verify:cli']);
-  const gitCheckArgs = await resolveCliPublishGitCheckArgs();
-  const tarballPath = await packCli();
+  const tarballPath = await packCli({ snapshot });
   const publishArgs = [
-    '--filter',
-    '@yiliang/aw',
     'publish',
+    tarballPath,
+    '--ignore-scripts',
     '--tag',
     publishMode.tag,
+    '--registry',
+    registryUrl,
     ...gitCheckArgs,
   ];
-  await runCommand('pnpm', publishArgs);
+  await runCommand('pnpm', publishArgs, {
+    env: {
+      ...process.env,
+      AW_NPM_REGISTRY_URL: registryUrl,
+      npm_config_registry: registryUrl,
+      NPM_CONFIG_REGISTRY: registryUrl,
+    },
+  });
 
   return {
     mode,
     version,
     tarballPath,
+    registryUrl,
+    generationId: snapshot.generationId,
+    outputDigest: snapshot.outputDigest,
   };
+}
+
+export async function publishCli(argv = process.argv.slice(2), options = {}) {
+  const { mode, publishMode } = parseArgs(argv);
+  const expectedVersion = options.expectedVersion
+    ?? String((await readCliPackageJson()).version);
+  assertVersionKind(expectedVersion, publishMode.versionKind);
+
+  if (!options.skipVerify) {
+    await runCommand('pnpm', ['run', 'release:verify:cli']);
+  }
+  const gitCheckArgs = await resolveCliPublishGitCheckArgs();
+  if (options.snapshot) {
+    return publishCliFromSnapshot(
+      mode,
+      publishMode,
+      options.snapshot,
+      expectedVersion,
+      gitCheckArgs,
+    );
+  }
+  return withReleaseBuildSnapshot((snapshot) =>
+    publishCliFromSnapshot(
+      mode,
+      publishMode,
+      snapshot,
+      expectedVersion,
+      gitCheckArgs,
+    )
+  );
 }
 
 export async function main(argv = process.argv.slice(2)) {
   try {
-    const { mode, version, tarballPath } = await publishCli(argv);
+    const { mode, version, tarballPath, generationId } = await publishCli(argv);
     console.log(
-      `Published CLI @yiliang/aw@${version} with tag ${mode}. Tarball: ${relativeToRepo(tarballPath)}`,
+      `Published CLI @yiliang/aw@${version} with tag ${mode} from build generation ${generationId}. Tarball: ${relativeToRepo(tarballPath)}`,
     );
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));

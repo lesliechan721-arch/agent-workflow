@@ -32,6 +32,8 @@ aw install git-commit -p codex -s project
 
 `aw init` 用来预热远程 catalog 和 artifact cache。它会先读取 `@yiliang/aw-plugins-manifest`，再获取同版本 `@yiliang/aw-plugins` 并校验 digest；它不安装插件、不升级插件、不写 install record，也不主动 materialize 本机 native runtime。需要 user scope native runtime 的写命令会在真正调用平台前同步 active runtime；纯 Codex project 路径只读使用 current catalog，不会为了写当前仓库产物去注册用户级 Codex runtime。绑定真实插件 target 的写入型命令需要显式传 `-p codex|claude|both`。
 
+`aw status` 和主控制台首页优先使用合法的 catalog cache；安装、升级和普通初始化会检查远程 catalog。`aw init --force` 跳过 cache 快路径并强制尝试远程刷新；如果 resolver 只能返回 cache fallback，命令会拒绝该结果并报错。catalog deadline、cache TTL、原生命令 timeout 和离线 fallback 的完整合同见 [插件安装指南](docs/plugin-installation.md#catalog-与原生命令环境变量)。
+
 常用排障命令：
 
 ```bash
@@ -86,6 +88,7 @@ make test
 
 - `make build`：编译 `@yiliang/aw`，并生成本地 catalog staging / runtime bundle
 - `make test`：运行单元测试和集成测试
+- `pnpm test:perf:gate`：运行独立性能预算和 fast unit wall-time 门禁；预算定义见 [测试指南](docs/testing.md#performance-budgets)
 - `pnpm plugin:test <plugin>`：运行插件确定性 Node 脚本测试，不调用模型
 - `pnpm plugin:eval <plugin> --materialize-only`：生成并核验 Codex project/user 最终 Skill 制品，不调用模型
 - `pnpm plugin:eval <plugin> --output-dir /tmp/aw-eval`：本地显式运行该插件 release-required Codex eval；不进入常规 CI

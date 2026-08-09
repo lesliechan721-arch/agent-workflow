@@ -1,12 +1,6 @@
-import path from 'node:path';
-
 import {
-  createCatalogRegistryAdapter,
-  fullCatalogPackageName,
   publishCatalogRelease,
-  relativeToRepo,
   runCommand,
-  sidecarCatalogPackageName,
 } from './common.mjs';
 
 function parseArgs(argv) {
@@ -48,21 +42,13 @@ try {
   const { mode, catalogVersion } = parseArgs(process.argv.slice(2));
 
   await runCommand('pnpm', ['run', 'release:verify:catalog']);
-  const registry = await createCatalogRegistryAdapter();
-  const staged = await publishCatalogRelease({
+  const published = await publishCatalogRelease({
     channel: mode,
     catalogVersion,
-    registry,
   });
 
   console.log(
-    `Published catalog ${staged.manifest.catalogVersion} to ${mode} (${sidecarCatalogPackageName}, ${fullCatalogPackageName}).`,
-  );
-  console.log(
-    `  sidecar: ${relativeToRepo(path.join(staged.sidecarPackageRoot, 'package.json'))}`,
-  );
-  console.log(
-    `  full: ${relativeToRepo(path.join(staged.fullPackageRoot, 'package.json'))}`,
+    `Published catalog ${published.catalogVersion} to ${published.channel} (${published.packages.sidecar.name}, ${published.packages.full.name}).`,
   );
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error));

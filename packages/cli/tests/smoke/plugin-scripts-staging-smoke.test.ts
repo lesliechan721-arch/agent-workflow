@@ -1,15 +1,24 @@
 import os from 'node:os';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 
 import fs from 'fs-extra';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
 import { registerCurrentTestWritableStateRoot } from '../setup/test-isolation.js';
-import { execPnpmForTest } from '../helpers/pnpm.js';
 import { writeNodeScriptFixture } from '../support/plugin-scripts-node-fixture.js';
+import {
+  activateSmokeBuildSnapshot,
+  cleanupSmokeBuildSnapshot,
+  createSmokeBuildSnapshot,
+  type SmokeBuildSnapshot,
+} from '../support/smoke-build-snapshot.js';
 
+const execFileAsync = promisify(execFile);
 const tempDirs: string[] = [];
+let buildSnapshot: SmokeBuildSnapshot | null = null;
 
 function repoRoot(): string {
   return path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
@@ -50,18 +59,41 @@ async function makeTempRepo(): Promise<string> {
   return tempRepo;
 }
 
+async function requireBuildSnapshot(): Promise<SmokeBuildSnapshot> {
+  if (!buildSnapshot) {
+    throw new Error('Plugin scripts smoke snapshot is not initialized.');
+  }
+  return activateSmokeBuildSnapshot(buildSnapshot);
+}
+
+beforeAll(async () => {
+  buildSnapshot = await createSmokeBuildSnapshot(repoRoot());
+});
+
+afterAll(async () => {
+  await cleanupSmokeBuildSnapshot(buildSnapshot);
+  buildSnapshot = null;
+});
+
 afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
 
 describe('plugin scripts staging smoke', () => {
-  it('runs real scripts.node staging through the package plugin:test entry', async () => {
+  it('runs real scripts.node staging through the snapshot compiled entry', async () => {
     const root = repoRoot();
+    const snapshot = await requireBuildSnapshot();
     const tempRepo = await makeTempRepo();
     await writeNodeScriptFixture(tempRepo);
 
-    const result = await execPnpmForTest(
-      ['plugin:test', 'git-commit', '--test-name', 'staged smoke generated test'],
+    const result = await execFileAsync(
+      process.execPath,
+      [
+        path.join(snapshot.cliDistRoot, 'scripts', 'test-plugin-scripts.js'),
+        'git-commit',
+        '--test-name',
+        'staged smoke generated test',
+      ],
       {
         cwd: root,
         env: {

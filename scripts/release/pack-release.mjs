@@ -1,4 +1,11 @@
-import { readCliPackageJson, runCommand } from './common.mjs';
+import path from 'node:path';
+
+import {
+  packCli,
+  readPackageJson,
+  withReleaseBuildSnapshot,
+} from './common.mjs';
+import { packCatalogRelease } from './pack-catalog.mjs';
 
 function parseArgs(argv) {
   const args = [...argv];
@@ -32,11 +39,23 @@ function parseArgs(argv) {
 
 try {
   const { catalogVersion } = parseArgs(process.argv.slice(2));
-  const cliPackageJson = await readCliPackageJson();
-  await runCommand('node', ['scripts/release/pack-cli.mjs']);
-  await runCommand('node', ['scripts/release/pack-catalog.mjs', '--catalog-version', catalogVersion]);
+  const packed = await withReleaseBuildSnapshot(async (snapshot) => {
+    const cliPackageJson = await readPackageJson(
+      path.join(snapshot.cliPackageRoot, 'package.json'),
+    );
+    const cliTarballPath = await packCli({ snapshot });
+    const catalog = await packCatalogRelease(
+      ['--catalog-version', catalogVersion],
+      { snapshot },
+    );
+    return {
+      cliPackageJson,
+      cliTarballPath,
+      catalog,
+    };
+  });
   console.log(
-    `Packed CLI ${cliPackageJson.version} and catalog ${catalogVersion}.`,
+    `Packed CLI ${packed.cliPackageJson.version} and catalog ${packed.catalog.catalogVersion} from build generation ${packed.catalog.generationId}.`,
   );
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error));

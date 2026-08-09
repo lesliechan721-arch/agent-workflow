@@ -9,6 +9,10 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { registerCurrentTestWritableStateRoot } from '../setup/test-isolation.js';
 import { execPnpmForTest } from '../helpers/pnpm.js';
+import {
+  computeBuildOutputDigest,
+  inspectBuildCache,
+} from '../../../../scripts/build/build-cache.mjs';
 
 const execFileAsync = promisify(execFile);
 const tempDirs: string[] = [];
@@ -179,6 +183,157 @@ describe('catalog pack smoke', () => {
         kind: 'full',
         channel: sidecarManifest.channel,
       },
+    });
+  });
+
+  it('keeps canonical build output and its warm stamp reusable across catalog and combined release packs', async () => {
+    const root = repoRoot();
+    const canonicalRoot = path.join(root, 'packages', 'cli', 'plugins-dist');
+    const canonicalManifestPath = path.join(canonicalRoot, '.catalog', 'catalog-manifest.json');
+    const stampPath = path.join(root, '.release', 'cache', 'build-stamp.json');
+    const releaseStagingRoot = path.join(root, '.release', 'catalog-staging');
+    const catalogVersion = '99.0.0-beta.1';
+
+    await execPnpmForTest(['build:ensure'], {
+      cwd: root,
+      env: process.env,
+      maxBuffer: 20 * 1024 * 1024,
+    });
+    await expect(inspectBuildCache(root)).resolves.toMatchObject({
+      reusable: true,
+      reason: 'stamp and output tree match',
+    });
+    const [digestBefore, manifestBefore, stampBefore] = await Promise.all([
+      computeBuildOutputDigest(root),
+      fs.readFile(canonicalManifestPath),
+      fs.readFile(stampPath, 'utf8'),
+    ]);
+
+    const catalogPack = await execPnpmForTest([
+      'run',
+      'release:pack:catalog',
+      '--',
+      '--catalog-version',
+      catalogVersion,
+    ], {
+      cwd: root,
+      env: process.env,
+      maxBuffer: 20 * 1024 * 1024,
+    });
+
+    expect(catalogPack.stdout).not.toContain('Build cache miss');
+    await expect(computeBuildOutputDigest(root)).resolves.toBe(digestBefore);
+    await expect(fs.readFile(canonicalManifestPath)).resolves.toEqual(manifestBefore);
+    await expect(fs.readFile(stampPath, 'utf8')).resolves.toBe(stampBefore);
+    await expect(inspectBuildCache(root)).resolves.toMatchObject({ reusable: true });
+
+    const combinedPack = await execPnpmForTest([
+      'run',
+      'release:pack',
+      '--',
+      '--catalog-version',
+      catalogVersion,
+    ], {
+      cwd: root,
+      env: process.env,
+      maxBuffer: 20 * 1024 * 1024,
+    });
+
+    expect(combinedPack.stdout).not.toContain('Build cache miss');
+    await expect(computeBuildOutputDigest(root)).resolves.toBe(digestBefore);
+    await expect(fs.readFile(canonicalManifestPath)).resolves.toEqual(manifestBefore);
+    await expect(fs.readFile(stampPath, 'utf8')).resolves.toBe(stampBefore);
+    await expect(inspectBuildCache(root)).resolves.toMatchObject({ reusable: true });
+
+    const remainingReleaseStages = (await fs.readdir(releaseStagingRoot).catch(() => []))
+      .filter((entry) => entry.startsWith('catalog-'));
+    expect(remainingReleaseStages).toEqual([]);
+
+    const [sidecarTarballs, fullTarballs] = await Promise.all([
+      fs.readdir(path.join(root, '.release', 'tarballs', 'catalog', 'sidecar')),
+      fs.readdir(path.join(root, '.release', 'tarballs', 'catalog', 'full')),
+    ]);
+    expect(sidecarTarballs.filter((entry) => entry.endsWith('.tgz'))).toHaveLength(1);
+    expect(fullTarballs.filter((entry) => entry.endsWith('.tgz'))).toHaveLength(1);
+
+    const unpackRoot = await createSmokeTempRoot(
+      'aw-release-catalog-pack-smoke-',
+      'release catalog pack unpack root',
+    );
+    const sidecarUnpackRoot = path.join(unpackRoot, 'sidecar');
+    const fullUnpackRoot = path.join(unpackRoot, 'full');
+    await Promise.all([
+      fs.ensureDir(sidecarUnpackRoot),
+      fs.ensureDir(fullUnpackRoot),
+    ]);
+    const [sidecarPackageRoot, fullPackageRoot] = await Promise.all([
+      unpackSingleTarball(
+        path.join(root, '.release', 'tarballs', 'catalog', 'sidecar'),
+        sidecarUnpackRoot,
+      ),
+      unpackSingleTarball(
+        path.join(root, '.release', 'tarballs', 'catalog', 'full'),
+        fullUnpackRoot,
+      ),
+    ]);
+    const [sidecarManifest, fullManifest, sidecarPackageJson, fullPackageJson] = await Promise.all([
+      fs.readJson(path.join(sidecarPackageRoot, 'catalog-manifest.json')),
+      fs.readJson(path.join(fullPackageRoot, 'catalog-manifest.json')),
+      fs.readJson(path.join(sidecarPackageRoot, 'package.json')),
+      fs.readJson(path.join(fullPackageRoot, 'package.json')),
+    ]);
+    expect(sidecarManifest).toEqual(fullManifest);
+    expect(sidecarManifest).toMatchObject({
+      catalogVersion,
+      channel: 'beta',
+    });
+    expect(sidecarPackageJson).toMatchObject({
+      name: '@yiliang/aw-plugins-manifest',
+      version: catalogVersion,
+    });
+    expect(fullPackageJson).toMatchObject({
+      name: '@yiliang/aw-plugins',
+      version: catalogVersion,
+    });
+  });
+
+  it('packs CLI and catalog from one snapshot generation during a concurrent force build', async () => {
+    const root = repoRoot();
+    const catalogVersion = '99.0.0-beta.2';
+    const fixturePath = path.join(
+      root,
+      'packages',
+      'cli',
+      'tests',
+      'fixtures',
+      'release-snapshot-force.mjs',
+    );
+    const { stdout } = await execFileAsync(
+      process.execPath,
+      [fixturePath, root, catalogVersion],
+      {
+        cwd: root,
+        env: process.env,
+        maxBuffer: 40 * 1024 * 1024,
+        timeout: 90_000,
+      },
+    );
+    const resultLine = stdout
+      .split('\n')
+      .find((line) => line.startsWith('SNAPSHOT_FORCE_RESULT '));
+    expect(resultLine).toBeDefined();
+    const result = JSON.parse(resultLine!.slice('SNAPSHOT_FORCE_RESULT '.length));
+    expect(result).toMatchObject({
+      catalogVersion,
+      channel: 'beta',
+      generationMatches: true,
+      outputDigestMatches: true,
+      cliBytesMatch: true,
+      catalogBytesMatch: true,
+      snapshotRemoved: true,
+      remainingCatalogStages: 0,
+      remainingForceIntents: 0,
+      buildLockExists: false,
     });
   });
 });

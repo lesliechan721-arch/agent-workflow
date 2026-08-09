@@ -1,18 +1,68 @@
 # Testing Guidelines
 
-测试框架 Vitest，测试文件统一 `*.test.ts`，位于 `packages/cli/tests/` 下的 `unit/`、`integration/`、`smoke/`、`helpers/`、`fixtures/`。
+测试框架 Vitest。常规测试文件使用 `*.test.ts`；独立性能目录 `packages/cli/tests/perf/` 还包含 `*.test.mjs` gate 回归。其它测试材料位于 `packages/cli/tests/` 下的 `unit/`、`integration/`、`smoke/`、`helpers/`、`fixtures/`。
 
 ## Test Layers
 
 - **`unit/` 和 `integration/`** — 保持 build-free，不依赖预先存在的 `plugins-dist`；需要 runtime bundle 输入时，用 `tests/helpers/embedded-root.ts` 生成临时 synthetic embedded root
 - **`pnpm test:unit:fast`** — 运行显式 allowlist 中的纯逻辑 unit 文件，用于开发中的快速反馈；它不启动 child process、package manager 或 native CLI，也不构造大规模 artifact tree
-- **`smoke/`** — 专门验证真实 `pnpm build`、CLI pack、sidecar/full catalog pack 和 catalog fetch 产物，不进入常规 `pnpm test`
+- **`pnpm test:perf`** — 只运行 `tests/perf/` 下的独立性能预算和 gate 回归；它不进入普通 unit、integration 或 `pnpm test`
+- **`pnpm test:perf:gate`** — 先运行性能 Vitest，再运行 `test:unit:fast` 并检查 fast lane 的 wall time；用于性能门禁
+- **`smoke/`** — 专门验证 CLI build、CLI pack、sidecar/full catalog pack 和 catalog fetch 产物；这些入口通过 `build:ensure` 取得已验证构建，不进入常规 `pnpm test`
 - **`pnpm plugin:test <plugin>`** — 插件作者脚本测试入口，先 compile CLI，再运行已编译的 `packages/cli/scripts/test-plugin-scripts.js`；它使用 build 后 staging manifest 判定支持平台，并准备临时 bundle，但不是 `aw` 客户端子命令
 - **`pnpm plugin:eval <plugin>`** — Codex 插件 Skill 作者 eval 入口，按插件根 `evals/manifest.json` 经过真实 staging/renderer/adapter materialize project/user 制品；中央 native trigger driver 统一负责触发评测，领域专用 command runner 也只能消费最终制品；默认运行 release-required 模型 suite，`--materialize-only` 不调用模型
 - **`node .agents/skills/skill-review/scripts/run_static_skill_evals.mjs <skill> ...`** — 当前仓库 `.agents/skills/<name>` 的静态 project Skill eval；不伪装成插件，也不增加 package script
 - **`fixtures/repo-template/`** — 含 `.codex/`、`.claude/` 等完整项目结构示例
 - **`fixtures/codex-config/`** — Codex 配置示例
 - **`fixtures/codex-project-repo-managed/`** — Codex project scope repo-visible fixture 矩阵，覆盖 skills-only、mcp-only、slashCommands-only、skills+MCP、apps 拒绝、quoted-key MCP 和 project artifact identity
+
+## Build Reuse
+
+过去，测试和发布入口各自运行完整 build。同一条验证或打包链路可能重复编译 CLI，并重复生成 catalog staging。现在根脚本区分强制 build 和可复用 build：
+
+- `pnpm build`：始终执行完整构建，并在成功后刷新 build stamp。修改或验证构建实现本身时使用此入口。
+- `pnpm build:ensure`：先检查 stamp、构建输入和必要输出。全部匹配时复用现有产物；任一项失效时执行完整构建并刷新 stamp。只需要一个已验证构建输入的 smoke、pack 或 release 步骤使用此入口。
+
+普通 `pnpm build:ensure` 只保证 canonical build 有效，不创建消费副本。需要在 ensure 返回后继续读取构建产物的 release 和 smoke 路径使用私有 build snapshot，避免并发强制构建改写 canonical 输出。真实强制构建仍由根 `pnpm build` 执行；`run-build.mjs` 传入 `force: true`。build-cache 单测覆盖 warm stamp 下的强制重建和 generation 刷新。
+
+stamp 位于 `.release/cache/build-stamp.json`，schema version 为 `5`。每次真实构建生成新的 `generationId`；warm reuse 保留原 generation。一个 generation 同时绑定 `inputDigest`、`outputDigest` 和 `cliPackageDigest`。输入 identity 包含：
+
+- 已登记输入树的 path、type、mode 和文件内容摘要。摘要使用无歧义的字段编码，并为每个 entry 单独计算 hash。
+- Node 版本、Node executable 的路径、realpath 与内容摘要、`process.platform`、`process.arch`，以及根 `packageManager` 声明。
+- 当前 pnpm launcher 的路径、realpath、内容摘要和 npm user-agent。构建使用已验证的 Node 与 pnpm realpath；缺少 `npm_execpath` 时失败。launcher 在构建前固定，构建后会比较全部 stamp identity；任一 identity 在构建期间变化都拒绝写 stamp。
+
+`cliPackageDigest` 使用长度前缀的结构化 hash，绑定物化后的 regular `packages/cli/package.json` 的 type、path、referent mode 和 bytes。canonical package 即使是 symlink，也按 referent 的实际内容计算；该 symlink 仍会按输入 symlink 规则禁用 warm stamp。
+
+输入扫描只排除明确无关内容：`.release`、`packages/cli/dist`、`packages/cli/plugins-dist`、任意 `node_modules`，以及 `plugins/<name>/evals/**`。插件源码内其它名为 `dist` 的目录仍是输入，内容变化会使 stamp 失效。`evals/**` 是作者期材料，不进入 production bundle，因此不触发重建。
+
+stamp 还绑定 `packages/cli/dist/**` 和 `packages/cli/plugins-dist/**` 的完整输出树摘要。输出树中任意文件或目录增删、内容或 mode 改变，都会使复用失败。输出树出现 symlink 时拒绝复用和写 stamp。关键 marketplace、catalog 和 package JSON 另做结构校验。
+
+如果任一已登记输入路径中存在 symlink，或任一插件 source manifest 声明 `scripts.node.build`，warm stamp 复用会禁用。`build:ensure` 会执行完整构建，但可以为本次调用返回经过摘要校验的临时 snapshot；不会把该结果写成可复用 stamp。插件 build 脚本可以读取自己的环境，因此 CLI 不把任意环境变量当作长期可复用 identity。
+
+`.release/cache/build.lock` 用 direct `mkdir` 串行化强制构建、ensure 和 snapshot copy。锁不做自动 stale recovery。等待超时会报告 lock 和 owner 信息；恢复前必须停止全部相关 build、release 和 smoke 进程，再离线删除明确的 lock 或 intent 路径。
+
+每个强制构建在 `buildWithCache()` 返回 Promise 前同步创建 `.release/cache/build.force/<token>` intent，然后等待 build lock。ensure 在锁内检查全部 intent；发现 intent 时释放 lock，等待 intent 清理，再重新检查。intent 不自动回收，强制构建成功或失败后只清理自己的 token。
+
+私有 snapshot 位于 `.release/build-snapshots/build-*`。它在持有 build lock 时取得稳定 generation，把 canonical `package.json` referent 的 bytes 和 mode 写成普通文件，并复制 `dist` 与 `plugins-dist`。复制完成后会重新计算 canonical 完整 `inputDigest`、canonical `cliPackageDigest`、snapshot package digest 和 snapshot 输出摘要；任一值与本次 generation 不一致都会拒绝返回并清理 snapshot。canonical package symlink 的外部 target 后续变化不会改变已经物化的 snapshot package。
+
+snapshot handle 返回 `generationId`、`outputDigest`，以及同一 generation 的 `inputDigest` 和 `cliPackageDigest`。除 `node_modules` directory symlink 或 Windows junction 外，snapshot 中不允许其它 symlink。这个依赖链接只提供 ESM 解析，不进入输出摘要或 tarball。snapshot 完成后释放 build lock；consumer 在锁外只读取 snapshot，后续 force 可以安全更新 canonical 输出。owner 在成功或失败的 `finally` 中清理自己的完整 snapshot；snapshot cleanup 不需要 build lock。
+
+CLI pack 从 `snapshot.cliPackageRoot` 生成 tarball。组合 pack 和组合 publish 对 CLI 与 catalog 使用同一个 generation。Catalog prepare、pack、preflight 和 publish 使用同一 snapshot 的 compiled helper 与 catalog source；版本和 history 只写入 `.release/catalog-staging/catalog-*` 副本。CLI publish 发布已经生成的 tarball，不重新读取 workspace package。Release 和 smoke 都在结束时清理自己的 snapshot 与 catalog staging。
+
+`build:ensure` 只复用通过这些检查的构建结果。它不是跳过 build 正确性的选项。需要证明“从当前输入重新构建”的测试必须用 `pnpm build`；只需要保证后续步骤消费有效产物时用 `pnpm build:ensure`。
+
+## Performance Budgets
+
+性能测试与普通功能测试分开。不要把性能用例放进 `tests/unit/`，也不要把 `pnpm test:perf` 当成功能正确性门禁。预算使用稳定名称输出 `AW_PERF_SUMMARY`，便于本地和 CI 收集：
+
+| 预算 | 样本与指标 | 上限 |
+|------|------------|------|
+| `catalog-cache-first-warm` | 已验证磁盘 cache 的 warm `cacheFirst` 解析 P95 | `150 ms` |
+| `console-warm-load` | 主控制台/status 真实 warm load chain P95 | `500 ms` |
+| `catalog-remote-deadline` | `AW_CATALOG_REMOTE_TIMEOUT_MS=100` 时单次挂起远程解析的最大耗时 | `500 ms` |
+| `unit-fast-wall` | `test:unit:fast` 单次 wall time，由 gate 编排器测量 | `30000 ms` |
+
+前三项由 `pnpm test:perf` 执行。`unit-fast-wall` 由 `pnpm test:perf:gate` 在性能 Vitest 通过后执行。gate 还有独立 hard timeout，用于终止异常挂起；hard timeout 不是性能预算。进程树清理的 POSIX 和 Windows 路径分别有可注入回归，覆盖正常退出和 timeout 清理。
 
 ## Focus Areas
 
@@ -140,6 +190,7 @@ lifecycle 回归要覆盖 install/upgrade/uninstall 执行时机、失败阻断�
 `pnpm test:unit:fast` 只用于局部开发反馈。提交前仍必须运行完整 `pnpm test:unit`；fast lane 不能替代完整 unit 门禁。
 
 - 改命令分支、catalog 判定、账本、bundle 生成或打包行为 → 至少运行相关测试
+- 改 catalog cache-first、主控制台 warm load、远程 deadline 或 fast lane 范围 → 运行 `pnpm test:perf:gate`；性能门禁不能替代相关 unit/integration 测试
 - 改 build 或 tarball 行为 → 补跑 `pnpm test:smoke:build`，必要时再跑 `pnpm test:smoke:pack`
 - 改 catalog 打包、sidecar/full manifest、history、selector/cache 或 fetch 行为 → 补跑 catalog pack/fetch smoke，以及相关 `plugin-catalog*`、`local-marketplace`、`command-options` 单测
 - 改 `scripts.node` staging、manifest build、runtime dependency closure 或 `pnpm plugin:test` → 补跑 `pnpm test:smoke:plugin-scripts`；维护具体插件脚本时可先跑 `pnpm plugin:test <plugin>`

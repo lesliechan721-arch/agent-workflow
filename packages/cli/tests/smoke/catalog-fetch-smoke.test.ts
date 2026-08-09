@@ -1,16 +1,21 @@
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 
 import fs from 'fs-extra';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { registerCurrentTestWritableStateRoot } from '../setup/test-isolation.js';
-import { installCurrentSmokeDistIsolationBridge } from '../setup/test-isolation-smoke.js';
-import { execPnpmForTest } from '../helpers/pnpm.js';
+import {
+  activateSmokeBuildSnapshot,
+  cleanupSmokeBuildSnapshot,
+  createSmokeBuildSnapshot,
+  importSmokeSnapshotModule,
+  type SmokeBuildSnapshot,
+} from '../support/smoke-build-snapshot.js';
 
 const tempDirs: string[] = [];
-let cliBuildPromise: Promise<void> | null = null;
+let buildSnapshot: SmokeBuildSnapshot | null = null;
 
 function repoRoot(): string {
   return path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
@@ -171,19 +176,21 @@ async function createSmokeTempRoot(prefix: string, source: string): Promise<stri
   return registerSmokeWritableRoot(rootPath, source);
 }
 
-async function buildCli(root: string): Promise<void> {
-  await execPnpmForTest(['build'], {
-    cwd: root,
-    env: process.env,
-    maxBuffer: 20 * 1024 * 1024,
-  });
+async function requireBuildSnapshot(): Promise<SmokeBuildSnapshot> {
+  if (!buildSnapshot) {
+    throw new Error('Catalog fetch smoke snapshot is not initialized.');
+  }
+  return activateSmokeBuildSnapshot(buildSnapshot);
 }
 
-async function ensureBuiltCli(root: string): Promise<void> {
-  cliBuildPromise ??= buildCli(root);
-  await cliBuildPromise;
-  await installCurrentSmokeDistIsolationBridge();
-}
+beforeAll(async () => {
+  buildSnapshot = await createSmokeBuildSnapshot(repoRoot());
+});
+
+afterAll(async () => {
+  await cleanupSmokeBuildSnapshot(buildSnapshot);
+  buildSnapshot = null;
+});
 
 afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
@@ -191,46 +198,37 @@ afterEach(async () => {
 
 describe('catalog fetch smoke', () => {
   it('keeps smoke dist guards active for repo dist imports after rebuilding dist', async () => {
-    const root = repoRoot();
-    await ensureBuiltCli(root);
+    const snapshot = await requireBuildSnapshot();
 
-    const distMarketplace = await import(
-      pathToFileURL(path.join(root, 'packages', 'cli', 'dist', 'src', 'utils', 'marketplace.js')).href,
-    ) as {
+    const distMarketplace = await importSmokeSnapshotModule<{
       hasCatalogPackageSourceOverrideForTests: () => boolean;
-    };
-    const distPaths = await import(
-      pathToFileURL(path.join(root, 'packages', 'cli', 'dist', 'src', 'utils', 'paths.js')).href,
-    ) as {
+    }>(path.join(snapshot.cliDistRoot, 'src', 'utils', 'marketplace.js'));
+    const distPaths = await importSmokeSnapshotModule<{
       getEmbeddedPluginsRootOverrideForTests: () => string | null;
       resolveAwHome: (env?: NodeJS.ProcessEnv) => string;
-    };
-    const distNativeCli = await import(
-      pathToFileURL(path.join(root, 'packages', 'cli', 'dist', 'src', 'utils', 'native-cli.js')).href,
-    ) as {
+    }>(path.join(snapshot.cliDistRoot, 'src', 'utils', 'paths.js'));
+    const distNativeCli = await importSmokeSnapshotModule<{
       runNativeCli: (invocation: {
         command: string;
         args: string[];
         cwd?: string;
         env?: NodeJS.ProcessEnv;
       }) => Promise<unknown>;
-    };
-    const distCodexAppServer = await import(
-      pathToFileURL(path.join(root, 'packages', 'cli', 'dist', 'src', 'utils', 'codex-app-server-client.js')).href,
-    ) as {
+    }>(path.join(snapshot.cliDistRoot, 'src', 'utils', 'native-cli.js'));
+    const distCodexAppServer = await importSmokeSnapshotModule<{
       installCodexPluginViaAppServer: (options: {
         cwd: string;
         env: NodeJS.ProcessEnv;
         marketplacePath: string;
         pluginName: string;
       }) => Promise<unknown>;
-    };
+    }>(path.join(snapshot.cliDistRoot, 'src', 'utils', 'codex-app-server-client.js'));
 
     expect(distMarketplace.hasCatalogPackageSourceOverrideForTests()).toBe(false);
     expect(distPaths.getEmbeddedPluginsRootOverrideForTests()).toBeNull();
     expect(() => distPaths.resolveAwHome({
       ...process.env,
-      AW_HOME: path.join(root, 'packages', 'cli', 'dist', '.aw-smoke-readonly'),
+      AW_HOME: path.join(snapshot.cliDistRoot, '.aw-smoke-readonly'),
     })).toThrow('Unsafe test write path');
     expect(vi.isMockFunction(globalThis.fetch)).toBe(true);
     const guardedFetch = globalThis.fetch as typeof fetch;
@@ -260,20 +258,15 @@ describe('catalog fetch smoke', () => {
   });
 
   it('resolves sidecar before full and reuses current catalog cache before a later full download', async () => {
-    const root = repoRoot();
-    await ensureBuiltCli(root);
+    const snapshot = await requireBuildSnapshot();
 
-    const distPluginCatalog = await import(
-      pathToFileURL(path.join(root, 'packages', 'cli', 'dist', 'src', 'utils', 'plugin-catalog.js')).href,
-    ) as {
+    const distPluginCatalog = await importSmokeSnapshotModule<{
       clearCurrentCatalogResolutionMemoForTests: () => void;
       resolveCurrentCatalog: (env?: NodeJS.ProcessEnv) => Promise<Record<string, unknown>>;
-    };
-    const distMarketplace = await import(
-      pathToFileURL(path.join(root, 'packages', 'cli', 'dist', 'src', 'utils', 'marketplace.js')).href,
-    ) as {
+    }>(path.join(snapshot.cliDistRoot, 'src', 'utils', 'plugin-catalog.js'));
+    const distMarketplace = await importSmokeSnapshotModule<{
       setCatalogPackageSourceForTests: (source: unknown) => void;
-    };
+    }>(path.join(snapshot.cliDistRoot, 'src', 'utils', 'marketplace.js'));
 
     const tempRoot = await createSmokeTempRoot(
       'aw-fetch-cache-smoke-',
@@ -281,7 +274,7 @@ describe('catalog fetch smoke', () => {
     );
     registerSmokeWritableRoot(path.join(tempRoot, 'aw-home'), 'catalog fetch smoke cache AW_HOME');
     const stagedManifest = await fs.readJson(
-      path.join(root, 'packages', 'cli', 'plugins-dist', '.catalog', 'sidecar', 'catalog-manifest.json'),
+      path.join(snapshot.catalogOutputRoot, '.catalog', 'sidecar', 'catalog-manifest.json'),
     ) as {
       catalogVersion: string;
       channel: 'latest' | 'beta';
@@ -293,7 +286,7 @@ describe('catalog fetch smoke', () => {
     };
     const operations: string[] = [];
     const fullRecord = {
-      rootDir: path.join(root, 'packages', 'cli', 'plugins-dist', '.catalog', 'full'),
+      rootDir: path.join(snapshot.catalogOutputRoot, '.catalog', 'full'),
       manifest: stagedManifest as Record<string, unknown>,
     };
     const source = createFakeCatalogPackageSource({
@@ -302,7 +295,7 @@ describe('catalog fetch smoke', () => {
       },
       manifestPackages: {
         [packageKey('@yiliang/aw-plugins-manifest', stagedManifest.catalogVersion)]: {
-          rootDir: path.join(root, 'packages', 'cli', 'plugins-dist', '.catalog', 'sidecar'),
+          rootDir: path.join(snapshot.catalogOutputRoot, '.catalog', 'sidecar'),
           manifest: stagedManifest as Record<string, unknown>,
         },
       },
@@ -356,19 +349,14 @@ describe('catalog fetch smoke', () => {
   });
 
   it('uses sidecar history to fall back from incompatible latest to a compatible historical catalog', async () => {
-    const root = repoRoot();
-    await ensureBuiltCli(root);
+    const snapshot = await requireBuildSnapshot();
 
-    const distPluginCatalog = await import(
-      pathToFileURL(path.join(root, 'packages', 'cli', 'dist', 'src', 'utils', 'plugin-catalog.js')).href,
-    ) as {
+    const distPluginCatalog = await importSmokeSnapshotModule<{
       resolveCurrentCatalog: (env?: NodeJS.ProcessEnv) => Promise<Record<string, unknown>>;
-    };
-    const distMarketplace = await import(
-      pathToFileURL(path.join(root, 'packages', 'cli', 'dist', 'src', 'utils', 'marketplace.js')).href,
-    ) as {
+    }>(path.join(snapshot.cliDistRoot, 'src', 'utils', 'plugin-catalog.js'));
+    const distMarketplace = await importSmokeSnapshotModule<{
       setCatalogPackageSourceForTests: (source: unknown) => void;
-    };
+    }>(path.join(snapshot.cliDistRoot, 'src', 'utils', 'marketplace.js'));
 
     const tempRoot = await createSmokeTempRoot(
       'aw-fetch-history-smoke-',
@@ -376,7 +364,7 @@ describe('catalog fetch smoke', () => {
     );
     registerSmokeWritableRoot(path.join(tempRoot, 'aw-home'), 'catalog fetch smoke history AW_HOME');
     const compatible = await buildCatalogPair({
-      sourceCatalogRoot: path.join(root, 'packages', 'cli', 'plugins-dist'),
+      sourceCatalogRoot: snapshot.catalogOutputRoot,
       targetRoot: tempRoot,
       label: 'compatible',
       catalogVersion: '0.9.0',
@@ -384,7 +372,7 @@ describe('catalog fetch smoke', () => {
       minAwVersion: '1.0.0',
     });
     const blocked = await buildCatalogPair({
-      sourceCatalogRoot: path.join(root, 'packages', 'cli', 'plugins-dist'),
+      sourceCatalogRoot: snapshot.catalogOutputRoot,
       targetRoot: tempRoot,
       label: 'blocked',
       catalogVersion: '1.5.0',
