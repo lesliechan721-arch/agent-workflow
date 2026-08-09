@@ -3606,6 +3606,57 @@ describe('authoring tools', () => {
     }
   });
 
+  it('validate_plugin.mjs rejects a stale CLI manifest contract and uses lightweight fallback', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-validator-stale-dist-'));
+    tempDirs.push(tempRoot);
+
+    const scriptPath = path.join(
+      tempRoot,
+      '.agents',
+      'skills',
+      'create-agent-workflows-plugin',
+      'scripts',
+      'validate_plugin.mjs',
+    );
+    await fs.ensureDir(path.dirname(scriptPath));
+    await fs.copy(validatePluginScriptPath(), scriptPath);
+
+    const staleManifestModulePath = path.join(
+      tempRoot,
+      'packages',
+      'cli',
+      'dist',
+      'src',
+      'utils',
+      'manifest.js',
+    );
+    await fs.outputFile(
+      staleManifestModulePath,
+      [
+        'exports.validatePluginDependencyReferences = () => {};',
+        'exports.validateSourcePluginManifest = async (_pluginDir, manifest) => {',
+        '  if (!manifest.skillTriggers) throw new Error("stale validator requires skillTriggers");',
+        '};',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+
+    const { pluginDir } = await writeSourcePlugin(
+      path.join(tempRoot, 'plugins'),
+      'stale-dist-test',
+      createBaseManifest('stale-dist-test'),
+    );
+    const result = await execFileAsync('node', [scriptPath, pluginDir], {
+      cwd: tempRoot,
+      env: process.env,
+      maxBuffer: 10 * 1024 * 1024,
+    });
+
+    expect(result.stdout).toContain('仅执行轻量预检');
+    expect(result.stdout).toContain('[PASS] All checks passed.');
+  });
+
   it('validate_plugin.mjs fallback warns that it is lightweight and skips templated native asset shape checks', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-validator-fallback-'));
     tempDirs.push(tempRoot);

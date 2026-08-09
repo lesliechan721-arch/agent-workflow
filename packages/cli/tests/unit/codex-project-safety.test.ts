@@ -1063,6 +1063,63 @@ describe('Codex project safety preflight', () => {
     ).rejects.toThrow('repo skill "repo-check"');
   });
 
+  it('ignores user-only dynamic skill runtime during project write preflight', async () => {
+    const workspace = await makeCodexWorkspace({
+      pluginDirs: ['dynamic-artifacts'],
+      mutateRepo: async (repoRoot) => {
+        const pluginRoot = path.join(repoRoot, 'plugins', 'dynamic-artifacts');
+        const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
+        const manifest = await fs.readJson(manifestPath);
+        manifest.artifacts.targets.push({
+          id: 'user-runtime-skill',
+          platform: 'codex',
+          scopes: ['user'],
+          target: 'codex.skill',
+          projectManagedKind: 'skill',
+          states: ['present'],
+          refreshKeys: [],
+          skillKey: 'user-runtime',
+        });
+        await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+        await fs.outputFile(
+          path.join(pluginRoot, 'codex', 'skills', 'user-runtime', 'SKILL.md'),
+          '# User runtime\n',
+          'utf8',
+        );
+        await fs.outputFile(
+          path.join(repoRoot, '.agents', 'skills', 'user-runtime', 'SKILL.md'),
+          '# Foreign project skill\n',
+          'utf8',
+        );
+      },
+    });
+    const plugin = await readPluginManifest(
+      path.join(workspace.repoRoot, 'plugins', 'dynamic-artifacts'),
+    );
+
+    await expect(
+      runWithZeroWriteSnapshot(
+        {
+          repoRoot: workspace.repoRoot,
+          env: workspace.env,
+        },
+        () => preflightCodexProjectWriteSafety({
+          targets: [{
+            pluginName: 'dynamic-artifacts',
+            plugin,
+            currentPlugin: plugin,
+            source: 'currentCatalog',
+          }],
+          platforms: ['codex'],
+          cwd: workspace.repoRoot,
+          scope: 'project',
+          env: workspace.env,
+          operation: 'install',
+        }),
+      ),
+    ).resolves.toBeUndefined();
+  });
+
   it('fails install before config prompt when an unmanaged MCP server with the same key already exists', async () => {
     const workspace = await makeCodexWorkspace({
       pluginDirs: ['mcp-only'],

@@ -27,6 +27,10 @@ async function collectBundledCodexSkillTrees(
     return [];
   }
 
+  const dynamicSkillKeys = new Set(
+    (plugin.manifest.artifacts?.targets ?? []).flatMap((target) =>
+      target.target === 'codex.skill' && target.skillKey ? [target.skillKey] : []),
+  );
   const entries = await fs.readdir(skillsRoot, { withFileTypes: true });
   const trees: CodexSkillStagingTree[] = [];
   for (const entry of entries.sort((left, right) =>
@@ -35,6 +39,9 @@ async function collectBundledCodexSkillTrees(
       throw new Error(`Codex 项目 Skills 根目录不支持符号链接：${entry.name}`);
     }
     if (!entry.isDirectory()) {
+      continue;
+    }
+    if (dynamicSkillKeys.has(entry.name)) {
       continue;
     }
     const skillRoot = path.join(skillsRoot, entry.name);

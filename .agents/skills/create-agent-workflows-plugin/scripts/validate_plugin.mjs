@@ -12,6 +12,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const errors = [];
 const warnings = [];
+const SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION = 2;
 const MAX_SKILL_NAME_LEN = 64;
 const MAX_SKILL_DESCRIPTION_LEN = 1024;
 const MAX_SKILL_COMPATIBILITY_LEN = 500;
@@ -376,10 +377,14 @@ async function tryLoadCliManifestTools() {
     'manifest.js',
   );
   if (!fs.existsSync(modulePath)) return null;
-  const moduleSource = fs.readFileSync(modulePath, 'utf8');
-  if (!moduleSource.includes('validatePluginDependencyReferences')) return null;
   try {
     const mod = await import(pathToFileURL(modulePath).href);
+    if (
+      mod.SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION
+      !== SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION
+    ) {
+      return null;
+    }
     return {
       validateSourcePluginManifest: mod.validateSourcePluginManifest ?? null,
     };
@@ -3744,7 +3749,7 @@ async function validatePluginDir(pluginDir, options) {
     validatePlatformFieldSupport(manifest);
   } else {
     warn(
-      'CLI 未构建（packages/cli/dist/ 不存在），仅执行轻量预检；预检通过不代表完整 contract 通过，运行 pnpm build 后可获得权威源码校验',
+      'CLI 未构建或 packages/cli/dist manifest contract 已过期，仅执行轻量预检；预检通过不代表完整 contract 通过，运行 pnpm build 后可获得权威源码校验',
     );
     validateManifestLightweight(manifest);
     validateDeclaredPathsExist(pluginDir, manifest);

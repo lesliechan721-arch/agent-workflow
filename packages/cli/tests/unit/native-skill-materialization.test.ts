@@ -107,6 +107,47 @@ describe('native Codex project skill materialization', () => {
     await expect(fs.pathExists(path.join(targetSkillRoot, 'agents', 'openai.yaml'))).resolves.toBe(false);
   });
 
+  it('excludes declared dynamic skill targets from fallback static materialization', async () => {
+    const root = await makeTempRoot();
+    const pluginRoot = path.join(root, 'plugin');
+    const repoRoot = path.join(root, 'repo');
+    const plugin = makePlugin(pluginRoot);
+    plugin.manifest.artifacts = {
+      targets: [{
+        id: 'dynamic-skill',
+        platform: 'codex',
+        scopes: ['user', 'project'],
+        target: 'codex.skill',
+        projectManagedKind: 'skill',
+        states: ['present'],
+        refreshKeys: [],
+        skillKey: 'dynamic',
+      }],
+    };
+
+    for (const skillName of ['static', 'dynamic']) {
+      const sourceSkillRoot = path.join(pluginRoot, 'codex', 'skills', skillName);
+      await fs.outputFile(path.join(sourceSkillRoot, 'SKILL.md'), `# ${skillName}\n`);
+      await fs.outputFile(
+        path.join(sourceSkillRoot, 'agents', 'openai.yaml'),
+        'policy:\n  allow_implicit_invocation: false\n',
+      );
+    }
+
+    const materialization = await materializeCodexProjectSkills({
+      plugin,
+      repoRoot,
+    });
+
+    expect(materialization.artifacts.map((artifact) => artifact.artifactKey)).toEqual(['static']);
+    await expect(
+      fs.pathExists(path.join(repoRoot, '.agents', 'skills', 'static', 'SKILL.md')),
+    ).resolves.toBe(true);
+    await expect(
+      fs.pathExists(path.join(repoRoot, '.agents', 'skills', 'dynamic')),
+    ).resolves.toBe(false);
+  });
+
   it.runIf(process.platform !== 'win32')(
     'rejects symbolic links in the bundled Skills root',
     async () => {

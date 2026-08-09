@@ -1,10 +1,10 @@
 {
   "name": "ask-me",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "在具体实施前澄清重大用户决策，并对计划、方案和重大决策进行压力测试。",
   "compatibility": {
     "aw": {
-      "minVersion": "0.0.0"
+      "minVersion": "1.0.0-beta.31"
     }
   },
   "skills": "./skills",

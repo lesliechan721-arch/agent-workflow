@@ -63,7 +63,7 @@ async function resolveTestContext() {
   }
   const context = JSON.parse(await readFile(contextPath, 'utf8'));
   assert.equal(context.plugin.name, 'git-commit');
-  assert.equal(context.plugin.version, '0.1.7');
+  assert.equal(context.plugin.version, '0.1.8');
   assert.equal(context.event, 'test');
   return {
     sourceRoot: context.sourceRoot,

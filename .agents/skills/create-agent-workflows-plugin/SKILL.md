@@ -129,7 +129,7 @@ pnpm plugin:eval <plugin> --materialize-only --output-dir /tmp/aw-eval
 pnpm plugin:eval <plugin> --suite trigger --split validation --runs 1 --output-dir /tmp/aw-eval
 ```
 
-`validate_plugin.mjs` 默认校验 AW source profile；`--strict-agent-skills` 用于仓库内检查是否只使用 Agent Skills portable core，但不是上游 `skills-ref` 的替代品。`--json` 提供机器可解析结果。CLI 未构建时 validator 只做轻量预检；完整 contract 仍需先运行 `pnpm build`。
+`validate_plugin.mjs` 默认校验 AW source profile；`--strict-agent-skills` 用于仓库内检查是否只使用 Agent Skills portable core，但不是上游 `skills-ref` 的替代品。`--json` 提供机器可解析结果。CLI 未构建或 `packages/cli/dist` 的 manifest contract 已过期时，validator 只做轻量预检；完整 contract 仍需先运行 `pnpm build`。
 
 ## 完成条件
 

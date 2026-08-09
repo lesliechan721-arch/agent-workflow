@@ -260,6 +260,10 @@ export async function collectDeclaredCodexProjectSkillKeys(plugin: PluginMeta): 
     ? path.resolve(plugin.rootDir, trimDotSlash(plugin.manifest.slashCommands))
     : undefined;
   const keys = new Set<string>();
+  const dynamicSkillKeys = new Set(
+    getCodexDynamicArtifactTargets(plugin).flatMap((target) =>
+      target.target === 'codex.skill' && target.skillKey ? [target.skillKey] : []),
+  );
 
   for (const target of getCodexDynamicArtifactTargets(plugin, { scope: 'project' })) {
     if (target.target === 'codex.skill' && target.skillKey) {
@@ -274,6 +278,9 @@ export async function collectDeclaredCodexProjectSkillKeys(plugin: PluginMeta): 
 
     const entries = await fs.readdir(root, { withFileTypes: true });
     for (const entry of entries) {
+      if (root === codexSkillRoot && dynamicSkillKeys.has(entry.name)) {
+        continue;
+      }
       if (!entry.isDirectory()) {
         continue;
       }

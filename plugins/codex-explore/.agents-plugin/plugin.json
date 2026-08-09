@@ -1,10 +1,10 @@
 {
   "name": "codex-explore",
-  "version": "0.2.9",
+  "version": "0.2.10",
   "description": "在大量、陌生或边界不明的代码、文档、日志和网页中隔离探索并核验证据。",
   "compatibility": {
     "aw": {
-      "minVersion": "1.0.0-beta.30"
+      "minVersion": "1.0.0-beta.31"
     }
   },
   "marketplace": {
