@@ -101,7 +101,7 @@ async function writeCommandPlugin(
     marketplace: {
       category: 'workflow',
       strict: true,
-      policy: { installation: 'AVAILABLE', authentication: 'NONE', products: ['CODEX'] },
+      policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL', products: ['CODEX'] },
     },
   }, { spaces: 2 });
   await fs.writeFile(

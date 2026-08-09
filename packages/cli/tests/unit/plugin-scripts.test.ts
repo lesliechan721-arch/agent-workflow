@@ -57,7 +57,7 @@ function createManifest(name = 'script-plugin'): PluginManifestSource {
       strict: true,
       policy: {
         installation: 'AVAILABLE',
-        authentication: 'NONE',
+        authentication: 'ON_INSTALL',
       },
     },
     scripts: {

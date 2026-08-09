@@ -15,7 +15,7 @@ function baseManifest(name = 'dependency-parent'): Record<string, unknown> {
       strict: true,
       policy: {
         installation: 'AVAILABLE',
-        authentication: 'NONE',
+        authentication: 'ON_INSTALL',
       },
     },
   };

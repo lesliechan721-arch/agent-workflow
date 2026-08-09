@@ -7,7 +7,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { validateBundleLayout } from '../../src/utils/bundle-layout.js';
 import { readJsonFile } from '../../src/utils/json.js';
-import { resolveCatalogPackageIdentityByDistTag } from '../../src/utils/marketplace.js';
+import {
+  resolveCatalogPackageIdentityByDistTag,
+  validateMarketplaceManifest,
+} from '../../src/utils/marketplace.js';
 import { bundlePlugins } from '../../scripts/bundle-plugins.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
 import { TestPathFenceError } from '../helpers/test-isolation.js';
@@ -347,6 +350,34 @@ describe('marketplace bundle', () => {
     const { readMarketplaceManifest } = await import('../../src/utils/marketplace.js');
     await expect(readMarketplaceManifest(process.cwd(), 'claude')).rejects.toThrow(
       'Invalid claude marketplace manifest.owner.url: expected a non-empty string.',
+    );
+  });
+
+  it('rejects unsupported authentication policies in marketplace files', () => {
+    expect(() => validateMarketplaceManifest({
+      name: 'aw',
+      owner: {
+        name: 'Leslie Chan',
+        url: 'https://github.com/LeslieChan/agent-workflows',
+      },
+      interface: {
+        displayName: 'Agent Workflows',
+      },
+      plugins: [
+        {
+          name: 'invalid-authentication',
+          source: './plugins/invalid-authentication',
+          description: 'Invalid authentication fixture.',
+          category: 'workflow',
+          strict: true,
+          policy: {
+            installation: 'AVAILABLE',
+            authentication: 'NONE',
+          },
+        },
+      ],
+    })).toThrow(
+      'Invalid marketplace manifest.plugins[0].policy.authentication: expected "ON_INSTALL" or "ON_USE".',
     );
   });
 

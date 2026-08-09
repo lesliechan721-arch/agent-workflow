@@ -20,6 +20,7 @@ import type {
   DynamicArtifactKind,
   HookDefinition,
   InstructionDefinition,
+  MarketplaceAuthenticationPolicy,
   MarketplaceManifest,
   MarketplaceSourceMeta,
   NativeHookDefinition,
@@ -80,9 +81,13 @@ import {
 } from './platform-support.js';
 
 export const SOURCE_MANIFEST_PATH = path.join('.agents-plugin', 'plugin.json');
-export const SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION = 2;
+export const SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION = 3;
 export const MARKETPLACE_SOURCE_PATH = path.join('plugins', 'marketplace-source.json');
 const MANIFEST_POLICY_PRODUCTS = new Set(['CODEX', 'CLAUDE']);
+const MARKETPLACE_AUTHENTICATION_POLICIES = new Set<MarketplaceAuthenticationPolicy>([
+  'ON_INSTALL',
+  'ON_USE',
+]);
 const PLUGIN_DEPENDENCY_PLATFORMS = new Set<PlatformName>(['codex', 'claude']);
 const CATALOG_CHANNELS = new Set<CatalogChannel>(['latest', 'beta']);
 const NODE_RUNNABLE_EXTENSIONS = new Set(['.js', '.mjs', '.cjs']);
@@ -685,10 +690,23 @@ function normalizeMarketplacePolicy(
 ): PluginMarketplaceMeta['policy'] {
   const input = assertObject(value, fieldName);
   assertAllowedKeys(input, fieldName, ['installation', 'authentication', 'products']);
+  const authentication = ensureString(
+    input.authentication,
+    `${fieldName}.authentication`,
+  );
+  if (
+    !MARKETPLACE_AUTHENTICATION_POLICIES.has(
+      authentication as MarketplaceAuthenticationPolicy,
+    )
+  ) {
+    throw new Error(
+      `Invalid ${fieldName}.authentication: expected "ON_INSTALL" or "ON_USE".`,
+    );
+  }
 
   return {
     installation: ensureString(input.installation, `${fieldName}.installation`),
-    authentication: ensureString(input.authentication, `${fieldName}.authentication`),
+    authentication: authentication as MarketplaceAuthenticationPolicy,
     products: normalizeMarketplaceProducts(input.products, `${fieldName}.products`),
   };
 }

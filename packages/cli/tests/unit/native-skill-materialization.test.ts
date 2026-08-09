@@ -32,7 +32,7 @@ function makePlugin(rootDir: string): PluginMeta {
         strict: true,
         policy: {
           installation: 'AVAILABLE',
-          authentication: 'NONE',
+          authentication: 'ON_INSTALL',
         },
       },
     },

@@ -147,7 +147,7 @@ async function addInvalidNeighborPlugin(repoRoot: string): Promise<void> {
         strict: true,
         policy: {
           installation: 'AVAILABLE',
-          authentication: 'NONE',
+          authentication: 'ON_INSTALL',
         },
       },
       scripts: {

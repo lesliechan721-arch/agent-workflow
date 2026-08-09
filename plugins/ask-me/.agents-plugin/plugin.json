@@ -1,6 +1,6 @@
 {
   "name": "ask-me",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "在具体实施前澄清重大用户决策，并对计划、方案和重大决策进行压力测试。",
   "compatibility": {
     "aw": {
@@ -13,7 +13,7 @@
     "strict": true,
     "policy": {
       "installation": "AVAILABLE",
-      "authentication": "NONE"
+      "authentication": "ON_INSTALL"
     }
   },
   "interface": {

@@ -606,7 +606,7 @@ export async function createHistoricalPluginTarget(
           strict: true,
           policy: {
             installation: 'HISTORICAL',
-            authentication: 'NONE',
+            authentication: 'ON_INSTALL',
           },
         },
         extensions: createHistoricalExtensionKinds(trackingSummary),

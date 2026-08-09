@@ -11,6 +11,7 @@ import {
 import type {
   CatalogChannel,
   CatalogVersion,
+  MarketplaceAuthenticationPolicy,
   MarketplaceManifest,
   PlatformName,
 } from '../types.js';
@@ -79,6 +80,10 @@ export interface CatalogPackageSource {
 
 let catalogPackageSourceOverride: CatalogPackageSource | null = null;
 let catalogPackageSourceRevision = 0;
+const MARKETPLACE_AUTHENTICATION_POLICIES = new Set<MarketplaceAuthenticationPolicy>([
+  'ON_INSTALL',
+  'ON_USE',
+]);
 
 function assertObject(value: unknown, fieldName: string): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -135,7 +140,19 @@ function validateMarketplaceManifestEntry(
 
   const policy = assertObject(entry.policy, `${fieldName}.policy`);
   assertString(policy.installation, `${fieldName}.policy.installation`);
-  assertString(policy.authentication, `${fieldName}.policy.authentication`);
+  const authentication = assertString(
+    policy.authentication,
+    `${fieldName}.policy.authentication`,
+  );
+  if (
+    !MARKETPLACE_AUTHENTICATION_POLICIES.has(
+      authentication as MarketplaceAuthenticationPolicy,
+    )
+  ) {
+    throw new Error(
+      `Invalid ${fieldName}.policy.authentication: expected "ON_INSTALL" or "ON_USE".`,
+    );
+  }
   if (policy.products !== undefined) {
     assertStringArray(policy.products, `${fieldName}.policy.products`);
   }

@@ -195,7 +195,7 @@ function syntheticPlugin(options: {
         strict: false,
         policy: {
           installation: 'manual',
-          authentication: 'none',
+          authentication: 'ON_INSTALL',
         },
       },
     },

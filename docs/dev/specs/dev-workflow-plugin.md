@@ -489,7 +489,7 @@ docs/dev/workflows/<workflow-id>/
     "strict": true,
     "policy": {
       "installation": "AVAILABLE",
-      "authentication": "NONE"
+      "authentication": "ON_INSTALL"
     }
   },
   "interface": {

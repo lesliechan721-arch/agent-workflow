@@ -741,7 +741,7 @@ async function writeHistoricalLifecycleRuntime(
         strict: true,
         policy: {
           installation: 'AVAILABLE',
-          authentication: 'NONE',
+          authentication: 'ON_INSTALL',
           products: [target.location.platform === 'codex' ? 'CODEX' : 'CLAUDE'],
         },
       },

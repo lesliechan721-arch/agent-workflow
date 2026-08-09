@@ -216,7 +216,7 @@ describe('slashCommands source and bundle contract', () => {
           strict: true,
           policy: {
             installation: 'AVAILABLE',
-            authentication: 'NONE',
+            authentication: 'ON_INSTALL',
           },
         },
       },
@@ -257,7 +257,7 @@ describe('slashCommands source and bundle contract', () => {
           strict: true,
           policy: {
             installation: 'AVAILABLE',
-            authentication: 'NONE',
+            authentication: 'ON_INSTALL',
           },
         },
       },
@@ -289,7 +289,7 @@ describe('slashCommands source and bundle contract', () => {
           strict: true,
           policy: {
             installation: 'AVAILABLE',
-            authentication: 'NONE',
+            authentication: 'ON_INSTALL',
             products: ['CLAUDE'],
           },
         },
@@ -342,7 +342,7 @@ describe('slashCommands source and bundle contract', () => {
           strict: true,
           policy: {
             installation: 'AVAILABLE',
-            authentication: 'NONE',
+            authentication: 'ON_INSTALL',
             products: ['CODEX'],
           },
         },
@@ -375,7 +375,7 @@ describe('slashCommands source and bundle contract', () => {
           strict: true,
           policy: {
             installation: 'AVAILABLE',
-            authentication: 'NONE',
+            authentication: 'ON_INSTALL',
             products: ['CODEX'],
           },
         },
@@ -413,7 +413,7 @@ describe('slashCommands source and bundle contract', () => {
           strict: true,
           policy: {
             installation: 'AVAILABLE',
-            authentication: 'NONE',
+            authentication: 'ON_INSTALL',
           },
         },
       },
@@ -436,7 +436,7 @@ describe('slashCommands source and bundle contract', () => {
           strict: true,
           policy: {
             installation: 'AVAILABLE',
-            authentication: 'NONE',
+            authentication: 'ON_INSTALL',
           },
         },
       },
@@ -460,7 +460,7 @@ describe('slashCommands source and bundle contract', () => {
           strict: true,
           policy: {
             installation: 'AVAILABLE',
-            authentication: 'NONE',
+            authentication: 'ON_INSTALL',
           },
         },
       },
@@ -487,7 +487,7 @@ describe('slashCommands source and bundle contract', () => {
           strict: true,
           policy: {
             installation: 'AVAILABLE',
-            authentication: 'NONE',
+            authentication: 'ON_INSTALL',
           },
         },
       },
@@ -510,7 +510,7 @@ describe('slashCommands source and bundle contract', () => {
           strict: true,
           policy: {
             installation: 'AVAILABLE',
-            authentication: 'NONE',
+            authentication: 'ON_INSTALL',
           },
         },
       },
@@ -541,7 +541,7 @@ describe('slashCommands source and bundle contract', () => {
           strict: true,
           policy: {
             installation: 'AVAILABLE',
-            authentication: 'NONE',
+            authentication: 'ON_INSTALL',
           },
         },
       },

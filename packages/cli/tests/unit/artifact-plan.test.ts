@@ -34,7 +34,7 @@ function createManifest(overrides: Partial<PluginManifestSource> = {}): PluginMa
       strict: true,
       policy: {
         installation: 'AVAILABLE',
-        authentication: 'NONE',
+        authentication: 'ON_INSTALL',
       },
     },
     config: {

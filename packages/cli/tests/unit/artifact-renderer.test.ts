@@ -31,7 +31,7 @@ function createManifest(name = 'dynamic-artifacts'): PluginManifestSource {
       strict: true,
       policy: {
         installation: 'AVAILABLE',
-        authentication: 'NONE',
+        authentication: 'ON_INSTALL',
       },
     },
     scripts: {

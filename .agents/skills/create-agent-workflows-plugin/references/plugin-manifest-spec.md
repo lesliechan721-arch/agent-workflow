@@ -223,7 +223,7 @@ AW 版本管理里有三套身份，不能混用：
     "strict": true,
     "policy": {
       "installation": "AVAILABLE",
-      "authentication": "NONE",
+      "authentication": "ON_INSTALL",
       "products": ["CODEX"]
     }
   },
@@ -372,7 +372,7 @@ codex:
 | `tags` | string[] | 否 | 搜索标签，会 trim、去空、去重 |
 | `strict` | boolean | 是 | 是否要求 plugin.json 存在 |
 | `policy.installation` | string | 是 | `"AVAILABLE"` 或 `"NOT_AVAILABLE"` 或 `"INSTALLED_BY_DEFAULT"` |
-| `policy.authentication` | string | 是 | `"NONE"` 或 `"ON_INSTALL"` 或 `"ON_USE"` |
+| `policy.authentication` | string | 是 | `"ON_INSTALL"` 或 `"ON_USE"` |
 | `policy.products` | string[] | 否 | 产品限制，例如 `["CODEX"]` 或 `["CLAUDE"]`，会 trim、去空、去重 |
 
 ### policy 字段说明
@@ -382,7 +382,6 @@ codex:
   - `"NOT_AVAILABLE"`：不在 marketplace 中显示
   - `"INSTALLED_BY_DEFAULT"`：默认安装
 - `authentication`：
-  - `"NONE"`：无需认证
   - `"ON_INSTALL"`：安装时认证
   - `"ON_USE"`：使用时认证
 - `products`：省略或空数组时表示同时支持 Claude 和 Codex；声明后只支持指定产品。这个字段不只是安装门禁，还参与 `pnpm build` 的 platform manifest/runtime 裁剪、平台 marketplace entries 过滤和 `pnpm plugin:test` 平台选择。`aw install` / 显式 `aw upgrade` 会拦截不匹配的平台；写入口必须显式传 `--platform codex|claude|both`。脚手架默认省略该字段，让插件保持双平台；只有明确要限制平台时才添加。
@@ -479,7 +478,7 @@ project scope 还会写两类项目共享文件：`.agent-workflows/plugin-confi
     "strict": true,
     "policy": {
       "installation": "AVAILABLE",
-      "authentication": "NONE"
+      "authentication": "ON_INSTALL"
     }
   },
   "extensions": {

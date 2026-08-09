@@ -72,7 +72,7 @@ async function writeManifestOnlyPlugin(
       strict: true,
       policy: {
         installation: 'AVAILABLE',
-        authentication: 'NONE',
+        authentication: 'ON_INSTALL',
       },
     },
     extensions,
@@ -142,7 +142,7 @@ function createBaseManifest(
       strict: true,
       policy: {
         installation: 'AVAILABLE',
-        authentication: 'NONE',
+        authentication: 'ON_INSTALL',
       },
     },
     ...extra,
@@ -189,7 +189,7 @@ async function writeDynamicArtifactPlugin(
       strict: true,
       policy: {
         installation: 'AVAILABLE',
-        authentication: 'NONE',
+        authentication: 'ON_INSTALL',
         ...(options.products === null ? {} : { products: options.products ?? ['CODEX'] }),
       },
     },
@@ -328,7 +328,7 @@ async function writeSlashCommandPlugin(
         strict: true,
         policy: {
           installation: 'AVAILABLE',
-          authentication: 'NONE',
+          authentication: 'ON_INSTALL',
           ...(options.products === null ? {} : { products: options.products ?? ['CODEX'] }),
         },
       },
@@ -462,7 +462,7 @@ describe('authoring tools', () => {
         strict: true,
         policy: {
           installation: 'AVAILABLE',
-          authentication: 'NONE',
+          authentication: 'ON_INSTALL',
         },
       },
       interface: {
@@ -613,7 +613,7 @@ describe('authoring tools', () => {
           strict: true,
           policy: {
             installation: 'AVAILABLE',
-            authentication: 'NONE',
+            authentication: 'ON_INSTALL',
           },
         },
       },
@@ -647,6 +647,24 @@ describe('authoring tools', () => {
     });
     await expect(runValidatePlugin(invalidPluginVersionDir)).rejects.toMatchObject({
       stdout: expect.stringContaining('strict SemVer 2.0.0'),
+    });
+
+    const invalidAuthenticationDir = path.join(pluginsRoot, 'invalid-authentication');
+    await writeAuthoringPluginManifest(invalidAuthenticationDir, {
+      ...createBaseManifest('invalid-authentication'),
+      marketplace: {
+        category: 'workflow',
+        strict: true,
+        policy: {
+          installation: 'AVAILABLE',
+          authentication: 'NONE',
+        },
+      },
+    });
+    await expect(runValidatePlugin(invalidAuthenticationDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining(
+        'Invalid marketplace.policy.authentication: expected "ON_INSTALL" or "ON_USE".',
+      ),
     });
 
     const aboveCatalogMinDir = path.join(pluginsRoot, 'above-catalog-min');
@@ -907,7 +925,7 @@ describe('authoring tools', () => {
       marketplace: {
         category: 'workflow',
         strict: true,
-        policy: { installation: 'AVAILABLE', authentication: 'NONE' },
+        policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
       },
       scripts: {
         helpers: { config: './scripts/aw-config.mjs' },
@@ -1543,7 +1561,7 @@ describe('authoring tools', () => {
         marketplace: {
           category: 'workflow',
           strict: true,
-          policy: { installation: 'AVAILABLE', authentication: 'NONE' },
+          policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
         },
       }),
       { spaces: 2 },
@@ -2039,7 +2057,7 @@ describe('authoring tools', () => {
           strict: true,
           policy: {
             installation: 'AVAILABLE',
-            authentication: 'NONE',
+            authentication: 'ON_INSTALL',
             products: ['CLAUDE'],
           },
         },
@@ -2457,7 +2475,7 @@ describe('authoring tools', () => {
             strict: true,
             policy: {
               installation: 'AVAILABLE',
-              authentication: 'NONE',
+              authentication: 'ON_INSTALL',
               products: testCase.products,
             },
           },
@@ -2589,7 +2607,7 @@ describe('authoring tools', () => {
         strict: true,
         policy: {
           installation: 'AVAILABLE',
-          authentication: 'NONE',
+          authentication: 'ON_INSTALL',
           products: ['CLAUDE'],
         },
       },
@@ -2673,7 +2691,7 @@ describe('authoring tools', () => {
       marketplace: {
         category: 'workflow',
         strict: true,
-        policy: { installation: 'AVAILABLE', authentication: 'NONE' },
+        policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
       },
     }), { spaces: 2 });
     await fs.writeFile(
@@ -2877,7 +2895,7 @@ describe('authoring tools', () => {
         strict: true,
         policy: {
           installation: 'AVAILABLE',
-          authentication: 'NONE',
+          authentication: 'ON_INSTALL',
           products: ['CODEX', 'BROWSER'],
         },
       },
@@ -2933,7 +2951,7 @@ describe('authoring tools', () => {
       marketplace: {
         category: 'workflow',
         strict: true,
-        policy: { installation: 'AVAILABLE', authentication: 'NONE' },
+        policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
       },
     }), { spaces: 2 });
     await fs.writeFile(
@@ -3017,7 +3035,7 @@ describe('authoring tools', () => {
       marketplace: {
         category: 'workflow',
         strict: true,
-        policy: { installation: 'AVAILABLE', authentication: 'NONE' },
+        policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
       },
     }), { spaces: 2 });
 
@@ -3100,7 +3118,7 @@ describe('authoring tools', () => {
       marketplace: {
         category: 'workflow',
         strict: true,
-        policy: { installation: 'AVAILABLE', authentication: 'NONE' },
+        policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
       },
       buildConfig: {
         templates: {
@@ -3202,7 +3220,7 @@ describe('authoring tools', () => {
         strict: true,
         policy: {
           installation: 'AVAILABLE',
-          authentication: 'NONE',
+          authentication: 'ON_INSTALL',
           products: ['CLAUDE'],
         },
       },
@@ -3256,7 +3274,7 @@ describe('authoring tools', () => {
       marketplace: {
         category: 'workflow',
         strict: true,
-        policy: { installation: 'AVAILABLE', authentication: 'NONE' },
+        policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
       },
     }), { spaces: 2 });
     await fs.writeFile(
@@ -3555,7 +3573,7 @@ describe('authoring tools', () => {
       marketplace: {
         category: 'workflow',
         strict: true,
-        policy: { installation: 'AVAILABLE', authentication: 'NONE' },
+        policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
       },
       interface: { displayName: 'Boundary Test', shortDescription: 'Test' },
     }), { spaces: 2 });
@@ -3642,7 +3660,7 @@ describe('authoring tools', () => {
       'utf8',
     );
 
-    const { pluginDir } = await writeSourcePlugin(
+    const { pluginDir, manifestPath } = await writeSourcePlugin(
       path.join(tempRoot, 'plugins'),
       'stale-dist-test',
       createBaseManifest('stale-dist-test'),
@@ -3655,6 +3673,21 @@ describe('authoring tools', () => {
 
     expect(result.stdout).toContain('仅执行轻量预检');
     expect(result.stdout).toContain('[PASS] All checks passed.');
+
+    const manifest = await fs.readJson(manifestPath);
+    manifest.marketplace.policy.authentication = 'NONE';
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+    await expect(
+      execFileAsync('node', [scriptPath, pluginDir], {
+        cwd: tempRoot,
+        env: process.env,
+        maxBuffer: 10 * 1024 * 1024,
+      }),
+    ).rejects.toMatchObject({
+      stdout: expect.stringContaining(
+        'marketplace.policy.authentication must be "ON_INSTALL" or "ON_USE"',
+      ),
+    });
   });
 
   it('validate_plugin.mjs fallback warns that it is lightweight and skips templated native asset shape checks', async () => {
@@ -3691,7 +3724,7 @@ describe('authoring tools', () => {
       marketplace: {
         category: 'workflow',
         strict: true,
-        policy: { installation: 'AVAILABLE', authentication: 'NONE' },
+        policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
       },
       buildConfig: {
         templates: {

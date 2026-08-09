@@ -1280,7 +1280,7 @@ describe('cli entry', () => {
               strict: false,
               policy: {
                 installation: 'AVAILABLE',
-                authentication: 'NONE',
+                authentication: 'ON_INSTALL',
               },
             },
             config: {
@@ -1360,7 +1360,7 @@ describe('cli entry', () => {
               strict: false,
               policy: {
                 installation: 'AVAILABLE',
-                authentication: 'NONE',
+                authentication: 'ON_INSTALL',
               },
             },
             config: {
@@ -1446,7 +1446,7 @@ describe('cli entry', () => {
               strict: false,
               policy: {
                 installation: 'AVAILABLE',
-                authentication: 'NONE',
+                authentication: 'ON_INSTALL',
               },
             },
             config: {
@@ -1554,7 +1554,7 @@ describe('cli entry', () => {
               strict: false,
               policy: {
                 installation: 'AVAILABLE',
-                authentication: 'NONE',
+                authentication: 'ON_INSTALL',
               },
             },
             config: {
@@ -1626,7 +1626,7 @@ describe('cli entry', () => {
               strict: false,
               policy: {
                 installation: 'AVAILABLE',
-                authentication: 'NONE',
+                authentication: 'ON_INSTALL',
               },
             },
             config: {
@@ -2105,7 +2105,7 @@ describe('cli entry', () => {
               strict: false,
               policy: {
                 installation: 'AVAILABLE',
-                authentication: 'NONE',
+                authentication: 'ON_INSTALL',
               },
             },
             config: {

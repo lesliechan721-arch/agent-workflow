@@ -103,7 +103,7 @@ describe('build smoke', () => {
       marketplace: {
         category: 'workflow',
         policy: {
-          authentication: 'NONE',
+          authentication: 'ON_INSTALL',
         },
       },
       extensions: {
@@ -155,7 +155,7 @@ describe('build smoke', () => {
           name: 'ask-me',
           source: './plugins/ask-me',
           policy: expect.objectContaining({
-            authentication: 'NONE',
+            authentication: 'ON_INSTALL',
           }),
         }),
         expect.objectContaining({
@@ -179,7 +179,7 @@ describe('build smoke', () => {
         name: 'ask-me',
         source: './plugins/ask-me',
         policy: expect.objectContaining({
-          authentication: 'NONE',
+          authentication: 'ON_INSTALL',
         }),
       }),
     ]));

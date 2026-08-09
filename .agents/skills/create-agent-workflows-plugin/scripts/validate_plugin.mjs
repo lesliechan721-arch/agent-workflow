@@ -12,7 +12,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const errors = [];
 const warnings = [];
-const SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION = 2;
+const SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION = 3;
 const MAX_SKILL_NAME_LEN = 64;
 const MAX_SKILL_DESCRIPTION_LEN = 1024;
 const MAX_SKILL_COMPATIBILITY_LEN = 500;
@@ -58,6 +58,7 @@ const CODEX_POLICY_PRODUCTS = new Set([
   'CODEX',
 ]);
 const MANIFEST_POLICY_PRODUCTS = new Set(['CODEX', 'CLAUDE']);
+const MARKETPLACE_AUTHENTICATION_POLICIES = new Set(['ON_INSTALL', 'ON_USE']);
 const PUBLIC_HOOK_EVENTS = new Set(['before_tool', 'after_tool', 'session_start']);
 const PUBLIC_SESSION_START_SOURCES = new Set(['startup', 'resume', 'clear']);
 const PUBLIC_SESSION_START_DEFAULT_MATCHER = 'startup|resume|clear';
@@ -529,6 +530,8 @@ function validateManifestLightweight(manifest) {
       error('marketplace.policy.installation is required');
     if (!mp.policy || !mp.policy.authentication)
       error('marketplace.policy.authentication is required');
+    else if (!MARKETPLACE_AUTHENTICATION_POLICIES.has(mp.policy.authentication))
+      error('marketplace.policy.authentication must be "ON_INSTALL" or "ON_USE"');
     validateManifestPolicyProducts(mp.policy?.products);
   }
 

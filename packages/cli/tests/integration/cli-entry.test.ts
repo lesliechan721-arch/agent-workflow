@@ -139,7 +139,7 @@ async function addNativeHookOnlyPlugin(repoRoot: string, pluginName = 'prompt-gu
         strict: true,
         policy: {
           installation: 'AVAILABLE',
-          authentication: 'NONE',
+          authentication: 'ON_INSTALL',
           products: ['CODEX'],
         },
       },

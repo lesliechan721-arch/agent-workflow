@@ -491,7 +491,7 @@ describe('CodexAdapter', () => {
           strict: true,
           policy: {
             installation: 'AVAILABLE',
-            authentication: 'NONE',
+            authentication: 'ON_INSTALL',
           },
         },
         extensions: {

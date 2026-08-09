@@ -196,7 +196,7 @@ function createCatalogManifestFixture() {
         strict: true,
         policy: {
           installation: 'AVAILABLE',
-          authentication: 'NONE',
+          authentication: 'ON_INSTALL',
         },
         compatibility: {
           aw: {
@@ -373,14 +373,14 @@ describe('manifest utils', () => {
         strict: true,
         policy: {
           installation: 'AVAILABLE',
-          authentication: 'NONE',
+          authentication: 'ON_INSTALL',
         },
       },
     });
     const right = validatePluginManifest('/tmp/plugin', {
       marketplace: {
         policy: {
-          authentication: 'NONE',
+          authentication: 'ON_INSTALL',
           installation: 'AVAILABLE',
         },
         strict: true,
@@ -451,6 +451,19 @@ describe('manifest utils', () => {
 
     await expect(readMarketplaceSourceMeta(repoRoot)).rejects.toThrow(
       'unknown field "metadata"',
+    );
+  });
+
+  it('rejects unsupported marketplace authentication policies', async () => {
+    const repoRoot = await makeTempRepo();
+    const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
+    const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
+    const manifest = await fs.readJson(manifestPath);
+    manifest.marketplace.policy.authentication = 'NONE';
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
+      'Invalid marketplace.policy.authentication: expected "ON_INSTALL" or "ON_USE".',
     );
   });
 
@@ -1931,7 +1944,7 @@ describe('manifest utils', () => {
         strict: true,
         policy: {
           installation: 'AVAILABLE',
-          authentication: 'NONE',
+          authentication: 'ON_INSTALL',
         },
       },
     });
@@ -1949,7 +1962,7 @@ describe('manifest utils', () => {
         strict: true,
         policy: {
           installation: 'AVAILABLE',
-          authentication: 'NONE',
+          authentication: 'ON_INSTALL',
         },
       },
     });

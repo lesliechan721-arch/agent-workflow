@@ -146,9 +146,11 @@ export interface MarketplaceSourceMeta {
   interface: MarketplaceInterfaceMeta;
 }
 
+export type MarketplaceAuthenticationPolicy = 'ON_INSTALL' | 'ON_USE';
+
 export interface MarketplacePolicy {
   installation: string;
-  authentication: string;
+  authentication: MarketplaceAuthenticationPolicy;
   products?: string[];
 }
 

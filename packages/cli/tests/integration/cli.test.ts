@@ -506,7 +506,7 @@ async function addNativeHookOnlyPlugin(
         strict: true,
         policy: {
           installation: 'AVAILABLE',
-          authentication: 'NONE',
+          authentication: 'ON_INSTALL',
           products: ['CODEX'],
         },
       },
@@ -639,7 +639,7 @@ async function addMixedHookPlugin(repoRoot: string): Promise<void> {
         strict: true,
         policy: {
           installation: 'AVAILABLE',
-          authentication: 'NONE',
+          authentication: 'ON_INSTALL',
           products: ['CODEX'],
         },
       },
@@ -679,7 +679,7 @@ async function addClaudeNativeHookOnlyPlugin(repoRoot: string): Promise<void> {
         strict: true,
         policy: {
           installation: 'AVAILABLE',
-          authentication: 'NONE',
+          authentication: 'ON_INSTALL',
           products: ['CLAUDE'],
         },
       },

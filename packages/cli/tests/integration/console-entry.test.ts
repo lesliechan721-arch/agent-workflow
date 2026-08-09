@@ -267,7 +267,7 @@ describe('console entry', () => {
               strict: false,
               policy: {
                 installation: 'AVAILABLE',
-                authentication: 'NONE',
+                authentication: 'ON_INSTALL',
               },
             },
           },

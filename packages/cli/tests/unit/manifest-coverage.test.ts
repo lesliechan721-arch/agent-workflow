@@ -102,7 +102,7 @@ function createCatalogManifestFixture() {
         strict: true,
         policy: {
           installation: 'AVAILABLE',
-          authentication: 'NONE',
+          authentication: 'ON_INSTALL',
         },
         compatibility: {
           aw: {
@@ -831,7 +831,7 @@ describe('manifest coverage', () => {
       strict: true,
       policy: {
         installation: 'AVAILABLE',
-        authentication: 'NONE',
+        authentication: 'ON_INSTALL',
       },
       compatibility: {
         aw: {

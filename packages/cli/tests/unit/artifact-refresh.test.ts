@@ -98,7 +98,7 @@ function createPlugin(pluginName = 'codex-explore'): PluginMeta {
         strict: true,
         policy: {
           installation: 'AVAILABLE',
-          authentication: 'NONE',
+          authentication: 'ON_INSTALL',
           products: ['CODEX'],
         },
       },

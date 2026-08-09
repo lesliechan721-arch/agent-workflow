@@ -55,7 +55,7 @@ function createManifest(pluginName = 'configurable-plugin'): PluginManifestSourc
       strict: true,
       policy: {
         installation: 'AVAILABLE',
-        authentication: 'NONE',
+        authentication: 'ON_INSTALL',
       },
     },
     compatibility: {

@@ -531,7 +531,7 @@ describe('status command P8', () => {
           strict: true,
           policy: {
             installation: 'AVAILABLE',
-            authentication: 'NONE',
+            authentication: 'ON_INSTALL',
           },
         },
       },
@@ -636,7 +636,7 @@ describe('status command P8', () => {
           strict: true,
           policy: {
             installation: 'AVAILABLE',
-            authentication: 'NONE',
+            authentication: 'ON_INSTALL',
           },
         },
       },

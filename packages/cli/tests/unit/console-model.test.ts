@@ -666,7 +666,7 @@ describe('console-model', () => {
           strict: false,
           policy: {
             installation: 'AVAILABLE',
-            authentication: 'NONE',
+            authentication: 'ON_INSTALL',
           },
         },
       },

@@ -165,7 +165,7 @@ function buildPluginManifest(pluginName, version, minVersion, description, displ
     strict: true,
     policy: {
       installation: 'AVAILABLE',
-      authentication: 'NONE',
+      authentication: 'ON_INSTALL',
     },
   };
 
