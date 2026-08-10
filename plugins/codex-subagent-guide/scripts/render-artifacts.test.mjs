@@ -131,27 +131,26 @@ test('renders four task roles and agent-type-only preset guidance', async () => 
     assert.ok(skill.content.skillFile.includes(`| \`${expected.roleKey}\` |`));
   }
 
-  assert.match(skill.content.skillFile, /\| 简单任务 \|/);
-  assert.match(skill.content.skillFile, /\| 通用任务 \|/);
-  assert.match(skill.content.skillFile, /\| 复杂任务 \|/);
+  assert.match(skill.content.skillFile, /\| 简单 \|/);
+  assert.match(skill.content.skillFile, /\| 通用 \|/);
+  assert.match(skill.content.skillFile, /\| 复杂 \|/);
   assert.match(skill.content.skillFile, /\| 计划与审核 \|/);
-  assert.match(skill.content.skillFile, /且没有专用 skill 自行完整管理本次委派时使用/);
-  assert.match(skill.content.skillFile, /不与已经定义独立委派流程的专用 skill 叠加使用/);
-  assert.match(skill.content.skillFile, /计划或审核优先于其前置探索/);
-  assert.match(skill.content.skillFile, /复杂实现与调试优先于通用/);
-  assert.match(skill.content.skillFile, /低歧义、边界清晰且成功标准明确的只读探索/);
-  assert.match(skill.content.skillFile, /只读不自动等于简单/);
-  assert.match(skill.content.skillFile, /需要跨模块因果归纳、未知根因分析或高完整性核验的只读任务/);
-  assert.match(skill.content.skillFile, /超出简单任务范围的常规交付使用通用任务/);
-  assert.match(skill.content.skillFile, /预定义任务使用表中的 `agent_type` 选择 preset/);
-  assert.match(skill.content.skillFile, /不额外传 `model` 或 `reasoning_effort`/);
-  assert.match(skill.content.skillFile, /不回退到动态 model override/);
-  assert.match(skill.content.skillFile, /`reasoning_effort` 或 `agent_type`/);
-  assert.match(skill.content.skillFile, /按显式指令的实际作用域逐个子任务判断/);
-  assert.match(skill.content.skillFile, /仅该子任务作为自定义任务并跳过 preset/);
-  assert.match(skill.content.skillFile, /未指定字段不补预设/);
-  assert.match(skill.content.skillFile, /字段或值不可用、组合冲突时停止并说明/);
-  assert.match(skill.content.skillFile, /不猜测、循环试探或降级/);
+  assert.match(skill.content.skillFile, /且没有专用 skill 管理本次委派时使用/);
+  assert.match(skill.content.skillFile, /本 skill 不授予或判断委派权限/);
+  assert.equal(skill.content.skillFile.includes('委派必须已经获准'), false);
+  assert.match(skill.content.skillFile, /显式指定 `model`、`reasoning_effort` 或 `agent_type`/);
+  assert.match(skill.content.skillFile, /按其作用域作为自定义任务/);
+  assert.match(skill.content.skillFile, /否则按最终交付物选择 preset/);
+  assert.match(skill.content.skillFile, /计划或审核优先于前置探索/);
+  assert.match(skill.content.skillFile, /复杂实现或调试优先于通用/);
+  assert.match(skill.content.skillFile, /只读不等于简单/);
+  assert.match(skill.content.skillFile, /按范围、歧义、冲突、因果推理和完整性要求判断复杂度/);
+  assert.match(skill.content.skillFile, /preset 只传表中的 `agent_type`/);
+  assert.match(skill.content.skillFile, /role 不可用时停止/);
+  assert.match(skill.content.skillFile, /不改用动态 model override/);
+  assert.match(skill.content.skillFile, /自定义任务只传作用于该子任务/);
+  assert.match(skill.content.skillFile, /不可用或冲突时停止/);
+  assert.match(skill.content.skillFile, /不猜测、试探或降级/);
   assert.equal(skill.content.skillFile.includes('整体作为自定义任务'), false);
   assert.equal(skill.content.skillFile.includes('service_tier'), false);
   assert.equal(skill.content.skillFile.includes('gpt-5.6-luna'), false);
@@ -160,49 +159,36 @@ test('renders four task roles and agent-type-only preset guidance', async () => 
 
   assert.match(skill.content.skillFile, /默认使用干净上下文/);
   assert.match(skill.content.skillFile, /约束、成功标准、验证要求和预期输出/);
-  assert.match(
-    skill.content.skillFile,
-    /按当前 `spawn_agent` schema 传表示“不继承”的值/,
-  );
-  assert.match(skill.content.skillFile, /具体模式和兼容性服从当前工具 schema/);
-  assert.match(skill.content.skillFile, /用户、适用规则或其它已加载 skill 明确要求继承/);
-  assert.equal(skill.content.skillFile.includes('多个显式 context 要求'), false);
-  assert.equal(
-    skill.content.skillFile.includes('同级冲突或 schema 无法满足时停止并说明'),
-    false,
-  );
-  assert.match(skill.content.skillFile, /context 选择独立于预设或自定义任务分类/);
-  assert.equal(skill.content.skillFile.includes('按当前 schema 对 `agent_type`'), false);
+  assert.match(skill.content.skillFile, /`fork_turns: "none"` 或 `fork_context: false`/);
+  assert.match(skill.content.skillFile, /只有明确要求继承/);
+  assert.match(skill.content.skillFile, /上下文选择独立于 preset\/custom/);
 
-  assert.match(skill.content.skillFile, /调用时只等待尚未终态的 agent/);
-  assert.match(skill.content.skillFile, /活动通知不等于最终结果/);
-  assert.match(skill.content.skillFile, /用户或任务专用 skill 明确指定单次等待时优先遵守/);
-  assert.match(skill.content.skillFile, /至少使用 `10` 分钟的响应式窗口（`timeout_ms=600000`）/);
-  assert.match(skill.content.skillFile, /timeout 不是终态或失败/);
-  assert.match(skill.content.skillFile, /继续使用相同或更长且不超过当前 schema 上限的响应式等待窗口/);
-  assert.match(skill.content.skillFile, /只有工具结果或运行时通知明确表示终态时才视为完成/);
-  assert.match(skill.content.skillFile, /发送一次聚焦缺口的 follow-up 并重新校验/);
-  assert.match(skill.content.skillFile, /不要为相同任务重复 spawn/);
-  assert.match(skill.content.skillFile, /否则向用户说明未解决项/);
-  assert.match(skill.content.skillFile, /重复进度询问来监控子代理/);
+  assert.match(skill.content.skillFile, /只在需要结果才能继续时调用 `wait_agent`/);
+  assert.match(skill.content.skillFile, /至少 `10` 分钟的响应式窗口（`timeout_ms=600000`）/);
+  assert.match(skill.content.skillFile, /超时不是失败/);
+  assert.match(skill.content.skillFile, /不短于前次且不超过上限的窗口/);
+  assert.match(skill.content.skillFile, /只有工具结果或通知明确表示终态时才算完成/);
+  assert.match(skill.content.skillFile, /不得使用 shell `sleep`、短 wait 循环、周期性查询/);
+  assert.match(skill.content.skillFile, /文件、Git、测试状态或重复进度询问进行监控/);
   assert.match(skill.content.skillFile, /当前工具提供 `close_agent` 时/);
   assert.match(skill.content.skillFile, /所需结果或终态信息已保留/);
-  assert.match(skill.content.skillFile, /目标及其后代均不再需要后续调用后，才关闭目标/);
+  assert.match(skill.content.skillFile, /目标及其后代均不再需要后续调用后关闭/);
+  assert.equal(skill.content.skillFile.includes('follow-up'), false);
+  assert.equal(skill.content.skillFile.includes('重复 spawn'), false);
   assert.equal(skill.content.skillFile.includes('存活探测'), false);
   assert.equal(skill.content.skillFile.includes('status=progress'), false);
   assert.equal(skill.content.skillFile.includes('status=blocked'), false);
   assert.match(
     skill.content.skillFile,
-    /compatibility: Preset routing requires Codex multi-agent V1 or V2 spawn_agent with agent_type exposed and the four bundled agent roles installed/,
+    /compatibility: Requires Codex multi-agent spawn_agent\.agent_type and the four bundled roles/,
   );
-  assert.equal(skill.content.skillFile.includes('`followup_task`'), false);
   assert.equal(skill.content.skillFile.includes('时是 V1'), false);
   assert.equal(skill.content.skillFile.includes('时是 V2'), false);
   assert.equal(skill.content.skillFile.includes('催促后等待'), false);
   assert.equal(skill.content.skillFile.includes('非中断收敛请求'), false);
   assert.equal(skill.content.skillFile.includes('list_agents'), false);
   assert.equal(skill.content.skillFile.includes('interrupt_agent'), false);
-  assert.ok(skill.content.skillFile.split('\n').length <= 80);
+  assert.ok(skill.content.skillFile.split('\n').length <= 65);
   assert.equal(skill.content.skillFile.includes('{{spawnParameterGuidance}}'), false);
   assert.equal(skill.content.skillFile.includes('{{minimumInitialWaitMinutes}}'), false);
   assert.match(openaiYaml, /allow_implicit_invocation: true/);
@@ -219,7 +205,7 @@ test('renders a configured minimum initial wait window', async () => {
 
   assert.match(
     skill.content.skillFile,
-    /至少使用 `15` 分钟的响应式窗口（`timeout_ms=900000`）/,
+    /至少 `15` 分钟的响应式窗口（`timeout_ms=900000`）/,
   );
 });
 
