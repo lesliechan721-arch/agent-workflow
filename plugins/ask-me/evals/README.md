@@ -18,16 +18,17 @@ pnpm plugin:eval ask-me --output-dir /tmp/ask-me-eval
 
 两个 trigger corpus 各有 20 条用例：10 条正例和 10 条近似负例，train 与 validation 各 10 条。中央 native trigger driver 负责干净会话、Skill 加载事件、重复运行、validation 零误触门槛和报告归档。
 
-- `requirements-clarifier` 覆盖实施前重大用户决策、冲突约束、委托默认，以及计划评审等相邻负例。
-- `decision-grill` 覆盖计划、方案和重大决策压力测试，以及实施阻塞、事实核验和机械执行等相邻负例。
+- `requirements-clarifier` 覆盖会影响成品或造成返工的关键歧义、多项小歧义的合并影响，以及可查事实、明确惯例、授权默认和协作规划等相邻负例。
+- `decision-grill` 覆盖共同制定或评审计划和重要决策，以及内部执行计划、实施歧义、既定方案、事实核验和机械执行等相邻负例。
 - 所有 case 都声明 `use_project_rules: true`，使 `extensions.instructions` 中的质量门禁进入评测。
+- 依赖现有代码、规范或测试的 near-miss 使用 `trigger-fixture.mjs` 准备小型脱敏仓库，避免空工作区改变触发判断。
 - 隐式用例在干净 project session 中各运行至少三次。只根据 train 调整 description，再用 validation 检查泛化。
 
 ## 行为评测
 
-`requirements-clarifier-evals.json` 包含 9 个会话用例，覆盖先查后问、用户决策所有权、依赖前沿、待验证项、冲突、部分回答、无副作用和交接。
+`requirements-clarifier-evals.json` 包含 10 个会话用例，覆盖先查后问、查明／默认／提问三路处理、透明默认、多项小歧义的合并影响、依赖前沿、待验证项、冲突、问题形态、无缺口停止和交接。
 
-`decision-grill-evals.json` 包含 10 个会话用例，覆盖事实底座、主要替代方案、假设验证、决策前沿、推荐校准、收敛、停止、决策简报、上游决定复用和无副作用。
+`decision-grill-evals.json` 包含 10 个会话用例，覆盖内部规划边界、先读后问、主要替代方案、假设验证、决策前沿、既有决定、推荐校准、收敛、决策记录和风险延后。
 
 v1 每个用例分别在全新的 Codex app-server 会话中运行：
 

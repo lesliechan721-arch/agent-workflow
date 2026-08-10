@@ -3,164 +3,173 @@
   "skill": "requirements-clarifier",
   "cases": [
     {
-      "id": "p01_auth_semantics",
-      "query": "给后台加一个安全登录功能，直接开始做。",
+      "id": "p01_order_export",
+      "query": "给订单列表加个导出功能，做好后直接提交。",
       "should_load_skill": true,
-      "rationale": "认证方式、会话和安全边界会显著影响实现，且需要用户决定。",
+      "rationale": "导出范围、字段和格式存在多种合理理解，组合起来会决定成品形态。",
       "split": "train",
       "use_project_rules": true
     },
     {
-      "id": "p02_multitenancy",
-      "query": "把现有系统改成多租户，不能影响老客户。",
+      "id": "p02_team_sharing",
+      "query": "给这个 SaaS 加团队共享，先做起来。",
       "should_load_skill": true,
-      "rationale": "隔离、迁移和兼容承诺存在重大实施阻塞。",
+      "rationale": "成员边界、权限和共享对象不清楚，猜测会明显改变交付结果。",
       "split": "train",
       "use_project_rules": true
     },
     {
-      "id": "p03_delete_api",
-      "query": "实现用户删除接口，接口格式已经定了，但删除后能否恢复还没想好。",
+      "id": "p03_phone_signup",
+      "query": "注册流程里加手机号。",
       "should_load_skill": true,
-      "rationale": "删除语义和数据生命周期是重大用户决策。",
+      "rationale": "手机号是必填、选填还是验证凭据，会明显改变用户流程和验收。",
       "split": "train",
       "use_project_rules": true
     },
     {
-      "id": "p04_migration_window",
-      "query": "按已批准方案迁移数据库，下周上线；停机窗口和失败回滚由我决定。",
+      "id": "p04_bulk_edit",
+      "query": "给后台做一个批量编辑，交互你看着办。",
       "should_load_skill": true,
-      "rationale": "存在明确保留给用户的重大实施决策。",
+      "rationale": "可编辑字段、选择范围和失败语义共同决定功能，不宜全部静默假设。",
       "split": "train",
       "use_project_rules": true
     },
     {
-      "id": "p05_conflicting_implementation",
-      "query": "实现全文搜索，不能加索引或依赖，P99 必须低于 10ms。",
+      "id": "p05_account_pause",
+      "query": "增加暂停账号功能，尽量复用现有代码。",
       "should_load_skill": true,
-      "rationale": "约束可能冲突，需要用户作最小可行取舍。",
+      "rationale": "暂停后登录、计费和数据访问的行为未明确。",
       "split": "train",
       "use_project_rules": true
     },
     {
-      "id": "p06_explicit_complete",
-      "query": "$requirements-clarifier 按 spec.md 实现，帮我先检查是否还有必须由我决定的阻塞项。",
+      "id": "p06_explicit_check",
+      "query": "$requirements-clarifier 帮我检查这个通知中心需求还有哪些地方值得先问清楚。",
       "should_load_skill": true,
-      "rationale": "显式调用必须执行扫描，即使最终可能没有问题。",
+      "rationale": "用户显式要求按该技能检查关键歧义。",
       "split": "validation",
       "use_project_rules": true
     },
     {
-      "id": "p07_public_errors",
-      "query": "实现批量导入；失败时是部分成功还是整批回滚必须由我决定。",
+      "id": "p07_import_errors",
+      "query": "实现 CSV 批量导入，失败记录怎么处理还没定。",
       "should_load_skill": true,
-      "rationale": "公开失败语义会改变数据和用户行为。",
+      "rationale": "部分成功、整批回滚或跳过错误会明显影响结果和验收。",
       "split": "validation",
       "use_project_rules": true
     },
     {
-      "id": "p08_retention",
-      "query": "落地用户行为日志，数据字段已经确定，但保留期限和删除方式还没定。",
+      "id": "p08_search_scope",
+      "query": "把站内搜索补上，用户能搜到自己需要的内容就行。",
       "should_load_skill": true,
-      "rationale": "数据生命周期和隐私边界是重大用户决策。",
+      "rationale": "搜索对象、权限和匹配范围存在多个合理解释。",
       "split": "validation",
       "use_project_rules": true
     },
     {
-      "id": "p09_payment_retry",
-      "query": "按现有接口实现支付自动重试，重试次数、终止状态和用户提示还没决定。",
+      "id": "p09_webhook_delivery",
+      "query": "给客户开放 webhook，接口路径已经定了，其他按常规做。",
       "should_load_skill": true,
-      "rationale": "支付行为和幂等风险需要用户确认。",
+      "rationale": "重试、签名和投递成功语义会影响外部行为，不能仅凭“常规”稳定推断。",
       "split": "validation",
       "use_project_rules": true
     },
     {
-      "id": "p10_rollout_owner",
-      "query": "实现功能开关发布；生产异常后自动回滚还是人工确认由业务负责人决定。",
+      "id": "p10_small_ambiguities_combine",
+      "query": "给商品页加收藏：按钮放哪、收藏是否公开、取消后怎么提示都还没说，你直接做。",
       "should_load_skill": true,
-      "rationale": "发布和恢复策略是重大实施决策。",
+      "rationale": "多个单项不大的歧义合起来会决定用户体验和功能形态。",
       "split": "validation",
       "use_project_rules": true
     },
     {
-      "id": "n01_fact",
-      "query": "这个仓库当前使用什么数据库？",
+      "id": "n01_repo_fact",
+      "query": "这个仓库现在用哪套分页组件？",
       "should_load_skill": false,
-      "rationale": "这是可发现事实。",
+      "rationale": "这是可从仓库查明的事实。",
       "split": "train",
-      "use_project_rules": true
+      "use_project_rules": true,
+      "workspace_fixture": "implementation_repo"
     },
     {
-      "id": "n02_complete_spec",
-      "query": "严格按已批准的 spec.md 实现；接口、数据迁移、兼容行为和验收测试都以该文档为准。",
+      "id": "n02_existing_pattern",
+      "query": "按发票列表现有的导出方式，给订单列表加同样的导出。",
       "should_load_skill": false,
-      "rationale": "没有可见的重大未决用户决策。",
+      "rationale": "已有明确项目惯例，可以直接沿用。",
       "split": "train",
-      "use_project_rules": true
+      "use_project_rules": true,
+      "workspace_fixture": "implementation_repo"
     },
     {
       "id": "n03_delegated_defaults",
-      "query": "用合理默认完成这个内部工具，不要问普通偏好；只有凭据泄露或不可逆删除风险时再停。",
+      "query": "这是内部工具，普通交互和实现细节都用合理默认，不用问我；涉及数据删除再停。",
       "should_load_skill": false,
-      "rationale": "用户已委托普通决策并定义升级边界。",
+      "rationale": "用户已经授权普通默认，并明确了需要升级的边界。",
+      "split": "train",
+      "use_project_rules": true,
+      "workspace_fixture": "implementation_repo"
+    },
+    {
+      "id": "n04_small_style_change",
+      "query": "把设置页主按钮从灰色改成蓝色。",
+      "should_load_skill": false,
+      "rationale": "边界清楚、容易调整，没有值得先确认的关键歧义。",
+      "split": "train",
+      "use_project_rules": true,
+      "workspace_fixture": "implementation_repo"
+    },
+    {
+      "id": "n05_decision_planning",
+      "query": "和我一起制定团队协作功能的整体方案，并比较几种权限模型。",
+      "should_load_skill": false,
+      "rationale": "计划和方案本身是当前任务，应使用 decision-grill。",
       "split": "train",
       "use_project_rules": true
     },
     {
-      "id": "n04_low_risk",
-      "query": "修正 README 里的两个拼写错误。",
+      "id": "n06_complete_spec",
+      "query": "严格按 spec/account-pause.md 实现；暂停后的登录、计费、通知、恢复和验收都以文档为准。",
       "should_load_skill": false,
-      "rationale": "机械、局部、低风险。",
-      "split": "train",
-      "use_project_rules": true
-    },
-    {
-      "id": "n05_plan_scene",
-      "query": "帮我从零制定这个产品的团队协作方案，并挑战我的想法。",
-      "should_load_skill": false,
-      "rationale": "应由 decision-grill 处理。",
-      "split": "train",
-      "use_project_rules": true
-    },
-    {
-      "id": "n06_analysis_only",
-      "query": "解释当前登录流程并指出潜在问题，不要修改代码。",
-      "should_load_skill": false,
-      "rationale": "只读分析，不是实施门禁。",
+      "rationale": "权威规范已覆盖相关行为和验收。",
       "split": "validation",
-      "use_project_rules": true
+      "use_project_rules": true,
+      "workspace_fixture": "implementation_repo"
     },
     {
-      "id": "n07_decision_review",
-      "query": "比较三种定价策略并系统性挑战假设。",
+      "id": "n07_internal_planning",
+      "query": "实现这个已批准的需求，你自己先列执行步骤再直接做，不需要和我讨论计划。",
       "should_load_skill": false,
-      "rationale": "当前任务是重大决策压力测试，应使用 decision-grill。",
+      "rationale": "需求已批准且用户只要求 agent 内部规划。",
       "split": "validation",
-      "use_project_rules": true
+      "use_project_rules": true,
+      "workspace_fixture": "implementation_repo"
     },
     {
-      "id": "n08_approved_adr",
-      "query": "按照 ADR-022 落地缓存迁移，严格保持公共行为；所有迁移步骤和回滚条件已批准。",
+      "id": "n08_bounded_bugfix",
+      "query": "修复 tests/parser_test.py 里这个稳定复现的失败，保持其他行为不变。",
       "should_load_skill": false,
-      "rationale": "权威决策和实施边界已明确。",
+      "rationale": "具体边界和预期行为已经明确。",
       "split": "validation",
-      "use_project_rules": true
+      "use_project_rules": true,
+      "workspace_fixture": "implementation_repo"
     },
     {
-      "id": "n09_recommendation_only",
-      "query": "根据当前仓库比较两个内部日志库并给出推荐，不要实施。",
+      "id": "n09_readonly_explanation",
+      "query": "解释当前删除流程，指出代码里已有的恢复机制，不要修改。",
       "should_load_skill": false,
-      "rationale": "这是分析和 agent 拥有的内部技术选择。",
+      "rationale": "这是事实分析，不是实施前澄清。",
       "split": "validation",
-      "use_project_rules": true
+      "use_project_rules": true,
+      "workspace_fixture": "implementation_repo"
     },
     {
-      "id": "n10_bounded_bugfix",
-      "query": "修复 tests/parser_test.py 中确定可复现的失败，保持其余行为不变。",
+      "id": "n10_easy_default",
+      "query": "新增一个只在内部使用的日志 helper，命名和文件位置沿用附近代码。",
       "should_load_skill": false,
-      "rationale": "边界明确且不涉及产品语义。",
+      "rationale": "内部、可逆且有清楚惯例，应直接采用默认。",
       "split": "validation",
-      "use_project_rules": true
+      "use_project_rules": true,
+      "workspace_fixture": "implementation_repo"
     }
   ]
 }

@@ -2,8 +2,25 @@
   "skill_name": "decision-grill",
   "evals": [
     {
-      "id": "frame-without-redundancy",
-      "prompt": "$decision-grill 压力测试这份路线图，不要修改文件：目标是提高新用户激活率，时间范围是下个季度，受众是 10 至 50 人的设计团队。直接进入仍会改变路线图的重大分支。",
+      "id": "collaborative-plan-boundary",
+      "prompt": "$decision-grill 用户要求实现一个已批准需求，并说‘你自己先计划好再做’。请判断本 Skill 是否适用，不要修改文件。",
+      "scripted_replies": [],
+      "expected_output": "不把 agent 的内部执行计划当作 decision-grill 场景，不启动用户访谈，由原实现工作流继续。",
+      "files": [],
+      "review": {
+        "platforms": ["codex", "claude"],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "不把 agent 的内部执行计划当作 decision-grill 场景",
+          "不启动用户访谈",
+          "由原实现工作流继续"
+        ]
+      }
+    },
+    {
+      "id": "read-before-question",
+      "prompt": "$decision-grill 用户提供了明确写出目标、受众和时间范围的路线图，要求压力测试。请先读取已有内容，不要修改文件。",
       "scripted_replies": [
         {
           "answers_by_index": [
@@ -14,22 +31,22 @@
           "unexpected_question_answer": "我暂时不知道，请先记录为未解决项。"
         }
       ],
-      "expected_output": "从已给路线图建立事实底座，不重复询问目标、季度或受众；直接询问会实质改变优先级或成功标准的重大分支。",
+      "expected_output": "先读取已有路线图，不重复询问已明确的目标、受众和时间范围，直接进入仍可能改变方向的重要分支。",
       "files": [],
       "review": {
         "platforms": ["codex", "claude"],
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [
-          "从文档建立 grill frame",
-          "不重复询问文档已明确的目标、时间范围和受众",
-          "直接进入重大候选分支"
+          "先读取已有路线图",
+          "不重复询问已经明确的目标、受众和时间范围",
+          "直接进入仍可能改变方向的重要分支"
         ]
       }
     },
     {
-      "id": "alternatives",
-      "prompt": "$decision-grill 我默认要自建内部搜索平台。请压力测试这个决定，重点检查主要替代方案，不要修改文件。",
+      "id": "main-alternatives",
+      "prompt": "$decision-grill 用户默认要自建内部搜索平台。请检查主要替代方向，不要修改文件。",
       "scripted_replies": [
         {
           "answers_by_index": [
@@ -40,168 +57,141 @@
           "unexpected_question_answer": "我暂时不知道，请先记录为未解决项。"
         }
       ],
-      "expected_output": "检查采购、复用现有能力、延后或不做等主要替代方案，只保留会实质改变决定的选项，不列出琐碎变体。",
+      "expected_output": "检查采购、复用现有能力、延后或不做等主要替代方向，只保留可能改变决定的备选，不为凑数量列出琐碎变体。",
       "files": [],
       "review": {
         "platforms": ["codex", "claude"],
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [
-          "检查采购、复用现有能力、延后或不做等主要替代方案",
-          "只保留会显著改变决定的选项",
-          "不为制造选项而列出琐碎变体"
+          "检查采购、复用现有能力、延后或不做等主要替代方向",
+          "只保留可能改变决定的备选",
+          "不为凑数量列出琐碎变体"
         ]
       }
     },
     {
       "id": "challenge-assumption",
-      "prompt": "$decision-grill 压力测试这个已批准目标，不要修改文件，也不要让我凭偏好判断技术可行性：方案同步调用三个第三方服务，P99 小于 50ms 是硬目标，但目前没有第三方延迟数据。",
+      "prompt": "$decision-grill 方案要求同步调用三个第三方服务，同时承诺 P99 小于 50ms。请压力测试，不要修改文件。",
       "scripted_replies": [],
-      "expected_output": "区分已批准的 P99 目标与未经验证的第三方延迟假设，指出两者可能冲突，并把端到端延迟验证记录为待验证命题。",
+      "expected_output": "区分业务目标和未经验证的工程命题，指出关键延迟假设和潜在冲突，把可行性列为待验证而不是让用户凭偏好确认。",
       "files": [],
       "review": {
         "platforms": ["codex", "claude"],
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [
-          "区分用户目标和工程事实主张",
-          "指出未经验证的延迟假设及冲突",
-          "记录验证命题而不是让用户主观确认可行性"
+          "区分业务目标和未经验证的工程命题",
+          "指出关键延迟假设和潜在冲突",
+          "把可行性列为待验证而不是让用户凭偏好确认"
         ]
       }
     },
     {
       "id": "decision-frontier",
-      "prompt": "$decision-grill 帮我形成访问控制方案，不要修改文件：目标用户决定权限模型，权限模型决定审计和计费。",
+      "prompt": "$decision-grill 目标用户决定访问边界，访问边界决定权限和计费。请逐轮讨论，不要修改文件。",
       "scripted_replies": [
         {
           "expected_question_count": 1,
-          "answers_by_index": [
-            "目标用户只有受邀的外部合作伙伴；不支持公开访客。"
-          ],
+          "answers_by_index": ["目标用户只有受邀的外部合作伙伴；不支持公开访客。"],
           "unexpected_question_answer": "我暂时不知道，请先记录为未解决项。"
         }
       ],
-      "expected_output": "先处理目标用户或访问边界，不提前询问依赖它的权限、审计或计费细节；每轮不超过三个独立问题，并在回答后更新决策地图。",
+      "expected_output": "先讨论目标用户或访问边界，不提前讨论依赖该答案的权限和计费细节，每轮最多处理三个互相独立的问题。",
       "files": [],
       "review": {
         "platforms": ["codex", "claude"],
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [
-          "先处理目标用户或访问边界",
-          "不提前询问依赖项",
-          "每轮不超过三个独立问题"
+          "先讨论目标用户或访问边界",
+          "不提前讨论依赖该答案的权限和计费细节",
+          "每轮最多处理三个互相独立的问题"
+        ]
+      }
+    },
+    {
+      "id": "reopen-existing-decision",
+      "prompt": "$decision-grill 用户已决定采用微服务，但理由充分、后果清楚，也定义了重新评估条件。请判断是否需要重开决定，不要修改文件。",
+      "scripted_replies": [],
+      "expected_output": "不为展示完整性而重新争论该决定，只继续处理仍未关闭的重要分支，并尊重已有决策记录。",
+      "files": [],
+      "review": {
+        "platforms": ["codex", "claude"],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "不为展示完整性而重新争论该决定",
+          "只继续处理仍未关闭的重要分支",
+          "尊重已有决策记录"
         ]
       }
     },
     {
       "id": "recommendation-calibration",
-      "prompt": "$decision-grill 比较两个重大方案，但仓库证据和用户目标都不足以支持推荐。现在不要向我追问；请平等呈现主要后果，并说明需要什么证据才能推荐。不要修改文件。",
+      "prompt": "$decision-grill 两个方案都合理，但现有目标和证据不足以支持推荐。现在不要追问，请说明主要取舍，不要修改文件。",
       "scripted_replies": [],
-      "expected_output": "平等呈现两个方案及主要后果，不伪造推荐；明确指出形成推荐还缺少的目标、约束或证据。",
+      "expected_output": "说明主要取舍而不是伪造确定推荐，指出还需要什么信息才能偏向其中一个方案，不把 agent 偏好包装成用户决定。",
       "files": [],
       "review": {
         "platforms": ["codex", "claude"],
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [
-          "平等呈现选项和主要后果",
-          "不伪造推荐",
-          "说明需要什么证据才能推荐"
+          "说明主要取舍而不是伪造确定推荐",
+          "指出还需要什么信息才能偏向其中一个方案",
+          "不把 agent 偏好包装成用户决定"
         ]
       }
     },
     {
       "id": "avoid-exhaustion",
-      "prompt": "$decision-grill 当前方案的重大边界已经清楚，剩余只有低影响命名和未来优化。请判断是否应收敛，不要继续提问，也不要修改文件。",
+      "prompt": "$decision-grill 主要方向、取舍和验证方式都已明确，只剩低影响命名和未来优化。请收尾，不要修改文件。",
       "scripted_replies": [],
-      "expected_output": "不追问低风险命名或未来优化，不声称穷尽所有问题；在重大分支已经关闭后立即收敛。",
+      "expected_output": "不继续进入低影响细节，不声称穷尽了所有理论问题，按完成条件收尾。",
       "files": [],
       "review": {
         "platforms": ["codex", "claude"],
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [
-          "不继续追问低风险分支",
-          "不宣称覆盖了所有可能问题",
-          "在重大分支关闭后收敛"
+          "不继续进入低影响细节",
+          "不声称穷尽了所有理论问题",
+          "按完成条件收尾"
         ]
       }
     },
     {
-      "id": "user-stops",
-      "prompt": "$decision-grill 请停止访谈并交接，不要修改文件：我接受尚未讨论的发布策略风险，先到这里。",
+      "id": "decision-record",
+      "prompt": "$decision-grill 多轮讨论后已有决定、关键假设、一个委托事项和两个待验证事项。请输出记录，不要继续提问或实施。",
       "scripted_replies": [],
-      "expected_output": "记录发布策略被明确延后及用户接受的风险，不继续提问，也不声称方案完整或稳定。",
+      "expected_output": "输出简短决策记录，区分决定、关键取舍与假设、待验证和未解决，不自行开始实施或制作原型。",
       "files": [],
       "review": {
         "platforms": ["codex", "claude"],
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [
-          "记录明确延后和接受的风险",
+          "输出简短决策记录",
+          "区分决定、关键取舍与假设、待验证和未解决",
+          "不自行开始实施或制作原型"
+        ]
+      }
+    },
+    {
+      "id": "user-defers-risk",
+      "prompt": "$decision-grill 用户决定先停止讨论，并明确接受暂不处理发布回滚策略的风险。请交接，不要修改文件。",
+      "scripted_replies": [],
+      "expected_output": "记录明确延后及其风险，不继续追问，不声称该分支已经解决。",
+      "files": [],
+      "review": {
+        "platforms": ["codex", "claude"],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "记录明确延后及其风险",
           "不继续追问",
-          "不声称方案完整稳定"
-        ]
-      }
-    },
-    {
-      "id": "decision-brief",
-      "prompt": "$decision-grill 请把当前状态收敛为紧凑决策简报，不要继续提问或实施：已经决定自建；鉴权细节委托给工程团队；第三方延迟是假设；采购方案已排除；性能需要压测。",
-      "scripted_replies": [],
-      "expected_output": "输出紧凑决策简报，保留决定、委托、关键假设、排除方案、取舍和待验证事项，并给出合理的重新评估信号；不开始实施。",
-      "files": [],
-      "review": {
-        "platforms": ["codex", "claude"],
-        "clean_session": true,
-        "workspace_unchanged": true,
-        "checks": [
-          "输出紧凑决策简报",
-          "保留理由、取舍和重新评估信号",
-          "不自行开始写代码或实施"
-        ]
-      }
-    },
-    {
-      "id": "reuse-upstream-ledger",
-      "prompt": "$decision-grill 上游 requirements-clarifier 已确认兼容策略：旧客户端支持两个正式版本。当前没有新证据或冲突；请检查是否需要重新打开该决定，不要继续提问或修改文件。",
-      "scripted_replies": [],
-      "expected_output": "复用已经确认的兼容策略，不重复询问；只有发现新证据、冲突或关键假设时才重新打开，否则直接收敛。",
-      "files": [],
-      "review": {
-        "platforms": ["codex", "claude"],
-        "clean_session": true,
-        "workspace_unchanged": true,
-        "checks": [
-          "复用已确认兼容策略",
-          "不重复询问同一问题",
-          "只在压力测试发现新证据、冲突或假设时重新打开"
-        ]
-      }
-    },
-    {
-      "id": "no-side-effects",
-      "prompt": "$decision-grill 压力测试迁移方案，不要修改文件：主路径已确定，但回滚触发条件还没决定。",
-      "scripted_replies": [
-        {
-          "expected_question_count": 1,
-          "answers_by_index": [
-            "错误率连续五分钟超过 2%，或出现数据一致性错误时回滚。"
-          ],
-          "unexpected_question_answer": "我暂时不知道，请先记录为未解决项。"
-        }
-      ],
-      "expected_output": "只读检查迁移方案并澄清回滚触发条件；不运行迁移、构建、测试、压测或原型，不创建或修改文件。",
-      "files": [],
-      "review": {
-        "platforms": ["codex", "claude"],
-        "clean_session": true,
-        "workspace_unchanged": true,
-        "checks": [
-          "只读探索",
-          "不运行迁移、构建、测试、压测或原型",
-          "不创建或修改文件"
+          "不声称该分支已经解决"
         ]
       }
     }

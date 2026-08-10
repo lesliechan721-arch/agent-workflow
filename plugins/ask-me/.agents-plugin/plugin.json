@@ -1,7 +1,7 @@
 {
   "name": "ask-me",
-  "version": "0.2.2",
-  "description": "在具体实施前澄清重大用户决策，并对计划、方案和重大决策进行压力测试。",
+  "version": "0.2.3",
+  "description": "在具体实施前澄清会影响结果或造成返工的关键歧义，并协作制定、比较或评审计划和重要决策。",
   "compatibility": {
     "aw": {
       "minVersion": "1.0.0-beta.31"
@@ -18,7 +18,7 @@
   },
   "interface": {
     "displayName": "Ask Me",
-    "shortDescription": "实施前澄清重大阻塞项，并压力测试计划、方案和重大决策",
+    "shortDescription": "实施前澄清关键歧义，并协作制定或评审计划和重要决策",
     "capabilities": [
       "Skills",
       "Instructions"
@@ -28,8 +28,8 @@
     "instructions": [
       {
         "name": "quality-gate",
-        "title": "需求与决策质量门禁",
-        "content": "开始非平凡实施前，先检查现有上下文。若仍有必须由用户决定、且会实质改变行为、接口或数据、兼容迁移、安全合规或验收的阻塞项，使用 `requirements-clarifier`；可查事实、可逆实现细节和已授权默认不阻塞。当前任务若是形成或压力测试计划、想法、方案或重大决策，使用 `decision-grill`。"
+        "title": "实施前需求检查",
+        "content": "开始非平凡实现前，先检查需求是否还有关键歧义。若存在多种合理理解，且选错会明显影响交付结果、功能范围或验收，或多项小歧义合起来会决定成品形态，先使用 `requirements-clarifier`。\n\n能从现有上下文查明、有明确项目惯例、容易调整、只涉及内部实现或用户已授权采用默认值的事项不必追问；会影响用户预期的关键默认值应明确说明，不要静默假设。"
       }
     ]
   },
