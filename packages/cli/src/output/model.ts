@@ -11,7 +11,6 @@ import type {
   ManualNextStepKind,
   NextStepInstruction,
   NextStepsPayloadBoundary,
-  NativeRecoveryState,
   PlatformName,
   Scope,
 } from '../types.js';
@@ -46,20 +45,6 @@ export interface NativeRpcEventData {
   phase: NativeEventPhase;
   durationMs: number;
   nativeWriteSucceeded?: boolean;
-  errorCategory?: string;
-  suggestion?: string;
-}
-
-export interface NativeRecoveryEventData {
-  platform: PlatformName;
-  scope: Scope;
-  plugin: string;
-  pluginId: string;
-  operation: 'write' | 'update' | 'delete';
-  phase: NativeEventPhase;
-  state: NativeRecoveryState;
-  nativeWriteSucceeded: boolean;
-  recoveryBreadcrumbPersisted: boolean;
   errorCategory?: string;
   suggestion?: string;
 }
@@ -104,7 +89,6 @@ export interface CatalogResolutionEventData {
 export type CommandEventType =
   | 'native:marketplace'
   | 'native:rpc'
-  | 'native:recovery'
   | 'native:post-check'
   | 'native:skipped'
   | string;
@@ -113,7 +97,6 @@ export type CommandEventData =
   | Record<string, unknown>
   | NativeMarketplaceEventData
   | NativeRpcEventData
-  | NativeRecoveryEventData
   | NativePostCheckEventData
   | NativeSkippedEventData
   | CatalogResolutionEventData;

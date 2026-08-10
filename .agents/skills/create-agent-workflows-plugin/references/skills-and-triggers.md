@@ -183,7 +183,7 @@ Skill 的调用行为是 Skill 设计的一部分。作者直接在平台原生�
 - Codex：`agents/openai.yaml` 中的 `policy.allow_implicit_invocation`
 - Claude Code：`SKILL.md` frontmatter 中的 `disable-model-invocation` 与 `user-invocable`
 
-安装、升级、重装、配置刷新和 historical bundle replay 都保留最终 Skill 树中的原生元数据。静态 Skill 从平台 bundle 原样复制；动态 `codex.skill` 或 `claude.skill` 必须在最终树中提供合法元数据。AW 只校验并分发，不根据用户配置修改调用方式。
+安装、升级、重装和 lifecycle active replay 都保留最终 Skill 树中的原生元数据。静态 Skill 从平台 bundle 原样复制；动态 `codex.skill` 或 `claude.skill` 必须在最终树中提供合法元数据。AW 只校验并分发，不根据用户配置修改调用方式。
 
 显式调用不受影响。Codex 可继续使用 `$skill-name`；Claude 是否显示用户入口由 `user-invocable` 决定。要改变调用行为，插件作者必须修改 Skill 源码或 renderer 输出，并按正常插件版本流程发布。
 

@@ -3,7 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import fse from 'fs-extra';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type {
   DesiredTarget,
@@ -22,6 +22,7 @@ import type {
   ReadLifecycleActiveSnapshot,
 } from '../../src/utils/lifecycle-active-store.js';
 import type { OwnedComponent, OwnedProbeResult } from '../../src/utils/ownership.js';
+import * as ownershipModule from '../../src/utils/ownership.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
@@ -540,6 +541,7 @@ describe('rebuild operation failures', () => {
 
   it('stops after stale cleanup fails and does not start materialization', async () => {
     const fixture = createFixture({ initial: 'present' });
+    fixture.target.desiredOwnedComponents = [fixture.target.ownedComponents[0]!];
     fixture.fail.add('cleanup');
     const result = await executeRebuildOperation({
       command: 'install', target: fixture.target, driver: fixture.driver, activeStore: fixture.store,
@@ -621,7 +623,73 @@ describe('rebuild operation failures', () => {
     if (result.status === 'failed') expect(result.error.message).toBe('artifact write failed');
     expect(fixture.cleanupCalls.native).toBe(1);
     expect(fixture.cleanupCalls.artifact).toBe(1);
+    expect(fixture.cleanupCalls.active).toBe(0);
     expect(result.failures.some((failure) => failure.message === 'cleanup failed')).toBe(true);
+  });
+
+  it('retains active when cleanup has an owner removal failure', async () => {
+    const fixture = createFixture({ initial: 'present' });
+    fixture.setActive('valid');
+    fixture.fail.add('cleanup');
+    const result = await executeRebuildOperation({
+      command: 'cleanup', target: fixture.target, driver: fixture.driver, activeStore: fixture.store,
+    });
+    expect(result.status).toBe('failed');
+    if (result.status === 'failed') expect(result.error.phase).toBe('cleanup.owned');
+    expect(fixture.cleanupCalls.native).toBe(1);
+    expect(fixture.cleanupCalls.artifact).toBe(1);
+    expect(fixture.cleanupCalls.active).toBe(0);
+    expect(fixture.log).not.toContain('active.remove');
+  });
+
+  it('retains active when cleanup leaves a foreign residual', async () => {
+    const fixture = createFixture({ initial: 'foreign' });
+    fixture.setActive('valid');
+    const result = await executeRebuildOperation({
+      command: 'cleanup', target: fixture.target, driver: fixture.driver, activeStore: fixture.store,
+    });
+    expect(result.status).toBe('failed');
+    if (result.status === 'failed') expect(result.error.phase).toBe('cleanup.owned');
+    expect(result.residual).toEqual(['active-plugin@aw', 'active-plugin:artifact']);
+    expect(fixture.cleanupCalls.active).toBe(0);
+  });
+
+  it('retains active when cleanup reports a quarantine without another failure', async () => {
+    const fixture = createFixture();
+    fixture.setActive('valid');
+    const cleanupSpy = vi.spyOn(ownershipModule, 'cleanupOwnedComponents').mockResolvedValueOnce({
+      removed: [],
+      absent: [],
+      residual: [],
+      quarantined: ['/quarantine/owned-output'],
+      failures: [],
+    });
+    try {
+      const result = await executeRebuildOperation({
+        command: 'cleanup', target: fixture.target, driver: fixture.driver, activeStore: fixture.store,
+      });
+      expect(result.status).toBe('failed');
+      if (result.status === 'failed') expect(result.error.phase).toBe('cleanup.owned');
+      expect(result.quarantined).toEqual(['/quarantine/owned-output']);
+      expect(fixture.cleanupCalls.active).toBe(0);
+    } finally {
+      cleanupSpy.mockRestore();
+    }
+  });
+
+  it('retains promoted active when postcheck recovery cleanup fails', async () => {
+    const fixture = createFixture();
+    fixture.postcheckAbsent = true;
+    fixture.fail.add('cleanup');
+    const result = await executeRebuildOperation({
+      command: 'install', target: fixture.target, driver: fixture.driver, activeStore: fixture.store,
+    });
+    expect(result.status).toBe('failed');
+    if (result.status === 'failed') expect(result.error.phase).toBe('postcheck.inspect');
+    expect(result.actions.filter((entry) => entry.name === 'recovery.cleanup')).toHaveLength(1);
+    expect(fixture.cleanupCalls.native).toBe(1);
+    expect(fixture.cleanupCalls.active).toBe(0);
+    expect(fixture.log).not.toContain('active.remove');
   });
 
   it('reports active snapshot removal failure without retrying ownership cleanup', async () => {
@@ -739,6 +807,22 @@ describe('uninstall safety and dependency boundary', () => {
     expect(result.status).toBe('failed');
     expect(fixture.states).toEqual({ native: 'present', artifact: 'present' });
     expect(fixture.cleanupCalls).toEqual({ native: 0, artifact: 0, active: 0 });
+  });
+
+  it('retains snapshot when historical lifecycle succeeds but owner cleanup fails', async () => {
+    const fixture = createFixture({ initial: 'present' });
+    fixture.setActive('valid');
+    fixture.fail.add('cleanup');
+    const result = await executeRebuildOperation({
+      command: 'uninstall', target: fixture.target, driver: fixture.driver, activeStore: fixture.store,
+    });
+    expect(result.status).toBe('failed');
+    if (result.status === 'failed') expect(result.error.phase).toBe('cleanup.owned');
+    expect(fixture.log).toContain('lifecycle.uninstall:1.0.0:/old/active-plugin.md');
+    expect(fixture.cleanupCalls.native).toBe(1);
+    expect(fixture.cleanupCalls.artifact).toBe(1);
+    expect(fixture.cleanupCalls.active).toBe(0);
+    expect(fixture.log).not.toContain('active.remove');
   });
 
   it('keeps config and legacy persisted-state modules outside the core contract', async () => {

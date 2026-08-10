@@ -108,15 +108,15 @@ aw config list <plugin> --scope project --local
 - `unset` 删除某一层 store 中的单个 key，不会删除其它 key。
 - `reset` 删除整个 scope store。目标 store 存在时脚本化调用需要 `--yes`；目标 store 不存在时是 no-op。
 - `reset` 不需要当前 catalog 里仍有这个插件，因此可以用来清理已卸载或已从 catalog 移除的插件残留配置。
-- `aw uninstall` 默认保留 AW config；需要随卸载成功一起清理当前 target 的配置时可传 `--remove-config`。只想删除配置、不动安装状态时显式运行 `aw config reset <plugin> -s user|project --yes`。`aw cleanup --remove-config` 同样只在主体清理成功后删除当前 target 的配置。
+- `aw uninstall` 和 `aw cleanup` 保留 AW config。只想删除配置时显式运行 `aw config reset <plugin> -s user|project`。
 
 ### 输出分层和 receipt
 
-默认人类输出只承诺展示完成状态、友好原因和必要下一步，不适合脚本解析。内部诊断词，例如 marketplace、app-server、RPC、cache、native transaction、install record、diagnostic cache、project artifact identity、healthSource 或 config/script health 等，不应出现在默认成功输出里；需要诊断时使用 `--verbose` 或 `--debug`。
+默认人类输出只承诺展示完成状态、友好原因和必要下一步，不适合脚本解析。需要详细诊断时使用 `--verbose` 或 `--debug`。
 
-所有脚本化写命令的 `--json` stdout 都是单一 JSON receipt，可直接 `JSON.parse`。`init/install/uninstall/upgrade/config set/unset/reset --json` 至少包含 `ok`、`command`、`warnings`、`nextSteps`；安装、卸载、升级会按实际结果补充 `plugins`、`targets`、`actions`、`artifacts`、`native` 等字段；配置写命令会返回 `updatedKeys` / `removedKeys` 和稳定的 `artifactRefresh`。`config list/get --json` 保留既有数据结构，同时包含稳定的 `ok` 和 `command`。
+所有脚本化写命令的 `--json` stdout 都是单一 JSON receipt。五个写命令使用 receipt v3；配置写命令使用 config receipt v3，并返回 `updatedKeys` / `removedKeys` 和 target reinstall 结果。
 
-`aw status` 是只读投影：默认输出是友好摘要，`aw status --verbose` 展示内部排查字段，`aw status --json` 输出 `statusSchemaVersion: 2`、`consoleItemsSchemaVersion: 3`、`ok`、`command`、`friendlySummaries` 和 `consoleItems`。status 失败路径也必须守住 stdout 机器合同：stdout 为空或仍是单一可解析 JSON，错误说明写 stderr。
+`aw status` 是 live ownership 只读投影：默认输出友好摘要，`aw status --verbose` 展示组件检查，`aw status --json` 输出 `schemaVersion: 3`、catalog、filters、targets 和 errors。每个 target 的状态只允许 `present`、`absent`、`partial`、`error`。status 失败路径也必须守住 stdout 机器合同：stdout 为空或仍是单一可解析 JSON，错误说明写 stderr。
 
 ## 标准配置 Helper
 
@@ -148,7 +148,7 @@ helper 的读取路径分两种：
 - `codex.developerInstructionsBlock`：写入当前 scope 的 Codex AW managed developer instructions block。
 - `codex.agentRole`：写入 role layer 文件，并在当前 scope Codex config 中注册 `[agents.<roleKey>]`。
 
-manifest 中要同时声明 `scripts.artifacts.render` 和 `artifacts.targets`。`artifacts.targets` 是安装前能力真值，负责 installability、project preflight、status current catalog、install record artifact identity 和 project artifact shared identity；renderer 只负责根据当前 config 输出 `ArtifactPlan`。
+manifest 中要同时声明 `scripts.artifacts.render` 和 `artifacts.targets`。`artifacts.targets` 是 rebuild 和 live status 的能力真值；renderer 只负责根据当前 config 输出 `ArtifactPlan`。
 
 ```json
 {
@@ -163,7 +163,7 @@ manifest 中要同时声明 `scripts.artifacts.render` 和 `artifacts.targets`�
 }
 ```
 
-renderer 只在 `install`、`upgrade`、config-triggered `refresh` 这些写路径执行。`aw status` 不执行 renderer，也不执行 lifecycle。install/upgrade 时 renderer 从本次解析出的 bundle 运行；config refresh 和 refresh-only 时从当前 location 的 install record historical bundle 运行，避免 current local marketplace 被运行时产物污染后继续充当模板源。renderer 通过 `AW_PLUGIN_CONTEXT` 读取 JSON context，常用字段包括：
+renderer 在 install、upgrade、reinstall 和配置触发的 reinstall 中执行。`aw status` 不执行 renderer 或 lifecycle。renderer 通过 `AW_PLUGIN_CONTEXT` 读取 JSON context，常用字段包括：
 
 - `event`、`platform`、`scope`
 - 插件 `name`、`version`、`rootDir`、`manifestPath`
@@ -208,13 +208,9 @@ renderer stdout 必须只输出 JSON：
 
 `codex.skill` / `claude.skill` 必须在 manifest 静态声明 `skillKey`。静态完整目录来自 `sourceDirs`：AW 按声明顺序做字节级合并，后面的目录覆盖前面的文件。renderer 的 `content.files` 再覆盖静态树，只接受 UTF-8 字符串和安全的 POSIX 相对路径。最终 Codex tree 必须有 `SKILL.md` 与 `agents/openai.yaml`；最终 Claude tree 必须有 `SKILL.md`。AW apply 阶段 patch 对应平台的触发字段。同一插件声明多个 `codex.developerInstructionsBlock` artifact 时，AW 会按 `artifact.id` 稳定排序后合成为一个 managed block；disabled instruction artifact 只会从合成内容里省略自己的 fragment，所有 instruction artifact 都 disabled 时才移除该插件的 managed block。status 和 refresh preflight 会按合成后的 managed block digest 诊断用户编辑造成的 content drift。`codex.agentRole` 的 `roleKey` 和 `roleFile.name` 必须与 manifest 静态 `artifacts.targets[].roleKey` 一致；`registration.config_file` 和 role layer 路径由 AW 生成，renderer 不能提供。
 
-renderer 不能直接写 Codex/Claude Skill runtime、`.codex/config.toml`、`.codex/agents/*.toml`、project artifact identity、dynamic diagnostic cache、install record 或其它 AW 受管文件。写盘、回滚、status、uninstall 和 diagnostic cache 更新都集中在 AW target apply。
+renderer 不能直接写 Codex/Claude Skill runtime、`.codex/config.toml`、`.codex/agents/*.toml` 或其它 AW 受管文件。写盘和 ownership inspection 集中在 rebuild target apply。
 
-配置写入后的 refresh 只覆盖当前命令能定位到的 target：user config 写入会刷新 user-scope dynamic artifacts，并在当前仓库也安装了 project target 时刷新当前 repo；project shared config 写入只刷新当前 repo project target。project local config 和路径型 key 不触发 repo-visible project artifact refresh。CLI 不扫描所有历史 project；refresh 成功或失败摘要写入 dynamic diagnostic cache，`lastRefresh` / `refreshReach` 可供 `aw status`、`aw status --json.consoleItems` 和 JSON receipt 投影为 recent refresh failed / `artifactRefreshFailed`。install record 或 historical bundle 不可用时，refresh 会 fail closed 并提示查看 status 详情；artifact drift 或 missing 在 `consoleItems.reasonCodes` 中投影为 `artifactRefreshFailed`；`disabledReason: "config"` 不是故障。
-
-重新应用配置动作用于重放已有配置，不修改 config store。它优先使用 dynamic diagnostic cache 中失败 artifact 的 `refreshKeys`；没有失败记录时，退回当前目标可定位的 dynamic artifact refresh keys。成功后更新对应 artifact 的 accepted state 和 refresh 诊断，并保留 renderer 最终树中的平台原生调用元数据；失败后保留配置，并把本次错误写入 receipt 的 `artifactRefresh.error`，后续 status 可从 diagnostic cache 读取。没有可定位 dynamic artifact 时返回 skipped。
-
-动态 artifact 写动作必须来自明确的 location target。多位置状态可以被 status 或控制台汇总展示，但不能把汇总位置解释成隐式批量写。执行配置保存、refresh-only、安装、升级、卸载或 cleanup 前，调用方必须明确 platform、scope 和 project root；renderer 仍只返回 plan，不能自行写 `.agents/skills/**`、Codex user runtime、`.codex/config.toml`、`.codex/agents/*.toml`、install record、diagnostic cache 或 project artifact identity。
+配置写入只覆盖当前命令能定位到的 target，并对这些 target 运行完整 reinstall。CLI 不扫描其它历史 project；receipt 会提示其它项目需要手动 reinstall。动态 artifact 写动作必须来自明确的 platform、scope 和 project root，renderer 仍只返回 plan，不能自行写 AW 受管输出。
 
 ## Lifecycle
 
@@ -271,18 +267,10 @@ lifecycle 可能在这些情况下被再次调用：用户重复安装、升级�
 - 不改写源码树和 generated bundle。
 - 写入 AW 受管状态前先创建目录，已有内容按可重复执行处理。
 - 清理操作允许目标不存在。
-- 不依赖当前 marketplace 中的同名插件；`uninstall` 会优先使用安装时保存的 historical runtime bundle，config refresh 也会使用它运行动态 artifact renderer。这个 runtime 不是 current catalog，不能当作当前依赖边或 schema 真值。
+- uninstall lifecycle 使用 lifecycle active store 保存的最后一次成功脚本输入，不读取旧安装状态文件。
 - 把 `context.plugin.rootDir` 或 `AW_PLUGIN_ROOT` 当作 runtime 真值，不从 `process.cwd()` 推断插件根。
 
-`aw status` 只读展示 config/script 健康，不会运行 lifecycle、刷新 marketplace、创建 config store 或改写 bundle。默认输出会把这些内部诊断投影成用户可理解的状态、位置和下一步；`--verbose` / `--json` 才暴露机器字段。它们不是安装真值，顶层安装状态仍只允许 `installed`、`notInstalled`、`cleanupRequired` 和 `external`。常见底层状态包括：
-
-| 维度 | 状态 |
-|------|------|
-| config | `configured`、`missing-required`、`invalid-config`、`no-schema` |
-| scripts | `declared`、`not_declared`、`missing-from-bundle`、`unsupported-on-current-os` |
-| healthSource | `installRecord`、`currentCatalog`、`historicalLifecycle`、`none` |
-
-没有声明 `config.schema`、`scripts.lifecycle` 或 `artifacts.targets` 不是默认问题。它们只表示插件没有 AW 配置面、没有生命周期脚本或没有动态 artifact；status 不应因此生成 `missingRequiredConfig`、脚本异常或 artifact refresh 问题。
+`aw status` 只读取 current catalog、现场 owner marker 和平台原生状态。它不会运行 lifecycle、renderer，不会刷新 marketplace，也不会创建 config store。target 状态只允许 `present`、`absent`、`partial`、`error`：全部期望组件存在时是 `present`，全部缺失时是 `absent`，部分存在或不完整时是 `partial`，检查失败时是 `error`。没有声明 `config.schema`、`scripts.lifecycle` 或 `artifacts.targets` 不是问题，只表示插件没有对应能力。
 
 ## 运行时 Context
 

@@ -242,7 +242,6 @@ async function createCatalogManifestEntryFromPlugin(
     ...marketplaceEntry,
     version: plugin.manifest.version,
     compatibility: plugin.manifest.compatibility!,
-    dependencies: plugin.manifest.dependencies,
     artifactDigest: await calculateCatalogEntryArtifactDigest(pluginRoot),
     manifestDigest: calculateCatalogEntryManifestDigest(plugin.manifest),
   };

@@ -13,9 +13,6 @@ function sanitizeHumanText(text: string): string {
     .replaceAll('app-server', '本地服务')
     .replaceAll('RPC', '接口调用')
     .replaceAll('rpc', '接口调用')
-    .replaceAll('breadcrumb', '恢复标记')
-    .replaceAll('ledger', '安装记录')
-    .replaceAll('installed.json', '本地安装记录')
     .replaceAll('marketplace', '插件目录')
     .replaceAll('cache', '本地缓存')
     .replaceAll('healthSource', '状态来源')
@@ -86,8 +83,7 @@ export function formatWarningText(warning: string): string {
     const [, platform, pluginName, rawMessage] = sourceMatch;
     const translated =
       translateTrustWarning(rawMessage) ??
-      rawMessage
-        .replaceAll('installed.json', '本地安装记录');
+      rawMessage;
     return sanitizeHumanText(`${PLATFORM_LABELS[platform] ?? platform} / ${pluginName}：${translated}`);
   }
 

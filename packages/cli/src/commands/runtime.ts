@@ -3,8 +3,6 @@ import path from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { PassThrough, Writable } from 'node:stream';
 
-import { ClaudeAdapter } from '../adapters/claude.js';
-import { CodexAdapter } from '../adapters/codex.js';
 import {
   createFileDebugLogger,
   createNoopDebugLogger,
@@ -23,7 +21,6 @@ import type { NativeCliInvocation, NativeCliResult, NativeCliRunner } from '../u
 import { NativeCliError, getDefaultNativeCliRunner } from '../utils/native-cli.js';
 import { resolveAwHome } from '../utils/paths.js';
 import { assertTestWritablePath } from '../utils/test-path-fence.js';
-import type { PlatformAdapter, PlatformName } from '../types.js';
 import type { Scope } from '../types.js';
 
 export type {
@@ -171,15 +168,8 @@ export interface CliPrompt {
   configurePlugin?: (options: CliConfigPromptOptions) => Promise<CliConfigPromptResult>;
 }
 
-export type AdaptersFactory = (
-  cwd: string,
-  context: CommandExecutionContext,
-) => Record<PlatformName, PlatformAdapter>;
-
 export interface CommandExecutionContext {
   env: NodeJS.ProcessEnv;
-  adapters?: Record<PlatformName, PlatformAdapter>;
-  adaptersFactory: AdaptersFactory;
   nativeCliRunner: NativeCliRunner;
   interactive: boolean;
   prompt: CliPrompt;
@@ -1230,16 +1220,6 @@ export function createInquirerPrompt(options: InquirerPromptOptions = {}): CliPr
   };
 }
 
-function defaultAdaptersFactory(
-  cwd: string,
-  context: CommandExecutionContext,
-): Record<PlatformName, PlatformAdapter> {
-  return {
-    codex: new CodexAdapter(cwd, context.nativeCliRunner, context.env),
-    claude: new ClaudeAdapter(cwd, context.nativeCliRunner, context.env),
-  };
-}
-
 function serializeInvocation(invocation: NativeCliInvocation): Record<string, unknown> {
   return {
     command: invocation.command,
@@ -1359,7 +1339,6 @@ export function isCommandExecutionContext(
   return Boolean(
     input &&
       typeof input.env === 'object' &&
-      typeof input.adaptersFactory === 'function' &&
       typeof input.nativeCliRunner === 'function' &&
       typeof input.reporter?.event === 'function' &&
       typeof input.debugLogger?.log === 'function' &&
@@ -1386,8 +1365,6 @@ export function createCommandExecutionContext(
 
   return {
     env,
-    adapters: input.adapters,
-    adaptersFactory: input.adaptersFactory ?? defaultAdaptersFactory,
     nativeCliRunner: createInstrumentedNativeCliRunner({
       baseRunner,
       diagnostics,

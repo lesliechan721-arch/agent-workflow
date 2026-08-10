@@ -32,8 +32,6 @@ import type {
   PluginConfigSchema,
   PluginArtifactRenderScriptEntry,
   PluginArtifactsConfig,
-  PluginDependenciesConfig,
-  PluginDependencyEntry,
   PluginArtifactTargetDefinition,
   PluginInterfaceMeta,
   PluginLifecycleScriptEntry,
@@ -88,7 +86,6 @@ const MARKETPLACE_AUTHENTICATION_POLICIES = new Set<MarketplaceAuthenticationPol
   'ON_INSTALL',
   'ON_USE',
 ]);
-const PLUGIN_DEPENDENCY_PLATFORMS = new Set<PlatformName>(['codex', 'claude']);
 const CATALOG_CHANNELS = new Set<CatalogChannel>(['latest', 'beta']);
 const NODE_RUNNABLE_EXTENSIONS = new Set(['.js', '.mjs', '.cjs']);
 const PLATFORM_PRODUCT_BY_NAME: Record<PlatformName, string> = {
@@ -731,118 +728,6 @@ function normalizeMarketplaceMeta(
     strict: input.strict,
     policy: normalizeMarketplacePolicy(input.policy, `${fieldName}.policy`),
   };
-}
-
-function normalizePluginDependencyPlatforms(
-  value: unknown,
-  fieldName: string,
-): PlatformName[] {
-  const platforms = ensureStringArray(value, fieldName);
-  if (platforms.length === 0) {
-    throw new Error(`Invalid ${fieldName}: expected at least one platform.`);
-  }
-
-  const normalized: PlatformName[] = [];
-  for (const [index, platform] of platforms.entries()) {
-    if (!PLUGIN_DEPENDENCY_PLATFORMS.has(platform as PlatformName)) {
-      throw new Error(`Invalid ${fieldName}[${index}]: expected "codex" or "claude".`);
-    }
-    if (normalized.includes(platform as PlatformName)) {
-      throw new Error(`Invalid ${fieldName}[${index}]: duplicate platform "${platform}".`);
-    }
-    normalized.push(platform as PlatformName);
-  }
-
-  return normalized;
-}
-
-function normalizePluginDependencyEntry(
-  pluginName: string,
-  value: unknown,
-  fieldName: string,
-): PluginDependencyEntry {
-  const input = assertObject(value, fieldName);
-  assertAllowedKeys(input, fieldName, ['name', 'minVersion', 'target', 'when']);
-
-  const dependencyName = ensurePluginName(input.name, `${fieldName}.name`);
-  if (dependencyName === pluginName) {
-    throw new Error(`Invalid ${fieldName}.name: plugin "${pluginName}" cannot depend on itself.`);
-  }
-
-  const entry: PluginDependencyEntry = {
-    name: dependencyName,
-  };
-
-  if (input.minVersion !== undefined) {
-    entry.minVersion = assertStrictSemVer(input.minVersion, `${fieldName}.minVersion`);
-  }
-
-  if (input.target !== undefined) {
-    const target = assertObject(input.target, `${fieldName}.target`);
-    assertAllowedKeys(target, `${fieldName}.target`, ['scope']);
-
-    const scope = ensureString(target.scope, `${fieldName}.target.scope`);
-    if (scope !== 'user' && scope !== 'project') {
-      throw new Error(`Invalid ${fieldName}.target.scope: expected "user" or "project".`);
-    }
-
-    entry.target = { scope };
-  }
-
-  if (input.when !== undefined) {
-    const when = assertObject(input.when, `${fieldName}.when`);
-    assertAllowedKeys(when, `${fieldName}.when`, ['platforms']);
-    entry.when = {
-      platforms: normalizePluginDependencyPlatforms(when.platforms, `${fieldName}.when.platforms`),
-    };
-  }
-
-  return entry;
-}
-
-function normalizedDependencyPlatforms(entry: PluginDependencyEntry): PlatformName[] {
-  return entry.when?.platforms ? [...entry.when.platforms] : ['codex', 'claude'];
-}
-
-function validateOverlappingPluginDependencies(
-  entries: PluginDependencyEntry[],
-  fieldName: string,
-): void {
-  const seenByPlugin = new Map<string, Map<PlatformName, number>>();
-
-  for (const [index, entry] of entries.entries()) {
-    const seenPlatforms = seenByPlugin.get(entry.name) ?? new Map<PlatformName, number>();
-    for (const platform of normalizedDependencyPlatforms(entry)) {
-      const existingIndex = seenPlatforms.get(platform);
-      if (existingIndex !== undefined) {
-        throw new Error(
-          `Invalid ${fieldName}[${index}].when.platforms: overlaps with ${fieldName}[${existingIndex}] for plugin "${entry.name}" on platform "${platform}".`,
-        );
-      }
-      seenPlatforms.set(platform, index);
-    }
-    seenByPlugin.set(entry.name, seenPlatforms);
-  }
-}
-
-function normalizePluginDependencies(
-  pluginName: string,
-  value: unknown,
-  fieldName: string,
-): PluginDependenciesConfig {
-  const input = assertObject(value, fieldName);
-  assertAllowedKeys(input, fieldName, ['plugins']);
-
-  if (!Array.isArray(input.plugins)) {
-    throw new Error(`Invalid ${fieldName}.plugins: expected an array.`);
-  }
-
-  const plugins = input.plugins.map((entry, index) =>
-    normalizePluginDependencyEntry(pluginName, entry, `${fieldName}.plugins[${index}]`),
-  );
-  validateOverlappingPluginDependencies(plugins, `${fieldName}.plugins`);
-
-  return { plugins };
 }
 
 function normalizeTemplateVarByPlatform(
@@ -2300,6 +2185,9 @@ export function validatePluginManifest(
       'Invalid plugin manifest: top-level "commands" has been removed; use "slashCommands" instead.',
     );
   }
+  if (Object.hasOwn(input, 'dependencies')) {
+    throw new Error('Invalid plugin manifest: top-level "dependencies" is unsupported.');
+  }
   assertAllowedKeys(input, 'plugin manifest', [
     'name',
     'version',
@@ -2311,7 +2199,6 @@ export function validatePluginManifest(
     'apps',
     'marketplace',
     'interface',
-    'dependencies',
     'extensions',
     'artifacts',
     'buildConfig',
@@ -2364,14 +2251,6 @@ export function validatePluginManifest(
 
   if (input.interface !== undefined) {
     manifest.interface = normalizePluginInterface(input.interface, 'interface');
-  }
-
-  if (input.dependencies !== undefined) {
-    manifest.dependencies = normalizePluginDependencies(
-      manifest.name,
-      input.dependencies,
-      'dependencies',
-    );
   }
 
   if (input.extensions !== undefined) {
@@ -2624,32 +2503,6 @@ export async function discoverPlugins(repoRoot: string): Promise<PluginMeta[]> {
   return discoverPluginsInDirectory(path.join(repoRoot, 'plugins'));
 }
 
-export function validatePluginDependencyReferences(
-  plugins: readonly PluginMeta[],
-): void {
-  const pluginsByName = new Map(plugins.map((plugin) => [plugin.manifest.name, plugin]));
-
-  for (const plugin of plugins) {
-    for (const [index, dependency] of (plugin.manifest.dependencies?.plugins ?? []).entries()) {
-      const dependencyPlugin = pluginsByName.get(dependency.name);
-      if (!dependencyPlugin) {
-        throw new Error(
-          `Invalid dependencies.plugins[${index}].name for plugin "${plugin.manifest.name}": current catalog is missing plugin "${dependency.name}".`,
-        );
-      }
-
-      if (
-        dependency.minVersion &&
-        compareStrictSemVer(dependencyPlugin.manifest.version, dependency.minVersion) < 0
-      ) {
-        throw new Error(
-          `Invalid dependencies.plugins[${index}].minVersion for plugin "${plugin.manifest.name}": current catalog plugin "${dependency.name}" version ${dependencyPlugin.manifest.version} does not satisfy minimum ${dependency.minVersion}.`,
-        );
-      }
-    }
-  }
-}
-
 function selectPlugins(plugins: PluginMeta[], pluginNames?: string[]): PluginMeta[] {
   if (!pluginNames || pluginNames.length === 0) {
     return plugins;
@@ -2681,7 +2534,6 @@ export async function resolvePluginsFromCatalog(
     path.join(catalogRoot, 'plugins'),
     { mode: 'bundle' },
   );
-  validatePluginDependencyReferences(plugins);
   return selectPlugins(plugins, pluginNames);
 }
 
@@ -2779,6 +2631,9 @@ function normalizeCatalogHistoryPluginRelease(
   catalogMinAwVersion: string,
 ): CatalogHistoryPluginRelease {
   const input = assertObject(value, fieldName);
+  if (Object.hasOwn(input, 'dependencies')) {
+    throw new Error(`Invalid ${fieldName}: "dependencies" is unsupported.`);
+  }
   assertAllowedKeys(input, fieldName, [
     'name',
     'version',
@@ -2887,6 +2742,9 @@ function normalizeCatalogManifestEntry(
   fieldName: string,
 ): CatalogManifestEntry {
   const input = assertObject(value, fieldName);
+  if (Object.hasOwn(input, 'dependencies')) {
+    throw new Error(`Invalid ${fieldName}: "dependencies" is unsupported.`);
+  }
   assertAllowedKeys(input, fieldName, [
     'name',
     'version',
@@ -2897,7 +2755,6 @@ function normalizeCatalogManifestEntry(
     'strict',
     'policy',
     'compatibility',
-    'dependencies',
     'source',
     'artifactDigest',
     'manifestDigest',
@@ -2924,14 +2781,6 @@ function normalizeCatalogManifestEntry(
   if (input.interface !== undefined) {
     entry.interface = normalizePluginInterface(input.interface, `${fieldName}.interface`);
   }
-  if (input.dependencies !== undefined) {
-    entry.dependencies = normalizePluginDependencies(
-      entry.name,
-      input.dependencies,
-      `${fieldName}.dependencies`,
-    );
-  }
-
   return entry;
 }
 
@@ -3012,25 +2861,6 @@ export function validateCatalogManifest(
     });
   }
 
-  for (const entry of entries) {
-    for (const dependency of entry.dependencies?.plugins ?? []) {
-      const dependencyEntry = entriesByName.get(dependency.name);
-      if (!dependencyEntry) {
-        throw new Error(
-          `Invalid catalog manifest.entries.${entry.name}.dependencies: current snapshot is missing plugin "${dependency.name}".`,
-        );
-      }
-      if (
-        dependency.minVersion &&
-        compareStrictSemVer(dependencyEntry.version, dependency.minVersion) < 0
-      ) {
-        throw new Error(
-          `Invalid catalog manifest.entries.${entry.name}.dependencies.plugins.${dependency.name}.minVersion: current snapshot version ${dependencyEntry.version} does not satisfy minimum ${dependency.minVersion}.`,
-        );
-      }
-    }
-  }
-
   const latestRelease = history.releases[history.releases.length - 1]!;
   if (latestRelease.catalogVersion !== catalogVersion) {
     throw new Error('Invalid catalog manifest.history.releases: last release must match catalogVersion.');
@@ -3092,9 +2922,6 @@ export function createBundleSourceManifest(plugin: PluginMeta): PluginManifestSo
     compatibility: plugin.manifest.compatibility
       ? structuredClone(plugin.manifest.compatibility)
       : createPluginCompatibility(DEFAULT_SOURCE_PLUGIN_AW_MIN_VERSION),
-    dependencies: plugin.manifest.dependencies
-      ? structuredClone(plugin.manifest.dependencies)
-      : undefined,
     extensions: plugin.manifest.extensions
       ? {
           instructions: plugin.manifest.extensions.instructions

@@ -13,7 +13,6 @@ import {
 } from '../../src/index.js';
 import { getCurrentSourceTestRootRegistry } from '../setup/test-isolation.js';
 import {
-  createSafeAdaptersFactory,
   createTestCodexAppServerProcessGuard,
   createTestNativeCliGuard,
 } from './native-guard.js';
@@ -70,7 +69,6 @@ export function createSafeCliRuntimeOptions(
 ): CliRuntimeOptions {
   const {
     nativeCliRunner,
-    adaptersFactory,
     codexAppServerRunner,
     ...runtimeOptions
   } = options;
@@ -82,12 +80,6 @@ export function createSafeCliRuntimeOptions(
     nativeCliRunner: nativeCliRunner ?? createTestNativeCliGuard({
       cwdSource: 'createSafeCliRuntimeOptions().cwd',
       envSource: 'createSafeCliRuntimeOptions().env',
-    }),
-    adaptersFactory: adaptersFactory ?? createSafeAdaptersFactory({
-      codexAppServerRunner: codexAppServerRunner ?? createTestCodexAppServerProcessGuard({
-        cwdSource: 'createSafeCliRuntimeOptions().cwd',
-        envSource: 'createSafeCliRuntimeOptions().env',
-      }),
     }),
   };
 }
@@ -105,7 +97,6 @@ export function createSafeCommandExecutionContext(
 ): CommandExecutionContext {
   const {
     nativeCliRunner,
-    adaptersFactory,
     codexAppServerRunner,
     ...contextInput
   } = input;
@@ -116,12 +107,6 @@ export function createSafeCommandExecutionContext(
     nativeCliRunner: nativeCliRunner ?? createTestNativeCliGuard({
       cwdSource: 'createSafeCommandExecutionContext().native invocation.cwd',
       envSource: 'createSafeCommandExecutionContext().env',
-    }),
-    adaptersFactory: adaptersFactory ?? createSafeAdaptersFactory({
-      codexAppServerRunner: codexAppServerRunner ?? createTestCodexAppServerProcessGuard({
-        cwdSource: 'createSafeCommandExecutionContext().adapter cwd',
-        envSource: 'createSafeCommandExecutionContext().env',
-      }),
     }),
   });
 }

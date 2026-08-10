@@ -1,5 +1,4 @@
 import { spawn } from 'node:child_process';
-import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -7,11 +6,7 @@ import fs from 'fs-extra';
 
 import type { CommandExecutionContext } from '../commands/runtime.js';
 import type {
-  CatalogResolution,
   GeneratedArtifact,
-  InstalledLedger,
-  InstalledScopeRecord,
-  LifecycleConfigSnapshotMetadata,
   PlatformName,
   PluginLifecycleEvent,
   PluginLifecycleRuntimeOs,
@@ -29,12 +24,8 @@ import {
 } from './plugin-script-contract.js';
 import {
   resolveAwHome,
-  resolveClaudeProjectKey,
-  resolveCodexProjectKey,
-  resolveEmbeddedPluginsRoot,
 } from './paths.js';
-import { SOURCE_MANIFEST_PATH, readPluginManifest } from './manifest.js';
-import { resolveCatalogPlugins, resolveCurrentCatalog } from './plugin-catalog.js';
+import { resolveCatalogPlugins } from './plugin-catalog.js';
 import { resolveEffectivePluginConfig } from './plugin-config.js';
 import { redactString } from '../output/redact.js';
 import { assertTestWritablePath } from './test-path-fence.js';
@@ -42,30 +33,9 @@ export {
   calculateFileDigest,
   calculatePluginBundleFingerprint,
 } from './bundle-integrity.js';
-import {
-  calculateFileDigest,
-  calculatePluginBundleFingerprint,
-} from './bundle-integrity.js';
+import { calculateFileDigest } from './bundle-integrity.js';
 
-export const PLUGIN_INSTALL_SNAPSHOTS_DIR = 'plugin-install-snapshots';
-
-export type LifecycleScriptTargetSource = 'installSnapshot' | 'currentCatalog' | 'none';
-
-export interface CreateLifecycleConfigSnapshotOptions {
-  plugin: PluginMeta;
-  platform: PlatformName;
-  scope: Scope;
-  cwd: string;
-  env?: NodeJS.ProcessEnv;
-  catalogResolution?: CatalogResolution;
-}
-
-export interface PreparedLifecycleConfigSnapshot {
-  metadata: LifecycleConfigSnapshotMetadata;
-  sourceBundleRoot: string;
-  stagingRoot: string;
-  stagedBundleRoot: string;
-}
+export type LifecycleScriptTargetSource = 'currentCatalog' | 'none';
 
 export interface LifecycleScriptTarget {
   noOp: boolean;
@@ -83,7 +53,6 @@ export interface ResolveLifecycleScriptTargetOptions {
   event: PluginLifecycleEvent;
   pluginName: string;
   platform: PlatformName;
-  scopeRecord?: InstalledScopeRecord<Record<string, unknown>>;
   currentPlugin?: PluginMeta;
   cwd: string;
   env?: NodeJS.ProcessEnv;
@@ -169,15 +138,6 @@ function isInsidePath(childPath: string, rootPath: string): boolean {
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
 }
 
-function digestHex(value: string): string {
-  return crypto.createHash('sha256').update(value).digest('hex');
-}
-
-function safePathSegment(value: string): string {
-  const readable = value.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48);
-  return `${readable || 'scope'}-${digestHex(value).slice(0, 12)}`;
-}
-
 function lifecycleCodexHome(env: NodeJS.ProcessEnv): string {
   return env.AW_CODEX_HOME || path.join(resolveAwHome(env), 'isolated-codex-home');
 }
@@ -211,271 +171,6 @@ export async function resolveBundledPluginFilePath(options: {
   }
 
   return resolvedPath;
-}
-
-async function resolveSnapshotScopeIdentity(
-  platform: PlatformName,
-  scope: Scope,
-  cwd: string,
-): Promise<string> {
-  if (scope === 'user') {
-    return 'user';
-  }
-
-  return platform === 'claude'
-    ? resolveClaudeProjectKey(cwd)
-    : resolveCodexProjectKey(cwd);
-}
-
-async function resolveLifecycleSnapshotSource(options: {
-  plugin: PluginMeta;
-  pluginManifestDigest: string;
-  catalog?: Awaited<ReturnType<typeof resolveCurrentCatalog>>;
-  env?: NodeJS.ProcessEnv;
-}): Promise<{
-  sourceBundleRoot: string;
-  manifestDigest: string;
-  bundleFingerprint: string;
-}> {
-  const env = options.env ?? process.env;
-  const activeMarketplacePluginsRoot = path.join(resolveAwHome(env), 'plugins');
-
-  if (
-    options.catalog?.source !== 'local' ||
-    !isInsidePath(options.plugin.rootDir, activeMarketplacePluginsRoot)
-  ) {
-    return {
-      sourceBundleRoot: options.plugin.rootDir,
-      manifestDigest: options.pluginManifestDigest,
-      bundleFingerprint: await calculatePluginBundleFingerprint(options.plugin.rootDir),
-    };
-  }
-
-  try {
-    const embeddedPluginRoot = path.join(
-      await resolveEmbeddedPluginsRoot(),
-      'plugins',
-      options.plugin.manifest.name,
-    );
-    const embeddedPlugin = await readPluginManifest(embeddedPluginRoot, { mode: 'bundle' });
-    if (
-      embeddedPlugin.manifest.name === options.plugin.manifest.name &&
-      embeddedPlugin.manifest.version === options.plugin.manifest.version
-    ) {
-      return {
-        sourceBundleRoot: embeddedPluginRoot,
-        manifestDigest: await calculateFileDigest(embeddedPlugin.manifestPath),
-        bundleFingerprint: await calculatePluginBundleFingerprint(embeddedPluginRoot),
-      };
-    }
-  } catch {
-    return {
-      sourceBundleRoot: options.plugin.rootDir,
-      manifestDigest: options.pluginManifestDigest,
-      bundleFingerprint: await calculatePluginBundleFingerprint(options.plugin.rootDir),
-    };
-  }
-
-  return {
-    sourceBundleRoot: options.plugin.rootDir,
-    manifestDigest: options.pluginManifestDigest,
-    bundleFingerprint: await calculatePluginBundleFingerprint(options.plugin.rootDir),
-  };
-}
-
-export async function prepareLifecycleConfigSnapshot(
-  options: CreateLifecycleConfigSnapshotOptions,
-): Promise<PreparedLifecycleConfigSnapshot> {
-  const env = options.env ?? process.env;
-  const manifestPath = path.join(options.plugin.rootDir, SOURCE_MANIFEST_PATH);
-  const [pluginManifestDigest, catalog, scopeIdentity] = await Promise.all([
-    calculateFileDigest(manifestPath),
-    options.catalogResolution === undefined
-      ? resolveCurrentCatalog(env).catch(() => undefined)
-      : Promise.resolve(options.catalogResolution),
-    resolveSnapshotScopeIdentity(options.platform, options.scope, options.cwd),
-  ]);
-  const {
-    sourceBundleRoot,
-    manifestDigest,
-    bundleFingerprint,
-  } = await resolveLifecycleSnapshotSource({
-    plugin: options.plugin,
-    pluginManifestDigest,
-    catalog,
-    env,
-  });
-  const createdAt = new Date().toISOString();
-  const digestSegment = manifestDigest.replace(/^sha256:/, '').slice(0, 16);
-  const snapshotRoot = assertLifecycleStagingPathForTests(path.join(
-    resolveAwHome(env),
-    PLUGIN_INSTALL_SNAPSHOTS_DIR,
-    options.platform,
-    options.scope,
-    safePathSegment(scopeIdentity),
-    safePathSegment(options.plugin.manifest.name),
-    `${digestSegment}-${Date.now().toString(36)}-${crypto.randomBytes(4).toString('hex')}`,
-  ), 'plugin lifecycle snapshot root');
-  const bundleRoot = assertLifecycleStagingPathForTests(
-    path.join(snapshotRoot, 'bundle'),
-    'plugin lifecycle snapshot bundle root',
-  );
-  const stagingRoot = assertLifecycleStagingPathForTests(
-    `${snapshotRoot}.tmp-${crypto.randomBytes(4).toString('hex')}`,
-    'plugin lifecycle snapshot staging root',
-  );
-  const stagedBundleRoot = assertLifecycleStagingPathForTests(
-    path.join(stagingRoot, 'bundle'),
-    'plugin lifecycle staged bundle root',
-  );
-
-  return {
-    metadata: {
-      snapshotRoot,
-      bundleRoot,
-      manifestPath: path.join(bundleRoot, SOURCE_MANIFEST_PATH),
-      pluginName: options.plugin.manifest.name,
-      pluginVersion: options.plugin.manifest.version,
-      sourceManifestDigest: manifestDigest,
-      bundleFingerprint,
-      createdAt,
-      createdFrom: {
-        source: 'currentCatalog',
-        catalogRoot: catalog?.rootDir,
-        catalogSource: catalog?.source,
-        pluginRoot: options.plugin.rootDir,
-      },
-    },
-    sourceBundleRoot,
-    stagingRoot,
-    stagedBundleRoot,
-  };
-}
-
-export async function persistLifecycleConfigSnapshot(
-  prepared: PreparedLifecycleConfigSnapshot,
-): Promise<LifecycleConfigSnapshotMetadata> {
-  const snapshotRoot = assertLifecycleStagingPathForTests(
-    prepared.metadata.snapshotRoot,
-    'plugin lifecycle snapshot root',
-  );
-  const stagingRoot = assertLifecycleStagingPathForTests(
-    prepared.stagingRoot,
-    'plugin lifecycle snapshot staging root',
-  );
-  const stagedBundleRoot = assertLifecycleStagingPathForTests(
-    prepared.stagedBundleRoot,
-    'plugin lifecycle staged bundle root',
-  );
-
-  await fs.ensureDir(path.dirname(snapshotRoot));
-  try {
-    await fs.copy(prepared.sourceBundleRoot, stagedBundleRoot, {
-      overwrite: false,
-      errorOnExist: true,
-    });
-    const stagedManifestPath = path.join(stagedBundleRoot, SOURCE_MANIFEST_PATH);
-    const [stagedManifestDigest, stagedBundleFingerprint] = await Promise.all([
-      calculateFileDigest(stagedManifestPath),
-      calculatePluginBundleFingerprint(stagedBundleRoot),
-    ]);
-    if (
-      stagedManifestDigest !== prepared.metadata.sourceManifestDigest ||
-      stagedBundleFingerprint !== prepared.metadata.bundleFingerprint
-    ) {
-      throw new Error(
-        'Lifecycle config snapshot staging no longer matches the prepared source bundle.',
-      );
-    }
-    await fs.move(stagingRoot, snapshotRoot, { overwrite: false });
-  } catch (error) {
-    await fs.remove(stagingRoot).catch(() => undefined);
-    throw error;
-  }
-
-  return prepared.metadata;
-}
-
-function collectReferencedSnapshotRoots(ledger: InstalledLedger): Set<string> {
-  const roots = new Set<string>();
-  for (const pluginRecord of Object.values(ledger.plugins)) {
-    for (const platformRecord of Object.values(pluginRecord.platforms)) {
-      const records = [
-        platformRecord?.userScope,
-        ...Object.values(platformRecord?.projectScopes ?? {}),
-      ];
-      for (const record of records) {
-        const snapshotRoot = record?.lifecycleConfigSnapshot?.snapshotRoot;
-        if (snapshotRoot) {
-          roots.add(path.resolve(snapshotRoot));
-        }
-      }
-    }
-  }
-  return roots;
-}
-
-async function listSnapshotRoots(awHome: string): Promise<string[]> {
-  const root = path.join(awHome, PLUGIN_INSTALL_SNAPSHOTS_DIR);
-  const output: string[] = [];
-
-  async function visit(dir: string): Promise<void> {
-    const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
-    if (entries.some((entry) => entry.isDirectory() && entry.name === 'bundle')) {
-      output.push(dir);
-      return;
-    }
-    for (const entry of entries) {
-      if (entry.isDirectory()) {
-        await visit(path.join(dir, entry.name));
-      }
-    }
-  }
-
-  await visit(root);
-  return output;
-}
-
-export async function garbageCollectLifecycleConfigSnapshots(options: {
-  ledger: InstalledLedger;
-  env?: NodeJS.ProcessEnv;
-}): Promise<{ deleted: string[]; preserved: string[] }> {
-  const awHome = resolveAwHome(options.env ?? process.env);
-  const referenced = collectReferencedSnapshotRoots(options.ledger);
-  const snapshotRoots = await listSnapshotRoots(awHome);
-  const deleted: string[] = [];
-  const preserved: string[] = [];
-
-  for (const snapshotRoot of snapshotRoots) {
-    const resolvedRoot = path.resolve(snapshotRoot);
-    if (referenced.has(resolvedRoot)) {
-      preserved.push(snapshotRoot);
-      continue;
-    }
-    await fs.remove(snapshotRoot);
-    deleted.push(snapshotRoot);
-  }
-
-  return { deleted, preserved };
-}
-
-function validateSnapshotMetadata(
-  snapshot: LifecycleConfigSnapshotMetadata,
-  pluginName: string,
-): void {
-  if (
-    snapshot.pluginName !== pluginName ||
-    !snapshot.snapshotRoot ||
-    !snapshot.bundleRoot ||
-    !snapshot.manifestPath ||
-    !snapshot.pluginVersion ||
-    !snapshot.sourceManifestDigest ||
-    !snapshot.bundleFingerprint ||
-    !snapshot.createdAt ||
-    !snapshot.createdFrom
-  ) {
-    throw new Error('snapshot metadata is incomplete or belongs to another plugin');
-  }
 }
 
 async function createTargetFromPlugin(options: {
@@ -525,53 +220,6 @@ async function createTargetFromPlugin(options: {
   };
 }
 
-async function createTargetFromSnapshot(options: {
-  event: PluginLifecycleEvent;
-  pluginName: string;
-  snapshot: LifecycleConfigSnapshotMetadata;
-  runtimeOs: PluginLifecycleRuntimeOs;
-}): Promise<LifecycleScriptTarget> {
-  validateSnapshotMetadata(options.snapshot, options.pluginName);
-  const bundleRoot = await fs.realpath(options.snapshot.bundleRoot);
-  const snapshotBundleRoot = await fs.realpath(path.join(options.snapshot.snapshotRoot, 'bundle'));
-  if (bundleRoot !== snapshotBundleRoot || !isInsidePath(bundleRoot, await fs.realpath(options.snapshot.snapshotRoot))) {
-    throw new Error('snapshot bundle root is outside the snapshot root');
-  }
-
-  const manifestPath = await fs.realpath(options.snapshot.manifestPath);
-  if (!isInsidePath(manifestPath, bundleRoot)) {
-    throw new Error('snapshot manifest path is outside the snapshot bundle root');
-  }
-
-  const manifestDigest = await calculateFileDigest(manifestPath);
-  if (manifestDigest !== options.snapshot.sourceManifestDigest) {
-    throw new Error('snapshot manifest digest does not match ledger metadata');
-  }
-
-  const bundleFingerprint = await calculatePluginBundleFingerprint(bundleRoot);
-  if (bundleFingerprint !== options.snapshot.bundleFingerprint) {
-    throw new Error('snapshot bundle fingerprint does not match ledger metadata');
-  }
-
-  const plugin = await readPluginManifest(bundleRoot, { mode: 'bundle' });
-  if (
-    plugin.manifest.name !== options.snapshot.pluginName ||
-    plugin.manifest.version !== options.snapshot.pluginVersion
-  ) {
-    throw new Error('snapshot manifest identity does not match ledger metadata');
-  }
-  if (!plugin.manifest.scripts?.lifecycle?.[options.event]) {
-    throw new Error(`snapshot manifest does not declare "${options.event}" lifecycle script`);
-  }
-
-  return createTargetFromPlugin({
-    event: options.event,
-    plugin,
-    source: 'installSnapshot',
-    runtimeOs: options.runtimeOs,
-  });
-}
-
 async function resolveCurrentPlugin(
   pluginName: string,
   currentPlugin: PluginMeta | undefined,
@@ -593,64 +241,30 @@ function createMissingLifecycleWarning(pluginName: string, event: PluginLifecycl
   return `No executable ${event} lifecycle script was found for ${pluginName}; continuing cleanup without running a lifecycle script.`;
 }
 
-function isMissingLifecycleDeclarationError(
-  error: unknown,
-  event: PluginLifecycleEvent,
-): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return message.includes(`does not declare "${event}" lifecycle script`);
-}
-
 export async function resolveLifecycleScriptTarget(
   options: ResolveLifecycleScriptTargetOptions,
 ): Promise<LifecycleScriptTarget> {
   const runtime = options.runtimeOs ?? runtimeOs();
   const warnings: string[] = [];
-  const snapshot = options.scopeRecord?.lifecycleConfigSnapshot;
-
-  if (snapshot) {
-    try {
-      return await createTargetFromSnapshot({
-        event: options.event,
-        pluginName: options.pluginName,
-        snapshot,
-        runtimeOs: runtime,
-      });
-    } catch (error) {
-      if (!isMissingLifecycleDeclarationError(error, options.event)) {
-        warnings.push(
-          `Lifecycle install snapshot for ${options.pluginName} is unusable; falling back to current catalog. ${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
-    }
-  }
-
-  const currentPlugin = await resolveCurrentPlugin(options.pluginName, options.currentPlugin, options.env ?? process.env);
+  const currentPlugin = await resolveCurrentPlugin(
+    options.pluginName,
+    options.currentPlugin,
+    options.env ?? process.env,
+  );
   if (currentPlugin) {
-    const target = await createTargetFromPlugin({
+    return createTargetFromPlugin({
       event: options.event,
       plugin: currentPlugin,
       source: 'currentCatalog',
       runtimeOs: runtime,
       warnings,
     });
-    if (target.noOp && options.event === 'uninstall' && snapshot) {
-      target.warnings.push(createMissingLifecycleWarning(options.pluginName, options.event));
-    }
-    return target;
   }
-
   if (options.event === 'uninstall') {
     warnings.push(createMissingLifecycleWarning(options.pluginName, options.event));
   }
-
-  return {
-    noOp: true,
-    source: 'none',
-    warnings,
-  };
+  return { noOp: true, source: 'none', warnings };
 }
-
 function stripDotSlash(value: string): string {
   return value.startsWith('./') ? value.slice(2) : value;
 }
@@ -1038,7 +652,6 @@ export async function runLifecycleScript(options: {
   scope: Scope;
   cwd: string;
   context: CommandExecutionContext;
-  scopeRecord?: InstalledScopeRecord<Record<string, unknown>>;
   currentPlugin?: PluginMeta;
   artifacts?: GeneratedArtifact[];
   scriptTimeoutMs?: number;
@@ -1049,7 +662,6 @@ export async function runLifecycleScript(options: {
     event: options.event,
     pluginName: options.pluginName,
     platform: options.platform,
-    scopeRecord: options.scopeRecord,
     currentPlugin: options.currentPlugin,
     cwd: options.cwd,
     env: options.context.env,

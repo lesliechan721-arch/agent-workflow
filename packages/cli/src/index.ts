@@ -7,9 +7,13 @@ import { fileURLToPath } from 'node:url';
 import { Command, CommanderError } from 'commander';
 
 import { initCommand } from './commands/init.js';
-import { installCommand } from './commands/install.js';
-import { cleanupCommand, isCleanupExecutionFailure } from './commands/cleanup.js';
-import { reinstallCommand } from './commands/reinstall.js';
+import {
+  cleanupWriteCommand as cleanupCommand,
+  installWriteCommand as installCommand,
+  reinstallWriteCommand as reinstallCommand,
+  uninstallWriteCommand as uninstallCommand,
+  upgradeWriteCommand as upgradeCommand,
+} from './commands/write-commands.js';
 import {
   formatInteractiveConsoleUnavailableMessage,
   runConsoleController,
@@ -23,8 +27,6 @@ import {
   type CommandDiagnosticsInput,
 } from './commands/runtime.js';
 import { statusCommand } from './commands/status.js';
-import { uninstallCommand } from './commands/uninstall.js';
-import { upgradeCommand } from './commands/upgrade.js';
 import {
   normalizeUninstallCommandOptions,
   normalizeCatalogSelectorOptions,
@@ -44,12 +46,10 @@ import {
 } from './types.js';
 import { formatWarnings } from './output/reporter.js';
 import {
-  buildCommandReceiptJson,
-  buildCleanupReceiptJson,
+  buildRebuildReceiptJson,
   buildInitFailureReceiptJson,
   buildInitReceiptJson,
-  renderCommandReceipt,
-  renderCleanupReceipt,
+  renderRebuildReceipt,
   renderInitReceipt,
   type CliCommandResult,
 } from './output/command-receipt.js';
@@ -59,10 +59,10 @@ import {
   assertSafePluginConfigSegment,
   coercePluginConfigValue,
   findConfigFieldEntry,
-  hasConfigReadV2Content,
+  hasConfigReadContent,
   readPluginConfigStore,
   renderPluginConfigValueForDisplay,
-  resolveConfigReadV2,
+  resolveConfigRead,
   resolveEffectivePluginConfig,
   resolveProjectScopedPluginConfigView,
   resolveProjectLocalPluginConfigView,
@@ -75,70 +75,10 @@ import {
   resetPluginConfigWithHelper,
 } from './utils/plugin-config-write.js';
 import { assertStrictSemVer } from './utils/manifest.js';
-import type { ConfigFieldEntryV2, PluginManifestSource, PluginMeta, Scope } from './types.js';
+import type { ConfigFieldEntry, PluginManifestSource, PluginMeta, Scope } from './types.js';
 
 export type { CliIo } from './commands/runtime.js';
 export type CliRuntimeOptions = CliExecutionContextInput;
-
-function extractLegacyDiagnosePlugins(argv: string[]): string[] {
-  const plugins: string[] = [];
-  let positionalOnly = false;
-
-  for (let index = 1; index < argv.length; index += 1) {
-    const token = argv[index];
-    if (!token) {
-      continue;
-    }
-    if (positionalOnly) {
-      plugins.push(token);
-      continue;
-    }
-    if (token === '--') {
-      positionalOnly = true;
-      continue;
-    }
-    if (
-      token === '-s' ||
-      token === '--scope' ||
-      token === '-p' ||
-      token === '--platform' ||
-      token === '--log-file'
-    ) {
-      if (index + 1 < argv.length) {
-        index += 1;
-      }
-      continue;
-    }
-    if (
-      token.startsWith('--scope=') ||
-      token.startsWith('--platform=') ||
-      token.startsWith('--log-file=')
-    ) {
-      continue;
-    }
-    if (token.startsWith('-')) {
-      continue;
-    }
-    plugins.push(token);
-  }
-
-  return plugins;
-}
-
-function createDiagnoseMigrationError(argv: string[]): Error | null {
-  if (argv[0] !== 'diagnose') {
-    return null;
-  }
-
-  const plugins = extractLegacyDiagnosePlugins(argv);
-  const suggested = plugins.length > 0
-    ? `aw status ${plugins.join(' ')} --verbose`
-    : 'aw status --verbose';
-  const details = argv.includes('--deep')
-    ? '（原 `--deep` 诊断已并入 `status --verbose`）'
-    : '';
-  return new Error(`\`aw diagnose\` 已移除，请改用 \`${suggested}\`${details}。`);
-}
 
 function createDefaultIo(): CliIo {
   return {
@@ -173,10 +113,9 @@ function resolveCommandReceiptExitCode(
   action: 'install' | 'uninstall' | 'upgrade',
   result: CliCommandResult,
 ): number {
-  if (action === 'upgrade' && result.plugins.length === 0 && (result.skipped?.length ?? 0) > 0) {
+  if (result.overallState === 'failed') {
     return 1;
   }
-
   return 0;
 }
 
@@ -237,11 +176,8 @@ function assertUpgradeRequestProvided(pluginNames: string[], upgradeAll: boolean
   );
 }
 
-function assertCleanupRequestProvided(pluginNames: string[], dependencyIndex: boolean): void {
-  if (dependencyIndex && pluginNames.length > 0) {
-    throw new Error('cleanup --dependency-index 不接受插件名。');
-  }
-  if (dependencyIndex || pluginNames.length === 1) {
+function assertCleanupRequestProvided(pluginNames: string[]): void {
+  if (pluginNames.length === 1) {
     return;
   }
   throw new Error('cleanup 命令当前只支持单个插件目标。');
@@ -424,25 +360,38 @@ function configLayerLabel(scope: Scope, projectLayer: 'shared' | 'local' = 'shar
   return projectLayer === 'local' ? '当前项目（本机私有覆盖）' : '当前项目';
 }
 
-function writeArtifactRefreshNotice(
+function writeConfigApplyNotice(
   write: (text: string) => void,
-  artifactRefresh: {
-    attempted: boolean;
-    status: 'succeeded' | 'failed' | 'skipped';
-    error?: string;
-    nextSteps?: string[];
-  } | undefined,
+  receipt: {
+    plugin: string;
+    overallState: 'succeeded' | 'failed';
+    targetResults: Array<{
+      target: { platform: string; scope: Scope };
+      state: string;
+      message?: string;
+    }>;
+    applySkippedReason?: string;
+    otherProjectsRequireReinstall: boolean;
+  },
 ): void {
-  if (!artifactRefresh?.attempted || artifactRefresh.status !== 'failed') {
-    return;
+  if (receipt.targetResults.length === 0) {
+    writeLine(write, receipt.applySkippedReason === 'noConfigChange'
+      ? '配置内容没有变化，因此没有运行 reinstall。'
+      : '配置已保存。当前没有可见的 AW 安装目标，因此没有应用配置。');
+  } else {
+    const completed = receipt.targetResults.filter((entry) => entry.state === 'completed').length;
+    const failed = receipt.targetResults.filter((entry) => entry.state === 'failed');
+    writeLine(write, `配置已保存。已重装 ${completed} 个当前可见目标；失败 ${failed.length} 个。`);
+    for (const entry of failed) {
+      writeLine(
+        write,
+        `${entry.target.platform}/${entry.target.scope}：${entry.message ?? 'reinstall 失败。'} `
+        + `请重试 aw reinstall ${receipt.plugin} -p ${entry.target.platform} -s ${entry.target.scope}。`,
+      );
+    }
   }
-
-  writeLine(
-    write,
-    `配置已保存，但相关项目文件刷新失败：${artifactRefresh.error ?? '请运行 aw status 检查详细诊断。'}`,
-  );
-  if (artifactRefresh.nextSteps && artifactRefresh.nextSteps.length > 0) {
-    writeLine(write, `下一步：${artifactRefresh.nextSteps.join('；')}`);
+  if (receipt.otherProjectsRequireReinstall) {
+    writeLine(write, '其它项目没有被扫描。请进入每个项目目录并运行对应的 aw reinstall 命令。');
   }
 }
 
@@ -737,16 +686,16 @@ async function resolveConfigForRead(options: {
   };
 }
 
-function renderConfigFieldState(field: ConfigFieldEntryV2): string {
+function renderConfigFieldState(field: ConfigFieldEntry): string {
   if (field.valueState === 'invalid') {
     return 'invalid-config';
   }
   return field.valueState;
 }
 
-function writeConfigReadV2Human(
+function writeConfigReadHuman(
   write: (text: string) => void,
-  resolved: Awaited<ReturnType<typeof resolveConfigReadV2>>,
+  resolved: Awaited<ReturnType<typeof resolveConfigRead>>,
   pluginName: string,
 ): void {
   for (const field of resolved.fields) {
@@ -771,12 +720,6 @@ function writeConfigReadV2Human(
       writeLine(write, `  aw config unset ${pluginName} ${field.key}${sourceScope}`);
       writeLine(write, `  aw config reset ${pluginName}${sourceScope}`);
     }
-  }
-  for (const legacy of resolved.legacyConfigStores) {
-    writeLine(
-      write,
-      `${legacy.storeKind}: storeOnly (${legacy.reason})`,
-    );
   }
 }
 
@@ -881,7 +824,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .argument('[plugins...]')
     .option('-s, --scope <scope>', 'project or user')
     .option('-p, --platform <platform>', 'codex | claude | both')
-    .option('--adopt-existing', 'adopt existing project-scope shared artifacts', false)
     .option('--script-timeout <ms>', 'override plugin lifecycle script timeout in milliseconds')
     .option('-j, --json', 'print receipt as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
@@ -895,7 +837,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           platform?: string;
           catalogChannel?: string;
           catalogVersion?: string;
-          adoptExisting?: boolean;
           scriptTimeout?: string;
           json?: boolean;
         } & RawDiagnosticsOptions,
@@ -928,9 +869,9 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           },
         );
         if (rawOptions.json) {
-          writeJsonReceipt(io.stdout, buildCommandReceiptJson('install', receipt));
+          writeJsonReceipt(io.stdout, buildRebuildReceiptJson('install', receipt.result));
         } else {
-          for (const line of renderCommandReceipt('install', receipt)) {
+          for (const line of renderRebuildReceipt('install', receipt.result)) {
             writeLine(io.stdout, line);
           }
         }
@@ -945,7 +886,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('-s, --scope <scope>', 'project or user')
     .option('-p, --platform <platform>', 'codex | claude | both')
     .option('--script-timeout <ms>', 'override plugin lifecycle script timeout in milliseconds')
-    .option('--remove-config', 'remove the AW-managed config store after uninstall succeeds', false)
     .option('-j, --json', 'print receipt as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
     .option('-D, --debug', 'write debug diagnostics to a log file', false)
@@ -956,7 +896,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         scope?: string;
         platform?: string;
         scriptTimeout?: string;
-        removeConfig?: boolean;
         json?: boolean;
       } & RawDiagnosticsOptions,
     ) => {
@@ -988,9 +927,9 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         },
       );
       if (rawOptions.json) {
-        writeJsonReceipt(io.stdout, buildCommandReceiptJson('uninstall', receipt));
+        writeJsonReceipt(io.stdout, buildRebuildReceiptJson('uninstall', receipt.result));
       } else {
-        for (const line of renderCommandReceipt('uninstall', receipt)) {
+        for (const line of renderRebuildReceipt('uninstall', receipt.result)) {
           writeLine(io.stdout, line);
         }
       }
@@ -1052,9 +991,9 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           },
         );
         if (rawOptions.json) {
-          writeJsonReceipt(io.stdout, buildCommandReceiptJson('upgrade', receipt));
+          writeJsonReceipt(io.stdout, buildRebuildReceiptJson('upgrade', receipt.result));
         } else {
-          for (const line of renderCommandReceipt('upgrade', receipt)) {
+          for (const line of renderRebuildReceipt('upgrade', receipt.result)) {
             writeLine(io.stdout, line);
           }
         }
@@ -1068,12 +1007,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .argument('[plugins...]')
     .option('-s, --scope <scope>', 'project or user')
     .option('-p, --platform <platform>', 'codex | claude | both')
-    .option('--force', 'allow high-risk cleanup after evaluating backups and affected dependents', false)
-    .option('--remove-config', 'remove the AW-managed config store after cleanup succeeds', false)
-    .option('--dependency-index', 'prune stale dependency index entries', false)
-    .option('--prune-stale <token>', 'retire a single stale dependency index reference')
-    .option('-y, --yes', 'confirm dependency-index prune actions', false)
-    .option('--script-timeout <ms>', 'override plugin lifecycle script timeout in milliseconds')
     .option('-j, --json', 'print cleanup result as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
     .option('-D, --debug', 'write debug diagnostics to a log file', false)
@@ -1083,12 +1016,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       rawOptions: {
         scope?: string;
         platform?: string;
-        force?: boolean;
-        removeConfig?: boolean;
-        dependencyIndex?: boolean;
-        pruneStale?: string;
-        yes?: boolean;
-        scriptTimeout?: string;
         json?: boolean;
       } & RawDiagnosticsOptions,
     ) => {
@@ -1100,7 +1027,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             cwd,
             ...rawOptions,
           });
-          assertCleanupRequestProvided(plugins ?? [], commandOptions.dependencyIndex);
+          assertCleanupRequestProvided(plugins ?? []);
           await emitCommandEvent(context, {
             type: 'options:normalized',
             data: {
@@ -1112,14 +1039,14 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         },
       );
       if (rawOptions.json) {
-        writeJsonReceipt(io.stdout, buildCleanupReceiptJson(result));
+        writeJsonReceipt(io.stdout, buildRebuildReceiptJson('cleanup', result));
       } else {
-        for (const line of renderCleanupReceipt(result)) {
+        for (const line of renderRebuildReceipt('cleanup', result)) {
           writeLine(io.stdout, line);
         }
       }
       writeWarnings(io.stderr, result.warnings, { actionableOnly: true });
-      commandExitState.exitCode = isCleanupExecutionFailure(result.payload) ? 1 : 0;
+      commandExitState.exitCode = result.overallState === 'failed' ? 1 : 0;
     });
 
   addCatalogSelectorOptions(
@@ -1173,15 +1100,9 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         },
       );
       if (rawOptions.json) {
-        writeJsonReceipt(io.stdout, {
-          ok: true,
-          command: 'reinstall',
-          receipt: buildCommandReceiptJson('install', receipt),
-        });
+        writeJsonReceipt(io.stdout, buildRebuildReceiptJson('reinstall', receipt.result));
       } else {
-        const lines = renderCommandReceipt('install', receipt, {
-          headlineVariant: 'reinstall',
-        });
+        const lines = renderRebuildReceipt('reinstall', receipt.result);
         for (const line of lines) {
           writeLine(io.stdout, line);
         }
@@ -1210,7 +1131,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       const resolved = await runActionWithContext(context, async () => {
         const projectLayer = resolveConfigProjectLayer(rawOptions);
         const { plugin, error } = await loadConfigPluginLookup(pluginName, context);
-        const result = await resolveConfigReadV2({
+        const result = await resolveConfigRead({
           pluginName,
           plugin,
           ...(error ? { pluginError: error } : {}),
@@ -1219,7 +1140,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           cwd: context.cwd,
           env: context.env,
         });
-        if (!plugin && !hasConfigReadV2Content(result)) {
+        if (!plugin && !hasConfigReadContent(result)) {
           throw new Error(
             `Unknown plugin "${pluginName}". Use \`aw config reset ${pluginName} -s user --yes\` or ` +
               `\`aw config reset ${pluginName} -s project --yes\` to clean leftover config stores.`,
@@ -1230,19 +1151,16 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       if (rawOptions.json) {
         writeJsonReceipt(io.stdout, {
           ok: true,
-          configSchemaVersion: 2,
+          configSchemaVersion: 3,
           command: 'config:list',
           plugin: pluginName,
           scope: rawOptions.local ? 'project' : rawOptions.scope ?? 'effective',
           projectLayer: rawOptions.local ? 'local' : 'shared',
           ...(resolved.schema ? { schema: resolved.schema } : {}),
           fields: resolved.fields,
-          ...(resolved.legacyConfigStores.length > 0
-            ? { legacyConfigStores: resolved.legacyConfigStores }
-            : {}),
         });
       } else {
-        writeConfigReadV2Human(io.stdout, resolved, pluginName);
+        writeConfigReadHuman(io.stdout, resolved, pluginName);
       }
     });
 
@@ -1263,7 +1181,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       const resolved = await runActionWithContext(context, async () => {
         const projectLayer = resolveConfigProjectLayer(rawOptions);
         const { plugin, error } = await loadConfigPluginLookup(pluginName, context);
-        const result = await resolveConfigReadV2({
+        const result = await resolveConfigRead({
           pluginName,
           plugin,
           ...(error ? { pluginError: error } : {}),
@@ -1272,7 +1190,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           cwd: context.cwd,
           env: context.env,
         });
-        if (!plugin && !hasConfigReadV2Content(result)) {
+        if (!plugin && !hasConfigReadContent(result)) {
           throw new Error(
             `Unknown plugin "${pluginName}". Use \`aw config reset ${pluginName} -s user --yes\` or ` +
               `\`aw config reset ${pluginName} -s project --yes\` to clean leftover config stores.`,
@@ -1288,13 +1206,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             fields: [field],
           };
         }
-        if (result.legacyConfigStores.length > 0) {
-          throw new Error(
-            `${pluginName} 只剩 storeOnly 旧配置，不能按字段读取普通 raw value。` +
-              `请运行 \`aw config reset ${pluginName} -s user --yes\` 或 ` +
-              `\`aw config reset ${pluginName} -s project --yes\` 清理对应 store。`,
-          );
-        }
+
         if (plugin?.manifest.config?.schema?.[key] === undefined) {
           throw new Error(`Unknown config key "${key}".`);
         }
@@ -1303,7 +1215,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       if (rawOptions.json) {
         writeJsonReceipt(io.stdout, {
           ok: true,
-          configSchemaVersion: 2,
+          configSchemaVersion: 3,
           command: 'config:get',
           plugin: pluginName,
           key,
@@ -1311,12 +1223,9 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           projectLayer: rawOptions.local ? 'local' : 'shared',
           ...(resolved.schema ? { schema: resolved.schema } : {}),
           fields: resolved.fields,
-          ...(resolved.legacyConfigStores.length > 0
-            ? { legacyConfigStores: resolved.legacyConfigStores }
-            : {}),
         });
       } else {
-        writeConfigReadV2Human(io.stdout, resolved, pluginName);
+        writeConfigReadHuman(io.stdout, resolved, pluginName);
       }
     });
 
@@ -1355,17 +1264,19 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           cwd: context.cwd,
           env: context.env,
           nativeCliRunner: context.nativeCliRunner,
+          catalogChannel: rawOptions.catalogChannel,
+          catalogVersion: rawOptions.catalogVersion,
           request: {
             updates: { [key]: inputValue },
           },
         });
         return {
-          ok: true,
-          receiptSchemaVersion: 2,
-            command: 'config:set',
-            ...writeReceipt,
-            affectedFields: [{
-              key,
+          ok: writeReceipt.overallState === 'succeeded',
+          receiptSchemaVersion: 3,
+          command: 'config:set',
+          ...writeReceipt,
+          affectedFields: [{
+            key,
             title: plugin?.manifest.config?.schema?.[key]?.title ?? key,
             kind: 'manifest' as const,
             reserved: false,
@@ -1382,8 +1293,9 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         if (receipt.projectLayer === 'local') {
           writeProjectLocalConfigNotice(io.stdout);
         }
-        writeArtifactRefreshNotice(io.stderr, 'artifactRefresh' in receipt ? receipt.artifactRefresh : undefined);
+        writeConfigApplyNotice(io.stderr, receipt);
       }
+      commandExitState.exitCode = receipt.overallState === 'failed' ? 1 : 0;
     });
 
   config
@@ -1424,13 +1336,15 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           cwd: context.cwd,
           env: context.env,
           nativeCliRunner: context.nativeCliRunner,
+          catalogChannel: rawOptions.catalogChannel,
+          catalogVersion: rawOptions.catalogVersion,
           request: {
             removeKeys: [key],
           },
         });
         return {
-          ok: true,
-          receiptSchemaVersion: 2,
+          ok: writeReceipt.overallState === 'succeeded',
+          receiptSchemaVersion: 3,
           command: 'config:unset',
           ...writeReceipt,
           removedKey: key,
@@ -1455,8 +1369,9 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         if (receipt.projectLayer === 'local') {
           writeProjectLocalConfigNotice(io.stdout);
         }
-        writeArtifactRefreshNotice(io.stderr, 'artifactRefresh' in receipt ? receipt.artifactRefresh : undefined);
+        writeConfigApplyNotice(io.stderr, receipt);
       }
+      commandExitState.exitCode = receipt.overallState === 'failed' ? 1 : 0;
     });
 
   config
@@ -1504,12 +1419,14 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           cwd: context.cwd,
           env: context.env,
           nativeCliRunner: context.nativeCliRunner,
+          catalogChannel: rawOptions.catalogChannel,
+          catalogVersion: rawOptions.catalogVersion,
           ...(error ? { pluginError: error } : {}),
           ...(plugin ? { plugin } : {}),
         });
         return {
-          ok: true,
-          receiptSchemaVersion: 2,
+          ok: resetReceipt.overallState === 'succeeded',
+          receiptSchemaVersion: 3,
           command: 'config:reset',
           ...resetReceipt,
           affectedFields,
@@ -1524,8 +1441,9 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         if (receipt.projectLayer === 'local') {
           writeProjectLocalConfigNotice(io.stdout);
         }
-        writeArtifactRefreshNotice(io.stderr, receipt.artifactRefresh);
+        writeConfigApplyNotice(io.stderr, receipt);
       }
+      commandExitState.exitCode = receipt.overallState === 'failed' ? 1 : 0;
     });
 
   addCatalogSelectorOptions(
@@ -1561,6 +1479,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           context,
         ),
       );
+      commandExitState.exitCode = result.hasErrors ? 1 : 0;
       writeLine(io.stdout, result.output);
     });
 
@@ -1619,10 +1538,6 @@ export async function runCli(
         return 1;
       }
       return await runActionWithContext(context, () => runConsoleController(context));
-    }
-    const diagnoseMigrationError = createDiagnoseMigrationError(argv);
-    if (diagnoseMigrationError) {
-      throw diagnoseMigrationError;
     }
     const program = buildProgram({
       ...options,

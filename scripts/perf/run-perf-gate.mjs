@@ -8,6 +8,12 @@ const FAST_UNIT_BUDGET_MS = 30_000;
 const FAST_UNIT_HARD_TIMEOUT_MS = 45_000;
 const PERF_HARD_TIMEOUT_MS = 120_000;
 const SUMMARY_PREFIX = 'AW_PERF_SUMMARY ';
+export const EXPECTED_PERF_SUMMARY_NAMES = [
+  'catalog-cache-first-warm',
+  'catalog-cache-first-after-marketplace-rebuild',
+  'live-status-console-warm',
+  'catalog-remote-deadline',
+];
 
 const scriptPath = fileURLToPath(import.meta.url);
 const repositoryRoot = path.resolve(path.dirname(scriptPath), '..', '..');
@@ -39,8 +45,41 @@ function runChild(label, args, timeoutMs) {
   });
 }
 
+export function assertExpectedPerfSummaries(output) {
+  const names = output
+    .split(/\r?\n/u)
+    .filter((line) => line.startsWith(SUMMARY_PREFIX))
+    .map((line) => {
+      let parsed;
+      try {
+        parsed = JSON.parse(line.slice(SUMMARY_PREFIX.length));
+      } catch (error) {
+        throw new Error(
+          `Performance gate found an invalid AW_PERF_SUMMARY line: ${error instanceof Error ? error.message : String(error)}.`,
+        );
+      }
+      if (!parsed || typeof parsed !== 'object' || typeof parsed.name !== 'string') {
+        throw new Error('Performance gate found an AW_PERF_SUMMARY without a string name.');
+      }
+      return parsed.name;
+    });
+  const duplicates = [...new Set(names.filter((name, index) => names.indexOf(name) !== index))].sort();
+  const expected = new Set(EXPECTED_PERF_SUMMARY_NAMES);
+  const actual = new Set(names);
+  const missing = EXPECTED_PERF_SUMMARY_NAMES.filter((name) => !actual.has(name));
+  const unexpected = [...actual].filter((name) => !expected.has(name)).sort();
+  if (duplicates.length > 0 || missing.length > 0 || unexpected.length > 0) {
+    throw new Error([
+      'Performance summary set does not match the required budgets.',
+      `missing=${missing.join(',') || 'none'}`,
+      `unexpected=${unexpected.join(',') || 'none'}`,
+      `duplicates=${duplicates.join(',') || 'none'}`,
+    ].join(' '));
+  }
+}
+
 export async function runPerfGate() {
-  await runChild('performance Vitest', [
+  const performanceResult = await runChild('performance Vitest', [
     '--filter',
     '@yiliang/aw',
     'exec',
@@ -49,6 +88,7 @@ export async function runPerfGate() {
     '--config',
     'vitest.perf.config.ts',
   ], PERF_HARD_TIMEOUT_MS);
+  assertExpectedPerfSummaries(performanceResult.stdout);
 
   const fastUnitStartedAt = performance.now();
   await runChild('fast unit lane', [

@@ -43,6 +43,8 @@ export interface DesiredTarget {
   plugin: PluginMeta;
   identity: RebuildTargetIdentity;
   ownedComponents: readonly OwnedComponent[];
+  desiredOwnedComponents?: readonly OwnedComponent[];
+  optionalOwnedComponents?: readonly OwnedComponent[];
   requiresNative: boolean;
   artifacts: readonly GeneratedArtifact[];
   lifecycleSource: PluginMeta;
@@ -109,10 +111,35 @@ export interface RebuildLifecycleInvocation {
 
 export interface RebuildTargetDriver {
   writeNative(target: DesiredTarget): Promise<void>;
-  writeArtifacts(target: DesiredTarget): Promise<void>;
+  writeArtifacts(target: DesiredTarget): Promise<void | readonly GeneratedArtifact[]>;
   probeNative?: NativeOwnershipProbe;
   removeNative?: NativeOwnershipRemove;
   runLifecycle(invocation: RebuildLifecycleInvocation): Promise<void>;
+}
+
+function artifactIdentity(artifact: GeneratedArtifact): string {
+  return [
+    artifact.platform,
+    artifact.kind,
+    path.resolve(artifact.path),
+    artifact.artifactKey ?? '',
+    artifact.id ?? '',
+    artifact.target ?? '',
+    artifact.state ?? '',
+  ].join('\0');
+}
+
+function bindWrittenArtifacts(
+  target: DesiredTarget,
+  written: void | readonly GeneratedArtifact[],
+): void {
+  if (written === undefined) return;
+  const expected = target.artifacts.map(artifactIdentity).sort();
+  const actual = written.map(artifactIdentity).sort();
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    throw new Error('Artifact writer result does not match the precomputed desired artifact plan.');
+  }
+  target.artifacts = [...written];
 }
 
 export interface RebuildActiveStore {
@@ -296,12 +323,14 @@ function validateDesiredTarget(target: DesiredTarget): void {
       componentPaths.add(componentPath);
     }
     if (component.kind === 'native-plugin') {
-      nativeCount += 1;
       if (component.pluginId !== `${pluginName}@aw`) {
         throw new Error(`Native plugin identity must be ${pluginName}@aw.`);
       }
     }
   }
+
+  const desiredComponents = target.desiredOwnedComponents ?? target.ownedComponents;
+  nativeCount = desiredComponents.filter((component) => component.kind === 'native-plugin').length;
 
   if (target.requiresNative ? nativeCount !== 1 : nativeCount !== 0) {
     throw new Error(
@@ -312,6 +341,17 @@ function validateDesiredTarget(target: DesiredTarget): void {
   }
   if (target.artifacts.some((artifact) => artifact.platform !== platform)) {
     throw new Error('Artifact platform does not match the desired target.');
+  }
+  const owned = new Set(target.ownedComponents);
+  if ((target.desiredOwnedComponents ?? target.ownedComponents).some((component) => !owned.has(component))) {
+    throw new Error('Desired owned components must be a subset of all owned components.');
+  }
+  const desired = new Set(target.desiredOwnedComponents ?? target.ownedComponents);
+  if ((target.optionalOwnedComponents ?? []).some((component) => !owned.has(component))) {
+    throw new Error('Optional owned components must be a subset of all owned components.');
+  }
+  if ((target.optionalOwnedComponents ?? []).some((component) => desired.has(component))) {
+    throw new Error('Optional owned components must not also be required desired components.');
   }
 }
 
@@ -380,9 +420,10 @@ function postcheckMessage(
 async function cleanupOwned(
   target: DesiredTarget,
   driver: RebuildTargetDriver,
+  components: readonly OwnedComponent[] = target.ownedComponents,
 ): Promise<CleanupResult> {
   return cleanupOwnedComponents({
-    components: target.ownedComponents,
+    components,
     nativeProbe: driver.probeNative,
     nativeRemove: driver.removeNative,
   });
@@ -396,22 +437,27 @@ async function cleanupTarget(
   ownedAction: 'cleanup.owned' | 'recovery.cleanup',
 ): Promise<{ phase: RebuildFailure['phase']; message: string } | null> {
   accumulator.cleanupAttempted = true;
-  let primary: { phase: RebuildFailure['phase']; message: string } | null = null;
   try {
     const cleanup = await action(accumulator, ownedAction, () => cleanupOwned(target, driver));
     mergeCleanup(accumulator, cleanup, ownedAction);
-    if (cleanup.failures.length > 0 || cleanup.residual.length > 0) {
+    if (
+      cleanup.failures.length > 0
+      || cleanup.residual.length > 0
+      || cleanup.quarantined.length > 0
+    ) {
       markLastActionFailed(accumulator, ownedAction);
-      primary = {
+      return {
         phase: ownedAction,
         message: cleanup.failures[0]?.message
-          ?? `Ownership cleanup left residual components: ${cleanup.residual.join(', ')}`,
+          ?? (cleanup.residual.length > 0
+            ? `Ownership cleanup left residual components: ${cleanup.residual.join(', ')}`
+            : `Ownership cleanup left quarantined components: ${cleanup.quarantined.join(', ')}`),
       };
     }
   } catch (error) {
     const message = errorMessage(error);
-    primary = { phase: ownedAction, message };
     accumulator.failures.push({ phase: ownedAction, message });
+    return { phase: ownedAction, message };
   }
 
   try {
@@ -419,9 +465,9 @@ async function cleanupTarget(
   } catch (error) {
     const message = errorMessage(error);
     accumulator.failures.push({ phase: 'active.remove', message });
-    primary ??= { phase: 'active.remove', message };
+    return { phase: 'active.remove', message };
   }
-  return primary;
+  return null;
 }
 
 async function materializeTarget(options: {
@@ -448,11 +494,20 @@ async function materializeTarget(options: {
     return failed(command, target, accumulator, 'preflight', collision);
   }
 
-  if (inspection.components.some((component) => component.state === 'present')) {
+  const desiredComponents = new Set(target.desiredOwnedComponents ?? target.ownedComponents);
+  const optionalComponents = new Set(target.optionalOwnedComponents ?? []);
+  const staleComponents = target.ownedComponents.filter((component) =>
+    !desiredComponents.has(component) && !optionalComponents.has(component));
+  const staleInspection = inspection.components.filter((entry) => staleComponents.includes(entry.component));
+  if (staleInspection.some((component) => component.state === 'present')) {
     accumulator.cleanupAttempted = true;
     let stale: CleanupResult;
     try {
-      stale = await action(accumulator, 'stale.cleanup', () => cleanupOwned(target, driver));
+      stale = await action(
+        accumulator,
+        'stale.cleanup',
+        () => cleanupOwned(target, driver, staleComponents),
+      );
     } catch (error) {
       return failed(command, target, accumulator, 'stale.cleanup', errorMessage(error));
     }
@@ -473,7 +528,12 @@ async function materializeTarget(options: {
       await action(accumulator, failurePhase, () => driver.writeNative(target));
     }
     failurePhase = 'artifacts.write';
-    await action(accumulator, failurePhase, () => driver.writeArtifacts(target));
+    const writtenArtifacts = await action(
+      accumulator,
+      failurePhase,
+      () => driver.writeArtifacts(target),
+    );
+    bindWrittenArtifacts(target, writtenArtifacts);
     failurePhase = 'active.prepare';
     prepared = await action(accumulator, failurePhase, () => store.prepare(target));
     failurePhase = `lifecycle.${lifecycleEvent}`;
@@ -487,8 +547,10 @@ async function materializeTarget(options: {
     await action(accumulator, failurePhase, () => store.promote(prepared!));
     failurePhase = 'postcheck.inspect';
     await action(accumulator, failurePhase, async () => {
+      const optional = new Set(target.optionalOwnedComponents ?? []);
       const postcheck = await inspectOwnedComponents({
-        components: target.ownedComponents,
+        components: (target.desiredOwnedComponents ?? target.ownedComponents)
+          .filter((component) => !optional.has(component)),
         nativeProbe: driver.probeNative,
       });
       const postcheckFailure = postcheckMessage(accumulator, postcheck);

@@ -1287,7 +1287,7 @@ export function resolveCodexMcpServerStatusSignal(options: {
       key: options.key,
       tracked: false,
       state: 'orphan',
-      reason: 'server exists in .codex/config.toml but current plugin has no tracking ownership for it.',
+      reason: 'server exists in .codex/config.toml but current plugin has no AW ownership marker for it.',
     };
   }
 

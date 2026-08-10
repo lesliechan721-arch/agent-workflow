@@ -5,32 +5,38 @@ import { performance } from 'node:perf_hooks';
 import fs from 'fs-extra';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
-import { loadConsoleItemsResult } from '../../src/commands/status.js';
-import { clearAgentVersionProbeCacheForTests } from '../../src/utils/agent-version.js';
+import {
+  loadConsoleItemsResult,
+  statusCommand,
+  type StatusCommandRuntime,
+} from '../../src/commands/status.js';
 import { initializeLocalMarketplace } from '../../src/utils/local-marketplace.js';
+import type { CatalogPackageSource } from '../../src/utils/marketplace.js';
+import { setCatalogPackageSourceForTests } from '../../src/utils/marketplace.js';
+import {
+  inspectOwnedComponents,
+  writeOwnedTextFile,
+  type OwnedComponent,
+} from '../../src/utils/ownership.js';
 import {
   clearCurrentCatalogResolutionMemoForTests,
   resolveCurrentCatalog,
 } from '../../src/utils/plugin-catalog.js';
-import type { CatalogPackageSource } from '../../src/utils/marketplace.js';
-import { setCatalogPackageSourceForTests } from '../../src/utils/marketplace.js';
-import type { NativeCliRunner } from '../../src/utils/native-cli.js';
 import {
   createFixtureCatalogPackageSource,
   createPerfCatalogFixture,
   createUnexpectedRemoteCatalogSource,
-  writePerfInstalledEvidence,
   type PerfCatalogFixture,
 } from './catalog-fixture.js';
 import { createPerfSummary, printPerfSummary } from './perf-metrics.js';
 
-const CATALOG_WARMUP_SAMPLES = 5;
-const CATALOG_MEASURED_SAMPLES = 25;
-const CATALOG_CACHE_FIRST_P95_BUDGET_MS = 150;
-const POST_REBUILD_CACHE_FIRST_BUDGET_MS = 500;
-const CONSOLE_WARMUP_SAMPLES = 3;
-const CONSOLE_MEASURED_SAMPLES = 15;
-const CONSOLE_WARM_LOAD_P95_BUDGET_MS = 500;
+const CACHE_WARMUPS = 5;
+const CACHE_SAMPLES = 25;
+const CACHE_P95_BUDGET_MS = 150;
+const POST_REBUILD_BUDGET_MS = 500;
+const LIVE_WARMUPS = 3;
+const LIVE_SAMPLES = 15;
+const LIVE_P95_BUDGET_MS = 500;
 const REMOTE_DEADLINE_BUDGET_MS = 500;
 
 function isolatedEnv(root: string): NodeJS.ProcessEnv {
@@ -61,7 +67,6 @@ async function runSamples(options: {
     options.beforeEach();
     await options.operation();
   }
-
   const durations: number[] = [];
   for (let index = 0; index < options.samples; index += 1) {
     options.beforeEach();
@@ -72,20 +77,63 @@ async function runSamples(options: {
   return durations;
 }
 
-function createFakeNativeRunner(): NativeCliRunner {
-  return async (invocation) => {
-    if (invocation.args.length !== 1 || invocation.args[0] !== '--version') {
+async function createLiveOwnerRuntime(options: {
+  workspace: string;
+  pluginNames: readonly string[];
+}): Promise<StatusCommandRuntime> {
+  const components = new Map<string, OwnedComponent>();
+  const ownerRoot = path.join(options.workspace, 'live-owners');
+  for (const pluginName of options.pluginNames) {
+    const filePath = path.join(ownerRoot, `${pluginName}.txt`);
+    const identity = {
+      owner: 'agent-workflows' as const,
+      plugin: pluginName,
+      artifactKey: 'perf-live-owner',
+      platform: 'codex' as const,
+      scope: 'user' as const,
+    };
+    await writeOwnedTextFile({
+      path: filePath,
+      allowedRoot: ownerRoot,
+      identity,
+      content: `${pluginName}\n`,
+    });
+    components.set(pluginName, {
+      kind: 'owned-text-file',
+      path: filePath,
+      allowedRoot: ownerRoot,
+      identity,
+    });
+  }
+  return {
+    discoverTargets: async () => [],
+    inspectTarget: async ({ plugin, platform, scope, cwd }) => {
+      const component = components.get(plugin.manifest.name)!;
+      const inspection = await inspectOwnedComponents({ components: [component] });
+      return {
+        target: {
+          plugin,
+          identity: {
+            pluginName: plugin.manifest.name,
+            pluginVersion: plugin.manifest.version,
+            platform,
+            scope,
+            cwd,
+          },
+          ownedComponents: [component],
+          desiredOwnedComponents: [component],
+          requiresNative: false,
+          artifacts: [],
+          lifecycleSource: plugin,
+        },
+        inspection,
+      };
+    },
+    nativeCliRunner: async (invocation) => {
       throw new Error(
-        `Unexpected native call in console performance test: ${invocation.command} ${invocation.args.join(' ')}`,
+        `Unexpected native call in live performance fixture: ${invocation.command} ${invocation.args.join(' ')}`,
       );
-    }
-    if (invocation.command === 'codex') {
-      return { exitCode: 0, stdout: 'codex-cli 0.145.0', stderr: '' };
-    }
-    if (invocation.command === 'claude') {
-      return { exitCode: 0, stdout: '2.1.88 (Claude Code)', stderr: '' };
-    }
-    throw new Error(`Unexpected native command in console performance test: ${invocation.command}.`);
+    },
   };
 }
 
@@ -95,6 +143,7 @@ describe('performance budgets', () => {
   let fixture: PerfCatalogFixture;
   let env: NodeJS.ProcessEnv;
   let workspace: string;
+  let liveRuntime: StatusCommandRuntime;
   let unexpectedRemoteCalls = 0;
   let caseIndex = 0;
 
@@ -104,32 +153,27 @@ describe('performance budgets', () => {
   }, 120_000);
 
   beforeEach(async () => {
-    clearAgentVersionProbeCacheForTests();
     clearCurrentCatalogResolutionMemoForTests();
     setCatalogPackageSourceForTests(null);
     unexpectedRemoteCalls = 0;
     caseRoot = path.join(suiteRoot, `case-${caseIndex}`);
     caseIndex += 1;
-    const installedEvidence = await writePerfInstalledEvidence({
-      rootDir: path.join(caseRoot, 'runtime'),
-      pluginNames: fixture.pluginNames,
-    });
+    workspace = path.join(caseRoot, 'workspace');
+    await fs.ensureDir(workspace);
     env = {
       ...isolatedEnv(path.join(caseRoot, 'runtime')),
-      AW_HOME: installedEvidence.awHome,
-      AW_CODEX_HOME: installedEvidence.codexHome,
-      AW_CLAUDE_HOME: installedEvidence.claudeHome,
       AW_CLI_VERSION: fixture.cliVersion,
     };
-    workspace = installedEvidence.workspace;
+    liveRuntime = {
+      ...(await createLiveOwnerRuntime({ workspace, pluginNames: fixture.pluginNames })),
+      env,
+    };
 
     setCatalogPackageSourceForTests(createFixtureCatalogPackageSource(fixture));
-    const seededCatalog = await resolveCurrentCatalog(env);
-    expect(seededCatalog).toMatchObject({
+    await expect(resolveCurrentCatalog(env)).resolves.toMatchObject({
       source: 'remote',
       catalogVersion: fixture.catalogVersion,
     });
-
     clearCurrentCatalogResolutionMemoForTests();
     setCatalogPackageSourceForTests(createUnexpectedRemoteCatalogSource(() => {
       unexpectedRemoteCalls += 1;
@@ -137,12 +181,9 @@ describe('performance budgets', () => {
   });
 
   afterEach(async () => {
-    clearAgentVersionProbeCacheForTests();
     clearCurrentCatalogResolutionMemoForTests();
     setCatalogPackageSourceForTests(null);
-    if (caseRoot) {
-      await fs.remove(caseRoot);
-    }
+    await fs.remove(caseRoot);
   });
 
   afterAll(async () => {
@@ -151,49 +192,40 @@ describe('performance budgets', () => {
 
   it('keeps validated disk catalog cache-first resolution within its P95 budget', async () => {
     const durations = await runSamples({
-      warmups: CATALOG_WARMUP_SAMPLES,
-      samples: CATALOG_MEASURED_SAMPLES,
+      warmups: CACHE_WARMUPS,
+      samples: CACHE_SAMPLES,
       beforeEach: clearCurrentCatalogResolutionMemoForTests,
       operation: async () => {
-        const resolved = await resolveCurrentCatalog(env, { freshnessPolicy: 'cacheFirst' });
-        expect(resolved).toMatchObject({
-          source: 'cache',
-          catalogVersion: fixture.catalogVersion,
-          cacheState: { state: 'fresh' },
-        });
+        await expect(resolveCurrentCatalog(env, { freshnessPolicy: 'cacheFirst' }))
+          .resolves.toMatchObject({
+            source: 'cache',
+            catalogVersion: fixture.catalogVersion,
+            cacheState: { state: 'fresh' },
+          });
       },
     });
     const summary = createPerfSummary(
       'catalog-cache-first-warm',
       durations,
-      CATALOG_CACHE_FIRST_P95_BUDGET_MS,
+      CACHE_P95_BUDGET_MS,
     );
     printPerfSummary(summary);
 
-    expect(unexpectedRemoteCalls, 'warm cache-first samples must not access the remote source').toBe(0);
-    expect(
-      summary.p95Ms,
-      `catalog-cache-first-warm P95 ${summary.p95Ms}ms exceeded ${summary.budgetMs}ms`,
-    ).toBeLessThanOrEqual(summary.budgetMs);
+    expect(unexpectedRemoteCalls).toBe(0);
+    expect(summary.p95Ms).toBeLessThanOrEqual(summary.budgetMs);
   });
 
-  it('keeps the first cache-first read after a marketplace rebuild within its independent budget', async () => {
-    const cachedCatalog = await resolveCurrentCatalog(env, { freshnessPolicy: 'cacheFirst' });
-    expect(cachedCatalog.source).toBe('cache');
-    await initializeLocalMarketplace({
-      force: true,
-      env,
-      catalogResolution: cachedCatalog,
-    });
-
+  it('keeps the first cache read after an active marketplace rebuild within budget', async () => {
+    const cached = await resolveCurrentCatalog(env, { freshnessPolicy: 'cacheFirst' });
+    await initializeLocalMarketplace({ force: true, env, catalogResolution: cached });
     clearCurrentCatalogResolutionMemoForTests();
+
     const startedAt = performance.now();
     const resolved = await resolveCurrentCatalog(env, { freshnessPolicy: 'cacheFirst' });
-    const elapsedMs = performance.now() - startedAt;
     const summary = createPerfSummary(
       'catalog-cache-first-after-marketplace-rebuild',
-      [elapsedMs],
-      POST_REBUILD_CACHE_FIRST_BUDGET_MS,
+      [performance.now() - startedAt],
+      POST_REBUILD_BUDGET_MS,
     );
     printPerfSummary(summary);
 
@@ -202,73 +234,66 @@ describe('performance budgets', () => {
       catalogVersion: fixture.catalogVersion,
       cacheState: { state: 'fresh' },
     });
-    expect(unexpectedRemoteCalls, 'post-rebuild cache-first read must not access the remote source').toBe(0);
-    expect(
-      summary.maxMs,
-      `catalog-cache-first-after-marketplace-rebuild ${summary.maxMs}ms exceeded ${summary.budgetMs}ms`,
-    ).toBeLessThanOrEqual(summary.budgetMs);
+    expect(unexpectedRemoteCalls).toBe(0);
+    expect(summary.maxMs).toBeLessThanOrEqual(summary.budgetMs);
   });
 
-  it('keeps the real warm console/status load chain within its P95 budget', async () => {
-    const nativeCliRunner = createFakeNativeRunner();
-    const expectedPluginNames = [...fixture.pluginNames].sort();
-
+  it('keeps the live status and console warm chain within its P95 budget', async () => {
     const durations = await runSamples({
-      warmups: CONSOLE_WARMUP_SAMPLES,
-      samples: CONSOLE_MEASURED_SAMPLES,
-      beforeEach: () => {
-        clearAgentVersionProbeCacheForTests();
-        clearCurrentCatalogResolutionMemoForTests();
-      },
+      warmups: LIVE_WARMUPS,
+      samples: LIVE_SAMPLES,
+      beforeEach: clearCurrentCatalogResolutionMemoForTests,
       operation: async () => {
-        const result = await loadConsoleItemsResult({
-          cwd: workspace,
-          includeCatalogOnly: true,
-        }, {
-          env,
-          nativeCliRunner,
+        const catalogResolution = await resolveCurrentCatalog(env, {
+          freshnessPolicy: 'cacheFirst',
         });
-        const actualPluginNames = result.items
-          .map((item) => item.summary.pluginName)
-          .sort();
-        expect(result.catalog.source).toBe('cache');
-        expect(result.catalog.catalogVersion).toBe(fixture.catalogVersion);
-        expect(result.catalog.cacheState?.state).toBe('fresh');
-        expect(result.catalogUnavailable).toBe(false);
-        expect(actualPluginNames).toEqual(expectedPluginNames);
-        expect(result.items.every((item) => item.summary.status !== 'notInstalled')).toBe(true);
+        const runtime = { ...liveRuntime, catalogResolution };
+        const status = await statusCommand([], {
+          cwd: workspace,
+          platform: 'codex',
+          scope: 'user',
+          json: true,
+        }, runtime);
+        const consoleResult = await loadConsoleItemsResult({
+          cwd: workspace,
+          platform: 'codex',
+          scope: 'user',
+          includeCatalogOnly: true,
+        }, runtime);
+        expect(status.payload.schemaVersion).toBe(3);
+        expect(status.payload.targets.length).toBeGreaterThan(0);
+        expect(
+          [...new Set(status.payload.targets.map((target) => target.state))],
+          JSON.stringify(status.payload.targets),
+        ).toEqual(['present']);
+        expect(consoleResult.status.schemaVersion).toBe(3);
+        expect(consoleResult.items.length).toBe(status.payload.targets.length);
       },
     });
     const summary = createPerfSummary(
-      'console-warm-load',
+      'live-status-console-warm',
       durations,
-      CONSOLE_WARM_LOAD_P95_BUDGET_MS,
+      LIVE_P95_BUDGET_MS,
     );
     printPerfSummary(summary);
 
-    expect(unexpectedRemoteCalls, 'console warm samples must use the disk cache-first path').toBe(0);
-    expect(
-      summary.p95Ms,
-      `console-warm-load P95 ${summary.p95Ms}ms exceeded ${summary.budgetMs}ms`,
-    ).toBeLessThanOrEqual(summary.budgetMs);
+    expect(unexpectedRemoteCalls).toBe(0);
+    expect(summary.p95Ms).toBeLessThanOrEqual(summary.budgetMs);
   });
 
   it('applies one bounded deadline to a pending remote source', async () => {
-    const deadlineEnv = {
-      ...env,
-      AW_CATALOG_REMOTE_TIMEOUT_MS: '100',
-    };
+    const deadlineEnv = { ...env, AW_CATALOG_REMOTE_TIMEOUT_MS: '100' };
     let identityCalls = 0;
     const pendingSource: CatalogPackageSource = {
       resolveIdentityByDistTag: async () => {
         identityCalls += 1;
-        return await new Promise(() => {});
+        return new Promise(() => {});
       },
       resolveIdentityByVersion: async () => {
-        throw new Error('Unexpected version identity call in deadline performance test.');
+        throw new Error('Unexpected exact version call.');
       },
       downloadArchive: async () => {
-        throw new Error('Unexpected download call in deadline performance test.');
+        throw new Error('Unexpected archive call.');
       },
     };
     clearCurrentCatalogResolutionMemoForTests();
@@ -276,10 +301,9 @@ describe('performance budgets', () => {
 
     const startedAt = performance.now();
     const resolved = await resolveCurrentCatalog(deadlineEnv);
-    const elapsedMs = performance.now() - startedAt;
     const summary = createPerfSummary(
       'catalog-remote-deadline',
-      [elapsedMs],
+      [performance.now() - startedAt],
       REMOTE_DEADLINE_BUDGET_MS,
     );
     printPerfSummary(summary);
@@ -291,9 +315,6 @@ describe('performance budgets', () => {
       remoteFailure: { stage: 'deadline' },
     });
     expect(identityCalls).toBe(1);
-    expect(
-      summary.maxMs,
-      `catalog-remote-deadline ${summary.maxMs}ms exceeded ${summary.budgetMs}ms`,
-    ).toBeLessThanOrEqual(summary.budgetMs);
+    expect(summary.maxMs).toBeLessThanOrEqual(summary.budgetMs);
   });
 });

@@ -4,7 +4,7 @@ import type {
   PluginMeta,
   Scope,
 } from '../types.js';
-import { getCodexProjectInstallability } from './codex-project-installability.js';
+import { hasCodexProjectManagedArtifacts } from '../utils/codex-project-surface.js';
 
 const PLATFORM_ORDER: PlatformName[] = ['codex', 'claude'];
 
@@ -26,7 +26,7 @@ export function canExecuteCodexProjectWithoutNative(options: {
   }
 
   return options.plugins.length > 0 &&
-    options.plugins.every((plugin) => getCodexProjectInstallability(plugin).installable);
+    options.plugins.every((plugin) => hasCodexProjectManagedArtifacts(plugin));
 }
 
 export function listExecutablePlatformsForNativeAndCodexProject(options: {

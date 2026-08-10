@@ -86,7 +86,7 @@ Claude-only 字段不能放在顶层。Codex block 只允许 `description` 和 `
 - 支持 Codex 的插件得到 generated `codex/skills/<name>/SKILL.md`、`agents/openai.yaml` 和被引用的 `assets/`。
 - 原始 `slash-commands/` 源目录不作为 runtime 目录发布。
 
-Claude generated command 会固定写入 `disable-model-invocation: true`。Codex generated skill 会固定写入 `policy.allow_implicit_invocation: false`，因此只能由用户显式 `$command-name` 或结构化 skill mention 调用。`default_prompt` 只用于 UI/客户端的推荐起手话，不会替代 generated `SKILL.md` 正文。Codex project scope 安装这些命令时，会把 generated skill 复制到当前仓库 `.agents/skills/<name>`，并在 install record / project artifact shared identity 中以 `kind: "skill"` + `artifactKey: "<name>"` 记录最小 artifact identity。
+Claude generated command 会固定写入 `disable-model-invocation: true`。Codex generated skill 会固定写入 `policy.allow_implicit_invocation: false`，因此只能由用户显式 `$command-name` 或结构化 skill mention 调用。Codex project scope 会把 generated skill 复制到当前仓库 `.agents/skills/<name>`，并写入 AW ownership marker。
 
 ## 动态参数与 Claude-only 语法
 

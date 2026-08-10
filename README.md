@@ -19,9 +19,9 @@ aw status
 aw
 ```
 
-脚本化写命令默认输出只展示用户能理解的完成结果和下一步；需要机器合同时加 `--json`，stdout 会是单一 JSON receipt。`--verbose` 展开诊断到 stderr，`--debug` 生成脱敏 debug log 并隐含 verbose。`aw status` 默认使用友好状态摘要，`aw status --verbose` 展开详细只读排查；`aw status --json` 输出 `statusSchemaVersion: 2`、`consoleItemsSchemaVersion: 3`、`friendlySummaries` 和 `consoleItems`。
+脚本化写命令默认输出只展示用户能理解的完成结果和下一步；需要机器合同时加 `--json`，stdout 会是单一 JSON receipt。`--verbose` 展开诊断到 stderr，`--debug` 生成脱敏 debug log 并隐含 verbose。五个写命令的 receipt 使用 schema v3。`aw status --json` 使用 schema v3，只按现场 ownership 和平台组件报告 `present`、`absent`、`partial`、`error`。配置读写合同也使用 config v3。
 
-`install`、`uninstall`、`upgrade` 默认写入 user scope；需要项目级产物时再显式传 `-s project`。Codex project scope 不会启用用户级 native plugin，而是写当前仓库的 `.agents/skills`、`.codex/config.toml`、`.codex/hooks.json`、`.codex/rules/` 和 `.codex/agents/`，并维护可提交的 project artifact identity metadata。
+`install`、`uninstall`、`upgrade` 默认写入 user scope；需要项目级产物时再显式传 `-s project`。Codex project scope 不会启用用户级 native plugin，而是写当前仓库的 `.agents/skills`、`.codex/config.toml`、`.codex/hooks.json`、`.codex/rules/` 和 `.codex/agents/`。这些文件中的 AW owner marker 提供写入和清理边界。
 
 常用短选项示例：
 
@@ -30,7 +30,7 @@ aw install git-commit -p codex -s user
 aw install git-commit -p codex -s project
 ```
 
-`aw init` 用来预热远程 catalog 和 artifact cache。它会先读取 `@yiliang/aw-plugins-manifest`，再获取同版本 `@yiliang/aw-plugins` 并校验 digest；它不安装插件、不升级插件、不写 install record，也不主动 materialize 本机 native runtime。需要 user scope native runtime 的写命令会在真正调用平台前同步 active runtime；纯 Codex project 路径只读使用 current catalog，不会为了写当前仓库产物去注册用户级 Codex runtime。绑定真实插件 target 的写入型命令需要显式传 `-p codex|claude|both`。
+`aw init` 用来预热远程 catalog 和 artifact cache。它会先读取 `@yiliang/aw-plugins-manifest`，再获取同版本 `@yiliang/aw-plugins` 并校验 digest；它不安装或升级插件，也不主动 materialize 本机 native runtime。需要 user scope native runtime 的写命令会在真正调用平台前同步 active runtime；纯 Codex project 路径只读使用 current catalog，不会为了写当前仓库产物去注册用户级 Codex runtime。绑定真实插件 target 的写命令需要显式传 `-p codex|claude|both`。
 
 `aw status` 和主控制台首页优先使用合法的 catalog cache；安装、升级和普通初始化会检查远程 catalog。`aw init --force` 跳过 cache 快路径并强制尝试远程刷新；如果 resolver 只能返回 cache fallback，命令会拒绝该结果并报错。catalog deadline、cache TTL、原生命令 timeout 和离线 fallback 的完整合同见 [插件安装指南](docs/plugin-installation.md#catalog-与原生命令环境变量)。
 
@@ -38,10 +38,7 @@ aw install git-commit -p codex -s project
 
 ```bash
 aw status git-commit --verbose
-aw install git-commit -p codex -s project --adopt-existing
 aw cleanup git-commit -p codex -s project
-aw cleanup git-commit -p codex -s project --remove-config
-aw cleanup --dependency-index --prune-stale <token> --yes
 aw reinstall git-commit -p codex -s user
 aw config list codex-explore -s user
 aw config set codex-explore standardModel gpt-5.6-terra -s user
@@ -54,7 +51,7 @@ aw config set codex-subagent-guide planningReviewTaskReasoningEffort xhigh -s us
 aw config set codex-subagent-guide minimumInitialWaitMinutes 15 -s user
 ```
 
-`aw cleanup` 会直接清理 AW 能证明归属的异常状态和残留；默认保留 AW 自管配置，也不会运行 uninstall lifecycle。`--remove-config` 只用于 `uninstall` / `cleanup` 主体成功后删除当前 target 的 AW 自管配置；只想删除配置时使用 `aw config reset`。dependency index stale reference 的唯一显式维护入口是 `aw cleanup --dependency-index --prune-stale <token> --yes`。
+`aw cleanup` 删除当前 target 中带有效 AW ownership 的现场组件，不运行 uninstall lifecycle。`aw reinstall` 先清理 AW-owned 组件，再按 current catalog 重建。`uninstall`、`cleanup` 和 `reinstall` 都保留 AW 自管配置；配置只由 `aw config reset` 删除。最后一次成功 lifecycle 输入单独保存在 lifecycle active store 中，供卸载或重装运行对应脚本；它不是安装状态账本。
 
 Skill 的触发行为只由平台原生元数据决定。Codex 使用 `agents/openai.yaml` 的 `policy.allow_implicit_invocation`；Claude Code 使用 `SKILL.md` frontmatter 的 `disable-model-invocation` 和 `user-invocable`。AW 在安装、升级和动态刷新时校验并保留这些值，不提供 CLI、配置页或 manifest 覆盖项。显式调用入口不受影响。
 

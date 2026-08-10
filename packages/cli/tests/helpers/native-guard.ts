@@ -1,8 +1,5 @@
 import path from 'node:path';
 
-import { ClaudeAdapter } from '../../src/adapters/claude.js';
-import { CodexAdapter } from '../../src/adapters/codex.js';
-import type { AdaptersFactory } from '../../src/commands/runtime.js';
 import {
   CodexAppServerError,
   type CodexAppServerInvocation,
@@ -15,7 +12,6 @@ import {
   type NativeCliRunner,
   setNativeCliRunnerOverrideForTests,
 } from '../../src/utils/native-cli.js';
-import type { PlatformAdapter, PlatformName } from '../../src/types.js';
 
 const DEFAULT_GUARDED_NATIVE_COMMANDS = ['codex', 'claude'] as const;
 const DEFAULT_VERSION_OUTPUTS: Record<string, string> = {
@@ -168,26 +164,6 @@ export function createTestCodexAppServerProcessGuard(options: {
       `Unexpected non-Codex app-server invocation in test guard: ${invocation.command} ${invocation.args.join(' ')}`.trim(),
     );
   };
-}
-
-export function createSafeAdaptersFactory(options: {
-  codexAppServerRunner?: CodexAppServerProcessRunner;
-} = {}): AdaptersFactory {
-  return (
-    cwd: string,
-    context,
-  ): Record<PlatformName, PlatformAdapter> => ({
-    codex: new CodexAdapter(
-      cwd,
-      context.nativeCliRunner,
-      context.env,
-      options.codexAppServerRunner ?? createTestCodexAppServerProcessGuard({
-        cwdSource: 'safe adapters factory -> CodexAdapter cwd',
-        envSource: 'safe adapters factory -> CodexAdapter env',
-      }),
-    ),
-    claude: new ClaudeAdapter(cwd, context.nativeCliRunner, context.env),
-  });
 }
 
 export function installSourceTestNativeGuards(): void {

@@ -10,19 +10,6 @@
   "skills": "./review-skills",
   "slashCommands": "./slash-commands",
   "mcpServers": "./.mcp.json",
-  "dependencies": {
-    "plugins": [
-      {
-        "name": "git-commit",
-        "target": {
-          "scope": "user"
-        },
-        "when": {
-          "platforms": ["codex"]
-        }
-      }
-    ]
-  },
   "marketplace": {
     "category": "workflow",
     "tags": ["code-review", "quality", "ci"],

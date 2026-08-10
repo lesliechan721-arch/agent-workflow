@@ -4,1858 +4,506 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
 import fs from 'fs-extra';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../src/utils/artifact-refresh.js', () => ({
-  refreshArtifactsAfterConfigWrite: vi.fn(async (options: { changedKeys?: string[]; resetAllTrackedKeys?: boolean }) => ({
-    attempted: options.resetAllTrackedKeys === true || (options.changedKeys?.length ?? 0) > 0,
-    status: 'succeeded' as const,
-    triggerKeys: [...(options.changedKeys ?? [])],
-    artifacts: [],
-  })),
-  reapplyConfigRefresh: vi.fn(async () => ({
-    attempted: false,
-    status: 'skipped' as const,
-    triggerKeys: [],
-    artifacts: [],
+const mocks = vi.hoisted(() => ({
+  visible: new Set<string>(),
+  states: new Map<string, 'present' | 'partial' | 'absent' | 'error'>(),
+  discover: vi.fn(),
+  inspect: vi.fn(),
+}));
+
+vi.mock('../../src/commands/rebuild-integration.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../src/commands/rebuild-integration.js')>(),
+  discoverRebuildTargetNames: mocks.discover,
+  inspectRebuildTarget: mocks.inspect,
+}));
+
+vi.mock('../../src/utils/plugin-catalog.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../src/utils/plugin-catalog.js')>(),
+  resolveCurrentCatalog: vi.fn(async () => ({
+    rootDir: '/catalog',
+    manifestPath: '/catalog/catalog.json',
+    catalogVersion: '1.0.0',
+    channel: 'latest',
+    source: 'embedded',
   })),
 }));
 
-import {
-  reapplyConfigRefresh,
-  refreshArtifactsAfterConfigWrite,
-} from '../../src/utils/artifact-refresh.js';
-import type { PluginMeta } from '../../src/types.js';
-import type { NativeCliRunner } from '../../src/utils/native-cli.js';
+vi.mock('../../src/utils/project-boundary.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../src/utils/project-boundary.js')>(),
+  assertProjectSharedConfigPathVisible: vi.fn(async () => undefined),
+  ensureProjectPrivateStateIgnore: vi.fn(async () => ({ updated: false })),
+}));
+
+import type { RebuildCommandResult } from '../../src/commands/rebuild-command.js';
+import type { PlatformName, PluginMeta, ReceiptTargetIdentity, Scope } from '../../src/types.js';
 import {
   applyPluginConfigWrite,
   resetPluginConfigWithHelper,
 } from '../../src/utils/plugin-config-write.js';
 import {
-  writeDynamicArtifactDiagnosticCacheAt,
-  writeInstallRecordFileAt,
-  writeProjectArtifactIdentityFileAt,
-} from '../../src/install-state/facade.js';
-import {
-  createProjectArtifactSharedLocator,
-  createHistoricalLifecycleRuntimePaths,
-  getDiagnosticCachePath,
-  getInstallRecordPath,
-  getProjectArtifactSharedIdentityPath,
-} from '../../src/install-state/paths.js';
-import {
   readPluginConfigStore,
-  resolvePluginConfigStorePath,
   writePluginConfigStore,
 } from '../../src/utils/plugin-config.js';
-import {
-  calculateFileDigest,
-  calculatePluginBundleFingerprint,
-} from '../../src/utils/plugin-scripts.js';
-import { createDynamicSkillTreeContentDigest } from '../../src/utils/dynamic-skill-tree.js';
-import * as pluginConfigModule from '../../src/utils/plugin-config.js';
-import * as localMarketplaceModule from '../../src/utils/local-marketplace.js';
-import {
-  resolveClaudePaths,
-  resolveCodexPaths,
-  resolveCodexProjectKey,
-} from '../../src/utils/paths.js';
-import { writeTrackingManifest } from '../../src/utils/tracking.js';
-import {
-  TestPathFenceError,
-  normalizeAbsolutePath,
-} from '../helpers/path-fence.js';
-import {
-  getSourceTestRepositoryCwd,
-  registerCurrentTestWritableStateRoot,
-  runWithCurrentRepositoryCwdAsReadOnly,
-} from '../setup/test-isolation.js';
+import { registerCurrentTestWritableStateRoot } from '../setup/test-isolation.js';
 
-const tempDirs: string[] = [];
 const execFileAsync = promisify(execFile);
+const tempDirs: string[] = [];
 
-interface ExpectedAsyncPathFenceViolation {
-  access: 'read' | 'write';
-  path: string;
-  source: string;
-  reason?: 'outsideRegisteredRoots' | 'writeToReadOnlyRoot';
-  conflictingRootPath?: string;
-  recommendedFixIncludes?: string;
+function locationKey(platform: PlatformName, scope: Scope): string {
+  return `${platform}:${scope}`;
 }
 
-async function makeTempRoot(prefix: string): Promise<string> {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
-  tempDirs.push(root);
-  return root;
+function rebuildResult(target: ReceiptTargetIdentity, state: 'succeeded' | 'failed'): RebuildCommandResult {
+  return {
+    platforms: [target.platform],
+    plugins: state === 'succeeded' ? [target.pluginName] : [],
+    warnings: [],
+    rebuildResults: [],
+    targetResults: [{
+      target,
+      action: 'reinstall',
+      state: state === 'succeeded' ? 'completed' : 'failed',
+      ...(state === 'failed' ? { message: 'target failed' } : {}),
+    }],
+    overallState: state,
+    nativePlugins: {},
+    repoManagedArtifacts: [],
+    receiptTargets: [{
+      plugin: target.pluginName,
+      platform: target.platform,
+      scope: target.scope,
+    }],
+  };
 }
 
-async function initRepo(repoRoot: string): Promise<void> {
-  await fs.ensureDir(repoRoot);
-  await execFileAsync('git', ['init', '-q'], { cwd: repoRoot });
-}
-
-function createPlugin(
+async function createFixture(
   pluginName = 'configurable-plugin',
   options: {
-    withProjectDynamicTarget?: boolean;
-    withUserDynamicTarget?: boolean;
-    withClaudeProjectDynamicTarget?: boolean;
+    products?: string[];
+    codexProjectManaged?: boolean;
+    dynamicTarget?: boolean;
   } = {},
-): PluginMeta {
-  const artifactTargets = [
-    ...(options.withProjectDynamicTarget
-      ? [{
-          id: 'project-instructions',
-          platform: 'codex' as const,
-          target: 'codex.developerInstructionsBlock' as const,
-          scopes: ['project' as const],
-          states: ['present' as const],
-          refreshKeys: ['mode'],
-          requiresCodexProjectConfig: true,
-        }]
-      : []),
-    ...(options.withUserDynamicTarget
-      ? [{
-          id: 'user-instructions',
-          platform: 'codex' as const,
-          target: 'codex.developerInstructionsBlock' as const,
-          scopes: ['user' as const],
-          states: ['present' as const],
-          refreshKeys: ['mode'],
-        }]
-      : []),
-    ...(options.withClaudeProjectDynamicTarget
-      ? [{
-          id: 'project-claude-skill',
-          platform: 'claude' as const,
-          target: 'claude.skill' as const,
-          kind: 'skill' as const,
-          scopes: ['project' as const],
-          states: ['present' as const],
-          refreshKeys: ['mode'],
-          skillKey: 'configurable-claude',
-        }]
-      : []),
-  ];
-  return {
-    rootDir: '/tmp/plugin',
-    manifestPath: '/tmp/plugin/.agents-plugin/plugin.json',
-    manifest: {
-      name: pluginName,
-      version: '0.1.0',
-      description: 'Config write test plugin',
-      marketplace: {
-        category: 'test',
-        strict: true,
-        policy: {
-          installation: 'AVAILABLE',
-          authentication: 'ON_INSTALL',
-        },
-      },
-      compatibility: {
-        aw: {
-          minVersion: '0.0.0',
-        },
-      },
-      config: {
-        schema: {
-          token: {
-            type: 'string',
-            required: true,
-            sensitive: true,
-          },
-          retries: {
-            type: 'number',
-            default: 1,
-            min: 0,
-            max: 3,
-          },
-          mode: {
-            type: 'enum',
-            values: ['fast', 'safe'],
-            default: 'safe',
-          },
-        },
-      },
-      ...(artifactTargets.length > 0
-        ? {
-            artifacts: {
-              targets: artifactTargets,
-            },
-          }
-        : {}),
-    },
-  };
-}
-
-async function materializePlugin(root: string, plugin: PluginMeta): Promise<PluginMeta> {
-  const pluginRoot = path.join(root, 'plugin');
-  const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
-  await fs.ensureDir(path.dirname(manifestPath));
-  await fs.writeJson(manifestPath, plugin.manifest, { spaces: 2 });
-  await fs.outputFile(path.join(pluginRoot, 'index.js'), 'export {};\n');
-  return {
-    ...plugin,
-    rootDir: pluginRoot,
-    manifestPath,
-  };
-}
-
-function createAgentVersionRunner(options: {
-  codex?: string;
-  claude?: string;
-} = {}): NativeCliRunner {
-  return async (invocation) => {
-    if (invocation.args.length !== 1 || invocation.args[0] !== '--version') {
-      throw new Error(`Unexpected native CLI invocation in config-write.test.ts: ${invocation.command} ${invocation.args.join(' ')}`.trim());
-    }
-    if (invocation.command === 'codex') {
-      return { exitCode: 0, stdout: options.codex ?? 'codex-cli 0.145.0', stderr: '' };
-    }
-    if (invocation.command === 'claude') {
-      return { exitCode: 0, stdout: options.claude ?? '2.1.88 (Claude Code)', stderr: '' };
-    }
-    throw new Error(`Unexpected native CLI command: ${invocation.command}`);
-  };
-}
-
-async function writeUserInstallRecordForConfigTest(options: {
+): Promise<{
   root: string;
   cwd: string;
   env: NodeJS.ProcessEnv;
   plugin: PluginMeta;
-}): Promise<void> {
-  const location = {
-    plugin: options.plugin.manifest.name,
-    platform: 'codex' as const,
-    scope: 'user' as const,
+}> {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-config-reinstall-'));
+  tempDirs.push(root);
+  registerCurrentTestWritableStateRoot(root);
+  const cwd = path.join(root, 'repo');
+  await fs.ensureDir(cwd);
+  await execFileAsync('git', ['init', '-q'], { cwd });
+  const pluginRoot = path.join(root, 'plugin');
+  const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
+  const manifest: PluginMeta['manifest'] = {
+    name: pluginName,
+    version: '1.0.0',
+    description: 'Config apply test plugin',
+    compatibility: { aw: { minVersion: '0.0.0' } },
+    marketplace: {
+      category: 'test',
+      strict: true,
+      policy: {
+        installation: 'AVAILABLE',
+        authentication: 'ON_INSTALL',
+        ...(options.products ? { products: options.products } : {}),
+      },
+    },
+    config: {
+      schema: {
+        token: { type: 'string', sensitive: true },
+        mode: { type: 'enum', values: ['fast', 'safe'], default: 'safe' },
+      },
+    },
+    ...(options.codexProjectManaged === false ? {} : { skills: './skills' }),
+    ...(options.dynamicTarget
+      ? {
+          artifacts: {
+            targets: [{
+              id: 'dynamic-skill',
+              platform: 'codex',
+              target: 'codex.skill',
+              kind: 'skill',
+              scopes: ['user'],
+              states: ['present'],
+              refreshKeys: ['mode'],
+              skillKey: 'dynamic-skill',
+            }],
+          },
+        }
+      : {}),
   };
-  const recordPath = getInstallRecordPath(options.cwd, location, options.env);
-  const recordId = path.basename(recordPath, '.json');
-  const sourceManifestDigest = await calculateFileDigest(options.plugin.manifestPath);
-  const sourceBundleFingerprint = await calculatePluginBundleFingerprint(options.plugin.rootDir);
-  const lifecyclePaths = createHistoricalLifecycleRuntimePaths({
-    cwd: options.cwd,
-    location,
-    recordId,
-    manifestDigest: sourceManifestDigest,
-    bundleFingerprint: sourceBundleFingerprint,
-    nonce: `test-${options.plugin.manifest.name}`,
-    env: options.env,
-    manifestRelativePath: '.agents-plugin/plugin.json',
-  });
-  await fs.copy(options.plugin.rootDir, lifecyclePaths.bundleRoot);
-  const manifestDigest = await calculateFileDigest(lifecyclePaths.manifestPath);
-  const bundleFingerprint = await calculatePluginBundleFingerprint(lifecyclePaths.bundleRoot);
-  await writeInstallRecordFileAt(recordPath, {
-    version: 2,
-    recordId,
-    record: {
-      pluginName: options.plugin.manifest.name,
-      platform: 'codex',
-      scope: 'user',
-      installedAt: '2026-05-18T00:00:00.000Z',
-      updatedAt: '2026-05-18T00:00:00.000Z',
-      source: {
-        pluginVersion: options.plugin.manifest.version,
-        manifestDigest,
-        bundleFingerprint,
-      },
-      installSource: {
-        kind: 'explicit',
-        explicitlyRequested: true,
-      },
-      lifecycle: {
-        runtimeRoot: lifecyclePaths.runtimeRoot,
-        bundleRoot: lifecyclePaths.bundleRoot,
-        manifestPath: lifecyclePaths.manifestPath,
-        pluginVersion: options.plugin.manifest.version,
-        sourceManifestDigest: manifestDigest,
-        bundleFingerprint,
-        events: ['install'],
-        createdAt: '2026-05-18T00:00:00.000Z',
-      },
-      artifacts: [],
-      dependencyEdges: [],
-    },
-  }, { env: options.env });
-}
-
-async function writeProjectInstallRecordForConfigTest(options: {
-  cwd: string;
-  env: NodeJS.ProcessEnv;
-  plugin: PluginMeta;
-}): Promise<{ projectKey: string }> {
-  const projectKey = await resolveCodexProjectKey(options.cwd);
-  const location = {
-    plugin: options.plugin.manifest.name,
-    platform: 'codex' as const,
-    scope: 'project' as const,
-    projectKey,
+  await fs.outputJson(manifestPath, manifest);
+  return {
+    root,
+    cwd,
+    env: { AW_HOME: path.join(root, 'aw-home') },
+    plugin: { rootDir: pluginRoot, manifestPath, manifest },
   };
-  const recordPath = getInstallRecordPath(options.cwd, location, options.env);
-  const recordId = path.basename(recordPath, '.json');
-  const sourceManifestDigest = await calculateFileDigest(options.plugin.manifestPath);
-  const sourceBundleFingerprint = await calculatePluginBundleFingerprint(options.plugin.rootDir);
-  const lifecyclePaths = createHistoricalLifecycleRuntimePaths({
-    cwd: options.cwd,
-    location,
-    recordId,
-    manifestDigest: sourceManifestDigest,
-    bundleFingerprint: sourceBundleFingerprint,
-    nonce: `test-project-${options.plugin.manifest.name}`,
-    env: options.env,
-    manifestRelativePath: '.agents-plugin/plugin.json',
+}
+
+function createReinstallMock(options: {
+  fail?: (platform: PlatformName, scope: Scope) => boolean;
+  beforeReturn?: () => Promise<void> | void;
+} = {}) {
+  return vi.fn(async (pluginNames, rawOptions) => {
+    await options.beforeReturn?.();
+    const target: ReceiptTargetIdentity = {
+      pluginName: pluginNames[0]!,
+      platform: rawOptions.platform as PlatformName,
+      scope: rawOptions.scope as Scope,
+    };
+    return rebuildResult(
+      target,
+      options.fail?.(target.platform, target.scope) ? 'failed' : 'succeeded',
+    );
   });
-  await fs.copy(options.plugin.rootDir, lifecyclePaths.bundleRoot);
-  const manifestDigest = await calculateFileDigest(lifecyclePaths.manifestPath);
-  const bundleFingerprint = await calculatePluginBundleFingerprint(lifecyclePaths.bundleRoot);
-  await writeInstallRecordFileAt(recordPath, {
-    version: 2,
-    recordId,
-    record: {
-      pluginName: options.plugin.manifest.name,
-      platform: 'codex',
-      scope: 'project',
-      projectKey,
-      installedAt: '2026-05-18T00:00:00.000Z',
-      updatedAt: '2026-05-18T00:00:00.000Z',
-      source: {
-        pluginVersion: options.plugin.manifest.version,
-        manifestDigest,
-        bundleFingerprint,
-      },
-      installSource: {
-        kind: 'explicit',
-        explicitlyRequested: true,
-      },
-      lifecycle: {
-        runtimeRoot: lifecyclePaths.runtimeRoot,
-        bundleRoot: lifecyclePaths.bundleRoot,
-        manifestPath: lifecyclePaths.manifestPath,
-        pluginVersion: options.plugin.manifest.version,
-        sourceManifestDigest: manifestDigest,
-        bundleFingerprint,
-        events: ['install'],
-        createdAt: '2026-05-18T00:00:00.000Z',
-      },
-      artifacts: [],
-      dependencyEdges: [],
+}
+
+beforeEach(() => {
+  mocks.visible.clear();
+  mocks.states.clear();
+  mocks.discover.mockImplementation(async (options: { platform: PlatformName; scope: Scope }) =>
+    mocks.visible.has(locationKey(options.platform, options.scope)) ? ['configurable-plugin'] : []);
+  mocks.inspect.mockImplementation(async (options: { platform: PlatformName; scope: Scope }) => ({
+    target: {},
+    inspection: {
+      state: mocks.states.get(locationKey(options.platform, options.scope)) ?? 'present',
+      components: [],
+      errors: [],
     },
-  }, { env: options.env });
-  return { projectKey };
-}
-
-async function writeUserDynamicTrackingForConfigTest(options: {
-  cwd: string;
-  env: NodeJS.ProcessEnv;
-  plugin: PluginMeta;
-}): Promise<void> {
-  await writeTrackingManifest(resolveCodexPaths(options.cwd, 'user', options.env).trackingDir, {
-    version: 1,
-    plugins: {
-      [options.plugin.manifest.name]: {
-        name: options.plugin.manifest.name,
-        generatedAt: '2026-05-18T00:00:00.000Z',
-        artifacts: [{
-          path: path.join(options.env.AW_HOME!, 'runtime', options.plugin.manifest.name, 'instructions.md'),
-          kind: 'instruction',
-          platform: 'codex',
-          id: 'user-instructions',
-          target: 'codex.developerInstructionsBlock',
-          state: 'present',
-          refreshKeys: ['mode'],
-          configDigest: 'sha256:old-config',
-          contentDigest: 'sha256:old-content',
-        }],
-      },
-    },
-  });
-}
-
-async function writeUserDynamicDiagnosticCacheForConfigTest(options: {
-  cwd: string;
-  env: NodeJS.ProcessEnv;
-  plugin: PluginMeta;
-}): Promise<void> {
-  const location = {
-    plugin: options.plugin.manifest.name,
-    platform: 'codex' as const,
-    scope: 'user' as const,
-  };
-  const cachePath = getDiagnosticCachePath(options.cwd, location, options.env);
-  await writeDynamicArtifactDiagnosticCacheAt(cachePath, {
-    version: 1,
-    recordId: path.basename(cachePath, '.json'),
-    location,
-    updatedAt: '2026-05-18T00:00:00.000Z',
-    artifacts: [{
-      id: 'user-instructions',
-      target: 'codex.developerInstructionsBlock',
-      state: 'present',
-      refreshKeys: ['mode'],
-      configDigest: 'sha256:old-config',
-      contentDigest: 'sha256:old-content',
-    }],
-  });
-}
-
-async function writeAdoptableProjectIdentityForConfigTest(options: {
-  cwd: string;
-  repoRoot: string;
-  plugin: PluginMeta;
-}): Promise<void> {
-  const repoArtifactPath = path.join(options.repoRoot, '.codex', 'config.toml');
-  await fs.outputFile(repoArtifactPath, '# existing\n');
-  const sourceManifestDigest = await calculateFileDigest(options.plugin.manifestPath);
-  const sourceBundleFingerprint = await calculatePluginBundleFingerprint(options.plugin.rootDir);
-  const locator = createProjectArtifactSharedLocator({
-    plugin: options.plugin.manifest.name,
-    platform: 'codex',
-    repoRoot: options.repoRoot,
-    projectRoot: options.repoRoot,
-  });
-  const identityPath = getProjectArtifactSharedIdentityPath({ repoRoot: options.repoRoot, locator });
-  await writeProjectArtifactIdentityFileAt(identityPath, {
-    version: 1,
-    sharedIdentityId: path.basename(identityPath, '.json'),
-    locator,
-    source: {
-      pluginVersion: options.plugin.manifest.version,
-      manifestDigest: sourceManifestDigest,
-      bundleFingerprint: sourceBundleFingerprint,
-    },
-    generatedAt: '2026-05-18T00:00:00.000Z',
-    artifacts: [{
-      kind: 'instruction',
-      platform: 'codex',
-      path: '.codex/config.toml',
-      id: 'project-instructions',
-      target: 'codex.developerInstructionsBlock',
-      state: 'present',
-    }],
-  });
-}
-
-async function writeAdoptableClaudeProjectIdentityForConfigTest(options: {
-  cwd: string;
-  repoRoot: string;
-  plugin: PluginMeta;
-}): Promise<void> {
-  const skillKey = 'configurable-claude';
-  const skillRoot = path.join(resolveClaudePaths(options.cwd, 'project').configDir, 'skills', skillKey);
-  const skillFiles = {
-    'SKILL.md': Buffer.from(
-      '---\nname: configurable-claude\ndescription: Configurable Claude skill.\n---\nBody\n',
-      'utf8',
-    ),
-    'references/guide.md': Buffer.from('# Guide\n', 'utf8'),
-  };
-  for (const [relativePath, content] of Object.entries(skillFiles)) {
-    await fs.outputFile(path.join(skillRoot, relativePath), content);
-  }
-  const sourceManifestDigest = await calculateFileDigest(options.plugin.manifestPath);
-  const sourceBundleFingerprint = await calculatePluginBundleFingerprint(options.plugin.rootDir);
-  const locator = createProjectArtifactSharedLocator({
-    plugin: options.plugin.manifest.name,
-    platform: 'claude',
-    repoRoot: options.repoRoot,
-    projectRoot: options.cwd,
-  });
-  const identityPath = getProjectArtifactSharedIdentityPath({ repoRoot: options.repoRoot, locator });
-  await writeProjectArtifactIdentityFileAt(identityPath, {
-    version: 1,
-    sharedIdentityId: path.basename(identityPath, '.json'),
-    locator,
-    source: {
-      pluginVersion: options.plugin.manifest.version,
-      manifestDigest: sourceManifestDigest,
-      bundleFingerprint: sourceBundleFingerprint,
-    },
-    generatedAt: '2026-05-18T00:00:00.000Z',
-    artifacts: [{
-      kind: 'skill',
-      platform: 'claude',
-      path: path.relative(options.repoRoot, skillRoot).split(path.sep).join('/'),
-      artifactKey: skillKey,
-      id: 'project-claude-skill',
-      target: 'claude.skill',
-      ownershipMarker: skillKey,
-      state: 'present',
-      contentDigest: createDynamicSkillTreeContentDigest({
-        skillKey,
-        files: skillFiles,
-      }),
-    }],
-  });
-}
-
-async function expectAsyncPathFenceViolation(
-  action: () => Promise<unknown>,
-  expected: ExpectedAsyncPathFenceViolation,
-): Promise<TestPathFenceError> {
-  let caughtError: unknown;
-
-  try {
-    await action();
-  } catch (error) {
-    caughtError = error;
-  }
-
-  expect(caughtError).toBeInstanceOf(TestPathFenceError);
-  const pathFenceError = caughtError as TestPathFenceError;
-  expect(pathFenceError.details.access).toBe(expected.access);
-  expect(pathFenceError.details.source).toBe(expected.source);
-  expect(pathFenceError.details.normalizedUnsafePath).toBe(normalizeAbsolutePath(expected.path));
-
-  if (expected.reason) {
-    expect(pathFenceError.details.reason).toBe(expected.reason);
-  }
-  if (expected.conflictingRootPath) {
-    expect(pathFenceError.details.conflictingRoot?.path).toBe(normalizeAbsolutePath(expected.conflictingRootPath));
-  }
-  if (expected.recommendedFixIncludes) {
-    expect(pathFenceError.details.recommendedFix).toContain(expected.recommendedFixIncludes);
-  }
-
-  return pathFenceError;
-}
-
-afterEach(async () => {
-  vi.restoreAllMocks();
-  vi.clearAllMocks();
-  await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
+  }));
 });
 
-describe('plugin config write helper', () => {
-  it('fails atomically when any updated field is invalid', async () => {
-    const root = await makeTempRoot('aw-config-write-');
-    const cwd = path.join(root, 'repo');
-    const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
-    await fs.ensureDir(cwd);
-    const plugin = createPlugin('fresh-config-plugin');
+afterEach(async () => {
+  vi.clearAllMocks();
+  while (tempDirs.length > 0) await fs.remove(tempDirs.pop()!);
+});
+
+describe('config write full reinstall apply', () => {
+  it('validates before creating a config store or running reinstall', async () => {
+    const fixture = await createFixture();
+    const reinstall = createReinstallMock();
 
     await expect(applyPluginConfigWrite({
-      plugin,
+      plugin: fixture.plugin,
       scope: 'user',
-      cwd,
-      env,
-      request: {
-        updates: {
-          token: 'secret',
-          retries: '4',
-        },
-      },
-    })).rejects.toThrow('less than or equal to 3');
+      cwd: fixture.cwd,
+      env: fixture.env,
+      request: { updates: { mode: 'invalid' } },
+      reinstallCommandImpl: reinstall,
+    })).rejects.toThrow('must be one of');
 
-    await expect(fs.pathExists(resolvePluginConfigStorePath({
-      pluginName: plugin.manifest.name,
+    expect(reinstall).not.toHaveBeenCalled();
+    expect((await readPluginConfigStore({
+      pluginName: fixture.plugin.manifest.name,
       scope: 'user',
-      cwd,
-      env,
-    }))).resolves.toBe(false);
-    expect(refreshArtifactsAfterConfigWrite).not.toHaveBeenCalled();
+      cwd: fixture.cwd,
+      env: fixture.env,
+    })).exists).toBe(false);
   });
 
-  it('blocks project shared config writes when cwd is only registered as a read-only repo fixture', async () => {
-    const root = await makeTempRoot('aw-config-write-readonly-project-');
-    const repositoryCwd = pluginConfigModule.resolveAwProjectRoot(getSourceTestRepositoryCwd());
-    const plugin = await materializePlugin(
-      root,
-      createPlugin('readonly-project-config-plugin'),
+  it('reinstalls both user and current-project targets on both platforms after a user write', async () => {
+    const fixture = await createFixture();
+    for (const platform of ['codex', 'claude'] as const) {
+      for (const scope of ['user', 'project'] as const) mocks.visible.add(locationKey(platform, scope));
+    }
+    mocks.states.set('claude:project', 'partial');
+    const reinstall = createReinstallMock();
+
+    const receipt = await applyPluginConfigWrite({
+      plugin: fixture.plugin,
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      request: { updates: { mode: 'fast' } },
+      reinstallCommandImpl: reinstall,
+      catalogChannel: 'beta',
+      catalogVersion: '2.0.0-beta.1',
+    });
+
+    expect(receipt.configWrite).toBe('succeeded');
+    expect(receipt.overallState).toBe('succeeded');
+    expect(receipt.targetResults).toHaveLength(4);
+    expect(reinstall).toHaveBeenCalledTimes(4);
+    expect(reinstall.mock.calls.every((call) => call[1].cwd === fixture.cwd)).toBe(true);
+    expect(reinstall.mock.calls.every((call) =>
+      call[1].catalogChannel === 'beta' && call[1].catalogVersion === '2.0.0-beta.1')).toBe(true);
+    expect(receipt.otherProjectsRequireReinstall).toBe(true);
+    expect(receipt.warnings.join('\n')).toContain('其它项目');
+  });
+
+  it.each([
+    ['shared' as const, undefined],
+    ['local' as const, 'local' as const],
+  ])('limits a project %s write to current-project targets', async (_label, projectLayer) => {
+    const fixture = await createFixture();
+    for (const platform of ['codex', 'claude'] as const) {
+      mocks.visible.add(locationKey(platform, 'user'));
+      mocks.visible.add(locationKey(platform, 'project'));
+    }
+    const reinstall = createReinstallMock();
+
+    const receipt = await applyPluginConfigWrite({
+      plugin: fixture.plugin,
+      scope: 'project',
+      ...(projectLayer ? { projectLayer } : {}),
+      cwd: fixture.cwd,
+      env: fixture.env,
+      request: { updates: { mode: 'fast' } },
+      reinstallCommandImpl: reinstall,
+    });
+
+    expect(receipt.targetResults.map((entry) => entry.target.scope)).toEqual(['project', 'project']);
+    expect(reinstall.mock.calls.every((call) => call[1].scope === 'project')).toBe(true);
+    expect(receipt.otherProjectsRequireReinstall).toBe(false);
+  });
+
+  it('does not install an absent target', async () => {
+    const fixture = await createFixture();
+    const reinstall = createReinstallMock();
+
+    const receipt = await applyPluginConfigWrite({
+      plugin: fixture.plugin,
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      request: { updates: { mode: 'fast' } },
+      reinstallCommandImpl: reinstall,
+    });
+
+    expect(receipt.overallState).toBe('succeeded');
+    expect(receipt.applySkippedReason).toBe('noVisibleTarget');
+    expect(receipt.targetResults).toEqual([]);
+    expect(reinstall).not.toHaveBeenCalled();
+  });
+
+  it('does not probe Codex for a Claude-only manifest when Codex CLI is unavailable', async () => {
+    const fixture = await createFixture('configurable-plugin', { products: ['CLAUDE'] });
+    mocks.visible.add('claude:user');
+    mocks.discover.mockImplementation(async (options: { platform: PlatformName; scope: Scope }) => {
+      if (options.platform === 'codex') throw new Error('Codex CLI is unavailable');
+      return mocks.visible.has(locationKey(options.platform, options.scope)) ? ['configurable-plugin'] : [];
+    });
+    const reinstall = createReinstallMock();
+
+    const receipt = await applyPluginConfigWrite({
+      plugin: fixture.plugin,
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      request: { updates: { mode: 'fast' } },
+      reinstallCommandImpl: reinstall,
+    });
+
+    expect(receipt.overallState).toBe('succeeded');
+    expect(mocks.discover.mock.calls.every((call) => call[0].platform === 'claude')).toBe(true);
+    expect(receipt.targetResults.map((entry) => entry.target.platform)).toEqual(['claude']);
+  });
+
+  it('does not probe Claude for a Codex-only manifest when Claude CLI is unavailable', async () => {
+    const fixture = await createFixture('configurable-plugin', { products: ['CODEX'] });
+    mocks.visible.add('codex:user');
+    mocks.discover.mockImplementation(async (options: { platform: PlatformName; scope: Scope }) => {
+      if (options.platform === 'claude') throw new Error('Claude CLI is unavailable');
+      return mocks.visible.has(locationKey(options.platform, options.scope)) ? ['configurable-plugin'] : [];
+    });
+    const reinstall = createReinstallMock();
+
+    const receipt = await applyPluginConfigWrite({
+      plugin: fixture.plugin,
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      request: { updates: { mode: 'fast' } },
+      reinstallCommandImpl: reinstall,
+    });
+
+    expect(receipt.overallState).toBe('succeeded');
+    expect(mocks.discover.mock.calls.every((call) => call[0].platform === 'codex')).toBe(true);
+    expect(receipt.targetResults.map((entry) => entry.target.platform)).toEqual(['codex']);
+  });
+
+  it('applies a user config write to a visible Claude project native-only target', async () => {
+    const fixture = await createFixture('configurable-plugin', {
+      products: ['CLAUDE'],
+      codexProjectManaged: false,
+    });
+    mocks.visible.add('claude:project');
+    const reinstall = createReinstallMock();
+
+    const receipt = await applyPluginConfigWrite({
+      plugin: fixture.plugin,
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      request: { updates: { mode: 'fast' } },
+      reinstallCommandImpl: reinstall,
+    });
+
+    expect(receipt.overallState).toBe('succeeded');
+    expect(receipt.targetResults).toHaveLength(1);
+    expect(receipt.targetResults[0]?.target).toMatchObject({
+      platform: 'claude',
+      scope: 'project',
+    });
+    expect(reinstall).toHaveBeenCalledWith(
+      ['configurable-plugin'],
+      expect.objectContaining({ platform: 'claude', scope: 'project', cwd: fixture.cwd }),
+      expect.any(Object),
     );
-
-    await runWithCurrentRepositoryCwdAsReadOnly(async () => {
-      const repositoryCwd = process.cwd();
-      const projectRoot = pluginConfigModule.resolveAwProjectRoot(repositoryCwd);
-
-      await expectAsyncPathFenceViolation(
-        () => applyPluginConfigWrite({
-          plugin,
-          scope: 'project',
-          cwd: repositoryCwd,
-          env: process.env,
-          request: {
-            updates: {
-              retries: '2',
-            },
-          },
-        }),
-        {
-          access: 'write',
-          path: path.join(
-            projectRoot,
-            '.agent-workflows',
-            'plugin-config',
-            plugin.manifest.name,
-            'config.json',
-          ),
-          source: 'project shared plugin config store (.agent-workflows/plugin-config)',
-          reason: 'writeToReadOnlyRoot',
-          conflictingRootPath: projectRoot,
-          recommendedFixIncludes: 'withSafeTestCwd()',
-        },
-      );
-      expect(refreshArtifactsAfterConfigWrite).not.toHaveBeenCalled();
-    }, { repositoryCwd });
   });
 
-  it('prewrites project shared config without refresh when the current project has no local record', async () => {
-    const root = await makeTempRoot('aw-config-write-');
-    const repoRoot = path.join(root, 'repo');
-    const cwd = path.join(repoRoot, 'packages', 'app');
-    const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
-    await initRepo(repoRoot);
-    await fs.ensureDir(cwd);
-    const plugin = await materializePlugin(root, createPlugin());
-
-    await writePluginConfigStore({
-      pluginName: plugin.manifest.name,
-      scope: 'user',
-      cwd,
-      env,
-      values: {
-        token: 'user-secret',
-      },
+  it('limits a project config write to the visible Claude project native-only target', async () => {
+    const fixture = await createFixture('configurable-plugin', {
+      products: ['CLAUDE'],
+      codexProjectManaged: false,
     });
-    await writePluginConfigStore({
-      pluginName: plugin.manifest.name,
-      scope: 'project',
-      cwd,
-      env,
-      values: {
-        mode: 'safe',
-        legacyProject: 'keep-me',
-      },
-    });
+    mocks.visible.add('claude:user');
+    mocks.visible.add('claude:project');
+    const reinstall = createReinstallMock();
 
     const receipt = await applyPluginConfigWrite({
-      plugin,
+      plugin: fixture.plugin,
       scope: 'project',
-      cwd,
-      env,
-      request: {
-        updates: {
-          retries: '2',
-        },
-        removeKeys: ['mode'],
-      },
+      cwd: fixture.cwd,
+      env: fixture.env,
+      request: { updates: { mode: 'fast' } },
+      reinstallCommandImpl: reinstall,
     });
 
-    expect(receipt).toMatchObject({
-      plugin: plugin.manifest.name,
+    expect(receipt.targetResults).toHaveLength(1);
+    expect(receipt.targetResults[0]?.target).toMatchObject({
+      platform: 'claude',
       scope: 'project',
-      projectLayer: 'shared',
-      updatedKeys: ['retries'],
-      removedKeys: ['mode'],
-      effective: {
-        values: {
-          token: '[redacted]',
-          retries: 2,
-        },
-      },
-      artifactRefresh: {
-        attempted: false,
-        status: 'skipped',
-        triggerKeys: ['retries', 'mode'],
-      },
-      configRefreshSkippedReason: 'noRefreshTarget',
-      warnings: [],
     });
-    expect(refreshArtifactsAfterConfigWrite).not.toHaveBeenCalled();
-    await expect(readPluginConfigStore({
-      pluginName: plugin.manifest.name,
-      scope: 'project',
-      cwd,
-      env,
-    })).resolves.toMatchObject({
-      values: {
-        retries: 2,
-        legacyProject: 'keep-me',
-      },
-    });
-    await expect(readPluginConfigStore({
-      pluginName: plugin.manifest.name,
-      scope: 'user',
-      cwd,
-      env,
-    })).resolves.toMatchObject({
-      values: {
-        token: 'user-secret',
-      },
-    });
+    expect(reinstall).toHaveBeenCalledTimes(1);
   });
 
-  it('fails config writes before touching the store when an installed refresh target fails agent version gate', async () => {
-    const root = await makeTempRoot('aw-config-write-version-gate-');
-    const cwd = path.join(root, 'repo');
-    const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
-    await fs.ensureDir(cwd);
-    const plugin = await materializePlugin(root, createPlugin('version-gated-config-plugin', {
-      withUserDynamicTarget: true,
-    }));
-    await writeUserInstallRecordForConfigTest({ root, cwd, env, plugin });
-    await writePluginConfigStore({
-      pluginName: plugin.manifest.name,
-      scope: 'user',
-      cwd,
-      env,
-      values: {
-        mode: 'safe',
-      },
+  it('does not inspect a Codex project target when the manifest has no project-managed capability', async () => {
+    const fixture = await createFixture('configurable-plugin', {
+      products: ['CODEX'],
+      codexProjectManaged: false,
     });
-
-    await expect(applyPluginConfigWrite({
-      plugin,
-      scope: 'user',
-      cwd,
-      env,
-      nativeCliRunner: createAgentVersionRunner({ codex: 'codex-cli 0.130.0' }),
-      request: {
-        updates: {
-          mode: 'fast',
-        },
-      },
-    })).rejects.toThrow('Codex 版本过低');
-
-    await expect(readPluginConfigStore({
-      pluginName: plugin.manifest.name,
-      scope: 'user',
-      cwd,
-      env,
-    })).resolves.toMatchObject({
-      values: {
-        mode: 'safe',
-      },
-    });
-    expect(refreshArtifactsAfterConfigWrite).not.toHaveBeenCalled();
-  });
-
-  it('fails config writes before touching the store when user tracking-only dynamic refresh target fails agent version gate', async () => {
-    const root = await makeTempRoot('aw-config-write-user-tracking-gate-');
-    const cwd = path.join(root, 'repo');
-    const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
-    await fs.ensureDir(cwd);
-    const plugin = await materializePlugin(root, createPlugin('tracking-backed-config-plugin', {
-      withUserDynamicTarget: true,
-    }));
-    await writePluginConfigStore({
-      pluginName: plugin.manifest.name,
-      scope: 'user',
-      cwd,
-      env,
-      values: {
-        mode: 'safe',
-      },
-    });
-    await writeUserDynamicTrackingForConfigTest({ cwd, env, plugin });
-
-    await expect(applyPluginConfigWrite({
-      plugin,
-      scope: 'user',
-      cwd,
-      env,
-      nativeCliRunner: createAgentVersionRunner({ codex: 'codex-cli 0.130.0' }),
-      request: {
-        updates: {
-          mode: 'fast',
-        },
-      },
-    })).rejects.toThrow('Codex 版本过低');
-
-    await expect(readPluginConfigStore({
-      pluginName: plugin.manifest.name,
-      scope: 'user',
-      cwd,
-      env,
-    })).resolves.toMatchObject({
-      values: {
-        mode: 'safe',
-      },
-    });
-    expect(refreshArtifactsAfterConfigWrite).not.toHaveBeenCalled();
-  });
-
-  it('refreshes user dynamic artifacts when only tracking evidence remains and agent version is supported', async () => {
-    const root = await makeTempRoot('aw-config-write-user-tracking-refresh-');
-    const cwd = path.join(root, 'repo');
-    const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
-    await fs.ensureDir(cwd);
-    const plugin = await materializePlugin(root, createPlugin('tracking-refresh-config-plugin', {
-      withUserDynamicTarget: true,
-    }));
-    await writePluginConfigStore({
-      pluginName: plugin.manifest.name,
-      scope: 'user',
-      cwd,
-      env,
-      values: {
-        mode: 'safe',
-      },
-    });
-    await writeUserDynamicTrackingForConfigTest({ cwd, env, plugin });
+    mocks.visible.add('codex:user');
+    mocks.visible.add('codex:project');
+    const reinstall = createReinstallMock();
 
     const receipt = await applyPluginConfigWrite({
-      plugin,
+      plugin: fixture.plugin,
       scope: 'user',
-      cwd,
-      env,
-      nativeCliRunner: createAgentVersionRunner({ codex: 'codex-cli 0.145.0' }),
-      request: {
-        updates: {
-          mode: 'fast',
-        },
-      },
+      cwd: fixture.cwd,
+      env: fixture.env,
+      request: { updates: { mode: 'fast' } },
+      reinstallCommandImpl: reinstall,
     });
 
-    expect(refreshArtifactsAfterConfigWrite).toHaveBeenCalledWith(expect.objectContaining({
-      plugin,
-      commandScope: 'user',
-      changedKeys: ['mode'],
+    expect(mocks.discover).toHaveBeenCalledTimes(1);
+    expect(mocks.discover).toHaveBeenCalledWith(expect.objectContaining({
+      platform: 'codex',
+      scope: 'user',
     }));
-    expect(receipt.targetResults).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        target: {
-          pluginName: plugin.manifest.name,
-          platform: 'codex',
+    expect(receipt.targetResults.map((entry) => entry.target.scope)).toEqual(['user']);
+  });
+
+  it('does not inspect or render an absent dynamic plugin target', async () => {
+    const fixture = await createFixture('configurable-plugin', {
+      products: ['CODEX'],
+      dynamicTarget: true,
+    });
+    const reinstall = createReinstallMock();
+
+    const receipt = await applyPluginConfigWrite({
+      plugin: fixture.plugin,
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      request: { updates: { mode: 'fast' } },
+      reinstallCommandImpl: reinstall,
+    });
+
+    expect(receipt.applySkippedReason).toBe('noVisibleTarget');
+    expect(mocks.discover.mock.calls.every((call) => call[0].nativeFailureMode === 'ignore')).toBe(true);
+    expect(mocks.inspect).not.toHaveBeenCalled();
+    expect(reinstall).not.toHaveBeenCalled();
+  });
+
+  it('keeps the saved config and successful targets when another target fails', async () => {
+    const fixture = await createFixture();
+    mocks.visible.add('codex:user');
+    mocks.visible.add('claude:user');
+    const reinstall = createReinstallMock({
+      fail: (platform) => platform === 'claude',
+      beforeReturn: async () => {
+        const stored = await readPluginConfigStore({
+          pluginName: fixture.plugin.manifest.name,
           scope: 'user',
-        },
-        action: 'configApply',
-        state: 'completed',
-      }),
-    ]));
-    expect(receipt.configRefreshSkippedReason).toBeUndefined();
+          cwd: fixture.cwd,
+          env: fixture.env,
+        });
+        expect(stored.values.mode).toBe('fast');
+      },
+    });
+
+    const receipt = await applyPluginConfigWrite({
+      plugin: fixture.plugin,
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      request: { updates: { mode: 'fast' } },
+      reinstallCommandImpl: reinstall,
+    });
+    const stored = await readPluginConfigStore({
+      pluginName: fixture.plugin.manifest.name,
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+    });
+
+    expect(receipt.configWrite).toBe('succeeded');
+    expect(receipt.overallState).toBe('failed');
+    expect(receipt.targetResults.map((entry) => entry.state).sort()).toEqual(['completed', 'failed']);
+    expect(stored.values.mode).toBe('fast');
   });
 
-  it('fails config writes before touching the store when user diagnostic cache dynamic refresh target fails agent version gate', async () => {
-    const root = await makeTempRoot('aw-config-write-user-cache-gate-');
-    const cwd = path.join(root, 'repo');
-    const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
-    await fs.ensureDir(cwd);
-    const plugin = await materializePlugin(root, createPlugin('cache-backed-config-plugin', {
-      withUserDynamicTarget: true,
-    }));
+  it('resets an unknown catalog plugin store without trying to apply it', async () => {
+    const fixture = await createFixture('unknown-plugin');
     await writePluginConfigStore({
-      pluginName: plugin.manifest.name,
+      pluginName: 'unknown-plugin',
       scope: 'user',
-      cwd,
-      env,
-      values: {
-        mode: 'safe',
-      },
+      cwd: fixture.cwd,
+      env: fixture.env,
+      values: { secret: 'kept-only-in-store' },
     });
-    await writeUserDynamicDiagnosticCacheForConfigTest({ cwd, env, plugin });
+    const reinstall = createReinstallMock();
 
-    await expect(applyPluginConfigWrite({
-      plugin,
+    const receipt = await resetPluginConfigWithHelper({
+      pluginName: 'unknown-plugin',
+      plugin: null,
+      pluginError: new Error('not in catalog'),
       scope: 'user',
-      cwd,
-      env,
-      nativeCliRunner: createAgentVersionRunner({ codex: 'codex-cli 0.130.0' }),
-      request: {
-        updates: {
-          mode: 'fast',
-        },
-      },
-    })).rejects.toThrow('Codex 版本过低');
-
-    await expect(readPluginConfigStore({
-      pluginName: plugin.manifest.name,
-      scope: 'user',
-      cwd,
-      env,
-    })).resolves.toMatchObject({
-      values: {
-        mode: 'safe',
-      },
-    });
-    expect(refreshArtifactsAfterConfigWrite).not.toHaveBeenCalled();
-  });
-
-  it('fails config reset before deleting the store when an installed refresh target fails agent version gate', async () => {
-    const root = await makeTempRoot('aw-config-reset-version-gate-');
-    const cwd = path.join(root, 'repo');
-    const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
-    await fs.ensureDir(cwd);
-    const plugin = await materializePlugin(root, createPlugin('version-gated-reset-plugin', {
-      withUserDynamicTarget: true,
-    }));
-    await writeUserInstallRecordForConfigTest({ root, cwd, env, plugin });
-    await writePluginConfigStore({
-      pluginName: plugin.manifest.name,
-      scope: 'user',
-      cwd,
-      env,
-      values: {
-        mode: 'safe',
-      },
-    });
-
-    await expect(resetPluginConfigWithHelper({
-      pluginName: plugin.manifest.name,
-      plugin,
-      scope: 'user',
-      cwd,
-      env,
-      nativeCliRunner: createAgentVersionRunner({ codex: 'codex-cli 0.130.0' }),
-    })).rejects.toThrow('Codex 版本过低');
-
-    await expect(readPluginConfigStore({
-      pluginName: plugin.manifest.name,
-      scope: 'user',
-      cwd,
-      env,
-    })).resolves.toMatchObject({
-      values: {
-        mode: 'safe',
-      },
-    });
-    expect(refreshArtifactsAfterConfigWrite).not.toHaveBeenCalled();
-  });
-
-  it('allows config-only prewrites for adoptable project artifacts without entering the agent version gate', async () => {
-    const root = await makeTempRoot('aw-config-write-adoptable-prewrite-');
-    const repoRoot = path.join(root, 'repo');
-    const cwd = path.join(repoRoot, 'packages', 'app');
-    const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
-    await initRepo(repoRoot);
-    await fs.ensureDir(cwd);
-    const plugin = await materializePlugin(root, createPlugin('adoptable-prewrite-plugin', {
-      withProjectDynamicTarget: true,
-    }));
-    await writeAdoptableProjectIdentityForConfigTest({ cwd, repoRoot, plugin });
-    const nativeCliRunner = vi.fn(createAgentVersionRunner({ codex: 'codex-cli 0.130.0' }));
-
-    const receipt = await applyPluginConfigWrite({
-      plugin,
-      scope: 'project',
-      cwd,
-      env,
-      nativeCliRunner,
-      request: {
-        updates: {
-          retries: '2',
-        },
-      },
-    });
-
-    expect(receipt.configRefreshSkippedReason).toBe('adoptExistingRequired');
-    expect(nativeCliRunner).not.toHaveBeenCalled();
-    expect(refreshArtifactsAfterConfigWrite).not.toHaveBeenCalled();
-    await expect(readPluginConfigStore({
-      pluginName: plugin.manifest.name,
-      scope: 'project',
-      cwd,
-      env,
-    })).resolves.toMatchObject({
-      values: {
-        retries: 2,
-      },
-    });
-  });
-
-  it('blocks adoptable project artifact refresh before agent version probing or store writes', async () => {
-    const root = await makeTempRoot('aw-config-write-adoptable-refresh-');
-    const repoRoot = path.join(root, 'repo');
-    const cwd = path.join(repoRoot, 'packages', 'app');
-    const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
-    await initRepo(repoRoot);
-    await fs.ensureDir(cwd);
-    const plugin = await materializePlugin(root, createPlugin('adoptable-refresh-plugin', {
-      withProjectDynamicTarget: true,
-    }));
-    await writeAdoptableProjectIdentityForConfigTest({ cwd, repoRoot, plugin });
-    const nativeCliRunner = vi.fn(createAgentVersionRunner({ codex: 'codex-cli 0.130.0' }));
-
-    await expect(applyPluginConfigWrite({
-      plugin,
-      scope: 'project',
-      cwd,
-      env,
-      nativeCliRunner,
-      request: {
-        updates: {
-          mode: 'fast',
-        },
-      },
-    })).rejects.toThrow('aw install adoptable-refresh-plugin --platform codex --scope project --adopt-existing');
-
-    expect(nativeCliRunner).not.toHaveBeenCalled();
-    expect(refreshArtifactsAfterConfigWrite).not.toHaveBeenCalled();
-    await expect(fs.pathExists(resolvePluginConfigStorePath({
-      pluginName: plugin.manifest.name,
-      scope: 'project',
-      cwd,
-      env,
-    }))).resolves.toBe(false);
-  });
-
-  it('requires local adoption before refreshing a fresh clone Claude project skill', async () => {
-    const root = await makeTempRoot('aw-config-write-adoptable-claude-refresh-');
-    const repoRoot = path.join(root, 'repo');
-    const cwd = path.join(repoRoot, 'packages', 'app');
-    const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
-    await initRepo(repoRoot);
-    await fs.ensureDir(cwd);
-    const plugin = await materializePlugin(root, createPlugin('adoptable-claude-plugin', {
-      withClaudeProjectDynamicTarget: true,
-    }));
-    await writeAdoptableClaudeProjectIdentityForConfigTest({ cwd, repoRoot, plugin });
-    const nativeCliRunner = vi.fn(createAgentVersionRunner({ claude: '2.1.88 (Claude Code)' }));
-
-    await expect(applyPluginConfigWrite({
-      plugin,
-      scope: 'project',
-      cwd,
-      env,
-      nativeCliRunner,
-      request: {
-        updates: {
-          mode: 'fast',
-        },
-      },
-    })).rejects.toThrow(
-      'aw install adoptable-claude-plugin --platform claude --scope project --adopt-existing',
-    );
-
-    expect(nativeCliRunner).not.toHaveBeenCalled();
-    expect(refreshArtifactsAfterConfigWrite).not.toHaveBeenCalled();
-    await expect(fs.pathExists(resolvePluginConfigStorePath({
-      pluginName: plugin.manifest.name,
-      scope: 'project',
-      cwd,
-      env,
-    }))).resolves.toBe(false);
-  });
-
-  it('does not use legacy Claude project tracking as a refresh target', async () => {
-    const root = await makeTempRoot('aw-config-write-legacy-claude-refresh-');
-    const repoRoot = path.join(root, 'repo');
-    const cwd = path.join(repoRoot, 'packages', 'app');
-    const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
-    await initRepo(repoRoot);
-    await fs.ensureDir(cwd);
-    const plugin = await materializePlugin(root, createPlugin('legacy-claude-plugin', {
-      withClaudeProjectDynamicTarget: true,
-    }));
-    const claudePaths = resolveClaudePaths(cwd, 'project', env);
-    const skillRoot = path.join(claudePaths.configDir, 'skills', 'configurable-claude');
-    await fs.outputFile(
-      path.join(skillRoot, 'SKILL.md'),
-      '---\nname: configurable-claude\ndescription: Configurable Claude skill.\n---\nBody\n',
-    );
-    await writeTrackingManifest(claudePaths.trackingDir, {
-      version: 1,
-      plugins: {
-        [plugin.manifest.name]: {
-          name: plugin.manifest.name,
-          generatedAt: '2026-05-18T00:00:00.000Z',
-          artifacts: [{
-            path: skillRoot,
-            paths: [path.join(skillRoot, 'SKILL.md')],
-            kind: 'skill',
-            platform: 'claude',
-            artifactKey: 'configurable-claude',
-            id: 'project-claude-skill',
-            target: 'claude.skill',
-            state: 'present',
-            refreshKeys: ['mode'],
-            contentDigest: 'sha256:legacy-content',
-            configDigest: 'sha256:legacy-config',
-          }],
-        },
-      },
-    });
-
-    await expect(applyPluginConfigWrite({
-      plugin,
-      scope: 'project',
-      cwd,
-      env,
-      request: {
-        updates: {
-          mode: 'fast',
-        },
-      },
-    })).rejects.toThrow('存在未认领或无法验证的残留状态');
-
-    expect(refreshArtifactsAfterConfigWrite).not.toHaveBeenCalled();
-    await expect(fs.pathExists(resolvePluginConfigStorePath({
-      pluginName: plugin.manifest.name,
-      scope: 'project',
-      cwd,
-      env,
-    }))).resolves.toBe(false);
-  });
-
-  it('refreshes current project artifacts and同步写回 install-state when project shared config changes affect a local record', async () => {
-    const root = await makeTempRoot('aw-config-write-');
-    const repoRoot = path.join(root, 'repo');
-    const cwd = path.join(repoRoot, 'packages', 'app');
-    const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
-    await initRepo(repoRoot);
-    await fs.ensureDir(cwd);
-    const plugin = await materializePlugin(root, createPlugin('configurable-plugin', {
-      withProjectDynamicTarget: true,
-    }));
-
-    const projectKey = await resolveCodexProjectKey(cwd);
-    const location = {
-      plugin: plugin.manifest.name,
-      platform: 'codex' as const,
-      scope: 'project' as const,
-      projectKey,
-    };
-    const recordPath = getInstallRecordPath(cwd, location, env);
-    const recordId = path.basename(recordPath, '.json');
-    const repoArtifactPath = path.join(repoRoot, '.codex', 'config.toml');
-    await fs.outputFile(repoArtifactPath, '# before\n');
-    const sourceManifestDigest = await calculateFileDigest(plugin.manifestPath);
-    const sourceBundleFingerprint = await calculatePluginBundleFingerprint(plugin.rootDir);
-    const lifecyclePaths = createHistoricalLifecycleRuntimePaths({
-      cwd,
-      location,
-      recordId,
-      manifestDigest: sourceManifestDigest,
-      bundleFingerprint: sourceBundleFingerprint,
-      nonce: 'test-refresh',
-      env,
-      manifestRelativePath: '.agents-plugin/plugin.json',
-    });
-    await fs.copy(plugin.rootDir, lifecyclePaths.bundleRoot);
-    const manifestDigest = await calculateFileDigest(lifecyclePaths.manifestPath);
-    const bundleFingerprint = await calculatePluginBundleFingerprint(lifecyclePaths.bundleRoot);
-
-    await writeTrackingManifest(resolveCodexPaths(cwd, 'project', env).trackingDir, {
-      version: 1,
-      plugins: {
-        [plugin.manifest.name]: {
-          name: plugin.manifest.name,
-          generatedAt: '2026-05-08T01:00:00.000Z',
-          artifacts: [{
-            path: repoArtifactPath,
-            kind: 'instruction',
-            platform: 'codex',
-            id: 'project-instructions',
-            target: 'codex.developerInstructionsBlock',
-            state: 'present',
-            refreshKeys: ['mode'],
-            configDigest: 'sha256:new-config',
-            contentDigest: 'sha256:new-content',
-            lastRefresh: {
-              status: 'succeeded',
-              updatedAt: '2026-05-08T01:00:00.000Z',
-              triggerKeys: ['mode'],
-              event: 'refresh',
-            },
-            refreshReach: {
-              commandScope: 'project',
-              refreshedCurrentProjectTarget: true,
-            },
-          }],
-        },
-      },
-    });
-
-    const recordFile = {
-      version: 2 as const,
-      recordId,
-      record: {
-        pluginName: plugin.manifest.name,
-        platform: 'codex' as const,
-        scope: 'project' as const,
-        projectKey,
-        installedAt: '2026-05-07T01:00:00.000Z',
-        updatedAt: '2026-05-07T01:00:00.000Z',
-        source: {
-          pluginVersion: plugin.manifest.version,
-          manifestDigest,
-          bundleFingerprint,
-        },
-        installSource: {
-          kind: 'explicit' as const,
-          explicitlyRequested: true,
-        },
-        lifecycle: {
-          runtimeRoot: lifecyclePaths.runtimeRoot,
-          bundleRoot: lifecyclePaths.bundleRoot,
-          manifestPath: lifecyclePaths.manifestPath,
-          pluginVersion: plugin.manifest.version,
-          sourceManifestDigest: manifestDigest,
-          bundleFingerprint,
-          events: ['install'],
-          createdAt: '2026-05-07T01:00:00.000Z',
-        },
-        artifacts: [{
-          kind: 'instruction' as const,
-          platform: 'codex' as const,
-          path: repoArtifactPath,
-          id: 'project-instructions',
-          target: 'codex.developerInstructionsBlock' as const,
-        }],
-        dependencyEdges: [],
-      },
-    };
-    await writeInstallRecordFileAt(recordPath, recordFile, { env });
-    await writeDynamicArtifactDiagnosticCacheAt(
-      getDiagnosticCachePath(cwd, location, env),
-      {
-        version: 1,
-        recordId,
-        location,
-        updatedAt: '2026-05-07T01:00:00.000Z',
-        artifacts: [{
-          id: 'project-instructions',
-          target: 'codex.developerInstructionsBlock',
-          state: 'present',
-          refreshKeys: ['mode'],
-          configDigest: 'sha256:old-config',
-          contentDigest: 'sha256:old-content',
-          lastRefresh: {
-            status: 'success',
-            at: '2026-05-07T01:00:00.000Z',
-            event: 'install',
-          },
-        }],
-      },
-      recordFile,
-    );
-
-    const locator = createProjectArtifactSharedLocator({
-      plugin: plugin.manifest.name,
-      platform: 'codex',
-      repoRoot,
-      projectRoot: repoRoot,
-    });
-    await writeProjectArtifactIdentityFileAt(
-      getProjectArtifactSharedIdentityPath({ repoRoot, locator }),
-      {
-        version: 1,
-        sharedIdentityId: path.basename(getProjectArtifactSharedIdentityPath({ repoRoot, locator }), '.json'),
-        locator,
-        source: recordFile.record.source,
-        generatedAt: '2026-05-07T01:00:00.000Z',
-        artifacts: [{
-          kind: 'instruction',
-          platform: 'codex',
-          path: '.codex/config.toml',
-          id: 'project-instructions',
-          target: 'codex.developerInstructionsBlock',
-          state: 'present',
-          contentDigest: 'sha256:old-content',
-        }],
-      },
-    );
-
-    const receipt = await applyPluginConfigWrite({
-      plugin,
-      scope: 'project',
-      cwd,
-      env,
-      applyTargets: [
-        {
-          pluginName: plugin.manifest.name,
-          platform: 'codex',
-          scope: 'project',
-          projectKey,
-        },
-        {
-          pluginName: plugin.manifest.name,
-          platform: 'claude',
-          scope: 'project',
-          projectKey,
-        },
-      ],
-      request: {
-        updates: {
-          mode: 'fast',
-        },
-      },
-    });
-
-    expect(receipt.artifactRefresh).toMatchObject({
-      attempted: true,
-      status: 'succeeded',
-      triggerKeys: ['mode'],
-    });
-    expect(receipt.targetResults).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        target: {
-          pluginName: plugin.manifest.name,
-          platform: 'codex',
-          scope: 'project',
-          projectKey,
-        },
-        action: 'configApply',
-        state: 'completed',
-      }),
-      expect.objectContaining({
-        target: {
-          pluginName: plugin.manifest.name,
-          platform: 'claude',
-          scope: 'project',
-          projectKey,
-        },
-        action: 'configApply',
-        state: 'notRun',
-      }),
-    ]));
-    expect(refreshArtifactsAfterConfigWrite).toHaveBeenCalledTimes(1);
-
-    const updatedRecord = await fs.readJson(recordPath);
-    expect(updatedRecord.record.artifacts[0]).toMatchObject({
-      id: 'project-instructions',
-      target: 'codex.developerInstructionsBlock',
-      path: repoArtifactPath,
-    });
-
-    const updatedCache = await fs.readJson(getDiagnosticCachePath(cwd, location, env));
-    expect(updatedCache.artifacts[0]).toMatchObject({
-      id: 'project-instructions',
-      target: 'codex.developerInstructionsBlock',
-      configDigest: 'sha256:new-config',
-      contentDigest: 'sha256:new-content',
-      lastRefresh: {
-        status: 'success',
-        event: 'config',
-      },
-    });
-
-    const updatedIdentity = await fs.readJson(getProjectArtifactSharedIdentityPath({ repoRoot, locator }));
-    expect(updatedIdentity.artifacts[0]).toMatchObject({
-      path: '.codex/config.toml',
-      id: 'project-instructions',
-      target: 'codex.developerInstructionsBlock',
-      contentDigest: 'sha256:new-content',
-    });
-  });
-
-  it('preserves accepted install-state and only records refresh failure summary when config refresh fails', async () => {
-    const root = await makeTempRoot('aw-config-write-');
-    const repoRoot = path.join(root, 'repo');
-    const cwd = path.join(repoRoot, 'packages', 'app');
-    const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
-    await initRepo(repoRoot);
-    await fs.ensureDir(cwd);
-    const plugin = await materializePlugin(root, createPlugin('configurable-plugin', {
-      withProjectDynamicTarget: true,
-    }));
-
-    vi.mocked(refreshArtifactsAfterConfigWrite).mockResolvedValueOnce({
-      attempted: true,
-      status: 'failed',
-      triggerKeys: ['mode'],
-      artifacts: [],
-      error: 'render failed',
-    });
-
-    const projectKey = await resolveCodexProjectKey(cwd);
-    const location = {
-      plugin: plugin.manifest.name,
-      platform: 'codex' as const,
-      scope: 'project' as const,
-      projectKey,
-    };
-    const recordPath = getInstallRecordPath(cwd, location, env);
-    const recordId = path.basename(recordPath, '.json');
-    const repoArtifactPath = path.join(repoRoot, '.codex', 'config.toml');
-    await fs.outputFile(repoArtifactPath, '# before\n');
-    const sourceManifestDigest = await calculateFileDigest(plugin.manifestPath);
-    const sourceBundleFingerprint = await calculatePluginBundleFingerprint(plugin.rootDir);
-    const lifecyclePaths = createHistoricalLifecycleRuntimePaths({
-      cwd,
-      location,
-      recordId,
-      manifestDigest: sourceManifestDigest,
-      bundleFingerprint: sourceBundleFingerprint,
-      nonce: 'test-refresh-failed',
-      env,
-      manifestRelativePath: '.agents-plugin/plugin.json',
-    });
-    await fs.copy(plugin.rootDir, lifecyclePaths.bundleRoot);
-    const manifestDigest = await calculateFileDigest(lifecyclePaths.manifestPath);
-    const bundleFingerprint = await calculatePluginBundleFingerprint(lifecyclePaths.bundleRoot);
-
-    await writeTrackingManifest(resolveCodexPaths(cwd, 'project', env).trackingDir, {
-      version: 1,
-      plugins: {
-        [plugin.manifest.name]: {
-          name: plugin.manifest.name,
-          generatedAt: '2026-05-08T01:00:00.000Z',
-          artifacts: [{
-            path: repoArtifactPath,
-            kind: 'instruction',
-            platform: 'codex',
-            id: 'project-instructions',
-            target: 'codex.developerInstructionsBlock',
-            state: 'present',
-            refreshKeys: ['mode'],
-            configDigest: 'sha256:new-config',
-            contentDigest: 'sha256:new-content',
-            lastRefresh: {
-              status: 'failed',
-              updatedAt: '2026-05-08T01:00:00.000Z',
-              triggerKeys: ['mode'],
-              event: 'refresh',
-              error: 'render failed',
-            },
-            refreshReach: {
-              commandScope: 'project',
-              refreshedCurrentProjectTarget: false,
-            },
-          }],
-        },
-      },
-    });
-
-    const recordFile = {
-      version: 2 as const,
-      recordId,
-      record: {
-        pluginName: plugin.manifest.name,
-        platform: 'codex' as const,
-        scope: 'project' as const,
-        projectKey,
-        installedAt: '2026-05-07T01:00:00.000Z',
-        updatedAt: '2026-05-07T01:00:00.000Z',
-        source: {
-          pluginVersion: plugin.manifest.version,
-          manifestDigest,
-          bundleFingerprint,
-        },
-        installSource: {
-          kind: 'explicit' as const,
-          explicitlyRequested: true,
-        },
-        lifecycle: {
-          runtimeRoot: lifecyclePaths.runtimeRoot,
-          bundleRoot: lifecyclePaths.bundleRoot,
-          manifestPath: lifecyclePaths.manifestPath,
-          pluginVersion: plugin.manifest.version,
-          sourceManifestDigest: manifestDigest,
-          bundleFingerprint,
-          events: ['install'],
-          createdAt: '2026-05-07T01:00:00.000Z',
-        },
-        artifacts: [{
-          kind: 'instruction' as const,
-          platform: 'codex' as const,
-          path: repoArtifactPath,
-          id: 'project-instructions',
-          target: 'codex.developerInstructionsBlock' as const,
-        }],
-        dependencyEdges: [],
-      },
-    };
-    await writeInstallRecordFileAt(recordPath, recordFile, { env });
-    await writeDynamicArtifactDiagnosticCacheAt(
-      getDiagnosticCachePath(cwd, location, env),
-      {
-        version: 1,
-        recordId,
-        location,
-        updatedAt: '2026-05-07T01:00:00.000Z',
-        artifacts: [{
-          id: 'project-instructions',
-          target: 'codex.developerInstructionsBlock',
-          state: 'present',
-          refreshKeys: ['mode'],
-          configDigest: 'sha256:old-config',
-          contentDigest: 'sha256:old-content',
-          lastRefresh: {
-            status: 'success',
-            at: '2026-05-07T01:00:00.000Z',
-            event: 'install',
-          },
-        }],
-      },
-      recordFile,
-    );
-
-    const locator = createProjectArtifactSharedLocator({
-      plugin: plugin.manifest.name,
-      platform: 'codex',
-      repoRoot,
-      projectRoot: repoRoot,
-    });
-    const identityPath = getProjectArtifactSharedIdentityPath({ repoRoot, locator });
-    await writeProjectArtifactIdentityFileAt(
-      identityPath,
-      {
-        version: 1,
-        sharedIdentityId: path.basename(identityPath, '.json'),
-        locator,
-        source: recordFile.record.source,
-        generatedAt: '2026-05-07T01:00:00.000Z',
-        artifacts: [{
-          kind: 'instruction',
-          platform: 'codex',
-          path: '.codex/config.toml',
-          id: 'project-instructions',
-          target: 'codex.developerInstructionsBlock',
-          state: 'present',
-          contentDigest: 'sha256:old-content',
-        }],
-      },
-    );
-
-    const beforeRecord = await fs.readJson(recordPath);
-    const beforeIdentity = await fs.readJson(identityPath);
-
-    const receipt = await applyPluginConfigWrite({
-      plugin,
-      scope: 'project',
-      cwd,
-      env,
-      request: {
-        updates: {
-          mode: 'fast',
-        },
-      },
-    });
-
-    expect(receipt.artifactRefresh).toMatchObject({
-      attempted: true,
-      status: 'failed',
-      error: 'render failed',
-    });
-
-    await expect(fs.readJson(recordPath)).resolves.toEqual(beforeRecord);
-    await expect(fs.readJson(identityPath)).resolves.toEqual(beforeIdentity);
-    await expect(fs.readJson(getDiagnosticCachePath(cwd, location, env))).resolves.toMatchObject({
-      artifacts: [{
-        id: 'project-instructions',
-        target: 'codex.developerInstructionsBlock',
-        configDigest: 'sha256:old-config',
-        contentDigest: 'sha256:old-content',
-        lastRefresh: {
-          status: 'failed',
-          event: 'config',
-          error: 'render failed',
-        },
-      }],
-    });
-  });
-
-  it('treats removing a missing key as a no-op without creating an empty store or refreshing', async () => {
-    const root = await makeTempRoot('aw-config-write-');
-    const cwd = path.join(root, 'repo');
-    const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
-    await fs.ensureDir(cwd);
-    const plugin = createPlugin('missing-key-plugin');
-
-    const receipt = await applyPluginConfigWrite({
-      plugin,
-      scope: 'user',
-      cwd,
-      env,
-      request: {
-        removeKeys: ['mode'],
-      },
-    });
-
-    expect(receipt.updatedKeys).toEqual([]);
-    expect(receipt.removedKeys).toEqual([]);
-    expect(receipt.artifactRefresh).toMatchObject({
-      attempted: false,
-      status: 'skipped',
-      triggerKeys: [],
-    });
-    await expect(fs.pathExists(resolvePluginConfigStorePath({
-      pluginName: plugin.manifest.name,
-      scope: 'user',
-      cwd,
-      env,
-    }))).resolves.toBe(false);
-    expect(refreshArtifactsAfterConfigWrite).not.toHaveBeenCalled();
-  });
-
-  it('fails before shared config write when the target path is ignored', async () => {
-    const root = await makeTempRoot('aw-config-write-');
-    const repoRoot = path.join(root, 'repo');
-    const cwd = path.join(repoRoot, 'packages', 'app');
-    const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
-    await initRepo(repoRoot);
-    await fs.ensureDir(cwd);
-    await fs.writeFile(path.join(repoRoot, '.gitignore'), '.agent-workflows/\n', 'utf8');
-    const plugin = createPlugin();
-
-    await expect(applyPluginConfigWrite({
-      plugin,
-      scope: 'project',
-      cwd,
-      env,
-      request: {
-        updates: {
-          retries: '2',
-        },
-      },
-    })).rejects.toThrow('project shared config');
-
-    await expect(fs.pathExists(resolvePluginConfigStorePath({
-      pluginName: plugin.manifest.name,
-      scope: 'project',
-      cwd,
-      env,
-    }))).resolves.toBe(false);
-    expect(refreshArtifactsAfterConfigWrite).not.toHaveBeenCalled();
-  });
-
-  it('writes project local config into plugin-config.local, ensures ignore, and skips repo-visible refresh', async () => {
-    const root = await makeTempRoot('aw-config-write-');
-    const repoRoot = path.join(root, 'repo');
-    const cwd = path.join(repoRoot, 'packages', 'app');
-    const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
-    await initRepo(repoRoot);
-    await fs.ensureDir(cwd);
-    const plugin = createPlugin();
-
-    const receipt = await applyPluginConfigWrite({
-      plugin,
-      scope: 'project',
-      projectLayer: 'local',
-      cwd,
-      env,
-      request: {
-        updates: {
-          token: 'local-secret',
-        },
-      },
+      cwd: fixture.cwd,
+      env: fixture.env,
+      reinstallCommandImpl: reinstall,
     });
 
     expect(receipt).toMatchObject({
-      scope: 'project',
-      projectLayer: 'local',
-      updatedKeys: ['token'],
-      artifactRefresh: {
-        attempted: false,
-        status: 'skipped',
-      },
-      warnings: [],
-    });
-    await expect(readPluginConfigStore({
-      pluginName: plugin.manifest.name,
-      scope: 'project',
-      projectLayer: 'local',
-      cwd,
-      env,
-    })).resolves.toMatchObject({
-      values: {
-        token: 'local-secret',
-      },
-    });
-    await expect(fs.readFile(path.join(repoRoot, '.gitignore'), 'utf8')).resolves.toContain(
-      '.agent-workflows/plugin-config.local/',
-    );
-    expect(refreshArtifactsAfterConfigWrite).not.toHaveBeenCalled();
-  });
-
-  it('blocks path-type keys from project shared config but allows them in project local config', async () => {
-    const root = await makeTempRoot('aw-config-write-');
-    const repoRoot = path.join(root, 'repo');
-    const cwd = path.join(repoRoot, 'packages', 'app');
-    const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
-    await initRepo(repoRoot);
-    await fs.ensureDir(cwd);
-    await fs.outputFile(path.join(repoRoot, 'config.json'), '{}\n');
-    const plugin = createPlugin();
-    plugin.manifest.config!.schema.configFile = { type: 'file', required: false };
-
-    await expect(applyPluginConfigWrite({
-      plugin,
-      scope: 'project',
-      cwd,
-      env,
-      request: {
-        updates: {
-          configFile: 'config.json',
-        },
-      },
-    })).rejects.toThrow('cannot be written into project shared config');
-
-    const localReceipt = await applyPluginConfigWrite({
-      plugin,
-      scope: 'project',
-      projectLayer: 'local',
-      cwd,
-      env,
-      request: {
-        updates: {
-          configFile: 'config.json',
-        },
-      },
-    });
-
-    expect(localReceipt.projectLayer).toBe('local');
-    await expect(readPluginConfigStore({
-      pluginName: plugin.manifest.name,
-      scope: 'project',
-      projectLayer: 'local',
-      cwd,
-      env,
-    })).resolves.toMatchObject({
-      values: {
-        configFile: await fs.realpath(path.join(repoRoot, 'config.json')),
-      },
-    });
-  });
-
-  it('returns removedKeys and installedHistorical schema metadata when resetting an installed store', async () => {
-    const root = await makeTempRoot('aw-config-write-reset-');
-    const cwd = path.join(root, 'repo');
-    const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
-    await fs.ensureDir(cwd);
-
-    const historicalPlugin = await materializePlugin(root, createPlugin('resettable-plugin', {
-      withUserDynamicTarget: true,
-    }));
-    const currentPlugin = {
-      ...historicalPlugin,
-      manifest: {
-        ...structuredClone(historicalPlugin.manifest),
-        version: '0.2.0',
-      },
-    } satisfies PluginMeta;
-    const location = {
-      plugin: historicalPlugin.manifest.name,
-      platform: 'codex' as const,
-      scope: 'user' as const,
-    };
-    const recordPath = getInstallRecordPath(cwd, location, env);
-    const recordId = path.basename(recordPath, '.json');
-    const sourceManifestDigest = await calculateFileDigest(historicalPlugin.manifestPath);
-    const sourceBundleFingerprint = await calculatePluginBundleFingerprint(historicalPlugin.rootDir);
-    const lifecyclePaths = createHistoricalLifecycleRuntimePaths({
-      cwd,
-      location,
-      recordId,
-      manifestDigest: sourceManifestDigest,
-      bundleFingerprint: sourceBundleFingerprint,
-      nonce: 'test-reset',
-      env,
-      manifestRelativePath: '.agents-plugin/plugin.json',
-    });
-    await fs.copy(historicalPlugin.rootDir, lifecyclePaths.bundleRoot);
-    const manifestDigest = await calculateFileDigest(lifecyclePaths.manifestPath);
-    const bundleFingerprint = await calculatePluginBundleFingerprint(lifecyclePaths.bundleRoot);
-    await writeInstallRecordFileAt(recordPath, {
-      version: 2,
-      recordId,
-      record: {
-        pluginName: historicalPlugin.manifest.name,
-        platform: 'codex',
-        scope: 'user',
-        installedAt: '2026-05-18T00:00:00.000Z',
-        updatedAt: '2026-05-18T00:00:00.000Z',
-        source: {
-          pluginVersion: historicalPlugin.manifest.version,
-          manifestDigest,
-          bundleFingerprint,
-        },
-        installSource: {
-          kind: 'explicit',
-          explicitlyRequested: true,
-        },
-        lifecycle: {
-          runtimeRoot: lifecyclePaths.runtimeRoot,
-          bundleRoot: lifecyclePaths.bundleRoot,
-          manifestPath: lifecyclePaths.manifestPath,
-          pluginVersion: historicalPlugin.manifest.version,
-          sourceManifestDigest: manifestDigest,
-          bundleFingerprint,
-          events: ['install'],
-          createdAt: '2026-05-18T00:00:00.000Z',
-        },
-        artifacts: [],
-        dependencyEdges: [],
-      },
-    }, { env });
-    await writePluginConfigStore({
-      pluginName: historicalPlugin.manifest.name,
-      scope: 'user',
-      cwd,
-      env,
-      values: {
-        mode: 'fast',
-      },
-    });
-
-    const receipt = await resetPluginConfigWithHelper({
-      pluginName: historicalPlugin.manifest.name,
-      scope: 'user',
-      cwd,
-      env,
-      plugin: currentPlugin,
-    });
-
-    expect(receipt.schema).toMatchObject({
-      source: 'installedHistorical',
-      pluginVersion: historicalPlugin.manifest.version,
-    });
-    expect(receipt.removedKeys).toEqual(['mode']);
-    expect(receipt.artifactRefresh).toMatchObject({
-      attempted: true,
-      status: 'succeeded',
-      triggerKeys: ['mode'],
-    });
-    expect(refreshArtifactsAfterConfigWrite).toHaveBeenCalledWith(expect.objectContaining({
-      changedKeys: ['mode'],
-    }));
-  });
-
-  it('supports raw-store reset when the current catalog entry is missing and refuses unsafe plugin names', async () => {
-    const root = await makeTempRoot('aw-config-write-');
-    const cwd = path.join(root, 'repo');
-    const env = { AW_HOME: path.join(root, 'aw-home') } as NodeJS.ProcessEnv;
-    await fs.ensureDir(cwd);
-
-    await writePluginConfigStore({
-      pluginName: 'missing-plugin',
-      scope: 'user',
-      cwd,
-      env,
-      values: {
-        token: 'old-secret',
-      },
-    });
-
-    const receipt = await resetPluginConfigWithHelper({
-      pluginName: 'missing-plugin',
-      scope: 'user',
-      cwd,
-      env,
-    });
-    expect(receipt).toMatchObject({
-      plugin: 'missing-plugin',
-      projectLayer: 'shared',
-      existed: true,
+      configWrite: 'succeeded',
+      overallState: 'succeeded',
       deleted: true,
-      artifactRefresh: {
-        attempted: false,
-        status: 'skipped',
-      },
-      warnings: [],
+      applySkippedReason: 'currentCatalogUnavailable',
+      targetResults: [],
     });
-    await expect(fs.pathExists(resolvePluginConfigStorePath({
-      pluginName: 'missing-plugin',
+    expect(reinstall).not.toHaveBeenCalled();
+    expect((await readPluginConfigStore({
+      pluginName: 'unknown-plugin',
       scope: 'user',
-      cwd,
-      env,
-    }))).resolves.toBe(false);
-
-    const unsafeRoot = await makeTempRoot('aw-config-write-');
-    const unsafeCwd = path.join(unsafeRoot, 'repo');
-    const unsafeEnv = { AW_HOME: path.join(unsafeRoot, 'aw-home') } as NodeJS.ProcessEnv;
-    await fs.ensureDir(unsafeCwd);
-    const untouchedPath = path.join(unsafeEnv.AW_HOME!, 'plugin-config', 'safe-plugin', 'config.json');
-    await fs.outputJson(untouchedPath, { token: 'keep' }, { spaces: 2 });
-
-    await expect(resetPluginConfigWithHelper({
-      pluginName: '../safe-plugin',
-      scope: 'user',
-      cwd: unsafeCwd,
-      env: unsafeEnv,
-    })).rejects.toThrow('Invalid plugin config segment');
-    await expect(fs.readJson(untouchedPath)).resolves.toEqual({ token: 'keep' });
+      cwd: fixture.cwd,
+      env: fixture.env,
+    })).exists).toBe(false);
   });
 });

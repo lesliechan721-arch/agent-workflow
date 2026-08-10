@@ -9,28 +9,19 @@ import type {
   CommandExecutionContext,
 } from '../commands/runtime.js';
 import type {
-  ConfigSchemaEvidenceV2,
-  ConfigFieldEntryV2,
-  LegacyConfigStoreEntryV2,
-  PlatformName,
+  ConfigSchemaEvidence,
+  ConfigFieldEntry,
   PluginConfigSchema,
   PluginConfigSchemaField,
   PluginManifestSource,
   PluginMeta,
   Scope,
 } from '../types.js';
-import { readInstallRecordForLocation } from '../install-state/facade.js';
-import type { InstallRecordFile, PluginLocation } from '../install-state/types.js';
-import { readPluginManifest } from './manifest.js';
-import {
-  calculateFileDigest,
-  calculatePluginBundleFingerprint,
-} from './plugin-scripts.js';
 import {
   assertTestReadablePath,
   assertTestWritablePath,
 } from './test-path-fence.js';
-import { resolveAwHome, resolveCodexProjectKey, resolveRepoRootSync } from './paths.js';
+import { resolveAwHome, resolveRepoRootSync } from './paths.js';
 
 export type PluginConfigValue = string | number | boolean;
 export type PluginConfigSource = 'default' | 'user' | 'project' | 'projectLocal' | 'missing';
@@ -184,19 +175,17 @@ export interface PluginConfigFormModel {
   fields: PluginConfigFormFieldModel[];
 }
 
-export interface ResolvedConfigReadV2 {
+export interface ResolvedConfigRead {
   pluginName: string;
   scope: Scope | 'effective';
   projectLayer: 'shared' | 'local';
-  schema?: ConfigSchemaEvidenceV2;
-  fields: ConfigFieldEntryV2[];
-  legacyConfigStores: LegacyConfigStoreEntryV2[];
+  schema?: ConfigSchemaEvidence;
+  fields: ConfigFieldEntry[];
 }
 
 export type ConfigSchemaResolutionCode =
   | 'catalogUnavailable'
-  | 'configSchemaUnavailable'
-  | 'configSchemaConflict';
+  | 'configSchemaUnavailable';
 
 export class PluginConfigSchemaResolutionError extends Error {
   readonly code: ConfigSchemaResolutionCode;
@@ -216,20 +205,10 @@ export function isPluginConfigSchemaResolutionError(
   return error instanceof PluginConfigSchemaResolutionError;
 }
 
-export interface InstalledConfigSchemaConsumer {
-  location: PluginLocation;
-  recordPath: string;
-  manifestDigest: string;
-  schemaIdentity: string;
-  plugin: PluginMeta;
-}
-
 export interface ResolvedPluginConfigSchemaAccess {
   pluginName: string;
   plugin: PluginMeta | null;
-  schema?: ConfigSchemaEvidenceV2;
-  installedConsumers: InstalledConfigSchemaConsumer[];
-  schemaConflict: boolean;
+  schema?: ConfigSchemaEvidence;
 }
 
 const CONFIG_DIR = 'plugin-config';
@@ -263,183 +242,13 @@ async function calculateConfigSchemaManifestDigestForPlugin(
 function createConfigSchemaEvidenceFromCurrentCatalog(
   plugin: PluginMeta,
   manifestDigest: string,
-): ConfigSchemaEvidenceV2 {
+): ConfigSchemaEvidence {
   return {
     source: 'currentCatalog',
     identity: createPluginConfigSchemaIdentity(plugin.manifest),
     pluginVersion: plugin.manifest.version,
     manifestDigest,
   };
-}
-
-function createConfigSchemaEvidenceFromInstalledHistorical(
-  consumer: InstalledConfigSchemaConsumer,
-): ConfigSchemaEvidenceV2 {
-  return {
-    source: 'installedHistorical',
-    identity: consumer.schemaIdentity,
-    pluginVersion: consumer.plugin.manifest.version,
-    manifestDigest: consumer.manifestDigest,
-    location: {
-      platform: consumer.location.platform,
-      scope: consumer.location.scope,
-      ...(consumer.location.projectKey ? { projectKey: consumer.location.projectKey } : {}),
-      recordPath: consumer.recordPath,
-    },
-  };
-}
-
-function formatConfigLocation(location: PluginLocation): string {
-  return location.scope === 'project'
-    ? `${location.platform}/project/${location.projectKey ?? '<unknown>'}`
-    : `${location.platform}/user`;
-}
-
-async function loadHistoricalConfigConsumerFromRecord(options: {
-  pluginName: string;
-  location: PluginLocation;
-  recordPath: string;
-  recordFile: InstallRecordFile;
-}): Promise<InstalledConfigSchemaConsumer> {
-  const lifecycle = options.recordFile.record.lifecycle;
-  if (!lifecycle) {
-    throw new PluginConfigSchemaResolutionError(
-      'configSchemaUnavailable',
-      `${options.pluginName} 的已安装位置 ${formatConfigLocation(options.location)} 缺少 historical lifecycle runtime。`,
-      {
-        location: options.location,
-        recordPath: options.recordPath,
-      },
-    );
-  }
-  if (!(await fs.pathExists(lifecycle.bundleRoot))) {
-    throw new PluginConfigSchemaResolutionError(
-      'configSchemaUnavailable',
-      `${options.pluginName} 的已安装位置 ${formatConfigLocation(options.location)} 缺少 historical bundle：${lifecycle.bundleRoot}。`,
-      {
-        location: options.location,
-        recordPath: options.recordPath,
-      },
-    );
-  }
-
-  const [manifestDigest, bundleFingerprint, plugin] = await Promise.all([
-    calculateFileDigest(lifecycle.manifestPath),
-    calculatePluginBundleFingerprint(lifecycle.bundleRoot),
-    readPluginManifest(lifecycle.bundleRoot, { mode: 'bundle' }),
-  ]);
-  if (manifestDigest !== lifecycle.sourceManifestDigest) {
-    throw new PluginConfigSchemaResolutionError(
-      'configSchemaUnavailable',
-      `${options.pluginName} 的 historical manifest digest 不匹配：expected ${lifecycle.sourceManifestDigest}, got ${manifestDigest}。`,
-      {
-        location: options.location,
-        recordPath: options.recordPath,
-      },
-    );
-  }
-  if (bundleFingerprint !== lifecycle.bundleFingerprint) {
-    throw new PluginConfigSchemaResolutionError(
-      'configSchemaUnavailable',
-      `${options.pluginName} 的 historical bundle fingerprint 不匹配：expected ${lifecycle.bundleFingerprint}, got ${bundleFingerprint}。`,
-      {
-        location: options.location,
-        recordPath: options.recordPath,
-      },
-    );
-  }
-  if (
-    plugin.manifest.name !== options.pluginName ||
-    plugin.manifest.version !== lifecycle.pluginVersion
-  ) {
-    throw new PluginConfigSchemaResolutionError(
-      'configSchemaUnavailable',
-      `${options.pluginName} 的 historical manifest 身份不匹配：expected ${options.pluginName}@${lifecycle.pluginVersion}, got ${plugin.manifest.name}@${plugin.manifest.version}。`,
-      {
-        location: options.location,
-        recordPath: options.recordPath,
-      },
-    );
-  }
-
-  return {
-    location: options.location,
-    recordPath: options.recordPath,
-    manifestDigest,
-    schemaIdentity: createPluginConfigSchemaIdentity(plugin.manifest),
-    plugin,
-  };
-}
-
-async function resolveHistoricalConfigConsumer(options: {
-  pluginName: string;
-  location: PluginLocation;
-  cwd: string;
-  env?: NodeJS.ProcessEnv;
-}): Promise<InstalledConfigSchemaConsumer | null> {
-  const recordRead = await readInstallRecordForLocation({
-    cwd: options.cwd,
-    location: options.location,
-    env: options.env,
-  });
-  if (recordRead.status === 'missing') {
-    return null;
-  }
-  if (recordRead.status !== 'ok') {
-    throw new PluginConfigSchemaResolutionError(
-      'configSchemaUnavailable',
-      `${options.pluginName} 的已安装位置 ${formatConfigLocation(options.location)} 缺少可用 install record（${recordRead.code}: ${recordRead.error}）。`,
-      {
-        location: options.location,
-        recordPath: recordRead.path,
-        readStatus: recordRead.status,
-        readCode: recordRead.code,
-      },
-    );
-  }
-
-  return loadHistoricalConfigConsumerFromRecord({
-    pluginName: options.pluginName,
-    location: options.location,
-    recordPath: recordRead.path,
-    recordFile: recordRead.value,
-  });
-}
-
-async function collectInstalledConfigSchemaConsumers(options: {
-  pluginName: string;
-  scope: Scope;
-  cwd: string;
-  env?: NodeJS.ProcessEnv;
-}): Promise<InstalledConfigSchemaConsumer[]> {
-  const projectKey = options.scope === 'project'
-    ? await resolveCodexProjectKey(options.cwd)
-    : undefined;
-  const consumers: InstalledConfigSchemaConsumer[] = [];
-  for (const platform of ['codex', 'claude'] as const satisfies readonly PlatformName[]) {
-    const location: PluginLocation = options.scope === 'project'
-      ? {
-          plugin: options.pluginName,
-          platform,
-          scope: 'project',
-          projectKey,
-        }
-      : {
-          plugin: options.pluginName,
-          platform,
-          scope: 'user',
-        };
-    const consumer = await resolveHistoricalConfigConsumer({
-      pluginName: options.pluginName,
-      location,
-      cwd: options.cwd,
-      env: options.env,
-    });
-    if (consumer) {
-      consumers.push(consumer);
-    }
-  }
-  return consumers;
 }
 
 function getStoreEntries(values: Record<string, unknown>): Record<string, unknown> {
@@ -1516,7 +1325,7 @@ export async function resolveProjectScopedPluginConfigView(options: {
 
 function toConfigSourceLayer(
   source: PluginConfigSource | undefined,
-): ConfigFieldEntryV2['sourceLayer'] {
+): ConfigFieldEntry['sourceLayer'] {
   if (source === 'default') {
     return 'default';
   }
@@ -1532,55 +1341,13 @@ function toConfigSourceLayer(
   return null;
 }
 
-function buildLegacyConfigStoreEntries(options: {
-  pluginName: string;
-  pluginAvailable: boolean;
-  schema: PluginConfigSchema['schema'] | undefined;
-  scope: Scope | 'effective';
-  projectLayer: 'shared' | 'local';
-  projectRoot: string;
-  stores: ResolvedEffectivePluginConfig['stores'];
-}): LegacyConfigStoreEntryV2[] {
-  const schemaKeys = new Set(Object.keys(options.schema ?? {}));
-  const entries: LegacyConfigStoreEntryV2[] = [];
-  for (const [storeKind, store] of [
-    ['user', options.stores.user],
-    ['projectShared', options.stores.project],
-    ['projectLocal', options.stores.projectLocal],
-  ] as const) {
-    if (options.scope === 'user' && storeKind !== 'user') {
-      continue;
-    }
-    if (options.scope === 'project' && options.projectLayer === 'shared' && storeKind === 'projectLocal') {
-      continue;
-    }
-    if (options.scope === 'project' && options.projectLayer === 'local' && storeKind !== 'projectLocal') {
-      continue;
-    }
-    const plainEntries = getStoreEntries(store.values);
-    const hasLegacyPlainKeys = Object.keys(plainEntries).some((key) => !schemaKeys.has(key));
-    if (!hasLegacyPlainKeys) {
-      continue;
-    }
-    entries.push({
-      plugin: options.pluginName,
-      storeKind,
-      ...(storeKind === 'user' ? {} : { projectRoot: options.projectRoot }),
-      reason: options.pluginAvailable ? 'schemaUnavailable' : 'pluginRemoved',
-      fieldVisibility: 'storeOnly',
-      cleanupOnly: true,
-    });
-  }
-  return entries;
-}
-
 async function buildManifestFieldEntries(options: {
   plugin: PluginMeta;
   scope: Scope | 'effective';
   projectLayer: 'shared' | 'local';
   cwd: string;
   env?: NodeJS.ProcessEnv;
-}): Promise<ConfigFieldEntryV2[]> {
+}): Promise<ConfigFieldEntry[]> {
   const schema = options.plugin.manifest.config?.schema;
   if (!schema) {
     return [];
@@ -1618,9 +1385,9 @@ async function buildManifestFieldEntries(options: {
     env: options.env,
   });
 
-  const fields: ConfigFieldEntryV2[] = [];
+  const fields: ConfigFieldEntry[] = [];
   for (const [key, field] of Object.entries(schema)) {
-    const base: ConfigFieldEntryV2 = {
+    const base: ConfigFieldEntry = {
       key,
       title: field.title ?? key,
       kind: 'manifest',
@@ -1743,50 +1510,8 @@ export async function resolvePluginConfigSchemaAccess(options: {
   projectLayer: 'shared' | 'local';
   cwd: string;
   env?: NodeJS.ProcessEnv;
-  allowSchemaConflict?: boolean;
 }): Promise<ResolvedPluginConfigSchemaAccess> {
   const pluginName = assertSafePluginConfigSegment(options.pluginName);
-  const scopeCandidates = options.scope === 'effective'
-    ? ['user', 'project'] as const
-    : [options.scope] as const;
-  const installedConsumers = (await Promise.all(
-    scopeCandidates.map((scope) =>
-      collectInstalledConfigSchemaConsumers({
-        pluginName,
-        scope,
-        cwd: options.cwd,
-        env: options.env,
-      })),
-  )).flat();
-
-  if (installedConsumers.length > 0) {
-    const identities = [...new Set(installedConsumers.map((consumer) => consumer.schemaIdentity))];
-    const schemaConflict = identities.length > 1;
-    if (schemaConflict && !options.allowSchemaConflict) {
-      throw new PluginConfigSchemaResolutionError(
-        'configSchemaConflict',
-        `${pluginName} 的同一配置 store 被多个已安装 consumer 使用，但 schema identity 不一致。`,
-        {
-          consumers: installedConsumers.map((consumer) => ({
-            location: consumer.location,
-            recordPath: consumer.recordPath,
-            schemaIdentity: consumer.schemaIdentity,
-            pluginVersion: consumer.plugin.manifest.version,
-            manifestDigest: consumer.manifestDigest,
-          })),
-        },
-      );
-    }
-    const primaryConsumer = installedConsumers[0]!;
-    return {
-      pluginName,
-      plugin: primaryConsumer.plugin,
-      schema: createConfigSchemaEvidenceFromInstalledHistorical(primaryConsumer),
-      installedConsumers,
-      schemaConflict,
-    };
-  }
-
   if (options.currentPluginError) {
     throw options.currentPluginError;
   }
@@ -1795,8 +1520,6 @@ export async function resolvePluginConfigSchemaAccess(options: {
     return {
       pluginName,
       plugin: null,
-      installedConsumers: [],
-      schemaConflict: false,
     };
   }
 
@@ -1807,12 +1530,10 @@ export async function resolvePluginConfigSchemaAccess(options: {
       options.currentPlugin,
       await calculateConfigSchemaManifestDigestForPlugin(options.currentPlugin),
     ),
-    installedConsumers: [],
-    schemaConflict: false,
   };
 }
 
-export async function resolveConfigReadV2(options: {
+export async function resolveConfigRead(options: {
   pluginName: string;
   plugin?: PluginMeta | null;
   pluginError?: Error | null;
@@ -1820,7 +1541,7 @@ export async function resolveConfigReadV2(options: {
   projectLayer: 'shared' | 'local';
   cwd: string;
   env?: NodeJS.ProcessEnv;
-}): Promise<ResolvedConfigReadV2> {
+}): Promise<ResolvedConfigRead> {
   const pluginName = assertSafePluginConfigSegment(options.pluginName);
   const projectRoot = resolveAwProjectRoot(options.cwd);
   const [userStore, projectStore, projectLocalStore] = await Promise.all([
@@ -1858,15 +1579,7 @@ export async function resolveConfigReadV2(options: {
     cwd: options.cwd,
     env: options.env,
   });
-  const legacyConfigStores = buildLegacyConfigStoreEntries({
-    pluginName,
-    pluginAvailable: Boolean(schemaAccess.plugin),
-    schema: schemaAccess.plugin?.manifest.config?.schema,
-    scope: options.scope,
-    projectLayer: options.projectLayer,
-    projectRoot,
-    stores,
-  });
+
 
   const manifestFields = schemaAccess.plugin
     ? await buildManifestFieldEntries({
@@ -1884,19 +1597,18 @@ export async function resolveConfigReadV2(options: {
     projectLayer: options.projectLayer,
     ...(schemaAccess.schema ? { schema: schemaAccess.schema } : {}),
     fields: manifestFields,
-    legacyConfigStores,
   };
 }
 
 export function findConfigFieldEntry(
-  fields: ConfigFieldEntryV2[],
+  fields: ConfigFieldEntry[],
   key: string,
-): ConfigFieldEntryV2 | null {
+): ConfigFieldEntry | null {
   return fields.find((field) => field.key === key) ?? null;
 }
 
-export function hasConfigReadV2Content(result: ResolvedConfigReadV2): boolean {
-  return result.fields.length > 0 || result.legacyConfigStores.length > 0;
+export function hasConfigReadContent(result: ResolvedConfigRead): boolean {
+  return result.fields.length > 0;
 }
 
 export function summarizeEffectivePluginConfig(

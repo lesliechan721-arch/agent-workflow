@@ -13,24 +13,12 @@ import type {
   CatalogSelector,
   CatalogVersion,
   CliVersion,
-  InstalledDependencyEdge,
-  CodexSharedNativeRefs,
-  GeneratedArtifact,
-  InstalledLedger,
-  InstalledLedgerPluginPlatforms,
-  InstalledScopeInstallSource,
-  LedgerStateReason,
   LocalMarketplaceConfig,
-  PlatformName,
-  Scope,
 } from '../types.js';
 import {
   CURRENT_CATALOG_MANIFEST_FILE,
   CURRENT_CATALOG_MANIFEST_PACKAGE,
 } from '../constants.js';
-import { readInstallRecordFileAt } from '../install-state/facade.js';
-import type { InstallRecordArtifact } from '../install-state/types.js';
-import { AW_RUNTIME_STATE_PRESERVE_DIR_SET } from '../install-state/runtime-state.js';
 import { readJsonFile, readJsonFileIfExistsSafe, writeJsonFile } from './json.js';
 import {
   getCodexHome,
@@ -50,11 +38,7 @@ import {
   tryParseStrictSemVer,
 } from './manifest.js';
 import { assertTestWritablePath } from './test-path-fence.js';
-import {
-  createDynamicSkillTreeContentDigest,
-  validateSkillDirectory,
-} from './dynamic-skill-tree.js';
-import { writeSkillOwnerMarker } from './ownership.js';
+import { readSkillOwnerMarker } from './ownership.js';
 
 function resolveCliPackageJsonPath(): string {
   return path.join(resolveCliPackageRoot(), 'package.json');
@@ -76,226 +60,11 @@ export function getLocalMarketplaceCodexSkillRoot(
   return path.join(getLocalMarketplaceCodexSkillsRoot(rootDir, pluginName), skillKey);
 }
 
-const CODEX_PLATFORM_PLUGIN_MANIFEST_SKILLS_ROOT = './codex/skills';
-
-function stripDotSlash(value: string): string {
-  return value.startsWith('./') ? value.slice(2) : value;
-}
-
 function hasCatalogSelectorOverride(env: NodeJS.ProcessEnv): boolean {
   return env.AW_CATALOG_VERSION !== undefined ||
     env.AW_CATALOG_CHANNEL === 'latest' ||
     env.AW_CATALOG_CHANNEL === 'beta' ||
     env.AW_CLI_VERSION !== undefined;
-}
-
-function resolveCodexManifestSkillsDeclaration(manifest: Record<string, unknown>): string {
-  return typeof manifest.skills === 'string' && manifest.skills.trim() !== ''
-    ? manifest.skills
-    : CODEX_PLATFORM_PLUGIN_MANIFEST_SKILLS_ROOT;
-}
-
-function hasCodexManifestSkillsDeclaration(manifest: Record<string, unknown>): boolean {
-  return typeof manifest.skills === 'string' && manifest.skills.trim() !== '';
-}
-
-function getCodexPlatformPluginManifestPath(pluginRoot: string): string {
-  return path.join(pluginRoot, '.codex-plugin', 'plugin.json');
-}
-
-function resolveCodexManifestSkillsRoot(pluginRoot: string, manifestSkills: string): string {
-  return path.join(pluginRoot, stripDotSlash(manifestSkills));
-}
-
-function getDeclaredCodexDynamicSkillKeys(sourceManifest: Record<string, unknown>): Set<string> {
-  const artifacts = isRecord(sourceManifest.artifacts) && Array.isArray(sourceManifest.artifacts.targets)
-    ? sourceManifest.artifacts.targets
-    : [];
-
-  return new Set(
-    artifacts
-      .filter((artifact): artifact is Record<string, unknown> => isRecord(artifact))
-      .filter((artifact) =>
-        artifact.platform === 'codex' &&
-        artifact.target === 'codex.skill' &&
-        Array.isArray(artifact.scopes) &&
-        artifact.scopes.includes('user') &&
-        typeof artifact.skillKey === 'string')
-      .map((artifact) => (artifact.skillKey as string).trim()),
-  );
-}
-
-function resolveSourceManifestSkillsRoot(
-  pluginRoot: string,
-  sourceManifest: Record<string, unknown>,
-): string | null {
-  return typeof sourceManifest.skills === 'string' && sourceManifest.skills.trim() !== ''
-    ? path.join(pluginRoot, stripDotSlash(sourceManifest.skills))
-    : null;
-}
-
-async function pathIsDirectory(filePath: string): Promise<boolean> {
-  const stats = await fs.stat(filePath).catch(() => null);
-  return stats?.isDirectory() === true;
-}
-
-function uniquePaths(paths: string[]): string[] {
-  const seen = new Set<string>();
-  const result: string[] = [];
-  for (const candidate of paths) {
-    const key = path.resolve(candidate);
-    if (seen.has(key)) {
-      continue;
-    }
-    seen.add(key);
-    result.push(candidate);
-  }
-  return result;
-}
-
-function isCodexDynamicSkillArtifact(
-  artifact: Pick<InstallRecordArtifact, 'target' | 'artifactKey'>,
-): artifact is Pick<InstallRecordArtifact, 'target'> & { artifactKey: string } {
-  return (
-    artifact.target === 'codex.skill' &&
-    typeof artifact.artifactKey === 'string' &&
-    artifact.artifactKey.trim() !== ''
-  );
-}
-
-export function collectCodexDynamicSkillSyncKeys(options: {
-  skillKeys: readonly string[];
-  installedArtifacts?: readonly Pick<InstallRecordArtifact, 'target' | 'artifactKey'>[];
-}): string[] {
-  return [...new Set([
-    ...options.skillKeys
-      .map((skillKey) => skillKey.trim())
-      .filter((skillKey) => skillKey !== ''),
-    ...(options.installedArtifacts ?? [])
-      .filter(isCodexDynamicSkillArtifact)
-      .map((artifact) => artifact.artifactKey.trim()),
-  ])].sort();
-}
-
-async function syncLocalMarketplaceCodexDynamicSkillsInternal(
-  options: {
-    rootDir: string;
-    pluginName: string;
-    skillKeys: readonly string[];
-    manifestSkillsMode: 'preserve' | 'declareIfMissing';
-  },
-): Promise<void> {
-  const pluginRoot = getLocalMarketplacePluginRoot(options.rootDir, options.pluginName);
-  const manifestPath = getCodexPlatformPluginManifestPath(pluginRoot);
-  const manifest = await readJsonFile<Record<string, unknown>>(manifestPath);
-  const hasDeclaredSkills = hasCodexManifestSkillsDeclaration(manifest);
-  const manifestSkills = resolveCodexManifestSkillsDeclaration(manifest);
-  const sourceManifest = await readJsonFile<Record<string, unknown>>(
-    path.join(pluginRoot, '.agents-plugin', 'plugin.json'),
-  );
-  const declaredDynamicSkillKeys = getDeclaredCodexDynamicSkillKeys(sourceManifest);
-  const sourceManifestSkillsRoot = resolveSourceManifestSkillsRoot(pluginRoot, sourceManifest);
-
-  const runtimeSkillsRoot = getLocalMarketplaceCodexSkillsRoot(options.rootDir, options.pluginName);
-  const manifestSkillsRoot = resolveCodexManifestSkillsRoot(
-    pluginRoot,
-    manifestSkills,
-  );
-
-  if (path.resolve(runtimeSkillsRoot) !== path.resolve(manifestSkillsRoot)) {
-    for (const skillKey of [...new Set(options.skillKeys)].sort()) {
-      const sourceSkillRoot = path.join(runtimeSkillsRoot, skillKey);
-      const targetSkillRoot = path.join(manifestSkillsRoot, skillKey);
-      const bundledStaticSkillRoot = sourceManifestSkillsRoot === null
-        ? null
-        : path.join(sourceManifestSkillsRoot, skillKey);
-      if (!(await fs.pathExists(sourceSkillRoot))) {
-        // Historical user dynamic skills can migrate to bundled static skills with the same key.
-        const currentStaticSkillDeclared = bundledStaticSkillRoot !== null &&
-          !declaredDynamicSkillKeys.has(skillKey) &&
-          await pathIsDirectory(bundledStaticSkillRoot);
-        if (currentStaticSkillDeclared) {
-          if (
-            bundledStaticSkillRoot !== null &&
-            await pathIsDirectory(bundledStaticSkillRoot) &&
-            path.resolve(bundledStaticSkillRoot) !== path.resolve(targetSkillRoot)
-          ) {
-            await fs.remove(targetSkillRoot);
-            await fs.ensureDir(path.dirname(targetSkillRoot));
-            await fs.copy(bundledStaticSkillRoot, targetSkillRoot, {
-              overwrite: true,
-              errorOnExist: false,
-            });
-          }
-          continue;
-        }
-
-        await fs.remove(targetSkillRoot);
-        continue;
-      }
-
-      await fs.remove(targetSkillRoot);
-      await fs.ensureDir(path.dirname(targetSkillRoot));
-      await fs.copy(sourceSkillRoot, targetSkillRoot, {
-        overwrite: true,
-        errorOnExist: false,
-      });
-    }
-  }
-
-  if (
-    options.manifestSkillsMode === 'declareIfMissing' &&
-    !hasDeclaredSkills &&
-    await pathIsDirectory(manifestSkillsRoot)
-  ) {
-    await writeJsonFile(manifestPath, {
-      ...manifest,
-      skills: manifestSkills,
-    });
-  }
-
-  for (const skillKey of [...new Set(options.skillKeys)].sort()) {
-    const skillRoot = path.join(manifestSkillsRoot, skillKey);
-    if (await pathIsDirectory(skillRoot) && await fs.pathExists(path.join(skillRoot, 'SKILL.md'))) {
-      await writeSkillOwnerMarker({
-        skillRoot,
-        allowedRoot: manifestSkillsRoot,
-        identity: {
-          owner: 'agent-workflows',
-          plugin: options.pluginName,
-          artifactKey: skillKey,
-          platform: 'codex',
-          scope: 'user',
-        },
-      });
-    }
-  }
-}
-
-export async function syncLocalMarketplaceCodexDynamicSkills(
-  options: {
-    rootDir: string;
-    pluginName: string;
-    skillKeys: readonly string[];
-  },
-): Promise<void> {
-  await syncLocalMarketplaceCodexDynamicSkillsInternal({
-    ...options,
-    manifestSkillsMode: 'preserve',
-  });
-}
-
-export async function materializeStagedMarketplaceCodexDynamicSkills(
-  options: {
-    rootDir: string;
-    pluginName: string;
-    skillKeys: readonly string[];
-  },
-): Promise<void> {
-  await syncLocalMarketplaceCodexDynamicSkillsInternal({
-    ...options,
-    manifestSkillsMode: 'declareIfMissing',
-  });
 }
 
 export interface LocalMarketplaceGateOptions {
@@ -1903,444 +1672,26 @@ function serializeCatalogSelectorForReuse(selector: CatalogSelector): string {
   });
 }
 
-function isScope(value: unknown): value is Scope {
-  return value === 'user' || value === 'project';
-}
-
-function isPlatformName(value: unknown): value is PlatformName {
-  return value === 'codex' || value === 'claude';
-}
-
-function isUniquePlatformNameArray(value: unknown): value is PlatformName[] {
-  return (
-    Array.isArray(value) &&
-    value.length > 0 &&
-    value.every((entry) => isPlatformName(entry)) &&
-    new Set(value).size === value.length
-  );
-}
-
-function isInstalledScopeInstallSource(value: unknown): value is InstalledScopeInstallSource {
-  if (!isRecord(value)) {
-    return false;
-  }
-
-  const allowedKeys = new Set(['kind', 'explicitlyRequested', 'allowsUnusedCleanup']);
-  if (Object.keys(value).some((key) => !allowedKeys.has(key))) {
-    return false;
-  }
-
-  return (
-    (value.kind === 'explicit' || value.kind === 'dependency') &&
-    typeof value.explicitlyRequested === 'boolean' &&
-    typeof value.allowsUnusedCleanup === 'boolean'
-  );
-}
-
-function isPluginLocation(value: unknown): boolean {
-  if (!isRecord(value) || !isScope(value.scope) || !isPlatformName(value.platform) || typeof value.plugin !== 'string') {
-    return false;
-  }
-
-  if (value.scope === 'user') {
-    return value.projectKey === undefined || value.projectKey === null;
-  }
-
-  return typeof value.projectKey === 'string';
-}
-
-function isInstalledDependencyEdgeDeclaration(value: unknown): boolean {
-  if (!isRecord(value) || typeof value.name !== 'string') {
-    return false;
-  }
-
-  const allowedKeys = new Set(['name', 'minVersion', 'target', 'when']);
-  if (Object.keys(value).some((key) => !allowedKeys.has(key))) {
-    return false;
-  }
-
-  const validTarget =
-    value.target === undefined ||
-    (
-      isRecord(value.target) &&
-      Object.keys(value.target).every((key) => key === 'scope') &&
-      (value.target.scope === undefined || isScope(value.target.scope))
-    );
-  const validWhen =
-    value.when === undefined ||
-    (
-      isRecord(value.when) &&
-      Object.keys(value.when).every((key) => key === 'platforms') &&
-      isUniquePlatformNameArray(value.when.platforms)
-    );
-
-  return (
-    (value.minVersion === undefined || typeof value.minVersion === 'string') &&
-    validTarget &&
-    validWhen
-  );
-}
-
-function isInstalledDependencyEdge(value: unknown): value is InstalledDependencyEdge {
-  if (!isRecord(value)) {
-    return false;
-  }
-
-  const allowedKeys = new Set(['dependency', 'declaration']);
-  if (Object.keys(value).some((key) => !allowedKeys.has(key))) {
-    return false;
-  }
-
-  return isPluginLocation(value.dependency) && isInstalledDependencyEdgeDeclaration(value.declaration);
-}
-
-function isLifecycleConfigSnapshotMetadata(value: unknown): boolean {
-  if (!isRecord(value)) {
-    return false;
-  }
-
-  const createdFrom = value.createdFrom;
-  return (
-    typeof value.snapshotRoot === 'string' &&
-    typeof value.bundleRoot === 'string' &&
-    typeof value.manifestPath === 'string' &&
-    typeof value.pluginName === 'string' &&
-    typeof value.pluginVersion === 'string' &&
-    typeof value.sourceManifestDigest === 'string' &&
-    typeof value.bundleFingerprint === 'string' &&
-    typeof value.createdAt === 'string' &&
-    isRecord(createdFrom) &&
-    (
-      createdFrom.source === 'currentCatalog' ||
-      createdFrom.source === 'test' ||
-      createdFrom.source === 'unknown'
-    ) &&
-    (createdFrom.catalogRoot === undefined || typeof createdFrom.catalogRoot === 'string') &&
-    (createdFrom.catalogSource === undefined ||
-      createdFrom.catalogSource === 'local' ||
-      createdFrom.catalogSource === 'embedded') &&
-    (createdFrom.pluginRoot === undefined || typeof createdFrom.pluginRoot === 'string')
-  );
-}
-
-function isInstalledScopeRecord(
-  value: unknown,
-  options: { requireDependencyMetadata?: boolean } = {},
-): boolean {
-  if (!isRecord(value)) {
-    return false;
-  }
-
-  const allowedKeys = new Set([
-    'managed',
-    'updatedAt',
-    'resolvedVersion',
-    'capabilitySnapshot',
-    'projectKey',
-    'installSource',
-    'dependencyEdges',
-    'lifecycleConfigSnapshot',
-  ]);
-  if (Object.keys(value).some((key) => !allowedKeys.has(key))) {
-    return false;
-  }
-
-  if (
-    typeof value.managed !== 'boolean' ||
-    typeof value.updatedAt !== 'string' ||
-    typeof value.resolvedVersion !== 'string' ||
-    !isRecord(value.capabilitySnapshot)
-  ) {
-    return false;
-  }
-
-  if (value.installSource !== undefined && !isInstalledScopeInstallSource(value.installSource)) {
-    return false;
-  }
-
-  if (
-    value.dependencyEdges !== undefined &&
-    (!Array.isArray(value.dependencyEdges) || value.dependencyEdges.some((edge) => !isInstalledDependencyEdge(edge)))
-  ) {
-    return false;
-  }
-
-  if (options.requireDependencyMetadata && (value.installSource === undefined || value.dependencyEdges === undefined)) {
-    return false;
-  }
-
-  if (value.lifecycleConfigSnapshot !== undefined && !isLifecycleConfigSnapshotMetadata(value.lifecycleConfigSnapshot)) {
-    return false;
-  }
-
-  if (value.projectKey !== undefined && typeof value.projectKey !== 'string') {
-    return false;
-  }
-
-  return true;
-}
-
-function isClaudePlatformRecord(
-  value: unknown,
-  options: { requireDependencyMetadata?: boolean } = {},
-): boolean {
-  if (!isRecord(value)) {
-    return false;
-  }
-
-  const { userScope, projectScopes, lastRequestedScope, lastRequestedAt } = value;
-
-  return (
-    (userScope === undefined || isInstalledScopeRecord(userScope, options)) &&
-    (projectScopes === undefined ||
-      (isRecord(projectScopes) && Object.values(projectScopes).every((entry) => isInstalledScopeRecord(entry, options)))) &&
-    (lastRequestedScope === undefined ||
-      lastRequestedScope === 'project' ||
-      lastRequestedScope === 'user') &&
-    (lastRequestedAt === undefined || typeof lastRequestedAt === 'string')
-  );
-}
-
-function isCodexPlatformRecord(
-  value: unknown,
-  options: { requireDependencyMetadata?: boolean } = {},
-): boolean {
-  if (!isRecord(value)) {
-    return false;
-  }
-
-  const { userScope, projectScopes, sharedNativeRefs, lastRequestedScope, lastRequestedAt } = value;
-
-  const sharedNativeRefsValid =
-    sharedNativeRefs === undefined ||
-    (isRecord(sharedNativeRefs) &&
-      typeof sharedNativeRefs.user === 'boolean' &&
-      isStringArray(sharedNativeRefs.projects));
-
-  return (
-    (userScope === undefined || isInstalledScopeRecord(userScope, options)) &&
-    (projectScopes === undefined ||
-      (isRecord(projectScopes) && Object.values(projectScopes).every((entry) => isInstalledScopeRecord(entry, options)))) &&
-    sharedNativeRefsValid &&
-    (lastRequestedScope === undefined ||
-      lastRequestedScope === 'project' ||
-      lastRequestedScope === 'user') &&
-    (lastRequestedAt === undefined || typeof lastRequestedAt === 'string')
-  );
-}
-
-function isInstalledLedgerPluginPlatforms(
-  value: unknown,
-  options: { requireDependencyMetadata?: boolean } = {},
-): value is InstalledLedgerPluginPlatforms {
-  return (
-    isRecord(value) &&
-    (value.claude === undefined || isClaudePlatformRecord(value.claude, options)) &&
-    (value.codex === undefined || isCodexPlatformRecord(value.codex, options))
-  );
-}
-
-export function normalizeSharedNativeRefs(value: unknown): CodexSharedNativeRefs | null {
-  if (!isRecord(value)) {
-    return null;
-  }
-
-  if (typeof value.user !== 'boolean' || !isStringArray(value.projects)) {
-    return null;
-  }
-
-  return {
-    user: value.user,
-    projects: [...new Set(value.projects)].sort(),
-  };
-}
-
-export function validateInstalledLedger(
-  rawValue: unknown,
-  options: { requireDependencyMetadata?: boolean } = {},
-): InstalledLedger | null {
-  if (!isRecord(rawValue)) {
-    return null;
-  }
-
-  if (rawValue.version !== 1 || !isRecord(rawValue.ledgerState) || !isRecord(rawValue.plugins)) {
-    return null;
-  }
-
-  const status = rawValue.ledgerState.status;
-  const degradedAt = rawValue.ledgerState.degradedAt;
-  const reason = rawValue.ledgerState.reason;
-  const validReasons: Array<LedgerStateReason | null> = [
-    'rebuilt_from_missing_or_invalid',
-    'operation_interrupted_after_native_write',
-    'operation_interrupted_after_artifact_write',
-    'capability_changed_upgrade_restore_incomplete',
-    null,
-  ];
-
-  if (
-    (status !== 'available' && status !== 'degraded') ||
-    (degradedAt !== null && typeof degradedAt !== 'string') ||
-    !validReasons.includes(reason as LedgerStateReason | null)
-  ) {
-    return null;
-  }
-
-  for (const pluginRecord of Object.values(rawValue.plugins)) {
-    if (
-      !isRecord(pluginRecord) ||
-      typeof pluginRecord.lastResolvedVersion !== 'string' ||
-      !isInstalledLedgerPluginPlatforms(pluginRecord.platforms, options)
-    ) {
-      return null;
-    }
-  }
-
-  return rawValue as unknown as InstalledLedger;
-}
-
-export function hasInstalledLedgerDependencyMetadata(
-  ledger: InstalledLedger | null,
-): boolean {
-  return ledger !== null && validateInstalledLedger(ledger, { requireDependencyMetadata: true }) !== null;
-}
-
-function createDegradedLedger(reason: LedgerStateReason): InstalledLedger {
-  return {
-    version: 1,
-    ledgerState: {
-      status: 'degraded',
-      degradedAt: new Date().toISOString(),
-      reason,
-    },
-    plugins: {},
-  };
-}
-
-export function createAvailableLedger(): InstalledLedger {
-  return {
-    version: 1,
-    ledgerState: {
-      status: 'available',
-      degradedAt: null,
-      reason: null,
-    },
-    plugins: {},
-  };
-}
-
 const LOCAL_MARKETPLACE_RUNTIME_STATE_DIRS = new Set([
-  ...AW_RUNTIME_STATE_PRESERVE_DIR_SET,
   'catalog-cache',
+  'plugin-config',
+  'lifecycle-active',
 ]);
 
 const LOCAL_MARKETPLACE_ALREADY_STAGED_STATE_DIRS = new Set([
   'catalog-cache',
+  'plugin-config',
+  'lifecycle-active',
 ]);
 
-export function getInstalledLedgerPath(
-  env: NodeJS.ProcessEnv = process.env,
-): string {
-  return path.join(resolveAwHome(env), 'installed.json');
-}
-
-export async function readInstalledLedger(
-  env: NodeJS.ProcessEnv = process.env,
-): Promise<InstalledLedger> {
-  const rawLedger = await readJsonFileIfExistsSafe<unknown>(getInstalledLedgerPath(env));
-  return validateInstalledLedger(rawLedger) ?? createDegradedLedger('rebuilt_from_missing_or_invalid');
-}
-
-export async function writeInstalledLedger(
-  ledger: InstalledLedger,
-  env: NodeJS.ProcessEnv = process.env,
-): Promise<void> {
-  const ledgerPath = getInstalledLedgerPath(env);
-  await fs.ensureDir(path.dirname(ledgerPath));
-  const tempPath = path.join(
-    path.dirname(ledgerPath),
-    `${path.basename(ledgerPath)}.tmp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-  );
-  await writeJsonFile(tempPath, ledger);
-  await fs.move(tempPath, ledgerPath, { overwrite: true });
-}
-
-export function resolveScopeInitialized(
-  ledger: InstalledLedger | null,
-  pluginName: string,
-  platform: PlatformName,
-  scope: Scope,
-  projectKey?: string,
-): 'yes' | 'no' | 'unknown' {
-  if (!ledger) {
-    return 'unknown';
-  }
-
-  const pluginRecord = ledger.plugins[pluginName];
-  if (!pluginRecord) {
-    return ledger.ledgerState.status === 'available' ? 'no' : 'unknown';
-  }
-
-  const platformRecord = pluginRecord.platforms[platform];
-  if (!platformRecord) {
-    return ledger.ledgerState.status === 'available' ? 'no' : 'unknown';
-  }
-
-  const scopeRecord =
-    scope === 'user'
-      ? platformRecord.userScope
-      : projectKey
-        ? platformRecord.projectScopes?.[projectKey]
-        : undefined;
-
-  if (!scopeRecord) {
-    return ledger.ledgerState.status === 'available' ? 'no' : 'unknown';
-  }
-
-  return scopeRecord.managed ? 'yes' : 'no';
-}
-
-export function resolveCodexProjectScopeInitialized(options: {
-  ledger: InstalledLedger | null;
-  pluginName: string;
-  projectKey?: string;
-  trackingArtifacts?: GeneratedArtifact[];
-  trackingIdentityComplete: boolean;
-  externalOwnershipPresent?: boolean;
-}): 'yes' | 'no' | 'unknown' {
-  const ledgerScopeInitialized = resolveScopeInitialized(
-    options.ledger,
-    options.pluginName,
-    'codex',
-    'project',
-    options.projectKey,
-  );
-  if (ledgerScopeInitialized === 'yes') {
-    return 'yes';
-  }
-
-  if (!options.projectKey) {
-    return 'unknown';
-  }
-
-  const trackedArtifacts = (options.trackingArtifacts ?? []).filter((artifact) => artifact.platform === 'codex');
-  if (trackedArtifacts.length > 0) {
-    return options.trackingIdentityComplete ? 'yes' : 'unknown';
-  }
-
-  if (options.externalOwnershipPresent === true) {
-    return 'no';
-  }
-
-  return ledgerScopeInitialized;
-}
+const LOCAL_MARKETPLACE_DEFERRED_STATE_DIRS = new Set(['catalog-cache']);
 
 async function listFilesRecursively(rootDir: string): Promise<string[]> {
   const entries = await fs.readdir(rootDir, { withFileTypes: true });
   const files: string[] = [];
 
   for (const entry of entries) {
-    if (entry.name === 'config.json' || entry.name === 'installed.json') {
+    if (entry.name === 'config.json') {
       continue;
     }
     if (LOCAL_MARKETPLACE_RUNTIME_STATE_DIRS.has(entry.name)) {
@@ -2384,6 +1735,101 @@ async function copyBundleToStaging(embeddedRoot: string, stagingRoot: string): P
   await fs.copy(path.join(embeddedRoot, '.claude-plugin'), path.join(stagingRoot, '.claude-plugin'));
   await fs.copy(path.join(embeddedRoot, '.agents'), path.join(stagingRoot, '.agents'));
   await fs.copy(path.join(embeddedRoot, 'plugins'), path.join(stagingRoot, 'plugins'));
+}
+
+function normalizePluginRelativeDirectory(value: unknown, fallback: string): string | null {
+  const raw = typeof value === 'string' && value.trim() !== '' ? value : fallback;
+  const normalized = path.posix.normalize(raw.replace(/^\.\//u, ''));
+  return normalized === '..' || normalized.startsWith('../') || path.isAbsolute(normalized)
+    ? null
+    : normalized;
+}
+
+async function assertOverlayTreeHasNoSymlinks(root: string): Promise<void> {
+  const pending = [root];
+  while (pending.length > 0) {
+    const current = pending.pop()!;
+    for (const entry of await fs.readdir(current, { withFileTypes: true })) {
+      const entryPath = path.join(current, entry.name);
+      if (entry.isSymbolicLink()) {
+        throw new Error(`Dynamic Skill overlay 不能包含符号链接：${entryPath}`);
+      }
+      if (entry.isDirectory()) pending.push(entryPath);
+    }
+  }
+}
+
+async function replayOwnedDynamicSkillOverlays(
+  sourceRoot: string,
+  stagingRoot: string,
+): Promise<void> {
+  const sourcePluginsRoot = path.join(sourceRoot, 'plugins');
+  const pluginEntries = await fs.readdir(sourcePluginsRoot, { withFileTypes: true }).catch(() => []);
+  for (const pluginEntry of pluginEntries) {
+    if (!pluginEntry.isDirectory() || pluginEntry.isSymbolicLink()) continue;
+    const pluginName = pluginEntry.name;
+    const sourcePluginRoot = path.join(sourcePluginsRoot, pluginName);
+    const stagingPluginRoot = path.join(stagingRoot, 'plugins', pluginName);
+    if (!await fs.pathExists(stagingPluginRoot)) continue;
+    const sourceManifest = await fs.readJson(
+      path.join(sourcePluginRoot, '.agents-plugin', 'plugin.json'),
+    ).catch(() => null) as Record<string, unknown> | null;
+    const targets = (sourceManifest?.artifacts as { targets?: unknown[] } | undefined)?.targets ?? [];
+    const dynamicKeys = new Set(targets.flatMap((target) => {
+      if (!target || typeof target !== 'object' || Array.isArray(target)) return [];
+      const record = target as Record<string, unknown>;
+      return record.platform === 'codex'
+        && record.target === 'codex.skill'
+        && Array.isArray(record.scopes)
+        && record.scopes.includes('user')
+        && typeof record.skillKey === 'string'
+        ? [record.skillKey]
+        : [];
+    }));
+    if (dynamicKeys.size === 0) continue;
+    const sourcePlatformManifest = await fs.readJson(
+      path.join(sourcePluginRoot, '.codex-plugin', 'plugin.json'),
+    ).catch(() => null) as Record<string, unknown> | null;
+    const stagingPlatformManifest = await fs.readJson(
+      path.join(stagingPluginRoot, '.codex-plugin', 'plugin.json'),
+    ).catch(() => null) as Record<string, unknown> | null;
+    const sourceSkillsRoot = normalizePluginRelativeDirectory(
+      sourcePlatformManifest?.skills,
+      'codex/skills',
+    );
+    if (!sourceSkillsRoot) continue;
+    let replayed = false;
+    for (const skillKey of dynamicKeys) {
+      const sourceSkillRoot = path.join(sourcePluginRoot, ...sourceSkillsRoot.split('/'), skillKey);
+      const marker = await readSkillOwnerMarker({
+        skillRoot: sourceSkillRoot,
+        allowedRoot: path.dirname(sourceSkillRoot),
+      }).catch(() => null);
+      if (
+        marker?.plugin !== pluginName
+        || marker.artifactKey !== skillKey
+        || marker.platform !== 'codex'
+        || marker.scope !== 'user'
+      ) continue;
+      await assertOverlayTreeHasNoSymlinks(sourceSkillRoot);
+      await fs.copy(
+        sourceSkillRoot,
+        path.join(stagingPluginRoot, ...sourceSkillsRoot.split('/'), skillKey),
+        { overwrite: true, errorOnExist: false, dereference: false },
+      );
+      replayed = true;
+    }
+    if (replayed) {
+      await fs.outputJson(
+        path.join(stagingPluginRoot, '.codex-plugin', 'plugin.json'),
+        {
+          ...(stagingPlatformManifest ?? {}),
+          skills: `./${sourceSkillsRoot}`,
+        },
+        { spaces: 2 },
+      );
+    }
+  }
 }
 
 function isLocalMarketplaceConfig(value: unknown): value is LocalMarketplaceConfig {
@@ -2656,14 +2102,6 @@ async function isFreshLocalMarketplace(
   }
 }
 
-async function readPreservedLedger(
-  awHome: string,
-): Promise<InstalledLedger> {
-  const ledgerPath = path.join(awHome, 'installed.json');
-  const rawLedger = await readJsonFileIfExistsSafe<unknown>(ledgerPath);
-  return validateInstalledLedger(rawLedger) ?? createDegradedLedger('rebuilt_from_missing_or_invalid');
-}
-
 async function preserveLocalRuntimeStateDirectories(
   sourceRoot: string,
   targetRoot: string,
@@ -2722,137 +2160,6 @@ async function preserveLocalCatalogCache(sourceRoot: string, stagingRoot: string
     errorOnExist: false,
   });
   await restoreStagedCurrentCatalogCacheSelectorIndexes(stagingRoot);
-}
-
-async function replayCodexUserDynamicSkillsToMarketplace(options: {
-  previousMarketplaceRoot: string;
-  marketplaceRoot: string;
-  env: NodeJS.ProcessEnv;
-}): Promise<{ warnings: string[] }> {
-  const warnings: string[] = [];
-  const recordsDir = path.join(getCodexHome(options.env), '.agent-workflows', 'records');
-  if (!(await fs.pathExists(recordsDir))) {
-    return { warnings };
-  }
-
-  const recordEntries = (await fs.readdir(recordsDir))
-    .filter((entry) => entry.endsWith('.json'))
-    .sort();
-
-  for (const entry of recordEntries) {
-    const recordPath = path.join(recordsDir, entry);
-    const recordRead = await readInstallRecordFileAt(recordPath, { env: options.env });
-    if (recordRead.status !== 'ok') {
-      warnings.push(`跳过 user dynamic skill replay：无法读取 install record ${recordPath}。`);
-      continue;
-    }
-
-    const recordFile = recordRead.value;
-    if (recordFile.record.platform !== 'codex' || recordFile.record.scope !== 'user') {
-      continue;
-    }
-
-    const dynamicSkillArtifacts = recordFile.record.artifacts
-      .filter((artifact): artifact is InstallRecordArtifact & { artifactKey: string } =>
-        artifact.target === 'codex.skill' && Boolean(artifact.artifactKey));
-    if (dynamicSkillArtifacts.length === 0) {
-      continue;
-    }
-
-    const targetPluginManifestPath = getCodexPlatformPluginManifestPath(
-      getLocalMarketplacePluginRoot(options.marketplaceRoot, recordFile.record.pluginName),
-    );
-    if (!(await fs.pathExists(targetPluginManifestPath))) {
-      warnings.push(
-        `跳过 user dynamic skill replay：current catalog 缺少 Codex plugin ${recordFile.record.pluginName}。`,
-      );
-      continue;
-    }
-
-    const targetPluginRoot = getLocalMarketplacePluginRoot(
-      options.marketplaceRoot,
-      recordFile.record.pluginName,
-    );
-    const targetSourceManifestPath = path.join(targetPluginRoot, '.agents-plugin', 'plugin.json');
-    const targetSourceManifest = await readJsonFile<Record<string, unknown>>(targetSourceManifestPath);
-    const declaredDynamicSkillKeys = getDeclaredCodexDynamicSkillKeys(targetSourceManifest);
-    const targetCodexManifest = await readJsonFile<Record<string, unknown>>(targetPluginManifestPath);
-    const targetManifestSkillsRoot = resolveCodexManifestSkillsRoot(
-      targetPluginRoot,
-      resolveCodexManifestSkillsDeclaration(targetCodexManifest),
-    );
-
-    for (const artifact of dynamicSkillArtifacts) {
-      if (!declaredDynamicSkillKeys.has(artifact.artifactKey)) {
-        warnings.push(
-          `跳过 user dynamic skill replay：current catalog 不再为 user scope 声明 Codex dynamic skill ${recordFile.record.pluginName}/${artifact.artifactKey}。`,
-        );
-        continue;
-      }
-
-      const targetRuntimeSkillRoot = getLocalMarketplaceCodexSkillRoot(
-        options.marketplaceRoot,
-        recordFile.record.pluginName,
-        artifact.artifactKey,
-      );
-      const targetSkillRoots = uniquePaths([
-        targetRuntimeSkillRoot,
-        path.join(targetManifestSkillsRoot, artifact.artifactKey),
-      ]);
-
-      if (artifact.state === 'disabled') {
-        await Promise.all(targetSkillRoots.map((targetSkillRoot) => fs.remove(targetSkillRoot)));
-        continue;
-      }
-
-      const sourceSkillRoot = path.isAbsolute(artifact.path)
-        ? artifact.path
-        : getLocalMarketplaceCodexSkillRoot(
-            options.previousMarketplaceRoot,
-            recordFile.record.pluginName,
-            artifact.artifactKey,
-          );
-      if (!(await fs.pathExists(sourceSkillRoot))) {
-        warnings.push(
-          `跳过 user dynamic skill replay：缺少 runtime skill ${recordFile.record.pluginName}/${artifact.artifactKey}（${sourceSkillRoot}）。`,
-        );
-        await Promise.all(targetSkillRoots.map((targetSkillRoot) => fs.remove(targetSkillRoot)));
-        continue;
-      }
-
-      let sourceTree;
-      try {
-        sourceTree = await validateSkillDirectory(sourceSkillRoot, 'codex.skill', {
-          ownerMarkerPolicy: 'ignore',
-        });
-      } catch (error) {
-        warnings.push(
-          `跳过 user dynamic skill replay：runtime skill ${recordFile.record.pluginName}/${artifact.artifactKey} 无效（${error instanceof Error ? error.message : String(error)}）。`,
-        );
-        await Promise.all(targetSkillRoots.map((targetSkillRoot) => fs.remove(targetSkillRoot)));
-        continue;
-      }
-      const sourceContentDigest = createDynamicSkillTreeContentDigest(sourceTree);
-      if (artifact.contentDigest && artifact.contentDigest !== sourceContentDigest) {
-        warnings.push(
-          `跳过 user dynamic skill replay：runtime skill ${recordFile.record.pluginName}/${artifact.artifactKey} 内容与 install record 不一致。`,
-        );
-        await Promise.all(targetSkillRoots.map((targetSkillRoot) => fs.remove(targetSkillRoot)));
-        continue;
-      }
-
-      for (const targetSkillRoot of targetSkillRoots) {
-        await fs.remove(targetSkillRoot);
-        await fs.ensureDir(path.dirname(targetSkillRoot));
-        await fs.copy(sourceSkillRoot, targetSkillRoot, {
-          overwrite: true,
-          errorOnExist: false,
-        });
-      }
-    }
-  }
-
-  return { warnings };
 }
 
 function resolveLocalMarketplaceStagingRoot(awHome: string): string {
@@ -3089,17 +2396,10 @@ export async function initializeLocalMarketplace(
 
   try {
     await copyBundleToStaging(inspection.embeddedRoot, stagingDir);
-    const ledger = await readPreservedLedger(inspection.awHome);
+    await replayOwnedDynamicSkillOverlays(inspection.awHome, stagingDir);
     await preserveLocalRuntimeStateDirectories(inspection.awHome, stagingDir, {
-      skip: LOCAL_MARKETPLACE_ALREADY_STAGED_STATE_DIRS,
+      skip: LOCAL_MARKETPLACE_DEFERRED_STATE_DIRS,
     });
-    const dynamicSkillReplay = await replayCodexUserDynamicSkillsToMarketplace({
-      previousMarketplaceRoot: inspection.awHome,
-      marketplaceRoot: stagingDir,
-      env,
-    });
-    warnings.push(...dynamicSkillReplay.warnings);
-    await writeJsonFile(path.join(stagingDir, 'installed.json'), ledger);
     await writeJsonFile(path.join(stagingDir, 'config.json'), {
       version: 2,
       initializedAt: new Date().toISOString(),

@@ -539,23 +539,6 @@ describe('bundle layout validation', () => {
     );
   });
 
-  it('rejects bundle source manifests whose dependencies cannot be resolved in the current catalog', async () => {
-    const repoRoot = await makeTempRepo();
-    const manifest = await readFixturePluginManifest(repoRoot);
-    manifest.dependencies = {
-      plugins: [
-        {
-          name: 'missing-helper',
-        },
-      ],
-    };
-    await writeFixturePluginManifest(repoRoot, manifest);
-
-    await expect(createSyntheticEmbeddedRoot(repoRoot)).rejects.toThrow(
-      'current catalog is missing plugin "missing-helper"',
-    );
-  });
-
   it('rejects platform manifests that accidentally keep AW-managed dependencies fields', async () => {
     const repoRoot = await makeTempRepo();
     const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);

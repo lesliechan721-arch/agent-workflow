@@ -16,7 +16,6 @@ import {
   readPluginManifest,
   STRICT_SEMVER_VALIDATION_CODE,
   validateCatalogManifest,
-  validatePluginDependencyReferences,
   validatePluginManifest,
 } from '../../src/utils/manifest.js';
 import {
@@ -27,10 +26,6 @@ import {
   CLAUDE_NATIVE_HOOK_EVENTS,
   NATIVE_HOOK_EVENT_CONTRACTS,
 } from '../../src/utils/hooks-contract.js';
-import {
-  createDependencySiblingManifest,
-  pluginDependencyValidatorParityCases,
-} from '../support/plugin-dependency-validator-parity.js';
 
 const tempDirs: string[] = [];
 
@@ -348,63 +343,6 @@ describe('manifest utils', () => {
     expect(compareStrictSemVer('1.2.3+build.1', '1.2.3+build.2')).toBe(0);
     expect(compareStrictSemVer('1.2.3-beta.1', '1.2.3')).toBeLessThan(0);
     expect(compareStrictSemVer('1.2.4', '1.2.3')).toBeGreaterThan(0);
-  });
-
-  it('normalizes manifest digest input with stable key ordering', () => {
-    const left = validatePluginManifest('/tmp/plugin', {
-      name: 'digest-demo',
-      version: '1.2.3',
-      description: 'demo',
-      compatibility: {
-        aw: {
-          minVersion: '0.1.0',
-        },
-      },
-      dependencies: {
-        plugins: [
-          {
-            name: 'shared-helper',
-            minVersion: '1.0.0',
-          },
-        ],
-      },
-      marketplace: {
-        category: 'workflow',
-        strict: true,
-        policy: {
-          installation: 'AVAILABLE',
-          authentication: 'ON_INSTALL',
-        },
-      },
-    });
-    const right = validatePluginManifest('/tmp/plugin', {
-      marketplace: {
-        policy: {
-          authentication: 'ON_INSTALL',
-          installation: 'AVAILABLE',
-        },
-        strict: true,
-        category: 'workflow',
-      },
-      description: 'demo',
-      version: '1.2.3',
-      name: 'digest-demo',
-      dependencies: {
-        plugins: [
-          {
-            minVersion: '1.0.0',
-            name: 'shared-helper',
-          },
-        ],
-      },
-      compatibility: {
-        aw: {
-          minVersion: '0.1.0',
-        },
-      },
-    });
-
-    expect(normalizeManifestDigestInput(left)).toBe(normalizeManifestDigestInput(right));
   });
 
   it('rejects hook fields and permission patterns outside the public source contract', async () => {
@@ -1900,127 +1838,4 @@ describe('manifest utils', () => {
     }
   });
 
-  it('validates catalog manifests with history, package identity, digests, and dependency minVersion', () => {
-    expect(validateCatalogManifest(createCatalogManifestFixture())).toMatchObject({
-      catalogVersion: '1.2.3',
-      channel: 'latest',
-      compatibility: {
-        aw: {
-          minVersion: '0.0.0',
-        },
-      },
-      packages: {
-        sidecar: {
-          name: '@yiliang/aw-plugins-manifest',
-        },
-        full: {
-          name: '@yiliang/aw-plugins',
-          manifestPath: './catalog-manifest.json',
-        },
-      },
-    });
-  });
-
-  it('rejects dependency minVersion that the current catalog cannot satisfy', () => {
-    const parent = validatePluginManifest('/tmp/plugins/dependency-parent', {
-      name: 'dependency-parent',
-      version: '1.0.0',
-      description: 'parent',
-      compatibility: {
-        aw: {
-          minVersion: '0.0.0',
-        },
-      },
-      dependencies: {
-        plugins: [
-          {
-            name: 'shared-helper',
-            minVersion: '2.0.0',
-          },
-        ],
-      },
-      marketplace: {
-        category: 'workflow',
-        strict: true,
-        policy: {
-          installation: 'AVAILABLE',
-          authentication: 'ON_INSTALL',
-        },
-      },
-    });
-    const dependency = validatePluginManifest('/tmp/plugins/shared-helper', {
-      name: 'shared-helper',
-      version: '1.5.0',
-      description: 'helper',
-      compatibility: {
-        aw: {
-          minVersion: '0.0.0',
-        },
-      },
-      marketplace: {
-        category: 'workflow',
-        strict: true,
-        policy: {
-          installation: 'AVAILABLE',
-          authentication: 'ON_INSTALL',
-        },
-      },
-    });
-
-    expect(() => validatePluginDependencyReferences([
-      {
-        rootDir: '/tmp/plugins/dependency-parent',
-        manifestPath: '/tmp/plugins/dependency-parent/.agents-plugin/plugin.json',
-        manifest: parent,
-      },
-      {
-        rootDir: '/tmp/plugins/shared-helper',
-        manifestPath: '/tmp/plugins/shared-helper/.agents-plugin/plugin.json',
-        manifest: dependency,
-      },
-    ])).toThrow('does not satisfy minimum 2.0.0');
-  });
-
-  it('keeps CLI manifest validation in sync with dependency parity fixtures', () => {
-    for (const testCase of pluginDependencyValidatorParityCases) {
-      const manifest = testCase.manifest;
-      if (!testCase.expectedError) {
-        const plugin = {
-          rootDir: '/tmp/plugins/dependency-parent',
-          manifestPath: '/tmp/plugins/dependency-parent/.agents-plugin/plugin.json',
-          manifest: validatePluginManifest('/tmp/plugins/dependency-parent', manifest),
-        };
-        const siblings = (testCase.siblingPluginNames ?? []).map((name) => ({
-          rootDir: `/tmp/plugins/${name}`,
-          manifestPath: `/tmp/plugins/${name}/.agents-plugin/plugin.json`,
-          manifest: validatePluginManifest(`/tmp/plugins/${name}`, createDependencySiblingManifest(name)),
-        }));
-
-        expect(() => validatePluginDependencyReferences([plugin, ...siblings])).not.toThrow();
-        continue;
-      }
-
-      if (testCase.expectedError.includes('current catalog is missing plugin')) {
-        const plugin = {
-          rootDir: '/tmp/plugins/dependency-parent',
-          manifestPath: '/tmp/plugins/dependency-parent/.agents-plugin/plugin.json',
-          manifest: validatePluginManifest('/tmp/plugins/dependency-parent', manifest),
-        };
-        const siblings = (testCase.siblingPluginNames ?? []).map((name) => ({
-          rootDir: `/tmp/plugins/${name}`,
-          manifestPath: `/tmp/plugins/${name}/.agents-plugin/plugin.json`,
-          manifest: validatePluginManifest(`/tmp/plugins/${name}`, createDependencySiblingManifest(name)),
-        }));
-
-        expect(() => validatePluginDependencyReferences([plugin, ...siblings])).toThrow(
-          testCase.expectedError,
-        );
-        continue;
-      }
-
-      expect(() => validatePluginManifest('/tmp/plugins/dependency-parent', manifest)).toThrow(
-        testCase.expectedError,
-      );
-    }
-  });
 });

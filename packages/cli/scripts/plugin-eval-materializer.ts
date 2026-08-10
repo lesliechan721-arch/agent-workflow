@@ -4,8 +4,10 @@ import path from 'node:path';
 
 import fs from 'fs-extra';
 
-import { CodexAdapter } from '../src/adapters/codex.js';
+import { createRebuildIntegration } from '../src/commands/rebuild-integration.js';
 import { bundleLocalPlugin, prepareLocalPluginBundleSource } from '../src/generators/local-plugin.js';
+import { createNoopDebugLogger } from '../src/output/debug-log.js';
+import { createNoopReporter } from '../src/output/reporter.js';
 import type { PluginMeta } from '../src/types.js';
 import { writePluginConfigStore } from '../src/utils/plugin-config.js';
 import { validateSkillDirectoriesRoot } from '../src/utils/dynamic-skill-tree.js';
@@ -250,10 +252,29 @@ async function materializeProfile(options: {
     env,
   });
 
-  const adapter = new CodexAdapter(projectRoot, env);
-  await adapter.installExtensions(options.prepared.plugin, options.profile.scope, {
-    event: 'install',
+  const integration = createRebuildIntegration({
+    context: {
+      env,
+      nativeCliRunner: async () => {
+        throw new Error('Plugin eval materialization cannot run a native CLI.');
+      },
+      reporter: createNoopReporter(),
+      debugLogger: createNoopDebugLogger(),
+    },
   });
+  const target = await integration.buildTarget({
+    plugin: options.prepared.plugin,
+    platform: 'codex',
+    scope: options.profile.scope,
+    cwd: projectRoot,
+    command: 'install',
+    catalog: {
+      rootDir: options.prepared.bundleRoot,
+      source: 'local',
+    },
+    includeHistoricalLifecycleArtifacts: false,
+  });
+  await integration.driver.writeArtifacts(target);
 
   const subjectRoot = options.profile.scope === 'project'
     ? projectRoot

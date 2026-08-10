@@ -16,7 +16,6 @@ import type {
   CatalogPackageSource,
 } from '../../src/utils/marketplace.js';
 import type { CatalogChannel, CatalogManifest } from '../../src/types.js';
-import { createMinimalPluginInstallStateFixtureBuilder } from '../helpers/minimal-plugin-install-state-fixtures.js';
 
 export interface PerfCatalogFixture {
   channel: CatalogChannel;
@@ -51,7 +50,9 @@ export async function createPerfCatalogFixture(
     path.join(sidecarRoot, CATALOG_MANIFEST_FILENAME),
   ) as CatalogManifest;
   if (manifest.entries.length < 4) {
-    throw new Error(`Performance catalog fixture requires at least 4 plugins, found ${manifest.entries.length}.`);
+    throw new Error(
+      `Performance catalog fixture requires at least 4 plugins, found ${manifest.entries.length}.`,
+    );
   }
 
   return {
@@ -61,40 +62,6 @@ export async function createPerfCatalogFixture(
     fullRoot,
     sidecarRoot,
     pluginNames: manifest.entries.map((entry) => entry.name),
-  };
-}
-
-export async function writePerfInstalledEvidence(options: {
-  rootDir: string;
-  pluginNames: readonly string[];
-}): Promise<{
-  workspace: string;
-  awHome: string;
-  codexHome: string;
-  claudeHome: string;
-}> {
-  const builder = await createMinimalPluginInstallStateFixtureBuilder(options.rootDir);
-  const records = [];
-  for (const pluginName of options.pluginNames) {
-    const target = builder.createTarget({
-      pluginName,
-      platform: 'codex',
-      scope: 'project',
-    });
-    await builder.writeRepoArtifact(target);
-    const lifecycle = await builder.writeHistoricalLifecycleRuntime(target);
-    const record = await builder.writeInstallRecord(target, lifecycle);
-    await builder.writeDiagnosticCache(target);
-    await builder.writeProjectIdentity(target);
-    records.push({ target, record });
-  }
-  await builder.writeDependencyIndex(records);
-
-  return {
-    workspace: builder.paths.repoRoot,
-    awHome: builder.paths.awHome,
-    codexHome: builder.paths.codexHome,
-    claudeHome: builder.paths.claudeHome,
   };
 }
 
@@ -139,7 +106,6 @@ export function createFixtureCatalogPackageSource(
         path.join(packageRoot, CATALOG_MANIFEST_FILENAME),
         'utf8',
       );
-
       return {
         identity,
         manifestText,

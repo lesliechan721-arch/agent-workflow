@@ -107,8 +107,8 @@ node .agents/skills/create-agent-workflows-plugin/scripts/init_plugin.mjs <plugi
 - 面向 Codex 的静态 skill 必须带 `agents/openai.yaml`，并显式声明 `policy.allow_implicit_invocation`。
 - Skill 的调用方式是 Skill 设计的一部分。Codex 使用 `agents/openai.yaml` 的 `policy.allow_implicit_invocation`；Claude 使用 `SKILL.md` frontmatter 的 `disable-model-invocation` 与 `user-invocable`。AW 原样保留这些字段。
 - Agent Skills portable core 与 Claude/Codex 扩展要明确区分；默认 AW validator 接受目标平台的已知扩展，`--strict-agent-skills` 只接受 portable core。
-- `dependencies.plugins` 只指向当前 catalog 内插件；版本门槛使用 `minVersion`，不写 range 或外部来源。
-- lifecycle 和 renderer 要可重试、幂等；renderer V2 只返回 plan，不直接写 Codex/Claude Skill runtime、config、install record 或 diagnostic cache。完整静态 Skill 树用 target `sourceDirs`，动态 UTF-8 覆盖用 `content.files`。
+- 插件 manifest 不支持 `dependencies`；插件必须独立声明和生成自己的运行时能力。
+- lifecycle 和 renderer 要可重试、幂等；renderer V2 只返回 plan，不直接写 Codex/Claude Skill runtime 或 config。完整静态 Skill 树用 target `sourceDirs`，动态 UTF-8 覆盖用 `content.files`。
 - 插件根 `evals/**` 是作者期材料，不放进 Skill 子树，也不进入 production runtime bundle；动态 Skill 的行为评测必须消费 materialized 最终制品。
 - `plugin:test` 只验证确定性脚本；`plugin:eval` v1 只提供 Codex 模型证据，真实模型只运行 project profile，user profile 只做确定性 materialization。
 - Codex project 插件必须有 repo-managed surface；含 Apps 或纯 native-only 的插件不能 project 安装。

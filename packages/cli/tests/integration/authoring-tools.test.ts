@@ -8,10 +8,6 @@ import fs from 'fs-extra';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { validatePluginManifest } from '../../src/utils/manifest.js';
-import {
-  createDependencySiblingManifest,
-  pluginDependencyValidatorParityCases,
-} from '../support/plugin-dependency-validator-parity.js';
 
 const execFileAsync = promisify(execFile);
 const tempDirs: string[] = [];
@@ -3595,35 +3591,6 @@ describe('authoring tools', () => {
     ).rejects.toBeDefined();
   });
 
-  it('validate_plugin.mjs stays in parity with CLI dependency validation fixtures', async () => {
-    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-dependency-parity-'));
-    tempDirs.push(tempRoot);
-    const pluginsRoot = path.join(tempRoot, 'plugins');
-
-    for (const testCase of pluginDependencyValidatorParityCases) {
-      await fs.remove(pluginsRoot);
-      const pluginDir = path.join(pluginsRoot, 'dependency-parent');
-      await writeAuthoringPluginManifest(pluginDir, testCase.manifest);
-
-      for (const siblingName of testCase.siblingPluginNames ?? []) {
-        await writeAuthoringPluginManifest(
-          path.join(pluginsRoot, siblingName),
-          createDependencySiblingManifest(siblingName),
-        );
-      }
-
-      if (testCase.expectedError) {
-        await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
-          stdout: expect.stringContaining(testCase.expectedError),
-        });
-      } else {
-        await expect(runValidatePlugin(pluginDir)).resolves.toMatchObject({
-          stdout: expect.stringContaining('[PASS] All checks passed.'),
-        });
-      }
-    }
-  });
-
   it('validate_plugin.mjs rejects a stale CLI manifest contract and uses lightweight fallback', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-validator-stale-dist-'));
     tempDirs.push(tempRoot);
@@ -3651,7 +3618,7 @@ describe('authoring tools', () => {
     await fs.outputFile(
       staleManifestModulePath,
       [
-        'exports.validatePluginDependencyReferences = () => {};',
+        'exports.validatePluginManifest = () => {};',
         'exports.validateSourcePluginManifest = async (_pluginDir, manifest) => {',
         '  if (!manifest.skillTriggers) throw new Error("stale validator requires skillTriggers");',
         '};',

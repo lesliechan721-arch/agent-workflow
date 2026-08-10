@@ -2,542 +2,245 @@
 
 ## 前置条件
 
-- Node.js 版本至少为 `20`
-- 已全局安装 `@yiliang/aw`（`npm install -g @yiliang/aw`）
-- 写入 Claude 目标时需要 Claude Code `>= 2.1.88`
-- 写入 Codex 目标时需要 Codex `>= 0.145.0`；Codex project scope 也会在写 repo-visible artifacts 前检查版本。Codex `0.144.x` 可能不暴露 `spawn_agent` 的 `agent_type` 参数，导致 `codex-explore` 无法调度专用子代理
-
-## 快速上手
+- Node.js `>= 20`
+- 全局安装 `@yiliang/aw`
+- Claude 写入需要 Claude Code `>= 2.1.88`
+- Codex 写入需要 Codex `>= 0.145.0`
 
 ```bash
-# 1. 可选：提前预热远程 catalog 和 artifact cache
+npm install -g @yiliang/aw
 aw init
-
-# 2. 安装插件
 aw install git-commit -p both
-
-# 3. 查看安装状态
 aw status
 ```
 
-`aw install` 和 `aw upgrade` 会先解析 current catalog。显式运行 `aw init` 不是硬性前置步骤，但适合首次安装前预热远程 catalog/cache，或验证当前网络、selector 和本地 fallback 状态。纯 `Codex + project scope` 安装走当前仓库的 repo-visible artifacts，只读使用 current catalog，不会为了当前项目写入去初始化、修复或注册用户级 Codex marketplace。
+`aw init` 只预热 catalog 和 strict artifact cache。`install`、`upgrade`、`reinstall`、`uninstall`、`cleanup` 是五个写命令，它们都通过同一条 rebuild pipeline 执行。
 
-带动态 `codex.skill` 或 `claude.skill` 的插件也由 AW 统一安装和刷新。manifest `sourceDirs` 可以提供任意目录文件，包括二进制资源；多个源按顺序合并。renderer 只返回 ArtifactPlan V2，并用 `content.files` 提供 UTF-8 动态覆盖。AW 合并并验证最终文件树，再原子写入 user 或 project runtime。Skill 的调用行为由最终文件树中的平台原生元数据决定，AW 不改写这些值。配置变化命中 `refreshKeys` 后，同一条 apply 路径会重新生成完整 Skill并更新 dynamic diagnostic cache。
+## Target
 
----
-
-## 命令参考
-
-### `aw init`
-
-预热远程 catalog 和 artifact cache。`aw init` 会先获取轻量 sidecar 包 `@yiliang/aw-plugins-manifest`，确认 catalog 与当前 CLI 兼容后，再解析同版本 full catalog 包 `@yiliang/aw-plugins` 的 identity；如果本机已有完全匹配的 cache，就直接复用，否则下载 full catalog 并校验 manifest、integrity 和 artifact digest。它不安装插件、不升级插件、不写 install record，也不写活 active local marketplace/runtime view；需要 user-scope native runtime 的写命令会在真正调用平台 native 能力前 materialize active view。
+绑定插件 target 的写命令必须明确平台：
 
 ```bash
-aw init [-f|--force] [--catalog-channel <dist-tag>|--catalog-version <semver>]
+aw install git-commit -p codex -s user
+aw install git-commit -p codex -s project
+aw install git-commit -p both -s user
 ```
 
-- `-f, --force`：绕过已匹配的 cache 快路径并强制尝试重新拉取和重建匹配 selector 的 catalog/cache；resolver 远程失败时仍会严格检查匹配 cache fallback，但公开命令会拒绝 cache 结果并报错；命令不会删除仍被安装位置或恢复证据引用的 historical runtime
-- `--catalog-channel <dist-tag>`：本次预热使用显式 dist-tag；`aw init --channel <dist-tag>` 是兼容别名
-- `--catalog-version <semver>`：本次预热使用显式 exact catalog version；与 `--catalog-channel` 互斥
-- selector 只影响本次命令，不修改持久默认 channel，也不会污染其它 channel 或 exact version 的离线 fallback
+- `-p, --platform`：`codex`、`claude` 或 `both`
+- `-s, --scope`：`user` 或 `project`，默认 `user`
+- `both` 只展开插件实际支持的平台
+- Codex project scope 只写当前仓库，不注册用户级 Codex plugin
 
-稳定版 CLI 默认解析 `@yiliang/aw-plugins-manifest@latest`，prerelease / beta CLI 默认解析 `@yiliang/aw-plugins-manifest@beta`。`latest` catalog 只接受 stable catalog version 和 stable 插件 version；`beta` catalog version 必须是 prerelease，且可包含 stable 或 prerelease 插件 version。
+插件 manifest 不支持顶层 `dependencies`。CLI 不自动安装其它插件，也不提供插件依赖保护。
 
-如果 latest catalog 的最低 CLI 版本高于当前 `aw`，CLI 不会写入这个不兼容 catalog，而是按 sidecar manifest 的 history 查询同一轨道里仍支持当前 CLI 的最新历史 catalog。history 不可用、schema 不支持或内容非法时返回 `catalogHistoryUnavailable`；有效 history 确认没有兼容 catalog 时返回 `awVersionTooLow`。解析出合法 catalog identity 后，匹配 cache 可以作为快路径使用；普通远程校验失败时，匹配 cache 也可以作为 fallback。selector cache 还必须属于当前规范化 npm registry；切换 registry 后不会使用其它 registry 或旧的无来源记录作为 fallback。`forceRemote` resolver 会跳过 cache 快路径；远程失败时，它仍可返回 selector 精确匹配且完整性、identity 和兼容性严格验证通过的 cache fallback，并标记 `cacheState.state=refreshFailed`。公开 `aw init --force` 随后会拒绝这个 cache 结果并报错。远程不可用且没有允许使用的匹配 cache 时，需要 current catalog 的命令返回 `catalogUnavailable`。这些场景都不会回退到 CLI 包内 embedded catalog。
+## Catalog 和 Cache
 
-不同命令使用不同 freshness 策略：
+`aw init` 先获取 `@yiliang/aw-plugins-manifest` sidecar，再获取同版本 `@yiliang/aw-plugins` full catalog，并校验 package identity、manifest digest 和 artifact digest。
 
-| 入口 | Catalog 行为 |
-|------|--------------|
-| `aw status` | 优先读取合法 cache，不做后台刷新 |
-| `aw` 主控制台首页 | 优先显示合法 cache；cache 过期时在后台检查远程 catalog，并在下一次导航时应用结果 |
-| `install`、`upgrade`、普通 `init` | 要求一次远程检查；失败时可以使用严格匹配的合法 cache fallback |
-| `init --force` | resolver 跳过 cache 快路径并强制尝试远程刷新；如果 resolver 返回严格验证的 cache fallback，命令层拒绝该结果并报错 |
+```bash
+aw init
+aw init --force
+aw init --catalog-channel beta
+aw init --catalog-version 1.2.0-beta.1
+```
 
-主控制台的写动作完成后会重读本地状态。它不会把这次状态重读变成另一轮远程 catalog 请求。诊断中的 `cacheState` 可为 `fresh`、`stale` 或 `refreshFailed`：分别表示 cache 仍新鲜、合法 cache 已超过 TTL、远程刷新失败后使用了合法 fallback。
+- 普通 `init`、`install` 和 `upgrade` 要求一次远程检查；远程失败时，可以使用 selector 和 identity 都严格匹配的合法 cache。
+- `status` 和主控制台 warm load 使用 `cacheFirst`，不会为了显示状态自动刷新远程内容。
+- `init --force` 跳过 cache 快路径。远程刷新失败时，公开命令返回失败。
+- cache 按 selector 和 registry source identity 隔离，并使用 immutable entry、原子 selector publication 和有界 lock。
+- active marketplace 重建会保留 strict catalog cache 和 AW config store。
 
-同一组 catalog selector 也用于 `aw install`、`aw upgrade`、`aw reinstall`、`aw status`、发现类入口，以及未安装或未消费 store 上需要 current catalog schema 的 `aw config list/get/set/unset`。直接命令的 JSON / verbose 输出会展示请求 selector、实际 catalog identity、latest blocked 状态，以及 cache source 或 fallback 证据。
+如果 latest catalog 的最低 CLI 版本高于当前 `aw`，CLI 只按 sidecar history 查询同一轨道中仍支持当前 CLI 的最新 catalog。history 不可用、schema 不支持或内容非法时返回 `catalogHistoryUnavailable`；有效 history 确认没有兼容 catalog 时返回 `awVersionTooLow`。catalog history 记录历史 catalog version、catalog 最低 CLI 版本、plugin version、plugin 最低 CLI 版本、`artifactDigest` 和 `manifestDigest`。它不是可直接安装的多版本索引。
 
-### Catalog 与原生命令环境变量
+### 环境变量
 
 | 环境变量 | 默认值 | 合法值 | 说明 |
 |----------|--------|--------|------|
-| `AW_CATALOG_CACHE_TTL_MS` | `300000` | 整数 `0..86400000` | `0` 关闭 settled cache 快路径，但保留持久 cache 和合法 fallback |
-| `AW_CATALOG_REMOTE_TIMEOUT_MS` | `5000` | `0` 或整数 `100..60000` | catalog 远程 deadline；`0` 禁用 deadline |
-| `AW_NATIVE_CLI_TIMEOUT_MS` | `60000` | `0` 或整数 `1000..600000` | 只用于 basename 为 `codex` 或 `claude` 的命令；`0` 禁用默认超时 |
+| `AW_CATALOG_CACHE_TTL_MS` | `300000` | 整数 `0..86400000` | settled cache TTL |
+| `AW_CATALOG_REMOTE_TIMEOUT_MS` | `5000` | `0` 或整数 `100..60000` | catalog 远程 deadline |
+| `AW_NATIVE_CLI_TIMEOUT_MS` | `60000` | `0` 或整数 `1000..600000` | Codex/Claude 原生命令 timeout |
 
-这些变量只接受严格的非负十进制整数。不接受小数、正负号、空白或指数格式。非法值会立即报错。原生命令显式传入的 invocation timeout 优先于 `AW_NATIVE_CLI_TIMEOUT_MS`，但非法环境值仍会报错。
+## 五个写命令
 
----
-
-### `aw`
-
-`aw` 主命令是唯一交互入口。TTY 环境下直接运行 `aw` 会打开插件管理控制台，首页按 `异常`、`可升级`、`已安装`、`未安装` 分组展示插件；详情页承载安装、升级、配置、卸载、清理、重装和重新应用配置动作，状态页只展示状态详情。子命令只服务脚本化调用，不会弹出 prompt。
+### Install
 
 ```bash
-aw
+aw install <plugin...> -p codex|claude|both [-s user|project] [--script-timeout <ms>] [--json]
 ```
 
-主控制台复用 `aw status --json.consoleItems` 的状态投影：首屏合并 current catalog、install record、project artifact identity、native evidence、dynamic diagnostic cache 和 dependency index；同名插件多个位置只显示一个 item，执行写动作前必须先选明确位置。用户可见页面不会显示诊断入口、raw command 或字符串 `nextSteps`。安装和升级向导固定先选插件、平台和位置，再执行只读安全预检。只有预检通过后，才进入 required config 表单。非 TTY、`CI=true` 或 prompt 不可用时，直接运行 `aw` 不会挂起，会返回清晰错误、可复制的脚本化命令示例和 `--json` 机器输出提示。
+`install` 按 current catalog 生成期望组件，检查 live ownership，再写平台原生和 repo-managed 组件。成功后保存 lifecycle active snapshot。
 
-配置向导只在 `aw` 主控制台中提供。脚本里请使用 `aw config set/unset/reset` 写入配置。
-
----
-
-### `aw install`
+### Upgrade
 
 ```bash
-aw install [插件名...] [-s project|user] -p codex|claude|both [--adopt-existing] [--script-timeout <ms>] [-j|--json]
+aw upgrade <plugin...> -p codex|claude|both [-s user|project] [--json]
+aw upgrade --all -p codex|claude|both [-s user|project] [--json]
 ```
 
-| 选项 | 默认值 | 说明 |
-|------|--------|------|
-| `-s, --scope` | `user` | `user`：安装到用户全局目录（`~/.claude/` 或 `~/.codex/`）；`project`：安装到当前目录（`.claude/` 或 `.codex/`） |
-| `-p, --platform` | 必填 | 显式选择 `claude`、`codex` 或 `both`；`both` 按每个插件当前支持平台集合展开 |
-| `--script-timeout` | 插件 manifest 或 `30000` | 覆盖 lifecycle 脚本超时，单位毫秒，合法范围 `1000..300000` |
-| `--adopt-existing` | 关闭 | 只允许 project scope；fresh clone 后仓库已有可验证 repo-visible artifacts 和 project artifact identity、本机缺少 install record 时，用它创建本机 record 并认领共享产物 |
-| `--catalog-channel` | 当前 CLI 默认轨道 | 本次命令显式使用某个 catalog dist-tag；不改变持久默认 channel |
-| `--catalog-version` | 无 | 本次命令显式使用某个 exact catalog version；与 `--catalog-channel` 互斥 |
-| `-j, --json` | 关闭 | stdout 输出单一 JSON receipt，包含 `receiptSchemaVersion: 2`、`ok`、`command`、`plugins`、`targets`、`actions`、`artifacts`、`native`、`warnings` 和结构化 `nextSteps` |
+`upgrade` 按 current catalog 重建目标。`--all` 只从 live owner marker 发现当前 target。
 
-一次安装多个插件：
+### Reinstall
 
 ```bash
-aw install git-commit another-plugin -p claude
+aw reinstall <plugin> -p codex|claude|both [-s user|project] [--json]
 ```
 
-如果目标插件声明了 `dependencies.plugins`，`aw install` 会在写入任何状态前先解析完整依赖图。缺失依赖会自动安装；已经安装但低于 `dependencies.plugins[].minVersion` 的依赖会自动升级；已经健康满足的依赖不会重复安装，但父插件的依赖引用会刷新。默认输出会说明哪些插件是自动依赖，`--json` receipt 中自动依赖 target 会带 `requested: false` 和 `dependencyOf`。
+`reinstall` 先删除能证明属于 AW 的目标组件，再按 current catalog 完整重建。它保留 AW config。配置会参与重建后的 artifact 渲染和 lifecycle context。
 
-`install --adopt-existing` 是 project fresh clone 的认领入口。它不会覆盖普通外部 evidence，也不会把已有有效 install record 当成需要认领的目标；如果共享产物或 identity 无法验证，命令会在写入前失败，并提示先查看 `aw status --verbose` 的状态详情。
-
----
-
-### `aw uninstall`
+### Uninstall
 
 ```bash
-aw uninstall [插件名...] [-s project|user] -p codex|claude|both [--script-timeout <ms>] [--remove-config] [-j|--json]
+aw uninstall <plugin...> -p codex|claude|both [-s user|project] [--json]
 ```
 
-参数与 `install` 相同。卸载会清理当前 scope 里 AW 管理的平台原生注册、repo-visible artifacts、project artifact identity、dynamic diagnostic cache 和 install record，但默认保留 AW 自管配置；需要在主体卸载成功后同时删除当前 target scope/store 的 AW 自管配置时，传 `--remove-config`。Codex project scope 只清理当前仓库里 AW 管理的 repo-visible artifacts，不会删除用户级 Codex native plugin 状态。`--json` receipt 会包含清理动作、native 结果、artifact 结果、配置处理结果、warnings 和 next steps。
+`uninstall` 删除 AW-owned 组件。最后一次成功写入留下 lifecycle active snapshot 时，命令使用它运行 uninstall lifecycle。snapshot 缺失不改变 live ownership 判断。
 
-如果目标仍被其它已安装插件依赖，`aw uninstall` 会拒绝单独卸载，并提示先卸载依赖它的插件。父插件成功卸载后，AW 会反向检查自动依赖：如果某个自动安装的依赖没有可信 incoming edge，只给出手动处理建议，不会自动删除。`aw uninstall` 仍然依赖可信 dependency index 做跨 scope 删除保护；但 `aw cleanup` 是用户显式确认的残留收口入口，只要 AW 能定位到要删的残留，并且没有已知 dependents，命令就会继续执行，不再把用户卡回“重装一遍”或手动改文件。
-
-`aw uninstall` 只处理有有效 install record、且能安全标准卸载的目标。record 损坏、native 状态不完整、可认领 project 产物、AW-owned 残留、外部归属冲突或依赖元数据异常时，命令会在删除前失败，并给出稳定 reason code 和下一步入口；需要收口异常状态时，改用 `aw cleanup` 或 `aw reinstall`。`cleanup` 默认保留配置，且不运行 uninstall lifecycle。
-
----
-
-### `aw upgrade`
+### Cleanup
 
 ```bash
-aw upgrade [插件名...] [-a|--all] [-s project|user] -p codex|claude|both [--script-timeout <ms>] [-j|--json]
+aw cleanup <plugin> -p codex|claude|both [-s user|project] [--json]
 ```
 
-- 指定插件名，或用 `-a, --all` 升级当前 scope 下所有已管理的插件
-- 显式升级会先安装缺失依赖、再升级已安装依赖，最后升级用户指定的父插件；父插件失败时不会提交失败父插件的依赖引用
-- current catalog 来自最新兼容远程 catalog、历史兼容 catalog，或已经解析出允许使用的 catalog identity 后命中的匹配 cache；latest catalog 被当前 CLI 阻止时，不会显示成插件可升级
-- 若插件的能力（instructions / permissions / hooks / native hooks / agents）发生变更，CLI 会先卸载再重新安装
-- `upgrade --all` 只把用户显式保留的安装作为根，从 current catalog 展开依赖图；孤立 auto dependency 不会被当作用户目标，旧 edge 中已经不再需要的自动依赖不会阻塞父插件升级
-- `upgrade --all` 只处理 `catalogCompatibility=current` 且 scope 已初始化的插件；缺失、能力变更、外部 marketplace 管理、project artifact identity 损坏或项目配置不可读时会把对应 target 放入 `skipped[]`
-- `upgrade --all` 的默认输出会同时展示成功和跳过摘要；部分成功部分跳过时退出码为 `0`，全部 target 都 skipped 且没有成功升级时退出码为 `1`
-- `--json` receipt 包含 `upgraded`、`skipped`、`targets`、`actions`、`native`、`artifacts`、`warnings` 和 `nextSteps`
+`cleanup` 只删除能通过 owner marker 或平台 ownership 检查证明属于 AW 的现场组件。它不运行 uninstall lifecycle，也不删除 AW config。无法证明归属的组件不会被删除。
 
----
-
-### `aw status --verbose`
+## Live Status
 
 ```bash
-aw status [插件名...] [-s project|user] [-p codex|claude|both] [--verbose] [-j|--json]
+aw status
+aw status git-commit -p codex -s project
+aw status git-commit -p codex -s project --verbose
+aw status git-commit -p codex -s project --json
 ```
 
-`status --verbose` 是统一只读排查入口。它不执行 lifecycle、不修复文件，详细说明当前证据来自哪些层：current catalog、平台现场、project artifact identity、install record、dynamic diagnostic cache、historical lifecycle runtime、dependency index、native transaction marker 和配置状态。原先需要深度诊断才能看到的信息迁移到这里；不再提供额外的 `--deep` 用户选项。
+`status` 读取 current catalog、live owner marker 和平台原生组件。它不运行 lifecycle 或 renderer，不刷新 marketplace，也不创建配置目录。
 
-- dependency index 不可信时，verbose / JSON 会把它作为诊断或写命令 blocker 展示；遇到 stale project reference 时会给出 token，并要求用户显式运行 `aw cleanup --dependency-index --prune-stale <token> --yes`。
-- project shared/local config、路径型配置和 ignore 规则问题会在这里汇总，方便在写命令前修正。
-- verbose / JSON 会展示 catalog selector、实际 catalog identity、catalog 最低 CLI 版本、latest 是否被当前 CLI 阻止、history schema、cache source 或 fallback 命中的 selector / catalog identity，以及 manifest mismatch、integrity failure 等原始远程错误。
+target 状态只允许：
 
----
+| 状态 | 含义 | 建议 |
+|------|------|------|
+| `present` | 所有期望 AW-owned 组件都存在 | 无 |
+| `absent` | 没有发现目标的 AW-owned 组件 | `aw install` |
+| `partial` | 只存在部分组件，或组件不完整 | `aw reinstall` |
+| `error` | catalog、发现或组件检查失败 | 查看 target errors |
 
-### 已移除的旧恢复入口
+status v3 JSON 示例：
 
-旧版恢复命令不再是公开入口，也不再提供 dependency index 重建或 project adopt 参数。新的恢复路径按状态分流：
+```json
+{
+  "schemaVersion": 3,
+  "catalog": {
+    "source": "cache",
+    "catalogVersion": "1.2.0"
+  },
+  "filters": {
+    "plugins": ["git-commit"],
+    "platform": "codex",
+    "scope": "project",
+    "cwd": "/workspace"
+  },
+  "targets": [
+    {
+      "target": {
+        "plugin": "git-commit",
+        "platform": "codex",
+        "scope": "project",
+        "cwd": "/workspace"
+      },
+      "state": "present",
+      "components": [],
+      "errors": []
+    }
+  ],
+  "errors": []
+}
+```
 
-- project fresh clone 中已有可验证共享产物，但本机没有 install record：使用 `aw install <插件名> -p <platform> -s project --adopt-existing`
-- AW-owned 残留、marker-only 或无效 record：使用 `aw cleanup <插件名> -p <platform> -s <scope>`
-- 需要按 current catalog 删除后重建：使用 `aw reinstall <插件名> -p <platform> -s <scope>`
-- dependency index stale project reference：只使用 `aw cleanup --dependency-index --prune-stale <token> --yes`
+主控制台使用同一份 live status，不维护另一套状态投影。
 
----
-
-### `aw cleanup`
+## Config
 
 ```bash
-aw cleanup [插件名...] [-s project|user] [-p codex|claude|both] [--force] [--remove-config] [--dependency-index --prune-stale <token>] [-y|--yes] [-j|--json]
+aw config list codex-explore -s user --json
+aw config get codex-explore standardModel -s user --json
+aw config set codex-explore standardModel gpt-5.6-terra -s user --json
+aw config unset codex-explore standardModel -s user --json
+aw config reset codex-explore -s user --yes --json
 ```
 
-`cleanup` 是异常状态和残留的直接收口入口。它覆盖 marker-only、半完成写入、AW-owned 残留、无效 record、native transaction marker、historical runtime 残留和 dependency index 引用残留；外部归属证据只作为 blocker 或 skipped item，不会被默认删除。cleanup 不再提供只读 plan 模式：命令通过安全边界后会直接执行，默认保留 AW 自管配置，也不会运行 uninstall lifecycle。
+配置合并顺序：manifest default、user store、project shared store、project local store。
 
-`cleanup --force` 是 direct CLI 的高风险确认，不再额外要求 `--yes`。执行 receipt 会列出 force reason、备份项、跳过项、受影响 dependents、阻断原因和实际未清项；如果无法归类、枚举或证明归属，命令仍会失败并给出人工处理建议。`--remove-config` 只在主体清理成功后删除当前 target scope/store 的 AW 自管配置；主体被阻断或失败时配置会保留。普通插件 cleanup 不接受 `--yes`，`--yes` 只用于 dependency index stale reference prune。
+- config read 使用 `configSchemaVersion: 3`。
+- config write 使用 `receiptSchemaVersion: 3`。
+- config 写入会对当前可定位 target 运行完整 reinstall。
+- `uninstall`、`cleanup` 和 `reinstall` 都保留 config。
+- `config reset` 是删除 config store 的唯一入口。
+- project shared 配置可提交；`--local` 写 project local 配置。
+- project repo-visible artifact 不能使用 user、project local 或路径型私有配置。
 
-dependency index 的 stale project reference 不会被读命令静默裁剪。只有诊断给出 token 后，才运行：
+## Lifecycle Active Snapshot
+
+带 lifecycle 的插件在成功 install 或 upgrade 后保存最小 active snapshot。它只包含下一次 uninstall 或 reinstall 所需的脚本输入和 bundle 内容。
+
+- snapshot 不表示插件已安装。
+- status 不读取 snapshot 来决定 target 状态。
+- uninstall/reinstall 可以使用 snapshot 运行对应 lifecycle。
+- cleanup 不运行 uninstall lifecycle。
+- snapshot 缺失时，live owner marker 仍是清理边界。
+
+## 平台输出
+
+Codex project scope 可以写：
+
+- `.agents/skills/<skill>/`
+- `.codex/config.toml`
+- `.codex/hooks.json`
+- `.codex/rules/`
+- `.codex/agents/`
+
+Codex user scope 可以使用 `codex plugin marketplace add/list/remove` 和 `codex plugin add/remove`。Claude user/project scope 使用 Claude 的 settings、skills、hooks 和 plugin 目录。
+
+Skill 的调用行为来自平台原生元数据：Codex 使用 `agents/openai.yaml` 的 `policy.allow_implicit_invocation`；Claude 使用 `SKILL.md` 的 `disable-model-invocation` 和 `user-invocable`。AW 校验并保留这些值。
+
+MCP、apps、hooks、permissions、roles、instructions、skills 和 slash commands 都继续由平台能力层处理。
+
+## JSON 和退出码
+
+| 输出 | 版本 |
+|------|------|
+| 五个写命令 receipt | `receiptSchemaVersion: 3` |
+| status | `schemaVersion: 3` |
+| config list/get | `configSchemaVersion: 3` |
+| config set/unset/reset | `receiptSchemaVersion: 3` |
+
+- `--json` 成功时 stdout 只包含一个可解析 JSON 对象。
+- verbose/debug 信息和错误说明写 stderr。
+- 写命令 target 失败时，receipt 保留失败结果，命令返回非零退出码。
+- status 含 `error` target 时返回非零退出码；其它 target 仍保留在 JSON 中。
+
+## 常见处理
+
+状态为 `absent`：
 
 ```bash
-aw cleanup --dependency-index --prune-stale <token> --yes
+aw install git-commit -p codex -s project
 ```
 
----
-
-### `aw reinstall`
+状态为 `partial`：
 
 ```bash
-aw reinstall [插件名...] [-s project|user] -p codex|claude|both [-j|--json]
+aw reinstall git-commit -p codex -s project
 ```
 
-`reinstall` 等价于先读取详细状态，再安全移除 AW-owned 状态，最后按 current catalog 重新安装。遇到 project fresh clone 的可认领共享产物时默认停止，提示改用 `aw install --adopt-existing`，避免把团队共享产物当成残留覆盖。Skill 的调用行为来自 current catalog artifact 中的平台原生元数据，重装不提供覆盖参数。
-
-`reinstall` 必须拿到 current catalog，不能在 catalog unavailable 时改用 historical runtime 重新铺一遍。旧状态撤销阶段继承 `uninstall` 的安全边界；如果需要运行旧 lifecycle、撤销动态 artifact 或收口 native 副作用，而 historical runtime 缺失或摘要不可信，本次重装会在写入新版本前失败。
-
----
-
-### `aw config`
-
-`aw config` 管理 AW 自管插件配置，独立于 Claude 原生 `userConfig`。插件只要在当前 catalog 中声明了 `config.schema`，就可以先配置后安装，也可以在未安装插件的另一层 scope 里预置覆盖值。脚本化配置命令只有 `set`、`unset`、`reset`、`get` 和 `list`；交互式配置请运行 `aw` 主控制台。
+只删除已证明属于 AW 的现场组件：
 
 ```bash
-aw config list <插件名> [-s project|user] [-j]
-aw config get <插件名> [key] [-s project|user] [-j]
-aw config set <插件名> <key> <value> [-s project|user] [--value-json] [-j]
-aw config unset <插件名> <key> [-s project|user] [-j]
-aw config reset <插件名> [-s project|user] [-y] [-j]
+aw cleanup git-commit -p codex -s project
 ```
 
-- `set` / `unset` / `reset` 默认写 `user`；`get` / `list` 默认读取 effective config。
-- effective config 按 `manifest default < user store < project shared store < project local store` 合并，project local 只影响本机读命令、lifecycle/helper 或未来 local-only 能力。
-- project shared config 在仓库或 workspace 内锚定 repo root，路径是 `.agent-workflows/plugin-config/<plugin>/config.json`，可以提交；project local config 位于 `.agent-workflows/plugin-config.local/<plugin>/config.json`，默认忽略。不在仓库内时退回 normalized command `cwd`。
-- `file` / `directory` 是本机路径型配置，只能写 user store 或 project local store，写入时会把相对路径按 AW project root 解析，并以 canonical absolute realpath 落盘；后续每次读取都会重新校验路径是否仍存在且类型正确。路径型配置不能进入 project shared config，也不能参与 project repo-visible artifact 的 render config、digest、stale 判断或 refresh。
-- `--value-json` 只影响 `set` 的输入值解析；`--json` 只影响输出格式。
-- 已安装位置的 schema 优先来自 install record 绑定的 historical runtime / manifest；current catalog 不可用时，只要 historical schema 健康且没有 schema conflict，已安装插件的配置读写仍可继续。未安装插件的配置预置或未消费 store 需要 current catalog schema，拿不到时会失败。
-- `reset` 是单纯的 config store 级删除，不卸载插件、不清理 runtime artifact，也不处理 native residue。已被安装位置消费的 store 会走 installed-aware write，receipt 暴露 `removedKeys` 和 `artifactRefresh`，删除命中 `refreshKeys` 时按 historical runtime 刷新动态 artifact；schema conflict 时只能作为整 store 清理动作继续，不能任选一个 schema 解释输入。孤立残留 store 才允许确认后 raw 删除，不伪造 schema identity，也不刷新 artifact。存在 store 且未传 `--yes` 时，脚本化命令会确定性失败，不会静默删除；需要交互确认时请运行 `aw` 主控制台。
-- `set` / `unset` / `reset` 共用配置写入 helper。JSON receipt 顶层使用 `receiptSchemaVersion: 2`，稳定返回 `updatedKeys`、`removedKeys`、`affectedFields` 和 `artifactRefresh`；sensitive 值不会在默认输出、debug log 或 receipt 中明文出现。
-
-插件名会先经过 config store 路径段安全校验：只允许非空单段名称，拒绝路径分隔符、`.`、`..`、绝对路径和 URL-like 值。
-
-带动态 artifact 的插件会在配置写入后按需刷新已安装产物。刷新只在写入的 key 命中已安装 artifact 的 `refreshKeys` 时触发；未命中时只保存配置。user 配置写入会刷新 user scope artifact，并在当前仓库也安装了 project artifact 时一并刷新当前仓库；project 配置写入只刷新当前仓库 project artifact，不会改写 user artifact。CLI 不会扫描所有历史项目。刷新执行 renderer 时使用当前 location 的 install record 所引用的 historical bundle，而不是可能已被运行时产物覆盖的本地 marketplace 当前副本；historical bundle 缺失或校验失败时，本次刷新会失败并留下诊断。动态 Skill 刷新会校验并保留 renderer 最终文件树中的平台原生调用元数据。
-
-刷新使用 artifact render config，而不是 `get/list` 的 effective config：user artifact 只看 `default < user store`，project repo-visible artifact 只看 `default < project shared store` 中可共享的键。user / project local 覆盖不会改变 project artifact identity、config digest 或 stale 判断。如果 renderer、project preflight 或写盘失败，已经写入的 config store 会保留，受影响 artifact 会在 dynamic diagnostic cache 中标记为最近刷新失败，`aw status` 可继续诊断。`aw config ... --json` 会在 receipt 中包含 `artifactRefresh.attempted`、`status`、`triggerKeys`、`artifacts[]`，失败时还会有稳定的 `error` 摘要。
-
-`aw` 主控制台里的“重新应用配置”复用 artifact apply 和 diagnostic cache 写回路径，但不修改 config store。成功后会更新对应 artifact 的 `lastRefresh` 和 dynamic diagnostic cache；失败后保留配置，并把新的 `artifactRefresh.error` 写回 receipt 和后续 status 诊断。脚本化场景通过 `aw config set/unset/reset` 写入配置来触发刷新。
-
----
-
-## 脚本化命令与安全预检
-
-`install`、`uninstall`、`upgrade` 和 `config` 子命令不会 prompt。缺少插件名、缺少必填配置、未传 `--yes` 的 reset、非 TTY 或 CI 场景都会确定性失败，并给出可复制命令；需要交互式选择时运行 `aw`。
-
-在 `Codex + project scope` 下，安装候选必须包含 repo-visible artifacts；纯 native-only 插件不能作为项目级安装目标。skills-only、mcp-only、slashCommands-only 和 extensions-only 插件都可以作为项目级候选；带 `apps` 的 Codex project 安装会明确拒绝，请改用 `--scope user` 或拆分插件。
-
-如果插件声明了 required AW config，脚本化 `install` / `upgrade` 会在写入平台状态前先解析 effective config。Codex project install / explicit upgrade / mixed explicit command 的顺序更严格：先做不会写状态的安全预检，包括 project installability、用户级 Codex config external ownership、必要的 `.codex/config.toml` 解析、project artifact identity 和未受管 repo artifact 冲突；这些都通过后，才检查 required AW config。缺少必填项或 `file` / `directory` 路径失效时，子命令会确定性失败，并提示可复制的 `aw config set` 命令或引导运行 `aw` 主控制台。同一插件在 `--platform both` 或重复 target 中只会复用一次重新解析后的 effective config。
-
----
-
-## Skill 原生调用元数据
-
-Skill 的触发行为只由平台原生元数据决定。Codex 使用 `agents/openai.yaml` 的 `policy.allow_implicit_invocation`；Claude Code 使用 `SKILL.md` frontmatter 的 `disable-model-invocation` 和 `user-invocable`。两个平台的开关完全独立。
-
-插件作者必须在 Skill 源码或动态 renderer 的最终文件树中设计这些值。AW 在安装、升级和刷新前验证类型，并原样写入最终 Skill 目录。AW 不在插件 manifest、安装参数、`aw config`、主控制台、install record 或 status JSON 中提供覆盖入口。
-
-Codex 的 `policy.allow_implicit_invocation: false` 只关闭模型隐式调用，用户仍可通过 `$skill-name` 显式调用。Claude 的显式入口由 `user-invocable` 决定，模型调用由 `disable-model-invocation` 决定。
-
----
-
-### `aw status`
+只删除配置：
 
 ```bash
-aw status [插件名...] [-s project|user] [-p codex|claude|both] [-j|--json]
+aw config reset git-commit -s project --yes
 ```
 
-不指定插件名时，显示 AW 管理过或平台可发现的插件摘要。`status` 的 `--scope` 和 `--platform` 是过滤条件；不传 `--platform` 时按 `both` 查看所有有状态证据的真实平台。需要全部平台时使用 `both`，需要单平台时使用 `codex` 或 `claude`。
-
-默认输出是日常状态面板，包含：
-
-- 状态摘要：每个位置的顶层状态只会是 `installed`、`notInstalled`、`cleanupRequired` 或 `external`
-- 位置摘要：展示用户可理解的位置、原因和可执行下一步；默认文案不展示内部诊断词
-- 下一步：给出最可能的确认或恢复入口，例如 `aw status <plugin> --verbose`、`aw upgrade <plugin> -p both`、`aw install <plugin> -p both`、`aw cleanup <plugin> -p <platform> -s <scope>` 或 `aw reinstall <plugin> -p <platform> -s <scope>`
-
-友好状态投影由 status、主控制台和 JSON 共用。有效 install record 是唯一安装真值；project artifact identity、dynamic diagnostic cache、dependency index、historical runtime 和 native marker 只能进入 reason、diagnostic、cleanup / reinstall 删除范围或 command blocker，不能单独把顶层状态改成已安装。默认输出只展示用户可理解的四态和摘要；内部状态文件、低层 runtime 细节和诊断字段只出现在 `--verbose` / `--json` 或 debug log 中。可复制命令、argv、flag、JSON 字段和类型名保留真实技术标识。
-
-`--verbose` 会展开诊断字段，包括平台检测、native plugin 状态、scope 初始化状态、install record、catalog 兼容性、managed evidence、config/script health、generated artifacts、dynamic diagnostic cache、project artifact identity、dependency index 和 drift warnings。Codex project scope 的默认状态面板以本机 install record 为安装真值；仓库里有可验证 repo-visible artifacts 和 identity、但本机没有 record 时，顶层状态是 `external`，reason 是可认领 project 共享产物，并指向 `install --adopt-existing`。动态 artifact 会单独展示 skill / instruction / role 等 artifact health，常见状态包括 healthy、disabled by config、missing、content drift、config digest stale 和 recent refresh failed。user 配置写入没有扫描历史项目时，`refreshReach` 会说明本次已刷新 user / 当前 project，以及其它已知 project target 是否可能仍 stale。`status` 只读，不会执行 lifecycle、不会执行 artifact renderer、不会刷新 marketplace、不会启动 `codex app-server`、不会创建配置目录；失效的 `file` / `directory` 配置会显示为 `invalid-config`。配置驱动的 runtime drift 会指向配置页或主控制台“重新应用配置”。`-j, --json` 输出稳定 JSON schema；即使和 `--verbose`、`--debug` 叠加，stdout 也只包含可直接 `JSON.parse` 的 JSON。
-
-依赖状态也只读展示。`status --json` 中每个位置的 `dependencies` 会包含 `declared`、`resolved`、`satisfied`、`missing`、`dependents`、`autoInstalled`、`autoRemovable`、`catalogDrift` 和 `dependencyIndexTrusted`。`missing` 表示当前健康层确实缺依赖；`catalogDrift` 表示 current catalog 和 record 里的依赖声明不同，不会单独把旧安装判成缺失依赖。`autoRemovable=true` 是只读投影，表示该位置是未显式保留的自动依赖且当前没有其它插件引用；status 和主控制台不会因此自动删除它。
-
-`status --json` 顶层使用 `statusSchemaVersion: 2`，并输出 `consoleItemsSchemaVersion: 3`、`ok`、`command`、`friendlySummaries` 和 `consoleItems`。`statusSchemaVersion: 2` 管理 status 顶层 envelope 和 `status --verbose --json` 详细结构；每个 location 的顶层 `state` 只允许 `installed`、`notInstalled`、`cleanupRequired`、`external`。`consoleItemsSchemaVersion: 3` 管理主控制台 summary shape 和结构化 `nextSteps`。功能入口放在 `features`，不输出旧 `locations[].actions[]`、命令数组、确认文案或 TUI 页面字段；真正的执行动作由主控制台在用户选择功能和明确 target 后生成。
-
-主控制台首页按用户任务分组，而不是扩展新的状态机：
-
-| 首页分组 | 来源 |
-|---|---|
-| `异常` | `cleanupRequired`、普通 `external`、缺配置、dependency blocker 等需要用户处理的条目 |
-| `可升级` | 顶层仍为 `installed`，且 current catalog 显示有可升级版本 |
-| `已安装` | 顶层为 `installed`，没有更高优先级提示 |
-| `未安装` | 顶层为 `notInstalled`，或 catalog 可发现但本机无安装证据 |
-
-详情页承载 install、upgrade、uninstall、cleanup、reinstall、adopt existing 和 reapply config 等动作；状态页只展示状态详情。用户可见页面不出现诊断入口、raw command、字符串 `nextSteps` 或旧恢复模型。
-
-Codex user native 的 JSON 字段有一个重要变化：`native.pluginInstalled` 表示 Codex cache 中已经 materialize 出可用 active version；`native.pluginEnabled` 表示用户级 config 中 `[plugins."<plugin>@aw"].enabled === true`；native transaction marker 表示 native 写入已经发生但 AW record 还没成功提交。因此 enabled-only、cache-only、marker-only 只会作为 diagnostics、command blocker 或 `cleanupRequired` 细节暴露，不再被解释成完整安装。
-
----
-
-## JSON schema 迁移说明
-
-公开 JSON 版本边界固定如下：
-
-| 字段 | 版本 | 管理范围 |
-|---|---:|---|
-| `statusSchemaVersion` | `2` | `aw status --json` 顶层 envelope、顶层字段和 verbose 详细状态 |
-| `consoleItemsSchemaVersion` | `3` | `consoleItems` summary shape 和结构化 `nextSteps` |
-| `configSchemaVersion` | `2` | `aw config list/get --json` 的 `fields` 主结构 |
-| `receiptSchemaVersion` | `2` | 写命令 receipt、target/action、结构化 `nextSteps`，以及配置写命令的 `affectedFields` |
-| `nextStepsSchemaVersion` | `1` | 同层 `nextSteps` 结构化对象数组 |
-
-暴露 `nextSteps` 的对象必须同时带 `nextStepsSchemaVersion: 1`。读配置命令使用 `configSchemaVersion: 2`，写配置命令使用 `receiptSchemaVersion: 2`；两者不能互相冒充。
-
----
-
-## Scope 与 Platform 说明
-
-### Scope
-
-| | `project` | `user` |
-|---|---|---|
-| 写入位置 | 当前项目目录下的 `.claude/`；Codex 写当前仓库的 `.agents/skills` 和 `.codex/` | `~/.claude/` 或 `~/.codex/`，并按需使用 `~/.aw` native runtime |
-| 适用场景 | 项目级配置，提交到版本控制 | 跨项目共享的个人配置 |
-
-> **Codex 注意**：`--scope user` 使用 Codex native plugin 平面。AW 会先通过 `codex plugin marketplace add <canonical ~/.aw>` 注册或重新指向本地 marketplace，用 `codex plugin marketplace list` 校验，再通过 `codex plugin add/remove` 完成安装或卸载，并做写后本地证据校验；AW 不回退到只写或只删 `~/.codex/config.toml`。`codex app-server` 的 `plugin/list`、`plugin/installed`、`plugin/read` 只用于 `status --verbose`、native view 和诊断详情这类只读视图，不是普通写命令主链路。`--scope project` 不写 `~/.codex/config.toml [marketplaces]` 或 `[plugins]`，也不调用 Codex native CLI / app-server；它只写当前仓库的 repo-visible artifacts，并维护 `.agent-workflows/project-artifacts/` 下的 shared identity metadata，但写入前仍要求本机 Codex `>= 0.145.0`。
-
-### Platform
-
-| 值 | 行为 |
-|---|---|
-| `claude` | 仅安装到 Claude Code |
-| `codex` | 仅安装到 Codex |
-| `both` | 安装、升级时按每个插件当前支持平台集合展开；恢复动作时处理所有可定位目标 |
-
-如果插件声明了 `marketplace.policy.products`，安装和升级时会拦截不匹配的平台；省略该字段表示不限制平台。绑定真实插件 target 的写入口必须显式传 `--platform codex|claude|both`；`aw status` 未传平台时按 `both` 读取状态。
-
----
-
-## 安装后生成的文件
-
-安装成功后，CLI 会在对应目录写入以下产物：
-
-**Claude**
-- `.claude/skills/<skill>/` — 动态 `claude.skill` 的完整目录树；project scope 写当前项目，user scope 写 Claude home。AW 只覆盖有 present ownership evidence 的目录，disabled target 不会取得或删除同名外部目录
-- `.claude/rules/aw-<名称>.md` — instructions 文件
-- `.claude/settings.json` — 合并 permissions 配置，并在 `awGenerated` 下记录 CLI 生成部分，尽量保留手写权限
-- Claude hooks 来自插件 bundle 内的 `claude/hooks/hooks.json`，由 Claude Code 原生插件加载；CLI 不会把它作为额外 repo-visible hook 文件写入项目目录
-
-**Codex project scope**
-- `.agents/skills/<skill>/` — Codex project scope 的 repo skill；静态 skill、动态 `codex.skill` 和公共 `slashCommands` 生成的 manual-only skill 都会以受管 identity 记录
-- `.codex/config.toml` — 追加 managed instructions block，写入动态 `developer_instructions` block、Codex agent role 注册项和 `mcp_servers`；动态 `codex.skill` 不要求 `.codex/config.toml`。MCP server key 保留 rendered `.mcp.json` 的原始属性名，包含点号、空格或 Unicode 时使用 TOML quoted key，例如 `[mcp_servers."acme.tools v1"]`
-- `.codex/rules/*.rules` — Codex execpolicy `prefix_rule(...)` 权限规则
-- `.codex/hooks.json` — Codex `hooks.<Event>[]` 钩子配置，包含公共 hooks 和 `extensions.nativeHooks.codex`
-- `.codex/agents/*.toml` — Codex agent role 文件
-
-Codex project scope 的 `.codex/hooks.json` 是共享文件。CLI 只替换自己通过 artifact identity 确认拥有的 hook groups，手写配置或其它工具写入的 runtime-valid groups 会原样保留。Codex user scope 的 hooks 不写这里；它们随 native bundle 进入 `.codex-plugin/plugin.json` 的 `hooks` 字段，由 Codex `>= 0.145.0` 原生插件生命周期加载。历史上由 AW 写到 user scope `.codex/hooks.json` 的旧 hook groups 本期不迁移、不接管；缺少 ownership evidence 时也不会自动删除。
-
-安装成功后，AW 会为当前 location 写入独立 install record v2。record 只保存归属、安装来源和 canonical outgoing dependency edges；它是本机安装真值，但不是健康状态数据库，也不保存 Skill 原生调用元数据。project scope 还会在 `.agent-workflows/project-artifacts/<platform>/` 写入可提交的 shared identity metadata，用于 fresh clone 后识别“可认领”的共享产物。动态 artifact 的 accepted state、`configDigest`、`contentDigest`、`lastRefresh` 和 `refreshReach` 写入 dynamic diagnostic cache，供 `status` / `status --verbose` 只读展示。
-
-带 lifecycle、AW config 或动态 artifact renderer 的插件会保存最小 historical runtime / snapshot。普通 `uninstall` 和必要 `reinstall` 撤销阶段会用它运行安装时的 lifecycle；配置触发的 dynamic artifact refresh 和 refresh-only 会用它执行安装时的 renderer；已安装位置的 config schema 也优先来自这份 historical manifest。它不作为 current catalog 或新依赖声明的来源。
-
-project scope 的本机私有状态和本机配置会默认加入 ignore：`.claude/.agent-workflows/`、`.codex/.agent-workflows/`、`.agent-workflows/plugin-config.local/`。团队共享输入不能默认忽略：`.agent-workflows/plugin-config/` 和 `.agent-workflows/project-artifacts/` 应随仓库提交。
-
----
-
-## 常用短选项
-
-| 短选项 | 长选项 | 适用命令 |
-|---|---|---|
-| `-s` | `--scope <scope>` | `install` / `uninstall` / `upgrade` / `status` |
-| `-p` | `--platform <platform>` | `install` / `uninstall` / `upgrade` / `status` |
-| `-a` | `--all` | `upgrade` |
-| `-v` | `--verbose` | `install` / `uninstall` / `upgrade` / `status` |
-| `-D` | `--debug` | `install` / `uninstall` / `upgrade` / `status` |
-| `-j` | `--json` | `init` / `install` / `uninstall` / `upgrade` / `config` / `status` |
-| `-f` | `--force` | `init` |
-| 无 | `--force` | `cleanup` |
-| 无 | `--plan` | `cleanup` |
-| 无 | `--remove-config` | `uninstall` / `cleanup` |
-
----
-
-## 可用插件
-
-| 插件名 | 描述 | 支持平台 |
-|--------|------|----------|
-| `git-commit` | 在用户请求提交时，按用户或仓库适用规范完成 Git 提交 | Codex / Claude Code |
-| `codex-explore` | 为 Codex 提供通用只读探索流程 | Codex |
-| `codex-subagent-guide` | 在委派已获授权后按任务类型指导子代理参数、fork、响应式等待与条件清理 | Codex |
-
-> P0/P11 runtime contract：`codex-explore` 是 Codex 通用只读探索 workflow，可用于代码库、文档、网络资料、日志和用户材料的证据搜索与总结；具体能访问哪些来源取决于当前会话工具、权限、联网策略和用户提供的上下文。
-
-`codex-explore` 提供 quick、standard 和 deep 三档预设探索 role；无法明确分档时使用 standard。每档 role 的 model 和 reasoning effort 都能独立配置；用户显式指定 model 或 reasoning effort 时使用不锁定参数的 custom role，并只透传显式字段。review、缺陷分析、质量判断、修改或实现任务中的独立大范围只读探索可以使用这些 role，最终判断、建议和写操作仍由主流程完成。
-
-上下文隔离本身是 `codex-explore` 的委派价值，不要求主代理同时存在其它可并行工作。即使大范围事实探索是主流程下一步的前置条件，只要能够独立定义来源、问题和证据合同，也可以先委派探索、等待结果，再由主流程做最小核验和后续判断。
-
-子代理继承当前 turn 的有效 permission profile、approval policy 和 sandbox。父 turn 已处于权限级只读状态时，子代理继承该限制；父 turn 可写时，`spawn_agent` 不提供把单个子代理独立降为只读的参数，此时插件提供的是行为只读约束。探索工作流完成或停止后，主流程可以继续用户已经授权的修改或实现。
-
-预设 role 的配置键与默认值：
-
-| 探索深度 | model 配置与默认值 | effort 配置与默认值 |
-|---|---|---|
-| quick | `quickModel=gpt-5.6-luna` | `quickReasoningEffort=medium` |
-| standard | `standardModel=gpt-5.6-luna` | `standardReasoningEffort=high` |
-| deep | `deepModel=gpt-5.6-luna` | `deepReasoningEffort=xhigh` |
-
-这些角色配置和首次存活探测前的累计等待预算都可以通过 `aw config` 调整：
-
-```bash
-aw config set codex-explore standardModel gpt-5.6-terra -s user
-aw config set codex-explore standardReasoningEffort max -s user
-aw config set codex-explore minimumInitialWaitMinutes 15 -s user
-```
-
-`codex-subagent-guide` 只处理已经获准的委派，不把 skill 加载或插件安装视为使用子代理的授权。预设路由要求当前 Codex multi-agent V1/V2 `spawn_agent` 公开 `agent_type`，并已安装插件随附的四个 role；等待与清理原则只使用当前 schema 明确公开的能力，不预判工具版本。
-
-插件按最终交付物区分四类任务，每类 model 和 reasoning effort 都能独立配置：
-
-| 任务类型 | 适用范围 | model 配置与默认值 | effort 配置与默认值 |
-|---|---|---|---|
-| 简单任务 | 低歧义、边界清晰、成功标准明确的只读探索、验证、简单代码及其他简单任务 | `simpleTaskModel=gpt-5.6-luna` | `simpleTaskReasoningEffort=max` |
-| 通用任务 | 超出简单任务范围的常规代码、文档或其他通用交付 | `generalTaskModel=gpt-5.6-sol` | `generalTaskReasoningEffort=medium` |
-| 复杂任务 | 跨模块实现、未知根因调试、并发、生命周期、性能或高风险修改 | `complexTaskModel=gpt-5.6-sol` | `complexTaskReasoningEffort=high` |
-| 计划与审核 | 代码、安全、质量或方案审核，以及架构设计和实施计划 | `planningReviewTaskModel=gpt-5.6-sol` | `planningReviewTaskReasoningEffort=xhigh` |
-
-effort 配置支持 `low`、`medium`、`high`、`xhigh`、`max`，不提供 `auto` 或 `ultra`。运行时只传当前 `spawn_agent` schema 公开且与显式要求兼容的参数；预定义任务通过生成的 `agent_type` 选择对应配置。显式指定 `model`、`reasoning_effort` 或 `agent_type` 时，按实际作用域仅将受影响的子任务作为自定义任务处理，不静默补入或覆盖预设值。`minimumInitialWaitMinutes` 控制用户或任务专用 skill 没有指定单次等待时，首次响应式 `wait_agent` 窗口的最短时间。
-
-```bash
-aw config set codex-subagent-guide planningReviewTaskModel gpt-5.6-sol -s user
-aw config set codex-subagent-guide planningReviewTaskReasoningEffort xhigh -s user
-aw config set codex-subagent-guide minimumInitialWaitMinutes 15 -s user
-```
-
-查看该插件的完整配置：
-
-```bash
-aw config list codex-subagent-guide -s user
-```
-
----
-
-## 常见工作流
-
-### 在新项目中启用插件
-
-```bash
-cd my-project
-aw init          # 若本机已初始化过可跳过
-aw install git-commit -p both
-aw status        # 确认安装成功
-```
-
-### 升级所有插件
-
-```bash
-aw upgrade -a
-```
-
-### 迁移到新机器
-
-新机器上重新执行 `aw init` 和 `aw install` 即可恢复需要 native runtime 的本机 marketplace 与平台原生注册。Codex project scope 的 repo-visible 文件（如 `.agents/skills/`、`.codex/config.toml`、`.codex/rules/`、`.codex/hooks.json`）随项目存在；如果仓库里已有可验证的 project artifact identity，本机缺少 install record 时，先运行：
-
-```bash
-aw install git-commit -p codex -s project --adopt-existing
-```
-
-认领会在当前机器创建 project install record，并按 current catalog 重新应用共享 artifacts。用户级配置仍需要在新机器上重新安装或重新设置。
-
----
-
-## 故障排查
-
-### 安装中断或状态需要处理
-
-安装、卸载或升级过程中断后，先用只读命令确认状态：
-
-```bash
-aw status git-commit
-aw status git-commit --verbose
-```
-
-常见处理路径：
-
-```bash
-aw reinstall git-commit -p codex -s user
-aw cleanup git-commit -p codex -s user
-```
-
-依赖功能依赖完整的 `installSource` 和 `dependencyEdges` metadata。若 install record 缺少这些字段、edge 不完整，或 dependency index 不可信，依赖相关安装、升级和普通卸载保护仍会保守失败；先用 `aw status --verbose` 看具体位置，再通过显式升级或重新安装受影响插件补齐记录。遇到 stale project reference 时，按状态或 receipt 给出的 token 运行 `aw cleanup --dependency-index --prune-stale <token> --yes`。`aw cleanup` 不再把这类索引问题当成硬前置，只要能定位残留并确认当前没有已知 dependents，就允许显式收口。
-
-### 自动依赖无法安装或升级
-
-自动依赖和显式目标使用同一套 preflight。常见失败原因包括：依赖插件不在当前 AW catalog、依赖插件不支持父插件当前 platform、user scope 父插件声明了 project scope 依赖、Codex project scope 依赖没有 repo-visible surface，或依赖缺少 required config。
-
-处理时先运行：
-
-```bash
-aw status <插件名> --verbose
-```
-
-缺配置时按提示对依赖插件运行 `aw config set <依赖插件> <key> <value> -s <scope>`；scope 不匹配时需要改用合适的 `--scope` 安装父插件，或由插件作者调整 `target.scope`。
-
-### 插件安装后 AI 看不到 instructions
-
-先执行 `aw status` 查看友好摘要和下一步；需要定位具体运行时可见性时，再执行 `aw status --verbose` 查看诊断字段：
-
-- `blockedByProjectTrust`：Codex 项目信任未开启，需在 Codex 中将项目标记为 trusted
-- `shadowedByProjectDeveloperInstructions`：被项目自定义 instructions 覆盖
-- `absent`：文件未正确生成，尝试重新安装
-
-### 提示"插件已由外部 marketplace 管理"
-
-Codex project scope 安装 / 显式升级时，如果用户级 `~/.codex/config.toml [plugins]` 中已有同名外部 native plugin，CLI 会在写入任何 repo artifact 前拒绝，避免运行时歧义。已有 project artifact identity 或 install record 的 `status` 会继续以当前仓库的安装状态为主，把 external ownership 作为附加诊断和下一步；`uninstall -p codex -s project` 只清理 AW 管理的 repo artifacts，不删除用户级 native plugin。
-
-### Codex native CLI 或 native view 诊断失败
-
-`aw install <plugin> -p codex -s user` 和 `aw uninstall <plugin> -p codex -s user` 需要 Codex `>= 0.145.0` 提供 `codex plugin add/remove` 和 `codex plugin marketplace add/list/remove`。如果 CLI 不可用、命令失败、marketplace 未指向当前 canonical `AW_HOME`，或写后本地证据无法证明 plugin 已安装/已移除，命令会失败并给出可行动建议。AW 不会退回到只写 enabled config 或只删 config；请先升级/修复 Codex CLI 或 workspace policy，再重试同一条 `aw install` / `aw uninstall`。`codex app-server` 只影响 verbose/native view 只读诊断，RPC 不可用会显示 `nativeViewUnknown`，不会阻断 Codex CLI 写入主链路。
-
-Codex 和 Claude 原生命令默认在 `60000` 毫秒后超时。AW 会在 POSIX 和 Windows 上有界清理对应进程树，且不会自动重试。原生命令可能在超时前已经产生部分写入，因此请先运行 `aw status --verbose`，再按 marker、post-check 和状态建议选择 `cleanup` 或 `reinstall`。
-
-如果机器或网络稳定但原生命令持续超过默认值，可以只为当前命令调大上限，例如：
-
-```bash
-AW_NATIVE_CLI_TIMEOUT_MS=180000 aw install git-commit -p codex
-```
-
-也可以设置 `AW_NATIVE_CLI_TIMEOUT_MS=0` 禁用默认超时。禁用后，挂起的原生命令可以无限等待；CI 和无人值守脚本不建议这样配置。catalog 远程请求可用 `AW_CATALOG_REMOTE_TIMEOUT_MS` 调整，或设为 `0` 禁用 deadline。远程 deadline 禁用后，离线或异常 registry 也可能让命令长时间等待。
-
-排查时建议加 `--verbose` 或 `--debug`。debug event 会区分：
-
-- `native:marketplace`：marketplace add / list / remove，失败通常是 `codex plugin marketplace add <canonical ~/.aw>` 不可用或注册后未指向当前 AW_HOME。
-- `native:plugin`：`codex plugin add/remove` 写入，失败会带 `pluginId`、`errorCategory` 和 `suggestion`。
-- `native:post-check`：CLI 写入后检查 enabled config、config entry 和 active cache；install 要求 enabled config + active cache 同时存在，uninstall 要求 config entry 不存在且 active cache 不存在。
-- `native:transaction`：native transaction marker 写入、更新或删除；它说明 AW 是否能把残留纳入 cleanup 范围。
-- `native:skipped`：Codex project 路径不会写 native 状态，reason 为 `project_repo_managed_skipped_native`。
-
-### Codex user native marker
-
-Codex user native CLI 写入成功后，AW 会写入短生命周期 native transaction marker，再继续 post-check、lifecycle、artifact apply 和 install record 提交。只要后续步骤失败，`aw status --verbose` / `aw status --json` 都会把 marker-only 作为 diagnostic、command blocker 或 `cleanupRequired` 细节展示。
-
-常见状态和处理方式：
-
-- `pending_after_native_write`：Codex native 写入已发生，AW 后续步骤未完成。可重试同一条 `aw install`；如果状态已经进入 `cleanupRequired`，运行 `aw cleanup <plugin> -p codex -s user` 清理残留。
-- `post_check_failed`：Codex CLI 返回成功，但 enabled config 或 active cache 缺失。AW 不会 config-only fallback；先修复 Codex CLI / marketplace，再重试 install 或 uninstall。
-- `lifecycle_failed`、`record_write_failed`、`diagnostic_write_failed`：native 已写入，AW 后续持久化或脚本失败。重试同一条 install 可重新走写入收口；cleanup 可用 marker 授权清理残留。
-- `cleanup_failed`：native 卸载大概率已执行，但 cache/config 或 marker 清理未收口。重新运行 `aw cleanup <plugin> -p codex -s user`，必要时按 receipt 建议加 `--force`。
-
-如果 marker 写入本身失败，命令会立即失败，并提示 AW 不能承诺后续自动 cleanup 授权。此时先运行 `aw status --verbose` 检查 config/cache，再决定是否修正文件权限或手动处理。marker-only cleanup 会清 config/cache/marker，但不会运行 uninstall lifecycle；marker-only upgrade 会明确失败，`upgrade --all` 会跳过。
-
-### `upgrade --all` 跳过 code
-
-`upgrade --all` 的 direct command 返回值包含稳定 `skipped[]`。CLI receipt 会展示 code 和原因。首版 code 如下：
-
-`scopeNotInitialized`、`repairRequired`、`cleanupRequired`、`notInstalled`、`dependencySkipped`、`capabilityChanged`、`codexProjectUserConfigUnreadable`、`externalOwnershipUnknown`、`externalOwnershipPresent`、`roleNameConflict`、`trackingIntegrityError`、`catalogNotCurrent`、`catalogNotProjectInstallable`、`projectConfigUnreadable`、`unmanagedRepoArtifactConflict`。
+原生命令超时后，先运行 `aw status --verbose`。如果组件是 `partial`，运行 `reinstall`；如果只需要删除 AW-owned 输出，运行 `cleanup`。

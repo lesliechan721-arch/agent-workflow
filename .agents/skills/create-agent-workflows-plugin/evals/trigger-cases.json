@@ -80,9 +80,9 @@
       "tags": ["near-miss", "review"]
     },
     {
-      "id": "diagnose_runtime_status",
+      "id": "inspect_live_runtime_status",
       "split": "train",
-      "query": "aw status 显示 codex-explore cleanupRequired，帮我排查本机 install record 和 native cache。",
+      "query": "aw status 显示 codex-explore 为 partial，帮我只读检查 live owner marker 和平台组件。",
       "should_load_skill": false,
       "tags": ["near-miss", "runtime-diagnosis"]
     },

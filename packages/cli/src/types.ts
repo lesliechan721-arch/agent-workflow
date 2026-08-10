@@ -7,7 +7,6 @@ export type CommandAction =
   | 'uninstall'
   | 'upgrade'
   | 'upgradeAll'
-  | 'repair'
   | 'reinstall'
   | 'cleanup'
   | 'config'
@@ -16,23 +15,19 @@ export type StrictSemVerString = string;
 export type CliVersion = StrictSemVerString;
 export type CatalogVersion = StrictSemVerString;
 export type PluginVersion = StrictSemVerString;
-export type DependencyVersion = StrictSemVerString;
 export type AgentVersionStatus = 'supported' | 'missing' | 'probeFailed' | 'unparseable' | 'tooOld';
 export type AgentVersionReasonCode =
   | 'agentVersionMissing'
   | 'agentVersionProbeFailed'
   | 'agentVersionUnparseable'
   | 'agentVersionTooLow';
-export type InstalledVersion = string;
 export type CatalogChannel = 'latest' | 'beta';
 export type ConfigFieldKind = 'manifest';
 export type ConfigValueState = 'default' | 'configured' | 'invalid';
-export type NativePluginsByPlatform = Partial<Record<PlatformName, string[]>>;
 export type NextStepKind = 'uiAction' | 'cliCommand' | 'manual';
 export type ManualNextStepKind = 'guidance' | 'blocker' | 'documentation';
-export type TargetWriteState = 'completed' | 'rolledBack' | 'notRun' | 'failed';
+export type TargetWriteState = 'completed' | 'failed';
 export type ReceiptOverallState = 'succeeded' | 'failed';
-export type ConfigStoreRemovalState = 'removed' | 'notFound' | 'skipped' | 'failed';
 
 export interface NextStepInstruction {
   kind: NextStepKind;
@@ -62,34 +57,9 @@ export interface ReceiptTargetResult {
   state: TargetWriteState;
   message?: string;
   errorCode?: string;
-  rollbackState?: 'notNeeded' | 'completed' | 'failed';
 }
 
-export interface ConfigStoreIdentity {
-  pluginName: string;
-  storeKind: 'user' | 'projectShared' | 'projectLocal';
-  projectRoot?: string;
-}
-
-export interface ConfigStoreRemovalResult {
-  store: ConfigStoreIdentity;
-  state: ConfigStoreRemovalState;
-  subjectTargets: ReceiptTargetIdentity[];
-  reasonCode?: 'subjectFailed' | 'removeFailed';
-  message?: string;
-  path?: string;
-}
-
-export interface LegacyConfigStoreEntryV2 {
-  plugin: string;
-  storeKind: 'user' | 'projectShared' | 'projectLocal';
-  projectRoot?: string;
-  reason: 'pluginRemoved' | 'schemaUnavailable';
-  fieldVisibility: 'storeOnly';
-  cleanupOnly: true;
-}
-
-export interface ConfigFieldEntryV2 {
+export interface ConfigFieldEntry {
   key: string;
   title: string;
   kind: ConfigFieldKind;
@@ -102,7 +72,7 @@ export interface ConfigFieldEntryV2 {
   storedSourceLayer?: 'user' | 'project' | 'local';
 }
 
-export interface ConfigReceiptFieldEntryV2 {
+export interface ConfigReceiptFieldEntry {
   key: string;
   title: string;
   kind: ConfigFieldKind;
@@ -113,17 +83,11 @@ export interface ConfigReceiptFieldEntryV2 {
   valueState?: ConfigValueState;
 }
 
-export interface ConfigSchemaEvidenceV2 {
-  source: 'currentCatalog' | 'installedHistorical';
+export interface ConfigSchemaEvidence {
+  source: 'currentCatalog';
   identity: string;
   pluginVersion: PluginVersion;
   manifestDigest: string;
-  location?: {
-    platform: PlatformName;
-    scope: Scope;
-    projectKey?: string;
-    recordPath: string;
-  };
 }
 
 export interface PluginInterfaceMeta {
@@ -467,25 +431,6 @@ export interface PluginCompatibility {
   };
 }
 
-export interface PluginDependencyWhen {
-  platforms: PlatformName[];
-}
-
-export interface PluginDependencyTarget {
-  scope: Scope;
-}
-
-export interface PluginDependencyEntry {
-  name: string;
-  minVersion?: DependencyVersion;
-  target?: PluginDependencyTarget;
-  when?: PluginDependencyWhen;
-}
-
-export interface PluginDependenciesConfig {
-  plugins: PluginDependencyEntry[];
-}
-
 export interface PluginManifestSource {
   name: string;
   version: PluginVersion;
@@ -497,7 +442,6 @@ export interface PluginManifestSource {
   apps?: string;
   marketplace: PluginMarketplaceMeta;
   interface?: PluginInterfaceMeta;
-  dependencies?: PluginDependenciesConfig;
   extensions?: PluginExtensions;
   artifacts?: PluginArtifactsConfig;
   buildConfig?: BuildConfig;
@@ -566,7 +510,6 @@ export interface CatalogManifestEntry {
   strict: boolean;
   policy: MarketplacePolicy;
   compatibility: PluginCompatibility;
-  dependencies?: PluginDependenciesConfig;
   source: string;
   artifactDigest: string;
   manifestDigest: string;
@@ -634,26 +577,6 @@ export interface CodexSharedHookGroup {
   rawGroup: Record<string, unknown>;
 }
 
-export type ArtifactRefreshEvent = 'install' | 'upgrade' | 'refresh';
-export type ArtifactRefreshStatus = 'succeeded' | 'failed' | 'skipped';
-
-export interface ArtifactLastRefresh {
-  status: ArtifactRefreshStatus;
-  updatedAt: string;
-  triggerKeys?: string[];
-  event: ArtifactRefreshEvent;
-  error?: string;
-}
-
-export interface ArtifactRefreshReach {
-  commandScope: Scope;
-  refreshedUserTarget?: boolean;
-  refreshedCurrentProjectTarget?: boolean;
-  scannedHistoricalProjects?: boolean;
-  historicalProjectTargetsMayBeStale?: boolean;
-  knownProjectTargetsOutsideReach?: string[];
-}
-
 export interface GeneratedArtifact {
   path: string;
   paths?: string[];
@@ -669,19 +592,6 @@ export interface GeneratedArtifact {
   configDigest?: string;
   contentDigest?: string;
   roleKey?: string;
-  lastRefresh?: ArtifactLastRefresh;
-  refreshReach?: ArtifactRefreshReach;
-}
-
-export interface TrackingPluginRecord {
-  name: string;
-  generatedAt: string;
-  artifacts: GeneratedArtifact[];
-}
-
-export interface TrackingManifest {
-  version: 1;
-  plugins: Record<string, TrackingPluginRecord>;
 }
 
 export interface AgentVersionRequirement {
@@ -723,320 +633,6 @@ export interface AgentVersionGateErrorPayload {
   failures: AgentVersionGateFailure[];
 }
 
-export interface PlatformDetection {
-  available: boolean;
-  scopes: Scope[];
-  preferredScope?: Scope;
-  reason?: string;
-  agentVersion?: AgentVersionProbeResult;
-}
-
-export interface EnvironmentDetection {
-  codex: PlatformDetection;
-  claude: PlatformDetection;
-}
-
-export type MarketplaceSourceStatus = 'local' | 'missing' | 'invalid';
-export type MarketplaceRootResolution = 'localSource' | 'installedCopy' | 'missing' | 'unknown';
-export type CodexNativeCacheStatus = 'missing' | 'active' | 'invalid' | 'ambiguous';
-export type NativeRecoveryState =
-  | 'pending_after_native_write'
-  | 'post_check_failed'
-  | 'lifecycle_failed'
-  | 'tracking_write_failed'
-  | 'ledger_write_failed'
-  | 'snapshot_write_failed'
-  | 'cleanup_failed';
-
-export interface NativeRecoveryStatus {
-  present: boolean;
-  state: NativeRecoveryState | null;
-  reason: string | null;
-  evidenceMatches: boolean | null;
-  suggestion: string | null;
-}
-
-export interface NativePluginStatus {
-  marketplaceRegistered: boolean;
-  marketplaceSource?: string;
-  marketplaceSourceType?: MarketplaceSourceStatus;
-  marketplaceRootResolution?: MarketplaceRootResolution;
-  requiresNativePlugin?: boolean;
-  pluginAvailable: boolean;
-  pluginInstalled: boolean;
-  pluginEnabled?: boolean;
-  configEntryPresent?: boolean;
-  configPath?: string;
-  cacheRootPath?: string;
-  cacheStatus?: CodexNativeCacheStatus;
-  activeCacheVersion?: string;
-  activeCachePath?: string;
-  validCachePaths?: string[];
-  invalidCachePaths?: string[];
-  ignoredCacheEntries?: string[];
-  recovery?: NativeRecoveryStatus;
-  version?: string;
-  details?: string;
-  declaredSource?: string;
-  materializedInstallLocation?: string;
-  activeLocalBundlePath?: string | null;
-  sharedNativeRefs?: CodexSharedNativeRefs | null;
-}
-
-export interface GeneratedArtifactStatus {
-  path: string;
-  exists: boolean;
-  kind: GeneratedArtifact['kind'];
-  artifactKey?: string;
-  hookGroups?: TrackedHookGroupIdentity[];
-  paths?: string[];
-  id?: ManagedArtifactId;
-  target?: ArtifactTarget;
-  state?: ArtifactState;
-  disabledReason?: string;
-  refreshKeys?: string[];
-  configDigest?: string;
-  currentConfigDigest?: string;
-  contentDigest?: string;
-  currentContentDigest?: string;
-  roleKey?: string;
-  lastRefresh?: ArtifactLastRefresh;
-  refreshReach?: ArtifactRefreshReach;
-}
-
-export type GeneratedArtifactHealth =
-  | 'healthy'
-  | 'disabledByConfig'
-  | 'blockMissing'
-  | 'missing'
-  | 'contentDrift'
-  | 'roleLayerMissing'
-  | 'registrationDrift'
-  | 'configDigestStale'
-  | 'recentRefreshFailed'
-  | 'unknown'
-  | 'unavailable';
-export type GeneratedArtifactSessionVisibility =
-  | InstructionsSessionState
-  | RepoManagedSessionVisibility;
-
-export interface ManagedArtifactStatus extends GeneratedArtifactStatus {
-  tracked: boolean;
-  health: GeneratedArtifactHealth;
-  sessionVisibility: GeneratedArtifactSessionVisibility;
-  diagnostics: string[];
-}
-
-export type ScopeInitializedState = 'yes' | 'no' | 'unknown';
-export type CatalogCompatibility = 'current' | 'missing' | 'capabilityChanged';
-export type ProjectTrust = 'trusted' | 'untrusted' | 'unknown' | 'not_applicable';
-export type RepoManagedProjectItemState =
-  | 'visible'
-  | 'missing'
-  | 'drifted'
-  | 'orphan'
-  | 'blockedByProjectTrust'
-  | 'projectTrustUnknown'
-  | 'absent'
-  | 'unknown';
-export type RepoManagedProjectSummaryState = RepoManagedProjectItemState | 'not_applicable';
-export type InstructionsSessionState =
-  | 'visible'
-  | 'shadowedByProjectDeveloperInstructions'
-  | 'blockedByProjectTrust'
-  | 'projectTrustUnknown'
-  | 'unknownByExternalLayer'
-  | 'absent'
-  | 'not_applicable';
-export type RepoManagedSessionVisibility =
-  | 'visible'
-  | 'blockedByProjectTrust'
-  | 'projectTrustUnknown'
-  | 'unknownByExternalLayer'
-  | 'absent'
-  | 'not_applicable';
-
-export interface PlatformRuntimeEvidence {
-  present: boolean;
-  details?: string;
-}
-
-export interface PlatformNativeFallbackEvidence {
-  present: boolean;
-  details?: string;
-}
-
-export interface ExternalOwnershipStatus {
-  present: boolean;
-  checkState?: 'known' | 'unknown';
-  marketplace?: string;
-  owner?: string;
-  details?: string;
-}
-
-export interface ScopeManagedEvidence {
-  ledger: boolean;
-  tracking: boolean;
-  sharedNativeRef: boolean;
-}
-
-export interface RepoManagedProjectKindSummary {
-  state: RepoManagedProjectSummaryState;
-  totalCount: number;
-  visibleCount: number;
-  missingCount: number;
-  driftedCount: number;
-  orphanCount: number;
-  blockedCount: number;
-  projectTrustUnknownCount: number;
-  unknownCount: number;
-  absentCount: number;
-}
-
-export interface RepoManagedProjectItemReport {
-  kind: GeneratedArtifact['kind'];
-  path: string;
-  artifactKey?: string;
-  tracked: boolean;
-  exists: boolean;
-  state: RepoManagedProjectItemState;
-  drift: 'yes' | 'no' | 'unknown';
-  diagnostics: string[];
-}
-
-export interface RepoManagedSessionStateReport {
-  instructions: InstructionsSessionState;
-  rules: RepoManagedSessionVisibility;
-  hooks: RepoManagedSessionVisibility;
-  agents: RepoManagedSessionVisibility;
-  skills?: RepoManagedProjectKindSummary;
-  mcpServers?: RepoManagedProjectKindSummary;
-  items?: RepoManagedProjectItemReport[];
-  diagnostics: string[];
-}
-
-export interface CurrentCatalogStatus {
-  rootDir: string;
-  source: CatalogResolution['source'];
-  available: boolean;
-  reason?: string;
-  reasonCode?: CatalogResolution['reasonCode'];
-  selector?: CatalogResolution['selector'];
-  sidecarManifestPackage?: CatalogResolution['sidecarManifestPackage'];
-  fullCatalog?: CatalogResolution['fullCatalog'];
-  channel?: CatalogResolution['channel'];
-  catalogVersion?: CatalogResolution['catalogVersion'];
-  minAwVersion?: CatalogResolution['minAwVersion'];
-  latestCatalog?: CatalogResolution['latestCatalog'];
-  latestCatalogBlocked?: CatalogResolution['latestCatalogBlocked'];
-  historySchemaVersion?: CatalogResolution['historySchemaVersion'];
-  cacheFallback?: CatalogResolution['cacheFallback'];
-  remoteFailure?: CatalogResolution['remoteFailure'];
-  pluginVersion?: PluginVersion;
-}
-
-export type PluginStatusDependencyHealthSource =
-  | 'installSnapshot'
-  | 'currentCatalog'
-  | 'historical'
-  | 'none';
-export type PluginStatusDependencyResolvedSource =
-  | 'installSnapshot'
-  | 'currentCatalog';
-export type PluginStatusDependencyCatalogDriftKind =
-  | 'none'
-  | 'snapshotMissing'
-  | 'currentCatalogMissing'
-  | 'dependenciesChanged';
-export type PluginStatusDependencyVersionComparison =
-  | 'notRequired'
-  | 'satisfies'
-  | 'belowMinimum'
-  | 'missing'
-  | 'invalid';
-export type PluginStatusDependencyAutoUpgradeState =
-  | 'notNeeded'
-  | 'available'
-  | 'catalogUnavailable'
-  | 'blockedByCli'
-  | 'unavailable'
-  | 'unknown';
-
-export interface PluginStatusDependencyVersionState {
-  declaredMinVersion?: DependencyVersion;
-  installedVersion?: string;
-  candidateVersion?: PluginVersion;
-  installedVersionComparison: PluginStatusDependencyVersionComparison;
-  candidateVersionComparison: PluginStatusDependencyVersionComparison;
-  autoUpgradeState: PluginStatusDependencyAutoUpgradeState;
-}
-
-export interface PluginStatusDependencyResolvedEntry {
-  declaration: PluginDependencyEntry;
-  source: PluginStatusDependencyResolvedSource;
-  versionState: PluginStatusDependencyVersionState;
-}
-
-export interface PluginStatusDependencySatisfiedEntry {
-  declaration: PluginDependencyEntry;
-  location: PluginLocation;
-}
-
-export interface PluginStatusDependencyMissingEntry {
-  declaration: PluginDependencyEntry;
-  expectedLocation?: PluginLocation;
-  reason: string;
-}
-
-export interface PluginStatusDependencyCatalogDrift {
-  kind: PluginStatusDependencyCatalogDriftKind;
-  snapshotDependencies: string[];
-  currentDependencies: string[];
-}
-
-export interface PluginStatusDependencies {
-  healthSource: PluginStatusDependencyHealthSource;
-  declared: PluginDependencyEntry[];
-  resolved: PluginStatusDependencyResolvedEntry[];
-  satisfied: PluginStatusDependencySatisfiedEntry[];
-  missing: PluginStatusDependencyMissingEntry[];
-  dependents: PluginLocation[];
-  autoInstalled: boolean;
-  autoRemovable: boolean;
-  catalogDrift: PluginStatusDependencyCatalogDrift;
-}
-
-export interface PluginStatusReport {
-  pluginName: string;
-  native: NativePluginStatus;
-  generatedArtifacts: GeneratedArtifactStatus[];
-  managedArtifacts?: ManagedArtifactStatus[];
-  driftWarnings: string[];
-  ledgerStateStatus?: LedgerStateStatus;
-  ledgerStateReason?: LedgerStateReason | null;
-  scopeInitialized?: ScopeInitializedState;
-  projectManagedKinds?: CodexProjectManagedKind[];
-  catalogCompatibility?: CatalogCompatibility;
-  externalOwnership?: ExternalOwnershipStatus;
-  projectTrust?: ProjectTrust;
-  platformRuntimeEvidence?: PlatformRuntimeEvidence;
-  platformNativeFallbackEvidence?: PlatformNativeFallbackEvidence;
-  scopeManagedEvidence?: ScopeManagedEvidence;
-  repoManagedSessionState?: RepoManagedSessionStateReport;
-  currentCatalog?: CurrentCatalogStatus;
-  activeLocalBundle?: string | null;
-  artifactsInitialized?: boolean;
-  dependencies?: PluginStatusDependencies;
-}
-
-export interface StatusReport {
-  platform: PlatformName;
-  scope: Scope;
-  initialized: boolean;
-  scopeInitialized?: ScopeInitializedState;
-  plugins: PluginStatusReport[];
-}
-
 export interface CatalogSelectionOptions {
   catalogChannel?: CatalogChannel;
   catalogVersion?: CatalogVersion;
@@ -1049,82 +645,10 @@ export interface CommandOptions extends CatalogSelectionOptions {
   scriptTimeoutMs?: number;
 }
 
-export interface InstallCommandOptions extends CommandOptions {
-  adoptExisting?: boolean;
-}
+export type InstallCommandOptions = CommandOptions;
 
 export interface UpgradeCommandOptions extends CommandOptions {
   all?: boolean;
-}
-
-export type SkippedUpgradeCode =
-  | 'scopeNotInitialized'
-  | 'repairRequired'
-  | 'cleanupRequired'
-  | 'notInstalled'
-  | 'dependencySkipped'
-  | 'capabilityChanged'
-  | 'codexProjectUserConfigUnreadable'
-  | 'externalOwnershipUnknown'
-  | 'externalOwnershipPresent'
-  | 'roleNameConflict'
-  | 'trackingIntegrityError'
-  | 'catalogNotCurrent'
-  | 'catalogNotProjectInstallable'
-  | 'projectConfigUnreadable'
-  | 'unmanagedRepoArtifactConflict';
-
-export interface SkippedUpgradeTarget {
-  platform: PlatformName;
-  scope: Scope;
-  plugin: string;
-  reason: string;
-  code: SkippedUpgradeCode;
-  requested?: boolean;
-  dependencyOf?: Array<{
-    plugin: string;
-    platform: PlatformName;
-    scope: Scope;
-  }>;
-}
-
-export interface UpgradeCommandResult {
-  platforms: string[];
-  plugins: string[];
-  warnings: string[];
-  skipped: SkippedUpgradeTarget[];
-  nativePlugins: NativePluginsByPlatform;
-  repoManagedArtifacts: GeneratedArtifact[];
-  receiptTargets?: Array<{
-    plugin: string;
-    platform: PlatformName;
-    scope: Scope;
-    requested?: boolean;
-    dependencyOf?: Array<{
-      plugin: string;
-      platform: PlatformName;
-      scope: Scope;
-    }>;
-  }>;
-  receiptActions?: Array<{
-    type: 'installDependency' | 'upgradeDependency';
-    plugin: string;
-    platform: PlatformName;
-    scope: Scope;
-    requested?: boolean;
-    dependencyOf?: Array<{
-      plugin: string;
-      platform: PlatformName;
-      scope: Scope;
-    }>;
-  }>;
-  marketplace?: {
-    rootDir: string;
-    source: CatalogResolution['source'];
-    changed: boolean;
-    mode?: 'readOnly' | 'runtimeWritable';
-    catalog: CatalogResolution;
-  };
 }
 
 export interface StatusCommandOptions extends CatalogSelectionOptions {
@@ -1134,14 +658,6 @@ export interface StatusCommandOptions extends CatalogSelectionOptions {
   verbose?: boolean;
   json?: boolean;
 }
-
-export type StatusHealthSource = 'installSnapshot' | 'currentCatalog' | 'historical' | 'none';
-export type StatusConfigHealth = 'configured' | 'missing-required' | 'invalid-config' | 'no-schema';
-export type StatusScriptHealth =
-  | 'declared'
-  | 'not_declared'
-  | 'missing-from-bundle'
-  | 'unsupported-on-current-os';
 
 export class CommandWarningError extends Error {
   readonly warnings: string[];
@@ -1194,53 +710,6 @@ export function isAgentVersionGateError(error: unknown): error is AgentVersionGa
   );
 }
 
-export interface PlatformAdapter {
-  name: PlatformName;
-  detect(cwd: string): Promise<boolean>;
-  installPlugin(
-    plugin: PluginMeta,
-    scope: Scope,
-    options?: {
-      catalogResolution?: CatalogResolution;
-      marketplacePrepared?: boolean;
-    },
-  ): Promise<void>;
-  uninstallPlugin(plugin: PluginMeta, scope: Scope): Promise<void>;
-  installExtensions(
-    plugin: PluginMeta,
-    scope: Scope,
-    options?: {
-      event?: 'install' | 'upgrade' | 'refresh';
-      changedConfigKeys?: string[];
-      dynamicOnly?: boolean;
-      previousArtifacts?: GeneratedArtifact[];
-      catalogResolution?: CatalogResolution;
-      marketplacePrepared?: boolean;
-    },
-  ): Promise<GeneratedArtifact[]>;
-  uninstallExtensions(
-    plugin: PluginMeta,
-    scope: Scope,
-    generatedArtifacts?: GeneratedArtifact[],
-  ): Promise<void>;
-  upgradePlugin(
-    plugin: PluginMeta,
-    scope: Scope,
-    options?: {
-      catalogResolution?: CatalogResolution;
-      marketplacePrepared?: boolean;
-    },
-  ): Promise<void>;
-  status(
-    plugin: PluginMeta,
-    scope: Scope,
-    options?: {
-      previousArtifacts?: GeneratedArtifact[];
-      catalogResolution?: CatalogResolution;
-    },
-  ): Promise<StatusReport>;
-}
-
 export interface LocalMarketplaceConfig {
   version: 2;
   initializedAt: string;
@@ -1256,23 +725,6 @@ export interface LocalMarketplaceConfig {
   bundleFingerprint: string;
 }
 
-export type LedgerStateStatus = 'available' | 'degraded';
-export type LedgerStateReason =
-  | 'rebuilt_from_missing_or_invalid'
-  | 'operation_interrupted_after_native_write'
-  | 'operation_interrupted_after_artifact_write'
-  | 'capability_changed_upgrade_restore_incomplete';
-
-export interface LedgerState {
-  status: LedgerStateStatus;
-  degradedAt: string | null;
-  reason: LedgerStateReason | null;
-}
-
-export interface ClaudeCapabilitySnapshot {
-  managedExtensions?: string[];
-}
-
 export type CodexProjectManagedKind =
   | 'skill'
   | 'mcpServer'
@@ -1280,102 +732,6 @@ export type CodexProjectManagedKind =
   | 'permission'
   | 'hook'
   | 'agent';
-
-export interface CodexCapabilitySnapshot {
-  requiresNativePlugin?: boolean;
-  hasRepoManagedArtifacts?: boolean;
-  projectManagedKinds?: CodexProjectManagedKind[];
-  managedKinds?: CodexProjectManagedKind[];
-}
-
-export interface LifecycleConfigSnapshotMetadata {
-  snapshotRoot: string;
-  bundleRoot: string;
-  manifestPath: string;
-  pluginName: string;
-  pluginVersion: PluginVersion;
-  sourceManifestDigest: string;
-  bundleFingerprint: string;
-  createdAt: string;
-  createdFrom: {
-    source: 'currentCatalog' | 'test' | 'unknown';
-    catalogRoot?: string;
-    catalogSource?: CatalogResolution['source'];
-    pluginRoot?: string;
-  };
-}
-
-export interface PluginLocation {
-  plugin: string;
-  platform: PlatformName;
-  scope: Scope;
-  projectKey: string | null;
-}
-
-export interface InstalledScopeInstallSource {
-  kind: 'explicit' | 'dependency';
-  explicitlyRequested: boolean;
-  allowsUnusedCleanup: boolean;
-}
-
-export interface InstalledDependencyEdgeDeclaration {
-  name: string;
-  minVersion?: DependencyVersion;
-  target?: {
-    scope?: Scope;
-  };
-  when?: {
-    platforms?: PlatformName[];
-  };
-}
-
-export interface InstalledDependencyEdge {
-  dependency: PluginLocation;
-  declaration: InstalledDependencyEdgeDeclaration;
-}
-
-export interface InstalledScopeRecord<TCapabilitySnapshot> {
-  managed: boolean;
-  updatedAt: string;
-  resolvedVersion: InstalledVersion;
-  capabilitySnapshot: TCapabilitySnapshot;
-  projectKey?: string;
-  installSource?: InstalledScopeInstallSource;
-  dependencyEdges?: InstalledDependencyEdge[];
-  lifecycleConfigSnapshot?: LifecycleConfigSnapshotMetadata;
-}
-
-export interface CodexSharedNativeRefs {
-  user: boolean;
-  projects: string[];
-}
-
-export interface InstalledLedgerPluginPlatforms {
-  claude?: {
-    userScope?: InstalledScopeRecord<ClaudeCapabilitySnapshot>;
-    projectScopes?: Record<string, InstalledScopeRecord<ClaudeCapabilitySnapshot>>;
-    lastRequestedScope?: Scope;
-    lastRequestedAt?: string;
-  };
-  codex?: {
-    userScope?: InstalledScopeRecord<CodexCapabilitySnapshot>;
-    projectScopes?: Record<string, InstalledScopeRecord<CodexCapabilitySnapshot>>;
-    sharedNativeRefs?: CodexSharedNativeRefs;
-    lastRequestedScope?: Scope;
-    lastRequestedAt?: string;
-  };
-}
-
-export interface InstalledLedgerPluginRecord {
-  lastResolvedVersion: InstalledVersion;
-  platforms: InstalledLedgerPluginPlatforms;
-}
-
-export interface InstalledLedger {
-  version: 1;
-  ledgerState: LedgerState;
-  plugins: Record<string, InstalledLedgerPluginRecord>;
-}
 
 export interface CatalogSelector {
   kind: 'default' | 'distTag' | 'exactVersion';
@@ -1497,6 +853,5 @@ export interface CatalogResolution {
     | 'localCatalogSourceVersionBehind'
     | 'localCatalogFingerprintMismatch'
     | 'localCatalogLayoutInvalid'
-    | 'localLedgerDegraded'
     | CatalogResolutionFailure['reasonCode'];
 }

@@ -159,7 +159,6 @@ const ARTIFACT_PROJECT_MANAGED_KIND_BY_TARGET = {
   'codex.skill': 'skill',
 };
 const PLUGIN_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
-const PLUGIN_DEPENDENCY_PLATFORMS = new Set(['codex', 'claude']);
 const PLUGIN_EVAL_SCHEMA_VERSION = 1;
 const PLUGIN_EVAL_SCOPES = new Set(['user', 'project']);
 const PLUGIN_EVAL_SPLITS = new Set(['train', 'validation', 'sanity', 'all']);
@@ -487,6 +486,9 @@ function validateManifestLightweight(manifest) {
   if (Object.prototype.hasOwnProperty.call(input, 'commands')) {
     error('top-level "commands" has been removed; use "slashCommands" instead');
   }
+  if (Object.prototype.hasOwnProperty.call(input, 'dependencies')) {
+    error('top-level "dependencies" is unsupported');
+  }
   validateAllowedKeys(input, 'plugin manifest', [
     'name',
     'version',
@@ -498,7 +500,6 @@ function validateManifestLightweight(manifest) {
     'apps',
     'marketplace',
     'interface',
-    'dependencies',
     'extensions',
     'buildConfig',
     'scripts',
@@ -518,8 +519,6 @@ function validateManifestLightweight(manifest) {
   if (manifest.version && !STRICT_SEMVER_PATTERN.test(manifest.version)) {
     error(`manifest.version must be a strict SemVer 2.0.0 string, got "${manifest.version}"`);
   }
-
-  validateManifestDependenciesLightweight(manifest.name, manifest.dependencies);
 
   if (manifest.marketplace) {
     const mp = manifest.marketplace;
@@ -559,103 +558,6 @@ function validateManifestLightweight(manifest) {
 
   validateExtensionsLightweight(manifest.extensions);
   validatePlatformFieldSupport(manifest);
-}
-
-function normalizeDependencyPlatforms(entry) {
-  if (!entry.when || !Array.isArray(entry.when.platforms)) {
-    return ['codex', 'claude'];
-  }
-  return entry.when.platforms;
-}
-
-function validateManifestDependenciesLightweight(pluginName, dependencies) {
-  if (dependencies === undefined) return;
-
-  const record = expectRecord(dependencies, 'dependencies');
-  if (!record) return;
-  validateAllowedKeys(record, 'dependencies', ['plugins']);
-
-  if (!Array.isArray(record.plugins)) {
-    error('dependencies.plugins must be an array');
-    return;
-  }
-
-  if (record.plugins.length === 0) {
-    warn('dependencies.plugins 为空；可以删除整个 dependencies block。');
-  }
-
-  const seen = new Map();
-  record.plugins.forEach((rawEntry, index) => {
-    const fieldName = `dependencies.plugins[${index}]`;
-    const entry = expectRecord(rawEntry, fieldName);
-    if (!entry) return;
-  validateAllowedKeys(entry, fieldName, ['name', 'minVersion', 'target', 'when']);
-  let platformsForOverlap = ['codex', 'claude'];
-
-    const name = validateManifestString(entry.name, `${fieldName}.name`);
-    if (name && !PLUGIN_NAME_PATTERN.test(name)) {
-      error(`${fieldName}.name must use lowercase-hyphen-case`);
-    }
-    if (name && pluginName && name === pluginName) {
-      error(`${fieldName}.name: plugin "${pluginName}" cannot depend on itself.`);
-    }
-
-    if (entry.minVersion !== undefined) {
-      validateStrictSemVerString(entry.minVersion, `${fieldName}.minVersion`);
-    }
-
-    if (entry.target !== undefined) {
-      const target = expectRecord(entry.target, `${fieldName}.target`);
-      if (target) {
-        validateAllowedKeys(target, `${fieldName}.target`, ['scope']);
-        if (typeof target.scope !== 'string' || (target.scope !== 'user' && target.scope !== 'project')) {
-          error(`${fieldName}.target.scope must be "user" or "project"`);
-        }
-      }
-    }
-
-    if (entry.when !== undefined) {
-      const when = expectRecord(entry.when, `${fieldName}.when`);
-      if (when) {
-        validateAllowedKeys(when, `${fieldName}.when`, ['platforms']);
-        if (!Array.isArray(when.platforms)) {
-          error(`${fieldName}.when.platforms must be an array`);
-          platformsForOverlap = [];
-        } else if (when.platforms.length === 0) {
-          error(`${fieldName}.when.platforms must contain at least one platform`);
-          platformsForOverlap = [];
-        } else {
-          const platforms = [];
-          let invalidPlatforms = false;
-          when.platforms.forEach((platform, platformIndex) => {
-            const platformField = `${fieldName}.when.platforms[${platformIndex}]`;
-            if (typeof platform !== 'string' || !PLUGIN_DEPENDENCY_PLATFORMS.has(platform)) {
-              error(`${platformField} must be "codex" or "claude"`);
-              invalidPlatforms = true;
-              return;
-            }
-            if (platforms.includes(platform)) {
-              error(`${platformField} duplicate platform "${platform}"`);
-              invalidPlatforms = true;
-              return;
-            }
-            platforms.push(platform);
-          });
-          platformsForOverlap = invalidPlatforms ? [] : platforms;
-        }
-      }
-    }
-
-    if (!name) return;
-    for (const platform of platformsForOverlap) {
-      const platformKey = `${name}::${platform}`;
-      if (seen.has(platformKey)) {
-        error(`${fieldName}.when.platforms overlaps with dependencies.plugins[${seen.get(platformKey)}] for plugin "${name}" on platform "${platform}"`);
-        continue;
-      }
-      seen.set(platformKey, index);
-    }
-  });
 }
 
 function normalizeManifestProductToken(value) {
@@ -1757,52 +1659,6 @@ function validateDeclaredNativeAssets(pluginDir, manifest) {
       );
     }
   }
-}
-
-function findCurrentCatalogPluginsDir(pluginDir) {
-  const parentDir = path.dirname(pluginDir);
-  return path.basename(parentDir) === 'plugins' ? parentDir : null;
-}
-
-function collectCurrentCatalogPluginNames(pluginsDir) {
-  const pluginNames = new Set();
-  for (const entry of fs.readdirSync(pluginsDir, { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue;
-    const manifestPath = path.join(pluginsDir, entry.name, '.agents-plugin', 'plugin.json');
-    if (!fs.existsSync(manifestPath)) continue;
-    try {
-      const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-      if (manifest && typeof manifest.name === 'string' && manifest.name.trim() !== '') {
-        pluginNames.add(manifest.name);
-      }
-    } catch {
-      continue;
-    }
-  }
-  return pluginNames;
-}
-
-function validateCatalogDependencyReferences(pluginDir, manifest) {
-  const dependencies = manifest.dependencies?.plugins;
-  if (!Array.isArray(dependencies) || dependencies.length === 0) {
-    return;
-  }
-
-  const pluginsDir = findCurrentCatalogPluginsDir(pluginDir);
-  if (!pluginsDir) {
-    warn('当前插件目录不在 "<catalog>/plugins/<name>" 结构下，跳过 dependencies.plugins 的 catalog 存在性校验。');
-    return;
-  }
-
-  const pluginNames = collectCurrentCatalogPluginNames(pluginsDir);
-  dependencies.forEach((entry, index) => {
-    if (!entry || typeof entry !== 'object' || typeof entry.name !== 'string') {
-      return;
-    }
-    if (!pluginNames.has(entry.name)) {
-      error(`Invalid dependencies.plugins[${index}].name for plugin "${manifest.name}": current catalog is missing plugin "${entry.name}".`);
-    }
-  });
 }
 
 function validatePluginVersionContracts(manifest, options) {
@@ -3762,7 +3618,6 @@ async function validatePluginDir(pluginDir, options) {
   validateNoBuildOutputDirs(pluginDir);
   validateDeclaredNativeAssets(pluginDir, manifest);
   validatePluginVersionContracts(manifest, options);
-  validateCatalogDependencyReferences(pluginDir, manifest);
   validateSkillInventory(pluginDir, manifest);
   validatePluginEvalManifest(pluginDir, manifest);
   const artifactRenderEntry = validateScriptsLightweight(pluginDir, manifest);

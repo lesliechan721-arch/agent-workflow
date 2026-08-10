@@ -28,7 +28,6 @@ export type RawCommandOptions = {
 };
 
 export type RawInstallCommandOptions = RawCommandOptions & {
-  adoptExisting?: boolean;
 };
 
 export type RawUpgradeCommandOptions = RawCommandOptions & {
@@ -45,38 +44,14 @@ export type RawStatusCommandOptions = {
   json?: boolean;
 };
 
-export type RawDiagnoseCommandOptions = RawStatusCommandOptions & {
-  deep?: boolean;
-};
-
-export interface DiagnoseCommandOptions extends StatusCommandOptions {
-  deep?: boolean;
-}
-
-export type RawUninstallCommandOptions = RawCommandOptions & {
-  removeConfig?: boolean;
-};
-
-export interface UninstallCommandOptions extends CommandOptions {
-  removeConfig: boolean;
-}
+export type RawUninstallCommandOptions = RawCommandOptions;
+export type UninstallCommandOptions = CommandOptions;
 
 export type RawCleanupCommandOptions = RawCommandOptions & {
-  force?: boolean;
-  dependencyIndex?: boolean;
-  pruneStale?: string;
-  yes?: boolean;
-  plan?: boolean;
-  removeConfig?: boolean;
   json?: boolean;
 };
 
 export interface CleanupCommandOptions extends CommandOptions {
-  force: boolean;
-  dependencyIndex: boolean;
-  pruneStale?: string;
-  yes: boolean;
-  removeConfig: boolean;
   json?: boolean;
 }
 
@@ -270,22 +245,14 @@ export function normalizeInstallCommandOptions(
   raw: RawInstallCommandOptions = {},
   defaults: NormalizeCommandOptionsDefaults = {},
 ): InstallCommandOptions {
-  if (raw.adoptExisting === true && raw.scope !== 'project') {
-    throw new Error('`install --adopt-existing` 只允许 `--scope project`。');
-  }
-  const normalized = {
+  return {
     ...normalizeCommandOptions(raw, {
       defaultScope: 'user',
       requirePlatform: true,
       missingPlatformMessage: 'install 命令需要显式指定 `--platform codex|claude|both`。',
       ...defaults,
     }),
-    adoptExisting: raw.adoptExisting === true,
   };
-  if (normalized.adoptExisting && normalized.scope !== 'project') {
-    throw new Error('`install --adopt-existing` 只允许 `--scope project`。');
-  }
-  return normalized;
 }
 
 export function normalizeUpgradeCommandOptions(
@@ -327,16 +294,6 @@ export function normalizeStatusCommandOptions(
   };
 }
 
-export function normalizeDiagnoseCommandOptions(
-  raw: RawDiagnoseCommandOptions = {},
-  defaults: { cwd?: string } = {},
-): DiagnoseCommandOptions {
-  return {
-    ...normalizeStatusCommandOptions(raw, defaults),
-    deep: raw.deep === true,
-  };
-}
-
 export function normalizeUninstallCommandOptions(
   raw: RawUninstallCommandOptions = {},
   defaults: NormalizeCommandOptionsDefaults = {},
@@ -348,7 +305,6 @@ export function normalizeUninstallCommandOptions(
       missingPlatformMessage: 'uninstall 命令需要显式指定 `--platform codex|claude|both`。',
       ...defaults,
     }),
-    removeConfig: raw.removeConfig === true,
   };
 }
 
@@ -356,44 +312,18 @@ export function normalizeCleanupCommandOptions(
   raw: RawCleanupCommandOptions = {},
   defaults: NormalizeCommandOptionsDefaults = {},
 ): CleanupCommandOptions {
-  if (raw.plan === true) {
-    throw new Error('`cleanup --plan` 已移除；请直接运行 `aw cleanup`，或先用 `aw status --verbose` 查看当前状态。');
-  }
-  if (raw.dependencyIndex && raw.scope !== undefined) {
-    throw new Error('cleanup --dependency-index 不接受 `--scope`。');
-  }
-  if (raw.dependencyIndex && raw.platform !== undefined) {
-    throw new Error('cleanup --dependency-index 不接受 `--platform`。');
+  if (raw.scope === undefined) {
+    throw new Error('cleanup 命令需要显式指定 `--scope project|user`。');
   }
   const normalized = {
     ...normalizeCommandOptions(raw, {
       defaultScope: 'user',
-      requirePlatform: raw.dependencyIndex !== true,
+      requirePlatform: true,
       missingPlatformMessage: 'cleanup 命令需要显式指定 `--platform codex|claude|both`。',
-      ...(raw.dependencyIndex ? { defaultPlatform: 'both' as const } : {}),
       ...defaults,
     }),
-    force: raw.force === true,
-    dependencyIndex: raw.dependencyIndex === true,
-    pruneStale: raw.pruneStale,
-    yes: raw.yes === true,
-    removeConfig: raw.removeConfig === true,
     json: raw.json === true,
   } satisfies CleanupCommandOptions;
-
-  if (normalized.dependencyIndex) {
-    if (!normalized.pruneStale) {
-      throw new Error('cleanup --dependency-index 目前只支持 --prune-stale <token>。');
-    }
-    if (!normalized.yes) {
-      throw new Error('cleanup --dependency-index --prune-stale 需要显式传入 --yes。');
-    }
-    if (normalized.removeConfig) {
-      throw new Error('cleanup --dependency-index --prune-stale 不支持 --remove-config。');
-    }
-  } else if (normalized.yes) {
-    throw new Error('cleanup --yes 只用于 --dependency-index --prune-stale。');
-  }
 
   return normalized;
 }

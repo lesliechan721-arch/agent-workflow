@@ -79,7 +79,7 @@ function resolveSourceImport(sourcePath: string, specifier: string): string | nu
 }
 
 describe('rebuild runtime import boundary', () => {
-  it('cannot recursively reach legacy state or lifecycle execution modules', () => {
+  it('stays inside the rebuild core architecture allowlist', () => {
     const srcRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../src');
     const entry = path.join(srcRoot, 'commands', 'rebuild-operations.ts');
     const pending = [entry];
@@ -101,15 +101,22 @@ describe('rebuild runtime import boundary', () => {
 
     const relativeModules = [...visited].map((sourcePath) =>
       path.relative(srcRoot, sourcePath).split(path.sep).join('/')).sort();
-    expect(relativeModules).toContain('utils/lifecycle-active-store.ts');
-    expect(relativeModules).not.toContain('utils/plugin-scripts.ts');
-    expect(relativeModules.filter((modulePath) =>
-      modulePath.startsWith('install-state/')
-      || modulePath === 'utils/tracking.ts'
-      || modulePath === 'utils/installed-ledger.ts'
-      || modulePath.includes('dependency')
-      || modulePath.includes('codex-native-state')
-      || modulePath.includes('codex-native-recovery')
-      || modulePath.includes('native-transaction'))).toEqual([]);
+    const allowedModules = new Set([
+      'commands/rebuild-operations.ts',
+      'types.ts',
+      'utils/bundle-integrity.ts',
+      'utils/lifecycle-active-store.ts',
+      'utils/ownership.ts',
+      'utils/plugin-script-contract.ts',
+      'utils/process-lock.ts',
+      'utils/state-paths.ts',
+      'utils/test-path-fence.ts',
+    ]);
+    expect(relativeModules.filter((modulePath) => !allowedModules.has(modulePath))).toEqual([]);
+    expect(relativeModules).toEqual(expect.arrayContaining([
+      'commands/rebuild-operations.ts',
+      'utils/lifecycle-active-store.ts',
+      'utils/ownership.ts',
+    ]));
   });
 });

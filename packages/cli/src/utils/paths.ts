@@ -96,7 +96,6 @@ export interface ClaudePaths {
   knownMarketplacesPath: string;
   installedPluginsPath: string;
   marketplaceCacheDir: string;
-  trackingDir: string;
 }
 
 export interface CodexPaths {
@@ -108,7 +107,6 @@ export interface CodexPaths {
   rulesDir: string;
   agentsDir: string;
   hooksPath: string;
-  trackingDir: string;
   registryConfigPath: string;
   registryScope: 'user';
 }
@@ -267,7 +265,6 @@ export function resolveClaudePaths(
     knownMarketplacesPath: path.join(pluginsDir, 'known_marketplaces.json'),
     installedPluginsPath: path.join(pluginsDir, 'installed_plugins.json'),
     marketplaceCacheDir: path.join(pluginsDir, 'marketplaces'),
-    trackingDir: configDir,
   };
 }
 
@@ -289,7 +286,6 @@ export function resolveCodexPaths(
     rulesDir: path.join(configDir, 'rules'),
     agentsDir: path.join(configDir, 'agents'),
     hooksPath: path.join(configDir, 'hooks.json'),
-    trackingDir: configDir,
     registryConfigPath: path.join(getCodexHome(env), 'config.toml'),
     registryScope: 'user',
   };

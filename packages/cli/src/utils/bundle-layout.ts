@@ -12,7 +12,6 @@ import type {
   PluginManifestSource,
 } from '../types.js';
 import {
-  validatePluginDependencyReferences,
   assertStrictSemVer,
   validateCatalogManifest,
   validatePluginManifest,
@@ -916,8 +915,6 @@ export async function validateBundleLayout(
     'codex',
     supportedPluginNamesByPlatform.codex,
   );
-  validatePluginDependencyReferences(pluginMetas);
-
   if (await fs.pathExists(getCatalogStagingRoot(rootDir))) {
     await validateCatalogStagingLayout(rootDir);
   }
