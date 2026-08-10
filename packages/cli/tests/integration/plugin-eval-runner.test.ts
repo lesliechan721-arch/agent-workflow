@@ -68,10 +68,26 @@ async function writeProviderCheckingFakeCodex(root: string, skillName: string): 
     "if (fs.existsSync(path.join(process.env.CODEX_HOME, 'auth.json'))) { process.stderr.write('official auth copied\\n'); process.exit(12); }",
     "if (process.env.OPENAI_API_KEY || process.env.UNRELATED_SECRET) { process.stderr.write('unrelated environment copied\\n'); process.exit(13); }",
     'const send = (value) => process.stdout.write(JSON.stringify(value) + "\\n");',
-    `send({ type: "item.completed", item: { type: "command_execution", status: "completed", exit_code: 0, command: "cat .agents/skills/${skillName}/SKILL.md" } });`,
-    'send({ type: "item.completed", item: { type: "agent_message", text: "fixture-secret https://example.invalid/v1" } });',
-    "process.stderr.write('fixture-secret https://example.invalid/v1\\n');",
-    'send({ type: "turn.completed", usage: { total_tokens: 7 } });',
+    "if (process.argv[2] === 'app-server') {",
+    "  const readline = require('node:readline');",
+    "  const input = readline.createInterface({ input: process.stdin });",
+    "  input.on('line', (line) => {",
+    "    const frame = JSON.parse(line);",
+    "    if (frame.method === 'initialize') send({ id: frame.id, result: {} });",
+    "    else if (frame.method === 'config/read') send({ id: frame.id, result: {",
+    "      config: { cli_auth_credentials_store: 'file', mcp_oauth_credentials_store: 'file', include_apps_instructions: false, include_collaboration_mode_instructions: false, mcp_servers: {}, features: { secret_auth_storage: false, default_mode_request_user_input: true, apps: false, plugins: false, remote_plugin: false, plugin_sharing: false, tool_suggest: false, skill_mcp_dependency_install: false }, skills: { bundled: { enabled: false } }, orchestrator: { skills: { enabled: false }, mcp: { enabled: false } } },",
+    "      origins: {}, layers: [{ name: { type: 'system', file: '/etc/codex/config.toml' }, version: '1', config: {} }, { name: { type: 'user', file: path.join(process.env.CODEX_HOME, 'config.toml') }, version: '1', config: {} }, { name: { type: 'sessionFlags' }, version: '1', config: {} }],",
+    "    } });",
+    "    else if (frame.method === 'configRequirements/read') send({ id: frame.id, result: { requirements: null } });",
+    "    else if (frame.method === 'skills/list') { const cwd = frame.params.cwds[0]; const skillPath = path.join(cwd, '.agents', 'skills', " + JSON.stringify(skillName) + ", 'SKILL.md'); send({ id: frame.id, result: { data: [{ cwd, skills: [{ name: " + JSON.stringify(skillName) + ", path: skillPath, scope: 'repo', enabled: true }], errors: [] }] } }); }",
+    "    else if (frame.method === 'mcpServerStatus/list') send({ id: frame.id, result: { data: [], nextCursor: null } });",
+    "  });",
+    "} else {",
+    `  send({ type: "item.completed", item: { type: "command_execution", status: "completed", exit_code: 0, command: "cat .agents/skills/${skillName}/SKILL.md" } });`,
+    '  send({ type: "item.completed", item: { type: "agent_message", text: "fixture-secret https://example.invalid/v1" } });',
+    "  process.stderr.write('fixture-secret https://example.invalid/v1\\n');",
+    '  send({ type: "turn.completed", usage: { total_tokens: 7 } });',
+    '}',
   ].join('\n'), 'utf8');
   await fs.chmod(codexBin, 0o755);
   return codexBin;
@@ -376,7 +392,7 @@ describe('plugin eval runner', () => {
         '--suite',
         'requirements-clarifier-trigger',
         '--case',
-        'p06_explicit_complete',
+        'p06_explicit_check',
         '--runs',
         '1',
         '--codex-bin',
@@ -397,7 +413,7 @@ describe('plugin eval runner', () => {
 
       expect(exitCode, stderr).toBe(1);
       const commandReport = JSON.parse(stdout);
-      expect(commandReport.bundles[0]).toMatchObject({
+      expect(commandReport.bundles[0], stderr).toMatchObject({
         model: 'fixture-model',
         modelProvider: 'fixture-provider',
         credentialSource: 'embedded',

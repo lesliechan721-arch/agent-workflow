@@ -37,6 +37,9 @@ describe('Codex eval runtime config', () => {
       'model = "inherited-model"',
       'model_provider = "custom"',
       'model_reasoning_effort = "high"',
+      'cli_auth_credentials_store = "keyring"',
+      'mcp_oauth_credentials_store = "keyring"',
+      'features.secret_auth_storage = true',
       '',
       '[model_providers.custom]',
       'name = "Custom"',
@@ -75,6 +78,13 @@ describe('Codex eval runtime config', () => {
     expect(runtime.configToml).not.toContain('model_providers.unused');
     expect(runtime.configToml).not.toContain('[plugins.');
     expect(runtime.configToml).not.toContain('[mcp_servers.');
+    expect(runtime.configToml).not.toContain('"keyring"');
+    expect(runtime.configToml).toContain('cli_auth_credentials_store = "file"');
+    expect(runtime.configToml).toContain('mcp_oauth_credentials_store = "file"');
+    expect(runtime.configToml).toContain('features.secret_auth_storage = false');
+    expect(runtime.configToml.indexOf('features.secret_auth_storage = false')).toBeLessThan(
+      runtime.configToml.indexOf('[model_providers.custom]'),
+    );
 
     const destination = path.join(root, 'isolated-home');
     await materializeCodexEvalRuntimeHome(runtime, destination);
@@ -259,6 +269,45 @@ describe('Codex eval runtime config', () => {
       modelProvider: 'openai',
       credentialSource: 'openai-auth',
     });
+    expect(clean.configToml).toContain('cli_auth_credentials_store = "file"');
+    expect(clean.configToml).toContain('mcp_oauth_credentials_store = "file"');
+    expect(clean.configToml).toContain('features.secret_auth_storage = false');
+  });
+
+  it('always materializes a file-only credential config without a model override', async () => {
+    const root = await tempRoot();
+    const runtime = await resolveCodexEvalRuntimeConfig({
+      sourceEnv: { CODEX_HOME: root },
+      inheritUserConfig: false,
+    });
+    const destination = path.join(root, 'runtime-no-model');
+
+    await materializeCodexEvalRuntimeHome(runtime, destination);
+
+    const config = await fs.readFile(path.join(destination, 'config.toml'), 'utf8');
+    expect(config).toContain('cli_auth_credentials_store = "file"');
+    expect(config).toContain('mcp_oauth_credentials_store = "file"');
+    expect(config).toContain('features.secret_auth_storage = false');
+  });
+
+  it('trusts only the temporary project requested by the eval run', async () => {
+    const root = await tempRoot();
+    const workspace = path.join(root, 'project');
+    const destination = path.join(root, 'runtime-trusted-project');
+    await fs.ensureDir(workspace);
+    const runtime = await resolveCodexEvalRuntimeConfig({
+      sourceEnv: { CODEX_HOME: root },
+      inheritUserConfig: false,
+    });
+
+    await materializeCodexEvalRuntimeHome(runtime, destination, {
+      trustedProject: workspace,
+    });
+
+    const canonicalWorkspace = await fs.realpath(workspace);
+    const config = await fs.readFile(path.join(destination, 'config.toml'), 'utf8');
+    expect(config).toContain(`[projects.${JSON.stringify(canonicalWorkspace)}]`);
+    expect(config).toContain('trust_level = "trusted"');
   });
 
   it('never copies official auth for a non-official provider', async () => {

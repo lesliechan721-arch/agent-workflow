@@ -65,7 +65,7 @@ function assertSharedSkillContract(skill, skillName) {
   assert.match(skill, /先只读查看/);
   assert.match(skill, /已经说明或能查到的事实直接采用|能查到的事实自行确认/);
   assert.match(skill, /互相独立时每轮最多三题/);
-  assert.match(skill, /适合给选项时优先使用 `\{\{questionTool\}\}`/);
+  assert.match(skill, /适合列选项时使用 \{\{questionTool\}\}/);
   assert.match(skill, /待验证/);
   assert.match(skill, /交还原任务|交还原工作流/);
   assert.equal(skill.includes('request_user_input'), false);
@@ -338,10 +338,10 @@ test('eval manifest delegates both skills to central trigger and conversation dr
   for (const suite of manifest.suites) {
     assert.deepEqual(suite.profiles, ['project-default']);
     assert.equal(suite.requiredForRelease, true);
+    assert.equal(suite.isolation, 'strict');
     if (suite.kind === 'trigger') {
       assert.equal(suite.defaultRuns, 3);
       assert.equal(suite.fixtureModule, './evals/trigger-fixture.mjs');
-      assert.equal(suite.isolation, 'strict');
       assert.deepEqual(suite.releaseSplits, ['validation']);
       assert.deepEqual(suite.strictNegativeSplits, ['validation']);
     } else {
@@ -437,6 +437,7 @@ test('prepared bundle renders the platform question tool for both skills', async
       assertDecisionGrillContract(skill.replace(expectedTool, '{{questionTool}}'));
     }
     assert.equal(skill.includes(expectedTool), true);
+    assert.equal(skill.includes(`\`${expectedTool}\``), false);
     assert.equal(skill.includes(otherTool), false);
     assert.equal(skill.includes('{{questionTool}}'), false);
     assertOpenAiMetadata(openaiYaml, skillName);

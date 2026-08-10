@@ -784,6 +784,7 @@ async function runOnePlugin(options: {
               model: options.parsed.model,
               codexRuntime: options.codexRuntime,
               timeoutMs: suite.perRunTimeoutMs,
+              isolation: suite.isolation,
               sourceEnv: options.modelEnv,
               reportPath,
             });

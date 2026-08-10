@@ -1669,6 +1669,7 @@ describe('authoring tools', () => {
       kind: 'conversation',
       skill: 'eval-demo',
       cases: './evals/conversation-cases.json',
+      isolation: 'strict',
       profiles: ['project-default'],
       defaultRuns: 1,
       releaseSplits: [],
@@ -1694,6 +1695,15 @@ describe('authoring tools', () => {
     await expect(runValidatePlugin(pluginDir)).resolves.toMatchObject({
       stdout: expect.stringContaining('[PASS] All checks passed.'),
     });
+
+    await fs.writeJson(evalManifestPath, {
+      ...conversationManifest,
+      suites: [{ ...conversationSuite, isolation: 'partial' }],
+    }, { spaces: 2 });
+    await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining('isolation must be standard or strict'),
+    });
+    await fs.writeJson(evalManifestPath, conversationManifest, { spaces: 2 });
 
     await fs.writeJson(evalManifestPath, {
       ...conversationManifest,

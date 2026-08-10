@@ -62,7 +62,7 @@ Skill 的触发行为只由平台原生元数据决定。Codex 使用 `agents/op
 
 | 插件 | 说明 | 支持平台 |
 |------|------|----------|
-| `ask-me` | 实施前澄清重大阻塞项，并压力测试计划、方案和重大决策 | Codex / Claude Code |
+| `ask-me` | 实施前澄清会影响结果或造成返工的关键歧义，并协作制定、比较或评审计划与重要决策 | Codex / Claude Code |
 | `git-commit` | 在用户请求提交时，按用户或仓库适用规范完成 Git 提交 | Codex / Claude Code |
 | `codex-explore` | 为 Codex 提供通用只读探索流程 | Codex |
 | `codex-subagent-guide` | 在委派已获授权后按任务类型指导子代理参数、fork、响应式等待与条件清理 | Codex |

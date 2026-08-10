@@ -5,6 +5,8 @@ import path from 'node:path';
 import fs from 'fs-extra';
 import { ParseError, parseTOML, type AST } from 'toml-eslint-parser';
 
+import { CODEX_EVAL_CREDENTIAL_CONFIG_LINES } from './codex-eval-isolation.js';
+
 const INHERITED_MODEL_KEYS = new Set([
   'model',
   'model_provider',
@@ -70,7 +72,7 @@ export interface CodexEvalRuntimeConfig {
   model: string | null;
   modelProvider: string;
   credentialSource: CodexEvalCredentialSource;
-  configToml: string | null;
+  configToml: string;
   providerEnvironment: Record<string, string>;
   sourceCodexHome: string;
   copyOpenAiAuth: boolean;
@@ -299,8 +301,8 @@ function renderFilteredConfig(options: {
   tables: AST.TOMLTable[];
   modelOverride?: string;
   providerOverride?: string;
-}): string | null {
-  const lines: string[] = [];
+}): string {
+  const lines: string[] = [...CODEX_EVAL_CREDENTIAL_CONFIG_LINES];
   for (const [key, entry] of effectiveModelEntries(options.program)) {
     if (key === 'model' && options.modelOverride) continue;
     if (key === 'model_provider') continue;
@@ -313,7 +315,7 @@ function renderFilteredConfig(options: {
   for (const table of options.tables) {
     lines.push(options.content.slice(table.range[0], table.range[1]));
   }
-  return lines.length > 0 ? `${lines.join('\n\n')}\n` : null;
+  return `${lines.join('\n\n')}\n`;
 }
 
 function evidenceDigest(value: {
@@ -322,7 +324,14 @@ function evidenceDigest(value: {
   modelProvider: string;
   credentialSource: CodexEvalCredentialSource;
 }): string {
-  return `sha256:${createHash('sha256').update(JSON.stringify(value)).digest('hex')}`;
+  return `sha256:${createHash('sha256').update(JSON.stringify({
+    ...value,
+    credentialStores: {
+      cliAuth: 'file',
+      mcpOauth: 'file',
+      secretAuthStorage: false,
+    },
+  })).digest('hex')}`;
 }
 
 export function cleanCodexEvalRuntimeConfig(
@@ -339,7 +348,12 @@ export function cleanCodexEvalRuntimeConfig(
   };
   return {
     ...descriptor,
-    configToml: model ? `model = ${JSON.stringify(model)}\nmodel_provider = "openai"\n` : null,
+    configToml: [
+      ...CODEX_EVAL_CREDENTIAL_CONFIG_LINES,
+      ...(model ? [`model = ${JSON.stringify(model)}`] : []),
+      'model_provider = "openai"',
+      '',
+    ].join('\n'),
     providerEnvironment: sourceEnv.OPENAI_API_KEY
       ? { OPENAI_API_KEY: sourceEnv.OPENAI_API_KEY }
       : {},
@@ -458,14 +472,19 @@ export async function resolveCodexEvalRuntimeConfig(
 export async function materializeCodexEvalRuntimeHome(
   runtime: CodexEvalRuntimeConfig,
   destination: string,
+  options: { trustedProject?: string } = {},
 ): Promise<void> {
   await fs.ensureDir(destination);
   await fs.chmod(destination, 0o700).catch(() => undefined);
-  if (runtime.configToml) {
-    const configPath = path.join(destination, 'config.toml');
-    await fs.writeFile(configPath, runtime.configToml, { encoding: 'utf8', mode: 0o600 });
-    await fs.chmod(configPath, 0o600).catch(() => undefined);
-  }
+  const configPath = path.join(destination, 'config.toml');
+  const trustedProject = options.trustedProject
+    ? await fs.realpath(options.trustedProject)
+    : null;
+  const configToml = trustedProject
+    ? `${runtime.configToml.trimEnd()}\n\n[projects.${JSON.stringify(trustedProject)}]\ntrust_level = "trusted"\n`
+    : runtime.configToml;
+  await fs.writeFile(configPath, configToml, { encoding: 'utf8', mode: 0o600 });
+  await fs.chmod(configPath, 0o600).catch(() => undefined);
   if (!runtime.copyOpenAiAuth) return;
   for (const name of OPENAI_AUTH_FILES) {
     const source = path.join(runtime.sourceCodexHome, name);
@@ -776,6 +795,11 @@ export function codexEvalRuntimeEvidence(
     model: runtime.model,
     model_provider: runtime.modelProvider,
     credential_source: runtime.credentialSource,
+    credential_stores: {
+      cli_auth: 'file',
+      mcp_oauth: 'file',
+      secret_auth_storage: false,
+    },
     config_digest: runtime.evidenceDigest,
   };
 }

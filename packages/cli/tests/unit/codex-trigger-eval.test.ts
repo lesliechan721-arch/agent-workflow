@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   inspectTriggerExecEvent,
+  inspectTriggerStrictConfigWarning,
   readTriggerSpawnCalls,
   runCodexTriggerSuite,
   summarizeTriggerCase,
@@ -188,6 +189,20 @@ describe('Codex native trigger eval driver', () => {
     }, skillPath)).toEqual({});
   });
 
+  it('detects project trust warnings emitted by strict Codex exec', () => {
+    expect(inspectTriggerStrictConfigWarning({
+      type: 'item.completed',
+      item: {
+        type: 'error',
+        message: 'Project-local config is disabled until the project is trusted.',
+      },
+    })).toContain('project is trusted');
+    expect(inspectTriggerStrictConfigWarning({
+      type: 'item.completed',
+      item: { type: 'agent_message', text: 'done' },
+    })).toBeNull();
+  });
+
   it('preserves per-suite strict negative scoring', () => {
     const evalCase: PluginEvalTriggerCase = {
       id: 'negative',
@@ -254,7 +269,14 @@ describe('Codex native trigger eval driver', () => {
       expect(evidence.environment.isolation).toMatchObject({
         mode: 'standard',
         isolated_home: true,
-        system_cloud_and_managed_layers_disabled: false,
+        credential_stores: {
+          cli_auth: 'file',
+          mcp_oauth: 'file',
+          secret_auth_storage: false,
+        },
+        strict_surfaces_disabled: false,
+        host_configuration: null,
+        runtime_probe: null,
       });
       expect(evidence.results[0].runs[0].spawn_calls).toHaveLength(1);
       expect(evidence.results[0].runs[0].fixture_unchanged).toBe(true);

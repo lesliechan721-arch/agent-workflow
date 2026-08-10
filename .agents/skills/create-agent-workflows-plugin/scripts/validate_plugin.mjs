@@ -1414,6 +1414,10 @@ function validatePluginEvalManifest(pluginDir, pluginManifest) {
       } else if (skill && !collectDeclaredSkillNames(pluginDir, pluginManifest).all.has(skill)) {
         error(`${fieldName}.skill must reference a declared static or dynamic skill`);
       }
+      const isolation = suite.isolation ?? 'standard';
+      if (isolation !== 'standard' && isolation !== 'strict') {
+        error(`${fieldName}.isolation must be standard or strict`);
+      }
       if (suite.kind === 'conversation') {
         if (Array.isArray(suite.releaseSplits) && suite.releaseSplits.length > 0) {
           error(`${fieldName} cannot declare releaseSplits because conversation cases do not support split filtering`);
@@ -1422,9 +1426,6 @@ function validatePluginEvalManifest(pluginDir, pluginManifest) {
       } else {
         if (typeof suite.observeSpawnAgent !== 'boolean') {
           error(`${fieldName}.observeSpawnAgent must be boolean`);
-        }
-        if (suite.isolation !== 'standard' && suite.isolation !== 'strict') {
-          error(`${fieldName}.isolation must be standard or strict`);
         }
         if (!Array.isArray(suite.strictNegativeSplits)) {
           error(`${fieldName}.strictNegativeSplits must be an array`);

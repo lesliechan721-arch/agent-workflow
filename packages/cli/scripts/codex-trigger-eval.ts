@@ -8,6 +8,15 @@ import { pathToFileURL } from 'node:url';
 
 import fs from 'fs-extra';
 
+import { runCodexEvalIsolationProbe } from './codex-eval-app-server.js';
+import {
+  codexEvalConfigOverrides,
+  codexEvalIsolationEvidence,
+  inspectCodexEvalHostIsolation,
+  type CodexEvalHostIsolationEvidence,
+  type CodexEvalRpcIsolationEvidence,
+} from './codex-eval-isolation.js';
+
 import {
   assertProcessTreeInspectionAvailable,
   CODEX_EVAL_PROCESS_TREE_ID_ENV,
@@ -280,6 +289,22 @@ export function inspectTriggerExecEvent(
   return {};
 }
 
+export function inspectTriggerStrictConfigWarning(
+  event: Record<string, unknown> | null,
+): string | null {
+  const item = eventItem(event);
+  if (
+    event?.type !== 'item.completed' ||
+    item?.type !== 'error' ||
+    typeof item.message !== 'string'
+  ) {
+    return null;
+  }
+  return /project-local config[\s\S]*disabled|until the project is trusted/iu.test(item.message)
+    ? item.message
+    : null;
+}
+
 async function listFilesRecursively(root: string): Promise<string[]> {
   const entries = await fs.readdir(root, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
     if (error.code === 'ENOENT') {
@@ -394,19 +419,8 @@ function buildCodexArgs(options: {
     '--config',
     `model_provider=${JSON.stringify(options.modelProvider)}`,
   );
-  if (options.suite.isolation === 'strict') {
-    args.push(
-      '--config',
-      'skills.bundled.enabled=false',
-      '--config',
-      'orchestrator.skills.enabled=false',
-      '--config',
-      'orchestrator.mcp.enabled=false',
-      '--config',
-      'include_apps_instructions=false',
-      '--config',
-      'include_collaboration_mode_instructions=false',
-    );
+  for (const override of codexEvalConfigOverrides(options.suite.isolation)) {
+    args.push('--config', override);
   }
   if (options.suite.observeSpawnAgent) {
     args.push(
@@ -519,30 +533,31 @@ async function captureState(
   return state;
 }
 
-function strictSystemCodexRoot(sourceEnv: NodeJS.ProcessEnv): string {
-  if (process.platform === 'win32') {
-    return path.join(
-      sourceEnv.ProgramData ?? String.raw`C:\ProgramData`,
-      'OpenAI',
-      'Codex',
-    );
-  }
-  return '/etc/codex';
-}
-
-async function assertStrictSystemConfigAbsent(sourceEnv: NodeJS.ProcessEnv): Promise<void> {
-  const systemRoot = strictSystemCodexRoot(sourceEnv);
-  const entries = await fs.readdir(systemRoot).catch((error: NodeJS.ErrnoException) => {
-    if (error.code === 'ENOENT') {
-      return [];
-    }
+async function isolateTriggerWorkspaceSkills(
+  workspaceRoot: string,
+  skillName: string,
+): Promise<void> {
+  const skillsRoot = path.join(workspaceRoot, '.agents', 'skills');
+  const entries = await fs.readdir(skillsRoot).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return [];
     throw error;
   });
-  if (entries.length > 0) {
-    throw new Error(
-      `Refusing strict trigger eval because Codex system configuration exists at ${systemRoot}.`,
-    );
-  }
+  await Promise.all(entries.map(async (entry) => {
+    if (entry === skillName) return;
+    await fs.remove(path.join(skillsRoot, entry));
+  }));
+}
+
+async function snapshotStrictControlPlane(
+  workspaceRoot: string,
+): Promise<Record<string, string>> {
+  const snapshot = await snapshotWorkspace(workspaceRoot);
+  return Object.fromEntries(Object.entries(snapshot).filter(([entry]) =>
+    entry === '.agents' ||
+    entry.startsWith('.agents/') ||
+    entry === '.codex' ||
+    entry.startsWith('.codex/')
+  ));
 }
 
 async function runTriggerOnce(options: {
@@ -573,6 +588,9 @@ async function runTriggerOnce(options: {
   try {
     await assertProcessTreeInspectionAvailable();
     await fs.copy(options.subjectRoot, workspaceRoot, { dereference: false });
+    if (options.suite.isolation === 'strict') {
+      await isolateTriggerWorkspaceSkills(workspaceRoot, options.suite.skill);
+    }
     const skillPath = path.join(
       workspaceRoot,
       '.agents',
@@ -593,7 +611,9 @@ async function runTriggerOnce(options: {
     await Promise.all([
       fs.ensureDir(env.HOME!),
       fs.ensureDir(env.TMPDIR!),
-      materializeCodexEvalRuntimeHome(options.codexRuntime, codexHome),
+      materializeCodexEvalRuntimeHome(options.codexRuntime, codexHome, {
+        trustedProject: workspaceRoot,
+      }),
     ]);
     const initialContext: TriggerFixtureContext = {
       workspaceRoot,
@@ -601,11 +621,20 @@ async function runTriggerOnce(options: {
       env,
     };
     const protectedEnvironment = protectedEnvironmentSnapshot(env);
+    const controlPlaneBefore = options.suite.isolation === 'strict'
+      ? await snapshotStrictControlPlane(workspaceRoot)
+      : null;
     const fixtureResult = options.fixture
       ? await options.fixture.setupTriggerWorkspace(initialContext)
       : undefined;
     assertProtectedEnvironmentUnchanged(env, protectedEnvironment);
     env = mergeFixtureEnvironment(env, fixtureResult);
+    if (
+      controlPlaneBefore &&
+      stableJson(controlPlaneBefore) !== stableJson(await snapshotStrictControlPlane(workspaceRoot))
+    ) {
+      throw new Error('Trigger fixture modified strict eval control-plane files.');
+    }
     const context: TriggerFixtureContext = {
       ...initialContext,
       env,
@@ -754,6 +783,14 @@ async function runTriggerOnce(options: {
           return;
         }
         eventTrace.push(event);
+        const configWarning = options.suite.isolation === 'strict'
+          ? inspectTriggerStrictConfigWarning(event)
+          : null;
+        if (configWarning) {
+          diagnostics.push(`Strict Codex eval received a config warning: ${configWarning}`);
+          stop('strict_isolation_error');
+          return;
+        }
         const evidence = inspectTriggerExecEvent(event, skillPath);
         if (evidence.loaded) {
           observed.loaded = true;
@@ -769,9 +806,16 @@ async function runTriggerOnce(options: {
         if (evidence.usage !== undefined) {
           usage = evidence.usage;
         }
-        const reason = expectedEarlyStop(options.suite, options.evalCase, observed);
-        if (reason) {
-          stop(reason);
+        if (
+          evidence.loaded ||
+          evidence.spawned ||
+          evidence.finalMessage !== undefined ||
+          evidence.usage !== undefined
+        ) {
+          const reason = expectedEarlyStop(options.suite, options.evalCase, observed);
+          if (reason) {
+            stop(reason);
+          }
         }
       });
       child.once('error', (error) => {
@@ -990,9 +1034,18 @@ export async function runCodexTriggerSuite(options: {
     );
   }
   let fixture: TriggerFixtureModule | null;
+  let hostIsolation: CodexEvalHostIsolationEvidence | null = null;
+  let runtimeProbe: CodexEvalRpcIsolationEvidence | null = null;
   try {
     if (options.suite.isolation === 'strict') {
-      await assertStrictSystemConfigAbsent(sourceEnv);
+      hostIsolation = await inspectCodexEvalHostIsolation({ sourceEnv });
+      runtimeProbe = await runCodexEvalIsolationProbe({
+        subjectRoot: options.subjectRoot,
+        skillName: options.suite.skill,
+        codexBin: options.codexBin,
+        codexRuntime,
+        sourceEnv,
+      });
     }
     fixture = await loadFixtureModule(options.pluginRoot, options.suite);
   } catch (error) {
@@ -1006,6 +1059,14 @@ export async function runCodexTriggerSuite(options: {
       complete: false,
       passed: false,
       environment_error: diagnostic,
+      environment: {
+        isolation: codexEvalIsolationEvidence({
+          mode: options.suite.isolation,
+          host: hostIsolation,
+          runtimeProbe,
+        }),
+        codex_runtime: codexEvalRuntimeEvidence(codexRuntime),
+      },
       summary: { cases: cases.length, passed: 0, failed: 0 },
       results: [],
     }, codexRuntime);
@@ -1072,12 +1133,12 @@ export async function runCodexTriggerSuite(options: {
     environment: {
       codex_version: await readCodexVersion(options.codexBin, sourceEnv),
       isolation: {
-        mode: options.suite.isolation,
-        isolated_home: true,
-        source_user_config_filtered: true,
+        ...codexEvalIsolationEvidence({
+          mode: options.suite.isolation,
+          host: hostIsolation,
+          runtimeProbe,
+        }),
         project_rules_ignored_by_default: true,
-        bundled_surfaces_disabled: options.suite.isolation === 'strict',
-        system_cloud_and_managed_layers_disabled: false,
       },
       codex_runtime: codexEvalRuntimeEvidence(codexRuntime),
       skill_sha256: sha256(await fs.readFile(skillPath)),

@@ -26,7 +26,17 @@ import {
   type CodexEvalRuntimeConfig,
 } from './codex-eval-runtime-config.js';
 import {
+  codexEvalConfigOverrides,
+  codexEvalIsolationEvidence,
+  inspectCodexEvalHostIsolation,
+  validateCodexEvalConfigIsolation,
+  validateCodexEvalRpcIsolation,
+  type CodexEvalHostIsolationEvidence,
+  type CodexEvalRpcIsolationEvidence,
+} from './codex-eval-isolation.js';
+import {
   validatePluginEvalConversationCaseDocument,
+  type PluginEvalIsolation,
   type PluginEvalSuiteReport,
 } from './plugin-eval-contract.js';
 
@@ -81,6 +91,7 @@ interface AppServerRunEvidence {
   workspaceChanges: string[];
   diagnostics: string[];
   eventTrace: unknown[];
+  isolation: CodexEvalRpcIsolationEvidence | null;
   stderr?: string;
 }
 
@@ -123,16 +134,31 @@ const PASSTHROUGH_ENV = new Set([
   'SSL_CERT_DIR',
   'NODE_EXTRA_CA_CERTS',
 ]);
+const CODEX_EVAL_APP_SERVER_OVERRIDES = [
+  'features.default_mode_request_user_input=true',
+] as const;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function requestId(value: unknown): string | undefined {
-  if (typeof value === 'string' || typeof value === 'number') {
-    return String(value);
-  }
-  return undefined;
+  const rawId = appServerRequestId(value);
+  return rawId === undefined ? undefined : String(rawId);
+}
+
+function appServerRequestId(value: unknown): string | number | undefined {
+  return typeof value === 'string' || typeof value === 'number'
+    ? value
+    : undefined;
+}
+
+export function inspectAppServerConfigWarning(
+  frame: Record<string, unknown>,
+): string | null {
+  if (frame.method !== 'configWarning') return null;
+  const params = isRecord(frame.params) ? frame.params : {};
+  return typeof params.summary === 'string' ? params.summary : JSON.stringify(params);
 }
 
 function buildIsolatedEnv(
@@ -188,6 +214,28 @@ async function snapshotWorkspace(root: string): Promise<Map<string, string>> {
   return snapshot;
 }
 
+async function isolateWorkspaceSkills(options: {
+  workspaceRoot: string;
+  skillName: string;
+  includeTarget: boolean;
+}): Promise<string | null> {
+  const skillsRoot = path.join(options.workspaceRoot, '.agents', 'skills');
+  const targetRoot = path.join(skillsRoot, options.skillName);
+  const entries = await fs.readdir(skillsRoot).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return [];
+    throw error;
+  });
+  await Promise.all(entries.map(async (entry) => {
+    if (options.includeTarget && entry === options.skillName) return;
+    await fs.remove(path.join(skillsRoot, entry));
+  }));
+  if (!options.includeTarget) return null;
+  if (!(await fs.pathExists(path.join(targetRoot, 'SKILL.md')))) {
+    throw new Error(`Materialized eval Skill is missing: ${targetRoot}`);
+  }
+  return targetRoot;
+}
+
 function diffSnapshots(before: Map<string, string>, after: Map<string, string>): string[] {
   const paths = new Set([...before.keys(), ...after.keys()]);
   return [...paths]
@@ -218,13 +266,15 @@ class EvalAppServerSession {
     env: NodeJS.ProcessEnv;
     modelProvider: string;
     sensitiveEnvironmentNames: string[];
+    isolation: PluginEvalIsolation;
   }) {
     assertCodexEvalCanStartWork();
     this.closed = new Promise<void>((resolve) => {
       this.resolveClosed = resolve;
     });
-    this.process = spawn(options.codexBin, [
+    const args = [
       'app-server',
+      ...(options.isolation === 'strict' ? ['--strict-config'] : []),
       '--listen',
       'stdio://',
       '--config',
@@ -236,7 +286,14 @@ class EvalAppServerSession {
       ])}`,
       '--config',
       `model_provider=${JSON.stringify(options.modelProvider)}`,
-    ], {
+    ];
+    for (const override of codexEvalConfigOverrides(options.isolation)) {
+      args.push('--config', override);
+    }
+    for (const override of CODEX_EVAL_APP_SERVER_OVERRIDES) {
+      args.push('--config', override);
+    }
+    this.process = spawn(options.codexBin, args, {
       cwd: options.cwd,
       env: {
         ...options.env,
@@ -320,7 +377,7 @@ class EvalAppServerSession {
     });
   }
 
-  async respond(id: string, result: unknown): Promise<void> {
+  async respond(id: string | number, result: unknown): Promise<void> {
     await this.write({ id, result });
   }
 
@@ -447,6 +504,48 @@ class EvalAppServerSession {
   }
 }
 
+async function collectStrictIsolationEvidence(options: {
+  session: EvalAppServerSession;
+  workspaceRoot: string;
+  codexHome: string;
+  allowedSkillRoot: string | null;
+}): Promise<CodexEvalRpcIsolationEvidence> {
+  const [config, requirements] = await Promise.all([
+    options.session.sendRequest('config/read', {
+      includeLayers: true,
+      cwd: options.workspaceRoot,
+    }),
+    options.session.sendRequest('configRequirements/read', {}),
+  ]);
+  validateCodexEvalConfigIsolation({
+    config,
+    requirements,
+    codexHome: options.codexHome,
+    workspaceRoot: options.workspaceRoot,
+  });
+  const [skills, mcpServers] = await Promise.all([
+    options.session.sendRequest('skills/list', {
+      cwds: [options.workspaceRoot],
+      forceReload: true,
+    }),
+    options.session.sendRequest('mcpServerStatus/list', {
+      cursor: null,
+      limit: 100,
+      detail: 'toolsAndAuthOnly',
+      threadId: null,
+    }),
+  ]);
+  return validateCodexEvalRpcIsolation({
+    config,
+    requirements,
+    skills,
+    mcpServers,
+    codexHome: options.codexHome,
+    workspaceRoot: options.workspaceRoot,
+    allowedSkillRoot: options.allowedSkillRoot,
+  });
+}
+
 function normalizeScriptedReply(value: unknown, label: string): ScriptedReply {
   if (typeof value === 'string') {
     return {
@@ -530,6 +629,7 @@ async function runConversationOnce(options: {
   codexRuntime: CodexEvalRuntimeConfig;
   timeoutMs: number;
   sourceEnv: NodeJS.ProcessEnv;
+  isolation: PluginEvalIsolation;
 }): Promise<AppServerRunEvidence> {
   assertCodexEvalCanStartWork();
   const temporaryRoot = await createCodexEvalTemporaryRoot('aw-ask-me-eval-');
@@ -541,6 +641,7 @@ async function runConversationOnce(options: {
   const finalMessages: string[] = [];
   const eventTrace: unknown[] = [];
   let usage: unknown = null;
+  let isolationEvidence: CodexEvalRpcIsolationEvidence | null = null;
   let session: EvalAppServerSession | undefined;
   let removeHandler: (() => void) | undefined;
   let removeFailureHandler: (() => void) | undefined;
@@ -548,8 +649,18 @@ async function runConversationOnce(options: {
   const startedAt = Date.now();
   try {
     await fs.copy(options.sourceProjectRoot, workspaceRoot, { dereference: false });
-    if (options.variant === 'without_skill') {
+    let allowedSkillRoot: string | null;
+    if (options.isolation === 'strict') {
+      allowedSkillRoot = await isolateWorkspaceSkills({
+        workspaceRoot,
+        skillName: options.skillName,
+        includeTarget: options.variant === 'with_skill',
+      });
+    } else if (options.variant === 'without_skill') {
       await fs.remove(path.join(workspaceRoot, '.agents', 'skills', options.skillName));
+      allowedSkillRoot = null;
+    } else {
+      allowedSkillRoot = path.join(workspaceRoot, '.agents', 'skills', options.skillName);
     }
     const env = buildIsolatedEnv(
       options.sourceEnv,
@@ -560,7 +671,9 @@ async function runConversationOnce(options: {
     await Promise.all([
       fs.ensureDir(env.HOME!),
       fs.ensureDir(env.TMPDIR!),
-      materializeCodexEvalRuntimeHome(options.codexRuntime, codexHome),
+      materializeCodexEvalRuntimeHome(options.codexRuntime, codexHome, {
+        trustedProject: workspaceRoot,
+      }),
     ]);
     const before = await snapshotWorkspace(workspaceRoot);
     await assertProcessTreeInspectionAvailable();
@@ -571,6 +684,7 @@ async function runConversationOnce(options: {
       env,
       modelProvider: options.codexRuntime.modelProvider,
       sensitiveEnvironmentNames: options.codexRuntime.sensitiveEnvironmentNames,
+      isolation: options.isolation,
     });
     let replyStep = 0;
     let turnResolve: ((value: { complete: boolean }) => void) | undefined;
@@ -586,12 +700,19 @@ async function runConversationOnce(options: {
     }, options.timeoutMs);
 
     removeHandler = session.onFrame(async (frame) => {
-      eventTrace.push(frame);
       const method = typeof frame.method === 'string' ? frame.method : '';
       const params = isRecord(frame.params) ? frame.params : {};
+      if (!method.startsWith('remoteControl/') && !method.startsWith('account/')) {
+        eventTrace.push(frame);
+      }
+      const configWarning = inspectAppServerConfigWarning(frame);
+      if (options.isolation === 'strict' && configWarning) {
+        throw new Error(`Strict Codex eval received a config warning: ${configWarning}`);
+      }
       if (method === 'item/tool/requestUserInput') {
-        const id = requestId(frame.id);
-        if (!id || !Array.isArray(params.questions)) {
+        const responseId = appServerRequestId(frame.id);
+        const id = requestId(responseId);
+        if (!id || responseId === undefined || !Array.isArray(params.questions)) {
           throw new Error('requestUserInput frame is missing id or questions.');
         }
         const scripted = options.evalCase.scriptedReplies[replyStep];
@@ -632,7 +753,7 @@ async function runConversationOnce(options: {
           answers,
         });
         replyStep += 1;
-        await session!.respond(id, {
+        await session!.respond(responseId, {
           answers: Object.fromEntries(
             Object.entries(answers).map(([key, value]) => [key, { answers: value }]),
           ),
@@ -658,6 +779,14 @@ async function runConversationOnce(options: {
     });
 
     await session.initialize();
+    if (options.isolation === 'strict') {
+      isolationEvidence = await collectStrictIsolationEvidence({
+        session,
+        workspaceRoot,
+        codexHome,
+        allowedSkillRoot,
+      });
+    }
     const threadResult = await session.sendRequest('thread/start', {
       cwd: workspaceRoot,
       approvalPolicy: 'never',
@@ -702,6 +831,7 @@ async function runConversationOnce(options: {
       workspaceChanges,
       diagnostics,
       eventTrace,
+      isolation: isolationEvidence,
       ...(session.stderr.trim() ? { stderr: session.stderr.trim() } : {}),
     });
   } catch (error) {
@@ -716,6 +846,7 @@ async function runConversationOnce(options: {
       workspaceChanges: [],
       diagnostics: [error instanceof Error ? error.stack ?? error.message : String(error)],
       eventTrace,
+      isolation: isolationEvidence,
       ...(session?.stderr.trim() ? { stderr: session.stderr.trim() } : {}),
     };
     return session ? session.scrub(evidence) : evidence;
@@ -725,6 +856,64 @@ async function runConversationOnce(options: {
     }
     removeHandler?.();
     removeFailureHandler?.();
+    try {
+      await session?.cleanup();
+    } finally {
+      await temporaryRoot.cleanup();
+    }
+  }
+}
+
+export async function runCodexEvalIsolationProbe(options: {
+  subjectRoot: string;
+  skillName: string;
+  codexBin: string;
+  codexRuntime: CodexEvalRuntimeConfig;
+  sourceEnv?: NodeJS.ProcessEnv;
+}): Promise<CodexEvalRpcIsolationEvidence> {
+  assertCodexEvalCanStartWork();
+  const sourceEnv = options.sourceEnv ?? process.env;
+  const temporaryRoot = await createCodexEvalTemporaryRoot('aw-isolation-probe-');
+  const workspaceRoot = path.join(temporaryRoot.root, 'project');
+  const codexHome = path.join(temporaryRoot.root, 'codex-home');
+  let session: EvalAppServerSession | undefined;
+  try {
+    await fs.copy(options.subjectRoot, workspaceRoot, { dereference: false });
+    const allowedSkillRoot = await isolateWorkspaceSkills({
+      workspaceRoot,
+      skillName: options.skillName,
+      includeTarget: true,
+    });
+    const env = buildIsolatedEnv(
+      sourceEnv,
+      temporaryRoot.root,
+      codexHome,
+      options.codexRuntime,
+    );
+    await Promise.all([
+      fs.ensureDir(env.HOME!),
+      fs.ensureDir(env.TMPDIR!),
+      materializeCodexEvalRuntimeHome(options.codexRuntime, codexHome, {
+        trustedProject: workspaceRoot,
+      }),
+    ]);
+    await assertProcessTreeInspectionAvailable();
+    session = new EvalAppServerSession({
+      codexBin: options.codexBin,
+      cwd: workspaceRoot,
+      env,
+      modelProvider: options.codexRuntime.modelProvider,
+      sensitiveEnvironmentNames: options.codexRuntime.sensitiveEnvironmentNames,
+      isolation: 'strict',
+    });
+    await session.initialize();
+    return await collectStrictIsolationEvidence({
+      session,
+      workspaceRoot,
+      codexHome,
+      allowedSkillRoot,
+    });
+  } finally {
     try {
       await session?.cleanup();
     } finally {
@@ -745,18 +934,60 @@ export async function runCodexConversationSuite(options: {
   model?: string;
   codexRuntime?: CodexEvalRuntimeConfig;
   timeoutMs: number;
+  isolation?: PluginEvalIsolation;
   sourceEnv?: NodeJS.ProcessEnv;
   reportPath?: string;
 }): Promise<PluginEvalSuiteReport> {
   const sourceEnv = options.sourceEnv ?? process.env;
   const codexRuntime = options.codexRuntime ?? cleanCodexEvalRuntimeConfig(sourceEnv, options.model);
   const model = options.model ?? codexRuntime.model ?? undefined;
+  const isolation = options.isolation ?? 'standard';
   let cases = await readConversationCases(options.casesPath, options.skillName);
   if (options.caseId) {
     cases = cases.filter((entry) => entry.id === options.caseId);
     if (cases.length === 0) {
       throw new Error(`Unknown conversation case: ${options.caseId}`);
     }
+  }
+  let hostIsolation: CodexEvalHostIsolationEvidence | null = null;
+  try {
+    if (isolation === 'strict') {
+      hostIsolation = await inspectCodexEvalHostIsolation({ sourceEnv });
+    }
+  } catch (error) {
+    const diagnostic = error instanceof Error ? error.stack ?? error.message : String(error);
+    const report = redactCodexEvalValue({
+      schema_version: 1,
+      generated_at: new Date().toISOString(),
+      suite: options.suiteId,
+      profile: options.profile,
+      complete: false,
+      mechanical_passed: false,
+      qualitative_review: 'required',
+      environment_error: diagnostic,
+      environment: {
+        isolation: codexEvalIsolationEvidence({ mode: isolation }),
+        codex_runtime: codexEvalRuntimeEvidence(codexRuntime),
+      },
+      results: [],
+    }, codexRuntime);
+    if (options.reportPath) {
+      await fs.ensureDir(path.dirname(options.reportPath));
+      await fs.writeJson(options.reportPath, report, { spaces: 2 });
+    }
+    return redactCodexEvalValue({
+      id: options.suiteId,
+      kind: 'conversation',
+      profile: options.profile,
+      split: null,
+      outcome: 'incomplete',
+      complete: false,
+      mechanicalPassed: false,
+      qualitativeReview: 'required',
+      ...(options.reportPath ? { reportPath: options.reportPath } : {}),
+      summary: { cases: cases.length, runs: 0 },
+      diagnostics: [diagnostic],
+    }, codexRuntime);
   }
   const results = [];
   for (const evalCase of cases) {
@@ -773,6 +1004,7 @@ export async function runCodexConversationSuite(options: {
         codexRuntime,
         timeoutMs: options.timeoutMs,
         sourceEnv,
+        isolation,
       });
       assertCodexEvalCanStartWork();
       const withoutSkill = await runConversationOnce({
@@ -785,6 +1017,7 @@ export async function runCodexConversationSuite(options: {
         codexRuntime,
         timeoutMs: options.timeoutMs,
         sourceEnv,
+        isolation,
       });
       runs.push({ run: runIndex + 1, with_skill: withSkill, without_skill: withoutSkill });
     }
@@ -802,6 +1035,7 @@ export async function runCodexConversationSuite(options: {
   ]);
   const complete = allRuns.every((run) => run.complete);
   const mechanicalPassed = complete && allRuns.every((run) => run.mechanicalPassed);
+  const runtimeProbe = allRuns.find((run) => run.isolation)?.isolation ?? null;
   const report = redactCodexEvalValue({
     schema_version: 1,
     generated_at: new Date().toISOString(),
@@ -811,6 +1045,11 @@ export async function runCodexConversationSuite(options: {
     mechanical_passed: mechanicalPassed,
     qualitative_review: 'required',
     environment: {
+      isolation: codexEvalIsolationEvidence({
+        mode: isolation,
+        host: hostIsolation,
+        runtimeProbe,
+      }),
       codex_runtime: codexEvalRuntimeEvidence(codexRuntime),
     },
     results,

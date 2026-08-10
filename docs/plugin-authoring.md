@@ -32,7 +32,7 @@
 
 设计 skill 时先确定用户意图、输入输出、完成标准、相邻任务边界和真实失败案例。主 `SKILL.md` 只保留每次触发都需要的工作流与 gotcha，建议少于 500 行和 5,000 tokens；长规则放 `references/`，重复或脆弱逻辑放可测试的 `scripts/`，并明确说明何时读取或执行。允许自动发现的 skill 要用真实正例和 near-miss 负例验证 description；模型输出质量要与无 skill 或旧版本 baseline 比较，不能用 `pnpm plugin:test` 代替行为 eval。
 
-插件 Skill 的作者期语料、fixture 和可选领域 runner 统一放在插件根 `evals/`，不放进声明的 Skill 子树，也不进入 production runtime bundle。`evals/manifest.json` 声明 Codex project/user materialization profile 和模型 suite；自动触发优先使用中央原生 `kind: "trigger"`，插件不再重复实现 Codex 启动、事件识别、重复运行和评分。`command` 只保留给 routing/workflow 等领域专用检查，并且只能消费中央提供的 materialized 最终制品；`perRunTimeoutMs` 限制单次模型运行，独立的 `suiteTimeoutMs` 才限制整个 command runner。`validate_plugin.mjs` 在 manifest 存在时校验其路径、语料和引用。动态 Skill 的行为 eval 必须先经过真实 staging、renderer、ArtifactPlan 校验和 Codex adapter，不能直接拿 template 代替最终制品。
+插件 Skill 的作者期语料、fixture 和可选领域 runner 统一放在插件根 `evals/`，不放进声明的 Skill 子树，也不进入 production runtime bundle。`evals/manifest.json` 声明 Codex project/user materialization profile 和模型 suite；自动触发优先使用中央原生 `kind: "trigger"`，插件不再重复实现 Codex 启动、事件识别、重复运行和评分。`trigger` 与 `conversation` 的 `isolation` 可为 `standard` 或 `strict`，省略时为 `standard`；发布级触发边界和行为归因应显式使用 `strict`。`command` 只保留给 routing/workflow 等领域专用检查，并且只能消费中央提供的 materialized 最终制品；`perRunTimeoutMs` 限制单次模型运行，独立的 `suiteTimeoutMs` 才限制整个 command runner。`validate_plugin.mjs` 在 manifest 存在时校验其路径、语料和引用。动态 Skill 的行为 eval 必须先经过真实 staging、renderer、ArtifactPlan 校验和 Codex adapter，不能直接拿 template 代替最终制品。
 
 ```bash
 pnpm plugin:eval <plugin> --materialize-only --output-dir /tmp/aw-eval
@@ -40,7 +40,7 @@ pnpm plugin:eval <plugin> --suite trigger --split validation --runs 1 --output-d
 pnpm plugin:eval <plugin> --output-dir /tmp/aw-eval
 ```
 
-真实模型默认安全继承当前 Codex model/provider；只提取对应 provider 配置，不继承用户 plugins、skills 或 MCP。需要固定来源时使用 `--codex-config <path>` / `--model-provider <id>`，诊断官方默认路径时使用 `--no-inherit-codex-config`。
+真实模型默认安全继承当前 Codex model/provider；只提取对应 provider 配置，不继承用户 plugins、skills 或 MCP。中央 eval 固定使用文件凭据存储并关闭 secret keychain storage；conversation driver 会在 Default 协作模式显式启用 `request_user_input`。strict suite 还会关闭内置 Skill、插件、Apps、MCP 和建议类表面，并通过 app-server RPC 验证有效配置、目标 Skill 和空 MCP 清单。需要固定来源时使用 `--codex-config <path>` / `--model-provider <id>`，诊断官方默认路径时使用 `--no-inherit-codex-config`。真实模型 eval 从普通 Terminal 直接运行，避免外层 GUI、沙箱或提权包装器改写 macOS keychain search list。
 
 eval v1 只支持 Codex：真实模型只运行 project profile；user profile 只生成确定性 materialized evidence，不声称经过 native cache 模型运行。无过滤参数时运行所有 release-required suite/split；真实模型命令只在本地显式执行，不进入常规 CI。规范结果写到 `<output-dir>/<plugin>/evaluation.json`，需要定性判断的 case 标为 `needs_review`，由 `.agents/skills/skill-review/` 读取 trace 后逐项判分，不额外调用 judge 模型。
 
