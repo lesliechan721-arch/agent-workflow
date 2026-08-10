@@ -67,7 +67,11 @@ async function createFixture(): Promise<{
   await fs.outputJson(manifestPath, manifest);
   return {
     cwd,
-    env: { AW_HOME: path.join(root, 'aw-home') },
+    env: {
+      AW_HOME: path.join(root, 'aw-home'),
+      AW_CLAUDE_HOME: path.join(root, 'claude-home'),
+      AW_CODEX_HOME: path.join(root, 'codex-home'),
+    },
     plugin: { rootDir: pluginRoot, manifestPath, manifest },
   };
 }
@@ -91,14 +95,7 @@ function rebuildResult(target: ReceiptTargetIdentity): RebuildCommandResult {
 }
 
 function createNativeRunner(): NativeCliRunner {
-  return vi.fn(async (invocation) => {
-    const project = invocation.args.join(' ') === 'plugin list --scope project';
-    return {
-      exitCode: 0,
-      stdout: project ? 'claude-native-only@aw\n' : '',
-      stderr: '',
-    };
-  });
+  return vi.fn(async () => { throw new Error('claude CLI missing'); });
 }
 
 function createReinstallMock() {
@@ -123,6 +120,18 @@ describe('Claude project native-only config apply', () => {
     ['project' as const, ['project']],
   ])('applies a %s config write to the visible current-project native target', async (scope, expectedScopes) => {
     const fixture = await createFixture();
+    const projectPath = await fs.realpath(fixture.cwd);
+    await fs.outputJson(path.join(fixture.env.AW_CLAUDE_HOME!, 'plugins', 'known_marketplaces.json'), {
+      marketplaces: { aw: { installLocation: fixture.env.AW_HOME } },
+    });
+    await fs.outputJson(path.join(fixture.env.AW_CLAUDE_HOME!, 'plugins', 'installed_plugins.json'), {
+      plugins: {
+        'claude-native-only@aw': [{
+          name: 'claude-native-only', marketplace: 'aw', scope: 'project',
+          projectPath, version: '1.0.0',
+        }],
+      },
+    });
     const nativeCliRunner = createNativeRunner();
     const reinstallCommandImpl = createReinstallMock();
 

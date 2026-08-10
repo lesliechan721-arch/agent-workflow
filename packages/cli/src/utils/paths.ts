@@ -17,7 +17,6 @@ import {
   getCodexHome,
   resolveAwHome,
   resolveAwHomeCanonical,
-  resolveClaudeProjectKey,
   resolveCodexProjectKey,
   resolveRepoRoot,
   resolveRepoRootSync,
@@ -27,11 +26,15 @@ export {
   getCodexHome,
   resolveAwHome,
   resolveAwHomeCanonical,
-  resolveClaudeProjectKey,
   resolveCodexProjectKey,
   resolveRepoRoot,
   resolveRepoRootSync,
 } from './state-paths.js';
+
+export async function resolveClaudeProjectKey(cwd: string): Promise<string> {
+  const repoRoot = resolveRepoRootSync(cwd);
+  return fs.realpath(repoRoot).catch(() => path.resolve(repoRoot));
+}
 
 let embeddedPluginsRootOverride: string | null = null;
 const validatedEmbeddedPluginRoots = new Set<string>();
@@ -253,7 +256,9 @@ export function resolveClaudePaths(
   scope: Scope,
   env: NodeJS.ProcessEnv = process.env,
 ): ClaudePaths {
-  const configDir = scope === 'project' ? path.join(cwd, '.claude') : getClaudeHome(env);
+  const configDir = scope === 'project'
+    ? path.join(fs.realpathSync(resolveRepoRootSync(cwd)), '.claude')
+    : getClaudeHome(env);
   const pluginsDir = resolveClaudePluginsDir(env);
   return {
     platform: 'claude',

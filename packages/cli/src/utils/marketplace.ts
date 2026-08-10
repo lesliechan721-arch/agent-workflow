@@ -58,6 +58,46 @@ export interface CatalogPackageArchive {
   dispose: () => Promise<void>;
 }
 
+export type CatalogPackageManifestErrorStage = 'read' | 'parse' | 'validate';
+
+export class CatalogPackageManifestError extends Error {
+  readonly stage: CatalogPackageManifestErrorStage;
+
+  constructor(stage: CatalogPackageManifestErrorStage, cause: unknown) {
+    const normalizedCause = cause instanceof Error ? cause : new Error(String(cause));
+    super(normalizedCause.message, { cause: normalizedCause });
+    this.name = 'CatalogPackageManifestError';
+    this.stage = stage;
+  }
+}
+
+export function findCatalogPackageManifestError(
+  error: unknown,
+  visited = new Set<unknown>(),
+): CatalogPackageManifestError | null {
+  if (error instanceof CatalogPackageManifestError) {
+    return error;
+  }
+  if (!(error instanceof Error) || visited.has(error)) {
+    return null;
+  }
+  visited.add(error);
+  if (error instanceof AggregateError) {
+    const causeFailure = findCatalogPackageManifestError(error.cause, visited);
+    if (causeFailure) {
+      return causeFailure;
+    }
+    for (const entry of error.errors) {
+      const nestedFailure = findCatalogPackageManifestError(entry, visited);
+      if (nestedFailure) {
+        return nestedFailure;
+      }
+    }
+    return null;
+  }
+  return findCatalogPackageManifestError(error.cause, visited);
+}
+
 export interface CatalogPackageSource {
   resolveIdentityByDistTag: (
     packageName: string,
@@ -731,6 +771,70 @@ function verifyPackageIntegrity(buffer: Buffer, integrity: string): void {
   }
 }
 
+function combineCatalogArchiveErrors(
+  primaryError: unknown,
+  cleanupError: unknown,
+  context: string,
+): AggregateError {
+  const primary = primaryError instanceof Error
+    ? primaryError
+    : new Error(String(primaryError));
+  const cleanup = cleanupError instanceof Error
+    ? cleanupError
+    : new Error(String(cleanupError));
+  const errors = primary instanceof AggregateError
+    ? [...primary.errors, cleanup]
+    : [primary, cleanup];
+  const cause = primary instanceof AggregateError && primary.cause instanceof Error
+    ? primary.cause
+    : primary;
+  return new AggregateError(
+    errors,
+    `${cause.message}\n${context}: ${cleanup.message}`,
+    { cause },
+  );
+}
+
+async function rethrowAfterCatalogArchiveCleanup(
+  tempRoot: string,
+  primaryError: unknown,
+  context: string,
+): Promise<never> {
+  try {
+    await fs.remove(tempRoot);
+  } catch (cleanupError) {
+    throw combineCatalogArchiveErrors(primaryError, cleanupError, context);
+  }
+  throw primaryError;
+}
+
+async function readCatalogPackageManifest(packageRoot: string): Promise<{
+  manifestText: string;
+  rawManifest: unknown;
+}> {
+  const manifestPath = path.join(packageRoot, CURRENT_CATALOG_MANIFEST_FILE);
+  let manifestText: string;
+  try {
+    manifestText = await fs.readFile(manifestPath, 'utf8');
+  } catch (error) {
+    throw new CatalogPackageManifestError('read', error);
+  }
+
+  let rawManifest: unknown;
+  try {
+    rawManifest = JSON.parse(manifestText) as unknown;
+  } catch (error) {
+    throw new CatalogPackageManifestError('parse', error);
+  }
+
+  try {
+    validateCatalogManifest(rawManifest);
+  } catch (error) {
+    throw new CatalogPackageManifestError('validate', error);
+  }
+  return { manifestText, rawManifest };
+}
+
 async function extractPackageArchive(
   archiveBuffer: Buffer,
   env: NodeJS.ProcessEnv,
@@ -765,8 +869,11 @@ async function extractPackageArchive(
       packageRoot,
     };
   } catch (error) {
-    await fs.remove(tempRoot);
-    throw error;
+    return rethrowAfterCatalogArchiveCleanup(
+      tempRoot,
+      error,
+      'Catalog package extraction cleanup also failed',
+    );
   }
 }
 
@@ -784,29 +891,37 @@ async function resolveRegistryPackageArchive(
 
   signal?.throwIfAborted();
   const extracted = await extractPackageArchive(archiveBuffer, env, signal);
-  const manifestPath = path.join(extracted.packageRoot, CURRENT_CATALOG_MANIFEST_FILE);
-  const manifestText = await fs.readFile(manifestPath, 'utf8');
-  const rawManifest = JSON.parse(manifestText) as unknown;
+  try {
+    const { manifestText, rawManifest } = await readCatalogPackageManifest(
+      extracted.packageRoot,
+    );
 
-  return {
-    identity,
-    manifestText,
-    rawManifest,
-    packageRoot: extracted.packageRoot,
-    materialize: async (targetRoot: string, materializeSignal?: AbortSignal) => {
-      materializeSignal?.throwIfAborted();
-      await fs.remove(targetRoot);
-      await fs.ensureDir(path.dirname(targetRoot));
-      await fs.copy(extracted.packageRoot, targetRoot);
-      if (materializeSignal?.aborted) {
+    return {
+      identity,
+      manifestText,
+      rawManifest,
+      packageRoot: extracted.packageRoot,
+      materialize: async (targetRoot: string, materializeSignal?: AbortSignal) => {
+        materializeSignal?.throwIfAborted();
         await fs.remove(targetRoot);
-        materializeSignal.throwIfAborted();
-      }
-    },
-    dispose: async () => {
-      await fs.remove(extracted.tempRoot);
-    },
-  };
+        await fs.ensureDir(path.dirname(targetRoot));
+        await fs.copy(extracted.packageRoot, targetRoot);
+        if (materializeSignal?.aborted) {
+          await fs.remove(targetRoot);
+          materializeSignal.throwIfAborted();
+        }
+      },
+      dispose: async () => {
+        await fs.remove(extracted.tempRoot);
+      },
+    };
+  } catch (error) {
+    return rethrowAfterCatalogArchiveCleanup(
+      extracted.tempRoot,
+      error,
+      'Catalog package construction cleanup also failed',
+    );
+  }
 }
 
 async function resolvePackageIdentityByDistTag(

@@ -1,8 +1,10 @@
 import fs from 'node:fs/promises';
+import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { gzipSync, gunzipSync } from 'node:zlib';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -66,7 +68,7 @@ async function createCatalogPackageFixture(
   return { root, packageJsonPath };
 }
 
-async function packAndUnpackPackage(packageRoot: string): Promise<string> {
+async function packAndUnpackPackage(packageRoot: string) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-release-packed-package-'));
   tempRoots.push(root);
   const packRoot = path.join(root, 'pack');
@@ -81,13 +83,131 @@ async function packAndUnpackPackage(packageRoot: string): Promise<string> {
   );
   const tarballs = (await fs.readdir(packRoot)).filter((entry) => entry.endsWith('.tgz'));
   expect(tarballs).toHaveLength(1);
+  const tarballPath = path.join(packRoot, tarballs[0]!);
   await execFileAsync('tar', [
     '-xzf',
-    path.join(packRoot, tarballs[0]!),
+    tarballPath,
     '-C',
     unpackRoot,
   ]);
-  return path.join(unpackRoot, 'package');
+  const integrity = `sha512-${crypto
+    .createHash('sha512')
+    .update(await fs.readFile(tarballPath))
+    .digest('base64')}`;
+  return {
+    integrity,
+    packageRoot: path.join(unpackRoot, 'package'),
+    tarballPath,
+  };
+}
+
+async function createPackageWithChangedTarMode(tarballPath: string) {
+  const archive = gunzipSync(await fs.readFile(tarballPath));
+  const targetPath = 'package/catalog-manifest.json';
+  let changed = false;
+  for (let offset = 0; offset + 512 <= archive.length; offset += 512) {
+    const entryName = archive
+      .subarray(offset, offset + 100)
+      .toString('utf8')
+      .replace(/\0.*$/, '');
+    if (entryName !== targetPath) {
+      continue;
+    }
+    const mode = archive
+      .subarray(offset + 100, offset + 108)
+      .toString('ascii')
+      .replace(/\0.*$/, '')
+      .trim();
+    expect(Number.parseInt(mode, 8)).toBe(0o644);
+    archive.write('0000755\0', offset + 100, 8, 'ascii');
+    archive.fill(0x20, offset + 148, offset + 156);
+    let checksum = 0;
+    for (let index = offset; index < offset + 512; index += 1) {
+      checksum += archive[index]!;
+    }
+    archive.write(`${checksum.toString(8).padStart(6, '0')}\0 `, offset + 148, 8, 'ascii');
+    changed = true;
+    break;
+  }
+  expect(changed).toBe(true);
+  const changedArchive = gzipSync(archive);
+  const changedTarballPath = path.join(path.dirname(tarballPath), 'changed-mode.tgz');
+  const changedUnpackRoot = path.join(path.dirname(tarballPath), 'changed-mode-unpack');
+  await fs.writeFile(changedTarballPath, changedArchive);
+  await fs.mkdir(changedUnpackRoot);
+  await execFileAsync('tar', ['-xzf', changedTarballPath, '-C', changedUnpackRoot]);
+  const changedStats = await fs.stat(
+    path.join(changedUnpackRoot, 'package', 'catalog-manifest.json'),
+  );
+  expect(changedStats.mode & 0o777).toBe(0o755);
+  const integrity = `sha512-${crypto
+    .createHash('sha512')
+    .update(changedArchive)
+    .digest('base64')}`;
+  return {
+    integrity,
+    packageRoot: path.join(changedUnpackRoot, 'package'),
+  };
+}
+
+async function createPackageWithChangedTarEntryType(tarballPath: string) {
+  let archive = gunzipSync(await fs.readFile(tarballPath));
+  const targetPath = 'package/catalog-manifest.json';
+  let changed = false;
+  for (let offset = 0; offset + 512 <= archive.length; offset += 512) {
+    const entryName = archive
+      .subarray(offset, offset + 100)
+      .toString('utf8')
+      .replace(/\0.*$/, '');
+    if (entryName !== targetPath) {
+      continue;
+    }
+    expect(archive[offset + 156]).toBe(0x30);
+    const size = Number.parseInt(
+      archive
+        .subarray(offset + 124, offset + 136)
+        .toString('ascii')
+        .replace(/\0.*$/, '')
+        .trim(),
+      8,
+    );
+    archive.write('00000000000\0', offset + 124, 12, 'ascii');
+    archive[offset + 156] = 0x32;
+    archive.fill(0, offset + 157, offset + 257);
+    archive.write('manifest-target.json', offset + 157, 'utf8');
+    archive.fill(0x20, offset + 148, offset + 156);
+    let checksum = 0;
+    for (let index = offset; index < offset + 512; index += 1) {
+      checksum += archive[index]!;
+    }
+    archive.write(`${checksum.toString(8).padStart(6, '0')}\0 `, offset + 148, 8, 'ascii');
+    const nextHeaderOffset = offset + 512 + Math.ceil(size / 512) * 512;
+    archive = Buffer.concat([
+      archive.subarray(0, offset + 512),
+      archive.subarray(nextHeaderOffset),
+    ]);
+    changed = true;
+    break;
+  }
+  expect(changed).toBe(true);
+  const changedArchive = gzipSync(archive);
+  const changedTarballPath = path.join(path.dirname(tarballPath), 'changed-type.tgz');
+  const changedUnpackRoot = path.join(path.dirname(tarballPath), 'changed-type-unpack');
+  await fs.writeFile(changedTarballPath, changedArchive);
+  await fs.mkdir(changedUnpackRoot);
+  await execFileAsync('tar', ['-xzf', changedTarballPath, '-C', changedUnpackRoot]);
+  const packageRoot = path.join(changedUnpackRoot, 'package');
+  expect((await fs.lstat(
+    path.join(packageRoot, 'catalog-manifest.json'),
+  )).isSymbolicLink()).toBe(true);
+  expect(await fs.readFile(
+    path.join(packageRoot, 'catalog-manifest.json'),
+  )).toEqual(await fs.readFile(path.join(packageRoot, 'manifest-target.json')));
+  const integrity = `sha512-${crypto
+    .createHash('sha512')
+    .update(changedArchive)
+    .digest('base64')}`;
+  return { integrity, packageRoot };
 }
 
 afterEach(async () => {
@@ -163,7 +283,7 @@ describe('release registry consistency', () => {
       NPM_CONFIG_REGISTRY: 'https://ignored-upper.example.test/',
     });
     const { root: packageRoot, packageJsonPath } = await createPackageJson();
-    const publishedPackageRoot = await packAndUnpackPackage(packageRoot);
+    const publishedPackage = await packAndUnpackPackage(packageRoot);
     const expectedRegistryUrl = 'https://registry.example.test/team/';
     const receivedEnvs: NodeJS.ProcessEnv[] = [];
     const commandRunner = vi.fn(async () => undefined);
@@ -182,7 +302,11 @@ describe('release registry consistency', () => {
         env: NodeJS.ProcessEnv,
       ) => {
         receivedEnvs.push(env);
-        return { packageName: '@yiliang/aw-plugins', version: '2.0.0-beta.1' };
+        return {
+          packageName: '@yiliang/aw-plugins',
+          version: '2.0.0-beta.1',
+          integrity: publishedPackage.integrity,
+        };
       }),
       downloadCatalogPackageArchive: vi.fn(async (
         _identity: unknown,
@@ -190,7 +314,7 @@ describe('release registry consistency', () => {
       ) => {
         receivedEnvs.push(env);
         return {
-          packageRoot: publishedPackageRoot,
+          packageRoot: publishedPackage.packageRoot,
           dispose: vi.fn(async () => undefined),
         };
       }),
@@ -255,10 +379,10 @@ describe('release registry consistency', () => {
 
   it('compares the packed candidate so npm package.json normalization remains idempotent', async () => {
     const candidate = await createCatalogPackageFixture('sidecar');
-    const publishedPackageRoot = await packAndUnpackPackage(candidate.root);
+    const publishedPackage = await packAndUnpackPackage(candidate.root);
     const [candidatePackageJson, publishedPackageJson] = await Promise.all([
       fs.readFile(candidate.packageJsonPath),
-      fs.readFile(path.join(publishedPackageRoot, 'package.json')),
+      fs.readFile(path.join(publishedPackage.packageRoot, 'package.json')),
     ]);
     expect(candidatePackageJson.equals(publishedPackageJson)).toBe(false);
     expect(candidatePackageJson.at(-1)).toBe(0x0a);
@@ -270,9 +394,10 @@ describe('release registry consistency', () => {
         resolveCatalogPackageIdentityByVersion: vi.fn(async () => ({
           packageName: '@yiliang/aw-plugins-manifest',
           version: '2.0.0-beta.1',
+          integrity: publishedPackage.integrity,
         })),
         downloadCatalogPackageArchive: vi.fn(async () => ({
-          packageRoot: publishedPackageRoot,
+          packageRoot: publishedPackage.packageRoot,
           dispose: vi.fn(async () => undefined),
         })),
       },
@@ -286,12 +411,43 @@ describe('release registry consistency', () => {
     })).resolves.toEqual({ exists: true, verified: true });
   });
 
+  it('ignores lifecycle scripts while packing the candidate identity', async () => {
+    const candidate = await createCatalogPackageFixture('full');
+    const packageJson = JSON.parse(await fs.readFile(candidate.packageJsonPath, 'utf8'));
+    packageJson.scripts = {
+      prepack: 'node -e "process.exit(19)"',
+    };
+    await fs.writeFile(candidate.packageJsonPath, `${JSON.stringify(packageJson, null, 2)}\n`);
+    const publishedPackage = await packAndUnpackPackage(candidate.root);
+    const adapter = await createCatalogRegistryAdapter({
+      registryUrl: 'https://registry.example.test/',
+      marketplace: {
+        resolveCatalogPackageIdentityByVersion: vi.fn(async () => ({
+          packageName: '@yiliang/aw-plugins',
+          version: '2.0.0-beta.1',
+          integrity: publishedPackage.integrity,
+        })),
+        downloadCatalogPackageArchive: vi.fn(async () => ({
+          packageRoot: publishedPackage.packageRoot,
+          dispose: vi.fn(async () => undefined),
+        })),
+      },
+    });
+
+    await expect(adapter.verifyExistingPackage('full', {
+      packageRoot: candidate.root,
+      channel: 'beta',
+      version: '2.0.0-beta.1',
+      manifest: {},
+    })).resolves.toEqual({ exists: true, verified: true });
+  });
+
   it.each(['sidecar', 'full'] as const)(
     'rejects a real packed %s package with different content',
     async (kind) => {
       const candidate = await createCatalogPackageFixture(kind, 'candidate');
       const published = await createCatalogPackageFixture(kind, 'published-different');
-      const publishedPackageRoot = await packAndUnpackPackage(published.root);
+      const publishedPackage = await packAndUnpackPackage(published.root);
       const adapter = await createCatalogRegistryAdapter({
         registryUrl: 'https://registry.example.test/',
         marketplace: {
@@ -300,9 +456,10 @@ describe('release registry consistency', () => {
               ? '@yiliang/aw-plugins-manifest'
               : '@yiliang/aw-plugins',
             version: '2.0.0-beta.1',
+            integrity: publishedPackage.integrity,
           })),
           downloadCatalogPackageArchive: vi.fn(async () => ({
-            packageRoot: publishedPackageRoot,
+            packageRoot: publishedPackage.packageRoot,
             dispose: vi.fn(async () => undefined),
           })),
         },
@@ -316,8 +473,115 @@ describe('release registry consistency', () => {
       })).resolves.toEqual({
         exists: true,
         verified: false,
-        reason: 'File content mismatch at catalog-manifest.json.',
+        reason: 'Packed package integrity does not match the exact registry identity.',
       });
     },
   );
+
+  it('rejects a real packed package when only the file mode differs', async () => {
+    const candidate = await createCatalogPackageFixture('sidecar');
+    const publishedPackage = await packAndUnpackPackage(candidate.root);
+    const publishedArchive = await createPackageWithChangedTarMode(
+      publishedPackage.tarballPath,
+    );
+    const downloadCatalogPackageArchive = vi.fn(async () => ({
+      packageRoot: publishedArchive.packageRoot,
+      dispose: vi.fn(async () => undefined),
+    }));
+    const adapter = await createCatalogRegistryAdapter({
+      registryUrl: 'https://registry.example.test/',
+      marketplace: {
+        resolveCatalogPackageIdentityByVersion: vi.fn(async () => ({
+          packageName: '@yiliang/aw-plugins-manifest',
+          version: '2.0.0-beta.1',
+          integrity: publishedArchive.integrity,
+        })),
+        downloadCatalogPackageArchive,
+      },
+    });
+
+    await expect(adapter.verifyExistingPackage('sidecar', {
+      packageRoot: candidate.root,
+      channel: 'beta',
+      version: '2.0.0-beta.1',
+      manifest: {},
+    })).resolves.toEqual({
+      exists: true,
+      verified: false,
+      reason: 'Packed package integrity does not match the exact registry identity.',
+    });
+    expect(downloadCatalogPackageArchive).toHaveBeenCalledOnce();
+  });
+
+  it('rejects a real packed package when a regular file becomes a symlink', async () => {
+    const candidate = await createCatalogPackageFixture('full');
+    const packageJson = JSON.parse(await fs.readFile(candidate.packageJsonPath, 'utf8'));
+    packageJson.files.push('manifest-target.json');
+    await fs.writeFile(candidate.packageJsonPath, `${JSON.stringify(packageJson, null, 2)}\n`);
+    await fs.copyFile(
+      path.join(candidate.root, 'catalog-manifest.json'),
+      path.join(candidate.root, 'manifest-target.json'),
+    );
+    const publishedPackage = await packAndUnpackPackage(candidate.root);
+    const publishedArchive = await createPackageWithChangedTarEntryType(
+      publishedPackage.tarballPath,
+    );
+    const downloadCatalogPackageArchive = vi.fn(async () => ({
+      packageRoot: publishedArchive.packageRoot,
+      dispose: vi.fn(async () => undefined),
+    }));
+    const adapter = await createCatalogRegistryAdapter({
+      registryUrl: 'https://registry.example.test/',
+      marketplace: {
+        resolveCatalogPackageIdentityByVersion: vi.fn(async () => ({
+          packageName: '@yiliang/aw-plugins',
+          version: '2.0.0-beta.1',
+          integrity: publishedArchive.integrity,
+        })),
+        downloadCatalogPackageArchive,
+      },
+    });
+
+    await expect(adapter.verifyExistingPackage('full', {
+      packageRoot: candidate.root,
+      channel: 'beta',
+      version: '2.0.0-beta.1',
+      manifest: {},
+    })).resolves.toEqual({
+      exists: true,
+      verified: false,
+      reason: 'Packed package integrity does not match the exact registry identity.',
+    });
+    expect(downloadCatalogPackageArchive).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    undefined,
+    '',
+    'sha512-not-base64',
+    `sha256-${Buffer.alloc(32).toString('base64')}`,
+    `sha512-${Buffer.alloc(63).toString('base64')}`,
+  ])('fails closed for missing or invalid registry integrity: %s', async (integrity) => {
+    const candidate = await createCatalogPackageFixture('full');
+    const downloadCatalogPackageArchive = vi.fn();
+    const adapter = await createCatalogRegistryAdapter({
+      registryUrl: 'https://registry.example.test/',
+      marketplace: {
+        resolveCatalogPackageIdentityByVersion: vi.fn(async () => ({
+          packageName: '@yiliang/aw-plugins',
+          version: '2.0.0-beta.1',
+          integrity,
+        })),
+        downloadCatalogPackageArchive,
+      },
+    });
+
+    await expect(adapter.verifyExistingPackage('full', {
+      packageRoot: candidate.root,
+      channel: 'beta',
+      version: '2.0.0-beta.1',
+      manifest: {},
+    })).rejects.toThrow('has invalid or untrusted dist.integrity');
+    expect(downloadCatalogPackageArchive).not.toHaveBeenCalled();
+  });
 });

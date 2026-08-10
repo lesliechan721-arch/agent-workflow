@@ -51,7 +51,7 @@ aw config set codex-subagent-guide planningReviewTaskReasoningEffort xhigh -s us
 aw config set codex-subagent-guide minimumInitialWaitMinutes 15 -s user
 ```
 
-`aw cleanup` 删除当前 target 中带有效 AW ownership 的现场组件，不运行 uninstall lifecycle。`aw reinstall` 先清理 AW-owned 组件，再按 current catalog 重建。`uninstall`、`cleanup` 和 `reinstall` 都保留 AW 自管配置；配置只由 `aw config reset` 删除。最后一次成功 lifecycle 输入单独保存在 lifecycle active store 中，供卸载或重装运行对应脚本；它不是安装状态账本。
+`aw cleanup` 删除当前 target 中带有效 AW ownership 的现场组件，不运行 uninstall lifecycle。`aw reinstall` 先清理 AW-owned 组件，再按 current catalog 重建。`uninstall`、`cleanup` 和 `reinstall` 都保留 AW 自管配置；配置只由 `aw config reset` 删除。最后一次成功 lifecycle 输入单独保存在 lifecycle active store 中，只供下一次 uninstall 运行对应脚本；它不是安装状态账本。
 
 Skill 的触发行为只由平台原生元数据决定。Codex 使用 `agents/openai.yaml` 的 `policy.allow_implicit_invocation`；Claude Code 使用 `SKILL.md` frontmatter 的 `disable-model-invocation` 和 `user-invocable`。AW 在安装、升级和动态刷新时校验并保留这些值，不提供 CLI、配置页或 manifest 覆盖项。显式调用入口不受影响。
 

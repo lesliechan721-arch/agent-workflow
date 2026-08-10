@@ -21,6 +21,7 @@ import type {
   PreparedLifecycleActiveSnapshot,
   ReadLifecycleActiveSnapshot,
 } from '../../src/utils/lifecycle-active-store.js';
+import { acquireProcessLock } from '../../src/utils/process-lock.js';
 import type { OwnedComponent, OwnedProbeResult } from '../../src/utils/ownership.js';
 import * as ownershipModule from '../../src/utils/ownership.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
@@ -219,6 +220,11 @@ function actionNames(result: Awaited<ReturnType<typeof executeRebuildOperation>>
   return result.actions.map((entry) => `${entry.name}:${entry.status}`);
 }
 
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  return { promise: new Promise<void>((done) => { resolve = done; }), resolve };
+}
+
 async function collectRelativeImportGraph(entryPath: string): Promise<Set<string>> {
   const visited = new Set<string>();
   const pending = [entryPath];
@@ -246,6 +252,143 @@ async function collectRelativeImportGraph(entryPath: string): Promise<Set<string
 }
 
 describe('rebuild operation happy paths', () => {
+  it('serializes the complete operation window for one target', async () => {
+    const fixture = createFixture();
+    const lockPath = path.join(
+      getCurrentSourceTestIsolation().layout.fixtureCwd,
+      'same-target.operation.lock',
+    );
+    const firstLifecycleEntered = deferred();
+    const releaseFirstLifecycle = deferred();
+    const secondAcquireEntered = deferred();
+    let acquireCalls = 0;
+    let lifecycleCalls = 0;
+    const originalLifecycle = fixture.driver.runLifecycle;
+    fixture.driver.runLifecycle = async (invocation) => {
+      lifecycleCalls += 1;
+      if (lifecycleCalls === 1) {
+        firstLifecycleEntered.resolve();
+        await releaseFirstLifecycle.promise;
+      }
+      await originalLifecycle(invocation);
+    };
+    fixture.store.acquireOperation = async () => {
+      acquireCalls += 1;
+      if (acquireCalls === 2) secondAcquireEntered.resolve();
+      return acquireProcessLock({ lockPath, pollMs: 1, timeoutMs: 500 });
+    };
+
+    const first = executeRebuildOperation({
+      command: 'upgrade', target: fixture.target, driver: fixture.driver, activeStore: fixture.store,
+    });
+    await firstLifecycleEntered.promise;
+    const second = executeRebuildOperation({
+      command: 'upgrade', target: fixture.target, driver: fixture.driver, activeStore: fixture.store,
+    });
+    await secondAcquireEntered.promise;
+    expect(fixture.log.filter((entry) => entry === 'native.write')).toHaveLength(1);
+
+    releaseFirstLifecycle.resolve();
+    const results = await Promise.all([first, second]);
+    expect(results.map((result) => result.status)).toEqual(['succeeded', 'succeeded']);
+    expect(fixture.log.filter((entry) => entry === 'native.write')).toHaveLength(2);
+    expect(results.every((result) => result.actions.some(
+      (entry) => entry.name === 'operation.release' && entry.status === 'succeeded',
+    ))).toBe(true);
+  });
+
+  it('releases the operation lock after a failed operation', async () => {
+    const fixture = createFixture();
+    const lockPath = path.join(
+      getCurrentSourceTestIsolation().layout.fixtureCwd,
+      'failed-target.operation.lock',
+    );
+    fixture.fail.add('lifecycle.upgrade');
+    fixture.store.acquireOperation = () => acquireProcessLock({ lockPath });
+
+    const result = await executeRebuildOperation({
+      command: 'upgrade', target: fixture.target, driver: fixture.driver, activeStore: fixture.store,
+    });
+    expect(result.status).toBe('failed');
+    if (result.status === 'failed') expect(result.error.phase).toBe('lifecycle.upgrade');
+
+    const reacquired = await acquireProcessLock({ lockPath, timeoutMs: 50, pollMs: 1 });
+    await reacquired.release();
+  });
+
+  it('keeps command success when a contender completes its release claim', async () => {
+    const fixture = createFixture();
+    const lockPath = path.join(
+      getCurrentSourceTestIsolation().layout.fixtureCwd,
+      'completed-release-claim.operation.lock',
+    );
+    let contender: Awaited<ReturnType<typeof acquireProcessLock>> | undefined;
+    fixture.store.acquireOperation = () => acquireProcessLock({
+      lockPath,
+      testHooks: {
+        async afterReleaseClaim() {
+          const old = new Date(Date.now() - 2_000);
+          await fse.utimes(lockPath, old, old);
+          contender = await acquireProcessLock({
+            lockPath,
+            malformedOwnerGraceMs: 1,
+            pollMs: 1,
+            timeoutMs: 100,
+          });
+        },
+      },
+    });
+
+    const result = await executeRebuildOperation({
+      command: 'install', target: fixture.target, driver: fixture.driver, activeStore: fixture.store,
+    });
+    expect(result.status).toBe('succeeded');
+    expect(result.actions).toContainEqual({ name: 'operation.release', status: 'succeeded' });
+    await contender?.release();
+  });
+
+  it('keeps command success during contender owner publication', async () => {
+    const fixture = createFixture();
+    const lockPath = path.join(
+      getCurrentSourceTestIsolation().layout.fixtureCwd,
+      'release-publication-window.operation.lock',
+    );
+    const contenderCreated = deferred();
+    const resumeContender = deferred();
+    let contenderAcquiring: ReturnType<typeof acquireProcessLock> | undefined;
+    fixture.store.acquireOperation = () => acquireProcessLock({
+      lockPath,
+      testHooks: {
+        async afterReleaseClaim() {
+          const old = new Date(Date.now() - 2_000);
+          await fse.utimes(lockPath, old, old);
+          contenderAcquiring = acquireProcessLock({
+            lockPath,
+            malformedOwnerGraceMs: 1,
+            pollMs: 1,
+            timeoutMs: 100,
+            testHooks: {
+              async afterMkdir() {
+                contenderCreated.resolve();
+                await resumeContender.promise;
+              },
+            },
+          });
+          await contenderCreated.promise;
+        },
+      },
+    });
+
+    const result = await executeRebuildOperation({
+      command: 'install', target: fixture.target, driver: fixture.driver, activeStore: fixture.store,
+    });
+    expect(result.status).toBe('succeeded');
+    expect(result.actions).toContainEqual({ name: 'operation.release', status: 'succeeded' });
+    resumeContender.resolve();
+    const contender = await contenderAcquiring;
+    await contender?.release();
+  });
+
   it('installs, promotes after lifecycle, and post-inspects after promote', async () => {
     const fixture = createFixture();
     const result = await executeRebuildOperation({

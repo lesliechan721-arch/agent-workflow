@@ -10,8 +10,11 @@ import {
   uninstallWriteCommand,
   upgradeWriteCommand,
 } from '../../src/commands/write-commands.js';
+import { setRebuildCommandTestHooksForTests } from '../../src/commands/rebuild-command.js';
 import type { CatalogResolution } from '../../src/types.js';
+import { setLifecycleActiveLockFileSystemForTests } from '../../src/utils/lifecycle-active-store.js';
 import type { NativeCliRunner } from '../../src/utils/native-cli.js';
+import type { ProcessLockFileSystem } from '../../src/utils/process-lock.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 interface LifecycleLogEntry {
@@ -24,6 +27,30 @@ interface LifecycleLogEntry {
     platform: string;
     path: string;
   }>;
+}
+
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  return { promise: new Promise<void>((done) => { resolve = done; }), resolve };
+}
+
+function processLockFileSystem(
+  overrides: Partial<ProcessLockFileSystem>,
+): ProcessLockFileSystem {
+  return {
+    mkdir: (targetPath) => fs.mkdir(targetPath),
+    writeFile: (targetPath, contents, options) => fs.writeFile(targetPath, contents, options),
+    readFile: (targetPath, encoding) => fs.readFile(targetPath, encoding),
+    readdir: (targetPath) => fs.readdir(targetPath),
+    stat: (targetPath) => fs.stat(targetPath),
+    lstat: (targetPath) => fs.lstat(targetPath),
+    rename: (sourcePath, targetPath) => fs.rename(sourcePath, targetPath),
+    link: (existingPath, newPath) => fs.link(existingPath, newPath),
+    copyFile: (sourcePath, targetPath, flags) => fs.copyFile(sourcePath, targetPath, flags),
+    unlink: (targetPath) => fs.unlink(targetPath),
+    rmdir: (targetPath) => fs.rmdir(targetPath),
+    ...overrides,
+  };
 }
 
 const lifecycleScript = [
@@ -193,4 +220,84 @@ describe('rebuild lifecycle bridge', () => {
       }],
     });
   });
+
+  it.each(['cleanup', 'uninstall'] as const)(
+    'locks %s before absent planning so a concurrent install cannot pass the plan',
+    async (command) => {
+      const isolation = getCurrentSourceTestIsolation();
+      const cwd = isolation.layout.fixtureCwd;
+      const catalogRoot = path.join(isolation.layout.rootDir, `lifecycle-${command}-race-catalog`);
+      const pluginName = `lifecycle-${command}-race`;
+      await writePlugin({ catalogRoot, name: pluginName, version: '1.0.0' });
+      const logPath = path.join(cwd, 'lifecycle-events.jsonl');
+      await fs.remove(logPath);
+      const runner: NativeCliRunner = async (invocation) => {
+        if (invocation.command === 'codex' && invocation.args[0] === '--version') {
+          return { exitCode: 0, stdout: 'codex-cli 0.145.0', stderr: '' };
+        }
+        throw new Error(`Unexpected native call: ${invocation.command} ${invocation.args.join(' ')}`);
+      };
+      const runtime = {
+        env: isolation.env,
+        nativeCliRunner: runner,
+        catalogResolution: { rootDir: catalogRoot, source: 'local' } as CatalogResolution,
+      };
+      const options = { cwd, platform: 'codex', scope: 'project' } as const;
+      const targetPlanned = deferred();
+      const resumeTarget = deferred();
+      const installContended = deferred();
+      let contentionReported = false;
+      setRebuildCommandTestHooksForTests({
+        async afterTargetBuilt(input) {
+          if (input.command === command && input.identity.pluginName === pluginName) {
+            targetPlanned.resolve();
+            await resumeTarget.promise;
+          }
+        },
+      });
+      setLifecycleActiveLockFileSystemForTests(processLockFileSystem({
+        async mkdir(targetPath) {
+          try {
+            return await fs.mkdir(targetPath);
+          } catch (error) {
+            if (!contentionReported
+              && (error as NodeJS.ErrnoException).code === 'EEXIST'
+              && targetPath.endsWith(`.${pluginName}.operation.lock`)) {
+              contentionReported = true;
+              installContended.resolve();
+            }
+            throw error;
+          }
+        },
+      }));
+      let absentOperation: ReturnType<typeof cleanupWriteCommand> | undefined;
+      let installing: ReturnType<typeof installWriteCommand> | undefined;
+      try {
+        absentOperation = command === 'cleanup'
+          ? cleanupWriteCommand([pluginName], options, runtime)
+          : uninstallWriteCommand([pluginName], options, runtime);
+        await targetPlanned.promise;
+        installing = installWriteCommand([pluginName], options, runtime);
+        await installContended.promise;
+        expect(await readLifecycleLog(logPath)).toEqual([]);
+
+        resumeTarget.resolve();
+        await expect(absentOperation).resolves.toMatchObject({ overallState: 'succeeded' });
+        await expect(installing).resolves.toMatchObject({ overallState: 'succeeded' });
+        expect((await readLifecycleLog(logPath)).map((entry) => entry.event)).toEqual(['install']);
+
+        await expect(uninstallWriteCommand([pluginName], options, runtime))
+          .resolves.toMatchObject({ overallState: 'succeeded' });
+        expect((await readLifecycleLog(logPath)).map((entry) => entry.event))
+          .toEqual(['install', 'uninstall']);
+      } finally {
+        resumeTarget.resolve();
+        await Promise.allSettled(
+          [absentOperation, installing].filter((operation) => operation !== undefined),
+        );
+        setRebuildCommandTestHooksForTests(undefined);
+        setLifecycleActiveLockFileSystemForTests(undefined);
+      }
+    },
+  );
 });

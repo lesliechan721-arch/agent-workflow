@@ -158,7 +158,7 @@ renderer 不能直接写平台目录。rebuild integration 合并 `sourceDirs` �
 
 超时优先级：CLI `--script-timeout`、manifest `scripts.timeoutMs`、默认 `30000` ms。
 
-成功 install/upgrade 后，AW 保存 lifecycle active snapshot。uninstall 或 reinstall 可以使用它运行对应脚本。snapshot 只服务脚本输入，不决定 live status。cleanup 不运行 uninstall lifecycle。
+成功 install/upgrade 后，AW 保存 lifecycle active snapshot。uninstall 可以使用它运行 uninstall 脚本。reinstall 的 cleanup 不运行旧 snapshot；重建后使用 current bundle 运行 install lifecycle。snapshot 只服务脚本输入，不决定 live status。
 
 Lifecycle 必须短、小、幂等，不能直接写 AW 管理的平台输出。
 

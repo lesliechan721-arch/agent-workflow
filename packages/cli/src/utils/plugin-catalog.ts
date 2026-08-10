@@ -41,6 +41,7 @@ import {
 } from './manifest.js';
 import {
   downloadCatalogPackageArchive,
+  findCatalogPackageManifestError,
   getCatalogPackageSourceRevisionForTests,
   hasCatalogPackageSourceOverrideForTests,
   resolveCatalogRegistryUrl,
@@ -770,6 +771,7 @@ async function resolveCatalogTarget(
     try {
       requestedSidecarArchive = await resolveArchiveByIdentity(requestedSidecarIdentity, env, signal);
     } catch (error) {
+      const manifestFailure = findCatalogPackageManifestError(error);
       throwCatalogResolutionFailure({
         selector,
         channel: getRequestedCatalogChannel(selector) ?? undefined,
@@ -778,7 +780,7 @@ async function resolveCatalogTarget(
           used: false,
         },
         remoteFailure: createRemoteFailure(
-          'sidecarTarball',
+          manifestFailure ? 'sidecarManifest' : 'sidecarTarball',
           normalizeErrorMessage(error),
           {
             packageName: requestedSidecarIdentity.packageName,
@@ -786,7 +788,9 @@ async function resolveCatalogTarget(
             integrity: requestedSidecarIdentity.integrity,
           },
         ),
-        reason: `无法下载 current catalog sidecar：${normalizeErrorMessage(error)}`,
+        reason: manifestFailure
+          ? `current catalog sidecar manifest 校验失败：${normalizeErrorMessage(error)}`
+          : `无法下载 current catalog sidecar：${normalizeErrorMessage(error)}`,
         reasonCode: 'catalogUnavailable',
       });
     }
@@ -1293,6 +1297,8 @@ async function resolveValidatedCatalogRoot(
       throwIfRemoteAborted(signal);
       fullArchive = await resolveArchiveByIdentity(fullIdentity, env, signal);
     } catch (error) {
+      const manifestFailure = findCatalogPackageManifestError(error);
+      const failureStage = manifestFailure ? 'fullManifest' : 'fullTarball';
       cacheEntry = await readValidatedCurrentCatalogCacheEntry(
         cacheIdentity,
         target,
@@ -1301,7 +1307,7 @@ async function resolveValidatedCatalogRoot(
       );
       if (cacheEntry) {
         const remoteFailure = createRemoteFailure(
-          'fullTarball',
+          failureStage,
           normalizeErrorMessage(error),
           {
             packageName: fullIdentity.packageName,
@@ -1345,7 +1351,7 @@ async function resolveValidatedCatalogRoot(
           used: false,
         },
         remoteFailure: createRemoteFailure(
-          'fullTarball',
+          failureStage,
           normalizeErrorMessage(error),
           {
             packageName: fullIdentity.packageName,
@@ -1353,7 +1359,9 @@ async function resolveValidatedCatalogRoot(
             integrity: fullIdentity.integrity,
           },
         ),
-        reason: `无法下载 full catalog：${normalizeErrorMessage(error)}`,
+        reason: manifestFailure
+          ? `full catalog 校验失败：${normalizeErrorMessage(error)}`
+          : `无法下载 full catalog：${normalizeErrorMessage(error)}`,
         reasonCode: 'catalogUnavailable',
       });
     }

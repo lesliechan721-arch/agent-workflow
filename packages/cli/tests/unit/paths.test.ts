@@ -9,6 +9,7 @@ import {
   getClaudeHome,
   getCodexHome,
   resolveCliTempRoot,
+  resolveClaudePaths,
   resolveClaudeProjectKey,
   resolveAwHome,
   resolveCurrentCatalogCacheEntriesDir,
@@ -36,6 +37,23 @@ afterEach(async () => {
 });
 
 describe('project key paths', () => {
+  it('uses the canonical repo root for Claude project paths from a subdirectory', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const repoRoot = path.join(isolation.layout.rootDir, 'claude-project-root');
+    const subdir = path.join(repoRoot, 'packages', 'app');
+    const outside = path.join(isolation.layout.rootDir, 'outside-claude');
+    await fs.ensureDir(path.join(repoRoot, '.git'));
+    await fs.ensureDir(subdir);
+    await fs.ensureDir(outside);
+    await fs.symlink(outside, path.join(subdir, '.claude'), 'dir');
+    const canonicalRoot = await fs.realpath(repoRoot);
+
+    expect(resolveClaudePaths(subdir, 'project', isolation.env).configDir).toBe(
+      path.join(canonicalRoot, '.claude'),
+    );
+    await expect(resolveClaudeProjectKey(subdir)).resolves.toBe(canonicalRoot);
+  });
+
   it('derives isolated home and current catalog cache paths from the shared test env', () => {
     const isolation = getCurrentSourceTestIsolation();
 

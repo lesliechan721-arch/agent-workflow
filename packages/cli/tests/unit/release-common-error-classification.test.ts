@@ -37,6 +37,27 @@ describe('release common registry error classification', () => {
     })).resolves.toEqual({ exists: false, verified: false });
   });
 
+  it('treats an exact-version metadata HTTP 404 as absent before identity resolution', async () => {
+    const downloadCatalogPackageArchive = vi.fn();
+    const adapter = await createCatalogRegistryAdapter({
+      registryUrl: 'https://registry.example.test/',
+      marketplace: {
+        resolveCatalogPackageIdentityByVersion: vi.fn(async () => {
+          throw new Error('HTTP 404 from exact-version registry metadata');
+        }),
+        downloadCatalogPackageArchive,
+      },
+    });
+
+    await expect(adapter.verifyExistingPackage('sidecar', {
+      packageRoot: '/tmp/sidecar',
+      channel: 'latest',
+      version: '2.0.0',
+      manifest: {},
+    })).resolves.toEqual({ exists: false, verified: false });
+    expect(downloadCatalogPackageArchive).not.toHaveBeenCalled();
+  });
+
   it('fails closed when an existing target version has malformed metadata', async () => {
     const adapter = await createCatalogRegistryAdapter({
       registryUrl: 'https://registry.example.test/',
@@ -84,6 +105,7 @@ describe('release common registry error classification', () => {
         resolveCatalogPackageIdentityByVersion: vi.fn(async () => ({
           packageName: '@yiliang/aw-plugins',
           version: '2.0.0',
+          integrity: `sha512-${Buffer.alloc(64).toString('base64')}`,
         })),
         downloadCatalogPackageArchive: vi.fn(async () => {
           throw new Error(message);

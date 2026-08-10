@@ -1,7 +1,9 @@
+import { execFile } from 'node:child_process';
 import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 
 import fs from 'fs-extra';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -26,9 +28,12 @@ import {
 } from '../../src/utils/marketplace.js';
 import {
   setEmbeddedPluginsRootOverrideForTests,
+  resolveCurrentCatalogCacheStagingDir,
 } from '../../src/utils/paths.js';
 import { initCommand } from '../../src/commands/init.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
+
+const execFileAsync = promisify(execFile);
 
 const tempDirs: string[] = [];
 const originalCwd = process.cwd();
@@ -128,6 +133,111 @@ async function createValidCatalogPackage(options: {
     sidecarRoot,
     manifest,
   };
+}
+
+function createMinimalCatalogManifest() {
+  return {
+    schemaVersion: 2,
+    catalogVersion: '1.0.0',
+    channel: 'latest',
+    compatibility: {
+      aw: {
+        minVersion: '1.0.0',
+      },
+    },
+    packages: {
+      sidecar: {
+        name: '@yiliang/aw-plugins-manifest',
+        version: '1.0.0',
+        channel: 'latest',
+      },
+      full: {
+        name: '@yiliang/aw-plugins',
+        version: '1.0.0',
+        channel: 'latest',
+        manifestPath: './catalog-manifest.json',
+      },
+    },
+    entries: [],
+  };
+}
+
+interface RealRegistryArchive {
+  archiveBytes: Buffer;
+  integrity: string;
+  tarballUrl: string;
+}
+
+async function createRealRegistryArchive(
+  manifestText: string,
+  label: string,
+): Promise<RealRegistryArchive> {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), `aw-real-catalog-${label}-`));
+  tempDirs.push(root);
+  const packageRoot = path.join(root, 'package');
+  await fs.ensureDir(packageRoot);
+  await fs.writeFile(path.join(packageRoot, 'catalog-manifest.json'), manifestText, 'utf8');
+  const tarballPath = path.join(root, `${label}.tgz`);
+  await execFileAsync('tar', ['-czf', tarballPath, '-C', root, 'package']);
+  const archiveBytes = await fs.readFile(tarballPath);
+  return {
+    archiveBytes,
+    integrity: `sha512-${crypto.createHash('sha512').update(archiveBytes).digest('base64')}`,
+    tarballUrl: `https://registry.example.test/${label}.tgz`,
+  };
+}
+
+function createInvalidRegistryArchive(label: string): RealRegistryArchive {
+  const archiveBytes = Buffer.from(`invalid tarball ${label}`);
+  return {
+    archiveBytes,
+    integrity: `sha512-${crypto.createHash('sha512').update(archiveBytes).digest('base64')}`,
+    tarballUrl: `https://registry.example.test/${label}.tgz`,
+  };
+}
+
+function installRealRegistryFetch(options: {
+  sidecar: RealRegistryArchive;
+  full: RealRegistryArchive;
+}): void {
+  const packageMetadata = (archive: RealRegistryArchive) => ({
+    'dist-tags': {
+      latest: '1.0.0',
+    },
+    versions: {
+      '1.0.0': {
+        dist: {
+          integrity: archive.integrity,
+          tarball: archive.tarballUrl,
+        },
+      },
+    },
+  });
+  const responses = new Map<string, Response>([
+    [
+      `https://registry.example.test/${encodeURIComponent('@yiliang/aw-plugins-manifest')}`,
+      new Response(JSON.stringify(packageMetadata(options.sidecar)), { status: 200 }),
+    ],
+    [
+      `https://registry.example.test/${encodeURIComponent('@yiliang/aw-plugins')}`,
+      new Response(JSON.stringify(packageMetadata(options.full)), { status: 200 }),
+    ],
+    [options.sidecar.tarballUrl, new Response(options.sidecar.archiveBytes, { status: 200 })],
+    [options.full.tarballUrl, new Response(options.full.archiveBytes, { status: 200 })],
+  ]);
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+    const response = responses.get(String(input));
+    return response ? response.clone() : new Response('', { status: 404 });
+  }));
+}
+
+async function listRealArchiveTemporaryRoots(env: NodeJS.ProcessEnv): Promise<string[]> {
+  const stagingRoot = resolveCurrentCatalogCacheStagingDir(env);
+  const entries = await fs.readdir(stagingRoot, { withFileTypes: true }).catch(() => []);
+  return entries
+    .filter((entry) => entry.isDirectory() && entry.name.startsWith('package-'))
+    .map((entry) => path.join(stagingRoot, entry.name))
+    .sort();
 }
 
 function createIncompatibleLatestSidecar(options: {
@@ -838,6 +948,121 @@ describe('plugin catalog resolvers', () => {
       remoteFailure: { stage: 'deadline' },
     });
   });
+
+  it.each([
+    {
+      caseName: 'schema 1',
+      manifestText: JSON.stringify({
+        ...createMinimalCatalogManifest(),
+        schemaVersion: 1,
+      }),
+    },
+    {
+      caseName: 'invalid JSON',
+      manifestText: '{ invalid json',
+    },
+  ])('classifies a real sidecar $caseName archive as sidecarManifest without leftovers', async ({
+    caseName,
+    manifestText,
+  }) => {
+    const { env } = await makeRepoWorkspace();
+    const registryTestEnv = {
+      ...env,
+      AW_NPM_REGISTRY_URL: 'https://registry.example.test/',
+    };
+    const validManifestText = JSON.stringify(createMinimalCatalogManifest());
+    const [sidecar, full] = await Promise.all([
+      createRealRegistryArchive(manifestText, `sidecar-${caseName.replaceAll(' ', '-')}`),
+      createRealRegistryArchive(validManifestText, `full-${caseName.replaceAll(' ', '-')}`),
+    ]);
+    installRealRegistryFetch({ sidecar, full });
+    const before = await listRealArchiveTemporaryRoots(registryTestEnv);
+
+    await expect(resolveCurrentCatalog(registryTestEnv, { forceRefresh: true })).rejects.toMatchObject({
+      resolution: {
+        remoteFailure: {
+          stage: 'sidecarManifest',
+        },
+      },
+    });
+    await expect(listRealArchiveTemporaryRoots(registryTestEnv)).resolves.toEqual(before);
+  });
+
+  it.each([
+    {
+      caseName: 'schema 1',
+      manifestText: JSON.stringify({
+        ...createMinimalCatalogManifest(),
+        schemaVersion: 1,
+      }),
+    },
+    {
+      caseName: 'invalid JSON',
+      manifestText: '{ invalid json',
+    },
+  ])('classifies a real full $caseName archive as fullManifest without leftovers', async ({
+    caseName,
+    manifestText,
+  }) => {
+    const { env } = await makeRepoWorkspace();
+    const registryTestEnv = {
+      ...env,
+      AW_NPM_REGISTRY_URL: 'https://registry.example.test/',
+    };
+    const validManifestText = JSON.stringify(createMinimalCatalogManifest());
+    const [sidecar, full] = await Promise.all([
+      createRealRegistryArchive(validManifestText, `sidecar-valid-${caseName.replaceAll(' ', '-')}`),
+      createRealRegistryArchive(manifestText, `full-${caseName.replaceAll(' ', '-')}`),
+    ]);
+    installRealRegistryFetch({ sidecar, full });
+    const before = await listRealArchiveTemporaryRoots(registryTestEnv);
+
+    await expect(resolveCurrentCatalog(registryTestEnv, { forceRefresh: true })).rejects.toMatchObject({
+      resolution: {
+        remoteFailure: {
+          stage: 'fullManifest',
+        },
+      },
+    });
+    await expect(listRealArchiveTemporaryRoots(registryTestEnv)).resolves.toEqual(before);
+  });
+
+  it.each(['sidecar', 'full'] as const)(
+    'keeps a real invalid %s archive in the tarball stage without leftovers',
+    async (kind) => {
+      const { env } = await makeRepoWorkspace();
+      const registryTestEnv = {
+        ...env,
+        AW_NPM_REGISTRY_URL: 'https://registry.example.test/',
+      };
+      const validManifestText = JSON.stringify(createMinimalCatalogManifest());
+      const validSidecar = await createRealRegistryArchive(
+        validManifestText,
+        `sidecar-valid-for-${kind}`,
+      );
+      const validFull = await createRealRegistryArchive(
+        validManifestText,
+        `full-valid-for-${kind}`,
+      );
+      const sidecar = kind === 'sidecar'
+        ? createInvalidRegistryArchive('sidecar-invalid-tar')
+        : validSidecar;
+      const full = kind === 'full'
+        ? createInvalidRegistryArchive('full-invalid-tar')
+        : validFull;
+      installRealRegistryFetch({ sidecar, full });
+      const before = await listRealArchiveTemporaryRoots(registryTestEnv);
+
+      await expect(resolveCurrentCatalog(registryTestEnv, { forceRefresh: true })).rejects.toMatchObject({
+        resolution: {
+          remoteFailure: {
+            stage: `${kind}Tarball`,
+          },
+        },
+      });
+      await expect(listRealArchiveTemporaryRoots(registryTestEnv)).resolves.toEqual(before);
+    },
+  );
 
   it('rejects identities and manifests that do not bind to the selector', async () => {
     const { repoRoot, env } = await makeRepoWorkspace();

@@ -8,16 +8,20 @@ import type {
   Scope,
 } from '../types.js';
 import {
+  acquireLifecycleOperationLock,
   discardLifecycleActiveSnapshot,
+  leaseLifecycleActiveSnapshot,
   prepareLifecycleActiveSnapshot,
   promoteLifecycleActiveSnapshot,
   readLifecycleActiveSnapshot,
+  releaseLifecycleActiveSnapshot,
   removeLifecycleActiveSnapshot,
   restoreLifecycleActiveScriptInputs,
   type LifecycleActivePluginLoader,
   type PreparedLifecycleActiveSnapshot,
   type ReadLifecycleActiveSnapshot,
 } from '../utils/lifecycle-active-store.js';
+import type { ProcessLockLease } from '../utils/process-lock.js';
 import {
   cleanupOwnedComponents,
   inspectOwnedComponents,
@@ -63,7 +67,10 @@ export type RebuildActionName =
   | 'recovery.cleanup'
   | 'cleanup.owned'
   | 'active.read'
-  | 'active.remove';
+  | 'active.remove'
+  | 'active.release'
+  | 'operation.lock'
+  | 'operation.release';
 
 export interface RebuildAction {
   name: RebuildActionName;
@@ -147,7 +154,10 @@ export interface RebuildActiveStore {
   discard(prepared: PreparedLifecycleActiveSnapshot): Promise<void>;
   promote(prepared: PreparedLifecycleActiveSnapshot): Promise<ReadLifecycleActiveSnapshot | null>;
   read(target: DesiredTarget): Promise<ReadLifecycleActiveSnapshot | null>;
+  readStable?(target: DesiredTarget): Promise<ReadLifecycleActiveSnapshot | null>;
   remove(target: DesiredTarget): Promise<void>;
+  acquireOperation?(identity: RebuildTargetIdentity): Promise<ProcessLockLease>;
+  releaseRead?(snapshot: ReadLifecycleActiveSnapshot): Promise<void>;
 }
 
 export function createRebuildActiveStore(options: {
@@ -174,6 +184,14 @@ export function createRebuildActiveStore(options: {
       loadPlugin: options.loadPlugin,
       env: options.env,
     }),
+    readStable: (target) => leaseLifecycleActiveSnapshot({
+      pluginName: target.identity.pluginName,
+      platform: target.identity.platform,
+      scope: target.identity.scope,
+      cwd: target.identity.cwd,
+      loadPlugin: options.loadPlugin,
+      env: options.env,
+    }),
     remove: (target) => removeLifecycleActiveSnapshot({
       pluginName: target.identity.pluginName,
       platform: target.identity.platform,
@@ -181,6 +199,14 @@ export function createRebuildActiveStore(options: {
       cwd: target.identity.cwd,
       env: options.env,
     }),
+    acquireOperation: (identity) => acquireLifecycleOperationLock({
+      pluginName: identity.pluginName,
+      platform: identity.platform,
+      scope: identity.scope,
+      cwd: identity.cwd,
+      env: options.env,
+    }),
+    releaseRead: releaseLifecycleActiveSnapshot,
   };
 }
 
@@ -208,6 +234,24 @@ function createAccumulator(): ResultAccumulator {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+export async function releaseRebuildOperationLease(lock: ProcessLockLease): Promise<void> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      await lock.release();
+      return;
+    } catch (error) {
+      lastError = error;
+      if (!new Set(['EACCES', 'EBUSY', 'EINTR', 'EIO', 'ENOTEMPTY', 'EPERM']).has(
+        (error as NodeJS.ErrnoException).code ?? '',
+      )) {
+        throw error;
+      }
+    }
+  }
+  throw lastError;
 }
 
 function pushUnique(target: string[], values: readonly string[]): void {
@@ -617,8 +661,13 @@ async function executeUninstall(options: {
     return failed('uninstall', target, accumulator, 'preflight.inspect', errorMessage(error));
   }
   let snapshot: ReadLifecycleActiveSnapshot | null;
+  const stableRead = store.readStable !== undefined;
   try {
-    snapshot = await action(accumulator, 'active.read', () => store.read(target));
+    snapshot = await action(
+      accumulator,
+      'active.read',
+      () => (store.readStable ?? store.read)(target),
+    );
   } catch (error) {
     const message = `Active lifecycle snapshot is corrupt. Run cleanup to remove live outputs without lifecycle: ${errorMessage(error)}`;
     return failed('uninstall', target, accumulator, 'active.read', message);
@@ -654,10 +703,18 @@ async function executeUninstall(options: {
   const collision = collisionMessage(inspection);
   if (collision) {
     recordInspectionResiduals(accumulator, inspection);
+    if (stableRead && store.releaseRead) {
+      try {
+        await action(accumulator, 'active.release', () => store.releaseRead!(snapshot!));
+      } catch (error) {
+        accumulator.failures.push({ phase: 'active.release', message: errorMessage(error) });
+      }
+    }
     return failed('uninstall', target, accumulator, 'preflight', collision);
   }
 
   const historical = restoreLifecycleActiveScriptInputs(snapshot);
+  let lifecycleError: unknown;
   try {
     await action(accumulator, 'lifecycle.uninstall', () => driver.runLifecycle({
       event: 'uninstall',
@@ -666,7 +723,27 @@ async function executeUninstall(options: {
       artifacts: historical.artifacts,
     }));
   } catch (error) {
-    return failed('uninstall', target, accumulator, 'lifecycle.uninstall', errorMessage(error));
+    lifecycleError = error;
+  }
+  if (stableRead && store.releaseRead) {
+    try {
+      await action(accumulator, 'active.release', () => store.releaseRead!(snapshot!));
+    } catch (error) {
+      const message = errorMessage(error);
+      accumulator.failures.push({ phase: 'active.release', message });
+      if (lifecycleError === undefined) {
+        return failed('uninstall', target, accumulator, 'active.release', message);
+      }
+    }
+  }
+  if (lifecycleError !== undefined) {
+    return failed(
+      'uninstall',
+      target,
+      accumulator,
+      'lifecycle.uninstall',
+      errorMessage(lifecycleError),
+    );
   }
 
   const cleanupError = await cleanupTarget(target, driver, store, accumulator, 'cleanup.owned');
@@ -695,6 +772,60 @@ export async function executeRebuildOperation(options: {
       errorMessage(error),
     );
   }
+
+  let operationLock: ProcessLockLease | undefined;
+  if (store.acquireOperation) {
+    try {
+      operationLock = await action(
+        accumulator,
+        'operation.lock',
+        () => store.acquireOperation!(options.target.identity),
+      );
+    } catch (error) {
+      return failed(
+        options.command,
+        options.target,
+        accumulator,
+        'operation.lock',
+        errorMessage(error),
+      );
+    }
+  }
+
+  let result: RebuildResult;
+  try {
+    result = await executeRebuildOperationLocked(options, accumulator, store);
+  } catch (error) {
+    result = failed(options.command, options.target, accumulator, 'preflight', errorMessage(error));
+  }
+  if (operationLock) {
+    try {
+      await action(
+        accumulator,
+        'operation.release',
+        () => releaseRebuildOperationLease(operationLock!),
+      );
+    } catch (error) {
+      const message = errorMessage(error);
+      accumulator.failures.push({ phase: 'operation.release', message });
+      if (result.status === 'succeeded') {
+        return failed(options.command, options.target, accumulator, 'operation.release', message);
+      }
+    }
+  }
+  return result;
+}
+
+async function executeRebuildOperationLocked(
+  options: {
+    command: RebuildCommand;
+    target: DesiredTarget;
+    driver: RebuildTargetDriver;
+    activeStore: RebuildActiveStore;
+  },
+  accumulator: ResultAccumulator,
+  store: RebuildActiveStore,
+): Promise<RebuildResult> {
 
   if (options.command === 'install' || options.command === 'upgrade') {
     return materializeTarget({

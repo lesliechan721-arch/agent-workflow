@@ -113,6 +113,7 @@ export interface LifecycleActiveTarget extends LifecycleActiveTargetIdentity {
   activeRoot: string;
   stagingRoot: string;
   lockPath: string;
+  operationLockPath: string;
   artifactOutputRoots: string[];
   pathAliases: Array<{ source: string; canonical: string }>;
 }
@@ -159,6 +160,8 @@ const preparedContexts = new WeakMap<PreparedLifecycleActiveSnapshot, {
   lock: ProcessLockLease;
   loadPlugin: LifecycleActivePluginLoader;
 }>();
+const readContexts = new WeakMap<ReadLifecycleActiveSnapshot, ProcessLockLease>();
+const releasedReads = new WeakSet<ReadLifecycleActiveSnapshot>();
 const finalizedPrepared = new WeakSet<PreparedLifecycleActiveSnapshot>();
 let beforePruneStagingRootForTests: (() => Promise<void>) | undefined;
 let processLockFileSystemForTests: ProcessLockFileSystem | undefined;
@@ -323,6 +326,10 @@ export async function resolveLifecycleActiveTarget(options: {
     path.dirname(targetRoot),
     `.${options.pluginName}.lock`,
   ));
+  const operationLockPath = assertWritableStorePath(path.join(
+    path.dirname(targetRoot),
+    `.${options.pluginName}.operation.lock`,
+  ));
   return {
     pluginName: options.pluginName,
     platform,
@@ -335,6 +342,7 @@ export async function resolveLifecycleActiveTarget(options: {
     activeRoot: path.join(targetRoot, 'active'),
     stagingRoot: path.join(targetRoot, 'staging'),
     lockPath,
+    operationLockPath,
     artifactOutputRoots: [awHome, platformHome, ...(projectKey ? [projectKey] : [])],
     pathAliases: [
       { source: rawAwHome, canonical: awHome },
@@ -418,6 +426,24 @@ async function acquireTargetLock(target: LifecycleActiveTarget): Promise<Process
   await assertExistingPathChainHasNoSymlinks(target.awHome, lockParent);
   return acquireProcessLock({
     lockPath: target.lockPath,
+    fileSystem: processLockFileSystemForTests,
+  });
+}
+
+export async function acquireLifecycleOperationLock(options: {
+  pluginName: string;
+  platform: PlatformName;
+  scope: Scope;
+  cwd: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<ProcessLockLease> {
+  const target = await resolveLifecycleActiveTarget(options);
+  const lockParent = path.dirname(target.operationLockPath);
+  await assertExistingPathChainHasNoSymlinks(target.awHome, lockParent);
+  await fs.ensureDir(lockParent);
+  await assertExistingPathChainHasNoSymlinks(target.awHome, lockParent);
+  return acquireProcessLock({
+    lockPath: target.operationLockPath,
     fileSystem: processLockFileSystemForTests,
   });
 }
@@ -1338,6 +1364,63 @@ export async function readLifecycleActiveSnapshot(options: {
     }
     throw new LifecycleActiveSnapshotError('Lifecycle active snapshot is corrupt.', { cause: error });
   }
+}
+
+export async function leaseLifecycleActiveSnapshot(options: {
+  pluginName: string;
+  platform: PlatformName;
+  scope: Scope;
+  cwd: string;
+  loadPlugin: LifecycleActivePluginLoader;
+  env?: NodeJS.ProcessEnv;
+}): Promise<ReadLifecycleActiveSnapshot | null> {
+  const target = await resolveLifecycleActiveTarget(options);
+  const lock = await acquireTargetLock(target);
+  let snapshot: ReadLifecycleActiveSnapshot | null;
+  try {
+    await assertExistingPathChainHasNoSymlinks(target.awHome, target.activeRoot);
+    if (!await fs.pathExists(target.activeRoot)) {
+      snapshot = null;
+    } else {
+      snapshot = createReadSnapshot(
+        target,
+        await validateSnapshotRoot(target.activeRoot, target, options.loadPlugin),
+      );
+    }
+  } catch (error) {
+    const primaryError = error instanceof LifecycleActiveSnapshotError
+      ? error
+      : new LifecycleActiveSnapshotError('Lifecycle active snapshot is corrupt.', { cause: error });
+    try {
+      await releaseLeaseWithRetry(lock);
+    } catch (releaseError) {
+      throw new AggregateError(
+        [primaryError, releaseError],
+        'Lifecycle active read failed and its target lock could not be released.',
+        { cause: primaryError },
+      );
+    }
+    throw primaryError;
+  }
+  if (!snapshot) {
+    await releaseLeaseWithRetry(lock);
+    return null;
+  }
+  readContexts.set(snapshot, lock);
+  return snapshot;
+}
+
+export async function releaseLifecycleActiveSnapshot(
+  snapshot: ReadLifecycleActiveSnapshot,
+): Promise<void> {
+  const lock = readContexts.get(snapshot);
+  if (!lock && releasedReads.has(snapshot)) return;
+  if (!lock) {
+    fail('Lifecycle active read snapshot no longer owns its target lock.');
+  }
+  await releaseLeaseWithRetry(lock);
+  readContexts.delete(snapshot);
+  releasedReads.add(snapshot);
 }
 
 export function restoreLifecycleActiveScriptInputs(

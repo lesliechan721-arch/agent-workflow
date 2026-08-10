@@ -8,9 +8,11 @@ import {
   LIFECYCLE_ACTIVE_METADATA_FILE,
   LifecycleActiveSnapshotError,
   discardLifecycleActiveSnapshot,
+  leaseLifecycleActiveSnapshot,
   prepareLifecycleActiveSnapshot as prepareLifecycleActiveSnapshotWithLoader,
   promoteLifecycleActiveSnapshot,
   readLifecycleActiveSnapshot,
+  releaseLifecycleActiveSnapshot,
   removeLifecycleActiveSnapshot,
   resolveLifecycleActiveTarget,
   restoreLifecycleActiveScriptInputs,
@@ -181,9 +183,12 @@ describe('lifecycle active store', () => {
 
     expect(userA.locationKey).toBe('user');
     expect(userB.targetRoot).toBe(userA.targetRoot);
+    expect(userB.operationLockPath).toBe(userA.operationLockPath);
+    expect(userA.operationLockPath).not.toBe(userA.lockPath);
     expect(projectA.projectKey).toBe(await fs.realpath(repoA));
     expect(nestedProjectA.targetRoot).toBe(projectA.targetRoot);
     expect(projectB.targetRoot).not.toBe(projectA.targetRoot);
+    expect(projectB.operationLockPath).not.toBe(projectA.operationLockPath);
     expect(path.relative(projectA.awHome, projectA.targetRoot)).toMatch(
       /^lifecycle-active\/codex\/project\/project-[^/]+\/active-plugin$/,
     );
@@ -612,6 +617,61 @@ describe('lifecycle active store', () => {
     expect(results.every((result) => result !== null)).toBe(true);
     expect(['1.0.0', '2.0.0']).toContain(active?.metadata.pluginVersion);
     expect((await fs.readdir(active!.target.targetRoot)).sort()).toEqual(['active']);
+  });
+
+  it('keeps leased uninstall bytes stable while a newer promote waits', async () => {
+    const repo = await createRepo('leased-read-repo');
+    const root = getCurrentSourceTestIsolation().layout.fixtureCwd;
+    const first = await writePlugin({ root, version: '1.0.0', marker: 'leased-v1' });
+    await stageAndPromote({ plugin: first, cwd: repo });
+    const leased = await leaseLifecycleActiveSnapshot(targetOptions(repo));
+    expect(leased?.metadata.pluginVersion).toBe('1.0.0');
+
+    const second = await writePlugin({ root, version: '2.0.0', marker: 'promoted-v2' });
+    let contenderObservedLock = false;
+    let notifyContender!: () => void;
+    const contenderObserved = new Promise<void>((resolve) => { notifyContender = resolve; });
+    const fileSystem = processLockFileSystem({
+      async mkdir(targetPath) {
+        try {
+          return await fs.mkdir(targetPath);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'EEXIST'
+            && targetPath === leased?.target.lockPath
+            && !contenderObservedLock) {
+            contenderObservedLock = true;
+            notifyContender();
+          }
+          throw error;
+        }
+      },
+    });
+    setLifecycleActiveLockFileSystemForTests(fileSystem);
+    const promoting = (async () => {
+      const prepared = await prepareLifecycleActiveSnapshot({
+        plugin: second,
+        platform: 'codex',
+        scope: 'user',
+        cwd: repo,
+        env: process.env,
+      });
+      return promoteLifecycleActiveSnapshot(prepared);
+    })();
+    try {
+      await contenderObserved;
+      await expect(fs.readFile(
+        path.join(leased!.bundleRoot, 'scripts', 'uninstall.mjs'),
+        'utf8',
+      )).resolves.toContain('leased-v1:uninstall');
+      await releaseLifecycleActiveSnapshot(leased!);
+      await expect(promoting).resolves.toMatchObject({
+        metadata: { pluginVersion: '2.0.0' },
+      });
+      await expect(releaseLifecycleActiveSnapshot(leased!)).resolves.toBeUndefined();
+    } finally {
+      setLifecycleActiveLockFileSystemForTests(undefined);
+      await releaseLifecycleActiveSnapshot(leased!).catch(() => undefined);
+    }
   });
 
   it('preserves the valid active generation when a concurrent promote fails before replacement', async () => {

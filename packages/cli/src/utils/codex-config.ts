@@ -3,6 +3,11 @@ import path from 'node:path';
 import fs from 'fs-extra';
 import { ParseError, parseTOML, type AST } from 'toml-eslint-parser';
 
+import {
+  atomicReplaceConfigFile,
+  withConfigFileLock,
+} from './plugin-config.js';
+
 const AW_MANAGED_PREFIX = '[[aw-managed:';
 const MANAGED_INSTRUCTIONS_KIND = 'developer_instructions';
 const MANAGED_BLOCK_START_RE =
@@ -138,6 +143,10 @@ export interface CodexConfigTransactionResult {
   content: string;
   snapshot: CodexConfigSnapshot;
   wrote: boolean;
+}
+
+export interface ConditionalCodexConfigTransactionResult extends CodexConfigTransactionResult {
+  applied: boolean;
 }
 
 function detectNewline(content: string): string {
@@ -1471,37 +1480,106 @@ export function applyCodexConfigTransaction(
   return next;
 }
 
-async function writeCodexConfigFile(
+async function replaceCodexConfigFile(
   configPath: string,
   content: string,
 ): Promise<void> {
-  await fs.ensureDir(path.dirname(configPath));
-  await fs.writeFile(configPath, content, 'utf8');
+  await atomicReplaceConfigFile({
+    filePath: configPath,
+    allowedRoot: path.dirname(configPath),
+    content,
+  });
+}
+
+async function updateCodexConfigFile(
+  configPath: string,
+  update: (content: string) => string,
+): Promise<CodexConfigSnapshot> {
+  return withConfigFileLock({
+    filePath: configPath,
+    allowedRoot: path.dirname(configPath),
+    action: async () => {
+      const current = (await fs.pathExists(configPath))
+        ? await fs.readFile(configPath, 'utf8')
+        : '';
+      const next = update(current);
+      await replaceCodexConfigFile(configPath, next);
+      return parseCodexConfig(next);
+    },
+  });
 }
 
 export async function applyCodexConfigTransactionFile(
   configPath: string,
   transaction: CodexConfigTransaction,
 ): Promise<CodexConfigTransactionResult> {
-  const baselineExists = await fs.pathExists(configPath);
-  const baselineContent = baselineExists
-    ? await fs.readFile(configPath, 'utf8')
-    : null;
-  const baselineText = baselineContent ?? '';
-  const nextContent = applyCodexConfigTransaction(baselineText, transaction);
-  const baselineWithTerminalNewline = ensureTerminalNewline(baselineText);
-  const wrote = nextContent !== baselineWithTerminalNewline;
+  return withConfigFileLock({
+    filePath: configPath,
+    allowedRoot: path.dirname(configPath),
+    action: async () => {
+      const baselineExists = await fs.pathExists(configPath);
+      const baselineContent = baselineExists
+        ? await fs.readFile(configPath, 'utf8')
+        : null;
+      const baselineText = baselineContent ?? '';
+      const nextContent = applyCodexConfigTransaction(baselineText, transaction);
+      const baselineWithTerminalNewline = ensureTerminalNewline(baselineText);
+      const wrote = nextContent !== baselineWithTerminalNewline;
 
-  if (wrote) {
-    await writeCodexConfigFile(configPath, nextContent);
-  }
+      if (wrote) {
+        await replaceCodexConfigFile(configPath, nextContent);
+      }
 
-  return {
-    baselineContent,
-    content: nextContent,
-    snapshot: parseCodexConfig(nextContent),
-    wrote,
-  };
+      return {
+        baselineContent,
+        content: nextContent,
+        snapshot: parseCodexConfig(nextContent),
+        wrote,
+      };
+    },
+  });
+}
+
+export async function applyConditionalCodexConfigTransactionFile(
+  configPath: string,
+  resolveTransaction: (
+    snapshot: CodexConfigSnapshot,
+    content: string,
+  ) => CodexConfigTransaction | null | Promise<CodexConfigTransaction | null>,
+): Promise<ConditionalCodexConfigTransactionResult> {
+  return withConfigFileLock({
+    filePath: configPath,
+    allowedRoot: path.dirname(configPath),
+    action: async () => {
+      const baselineExists = await fs.pathExists(configPath);
+      const baselineContent = baselineExists
+        ? await fs.readFile(configPath, 'utf8')
+        : null;
+      const baselineText = baselineContent ?? '';
+      const baselineSnapshot = parseCodexConfig(baselineText);
+      const transaction = await resolveTransaction(baselineSnapshot, baselineText);
+      if (!transaction) {
+        return {
+          baselineContent,
+          content: baselineText,
+          snapshot: baselineSnapshot,
+          wrote: false,
+          applied: false,
+        };
+      }
+
+      const nextContent = applyCodexConfigTransaction(baselineText, transaction);
+      const wrote = nextContent !== ensureTerminalNewline(baselineText);
+      if (wrote) await replaceCodexConfigFile(configPath, nextContent);
+      return {
+        baselineContent,
+        content: nextContent,
+        snapshot: parseCodexConfig(nextContent),
+        wrote,
+        applied: true,
+      };
+    },
+  });
 }
 
 export async function upsertCodexMarketplaceFile(
@@ -1509,24 +1587,16 @@ export async function upsertCodexMarketplaceFile(
   name: string,
   config: CodexMarketplaceConfig,
 ): Promise<CodexConfigSnapshot> {
-  const current = (await fs.pathExists(configPath))
-    ? await fs.readFile(configPath, 'utf8')
-    : '';
-  const next = upsertCodexMarketplace(current, name, config);
-  await writeCodexConfigFile(configPath, next);
-  return parseCodexConfig(next);
+  return updateCodexConfigFile(configPath, (current) =>
+    upsertCodexMarketplace(current, name, config));
 }
 
 export async function removeCodexMarketplaceFile(
   configPath: string,
   name: string,
 ): Promise<CodexConfigSnapshot> {
-  const current = (await fs.pathExists(configPath))
-    ? await fs.readFile(configPath, 'utf8')
-    : '';
-  const next = removeCodexMarketplace(current, name);
-  await writeCodexConfigFile(configPath, next);
-  return parseCodexConfig(next);
+  return updateCodexConfigFile(configPath, (current) =>
+    removeCodexMarketplace(current, name));
 }
 
 export async function upsertCodexPluginEnabledFile(
@@ -1534,48 +1604,32 @@ export async function upsertCodexPluginEnabledFile(
   name: string,
   config: CodexPluginEnabledConfig,
 ): Promise<CodexConfigSnapshot> {
-  const current = (await fs.pathExists(configPath))
-    ? await fs.readFile(configPath, 'utf8')
-    : '';
-  const next = upsertCodexPluginEnabled(current, name, config);
-  await writeCodexConfigFile(configPath, next);
-  return parseCodexConfig(next);
+  return updateCodexConfigFile(configPath, (current) =>
+    upsertCodexPluginEnabled(current, name, config));
 }
 
 export async function removeCodexPluginEnabledFile(
   configPath: string,
   name: string,
 ): Promise<CodexConfigSnapshot> {
-  const current = (await fs.pathExists(configPath))
-    ? await fs.readFile(configPath, 'utf8')
-    : '';
-  const next = removeCodexPluginEnabled(current, name);
-  await writeCodexConfigFile(configPath, next);
-  return parseCodexConfig(next);
+  return updateCodexConfigFile(configPath, (current) =>
+    removeCodexPluginEnabled(current, name));
 }
 
 export async function upsertManagedDeveloperInstructionsFile(
   configPath: string,
   block: CodexManagedInstructionBlock,
 ): Promise<CodexConfigSnapshot> {
-  const current = (await fs.pathExists(configPath))
-    ? await fs.readFile(configPath, 'utf8')
-    : '';
-  const next = upsertManagedDeveloperInstructions(current, block);
-  await writeCodexConfigFile(configPath, next);
-  return parseCodexConfig(next);
+  return updateCodexConfigFile(configPath, (current) =>
+    upsertManagedDeveloperInstructions(current, block));
 }
 
 export async function removeManagedDeveloperInstructionsFile(
   configPath: string,
   pluginName: string,
 ): Promise<CodexConfigSnapshot> {
-  const current = (await fs.pathExists(configPath))
-    ? await fs.readFile(configPath, 'utf8')
-    : '';
-  const next = removeManagedDeveloperInstructions(current, pluginName);
-  await writeCodexConfigFile(configPath, next);
-  return parseCodexConfig(next);
+  return updateCodexConfigFile(configPath, (current) =>
+    removeManagedDeveloperInstructions(current, pluginName));
 }
 
 export function validateInstructionBodyForCodexConfig(value: string): void {

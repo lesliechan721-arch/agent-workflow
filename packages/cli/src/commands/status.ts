@@ -382,10 +382,12 @@ export async function statusCommand(
     ? [{ code: 'bundleUnavailable', message: catalogFailureMessage(catalogState.failure!) }]
     : [];
   const namesByLocation = new Map<string, Set<string>>();
+  const discoveredByLocation = new Map<string, Set<string>>();
 
   for (const platform of platforms) {
     for (const scope of scopes) {
       const names = new Set(explicitNames);
+      const discovered = new Set<string>();
       if (explicitNames.length === 0) {
         for (const plugin of catalogState.plugins) {
           if (supportsTarget(plugin, platform, scope)) names.add(plugin.manifest.name);
@@ -398,7 +400,10 @@ export async function statusCommand(
             scope,
             nativeCliRunner: context.nativeCliRunner,
             nativeFailureMode: 'error',
-          })) names.add(name);
+          })) {
+            names.add(name);
+            discovered.add(name);
+          }
         } catch (error) {
           globalErrors.push({
             code: 'discoveryFailed',
@@ -407,6 +412,7 @@ export async function statusCommand(
         }
       }
       namesByLocation.set(targetKey('', platform, scope), names);
+      discoveredByLocation.set(targetKey('', platform, scope), discovered);
     }
   }
 
@@ -430,7 +436,13 @@ export async function statusCommand(
           }));
           continue;
         }
-        if (!supportsTarget(plugin, platform, scope)) {
+        const staleProjectTarget = explicitNames.length === 0
+          && platform === 'codex'
+          && scope === 'project'
+          && !plugin.manifest.apps
+          && supportsPlatform(plugin.manifest, platform)
+          && discoveredByLocation.get(targetKey('', platform, scope))?.has(pluginName) === true;
+        if (!supportsTarget(plugin, platform, scope) && !staleProjectTarget) {
           if (explicitNames.length > 0) {
             targets.push(createErrorTarget({
               plugin: pluginName,
@@ -458,7 +470,7 @@ export async function statusCommand(
             version: live.target.identity.pluginVersion,
             platform,
             scope,
-            cwd: path.resolve(options.cwd),
+            cwd: path.resolve(live.target.identity.cwd),
           };
           const state = projectLiveState({
             inspection: live.inspection,

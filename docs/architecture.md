@@ -88,11 +88,12 @@ normalize target
 
 ### Lifecycle active store
 
-`lifecycle-active/` 是唯一的生命周期例外状态。成功 install 或 upgrade 后，AW 保存下一次 uninstall 或 reinstall 所需的脚本输入和 bundle 内容。它有以下边界：
+`lifecycle-active/` 是唯一的生命周期例外状态。成功 install 或 upgrade 后，AW 保存下一次 uninstall 所需的脚本输入和 bundle 内容。它有以下边界：
 
 - 它只服务 lifecycle 重放。
 - 它不决定插件是否存在。
 - 它不参与 status 健康判断。
+- `reinstall` 的 cleanup 不运行旧 snapshot；重建使用 current bundle 运行 install lifecycle。
 - `cleanup` 不运行 uninstall lifecycle。
 - lifecycle active snapshot 缺失时，live ownership 仍是写入和清理真值。
 

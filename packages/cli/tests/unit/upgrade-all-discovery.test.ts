@@ -7,6 +7,7 @@ import { upgradeWriteCommand } from '../../src/commands/write-commands.js';
 import type { CatalogResolution } from '../../src/types.js';
 import type { NativeCliRunner } from '../../src/utils/native-cli.js';
 import { writeOwnedTextFile } from '../../src/utils/ownership.js';
+import { resolveClaudePaths } from '../../src/utils/paths.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 async function emptyCatalog(root: string): Promise<CatalogResolution> {
@@ -31,11 +32,10 @@ function discoveryRunner(calls: string[]): NativeCliRunner {
       return { exitCode: 0, stdout: 'codex-user-residue@aw\n', stderr: '' };
     }
     if (invocation.command === 'claude' && invocation.args.includes('list')) {
-      const project = invocation.args.includes('project');
       return {
         exitCode: 0,
-        stdout: project ? 'claude-project-residue@aw\n' : 'claude-user-residue@aw\n',
-        stderr: '',
+        stdout: 'claude-list-ghost@aw\n',
+        stderr: 'warning-ghost@aw',
       };
     }
     return { exitCode: 0, stdout: '', stderr: '' };
@@ -45,6 +45,26 @@ function discoveryRunner(calls: string[]): NativeCliRunner {
 describe('upgrade --all live discovery', () => {
   it('discovers Codex and Claude user residue with --platform both and fails catalog-missing targets independently', async () => {
     const isolation = getCurrentSourceTestIsolation();
+    await fs.outputFile(path.join(isolation.layout.codexHomeDir, 'config.toml'), [
+      '[marketplaces.aw]',
+      `source = ${JSON.stringify(isolation.layout.awHomeDir)}`,
+      'source_type = "local"',
+      '',
+      '[plugins."codex-user-residue@aw"]',
+      'enabled = true',
+      '',
+    ].join('\n'));
+    const claudePaths = resolveClaudePaths(isolation.layout.fixtureCwd, 'user', isolation.env);
+    await fs.outputJson(claudePaths.knownMarketplacesPath, {
+      marketplaces: { aw: { installLocation: isolation.layout.awHomeDir } },
+    });
+    await fs.outputJson(claudePaths.installedPluginsPath, {
+      plugins: {
+        'claude-user-residue@aw': [{
+          name: 'claude-user-residue', marketplace: 'aw', scope: 'user', version: '1.0.0',
+        }],
+      },
+    });
     const calls: string[] = [];
     const result = await upgradeWriteCommand([], {
       all: true,
@@ -69,11 +89,12 @@ describe('upgrade --all live discovery', () => {
         state: 'failed',
       }),
     ]));
-    expect(calls).toContain('claude plugin list --scope user');
-    expect(calls.some((call) => call.startsWith('codex plugin list'))).toBe(true);
+    expect(calls.some((call) => call === 'claude plugin list --scope user')).toBe(false);
+    expect(calls.some((call) => call.startsWith('codex plugin list'))).toBe(false);
+    expect(result.targetResults.some((entry) => entry.target.pluginName.includes('ghost'))).toBe(false);
   });
 
-  it('isolates project discovery: Codex uses current-project owners and Claude uses project native list', async () => {
+  it('isolates project discovery with validated Claude project records', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const cwd = await fs.realpath(isolation.layout.fixtureCwd);
     const rulesRoot = path.join(cwd, '.codex', 'rules');
@@ -89,6 +110,18 @@ describe('upgrade --all live discovery', () => {
         scope: 'project',
       },
       content: 'prefix_rule(pattern = ["git"], decision = "allow")\n',
+    });
+    const claudePaths = resolveClaudePaths(cwd, 'project', isolation.env);
+    await fs.outputJson(claudePaths.knownMarketplacesPath, {
+      marketplaces: { aw: { installLocation: isolation.layout.awHomeDir } },
+    });
+    await fs.outputJson(claudePaths.installedPluginsPath, {
+      plugins: {
+        'claude-project-residue@aw': [{
+          name: 'claude-project-residue', marketplace: 'aw', scope: 'project',
+          projectPath: cwd, version: '1.0.0',
+        }],
+      },
     });
     const calls: string[] = [];
     const result = await upgradeWriteCommand([], {
@@ -112,7 +145,8 @@ describe('upgrade --all live discovery', () => {
     ]));
     expect(result.targetResults.some((entry) =>
       entry.target.pluginName === 'codex-user-residue')).toBe(false);
-    expect(calls).toContain('claude plugin list --scope project');
+    expect(calls.some((call) => call === 'claude plugin list --scope project')).toBe(false);
     expect(calls.some((call) => call.startsWith('codex plugin list'))).toBe(false);
+    expect(result.targetResults.some((entry) => entry.target.pluginName.includes('ghost'))).toBe(false);
   });
 });

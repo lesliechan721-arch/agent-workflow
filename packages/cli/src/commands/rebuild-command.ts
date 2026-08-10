@@ -1,3 +1,5 @@
+import path from 'node:path';
+
 import type {
   CatalogResolution,
   CommandOptions,
@@ -14,11 +16,13 @@ import { createNoopReporter } from '../output/reporter.js';
 import { getDefaultNativeCliRunner, type NativeCliRunner } from '../utils/native-cli.js';
 import { readPluginManifest, resolvePluginsFromCatalog } from '../utils/manifest.js';
 import { resolveCurrentCatalog } from '../utils/plugin-catalog.js';
+import { resolveAwHome } from '../utils/paths.js';
 import { supportsPlatform } from '../utils/platform-support.js';
 import { hasCodexProjectManagedArtifacts } from '../utils/codex-project-surface.js';
 import {
   createRebuildActiveStore,
-  executeRebuildTargets,
+  executeRebuildOperation,
+  releaseRebuildOperationLease,
   type RebuildCommand,
   type RebuildResult,
   type RebuildTargetIdentity,
@@ -50,14 +54,30 @@ export interface RebuildCommandResult {
   }>;
 }
 
+export interface RebuildCommandTestHooks {
+  afterTargetBuilt?: (options: {
+    command: RebuildCommand;
+    identity: RebuildTargetIdentity;
+  }) => Promise<void>;
+}
+
+let rebuildCommandTestHooks: RebuildCommandTestHooks | undefined;
+
+export function setRebuildCommandTestHooksForTests(
+  hooks: RebuildCommandTestHooks | undefined,
+): void {
+  rebuildCommandTestHooks = hooks;
+}
+
 function selectedPlatforms(selection: CommandOptions['platform']): PlatformName[] {
   return selection === 'both' ? ['codex', 'claude'] : [selection];
 }
 
-function createSyntheticPlugin(pluginName: string): PluginMeta {
+function createSyntheticPlugin(pluginName: string, env: NodeJS.ProcessEnv): PluginMeta {
+  const rootDir = path.join(resolveAwHome(env), 'plugins', pluginName);
   return {
-    rootDir: '.',
-    manifestPath: '.agents-plugin/plugin.json',
+    rootDir,
+    manifestPath: path.join(rootDir, '.agents-plugin', 'plugin.json'),
     manifest: {
       name: pluginName,
       version: '0.0.0',
@@ -76,19 +96,34 @@ function failedResult(
   command: RebuildCommand,
   identity: RebuildTargetIdentity,
   message: string,
+  phase: 'preflight' | 'operation.lock' | 'operation.release' = 'preflight',
 ): RebuildResult {
   return {
     status: 'failed',
     command,
     target: identity,
-    actions: [],
+    actions: phase === 'preflight' ? [] : [{ name: phase, status: 'failed' }],
     cleanupAttempted: false,
     removed: [],
     absent: [],
     residual: [],
     quarantined: [],
-    failures: [{ phase: 'preflight', message }],
-    error: { phase: 'preflight', message },
+    failures: [{ phase, message }],
+    error: { phase, message },
+  };
+}
+
+function appendOperationReleaseFailure(
+  result: RebuildResult,
+  message: string,
+): RebuildResult {
+  result.actions.push({ name: 'operation.release', status: 'failed' });
+  result.failures.push({ phase: 'operation.release', message });
+  if (result.status === 'failed') return result;
+  return {
+    ...result,
+    status: 'failed',
+    error: { phase: 'operation.release', message },
   };
 }
 
@@ -227,7 +262,7 @@ export async function runRebuildCommand(options: {
         ));
         continue;
       }
-      const plugin = currentPlugin ?? createSyntheticPlugin(pluginName);
+      const plugin = currentPlugin ?? createSyntheticPlugin(pluginName, env);
       if (
         currentPlugin
         && options.command !== 'cleanup'
@@ -273,8 +308,21 @@ export async function runRebuildCommand(options: {
         ));
         continue;
       }
+      let operationLock;
       try {
-        targets.push(await integration.buildTarget({
+        operationLock = await activeStore.acquireOperation!(identity);
+      } catch (error) {
+        results.push(failedResult(
+          options.command,
+          identity,
+          error instanceof Error ? error.message : String(error),
+          'operation.lock',
+        ));
+        continue;
+      }
+      let result: RebuildResult;
+      try {
+        const target = await integration.buildTarget({
           plugin,
           platform,
           scope: options.commandOptions.scope,
@@ -282,22 +330,39 @@ export async function runRebuildCommand(options: {
           command: options.command,
           catalog,
           includeHistoricalLifecycleArtifacts: true,
-        }));
+        });
+        targets.push(target);
+        await rebuildCommandTestHooks?.afterTargetBuilt?.({
+          command: options.command,
+          identity,
+        });
+        const { acquireOperation: _acquireOperation, ...operationHeldStore } = activeStore;
+        result = await executeRebuildOperation({
+          command: options.command,
+          target,
+          driver: integration.driver,
+          activeStore: operationHeldStore,
+        });
       } catch (error) {
-        results.push(failedResult(
+        result = failedResult(
           options.command,
           identity,
           error instanceof Error ? error.message : String(error),
-        ));
+        );
       }
+      result.actions.unshift({ name: 'operation.lock', status: 'succeeded' });
+      try {
+        await releaseRebuildOperationLease(operationLock);
+        result.actions.push({ name: 'operation.release', status: 'succeeded' });
+      } catch (error) {
+        result = appendOperationReleaseFailure(
+          result,
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+      results.push(result);
     }
   }
-  results.push(...await executeRebuildTargets({
-    command: options.command,
-    targets,
-    driver: integration.driver,
-    activeStore,
-  }));
   const successful = results.filter((result) => result.status === 'succeeded');
   const artifacts = targets.flatMap((target) => [...target.artifacts]);
   const nativePlugins: Partial<Record<PlatformName, string[]>> = {};

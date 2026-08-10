@@ -32,13 +32,14 @@ import {
   resolveEmbeddedPluginsRoot,
 } from './paths.js';
 import { validateBundleLayout } from './bundle-layout.js';
+import { readCodexConfigFile } from './codex-config.js';
 import {
   assertStrictSemVer,
   compareStrictSemVer,
   tryParseStrictSemVer,
 } from './manifest.js';
 import { assertTestWritablePath } from './test-path-fence.js';
-import { readSkillOwnerMarker } from './ownership.js';
+import { readSkillOwnerMarker, SKILL_OWNER_MARKER } from './ownership.js';
 
 function resolveCliPackageJsonPath(): string {
   return path.join(resolveCliPackageRoot(), 'package.json');
@@ -1626,21 +1627,24 @@ const LOCAL_MARKETPLACE_ALREADY_STAGED_STATE_DIRS = new Set([
 
 const LOCAL_MARKETPLACE_DEFERRED_STATE_DIRS = new Set(['catalog-cache']);
 
-async function listFilesRecursively(rootDir: string): Promise<string[]> {
+async function listFilesRecursively(rootDir: string, relativeRoot = ''): Promise<string[]> {
   const entries = await fs.readdir(rootDir, { withFileTypes: true });
   const files: string[] = [];
 
   for (const entry of entries) {
-    if (entry.name === 'config.json') {
+    if (relativeRoot === '' && entry.name === 'config.json') {
       continue;
     }
-    if (LOCAL_MARKETPLACE_RUNTIME_STATE_DIRS.has(entry.name)) {
+    if (relativeRoot === '' && LOCAL_MARKETPLACE_RUNTIME_STATE_DIRS.has(entry.name)) {
       continue;
     }
 
     const entryPath = path.join(rootDir, entry.name);
     if (entry.isDirectory()) {
-      const nestedFiles = await listFilesRecursively(entryPath);
+      const nestedFiles = await listFilesRecursively(
+        entryPath,
+        path.join(relativeRoot, entry.name),
+      );
       files.push(
         ...nestedFiles.map((nestedFile) => path.join(entry.name, nestedFile).split(path.sep).join('/')),
       );
@@ -1702,6 +1706,7 @@ async function assertOverlayTreeHasNoSymlinks(root: string): Promise<void> {
 async function replayOwnedDynamicSkillOverlays(
   sourceRoot: string,
   stagingRoot: string,
+  env: NodeJS.ProcessEnv,
 ): Promise<void> {
   const sourcePluginsRoot = path.join(sourceRoot, 'plugins');
   const pluginEntries = await fs.readdir(sourcePluginsRoot, { withFileTypes: true }).catch(() => []);
@@ -1711,10 +1716,10 @@ async function replayOwnedDynamicSkillOverlays(
     const sourcePluginRoot = path.join(sourcePluginsRoot, pluginName);
     const stagingPluginRoot = path.join(stagingRoot, 'plugins', pluginName);
     if (!await fs.pathExists(stagingPluginRoot)) continue;
-    const sourceManifest = await fs.readJson(
-      path.join(sourcePluginRoot, '.agents-plugin', 'plugin.json'),
+    const stagingManifest = await fs.readJson(
+      path.join(stagingPluginRoot, '.agents-plugin', 'plugin.json'),
     ).catch(() => null) as Record<string, unknown> | null;
-    const targets = (sourceManifest?.artifacts as { targets?: unknown[] } | undefined)?.targets ?? [];
+    const targets = (stagingManifest?.artifacts as { targets?: unknown[] } | undefined)?.targets ?? [];
     const dynamicKeys = new Set(targets.flatMap((target) => {
       if (!target || typeof target !== 'object' || Array.isArray(target)) return [];
       const record = target as Record<string, unknown>;
@@ -1726,21 +1731,85 @@ async function replayOwnedDynamicSkillOverlays(
         ? [record.skillKey]
         : [];
     }));
-    if (dynamicKeys.size === 0) continue;
-    const sourcePlatformManifest = await fs.readJson(
-      path.join(sourcePluginRoot, '.codex-plugin', 'plugin.json'),
-    ).catch(() => null) as Record<string, unknown> | null;
     const stagingPlatformManifest = await fs.readJson(
       path.join(stagingPluginRoot, '.codex-plugin', 'plugin.json'),
     ).catch(() => null) as Record<string, unknown> | null;
-    const sourceSkillsRoot = normalizePluginRelativeDirectory(
-      sourcePlatformManifest?.skills,
+    const expectedSkillsRoot = normalizePluginRelativeDirectory(
+      stagingPlatformManifest?.skills,
       'codex/skills',
     );
-    if (!sourceSkillsRoot) continue;
+    if (!expectedSkillsRoot) continue;
+    const stagedVersion = typeof stagingPlatformManifest?.version === 'string'
+      ? stagingPlatformManifest.version
+      : null;
+    const pluginId = `${pluginName}@aw`;
+    const config = await readCodexConfigFile(
+      path.join(getCodexHome(env), 'config.toml'),
+    ).catch(() => null);
+    const marketplace = config?.snapshot.marketplaces.aw;
+    const canonicalMarketplace = marketplace?.sourceType === 'local'
+      && !marketplace.sourcePointsToManifest
+      && path.normalize(marketplace.source ?? '') === path.normalize(sourceRoot);
+    const cacheRoot = stagedVersion
+      ? path.join(getCodexHome(env), 'plugins', 'cache', 'aw', pluginName, stagedVersion)
+      : null;
+    const cacheManifests = cacheRoot ? [
+      path.join(cacheRoot, 'plugin.json'),
+      path.join(cacheRoot, '.codex-plugin', 'plugin.json'),
+    ] : [];
+    let validatedCache = false;
+    for (const manifestPath of cacheManifests) {
+      const manifest = await fs.readJson(manifestPath).catch(() => null) as Record<string, unknown> | null;
+      if (
+        (manifest?.id === pluginName || manifest?.id === pluginId
+          || manifest?.name === pluginName || manifest?.name === pluginId)
+        && manifest?.version === stagedVersion
+      ) {
+        validatedCache = true;
+        break;
+      }
+    }
+    const installed = canonicalMarketplace
+      && config?.snapshot.plugins[pluginId]?.enabled === true
+      && validatedCache;
+    const sourceSkillsRoot = path.join(sourcePluginRoot, ...expectedSkillsRoot.split('/'));
+    const stagingSkillsRoot = path.join(stagingPluginRoot, ...expectedSkillsRoot.split('/'));
     let replayed = false;
+    if (installed) {
+      for (const entry of await fs.readdir(stagingSkillsRoot, { withFileTypes: true }).catch(() => [])) {
+        if (!entry.isDirectory() || entry.isSymbolicLink() || dynamicKeys.has(entry.name)) continue;
+        const sourceSkillRoot = path.join(sourceSkillsRoot, entry.name);
+        const marker = await readSkillOwnerMarker({
+          skillRoot: sourceSkillRoot,
+          allowedRoot: sourceSkillsRoot,
+        }).catch(() => null);
+        const cacheSkillsRoot = cacheRoot
+          ? path.join(cacheRoot, ...expectedSkillsRoot.split('/'))
+          : null;
+        const cacheMarker = cacheSkillsRoot
+          ? await readSkillOwnerMarker({
+              skillRoot: path.join(cacheSkillsRoot, entry.name),
+              allowedRoot: cacheSkillsRoot,
+            }).catch(() => null)
+          : null;
+        if (
+          marker?.plugin !== pluginName
+          || marker.artifactKey !== entry.name
+          || marker.platform !== 'codex'
+          || marker.scope !== 'user'
+          || cacheMarker?.plugin !== pluginName
+          || cacheMarker.artifactKey !== entry.name
+          || cacheMarker.platform !== 'codex'
+          || cacheMarker.scope !== 'user'
+        ) continue;
+        await fs.copyFile(
+          path.join(sourceSkillRoot, SKILL_OWNER_MARKER),
+          path.join(stagingSkillsRoot, entry.name, SKILL_OWNER_MARKER),
+        );
+      }
+    }
     for (const skillKey of dynamicKeys) {
-      const sourceSkillRoot = path.join(sourcePluginRoot, ...sourceSkillsRoot.split('/'), skillKey);
+      const sourceSkillRoot = path.join(sourceSkillsRoot, skillKey);
       const marker = await readSkillOwnerMarker({
         skillRoot: sourceSkillRoot,
         allowedRoot: path.dirname(sourceSkillRoot),
@@ -1754,7 +1823,7 @@ async function replayOwnedDynamicSkillOverlays(
       await assertOverlayTreeHasNoSymlinks(sourceSkillRoot);
       await fs.copy(
         sourceSkillRoot,
-        path.join(stagingPluginRoot, ...sourceSkillsRoot.split('/'), skillKey),
+        path.join(stagingSkillsRoot, skillKey),
         { overwrite: true, errorOnExist: false, dereference: false },
       );
       replayed = true;
@@ -1764,11 +1833,34 @@ async function replayOwnedDynamicSkillOverlays(
         path.join(stagingPluginRoot, '.codex-plugin', 'plugin.json'),
         {
           ...(stagingPlatformManifest ?? {}),
-          skills: `./${sourceSkillsRoot}`,
+          skills: `./${expectedSkillsRoot}`,
         },
         { spaces: 2 },
       );
     }
+  }
+}
+
+async function activeLocalMarketplaceMatchesExpectedStaticContent(
+  embeddedRoot: string,
+  awHome: string,
+  env: NodeJS.ProcessEnv,
+): Promise<boolean> {
+  const stagingParent = resolveLocalMarketplaceStagingRoot(awHome);
+  await fs.ensureDir(stagingParent);
+  const expectedRoot = await fs.mkdtemp(path.join(stagingParent, '.aw-freshness-'));
+  try {
+    await copyBundleToStaging(embeddedRoot, expectedRoot);
+    await replayOwnedDynamicSkillOverlays(awHome, expectedRoot, env);
+    const [expectedFingerprint, activeFingerprint] = await Promise.all([
+      calculateBundleFingerprint(expectedRoot),
+      calculateBundleFingerprint(awHome),
+    ]);
+    return expectedFingerprint === activeFingerprint;
+  } catch {
+    return false;
+  } finally {
+    await fs.remove(expectedRoot);
   }
 }
 
@@ -1886,7 +1978,11 @@ async function inspectLocalMarketplaceState(
   ) {
     try {
       await validateLocalMarketplaceLayout(awHome);
-      layoutHealthy = true;
+      layoutHealthy = await activeLocalMarketplaceMatchesExpectedStaticContent(
+        embeddedRoot,
+        awHome,
+        env,
+      );
     } catch (error) {
       layoutError = error instanceof Error ? error.message : String(error);
     }
@@ -2336,7 +2432,7 @@ export async function initializeLocalMarketplace(
 
   try {
     await copyBundleToStaging(inspection.embeddedRoot, stagingDir);
-    await replayOwnedDynamicSkillOverlays(inspection.awHome, stagingDir);
+    await replayOwnedDynamicSkillOverlays(inspection.awHome, stagingDir, env);
     await preserveLocalRuntimeStateDirectories(inspection.awHome, stagingDir, {
       skip: LOCAL_MARKETPLACE_DEFERRED_STATE_DIRS,
     });

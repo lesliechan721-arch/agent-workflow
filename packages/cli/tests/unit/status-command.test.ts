@@ -205,6 +205,30 @@ async function dynamicRendererPlugin(
 }
 
 describe('live status command', () => {
+  it('uses the write capability gate for Codex project apps', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const current = plugin('apps-project-gate', ['CODEX']);
+    current.manifest.apps = './apps';
+    current.manifest.extensions = {
+      instructions: [{ name: 'policy', title: 'Policy', content: 'Policy.' }],
+    };
+    const inspectTarget = vi.fn();
+    const result = await statusCommand(['apps-project-gate'], {
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'codex',
+      scope: 'project',
+      json: true,
+    }, {
+      env: isolation.env,
+      catalogResolution: catalog(),
+      catalogPlugins: [current],
+      inspectTarget: inspectTarget as never,
+    });
+
+    expect(result.payload.targets[0]).toMatchObject({ state: 'error' });
+    expect(inspectTarget).not.toHaveBeenCalled();
+  });
+
   it('emits schemaVersion 3 with only live target state and the three deterministic states', async () => {
     const plugins = [plugin('present-plugin'), plugin('absent-plugin'), plugin('partial-plugin')];
     const result = await statusCommand(
@@ -360,7 +384,7 @@ describe('live status command', () => {
     ]));
   });
 
-  it('reports an unavailable native list probe as error instead of partial', async () => {
+  it('does not use an unavailable Codex native list as ownership evidence', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const current = plugin('native-unavailable', ['CODEX']);
     current.manifest.apps = './apps';
@@ -378,11 +402,8 @@ describe('live status command', () => {
       },
     });
 
-    expect(result.payload.targets[0]).toMatchObject({
-      state: 'error',
-      errors: [{ code: 'inspectionFailed', message: 'native list unavailable' }],
-    });
-    expect(result.output).not.toContain('"state":"partial"');
+    expect(result.payload.targets[0]).toMatchObject({ state: 'absent', errors: [] });
+    expect(result.output).not.toContain('native list unavailable');
   });
 
   it('reports a missing current bundle separately from catalog selector metadata', async () => {

@@ -1,17 +1,24 @@
+import { execFile } from 'node:child_process';
 import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
+import { promisify } from 'node:util';
 
 import fs from 'fs-extra';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  CatalogPackageManifestError,
   downloadCatalogPackageArchive,
+  findCatalogPackageManifestError,
   resolveCatalogPackageIdentityByDistTag,
   resolveCatalogPackageIdentityByVersion,
   setCatalogPackageSourceForTests,
 } from '../../src/utils/marketplace.js';
 import { setNativeCliRunnerOverrideForTests } from '../../src/utils/native-cli.js';
+import { resolveCurrentCatalogCacheStagingDir } from '../../src/utils/paths.js';
+
+const execFileAsync = promisify(execFile);
 
 const tempDirs: string[] = [];
 const originalCwd = process.cwd();
@@ -28,6 +35,85 @@ function stubRegistryMetadata(metadata: unknown) {
 const registryEnv = {
   AW_NPM_REGISTRY_URL: 'https://registry.example.test/',
 };
+
+function createCatalogManifestFixture() {
+  return {
+    schemaVersion: 2,
+    catalogVersion: '2.0.0',
+    channel: 'latest',
+    compatibility: {
+      aw: {
+        minVersion: '0.0.0',
+      },
+    },
+    packages: {
+      sidecar: {
+        name: '@yiliang/aw-plugins-manifest',
+        version: '2.0.0',
+        channel: 'latest',
+      },
+      full: {
+        name: '@yiliang/aw-plugins',
+        version: '2.0.0',
+        channel: 'latest',
+        manifestPath: './catalog-manifest.json',
+      },
+    },
+    entries: [],
+  };
+}
+
+async function createRealCatalogArchive(manifestText: string | null) {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-registry-archive-'));
+  tempDirs.push(root);
+  const packageRoot = path.join(root, 'package');
+  await fs.ensureDir(packageRoot);
+  if (manifestText !== null) {
+    await fs.writeFile(path.join(packageRoot, 'catalog-manifest.json'), manifestText, 'utf8');
+  }
+  const tarballPath = path.join(root, 'catalog.tgz');
+  await execFileAsync('tar', ['-czf', tarballPath, '-C', root, 'package']);
+  const archiveBytes = await fs.readFile(tarballPath);
+  return {
+    archiveBytes,
+    identity: {
+      packageName: '@yiliang/aw-plugins',
+      version: '2.0.0',
+      integrity: `sha512-${crypto.createHash('sha512').update(archiveBytes).digest('base64')}`,
+      tarballUrl: 'https://registry.example.test/catalog.tgz',
+    },
+  } as const;
+}
+
+async function listArchiveTemporaryRoots(env: NodeJS.ProcessEnv): Promise<string[]> {
+  const stagingRoot = resolveCurrentCatalogCacheStagingDir(env);
+  const entries = await fs.readdir(stagingRoot, { withFileTypes: true }).catch(() => []);
+  return entries
+    .filter((entry) => entry.isDirectory() && entry.name.startsWith('package-'))
+    .map((entry) => path.join(stagingRoot, entry.name))
+    .sort();
+}
+
+async function expectRealArchiveFailureWithoutLeftovers(
+  manifestText: string | null,
+): Promise<unknown> {
+  const fixture = await createRealCatalogArchive(manifestText);
+  const env = {
+    ...process.env,
+    AW_NPM_REGISTRY_URL: 'https://registry.example.test/',
+  };
+  const before = await listArchiveTemporaryRoots(env);
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+    new Response(fixture.archiveBytes, { status: 200 }),
+  ));
+
+  const error = await downloadCatalogPackageArchive(fixture.identity, env)
+    .then(() => null, (caught) => caught as unknown);
+
+  expect(error).not.toBeNull();
+  await expect(listArchiveTemporaryRoots(env)).resolves.toEqual(before);
+  return error;
+}
 
 async function writeUserNpmrc(contents: string): Promise<string> {
   const homeDir = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-npmrc-home-'));
@@ -725,7 +811,10 @@ describe('registry catalog package archive retries and cancellation', () => {
       if (!extractRoot) {
         throw new Error('Missing tar extraction root.');
       }
-      await fs.outputJson(path.join(extractRoot, 'package', 'catalog-manifest.json'), {});
+      await fs.outputJson(
+        path.join(extractRoot, 'package', 'catalog-manifest.json'),
+        createCatalogManifestFixture(),
+      );
       return { exitCode: 0, stdout: '', stderr: '' };
     });
 
@@ -777,5 +866,93 @@ describe('registry catalog package archive retries and cancellation', () => {
 
     await rejection;
     await expect(fs.pathExists(tempRoot)).resolves.toBe(false);
+  });
+});
+
+describe('registry catalog package archive ownership', () => {
+  it('removes a real extracted archive when the manifest is missing', async () => {
+    const error = await expectRealArchiveFailureWithoutLeftovers(null);
+
+    expect(error).toBeInstanceOf(CatalogPackageManifestError);
+    expect((error as CatalogPackageManifestError).stage).toBe('read');
+    expect((error as Error).message).toContain('catalog-manifest.json');
+  });
+
+  it('removes a real extracted archive when the manifest JSON is invalid', async () => {
+    const error = await expectRealArchiveFailureWithoutLeftovers('{ invalid json');
+
+    expect(error).toBeInstanceOf(CatalogPackageManifestError);
+    expect((error as CatalogPackageManifestError).stage).toBe('parse');
+    expect((error as Error & { cause?: unknown }).cause).toBeInstanceOf(SyntaxError);
+  });
+
+  it('removes a real extracted archive when manifest validation fails', async () => {
+    const error = await expectRealArchiveFailureWithoutLeftovers(JSON.stringify({
+      schemaVersion: 1,
+    }));
+
+    expect(error).toBeInstanceOf(CatalogPackageManifestError);
+    expect((error as CatalogPackageManifestError).stage).toBe('validate');
+    expect((error as Error).message).toContain('schemaVersion: expected 2');
+  });
+
+  it('keeps a valid real archive until its returned dispose owner runs', async () => {
+    const fixture = await createRealCatalogArchive(JSON.stringify(createCatalogManifestFixture()));
+    const env = {
+      ...process.env,
+      AW_NPM_REGISTRY_URL: 'https://registry.example.test/',
+    };
+    const before = await listArchiveTemporaryRoots(env);
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+      new Response(fixture.archiveBytes, { status: 200 }),
+    ));
+
+    const archive = await downloadCatalogPackageArchive(fixture.identity, env);
+
+    await expect(fs.pathExists(archive.packageRoot)).resolves.toBe(true);
+    expect(await listArchiveTemporaryRoots(env)).toHaveLength(before.length + 1);
+    await archive.dispose();
+    await expect(listArchiveTemporaryRoots(env)).resolves.toEqual(before);
+  });
+
+  it('keeps the construction error visible when cleanup also fails', async () => {
+    const fixture = await createRealCatalogArchive('{ invalid json');
+    const env = {
+      ...process.env,
+      AW_NPM_REGISTRY_URL: 'https://registry.example.test/',
+    };
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+      new Response(fixture.archiveBytes, { status: 200 }),
+    ));
+    const realRemove = fs.remove.bind(fs);
+    let failedRoot: string | null = null;
+    const removeSpy = vi.spyOn(fs, 'remove').mockImplementation(async (target) => {
+      if (path.basename(String(target)).startsWith('package-')) {
+        failedRoot = String(target);
+        throw new Error('fixture cleanup failed');
+      }
+      return realRemove(target);
+    });
+
+    const error = await downloadCatalogPackageArchive(fixture.identity, env)
+      .then(() => null, (caught) => caught as AggregateError);
+    removeSpy.mockRestore();
+
+    expect(error).toBeInstanceOf(AggregateError);
+    expect(error?.errors[0]).toBeInstanceOf(CatalogPackageManifestError);
+    expect((error?.errors[0] as CatalogPackageManifestError).stage).toBe('parse');
+    expect(error?.message).toContain((error?.errors[0] as Error).message);
+    expect(error?.message).toContain('fixture cleanup failed');
+    expect(error?.errors).toHaveLength(2);
+    expect((error as AggregateError & { cause?: unknown }).cause).toBeInstanceOf(
+      CatalogPackageManifestError,
+    );
+    expect(((error as AggregateError & { cause?: Error }).cause as Error & {
+      cause?: unknown;
+    }).cause).toBeInstanceOf(SyntaxError);
+    expect(findCatalogPackageManifestError(error)?.stage).toBe('parse');
+    expect(failedRoot).not.toBeNull();
+    await expect(fs.pathExists(failedRoot!)).resolves.toBe(true);
+    await realRemove(failedRoot!);
   });
 });

@@ -29,12 +29,13 @@ export function requiresCodexNativePlugin(plugin: PluginMeta, scope: Scope): boo
     || plugin.manifest.slashCommands
     || plugin.manifest.mcpServers
     || plugin.manifest.apps
+    || resolvePlatformHookDefinitions(plugin.manifest, 'codex').length > 0
     || codexTargets(plugin, 'user').some((target) => target.target === 'codex.skill'),
   );
 }
 
 export function hasCodexProjectManagedArtifacts(plugin: PluginMeta): boolean {
-  if (!supportsPlatform(plugin.manifest, 'codex')) return false;
+  if (!supportsPlatform(plugin.manifest, 'codex') || plugin.manifest.apps) return false;
   const kinds = new Set<CodexProjectManagedKind>();
   if (plugin.manifest.skills || plugin.manifest.slashCommands) kinds.add('skill');
   if (plugin.manifest.mcpServers) kinds.add('mcpServer');

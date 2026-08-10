@@ -100,7 +100,7 @@ aw uninstall <plugin...> -p codex|claude|both [-s user|project] [--json]
 ### Cleanup
 
 ```bash
-aw cleanup <plugin> -p codex|claude|both [-s user|project] [--json]
+aw cleanup <plugin> -p codex|claude|both -s user|project [--json]
 ```
 
 `cleanup` 只删除能通过 owner marker 或平台 ownership 检查证明属于 AW 的现场组件。它不运行 uninstall lifecycle，也不删除 AW config。无法证明归属的组件不会被删除。
@@ -181,11 +181,12 @@ aw config reset codex-explore -s user --yes --json
 
 ## Lifecycle Active Snapshot
 
-带 lifecycle 的插件在成功 install 或 upgrade 后保存最小 active snapshot。它只包含下一次 uninstall 或 reinstall 所需的脚本输入和 bundle 内容。
+带 lifecycle 的插件在成功 install 或 upgrade 后保存最小 active snapshot。它只包含下一次 uninstall 所需的脚本输入和 bundle 内容。
 
 - snapshot 不表示插件已安装。
 - status 不读取 snapshot 来决定 target 状态。
-- uninstall/reinstall 可以使用 snapshot 运行对应 lifecycle。
+- uninstall 可以使用 snapshot 运行 uninstall lifecycle。
+- reinstall 的 cleanup 不运行旧 snapshot；重建后使用 current bundle 运行 install lifecycle。
 - cleanup 不运行 uninstall lifecycle。
 - snapshot 缺失时，live owner marker 仍是清理边界。
 

@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -503,61 +504,31 @@ function isMissingExactRegistryPackageVersionError(error) {
   return message.includes('HTTP 404') || isMissingRegistryPackageVersionError(error);
 }
 
-async function listFilesRecursively(rootDir) {
-  const entries = await fs.readdir(rootDir, { withFileTypes: true }).catch(() => []);
-  const files = [];
-  for (const entry of entries) {
-    const entryPath = path.join(rootDir, entry.name);
-    if (entry.isDirectory()) {
-      const nested = await listFilesRecursively(entryPath);
-      files.push(...nested.map((filePath) => path.join(entry.name, filePath).split(path.sep).join('/')));
-      continue;
-    }
-    files.push(entry.name);
+function assertTrustedRegistryIntegrity(identity) {
+  const integrity = identity?.integrity;
+  const match = typeof integrity === 'string'
+    ? /^sha512-([A-Za-z0-9+/]+={0,2})$/.exec(integrity)
+    : null;
+  const digest = match?.[1];
+  const decoded = digest ? Buffer.from(digest, 'base64') : null;
+  if (
+    !digest
+    || decoded.length !== 64
+    || decoded.toString('base64') !== digest
+  ) {
+    throw new Error(
+      `Registry identity for ${identity?.packageName ?? 'unknown package'}@${identity?.version ?? 'unknown version'} has invalid or untrusted dist.integrity. Expected one canonical sha512 SSRI.`,
+    );
   }
-  return files.sort();
+  return integrity;
 }
 
-async function comparePackageDirectories(expectedRoot, actualRoot) {
-  const [expectedFiles, actualFiles] = await Promise.all([
-    listFilesRecursively(expectedRoot),
-    listFilesRecursively(actualRoot),
-  ]);
-  if (JSON.stringify(expectedFiles) !== JSON.stringify(actualFiles)) {
-    return {
-      ok: false,
-      reason: `File list mismatch.\nexpected=${expectedFiles.join(', ')}\nactual=${actualFiles.join(', ')}`,
-    };
-  }
-
-  for (const relativePath of expectedFiles) {
-    const [expectedBuffer, actualBuffer] = await Promise.all([
-      fs.readFile(path.join(expectedRoot, relativePath)),
-      fs.readFile(path.join(actualRoot, relativePath)),
-    ]);
-    if (!expectedBuffer.equals(actualBuffer)) {
-      return {
-        ok: false,
-        reason: `File content mismatch at ${relativePath}.`,
-      };
-    }
-  }
-
-  return {
-    ok: true,
-  };
-}
-
-async function comparePackedPackageDirectory(candidateRoot, publishedRoot) {
+async function comparePackedPackageIntegrity(candidateRoot, publishedIntegrity) {
   return withOwnedTemporaryDirectory(
     path.join(os.tmpdir(), 'aw-catalog-package-compare-'),
     async (temporaryRoot) => {
       const packRoot = path.join(temporaryRoot, 'pack');
-      const unpackRoot = path.join(temporaryRoot, 'unpack');
-      await Promise.all([
-        ensureDirectory(packRoot),
-        ensureDirectory(unpackRoot),
-      ]);
+      await ensureDirectory(packRoot);
       await runCommand('pnpm', [
         '--config.ignore-scripts=true',
         'pack',
@@ -573,18 +544,17 @@ async function comparePackedPackageDirectory(candidateRoot, publishedRoot) {
           `Expected candidate catalog pack to produce exactly one tarball, found ${tarballs.length}.`,
         );
       }
-      await runCommand('tar', [
-        '-xzf',
-        tarballs[0],
-        '-C',
-        unpackRoot,
-      ], {
-        stdio: 'ignore',
-      });
-      return comparePackageDirectories(
-        path.join(unpackRoot, 'package'),
-        publishedRoot,
-      );
+      const candidateDigest = crypto
+        .createHash('sha512')
+        .update(await fs.readFile(tarballs[0]))
+        .digest('base64');
+      const candidateIntegrity = `sha512-${candidateDigest}`;
+      return candidateIntegrity === publishedIntegrity
+        ? { ok: true }
+        : {
+            ok: false,
+            reason: 'Packed package integrity does not match the exact registry identity.',
+          };
     },
     'Catalog package comparison cleanup also failed',
   );
@@ -813,11 +783,12 @@ export async function createCatalogRegistryAdapter(options = {}) {
         }
         throw error;
       }
+      const publishedIntegrity = assertTrustedRegistryIntegrity(identity);
       const archive = await marketplace.downloadCatalogPackageArchive(identity, registryEnv);
       try {
-        const comparison = await comparePackedPackageDirectory(
+        const comparison = await comparePackedPackageIntegrity(
           context.packageRoot,
-          archive.packageRoot,
+          publishedIntegrity,
         );
         return comparison.ok
           ? { exists: true, verified: true }

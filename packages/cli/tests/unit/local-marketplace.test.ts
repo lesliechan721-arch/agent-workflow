@@ -19,7 +19,8 @@ import {
   type CurrentCatalogCacheIdentity,
   type CurrentCatalogCacheObservation,
 } from '../../src/utils/local-marketplace.js';
-import { resolveCurrentCatalogCacheEntryDir } from '../../src/utils/paths.js';
+import { getCodexHome, resolveCurrentCatalogCacheEntryDir } from '../../src/utils/paths.js';
+import { SKILL_OWNER_MARKER } from '../../src/utils/ownership.js';
 import type { CatalogResolution, CatalogSelector } from '../../src/types.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
 
@@ -131,6 +132,111 @@ afterEach(async () => {
 });
 
 describe('strict current catalog cache', () => {
+  it('rebuilds drifted active static content without treating runtime state as drift', async () => {
+    const workspace = await makeWorkspace();
+    const resolution = await embeddedResolution(workspace.embeddedRoot);
+    await initializeLocalMarketplace({ force: true, env: workspace.env, catalogResolution: resolution });
+    const activeManifest = path.join(
+      workspace.awHome,
+      'plugins',
+      'git-commit',
+      '.agents-plugin',
+      'plugin.json',
+    );
+    const expected = await fs.readFile(activeManifest, 'utf8');
+    const nestedConfig = path.join(workspace.awHome, 'plugins', 'git-commit', 'payload', 'config.json');
+    const nestedCatalogCache = path.join(
+      workspace.awHome,
+      'plugins',
+      'git-commit',
+      'payload',
+      'catalog-cache',
+      'extra.txt',
+    );
+    await fs.outputJson(nestedConfig, { drift: true });
+    await fs.outputFile(nestedCatalogCache, 'drift\n');
+    await fs.outputJson(path.join(workspace.awHome, 'plugin-config', 'runtime.json'), { keep: true });
+
+    const rebuilt = await initializeLocalMarketplace({
+      force: false,
+      env: workspace.env,
+      catalogResolution: resolution,
+    });
+
+    expect(rebuilt.changed).toBe(true);
+    await expect(fs.readFile(activeManifest, 'utf8')).resolves.toBe(expected);
+    await expect(fs.pathExists(nestedConfig)).resolves.toBe(false);
+    await expect(fs.pathExists(nestedCatalogCache)).resolves.toBe(false);
+    await expect(fs.readJson(path.join(
+      workspace.awHome,
+      'plugin-config',
+      'runtime.json',
+    ))).resolves.toEqual({ keep: true });
+  });
+
+  it('preserves only a validated installed Codex static Skill owner marker across ensure', async () => {
+    const workspace = await makeWorkspace();
+    const resolution = await embeddedResolution(workspace.embeddedRoot);
+    await initializeLocalMarketplace({ force: true, env: workspace.env, catalogResolution: resolution });
+    const platformManifest = await fs.readJson(path.join(
+      workspace.awHome,
+      'plugins',
+      'git-commit',
+      '.codex-plugin',
+      'plugin.json',
+    ));
+    const skillsRoot = String(platformManifest.skills).replace(/^\.\//u, '');
+    const skillRoot = path.join(workspace.awHome, 'plugins', 'git-commit', skillsRoot, 'commit');
+    const markerPath = path.join(skillRoot, SKILL_OWNER_MARKER);
+    await fs.outputJson(markerPath, {
+      schemaVersion: 1,
+      owner: 'agent-workflows',
+      plugin: 'git-commit',
+      artifactKey: 'commit',
+      platform: 'codex',
+      scope: 'user',
+    });
+    const codexHome = getCodexHome(workspace.env);
+    await fs.outputFile(path.join(codexHome, 'config.toml'), [
+      '[marketplaces.aw]',
+      `source = ${JSON.stringify(workspace.awHome)}`,
+      'source_type = "local"',
+      '',
+      '[plugins."git-commit@aw"]',
+      'enabled = true',
+      '',
+    ].join('\n'));
+    const cacheRoot = path.join(
+      codexHome,
+      'plugins',
+      'cache',
+      'aw',
+      'git-commit',
+      platformManifest.version,
+    );
+    await fs.copy(
+      path.join(workspace.awHome, 'plugins', 'git-commit'),
+      cacheRoot,
+      { overwrite: true },
+    );
+
+    await initializeLocalMarketplace({ force: false, env: workspace.env, catalogResolution: resolution });
+    await expect(fs.readJson(markerPath)).resolves.toMatchObject({
+      plugin: 'git-commit', platform: 'codex', scope: 'user', artifactKey: 'commit',
+    });
+
+    await fs.outputJson(markerPath, {
+      schemaVersion: 1,
+      owner: 'agent-workflows',
+      plugin: 'other-plugin',
+      artifactKey: 'commit',
+      platform: 'claude',
+      scope: 'user',
+    });
+    await initializeLocalMarketplace({ force: false, env: workspace.env, catalogResolution: resolution });
+    await expect(fs.pathExists(markerPath)).resolves.toBe(false);
+  });
+
   it('writes and reads an identity-bound immutable entry', async () => {
     const { env, sourceRoot, identity } = await makeCacheFixture();
     const written = await writeCurrentCatalogCacheEntry({ ...identity, sourceRoot, env });
@@ -466,6 +572,13 @@ describe('strict current catalog cache', () => {
         }],
       };
       await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+      await fs.writeJson(path.join(
+        embeddedRoot,
+        'plugins',
+        pluginName,
+        '.agents-plugin',
+        'plugin.json',
+      ), manifest, { spaces: 2 });
       const skillsRoot = pluginName === 'second-plugin' ? 'codex/custom-skills' : 'codex/skills';
       if (pluginName === 'second-plugin') {
         const platformManifestPath = path.join(
@@ -480,6 +593,22 @@ describe('strict current catalog cache', () => {
           ...platformManifest,
           skills: `./${skillsRoot}`,
         }, { spaces: 2 });
+        await fs.writeJson(path.join(
+          embeddedRoot,
+          'plugins',
+          pluginName,
+          '.codex-plugin',
+          'plugin.json',
+        ), {
+          ...platformManifest,
+          skills: `./${skillsRoot}`,
+        }, { spaces: 2 });
+        await fs.ensureDir(path.join(
+          embeddedRoot,
+          'plugins',
+          pluginName,
+          ...skillsRoot.split('/'),
+        ));
       }
       const skillRoot = path.join(awHome, 'plugins', pluginName, ...skillsRoot.split('/'), skillKey);
       await fs.outputFile(path.join(skillRoot, 'SKILL.md'), `# ${skillKey}\n`);

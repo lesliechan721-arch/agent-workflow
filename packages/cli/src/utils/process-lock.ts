@@ -44,6 +44,8 @@ export interface ProcessLockTestHooks {
   afterStaleObserve?: () => Promise<void>;
   afterOwnerClaim?: (claimPath: string) => Promise<void>;
   afterReleaseClaim?: (claimPath: string) => Promise<void>;
+  afterStaleTempClaim?: (canonicalPath: string, quarantinePath: string) => Promise<void>;
+  afterStaleTempValidate?: (canonicalPath: string, quarantinePath: string) => Promise<void>;
 }
 
 const defaultFileSystem: ProcessLockFileSystem = {
@@ -138,6 +140,28 @@ function isOwner(value: unknown): value is ProcessLockOwner {
     && typeof owner.acquiredAt === 'string' && !Number.isNaN(Date.parse(owner.acquiredAt));
 }
 
+function isStrictOwnerRecord(raw: string, owner: ProcessLockOwner | null): owner is ProcessLockOwner {
+  if (!owner) return false;
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw); } catch { return false; }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return false;
+  return Object.keys(parsed).sort().join('\0') === [
+    'acquiredAt',
+    'pid',
+    'processStartIdentity',
+    'schemaVersion',
+    'token',
+  ].join('\0');
+}
+
+function sameOwnerIdentity(left: ProcessLockOwner, right: ProcessLockOwner): boolean {
+  return left.schemaVersion === right.schemaVersion
+    && left.token === right.token
+    && left.pid === right.pid
+    && left.processStartIdentity === right.processStartIdentity
+    && left.acquiredAt === right.acquiredAt;
+}
+
 interface OwnerFileRead {
   raw: string;
   owner: ProcessLockOwner | null;
@@ -160,6 +184,214 @@ async function ownerIsRecoverable(
   if (!processIsAlive(owner.pid)) return true;
   const current = await identityReader(owner.pid);
   return current !== null && current !== owner.processStartIdentity;
+}
+
+async function releaseClaimWasCompleted(
+  fileSystem: ProcessLockFileSystem,
+  lockPath: string,
+  releasingOwner: ProcessLockOwner,
+): Promise<boolean> {
+  let lockStat: fs.Stats;
+  try {
+    lockStat = await fileSystem.lstat(lockPath);
+  } catch (error) {
+    return isMissing(error);
+  }
+  if (lockStat.isSymbolicLink() || !lockStat.isDirectory()) return false;
+  let entries: string[];
+  try {
+    entries = await fileSystem.readdir(lockPath);
+  } catch (error) {
+    return isMissing(error);
+  }
+  if (entries.length === 0) return true;
+  if (entries.length !== 1 || entries[0] !== 'owner.json') return false;
+  let current: OwnerFileRead;
+  try {
+    current = await readOwnerFile(fileSystem, path.join(lockPath, 'owner.json'));
+  } catch (error) {
+    if (!isMissing(error)) return false;
+    try {
+      await fileSystem.lstat(lockPath);
+      return false;
+    } catch (lockError) {
+      return isMissing(lockError);
+    }
+  }
+  return current.owner !== null && current.owner.token !== releasingOwner.token;
+}
+
+async function cleanupVerifiedStaleOwnerTemps(options: {
+  fileSystem: ProcessLockFileSystem;
+  lockPath: string;
+  staleOwner: ProcessLockOwner;
+  hooks?: ProcessLockTestHooks;
+}): Promise<void> {
+  const parentPath = path.dirname(options.lockPath);
+  const parentStat = await options.fileSystem.lstat(parentPath);
+  if (parentStat.isSymbolicLink() || !parentStat.isDirectory()) {
+    throw new Error(`Process lock temp parent is not a regular directory: ${parentPath}`);
+  }
+  const lockName = path.basename(options.lockPath).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const tempPattern = new RegExp(
+    `^${lockName}\\.owner-[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\\.tmp$`,
+  );
+  const entries = await options.fileSystem.readdir(parentPath);
+  for (const entry of entries.filter((name) => tempPattern.test(name))) {
+    const canonicalPath = path.join(parentPath, entry);
+    let stat: fs.Stats;
+    try {
+      stat = await options.fileSystem.lstat(canonicalPath);
+    } catch (error) {
+      if (isMissing(error)) continue;
+      throw error;
+    }
+    if (stat.isSymbolicLink() || !stat.isFile()) continue;
+    const quarantinePath = path.join(
+      parentPath,
+      `${entry}.stale-quarantine-${crypto.randomUUID()}`,
+    );
+    try {
+      await options.fileSystem.rename(canonicalPath, quarantinePath);
+    } catch (error) {
+      if (isMissing(error)) continue;
+      throw error;
+    }
+    try {
+      await options.hooks?.afterStaleTempClaim?.(canonicalPath, quarantinePath);
+    } catch (error) {
+      await restoreStaleTempAfterFailure({
+        fileSystem: options.fileSystem,
+        parentPath,
+        canonicalPath,
+        quarantinePath,
+        primaryError: error,
+      });
+      throw error;
+    }
+    let temp: OwnerFileRead;
+    try {
+      const quarantineStat = await options.fileSystem.lstat(quarantinePath);
+      if (quarantineStat.isSymbolicLink() || !quarantineStat.isFile()) {
+        throw new Error(`Stale owner temp quarantine is not a regular file: ${quarantinePath}`);
+      }
+      temp = await readOwnerFile(options.fileSystem, quarantinePath);
+    } catch (error) {
+      await restoreStaleTempAfterFailure({
+        fileSystem: options.fileSystem,
+        parentPath,
+        canonicalPath,
+        quarantinePath,
+        primaryError: error,
+      });
+      throw error;
+    }
+    if (!isStrictOwnerRecord(temp.raw, temp.owner)
+      || !sameOwnerIdentity(temp.owner, options.staleOwner)) {
+      const mismatch = new Error(`Stale owner temp quarantine identity mismatch: ${quarantinePath}`);
+      await restoreStaleTempAfterFailure({
+        fileSystem: options.fileSystem,
+        parentPath,
+        canonicalPath,
+        quarantinePath,
+        primaryError: mismatch,
+      });
+      continue;
+    }
+    try {
+      await options.hooks?.afterStaleTempValidate?.(canonicalPath, quarantinePath);
+      await options.fileSystem.unlink(quarantinePath);
+    } catch (error) {
+      await restoreStaleTempAfterFailure({
+        fileSystem: options.fileSystem,
+        parentPath,
+        canonicalPath,
+        quarantinePath,
+        primaryError: error,
+      });
+      throw error;
+    }
+  }
+}
+
+async function restoreStaleTempAfterFailure(options: {
+  fileSystem: ProcessLockFileSystem;
+  parentPath: string;
+  canonicalPath: string;
+  quarantinePath: string;
+  primaryError: unknown;
+}): Promise<void> {
+  let restored = false;
+  let restoreError: unknown;
+  try {
+    restored = await restoreStaleTempNoReplace(options);
+  } catch (error) {
+    restoreError = error;
+  }
+  if (!restored) {
+    throw new AggregateError(
+      restoreError === undefined
+        ? [options.primaryError]
+        : [options.primaryError, restoreError],
+      `Cannot restore stale owner temp without overwrite; quarantine retained at ${options.quarantinePath}`,
+      { cause: options.primaryError },
+    );
+  }
+}
+
+async function restoreStaleTempNoReplace(options: {
+  fileSystem: ProcessLockFileSystem;
+  parentPath: string;
+  canonicalPath: string;
+  quarantinePath: string;
+}): Promise<boolean> {
+  if (path.dirname(options.canonicalPath) !== options.parentPath
+    || path.dirname(options.quarantinePath) !== options.parentPath) {
+    throw new Error('Stale owner temp restore path escapes its parent boundary.');
+  }
+  if (!/\.owner-[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.tmp$/.test(
+    path.basename(options.canonicalPath),
+  )) {
+    throw new Error('Stale owner temp canonical name is invalid.');
+  }
+  const canonicalName = path.basename(options.canonicalPath).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  if (!new RegExp(
+    `^${canonicalName}\\.stale-quarantine-[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`,
+  ).test(path.basename(options.quarantinePath))) {
+    throw new Error('Stale owner temp quarantine name is invalid.');
+  }
+  const parentStat = await options.fileSystem.lstat(options.parentPath);
+  if (parentStat.isSymbolicLink() || !parentStat.isDirectory()) {
+    throw new Error('Stale owner temp restore parent is not a regular directory.');
+  }
+  try {
+    await options.fileSystem.lstat(options.canonicalPath);
+    return false;
+  } catch (error) {
+    if (!isMissing(error)) throw error;
+  }
+  const quarantineStat = await options.fileSystem.lstat(options.quarantinePath);
+  if (quarantineStat.isSymbolicLink() || !quarantineStat.isFile()) return false;
+  try {
+    await options.fileSystem.link(options.quarantinePath, options.canonicalPath);
+  } catch (error) {
+    if (isExists(error)) return false;
+    if (!['EPERM', 'ENOSYS', 'ENOTSUP', 'EOPNOTSUPP'].includes(errorCode(error) ?? '')) {
+      throw error;
+    }
+    try {
+      await options.fileSystem.copyFile(
+        options.quarantinePath,
+        options.canonicalPath,
+        fsConstants.COPYFILE_EXCL,
+      );
+    } catch (copyError) {
+      if (isExists(copyError)) return false;
+      throw copyError;
+    }
+  }
+  await options.fileSystem.unlink(options.quarantinePath);
+  return true;
 }
 
 async function restoreClaimNoReplace(
@@ -257,6 +489,27 @@ async function tryRecoverLock(options: {
     await restoreClaimNoReplace(options.fileSystem, claimPath, ownerPath);
     return false;
   }
+  if (claimed.owner) {
+    try {
+      await cleanupVerifiedStaleOwnerTemps({
+        fileSystem: options.fileSystem,
+        lockPath: options.lockPath,
+        staleOwner: claimed.owner,
+        hooks: options.hooks,
+      });
+    } catch (error) {
+      const restored = await restoreClaimNoReplace(options.fileSystem, claimPath, ownerPath)
+        .catch(() => false);
+      if (!restored) {
+        throw new AggregateError(
+          [error],
+          'Cannot clean stale owner temp files or safely restore the stale lock claim.',
+          { cause: error },
+        );
+      }
+      throw error;
+    }
+  }
   await options.fileSystem.unlink(claimPath);
   try {
     await options.fileSystem.rmdir(options.lockPath);
@@ -316,8 +569,12 @@ export async function acquireProcessLock(options: {
       ) {
         throw new Error('Published process lock owner does not match its creator identity.');
       }
-      await fileSystem.unlink(ownerTempPath).catch(() => undefined);
-      ownerTempPath = null;
+      try {
+        await fileSystem.unlink(ownerTempPath);
+        ownerTempPath = null;
+      } catch {
+        // Keep the path attached to the lease so release can retry visible cleanup.
+      }
       let released = false;
       let releaseClaimPath: string | null = null;
       let claimVerified = false;
@@ -329,6 +586,18 @@ export async function acquireProcessLock(options: {
         async release() {
           if (released) return;
           if (unsafeClaim) throw new Error('Process lock release claim is unsafe and requires manual recovery.');
+          if (ownerTempPath) {
+            try {
+              await fileSystem.unlink(ownerTempPath);
+              ownerTempPath = null;
+            } catch (error) {
+              if (isMissing(error)) {
+                ownerTempPath = null;
+              } else {
+                throw error;
+              }
+            }
+          }
           const ownerPath = path.join(options.lockPath, 'owner.json');
           if (!releaseClaimPath) {
             const candidateClaimPath = path.join(options.lockPath, `release-${owner.token}.json`);
@@ -339,6 +608,15 @@ export async function acquireProcessLock(options: {
             try {
               claimed = await readOwnerFile(fileSystem, releaseClaimPath);
             } catch (error) {
+              if (isMissing(error)) {
+                if (await releaseClaimWasCompleted(fileSystem, options.lockPath, owner)) {
+                  released = true;
+                  return;
+                }
+                throw new Error('Process lock release claim disappeared before verified cleanup.', {
+                  cause: error,
+                });
+              }
               const restored = await restoreClaimNoReplace(fileSystem, releaseClaimPath, ownerPath)
                 .catch(() => false);
               if (!restored) unsafeClaim = true;
@@ -355,9 +633,38 @@ export async function acquireProcessLock(options: {
             }
             claimVerified = true;
           }
-          if (!claimVerified) throw new Error('Process lock release claim was not verified.');
+          if (!claimVerified) {
+            try {
+              await fileSystem.lstat(releaseClaimPath!);
+            } catch (error) {
+              if (isMissing(error)) {
+                if (await releaseClaimWasCompleted(fileSystem, options.lockPath, owner)) {
+                  released = true;
+                  return;
+                }
+                throw new Error('Process lock release claim disappeared before verified cleanup.', {
+                  cause: error,
+                });
+              }
+              throw error;
+            }
+            throw new Error('Process lock release claim was not verified.');
+          }
           if (!claimRemoved) {
-            await fileSystem.unlink(releaseClaimPath!);
+            try {
+              await fileSystem.unlink(releaseClaimPath!);
+            } catch (error) {
+              if (isMissing(error)) {
+                if (await releaseClaimWasCompleted(fileSystem, options.lockPath, owner)) {
+                  released = true;
+                  return;
+                }
+                throw new Error('Process lock release claim disappeared before verified cleanup.', {
+                  cause: error,
+                });
+              }
+              throw error;
+            }
             claimRemoved = true;
           }
           try {
@@ -384,13 +691,26 @@ export async function acquireProcessLock(options: {
       }
       if (!isExists(error)) throw error;
     }
-    if (await tryRecoverLock({
-      lockPath: options.lockPath,
-      graceMs,
-      fileSystem,
-      identityReader,
-      hooks: options.testHooks,
-    })) continue;
+    try {
+      if (await tryRecoverLock({
+        lockPath: options.lockPath,
+        graceMs,
+        fileSystem,
+        identityReader,
+        hooks: options.testHooks,
+      })) continue;
+    } catch (error) {
+      // The observed owner can complete release between mkdir(EEXIST) and recovery.
+      // A missing lock path is normal contention progress, so retry acquisition.
+      if (isMissing(error)) {
+        if (Date.now() - startedAt >= timeoutMs) {
+          throw new Error(`Timed out waiting for process lock: ${options.lockPath}`);
+        }
+        await new Promise<void>((resolve) => setTimeout(resolve, pollMs));
+        continue;
+      }
+      throw error;
+    }
     if (Date.now() - startedAt >= timeoutMs) {
       throw new Error(`Timed out waiting for process lock: ${options.lockPath}`);
     }
