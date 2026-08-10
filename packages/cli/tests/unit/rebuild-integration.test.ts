@@ -25,6 +25,7 @@ import {
   parseOwnedTextHeader,
   readSkillOwnerMarker,
   writeOwnedTextFile,
+  writeSkillOwnerMarker,
 } from '../../src/utils/ownership.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
 import { bundleLocalPlugin } from '../../src/generators/local-plugin.js';
@@ -75,39 +76,46 @@ async function writeClaudeNativeState(options: {
   scope: 'user' | 'project';
   installed: boolean;
   canonical?: boolean;
+  declaredMarketplace?: boolean;
+  materializedMarketplace?: boolean;
+  includeEnabled?: boolean;
+  enabledValue?: boolean | readonly string[];
 }): Promise<void> {
   const paths = resolveClaudePaths(options.cwd, options.scope, options.env);
   const awHome = options.env.AW_HOME!;
   const source = options.canonical === false ? path.join(path.dirname(awHome), 'foreign') : awHome;
+  const sourceDescriptor = { source: 'directory', path: source };
   const projectPath = options.scope === 'project'
     ? await resolveClaudeProjectKey(options.cwd)
     : undefined;
   if (options.installed) {
     await fs.ensureDir(path.join(awHome, 'plugins', options.pluginName));
   }
+  const includeEnabled = options.includeEnabled ?? options.installed;
   await fs.outputJson(paths.settingsPath, {
-    extraKnownMarketplaces: { aw: { source } },
-    plugins: {
-      installed: options.installed ? {
-        [options.pluginName]: {
-          marketplace: 'aw',
-          version: options.pluginVersion,
-          installedAt: new Date(0).toISOString(),
-          scope: options.scope,
-          ...(projectPath ? { projectPath } : {}),
-          enabled: true,
+    ...(options.declaredMarketplace === false
+      ? {}
+      : { extraKnownMarketplaces: { aw: { source: sourceDescriptor } } }),
+    ...(includeEnabled
+      ? {
+          enabledPlugins: {
+            [`${options.pluginName}@aw`]: options.enabledValue ?? true,
+          },
+        }
+      : {}),
+  });
+  await fs.outputJson(paths.knownMarketplacesPath, options.materializedMarketplace === false
+    ? {}
+    : {
+        aw: {
+          source: sourceDescriptor,
+          installLocation: source,
+          lastUpdated: new Date(0).toISOString(),
         },
-      } : {},
-    },
-  });
-  await fs.outputJson(paths.knownMarketplacesPath, {
-    marketplaces: { aw: { installLocation: source, source } },
-  });
+      });
   await fs.outputJson(paths.installedPluginsPath, {
     plugins: options.installed ? {
       [`${options.pluginName}@aw`]: [{
-        name: options.pluginName,
-        marketplace: 'aw',
         scope: options.scope,
         ...(projectPath ? { projectPath } : {}),
         version: options.pluginVersion,
@@ -206,11 +214,16 @@ async function writeClaudeGlobalConsumerState(options: {
   }>>;
 }): Promise<void> {
   const paths = resolveClaudePaths(options.cwd, 'user', options.env);
+  const sourceDescriptor = { source: 'directory', path: options.env.AW_HOME };
   await fs.outputJson(paths.settingsPath, {
-    extraKnownMarketplaces: { aw: { source: options.env.AW_HOME } },
+    extraKnownMarketplaces: { aw: { source: sourceDescriptor } },
   });
   await fs.outputJson(paths.knownMarketplacesPath, {
-    marketplaces: { aw: { installLocation: options.env.AW_HOME } },
+    aw: {
+      source: sourceDescriptor,
+      installLocation: options.env.AW_HOME,
+      lastUpdated: new Date(0).toISOString(),
+    },
   });
   await fs.outputJson(paths.installedPluginsPath, { plugins: options.plugins });
 }
@@ -322,6 +335,76 @@ describe('rebuild adapter integration', () => {
     },
   );
 
+  it.each([
+    { label: 'boolean true', includeEnabled: true, enabledValue: true, expected: 'present' },
+    { label: 'boolean false', includeEnabled: true, enabledValue: false, expected: 'partial' },
+    { label: 'string array', includeEnabled: true, enabledValue: ['^1.0.0'], expected: 'present' },
+    { label: 'missing entry', includeEnabled: false, expected: 'partial' },
+  ] as const)(
+    'uses Claude enabledPlugins $label as native health truth',
+    async ({ includeEnabled, enabledValue, expected }) => {
+      const isolation = getCurrentSourceTestIsolation();
+      const plugin = createClaudeCleanupPlugin(isolation.layout.rootDir, 'claude-enabled-health');
+      plugin.manifest.version = '1.0.0';
+      await writeClaudeNativeState({
+        cwd: isolation.layout.fixtureCwd,
+        env: isolation.env,
+        pluginName: plugin.manifest.name,
+        pluginVersion: plugin.manifest.version,
+        scope: 'user',
+        installed: true,
+        includeEnabled,
+        ...(enabledValue === undefined ? {} : { enabledValue }),
+      });
+      const inspected = await inspectRebuildTarget({
+        plugin,
+        platform: 'claude',
+        scope: 'user',
+        cwd: isolation.layout.fixtureCwd,
+        catalog: { rootDir: isolation.layout.rootDir, source: 'local' },
+        context: createCommandExecutionContext({
+          env: isolation.env,
+          nativeCliRunner: async () => ({ exitCode: 0, stdout: '', stderr: '' }),
+        }),
+      });
+      expect(inspected.inspection.state).toBe(expected);
+    },
+  );
+
+  it.each([
+    { label: 'declaration', declaredMarketplace: false },
+    { label: 'materialized record', materializedMarketplace: false },
+  ] as const)(
+    'reports Claude native state as partial when the marketplace $label is missing',
+    async ({ declaredMarketplace, materializedMarketplace }) => {
+      const isolation = getCurrentSourceTestIsolation();
+      const plugin = createClaudeCleanupPlugin(isolation.layout.rootDir, 'claude-marketplace-layers');
+      plugin.manifest.version = '1.0.0';
+      await writeClaudeNativeState({
+        cwd: isolation.layout.fixtureCwd,
+        env: isolation.env,
+        pluginName: plugin.manifest.name,
+        pluginVersion: plugin.manifest.version,
+        scope: 'user',
+        installed: true,
+        ...(declaredMarketplace === undefined ? {} : { declaredMarketplace }),
+        ...(materializedMarketplace === undefined ? {} : { materializedMarketplace }),
+      });
+      const inspected = await inspectRebuildTarget({
+        plugin,
+        platform: 'claude',
+        scope: 'user',
+        cwd: isolation.layout.fixtureCwd,
+        catalog: { rootDir: isolation.layout.rootDir, source: 'local' },
+        context: createCommandExecutionContext({
+          env: isolation.env,
+          nativeCliRunner: async () => ({ exitCode: 0, stdout: '', stderr: '' }),
+        }),
+      });
+      expect(inspected.inspection.state).toBe('partial');
+    },
+  );
+
   it.each(['codex', 'claude'] as const)(
     'reports a validated stale %s native version as partial',
     async (platform) => {
@@ -374,6 +457,100 @@ describe('rebuild adapter integration', () => {
       expect(inspected.inspection.state).toBe('partial');
     },
   );
+
+  it.each([
+    { label: 'disabled', configEntry: 'enabled = false' },
+    { label: 'missing', configEntry: null },
+  ])('reports Codex native residue with a $label config entry as partial and discoverable', async ({ configEntry }) => {
+    const isolation = getCurrentSourceTestIsolation();
+    const plugin = createClaudeCleanupPlugin(isolation.layout.rootDir, 'disabled-native');
+    plugin.manifest.version = '1.0.0';
+    plugin.manifest.marketplace.policy.products = ['CODEX'];
+    plugin.manifest.apps = './apps';
+    await fs.outputFile(path.join(isolation.layout.codexHomeDir, 'config.toml'), [
+      '[marketplaces.aw]',
+      `source = ${JSON.stringify(isolation.layout.awHomeDir)}`,
+      'source_type = "local"',
+      '',
+      ...(configEntry ? ['[plugins."disabled-native@aw"]', configEntry, ''] : []),
+    ].join('\n'));
+    await fs.outputJson(path.join(
+      isolation.layout.codexHomeDir,
+      'plugins',
+      'cache',
+      'aw',
+      'disabled-native',
+      '1.0.0',
+      '.codex-plugin',
+      'plugin.json',
+    ), { name: 'disabled-native', version: '1.0.0' });
+    const context = createCommandExecutionContext({
+      env: isolation.env,
+      nativeCliRunner: async () => ({ exitCode: 0, stdout: '', stderr: '' }),
+    });
+
+    const inspected = await inspectRebuildTarget({
+      plugin,
+      platform: 'codex',
+      scope: 'user',
+      cwd: isolation.layout.fixtureCwd,
+      catalog: { rootDir: isolation.layout.rootDir, source: 'local' },
+      context,
+    });
+    expect(inspected.inspection.state).toBe('partial');
+    await expect(discoverRebuildTargetNames({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      platform: 'codex',
+      scope: 'user',
+      nativeCliRunner: context.nativeCliRunner,
+    })).resolves.toContain('disabled-native');
+  });
+
+  it('reports a marker-owned Codex Skill with missing required content as partial', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const cwd = await fs.realpath(isolation.layout.fixtureCwd);
+    const catalogRoot = await createSyntheticCatalog({
+      root: isolation.layout.rootDir,
+      pluginRoots: [path.join(repositoryRoot, 'plugins', 'git-commit')],
+    });
+    const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', 'git-commit'), {
+      mode: 'bundle',
+    });
+    const skillsRoot = path.join(cwd, '.agents', 'skills');
+    const skillRoot = path.join(skillsRoot, 'commit');
+    await fs.outputFile(path.join(skillRoot, 'SKILL.md'), '# Commit\n');
+    await writeSkillOwnerMarker({
+      skillRoot,
+      allowedRoot: skillsRoot,
+      identity: {
+        owner: 'agent-workflows',
+        plugin: 'git-commit',
+        artifactKey: 'commit',
+        platform: 'codex',
+        scope: 'project',
+      },
+    });
+
+    const inspected = await inspectRebuildTarget({
+      plugin,
+      platform: 'codex',
+      scope: 'project',
+      cwd,
+      catalog: { rootDir: catalogRoot, source: 'local' },
+      context: createCommandExecutionContext({
+        env: isolation.env,
+        nativeCliRunner: async () => ({ exitCode: 0, stdout: '', stderr: '' }),
+      }),
+    });
+    expect(inspected.inspection).toMatchObject({
+      state: 'partial',
+      components: [expect.objectContaining({
+        state: 'partial',
+        diagnostic: expect.stringContaining('agents/openai.yaml'),
+      })],
+    });
+  });
 
   const activeStore = {
     prepare: async () => ({ status: 'not-required' }),
@@ -473,7 +650,7 @@ describe('rebuild adapter integration', () => {
     expect(result.status, JSON.stringify(result.failures)).toBe('succeeded');
     expect(calls).toContain('claude plugin marketplace add ' + isolation.layout.awHomeDir + ' --scope user');
     expect(calls).toContain('claude plugin install simple-plugin@aw --scope user');
-    expect(calls.filter((call) => call === 'claude plugin list --scope user')).toHaveLength(1);
+    expect(calls.filter((call) => call === 'claude plugin list')).toHaveLength(1);
     expect(await fs.readFile(target.artifacts[0]!.path, 'utf8')).toContain(OWNED_TEXT_HEADER_PREFIX);
   });
 
@@ -1524,17 +1701,23 @@ describe('rebuild adapter integration', () => {
     })).rejects.toThrow('roleNameConflict');
   });
 
-  it('cleans stale Claude awGenerated permissions and preserves manual permissions', async () => {
+  it('keeps current Claude permission overlaps without restoring later removals', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const settingsPath = path.join(isolation.layout.claudeHomeDir, 'settings.json');
     await fs.outputJson(settingsPath, {
-      permissions: { allow: ['Manual', 'OldGenerated', 'OtherGenerated'] },
+      permissions: {
+        allow: ['Manual', 'AddedLater', 'OldGenerated', 'RetainedOverlap', 'OtherGenerated'],
+      },
       awGenerated: {
         permissions: {
-          'stale-permission': { allow: ['OldGenerated'], ask: [], deny: [] },
+          'stale-permission': {
+            allow: ['OldGenerated', 'RetainedOverlap', 'RemovedOverlap'], ask: [], deny: [],
+          },
           other: { allow: ['OtherGenerated'], ask: [], deny: [] },
         },
-        manualPermissions: { allow: ['Manual'], ask: [], deny: [] },
+        manualPermissions: {
+          allow: ['Manual', 'RemovedLater', 'RetainedOverlap', 'RemovedOverlap'], ask: [], deny: [],
+        },
       },
     });
     const plugin = {
@@ -1578,7 +1761,14 @@ describe('rebuild adapter integration', () => {
     expect(settings.awGenerated.permissions).toEqual({
       other: { allow: ['OtherGenerated'], ask: [], deny: [] },
     });
-    expect(settings.permissions.allow).toEqual(['Manual', 'OtherGenerated']);
+    expect(settings.awGenerated.manualPermissions.allow).toHaveLength(3);
+    expect(settings.awGenerated.manualPermissions.allow).toEqual(expect.arrayContaining([
+      'Manual', 'AddedLater', 'RetainedOverlap',
+    ]));
+    expect(settings.permissions.allow).toHaveLength(4);
+    expect(settings.permissions.allow).toEqual(expect.arrayContaining([
+      'Manual', 'AddedLater', 'RetainedOverlap', 'OtherGenerated',
+    ]));
   });
 
   it.each(['user', 'project'] as const)(
@@ -1601,8 +1791,11 @@ describe('rebuild adapter integration', () => {
         if (invocation.args[1] === 'uninstall') installed = false;
         if (invocation.args[1] === 'marketplace' && invocation.args[2] === 'remove') {
           const paths = resolveClaudePaths(cwd, scope, isolation.env);
-          await fs.outputJson(paths.settingsPath, { plugins: { installed: {} } });
-          await fs.outputJson(paths.knownMarketplacesPath, { marketplaces: {} });
+          await fs.outputJson(paths.settingsPath, {
+            extraKnownMarketplaces: {},
+            enabledPlugins: {},
+          });
+          await fs.outputJson(paths.knownMarketplacesPath, {});
           await fs.outputJson(paths.installedPluginsPath, { plugins: {} });
         } else if (invocation.args[1] === 'marketplace' && invocation.args[2] === 'add') {
           await writeClaudeNativeState({
@@ -3134,7 +3327,7 @@ describe('rebuild adapter integration', () => {
     });
     expect(result.status, JSON.stringify(result.failures)).toBe('succeeded');
     expect(calls).toContain(`claude plugin uninstall ${pluginName}@aw --scope user`);
-    expect(calls).not.toContain('claude plugin marketplace remove aw --scope user');
+    expect(calls).not.toContain('claude plugin marketplace remove aw');
   });
 
   it('re-reads global Claude consumers after native uninstall', async () => {
@@ -3183,8 +3376,67 @@ describe('rebuild adapter integration', () => {
       command: 'cleanup', target, driver: integration.driver, activeStore,
     });
     expect(result.status, JSON.stringify(result.failures)).toBe('succeeded');
-    expect(calls).not.toContain('claude plugin marketplace remove aw --scope user');
+    expect(calls).not.toContain('claude plugin marketplace remove aw');
     expect((await fs.readJson(paths.installedPluginsPath)).plugins['late-consumer@aw']).toHaveLength(1);
+  });
+
+  it.each([
+    ['enabledPlugins', { enabledPlugins: { 'late-consumer@aw': true } }],
+    ['settings.plugins.installed', {
+      plugins: {
+        installed: {
+          'late-consumer': {
+            version: '1.0.0',
+            marketplace: 'aw',
+            scope: 'user',
+          },
+        },
+      },
+    }],
+  ])('keeps the Claude marketplace for a late %s residue', async (_label, residue) => {
+    const isolation = getCurrentSourceTestIsolation();
+    const cwd = isolation.layout.fixtureCwd;
+    const pluginName = 'removed-claude';
+    const plugin = createClaudeCleanupPlugin(isolation.layout.rootDir, pluginName);
+    const paths = resolveClaudePaths(cwd, 'user', isolation.env);
+    await writeClaudeGlobalConsumerState({
+      cwd,
+      env: isolation.env,
+      plugins: {
+        [`${pluginName}@aw`]: [{
+          name: pluginName, marketplace: 'aw', scope: 'user', version: '1.0.0',
+        }],
+      },
+    });
+    const calls: string[] = [];
+    const integration = createRebuildIntegration({
+      context: createCommandExecutionContext({
+        env: isolation.env,
+        nativeCliRunner: async (invocation) => {
+          calls.push([invocation.command, ...invocation.args].join(' '));
+          if (invocation.args[1] === 'uninstall') {
+            const installed = await fs.readJson(paths.installedPluginsPath);
+            delete installed.plugins[`${pluginName}@aw`];
+            await fs.writeJson(paths.installedPluginsPath, installed);
+            const settings = await fs.readJson(paths.settingsPath);
+            await fs.writeJson(paths.settingsPath, { ...settings, ...residue });
+          }
+          return { exitCode: 0, stdout: '', stderr: '' };
+        },
+      }),
+    });
+    const target = await integration.buildTarget({
+      plugin, platform: 'claude', scope: 'user', cwd, command: 'cleanup',
+      catalog: { rootDir: isolation.layout.rootDir, source: 'local' } as CatalogResolution,
+      includeHistoricalLifecycleArtifacts: false,
+    });
+
+    const result = await executeRebuildOperation({
+      command: 'cleanup', target, driver: integration.driver, activeStore,
+    });
+
+    expect(result.status, JSON.stringify(result.failures)).toBe('succeeded');
+    expect(calls).not.toContain('claude plugin marketplace remove aw');
   });
 
   it('reinstalls Claude plugin A while same-scope plugin B keeps the marketplace', async () => {
@@ -3202,8 +3454,22 @@ describe('rebuild adapter integration', () => {
     const pluginB = 'same-scope-claude-consumer';
     let installedA = true;
     const writeState = async () => {
+      const sourceDescriptor = {
+        source: 'directory',
+        path: isolation.layout.awHomeDir,
+      };
+      await fs.outputJson(paths.settingsPath, {
+        extraKnownMarketplaces: { aw: { source: sourceDescriptor } },
+        enabledPlugins: {
+          ...(installedA ? { [`${pluginA}@aw`]: true } : {}),
+          [`${pluginB}@aw`]: true,
+        },
+      });
       await fs.outputJson(paths.knownMarketplacesPath, {
-        marketplaces: { aw: { installLocation: isolation.layout.awHomeDir } },
+        aw: {
+          source: sourceDescriptor,
+          installLocation: isolation.layout.awHomeDir,
+        },
       });
       await fs.outputJson(paths.installedPluginsPath, {
         plugins: {
@@ -3246,7 +3512,7 @@ describe('rebuild adapter integration', () => {
       command: 'reinstall', target, driver: integration.driver, activeStore,
     });
     expect(result.status, JSON.stringify(result.failures)).toBe('succeeded');
-    expect(calls).not.toContain('claude plugin marketplace remove aw --scope user');
+    expect(calls).not.toContain('claude plugin marketplace remove aw');
     expect((await fs.readJson(paths.installedPluginsPath)).plugins[`${pluginB}@aw`]).toHaveLength(1);
   });
 
@@ -3297,9 +3563,9 @@ describe('rebuild adapter integration', () => {
       command: 'cleanup', target, driver: integration.driver, activeStore,
     });
     expect(result.status, JSON.stringify(result.failures)).toBe('succeeded');
-    expect(calls).toContain('claude plugin marketplace remove aw --scope user');
+    expect(calls).toContain('claude plugin marketplace remove aw');
     expect(calls.indexOf('claude plugin uninstall last-claude@aw --scope user')).toBeLessThan(
-      calls.indexOf('claude plugin marketplace remove aw --scope user'),
+      calls.indexOf('claude plugin marketplace remove aw'),
     );
   });
 

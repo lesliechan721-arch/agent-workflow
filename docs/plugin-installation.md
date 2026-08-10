@@ -28,7 +28,7 @@ aw install git-commit -p both -s user
 
 - `-p, --platform`：`codex`、`claude` 或 `both`
 - `-s, --scope`：`user` 或 `project`，默认 `user`
-- `both` 只展开插件实际支持的平台
+- `install`、`upgrade` 和 `reinstall` 使用 `both` 时，只展开插件实际支持的平台；`uninstall` 和 `cleanup` 仍检查两个选中平台，以便删除历史残留
 - Codex project scope 只写当前仓库，不注册用户级 Codex plugin
 
 插件 manifest 不支持顶层 `dependencies`。CLI 不自动安装其它插件，也不提供插件依赖保护。
@@ -50,7 +50,7 @@ aw init --catalog-version 1.2.0-beta.1
 - `status` 和主控制台 warm load 使用 `cacheFirst`，不会为了显示状态自动刷新远程内容。
 - `init --force` 跳过 cache 快路径。远程刷新失败时，公开命令返回失败。
 - cache 按 selector 和 registry source identity 隔离，并使用 immutable entry、原子 selector publication 和有界 lock。
-- active marketplace 重建会保留 strict catalog cache 和 AW config store。
+- active marketplace 重建会保留 strict catalog cache、AW config store、Codex user Skill overlay 和 lifecycle active snapshot。
 
 如果 channel selector 当前 catalog 的最低 CLI 版本高于当前 `aw`，CLI 直接返回 `awVersionTooLow`。显式 catalog version 不兼容时返回 `explicitCatalogIncompatible`。这两类结果都不下载 full catalog，也不使用 cache fallback。
 

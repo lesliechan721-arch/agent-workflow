@@ -22,6 +22,7 @@ import {
   assertTestReadablePath,
   assertTestWritablePath,
 } from './test-path-fence.js';
+import { withActiveMarketplaceRuntimeLease } from './active-marketplace-runtime-lock.js';
 import { resolveAwHome, resolveRepoRootSync } from './paths.js';
 import { acquireProcessLock, type ProcessLockLease } from './process-lock.js';
 
@@ -679,6 +680,15 @@ async function readStoreFile(filePath: string): Promise<Record<string, unknown>>
   return value;
 }
 
+async function withUserPluginConfigRuntimeLease<T>(options: {
+  scope: Scope;
+  env?: NodeJS.ProcessEnv;
+}, action: () => Promise<T>): Promise<T> {
+  return options.scope === 'user'
+    ? withActiveMarketplaceRuntimeLease(options.env, action)
+    : action();
+}
+
 export async function readPluginConfigStore(options: {
   pluginName: string;
   scope: Scope;
@@ -756,15 +766,17 @@ export async function writePluginConfigStore(options: {
     ...(options.scope === 'project' ? { access: 'write' as const } : {}),
   });
   const allowedRoot = resolvePluginConfigAllowedRoot(options);
-  await withConfigFileLock({
-    filePath,
-    allowedRoot,
-    action: async () => atomicReplaceConfigFile({
+  await withUserPluginConfigRuntimeLease(options, async () => {
+    await withConfigFileLock({
       filePath,
       allowedRoot,
-      content: `${JSON.stringify(options.values, null, 2)}\n`,
-      mode: 0o600,
-    }),
+      action: async () => atomicReplaceConfigFile({
+        filePath,
+        allowedRoot,
+        content: `${JSON.stringify(options.values, null, 2)}\n`,
+        mode: 0o600,
+      }),
+    });
   });
 
   return {
@@ -789,27 +801,29 @@ export async function patchPluginConfigStore(options: {
   });
   const allowedRoot = resolvePluginConfigAllowedRoot(options);
   const removedKeys = options.removeKeys ?? [];
-  await withConfigFileLock({
-    filePath,
-    allowedRoot,
-    action: async () => {
-      const current = (await fs.pathExists(filePath))
-        ? await readStoreFile(filePath)
-        : {};
-      const next = { ...current };
-      for (const key of removedKeys) {
-        delete next[key];
-      }
-      for (const [key, value] of Object.entries(options.updates)) {
-        next[key] = value;
-      }
-      await atomicReplaceConfigFile({
-        filePath,
-        allowedRoot,
-        content: `${JSON.stringify(next, null, 2)}\n`,
-        mode: 0o600,
-      });
-    },
+  await withUserPluginConfigRuntimeLease(options, async () => {
+    await withConfigFileLock({
+      filePath,
+      allowedRoot,
+      action: async () => {
+        const current = (await fs.pathExists(filePath))
+          ? await readStoreFile(filePath)
+          : {};
+        const next = { ...current };
+        for (const key of removedKeys) {
+          delete next[key];
+        }
+        for (const [key, value] of Object.entries(options.updates)) {
+          next[key] = value;
+        }
+        await atomicReplaceConfigFile({
+          filePath,
+          allowedRoot,
+          content: `${JSON.stringify(next, null, 2)}\n`,
+          mode: 0o600,
+        });
+      },
+    });
   });
 
   return {
@@ -832,10 +846,11 @@ export async function resetPluginConfigStore(options: {
     ...options,
     ...(options.scope === 'project' ? { access: 'write' as const } : {}),
   });
-  const existed = await fs.pathExists(filePath);
-  if (existed) {
-    await fs.remove(filePath);
-  }
+  const existed = await withUserPluginConfigRuntimeLease(options, async () => {
+    const current = await fs.pathExists(filePath);
+    if (current) await fs.remove(filePath);
+    return current;
+  });
 
   return {
     pluginName: options.pluginName,
@@ -862,20 +877,22 @@ export async function resetPluginConfigStores(options: {
     ...(options.scope === 'project' ? { access: 'write' as const } : {}),
   });
   const receipts: ResetPluginConfigStoreReceipt[] = [];
-  for (const target of targets) {
-    const existed = await fs.pathExists(target.path);
-    if (existed) {
-      await fs.remove(target.path);
+  await withUserPluginConfigRuntimeLease(options, async () => {
+    for (const target of targets) {
+      const existed = await fs.pathExists(target.path);
+      if (existed) {
+        await fs.remove(target.path);
+      }
+      receipts.push({
+        pluginName: options.pluginName,
+        scope: options.scope,
+        storeKind: target.storeKind,
+        path: target.path,
+        existed,
+        deleted: existed,
+      });
     }
-    receipts.push({
-      pluginName: options.pluginName,
-      scope: options.scope,
-      storeKind: target.storeKind,
-      path: target.path,
-      existed,
-      deleted: existed,
-    });
-  }
+  });
   return receipts;
 }
 

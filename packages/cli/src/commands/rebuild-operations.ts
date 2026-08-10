@@ -119,9 +119,21 @@ export interface RebuildLifecycleInvocation {
 export interface RebuildTargetDriver {
   writeNative(target: DesiredTarget): Promise<void>;
   writeArtifacts(target: DesiredTarget): Promise<void | readonly GeneratedArtifact[]>;
+  withOwnershipLease?<T>(target: DesiredTarget, action: () => Promise<T>): Promise<T>;
   probeNative?: NativeOwnershipProbe;
+  probeNativeHealth?: NativeOwnershipProbe;
   removeNative?: NativeOwnershipRemove;
   runLifecycle(invocation: RebuildLifecycleInvocation): Promise<void>;
+}
+
+async function withOwnershipLease<T>(
+  target: DesiredTarget,
+  driver: RebuildTargetDriver,
+  operation: () => Promise<T>,
+): Promise<T> {
+  return driver.withOwnershipLease
+    ? driver.withOwnershipLease(target, operation)
+    : operation();
 }
 
 function artifactIdentity(artifact: GeneratedArtifact): string {
@@ -466,11 +478,11 @@ async function cleanupOwned(
   driver: RebuildTargetDriver,
   components: readonly OwnedComponent[] = target.ownedComponents,
 ): Promise<CleanupResult> {
-  return cleanupOwnedComponents({
+  return withOwnershipLease(target, driver, () => cleanupOwnedComponents({
     components,
     nativeProbe: driver.probeNative,
     nativeRemove: driver.removeNative,
-  });
+  }));
 }
 
 async function cleanupTarget(
@@ -525,10 +537,14 @@ async function materializeTarget(options: {
   const { command, lifecycleEvent, target, driver, store, accumulator } = options;
   let inspection: OwnershipInspection;
   try {
-    inspection = await action(accumulator, 'preflight.inspect', () => inspectOwnedComponents({
-      components: target.ownedComponents,
-      nativeProbe: driver.probeNative,
-    }));
+    inspection = await action(
+      accumulator,
+      'preflight.inspect',
+      () => withOwnershipLease(target, driver, () => inspectOwnedComponents({
+        components: target.ownedComponents,
+        nativeProbe: driver.probeNative,
+      })),
+    );
   } catch (error) {
     return failed(command, target, accumulator, 'preflight.inspect', errorMessage(error));
   }
@@ -592,11 +608,12 @@ async function materializeTarget(options: {
     failurePhase = 'postcheck.inspect';
     await action(accumulator, failurePhase, async () => {
       const optional = new Set(target.optionalOwnedComponents ?? []);
-      const postcheck = await inspectOwnedComponents({
+      const postcheck = await withOwnershipLease(target, driver, () => inspectOwnedComponents({
         components: (target.desiredOwnedComponents ?? target.ownedComponents)
           .filter((component) => !optional.has(component)),
-        nativeProbe: driver.probeNative,
-      });
+        nativeProbe: driver.probeNativeHealth ?? driver.probeNative,
+        verifyHealth: true,
+      }));
       const postcheckFailure = postcheckMessage(accumulator, postcheck);
       if (postcheckFailure) throw new Error(postcheckFailure);
     });
@@ -653,10 +670,14 @@ async function executeUninstall(options: {
   const { target, driver, store, accumulator } = options;
   let inspection: OwnershipInspection;
   try {
-    inspection = await action(accumulator, 'preflight.inspect', () => inspectOwnedComponents({
-      components: target.ownedComponents,
-      nativeProbe: driver.probeNative,
-    }));
+    inspection = await action(
+      accumulator,
+      'preflight.inspect',
+      () => withOwnershipLease(target, driver, () => inspectOwnedComponents({
+        components: target.ownedComponents,
+        nativeProbe: driver.probeNative,
+      })),
+    );
   } catch (error) {
     return failed('uninstall', target, accumulator, 'preflight.inspect', errorMessage(error));
   }

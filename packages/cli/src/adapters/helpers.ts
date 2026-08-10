@@ -9,7 +9,10 @@ import {
 import { readJsonFileIfExists } from '../utils/json.js';
 
 export interface ClaudeSettings {
-  extraKnownMarketplaces?: Record<string, string | { source: string }>;
+  extraKnownMarketplaces?: Record<string, string | {
+    source: string | { source: string; path: string };
+  }>;
+  enabledPlugins?: Record<string, boolean | string[]>;
   plugins?: {
     installed?: Record<string, ClaudeSettingsInstalledRecord>;
   };

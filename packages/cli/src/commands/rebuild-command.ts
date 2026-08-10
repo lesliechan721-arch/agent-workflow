@@ -203,13 +203,7 @@ export async function runRebuildCommand(options: {
     debugLogger: options.runtime?.debugLogger ?? createNoopDebugLogger(),
   };
   const env = applyCatalogSelectorEnv(runtime.env, options.commandOptions);
-  const platforms = selectedPlatforms(options.commandOptions.platform);
-  await assertAgentVersions({
-    platforms,
-    cwd: options.commandOptions.cwd,
-    env,
-    runtime,
-  });
+  const selected = selectedPlatforms(options.commandOptions.platform);
   const catalog = options.runtime?.catalogResolution ?? await resolveCurrentCatalog(env, {
     channel: options.commandOptions.catalogChannel,
     catalogVersion: options.commandOptions.catalogVersion,
@@ -220,11 +214,34 @@ export async function runRebuildCommand(options: {
     command: options.command,
     pluginNames: options.pluginNames,
     all: options.all,
-    platforms,
+    platforms: selected,
     scope: options.commandOptions.scope,
     cwd: options.commandOptions.cwd,
     env,
     nativeCliRunner: runtime.nativeCliRunner,
+  });
+  if (
+    options.commandOptions.platform === 'both'
+    && options.command !== 'cleanup'
+    && options.command !== 'uninstall'
+  ) {
+    for (const platform of selected) {
+      requestedByPlatform.set(
+        platform,
+        (requestedByPlatform.get(platform) ?? []).filter((pluginName) => {
+          const plugin = catalogByName.get(pluginName);
+          return !plugin || supportsPlatform(plugin.manifest, platform);
+        }),
+      );
+    }
+  }
+  const platforms = selected.filter((platform) =>
+    (requestedByPlatform.get(platform)?.length ?? 0) > 0);
+  await assertAgentVersions({
+    platforms,
+    cwd: options.commandOptions.cwd,
+    env,
+    runtime,
   });
   const integration = createRebuildIntegration({
     context: runtime,

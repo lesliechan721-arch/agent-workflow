@@ -20,7 +20,9 @@ import {
   setLifecycleActiveLockFileSystemForTests,
 } from '../../src/utils/lifecycle-active-store.js';
 import type { ProcessLockFileSystem } from '../../src/utils/process-lock.js';
+import { setActiveMarketplaceLifecycleBeforeAcquireHookForTests } from '../../src/utils/active-marketplace-runtime-lock.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
+import { readPluginConfigStore, writePluginConfigStore } from '../../src/utils/plugin-config.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 const loadPlugin = async (bundleRoot: string, manifestPath: string): Promise<PluginMeta> => {
@@ -359,6 +361,37 @@ describe('lifecycle active store', () => {
     expect(await fs.pathExists(target.targetRoot)).toBe(false);
   });
 
+  it('keeps user config readable while a prepared snapshot owns the lifecycle lease', async () => {
+    const repo = await createRepo('repo');
+    const plugin = await writePlugin({ root: getCurrentSourceTestIsolation().layout.fixtureCwd });
+    await writePluginConfigStore({
+      pluginName: plugin.manifest.name,
+      scope: 'user',
+      cwd: repo,
+      env: process.env,
+      values: { token: 'current' },
+    });
+    const prepared = await prepareLifecycleActiveSnapshot({
+      plugin,
+      platform: 'codex',
+      scope: 'user',
+      cwd: repo,
+      env: process.env,
+    });
+
+    try {
+      expect(prepared.status).toBe('staged');
+      await expect(readPluginConfigStore({
+        pluginName: plugin.manifest.name,
+        scope: 'user',
+        cwd: repo,
+        env: process.env,
+      })).resolves.toMatchObject({ values: { token: 'current' } });
+    } finally {
+      await discardLifecycleActiveSnapshot(prepared);
+    }
+  });
+
   it('keeps the same plugin isolated across multiple projects', async () => {
     const repoA = await createRepo('repo-a');
     const repoB = await createRepo('repo-b');
@@ -631,22 +664,12 @@ describe('lifecycle active store', () => {
     let contenderObservedLock = false;
     let notifyContender!: () => void;
     const contenderObserved = new Promise<void>((resolve) => { notifyContender = resolve; });
-    const fileSystem = processLockFileSystem({
-      async mkdir(targetPath) {
-        try {
-          return await fs.mkdir(targetPath);
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code === 'EEXIST'
-            && targetPath === leased?.target.lockPath
-            && !contenderObservedLock) {
-            contenderObservedLock = true;
-            notifyContender();
-          }
-          throw error;
-        }
-      },
+    setActiveMarketplaceLifecycleBeforeAcquireHookForTests(async () => {
+      if (!contenderObservedLock) {
+        contenderObservedLock = true;
+        notifyContender();
+      }
     });
-    setLifecycleActiveLockFileSystemForTests(fileSystem);
     const promoting = (async () => {
       const prepared = await prepareLifecycleActiveSnapshot({
         plugin: second,
@@ -669,7 +692,7 @@ describe('lifecycle active store', () => {
       });
       await expect(releaseLifecycleActiveSnapshot(leased!)).resolves.toBeUndefined();
     } finally {
-      setLifecycleActiveLockFileSystemForTests(undefined);
+      setActiveMarketplaceLifecycleBeforeAcquireHookForTests(undefined);
       await releaseLifecycleActiveSnapshot(leased!).catch(() => undefined);
     }
   });

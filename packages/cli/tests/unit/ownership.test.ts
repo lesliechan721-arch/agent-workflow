@@ -16,6 +16,7 @@ import {
   writeOwnedTextFile,
   writeSkillOwnerMarker,
 } from '../../src/utils/ownership.js';
+import { validateSkillDirectory } from '../../src/utils/dynamic-skill-tree.js';
 
 const tempDirs: string[] = [];
 
@@ -275,6 +276,59 @@ describe('ownership inspection and cleanup', () => {
     await expect(fs.pathExists(ownedRoot)).resolves.toBe(false);
     await expect(fs.readFile(path.join(foreignRoot, 'SKILL.md'), 'utf8')).resolves.toBe('# foreign\n');
   });
+
+  it.each(['codex', 'claude'] as const)(
+    'reports owned %s Skill health separately from deletion authorization',
+    async (platform) => {
+      const root = await makeTempRoot();
+      const skillsRoot = path.join(root, 'skills');
+      const skillRoot = path.join(skillsRoot, 'review');
+      const identity = { ...userIdentity(), platform };
+      if (platform === 'codex') {
+        await fs.outputFile(path.join(skillRoot, 'SKILL.md'), '# Review\n');
+      } else {
+        await fs.ensureDir(skillRoot);
+      }
+      await writeSkillOwnerMarker({
+        skillRoot,
+        allowedRoot: skillsRoot,
+        identity,
+      });
+      const component: OwnedComponent = {
+        kind: 'skill-directory',
+        path: skillRoot,
+        allowedRoot: skillsRoot,
+        identity,
+        validateHealth: async () => {
+          await validateSkillDirectory(
+            skillRoot,
+            platform === 'codex' ? 'codex.skill' : 'claude.skill',
+            { ownerMarkerPolicy: 'ignore' },
+          );
+        },
+      };
+
+      await expect(inspectOwnedComponents({ components: [component] })).resolves.toMatchObject({
+        state: 'present',
+      });
+      await expect(inspectOwnedComponents({
+        components: [component],
+        verifyHealth: true,
+      })).resolves.toMatchObject({
+        state: 'partial',
+        components: [{
+          state: 'partial',
+          diagnostic: expect.stringContaining(
+            platform === 'codex' ? 'agents/openai.yaml' : 'SKILL.md',
+          ),
+        }],
+      });
+      await expect(cleanupOwnedComponents({ components: [component] })).resolves.toMatchObject({
+        removed: [skillRoot],
+        residual: [],
+      });
+    },
+  );
 
   it('uses injected managed-block and native plugin probes', async () => {
     let managedPresent = true;

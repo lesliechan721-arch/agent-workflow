@@ -43,6 +43,7 @@ import {
 import {
   createDynamicSkillExpectedTree,
   createDynamicSkillTreeContentDigest,
+  validateSkillDirectory,
   writeDynamicSkillTree,
   type DynamicSkillTree,
 } from '../utils/dynamic-skill-tree.js';
@@ -89,6 +90,7 @@ import {
   atomicReplaceConfigFile,
   withConfigFileLock,
 } from '../utils/plugin-config.js';
+import { withActiveMarketplaceRuntimeLease } from '../utils/active-marketplace-runtime-lock.js';
 import { ensureLocalMarketplace } from '../utils/local-marketplace.js';
 import { readClaudeSettings, writeClaudeSettings, type ClaudeSettings } from '../adapters/helpers.js';
 import { requiresCodexNativePlugin } from '../utils/codex-project-surface.js';
@@ -160,7 +162,17 @@ function pathComponent(options: {
   allowedRoot: string;
   identity: OwnerIdentity;
 }): OwnedComponent {
-  return options;
+  if (options.kind !== 'skill-directory') return options;
+  return {
+    ...options,
+    validateHealth: async () => {
+      await validateSkillDirectory(
+        options.path,
+        options.identity.platform === 'codex' ? 'codex.skill' : 'claude.skill',
+        { ownerMarkerPolicy: 'ignore' },
+      );
+    },
+  };
 }
 
 function generatedTextWrite(options: {
@@ -206,14 +218,6 @@ function generatedTextWrite(options: {
   };
 }
 
-function normalizePermissionState(value: Partial<ClaudePermissions> | undefined): ClaudePermissions {
-  return {
-    allow: [...new Set(value?.allow ?? [])],
-    ask: [...new Set(value?.ask ?? [])],
-    deny: [...new Set(value?.deny ?? [])],
-  };
-}
-
 function mergePermissionStates(values: Array<Partial<ClaudePermissions> | undefined>): ClaudePermissions {
   return {
     allow: [...new Set(values.flatMap((value) => value?.allow ?? []))],
@@ -238,13 +242,34 @@ function subtractPermissionState(
   };
 }
 
+function intersectPermissionState(
+  value: Partial<ClaudePermissions> | undefined,
+  generated: ClaudePermissions,
+): ClaudePermissions {
+  const keep = {
+    allow: new Set(generated.allow),
+    ask: new Set(generated.ask),
+    deny: new Set(generated.deny),
+  };
+  return {
+    allow: (value?.allow ?? []).filter((entry) => keep.allow.has(entry)),
+    ask: (value?.ask ?? []).filter((entry) => keep.ask.has(entry)),
+    deny: (value?.deny ?? []).filter((entry) => keep.deny.has(entry)),
+  };
+}
+
 function rebuildClaudePermissions(settings: ClaudeSettings, pluginName: string, desired?: ClaudePermissions): void {
   const previousGenerated = mergePermissionStates(
     Object.values(settings.awGenerated?.permissions ?? {}),
   );
-  const manual = settings.awGenerated?.manualPermissions
-    ? normalizePermissionState(settings.awGenerated.manualPermissions)
-    : subtractPermissionState(settings.permissions, previousGenerated);
+  const currentPermissions = mergePermissionStates([settings.permissions]);
+  const manual = mergePermissionStates([
+    subtractPermissionState(currentPermissions, previousGenerated),
+    intersectPermissionState(
+      intersectPermissionState(settings.awGenerated?.manualPermissions, previousGenerated),
+      currentPermissions,
+    ),
+  ]);
   settings.awGenerated ??= {};
   settings.awGenerated.permissions ??= {};
   if (desired) settings.awGenerated.permissions[pluginName] = desired;
@@ -1824,6 +1849,7 @@ async function inspectCodexNativeResidue(options: {
   state: 'present' | 'absent' | 'foreign';
   labels: string[];
   versions: string[];
+  enabled: boolean;
 }> {
   const pluginId = `${options.pluginName}@${MARKETPLACE_NAME}`;
   const configPath = resolveCodexPaths(options.cwd, 'user', options.env).configTomlPath;
@@ -1848,7 +1874,8 @@ async function inspectCodexNativeResidue(options: {
   const labels: string[] = [];
   const foreignLabels: string[] = [];
   const versions = new Set<string>();
-  if (config.snapshot.plugins[pluginId]) {
+  const configEntry = config.snapshot.plugins[pluginId];
+  if (configEntry) {
     (canonicalMarketplace ? labels : foreignLabels).push(`${configPath}#plugins.${pluginId}`);
   }
   const inspectManifest = async (manifestPath: string, directoryVersion?: string): Promise<void> => {
@@ -1892,10 +1919,13 @@ async function inspectCodexNativeResidue(options: {
   }
   await inspectManifest(installedManifest);
   return foreignLabels.length > 0
-    ? { state: 'foreign', labels: [...labels, ...foreignLabels], versions: [...versions] }
+    ? {
+        state: 'foreign', labels: [...labels, ...foreignLabels], versions: [...versions],
+        enabled: configEntry?.enabled === true,
+      }
     : labels.length > 0
-      ? { state: 'present', labels, versions: [...versions] }
-      : { state: 'absent', labels: [], versions: [] };
+      ? { state: 'present', labels, versions: [...versions], enabled: configEntry?.enabled === true }
+      : { state: 'absent', labels: [], versions: [], enabled: false };
 }
 
 async function discoverCodexNativeResidueNames(options: {
@@ -2009,7 +2039,9 @@ function createCodexMarketplaceComponent(options: {
     });
     if (plugin.state === 'foreign') return 'foreign';
     if (options.desired) {
-      return canonical === 'present' && plugin.state === 'present' ? 'present' : 'absent';
+      return canonical === 'present' && plugin.state === 'present' && plugin.enabled
+        ? 'present'
+        : 'absent';
     }
     if (canonical !== 'present') return canonical;
     return await hasRemainingPlugins() ? 'absent' : 'present';
@@ -2183,6 +2215,12 @@ interface ClaudeNativeRecord {
   version: string;
 }
 
+interface ClaudeMarketplaceConsumer {
+  name: string;
+  scope: Scope;
+  projectPath?: string;
+}
+
 async function readJsonObjectIfExists(filePath: string, label: string): Promise<Record<string, unknown>> {
   let value: unknown;
   try {
@@ -2201,6 +2239,57 @@ function nonEmptyString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() !== '' ? value : undefined;
 }
 
+function readClaudeMarketplaceSourcePath(value: unknown, label: string): string | null | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === 'string') {
+    const source = nonEmptyString(value);
+    if (!source) throw new Error(`${label} 必须是非空 string。`);
+    return source;
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`${label} 必须是 string 或 object。`);
+  }
+  const record = value as Record<string, unknown>;
+  if (record.source && typeof record.source === 'object' && !Array.isArray(record.source)) {
+    return readClaudeMarketplaceSourcePath(record.source, `${label}.source`);
+  }
+  const source = nonEmptyString(record.source);
+  if (!source) throw new Error(`${label}.source 必须是非空 string 或 object。`);
+  if (record.path === undefined) return source;
+  const sourcePath = nonEmptyString(record.path);
+  if (!sourcePath) throw new Error(`${label}.path 必须是非空 string。`);
+  return source === 'directory' ? sourcePath : null;
+}
+
+type ClaudeMarketplaceState = 'absent' | 'canonical' | 'foreign';
+
+function classifyClaudeMarketplaceSources(
+  sources: Array<string | null | undefined>,
+  awHome: string,
+): ClaudeMarketplaceState {
+  if (sources.some((source) =>
+    source === null || (source !== undefined && path.normalize(source) !== awHome))) {
+    return 'foreign';
+  }
+  return sources.some((source) => source !== undefined) ? 'canonical' : 'absent';
+}
+
+function readClaudeKnownMarketplaceSources(value: unknown, label: string): Array<string | null | undefined> {
+  if (value === undefined) return [];
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`${label} 记录无效。`);
+  }
+  const record = value as Record<string, unknown>;
+  const sources: Array<string | null | undefined> = [];
+  if (record.installLocation !== undefined) {
+    const installLocation = nonEmptyString(record.installLocation);
+    if (!installLocation) throw new Error(`${label}.installLocation 必须是非空 string。`);
+    sources.push(installLocation);
+  }
+  sources.push(readClaudeMarketplaceSourcePath(record.source, `${label}.source`));
+  return sources;
+}
+
 async function readClaudeNativeState(options: {
   pluginName: string;
   scope: Scope;
@@ -2208,9 +2297,14 @@ async function readClaudeNativeState(options: {
   env: NodeJS.ProcessEnv;
 }): Promise<{
   paths: ReturnType<typeof resolveClaudePaths>;
-  marketplaceState: 'absent' | 'canonical' | 'foreign';
+  marketplaceState: ClaudeMarketplaceState;
+  marketplaceDeclaredState: ClaudeMarketplaceState;
+  marketplaceMaterializedState: ClaudeMarketplaceState;
+  legacyMarketplaceState: ClaudeMarketplaceState;
   pluginState: 'absent' | 'present' | 'foreign';
+  pluginEnabled: boolean;
   records: ClaudeNativeRecord[];
+  marketplaceConsumers: ClaudeMarketplaceConsumer[];
   pluginVersions: string[];
 }> {
   const paths = resolveClaudePaths(options.cwd, options.scope, options.env);
@@ -2226,6 +2320,11 @@ async function readClaudeNativeState(options: {
   if (settings.plugins !== undefined && (
     !settings.plugins || typeof settings.plugins !== 'object' || Array.isArray(settings.plugins)
   )) throw new Error('Claude settings.plugins 必须是 object。');
+  if (settings.enabledPlugins !== undefined && (
+    !settings.enabledPlugins
+    || typeof settings.enabledPlugins !== 'object'
+    || Array.isArray(settings.enabledPlugins)
+  )) throw new Error('Claude settings.enabledPlugins 必须是 object。');
   const settingsPlugins = settings.plugins as Record<string, unknown> | undefined;
   if (settingsPlugins?.installed !== undefined && (
     !settingsPlugins.installed
@@ -2240,28 +2339,48 @@ async function readClaudeNativeState(options: {
   )) throw new Error('Claude installed_plugins.plugins 必须是 object。');
   const extraKnown = settings.extraKnownMarketplaces as Record<string, unknown> | undefined;
   const settingsSourceValue = extraKnown?.[MARKETPLACE_NAME];
-  if (
-    settingsSourceValue !== undefined
-    && typeof settingsSourceValue !== 'string'
-    && (!settingsSourceValue || typeof settingsSourceValue !== 'object' || Array.isArray(settingsSourceValue))
-  ) throw new Error('Claude settings marketplace aw 声明无效。');
-  const settingsSource = typeof settingsSourceValue === 'string'
-    ? settingsSourceValue
-    : nonEmptyString((settingsSourceValue as Record<string, unknown> | undefined)?.source);
-  const knownRecord = (known.marketplaces as Record<string, unknown> | undefined)?.[MARKETPLACE_NAME];
-  if (knownRecord !== undefined && (
-    !knownRecord || typeof knownRecord !== 'object' || Array.isArray(knownRecord)
-  )) throw new Error('Claude known marketplace aw 记录无效。');
-  const knownObject = knownRecord as Record<string, unknown> | undefined;
-  const knownSource = nonEmptyString(knownObject?.installLocation) ?? nonEmptyString(knownObject?.source);
-  const normalizedSettingsSource = nonEmptyString(settingsSource);
-  const foreignMarketplace = [normalizedSettingsSource, knownSource].some((source) =>
-    source !== undefined && path.normalize(source) !== awHome);
-  const marketplaceState = foreignMarketplace
+  const settingsSource = readClaudeMarketplaceSourcePath(
+    settingsSourceValue,
+    'Claude settings marketplace aw',
+  );
+  const legacyKnown = known.marketplaces as Record<string, unknown> | undefined;
+  const marketplaceDeclaredState = classifyClaudeMarketplaceSources([settingsSource], awHome);
+  const marketplaceMaterializedState = classifyClaudeMarketplaceSources(
+    readClaudeKnownMarketplaceSources(
+      known[MARKETPLACE_NAME],
+      'Claude known marketplace aw',
+    ),
+    awHome,
+  );
+  const legacyMarketplaceState = classifyClaudeMarketplaceSources(
+    readClaudeKnownMarketplaceSources(
+      legacyKnown?.[MARKETPLACE_NAME],
+      'Claude known marketplace aw legacy',
+    ),
+    awHome,
+  );
+  const marketplaceStates = [
+    marketplaceDeclaredState,
+    marketplaceMaterializedState,
+    legacyMarketplaceState,
+  ];
+  const marketplaceState = marketplaceStates.includes('foreign')
     ? 'foreign'
-    : normalizedSettingsSource === undefined && knownSource === undefined
-      ? 'absent'
-      : 'canonical';
+    : marketplaceStates.includes('canonical')
+      ? 'canonical'
+      : 'absent';
+  const pluginId = `${options.pluginName}@${MARKETPLACE_NAME}`;
+  const enabledPlugins = settings.enabledPlugins as Record<string, unknown> | undefined;
+  const rawEnabled = enabledPlugins?.[pluginId];
+  if (
+    rawEnabled !== undefined
+    && typeof rawEnabled !== 'boolean'
+    && (!Array.isArray(rawEnabled) || !rawEnabled.every((entry) => typeof entry === 'string'))
+  ) {
+    throw new Error(`Claude settings.enabledPlugins 记录 ${pluginId} 必须是 boolean 或 string array。`);
+  }
+  const pluginEnabled = rawEnabled === true || Array.isArray(rawEnabled);
+  const enabledPluginEvidence = rawEnabled !== undefined;
   const records: ClaudeNativeRecord[] = [];
   for (const [pluginKey, raw] of Object.entries(
     (installed.plugins as Record<string, unknown> | undefined) ?? {},
@@ -2323,23 +2442,66 @@ async function readClaudeNativeState(options: {
       : settingsRecord.scope === 'project'
         && path.normalize((settingsRecord.projectPath as string | undefined) ?? '') === projectPath);
   const canonicalEvidence = matchingRecords.some((record) => record.marketplace === MARKETPLACE_NAME)
-    || Boolean(settingsMatchesScope && settingsRecord?.marketplace === MARKETPLACE_NAME);
+    || Boolean(settingsMatchesScope && settingsRecord?.marketplace === MARKETPLACE_NAME)
+    || enabledPluginEvidence;
   const foreign = matchingRecords.some((record) => record.marketplace !== MARKETPLACE_NAME)
     || Boolean(settingsMatchesScope && settingsRecord?.marketplace !== MARKETPLACE_NAME)
     || (canonicalEvidence && marketplaceState === 'foreign');
   const canonicalRecords = matchingRecords.filter((record) => record.marketplace === MARKETPLACE_NAME);
   const canonicalSettingsRecord = settingsMatchesScope
     && settingsRecord?.marketplace === MARKETPLACE_NAME;
+  const marketplaceConsumers: ClaudeMarketplaceConsumer[] = records
+    .filter((record) => record.marketplace === MARKETPLACE_NAME)
+    .map((record) => ({
+      name: record.name,
+      scope: record.scope,
+      ...(record.projectPath ? { projectPath: record.projectPath } : {}),
+    }));
+  for (const pluginKey of Object.keys(enabledPlugins ?? {})) {
+    const suffix = `@${MARKETPLACE_NAME}`;
+    if (!pluginKey.endsWith(suffix)) continue;
+    marketplaceConsumers.push({
+      name: pluginKey.slice(0, -suffix.length),
+      scope: options.scope,
+      ...(projectPath ? { projectPath } : {}),
+    });
+  }
+  for (const [pluginKey, rawRecord] of Object.entries(settingsInstalled ?? {})) {
+    if (!rawRecord || typeof rawRecord !== 'object' || Array.isArray(rawRecord)) continue;
+    const record = rawRecord as Record<string, unknown>;
+    if (record.marketplace !== MARKETPLACE_NAME) continue;
+    const name = nonEmptyString(record.name)
+      ?? (pluginKey.endsWith(`@${MARKETPLACE_NAME}`)
+        ? pluginKey.slice(0, -`@${MARKETPLACE_NAME}`.length)
+        : pluginKey);
+    const scope = record.scope === 'project' ? 'project' : 'user';
+    marketplaceConsumers.push({
+      name,
+      scope,
+      ...(typeof record.projectPath === 'string' ? { projectPath: record.projectPath } : {}),
+    });
+  }
   const pluginState = foreign
     ? 'foreign'
-    : canonicalRecords.length > 0 || canonicalSettingsRecord
+    : canonicalEvidence
       ? 'present'
       : 'absent';
   const pluginVersions = [
     ...canonicalRecords.map((record) => record.version),
     ...(canonicalSettingsRecord ? [nonEmptyString(settingsRecord.version)!] : []),
   ];
-  return { paths, marketplaceState, pluginState, records, pluginVersions };
+  return {
+    paths,
+    marketplaceState,
+    marketplaceDeclaredState,
+    marketplaceMaterializedState,
+    legacyMarketplaceState,
+    pluginState,
+    pluginEnabled,
+    records,
+    marketplaceConsumers,
+    pluginVersions,
+  };
 }
 
 function createClaudeMarketplaceComponent(options: {
@@ -2354,7 +2516,10 @@ function createClaudeMarketplaceComponent(options: {
     const state = await readClaudeNativeState(options);
     if (state.pluginState === 'foreign') return 'foreign';
     if (options.desired) {
-      return state.marketplaceState === 'canonical' && state.pluginState === 'present'
+      return state.marketplaceDeclaredState === 'canonical'
+        && state.marketplaceMaterializedState === 'canonical'
+        && state.pluginState === 'present'
+        && state.pluginEnabled
         ? 'present'
         : 'absent';
     }
@@ -2362,13 +2527,11 @@ function createClaudeMarketplaceComponent(options: {
     const projectPath = options.scope === 'project'
       ? path.normalize(await resolveRepoRoot(options.cwd))
       : undefined;
-    return state.records.some((record) =>
-      record.marketplace === MARKETPLACE_NAME
-      && !(
-        record.name === options.pluginName
-        && record.scope === options.scope
-        && (options.scope === 'user' || path.normalize(record.projectPath ?? '') === projectPath)
-      ))
+    return state.marketplaceConsumers.some((consumer) => !(
+      consumer.name === options.pluginName
+      && consumer.scope === options.scope
+      && (options.scope === 'user' || path.normalize(consumer.projectPath ?? '') === projectPath)
+    ))
       ? 'absent'
       : 'present';
   };
@@ -2381,10 +2544,10 @@ function createClaudeMarketplaceComponent(options: {
       if (await inspect() !== 'present') return;
       const before = await readClaudeNativeState(options);
       if (before.pluginState !== 'absent') return;
-      if (before.records.some((record) => record.marketplace === MARKETPLACE_NAME)) return;
+      if (before.marketplaceConsumers.length > 0) return;
       await runNativeCliChecked({
         command: 'claude',
-        args: ['plugin', 'marketplace', 'remove', MARKETPLACE_NAME, '--scope', options.scope],
+        args: ['plugin', 'marketplace', 'remove', MARKETPLACE_NAME],
         cwd: options.cwd,
         env: options.env,
       }, options.runner);
@@ -2414,18 +2577,25 @@ function createNativeVersionComponent(options: {
     ),
     label: `${options.pluginName}@aw#version=${options.pluginVersion}`,
     inspect: async () => {
-      const versions = options.platform === 'codex'
-        ? (await inspectCodexNativeResidue({
-            pluginName: options.pluginName,
-            cwd: options.cwd,
-            env: options.env,
-          })).versions
-        : (await readClaudeNativeState({
-            pluginName: options.pluginName,
-            scope: options.scope,
-            cwd: options.cwd,
-            env: options.env,
-          })).pluginVersions;
+      let versions: string[];
+      if (options.platform === 'codex') {
+        const residue = await inspectCodexNativeResidue({
+          pluginName: options.pluginName,
+          cwd: options.cwd,
+          env: options.env,
+        });
+        versions = residue.enabled && residue.state === 'present' ? residue.versions : [];
+      } else {
+        const state = await readClaudeNativeState({
+          pluginName: options.pluginName,
+          scope: options.scope,
+          cwd: options.cwd,
+          env: options.env,
+        });
+        versions = state.pluginEnabled && state.pluginState === 'present'
+          ? state.pluginVersions
+          : [];
+      }
       return versions.includes(options.pluginVersion) ? 'present' : 'absent';
     },
     remove: async () => undefined,
@@ -2443,6 +2613,11 @@ function createNativeDriver(options: {
 }): RebuildTargetDriver {
   const runner = options.context.nativeCliRunner;
   return {
+    withOwnershipLease: (target, operation) => (
+      target.identity.platform === 'codex' && target.identity.scope === 'user'
+        ? withActiveMarketplaceRuntimeLease(options.context.env, operation)
+        : operation()
+    ),
     probeNative: async (component) => {
       const target = [...plansTargetEntries(options.plans)].find((entry) =>
         entry.target.identity.pluginName === component.identity.plugin
@@ -2465,6 +2640,33 @@ function createNativeDriver(options: {
           env: options.context.env,
         });
         return residue.state;
+      }
+      return 'absent';
+    },
+    probeNativeHealth: async (component) => {
+      const target = [...plansTargetEntries(options.plans)].find((entry) =>
+        entry.target.identity.pluginName === component.identity.plugin
+        && entry.target.identity.platform === component.identity.platform
+        && entry.target.identity.scope === component.identity.scope)?.target;
+      if (!target) throw new Error('Native health probe cannot resolve its desired target.');
+      if (target.identity.platform === 'claude') {
+        const state = await readClaudeNativeState({
+          pluginName: target.identity.pluginName,
+          scope: target.identity.scope,
+          cwd: target.identity.cwd,
+          env: options.context.env,
+        });
+        if (state.pluginState !== 'present') return state.pluginState;
+        return state.pluginEnabled ? 'present' : 'partial';
+      }
+      if (target.identity.platform === 'codex' && target.identity.scope === 'user') {
+        const residue = await inspectCodexNativeResidue({
+          pluginName: target.identity.pluginName,
+          cwd: target.identity.cwd,
+          env: options.context.env,
+        });
+        if (residue.state !== 'present') return residue.state;
+        return residue.enabled ? 'present' : 'partial';
       }
       return 'absent';
     },
@@ -2505,7 +2707,7 @@ function createNativeDriver(options: {
         }, runner);
         await runNativeCliChecked({
           command: 'claude',
-          args: ['plugin', 'list', '--scope', target.identity.scope],
+          args: ['plugin', 'list'],
           cwd: target.identity.cwd,
           env: options.context.env,
         }, runner);
@@ -2548,94 +2750,103 @@ function createNativeDriver(options: {
       }
       const marketplaceRoot = await mirrorCatalog(plan.catalog, options.context.env);
       const pluginId = `${target.identity.pluginName}@${MARKETPLACE_NAME}`;
-      if (target.identity.platform === 'codex') {
-        const requiredSkillWrites = plan.writes.filter((entry) =>
-          !entry.optional
-          && entry.component?.kind === 'skill-directory'
-          && entry.artifact.kind === 'skill'
-          && entry.artifact.state !== 'disabled'
-          && target.identity.scope === 'user');
-        for (const write of requiredSkillWrites) {
-          await write.write();
-        }
-        const skillsRelativeRoot = await ensureCodexActiveSkillsManifest({
-          plugin: target.plugin,
-          marketplaceRoot,
-          hasRequiredSkills: requiredSkillWrites.length > 0,
-        });
-        const config = await readCodexConfigFile(
-          resolveCodexPaths(target.identity.cwd, 'user', options.context.env).configTomlPath,
-        );
-        const marketplace = config.snapshot.marketplaces[MARKETPLACE_NAME];
-        if (path.normalize(marketplace?.source ?? '') !== path.normalize(marketplaceRoot)) {
+      await withActiveMarketplaceRuntimeLease(options.context.env, async () => {
+        if (target.identity.platform === 'codex') {
+          const requiredSkillWrites = plan.writes.filter((entry) =>
+            !entry.optional
+            && entry.component?.kind === 'skill-directory'
+            && entry.artifact.kind === 'skill'
+            && entry.artifact.state !== 'disabled'
+            && target.identity.scope === 'user');
+          for (const write of requiredSkillWrites) {
+            await write.write();
+          }
+          const skillsRelativeRoot = await ensureCodexActiveSkillsManifest({
+            plugin: target.plugin,
+            marketplaceRoot,
+            hasRequiredSkills: requiredSkillWrites.length > 0,
+          });
+          const config = await readCodexConfigFile(
+            resolveCodexPaths(target.identity.cwd, 'user', options.context.env).configTomlPath,
+          );
+          const marketplace = config.snapshot.marketplaces[MARKETPLACE_NAME];
+          if (path.normalize(marketplace?.source ?? '') !== path.normalize(marketplaceRoot)) {
+            await runNativeCliChecked(
+              buildCodexMarketplaceAddInvocation(marketplaceRoot, target.identity.cwd, options.context.env),
+              runner,
+            );
+          }
           await runNativeCliChecked(
-            buildCodexMarketplaceAddInvocation(marketplaceRoot, target.identity.cwd, options.context.env),
+            buildCodexMarketplaceListInvocation(target.identity.cwd, options.context.env),
             runner,
           );
-        }
-        await runNativeCliChecked(
-          buildCodexMarketplaceListInvocation(target.identity.cwd, options.context.env),
-          runner,
-        );
-        await runNativeCliChecked(
-          buildCodexPluginAddInvocation(pluginId, target.identity.cwd, options.context.env),
-          runner,
-        );
-        await runNativeCliChecked(
-          buildCodexPluginListInvocation(target.identity.cwd, options.context.env),
-          runner,
-        );
-        await assertCodexNativeInstallState({
-          pluginName: target.identity.pluginName,
-          pluginVersion: target.identity.pluginVersion,
-          cwd: target.identity.cwd,
-          env: options.context.env,
-          marketplaceRoot,
-          skillsRelativeRoot,
-          requiredSkillKeys: requiredSkillWrites.flatMap((write) =>
-            write.artifact.artifactKey ? [write.artifact.artifactKey] : []),
-        });
-      } else {
-        await runNativeCliChecked({
-          command: 'claude',
-          args: ['plugin', 'marketplace', 'add', marketplaceRoot, '--scope', target.identity.scope],
-          cwd: target.identity.cwd,
-          env: options.context.env,
-        }, runner);
-        await runNativeCliChecked({
-          command: 'claude',
-          args: ['plugin', 'install', pluginId, '--scope', target.identity.scope],
-          cwd: target.identity.cwd,
-          env: options.context.env,
-        }, runner);
-        await runNativeCliChecked({
-          command: 'claude',
-          args: ['plugin', 'list', '--scope', target.identity.scope],
-          cwd: target.identity.cwd,
-          env: options.context.env,
-        }, runner);
-        const after = await readClaudeNativeState({
-          pluginName: target.identity.pluginName,
-          scope: target.identity.scope,
-          cwd: target.identity.cwd,
-          env: options.context.env,
-        });
-        if (
-          after.marketplaceState !== 'canonical'
-          || after.pluginState !== 'present'
-          || !after.pluginVersions.includes(target.identity.pluginVersion)
-        ) {
-          throw new Error(
-            `Claude native install postcheck 失败：marketplace=${after.marketplaceState}，plugin=${after.pluginState}，versions=${after.pluginVersions.join(',')}。`,
+          await runNativeCliChecked(
+            buildCodexPluginAddInvocation(pluginId, target.identity.cwd, options.context.env),
+            runner,
           );
+          await runNativeCliChecked(
+            buildCodexPluginListInvocation(target.identity.cwd, options.context.env),
+            runner,
+          );
+          await assertCodexNativeInstallState({
+            pluginName: target.identity.pluginName,
+            pluginVersion: target.identity.pluginVersion,
+            cwd: target.identity.cwd,
+            env: options.context.env,
+            marketplaceRoot,
+            skillsRelativeRoot,
+            requiredSkillKeys: requiredSkillWrites.flatMap((write) =>
+              write.artifact.artifactKey ? [write.artifact.artifactKey] : []),
+          });
+        } else {
+          await runNativeCliChecked({
+            command: 'claude',
+            args: ['plugin', 'marketplace', 'add', marketplaceRoot, '--scope', target.identity.scope],
+            cwd: target.identity.cwd,
+            env: options.context.env,
+          }, runner);
+          await runNativeCliChecked({
+            command: 'claude',
+            args: ['plugin', 'install', pluginId, '--scope', target.identity.scope],
+            cwd: target.identity.cwd,
+            env: options.context.env,
+          }, runner);
+          await runNativeCliChecked({
+            command: 'claude',
+            args: ['plugin', 'list'],
+            cwd: target.identity.cwd,
+            env: options.context.env,
+          }, runner);
+          const after = await readClaudeNativeState({
+            pluginName: target.identity.pluginName,
+            scope: target.identity.scope,
+            cwd: target.identity.cwd,
+            env: options.context.env,
+          });
+          if (
+            after.marketplaceDeclaredState !== 'canonical'
+            || after.marketplaceMaterializedState !== 'canonical'
+            || after.pluginState !== 'present'
+            || !after.pluginEnabled
+            || !after.pluginVersions.includes(target.identity.pluginVersion)
+          ) {
+            throw new Error(
+              `Claude native install postcheck 失败：declaredMarketplace=${after.marketplaceDeclaredState}，materializedMarketplace=${after.marketplaceMaterializedState}，plugin=${after.pluginState}，enabled=${after.pluginEnabled}，versions=${after.pluginVersions.join(',')}。`,
+            );
+          }
         }
-      }
+      });
     },
     writeArtifacts: async (target) => {
       const plan = options.plans.get(target);
       if (!plan) throw new Error('Missing rebuild integration plan.');
-      for (const write of plan.writes) await write.write();
-      return plan.writes.map((write) => write.artifact);
+      const writeAll = async (): Promise<readonly GeneratedArtifact[]> => {
+        for (const write of plan.writes) await write.write();
+        return plan.writes.map((write) => write.artifact);
+      };
+      return target.identity.platform === 'codex' && target.identity.scope === 'user'
+        ? withActiveMarketplaceRuntimeLease(options.context.env, writeAll)
+        : writeAll();
     },
     runLifecycle: async (invocation: RebuildLifecycleInvocation) => {
       await runLifecycleScript({
@@ -2774,12 +2985,19 @@ export function createRebuildIntegration(options: {
               input.plugin.manifest.name,
             )]
         : [path.join(configDir, 'skills')];
-      const scannedSkills = (await Promise.all(skillRoots.map((root) => scanOwnedSkills({
+      const scanSkills = () => Promise.all(skillRoots.map((root) => scanOwnedSkills({
         root,
         pluginName: input.plugin.manifest.name,
         platform: input.platform,
         scope: input.scope,
-      })))).flat();
+      })));
+      const scannedSkills = (await (
+        input.platform === 'codex'
+          && input.scope === 'user'
+          && input.readOnlyInspectionPlan !== true
+          ? withActiveMarketplaceRuntimeLease(options.context.env, scanSkills)
+          : scanSkills()
+      )).flat();
       const historicalComponents = await buildHistoricalComponents({
         pluginName: input.plugin.manifest.name,
         platform: input.platform,
@@ -2923,7 +3141,8 @@ export async function inspectRebuildTarget(options: {
   });
   const inspection = await inspectOwnedComponents({
     components: target.ownedComponents,
-    nativeProbe: integration.driver.probeNative,
+    nativeProbe: integration.driver.probeNativeHealth ?? integration.driver.probeNative,
+    verifyHealth: true,
   });
   return { target, inspection };
 }
@@ -3109,6 +3328,18 @@ export async function discoverRebuildTargetNames(options: {
     for (const name of Object.keys(
       (settingsInstalled as Record<string, unknown> | undefined) ?? {},
     )) {
+      if (/^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(name)) candidates.add(name);
+    }
+    const enabledPlugins = rawSettings.enabledPlugins;
+    if (enabledPlugins !== undefined && (
+      !enabledPlugins || typeof enabledPlugins !== 'object' || Array.isArray(enabledPlugins)
+    )) throw new Error('Claude settings.enabledPlugins 必须是 object。');
+    for (const pluginId of Object.keys(
+      (enabledPlugins as Record<string, unknown> | undefined) ?? {},
+    )) {
+      const suffix = `@${MARKETPLACE_NAME}`;
+      if (!pluginId.endsWith(suffix)) continue;
+      const name = pluginId.slice(0, -suffix.length);
       if (/^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(name)) candidates.add(name);
     }
     for (const name of candidates) {

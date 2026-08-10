@@ -540,27 +540,25 @@ describe('live status command', () => {
       nativeCliRunner,
     };
     const claudePaths = resolveClaudePaths(cwd, 'project', isolation.env);
+    const sourceDescriptor = {
+      source: 'directory',
+      path: isolation.layout.awHomeDir,
+    };
     await fs.ensureDir(path.join(isolation.layout.awHomeDir, 'plugins', 'claude-project-native'));
     await fs.outputJson(claudePaths.settingsPath, {
-      extraKnownMarketplaces: { aw: { source: isolation.layout.awHomeDir } },
-      plugins: {
-        installed: {
-          'claude-project-native': {
-            marketplace: 'aw', version: '1.2.3', scope: 'project', projectPath: cwd, enabled: true,
-          },
-        },
-      },
+      extraKnownMarketplaces: { aw: { source: sourceDescriptor } },
+      enabledPlugins: { 'claude-project-native@aw': true },
     });
     await fs.outputJson(claudePaths.knownMarketplacesPath, {
-      marketplaces: {
-        aw: { installLocation: isolation.layout.awHomeDir, source: isolation.layout.awHomeDir },
+      aw: {
+        installLocation: isolation.layout.awHomeDir,
+        source: sourceDescriptor,
       },
     });
     await fs.outputJson(claudePaths.installedPluginsPath, {
       plugins: {
         'claude-project-native@aw': [{
-          name: 'claude-project-native', marketplace: 'aw', version: '1.2.3',
-          scope: 'project', projectPath: cwd,
+          version: '1.2.3', scope: 'project', projectPath: cwd,
         }],
       },
     });
@@ -685,7 +683,16 @@ describe('live status command', () => {
 
     const skillsRoot = path.join(cwd, '.agents', 'skills');
     const skillRoot = path.join(skillsRoot, 'dynamic-renderer-skill');
-    await fs.ensureDir(skillRoot);
+    await fs.outputFile(path.join(skillRoot, 'SKILL.md'), '# Dynamic renderer Skill\n');
+    await fs.outputFile(path.join(skillRoot, 'agents', 'openai.yaml'), [
+      'interface:',
+      '  display_name: "Dynamic renderer Skill"',
+      '  short_description: "Status fixture"',
+      '  default_prompt: "Use the dynamic renderer Skill."',
+      'policy:',
+      '  allow_implicit_invocation: true',
+      '',
+    ].join('\n'));
     await writeSkillOwnerMarker({
       skillRoot,
       allowedRoot: skillsRoot,

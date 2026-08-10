@@ -104,6 +104,7 @@ describe('rebuild runtime import boundary', () => {
     const allowedModules = new Set([
       'commands/rebuild-operations.ts',
       'types.ts',
+      'utils/active-marketplace-runtime-lock.ts',
       'utils/bundle-integrity.ts',
       'utils/lifecycle-active-store.ts',
       'utils/ownership.ts',

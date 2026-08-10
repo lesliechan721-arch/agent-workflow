@@ -16,6 +16,59 @@ import type { NativeCliRunner } from '../../src/utils/native-cli.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 describe('five write commands', () => {
+  it('expands both only to a current plugin supported platforms before version probes', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.rootDir, 'both-source');
+    const catalogRoot = path.join(isolation.layout.rootDir, 'both-catalog');
+    await fs.outputJson(path.join(sourceRoot, 'plugins', 'marketplace-source.json'), {
+      owner: { name: 'AW test', url: 'https://example.test/aw' },
+      interface: { displayName: 'AW test catalog' },
+    });
+    await fs.outputJson(
+      path.join(sourceRoot, 'plugins', 'codex-only', '.agents-plugin', 'plugin.json'),
+      {
+        name: 'codex-only',
+        version: '1.0.0',
+        description: 'both expansion fixture',
+        compatibility: { aw: { minVersion: '0.1.0' } },
+        marketplace: {
+          category: 'test',
+          strict: true,
+          policy: {
+            installation: 'AVAILABLE',
+            authentication: 'ON_INSTALL',
+            products: ['CODEX'],
+          },
+        },
+        extensions: {
+          instructions: [{ name: 'rule', title: 'Rule', content: 'Codex only.' }],
+        },
+      },
+    );
+    await bundlePlugins({ repoRoot: sourceRoot, outputRoot: catalogRoot });
+    const calls: string[] = [];
+    const result = await installWriteCommand(['codex-only'], {
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'both',
+      scope: 'project',
+    }, {
+      env: isolation.env,
+      catalogResolution: { rootDir: catalogRoot, source: 'local' } as CatalogResolution,
+      nativeCliRunner: async (invocation) => {
+        calls.push([invocation.command, ...invocation.args].join(' '));
+        if (invocation.command === 'codex' && invocation.args[0] === '--version') {
+          return { exitCode: 0, stdout: 'codex-cli 0.145.0', stderr: '' };
+        }
+        throw new Error(`Unexpected native call: ${invocation.command} ${invocation.args.join(' ')}`);
+      },
+    });
+
+    expect(result.overallState, JSON.stringify(result)).toBe('succeeded');
+    expect(result.platforms).toEqual(['codex']);
+    expect(result.targetResults).toHaveLength(1);
+    expect(calls).toEqual(['codex --version']);
+  });
+
   it('executes install, upgrade, reinstall, uninstall, and cleanup through rebuild', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.rootDir, 'five-write-source');

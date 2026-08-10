@@ -40,6 +40,10 @@ import {
 } from './manifest.js';
 import { assertTestWritablePath } from './test-path-fence.js';
 import { readSkillOwnerMarker, SKILL_OWNER_MARKER } from './ownership.js';
+import {
+  withActiveMarketplaceLifecycleLease,
+  withActiveMarketplaceRuntimeLease,
+} from './active-marketplace-runtime-lock.js';
 
 function resolveCliPackageJsonPath(): string {
   return path.join(resolveCliPackageRoot(), 'package.json');
@@ -1619,13 +1623,27 @@ const LOCAL_MARKETPLACE_RUNTIME_STATE_DIRS = new Set([
   'lifecycle-active',
 ]);
 
-const LOCAL_MARKETPLACE_ALREADY_STAGED_STATE_DIRS = new Set([
-  'catalog-cache',
+const LOCAL_MARKETPLACE_REPLACEMENT_STATE_DIRS = [
   'plugin-config',
   'lifecycle-active',
-]);
+] as const;
 
-const LOCAL_MARKETPLACE_DEFERRED_STATE_DIRS = new Set(['catalog-cache']);
+let localMarketplaceAfterStagingPreparedForTests:
+  ((stagingDir: string) => Promise<void>) | undefined;
+let localMarketplaceAfterTargetMovedToBackupForTests:
+  (() => Promise<void>) | undefined;
+
+export function setLocalMarketplaceAfterStagingPreparedForTests(
+  hook: ((stagingDir: string) => Promise<void>) | undefined,
+): void {
+  localMarketplaceAfterStagingPreparedForTests = hook;
+}
+
+export function setLocalMarketplaceAfterTargetMovedToBackupForTests(
+  hook: (() => Promise<void>) | undefined,
+): void {
+  localMarketplaceAfterTargetMovedToBackupForTests = hook;
+}
 
 async function listFilesRecursively(rootDir: string, relativeRoot = ''): Promise<string[]> {
   const entries = await fs.readdir(rootDir, { withFileTypes: true });
@@ -2138,24 +2156,20 @@ async function isFreshLocalMarketplace(
   }
 }
 
-async function preserveLocalRuntimeStateDirectories(
+async function moveLocalReplacementStateDirectories(
   sourceRoot: string,
   targetRoot: string,
-  options: { skip?: ReadonlySet<string> } = {},
 ): Promise<void> {
-  for (const directoryName of LOCAL_MARKETPLACE_RUNTIME_STATE_DIRS) {
-    if (options.skip?.has(directoryName)) {
-      continue;
-    }
+  for (const directoryName of LOCAL_MARKETPLACE_REPLACEMENT_STATE_DIRS) {
     const sourceDir = path.join(sourceRoot, directoryName);
     if (!(await fs.pathExists(sourceDir))) {
       continue;
     }
-
-    await fs.copy(sourceDir, path.join(targetRoot, directoryName), {
-      overwrite: true,
-      errorOnExist: false,
-    });
+    const targetDir = path.join(targetRoot, directoryName);
+    if (await fs.pathExists(targetDir)) {
+      throw new Error(`Active marketplace runtime state 目标已存在：${targetDir}`);
+    }
+    await fs.move(sourceDir, targetDir, { overwrite: false });
   }
 }
 
@@ -2231,33 +2245,49 @@ async function replaceDirectoryAtomically(
     `.aw-failed-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
   );
   const targetExists = await fs.pathExists(targetDir);
+  let stagingPublished = false;
   await fs.ensureDir(path.dirname(backupDir));
 
   try {
     if (targetExists) {
       await fs.move(targetDir, backupDir, { overwrite: true });
+      await localMarketplaceAfterTargetMovedToBackupForTests?.();
+      await moveLocalReplacementStateDirectories(backupDir, stagingDir);
     }
 
-    await fs.move(stagingDir, targetDir, { overwrite: true });
+    await fs.move(stagingDir, targetDir, { overwrite: false });
+    stagingPublished = true;
     if (targetExists) {
-      await preserveLocalRuntimeStateDirectories(backupDir, targetDir, {
-        skip: LOCAL_MARKETPLACE_ALREADY_STAGED_STATE_DIRS,
-      });
       await fs.remove(backupDir);
     }
   } catch (error) {
+    let unexpectedTargetQuarantine: string | null = null;
     try {
       if (targetExists && await fs.pathExists(backupDir)) {
         if (await fs.pathExists(targetDir)) {
           await fs.move(targetDir, failedTargetDir, { overwrite: false });
+          if (!stagingPublished) unexpectedTargetQuarantine = failedTargetDir;
+        }
+        if (await fs.pathExists(stagingDir)) {
+          await moveLocalReplacementStateDirectories(stagingDir, backupDir);
+        }
+        if (stagingPublished && await fs.pathExists(failedTargetDir)) {
+          await moveLocalReplacementStateDirectories(failedTargetDir, backupDir);
         }
         await fs.move(backupDir, targetDir, { overwrite: true });
-        await fs.remove(failedTargetDir);
+        if (stagingPublished) await fs.remove(failedTargetDir);
       }
     } catch (rollbackError) {
       throw new AggregateError(
         [error, rollbackError],
         error instanceof Error ? error.message : String(error),
+        { cause: error },
+      );
+    }
+    if (unexpectedTargetQuarantine) {
+      throw new AggregateError(
+        [error],
+        `Active marketplace publication found an unexpected target; preserved it at ${unexpectedTargetQuarantine}.`,
         { cause: error },
       );
     }
@@ -2432,10 +2462,6 @@ export async function initializeLocalMarketplace(
 
   try {
     await copyBundleToStaging(inspection.embeddedRoot, stagingDir);
-    await replayOwnedDynamicSkillOverlays(inspection.awHome, stagingDir, env);
-    await preserveLocalRuntimeStateDirectories(inspection.awHome, stagingDir, {
-      skip: LOCAL_MARKETPLACE_DEFERRED_STATE_DIRS,
-    });
     await writeJsonFile(path.join(stagingDir, 'config.json'), {
       version: 2,
       initializedAt: new Date().toISOString(),
@@ -2446,10 +2472,17 @@ export async function initializeLocalMarketplace(
       bundleFingerprint: inspection.bundleFingerprint,
     } satisfies LocalMarketplaceConfig);
     await validateLocalMarketplaceLayout(stagingDir);
+    await localMarketplaceAfterStagingPreparedForTests?.(stagingDir);
     const catalogCacheLease = await acquireCurrentCatalogCacheLease(env);
     try {
-      await preserveLocalCatalogCache(inspection.awHome, stagingDir);
-      await replaceDirectoryAtomically(inspection.awHome, stagingDir);
+      await withActiveMarketplaceLifecycleLease(env, async () => {
+        await withActiveMarketplaceRuntimeLease(env, async () => {
+          await replayOwnedDynamicSkillOverlays(inspection.awHome, stagingDir, env);
+          await validateLocalMarketplaceLayout(stagingDir);
+          await preserveLocalCatalogCache(inspection.awHome, stagingDir);
+          await replaceDirectoryAtomically(inspection.awHome, stagingDir);
+        });
+      });
     } finally {
       await catalogCacheLease.release();
     }

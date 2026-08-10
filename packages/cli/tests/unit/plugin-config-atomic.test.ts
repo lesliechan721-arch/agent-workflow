@@ -5,6 +5,7 @@ import fs from 'fs-extra';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  listPluginConfigStorePluginNames,
   patchPluginConfigStore,
   readPluginConfigStore,
   resolveConfigFileLockPath,
@@ -15,6 +16,7 @@ import {
   withConfigFileLock,
   writePluginConfigStore,
 } from '../../src/utils/plugin-config.js';
+import { resolveActiveMarketplaceRuntimeCoordinationRoot } from '../../src/utils/active-marketplace-runtime-lock.js';
 
 const tempDirs: string[] = [];
 
@@ -41,6 +43,27 @@ afterEach(async () => {
 });
 
 describe('plugin config atomic writes', () => {
+  it('reads and lists user config without creating runtime coordination state', async () => {
+    const fixture = await makeFixture();
+    const options = {
+      pluginName: 'read-only-test',
+      scope: 'user' as const,
+      cwd: fixture.cwd,
+      env: fixture.env,
+    };
+    const coordinationRoot = resolveActiveMarketplaceRuntimeCoordinationRoot(fixture.env);
+
+    await expect(readPluginConfigStore(options)).resolves.toMatchObject({
+      exists: false,
+      values: {},
+    });
+    await expect(listPluginConfigStorePluginNames({
+      cwd: fixture.cwd,
+      env: fixture.env,
+    })).resolves.toEqual([]);
+    await expect(fs.pathExists(coordinationRoot)).resolves.toBe(false);
+  });
+
   it('keeps the old store and removes its temp and lock when atomic commit fails', async () => {
     const fixture = await makeFixture();
     const options = {

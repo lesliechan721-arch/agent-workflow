@@ -89,7 +89,7 @@ describe('upgrade --all live discovery', () => {
         state: 'failed',
       }),
     ]));
-    expect(calls.some((call) => call === 'claude plugin list --scope user')).toBe(false);
+    expect(calls.some((call) => call.startsWith('claude plugin list'))).toBe(false);
     expect(calls.some((call) => call.startsWith('codex plugin list'))).toBe(false);
     expect(result.targetResults.some((entry) => entry.target.pluginName.includes('ghost'))).toBe(false);
   });
@@ -145,7 +145,7 @@ describe('upgrade --all live discovery', () => {
     ]));
     expect(result.targetResults.some((entry) =>
       entry.target.pluginName === 'codex-user-residue')).toBe(false);
-    expect(calls.some((call) => call === 'claude plugin list --scope project')).toBe(false);
+    expect(calls.some((call) => call.startsWith('claude plugin list'))).toBe(false);
     expect(calls.some((call) => call.startsWith('codex plugin list'))).toBe(false);
     expect(result.targetResults.some((entry) => entry.target.pluginName.includes('ghost'))).toBe(false);
   });

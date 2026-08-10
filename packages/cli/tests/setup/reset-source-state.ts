@@ -5,6 +5,7 @@ import { setEmbeddedPluginsRootOverrideForTests } from '../../src/utils/paths.js
 import { setTestPathFenceHookForTests } from '../../src/utils/test-path-fence.js';
 import { clearAgentVersionProbeCacheForTests } from '../../src/utils/agent-version.js';
 import { clearCurrentCatalogResolutionMemoForTests } from '../../src/utils/plugin-catalog.js';
+import { setActiveMarketplaceLifecycleBeforeAcquireHookForTests } from '../../src/utils/active-marketplace-runtime-lock.js';
 import { resetSourceTestNativeGuards } from '../helpers/native-guard.js';
 
 export function resetSourceStateForTests(): void {
@@ -13,6 +14,7 @@ export function resetSourceStateForTests(): void {
   setTestPathFenceHookForTests(null);
   clearAgentVersionProbeCacheForTests();
   clearCurrentCatalogResolutionMemoForTests();
+  setActiveMarketplaceLifecycleBeforeAcquireHookForTests(undefined);
   resetSourceTestNativeGuards();
   vi.unstubAllGlobals();
 }

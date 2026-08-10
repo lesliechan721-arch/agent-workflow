@@ -18,6 +18,12 @@ import {
   calculateFileDigest,
   calculatePluginBundleFingerprintV2,
 } from './bundle-integrity.js';
+import {
+  acquireActiveMarketplaceLifecycleLeaseAtRoot,
+  releaseActiveMarketplaceCoordinationLease,
+  resolveActiveMarketplaceRuntimeCoordinationRoot,
+  withActiveMarketplaceLifecycleLease,
+} from './active-marketplace-runtime-lock.js';
 import { PLUGIN_LIFECYCLE_EVENTS } from './plugin-script-contract.js';
 import {
   acquireProcessLock,
@@ -108,6 +114,7 @@ export interface LifecycleActiveMetadata extends LifecycleActiveMetadataPayload 
 
 export interface LifecycleActiveTarget extends LifecycleActiveTargetIdentity {
   awHome: string;
+  coordinationRoot: string;
   storeRoot: string;
   targetRoot: string;
   activeRoot: string;
@@ -314,6 +321,7 @@ export async function resolveLifecycleActiveTarget(options: {
   const rawPlatformHome = path.resolve(platform === 'codex' ? getCodexHome(env) : getClaudeHome(env));
   const platformHome = await canonicalizePathThroughExistingAncestor(rawPlatformHome);
   const locationKey = projectKey ? createProjectLocationKey(projectKey) : 'user';
+  const coordinationRoot = resolveActiveMarketplaceRuntimeCoordinationRoot(env);
   const storeRoot = assertWritableStorePath(path.join(awHome, LIFECYCLE_ACTIVE_DIR));
   const targetRoot = assertWritableStorePath(path.join(
     storeRoot,
@@ -322,12 +330,19 @@ export async function resolveLifecycleActiveTarget(options: {
     locationKey,
     options.pluginName,
   ));
+  const lockParent = assertWritableStorePath(path.join(
+    coordinationRoot,
+    'lifecycle-locks',
+    platform,
+    scope,
+    locationKey,
+  ));
   const lockPath = assertWritableStorePath(path.join(
-    path.dirname(targetRoot),
+    lockParent,
     `.${options.pluginName}.lock`,
   ));
   const operationLockPath = assertWritableStorePath(path.join(
-    path.dirname(targetRoot),
+    lockParent,
     `.${options.pluginName}.operation.lock`,
   ));
   return {
@@ -337,6 +352,7 @@ export async function resolveLifecycleActiveTarget(options: {
     projectKey,
     locationKey,
     awHome,
+    coordinationRoot,
     storeRoot,
     targetRoot,
     activeRoot: path.join(targetRoot, 'active'),
@@ -420,14 +436,46 @@ async function assertExistingDirectoryBoundary(
 }
 
 async function acquireTargetLock(target: LifecycleActiveTarget): Promise<ProcessLockLease> {
+  const lifecycleLease = await acquireActiveMarketplaceLifecycleLeaseAtRoot(target.coordinationRoot);
   const lockParent = path.dirname(target.lockPath);
-  await assertExistingPathChainHasNoSymlinks(target.awHome, lockParent);
-  await fs.ensureDir(lockParent);
-  await assertExistingPathChainHasNoSymlinks(target.awHome, lockParent);
-  return acquireProcessLock({
-    lockPath: target.lockPath,
-    fileSystem: processLockFileSystemForTests,
-  });
+  let targetLease: ProcessLockLease;
+  try {
+    await assertExistingPathChainHasNoSymlinks(target.coordinationRoot, lockParent);
+    await fs.ensureDir(lockParent);
+    await assertExistingPathChainHasNoSymlinks(target.coordinationRoot, lockParent);
+    targetLease = await acquireProcessLock({
+      lockPath: target.lockPath,
+      fileSystem: processLockFileSystemForTests,
+    });
+  } catch (error) {
+    try {
+      await releaseActiveMarketplaceCoordinationLease(lifecycleLease);
+    } catch (releaseError) {
+      throw new AggregateError(
+        [error, releaseError],
+        'Lifecycle target lock acquisition and lifecycle lease release both failed.',
+        { cause: error },
+      );
+    }
+    throw error;
+  }
+
+  let targetReleased = false;
+  let lifecycleReleased = false;
+  return {
+    lockPath: targetLease.lockPath,
+    owner: targetLease.owner,
+    release: async () => {
+      if (!targetReleased) {
+        await targetLease.release();
+        targetReleased = true;
+      }
+      if (!lifecycleReleased) {
+        await lifecycleLease.release();
+        lifecycleReleased = true;
+      }
+    },
+  };
 }
 
 export async function acquireLifecycleOperationLock(options: {
@@ -439,9 +487,9 @@ export async function acquireLifecycleOperationLock(options: {
 }): Promise<ProcessLockLease> {
   const target = await resolveLifecycleActiveTarget(options);
   const lockParent = path.dirname(target.operationLockPath);
-  await assertExistingPathChainHasNoSymlinks(target.awHome, lockParent);
+  await assertExistingPathChainHasNoSymlinks(target.coordinationRoot, lockParent);
   await fs.ensureDir(lockParent);
-  await assertExistingPathChainHasNoSymlinks(target.awHome, lockParent);
+  await assertExistingPathChainHasNoSymlinks(target.coordinationRoot, lockParent);
   return acquireProcessLock({
     lockPath: target.operationLockPath,
     fileSystem: processLockFileSystemForTests,
@@ -1348,22 +1396,27 @@ export async function readLifecycleActiveSnapshot(options: {
   loadPlugin: LifecycleActivePluginLoader;
   env?: NodeJS.ProcessEnv;
 }): Promise<ReadLifecycleActiveSnapshot | null> {
-  const target = await resolveLifecycleActiveTarget(options);
-  await assertExistingPathChainHasNoSymlinks(target.awHome, target.activeRoot);
-  if (!await fs.pathExists(target.activeRoot)) {
-    return null;
-  }
-  try {
-    return createReadSnapshot(
-      target,
-      await validateSnapshotRoot(target.activeRoot, target, options.loadPlugin),
-    );
-  } catch (error) {
-    if (error instanceof LifecycleActiveSnapshotError) {
-      throw error;
+  return withActiveMarketplaceLifecycleLease(options.env, async () => {
+    const target = await resolveLifecycleActiveTarget(options);
+    await assertExistingPathChainHasNoSymlinks(target.awHome, target.activeRoot);
+    if (!await fs.pathExists(target.activeRoot)) {
+      return null;
     }
-    throw new LifecycleActiveSnapshotError('Lifecycle active snapshot is corrupt.', { cause: error });
-  }
+    try {
+      return createReadSnapshot(
+        target,
+        await validateSnapshotRoot(target.activeRoot, target, options.loadPlugin),
+      );
+    } catch (error) {
+      if (error instanceof LifecycleActiveSnapshotError) {
+        throw error;
+      }
+      throw new LifecycleActiveSnapshotError(
+        'Lifecycle active snapshot is corrupt.',
+        { cause: error },
+      );
+    }
+  });
 }
 
 export async function leaseLifecycleActiveSnapshot(options: {

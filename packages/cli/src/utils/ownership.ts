@@ -27,7 +27,7 @@ export interface SkillOwnerMarker extends OwnerIdentity {
   schemaVersion: 1;
 }
 
-export type OwnedProbeResult = 'present' | 'absent' | 'foreign';
+export type OwnedProbeResult = 'present' | 'absent' | 'partial' | 'foreign';
 
 interface OwnedPathComponent {
   path: string;
@@ -36,7 +36,7 @@ interface OwnedPathComponent {
 }
 
 export type OwnedComponent =
-  | ({ kind: 'skill-directory' } & OwnedPathComponent)
+  | ({ kind: 'skill-directory'; validateHealth?: () => Promise<void> } & OwnedPathComponent)
   | ({ kind: 'owned-text-file' } & OwnedPathComponent)
   | {
       kind: 'managed-block' | 'shared-config';
@@ -521,17 +521,38 @@ async function inspectComponent(
 export async function inspectOwnedComponents(options: {
   components: readonly OwnedComponent[];
   nativeProbe?: NativeOwnershipProbe;
+  verifyHealth?: boolean;
 }): Promise<OwnershipInspection> {
   const components: OwnedComponentInspection[] = [];
   const errors: OwnershipError[] = [];
   for (const component of options.components) {
     const label = componentLabel(component);
     try {
-      const probe = await inspectComponent(component, options.nativeProbe);
+      let probe = await inspectComponent(component, options.nativeProbe);
+      let healthDiagnostic: string | undefined;
+      if (
+        options.verifyHealth
+        && probe === 'present'
+        && component.kind === 'skill-directory'
+        && component.validateHealth
+      ) {
+        try {
+          await component.validateHealth();
+        } catch (error) {
+          probe = 'partial';
+          healthDiagnostic = errorMessage(error);
+        }
+      }
       components.push({
         component,
         state: probe === 'foreign' ? 'partial' : probe,
-        ...(probe === 'foreign' ? { diagnostic: `存在 foreign collision：${label}` } : {}),
+        ...(probe === 'foreign'
+          ? { diagnostic: `存在 foreign collision：${label}` }
+          : healthDiagnostic
+            ? { diagnostic: healthDiagnostic }
+            : probe === 'partial'
+              ? { diagnostic: `组件归属有效但内容或启用状态不完整：${label}` }
+              : {}),
       });
     } catch (error) {
       const message = errorMessage(error);
@@ -663,7 +684,7 @@ export async function cleanupOwnedComponents(options: {
       const probe = await inspectComponent(component, options.nativeProbe);
       probes.set(component, probe);
       if (probe === 'absent') pushUnique(result.absent, label);
-      if (probe === 'foreign') pushUnique(result.residual, label);
+      if (probe === 'foreign' || probe === 'partial') pushUnique(result.residual, label);
     } catch (error) {
       result.failures.push({ label, phase: 'probe', message: errorMessage(error) });
       pushUnique(result.residual, label);

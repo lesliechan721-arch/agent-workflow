@@ -13,6 +13,8 @@ import {
   readCliPackageInfo,
   readCurrentCatalogCacheEntry,
   readCurrentCatalogCacheEntryBySelector,
+  setLocalMarketplaceAfterTargetMovedToBackupForTests,
+  setLocalMarketplaceAfterStagingPreparedForTests,
   validateLocalMarketplaceLayout,
   writeCurrentCatalogCacheEntry,
   type CurrentCatalogCacheEntry,
@@ -21,6 +23,11 @@ import {
 } from '../../src/utils/local-marketplace.js';
 import { getCodexHome, resolveCurrentCatalogCacheEntryDir } from '../../src/utils/paths.js';
 import { SKILL_OWNER_MARKER } from '../../src/utils/ownership.js';
+import { patchPluginConfigStore } from '../../src/utils/plugin-config.js';
+import { acquireLifecycleOperationLock } from '../../src/utils/lifecycle-active-store.js';
+import { withActiveMarketplaceRuntimeLease } from '../../src/utils/active-marketplace-runtime-lock.js';
+import { writeDynamicSkillTree } from '../../src/utils/dynamic-skill-tree.js';
+import type { ProcessLockLease } from '../../src/utils/process-lock.js';
 import type { CatalogResolution, CatalogSelector } from '../../src/types.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
 
@@ -127,6 +134,8 @@ async function embeddedResolution(
 }
 
 afterEach(async () => {
+  setLocalMarketplaceAfterStagingPreparedForTests(undefined);
+  setLocalMarketplaceAfterTargetMovedToBackupForTests(undefined);
   vi.restoreAllMocks();
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
@@ -662,6 +671,222 @@ describe('strict current catalog cache', () => {
     ))).resolves.toMatchObject({ skills: './codex/custom-skills' });
   });
 
+  it('replays a Codex user Skill written after marketplace staging is prepared', async () => {
+    const workspace = await makeWorkspace();
+    const resolution = await embeddedResolution(workspace.embeddedRoot);
+    await initializeLocalMarketplace({
+      force: true,
+      env: workspace.env,
+      catalogResolution: resolution,
+    });
+    const skillKey = 'dynamic-race';
+    const embeddedManifestPath = path.join(
+      workspace.embeddedRoot,
+      'plugins',
+      'git-commit',
+      '.agents-plugin',
+      'plugin.json',
+    );
+    const embeddedManifest = await fs.readJson(embeddedManifestPath) as Record<string, unknown>;
+    const artifacts = embeddedManifest.artifacts as { targets?: unknown[] } | undefined;
+    await fs.writeJson(embeddedManifestPath, {
+      ...embeddedManifest,
+      artifacts: {
+        ...(artifacts ?? {}),
+        targets: [
+          ...(artifacts?.targets ?? []),
+          {
+            id: skillKey,
+            platform: 'codex',
+            scopes: ['user'],
+            target: 'codex.skill',
+            states: ['present'],
+            refreshKeys: [],
+            skillKey,
+          },
+        ],
+      },
+    }, { spaces: 2 });
+    const skillsRoot = path.join(
+      workspace.awHome,
+      'plugins',
+      'git-commit',
+      'codex',
+      'skills',
+    );
+    const skillRoot = path.join(skillsRoot, skillKey);
+    let writer: Promise<string[]> | undefined;
+    setLocalMarketplaceAfterStagingPreparedForTests(async () => {
+      writer = withActiveMarketplaceRuntimeLease(workspace.env, () => writeDynamicSkillTree(
+        skillRoot,
+        {
+          skillKey,
+          files: {
+            'SKILL.md': Buffer.from('# Dynamic race\n'),
+            'agents/openai.yaml': Buffer.from([
+              'interface:',
+              '  display_name: "Dynamic race"',
+              '  short_description: "Concurrency fixture"',
+              '  default_prompt: "Use $dynamic-race."',
+              'policy:',
+              '  allow_implicit_invocation: true',
+              '',
+            ].join('\n')),
+          },
+        },
+        {
+          allowedRoot: skillsRoot,
+          identity: {
+            owner: 'agent-workflows',
+            plugin: 'git-commit',
+            artifactKey: skillKey,
+            platform: 'codex',
+            scope: 'user',
+          },
+        },
+      ));
+      await writer;
+    });
+
+    await initializeLocalMarketplace({
+      force: true,
+      env: workspace.env,
+      catalogResolution: resolution,
+    });
+
+    await writer;
+    await expect(fs.readFile(path.join(skillRoot, 'SKILL.md'), 'utf8'))
+      .resolves.toBe('# Dynamic race\n');
+    await expect(fs.pathExists(path.join(skillRoot, SKILL_OWNER_MARKER))).resolves.toBe(true);
+  });
+
+  it('preserves the latest runtime state across two concurrent marketplace replacements', async () => {
+    const workspace = await makeWorkspace();
+    const resolution = await embeddedResolution(workspace.embeddedRoot);
+    await initializeLocalMarketplace({
+      force: true,
+      env: workspace.env,
+      catalogResolution: resolution,
+    });
+    const staleConfig = path.join(workspace.awHome, 'plugin-config', 'stale.json');
+    const currentConfig = path.join(workspace.awHome, 'plugin-config', 'current.json');
+    const staleLifecycle = path.join(workspace.awHome, 'lifecycle-active', 'stale.json');
+    const currentSnapshot = path.join(
+      workspace.awHome,
+      'lifecycle-active',
+      'targets',
+      'current',
+      'snapshot.json',
+    );
+    const operationLock = path.join(
+      workspace.awHome,
+      'lifecycle-active',
+      'locks',
+      'current.operation.lock',
+    );
+    await fs.outputJson(staleConfig, { generation: 'stale' });
+    await fs.outputJson(staleLifecycle, { generation: 'stale' });
+
+    let staged = 0;
+    let releaseStaging!: () => void;
+    const stagingBarrier = new Promise<void>((resolve) => {
+      releaseStaging = resolve;
+    });
+    setLocalMarketplaceAfterStagingPreparedForTests(async () => {
+      staged += 1;
+      if (staged === 2) {
+        await fs.remove(staleConfig);
+        await fs.remove(staleLifecycle);
+        await fs.outputJson(currentConfig, { generation: 'current' });
+        await fs.outputJson(currentSnapshot, { generation: 'current' });
+        await fs.outputFile(operationLock, 'current-owner\n');
+        releaseStaging();
+      }
+      await stagingBarrier;
+    });
+
+    await Promise.all([
+      initializeLocalMarketplace({
+        force: true,
+        env: workspace.env,
+        catalogResolution: resolution,
+      }),
+      initializeLocalMarketplace({
+        force: true,
+        env: workspace.env,
+        catalogResolution: resolution,
+      }),
+    ]);
+
+    await expect(fs.pathExists(staleConfig)).resolves.toBe(false);
+    await expect(fs.pathExists(staleLifecycle)).resolves.toBe(false);
+    await expect(fs.readJson(currentConfig)).resolves.toEqual({ generation: 'current' });
+    await expect(fs.readJson(currentSnapshot)).resolves.toEqual({ generation: 'current' });
+    await expect(fs.readFile(operationLock, 'utf8')).resolves.toBe('current-owner\n');
+  });
+
+  it('serializes runtime writers and keeps operation locks outside an active root replacement', async () => {
+    const workspace = await makeWorkspace();
+    const resolution = await embeddedResolution(workspace.embeddedRoot);
+    await initializeLocalMarketplace({
+      force: true,
+      env: workspace.env,
+      catalogResolution: resolution,
+    });
+
+    let configWrite: ReturnType<typeof patchPluginConfigStore> | undefined;
+    let operationLease: ProcessLockLease | undefined;
+    setLocalMarketplaceAfterTargetMovedToBackupForTests(async () => {
+      expect(await fs.pathExists(workspace.awHome)).toBe(false);
+      configWrite = patchPluginConfigStore({
+        pluginName: 'runtime-writer',
+        scope: 'user',
+        cwd: path.dirname(workspace.awHome),
+        env: workspace.env,
+        updates: { generation: 'current' },
+      });
+      operationLease = await acquireLifecycleOperationLock({
+        pluginName: 'runtime-writer',
+        platform: 'codex',
+        scope: 'user',
+        cwd: path.dirname(workspace.awHome),
+        env: workspace.env,
+      });
+      expect(path.relative(workspace.awHome, operationLease.lockPath).startsWith('..')).toBe(true);
+      expect(await fs.pathExists(workspace.awHome)).toBe(false);
+    });
+
+    try {
+      await initializeLocalMarketplace({
+        force: true,
+        env: workspace.env,
+        catalogResolution: resolution,
+      });
+      await configWrite;
+      await expect(fs.readJson(path.join(
+        workspace.awHome,
+        'plugin-config',
+        'runtime-writer',
+        'config.json',
+      ))).resolves.toEqual({ generation: 'current' });
+      expect(operationLease).toBeDefined();
+      await operationLease!.release();
+      operationLease = undefined;
+      const nextLease = await acquireLifecycleOperationLock({
+        pluginName: 'runtime-writer',
+        platform: 'codex',
+        scope: 'user',
+        cwd: path.dirname(workspace.awHome),
+        env: workspace.env,
+      });
+      await nextLease.release();
+    } finally {
+      setLocalMarketplaceAfterTargetMovedToBackupForTests(undefined);
+      await configWrite?.catch(() => undefined);
+      await operationLease?.release().catch(() => undefined);
+    }
+  });
+
   it('allows missing or damaged cache during rebuild and preserves the old cache on publish failure', async () => {
     const workspace = await makeWorkspace();
     const resolution = await embeddedResolution(workspace.embeddedRoot);
@@ -679,8 +904,12 @@ describe('strict current catalog cache', () => {
     })).resolves.toMatchObject({ changed: true });
 
     const markerPath = path.join(workspace.awHome, 'catalog-cache', 'marker.bin');
+    const configMarkerPath = path.join(workspace.awHome, 'plugin-config', 'marker.json');
+    const lifecycleMarkerPath = path.join(workspace.awHome, 'lifecycle-active', 'marker.json');
     const marker = Buffer.from([0, 1, 2, 3, 255]);
     await fs.outputFile(markerPath, marker);
+    await fs.outputJson(configMarkerPath, { preserved: 'config' });
+    await fs.outputJson(lifecycleMarkerPath, { preserved: 'lifecycle' });
     const realMove: typeof fs.move = fs.move.bind(fs);
     const moveSpy = vi.spyOn(fs, 'move').mockImplementation(async (...args) => {
       if (
@@ -700,6 +929,8 @@ describe('strict current catalog cache', () => {
     moveSpy.mockRestore();
 
     await expect(fs.readFile(markerPath)).resolves.toEqual(marker);
+    await expect(fs.readJson(configMarkerPath)).resolves.toEqual({ preserved: 'config' });
+    await expect(fs.readJson(lifecycleMarkerPath)).resolves.toEqual({ preserved: 'lifecycle' });
     await expect(validateLocalMarketplaceLayout(workspace.awHome)).resolves.toBeUndefined();
   });
 });
