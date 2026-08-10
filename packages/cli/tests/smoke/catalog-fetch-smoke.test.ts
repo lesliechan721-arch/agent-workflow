@@ -181,15 +181,6 @@ describe('catalog fetch smoke', () => {
         env?: NodeJS.ProcessEnv;
       }) => Promise<unknown>;
     }>(path.join(snapshot.cliDistRoot, 'src', 'utils', 'native-cli.js'));
-    const distCodexAppServer = await importSmokeSnapshotModule<{
-      installCodexPluginViaAppServer: (options: {
-        cwd: string;
-        env: NodeJS.ProcessEnv;
-        marketplacePath: string;
-        pluginName: string;
-      }) => Promise<unknown>;
-    }>(path.join(snapshot.cliDistRoot, 'src', 'utils', 'codex-app-server-client.js'));
-
     expect(distMarketplace.hasCatalogPackageSourceOverrideForTests()).toBe(false);
     expect(distPaths.getEmbeddedPluginsRootOverrideForTests()).toBeNull();
     expect(() => distPaths.resolveAwHome({
@@ -215,12 +206,6 @@ describe('catalog fetch smoke', () => {
       cwd: process.cwd(),
       env: process.env,
     })).rejects.toThrow('测试默认禁止真实 native CLI 调用');
-    await expect(distCodexAppServer.installCodexPluginViaAppServer({
-      cwd: process.cwd(),
-      env: process.env,
-      marketplacePath: path.join(process.cwd(), 'fake-marketplace'),
-      pluginName: 'git-commit',
-    })).rejects.toThrow('测试默认禁止启动真实 `codex app-server`');
   });
 
   it('resolves sidecar before full and reuses current catalog cache before a later full download', async () => {

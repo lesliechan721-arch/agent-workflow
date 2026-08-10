@@ -3,10 +3,7 @@ import path from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { PassThrough, Writable } from 'node:stream';
 
-import {
-  createFileDebugLogger,
-  createNoopDebugLogger,
-} from '../output/debug-log.js';
+import { createFileDebugLogger } from '../output/debug-log.js';
 import type {
   CommandEvent,
   CommandNotice,

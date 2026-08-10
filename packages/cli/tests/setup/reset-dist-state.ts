@@ -9,14 +9,12 @@ import {
   assertPathWithinWritableRoots,
 } from '../helpers/test-isolation.js';
 import {
-  createTestCodexAppServerProcessGuard,
   createTestNativeCliGuard,
 } from '../helpers/native-guard.js';
 import type {
   TestPathFenceCheck,
   TestRootRegistry,
 } from '../helpers/path-fence.js';
-import type { CodexAppServerProcessRunner } from '../../src/utils/codex-app-server-client.js';
 import type { NativeCliRunner } from '../../src/utils/native-cli.js';
 import type { TestPathFenceHook } from '../../src/utils/test-path-fence.js';
 
@@ -36,10 +34,6 @@ interface DistNativeCliModule {
   setNativeCliRunnerOverrideForTests: (runner: NativeCliRunner | null) => void;
 }
 
-interface DistCodexAppServerModule {
-  setCodexAppServerProcessRunnerOverrideForTests: (runner: CodexAppServerProcessRunner | null) => void;
-}
-
 interface DistTestPathFenceModule {
   setTestPathFenceHookForTests: (hook: TestPathFenceHook | null) => void;
 }
@@ -49,7 +43,6 @@ interface DistStateModules {
   marketplace: DistMarketplaceModule | null;
   pluginCatalog: DistPluginCatalogModule | null;
   nativeCli: DistNativeCliModule | null;
-  codexAppServer: DistCodexAppServerModule | null;
   testPathFence: DistTestPathFenceModule | null;
 }
 
@@ -63,7 +56,6 @@ const distStateModulePaths = {
   marketplace: 'src/utils/marketplace.js',
   pluginCatalog: 'src/utils/plugin-catalog.js',
   nativeCli: 'src/utils/native-cli.js',
-  codexAppServer: 'src/utils/codex-app-server-client.js',
   testPathFence: 'src/utils/test-path-fence.js',
 } as const;
 
@@ -131,7 +123,6 @@ async function loadDistStateModules(cliPackageRoot: string): Promise<DistStateMo
   const rawMarketplace = await importDistModule<DistMarketplaceModule>(cliPackageRoot, distStateModulePaths.marketplace);
   const rawPluginCatalog = await importDistModule<DistPluginCatalogModule>(cliPackageRoot, distStateModulePaths.pluginCatalog);
   const rawNativeCli = await importDistModule<DistNativeCliModule>(cliPackageRoot, distStateModulePaths.nativeCli);
-  const rawCodexAppServer = await importDistModule<DistCodexAppServerModule>(cliPackageRoot, distStateModulePaths.codexAppServer);
   const rawTestPathFence = await importDistModule<DistTestPathFenceModule>(cliPackageRoot, distStateModulePaths.testPathFence);
 
   const modules = {
@@ -139,7 +130,6 @@ async function loadDistStateModules(cliPackageRoot: string): Promise<DistStateMo
     marketplace: hasFunctionExport(rawMarketplace, 'setCatalogPackageSourceForTests') ? rawMarketplace : null,
     pluginCatalog: hasFunctionExport(rawPluginCatalog, 'clearCurrentCatalogResolutionMemoForTests') ? rawPluginCatalog : null,
     nativeCli: hasFunctionExport(rawNativeCli, 'setNativeCliRunnerOverrideForTests') ? rawNativeCli : null,
-    codexAppServer: hasFunctionExport(rawCodexAppServer, 'setCodexAppServerProcessRunnerOverrideForTests') ? rawCodexAppServer : null,
     testPathFence: hasFunctionExport(rawTestPathFence, 'setTestPathFenceHookForTests') ? rawTestPathFence : null,
   };
 
@@ -189,10 +179,6 @@ export async function installDistStateForTests(
     cwdSource: 'dist runNativeCli()/createCommandExecutionContext() invocation.cwd',
     envSource: 'dist runNativeCli()/createCommandExecutionContext() invocation.env',
   }));
-  modules.codexAppServer?.setCodexAppServerProcessRunnerOverrideForTests(createTestCodexAppServerProcessGuard({
-    cwdSource: 'dist installCodexPluginViaAppServer()/uninstallCodexPluginViaAppServer() invocation.cwd',
-    envSource: 'dist installCodexPluginViaAppServer()/uninstallCodexPluginViaAppServer() invocation.env',
-  }));
   modules.testPathFence?.setTestPathFenceHookForTests(createDistPathFenceHook(rootRegistry));
 }
 
@@ -202,7 +188,6 @@ export async function resetDistStateForTests(): Promise<void> {
     modules.marketplace?.setCatalogPackageSourceForTests(null);
     modules.pluginCatalog?.clearCurrentCatalogResolutionMemoForTests();
     modules.nativeCli?.setNativeCliRunnerOverrideForTests(null);
-    modules.codexAppServer?.setCodexAppServerProcessRunnerOverrideForTests(null);
     modules.testPathFence?.setTestPathFenceHookForTests(null);
   }
 }

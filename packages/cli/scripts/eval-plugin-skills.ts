@@ -41,7 +41,6 @@ import {
   combinePluginEvalOutcome,
   PLUGIN_EVAL_SCHEMA_VERSION,
   readPluginEvalManifest,
-  type MaterializedPluginEvalSubject,
   type PluginEvaluationBundle,
   type PluginEvalCommandSuite,
   type PluginEvalManifest,

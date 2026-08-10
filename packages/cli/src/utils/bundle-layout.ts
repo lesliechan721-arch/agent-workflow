@@ -3,7 +3,6 @@ import path from 'node:path';
 import fs from 'fs-extra';
 
 import type {
-  CatalogManifest,
   MarketplaceManifest,
   PlatformName,
   PluginMeta,

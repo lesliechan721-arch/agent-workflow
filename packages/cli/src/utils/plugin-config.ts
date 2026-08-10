@@ -1014,10 +1014,6 @@ function redactValue(
   return field.sensitive ? '[redacted]' : value;
 }
 
-function sourceForScope(scope: Scope): PluginConfigSource {
-  return scope;
-}
-
 function sourceForStoreLayer(
   scope: Scope,
   projectLayer: ProjectConfigStoreLayer = 'shared',
@@ -1690,16 +1686,10 @@ async function buildManifestFieldEntries(options: {
   }
 
   const projectRoot = resolveAwProjectRoot(options.cwd);
-  const [userStore, projectStore, projectLocalStore] = await Promise.all([
+  const [userStore, projectLocalStore] = await Promise.all([
     readPluginConfigStore({
       pluginName: options.plugin.manifest.name,
       scope: 'user',
-      cwd: options.cwd,
-      env: options.env,
-    }),
-    readPluginConfigStore({
-      pluginName: options.plugin.manifest.name,
-      scope: 'project',
       cwd: options.cwd,
       env: options.env,
     }),
@@ -1712,7 +1702,6 @@ async function buildManifestFieldEntries(options: {
     }),
   ]);
   const userPlainEntries = getStoreEntries(userStore.values);
-  const projectPlainEntries = getStoreEntries(projectStore.values);
   const localPlainEntries = getStoreEntries(projectLocalStore.values);
   const effective = await resolveEffectivePluginConfig({
     pluginName: options.plugin.manifest.name,
@@ -1879,33 +1868,6 @@ export async function resolveConfigRead(options: {
   env?: NodeJS.ProcessEnv;
 }): Promise<ResolvedConfigRead> {
   const pluginName = assertSafePluginConfigSegment(options.pluginName);
-  const projectRoot = resolveAwProjectRoot(options.cwd);
-  const [userStore, projectStore, projectLocalStore] = await Promise.all([
-    readPluginConfigStore({
-      pluginName,
-      scope: 'user',
-      cwd: options.cwd,
-      env: options.env,
-    }),
-    readPluginConfigStore({
-      pluginName,
-      scope: 'project',
-      cwd: options.cwd,
-      env: options.env,
-    }),
-    readPluginConfigStore({
-      pluginName,
-      scope: 'project',
-      projectLayer: 'local',
-      cwd: options.cwd,
-      env: options.env,
-    }),
-  ]);
-  const stores = {
-    user: userStore,
-    project: projectStore,
-    projectLocal: projectLocalStore,
-  };
   const schemaAccess = await resolvePluginConfigSchemaAccess({
     pluginName,
     currentPlugin: options.plugin,

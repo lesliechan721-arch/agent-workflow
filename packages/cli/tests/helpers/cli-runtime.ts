@@ -6,16 +6,12 @@ import {
   type CommandExecutionContext,
   type CommandExecutionContextInput,
 } from '../../src/commands/runtime.js';
-import type { CodexAppServerProcessRunner } from '../../src/utils/codex-app-server-client.js';
 import {
   runCli,
   type CliRuntimeOptions,
 } from '../../src/index.js';
 import { getCurrentSourceTestRootRegistry } from '../setup/test-isolation.js';
-import {
-  createTestCodexAppServerProcessGuard,
-  createTestNativeCliGuard,
-} from './native-guard.js';
+import { createTestNativeCliGuard } from './native-guard.js';
 import {
   assertIsolatedTestEnv,
   assertSafeTestCwd,
@@ -24,18 +20,15 @@ import {
 export interface SafeCliRuntimeOptions extends Omit<CliRuntimeOptions, 'cwd' | 'env'> {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
-  codexAppServerRunner?: CodexAppServerProcessRunner;
 }
 
 export interface SafeCommandExecutionContextInput extends Omit<CommandExecutionContextInput, 'env'> {
   env?: NodeJS.ProcessEnv;
-  codexAppServerRunner?: CodexAppServerProcessRunner;
 }
 
 export interface SafeCliExecutionContextInput extends Omit<CliExecutionContextInput, 'cwd' | 'env'> {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
-  codexAppServerRunner?: CodexAppServerProcessRunner;
 }
 
 export interface RunSafeCliOptions extends SafeCliRuntimeOptions {
@@ -69,7 +62,6 @@ export function createSafeCliRuntimeOptions(
 ): CliRuntimeOptions {
   const {
     nativeCliRunner,
-    codexAppServerRunner,
     ...runtimeOptions
   } = options;
 
@@ -97,7 +89,6 @@ export function createSafeCommandExecutionContext(
 ): CommandExecutionContext {
   const {
     nativeCliRunner,
-    codexAppServerRunner,
     ...contextInput
   } = input;
 

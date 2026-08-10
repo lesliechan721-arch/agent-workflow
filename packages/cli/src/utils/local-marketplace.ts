@@ -1485,10 +1485,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function isStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((entry) => typeof entry === 'string');
-}
-
 function isCatalogChannel(value: unknown): value is CatalogChannel {
   return value === 'latest' || value === 'beta';
 }
@@ -2132,28 +2128,6 @@ export async function resolveReadOnlyCatalogResolution(
   }
 
   throw currentCatalogError;
-}
-
-async function isFreshLocalMarketplace(
-  awHome: string,
-  sourceVersion: string,
-  bundleFingerprint: string,
-): Promise<boolean> {
-  const config = await readLocalMarketplaceConfig(awHome);
-  if (!config) {
-    return false;
-  }
-
-  if (config.sourceVersion !== sourceVersion || config.bundleFingerprint !== bundleFingerprint) {
-    return false;
-  }
-
-  try {
-    await validateLocalMarketplaceLayout(awHome);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 async function moveLocalReplacementStateDirectories(

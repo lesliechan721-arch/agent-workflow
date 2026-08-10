@@ -98,10 +98,6 @@ function toPlatformRelativePath(value: string, platform: PlatformName): string {
   return `./${platform}/${stripDotSlash(value)}`;
 }
 
-function toPlatformOutputPath(value: string, platform: PlatformName): string {
-  return path.join(platform, stripDotSlash(value));
-}
-
 function isTextFile(filePath: string): boolean {
   return /\.(md|markdown|txt|json|yaml|yml|toml|rules)$/i.test(filePath);
 }

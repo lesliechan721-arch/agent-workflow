@@ -16,9 +16,6 @@ import {
   getClaudeHome,
   getCodexHome,
   resolveAwHome,
-  resolveAwHomeCanonical,
-  resolveCodexProjectKey,
-  resolveRepoRoot,
   resolveRepoRootSync,
 } from './state-paths.js';
 export {

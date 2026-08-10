@@ -5,10 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import {
-  createBuildSnapshot,
-  withBuildSnapshot,
-} from '../build/build-cache.mjs';
+import { withBuildSnapshot } from '../build/build-cache.mjs';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const semverPattern =
@@ -85,10 +82,6 @@ export async function syncCliVersion(version) {
   ]);
 
   return version;
-}
-
-export async function syncRepoVersion(version) {
-  return syncCliVersion(version);
 }
 
 export async function runCommand(command, args, options = {}) {
@@ -423,10 +416,6 @@ export async function packCli({ destination = tarballDir, snapshot } = {}) {
   return withBuildSnapshot(repoRoot, (ownedSnapshot) =>
     packCliFromSnapshot(ownedSnapshot, destination)
   );
-}
-
-export function createReleaseBuildSnapshot(options = {}) {
-  return createBuildSnapshot(repoRoot, options);
 }
 
 export function withReleaseBuildSnapshot(callback, options = {}) {

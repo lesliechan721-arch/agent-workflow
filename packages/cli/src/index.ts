@@ -35,7 +35,6 @@ import {
   resolveConfigProjectLayer,
   resolveConfigWriteScope,
   applyCatalogSelectorEnv,
-  normalizeCommandOptions,
   normalizeInstallCommandOptions,
   normalizeReinstallCommandOptions,
   normalizeStatusCommandOptions,
@@ -57,17 +56,11 @@ import { resolveCliPackageRoot } from './utils/paths.js';
 import { isCatalogResolutionError, resolveCatalogPlugins } from './utils/plugin-catalog.js';
 import {
   assertSafePluginConfigSegment,
-  coercePluginConfigValue,
   findConfigFieldEntry,
   hasConfigReadContent,
   readPluginConfigStore,
   renderPluginConfigValueForDisplay,
   resolveConfigRead,
-  resolveEffectivePluginConfig,
-  resolveProjectScopedPluginConfigView,
-  resolveProjectLocalPluginConfigView,
-  summarizeEffectivePluginConfig,
-  type PluginConfigIssue,
 } from './utils/plugin-config.js';
 import {
   applyPluginConfigWrite,
@@ -75,7 +68,7 @@ import {
   resetPluginConfigWithHelper,
 } from './utils/plugin-config-write.js';
 import { assertStrictSemVer } from './utils/manifest.js';
-import type { ConfigFieldEntry, PluginManifestSource, PluginMeta, Scope } from './types.js';
+import type { ConfigFieldEntry, PluginMeta, Scope } from './types.js';
 
 export type { CliIo } from './commands/runtime.js';
 export type CliRuntimeOptions = CliExecutionContextInput;
@@ -110,7 +103,6 @@ function resolveCliVersion(): string {
 }
 
 function resolveCommandReceiptExitCode(
-  action: 'install' | 'uninstall' | 'upgrade',
   result: CliCommandResult,
 ): number {
   if (result.overallState === 'failed') {
@@ -300,27 +292,6 @@ async function runActionWithContext<T>(
   }
 }
 
-async function loadConfigManifest(
-  pluginName: string,
-  context: CliExecutionContext,
-): Promise<PluginMeta> {
-  const { plugin, error } = await loadConfigPluginLookup(pluginName, context);
-  if (error) {
-    throw error;
-  }
-  if (!plugin) {
-    throw new Error(
-      `Unknown plugin "${pluginName}". Cannot read schema-aware config without a current catalog entry. ` +
-        `Use \`aw config reset ${pluginName} -s user --yes\` or ` +
-        `\`aw config reset ${pluginName} -s project --yes\` to clean leftover config stores.`,
-    );
-  }
-  if (!plugin.manifest.config?.schema) {
-    throw new Error(`Plugin "${pluginName}" does not declare an AW config schema.`);
-  }
-  return plugin;
-}
-
 async function loadConfigPluginLookup(
   pluginName: string,
   context: CliExecutionContext,
@@ -347,10 +318,6 @@ async function loadConfigPluginLookup(
 
 function writeJsonReceipt(write: (text: string) => void, payload: unknown): void {
   writeLine(write, JSON.stringify(payload, null, 2));
-}
-
-function configScopeLabel(scope: Scope): string {
-  return scope === 'user' ? '个人' : '当前项目';
 }
 
 function configLayerLabel(scope: Scope, projectLayer: 'shared' | 'local' = 'shared'): string {
@@ -395,297 +362,9 @@ function writeConfigApplyNotice(
   }
 }
 
-function formatConfigIssueRepairHint(
-  pluginName: string,
-  issue: PluginConfigIssue,
-): string {
-  const sourceScope = issue.source === 'user' || issue.source === 'project'
-    ? ` -s ${issue.source}`
-    : issue.source === 'projectLocal'
-      ? ' -s project --local'
-    : '';
-  const setCommand = `aw config set ${pluginName} ${issue.key} <value>${sourceScope}`;
-
-  if (issue.type === 'invalid-config' && sourceScope) {
-    return [
-      `可运行 \`${setCommand}\` 重新写入`,
-      `\`aw config unset ${pluginName} ${issue.key}${sourceScope}\` 删除该值`,
-      `或 \`aw config reset ${pluginName}${sourceScope}\` 清空这一层配置`,
-    ].join('，');
-  }
-
-  return `可运行 \`${setCommand}\` 写入有效值。`;
-}
-
-function formatConfigIssues(
-  pluginName: string,
-  issues: PluginConfigIssue[],
-): string[] {
-  return issues.map((issue) => [
-    `${issue.key}: ${issue.type} - ${issue.message}`,
-    `修复建议：${formatConfigIssueRepairHint(pluginName, issue)}`,
-  ].join('。'));
-}
-
-type LocalProjectConfigView = Awaited<ReturnType<typeof resolveProjectLocalPluginConfigView>>;
-type ProjectScopedConfigView = Awaited<ReturnType<typeof resolveProjectScopedPluginConfigView>>;
-type EffectiveConfigView = Awaited<ReturnType<typeof resolveEffectivePluginConfig>>;
-type ScopedConfigView = Awaited<ReturnType<typeof resolveConfigForRead>>;
-
-function isLocalProjectConfigView(value: ScopedConfigView): value is LocalProjectConfigView {
-  return 'localStore' in value;
-}
-
-function isProjectScopedConfigView(value: ScopedConfigView): value is ProjectScopedConfigView {
-  return 'entries' in value && 'repoVisibleArtifactConfig' in value && !('localStore' in value);
-}
-
 function writeProjectLocalConfigNotice(write: (text: string) => void): void {
   writeLine(write, '当前显示的是当前项目的本机私有覆盖层，不作为 repo-visible artifact 渲染输入。');
 }
-
-function writeProjectScopedConfigNotice(write: (text: string) => void): void {
-  writeLine(
-    write,
-    '当前显示的是项目作用域的五层视图：manifest default < user < project shared < project local < effective；repo-visible artifact 仍只使用 project shared truth。',
-  );
-}
-
-function renderLayerValue(value: string | number | boolean | '[redacted]' | undefined): string {
-  return value === undefined ? '<unset>' : renderPluginConfigValueForDisplay(value);
-}
-
-function writeProjectScopedConfigEntry(
-  write: (text: string) => void,
-  key: string,
-  entry: ProjectScopedConfigView['entries'][string],
-): void {
-  writeLine(
-    write,
-    `${key}: effective=${entry.effectiveSource} ${renderLayerValue(entry.effectiveValue)}; ` +
-    `shared=${renderLayerValue(entry.projectSharedValue)}; local=${renderLayerValue(entry.projectLocalValue)}; ` +
-    `repo-visible=${entry.repoVisibleArtifactSource} ${renderLayerValue(entry.repoVisibleArtifactValue)}`,
-  );
-  if (
-    entry.effectiveSource === 'user' ||
-    entry.effectiveSource === 'projectLocal' ||
-    entry.effectiveValue !== entry.repoVisibleArtifactValue
-  ) {
-    writeLine(write, `  说明：本机 effective 值不改变 repo-visible artifact；共享真值仍取 project shared 层。`);
-  }
-}
-
-function writeConfigList(
-  write: (text: string) => void,
-  pluginName: string,
-  resolved: ScopedConfigView,
-): void {
-  if (isLocalProjectConfigView(resolved)) {
-    writeProjectLocalConfigNotice(write);
-  }
-  if (isProjectScopedConfigView(resolved)) {
-    writeProjectScopedConfigNotice(write);
-    for (const key of Object.keys(resolved.schema)) {
-      writeProjectScopedConfigEntry(write, key, resolved.entries[key]!);
-    }
-    if (resolved.repoVisibleArtifactConfig.issues.length > 0) {
-      writeLine(
-        write,
-        `共享 artifact 渲染输入存在边界问题：${resolved.repoVisibleArtifactConfig.issues.map((issue) => issue.message).join('；')}`,
-      );
-    }
-    if (resolved.issues.length > 0) {
-      writeLine(write, `配置存在问题：${formatConfigIssues(pluginName, resolved.issues).join('；')}`);
-    }
-    return;
-  }
-  for (const [key, field] of Object.entries(resolved.schema)) {
-    const source = resolved.sources[key] ?? 'missing';
-    const configured = source === 'user' || source === 'project' || source === 'projectLocal';
-    const required = field?.required ? 'required' : 'optional';
-    const fromDefault = source === 'default' ? ', default' : '';
-    writeLine(write, `${key}: ${source}${configured ? ', configured' : ''}, ${required}${fromDefault}`);
-  }
-  if (isLocalProjectConfigView(resolved)) {
-    if (resolved.repoVisibleArtifactConfig.issues.length > 0) {
-      writeLine(
-        write,
-        `共享 artifact 渲染输入仍以 project shared 为准：${resolved.repoVisibleArtifactConfig.issues.map((issue) => issue.message).join('；')}`,
-      );
-    }
-  }
-  if (resolved.issues.length > 0) {
-    writeLine(write, `配置存在问题：${formatConfigIssues(pluginName, resolved.issues).join('；')}`);
-  }
-}
-
-function writeConfigGet(
-  write: (text: string) => void,
-  pluginName: string,
-  resolved: ScopedConfigView,
-  key?: string,
-): void {
-  if (isLocalProjectConfigView(resolved)) {
-    writeProjectLocalConfigNotice(write);
-  }
-  if (isProjectScopedConfigView(resolved)) {
-    writeProjectScopedConfigNotice(write);
-    if (key) {
-      const entry = resolved.entries[key];
-      if (!entry) {
-        throw new Error(`Unknown config key "${key}".`);
-      }
-      writeLine(write, `effective=${renderLayerValue(entry.effectiveValue)}`);
-      writeLine(write, `default=${renderLayerValue(entry.defaultValue)}`);
-      writeLine(write, `user=${renderLayerValue(entry.userValue)}`);
-      writeLine(write, `project shared=${renderLayerValue(entry.projectSharedValue)}`);
-      writeLine(write, `project local=${renderLayerValue(entry.projectLocalValue)}`);
-      writeLine(
-        write,
-        `repo-visible artifact truth=${entry.repoVisibleArtifactSource} ${renderLayerValue(entry.repoVisibleArtifactValue)}`,
-      );
-      if (
-        entry.effectiveSource === 'user' ||
-        entry.effectiveSource === 'projectLocal' ||
-        entry.effectiveValue !== entry.repoVisibleArtifactValue
-      ) {
-        writeLine(write, '说明：本机 effective 值不会改写 repo-visible artifact。');
-      }
-    } else {
-      for (const [entryKey, entry] of Object.entries(resolved.entries)) {
-        writeProjectScopedConfigEntry(write, entryKey, entry);
-      }
-    }
-    if (resolved.repoVisibleArtifactConfig.issues.length > 0) {
-      writeLine(
-        write,
-        `共享 artifact 渲染输入存在边界问题：${resolved.repoVisibleArtifactConfig.issues.map((issue) => issue.message).join('；')}`,
-      );
-    }
-    if (resolved.issues.length > 0) {
-      writeLine(write, `配置存在问题：${formatConfigIssues(pluginName, resolved.issues).join('；')}`);
-    }
-    return;
-  }
-  if (key) {
-    if (!('schema' in resolved) || !resolved.schema[key]) {
-      throw new Error(`Unknown config key "${key}".`);
-    }
-    const value = resolved.redactedValues[key];
-    writeLine(write, value === undefined ? '' : renderPluginConfigValueForDisplay(value));
-  } else {
-    for (const [entryKey, value] of Object.entries(resolved.redactedValues)) {
-      writeLine(write, `${entryKey}=${renderPluginConfigValueForDisplay(value)}`);
-    }
-  }
-  if (resolved.issues.length > 0) {
-    writeLine(write, `配置存在问题：${formatConfigIssues(pluginName, resolved.issues).join('；')}`);
-  }
-}
-
-async function resolveConfigForRead(options: {
-  pluginName: string;
-  manifest: PluginManifestSource;
-  scopeOrEffective: Scope | 'effective';
-  localOnly?: boolean;
-  context: CliExecutionContext;
-}) {
-  if (options.localOnly) {
-    return resolveProjectLocalPluginConfigView({
-      pluginName: options.pluginName,
-      manifest: options.manifest,
-      cwd: options.context.cwd,
-      env: options.context.env,
-    });
-  }
-  if (options.scopeOrEffective === 'project') {
-    return resolveProjectScopedPluginConfigView({
-      pluginName: options.pluginName,
-      manifest: options.manifest,
-      cwd: options.context.cwd,
-      env: options.context.env,
-    });
-  }
-  const resolved = await resolveEffectivePluginConfig({
-    pluginName: options.pluginName,
-    manifest: options.manifest,
-    cwd: options.context.cwd,
-    env: options.context.env,
-  });
-
-  if (options.scopeOrEffective === 'effective') {
-    return resolved;
-  }
-
-  const scopedStore = resolved.stores[options.scopeOrEffective];
-  const scopedValues: Record<string, string | number | boolean> = {};
-  const scopedRedactedValues: Record<string, string | number | boolean | '[redacted]'> = {};
-  const scopedSources: Record<string, Scope | 'default' | 'missing'> = {};
-  const scopedIssues = [];
-  for (const [key, field] of Object.entries(resolved.schema)) {
-    scopedSources[key] = 'missing';
-    if (field.default !== undefined) {
-      try {
-        const coerced = await coercePluginConfigValue({
-          key,
-          field,
-          value: field.default,
-          projectRoot: resolved.projectRoot,
-        });
-        scopedValues[key] = coerced;
-        scopedRedactedValues[key] = field.sensitive ? '[redacted]' : coerced;
-        scopedSources[key] = 'default';
-      } catch (error) {
-        scopedIssues.push({
-          type: 'invalid-config' as const,
-          key,
-          source: 'default' as const,
-          message: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }
-    if (Object.hasOwn(scopedStore.values, key)) {
-      scopedSources[key] = options.scopeOrEffective;
-      try {
-        const coerced = await coercePluginConfigValue({
-          key,
-          field,
-          value: scopedStore.values[key],
-          projectRoot: resolved.projectRoot,
-        });
-        scopedValues[key] = coerced;
-        scopedRedactedValues[key] = field.sensitive ? '[redacted]' : coerced;
-      } catch (error) {
-        delete scopedValues[key];
-        delete scopedRedactedValues[key];
-        scopedIssues.push({
-          type: 'invalid-config' as const,
-          key,
-          source: options.scopeOrEffective,
-          message: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }
-    if (field.required && scopedValues[key] === undefined) {
-      scopedIssues.push({
-        type: 'missing-required' as const,
-        key,
-        source: scopedSources[key],
-        message: `Config "${key}" is required.`,
-      });
-    }
-  }
-
-  return {
-    ...resolved,
-    values: scopedValues,
-    redactedValues: scopedRedactedValues,
-    sources: scopedSources,
-    issues: scopedIssues,
-    ignoredUnknownKeys: resolved.ignoredUnknownKeys.filter((entry) => entry.scope === options.scopeOrEffective),
-  };
-}
-
 function renderConfigFieldState(field: ConfigFieldEntry): string {
   if (field.valueState === 'invalid') {
     return 'invalid-config';
@@ -876,7 +555,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           }
         }
         writeWarnings(io.stderr, receipt.result.warnings, { actionableOnly: true });
-        commandExitState.exitCode = resolveCommandReceiptExitCode('install', receipt.result);
+        commandExitState.exitCode = resolveCommandReceiptExitCode(receipt.result);
       },
     );
 
@@ -934,7 +613,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         }
       }
       writeWarnings(io.stderr, receipt.result.warnings, { actionableOnly: true });
-      commandExitState.exitCode = resolveCommandReceiptExitCode('uninstall', receipt.result);
+      commandExitState.exitCode = resolveCommandReceiptExitCode(receipt.result);
     });
 
   addCatalogSelectorOptions(
@@ -998,7 +677,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           }
         }
         writeWarnings(io.stderr, receipt.result.warnings, { actionableOnly: true });
-        commandExitState.exitCode = resolveCommandReceiptExitCode('upgrade', receipt.result);
+        commandExitState.exitCode = resolveCommandReceiptExitCode(receipt.result);
       },
     );
 
@@ -1108,7 +787,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         }
       }
       writeWarnings(io.stderr, receipt.result.warnings, { actionableOnly: true });
-      commandExitState.exitCode = resolveCommandReceiptExitCode('install', receipt.result);
+      commandExitState.exitCode = resolveCommandReceiptExitCode(receipt.result);
     });
 
   const config = program

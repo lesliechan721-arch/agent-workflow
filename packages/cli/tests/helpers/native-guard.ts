@@ -1,12 +1,6 @@
 import path from 'node:path';
 
 import {
-  CodexAppServerError,
-  type CodexAppServerInvocation,
-  type CodexAppServerProcessRunner,
-  setCodexAppServerProcessRunnerOverrideForTests,
-} from '../../src/utils/codex-app-server-client.js';
-import {
   execFileNativeCliRunner,
   type NativeCliInvocation,
   type NativeCliRunner,
@@ -61,14 +55,6 @@ function isGuardedNativeCliInvocation(
 
 function isVersionProbeInvocation(invocation: NativeCliInvocation): boolean {
   return invocation.args.length === 1 && invocation.args[0] === '--version';
-}
-
-function isCodexAppServerInvocation(invocation: CodexAppServerInvocation): boolean {
-  return (
-    normalizeCommandName(invocation.command) === 'codex' &&
-    invocation.args.length > 0 &&
-    invocation.args[0] === 'app-server'
-  );
 }
 
 export class TestNativeCliGuardError extends Error {
@@ -130,54 +116,13 @@ export function createTestNativeCliGuard(options: {
   };
 }
 
-export function createTestCodexAppServerProcessGuard(options: {
-  cwdSource?: string;
-  envSource?: string;
-  fallbackRunner?: CodexAppServerProcessRunner;
-} = {}): CodexAppServerProcessRunner {
-  const cwdSource = options.cwdSource ?? 'codex app-server invocation.cwd';
-  const envSource = options.envSource ?? 'codex app-server invocation.env';
-
-  return (invocation) => {
-    if (isCodexAppServerInvocation(invocation)) {
-      throw new CodexAppServerError({
-        category: 'spawn_failure',
-        summary: '测试默认禁止启动真实 `codex app-server`。',
-        suggestion: '请显式注入 fake app-server harness，例如 `createFakeCodexAppServerHarness()` 或向 safe CLI/helper 传入 `codexAppServerRunner`。',
-        debugContext: {
-          command: invocation.command,
-          args: invocation.args,
-          cwd: invocation.cwd,
-          envSummary: renderEnvSummary(invocation.env),
-          cwdSource,
-          envSource,
-          method: 'initialize',
-        },
-      });
-    }
-
-    if (options.fallbackRunner) {
-      return options.fallbackRunner(invocation);
-    }
-
-    throw new Error(
-      `Unexpected non-Codex app-server invocation in test guard: ${invocation.command} ${invocation.args.join(' ')}`.trim(),
-    );
-  };
-}
-
 export function installSourceTestNativeGuards(): void {
   setNativeCliRunnerOverrideForTests(createTestNativeCliGuard({
     cwdSource: 'runNativeCli()/createCommandExecutionContext() invocation.cwd',
     envSource: 'runNativeCli()/createCommandExecutionContext() invocation.env',
   }));
-  setCodexAppServerProcessRunnerOverrideForTests(createTestCodexAppServerProcessGuard({
-    cwdSource: 'installCodexPluginViaAppServer()/uninstallCodexPluginViaAppServer() invocation.cwd',
-    envSource: 'installCodexPluginViaAppServer()/uninstallCodexPluginViaAppServer() invocation.env',
-  }));
 }
 
 export function resetSourceTestNativeGuards(): void {
   setNativeCliRunnerOverrideForTests(null);
-  setCodexAppServerProcessRunnerOverrideForTests(null);
 }
