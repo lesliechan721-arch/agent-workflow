@@ -5,9 +5,8 @@ import fs from 'fs-extra';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
-  inspectTriggerExecEvent,
-  inspectTriggerStrictConfigWarning,
-  readTriggerSpawnCalls,
+  inspectTriggerAppServerConfigWarning,
+  inspectTriggerAppServerFrame,
   runCodexTriggerSuite,
   summarizeTriggerCase,
   type TriggerRunEvidence,
@@ -67,8 +66,8 @@ function runEvidence(overrides: Partial<TriggerRunEvidence>): TriggerRunEvidence
 async function createFixture(options: {
   protectedEnv?: boolean;
   detachedDescendant?: boolean;
-  stdoutEvidence?: boolean;
   rootExitDelayMs?: number;
+  useProjectRules?: boolean;
 } = {}): Promise<{
   pluginRoot: string;
   subjectRoot: string;
@@ -82,10 +81,16 @@ async function createFixture(options: {
   const descendantPidPath = path.join(root, 'descendant-pid.txt');
   await fs.ensureDir(path.join(pluginRoot, 'evals'));
   await fs.ensureDir(path.join(subjectRoot, '.agents', 'skills', 'eval-fixture'));
+  await fs.ensureDir(path.join(subjectRoot, '.codex', 'rules'));
   await fs.ensureDir(path.join(subjectRoot, '.git'));
   await fs.writeFile(
     path.join(subjectRoot, '.agents', 'skills', 'eval-fixture', 'SKILL.md'),
     '# Eval Fixture\n',
+    'utf8',
+  );
+  await fs.writeFile(
+    path.join(subjectRoot, '.codex', 'rules', 'eval.rules'),
+    'prefix_rule(pattern = ["node"], decision = "allow")\n',
     'utf8',
   );
   await fs.writeJson(path.join(pluginRoot, 'evals', 'trigger-cases.json'), {
@@ -97,6 +102,7 @@ async function createFixture(options: {
       query: 'Load the fixture and spawn one agent.',
       should_load_skill: true,
       should_spawn_agent: true,
+      ...(options.useProjectRules ? { use_project_rules: true } : {}),
     }],
   }, { spaces: 2 });
   await fs.writeFile(
@@ -126,25 +132,32 @@ async function createFixture(options: {
       'descendant.unref();',
       `fs.writeFileSync(${JSON.stringify(descendantPidPath)}, String(descendant.pid));`,
     ] : []),
-    "const cwdIndex = process.argv.indexOf('--cd');",
-    'const cwd = process.argv[cwdIndex + 1];',
-    "const sessionDir = path.join(process.env.CODEX_HOME, 'sessions');",
-    'fs.mkdirSync(sessionDir, { recursive: true });',
-    'fs.writeFileSync(path.join(sessionDir, "rollout.jsonl"), JSON.stringify({',
-    "  type: 'response_item',",
-    "  payload: { type: 'function_call', name: 'spawn_agent', namespace: 'collaboration', arguments: JSON.stringify({ agent_type: 'worker', message: 'inspect' }), call_id: 'spawn-1' },",
-    "}) + '\\n');",
+    "if (process.argv[2] !== 'app-server') process.exit(3);",
+    `if (fs.existsSync(path.join(process.cwd(), '.codex', 'rules', 'eval.rules')) !== ${
+      options.useProjectRules === true
+    }) process.exit(3);`,
+    "if (!process.argv.includes('features.multi_agent=true')) process.exit(3);",
+    "if (!process.argv.includes('features.multi_agent_v2.hide_spawn_agent_metadata=true')) process.exit(3);",
+    "if (!process.argv.includes('features.multi_agent_v2.expose_spawn_agent_model_overrides=true')) process.exit(3);",
     'const send = (value) => process.stdout.write(JSON.stringify(value) + "\\n");',
-    ...(options.stdoutEvidence === false ? [
-      'send({ type: "item.completed", item: { type: "command_execution", status: "completed", exit_code: 0, command: "cat .agents/skills/eval-fixture/SKILL.md" } });',
-    ] : [
-      'send({ type: "item.completed", item: { type: "command_execution", status: "completed", exit_code: 0, command: "cat .agents/skills/eval-fixture/SKILL.md" } });',
-      'send({ type: "item.completed", item: { type: "collab_tool_call", tool: "spawn_agent", prompt: "inspect" } });',
-      'send({ type: "turn.completed", usage: { total_tokens: 7 } });',
-    ]),
+    "const readline = require('node:readline');",
+    'const input = readline.createInterface({ input: process.stdin });',
+    "input.on('line', (line) => {",
+    '  const frame = JSON.parse(line);',
+    "  if (frame.method === 'initialize') send({ id: frame.id, result: {} });",
+    "  else if (frame.method === 'thread/start') send({ id: frame.id, result: { thread: { id: 'thread-1' } } });",
+    "  else if (frame.method === 'turn/start') {",
+    "    send({ id: frame.id, result: { turn: { id: 'turn-1', status: 'inProgress' } } });",
+    "    send({ method: 'item/completed', params: { threadId: 'thread-1', item: { id: 'read-1', type: 'commandExecution', status: 'completed', exitCode: 0, command: 'cat .agents/skills/eval-fixture/SKILL.md' } } });",
+    "    const activity = { id: 'spawn-1', type: 'subAgentActivity', kind: 'started', agentThreadId: 'agent-1', agentPath: '/root/evidence' };",
+    "    send({ method: 'item/started', params: { threadId: 'thread-1', item: activity } });",
+    "    send({ method: 'item/completed', params: { threadId: 'thread-1', item: activity } });",
+    "    send({ method: 'thread/tokenUsage/updated', params: { threadId: 'thread-1', tokenUsage: { totalTokens: 7 } } });",
+    "    send({ method: 'turn/completed', params: { threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed' } } });",
+    '  }',
+    '});',
     'process.on("SIGTERM", () => process.exit(0));',
     `setTimeout(() => process.exit(0), ${options.rootExitDelayMs ?? 100});`,
-    'void cwd;',
   ].join('\n'), 'utf8');
   await fs.chmod(codexBin, 0o755);
   return {
@@ -162,44 +175,52 @@ afterEach(async () => {
 describe('Codex native trigger eval driver', () => {
   it('only accepts completed successful skill-read evidence', () => {
     const skillPath = '/tmp/project/.agents/skills/eval-fixture/SKILL.md';
-    expect(inspectTriggerExecEvent({
-      type: 'item.started',
-      item: { type: 'command_execution', command: 'cat .agents/skills/eval-fixture/SKILL.md' },
+    expect(inspectTriggerAppServerFrame({
+      method: 'item/started',
+      params: {
+        item: {
+          type: 'commandExecution',
+          command: 'cat .agents/skills/eval-fixture/SKILL.md',
+        },
+      },
     }, skillPath)).toEqual({});
-    expect(inspectTriggerExecEvent({
-      type: 'item.completed',
-      item: {
-        type: 'command_execution',
-        status: 'completed',
-        exit_code: 0,
-        command: 'cat .agents/skills/eval-fixture/SKILL.md',
+    expect(inspectTriggerAppServerFrame({
+      method: 'item/completed',
+      params: {
+        item: {
+          type: 'commandExecution',
+          status: 'completed',
+          exitCode: 0,
+          command: 'cat .agents/skills/eval-fixture/SKILL.md',
+        },
       },
     }, skillPath)).toEqual({
       loaded: true,
       loadEvidence: 'cat .agents/skills/eval-fixture/SKILL.md',
     });
-    expect(inspectTriggerExecEvent({
-      type: 'item.completed',
-      item: {
-        type: 'command_execution',
-        status: 'completed',
-        exit_code: 0,
-        command: 'echo .agents/skills/eval-fixture/SKILL.md',
+    expect(inspectTriggerAppServerFrame({
+      method: 'item/completed',
+      params: {
+        item: {
+          type: 'commandExecution',
+          status: 'completed',
+          exitCode: 0,
+          command: 'echo .agents/skills/eval-fixture/SKILL.md',
+        },
       },
     }, skillPath)).toEqual({});
   });
 
-  it('detects project trust warnings emitted by strict Codex exec', () => {
-    expect(inspectTriggerStrictConfigWarning({
-      type: 'item.completed',
-      item: {
-        type: 'error',
-        message: 'Project-local config is disabled until the project is trusted.',
+  it('detects config warnings emitted by strict Codex app-server', () => {
+    expect(inspectTriggerAppServerConfigWarning({
+      method: 'configWarning',
+      params: {
+        summary: 'Project-local config is disabled until the project is trusted.',
       },
     })).toContain('project is trusted');
-    expect(inspectTriggerStrictConfigWarning({
-      type: 'item.completed',
-      item: { type: 'agent_message', text: 'done' },
+    expect(inspectTriggerAppServerConfigWarning({
+      method: 'item/completed',
+      params: { item: { type: 'agentMessage', text: 'done' } },
     })).toBeNull();
   });
 
@@ -224,22 +245,27 @@ describe('Codex native trigger eval driver', () => {
     ).passed).toBe(false);
   });
 
-  it('deduplicates raw spawn_agent rollout calls', async () => {
-    const codexHome = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-trigger-rollout-'));
-    tempDirs.push(codexHome);
-    const sessionRoot = path.join(codexHome, 'sessions');
-    await fs.ensureDir(sessionRoot);
-    const line = JSON.stringify({
-      type: 'response_item',
-      payload: {
-        type: 'function_call',
-        name: 'spawn_agent',
-        arguments: JSON.stringify({ agent_type: 'worker' }),
-        call_id: 'call-1',
+  it('observes V2 spawn from app-server sub-agent activity', () => {
+    expect(inspectTriggerAppServerFrame({
+      method: 'item/started',
+      params: {
+        item: {
+          id: 'spawn-1',
+          type: 'subAgentActivity',
+          kind: 'started',
+          agentThreadId: 'agent-1',
+          agentPath: '/root/evidence',
+        },
+      },
+    }, '/tmp/project/.agents/skills/eval-fixture/SKILL.md')).toMatchObject({
+      spawned: true,
+      spawnEvidence: 'app-server:/root/evidence',
+      spawnCall: {
+        source: 'app_server_sub_agent_activity',
+        agent_thread_id: 'agent-1',
+        agent_path: '/root/evidence',
       },
     });
-    await fs.writeFile(path.join(sessionRoot, 'rollout.jsonl'), `${line}\n${line}\n`, 'utf8');
-    await expect(readTriggerSpawnCalls(codexHome)).resolves.toHaveLength(1);
   });
 
   it.runIf(process.platform !== 'win32')(
@@ -258,7 +284,7 @@ describe('Codex native trigger eval driver', () => {
         sourceEnv: process.env,
         reportPath,
       });
-      expect(report).toMatchObject({
+      expect(report, JSON.stringify(report, null, 2)).toMatchObject({
         kind: 'trigger',
         outcome: 'passed',
         complete: true,
@@ -943,11 +969,10 @@ describe('Codex native trigger eval driver', () => {
   });
 
   it.runIf(process.platform !== 'win32')(
-    'cleans an observed detached descendant after the root exits before evidence processing',
+    'cleans an observed detached descendant after an early trigger stop',
     async () => {
       const fixture = await createFixture({
         detachedDescendant: true,
-        stdoutEvidence: false,
         rootExitDelayMs: 100,
       });
       let descendantPid: number | undefined;
@@ -970,7 +995,7 @@ describe('Codex native trigger eval driver', () => {
           codexBin: fixture.codexBin,
           sourceEnv: process.env,
         });
-        expect(report).toMatchObject({
+        expect(report, JSON.stringify(report, null, 2)).toMatchObject({
           outcome: 'passed',
           complete: true,
           mechanicalPassed: true,
@@ -986,6 +1011,28 @@ describe('Codex native trigger eval driver', () => {
           }
         }
       }
+    },
+  );
+
+  it.runIf(process.platform !== 'win32')(
+    'preserves project exec-policy rules only when the case requests them',
+    async () => {
+      const fixture = await createFixture({ useProjectRules: true });
+      const report = await runCodexTriggerSuite({
+        suite: suite(),
+        split: 'validation',
+        subjectRoot: fixture.subjectRoot,
+        pluginRoot: fixture.pluginRoot,
+        profile: 'project-default',
+        runs: 1,
+        codexBin: fixture.codexBin,
+        sourceEnv: process.env,
+      });
+      expect(report, JSON.stringify(report, null, 2)).toMatchObject({
+        outcome: 'passed',
+        complete: true,
+        mechanicalPassed: true,
+      });
     },
   );
 

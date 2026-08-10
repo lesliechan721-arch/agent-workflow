@@ -4,6 +4,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  realpath,
   rm,
   stat,
   writeFile,
@@ -16,6 +17,8 @@ import {
   copyCodexRuntimeFiles,
   createEvalWorkspace,
   readEvalResource,
+  resolveParentModelOverride,
+  shouldStopEarly,
 } from '../evals/eval-harness.mjs';
 import { setupTriggerWorkspace } from '../evals/trigger-fixture.mjs';
 
@@ -50,6 +53,21 @@ async function testEvalCorpus() {
   }
 }
 
+function testPositiveEarlyStopRequiresRawSpawnArguments() {
+  const evalCase = {
+    should_load_skill: true,
+    should_spawn_agent: true,
+  };
+  const observed = {
+    loaded: true,
+    spawned: true,
+    spawnCalls: [],
+  };
+  assert.equal(shouldStopEarly(evalCase, observed), null);
+  observed.spawnCalls.push({ arguments: { agent_type: 'codex-explore-standard' } });
+  assert.equal(shouldStopEarly(evalCase, observed), 'expected_outcome_observed');
+}
+
 async function testFixture() {
   const root = await mkdtemp(path.join(os.tmpdir(), 'codex-explore-fixture-'));
   try {
@@ -65,6 +83,21 @@ async function testFixture() {
     assert.match(
       await readFile(path.join(root, 'reports', 'audit', 'day-03.log'), 'utf8'),
       /worker/,
+    );
+    assert.match(
+      await readFile(
+        path.join(root, 'repo', 'modules', 'module-16', 'handler-160.ts'),
+        'utf8',
+      ),
+      /unrelated_feature_160/,
+    );
+    assert.match(
+      await readFile(path.join(root, 'reports', 'audit', 'archive-072.log'), 'utf8'),
+      /decoy-072/,
+    );
+    assert.match(
+      await readFile(path.join(root, 'materials', 'interview-18.md'), 'utf8'),
+      /outcome is unknown/,
     );
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -114,11 +147,36 @@ async function testSpecializedWorkspaceCopiesFinalArtifact() {
       );
       assert.ok(args.includes('--enable'));
       assert.ok(args.includes('multi_agent'));
+      assert.ok(args.includes('executed_tool_call_metadata'));
+      assert.ok(args.includes('suppress_unstable_features_warning=true'));
       assert.ok(args.includes('gpt-test'));
       assert.ok(args.includes('model_provider="fixture-provider"'));
       assert.ok(args.includes('shell_environment_policy.exclude=["CODEX_HOME","CUSTOM_TOKEN"]'));
       assert.equal(args.includes('--ignore-user-config'), false);
       assert.equal(args.some((arg) => arg.startsWith('agents.codex-explore-')), false);
+      const v1Args = buildCodexArgs(
+        workspace,
+        {
+          query: '$codex-explore inspect with V1',
+          parent_model: 'gpt-5.5',
+          codex_config: { 'features.multi_agent_v2.enabled': false },
+        },
+        { model: 'gpt-5.6-sol' },
+      );
+      assert.equal(v1Args[v1Args.indexOf('--model') + 1], 'gpt-5.5');
+      assert.equal(v1Args.includes('gpt-5.6-sol'), false);
+      assert.equal(
+        resolveParentModelOverride(
+          { parent_model: 'gpt-5.5' },
+          { model: 'gpt-5.6-sol' },
+        ),
+        'gpt-5.5',
+      );
+      assert.equal(
+        resolveParentModelOverride({}, { model: 'gpt-5.6-sol' }),
+        'gpt-5.6-sol',
+      );
+      assert.equal(resolveParentModelOverride({}, {}), null);
     } finally {
       await rm(workspace.root, { recursive: true, force: true });
     }
@@ -140,14 +198,22 @@ async function testCredentialIsolation() {
     ]);
     await writeFile(path.join(sourceHome, 'auth.json'), '{"token":"test"}\n', 'utf8');
     await writeFile(path.join(sourceHome, 'config.toml'), 'model_provider = "fixture"\n', 'utf8');
-    await copyCodexRuntimeFiles(targetHome, sourceHome);
+    const trustedProject = path.join(root, 'trusted-project');
+    await mkdir(trustedProject, { recursive: true });
+    await copyCodexRuntimeFiles(targetHome, sourceHome, { trustedProject });
     const target = path.join(targetHome, 'auth.json');
     assert.equal((await lstat(target)).isSymbolicLink(), false);
     assert.equal((await stat(target)).mode & 0o777, 0o600);
     assert.equal(await readFile(target, 'utf8'), '{"token":"test"}\n');
     assert.equal(
       await readFile(path.join(targetHome, 'config.toml'), 'utf8'),
-      'model_provider = "fixture"\n',
+      [
+        'model_provider = "fixture"',
+        '',
+        `[projects.${JSON.stringify(await realpath(trustedProject))}]`,
+        'trust_level = "trusted"',
+        '',
+      ].join('\n'),
     );
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -156,6 +222,7 @@ async function testCredentialIsolation() {
 
 async function main() {
   await testEvalCorpus();
+  testPositiveEarlyStopRequiresRawSpawnArguments();
   await testFixture();
   await testSpecializedWorkspaceRequiresFinalArtifact();
   await testSpecializedWorkspaceCopiesFinalArtifact();

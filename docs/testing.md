@@ -10,7 +10,7 @@
 - **`pnpm test:perf:gate`** — 先运行性能 Vitest，再运行 `test:unit:fast` 并检查 fast lane 的 wall time；由 CLI 发布验证入口执行
 - **`smoke/`** — 专门验证 CLI build、CLI pack、sidecar/full catalog pack 和 catalog fetch 产物；这些入口通过 `build:ensure` 取得已验证构建，不进入常规 `pnpm test`
 - **`pnpm plugin:test <plugin>`** — 插件作者脚本测试入口，先 compile CLI，再运行已编译的 `packages/cli/scripts/test-plugin-scripts.js`；它使用 build 后 staging manifest 判定支持平台，并准备临时 bundle，但不是 `aw` 客户端子命令
-- **`pnpm plugin:eval <plugin>`** — Codex 插件 Skill 作者 eval 入口，按插件根 `evals/manifest.json` 经过真实 staging/renderer/adapter materialize project/user 制品；中央 native trigger driver 统一负责触发评测，领域专用 command runner 也只能消费最终制品；默认运行 release-required 模型 suite，`--materialize-only` 不调用模型
+- **`pnpm plugin:eval <plugin>`** — Codex 插件 Skill 作者 eval 入口，按插件根 `evals/manifest.json` 经过真实 staging/renderer/adapter materialize project/user 制品；中央 app-server trigger driver 统一负责触发评测，领域专用 command runner 也只能消费最终制品；默认运行 release-required 模型 suite，`--materialize-only` 不调用模型
 - **`node .agents/skills/skill-review/scripts/run_static_skill_evals.mjs <skill> ...`** — 当前仓库 `.agents/skills/<name>` 的静态 project Skill eval；不伪装成插件，也不增加 package script
 - **`fixtures/repo-template/`** — 含 `.codex/`、`.claude/` 等完整项目结构示例
 - **`fixtures/codex-config/`** — Codex 配置示例

@@ -393,7 +393,7 @@ project scope 的本机私有状态和本机配置会默认加入 ignore：`.cla
 | standard | `standardModel=gpt-5.6-luna` | `standardReasoningEffort=high` |
 | deep | `deepModel=gpt-5.6-luna` | `deepReasoningEffort=xhigh` |
 
-这些角色配置和首次存活探测前的累计等待预算都可以通过 `aw config` 调整：
+这些角色配置和首次响应式等待窗口都可以通过 `aw config` 调整：
 
 ```bash
 aw config set codex-explore standardModel gpt-5.6-terra -s user

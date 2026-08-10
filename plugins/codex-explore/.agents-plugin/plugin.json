@@ -1,6 +1,6 @@
 {
   "name": "codex-explore",
-  "version": "0.2.10",
+  "version": "0.2.11",
   "description": "在大量、陌生或边界不明的代码、文档、日志和网页中隔离探索并核验证据。",
   "compatibility": {
     "aw": {
@@ -43,7 +43,8 @@
         "./scripts/render-artifacts.test.mjs",
         "./scripts/trigger-evals.test.mjs",
         "./scripts/model-selection-evals.test.mjs",
-        "./scripts/workflow-evals.test.mjs"
+        "./scripts/workflow-evals.test.mjs",
+        "./scripts/liveness-evals.test.mjs"
       ]
     }
   },
@@ -90,11 +91,11 @@
       },
       "minimumInitialWaitMinutes": {
         "type": "number",
-        "title": "首次存活探测前累计等待预算（分钟）",
+        "title": "首次响应式等待窗口（分钟）",
         "default": 10,
         "min": 1,
         "max": 60,
-        "description": "用户未明确指定时，主代理在首次非中断存活探测前应给子任务的最小累计响应式等待预算。"
+        "description": "用户未明确指定时，主代理首次响应式等待应使用的最小单次窗口。"
       }
     }
   },

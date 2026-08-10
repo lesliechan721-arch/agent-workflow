@@ -76,7 +76,7 @@ Profile 规则：
 
 Suite 规则：
 
-- `trigger` 由中央 `codex exec --json` driver 执行，使用 materialized project Skill、隔离 `CODEX_HOME`、重复运行和统一报告。它原生支持 split/runs/case/model/codex-bin，不需要插件 runner。
+- `trigger` 由中央 Codex app-server driver 执行，使用 materialized project Skill、隔离 `CODEX_HOME`、重复运行和统一报告。Skill 加载由成功的 `commandExecution` 完成事件确认；启用 `observeSpawnAgent` 时，实际委派由 V2 `subAgentActivity(kind=started)` 确认。该事件不包含完整 spawn 参数；需要校验 role、model 或 effort 时使用领域 command suite。中央 driver 原生支持 split/runs/case/model/codex-bin，不需要插件 runner。
 - `trigger` 和 `conversation` 都支持 `isolation: "standard" | "strict"`，schema v1 省略时默认为 `standard`。用于发布门禁、触发边界或行为归因的 suite 应显式使用 `strict`；只需要兼容旧语料或调试宿主集成时才使用 `standard`。
 - trigger corpus 使用 `{ "schemaVersion": 1, "skill": "...", "cases": [...] }`；每个 case 声明 `id`、`split`、`query`、`should_load_skill`，需要检查子代理时再声明 `should_spawn_agent`。
 - `fixtureModule` 只能指向 `evals/*.mjs`，必须导出 `setupTriggerWorkspace({ workspaceRoot, evalCase, env })`；可选的 `captureTriggerWorkspaceState` 返回前后可比较的 JSON 状态。fixture 只能准备临时材料，不能修改 materialized 目标 Skill，也不能覆盖 HOME/CODEX_HOME/XDG/TMP/PATH；strict 模式还禁止修改 `.agents` 和 `.codex` 控制面。

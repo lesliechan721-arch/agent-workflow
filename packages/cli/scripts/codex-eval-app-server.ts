@@ -243,7 +243,7 @@ function diffSnapshots(before: Map<string, string>, after: Map<string, string>):
     .sort((left, right) => left.localeCompare(right));
 }
 
-class EvalAppServerSession {
+export class EvalAppServerSession {
   private readonly process: AppServerProcess;
   private readonly processTreeId = randomUUID();
   private readonly processTreeMonitor: ChildProcessTreeMonitor;
@@ -267,6 +267,7 @@ class EvalAppServerSession {
     modelProvider: string;
     sensitiveEnvironmentNames: string[];
     isolation: PluginEvalIsolation;
+    configOverrides?: readonly string[];
   }) {
     assertCodexEvalCanStartWork();
     this.closed = new Promise<void>((resolve) => {
@@ -291,6 +292,9 @@ class EvalAppServerSession {
       args.push('--config', override);
     }
     for (const override of CODEX_EVAL_APP_SERVER_OVERRIDES) {
+      args.push('--config', override);
+    }
+    for (const override of options.configOverrides ?? []) {
       args.push('--config', override);
     }
     this.process = spawn(options.codexBin, args, {
@@ -612,7 +616,7 @@ async function readConversationCases(
   });
 }
 
-function extractThreadId(result: unknown): string {
+export function extractAppServerThreadId(result: unknown): string {
   if (!isRecord(result) || !isRecord(result.thread) || typeof result.thread.id !== 'string') {
     throw new Error('app-server thread/start response is missing thread.id.');
   }
@@ -794,7 +798,7 @@ async function runConversationOnce(options: {
       ephemeral: false,
       ...(options.model ? { model: options.model } : {}),
     });
-    const threadId = extractThreadId(threadResult);
+    const threadId = extractAppServerThreadId(threadResult);
     await session.sendRequest('turn/start', {
       threadId,
       input: [{ type: 'text', text: options.evalCase.prompt, text_elements: [] }],

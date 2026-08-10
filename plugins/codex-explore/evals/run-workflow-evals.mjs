@@ -102,6 +102,7 @@ function validateLifecycleContract(value, id) {
     Array.isArray(value) ||
     !Number.isInteger(value.minimum_initial_wait_timeout_ms) ||
     value.minimum_initial_wait_timeout_ms <= 0 ||
+    typeof value.allow_liveness_probe !== 'boolean' ||
     !Number.isInteger(value.max_recoveries) ||
     value.max_recoveries < 0
   ) {
@@ -119,6 +120,12 @@ function validateCase(entry, index) {
   if (typeof entry.prompt !== 'string' || entry.prompt.trim() === '') {
     throw new Error(`${entry.id}.prompt must be a non-empty string.`);
   }
+  if (
+    entry.parent_model !== undefined &&
+    (typeof entry.parent_model !== 'string' || entry.parent_model.trim() === '')
+  ) {
+    throw new Error(`${entry.id}.parent_model must be a non-empty string.`);
+  }
   const expected = entry.expected;
   if (
     !expected ||
@@ -126,6 +133,7 @@ function validateCase(entry, index) {
     typeof expected.agent_type !== 'string' ||
     !nonEmptyStrings(expected.final_message_includes_all) ||
     !nonEmptyStrings(expected.final_message_patterns) ||
+    !nonEmptyStrings(expected.delegated_source_prefixes) ||
     expected.workspace_unchanged !== true ||
     !expected.lifecycle
   ) {
@@ -201,6 +209,29 @@ function waitTimedOut(call) {
   return typeof call?.output === 'string' && /timed[ _-]?out/i.test(call.output);
 }
 
+function hasFinalAgentResult(call) {
+  if (
+    call?.tool === 'agent_message' &&
+    call.output?.message_type === 'FINAL_ANSWER'
+  ) {
+    return true;
+  }
+  if (
+    call?.tool !== 'wait_agent' ||
+    !call.output?.status ||
+    typeof call.output.status !== 'object' ||
+    Array.isArray(call.output.status)
+  ) {
+    return false;
+  }
+  return Object.values(call.output.status).some(
+    (status) =>
+      status &&
+      typeof status === 'object' &&
+      typeof status.completed === 'string',
+  );
+}
+
 export function evaluateLifecycleTrace(calls, contract) {
   const timeline = Array.isArray(calls) ? calls : [];
   const assertions = [];
@@ -213,13 +244,18 @@ export function evaluateLifecycleTrace(calls, contract) {
   const spawnIndexes = indexes('spawn_agent');
   const waitIndexes = indexes('wait_agent');
   const probeIndexes = indexes('send_message');
+  const statusIndexes = timeline.flatMap(
+    (call, index) =>
+      call?.tool === 'agent_message' &&
+      call.output?.message_type === 'MESSAGE' &&
+      ['progress', 'blocked'].includes(call.output?.status)
+        ? [index]
+        : [],
+  );
   const followupIndexes = indexes('followup_task');
   const closeIndexes = indexes('close_agent');
   const resultIndexes = timeline.flatMap(
-    (call, index) =>
-      call?.tool === 'agent_message' && call.output?.message_type === 'FINAL_ANSWER'
-        ? [index]
-        : [],
+    (call, index) => hasFinalAgentResult(call) ? [index] : [],
   );
   const retrySpawnIndexes = spawnIndexes.slice(1);
   const recoveryIndexes = [...followupIndexes, ...retrySpawnIndexes].sort(
@@ -280,6 +316,18 @@ export function evaluateLifecycleTrace(calls, contract) {
     probeIndexes.every((probeIndex) => waitIndexes.some((waitIndex) => waitIndex > probeIndex)),
     `probe_indexes=${JSON.stringify(probeIndexes)} wait_indexes=${JSON.stringify(waitIndexes)}`,
   );
+  add(
+    'probe_policy',
+    contract.allow_liveness_probe ||
+      (probeIndexes.length === 0 && statusIndexes.length === 0),
+    `allowed=${contract.allow_liveness_probe} probe_indexes=${JSON.stringify(probeIndexes)} status_indexes=${JSON.stringify(statusIndexes)}`,
+  );
+  add(
+    'status_follows_probe',
+    statusIndexes.every((statusIndex) =>
+      probeIndexes.some((probeIndex) => probeIndex < statusIndex)),
+    `probe_indexes=${JSON.stringify(probeIndexes)} status_indexes=${JSON.stringify(statusIndexes)}`,
+  );
 
   add(
     'recovery_limit',
@@ -306,7 +354,7 @@ export function evaluateLifecycleTrace(calls, contract) {
   add(
     'result_before_final',
     Number.isInteger(lastResultIndex) &&
-      lastResultIndex > firstWait &&
+      lastResultIndex >= firstWait &&
       (!Number.isInteger(lastRecoveryIndex) || lastResultIndex > lastRecoveryIndex),
     `result_index=${lastResultIndex ?? 'missing'} wait_index=${firstWait ?? 'missing'} recovery_index=${lastRecoveryIndex ?? 'none'}`,
   );
@@ -314,6 +362,63 @@ export function evaluateLifecycleTrace(calls, contract) {
   return {
     passed: assertions.every((assertion) => assertion.passed),
     assertions,
+  };
+}
+
+export function evaluateParentScopeIsolation(calls, delegatedSourcePrefixes) {
+  const timeline = Array.isArray(calls) ? calls : [];
+  const firstSpawn = timeline.findIndex((call) => call?.tool === 'spawn_agent');
+  const firstFinalResult = timeline.findIndex(
+    (call, index) => index > firstSpawn && hasFinalAgentResult(call),
+  );
+  const normalizedPrefixes = delegatedSourcePrefixes.map((prefix) =>
+    prefix.replaceAll('\\', '/').replace(/^\.\//u, '').replace(/\/+$/u, ''));
+  const readableArguments = (call) => {
+    if (call?.tool === 'exec_command' && typeof call.arguments?.cmd === 'string') {
+      return [call.arguments.cmd];
+    }
+    if (call?.tool === 'view_image' && typeof call.arguments?.path === 'string') {
+      return [call.arguments.path];
+    }
+    if (call?.tool === 'read_mcp_resource' && typeof call.arguments?.uri === 'string') {
+      return [call.arguments.uri];
+    }
+    return [];
+  };
+  const referencesPrefix = (value, prefix) => value
+    .replaceAll('\\', '/')
+    .split(/[\s"'`=,:;|&()[\]{}<>]+/u)
+    .some((token) => {
+      const normalized = token.replace(/^\.\//u, '').replace(/\/+$/u, '');
+      return normalized === prefix ||
+        normalized.startsWith(`${prefix}/`) ||
+        normalized.endsWith(`/${prefix}`) ||
+        normalized.includes(`/${prefix}/`);
+    });
+  const duplicateCalls = timeline.flatMap((call, index) => {
+    if (index <= firstSpawn || index >= firstFinalResult) {
+      return [];
+    }
+    const argumentsToCheck = readableArguments(call);
+    return normalizedPrefixes.some((prefix) =>
+      argumentsToCheck.some((value) => referencesPrefix(value, prefix)))
+      ? [{ index, tool: call?.tool, arguments: call?.arguments }]
+      : [];
+  });
+  return {
+    name: 'parent_scope_isolation',
+    passed:
+      Number.isInteger(firstSpawn) &&
+      firstSpawn >= 0 &&
+      Number.isInteger(firstFinalResult) &&
+      firstFinalResult > firstSpawn &&
+      duplicateCalls.length === 0,
+    evidence: JSON.stringify({
+      first_spawn: firstSpawn,
+      first_final_result: firstFinalResult,
+      delegated_source_prefixes: delegatedSourcePrefixes,
+      duplicate_calls: duplicateCalls,
+    }),
   };
 }
 
@@ -364,6 +469,12 @@ export function evaluateWorkflowRun(run, expected) {
     evidence: JSON.stringify(run.workspace_changes),
   });
   assertions.push(
+    evaluateParentScopeIsolation(
+      run.collaboration_timeline,
+      expected.delegated_source_prefixes,
+    ),
+  );
+  assertions.push(
     ...evaluateLifecycleTrace(run.collaboration_timeline, expected.lifecycle).assertions,
   );
   return {
@@ -375,6 +486,7 @@ export function evaluateWorkflowRun(run, expected) {
 export function workflowEvalRunCase(entry) {
   return {
     query: entry.prompt,
+    parent_model: entry.parent_model,
     explicit_skill: true,
     should_load_skill: true,
     should_spawn_agent: true,
@@ -401,6 +513,7 @@ async function run(options) {
             model: options.model,
             timeoutMs: options.timeoutMs,
             sandboxMode: 'workspace-write',
+            captureTrace: true,
           },
         );
         const after = await captureWorkspaceSnapshot(workspace.root);
@@ -429,7 +542,7 @@ async function run(options) {
     skill_name: spec.skill_name,
     scope: 'outcome-smoke',
     runs_per_case: options.runs,
-    model: options.model ?? null,
+    requested_model_override: options.model ?? null,
     sandbox: 'workspace-write',
     read_only_enforcement: 'instruction-only',
     passed: results.every((result) => result.passed),

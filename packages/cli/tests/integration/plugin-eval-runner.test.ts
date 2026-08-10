@@ -35,20 +35,33 @@ async function writeFakeCodex(root: string, skillName: string): Promise<string> 
   const codexBin = path.join(root, 'fake-codex');
   await fs.writeFile(codexBin, [
     '#!/usr/bin/env node',
-    "const fs = require('node:fs');",
     "const path = require('node:path');",
     "if (process.argv[2] === '--version') { process.stdout.write('codex-fake 1.0\\n'); process.exit(0); }",
-    "const sessionDir = path.join(process.env.CODEX_HOME, 'sessions');",
-    'fs.mkdirSync(sessionDir, { recursive: true });',
-    'fs.writeFileSync(path.join(sessionDir, "rollout.jsonl"), JSON.stringify({',
-    "  type: 'response_item',",
-    "  payload: { type: 'function_call', name: 'spawn_agent', namespace: 'collaboration', arguments: JSON.stringify({ agent_type: 'worker', message: 'inspect' }), call_id: 'spawn-1' },",
-    "}) + '\\n');",
+    "if (process.argv[2] !== 'app-server') process.exit(3);",
     'const send = (value) => process.stdout.write(JSON.stringify(value) + "\\n");',
-    `send({ type: "item.completed", item: { type: "command_execution", status: "completed", exit_code: 0, command: "cat .agents/skills/${skillName}/SKILL.md" } });`,
-    'send({ type: "item.completed", item: { type: "collab_tool_call", tool: "spawn_agent", prompt: "inspect" } });',
-    'send({ type: "turn.completed", usage: { total_tokens: 7 } });',
-    'setTimeout(() => process.exit(0), 25);',
+    "const readline = require('node:readline');",
+    'const input = readline.createInterface({ input: process.stdin });',
+    "input.on('line', (line) => {",
+    '  const frame = JSON.parse(line);',
+    "  if (frame.method === 'initialize') send({ id: frame.id, result: {} });",
+    "  else if (frame.method === 'config/read') send({ id: frame.id, result: {",
+    "    config: { cli_auth_credentials_store: 'file', mcp_oauth_credentials_store: 'file', include_apps_instructions: false, include_collaboration_mode_instructions: false, mcp_servers: {}, features: { secret_auth_storage: false, default_mode_request_user_input: true, apps: false, plugins: false, remote_plugin: false, plugin_sharing: false, tool_suggest: false, skill_mcp_dependency_install: false }, skills: { bundled: { enabled: false } }, orchestrator: { skills: { enabled: false }, mcp: { enabled: false } } },",
+    "    origins: {}, layers: [{ name: { type: 'system', file: '/etc/codex/config.toml' }, version: '1', config: {} }, { name: { type: 'user', file: path.join(process.env.CODEX_HOME, 'config.toml') }, version: '1', config: {} }, { name: { type: 'project', dotCodexFolder: path.join(frame.params.cwd, '.codex') }, version: '1', config: {} }, { name: { type: 'sessionFlags' }, version: '1', config: {} }],",
+    "  } });",
+    "  else if (frame.method === 'configRequirements/read') send({ id: frame.id, result: { requirements: null } });",
+    "  else if (frame.method === 'skills/list') { const cwd = frame.params.cwds[0]; const skillPath = path.join(cwd, '.agents', 'skills', " + JSON.stringify(skillName) + ", 'SKILL.md'); send({ id: frame.id, result: { data: [{ cwd, skills: [{ name: " + JSON.stringify(skillName) + ", path: skillPath, scope: 'repo', enabled: true }], errors: [] }] } }); }",
+    "  else if (frame.method === 'mcpServerStatus/list') send({ id: frame.id, result: { data: [], nextCursor: null } });",
+    "  else if (frame.method === 'thread/start') send({ id: frame.id, result: { thread: { id: 'thread-1' } } });",
+    "  else if (frame.method === 'turn/start') {",
+    "    send({ id: frame.id, result: { turn: { id: 'turn-1', status: 'inProgress' } } });",
+    '    send({ method: "item/completed", params: { threadId: "thread-1", item: { id: "read-1", type: "commandExecution", status: "completed", exitCode: 0, command: ' + JSON.stringify('cat .agents/skills/' + skillName + '/SKILL.md') + ' } } });',
+    "    const activity = { id: 'spawn-1', type: 'subAgentActivity', kind: 'started', agentThreadId: 'agent-1', agentPath: '/root/evidence' };",
+    "    send({ method: 'item/started', params: { threadId: 'thread-1', item: activity } });",
+    "    send({ method: 'item/completed', params: { threadId: 'thread-1', item: activity } });",
+    "    send({ method: 'turn/completed', params: { threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed' } } });",
+    '  }',
+    '});',
+    'setInterval(() => {}, 1000);',
   ].join('\n'), 'utf8');
   await fs.chmod(codexBin, 0o755);
   return codexBin;
@@ -261,7 +274,7 @@ describe('plugin eval runner', () => {
       const bundle = commandReport.bundles.find(
         (entry: { plugin: string }) => entry.plugin === pluginName,
       );
-      expect(bundle.subjects).toHaveLength(4);
+      expect(bundle.subjects).toHaveLength(pluginName === 'codex-explore' ? 5 : 4);
       const defaultProfile = bundle.subjects.find(
         (entry: { profile: string }) => entry.profile === 'project-default',
       );
@@ -275,6 +288,14 @@ describe('plugin eval runner', () => {
         expect.objectContaining({ kind: 'agent' }),
         expect.objectContaining({ kind: 'instruction' }),
       ]));
+      if (pluginName === 'codex-explore') {
+        expect(bundle.subjects).toContainEqual(expect.objectContaining({
+          profile: 'project-short-wait',
+          scope: 'project',
+          modelExecution: true,
+          evidenceLevel: 'runtime-project',
+        }));
+      }
     }
   });
 
@@ -344,7 +365,10 @@ describe('plugin eval runner', () => {
       expect(stderr).toContain('codex-explore/trigger/all');
       expect(stderr).not.toContain('codex-explore/trigger/validation');
       const commandReport = JSON.parse(stdout);
-      expect(commandReport.bundles[0]).toMatchObject({
+      expect(
+        commandReport.bundles[0],
+        JSON.stringify(commandReport.bundles[0], null, 2),
+      ).toMatchObject({
         outcome: 'incomplete',
         complete: false,
         mechanicalPassed: true,

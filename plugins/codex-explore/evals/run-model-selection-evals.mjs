@@ -119,6 +119,12 @@ function validateEvalCase(entry, index) {
     throw new Error(`${entry.id}.prompt must be a non-empty string.`);
   }
   if (
+    entry.parent_model !== undefined &&
+    (typeof entry.parent_model !== 'string' || entry.parent_model.trim() === '')
+  ) {
+    throw new Error(`${entry.id}.parent_model must be a non-empty string.`);
+  }
+  if (
     typeof entry.expected_output !== 'string' ||
     entry.expected_output.trim() === ''
   ) {
@@ -279,6 +285,7 @@ export function modelEvalRunCase(entry) {
     should_load_skill: true,
     should_spawn_agent: entry.expected.spawn_calls.min > 0,
     wait_for_completion: Boolean(entry.wait_for_completion),
+    parent_model: entry.parent_model,
     enable_features: entry.enable_features,
     disable_features: entry.disable_features,
     codex_config: entry.codex_config,
@@ -346,7 +353,7 @@ async function run(options) {
     skill_name: spec.skill_name,
     runs_per_case: options.runs,
     threshold: options.threshold,
-    model: options.model ?? null,
+    requested_model_override: options.model ?? null,
     allow_environment_skips: options.allowEnvironmentSkips,
     complete: reportStatus.complete,
     passed: reportStatus.passed,

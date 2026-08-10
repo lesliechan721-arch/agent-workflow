@@ -1414,7 +1414,8 @@ describe('authoring tools', () => {
     expect(skillEvaluationDoc).toContain('`evals/evals.json`');
     expect(skillEvaluationDoc).toContain('`evals/manifest.json`');
     expect(skillEvaluationDoc).toContain('`pnpm plugin:eval`');
-    expect(skillEvaluationDoc).toContain('`trigger` 由中央 `codex exec --json` driver 执行');
+    expect(skillEvaluationDoc).toContain('`trigger` 由中央 Codex app-server driver 执行');
+    expect(skillEvaluationDoc).toContain('`subAgentActivity(kind=started)`');
     expect(skillEvaluationDoc).toContain('`fixtureModule`');
     expect(skillEvaluationDoc).toContain('`AW_PLUGIN_EVAL_PROJECT_ROOT`');
     expect(skillEvaluationDoc).not.toContain('run-trigger-evals.mjs');

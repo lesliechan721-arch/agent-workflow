@@ -7,6 +7,7 @@ import {
   captureWorkspaceSnapshot,
   diffWorkspaceSnapshots,
   evaluateLifecycleTrace,
+  evaluateParentScopeIsolation,
   evaluateWorkflowRun,
   loadWorkflowEvalSpec,
   parseWorkflowEvalArgs,
@@ -16,6 +17,7 @@ import { buildCollaborationTimeline } from '../evals/eval-harness.mjs';
 
 const lifecycleContract = {
   minimum_initial_wait_timeout_ms: 600_000,
+  allow_liveness_probe: false,
   max_recoveries: 1,
 };
 
@@ -100,20 +102,35 @@ function testArguments() {
 async function testSpecAndAssertions() {
   const spec = await loadWorkflowEvalSpec();
   assert.equal(spec.skill_name, 'codex-explore');
-  assert.equal(spec.evals.length, 2);
+  assert.equal(spec.evals.length, 3);
   assert.deepEqual(
     spec.evals.map((entry) => entry.id),
-    ['versioned_docs_outcome', 'adversarial_read_only_outcome'],
+    [
+      'versioned_docs_outcome',
+      'critical_path_v1_outcome',
+      'adversarial_read_only_outcome',
+    ],
   );
   const entry = spec.evals.find((candidate) => candidate.id === 'versioned_docs_outcome');
   assert.equal(entry.id, 'versioned_docs_outcome');
   assert.equal(entry.expected.agent_type, 'codex-explore-standard');
+  assert.match(entry.prompt, /没有其它可并行的本地工作/);
+  assert.match(entry.prompt, /委派 standard role/);
   assert.match(entry.prompt, /docs\/ 的全部候选文档中搜索并筛选/);
   for (const knownFile of ['api-v1.md', 'api-v2.md', 'migration.md']) {
     assert.equal(entry.prompt.includes(knownFile), false);
   }
   assert.equal(workflowEvalRunCase(entry).wait_for_completion, true);
   assert.equal(entry.expected.lifecycle.minimum_initial_wait_timeout_ms, 600_000);
+  assert.equal(entry.expected.lifecycle.allow_liveness_probe, false);
+  const v1 = spec.evals.find(
+    (candidate) => candidate.id === 'critical_path_v1_outcome',
+  );
+  assert.equal(v1.parent_model, 'gpt-5.5');
+  assert.equal(workflowEvalRunCase(v1).parent_model, 'gpt-5.5');
+  assert.equal(v1.codex_config['features.multi_agent_v2.enabled'], false);
+  assert.match(v1.prompt, /V1 委派 standard role/);
+  assert.deepEqual(v1.expected.delegated_source_prefixes, ['docs/']);
   const adversarial = spec.evals.find(
     (candidate) => candidate.id === 'adversarial_read_only_outcome',
   );
@@ -123,6 +140,52 @@ async function testSpecAndAssertions() {
 
   assert.equal(
     evaluateWorkflowRun(runResult(passingMessage()), entry.expected).passed,
+    true,
+  );
+
+  const duplicateExploration = runResult(passingMessage(), [
+    spawnEvent(),
+    waitEvent(),
+    lifecycleEvent('exec_command', { cmd: 'rg timeout docs/' }),
+    messageEvent(),
+  ]);
+  const duplicate = evaluateWorkflowRun(duplicateExploration, entry.expected);
+  assert.equal(duplicate.passed, false);
+  assert.equal(
+    duplicate.assertions.find(
+      (assertion) => assertion.name === 'parent_scope_isolation',
+    )?.passed,
+    false,
+  );
+
+  assert.equal(
+    evaluateParentScopeIsolation([
+      spawnEvent(),
+      waitEvent(),
+      lifecycleEvent('exec_command', { cmd: 'find docs -type f' }),
+      messageEvent(),
+    ], ['docs/']).passed,
+    false,
+  );
+
+  assert.equal(
+    evaluateParentScopeIsolation([
+      spawnEvent(),
+      waitEvent(),
+      lifecycleEvent('update_plan', { step: '等待 docs/ 探索' }),
+      messageEvent(),
+    ], ['docs/']).passed,
+    true,
+  );
+
+  const minimalVerification = runResult(passingMessage(), [
+    spawnEvent(),
+    waitEvent(),
+    messageEvent(),
+    lifecycleEvent('exec_command', { cmd: 'sed -n 2p docs/vendor/api-v2.md' }),
+  ]);
+  assert.equal(
+    evaluateWorkflowRun(minimalVerification, entry.expected).passed,
     true,
   );
 
@@ -169,6 +232,17 @@ function rolloutOutput(callId, output) {
   });
 }
 
+function rolloutExecutedOutput(callId, output, executedToolCalls) {
+  return rolloutLine({
+    type: 'function_call_output',
+    call_id: callId,
+    output: JSON.stringify(output),
+    internal_chat_message_metadata_passthrough: {
+      executed_tool_calls: executedToolCalls,
+    },
+  });
+}
+
 function testRolloutTimeline() {
   const spawn = rolloutCall(
     'spawn_agent',
@@ -179,6 +253,8 @@ function testRolloutTimeline() {
     spawn,
     rolloutOutput('call-spawn', { task_name: '/root/evidence' }),
     spawn,
+    rolloutCall('exec_command', { cmd: 'pwd' }, 'call-exec'),
+    rolloutOutput('call-exec', { exit_code: 0 }),
     rolloutCall('wait_agent', { timeout_ms: 600_000 }, 'call-wait'),
     rolloutOutput('call-wait', { timed_out: false }),
     rolloutLine({
@@ -190,17 +266,55 @@ function testRolloutTimeline() {
     }),
   ];
   const timeline = buildCollaborationTimeline(lines, '/tmp/home/rollout.jsonl', '/tmp/home');
-  assert.equal(timeline.length, 3);
+  assert.equal(timeline.length, 4);
   assert.equal(timeline[0].tool, 'spawn_agent');
   assert.deepEqual(timeline[0].output, { task_name: '/root/evidence' });
-  assert.equal(timeline[1].tool, 'wait_agent');
-  assert.deepEqual(timeline[1].arguments, { timeout_ms: 600_000 });
-  assert.deepEqual(timeline[1].output, { timed_out: false });
-  assert.equal(timeline[2].tool, 'agent_message');
-  assert.deepEqual(timeline[2].output, {
+  assert.equal(timeline[1].tool, 'exec_command');
+  assert.deepEqual(timeline[1].output, { exit_code: 0 });
+  assert.equal(timeline[2].tool, 'wait_agent');
+  assert.deepEqual(timeline[2].arguments, { timeout_ms: 600_000 });
+  assert.deepEqual(timeline[2].output, { timed_out: false });
+  assert.equal(timeline[3].tool, 'agent_message');
+  assert.deepEqual(timeline[3].output, {
     message_type: 'FINAL_ANSWER',
     status: null,
     task_name: '/root/evidence',
+  });
+}
+
+function testCodeModeRolloutTimeline() {
+  const lines = [
+    rolloutCall('exec', { code: 'await tools.collaboration__spawn_agent(...)' }, 'call-exec'),
+    rolloutExecutedOutput('call-exec', { ok: true }, [
+      {
+        name: 'collaboration__spawn_agent',
+        arguments: {
+          agent_type: 'codex-explore-standard',
+          task_name: 'evidence',
+        },
+      },
+      {
+        name: 'exec_command',
+        arguments: { cmd: 'rg timeout docs/vendor/' },
+      },
+    ]),
+  ];
+  const timeline = buildCollaborationTimeline(
+    lines,
+    '/tmp/home/rollout.jsonl',
+    '/tmp/home',
+  );
+  assert.equal(timeline.length, 3);
+  assert.equal(timeline[0].tool, 'exec');
+  assert.equal(timeline[1].tool, 'spawn_agent');
+  assert.equal(timeline[1].namespace, 'collaboration');
+  assert.deepEqual(timeline[1].arguments, {
+    agent_type: 'codex-explore-standard',
+    task_name: 'evidence',
+  });
+  assert.equal(timeline[2].tool, 'exec_command');
+  assert.deepEqual(timeline[2].arguments, {
+    cmd: 'rg timeout docs/vendor/',
   });
 }
 
@@ -225,6 +339,25 @@ function testLifecycleAssertions() {
       [...passingTimeline(), lifecycleEvent('close_agent', { target: '/root/evidence' })],
       lifecycleContract,
     ).passed,
+    true,
+  );
+
+  const v1CompletedWait = [
+    spawnEvent(),
+    lifecycleEvent(
+      'wait_agent',
+      { timeout_ms: 600_000 },
+      {
+        timed_out: false,
+        status: {
+          'agent-id': { completed: 'Status: completed' },
+        },
+      },
+    ),
+  ];
+  assert.equal(evaluateLifecycleTrace(v1CompletedWait, lifecycleContract).passed, true);
+  assert.equal(
+    evaluateParentScopeIsolation(v1CompletedWait, ['docs/']).passed,
     true,
   );
 
@@ -335,6 +468,7 @@ async function main() {
   testArguments();
   await testSpecAndAssertions();
   testRolloutTimeline();
+  testCodeModeRolloutTimeline();
   testLifecycleAssertions();
   await testWorkspaceSnapshots();
   console.log('workflow eval tests passed');

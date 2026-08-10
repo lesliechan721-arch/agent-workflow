@@ -7,8 +7,10 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  realpath,
   readdir,
   rm,
+  writeFile,
 } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -19,14 +21,6 @@ import { fileURLToPath } from 'node:url';
 import { setupTriggerWorkspace } from './trigger-fixture.mjs';
 
 const evalDir = path.dirname(fileURLToPath(import.meta.url));
-const collaborationToolNames = new Set([
-  'spawn_agent',
-  'wait_agent',
-  'send_message',
-  'followup_task',
-  'interrupt_agent',
-  'close_agent',
-]);
 export async function readEvalResource(relativePath) {
   const normalized = path.normalize(relativePath);
   if (
@@ -135,6 +129,10 @@ function sensitiveEnvironmentNames(options) {
   }
 }
 
+export function resolveParentModelOverride(evalCase, options) {
+  return evalCase.parent_model ?? options.model ?? null;
+}
+
 export function buildCodexArgs(workspace, evalCase, options) {
   const args = [
     'exec',
@@ -149,8 +147,12 @@ export function buildCodexArgs(workspace, evalCase, options) {
     workspace.root,
     '--enable',
     'multi_agent',
+    '--enable',
+    'executed_tool_call_metadata',
     '--config',
     `skills.include_instructions=true`,
+    '--config',
+    'suppress_unstable_features_warning=true',
     '--config',
     `shell_environment_policy.exclude=${codexConfigValue([
       'CODEX_HOME',
@@ -170,8 +172,9 @@ export function buildCodexArgs(workspace, evalCase, options) {
   for (const [key, value] of Object.entries(evalCase.codex_config ?? {})) {
     args.push('--config', `${key}=${codexConfigValue(value)}`);
   }
-  if (options.model) {
-    args.push('--model', options.model);
+  const parentModel = resolveParentModelOverride(evalCase, options);
+  if (parentModel) {
+    args.push('--model', parentModel);
   }
   args.push(evalCase.query);
   return args;
@@ -257,7 +260,7 @@ export function buildCollaborationTimeline(
       calls.push(update);
       continue;
     }
-    if (payload?.type === 'function_call' && collaborationToolNames.has(payload.name)) {
+    if (payload?.type === 'function_call' && typeof payload.name === 'string') {
       const callId = typeof payload.call_id === 'string' ? payload.call_id : null;
       if (callId && callsById.has(callId)) {
         continue;
@@ -286,6 +289,46 @@ export function buildCollaborationTimeline(
       continue;
     }
 
+    const metadata = payload?.internal_chat_message_metadata_passthrough;
+    const executedCalls = Array.isArray(metadata?.executed_tool_calls)
+      ? metadata.executed_tool_calls
+      : [];
+    for (const [nestedIndex, executedCall] of executedCalls.entries()) {
+      if (typeof executedCall?.name !== 'string') {
+        continue;
+      }
+      const separator = executedCall.name.indexOf('__');
+      const namespace = separator >= 0
+        ? executedCall.name.slice(0, separator)
+        : null;
+      const name = separator >= 0
+        ? executedCall.name.slice(separator + 2)
+        : executedCall.name;
+      const directCall = typeof payload.call_id === 'string'
+        ? callsById.get(payload.call_id)
+        : null;
+      if (
+        directCall?.tool === name &&
+        (namespace === null || directCall.namespace === namespace)
+      ) {
+        continue;
+      }
+      calls.push({
+        call_id: `executed:${index + 1}:${nestedIndex}`,
+        namespace,
+        tool: name,
+        arguments:
+          executedCall.arguments &&
+          typeof executedCall.arguments === 'object' &&
+          !Array.isArray(executedCall.arguments)
+            ? executedCall.arguments
+            : null,
+        output: null,
+        rollout_file: path.relative(codexHome, rolloutFile),
+        line_number: index + 1,
+      });
+    }
+
     if (payload?.type !== 'function_call_output' || typeof payload.call_id !== 'string') {
       continue;
     }
@@ -301,7 +344,7 @@ export function buildCollaborationTimeline(
   return calls;
 }
 
-export async function readCollaborationTimelineFromRollouts(codexHome) {
+export async function readRolloutEvidenceFromRollouts(codexHome) {
   const files = (await listFilesRecursively(path.join(codexHome, 'sessions')))
     .filter((file) => file.endsWith('.jsonl'))
     .sort();
@@ -317,9 +360,16 @@ export async function readCollaborationTimelineFromRollouts(codexHome) {
       .map((call) => call.rollout_file),
   );
   if (parentRollouts.size === 0) {
-    return calls;
+    return { parent_calls: calls, leaf_calls: [] };
   }
-  return calls.filter((call) => parentRollouts.has(call.rollout_file));
+  return {
+    parent_calls: calls.filter((call) => parentRollouts.has(call.rollout_file)),
+    leaf_calls: calls.filter((call) => !parentRollouts.has(call.rollout_file)),
+  };
+}
+
+export async function readCollaborationTimelineFromRollouts(codexHome) {
+  return (await readRolloutEvidenceFromRollouts(codexHome)).parent_calls;
 }
 
 function spawnCalls(calls) {
@@ -344,6 +394,7 @@ export async function copyCodexRuntimeFiles(
   sourceHome = process.env.AW_CODEX_EVAL_RUNTIME_HOME ||
     process.env.CODEX_HOME ||
     path.join(os.homedir(), '.codex'),
+  { trustedProject } = {},
 ) {
   for (const name of ['config.toml', 'auth.json', '.credentials.json']) {
     const source = path.join(sourceHome, name);
@@ -354,9 +405,25 @@ export async function copyCodexRuntimeFiles(
     await copyFile(source, target);
     await chmod(target, 0o600);
   }
+  if (trustedProject) {
+    const configPath = path.join(codexHome, 'config.toml');
+    const existing = await pathExists(configPath)
+      ? await readFile(configPath, 'utf8')
+      : '';
+    const project = await realpath(trustedProject);
+    const trustBlock = [
+      existing.trimEnd(),
+      '',
+      `[projects.${JSON.stringify(project)}]`,
+      'trust_level = "trusted"',
+      '',
+    ].join('\n');
+    await writeFile(configPath, trustBlock, 'utf8');
+    await chmod(configPath, 0o600);
+  }
 }
 
-function shouldStopEarly(evalCase, observed) {
+export function shouldStopEarly(evalCase, observed) {
   if (evalCase.wait_for_completion) {
     return null;
   }
@@ -370,7 +437,8 @@ function shouldStopEarly(evalCase, observed) {
     evalCase.should_load_skill &&
     evalCase.should_spawn_agent &&
     observed.loaded &&
-    observed.spawned
+    observed.spawned &&
+    observed.spawnCalls.length > 0
   ) {
     return 'expected_outcome_observed';
   }
@@ -378,6 +446,7 @@ function shouldStopEarly(evalCase, observed) {
 }
 
 export async function runCodexOnce(workspace, evalCase, options) {
+  const parentModelOverride = resolveParentModelOverride(evalCase, options);
   const args = buildCodexArgs(workspace, evalCase, options);
   const runtimeHome = process.env.AW_CODEX_EVAL_RUNTIME_HOME;
   const runHomeRoot = runtimeHome
@@ -386,9 +455,16 @@ export async function runCodexOnce(workspace, evalCase, options) {
   await mkdir(runHomeRoot, { recursive: true });
   const codexHome = await mkdtemp(path.join(runHomeRoot, 'codex-explore-home-'));
   try {
-    await copyCodexRuntimeFiles(codexHome);
+    await copyCodexRuntimeFiles(codexHome, undefined, {
+      trustedProject: workspace.root,
+    });
   } catch (error) {
-    await rm(codexHome, { recursive: true, force: true });
+    await rm(codexHome, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 100,
+    });
     throw error;
   }
   const startedAt = Date.now();
@@ -410,6 +486,7 @@ export async function runCodexOnce(workspace, evalCase, options) {
         spawnEvidence: null,
         spawnCalls: [],
         collaborationTimeline: [],
+        leafToolCalls: [],
       };
       let stderr = '';
       let finalMessage = null;
@@ -534,8 +611,9 @@ export async function runCodexOnce(workspace, evalCase, options) {
         removeInterruptHandlers();
         lines.close();
         try {
-          observed.collaborationTimeline =
-            await readCollaborationTimelineFromRollouts(codexHome);
+          const rolloutEvidence = await readRolloutEvidenceFromRollouts(codexHome);
+          observed.collaborationTimeline = rolloutEvidence.parent_calls;
+          observed.leafToolCalls = rolloutEvidence.leaf_calls;
           observed.spawnCalls = spawnCalls(observed.collaborationTimeline);
         } catch (error) {
           stderr = `${stderr}\nFailed to read rollout evidence: ${
@@ -562,12 +640,14 @@ export async function runCodexOnce(workspace, evalCase, options) {
           spawn_evidence: observed.spawnEvidence,
           spawn_calls: observed.spawnCalls,
           collaboration_timeline: observed.collaborationTimeline,
+          leaf_tool_calls: observed.leafToolCalls,
           termination,
           exit_code: exitCode,
           signal,
           execution_error: executionError,
           stderr: stderr.trim() || undefined,
           final_message: finalMessage,
+          parent_model_override: parentModelOverride,
           duration_ms: Date.now() - startedAt,
           usage,
           event_trace: options.captureTrace ? eventTrace : undefined,
@@ -575,6 +655,11 @@ export async function runCodexOnce(workspace, evalCase, options) {
       });
     });
   } finally {
-    await rm(codexHome, { recursive: true, force: true });
+    await rm(codexHome, {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 100,
+    });
   }
 }

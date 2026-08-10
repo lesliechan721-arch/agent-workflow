@@ -9,7 +9,7 @@
       "config_values": {},
       "codex_config": {
         "features.multi_agent_v2.enabled": true,
-        "features.multi_agent_v2.hide_spawn_agent_metadata": false,
+        "features.multi_agent_v2.hide_spawn_agent_metadata": true,
         "features.multi_agent_v2.expose_spawn_agent_model_overrides": true
       },
       "expected": {
@@ -35,7 +35,7 @@
       "config_values": {},
       "codex_config": {
         "features.multi_agent_v2.enabled": true,
-        "features.multi_agent_v2.hide_spawn_agent_metadata": false,
+        "features.multi_agent_v2.hide_spawn_agent_metadata": true,
         "features.multi_agent_v2.expose_spawn_agent_model_overrides": true
       },
       "expected": {
@@ -58,6 +58,7 @@
       "prompt": "$codex-explore 请从 repo/ 的网关、结算、任务和共享模块中追踪 regional_checkout 的完整传递路径，核对字段是否一致并给出可复核文件证据；不要修改代码。",
       "expected_output": "V1 自动选择默认 standard role，使用 fork_context: false 启动干净上下文。",
       "files": [],
+      "parent_model": "gpt-5.5",
       "config_values": {},
       "codex_config": {
         "features.multi_agent_v2.enabled": false
@@ -86,7 +87,7 @@
       "config_values": {},
       "codex_config": {
         "features.multi_agent_v2.enabled": true,
-        "features.multi_agent_v2.hide_spawn_agent_metadata": false,
+        "features.multi_agent_v2.hide_spawn_agent_metadata": true,
         "features.multi_agent_v2.expose_spawn_agent_model_overrides": true
       },
       "expected": {
@@ -112,7 +113,7 @@
       "config_values": {},
       "codex_config": {
         "features.multi_agent_v2.enabled": true,
-        "features.multi_agent_v2.hide_spawn_agent_metadata": false,
+        "features.multi_agent_v2.hide_spawn_agent_metadata": true,
         "features.multi_agent_v2.expose_spawn_agent_model_overrides": true
       },
       "expected": {
@@ -138,7 +139,7 @@
       "config_values": {},
       "codex_config": {
         "features.multi_agent_v2.enabled": true,
-        "features.multi_agent_v2.hide_spawn_agent_metadata": false,
+        "features.multi_agent_v2.hide_spawn_agent_metadata": true,
         "features.multi_agent_v2.expose_spawn_agent_model_overrides": true
       },
       "expected": {
@@ -164,7 +165,7 @@
       "config_values": {},
       "codex_config": {
         "features.multi_agent_v2.enabled": true,
-        "features.multi_agent_v2.hide_spawn_agent_metadata": false,
+        "features.multi_agent_v2.hide_spawn_agent_metadata": true,
         "features.multi_agent_v2.expose_spawn_agent_model_overrides": true
       },
       "expected": {
@@ -190,7 +191,7 @@
       "config_values": {},
       "codex_config": {
         "features.multi_agent_v2.enabled": true,
-        "features.multi_agent_v2.hide_spawn_agent_metadata": false,
+        "features.multi_agent_v2.hide_spawn_agent_metadata": true,
         "features.multi_agent_v2.expose_spawn_agent_model_overrides": false
       },
       "expected": {
@@ -217,7 +218,7 @@
       "config_values": {},
       "codex_config": {
         "features.multi_agent_v2.enabled": true,
-        "features.multi_agent_v2.hide_spawn_agent_metadata": false,
+        "features.multi_agent_v2.hide_spawn_agent_metadata": true,
         "features.multi_agent_v2.expose_spawn_agent_model_overrides": false
       },
       "wait_for_completion": true,
@@ -239,7 +240,7 @@
       "config_values": {},
       "codex_config": {
         "features.multi_agent_v2.enabled": true,
-        "features.multi_agent_v2.hide_spawn_agent_metadata": false,
+        "features.multi_agent_v2.hide_spawn_agent_metadata": true,
         "features.multi_agent_v2.expose_spawn_agent_model_overrides": true
       },
       "wait_for_completion": true,
