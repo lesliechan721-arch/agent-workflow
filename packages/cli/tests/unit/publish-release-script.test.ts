@@ -245,10 +245,30 @@ describe('publish-release script', () => {
     expect(harness.snapshotCleanups).toBe(0);
   });
 
-  it('cleans the shared snapshot when catalog preflight fails before CLI publish', async () => {
+  it.each(['sidecar', 'full'])(
+    'stops before CLI publish when exact-version %s package bytes differ',
+    async (kind) => {
+      const harness = await loadPublishReleaseHarness({
+        preflightImpl: async () => {
+          throw new Error(`Existing ${kind} catalog package does not match staged contents.`);
+        },
+      });
+
+      await expect(harness.publishRelease([
+        'beta',
+        '--catalog-version',
+        '2.0.0-beta.1',
+      ])).rejects.toThrow(`Existing ${kind} catalog package does not match staged contents.`);
+      expect(harness.calls.some((call) => call.type === 'cli-publish')).toBe(false);
+      expect(harness.snapshotRequests).toBe(1);
+      expect(harness.snapshotCleanups).toBe(1);
+    },
+  );
+
+  it('stops before CLI publish when a resolved exact-version tarball cannot be downloaded', async () => {
     const harness = await loadPublishReleaseHarness({
       preflightImpl: async () => {
-        throw new Error('Unable to read target beta catalog history. registry offline');
+        throw new Error('HTTP 404 while downloading resolved catalog tarball');
       },
     });
 
@@ -256,9 +276,8 @@ describe('publish-release script', () => {
       'beta',
       '--catalog-version',
       '2.0.0-beta.1',
-    ])).rejects.toThrow('Unable to read target beta catalog history');
+    ])).rejects.toThrow('HTTP 404 while downloading resolved catalog tarball');
     expect(harness.calls.some((call) => call.type === 'cli-publish')).toBe(false);
-    expect(harness.snapshotRequests).toBe(1);
     expect(harness.snapshotCleanups).toBe(1);
   });
 

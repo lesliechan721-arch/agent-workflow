@@ -23,7 +23,7 @@
 
 - `PluginManifestSource`：源码 manifest。顶层 `dependencies` unsupported。
 - `PluginMeta`：manifest 加 bundle root 和 manifest path。
-- `CatalogResolution`：current catalog identity、selector、cache 和 history 证据。
+- `CatalogResolution`：current catalog identity、selector 和 strict cache 证据。
 - `OwnedComponent`：可检查、可删除的平台组件。
 - `OwnerIdentity`：owner、plugin、artifactKey、platform、scope。
 - `DesiredTarget`：rebuild 前计算出的目标组件与 artifact。

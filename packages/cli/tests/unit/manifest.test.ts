@@ -108,39 +108,13 @@ function sha256(char: string): string {
 
 function createCatalogManifestFixture() {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     catalogVersion: '1.2.3',
     channel: 'latest',
     compatibility: {
       aw: {
         minVersion: '0.0.0',
       },
-    },
-    history: {
-      schemaVersion: 1,
-      channel: 'latest',
-      releases: [
-        {
-          catalogVersion: '1.2.3',
-          minAwVersion: '0.0.0',
-          plugins: [
-            {
-              name: 'code-review',
-              version: '1.4.0',
-              minAwVersion: '0.0.0',
-              artifactDigest: sha256('a'),
-              manifestDigest: sha256('b'),
-            },
-            {
-              name: 'shared-helper',
-              version: '1.2.0',
-              minAwVersion: '0.0.0',
-              artifactDigest: sha256('c'),
-              manifestDigest: sha256('d'),
-            },
-          ],
-        },
-      ],
     },
     packages: {
       sidecar: {

@@ -3,7 +3,6 @@ import type {
   AgentVersionReasonCode,
   AgentVersionStatus,
   CatalogCacheFallbackEvidence,
-  CatalogLatestBlockedEvidence,
   CatalogRemoteFailureEvidence,
   CatalogSelector,
   CodexProjectManagedKind,
@@ -79,8 +78,6 @@ export interface CatalogResolutionEventData {
   channel?: string;
   catalogVersion?: string;
   minAwVersion?: string;
-  latestCatalogBlocked?: CatalogLatestBlockedEvidence;
-  historySchemaVersion?: number | null;
   cacheFallback?: CatalogCacheFallbackEvidence;
   remoteFailure?: CatalogRemoteFailureEvidence;
   reasonCode?: string;

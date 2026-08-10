@@ -10,7 +10,7 @@
 - `utils/ownership.ts` 定义 owner marker、组件检查和安全删除边界。
 - `utils/lifecycle-active-store.ts` 保存最后一次成功写入所需的 lifecycle 输入。
 - `utils/local-marketplace.ts` 管理本机 active marketplace 和严格 catalog cache。
-- `utils/plugin-catalog.ts` 解析 sidecar/full catalog、selector、history 和 cache fallback。
+- `utils/plugin-catalog.ts` 解析 current sidecar/full catalog、selector 和严格 cache fallback。
 - `utils/plugin-config.ts` 与 `utils/plugin-config-write.ts` 管理 AW config store 和 config v3 输出。
 - `output/command-receipt.ts` 生成五个写命令的 receipt v3。
 - `generators/` 生成 instructions、permissions、hooks、agents、skills 和 MCP 等平台能力。
@@ -55,7 +55,8 @@ Local runtime
 - catalog staging 是生成物，不手工修改。
 - `@yiliang/aw-plugins-manifest` 是 sidecar；`@yiliang/aw-plugins` 是同版本 full catalog。
 - CLI version、catalog version 和 plugin version 是三套独立身份。
-- catalog history 继续记录历史 catalog version、catalog 最低 CLI 版本、plugin version、plugin 最低 CLI 版本、`artifactDigest` 和 `manifestDigest`。它只用于兼容 catalog 查询和发布门禁。
+- catalog manifest 使用 schema 2，只描述 current 单版本快照。它记录 catalog 最低 CLI 版本、sidecar/full package identity，以及每个 current plugin 的版本、最低 CLI 版本、`artifactDigest` 和 `manifestDigest`。
+- 发布门禁要求目标 channel 的 catalog version 单调不降低。同一 catalog version 的 sidecar/full 包已存在时，待发布 package 必须与 registry 中的 exact-version package 字节相同。
 - strict catalog cache 按 selector、registry source identity、integrity、manifest digest 和 CLI compatibility 隔离。并发写入使用 immutable entry、原子 selector publication 和有界 lock。
 - active marketplace 只供平台原生能力读取。重建 active marketplace 时必须保留 strict catalog cache 和 AW config store。
 
@@ -159,6 +160,8 @@ cache publication 必须满足：
 - registry source identity 不同的 selector index 互不复用。
 - lock 等待有 deadline，释放时必须验证 owner token。
 - active marketplace 重建失败时，原 strict cache 保持可读。
+
+按 `latest` 或 `beta` channel 选择的 current catalog，其 `compatibility.aw.minVersion` 高于当前 CLI 时，resolver 直接返回 `awVersionTooLow`。显式选择 exact catalog version 且版本不兼容时返回 `explicitCatalogIncompatible`。两种情况都不选择更早的 catalog version。
 
 ## Output Contract
 

@@ -40,9 +40,9 @@
 
 CLI version、catalog version 和 plugin version 是三套身份。插件更新通常只发布 catalog，不要求发布 CLI。
 
-`@yiliang/aw-plugins-manifest` sidecar 与 `@yiliang/aw-plugins` full catalog 使用同一份 `catalog-manifest.json`。catalog history 记录历史 catalog version、catalog 最低 CLI 版本、plugin version、plugin 最低 CLI 版本、`artifactDigest` 和 `manifestDigest`，用于兼容 catalog 查询和发布门禁。
+`@yiliang/aw-plugins-manifest` sidecar 与 `@yiliang/aw-plugins` full catalog 使用同一份 schema 2 `catalog-manifest.json`。manifest 只描述 current 单版本快照，并记录 catalog 最低 CLI 版本、sidecar/full package identity，以及每个 current plugin 的 version、最低 CLI 版本、`artifactDigest` 和 `manifestDigest`。
 
-作者不手改 catalog history、platform marketplace 或 staging 输出。
+作者不手改 catalog manifest、platform marketplace 或 staging 输出。发布流程校验 current candidate 内的最低 CLI 版本和 digest；同一 catalog version 的 exact-version sidecar/full package 内容不可改变。
 
 ## Skills
 

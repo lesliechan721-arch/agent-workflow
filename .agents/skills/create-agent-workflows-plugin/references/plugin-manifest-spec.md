@@ -57,10 +57,12 @@ AW 版本管理里有三套身份，不能混用：
 - `beta` catalog 的 catalog version 必须是 prerelease；同一快照内可以混合 stable 和 prerelease 插件 version。
 - 同一个 catalog version 只能属于一个发布轨道，不能把已发布到 `beta` 的 catalog version 后续改挂到 `latest`。
 - 插件最低 CLI 版本不能高于 catalog 级 `compatibility.aw.minVersion`。catalog 级门槛是整包门槛，必须覆盖包内所有插件的真实运行时要求。
-- 同一 `plugin@version` 发布后不可变。只要 manifest、runtime 文件、脚本、静态资源、依赖声明、最低 CLI 版本或平台能力会改变 artifact 身份，就必须发布新的插件 `version`。
-- 只改 build metadata 不是合法替代版本。官方 catalog 会拒绝用 SemVer 优先级相同但 build metadata 不同的版本替换同一插件。
+- current candidate 中每个插件都必须提供与 artifact 和 manifest 对应的 digest，并声明不高于 catalog 级门槛的最低 CLI 版本。作者改变 manifest、runtime 文件、脚本、静态资源、最低 CLI 版本或平台能力时，应发布新的插件 `version`。
+- 同一 catalog version 的 sidecar/full exact-version package 内容不可改变。要发布不同快照，必须提高 catalog version。
 
-`@yiliang/aw-plugins-manifest` sidecar 包和 `@yiliang/aw-plugins` full catalog 包使用相同 catalog version、channel 和 catalog 级最低 CLI 版本。sidecar 只包含 `catalog-manifest.json` 和必要 package metadata；full 包包含同一份 manifest 以及当前 catalog 单版本快照的全部插件 artifact。catalog history 记录历史 catalog version、插件 version、插件最低 CLI 版本、`artifactDigest` 和 `manifestDigest`，用于兼容历史 catalog 查询和发布门禁；它不是可安装的历史多版本索引。
+发布门禁不查询 earlier catalog manifest，也不证明全部已发布 `plugin@version` 的全局不可变性。插件 version 是否准确表达内容变化是作者合同；自动门禁只校验 current candidate 内的身份字段和同一 catalog version 的 exact-version package 内容。
+
+`@yiliang/aw-plugins-manifest` sidecar 包和 `@yiliang/aw-plugins` full catalog 包使用相同 schema 2 manifest、catalog version、channel 和 catalog 级最低 CLI 版本。sidecar 只包含 current `catalog-manifest.json` 和必要 package metadata；full 包包含同一份 manifest 以及 current 单版本快照的全部插件 artifact。
 
 ## scripts / config block
 
@@ -385,7 +387,7 @@ Catalog staging（生成产物，不手改）
            │  catalog 发布
            ▼
 远程 catalog（独立于 CLI 发布）
-  @yiliang/aw-plugins-manifest       sidecar：catalog-manifest.json、history、digest 真值
+  @yiliang/aw-plugins-manifest       sidecar：current catalog-manifest.json 和 digest 真值
   @yiliang/aw-plugins                full：同一份 manifest + 当前快照的全部插件 artifact
            │
            │  aw init / install / upgrade 解析 current catalog

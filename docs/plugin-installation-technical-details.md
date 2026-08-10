@@ -18,13 +18,14 @@ catalog source
 
 ## Current Catalog
 
-`@yiliang/aw-plugins-manifest` sidecar 提供 catalog identity、compatibility、entries、digest 和 history。`@yiliang/aw-plugins` full 包提供同版本当前 artifact。
+`@yiliang/aw-plugins-manifest` sidecar 提供 catalog identity、compatibility、entries 和 digest。`@yiliang/aw-plugins` full 包提供同版本当前 artifact。
 
-catalog history 保留历史 catalog version、catalog 最低 CLI 版本、plugin version、plugin 最低 CLI 版本、`artifactDigest` 和 `manifestDigest`。latest catalog 与当前 CLI 不兼容时，resolver 只按该 history 查找同轨兼容 catalog。
+catalog manifest 使用 `schemaVersion: 2`，只包含 selector 当前指向的 catalog。resolver 先完整校验 schema 2，再检查 CLI 兼容性。channel catalog 不兼容时直接返回 `awVersionTooLow`；显式版本不兼容时返回 `explicitCatalogIncompatible`。两种情况都不解析其它 catalog，不下载 full 包，也不使用 cache fallback。
 
 严格 cache 具有以下边界：
 
 - selector 和 registry source identity 隔离。
+- cache key 绑定 selector、catalog identity、manifest schema、sidecar integrity 和 full integrity。
 - entry immutable，写完后才发布 selector index。
 - 较新的 observation 不被较旧完成结果覆盖。
 - lock 有 deadline、owner token 和 stale owner 恢复。

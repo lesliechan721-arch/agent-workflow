@@ -75,7 +75,7 @@ code-review/
 
 **插件 manifest 和平台原生 manifest 都不支持**：`dependencies`。
 
-**catalog manifest 负责记录**：catalog version、catalog channel、catalog 级 `compatibility.aw.minVersion`、sidecar/full package identity、当前快照里每个插件的单一版本，以及 history 中每个已发布插件的 `artifactDigest` / `manifestDigest`。这些文件由发布流程生成，不手改。
+**schema 2 catalog manifest 负责记录**：current catalog version、catalog channel、catalog 级 `compatibility.aw.minVersion`、sidecar/full package identity，以及 current 快照里每个插件的单一版本、最低 CLI 版本和 `artifactDigest` / `manifestDigest`。这些文件由发布流程生成，不手改。同一 catalog version 的 exact-version sidecar/full package 内容不可改变。
 
 **Codex bundle 不包含**：output-styles/、Claude-only manifest overrides、extensions 衍生产物（均在安装时生成）
 

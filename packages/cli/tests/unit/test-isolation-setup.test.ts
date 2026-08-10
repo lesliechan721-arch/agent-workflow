@@ -33,22 +33,13 @@ import { resetSourceStateForTests } from '../setup/reset-source-state.js';
 
 function createCatalogManifest(catalogVersion: string): Record<string, unknown> {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     catalogVersion,
     channel: 'latest',
     compatibility: {
       aw: {
         minVersion: '1.0.0',
       },
-    },
-    history: {
-      schemaVersion: 1,
-      channel: 'latest',
-      releases: [{
-        catalogVersion,
-        minAwVersion: '1.0.0',
-        plugins: [],
-      }],
     },
     packages: {
       sidecar: {

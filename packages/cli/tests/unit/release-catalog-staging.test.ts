@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   catalogReleaseStagingRoot,
@@ -35,19 +35,26 @@ function createSnapshot(catalogOutputRoot: string) {
   };
 }
 
-function createManifest(catalogVersion: string, channel: 'beta' | 'latest', history?: unknown) {
+function createManifest(catalogVersion: string, channel: 'beta' | 'latest') {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     catalogVersion,
     channel,
     compatibility: { aw: { minVersion: '0.0.0' } },
-    packages: {},
-    entries: [],
-    history: history ?? {
-      schemaVersion: 1,
-      channel,
-      releases: [{ catalogVersion, minAwVersion: '0.0.0', plugins: [] }],
+    packages: {
+      sidecar: {
+        name: '@yiliang/aw-plugins-manifest',
+        version: catalogVersion,
+        channel,
+      },
+      full: {
+        name: '@yiliang/aw-plugins',
+        version: catalogVersion,
+        channel,
+        manifestPath: './catalog-manifest.json',
+      },
     },
+    entries: [],
   };
 }
 
@@ -58,7 +65,6 @@ function createCatalogModules(stageRoots: string[]) {
         outputRoot: string;
         catalogVersion: string;
         channel: 'beta' | 'latest';
-        history?: unknown;
       }) {
         stageRoots.push(options.outputRoot);
         const sidecarPackageRoot = path.join(options.outputRoot, '.catalog', 'sidecar');
@@ -68,7 +74,7 @@ function createCatalogModules(stageRoots: string[]) {
           fs.mkdir(fullPackageRoot, { recursive: true }),
         ]);
         return {
-          manifest: createManifest(options.catalogVersion, options.channel, options.history),
+          manifest: createManifest(options.catalogVersion, options.channel),
           canonicalManifestPath: path.join(options.outputRoot, '.catalog', 'catalog-manifest.json'),
           sidecarPackageRoot,
           fullPackageRoot,
@@ -80,7 +86,11 @@ function createCatalogModules(stageRoots: string[]) {
     },
     manifest: {
       validateCatalogManifest: (manifest: unknown) => manifest,
-      compareStrictSemVer: (left: string, right: string) => left.localeCompare(right),
+      compareStrictSemVer: (left: string, right: string) => left.localeCompare(
+        right,
+        undefined,
+        { numeric: true },
+      ),
     },
   };
 }
@@ -137,8 +147,6 @@ describe('catalog release staging', () => {
       generationId: 'generation-fixture',
       outputDigest: 'digest-fixture',
       channel: 'beta',
-      targetHistoryManifest: null,
-      officialHistoryManifests: { latest: null, beta: null },
       catalogModules: createCatalogModules(stageRoots),
       registry: {},
     });
@@ -157,7 +165,7 @@ describe('catalog release staging', () => {
     expect(preflight.staged).not.toHaveProperty('sidecarPackageRoot');
     expect(preflight.staged).not.toHaveProperty('fullPackageRoot');
 
-    expect(stageRoots).toHaveLength(2);
+    expect(stageRoots).toHaveLength(1);
     expect(new Set(stageRoots).size).toBe(1);
     expect(stageRoots[0]).not.toBe(sourceRoot);
     await expect(fs.stat(stageRoots[0]!)).rejects.toMatchObject({ code: 'ENOENT' });
@@ -174,8 +182,6 @@ describe('catalog release staging', () => {
       snapshot: createSnapshot(sourceRoot),
       catalogVersion: '9.0.0-beta.2',
       channel: 'beta',
-      targetHistoryManifest: null,
-      officialHistoryManifests: { latest: null, beta: null },
       catalogModules: createCatalogModules(stageRoots),
       registry: {
         verifyExistingPackage: async () => ({ exists: false, verified: false }),
@@ -220,8 +226,6 @@ describe('catalog release staging', () => {
       snapshot: createSnapshot(sourceRoot),
       catalogVersion: '9.0.0-beta.3',
       channel: 'beta',
-      targetHistoryManifest: null,
-      officialHistoryManifests: { latest: null, beta: null },
       catalogModules: createCatalogModules(stageRoots),
       registry: {
         verifyExistingPackage: async () => ({ exists: false, verified: false }),
@@ -239,5 +243,140 @@ describe('catalog release staging', () => {
     await expect(fs.stat(stageRoots[0]!)).rejects.toMatchObject({ code: 'ENOENT' });
     await expect(fs.readFile(path.join(sourceRoot, 'canonical-marker.txt'), 'utf8'))
       .resolves.toBe('canonical\n');
+  });
+
+  it('bootstraps a higher schema 2 candidate from a legacy schema 1 dist-tag without parsing its manifest', async () => {
+    const sourceRoot = await createCatalogSource();
+    const stageRoots: string[] = [];
+    const legacyManifest = {
+      schemaVersion: 1,
+      history: { schemaVersion: 1, releases: [] },
+    };
+
+    await expect(preflightCatalogRelease({
+      snapshot: createSnapshot(sourceRoot),
+      catalogVersion: '9.0.0-beta.2',
+      channel: 'beta',
+      catalogModules: createCatalogModules(stageRoots),
+      registry: {
+        readChannelPackageIdentity: async () => ({
+          status: 'ready',
+          version: '9.0.0-beta.1',
+          identity: { version: '9.0.0-beta.1', legacyManifest },
+        }),
+        verifyExistingPackage: async () => ({ exists: false, verified: false }),
+      },
+    })).resolves.toMatchObject({ catalogVersion: '9.0.0-beta.2' });
+
+    expect(stageRoots).toHaveLength(1);
+  });
+
+  it('rejects a candidate below the current dist-tag package version', async () => {
+    const sourceRoot = await createCatalogSource();
+    const stageRoots: string[] = [];
+
+    await expect(preflightCatalogRelease({
+      snapshot: createSnapshot(sourceRoot),
+      catalogVersion: '9.0.0-beta.1',
+      channel: 'beta',
+      catalogModules: createCatalogModules(stageRoots),
+      registry: {
+        readChannelPackageIdentity: async () => ({
+          status: 'ready',
+          version: '9.0.0-beta.2',
+        }),
+      },
+    })).rejects.toThrow(
+      'Catalog version 9.0.0-beta.1 must not be lower than current 9.0.0-beta.2 on beta.',
+    );
+
+    await expect(fs.stat(stageRoots[0]!)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('reports current package identity failures without the removed history error contract', async () => {
+    const sourceRoot = await createCatalogSource();
+
+    await expect(preflightCatalogRelease({
+      snapshot: createSnapshot(sourceRoot),
+      catalogVersion: '9.0.0-beta.2',
+      channel: 'beta',
+      catalogModules: createCatalogModules([]),
+      registry: {
+        readChannelPackageIdentity: async () => ({
+          status: 'error',
+          error: 'registry offline',
+        }),
+      },
+    })).rejects.toThrow(
+      'Unable to read current beta catalog package identity. registry offline',
+    );
+  });
+
+  it('treats matching exact-version sidecar and full packages as idempotent', async () => {
+    const sourceRoot = await createCatalogSource();
+    const stageRoots: string[] = [];
+    const verifyExistingPackage = vi.fn(async () => ({ exists: true, verified: true }));
+    const publishPackage = vi.fn(async () => undefined);
+
+    await expect(publishCatalogRelease({
+      snapshot: createSnapshot(sourceRoot),
+      catalogVersion: '9.0.0-beta.2',
+      channel: 'beta',
+      catalogModules: createCatalogModules(stageRoots),
+      registry: {
+        readChannelPackageIdentity: async () => ({
+          status: 'ready',
+          version: '9.0.0-beta.2',
+        }),
+        verifyExistingPackage,
+        publishPackage,
+      },
+    })).resolves.toMatchObject({ catalogVersion: '9.0.0-beta.2' });
+
+    expect(verifyExistingPackage).toHaveBeenCalledTimes(4);
+    expect(publishPackage).not.toHaveBeenCalled();
+  });
+
+  it.each(['sidecar', 'full'] as const)(
+    'rejects different exact-version %s package bytes during preflight',
+    async (differentKind) => {
+      const sourceRoot = await createCatalogSource();
+      const stageRoots: string[] = [];
+
+      await expect(preflightCatalogRelease({
+        snapshot: createSnapshot(sourceRoot),
+        catalogVersion: '9.0.0-beta.2',
+        channel: 'beta',
+        catalogModules: createCatalogModules(stageRoots),
+        registry: {
+          readChannelPackageIdentity: async () => ({
+            status: 'ready',
+            version: '9.0.0-beta.2',
+          }),
+          verifyExistingPackage: async (kind: string) => kind === differentKind
+            ? { exists: true, verified: false, reason: 'fixture bytes differ' }
+            : { exists: true, verified: true },
+        },
+      })).rejects.toThrow(
+        `Existing ${differentKind} catalog package does not match staged contents. fixture bytes differ`,
+      );
+
+      await expect(fs.stat(stageRoots[0]!)).rejects.toMatchObject({ code: 'ENOENT' });
+    },
+  );
+
+  it.each([
+    { channel: 'latest' as const, version: '9.0.0-beta.1', kind: 'stable' },
+    { channel: 'beta' as const, version: '9.0.0', kind: 'prerelease' },
+  ])('keeps the $channel channel $kind version boundary', async ({ channel, version, kind }) => {
+    const sourceRoot = await createCatalogSource();
+
+    await expect(preflightCatalogRelease({
+      snapshot: createSnapshot(sourceRoot),
+      catalogVersion: version,
+      channel,
+      catalogModules: createCatalogModules([]),
+      registry: {},
+    })).rejects.toThrow(`Expected a ${kind} version`);
   });
 });

@@ -498,6 +498,11 @@ function isMissingRegistryPackageVersionError(error) {
   return /Registry version .+ is missing for /.test(message);
 }
 
+function isMissingExactRegistryPackageVersionError(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes('HTTP 404') || isMissingRegistryPackageVersionError(error);
+}
+
 async function listFilesRecursively(rootDir) {
   const entries = await fs.readdir(rootDir, { withFileTypes: true }).catch(() => []);
   const files = [];
@@ -543,6 +548,48 @@ async function comparePackageDirectories(expectedRoot, actualRoot) {
   };
 }
 
+async function comparePackedPackageDirectory(candidateRoot, publishedRoot) {
+  return withOwnedTemporaryDirectory(
+    path.join(os.tmpdir(), 'aw-catalog-package-compare-'),
+    async (temporaryRoot) => {
+      const packRoot = path.join(temporaryRoot, 'pack');
+      const unpackRoot = path.join(temporaryRoot, 'unpack');
+      await Promise.all([
+        ensureDirectory(packRoot),
+        ensureDirectory(unpackRoot),
+      ]);
+      await runCommand('pnpm', [
+        '--config.ignore-scripts=true',
+        'pack',
+        '--pack-destination',
+        packRoot,
+      ], {
+        cwd: candidateRoot,
+        stdio: 'ignore',
+      });
+      const tarballs = await listTarballs(packRoot);
+      if (tarballs.length !== 1) {
+        throw new Error(
+          `Expected candidate catalog pack to produce exactly one tarball, found ${tarballs.length}.`,
+        );
+      }
+      await runCommand('tar', [
+        '-xzf',
+        tarballs[0],
+        '-C',
+        unpackRoot,
+      ], {
+        stdio: 'ignore',
+      });
+      return comparePackageDirectories(
+        path.join(unpackRoot, 'package'),
+        publishedRoot,
+      );
+    },
+    'Catalog package comparison cleanup also failed',
+  );
+}
+
 function packageNameForKind(kind) {
   if (kind === 'full') {
     return fullCatalogPackageName;
@@ -576,84 +623,15 @@ export async function resolveRegistryUrl(
   return 'https://registry.npmjs.org/';
 }
 
-function assertHistorySourceReady(result, channel, purpose) {
+function assertChannelPackageIdentityReady(result, channel) {
   if (!result || result.status === 'missing') {
     return null;
   }
-  if (result.status !== 'ready' || !result.manifest) {
+  if (result.status !== 'ready' || !result.version) {
     const detail = result?.error ? ` ${result.error}` : '';
-    throw new Error(`Unable to read ${purpose} ${channel} catalog history.${detail}`.trim());
+    throw new Error(`Unable to read current ${channel} catalog package identity.${detail}`.trim());
   }
-  return result.manifest;
-}
-
-function createHistoryPluginMap(releases) {
-  const entries = new Map();
-  for (const release of releases) {
-    for (const plugin of release.plugins) {
-      const key = `${plugin.name}@${plugin.version}`;
-      const previous = entries.get(key);
-      if (!previous) {
-        entries.set(key, {
-          artifactDigest: plugin.artifactDigest,
-          manifestDigest: plugin.manifestDigest,
-          minAwVersion: plugin.minAwVersion,
-        });
-        continue;
-      }
-      if (
-        previous.artifactDigest !== plugin.artifactDigest ||
-        previous.manifestDigest !== plugin.manifestDigest ||
-        previous.minAwVersion !== plugin.minAwVersion
-      ) {
-        throw new Error(`Published plugin identity drift detected for ${key}.`);
-      }
-    }
-  }
-  return entries;
-}
-
-function assertBuildMetadataPriorityUniqueness(compareStrictSemVer, releases, currentEntries) {
-  const byPlugin = new Map();
-  const seen = [];
-  for (const release of releases) {
-    seen.push(...release.plugins);
-  }
-  seen.push(...currentEntries.map((entry) => ({
-    name: entry.name,
-    version: entry.version,
-  })));
-
-  for (const plugin of seen) {
-    const versions = byPlugin.get(plugin.name) ?? [];
-    for (const existingVersion of versions) {
-      if (
-        existingVersion !== plugin.version &&
-        compareStrictSemVer(existingVersion, plugin.version) === 0
-      ) {
-        throw new Error(
-          `Plugin "${plugin.name}" cannot reuse SemVer precedence with build metadata variants (${existingVersion} vs ${plugin.version}).`,
-        );
-      }
-    }
-    versions.push(plugin.version);
-    byPlugin.set(plugin.name, versions);
-  }
-}
-
-function findHighestVersion(compareStrictSemVer, releases, pluginName) {
-  let highest = null;
-  for (const release of releases) {
-    for (const plugin of release.plugins) {
-      if (plugin.name !== pluginName) {
-        continue;
-      }
-      if (!highest || compareStrictSemVer(plugin.version, highest) > 0) {
-        highest = plugin.version;
-      }
-    }
-  }
-  return highest;
+  return result.version;
 }
 
 export async function readCatalogStage(options = {}) {
@@ -676,8 +654,7 @@ export async function validateCatalogReleaseCandidate(options = {}) {
   const {
     stagedManifest,
     targetChannel,
-    targetHistoryManifest = null,
-    officialHistoryManifests = {},
+    targetChannelVersion = null,
   } = options;
   const { manifest } = await resolveCatalogModules(options.catalogModules, options.cliDistRoot);
   const { validateCatalogManifest, compareStrictSemVer } = manifest;
@@ -692,25 +669,6 @@ export async function validateCatalogReleaseCandidate(options = {}) {
     );
   }
 
-  const targetHistory = targetHistoryManifest
-    ? validateCatalogManifest(deepClone(targetHistoryManifest))
-    : null;
-  if (targetHistory && targetHistory.channel !== channel) {
-    throw new Error(`Target history channel mismatch: expected "${channel}", received "${targetHistory.channel}".`);
-  }
-
-  const globalHistoryManifests = [];
-  for (const source of [officialHistoryManifests.latest, officialHistoryManifests.beta]) {
-    if (!source) {
-      continue;
-    }
-    globalHistoryManifests.push(validateCatalogManifest(deepClone(source)));
-  }
-
-  const currentRelease = candidateManifest.history.releases[candidateManifest.history.releases.length - 1];
-  if (!currentRelease) {
-    throw new Error('Catalog staging manifest is missing the current release entry.');
-  }
   const requiredCatalogMinVersion = candidateManifest.entries.reduce((highest, entry) => {
     if (!highest) {
       return entry.compatibility.aw.minVersion;
@@ -728,104 +686,20 @@ export async function validateCatalogReleaseCandidate(options = {}) {
     );
   }
 
-  for (const historyManifest of globalHistoryManifests) {
-    if (historyManifest.channel !== channel) {
-      const conflict = historyManifest.history.releases.find(
-        (release) => release.catalogVersion === candidateManifest.catalogVersion,
-      );
-      if (conflict) {
-        throw new Error(
-          `Catalog version ${candidateManifest.catalogVersion} cannot be reused across channels (${channel} vs ${historyManifest.channel}).`,
-        );
-      }
-    }
-  }
-
-  const globalReleases = globalHistoryManifests.flatMap((entry) => entry.history.releases);
-  const publishedPluginIdentities = createHistoryPluginMap(globalReleases);
-  assertBuildMetadataPriorityUniqueness(
-    compareStrictSemVer,
-    globalReleases,
-    candidateManifest.entries,
-  );
-
-  for (const entry of candidateManifest.entries) {
-    const exactKey = `${entry.name}@${entry.version}`;
-    const publishedIdentity = publishedPluginIdentities.get(exactKey);
-    if (
-      publishedIdentity &&
-      (
-        publishedIdentity.artifactDigest !== entry.artifactDigest ||
-        publishedIdentity.manifestDigest !== entry.manifestDigest ||
-        publishedIdentity.minAwVersion !== entry.compatibility.aw.minVersion
-      )
-    ) {
-      throw new Error(`Published plugin "${exactKey}" is immutable; digest or minAwVersion changed.`);
-    }
-  }
-
-  const targetReleases = targetHistory?.history.releases ?? [];
-  const targetLatest = targetReleases[targetReleases.length - 1] ?? null;
-  let nextReleases;
-  if (!targetLatest) {
-    nextReleases = [currentRelease];
-  } else {
+  if (targetChannelVersion) {
     const catalogComparison = compareStrictSemVer(
       candidateManifest.catalogVersion,
-      targetLatest.catalogVersion,
+      targetChannelVersion,
     );
     if (catalogComparison < 0) {
       throw new Error(
-        `Catalog version ${candidateManifest.catalogVersion} must be higher than existing ${targetLatest.catalogVersion} on ${channel}.`,
-      );
-    }
-    if (catalogComparison === 0) {
-      const targetReleaseJson = JSON.stringify(targetLatest);
-      const currentReleaseJson = JSON.stringify(currentRelease);
-      if (targetReleaseJson !== currentReleaseJson) {
-        throw new Error(
-          `Catalog version ${candidateManifest.catalogVersion} already exists on ${channel} with different contents.`,
-        );
-      }
-      nextReleases = targetReleases;
-    } else {
-      nextReleases = [...targetReleases, currentRelease];
-    }
-  }
-
-  for (const entry of candidateManifest.entries) {
-    const exactTargetRelease = targetReleases
-      .flatMap((release) => release.plugins)
-      .find((plugin) => plugin.name === entry.name && plugin.version === entry.version);
-    if (
-      exactTargetRelease &&
-      exactTargetRelease.artifactDigest === entry.artifactDigest &&
-      exactTargetRelease.manifestDigest === entry.manifestDigest &&
-      exactTargetRelease.minAwVersion === entry.compatibility.aw.minVersion
-    ) {
-      continue;
-    }
-
-    const highestTargetVersion = findHighestVersion(
-      compareStrictSemVer,
-      targetReleases,
-      entry.name,
-    );
-    if (highestTargetVersion && compareStrictSemVer(entry.version, highestTargetVersion) <= 0) {
-      throw new Error(
-        `Plugin "${entry.name}" changed artifact identity but version ${entry.version} is not higher than ${highestTargetVersion} on ${channel}.`,
+        `Catalog version ${candidateManifest.catalogVersion} must not be lower than current ${targetChannelVersion} on ${channel}.`,
       );
     }
   }
 
   return {
     channel,
-    currentRelease,
-    nextHistory: {
-      schemaVersion: 1,
-      channel,
-      releases: nextReleases,
-    },
   };
 }
 
@@ -834,8 +708,7 @@ export async function prepareCatalogRelease(options = {}) {
     outputRoot = defaultCatalogOutputRoot,
     catalogVersion,
     channel,
-    targetHistoryManifest = null,
-    officialHistoryManifests = {},
+    targetChannelVersion = null,
   } = options;
   const sourceRepoRoot = options.sourceRepoRoot ?? repoRoot;
   const [{ pluginStaging, bundleLayout }, stagedCandidate] = await Promise.all([
@@ -848,24 +721,16 @@ export async function prepareCatalogRelease(options = {}) {
         ...(channel ? { channel } : {}),
       })),
   ]);
-  const validation = await validateCatalogReleaseCandidate({
+  await validateCatalogReleaseCandidate({
     stagedManifest: stagedCandidate.manifest,
     targetChannel: channel,
-    targetHistoryManifest,
-    officialHistoryManifests,
+    targetChannelVersion,
     catalogModules: options.catalogModules,
     cliDistRoot: options.cliDistRoot,
   });
 
-  const staged = await pluginStaging.stageCatalogArtifacts({
-    repoRoot: sourceRepoRoot,
-    outputRoot,
-    catalogVersion: stagedCandidate.manifest.catalogVersion,
-    channel: validation.channel,
-    history: validation.nextHistory,
-  });
   await bundleLayout.validateBundleLayout(outputRoot);
-  return staged;
+  return stagedCandidate;
 }
 
 export async function packCatalogPackage(options = {}) {
@@ -909,21 +774,18 @@ export async function createCatalogRegistryAdapter(options = {}) {
 
   return {
     registryUrl,
-    async readChannelManifest(channel) {
+    async readChannelPackageIdentity(channel) {
       try {
-        const archive = await marketplace.resolveCatalogPackageByDistTag(
+        const identity = await marketplace.resolveCatalogPackageIdentityByDistTag(
           sidecarCatalogPackageName,
           channel,
           registryEnv,
         );
-        try {
-          return {
-            status: 'ready',
-            manifest: archive.rawManifest,
-          };
-        } finally {
-          await archive.dispose();
-        }
+        return {
+          status: 'ready',
+          identity,
+          version: identity.version,
+        };
       } catch (error) {
         if (isMissingRegistryPackageError(error)) {
           return {
@@ -938,26 +800,30 @@ export async function createCatalogRegistryAdapter(options = {}) {
     },
     async verifyExistingPackage(kind, context) {
       const packageName = packageNameForKind(kind);
+      let identity;
       try {
-        const identity = await marketplace.resolveCatalogPackageIdentityByVersion(
+        identity = await marketplace.resolveCatalogPackageIdentityByVersion(
           packageName,
           context.version,
           registryEnv,
         );
-        const archive = await marketplace.downloadCatalogPackageArchive(identity, registryEnv);
-        try {
-          const comparison = await comparePackageDirectories(context.packageRoot, archive.packageRoot);
-          return comparison.ok
-            ? { exists: true, verified: true }
-            : { exists: true, verified: false, reason: comparison.reason };
-        } finally {
-          await archive.dispose();
-        }
       } catch (error) {
-        if (isMissingRegistryPackageError(error) || isMissingRegistryPackageVersionError(error)) {
+        if (isMissingExactRegistryPackageVersionError(error)) {
           return { exists: false, verified: false };
         }
         throw error;
+      }
+      const archive = await marketplace.downloadCatalogPackageArchive(identity, registryEnv);
+      try {
+        const comparison = await comparePackedPackageDirectory(
+          context.packageRoot,
+          archive.packageRoot,
+        );
+        return comparison.ok
+          ? { exists: true, verified: true }
+          : { exists: true, verified: false, reason: comparison.reason };
+      } finally {
+        await archive.dispose();
       }
     },
     async publishPackage(_kind, context) {
@@ -987,75 +853,53 @@ export async function createCatalogRegistryAdapter(options = {}) {
   };
 }
 
-async function resolveChannelHistoryManifests(options) {
-  const requestedChannel = options.channel;
+async function resolveCurrentChannelVersion(options) {
+  if (options.targetChannelVersion !== undefined) {
+    return options.targetChannelVersion;
+  }
   const registry = options.registry ?? {};
-  const providedOfficial = options.officialHistoryManifests ?? {};
-  const providedTarget = options.targetHistoryManifest;
-
-  const readChannelManifest = registry.readChannelManifest;
-  const latestResult = providedOfficial.latest !== undefined
-    ? { status: providedOfficial.latest ? 'ready' : 'missing', manifest: providedOfficial.latest }
-    : await readChannelManifest?.('latest');
-  const betaResult = providedOfficial.beta !== undefined
-    ? { status: providedOfficial.beta ? 'ready' : 'missing', manifest: providedOfficial.beta }
-    : await readChannelManifest?.('beta');
-
-  const officialHistoryManifests = {
-    latest: assertHistorySourceReady(latestResult, 'latest', 'official'),
-    beta: assertHistorySourceReady(betaResult, 'beta', 'official'),
-  };
-
-  if (providedTarget !== undefined) {
-    return {
-      targetHistoryManifest: providedTarget,
-      officialHistoryManifests,
-    };
+  if (typeof registry.readChannelPackageIdentity !== 'function') {
+    return null;
   }
+  return assertChannelPackageIdentityReady(
+    await registry.readChannelPackageIdentity(options.channel),
+    options.channel,
+  );
+}
 
-  if (typeof readChannelManifest !== 'function') {
-    return {
-      targetHistoryManifest: officialHistoryManifests[requestedChannel] ?? null,
-      officialHistoryManifests,
-    };
+async function verifyCatalogPackageCandidate(kind, publishContext) {
+  const registry = publishContext.registry ?? {};
+  if (typeof registry.verifyExistingPackage !== 'function') {
+    return { exists: false, verified: false };
   }
-
-  const targetResult = requestedChannel === 'latest' ? latestResult : betaResult;
-  return {
-    targetHistoryManifest: assertHistorySourceReady(
-      targetResult,
-      requestedChannel,
-      'target',
-    ),
-    officialHistoryManifests,
-  };
+  const packageRoot = kind === 'full'
+    ? publishContext.fullPackageRoot
+    : publishContext.sidecarPackageRoot;
+  const verified = await registry.verifyExistingPackage(kind, {
+    packageRoot,
+    channel: publishContext.channel,
+    version: publishContext.manifest.catalogVersion,
+    manifest: publishContext.manifest,
+  });
+  if (!verified || typeof verified !== 'object') {
+    throw new Error(`Registry verifyExistingPackage returned an invalid result for ${kind}.`);
+  }
+  if (verified.exists && !verified.verified) {
+    const detail = verified.reason ? ` ${verified.reason}` : '';
+    throw new Error(`Existing ${kind} catalog package does not match staged contents.${detail}`.trim());
+  }
+  return verified;
 }
 
 async function verifyOrPublishCatalogPackage(kind, publishContext) {
   const registry = publishContext.registry ?? {};
-  const verifyExistingPackage = registry.verifyExistingPackage;
   const publishPackage = registry.publishPackage;
   const packageRoot = kind === 'full'
     ? publishContext.fullPackageRoot
     : publishContext.sidecarPackageRoot;
 
-  const verified = typeof verifyExistingPackage === 'function'
-    ? await verifyExistingPackage(kind, {
-      packageRoot,
-      channel: publishContext.channel,
-      version: publishContext.manifest.catalogVersion,
-      manifest: publishContext.manifest,
-    })
-    : { exists: false };
-  if (!verified || typeof verified !== 'object') {
-    throw new Error(`Registry verifyExistingPackage returned an invalid result for ${kind}.`);
-  }
-  if (verified.exists) {
-    if (!verified.verified) {
-      const detail = verified.reason ? ` ${verified.reason}` : '';
-      throw new Error(`Existing ${kind} catalog package does not match staged contents.${detail}`.trim());
-    }
-  } else {
+  const verified = await verifyCatalogPackageCandidate(kind, publishContext);
+  if (!verified.exists) {
     if (typeof publishPackage !== 'function') {
       throw new Error(`Missing registry publishPackage handler for ${kind}.`);
     }
@@ -1107,22 +951,31 @@ async function stageCatalogReleasePreflight(options = {}) {
       })).manifest.catalogVersion;
     const channel = normalizeChannel(options.channel, stagedCatalogVersion);
     assertVersionKind(stagedCatalogVersion, channel === 'beta' ? 'prerelease' : 'stable');
-    const historyInputs = await resolveChannelHistoryManifests({
+    const targetChannelVersion = await resolveCurrentChannelVersion({
       channel,
       registry,
-      targetHistoryManifest: options.targetHistoryManifest,
-      officialHistoryManifests: options.officialHistoryManifests,
+      targetChannelVersion: options.targetChannelVersion,
     });
     const staged = await prepareCatalogRelease({
       outputRoot,
       catalogVersion: stagedCatalogVersion,
       channel,
-      targetHistoryManifest: historyInputs.targetHistoryManifest,
-      officialHistoryManifests: historyInputs.officialHistoryManifests,
+      targetChannelVersion,
       catalogModules,
       cliDistRoot: snapshot.cliDistRoot,
       sourceRepoRoot: snapshot.root,
     });
+    const publishContext = {
+      channel,
+      manifest: staged.manifest,
+      sidecarPackageRoot: staged.sidecarPackageRoot,
+      fullPackageRoot: staged.fullPackageRoot,
+      registry,
+    };
+    await Promise.all([
+      verifyCatalogPackageCandidate('sidecar', publishContext),
+      verifyCatalogPackageCandidate('full', publishContext),
+    ]);
 
     return {
       channel,

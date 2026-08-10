@@ -1,6 +1,8 @@
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -8,6 +10,9 @@ import {
   createCatalogRegistryAdapter,
   resolveRegistryUrl,
 } from '../../../../scripts/release/common.mjs';
+import { execPnpmForTest } from '../helpers/pnpm.js';
+
+const execFileAsync = promisify(execFile);
 
 const registryEnvKeys = [
   'AW_NPM_REGISTRY_URL',
@@ -40,6 +45,49 @@ async function createPackageJson(registry: string | null = 'https://package.exam
     ...(registry === null ? {} : { publishConfig: { registry } }),
   })}\n`);
   return { root, packageJsonPath };
+}
+
+async function createCatalogPackageFixture(
+  kind: 'sidecar' | 'full',
+  manifestMarker = 'candidate',
+) {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), `aw-release-${kind}-package-`));
+  tempRoots.push(root);
+  const packageJsonPath = path.join(root, 'package.json');
+  await fs.writeFile(packageJsonPath, `${JSON.stringify({
+    name: kind === 'sidecar' ? '@yiliang/aw-plugins-manifest' : '@yiliang/aw-plugins',
+    version: '2.0.0-beta.1',
+    files: ['catalog-manifest.json'],
+  }, null, 2)}\n`);
+  await fs.writeFile(
+    path.join(root, 'catalog-manifest.json'),
+    `${JSON.stringify({ schemaVersion: 2, marker: manifestMarker }, null, 2)}\n`,
+  );
+  return { root, packageJsonPath };
+}
+
+async function packAndUnpackPackage(packageRoot: string): Promise<string> {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-release-packed-package-'));
+  tempRoots.push(root);
+  const packRoot = path.join(root, 'pack');
+  const unpackRoot = path.join(root, 'unpack');
+  await Promise.all([
+    fs.mkdir(packRoot, { recursive: true }),
+    fs.mkdir(unpackRoot, { recursive: true }),
+  ]);
+  await execPnpmForTest(
+    ['--config.ignore-scripts=true', 'pack', '--pack-destination', packRoot],
+    { cwd: packageRoot, env: process.env },
+  );
+  const tarballs = (await fs.readdir(packRoot)).filter((entry) => entry.endsWith('.tgz'));
+  expect(tarballs).toHaveLength(1);
+  await execFileAsync('tar', [
+    '-xzf',
+    path.join(packRoot, tarballs[0]!),
+    '-C',
+    unpackRoot,
+  ]);
+  return path.join(unpackRoot, 'package');
 }
 
 afterEach(async () => {
@@ -115,20 +163,18 @@ describe('release registry consistency', () => {
       NPM_CONFIG_REGISTRY: 'https://ignored-upper.example.test/',
     });
     const { root: packageRoot, packageJsonPath } = await createPackageJson();
+    const publishedPackageRoot = await packAndUnpackPackage(packageRoot);
     const expectedRegistryUrl = 'https://registry.example.test/team/';
     const receivedEnvs: NodeJS.ProcessEnv[] = [];
     const commandRunner = vi.fn(async () => undefined);
     const marketplace = {
-      resolveCatalogPackageByDistTag: vi.fn(async (
+      resolveCatalogPackageIdentityByDistTag: vi.fn(async (
         _packageName: string,
         _channel: string,
         env: NodeJS.ProcessEnv,
       ) => {
         receivedEnvs.push(env);
-        return {
-          rawManifest: { catalogVersion: '2.0.0-beta.1' },
-          dispose: vi.fn(async () => undefined),
-        };
+        return { packageName: '@yiliang/aw-plugins-manifest', version: '2.0.0-beta.1' };
       }),
       resolveCatalogPackageIdentityByVersion: vi.fn(async (
         _packageName: string,
@@ -144,7 +190,7 @@ describe('release registry consistency', () => {
       ) => {
         receivedEnvs.push(env);
         return {
-          packageRoot,
+          packageRoot: publishedPackageRoot,
           dispose: vi.fn(async () => undefined),
         };
       }),
@@ -164,7 +210,10 @@ describe('release registry consistency', () => {
     const cliRegistryUrl = await resolveRegistryUrl(packageJsonPath);
     expect(cliRegistryUrl).toBe(expectedRegistryUrl);
     expect(adapter.registryUrl).toBe(cliRegistryUrl);
-    await expect(adapter.readChannelManifest('beta')).resolves.toMatchObject({ status: 'ready' });
+    await expect(adapter.readChannelPackageIdentity('beta')).resolves.toMatchObject({
+      status: 'ready',
+      version: '2.0.0-beta.1',
+    });
     await expect(adapter.verifyExistingPackage('full', context)).resolves.toEqual({
       exists: true,
       verified: true,
@@ -203,4 +252,72 @@ describe('release registry consistency', () => {
       env: receivedEnvs[0],
     });
   });
+
+  it('compares the packed candidate so npm package.json normalization remains idempotent', async () => {
+    const candidate = await createCatalogPackageFixture('sidecar');
+    const publishedPackageRoot = await packAndUnpackPackage(candidate.root);
+    const [candidatePackageJson, publishedPackageJson] = await Promise.all([
+      fs.readFile(candidate.packageJsonPath),
+      fs.readFile(path.join(publishedPackageRoot, 'package.json')),
+    ]);
+    expect(candidatePackageJson.equals(publishedPackageJson)).toBe(false);
+    expect(candidatePackageJson.at(-1)).toBe(0x0a);
+    expect(publishedPackageJson.at(-1)).not.toBe(0x0a);
+
+    const adapter = await createCatalogRegistryAdapter({
+      registryUrl: 'https://registry.example.test/',
+      marketplace: {
+        resolveCatalogPackageIdentityByVersion: vi.fn(async () => ({
+          packageName: '@yiliang/aw-plugins-manifest',
+          version: '2.0.0-beta.1',
+        })),
+        downloadCatalogPackageArchive: vi.fn(async () => ({
+          packageRoot: publishedPackageRoot,
+          dispose: vi.fn(async () => undefined),
+        })),
+      },
+    });
+
+    await expect(adapter.verifyExistingPackage('sidecar', {
+      packageRoot: candidate.root,
+      channel: 'beta',
+      version: '2.0.0-beta.1',
+      manifest: {},
+    })).resolves.toEqual({ exists: true, verified: true });
+  });
+
+  it.each(['sidecar', 'full'] as const)(
+    'rejects a real packed %s package with different content',
+    async (kind) => {
+      const candidate = await createCatalogPackageFixture(kind, 'candidate');
+      const published = await createCatalogPackageFixture(kind, 'published-different');
+      const publishedPackageRoot = await packAndUnpackPackage(published.root);
+      const adapter = await createCatalogRegistryAdapter({
+        registryUrl: 'https://registry.example.test/',
+        marketplace: {
+          resolveCatalogPackageIdentityByVersion: vi.fn(async () => ({
+            packageName: kind === 'sidecar'
+              ? '@yiliang/aw-plugins-manifest'
+              : '@yiliang/aw-plugins',
+            version: '2.0.0-beta.1',
+          })),
+          downloadCatalogPackageArchive: vi.fn(async () => ({
+            packageRoot: publishedPackageRoot,
+            dispose: vi.fn(async () => undefined),
+          })),
+        },
+      });
+
+      await expect(adapter.verifyExistingPackage(kind, {
+        packageRoot: candidate.root,
+        channel: 'beta',
+        version: '2.0.0-beta.1',
+        manifest: {},
+      })).resolves.toEqual({
+        exists: true,
+        verified: false,
+        reason: 'File content mismatch at catalog-manifest.json.',
+      });
+    },
+  );
 });

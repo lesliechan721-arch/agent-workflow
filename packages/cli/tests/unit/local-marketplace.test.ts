@@ -86,7 +86,6 @@ async function makeCacheFixture(options: {
       catalogVersion: options.catalogVersion ?? '1.0.0',
       minAwVersion: '1.0.0',
       schemaVersion: 1,
-      historySchemaVersion: 1,
       sidecarIntegrity: `sha512-sidecar-${options.catalogVersion ?? '1.0.0'}`,
       fullIntegrity: `sha512-full-${options.catalogVersion ?? '1.0.0'}`,
     },
@@ -106,14 +105,6 @@ function observation(
       npmIntegrity: entry.metadata.sidecarIntegrity,
       manifestDigest: entry.metadata.manifestDigest,
     },
-    latestCatalog: {
-      channel: entry.metadata.channel,
-      catalogVersion: entry.metadata.catalogVersion,
-      minAwVersion: entry.metadata.minAwVersion,
-      blocked: false,
-    },
-    historySchemaVersion: entry.metadata.historySchemaVersion,
-    resolutionSource: 'requestedCatalog',
     sourceIdentity,
     observationOrder,
   };
@@ -149,6 +140,8 @@ describe('strict current catalog cache', () => {
       cacheKey: written.cacheKey,
       metadata: { version: 2, catalogVersion: '1.0.0' },
     });
+    expect(written.metadata).not.toHaveProperty('historySchemaVersion');
+    expect(written.observation).toBeUndefined();
   });
 
   it('partitions selector observations by registry source and keeps the newest order', async () => {

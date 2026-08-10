@@ -53,32 +53,13 @@ function sha256(char: string): string {
 
 function createCatalogManifestFixture() {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     catalogVersion: '1.2.3',
     channel: 'latest',
     compatibility: {
       aw: {
         minVersion: '0.0.0',
       },
-    },
-    history: {
-      schemaVersion: 1,
-      channel: 'latest',
-      releases: [
-        {
-          catalogVersion: '1.2.3',
-          minAwVersion: '0.0.0',
-          plugins: [
-            {
-              name: 'demo',
-              version: '1.2.0',
-              minAwVersion: '0.0.0',
-              artifactDigest: sha256('a'),
-              manifestDigest: sha256('b'),
-            },
-          ],
-        },
-      ],
     },
     packages: {
       sidecar: {
@@ -329,18 +310,27 @@ describe('manifest coverage', () => {
     });
   });
 
-  it('rejects invalid catalog manifest channel, prerelease, digest, package identity, and history contracts', () => {
-    const missingHistory = createCatalogManifestFixture();
-    delete (missingHistory as Record<string, unknown>).history;
-    expect(() => validateCatalogManifest(missingHistory)).toThrow('expected an object');
+  it('accepts schema 2 and rejects schema 1 or history fields', () => {
+    expect(validateCatalogManifest(createCatalogManifestFixture()).schemaVersion).toBe(2);
 
-    const badHistorySchema = createCatalogManifestFixture();
-    badHistorySchema.history.schemaVersion = 2;
-    expect(() => validateCatalogManifest(badHistorySchema)).toThrow('history.schemaVersion');
+    const schemaOne = createCatalogManifestFixture();
+    schemaOne.schemaVersion = 1;
+    expect(() => validateCatalogManifest(schemaOne)).toThrow('schemaVersion: expected 2');
+
+    const schemaOneWithHistory = createCatalogManifestFixture() as Record<string, unknown>;
+    schemaOneWithHistory.schemaVersion = 1;
+    schemaOneWithHistory.history = {};
+    expect(() => validateCatalogManifest(schemaOneWithHistory)).toThrow();
+
+    const withHistory = createCatalogManifestFixture() as Record<string, unknown>;
+    withHistory.history = {};
+    expect(() => validateCatalogManifest(withHistory)).toThrow('unknown field "history"');
+  });
+
+  it('rejects invalid catalog manifest channel, prerelease, digest, and package identity', () => {
 
     const badDigest = createCatalogManifestFixture();
     badDigest.entries[0]!.manifestDigest = 'sha256:not-hex';
-    badDigest.history.releases[0]!.plugins[0]!.manifestDigest = 'sha256:not-hex';
     expect(() => validateCatalogManifest(badDigest)).toThrow('manifestDigest');
 
     const mismatchedPackageIdentity = createCatalogManifestFixture();
@@ -349,19 +339,15 @@ describe('manifest coverage', () => {
 
     const betaStableCatalog = createCatalogManifestFixture();
     betaStableCatalog.channel = 'beta';
-    betaStableCatalog.history.channel = 'beta';
     betaStableCatalog.packages.sidecar.channel = 'beta';
     betaStableCatalog.packages.full.channel = 'beta';
-    betaStableCatalog.history.releases[0]!.catalogVersion = '1.2.3';
     expect(() => validateCatalogManifest(betaStableCatalog)).toThrow('beta catalog requires a prerelease catalog version');
   });
 
   it('rejects plugin minVersion and duplicate snapshot names that violate catalog bounds', () => {
     const pluginMinAboveCatalog = createCatalogManifestFixture();
     pluginMinAboveCatalog.entries[0]!.compatibility.aw.minVersion = '0.0.1';
-    pluginMinAboveCatalog.history.releases[0]!.plugins[0]!.minAwVersion = '0.0.1';
     pluginMinAboveCatalog.compatibility.aw.minVersion = '0.0.0';
-    pluginMinAboveCatalog.history.releases[0]!.minAwVersion = '0.0.0';
     expect(() => validateCatalogManifest(pluginMinAboveCatalog)).toThrow('higher than catalog minimum');
 
     const duplicateEntry = createCatalogManifestFixture();

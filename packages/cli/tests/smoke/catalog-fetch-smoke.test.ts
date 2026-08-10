@@ -28,17 +28,6 @@ async function buildCatalogPair(options: {
   catalogVersion: string;
   channel: 'latest' | 'beta';
   minAwVersion: string;
-  historyReleases?: Array<{
-    catalogVersion: string;
-    minAwVersion: string;
-    plugins: Array<{
-      name: string;
-      version: string;
-      minAwVersion: string;
-      artifactDigest: string;
-      manifestDigest: string;
-    }>;
-  }>;
 }) {
   const sidecarRoot = path.join(options.targetRoot, `${options.label}-sidecar`);
   const fullRoot = path.join(options.targetRoot, `${options.label}-full`);
@@ -46,26 +35,7 @@ async function buildCatalogPair(options: {
   await fs.copy(path.join(options.sourceCatalogRoot, '.catalog', 'full'), fullRoot);
 
   const manifest = await fs.readJson(path.join(sidecarRoot, 'catalog-manifest.json'));
-  const defaultHistoryReleases = [
-    {
-      catalogVersion: options.catalogVersion,
-      minAwVersion: options.minAwVersion,
-      plugins: manifest.entries.map((entry: {
-        name: string;
-        version: string;
-        compatibility: { aw: { minVersion: string } };
-        artifactDigest: string;
-        manifestDigest: string;
-      }) => ({
-        name: entry.name,
-        version: entry.version,
-        minAwVersion: entry.compatibility.aw.minVersion,
-        artifactDigest: entry.artifactDigest,
-        manifestDigest: entry.manifestDigest,
-      })),
-    },
-  ];
-
+  manifest.schemaVersion = 2;
   manifest.catalogVersion = options.catalogVersion;
   manifest.channel = options.channel;
   manifest.compatibility.aw.minVersion = options.minAwVersion;
@@ -73,11 +43,7 @@ async function buildCatalogPair(options: {
   manifest.packages.sidecar.channel = options.channel;
   manifest.packages.full.version = options.catalogVersion;
   manifest.packages.full.channel = options.channel;
-  manifest.history = {
-    schemaVersion: 1,
-    channel: options.channel,
-    releases: options.historyReleases ?? defaultHistoryReleases,
-  };
+  delete manifest.history;
 
   await Promise.all([
     fs.writeJson(path.join(sidecarRoot, 'catalog-manifest.json'), manifest, { spaces: 2 }),
@@ -348,7 +314,7 @@ describe('catalog fetch smoke', () => {
     ]);
   });
 
-  it('uses sidecar history to fall back from incompatible latest to a compatible historical catalog', async () => {
+  it('rejects an incompatible channel catalog without full download or cache fallback', async () => {
     const snapshot = await requireBuildSnapshot();
 
     const distPluginCatalog = await importSmokeSnapshotModule<{
@@ -359,18 +325,10 @@ describe('catalog fetch smoke', () => {
     }>(path.join(snapshot.cliDistRoot, 'src', 'utils', 'marketplace.js'));
 
     const tempRoot = await createSmokeTempRoot(
-      'aw-fetch-history-smoke-',
-      'catalog fetch smoke history temp root',
+      'aw-fetch-incompatible-smoke-',
+      'catalog fetch incompatible temp root',
     );
-    registerSmokeWritableRoot(path.join(tempRoot, 'aw-home'), 'catalog fetch smoke history AW_HOME');
-    const compatible = await buildCatalogPair({
-      sourceCatalogRoot: snapshot.catalogOutputRoot,
-      targetRoot: tempRoot,
-      label: 'compatible',
-      catalogVersion: '0.9.0',
-      channel: 'latest',
-      minAwVersion: '1.0.0',
-    });
+    registerSmokeWritableRoot(path.join(tempRoot, 'aw-home'), 'catalog fetch incompatible AW_HOME');
     const blocked = await buildCatalogPair({
       sourceCatalogRoot: snapshot.catalogOutputRoot,
       targetRoot: tempRoot,
@@ -378,14 +336,6 @@ describe('catalog fetch smoke', () => {
       catalogVersion: '1.5.0',
       channel: 'latest',
       minAwVersion: '2.0.0',
-      historyReleases: [
-        compatible.manifest.history.releases[0],
-        {
-          catalogVersion: '1.5.0',
-          minAwVersion: '2.0.0',
-          plugins: compatible.manifest.history.releases[0].plugins,
-        },
-      ],
     });
 
     const operations: string[] = [];
@@ -398,47 +348,27 @@ describe('catalog fetch smoke', () => {
           rootDir: blocked.sidecarRoot,
           manifest: blocked.manifest as Record<string, unknown>,
         },
-        [packageKey('@yiliang/aw-plugins-manifest', '0.9.0')]: {
-          rootDir: compatible.sidecarRoot,
-          manifest: compatible.manifest as Record<string, unknown>,
-        },
-      },
-      fullPackages: {
-        [packageKey('@yiliang/aw-plugins', '0.9.0')]: {
-          rootDir: compatible.fullRoot,
-          manifest: compatible.manifest as Record<string, unknown>,
-        },
       },
       operations,
     }));
 
-    const resolution = await distPluginCatalog.resolveCurrentCatalog({
+    await expect(distPluginCatalog.resolveCurrentCatalog({
       ...process.env,
       AW_HOME: path.join(tempRoot, 'aw-home'),
       AW_CLI_VERSION: '1.0.0',
       AW_CATALOG_CHANNEL: 'latest',
-    });
-
-    expect(resolution).toMatchObject({
-      source: 'remote',
-      channel: 'latest',
-      catalogVersion: '0.9.0',
-      latestCatalogBlocked: {
+    })).rejects.toMatchObject({
+      resolution: {
+        reasonCode: 'awVersionTooLow',
         channel: 'latest',
         catalogVersion: '1.5.0',
         minAwVersion: '2.0.0',
-      },
-      fullCatalog: {
-        resolutionSource: 'historyCompatibleCatalog',
+        cacheFallback: { used: false },
       },
     });
     expect(operations).toEqual([
       'identity:@yiliang/aw-plugins-manifest:latest',
       'download:@yiliang/aw-plugins-manifest:1.5.0',
-      'identity:@yiliang/aw-plugins-manifest:0.9.0',
-      'download:@yiliang/aw-plugins-manifest:0.9.0',
-      'identity:@yiliang/aw-plugins:0.9.0',
-      'download:@yiliang/aw-plugins:0.9.0',
     ]);
   });
 });

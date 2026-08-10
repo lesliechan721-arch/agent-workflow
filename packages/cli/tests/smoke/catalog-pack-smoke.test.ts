@@ -135,22 +135,7 @@ describe('catalog pack smoke', () => {
     expect(sidecarManifestText).toBe(canonicalManifestText);
     expect(fullManifestText).toBe(canonicalManifestText);
     expect(sidecarManifest).toMatchObject({
-      schemaVersion: 1,
-      history: {
-        schemaVersion: 1,
-        releases: expect.arrayContaining([
-          expect.objectContaining({
-            catalogVersion: sidecarManifest.catalogVersion,
-            minAwVersion: sidecarManifest.compatibility.aw.minVersion,
-            plugins: expect.arrayContaining([
-              expect.objectContaining({
-                artifactDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
-                manifestDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
-              }),
-            ]),
-          }),
-        ]),
-      },
+      schemaVersion: 2,
       packages: {
         sidecar: {
           name: '@yiliang/aw-plugins-manifest',
@@ -162,7 +147,14 @@ describe('catalog pack smoke', () => {
           manifestPath: './catalog-manifest.json',
         },
       },
+      entries: expect.arrayContaining([
+        expect.objectContaining({
+          artifactDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+          manifestDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+        }),
+      ]),
     });
+    expect(sidecarManifest).not.toHaveProperty('history');
     expect(JSON.stringify(sidecarManifest)).not.toContain('dist.integrity');
     expect(JSON.stringify(sidecarManifest)).not.toContain('"catalogManifestDigest"');
     expect(fullFiles).toContain('.claude-plugin/marketplace.json');

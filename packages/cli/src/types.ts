@@ -480,26 +480,6 @@ export interface CatalogManifestPackageIdentity {
   manifestPath?: string;
 }
 
-export interface CatalogHistoryPluginRelease {
-  name: string;
-  version: PluginVersion;
-  minAwVersion: CliVersion;
-  artifactDigest: string;
-  manifestDigest: string;
-}
-
-export interface CatalogHistoryRelease {
-  catalogVersion: CatalogVersion;
-  minAwVersion: CliVersion;
-  plugins: CatalogHistoryPluginRelease[];
-}
-
-export interface CatalogManifestHistory {
-  schemaVersion: 1;
-  channel: CatalogChannel;
-  releases: CatalogHistoryRelease[];
-}
-
 export interface CatalogManifestEntry {
   name: string;
   version: PluginVersion;
@@ -516,11 +496,10 @@ export interface CatalogManifestEntry {
 }
 
 export interface CatalogManifest {
-  schemaVersion: 1;
+  schemaVersion: 2;
   catalogVersion: CatalogVersion;
   channel: CatalogChannel;
   compatibility: PluginCompatibility;
-  history: CatalogManifestHistory;
   packages: {
     sidecar: CatalogManifestPackageIdentity;
     full: CatalogManifestPackageIdentity;
@@ -720,7 +699,6 @@ export interface LocalMarketplaceConfig {
     channel: CatalogChannel;
     catalogVersion: CatalogVersion;
     minAwVersion: CliVersion;
-    historySchemaVersion: number | null;
   };
   bundleFingerprint: string;
 }
@@ -747,16 +725,6 @@ export interface CatalogSelector {
     | 'env:AW_CATALOG_VERSION';
 }
 
-export interface CatalogLatestBlockedEvidence {
-  channel: CatalogChannel;
-  catalogVersion: CatalogVersion;
-  minAwVersion: CliVersion;
-}
-
-export interface CatalogLatestEvidence extends CatalogLatestBlockedEvidence {
-  blocked: boolean;
-}
-
 export interface CatalogSidecarManifestEvidence {
   source: string;
   version: CatalogVersion;
@@ -772,7 +740,6 @@ export interface CatalogIdentityEvidence {
   minAwVersion: CliVersion;
   revision: string;
   freshness: 'fresh' | 'cached' | 'localFixture' | 'embedded';
-  resolutionSource: 'requestedCatalog' | 'historyCompatibleCatalog';
 }
 
 export interface CatalogCacheFallbackEvidence {
@@ -790,7 +757,6 @@ export interface CatalogRemoteFailureEvidence {
     | 'sidecarMetadata'
     | 'sidecarTarball'
     | 'sidecarManifest'
-    | 'historyLookup'
     | 'fullMetadata'
     | 'fullTarball'
     | 'fullManifest'
@@ -807,14 +773,11 @@ export interface CatalogResolutionFailure {
   channel?: CatalogChannel;
   catalogVersion?: CatalogVersion;
   minAwVersion?: CliVersion;
-  latestCatalogBlocked?: CatalogLatestBlockedEvidence;
-  historySchemaVersion?: number | null;
   cacheFallback?: CatalogCacheFallbackEvidence;
   remoteFailure?: CatalogRemoteFailureEvidence;
   reason: string;
   reasonCode:
     | 'catalogUnavailable'
-    | 'catalogHistoryUnavailable'
     | 'awVersionTooLow'
     | 'explicitCatalogIncompatible';
 }
@@ -837,9 +800,6 @@ export interface CatalogResolution {
   channel?: CatalogChannel;
   catalogVersion?: CatalogVersion;
   minAwVersion?: CliVersion;
-  latestCatalog?: CatalogLatestEvidence;
-  latestCatalogBlocked?: CatalogLatestBlockedEvidence;
-  historySchemaVersion?: number | null;
   cacheFallback?: CatalogCacheFallbackEvidence;
   remoteFailure?: CatalogRemoteFailureEvidence;
   cacheState?: CatalogCacheStateEvidence;

@@ -37,6 +37,8 @@ aw install git-commit -p both -s user
 
 `aw init` 先获取 `@yiliang/aw-plugins-manifest` sidecar，再获取同版本 `@yiliang/aw-plugins` full catalog，并校验 package identity、manifest digest 和 artifact digest。
 
+catalog manifest 使用 `schemaVersion: 2`，只描述 selector 当前指向的 catalog。schema 1 和带 `history` 字段的 manifest 都不受支持。
+
 ```bash
 aw init
 aw init --force
@@ -50,7 +52,7 @@ aw init --catalog-version 1.2.0-beta.1
 - cache 按 selector 和 registry source identity 隔离，并使用 immutable entry、原子 selector publication 和有界 lock。
 - active marketplace 重建会保留 strict catalog cache 和 AW config store。
 
-如果 latest catalog 的最低 CLI 版本高于当前 `aw`，CLI 只按 sidecar history 查询同一轨道中仍支持当前 CLI 的最新 catalog。history 不可用、schema 不支持或内容非法时返回 `catalogHistoryUnavailable`；有效 history 确认没有兼容 catalog 时返回 `awVersionTooLow`。catalog history 记录历史 catalog version、catalog 最低 CLI 版本、plugin version、plugin 最低 CLI 版本、`artifactDigest` 和 `manifestDigest`。它不是可直接安装的多版本索引。
+如果 channel selector 当前 catalog 的最低 CLI 版本高于当前 `aw`，CLI 直接返回 `awVersionTooLow`。显式 catalog version 不兼容时返回 `explicitCatalogIncompatible`。这两类结果都不下载 full catalog，也不使用 cache fallback。
 
 ### 环境变量
 

@@ -76,32 +76,11 @@ interface ResolveCurrentCatalogRuntimeOptions extends ResolveCurrentCatalogOptio
   sourceIdentity: string;
 }
 
-interface PartialCatalogSummary {
-  catalogVersion: CatalogVersion;
-  channel: CatalogChannel;
-  minAwVersion: CliVersion;
-  historySchemaVersion: number | null;
-}
-
-interface CatalogHistoryReleaseSummary {
-  catalogVersion: CatalogVersion;
-  minAwVersion: CliVersion;
-}
-
-interface ParsedCatalogHistory {
-  schemaVersion: number;
-  releases: CatalogHistoryReleaseSummary[];
-}
-
 interface ResolvedCatalogTarget {
   manifest: CatalogManifest;
   manifestText: string;
   sidecarIdentity: CatalogPackageArchiveIdentity;
   sidecarManifestPackage: NonNullable<CatalogResolution['sidecarManifestPackage']>;
-  latestCatalog?: CatalogResolution['latestCatalog'];
-  latestCatalogBlocked?: CatalogResolution['latestCatalogBlocked'];
-  historySchemaVersion: number | null;
-  resolutionSource?: NonNullable<CatalogResolution['fullCatalog']>['resolutionSource'];
   observationOrder?: number;
 }
 
@@ -198,20 +177,6 @@ function throwIfRemoteAborted(signal?: AbortSignal): void {
 
 function calculateManifestTextDigest(manifestText: string): string {
   return `sha256:${crypto.createHash('sha256').update(manifestText).digest('hex')}`;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function assertCatalogChannel(
-  value: unknown,
-  fieldName: string,
-): CatalogChannel {
-  if (value === 'latest' || value === 'beta') {
-    return value;
-  }
-  throw new Error(`Invalid ${fieldName}: expected "latest" or "beta".`);
 }
 
 function isCompatibleWithCliVersion(
@@ -482,12 +447,7 @@ async function validateMemoizedCatalogResolutionRoot(
     if (
       manifest.channel !== resolved.channel ||
       manifest.catalogVersion !== resolved.catalogVersion ||
-      manifest.compatibility.aw.minVersion !== resolved.minAwVersion ||
-      (
-        resolved.historySchemaVersion !== undefined &&
-        resolved.historySchemaVersion !== null &&
-        manifest.history.schemaVersion !== resolved.historySchemaVersion
-      )
+      manifest.compatibility.aw.minVersion !== resolved.minAwVersion
     ) {
       return false;
     }
@@ -646,98 +606,6 @@ export function clearCurrentCatalogResolutionMemoForTests(): void {
   currentCatalogResolutionMemo.clear();
 }
 
-function parseCatalogSummary(
-  rawManifest: unknown,
-): PartialCatalogSummary {
-  if (!isRecord(rawManifest)) {
-    throw new Error('Invalid catalog manifest: expected an object.');
-  }
-
-  const catalogVersion = assertStrictSemVer(
-    rawManifest.catalogVersion,
-    'catalog manifest.catalogVersion',
-  );
-  const channel = assertCatalogChannel(
-    rawManifest.channel,
-    'catalog manifest.channel',
-  );
-
-  const compatibility = rawManifest.compatibility;
-  if (!isRecord(compatibility) || !isRecord(compatibility.aw)) {
-    throw new Error('Invalid catalog manifest.compatibility.aw: expected an object.');
-  }
-
-  const minAwVersion = assertStrictSemVer(
-    compatibility.aw.minVersion,
-    'catalog manifest.compatibility.aw.minVersion',
-  );
-  const historySchemaVersion =
-    isRecord(rawManifest.history) && typeof rawManifest.history.schemaVersion === 'number'
-      ? rawManifest.history.schemaVersion
-      : null;
-
-  return {
-    catalogVersion,
-    channel,
-    minAwVersion,
-    historySchemaVersion,
-  };
-}
-
-function parseCatalogHistory(
-  rawManifest: unknown,
-  expectedChannel: CatalogChannel,
-): ParsedCatalogHistory {
-  if (!isRecord(rawManifest) || !isRecord(rawManifest.history)) {
-    throw new Error('catalog history is missing.');
-  }
-
-  const history = rawManifest.history;
-  const schemaVersion = typeof history.schemaVersion === 'number'
-    ? history.schemaVersion
-    : NaN;
-  if (schemaVersion !== 1) {
-    throw new Error('catalog history schemaVersion is unsupported.');
-  }
-
-  const channel = assertCatalogChannel(history.channel, 'catalog manifest.history.channel');
-  if (channel !== expectedChannel) {
-    throw new Error(`catalog history channel ${channel} does not match requested channel ${expectedChannel}.`);
-  }
-
-  if (!Array.isArray(history.releases) || history.releases.length === 0) {
-    throw new Error('catalog history releases are missing.');
-  }
-
-  const releases = history.releases.map((entry, index) => {
-    if (!isRecord(entry)) {
-      throw new Error(`catalog history release[${index}] is invalid.`);
-    }
-
-    return {
-      catalogVersion: assertStrictSemVer(
-        entry.catalogVersion,
-        `catalog manifest.history.releases[${index}].catalogVersion`,
-      ),
-      minAwVersion: assertStrictSemVer(
-        entry.minAwVersion,
-        `catalog manifest.history.releases[${index}].minAwVersion`,
-      ),
-    };
-  });
-
-  for (let index = 1; index < releases.length; index += 1) {
-    if (compareStrictSemVer(releases[index - 1]!.catalogVersion, releases[index]!.catalogVersion) >= 0) {
-      throw new Error('catalog history releases must be strictly increasing.');
-    }
-  }
-
-  return {
-    schemaVersion,
-    releases,
-  };
-}
-
 async function resolveArchiveByIdentity(
   identity: CatalogPackageArchiveIdentity,
   env: NodeJS.ProcessEnv,
@@ -809,15 +677,6 @@ async function validateResolvedCatalogArchive(
 
 function validateCatalogPackageEnvelope(manifest: CatalogManifest): void {
   const expectedManifestPath = `./${CURRENT_CATALOG_MANIFEST_FILE}`;
-  const latestHistoryRelease = manifest.history.releases[manifest.history.releases.length - 1];
-  if (
-    !latestHistoryRelease ||
-    manifest.history.channel !== manifest.channel ||
-    latestHistoryRelease.catalogVersion !== manifest.catalogVersion ||
-    latestHistoryRelease.minAwVersion !== manifest.compatibility.aw.minVersion
-  ) {
-    throw new Error('catalog history latest release does not match the sidecar summary.');
-  }
   if (
     manifest.packages.sidecar.name !== CURRENT_CATALOG_MANIFEST_PACKAGE ||
     manifest.packages.sidecar.version !== manifest.catalogVersion ||
@@ -850,16 +709,6 @@ function buildSidecarManifestPackageEvidence(
   };
 }
 
-function selectLatestCompatibleHistoryRelease(
-  history: ParsedCatalogHistory,
-  cliVersion: CliVersion,
-): CatalogHistoryReleaseSummary | null {
-  const compatible = history.releases.filter((release) =>
-    isCompatibleWithCliVersion(cliVersion, release.minAwVersion),
-  );
-  return compatible.length > 0 ? compatible[compatible.length - 1]! : null;
-}
-
 async function resolveCatalogTarget(
   selector: CatalogSelector,
   sourceIdentity: string,
@@ -888,7 +737,6 @@ async function resolveCatalogTarget(
     throwCatalogResolutionFailure({
       selector,
       channel: getRequestedCatalogChannel(selector) ?? undefined,
-      historySchemaVersion: null,
       cacheFallback: {
         used: false,
       },
@@ -904,6 +752,7 @@ async function resolveCatalogTarget(
       reasonCode: 'catalogUnavailable',
     });
   }
+
   let observationOrder: number | undefined;
   try {
     observationOrder = await reserveCurrentCatalogCacheObservationOrder(
@@ -925,7 +774,6 @@ async function resolveCatalogTarget(
         selector,
         channel: getRequestedCatalogChannel(selector) ?? undefined,
         catalogVersion: requestedSidecarIdentity.version,
-        historySchemaVersion: null,
         cacheFallback: {
           used: false,
         },
@@ -943,24 +791,23 @@ async function resolveCatalogTarget(
       });
     }
 
-    let requestedSummary: PartialCatalogSummary;
+    let validated: Awaited<ReturnType<typeof validateResolvedCatalogArchive>>;
     try {
-      requestedSummary = parseCatalogSummary(requestedSidecarArchive.rawManifest);
-      if (requestedSummary.catalogVersion !== requestedSidecarIdentity.version) {
-        throw new Error(`sidecar manifest version ${requestedSummary.catalogVersion} does not match identity ${requestedSidecarIdentity.version}.`);
+      validated = await validateResolvedCatalogArchive(requestedSidecarArchive);
+      if (validated.manifest.catalogVersion !== requestedSidecarIdentity.version) {
+        throw new Error(`sidecar manifest version ${validated.manifest.catalogVersion} does not match identity ${requestedSidecarIdentity.version}.`);
       }
       if (
         selector.kind !== 'exactVersion' &&
-        requestedSummary.channel !== getRequestedCatalogChannel(selector)
+        validated.manifest.channel !== getRequestedCatalogChannel(selector)
       ) {
-        throw new Error(`sidecar manifest channel ${requestedSummary.channel} does not match selector channel ${getRequestedCatalogChannel(selector)}.`);
+        throw new Error(`sidecar manifest channel ${validated.manifest.channel} does not match selector channel ${getRequestedCatalogChannel(selector)}.`);
       }
     } catch (error) {
       throwCatalogResolutionFailure({
         selector,
         channel: getRequestedCatalogChannel(selector) ?? undefined,
         catalogVersion: requestedSidecarIdentity.version,
-        historySchemaVersion: null,
         cacheFallback: {
           used: false,
         },
@@ -973,330 +820,47 @@ async function resolveCatalogTarget(
             integrity: requestedSidecarIdentity.integrity,
           },
         ),
-        reason: `current catalog sidecar manifest 无法解析：${normalizeErrorMessage(error)}`,
+        reason: `current catalog sidecar manifest 校验失败：${normalizeErrorMessage(error)}`,
         reasonCode: 'catalogUnavailable',
       });
     }
 
-    if (selector.kind === 'exactVersion') {
-      if (!isCompatibleWithCliVersion(selector.cliVersion, requestedSummary.minAwVersion)) {
-        throwCatalogResolutionFailure({
-          selector,
-          channel: requestedSummary.channel,
-          catalogVersion: requestedSummary.catalogVersion,
-          minAwVersion: requestedSummary.minAwVersion,
-          historySchemaVersion: requestedSummary.historySchemaVersion,
-          cacheFallback: {
-            used: false,
-          },
-          reason: `显式 catalog 版本 ${requestedSummary.catalogVersion} 需要 aw >= ${requestedSummary.minAwVersion}，当前 CLI 为 ${selector.cliVersion}。`,
-          reasonCode: 'explicitCatalogIncompatible',
-        });
-      }
-
-      try {
-        const validated = await validateResolvedCatalogArchive(requestedSidecarArchive);
-        return {
-          manifest: validated.manifest,
-          manifestText: validated.manifestText,
-          sidecarIdentity: requestedSidecarIdentity,
-          sidecarManifestPackage: buildSidecarManifestPackageEvidence(
-            requestedSidecarIdentity,
-            validated.manifest,
-            validated.manifestText,
-          ),
-          latestCatalog: {
-            channel: validated.manifest.channel,
-            catalogVersion: validated.manifest.catalogVersion,
-            minAwVersion: validated.manifest.compatibility.aw.minVersion,
-            blocked: false,
-          },
-          historySchemaVersion: validated.manifest.history.schemaVersion,
-          resolutionSource: 'requestedCatalog',
-          ...(observationOrder === undefined ? {} : { observationOrder }),
-        };
-      } catch (error) {
-        throwCatalogResolutionFailure({
-          selector,
-          channel: requestedSummary.channel,
-          catalogVersion: requestedSummary.catalogVersion,
-          minAwVersion: requestedSummary.minAwVersion,
-          historySchemaVersion: requestedSummary.historySchemaVersion,
-          cacheFallback: {
-            used: false,
-          },
-          remoteFailure: createRemoteFailure(
-            'sidecarManifest',
-            normalizeErrorMessage(error),
-            {
-              packageName: requestedSidecarIdentity.packageName,
-              packageVersion: requestedSidecarIdentity.version,
-              integrity: requestedSidecarIdentity.integrity,
-            },
-          ),
-          reason: `显式 catalog sidecar manifest 校验失败：${normalizeErrorMessage(error)}`,
-          reasonCode: 'catalogUnavailable',
-        });
-      }
-    }
-
-    if (isCompatibleWithCliVersion(selector.cliVersion, requestedSummary.minAwVersion)) {
-      try {
-        const validated = await validateResolvedCatalogArchive(requestedSidecarArchive);
-        return {
-          manifest: validated.manifest,
-          manifestText: validated.manifestText,
-          sidecarIdentity: requestedSidecarIdentity,
-          sidecarManifestPackage: buildSidecarManifestPackageEvidence(
-            requestedSidecarIdentity,
-            validated.manifest,
-            validated.manifestText,
-          ),
-          latestCatalog: {
-            channel: validated.manifest.channel,
-            catalogVersion: validated.manifest.catalogVersion,
-            minAwVersion: validated.manifest.compatibility.aw.minVersion,
-            blocked: false,
-          },
-          historySchemaVersion: validated.manifest.history.schemaVersion,
-          resolutionSource: 'requestedCatalog',
-          ...(observationOrder === undefined ? {} : { observationOrder }),
-        };
-      } catch (error) {
-        throwCatalogResolutionFailure({
-          selector,
-          channel: requestedSummary.channel,
-          catalogVersion: requestedSummary.catalogVersion,
-          minAwVersion: requestedSummary.minAwVersion,
-          historySchemaVersion: requestedSummary.historySchemaVersion,
-          cacheFallback: {
-            used: false,
-          },
-          remoteFailure: createRemoteFailure(
-            'sidecarManifest',
-            normalizeErrorMessage(error),
-            {
-              packageName: requestedSidecarIdentity.packageName,
-              packageVersion: requestedSidecarIdentity.version,
-              integrity: requestedSidecarIdentity.integrity,
-            },
-          ),
-          reason: `current catalog sidecar manifest 校验失败：${normalizeErrorMessage(error)}`,
-          reasonCode: 'catalogUnavailable',
-        });
-      }
-    }
-
-    const requestedChannel = getRequestedCatalogChannel(selector)!;
-    let history: ParsedCatalogHistory;
-    try {
-      history = parseCatalogHistory(requestedSidecarArchive.rawManifest, requestedChannel);
-      const latestHistoryRelease = history.releases[history.releases.length - 1]!;
-      if (
-        latestHistoryRelease.catalogVersion !== requestedSummary.catalogVersion ||
-        latestHistoryRelease.minAwVersion !== requestedSummary.minAwVersion
-      ) {
-        throw new Error('catalog history latest release does not match the latest sidecar summary.');
-      }
-    } catch (error) {
+    if (!isCompatibleWithCliVersion(
+      selector.cliVersion,
+      validated.manifest.compatibility.aw.minVersion,
+    )) {
       throwCatalogResolutionFailure({
         selector,
-        channel: requestedSummary.channel,
-        catalogVersion: requestedSummary.catalogVersion,
-        minAwVersion: requestedSummary.minAwVersion,
-        latestCatalogBlocked: {
-          channel: requestedSummary.channel,
-          catalogVersion: requestedSummary.catalogVersion,
-          minAwVersion: requestedSummary.minAwVersion,
-        },
-        historySchemaVersion: requestedSummary.historySchemaVersion,
+        channel: validated.manifest.channel,
+        catalogVersion: validated.manifest.catalogVersion,
+        minAwVersion: validated.manifest.compatibility.aw.minVersion,
         cacheFallback: {
           used: false,
         },
-        remoteFailure: createRemoteFailure(
-          'historyLookup',
-          normalizeErrorMessage(error),
-          {
-            packageName: requestedSidecarIdentity.packageName,
-            packageVersion: requestedSidecarIdentity.version,
-            integrity: requestedSidecarIdentity.integrity,
-          },
-        ),
-        reason: `当前 ${requestedChannel} 轨道最新 catalog 不兼容，且 history 不可用：${normalizeErrorMessage(error)}`,
-        reasonCode: 'catalogHistoryUnavailable',
+        reason: selector.kind === 'exactVersion'
+          ? `显式 catalog 版本 ${validated.manifest.catalogVersion} 需要 aw >= ${validated.manifest.compatibility.aw.minVersion}，当前 CLI 为 ${selector.cliVersion}。`
+          : `当前 ${validated.manifest.channel} 轨道 catalog ${validated.manifest.catalogVersion} 需要 aw >= ${validated.manifest.compatibility.aw.minVersion}，当前 CLI 为 ${selector.cliVersion}。`,
+        reasonCode: selector.kind === 'exactVersion'
+          ? 'explicitCatalogIncompatible'
+          : 'awVersionTooLow',
       });
     }
 
-    const compatibleHistoryRelease = selectLatestCompatibleHistoryRelease(history, selector.cliVersion);
-    if (!compatibleHistoryRelease) {
-      throwCatalogResolutionFailure({
-        selector,
-        channel: requestedSummary.channel,
-        catalogVersion: requestedSummary.catalogVersion,
-        minAwVersion: requestedSummary.minAwVersion,
-        latestCatalogBlocked: {
-          channel: requestedSummary.channel,
-          catalogVersion: requestedSummary.catalogVersion,
-          minAwVersion: requestedSummary.minAwVersion,
-        },
-        historySchemaVersion: history.schemaVersion,
-        cacheFallback: {
-          used: false,
-        },
-        reason: `当前 CLI 版本 ${selector.cliVersion} 低于 ${requestedChannel} 轨道可用 catalog 的最低兼容版本。`,
-        reasonCode: 'awVersionTooLow',
-      });
-    }
-
-    let fallbackSidecarIdentity: CatalogPackageArchiveIdentity;
-    try {
-      fallbackSidecarIdentity = await resolveCatalogPackageIdentityByVersion(
-        CURRENT_CATALOG_MANIFEST_PACKAGE,
-        compatibleHistoryRelease.catalogVersion,
-        env,
-        signal,
-      );
-      if (
-        fallbackSidecarIdentity.packageName !== CURRENT_CATALOG_MANIFEST_PACKAGE ||
-        fallbackSidecarIdentity.version !== compatibleHistoryRelease.catalogVersion
-      ) {
-        throw new Error(`history fallback identity ${fallbackSidecarIdentity.packageName}@${fallbackSidecarIdentity.version} does not match ${compatibleHistoryRelease.catalogVersion}.`);
-      }
-    } catch (error) {
-      throwCatalogResolutionFailure({
-        selector,
-        channel: requestedSummary.channel,
-        catalogVersion: compatibleHistoryRelease.catalogVersion,
-        minAwVersion: compatibleHistoryRelease.minAwVersion,
-        latestCatalogBlocked: {
-          channel: requestedSummary.channel,
-          catalogVersion: requestedSummary.catalogVersion,
-          minAwVersion: requestedSummary.minAwVersion,
-        },
-        historySchemaVersion: history.schemaVersion,
-        cacheFallback: {
-          used: false,
-        },
-        remoteFailure: createRemoteFailure(
-          'sidecarMetadata',
-          normalizeErrorMessage(error),
-          {
-            packageName: CURRENT_CATALOG_MANIFEST_PACKAGE,
-            packageVersion: compatibleHistoryRelease.catalogVersion,
-          },
-        ),
-        reason: `无法解析兼容 catalog ${compatibleHistoryRelease.catalogVersion} 的 sidecar metadata：${normalizeErrorMessage(error)}`,
-        reasonCode: 'catalogUnavailable',
-      });
-    }
-
-    let fallbackSidecarArchive: CatalogPackageArchive | null = null;
-    try {
-      try {
-        fallbackSidecarArchive = await resolveArchiveByIdentity(fallbackSidecarIdentity, env, signal);
-      } catch (error) {
-        throwCatalogResolutionFailure({
-          selector,
-          channel: requestedSummary.channel,
-          catalogVersion: compatibleHistoryRelease.catalogVersion,
-          minAwVersion: compatibleHistoryRelease.minAwVersion,
-          latestCatalogBlocked: {
-            channel: requestedSummary.channel,
-            catalogVersion: requestedSummary.catalogVersion,
-            minAwVersion: requestedSummary.minAwVersion,
-          },
-          historySchemaVersion: history.schemaVersion,
-          cacheFallback: {
-            used: false,
-          },
-          remoteFailure: createRemoteFailure(
-            'sidecarTarball',
-            normalizeErrorMessage(error),
-            {
-              packageName: fallbackSidecarIdentity.packageName,
-              packageVersion: fallbackSidecarIdentity.version,
-              integrity: fallbackSidecarIdentity.integrity,
-            },
-          ),
-          reason: `无法下载兼容 catalog ${compatibleHistoryRelease.catalogVersion} 的 sidecar：${normalizeErrorMessage(error)}`,
-          reasonCode: 'catalogUnavailable',
-        });
-      }
-
-      const validated = await validateResolvedCatalogArchive(fallbackSidecarArchive);
-      if (
-        validated.manifest.catalogVersion !== compatibleHistoryRelease.catalogVersion ||
-        validated.manifest.compatibility.aw.minVersion !== compatibleHistoryRelease.minAwVersion ||
-        validated.manifest.channel !== requestedChannel
-      ) {
-        throw new Error(`history fallback catalog ${validated.manifest.catalogVersion} does not match the selected history release.`);
-      }
-
-      return {
-        manifest: validated.manifest,
-        manifestText: validated.manifestText,
-        sidecarIdentity: fallbackSidecarIdentity,
-        sidecarManifestPackage: buildSidecarManifestPackageEvidence(
-          fallbackSidecarIdentity,
-          validated.manifest,
-          validated.manifestText,
-        ),
-        latestCatalog: {
-          channel: requestedSummary.channel,
-          catalogVersion: requestedSummary.catalogVersion,
-          minAwVersion: requestedSummary.minAwVersion,
-          blocked: true,
-        },
-        latestCatalogBlocked: {
-          channel: requestedSummary.channel,
-          catalogVersion: requestedSummary.catalogVersion,
-          minAwVersion: requestedSummary.minAwVersion,
-        },
-        historySchemaVersion: history.schemaVersion,
-        resolutionSource: 'historyCompatibleCatalog',
-        ...(observationOrder === undefined ? {} : { observationOrder }),
-      };
-    } catch (error) {
-      if (isCatalogResolutionError(error)) {
-        throw error;
-      }
-
-      throwCatalogResolutionFailure({
-        selector,
-        channel: requestedSummary.channel,
-        catalogVersion: compatibleHistoryRelease.catalogVersion,
-        minAwVersion: compatibleHistoryRelease.minAwVersion,
-        latestCatalogBlocked: {
-          channel: requestedSummary.channel,
-          catalogVersion: requestedSummary.catalogVersion,
-          minAwVersion: requestedSummary.minAwVersion,
-        },
-        historySchemaVersion: history.schemaVersion,
-        cacheFallback: {
-          used: false,
-        },
-        remoteFailure: createRemoteFailure(
-          'sidecarManifest',
-          normalizeErrorMessage(error),
-          {
-            packageName: fallbackSidecarIdentity.packageName,
-            packageVersion: fallbackSidecarIdentity.version,
-            integrity: fallbackSidecarIdentity.integrity,
-          },
-        ),
-        reason: `兼容 catalog ${compatibleHistoryRelease.catalogVersion} 的 sidecar manifest 校验失败：${normalizeErrorMessage(error)}`,
-        reasonCode: 'catalogUnavailable',
-      });
-    } finally {
-      await disposeCatalogArchiveBounded(fallbackSidecarArchive, signal);
-    }
+    return {
+      manifest: validated.manifest,
+      manifestText: validated.manifestText,
+      sidecarIdentity: requestedSidecarIdentity,
+      sidecarManifestPackage: buildSidecarManifestPackageEvidence(
+        requestedSidecarIdentity,
+        validated.manifest,
+        validated.manifestText,
+      ),
+      ...(observationOrder === undefined ? {} : { observationOrder }),
+    };
   } finally {
     await disposeCatalogArchiveBounded(requestedSidecarArchive, signal);
   }
-
-  throw new Error('resolveCatalogTarget reached an unreachable state.');
 }
-
 async function validateMaterializedCatalog(
   options: {
     manifest: CatalogManifest;
@@ -1359,7 +923,6 @@ function buildFullCatalogEvidence(
   resolution: Pick<CatalogResolution, 'source'>,
   manifest: CatalogManifest,
   revision: string,
-  resolutionSource: NonNullable<ResolvedCatalogTarget['resolutionSource']>,
 ): NonNullable<CatalogResolution['fullCatalog']> {
   return {
     source: resolution.source,
@@ -1374,7 +937,6 @@ function buildFullCatalogEvidence(
         : resolution.source === 'embedded'
           ? 'embedded'
           : 'fresh',
-    resolutionSource,
   };
 }
 
@@ -1382,18 +944,11 @@ function buildCurrentCatalogCacheObservation(
   target: ResolvedCatalogTarget,
   sourceIdentity: string,
 ): CurrentCatalogCacheObservation | null {
-  if (!target.resolutionSource) {
-    throw new Error('Current catalog target is missing resolutionSource.');
-  }
   if (target.observationOrder === undefined) {
     return null;
   }
   return {
     sidecarManifestPackage: target.sidecarManifestPackage,
-    ...(target.latestCatalog ? { latestCatalog: target.latestCatalog } : {}),
-    ...(target.latestCatalogBlocked ? { latestCatalogBlocked: target.latestCatalogBlocked } : {}),
-    historySchemaVersion: target.historySchemaVersion,
-    resolutionSource: target.resolutionSource,
     sourceIdentity,
     observationOrder: target.observationOrder,
   };
@@ -1408,27 +963,21 @@ function buildCatalogResolutionFromCache(options: {
   reason?: string;
   cacheState?: CatalogResolution['cacheState'];
 }): CatalogResolution {
-  const matchedCatalog = options.target.resolutionSource
-    ? buildFullCatalogEvidence(
-      { source: 'cache' },
-      options.target.manifest,
-      options.cacheEntry.metadata.manifestDigest,
-      options.target.resolutionSource,
-    )
-    : undefined;
+  const matchedCatalog = buildFullCatalogEvidence(
+    { source: 'cache' },
+    options.target.manifest,
+    options.cacheEntry.metadata.manifestDigest,
+  );
 
   return {
     rootDir: options.cacheEntry.rootDir,
     source: 'cache',
     selector: options.selector,
     sidecarManifestPackage: options.target.sidecarManifestPackage,
-    ...(matchedCatalog ? { fullCatalog: matchedCatalog } : {}),
+    fullCatalog: matchedCatalog,
     channel: options.target.manifest.channel,
     catalogVersion: options.target.manifest.catalogVersion,
     minAwVersion: options.target.manifest.compatibility.aw.minVersion,
-    ...(options.target.latestCatalog ? { latestCatalog: options.target.latestCatalog } : {}),
-    ...(options.target.latestCatalogBlocked ? { latestCatalogBlocked: options.target.latestCatalogBlocked } : {}),
-    historySchemaVersion: options.target.historySchemaVersion,
     cacheFallback: options.cacheFallback ?? {
       used: false,
       cacheKey: options.cacheEntry.cacheKey,
@@ -1490,7 +1039,6 @@ async function readValidatedCurrentCatalogCacheEntryBySelector(
       manifest.catalogVersion !== cacheEntry.metadata.catalogVersion ||
       manifest.compatibility.aw.minVersion !== cacheEntry.metadata.minAwVersion ||
       manifest.schemaVersion !== cacheEntry.metadata.schemaVersion ||
-      manifest.history.schemaVersion !== cacheEntry.metadata.historySchemaVersion ||
       cacheEntry.metadata.sidecarIntegrity.trim() === '' ||
       cacheEntry.metadata.fullIntegrity.trim() === ''
     ) {
@@ -1524,16 +1072,6 @@ async function readValidatedCurrentCatalogCacheEntryBySelector(
         sidecarIdentity,
         sidecarManifestPackage: cacheEntry.observation?.sidecarManifestPackage ??
           buildSidecarManifestPackageEvidence(sidecarIdentity, manifest, manifestText),
-        ...(cacheEntry.observation?.latestCatalog
-          ? { latestCatalog: cacheEntry.observation.latestCatalog }
-          : {}),
-        ...(cacheEntry.observation?.latestCatalogBlocked
-          ? { latestCatalogBlocked: cacheEntry.observation.latestCatalogBlocked }
-          : {}),
-        historySchemaVersion: cacheEntry.observation?.historySchemaVersion ?? manifest.history.schemaVersion,
-        ...(cacheEntry.observation?.resolutionSource
-          ? { resolutionSource: cacheEntry.observation.resolutionSource }
-          : {}),
       },
     };
   } catch {
@@ -1617,14 +1155,11 @@ async function resolveCatalogFailureFromSelectorCache(
     }
     throw new CatalogResolutionError(failure);
   }
-  const matchedCatalog = cached.target.resolutionSource
-    ? buildFullCatalogEvidence(
-      { source: 'cache' },
-      cached.target.manifest,
-      cached.cacheEntry.metadata.manifestDigest,
-      cached.target.resolutionSource,
-    )
-    : undefined;
+  const matchedCatalog = buildFullCatalogEvidence(
+    { source: 'cache' },
+    cached.target.manifest,
+    cached.cacheEntry.metadata.manifestDigest,
+  );
   return buildCatalogResolutionFromCache({
     selector,
     target: cached.target,
@@ -1636,7 +1171,7 @@ async function resolveCatalogFailureFromSelectorCache(
       selectorKey: cached.cacheEntry.selectorKey,
       blockingCode: failure.reasonCode,
       matchedSelector: selector,
-      ...(matchedCatalog ? { matchedCatalog } : {}),
+      matchedCatalog,
     },
     remoteFailure: failure.remoteFailure,
     cacheState: buildCacheState(
@@ -1695,8 +1230,6 @@ async function resolveValidatedCatalogRoot(
       channel: target.manifest.channel,
       catalogVersion: target.manifest.catalogVersion,
       minAwVersion: target.manifest.compatibility.aw.minVersion,
-      latestCatalogBlocked: target.latestCatalogBlocked,
-      historySchemaVersion: target.historySchemaVersion,
       cacheFallback: {
         used: false,
       },
@@ -1719,7 +1252,6 @@ async function resolveValidatedCatalogRoot(
     catalogVersion: target.manifest.catalogVersion,
     minAwVersion: target.manifest.compatibility.aw.minVersion,
     schemaVersion: target.manifest.schemaVersion,
-    historySchemaVersion: target.manifest.history.schemaVersion,
     sidecarIntegrity: target.sidecarIdentity.integrity,
     fullIntegrity: fullIdentity.integrity,
   } as const;
@@ -1792,7 +1324,6 @@ async function resolveValidatedCatalogRoot(
               { source: 'cache' },
               target.manifest,
               cacheEntry.metadata.manifestDigest,
-              target.resolutionSource!,
             ),
           },
           remoteFailure,
@@ -1810,8 +1341,6 @@ async function resolveValidatedCatalogRoot(
         channel: target.manifest.channel,
         catalogVersion: target.manifest.catalogVersion,
         minAwVersion: target.manifest.compatibility.aw.minVersion,
-        latestCatalogBlocked: target.latestCatalogBlocked,
-        historySchemaVersion: target.historySchemaVersion,
         cacheFallback: {
           used: false,
         },
@@ -1873,7 +1402,6 @@ async function resolveValidatedCatalogRoot(
               { source: 'cache' },
               target.manifest,
               cacheEntry.metadata.manifestDigest,
-              target.resolutionSource!,
             ),
           },
           remoteFailure,
@@ -1891,8 +1419,6 @@ async function resolveValidatedCatalogRoot(
         channel: target.manifest.channel,
         catalogVersion: target.manifest.catalogVersion,
         minAwVersion: target.manifest.compatibility.aw.minVersion,
-        latestCatalogBlocked: target.latestCatalogBlocked,
-        historySchemaVersion: target.historySchemaVersion,
         cacheFallback: {
           used: false,
         },
@@ -1967,14 +1493,10 @@ async function resolveValidatedCatalogRoot(
           { source: 'remote' },
           target.manifest,
           cacheResult.metadata.manifestDigest,
-          target.resolutionSource!,
         ),
         channel: target.manifest.channel,
         catalogVersion: target.manifest.catalogVersion,
         minAwVersion: target.manifest.compatibility.aw.minVersion,
-        latestCatalog: target.latestCatalog,
-        latestCatalogBlocked: target.latestCatalogBlocked,
-        historySchemaVersion: target.historySchemaVersion,
         cacheFallback: {
           used: false,
           cacheKey: cacheResult.cacheKey,
@@ -2001,14 +1523,10 @@ async function resolveValidatedCatalogRoot(
           { source: 'remote' },
           target.manifest,
           calculateManifestTextDigest(target.manifestText),
-          target.resolutionSource!,
         ),
         channel: target.manifest.channel,
         catalogVersion: target.manifest.catalogVersion,
         minAwVersion: target.manifest.compatibility.aw.minVersion,
-        latestCatalog: target.latestCatalog,
-        latestCatalogBlocked: target.latestCatalogBlocked,
-        historySchemaVersion: target.historySchemaVersion,
         cacheFallback: {
           used: false,
           cacheKey: buildCurrentCatalogCacheKey(cacheIdentity),
@@ -2072,18 +1590,10 @@ async function tryResolveFixtureCatalogOverride(
       minAwVersion: manifest.compatibility.aw.minVersion,
       revision: manifestDigest,
       freshness: 'localFixture',
-      resolutionSource: 'requestedCatalog',
     },
     channel: manifest.channel,
     catalogVersion: manifest.catalogVersion,
     minAwVersion: manifest.compatibility.aw.minVersion,
-    latestCatalog: {
-      channel: manifest.channel,
-      catalogVersion: manifest.catalogVersion,
-      minAwVersion: manifest.compatibility.aw.minVersion,
-      blocked: false,
-    },
-    historySchemaVersion: manifest.history.schemaVersion,
   };
 }
 

@@ -21,15 +21,10 @@ describe('removed plugin dependencies capability', () => {
 
   it('rejects dependencies in current catalog entries explicitly', () => {
     expect(() => validateCatalogManifest({
-      schemaVersion: 1,
+      schemaVersion: 2,
       catalogVersion: '1.0.0',
       channel: 'latest',
       compatibility: { aw: { minVersion: '1.0.0' } },
-      history: {
-        schemaVersion: 1,
-        channel: 'latest',
-        releases: [{ catalogVersion: '1.0.0', minAwVersion: '1.0.0', plugins: [] }],
-      },
       packages: {
         sidecar: { name: '@yiliang/aw-plugins-manifest', version: '1.0.0', channel: 'latest' },
         full: {

@@ -12,9 +12,6 @@ import type {
   CatalogChannel,
   CatalogManifest,
   CatalogManifestEntry,
-  CatalogManifestHistory,
-  CatalogHistoryPluginRelease,
-  CatalogHistoryRelease,
   ClaudeManifestOverrides,
   CodexProjectManagedKind,
   DynamicArtifactKind,
@@ -2625,118 +2622,6 @@ function normalizeCatalogManifestPackageIdentity(
   return identity;
 }
 
-function normalizeCatalogHistoryPluginRelease(
-  value: unknown,
-  fieldName: string,
-  catalogMinAwVersion: string,
-): CatalogHistoryPluginRelease {
-  const input = assertObject(value, fieldName);
-  if (Object.hasOwn(input, 'dependencies')) {
-    throw new Error(`Invalid ${fieldName}: "dependencies" is unsupported.`);
-  }
-  assertAllowedKeys(input, fieldName, [
-    'name',
-    'version',
-    'minAwVersion',
-    'artifactDigest',
-    'manifestDigest',
-  ]);
-
-  const pluginRelease = {
-    name: ensurePluginName(input.name, `${fieldName}.name`),
-    version: assertStrictSemVer(input.version, `${fieldName}.version`),
-    minAwVersion: assertStrictSemVer(input.minAwVersion, `${fieldName}.minAwVersion`),
-    artifactDigest: ensureDigestString(input.artifactDigest, `${fieldName}.artifactDigest`),
-    manifestDigest: ensureDigestString(input.manifestDigest, `${fieldName}.manifestDigest`),
-  };
-  assertPluginMinVersionWithinCatalogBounds({
-    pluginName: pluginRelease.name,
-    pluginMinVersion: pluginRelease.minAwVersion,
-    catalogMinVersion: catalogMinAwVersion,
-    fieldName: `${fieldName}.minAwVersion`,
-  });
-
-  return pluginRelease;
-}
-
-function normalizeCatalogHistoryRelease(
-  value: unknown,
-  fieldName: string,
-  channel: CatalogChannel,
-): CatalogHistoryRelease {
-  const input = assertObject(value, fieldName);
-  assertAllowedKeys(input, fieldName, ['catalogVersion', 'minAwVersion', 'plugins']);
-
-  const catalogVersion = assertStrictSemVer(input.catalogVersion, `${fieldName}.catalogVersion`);
-  assertCatalogChannelVersionContract({
-    channel,
-    version: catalogVersion,
-    fieldName: `${fieldName}.catalogVersion`,
-    kind: 'catalog',
-  });
-  const minAwVersion = assertStrictSemVer(input.minAwVersion, `${fieldName}.minAwVersion`);
-  if (!Array.isArray(input.plugins)) {
-    throw new Error(`Invalid ${fieldName}.plugins: expected an array.`);
-  }
-
-  const plugins = input.plugins.map((entry, index) =>
-    normalizeCatalogHistoryPluginRelease(
-      entry,
-      `${fieldName}.plugins[${index}]`,
-      minAwVersion,
-    ),
-  );
-  const seenPluginNames = new Set<string>();
-  for (const plugin of plugins) {
-    if (seenPluginNames.has(plugin.name)) {
-      throw new Error(`Invalid ${fieldName}.plugins: duplicate plugin "${plugin.name}".`);
-    }
-    seenPluginNames.add(plugin.name);
-    assertCatalogChannelVersionContract({
-      channel,
-      version: plugin.version,
-      fieldName: `${fieldName}.plugins.${plugin.name}.version`,
-      kind: 'plugin',
-    });
-  }
-
-  return {
-    catalogVersion,
-    minAwVersion,
-    plugins,
-  };
-}
-
-function normalizeCatalogManifestHistory(
-  value: unknown,
-  fieldName: string,
-): CatalogManifestHistory {
-  const input = assertObject(value, fieldName);
-  assertAllowedKeys(input, fieldName, ['schemaVersion', 'channel', 'releases']);
-  if (input.schemaVersion !== 1) {
-    throw new Error(`Invalid ${fieldName}.schemaVersion: expected 1.`);
-  }
-  const channel = assertCatalogChannel(input.channel, `${fieldName}.channel`);
-  if (!Array.isArray(input.releases) || input.releases.length === 0) {
-    throw new Error(`Invalid ${fieldName}.releases: expected a non-empty array.`);
-  }
-
-  const releases = input.releases.map((entry, index) =>
-    normalizeCatalogHistoryRelease(entry, `${fieldName}.releases[${index}]`, channel),
-  );
-  for (let index = 1; index < releases.length; index += 1) {
-    if (compareStrictSemVer(releases[index - 1]!.catalogVersion, releases[index]!.catalogVersion) >= 0) {
-      throw new Error(`Invalid ${fieldName}.releases[${index}].catalogVersion: releases must be strictly increasing.`);
-    }
-  }
-
-  return {
-    schemaVersion: 1,
-    channel,
-    releases,
-  };
-}
-
 function normalizeCatalogManifestEntry(
   value: unknown,
   fieldName: string,
@@ -2793,13 +2678,12 @@ export function validateCatalogManifest(
     'catalogVersion',
     'channel',
     'compatibility',
-    'history',
     'packages',
     'entries',
   ]);
 
-  if (input.schemaVersion !== 1) {
-    throw new Error('Invalid catalog manifest.schemaVersion: expected 1.');
+  if (input.schemaVersion !== 2) {
+    throw new Error('Invalid catalog manifest.schemaVersion: expected 2.');
   }
 
   const catalogVersion = assertStrictSemVer(input.catalogVersion, 'catalog manifest.catalogVersion');
@@ -2813,11 +2697,6 @@ export function validateCatalogManifest(
   const compatibility = normalizePluginCompatibility(input.compatibility, 'catalog manifest.compatibility', {
     allowMissing: false,
   });
-  const history = normalizeCatalogManifestHistory(input.history, 'catalog manifest.history');
-  if (history.channel !== channel) {
-    throw new Error('Invalid catalog manifest.history.channel: must match catalog manifest.channel.');
-  }
-
   const packages = assertObject(input.packages, 'catalog manifest.packages');
   assertAllowedKeys(packages, 'catalog manifest.packages', ['sidecar', 'full']);
   const sidecar = normalizeCatalogManifestPackageIdentity(packages.sidecar, 'catalog manifest.packages.sidecar', {
@@ -2861,43 +2740,11 @@ export function validateCatalogManifest(
     });
   }
 
-  const latestRelease = history.releases[history.releases.length - 1]!;
-  if (latestRelease.catalogVersion !== catalogVersion) {
-    throw new Error('Invalid catalog manifest.history.releases: last release must match catalogVersion.');
-  }
-  if (latestRelease.minAwVersion !== compatibility.aw.minVersion) {
-    throw new Error('Invalid catalog manifest.history.releases: last release minAwVersion must match catalog manifest compatibility.aw.minVersion.');
-  }
-
-  const historyPluginsByName = new Map(latestRelease.plugins.map((plugin) => [plugin.name, plugin]));
-  if (historyPluginsByName.size !== entries.length) {
-    throw new Error('Invalid catalog manifest.history.releases: last release plugin set must match current entries.');
-  }
-  for (const entry of entries) {
-    const releasePlugin = historyPluginsByName.get(entry.name);
-    if (!releasePlugin) {
-      throw new Error(`Invalid catalog manifest.history.releases: last release is missing plugin "${entry.name}".`);
-    }
-    if (releasePlugin.version !== entry.version) {
-      throw new Error(`Invalid catalog manifest.history.releases: plugin "${entry.name}" version must match current entry.`);
-    }
-    if (releasePlugin.minAwVersion !== entry.compatibility.aw.minVersion) {
-      throw new Error(`Invalid catalog manifest.history.releases: plugin "${entry.name}" minAwVersion must match current entry.`);
-    }
-    if (releasePlugin.artifactDigest !== entry.artifactDigest) {
-      throw new Error(`Invalid catalog manifest.history.releases: plugin "${entry.name}" artifactDigest must match current entry.`);
-    }
-    if (releasePlugin.manifestDigest !== entry.manifestDigest) {
-      throw new Error(`Invalid catalog manifest.history.releases: plugin "${entry.name}" manifestDigest must match current entry.`);
-    }
-  }
-
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     catalogVersion,
     channel,
     compatibility,
-    history,
     packages: {
       sidecar,
       full,

@@ -94,28 +94,13 @@ async function createValidCatalogPackage(options: {
     };
   }));
   const manifest = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     catalogVersion: options.catalogVersion,
     channel: options.channel,
     compatibility: {
       aw: {
         minVersion: options.minAwVersion,
       },
-    },
-    history: {
-      schemaVersion: 1,
-      channel: options.channel,
-      releases: [{
-        catalogVersion: options.catalogVersion,
-        minAwVersion: options.minAwVersion,
-        plugins: entries.map((entry) => ({
-          name: entry.name,
-          version: entry.version,
-          minAwVersion: (entry.compatibility as { aw: { minVersion: string } }).aw.minVersion,
-          artifactDigest: entry.artifactDigest,
-          manifestDigest: entry.manifestDigest,
-        })),
-      }],
     },
     packages: {
       sidecar: {
@@ -153,29 +138,13 @@ function createIncompatibleLatestSidecar(options: {
   channel: CatalogChannel;
 }): Record<string, unknown> {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     catalogVersion: options.catalogVersion,
     channel: options.channel,
     compatibility: {
       aw: {
         minVersion: options.minAwVersion,
       },
-    },
-    history: {
-      schemaVersion: 1,
-      channel: options.channel,
-      releases: [
-        {
-          catalogVersion: options.fallbackVersion,
-          minAwVersion: options.fallbackMinAwVersion,
-          plugins: [],
-        },
-        {
-          catalogVersion: options.catalogVersion,
-          minAwVersion: options.minAwVersion,
-          plugins: [],
-        },
-      ],
     },
     packages: {
       sidecar: {
@@ -916,7 +885,7 @@ describe('plugin catalog resolvers', () => {
     });
   });
 
-  it('rejects malicious history envelopes and package layout declarations', async () => {
+  it('rejects package layout declarations and validates schema before compatibility', async () => {
     const { env } = await makeRepoWorkspace();
     const invalidPackages = createIncompatibleLatestSidecar({
       catalogVersion: '2.0.0',
@@ -952,15 +921,14 @@ describe('plugin catalog resolvers', () => {
       resolution: { remoteFailure: { stage: 'sidecarManifest' } },
     });
 
-    const invalidHistory = createIncompatibleLatestSidecar({
+    const withHistory = createIncompatibleLatestSidecar({
       catalogVersion: '2.0.0',
       minAwVersion: '9.0.0',
       fallbackVersion: '1.0.0',
       fallbackMinAwVersion: '1.0.0',
       channel: 'latest',
     });
-    const history = invalidHistory.history as { releases: Array<Record<string, unknown>> };
-    history.releases[history.releases.length - 1]!.minAwVersion = '8.0.0';
+    withHistory.history = {};
     setCatalogPackageSourceForTests(createFakeCatalogPackageSource({
       distTags: { latest: '2.0.0' },
       manifestPackages: {
@@ -971,12 +939,18 @@ describe('plugin catalog resolvers', () => {
             integrity: 'sha512-sidecar-2',
             requestedDistTag: 'latest',
           },
-          manifest: invalidHistory,
+          manifest: withHistory,
         },
       },
     }));
     await expect(resolveCurrentCatalog(env)).rejects.toMatchObject({
-      resolution: { remoteFailure: { stage: 'historyLookup' } },
+      resolution: {
+        reasonCode: 'catalogUnavailable',
+        remoteFailure: {
+          stage: 'sidecarManifest',
+          message: expect.stringContaining('unknown field "history"'),
+        },
+      },
     });
   });
 
@@ -1118,102 +1092,6 @@ describe('plugin catalog resolvers', () => {
     expect(runtimeDigests).toEqual({
       artifactDigest: gitCommitEntry!.artifactDigest,
       manifestDigest: gitCommitEntry!.manifestDigest,
-    });
-  });
-
-  it('uses history to resolve the latest compatible catalog on the same channel', async () => {
-    const { repoRoot, env } = await makeRepoWorkspace();
-    const compatiblePackage = await createValidCatalogPackage({
-      repoRoot,
-      catalogVersion: '1.0.0',
-      channel: 'latest',
-      minAwVersion: '1.0.0',
-    });
-    const blockedLatestManifest = createIncompatibleLatestSidecar({
-      catalogVersion: '2.0.0',
-      minAwVersion: '9.0.0',
-      fallbackVersion: '1.0.0',
-      fallbackMinAwVersion: '1.0.0',
-      channel: 'latest',
-    });
-    const blockedRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-catalog-blocked-'));
-    tempDirs.push(blockedRoot);
-    await fs.writeJson(path.join(blockedRoot, 'catalog-manifest.json'), blockedLatestManifest, { spaces: 2 });
-
-    setCatalogPackageSourceForTests(createFakeCatalogPackageSource({
-      distTags: {
-        latest: '2.0.0',
-      },
-      manifestPackages: {
-        [packageKey('@yiliang/aw-plugins-manifest', '2.0.0')]: {
-          identity: {
-            packageName: '@yiliang/aw-plugins-manifest',
-            version: '2.0.0',
-            integrity: 'sha512-sidecar-latest',
-            requestedDistTag: 'latest',
-          },
-          rootDir: blockedRoot,
-          manifest: blockedLatestManifest,
-        },
-        [packageKey('@yiliang/aw-plugins-manifest', '1.0.0')]: {
-          identity: {
-            packageName: '@yiliang/aw-plugins-manifest',
-            version: '1.0.0',
-            integrity: 'sha512-sidecar-1',
-          },
-          rootDir: compatiblePackage.sidecarRoot,
-          manifest: compatiblePackage.manifest,
-        },
-      },
-      fullPackages: {
-        [packageKey('@yiliang/aw-plugins', '1.0.0')]: {
-          identity: {
-            packageName: '@yiliang/aw-plugins',
-            version: '1.0.0',
-            integrity: 'sha512-full-1',
-          },
-          rootDir: compatiblePackage.fullRoot,
-          manifest: compatiblePackage.manifest,
-        },
-      },
-    }));
-
-    await expect(resolveCurrentCatalog(env)).resolves.toMatchObject({
-      source: 'remote',
-      channel: 'latest',
-      catalogVersion: '1.0.0',
-      minAwVersion: '1.0.0',
-      latestCatalogBlocked: {
-        catalogVersion: '2.0.0',
-        minAwVersion: '9.0.0',
-      },
-    });
-
-    await expect(resolveCatalogPlugins(['git-commit'], env)).resolves.toMatchObject({
-      catalog: {
-        catalogVersion: '1.0.0',
-      },
-      plugins: [{
-        manifest: {
-          name: 'git-commit',
-        },
-      }],
-    });
-
-    clearCurrentCatalogResolutionMemoForTests();
-    setCatalogPackageSourceForTests(createFakeCatalogPackageSource({}));
-    await expect(resolveCurrentCatalog(env, { freshnessPolicy: 'cacheFirst' })).resolves.toMatchObject({
-      source: 'cache',
-      latestCatalog: {
-        catalogVersion: '2.0.0',
-        blocked: true,
-      },
-      latestCatalogBlocked: {
-        catalogVersion: '2.0.0',
-      },
-      fullCatalog: {
-        resolutionSource: 'historyCompatibleCatalog',
-      },
     });
   });
 
@@ -1796,20 +1674,6 @@ describe('plugin catalog resolvers', () => {
         channel: 'latest',
       }),
     },
-    {
-      name: 'current catalog history is unusable',
-      reasonCode: 'catalogHistoryUnavailable',
-      createBlockedManifest: () => ({
-        ...createIncompatibleLatestSidecar({
-          catalogVersion: '2.0.0',
-          minAwVersion: '9.0.0',
-          fallbackVersion: '1.0.0',
-          fallbackMinAwVersion: '1.0.0',
-          channel: 'latest',
-        }),
-        history: {},
-      }),
-    },
   ]) {
     it(`does not reuse an expired process memo when the ${scenario.name}`, async () => {
       const { repoRoot, env } = await makeRepoWorkspace();
@@ -1879,25 +1743,14 @@ describe('plugin catalog resolvers', () => {
 
       env.AW_CATALOG_CACHE_TTL_MS = '0';
 
-      const resolution = resolveCurrentCatalog(env);
-      if (scenario.reasonCode === 'catalogHistoryUnavailable') {
-        await expect(resolution).resolves.toMatchObject({
-          source: 'cache',
-          cacheFallback: { used: true, blockingCode: 'catalogHistoryUnavailable' },
-          cacheState: { state: 'refreshFailed' },
-          remoteFailure: { stage: 'historyLookup' },
-        });
-      } else {
-        await expect(resolution).rejects.toMatchObject({
-          resolution: {
-            reasonCode: scenario.reasonCode,
-            latestCatalogBlocked: {
-              catalogVersion: '2.0.0',
-              minAwVersion: '9.0.0',
-            },
-          },
-        });
-      }
+      await expect(resolveCurrentCatalog(env)).rejects.toMatchObject({
+        resolution: {
+          reasonCode: scenario.reasonCode,
+          catalogVersion: '2.0.0',
+          minAwVersion: '9.0.0',
+          cacheFallback: { used: false },
+        },
+      });
       expect(operations).toEqual([
         'identity:@yiliang/aw-plugins-manifest:latest',
         'download:@yiliang/aw-plugins-manifest:2.0.0',

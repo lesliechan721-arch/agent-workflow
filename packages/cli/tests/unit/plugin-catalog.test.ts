@@ -45,25 +45,15 @@ function createManifest(options: {
   catalogVersion: string;
   channel: 'latest' | 'beta';
   minAwVersion: string;
-  history?: Record<string, unknown>;
 }): Record<string, unknown> {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     catalogVersion: options.catalogVersion,
     channel: options.channel,
     compatibility: {
       aw: {
         minVersion: options.minAwVersion,
       },
-    },
-    history: options.history ?? {
-      schemaVersion: 1,
-      channel: options.channel,
-      releases: [{
-        catalogVersion: options.catalogVersion,
-        minAwVersion: options.minAwVersion,
-        plugins: [],
-      }],
     },
     packages: {
       sidecar: {
@@ -160,23 +150,30 @@ describe('plugin catalog failures', () => {
     });
   });
 
-  it('rejects explicit incompatible catalog versions without history fallback', async () => {
+  it('rejects explicit incompatible catalog versions without fallback or full download', async () => {
     const manifest = createManifest({
       catalogVersion: '2.0.0-beta.1',
       channel: 'beta',
       minAwVersion: '9.0.0',
     });
     const rootDir = await makeRootWithManifest(manifest);
+    const operations: string[] = [];
     setCatalogPackageSourceForTests({
       resolveIdentityByDistTag: async () => {
         throw new Error('unexpected');
       },
-      resolveIdentityByVersion: async () => ({
-        packageName: '@yiliang/aw-plugins-manifest',
-        version: '2.0.0-beta.1',
-        integrity: 'sha512-sidecar-exact',
-      }),
-      downloadArchive: async () => createArchive(manifest, rootDir),
+      resolveIdentityByVersion: async (packageName) => {
+        operations.push(`identity:${packageName}`);
+        return {
+          packageName: '@yiliang/aw-plugins-manifest',
+          version: '2.0.0-beta.1',
+          integrity: 'sha512-sidecar-exact',
+        };
+      },
+      downloadArchive: async (identity) => {
+        operations.push(`download:${identity.packageName}`);
+        return createArchive(manifest, rootDir);
+      },
     });
 
     await expect(
@@ -194,16 +191,20 @@ describe('plugin catalog failures', () => {
         reasonCode: 'explicitCatalogIncompatible',
         catalogVersion: '2.0.0-beta.1',
         minAwVersion: '9.0.0',
+        cacheFallback: { used: false },
       },
     } satisfies Partial<CatalogResolutionError>);
+    expect(operations).toEqual([
+      'identity:@yiliang/aw-plugins-manifest',
+      'download:@yiliang/aw-plugins-manifest',
+    ]);
   });
 
-  it('reports catalogHistoryUnavailable when latest is incompatible and history is unusable', async () => {
+  it('reports awVersionTooLow for an incompatible channel without fallback or full download', async () => {
     const manifest = createManifest({
       catalogVersion: '2.0.0',
       channel: 'latest',
       minAwVersion: '9.0.0',
-      history: {},
     });
     const rootDir = await makeRootWithManifest(manifest);
     setCatalogPackageSourceForTests({
@@ -228,11 +229,10 @@ describe('plugin catalog failures', () => {
       ),
     ).rejects.toMatchObject({
       resolution: {
-        reasonCode: 'catalogHistoryUnavailable',
-        latestCatalogBlocked: {
-          catalogVersion: '2.0.0',
-          minAwVersion: '9.0.0',
-        },
+        reasonCode: 'awVersionTooLow',
+        catalogVersion: '2.0.0',
+        minAwVersion: '9.0.0',
+        cacheFallback: { used: false },
       },
     } satisfies Partial<CatalogResolutionError>);
   });

@@ -55,19 +55,86 @@ describe('release common registry error classification', () => {
     })).rejects.toThrow('missing dist.integrity or dist.tarball');
   });
 
+  it('does not classify a dist-tag lookup error as a missing exact version', async () => {
+    const adapter = await createCatalogRegistryAdapter({
+      registryUrl: 'https://registry.example.test/',
+      marketplace: {
+        resolveCatalogPackageIdentityByVersion: vi.fn(async () => {
+          throw new Error('Registry dist-tag beta is missing for @yiliang/aw-plugins.');
+        }),
+      },
+    });
+
+    await expect(adapter.verifyExistingPackage('full', {
+      packageRoot: '/tmp/full',
+      channel: 'beta',
+      version: '2.0.0-beta.1',
+      manifest: {},
+    })).rejects.toThrow('Registry dist-tag beta is missing');
+  });
+
+  it.each([
+    'HTTP 404 while downloading resolved tarball',
+    'catalog tarball network timeout',
+    'catalog tarball extraction failed',
+  ])('fails closed after exact-version identity resolution: %s', async (message) => {
+    const adapter = await createCatalogRegistryAdapter({
+      registryUrl: 'https://registry.example.test/',
+      marketplace: {
+        resolveCatalogPackageIdentityByVersion: vi.fn(async () => ({
+          packageName: '@yiliang/aw-plugins',
+          version: '2.0.0',
+        })),
+        downloadCatalogPackageArchive: vi.fn(async () => {
+          throw new Error(message);
+        }),
+      },
+    });
+
+    await expect(adapter.verifyExistingPackage('full', {
+      packageRoot: '/tmp/full',
+      channel: 'latest',
+      version: '2.0.0',
+      manifest: {},
+    })).rejects.toThrow(message);
+  });
+
   it('fails closed when a channel dist-tag points at missing version metadata', async () => {
     const adapter = await createCatalogRegistryAdapter({
       registryUrl: 'https://registry.example.test/',
       marketplace: {
-        resolveCatalogPackageByDistTag: vi.fn(async () => {
+        resolveCatalogPackageIdentityByDistTag: vi.fn(async () => {
           throw new Error('Registry version 2.0.0 is missing for @yiliang/aw-plugins-manifest.');
         }),
       },
     });
 
-    await expect(adapter.readChannelManifest('latest')).resolves.toEqual({
+    await expect(adapter.readChannelPackageIdentity('latest')).resolves.toEqual({
       status: 'error',
       error: 'Registry version 2.0.0 is missing for @yiliang/aw-plugins-manifest.',
     });
+  });
+
+  it('does not download or parse a dist-tag catalog manifest', async () => {
+    const resolveCatalogPackageIdentityByDistTag = vi.fn(async () => ({
+      packageName: '@yiliang/aw-plugins-manifest',
+      version: '1.0.0',
+    }));
+    const downloadCatalogPackageArchive = vi.fn(async () => {
+      throw new Error('legacy schema 1 manifest must not be parsed');
+    });
+    const adapter = await createCatalogRegistryAdapter({
+      registryUrl: 'https://registry.example.test/',
+      marketplace: {
+        resolveCatalogPackageIdentityByDistTag,
+        downloadCatalogPackageArchive,
+      },
+    });
+
+    await expect(adapter.readChannelPackageIdentity('latest')).resolves.toMatchObject({
+      status: 'ready',
+      version: '1.0.0',
+    });
+    expect(downloadCatalogPackageArchive).not.toHaveBeenCalled();
   });
 });

@@ -83,6 +83,36 @@ describe('public docs', () => {
     }
   });
 
+  it('keeps removed catalog history keys out of public docs and author references', async () => {
+    const files = await readPublicContractFiles();
+    const forbidden = [
+      /catalog[ -]?history/iu,
+      /catalogHistoryUnavailable/u,
+      /historyCompatibleCatalog/u,
+      /historyLookup/u,
+      /sidecar history/iu,
+    ];
+    for (const { file, content } of files) {
+      for (const pattern of forbidden) {
+        expect(content, `${file} matched ${pattern}`).not.toMatch(pattern);
+      }
+    }
+  });
+
+  it('does not claim a global historical plugin identity release guarantee', async () => {
+    const files = await readPublicContractFiles();
+    const forbidden = [
+      /同一 `plugin@version` 发布后不可变/u,
+      /发布(?:流程|门禁)(?:会|可|能够)(?:证明|保证)全部(?:历史|已发布) `?plugin@version`?.{0,10}不可变/u,
+      /Published plugin .+ is immutable/iu,
+    ];
+    for (const { file, content } of files) {
+      for (const pattern of forbidden) {
+        expect(content, `${file} matched ${pattern}`).not.toMatch(pattern);
+      }
+    }
+  });
+
   it('documents only the v3 write, status, and config JSON contracts', async () => {
     const docs = await readCombinedFiles(runtimeDocs);
 
@@ -119,15 +149,17 @@ describe('public docs', () => {
     expect(docs).not.toMatch(/--remove-config|--adopt-existing|aw repair|dependency-index/u);
   });
 
-  it('documents strict catalog cache while retaining the catalog history contract', async () => {
+  it('documents strict current-only catalog cache and direct compatibility failure', async () => {
     const docs = await readCombinedFiles(['docs/architecture.md', 'docs/plugin-installation.md', 'docs/testing.md']);
 
     expect(docs).toContain('immutable entry');
     expect(docs).toContain('原子 selector publication');
     expect(docs).toContain('registry source identity');
-    expect(docs).toContain('catalogHistoryUnavailable');
+    expect(docs).toContain('schema 2');
     expect(docs).toContain('awVersionTooLow');
+    expect(docs).toContain('explicitCatalogIncompatible');
     expect(docs).toContain('`artifactDigest` 和 `manifestDigest`');
+    expect(docs).not.toContain('catalogHistoryUnavailable');
   });
 
   it('documents plugin dependencies as unsupported in runtime and author contracts', async () => {

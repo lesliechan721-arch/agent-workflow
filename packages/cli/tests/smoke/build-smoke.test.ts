@@ -463,10 +463,11 @@ describe('build smoke', () => {
     ).resolves.toBe(false);
     expect(canonicalCatalogManifestText).toBe(sidecarCatalogManifestText);
     expect(canonicalCatalogManifestText).toBe(fullCatalogManifestText);
+    expect(JSON.parse(canonicalCatalogManifestText)).not.toHaveProperty('history');
     await expect(
       fs.readJson(path.join(outputRoot, '.catalog', 'catalog-manifest.json')),
     ).resolves.toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       packages: {
         sidecar: {
           name: '@yiliang/aw-plugins-manifest',

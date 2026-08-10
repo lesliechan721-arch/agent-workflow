@@ -73,8 +73,6 @@ import type {
   CatalogChannel,
   CatalogManifest,
   CatalogManifestEntry,
-  CatalogManifestHistory,
-  CatalogHistoryRelease,
   PluginMeta,
 } from '../src/types.js';
 import {
@@ -105,7 +103,6 @@ export interface CatalogStageOptions {
   outputRoot: string;
   catalogVersion?: string;
   channel?: CatalogChannel;
-  history?: CatalogManifestHistory;
 }
 
 export interface CatalogPackageMetadata {
@@ -170,22 +167,6 @@ async function readCliPackageMetadata(
       packageJson.publishConfig && typeof packageJson.publishConfig === 'object' && !Array.isArray(packageJson.publishConfig)
         ? packageJson.publishConfig as Record<string, unknown>
         : undefined,
-  };
-}
-
-function createCatalogRelease(
-  manifest: CatalogManifest,
-): CatalogHistoryRelease {
-  return {
-    catalogVersion: manifest.catalogVersion,
-    minAwVersion: manifest.compatibility.aw.minVersion,
-    plugins: manifest.entries.map((entry) => ({
-      name: entry.name,
-      version: entry.version,
-      minAwVersion: entry.compatibility.aw.minVersion,
-      artifactDigest: entry.artifactDigest,
-      manifestDigest: entry.manifestDigest,
-    })),
   };
 }
 
@@ -322,7 +303,7 @@ export async function stageCatalogArtifacts(
   );
 
   const manifestBase = {
-    schemaVersion: 1 as const,
+    schemaVersion: 2 as const,
     catalogVersion,
     channel,
     compatibility: {
@@ -346,28 +327,7 @@ export async function stageCatalogArtifacts(
     entries,
   };
 
-  const history = options.history ?? {
-    schemaVersion: 1 as const,
-    channel,
-    releases: [
-      {
-        catalogVersion,
-        minAwVersion,
-        plugins: entries.map((entry) => ({
-          name: entry.name,
-          version: entry.version,
-          minAwVersion: entry.compatibility.aw.minVersion,
-          artifactDigest: entry.artifactDigest,
-          manifestDigest: entry.manifestDigest,
-        })),
-      },
-    ],
-  };
-
-  const manifest = validateCatalogManifest({
-    ...manifestBase,
-    history,
-  });
+  const manifest = validateCatalogManifest(manifestBase);
   const stagingRoot = getCatalogStagingRoot(options.outputRoot);
   const canonicalManifestPath = getCanonicalCatalogManifestPath(options.outputRoot);
   const sidecarPackageRoot = getCatalogSidecarPackageRoot(options.outputRoot);
@@ -415,10 +375,4 @@ export async function readStagedCatalogManifest(
   return validateCatalogManifest(
     await readJsonFile<unknown>(getCanonicalCatalogManifestPath(outputRoot)),
   );
-}
-
-export function createCatalogHistoryRelease(
-  manifest: CatalogManifest,
-): CatalogHistoryRelease {
-  return createCatalogRelease(manifest);
 }

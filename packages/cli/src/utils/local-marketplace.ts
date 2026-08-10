@@ -116,7 +116,6 @@ export interface CurrentCatalogCacheIdentity {
   catalogVersion: CatalogVersion;
   minAwVersion: CliVersion;
   schemaVersion: number;
-  historySchemaVersion: number | null;
   sidecarIntegrity: string;
   fullIntegrity: string;
 }
@@ -151,10 +150,6 @@ export interface CurrentCatalogCacheEntry {
 
 export interface CurrentCatalogCacheObservation {
   sidecarManifestPackage: NonNullable<CatalogResolution['sidecarManifestPackage']>;
-  latestCatalog?: CatalogResolution['latestCatalog'];
-  latestCatalogBlocked?: CatalogResolution['latestCatalogBlocked'];
-  historySchemaVersion: number | null;
-  resolutionSource: NonNullable<NonNullable<CatalogResolution['fullCatalog']>['resolutionSource']>;
   sourceIdentity?: string;
   observationOrder?: number;
 }
@@ -655,7 +650,6 @@ function createCurrentCatalogCacheIdentityPayload(
     catalogVersion: identity.catalogVersion,
     minAwVersion: identity.minAwVersion,
     schemaVersion: identity.schemaVersion,
-    historySchemaVersion: identity.historySchemaVersion,
     sidecarIntegrity: identity.sidecarIntegrity,
     fullIntegrity: identity.fullIntegrity,
   };
@@ -723,9 +717,6 @@ function isCurrentCatalogCacheEntryRecord(value: unknown): value is CurrentCatal
     isStrictSemVerString(value.minAwVersion) &&
     typeof value.schemaVersion === 'number' && Number.isInteger(value.schemaVersion) &&
     value.schemaVersion >= 1 &&
-    (value.historySchemaVersion === null || (
-      typeof value.historySchemaVersion === 'number' && Number.isInteger(value.historySchemaVersion)
-    )) &&
     typeof value.sidecarIntegrity === 'string' && value.sidecarIntegrity.trim() !== '' &&
     typeof value.fullIntegrity === 'string' && value.fullIntegrity.trim() !== '' &&
     typeof value.manifestDigest === 'string' && /^sha256:[a-f0-9]{64}$/.test(value.manifestDigest) &&
@@ -759,14 +750,6 @@ function isCurrentCatalogCacheSelectorIndexRecord(
     ));
 }
 
-function isCatalogLatestEvidence(value: unknown): boolean {
-  return isRecord(value) &&
-    isCatalogChannel(value.channel) &&
-    isStrictSemVerString(value.catalogVersion) &&
-    isStrictSemVerString(value.minAwVersion) &&
-    typeof value.blocked === 'boolean';
-}
-
 function isCurrentCatalogCacheObservation(value: unknown): value is CurrentCatalogCacheObservation {
   if (!isRecord(value) || !isRecord(value.sidecarManifestPackage)) {
     return false;
@@ -777,36 +760,18 @@ function isCurrentCatalogCacheObservation(value: unknown): value is CurrentCatal
     isCatalogChannel(sidecar.channel) &&
     typeof sidecar.manifestDigest === 'string' &&
     (sidecar.npmIntegrity === undefined || typeof sidecar.npmIntegrity === 'string') &&
-    (value.latestCatalog === undefined || isCatalogLatestEvidence(value.latestCatalog)) &&
-    (value.latestCatalogBlocked === undefined || (
-      isRecord(value.latestCatalogBlocked) &&
-      isCatalogChannel(value.latestCatalogBlocked.channel) &&
-      isStrictSemVerString(value.latestCatalogBlocked.catalogVersion) &&
-      isStrictSemVerString(value.latestCatalogBlocked.minAwVersion)
-    )) &&
-    (value.historySchemaVersion === null || Number.isInteger(value.historySchemaVersion)) &&
     ((value.sourceIdentity === undefined && value.observationOrder === undefined) || (
       typeof value.sourceIdentity === 'string' && value.sourceIdentity.trim() !== '' &&
       typeof value.observationOrder === 'number' &&
       Number.isSafeInteger(value.observationOrder) &&
       value.observationOrder > 0
-    )) &&
-    (value.resolutionSource === 'requestedCatalog' || value.resolutionSource === 'historyCompatibleCatalog');
+    ));
 }
 
 function getRequestedCatalogChannelForCache(selector: CatalogSelector): CatalogChannel | null {
   return selector.kind === 'exactVersion'
     ? null
     : selector.requestedChannel ?? selector.defaultChannel;
-}
-
-function sameCatalogLatestEvidence(
-  left: NonNullable<CurrentCatalogCacheObservation['latestCatalog']>,
-  right: NonNullable<CurrentCatalogCacheObservation['latestCatalogBlocked']>,
-): boolean {
-  return left.channel === right.channel &&
-    left.catalogVersion === right.catalogVersion &&
-    left.minAwVersion === right.minAwVersion;
 }
 
 function isCurrentCatalogCacheObservationForEntry(
@@ -824,7 +789,6 @@ function isCurrentCatalogCacheObservationForEntry(
     sidecar.channel !== metadata.channel ||
     sidecar.manifestDigest !== metadata.manifestDigest ||
     sidecar.npmIntegrity !== metadata.sidecarIntegrity ||
-    value.historySchemaVersion !== metadata.historySchemaVersion ||
     compareStrictSemVer(metadata.minAwVersion, metadata.selector.cliVersion) > 0
   ) {
     return false;
@@ -839,26 +803,7 @@ function isCurrentCatalogCacheObservationForEntry(
     return false;
   }
 
-  const latest = value.latestCatalog;
-  const blocked = value.latestCatalogBlocked;
-  if (value.resolutionSource === 'requestedCatalog') {
-    return latest !== undefined &&
-      latest.channel === metadata.channel &&
-      latest.catalogVersion === metadata.catalogVersion &&
-      latest.minAwVersion === metadata.minAwVersion &&
-      latest.blocked === false &&
-      blocked === undefined;
-  }
-
-  return metadata.selector.kind !== 'exactVersion' &&
-    latest !== undefined &&
-    latest.blocked === true &&
-    blocked !== undefined &&
-    sameCatalogLatestEvidence(latest, blocked) &&
-    latest.channel === metadata.channel &&
-    compareStrictSemVer(latest.catalogVersion, metadata.catalogVersion) > 0 &&
-    compareStrictSemVer(latest.minAwVersion, metadata.selector.cliVersion) > 0 &&
-    metadata.historySchemaVersion !== null;
+  return true;
 }
 
 async function readCurrentCatalogCacheEntryByKey(
@@ -1380,7 +1325,6 @@ export async function readCurrentCatalogCacheEntry(
     metadata.catalogVersion !== identity.catalogVersion ||
     metadata.minAwVersion !== identity.minAwVersion ||
     metadata.schemaVersion !== identity.schemaVersion ||
-    metadata.historySchemaVersion !== identity.historySchemaVersion ||
     metadata.sidecarIntegrity !== identity.sidecarIntegrity ||
     metadata.fullIntegrity !== identity.fullIntegrity
   ) {
@@ -1436,7 +1380,6 @@ async function writeCurrentCatalogCacheEntryWithLease(
       catalogVersion: options.catalogVersion,
       minAwVersion: options.minAwVersion,
       schemaVersion: options.schemaVersion,
-      historySchemaVersion: options.historySchemaVersion,
       sidecarIntegrity: options.sidecarIntegrity,
       fullIntegrity: options.fullIntegrity,
       manifestDigest,
@@ -1591,15 +1534,14 @@ function isLocalMarketplaceResolvedCatalog(
     isRecord(value) &&
     isCatalogChannel(value.channel) &&
     isStrictSemVerString(value.catalogVersion) &&
-    isStrictSemVerString(value.minAwVersion) &&
-    (value.historySchemaVersion === null || Number.isInteger(value.historySchemaVersion))
+    isStrictSemVerString(value.minAwVersion)
   );
 }
 
 function resolveLocalMarketplaceResolvedCatalog(
   value: Pick<
     CatalogResolution | CatalogResolutionFailure,
-    'channel' | 'catalogVersion' | 'minAwVersion' | 'historySchemaVersion'
+    'channel' | 'catalogVersion' | 'minAwVersion'
   >,
 ): NonNullable<LocalMarketplaceConfig['resolvedCatalog']> | null {
   if (
@@ -1614,7 +1556,6 @@ function resolveLocalMarketplaceResolvedCatalog(
     channel: value.channel,
     catalogVersion: value.catalogVersion,
     minAwVersion: value.minAwVersion,
-    historySchemaVersion: value.historySchemaVersion ?? null,
   };
 }
 
@@ -1651,8 +1592,7 @@ function localMarketplaceCatalogSelectorMatches(
   return (
     config.resolvedCatalog?.channel === expectedResolvedCatalog.channel &&
     config.resolvedCatalog.catalogVersion === expectedResolvedCatalog.catalogVersion &&
-    config.resolvedCatalog.minAwVersion === expectedResolvedCatalog.minAwVersion &&
-    config.resolvedCatalog.historySchemaVersion === expectedResolvedCatalog.historySchemaVersion
+    config.resolvedCatalog.minAwVersion === expectedResolvedCatalog.minAwVersion
   );
 }
 
