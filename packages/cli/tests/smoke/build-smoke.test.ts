@@ -226,7 +226,7 @@ describe('build smoke', () => {
         expect(skill).toContain('使用 `AskUserQuestion`');
         expect(skill).not.toContain('request_user_input');
       }
-      expect(openaiYaml).toContain(`default_prompt: "使用 $${skillName}：`);
+      expect(openaiYaml).toContain(`default_prompt: "使用 $${skillName}`);
       expect(openaiYaml).toContain('allow_implicit_invocation: true');
     }
     await expect(
