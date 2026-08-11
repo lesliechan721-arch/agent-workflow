@@ -121,7 +121,7 @@ pnpm plugin:eval <plugin> --output-dir /tmp/aw-eval
 
 strict 模式在启动模型前检查 `/etc/codex`（Windows 对应系统目录）和 macOS `com.openai.codex` 的受管配置键；启动 app-server 后再读取有效 config layers、requirements、Skill 清单和 MCP 清单。检测到系统、MDM、云端或旧式 managed config、非目标 Skill、MCP server、Skill discovery error，或任一关闭项未生效时，suite 以 `incomplete` 结束，不产生发布通过证据。报告的 `environment.isolation` 保存这些检查结果。
 
-真实模型 eval 应从普通 Terminal 会话直接运行。不要通过会临时导出或改写用户 keychain search list 的 GUI、沙箱或提权包装器启动；这类外层包装器可能留下失效的 `accountsKeychainExport` 路径，并在 Codex 启动前触发 macOS“找不到钥匙串”弹窗。`--materialize-only` 和确定性测试不需要启动 Codex 模型进程。
+真实模型 eval 应从普通 Terminal 会话直接运行。不要通过会临时导出或改写用户 keychain search list 的 GUI、沙箱或提权包装器启动；这类外层包装器可能留下失效的 `accountsKeychainExport` 路径，并在 Codex 启动前触发 macOS“找不到钥匙串”弹窗。中央入口在 macOS 检测到该包装器路径时会直接拒绝真实模型 eval，不会修改用户 keychain search list；`--materialize-only` 和确定性测试不执行该检查，也不需要启动 Codex 模型进程。
 
 `pnpm plugin:eval` 是唯一支持的模型 eval 入口。不要直接运行插件 `evals/` 下的 command runner；直接调用既缺少 final-artifact profile/digest，也会因缺少 `AW_PLUGIN_EVAL_PROJECT_ROOT` 失败。
 

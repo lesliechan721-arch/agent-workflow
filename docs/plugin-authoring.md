@@ -173,7 +173,7 @@ pnpm plugin:eval <plugin> --materialize-only
 - plugin test 使用隔离 bundle、home 和 project。
 - eval materialization 必须验证最终 Codex Skill 文件和原生调用 metadata。
 - `trigger` 和 `conversation` suite 支持 `isolation: standard|strict`；发布级触发边界和行为归因应使用 `strict`。
-- 真实模型 eval 使用文件凭据存储并关闭 secret keychain storage；从普通 Terminal 显式运行，不进入普通 unit/integration。
+- 真实模型 eval 使用文件凭据存储并关闭 secret keychain storage；从普通 Terminal 显式运行，不进入普通 unit/integration。macOS 检测到 `accountsKeychainExport` 包装器路径时会在启动模型前失败，且不会修改用户 keychain search list。
 
 ## Validation
 

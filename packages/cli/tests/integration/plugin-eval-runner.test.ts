@@ -213,6 +213,48 @@ describe('plugin eval runner', () => {
     expect(stderr).toContain('without path separators');
   });
 
+  it('blocks model eval under a macOS accountsKeychainExport wrapper', async () => {
+    let stderr = '';
+    const exitCode = await runPluginEvals(['codex-subagent-guide'], {
+      repoRoot: repoRoot(),
+      platform: 'darwin',
+      readUserKeychainSearchList: async () =>
+        '    "/private/tmp/accountsKeychainExport123/accountsKeychainExport.keychain"\n',
+      stderr: (text) => { stderr += text; },
+    });
+
+    expect(exitCode).toBe(2);
+    expect(stderr).toContain('ordinary Terminal');
+  });
+
+  it('does not inspect the keychain for materialize-only eval', async () => {
+    const root = repoRoot();
+    const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-eval-materialize-'));
+    tempDirs.push(outputRoot);
+    registerCurrentTestReadonlyFixtureRoot(root);
+    registerCurrentTestWritableStateRoot(outputRoot);
+    const readUserKeychainSearchList = vi.fn(async () => {
+      throw new Error('must not inspect the keychain');
+    });
+
+    const exitCode = await runPluginEvals([
+      'codex-subagent-guide',
+      '--materialize-only',
+      '--output-dir',
+      outputRoot,
+    ], {
+      repoRoot: root,
+      platform: 'darwin',
+      readUserKeychainSearchList,
+      env: process.env,
+      stdout: () => undefined,
+      stderr: () => undefined,
+    });
+
+    expect(exitCode).toBe(0);
+    expect(readUserKeychainSearchList).not.toHaveBeenCalled();
+  });
+
   it('materializes every Codex profile through the real staging and renderer paths', async () => {
     const root = repoRoot();
     const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-eval-all-'));

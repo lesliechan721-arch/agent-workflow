@@ -151,6 +151,39 @@ async function readMacManagedPreference(key: string): Promise<boolean> {
   }
 }
 
+async function readMacUserKeychainSearchList(): Promise<string> {
+  try {
+    const result = await execFileAsync(
+      '/usr/bin/security',
+      ['list-keychains', '-d', 'user'],
+      { encoding: 'utf8', timeout: 10_000 },
+    );
+    return result.stdout;
+  } catch (error) {
+    throw new Error(
+      'Unable to inspect the macOS user keychain search list before Codex model eval.',
+      { cause: error },
+    );
+  }
+}
+
+export async function assertCodexEvalKeychainWrapperAbsent(options: {
+  platform?: NodeJS.Platform;
+  readUserKeychainSearchList?: () => Promise<string>;
+} = {}): Promise<void> {
+  if ((options.platform ?? process.platform) !== 'darwin') return;
+  const searchList = await (
+    options.readUserKeychainSearchList ?? readMacUserKeychainSearchList
+  )();
+  if (/accountsKeychainExport/iu.test(searchList)) {
+    throw new Error(
+      'Cannot start a Codex model eval from a macOS wrapper that injects ' +
+      'accountsKeychainExport into the user keychain search list. Run ' +
+      'pnpm plugin:eval from an ordinary Terminal session.',
+    );
+  }
+}
+
 export function codexEvalConfigOverrides(
   isolation: PluginEvalIsolation,
 ): string[] {

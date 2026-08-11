@@ -16,6 +16,7 @@ import fs from 'fs-extra';
 import { discoverPlugins, readPluginManifest } from '../src/utils/manifest.js';
 import { resolveCliPackageRoot } from '../src/utils/paths.js';
 import { runCodexConversationSuite } from './codex-eval-app-server.js';
+import { assertCodexEvalKeychainWrapperAbsent } from './codex-eval-isolation.js';
 import {
   assertProcessTreeInspectionAvailable,
   CODEX_EVAL_PROCESS_TREE_ID_ENV,
@@ -80,6 +81,8 @@ export interface PluginEvalRunnerOptions {
   env?: NodeJS.ProcessEnv;
   stdout?: (text: string) => void;
   stderr?: (text: string) => void;
+  platform?: NodeJS.Platform;
+  readUserKeychainSearchList?: () => Promise<string>;
 }
 
 interface ChildResult {
@@ -890,6 +893,17 @@ export async function runPluginEvals(
   const repoRoot = path.resolve(
     options.repoRoot ?? env[REPO_ROOT_ENV] ?? resolveRepoRoot(),
   );
+  if (!parsed.materializeOnly) {
+    try {
+      await assertCodexEvalKeychainWrapperAbsent({
+        platform: options.platform,
+        readUserKeychainSearchList: options.readUserKeychainSearchList,
+      });
+    } catch (error) {
+      stderr(`${error instanceof Error ? error.message : String(error)}\n`);
+      return 2;
+    }
+  }
   const temporaryOutput = parsed.outputDir === undefined;
   const rootOutput = parsed.outputDir ?? await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-eval-'));
   let runtimeCapsule: Awaited<ReturnType<typeof createCodexEvalRuntimeCapsule>> | undefined;

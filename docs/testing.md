@@ -159,7 +159,7 @@ AW_PERF_SUMMARY {"name":"..."}
 
 真实模型运行使用隔离 runtime home，并固定使用文件凭据存储且关闭 secret keychain storage。provider credential 不进入模型 shell，持久化报告必须脱敏。临时 runtime capsule 在成功、失败和中断后清理。
 
-`trigger` 和 `conversation` suite 支持 `isolation: standard|strict`。conversation driver 在 Default 协作模式启用 `request_user_input`。strict 模式只保留目标 Skill，关闭内置 Skill、插件、Apps、MCP 和建议类表面，并在运行前验证有效配置、目标 Skill 和空 MCP 清单。检查失败时结果必须是 incomplete。真实模型 eval 应从普通 Terminal 运行。
+`trigger` 和 `conversation` suite 支持 `isolation: standard|strict`。conversation driver 在 Default 协作模式启用 `request_user_input`。strict 模式只保留目标 Skill，关闭内置 Skill、插件、Apps、MCP 和建议类表面，并在运行前验证有效配置、目标 Skill 和空 MCP 清单。检查失败时结果必须是 incomplete。真实模型 eval 应从普通 Terminal 运行；macOS 检测到 `accountsKeychainExport` 包装器路径时会在启动模型前失败，且不会修改用户 keychain search list。
 
 ## Pre-commit Checklist
 

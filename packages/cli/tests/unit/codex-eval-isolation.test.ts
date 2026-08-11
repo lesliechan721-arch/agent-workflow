@@ -5,6 +5,7 @@ import fs from 'fs-extra';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  assertCodexEvalKeychainWrapperAbsent,
   codexEvalConfigOverrides,
   inspectCodexEvalHostIsolation,
   validateCodexEvalRpcIsolation,
@@ -97,6 +98,30 @@ function validFixture(): {
 }
 
 describe('Codex eval isolation', () => {
+  it('rejects macOS wrappers that inject accountsKeychainExport', async () => {
+    await expect(assertCodexEvalKeychainWrapperAbsent({
+      platform: 'darwin',
+      readUserKeychainSearchList: async () => [
+        '    "/private/var/folders/example/T/accountsKeychainExport123/accountsKeychainExport.keychain"',
+        '    "/Users/example/Library/Keychains/login.keychain-db"',
+      ].join('\n'),
+    })).rejects.toThrow('ordinary Terminal');
+  });
+
+  it('accepts a normal macOS keychain list and skips other platforms', async () => {
+    const readUserKeychainSearchList = vi.fn(async () =>
+      '    "/Users/example/Library/Keychains/login.keychain-db"\n');
+    await expect(assertCodexEvalKeychainWrapperAbsent({
+      platform: 'darwin',
+      readUserKeychainSearchList,
+    })).resolves.toBeUndefined();
+    await expect(assertCodexEvalKeychainWrapperAbsent({
+      platform: 'linux',
+      readUserKeychainSearchList,
+    })).resolves.toBeUndefined();
+    expect(readUserKeychainSearchList).toHaveBeenCalledTimes(1);
+  });
+
   it('forces file credential stores for every eval and disables strict surfaces', () => {
     expect(codexEvalConfigOverrides('standard')).toEqual([
       'cli_auth_credentials_store="file"',
