@@ -135,8 +135,12 @@ test('renders four task roles and agent-type-only preset guidance', async () => 
   assert.match(skill.content.skillFile, /\| 通用 \|/);
   assert.match(skill.content.skillFile, /\| 复杂 \|/);
   assert.match(skill.content.skillFile, /\| 计划与审核 \|/);
-  assert.match(skill.content.skillFile, /且没有专用 skill 管理本次委派时使用/);
+  assert.match(
+    skill.content.skillFile,
+    /当前任务要求实际启动子代理或继续管理已启动或已完成的子代理/,
+  );
   assert.match(skill.content.skillFile, /本 skill 不授予或判断委派权限/);
+  assert.match(skill.content.skillFile, /只要求判断、讨论或建议是否需要委派或多 Agent 并行，不要使用/);
   assert.equal(skill.content.skillFile.includes('委派必须已经获准'), false);
   assert.match(skill.content.skillFile, /显式指定 `model`、`reasoning_effort` 或 `agent_type`/);
   assert.match(skill.content.skillFile, /按其作用域作为自定义任务/);

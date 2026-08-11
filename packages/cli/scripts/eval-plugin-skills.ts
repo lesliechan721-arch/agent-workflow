@@ -442,8 +442,7 @@ export async function runChild(
           stderr += `${terminationDiagnostics.join('\n')}\n`;
         }
         finish(
-          (processTreeCleanupIsUnconfirmed(terminationDiagnostics) ||
-            terminationDiagnostics.length > 0) && exitCode === 0
+          processTreeCleanupIsUnconfirmed(terminationDiagnostics) && exitCode === 0
             ? 1
             : exitCode,
           signal,

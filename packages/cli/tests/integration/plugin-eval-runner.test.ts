@@ -1096,6 +1096,49 @@ describe('plugin eval runner', () => {
     },
   );
 
+  it('keeps a successful result when cleanup is confirmed with monitor diagnostics', async () => {
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+    const child = Object.assign(new EventEmitter(), {
+      pid: 42_425,
+      exitCode: null as number | null,
+      signalCode: null as NodeJS.Signals | null,
+      stdin: null,
+      stdout,
+      stderr,
+      kill: vi.fn(() => true),
+      unref: vi.fn(),
+    }) as unknown as ChildProcessWithoutNullStreams;
+    const spawnChild = vi.fn(() => {
+      setTimeout(() => {
+        Object.assign(child, { exitCode: 0 });
+        stdout.end();
+        stderr.end();
+        child.emit('close', 0, null);
+      }, 0);
+      return child;
+    });
+    const diagnostic = 'Could not monitor the POSIX process tree before cleanup: temporary scan timeout.';
+    const terminate = vi.fn(async () => [diagnostic]);
+    let renderedStderr = '';
+
+    await expect(runChild('fake-command', [], {
+      cwd: process.cwd(),
+      env: process.env,
+      stderr: (text) => { renderedStderr += text; },
+      timeoutMs: 1_000,
+      spawnChild,
+      createProcessTreeMonitor: () => ({ terminate }),
+    })).resolves.toMatchObject({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stderr: `${diagnostic}\n`,
+    });
+    expect(renderedStderr).toContain(diagnostic);
+    expect(processTreeCleanupIsUnconfirmed([diagnostic])).toBe(false);
+  });
+
   it.runIf(process.platform !== 'win32')(
     'terminates an active command suite and prevents the next suite before re-emitting SIGTERM',
     async () => {

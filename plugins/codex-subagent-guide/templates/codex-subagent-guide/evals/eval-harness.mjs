@@ -341,7 +341,10 @@ function splitTopLevel(source, delimiter) {
   return parts;
 }
 
-function parseInlineScalar(source) {
+const INLINE_LITERAL_MAX_DEPTH = 8;
+
+function parseInlineValue(source, depth = 0) {
+  if (depth > INLINE_LITERAL_MAX_DEPTH) return { parsed: false };
   const value = source.trim();
   if (value.startsWith('"') && value.endsWith('"')) {
     try {
@@ -357,13 +360,35 @@ function parseInlineScalar(source) {
   if (/^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$/u.test(value)) {
     return { parsed: true, value: Number(value) };
   }
+  if (value.startsWith('{') && value.endsWith('}')) {
+    const parsed = parseInlineObjectLiteral(value, depth + 1);
+    return parsed === null ? { parsed: false } : { parsed: true, value: parsed };
+  }
+  if (value.startsWith('[') && value.endsWith(']')) {
+    const parsed = parseInlineArrayLiteral(value, depth + 1);
+    return parsed === null ? { parsed: false } : { parsed: true, value: parsed };
+  }
   return { parsed: false };
 }
 
-function parseFlatObjectLiteral(source) {
-  if (!source.startsWith('{') || !source.endsWith('}')) return null;
+function parseInlineArrayLiteral(source, depth) {
+  const value = source.trim();
+  if (!value.startsWith('[') || !value.endsWith(']')) return null;
+  const result = [];
+  for (const item of splitTopLevel(value.slice(1, -1), ',')) {
+    if (item.trim() === '') continue;
+    const parsedItem = parseInlineValue(item, depth);
+    if (!parsedItem.parsed) return null;
+    result.push(parsedItem.value);
+  }
+  return result;
+}
+
+function parseInlineObjectLiteral(source, depth = 0) {
+  const value = source.trim();
+  if (!value.startsWith('{') || !value.endsWith('}')) return null;
   const result = {};
-  for (const property of splitTopLevel(source.slice(1, -1), ',')) {
+  for (const property of splitTopLevel(value.slice(1, -1), ',')) {
     if (property.trim() === '') continue;
     const colon = topLevelDelimiterIndex(property, ':');
     if (colon < 0) return null;
@@ -372,11 +397,11 @@ function parseFlatObjectLiteral(source) {
     if (/^[A-Za-z_$][A-Za-z0-9_$]*$/u.test(rawKey)) {
       key = rawKey;
     } else {
-      const parsedKey = parseInlineScalar(rawKey);
+      const parsedKey = parseInlineValue(rawKey, depth);
       if (!parsedKey.parsed || typeof parsedKey.value !== 'string') return null;
       key = parsedKey.value;
     }
-    const parsedValue = parseInlineScalar(property.slice(colon + 1));
+    const parsedValue = parseInlineValue(property.slice(colon + 1), depth);
     if (!parsedValue.parsed) return null;
     result[key] = parsedValue.value;
   }
@@ -416,7 +441,7 @@ export function extractExecToolCalls(source) {
     if (source[openingBrace] !== '{') continue;
     const closingBrace = closingBraceIndex(source, openingBrace);
     if (closingBrace < 0) continue;
-    const argumentsValue = parseFlatObjectLiteral(source.slice(openingBrace, closingBrace + 1));
+    const argumentsValue = parseInlineObjectLiteral(source.slice(openingBrace, closingBrace + 1));
     if (!argumentsValue) continue;
     calls.push({ ...normalized, arguments: argumentsValue });
   }

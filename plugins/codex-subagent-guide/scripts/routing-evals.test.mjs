@@ -16,6 +16,7 @@ import {
   parseRoutingArgs,
   routingReportStatus,
   routingRunCase,
+  shouldRetryTransportFailure,
   summarizeRoutingVariant,
 } from '../templates/codex-subagent-guide/evals/run-routing-evals.mjs';
 
@@ -163,6 +164,7 @@ async function testRolloutArgumentEvidence() {
               '  agent_type: "codex-subagent-simple",',
               '  fork_context: false,',
               '  message: "verify { left: 1, right: 2 }",',
+              '  items: [{ type: "text", text: "nested evidence" }],',
               '}); text(result);',
             ].join('\n'),
           },
@@ -180,6 +182,7 @@ async function testRolloutArgumentEvidence() {
                   agent_type: 'codex-subagent-simple',
                   fork_context: false,
                   message: 'verify { left: 1, right: 2 }',
+                  items: [{ type: 'text', text: 'nested evidence' }],
                 },
               }],
             },
@@ -205,6 +208,7 @@ async function testRolloutArgumentEvidence() {
       agent_type: 'codex-subagent-simple',
       fork_context: false,
       message: 'verify { left: 1, right: 2 }',
+      items: [{ type: 'text', text: 'nested evidence' }],
     });
     assert.deepEqual(extractExecToolCalls('await tools.exec_command({ cmd: "pwd" });'), []);
     assert.deepEqual(
@@ -271,6 +275,17 @@ function testMechanicalAssertions() {
     }],
   };
   assert.equal(evaluateRoutingRun(passingRun, expected, 'with_skill').passed, true);
+
+  const rejectedByToolRouter = {
+    ...passingRun,
+    stderr: 'ERROR codex_core::tools::router: error=Provide either message or items, but not both',
+  };
+  const routerEvaluation = evaluateRoutingRun(rejectedByToolRouter, expected, 'with_skill');
+  assert.equal(routerEvaluation.passed, false);
+  assert.match(
+    routerEvaluation.assertions.find((assertion) => assertion.name === 'execution').evidence,
+    /router_error/,
+  );
 
   const explicitlyInjected = {
     ...passingRun,
@@ -368,6 +383,25 @@ function testMechanicalAssertions() {
   assert.equal(missingLoadEvidence.passed, false);
 }
 
+function testTransportRetryGate() {
+  const transient = {
+    execution_error: true,
+    stderr: 'Reading additional input from stdin...',
+    event_trace: [{
+      type: 'error',
+      message: 'stream disconnected before completion: WebSocket protocol error: Connection reset without closing handshake',
+    }],
+  };
+  assert.equal(shouldRetryTransportFailure(transient, 0), true);
+  assert.equal(shouldRetryTransportFailure(transient, 1), true);
+  assert.equal(shouldRetryTransportFailure(transient, 2), false);
+  assert.equal(shouldRetryTransportFailure({ ...transient, execution_error: false }, 0), false);
+  assert.equal(
+    shouldRetryTransportFailure({ execution_error: true, stderr: 'ordinary timeout' }, 0),
+    false,
+  );
+}
+
 function testReportStatus() {
   const entry = {
     id: 'example',
@@ -417,6 +451,7 @@ async function main() {
   await testJsonReportOutput();
   await testEvalDirectoryCleanupContract();
   testMechanicalAssertions();
+  testTransportRetryGate();
   testReportStatus();
   console.log('routing eval tests passed');
 }

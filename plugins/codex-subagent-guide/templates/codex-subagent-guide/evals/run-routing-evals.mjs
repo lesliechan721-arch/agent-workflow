@@ -23,6 +23,8 @@ const DEFAULT_OPTIONS = {
   caseId: undefined,
   output: undefined,
 };
+const MAX_TRANSIENT_TRANSPORT_RETRIES = 2;
+const TOOL_ROUTER_ERROR = /codex_core::tools::router: error=([^\n]+)/u;
 
 function usage() {
   return `Usage: node plugins/codex-subagent-guide/templates/codex-subagent-guide/evals/run-routing-evals.mjs [OPTIONS]
@@ -220,11 +222,12 @@ function hasLoadEvidence(run) {
 export function evaluateRoutingRun(run, expected, variant) {
   const calls = run.spawn_calls ?? [];
   const loadObserved = hasLoadEvidence(run);
+  const routerError = run.stderr?.match(TOOL_ROUTER_ERROR)?.[1];
   const assertions = [
     {
       name: 'execution',
-      passed: !run.execution_error,
-      evidence: `termination=${run.termination} exit_code=${run.exit_code}`,
+      passed: !run.execution_error && !routerError,
+      evidence: `termination=${run.termination} exit_code=${run.exit_code}${routerError ? ` router_error=${JSON.stringify(routerError)}` : ''}`,
     },
     {
       name: 'skill_load',
@@ -344,6 +347,16 @@ function thrownExecutionError(error) {
   };
 }
 
+export function shouldRetryTransportFailure(run, retriesUsed) {
+  if (!run.execution_error || retriesUsed >= MAX_TRANSIENT_TRANSPORT_RETRIES) return false;
+  const evidence = executionErrorEvidence(run);
+  return evidence.includes('stream disconnected before completion') &&
+    (
+      evidence.includes('WebSocket protocol error') ||
+      evidence.includes('Connection reset without closing handshake')
+    );
+}
+
 async function run(options) {
   const spec = await loadRoutingSpec();
   const selected = options.caseId
@@ -373,23 +386,38 @@ async function run(options) {
         for (const variant of variants) {
           const runs = [];
           for (let runIndex = 0; runIndex < options.runs; runIndex += 1) {
-            process.stderr.write(
-              `[${profile}/${variant}] ${entry.id} run ${runIndex + 1}/${options.runs}\n`,
-            );
             let result;
-            try {
-              result = await runCodexOnce(
-                workspaces.get(variant),
-                routingRunCase(entry, profile, variant),
-                {
-                  ...options,
-                  profile,
-                  model: profile === 'v1' ? options.v1Model : options.v2Model,
-                  captureTrace: true,
-                },
+            const retryEvidence = [];
+            do {
+              const retryLabel = retryEvidence.length > 0
+                ? ` retry ${retryEvidence.length}/${MAX_TRANSIENT_TRANSPORT_RETRIES}`
+                : '';
+              process.stderr.write(
+                `[${profile}/${variant}] ${entry.id} run ${runIndex + 1}/${options.runs}${retryLabel}\n`,
               );
-            } catch (error) {
-              result = thrownExecutionError(error);
+              try {
+                result = await runCodexOnce(
+                  workspaces.get(variant),
+                  routingRunCase(entry, profile, variant),
+                  {
+                    ...options,
+                    profile,
+                    model: profile === 'v1' ? options.v1Model : options.v2Model,
+                    captureTrace: true,
+                  },
+                );
+              } catch (error) {
+                result = thrownExecutionError(error);
+              }
+              if (!shouldRetryTransportFailure(result, retryEvidence.length)) break;
+              retryEvidence.push(executionErrorEvidence(result));
+            } while (true);
+            if (retryEvidence.length > 0) {
+              result = {
+                ...result,
+                transient_transport_retries: retryEvidence.length,
+                transient_transport_retry_evidence: retryEvidence,
+              };
             }
             runs.push(result);
             if (result.execution_error) {
