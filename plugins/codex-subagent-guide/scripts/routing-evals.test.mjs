@@ -4,6 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 
 import {
+  earlyStopReason,
+  extractExecToolCalls,
   readSpawnCallsFromRollouts,
   writeJsonReport,
 } from '../templates/codex-subagent-guide/evals/eval-harness.mjs';
@@ -149,12 +151,45 @@ async function testRolloutArgumentEvidence() {
             },
           },
         }),
+        JSON.stringify({
+          type: 'response_item',
+          payload: {
+            type: 'custom_tool_call',
+            name: 'exec',
+            call_id: 'exec-call-1',
+            input: [
+              'const result = await tools.multi_agent_v1__spawn_agent({',
+              '  agent_type: "codex-subagent-simple",',
+              '  fork_context: false,',
+              '  message: "verify { left: 1, right: 2 }",',
+              '}); text(result);',
+            ].join('\n'),
+          },
+        }),
+        JSON.stringify({
+          type: 'response_item',
+          payload: {
+            type: 'custom_tool_call_output',
+            call_id: 'exec-call-1',
+            output: { task_name: '/root/verify' },
+            internal_chat_message_metadata_passthrough: {
+              executed_tool_calls: [{
+                name: 'multi_agent_v1__spawn_agent',
+                arguments: {
+                  agent_type: 'codex-subagent-simple',
+                  fork_context: false,
+                  message: 'verify { left: 1, right: 2 }',
+                },
+              }],
+            },
+          },
+        }),
         '',
       ].join('\n'),
       'utf8',
     );
     const calls = await readSpawnCallsFromRollouts(codexHome);
-    assert.equal(calls.length, 2);
+    assert.equal(calls.length, 3);
     assert.deepEqual(calls[0].arguments, {
       agent_type: 'codex-subagent-simple',
       message: 'verify facts',
@@ -165,6 +200,16 @@ async function testRolloutArgumentEvidence() {
       message: 'investigate',
       fork_turns: 'none',
     });
+    assert.deepEqual(calls[2].arguments, {
+      agent_type: 'codex-subagent-simple',
+      fork_context: false,
+      message: 'verify { left: 1, right: 2 }',
+    });
+    assert.deepEqual(extractExecToolCalls('await tools.exec_command({ cmd: "pwd" });'), []);
+    assert.deepEqual(
+      extractExecToolCalls('await tools.multi_agent_v1__spawn_agent(argumentsValue);'),
+      [],
+    );
   } finally {
     await rm(codexHome, { recursive: true, force: true });
   }
@@ -208,6 +253,21 @@ function testMechanicalAssertions() {
     }],
   };
   assert.equal(evaluateRoutingRun(passingRun, expected, 'with_skill').passed, true);
+
+  const explicitlyInjected = {
+    ...passingRun,
+    requested_explicitly: true,
+    loaded: false,
+    load_evidence: null,
+  };
+  assert.equal(evaluateRoutingRun(explicitlyInjected, expected, 'with_skill').passed, true);
+  assert.equal(
+    earlyStopReason(
+      { stop_on_spawn: true },
+      { spawned: true, spawnCalls: [] },
+    ),
+    'spawn_observed',
+  );
 
   const inheritedWrongly = {
     ...passingRun,

@@ -303,6 +303,126 @@ function normalizedToolName(value) {
     : { namespace: value.slice(0, separator), tool: value.slice(separator + (value[separator] === '.' ? 1 : 2)) };
 }
 
+function topLevelDelimiterIndex(source, delimiter) {
+  let quote = null;
+  let escaped = false;
+  let depth = 0;
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index];
+    if (quote) {
+      if (escaped) escaped = false;
+      else if (character === '\\') escaped = true;
+      else if (character === quote) quote = null;
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+      continue;
+    }
+    if (character === '{' || character === '[' || character === '(') depth += 1;
+    else if (character === '}' || character === ']' || character === ')') depth -= 1;
+    else if (character === delimiter && depth === 0) return index;
+  }
+  return -1;
+}
+
+function splitTopLevel(source, delimiter) {
+  const parts = [];
+  let remaining = source;
+  while (remaining !== '') {
+    const index = topLevelDelimiterIndex(remaining, delimiter);
+    if (index < 0) {
+      parts.push(remaining);
+      break;
+    }
+    parts.push(remaining.slice(0, index));
+    remaining = remaining.slice(index + 1);
+  }
+  return parts;
+}
+
+function parseInlineScalar(source) {
+  const value = source.trim();
+  if (value.startsWith('"') && value.endsWith('"')) {
+    try {
+      const parsed = JSON.parse(value);
+      return typeof parsed === 'string' ? { parsed: true, value: parsed } : { parsed: false };
+    } catch {
+      return { parsed: false };
+    }
+  }
+  if (value === 'true') return { parsed: true, value: true };
+  if (value === 'false') return { parsed: true, value: false };
+  if (value === 'null') return { parsed: true, value: null };
+  if (/^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?$/u.test(value)) {
+    return { parsed: true, value: Number(value) };
+  }
+  return { parsed: false };
+}
+
+function parseFlatObjectLiteral(source) {
+  if (!source.startsWith('{') || !source.endsWith('}')) return null;
+  const result = {};
+  for (const property of splitTopLevel(source.slice(1, -1), ',')) {
+    if (property.trim() === '') continue;
+    const colon = topLevelDelimiterIndex(property, ':');
+    if (colon < 0) return null;
+    const rawKey = property.slice(0, colon).trim();
+    let key;
+    if (/^[A-Za-z_$][A-Za-z0-9_$]*$/u.test(rawKey)) {
+      key = rawKey;
+    } else {
+      const parsedKey = parseInlineScalar(rawKey);
+      if (!parsedKey.parsed || typeof parsedKey.value !== 'string') return null;
+      key = parsedKey.value;
+    }
+    const parsedValue = parseInlineScalar(property.slice(colon + 1));
+    if (!parsedValue.parsed) return null;
+    result[key] = parsedValue.value;
+  }
+  return result;
+}
+
+function closingBraceIndex(source, openingBrace) {
+  let quote = null;
+  let escaped = false;
+  let depth = 0;
+  for (let index = openingBrace; index < source.length; index += 1) {
+    const character = source[index];
+    if (quote) {
+      if (escaped) escaped = false;
+      else if (character === '\\') escaped = true;
+      else if (character === quote) quote = null;
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+      continue;
+    }
+    if (character === '{') depth += 1;
+    if (character === '}' && --depth === 0) return index;
+  }
+  return -1;
+}
+
+export function extractExecToolCalls(source) {
+  if (typeof source !== 'string') return [];
+  const calls = [];
+  const pattern = /tools\.([A-Za-z_$][A-Za-z0-9_$]*(?:__[A-Za-z_$][A-Za-z0-9_$]*)?)\s*\(\s*/gu;
+  for (const match of source.matchAll(pattern)) {
+    const normalized = normalizedToolName(match[1]);
+    if (!['spawn_agent', 'wait_agent', 'close_agent'].includes(normalized.tool)) continue;
+    const openingBrace = match.index + match[0].length;
+    if (source[openingBrace] !== '{') continue;
+    const closingBrace = closingBraceIndex(source, openingBrace);
+    if (closingBrace < 0) continue;
+    const argumentsValue = parseFlatObjectLiteral(source.slice(openingBrace, closingBrace + 1));
+    if (!argumentsValue) continue;
+    calls.push({ ...normalized, arguments: argumentsValue });
+  }
+  return calls;
+}
+
 export async function readSpawnCallsFromRollouts(codexHome) {
   return (await readCollaborationTimelineFromRollouts(codexHome)).filter(
     (call) => call.tool === 'spawn_agent',
@@ -344,6 +464,7 @@ export function buildCollaborationTimeline(
 ) {
   const calls = [];
   const callsById = new Map();
+  const execCallsByOuterId = new Map();
   const pendingOutputs = new Map();
   for (const [index, line] of lines.entries()) {
     const event = parseExecEventLine(line);
@@ -352,6 +473,27 @@ export function buildCollaborationTimeline(
     if (update) {
       calls.push(update);
       continue;
+    }
+    if (
+      payload?.type === 'custom_tool_call' &&
+      payload.name === 'exec' &&
+      typeof payload.input === 'string'
+    ) {
+      const nestedCalls = extractExecToolCalls(payload.input).map((call, nestedIndex) => ({
+        call_id: typeof payload.call_id === 'string'
+          ? `${payload.call_id}:${nestedIndex}`
+          : `exec:${index + 1}:${nestedIndex}`,
+        namespace: call.namespace,
+        tool: call.tool,
+        arguments: call.arguments,
+        output: null,
+        rollout_file: path.relative(codexHome, rolloutFile),
+        line_number: index + 1,
+      }));
+      calls.push(...nestedCalls);
+      if (typeof payload.call_id === 'string') {
+        execCallsByOuterId.set(payload.call_id, nestedCalls);
+      }
     }
     if (payload?.type === 'function_call' && typeof payload.name === 'string') {
       const normalized = normalizedToolName(payload.name);
@@ -386,9 +528,15 @@ export function buildCollaborationTimeline(
       const directCall = typeof payload.call_id === 'string'
         ? callsById.get(payload.call_id)
         : null;
+      const execCalls = typeof payload.call_id === 'string'
+        ? execCallsByOuterId.get(payload.call_id) ?? []
+        : [];
       if (
-        directCall?.tool === normalized.tool &&
-        (normalized.namespace === null || directCall.namespace === normalized.namespace)
+        (directCall?.tool === normalized.tool &&
+          (normalized.namespace === null || directCall.namespace === normalized.namespace)) ||
+        execCalls.some((call) =>
+          call.tool === normalized.tool &&
+          (normalized.namespace === null || call.namespace === normalized.namespace))
       ) {
         continue;
       }
@@ -461,12 +609,12 @@ export async function copyCodexRuntimeFiles(
   }
 }
 
-function earlyStopReason(evalCase, observed) {
+export function earlyStopReason(evalCase, observed) {
   if (evalCase.wait_for_completion) {
     return null;
   }
   if (evalCase.stop_on_spawn) {
-    return observed.spawnCalls.length > 0 ? 'spawn_observed' : null;
+    return observed.spawned ? 'spawn_observed' : null;
   }
   if (!evalCase.should_load_skill && observed.loaded) {
     return 'unexpected_skill_load';

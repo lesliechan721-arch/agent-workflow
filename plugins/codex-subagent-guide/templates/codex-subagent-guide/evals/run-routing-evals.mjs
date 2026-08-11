@@ -208,9 +208,12 @@ function evaluateArguments(call, expectedArguments) {
 
 function hasLoadEvidence(run) {
   return (
-    run.loaded === true &&
-    typeof run.load_evidence === 'string' &&
-    run.load_evidence !== ''
+    run.requested_explicitly === true ||
+    (
+      run.loaded === true &&
+      typeof run.load_evidence === 'string' &&
+      run.load_evidence !== ''
+    )
   );
 }
 
@@ -226,7 +229,7 @@ export function evaluateRoutingRun(run, expected, variant) {
     {
       name: 'skill_load',
       passed: variant === 'with_skill' ? loadObserved : run.loaded === false,
-      evidence: `variant=${variant} loaded=${Boolean(run.loaded)} evidence=${JSON.stringify(run.load_evidence ?? null)}`,
+      evidence: `variant=${variant} requested=${Boolean(run.requested_explicitly)} loaded=${Boolean(run.loaded)} evidence=${JSON.stringify(run.load_evidence ?? null)}`,
     },
     {
       name: 'spawn_call_count',
