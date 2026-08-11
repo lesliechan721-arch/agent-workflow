@@ -20,9 +20,9 @@
     },
     {
       "id": "p03_product_idea_to_plan",
-      "query": "我有一个面向独立设计师的协作产品想法。请逐轮问清目标、范围和优先级，和我一起形成试点计划。",
+      "query": "我有一个面向独立设计师的协作产品想法。请逐轮追问并压力测试我的判断，直到我们对目标、边界和主要风险形成共享理解。",
       "should_load_skill": true,
-      "rationale": "用户要通过逐轮讨论把想法推进成计划。",
+      "rationale": "用户明确要求通过逐轮访谈把产品想法想透并形成共享理解。",
       "split": "train",
       "use_project_rules": true
     },
@@ -36,9 +36,9 @@
     },
     {
       "id": "p05_workflow_planning_stage",
-      "query": "外层工作流现在进入协作规划阶段。发布方式和兼容期限仍需我选择，请逐轮收敛并输出实施计划。",
+      "query": "外层工作流现在进入协作决策访谈阶段。发布方式和兼容期限仍需我选择，请逐轮推演，直到我们形成共享理解。",
       "should_load_skill": true,
-      "rationale": "外层工作流明确进入协作规划且仍需用户选择。",
+      "rationale": "外层工作流明确进入协作决策访谈阶段。",
       "split": "train",
       "use_project_rules": true
     },
@@ -68,17 +68,17 @@
     },
     {
       "id": "p09_pricing_transition_plan",
-      "query": "我们准备从免费转订阅，但试点范围、价格验证和失败后的回退还没定。请逐轮和我决定并形成上线计划。",
+      "query": "实现导出前，围绕导出范围、权限和格式逐轮追问我。请压力测试这些决定，直到我们形成共享方案。",
       "should_load_skill": true,
-      "rationale": "重要取舍仍需用户参与并收敛为上线计划。",
+      "rationale": "显式决策访谈意图覆盖实施语境。",
       "split": "validation",
       "use_project_rules": true
     },
     {
       "id": "p10_explicit_skill_plan",
-      "query": "$decision-grill 这份 API 下线想法还没定型。请逐轮和我确认兼容期限、迁移责任和回退条件，形成可执行计划。",
+      "query": "$decision-grill 帮我把 API 下线想法想透。逐轮确认兼容期限、迁移责任和回退条件，直到形成共享理解。",
       "should_load_skill": true,
-      "rationale": "用户显式选择 Skill，并提供了尚未定型且需要共同收敛的计划。",
+      "rationale": "用户显式选择 Skill，并要求逐轮访谈一个尚未定型的想法。",
       "split": "validation",
       "use_project_rules": true
     },
@@ -155,8 +155,8 @@
       "should_load_skill": false,
       "rationale": "这是具体实施需求的关键歧义，应使用 requirements-clarifier。",
       "split": "train",
-      "use_project_rules": true,
-      "workspace_fixture": "implementation_repo"
+      "use_project_rules": false,
+      "workspace_fixture": "neutral_export_repo"
     },
     {
       "id": "n10_technical_explanation",

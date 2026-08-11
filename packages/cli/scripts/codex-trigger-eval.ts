@@ -111,6 +111,9 @@ interface TriggerObservation {
 
 export interface TriggerRunEvidence {
   loaded: boolean;
+  first_loaded_skill: string | null;
+  all_loaded_skills: string[];
+  load_evidence_by_skill: Record<string, string>;
   spawned: boolean;
   load_evidence: string | null;
   spawn_evidence: string | null;
@@ -120,6 +123,9 @@ export interface TriggerRunEvidence {
   signal: NodeJS.Signals | null;
   execution_error: boolean;
   fixture_unchanged: boolean;
+  request_user_input_called: boolean;
+  waiting_on_user_input: boolean;
+  final_response_emitted: boolean;
   stderr?: string;
   final_message: string | null;
   duration_ms: number;
@@ -133,11 +139,16 @@ interface TriggerCaseSummary {
   split: PluginEvalTriggerCase['split'];
   query: string;
   expected: {
-    load_skill: boolean;
+    load_skill?: boolean;
+    loaded_skills?: string[];
     spawn_agent?: boolean;
   };
   observed: {
     load_rate: number;
+    skill_load_rates: Record<string, number>;
+    route_match_rate?: number;
+    route_counts?: Record<string, number>;
+    multiple_skill_loads: number;
     spawn_rate?: number;
     execution_errors: number;
   };
@@ -222,6 +233,25 @@ function explicitSkillRequested(query: string, skillName: string): boolean {
   return new RegExp(`(?:^|\\s)\\$${escaped}(?:\\s|$)`, 'u').test(query);
 }
 
+function expectedLoadedSkills(
+  suite: PluginEvalTriggerSuite,
+  evalCase: PluginEvalTriggerCase,
+): string[] {
+  if (evalCase.expected_loaded_skills) {
+    return [...evalCase.expected_loaded_skills];
+  }
+  return evalCase.should_load_skill ? [suite.skill] : [];
+}
+
+function sameSkillSet(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((entry) => right.includes(entry));
+}
+
+function routeLabel(skills: string[]): string {
+  if (skills.length === 0) return 'neither';
+  return [...skills].sort((left, right) => left.localeCompare(right)).join('+');
+}
+
 function normalizedCommandReadsSkill(command: string, skillPath: string): boolean {
   const normalize = (value: string): string => {
     let normalized = value.replaceAll('\\', '/').replaceAll('"', '').replaceAll("'", '');
@@ -271,6 +301,7 @@ export function inspectTriggerAppServerFrame(
   usage?: unknown;
   turnStatus?: string;
   spawnCall?: Record<string, unknown>;
+  requestUserInput?: boolean;
 } {
   const method = typeof frame.method === 'string' ? frame.method : '';
   const params = isRecord(frame.params) ? frame.params : {};
@@ -307,11 +338,19 @@ export function inspectTriggerAppServerFrame(
       },
     };
   }
-  if (method === 'item/completed' && item?.type === 'agentMessage' && typeof item.text === 'string') {
+  if (
+    method === 'item/completed' &&
+    item?.type === 'agentMessage' &&
+    item.phase !== 'commentary' &&
+    typeof item.text === 'string'
+  ) {
     return { finalMessage: item.text };
   }
   if (method === 'thread/tokenUsage/updated' && params.tokenUsage !== undefined) {
     return { usage: params.tokenUsage };
+  }
+  if (method === 'item/tool/requestUserInput') {
+    return { requestUserInput: true };
   }
   if (method === 'turn/completed') {
     const turn = isRecord(params.turn) ? params.turn : {};
@@ -342,7 +381,31 @@ function expectedEarlyStop(
   suite: PluginEvalTriggerSuite,
   evalCase: PluginEvalTriggerCase,
   observed: TriggerObservation,
+  loadedSkills: string[],
 ): string | null {
+  if (evalCase.expected_loaded_skills) {
+    const expected = expectedLoadedSkills(suite, evalCase);
+    if (suite.forbidMultipleSkillLoads && loadedSkills.length > 1) {
+      return 'unexpected_multiple_skill_loads';
+    }
+    const routeResolved =
+      expected.length === suite.skills.length && sameSkillSet(loadedSkills, expected);
+    if (suite.observeSpawnAgent && !evalCase.should_spawn_agent && observed.spawned) {
+      return 'unexpected_spawn';
+    }
+    if (
+      routeResolved &&
+      suite.observeSpawnAgent &&
+      evalCase.should_spawn_agent &&
+      observed.spawned
+    ) {
+      return 'expected_outcome_observed';
+    }
+    if (routeResolved && !suite.observeSpawnAgent) {
+      return 'expected_skill_route_observed';
+    }
+    return null;
+  }
   if (!evalCase.should_load_skill && observed.loaded) {
     return 'unexpected_skill_load';
   }
@@ -504,17 +567,19 @@ async function runTriggerOnce(options: {
     if (options.suite.isolation === 'strict') {
       await isolateTriggerWorkspaceSkills(workspaceRoot, options.suite.skills);
     }
-    const skillPath = path.join(
-      workspaceRoot,
-      '.agents',
-      'skills',
-      options.suite.skill,
-      'SKILL.md',
-    );
-    if (!(await fs.pathExists(skillPath))) {
-      throw new Error(`Materialized trigger skill is missing: ${skillPath}`);
+    const skillPaths = new Map(options.suite.skills.map((skillName) => [
+      skillName,
+      path.join(workspaceRoot, '.agents', 'skills', skillName, 'SKILL.md'),
+    ]));
+    for (const [skillName, skillPath] of skillPaths) {
+      if (!(await fs.pathExists(skillPath))) {
+        throw new Error(`Materialized trigger Skill is missing: ${skillName} (${skillPath})`);
+      }
     }
-    const skillDigest = sha256(await fs.readFile(skillPath));
+    const skillDigests = new Map(await Promise.all([...skillPaths].map(
+      async ([skillName, skillPath]) => [skillName, sha256(await fs.readFile(skillPath))] as const,
+    )));
+    const ownerSkillPath = skillPaths.get(options.suite.skill)!;
     let env = buildIsolatedEnv(
       options.sourceEnv,
       runRoot,
@@ -552,17 +617,36 @@ async function runTriggerOnce(options: {
       ...initialContext,
       env,
     };
-    if (sha256(await fs.readFile(skillPath)) !== skillDigest) {
-      throw new Error('Trigger fixture modified the materialized target skill.');
+    for (const [skillName, skillPath] of skillPaths) {
+      if (sha256(await fs.readFile(skillPath)) !== skillDigests.get(skillName)) {
+        throw new Error(`Trigger fixture modified materialized participant Skill "${skillName}".`);
+      }
     }
     const beforeState = await captureState(options.fixture, context);
+    const allLoadedSkills = options.suite.skills.filter((skillName) =>
+      explicitSkillRequested(options.evalCase.query, skillName));
+    const loadEvidenceBySkill = Object.fromEntries(allLoadedSkills.map((skillName) => [
+      skillName,
+      `explicit $${skillName} invocation`,
+    ]));
     const observed: TriggerObservation = {
-      loaded: explicitSkillRequested(options.evalCase.query, options.suite.skill),
+      loaded: allLoadedSkills.includes(options.suite.skill),
       spawned: false,
-      loadEvidence: explicitSkillRequested(options.evalCase.query, options.suite.skill)
-        ? `explicit $${options.suite.skill} invocation`
-        : null,
+      loadEvidence: loadEvidenceBySkill[options.suite.skill] ?? null,
       spawnEvidence: null,
+    };
+    let requestUserInputCalled = false;
+    let waitingOnUserInput = false;
+    let finalResponseEmitted = false;
+    const recordSkillLoad = (skillName: string, evidence: string | null | undefined): void => {
+      if (!allLoadedSkills.includes(skillName)) allLoadedSkills.push(skillName);
+      if (evidence && !loadEvidenceBySkill[skillName]) {
+        loadEvidenceBySkill[skillName] = evidence;
+      }
+      if (skillName === options.suite.skill) {
+        observed.loaded = true;
+        observed.loadEvidence ??= evidence ?? null;
+      }
     };
     const spawnCalls: Array<Record<string, unknown>> = [];
     const spawnCallIds = new Set<string>();
@@ -622,10 +706,12 @@ async function runTriggerOnce(options: {
       if (rootThreadId && frameThreadId && frameThreadId !== rootThreadId) {
         return;
       }
-      const evidence = inspectTriggerAppServerFrame(frame, skillPath);
-      if (evidence.loaded) {
-        observed.loaded = true;
-        observed.loadEvidence ??= evidence.loadEvidence ?? null;
+      const evidence = inspectTriggerAppServerFrame(frame, ownerSkillPath);
+      for (const [skillName, skillPath] of skillPaths) {
+        const skillEvidence = inspectTriggerAppServerFrame(frame, skillPath);
+        if (skillEvidence.loaded) {
+          recordSkillLoad(skillName, skillEvidence.loadEvidence);
+        }
       }
       if (evidence.spawned) {
         observed.spawned = true;
@@ -642,6 +728,7 @@ async function runTriggerOnce(options: {
       }
       if (evidence.finalMessage !== undefined) {
         finalMessage = evidence.finalMessage;
+        finalResponseEmitted = true;
       }
       if (evidence.usage !== undefined) {
         usage = evidence.usage;
@@ -656,7 +743,18 @@ async function runTriggerOnce(options: {
         finishRun('app_server_error');
         return;
       }
-      const reason = expectedEarlyStop(options.suite, options.evalCase, observed);
+      if (evidence.requestUserInput) {
+        requestUserInputCalled = true;
+        waitingOnUserInput = true;
+        finishRun('waiting_on_user_input');
+        return;
+      }
+      const reason = expectedEarlyStop(
+        options.suite,
+        options.evalCase,
+        observed,
+        allLoadedSkills,
+      );
       if (reason) finishRun(reason);
     });
     turnTimer = setTimeout(() => finishRun('timeout'), options.timeoutMs);
@@ -699,13 +797,17 @@ async function runTriggerOnce(options: {
       );
     }
     const afterState = await captureState(options.fixture, context);
-    const skillUnchanged =
-      await fs.pathExists(skillPath) && sha256(await fs.readFile(skillPath)) === skillDigest;
-    if (!skillUnchanged) {
-      diagnostics.push('Materialized target skill changed during trigger evaluation.');
+    let skillsUnchanged = true;
+    for (const [skillName, skillPath] of skillPaths) {
+      const unchanged = await fs.pathExists(skillPath) &&
+        sha256(await fs.readFile(skillPath)) === skillDigests.get(skillName);
+      if (!unchanged) {
+        skillsUnchanged = false;
+        diagnostics.push(`Materialized participant Skill "${skillName}" changed during trigger evaluation.`);
+      }
     }
     const fixtureUnchanged =
-      stableJson(beforeState) === stableJson(afterState) && skillUnchanged;
+      stableJson(beforeState) === stableJson(afterState) && skillsUnchanged;
     if (!fixtureUnchanged) {
       diagnostics.push('Trigger evaluation workspace state changed.');
     }
@@ -714,6 +816,9 @@ async function runTriggerOnce(options: {
       'expected_outcome_observed',
       'unexpected_skill_load',
       'unexpected_spawn',
+      'unexpected_multiple_skill_loads',
+      'expected_skill_route_observed',
+      'waiting_on_user_input',
     ]).has(termination);
     const executionError =
       termination === 'timeout' ||
@@ -724,6 +829,9 @@ async function runTriggerOnce(options: {
       cleanupFailed;
     return session.scrub({
       loaded: observed.loaded,
+      first_loaded_skill: allLoadedSkills[0] ?? null,
+      all_loaded_skills: allLoadedSkills,
+      load_evidence_by_skill: loadEvidenceBySkill,
       spawned: observed.spawned,
       load_evidence: observed.loadEvidence,
       spawn_evidence: observed.spawnEvidence,
@@ -733,6 +841,9 @@ async function runTriggerOnce(options: {
       signal: null,
       execution_error: executionError,
       fixture_unchanged: fixtureUnchanged,
+      request_user_input_called: requestUserInputCalled,
+      waiting_on_user_input: waitingOnUserInput,
+      final_response_emitted: finalResponseEmitted,
       ...(session.stderr.trim() ? { stderr: session.stderr.trim() } : {}),
       final_message: finalMessage,
       duration_ms: Date.now() - startedAt,
@@ -743,6 +854,9 @@ async function runTriggerOnce(options: {
   } catch (error) {
     const evidence: TriggerRunEvidence = {
       loaded: false,
+      first_loaded_skill: null,
+      all_loaded_skills: [],
+      load_evidence_by_skill: {},
       spawned: false,
       load_evidence: null,
       spawn_evidence: null,
@@ -752,6 +866,9 @@ async function runTriggerOnce(options: {
       signal: null,
       execution_error: true,
       fixture_unchanged: false,
+      request_user_input_called: false,
+      waiting_on_user_input: false,
+      final_response_emitted: finalMessage !== null,
       final_message: finalMessage,
       duration_ms: Date.now() - startedAt,
       usage,
@@ -790,29 +907,57 @@ export function summarizeTriggerCase(
   runs: TriggerRunEvidence[],
 ): TriggerCaseSummary {
   const loadRate = runs.filter((run) => run.loaded).length / runs.length;
+  const skillLoadRates = Object.fromEntries(suite.skills.map((skillName) => [
+    skillName,
+    runs.filter((run) => run.all_loaded_skills.includes(skillName)).length / runs.length,
+  ]));
   const spawnRate = runs.filter((run) => run.spawned).length / runs.length;
   const executionErrors = runs.filter((run) => run.execution_error).length;
   const strictNegative = suite.strictNegativeSplits.includes(evalCase.split);
-  const loadPassed = ratePasses(loadRate, evalCase.should_load_skill, strictNegative);
+  const usesRouteExpectation = evalCase.expected_loaded_skills !== undefined;
+  const expectedSkills = expectedLoadedSkills(suite, evalCase);
+  const routeMatches = runs.filter((run) =>
+    sameSkillSet(run.all_loaded_skills, expectedSkills)).length;
+  const routeMatchRate = routeMatches / runs.length;
+  const multipleSkillLoads = runs.filter((run) => run.all_loaded_skills.length > 1).length;
+  const loadPassed = usesRouteExpectation
+    ? strictNegative && expectedSkills.length === 0
+      ? routeMatchRate === 1
+      : routeMatchRate >= (suite.minimumPassRate ?? PASS_THRESHOLD)
+    : ratePasses(loadRate, Boolean(evalCase.should_load_skill), strictNegative);
+  const routePassed = !suite.forbidMultipleSkillLoads || multipleSkillLoads === 0;
   const spawnPassed = suite.observeSpawnAgent
     ? ratePasses(spawnRate, Boolean(evalCase.should_spawn_agent), strictNegative)
     : true;
   const complete = executionErrors === 0;
+  const routeCounts = Object.fromEntries([...new Set(runs.map((run) =>
+    routeLabel(run.all_loaded_skills)))].map((route) => [
+    route,
+    runs.filter((run) => routeLabel(run.all_loaded_skills) === route).length,
+  ]));
   return {
     id: evalCase.id,
     split: evalCase.split,
     query: evalCase.query,
     expected: {
-      load_skill: evalCase.should_load_skill,
+      ...(usesRouteExpectation
+        ? { loaded_skills: expectedSkills }
+        : { load_skill: Boolean(evalCase.should_load_skill) }),
       ...(suite.observeSpawnAgent ? { spawn_agent: Boolean(evalCase.should_spawn_agent) } : {}),
     },
     observed: {
       load_rate: loadRate,
+      skill_load_rates: skillLoadRates,
+      ...(usesRouteExpectation ? {
+        route_match_rate: routeMatchRate,
+        route_counts: routeCounts,
+      } : {}),
+      multiple_skill_loads: multipleSkillLoads,
       ...(suite.observeSpawnAgent ? { spawn_rate: spawnRate } : {}),
       execution_errors: executionErrors,
     },
     complete,
-    passed: complete && loadPassed && spawnPassed,
+    passed: complete && loadPassed && routePassed && spawnPassed,
     runs,
   };
 }
@@ -953,13 +1098,18 @@ export async function runCodexTriggerSuite(options: {
   }
   const complete = results.every((result) => result.complete);
   const passed = complete && results.every((result) => result.passed);
-  const skillPath = path.join(
-    options.subjectRoot,
-    '.agents',
-    'skills',
-    options.suite.skill,
-    'SKILL.md',
-  );
+  const participantSkillDigests = Object.fromEntries(await Promise.all(
+    options.suite.skills.map(async (skillName) => [
+      skillName,
+      sha256(await fs.readFile(path.join(
+        options.subjectRoot,
+        '.agents',
+        'skills',
+        skillName,
+        'SKILL.md',
+      ))),
+    ]),
+  ));
   const report = redactCodexEvalValue({
     schema_version: PLUGIN_EVAL_SCHEMA_VERSION,
     generated_at: new Date().toISOString(),
@@ -970,6 +1120,8 @@ export async function runCodexTriggerSuite(options: {
     split: options.split,
     runs_per_case: options.runs,
     threshold: PASS_THRESHOLD,
+    route_minimum_pass_rate: options.suite.minimumPassRate ?? null,
+    forbid_multiple_skill_loads: options.suite.forbidMultipleSkillLoads,
     model: model ?? null,
     complete,
     passed,
@@ -985,7 +1137,8 @@ export async function runCodexTriggerSuite(options: {
         project_rules_ignored_by_default: true,
       },
       codex_runtime: codexEvalRuntimeEvidence(codexRuntime),
-      skill_sha256: sha256(await fs.readFile(skillPath)),
+      skill_sha256: participantSkillDigests[options.suite.skill],
+      participant_skill_sha256: participantSkillDigests,
       corpus_sha256: sha256(stableJson(corpus)),
     },
     summary: {

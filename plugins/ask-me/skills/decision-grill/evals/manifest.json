@@ -35,9 +35,26 @@
       "perRunTimeoutMs": 180000
     },
     {
+      "id": "router",
+      "kind": "trigger",
+      "skills": ["decision-grill", "requirements-clarifier"],
+      "cases": "./ask-me-routing-cases.json",
+      "fixtureModule": "./trigger-fixture.mjs",
+      "observeSpawnAgent": false,
+      "isolation": "strict",
+      "strictNegativeSplits": [],
+      "minimumPassRate": 0.9,
+      "forbidMultipleSkillLoads": true,
+      "profiles": ["project-default"],
+      "defaultRuns": 10,
+      "releaseSplits": ["validation"],
+      "requiredForRelease": true,
+      "perRunTimeoutMs": 180000
+    },
+    {
       "id": "behavior",
       "kind": "conversation",
-      "skills": ["decision-grill"],
+      "skills": ["decision-grill", "requirements-clarifier"],
       "cases": "./decision-grill-evals.json",
       "isolation": "strict",
       "profiles": ["project-default"],

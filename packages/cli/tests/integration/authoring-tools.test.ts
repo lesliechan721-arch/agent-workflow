@@ -1645,6 +1645,27 @@ describe('authoring tools', () => {
       stdout: expect.stringContaining('[PASS] All checks passed.'),
     });
 
+    const routeCasesPath = path.join(evalDir, 'trigger-cases.json');
+    const routeCases = await fs.readJson(routeCasesPath);
+    delete routeCases.cases[0].should_load_skill;
+    routeCases.cases[0].expected_loaded_skills = [];
+    await fs.writeJson(routeCasesPath, routeCases, { spaces: 2 });
+    await fs.writeJson(evalManifestPath, {
+      ...validEvalManifest,
+      suites: [{
+        ...validEvalManifest.suites[0],
+        minimumPassRate: 0.9,
+        forbidMultipleSkillLoads: true,
+      }],
+    }, { spaces: 2 });
+    await expect(runValidatePlugin(pluginDir)).resolves.toMatchObject({
+      stdout: expect.stringContaining('[PASS] All checks passed.'),
+    });
+    delete routeCases.cases[0].expected_loaded_skills;
+    routeCases.cases[0].should_load_skill = true;
+    await fs.writeJson(routeCasesPath, routeCases, { spaces: 2 });
+    await fs.writeJson(evalManifestPath, validEvalManifest, { spaces: 2 });
+
     await fs.writeJson(evalManifestPath, {
       ...validEvalManifest,
       profiles: validEvalManifest.profiles.map((profile, index) =>

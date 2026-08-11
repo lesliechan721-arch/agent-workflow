@@ -120,11 +120,11 @@
     },
     {
       "id": "n05_decision_planning",
-      "query": "和我一起制定团队协作功能的整体方案，并比较几种权限模型。",
+      "query": "围绕团队协作功能逐轮访谈我，压力测试几种权限模型，直到我们形成共享理解。",
       "should_load_skill": false,
-      "rationale": "计划和方案本身是当前任务，应使用 decision-grill。",
+      "rationale": "当前任务本身是决策访谈，应使用 decision-grill。",
       "split": "train",
-      "use_project_rules": true
+      "use_project_rules": false
     },
     {
       "id": "n06_complete_spec",

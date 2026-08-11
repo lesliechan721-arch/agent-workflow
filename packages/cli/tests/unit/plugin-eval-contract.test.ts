@@ -310,6 +310,47 @@ describe('plugin eval contract and materialization', () => {
     );
   });
 
+  it('parses exact trigger routes and route scoring controls', async () => {
+    const pluginRoot = await createStaticEvalPlugin();
+    const casesPath = skillEvalPath(pluginRoot, 'trigger-cases.json');
+    const document = await fs.readJson(casesPath);
+    delete document.cases[0].should_load_skill;
+    document.cases[0].expected_loaded_skills = [];
+    await fs.writeJson(casesPath, document, { spaces: 2 });
+
+    const manifestPath = skillEvalPath(pluginRoot, 'manifest.json');
+    const manifest = await fs.readJson(manifestPath);
+    manifest.suites[0].minimumPassRate = 0.9;
+    manifest.suites[0].forbidMultipleSkillLoads = true;
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+
+    const parsed = await readPluginEvalManifest(pluginRoot, 'eval-fixture');
+    expect(parsed.suites[0]).toMatchObject({
+      kind: 'trigger',
+      minimumPassRate: 0.9,
+      forbidMultipleSkillLoads: true,
+    });
+
+    document.cases[0].should_load_skill = false;
+    await fs.writeJson(casesPath, document, { spaces: 2 });
+    await expect(readPluginEvalManifest(pluginRoot, 'eval-fixture')).rejects.toThrow(
+      'must declare exactly one of should_load_skill or expected_loaded_skills',
+    );
+  });
+
+  it('rejects a trigger route that names a non-participant Skill', async () => {
+    const pluginRoot = await createStaticEvalPlugin();
+    const casesPath = skillEvalPath(pluginRoot, 'trigger-cases.json');
+    const document = await fs.readJson(casesPath);
+    delete document.cases[0].should_load_skill;
+    document.cases[0].expected_loaded_skills = ['other-skill'];
+    await fs.writeJson(casesPath, document, { spaces: 2 });
+
+    await expect(readPluginEvalManifest(pluginRoot, 'eval-fixture')).rejects.toThrow(
+      'contains non-participant Skill "other-skill"',
+    );
+  });
+
   it.runIf(process.platform !== 'win32')(
     'rejects eval assets whose symlinks resolve outside the plugin root',
     async () => {

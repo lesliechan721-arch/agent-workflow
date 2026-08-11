@@ -37,7 +37,7 @@
     {
       "id": "behavior",
       "kind": "conversation",
-      "skills": ["requirements-clarifier"],
+      "skills": ["requirements-clarifier", "decision-grill"],
       "cases": "./requirements-clarifier-evals.json",
       "isolation": "strict",
       "profiles": ["project-default"],

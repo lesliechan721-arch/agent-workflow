@@ -128,6 +128,29 @@ const TYPESCRIPT_SERVICE_FILES = {
   ].join('\n'),
 };
 
+const NEUTRAL_EXPORT_REPO_FILES = {
+  ...TYPESCRIPT_SERVICE_FILES,
+  'src/features/orders/list.ts': [
+    'export interface Order {',
+    '  id: string;',
+    '  customer: string;',
+    '  amount: number;',
+    '}',
+    '',
+    'export function listOrders(): Order[] {',
+    '  return [];',
+    '}',
+    '',
+  ].join('\n'),
+  'docs/order-export.md': [
+    '# Order export',
+    '',
+    'The export feature has not been specified.',
+    'This repository contains no approved export range convention.',
+    '',
+  ].join('\n'),
+};
+
 const ACCOUNT_PAUSE_REPO_FILES = {
   ...TYPESCRIPT_SERVICE_FILES,
   'src/accounts/store.ts': [
@@ -262,6 +285,7 @@ const SESSION_MIGRATION_REPO_FILES = {
 
 export const TRIGGER_WORKSPACE_FIXTURES = new Set([
   'default',
+  'neutral_export_repo',
   'implementation_repo',
   'account_pause_repo',
   'session_migration_repo',
@@ -274,11 +298,13 @@ export async function setupTriggerWorkspace({ workspaceRoot, evalCase }) {
   }
   if (fixture === 'default') return;
 
-  const files = {
-    ...IMPLEMENTATION_REPO_FILES,
-    ...(fixture === 'account_pause_repo' ? ACCOUNT_PAUSE_REPO_FILES : {}),
-    ...(fixture === 'session_migration_repo' ? SESSION_MIGRATION_REPO_FILES : {}),
-  };
+  const files = fixture === 'neutral_export_repo'
+    ? NEUTRAL_EXPORT_REPO_FILES
+    : {
+      ...IMPLEMENTATION_REPO_FILES,
+      ...(fixture === 'account_pause_repo' ? ACCOUNT_PAUSE_REPO_FILES : {}),
+      ...(fixture === 'session_migration_repo' ? SESSION_MIGRATION_REPO_FILES : {}),
+    };
 
   await Promise.all(Object.entries(files).map(async ([relativePath, content]) => {
     const target = path.join(workspaceRoot, relativePath);

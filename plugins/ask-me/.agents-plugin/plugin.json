@@ -1,7 +1,7 @@
 {
   "name": "ask-me",
-  "version": "0.2.3",
-  "description": "在具体实施前澄清会影响结果或造成返工的关键歧义，并协作制定、比较或评审计划和重要决策。",
+  "version": "0.2.4",
+  "description": "在具体实施前澄清会影响结果或造成返工的关键歧义，并通过逐轮访谈把计划、决策或想法想透，形成共享理解。",
   "compatibility": {
     "aw": {
       "minVersion": "0.0.0"
@@ -18,7 +18,7 @@
   },
   "interface": {
     "displayName": "Ask Me",
-    "shortDescription": "实施前澄清关键歧义，并协作制定或评审计划和重要决策",
+    "shortDescription": "实施前澄清关键歧义，并通过逐轮访谈形成共享理解",
     "capabilities": [
       "Skills",
       "Instructions"

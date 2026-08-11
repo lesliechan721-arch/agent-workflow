@@ -1104,8 +1104,31 @@ function validateTriggerCaseCorpus(evalDir, suite, fieldName) {
       seenSplits.add(entry.split);
     }
     validateNonEmptyString(entry.query, `${caseField}.query`);
-    if (typeof entry.should_load_skill !== 'boolean') {
+    const usesLegacyExpectation = entry.should_load_skill !== undefined;
+    const usesRouteExpectation = entry.expected_loaded_skills !== undefined;
+    if (usesLegacyExpectation === usesRouteExpectation) {
+      error(`${caseField} must declare exactly one of should_load_skill or expected_loaded_skills`);
+    } else if (usesLegacyExpectation && typeof entry.should_load_skill !== 'boolean') {
       error(`${caseField}.should_load_skill must be boolean`);
+    } else if (usesRouteExpectation) {
+      if (!Array.isArray(entry.expected_loaded_skills)) {
+        error(`${caseField}.expected_loaded_skills must be an array`);
+      } else {
+        const expectedSkills = entry.expected_loaded_skills;
+        expectedSkills.forEach((skillName, skillIndex) => {
+          if (typeof skillName !== 'string' || skillName.trim() === '') {
+            error(`${caseField}.expected_loaded_skills[${skillIndex}] must be a non-empty string`);
+          } else if (!suite.skills.includes(skillName)) {
+            error(`${caseField}.expected_loaded_skills[${skillIndex}] must name a participant Skill`);
+          }
+        });
+        if (new Set(expectedSkills).size !== expectedSkills.length) {
+          error(`${caseField}.expected_loaded_skills must not contain duplicates`);
+        }
+        if (suite.forbidMultipleSkillLoads === true && expectedSkills.length > 1) {
+          error(`${caseField} expects multiple Skills but the suite forbids multiple Skill loads`);
+        }
+      }
     }
     if (suite.observeSpawnAgent === true) {
       if (typeof entry.should_spawn_agent !== 'boolean') {
@@ -1422,7 +1445,8 @@ function validateOnePluginEvalManifest(pluginDir, pluginManifest, evalDir, expec
       } else {
         validateAllowedKeys(suite, fieldName, [
           'id', 'kind', 'skills', 'cases', 'fixtureModule', 'observeSpawnAgent', 'isolation',
-          'strictNegativeSplits', 'profiles', 'defaultRuns', 'releaseSplits',
+          'strictNegativeSplits', 'minimumPassRate', 'forbidMultipleSkillLoads',
+          'profiles', 'defaultRuns', 'releaseSplits',
           'requiredForRelease', 'perRunTimeoutMs',
         ]);
         if (typeof suite.observeSpawnAgent !== 'boolean') {
@@ -1436,6 +1460,23 @@ function validateOnePluginEvalManifest(pluginDir, pluginManifest, evalDir, expec
               error(`${fieldName}.strictNegativeSplits[${splitIndex}] is unsupported`);
             }
           });
+        }
+        if (
+          suite.minimumPassRate !== undefined &&
+          (
+            typeof suite.minimumPassRate !== 'number' ||
+            !Number.isFinite(suite.minimumPassRate) ||
+            suite.minimumPassRate <= 0 ||
+            suite.minimumPassRate > 1
+          )
+        ) {
+          error(`${fieldName}.minimumPassRate must be greater than 0 and at most 1`);
+        }
+        if (
+          suite.forbidMultipleSkillLoads !== undefined &&
+          typeof suite.forbidMultipleSkillLoads !== 'boolean'
+        ) {
+          error(`${fieldName}.forbidMultipleSkillLoads must be boolean`);
         }
         if (suite.fixtureModule !== undefined) {
           const fixturePath = validateEvalRelativeFile(

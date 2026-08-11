@@ -494,14 +494,22 @@ async function evalDiagnostics(skillRoot, files) {
         Array.isArray(data.cases)
       ) {
         const cases = data.cases.filter(isRecord);
-        if (cases.length !== data.cases.length || cases.some((item) =>
-          typeof item.query !== 'string' || typeof item.should_load_skill !== 'boolean')) {
+        if (cases.length !== data.cases.length || cases.some((item) => {
+          const hasLegacyExpectation = typeof item.should_load_skill === 'boolean';
+          const hasRouteExpectation = Array.isArray(item.expected_loaded_skills) &&
+            item.expected_loaded_skills.every((skillName) => typeof skillName === 'string');
+          return typeof item.query !== 'string' || hasLegacyExpectation === hasRouteExpectation;
+        })) {
           throw new Error('trigger case document contains invalid cases');
         }
         parsed.push({ path: entry.path, kind: 'trigger', cases: cases.length });
         triggerTotal += cases.length;
-        triggerPositive += cases.filter((item) => item.should_load_skill === true).length;
-        triggerNegative += cases.filter((item) => item.should_load_skill === false).length;
+        triggerPositive += cases.filter((item) => item.should_load_skill === true || (
+          Array.isArray(item.expected_loaded_skills) && item.expected_loaded_skills.includes(data.skill)
+        )).length;
+        triggerNegative += cases.filter((item) => item.should_load_skill === false || (
+          Array.isArray(item.expected_loaded_skills) && !item.expected_loaded_skills.includes(data.skill)
+        )).length;
         continue;
       }
       if (

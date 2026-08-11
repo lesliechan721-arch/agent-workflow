@@ -799,7 +799,11 @@ async function runConversationOnce(options: {
       }
       if (method === 'item/completed' && isRecord(params.item)) {
         const item = params.item;
-        if (item.type === 'agentMessage' && typeof item.text === 'string') {
+        if (
+          item.type === 'agentMessage' &&
+          item.phase === 'final_answer' &&
+          typeof item.text === 'string'
+        ) {
           finalMessages.push(item.text);
         }
       }

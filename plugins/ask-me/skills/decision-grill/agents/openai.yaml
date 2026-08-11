@@ -1,6 +1,6 @@
 interface:
-  display_name: "决策推演"
-  short_description: "通过逐轮讨论，把未定型想法和关键取舍收敛为可执行计划"
-  default_prompt: "使用 $decision-grill 和我逐轮完善当前计划，确认目标、边界、关键取舍、推进顺序和待验证事项。"
+  display_name: "Decision Grill"
+  short_description: "通过逐轮访谈，把计划、决策或想法想透并形成共享理解"
+  default_prompt: "使用 $decision-grill 围绕当前计划、决策或想法逐轮访谈我，直到我们形成共享理解。"
 policy:
   allow_implicit_invocation: true

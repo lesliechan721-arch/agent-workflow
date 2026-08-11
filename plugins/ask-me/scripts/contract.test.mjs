@@ -12,7 +12,7 @@ import {
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const localPluginRoot = path.resolve(scriptDir, '..');
-const pluginVersion = '0.2.3';
+const pluginVersion = '0.2.4';
 const qualityGate = '开始非平凡实现前，先依据当前对话和仓库检查需求。检查本身不要求加载 Skill；只有检查后仍存在多种合理理解，且选错会明显影响交付结果、功能范围或验收，或多项小歧义合起来会决定成品形态时，才使用 `requirements-clarifier`。\n\n能从现有上下文查明、有明确项目惯例、容易调整、只涉及内部实现或用户已授权采用默认值的事项不必追问；会影响用户预期的关键默认值应明确说明，不要静默假设。';
 const skillNames = ['requirements-clarifier', 'decision-grill'];
 
@@ -48,10 +48,15 @@ function yamlQuotedValue(yaml, key) {
 }
 
 function assertOpenAiMetadata(openaiYaml, skillName) {
+  const displayName = yamlQuotedValue(openaiYaml, 'display_name');
   const shortDescription = yamlQuotedValue(openaiYaml, 'short_description');
   const defaultPrompt = yamlQuotedValue(openaiYaml, 'default_prompt');
   const shortDescriptionLength = Array.from(shortDescription).length;
 
+  assert.equal(displayName, skillName === 'decision-grill'
+    ? 'Decision Grill'
+    : 'Requirements Clarifier');
+  assert.match(displayName, /^[\x20-\x7E]+$/);
   assert.equal(shortDescriptionLength >= 25, true);
   assert.equal(shortDescriptionLength <= 64, true);
   assert.match(defaultPrompt, new RegExp(`\\$${skillName}`));
@@ -83,23 +88,28 @@ function assertRequirementsClarifierContract(skill) {
   assert.match(skill, /猜错后的返工大于现在提问的成本/);
   assert.match(skill, /不要仅因非平凡实现需要 agent 自查而使用/);
   assert.match(skill, /权威规范和现有实现已覆盖行为、范围与验收/);
-  assert.match(skill, /需要通过逐轮讨论共同制定或修订计划时使用 decision-grill/);
+  assert.match(skill, /明确希望通过逐轮访谈.*使用 decision-grill/);
+  assert.match(skill, /用最少问题补齐足够实施的需求边界/);
   assert.match(skill, /单项影响有限，但多项合在一起会决定功能形态时，也应先澄清/);
   assert.match(skill, /已确认 \/ 采用的关键默认 \/ 待验证或未解决/);
 }
 
 function assertDecisionGrillContract(skill) {
   assertSharedSkillContract(skill, 'decision-grill');
-  assert.match(skill, /计划本身是当前任务的产物/);
-  assert.match(skill, /不是 agent 为完成其它任务安排的内部步骤/);
-  assert.match(skill, /只有当前任务需要用户参与形成、修改或定稿计划时才继续/);
-  assert.match(skill, /若用户只是要说明、比较、估算、推荐或一次性评审/);
-  assert.match(skill, /必须由用户决定的关键取舍/);
-  assert.match(skill, /依赖和推进顺序/);
-  assert.match(skill, /上线、迁移和回退方式/);
-  assert.match(skill, /不要为了完整而穷举细节/);
-  assert.match(skill, /目标与边界 \/ 已定取舍 \/ 待验证 \/ 未解决/);
-  assert.match(skill, /明确委托必须写入最相关条目/);
+  assert.match(skill, /计划、决策或想法进行逐轮访谈/);
+  assert.match(skill, /产物是经过讨论的共享理解/);
+  assert.match(skill, /不是 agent 为完成其它任务安排的内部计划/);
+  assert.match(skill, /只需补齐局部需求歧义，使用 `requirements-clarifier`/);
+  assert.match(skill, /明确要求围绕该决定进行逐轮访谈时.*覆盖实施语境/);
+  assert.match(skill, /建立决策树/);
+  assert.match(skill, /事实由 agent 查明/);
+  assert.match(skill, /不要替用户作出仍属于用户的决定/);
+  assert.match(skill, /收到回答后重新计算当前前沿/);
+  assert.match(skill, /不要为了完整而穷举低影响细节/);
+  assert.match(skill, /主题与边界 \/ 已定决定 \/ 明确委托 \/ 待验证 \/ 延后及风险 \/ 未解决/);
+  assert.match(skill, /请用户确认记录是否准确反映共享理解/);
+  assert.match(skill, /逐项给出决定不等于确认最终记录/);
+  assert.match(skill, /确认前不修改文件、不做原型/);
 }
 
 function assertTriggerCorpus(document, skillName) {
@@ -121,10 +131,45 @@ function assertTriggerCorpus(document, skillName) {
     cases.filter((entry) => entry.split === 'validation' && entry.should_load_skill).length,
     5,
   );
-  assert.equal(cases.every((entry) => entry.use_project_rules === true), true);
+  assert.equal(cases.every((entry) => typeof entry.use_project_rules === 'boolean'), true);
   assert.equal(
     cases.every((entry) => typeof entry.rationale === 'string' && entry.rationale.length > 0),
     true,
+  );
+}
+
+function assertRoutingCorpus(document) {
+  const participants = new Set(['decision-grill', 'requirements-clarifier']);
+  assert.equal(document.schemaVersion, 1);
+  assert.equal(document.skill, 'decision-grill');
+  assert.equal(document.cases.length, 14);
+  assert.equal(new Set(document.cases.map((entry) => entry.id)).size, 14);
+  assert.equal(document.cases.filter((entry) => entry.split === 'validation').length, 8);
+  assert.equal(document.cases.filter((entry) => entry.split === 'sanity').length, 6);
+  for (const entry of document.cases) {
+    assert.equal(['validation', 'sanity'].includes(entry.split), true);
+    assert.equal(Array.isArray(entry.expected_loaded_skills), true);
+    assert.equal(entry.expected_loaded_skills.every((skill) => participants.has(skill)), true);
+    assert.equal(new Set(entry.expected_loaded_skills).size, entry.expected_loaded_skills.length);
+    assert.equal('should_load_skill' in entry, false);
+    assert.equal(entry.use_project_rules, true);
+    assert.equal(typeof entry.rationale, 'string');
+  }
+  assert.deepEqual(
+    document.cases.find((entry) => entry.id === 'export_clarify').expected_loaded_skills,
+    ['requirements-clarifier'],
+  );
+  assert.deepEqual(
+    document.cases.find((entry) => entry.id === 'export_grill').expected_loaded_skills,
+    ['decision-grill'],
+  );
+  assert.deepEqual(
+    document.cases.find((entry) => entry.id === 'runner_explain').expected_loaded_skills,
+    [],
+  );
+  assert.equal(
+    document.cases.find((entry) => entry.id === 'export_clarify').workspace_fixture,
+    'neutral_export_repo',
   );
 }
 
@@ -249,8 +294,8 @@ test('source package contains only the two redesigned skills', async () => {
   assertOpenAiMetadata(decisionOpenAi, 'decision-grill');
 });
 
-test('trigger corpora preserve balanced adjacent-skill coverage and load project rules', async () => {
-  const [requirements, decision] = await Promise.all([
+test('trigger corpora preserve balanced single-Skill coverage and exact routing', async () => {
+  const [requirements, decision, routing] = await Promise.all([
     readJson(
       path.join(
         context.sourceRoot,
@@ -267,14 +312,27 @@ test('trigger corpora preserve balanced adjacent-skill coverage and load project
       'evals',
       'decision-grill-trigger-cases.json',
     )),
+    readJson(path.join(
+      context.sourceRoot,
+      'skills',
+      'decision-grill',
+      'evals',
+      'ask-me-routing-cases.json',
+    )),
   ]);
 
   assertTriggerCorpus(requirements, 'requirements-clarifier');
   assertTriggerCorpus(decision, 'decision-grill');
+  assertRoutingCorpus(routing);
 
   assert.equal(
     requirements.cases.find((entry) => entry.id === 'n05_decision_planning')
       .should_load_skill,
+    false,
+  );
+  assert.equal(
+    requirements.cases.find((entry) => entry.id === 'n05_decision_planning')
+      .use_project_rules,
     false,
   );
   assert.equal(
@@ -290,6 +348,16 @@ test('trigger corpora preserve balanced adjacent-skill coverage and load project
   assert.equal(
     decision.cases.find((entry) => entry.id === 'n09_implementation_ambiguity')
       .should_load_skill,
+    false,
+  );
+  assert.equal(
+    decision.cases.find((entry) => entry.id === 'n09_implementation_ambiguity')
+      .workspace_fixture,
+    'neutral_export_repo',
+  );
+  assert.equal(
+    decision.cases.find((entry) => entry.id === 'n09_implementation_ambiguity')
+      .use_project_rules,
     false,
   );
   assert.equal(
@@ -343,18 +411,24 @@ test('trigger corpora preserve balanced adjacent-skill coverage and load project
 test('trigger fixture provides the repository facts used by near-miss cases', async () => {
   assert.deepEqual([...TRIGGER_WORKSPACE_FIXTURES], [
     'default',
+    'neutral_export_repo',
     'implementation_repo',
     'account_pause_repo',
     'session_migration_repo',
   ]);
   const roots = await Promise.all([
+    mkdtemp(path.join(os.tmpdir(), 'ask-me-neutral-export-fixture-')),
     mkdtemp(path.join(os.tmpdir(), 'ask-me-trigger-fixture-')),
     mkdtemp(path.join(os.tmpdir(), 'ask-me-account-fixture-')),
     mkdtemp(path.join(os.tmpdir(), 'ask-me-session-fixture-')),
   ]);
-  const [root, accountRoot, sessionRoot] = roots;
+  const [neutralRoot, root, accountRoot, sessionRoot] = roots;
   try {
     await Promise.all([
+      setupTriggerWorkspace({
+        workspaceRoot: neutralRoot,
+        evalCase: { workspace_fixture: 'neutral_export_repo' },
+      }),
       setupTriggerWorkspace({
         workspaceRoot: root,
         evalCase: { workspace_fixture: 'implementation_repo' },
@@ -368,6 +442,17 @@ test('trigger fixture provides the repository facts used by near-miss cases', as
         evalCase: { workspace_fixture: 'session_migration_repo' },
       }),
     ]);
+    assert.match(
+      await readFile(path.join(neutralRoot, 'docs', 'order-export.md'), 'utf8'),
+      /no approved export range convention/,
+    );
+    await assert.rejects(
+      readFile(
+        path.join(neutralRoot, 'src', 'features', 'invoices', 'export.ts'),
+        'utf8',
+      ),
+      { code: 'ENOENT' },
+    );
     assert.match(
       await readFile(path.join(root, 'src', 'features', 'invoices', 'export.ts'), 'utf8'),
       /current-filter/,
@@ -442,19 +527,37 @@ test('each Skill owns an independent central eval manifest', async () => {
     ]);
     assert.deepEqual(
       manifest.suites.map((suite) => [suite.id, suite.kind]),
-      [['trigger', 'trigger'], ['behavior', 'conversation']],
+      skill === 'decision-grill'
+        ? [['trigger', 'trigger'], ['router', 'trigger'], ['behavior', 'conversation']]
+        : [['trigger', 'trigger'], ['behavior', 'conversation']],
     );
 
     for (const suite of manifest.suites) {
-      assert.deepEqual(suite.skills, [skill]);
+      if (suite.id === 'trigger') {
+        assert.deepEqual(suite.skills, [skill]);
+      } else {
+        assert.deepEqual(
+          suite.skills,
+          skill === 'decision-grill'
+            ? ['decision-grill', 'requirements-clarifier']
+            : ['requirements-clarifier', 'decision-grill'],
+        );
+      }
       assert.deepEqual(suite.profiles, ['project-default']);
       assert.equal(suite.requiredForRelease, true);
       assert.equal(suite.isolation, 'strict');
-      if (suite.kind === 'trigger') {
+      if (suite.id === 'trigger') {
         assert.equal(suite.defaultRuns, 3);
         assert.equal(suite.fixtureModule, './trigger-fixture.mjs');
         assert.deepEqual(suite.releaseSplits, ['validation']);
         assert.deepEqual(suite.strictNegativeSplits, ['validation']);
+      } else if (suite.id === 'router') {
+        assert.equal(suite.defaultRuns, 10);
+        assert.equal(suite.fixtureModule, './trigger-fixture.mjs');
+        assert.deepEqual(suite.releaseSplits, ['validation']);
+        assert.deepEqual(suite.strictNegativeSplits, []);
+        assert.equal(suite.minimumPassRate, 0.9);
+        assert.equal(suite.forbidMultipleSkillLoads, true);
       } else {
         assert.equal(suite.defaultRuns, 1);
         assert.deepEqual(suite.releaseSplits, []);
@@ -504,6 +607,11 @@ test('behavior corpora preserve all redesigned assertions in executable conversa
     'avoid-exhaustion',
     'decision-record',
     'user-defers-risk',
+    'low-prompt-frontier',
+    'silent-assumption-audit',
+    'user-decision-not-self-answer',
+    'shared-understanding-confirmation',
+    'reopen-on-correction',
   ]);
 
   assert.equal(
@@ -541,7 +649,23 @@ test('behavior corpora preserve all redesigned assertions in executable conversa
   );
   assert.match(
     decision.evals.find((entry) => entry.id === 'decision-record').prompt,
-    /外层协作规划工作流现在进入规划记录阶段/,
+    /外层协作决策访谈现在进入决策记录阶段/,
+  );
+
+  assert.equal(
+    decision.evals.find((entry) => entry.id === 'low-prompt-frontier')
+      .scripted_replies.length,
+    2,
+  );
+  assert.equal(
+    decision.evals.find((entry) => entry.id === 'shared-understanding-confirmation')
+      .scripted_replies[0].expected_question_count,
+    1,
+  );
+  assert.equal(
+    decision.evals.find((entry) => entry.id === 'reopen-on-correction')
+      .scripted_replies.length,
+    2,
   );
 
   const readBeforeQuestion = decision.evals.find(
@@ -603,10 +727,10 @@ test('prepared bundle renders the platform question tool for both skills', async
 
     if (skillName === 'requirements-clarifier') {
       assertRequirementsClarifierContract(
-        skill.replace(expectedTool, '{{questionTool}}'),
+        skill.replaceAll(expectedTool, '{{questionTool}}'),
       );
     } else {
-      assertDecisionGrillContract(skill.replace(expectedTool, '{{questionTool}}'));
+      assertDecisionGrillContract(skill.replaceAll(expectedTool, '{{questionTool}}'));
     }
     assert.equal(skill.includes(expectedTool), true);
     assert.equal(skill.includes(`\`${expectedTool}\``), false);

@@ -157,16 +157,16 @@
     },
     {
       "id": "decision-record",
-      "prompt": "外层协作规划工作流现在进入规划记录阶段。多轮讨论已经结束：已决定先用一个团队试点托管搜索；关键假设是每月查询量不超过 50 万次；已委托产品负责人在本周五前确认数据驻留条款；待验证事项是 P95 延迟和迁移成本。请输出规划记录，不要继续提问或实施。",
+      "prompt": "外层协作决策访谈现在进入决策记录阶段。多轮讨论已经结束：已决定先用一个团队试点托管搜索；关键假设是每月查询量不超过 50 万次；已委托产品负责人在本周五前确认数据驻留条款；待验证事项是 P95 延迟和迁移成本。用户已要求按这些结论直接交接。请输出决策记录，不要继续提问或实施。",
       "scripted_replies": [],
-      "expected_output": "输出简短规划记录，区分目标与边界、已定取舍、待验证和未解决事项，完整保留产品负责人在本周五前确认数据驻留条款的委托，不自行开始实施或制作原型。",
+      "expected_output": "输出简短决策记录，区分主题与边界、已定决定、明确委托、待验证和未解决事项，完整保留产品负责人在本周五前确认数据驻留条款的委托，不自行开始实施或制作原型。",
       "files": [],
       "review": {
         "platforms": ["codex", "claude"],
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [
-          "输出简短规划记录，并区分目标与边界、已定取舍、待验证和未解决事项",
+          "输出简短决策记录，并区分主题与边界、已定决定、明确委托、待验证和未解决事项",
           "完整保留产品负责人在本周五前确认数据驻留条款的委托",
           "不自行开始实施或制作原型"
         ]
@@ -186,6 +186,125 @@
           "记录明确延后及其风险",
           "不继续追问",
           "不声称该分支已经解决"
+        ]
+      }
+    },
+    {
+      "id": "low-prompt-frontier",
+      "prompt": "请围绕一个合作产品决定逐轮访谈我。目标用户决定访问边界，访问边界再决定权限和计费。除此之外没有既有决定。不要替我作决定，也不要修改文件。",
+      "scripted_replies": [
+        {
+          "expected_question_count": 1,
+          "answers_by_index": ["目标用户只有受邀的外部合作伙伴，不支持公开访客。请继续下一轮。"],
+          "unexpected_question_answer": "这项决定暂时未知，请保持为未解决。"
+        },
+        {
+          "expected_question_count": 1,
+          "answers_by_index": ["访问只限被邀请的项目，不支持跨项目访问。请列出下一前沿并直接交接，不要继续提问。"],
+          "unexpected_question_answer": "这项决定暂时未知，请保持为未解决。"
+        }
+      ],
+      "expected_output": "模型自行识别依赖顺序。第一轮只问目标用户，第二轮只问访问边界；收到答案后把权限和计费列为下一前沿，不提前询问或替用户决定。",
+      "files": [],
+      "review": {
+        "platforms": ["codex", "claude"],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "第一轮只询问目标用户，第二轮只询问访问边界",
+          "不在前置决定明确前询问权限和计费",
+          "根据两轮回答重新计算并列出权限和计费这一下一前沿"
+        ]
+      }
+    },
+    {
+      "id": "silent-assumption-audit",
+      "prompt": "围绕内部搜索方案的访谈已结束。本轮不要提问：目标是减少检索时间；已决定先做一个团队的托管搜索试点；安全负责人受托本周五确认数据驻留；P95 延迟需要压测；离线模式明确延后并接受上线后补做的风险；计费归属仍未解决。请整理当前共享理解并直接交接，不要修改文件。",
+      "scripted_replies": [],
+      "expected_output": "决策记录覆盖决定、委托、待验证、明确延后及风险和未解决分支，不静默删除任何重要事项。",
+      "files": [],
+      "review": {
+        "platforms": ["codex", "claude"],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "保留一个团队托管搜索试点和安全负责人本周五确认数据驻留",
+          "把 P95 延迟列为待验证，把离线模式列为明确延后并保留风险",
+          "把计费归属保留为未解决，不静默作出决定"
+        ]
+      }
+    },
+    {
+      "id": "user-decision-not-self-answer",
+      "prompt": "请围绕数据驻留范围访谈我。EU-only 和全球部署都可行，现有目标和证据不足以偏向任何一个。不要替我选择，也不要修改文件。",
+      "scripted_replies": [
+        {
+          "expected_question_count": 1,
+          "answers_by_index": ["现在不决定。请明确延后，并记录这可能推迟上市时间，然后直接交接。"],
+          "unexpected_question_answer": "现在不决定，请记录为明确延后。"
+        }
+      ],
+      "expected_output": "询问用户的数据驻留决定，不自行选择；用户延后后保留延后状态和上市时间风险。",
+      "files": [],
+      "review": {
+        "platforms": ["codex", "claude"],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "不把 EU-only 或全球部署包装成用户决定",
+          "只在有依据时说明推荐，否则说明证据不足",
+          "记录用户明确延后及可能推迟上市时间的风险"
+        ]
+      }
+    },
+    {
+      "id": "shared-understanding-confirmation",
+      "prompt": "决策访谈的重要分支已经处理完：目标是把文档检索中位时间降到 3 分钟；先做 30 人试点；数据驻留由安全负责人周五确认；P95 延迟列为待验证。我还没有确认最终决策记录。请按访谈协议收尾并完成确认门禁，不要修改文件。",
+      "scripted_replies": [
+        {
+          "expected_question_count": 1,
+          "answers_by_index": ["记录准确，我确认这是共享理解。不要实施，请交还外层工作流。"],
+          "unexpected_question_answer": "记录准确，我确认。"
+        }
+      ],
+      "expected_output": "先输出决策记录并请求确认。用户确认后交还外层工作流，不开始实施。",
+      "files": [],
+      "review": {
+        "platforms": ["codex", "claude"],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "使用问题工具请求用户确认决策记录是否反映共享理解",
+          "确认前后都不开始实施或修改文件",
+          "用户确认后明确交还外层工作流"
+        ]
+      }
+    },
+    {
+      "id": "reopen-on-correction",
+      "prompt": "决策访谈的重要分支已经处理完。当前记录写的是：首轮试点 30 人；只允许受邀合作伙伴；P95 延迟待验证。我还没有确认最终记录。请按访谈协议收尾并完成确认门禁，不要修改文件。",
+      "scripted_replies": [
+        {
+          "expected_question_count": 1,
+          "answers_by_index": ["有一处错误：首轮试点应为 100 人，不是 30 人。请修正后重新确认。"],
+          "unexpected_question_answer": "首轮试点应为 100 人，请修正。"
+        },
+        {
+          "expected_question_count": 1,
+          "answers_by_index": ["修正后的记录准确，我确认。不要实施，请交还外层工作流。"],
+          "unexpected_question_answer": "修正后的记录准确，我确认。"
+        }
+      ],
+      "expected_output": "用户纠正试点规模后重新打开对应分支，把记录改为 100 人并再次确认；确认前不实施。",
+      "files": [],
+      "review": {
+        "platforms": ["codex", "claude"],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "收到纠正后把试点规模从 30 人改为 100 人",
+          "只重新打开被纠正的分支，并再次请求确认",
+          "用户确认前不实施，确认后交还外层工作流"
         ]
       }
     }

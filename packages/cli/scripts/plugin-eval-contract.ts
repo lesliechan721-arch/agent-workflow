@@ -80,6 +80,8 @@ export interface PluginEvalTriggerSuite {
   observeSpawnAgent: boolean;
   isolation: PluginEvalIsolation;
   strictNegativeSplits: Array<Exclude<PluginEvalSplit, 'all'>>;
+  minimumPassRate?: number;
+  forbidMultipleSkillLoads: boolean;
   profiles: string[];
   defaultRuns: number;
   releaseSplits: PluginEvalSplit[];
@@ -91,7 +93,8 @@ export interface PluginEvalTriggerCase {
   id: string;
   split: Exclude<PluginEvalSplit, 'all'>;
   query: string;
-  should_load_skill: boolean;
+  should_load_skill?: boolean;
+  expected_loaded_skills?: string[];
   should_spawn_agent?: boolean;
   workspace_fixture?: string;
   use_project_rules?: boolean;
@@ -224,6 +227,13 @@ function expectPositiveInteger(value: unknown, label: string): number {
     throw new Error(`${label} must be a positive integer.`);
   }
   return value as number;
+}
+
+function expectRate(value: unknown, label: string): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0 || value > 1) {
+    throw new Error(`${label} must be a number greater than 0 and at most 1.`);
+  }
+  return value;
 }
 
 function isPathInsideOrEqual(root: string, candidate: string): boolean {
@@ -525,7 +535,8 @@ function parseSuite(
   if (kind === 'trigger') {
     expectOnlyKeys(row, [
       'id', 'kind', 'skills', 'cases', 'fixtureModule', 'observeSpawnAgent', 'isolation',
-      'strictNegativeSplits', 'profiles', 'defaultRuns', 'releaseSplits',
+      'strictNegativeSplits', 'minimumPassRate', 'forbidMultipleSkillLoads',
+      'profiles', 'defaultRuns', 'releaseSplits',
       'requiredForRelease', 'perRunTimeoutMs',
     ], `suites[${index}]`);
     const isolation = parseIsolation(row.isolation, `suites[${index}].isolation`);
@@ -570,6 +581,18 @@ function parseSuite(
       ),
       isolation,
       strictNegativeSplits,
+      ...(row.minimumPassRate === undefined ? {} : {
+        minimumPassRate: expectRate(
+          row.minimumPassRate,
+          `suites[${index}].minimumPassRate`,
+        ),
+      }),
+      forbidMultipleSkillLoads: row.forbidMultipleSkillLoads === undefined
+        ? false
+        : expectBoolean(
+          row.forbidMultipleSkillLoads,
+          `suites[${index}].forbidMultipleSkillLoads`,
+        ),
     };
   }
 
@@ -648,14 +671,47 @@ function parseTriggerCase(
   if (row.tags !== undefined) {
     tags = parseStringArray(row.tags, `trigger cases[${index}].tags`);
   }
+  const usesLegacyExpectation = row.should_load_skill !== undefined;
+  const usesRouteExpectation = row.expected_loaded_skills !== undefined;
+  if (usesLegacyExpectation === usesRouteExpectation) {
+    throw new Error(
+      `trigger cases[${index}] must declare exactly one of should_load_skill or expected_loaded_skills.`,
+    );
+  }
+  let expectedLoadedSkills: string[] | undefined;
+  if (usesRouteExpectation) {
+    if (!Array.isArray(row.expected_loaded_skills)) {
+      throw new Error(`trigger cases[${index}].expected_loaded_skills must be an array.`);
+    }
+    expectedLoadedSkills = row.expected_loaded_skills.map((entry, skillIndex) =>
+      expectString(entry, `trigger cases[${index}].expected_loaded_skills[${skillIndex}]`));
+    if (new Set(expectedLoadedSkills).size !== expectedLoadedSkills.length) {
+      throw new Error(
+        `trigger cases[${index}].expected_loaded_skills must not contain duplicates.`,
+      );
+    }
+    const unknownSkill = expectedLoadedSkills.find((entry) => !suite.skills.includes(entry));
+    if (unknownSkill) {
+      throw new Error(
+        `trigger cases[${index}].expected_loaded_skills contains non-participant Skill "${unknownSkill}".`,
+      );
+    }
+    if (suite.forbidMultipleSkillLoads && expectedLoadedSkills.length > 1) {
+      throw new Error(
+        `trigger cases[${index}] expects multiple Skills but suite "${suite.id}" forbids multiple Skill loads.`,
+      );
+    }
+  }
   return {
     id,
     split: split as PluginEvalTriggerCase['split'],
     query: expectString(row.query, `trigger cases[${index}].query`),
-    should_load_skill: expectBoolean(
-      row.should_load_skill,
-      `trigger cases[${index}].should_load_skill`,
-    ),
+    ...(usesLegacyExpectation ? {
+      should_load_skill: expectBoolean(
+        row.should_load_skill,
+        `trigger cases[${index}].should_load_skill`,
+      ),
+    } : { expected_loaded_skills: expectedLoadedSkills! }),
     ...(shouldSpawnAgent === undefined ? {} : { should_spawn_agent: shouldSpawnAgent }),
     ...(workspaceFixture ? { workspace_fixture: workspaceFixture } : {}),
     ...(useProjectRules === undefined ? {} : { use_project_rules: useProjectRules }),

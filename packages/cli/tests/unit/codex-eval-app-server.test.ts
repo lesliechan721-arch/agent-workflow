@@ -124,7 +124,8 @@ describe('Codex app-server eval driver', () => {
         '      return;',
         '    }',
         "    const state = `owner=${fs.existsSync('.agents/skills/ask-me/SKILL.md')} companion=${fs.existsSync('.agents/skills/companion/SKILL.md')}`;",
-        "    send({ method: 'item/completed', params: { item: { type: 'agentMessage', id: 'message-1', text: state } } });",
+        "    send({ method: 'item/completed', params: { item: { type: 'agentMessage', id: 'commentary-1', phase: 'commentary', text: 'Preparing the final answer.' } } });",
+        "    send({ method: 'item/completed', params: { item: { type: 'agentMessage', id: 'message-1', phase: 'final_answer', text: state } } });",
         "    send({ method: 'thread/tokenUsage/updated', params: { tokenUsage: { totalTokens: 7 } } });",
         "    send({ method: 'turn/completed', params: { turn: { id: 'turn-1', status: 'completed' } } });",
         '  }',
@@ -185,6 +186,14 @@ describe('Codex app-server eval driver', () => {
     });
     expect(run.with_skill.finalMessages).toEqual(['owner=true companion=true']);
     expect(run.without_skill.finalMessages).toEqual(['owner=false companion=true']);
+    expect(run.with_skill.eventTrace).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        method: 'item/completed',
+        params: expect.objectContaining({
+          item: expect.objectContaining({ phase: 'commentary' }),
+        }),
+      }),
+    ]));
     expect(run.with_skill.workspaceChanges).toEqual([]);
     expect(JSON.stringify(evidence)).not.toContain('private-server-name');
     expect(JSON.stringify(evidence)).not.toContain('private-installation-id');
@@ -326,7 +335,7 @@ describe('Codex app-server eval driver', () => {
       "  else if (frame.method === 'thread/start') send({ id: frame.id, result: { thread: { id: 'thread-1' } } });",
       "  else if (frame.method === 'turn/start') {",
       "    send({ id: frame.id, result: { turn: { id: 'turn-1' } } });",
-      "    const message = JSON.stringify({ method: 'item/completed', params: { item: { [process.env.AW_CODEX_EVAL_PROCESS_TREE_ID]: true, type: 'agentMessage', id: 'message-1', text: `${process.env.CUSTOM_TOKEN} https://private.invalid/v1 ${process.env.AW_CODEX_EVAL_PROCESS_TREE_ID}` } } }) + '\\n';",
+      "    const message = JSON.stringify({ method: 'item/completed', params: { item: { [process.env.AW_CODEX_EVAL_PROCESS_TREE_ID]: true, type: 'agentMessage', id: 'message-1', phase: 'final_answer', text: `${process.env.CUSTOM_TOKEN} https://private.invalid/v1 ${process.env.AW_CODEX_EVAL_PROCESS_TREE_ID}` } } }) + '\\n';",
       "    const splitAt = message.indexOf(process.env.AW_CODEX_EVAL_PROCESS_TREE_ID) + 12;",
       "    process.stdout.write(message.slice(0, splitAt));",
       "    setImmediate(() => { finishTreeStderr(); process.stdout.write(message.slice(splitAt)); send({ method: 'turn/completed', params: { turn: { id: 'turn-1', status: 'completed' } } }); });",

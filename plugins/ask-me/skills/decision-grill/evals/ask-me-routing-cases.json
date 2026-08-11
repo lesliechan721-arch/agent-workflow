@@ -1,0 +1,138 @@
+{
+  "schemaVersion": 1,
+  "skill": "decision-grill",
+  "cases": [
+    {
+      "id": "runner_explain",
+      "query": "MCP/CI runner 怎么实现？难度多大？",
+      "expected_loaded_skills": [],
+      "rationale": "这是技术说明和难度评估，应直接回答。",
+      "split": "validation",
+      "use_project_rules": true,
+      "tags": ["runner", "direct-answer"]
+    },
+    {
+      "id": "runner_recommend",
+      "query": "比较本地 MCP runner 和 CI runner，分析后直接推荐一个。",
+      "expected_loaded_skills": [],
+      "rationale": "这是一次性比较和推荐，应直接回答。",
+      "split": "sanity",
+      "use_project_rules": true,
+      "tags": ["runner", "direct-answer"]
+    },
+    {
+      "id": "runner_grill",
+      "query": "逐轮问我凭据、运维和工作树取舍，压力测试本地 MCP runner 和 CI runner，直到我们形成共同决定。",
+      "expected_loaded_skills": ["decision-grill"],
+      "rationale": "用户明确要求围绕 runner 决策进行逐轮访谈。",
+      "split": "validation",
+      "use_project_rules": true,
+      "tags": ["runner", "decision-interview"]
+    },
+    {
+      "id": "export_clarify",
+      "query": "实现订单导出，但导出全部还是当前筛选结果还没定。",
+      "expected_loaded_skills": ["requirements-clarifier"],
+      "rationale": "具体实施结果存在关键需求歧义。",
+      "split": "validation",
+      "use_project_rules": true,
+      "workspace_fixture": "neutral_export_repo",
+      "tags": ["export", "implementation-ambiguity"]
+    },
+    {
+      "id": "export_grill",
+      "query": "实现前围绕订单导出的范围、权限和格式逐轮追问我，压力测试这些决定，直到我们形成共享方案。",
+      "expected_loaded_skills": ["decision-grill"],
+      "rationale": "显式访谈意图覆盖实施语境。",
+      "split": "validation",
+      "use_project_rules": true,
+      "workspace_fixture": "neutral_export_repo",
+      "tags": ["export", "decision-interview"]
+    },
+    {
+      "id": "export_convention",
+      "query": "沿用发票列表现有的导出范围惯例，给订单列表实现同样的导出。",
+      "expected_loaded_skills": [],
+      "rationale": "仓库已有明确惯例，不需要澄清或访谈。",
+      "split": "sanity",
+      "use_project_rules": true,
+      "workspace_fixture": "implementation_repo",
+      "tags": ["export", "repo-fact"]
+    },
+    {
+      "id": "export_override_convention",
+      "query": "虽然发票导出使用当前筛选结果，但这次订单导出的范围尚未决定。请先实现其它部分。",
+      "expected_loaded_skills": ["requirements-clarifier"],
+      "rationale": "用户显式声明本次需求未决，应覆盖仓库惯例。",
+      "split": "sanity",
+      "use_project_rules": true,
+      "workspace_fixture": "implementation_repo",
+      "tags": ["export", "implementation-ambiguity", "repo-fact"]
+    },
+    {
+      "id": "plan_review",
+      "query": "评审这份迁移计划，直接列出风险和改进建议。",
+      "expected_loaded_skills": [],
+      "rationale": "这是一次性计划评审。",
+      "split": "validation",
+      "use_project_rules": true,
+      "tags": ["plan", "direct-answer"]
+    },
+    {
+      "id": "plan_revise",
+      "query": "逐轮和我修改迁移计划，关键取舍问我，直到我们确认共享理解。",
+      "expected_loaded_skills": ["decision-grill"],
+      "rationale": "用户明确要求逐轮修订和确认。",
+      "split": "validation",
+      "use_project_rules": true,
+      "tags": ["plan", "decision-interview"]
+    },
+    {
+      "id": "approved_plan_implementation_gap",
+      "query": "按已批准的迁移计划实施，但兼容期还没定，而且这个选择会改变验收。",
+      "expected_loaded_skills": ["requirements-clarifier"],
+      "rationale": "计划主体已批准，但实施需求仍有关键歧义。",
+      "split": "validation",
+      "use_project_rules": true,
+      "tags": ["plan", "implementation-ambiguity"]
+    },
+    {
+      "id": "full_spec",
+      "query": "严格按 spec/account-pause.md 实现。文档中的行为、恢复和验收都已批准。",
+      "expected_loaded_skills": [],
+      "rationale": "权威规范完整，应直接实施。",
+      "split": "sanity",
+      "use_project_rules": true,
+      "workspace_fixture": "account_pause_repo",
+      "tags": ["implementation", "complete-spec"]
+    },
+    {
+      "id": "delegated",
+      "query": "为内部日志库做技术选型并直接采用你的推荐。内部选择你自行决定，不要问我。",
+      "expected_loaded_skills": [],
+      "rationale": "用户已明确委托内部选择。",
+      "split": "sanity",
+      "use_project_rules": true,
+      "workspace_fixture": "implementation_repo",
+      "tags": ["implementation", "delegated"]
+    },
+    {
+      "id": "explicit_grill",
+      "query": "$decision-grill 帮我把 API 下线想法想透，逐轮压力测试兼容期限、迁移责任和回退条件。",
+      "expected_loaded_skills": ["decision-grill"],
+      "rationale": "用户显式调用决策访谈。",
+      "split": "sanity",
+      "use_project_rules": true,
+      "tags": ["idea", "explicit"]
+    },
+    {
+      "id": "workflow_context",
+      "query": "当前外层工作流已进入协作决策访谈阶段。请围绕发布策略逐轮询问我的取舍，形成共享理解。",
+      "expected_loaded_skills": ["decision-grill"],
+      "rationale": "外层工作流明确进入协作决策访谈阶段。",
+      "split": "validation",
+      "use_project_rules": true,
+      "tags": ["workflow", "decision-interview"]
+    }
+  ]
+}

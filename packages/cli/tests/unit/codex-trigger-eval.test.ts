@@ -34,6 +34,7 @@ function suite(overrides: Partial<PluginEvalTriggerSuite> = {}): PluginEvalTrigg
     observeSpawnAgent: true,
     isolation: 'standard',
     strictNegativeSplits: [],
+    forbidMultipleSkillLoads: false,
     profiles: ['project-default'],
     defaultRuns: 1,
     releaseSplits: ['validation'],
@@ -46,6 +47,9 @@ function suite(overrides: Partial<PluginEvalTriggerSuite> = {}): PluginEvalTrigg
 function runEvidence(overrides: Partial<TriggerRunEvidence>): TriggerRunEvidence {
   return {
     loaded: false,
+    first_loaded_skill: null,
+    all_loaded_skills: [],
+    load_evidence_by_skill: {},
     spawned: false,
     load_evidence: null,
     spawn_evidence: null,
@@ -55,6 +59,9 @@ function runEvidence(overrides: Partial<TriggerRunEvidence>): TriggerRunEvidence
     signal: null,
     execution_error: false,
     fixture_unchanged: true,
+    request_user_input_called: false,
+    waiting_on_user_input: false,
+    final_response_emitted: false,
     final_message: null,
     duration_ms: 1,
     usage: null,
@@ -69,6 +76,10 @@ async function createFixture(options: {
   detachedDescendant?: boolean;
   rootExitDelayMs?: number;
   useProjectRules?: boolean;
+  waitForUserInput?: boolean;
+  routeToCompanion?: boolean;
+  routeToBoth?: boolean;
+  exactRouteSpawn?: { expected: boolean; actual: boolean };
 } = {}): Promise<{
   pluginRoot: string;
   subjectRoot: string;
@@ -82,6 +93,14 @@ async function createFixture(options: {
   const descendantPidPath = path.join(root, 'descendant-pid.txt');
   await fs.ensureDir(path.join(pluginRoot, 'evals'));
   await fs.ensureDir(path.join(subjectRoot, '.agents', 'skills', 'eval-fixture'));
+  if (options.routeToCompanion || options.routeToBoth) {
+    await fs.ensureDir(path.join(subjectRoot, '.agents', 'skills', 'companion'));
+    await fs.writeFile(
+      path.join(subjectRoot, '.agents', 'skills', 'companion', 'SKILL.md'),
+      '---\nname: companion\ndescription: Companion route fixture.\n---\n',
+      'utf8',
+    );
+  }
   await fs.ensureDir(path.join(subjectRoot, '.codex', 'rules'));
   await fs.ensureDir(path.join(subjectRoot, '.git'));
   await fs.writeFile(
@@ -100,9 +119,23 @@ async function createFixture(options: {
     cases: [{
       id: 'load_and_spawn',
       split: 'validation',
-      query: 'Load the fixture and spawn one agent.',
-      should_load_skill: true,
-      should_spawn_agent: true,
+      query: options.waitForUserInput
+        ? 'Ask one clarification question without loading the Skill.'
+        : options.exactRouteSpawn
+          ? 'Load the fixture and follow the delegation requirement.'
+        : options.routeToCompanion || options.routeToBoth
+          ? 'Route to the companion Skill.'
+          : 'Load the fixture and spawn one agent.',
+      ...(options.waitForUserInput
+        ? { expected_loaded_skills: [], should_spawn_agent: false }
+        : options.exactRouteSpawn
+          ? {
+            expected_loaded_skills: ['eval-fixture'],
+            should_spawn_agent: options.exactRouteSpawn.expected,
+          }
+        : options.routeToCompanion || options.routeToBoth
+          ? { expected_loaded_skills: ['companion'], should_spawn_agent: false }
+          : { should_load_skill: true, should_spawn_agent: true }),
       ...(options.useProjectRules ? { use_project_rules: true } : {}),
     }],
   }, { spaces: 2 });
@@ -149,12 +182,31 @@ async function createFixture(options: {
     "  else if (frame.method === 'thread/start') send({ id: frame.id, result: { thread: { id: 'thread-1' } } });",
     "  else if (frame.method === 'turn/start') {",
     "    send({ id: frame.id, result: { turn: { id: 'turn-1', status: 'inProgress' } } });",
-    "    send({ method: 'item/completed', params: { threadId: 'thread-1', item: { id: 'read-1', type: 'commandExecution', status: 'completed', exitCode: 0, command: 'cat .agents/skills/eval-fixture/SKILL.md' } } });",
-    "    const activity = { id: 'spawn-1', type: 'subAgentActivity', kind: 'started', agentThreadId: 'agent-1', agentPath: '/root/evidence' };",
-    "    send({ method: 'item/started', params: { threadId: 'thread-1', item: activity } });",
-    "    send({ method: 'item/completed', params: { threadId: 'thread-1', item: activity } });",
-    "    send({ method: 'thread/tokenUsage/updated', params: { threadId: 'thread-1', tokenUsage: { totalTokens: 7 } } });",
-    "    send({ method: 'turn/completed', params: { threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed' } } });",
+    ...(options.waitForUserInput ? [
+      "    send({ id: 17, method: 'item/tool/requestUserInput', params: { threadId: 'thread-1', turnId: 'turn-1', itemId: 'question-1', questions: [{ id: 'scope', header: 'Scope', question: 'Which scope?', options: [] }] } });",
+    ] : options.exactRouteSpawn ? [
+      "    send({ method: 'item/completed', params: { threadId: 'thread-1', item: { id: 'read-1', type: 'commandExecution', status: 'completed', exitCode: 0, command: 'cat .agents/skills/eval-fixture/SKILL.md' } } });",
+      ...(options.exactRouteSpawn.actual ? [
+        "    const activity = { id: 'spawn-1', type: 'subAgentActivity', kind: 'started', agentThreadId: 'agent-1', agentPath: '/root/evidence' };",
+        "    send({ method: 'item/started', params: { threadId: 'thread-1', item: activity } });",
+        "    send({ method: 'item/completed', params: { threadId: 'thread-1', item: activity } });",
+      ] : []),
+      "    send({ method: 'turn/completed', params: { threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed' } } });",
+    ] : options.routeToBoth ? [
+      "    send({ method: 'item/completed', params: { threadId: 'thread-1', item: { id: 'read-owner', type: 'commandExecution', status: 'completed', exitCode: 0, command: 'cat .agents/skills/eval-fixture/SKILL.md' } } });",
+      "    send({ method: 'item/completed', params: { threadId: 'thread-1', item: { id: 'read-companion', type: 'commandExecution', status: 'completed', exitCode: 0, command: 'cat .agents/skills/companion/SKILL.md' } } });",
+    ] : options.routeToCompanion ? [
+      "    send({ method: 'item/completed', params: { threadId: 'thread-1', item: { id: 'read-1', type: 'commandExecution', status: 'completed', exitCode: 0, command: 'cat .agents/skills/companion/SKILL.md' } } });",
+      "    send({ method: 'item/completed', params: { threadId: 'thread-1', item: { id: 'message-1', type: 'agentMessage', text: 'Need one clarification.' } } });",
+      "    send({ method: 'turn/completed', params: { threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed' } } });",
+    ] : [
+      "    send({ method: 'item/completed', params: { threadId: 'thread-1', item: { id: 'read-1', type: 'commandExecution', status: 'completed', exitCode: 0, command: 'cat .agents/skills/eval-fixture/SKILL.md' } } });",
+      "    const activity = { id: 'spawn-1', type: 'subAgentActivity', kind: 'started', agentThreadId: 'agent-1', agentPath: '/root/evidence' };",
+      "    send({ method: 'item/started', params: { threadId: 'thread-1', item: activity } });",
+      "    send({ method: 'item/completed', params: { threadId: 'thread-1', item: activity } });",
+      "    send({ method: 'thread/tokenUsage/updated', params: { threadId: 'thread-1', tokenUsage: { totalTokens: 7 } } });",
+      "    send({ method: 'turn/completed', params: { threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed' } } });",
+    ]),
     '  }',
     '});',
     'process.on("SIGTERM", () => process.exit(0));',
@@ -257,6 +309,41 @@ describe('Codex native trigger eval driver', () => {
     })).toBeNull();
   });
 
+  it('detects request_user_input as a trigger terminal signal', () => {
+    expect(inspectTriggerAppServerFrame({
+      id: 17,
+      method: 'item/tool/requestUserInput',
+      params: { questions: [] },
+    }, '/tmp/project/.agents/skills/eval-fixture/SKILL.md')).toEqual({
+      requestUserInput: true,
+    });
+  });
+
+  it('does not report commentary as a final response', () => {
+    expect(inspectTriggerAppServerFrame({
+      method: 'item/completed',
+      params: {
+        item: {
+          type: 'agentMessage',
+          phase: 'commentary',
+          text: 'Checking the repository first.',
+        },
+      },
+    }, '/tmp/project/.agents/skills/eval-fixture/SKILL.md')).toEqual({});
+    expect(inspectTriggerAppServerFrame({
+      method: 'item/completed',
+      params: {
+        item: {
+          type: 'agentMessage',
+          phase: 'final_answer',
+          text: 'Done.',
+        },
+      },
+    }, '/tmp/project/.agents/skills/eval-fixture/SKILL.md')).toEqual({
+      finalMessage: 'Done.',
+    });
+  });
+
   it('preserves per-suite strict negative scoring', () => {
     const evalCase: PluginEvalTriggerCase = {
       id: 'negative',
@@ -273,6 +360,36 @@ describe('Codex native trigger eval driver', () => {
     expect(summarizeTriggerCase(suite(), evalCase, runs).passed).toBe(true);
     expect(summarizeTriggerCase(
       suite({ strictNegativeSplits: ['validation'] }),
+      evalCase,
+      runs,
+    ).passed).toBe(false);
+  });
+
+  it('applies strict negative scoring to an empty exact route', () => {
+    const evalCase: PluginEvalTriggerCase = {
+      id: 'negative_route',
+      split: 'validation',
+      query: 'Do not load a participant Skill.',
+      expected_loaded_skills: [],
+      should_spawn_agent: false,
+    };
+    const runs = [
+      runEvidence({
+        loaded: true,
+        first_loaded_skill: 'eval-fixture',
+        all_loaded_skills: ['eval-fixture'],
+        load_evidence_by_skill: { 'eval-fixture': 'read fixture' },
+      }),
+      runEvidence({}),
+      runEvidence({}),
+    ];
+    expect(summarizeTriggerCase(
+      suite({ minimumPassRate: 0.5 }),
+      evalCase,
+      runs,
+    ).passed).toBe(true);
+    expect(summarizeTriggerCase(
+      suite({ minimumPassRate: 0.5, strictNegativeSplits: ['validation'] }),
       evalCase,
       runs,
     ).passed).toBe(false);
@@ -297,6 +414,62 @@ describe('Codex native trigger eval driver', () => {
       evalCase,
       runs,
     ).passed).toBe(false);
+  });
+
+  it('scores an exact multi-Skill route and rejects any combined load', () => {
+    const routingSuite = suite({
+      skill: 'decision-grill',
+      skills: ['decision-grill', 'requirements-clarifier'],
+      observeSpawnAgent: false,
+      minimumPassRate: 0.9,
+      forbidMultipleSkillLoads: true,
+    });
+    const evalCase: PluginEvalTriggerCase = {
+      id: 'implementation_scope',
+      split: 'validation',
+      query: 'Implement export, but its range is undecided.',
+      expected_loaded_skills: ['requirements-clarifier'],
+    };
+    const correct = runEvidence({
+      first_loaded_skill: 'requirements-clarifier',
+      all_loaded_skills: ['requirements-clarifier'],
+      load_evidence_by_skill: { 'requirements-clarifier': 'read requirements' },
+    });
+    const oneMiss = summarizeTriggerCase(
+      routingSuite,
+      evalCase,
+      [...Array.from({ length: 9 }, () => correct), runEvidence({})],
+    );
+    expect(oneMiss).toMatchObject({
+      expected: { loaded_skills: ['requirements-clarifier'] },
+      observed: {
+        route_match_rate: 0.9,
+        multiple_skill_loads: 0,
+        skill_load_rates: {
+          'decision-grill': 0,
+          'requirements-clarifier': 0.9,
+        },
+      },
+      passed: true,
+    });
+
+    const combined = runEvidence({
+      loaded: true,
+      first_loaded_skill: 'decision-grill',
+      all_loaded_skills: ['decision-grill', 'requirements-clarifier'],
+      load_evidence_by_skill: {
+        'decision-grill': 'read decision',
+        'requirements-clarifier': 'read requirements',
+      },
+    });
+    expect(summarizeTriggerCase(
+      routingSuite,
+      evalCase,
+      [...Array.from({ length: 9 }, () => correct), combined],
+    )).toMatchObject({
+      observed: { route_match_rate: 0.9, multiple_skill_loads: 1 },
+      passed: false,
+    });
   });
 
   it('observes V2 spawn from app-server sub-agent activity', () => {
@@ -360,6 +533,193 @@ describe('Codex native trigger eval driver', () => {
       });
       expect(evidence.results[0].runs[0].spawn_calls).toHaveLength(1);
       expect(evidence.results[0].runs[0].fixture_unchanged).toBe(true);
+    },
+  );
+
+  it.runIf(process.platform !== 'win32')(
+    'treats waiting on request_user_input as a complete not-loaded route',
+    async () => {
+      const fixture = await createFixture({ waitForUserInput: true });
+      const reportPath = path.join(fixture.pluginRoot, 'waiting-report.json');
+      const report = await runCodexTriggerSuite({
+        suite: suite({
+          fixtureModule: './evals/fixture.mjs',
+          minimumPassRate: 1,
+        }),
+        split: 'validation',
+        subjectRoot: fixture.subjectRoot,
+        pluginRoot: fixture.pluginRoot,
+        profile: 'project-default',
+        runs: 1,
+        codexBin: fixture.codexBin,
+        sourceEnv: process.env,
+        reportPath,
+      });
+      expect(report, JSON.stringify(report, null, 2)).toMatchObject({
+        outcome: 'passed',
+        complete: true,
+        mechanicalPassed: true,
+      });
+      const evidence = await fs.readJson(reportPath);
+      expect(evidence.results[0].runs[0]).toMatchObject({
+        termination: 'waiting_on_user_input',
+        execution_error: false,
+        all_loaded_skills: [],
+        request_user_input_called: true,
+        waiting_on_user_input: true,
+        final_response_emitted: false,
+      });
+    },
+  );
+
+  it.runIf(process.platform !== 'win32')(
+    'waits for a required spawn after observing an exact route',
+    async () => {
+      const fixture = await createFixture({
+        exactRouteSpawn: { expected: true, actual: true },
+      });
+      const reportPath = path.join(fixture.pluginRoot, 'required-spawn-report.json');
+      const report = await runCodexTriggerSuite({
+        suite: suite({
+          fixtureModule: './evals/fixture.mjs',
+          minimumPassRate: 1,
+        }),
+        split: 'validation',
+        subjectRoot: fixture.subjectRoot,
+        pluginRoot: fixture.pluginRoot,
+        profile: 'project-default',
+        runs: 1,
+        codexBin: fixture.codexBin,
+        sourceEnv: process.env,
+        reportPath,
+      });
+      expect(report, JSON.stringify(report, null, 2)).toMatchObject({
+        outcome: 'passed',
+        complete: true,
+        mechanicalPassed: true,
+      });
+      const evidence = await fs.readJson(reportPath);
+      expect(evidence.results[0].runs[0]).toMatchObject({
+        all_loaded_skills: ['eval-fixture'],
+        spawned: true,
+        termination: 'expected_outcome_observed',
+      });
+    },
+  );
+
+  it.runIf(process.platform !== 'win32')(
+    'observes a forbidden spawn after an exact route',
+    async () => {
+      const fixture = await createFixture({
+        exactRouteSpawn: { expected: false, actual: true },
+      });
+      const reportPath = path.join(fixture.pluginRoot, 'forbidden-spawn-report.json');
+      const report = await runCodexTriggerSuite({
+        suite: suite({
+          fixtureModule: './evals/fixture.mjs',
+          minimumPassRate: 1,
+        }),
+        split: 'validation',
+        subjectRoot: fixture.subjectRoot,
+        pluginRoot: fixture.pluginRoot,
+        profile: 'project-default',
+        runs: 1,
+        codexBin: fixture.codexBin,
+        sourceEnv: process.env,
+        reportPath,
+      });
+      expect(report, JSON.stringify(report, null, 2)).toMatchObject({
+        outcome: 'failed',
+        complete: true,
+        mechanicalPassed: false,
+      });
+      const evidence = await fs.readJson(reportPath);
+      expect(evidence.results[0].runs[0]).toMatchObject({
+        all_loaded_skills: ['eval-fixture'],
+        spawned: true,
+        termination: 'unexpected_spawn',
+      });
+    },
+  );
+
+  it.runIf(process.platform !== 'win32')(
+    'observes a non-owner participant as the exact route',
+    async () => {
+      const fixture = await createFixture({ routeToCompanion: true });
+      const reportPath = path.join(fixture.pluginRoot, 'companion-route-report.json');
+      const report = await runCodexTriggerSuite({
+        suite: suite({
+          skill: 'eval-fixture',
+          skills: ['eval-fixture', 'companion'],
+          fixtureModule: './evals/fixture.mjs',
+          minimumPassRate: 1,
+          forbidMultipleSkillLoads: true,
+        }),
+        split: 'validation',
+        subjectRoot: fixture.subjectRoot,
+        pluginRoot: fixture.pluginRoot,
+        profile: 'project-default',
+        runs: 1,
+        codexBin: fixture.codexBin,
+        sourceEnv: process.env,
+        reportPath,
+      });
+      expect(report, JSON.stringify(report, null, 2)).toMatchObject({
+        outcome: 'passed',
+        complete: true,
+        mechanicalPassed: true,
+      });
+      const evidence = await fs.readJson(reportPath);
+      expect(evidence.results[0].runs[0]).toMatchObject({
+        loaded: false,
+        first_loaded_skill: 'companion',
+        all_loaded_skills: ['companion'],
+        final_response_emitted: true,
+      });
+      expect(evidence.results[0].observed).toMatchObject({
+        route_match_rate: 1,
+        skill_load_rates: { 'eval-fixture': 0, companion: 1 },
+      });
+    },
+  );
+
+  it.runIf(process.platform !== 'win32')(
+    'records both participant Skills before rejecting a combined route',
+    async () => {
+      const fixture = await createFixture({ routeToBoth: true });
+      const reportPath = path.join(fixture.pluginRoot, 'combined-route-report.json');
+      const report = await runCodexTriggerSuite({
+        suite: suite({
+          skill: 'eval-fixture',
+          skills: ['eval-fixture', 'companion'],
+          fixtureModule: './evals/fixture.mjs',
+          minimumPassRate: 1,
+          forbidMultipleSkillLoads: true,
+        }),
+        split: 'validation',
+        subjectRoot: fixture.subjectRoot,
+        pluginRoot: fixture.pluginRoot,
+        profile: 'project-default',
+        runs: 1,
+        codexBin: fixture.codexBin,
+        sourceEnv: process.env,
+        reportPath,
+      });
+      expect(report, JSON.stringify(report, null, 2)).toMatchObject({
+        outcome: 'failed',
+        complete: true,
+        mechanicalPassed: false,
+      });
+      const evidence = await fs.readJson(reportPath);
+      expect(evidence.results[0].runs[0]).toMatchObject({
+        termination: 'unexpected_multiple_skill_loads',
+        first_loaded_skill: 'eval-fixture',
+        all_loaded_skills: ['eval-fixture', 'companion'],
+      });
+      expect(evidence.results[0].observed).toMatchObject({
+        route_match_rate: 0,
+        multiple_skill_loads: 1,
+      });
     },
   );
 

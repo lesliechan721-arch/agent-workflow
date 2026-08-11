@@ -227,6 +227,13 @@ function boolean(value, label) {
   return value;
 }
 
+function rate(value, label) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0 || value > 1) {
+    fail(`${label} must be greater than 0 and at most 1.`);
+  }
+  return value;
+}
+
 function stringArray(value, label, { allowEmpty = false } = {}) {
   if (!Array.isArray(value) || (!allowEmpty && value.length === 0)) {
     fail(`${label} must be ${allowEmpty ? 'an' : 'a non-empty'} array.`);
@@ -310,6 +317,15 @@ async function validateSuite(skillRoot, value, index) {
     observeSpawnAgent: boolean(row.observeSpawnAgent, `suites[${index}].observeSpawnAgent`),
     isolation,
     strictNegativeSplits,
+    ...(row.minimumPassRate === undefined ? {} : {
+      minimumPassRate: rate(row.minimumPassRate, `suites[${index}].minimumPassRate`),
+    }),
+    forbidMultipleSkillLoads: row.forbidMultipleSkillLoads === undefined
+      ? false
+      : boolean(
+        row.forbidMultipleSkillLoads,
+        `suites[${index}].forbidMultipleSkillLoads`,
+      ),
     ...(fixtureModule ? { fixtureModule } : {}),
   };
 }
@@ -393,7 +409,29 @@ async function validateLocalCases(skillRoot, suite) {
       }
       splits.add(split);
       nonEmptyString(row.query, `${suite.id}.cases[${index}].query`);
-      boolean(row.should_load_skill, `${suite.id}.cases[${index}].should_load_skill`);
+      const usesLegacyExpectation = row.should_load_skill !== undefined;
+      const usesRouteExpectation = row.expected_loaded_skills !== undefined;
+      if (usesLegacyExpectation === usesRouteExpectation) {
+        fail(`${suite.id}.cases[${index}] must declare exactly one trigger expectation.`);
+      }
+      if (usesLegacyExpectation) {
+        boolean(row.should_load_skill, `${suite.id}.cases[${index}].should_load_skill`);
+      } else {
+        const expectedSkills = stringArray(
+          row.expected_loaded_skills,
+          `${suite.id}.cases[${index}].expected_loaded_skills`,
+          { allowEmpty: true },
+        );
+        if (new Set(expectedSkills).size !== expectedSkills.length) {
+          fail(`${suite.id}.cases[${index}].expected_loaded_skills contains duplicates.`);
+        }
+        if (expectedSkills.some((skillName) => !suite.skills.includes(skillName))) {
+          fail(`${suite.id}.cases[${index}].expected_loaded_skills contains a non-participant Skill.`);
+        }
+        if (suite.forbidMultipleSkillLoads && expectedSkills.length > 1) {
+          fail(`${suite.id}.cases[${index}] expects multiple Skills but the suite forbids it.`);
+        }
+      }
       if (suite.observeSpawnAgent && row.should_spawn_agent === undefined) {
         fail(`${suite.id}.cases[${index}].should_spawn_agent is required.`);
       }

@@ -92,9 +92,13 @@ Profile 规则：
 Suite 规则：
 
 - 每个 suite 必须声明非空、无重复的 `skills[]`，并包含 owner Skill。profile 中安装的插件必须能提供全部 participant Skills。
-- `trigger` 由中央 Codex app-server driver 执行，使用 materialized project Skill、隔离 `CODEX_HOME`、重复运行和统一报告。Skill 加载由完成的 `commandExecution` 读取事件确认：命令成功时直接采用；复合命令整体失败时，只有 captured output 明确包含目标 Skill 的 `name` frontmatter 才采用，避免后续搜索失败抹掉已完成的读取，也避免把未成功的读取尝试当成证据。启用 `observeSpawnAgent` 时，实际委派由 V2 `subAgentActivity(kind=started)` 确认。该事件不包含完整 spawn 参数；需要校验 role、model 或 effort 时使用领域 command suite。中央 driver 原生支持 split/runs/case/model/codex-bin，不需要插件 runner。
+- `trigger` 由中央 Codex app-server driver 执行，使用 materialized project Skill、隔离 `CODEX_HOME`、重复运行和统一报告。driver 会观察 `skills[]` 中每个 participant Skill。Skill 加载由完成的 `commandExecution` 读取事件确认：命令成功时直接采用；复合命令整体失败时，只有 captured output 明确包含对应 Skill 的 `name` frontmatter 才采用，避免后续搜索失败抹掉已完成的读取，也避免把未成功的读取尝试当成证据。启用 `observeSpawnAgent` 时，实际委派由 V2 `subAgentActivity(kind=started)` 确认。该事件不包含完整 spawn 参数；需要校验 role、model 或 effort 时使用领域 command suite。中央 driver 原生支持 split/runs/case/model/codex-bin，不需要插件 runner。
 - `trigger` 和 `conversation` 都支持 `isolation: "standard" | "strict"`，schema v2 省略时默认为 `standard`。用于发布门禁、触发边界或行为归因的 suite 应显式使用 `strict`；只需要兼容旧语料或调试宿主集成时才使用 `standard`。
-- trigger corpus 使用 `{ "schemaVersion": 1, "skill": "...", "cases": [...] }`；每个 case 声明 `id`、`split`、`query`、`should_load_skill`，需要检查子代理时再声明 `should_spawn_agent`。
+- trigger corpus 使用 `{ "schemaVersion": 1, "skill": "...", "cases": [...] }`。每个 case 必须声明 `id`、`split`、`query`，并在以下两种期望中选择一种：
+  - 单目标触发用 `should_load_skill: boolean`，只判断 owner Skill。
+  - 相邻 Skill 竞争路由用 `expected_loaded_skills: string[]`，精确声明应加载的 participant Skill 集合；空数组表示不应加载任何 participant。
+- 精确路由 suite 可以用 `minimumPassRate` 设置正确路由下限，并用 `forbidMultipleSkillLoads: true` 禁止任一次同时加载多个 Skill。报告记录 `first_loaded_skill`、`all_loaded_skills`、逐 Skill 读取证据、问题工具调用、等待状态、最终响应和终止原因。
+- trigger 只判断路由，不等待完整澄清会话。未读取目标 Skill，并调用 `request_user_input` 时，以 `waiting_on_user_input` 正常结束，不计为 timeout 或 execution error。
 - `strictNegativeSplits` 对负例使用零容忍：重复运行中任何一次误加载或错误委派都会让该 split 失败，不能用三次中的多数结果掩盖一次错误。
 - `fixtureModule` 只能指向 owner Skill 的 `evals/*.mjs`，必须导出 `setupTriggerWorkspace({ workspaceRoot, evalCase, env })`；可选的 `captureTriggerWorkspaceState` 返回前后可比较的 JSON 状态。fixture 只能准备临时材料，不能修改 materialized participant Skill，也不能覆盖 HOME/CODEX_HOME/XDG/TMP/PATH；strict 模式还禁止修改 `.agents` 和 `.codex` 控制面。
 - `command` 只用于 model-selection、routing、workflow 等领域专用 runner；`supports` 明确中央入口可以透传哪些参数。runner 必须接受 `--output`，并要求中央提供 `AW_PLUGIN_EVAL_PROJECT_ROOT`，不得回退到源码或 template 自行渲染。
@@ -158,7 +162,7 @@ strict 模式在启动模型前检查 `/etc/codex`（Windows 对应系统目录�
 - 8–10 条共享关键词但目标不同的 near-miss 负例，不使用天气、斐波那契等无重叠任务。
 - 固定拆成约 60% train、40% validation，并另留 5–10 条 sanity。
 - 每条在干净 project session 中运行至少 3 次；只根据 train 调 description，用 validation/sanity 检查泛化。
-- 正例默认要求命中率高于 `0.5`，负例默认低于 `0.5`；需要 validation 零误触时把该 split 放进 `strictNegativeSplits`。
+- 单目标正例默认要求命中率高于 `0.5`，负例默认低于 `0.5`；需要 validation 零误触时把该 split 放进 `strictNegativeSplits`。相邻 Skill 路由应使用 `expected_loaded_skills` 和更高的 `minimumPassRate`，不能只检查 owner Skill 是否未加载。
 
 漏触发时扩大用户意图或场景类别；误触发时收紧相邻任务边界。不要把失败 query 原词逐个堆进 description。
 
