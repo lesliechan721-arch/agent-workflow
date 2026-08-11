@@ -14,7 +14,7 @@ pnpm plugin:eval codex-subagent-guide --skill codex-subagent-guide
 
 ## 触发评估
 
-strict 发布语料分成 train（12）、validation（8）和不参与 description 调优的 sanity（6）。它检查：
+strict 发布语料分成 train（12）、validation（7）和不参与 description 调优的 sanity（6）。它检查：
 
 - 已经由用户或临时 workspace 中的真实 `AGENTS.md` 授权委派时，加载 skill 并启动子代理。
 - 只询问是否应该委派、概念文档、安装配置、明确禁止子代理等 near miss，不加载也不启动。
