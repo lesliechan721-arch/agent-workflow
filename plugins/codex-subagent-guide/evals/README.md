@@ -12,19 +12,21 @@ pnpm plugin:eval codex-subagent-guide --output-dir /tmp/codex-subagent-guide-rel
 
 ## 触发评估
 
-固定语料分成 train（14）、validation（9）和不参与 description 调优的 sanity（7）。它同时检查：
+strict 发布语料分成 train（12）、validation（8）和不参与 description 调优的 sanity（6）。它检查：
 
 - 已经由用户或临时 workspace 中的真实 `AGENTS.md` 授权委派时，加载 skill 并启动子代理。
-- 临时安装的上游 skill 只授权、不提供代理管理时加载；专用 fixture skill 已完整拥有委派生命周期时不叠加加载。
 - 只询问是否应该委派、概念文档、安装配置、明确禁止子代理等 near miss，不加载也不启动。
 - 显式调用 skill 或管理已有 agent 时加载 skill，但不额外 spawn。
 
-每条 query 默认在干净会话运行三次，以 `0.5` 为严格分界。`$skill` 记录为宿主显式注入，隐式加载只接受成功读取 `SKILL.md` 的执行事件；spawn 还要求原始 rollout 参数证据。中央 native trigger driver 使用只读临时 workspace 和隔离 `CODEX_HOME`，插件 fixture module 只准备授权场景；常规插件测试只检查语料、fixture 和领域 grader，不调用模型。
+standard 组合性诊断语料另有 4 条。它检查临时安装的上游 skill 只授权、不提供代理管理时加载，以及专用 fixture skill 已完整拥有委派生命周期时不叠加加载。该 suite 会写临时 `.agents/` fixture，因此不作为发布证据。
+
+每条 query 默认在干净会话运行三次，以 `0.5` 为分界。strict 发布 suite 的 validation 和 sanity 禁止加载或禁止委派负例使用零容忍，任意一次误触发都失败。`$skill` 记录为宿主显式注入，隐式加载只接受成功读取 `SKILL.md` 的执行事件；spawn 还要求原始 rollout 参数证据。中央 native trigger driver 使用只读临时 workspace 和隔离 `CODEX_HOME`；常规插件测试只检查语料、fixture 和领域 grader，不调用模型。
 
 ```bash
 pnpm plugin:eval codex-subagent-guide --suite trigger --split train --runs 3 --output-dir /tmp/codex-subagent-guide-eval
 pnpm plugin:eval codex-subagent-guide --suite trigger --split validation --runs 3 --output-dir /tmp/codex-subagent-guide-eval
 pnpm plugin:eval codex-subagent-guide --suite trigger --split sanity --runs 3 --output-dir /tmp/codex-subagent-guide-eval
+pnpm plugin:eval codex-subagent-guide --suite trigger-composition --runs 3 --output-dir /tmp/codex-subagent-guide-eval
 ```
 
 ## Routing 参数评估

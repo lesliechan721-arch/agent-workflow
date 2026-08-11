@@ -21,18 +21,77 @@ const ROLE_NAMES = [
 ];
 
 async function testEvalCorpus() {
-  const document = JSON.parse(await readEvalResource('trigger-cases.json'));
-  const { cases } = document;
-  assert.equal(document.schemaVersion, 1);
-  assert.equal(document.skill, 'codex-subagent-guide');
-  assert.equal(cases.length, 30);
-  assert.equal(cases.filter((entry) => entry.split === 'train').length, 14);
-  assert.equal(cases.filter((entry) => entry.split === 'validation').length, 9);
-  assert.equal(cases.filter((entry) => entry.split === 'sanity').length, 7);
+  const manifest = JSON.parse(await readEvalResource('manifest.json'));
+  const releaseSuite = manifest.suites.find((entry) => entry.id === 'trigger');
+  const compositionSuite = manifest.suites.find((entry) => entry.id === 'trigger-composition');
+  assert.deepEqual(
+    {
+      cases: releaseSuite?.cases,
+      isolation: releaseSuite?.isolation,
+      strictNegativeSplits: releaseSuite?.strictNegativeSplits,
+      releaseSplits: releaseSuite?.releaseSplits,
+      requiredForRelease: releaseSuite?.requiredForRelease,
+    },
+    {
+      cases: './evals/trigger-cases.json',
+      isolation: 'strict',
+      strictNegativeSplits: ['validation', 'sanity'],
+      releaseSplits: ['validation', 'sanity'],
+      requiredForRelease: true,
+    },
+  );
+  assert.deepEqual(
+    {
+      cases: compositionSuite?.cases,
+      isolation: compositionSuite?.isolation,
+      strictNegativeSplits: compositionSuite?.strictNegativeSplits,
+      releaseSplits: compositionSuite?.releaseSplits,
+      requiredForRelease: compositionSuite?.requiredForRelease,
+    },
+    {
+      cases: './evals/trigger-composition-cases.json',
+      isolation: 'standard',
+      strictNegativeSplits: [],
+      releaseSplits: [],
+      requiredForRelease: false,
+    },
+  );
+
+  const releaseDocument = JSON.parse(await readEvalResource('trigger-cases.json'));
+  const compositionDocument = JSON.parse(
+    await readEvalResource('trigger-composition-cases.json'),
+  );
+  const releaseCases = releaseDocument.cases;
+  const compositionCases = compositionDocument.cases;
+  const cases = [...releaseCases, ...compositionCases];
+  assert.equal(releaseDocument.schemaVersion, 1);
+  assert.equal(releaseDocument.skill, 'codex-subagent-guide');
+  assert.equal(compositionDocument.schemaVersion, 1);
+  assert.equal(compositionDocument.skill, 'codex-subagent-guide');
+  assert.equal(releaseCases.length, 26);
+  assert.equal(releaseCases.filter((entry) => entry.split === 'train').length, 12);
+  assert.equal(releaseCases.filter((entry) => entry.split === 'validation').length, 8);
+  assert.equal(releaseCases.filter((entry) => entry.split === 'sanity').length, 6);
+  assert.equal(compositionCases.length, 4);
+  assert.equal(compositionCases.filter((entry) => entry.split === 'train').length, 2);
+  assert.equal(compositionCases.filter((entry) => entry.split === 'validation').length, 1);
+  assert.equal(compositionCases.filter((entry) => entry.split === 'sanity').length, 1);
   assert.equal(new Set(cases.map((entry) => entry.id)).size, cases.length);
   assert.equal(cases.every((entry) => typeof entry.should_spawn_agent === 'boolean'), true);
   assert.equal(
-    cases.filter((entry) => entry.workspace_fixture === 'project_authorization')
+    releaseCases.every((entry) => !['authorization_skill', 'lifecycle_skill'].includes(
+      entry.workspace_fixture,
+    )),
+    true,
+  );
+  assert.equal(
+    compositionCases.every((entry) => ['authorization_skill', 'lifecycle_skill'].includes(
+      entry.workspace_fixture,
+    )),
+    true,
+  );
+  assert.equal(
+    releaseCases.filter((entry) => entry.workspace_fixture === 'project_authorization')
       .every((entry) => entry.use_project_rules === true),
     true,
   );

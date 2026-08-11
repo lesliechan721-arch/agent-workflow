@@ -245,6 +245,27 @@ describe('Codex native trigger eval driver', () => {
     ).passed).toBe(false);
   });
 
+  it('fails a strict no-spawn case after one delegation in three runs', () => {
+    const evalCase: PluginEvalTriggerCase = {
+      id: 'must_not_delegate',
+      split: 'validation',
+      query: 'Load the guide but do not delegate.',
+      should_load_skill: true,
+      should_spawn_agent: false,
+    };
+    const runs = [
+      runEvidence({ loaded: true, spawned: true }),
+      runEvidence({ loaded: true }),
+      runEvidence({ loaded: true }),
+    ];
+    expect(summarizeTriggerCase(suite(), evalCase, runs).passed).toBe(true);
+    expect(summarizeTriggerCase(
+      suite({ strictNegativeSplits: ['validation'] }),
+      evalCase,
+      runs,
+    ).passed).toBe(false);
+  });
+
   it('observes V2 spawn from app-server sub-agent activity', () => {
     expect(inspectTriggerAppServerFrame({
       method: 'item/started',

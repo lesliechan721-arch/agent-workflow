@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-import { readSpawnCallsFromRollouts } from '../evals/eval-harness.mjs';
+import {
+  readSpawnCallsFromRollouts,
+  writeJsonReport,
+} from '../evals/eval-harness.mjs';
 import {
   evaluateRoutingRun,
   loadRoutingSpec,
@@ -138,6 +141,18 @@ async function testRolloutArgumentEvidence() {
     });
   } finally {
     await rm(codexHome, { recursive: true, force: true });
+  }
+}
+
+async function testJsonReportOutput() {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'codex-subagent-report-'));
+  const outputPath = path.join(root, 'reports', 'routing.json');
+  const report = { complete: true, passed: true };
+  try {
+    await writeJsonReport(report, outputPath);
+    assert.deepEqual(JSON.parse(await readFile(outputPath, 'utf8')), report);
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 }
 
@@ -295,6 +310,7 @@ async function main() {
   testArguments();
   await testEvalSpec();
   await testRolloutArgumentEvidence();
+  await testJsonReportOutput();
   testMechanicalAssertions();
   testReportStatus();
   console.log('routing eval tests passed');

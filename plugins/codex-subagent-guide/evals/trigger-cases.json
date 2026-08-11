@@ -40,22 +40,6 @@
       "should_spawn_agent": true
     },
     {
-      "id": "authorization_only_requires_guide",
-      "split": "train",
-      "query": "$delegation-authorizer 核对 src/simple.ts 的事实并整理证据。",
-      "should_load_skill": true,
-      "should_spawn_agent": true,
-      "workspace_fixture": "authorization_skill"
-    },
-    {
-      "id": "specialized_workflow_owns_lifecycle",
-      "split": "train",
-      "query": "$delegation-lifecycle-owner 继续现有的专用委派流程，等待已经运行的 agent_alpha。",
-      "should_load_skill": false,
-      "should_spawn_agent": false,
-      "workspace_fixture": "lifecycle_skill"
-    },
-    {
       "id": "decision_only_near_miss",
       "split": "train",
       "query": "你觉得这个小任务是否值得委派给子代理？只分析利弊，先不要启动任何 agent。",
@@ -135,14 +119,6 @@
       "should_spawn_agent": true
     },
     {
-      "id": "validation_specialized_workflow_owner",
-      "split": "validation",
-      "query": "$delegation-lifecycle-owner 继续安全审计的现有流程，等待已经运行的 agent_delta。",
-      "should_load_skill": false,
-      "should_spawn_agent": false,
-      "workspace_fixture": "lifecycle_skill"
-    },
-    {
       "id": "validation_should_we_delegate",
       "split": "validation",
       "query": "先判断是否需要多 agent 并行，不要真的调用 spawn_agent。",
@@ -192,14 +168,6 @@
       "should_spawn_agent": true,
       "workspace_fixture": "project_authorization",
       "use_project_rules": true
-    },
-    {
-      "id": "sanity_specialized_owner_native",
-      "split": "sanity",
-      "query": "$delegation-lifecycle-owner 继续现有工作流并等待已经运行的 agent，不要启动重复 agent。",
-      "should_load_skill": false,
-      "should_spawn_agent": false,
-      "workspace_fixture": "lifecycle_skill"
     },
     {
       "id": "sanity_docs_only",
