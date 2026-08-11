@@ -392,6 +392,23 @@ test('behavior corpora preserve all redesigned assertions in executable conversa
     0,
   );
 
+  const readBeforeQuestion = decision.evals.find(
+    (entry) => entry.id === 'read-before-question',
+  );
+  assert.match(readBeforeQuestion.prompt, /减少设计稿评审中的版本来回传递/);
+  assert.match(readBeforeQuestion.prompt, /3–10 人的独立设计团队/);
+  assert.match(readBeforeQuestion.prompt, /2027 年第一季度完成 12 周试点/);
+  assert.match(readBeforeQuestion.prompt, /不要在本轮提问/);
+  assert.equal(readBeforeQuestion.scripted_replies.length, 0);
+  assert.match(readBeforeQuestion.review.checks.join('\n'), /具体路线图事实/);
+
+  const decisionRecord = decision.evals.find((entry) => entry.id === 'decision-record');
+  assert.match(decisionRecord.prompt, /产品负责人在本周五前确认数据驻留条款/);
+  assert.match(
+    decisionRecord.review.checks.join('\n'),
+    /完整保留产品负责人在本周五前确认数据驻留条款的委托/,
+  );
+
   const readme = await readFile(path.join(context.sourceRoot, 'evals', 'README.md'), 'utf8');
   assert.match(readme, /use_project_rules: true/);
   assert.match(readme, /requirements-clarifier-evals\.json/);
