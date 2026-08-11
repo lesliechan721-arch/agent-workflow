@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "type": "plugin-skill-eval",
+  "runId": "20260811T150150Z-ad18f60c",
+  "plugin": "codex-subagent-guide",
+  "skill": "codex-subagent-guide",
+  "status": "completed",
+  "startedAt": "2026-08-11T15:01:50.876Z",
+  "completedAt": "2026-08-11T15:04:50.001Z",
+  "outcome": "incomplete",
+  "processManagement": {
+    "mode": "managed",
+    "inspectionAvailable": true,
+    "userAcknowledged": false,
+    "descendantCleanupGuaranteed": true
+  },
+  "source": {
+    "gitHead": "27627ee906907c8b0b3b58b59e34563e3d550a04",
+    "inScopeDirty": true
+  },
+  "rawDirectory": "raw"
+}

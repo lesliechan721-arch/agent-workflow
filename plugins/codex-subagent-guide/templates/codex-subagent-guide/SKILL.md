@@ -20,6 +20,8 @@ metadata:
 
 只有明确要求继承，或任务无法通过完整 `message` 自包含时才继承；不要仅为缩短委派说明而继承。上下文选择独立于 preset/custom。
 
+全历史继承会沿用父代理类型，因此省略 `agent_type`。若当前 schema 不能精确表达最近 N 轮，则停止并说明，不得改用全历史近似。
+
 ## 等待与清理
 
 只在需要结果才能继续时调用 `wait_agent`。除非用户或专用 skill 明确覆盖，当前 schema 允许时首次使用至少 `{{minimumInitialWaitMinutes}}` 分钟的响应式窗口（`timeout_ms={{minimumInitialWaitTimeoutMs}}`）；超时不是失败，结果仍必要时继续使用不短于前次且不超过上限的窗口。只有工具结果或通知明确表示终态时才算完成。

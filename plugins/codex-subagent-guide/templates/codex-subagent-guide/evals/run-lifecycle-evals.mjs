@@ -15,7 +15,7 @@ const DEFAULT_OPTIONS = {
   runs: 1,
   timeoutMs: 900_000,
   codexBin: 'codex',
-  model: 'gpt-5.6-sol',
+  model: 'gpt-5.6-luna',
   caseId: undefined,
   output: undefined,
 };
@@ -45,6 +45,7 @@ export function parseLifecycleArgs(argv) {
       else options.timeoutMs = parsed;
     } else if (flag === '--case') options.caseId = value;
     else if (flag === '--codex-bin') options.codexBin = value;
+    else if (flag === '--model') options.model = value;
     else if (flag === '--output') options.output = path.resolve(value);
     else throw new Error(`Unknown option: ${flag}`);
   }
@@ -183,7 +184,7 @@ async function runCase(evalCase, options) {
 async function main() {
   const options = parseLifecycleArgs(process.argv.slice(2));
   if (options.help) {
-    process.stdout.write('Usage: run-lifecycle-evals.mjs [--runs N] [--case ID] [--codex-bin PATH] [--timeout-ms MS] [--output PATH]\n');
+    process.stdout.write('Usage: run-lifecycle-evals.mjs [--runs N] [--case ID] [--model MODEL] [--codex-bin PATH] [--timeout-ms MS] [--output PATH]\n');
     return;
   }
   const cases = await loadCases(options.caseId);

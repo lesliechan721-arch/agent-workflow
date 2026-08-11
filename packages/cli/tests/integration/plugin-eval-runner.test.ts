@@ -670,7 +670,7 @@ describe('plugin eval runner', () => {
       expect(exitCode, stderr).toBe(1);
       const commandReport = JSON.parse(stdout);
       expect(commandReport.bundle, stderr).toMatchObject({
-        model: 'fixture-model',
+        model: 'gpt-5.6-luna',
         modelProvider: 'fixture-provider',
         credentialSource: 'embedded',
         outcome: 'incomplete',
@@ -781,6 +781,52 @@ describe('plugin eval runner', () => {
     );
     expect(persistedReport).toContain('[redacted]');
     expect(persistedReport).toContain('[process-tree-id]');
+  });
+
+  it('forwards an explicit model to a supporting command suite', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-eval-command-model-'));
+    const outputRoot = path.join(root, 'output');
+    tempDirs.push(root);
+    await writeCommandPlugin(root, {
+      name: 'model-demo',
+      script: [
+        "import { mkdir, writeFile } from 'node:fs/promises';",
+        "import path from 'node:path';",
+        "const model = process.argv[process.argv.indexOf('--model') + 1];",
+        "if (model !== 'gpt-test') process.exit(7);",
+        "const output = process.argv[process.argv.indexOf('--output') + 1];",
+        "await mkdir(path.dirname(output), { recursive: true });",
+        "await writeFile(output, JSON.stringify({ complete: true, passed: true, summary: { model } }));",
+      ].join('\n'),
+      defaultRuns: 1,
+      perRunTimeoutMs: 1_000,
+      suiteTimeoutMs: 2_000,
+      supports: ['model', 'codexBin'],
+    });
+    registerCurrentTestReadonlyFixtureRoot(root);
+    registerCurrentTestWritableStateRoot(outputRoot);
+    let stdout = '';
+    let stderr = '';
+
+    const exitCode = await runPluginEvals([
+      'model-demo',
+      '--skill',
+      'model-demo',
+      '--model',
+      'gpt-test',
+      '--codex-bin',
+      process.execPath,
+    ], {
+      repoRoot: root,
+      env: process.env,
+      stdout: (text) => { stdout += text; },
+      stderr: (text) => { stderr += text; },
+      inspectProcessTree: async () => undefined,
+      createRunLayout: testRunLayoutFactory(outputRoot),
+    });
+
+    expect(exitCode, stderr).toBe(0);
+    expect(JSON.parse(stdout).bundle.suites[0].summary).toEqual({ model: 'gpt-test' });
   });
 
   it('materializes a repo-local cross-plugin Skill set for one owner suite', async () => {

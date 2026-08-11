@@ -17,7 +17,7 @@ const DEFAULT_OPTIONS = {
   timeoutMs: 180_000,
   codexBin: 'codex',
   v1Model: 'gpt-5.6-luna',
-  v2Model: 'gpt-5.6-sol',
+  v2Model: 'gpt-5.6-luna',
   profile: 'all',
   variant: 'all',
   caseId: undefined,
@@ -37,8 +37,9 @@ Options:
   --threshold <rate>                          Pass boundary (default: 0.5)
   --timeout-ms <milliseconds>                 Per-run timeout (default: 180000)
   --codex-bin <path>                          Codex executable (default: codex)
+  --model <model>                             V1/V2 parent model override
   --v1-model <model>                          V1 parent model (default: gpt-5.6-luna)
-  --v2-model <model>                          V2 parent model (default: gpt-5.6-sol)
+  --v2-model <model>                          V2 parent model (default: gpt-5.6-luna)
   --profile <v1|v2|all>                       Profiles to run (default: all)
   --variant <with_skill|without_skill|all>    Variants to run (default: all)
   --case <id>                                 Run one case only
@@ -86,6 +87,9 @@ export function parseRoutingArgs(argv) {
       }
     } else if (flag === '--codex-bin') {
       options.codexBin = value;
+    } else if (flag === '--model') {
+      options.v1Model = value;
+      options.v2Model = value;
     } else if (flag === '--v1-model') {
       options.v1Model = value;
     } else if (flag === '--v2-model') {

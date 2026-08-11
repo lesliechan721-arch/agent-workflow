@@ -17,7 +17,7 @@ node .agents/skills/skill-review/scripts/run_static_skill_evals.mjs \
 pnpm build
 ```
 
-默认会安全继承本机选中的 Codex model/provider；只复制 provider 所需配置和凭据，不继承 plugins、skills 或 MCP。认证或 provider 配置错误会被记录为 `incomplete`，不能形成 Skill 失败或发布通过证据。嵌套沙箱无法初始化时，应在外层沙箱之外运行，由中央 driver 自己建立隔离的只读环境。
+默认使用 `gpt-5.6-luna`，并安全继承本机选中的 Codex provider；只复制 provider 所需配置和凭据，不继承本机 model、plugins、skills 或 MCP。认证或 provider 配置错误会被记录为 `incomplete`，不能形成 Skill 失败或发布通过证据。嵌套沙箱无法初始化时，应在外层沙箱之外运行，由中央 driver 自己建立隔离的只读环境。
 
 只根据 train 结果调整 description：
 

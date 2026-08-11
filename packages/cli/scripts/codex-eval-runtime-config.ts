@@ -7,7 +7,9 @@ import { ParseError, parseTOML, type AST } from 'toml-eslint-parser';
 
 import { CODEX_EVAL_CREDENTIAL_CONFIG_LINES } from './codex-eval-isolation.js';
 
-const INHERITED_MODEL_KEYS = new Set([
+export const DEFAULT_CODEX_EVAL_MODEL = 'gpt-5.6-luna';
+
+const MODEL_CONFIG_KEYS = new Set([
   'model',
   'model_provider',
   'model_reasoning_effort',
@@ -170,11 +172,11 @@ function effectiveModelEntries(
   for (const entry of topLevelEntries(program)) {
     if (entry.type !== 'TOMLKeyValue') continue;
     const key = keySegments(entry.key).join('.');
-    if (INHERITED_MODEL_KEYS.has(key)) entries.set(key, entry);
+    if (MODEL_CONFIG_KEYS.has(key)) entries.set(key, entry);
   }
   for (const entry of activeProfileTable(program)?.body ?? []) {
     const key = keySegments(entry.key).join('.');
-    if (INHERITED_MODEL_KEYS.has(key)) entries.set(key, entry);
+    if (MODEL_CONFIG_KEYS.has(key)) entries.set(key, entry);
   }
   return entries;
 }
@@ -299,18 +301,16 @@ function renderFilteredConfig(options: {
   program: AST.TOMLProgram;
   provider: string;
   tables: AST.TOMLTable[];
-  modelOverride?: string;
+  model: string;
   providerOverride?: string;
 }): string {
   const lines: string[] = [...CODEX_EVAL_CREDENTIAL_CONFIG_LINES];
   for (const [key, entry] of effectiveModelEntries(options.program)) {
-    if (key === 'model' && options.modelOverride) continue;
+    if (key === 'model') continue;
     if (key === 'model_provider') continue;
     lines.push(options.content.slice(entry.range[0], entry.range[1]));
   }
-  if (options.modelOverride) {
-    lines.push(`model = ${JSON.stringify(options.modelOverride)}`);
-  }
+  lines.push(`model = ${JSON.stringify(options.model)}`);
   lines.push(`model_provider = ${JSON.stringify(options.providerOverride ?? options.provider)}`);
   for (const table of options.tables) {
     lines.push(options.content.slice(table.range[0], table.range[1]));
@@ -338,7 +338,7 @@ export function cleanCodexEvalRuntimeConfig(
   sourceEnv: NodeJS.ProcessEnv = process.env,
   modelOverride?: string,
 ): CodexEvalRuntimeConfig {
-  const model = modelOverride ?? null;
+  const model = modelOverride ?? DEFAULT_CODEX_EVAL_MODEL;
   const sensitivePassthrough = sensitivePassthroughEnvironment(sourceEnv);
   const descriptor = {
     inherited: false,
@@ -350,7 +350,7 @@ export function cleanCodexEvalRuntimeConfig(
     ...descriptor,
     configToml: [
       ...CODEX_EVAL_CREDENTIAL_CONFIG_LINES,
-      ...(model ? [`model = ${JSON.stringify(model)}`] : []),
+      `model = ${JSON.stringify(model)}`,
       'model_provider = "openai"',
       '',
     ].join('\n'),
@@ -408,7 +408,7 @@ export async function resolveCodexEvalRuntimeConfig(
       `Codex eval model provider ${JSON.stringify(provider)} is not defined in ${configPath}.`,
     );
   }
-  const model = options.modelOverride ?? effectiveModelString(program, 'model') ?? null;
+  const model = options.modelOverride ?? DEFAULT_CODEX_EVAL_MODEL;
   const builtInOpenAiProvider = provider === 'openai' && tables.length === 0;
   const names = providerEnvironmentNames(tables);
   const providerEnvironment: Record<string, string> = {};
@@ -450,7 +450,7 @@ export async function resolveCodexEvalRuntimeConfig(
       program,
       provider,
       tables,
-      modelOverride: options.modelOverride,
+      model,
       providerOverride: options.modelProviderOverride,
     }),
     providerEnvironment,

@@ -648,7 +648,7 @@ export function earlyStopReason(evalCase, observed) {
     return null;
   }
   if (evalCase.stop_on_spawn) {
-    return observed.spawned ? 'spawn_observed' : null;
+    return observed.spawned && observed.spawnCalls.length > 0 ? 'spawn_observed' : null;
   }
   if (!evalCase.should_load_skill && observed.loaded) {
     return 'unexpected_skill_load';
