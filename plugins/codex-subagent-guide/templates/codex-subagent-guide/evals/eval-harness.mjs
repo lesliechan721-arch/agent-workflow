@@ -609,6 +609,15 @@ export async function copyCodexRuntimeFiles(
   }
 }
 
+export async function removeEvalDirectory(root, removeDirectory = rm) {
+  await removeDirectory(root, {
+    recursive: true,
+    force: true,
+    maxRetries: 5,
+    retryDelay: 100,
+  });
+}
+
 export function earlyStopReason(evalCase, observed) {
   if (evalCase.wait_for_completion) {
     return null;
@@ -838,7 +847,7 @@ export async function runCodexOnce(workspace, evalCase, options) {
       });
     });
   } finally {
-    await rm(codexHome, { recursive: true, force: true });
+    await removeEvalDirectory(codexHome);
   }
 }
 

@@ -7,6 +7,7 @@ import {
   earlyStopReason,
   extractExecToolCalls,
   readSpawnCallsFromRollouts,
+  removeEvalDirectory,
   writeJsonReport,
 } from '../templates/codex-subagent-guide/evals/eval-harness.mjs';
 import {
@@ -227,6 +228,23 @@ async function testJsonReportOutput() {
   }
 }
 
+async function testEvalDirectoryCleanupContract() {
+  const root = path.join(os.tmpdir(), 'codex-subagent-guide-eval');
+  const calls = [];
+  await removeEvalDirectory(root, async (candidate, options) => {
+    calls.push({ root: candidate, options });
+  });
+  assert.deepEqual(calls, [{
+    root,
+    options: {
+      recursive: true,
+      force: true,
+      maxRetries: 5,
+      retryDelay: 100,
+    },
+  }]);
+}
+
 function testMechanicalAssertions() {
   const expected = {
     spawn_calls: { min: 1, max: 1 },
@@ -397,6 +415,7 @@ async function main() {
   await testEvalSpec();
   await testRolloutArgumentEvidence();
   await testJsonReportOutput();
+  await testEvalDirectoryCleanupContract();
   testMechanicalAssertions();
   testReportStatus();
   console.log('routing eval tests passed');
