@@ -74,6 +74,7 @@ test('parses central command-suite arguments', () => {
     parseLifecycleArgs([
       '--runs', '2',
       '--case', 'wait_for_terminal_result',
+      '--model', 'gpt-test',
       '--codex-bin', '/tmp/codex',
       '--timeout-ms', '120000',
       '--output', './result.json',
@@ -82,10 +83,11 @@ test('parses central command-suite arguments', () => {
       runs: 2,
       timeoutMs: 120_000,
       codexBin: '/tmp/codex',
-      model: 'gpt-5.6-sol',
+      model: 'gpt-test',
       caseId: 'wait_for_terminal_result',
       output: path.resolve('./result.json'),
       help: false,
     },
   );
+  assert.equal(parseLifecycleArgs([]).model, 'gpt-5.6-luna');
 });

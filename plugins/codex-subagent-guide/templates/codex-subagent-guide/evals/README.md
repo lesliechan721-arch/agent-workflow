@@ -45,7 +45,7 @@ pnpm plugin:eval codex-subagent-guide --skill codex-subagent-guide --suite routi
 pnpm plugin:eval codex-subagent-guide --skill codex-subagent-guide --suite routing --runs 1 --case partial_preset
 ```
 
-runner 默认用 `gpt-5.6-luna` 运行 V1、`gpt-5.6-sol` 运行 V2，可用 `--v1-model` / `--v2-model` 调整。临时 home 只复制现有认证文件且权限设为 `0600`，模型 shell 环境不继承该路径，结束或中断后会删除。任何认证、网络、CLI 或 schema 环境错误都会令报告 `complete: false` 并返回非零，不会静默跳过。
+runner 默认用 `gpt-5.6-luna` 运行 V1 和 V2；中央 `plugin:eval --model` 同时覆盖两者，runner 内部仍可用 `--v1-model` / `--v2-model` 分别调整。lifecycle 使用同一个中央模型覆盖。临时 home 只复制现有认证文件且权限设为 `0600`，模型 shell 环境不继承该路径，结束或中断后会删除。任何认证、网络、CLI 或 schema 环境错误都会令报告 `complete: false` 并返回非零，不会静默跳过。
 
 如果 stdout 只给出简化的协作事件，却没有可读取的隔离 rollout 原始参数，runner 也会标记 `raw_evidence_missing` 和 `complete: false`；最终说明或调用事件不能替代参数证据。
 

@@ -94,7 +94,7 @@
       "requiredForRelease": true,
       "perRunTimeoutMs": 180000,
       "suiteTimeoutMs": 43200000,
-      "supports": ["runs", "case", "codexBin", "timeout"]
+      "supports": ["runs", "case", "model", "codexBin", "timeout"]
     },
     {
       "id": "lifecycle",
@@ -107,7 +107,7 @@
       "requiredForRelease": true,
       "perRunTimeoutMs": 900000,
       "suiteTimeoutMs": 3600000,
-      "supports": ["runs", "case", "codexBin", "timeout"]
+      "supports": ["runs", "case", "model", "codexBin", "timeout"]
     }
   ]
 }

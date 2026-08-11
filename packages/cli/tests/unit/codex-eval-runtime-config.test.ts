@@ -8,6 +8,7 @@ import {
   cleanupActiveCodexEvalRuntimeCapsules,
   createCodexEvalTemporaryRoot,
   createCodexEvalRuntimeCapsule,
+  DEFAULT_CODEX_EVAL_MODEL,
   materializeCodexEvalRuntimeHome,
   redactCodexEvalValue,
   registerCodexEvalTemporaryRoot,
@@ -67,13 +68,15 @@ describe('Codex eval runtime config', () => {
 
     expect(runtime).toMatchObject({
       inherited: true,
-      model: 'inherited-model',
+      model: DEFAULT_CODEX_EVAL_MODEL,
       modelProvider: 'custom',
       credentialSource: 'embedded',
       copyOpenAiAuth: false,
       providerEnvironment: {},
     });
     expect(runtime.configToml).toContain('[model_providers.custom]');
+    expect(runtime.configToml).toContain(`model = "${DEFAULT_CODEX_EVAL_MODEL}"`);
+    expect(runtime.configToml).not.toContain('model = "inherited-model"');
     expect(runtime.configToml).toContain('model_reasoning_effort = "high"');
     expect(runtime.configToml).not.toContain('model_providers.unused');
     expect(runtime.configToml).not.toContain('[plugins.');
@@ -95,7 +98,7 @@ describe('Codex eval runtime config', () => {
     }
   });
 
-  it('inherits model settings from the active profile', async () => {
+  it('uses the eval default model with provider settings from the active profile', async () => {
     const root = await tempRoot();
     await fs.writeFile(path.join(root, 'config.toml'), [
       'profile = "work"',
@@ -122,12 +125,13 @@ describe('Codex eval runtime config', () => {
     });
 
     expect(runtime).toMatchObject({
-      model: 'work-model',
+      model: DEFAULT_CODEX_EVAL_MODEL,
       modelProvider: 'work-provider',
       credentialSource: 'environment',
       providerEnvironment: { WORK_API_KEY: 'work-key' },
     });
-    expect(runtime.configToml).toContain('model = "work-model"');
+    expect(runtime.configToml).toContain(`model = "${DEFAULT_CODEX_EVAL_MODEL}"`);
+    expect(runtime.configToml).not.toContain('model = "work-model"');
     expect(runtime.configToml).toContain('model_reasoning_effort = "high"');
     expect(runtime.configToml).toContain('model_reasoning_summary = "concise"');
     expect(runtime.configToml).toContain('[model_providers.work-provider]');
@@ -274,7 +278,7 @@ describe('Codex eval runtime config', () => {
     expect(clean.configToml).toContain('features.secret_auth_storage = false');
   });
 
-  it('always materializes a file-only credential config without a model override', async () => {
+  it('always materializes the default model and file-only credential config', async () => {
     const root = await tempRoot();
     const runtime = await resolveCodexEvalRuntimeConfig({
       sourceEnv: { CODEX_HOME: root },
@@ -285,6 +289,8 @@ describe('Codex eval runtime config', () => {
     await materializeCodexEvalRuntimeHome(runtime, destination);
 
     const config = await fs.readFile(path.join(destination, 'config.toml'), 'utf8');
+    expect(runtime.model).toBe(DEFAULT_CODEX_EVAL_MODEL);
+    expect(config).toContain(`model = "${DEFAULT_CODEX_EVAL_MODEL}"`);
     expect(config).toContain('cli_auth_credentials_store = "file"');
     expect(config).toContain('mcp_oauth_credentials_store = "file"');
     expect(config).toContain('features.secret_auth_storage = false');

@@ -25,7 +25,7 @@ node .agents/skills/skill-review/scripts/run_static_skill_evals.mjs \
 
 ## Codex 配置与证据
 
-默认从当前 `CODEX_HOME/config.toml` 只提取顶层 model 选择和选中的 `model_providers.<id>`，不会继承 plugins、skills、MCP、agents 或其它用户配置。`--model`、`--model-provider`、`--codex-config` 可显式覆盖；`--no-inherit-codex-config` 使用干净的官方默认 provider。
+默认模型为 `gpt-5.6-luna`。当前 `CODEX_HOME/config.toml` 只提供选中的 `model_providers.<id>`、provider 连接配置及其它允许的 model 设置，不再决定默认模型；不会继承 plugins、skills、MCP、agents 或其它用户配置。`--model`、`--model-provider`、`--codex-config` 可显式覆盖；`--no-inherit-codex-config` 使用干净的官方默认 provider。
 
 provider 引用的 `env_key` / `env_http_headers` 会按名称透传，但不能使用 `HOME`、`CODEX_HOME`、`XDG_*`、`TMP*`、`PATH`、`AW_*` 等隔离保留变量；command harness 只继承固定网络/locale 白名单和 provider 明确声明的变量。配置内 bearer 只进入权限为 `0600` 的临时 runtime home，非官方 provider 一律不复制官方 auth。凭据变量不会进入模型 shell；endpoint、bearer、header、env credential 和官方 auth token 在写报告前统一脱敏。临时配置在成功、失败或 `SIGINT` / `SIGTERM` 后清理，持久报告只记录 provider ID、credential source 和不含 secret 的证据 digest。
 

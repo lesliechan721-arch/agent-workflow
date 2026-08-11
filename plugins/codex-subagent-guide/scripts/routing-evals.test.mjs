@@ -6,6 +6,7 @@ import path from 'node:path';
 import {
   earlyStopReason,
   extractExecToolCalls,
+  readEvalResource,
   readSpawnCallsFromRollouts,
   removeEvalDirectory,
   writeJsonReport,
@@ -40,7 +41,7 @@ function testArguments() {
       timeoutMs: 180_000,
       codexBin: 'codex',
       v1Model: 'gpt-5.6-luna',
-      v2Model: 'gpt-5.6-sol',
+      v2Model: 'gpt-5.6-luna',
       profile: 'v2',
       variant: 'with_skill',
       caseId: 'partial_preset',
@@ -50,10 +51,19 @@ function testArguments() {
   );
   assert.throws(() => parseRoutingArgs(['--profile', 'v3']), /v1, v2, or all/);
   assert.throws(() => parseRoutingArgs(['--runs', '0']), /positive integer/);
+  const overridden = parseRoutingArgs(['--model', 'gpt-test']);
+  assert.equal(overridden.v1Model, 'gpt-test');
+  assert.equal(overridden.v2Model, 'gpt-test');
 }
 
 async function testEvalSpec() {
   const spec = await loadRoutingSpec();
+  const manifest = JSON.parse(await readEvalResource('manifest.json'));
+  for (const suiteId of ['routing', 'lifecycle']) {
+    assert.ok(
+      manifest.suites.find((suite) => suite.id === suiteId).supports.includes('model'),
+    );
+  }
   assert.equal(spec.skill_name, 'codex-subagent-guide');
   assert.deepEqual(
     spec.evals.map((entry) => entry.id),

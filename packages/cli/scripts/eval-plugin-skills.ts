@@ -147,7 +147,7 @@ function usage(): string {
     '  --split <train|validation|sanity|all>',
     '  --case <id>                   Run one case (requires --suite)',
     '  --runs <count>                Override repetitions per case',
-    '  --model <model>               Override the parent Codex model',
+    '  --model <model>               Parent Codex model (default: gpt-5.6-luna)',
     '  --model-provider <id>         Override the inherited Codex model provider',
     '  --codex-config <path>         Read model/provider config from this config.toml',
     '  --no-inherit-codex-config     Use a clean official Codex provider config',
