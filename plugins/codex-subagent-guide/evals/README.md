@@ -45,4 +45,4 @@ runner 默认用 `gpt-5.6-luna` 运行 V1、`gpt-5.6-sol` 运行 V2，可用 `--
 
 如果 stdout 只给出简化的协作事件，却没有可读取的隔离 rollout 原始参数，runner 也会标记 `raw_evidence_missing` 和 `complete: false`；最终说明或调用事件不能替代参数证据。
 
-渲染单测只验证响应式长等待、终态、一次 follow-up、条件清理和禁止重复 spawn 等等待与清理不变量已进入最终 `SKILL.md`，不验证模型是否按这些规则行动。实时 routing eval 在 spawn 后停止，不启动长时间等待或清理工作流；这些行为仍需要 workflow eval 或人工轨迹检查。
+渲染单测只验证响应式长等待、终态、条件清理和监控禁令等等待与清理不变量已进入最终 `SKILL.md`，不验证模型是否按这些规则行动。实时 routing eval 在 spawn 后停止，不启动长时间等待或清理工作流；这些行为仍需要 workflow eval 或人工轨迹检查。

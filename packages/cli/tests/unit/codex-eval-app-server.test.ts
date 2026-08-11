@@ -8,6 +8,8 @@ import fs from 'fs-extra';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  inspectAppServerConfigWarning,
+  runCodexEvalIsolationProbe,
   runCodexConversationSuite,
   settleAppServerProcessCleanup,
 } from '../../scripts/codex-eval-app-server.js';
@@ -31,6 +33,17 @@ afterEach(async () => {
 });
 
 describe('Codex app-server eval driver', () => {
+  it('detects app-server config warnings for strict evals', () => {
+    expect(inspectAppServerConfigWarning({
+      method: 'configWarning',
+      params: { summary: 'Project-local config is disabled.' },
+    })).toBe('Project-local config is disabled.');
+    expect(inspectAppServerConfigWarning({
+      method: 'turn/started',
+      params: {},
+    })).toBeNull();
+  });
+
   it('releases open handles before reporting unconfirmed cleanup', async () => {
     const stdin = new PassThrough();
     const stdout = new PassThrough();
@@ -85,8 +98,10 @@ describe('Codex app-server eval driver', () => {
         "    send({ id: frame.id, result: { thread: { id: 'thread-1' } } });",
         "  } else if (frame.method === 'turn/start') {",
         "    send({ id: frame.id, result: { turn: { id: 'turn-1' } } });",
+        "    send({ method: 'remoteControl/status/changed', params: { serverName: 'private-server-name', installationId: 'private-installation-id' } });",
+        "    send({ method: 'account/rateLimits/updated', params: { planType: 'private-plan-type' } });",
         '    send({',
-        "      id: 'tool-1',",
+        '      id: 17,',
         "      method: 'item/tool/requestUserInput',",
         '      params: {',
         "        threadId: 'thread-1', turnId: 'turn-1', itemId: 'item-1', autoResolutionMs: null,",
@@ -96,7 +111,7 @@ describe('Codex app-server eval driver', () => {
         '        }],',
         '      },',
         '    });',
-        "  } else if (frame.id === 'tool-1' && frame.result) {",
+        '  } else if (frame.id === 17 && frame.result) {',
         "    const answer = frame.result.answers?.['runtime-question-id']?.answers?.[0];",
         "    if (answer !== 'approved') {",
         "      send({ method: 'error', params: { message: 'unexpected answer' } });",
@@ -153,6 +168,7 @@ describe('Codex app-server eval driver', () => {
     });
     const evidence = await fs.readJson(reportPath);
     const run = evidence.results[0].runs[0];
+    expect(run.with_skill.questions[0].requestId).toBe('17');
     expect(run.with_skill.questions[0].answers).toEqual({
       'runtime-question-id': ['approved'],
     });
@@ -161,6 +177,111 @@ describe('Codex app-server eval driver', () => {
     });
     expect(run.with_skill.finalMessages).toEqual(['done']);
     expect(run.with_skill.workspaceChanges).toEqual([]);
+    expect(JSON.stringify(evidence)).not.toContain('private-server-name');
+    expect(JSON.stringify(evidence)).not.toContain('private-installation-id');
+    expect(JSON.stringify(evidence)).not.toContain('private-plan-type');
+  });
+
+  it('proves strict config, target-only Skills, and empty MCP before model work', async () => {
+    const subjectRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-app-server-probe-'));
+    const sourceCodexHome = path.join(subjectRoot, 'source-codex-home');
+    const tracePath = path.join(subjectRoot, 'probe-trace.jsonl');
+    tempDirs.push(subjectRoot);
+    await fs.ensureDir(path.join(subjectRoot, '.agents', 'skills', 'target-skill'));
+    await fs.ensureDir(path.join(subjectRoot, '.agents', 'skills', 'other-skill'));
+    await fs.ensureDir(sourceCodexHome);
+    await fs.writeFile(
+      path.join(subjectRoot, '.agents', 'skills', 'target-skill', 'SKILL.md'),
+      '# Target\n',
+      'utf8',
+    );
+    await fs.writeFile(
+      path.join(subjectRoot, '.agents', 'skills', 'other-skill', 'SKILL.md'),
+      '# Other\n',
+      'utf8',
+    );
+    await fs.writeFile(path.join(subjectRoot, 'app-server'), [
+      "const fs = require('node:fs');",
+      "const path = require('node:path');",
+      "const readline = require('node:readline');",
+      `const tracePath = ${JSON.stringify(tracePath)};`,
+      "fs.appendFileSync(tracePath, JSON.stringify({ argv: process.argv.slice(2) }) + '\\n');",
+      "fs.appendFileSync(tracePath, JSON.stringify({ config: fs.readFileSync(path.join(process.env.CODEX_HOME, 'config.toml'), 'utf8') }) + '\\n');",
+      "const input = readline.createInterface({ input: process.stdin });",
+      "const send = (frame) => process.stdout.write(JSON.stringify(frame) + '\\n');",
+      "input.on('line', (line) => {",
+      "  const frame = JSON.parse(line);",
+      "  if (frame.method) fs.appendFileSync(tracePath, JSON.stringify({ method: frame.method }) + '\\n');",
+      "  if (frame.method === 'initialize') send({ id: frame.id, result: {} });",
+      "  else if (frame.method === 'config/read') send({ id: frame.id, result: {",
+      "    config: {",
+      "      cli_auth_credentials_store: 'file', mcp_oauth_credentials_store: 'file',",
+      "      include_apps_instructions: false, include_collaboration_mode_instructions: false,",
+      "      mcp_servers: {},",
+      "      features: { secret_auth_storage: false, default_mode_request_user_input: true, apps: false, plugins: false, remote_plugin: false, plugin_sharing: false, tool_suggest: false, skill_mcp_dependency_install: false },",
+      "      skills: { bundled: { enabled: false } },",
+      "      orchestrator: { skills: { enabled: false }, mcp: { enabled: false } },",
+      "    },",
+      "    origins: {},",
+      "    layers: [",
+      "      { name: { type: 'system', file: '/etc/codex/config.toml' }, version: '1', config: {} },",
+      "      { name: { type: 'user', file: path.join(process.env.CODEX_HOME, 'config.toml') }, version: '1', config: {} },",
+      "      { name: { type: 'sessionFlags' }, version: '1', config: {} },",
+      "    ],",
+      "  } });",
+      "  else if (frame.method === 'configRequirements/read') send({ id: frame.id, result: { requirements: null } });",
+      "  else if (frame.method === 'skills/list') {",
+      "    const cwd = frame.params.cwds[0];",
+      "    const target = path.join(cwd, '.agents', 'skills', 'target-skill', 'SKILL.md');",
+      "    const other = path.join(cwd, '.agents', 'skills', 'other-skill', 'SKILL.md');",
+      "    const skills = fs.existsSync(target) ? [{ name: 'target-skill', path: target, scope: 'repo', enabled: true }] : [];",
+      "    const errors = fs.existsSync(other) ? [{ path: other, message: 'unexpected Skill' }] : [];",
+      "    send({ id: frame.id, result: { data: [{ cwd, skills, errors }] } });",
+      "  }",
+      "  else if (frame.method === 'mcpServerStatus/list') send({ id: frame.id, result: { data: [], nextCursor: null } });",
+      "  else if (frame.method === 'thread/start' || frame.method === 'turn/start') process.exit(21);",
+      "});",
+    ].join('\n'), 'utf8');
+    const runtime = await resolveCodexEvalRuntimeConfig({
+      sourceEnv: { CODEX_HOME: sourceCodexHome },
+      inheritUserConfig: false,
+    });
+
+    const evidence = await runCodexEvalIsolationProbe({
+      subjectRoot,
+      skillName: 'target-skill',
+      codexBin: process.execPath,
+      codexRuntime: runtime,
+      sourceEnv: { PATH: process.env.PATH },
+    });
+
+    expect(evidence).toMatchObject({
+      config_requirements_absent: true,
+      mcp_server_count: 0,
+      strict_overrides_effective: true,
+    });
+    expect(evidence.skill_paths).toHaveLength(1);
+    const trace = (await fs.readFile(tracePath, 'utf8'))
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+    const argv = trace[0].argv as string[];
+    expect(argv).toContain('--strict-config');
+    expect(argv).toContain('cli_auth_credentials_store="file"');
+    expect(argv).toContain('features.plugins=false');
+    expect(argv).toContain('features.default_mode_request_user_input=true');
+    expect(argv).not.toContain('features.recommended_plugins=false');
+    expect(trace[1].config).toContain('trust_level = "trusted"');
+    expect(trace[1].config).toContain('[projects.');
+    const methods = trace.slice(2).map((entry) => entry.method);
+    expect(methods).toEqual(expect.arrayContaining([
+      'initialize',
+      'config/read',
+      'configRequirements/read',
+      'skills/list',
+      'mcpServerStatus/list',
+    ]));
+    expect(methods).not.toContain('thread/start');
   });
 
   it('excludes provider credentials from the model shell and redacts echoed values', async () => {

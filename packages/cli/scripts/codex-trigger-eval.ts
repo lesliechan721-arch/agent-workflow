@@ -1,20 +1,24 @@
-import { spawn } from 'node:child_process';
-import { createHash, randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
-import readline from 'node:readline';
 import { promisify } from 'node:util';
 import { pathToFileURL } from 'node:url';
 
 import fs from 'fs-extra';
 
 import {
-  assertProcessTreeInspectionAvailable,
-  CODEX_EVAL_PROCESS_TREE_ID_ENV,
-  createChildProcessTreeMonitor,
-  processTreeCleanupIsUnconfirmed,
-  releaseChildProcessHandles,
-} from './codex-eval-process-tree.js';
+  EvalAppServerSession,
+  extractAppServerThreadId,
+  inspectAppServerConfigWarning,
+  runCodexEvalIsolationProbe,
+} from './codex-eval-app-server.js';
+import {
+  codexEvalIsolationEvidence,
+  inspectCodexEvalHostIsolation,
+  type CodexEvalHostIsolationEvidence,
+  type CodexEvalRpcIsolationEvidence,
+} from './codex-eval-isolation.js';
+
 import {
   assertCodexEvalCanStartWork,
   applyCodexEvalProviderEnvironment,
@@ -23,7 +27,6 @@ import {
   createCodexEvalTemporaryRoot,
   materializeCodexEvalRuntimeHome,
   redactCodexEvalValue,
-  registerCodexEvalSignalCleanup,
   type CodexEvalRuntimeConfig,
 } from './codex-eval-runtime-config.js';
 import {
@@ -60,7 +63,6 @@ const PROTECTED_ENV = new Set([
   'TEMP',
   'TMP',
   'PATH',
-  CODEX_EVAL_PROCESS_TREE_ID_ENV,
 ]);
 
 interface TriggerFixtureContext {
@@ -202,22 +204,6 @@ function explicitSkillRequested(query: string, skillName: string): boolean {
   return new RegExp(`(?:^|\\s)\\$${escaped}(?:\\s|$)`, 'u').test(query);
 }
 
-export function parseTriggerExecEventLine(line: string): Record<string, unknown> | null {
-  try {
-    const parsed: unknown = JSON.parse(line);
-    return isRecord(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
-function eventItem(event: Record<string, unknown> | null): Record<string, unknown> | null {
-  if (!event || !['item.started', 'item.completed', 'item.updated'].includes(String(event.type))) {
-    return null;
-  }
-  return isRecord(event.item) ? event.item : null;
-}
-
 function normalizedCommandReadsSkill(command: string, skillPath: string): boolean {
   const normalize = (value: string): string => {
     let normalized = value.replaceAll('\\', '/').replaceAll('"', '').replaceAll("'", '');
@@ -247,15 +233,22 @@ function normalizedCommandReadsSkill(command: string, skillPath: string): boolea
   );
 }
 
-export function inspectTriggerExecEvent(
-  event: Record<string, unknown> | null,
+export function inspectTriggerAppServerFrame(
+  frame: Record<string, unknown>,
   skillPath: string,
-): Partial<TriggerObservation> & { finalMessage?: string; usage?: unknown } {
-  const item = eventItem(event);
-  if (item?.type === 'command_execution' && typeof item.command === 'string') {
-    const completed = event?.type === 'item.completed';
+): Partial<TriggerObservation> & {
+  finalMessage?: string;
+  usage?: unknown;
+  turnStatus?: string;
+  spawnCall?: Record<string, unknown>;
+} {
+  const method = typeof frame.method === 'string' ? frame.method : '';
+  const params = isRecord(frame.params) ? frame.params : {};
+  const item = isRecord(params.item) ? params.item : null;
+  if (item?.type === 'commandExecution' && typeof item.command === 'string') {
+    const completed = method === 'item/completed';
     const statusPassed = item.status === undefined || item.status === 'completed';
-    const exitPassed = item.exit_code === undefined || item.exit_code === 0;
+    const exitPassed = item.exitCode === undefined || item.exitCode === 0;
     if (
       completed &&
       statusPassed &&
@@ -265,88 +258,42 @@ export function inspectTriggerExecEvent(
       return { loaded: true, loadEvidence: item.command };
     }
   }
-  if (item?.type === 'collab_tool_call' && item.tool === 'spawn_agent') {
+  if (
+    (method === 'item/started' || method === 'item/completed') &&
+    item?.type === 'subAgentActivity' &&
+    item.kind === 'started'
+  ) {
+    const agentPath = typeof item.agentPath === 'string' ? item.agentPath : null;
+    const agentThreadId = typeof item.agentThreadId === 'string' ? item.agentThreadId : null;
     return {
       spawned: true,
-      spawnEvidence: typeof item.prompt === 'string' ? item.prompt : 'spawn_agent',
+      spawnEvidence: `app-server:${agentPath ?? agentThreadId ?? String(item.id ?? 'started')}`,
+      spawnCall: {
+        source: 'app_server_sub_agent_activity',
+        event_id: typeof item.id === 'string' ? item.id : null,
+        kind: 'started',
+        agent_thread_id: agentThreadId,
+        agent_path: agentPath,
+      },
     };
   }
-  if (item?.type === 'agent_message' && typeof item.text === 'string') {
+  if (method === 'item/completed' && item?.type === 'agentMessage' && typeof item.text === 'string') {
     return { finalMessage: item.text };
   }
-  if (event?.type === 'turn.completed' && event.usage !== undefined) {
-    return { usage: event.usage };
+  if (method === 'thread/tokenUsage/updated' && params.tokenUsage !== undefined) {
+    return { usage: params.tokenUsage };
+  }
+  if (method === 'turn/completed') {
+    const turn = isRecord(params.turn) ? params.turn : {};
+    return { turnStatus: typeof turn.status === 'string' ? turn.status : 'unknown' };
   }
   return {};
 }
 
-async function listFilesRecursively(root: string): Promise<string[]> {
-  const entries = await fs.readdir(root, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
-    if (error.code === 'ENOENT') {
-      return [];
-    }
-    throw error;
-  });
-  const nested = await Promise.all(entries.map(async (entry) => {
-    const candidate = path.join(root, entry.name);
-    return entry.isDirectory() ? listFilesRecursively(candidate) : [candidate];
-  }));
-  return nested.flat();
-}
-
-function parseSpawnCall(
-  line: string,
-  rolloutFile: string,
-  codexHome: string,
-): Record<string, unknown> | null {
-  const event = parseTriggerExecEventLine(line);
-  const payload = event?.type === 'response_item' && isRecord(event.payload)
-    ? event.payload
-    : null;
-  if (payload?.type !== 'function_call' || payload.name !== 'spawn_agent') {
-    return null;
-  }
-  let args: unknown = payload.arguments;
-  if (typeof args === 'string') {
-    try {
-      args = JSON.parse(args);
-    } catch {
-      args = null;
-    }
-  }
-  return {
-    call_id: typeof payload.call_id === 'string' ? payload.call_id : null,
-    namespace: typeof payload.namespace === 'string' ? payload.namespace : null,
-    arguments: isRecord(args) ? args : null,
-    rollout_file: path.relative(codexHome, rolloutFile).split(path.sep).join('/'),
-  };
-}
-
-export async function readTriggerSpawnCalls(
-  codexHome: string,
-): Promise<Array<Record<string, unknown>>> {
-  const files = (await listFilesRecursively(path.join(codexHome, 'sessions')))
-    .filter((file) => file.endsWith('.jsonl'))
-    .sort((left, right) => left.localeCompare(right));
-  const calls: Array<Record<string, unknown>> = [];
-  const seen = new Set<string>();
-  for (const file of files) {
-    const content = await fs.readFile(file, 'utf8');
-    for (const line of content.split('\n')) {
-      const call = parseSpawnCall(line, file, codexHome);
-      if (!call) {
-        continue;
-      }
-      const identity = typeof call.call_id === 'string'
-        ? call.call_id
-        : `${String(call.rollout_file)}:${calls.length}`;
-      if (!seen.has(identity)) {
-        seen.add(identity);
-        calls.push(call);
-      }
-    }
-  }
-  return calls;
+export function inspectTriggerAppServerConfigWarning(
+  frame: Record<string, unknown>,
+): string | null {
+  return inspectAppServerConfigWarning(frame);
 }
 
 function resolveCodexExecutable(codexBin: string): string {
@@ -359,70 +306,6 @@ function resolveCodexExecutable(codexBin: string): string {
     );
   }
   return codexBin;
-}
-
-function buildCodexArgs(options: {
-  suite: PluginEvalTriggerSuite;
-  evalCase: PluginEvalTriggerCase;
-  workspaceRoot: string;
-  model?: string;
-  modelProvider: string;
-  sensitiveEnvironmentNames: string[];
-}): string[] {
-  const args = ['exec', '--json'];
-  if (options.suite.isolation === 'strict') {
-    args.push('--ephemeral', '--strict-config');
-  }
-  if (!options.evalCase.use_project_rules) {
-    args.push('--ignore-rules');
-  }
-  args.push(
-    '--skip-git-repo-check',
-    '--color',
-    'never',
-    '--sandbox',
-    'read-only',
-    '--cd',
-    options.workspaceRoot,
-    '--config',
-    'skills.include_instructions=true',
-    '--config',
-    `shell_environment_policy.exclude=${JSON.stringify([
-      'CODEX_HOME',
-      ...options.sensitiveEnvironmentNames,
-    ])}`,
-    '--config',
-    `model_provider=${JSON.stringify(options.modelProvider)}`,
-  );
-  if (options.suite.isolation === 'strict') {
-    args.push(
-      '--config',
-      'skills.bundled.enabled=false',
-      '--config',
-      'orchestrator.skills.enabled=false',
-      '--config',
-      'orchestrator.mcp.enabled=false',
-      '--config',
-      'include_apps_instructions=false',
-      '--config',
-      'include_collaboration_mode_instructions=false',
-    );
-  }
-  if (options.suite.observeSpawnAgent) {
-    args.push(
-      '--enable',
-      'multi_agent',
-      '--config',
-      'features.multi_agent_v2.enabled=true',
-      '--config',
-      'features.multi_agent_v2.hide_spawn_agent_metadata=false',
-    );
-  }
-  if (options.model) {
-    args.push('--model', options.model);
-  }
-  args.push(options.evalCase.query);
-  return args;
 }
 
 function expectedEarlyStop(
@@ -519,30 +402,39 @@ async function captureState(
   return state;
 }
 
-function strictSystemCodexRoot(sourceEnv: NodeJS.ProcessEnv): string {
-  if (process.platform === 'win32') {
-    return path.join(
-      sourceEnv.ProgramData ?? String.raw`C:\ProgramData`,
-      'OpenAI',
-      'Codex',
-    );
-  }
-  return '/etc/codex';
-}
-
-async function assertStrictSystemConfigAbsent(sourceEnv: NodeJS.ProcessEnv): Promise<void> {
-  const systemRoot = strictSystemCodexRoot(sourceEnv);
-  const entries = await fs.readdir(systemRoot).catch((error: NodeJS.ErrnoException) => {
-    if (error.code === 'ENOENT') {
-      return [];
-    }
+async function isolateTriggerWorkspaceSkills(
+  workspaceRoot: string,
+  skillName: string,
+): Promise<void> {
+  const skillsRoot = path.join(workspaceRoot, '.agents', 'skills');
+  const entries = await fs.readdir(skillsRoot).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return [];
     throw error;
   });
-  if (entries.length > 0) {
-    throw new Error(
-      `Refusing strict trigger eval because Codex system configuration exists at ${systemRoot}.`,
-    );
-  }
+  await Promise.all(entries.map(async (entry) => {
+    if (entry === skillName) return;
+    await fs.remove(path.join(skillsRoot, entry));
+  }));
+}
+
+async function isolateTriggerWorkspaceRules(
+  workspaceRoot: string,
+  useProjectRules: boolean | undefined,
+): Promise<void> {
+  if (useProjectRules === true) return;
+  await fs.remove(path.join(workspaceRoot, '.codex', 'rules'));
+}
+
+async function snapshotStrictControlPlane(
+  workspaceRoot: string,
+): Promise<Record<string, string>> {
+  const snapshot = await snapshotWorkspace(workspaceRoot);
+  return Object.fromEntries(Object.entries(snapshot).filter(([entry]) =>
+    entry === '.agents' ||
+    entry.startsWith('.agents/') ||
+    entry === '.codex' ||
+    entry.startsWith('.codex/')
+  ));
 }
 
 async function runTriggerOnce(options: {
@@ -566,13 +458,19 @@ async function runTriggerOnce(options: {
   const eventTrace: unknown[] = [];
   let finalMessage: string | null = null;
   let usage: unknown = null;
-  const processTreeId = randomUUID();
-  const withoutProcessTreeId = <T>(value: T): T => JSON.parse(
-    JSON.stringify(value).replaceAll(processTreeId, '[process-tree-id]'),
-  ) as T;
+  let session: EvalAppServerSession | undefined;
+  let removeHandler: (() => void) | undefined;
+  let removeFailureHandler: (() => void) | undefined;
+  let turnTimer: ReturnType<typeof setTimeout> | undefined;
   try {
-    await assertProcessTreeInspectionAvailable();
     await fs.copy(options.subjectRoot, workspaceRoot, { dereference: false });
+    await isolateTriggerWorkspaceRules(
+      workspaceRoot,
+      options.evalCase.use_project_rules,
+    );
+    if (options.suite.isolation === 'strict') {
+      await isolateTriggerWorkspaceSkills(workspaceRoot, options.suite.skill);
+    }
     const skillPath = path.join(
       workspaceRoot,
       '.agents',
@@ -593,7 +491,9 @@ async function runTriggerOnce(options: {
     await Promise.all([
       fs.ensureDir(env.HOME!),
       fs.ensureDir(env.TMPDIR!),
-      materializeCodexEvalRuntimeHome(options.codexRuntime, codexHome),
+      materializeCodexEvalRuntimeHome(options.codexRuntime, codexHome, {
+        trustedProject: workspaceRoot,
+      }),
     ]);
     const initialContext: TriggerFixtureContext = {
       workspaceRoot,
@@ -601,11 +501,20 @@ async function runTriggerOnce(options: {
       env,
     };
     const protectedEnvironment = protectedEnvironmentSnapshot(env);
+    const controlPlaneBefore = options.suite.isolation === 'strict'
+      ? await snapshotStrictControlPlane(workspaceRoot)
+      : null;
     const fixtureResult = options.fixture
       ? await options.fixture.setupTriggerWorkspace(initialContext)
       : undefined;
     assertProtectedEnvironmentUnchanged(env, protectedEnvironment);
     env = mergeFixtureEnvironment(env, fixtureResult);
+    if (
+      controlPlaneBefore &&
+      stableJson(controlPlaneBefore) !== stableJson(await snapshotStrictControlPlane(workspaceRoot))
+    ) {
+      throw new Error('Trigger fixture modified strict eval control-plane files.');
+    }
     const context: TriggerFixtureContext = {
       ...initialContext,
       env,
@@ -622,217 +531,138 @@ async function runTriggerOnce(options: {
         : null,
       spawnEvidence: null,
     };
-    const args = buildCodexArgs({
-      suite: options.suite,
-      evalCase: options.evalCase,
-      workspaceRoot,
-      model: options.model,
+    const spawnCalls: Array<Record<string, unknown>> = [];
+    const spawnCallIds = new Set<string>();
+    let rootThreadId: string | undefined;
+    let turnStatus: string | undefined;
+    let finishRun: (termination: string) => void = () => undefined;
+    let rejectRun: (error: Error) => void = () => undefined;
+    let runSettled = false;
+    const runDone = new Promise<string>((resolve, reject) => {
+      finishRun = (termination) => {
+        if (runSettled) return;
+        runSettled = true;
+        resolve(termination);
+      };
+      rejectRun = (error) => {
+        if (runSettled) return;
+        runSettled = true;
+        reject(error);
+      };
+    });
+    void runDone.catch(() => undefined);
+
+    assertCodexEvalCanStartWork();
+    session = new EvalAppServerSession({
+      codexBin: resolveCodexExecutable(options.codexBin),
+      cwd: workspaceRoot,
+      env,
       modelProvider: options.codexRuntime.modelProvider,
       sensitiveEnvironmentNames: options.codexRuntime.sensitiveEnvironmentNames,
+      isolation: options.suite.isolation,
+      configOverrides: options.suite.observeSpawnAgent
+        ? [
+          'features.multi_agent=true',
+          'features.multi_agent_v2.enabled=true',
+          'features.multi_agent_v2.hide_spawn_agent_metadata=true',
+          'features.multi_agent_v2.expose_spawn_agent_model_overrides=true',
+        ]
+        : [],
     });
-    const executable = resolveCodexExecutable(options.codexBin);
-    assertCodexEvalCanStartWork();
-    const processResult = await new Promise<{
-      termination: string;
-      exitCode: number | null;
-      signal: NodeJS.Signals | null;
-      stderr: string;
-      spawnCalls: Array<Record<string, unknown>>;
-      interruptedSignal: NodeJS.Signals | null;
-    }>((resolve, reject) => {
-      const child = spawn(executable, args, {
-        cwd: workspaceRoot,
-        env: { ...env, [CODEX_EVAL_PROCESS_TREE_ID_ENV]: processTreeId },
-        shell: false,
-        detached: process.platform !== 'win32',
-        stdio: ['ignore', 'pipe', 'pipe'],
-      });
-      const processTreeMonitor = createChildProcessTreeMonitor(child, {
-        treeId: processTreeId,
-      });
-      let stderr = '';
-      let stopReason: string | null = null;
-      let interruptedSignal: NodeJS.Signals | null = null;
-      let settled = false;
-      let rolloutPollPending = false;
-      let spawnCalls: Array<Record<string, unknown>> = [];
-      let unregisterSignalCleanup = (): void => undefined;
-      let terminationPromise: Promise<string[]> | undefined;
-      let recordedTerminationPromise: Promise<void> | undefined;
-      const terminateTree = (): Promise<string[]> => {
-        terminationPromise ??= processTreeMonitor.terminate();
-        return terminationPromise;
-      };
-      const terminateTreeAndRecord = (): Promise<void> => {
-        recordedTerminationPromise ??= terminateTree().then((terminationDiagnostics) => {
-          diagnostics.push(...terminationDiagnostics);
-        }, (error: unknown) => {
-          diagnostics.push(
-            `Trigger eval process-tree termination failed: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-          );
-          throw error;
-        });
-        return recordedTerminationPromise;
-      };
-      const stop = (reason: string): void => {
-        if (stopReason || child.exitCode !== null || child.signalCode !== null) {
-          return;
+    removeFailureHandler = session.onFailure(rejectRun);
+    removeHandler = session.onFrame((frame) => {
+      const method = typeof frame.method === 'string' ? frame.method : '';
+      const params = isRecord(frame.params) ? frame.params : {};
+      if (!method.startsWith('remoteControl/') && !method.startsWith('account/')) {
+        eventTrace.push(frame);
+      }
+      const configWarning = options.suite.isolation === 'strict'
+        ? inspectTriggerAppServerConfigWarning(frame)
+        : null;
+      if (configWarning) {
+        diagnostics.push(`Strict Codex eval received a config warning: ${configWarning}`);
+        finishRun('strict_isolation_error');
+        return;
+      }
+      const frameThreadId = typeof params.threadId === 'string' ? params.threadId : undefined;
+      if (rootThreadId && frameThreadId && frameThreadId !== rootThreadId) {
+        return;
+      }
+      const evidence = inspectTriggerAppServerFrame(frame, skillPath);
+      if (evidence.loaded) {
+        observed.loaded = true;
+        observed.loadEvidence ??= evidence.loadEvidence ?? null;
+      }
+      if (evidence.spawned) {
+        observed.spawned = true;
+        observed.spawnEvidence ??= evidence.spawnEvidence ?? null;
+      }
+      if (evidence.spawnCall) {
+        const identity = `${String(evidence.spawnCall.event_id)}:${String(
+          evidence.spawnCall.agent_thread_id,
+        )}`;
+        if (!spawnCallIds.has(identity)) {
+          spawnCallIds.add(identity);
+          spawnCalls.push(evidence.spawnCall);
         }
-        stopReason = reason;
-        void terminateTreeAndRecord().catch(() => undefined);
-      };
-      const childClosed = new Promise<void>((resolveClose) => {
-        child.once('close', () => resolveClose());
-      });
-      unregisterSignalCleanup = registerCodexEvalSignalCleanup(async () => {
-        stop('parent_signal_shutdown');
-        await terminateTreeAndRecord();
-        let timer: ReturnType<typeof setTimeout> | undefined;
-        const closed = await Promise.race([
-          childClosed.then(() => true as const),
-          new Promise<false>((resolveTimeout) => {
-            timer = setTimeout(() => resolveTimeout(false), 3_000);
-          }),
-        ]);
-        if (timer) clearTimeout(timer);
-        if (!closed) {
-          releaseChildProcessHandles(child);
-          throw new Error('Could not confirm trigger eval process-tree termination within 3000ms.');
-        }
-      });
-      const handleInterrupt = (signal: NodeJS.Signals): void => {
-        interruptedSignal = signal;
-        stop(`parent_${signal.toLowerCase()}`);
-      };
-      const handleSigint = (): void => handleInterrupt('SIGINT');
-      const handleSigterm = (): void => handleInterrupt('SIGTERM');
-      const removeInterruptHandlers = (): void => {
-        process.off('SIGINT', handleSigint);
-        process.off('SIGTERM', handleSigterm);
-      };
-      process.once('SIGINT', handleSigint);
-      process.once('SIGTERM', handleSigterm);
-      const timeout = setTimeout(() => stop('timeout'), options.timeoutMs);
-      timeout.unref();
-      const pollRollouts = async (): Promise<void> => {
-        if (!options.suite.observeSpawnAgent || rolloutPollPending) {
-          return;
-        }
-        rolloutPollPending = true;
-        try {
-          spawnCalls = await readTriggerSpawnCalls(codexHome);
-          if (spawnCalls.length > 0) {
-            observed.spawned = true;
-            observed.spawnEvidence ??= `rollout:${String(spawnCalls[0].call_id ?? 'spawn_agent')}`;
-            const reason = expectedEarlyStop(options.suite, options.evalCase, observed);
-            if (reason) {
-              stop(reason);
-            }
-          }
-        } catch (error) {
-          diagnostics.push(
-            `Failed to read rollout evidence: ${error instanceof Error ? error.message : String(error)}`,
-          );
-        } finally {
-          rolloutPollPending = false;
-        }
-      };
-      const rolloutTimer = setInterval(() => void pollRollouts(), 250);
-      rolloutTimer.unref();
-      child.stderr.setEncoding('utf8');
-      child.stderr.on('data', (chunk: string) => {
-        stderr = `${stderr}${chunk.replaceAll(processTreeId, '[process-tree-id]')}`.slice(-32_000);
-      });
-      const lines = readline.createInterface({ input: child.stdout });
-      lines.on('line', (line) => {
-        const event = parseTriggerExecEventLine(
-          line.replaceAll(processTreeId, '[process-tree-id]'),
-        );
-        if (!event) {
-          return;
-        }
-        eventTrace.push(event);
-        const evidence = inspectTriggerExecEvent(event, skillPath);
-        if (evidence.loaded) {
-          observed.loaded = true;
-          observed.loadEvidence ??= evidence.loadEvidence ?? null;
-        }
-        if (evidence.spawned) {
-          observed.spawned = true;
-          observed.spawnEvidence ??= evidence.spawnEvidence ?? null;
-        }
-        if (evidence.finalMessage !== undefined) {
-          finalMessage = evidence.finalMessage;
-        }
-        if (evidence.usage !== undefined) {
-          usage = evidence.usage;
-        }
-        const reason = expectedEarlyStop(options.suite, options.evalCase, observed);
-        if (reason) {
-          stop(reason);
-        }
-      });
-      child.once('error', (error) => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        clearTimeout(timeout);
-        clearInterval(rolloutTimer);
-        removeInterruptHandlers();
-        unregisterSignalCleanup();
-        lines.close();
-        void terminateTreeAndRecord().finally(() => {
-          reject(new Error(`Failed to start ${executable}: ${error.message}`));
-        });
-      });
-      child.once('close', async (exitCode, signal) => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        clearTimeout(timeout);
-        clearInterval(rolloutTimer);
-        removeInterruptHandlers();
-        lines.close();
-        try {
-          await terminateTreeAndRecord();
-        } catch (error) {
-          unregisterSignalCleanup();
-          reject(error instanceof Error ? error : new Error(String(error)));
-          return;
-        }
-        unregisterSignalCleanup();
-        if (options.suite.observeSpawnAgent) {
-          try {
-            spawnCalls = await readTriggerSpawnCalls(codexHome);
-          } catch (error) {
-            diagnostics.push(
-              `Failed to read final rollout evidence: ${error instanceof Error ? error.message : String(error)}`,
-            );
-          }
-        }
-        if (spawnCalls.length > 0) {
-          observed.spawned = true;
-          observed.spawnEvidence ??= `rollout:${String(spawnCalls[0].call_id ?? 'spawn_agent')}`;
-        }
-        resolve({
-          termination: stopReason ?? 'completed',
-          exitCode,
-          signal,
-          stderr: stderr.trim(),
-          spawnCalls,
-          interruptedSignal,
-        });
-      });
+      }
+      if (evidence.finalMessage !== undefined) {
+        finalMessage = evidence.finalMessage;
+      }
+      if (evidence.usage !== undefined) {
+        usage = evidence.usage;
+      }
+      if (evidence.turnStatus !== undefined) {
+        turnStatus = evidence.turnStatus;
+        finishRun('completed');
+        return;
+      }
+      if (method === 'error') {
+        diagnostics.push(`app-server error: ${JSON.stringify(params)}`);
+        finishRun('app_server_error');
+        return;
+      }
+      const reason = expectedEarlyStop(options.suite, options.evalCase, observed);
+      if (reason) finishRun(reason);
     });
-    if (processResult.interruptedSignal) {
-      throw new Error(`Interrupted by ${processResult.interruptedSignal}.`);
+    turnTimer = setTimeout(() => finishRun('timeout'), options.timeoutMs);
+    turnTimer.unref();
+    await session.initialize();
+    const threadResult = await session.sendRequest('thread/start', {
+      cwd: workspaceRoot,
+      approvalPolicy: 'never',
+      sandbox: 'read-only',
+      ephemeral: false,
+      ...(options.model ? { model: options.model } : {}),
+    });
+    rootThreadId = extractAppServerThreadId(threadResult);
+    await session.sendRequest('turn/start', {
+      threadId: rootThreadId,
+      input: [{ type: 'text', text: options.evalCase.query, text_elements: [] }],
+      cwd: workspaceRoot,
+      approvalPolicy: 'never',
+      sandboxPolicy: { type: 'readOnly', networkAccess: true },
+      ...(options.model ? { model: options.model } : {}),
+    });
+    const termination = await runDone;
+    if (turnTimer) {
+      clearTimeout(turnTimer);
+      turnTimer = undefined;
     }
-    if (observed.spawned && processResult.spawnCalls.length === 0) {
-      diagnostics.push('spawn_agent was observed without raw rollout argument evidence.');
+    removeHandler();
+    removeHandler = undefined;
+    removeFailureHandler();
+    removeFailureHandler = undefined;
+    let cleanupFailed = false;
+    try {
+      await session.cleanup();
+    } catch (error) {
+      cleanupFailed = true;
+      diagnostics.push(
+        `Trigger eval app-server cleanup failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
     }
     const afterState = await captureState(options.fixture, context);
     const skillUnchanged =
@@ -850,26 +680,26 @@ async function runTriggerOnce(options: {
       'expected_outcome_observed',
       'unexpected_skill_load',
       'unexpected_spawn',
-    ]).has(processResult.termination);
+    ]).has(termination);
     const executionError =
-      processResult.termination === 'timeout' ||
-      (!expectedStop && processResult.exitCode !== 0) ||
+      termination === 'timeout' ||
+      termination === 'strict_isolation_error' ||
+      termination === 'app_server_error' ||
+      (!expectedStop && termination === 'completed' && turnStatus !== 'completed') ||
       !fixtureUnchanged ||
-      (observed.spawned && processResult.spawnCalls.length === 0) ||
-      diagnostics.some((entry) => entry.startsWith('Failed to read'));
-    const cleanupUnconfirmed = processTreeCleanupIsUnconfirmed(diagnostics);
-    return withoutProcessTreeId({
+      cleanupFailed;
+    return session.scrub({
       loaded: observed.loaded,
       spawned: observed.spawned,
       load_evidence: observed.loadEvidence,
       spawn_evidence: observed.spawnEvidence,
-      spawn_calls: processResult.spawnCalls,
-      termination: processResult.termination,
-      exit_code: processResult.exitCode,
-      signal: processResult.signal,
-      execution_error: executionError || cleanupUnconfirmed,
+      spawn_calls: spawnCalls,
+      termination,
+      exit_code: null,
+      signal: null,
+      execution_error: executionError,
       fixture_unchanged: fixtureUnchanged,
-      ...(processResult.stderr ? { stderr: processResult.stderr } : {}),
+      ...(session.stderr.trim() ? { stderr: session.stderr.trim() } : {}),
       final_message: finalMessage,
       duration_ms: Date.now() - startedAt,
       usage,
@@ -877,7 +707,7 @@ async function runTriggerOnce(options: {
       diagnostics,
     });
   } catch (error) {
-    return withoutProcessTreeId({
+    const evidence: TriggerRunEvidence = {
       loaded: false,
       spawned: false,
       load_evidence: null,
@@ -893,9 +723,19 @@ async function runTriggerOnce(options: {
       usage,
       event_trace: eventTrace,
       diagnostics: [error instanceof Error ? error.stack ?? error.message : String(error)],
-    });
+    };
+    return session ? session.scrub(evidence) : evidence;
   } finally {
-    await temporaryRoot.cleanup();
+    if (turnTimer) clearTimeout(turnTimer);
+    removeHandler?.();
+    removeFailureHandler?.();
+    try {
+      await session?.cleanup();
+    } catch {
+      // The primary result already records cleanup failures when the session started.
+    } finally {
+      await temporaryRoot.cleanup();
+    }
   }
 }
 
@@ -990,9 +830,18 @@ export async function runCodexTriggerSuite(options: {
     );
   }
   let fixture: TriggerFixtureModule | null;
+  let hostIsolation: CodexEvalHostIsolationEvidence | null = null;
+  let runtimeProbe: CodexEvalRpcIsolationEvidence | null = null;
   try {
     if (options.suite.isolation === 'strict') {
-      await assertStrictSystemConfigAbsent(sourceEnv);
+      hostIsolation = await inspectCodexEvalHostIsolation({ sourceEnv });
+      runtimeProbe = await runCodexEvalIsolationProbe({
+        subjectRoot: options.subjectRoot,
+        skillName: options.suite.skill,
+        codexBin: options.codexBin,
+        codexRuntime,
+        sourceEnv,
+      });
     }
     fixture = await loadFixtureModule(options.pluginRoot, options.suite);
   } catch (error) {
@@ -1006,6 +855,14 @@ export async function runCodexTriggerSuite(options: {
       complete: false,
       passed: false,
       environment_error: diagnostic,
+      environment: {
+        isolation: codexEvalIsolationEvidence({
+          mode: options.suite.isolation,
+          host: hostIsolation,
+          runtimeProbe,
+        }),
+        codex_runtime: codexEvalRuntimeEvidence(codexRuntime),
+      },
       summary: { cases: cases.length, passed: 0, failed: 0 },
       results: [],
     }, codexRuntime);
@@ -1072,12 +929,13 @@ export async function runCodexTriggerSuite(options: {
     environment: {
       codex_version: await readCodexVersion(options.codexBin, sourceEnv),
       isolation: {
-        mode: options.suite.isolation,
-        isolated_home: true,
-        source_user_config_filtered: true,
+        ...codexEvalIsolationEvidence({
+          mode: options.suite.isolation,
+          host: hostIsolation,
+          runtimeProbe,
+        }),
+        app_server_protocol: true,
         project_rules_ignored_by_default: true,
-        bundled_surfaces_disabled: options.suite.isolation === 'strict',
-        system_cloud_and_managed_layers_disabled: false,
       },
       codex_runtime: codexEvalRuntimeEvidence(codexRuntime),
       skill_sha256: sha256(await fs.readFile(skillPath)),

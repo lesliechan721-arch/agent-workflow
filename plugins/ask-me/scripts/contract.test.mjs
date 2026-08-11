@@ -1,13 +1,19 @@
 import assert from 'node:assert/strict';
-import { readFile, readdir } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import {
+  setupTriggerWorkspace,
+  TRIGGER_WORKSPACE_FIXTURES,
+} from '../evals/trigger-fixture.mjs';
+
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const localPluginRoot = path.resolve(scriptDir, '..');
-const pluginVersion = '0.2.2';
-const qualityGate = '开始非平凡实施前，先检查现有上下文。若仍有必须由用户决定、且会实质改变行为、接口或数据、兼容迁移、安全合规或验收的阻塞项，使用 `requirements-clarifier`；可查事实、可逆实现细节和已授权默认不阻塞。当前任务若是形成或压力测试计划、想法、方案或重大决策，使用 `decision-grill`。';
+const pluginVersion = '0.2.3';
+const qualityGate = '开始非平凡实现前，先检查需求是否还有关键歧义。若存在多种合理理解，且选错会明显影响交付结果、功能范围或验收，或多项小歧义合起来会决定成品形态，先使用 `requirements-clarifier`。\n\n能从现有上下文查明、有明确项目惯例、容易调整、只涉及内部实现或用户已授权采用默认值的事项不必追问；会影响用户预期的关键默认值应明确说明，不要静默假设。';
 const skillNames = ['requirements-clarifier', 'decision-grill'];
 
 async function readJson(filePath) {
@@ -56,12 +62,12 @@ function assertSharedSkillContract(skill, skillName) {
   assert.equal(skill.includes('[TODO:'), false);
   assert.match(skill, new RegExp(`^name: ${skillName}$`, 'm'));
   assert.match(skill, /^description: .+何时使用|^description: .+时使用/m);
-  assert.match(skill, /先只读检查/);
-  assert.match(skill, /自行查明可发现|自行查明已经给出或能够发现/);
+  assert.match(skill, /先只读查看/);
+  assert.match(skill, /已经说明或能查到的事实直接采用|能查到的事实自行确认/);
   assert.match(skill, /互相独立时每轮最多三题/);
-  assert.match(skill, /适合单选时使用 \{\{questionTool\}\}/);
+  assert.match(skill, /适合列选项时使用 \{\{questionTool\}\}/);
   assert.match(skill, /待验证/);
-  assert.match(skill, /交还外层/);
+  assert.match(skill, /交还原任务|交还原工作流/);
   assert.equal(skill.includes('request_user_input'), false);
   assert.equal(skill.includes('AskUserQuestion'), false);
   assert.doesNotMatch(skill, /^user-invocable:\s*false$/m);
@@ -70,19 +76,22 @@ function assertSharedSkillContract(skill, skillName) {
 
 function assertRequirementsClarifierContract(skill) {
   assertSharedSkillContract(skill, 'requirements-clarifier');
-  assert.match(skill, /让具体任务可以安全继续，而不是重新设计它/);
-  assert.match(skill, /决策属于用户，而非内部、可逆的实现选择/);
-  assert.match(skill, /用户尚未决定或委托，也不存在安全默认值/);
-  assert.match(skill, /当前任务若是在形成或挑战计划、想法或方案，改用 `decision-grill`/);
-  assert.match(skill, /已确认 \/ 已委托 \/ 待验证 \/ 未解决/);
+  assert.match(skill, /不是把所有细节都问一遍/);
+  assert.match(skill, /询问用户/);
+  assert.match(skill, /采用默认/);
+  assert.match(skill, /列为待验证/);
+  assert.match(skill, /猜错后的返工大于现在提问的成本/);
+  assert.match(skill, /单项影响有限，但多项合在一起会决定功能形态时，也应先澄清/);
+  assert.match(skill, /已确认 \/ 采用的关键默认 \/ 待验证或未解决/);
 }
 
 function assertDecisionGrillContract(skill) {
   assertSharedSkillContract(skill, 'decision-grill');
-  assert.match(skill, /提高计划或决策的质量；先暴露重大分支，再收敛/);
-  assert.match(skill, /主要替代方案，包括维持现状或不做/);
-  assert.match(skill, /失败、降级、恢复、迁移与回滚/);
-  assert.match(skill, /不追求穷举/);
+  assert.match(skill, /计划或决定本身是当前任务的产物/);
+  assert.match(skill, /不是 agent 为完成其它任务安排的内部步骤/);
+  assert.match(skill, /主要备选，包括维持现状或不做/);
+  assert.match(skill, /失败、降级、恢复、迁移和回滚/);
+  assert.match(skill, /不要为了完整而穷举细节/);
   assert.match(skill, /决定 \/ 关键取舍与假设 \/ 待验证 \/ 未解决/);
 }
 
@@ -142,7 +151,7 @@ function assertBehaviorCorpus(document, skillName, expectedIds) {
 
 const context = await resolveContext();
 
-test('manifest declares two skills and the global quality gate', async () => {
+test('manifest declares two skills and the implementation requirements gate', async () => {
   const manifest = await readJson(
     path.join(context.sourceRoot, '.agents-plugin', 'plugin.json'),
   );
@@ -165,11 +174,12 @@ test('manifest declares two skills and the global quality gate', async () => {
     instructions: [
       {
         name: 'quality-gate',
-        title: '需求与决策质量门禁',
+        title: '实施前需求检查',
         content: qualityGate,
       },
     ],
   });
+  assert.equal(qualityGate.includes('decision-grill'), false);
   assert.deepEqual(manifest.buildConfig, {
     templates: {
       include: ['skills/**/*.md'],
@@ -243,14 +253,55 @@ test('trigger corpora preserve balanced adjacent-skill coverage and load project
   assertTriggerCorpus(decision, 'decision-grill');
 
   assert.equal(
-    requirements.cases.find((entry) => entry.id === 'n05_plan_scene').should_load_skill,
-    false,
-  );
-  assert.equal(
-    decision.cases.find((entry) => entry.id === 'n01_implementation_blocker')
+    requirements.cases.find((entry) => entry.id === 'n05_decision_planning')
       .should_load_skill,
     false,
   );
+  assert.equal(
+    requirements.cases.find((entry) => entry.id === 'n02_existing_pattern')
+      .workspace_fixture,
+    'implementation_repo',
+  );
+  assert.equal(
+    decision.cases.find((entry) => entry.id === 'n01_internal_plan')
+      .should_load_skill,
+    false,
+  );
+  assert.equal(
+    decision.cases.find((entry) => entry.id === 'n03_implementation_ambiguity')
+      .should_load_skill,
+    false,
+  );
+  assert.equal(
+    decision.cases.find((entry) => entry.id === 'n01_internal_plan')
+      .workspace_fixture,
+    'implementation_repo',
+  );
+});
+
+test('trigger fixture provides the repository facts used by near-miss cases', async () => {
+  assert.deepEqual([...TRIGGER_WORKSPACE_FIXTURES], ['default', 'implementation_repo']);
+  const root = await mkdtemp(path.join(os.tmpdir(), 'ask-me-trigger-fixture-'));
+  try {
+    await setupTriggerWorkspace({
+      workspaceRoot: root,
+      evalCase: { workspace_fixture: 'implementation_repo' },
+    });
+    assert.match(
+      await readFile(path.join(root, 'src', 'features', 'invoices', 'export.ts'), 'utf8'),
+      /current-filter/,
+    );
+    assert.match(
+      await readFile(path.join(root, 'spec', 'account-pause.md'), 'utf8'),
+      /acceptance checks/,
+    );
+    assert.match(
+      await readFile(path.join(root, 'tests', 'parser_test.py'), 'utf8'),
+      /test_parse_trims_whitespace/,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test('eval manifest delegates both skills to central trigger and conversation drivers', async () => {
@@ -287,8 +338,10 @@ test('eval manifest delegates both skills to central trigger and conversation dr
   for (const suite of manifest.suites) {
     assert.deepEqual(suite.profiles, ['project-default']);
     assert.equal(suite.requiredForRelease, true);
+    assert.equal(suite.isolation, 'strict');
     if (suite.kind === 'trigger') {
       assert.equal(suite.defaultRuns, 3);
+      assert.equal(suite.fixtureModule, './evals/trigger-fixture.mjs');
       assert.deepEqual(suite.releaseSplits, ['validation']);
       assert.deepEqual(suite.strictNegativeSplits, ['validation']);
     } else {
@@ -305,32 +358,33 @@ test('behavior corpora preserve all redesigned assertions in executable conversa
   ]);
 
   assertBehaviorCorpus(requirements, 'requirements-clarifier', [
-    'discover-before-ask',
-    'delegated-defaults',
+    'find-before-ask',
+    'three-way-routing',
+    'transparent-default',
+    'combined-small-ambiguities',
     'dependent-frontier',
     'engineering-validation',
-    'conflict',
-    'explicit-no-gap',
-    'partial-answer',
-    'no-side-effects',
-    'handoff',
+    'conflicting-requirements',
+    'question-shape',
+    'stop-with-no-gap',
+    'handoff-on-stop',
   ]);
   assertBehaviorCorpus(decision, 'decision-grill', [
-    'frame-without-redundancy',
-    'alternatives',
+    'collaborative-plan-boundary',
+    'read-before-question',
+    'main-alternatives',
     'challenge-assumption',
     'decision-frontier',
+    'reopen-existing-decision',
     'recommendation-calibration',
     'avoid-exhaustion',
-    'user-stops',
-    'decision-brief',
-    'reuse-upstream-ledger',
-    'no-side-effects',
+    'decision-record',
+    'user-defers-risk',
   ]);
 
   assert.equal(
-    requirements.evals.find((entry) => entry.id === 'partial-answer').scripted_replies.length,
-    2,
+    requirements.evals.find((entry) => entry.id === 'question-shape').scripted_replies.length,
+    0,
   );
   assert.equal(
     decision.evals.find((entry) => entry.id === 'challenge-assumption')
@@ -383,6 +437,7 @@ test('prepared bundle renders the platform question tool for both skills', async
       assertDecisionGrillContract(skill.replace(expectedTool, '{{questionTool}}'));
     }
     assert.equal(skill.includes(expectedTool), true);
+    assert.equal(skill.includes(`\`${expectedTool}\``), false);
     assert.equal(skill.includes(otherTool), false);
     assert.equal(skill.includes('{{questionTool}}'), false);
     assertOpenAiMetadata(openaiYaml, skillName);

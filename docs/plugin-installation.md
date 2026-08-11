@@ -165,9 +165,12 @@ status v3 JSON 示例：
 aw config list codex-explore -s user --json
 aw config get codex-explore standardModel -s user --json
 aw config set codex-explore standardModel gpt-5.6-terra -s user --json
+aw config set codex-explore minimumInitialWaitMinutes 15 -s user --json
 aw config unset codex-explore standardModel -s user --json
 aw config reset codex-explore -s user --yes --json
 ```
+
+`minimumInitialWaitMinutes` 设置首次响应式等待的最小单次窗口，不是存活探测前的累计等待预算。
 
 配置合并顺序：manifest default、user store、project shared store、project local store。
 

@@ -40,8 +40,46 @@ const FIXTURE_FILES = {
   'changes/large-pr.diff': 'diff --git a/store.ts b/store.ts\n-deleteSafely(record)\n+deleteImmediately(record)\n',
 };
 
+function generatedFixtureFiles() {
+  const files = {};
+  for (let index = 1; index <= 160; index += 1) {
+    const module = String(((index - 1) % 16) + 1).padStart(2, '0');
+    const name = String(index).padStart(3, '0');
+    files[`repo/modules/module-${module}/handler-${name}.ts`] = [
+      `export const handler${index} = {`,
+      `  feature: "unrelated_feature_${index}",`,
+      `  requestId: "decoy-${name}",`,
+      '};',
+      '',
+    ].join('\n');
+  }
+  for (let index = 1; index <= 48; index += 1) {
+    const name = String(index).padStart(3, '0');
+    files[`docs/archive/note-${name}.md`] = [
+      `# Archived note ${index}`,
+      `This note documents unrelated protocol revision ${index}.`,
+      '',
+    ].join('\n');
+  }
+  for (let index = 1; index <= 72; index += 1) {
+    const name = String(index).padStart(3, '0');
+    files[`reports/audit/archive-${name}.log`] = [
+      `request=decoy-${name} component=gateway next=archive`,
+      `request=decoy-${name} component=archive status=complete`,
+      '',
+    ].join('\n');
+  }
+  for (let index = 3; index <= 18; index += 1) {
+    const name = String(index).padStart(2, '0');
+    files[`materials/interview-${name}.md`] =
+      `Interview ${index}: renewal outcome is unknown; no verified cause was recorded.\n`;
+  }
+  return files;
+}
+
 export async function setupTriggerWorkspace({ workspaceRoot }) {
-  await Promise.all(Object.entries(FIXTURE_FILES).map(async ([relativePath, content]) => {
+  const files = { ...FIXTURE_FILES, ...generatedFixtureFiles() };
+  await Promise.all(Object.entries(files).map(async ([relativePath, content]) => {
     const target = path.join(workspaceRoot, relativePath);
     await mkdir(path.dirname(target), { recursive: true });
     await writeFile(target, content, 'utf8');

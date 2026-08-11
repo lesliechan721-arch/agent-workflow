@@ -8,6 +8,7 @@ export const PLUGIN_EVAL_SCHEMA_VERSION = 1 as const;
 
 export type PluginEvalSplit = 'train' | 'validation' | 'sanity' | 'all';
 export type PluginEvalOutcome = 'passed' | 'failed' | 'needs_review' | 'incomplete';
+export type PluginEvalIsolation = 'standard' | 'strict';
 
 export interface PluginEvalProfile {
   id: string;
@@ -48,6 +49,7 @@ export interface PluginEvalConversationSuite {
   releaseSplits: PluginEvalSplit[];
   requiredForRelease: boolean;
   perRunTimeoutMs: number;
+  isolation: PluginEvalIsolation;
 }
 
 export interface PluginEvalTriggerSuite {
@@ -57,7 +59,7 @@ export interface PluginEvalTriggerSuite {
   cases: string;
   fixtureModule?: string;
   observeSpawnAgent: boolean;
-  isolation: 'standard' | 'strict';
+  isolation: PluginEvalIsolation;
   strictNegativeSplits: Array<Exclude<PluginEvalSplit, 'all'>>;
   profiles: string[];
   defaultRuns: number;
@@ -373,6 +375,14 @@ const VALID_SUPPORTS = new Set<PluginEvalCommandSuite['supports'][number]>([
   'allowEnvironmentSkips',
 ]);
 
+function parseIsolation(value: unknown, label: string): PluginEvalIsolation {
+  const isolation = value ?? 'standard';
+  if (isolation !== 'standard' && isolation !== 'strict') {
+    throw new Error(`${label} must be standard or strict.`);
+  }
+  return isolation;
+}
+
 function parseSuite(
   pluginRoot: string,
   value: unknown,
@@ -430,6 +440,7 @@ function parseSuite(
       kind,
       skill,
       cases: validateEvalRelativeFile(pluginRoot, row.cases, `suites[${index}].cases`),
+      isolation: parseIsolation(row.isolation, `suites[${index}].isolation`),
     };
   }
 
@@ -438,10 +449,7 @@ function parseSuite(
     if (!/^[a-z0-9][a-z0-9-]*$/u.test(skill)) {
       throw new Error(`suites[${index}].skill must use lowercase kebab-case.`);
     }
-    const isolation = row.isolation ?? 'standard';
-    if (isolation !== 'standard' && isolation !== 'strict') {
-      throw new Error(`suites[${index}].isolation must be standard or strict.`);
-    }
+    const isolation = parseIsolation(row.isolation, `suites[${index}].isolation`);
     const rawStrictNegativeSplits = row.strictNegativeSplits ?? [];
     if (!Array.isArray(rawStrictNegativeSplits)) {
       throw new Error(`suites[${index}].strictNegativeSplits must be an array.`);

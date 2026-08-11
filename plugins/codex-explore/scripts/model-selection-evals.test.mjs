@@ -11,7 +11,10 @@ import {
   parseModelEvalArgs,
   summarizeModelEval,
 } from '../evals/run-model-selection-evals.mjs';
-import { readSpawnCallsFromRollouts } from '../evals/eval-harness.mjs';
+import {
+  readRolloutEvidenceFromRollouts,
+  readSpawnCallsFromRollouts,
+} from '../evals/eval-harness.mjs';
 
 function testArguments() {
   assert.deepEqual(
@@ -61,8 +64,17 @@ async function testEvalSpec() {
       entry.codex_config['features.multi_agent_v2.enabled'],
       entry.id !== 'v1_auto_standard',
     );
+    if (entry.id !== 'v1_auto_standard') {
+      assert.equal(
+        entry.codex_config['features.multi_agent_v2.hide_spawn_agent_metadata'],
+        true,
+      );
+    }
     assert.equal(entry.assertions.length > 0, true);
   }
+  const v1 = spec.evals.find((entry) => entry.id === 'v1_auto_standard');
+  assert.equal(v1.parent_model, 'gpt-5.5');
+  assert.equal(modelEvalRunCase(v1).parent_model, 'gpt-5.5');
 
   const hiddenExplicit = spec.evals.find((entry) => entry.id === 'hidden_explicit_field');
   assert.equal(modelEvalRunCase(hiddenExplicit).should_spawn_agent, false);
@@ -94,6 +106,19 @@ async function testRolloutArgumentEvidence() {
       `${JSON.stringify(line)}\n${JSON.stringify(line)}\n`,
       'utf8',
     );
+    await writeFile(
+      path.join(sessionDir, 'rollout-leaf.jsonl'),
+      `${JSON.stringify({
+        type: 'response_item',
+        payload: {
+          type: 'function_call',
+          name: 'exec_command',
+          arguments: JSON.stringify({ cmd: 'node docs/liveness/verify-records.mjs' }),
+          call_id: 'leaf-call-1',
+        },
+      })}\n`,
+      'utf8',
+    );
 
     const calls = await readSpawnCallsFromRollouts(codexHome);
     assert.equal(calls.length, 1);
@@ -103,6 +128,13 @@ async function testRolloutArgumentEvidence() {
       task_name: 'trace_evidence',
       model: 'gpt-5.6-sol',
       fork_turns: 'none',
+    });
+    const evidence = await readRolloutEvidenceFromRollouts(codexHome);
+    assert.equal(evidence.parent_calls.length, 1);
+    assert.equal(evidence.leaf_calls.length, 1);
+    assert.equal(evidence.leaf_calls[0].tool, 'exec_command');
+    assert.deepEqual(evidence.leaf_calls[0].arguments, {
+      cmd: 'node docs/liveness/verify-records.mjs',
     });
   } finally {
     await rm(codexHome, { recursive: true, force: true });
@@ -231,6 +263,7 @@ function testEnvironmentSkipReportStatus() {
     execution_error: false,
     termination: 'completed',
     exit_code: 0,
+    parent_model_override: 'gpt-5.5',
     spawn_calls: [],
   };
   const skippedRun = {
@@ -241,6 +274,7 @@ function testEnvironmentSkipReportStatus() {
     spawn_calls: [],
   };
   const result = summarizeModelEval(entry, [passingRun, passingRun, skippedRun], 0.5);
+  assert.equal(result.runs[0].parent_model_override, 'gpt-5.5');
   assert.equal(result.complete, false);
   assert.equal(result.environment_skips, 1);
   assert.deepEqual(modelEvalReportStatus([result], false), { complete: false, passed: false });

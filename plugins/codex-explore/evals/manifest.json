@@ -32,6 +32,15 @@
       "requiredForRelease": true
     },
     {
+      "id": "project-short-wait",
+      "scope": "project",
+      "config": {
+        "minimumInitialWaitMinutes": 1
+      },
+      "runModel": true,
+      "requiredForRelease": false
+    },
+    {
       "id": "user-nondefault",
       "scope": "user",
       "config": {
@@ -55,7 +64,7 @@
       "cases": "./evals/trigger-cases.json",
       "fixtureModule": "./evals/trigger-fixture.mjs",
       "observeSpawnAgent": true,
-      "isolation": "standard",
+      "isolation": "strict",
       "strictNegativeSplits": [],
       "profiles": ["project-default"],
       "defaultRuns": 3,
@@ -86,6 +95,18 @@
       "perRunTimeoutMs": 900000,
       "suiteTimeoutMs": 3600000,
       "supports": ["runs", "model", "codexBin", "timeout"]
+    },
+    {
+      "id": "liveness",
+      "kind": "command",
+      "entry": "./evals/run-liveness-evals.mjs",
+      "profiles": ["project-short-wait"],
+      "defaultRuns": 3,
+      "releaseSplits": [],
+      "requiredForRelease": false,
+      "perRunTimeoutMs": 300000,
+      "suiteTimeoutMs": 3600000,
+      "supports": ["runs", "case", "model", "codexBin", "timeout"]
     }
   ]
 }

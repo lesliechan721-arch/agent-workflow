@@ -10,7 +10,7 @@
 | Performance gate | `pnpm test:perf:gate` | 预算结果和 fast unit wall-time 门禁 |
 | Smoke | `pnpm test:smoke:*` | 真实 build、pack、fetch 和插件脚本产物 |
 | Plugin test | `pnpm plugin:test <plugin>` | 插件自己的确定性 Node 测试 |
-| Plugin eval | `pnpm plugin:eval <plugin>` | 显式运行模型 eval；不进入普通 CI |
+| Plugin eval | `pnpm plugin:eval <plugin>` | 通过中央 app-server driver 显式运行模型 eval；不进入普通 CI |
 
 普通测试使用 synthetic catalog、隔离 home 和 fake native runner。不得调用用户真实 Codex/Claude 配置，也不得修改仓库外状态。
 
@@ -157,7 +157,9 @@ AW_PERF_SUMMARY {"name":"..."}
 
 `pnpm plugin:eval` 只提供 Codex 证据。默认 materialize 所有 profile，并运行所有 `requiredForRelease` suite/split。使用 suite/profile/split/case 过滤，或减少 runs 时，结果固定为 incomplete，不能作为发布证据。
 
-真实模型运行使用隔离 runtime home。provider credential 不进入模型 shell，持久化报告必须脱敏。临时 runtime capsule 在成功、失败和中断后清理。
+真实模型运行使用隔离 runtime home，并固定使用文件凭据存储且关闭 secret keychain storage。provider credential 不进入模型 shell，持久化报告必须脱敏。临时 runtime capsule 在成功、失败和中断后清理。
+
+`trigger` 和 `conversation` suite 支持 `isolation: standard|strict`。conversation driver 在 Default 协作模式启用 `request_user_input`。strict 模式只保留目标 Skill，关闭内置 Skill、插件、Apps、MCP 和建议类表面，并在运行前验证有效配置、目标 Skill 和空 MCP 清单。检查失败时结果必须是 incomplete。真实模型 eval 应从普通 Terminal 运行。
 
 ## Pre-commit Checklist
 

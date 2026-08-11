@@ -54,7 +54,7 @@ plugins/<name>/
       "skill": "review-workflow",
       "cases": "./evals/trigger-cases.json",
       "observeSpawnAgent": false,
-      "isolation": "standard",
+      "isolation": "strict",
       "strictNegativeSplits": ["validation"],
       "profiles": ["project-default"],
       "defaultRuns": 3,
@@ -76,12 +76,13 @@ Profile 规则：
 
 Suite 规则：
 
-- `trigger` 由中央 `codex exec --json` driver 执行，使用 materialized project Skill、隔离 `CODEX_HOME`、重复运行和统一报告。它原生支持 split/runs/case/model/codex-bin，不需要插件 runner。
+- `trigger` 由中央 Codex app-server driver 执行，使用 materialized project Skill、隔离 `CODEX_HOME`、重复运行和统一报告。Skill 加载由成功的 `commandExecution` 完成事件确认；启用 `observeSpawnAgent` 时，实际委派由 V2 `subAgentActivity(kind=started)` 确认。该事件不包含完整 spawn 参数；需要校验 role、model 或 effort 时使用领域 command suite。中央 driver 原生支持 split/runs/case/model/codex-bin，不需要插件 runner。
+- `trigger` 和 `conversation` 都支持 `isolation: "standard" | "strict"`，schema v1 省略时默认为 `standard`。用于发布门禁、触发边界或行为归因的 suite 应显式使用 `strict`；只需要兼容旧语料或调试宿主集成时才使用 `standard`。
 - trigger corpus 使用 `{ "schemaVersion": 1, "skill": "...", "cases": [...] }`；每个 case 声明 `id`、`split`、`query`、`should_load_skill`，需要检查子代理时再声明 `should_spawn_agent`。
-- `fixtureModule` 只能指向 `evals/*.mjs`，必须导出 `setupTriggerWorkspace({ workspaceRoot, evalCase, env })`；可选的 `captureTriggerWorkspaceState` 返回前后可比较的 JSON 状态。fixture 只能准备临时材料，不能修改 materialized 目标 Skill，也不能覆盖 HOME/CODEX_HOME/XDG/TMP/PATH。
+- `fixtureModule` 只能指向 `evals/*.mjs`，必须导出 `setupTriggerWorkspace({ workspaceRoot, evalCase, env })`；可选的 `captureTriggerWorkspaceState` 返回前后可比较的 JSON 状态。fixture 只能准备临时材料，不能修改 materialized 目标 Skill，也不能覆盖 HOME/CODEX_HOME/XDG/TMP/PATH；strict 模式还禁止修改 `.agents` 和 `.codex` 控制面。
 - `command` 只用于 model-selection、routing、workflow 等领域专用 runner；`supports` 明确中央入口可以透传哪些参数。runner 必须接受 `--output`，并要求中央提供 `AW_PLUGIN_EVAL_PROJECT_ROOT`，不得回退到源码或 template 自行渲染。
 - `perRunTimeoutMs` 是单次模型运行时限；`command` 还必须声明独立的 `suiteTimeoutMs` 作为整个领域 runner 的中央兜底，且不得小于 `perRunTimeoutMs`。中央只把前者透传为 `--timeout-ms`，只用后者终止整个子进程。
-- `conversation` 由中央 Codex app-server driver 执行，使用 `skill` 指定 baseline 要移除的受管 Skill，适合需要 `request_user_input` 多轮回复的用例；case 保存结构化 `scripted_replies`，不得依赖运行时生成的 question id。当前 conversation driver 不支持 split 过滤，因此 `releaseSplits` 必须为空数组。
+- `conversation` 由中央 Codex app-server driver 执行，使用 `skill` 指定 current/baseline 的唯一目标 Skill，适合需要 `request_user_input` 多轮回复的用例；driver 会在 Default 协作模式显式启用该工具，case 保存结构化 `scripted_replies`，不得依赖运行时生成的 question id。strict 模式会在 current 中只保留目标 Skill，并在 baseline 中移除全部 Skill。当前 conversation driver 不支持 split 过滤，因此 `releaseSplits` 必须为空数组。
 - suite 只能引用 `runModel: true` profile。materialize-only profile 不进入 suite。
 - `requiredForRelease` 和 `releaseSplits` 决定无过滤参数运行时的发布证据集合。
 
@@ -116,7 +117,11 @@ pnpm plugin:eval <plugin> --output-dir /tmp/aw-eval
 
 `--suite`、`--profile`、`--split`、`--case` 都会把 bundle 标为 `complete: false`、`outcome: incomplete`；低于 suite `defaultRuns` 的 `--runs` 也相同。此类局部调试即使机械检查通过也退出 `1`，不能作为发布证据。
 
-真实模型默认从当前 `CODEX_HOME/config.toml` 只提取顶层 model 选择和选中的 `model_providers.<id>`；不会继承用户 plugins、skills、MCP、agents 或其它配置。可用 `--model-provider <id>`、`--codex-config <path>` 显式选择来源，或用 `--no-inherit-codex-config` 回到干净的官方默认 provider。provider 引用的环境变量按名称透传，但隔离保留变量会被拒绝，command runner 也不会继承其它宿主 secret；配置内 bearer 只写入 `0600` 临时 runtime home，非官方 provider 一律不复制官方 auth。凭据变量排除出模型 shell，endpoint、token、header 或环境变量值在写持久报告前统一脱敏；临时 capsule 在正常结束、失败和进程信号中清理。
+真实模型默认从当前 `CODEX_HOME/config.toml` 只提取顶层 model 选择和选中的 `model_providers.<id>`；不会继承用户 plugins、skills、MCP、agents 或其它配置。所有中央 eval 都把 `cli_auth_credentials_store` 和 `mcp_oauth_credentials_store` 固定为 `file`，并关闭 `features.secret_auth_storage`，因此临时 Codex 进程不应访问 macOS 钥匙串。可用 `--model-provider <id>`、`--codex-config <path>` 显式选择来源，或用 `--no-inherit-codex-config` 回到干净的官方默认 provider。provider 引用的环境变量按名称透传，但隔离保留变量会被拒绝，command runner 也不会继承其它宿主 secret；配置内 bearer 只写入 `0600` 临时 runtime home，非官方 provider 一律不复制官方 auth。凭据变量排除出模型 shell，endpoint、token、header 或环境变量值在写持久报告前统一脱敏；临时 capsule 在正常结束、失败和进程信号中清理。
+
+strict 模式在启动模型前检查 `/etc/codex`（Windows 对应系统目录）和 macOS `com.openai.codex` 的受管配置键；启动 app-server 后再读取有效 config layers、requirements、Skill 清单和 MCP 清单。检测到系统、MDM、云端或旧式 managed config、非目标 Skill、MCP server、Skill discovery error，或任一关闭项未生效时，suite 以 `incomplete` 结束，不产生发布通过证据。报告的 `environment.isolation` 保存这些检查结果。
+
+真实模型 eval 应从普通 Terminal 会话直接运行。不要通过会临时导出或改写用户 keychain search list 的 GUI、沙箱或提权包装器启动；这类外层包装器可能留下失效的 `accountsKeychainExport` 路径，并在 Codex 启动前触发 macOS“找不到钥匙串”弹窗。`--materialize-only` 和确定性测试不需要启动 Codex 模型进程。
 
 `pnpm plugin:eval` 是唯一支持的模型 eval 入口。不要直接运行插件 `evals/` 下的 command runner；直接调用既缺少 final-artifact profile/digest，也会因缺少 `AW_PLUGIN_EVAL_PROJECT_ROOT` 失败。
 

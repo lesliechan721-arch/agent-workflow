@@ -172,7 +172,8 @@ pnpm plugin:eval <plugin> --materialize-only
 - `scripts.tests.node` 只进入作者测试，不进入 runtime bundle。
 - plugin test 使用隔离 bundle、home 和 project。
 - eval materialization 必须验证最终 Codex Skill 文件和原生调用 metadata。
-- 真实模型 eval 显式运行，不进入普通 unit/integration。
+- `trigger` 和 `conversation` suite 支持 `isolation: standard|strict`；发布级触发边界和行为归因应使用 `strict`。
+- 真实模型 eval 使用文件凭据存储并关闭 secret keychain storage；从普通 Terminal 显式运行，不进入普通 unit/integration。
 
 ## Validation
 

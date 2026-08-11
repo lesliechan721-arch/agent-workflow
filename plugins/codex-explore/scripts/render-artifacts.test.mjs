@@ -116,8 +116,9 @@ function assertRoleArtifact(plan, expected) {
   assert.match(instructions, /只读事实调查，不做最终判断、建议或修改/);
   assert.match(instructions, /不得读取或调用 `codex-explore` skill/);
   assert.match(instructions, /不得委派或管理代理/);
-  assert.match(instructions, /存活探测.*不打断调查/s);
-  assert.match(instructions, /`status=progress`.*`status=blocked`/s);
+  assert.match(instructions, /不主动进行代理间通信/);
+  assert.equal(instructions.includes('存活探测'), false);
+  assert.equal(instructions.includes('status=progress'), false);
   assert.match(instructions, /保持只读/);
   assert.match(instructions, /不得向外部发送密钥、个人数据、私有代码或用户材料原文/);
   assert.match(instructions, /关键 claim.*实际读取、可核验的来源定位/s);
@@ -166,7 +167,7 @@ async function testRenderedArtifactsAndSkillContract() {
   for (const heading of ['## Gate', '## 委派', '## 不变量', '## 等待与整合']) {
     assert.match(text, new RegExp(heading));
   }
-  assert.match(text, /spawn_agent 不提供独立于父 turn 的子代理只读权限参数/);
+  assert.match(text, /父 turn 可写时只能提供行为只读，不得描述为权限隔离/);
   assert.match(text, /Gate 只判断拟委派的子任务，不判断顶层任务类型/);
   assert.match(text, /上下文隔离本身构成委派价值/);
   assert.match(text, /少量已知来源.*定向读取/s);
@@ -182,18 +183,20 @@ async function testRenderedArtifactsAndSkillContract() {
   assert.match(text, /`message` 必须自包含范围、来源、具体问题、探索深度/);
   assert.match(text, /默认启动一个子代理/);
   assert.match(text, /子代理继承父 turn 的 permission profile、approval policy 和 sandbox/);
-  assert.match(text, /子代理仍可能处理某范围时，主代理不得重复调查或接管/);
-  assert.match(text, /首次存活探测前给子任务至少 `12` 分钟累计等待预算/);
-  assert.match(text, /优先使用 `timeout_ms=720000`/);
+  assert.match(text, /未明确终态或停止未确认的范围视为活跃；主代理不得重复调查或接管/);
+  assert.match(text, /只整合明确终态且通过证据校验的结果/);
+  assert.match(text, /首次等待优先使用至少 `12` 分钟的单次窗口/);
+  assert.match(text, /即 `timeout_ms=720000`/);
   assert.match(text, /`timeout` 不等于失败/);
-  assert.match(text, /才最多探测一次/);
+  assert.match(text, /无法确认状态时保持未解决/);
   assert.match(text, /不得使用短 wait 循环、周期性查询/);
-  assert.match(text, /只校验明确终态的结果/);
-  assert.match(text, /关键 claim.*可核验的来源/s);
+  assert.match(text, /主动状态探测/);
+  assert.match(text, /接受结果前检查.*关键 claim.*可核验的来源/s);
   assert.match(text, /每个子任务最多恢复一次/);
-  assert.match(text, /明确要求使用 `codex-explore`.*不由主代理接管/s);
-  assert.match(text, /自动触发时.*一次最小、只读回退/s);
-  assert.match(text, /停止未确认时保留未解决标记，不接管同一范围/);
+  assert.match(text, /明确要求使用 `codex-explore`.*只报告类型和缺失/s);
+  assert.match(text, /自动触发时.*一次最小只读回退/s);
+  assert.match(text, /停止未确认时保持活跃/);
+  assert.equal(text.includes('优先保持三项不变量'), false);
   assert.match(text, /不发送密钥、个人数据、私有代码或用户材料原文/);
   assert.equal(text.includes('要求 `targets` 且返回 `status`'), false);
   assert.equal(text.includes('`timed_out: true`'), false);
@@ -216,6 +219,7 @@ async function testRenderedArtifactsAndSkillContract() {
   assert.equal(text.includes('role 固定使用'), false);
   assert.equal(text.includes('催促后等待'), false);
   assert.equal(text.includes('非中断收敛请求'), false);
+  assert.equal(text.includes('status=progress'), false);
 
   assert.match(openaiYaml, /allow_implicit_invocation:\s*true/);
   assert.match(openaiYaml, /使用 \$codex-explore/);
@@ -241,8 +245,8 @@ async function testConfigSourcesAndManifestDefaults() {
   const configuredSkill = findArtifact(configured, 'codex-explore-skill');
   const configuredStandard = findArtifact(configured, 'codex-explore-standard-role');
   const configuredQuick = findArtifact(configured, 'codex-explore-quick-role');
-  assert.match(configuredSkill.content.files['SKILL.md'], /至少 `20` 分钟累计等待预算/);
-  assert.match(configuredSkill.content.files['SKILL.md'], /优先使用 `timeout_ms=1200000`/);
+  assert.match(configuredSkill.content.files['SKILL.md'], /至少 `20` 分钟的单次窗口/);
+  assert.match(configuredSkill.content.files['SKILL.md'], /即 `timeout_ms=1200000`/);
   assert.equal(configuredStandard.content.roleFile.model, 'configured-standard');
   assert.equal(configuredStandard.content.roleFile.model_reasoning_effort, 'max');
   assert.equal(configuredQuick.content.roleFile.model, 'gpt-5.6-luna');
@@ -259,8 +263,8 @@ async function testConfigSourcesAndManifestDefaults() {
   );
   const defaultSkill = findArtifact(defaults, 'codex-explore-skill');
   const defaultStandard = findArtifact(defaults, 'codex-explore-standard-role');
-  assert.match(defaultSkill.content.files['SKILL.md'], /至少 `10` 分钟累计等待预算/);
-  assert.match(defaultSkill.content.files['SKILL.md'], /优先使用 `timeout_ms=600000`/);
+  assert.match(defaultSkill.content.files['SKILL.md'], /至少 `10` 分钟的单次窗口/);
+  assert.match(defaultSkill.content.files['SKILL.md'], /即 `timeout_ms=600000`/);
   assert.equal(defaultStandard.content.roleFile.model, 'gpt-5.6-luna');
   assert.equal(defaultStandard.content.roleFile.model_reasoning_effort, 'high');
 }
@@ -272,7 +276,7 @@ async function testStaticManifestContract() {
   ]);
   const manifest = JSON.parse(manifestText);
 
-  assert.equal(manifest.version, '0.2.10');
+  assert.equal(manifest.version, '0.2.11');
   assert.deepEqual(Object.keys(manifest.config.schema), [
     'quickModel',
     'quickReasoningEffort',
@@ -291,7 +295,7 @@ async function testStaticManifestContract() {
     );
   }
   assert.equal(manifest.config.schema.minimumInitialWaitMinutes.default, 10);
-  assert.match(manifest.config.schema.minimumInitialWaitMinutes.title, /存活探测/);
+  assert.match(manifest.config.schema.minimumInitialWaitMinutes.title, /响应式等待/);
   assert.deepEqual(manifest.marketplace.policy.products, ['CODEX']);
   assert.equal(manifest.interface.capabilities.includes('Agents'), true);
   assert.match(manifest.extensions.instructions[0].content, /Gate 通过/);

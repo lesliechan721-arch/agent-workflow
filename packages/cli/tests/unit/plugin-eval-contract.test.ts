@@ -186,6 +186,49 @@ describe('plugin eval contract and materialization', () => {
     );
   });
 
+  it('parses conversation isolation and keeps the schema-v1 standard default', async () => {
+    const pluginRoot = await createStaticEvalPlugin();
+    await fs.writeJson(path.join(pluginRoot, 'evals', 'conversation-cases.json'), {
+      skill_name: 'eval-fixture',
+      evals: [{
+        id: 'conversation-fixture',
+        prompt: 'Inspect the fixture.',
+        scripted_replies: [],
+        expected_output: 'Return the result.',
+        review: { checks: ['Inspects the fixture.'], workspace_unchanged: true },
+      }],
+    }, { spaces: 2 });
+    const manifestPath = path.join(pluginRoot, 'evals', 'manifest.json');
+    const manifest = await fs.readJson(manifestPath);
+    manifest.suites = [{
+      id: 'conversation',
+      kind: 'conversation',
+      skill: 'eval-fixture',
+      cases: './evals/conversation-cases.json',
+      profiles: ['project-runtime'],
+      defaultRuns: 1,
+      releaseSplits: [],
+      requiredForRelease: true,
+      perRunTimeoutMs: 10_000,
+      isolation: 'strict',
+    }];
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+
+    const strict = await readPluginEvalManifest(pluginRoot, 'eval-fixture');
+    expect(strict.suites[0]).toMatchObject({ kind: 'conversation', isolation: 'strict' });
+
+    delete manifest.suites[0].isolation;
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+    const standard = await readPluginEvalManifest(pluginRoot, 'eval-fixture');
+    expect(standard.suites[0]).toMatchObject({ kind: 'conversation', isolation: 'standard' });
+
+    manifest.suites[0].isolation = 'partial';
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+    await expect(readPluginEvalManifest(pluginRoot, 'eval-fixture')).rejects.toThrow(
+      'suites[0].isolation must be standard or strict',
+    );
+  });
+
   it('rejects model execution for a user profile', async () => {
     const pluginRoot = await createStaticEvalPlugin();
     const manifestPath = path.join(pluginRoot, 'evals', 'manifest.json');
