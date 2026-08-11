@@ -1,6 +1,6 @@
 interface:
   display_name: "决策推演"
-  short_description: "共同制定、比较或压力测试计划与重要决策，梳理关键取舍和验证缺口"
-  default_prompt: "使用 $decision-grill 和我一起审视当前计划或决策，找出关键取舍、假设、主要备选、失败路径和验证缺口。"
+  short_description: "通过逐轮讨论，把未定型想法和关键取舍收敛为可执行计划"
+  default_prompt: "使用 $decision-grill 和我逐轮完善当前计划，确认目标、边界、关键取舍、推进顺序和待验证事项。"
 policy:
   allow_implicit_invocation: true

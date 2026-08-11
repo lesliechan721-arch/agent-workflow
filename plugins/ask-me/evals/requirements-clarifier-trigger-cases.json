@@ -133,16 +133,16 @@
       "rationale": "权威规范已覆盖相关行为和验收。",
       "split": "validation",
       "use_project_rules": true,
-      "workspace_fixture": "implementation_repo"
+      "workspace_fixture": "account_pause_repo"
     },
     {
       "id": "n07_internal_planning",
-      "query": "实现这个已批准的需求，你自己先列执行步骤再直接做，不需要和我讨论计划。",
+      "query": "严格按 docs/approved-migration.md 实现会话过期迁移。文档中的需求、步骤、回滚和验收都已批准；你自己列执行步骤后直接做，不需要和我讨论。",
       "should_load_skill": false,
-      "rationale": "需求已批准且用户只要求 agent 内部规划。",
+      "rationale": "权威文档给出了完整需求与验收，用户只要求 agent 内部规划。",
       "split": "validation",
       "use_project_rules": true,
-      "workspace_fixture": "implementation_repo"
+      "workspace_fixture": "session_migration_repo"
     },
     {
       "id": "n08_bounded_bugfix",
@@ -164,9 +164,9 @@
     },
     {
       "id": "n10_easy_default",
-      "query": "新增一个只在内部使用的日志 helper，命名和文件位置沿用附近代码。",
+      "query": "在 src/logging/format-entry.ts 新增内部函数 formatDebugContext(value)，与现有 formatEntry 一样返回 String(value)。",
       "should_load_skill": false,
-      "rationale": "内部、可逆且有清楚惯例，应直接采用默认。",
+      "rationale": "名称、位置和行为均已明确，剩余实现选择内部且可逆。",
       "split": "validation",
       "use_project_rules": true,
       "workspace_fixture": "implementation_repo"

@@ -3,172 +3,167 @@
   "skill": "decision-grill",
   "cases": [
     {
-      "id": "p01_product_idea",
-      "query": "我想做一个面向独立设计师的协作产品，和我一起把这个想法想清楚。",
+      "id": "p01_tenant_migration_plan",
+      "query": "和我一起制定多租户迁移计划。租户隔离方式、兼容期和回滚策略还没定，关键选择逐轮问我，最后形成可执行计划。",
       "should_load_skill": true,
-      "rationale": "产品想法本身是当前需要共同形成的成果。",
+      "rationale": "用户明确要求通过逐轮选择共同形成迁移计划。",
       "split": "train",
       "use_project_rules": true
     },
     {
-      "id": "p02_architecture_comparison",
-      "query": "比较单体和微服务两种方案，帮我把关键取舍和反转条件梳理出来。",
+      "id": "p02_iterative_launch_plan",
+      "query": "这份上线计划还不成熟。请逐轮和我修改，发布节奏和故障回退由我参与决定，直到计划能执行。",
       "should_load_skill": true,
-      "rationale": "当前任务是比较并形成架构决策。",
+      "rationale": "未定型计划需要用户参与交互式修订。",
       "split": "train",
       "use_project_rules": true
     },
     {
-      "id": "p03_plan_review",
-      "query": "评审这份数据库迁移计划，重点找假设、失败路径和回滚缺口。",
+      "id": "p03_product_idea_to_plan",
+      "query": "我有一个面向独立设计师的协作产品想法。请逐轮问清目标、范围和优先级，和我一起形成试点计划。",
       "should_load_skill": true,
-      "rationale": "用户明确要求压力测试已有计划。",
+      "rationale": "用户要通过逐轮讨论把想法推进成计划。",
       "split": "train",
       "use_project_rules": true
     },
     {
-      "id": "p04_build_or_buy",
-      "query": "我们该自建搜索还是买 SaaS？带我把这个决定做完。",
+      "id": "p04_runner_choice_to_plan",
+      "query": "本地 MCP runner 和 CI runner 都可行。请和我权衡凭据、运维和工作树要求，关键取舍逐项问我，最后定下方向并形成落地计划。",
       "should_load_skill": true,
-      "rationale": "重要决策本身是当前工作。",
+      "rationale": "方案比较服务于用户参与的选择和规划。",
+      "split": "validation",
+      "use_project_rules": true
+    },
+    {
+      "id": "p05_workflow_planning_stage",
+      "query": "外层工作流现在进入协作规划阶段。发布方式和兼容期限仍需我选择，请逐轮收敛并输出实施计划。",
+      "should_load_skill": true,
+      "rationale": "外层工作流明确进入协作规划且仍需用户选择。",
       "split": "train",
       "use_project_rules": true
     },
     {
-      "id": "p05_roadmap",
-      "query": "和我制定下个季度的产品路线图，顺便挑战一下优先级依据。",
+      "id": "p06_revision_to_executable_plan",
+      "query": "和我逐轮修订这份数据迁移草案。每遇到会改变范围或回滚方式的选择先问我，最后整理成可执行计划。",
       "should_load_skill": true,
-      "rationale": "路线图和优先级是需要共同产出的计划。",
+      "rationale": "用户要求交互式修订计划并参与关键取舍。",
+      "split": "validation",
+      "use_project_rules": true
+    },
+    {
+      "id": "p07_roadmap_planning",
+      "query": "和我制定下个季度的产品路线图。优先级和范围还没定，请逐轮讨论后形成计划。",
+      "should_load_skill": true,
+      "rationale": "路线图需要通过用户参与的取舍形成。",
       "split": "train",
       "use_project_rules": true
     },
     {
-      "id": "p06_workflow_stage",
-      "query": "技术方案工作流现在进入决策阶段，请使用 decision-grill 梳理关键取舍。",
+      "id": "p08_architecture_choice_plan",
+      "query": "单体和微服务都能满足需求。请先问清我的交付期限和运维取舍，和我选定方向，再形成迁移计划。",
       "should_load_skill": true,
-      "rationale": "外层工作流明确进入协作决策阶段。",
+      "rationale": "比较是共同选定方向并制定计划的一部分。",
       "split": "validation",
       "use_project_rules": true
     },
     {
-      "id": "p07_existing_decision",
-      "query": "我已经倾向事件驱动架构，请检查这个选择依赖哪些薄弱假设。",
+      "id": "p09_pricing_transition_plan",
+      "query": "我们准备从免费转订阅，但试点范围、价格验证和失败后的回退还没定。请逐轮和我决定并形成上线计划。",
       "should_load_skill": true,
-      "rationale": "用户要求检验已作出的重要决定。",
+      "rationale": "重要取舍仍需用户参与并收敛为上线计划。",
       "split": "validation",
       "use_project_rules": true
     },
     {
-      "id": "p08_rollout_strategy",
-      "query": "一起设计新计费系统的发布方案，比较灰度、双跑和一次切换。",
+      "id": "p10_explicit_skill_plan",
+      "query": "$decision-grill 这份 API 下线想法还没定型。请逐轮和我确认兼容期限、迁移责任和回退条件，形成可执行计划。",
       "should_load_skill": true,
-      "rationale": "发布方案和替代路径是当前要共同制定的内容。",
+      "rationale": "用户显式选择 Skill，并提供了尚未定型且需要共同收敛的计划。",
       "split": "validation",
       "use_project_rules": true
     },
     {
-      "id": "p09_api_sunset",
-      "query": "讨论是否下线旧 API，把迁移成本、风险和重新评估条件想透。",
-      "should_load_skill": true,
-      "rationale": "当前任务是形成并压力测试退出决策。",
-      "split": "validation",
-      "use_project_rules": true
-    },
-    {
-      "id": "p10_pricing_decision",
-      "query": "我们准备从免费转订阅，帮我比较定价方向和失败后的退路。",
-      "should_load_skill": true,
-      "rationale": "重大商业决策需要共同推演。",
-      "split": "validation",
-      "use_project_rules": true
-    },
-    {
-      "id": "n01_internal_plan",
-      "query": "实现这个已批准的功能，你自己先列执行计划，然后直接开始做。",
+      "id": "n01_observed_runner_explanation",
+      "query": "专用 MCP/CI runner 具体怎么实现？实现难度大么？",
       "should_load_skill": false,
-      "rationale": "计划只是 agent 的内部执行手段，不是用户要共同讨论的成果。",
+      "rationale": "用户要求技术说明和难度估算，没有要求共同形成计划或决定。",
+      "split": "validation",
+      "use_project_rules": true
+    },
+    {
+      "id": "n02_solution_comparison",
+      "query": "比较单体和微服务的成本、性能和实现难度。",
+      "should_load_skill": false,
+      "rationale": "这是一次性方案比较，不是交互式规划。",
+      "split": "validation",
+      "use_project_rules": true
+    },
+    {
+      "id": "n03_one_shot_plan_review",
+      "query": "评审这份迁移计划，直接列出风险和改进建议。",
+      "should_load_skill": false,
+      "rationale": "用户要求一次性计划评审，没有要求逐轮修订。",
+      "split": "validation",
+      "use_project_rules": true
+    },
+    {
+      "id": "n04_feasibility_effort",
+      "query": "这个方案两周内能做完吗？估一下可行性和工作量。",
+      "should_load_skill": false,
+      "rationale": "这是可行性和工作量估算，不是共同制定计划。",
+      "split": "validation",
+      "use_project_rules": true
+    },
+    {
+      "id": "n05_direct_recommendation",
+      "query": "PostgreSQL 和 MySQL 哪个更适合这个服务？分析后直接推荐一个。",
+      "should_load_skill": false,
+      "rationale": "用户要一次性技术选型建议，没有要求参与取舍或形成计划。",
+      "split": "validation",
+      "use_project_rules": true
+    },
+    {
+      "id": "n06_generate_plan_from_spec",
+      "query": "需求和技术规范都完整，直接生成实施计划，不需要问我。",
+      "should_load_skill": false,
+      "rationale": "用户明确要求根据完整输入直接产出计划，不需要交互式规划。",
       "split": "train",
       "use_project_rules": true,
       "workspace_fixture": "implementation_repo"
     },
     {
-      "id": "n02_think_then_code",
-      "query": "修这个 bug，先想清楚再动手，不用和我讨论方案。",
+      "id": "n07_delegated_internal_choice",
+      "query": "根据当前仓库为内部日志库做技术选型并直接采用你的推荐，不需要和我讨论。",
       "should_load_skill": false,
-      "rationale": "“想清楚”不等于协作制定计划。",
+      "rationale": "用户已把内部选择委托给 agent，且没有协作规划意图。",
       "split": "train",
       "use_project_rules": true,
       "workspace_fixture": "implementation_repo"
     },
     {
-      "id": "n03_implementation_ambiguity",
+      "id": "n08_agent_internal_planning",
+      "query": "修复 tests/parser_test.py 中稳定复现的错误。你自己先规划再实现，保持其他行为不变。",
+      "should_load_skill": false,
+      "rationale": "计划只是 agent 实施任务的内部步骤。",
+      "split": "train",
+      "use_project_rules": true,
+      "workspace_fixture": "implementation_repo"
+    },
+    {
+      "id": "n09_implementation_ambiguity",
       "query": "实现导出功能，但导出全部还是当前筛选结果还没定。",
       "should_load_skill": false,
-      "rationale": "这是具体实现前的关键歧义，应使用 requirements-clarifier。",
+      "rationale": "这是具体实施需求的关键歧义，应使用 requirements-clarifier。",
       "split": "train",
       "use_project_rules": true,
       "workspace_fixture": "implementation_repo"
     },
     {
-      "id": "n04_approved_plan",
-      "query": "严格按已经批准的迁移计划执行，不要重新讨论方案。",
+      "id": "n10_technical_explanation",
+      "query": "解释当前系统的会话迁移是怎么实现的，只给技术说明。",
       "should_load_skill": false,
-      "rationale": "用户要求执行既定计划，而不是评审计划。",
+      "rationale": "这是技术原理说明，不需要协作规划。",
       "split": "train",
-      "use_project_rules": true,
-      "workspace_fixture": "implementation_repo"
-    },
-    {
-      "id": "n05_fact_question",
-      "query": "ADR-014 为什么选择 PostgreSQL？",
-      "should_load_skill": false,
-      "rationale": "这是读取和解释已有事实。",
-      "split": "train",
-      "use_project_rules": true,
-      "workspace_fixture": "implementation_repo"
-    },
-    {
-      "id": "n06_small_choice",
-      "query": "这个内部 helper 叫 normalize 还是 canonicalize，你选一个。",
-      "should_load_skill": false,
-      "rationale": "低风险且已委托的内部选择不需要决策推演。",
-      "split": "validation",
-      "use_project_rules": true,
-      "workspace_fixture": "implementation_repo"
-    },
-    {
-      "id": "n07_format_existing_plan",
-      "query": "把这份已经批准的实施计划整理成 Markdown，不改变内容。",
-      "should_load_skill": false,
-      "rationale": "这是机械整理，不是制定或评审计划。",
-      "split": "validation",
-      "use_project_rules": true,
-      "workspace_fixture": "implementation_repo"
-    },
-    {
-      "id": "n08_bounded_bugfix",
-      "query": "修复一个有稳定复现和明确期望输出的解析器错误。",
-      "should_load_skill": false,
-      "rationale": "边界明确的实施任务。",
-      "split": "validation",
-      "use_project_rules": true,
-      "workspace_fixture": "implementation_repo"
-    },
-    {
-      "id": "n09_current_state",
-      "query": "当前系统是否已经支持 IPv6？只给证据和结论。",
-      "should_load_skill": false,
-      "rationale": "事实核验而非计划或决策讨论。",
-      "split": "validation",
-      "use_project_rules": true,
-      "workspace_fixture": "implementation_repo"
-    },
-    {
-      "id": "n10_agent_recommendation",
-      "query": "根据当前仓库为一个内部日志库做技术选型并直接采用你的推荐，不需要和我讨论。",
-      "should_load_skill": false,
-      "rationale": "用户已把内部选择委托给 agent，当前没有协作决策意图。",
-      "split": "validation",
       "use_project_rules": true,
       "workspace_fixture": "implementation_repo"
     }

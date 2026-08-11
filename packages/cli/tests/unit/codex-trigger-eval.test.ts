@@ -173,7 +173,7 @@ afterEach(async () => {
 });
 
 describe('Codex native trigger eval driver', () => {
-  it('only accepts completed successful skill-read evidence', () => {
+  it('accepts completed successful or output-proven skill-read evidence', () => {
     const skillPath = '/tmp/project/.agents/skills/eval-fixture/SKILL.md';
     expect(inspectTriggerAppServerFrame({
       method: 'item/started',
@@ -198,6 +198,38 @@ describe('Codex native trigger eval driver', () => {
       loaded: true,
       loadEvidence: 'cat .agents/skills/eval-fixture/SKILL.md',
     });
+    expect(inspectTriggerAppServerFrame({
+      method: 'item/completed',
+      params: {
+        item: {
+          type: 'commandExecution',
+          status: 'failed',
+          exitCode: 1,
+          command: 'cat .agents/skills/eval-fixture/SKILL.md && rg missing .',
+          aggregatedOutput: [
+            '---',
+            'name: eval-fixture',
+            'description: Eval fixture.',
+            '---',
+          ].join('\n'),
+        },
+      },
+    }, skillPath)).toEqual({
+      loaded: true,
+      loadEvidence: 'cat .agents/skills/eval-fixture/SKILL.md && rg missing .',
+    });
+    expect(inspectTriggerAppServerFrame({
+      method: 'item/completed',
+      params: {
+        item: {
+          type: 'commandExecution',
+          status: 'failed',
+          exitCode: 1,
+          command: 'cat .agents/skills/eval-fixture/SKILL.md && rg missing .',
+          aggregatedOutput: 'cat: SKILL.md: permission denied',
+        },
+      },
+    }, skillPath)).toEqual({});
     expect(inspectTriggerAppServerFrame({
       method: 'item/completed',
       params: {

@@ -2,46 +2,46 @@
   "skill_name": "requirements-clarifier",
   "evals": [
     {
-      "id": "find-before-ask",
-      "prompt": "$requirements-clarifier 给用户列表加分页；仓库文档已经规定每页 50 条，但没有说明默认排序。请先检查，不要修改文件。",
+      "id": "known-fact-before-question",
+      "prompt": "准备给用户列表加分页。现有项目约定每页 50 条；默认排序没有规定，而且会影响用户先看到哪些记录。请采用已知页数约定，并使用问题工具只确认默认排序；收到回答后直接交接，不要继续提问或修改文件。",
       "scripted_replies": [
         {
           "expected_question_count": 1,
-          "answers_by_index": ["默认按 created_at 和 id 倒序。"],
+          "answers_by_index": ["默认按 created_at 和 id 倒序。这是最后一个待确认项，请直接交接。"],
           "unexpected_question_answer": "我暂时不知道，请先处理已经回答的部分。"
         }
       ],
-      "expected_output": "先采用文档规定的每页数量，不重复询问；只在默认排序会明显影响用户结果且没有可靠惯例时提问。",
+      "expected_output": "采用已知的每页数量，不重复询问；只确认会影响用户结果的默认排序，收到回答后结束。",
       "files": [],
       "review": {
         "platforms": ["codex", "claude"],
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [
-          "先读取相关代码或文档",
+          "采用已提供的每页 50 条项目约定",
           "不询问已规定的每页数量",
-          "只在默认排序会明显影响用户结果且没有可靠惯例时提问"
+          "只确认默认排序，收到回答后结束"
         ]
       }
     },
     {
       "id": "three-way-routing",
-      "prompt": "$requirements-clarifier 需求同时包含一个仓库可查事实、一个内部可逆实现选择和一个会改变用户流程的产品歧义。请检查，不要修改文件。",
+      "prompt": "准备给注册流程加邮箱验证。已知项目规范规定验证码有效期为 10 分钟；验证码缓存使用 Map 还是普通对象属于内部可逆选择，由你决定；唯一未定的产品行为是现有未验证用户应立即被拦截，还是有 7 天宽限期。请使用问题工具只确认这个产品歧义，收到回答后直接交接，不要继续提问或修改文件。",
       "scripted_replies": [
         {
           "expected_question_count": 1,
-          "answers_by_index": ["用户必须先验证邮箱，之后才能进入主流程。"],
+          "answers_by_index": ["现有未验证用户立即被拦截，完成邮箱验证后才能进入主流程。请直接交接。"],
           "unexpected_question_answer": "我暂时不知道，请先处理已经回答的部分。"
         }
       ],
-      "expected_output": "自行查明可发现事实，对内部可逆选择采用合理默认，只向用户询问会改变用户流程的歧义。",
+      "expected_output": "采用已确认的验证码有效期，对内部缓存选择采用合理默认，只询问会改变现有用户流程的宽限期。",
       "files": [],
       "review": {
         "platforms": ["codex", "claude"],
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [
-          "自行查明可发现事实",
+          "采用已确认的验证码有效期",
           "对内部可逆选择采用合理默认",
           "只向用户询问会改变用户流程的歧义"
         ]
@@ -49,7 +49,7 @@
     },
     {
       "id": "transparent-default",
-      "prompt": "$requirements-clarifier 项目所有列表页都使用同一种空状态样式，新页面没有另行说明。请判断是否需要提问，不要修改文件。",
+      "prompt": "准备实现一个新列表页。项目所有列表页都使用同一种空状态样式，新页面没有另行说明。请判断是否需要提问，不要修改文件。",
       "scripted_replies": [],
       "expected_output": "不为已有明确惯例提问，沿用现有空状态样式；只有该默认会影响用户预期时才在交接中简要说明。",
       "files": [],
@@ -66,15 +66,19 @@
     },
     {
       "id": "combined-small-ambiguities",
-      "prompt": "$requirements-clarifier 一个收藏功能的可见性、取消反馈和作用对象分别影响不大，但合起来决定整体体验。请检查，不要修改文件。",
+      "prompt": "准备实现收藏功能。收藏归属、可见性和取消反馈分别影响不大，但合起来决定整体体验，而且三项互相独立。请使用问题工具在这一轮分别确认这三项，收到回答后直接交接，不要继续提问或修改文件。",
       "scripted_replies": [
         {
-          "expected_question_count": 1,
-          "answers_by_index": ["收藏属于当前用户且默认私有；取消后显示简短确认。"],
+          "expected_question_count": 3,
+          "answers_by_index": [
+            "收藏属于当前用户。",
+            "收藏默认私有。",
+            "取消后显示简短确认。请直接交接。"
+          ],
           "unexpected_question_answer": "我暂时不知道，请先处理已经回答的部分。"
         }
       ],
-      "expected_output": "识别多个歧义的合并影响，不因单项不够重大而全部静默假设，并优先询问能同时确定多个下游细节的上游选择。",
+      "expected_output": "识别多个小歧义的合并影响，在一轮内分别确认三个互相独立的问题，不因单项影响小而全部静默假设。",
       "files": [],
       "review": {
         "platforms": ["codex", "claude"],
@@ -83,17 +87,17 @@
         "checks": [
           "识别多个歧义的合并影响",
           "不因单项不够重大而全部静默假设",
-          "优先询问能同时确定多个下游细节的上游选择"
+          "在一轮内分别确认三个互相独立的问题"
         ]
       }
     },
     {
       "id": "dependent-frontier",
-      "prompt": "$requirements-clarifier 是否允许外部访客决定权限模型，权限模型再决定审计行为。请澄清，不要修改文件。",
+      "prompt": "准备实现访客协作功能。是否允许外部访客会决定权限模型，权限模型再决定审计行为。第一轮请使用问题工具只询问是否允许外部访客，不要提前询问权限或审计细节；收到回答后重新检查并直接交接，不要开始第二轮提问或修改文件。",
       "scripted_replies": [
         {
           "expected_question_count": 1,
-          "answers_by_index": ["不允许外部访客。"],
+          "answers_by_index": ["不允许外部访客。请重新检查剩余问题并直接交接。"],
           "unexpected_question_answer": "我暂时不知道，请先处理已经回答的部分。"
         }
       ],
@@ -112,7 +116,7 @@
     },
     {
       "id": "engineering-validation",
-      "prompt": "$requirements-clarifier 用户要求现有服务支持 10 万 QPS，但仓库没有性能数据。请检查，不要修改文件。",
+      "prompt": "准备让现有服务支持系统总吞吐 10 万 QPS。验收口径已确定：固定生产规格集群、标准请求负载、持续 30 分钟、P99 不超过 200 ms、错误率低于 0.1%；仓库没有性能数据。本轮不要提问，请判断应确认、默认还是待验证，不要运行压测、制作原型或修改文件。",
       "scripted_replies": [],
       "expected_output": "不要求用户主观确认技术可行性，把性能目标列为待验证事项，澄清期间不运行压测或制作原型。",
       "files": [],
@@ -129,11 +133,11 @@
     },
     {
       "id": "conflicting-requirements",
-      "prompt": "$requirements-clarifier 用户同时要求零停机迁移，并禁止双写、兼容层和灰度发布。请澄清，不要修改文件。",
+      "prompt": "准备实施数据库迁移，但要求同时是零停机，并禁止双写、兼容层和灰度发布。请使用问题工具只确认需要放宽哪项约束；收到回答后直接交接，不要继续提问或修改文件。",
       "scripted_replies": [
         {
           "expected_question_count": 1,
-          "answers_by_index": ["零停机是硬目标；可以使用兼容层和灰度发布，但仍禁止双写。"],
+          "answers_by_index": ["零停机是硬目标；可以使用兼容层和灰度发布，但仍禁止双写。请直接交接。"],
           "unexpected_question_answer": "我暂时不知道，请先处理已经回答的部分。"
         }
       ],
@@ -152,7 +156,7 @@
     },
     {
       "id": "question-shape",
-      "prompt": "$requirements-clarifier 需要确认并发上限，但合理值取决于用户的资源预算。请提出适合的问题，不要修改文件。",
+      "prompt": "外层实现工作流现在进入需求澄清阶段：并发任务需要确认并发上限，但合理值取决于用户可以自由描述的 CPU、内存、下游连接数和费用预算，当前没有可准确列出的互斥选项。请判断适合的问题形态，只输出这一条问题，不等待回答、伪造推荐或修改文件。",
       "scripted_replies": [],
       "expected_output": "不强行制造不准确的单选菜单；工具不适合时直接简洁提问，没有事实依据时不伪造推荐。",
       "files": [],
@@ -169,7 +173,7 @@
     },
     {
       "id": "stop-with-no-gap",
-      "prompt": "$requirements-clarifier 权威规范已覆盖行为、范围、错误、迁移和验收。请检查，没有关键歧义就结束，不要修改文件。",
+      "prompt": "准备严格按权威规范实施；规范已覆盖行为、范围、错误、迁移和验收。请检查，没有关键歧义就结束，不要提问、开始实施或修改文件。",
       "scripted_replies": [],
       "expected_output": "检查现有材料后不制造问题，明确没有值得继续追问的关键歧义，把控制权交还原任务且不开始实施。",
       "files": [],
@@ -186,7 +190,7 @@
     },
     {
       "id": "handoff-on-stop",
-      "prompt": "$requirements-clarifier 一项已确认，一项采用现有惯例，一项需要压测；用户表示不再回答。请交接，不要修改文件。",
+      "prompt": "实施前澄清即将结束：一项已确认，一项采用现有惯例，一项需要压测；用户表示不再回答。请交接，不要继续提问或修改文件。",
       "scripted_replies": [],
       "expected_output": "区分已确认、关键默认和待验证或未解决事项，说明未解决项可能带来的返工风险，不声称需求已经完全稳定。",
       "files": [],

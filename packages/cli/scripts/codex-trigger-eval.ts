@@ -233,6 +233,18 @@ function normalizedCommandReadsSkill(command: string, skillPath: string): boolea
   );
 }
 
+function commandOutputContainsSkill(
+  item: Record<string, unknown>,
+  skillPath: string,
+): boolean {
+  if (typeof item.aggregatedOutput !== 'string') return false;
+  const skillName = path.basename(path.dirname(skillPath));
+  const escaped = skillName.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+  return new RegExp(`^name:\\s*["']?${escaped}["']?\\s*$`, 'mu').test(
+    item.aggregatedOutput,
+  );
+}
+
 export function inspectTriggerAppServerFrame(
   frame: Record<string, unknown>,
   skillPath: string,
@@ -249,10 +261,10 @@ export function inspectTriggerAppServerFrame(
     const completed = method === 'item/completed';
     const statusPassed = item.status === undefined || item.status === 'completed';
     const exitPassed = item.exitCode === undefined || item.exitCode === 0;
+    const outputProvesRead = commandOutputContainsSkill(item, skillPath);
     if (
       completed &&
-      statusPassed &&
-      exitPassed &&
+      ((statusPassed && exitPassed) || outputProvesRead) &&
       normalizedCommandReadsSkill(item.command, skillPath)
     ) {
       return { loaded: true, loadEvidence: item.command };
