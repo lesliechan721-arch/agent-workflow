@@ -19,7 +19,7 @@ compatibility: Requires the agent-workflows repository, Node.js 20+, and install
 | 任务 | 必读 | 条件性补充 |
 |------|------|------------|
 | 新建或重写 skill | `references/skill-design.md`、`references/skills-and-triggers.md`、`references/plugin-manifest-spec.md` 的基础字段与平台原生调用元数据 | skill 内含脚本时读 `references/skill-scripts.md`；完成前读 `references/skill-evaluation.md` |
-| 设计或调整 Skill 原生调用元数据 | `references/skills-and-triggers.md` | 改 description 时读 `references/skill-design.md` 和 `references/skill-evaluation.md` |
+| 设计或调整 Skill 原生调用元数据 | `references/skills-and-triggers.md`、`references/skill-frontmatter-capabilities.generated.md` | 改 description 时读 `references/skill-design.md` 和 `references/skill-evaluation.md` |
 | Extensions | `references/extensions-spec.md`、manifest 对应章节 | — |
 | MCP / Apps | `references/mcp-and-apps.md`、manifest 对应章节 | — |
 | 公共 slashCommands | `references/slash-commands.md` | 复杂工作流仍放 skill，并读 skill 设计文档 |
@@ -33,16 +33,22 @@ compatibility: Requires the agent-workflows repository, Node.js 20+, and install
 ## 创建与维护工作流
 
 1. **确认目标和边界**
-   - 新建插件：确认插件名、用户目标、支持平台和最小能力组合
-   - 维护插件：先读现有 `.agents-plugin/plugin.json`、相关源码与测试，不重新脚手架
+   - 新建插件：确认插件名、用户目标、支持平台、允许修改文件和最小能力组合
+   - 维护插件：先读现有 `.agents-plugin/plugin.json`、相关源码、原生调用元数据与测试，不重新脚手架
+   - 完成条件：已列出允许修改文件、目标平台、现有或目标调用策略、声明能力和验证入口；关键项未知时不编辑
 2. **选择能力**
+   - 创建或重大重写 Skill 时先写 candidate brief：真实任务与证据、without-skill baseline、可观察成功指标、预期增量和相邻方案
    - 可调用、多步骤、需要模型判断的工作流 → skill
    - 常驻规则、权限、hooks、agents → extensions
    - 显式快捷入口 → 公共 `slashCommands`
    - 配置驱动的 Codex 产物 → dynamic artifact
+   - 明确 Skill invocation：`model`、`manual` 或 `claude-model-only`
+   - 完成条件：能力选择已与任务范围对齐；涉及创建或重大重写 Skill 时，baseline gap、invocation、Skill-specific description、信息层级和 eval strategy 均已确定，且不能证明 Skill 增量时使用更简单能力或不创建
 3. **创建骨架**
    - 新插件可运行 `scripts/init_plugin.mjs`
+   - 创建 Skill 时显式传 `--skill-invocation`；省略时采用 `model`
    - 只保留用户请求的能力，不预先生成 MCP、Apps、lifecycle 或 config
+   - 完成条件：骨架的能力、调用元数据、独立 Skill description 和 eval starter 与上一步决定一致
 4. **实现源码**
    - Skills → 编写 `SKILL.md`；面向 Codex 时同时提供 `agents/openai.yaml`
    - Extensions → 写入 manifest 的 `extensions`
@@ -50,18 +56,24 @@ compatibility: Requires the agent-workflows repository, Node.js 20+, and install
    - Public slashCommands → 创建 `slash-commands/*.md`
    - AW Config / Lifecycle → 声明 `config` 和插件根 `scripts`
    - Dynamic Artifacts → 静态声明 target，renderer 只输出 `ArtifactPlan`
+   - 完成条件：每个声明能力都有对应源码文件、字段和直接测试；没有修改生成目录或加入未请求能力
 5. **构建**
    - 运行 `pnpm build` 生成本地 staging/runtime bundle
+   - 完成条件：命令 exit 0，目标 staging/runtime artifact 存在，且生成物只由构建产生
 6. **验证并修复**
    - 运行 `scripts/validate_plugin.mjs`
    - 校验失败时按错误修复并重跑，直到通过
+   - 默认 Claude profile 是 AW 最低支持版本 2.1.88；`current` profile 只用于核对当前字段，不改变 AW 的最低版本兼容门
+   - 完成条件：默认 profile 通过；额外 profile 的结果与用途已区分为通过、诊断或未运行
 7. **测试**
    - 插件根 Node 脚本运行 `pnpm plugin:test <plugin>`
    - 改到 manifest、bundle 或安装逻辑时运行相关 `pnpm test:*`
    - 每个 Skill 的作者期用例放在自身源码根 `evals/`，按 `references/skill-evaluation.md` 声明 owner、participants 和 profiles
    - 先运行 `pnpm plugin:eval <plugin> --skill <skill> --materialize-only` 验证 Codex 最终制品；真实模型 eval 只在本地显式运行
+   - 完成条件：每个修改面有直接确定性测试；重大 Skill 修改有 with-skill/baseline behavior 和适用 trigger evidence；失败已修复并重跑
 8. **交付**
    - 报告修改的源码文件、运行的验证、未验证项和仍需用户决定的风险
+   - 完成条件：明确区分完整通过、轻量预检、模型证据和未运行项
 
 ## 脚手架
 
@@ -71,8 +83,9 @@ node .agents/skills/create-agent-workflows-plugin/scripts/init_plugin.mjs <plugi
   --display-name "Display Name" \
   --short-description "简短 UI 描述" \
   [--skill-name <name>] \
-  [--skill-description "skill 的用户目标和使用时机"] \
+  --skill-description "skill 的用户目标和使用时机" \
   [--skill-short-description "skill 的简短 UI 摘要"] \
+  [--skill-invocation model|manual|claude-model-only] \
   [--no-skills] \
   [--with-mcp] \
   [--with-apps] \
@@ -86,8 +99,11 @@ node .agents/skills/create-agent-workflows-plugin/scripts/init_plugin.mjs <plugi
 
 运行 `node .agents/skills/create-agent-workflows-plugin/scripts/init_plugin.mjs --help` 查看完整参数。
 
-- 默认创建带 skill 的最小插件，并在平台文件中生成明确的原生调用元数据
-- `--skill-short-description` 只控制初始 skill 的 UI metadata，必须为 25–64 字符；省略时兼容回退到 `--skill-description`，再回退到插件 UI 摘要，回退值也必须满足同一长度约束
+- 默认创建带 skill 的最小插件，调用策略为 `model`：Claude 允许模型发现，Codex 写入 `allow_implicit_invocation: true`
+- `--skill-invocation manual` 同步生成 Claude manual-only 和 Codex implicit false；`claude-model-only` 隐藏 Claude 用户入口，但 Codex 没有完全等价能力，仍允许模型与显式调用
+- 创建初始 Skill 时 `--skill-description` 必填，不能回退到插件 description
+- `--skill-short-description` 只控制初始 Skill 的 UI metadata，必须为 25–64 字符；省略时只回退到 `--skill-description`
+- 初始 Skill 同时生成 `evals/manifest.json`、trigger train/validation/sanity starter 和一个可写 behavior starter；发布前必须换成真实任务与断言
 - `--no-skills` 创建不含 skill 的插件
 - `--with-mcp` / `--with-apps` 只在确实需要时使用
 - `--with-config-api` / `--with-lifecycle` 添加插件根脚本和 Node 测试样板
@@ -106,7 +122,8 @@ node .agents/skills/create-agent-workflows-plugin/scripts/init_plugin.mjs <plugi
 - `skills`、`mcpServers`、`apps`、`slashCommands` 使用单个 `./` 相对路径，且路径必须存在。
 - 面向 Codex 的静态 skill 必须带 `agents/openai.yaml`，并显式声明 `policy.allow_implicit_invocation`。
 - Skill 的调用方式是 Skill 设计的一部分。Codex 使用 `agents/openai.yaml` 的 `policy.allow_implicit_invocation`；Claude 使用 `SKILL.md` frontmatter 的 `disable-model-invocation` 与 `user-invocable`。AW 原样保留这些字段。
-- Agent Skills portable core 与 Claude/Codex 扩展要明确区分；默认 AW validator 接受目标平台的已知扩展，`--strict-agent-skills` 只接受 portable core。
+- Agent Skills portable core 与 Claude/Codex 扩展要明确区分。字段、类型、目标 profile 和版本证据的单一事实源是 `packages/cli/src/utils/skill-frontmatter-capabilities.json`；`scripts/generate_skill_frontmatter_reference.mjs` 把作者字段表生成到 `references/skill-frontmatter-capabilities.generated.md`，不要手改生成表。
+- 默认 validator 按 AW 最低 Claude 2.1.88 profile 校验；`--claude-skill-profile current` 可核对当前官方字段，但不能让高版本字段兼容最低宿主。`--strict-agent-skills` 只接受 portable core。
 - 插件 manifest 不支持 `dependencies`；插件必须独立声明和生成自己的运行时能力。
 - lifecycle 和 renderer 要可重试、幂等；renderer V2 只返回 plan，不直接写 Codex/Claude Skill runtime 或 config。完整静态 Skill 树用 target `sourceDirs`，动态 UTF-8 覆盖用 `content.files`。
 - Skill 根 `evals/**` 和 `reports/**` 是作者期材料，不进入 production runtime bundle 或 runtime digest；动态 Skill 的行为评测必须消费 materialized 最终制品。
@@ -125,6 +142,10 @@ node .agents/skills/create-agent-workflows-plugin/scripts/init_plugin.mjs <plugi
 node .agents/skills/create-agent-workflows-plugin/scripts/validate_plugin.mjs plugins/<name>
 node .agents/skills/create-agent-workflows-plugin/scripts/validate_plugin.mjs \
   plugins/<name> --strict-agent-skills
+node .agents/skills/create-agent-workflows-plugin/scripts/validate_plugin.mjs \
+  plugins/<name> --claude-skill-profile current
+node .agents/skills/create-agent-workflows-plugin/scripts/generate_skill_frontmatter_reference.mjs \
+  --check
 pnpm plugin:test <plugin>
 pnpm plugin:test <plugin> --platform codex --scope project
 pnpm plugin:test <dual-platform-plugin> --platform both --scope project
@@ -139,25 +160,6 @@ pnpm plugin:eval <plugin> --skill <skill> --suite trigger --split validation --r
 - 只修改用户请求所需的插件源码和直接关联测试/文档
 - 没有手改生成目录、runtime cache 或 marketplace 产物
 - `validate_plugin.mjs` 通过，相关确定性测试通过
-- 新建或重大修改的 Skill 有明确完成标准、验证循环、自身 `evals/manifest.json` 和小型用例
+- 新建或重大修改的 Skill 有 candidate/value evidence、明确 invocation、局部完成标准、验证循环、自身 `evals/manifest.json` 和真实小型用例
 - Codex/Claude 动态 Skill 的 project/user final artifacts 已 materialize，并保留作者声明的原生调用元数据；真实模型未运行时明确列为未验证
 - 最终回复列出改动、验证结果和未完成项
-
-## 参考文档索引
-
-| 文档 | 何时读取 |
-|------|----------|
-| `references/skill-design.md` | 创建/重写 skill，定义职责、description、正文和资源布局 |
-| `references/skill-scripts.md` | skill 内需要可执行脚本 |
-| `references/skill-evaluation.md` | 优化触发或验证模型输出质量 |
-| `references/skills-and-triggers.md` | 平台 metadata、原生调用开关和显式调用规则 |
-| `references/plugin-manifest-spec.md` | 查询 plugin.json 字段、分发和 manifest 示例 |
-| `references/extensions-spec.md` | instructions / permissions / hooks / agents |
-| `references/build-config-spec.md` | templates / fileRules / manifestOverrides |
-| `references/mcp-and-apps.md` | `.mcp.json` / `.app.json` |
-| `references/slash-commands.md` | 公共 slashCommands 源码与平台产物 |
-| `references/aw-scripts-config-lifecycle.md` | 插件根 config、helper、lifecycle、renderer 和脚本测试 |
-| `references/claude-only-capabilities.md` | Claude 命令结果填充、output styles、LSP、userConfig、channels |
-| `references/comprehensive-example.md` | 完整 `code-review` 示例和构建产物预览 |
-
-`references/.examples/code-review/` 是可直接读取的完整示例插件。隐藏父目录用于避免 Codex 把示例中的 `SKILL.md` 当作当前仓库的真实 skill。

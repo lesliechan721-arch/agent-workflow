@@ -8,6 +8,8 @@
 
 `evals/behavior_cases.json` 和 `evals/scoring_cases.json` 是 portable 设计与校准语料，不是可执行 release evidence。只有 `evals/manifest.json` 声明且实际完成的 suite/case 才能形成模型行为证据。
 
+conversation case 默认使用 `read-only`。需要验证创建或修改行为时，case 必须显式写 `sandbox: "workspace-write"`，同时声明 `review.workspace_unchanged: false`、最小 `allowed_workspace_changes` 和非空 `artifacts`。写入只发生在每次运行的隔离临时副本；runner 对当前版本机械检查 diff、文件存在、文本或 JSON 子集，并为 current/baseline 保存 artifact digest。不得允许 `.git`、`.agents` 或 `.codex` 控制目录。
+
 ```bash
 node .agents/skills/skill-review/scripts/run_static_skill_evals.mjs \
   <skill-name-or-dir> --validate-only

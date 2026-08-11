@@ -328,6 +328,30 @@ describe('bundle layout validation', () => {
     );
   });
 
+  it('accepts Claude version and minimum-profile quoted boolean metadata', async () => {
+    const { embeddedRoot } = await createEmbeddedRootFromFixture();
+    const skillPath = path.join(
+      embeddedRoot,
+      'plugins',
+      'git-commit',
+      'claude',
+      'skills',
+      'commit',
+      'SKILL.md',
+    );
+    const skillContent = await fs.readFile(skillPath, 'utf8');
+    await fs.writeFile(
+      skillPath,
+      skillContent.replace(
+        'user-invocable: true',
+        'version: 0.1.0\nuser-invocable: "true"',
+      ),
+      'utf8',
+    );
+
+    await expect(validateBundleLayout(embeddedRoot)).resolves.toBeUndefined();
+  });
+
   it('rejects Claude skills with invalid native invocation metadata', async () => {
     const { embeddedRoot } = await createEmbeddedRootFromFixture();
     const skillPath = path.join(
@@ -342,12 +366,12 @@ describe('bundle layout validation', () => {
     const skillContent = await fs.readFile(skillPath, 'utf8');
     await fs.writeFile(
       skillPath,
-      skillContent.replace('user-invocable: true', 'user-invocable: "true"'),
+      skillContent.replace('user-invocable: true', 'user-invocable: enabled'),
       'utf8',
     );
 
     await expect(validateBundleLayout(embeddedRoot)).rejects.toThrow(
-      'user-invocable 必须是 boolean',
+      'known-field-invalid-type-value',
     );
   });
 

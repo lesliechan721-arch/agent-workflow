@@ -163,6 +163,7 @@ strict 模式在启动模型前检查 `/etc/codex`（Windows 对应系统目录�
 - 固定拆成约 60% train、40% validation，并另留 5–10 条 sanity。
 - 每条在干净 project session 中运行至少 3 次；只根据 train 调 description，用 validation/sanity 检查泛化。
 - 单目标正例默认要求命中率高于 `0.5`，负例默认低于 `0.5`；需要 validation 零误触时把该 split 放进 `strictNegativeSplits`。相邻 Skill 路由应使用 `expected_loaded_skills` 和更高的 `minimumPassRate`，不能只检查 owner Skill 是否未加载。
+- 自动触发 train/validation/sanity 不写 `$skill-name`；显式调用另放 smoke。manual Skill 的正向验收使用显式调用 smoke，负例验证未显式调用时不误加载。
 
 漏触发时扩大用户意图或场景类别；误触发时收紧相邻任务边界。不要把失败 query 原词逐个堆进 description。
 
@@ -176,6 +177,32 @@ strict 模式在启动模型前检查 `/etc/codex`（Windows 对应系统目录�
 2. `without_skill`：不加载 Skill 的 baseline；改进已有 Skill 时也可以对比冻结的 `old_skill`。
 
 第一轮先看实际输出，再把真正有区分度的机械断言写回 case。可检查文件、字段、数量、具体证据和 workspace diff；不要断言完全相同文案。
+
+需要实际创建或修改文件时，conversation case 显式声明：
+
+```json
+{
+  "sandbox": "workspace-write",
+  "review": {
+    "workspace_unchanged": false,
+    "allowed_workspace_changes": ["outputs/**"],
+    "artifacts": [
+      {
+        "path": "outputs/result.json",
+        "exists": true,
+        "json": { "status": "ok" },
+        "contains": ["evidence"],
+        "not_contains": ["TODO"]
+      }
+    ],
+    "checks": ["trace 执行完整工作流"]
+  }
+}
+```
+
+`workspace-write` 只作用于每次运行的隔离临时副本，关闭网络写入能力，并要求非空的允许改动路径和最终 artifact 断言。机械门对当前版本检查改动路径、文件存在、文本和 JSON 子集；baseline 使用相同 sandbox 和输入，并保留自己的 diff、artifact digest、token 和时间。只读 case 省略 `sandbox`，默认保持 `read-only`。
+
+`init_plugin.mjs` 会生成 trigger train/validation/sanity 和一个可写 behavior starter。starter 只提供合法结构；发布前必须替换为领域真实任务、near-miss、允许改动路径和可区分的断言。
 
 需要 `request_user_input` 时，回复按步骤和问题索引保存，例如：
 
@@ -208,6 +235,7 @@ strict 模式在启动模型前检查 `/etc/codex`（Windows 对应系统目录�
 - [ ] 动态 Skill 覆盖 default/non-default、project/user 最终制品。
 - [ ] 真实模型只运行 Codex project profile，user 只 materialize。
 - [ ] current 与 baseline 使用相同输入和干净上下文。
+- [ ] 写入行为只使用隔离 `workspace-write`，并有最小允许改动路径和最终 artifact 机械断言。
 - [ ] 机械断言优先，定性 checks 都能绑定 trace/diff 证据。
 - [ ] `plugin:test`、materialization 和模型 eval 没有互相冒充。
 - [ ] release required suite 没有 skip、incomplete 或未复核的 `needs_review`。

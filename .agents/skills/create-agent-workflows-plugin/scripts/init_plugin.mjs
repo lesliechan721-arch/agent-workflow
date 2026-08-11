@@ -15,6 +15,7 @@ const STRICT_SEMVER_PATTERN =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|(?:[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))(?:\.(?:0|[1-9]\d*|(?:[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)))*)?)?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
 const MIN_CODEX_SHORT_DESCRIPTION_LEN = 25;
 const MAX_CODEX_SHORT_DESCRIPTION_LEN = 64;
+const SKILL_INVOCATION_MODES = new Set(['model', 'manual', 'claude-model-only']);
 
 function requireHyphenName(value, fieldName) {
   if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value)) {
@@ -231,14 +232,22 @@ function buildPluginManifest(pluginName, version, minVersion, description, displ
   return manifest;
 }
 
-function renderSkillMd(skillName, skillDescription, shortDescription) {
+function renderClaudeInvocationFrontmatter(invocation) {
+  if (invocation === 'manual') {
+    return 'user-invocable: true\ndisable-model-invocation: true\n';
+  }
+  if (invocation === 'claude-model-only') {
+    return 'user-invocable: false\n';
+  }
+  return '';
+}
+
+function renderSkillMd(skillName, skillDescription, shortDescription, invocation) {
   const skillTitle = titleCaseSlug(skillName);
   return `---
 name: ${skillName}
 description: ${yamlString(skillDescription)}
-user-invocable: true
-disable-model-invocation: true
-metadata:
+${renderClaudeInvocationFrontmatter(invocation)}metadata:
   short-description: ${yamlString(shortDescription)}
 ---
 
@@ -257,8 +266,11 @@ metadata:
 ## 工作流
 
 1. [TODO: 第一步，以及为什么需要这一步]
+   完成条件：[TODO: 可检查的第一步结果]
 2. [TODO: 第二步]
+   完成条件：[TODO: 可检查的第二步结果]
 3. [TODO: 运行验证；失败时修复并重跑]
+   完成条件：[TODO: 验证通过，或失败已修复并重验]
 
 ## 验证
 
@@ -275,15 +287,159 @@ metadata:
 `;
 }
 
-function renderOpenAiYaml(displayName, shortDescription, skillName) {
+function renderOpenAiYaml(displayName, shortDescription, skillName, invocation) {
   const defaultPrompt = `使用 $${skillName}：${shortDescription.replace(/[。.]$/, '')}。`;
+  const allowImplicitInvocation = invocation !== 'manual';
   return `interface:
   display_name: ${yamlString(displayName)}
   short_description: ${yamlString(shortDescription)}
   default_prompt: ${yamlString(defaultPrompt)}
 policy:
-  allow_implicit_invocation: false
+  allow_implicit_invocation: ${allowImplicitInvocation}
 `;
+}
+
+function renderEvalManifest(pluginName, skillName) {
+  return {
+    schemaVersion: 2,
+    plugin: pluginName,
+    skill: skillName,
+    profiles: [
+      {
+        id: 'project-default',
+        scope: 'project',
+        plugins: [{ name: pluginName, config: {} }],
+        runModel: true,
+        requiredForRelease: true,
+      },
+      {
+        id: 'user-default',
+        scope: 'user',
+        plugins: [{ name: pluginName, config: {} }],
+        runModel: false,
+        requiredForRelease: true,
+      },
+    ],
+    suites: [
+      {
+        id: 'trigger',
+        kind: 'trigger',
+        skills: [skillName],
+        cases: './trigger-cases.json',
+        observeSpawnAgent: false,
+        isolation: 'strict',
+        strictNegativeSplits: ['validation', 'sanity'],
+        profiles: ['project-default'],
+        defaultRuns: 3,
+        releaseSplits: ['validation', 'sanity'],
+        requiredForRelease: true,
+        perRunTimeoutMs: 180000,
+      },
+      {
+        id: 'behavior',
+        kind: 'conversation',
+        skills: [skillName],
+        cases: './evals.json',
+        isolation: 'strict',
+        profiles: ['project-default'],
+        defaultRuns: 1,
+        releaseSplits: [],
+        requiredForRelease: true,
+        perRunTimeoutMs: 300000,
+      },
+    ],
+  };
+}
+
+function renderTriggerCases(skillName, skillDescription, invocation) {
+  const explicitPrefix = invocation === 'manual' ? `使用 $${skillName}，` : '';
+  const validationPositive = invocation === 'manual'
+    ? `${explicitPrefix}请使用真实输入完成目标工作流。`
+    : `请使用真实输入完成以下目标：${skillDescription}。`;
+  const sanityPositive = invocation === 'manual'
+    ? `${explicitPrefix}请完成该 Skill 的主要目标。`
+    : `请完成以下主要目标：${skillDescription}。`;
+  const implicitNegative = invocation === 'manual'
+    ? '请不要调用任何 Skill，只解释如何完成相邻任务；这不是目标 Skill 的显式请求。'
+    : `解释一个共享术语但职责不同的相邻任务；不要执行以下目标：${skillDescription}。`;
+  return {
+    schemaVersion: 1,
+    skill: skillName,
+    cases: [
+      {
+        id: 'primary_train_positive',
+        split: 'train',
+        query: `${explicitPrefix}${skillDescription}。`,
+        should_load_skill: true,
+        tags: [invocation, 'positive', 'starter'],
+      },
+      {
+        id: 'primary_train_negative',
+        split: 'train',
+        query: implicitNegative,
+        should_load_skill: false,
+        tags: ['near-miss', 'negative', 'starter'],
+      },
+      {
+        id: 'primary_validation_positive',
+        split: 'validation',
+        query: validationPositive,
+        should_load_skill: true,
+        tags: [invocation, 'positive', 'starter'],
+      },
+      {
+        id: 'primary_validation_negative',
+        split: 'validation',
+        query: '只处理一个共享关键词但目标不同的近似任务，不要调用该 Skill。',
+        should_load_skill: false,
+        tags: ['near-miss', 'negative', 'starter'],
+      },
+      {
+        id: 'primary_sanity_positive',
+        split: 'sanity',
+        query: sanityPositive,
+        should_load_skill: true,
+        tags: [invocation, 'positive', 'starter'],
+      },
+      {
+        id: 'primary_sanity_negative',
+        split: 'sanity',
+        query: '执行另一个职责边界外的任务；即使出现相同术语，也不要加载该 Skill。',
+        should_load_skill: false,
+        tags: ['near-miss', 'negative', 'starter'],
+      },
+    ],
+  };
+}
+
+function renderBehaviorCases(skillName, skillDescription) {
+  return {
+    skill_name: skillName,
+    evals: [
+      {
+        id: 'complete_primary_workflow',
+        prompt: `使用 $${skillName} 完成以下目标：${skillDescription}。把可交付结果写入 eval-output/result.md；不要修改 eval-output/ 之外的文件。`,
+        expected_output: '完成真实工作流，并生成可复核的 eval-output/result.md。作者应把本 starter 替换为领域真实任务和断言。',
+        scripted_replies: [],
+        sandbox: 'workspace-write',
+        review: {
+          workspace_unchanged: false,
+          allowed_workspace_changes: ['eval-output/**'],
+          artifacts: [
+            {
+              path: 'eval-output/result.md',
+              exists: true,
+            },
+          ],
+          checks: [
+            'trace 读取并执行 owner Skill，而不是只解释计划',
+            '结果满足 Skill 的完成标准，并包含可核验的领域证据',
+            '作者已把 starter prompt、near-miss 和断言替换为真实任务材料',
+          ],
+        },
+      },
+    ],
+  };
 }
 
 function renderMcpJson() {
@@ -403,7 +559,8 @@ Options:
   --skill-name <name>           Initial skill directory name.
   --skill-description <text>    What the initial skill does and when to use it.
   --skill-short-description <text>
-                                Initial skill UI summary (25-64 characters). Default: --skill-description, then plugin UI summary.
+                                Initial skill UI summary (25-64 characters). Default: --skill-description.
+  --skill-invocation <mode>     model | manual | claude-model-only. Default: model.
   --version <semver>            Plugin version. Default: 0.1.0
   --min-version <semver>        Plugin compatibility.aw.minVersion. Default: --catalog-min-version or 0.0.0
   --catalog-min-version <semver>
@@ -417,7 +574,7 @@ Options:
   -h, --help                    Show this help message.
 
 Note:
-  New skill scaffolds use native manual-trigger metadata in SKILL.md and agents/openai.yaml.
+  New skill scaffolds default to model invocation and generate an eval starter.
 `);
 }
 
@@ -446,6 +603,7 @@ function parseArgs(argv) {
     withConfigApi: false,
     withLifecycle: false,
     noSkills: false,
+    skillInvocation: 'model',
   };
 
   for (let index = 0; index < args.length; index += 1) {
@@ -508,6 +666,12 @@ function parseArgs(argv) {
       case '--skill-short-description':
         options.skillShortDescription = value;
         break;
+      case '--skill-invocation':
+        if (!SKILL_INVOCATION_MODES.has(value)) {
+          fail('--skill-invocation must be one of "model", "manual", or "claude-model-only".');
+        }
+        options.skillInvocation = value;
+        break;
       case '--version':
         options.version = value;
         break;
@@ -530,6 +694,9 @@ function parseArgs(argv) {
   }
   if (!options.description) {
     fail('--description is required.');
+  }
+  if (!options.noSkills && !options.skillDescription) {
+    fail('--skill-description is required unless --no-skills is used.');
   }
 
   return options;
@@ -560,7 +727,7 @@ function main() {
   const initialSkillShortDescription = args.noSkills
     ? undefined
     : requireCharacterRange(
-      args.skillShortDescription || args.skillDescription || shortDescription,
+      args.skillShortDescription || args.skillDescription,
       '--skill-short-description',
       MIN_CODEX_SHORT_DESCRIPTION_LEN,
       MAX_CODEX_SHORT_DESCRIPTION_LEN,
@@ -605,15 +772,42 @@ function main() {
 
   if (!args.noSkills) {
     const skillName = initialSkillName;
-    const skillDescription = args.skillDescription || args.description;
+    const skillDescription = args.skillDescription;
     const skillDisplayName = titleCaseSlug(skillName);
     const skillShortDescription = initialSkillShortDescription;
     const skillMdPath = path.join(pluginRoot, 'skills', skillName, 'SKILL.md');
     const openaiYamlPath = path.join(pluginRoot, 'skills', skillName, 'agents', 'openai.yaml');
 
-    writeText(skillMdPath, renderSkillMd(skillName, skillDescription, skillShortDescription));
-    writeText(openaiYamlPath, renderOpenAiYaml(skillDisplayName, skillShortDescription, skillName));
-    createdPaths.push(skillMdPath, openaiYamlPath);
+    const evalManifestPath = path.join(pluginRoot, 'skills', skillName, 'evals', 'manifest.json');
+    const triggerCasesPath = path.join(pluginRoot, 'skills', skillName, 'evals', 'trigger-cases.json');
+    const behaviorCasesPath = path.join(pluginRoot, 'skills', skillName, 'evals', 'evals.json');
+
+    writeText(
+      skillMdPath,
+      renderSkillMd(skillName, skillDescription, skillShortDescription, args.skillInvocation),
+    );
+    writeText(
+      openaiYamlPath,
+      renderOpenAiYaml(
+        skillDisplayName,
+        skillShortDescription,
+        skillName,
+        args.skillInvocation,
+      ),
+    );
+    writeJson(evalManifestPath, renderEvalManifest(pluginName, skillName));
+    writeJson(
+      triggerCasesPath,
+      renderTriggerCases(skillName, skillDescription, args.skillInvocation),
+    );
+    writeJson(behaviorCasesPath, renderBehaviorCases(skillName, skillDescription));
+    createdPaths.push(
+      skillMdPath,
+      openaiYamlPath,
+      evalManifestPath,
+      triggerCasesPath,
+      behaviorCasesPath,
+    );
   }
 
   if (args.withMcp) {
@@ -651,6 +845,9 @@ function main() {
     console.log(`  - ${createdPath}`);
   }
   console.log(`[OK] Left marketplace metadata unchanged: ${marketplaceSourcePath}`);
+  if (args.skillInvocation === 'claude-model-only') {
+    console.log('[WARN] Codex has no hidden-user-entry equivalent; Codex remains model-invocable and explicitly invocable.');
+  }
   console.log('[OK] Runtime marketplace and platform manifests will be generated by `pnpm build`.');
 }
 

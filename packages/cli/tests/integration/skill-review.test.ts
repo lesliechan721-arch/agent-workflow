@@ -104,6 +104,64 @@ describe('skill-review author tools', () => {
     }
   });
 
+  it('prepares an isolated authoring subject whose scaffold passes its bundled validator', async () => {
+    const runner = await import(`${pathToFileURL(staticEvalRunner()).href}?authoring-subject`);
+    const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-static-authoring-subject-'));
+    tempDirs.push(outputRoot);
+    const skillName = 'create-agent-workflows-plugin';
+    const skillRoot = path.join(repoRoot(), '.agents', 'skills', skillName);
+    const manifest = await runner.readManifest(skillRoot, skillName);
+    const subjectRoot = await runner.prepareSubject(manifest, outputRoot);
+    const subjectSkillRoot = path.join(subjectRoot, '.agents', 'skills', skillName);
+
+    await expect(fs.pathExists(path.join(subjectRoot, 'node_modules', 'yaml', 'package.json')))
+      .resolves.toBe(true);
+    await expect(fs.pathExists(path.join(
+      subjectRoot,
+      'packages',
+      'cli',
+      'src',
+      'utils',
+      'skill-frontmatter-capabilities.json',
+    ))).resolves.toBe(true);
+
+    const childEnv = { ...process.env };
+    delete childEnv.NODE_PATH;
+    await execFileAsync('node', [
+      path.join(subjectSkillRoot, 'scripts', 'init_plugin.mjs'),
+      'release-notes',
+      '--description',
+      'Generate release notes from repository changes.',
+      '--skill-description',
+      'Generate structured release notes from the current repository change set.',
+      '--skill-short-description',
+      'Generate structured notes from repository changes.',
+      '--skill-invocation',
+      'model',
+      '--repo-root',
+      subjectRoot,
+    ], { cwd: subjectRoot, env: childEnv });
+
+    const pluginRoot = path.join(subjectRoot, 'plugins', 'release-notes');
+    const skillMdPath = path.join(pluginRoot, 'skills', 'release-notes', 'SKILL.md');
+    const skillMd = await fs.readFile(skillMdPath, 'utf8');
+    await fs.writeFile(
+      skillMdPath,
+      skillMd.replace(/\[TODO:[^\]]+\]/gu, '已完成并可检查的作者内容'),
+      'utf8',
+    );
+    const result = await execFileAsync('node', [
+      path.join(subjectSkillRoot, 'scripts', 'validate_plugin.mjs'),
+      pluginRoot,
+    ], {
+      cwd: subjectRoot,
+      env: childEnv,
+      maxBuffer: 10 * 1024 * 1024,
+    });
+
+    expect(result.stdout).toContain('[PASS] All checks passed.');
+  });
+
   it('inspects dynamic source and materialized final artifacts together', async () => {
     const root = repoRoot();
     const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-skill-review-inspect-'));

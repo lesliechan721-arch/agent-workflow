@@ -3,11 +3,11 @@
   "skill": "create-agent-workflows-plugin",
   "cases": [
     {
-      "id": "explicit_release_notes_plugin",
+      "id": "release_notes_plugin",
       "split": "train",
-      "query": "$create-agent-workflows-plugin 在当前 agent-workflows 仓库新建一个双平台 release-notes 插件，只包含一个自动发现的 skill。",
+      "query": "在当前 agent-workflows 仓库新建一个双平台 release-notes 插件，只包含一个自动发现的 skill。",
       "should_load_skill": true,
-      "tags": ["explicit", "create"]
+      "tags": ["implicit", "create"]
     },
     {
       "id": "implicit_minimal_plugin",
@@ -141,6 +141,48 @@
       "query": "只更新 docs/plugin-installation.md 的 aw install 排障说明，不改插件源码和作者合同。",
       "should_load_skill": false,
       "tags": ["near-miss", "documentation"]
+    },
+    {
+      "id": "sanity_create_manual_release_plugin",
+      "split": "sanity",
+      "query": "在 agent-workflows 的 plugins/ 新建一个会执行发布动作的双端插件，Skill 必须保持显式手动触发，并补齐作者校验和 eval。",
+      "should_load_skill": true,
+      "tags": ["implicit", "create", "manual-invocation"]
+    },
+    {
+      "id": "sanity_fix_skill_frontmatter",
+      "split": "sanity",
+      "query": "plugins/audit-helper 的 Claude Skill frontmatter 被作者 validator 拒绝了，请按目标宿主 profile 修复源码和直接测试。",
+      "should_load_skill": true,
+      "tags": ["implicit", "maintain", "frontmatter"]
+    },
+    {
+      "id": "sanity_add_plugin_skill_eval",
+      "split": "sanity",
+      "query": "给现有 plugins/repo-health 的 owner Skill 增加可执行 behavior eval 和 materialization 验证，不要改安装流程。",
+      "should_load_skill": true,
+      "tags": ["implicit", "maintain", "eval"]
+    },
+    {
+      "id": "sanity_run_existing_plugin",
+      "split": "sanity",
+      "query": "运行已安装的 repo-health 插件，帮我检查当前项目，不要维护插件源码。",
+      "should_load_skill": false,
+      "tags": ["near-miss", "plugin-use"]
+    },
+    {
+      "id": "sanity_review_plugin_skill",
+      "split": "sanity",
+      "query": "只读评审 plugins/repo-health 中 Skill 的触发质量和发布证据，输出评分，不要修复。",
+      "should_load_skill": false,
+      "tags": ["near-miss", "review"]
+    },
+    {
+      "id": "sanity_generic_claude_skill",
+      "split": "sanity",
+      "query": "在普通项目里写一个 Claude Code 原生 Skill，不使用 agent-workflows 的 plugins 目录或 AW manifest。",
+      "should_load_skill": false,
+      "tags": ["near-miss", "external-skill"]
     }
   ]
 }

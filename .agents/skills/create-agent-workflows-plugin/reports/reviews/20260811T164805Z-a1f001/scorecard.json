@@ -1,0 +1,198 @@
+{
+  "review": {
+    "skill_name": "create-agent-workflows-plugin",
+    "mode": "delta",
+    "direction": "aligned",
+    "notes": "复核 2026-08-09 release finding 的修复，并完成独立上下文实现复核。实现 P0/P1 已关闭，确定性验证已完成；未运行真实 Codex/Claude 模型 eval。"
+  },
+  "artifacts": {
+    "official_validation": false,
+    "current_sources_checked": true,
+    "pointer_audit": true,
+    "information_hierarchy_map": true,
+    "completion_boundary_audit": true,
+    "trigger_eval_results": false,
+    "behavior_eval_results": false,
+    "regression_eval_results": false,
+    "ablation_results": false,
+    "runtime_traces": false,
+    "scripts_present": true,
+    "scripts_checked": true,
+    "compatibility_claims": true,
+    "compatibility_verified": true,
+    "previous_version": true
+  },
+  "dimensions": [
+    {
+      "id": "specification",
+      "score": 4.5,
+      "confidence": "high",
+      "evidence": [
+        "inspect_skill_target: 37 files, parse_errors=[], state_machine_risk=low",
+        "pnpm build and test:smoke:build passed"
+      ],
+      "summary": "根包、frontmatter、目录和生成产物合同有效；未运行上游 skills-ref。"
+    },
+    {
+      "id": "problem_value",
+      "score": 4.0,
+      "confidence": "medium",
+      "evidence": [
+        "references/skill-design.md candidate brief and baseline gate",
+        "SKILL.md capability selection completion criterion"
+      ],
+      "summary": "创建或重大重写 Skill 前已有明确 value gate；其自身 without-skill 模型结果仍未提供。"
+    },
+    {
+      "id": "triggering",
+      "score": 3.0,
+      "confidence": "medium",
+      "evidence": [
+        "evals/trigger-cases.json: 26 cases, 13 positive and 13 negative, with sanity split",
+        "init_plugin.mjs defaults to model and supports three invocation modes"
+      ],
+      "summary": "调用策略、脚手架映射和语料隔离已修复；没有真实 trigger rate，因此按证据上限计分。"
+    },
+    {
+      "id": "scope_composition",
+      "score": 4.5,
+      "confidence": "high",
+      "evidence": [
+        "SKILL.md description and source-of-truth boundary",
+        "integration tests for Skill-specific description and platform modes"
+      ],
+      "summary": "插件、单个 Skill、UI 摘要和 reviewer 职责已分离，非目标范围保持清楚。"
+    },
+    {
+      "id": "instruction_design",
+      "score": 4.5,
+      "confidence": "high",
+      "evidence": [
+        "SKILL.md steps 1-8 each have local completion criteria",
+        "generated Skill template has per-step completion TODOs"
+      ],
+      "summary": "主流程和脚手架均有可检查的局部完成边界；没有新增自然语言 runtime 状态机。"
+    },
+    {
+      "id": "context_disclosure",
+      "score": 4.5,
+      "confidence": "high",
+      "evidence": [
+        "SKILL.md branch routing table",
+        "references/skill-design.md Information Hierarchy Map contract",
+        "duplicate bottom reference index removed"
+      ],
+      "summary": "渐进披露保持清楚，易变字段表移动到 registry 生成 reference。"
+    },
+    {
+      "id": "architecture",
+      "score": 4.5,
+      "confidence": "high",
+      "evidence": [
+        "packages/cli/src/utils/skill-frontmatter-capabilities.json is the canonical field registry",
+        "source validator, bundle validator, docs generator, and tests consume the registry"
+      ],
+      "summary": "字段事实归 Schema/Project registry，执行状态归 CLI runner，作者与 reviewer 继续分离。"
+    },
+    {
+      "id": "scripts",
+      "score": 4.5,
+      "confidence": "high",
+      "evidence": [
+        "three scripts pass node --check and --help",
+        "generator --check, example validator, unit, integration, and smoke tests passed"
+      ],
+      "summary": "脚手架、校验和字段 reference 生成均为非交互、确定性入口，并有直接测试。"
+    },
+    {
+      "id": "resources",
+      "score": 4.5,
+      "confidence": "high",
+      "evidence": [
+        "inspect_skill_target reference graph",
+        "generated capability reference matches registry",
+        "complete example validator passed"
+      ],
+      "summary": "核心资源可达；inspector 的 nested-missing 项仍是示例相对路径或任务期产物误报。"
+    },
+    {
+      "id": "evals",
+      "score": 2.0,
+      "confidence": "medium",
+      "evidence": [
+        "three executable workspace-write behavior cases",
+        "static eval validate-only passed",
+        "no trigger or behavior result bundle"
+      ],
+      "summary": "suite 与 runner 已能验证真实写入、diff 和 artifact，但没有运行真实模型，发布证据仍缺失。"
+    },
+    {
+      "id": "reliability",
+      "score": 4.0,
+      "confidence": "high",
+      "evidence": [
+        "current Agent Skills and Claude Code docs checked 2026-08-12",
+        "Claude Code 2.1.88 source snapshot checked",
+        "table-driven profile and runtime bundle tests passed",
+        "independent review closed boolean token, metadata, version, case-sensitivity, control-directory, and Node 20 syntax gaps"
+      ],
+      "summary": "字段 profile 诊断与 Node >=20 loader 兼容已验证；真实 Claude/Codex host run 未执行。"
+    },
+    {
+      "id": "maintainability",
+      "score": 4.5,
+      "confidence": "high",
+      "evidence": [
+        "previous SKILL.md comparison available",
+        "SKILL.md net delta is +2 lines and +390 estimated tokens",
+        "generated reference --check prevents prose/schema drift"
+      ],
+      "summary": "新增规则替换旧硬编码和重复索引；较大代码增量位于 schema、runner 和测试 owner。"
+    }
+  ],
+  "gates": [
+    {
+      "id": "package-validity",
+      "status": "pass",
+      "severity": "P0",
+      "reason": "Inspector、构建和作者工具测试确认根包与必需结构有效。"
+    },
+    {
+      "id": "critical-artifacts",
+      "status": "pass",
+      "severity": "P0",
+      "reason": "主流程 reference、三个脚本、registry、生成字段表和 eval 文件均存在且可执行。"
+    },
+    {
+      "id": "goal-alignment",
+      "status": "pass",
+      "severity": "P0",
+      "reason": "默认自动触发和显式 invocation 参数符合用户决策，源码真值与非目标边界未改变。"
+    },
+    {
+      "id": "capability-validity",
+      "status": "pass",
+      "severity": "P0",
+      "reason": "核心流程只使用仓库现有脚本、CLI、app-server sandbox 和构建能力，相关测试通过。"
+    },
+    {
+      "id": "safety-permissions",
+      "status": "pass",
+      "severity": "P0",
+      "reason": "写入 eval 只在隔离副本运行，关闭网络，限制允许路径，并机械检查目录、根 .git、文件和 artifact。"
+    },
+    {
+      "id": "architecture-ownership",
+      "status": "pass",
+      "severity": "P1",
+      "reason": "平台字段事实已集中到 registry；生成、校验、写入隔离和 artifact 检查由脚本或 CLI 负责。"
+    },
+    {
+      "id": "release-evidence",
+      "status": "fail",
+      "severity": "P1",
+      "reason": "release-required trigger 和 behavior suite 已可执行，但本轮没有真实模型结果、trace、baseline delta 或完整 release bundle。"
+    }
+  ],
+  "findings": []
+}

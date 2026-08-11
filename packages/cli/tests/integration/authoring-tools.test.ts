@@ -395,6 +395,8 @@ describe('authoring tools', () => {
           'invalid-skill-metadata',
           '--description',
           '用于验证 skill UI metadata 长度约束的示例插件。',
+          '--skill-description',
+          '检查仓库状态、配置、依赖与风险并输出可执行的诊断结论',
           '--skill-short-description',
           '仓库诊断',
           '--repo-root',
@@ -427,7 +429,7 @@ describe('authoring tools', () => {
         '--skill-name',
         'repo-check',
         '--skill-description',
-        '手动触发这个 skill，执行仓库检查、风险核验与诊断报告工作流',
+        '检查仓库状态、执行风险核验并生成结构化诊断报告工作流',
         '--with-apps',
         '--repo-root',
         tempRepo,
@@ -481,10 +483,10 @@ describe('authoring tools', () => {
       path.join(tempRepo, 'plugins', 'repo-check', 'skills', 'repo-check', 'SKILL.md'),
       'utf8',
     );
-    expect(skillMdContent).toContain('user-invocable: true');
-    expect(skillMdContent).toContain('disable-model-invocation: true');
+    expect(skillMdContent).not.toContain('user-invocable:');
+    expect(skillMdContent).not.toContain('disable-model-invocation:');
     expect(skillMdContent).toContain(
-      'metadata:\n  short-description: "手动触发这个 skill，执行仓库检查、风险核验与诊断报告工作流"',
+      'metadata:\n  short-description: "检查仓库状态、执行风险核验并生成结构化诊断报告工作流"',
     );
     expect(skillMdContent).toContain('完成标准：');
     expect(skillMdContent).toContain('## 验证');
@@ -501,8 +503,42 @@ describe('authoring tools', () => {
     );
     expect(openaiYamlContent).toContain('display_name: "Repo Check"');
     expect(openaiYamlContent).toContain(
-      'short_description: "手动触发这个 skill，执行仓库检查、风险核验与诊断报告工作流"',
+      'short_description: "检查仓库状态、执行风险核验并生成结构化诊断报告工作流"',
     );
+    expect(openaiYamlContent).toContain('allow_implicit_invocation: true');
+    await expect(
+      fs.readJson(
+        path.join(tempRepo, 'plugins', 'repo-check', 'skills', 'repo-check', 'evals', 'manifest.json'),
+      ),
+    ).resolves.toMatchObject({
+      schemaVersion: 2,
+      plugin: 'repo-check',
+      skill: 'repo-check',
+    });
+    const modelTriggerCasesPath = path.join(
+      tempRepo,
+      'plugins',
+      'repo-check',
+      'skills',
+      'repo-check',
+      'evals',
+      'trigger-cases.json',
+    );
+    await expect(fs.pathExists(modelTriggerCasesPath)).resolves.toBe(true);
+    const modelTriggerCases = await fs.readJson(modelTriggerCasesPath) as {
+      cases: Array<{ query: string; should_load_skill: boolean }>;
+    };
+    expect(modelTriggerCases.cases
+      .filter((entry) => entry.should_load_skill)
+      .every((entry) => entry.query.includes(
+        '检查仓库状态、执行风险核验并生成结构化诊断报告工作流',
+      ))).toBe(true);
+    expect(JSON.stringify(modelTriggerCases)).not.toContain('$repo-check');
+    await expect(
+      fs.pathExists(
+        path.join(tempRepo, 'plugins', 'repo-check', 'skills', 'repo-check', 'evals', 'evals.json'),
+      ),
+    ).resolves.toBe(true);
     await expect(
       fs.readJson(path.join(tempRepo, 'plugins', 'repo-check', '.app.json')),
     ).resolves.toMatchObject({
@@ -519,6 +555,108 @@ describe('authoring tools', () => {
       fs.pathExists(path.join(tempRepo, 'plugins', 'repo-check', '.codex-plugin', 'plugin.json')),
     ).resolves.toBe(false);
     await expect(fs.readFile(marketplaceSourcePath, 'utf8')).resolves.toBe(beforeMarketplaceSource);
+  });
+
+  it('requires a Skill-specific description and maps explicit invocation modes', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-authoring-invocation-'));
+    tempDirs.push(tempRoot);
+    const tempRepo = path.join(tempRoot, 'repo');
+    await fs.copy(fixturePath('repo-template'), tempRepo);
+    const scriptPath = path.join(
+      repoRoot(),
+      '.agents',
+      'skills',
+      'create-agent-workflows-plugin',
+      'scripts',
+      'init_plugin.mjs',
+    );
+
+    await expect(execFileAsync('node', [
+      scriptPath,
+      'missing-skill-description',
+      '--description',
+      'Plugin-level description must not become a Skill discovery description.',
+      '--repo-root',
+      tempRepo,
+    ], { cwd: repoRoot(), env: process.env })).rejects.toMatchObject({
+      stderr: expect.stringContaining('--skill-description is required'),
+    });
+
+    await execFileAsync('node', [
+      scriptPath,
+      'manual-workflow',
+      '--description',
+      'Manual workflow plugin.',
+      '--skill-description',
+      'Run a side-effecting release workflow only after explicit user invocation.',
+      '--skill-short-description',
+      'Run a controlled release workflow after explicit user approval.',
+      '--skill-invocation',
+      'manual',
+      '--repo-root',
+      tempRepo,
+    ], { cwd: repoRoot(), env: process.env });
+    const manualRoot = path.join(tempRepo, 'plugins', 'manual-workflow', 'skills', 'manual-workflow');
+    await expect(fs.readFile(path.join(manualRoot, 'SKILL.md'), 'utf8')).resolves.toEqual(
+      expect.stringContaining('user-invocable: true\ndisable-model-invocation: true'),
+    );
+    await expect(fs.readFile(path.join(manualRoot, 'agents', 'openai.yaml'), 'utf8')).resolves.toEqual(
+      expect.stringContaining('allow_implicit_invocation: false'),
+    );
+    const manualTriggerCases = await fs.readJson(
+      path.join(manualRoot, 'evals', 'trigger-cases.json'),
+    ) as { cases: Array<{ query: string; should_load_skill: boolean }> };
+    expect(manualTriggerCases.cases
+      .filter((entry) => entry.should_load_skill)
+      .every((entry) => entry.query.includes('$manual-workflow'))).toBe(true);
+    expect(manualTriggerCases.cases
+      .filter((entry) => !entry.should_load_skill)
+      .every((entry) => !entry.query.includes('$manual-workflow'))).toBe(true);
+
+    await execFileAsync('node', [
+      scriptPath,
+      'claude-model-workflow',
+      '--description',
+      'Claude model-only workflow plugin.',
+      '--skill-description',
+      'Provide background knowledge to the model without a Claude picker entry.',
+      '--skill-short-description',
+      'Provide model-only background knowledge for repository tasks.',
+      '--skill-invocation',
+      'claude-model-only',
+      '--repo-root',
+      tempRepo,
+    ], { cwd: repoRoot(), env: process.env });
+    const claudeModelRoot = path.join(
+      tempRepo,
+      'plugins',
+      'claude-model-workflow',
+      'skills',
+      'claude-model-workflow',
+    );
+    await expect(fs.readFile(path.join(claudeModelRoot, 'SKILL.md'), 'utf8')).resolves.toEqual(
+      expect.stringContaining('user-invocable: false'),
+    );
+    await expect(
+      fs.readFile(path.join(claudeModelRoot, 'agents', 'openai.yaml'), 'utf8'),
+    ).resolves.toEqual(expect.stringContaining('allow_implicit_invocation: true'));
+
+    await expect(execFileAsync('node', [
+      scriptPath,
+      'invalid-invocation',
+      '--description',
+      'Invalid invocation plugin.',
+      '--skill-description',
+      'This description is long enough for the generated Skill UI metadata.',
+      '--skill-short-description',
+      'Validate an unsupported invocation mode for this initial Skill.',
+      '--skill-invocation',
+      'sometimes',
+      '--repo-root',
+      tempRepo,
+    ], { cwd: repoRoot(), env: process.env })).rejects.toMatchObject({
+      stderr: expect.stringContaining('--skill-invocation must be one of'),
+    });
   });
 
   it('scaffolds compatibility.aw.minVersion and blocks values above the target catalog minimum', async () => {
@@ -544,6 +682,7 @@ describe('authoring tools', () => {
         'catalog-aware',
         '--description',
         '用于验证 catalog 最低版本上下文与兼容性约束的示例插件。',
+        '--no-skills',
         '--catalog-min-version',
         '0.8.0',
         '--repo-root',
@@ -574,6 +713,7 @@ describe('authoring tools', () => {
           'too-new-for-catalog',
           '--description',
           '插件最低版本高于 catalog 门槛。',
+          '--no-skills',
           '--min-version',
           '0.9.0',
           '--catalog-min-version',
@@ -792,6 +932,7 @@ describe('authoring tools', () => {
       maxBuffer: 10 * 1024 * 1024,
     });
     expect(helpResult.stdout).toContain('--skill-short-description');
+    expect(helpResult.stdout).toContain('--skill-invocation <mode>');
   });
 
   it('standard aw-config helper prefers AW_PLUGIN_CONTEXT without manifest or store discovery', async () => {
@@ -1226,8 +1367,11 @@ describe('authoring tools', () => {
         .replace('[TODO: 可观察、可验证的成功结果]', '输出包含风险和证据的报告')
         .replace('[TODO: 需要读取的输入、状态或授权边界]', '先读取仓库状态且不扩大范围')
         .replace('[TODO: 第一步，以及为什么需要这一步]', '收集状态，建立事实基础')
+        .replace('[TODO: 可检查的第一步结果]', '已记录仓库状态和检查范围')
         .replace('[TODO: 第二步]', '分析风险')
+        .replace('[TODO: 可检查的第二步结果]', '已列出有证据的风险')
         .replace('[TODO: 运行验证；失败时修复并重跑]', '校验报告；发现遗漏时补齐并重跑')
+        .replace('[TODO: 验证通过，或失败已修复并重验]', '报告检查通过')
         .replace('[TODO: 验证命令、检查表或输出断言]', '检查报告包含状态、风险和证据')
         .replace('[TODO: 交付文件、数据或回复结构]', '输出结构化检查报告')
         .replace(
@@ -1308,6 +1452,10 @@ describe('authoring tools', () => {
       path.join(refBase, 'skill-evaluation.md'),
       'utf8',
     );
+    const skillFrontmatterCapabilitiesDoc = await fs.readFile(
+      path.join(refBase, 'skill-frontmatter-capabilities.generated.md'),
+      'utf8',
+    );
     const creatorEvalFixtures = await fs.readJson(
       path.join(creatorSkillRoot, 'evals', 'evals.json'),
     );
@@ -1342,6 +1490,7 @@ describe('authoring tools', () => {
     expect(skillDoc).toContain('`--with-mcp` / `--with-apps`');
     expect(skillDoc).toContain('不在插件 manifest 声明最低 Codex / Claude Code 版本');
     expect(skillDoc).toContain('`--strict-agent-skills`');
+    expect(skillDoc).toContain('`references/skill-frontmatter-capabilities.generated.md`');
     expect(skillDoc).not.toContain('`plugin/install`');
     expect(skillDoc).not.toContain('`plugin/uninstall`');
 
@@ -1369,7 +1518,10 @@ describe('authoring tools', () => {
     expect(triggersDoc).toContain('`user-invocable`');
     expect(triggersDoc).toContain('面向 Codex 时必需');
     expect(triggersDoc).toContain('`when_to_use`');
-    expect(triggersDoc).toContain('会失败');
+    expect(triggersDoc).toContain('`known-field-not-supported-by-target-version`');
+    expect(triggersDoc).toContain('`packages/cli/src/utils/skill-frontmatter-capabilities.json`');
+    expect(triggersDoc).toContain('`references/skill-frontmatter-capabilities.generated.md`');
+    expect(triggersDoc).toContain('`model`（默认）');
     expect(triggersDoc).toContain(
       'Codex 侧会生成 `allow_implicit_invocation: false` 的入口 Skill',
     );
@@ -1380,6 +1532,25 @@ describe('authoring tools', () => {
     expect(triggersDoc).toContain('`brand_color`：可选；填写时必须是 `#RRGGBB`');
     expect(triggersDoc).toContain('缺失或空值会被 Codex loader 丢弃');
     expect(triggersDoc).not.toContain('自动格式化 kebab-case');
+    expect(skillFrontmatterCapabilitiesDoc).toContain('| `when_to_use` | claude |');
+    expect(skillFrontmatterCapabilitiesDoc).toContain(
+      '| `background` | claude | no | boolean-or-string-or-binary-number | claude-current | true/false/yes/no/on/off/1/0 | case-insensitive | introduced 2.1.218 |',
+    );
+    expect(skillFrontmatterCapabilitiesDoc).toContain('| `version` | claude |');
+    expect(skillFrontmatterCapabilitiesDoc).toContain('required is an AW authoring/package policy');
+    const capabilityReferenceCheck = await execFileAsync(
+      'node',
+      [
+        path.join(
+          creatorSkillRoot,
+          'scripts',
+          'generate_skill_frontmatter_reference.mjs',
+        ),
+        '--check',
+      ],
+      { cwd: root, env: process.env },
+    );
+    expect(capabilityReferenceCheck.stdout).toContain('[PASS]');
     expect(extensionsSpecDoc).toContain('`command` 是公共 hook contract 的必填字段');
     expect(extensionsSpecDoc).toContain('`extensions.hooks` 不是 Claude Code / Codex 原生 hook 事件全集');
     expect(extensionsSpecDoc).toContain('公共 `session_start` 只覆盖 `startup / resume / clear`');
@@ -1402,6 +1573,9 @@ describe('authoring tools', () => {
     expect(buildConfigDoc).toContain('不会排除 manifest 已声明的能力路径');
     expect(mcpAppsDoc).toContain('`${user_config.KEY}` 是 Claude runtime 的原生占位符');
     expect(skillDesignDoc).toContain('## 先判断是否应该做成 skill');
+    expect(skillDesignDoc).toContain('## Skill candidate brief');
+    expect(skillDesignDoc).toContain('Information Hierarchy Map');
+    expect(skillDesignDoc).toContain('## 分离三种 description');
     expect(skillDesignDoc).toContain('portable core');
     expect(skillDesignDoc).toContain('description');
     expect(skillDesignDoc).toContain('skills-ref validate <skill-directory>');
@@ -1425,17 +1599,17 @@ describe('authoring tools', () => {
       schemaVersion: 1,
       skill: 'create-agent-workflows-plugin',
     });
-    expect(creatorTriggerFixtures.cases).toHaveLength(20);
+    expect(creatorTriggerFixtures.cases).toHaveLength(26);
     expect(
       creatorTriggerFixtures.cases.filter(
         (entry: { should_load_skill: boolean }) => entry.should_load_skill,
       ),
-    ).toHaveLength(10);
+    ).toHaveLength(13);
     expect(
       creatorTriggerFixtures.cases.filter(
         (entry: { should_load_skill: boolean }) => !entry.should_load_skill,
       ),
-    ).toHaveLength(10);
+    ).toHaveLength(13);
     expect(
       creatorTriggerFixtures.cases.filter(
         (entry: { split: string }) => entry.split === 'train',
@@ -1446,6 +1620,16 @@ describe('authoring tools', () => {
         (entry: { split: string }) => entry.split === 'validation',
       ),
     ).toHaveLength(8);
+    expect(
+      creatorTriggerFixtures.cases.filter(
+        (entry: { split: string }) => entry.split === 'sanity',
+      ),
+    ).toHaveLength(6);
+    expect(
+      creatorTriggerFixtures.cases.some(
+        (entry: { query: string }) => entry.query.includes('$create-agent-workflows-plugin'),
+      ),
+    ).toBe(false);
     const evalContractResult = await execFileAsync(
       'node',
       [
@@ -1497,28 +1681,42 @@ describe('authoring tools', () => {
           expect(evalCase.review).toMatchObject({
             platforms: ['codex'],
             clean_session: true,
-            workspace_unchanged: true,
+            workspace_unchanged: false,
           });
+          expect(evalCase.sandbox).toBe('workspace-write');
+          expect(evalCase.review.allowed_workspace_changes.length).toBeGreaterThan(0);
+          expect(evalCase.review.artifacts.length).toBeGreaterThan(0);
           expect(evalCase.review.checks.length).toBeGreaterThanOrEqual(4);
+
+          for (const artifact of evalCase.review.artifacts) {
+            expect(typeof artifact.path).toBe('string');
+            expect(
+              evalCase.review.allowed_workspace_changes.some((pattern: string) => {
+                if (!pattern.endsWith('/**')) return artifact.path === pattern;
+                const prefix = pattern.slice(0, -3);
+                return artifact.path === prefix || artifact.path.startsWith(`${prefix}/`);
+              }),
+            ).toBe(true);
+          }
         } else {
           expect(Number.isInteger(evalCase.id)).toBe(true);
           expect(evalCase.id).toBeGreaterThan(0);
+          expect(Array.isArray(evalCase.files)).toBe(true);
+          expect(evalCase).not.toHaveProperty('assertions');
+
+          for (const file of evalCase.files) {
+            expect(typeof file).toBe('string');
+            expect(file.trim().length).toBeGreaterThan(0);
+            expect(path.isAbsolute(file) || path.win32.isAbsolute(file)).toBe(false);
+            const relativeFile = path.posix.normalize(file.replaceAll('\\', '/'));
+            expect(relativeFile === '..' || relativeFile.startsWith('../')).toBe(false);
+            await expect(
+              fs.pathExists(path.join(suite.skillRoot, relativeFile)),
+            ).resolves.toBe(true);
+          }
         }
         expect(evalCase.prompt.trim().length).toBeGreaterThan(0);
         expect(evalCase.expected_output.trim().length).toBeGreaterThan(0);
-        expect(Array.isArray(evalCase.files)).toBe(true);
-        expect(evalCase).not.toHaveProperty('assertions');
-
-        for (const file of evalCase.files) {
-          expect(typeof file).toBe('string');
-          expect(file.trim().length).toBeGreaterThan(0);
-          expect(path.isAbsolute(file) || path.win32.isAbsolute(file)).toBe(false);
-          const relativeFile = path.posix.normalize(file.replaceAll('\\', '/'));
-          expect(relativeFile === '..' || relativeFile.startsWith('../')).toBe(false);
-          await expect(
-            fs.pathExists(path.join(suite.skillRoot, relativeFile)),
-          ).resolves.toBe(true);
-        }
       }
     }
 
@@ -3333,9 +3531,10 @@ describe('authoring tools', () => {
         'name: frontmatter-test',
         'description: Validate frontmatter handling.',
         'when_to_use: false',
+        'when_to_uses: Typo must remain unknown.',
         'license: false',
         'compatibility: []',
-        'user-invocable: "true"',
+        'user-invocable: "TRUE"',
         'disable-model-invocation: false',
         'metadata:',
         '  short-description: false',
@@ -3368,13 +3567,22 @@ describe('authoring tools', () => {
     } catch (error) {
       invalidFrontmatterStdout = (error as { stdout?: string }).stdout ?? '';
     }
-    expect(invalidFrontmatterStdout).toContain('frontmatter has unknown field "when_to_use"');
+    expect(invalidFrontmatterStdout).toContain(
+      '[known-field-invalid-type-value] field "when_to_use"',
+    );
+    expect(invalidFrontmatterStdout).toContain('[unknown-field] field "when_to_uses"');
     expect(invalidFrontmatterStdout).toContain('frontmatter.license must be a string');
     expect(invalidFrontmatterStdout).toContain('frontmatter.compatibility must be a string');
-    expect(invalidFrontmatterStdout).toContain('frontmatter.user-invocable must be a boolean');
+    expect(invalidFrontmatterStdout).toContain(
+      '[known-field-invalid-type-value] field "user-invocable"',
+    );
     expect(invalidFrontmatterStdout).toContain('frontmatter.metadata.short-description must be a string');
-    expect(invalidFrontmatterStdout).toContain('frontmatter.allowed-tools[1] must be a string');
-    expect(invalidFrontmatterStdout).toContain('frontmatter.shell must be "bash" or "powershell"');
+    expect(invalidFrontmatterStdout).toContain(
+      '[known-field-invalid-type-value] field "allowed-tools"',
+    );
+    expect(invalidFrontmatterStdout).toContain(
+      '[known-field-invalid-type-value] field "shell" must be one of "bash", "powershell"',
+    );
 
     await fs.writeFile(
       skillMdPath,
@@ -3382,8 +3590,20 @@ describe('authoring tools', () => {
         '---',
         'name: frontmatter-test',
         'description: Validate frontmatter handling.',
-        'user-invocable: true',
-        'disable-model-invocation: false',
+        'when_to_use: Use for Claude Code frontmatter validation.',
+        'argument-hint: "[path]"',
+        'arguments:',
+        '  - path',
+        'version: 0.1.0',
+        'user-invocable: "true"',
+        'disable-model-invocation: "false"',
+        'model: sonnet',
+        'effort: high',
+        'context: fork',
+        'agent: Explore',
+        'hooks: {}',
+        'paths:',
+        '  - packages/cli/**',
         'metadata:',
         '  short-description: Frontmatter validation',
         'allowed-tools:',
@@ -3402,8 +3622,107 @@ describe('authoring tools', () => {
       env: process.env,
       maxBuffer: 10 * 1024 * 1024,
     });
-    expect(result.stdout).not.toContain('when_to_use is recommended');
     expect(result.stdout).toContain('[PASS] All checks passed.');
+
+    await fs.writeFile(
+      skillMdPath,
+      [
+        '---',
+        'name: frontmatter-test',
+        'description: Validate current Claude Code frontmatter.',
+        'metadata:',
+        '  owner:',
+        '    team: agent-workflows',
+        '  priority: 1',
+        'user-invocable: "YES"',
+        'context: fork',
+        'background: ON',
+        'disallowed-tools: Bash(rm *)',
+        '---',
+        '',
+        '# Current Claude Frontmatter',
+      ].join('\n'),
+      'utf8',
+    );
+    let minimumProfileStdout = '';
+    try {
+      await execFileAsync('node', [scriptPath, pluginDir], {
+        cwd: repoRoot(),
+        env: process.env,
+        maxBuffer: 10 * 1024 * 1024,
+      });
+    } catch (error) {
+      minimumProfileStdout = (error as { stdout?: string }).stdout ?? '';
+    }
+    expect(minimumProfileStdout).toContain(
+      '[known-field-not-supported-by-target-version] field "background"',
+    );
+    expect(minimumProfileStdout).toContain('Claude Code 2.1.218');
+    expect(minimumProfileStdout).toContain(
+      '[known-field-not-supported-by-target-version] field "disallowed-tools"',
+    );
+
+    await expect(
+      execFileAsync(
+        'node',
+        [scriptPath, pluginDir, '--claude-skill-profile', 'current'],
+        {
+          cwd: repoRoot(),
+          env: process.env,
+          maxBuffer: 10 * 1024 * 1024,
+        },
+      ),
+    ).resolves.toMatchObject({ stdout: expect.stringContaining('[PASS] All checks passed.') });
+
+    await fs.writeFile(
+      skillMdPath,
+      [
+        '---',
+        'name: frontmatter-test',
+        'description: Validate related current Claude Code fields.',
+        'background: true',
+        '---',
+        '',
+        '# Related Current Claude Frontmatter',
+      ].join('\n'),
+      'utf8',
+    );
+    let relatedFieldStdout = '';
+    try {
+      await execFileAsync(
+        'node',
+        [scriptPath, pluginDir, '--claude-skill-profile', 'current'],
+        {
+          cwd: repoRoot(),
+          env: process.env,
+          maxBuffer: 10 * 1024 * 1024,
+        },
+      );
+    } catch (error) {
+      relatedFieldStdout = (error as { stdout?: string }).stdout ?? '';
+    }
+    expect(relatedFieldStdout).toContain(
+      '[known-field-requires-related-field] field "background" requires "context"="fork"',
+    );
+
+    await fs.writeFile(
+      skillMdPath,
+      [
+        '---',
+        'name: frontmatter-test',
+        'description: Validate frontmatter handling.',
+        'user-invocable: true',
+        'disable-model-invocation: false',
+        'allowed-tools:',
+        '  - Bash(git status *)',
+        '  - Read',
+        'shell: PowerShell',
+        '---',
+        '',
+        '# Frontmatter Test',
+      ].join('\n'),
+      'utf8',
+    );
 
     let strictExtensionStdout = '';
     try {
@@ -3415,13 +3734,17 @@ describe('authoring tools', () => {
     } catch (error) {
       strictExtensionStdout = (error as { stdout?: string }).stdout ?? '';
     }
-    expect(strictExtensionStdout).toContain('frontmatter has unknown field "user-invocable"');
     expect(strictExtensionStdout).toContain(
-      'frontmatter has unknown field "disable-model-invocation"',
+      '[portable-profile-platform-extension] field "user-invocable"',
     );
-    expect(strictExtensionStdout).toContain('frontmatter has unknown field "shell"');
     expect(strictExtensionStdout).toContain(
-      'frontmatter.allowed-tools must be a space-separated string',
+      '[portable-profile-platform-extension] field "disable-model-invocation"',
+    );
+    expect(strictExtensionStdout).toContain(
+      '[portable-profile-platform-extension] field "shell"',
+    );
+    expect(strictExtensionStdout).toContain(
+      '[known-field-invalid-type-value] field "allowed-tools"',
     );
 
     const manifestPath = path.join(pluginDir, '.agents-plugin', 'plugin.json');
@@ -3439,9 +3762,11 @@ describe('authoring tools', () => {
     } catch (error) {
       codexOnlyExtensionStdout = (error as { stdout?: string }).stdout ?? '';
     }
-    expect(codexOnlyExtensionStdout).toContain('frontmatter has unknown field "user-invocable"');
     expect(codexOnlyExtensionStdout).toContain(
-      'frontmatter.allowed-tools must be a space-separated string',
+      '[portable-profile-platform-extension] field "user-invocable"',
+    );
+    expect(codexOnlyExtensionStdout).toContain(
+      '[known-field-invalid-type-value] field "allowed-tools"',
     );
 
     await fs.writeFile(
@@ -3592,6 +3917,7 @@ describe('authoring tools', () => {
       maxBuffer: 10 * 1024 * 1024,
     });
     expect(helpResult.stdout).toContain('--strict-agent-skills');
+    expect(helpResult.stdout).toContain('--claude-skill-profile');
     expect(helpResult.stdout).toContain('--json');
   });
 
@@ -3648,6 +3974,24 @@ describe('authoring tools', () => {
     );
     await fs.ensureDir(path.dirname(scriptPath));
     await fs.copy(validatePluginScriptPath(), scriptPath);
+    await fs.copy(
+      path.join(
+        repoRoot(),
+        'packages',
+        'cli',
+        'src',
+        'utils',
+        'skill-frontmatter-capabilities.json',
+      ),
+      path.join(
+        tempRoot,
+        'packages',
+        'cli',
+        'src',
+        'utils',
+        'skill-frontmatter-capabilities.json',
+      ),
+    );
 
     const staleManifestModulePath = path.join(
       tempRoot,

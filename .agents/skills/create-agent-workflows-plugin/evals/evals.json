@@ -2,56 +2,140 @@
   "skill_name": "create-agent-workflows-plugin",
   "evals": [
     {
-      "id": "plan-minimal-plugin",
-      "prompt": "使用 $create-agent-workflows-plugin，在不修改文件的前提下检查当前仓库，并给出新建双平台 release-notes 插件的最小实施方案。它只包含一个允许自动发现的 skill，根据当前分支提交生成结构化发布说明；不要添加 MCP、hooks 或 lifecycle。",
-      "expected_output": "只选择 skill 能力；读取 skill 设计、平台原生调用元数据、manifest 与评估 reference；计划创建最小源码和作者期 eval，并列出 build、validator、materialization 与相关测试，不修改 marketplace 或生成目录。",
-      "files": [],
+      "id": "create-model-invoked",
+      "prompt": "在当前 agent-workflows 评测仓库中实际创建 plugins/release-notes。它是双平台最小插件，只含一个 release-notes Skill；该 Skill 根据当前分支变更生成结构化发布说明，风险低，应允许模型自动发现。使用作者脚手架并显式传入 model 调用策略，替换全部 TODO，保留脚手架生成的作者期 eval 并把 starter 调整为该领域的真实任务。运行作者 validator；不要运行 pnpm build，也不要修改 marketplace-source、平台 manifest、plugins-dist 或 runtime cache。",
+      "expected_output": "创建最小 source plugin；Claude 保持模型自动调用，Codex allow_implicit_invocation 为 true；存在 owner Skill eval manifest/cases；轻量作者 validator 通过。",
       "scripted_replies": [],
+      "sandbox": "workspace-write",
       "review": {
         "platforms": ["codex"],
         "clean_session": true,
-        "workspace_unchanged": true,
+        "workspace_unchanged": false,
+        "allowed_workspace_changes": ["plugins/release-notes/**"],
+        "artifacts": [
+          {
+            "path": "plugins/release-notes/.agents-plugin/plugin.json",
+            "exists": true,
+            "json": {
+              "name": "release-notes",
+              "skills": "./skills"
+            }
+          },
+          {
+            "path": "plugins/release-notes/skills/release-notes/SKILL.md",
+            "exists": true,
+            "contains": ["name: release-notes"],
+            "not_contains": ["disable-model-invocation: true", "[TODO"]
+          },
+          {
+            "path": "plugins/release-notes/skills/release-notes/agents/openai.yaml",
+            "exists": true,
+            "contains": ["allow_implicit_invocation: true"]
+          },
+          {
+            "path": "plugins/release-notes/skills/release-notes/evals/manifest.json",
+            "exists": true,
+            "json": {
+              "schemaVersion": 2,
+              "plugin": "release-notes",
+              "skill": "release-notes"
+            }
+          },
+          {
+            "path": "plugins/release-notes/.mcp.json",
+            "exists": false
+          }
+        ],
         "checks": [
-          "trace 读取 skill-design、skills-and-triggers、plugin-manifest-spec 和 skill-evaluation",
-          "方案只选择一个 skill，不增加 MCP、hooks、lifecycle 或其它未请求能力",
-          "方案包含 Codex 与 Claude 原生调用元数据、作者校验、materialization 和相关测试",
-          "方案不修改 marketplace-source、平台 manifest、plugins-dist 或 runtime cache"
+          "trace 按路由读取 skill-design、skills-and-triggers、plugin-manifest-spec 和 skill-evaluation",
+          "trace 实际运行 init_plugin.mjs、替换 TODO，并运行 validate_plugin.mjs 到通过",
+          "Skill description 是 release-notes 专属发现描述，不回退为插件级摘要",
+          "没有创建 MCP、hooks、lifecycle、平台 manifest、marketplace 修改或生成目录"
         ]
       }
     },
     {
-      "id": "plan-surgical-skill-script",
-      "prompt": "使用 $create-agent-workflows-plugin，只读检查 plugins/code-review，并给 review-workflow 增加一个 skill 内 JSON 报告校验脚本的实施方案。只允许改这个 skill 及必要测试，不改变插件安装、scope、config 或 lifecycle 行为。",
-      "expected_output": "先读取现有 manifest、skill 和测试，再读取 skill-scripts 与 skill-evaluation；方案保持局部，脚本非交互、支持 --help、输出可解析、错误可操作，并覆盖成功、失败和重复运行。",
-      "files": [],
+      "id": "create-manual-side-effect",
+      "prompt": "在当前 agent-workflows 评测仓库中实际创建 plugins/release-publisher。它是双平台最小插件，只含一个会发布制品的 release-publisher Skill。该工作流有外部副作用，必须只允许用户显式调用。使用作者脚手架并显式传入 manual 调用策略，替换全部 TODO，保留并定制作者期 eval starter，然后运行作者 validator；不要修改 marketplace-source 或任何生成目录。",
+      "expected_output": "创建 manual-only source plugin；Claude user-invocable 为 true 且禁用模型调用，Codex allow_implicit_invocation 为 false；存在 owner Skill eval；作者 validator 通过。",
       "scripted_replies": [],
+      "sandbox": "workspace-write",
       "review": {
         "platforms": ["codex"],
         "clean_session": true,
-        "workspace_unchanged": true,
+        "workspace_unchanged": false,
+        "allowed_workspace_changes": ["plugins/release-publisher/**"],
+        "artifacts": [
+          {
+            "path": "plugins/release-publisher/.agents-plugin/plugin.json",
+            "exists": true,
+            "json": {
+              "name": "release-publisher",
+              "skills": "./skills"
+            }
+          },
+          {
+            "path": "plugins/release-publisher/skills/release-publisher/SKILL.md",
+            "exists": true,
+            "contains": ["user-invocable: true", "disable-model-invocation: true"],
+            "not_contains": ["[TODO"]
+          },
+          {
+            "path": "plugins/release-publisher/skills/release-publisher/agents/openai.yaml",
+            "exists": true,
+            "contains": ["allow_implicit_invocation: false"]
+          },
+          {
+            "path": "plugins/release-publisher/skills/release-publisher/evals/manifest.json",
+            "exists": true,
+            "json": {
+              "schemaVersion": 2,
+              "plugin": "release-publisher",
+              "skill": "release-publisher"
+            }
+          }
+        ],
         "checks": [
-          "trace 先读取 plugins/code-review 的 manifest、目标 skill 和相关测试",
-          "trace 按路由读取 skill-scripts 和 skill-evaluation，而不是加载全部 references",
-          "方案只修改目标 skill、脚本和直接测试，不改变安装、scope、config 或 lifecycle",
-          "脚本合同包含非交互、--help、结构化输出、可操作错误和成功/失败/重试测试"
+          "trace 明确把副作用与 manual invocation 决策关联",
+          "trace 实际运行脚手架、完成 Skill 内容并运行作者 validator 到通过",
+          "manual 模式的 trigger starter 使用显式调用 smoke，而不是宣称自动触发",
+          "没有扩大到 MCP、config、lifecycle、marketplace 或生成目录"
         ]
       }
     },
     {
-      "id": "inspect-claude-frontmatter",
-      "prompt": "使用 $create-agent-workflows-plugin，只做只读分析：一个 Claude-only skill 的 frontmatter 使用 user-invocable、disable-model-invocation、shell 和数组形式 allowed-tools。请说明哪些属于 Agent Skills portable core、哪些属于 Claude 扩展，并说明如何在不改变现有手动调用行为的情况下校验。",
-      "expected_output": "读取 skill-design、skills-and-triggers 和 skill-evaluation；不会为了 strict portable core 静默删除 Claude 行为字段；按 AW source profile 校验，并把 --strict-agent-skills 或 skills-ref 作为额外 portable 检查。",
-      "files": [],
+      "id": "modify-with-script",
+      "prompt": "实际维护 plugins/code-review：只在 review-skills/review-workflow 内增加一个 Node.js JSON 报告 validator。脚本必须非交互，支持 --help，成功时 stdout 输出短 JSON，失败诊断写 stderr 并返回非零；覆盖合法输入、非法 JSON、缺少字段和重复运行。更新该 Skill 的准确调用说明，并添加直接 node:test。不要改变插件 manifest、安装、scope、config、lifecycle、MCP 或其它 Skill。运行 --help、成功、失败、重复运行、node --test 和作者 validator。",
+      "expected_output": "对既有 Skill 做局部修改；新增可执行 validator 与直接测试，SKILL.md 给出准确接口和验证循环；所有要求的确定性命令和作者 validator 通过。",
       "scripted_replies": [],
+      "sandbox": "workspace-write",
       "review": {
         "platforms": ["codex"],
         "clean_session": true,
-        "workspace_unchanged": true,
+        "workspace_unchanged": false,
+        "allowed_workspace_changes": ["plugins/code-review/review-skills/review-workflow/**"],
+        "artifacts": [
+          {
+            "path": "plugins/code-review/review-skills/review-workflow/scripts/validate-report.mjs",
+            "exists": true,
+            "contains": ["--help"]
+          },
+          {
+            "path": "plugins/code-review/review-skills/review-workflow/scripts/validate-report.test.mjs",
+            "exists": true,
+            "contains": ["node:test"]
+          },
+          {
+            "path": "plugins/code-review/review-skills/review-workflow/SKILL.md",
+            "exists": true,
+            "contains": ["scripts/validate-report.mjs"]
+          }
+        ],
         "checks": [
-          "trace 读取 skill-design、skills-and-triggers 和 skill-evaluation",
-          "结论把 name、description、compatibility、metadata 和字符串 allowed-tools 归入 portable core",
-          "结论把 user-invocable、disable-model-invocation、shell 和数组 allowed-tools 归入 Claude 扩展",
-          "方案保留手动调用行为，并区分 AW source 校验与 strict portable 校验"
+          "trace 先读取现有 manifest、目标 Skill 和直接测试，再读取 skill-scripts 与 skill-evaluation",
+          "diff 只触及目标 Skill 子树，没有改变 manifest、安装、scope、config、lifecycle 或 MCP",
+          "trace 运行 --help、成功、失败、重复运行和 node --test，并记录退出码和 stdout/stderr 合同",
+          "trace 最后运行作者 validator；失败时修复并重跑"
         ]
       }
     }

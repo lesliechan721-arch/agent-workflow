@@ -5,6 +5,14 @@
     "copy": [
       { "from": "package.json", "to": "package.json" },
       { "from": "pnpm-workspace.yaml", "to": "pnpm-workspace.yaml" },
+      {
+        "from": "node_modules/.pnpm/yaml@2.8.3/node_modules/yaml",
+        "to": "node_modules/yaml"
+      },
+      {
+        "from": "packages/cli/src/utils/skill-frontmatter-capabilities.json",
+        "to": "packages/cli/src/utils/skill-frontmatter-capabilities.json"
+      },
       { "from": "plugins/marketplace-source.json", "to": "plugins/marketplace-source.json" },
       {
         "from": ".agents/skills/create-agent-workflows-plugin/references/.examples/code-review",
@@ -24,10 +32,10 @@
       "skills": ["create-agent-workflows-plugin"],
       "cases": "./evals/trigger-cases.json",
       "observeSpawnAgent": false,
-      "isolation": "standard",
-      "strictNegativeSplits": ["validation"],
+      "isolation": "strict",
+      "strictNegativeSplits": ["validation", "sanity"],
       "defaultRuns": 3,
-      "releaseSplits": ["validation"],
+      "releaseSplits": ["validation", "sanity"],
       "requiredForRelease": true,
       "perRunTimeoutMs": 180000
     },
@@ -37,6 +45,7 @@
       "skill": "create-agent-workflows-plugin",
       "skills": ["create-agent-workflows-plugin"],
       "cases": "./evals/evals.json",
+      "isolation": "strict",
       "defaultRuns": 1,
       "releaseSplits": [],
       "requiredForRelease": true,

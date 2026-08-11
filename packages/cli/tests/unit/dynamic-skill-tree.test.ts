@@ -116,7 +116,7 @@ describe('dynamic skill tree', () => {
     const target = path.join(root, 'runtime', 'example');
     await fs.outputFile(
       path.join(source, 'SKILL.md'),
-      '---\nname: example\ndescription: Example skill\ndisable-model-invocation: true\nuser-invocable: true\n---\nBody\n',
+      '---\nname: example\ndescription: Example skill\nversion: 0.1.0\nwhen_to_use: Use for example tasks.\ndisable-model-invocation: "true"\nuser-invocable: "false"\n---\nBody\n',
     );
     await fs.outputFile(path.join(source, 'scripts', 'helper.sh'), '#!/bin/sh\n');
 
@@ -130,8 +130,10 @@ describe('dynamic skill tree', () => {
       artifact,
       sourceDirs: [source],
     });
-    expect(tree.files['SKILL.md']?.toString()).toContain('disable-model-invocation: true');
-    expect(tree.files['SKILL.md']?.toString()).toContain('user-invocable: true');
+    expect(tree.files['SKILL.md']?.toString()).toContain('version: 0.1.0');
+    expect(tree.files['SKILL.md']?.toString()).toContain('disable-model-invocation: "true"');
+    expect(tree.files['SKILL.md']?.toString()).toContain('user-invocable: "false"');
+    expect(tree.files['SKILL.md']?.toString()).toContain('when_to_use: Use for example tasks.');
 
     const written = await writeDynamicSkillTree(target, tree, {
       allowedRoot: path.dirname(target),
@@ -152,6 +154,29 @@ describe('dynamic skill tree', () => {
     expect(createDynamicSkillTreeContentDigest(actual!)).toBe(
       createDynamicSkillTreeContentDigest(tree),
     );
+  });
+
+  it('classifies Claude fields that require a host above the AW minimum', async () => {
+    await expect(createDynamicSkillExpectedTree({
+      artifact: {
+        target: 'claude.skill',
+        skillKey: 'example',
+        state: 'present',
+        content: {
+          files: {
+            'SKILL.md': [
+              '---',
+              'name: example',
+              'description: Example skill.',
+              'context: fork',
+              'background: false',
+              '---',
+              'Body',
+            ].join('\n'),
+          },
+        },
+      },
+    })).rejects.toThrow('known-field-not-supported-by-target-version');
   });
 
   it('rejects the reserved owner marker from source directories and renderer output', async () => {

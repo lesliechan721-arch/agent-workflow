@@ -161,6 +161,8 @@ AW_PERF_SUMMARY {"name":"..."}
 
 `trigger` 和 `conversation` suite 支持 `isolation: standard|strict`。conversation driver 在 Default 协作模式启用 `request_user_input`。trigger driver 观察所有 participant Skills；单目标用例使用 `should_load_skill`，相邻 Skill 路由使用 `expected_loaded_skills` 精确集合。trigger 遇到 `request_user_input` 等待时正常结束，不把正确澄清记为 timeout。strict current 只保留 suite 的 participant Skills；baseline 只移除 owner Skill，并保留 companions。strict 模式关闭内置 Skill、插件、Apps、MCP 和建议类表面，并在运行前验证有效配置、精确 participant Skill 集合和空 MCP 清单。检查失败时结果必须是 incomplete。`strictNegativeSplits` 对任何一次负例误加载或错误委派零容忍。
 
+conversation case 默认只读。执行写入型作者任务时，case 必须显式使用 `sandbox: workspace-write`，并声明最小 `allowed_workspace_changes` 与 `artifacts`。runner 只写隔离临时副本，禁写 eval 控制目录，并把越界 diff、缺失文件、文本或 JSON 断言失败作为 mechanical failure；current 与 baseline 都保存 workspace diff 和 artifact digest。
+
 真实模型 eval 应从普通 Terminal 运行；macOS 检测到 `accountsKeychainExport` 包装器路径时会在启动模型前失败，且不会修改用户 keychain search list。进程树检查默认要求 Full Access；不可用时必须在报告分配和模型启动前阻断。Windows 当前没有 Job Object containment，因此也必须显式传 `--allow-unmanaged-processes`。该降级模式只清理直接子进程，报告必须记录 `descendantCleanupGuaranteed: false`。
 
 插件 eval 中间产物固定在 `.tmp/agent-workflows/evals/plugins/<plugin>/<skill>/<run-id>/`；静态 Skill 使用 `.tmp/agent-workflows/evals/static/<skill>/<run-id>/`。持久 eval 报告固定在 owner Skill 的 `reports/evals/<run-id>/`，review 报告固定在 `reports/reviews/<run-id>/`。构建、安装和 runtime digest 排除 `evals/**` 与 `reports/**`。

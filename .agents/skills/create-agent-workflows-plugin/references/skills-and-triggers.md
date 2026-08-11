@@ -27,12 +27,17 @@ plugins/<name>/skills/
 
 ## SKILL.md profile
 
-AW 区分两层 frontmatter：
+AW 使用版本化 registry 区分 portable、最低宿主和当前宿主能力。机器真值位于 `packages/cli/src/utils/skill-frontmatter-capabilities.json`；作者 validator、CLI bundle validator、生成的 `references/skill-frontmatter-capabilities.generated.md` 和表驱动测试共同消费它。本文只保留选择原则，不复制易变字段全集。
 
-- **Agent Skills portable core**：`name`、`description`，以及可选的 `license`、`compatibility`、`metadata`、字符串形式 `allowed-tools`
-- **AW 平台扩展**：Claude 的 `user-invocable`、`disable-model-invocation`、`shell` 和数组形式 `allowed-tools`；Codex 的 `agents/openai.yaml`
+| Profile | 入口 | 结果用途 |
+| --- | --- | --- |
+| `portable-agent-skills` | `--strict-agent-skills` | 只检查 Agent Skills portable core |
+| `claude-2.1.88` | 默认 AW source 校验 | 保证 AW 最低 Claude Code 版本 |
+| `claude-current` | `--claude-skill-profile current` | 核对当前官方字段；不改变发布最低版本 |
 
-完整约束和选择原则见 `references/skill-design.md`。默认 `validate_plugin.mjs` 接受 portable core 加目标平台的已知扩展；`--strict-agent-skills` 只接受 portable core。未知字段和旧式 `when_to_use` 会失败。
+诊断区分 `unknown-field`、`known-field-not-supported-by-target-version`、`known-field-requires-related-field`、`known-field-invalid-type-value` 和 `portable-profile-platform-extension`。例如 `when_to_use` 已在 Claude Code 2.1.88 源码中验证，不再误报为 unknown；`background` 当前文档要求 Claude Code 2.1.218，因此默认最低版本 profile 会给版本诊断，而不是把它称为拼写错误。
+
+完整选择原则见 `references/skill-design.md`。当前字段重新核对 Agent Skills、Claude Code 和 Codex 官方文档；不要从本文的示例推断字段全集。
 
 双平台、可严格移植的基础 frontmatter：
 
@@ -113,6 +118,16 @@ policy:
 ## 双平台触发配置
 
 两个平台的触发开关完全独立，互不读取。
+
+脚手架参数映射：
+
+| `--skill-invocation` | Claude | Codex |
+| --- | --- | --- |
+| `model`（默认） | 允许模型发现，保留用户入口 | `allow_implicit_invocation: true` |
+| `manual` | `user-invocable: true`、`disable-model-invocation: true` | `allow_implicit_invocation: false` |
+| `claude-model-only` | `user-invocable: false`，不禁用模型 | 无隐藏用户入口的等价字段；保持 implicit true |
+
+脚手架默认只适合可自动发现的初始工作流。任务有副作用或强授权边界时，作者必须显式传 `manual`。
 
 ### 触发开关对照
 

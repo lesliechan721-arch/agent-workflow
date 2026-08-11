@@ -29,19 +29,6 @@ const MAX_OPENAI_DEPENDENCY_DESCRIPTION_LEN = 1024;
 const MAX_OPENAI_DEPENDENCY_COMMAND_LEN = 1024;
 const MAX_OPENAI_DEPENDENCY_URL_LEN = 1024;
 const CLAUDE_FRONTMATTER_SHELLS = new Set(['bash', 'powershell']);
-const AGENT_SKILLS_CORE_FRONTMATTER_FIELDS = new Set([
-  'name',
-  'description',
-  'license',
-  'compatibility',
-  'metadata',
-  'allowed-tools',
-]);
-const CLAUDE_SKILL_FRONTMATTER_FIELDS = new Set([
-  'user-invocable',
-  'disable-model-invocation',
-  'shell',
-]);
 const CLAUDE_SLASH_COMMAND_ONLY_FIELDS = new Set([
   'allowed-tools',
   'model',
@@ -174,6 +161,7 @@ const PLUGIN_EVAL_COMMAND_SUPPORTS = new Set([
   'allowEnvironmentSkips',
 ]);
 let yamlParser = null;
+let skillFrontmatterCapabilityRegistry = null;
 
 function error(msg) {
   errors.push(msg);
@@ -364,6 +352,35 @@ function parseFrontmatter(content, sourceName) {
   const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
   if (!match) return null;
   return parseYaml(match[1], sourceName);
+}
+
+function loadSkillFrontmatterCapabilityRegistry() {
+  if (skillFrontmatterCapabilityRegistry) return skillFrontmatterCapabilityRegistry;
+  const repoRoot = path.resolve(__dirname, '..', '..', '..', '..');
+  const registryPath = path.join(
+    repoRoot,
+    'packages',
+    'cli',
+    'src',
+    'utils',
+    'skill-frontmatter-capabilities.json',
+  );
+  if (!fs.existsSync(registryPath)) {
+    throw new Error(
+      `Skill frontmatter capability registry not found: ${registryPath}`,
+    );
+  }
+  const registry = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
+  if (
+    !registry ||
+    registry.schemaVersion !== 1 ||
+    !registry.profiles ||
+    !registry.fields
+  ) {
+    throw new Error(`Invalid Skill frontmatter capability registry: ${registryPath}`);
+  }
+  skillFrontmatterCapabilityRegistry = registry;
+  return registry;
 }
 
 async function tryLoadCliManifestTools() {
@@ -982,6 +999,42 @@ function validateEvalRelativeFile(evalDir, value, fieldName) {
   return absolutePath;
 }
 
+function validateEvalWorkspacePath(value, fieldName, options = {}) {
+  const raw = validateNonEmptyString(value, fieldName);
+  if (!raw) return null;
+  const treePattern = options.allowTreePattern === true && raw.endsWith('/**');
+  const candidate = treePattern ? raw.slice(0, -3) : raw;
+  if (
+    candidate === '' ||
+    candidate.includes('\0') ||
+    candidate.includes('\\') ||
+    candidate.includes('*') ||
+    candidate.includes('?') ||
+    candidate.includes('[') ||
+    candidate.includes(']') ||
+    path.isAbsolute(candidate) ||
+    path.posix.normalize(candidate) !== candidate ||
+    candidate.split('/').includes('..')
+  ) {
+    error(`${fieldName} must be a normalized POSIX path inside the eval workspace`);
+    return null;
+  }
+  const firstSegment = candidate.split('/')[0];
+  if (firstSegment === '.git' || firstSegment === '.agents' || firstSegment === '.codex') {
+    error(`${fieldName} must not target an eval control directory`);
+    return null;
+  }
+  return raw;
+}
+
+function evalWorkspacePathMatchesPattern(relativePath, pattern) {
+  if (pattern.endsWith('/**')) {
+    const prefix = pattern.slice(0, -3);
+    return relativePath === prefix || relativePath.startsWith(`${prefix}/`);
+  }
+  return relativePath === pattern;
+}
+
 function validateConversationCaseCorpus(evalDir, suite, fieldName) {
   const casesPath = validateEvalRelativeFile(evalDir, suite.cases, `${fieldName}.cases`);
   if (!casesPath) return;
@@ -1017,6 +1070,12 @@ function validateConversationCaseCorpus(evalDir, suite, fieldName) {
       ids.add(id);
     }
     validateNonEmptyString(entry.prompt, `${caseField}.prompt`);
+    const sandbox = entry.sandbox === undefined
+      ? 'read-only'
+      : validateNonEmptyString(entry.sandbox, `${caseField}.sandbox`);
+    if (sandbox && sandbox !== 'read-only' && sandbox !== 'workspace-write') {
+      error(`${caseField}.sandbox must be "read-only" or "workspace-write"`);
+    }
     if (!Array.isArray(entry.scripted_replies)) {
       error(`${caseField}.scripted_replies must be an array`);
     } else {
@@ -1056,6 +1115,79 @@ function validateConversationCaseCorpus(evalDir, suite, fieldName) {
         typeof review.workspace_unchanged !== 'boolean'
       ) {
         error(`${caseField}.review.workspace_unchanged must be boolean`);
+      }
+      const allowedWorkspaceChanges = [];
+      if (review.allowed_workspace_changes !== undefined) {
+        if (
+          !Array.isArray(review.allowed_workspace_changes) ||
+          review.allowed_workspace_changes.length === 0
+        ) {
+          error(`${caseField}.review.allowed_workspace_changes must be a non-empty array`);
+        } else {
+          review.allowed_workspace_changes.forEach((pathValue, pathIndex) => {
+            const normalized = validateEvalWorkspacePath(
+              pathValue,
+              `${caseField}.review.allowed_workspace_changes[${pathIndex}]`,
+              { allowTreePattern: true },
+            );
+            if (normalized) allowedWorkspaceChanges.push(normalized);
+          });
+        }
+      }
+      const artifactPaths = [];
+      if (review.artifacts !== undefined) {
+        if (!Array.isArray(review.artifacts) || review.artifacts.length === 0) {
+          error(`${caseField}.review.artifacts must be a non-empty array`);
+        } else {
+          review.artifacts.forEach((artifactValue, artifactIndex) => {
+            const artifactField = `${caseField}.review.artifacts[${artifactIndex}]`;
+            const artifact = expectRecord(artifactValue, artifactField);
+            if (!artifact) return;
+            validateAllowedKeys(
+              artifact,
+              artifactField,
+              ['path', 'exists', 'contains', 'not_contains', 'json'],
+            );
+            const artifactPath = validateEvalWorkspacePath(
+              artifact.path,
+              `${artifactField}.path`,
+            );
+            if (artifactPath) artifactPaths.push(artifactPath);
+            if (artifact.exists !== undefined && typeof artifact.exists !== 'boolean') {
+              error(`${artifactField}.exists must be boolean`);
+            }
+            for (const key of ['contains', 'not_contains']) {
+              if (
+                artifact[key] !== undefined &&
+                (!Array.isArray(artifact[key]) || artifact[key].length === 0 || artifact[key].some(
+                  (fragment) => typeof fragment !== 'string' || fragment.length === 0,
+                ))
+              ) {
+                error(`${artifactField}.${key} must be a non-empty array of strings`);
+              }
+            }
+            if (artifact.json !== undefined && !isRecord(artifact.json)) {
+              error(`${artifactField}.json must be an object`);
+            }
+          });
+        }
+      }
+      if (new Set(artifactPaths).size !== artifactPaths.length) {
+        error(`${caseField}.review.artifacts contains duplicate paths`);
+      }
+      if (sandbox === 'workspace-write') {
+        if (review.workspace_unchanged !== false) {
+          error(`${caseField} workspace-write requires review.workspace_unchanged=false`);
+        }
+        if (allowedWorkspaceChanges.length === 0 || artifactPaths.length === 0) {
+          error(`${caseField} workspace-write requires allowed changes and artifacts`);
+        }
+        const unmatchedArtifact = artifactPaths.find((artifactPath) =>
+          !allowedWorkspaceChanges.some((pattern) =>
+            evalWorkspacePathMatchesPattern(artifactPath, pattern)));
+        if (unmatchedArtifact) {
+          error(`${caseField} artifact ${JSON.stringify(unmatchedArtifact)} is outside allowed changes`);
+        }
       }
     }
   });
@@ -1673,12 +1805,6 @@ function validateCodexIconPath(record, key, fieldName) {
   }
 }
 
-function validateOptionalBoolean(record, key, fieldName) {
-  if (record[key] !== undefined && typeof record[key] !== 'boolean') {
-    error(`${fieldName}.${key} must be a boolean`);
-  }
-}
-
 function validateAllowedTools(value, fieldName, options) {
   if (typeof value === 'string') {
     if (value.trim().length === 0) {
@@ -1708,15 +1834,122 @@ function validateAllowedTools(value, fieldName, options) {
   }
 }
 
-function validateSkillFrontmatter(fm, skillName, options) {
-  const fieldName = `skills/${skillName}/SKILL.md frontmatter`;
-  const allowedFields = new Set(AGENT_SKILLS_CORE_FRONTMATTER_FIELDS);
-  if (!options.strictAgentSkills && options.targetsClaude) {
-    for (const key of CLAUDE_SKILL_FRONTMATTER_FIELDS) {
-      allowedFields.add(key);
+function isNonEmptyFrontmatterString(value) {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function isFrontmatterStringArray(value) {
+  return Array.isArray(value) && value.every(isNonEmptyFrontmatterString);
+}
+
+function frontmatterValueMatchesType(value, type) {
+  switch (type) {
+    case 'boolean':
+      return typeof value === 'boolean';
+    case 'boolean-or-string':
+      return typeof value === 'boolean' || isNonEmptyFrontmatterString(value);
+    case 'boolean-or-string-or-binary-number':
+      return typeof value === 'boolean'
+        || isNonEmptyFrontmatterString(value)
+        || value === 0
+        || value === 1;
+    case 'object':
+      return value !== null && typeof value === 'object' && !Array.isArray(value);
+    case 'string':
+      return isNonEmptyFrontmatterString(value);
+    case 'string-map':
+      return value !== null && typeof value === 'object' && !Array.isArray(value)
+        && Object.values(value).every((entry) => typeof entry === 'string');
+    case 'string-or-integer':
+      return isNonEmptyFrontmatterString(value)
+        || (typeof value === 'number' && Number.isInteger(value));
+    case 'string-or-string-array':
+      return isNonEmptyFrontmatterString(value) || isFrontmatterStringArray(value);
+    default:
+      return false;
+  }
+}
+
+function skillFrontmatterProfile(options) {
+  if (options.strictAgentSkills || !options.targetsClaude) {
+    return 'portable-agent-skills';
+  }
+  return options.claudeSkillProfile === 'current'
+    ? 'claude-current'
+    : 'claude-2.1.88';
+}
+
+function validateSkillFrontmatterCapabilityFields(fm, fieldName, profile) {
+  let registry;
+  try {
+    registry = loadSkillFrontmatterCapabilityRegistry();
+  } catch (registryError) {
+    error(`${fieldName} capability registry error: ${registryError.message}`);
+    return;
+  }
+
+  for (const [key, value] of Object.entries(fm)) {
+    const capability = registry.fields[key];
+    if (!capability) {
+      error(`${fieldName} [unknown-field] field ${JSON.stringify(key)} is not registered for any supported profile`);
+      continue;
+    }
+    if (!capability.profiles.includes(profile)) {
+      if (profile === 'portable-agent-skills' && capability.owner !== 'agent-skills') {
+        error(`${fieldName} [portable-profile-platform-extension] field ${JSON.stringify(key)} is a Claude Code extension`);
+      } else {
+        const version = capability.introducedVersion
+          ? `; documented minimum is Claude Code ${capability.introducedVersion}`
+          : '';
+        error(`${fieldName} [known-field-not-supported-by-target-version] field ${JSON.stringify(key)} is not supported by profile ${JSON.stringify(profile)}${version}`);
+      }
+      continue;
+    }
+
+    const expectedType = capability.typeByProfile?.[profile] ?? capability.type;
+    if (!frontmatterValueMatchesType(value, expectedType)) {
+      error(`${fieldName} [known-field-invalid-type-value] field ${JSON.stringify(key)} must have type ${JSON.stringify(expectedType)} in profile ${JSON.stringify(profile)}`);
+      continue;
+    }
+
+    const acceptedValues = capability.acceptedValuesByProfile?.[profile]
+      ?? capability.acceptedValues;
+    const acceptedValuesCaseInsensitive =
+      capability.acceptedValuesCaseInsensitiveByProfile?.[profile]
+      ?? capability.acceptedValuesCaseInsensitive
+      ?? false;
+    if (
+      typeof value === 'string' &&
+      acceptedValues &&
+      !acceptedValues.includes(
+        acceptedValuesCaseInsensitive ? value.trim().toLowerCase() : value.trim(),
+      )
+    ) {
+      error(`${fieldName} [known-field-invalid-type-value] field ${JSON.stringify(key)} must be one of ${acceptedValues.map((entry) => JSON.stringify(entry)).join(', ')}`);
+    }
+
+    for (const [requiredKey, requiredValue] of Object.entries(capability.requires ?? {})) {
+      if (fm[requiredKey] !== requiredValue) {
+        error(`${fieldName} [known-field-requires-related-field] field ${JSON.stringify(key)} requires ${JSON.stringify(requiredKey)}=${JSON.stringify(requiredValue)}`);
+      }
     }
   }
-  validateAllowedKeys(fm, fieldName, [...allowedFields]);
+
+  for (const [key, capability] of Object.entries(registry.fields)) {
+    if (capability.required && capability.profiles.includes(profile) && fm[key] === undefined) {
+      error(`${fieldName} [known-field-invalid-type-value] required field ${JSON.stringify(key)} is missing for profile ${JSON.stringify(profile)}`);
+    }
+  }
+}
+
+function validateSkillFrontmatter(fm, skillName, options) {
+  const fieldName = `skills/${skillName}/SKILL.md frontmatter`;
+  const profile = skillFrontmatterProfile(options);
+  validateSkillFrontmatterCapabilityFields(
+    fm,
+    fieldName,
+    profile,
+  );
 
   if (fm.name === undefined) {
     error(`${fieldName} missing "name"`);
@@ -1754,15 +1987,14 @@ function validateSkillFrontmatter(fm, skillName, options) {
     );
   }
 
-  validateOptionalBoolean(fm, 'user-invocable', fieldName);
-  validateOptionalBoolean(fm, 'disable-model-invocation', fieldName);
-
   if (fm.metadata !== undefined) {
     const metadata = expectRecord(fm.metadata, `${fieldName}.metadata`);
     if (metadata) {
-      for (const [key, value] of Object.entries(metadata)) {
-        if (typeof value !== 'string') {
-          error(`${fieldName}.metadata.${key} must be a string`);
+      if (profile !== 'claude-current') {
+        for (const [key, value] of Object.entries(metadata)) {
+          if (typeof value !== 'string') {
+            error(`${fieldName}.metadata.${key} must be a string`);
+          }
         }
       }
       if (metadata['short-description'] !== undefined) {
@@ -1775,19 +2007,6 @@ function validateSkillFrontmatter(fm, skillName, options) {
     }
   }
 
-  if (fm['allowed-tools'] !== undefined) {
-    validateAllowedTools(fm['allowed-tools'], `${fieldName}.allowed-tools`, {
-      allowArray: !options.strictAgentSkills && options.targetsClaude,
-    });
-  }
-
-  if (fm.shell !== undefined) {
-    if (typeof fm.shell !== 'string') {
-      error(`${fieldName}.shell must be a string`);
-    } else if (!CLAUDE_FRONTMATTER_SHELLS.has(fm.shell.trim().toLowerCase())) {
-      error(`${fieldName}.shell must be "bash" or "powershell"`);
-    }
-  }
 }
 
 function isCodexTargeted(manifest) {
@@ -3476,6 +3695,7 @@ function validateSkills(pluginDir, manifest, options) {
         validateSkillFrontmatter(fm, dir.name, {
           strictAgentSkills: options.strictAgentSkills,
           targetsClaude,
+          claudeSkillProfile: options.claudeSkillProfile,
         });
       }
     }
@@ -3772,6 +3992,8 @@ Options:
   --catalog-min-version <semver>
                                Validate compatibility.aw.minVersion against a target catalog.
   --strict-agent-skills        Allow only Agent Skills portable core frontmatter.
+  --claude-skill-profile <minimum|current>
+                               Validate Claude fields at AW minimum 2.1.88 (default) or current docs.
   --json                       Emit one machine-readable JSON result to stdout.
   -h, --help                   Show this help message.
 `);
@@ -3845,6 +4067,7 @@ function parseArgs(argv) {
     pluginDir: null,
     catalogMinVersion: null,
     strictAgentSkills: false,
+    claudeSkillProfile: 'minimum',
     json: args.includes('--json'),
   };
 
@@ -3859,6 +4082,21 @@ function parseArgs(argv) {
     }
     if (arg === '--strict-agent-skills') {
       options.strictAgentSkills = true;
+      continue;
+    }
+    if (arg === '--claude-skill-profile') {
+      const value = args[index + 1];
+      if (!value || value.startsWith('--')) {
+        exitCliError('--claude-skill-profile requires a value.', options.json);
+      }
+      index += 1;
+      if (value !== 'minimum' && value !== 'current') {
+        exitCliError(
+          `Invalid --claude-skill-profile: expected "minimum" or "current". Received ${JSON.stringify(value)}.`,
+          options.json,
+        );
+      }
+      options.claudeSkillProfile = value;
       continue;
     }
     if (!arg.startsWith('--')) {
@@ -3905,12 +4143,14 @@ async function main() {
   await validatePluginDir(resolved, {
     catalogMinVersion: args.catalogMinVersion,
     strictAgentSkills: args.strictAgentSkills,
+    claudeSkillProfile: args.claudeSkillProfile,
   });
 
   if (args.json) {
     console.log(JSON.stringify({
       ok: errors.length === 0,
       profile: args.strictAgentSkills ? 'agent-skills-portable-core' : 'aw-source',
+      claudeSkillProfile: args.claudeSkillProfile,
       pluginDirectory: resolved,
       warnings,
       errors,

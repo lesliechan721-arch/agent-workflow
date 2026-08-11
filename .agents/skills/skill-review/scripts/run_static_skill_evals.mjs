@@ -241,6 +241,39 @@ function stringArray(value, label, { allowEmpty = false } = {}) {
   return value.map((entry, index) => nonEmptyString(entry, `${label}[${index}]`));
 }
 
+function evalWorkspacePath(value, label, { allowTreePattern = false } = {}) {
+  const raw = nonEmptyString(value, label);
+  const treePattern = allowTreePattern && raw.endsWith('/**');
+  const candidate = treePattern ? raw.slice(0, -3) : raw;
+  if (
+    candidate === '' ||
+    candidate.includes('\0') ||
+    candidate.includes('\\') ||
+    candidate.includes('*') ||
+    candidate.includes('?') ||
+    candidate.includes('[') ||
+    candidate.includes(']') ||
+    path.isAbsolute(candidate) ||
+    path.posix.normalize(candidate) !== candidate ||
+    candidate.split('/').includes('..')
+  ) {
+    fail(`${label} must be a normalized POSIX path inside the eval workspace.`);
+  }
+  const firstSegment = candidate.split('/')[0];
+  if (firstSegment === '.git' || firstSegment === '.agents' || firstSegment === '.codex') {
+    fail(`${label} must not target an eval control directory.`);
+  }
+  return raw;
+}
+
+function workspacePathMatchesPattern(relativePath, pattern) {
+  if (pattern.endsWith('/**')) {
+    const prefix = pattern.slice(0, -3);
+    return relativePath === prefix || relativePath.startsWith(`${prefix}/`);
+  }
+  return relativePath === pattern;
+}
+
 function relativeEvalPath(skillRoot, value, label) {
   const relative = nonEmptyString(value, label).replace(/^\.\//u, '');
   if (
@@ -472,6 +505,12 @@ async function validateLocalCases(skillRoot, suite) {
     if (ids.has(id)) fail(`${suite.id} cases has duplicate id ${JSON.stringify(id)}.`);
     ids.add(id);
     nonEmptyString(row.prompt, `${suite.id}.evals[${index}].prompt`);
+    const sandbox = row.sandbox === undefined
+      ? 'read-only'
+      : nonEmptyString(row.sandbox, `${suite.id}.evals[${index}].sandbox`);
+    if (sandbox !== 'read-only' && sandbox !== 'workspace-write') {
+      fail(`${suite.id}.evals[${index}].sandbox must be "read-only" or "workspace-write".`);
+    }
     if (!Array.isArray(row.scripted_replies)) {
       fail(`${suite.id}.evals[${index}].scripted_replies must be an array.`);
     }
@@ -482,6 +521,49 @@ async function validateLocalCases(skillRoot, suite) {
     stringArray(review.checks, `${suite.id}.evals[${index}].review.checks`);
     if (review.workspace_unchanged !== undefined) {
       boolean(review.workspace_unchanged, `${suite.id}.evals[${index}].review.workspace_unchanged`);
+    }
+    const allowedWorkspaceChanges = review.allowed_workspace_changes === undefined
+      ? []
+      : stringArray(
+          review.allowed_workspace_changes,
+          `${suite.id}.evals[${index}].review.allowed_workspace_changes`,
+        ).map((entry, pathIndex) => evalWorkspacePath(
+          entry,
+          `${suite.id}.evals[${index}].review.allowed_workspace_changes[${pathIndex}]`,
+          { allowTreePattern: true },
+        ));
+    const artifacts = review.artifacts === undefined ? [] : review.artifacts;
+    if (!Array.isArray(artifacts)) {
+      fail(`${suite.id}.evals[${index}].review.artifacts must be an array.`);
+    }
+    const artifactPaths = artifacts.map((artifact, artifactIndex) => {
+      const artifactLabel = `${suite.id}.evals[${index}].review.artifacts[${artifactIndex}]`;
+      const artifactRow = record(artifact, artifactLabel);
+      const artifactPath = evalWorkspacePath(artifactRow.path, `${artifactLabel}.path`);
+      if (artifactRow.exists !== undefined) boolean(artifactRow.exists, `${artifactLabel}.exists`);
+      if (artifactRow.contains !== undefined) stringArray(artifactRow.contains, `${artifactLabel}.contains`);
+      if (artifactRow.not_contains !== undefined) {
+        stringArray(artifactRow.not_contains, `${artifactLabel}.not_contains`);
+      }
+      if (artifactRow.json !== undefined) record(artifactRow.json, `${artifactLabel}.json`);
+      return artifactPath;
+    });
+    if (new Set(artifactPaths).size !== artifactPaths.length) {
+      fail(`${suite.id}.evals[${index}].review.artifacts contains duplicate paths.`);
+    }
+    if (sandbox === 'workspace-write') {
+      if (review.workspace_unchanged !== false) {
+        fail(`${suite.id}.evals[${index}] workspace-write requires review.workspace_unchanged=false.`);
+      }
+      if (allowedWorkspaceChanges.length === 0 || artifactPaths.length === 0) {
+        fail(`${suite.id}.evals[${index}] workspace-write requires allowed changes and artifacts.`);
+      }
+      const unmatchedArtifact = artifactPaths.find((artifactPath) =>
+        !allowedWorkspaceChanges.some((pattern) =>
+          workspacePathMatchesPattern(artifactPath, pattern)));
+      if (unmatchedArtifact) {
+        fail(`${suite.id}.evals[${index}] artifact ${JSON.stringify(unmatchedArtifact)} is outside allowed changes.`);
+      }
     }
   }
 }

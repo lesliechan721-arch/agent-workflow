@@ -81,6 +81,23 @@ interface ScriptedReply {
   unexpectedQuestionAnswer: string;
 }
 
+interface WorkspaceArtifactExpectation {
+  path: string;
+  exists: boolean;
+  contains: string[];
+  notContains: string[];
+  json?: Record<string, unknown>;
+}
+
+interface WorkspaceArtifactEvidence {
+  path: string;
+  exists: boolean;
+  kind: 'absent' | 'file' | 'other';
+  bytes?: number;
+  sha256?: string;
+  text?: string;
+}
+
 interface ConversationEvalCase {
   id: string;
   prompt: string;
@@ -88,6 +105,9 @@ interface ConversationEvalCase {
   expectedOutput: string;
   checks: string[];
   workspaceUnchanged: boolean;
+  sandbox: 'read-only' | 'workspace-write';
+  allowedWorkspaceChanges: string[];
+  artifacts: WorkspaceArtifactExpectation[];
 }
 
 interface AppServerRunEvidence {
@@ -109,6 +129,7 @@ interface AppServerRunEvidence {
   finalMessages: string[];
   usage: unknown;
   workspaceChanges: string[];
+  workspaceArtifacts: WorkspaceArtifactEvidence[];
   diagnostics: string[];
   eventTrace: unknown[];
   isolation: CodexEvalRpcIsolationEvidence | null;
@@ -215,23 +236,124 @@ async function snapshotWorkspace(root: string): Promise<Map<string, string>> {
   async function visit(current: string): Promise<void> {
     const entries = await fs.readdir(current, { withFileTypes: true }).catch(() => []);
     for (const entry of entries) {
-      if (entry.name === '.git' || entry.name === '.codex' || entry.name === '.agents') {
-        continue;
-      }
       const absolutePath = path.join(current, entry.name);
+      const relativePath = path.relative(root, absolutePath).split(path.sep).join('/');
       if (entry.isDirectory()) {
+        snapshot.set(`${relativePath}/`, 'directory');
         await visit(absolutePath);
       } else if (entry.isFile()) {
-        const relativePath = path.relative(root, absolutePath).split(path.sep).join('/');
         snapshot.set(
           relativePath,
           createHash('sha256').update(await fs.readFile(absolutePath)).digest('hex'),
         );
+      } else if (entry.isSymbolicLink()) {
+        snapshot.set(relativePath, `symlink:${await fs.readlink(absolutePath)}`);
+      } else {
+        snapshot.set(relativePath, 'other');
       }
     }
   }
   await visit(root);
   return snapshot;
+}
+
+function workspacePathMatchesPattern(relativePath: string, pattern: string): boolean {
+  if (pattern.endsWith('/**')) {
+    const prefix = pattern.slice(0, -3);
+    return relativePath === prefix || relativePath.startsWith(`${prefix}/`);
+  }
+  return relativePath === pattern;
+}
+
+function jsonContains(actual: unknown, expected: unknown): boolean {
+  if (Array.isArray(expected)) {
+    return Array.isArray(actual)
+      && actual.length === expected.length
+      && expected.every((entry, index) => jsonContains(actual[index], entry));
+  }
+  if (isRecord(expected)) {
+    return isRecord(actual)
+      && Object.entries(expected).every(([key, value]) =>
+        Object.prototype.hasOwnProperty.call(actual, key) && jsonContains(actual[key], value));
+  }
+  return Object.is(actual, expected);
+}
+
+async function readWorkspaceArtifactEvidence(
+  workspaceRoot: string,
+  expectation: WorkspaceArtifactExpectation,
+): Promise<WorkspaceArtifactEvidence> {
+  const absolutePath = path.join(workspaceRoot, ...expectation.path.split('/'));
+  const stat = await fs.lstat(absolutePath).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  });
+  if (!stat) {
+    return { path: expectation.path, exists: false, kind: 'absent' };
+  }
+  if (!stat.isFile() || stat.isSymbolicLink()) {
+    return { path: expectation.path, exists: true, kind: 'other' };
+  }
+  const content = await fs.readFile(absolutePath);
+  const evidence: WorkspaceArtifactEvidence = {
+    path: expectation.path,
+    exists: true,
+    kind: 'file',
+    bytes: content.length,
+    sha256: createHash('sha256').update(content).digest('hex'),
+  };
+  if (content.length <= 64 * 1024 && !content.includes(0)) {
+    evidence.text = content.toString('utf8');
+  }
+  return evidence;
+}
+
+function validateWorkspaceArtifact(
+  expectation: WorkspaceArtifactExpectation,
+  evidence: WorkspaceArtifactEvidence,
+): string[] {
+  const diagnostics: string[] = [];
+  if (evidence.exists !== expectation.exists) {
+    diagnostics.push(
+      `Artifact ${expectation.path} expected exists=${expectation.exists} but exists=${evidence.exists}.`,
+    );
+    return diagnostics;
+  }
+  if (!expectation.exists) return diagnostics;
+  if (evidence.kind !== 'file') {
+    diagnostics.push(`Artifact ${expectation.path} must be a regular file.`);
+    return diagnostics;
+  }
+  const text = evidence.text;
+  if ((expectation.contains.length > 0 || expectation.notContains.length > 0 || expectation.json) && text === undefined) {
+    diagnostics.push(`Artifact ${expectation.path} is binary or exceeds the 64 KiB assertion limit.`);
+    return diagnostics;
+  }
+  for (const fragment of expectation.contains) {
+    if (!text!.includes(fragment)) {
+      diagnostics.push(`Artifact ${expectation.path} is missing required text ${JSON.stringify(fragment)}.`);
+    }
+  }
+  for (const fragment of expectation.notContains) {
+    if (text!.includes(fragment)) {
+      diagnostics.push(`Artifact ${expectation.path} contains forbidden text ${JSON.stringify(fragment)}.`);
+    }
+  }
+  if (expectation.json) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text!);
+    } catch (error) {
+      diagnostics.push(
+        `Artifact ${expectation.path} must contain valid JSON: ${error instanceof Error ? error.message : String(error)}.`,
+      );
+      return diagnostics;
+    }
+    if (!jsonContains(parsed, expectation.json)) {
+      diagnostics.push(`Artifact ${expectation.path} JSON does not contain the expected object subset.`);
+    }
+  }
+  return diagnostics;
 }
 
 async function isolateWorkspaceSkills(options: {
@@ -637,6 +759,22 @@ async function readConversationCases(
       expectedOutput: value.expected_output,
       checks: review.checks as string[],
       workspaceUnchanged: review.workspace_unchanged === true,
+      sandbox: value.sandbox === 'workspace-write' ? 'workspace-write' : 'read-only',
+      allowedWorkspaceChanges: Array.isArray(review.allowed_workspace_changes)
+        ? review.allowed_workspace_changes as string[]
+        : [],
+      artifacts: Array.isArray(review.artifacts)
+        ? review.artifacts.map((artifact) => {
+            const row = artifact as Record<string, unknown>;
+            return {
+              path: row.path as string,
+              exists: row.exists !== false,
+              contains: Array.isArray(row.contains) ? row.contains as string[] : [],
+              notContains: Array.isArray(row.not_contains) ? row.not_contains as string[] : [],
+              ...(isRecord(row.json) ? { json: row.json } : {}),
+            };
+          })
+        : [],
     };
   });
 }
@@ -828,10 +966,19 @@ async function runConversationOnce(options: {
         allowedSkillRoots,
       });
     }
+    const sandboxPolicy = options.evalCase.sandbox === 'workspace-write'
+      ? {
+          type: 'workspaceWrite' as const,
+          writableRoots: [workspaceRoot],
+          networkAccess: false,
+          excludeTmpdirEnvVar: false,
+          excludeSlashTmp: true,
+        }
+      : { type: 'readOnly' as const, networkAccess: true };
     const threadResult = await session.sendRequest('thread/start', {
       cwd: workspaceRoot,
       approvalPolicy: 'never',
-      sandbox: 'read-only',
+      sandbox: options.evalCase.sandbox,
       ephemeral: false,
       ...(options.model ? { model: options.model } : {}),
     });
@@ -841,7 +988,7 @@ async function runConversationOnce(options: {
       input: [{ type: 'text', text: options.evalCase.prompt, text_elements: [] }],
       cwd: workspaceRoot,
       approvalPolicy: 'never',
-      sandboxPolicy: { type: 'readOnly', networkAccess: true },
+      sandboxPolicy,
       ...(options.model ? { model: options.model } : {}),
     });
     const completed = await turnDone;
@@ -853,6 +1000,10 @@ async function runConversationOnce(options: {
     removeFailureHandler = undefined;
     const after = await snapshotWorkspace(workspaceRoot);
     const workspaceChanges = diffSnapshots(before, after);
+    const workspaceArtifacts = await Promise.all(
+      options.evalCase.artifacts.map((expectation) =>
+        readWorkspaceArtifactEvidence(workspaceRoot, expectation)),
+    );
     if (replyStep < options.evalCase.scriptedReplies.length) {
       diagnostics.push(
         `${options.evalCase.scriptedReplies.length - replyStep} scripted reply step(s) were unused.`,
@@ -860,6 +1011,19 @@ async function runConversationOnce(options: {
     }
     if (options.evalCase.workspaceUnchanged && workspaceChanges.length > 0) {
       diagnostics.push(`Workspace changed: ${workspaceChanges.join(', ')}`);
+    }
+    if (options.evalCase.sandbox === 'workspace-write') {
+      const unexpectedChanges = workspaceChanges.filter((relativePath) =>
+        !options.evalCase.allowedWorkspaceChanges.some((pattern) =>
+          workspacePathMatchesPattern(relativePath, pattern)));
+      if (unexpectedChanges.length > 0) {
+        diagnostics.push(`Workspace changed outside the allowed paths: ${unexpectedChanges.join(', ')}`);
+      }
+    }
+    if (options.variant === 'with_skill') {
+      for (const [index, expectation] of options.evalCase.artifacts.entries()) {
+        diagnostics.push(...validateWorkspaceArtifact(expectation, workspaceArtifacts[index]!));
+      }
     }
     return session.scrub({
       variant: options.variant,
@@ -870,6 +1034,7 @@ async function runConversationOnce(options: {
       finalMessages,
       usage,
       workspaceChanges,
+      workspaceArtifacts,
       diagnostics,
       eventTrace,
       isolation: isolationEvidence,
@@ -885,6 +1050,7 @@ async function runConversationOnce(options: {
       finalMessages,
       usage,
       workspaceChanges: [],
+      workspaceArtifacts: [],
       diagnostics: [error instanceof Error ? error.stack ?? error.message : String(error)],
       eventTrace,
       isolation: isolationEvidence,

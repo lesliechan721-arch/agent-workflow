@@ -15,6 +15,7 @@ import {
   SKILL_OWNER_MARKER,
 } from './ownership.js';
 import { isSkillAuthorOnlyPath } from './skill-authoring.js';
+import { validateSkillFrontmatterCapabilities } from './skill-frontmatter-capabilities.js';
 
 export const SKILL_FILE_PATH = 'SKILL.md';
 export const CODEX_OPENAI_YAML_PATH = 'agents/openai.yaml';
@@ -72,7 +73,10 @@ export function validateCodexOpenAiYaml(rawContent: string): void {
   }
 }
 
-export function validateClaudeSkillFrontmatter(rawContent: string): void {
+export function validateClaudeSkillFrontmatter(
+  rawContent: string,
+  expectedSkillName?: string,
+): void {
   const normalized = rawContent.replace(/\r\n/g, '\n');
   if (!normalized.startsWith('---\n')) {
     throw new Error('SKILL.md 缺少 YAML frontmatter。');
@@ -95,10 +99,18 @@ export function validateClaudeSkillFrontmatter(rawContent: string): void {
     throw new Error('SKILL.md frontmatter 根节点必须是 object。');
   }
 
-  for (const field of ['disable-model-invocation', 'user-invocable']) {
-    if (frontmatter[field] !== undefined && typeof frontmatter[field] !== 'boolean') {
-      throw new Error(`SKILL.md frontmatter 的 ${field} 必须是 boolean。`);
-    }
+  const diagnostics = validateSkillFrontmatterCapabilities(frontmatter, 'claude-2.1.88');
+  if (diagnostics.length > 0) {
+    throw new Error(
+      `SKILL.md frontmatter 不符合 Claude Code 2.1.88 profile：${diagnostics
+        .map((entry) => `[${entry.code}] ${entry.message}`)
+        .join('; ')}`,
+    );
+  }
+  if (expectedSkillName !== undefined && frontmatter.name !== expectedSkillName) {
+    throw new Error(
+      `SKILL.md frontmatter 的 name 必须与 Skill 目录一致：期望 ${JSON.stringify(expectedSkillName)}。`,
+    );
   }
 }
 
@@ -165,7 +177,7 @@ function validatePresentSkillTree(options: {
     validateCodexOpenAiYaml(openaiYaml.toString('utf8'));
     return;
   }
-  validateClaudeSkillFrontmatter(skillFile.toString('utf8'));
+  validateClaudeSkillFrontmatter(skillFile.toString('utf8'), options.skillKey);
 }
 
 export async function validateSkillDirectory(

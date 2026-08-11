@@ -200,6 +200,129 @@ describe('Codex app-server eval driver', () => {
     expect(JSON.stringify(evidence)).not.toContain('private-plan-type');
   });
 
+  it('runs bounded workspace-write cases and records mechanical artifact evidence', async () => {
+    const subjectRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-app-server-write-'));
+    const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-app-server-write-report-'));
+    tempDirs.push(subjectRoot, outputRoot);
+    await fs.ensureDir(path.join(subjectRoot, '.git'));
+    await fs.ensureDir(path.join(subjectRoot, '.agents', 'skills', 'writer'));
+    await fs.writeFile(
+      path.join(subjectRoot, '.agents', 'skills', 'writer', 'SKILL.md'),
+      '# Writer\n',
+      'utf8',
+    );
+    await fs.writeFile(
+      path.join(subjectRoot, 'app-server'),
+      [
+        "const fs = require('node:fs');",
+        "const readline = require('node:readline');",
+        "const input = readline.createInterface({ input: process.stdin });",
+        "const send = (frame) => process.stdout.write(JSON.stringify(frame) + '\\n');",
+        "let threadSandbox = 'unknown';",
+        "input.on('line', (line) => {",
+        '  const frame = JSON.parse(line);',
+        "  if (frame.method === 'initialize') send({ id: frame.id, result: {} });",
+        "  else if (frame.method === 'thread/start') {",
+        "    threadSandbox = frame.params.sandbox;",
+        "    send({ id: frame.id, result: { thread: { id: 'thread-1' } } });",
+        "  } else if (frame.method === 'turn/start') {",
+        "    fs.mkdirSync('outputs', { recursive: true });",
+        "    fs.writeFileSync('outputs/result.json', JSON.stringify({ status: 'ok', evidence: 'written' }));",
+        "    const prompt = frame.params.input?.[0]?.text ?? '';",
+        "    if (prompt.includes('control directory')) fs.writeFileSync('.git/marker', 'forbidden');",
+        "    send({ id: frame.id, result: { turn: { id: 'turn-1' } } });",
+        "    const text = `thread=${threadSandbox} turn=${frame.params.sandboxPolicy.type}`;",
+        "    send({ method: 'item/completed', params: { item: { type: 'agentMessage', id: 'message-1', phase: 'final_answer', text } } });",
+        "    send({ method: 'turn/completed', params: { turn: { id: 'turn-1', status: 'completed' } } });",
+        '  }',
+        '});',
+      ].join('\n'),
+      'utf8',
+    );
+    const casesPath = path.join(subjectRoot, 'cases.json');
+    await fs.writeJson(casesPath, {
+      skill_name: 'writer',
+      evals: [{
+        id: 'write_result',
+        prompt: 'Write the result.',
+        scripted_replies: [],
+        expected_output: 'Create outputs/result.json.',
+        sandbox: 'workspace-write',
+        review: {
+          workspace_unchanged: false,
+          allowed_workspace_changes: ['outputs/**'],
+          artifacts: [{
+            path: 'outputs/result.json',
+            exists: true,
+            contains: ['"evidence":"written"'],
+            json: { status: 'ok' },
+          }],
+          checks: ['Creates the requested artifact.'],
+        },
+      }],
+    }, { spaces: 2 });
+    const reportPath = path.join(outputRoot, 'behavior.json');
+
+    await expect(runCodexConversationSuite({
+      suiteId: 'behavior',
+      skillName: 'writer',
+      casesPath,
+      subjectRoot,
+      profile: 'project-default',
+      runs: 1,
+      codexBin: process.execPath,
+      timeoutMs: 10_000,
+      sourceEnv: process.env,
+      reportPath,
+    })).resolves.toMatchObject({
+      outcome: 'needs_review',
+      complete: true,
+      mechanicalPassed: true,
+    });
+
+    const evidence = await fs.readJson(reportPath);
+    const run = evidence.results[0].runs[0];
+    expect(run.with_skill.finalMessages).toEqual([
+      'thread=workspace-write turn=workspaceWrite',
+    ]);
+    expect(run.with_skill.workspaceChanges).toEqual(['outputs/', 'outputs/result.json']);
+    expect(run.with_skill.workspaceArtifacts).toEqual([
+      expect.objectContaining({
+        path: 'outputs/result.json',
+        exists: true,
+        kind: 'file',
+        bytes: expect.any(Number),
+        sha256: expect.any(String),
+        text: '{"status":"ok","evidence":"written"}',
+      }),
+    ]);
+    expect(run.without_skill.workspaceChanges).toEqual(['outputs/', 'outputs/result.json']);
+
+    const controlDirectoryCases = await fs.readJson(casesPath);
+    controlDirectoryCases.evals[0].prompt = 'Write the result and modify the control directory.';
+    await fs.writeJson(casesPath, controlDirectoryCases, { spaces: 2 });
+    const blockedReportPath = path.join(outputRoot, 'blocked.json');
+    await expect(runCodexConversationSuite({
+      suiteId: 'behavior',
+      skillName: 'writer',
+      casesPath,
+      subjectRoot,
+      profile: 'project-default',
+      runs: 1,
+      codexBin: process.execPath,
+      timeoutMs: 10_000,
+      sourceEnv: process.env,
+      reportPath: blockedReportPath,
+    })).resolves.toMatchObject({
+      outcome: 'failed',
+      complete: true,
+      mechanicalPassed: false,
+      diagnostics: expect.arrayContaining([
+        expect.stringContaining('.git/marker'),
+      ]),
+    });
+  });
+
   it('proves strict config, target-only Skills, and empty MCP before model work', async () => {
     const subjectRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-app-server-probe-'));
     const sourceCodexHome = path.join(subjectRoot, 'source-codex-home');

@@ -226,7 +226,7 @@ AW 版本管理里有三套身份，不能混用：
 - `requiresCodexProjectConfig: true` 表示 project scope 写路径需要进入 Codex project config safety preflight。`codex.skill` 不需要该字段，因为它写 `.agents/skills/<skillKey>`，不依赖 `.codex/config.toml`。
 - `codex.skill` 和 `claude.skill` 必须静态声明合法 `skillKey`，并可声明 `sourceDirs`。每个 source directory 必须是插件内存在的 `./` 相对目录，不能重复。AW 按数组顺序合并完整目录；后面的源覆盖前面的同名文件。静态文件按字节复制，符号链接和非普通文件失败。
 - Skill artifact 的 V2 `present` content 只能包含 `files`。`files` 是 POSIX 相对路径到 UTF-8 字符串的映射，并在所有 `sourceDirs` 之后覆盖同名文件。path 不能是绝对路径，不能含反斜杠、`.`、`..`，也不能产生文件/目录前缀冲突。
-- 最终 `codex.skill` 必须包含 `SKILL.md` 和 `agents/openai.yaml`，且 `policy.allow_implicit_invocation` 必须是 boolean。project target 的 `projectManagedKind` 必须是 `skill`，且不需要 `requiresCodexProjectConfig`。最终 `claude.skill` 必须包含带合法 YAML frontmatter 的 `SKILL.md`；`disable-model-invocation` 和 `user-invocable` 出现时必须是 boolean。AW 校验并原样写入这些原生字段。Claude target 不接受 `projectManagedKind` 或 `requiresCodexProjectConfig`。
+- 最终 `codex.skill` 必须包含 `SKILL.md` 和 `agents/openai.yaml`，且 `policy.allow_implicit_invocation` 必须是 boolean。project target 的 `projectManagedKind` 必须是 `skill`，且不需要 `requiresCodexProjectConfig`。最终 `claude.skill` 必须包含带合法 YAML frontmatter 的 `SKILL.md`；`disable-model-invocation` 和 `user-invocable` 出现时必须使用目标 profile 支持的原生 boolean token，具体类型、值和大小写规则见 `references/skill-frontmatter-capabilities.generated.md`。推荐使用规范 YAML boolean `true` / `false`。AW 校验并原样写入这些原生字段。Claude target 不接受 `projectManagedKind` 或 `requiresCodexProjectConfig`。
 - `codex.developerInstructionsBlock` 的 `projectManagedKind` 必须是 `instruction`，renderer `present` content 是 instruction 字符串。一个插件可以声明多个 instruction artifact；AW 会按 `artifact.id` 稳定排序后合成为同一个 managed block。`disabled` 只省略该 artifact 的 fragment；只有同一插件没有任何 present instruction artifact 时，AW 才移除或跳过 managed block。
 - `codex.agentRole` 的 `projectManagedKind` 必须是 `agent`，且必须静态声明合法 `roleKey`。renderer plan 里的 `roleKey` 和 `roleFile.name` 必须与静态 metadata 完全一致；`registration.config_file` 由 AW 生成，renderer 不能提供。
 
@@ -308,7 +308,7 @@ codex:
 - Codex 使用 `skills/<skill>/agents/openai.yaml` 的 `policy.allow_implicit_invocation`。
 - Claude Code 使用 `skills/<skill>/SKILL.md` frontmatter 的 `disable-model-invocation` 与 `user-invocable`。
 
-面向 Codex 的静态或动态 Skill 必须提供 `agents/openai.yaml`，并把 `policy.allow_implicit_invocation` 写成 boolean。Claude 字段出现时也必须是 boolean。AW 在 build、materialization、安装、升级和配置刷新中校验并保留这些字段，不改变其值。显式调用仍按平台原生规则工作。
+面向 Codex 的静态或动态 Skill 必须提供 `agents/openai.yaml`，并把 `policy.allow_implicit_invocation` 写成 boolean。Claude 字段出现时必须使用目标 profile 支持的原生 boolean token；推荐写规范 YAML boolean `true` / `false`，其它可接受值见 `references/skill-frontmatter-capabilities.generated.md`。AW 在 build、materialization、安装、升级和配置刷新中校验并保留这些字段，不改变其值。显式调用仍按平台原生规则工作。
 
 公共 `slashCommands` 生成的 Codex 入口 Skill 固定写入 `policy.allow_implicit_invocation: false`，因为它本身是显式命令入口。要改变其它 Skill 的调用行为，作者必须修改 Skill 源码或动态 renderer 输出，并发布新的插件版本。
 

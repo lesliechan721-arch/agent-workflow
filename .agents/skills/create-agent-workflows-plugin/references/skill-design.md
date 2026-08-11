@@ -14,6 +14,23 @@ Skill 适合封装需要模型判断、领域知识或多步骤协作的可复�
 - 模型在没有本 skill 时容易犯的具体错误
 - 哪些相邻任务不属于本 skill
 
+先完成 candidate brief：
+
+```markdown
+## Skill candidate brief
+
+- 真实任务：
+- 来源证据：成功执行、用户纠正、runbook/schema/issue 或失败 trace：
+- without-skill baseline：
+- 模型缺少的项目知识或程序：
+- 可观察成功指标：
+- 预期增量：质量、正确率、时间、token 或方差：
+- 相邻方案：extension、slash command、bundled script、dynamic artifact 或 no-op：
+- 决定：create skill / simpler component / no-op：
+```
+
+进入 authoring 的完成条件：至少有一个真实任务和一个可测 baseline gap。若无 Skill 已能稳定完成，或任务完全确定且不需要模型判断，不创建 Skill。
+
 以下情况优先使用其它能力：
 
 | 需求 | 优先能力 |
@@ -39,37 +56,21 @@ Skill 适合封装需要模型判断、领域知识或多步骤协作的可复�
 
 ## Frontmatter profile
 
-### Agent Skills portable core
+字段、类型、依赖、目标 profile 和版本证据的机器真值是 `packages/cli/src/utils/skill-frontmatter-capabilities.json`。`validate_plugin.mjs`、CLI bundle 校验、表驱动测试和 `references/skill-frontmatter-capabilities.generated.md` 共同消费该 registry。字段变化时修改 registry、重生成字段表并更新测试，不在本文维护第二份字段全集。
 
-以下字段属于 Agent Skills 核心格式：
+| Profile | 用途 |
+| --- | --- |
+| `portable-agent-skills` | 只接受 Agent Skills portable frontmatter |
+| `claude-2.1.88` | AW 默认；保证最低支持 Claude Code 版本 |
+| `claude-current` | 核对当前 Claude 文档；不能替代最低版本发布兼容 |
 
-| 字段 | 约束 | 使用方式 |
-|------|------|----------|
-| `name` | 必填，1–64 字符；不得以短横线开头、结尾或包含连续短横线；必须与目录名一致 | 稳定的 skill 标识 |
-| `description` | 必填，1–1024 字符 | 同时说明做什么和何时使用 |
-| `license` | 可选，非空字符串 | 许可证名称或 skill 内许可证文件 |
-| `compatibility` | 可选，1–500 字符 | 只写真实环境要求，例如 Node、系统包、网络或目标产品 |
-| `metadata` | 可选，string → string | 客户端或项目附加元数据 |
-| `allowed-tools` | 可选，空格分隔字符串；实验性 | 预批准工具声明，客户端支持可能不同 |
-
-Portable core 只保证格式可被兼容客户端理解，不保证所有客户端都执行实验字段。
+Portable core 只保证格式可被兼容客户端理解，不保证所有客户端都执行实验字段。当前字段重新核对 Agent Skills 和目标客户端官方文档；不要凭本文缓存判断。
 
 AW source profile 为了与插件目录、脚手架及两个宿主平台保持一致，额外把 `name` 收窄为 ASCII 小写短横线格式：`[a-z0-9]+(?:-[a-z0-9]+)*`。这是项目约束，不要把它误写成所有 Agent Skills 客户端都必须采用的额外限制；独立 portable skill 的最终判定以对应版本的上游 `skills-ref` 为准。
 
 ### AW 平台扩展
 
-AW 的共享源码还允许目标平台需要的扩展：
-
-| 字段或文件 | 平台 | 说明 |
-|------------|------|------|
-| `user-invocable` | Claude | 是否保留用户手动入口 |
-| `disable-model-invocation` | Claude | 是否禁止模型自动调用 |
-| `shell` | Claude | 命令结果填充使用的 shell |
-| `allowed-tools` 数组形式 | Claude | Claude 可读写法；不是 portable core 的 canonical 表达 |
-| `metadata.short-description` | 项目/UI 约定 | 仍必须是字符串 metadata |
-| `agents/openai.yaml` | Codex | UI、依赖和隐式调用策略；`short_description` 为 25–64 字符，`default_prompt` 必须显式包含 `$skill-name` |
-
-双平台源码可以保留这些已知扩展，但不能声称源码能严格通过只接受 portable core 的 validator。需要严格可移植时，使用字符串形式 `allowed-tools`，移除平台扩展，或通过模板生成分平台 frontmatter。
+Claude 扩展写在 `SKILL.md`，Codex metadata 写在 `agents/openai.yaml`。双平台源码可以保留目标 profile 已知的扩展，但不能声称它严格通过 portable-only validator。需要严格可移植时，移除平台扩展，或通过模板生成分平台 frontmatter。
 
 仓库内 `validate_plugin.mjs --strict-agent-skills` 用于和 AW manifest、目标平台一起做 portable core 预检，不是上游 reference validator 的替代品。需要发布独立 portable skill 时，在 `skills-ref` 可用的环境额外运行：
 
@@ -77,7 +78,27 @@ AW 的共享源码还允许目标平台需要的扩展：
 skills-ref validate <skill-directory>
 ```
 
-## 写好 description
+## 先决定 invocation
+
+把 invocation 作为 Skill 设计输入，不在脚手架后补：
+
+| Mode | 使用条件 | Claude | Codex |
+| --- | --- | --- | --- |
+| `model` | 模型应自主发现的低风险工作流 | 不禁用模型调用 | `allow_implicit_invocation: true` |
+| `manual` | 副作用、强授权或用户必须明确选择 | 用户可调用，禁用模型调用 | `allow_implicit_invocation: false` |
+| `claude-model-only` | Claude 模型可用，但不显示用户入口 | `user-invocable: false` | 无完全等价能力；仍可模型和显式调用 |
+
+完成条件：已说明为什么选择该 mode，并确认两个平台的实际行为可接受。
+
+## 分离三种 description
+
+- Plugin description：整个插件包提供什么。
+- Skill discovery description：单个 coherent Skill 做什么、何时用、何时不用。
+- UI short summary：人类 picker 中的一行结果摘要。
+
+创建初始 Skill 时 `--skill-description` 必填。不能从插件 description 回退。UI summary 只从 Skill-specific description 做受控压缩。
+
+### 写好 discovery description
 
 `description` 是自动发现 skill 的主要输入。按以下顺序写：
 
@@ -101,7 +122,7 @@ description: >
 - 把完整工作流和所有边界都塞进 description
 - 为少数测试 query 逐个堆关键词
 
-允许自动触发的 skill 应通过正例和近似负例验证 description。固定 manual 的 skill 仍要写清范围，方便用户发现、显式选择和未来策略调整。评估方法见 `references/skill-evaluation.md`。
+允许自动触发的 skill 应通过正例和近似负例验证 description。固定 manual 的 skill 使用面向人类 picker 的结果摘要，并用显式调用 smoke 验证。评估方法见 `references/skill-evaluation.md`。
 
 ## 组织 SKILL.md
 
@@ -141,7 +162,17 @@ description: >
 
 高价值内容通常是非直觉 gotcha、短输出模板、带依赖关系的 checklist，以及“执行 → 验证 → 修复 → 重验”循环。机械校验优先交给脚本。
 
+每个关键步骤都以局部完成条件结束。完成条件必须让 agent 区分 done/not done，可由文件、命令或明确断言检查，并覆盖进入下一步前必须处理的对象。全局 checklist 不能代替局部完成边界。
+
 ## 渐进式披露
+
+非平凡 Skill 在写正文前先完成 Information Hierarchy Map：
+
+| Content cluster | Type | Branch | Needed every run | Pointer/source | Completion boundary |
+| --- | --- | --- | --- | --- | --- |
+| ... | in-file-step / in-file-reference / disclosed-reference / script / asset / environment-lookup | ... | yes/no | ... | ... |
+
+放置规则：每次必须按序做的是 in-file step；同一文件内查询的稳定规则是 in-file reference；单一 branch 才用的是 disclosed reference；重复、确定、可测试的是 script；模板和静态数据是 asset；当前 schema、版本、目录和 `--help` 是 environment lookup。
 
 - 主 `SKILL.md` 保持少于 500 行、建议少于 5,000 tokens
 - 只把每次执行都需要的工作流和 gotcha 放在主文件
@@ -163,12 +194,16 @@ description: >
 
 - [ ] 职责是一个连贯工作单元
 - [ ] 内容来自真实项目知识或执行反馈
+- [ ] candidate brief 证明了 without-skill baseline gap
+- [ ] invocation mode 及两端行为已明确
+- [ ] plugin description、Skill discovery description 和 UI summary 没有混用
 - [ ] description 同时覆盖用户意图、触发线索和近似边界
 - [ ] portable core 与平台扩展没有混写成同一标准
 - [ ] 主文件只有每次都需要的内容，并在预算内
 - [ ] 脆弱步骤有验证门，失败后会修复并重验
 - [ ] 输出格式在确有要求时给出短模板
 - [ ] scripts、references 和 assets 都有明确读取或执行条件
+- [ ] 非平凡 Skill 有 Information Hierarchy Map，关键步骤有局部完成条件
 - [ ] 已按 `references/skill-evaluation.md` 为 owner Skill materialize 最终制品，并用真实任务检查结果
 
 ## 上游参考

@@ -250,6 +250,95 @@ describe('plugin eval contract and materialization', () => {
     );
   });
 
+  it('accepts bounded workspace-write conversation cases with artifact assertions', async () => {
+    const pluginRoot = await createStaticEvalPlugin();
+    await fs.writeJson(skillEvalPath(pluginRoot, 'conversation-cases.json'), {
+      skill_name: 'eval-fixture',
+      evals: [{
+        id: 'write_artifact',
+        prompt: 'Create the requested artifact.',
+        scripted_replies: [],
+        expected_output: 'Create outputs/result.json.',
+        sandbox: 'workspace-write',
+        review: {
+          checks: ['Creates the requested bounded artifact.'],
+          workspace_unchanged: false,
+          allowed_workspace_changes: ['outputs/**'],
+          artifacts: [{
+            path: 'outputs/result.json',
+            exists: true,
+            contains: ['"status"'],
+            not_contains: ['secret'],
+            json: { status: 'ok' },
+          }],
+        },
+      }],
+    }, { spaces: 2 });
+    const manifestPath = skillEvalPath(pluginRoot, 'manifest.json');
+    const manifest = await fs.readJson(manifestPath);
+    manifest.suites = [{
+      id: 'conversation',
+      kind: 'conversation',
+      skills: ['eval-fixture'],
+      cases: './conversation-cases.json',
+      profiles: ['project-runtime'],
+      defaultRuns: 1,
+      releaseSplits: [],
+      requiredForRelease: true,
+      perRunTimeoutMs: 10_000,
+    }];
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+
+    await expect(readPluginEvalManifest(pluginRoot, 'eval-fixture')).resolves.toMatchObject({
+      suites: [expect.objectContaining({ kind: 'conversation' })],
+    });
+
+    const cases = await fs.readJson(skillEvalPath(pluginRoot, 'conversation-cases.json'));
+    cases.evals[0].review.artifacts[0].path = 'outside/result.json';
+    await fs.writeJson(skillEvalPath(pluginRoot, 'conversation-cases.json'), cases, { spaces: 2 });
+    await expect(readPluginEvalManifest(pluginRoot, 'eval-fixture')).rejects.toThrow(
+      'artifact path "outside/result.json" is outside review.allowed_workspace_changes',
+    );
+  });
+
+  it('rejects workspace-write cases without a bounded write and artifact contract', async () => {
+    const pluginRoot = await createStaticEvalPlugin();
+    await fs.writeJson(skillEvalPath(pluginRoot, 'conversation-cases.json'), {
+      skill_name: 'eval-fixture',
+      evals: [{
+        id: 'unbounded_write',
+        prompt: 'Change the workspace.',
+        scripted_replies: [],
+        expected_output: 'Change files.',
+        sandbox: 'workspace-write',
+        review: {
+          checks: ['Changes files.'],
+          workspace_unchanged: true,
+          allowed_workspace_changes: ['.agents/**'],
+          artifacts: [],
+        },
+      }],
+    }, { spaces: 2 });
+    const manifestPath = skillEvalPath(pluginRoot, 'manifest.json');
+    const manifest = await fs.readJson(manifestPath);
+    manifest.suites = [{
+      id: 'conversation',
+      kind: 'conversation',
+      skills: ['eval-fixture'],
+      cases: './conversation-cases.json',
+      profiles: ['project-runtime'],
+      defaultRuns: 1,
+      releaseSplits: [],
+      requiredForRelease: true,
+      perRunTimeoutMs: 10_000,
+    }];
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+
+    await expect(readPluginEvalManifest(pluginRoot, 'eval-fixture')).rejects.toThrow(
+      'must not target an eval control directory',
+    );
+  });
+
   it('rejects model execution for a user profile', async () => {
     const pluginRoot = await createStaticEvalPlugin();
     const manifestPath = skillEvalPath(pluginRoot, 'manifest.json');

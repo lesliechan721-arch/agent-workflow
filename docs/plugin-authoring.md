@@ -71,6 +71,8 @@ user-invocable: true
 
 Skill 的触发行为只由平台原生元数据决定。AW 校验并保留这些字段，不用 config 或 CLI flag 改写它们。公共 slash command 生成的 Codex 入口固定为 manual-only。
 
+作者脚手架创建初始 Skill 时要求独立的 `--skill-description`。`--skill-invocation` 支持 `model`、`manual` 和 `claude-model-only`，默认 `model`。字段、类型和宿主版本支持状态由 `packages/cli/src/utils/skill-frontmatter-capabilities.json` 统一定义；作者 validator 默认检查 Claude Code 2.1.88 profile，`--claude-skill-profile current` 只核对当前文档字段，不改变最低版本发布门。
+
 作者不需要、也不能在插件 manifest 中声明最低 Codex 或 Claude Code 版本。宿主版本门禁由 CLI 统一维护。
 
 ## Public Slash Commands
@@ -177,6 +179,7 @@ pnpm plugin:eval <plugin> --skill <skill>
 - `evals/**` 和 `reports/**` 是作者期目录，不进入 runtime bundle 或 runtime digest。
 - eval materialization 必须验证最终 Codex Skill 文件和原生调用 metadata。
 - `trigger` 和 `conversation` suite 支持 `isolation: standard|strict`；发布级触发边界和行为归因应使用 `strict`。strict current 只保留 participants，conversation baseline 只移除 owner。单目标 trigger case 使用 `should_load_skill`；多 Skill 竞争路由使用 `expected_loaded_skills` 精确集合，并可设置 `minimumPassRate` 和 `forbidMultipleSkillLoads`。`request_user_input` 等待是 trigger 的正常终止。`strictNegativeSplits` 对单次负例错误零容忍。
+- conversation case 默认只读。需要验证创建或修改行为时，显式使用 `sandbox: workspace-write`，并声明最小 `allowed_workspace_changes` 和非空 `artifacts`；runner 只修改隔离副本，并把越界 diff 或 artifact 断言失败记为 mechanical failure。
 - 真实模型 eval 使用文件凭据存储并关闭 secret keychain storage；从普通 Terminal 显式运行，不进入普通 unit/integration。macOS 检测到 `accountsKeychainExport` 包装器路径时会在启动模型前失败，且不会修改用户 keychain search list。
 - 真实模型默认要求 Full Access 管理后代进程。用户显式传 `--allow-unmanaged-processes` 后可以在无 Full Access 时运行，但报告会标记无法保证后代清理。
 - 中间产物固定在项目 `.tmp/agent-workflows/evals/`。持久 eval 和 review 报告分别写入 owner Skill 的 `reports/evals/<run-id>/` 与 `reports/reviews/<run-id>/`。
@@ -187,6 +190,7 @@ pnpm plugin:eval <plugin> --skill <skill>
 
 ```bash
 node .agents/skills/create-agent-workflows-plugin/scripts/validate_plugin.mjs plugins/<name>
+node .agents/skills/create-agent-workflows-plugin/scripts/validate_plugin.mjs plugins/<name> --claude-skill-profile current
 pnpm plugin:test <name>
 pnpm plugin:eval <name> --skill <skill> --materialize-only
 pnpm build
