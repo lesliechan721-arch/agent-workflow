@@ -22,7 +22,7 @@ const tempDirs: string[] = [];
 function createArchive(manifest: Record<string, unknown>, rootDir: string) {
   return {
     identity: {
-      packageName: '@yiliang/test',
+      packageName: '@lesliechan721/test',
       version: manifest.catalogVersion as string,
       integrity: `sha512-${manifest.catalogVersion}`,
     },
@@ -57,12 +57,12 @@ function createManifest(options: {
     },
     packages: {
       sidecar: {
-        name: '@yiliang/aw-plugins-manifest',
+        name: '@lesliechan721/aw-plugins-manifest',
         version: options.catalogVersion,
         channel: options.channel,
       },
       full: {
-        name: '@yiliang/aw-plugins',
+        name: '@lesliechan721/aw-plugins',
         version: options.catalogVersion,
         channel: options.channel,
         manifestPath: './catalog-manifest.json',
@@ -119,13 +119,13 @@ describe('plugin catalog failures', () => {
     registerCurrentTestReadonlyFixtureRoot(repositoryCwd, 'repository cwd');
     setCatalogPackageSourceForTests({
       resolveIdentityByDistTag: async () => ({
-        packageName: '@yiliang/aw-plugins-manifest',
+        packageName: '@lesliechan721/aw-plugins-manifest',
         version: '2.0.0',
         integrity: 'sha512-sidecar-readonly',
         requestedDistTag: 'latest',
       }),
       resolveIdentityByVersion: async () => ({
-        packageName: '@yiliang/aw-plugins',
+        packageName: '@lesliechan721/aw-plugins',
         version: '2.0.0',
         integrity: 'sha512-full-readonly',
       }),
@@ -165,7 +165,7 @@ describe('plugin catalog failures', () => {
       resolveIdentityByVersion: async (packageName) => {
         operations.push(`identity:${packageName}`);
         return {
-          packageName: '@yiliang/aw-plugins-manifest',
+          packageName: '@lesliechan721/aw-plugins-manifest',
           version: '2.0.0-beta.1',
           integrity: 'sha512-sidecar-exact',
         };
@@ -195,8 +195,8 @@ describe('plugin catalog failures', () => {
       },
     } satisfies Partial<CatalogResolutionError>);
     expect(operations).toEqual([
-      'identity:@yiliang/aw-plugins-manifest',
-      'download:@yiliang/aw-plugins-manifest',
+      'identity:@lesliechan721/aw-plugins-manifest',
+      'download:@lesliechan721/aw-plugins-manifest',
     ]);
   });
 
@@ -209,7 +209,7 @@ describe('plugin catalog failures', () => {
     const rootDir = await makeRootWithManifest(manifest);
     setCatalogPackageSourceForTests({
       resolveIdentityByDistTag: async () => ({
-        packageName: '@yiliang/aw-plugins-manifest',
+        packageName: '@lesliechan721/aw-plugins-manifest',
         version: '2.0.0',
         integrity: 'sha512-sidecar-latest',
         requestedDistTag: 'latest',

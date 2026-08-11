@@ -107,7 +107,7 @@ function observation(
 ): CurrentCatalogCacheObservation {
   return {
     sidecarManifestPackage: {
-      source: '@yiliang/aw-plugins-manifest',
+      source: '@lesliechan721/aw-plugins-manifest',
       version: entry.metadata.catalogVersion,
       channel: entry.metadata.channel,
       npmIntegrity: entry.metadata.sidecarIntegrity,

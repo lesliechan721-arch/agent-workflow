@@ -1,13 +1,13 @@
 # Agent Workflows
 
-Agent Workflows 是一个面向 Codex 和 Claude Code 的插件工作流仓库。这里维护插件源码、作者工具和发布为 `@yiliang/aw` 的 CLI；插件通过 `@yiliang/aw-plugins-manifest` sidecar 包和 `@yiliang/aw-plugins` full catalog 包分发。CLI 解析当前 catalog，把插件按平台和 scope 安装到 Codex / Claude Code 对应位置。
+Agent Workflows 是一个面向 Codex 和 Claude Code 的插件工作流仓库。这里维护插件源码、作者工具和发布为 `@lesliechan721/aw` 的 CLI；插件通过 `@lesliechan721/aw-plugins-manifest` sidecar 包和 `@lesliechan721/aw-plugins` full catalog 包分发。CLI 解析当前 catalog，把插件按平台和 scope 安装到 Codex / Claude Code 对应位置。
 
 ## 快速使用
 
 需要 `Node.js >= 20`。
 
 ```bash
-npm install -g @yiliang/aw
+npm install -g @lesliechan721/aw
 aw init
 aw install git-commit -p both
 aw status
@@ -30,7 +30,7 @@ aw install git-commit -p codex -s user
 aw install git-commit -p codex -s project
 ```
 
-`aw init` 用来预热远程 catalog 和 artifact cache。它会先读取 `@yiliang/aw-plugins-manifest`，再获取同版本 `@yiliang/aw-plugins` 并校验 digest；它不安装或升级插件，也不主动 materialize 本机 native runtime。需要 user scope native runtime 的写命令会在真正调用平台前同步 active runtime；纯 Codex project 路径只读使用 current catalog，不会为了写当前仓库产物去注册用户级 Codex runtime。绑定真实插件 target 的写命令需要显式传 `-p codex|claude|both`。
+`aw init` 用来预热远程 catalog 和 artifact cache。它会先读取 `@lesliechan721/aw-plugins-manifest`，再获取同版本 `@lesliechan721/aw-plugins` 并校验 digest；它不安装或升级插件，也不主动 materialize 本机 native runtime。需要 user scope native runtime 的写命令会在真正调用平台前同步 active runtime；纯 Codex project 路径只读使用 current catalog，不会为了写当前仓库产物去注册用户级 Codex runtime。绑定真实插件 target 的写命令需要显式传 `-p codex|claude|both`。
 
 `aw status` 和主控制台首页优先使用合法的 catalog cache；安装、升级和普通初始化会检查远程 catalog。`aw init --force` 跳过 cache 快路径并强制尝试远程刷新；如果 resolver 只能返回 cache fallback，命令会拒绝该结果并报错。catalog deadline、cache TTL、原生命令 timeout 和离线 fallback 的完整合同见 [插件安装指南](docs/plugin-installation.md#catalog-与原生命令环境变量)。
 
@@ -82,7 +82,7 @@ make test
 
 常用命令：
 
-- `make build`：编译 `@yiliang/aw`，并生成本地 catalog staging / runtime bundle
+- `make build`：编译 `@lesliechan721/aw`，并生成本地 catalog staging / runtime bundle
 - `make test`：运行单元测试和集成测试
 - `pnpm test:perf:gate`：运行独立性能预算和 fast unit wall-time 门禁；预算定义见 [测试指南](docs/testing.md#performance-budgets)
 - `pnpm plugin:test <plugin>`：运行插件确定性 Node 脚本测试，不调用模型
@@ -141,7 +141,7 @@ make release CLI_VERSION=1.0.0 CATALOG_VERSION=1.2.0
 
 ## 仓库结构
 
-- `packages/cli/`：发布包 `@yiliang/aw` 的源码、测试和 build 脚本
+- `packages/cli/`：发布包 `@lesliechan721/aw` 的源码、测试和 build 脚本
 - `plugins/`：插件源码，只维护 `.agents-plugin/plugin.json`、`marketplace-source.json` 和插件能力文件
 - `scripts/release/`：版本同步、CLI / catalog tarball 打包、本地安装和发布编排脚本
 - `.agents/skills/create-agent-workflows-plugin/`：创建和维护插件的作者工具

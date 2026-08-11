@@ -36,7 +36,7 @@
 
 | 维度 | 当前 | 目标 |
 |------|------|------|
-| 分发渠道 | 源码仓库 `plugins/*` | 私有 npm 包 `@yiliang/aw` |
+| 分发渠道 | 源码仓库 `plugins/*` | 私有 npm 包 `@lesliechan721/aw` |
 | 运行时输入 | 当前仓库 `plugins/*` + 命令阶段补写 manifest | `embedded plugins root` 与 `~/.aw` |
 | 本地市场角色 | 运行时和安装状态混用 | 承担 current catalog 镜像与本地 bundle 目录，安装状态仍单独看平台原生状态和管理账本 |
 | 插件内容生成 | 源码树里已有平台清单，运行时仍可能重写 | build 阶段一次性生成运行时 bundle，命令阶段只读消费 |
@@ -152,13 +152,13 @@ source = "/abs/path/to/.aw"
 
 这个 phase 不是单纯补发布脚手架。凡是会决定 runtime bundle 目录结构、`buildConfig` schema、manifest contract 和 `local-plugin.ts` 输出语义的内容，都要和这里同批落地；后文 Phase 4 只是按主题展开这些 contract 细节。
 
-### 1.1 配置私有 npm 仓库
+### 1.1 配置 npm 仓库
 
-Registry 保持：
+Registry 默认使用：
 
-`https://packages.aliyun.com/5fa510142f8cc15c287b3dcd/npm/npm-registry/`
+`https://registry.npmjs.org/`
 
-通过 `publishConfig` 控制发布目标，无需额外维护 repo 级 `.npmrc`。
+不在 package metadata 中固定私有 registry。需要覆盖时，通过发布环境的 `AW_NPM_REGISTRY_URL` 或 npm registry 环境变量显式指定。
 
 ### 1.2 调整 `packages/cli/package.json` 与仓库根验证入口
 
@@ -166,7 +166,6 @@ Registry 保持：
 
 - 移除 `"private": true`
 - 添加 `files`
-- 添加 `publishConfig`
 - 添加 `prepack`
 - 让 build 脚本只执行编译后的产物，不直接从 JS 脚本 import `src/**/*.ts`
 - build 阶段同时产出 CLI 与运行时插件 bundle
@@ -175,14 +174,11 @@ Registry 保持：
 
 ```json
 {
-  "name": "@yiliang/aw",
+  "name": "@lesliechan721/aw",
   "version": "0.2.0",
   "type": "module",
   "bin": { "aw": "./dist/index.js" },
   "files": ["dist/", "plugins-dist/"],
-  "publishConfig": {
-    "registry": "https://packages.aliyun.com/5fa510142f8cc15c287b3dcd/npm/npm-registry/"
-  },
   "scripts": {
     "build": "tsc -p tsconfig.json && node dist/scripts/bundle-plugins.js",
     "test": "vitest run",
@@ -201,20 +197,20 @@ Registry 保持：
 - 把 `scripts/**/*.ts` 纳入编译输入
 - `bundle-plugins` 的源码文件参与 `tsc`，运行时只执行 `dist/scripts/bundle-plugins.js`
 
-同时调整仓库根 `package.json`，把仓库级验证入口统一代理到 `@yiliang/aw`，避免命令误落到 workspace root 包本身：
+同时调整仓库根 `package.json`，把仓库级验证入口统一代理到 `@lesliechan721/aw`，避免命令误落到 workspace root 包本身：
 
 ```json
 {
   "scripts": {
-    "build": "pnpm --filter @yiliang/aw build",
-    "test": "pnpm --filter @yiliang/aw test",
-    "test:unit": "pnpm --filter @yiliang/aw test:unit",
-    "test:integration": "pnpm --filter @yiliang/aw test:integration",
-    "test:coverage": "pnpm --filter @yiliang/aw test:coverage",
-    "test:smoke": "pnpm --filter @yiliang/aw test:smoke",
-    "test:smoke:build": "pnpm --filter @yiliang/aw test:smoke:build",
-    "test:smoke:pack": "pnpm --filter @yiliang/aw test:smoke:pack",
-    "pack:cli": "pnpm --filter @yiliang/aw pack"
+    "build": "pnpm --filter @lesliechan721/aw build",
+    "test": "pnpm --filter @lesliechan721/aw test",
+    "test:unit": "pnpm --filter @lesliechan721/aw test:unit",
+    "test:integration": "pnpm --filter @lesliechan721/aw test:integration",
+    "test:coverage": "pnpm --filter @lesliechan721/aw test:coverage",
+    "test:smoke": "pnpm --filter @lesliechan721/aw test:smoke",
+    "test:smoke:build": "pnpm --filter @lesliechan721/aw test:smoke:build",
+    "test:smoke:pack": "pnpm --filter @lesliechan721/aw test:smoke:pack",
+    "pack:cli": "pnpm --filter @lesliechan721/aw pack"
   }
 }
 ```
@@ -371,7 +367,7 @@ Registry 保持：
 {
   "version": 1,
   "initializedAt": "2026-04-23T10:00:00.000Z",
-  "sourcePackage": "@yiliang/aw",
+  "sourcePackage": "@lesliechan721/aw",
   "sourceVersion": "0.2.0",
   "bundleFingerprint": "sha256:4fd0..."
 }

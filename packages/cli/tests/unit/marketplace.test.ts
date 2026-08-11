@@ -130,12 +130,12 @@ describe('marketplace npm userconfig fencing', () => {
 
     await expect(
       resolveCatalogPackageIdentityByDistTag(
-        '@yiliang/aw-plugins-manifest',
+        '@lesliechan721/aw-plugins-manifest',
         'latest',
         process.env,
       ),
     ).resolves.toMatchObject({
-      packageName: '@yiliang/aw-plugins-manifest',
+      packageName: '@lesliechan721/aw-plugins-manifest',
       version: '1.2.3',
       integrity: 'sha512-test-integrity',
     });
@@ -154,7 +154,7 @@ describe('marketplace npm userconfig fencing', () => {
     delete process.env.HOME;
     delete process.env.USERPROFILE;
     const realHomeError = await resolveCatalogPackageIdentityByDistTag(
-      '@yiliang/aw-plugins-manifest',
+      '@lesliechan721/aw-plugins-manifest',
       'latest',
       {
         npm_config_userconfig: path.join(os.homedir(), '.npmrc'),
@@ -178,7 +178,7 @@ describe('marketplace npm userconfig fencing', () => {
     });
 
     const unregisteredError = await resolveCatalogPackageIdentityByDistTag(
-      '@yiliang/aw-plugins-manifest',
+      '@lesliechan721/aw-plugins-manifest',
       'latest',
       {
         ...process.env,

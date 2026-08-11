@@ -16,7 +16,7 @@
 - 版本比较、catalog 选择、依赖最低版本、cache fallback 和 JSON/TUI 状态都必须复用同一套结构化模型，不能在命令层、TUI 或测试夹具里各自补一份判断。
 - 每个阶段都必须补齐对应行为测试，并在阶段测试和阶段验收都通过后再标记完成。
 - 文件清单是起始范围；实现时如果发现同一职责在其它文件中，也要同步调整，并在 PR/提交说明里补充。
-- 本期删除 CLI embedded catalog 的正式分发语义。为了过渡可以保留构建 staging 产物，但不能把它作为 `@yiliang/aw` tarball 的插件兜底。
+- 本期删除 CLI embedded catalog 的正式分发语义。为了过渡可以保留构建 staging 产物，但不能把它作为 `@lesliechan721/aw` tarball 的插件兜底。
 - Catalog 历史记录、artifact digest、manifest digest 和 sidecar/full manifest 一致性是发布与运行时的版本真值；npm metadata 只能用于 dist-tag、tarball URL、npm integrity 等分发信息。
 - 前置 TUI 返工已落地的严格 SemVer、SemVer 驱动 `可升级`、`status --verbose`、显式平台选择、SkillTrigger 内建配置和既有 JSON schema version 视为现有基线；本计划只做回归校准和远程 catalog 扩展，不重新实现这些能力。
 - 公开 `--platform` 仍只有 `codex | claude | both`；catalog selector 不能恢复 `auto`，也不能改变写命令缺少真实 target 时必须在写入前失败的合同。
@@ -186,7 +186,7 @@ graph TD
 
 ## 阶段 3：Catalog artifact、sidecar/full 包和发布门禁
 
-目标：生成独立的 `@yiliang/aw-plugins-manifest` 和 `@yiliang/aw-plugins` 产物，并在本地发布门禁中阻断不合法 catalog。
+目标：生成独立的 `@lesliechan721/aw-plugins-manifest` 和 `@lesliechan721/aw-plugins` 产物，并在本地发布门禁中阻断不合法 catalog。
 
 主要文件：
 
@@ -264,8 +264,8 @@ graph TD
 
 - [x] 定义 catalog selector：默认 channel、显式 dist-tag、显式 exact catalog version，且 dist-tag 与 exact version 互斥。
 - [x] 根据 CLI version 类型选择默认 channel：stable CLI 默认 `latest`，prerelease / beta CLI 默认 `beta`。
-- [x] 先下载并校验 `@yiliang/aw-plugins-manifest` tarball integrity，再读取固定路径 `catalog-manifest.json`。
-- [x] 只有 sidecar manifest 表明目标 catalog 兼容当前 CLI 时，才下载或使用同版本 `@yiliang/aw-plugins`。
+- [x] 先下载并校验 `@lesliechan721/aw-plugins-manifest` tarball integrity，再读取固定路径 `catalog-manifest.json`。
+- [x] 只有 sidecar manifest 表明目标 catalog 兼容当前 CLI 时，才下载或使用同版本 `@lesliechan721/aw-plugins`。
 - [x] latest / beta 目标 catalog 不兼容时，通过同一 sidecar history 查询同轨道最新兼容 catalog package。
 - [x] 历史记录缺失、schema 不支持、非法或不可获取时返回 `catalogHistoryUnavailable`，不能使用 npm metadata 或本地 cache 绕过。
 - [x] 历史记录确认没有兼容 catalog 时返回 `awVersionTooLow`，不能被 cache fallback 推翻。
@@ -614,7 +614,7 @@ graph TD
 - [x] CLI version 仍由 `packages/cli/package.json` 表达，根目录 version 如继续镜像则只同步 CLI version。
 - [x] Catalog version 独立于 CLI version，由 sidecar/full catalog package 的相同 package version 表达。
 - [x] 拆分 `release:pack`、`release:publish:*`、Makefile 文案和入口，避免一个版本号隐式代表 CLI 与 catalog。
-- [x] CLI-only 发布只验证 `@yiliang/aw` 运行时代码、命令合同和 catalog fetch/cache 能力。
+- [x] CLI-only 发布只验证 `@lesliechan721/aw` 运行时代码、命令合同和 catalog fetch/cache 能力。
 - [x] Catalog-only 发布构建源码插件、生成 manifest、追加 history、打包 sidecar/full、执行发布门禁和 two-phase 发布。
 - [x] 组合发布入口分别接收或确定 CLI version 与 catalog version，默认先发布 CLI，再发布 catalog。
 - [x] CLI 发布成功但 catalog 发布失败时，组合入口不能报告整体成功，输出可重跑的 catalog 发布入口和两侧状态。

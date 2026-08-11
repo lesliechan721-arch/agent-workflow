@@ -43,13 +43,13 @@ const REQUIRED_OUTPUTS = [
   {
     path: 'packages/cli/plugins-dist/.catalog/sidecar/package.json',
     type: 'package',
-    packageName: '@yiliang/aw-plugins-manifest',
+    packageName: '@lesliechan721/aw-plugins-manifest',
   },
   { path: 'packages/cli/plugins-dist/.catalog/full/catalog-manifest.json', type: 'catalog' },
   {
     path: 'packages/cli/plugins-dist/.catalog/full/package.json',
     type: 'package',
-    packageName: '@yiliang/aw-plugins',
+    packageName: '@lesliechan721/aw-plugins',
   },
 ];
 
@@ -293,7 +293,7 @@ export function resolvePnpmInvocation(env = process.env) {
   }
   return {
     command: process.execPath,
-    args: [path.resolve(npmExecPath), '--filter', '@yiliang/aw', 'build'],
+    args: [path.resolve(npmExecPath), '--filter', '@lesliechan721/aw', 'build'],
   };
 }
 

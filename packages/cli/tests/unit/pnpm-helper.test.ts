@@ -22,7 +22,7 @@ describe('test pnpm helper', () => {
 
   it('runs the npm_execpath pnpm CLI through the current Node executable', () => {
     expect(createTestPnpmInvocation(
-      ['build', '--filter', '@yiliang/aw'],
+      ['build', '--filter', '@lesliechan721/aw'],
       '/workspace/node_modules/pnpm/bin/pnpm.cjs',
     )).toEqual({
       command: process.execPath,
@@ -30,7 +30,7 @@ describe('test pnpm helper', () => {
         '/workspace/node_modules/pnpm/bin/pnpm.cjs',
         'build',
         '--filter',
-        '@yiliang/aw',
+        '@lesliechan721/aw',
       ],
     });
   });

@@ -37,9 +37,9 @@ Catalog staging
           ↓ catalog pack / publish
 
 npm registry
-  @yiliang/aw
-  @yiliang/aw-plugins-manifest
-  @yiliang/aw-plugins
+  @lesliechan721/aw
+  @lesliechan721/aw-plugins-manifest
+  @lesliechan721/aw-plugins
 
           ↓ aw init / write command
 
@@ -53,7 +53,7 @@ Local runtime
 
 - 仓库源码层是插件作者维护的输入。
 - catalog staging 是生成物，不手工修改。
-- `@yiliang/aw-plugins-manifest` 是 sidecar；`@yiliang/aw-plugins` 是同版本 full catalog。
+- `@lesliechan721/aw-plugins-manifest` 是 sidecar；`@lesliechan721/aw-plugins` 是同版本 full catalog。
 - CLI version、catalog version 和 plugin version 是三套独立身份。
 - catalog manifest 使用 schema 2，只描述 current 单版本快照。它记录 catalog 最低 CLI 版本、sidecar/full package identity，以及每个 current plugin 的版本、最低 CLI 版本、`artifactDigest` 和 `manifestDigest`。
 - 发布门禁要求目标 channel 的 catalog version 单调不降低。同一 catalog version 的 sidecar/full 包已存在时，待发布 package 必须与 registry 中的 exact-version package 字节相同。

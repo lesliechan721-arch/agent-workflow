@@ -102,7 +102,7 @@ async function writeRepoPackageVersions(
   await fs.outputJson(
     path.join(repoRoot, 'packages', 'cli', 'package.json'),
     {
-      name: '@yiliang/aw',
+      name: '@lesliechan721/aw',
       version: versions.cliVersion,
     },
     { spaces: 2 },

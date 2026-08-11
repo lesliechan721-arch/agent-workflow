@@ -45,9 +45,9 @@
 
 ## 当前项目现状
 
-`/Users/LeslieChan/Desktop/yiliang/llm-agent` 是一个多项目目录。和这次调研最相关的是：
+`<workspace>/llm-agent` 是一个多项目目录。和这次调研最相关的是：
 
-- `/Users/LeslieChan/Desktop/yiliang/llm-agent/agent-workflows`
+- `<workspace>/llm-agent/agent-workflows`
 
 这个目录目前只有：
 

@@ -36,7 +36,7 @@ async function createRepo(): Promise<string> {
   await fs.writeFile(path.join(repoRoot, 'plugins', 'demo', 'SKILL.md'), 'initial\n');
   await fs.writeFile(
     path.join(repoRoot, 'packages', 'cli', 'package.json'),
-    JSON.stringify({ name: '@yiliang/aw', type: 'module', files: ['dist/'] }),
+    JSON.stringify({ name: '@lesliechan721/aw', type: 'module', files: ['dist/'] }),
   );
   const fakePnpmPath = path.join(repoRoot, 'tools', 'pnpm.cjs');
   await fs.writeFile(fakePnpmPath, '/* deterministic pnpm fixture */\n');
@@ -55,9 +55,9 @@ async function writeRequiredOutputs(repoRoot: string, generation = 1): Promise<v
     } else if (relativePath.endsWith('catalog-manifest.json')) {
       contents = `{"schemaVersion":1,"entries":[],"packages":{},"generation":${generation}}\n`;
     } else if (relativePath.endsWith('sidecar/package.json')) {
-      contents = `{"name":"@yiliang/aw-plugins-manifest","files":[],"generation":${generation}}\n`;
+      contents = `{"name":"@lesliechan721/aw-plugins-manifest","files":[],"generation":${generation}}\n`;
     } else if (relativePath.endsWith('full/package.json')) {
-      contents = `{"name":"@yiliang/aw-plugins","files":[],"generation":${generation}}\n`;
+      contents = `{"name":"@lesliechan721/aw-plugins","files":[],"generation":${generation}}\n`;
     }
     await fs.writeFile(outputPath, contents);
   }));
@@ -182,7 +182,7 @@ describe('build cache input and environment identity', () => {
   it('uses the Node executable with npm_execpath and fails fast without it', () => {
     expect(resolvePnpmInvocation({ npm_execpath: '/tmp/pnpm.cjs' })).toEqual({
       command: process.execPath,
-      args: [path.resolve('/tmp/pnpm.cjs'), '--filter', '@yiliang/aw', 'build'],
+      args: [path.resolve('/tmp/pnpm.cjs'), '--filter', '@lesliechan721/aw', 'build'],
     });
     expect(() => resolvePnpmInvocation({})).toThrow('npm_execpath is missing');
   });
@@ -256,7 +256,7 @@ describe('build cache input and environment identity', () => {
       build: async () => {
         await writeBuildOutputs(repoRoot);
         await fs.writeFile(packageJsonPath, JSON.stringify({
-          name: '@yiliang/aw',
+          name: '@lesliechan721/aw',
           type: 'module',
           version: '9.9.9',
           files: ['dist/', 'unexpected/'],
@@ -537,7 +537,7 @@ describe('build cache output binding', () => {
       __testBeforeFinalInputCheck: async () => {
         await fs.writeFile(
           path.join(repoRoot, 'packages', 'cli', 'package.json'),
-          JSON.stringify({ name: '@yiliang/aw', type: 'module', version: '9.9.9' }),
+          JSON.stringify({ name: '@lesliechan721/aw', type: 'module', version: '9.9.9' }),
         );
       },
     });
@@ -893,7 +893,7 @@ describe('build snapshots', () => {
       catalogOutputRoot: path.join(snapshot.root, 'packages', 'cli', 'plugins-dist'),
     });
     await expect(fs.readFile(path.join(snapshot.cliPackageRoot, 'package.json'), 'utf8'))
-      .resolves.toContain('@yiliang/aw');
+      .resolves.toContain('@lesliechan721/aw');
     const [sourcePackageStats, snapshotPackageStats] = await Promise.all([
       fs.stat(path.join(repoRoot, 'packages', 'cli', 'package.json')),
       fs.lstat(path.join(snapshot.cliPackageRoot, 'package.json')),
@@ -911,7 +911,7 @@ describe('build snapshots', () => {
     const canonicalPackagePath = path.join(repoRoot, 'packages', 'cli', 'package.json');
     const externalPackagePath = path.join(repoRoot, 'external-cli-package.json');
     const originalContents = JSON.stringify({
-      name: '@yiliang/aw',
+      name: '@lesliechan721/aw',
       type: 'module',
       version: '1.2.3',
       files: ['dist/'],
@@ -933,7 +933,7 @@ describe('build snapshots', () => {
       .rejects.toMatchObject({ code: 'ENOENT' });
 
     await fs.writeFile(externalPackagePath, JSON.stringify({
-      name: '@yiliang/aw',
+      name: '@lesliechan721/aw',
       version: '9.9.9',
       files: ['changed/'],
     }));
@@ -952,7 +952,7 @@ describe('build snapshots', () => {
         await fs.cp(source, target, options);
         if (source.endsWith(path.join('packages', 'cli', 'dist'))) {
           await fs.writeFile(packageJsonPath, JSON.stringify({
-            name: '@yiliang/aw',
+            name: '@lesliechan721/aw',
             type: 'module',
             version: '2.0.0',
             files: ['dist/', 'changed/'],

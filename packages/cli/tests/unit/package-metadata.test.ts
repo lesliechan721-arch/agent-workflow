@@ -54,8 +54,8 @@ describe('package metadata', () => {
     const rootScripts = rootPackageJson.scripts as Record<string, string>;
     const cliScripts = cliPackageJson.scripts as Record<string, string>;
 
-    expect(rootScripts.test).toBe('pnpm --filter @yiliang/aw test');
-    expect(rootScripts['test:unit']).toBe('pnpm --filter @yiliang/aw test:unit');
+    expect(rootScripts.test).toBe('pnpm --filter @lesliechan721/aw test');
+    expect(rootScripts['test:unit']).toBe('pnpm --filter @lesliechan721/aw test:unit');
     expect(rootScripts['release:verify:cli']).toMatch(
       /^pnpm test && pnpm test:perf:gate &&/,
     );

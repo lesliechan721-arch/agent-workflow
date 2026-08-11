@@ -31,8 +31,8 @@ export const CATALOG_STAGING_DIRNAME = '.catalog';
 export const CATALOG_MANIFEST_FILENAME = 'catalog-manifest.json';
 export const CATALOG_SIDECAR_DIRNAME = 'sidecar';
 export const CATALOG_FULL_DIRNAME = 'full';
-export const CATALOG_SIDECAR_PACKAGE_NAME = '@yiliang/aw-plugins-manifest';
-export const CATALOG_FULL_PACKAGE_NAME = '@yiliang/aw-plugins';
+export const CATALOG_SIDECAR_PACKAGE_NAME = '@lesliechan721/aw-plugins-manifest';
+export const CATALOG_FULL_PACKAGE_NAME = '@lesliechan721/aw-plugins';
 export const CATALOG_PACKAGE_METADATA_FIELD = 'awCatalog';
 
 export function getCatalogStagingRoot(rootDir: string): string {

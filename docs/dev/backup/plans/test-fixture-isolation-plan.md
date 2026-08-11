@@ -421,10 +421,10 @@ graph TD
 
 ## 最终回归
 
-- [x] `pnpm --filter @yiliang/aw exec vitest run tests/unit/test-isolation.test.ts tests/unit/path-fence.test.ts tests/unit/test-isolation-setup.test.ts`
-- [x] `pnpm --filter @yiliang/aw exec vitest run tests/unit/plugin-config.test.ts tests/unit/config-write.test.ts tests/unit/repair-command.test.ts`
-- [x] `pnpm --filter @yiliang/aw exec vitest run tests/unit/runtime.test.ts tests/unit/paths.test.ts tests/unit/marketplace.test.ts tests/unit/plugin-catalog.test.ts tests/unit/native-cli.test.ts tests/unit/codex-app-server-client.test.ts`
-- [x] `pnpm --filter @yiliang/aw exec vitest run tests/integration/runtime-env.test.ts tests/integration/cli-entry.test.ts`
+- [x] `pnpm --filter @lesliechan721/aw exec vitest run tests/unit/test-isolation.test.ts tests/unit/path-fence.test.ts tests/unit/test-isolation-setup.test.ts`
+- [x] `pnpm --filter @lesliechan721/aw exec vitest run tests/unit/plugin-config.test.ts tests/unit/config-write.test.ts tests/unit/repair-command.test.ts`
+- [x] `pnpm --filter @lesliechan721/aw exec vitest run tests/unit/runtime.test.ts tests/unit/paths.test.ts tests/unit/marketplace.test.ts tests/unit/plugin-catalog.test.ts tests/unit/native-cli.test.ts tests/unit/codex-app-server-client.test.ts`
+- [x] `pnpm --filter @lesliechan721/aw exec vitest run tests/integration/runtime-env.test.ts tests/integration/cli-entry.test.ts`
 - [x] `pnpm test:unit`
 - [x] `pnpm test:integration`
 - [x] `pnpm build`

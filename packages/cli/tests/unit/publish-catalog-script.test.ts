@@ -21,11 +21,11 @@ describe('publish-catalog script', () => {
         manifest: { catalogVersion: '9.0.0-beta.6', channel: 'beta' },
         packages: {
           sidecar: {
-            name: '@yiliang/aw-plugins-manifest',
+            name: '@lesliechan721/aw-plugins-manifest',
             version: '9.0.0-beta.6',
           },
           full: {
-            name: '@yiliang/aw-plugins',
+            name: '@lesliechan721/aw-plugins',
             version: '9.0.0-beta.6',
           },
         },
@@ -46,7 +46,7 @@ describe('publish-catalog script', () => {
 
     expect(log).toHaveBeenCalledOnce();
     expect(log).toHaveBeenCalledWith(
-      'Published catalog 9.0.0-beta.6 to beta (@yiliang/aw-plugins-manifest, @yiliang/aw-plugins).',
+      'Published catalog 9.0.0-beta.6 to beta (@lesliechan721/aw-plugins-manifest, @lesliechan721/aw-plugins).',
     );
     expect(log.mock.calls.flat().join('\n')).not.toContain('.release');
     expect(process.exitCode).not.toBe(1);

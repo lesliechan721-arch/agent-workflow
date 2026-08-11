@@ -439,8 +439,8 @@ context 结构建议：
 ```json
 {
   "scripts": {
-    "plugin:test": "pnpm --filter @yiliang/aw plugin:test --",
-    "test:smoke:plugin-scripts": "pnpm --filter @yiliang/aw test:smoke:plugin-scripts"
+    "plugin:test": "pnpm --filter @lesliechan721/aw plugin:test --",
+    "test:smoke:plugin-scripts": "pnpm --filter @lesliechan721/aw test:smoke:plugin-scripts"
   }
 }
 ```
@@ -609,7 +609,7 @@ pnpm plugin:test --all [--scope project|user] [--platform codex|claude|both|auto
 
 ### Phase 4：插件脚本测试 runner
 
-- 根 `package.json` 新增 `plugin:test` 脚本，委托到 `pnpm --filter @yiliang/aw plugin:test --`；另新增 opt-in 的 `test:smoke:plugin-scripts`，只用于真实 staging install / manifest build 回归，不进入根 `pnpm test`。
+- 根 `package.json` 新增 `plugin:test` 脚本，委托到 `pnpm --filter @lesliechan721/aw plugin:test --`；另新增 opt-in 的 `test:smoke:plugin-scripts`，只用于真实 staging install / manifest build 回归，不进入根 `pnpm test`。
 - `packages/cli/package.json` 新增 `plugin:test` 脚本：先运行 `tsc -p tsconfig.json` 编译 CLI 与 `scripts/**/*.ts`，再运行 `node dist/scripts/test-plugin-scripts.js`；这个脚本不能调用 `pnpm build` 或 `dist/scripts/bundle-plugins.js` 作为启动前置。另新增 `test:smoke:plugin-scripts`，通过 `vitest.smoke.config.ts` 运行 `tests/smoke/plugin-scripts-staging-smoke.test.ts`。
 - 新增 `packages/cli/scripts/test-plugin-scripts.ts`，作为 `plugin:test` 的唯一 runner 源码入口。它通过已编译 JS 模块复用 `readPluginManifest()`、`bundleLocalPlugin()` 和 `packages/cli/scripts/**` 下的 staging helper，不直接 import TS 源文件，也不 import `tests/helpers/**`。
 - 不修改 `packages/cli/src/index.ts`，不增加 `aw plugin test` 子命令。

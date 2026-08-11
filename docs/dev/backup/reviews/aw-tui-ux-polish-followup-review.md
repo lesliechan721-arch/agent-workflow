@@ -48,7 +48,7 @@
 
 ## 已运行测试
 
-- `pnpm --filter @yiliang/aw exec vitest run tests/unit/install-state-shared-runtime-owner.test.ts tests/unit/cli-entry.test.ts tests/unit/public-docs.test.ts tests/unit/diagnose-command.test.ts tests/unit/status-dependencies.test.ts`
+- `pnpm --filter @lesliechan721/aw exec vitest run tests/unit/install-state-shared-runtime-owner.test.ts tests/unit/cli-entry.test.ts tests/unit/public-docs.test.ts tests/unit/diagnose-command.test.ts tests/unit/status-dependencies.test.ts`
 
 结果：5 个测试文件全部通过，共 115 个用例通过。
 

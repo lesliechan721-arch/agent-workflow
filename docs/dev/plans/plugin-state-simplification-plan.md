@@ -601,7 +601,7 @@ graph TD
 
 测试验收：
 
-- [x] `pnpm --filter @yiliang/aw test:unit` 通过。
+- [x] `pnpm --filter @lesliechan721/aw test:unit` 通过。
 - [x] `pnpm test:integration` 通过。
 - [x] `pnpm test:smoke:build` 通过。
 - [x] `pnpm test:smoke:plugin-scripts` 通过。
@@ -716,7 +716,7 @@ graph TD
 
 ## 最终回归
 
-- [x] 运行 `pnpm --filter @yiliang/aw test:unit`。
+- [x] 运行 `pnpm --filter @lesliechan721/aw test:unit`。
 - [x] 运行 `pnpm test:integration`。
 - [x] 运行 `pnpm test:smoke:build`。
 - [x] 运行 `pnpm test:smoke:plugin-scripts`。

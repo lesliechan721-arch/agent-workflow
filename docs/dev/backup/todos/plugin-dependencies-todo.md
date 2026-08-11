@@ -111,7 +111,7 @@ TODO：
 
 验收记录：
 
-- 2026-05-06：已运行 `pnpm --filter @yiliang/aw exec vitest run tests/unit/plugin-dependency-fixtures.test.ts tests/unit/install-command.test.ts`，2 个 test files、9 个 tests 通过。
+- 2026-05-06：已运行 `pnpm --filter @lesliechan721/aw exec vitest run tests/unit/plugin-dependency-fixtures.test.ts tests/unit/install-command.test.ts`，2 个 test files、9 个 tests 通过。
 
 ## P1 manifest schema 与作者工具校验
 
@@ -160,7 +160,7 @@ TODO：
 
 验收记录：
 
-- 2026-05-06：已运行 `pnpm --filter @yiliang/aw exec vitest run tests/unit/plugin-dependency-fixtures.test.ts tests/unit/install-command.test.ts tests/unit/manifest.test.ts tests/unit/manifest-coverage.test.ts tests/unit/generators.test.ts tests/unit/bundle-layout.test.ts tests/integration/authoring-tools.test.ts tests/unit/installed-ledger.test.ts tests/unit/local-marketplace.test.ts tests/unit/plugin-dependency-graph.test.ts`，10 个 test files、130 个 tests 通过。
+- 2026-05-06：已运行 `pnpm --filter @lesliechan721/aw exec vitest run tests/unit/plugin-dependency-fixtures.test.ts tests/unit/install-command.test.ts tests/unit/manifest.test.ts tests/unit/manifest-coverage.test.ts tests/unit/generators.test.ts tests/unit/bundle-layout.test.ts tests/integration/authoring-tools.test.ts tests/unit/installed-ledger.test.ts tests/unit/local-marketplace.test.ts tests/unit/plugin-dependency-graph.test.ts`，10 个 test files、130 个 tests 通过。
 - 2026-05-06：已运行 `pnpm build`，通过。
 - 2026-05-06：已运行 `pnpm test:smoke:build`，`tests/smoke/build-smoke.test.ts` 5 个 tests 通过。
 
@@ -207,7 +207,7 @@ TODO：
 
 验收记录：
 
-- 2026-05-06：已运行 `pnpm --filter @yiliang/aw exec vitest run tests/unit/plugin-dependency-fixtures.test.ts tests/unit/install-command.test.ts tests/unit/manifest.test.ts tests/unit/manifest-coverage.test.ts tests/unit/generators.test.ts tests/unit/bundle-layout.test.ts tests/integration/authoring-tools.test.ts tests/unit/installed-ledger.test.ts tests/unit/local-marketplace.test.ts tests/unit/plugin-dependency-graph.test.ts`，10 个 test files、130 个 tests 通过。
+- 2026-05-06：已运行 `pnpm --filter @lesliechan721/aw exec vitest run tests/unit/plugin-dependency-fixtures.test.ts tests/unit/install-command.test.ts tests/unit/manifest.test.ts tests/unit/manifest-coverage.test.ts tests/unit/generators.test.ts tests/unit/bundle-layout.test.ts tests/integration/authoring-tools.test.ts tests/unit/installed-ledger.test.ts tests/unit/local-marketplace.test.ts tests/unit/plugin-dependency-graph.test.ts`，10 个 test files、130 个 tests 通过。
 
 ## P3 统一 dependency planner
 
@@ -265,7 +265,7 @@ TODO：
 
 验收记录：
 
-- 2026-05-06：已运行 `pnpm --filter @yiliang/aw exec vitest run tests/unit/plugin-dependency-fixtures.test.ts tests/unit/install-command.test.ts tests/unit/manifest.test.ts tests/unit/manifest-coverage.test.ts tests/unit/generators.test.ts tests/unit/bundle-layout.test.ts tests/integration/authoring-tools.test.ts tests/unit/installed-ledger.test.ts tests/unit/local-marketplace.test.ts tests/unit/plugin-dependency-graph.test.ts tests/unit/plugin-dependency-planner.test.ts`，11 个 test files、141 个 tests 通过。
+- 2026-05-06：已运行 `pnpm --filter @lesliechan721/aw exec vitest run tests/unit/plugin-dependency-fixtures.test.ts tests/unit/install-command.test.ts tests/unit/manifest.test.ts tests/unit/manifest-coverage.test.ts tests/unit/generators.test.ts tests/unit/bundle-layout.test.ts tests/integration/authoring-tools.test.ts tests/unit/installed-ledger.test.ts tests/unit/local-marketplace.test.ts tests/unit/plugin-dependency-graph.test.ts tests/unit/plugin-dependency-planner.test.ts`，11 个 test files、141 个 tests 通过。
 - 2026-05-06：已运行 `pnpm build`，通过。
 
 ## P4 graph write executor 与 install 接入
@@ -319,7 +319,7 @@ TODO：
 
 验收记录：
 
-- 2026-05-06：已运行 `pnpm --filter @yiliang/aw exec vitest run tests/unit/install-command.test.ts tests/unit/uninstall-command.test.ts tests/unit/status-dependencies.test.ts tests/unit/adapter-status.test.ts tests/unit/console-model.test.ts tests/unit/plugin-dependency-planner.test.ts tests/unit/plugin-dependency-graph.test.ts tests/unit/plugin-dependency-fixtures.test.ts tests/unit/local-marketplace.test.ts tests/integration/cli.test.ts tests/integration/discovery.test.ts`，11 个 test files、153 个 tests 通过。
+- 2026-05-06：已运行 `pnpm --filter @lesliechan721/aw exec vitest run tests/unit/install-command.test.ts tests/unit/uninstall-command.test.ts tests/unit/status-dependencies.test.ts tests/unit/adapter-status.test.ts tests/unit/console-model.test.ts tests/unit/plugin-dependency-planner.test.ts tests/unit/plugin-dependency-graph.test.ts tests/unit/plugin-dependency-fixtures.test.ts tests/unit/local-marketplace.test.ts tests/integration/cli.test.ts tests/integration/discovery.test.ts`，11 个 test files、153 个 tests 通过。
 - 2026-05-06：已运行 `pnpm build`，通过。
 
 ## P5 upgrade 接入
@@ -366,7 +366,7 @@ TODO：
 
 验收记录：
 
-- 2026-05-06：已运行 `pnpm --filter @yiliang/aw exec vitest run tests/unit/upgrade-command.test.ts tests/integration/upgrade-command.test.ts`，2 个 test files、21 个 tests 通过。
+- 2026-05-06：已运行 `pnpm --filter @lesliechan721/aw exec vitest run tests/unit/upgrade-command.test.ts tests/integration/upgrade-command.test.ts`，2 个 test files、21 个 tests 通过。
 - 2026-05-06：已运行 `pnpm build`，通过。
 
 ## P6 uninstall 与自动清理接入
@@ -411,7 +411,7 @@ TODO：
 
 验收记录：
 
-- 2026-05-06：已运行 `pnpm --filter @yiliang/aw exec vitest run tests/unit/install-command.test.ts tests/unit/uninstall-command.test.ts tests/unit/status-dependencies.test.ts tests/unit/adapter-status.test.ts tests/unit/console-model.test.ts tests/unit/plugin-dependency-planner.test.ts tests/unit/plugin-dependency-graph.test.ts tests/unit/plugin-dependency-fixtures.test.ts tests/unit/local-marketplace.test.ts tests/integration/cli.test.ts tests/integration/discovery.test.ts`，11 个 test files、153 个 tests 通过。
+- 2026-05-06：已运行 `pnpm --filter @lesliechan721/aw exec vitest run tests/unit/install-command.test.ts tests/unit/uninstall-command.test.ts tests/unit/status-dependencies.test.ts tests/unit/adapter-status.test.ts tests/unit/console-model.test.ts tests/unit/plugin-dependency-planner.test.ts tests/unit/plugin-dependency-graph.test.ts tests/unit/plugin-dependency-fixtures.test.ts tests/unit/local-marketplace.test.ts tests/integration/cli.test.ts tests/integration/discovery.test.ts`，11 个 test files、153 个 tests 通过。
 - 2026-05-06：已运行 `pnpm build`，通过。
 
 ## P7 status、discovery 与控制台投影
@@ -465,7 +465,7 @@ TODO：
 
 验收记录：
 
-- 2026-05-06：已运行 `pnpm --filter @yiliang/aw exec vitest run tests/unit/install-command.test.ts tests/unit/uninstall-command.test.ts tests/unit/status-dependencies.test.ts tests/unit/adapter-status.test.ts tests/unit/console-model.test.ts tests/unit/plugin-dependency-planner.test.ts tests/unit/plugin-dependency-graph.test.ts tests/unit/plugin-dependency-fixtures.test.ts tests/unit/local-marketplace.test.ts tests/integration/cli.test.ts tests/integration/discovery.test.ts`，11 个 test files、153 个 tests 通过。
+- 2026-05-06：已运行 `pnpm --filter @lesliechan721/aw exec vitest run tests/unit/install-command.test.ts tests/unit/uninstall-command.test.ts tests/unit/status-dependencies.test.ts tests/unit/adapter-status.test.ts tests/unit/console-model.test.ts tests/unit/plugin-dependency-planner.test.ts tests/unit/plugin-dependency-graph.test.ts tests/unit/plugin-dependency-fixtures.test.ts tests/unit/local-marketplace.test.ts tests/integration/cli.test.ts tests/integration/discovery.test.ts`，11 个 test files、153 个 tests 通过。
 - 2026-05-06：已运行 `pnpm build`，通过。
 
 ## P8 文档、作者技能、示例与输出合同收口
@@ -518,8 +518,8 @@ TODO：
 
 验收记录：
 
-- 2026-05-06：已运行 `pnpm --filter @yiliang/aw exec vitest run tests/unit/command-receipt.test.ts tests/integration/cli-entry-json-harness.test.ts tests/unit/cli-entry.test.ts`，3 个 test files、55 个 tests 通过。
-- 2026-05-06：已运行 `pnpm --filter @yiliang/aw exec vitest run tests/unit/install-command.test.ts tests/unit/upgrade-command.test.ts tests/unit/uninstall-command.test.ts`，3 个 test files、31 个 tests 通过。
+- 2026-05-06：已运行 `pnpm --filter @lesliechan721/aw exec vitest run tests/unit/command-receipt.test.ts tests/integration/cli-entry-json-harness.test.ts tests/unit/cli-entry.test.ts`，3 个 test files、55 个 tests 通过。
+- 2026-05-06：已运行 `pnpm --filter @lesliechan721/aw exec vitest run tests/unit/install-command.test.ts tests/unit/upgrade-command.test.ts tests/unit/uninstall-command.test.ts`，3 个 test files、31 个 tests 通过。
 - 2026-05-06：已运行 `pnpm build`，通过。
 
 ## P9 最终集成验证
@@ -569,7 +569,7 @@ pnpm test:smoke:build
 
 验收记录：
 
-- 2026-05-06：已运行依赖相关最小验收：`pnpm --filter @yiliang/aw exec vitest run tests/unit/upgrade-command.test.ts tests/integration/upgrade-command.test.ts`、`pnpm --filter @yiliang/aw exec vitest run tests/unit/command-receipt.test.ts tests/integration/cli-entry-json-harness.test.ts tests/unit/cli-entry.test.ts`、`pnpm --filter @yiliang/aw exec vitest run tests/unit/install-command.test.ts tests/unit/upgrade-command.test.ts tests/unit/uninstall-command.test.ts`，均通过。
+- 2026-05-06：已运行依赖相关最小验收：`pnpm --filter @lesliechan721/aw exec vitest run tests/unit/upgrade-command.test.ts tests/integration/upgrade-command.test.ts`、`pnpm --filter @lesliechan721/aw exec vitest run tests/unit/command-receipt.test.ts tests/integration/cli-entry-json-harness.test.ts tests/unit/cli-entry.test.ts`、`pnpm --filter @lesliechan721/aw exec vitest run tests/unit/install-command.test.ts tests/unit/upgrade-command.test.ts tests/unit/uninstall-command.test.ts`，均通过。
 - 2026-05-06：已运行 `pnpm test:unit`，56 个 test files、565 个 tests 通过。
 - 2026-05-06：已运行 `pnpm test:integration`，15 个 test files、231 个 tests 通过。
 - 2026-05-06：已运行 `pnpm test:smoke:build`，`tests/smoke/build-smoke.test.ts` 5 个 tests 通过。

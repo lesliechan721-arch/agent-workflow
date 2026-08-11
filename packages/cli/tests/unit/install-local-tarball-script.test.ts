@@ -23,8 +23,8 @@ afterEach(async () => {
 describe('install-local-tarball script', () => {
   it('installs the tarball returned by packCli even when an older tarball has newer mtime', async () => {
     const tarballDirectory = await createTempDirectory();
-    const packedTarballPath = path.join(tarballDirectory, 'yiliang-aw-current.tgz');
-    const oldTarballPath = path.join(tarballDirectory, 'yiliang-aw-old.tgz');
+    const packedTarballPath = path.join(tarballDirectory, 'lesliechan721-aw-current.tgz');
+    const oldTarballPath = path.join(tarballDirectory, 'lesliechan721-aw-old.tgz');
     await Promise.all([
       fs.writeFile(packedTarballPath, 'current\n'),
       fs.writeFile(oldTarballPath, 'old\n'),

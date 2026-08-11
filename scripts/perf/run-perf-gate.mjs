@@ -81,7 +81,7 @@ export function assertExpectedPerfSummaries(output) {
 export async function runPerfGate() {
   const performanceResult = await runChild('performance Vitest', [
     '--filter',
-    '@yiliang/aw',
+    '@lesliechan721/aw',
     'exec',
     'vitest',
     'run',
@@ -93,7 +93,7 @@ export async function runPerfGate() {
   const fastUnitStartedAt = performance.now();
   await runChild('fast unit lane', [
     '--filter',
-    '@yiliang/aw',
+    '@lesliechan721/aw',
     'run',
     'test:unit:fast',
   ], FAST_UNIT_HARD_TIMEOUT_MS);

@@ -74,8 +74,8 @@
 执行命令：
 
 - `rg` / `sed` / `nl`：通读计划、spec、实现、测试和现有 review 报告
-- `pnpm --filter @yiliang/aw exec vitest run tests/unit/plugin-dependency-planner.test.ts tests/unit/uninstall-command.test.ts tests/unit/upgrade-command.test.ts`
-- `pnpm --filter @yiliang/aw exec vitest run tests/integration/upgrade-command.test.ts`
+- `pnpm --filter @lesliechan721/aw exec vitest run tests/unit/plugin-dependency-planner.test.ts tests/unit/uninstall-command.test.ts tests/unit/upgrade-command.test.ts`
+- `pnpm --filter @lesliechan721/aw exec vitest run tests/integration/upgrade-command.test.ts`
 - `pnpm test:smoke:build`
 
 验证结果：

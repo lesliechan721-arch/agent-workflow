@@ -90,7 +90,7 @@ post-check 失败时，命令会继续保留并刷新 recovery breadcrumb，而�
 我本轮额外复跑了这条定向命令：
 
 ```bash
-pnpm --filter @yiliang/aw exec vitest run \
+pnpm --filter @lesliechan721/aw exec vitest run \
   tests/unit/codex-native-state.test.ts \
   tests/unit/uninstall-command.test.ts \
   tests/unit/codex-app-server-client.test.ts \

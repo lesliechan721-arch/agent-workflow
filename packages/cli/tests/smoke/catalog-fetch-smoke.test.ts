@@ -106,7 +106,7 @@ function createFakeCatalogPackageSource(options: {
     },
     downloadArchive: async (identity: { packageName: string; version: string }) => {
       options.operations.push(`download:${identity.packageName}:${identity.version}`);
-      const registry = identity.packageName === '@yiliang/aw-plugins-manifest'
+      const registry = identity.packageName === '@lesliechan721/aw-plugins-manifest'
         ? options.manifestPackages
         : options.fullPackages;
       const record = registry[packageKey(identity.packageName, identity.version)];
@@ -245,13 +245,13 @@ describe('catalog fetch smoke', () => {
         [stagedManifest.channel]: stagedManifest.catalogVersion,
       },
       manifestPackages: {
-        [packageKey('@yiliang/aw-plugins-manifest', stagedManifest.catalogVersion)]: {
+        [packageKey('@lesliechan721/aw-plugins-manifest', stagedManifest.catalogVersion)]: {
           rootDir: path.join(snapshot.catalogOutputRoot, '.catalog', 'sidecar'),
           manifest: stagedManifest as Record<string, unknown>,
         },
       },
       fullPackages: {
-        [packageKey('@yiliang/aw-plugins', stagedManifest.catalogVersion)]: fullRecord,
+        [packageKey('@lesliechan721/aw-plugins', stagedManifest.catalogVersion)]: fullRecord,
       },
       operations,
     });
@@ -273,10 +273,10 @@ describe('catalog fetch smoke', () => {
       },
     });
     expect(operations).toEqual([
-      `identity:@yiliang/aw-plugins-manifest:${stagedManifest.channel}`,
-      `download:@yiliang/aw-plugins-manifest:${stagedManifest.catalogVersion}`,
-      `identity:@yiliang/aw-plugins:${stagedManifest.catalogVersion}`,
-      `download:@yiliang/aw-plugins:${stagedManifest.catalogVersion}`,
+      `identity:@lesliechan721/aw-plugins-manifest:${stagedManifest.channel}`,
+      `download:@lesliechan721/aw-plugins-manifest:${stagedManifest.catalogVersion}`,
+      `identity:@lesliechan721/aw-plugins:${stagedManifest.catalogVersion}`,
+      `download:@lesliechan721/aw-plugins:${stagedManifest.catalogVersion}`,
     ]);
 
     operations.length = 0;
@@ -293,9 +293,9 @@ describe('catalog fetch smoke', () => {
     });
     expect(cachedResolution.remoteFailure).toBeUndefined();
     expect(operations).toEqual([
-      `identity:@yiliang/aw-plugins-manifest:${stagedManifest.channel}`,
-      `download:@yiliang/aw-plugins-manifest:${stagedManifest.catalogVersion}`,
-      `identity:@yiliang/aw-plugins:${stagedManifest.catalogVersion}`,
+      `identity:@lesliechan721/aw-plugins-manifest:${stagedManifest.channel}`,
+      `download:@lesliechan721/aw-plugins-manifest:${stagedManifest.catalogVersion}`,
+      `identity:@lesliechan721/aw-plugins:${stagedManifest.catalogVersion}`,
     ]);
   });
 
@@ -329,7 +329,7 @@ describe('catalog fetch smoke', () => {
         latest: '1.5.0',
       },
       manifestPackages: {
-        [packageKey('@yiliang/aw-plugins-manifest', '1.5.0')]: {
+        [packageKey('@lesliechan721/aw-plugins-manifest', '1.5.0')]: {
           rootDir: blocked.sidecarRoot,
           manifest: blocked.manifest as Record<string, unknown>,
         },
@@ -352,8 +352,8 @@ describe('catalog fetch smoke', () => {
       },
     });
     expect(operations).toEqual([
-      'identity:@yiliang/aw-plugins-manifest:latest',
-      'download:@yiliang/aw-plugins-manifest:1.5.0',
+      'identity:@lesliechan721/aw-plugins-manifest:latest',
+      'download:@lesliechan721/aw-plugins-manifest:1.5.0',
     ]);
   });
 });

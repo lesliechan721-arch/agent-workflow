@@ -48,12 +48,12 @@ function createCatalogManifestFixture() {
     },
     packages: {
       sidecar: {
-        name: '@yiliang/aw-plugins-manifest',
+        name: '@lesliechan721/aw-plugins-manifest',
         version: '2.0.0',
         channel: 'latest',
       },
       full: {
-        name: '@yiliang/aw-plugins',
+        name: '@lesliechan721/aw-plugins',
         version: '2.0.0',
         channel: 'latest',
         manifestPath: './catalog-manifest.json',
@@ -77,7 +77,7 @@ async function createRealCatalogArchive(manifestText: string | null) {
   return {
     archiveBytes,
     identity: {
-      packageName: '@yiliang/aw-plugins',
+      packageName: '@lesliechan721/aw-plugins',
       version: '2.0.0',
       integrity: `sha512-${crypto.createHash('sha512').update(archiveBytes).digest('base64')}`,
       tarballUrl: 'https://registry.example.test/catalog.tgz',
@@ -242,7 +242,7 @@ describe('registry catalog package identity errors', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     await expect(resolveCatalogPackageIdentityByVersion(
-      '@yiliang/aw-plugins',
+      '@lesliechan721/aw-plugins',
       '2.0.0',
       registryEnv,
     )).rejects.toThrow(`HTTP ${status} ${statusText}`);
@@ -276,7 +276,7 @@ describe('registry catalog package identity errors', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     await expect(resolveCatalogPackageIdentityByVersion(
-      '@yiliang/aw-plugins',
+      '@lesliechan721/aw-plugins',
       '2.0.0',
       registryEnv,
     )).resolves.toMatchObject({ version: '2.0.0' });
@@ -300,7 +300,7 @@ describe('registry catalog package identity errors', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     await expect(resolveCatalogPackageIdentityByVersion(
-      '@yiliang/aw-plugins',
+      '@lesliechan721/aw-plugins',
       '2.0.0',
       registryEnv,
     )).resolves.toMatchObject({ version: '2.0.0' });
@@ -330,7 +330,7 @@ describe('registry catalog package identity errors', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     await expect(resolveCatalogPackageIdentityByVersion(
-      '@yiliang/aw-plugins',
+      '@lesliechan721/aw-plugins',
       '2.0.0',
       registryEnv,
     )).resolves.toMatchObject({ version: '2.0.0' });
@@ -342,7 +342,7 @@ describe('registry catalog package identity errors', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     await expect(resolveCatalogPackageIdentityByVersion(
-      '@yiliang/aw-plugins',
+      '@lesliechan721/aw-plugins',
       '2.0.0',
       registryEnv,
     )).rejects.toBeInstanceOf(SyntaxError);
@@ -358,7 +358,7 @@ describe('registry catalog package identity errors', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     await expect(resolveCatalogPackageIdentityByVersion(
-      '@yiliang/aw-plugins',
+      '@lesliechan721/aw-plugins',
       '2.0.0',
       registryEnv,
       controller.signal,
@@ -380,7 +380,7 @@ describe('registry catalog package identity errors', () => {
     });
 
     await expect(resolveCatalogPackageIdentityByVersion(
-      '@yiliang/aw-plugins',
+      '@lesliechan721/aw-plugins',
       '2.0.0',
       {
         ...registryEnv,
@@ -410,7 +410,7 @@ describe('registry catalog package identity errors', () => {
     });
 
     await expect(resolveCatalogPackageIdentityByVersion(
-      '@yiliang/aw-plugins',
+      '@lesliechan721/aw-plugins',
       '2.0.0',
       {
         ...registryEnv,
@@ -439,7 +439,7 @@ describe('registry catalog package identity errors', () => {
     });
 
     await expect(resolveCatalogPackageIdentityByVersion(
-      '@yiliang/aw-plugins',
+      '@lesliechan721/aw-plugins',
       '2.0.0',
       {
         ...registryEnv,
@@ -479,7 +479,7 @@ describe('registry catalog package identity errors', () => {
 
     try {
       await expect(resolveCatalogPackageIdentityByVersion(
-        '@yiliang/aw-plugins',
+        '@lesliechan721/aw-plugins',
         '2.0.0',
         {
           ...registryEnv,
@@ -529,7 +529,7 @@ describe('registry catalog package identity errors', () => {
       process.chdir(childDir);
 
       await expect(resolveCatalogPackageIdentityByVersion(
-        '@yiliang/aw-plugins',
+        '@lesliechan721/aw-plugins',
         '2.0.0',
         {
           ...registryEnv,
@@ -572,7 +572,7 @@ describe('registry catalog package identity errors', () => {
       process.chdir(childDir);
 
       await expect(resolveCatalogPackageIdentityByVersion(
-        '@yiliang/aw-plugins',
+        '@lesliechan721/aw-plugins',
         '2.0.0',
         {
           ...registryEnv,
@@ -602,7 +602,7 @@ describe('registry catalog package identity errors', () => {
     });
 
     await expect(resolveCatalogPackageIdentityByVersion(
-      '@yiliang/aw-plugins',
+      '@lesliechan721/aw-plugins',
       '2.0.0',
       {
         ...registryEnv,
@@ -631,7 +631,7 @@ describe('registry catalog package identity errors', () => {
     });
 
     await expect(resolveCatalogPackageIdentityByVersion(
-      '@yiliang/aw-plugins',
+      '@lesliechan721/aw-plugins',
       '2.0.0',
       {
         ...registryEnv,
@@ -660,7 +660,7 @@ describe('registry catalog package identity errors', () => {
     });
 
     await expect(resolveCatalogPackageIdentityByVersion(
-      '@yiliang/aw-plugins',
+      '@lesliechan721/aw-plugins',
       '2.0.0',
       {
         ...registryEnv,
@@ -689,7 +689,7 @@ describe('registry catalog package identity errors', () => {
     });
 
     await expect(resolveCatalogPackageIdentityByVersion(
-      '@yiliang/aw-plugins',
+      '@lesliechan721/aw-plugins',
       '2.0.0',
       {
         ...registryEnv,
@@ -719,7 +719,7 @@ describe('registry catalog package identity errors', () => {
     });
 
     await expect(resolveCatalogPackageIdentityByVersion(
-      '@yiliang/aw-plugins',
+      '@lesliechan721/aw-plugins',
       '2.0.0',
       {
         AW_NPM_REGISTRY_URL: 'https://registry.example.test/team/',
@@ -745,10 +745,10 @@ describe('registry catalog package identity errors', () => {
     });
 
     await expect(resolveCatalogPackageIdentityByVersion(
-      '@yiliang/aw-plugins',
+      '@lesliechan721/aw-plugins',
       '2.0.0',
       registryEnv,
-    )).rejects.toThrow('Registry version 2.0.0 is missing for @yiliang/aw-plugins.');
+    )).rejects.toThrow('Registry version 2.0.0 is missing for @lesliechan721/aw-plugins.');
     expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledTimes(1);
   });
 
@@ -764,10 +764,10 @@ describe('registry catalog package identity errors', () => {
     });
 
     await expect(resolveCatalogPackageIdentityByVersion(
-      '@yiliang/aw-plugins',
+      '@lesliechan721/aw-plugins',
       '2.0.0',
       registryEnv,
-    )).rejects.toThrow('Registry metadata for @yiliang/aw-plugins@2.0.0 is missing dist.integrity or dist.tarball.');
+    )).rejects.toThrow('Registry metadata for @lesliechan721/aw-plugins@2.0.0 is missing dist.integrity or dist.tarball.');
   });
 
   it('treats a dist-tag pointing at missing version metadata as malformed history', async () => {
@@ -779,17 +779,17 @@ describe('registry catalog package identity errors', () => {
     });
 
     await expect(resolveCatalogPackageIdentityByDistTag(
-      '@yiliang/aw-plugins-manifest',
+      '@lesliechan721/aw-plugins-manifest',
       'latest',
       registryEnv,
-    )).rejects.toThrow('Registry version 2.0.0 is missing for @yiliang/aw-plugins-manifest.');
+    )).rejects.toThrow('Registry version 2.0.0 is missing for @lesliechan721/aw-plugins-manifest.');
   });
 });
 
 describe('registry catalog package archive retries and cancellation', () => {
   const archiveBytes = Buffer.from('synthetic npm archive');
   const archiveIdentity = {
-    packageName: '@yiliang/aw-plugins',
+    packageName: '@lesliechan721/aw-plugins',
     version: '2.0.0',
     integrity: `sha512-${crypto.createHash('sha512').update(archiveBytes).digest('base64')}`,
     tarballUrl: 'https://registry.example.test/catalog.tgz',

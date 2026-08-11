@@ -18,7 +18,7 @@ catalog source
 
 ## Current Catalog
 
-`@yiliang/aw-plugins-manifest` sidecar 提供 catalog identity、compatibility、entries 和 digest。`@yiliang/aw-plugins` full 包提供同版本当前 artifact。
+`@lesliechan721/aw-plugins-manifest` sidecar 提供 catalog identity、compatibility、entries 和 digest。`@lesliechan721/aw-plugins` full 包提供同版本当前 artifact。
 
 catalog manifest 使用 `schemaVersion: 2`，只包含 selector 当前指向的 catalog。resolver 先完整校验 schema 2，再检查 CLI 兼容性。channel catalog 不兼容时直接返回 `awVersionTooLow`；显式版本不兼容时返回 `explicitCatalogIncompatible`。两种情况都不解析其它 catalog，不下载 full 包，也不使用 cache fallback。
 

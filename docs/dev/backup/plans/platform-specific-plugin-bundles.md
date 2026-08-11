@@ -608,7 +608,7 @@ pnpm test:smoke:pack
 如果实现范围触及作者工具校验，再单独跑对应作者工具集成测试：
 
 ```bash
-pnpm --filter @yiliang/aw exec vitest run tests/integration/authoring-tools.test.ts
+pnpm --filter @lesliechan721/aw exec vitest run tests/integration/authoring-tools.test.ts
 ```
 
 ### 必须人工确认的产物

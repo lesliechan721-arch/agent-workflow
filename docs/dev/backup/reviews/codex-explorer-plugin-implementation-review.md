@@ -48,7 +48,7 @@
 
 我这次实际执行了这些测试：
 
-- `pnpm --filter @yiliang/aw exec vitest run tests/unit/artifact-plan.test.ts tests/unit/artifact-renderer.test.ts tests/unit/codex-project-safety.test.ts tests/unit/codex-adapter.test.ts tests/unit/adapter-status.test.ts tests/integration/codex-explore-plugin.test.ts tests/integration/authoring-tools.test.ts tests/integration/codex-static-extensions.test.ts tests/integration/discovery.test.ts`
+- `pnpm --filter @lesliechan721/aw exec vitest run tests/unit/artifact-plan.test.ts tests/unit/artifact-renderer.test.ts tests/unit/codex-project-safety.test.ts tests/unit/codex-adapter.test.ts tests/unit/adapter-status.test.ts tests/integration/codex-explore-plugin.test.ts tests/integration/authoring-tools.test.ts tests/integration/codex-static-extensions.test.ts tests/integration/discovery.test.ts`
 - `pnpm plugin:test codex-explore`
 - `pnpm test:smoke:build`
 - `pnpm test:smoke:plugin-scripts`

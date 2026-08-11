@@ -3,12 +3,12 @@
 ## 前置条件
 
 - Node.js `>= 20`
-- 全局安装 `@yiliang/aw`
+- 全局安装 `@lesliechan721/aw`
 - Claude 写入需要 Claude Code `>= 2.1.88`
 - Codex 写入需要 Codex `>= 0.145.0`
 
 ```bash
-npm install -g @yiliang/aw
+npm install -g @lesliechan721/aw
 aw init
 aw install git-commit -p both
 aw status
@@ -35,7 +35,7 @@ aw install git-commit -p both -s user
 
 ## Catalog 和 Cache
 
-`aw init` 先获取 `@yiliang/aw-plugins-manifest` sidecar，再获取同版本 `@yiliang/aw-plugins` full catalog，并校验 package identity、manifest digest 和 artifact digest。
+`aw init` 先获取 `@lesliechan721/aw-plugins-manifest` sidecar，再获取同版本 `@lesliechan721/aw-plugins` full catalog，并校验 package identity、manifest digest 和 artifact digest。
 
 catalog manifest 使用 `schemaVersion: 2`，只描述 selector 当前指向的 catalog。schema 1 和带 `history` 字段的 manifest 都不受支持。
 

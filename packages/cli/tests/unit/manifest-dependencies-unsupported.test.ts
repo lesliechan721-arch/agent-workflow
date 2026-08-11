@@ -26,9 +26,9 @@ describe('removed plugin dependencies capability', () => {
       channel: 'latest',
       compatibility: { aw: { minVersion: '1.0.0' } },
       packages: {
-        sidecar: { name: '@yiliang/aw-plugins-manifest', version: '1.0.0', channel: 'latest' },
+        sidecar: { name: '@lesliechan721/aw-plugins-manifest', version: '1.0.0', channel: 'latest' },
         full: {
-          name: '@yiliang/aw-plugins',
+          name: '@lesliechan721/aw-plugins',
           version: '1.0.0',
           channel: 'latest',
           manifestPath: './catalog-manifest.json',

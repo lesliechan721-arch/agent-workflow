@@ -61,7 +61,7 @@ code-review/
 
 ## 构建产物预览
 
-运行 `pnpm build` 后，两个平台的 staging/runtime bundle 内容不同。Codex 的 extensions 产物由写命令的 rebuild integration 生成。正式发布时，这些 bundle 进入 `@yiliang/aw-plugins` full catalog 包；`@yiliang/aw` CLI tarball 不再把它们作为 embedded catalog fallback 发布。
+运行 `pnpm build` 后，两个平台的 staging/runtime bundle 内容不同。Codex 的 extensions 产物由写命令的 rebuild integration 生成。正式发布时，这些 bundle 进入 `@lesliechan721/aw-plugins` full catalog 包；`@lesliechan721/aw` CLI tarball 不再把它们作为 embedded catalog fallback 发布。
 
 **Claude bundle（build 时写入）**：skills、.mcp.json、generated `commands/`、output-styles、hooks.json（公共 hook 渲染结果）、agents markdown、rules markdown、AW scripts/config bundle metadata
 

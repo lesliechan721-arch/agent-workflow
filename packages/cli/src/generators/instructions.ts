@@ -58,7 +58,7 @@ export function renderCodexInstructions(bundles: CodexInstructionBundle[]): stri
   const lines: string[] = [
     '# Agent Workflows',
     '',
-    '以下内容由 `@yiliang/aw` 从中立指令模型生成。',
+    '以下内容由 `@lesliechan721/aw` 从中立指令模型生成。',
   ];
 
   for (const bundle of populatedBundles) {

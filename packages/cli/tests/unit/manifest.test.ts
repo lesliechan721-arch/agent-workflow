@@ -118,12 +118,12 @@ function createCatalogManifestFixture() {
     },
     packages: {
       sidecar: {
-        name: '@yiliang/aw-plugins-manifest',
+        name: '@lesliechan721/aw-plugins-manifest',
         version: '1.2.3',
         channel: 'latest',
       },
       full: {
-        name: '@yiliang/aw-plugins',
+        name: '@lesliechan721/aw-plugins',
         version: '1.2.3',
         channel: 'latest',
         manifestPath: './catalog-manifest.json',

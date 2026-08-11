@@ -43,12 +43,12 @@ function createCatalogManifest(catalogVersion: string): Record<string, unknown> 
     },
     packages: {
       sidecar: {
-        name: '@yiliang/aw-plugins-manifest',
+        name: '@lesliechan721/aw-plugins-manifest',
         version: catalogVersion,
         channel: 'latest',
       },
       full: {
-        name: '@yiliang/aw-plugins',
+        name: '@lesliechan721/aw-plugins',
         version: catalogVersion,
         channel: 'latest',
         manifestPath: './catalog-manifest.json',
@@ -83,13 +83,13 @@ function createCatalogPackageSource(options: {
   const manifest = createCatalogManifest(options.catalogVersion);
   const manifestText = JSON.stringify(manifest, null, 2);
   const sidecarIdentity: CatalogPackageArchiveIdentity = {
-    packageName: '@yiliang/aw-plugins-manifest',
+    packageName: '@lesliechan721/aw-plugins-manifest',
     version: options.catalogVersion,
     integrity: `sha512-${options.label}-sidecar`,
     requestedDistTag: 'latest',
   };
   const fullIdentity: CatalogPackageArchiveIdentity = {
-    packageName: '@yiliang/aw-plugins',
+    packageName: '@lesliechan721/aw-plugins',
     version: options.catalogVersion,
     integrity: `sha512-${options.label}-full`,
   };
@@ -97,7 +97,7 @@ function createCatalogPackageSource(options: {
   return {
     resolveIdentityByDistTag: async (packageName, distTag) => {
       options.operations.push(`identity:${options.label}:${packageName}:${distTag}`);
-      if (packageName !== '@yiliang/aw-plugins-manifest' || distTag !== 'latest') {
+      if (packageName !== '@lesliechan721/aw-plugins-manifest' || distTag !== 'latest') {
         throw new Error(`unexpected dist-tag lookup for ${packageName}:${distTag}`);
       }
 
@@ -105,7 +105,7 @@ function createCatalogPackageSource(options: {
     },
     resolveIdentityByVersion: async (packageName, version) => {
       options.operations.push(`version:${options.label}:${packageName}:${version}`);
-      if (packageName !== '@yiliang/aw-plugins' || version !== options.catalogVersion) {
+      if (packageName !== '@lesliechan721/aw-plugins' || version !== options.catalogVersion) {
         throw new Error(`unexpected version lookup for ${packageName}:${version}`);
       }
 

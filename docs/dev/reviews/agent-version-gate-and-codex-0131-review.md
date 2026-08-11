@@ -22,7 +22,7 @@ Spec 的 19 条验收标准已经能追溯到计划中的阶段测试矩阵；�
 
 - 原问题：`packages/cli/tests/unit/codex-adapter.test.ts` 的 user native install/uninstall 用例仍以 app-server `plugin/install` / `plugin/uninstall` side effect 补写或删除 config/cache，和当前 Codex CLI 主链路不一致。
 - 修复结果：安装用例改为由 fake Codex CLI runner 物化 config/cache；卸载用例改为断言 `codex plugin remove`、`codex plugin list` 和 `codex plugin marketplace remove aw`，并去掉旧 app-server side effect。
-- 测试证据：`pnpm --filter @yiliang/aw exec vitest run tests/unit/codex-adapter.test.ts` 和完整 `pnpm test:unit` 均已通过。
+- 测试证据：`pnpm --filter @lesliechan721/aw exec vitest run tests/unit/codex-adapter.test.ts` 和完整 `pnpm test:unit` 均已通过。
 
 ## 验收追踪
 

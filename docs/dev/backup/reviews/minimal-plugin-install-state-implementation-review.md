@@ -42,8 +42,8 @@
 我实际复跑并通过了以下验证：
 
 - `pnpm build`
-- `pnpm --filter @yiliang/aw exec vitest run tests/unit/install-command.test.ts tests/unit/repair-command.test.ts tests/unit/install-state-status-projection.test.ts tests/unit/install-state-schema.test.ts tests/unit/config-write.test.ts tests/unit/install-state-project-boundary.test.ts tests/unit/uninstall-command.test.ts tests/unit/reinstall-command.test.ts tests/unit/diagnose-command.test.ts tests/unit/install-state-transactions.test.ts`
-- `pnpm --filter @yiliang/aw exec vitest run tests/integration/plugin-lifecycle-command.test.ts tests/integration/discovery.test.ts`
+- `pnpm --filter @lesliechan721/aw exec vitest run tests/unit/install-command.test.ts tests/unit/repair-command.test.ts tests/unit/install-state-status-projection.test.ts tests/unit/install-state-schema.test.ts tests/unit/config-write.test.ts tests/unit/install-state-project-boundary.test.ts tests/unit/uninstall-command.test.ts tests/unit/reinstall-command.test.ts tests/unit/diagnose-command.test.ts tests/unit/install-state-transactions.test.ts`
+- `pnpm --filter @lesliechan721/aw exec vitest run tests/integration/plugin-lifecycle-command.test.ts tests/integration/discovery.test.ts`
 - `pnpm test:smoke:build`
 
 按这次变更涉及的代码面来看，相关实现和回归覆盖已经收口，没有再看到上一轮那种“helper 已修好，但真实命令链路没有测到”的缺口。

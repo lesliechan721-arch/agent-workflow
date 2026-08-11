@@ -118,7 +118,7 @@ graph TD
 - [x] Unit：大小写、空格、短横线 token 归一化行为不变。
 - [x] Unit：`pluginSupportsPlatform()` 和共享 helper 结果一致。
 - [x] Unit：错误格式能稳定展示 `marketplace.policy.products=[CODEX]` 等文本。
-- [x] 运行相关 unit tests，例如 `pnpm --filter @yiliang/aw exec vitest run tests/unit/manifest.test.ts`。
+- [x] 运行相关 unit tests，例如 `pnpm --filter @lesliechan721/aw exec vitest run tests/unit/manifest.test.ts`。
 
 ## 阶段 2：Manifest 与 Build 冲突校验
 
@@ -171,7 +171,7 @@ graph TD
 - [x] Unit：`adapter-status.test.ts` 覆盖双平台插件的 Codex dynamic artifact 只进入 Codex capability/status surface。
 - [x] Unit：`codex-project-platform-gates.test.ts` 覆盖双平台插件携带 Codex dynamic artifact 时，project preflight 只在 Codex project 分支生效。
 - [x] Unit：`codex-project-installability.test.ts` 覆盖双平台插件携带 Codex dynamic artifact 时，repo-managed kinds 和 installability 只在 Codex project 分支生效。
-- [x] 运行相关 unit tests，例如 `pnpm --filter @yiliang/aw exec vitest run tests/unit/manifest.test.ts tests/unit/artifact-plan.test.ts tests/unit/adapter-status.test.ts tests/unit/codex-project-platform-gates.test.ts tests/unit/codex-project-installability.test.ts`。
+- [x] 运行相关 unit tests，例如 `pnpm --filter @lesliechan721/aw exec vitest run tests/unit/manifest.test.ts tests/unit/artifact-plan.test.ts tests/unit/adapter-status.test.ts tests/unit/codex-project-platform-gates.test.ts tests/unit/codex-project-installability.test.ts`。
 
 ## 阶段 3：`pnpm plugin:test` 平台选择
 
@@ -215,7 +215,7 @@ graph TD
 - [x] Integration：Claude-only 插件 `--platform both` fail fast。
 - [x] Integration：source manifest 与 staging manifest 的 `products` 不一致时，以 staging manifest 为准。
 - [x] Integration：校验失败不进入 `bundleLocalPlugin()`，也不会因为缺 runtime 文件才失败。
-- [x] 运行 `pnpm --filter @yiliang/aw exec vitest run tests/integration/plugin-test-runner.test.ts`。
+- [x] 运行 `pnpm --filter @lesliechan721/aw exec vitest run tests/integration/plugin-test-runner.test.ts`。
 
 ## 阶段 4：单插件 Bundle 平台裁剪
 
@@ -265,7 +265,7 @@ graph TD
 - [x] Unit：双平台插件保持双 manifest 与双 runtime 行为。
 - [x] Unit：`platformManifests` key 集合与支持平台一致。
 - [x] Unit：旧的 `result.claudeManifest` / `result.codexManifest` 调用全部迁移。
-- [x] 运行 `pnpm --filter @yiliang/aw exec vitest run tests/unit/generators.test.ts`。
+- [x] 运行 `pnpm --filter @lesliechan721/aw exec vitest run tests/unit/generators.test.ts`。
 
 ## 阶段 5：SlashCommands 按平台渲染
 
@@ -304,7 +304,7 @@ graph TD
 - [x] Unit：Claude-only 命令即使命中 Codex forbidden syntax，也不会因 Codex 校验失败。
 - [x] Unit：Codex-only 命令仍执行 Codex render/frontmatter/forbidden syntax 校验。
 - [x] Unit：`generators.test.ts` 覆盖 bundle 侧平台化 slash command 输出。
-- [x] 运行 `pnpm --filter @yiliang/aw exec vitest run tests/unit/slash-commands.test.ts tests/unit/generators.test.ts`。
+- [x] 运行 `pnpm --filter @lesliechan721/aw exec vitest run tests/unit/slash-commands.test.ts tests/unit/generators.test.ts`。
 
 ## 阶段 6：平台 Marketplace 过滤
 
@@ -341,7 +341,7 @@ graph TD
 - [x] Unit：build script 改写 staging manifest 后，平台 marketplace 按 staging manifest 过滤。
 - [x] Smoke：`build-smoke.test.ts` 覆盖平台 marketplace 过滤。
 - [x] Smoke：`pack-smoke.test.ts` 覆盖 tarball 内平台 marketplace 过滤。
-- [x] 运行 `pnpm --filter @yiliang/aw exec vitest run tests/unit/marketplace.test.ts tests/smoke/build-smoke.test.ts tests/smoke/pack-smoke.test.ts`。
+- [x] 运行 `pnpm --filter @lesliechan721/aw exec vitest run tests/unit/marketplace.test.ts tests/smoke/build-smoke.test.ts tests/smoke/pack-smoke.test.ts`。
 
 ## 阶段 7：Bundle Layout 校验
 
@@ -389,7 +389,7 @@ graph TD
 - [x] Unit：支持平台缺少 manifest 失败。
 - [x] Unit：marketplace entries 与支持平台集合不一致失败。
 - [x] Unit：`local-marketplace.test.ts` 覆盖刷新后 layout 校验。
-- [x] 运行 `pnpm --filter @yiliang/aw exec vitest run tests/unit/bundle-layout.test.ts tests/unit/local-marketplace.test.ts`。
+- [x] 运行 `pnpm --filter @lesliechan721/aw exec vitest run tests/unit/bundle-layout.test.ts tests/unit/local-marketplace.test.ts`。
 
 ## 阶段 8：安装、Status 与 Discovery 回归
 
@@ -539,7 +539,7 @@ graph TD
 - [x] Integration：`authoring-tools.test.ts` 覆盖 artifact target 平台校验。
 - [x] Docs：公开文档不再描述恒定双平台 platform manifest。
 - [x] Docs：作者技能参考与 CLI 的 `products` / bundle 裁剪 / `plugin:test` 语义一致。
-- [x] 运行 `pnpm --filter @yiliang/aw exec vitest run tests/integration/authoring-tools.test.ts`。
+- [x] 运行 `pnpm --filter @lesliechan721/aw exec vitest run tests/integration/authoring-tools.test.ts`。
 
 ## 阶段 11：验收与发布前验证
 
@@ -581,7 +581,7 @@ graph TD
 - [x] 执行 `pnpm test:smoke:build`。
 - [x] 执行 `pnpm test:smoke:plugin-scripts`。
 - [x] 执行 `pnpm test:smoke:pack`。
-- [x] 如果实现范围触及作者工具校验，执行 `pnpm --filter @yiliang/aw exec vitest run tests/integration/authoring-tools.test.ts`。
+- [x] 如果实现范围触及作者工具校验，执行 `pnpm --filter @lesliechan721/aw exec vitest run tests/integration/authoring-tools.test.ts`。
 
 ## 建议拆分
 

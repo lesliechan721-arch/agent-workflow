@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { packCli } from '../../../../scripts/release/common.mjs';
 
-const generatedTarballName = 'yiliang-aw-9.9.9.tgz';
+const generatedTarballName = 'lesliechan721-aw-9.9.9.tgz';
 const tempDirs: string[] = [];
 const originalEnvironment = {
   npmExecPath: process.env.npm_execpath,
@@ -88,8 +88,8 @@ describe('CLI release pack staging', () => {
     await expect(fs.stat(privatePackDirectory)).rejects.toMatchObject({ code: 'ENOENT' });
     await expect(fs.readdir(fixture.destination).then((entries) => entries.sort())).resolves.toEqual([
       'keep-me.tgz',
-      'notes.txt',
       generatedTarballName,
+      'notes.txt',
     ]);
   });
 

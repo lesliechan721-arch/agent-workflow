@@ -20,8 +20,8 @@ export const cliPackageRoot = path.join(repoRoot, 'packages', 'cli');
 export const cliDistRoot = path.join(cliPackageRoot, 'dist');
 export const defaultCatalogOutputRoot = path.join(cliPackageRoot, 'plugins-dist');
 export const catalogReleaseStagingRoot = path.join(releaseRoot, 'catalog-staging');
-export const sidecarCatalogPackageName = '@yiliang/aw-plugins-manifest';
-export const fullCatalogPackageName = '@yiliang/aw-plugins';
+export const sidecarCatalogPackageName = '@lesliechan721/aw-plugins-manifest';
+export const fullCatalogPackageName = '@lesliechan721/aw-plugins';
 
 const cachedCatalogModules = new Map();
 

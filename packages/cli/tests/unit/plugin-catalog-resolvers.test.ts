@@ -109,12 +109,12 @@ async function createValidCatalogPackage(options: {
     },
     packages: {
       sidecar: {
-        name: '@yiliang/aw-plugins-manifest',
+        name: '@lesliechan721/aw-plugins-manifest',
         version: options.catalogVersion,
         channel: options.channel,
       },
       full: {
-        name: '@yiliang/aw-plugins',
+        name: '@lesliechan721/aw-plugins',
         version: options.catalogVersion,
         channel: options.channel,
         manifestPath: './catalog-manifest.json',
@@ -147,12 +147,12 @@ function createMinimalCatalogManifest() {
     },
     packages: {
       sidecar: {
-        name: '@yiliang/aw-plugins-manifest',
+        name: '@lesliechan721/aw-plugins-manifest',
         version: '1.0.0',
         channel: 'latest',
       },
       full: {
-        name: '@yiliang/aw-plugins',
+        name: '@lesliechan721/aw-plugins',
         version: '1.0.0',
         channel: 'latest',
         manifestPath: './catalog-manifest.json',
@@ -215,11 +215,11 @@ function installRealRegistryFetch(options: {
   });
   const responses = new Map<string, Response>([
     [
-      `https://registry.example.test/${encodeURIComponent('@yiliang/aw-plugins-manifest')}`,
+      `https://registry.example.test/${encodeURIComponent('@lesliechan721/aw-plugins-manifest')}`,
       new Response(JSON.stringify(packageMetadata(options.sidecar)), { status: 200 }),
     ],
     [
-      `https://registry.example.test/${encodeURIComponent('@yiliang/aw-plugins')}`,
+      `https://registry.example.test/${encodeURIComponent('@lesliechan721/aw-plugins')}`,
       new Response(JSON.stringify(packageMetadata(options.full)), { status: 200 }),
     ],
     [options.sidecar.tarballUrl, new Response(options.sidecar.archiveBytes, { status: 200 })],
@@ -258,12 +258,12 @@ function createIncompatibleLatestSidecar(options: {
     },
     packages: {
       sidecar: {
-        name: '@yiliang/aw-plugins-manifest',
+        name: '@lesliechan721/aw-plugins-manifest',
         version: options.catalogVersion,
         channel: options.channel,
       },
       full: {
-        name: '@yiliang/aw-plugins',
+        name: '@lesliechan721/aw-plugins',
         version: options.catalogVersion,
         channel: options.channel,
         manifestPath: './catalog-manifest.json',
@@ -308,7 +308,7 @@ function createFakeCatalogPackageSource(options: {
     },
     resolveIdentityByVersion: async (packageName, version) => {
       options.operations?.push(`identity:${packageName}:${version}`);
-      const record = (packageName === '@yiliang/aw-plugins-manifest' ? manifestPackages : fullPackages)[packageKey(packageName, version)];
+      const record = (packageName === '@lesliechan721/aw-plugins-manifest' ? manifestPackages : fullPackages)[packageKey(packageName, version)];
       if (!record) {
         throw new Error(`missing ${packageName}@${version}`);
       }
@@ -316,7 +316,7 @@ function createFakeCatalogPackageSource(options: {
     },
     downloadArchive: async (identity) => {
       options.operations?.push(`download:${identity.packageName}:${identity.version}`);
-      const record = (identity.packageName === '@yiliang/aw-plugins-manifest' ? manifestPackages : fullPackages)[packageKey(identity.packageName, identity.version)];
+      const record = (identity.packageName === '@lesliechan721/aw-plugins-manifest' ? manifestPackages : fullPackages)[packageKey(identity.packageName, identity.version)];
       if (!record) {
         throw new Error(`missing ${identity.packageName}@${identity.version}`);
       }
@@ -356,9 +356,9 @@ function createSingleVersionCatalogPackageSource(options: {
   return createFakeCatalogPackageSource({
     distTags: { [channel]: catalogVersion },
     manifestPackages: {
-      [packageKey('@yiliang/aw-plugins-manifest', catalogVersion)]: {
+      [packageKey('@lesliechan721/aw-plugins-manifest', catalogVersion)]: {
         identity: {
-          packageName: '@yiliang/aw-plugins-manifest',
+          packageName: '@lesliechan721/aw-plugins-manifest',
           version: catalogVersion,
           integrity: `sha512-sidecar-${catalogVersion}`,
           requestedDistTag: channel,
@@ -368,9 +368,9 @@ function createSingleVersionCatalogPackageSource(options: {
       },
     },
     fullPackages: {
-      [packageKey('@yiliang/aw-plugins', catalogVersion)]: {
+      [packageKey('@lesliechan721/aw-plugins', catalogVersion)]: {
         identity: {
-          packageName: '@yiliang/aw-plugins',
+          packageName: '@lesliechan721/aw-plugins',
           version: catalogVersion,
           integrity: `sha512-full-${catalogVersion}`,
         },
@@ -466,7 +466,7 @@ describe('plugin catalog resolvers', () => {
       },
     });
     expect(operations).toEqual([
-      'identity:@yiliang/aw-plugins-manifest:latest',
+      'identity:@lesliechan721/aw-plugins-manifest:latest',
     ]);
     await expect(fs.pathExists(path.join(String(env.AW_HOME), 'catalog-cache', 'selectors')))
       .resolves.toBe(false);
@@ -538,10 +538,10 @@ describe('plugin catalog resolvers', () => {
       catalogVersion: '1.0.0',
     });
     expect(operations).toEqual([
-      'identity:@yiliang/aw-plugins-manifest:latest',
-      'download:@yiliang/aw-plugins-manifest:1.0.0',
-      'identity:@yiliang/aw-plugins:1.0.0',
-      'download:@yiliang/aw-plugins:1.0.0',
+      'identity:@lesliechan721/aw-plugins-manifest:latest',
+      'download:@lesliechan721/aw-plugins-manifest:1.0.0',
+      'identity:@lesliechan721/aw-plugins:1.0.0',
+      'download:@lesliechan721/aw-plugins:1.0.0',
     ]);
   });
 
@@ -571,7 +571,7 @@ describe('plugin catalog resolvers', () => {
     await expect(resolveCurrentCatalog(env, { freshnessPolicy: 'cacheFirst' })).resolves.toMatchObject({
       source: 'remote',
     });
-    expect(operations).toContain('download:@yiliang/aw-plugins:1.0.0');
+    expect(operations).toContain('download:@lesliechan721/aw-plugins:1.0.0');
   });
 
   it('rejects invalid cache policy environment values before network or cache writes', async () => {
@@ -883,7 +883,7 @@ describe('plugin catalog resolvers', () => {
       minAwVersion: '1.0.0',
     });
     const identity = {
-      packageName: '@yiliang/aw-plugins-manifest',
+      packageName: '@lesliechan721/aw-plugins-manifest',
       version: '1.0.0',
       integrity: 'sha512-sidecar-1',
       requestedDistTag: 'latest' as const,
@@ -895,7 +895,7 @@ describe('plugin catalog resolvers', () => {
       ['sidecarTarball', createFakeCatalogPackageSource({
         distTags: { latest: '1.0.0' },
         manifestPackages: {
-          [packageKey('@yiliang/aw-plugins-manifest', '1.0.0')]: {
+          [packageKey('@lesliechan721/aw-plugins-manifest', '1.0.0')]: {
             identity,
             manifest: catalogPackage.manifest,
             failDownload: 'sidecar offline',
@@ -905,7 +905,7 @@ describe('plugin catalog resolvers', () => {
       ['sidecarManifest', createFakeCatalogPackageSource({
         distTags: { latest: '1.0.0' },
         manifestPackages: {
-          [packageKey('@yiliang/aw-plugins-manifest', '1.0.0')]: {
+          [packageKey('@lesliechan721/aw-plugins-manifest', '1.0.0')]: {
             identity,
             manifest: {},
           },
@@ -914,7 +914,7 @@ describe('plugin catalog resolvers', () => {
       ['fullMetadata', createFakeCatalogPackageSource({
         distTags: { latest: '1.0.0' },
         manifestPackages: {
-          [packageKey('@yiliang/aw-plugins-manifest', '1.0.0')]: {
+          [packageKey('@lesliechan721/aw-plugins-manifest', '1.0.0')]: {
             identity,
             rootDir: catalogPackage.sidecarRoot,
             manifest: catalogPackage.manifest,
@@ -1074,13 +1074,13 @@ describe('plugin catalog resolvers', () => {
     });
     setCatalogPackageSourceForTests({
       resolveIdentityByDistTag: async () => ({
-        packageName: '@yiliang/aw-plugins-manifest',
+        packageName: '@lesliechan721/aw-plugins-manifest',
         version: '1.0.0',
         integrity: 'sha512-sidecar-1',
         requestedDistTag: 'beta',
       }),
       resolveIdentityByVersion: async (_packageName, version) => ({
-        packageName: '@yiliang/aw-plugins-manifest',
+        packageName: '@lesliechan721/aw-plugins-manifest',
         version,
         integrity: 'sha512-sidecar-1',
       }),
@@ -1093,9 +1093,9 @@ describe('plugin catalog resolvers', () => {
     setCatalogPackageSourceForTests(createFakeCatalogPackageSource({
       distTags: { latest: '2.0.0' },
       manifestPackages: {
-        [packageKey('@yiliang/aw-plugins-manifest', '2.0.0')]: {
+        [packageKey('@lesliechan721/aw-plugins-manifest', '2.0.0')]: {
           identity: {
-            packageName: '@yiliang/aw-plugins-manifest',
+            packageName: '@lesliechan721/aw-plugins-manifest',
             version: '2.0.0',
             integrity: 'sha512-sidecar-2',
             requestedDistTag: 'latest',
@@ -1122,7 +1122,7 @@ describe('plugin catalog resolvers', () => {
     invalidPackages.packages = {
       ...(invalidPackages.packages as Record<string, unknown>),
       full: {
-        name: '@yiliang/aw-plugins',
+        name: '@lesliechan721/aw-plugins',
         version: '2.0.0',
         channel: 'latest',
         manifestPath: './wrong.json',
@@ -1131,9 +1131,9 @@ describe('plugin catalog resolvers', () => {
     setCatalogPackageSourceForTests(createFakeCatalogPackageSource({
       distTags: { latest: '2.0.0' },
       manifestPackages: {
-        [packageKey('@yiliang/aw-plugins-manifest', '2.0.0')]: {
+        [packageKey('@lesliechan721/aw-plugins-manifest', '2.0.0')]: {
           identity: {
-            packageName: '@yiliang/aw-plugins-manifest',
+            packageName: '@lesliechan721/aw-plugins-manifest',
             version: '2.0.0',
             integrity: 'sha512-sidecar-2',
             requestedDistTag: 'latest',
@@ -1157,9 +1157,9 @@ describe('plugin catalog resolvers', () => {
     setCatalogPackageSourceForTests(createFakeCatalogPackageSource({
       distTags: { latest: '2.0.0' },
       manifestPackages: {
-        [packageKey('@yiliang/aw-plugins-manifest', '2.0.0')]: {
+        [packageKey('@lesliechan721/aw-plugins-manifest', '2.0.0')]: {
           identity: {
-            packageName: '@yiliang/aw-plugins-manifest',
+            packageName: '@lesliechan721/aw-plugins-manifest',
             version: '2.0.0',
             integrity: 'sha512-sidecar-2',
             requestedDistTag: 'latest',
@@ -1335,9 +1335,9 @@ describe('plugin catalog resolvers', () => {
         latest: '1.0.0',
       },
       manifestPackages: {
-        [packageKey('@yiliang/aw-plugins-manifest', '1.0.0')]: {
+        [packageKey('@lesliechan721/aw-plugins-manifest', '1.0.0')]: {
           identity: {
-            packageName: '@yiliang/aw-plugins-manifest',
+            packageName: '@lesliechan721/aw-plugins-manifest',
             version: '1.0.0',
             integrity: 'sha512-sidecar-1',
             requestedDistTag: 'latest',
@@ -1347,9 +1347,9 @@ describe('plugin catalog resolvers', () => {
         },
       },
       fullPackages: {
-        [packageKey('@yiliang/aw-plugins', '1.0.0')]: {
+        [packageKey('@lesliechan721/aw-plugins', '1.0.0')]: {
           identity: {
-            packageName: '@yiliang/aw-plugins',
+            packageName: '@lesliechan721/aw-plugins',
             version: '1.0.0',
             integrity: 'sha512-full-1',
           },
@@ -1362,10 +1362,10 @@ describe('plugin catalog resolvers', () => {
 
     const first = await resolveCurrentCatalog(env);
     expect(operations).toEqual([
-      'identity:@yiliang/aw-plugins-manifest:latest',
-      'download:@yiliang/aw-plugins-manifest:1.0.0',
-      'identity:@yiliang/aw-plugins:1.0.0',
-      'download:@yiliang/aw-plugins:1.0.0',
+      'identity:@lesliechan721/aw-plugins-manifest:latest',
+      'download:@lesliechan721/aw-plugins-manifest:1.0.0',
+      'identity:@lesliechan721/aw-plugins:1.0.0',
+      'download:@lesliechan721/aw-plugins:1.0.0',
     ]);
 
     operations.length = 0;
@@ -1405,7 +1405,7 @@ describe('plugin catalog resolvers', () => {
 
     expect(second).not.toBe(first);
     expect(second.catalogVersion).toBe('2.0.0');
-    expect(operations).toContain('identity:@yiliang/aw-plugins-manifest:latest');
+    expect(operations).toContain('identity:@lesliechan721/aw-plugins-manifest:latest');
   });
 
   it('tracks memo capability and coalesces concurrent remote resolution', async () => {
@@ -1439,9 +1439,9 @@ describe('plugin catalog resolvers', () => {
     expect(remotelyChecked).not.toBe(cacheOnly);
     expect(coalescedRequireRemote).toBe(remotelyChecked);
     expect(operations).toEqual([
-      'identity:@yiliang/aw-plugins-manifest:latest',
-      'download:@yiliang/aw-plugins-manifest:1.0.0',
-      'identity:@yiliang/aw-plugins:1.0.0',
+      'identity:@lesliechan721/aw-plugins-manifest:latest',
+      'download:@lesliechan721/aw-plugins-manifest:1.0.0',
+      'identity:@lesliechan721/aw-plugins:1.0.0',
     ]);
 
     operations.length = 0;
@@ -1527,9 +1527,9 @@ describe('plugin catalog resolvers', () => {
     expect(firstRemote.source).toBe('cache');
     expect(identityCalls).toBe(1);
     expect(operations).toEqual([
-      'identity:@yiliang/aw-plugins-manifest:latest',
-      'download:@yiliang/aw-plugins-manifest:1.0.0',
-      'identity:@yiliang/aw-plugins:1.0.0',
+      'identity:@lesliechan721/aw-plugins-manifest:latest',
+      'download:@lesliechan721/aw-plugins-manifest:1.0.0',
+      'identity:@lesliechan721/aw-plugins:1.0.0',
     ]);
   });
 
@@ -1584,9 +1584,9 @@ describe('plugin catalog resolvers', () => {
         latest: '1.0.0',
       },
       manifestPackages: {
-        [packageKey('@yiliang/aw-plugins-manifest', '1.0.0')]: {
+        [packageKey('@lesliechan721/aw-plugins-manifest', '1.0.0')]: {
           identity: {
-            packageName: '@yiliang/aw-plugins-manifest',
+            packageName: '@lesliechan721/aw-plugins-manifest',
             version: '1.0.0',
             integrity: 'sha512-sidecar-1',
             requestedDistTag: 'latest',
@@ -1596,9 +1596,9 @@ describe('plugin catalog resolvers', () => {
         },
       },
       fullPackages: {
-        [packageKey('@yiliang/aw-plugins', '1.0.0')]: {
+        [packageKey('@lesliechan721/aw-plugins', '1.0.0')]: {
           identity: {
-            packageName: '@yiliang/aw-plugins',
+            packageName: '@lesliechan721/aw-plugins',
             version: '1.0.0',
             integrity: 'sha512-full-1',
           },
@@ -1638,9 +1638,9 @@ describe('plugin catalog resolvers', () => {
         latest: '1.0.0',
       },
       manifestPackages: {
-        [packageKey('@yiliang/aw-plugins-manifest', '1.0.0')]: {
+        [packageKey('@lesliechan721/aw-plugins-manifest', '1.0.0')]: {
           identity: {
-            packageName: '@yiliang/aw-plugins-manifest',
+            packageName: '@lesliechan721/aw-plugins-manifest',
             version: '1.0.0',
             integrity: 'sha512-sidecar-1',
             requestedDistTag: 'latest',
@@ -1650,9 +1650,9 @@ describe('plugin catalog resolvers', () => {
         },
       },
       fullPackages: {
-        [packageKey('@yiliang/aw-plugins', '1.0.0')]: {
+        [packageKey('@lesliechan721/aw-plugins', '1.0.0')]: {
           identity: {
-            packageName: '@yiliang/aw-plugins',
+            packageName: '@lesliechan721/aw-plugins',
             version: '1.0.0',
             integrity: 'sha512-full-1',
           },
@@ -1670,9 +1670,9 @@ describe('plugin catalog resolvers', () => {
       catalogVersion: '1.0.0',
     });
     expect(operations).toEqual([
-      'identity:@yiliang/aw-plugins-manifest:latest',
-      'download:@yiliang/aw-plugins-manifest:1.0.0',
-      'identity:@yiliang/aw-plugins:1.0.0',
+      'identity:@lesliechan721/aw-plugins-manifest:latest',
+      'download:@lesliechan721/aw-plugins-manifest:1.0.0',
+      'identity:@lesliechan721/aw-plugins:1.0.0',
     ]);
   });
 
@@ -1760,7 +1760,7 @@ describe('plugin catalog resolvers', () => {
         sourceForVersion(version).resolveIdentityByVersion(packageName, version, ...args),
       downloadArchive: async (identity, ...args) => {
         if (
-          identity.packageName === '@yiliang/aw-plugins-manifest' &&
+          identity.packageName === '@lesliechan721/aw-plugins-manifest' &&
           identity.version === '1.1.0'
         ) {
           olderDownloadStarted();
@@ -1808,9 +1808,9 @@ describe('plugin catalog resolvers', () => {
         latest: '1.0.0',
       },
       manifestPackages: {
-        [packageKey('@yiliang/aw-plugins-manifest', '1.0.0')]: {
+        [packageKey('@lesliechan721/aw-plugins-manifest', '1.0.0')]: {
           identity: {
-            packageName: '@yiliang/aw-plugins-manifest',
+            packageName: '@lesliechan721/aw-plugins-manifest',
             version: '1.0.0',
             integrity: 'sha512-sidecar-1',
             requestedDistTag: 'latest',
@@ -1820,9 +1820,9 @@ describe('plugin catalog resolvers', () => {
         },
       },
       fullPackages: {
-        [packageKey('@yiliang/aw-plugins', '1.0.0')]: {
+        [packageKey('@lesliechan721/aw-plugins', '1.0.0')]: {
           identity: {
-            packageName: '@yiliang/aw-plugins',
+            packageName: '@lesliechan721/aw-plugins',
             version: '1.0.0',
             integrity: 'sha512-full-1',
           },
@@ -1845,9 +1845,9 @@ describe('plugin catalog resolvers', () => {
         latest: '2.0.0',
       },
       manifestPackages: {
-        [packageKey('@yiliang/aw-plugins-manifest', '2.0.0')]: {
+        [packageKey('@lesliechan721/aw-plugins-manifest', '2.0.0')]: {
           identity: {
-            packageName: '@yiliang/aw-plugins-manifest',
+            packageName: '@lesliechan721/aw-plugins-manifest',
             version: '2.0.0',
             integrity: 'sha512-sidecar-2',
             requestedDistTag: 'latest',
@@ -1857,9 +1857,9 @@ describe('plugin catalog resolvers', () => {
         },
       },
       fullPackages: {
-        [packageKey('@yiliang/aw-plugins', '2.0.0')]: {
+        [packageKey('@lesliechan721/aw-plugins', '2.0.0')]: {
           identity: {
-            packageName: '@yiliang/aw-plugins',
+            packageName: '@lesliechan721/aw-plugins',
             version: '2.0.0',
             integrity: 'sha512-full-2',
           },
@@ -1880,10 +1880,10 @@ describe('plugin catalog resolvers', () => {
       catalogVersion: '2.0.0',
     });
     expect(operations).toEqual([
-      'identity:@yiliang/aw-plugins-manifest:latest',
-      'download:@yiliang/aw-plugins-manifest:2.0.0',
-      'identity:@yiliang/aw-plugins:2.0.0',
-      'download:@yiliang/aw-plugins:2.0.0',
+      'identity:@lesliechan721/aw-plugins-manifest:latest',
+      'download:@lesliechan721/aw-plugins-manifest:2.0.0',
+      'identity:@lesliechan721/aw-plugins:2.0.0',
+      'download:@lesliechan721/aw-plugins:2.0.0',
     ]);
   });
 
@@ -1918,9 +1918,9 @@ describe('plugin catalog resolvers', () => {
           latest: '1.0.0',
         },
         manifestPackages: {
-          [packageKey('@yiliang/aw-plugins-manifest', '1.0.0')]: {
+          [packageKey('@lesliechan721/aw-plugins-manifest', '1.0.0')]: {
             identity: {
-              packageName: '@yiliang/aw-plugins-manifest',
+              packageName: '@lesliechan721/aw-plugins-manifest',
               version: '1.0.0',
               integrity: 'sha512-sidecar-1',
               requestedDistTag: 'latest',
@@ -1930,9 +1930,9 @@ describe('plugin catalog resolvers', () => {
           },
         },
         fullPackages: {
-          [packageKey('@yiliang/aw-plugins', '1.0.0')]: {
+          [packageKey('@lesliechan721/aw-plugins', '1.0.0')]: {
             identity: {
-              packageName: '@yiliang/aw-plugins',
+              packageName: '@lesliechan721/aw-plugins',
               version: '1.0.0',
               integrity: 'sha512-full-1',
             },
@@ -1952,9 +1952,9 @@ describe('plugin catalog resolvers', () => {
           latest: '2.0.0',
         },
         manifestPackages: {
-          [packageKey('@yiliang/aw-plugins-manifest', '2.0.0')]: {
+          [packageKey('@lesliechan721/aw-plugins-manifest', '2.0.0')]: {
             identity: {
-              packageName: '@yiliang/aw-plugins-manifest',
+              packageName: '@lesliechan721/aw-plugins-manifest',
               version: '2.0.0',
               integrity: 'sha512-sidecar-2',
               requestedDistTag: 'latest',
@@ -1977,8 +1977,8 @@ describe('plugin catalog resolvers', () => {
         },
       });
       expect(operations).toEqual([
-        'identity:@yiliang/aw-plugins-manifest:latest',
-        'download:@yiliang/aw-plugins-manifest:2.0.0',
+        'identity:@lesliechan721/aw-plugins-manifest:latest',
+        'download:@lesliechan721/aw-plugins-manifest:2.0.0',
       ]);
     });
   }
@@ -1999,9 +1999,9 @@ describe('plugin catalog resolvers', () => {
         latest: '1.0.0',
       },
       manifestPackages: {
-        [packageKey('@yiliang/aw-plugins-manifest', '1.0.0')]: {
+        [packageKey('@lesliechan721/aw-plugins-manifest', '1.0.0')]: {
           identity: {
-            packageName: '@yiliang/aw-plugins-manifest',
+            packageName: '@lesliechan721/aw-plugins-manifest',
             version: '1.0.0',
             integrity: 'sha512-sidecar-1',
             requestedDistTag: 'latest',
@@ -2011,9 +2011,9 @@ describe('plugin catalog resolvers', () => {
         },
       },
       fullPackages: {
-        [packageKey('@yiliang/aw-plugins', '1.0.0')]: {
+        [packageKey('@lesliechan721/aw-plugins', '1.0.0')]: {
           identity: {
-            packageName: '@yiliang/aw-plugins',
+            packageName: '@lesliechan721/aw-plugins',
             version: '1.0.0',
             integrity: 'sha512-full-1',
           },
@@ -2053,9 +2053,9 @@ describe('plugin catalog resolvers', () => {
         latest: '1.0.0',
       },
       manifestPackages: {
-        [packageKey('@yiliang/aw-plugins-manifest', '1.0.0')]: {
+        [packageKey('@lesliechan721/aw-plugins-manifest', '1.0.0')]: {
           identity: {
-            packageName: '@yiliang/aw-plugins-manifest',
+            packageName: '@lesliechan721/aw-plugins-manifest',
             version: '1.0.0',
             integrity: 'sha512-sidecar-1',
             requestedDistTag: 'latest',
@@ -2065,9 +2065,9 @@ describe('plugin catalog resolvers', () => {
         },
       },
       fullPackages: {
-        [packageKey('@yiliang/aw-plugins', '1.0.0')]: {
+        [packageKey('@lesliechan721/aw-plugins', '1.0.0')]: {
           identity: {
-            packageName: '@yiliang/aw-plugins',
+            packageName: '@lesliechan721/aw-plugins',
             version: '1.0.0',
             integrity: 'sha512-full-1',
           },
@@ -2102,10 +2102,10 @@ describe('plugin catalog resolvers', () => {
       catalogVersion: '1.0.0',
     });
     expect(operations).toEqual([
-      'identity:@yiliang/aw-plugins-manifest:latest',
-      'download:@yiliang/aw-plugins-manifest:1.0.0',
-      'identity:@yiliang/aw-plugins:1.0.0',
-      'download:@yiliang/aw-plugins:1.0.0',
+      'identity:@lesliechan721/aw-plugins-manifest:latest',
+      'download:@lesliechan721/aw-plugins-manifest:1.0.0',
+      'identity:@lesliechan721/aw-plugins:1.0.0',
+      'download:@lesliechan721/aw-plugins:1.0.0',
     ]);
     await expect(fs.pathExists(path.join(
       second.rootDir,
@@ -2134,9 +2134,9 @@ describe('plugin catalog resolvers', () => {
         latest: '1.0.0',
       },
       manifestPackages: {
-        [packageKey('@yiliang/aw-plugins-manifest', '1.0.0')]: {
+        [packageKey('@lesliechan721/aw-plugins-manifest', '1.0.0')]: {
           identity: {
-            packageName: '@yiliang/aw-plugins-manifest',
+            packageName: '@lesliechan721/aw-plugins-manifest',
             version: '1.0.0',
             integrity: 'sha512-sidecar-1',
             requestedDistTag: 'latest',
@@ -2146,9 +2146,9 @@ describe('plugin catalog resolvers', () => {
         },
       },
       fullPackages: {
-        [packageKey('@yiliang/aw-plugins', '1.0.0')]: {
+        [packageKey('@lesliechan721/aw-plugins', '1.0.0')]: {
           identity: {
-            packageName: '@yiliang/aw-plugins',
+            packageName: '@lesliechan721/aw-plugins',
             version: '1.0.0',
             integrity: 'sha512-full-1',
           },
@@ -2168,10 +2168,10 @@ describe('plugin catalog resolvers', () => {
 
     expect(second).not.toBe(first);
     expect(operations).toEqual([
-      'identity:@yiliang/aw-plugins-manifest:latest',
-      'download:@yiliang/aw-plugins-manifest:1.0.0',
-      'identity:@yiliang/aw-plugins:1.0.0',
-      'download:@yiliang/aw-plugins:1.0.0',
+      'identity:@lesliechan721/aw-plugins-manifest:latest',
+      'download:@lesliechan721/aw-plugins-manifest:1.0.0',
+      'identity:@lesliechan721/aw-plugins:1.0.0',
+      'download:@lesliechan721/aw-plugins:1.0.0',
     ]);
   });
 
@@ -2195,9 +2195,9 @@ describe('plugin catalog resolvers', () => {
         latest: '1.0.0',
       },
       manifestPackages: {
-        [packageKey('@yiliang/aw-plugins-manifest', '1.0.0')]: {
+        [packageKey('@lesliechan721/aw-plugins-manifest', '1.0.0')]: {
           identity: {
-            packageName: '@yiliang/aw-plugins-manifest',
+            packageName: '@lesliechan721/aw-plugins-manifest',
             version: '1.0.0',
             integrity: 'sha512-sidecar-1',
             requestedDistTag: 'latest',
@@ -2207,9 +2207,9 @@ describe('plugin catalog resolvers', () => {
         },
       },
       fullPackages: {
-        [packageKey('@yiliang/aw-plugins', '1.0.0')]: {
+        [packageKey('@lesliechan721/aw-plugins', '1.0.0')]: {
           identity: {
-            packageName: '@yiliang/aw-plugins',
+            packageName: '@lesliechan721/aw-plugins',
             version: '1.0.0',
             integrity: 'sha512-full-1',
           },
@@ -2228,9 +2228,9 @@ describe('plugin catalog resolvers', () => {
         latest: '2.0.0',
       },
       manifestPackages: {
-        [packageKey('@yiliang/aw-plugins-manifest', '2.0.0')]: {
+        [packageKey('@lesliechan721/aw-plugins-manifest', '2.0.0')]: {
           identity: {
-            packageName: '@yiliang/aw-plugins-manifest',
+            packageName: '@lesliechan721/aw-plugins-manifest',
             version: '2.0.0',
             integrity: 'sha512-sidecar-2',
             requestedDistTag: 'latest',
@@ -2240,9 +2240,9 @@ describe('plugin catalog resolvers', () => {
         },
       },
       fullPackages: {
-        [packageKey('@yiliang/aw-plugins', '2.0.0')]: {
+        [packageKey('@lesliechan721/aw-plugins', '2.0.0')]: {
           identity: {
-            packageName: '@yiliang/aw-plugins',
+            packageName: '@lesliechan721/aw-plugins',
             version: '2.0.0',
             integrity: 'sha512-full-2',
           },
@@ -2266,10 +2266,10 @@ describe('plugin catalog resolvers', () => {
       catalogVersion: '2.0.0',
     });
     expect(operations).toEqual([
-      'identity:@yiliang/aw-plugins-manifest:latest',
-      'download:@yiliang/aw-plugins-manifest:2.0.0',
-      'identity:@yiliang/aw-plugins:2.0.0',
-      'download:@yiliang/aw-plugins:2.0.0',
+      'identity:@lesliechan721/aw-plugins-manifest:latest',
+      'download:@lesliechan721/aw-plugins-manifest:2.0.0',
+      'identity:@lesliechan721/aw-plugins:2.0.0',
+      'download:@lesliechan721/aw-plugins:2.0.0',
     ]);
 
     operations.length = 0;
@@ -2297,9 +2297,9 @@ describe('plugin catalog resolvers', () => {
         latest: '1.0.0',
       },
       manifestPackages: {
-        [packageKey('@yiliang/aw-plugins-manifest', '1.0.0')]: {
+        [packageKey('@lesliechan721/aw-plugins-manifest', '1.0.0')]: {
           identity: {
-            packageName: '@yiliang/aw-plugins-manifest',
+            packageName: '@lesliechan721/aw-plugins-manifest',
             version: '1.0.0',
             integrity: 'sha512-sidecar-1',
             requestedDistTag: 'latest',
@@ -2309,9 +2309,9 @@ describe('plugin catalog resolvers', () => {
         },
       },
       fullPackages: {
-        [packageKey('@yiliang/aw-plugins', '1.0.0')]: {
+        [packageKey('@lesliechan721/aw-plugins', '1.0.0')]: {
           identity: {
-            packageName: '@yiliang/aw-plugins',
+            packageName: '@lesliechan721/aw-plugins',
             version: '1.0.0',
             integrity: 'sha512-full-1',
           },
@@ -2389,9 +2389,9 @@ describe('plugin catalog resolvers', () => {
         latest: '1.0.0',
       },
       manifestPackages: {
-        [packageKey('@yiliang/aw-plugins-manifest', '1.0.0')]: {
+        [packageKey('@lesliechan721/aw-plugins-manifest', '1.0.0')]: {
           identity: {
-            packageName: '@yiliang/aw-plugins-manifest',
+            packageName: '@lesliechan721/aw-plugins-manifest',
             version: '1.0.0',
             integrity: 'sha512-sidecar-1',
             requestedDistTag: 'latest',
@@ -2401,9 +2401,9 @@ describe('plugin catalog resolvers', () => {
         },
       },
       fullPackages: {
-        [packageKey('@yiliang/aw-plugins', '1.0.0')]: {
+        [packageKey('@lesliechan721/aw-plugins', '1.0.0')]: {
           identity: {
-            packageName: '@yiliang/aw-plugins',
+            packageName: '@lesliechan721/aw-plugins',
             version: '1.0.0',
             integrity: 'sha512-full-1',
           },
@@ -2422,9 +2422,9 @@ describe('plugin catalog resolvers', () => {
         latest: '1.0.0',
       },
       manifestPackages: {
-        [packageKey('@yiliang/aw-plugins-manifest', '1.0.0')]: {
+        [packageKey('@lesliechan721/aw-plugins-manifest', '1.0.0')]: {
           identity: {
-            packageName: '@yiliang/aw-plugins-manifest',
+            packageName: '@lesliechan721/aw-plugins-manifest',
             version: '1.0.0',
             integrity: 'sha512-sidecar-1',
             requestedDistTag: 'latest',
@@ -2434,9 +2434,9 @@ describe('plugin catalog resolvers', () => {
         },
       },
       fullPackages: {
-        [packageKey('@yiliang/aw-plugins', '1.0.0')]: {
+        [packageKey('@lesliechan721/aw-plugins', '1.0.0')]: {
           identity: {
-            packageName: '@yiliang/aw-plugins',
+            packageName: '@lesliechan721/aw-plugins',
             version: '1.0.0',
             integrity: 'sha512-full-1',
           },
@@ -2458,9 +2458,9 @@ describe('plugin catalog resolvers', () => {
     });
     expect(cached.remoteFailure).toBeUndefined();
     expect(operations).toEqual([
-      'identity:@yiliang/aw-plugins-manifest:latest',
-      'download:@yiliang/aw-plugins-manifest:1.0.0',
-      'identity:@yiliang/aw-plugins:1.0.0',
+      'identity:@lesliechan721/aw-plugins-manifest:latest',
+      'download:@lesliechan721/aw-plugins-manifest:1.0.0',
+      'identity:@lesliechan721/aw-plugins:1.0.0',
     ]);
 
     operations.length = 0;
@@ -2481,10 +2481,10 @@ describe('plugin catalog resolvers', () => {
       },
     });
     expect(operations).toEqual([
-      'identity:@yiliang/aw-plugins-manifest:latest',
-      'download:@yiliang/aw-plugins-manifest:1.0.0',
-      'identity:@yiliang/aw-plugins:1.0.0',
-      'download:@yiliang/aw-plugins:1.0.0',
+      'identity:@lesliechan721/aw-plugins-manifest:latest',
+      'download:@lesliechan721/aw-plugins-manifest:1.0.0',
+      'identity:@lesliechan721/aw-plugins:1.0.0',
+      'download:@lesliechan721/aw-plugins:1.0.0',
     ]);
 
     operations.length = 0;
@@ -2502,9 +2502,9 @@ describe('plugin catalog resolvers', () => {
         latest: '1.0.0',
       },
       manifestPackages: {
-        [packageKey('@yiliang/aw-plugins-manifest', '1.0.0')]: {
+        [packageKey('@lesliechan721/aw-plugins-manifest', '1.0.0')]: {
           identity: {
-            packageName: '@yiliang/aw-plugins-manifest',
+            packageName: '@lesliechan721/aw-plugins-manifest',
             version: '1.0.0',
             integrity: 'sha512-sidecar-1',
             requestedDistTag: 'latest',
@@ -2514,9 +2514,9 @@ describe('plugin catalog resolvers', () => {
         },
       },
       fullPackages: {
-        [packageKey('@yiliang/aw-plugins', '1.0.0')]: {
+        [packageKey('@lesliechan721/aw-plugins', '1.0.0')]: {
           identity: {
-            packageName: '@yiliang/aw-plugins',
+            packageName: '@lesliechan721/aw-plugins',
             version: '1.0.0',
             integrity: 'sha512-full-1',
           },
@@ -2536,10 +2536,10 @@ describe('plugin catalog resolvers', () => {
       },
     });
     expect(operations).toEqual([
-      'identity:@yiliang/aw-plugins-manifest:latest',
-      'download:@yiliang/aw-plugins-manifest:1.0.0',
-      'identity:@yiliang/aw-plugins:1.0.0',
-      'download:@yiliang/aw-plugins:1.0.0',
+      'identity:@lesliechan721/aw-plugins-manifest:latest',
+      'download:@lesliechan721/aw-plugins-manifest:1.0.0',
+      'identity:@lesliechan721/aw-plugins:1.0.0',
+      'download:@lesliechan721/aw-plugins:1.0.0',
     ]);
   });
 
@@ -2558,9 +2558,9 @@ describe('plugin catalog resolvers', () => {
         latest: '1.0.0',
       },
       manifestPackages: {
-        [packageKey('@yiliang/aw-plugins-manifest', '1.0.0')]: {
+        [packageKey('@lesliechan721/aw-plugins-manifest', '1.0.0')]: {
           identity: {
-            packageName: '@yiliang/aw-plugins-manifest',
+            packageName: '@lesliechan721/aw-plugins-manifest',
             version: '1.0.0',
             integrity: 'sha512-sidecar-1',
             requestedDistTag: 'latest',
@@ -2570,9 +2570,9 @@ describe('plugin catalog resolvers', () => {
         },
       },
       fullPackages: {
-        [packageKey('@yiliang/aw-plugins', '1.0.0')]: {
+        [packageKey('@lesliechan721/aw-plugins', '1.0.0')]: {
           identity: {
-            packageName: '@yiliang/aw-plugins',
+            packageName: '@lesliechan721/aw-plugins',
             version: '1.0.0',
             integrity: 'sha512-full-1',
           },
@@ -2608,10 +2608,10 @@ describe('plugin catalog resolvers', () => {
       },
     });
     expect(operations).toEqual([
-      'identity:@yiliang/aw-plugins-manifest:latest',
-      'download:@yiliang/aw-plugins-manifest:1.0.0',
-      'identity:@yiliang/aw-plugins:1.0.0',
-      'download:@yiliang/aw-plugins:1.0.0',
+      'identity:@lesliechan721/aw-plugins-manifest:latest',
+      'download:@lesliechan721/aw-plugins-manifest:1.0.0',
+      'identity:@lesliechan721/aw-plugins:1.0.0',
+      'download:@lesliechan721/aw-plugins:1.0.0',
     ]);
     await expect(fs.pathExists(path.join(
       refreshed.rootDir,
@@ -2638,9 +2638,9 @@ describe('plugin catalog resolvers', () => {
         latest: '1.0.0',
       },
       manifestPackages: {
-        [packageKey('@yiliang/aw-plugins-manifest', '1.0.0')]: {
+        [packageKey('@lesliechan721/aw-plugins-manifest', '1.0.0')]: {
           identity: {
-            packageName: '@yiliang/aw-plugins-manifest',
+            packageName: '@lesliechan721/aw-plugins-manifest',
             version: '1.0.0',
             integrity: 'sha512-sidecar-1',
             requestedDistTag: 'latest',
@@ -2650,9 +2650,9 @@ describe('plugin catalog resolvers', () => {
         },
       },
       fullPackages: {
-        [packageKey('@yiliang/aw-plugins', '1.0.0')]: {
+        [packageKey('@lesliechan721/aw-plugins', '1.0.0')]: {
           identity: {
-            packageName: '@yiliang/aw-plugins',
+            packageName: '@lesliechan721/aw-plugins',
             version: '1.0.0',
             integrity: 'sha512-full-1',
           },
@@ -2705,9 +2705,9 @@ describe('plugin catalog resolvers', () => {
         beta: '1.0.0-beta.1',
       },
       manifestPackages: {
-        [packageKey('@yiliang/aw-plugins-manifest', '1.0.0-beta.1')]: {
+        [packageKey('@lesliechan721/aw-plugins-manifest', '1.0.0-beta.1')]: {
           identity: {
-            packageName: '@yiliang/aw-plugins-manifest',
+            packageName: '@lesliechan721/aw-plugins-manifest',
             version: '1.0.0-beta.1',
             integrity: 'sha512-sidecar-beta',
             requestedDistTag: 'beta',
@@ -2717,9 +2717,9 @@ describe('plugin catalog resolvers', () => {
         },
       },
       fullPackages: {
-        [packageKey('@yiliang/aw-plugins', '1.0.0-beta.1')]: {
+        [packageKey('@lesliechan721/aw-plugins', '1.0.0-beta.1')]: {
           identity: {
-            packageName: '@yiliang/aw-plugins',
+            packageName: '@lesliechan721/aw-plugins',
             version: '1.0.0-beta.1',
             integrity: 'sha512-full-beta',
           },
@@ -2741,9 +2741,9 @@ describe('plugin catalog resolvers', () => {
         latest: '1.0.0',
       },
       manifestPackages: {
-        [packageKey('@yiliang/aw-plugins-manifest', '1.0.0')]: {
+        [packageKey('@lesliechan721/aw-plugins-manifest', '1.0.0')]: {
           identity: {
-            packageName: '@yiliang/aw-plugins-manifest',
+            packageName: '@lesliechan721/aw-plugins-manifest',
             version: '1.0.0',
             integrity: 'sha512-sidecar-stable',
             requestedDistTag: 'latest',
@@ -2753,9 +2753,9 @@ describe('plugin catalog resolvers', () => {
         },
       },
       fullPackages: {
-        [packageKey('@yiliang/aw-plugins', '1.0.0')]: {
+        [packageKey('@lesliechan721/aw-plugins', '1.0.0')]: {
           identity: {
-            packageName: '@yiliang/aw-plugins',
+            packageName: '@lesliechan721/aw-plugins',
             version: '1.0.0',
             integrity: 'sha512-full-stable',
           },

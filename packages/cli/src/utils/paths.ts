@@ -73,14 +73,14 @@ export function resolveCliPackageRoot(): string {
     const packageJsonPath = path.join(currentDir, 'package.json');
     if (fs.existsSync(packageJsonPath)) {
       const packageJson = fs.readJsonSync(packageJsonPath) as { name?: string };
-      if (packageJson.name === '@yiliang/aw') {
+      if (packageJson.name === '@lesliechan721/aw') {
         return currentDir;
       }
     }
 
     const parentDir = path.dirname(currentDir);
     if (parentDir === currentDir) {
-      throw new Error('Unable to resolve @yiliang/aw package root.');
+      throw new Error('Unable to resolve @lesliechan721/aw package root.');
     }
     currentDir = parentDir;
   }

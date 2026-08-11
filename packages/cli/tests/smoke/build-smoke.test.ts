@@ -470,10 +470,10 @@ describe('build smoke', () => {
       schemaVersion: 2,
       packages: {
         sidecar: {
-          name: '@yiliang/aw-plugins-manifest',
+          name: '@lesliechan721/aw-plugins-manifest',
         },
         full: {
-          name: '@yiliang/aw-plugins',
+          name: '@lesliechan721/aw-plugins',
           manifestPath: './catalog-manifest.json',
         },
       },
@@ -495,7 +495,7 @@ describe('build smoke', () => {
     await expect(
       fs.readJson(path.join(outputRoot, '.catalog', 'sidecar', 'package.json')),
     ).resolves.toMatchObject({
-      name: '@yiliang/aw-plugins-manifest',
+      name: '@lesliechan721/aw-plugins-manifest',
       files: ['catalog-manifest.json'],
       awCatalog: {
         kind: 'sidecar',
@@ -504,7 +504,7 @@ describe('build smoke', () => {
     await expect(
       fs.readJson(path.join(outputRoot, '.catalog', 'full', 'package.json')),
     ).resolves.toMatchObject({
-      name: '@yiliang/aw-plugins',
+      name: '@lesliechan721/aw-plugins',
       files: expect.arrayContaining(['catalog-manifest.json', '.agents/', '.claude-plugin/', 'plugins/']),
       awCatalog: {
         kind: 'full',

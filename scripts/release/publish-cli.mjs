@@ -121,7 +121,7 @@ export async function main(argv = process.argv.slice(2)) {
   try {
     const { mode, version, tarballPath, generationId } = await publishCli(argv);
     console.log(
-      `Published CLI @yiliang/aw@${version} with tag ${mode} from build generation ${generationId}. Tarball: ${relativeToRepo(tarballPath)}`,
+      `Published CLI @lesliechan721/aw@${version} with tag ${mode} from build generation ${generationId}. Tarball: ${relativeToRepo(tarballPath)}`,
     );
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));

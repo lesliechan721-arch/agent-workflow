@@ -398,7 +398,7 @@ graph TD
 
 ### 开发 TODO
 
-- [ ] 根 `package.json` 新增 `plugin:test`，委托到 `pnpm --filter @yiliang/aw plugin:test --`。
+- [ ] 根 `package.json` 新增 `plugin:test`，委托到 `pnpm --filter @lesliechan721/aw plugin:test --`。
 - [ ] 根 `package.json` 新增 opt-in `test:smoke:plugin-scripts`。
 - [ ] `packages/cli/package.json` 新增 `plugin:test`：先 `tsc -p tsconfig.json`，再运行 `node dist/scripts/test-plugin-scripts.js`。
 - [ ] `packages/cli/package.json` 新增 `test:smoke:plugin-scripts`，运行 `tests/smoke/plugin-scripts-staging-smoke.test.ts`。

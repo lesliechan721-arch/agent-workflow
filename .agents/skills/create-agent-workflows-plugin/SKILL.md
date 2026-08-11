@@ -100,7 +100,7 @@ node .agents/skills/create-agent-workflows-plugin/scripts/init_plugin.mjs <plugi
 - `.agents-plugin/plugin.json` 是唯一手动维护的 manifest；不要手写 `.claude-plugin/plugin.json` 或 `.codex-plugin/plugin.json`。
 - 插件名、skill 名使用小写短横线格式，并与目录名一致。
 - `version` 和 `compatibility.aw.minVersion` 使用严格 SemVer。CLI version、catalog version 和 plugin version 是三套身份。
-- Catalog 分为 `@yiliang/aw-plugins-manifest` sidecar 包和 `@yiliang/aw-plugins` full catalog 包；插件作者只维护源码，不手改包内产物。
+- Catalog 分为 `@lesliechan721/aw-plugins-manifest` sidecar 包和 `@lesliechan721/aw-plugins` full catalog 包；插件作者只维护源码，不手改包内产物。
 - 不在插件 manifest 声明最低 Codex / Claude Code 版本；AW CLI 内置门槛当前为 Codex `>= 0.145.0`、Claude Code `>= 2.1.88`。
 - `marketplace.policy.products` 同时约束 build 裁剪、平台 marketplace、安装/升级门禁和 `pnpm plugin:test` 平台选择。
 - `skills`、`mcpServers`、`apps`、`slashCommands` 使用单个 `./` 相对路径，且路径必须存在。

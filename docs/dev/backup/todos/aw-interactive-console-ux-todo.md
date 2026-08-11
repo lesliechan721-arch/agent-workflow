@@ -114,7 +114,7 @@ P0 验收记录：
 
 - 当前 `aw` 直接运行仍打印 Commander help；`status --json` 当前顶层仍是 `StatusMatrixReport`，尚未包含 `ok`、`command`、`friendlySummaries`、`consoleItems`。
 - 旧交互入口仍集中在 `packages/cli/src/index.ts` 与 `packages/cli/src/commands/interactive.ts`；`install/upgrade` 缺 required config 时还会经由 `preflightRequiredPluginConfigs()` 调用旧配置 prompt。
-- 已新增 P0 baseline tests：`packages/cli/tests/unit/cli-entry.test.ts` 与 `packages/cli/tests/integration/cli-entry.test.ts`。本轮复跑 `pnpm --filter @yiliang/aw exec vitest run tests/unit/cli-entry.test.ts tests/integration/cli-entry.test.ts`，结果为 2 个 test files 通过，74 个 tests 通过，3 个 todo。
+- 已新增 P0 baseline tests：`packages/cli/tests/unit/cli-entry.test.ts` 与 `packages/cli/tests/integration/cli-entry.test.ts`。本轮复跑 `pnpm --filter @lesliechan721/aw exec vitest run tests/unit/cli-entry.test.ts tests/integration/cli-entry.test.ts`，结果为 2 个 test files 通过，74 个 tests 通过，3 个 todo。
 - 依赖验证结论：P0 时本机 registry 查询无法证明真实安装；P9 已完成 `pnpm install`，`pnpm-lock.yaml` 锁定 `@inquirer/prompts@7.10.1`，并补跑干净目录 tarball install 与真实 TTY 验收。
 
 ## P1 友好状态投影模型
@@ -165,7 +165,7 @@ TODO：
 P1 验收记录：
 
 - 新增 `packages/cli/src/commands/console-model.ts` 和 `packages/cli/tests/unit/console-model.test.ts`。
-- 已跑 `pnpm --filter @yiliang/aw exec vitest run tests/unit/console-model.test.ts`，11 个测试通过。
+- 已跑 `pnpm --filter @lesliechan721/aw exec vitest run tests/unit/console-model.test.ts`，11 个测试通过。
 
 ## P2 `status` 友好摘要与 JSON 兼容字段
 
@@ -204,7 +204,7 @@ P2 验收记录：
 - `packages/cli/src/commands/status.ts` 已接入 `createPluginConsoleItems()`，并统一产出默认友好摘要、`--verbose` 诊断分层和 `status --json` 兼容扩展字段。
 - 默认 `aw status` 现在只展示插件名、友好状态、友好位置和下一步；`aw status --verbose` 会在 `诊断信息` 小节继续输出内部诊断矩阵和命令级字段。
 - `status --json` 顶层保留 `detection`、`summaries`、`cells`、`reports`，并追加 `ok`、`command`、`friendlySummaries`、`consoleItems`，供后续 P7 TUI 直接消费。
-- 已复跑 `pnpm --filter @yiliang/aw exec vitest run tests/integration/cli-entry.test.ts -t "status"` 和 `pnpm --filter @yiliang/aw exec vitest run tests/integration/cli-entry.test.ts -t "status|friendly needs-action summaries"`，均通过。
+- 已复跑 `pnpm --filter @lesliechan721/aw exec vitest run tests/integration/cli-entry.test.ts -t "status"` 和 `pnpm --filter @lesliechan721/aw exec vitest run tests/integration/cli-entry.test.ts -t "status|friendly needs-action summaries"`，均通过。
 
 ## P3 JSON receipt 与默认输出分层
 
@@ -250,7 +250,7 @@ TODO：
 P3 验收记录：
 
 - 新增 `packages/cli/src/output/command-receipt.ts`，`init/install/uninstall/upgrade` 已接入 `--json` receipt 和友好默认 renderer。
-- 已跑 `pnpm --filter @yiliang/aw exec vitest run tests/unit/cli-entry.test.ts` 与 `tests/integration/cli-entry.test.ts`，均通过；`tsc --noEmit` 通过。
+- 已跑 `pnpm --filter @lesliechan721/aw exec vitest run tests/unit/cli-entry.test.ts` 与 `tests/integration/cli-entry.test.ts`，均通过；`tsc --noEmit` 通过。
 
 ## P4 配置写入 helper 与 refresh-only 动作
 
@@ -357,7 +357,7 @@ P5 验收记录：
 - `packages/cli/src/index.ts` 已移除 `install` / `uninstall` / `upgrade` / `config reset` 的交互 flags，删除 `config configure` 注册，并改为入口层直接校验缺参和 `config reset --yes`。
 - `packages/cli/src/utils/plugin-config.ts` 的 required-config preflight 已改成纯失败路径，不再提示 `config configure`，统一引导到 `aw config set ...` 或 `aw` 主入口。
 - `packages/cli/src/commands/interactive.ts` 本轮先保留，暂不再被子命令调用，留给后续 P7 复用只读候选能力。
-- 已跑 `pnpm --filter @yiliang/aw exec vitest run tests/unit/cli-entry.test.ts tests/integration/cli-entry.test.ts`，结果为 2 个 test files 通过，85 个 tests 通过，2 个 todo。
+- 已跑 `pnpm --filter @lesliechan721/aw exec vitest run tests/unit/cli-entry.test.ts tests/integration/cli-entry.test.ts`，结果为 2 个 test files 通过，85 个 tests 通过，2 个 todo。
 
 ## P6 安全预检与 TUI 写入决策模型
 
@@ -409,7 +409,7 @@ P6 验收记录：
 
 - 新增 `packages/cli/src/commands/console-wizard.ts` 和 `packages/cli/tests/unit/console-wizard.test.ts`，提供 `resolveConsoleWriteActionPlan()`、`prepareConsoleWritePreflight()`、`createInstallWizardDecision()` 和 `executeInstallWizardDecision()`。
 - 安全预检和向导模型已覆盖阻断原因、只读顺序、触发方式文案、mixed target 配置去重、repair / cleanup 语义。
-- 已跑 `pnpm --filter @yiliang/aw exec vitest run tests/unit/console-wizard.test.ts`，13 个测试通过；`pnpm --filter @yiliang/aw exec vitest run tests/unit/codex-project-safety.test.ts`，28 个测试通过；`tsc --noEmit` 通过。
+- 已跑 `pnpm --filter @lesliechan721/aw exec vitest run tests/unit/console-wizard.test.ts`，13 个测试通过；`pnpm --filter @lesliechan721/aw exec vitest run tests/unit/codex-project-safety.test.ts`，28 个测试通过；`tsc --noEmit` 通过。
 
 ## P7 主入口 TUI 与 prompt adapter
 
@@ -469,7 +469,7 @@ P7 验收记录：
 - 新增 `packages/cli/src/commands/console.ts`，把 `status --json.consoleItems` 投影接成主控制台循环，详情页按 location 选择写动作，不做隐式多位置批量写。
 - `packages/cli/src/commands/runtime.ts` 已扩展统一 prompt 结果模型、默认 inquirer adapter、readline fallback 和可注入 console driver；`runCli([])` 现在在交互环境进入控制台，非 TTY / CI 失败并提示 `aw status`、`aw install <plugin> --platform codex --scope user`、`aw status --json`。
 - 已新增 P7 测试：`packages/cli/tests/unit/console.test.ts`、`packages/cli/tests/integration/console-entry.test.ts`，并更新 `tests/unit/runtime.test.ts`、`tests/unit/cli-entry.test.ts`、`tests/integration/cli-entry.test.ts`。
-- 已跑 `pnpm --filter @yiliang/aw exec tsc -p tsconfig.json --noEmit --pretty false`，以及 `pnpm --filter @yiliang/aw exec vitest run tests/unit/runtime.test.ts tests/unit/console.test.ts tests/unit/cli-entry.test.ts tests/integration/console-entry.test.ts tests/integration/cli-entry.test.ts`，均通过。
+- 已跑 `pnpm --filter @lesliechan721/aw exec tsc -p tsconfig.json --noEmit --pretty false`，以及 `pnpm --filter @lesliechan721/aw exec vitest run tests/unit/runtime.test.ts tests/unit/console.test.ts tests/unit/cli-entry.test.ts tests/integration/console-entry.test.ts tests/integration/cli-entry.test.ts`，均通过。
 - 依赖落地说明：`packages/cli/package.json` 已声明 `@inquirer/prompts@^7.8.4`，P9 已完成 `pnpm install`，`pnpm-lock.yaml` 锁定 `@inquirer/prompts@7.10.1`；运行时仍保留动态 import + readline fallback，便于缺依赖或非交互环境给出确定性行为。
 - 真实 TTY 验收：在 PTY 中运行编译后的 `aw`，首屏列表通过方向键移动，回车进入 `git-commit` 详情，位置页选择 `返回` 后回到首屏，再选择 `退出` 正常结束；通过 `createInquirerPrompt().password()` 验证隐藏输入只显示 `*`，不回显真实输入。
 
@@ -565,7 +565,7 @@ P9 验收记录：
 - `packages/cli/plugins-dist` 已生成 `.claude-plugin/marketplace.json`、`.agents/plugins/marketplace.json`、`plugins/git-commit` 和 `plugins/codex-explore` runtime bundle；pack smoke 能从 unpacked tarball 运行 init。
 - 非 TTY 验收：`node packages/cli/dist/index.js < /dev/null` 和 `CI=true node packages/cli/dist/index.js` 均退出 1，不挂起，并提示 `aw status`、`aw install <plugin> --platform codex --scope user`、`aw status --json`。
 - JSON receipt 手工验收：隔离 `/tmp` 环境中 `config set/unset/reset --json` 均输出单一 JSON；隔离 `/tmp` 项目中 `install git-commit --platform codex --scope project --json` 成功返回 install receipt。
-- 依赖与打包验收：`packages/cli` 下可真实 `import('@inquirer/prompts')` 并解析 `confirm/input/password/select`；随后用 `/tmp/aw-clean-pack/yiliang-aw-1.0.0-beta.0.tgz` 在 `/tmp/aw-clean-install-pnpm` 做干净目录 `pnpm add`，安装后的 tarball 包可运行 `--version`，并能从安装目录解析同一组 inquirer prompt API。
+- 依赖与打包验收：`packages/cli` 下可真实 `import('@inquirer/prompts')` 并解析 `confirm/input/password/select`；随后用 `/tmp/aw-clean-pack/lesliechan721-aw-1.0.0-beta.0.tgz` 在 `/tmp/aw-clean-install-pnpm` 做干净目录 `pnpm add`，安装后的 tarball 包可运行 `--version`，并能从安装目录解析同一组 inquirer prompt API。
 - 真实 TTY 探测：PTY 下直接运行编译后的 `aw` 进入 inquirer 控制台，没有退回 Commander help；方向键可在首屏列表移动，回车可进入插件详情，位置页选择 `返回` 后回到首屏，选择 `退出` 后正常结束。隐藏输入验收使用真实 `createInquirerPrompt().password({ mask: true })`，终端只显示掩码 `*`，不回显输入内容。
 
 ## 最终验收清单

@@ -43,12 +43,12 @@ function createManifest(catalogVersion: string, channel: 'beta' | 'latest') {
     compatibility: { aw: { minVersion: '0.0.0' } },
     packages: {
       sidecar: {
-        name: '@yiliang/aw-plugins-manifest',
+        name: '@lesliechan721/aw-plugins-manifest',
         version: catalogVersion,
         channel,
       },
       full: {
-        name: '@yiliang/aw-plugins',
+        name: '@lesliechan721/aw-plugins',
         version: catalogVersion,
         channel,
         manifestPath: './catalog-manifest.json',
@@ -155,8 +155,8 @@ describe('catalog release staging', () => {
       channel: 'beta',
       catalogVersion: '9.0.0-beta.1',
       packages: {
-        sidecar: { name: '@yiliang/aw-plugins-manifest', version: '9.0.0-beta.1' },
-        full: { name: '@yiliang/aw-plugins', version: '9.0.0-beta.1' },
+        sidecar: { name: '@lesliechan721/aw-plugins-manifest', version: '9.0.0-beta.1' },
+        full: { name: '@lesliechan721/aw-plugins', version: '9.0.0-beta.1' },
       },
       staged: {
         manifest: { catalogVersion: '9.0.0-beta.1' },
@@ -200,8 +200,8 @@ describe('catalog release staging', () => {
       catalogVersion: '9.0.0-beta.2',
       generationId: 'generation-fixture',
       packages: {
-        sidecar: { name: '@yiliang/aw-plugins-manifest', version: '9.0.0-beta.2' },
-        full: { name: '@yiliang/aw-plugins', version: '9.0.0-beta.2' },
+        sidecar: { name: '@lesliechan721/aw-plugins-manifest', version: '9.0.0-beta.2' },
+        full: { name: '@lesliechan721/aw-plugins', version: '9.0.0-beta.2' },
       },
     });
     expect(published).not.toHaveProperty('sidecarPackageRoot');

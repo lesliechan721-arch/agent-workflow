@@ -103,7 +103,7 @@
 已运行：
 
 - `node .agents/skills/create-agent-workflows-plugin/scripts/validate_plugin.js .agents/skills/create-agent-workflows-plugin/references/.examples/code-review`
-- `pnpm --filter @yiliang/aw exec vitest run tests/integration/authoring-tools.test.ts`
+- `pnpm --filter @lesliechan721/aw exec vitest run tests/integration/authoring-tools.test.ts`
 
 结果：
 

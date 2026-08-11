@@ -138,11 +138,11 @@ describe('catalog pack smoke', () => {
       schemaVersion: 2,
       packages: {
         sidecar: {
-          name: '@yiliang/aw-plugins-manifest',
+          name: '@lesliechan721/aw-plugins-manifest',
           version: sidecarManifest.catalogVersion,
         },
         full: {
-          name: '@yiliang/aw-plugins',
+          name: '@lesliechan721/aw-plugins',
           version: sidecarManifest.catalogVersion,
           manifestPath: './catalog-manifest.json',
         },
@@ -161,7 +161,7 @@ describe('catalog pack smoke', () => {
     expect(fullFiles).toContain('.agents/plugins/marketplace.json');
     expect(fullFiles).toContain('plugins/git-commit/.agents-plugin/plugin.json');
     expect(sidecarPackageJson).toMatchObject({
-      name: '@yiliang/aw-plugins-manifest',
+      name: '@lesliechan721/aw-plugins-manifest',
       version: sidecarManifest.catalogVersion,
       awCatalog: {
         kind: 'sidecar',
@@ -169,7 +169,7 @@ describe('catalog pack smoke', () => {
       },
     });
     expect(fullPackageJson).toMatchObject({
-      name: '@yiliang/aw-plugins',
+      name: '@lesliechan721/aw-plugins',
       version: sidecarManifest.catalogVersion,
       awCatalog: {
         kind: 'full',
@@ -280,11 +280,11 @@ describe('catalog pack smoke', () => {
       channel: 'beta',
     });
     expect(sidecarPackageJson).toMatchObject({
-      name: '@yiliang/aw-plugins-manifest',
+      name: '@lesliechan721/aw-plugins-manifest',
       version: catalogVersion,
     });
     expect(fullPackageJson).toMatchObject({
-      name: '@yiliang/aw-plugins',
+      name: '@lesliechan721/aw-plugins',
       version: catalogVersion,
     });
   });

@@ -7,7 +7,7 @@
 
 ## 项目定位
 
-一个 Codex + Claude Code 共用的工作流扩展项目，同时作为双端插件市场。通过 `@yiliang/aw` npm 包分发安装脚本，支持完整的安装生命周期管理。
+一个 Codex + Claude Code 共用的工作流扩展项目，同时作为双端插件市场。通过 `@lesliechan721/aw` npm 包分发安装脚本，支持完整的安装生命周期管理。
 
 仓库按“插件集合”组织。CLI 的 `install` / `uninstall` / `status` 面向插件名称集合执行，`upgrade` 额外支持全量更新。
 
@@ -52,7 +52,7 @@ agent-workflows/
 │           └── commit/
 │               └── SKILL.md          # 手动触发的提交工作流 skill
 ├── packages/
-│   └── cli/                          # @yiliang/aw npm 包
+│   └── cli/                          # @lesliechan721/aw npm 包
 │       ├── package.json
 │       ├── tsconfig.json
 │       ├── src/
@@ -157,7 +157,7 @@ skill 被调用后，指导 agent 按以下流程执行：
 
 ### Phase 3：CLI 安装工具
 
-实现 `@yiliang/aw` npm 包，承载完整生命周期。
+实现 `@lesliechan721/aw` npm 包，承载完整生命周期。
 
 - [ ] 3.1 初始化 `packages/cli/` 项目结构
   - `package.json`（bin 入口 `aw`）
@@ -416,6 +416,6 @@ CLI 层负责把用户指定的插件名称集合解析成 `PluginMeta[]`，再�
 
 - 一个可被双端识别的 Git 插件市场仓库
 - 一个 git-commit 插件，提供手动触发的提交工作流 skill，执行 Conventional Commits 规范的 git 提交
-- 一个 `@yiliang/aw` npm 包，提供 `install` / `uninstall` / `upgrade` / `status` 命令
+- 一个 `@lesliechan721/aw` npm 包，提供 `install` / `uninstall` / `upgrade` / `status` 命令
 - 双端自定义扩展的自动生成能力（规则、hooks、agent 定义）
 - 一套覆盖 manifest 同步、生成器输出和 CLI 安装流程的测试用例

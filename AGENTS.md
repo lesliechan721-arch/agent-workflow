@@ -6,7 +6,7 @@
 
 ## Overview
 
-`pnpm` monorepo，工作区定义在 `pnpm-workspace.yaml`。CLI 发布包是 `packages/cli`（`@yiliang/aw`）；插件通过独立的 sidecar/full catalog 包 `@yiliang/aw-plugins-manifest` 和 `@yiliang/aw-plugins` 分发。插件源码在 `plugins/`，插件作者工具在 `.agents/skills/create-agent-workflows-plugin/`，标准静态/AW 插件 Skill 的只读评审工具在 `.agents/skills/skill-review/`。根目录 `README.md` 面向项目使用者，`docs/` 放公开维护文档，`docs/dev/` 只作开发过程记录。
+`pnpm` monorepo，工作区定义在 `pnpm-workspace.yaml`。CLI 发布包是 `packages/cli`（`@lesliechan721/aw`）；插件通过独立的 sidecar/full catalog 包 `@lesliechan721/aw-plugins-manifest` 和 `@lesliechan721/aw-plugins` 分发。插件源码在 `plugins/`，插件作者工具在 `.agents/skills/create-agent-workflows-plugin/`，标准静态/AW 插件 Skill 的只读评审工具在 `.agents/skills/skill-review/`。根目录 `README.md` 面向项目使用者，`docs/` 放公开维护文档，`docs/dev/` 只作开发过程记录。
 
 ## Maintenance Principles
 
@@ -15,7 +15,7 @@
 ## Build & Test Commands
 
 - `pnpm install` — 安装工作区依赖
-- `pnpm build` — 编译 `@yiliang/aw`，并生成本地 catalog staging / runtime bundle（`packages/cli/plugins-dist`）
+- `pnpm build` — 编译 `@lesliechan721/aw`，并生成本地 catalog staging / runtime bundle（`packages/cli/plugins-dist`）
 - `pnpm test` — 运行全部 Vitest 用例
 - `pnpm test:unit` — 只跑单元测试
 - `pnpm test:integration` — 验证 CLI 命令编排、adapter 集成和夹具行为
@@ -37,7 +37,7 @@
 - `pnpm run release:local` / `make local-install` — 跑 CLI 本地发布验证链路，并执行本地 `npm install -g`
 - `make beta-release CLI_VERSION=x.y.z-beta.n CATALOG_VERSION=a.b.c-beta.n` — 校验并发布 CLI 测试版和 beta catalog
 - `make release CLI_VERSION=x.y.z CATALOG_VERSION=a.b.c` — 校验并发布 CLI 正式版和 latest catalog
-- `pnpm publish:cli` — 兼容旧入口；不改版本号，只发布当前已经写入的稳定版本到 `packages/cli/package.json` 的 `publishConfig.registry`
+- `pnpm publish:cli` — 兼容旧入口；不改版本号，只发布当前已经写入的稳定版本到官方 npm registry
 
 ## References
 

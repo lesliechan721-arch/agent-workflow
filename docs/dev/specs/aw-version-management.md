@@ -9,17 +9,17 @@
 
 ## 文档定位
 
-这份 Spec 只定义 `aw` CLI、插件、`@yiliang/aw-plugins` 远程 catalog 包和插件依赖版本管理的需求边界、现状探查结论、公开合同和验收标准，不写实现计划、阶段拆分、测试文件清单或迁移步骤。
+这份 Spec 只定义 `aw` CLI、插件、`@lesliechan721/aw-plugins` 远程 catalog 包和插件依赖版本管理的需求边界、现状探查结论、公开合同和验收标准，不写实现计划、阶段拆分、测试文件清单或迁移步骤。
 
 本文件以前置 TUI 返工 Spec 及其后续执行计划的已实施结果为基线：严格 SemVer、SemVer 驱动的 `可升级` 判断、`status --verbose` 诊断入口、`statusSchemaVersion: 2` / `consoleItemsSchemaVersion: 3` / `configSchemaVersion: 2` / `receiptSchemaVersion: 2` / `nextStepsSchemaVersion: 1`、显式平台选择和 SkillTrigger 内建配置都视为已存在合同。本文件继续扩展插件独立发布、独立更新、CLI 兼容性声明和依赖最小版本约束。若本文件和前置基线对本地 catalog `sourceVersion`、embedded catalog 回退或 project-only no-gate 例外的语义描述不同，以本文件的远程 catalog 拆分语义为准：CLI 版本、catalog 发布版本和插件版本必须分开管理，不能继续用 CLI package version 或 embedded bundle 代表 catalog 新鲜度。
 
 ## 背景
 
-当前项目里至少存在两套用户可见版本：`@yiliang/aw` CLI package version，以及每个插件 manifest 中的 `version`。前置基线已经把这些版本收敛到严格 SemVer 解析，并把用户可见 `可升级` 收敛为 SemVer 比较结果；但本地 catalog 的新鲜度仍把 CLI 版本、embedded bundle 和 bundle fingerprint 绑在一起，无法表达“CLI 未变，但远程插件 catalog 已更新”。
+当前项目里至少存在两套用户可见版本：`@lesliechan721/aw` CLI package version，以及每个插件 manifest 中的 `version`。前置基线已经把这些版本收敛到严格 SemVer 解析，并把用户可见 `可升级` 收敛为 SemVer 比较结果；但本地 catalog 的新鲜度仍把 CLI 版本、embedded bundle 和 bundle fingerprint 绑在一起，无法表达“CLI 未变，但远程插件 catalog 已更新”。
 
 更大的问题是插件发版依赖 CLI 发版。源码插件在 `pnpm build` 时被打进 `packages/cli/plugins-dist/`，再跟随 CLI npm 包发布。只要一个插件需要更新，即使 CLI 本身没有变化，也必须重新发布 CLI，用户也必须升级 CLI 才能拿到插件更新。这让插件迭代、修复和回滚都绑在 CLI 发布节奏上，版本责任不清晰。
 
-本轮目标是把 CLI 和插件的版本责任拆开：CLI 负责提供运行时能力、命令合同和兼容性校验；插件通过独立 npm 包 `@yiliang/aw-plugins` 发布 catalog 和全部构建后插件 artifact，并通过 sidecar npm 包 `@yiliang/aw-plugins-manifest` 发布可独立获取的轻量 catalog manifest；用户通过 `aw` 现有安装和升级流程获取当前可用 catalog 中的插件。最新 catalog 只保存当前官方最新插件快照，不在同一个 catalog 内保留历史插件 artifact 或同一插件的多版本索引；但 catalog 需要保存轻量历史版本记录，并把它作为历史兼容查询和发布递增校验的唯一版本依据。旧 CLI 需要兼容时，应通过 catalog 历史记录找到仍支持当前 CLI 的最新 catalog package version；取不到可用历史记录时，不能改用 npm registry 的历史版本信息猜测。插件依赖也需要从“只知道依赖谁”升级为“知道最低需要哪个依赖版本”，但不引入完整 semver range，避免依赖解析复杂度过早膨胀。
+本轮目标是把 CLI 和插件的版本责任拆开：CLI 负责提供运行时能力、命令合同和兼容性校验；插件通过独立 npm 包 `@lesliechan721/aw-plugins` 发布 catalog 和全部构建后插件 artifact，并通过 sidecar npm 包 `@lesliechan721/aw-plugins-manifest` 发布可独立获取的轻量 catalog manifest；用户通过 `aw` 现有安装和升级流程获取当前可用 catalog 中的插件。最新 catalog 只保存当前官方最新插件快照，不在同一个 catalog 内保留历史插件 artifact 或同一插件的多版本索引；但 catalog 需要保存轻量历史版本记录，并把它作为历史兼容查询和发布递增校验的唯一版本依据。旧 CLI 需要兼容时，应通过 catalog 历史记录找到仍支持当前 CLI 的最新 catalog package version；取不到可用历史记录时，不能改用 npm registry 的历史版本信息猜测。插件依赖也需要从“只知道依赖谁”升级为“知道最低需要哪个依赖版本”，但不引入完整 semver range，避免依赖解析复杂度过早膨胀。
 
 ## 现状探查结论
 
@@ -69,13 +69,13 @@
 
 ## 已确认决策
 
-1. 插件独立更新采用 `@yiliang/aw-plugins` npm 包模型。该包每次发布都包含一个 catalog 版本和该 catalog 引用的全部构建后插件 artifact；CLI npm 包不再携带 embedded catalog、`plugins-dist/` 插件快照或离线插件兜底。
+1. 插件独立更新采用 `@lesliechan721/aw-plugins` npm 包模型。该包每次发布都包含一个 catalog 版本和该 catalog 引用的全部构建后插件 artifact；CLI npm 包不再携带 embedded catalog、`plugins-dist/` 插件快照或离线插件兜底。
 2. Catalog manifest 和插件 manifest 都必须声明最低可用 CLI 版本。Catalog 级 `compatibility.aw.minVersion` 是整包门槛，包内任一插件 manifest 的 `compatibility.aw.minVersion` 不能高于 catalog 级门槛，避免 catalog 判定可用后插件安装又被 CLI 版本阻止。
 3. 本期明确接受 catalog 级最低 CLI 版本的整包门槛取舍：只要新 catalog 因任一插件或运行时能力要求提高了 catalog 级 `compatibility.aw.minVersion`，旧 CLI 就整体回退到历史兼容 catalog，不能继续消费该新 catalog 内其它仍可能单独兼容的插件更新。本期不做按插件过滤的细粒度兼容 catalog。
-4. 兼容性判断前，CLI 只能通过 `@yiliang/aw-plugins-manifest` sidecar npm 包读取轻量 catalog manifest；不能为了读取 manifest 先下载完整 `@yiliang/aw-plugins` artifact tarball。sidecar package 与完整 catalog package 使用相同 catalog version 和发布轨道，manifest 必须声明完整 catalog package 的 name、version 和 channel；完整 npm tarball integrity 属于 registry/package metadata 分发校验，不写入 `catalog-manifest.json`。
+4. 兼容性判断前，CLI 只能通过 `@lesliechan721/aw-plugins-manifest` sidecar npm 包读取轻量 catalog manifest；不能为了读取 manifest 先下载完整 `@lesliechan721/aw-plugins` artifact tarball。sidecar package 与完整 catalog package 使用相同 catalog version 和发布轨道，manifest 必须声明完整 catalog package 的 name、version 和 channel；完整 npm tarball integrity 属于 registry/package metadata 分发校验，不写入 `catalog-manifest.json`。
 5. 依赖版本约束本期只支持“最低依赖版本”，不支持完整 semver range、上界、peer、optional、dev 或跨 marketplace 依赖。
 6. 父插件安装或升级时，如果依赖已安装但版本低于最低要求，CLI 自动把依赖升级纳入同一依赖图预检和同一写事务。任一目标失败时，本次写命令整体失败，不能留下部分更新。
-7. 每个 `@yiliang/aw-plugins` catalog package 只包含当前快照中每个插件的一个版本；最新官方 catalog 不保留历史插件 artifact，也不在包内提供同一插件的多版本索引。Catalog manifest 必须保留轻量历史版本记录，记录已发布 catalog version、catalog 最低 CLI 版本、各插件版本、各插件最低 CLI 版本、artifact digest 和 manifest digest；运行时和发布侧只能以这份历史记录作为版本真值，不能用 npm metadata 补齐或替代。
+7. 每个 `@lesliechan721/aw-plugins` catalog package 只包含当前快照中每个插件的一个版本；最新官方 catalog 不保留历史插件 artifact，也不在包内提供同一插件的多版本索引。Catalog manifest 必须保留轻量历史版本记录，记录已发布 catalog version、catalog 最低 CLI 版本、各插件版本、各插件最低 CLI 版本、artifact digest 和 manifest digest；运行时和发布侧只能以这份历史记录作为版本真值，不能用 npm metadata 补齐或替代。
 8. 当默认 latest / beta catalog 的最低 CLI 版本高于当前 CLI 时，CLI 不能写入该不兼容 catalog；它应提示用户升级 `aw`，并根据 sidecar catalog manifest 中的历史版本记录查询仍支持当前 CLI 的最新历史 catalog package。历史记录缺失、schema 不支持、非法或不可获取时，本次 catalog 解析失败为 `catalogHistoryUnavailable`；不能改用 npm metadata 推测兼容历史版本。
 9. 官方 catalog 不允许用仅 build metadata 不同的新版本替换同一插件；需要改变 artifact 身份时必须发布一个 SemVer 优先级不同的新版本。
 10. `latest` catalog 代表稳定分发面：目标发布轨道为 `latest` 时，catalog 快照内所有插件 `version` 都必须是 stable SemVer；`beta` catalog 可以包含 stable 或 prerelease 插件版本。把 beta 插件转为 latest 发布时，任何 prerelease 插件都必须改用新的 stable 插件版本，不能把 prerelease 插件版本原样放进 latest。
@@ -89,7 +89,7 @@
 1. CLI package version、catalog 发布版本、catalog 最低 CLI 版本、插件 manifest version、插件最低 CLI 版本、已安装插件版本和依赖最低版本统一遵守严格 SemVer 2.0.0。
 2. 版本规范化只解析合法 SemVer，不自动修复或宽松接受非法输入。
 3. 插件发布从 CLI npm 包发布中解耦，单个插件版本更新不要求发布新的 CLI package。
-4. CLI 能先从 `@yiliang/aw-plugins-manifest` 获取 catalog 级兼容门槛、catalog 历史版本记录、插件版本、artifact 定位、integrity、插件兼容性和依赖最低版本信息，再在兼容性通过后从 `@yiliang/aw-plugins` 获取完整插件 artifact。
+4. CLI 能先从 `@lesliechan721/aw-plugins-manifest` 获取 catalog 级兼容门槛、catalog 历史版本记录、插件版本、artifact 定位、integrity、插件兼容性和依赖最低版本信息，再在兼容性通过后从 `@lesliechan721/aw-plugins` 获取完整插件 artifact。
 5. Catalog 能保存官方历史版本记录，使 CLI 和发布脚本不依赖 npm registry 的历史版本列表来判断兼容历史 catalog 和发布递增关系。
 6. 本地 catalog 元数据能区分 CLI 版本、catalog 版本、catalog 来源和 artifact 内容 fingerprint。
 7. CLI package 不再把 embedded catalog 或构建后插件快照作为发布内容；无网络且无与请求匹配的有效本地 catalog 缓存时，安装、升级和需要 current catalog 的发现类能力必须明确失败或展示 catalog 不可用。
@@ -103,8 +103,8 @@
 15. 父插件安装或升级时，依赖缺失或依赖版本过低都在写入前统一解析，并自动安装或升级到 current catalog 中满足最低版本的插件版本。
 16. 状态、JSON 和 TUI 能展示依赖版本比较结果，包括已安装依赖版本、最低要求、current catalog 候选版本和是否需要依赖升级。
 17. 插件 artifact 以 `name@version` 为不可变身份；同一插件版本不能被静默替换成不同内容。
-18. `@yiliang/aw-plugins` 发布、打包和 catalog 生成阶段必须阻断非法版本、缺失兼容性声明、插件最低 CLI 版本高于 catalog 门槛、无法解析的依赖最低版本、artifact integrity 不一致和历史版本记录递增关系破坏。
-19. 发布脚本必须拆分 CLI 发布和 catalog 发布，并提供显式组合发布入口；组合发布默认先发布 CLI，再发布 `@yiliang/aw-plugins`。
+18. `@lesliechan721/aw-plugins` 发布、打包和 catalog 生成阶段必须阻断非法版本、缺失兼容性声明、插件最低 CLI 版本高于 catalog 门槛、无法解析的依赖最低版本、artifact integrity 不一致和历史版本记录递增关系破坏。
+19. 发布脚本必须拆分 CLI 发布和 catalog 发布，并提供显式组合发布入口；组合发布默认先发布 CLI，再发布 `@lesliechan721/aw-plugins`。
 20. 插件作者工具、manifest 参考文档、公开安装文档、安装技术细节文档、测试指南和测试夹具必须随新版本合同同步更新。
 21. 成功安装、升级，或通过 current catalog 成功重建本地 artifact 的 repair，必须在提交表示成功的 install record 前持久化可校验 historical runtime / snapshot；后续 catalog cache 重建、轮转或清理不能删除仍被已安装位置引用的 historical runtime。
 22. 既有用户机器上的 legacy install record、本地 marketplace config 和本地 cache 必须有运行时解释规则，不能因为字段缺失或旧 schema 让状态命令崩溃或退回字符串比较。
@@ -127,11 +127,11 @@
 ### 非目标
 
 - 不在本 Spec 中写具体实现阶段、测试文件清单、迁移脚本或代码结构。
-- 不设计第三方 marketplace、多远程源优先级、信任根管理、签名体系或账号鉴权。本期只要求一个官方 npm catalog 包 `@yiliang/aw-plugins`。
+- 不设计第三方 marketplace、多远程源优先级、信任根管理、签名体系或账号鉴权。本期只要求一个官方 npm catalog 包 `@lesliechan721/aw-plugins`。
 - 不实现完整 semver range 依赖解析。依赖只支持最低版本，不支持上界、`^`、`~`、比较器组合、optional、peer、dev 或跨 marketplace 依赖。
 - 不设计 CLI 自更新机制。Catalog 更新被当前 CLI 版本阻止时，可以提示用户升级 CLI，但 `aw` 不负责自动升级自己。
 - 不支持同一 plugin/location 同时安装多个版本。
-- 不在最新 catalog 内保留同一插件的多版本 artifact 或可安装多版本索引。旧 CLI 兼容通过 catalog 历史版本记录定位历史 `@yiliang/aw-plugins` package version，再下载对应历史包；latest catalog 只保存历史元数据，不保存历史 artifact。
+- 不在最新 catalog 内保留同一插件的多版本 artifact 或可安装多版本索引。旧 CLI 兼容通过 catalog 历史版本记录定位历史 `@lesliechan721/aw-plugins` package version，再下载对应历史包；latest catalog 只保存历史元数据，不保存历史 artifact。
 - 不支持在一个对当前 CLI 不兼容的新 catalog 内按插件过滤可用项。即使其中部分插件本身仍可能兼容旧 CLI，本期也整体回退到历史兼容 catalog。
 - 不设计多维护者同时发布同一个 catalog channel 的竞态控制、分布式锁或自动冲突合并。官方发布流程可以通过串行发布控制并发；发布前只需要校验当时获取到的最新历史版本记录。
 - 不把 `aw status` 或 TUI 状态查看变成自动插件升级入口。状态可以刷新 catalog 和展示结果，但不能隐式修改已安装插件。
@@ -142,7 +142,7 @@
 
 ### CLI 版本
 
-CLI 版本指 `@yiliang/aw` 发布包的 package version，当前源头是 `packages/cli/package.json`。如果 release 流程同步根目录 `package.json`，两个 package version 必须同时满足严格 SemVer 2.0.0。
+CLI 版本指 `@lesliechan721/aw` 发布包的 package version，当前源头是 `packages/cli/package.json`。如果 release 流程同步根目录 `package.json`，两个 package version 必须同时满足严格 SemVer 2.0.0。
 
 CLI 版本表达运行时能力边界。Catalog 能否被当前 CLI 使用，先由 catalog manifest 的最低 CLI 版本声明和当前 CLI 版本比较决定；插件能否进入安装或升级流程，还要满足插件 manifest 的最低 CLI 版本声明。官方发布门禁必须保证包内所有插件的最低 CLI 版本都不高于 catalog 级最低 CLI 版本。
 
@@ -156,9 +156,9 @@ CLI 版本表达运行时能力边界。Catalog 能否被当前 CLI 使用，先
 
 ### Catalog 版本
 
-Catalog 版本指 `@yiliang/aw-plugins-manifest` 和 `@yiliang/aw-plugins` 共享的 npm package version。它描述“插件索引和全部构建后插件 artifact 这一批数据”的版本，不等于 CLI 版本，也不等于任一插件版本。Catalog 可以额外保存 revision、发布时间或内容 digest 作为不可变构建身份，但这些辅助字段不能替代 catalog version。
+Catalog 版本指 `@lesliechan721/aw-plugins-manifest` 和 `@lesliechan721/aw-plugins` 共享的 npm package version。它描述“插件索引和全部构建后插件 artifact 这一批数据”的版本，不等于 CLI 版本，也不等于任一插件版本。Catalog 可以额外保存 revision、发布时间或内容 digest 作为不可变构建身份，但这些辅助字段不能替代 catalog version。
 
-每个 catalog version 必须在 `@yiliang/aw-plugins-manifest` package metadata、`@yiliang/aw-plugins` package metadata 和 catalog manifest 中声明相同的 `compatibility.aw.minVersion`。该字段是整个 catalog package 的最低可用 CLI 版本，也是 CLI 是否能把该 catalog 写入本地 cache 的第一层门槛。包内任一插件 manifest 的 `compatibility.aw.minVersion` 都不能高于 catalog 级 `compatibility.aw.minVersion`；运行时遇到该约束被破坏时，必须把该 catalog 视为不一致，而不是先接受 catalog 再在插件安装阶段失败。
+每个 catalog version 必须在 `@lesliechan721/aw-plugins-manifest` package metadata、`@lesliechan721/aw-plugins` package metadata 和 catalog manifest 中声明相同的 `compatibility.aw.minVersion`。该字段是整个 catalog package 的最低可用 CLI 版本，也是 CLI 是否能把该 catalog 写入本地 cache 的第一层门槛。包内任一插件 manifest 的 `compatibility.aw.minVersion` 都不能高于 catalog 级 `compatibility.aw.minVersion`；运行时遇到该约束被破坏时，必须把该 catalog 视为不一致，而不是先接受 catalog 再在插件安装阶段失败。
 
 本期接受 catalog 级 `compatibility.aw.minVersion` 作为整包兼容门槛。换句话说，CLI 只会在 catalog package 这个粒度上选择 current catalog；不会在一个 catalog 级最低 CLI 版本过高的新 catalog 内筛出“单个插件仍兼容当前 CLI”的子集继续使用。这样可以保持 catalog 快照、依赖解析和 artifact integrity 的边界简单稳定，代价是旧 CLI 可能只能看到历史兼容 catalog 中的插件版本。
 
@@ -189,7 +189,7 @@ Active view 不能作为 catalog 历史查询、版本递增校验或 artifact �
 
 ### Catalog 发布轨道
 
-Catalog 发布轨道指 `@yiliang/aw-plugins-manifest` 和 `@yiliang/aw-plugins` 的官方 npm dist-tag 语义，本期只包含 `latest` 和 `beta`。发布轨道必须是 catalog package 内部可校验的真值，而不是发布后可随意移动的外部标签：
+Catalog 发布轨道指 `@lesliechan721/aw-plugins-manifest` 和 `@lesliechan721/aw-plugins` 的官方 npm dist-tag 语义，本期只包含 `latest` 和 `beta`。发布轨道必须是 catalog package 内部可校验的真值，而不是发布后可随意移动的外部标签：
 
 - `latest` 只能发布 stable SemVer catalog version，例如 `1.2.3`。
 - `beta` 只能发布 prerelease SemVer catalog version，例如 `1.2.3-beta.1`。
@@ -201,7 +201,7 @@ Catalog 发布轨道指 `@yiliang/aw-plugins-manifest` 和 `@yiliang/aw-plugins`
 
 ### Catalog 历史版本记录
 
-Catalog 历史版本记录是随 `@yiliang/aw-plugins-manifest` sidecar manifest 发布的轻量索引，并在完整 `@yiliang/aw-plugins` tarball 内保留同一份 manifest，用来保存官方已经发布过的 catalog 快照版本，以及这些快照中的插件版本和不可变摘要。它不是可安装插件索引，也不包含历史 artifact；CLI 真正安装或升级时，仍只能使用本次 current catalog package 自己携带的单版本快照。
+Catalog 历史版本记录是随 `@lesliechan721/aw-plugins-manifest` sidecar manifest 发布的轻量索引，并在完整 `@lesliechan721/aw-plugins` tarball 内保留同一份 manifest，用来保存官方已经发布过的 catalog 快照版本，以及这些快照中的插件版本和不可变摘要。它不是可安装插件索引，也不包含历史 artifact；CLI 真正安装或升级时，仍只能使用本次 current catalog package 自己携带的单版本快照。
 
 每个 catalog version 的 catalog manifest 必须带有历史版本记录。历史版本记录只能以 sidecar catalog manifest 中的字段为准；package metadata 不能作为历史兼容查询、发布递增校验或插件版本判断的依据。该记录至少包含：
 
@@ -232,13 +232,13 @@ Catalog 历史版本记录是随 `@yiliang/aw-plugins-manifest` sidecar manifest
 
 ### Current Catalog
 
-Current catalog 指当前命令或 TUI 本次使用的插件索引视图。它可以来自 sidecar manifest 判定兼容后的 `@yiliang/aw-plugins` 远程刷新结果或有效本地缓存。
+Current catalog 指当前命令或 TUI 本次使用的插件索引视图。它可以来自 sidecar manifest 判定兼容后的 `@lesliechan721/aw-plugins` 远程刷新结果或有效本地缓存。
 
 只读预检、TUI 首页 / 详情建模、安装 / 升级依赖图规划和可安装插件列表都必须直接消费已经解析出的 current catalog root。CLI package 内部的 `plugins-dist` 不再是可探测的运行时前置条件；这些入口不能为了 degraded ledger、本地 marketplace 新鲜度、skill trigger pristine default 或其它诊断目的先读取 embedded root，再把读取失败暴露给用户。
 
 每个 catalog package 是一个单版本插件快照：同一个 catalog 内每个插件名最多出现一个版本。Current catalog 面向安装和升级时只能使用该快照中的插件版本，不再在同一个 latest catalog 内按当前 CLI 解析“最高兼容插件版本”。
 
-默认 channel 的 catalog 解析流程必须先尝试最新的 `@yiliang/aw-plugins-manifest`。只有 sidecar manifest 判定目标 catalog 兼容当前 CLI 后，CLI 才能解析同版本 `@yiliang/aw-plugins` 的 identity；如果已有匹配 cache，可以直接作为本次 current catalog，否则才下载完整 catalog，校验并写入本地 cache。如果最新 catalog 要求更高 CLI，CLI 不能写入该不兼容 catalog，必须提示用户升级 `aw`，并通过 catalog 历史版本记录找到仍支持当前 CLI 的最新 catalog version。找到兼容历史 catalog 时，本次 current catalog 使用该历史 catalog，并在输出、JSON 和 verbose 诊断中说明 latest catalog 被当前 CLI 版本阻止、当前 `aw` 版本过低，以及实际使用的 catalog version。目标 catalog 被当前 CLI 版本或 catalog schema 支持范围阻止时，本次解析必须记录 `latestCatalogBlocked`。后续阻断状态必须按稳定映射收敛：历史记录缺失、schema 不受支持、非法或不可获取时，需要 current catalog 的命令失败为 `catalogHistoryUnavailable`；历史记录有效且确认没有兼容当前 CLI 的历史 catalog 时，失败为 `awVersionTooLow`，该否定结论不能被本地 cache 推翻；远程不可用、远程校验失败或其它原因导致最终拿不到已经允许使用的 current catalog，且没有允许使用的匹配 cache 时，失败为 `catalogUnavailable`。不能用本地 cache 或 npm metadata 绕过历史记录错误或历史记录给出的否定结论。Cache 快路径和 fallback 都只用于已经解析出允许使用的 catalog identity 后；命中的 cache 仍必须与本次 selector、channel / exact catalog version、schema、integrity 和最低 CLI 版本匹配。
+默认 channel 的 catalog 解析流程必须先尝试最新的 `@lesliechan721/aw-plugins-manifest`。只有 sidecar manifest 判定目标 catalog 兼容当前 CLI 后，CLI 才能解析同版本 `@lesliechan721/aw-plugins` 的 identity；如果已有匹配 cache，可以直接作为本次 current catalog，否则才下载完整 catalog，校验并写入本地 cache。如果最新 catalog 要求更高 CLI，CLI 不能写入该不兼容 catalog，必须提示用户升级 `aw`，并通过 catalog 历史版本记录找到仍支持当前 CLI 的最新 catalog version。找到兼容历史 catalog 时，本次 current catalog 使用该历史 catalog，并在输出、JSON 和 verbose 诊断中说明 latest catalog 被当前 CLI 版本阻止、当前 `aw` 版本过低，以及实际使用的 catalog version。目标 catalog 被当前 CLI 版本或 catalog schema 支持范围阻止时，本次解析必须记录 `latestCatalogBlocked`。后续阻断状态必须按稳定映射收敛：历史记录缺失、schema 不受支持、非法或不可获取时，需要 current catalog 的命令失败为 `catalogHistoryUnavailable`；历史记录有效且确认没有兼容当前 CLI 的历史 catalog 时，失败为 `awVersionTooLow`，该否定结论不能被本地 cache 推翻；远程不可用、远程校验失败或其它原因导致最终拿不到已经允许使用的 current catalog，且没有允许使用的匹配 cache 时，失败为 `catalogUnavailable`。不能用本地 cache 或 npm metadata 绕过历史记录错误或历史记录给出的否定结论。Cache 快路径和 fallback 都只用于已经解析出允许使用的 catalog identity 后；命中的 cache 仍必须与本次 selector、channel / exact catalog version、schema、integrity 和最低 CLI 版本匹配。
 
 本 Spec 把本次请求 catalog 的输入称为 catalog 选择器。选择器只能是默认 channel、显式 dist-tag 或显式 exact catalog version 三类之一。有效本地 cache 命中必须同时满足 integrity 校验、当前 CLI 兼容性和选择器匹配：
 
@@ -288,56 +288,56 @@ Current catalog 指当前命令或 TUI 本次使用的插件索引视图。它�
 
 ### Catalog 包发布
 
-官方远程 catalog 必须拆成两个独立 npm 包发布：`@yiliang/aw-plugins-manifest` 是轻量 manifest sidecar package，负责提供兼容性判断、历史版本记录和 artifact integrity 真值；`@yiliang/aw-plugins` 是完整 artifact catalog package，负责提供插件 artifact。`@yiliang/aw-plugins` 仍是 CLI 获取插件 artifact 的唯一官方远程来源。
+官方远程 catalog 必须拆成两个独立 npm 包发布：`@lesliechan721/aw-plugins-manifest` 是轻量 manifest sidecar package，负责提供兼容性判断、历史版本记录和 artifact integrity 真值；`@lesliechan721/aw-plugins` 是完整 artifact catalog package，负责提供插件 artifact。`@lesliechan721/aw-plugins` 仍是 CLI 获取插件 artifact 的唯一官方远程来源。
 
 发布合同：
 
-- `@yiliang/aw-plugins-manifest` package version 和 `@yiliang/aw-plugins` package version 都等于 catalog version，必须是严格 SemVer 2.0.0。
-- `@yiliang/aw-plugins-manifest` 和 `@yiliang/aw-plugins` 使用和 `@yiliang/aw` 相同的官方 npm registry 约定，并支持 `beta` 和 `latest` dist-tag。
+- `@lesliechan721/aw-plugins-manifest` package version 和 `@lesliechan721/aw-plugins` package version 都等于 catalog version，必须是严格 SemVer 2.0.0。
+- `@lesliechan721/aw-plugins-manifest` 和 `@lesliechan721/aw-plugins` 使用和 `@lesliechan721/aw` 相同的官方 npm registry 约定，并支持 `beta` 和 `latest` dist-tag。
 - `latest` dist-tag 只能发布 stable catalog version；`beta` dist-tag 只能发布 prerelease catalog version。
 - 同一个 catalog version 只能发布到一个正式 dist-tag。发布成功状态下，两个 catalog package 的正式 dist-tag 必须一致；发布入口不能在两包正式 dist-tag 不一致时报告成功。发布完成后不能通过移动 dist-tag 改变该 version 的 `history.channel` 语义。
-- `@yiliang/aw-plugins` 和 `@yiliang/aw` 独立发布；插件或 catalog 更新不要求重新发布 CLI。
-- `@yiliang/aw-plugins-manifest` 每个版本只包含固定路径的 `catalog-manifest.json` 和必要 package metadata，不包含插件 artifact、runtime 快照或历史 artifact。
-- 每个 `@yiliang/aw-plugins` 版本都是完整快照，不是增量包。包内必须包含该 catalog entry 引用的全部构建后插件 artifact。
+- `@lesliechan721/aw-plugins` 和 `@lesliechan721/aw` 独立发布；插件或 catalog 更新不要求重新发布 CLI。
+- `@lesliechan721/aw-plugins-manifest` 每个版本只包含固定路径的 `catalog-manifest.json` 和必要 package metadata，不包含插件 artifact、runtime 快照或历史 artifact。
+- 每个 `@lesliechan721/aw-plugins` 版本都是完整快照，不是增量包。包内必须包含该 catalog entry 引用的全部构建后插件 artifact。
 - 每个 catalog version 必须在 sidecar manifest、完整 catalog tarball 内 manifest、两个 package 的 metadata 中声明相同的 catalog 级 `compatibility.aw.minVersion`。
 - 每个 catalog version 的 sidecar manifest 和完整 catalog tarball 内 manifest 必须保存官方 catalog 历史版本记录，历史记录至少覆盖已发布 catalog version、catalog 最低 CLI 版本、各插件 version、各插件最低 CLI 版本、各插件 artifact digest 和 manifest digest。
 - 最新官方 catalog 只包含当前官方最新插件快照；同一 catalog 内每个插件名最多出现一个版本，不保留历史插件 artifact，也不提供同一插件的多版本索引。
-- 同一个 `@yiliang/aw-plugins` 版本发布后不可变，不能通过覆盖同版本 npm 包来修复 catalog 或插件内容。
+- 同一个 `@lesliechan721/aw-plugins` 版本发布后不可变，不能通过覆盖同版本 npm 包来修复 catalog 或插件内容。
 - 同一官方 catalog 源内，已经发布过的 `plugin name + plugin version` 不能在后续 catalog 版本里指向不同 digest、不同 manifest 或不同 runtime 内容；这个约束跨 `latest` 和 `beta` 生效，不随发布轨道拆分。
 - 同一官方 catalog 源内，同一插件不能用 SemVer 优先级相同但 build metadata 不同的版本作为新发布替代；只改 build metadata 不构成可发布的新插件版本。
 - Catalog 发布前必须先读取目标发布轨道最新已发布 sidecar catalog manifest 中的历史版本记录，追加本次发布记录，并校验 catalog version 严格递增、插件版本递增关系、最低 CLI 版本合法且覆盖当前快照需求。发布门禁还必须读取官方 `latest` 和 `beta` 两条可用历史记录的并集，校验跨轨道 `plugin@version` 摘要不可变和 build metadata 优先级唯一性；校验失败时不能打包或发布。
-- Catalog 发布采用完整 artifact catalog package 先就绪、sidecar manifest package 最后对外切换的合同。`@yiliang/aw-plugins` 必须先按本次 catalog version 发布或确认已存在，且通过 registry metadata、npm integrity、包内 manifest、artifact digest 和本次 staging manifest 的一致性校验；只有这些校验通过后，才能发布或提升 `@yiliang/aw-plugins-manifest` 到正式 `latest` / `beta`。
+- Catalog 发布采用完整 artifact catalog package 先就绪、sidecar manifest package 最后对外切换的合同。`@lesliechan721/aw-plugins` 必须先按本次 catalog version 发布或确认已存在，且通过 registry metadata、npm integrity、包内 manifest、artifact digest 和本次 staging manifest 的一致性校验；只有这些校验通过后，才能发布或提升 `@lesliechan721/aw-plugins-manifest` 到正式 `latest` / `beta`。
 - 正式 `latest` / `beta` 的用户可见切换点是 sidecar manifest package。发布过程中不能先让正式 sidecar 指向一个尚未完整可取、尚未校验的 full catalog version。若 full package 已成功而 sidecar 发布、校验或正式 dist-tag 设置失败，latest / beta sidecar 仍必须停留在上一成功 catalog version，发布入口可以用同一 catalog version 进入恢复重跑。
 - 恢复重跑同一 catalog version 时，发布入口必须把已经存在的一侧视为待校验事实，而不是重新覆盖：只有已发布 package 的 package metadata、catalog manifest、history release、artifact digest 和 registry integrity 都与本次生成产物一致时，才能跳过该侧并补齐另一侧或正式 dist-tag；任何不一致都必须失败并要求人工处理或发布更高 catalog version。
-- CLI npm 包不再发布 `plugins-dist/` 或等价的完整插件快照；`@yiliang/aw` 的 npm package 只发布 CLI 运行时代码和必要的命令资源。
-- 构建流程可以生成临时 staging 产物供 `@yiliang/aw-plugins` 打包使用，但这些产物不能作为 embedded catalog 随 CLI package 发布。
+- CLI npm 包不再发布 `plugins-dist/` 或等价的完整插件快照；`@lesliechan721/aw` 的 npm package 只发布 CLI 运行时代码和必要的命令资源。
+- 构建流程可以生成临时 staging 产物供 `@lesliechan721/aw-plugins` 打包使用，但这些产物不能作为 embedded catalog 随 CLI package 发布。
 
 远程 catalog 的存在不能要求用户先升级 CLI 才能看到兼容的插件新版本。只要当前 CLI 满足目标 catalog 的最低 CLI 版本，用户就应该能通过 catalog 刷新和插件升级拿到该 catalog 中的插件版本。最新 catalog 要求更高 CLI，或最新 catalog 的历史记录 schema 已超出当前 CLI 支持范围时，CLI 应提醒用户升级 `aw`，并根据 sidecar manifest 中的 catalog 历史版本记录选择仍兼容当前 CLI 的历史 catalog；历史记录不可用或查不到兼容历史 catalog 时，不能把 latest catalog 当作可用 catalog，也不能改用 npm metadata 猜测。
 
 ### Catalog 获取
 
-CLI 必须能从 npm registry 获取 `@yiliang/aw-plugins-manifest` 和 `@yiliang/aw-plugins`。前者是轻量 catalog manifest sidecar package，后者是完整 artifact catalog package。两者的 package version 都等于 catalog version，发布轨道也必须一致：
+CLI 必须能从 npm registry 获取 `@lesliechan721/aw-plugins-manifest` 和 `@lesliechan721/aw-plugins`。前者是轻量 catalog manifest sidecar package，后者是完整 artifact catalog package。两者的 package version 都等于 catalog version，发布轨道也必须一致：
 
-- 稳定版 CLI 默认先获取 `@yiliang/aw-plugins-manifest@latest`。
-- prerelease / beta CLI 默认先获取 `@yiliang/aw-plugins-manifest@beta`。
+- 稳定版 CLI 默认先获取 `@lesliechan721/aw-plugins-manifest@latest`。
+- prerelease / beta CLI 默认先获取 `@lesliechan721/aw-plugins-manifest@beta`。
 - 用户或测试流程可以通过命令级参数显式指定 catalog dist-tag 或 catalog version；dist-tag 和 catalog version 互斥，且只影响当前命令或本次 `aw init` 预热，不写入持久默认 channel。显式指定时必须体现在 JSON 和 verbose 诊断里。
 - 所有脚本化 current-catalog 消费入口必须暴露同一组 selector 参数：`--catalog-channel <dist-tag>` 用于显式 dist-tag，`--catalog-version <semver>` 用于显式 exact catalog version；两者互斥。`aw init --channel <dist-tag>` 可以作为 `--catalog-channel` 的兼容别名，但内部语义仍必须落到同一 catalog 选择器。需要覆盖的入口至少包括 `aw init`、`aw install`、`aw upgrade`、`aw upgrade --all`、`aw reinstall`、`aw status`，以及在未安装或未消费 store 上需要 current catalog schema 的 `aw config list/get/set/unset`。
 - Catalog selector 不改变前置基线的平台选择合同：公开 `--platform` 仍只有 `codex | claude | both`，不能恢复 `auto`；绑定真实插件 target 的写命令省略 `--platform` 仍应在写入前失败；`aw status` 未传 `--platform` 时仍按 `both` 查询已有证据。
 - 主控制台、TUI 状态页、发现页、可安装插件列表和可安装插件详情如果会解析 current catalog，也必须接收或继承同一 catalog 选择器。对 `aw status`、TUI 状态页这类可在无 current catalog 时继续展示本地状态的入口，selector 只影响可升级判断、候选版本、依赖候选和发现内容等 current-catalog 证据；不能因为传入 selector 而隐式修改安装状态。
 - 兼容历史 catalog 查询只适用于默认 channel 或显式 dist-tag。用户显式指定精确 catalog version 时，CLI 只校验该版本；该版本不兼容当前 CLI 时，显式 catalog 解析失败，不做历史回退，任何依赖 current catalog 的动作都必须失败。
 - CLI 可以用 npm package metadata 解析 dist-tag、tarball URL 和 npm integrity 这类分发信息；sidecar catalog manifest 负责提供目标版本的 catalog 级最低 CLI 版本、catalog version、发布轨道、历史版本记录、完整 catalog package identity 和 artifact digest。完整 npm tarball integrity 只来自 registry/package metadata，用于校验下载到的 package bytes，不能写入 `catalog-manifest.json`，也不能替代 sidecar manifest 参与兼容判断、历史查询或插件版本判断。
-- CLI 必须先下载并校验 `@yiliang/aw-plugins-manifest` 的 npm tarball integrity，再读取其中固定路径的 `catalog-manifest.json`。该 sidecar tarball 只能包含 catalog manifest 和必要 package metadata，不能包含插件 artifact 或完整 runtime 快照。
-- 只有 sidecar catalog manifest 表明目标 catalog 兼容当前 CLI 时，CLI 才能下载或继续使用对应版本的完整 `@yiliang/aw-plugins` tarball。下载后必须用 registry/package metadata 校验 npm tarball integrity，确认完整 tarball 内 catalog manifest 与 sidecar manifest byte-for-byte 一致，并校验每个插件 artifact digest，再写入本地 catalog 缓存。
-- 默认 channel 或显式 dist-tag 的目标 catalog 不兼容当前 CLI 时，CLI 必须使用目标 sidecar catalog manifest 的历史版本记录，查询同一 channel / dist-tag 语义下仍支持当前 CLI 的最新历史 catalog package。找到候选历史版本后，CLI 还必须获取同版本 `@yiliang/aw-plugins-manifest`，校验它的 sidecar manifest 与目标历史记录一致且兼容当前 CLI，然后才能下载对应版本的完整 `@yiliang/aw-plugins` tarball。
-- CLI 不能为了读取 catalog manifest、最低 CLI 版本或历史版本记录而先下载完整 `@yiliang/aw-plugins` tarball。sidecar manifest 缺失、无法下载、npm integrity 失败、schema 不受支持、内容非法或与完整 catalog package 不一致时，必须按 catalog manifest / history unavailable 或 integrity 错误处理；不能改用完整 catalog tarball、npm metadata 或 registry 版本列表补齐。
+- CLI 必须先下载并校验 `@lesliechan721/aw-plugins-manifest` 的 npm tarball integrity，再读取其中固定路径的 `catalog-manifest.json`。该 sidecar tarball 只能包含 catalog manifest 和必要 package metadata，不能包含插件 artifact 或完整 runtime 快照。
+- 只有 sidecar catalog manifest 表明目标 catalog 兼容当前 CLI 时，CLI 才能下载或继续使用对应版本的完整 `@lesliechan721/aw-plugins` tarball。下载后必须用 registry/package metadata 校验 npm tarball integrity，确认完整 tarball 内 catalog manifest 与 sidecar manifest byte-for-byte 一致，并校验每个插件 artifact digest，再写入本地 catalog 缓存。
+- 默认 channel 或显式 dist-tag 的目标 catalog 不兼容当前 CLI 时，CLI 必须使用目标 sidecar catalog manifest 的历史版本记录，查询同一 channel / dist-tag 语义下仍支持当前 CLI 的最新历史 catalog package。找到候选历史版本后，CLI 还必须获取同版本 `@lesliechan721/aw-plugins-manifest`，校验它的 sidecar manifest 与目标历史记录一致且兼容当前 CLI，然后才能下载对应版本的完整 `@lesliechan721/aw-plugins` tarball。
+- CLI 不能为了读取 catalog manifest、最低 CLI 版本或历史版本记录而先下载完整 `@lesliechan721/aw-plugins` tarball。sidecar manifest 缺失、无法下载、npm integrity 失败、schema 不受支持、内容非法或与完整 catalog package 不一致时，必须按 catalog manifest / history unavailable 或 integrity 错误处理；不能改用完整 catalog tarball、npm metadata 或 registry 版本列表补齐。
 - 如果目标 catalog 的历史版本记录缺失、schema 不受支持、非法或无法获取，兼容历史 catalog 查询必须失败。该查询能成功时，后续下载、校验和缓存写入只针对找到的兼容 catalog；查询失败时不能写入不兼容 catalog，也不能改用 npm metadata 或 registry 版本列表推测兼容历史版本。
-- CLI 不能从 `@yiliang/aw` package 内部读取 embedded catalog 或 embedded 插件 artifact。
+- CLI 不能从 `@lesliechan721/aw` package 内部读取 embedded catalog 或 embedded 插件 artifact。
 - 当前机器已有与本次 catalog 选择器匹配的有效本地缓存时，CLI 只能在目标 catalog 本身兼容，或已经通过有效历史记录解析出兼容历史 catalog identity 后，使用缓存作为 current catalog。普通命中时输出说明 catalog 来源是 cache；远程不可用 / 远程校验失败后的命中还必须暴露 cache fallback，以及缓存对应的 selector、catalog version、channel 和最低 CLI 版本。目标 catalog 的历史记录缺失、schema 不受支持、非法或无法获取，或历史记录有效且确认没有兼容当前 CLI 的历史 catalog 时，都不属于可 cache fallback 的情况。
 - 如果没有与本次选择器匹配的有效缓存，且远程 npm catalog 无法获取、无法通过校验，或已经解析出的兼容 catalog 无法取得，需要 current catalog 的命令必须失败或展示 catalog unavailable；如果历史记录确认不存在兼容 catalog，则失败为 `awVersionTooLow`。任何场景都不能回退到 CLI 包内置插件快照。
 
 ### Catalog 内容
 
-`@yiliang/aw-plugins-manifest` 的 `catalog-manifest.json` 是运行时读取 catalog manifest 的前置真值；完整 `@yiliang/aw-plugins` tarball 内也必须包含同一份 manifest。两处 manifest 必须 byte-for-byte 相同；`catalog-manifest.json` 不声明自身 digest，也不声明任一 npm tarball 的最终 integrity。不一致时按 catalog integrity 错误处理。
+`@lesliechan721/aw-plugins-manifest` 的 `catalog-manifest.json` 是运行时读取 catalog manifest 的前置真值；完整 `@lesliechan721/aw-plugins` tarball 内也必须包含同一份 manifest。两处 manifest 必须 byte-for-byte 相同；`catalog-manifest.json` 不声明自身 digest，也不声明任一 npm tarball 的最终 integrity。不一致时按 catalog integrity 错误处理。
 
 `catalog-manifest.json` 至少需要表达这些 catalog 级信息；package metadata 必须承载 npm 分发需要的 dist-tag、tarball URL、integrity 等信息，但不能作为 catalog 历史版本真值：
 
@@ -347,8 +347,8 @@ CLI 必须能从 npm registry 获取 `@yiliang/aw-plugins-manifest` 和 `@yilian
 - catalog revision、发布时间或内容 digest 这类辅助诊断信息。
 - catalog 级最低 CLI 版本，即 `compatibility.aw.minVersion`。
 - catalog 历史版本记录，即已发布 catalog version、catalog 最低 CLI 版本、插件 version、插件最低 CLI 版本、artifact digest 和 manifest digest 的轻量索引。
-- sidecar package identity，即 `@yiliang/aw-plugins-manifest` 的 package name、version 和 channel。
-- 完整 catalog package identity，即 `@yiliang/aw-plugins` 的 package name、version、channel 和 manifest 固定路径。完整 package 的 npm tarball integrity 必须从 registry/package metadata 校验，不能作为 manifest 字段。
+- sidecar package identity，即 `@lesliechan721/aw-plugins-manifest` 的 package name、version 和 channel。
+- 完整 catalog package identity，即 `@lesliechan721/aw-plugins` 的 package name、version、channel 和 manifest 固定路径。完整 package 的 npm tarball integrity 必须从 registry/package metadata 校验，不能作为 manifest 字段。
 
 `catalog-manifest.json` 对快照内每个插件版本至少需要表达这些信息：
 
@@ -362,7 +362,7 @@ CLI 必须能从 npm registry 获取 `@yiliang/aw-plugins-manifest` 和 `@yilian
 - artifact integrity digest。
 - artifact 大小、发布时间或 revision 这类辅助诊断信息。
 
-因为完整 catalog 包已经包含全部构建后插件 artifact，artifact 定位可以是 `@yiliang/aw-plugins` tarball 内相对路径或等价的稳定定位信息。无论使用哪种布局，catalog entry、完整包内 artifact 和 digest 必须能一一对应，不能要求 CLI 再从 CLI package 或源码目录补齐插件内容。
+因为完整 catalog 包已经包含全部构建后插件 artifact，artifact 定位可以是 `@lesliechan721/aw-plugins` tarball 内相对路径或等价的稳定定位信息。无论使用哪种布局，catalog entry、完整包内 artifact 和 digest 必须能一一对应，不能要求 CLI 再从 CLI package 或源码目录补齐插件内容。
 
 Catalog manifest 中每个插件 entry 的稳定身份应是 `plugin name + plugin version`。同一个 catalog package 内，插件名必须唯一；如果同一个插件名在同一个 catalog 中出现多个版本，运行时应视为 catalog 不一致，发布门禁必须提前阻断。
 
@@ -382,7 +382,7 @@ Catalog manifest 中每个插件 entry 的稳定身份应是 `plugin name + plug
 
 命令层还必须把 current catalog 解析结果传给 active local marketplace materialize 流程。需要 user-scope native runtime 的安装、升级、重装或 native repair，在调用 Claude / Codex 原生能力前必须确认 active view 已经对应本次命中的 catalog identity；如果本次命令使用了 cache fallback，也只能 materialize 该 fallback 命中的 catalog snapshot，不能沿用另一个 selector 或旧 catalog version 的 active view。
 
-Materialize active view 时，源 bundle 只能来自本次 current catalog root。即使 `@yiliang/aw` 是全局 npm 安装且包内没有 `plugins-dist`，只要 current catalog 解析成功，安装、升级和 TUI 写动作就不能报 “run `pnpm build` first” 这类 embedded bundle 错误。
+Materialize active view 时，源 bundle 只能来自本次 current catalog root。即使 `@lesliechan721/aw` 是全局 npm 安装且包内没有 `plugins-dist`，只要 current catalog 解析成功，安装、升级和 TUI 写动作就不能报 “run `pnpm build` first” 这类 embedded bundle 错误。
 
 远程不可用时：
 
@@ -449,7 +449,7 @@ CLI 下载或使用远程 artifact 前必须校验 catalog 中声明的 integrit
 
 ### Catalog 最低 CLI 版本
 
-Catalog manifest 必须新增固定字段 `compatibility.aw.minVersion` 表达整个 catalog package 的最低 CLI 版本。`@yiliang/aw-plugins-manifest` 和 `@yiliang/aw-plugins` package metadata 中也必须保存同一个值，便于 CLI 做早期诊断；真正写入 cache、选择历史 catalog 或判断插件版本时，仍必须以 sidecar catalog manifest 和 catalog 历史版本记录校验结果为准。
+Catalog manifest 必须新增固定字段 `compatibility.aw.minVersion` 表达整个 catalog package 的最低 CLI 版本。`@lesliechan721/aw-plugins-manifest` 和 `@lesliechan721/aw-plugins` package metadata 中也必须保存同一个值，便于 CLI 做早期诊断；真正写入 cache、选择历史 catalog 或判断插件版本时，仍必须以 sidecar catalog manifest 和 catalog 历史版本记录校验结果为准。
 
 ```json
 {
@@ -465,7 +465,7 @@ Catalog manifest 必须新增固定字段 `compatibility.aw.minVersion` 表达�
 
 - `minVersion` 必须是严格 SemVer 2.0.0。
 - 远程发布的 catalog 必须声明 catalog 级 `minVersion`。
-- `@yiliang/aw-plugins-manifest` metadata、`@yiliang/aw-plugins` metadata 和 catalog manifest 中的 catalog 级 `minVersion` 必须一致。
+- `@lesliechan721/aw-plugins-manifest` metadata、`@lesliechan721/aw-plugins` metadata 和 catalog manifest 中的 catalog 级 `minVersion` 必须一致。
 - catalog 级 `minVersion` 必须大于或等于包内所有插件 manifest 的 `compatibility.aw.minVersion`。
 - 当前 CLI 版本低于 catalog 级 `minVersion` 时，CLI 不能把该 catalog 写入本地 cache，也不能把其中任何插件显示为可安装或可升级。
 - 运行时发现任一 package metadata、catalog manifest 和插件 manifest 的最低 CLI 版本关系不一致时，必须把该 catalog 视为不一致。
@@ -534,7 +534,7 @@ Catalog manifest 必须包含稳定的历史版本记录字段。Package metadat
 - 当前 CLI 版本低于 `minVersion` 时，该插件版本对当前 CLI 不可安装、不可升级，也不能作为依赖自动安装候选。
 - 当前 CLI 版本等于或高于 `minVersion` 时，插件版本可以进入后续平台、scope、配置和依赖预检。
 
-如果既有源码插件缺少最低 CLI 版本，过渡期可以由实现方案定义一次性默认值或迁移方式；发布到 `@yiliang/aw-plugins` 的插件不能缺失该字段。
+如果既有源码插件缺少最低 CLI 版本，过渡期可以由实现方案定义一次性默认值或迁移方式；发布到 `@lesliechan721/aw-plugins` 的插件不能缺失该字段。
 
 ### 依赖最低版本
 
@@ -566,15 +566,15 @@ Catalog manifest 必须包含稳定的历史版本记录字段。Package metadat
 
 插件构建、插件发布和远程 catalog 生成必须统一执行这些门禁：
 
-- `@yiliang/aw-plugins-manifest` 和 `@yiliang/aw-plugins` 的 package version 必须相同，且都等于 catalog version。
-- 发布成功状态下，`@yiliang/aw-plugins-manifest` 和 `@yiliang/aw-plugins` 的发布轨道必须相同；同一 catalog version 不能只完成其中一个 package，也不能让两个 package 最终使用不同正式 dist-tag。
+- `@lesliechan721/aw-plugins-manifest` 和 `@lesliechan721/aw-plugins` 的 package version 必须相同，且都等于 catalog version。
+- 发布成功状态下，`@lesliechan721/aw-plugins-manifest` 和 `@lesliechan721/aw-plugins` 的发布轨道必须相同；同一 catalog version 不能只完成其中一个 package，也不能让两个 package 最终使用不同正式 dist-tag。
 - sidecar package 必须只包含固定路径的 `catalog-manifest.json` 和必要 package metadata，不能包含插件 artifact 或完整 runtime 快照。
 - sidecar `catalog-manifest.json` 和完整 catalog tarball 内的 catalog manifest 必须 byte-for-byte 一致；不一致时发布门禁失败。
-- sidecar manifest 中声明的完整 catalog package name、version、channel 和 manifest 固定路径必须与将要发布的 `@yiliang/aw-plugins` package 一致。完整 package 的 npm tarball integrity 只在 pack / registry metadata 层校验，不能回填进 `catalog-manifest.json`。
-- 正式 channel 切换前，`@yiliang/aw-plugins` 必须已经按同一 catalog version 发布或存在，并通过 package metadata、registry integrity、完整 catalog manifest、artifact digest 和 sidecar staging manifest 的一致性校验。sidecar manifest package 是正式 `latest` / `beta` 的最后切换点，不能先于 full package 暴露新 catalog version。
+- sidecar manifest 中声明的完整 catalog package name、version、channel 和 manifest 固定路径必须与将要发布的 `@lesliechan721/aw-plugins` package 一致。完整 package 的 npm tarball integrity 只在 pack / registry metadata 层校验，不能回填进 `catalog-manifest.json`。
+- 正式 channel 切换前，`@lesliechan721/aw-plugins` 必须已经按同一 catalog version 发布或存在，并通过 package metadata、registry integrity、完整 catalog manifest、artifact digest 和 sidecar staging manifest 的一致性校验。sidecar manifest package 是正式 `latest` / `beta` 的最后切换点，不能先于 full package 暴露新 catalog version。
 - 恢复重跑同一 catalog version 只能补齐缺失的一侧 package 或正式 dist-tag；已存在 package 必须和本次产物完全一致，不能覆盖、重打或用 package metadata 改写历史版本记录。
 - catalog 级最低 CLI 版本必须存在且是严格 SemVer。
-- `@yiliang/aw-plugins-manifest` metadata、`@yiliang/aw-plugins` metadata 和 catalog manifest 的 catalog 级最低 CLI 版本必须一致。
+- `@lesliechan721/aw-plugins-manifest` metadata、`@lesliechan721/aw-plugins` metadata 和 catalog manifest 的 catalog 级最低 CLI 版本必须一致。
 - catalog 历史版本记录必须存在、schema version 合法，且最后一条记录必须对应本次准备发布的 catalog version。
 - catalog 历史版本记录的 `channel` 必须匹配本次发布 dist-tag。
 - catalog version 必须符合 dist-tag 的版本类型约束：`latest` 只接受 stable version，`beta` 只接受 prerelease version。
@@ -712,7 +712,7 @@ Catalog 刷新只改变“可见的 current catalog”。插件升级才改变�
 
 移除 embedded catalog 后，`aw init` 的语义必须从“把 CLI npm 包内的插件快照同步到 `~/.aw`”改成“预热远程 catalog 和 artifact cache”：
 
-- `aw init` 先拉取当前 channel 的 `@yiliang/aw-plugins-manifest`。latest sidecar manifest 表明 catalog 兼容当前 CLI 时，再解析对应版本完整 `@yiliang/aw-plugins` 的 identity；如果已有匹配 cache，默认 `aw init` 可以直接复用，未命中时才拉取完整 catalog，用 registry/package metadata 校验 sidecar 和完整 catalog 的 npm integrity，确认两处 manifest byte-for-byte 一致，并校验 artifact digest 后写入本地 catalog/cache；latest catalog 不兼容当前 CLI 时，按同一 catalog 解析规则优先利用 sidecar manifest 中的 catalog 历史版本记录查询历史兼容 catalog，查到后只预热该兼容 catalog。
+- `aw init` 先拉取当前 channel 的 `@lesliechan721/aw-plugins-manifest`。latest sidecar manifest 表明 catalog 兼容当前 CLI 时，再解析对应版本完整 `@lesliechan721/aw-plugins` 的 identity；如果已有匹配 cache，默认 `aw init` 可以直接复用，未命中时才拉取完整 catalog，用 registry/package metadata 校验 sidecar 和完整 catalog 的 npm integrity，确认两处 manifest byte-for-byte 一致，并校验 artifact digest 后写入本地 catalog/cache；latest catalog 不兼容当前 CLI 时，按同一 catalog 解析规则优先利用 sidecar manifest 中的 catalog 历史版本记录查询历史兼容 catalog，查到后只预热该兼容 catalog。
 - `aw init --force` 可以强制重新拉取和重建本地 catalog / artifact cache，但仍不能从 CLI package 内部恢复 embedded 插件快照，也不能删除仍被已安装位置或恢复证据引用的 historical runtime。
 - `aw init` 不安装插件，不升级已安装插件，不写平台 runtime，不修改 install record，也不清理已安装位置的 historical runtime；它只准备后续命令会使用的 current catalog/cache。
 - 远程不可用时，已有与本次选择器匹配的有效缓存的默认 `aw init` 可以报告 cache fallback；没有匹配缓存时，`aw init` 必须失败并说明 catalog unavailable。
@@ -747,25 +747,25 @@ Catalog 刷新只改变“可见的 current catalog”。插件升级才改变�
 
 ### CLI 发布入口
 
-CLI 发布入口只负责 `@yiliang/aw`：
+CLI 发布入口只负责 `@lesliechan721/aw`：
 
 - CLI version 仍来自 `packages/cli/package.json`，根目录 `package.json` 如继续作为工作区版本镜像，必须和 CLI version 同步。
 - CLI 发布验证只保证 CLI 运行时代码、命令合同、fetch/cache catalog 能力和兼容性校验正确。
 - CLI npm tarball 不能包含 `plugins-dist/` 或等价的完整插件 artifact 快照。
 - `prepack`、`pack:cli`、`release:pack`、`release:publish:*` 和 Makefile release 入口必须避免把插件 staging 产物重新带回 CLI tarball。
-- CLI-only 发布不要求生成、打包或发布 `@yiliang/aw-plugins-manifest` 或 `@yiliang/aw-plugins`。
+- CLI-only 发布不要求生成、打包或发布 `@lesliechan721/aw-plugins-manifest` 或 `@lesliechan721/aw-plugins`。
 
 ### Catalog 发布入口
 
-Catalog 发布入口负责同一个 catalog version 下的 `@yiliang/aw-plugins-manifest` 和 `@yiliang/aw-plugins`：
+Catalog 发布入口负责同一个 catalog version 下的 `@lesliechan721/aw-plugins-manifest` 和 `@lesliechan721/aw-plugins`：
 
-- Catalog version 独立于 CLI version，由 `@yiliang/aw-plugins-manifest` 和 `@yiliang/aw-plugins` 的相同 package version 表达。
+- Catalog version 独立于 CLI version，由 `@lesliechan721/aw-plugins-manifest` 和 `@lesliechan721/aw-plugins` 的相同 package version 表达。
 - Catalog 发布脚本必须在构建可发布包前获取目标发布轨道最新已发布 sidecar catalog manifest 的历史版本记录；除目标轨道首次发布外，获取失败、schema 不兼容或历史记录无法校验都必须让发布失败。
 - Catalog 发布脚本还必须获取官方 `latest` 和 `beta` 两条可用发布轨道的最新 sidecar catalog manifest，把它们的历史版本记录合并为只读发布门禁输入，校验同一官方 catalog 源内 `plugin@version` 的 artifact digest / manifest digest 不可变，以及同一插件没有使用 SemVer 优先级相同但 build metadata 不同的替代版本。某条轨道尚未发布时可以视为空历史；已存在轨道的历史记录无法获取或无法校验时，本次发布必须失败。
-- Catalog 发布脚本必须构建全部源码插件，生成完整 catalog 快照，计算每个 artifact digest 和 manifest digest，并生成一份 canonical `catalog-manifest.json`。这份 manifest 必须同时写入 `@yiliang/aw-plugins-manifest` sidecar package 和完整 `@yiliang/aw-plugins` package。
-- `@yiliang/aw-plugins-manifest` tarball 只能包含 `catalog-manifest.json` 和必要 package metadata；`@yiliang/aw-plugins` tarball 必须包含同一份 manifest 和所有构建后插件 artifact。
+- Catalog 发布脚本必须构建全部源码插件，生成完整 catalog 快照，计算每个 artifact digest 和 manifest digest，并生成一份 canonical `catalog-manifest.json`。这份 manifest 必须同时写入 `@lesliechan721/aw-plugins-manifest` sidecar package 和完整 `@lesliechan721/aw-plugins` package。
+- `@lesliechan721/aw-plugins-manifest` tarball 只能包含 `catalog-manifest.json` 和必要 package metadata；`@lesliechan721/aw-plugins` tarball 必须包含同一份 manifest 和所有构建后插件 artifact。
 - Catalog 发布脚本必须把本次准备发布的 catalog version、catalog 最低 CLI 版本、插件 version、插件最低 CLI 版本、artifact digest 和 manifest digest 追加进历史版本记录，再把更新后的历史记录写入本次 catalog manifest；package metadata 不能作为历史版本记录的替代输出。
-- Catalog 发布脚本必须采用完整包先就绪、sidecar 最后切换的 two-phase 流程：先构建并校验 staging manifest 和两个 tarball，再发布或确认同版本 `@yiliang/aw-plugins`，校验 registry metadata、npm integrity、完整包内 manifest 与 sidecar staging manifest 一致，并校验 artifact digest；最后发布或提升同版本 `@yiliang/aw-plugins-manifest` 到正式 `latest` / `beta`，并做两包 package identity、channel、manifest 一致性终检。
+- Catalog 发布脚本必须采用完整包先就绪、sidecar 最后切换的 two-phase 流程：先构建并校验 staging manifest 和两个 tarball，再发布或确认同版本 `@lesliechan721/aw-plugins`，校验 registry metadata、npm integrity、完整包内 manifest 与 sidecar staging manifest 一致，并校验 artifact digest；最后发布或提升同版本 `@lesliechan721/aw-plugins-manifest` 到正式 `latest` / `beta`，并做两包 package identity、channel、manifest 一致性终检。
 - sidecar manifest package 或它的正式 dist-tag 是用户通过默认 channel 看到新 catalog 的最终切换点。full package 已成功但 sidecar 或正式 dist-tag 失败时，发布入口不能报告成功，也不能移动 sidecar 指向半成品；维护者可以重跑同一 catalog version 的 catalog 发布入口，重跑时必须复用并校验已存在 full package，再补齐 sidecar 或正式 dist-tag。
 - 如果同一 catalog version 的 full package 或 sidecar package 已存在但内容、metadata、history release、artifact digest 或 manifest digest 与本次 staging 产物不一致，恢复重跑必须失败；发布流程不能覆盖已发布 npm version，维护者必须人工处理或发布更高 catalog version。
 - Catalog 发布脚本必须支持 `beta` 和 `latest` dist-tag，并使用和 CLI 一致的官方 registry 约定。
@@ -776,14 +776,14 @@ Catalog 发布入口负责同一个 catalog version 下的 `@yiliang/aw-plugins-
 - 发布门禁失败时必须报错并停止发布，包括本次 catalog version 未高于目标发布轨道历史最高 catalog version、`latest` catalog 包含 prerelease 插件 version、同一 `plugin@version` 的 artifact digest 或 manifest digest 与官方 `latest` / `beta` 历史记录并集不一致、插件 artifact 相对目标发布轨道历史变化但插件 version 未高于目标发布轨道历史最高版本、同插件仅 build metadata 不同、最低 CLI 版本非法、缺失、不一致，或最低 CLI 版本不能覆盖当前快照真实需求。
 - sidecar package 或完整 catalog package 任一侧发布、校验或 dist-tag 设置失败时，Catalog 发布入口都不能报告成功。输出必须明确指出失败发生在 sidecar manifest package、完整 catalog package 还是二者一致性校验。
 - 本期不需要处理两个发布进程同时追加同一份历史记录的竞态；官方发布流程应保证 catalog 发布串行执行。
-- Catalog-only 发布不要求修改或发布 `@yiliang/aw`。
+- Catalog-only 发布不要求修改或发布 `@lesliechan721/aw`。
 
 ### 组合发布入口
 
 仓库可以保留一个 convenience 组合发布入口，但它必须显式编排两个独立发布流程：
 
 - 组合发布需要分别接收或确定 CLI version 与 catalog version，不能用一个版本号隐式代表两者。
-- 组合发布默认先发布 `@yiliang/aw`，再发布同一 catalog version 的 `@yiliang/aw-plugins-manifest` 和 `@yiliang/aw-plugins`。
+- 组合发布默认先发布 `@lesliechan721/aw`，再发布同一 catalog version 的 `@lesliechan721/aw-plugins-manifest` 和 `@lesliechan721/aw-plugins`。
 - 组合发布前必须分别跑 CLI 发布验证和 catalog 发布验证；任一验证失败都不能开始发布。
 - 如果 CLI 发布成功但 catalog 发布失败，脚本不能声称整体成功，也不能尝试不可靠的自动回滚；输出必须明确说明 CLI 已发布、sidecar / 完整 catalog 的发布状态，并给出可重跑的 catalog 发布入口。
 - 组合发布不能成为唯一入口；维护者必须能只发布 CLI 或只发布 catalog。
@@ -792,10 +792,10 @@ Catalog 发布入口负责同一个 catalog version 下的 `@yiliang/aw-plugins-
 
 本地发布验证需要拆分：
 
-- CLI pack / smoke 要验证 `@yiliang/aw` tarball 不含 embedded catalog 或完整插件 artifact。
-- Sidecar pack / smoke 要验证 `@yiliang/aw-plugins-manifest` tarball 只含 `catalog-manifest.json` 和必要 package metadata，manifest 中有 catalog schema version、catalog 级最低 CLI 版本、catalog 历史版本记录、完整 catalog package identity、每个插件的单版本快照，以及 history releases 中每个插件的 `artifactDigest` / `manifestDigest`；manifest 不能包含自身 digest 或任一 npm tarball 的最终 integrity。
-- Catalog pack / smoke 要验证 `@yiliang/aw-plugins` tarball 含与 sidecar 一致的完整 catalog manifest、全部构建后插件 artifact 和 digest 元数据。
-- Fetch smoke 要覆盖 CLI 先从本地或测试 registry 的 `@yiliang/aw-plugins-manifest` 解析 current catalog，兼容后再下载 `@yiliang/aw-plugins` tarball；latest catalog 要求更高 CLI 时优先按 sidecar manifest 的历史版本记录查询历史兼容 catalog，并在 sidecar 缺失、manifest 不可用、无缓存且 catalog 不可用时给出 catalog unavailable。
+- CLI pack / smoke 要验证 `@lesliechan721/aw` tarball 不含 embedded catalog 或完整插件 artifact。
+- Sidecar pack / smoke 要验证 `@lesliechan721/aw-plugins-manifest` tarball 只含 `catalog-manifest.json` 和必要 package metadata，manifest 中有 catalog schema version、catalog 级最低 CLI 版本、catalog 历史版本记录、完整 catalog package identity、每个插件的单版本快照，以及 history releases 中每个插件的 `artifactDigest` / `manifestDigest`；manifest 不能包含自身 digest 或任一 npm tarball 的最终 integrity。
+- Catalog pack / smoke 要验证 `@lesliechan721/aw-plugins` tarball 含与 sidecar 一致的完整 catalog manifest、全部构建后插件 artifact 和 digest 元数据。
+- Fetch smoke 要覆盖 CLI 先从本地或测试 registry 的 `@lesliechan721/aw-plugins-manifest` 解析 current catalog，兼容后再下载 `@lesliechan721/aw-plugins` tarball；latest catalog 要求更高 CLI 时优先按 sidecar manifest 的历史版本记录查询历史兼容 catalog，并在 sidecar 缺失、manifest 不可用、无缓存且 catalog 不可用时给出 catalog unavailable。
 - 版本同步脚本需要区分 CLI version 和 catalog version，不能继续只用根目录 package version 表达全部发布身份。
 
 ## CLI、JSON 与 TUI 公开合同
@@ -877,7 +877,7 @@ TUI 首页和详情页继续沿用前置 Spec 的状态模型和“不可展示 
 - 修改依赖最低版本、最低 CLI 版本或平台能力时必须重新发布插件 artifact 和 catalog entry。
 - 同一插件版本发布后不可变，不能靠覆盖 artifact 来修复内容。
 - Catalog 发布流程会读取历史版本记录中的 artifact digest 和 manifest digest 校验版本递增；插件内容变化但没有 bump 插件 version 时会在发布前失败。
-- 构建后的插件 staging 目录、`@yiliang/aw-plugins-manifest` manifest 包和 `@yiliang/aw-plugins` artifact 包内容都是生成产物，不手改；远程 artifact 必须由发布流程生成。
+- 构建后的插件 staging 目录、`@lesliechan721/aw-plugins-manifest` manifest 包和 `@lesliechan721/aw-plugins` artifact 包内容都是生成产物，不手改；远程 artifact 必须由发布流程生成。
 
 脚手架和校验工具应在作者创建、验证或发布插件时尽早发现非法版本，而不是等用户安装时失败。至少要在创建或校验阶段阻断缺失 `compatibility.aw.minVersion`、非法插件 `version`、非法插件最低 CLI 版本、非法 `dependencies.plugins[].minVersion`、仍使用旧式 `dependencies.plugins[].version` / `range` 字段，以及插件最低 CLI 版本高于目标 catalog 级最低 CLI 版本的情况。
 
@@ -885,11 +885,11 @@ TUI 首页和详情页继续沿用前置 Spec 的状态模型和“不可展示 
 
 1. CLI、catalog version、catalog 最低 CLI 版本、插件 manifest、插件最低 CLI 版本、依赖最低版本和已安装版本都使用同一套严格 SemVer 解析和比较规则。
 2. 非法版本值在构建、打包、发布或运行时比较前被阻断，错误信息包含字段路径和值。
-3. `@yiliang/aw-plugins-manifest` 和 `@yiliang/aw-plugins` 使用相同 catalog version 和发布轨道；sidecar manifest、完整 catalog tarball 内 manifest 和 package metadata 都声明相同的 catalog 级最低 CLI 版本；缺失、不一致或非法时发布门禁失败。
+3. `@lesliechan721/aw-plugins-manifest` 和 `@lesliechan721/aw-plugins` 使用相同 catalog version 和发布轨道；sidecar manifest、完整 catalog tarball 内 manifest 和 package metadata 都声明相同的 catalog 级最低 CLI 版本；缺失、不一致或非法时发布门禁失败。
 4. 包内任一插件 manifest 的最低 CLI 版本高于 catalog 级最低 CLI 版本时，发布门禁失败；运行时遇到这类 catalog 时按 catalog 不一致处理。验收接受 catalog 级最低 CLI 版本是整包门槛，不要求旧 CLI 在不兼容的新 catalog 中筛选仍兼容的单个插件。
-5. 插件可以通过 `@yiliang/aw-plugins` 发布新版本，用户不升级 CLI 也能在当前 CLI 满足目标 catalog 最低 CLI 版本时看到并安装该插件版本。
+5. 插件可以通过 `@lesliechan721/aw-plugins` 发布新版本，用户不升级 CLI 也能在当前 CLI 满足目标 catalog 最低 CLI 版本时看到并安装该插件版本。
 6. 最新官方 catalog 只包含当前官方最新插件快照；同一 catalog package 内每个插件名最多出现一个版本，不包含同一插件的历史多版本 artifact 或可安装索引，但包含 catalog 历史版本记录。
-7. CLI 先获取并校验 `@yiliang/aw-plugins-manifest`，只有 sidecar manifest 表明目标 catalog 兼容当前 CLI 后，才下载或使用完整 `@yiliang/aw-plugins` tarball；CLI 不能为了读取 manifest 或历史记录而先下载完整 artifact tarball。完整 package 的 npm tarball integrity 从 registry/package metadata 校验，不是 `catalog-manifest.json` 字段。
+7. CLI 先获取并校验 `@lesliechan721/aw-plugins-manifest`，只有 sidecar manifest 表明目标 catalog 兼容当前 CLI 后，才下载或使用完整 `@lesliechan721/aw-plugins` tarball；CLI 不能为了读取 manifest 或历史记录而先下载完整 artifact tarball。完整 package 的 npm tarball integrity 从 registry/package metadata 校验，不是 `catalog-manifest.json` 字段。
 8. latest catalog 的最低 CLI 版本高于当前 CLI 时，CLI 不写入该 catalog，输出提示升级 `aw`，并按 sidecar manifest 中的 catalog 历史版本记录查询仍支持当前 CLI 的最新历史 catalog package。历史记录 schema 超出当前 CLI 支持范围时，查询失败为 `catalogHistoryUnavailable`，不能改用 npm metadata 或本地 cache 绕过。
 9. latest catalog 不兼容且查到历史兼容 catalog 时，CLI 获取并校验该历史版本的 sidecar manifest 和完整 catalog tarball，使用该历史 catalog 作为 current catalog，并在默认输出、JSON 和 verbose 诊断中说明 latest catalog 被当前 CLI 版本阻止。
 10. latest catalog 不兼容时，sidecar manifest 或历史版本记录缺失、schema 不受支持、非法或不可获取会让需要 current catalog 的命令失败为 `catalogHistoryUnavailable`；CLI 不能改用完整 catalog tarball、npm metadata 或 registry 版本列表推测兼容历史版本。有效历史记录确认查不到兼容 catalog 时固定失败为 `awVersionTooLow`，不能用本地 cache fallback 改写；只有已经解析出允许使用的兼容 catalog identity 后，远程获取或校验失败才可以按选择器命中 cache fallback。
@@ -908,14 +908,14 @@ TUI 首页和详情页继续沿用前置 Spec 的状态模型和“不可展示 
 23. 同一 `plugin@version` 指向不同 artifact digest 时，CLI 视为 catalog integrity 错误，不能显示为升级。
 24. 已安装版本和 current catalog 插件版本只存在 build metadata 差异时，不能显示为 `可升级`。
 25. `aw status`、TUI 首页、catalog/cache 刷新和 `aw init` 预热不会隐式升级已安装插件。
-26. 稳定版 CLI 默认获取 `@yiliang/aw-plugins-manifest@latest`，prerelease / beta CLI 默认获取 `@yiliang/aw-plugins-manifest@beta`，兼容性通过后再获取同版本 `@yiliang/aw-plugins`；`latest` 只接受 stable catalog version 和 stable 插件 version，`beta` 只接受 prerelease catalog version 且可包含 stable 或 prerelease 插件 version，同一个 catalog version 不能跨轨道复用；`aw init`、安装、升级、重装、状态查看、发现类入口，以及需要 current catalog schema 的未安装配置入口，都能通过 `--catalog-channel <dist-tag>` 或 `--catalog-version <semver>` 显式覆盖 catalog 选择器；显式覆盖只影响当前命令或本次 `aw init` 预热，并且 JSON、verbose 输出和 TUI 状态能看见请求 selector 与实际 catalog identity。
+26. 稳定版 CLI 默认获取 `@lesliechan721/aw-plugins-manifest@latest`，prerelease / beta CLI 默认获取 `@lesliechan721/aw-plugins-manifest@beta`，兼容性通过后再获取同版本 `@lesliechan721/aw-plugins`；`latest` 只接受 stable catalog version 和 stable 插件 version，`beta` 只接受 prerelease catalog version 且可包含 stable 或 prerelease 插件 version，同一个 catalog version 不能跨轨道复用；`aw init`、安装、升级、重装、状态查看、发现类入口，以及需要 current catalog schema 的未安装配置入口，都能通过 `--catalog-channel <dist-tag>` 或 `--catalog-version <semver>` 显式覆盖 catalog 选择器；显式覆盖只影响当前命令或本次 `aw init` 预热，并且 JSON、verbose 输出和 TUI 状态能看见请求 selector 与实际 catalog identity。
 27. 远程 catalog 不可用且没有与本次选择器匹配的有效缓存时，需要 current catalog 的安装、升级和发现类命令不能回退到 embedded catalog，必须给出 catalog unavailable；远程 catalog 或有效缓存可用时，这些入口也不能因为 CLI package 内没有 `plugins-dist`、`.claude-plugin/marketplace.json` 或 `.agents/plugins/marketplace.json` 而失败。
 28. 远程 catalog 可达但完整包 npm integrity、sidecar/full manifest byte-for-byte 一致性或 artifact digest 校验失败时，如果已有与本次选择器匹配的有效本地缓存且不属于必须失败的历史记录错误，可以使用 cache fallback；输出、JSON 和 TUI 必须同时暴露 `cacheFallback` 以及 `manifestMismatch` / `integrityFailure` 等原始远程校验错误，不能写入失败的远程 catalog 或 artifact。没有匹配缓存时必须失败，且不能回退到 embedded catalog。
 29. `aw init` 拉取、校验并预热最新兼容 catalog/cache，不安装或升级插件，也不写 install record、active local marketplace 或平台 runtime；latest catalog 不兼容且历史记录有效、查不到历史兼容 catalog 时返回 `awVersionTooLow`；历史记录缺失、schema 不受支持、非法或不可获取时返回 `catalogHistoryUnavailable`；远程不可用或远程校验失败且没有匹配 cache 时返回 `catalogUnavailable`。
 30. `config`、`status --verbose`、`cleanup`、`uninstall`、`repair`、`reinstall`、主控制台和发现类入口在 current catalog unavailable 时有明确边界：可展示或处理已有本地证据的只读/清理动作可以继续；已有安装位置的 schema-aware config 在 historical schema 健康且无 schema conflict 时可以继续；`config reset` 对已消费 store 必须删除 store 后按 installed historical runtime 刷新命中的 dynamic artifact，schema conflict 时只能作为整 store 清理动作继续，孤立残留 store 才允许 raw 删除且不刷新 artifact；`uninstall` 不依赖 current catalog，但 historical runtime 缺失、摘要不可信或 legacy 证据不足时必须 fail closed 并暴露 `historicalRuntimeUnavailable` / `uninstallBlocked`；依赖 current catalog 的未安装插件配置预置、安装、升级、发现、依赖解析、`reinstall` 和选择 current catalog 版本动作必须禁用或失败；`reinstall` 不能改用 historical runtime 证据重建已安装版本，且已有安装位置需要撤销旧 lifecycle、dynamic artifact 或 native 副作用时，historical runtime 不可信必须在新安装前 fail closed。`aw diagnose` 旧入口只验收迁移错误，不验收诊断 payload。
 31. Legacy install record 缺少依赖 `minVersion`、旧本地 catalog cache、非 SemVer `resolvedVersion` 等场景都有稳定用户可见状态，且不会退回字符串比较或 embedded fallback。
-32. CLI 发布脚本和 catalog 发布脚本可以独立运行；catalog 发布采用 `@yiliang/aw-plugins` 完整包先就绪、`@yiliang/aw-plugins-manifest` 或正式 dist-tag 最后切换的流程；full package 已成功但 sidecar / dist-tag 失败时，同一 catalog version 的恢复重跑只能在已存在 package 与本次产物完全一致时补齐缺失侧，不能覆盖已发布 package；组合发布入口默认先发布 `@yiliang/aw`，再发布同一 catalog version 的 catalog 包。
-33. CLI tarball smoke 能证明不含 embedded catalog 或完整插件 artifact；sidecar tarball smoke 能证明 `@yiliang/aw-plugins-manifest` 只含 `catalog-manifest.json` 和必要 package metadata，并带 catalog 历史版本记录及 history releases 中每个插件的 `artifactDigest` / `manifestDigest`，且 manifest 不包含自身 digest 或任一 npm tarball 的最终 integrity；catalog tarball smoke 能证明 `@yiliang/aw-plugins` 包含与 sidecar byte-for-byte 一致的完整 catalog manifest、全部构建后插件 artifact、artifact digest 和 manifest digest 元数据。
+32. CLI 发布脚本和 catalog 发布脚本可以独立运行；catalog 发布采用 `@lesliechan721/aw-plugins` 完整包先就绪、`@lesliechan721/aw-plugins-manifest` 或正式 dist-tag 最后切换的流程；full package 已成功但 sidecar / dist-tag 失败时，同一 catalog version 的恢复重跑只能在已存在 package 与本次产物完全一致时补齐缺失侧，不能覆盖已发布 package；组合发布入口默认先发布 `@lesliechan721/aw`，再发布同一 catalog version 的 catalog 包。
+33. CLI tarball smoke 能证明不含 embedded catalog 或完整插件 artifact；sidecar tarball smoke 能证明 `@lesliechan721/aw-plugins-manifest` 只含 `catalog-manifest.json` 和必要 package metadata，并带 catalog 历史版本记录及 history releases 中每个插件的 `artifactDigest` / `manifestDigest`，且 manifest 不包含自身 digest 或任一 npm tarball 的最终 integrity；catalog tarball smoke 能证明 `@lesliechan721/aw-plugins` 包含与 sidecar byte-for-byte 一致的完整 catalog manifest、全部构建后插件 artifact、artifact digest 和 manifest digest 元数据。
 34. Catalog 发布前会读取目标发布轨道最新已发布 sidecar catalog manifest 的历史版本记录，追加本次 catalog version、catalog 最低 CLI 版本、插件 version、插件最低 CLI 版本、artifact digest 和 manifest digest；无法读取或校验目标轨道历史记录时，除目标轨道首次发布外必须失败。发布门禁还会读取官方 `latest` 和 `beta` 两条可用历史记录的并集；已存在轨道的历史记录无法读取或校验时，不能跳过跨轨道不可变校验继续发布。
 35. Catalog 发布门禁会校验 catalog version 在目标发布轨道内严格递增、`latest` catalog 不含 prerelease 插件 version、sidecar/full catalog package identity 一致、两份 catalog manifest byte-for-byte 一致、同一 `plugin@version` 的 artifact digest 和 manifest digest 与官方 `latest` / `beta` 历史记录并集完全一致、插件 artifact 相对目标轨道历史变化时插件 version 严格递增、同插件不使用仅 build metadata 不同的替代版本、最低 CLI 版本合法且覆盖当前快照真实需求；任何不满足都会报错并停止发布。最低 CLI 版本低于历史 release 的门槛不是失败条件。
 36. 插件作者文档、作者技能、manifest 参考文档、安装文档、安装技术细节文档、测试指南和架构文档都同步描述新的版本、兼容性、依赖最低版本、`latest` / `beta` 对插件 prerelease version 的发布约束、sidecar manifest 包、catalog 单版本快照、catalog 历史版本记录、`artifactDigest` / `manifestDigest` 不可变摘要、历史兼容 catalog 回退、catalog cache 与 active local marketplace/runtime view 分层、`aw config` schema source 优先级、`aw config reset` 的 installed-consumer / orphan-store 分支、`aw init` 预热合同，以及 CLI tarball 不再携带 embedded catalog / `plugins-dist/` 作为正式分发真值。

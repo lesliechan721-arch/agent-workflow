@@ -43,7 +43,7 @@ function stripCorepackBootstrapNoise(stderr: string): string {
     .filter((line) => (
       line.trim() !== '' &&
       !line.startsWith('! Corepack is about to download ') &&
-      line !== "$ pnpm --filter @yiliang/aw plugin:test -- git-commit --test-name 'staged smoke generated test'" &&
+      line !== "$ pnpm --filter @lesliechan721/aw plugin:test -- git-commit --test-name 'staged smoke generated test'" &&
       line !== "$ tsc -p tsconfig.json && node dist/scripts/test-plugin-scripts.js -- git-commit --test-name 'staged smoke generated test'"
     ))
     .join('\n');

@@ -19,8 +19,8 @@
 
 已执行验证
 
-- `pnpm --filter @yiliang/aw exec vitest run tests/unit/marketplace-registry-errors.test.ts tests/unit/release-common-error-classification.test.ts tests/unit/publish-release-script.test.ts tests/unit/plugin-catalog-resolvers.test.ts tests/integration/cli-entry-json-harness.test.ts`：通过（5 个测试文件，24 个测试全部通过）。
-- `pnpm --filter @yiliang/aw exec vitest run --config vitest.smoke.config.ts tests/smoke/catalog-fetch-smoke.test.ts`：通过（1 个测试文件，2 个测试全部通过；smoke 用 `pnpm build` 生成 dist 后再验证 sidecar / full fetch 路径）。
+- `pnpm --filter @lesliechan721/aw exec vitest run tests/unit/marketplace-registry-errors.test.ts tests/unit/release-common-error-classification.test.ts tests/unit/publish-release-script.test.ts tests/unit/plugin-catalog-resolvers.test.ts tests/integration/cli-entry-json-harness.test.ts`：通过（5 个测试文件，24 个测试全部通过）。
+- `pnpm --filter @lesliechan721/aw exec vitest run --config vitest.smoke.config.ts tests/smoke/catalog-fetch-smoke.test.ts`：通过（1 个测试文件，2 个测试全部通过；smoke 用 `pnpm build` 生成 dist 后再验证 sidecar / full fetch 路径）。
 - 静态复核 [packages/cli/src/utils/marketplace.ts](/Users/LeslieChan/.codex/worktrees/f091/agent-workflows/packages/cli/src/utils/marketplace.ts:305)、[packages/cli/src/utils/marketplace.ts](/Users/LeslieChan/.codex/worktrees/f091/agent-workflows/packages/cli/src/utils/marketplace.ts:337)、[scripts/release/common.mjs](/Users/LeslieChan/.codex/worktrees/f091/agent-workflows/scripts/release/common.mjs:230)、[scripts/release/common.mjs](/Users/LeslieChan/.codex/worktrees/f091/agent-workflows/scripts/release/common.mjs:624)、[scripts/release/common.mjs](/Users/LeslieChan/.codex/worktrees/f091/agent-workflows/scripts/release/common.mjs:651)、[scripts/release/publish-release.mjs](/Users/LeslieChan/.codex/worktrees/f091/agent-workflows/scripts/release/publish-release.mjs:72)：确认第五轮两个高优先级 finding 的真实调用链已经闭环，当前 diff 里没有再看到新的阻断或中高优先级回退。
 
 第五轮复审
@@ -67,8 +67,8 @@ Findings
 
 已执行验证
 
-- `pnpm --filter @yiliang/aw exec vitest run tests/unit/release-common-error-classification.test.ts tests/unit/publish-release-script.test.ts tests/unit/plugin-catalog-resolvers.test.ts tests/integration/cli-entry-json-harness.test.ts`：通过（4 个测试文件，20 个测试全部通过）。
-- `pnpm --filter @yiliang/aw exec vitest run --config vitest.smoke.config.ts tests/smoke/catalog-fetch-smoke.test.ts`：通过（1 个测试文件，2 个测试全部通过）。
+- `pnpm --filter @lesliechan721/aw exec vitest run tests/unit/release-common-error-classification.test.ts tests/unit/publish-release-script.test.ts tests/unit/plugin-catalog-resolvers.test.ts tests/integration/cli-entry-json-harness.test.ts`：通过（4 个测试文件，20 个测试全部通过）。
+- `pnpm --filter @lesliechan721/aw exec vitest run --config vitest.smoke.config.ts tests/smoke/catalog-fetch-smoke.test.ts`：通过（1 个测试文件，2 个测试全部通过）。
 - 静态复核 [packages/cli/src/utils/marketplace.ts](/Users/LeslieChan/.codex/worktrees/f091/agent-workflows/packages/cli/src/utils/marketplace.ts:305)、[packages/cli/src/utils/marketplace.ts](/Users/LeslieChan/.codex/worktrees/f091/agent-workflows/packages/cli/src/utils/marketplace.ts:327)、[scripts/release/common.mjs](/Users/LeslieChan/.codex/worktrees/f091/agent-workflows/scripts/release/common.mjs:230)、[scripts/release/common.mjs](/Users/LeslieChan/.codex/worktrees/f091/agent-workflows/scripts/release/common.mjs:620)、[scripts/release/common.mjs](/Users/LeslieChan/.codex/worktrees/f091/agent-workflows/scripts/release/common.mjs:647)：确认当前回归网没有覆盖到两个真实坏路径，因此第四轮 finding 仍未关闭，history dist-tag 路径还存在新的 fail-open。
 
 第四轮复审
@@ -108,8 +108,8 @@ Findings
 
 已执行验证
 
-- `pnpm --filter @yiliang/aw exec vitest run tests/unit/release-common-error-classification.test.ts tests/unit/publish-release-script.test.ts tests/unit/plugin-catalog-resolvers.test.ts tests/integration/cli-entry-json-harness.test.ts`：通过（4 个测试文件，18 个测试全部通过）。
-- `pnpm --filter @yiliang/aw exec vitest run --config vitest.smoke.config.ts tests/smoke/catalog-fetch-smoke.test.ts`：通过（1 个测试文件，2 个测试全部通过）。
+- `pnpm --filter @lesliechan721/aw exec vitest run tests/unit/release-common-error-classification.test.ts tests/unit/publish-release-script.test.ts tests/unit/plugin-catalog-resolvers.test.ts tests/integration/cli-entry-json-harness.test.ts`：通过（4 个测试文件，18 个测试全部通过）。
+- `pnpm --filter @lesliechan721/aw exec vitest run --config vitest.smoke.config.ts tests/smoke/catalog-fetch-smoke.test.ts`：通过（1 个测试文件，2 个测试全部通过）。
 - 静态复核 [scripts/release/common.mjs](/Users/LeslieChan/.codex/worktrees/f091/agent-workflows/scripts/release/common.mjs:230)、[scripts/release/common.mjs](/Users/LeslieChan/.codex/worktrees/f091/agent-workflows/scripts/release/common.mjs:614)、[scripts/release/common.mjs](/Users/LeslieChan/.codex/worktrees/f091/agent-workflows/scripts/release/common.mjs:688)、[scripts/release/publish-release.mjs](/Users/LeslieChan/.codex/worktrees/f091/agent-workflows/scripts/release/publish-release.mjs:72)：确认第三轮 malformed history metadata fail-open 已关闭，且失败时不会进入 CLI publish。
 
 第三轮复审
@@ -147,6 +147,6 @@ Findings
 
 已执行验证
 
-- `pnpm --filter @yiliang/aw exec vitest run tests/unit/publish-release-script.test.ts tests/unit/plugin-catalog-resolvers.test.ts tests/integration/cli-entry-json-harness.test.ts`：通过。覆盖组合发布 preflight 顺序、digest helper 对齐、cache 写失败 retained root，以及 `init --json` 失败 receipt。
-- `pnpm --filter @yiliang/aw exec vitest run --config vitest.smoke.config.ts tests/smoke/catalog-fetch-smoke.test.ts`：通过。确认 staged sidecar/full catalog 会被真实 fetch/validate 路径消费，且 latest 不兼容时仍按 history 回退兼容 catalog。
+- `pnpm --filter @lesliechan721/aw exec vitest run tests/unit/publish-release-script.test.ts tests/unit/plugin-catalog-resolvers.test.ts tests/integration/cli-entry-json-harness.test.ts`：通过。覆盖组合发布 preflight 顺序、digest helper 对齐、cache 写失败 retained root，以及 `init --json` 失败 receipt。
+- `pnpm --filter @lesliechan721/aw exec vitest run --config vitest.smoke.config.ts tests/smoke/catalog-fetch-smoke.test.ts`：通过。确认 staged sidecar/full catalog 会被真实 fetch/validate 路径消费，且 latest 不兼容时仍按 history 回退兼容 catalog。
 - 静态复核 [scripts/release/common.mjs](/Users/LeslieChan/.codex/worktrees/f091/agent-workflows/scripts/release/common.mjs:398)、[scripts/release/common.mjs](/Users/LeslieChan/.codex/worktrees/f091/agent-workflows/scripts/release/common.mjs:782)、[scripts/release/common.mjs](/Users/LeslieChan/.codex/worktrees/f091/agent-workflows/scripts/release/common.mjs:811)、[scripts/release/publish-release.mjs](/Users/LeslieChan/.codex/worktrees/f091/agent-workflows/scripts/release/publish-release.mjs:72)：确认 catalog-specific preflight 已前置，且 publish / dist-tag 仍只在 `publishCatalogRelease()` 阶段执行。

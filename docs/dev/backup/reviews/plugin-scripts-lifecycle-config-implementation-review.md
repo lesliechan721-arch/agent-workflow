@@ -46,8 +46,8 @@
 - `tests/integration/authoring-tools.test.ts`
 - `tests/integration/runtime-env.test.ts`
 - `tests/integration/upgrade-command.test.ts`
-- `pnpm --filter @yiliang/aw test:smoke:plugin-scripts` 通过，共 1 个 smoke 测试。
-- `pnpm --filter @yiliang/aw test:smoke:build` 通过，共 4 个 smoke 测试。
+- `pnpm --filter @lesliechan721/aw test:smoke:plugin-scripts` 通过，共 1 个 smoke 测试。
+- `pnpm --filter @lesliechan721/aw test:smoke:build` 通过，共 4 个 smoke 测试。
 
 本次修复后，报告里提到的两类覆盖空白已经补齐：
 
@@ -58,7 +58,7 @@
 本次修复后额外复跑：
 
 - `pnpm build` 通过。
-- `pnpm --filter @yiliang/aw exec vitest run tests/integration/cli.test.ts tests/integration/upgrade-command.test.ts tests/integration/plugin-lifecycle-command.test.ts` 通过，共 42 个测试。
+- `pnpm --filter @lesliechan721/aw exec vitest run tests/integration/cli.test.ts tests/integration/upgrade-command.test.ts tests/integration/plugin-lifecycle-command.test.ts` 通过，共 42 个测试。
 - `pnpm test:integration` 通过，共 151 个集成测试。
 
 ## 结论

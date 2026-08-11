@@ -32,7 +32,7 @@
 ### 开发 TODO
 
 - [x] 调整仓库根 `package.json`，提供统一的 `build`、`test`、`test:unit`、`test:integration`、`test:coverage`、`test:smoke*`、`pack:cli` 入口。
-- [x] 调整 `packages/cli/package.json`，补齐 `files`、`publishConfig`、`prepack`，并让 `build` 固定执行 `tsc -p tsconfig.json && node dist/scripts/bundle-plugins.js`。
+- [x] 调整 `packages/cli/package.json`，补齐 `files`、`prepack`，不再固定私有 registry，并让 `build` 固定执行 `tsc -p tsconfig.json && node dist/scripts/bundle-plugins.js`。
 - [x] 调整 `packages/cli/tsconfig.json`，把 `scripts/**/*.ts` 纳入编译输入。
 - [x] 调整 `packages/cli/vitest.config.ts`，把 `tests/smoke/**` 从常规测试集合剥离。
 - [x] 更新 `.gitignore`，忽略 `packages/cli/plugins-dist`。

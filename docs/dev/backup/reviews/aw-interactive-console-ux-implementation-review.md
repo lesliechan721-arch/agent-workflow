@@ -24,6 +24,6 @@
 - `pnpm test:smoke:build`：通过
 - `pnpm test:unit`：通过
 - `pnpm test:integration`：通过
-- `pnpm --filter @yiliang/aw test:smoke:pack`：通过
+- `pnpm --filter @lesliechan721/aw test:smoke:pack`：通过
 
 补充说明：第一次把 `test:unit` / `test:integration` 和 `test:smoke:build` 并行触发时，少数依赖 `packages/cli/plugins-dist` 的用例会先报“先跑 `pnpm build`”。这属于验证顺序问题，不是产品缺陷；在 `smoke:build` 完成后重跑，相关用例已全部通过。

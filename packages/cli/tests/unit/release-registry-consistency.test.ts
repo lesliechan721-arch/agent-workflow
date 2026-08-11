@@ -57,7 +57,7 @@ async function createCatalogPackageFixture(
   tempRoots.push(root);
   const packageJsonPath = path.join(root, 'package.json');
   await fs.writeFile(packageJsonPath, `${JSON.stringify({
-    name: kind === 'sidecar' ? '@yiliang/aw-plugins-manifest' : '@yiliang/aw-plugins',
+    name: kind === 'sidecar' ? '@lesliechan721/aw-plugins-manifest' : '@lesliechan721/aw-plugins',
     version: '2.0.0-beta.1',
     files: ['catalog-manifest.json'],
   }, null, 2)}\n`);
@@ -294,7 +294,7 @@ describe('release registry consistency', () => {
         env: NodeJS.ProcessEnv,
       ) => {
         receivedEnvs.push(env);
-        return { packageName: '@yiliang/aw-plugins-manifest', version: '2.0.0-beta.1' };
+        return { packageName: '@lesliechan721/aw-plugins-manifest', version: '2.0.0-beta.1' };
       }),
       resolveCatalogPackageIdentityByVersion: vi.fn(async (
         _packageName: string,
@@ -303,7 +303,7 @@ describe('release registry consistency', () => {
       ) => {
         receivedEnvs.push(env);
         return {
-          packageName: '@yiliang/aw-plugins',
+          packageName: '@lesliechan721/aw-plugins',
           version: '2.0.0-beta.1',
           integrity: publishedPackage.integrity,
         };
@@ -368,7 +368,7 @@ describe('release registry consistency', () => {
     expect(commandRunner).toHaveBeenNthCalledWith(2, 'npm', [
       'dist-tag',
       'add',
-      '@yiliang/aw-plugins@2.0.0-beta.1',
+      '@lesliechan721/aw-plugins@2.0.0-beta.1',
       'beta',
       '--registry',
       expectedRegistryUrl,
@@ -392,7 +392,7 @@ describe('release registry consistency', () => {
       registryUrl: 'https://registry.example.test/',
       marketplace: {
         resolveCatalogPackageIdentityByVersion: vi.fn(async () => ({
-          packageName: '@yiliang/aw-plugins-manifest',
+          packageName: '@lesliechan721/aw-plugins-manifest',
           version: '2.0.0-beta.1',
           integrity: publishedPackage.integrity,
         })),
@@ -423,7 +423,7 @@ describe('release registry consistency', () => {
       registryUrl: 'https://registry.example.test/',
       marketplace: {
         resolveCatalogPackageIdentityByVersion: vi.fn(async () => ({
-          packageName: '@yiliang/aw-plugins',
+          packageName: '@lesliechan721/aw-plugins',
           version: '2.0.0-beta.1',
           integrity: publishedPackage.integrity,
         })),
@@ -453,8 +453,8 @@ describe('release registry consistency', () => {
         marketplace: {
           resolveCatalogPackageIdentityByVersion: vi.fn(async () => ({
             packageName: kind === 'sidecar'
-              ? '@yiliang/aw-plugins-manifest'
-              : '@yiliang/aw-plugins',
+              ? '@lesliechan721/aw-plugins-manifest'
+              : '@lesliechan721/aw-plugins',
             version: '2.0.0-beta.1',
             integrity: publishedPackage.integrity,
           })),
@@ -492,7 +492,7 @@ describe('release registry consistency', () => {
       registryUrl: 'https://registry.example.test/',
       marketplace: {
         resolveCatalogPackageIdentityByVersion: vi.fn(async () => ({
-          packageName: '@yiliang/aw-plugins-manifest',
+          packageName: '@lesliechan721/aw-plugins-manifest',
           version: '2.0.0-beta.1',
           integrity: publishedArchive.integrity,
         })),
@@ -534,7 +534,7 @@ describe('release registry consistency', () => {
       registryUrl: 'https://registry.example.test/',
       marketplace: {
         resolveCatalogPackageIdentityByVersion: vi.fn(async () => ({
-          packageName: '@yiliang/aw-plugins',
+          packageName: '@lesliechan721/aw-plugins',
           version: '2.0.0-beta.1',
           integrity: publishedArchive.integrity,
         })),
@@ -568,7 +568,7 @@ describe('release registry consistency', () => {
       registryUrl: 'https://registry.example.test/',
       marketplace: {
         resolveCatalogPackageIdentityByVersion: vi.fn(async () => ({
-          packageName: '@yiliang/aw-plugins',
+          packageName: '@lesliechan721/aw-plugins',
           version: '2.0.0-beta.1',
           integrity,
         })),

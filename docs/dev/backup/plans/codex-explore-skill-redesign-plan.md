@@ -192,7 +192,7 @@ P1 执行记录：
 
 - 已接入 `codex.skill` 的类型、manifest schema、artifact plan 校验、generated artifact / install-state identity、Codex project capability 和 historical fallback。`codex.skill` 当前被识别为 project-managed `skill`，不再走 `.codex/config.toml` backed instruction / role 假设。
 - P1 只完成 schema、identity、plan 和 capability 基础；staging、apply、refresh、repair、uninstall 和 status/diagnose expected tree 留到 P2 之后实现。
-- 验证命令：`pnpm --filter @yiliang/aw exec vitest run tests/unit/manifest.test.ts tests/unit/artifact-plan.test.ts tests/unit/generated-artifacts.test.ts tests/unit/install-state-schema.test.ts tests/unit/codex-project-installability.test.ts tests/unit/codex-project-platform-gates.test.ts tests/unit/codex-project-read-only-catalog.test.ts tests/unit/codex-project-safety.test.ts`，结果为 8 个测试文件、120 个测试全部通过。
+- 验证命令：`pnpm --filter @lesliechan721/aw exec vitest run tests/unit/manifest.test.ts tests/unit/artifact-plan.test.ts tests/unit/generated-artifacts.test.ts tests/unit/install-state-schema.test.ts tests/unit/codex-project-installability.test.ts tests/unit/codex-project-platform-gates.test.ts tests/unit/codex-project-read-only-catalog.test.ts tests/unit/codex-project-safety.test.ts`，结果为 8 个测试文件、120 个测试全部通过。
 
 ### 阶段 P2：动态 Skill Staging 与 Trigger Patch
 
@@ -222,7 +222,7 @@ P2 执行记录：
 
 - 已新增 `packages/cli/src/utils/codex-skill-staging.ts`，用 renderer plan 的 `content.skillFile` / `content.openaiYaml` 生成 dynamic staging / expected tree，并按当前 `skillTriggerPreference` patch `agents/openai.yaml`。
 - 静态 skill trigger materialization 入口已统一排除 manifest 中声明为 `codex.skill` 的同名 `skillKey`；install / upgrade / repair / refresh 主链路、shared runtime owner replay、本地 marketplace rebuild replay 和 uninstall rematerialize 会继承这套排除规则，避免把 dynamic skill 写回静态 runtime。
-- 验证命令：`pnpm --filter @yiliang/aw exec vitest run tests/unit/skill-trigger-preferences.test.ts tests/unit/artifact-plan.test.ts tests/unit/install-state-shared-runtime-owner.test.ts tests/unit/local-marketplace.test.ts tests/unit/uninstall-command.test.ts tests/unit/repair-command.test.ts`，结果为 6 个测试文件、85 个测试全部通过。
+- 验证命令：`pnpm --filter @lesliechan721/aw exec vitest run tests/unit/skill-trigger-preferences.test.ts tests/unit/artifact-plan.test.ts tests/unit/install-state-shared-runtime-owner.test.ts tests/unit/local-marketplace.test.ts tests/unit/uninstall-command.test.ts tests/unit/repair-command.test.ts`，结果为 6 个测试文件、85 个测试全部通过。
 
 ### 阶段 P3：Project Scope Apply 闭环
 
@@ -254,7 +254,7 @@ P3 执行记录：
 - Project scope 已接入 `codex.skill` apply，按 renderer 输出和当前 trigger preference 写入 `.agents/skills/<skillKey>`，tracking / install-state / project artifact identity 记录 `target = "codex.skill"`、`artifactKey = skillKey`、`contentDigest` 和 `configDigest`。
 - Project scope 的 install、status、diagnose、repair、uninstall 已按 repo-managed skill 语义处理，不再要求 `.codex/config.toml`；repair 重新走 renderer + staging，不从 embedded static skill 复制。
 - 非 AW-owned 同名 skill、path-only adopt-existing、uninstall 后外部同名 skill 保护都已有测试覆盖。
-- 验证命令包含 P3/P4 合并子集及补验收子集；最终补验收命令 `pnpm --filter @yiliang/aw exec vitest run tests/unit/codex-project-safety.test.ts tests/unit/repair-command.test.ts tests/unit/uninstall-command.test.ts tests/unit/cleanup-command.test.ts tests/integration/codex-explore-plugin.test.ts tests/unit/install-state-evidence.test.ts` 通过，6 个测试文件、99 个测试全部通过。
+- 验证命令包含 P3/P4 合并子集及补验收子集；最终补验收命令 `pnpm --filter @lesliechan721/aw exec vitest run tests/unit/codex-project-safety.test.ts tests/unit/repair-command.test.ts tests/unit/uninstall-command.test.ts tests/unit/cleanup-command.test.ts tests/integration/codex-explore-plugin.test.ts tests/unit/install-state-evidence.test.ts` 通过，6 个测试文件、99 个测试全部通过。
 
 ### 阶段 P4：User Scope Runtime 可见性闭环
 
@@ -318,7 +318,7 @@ P5 执行记录：
 - `aw config set/unset/reset` 与 `reapplyConfigRefresh()` 已覆盖 `codex.skill`。user config 写入会刷新 user target，并在当前 repo 可定位时刷新 current-project target；project shared config 只刷新当前 repo project target。
 - Refresh 成功后会同步 install record、project artifact identity 和 dynamic diagnostic cache 的 `configDigest`、`contentDigest`、accepted state、`lastRefresh`、`refreshReach`；失败时保留上一份 accepted digest，只写 failure 摘要，不重放 lifecycle，不恢复旧 instruction / role。
 - Receipt / JSON 输出补充 attempted artifact、trigger keys、scope reach、success/failure 和 next steps。
-- 验证命令：`pnpm --filter @yiliang/aw exec vitest run tests/unit/artifact-refresh.test.ts tests/unit/config-write.test.ts tests/unit/command-receipt.test.ts tests/unit/diagnose-command.test.ts tests/unit/status-dependencies.test.ts tests/integration/codex-explore-plugin.test.ts`，结果为 6 个测试文件、74 个测试全部通过。
+- 验证命令：`pnpm --filter @lesliechan721/aw exec vitest run tests/unit/artifact-refresh.test.ts tests/unit/config-write.test.ts tests/unit/command-receipt.test.ts tests/unit/diagnose-command.test.ts tests/unit/status-dependencies.test.ts tests/integration/codex-explore-plugin.test.ts`，结果为 6 个测试文件、74 个测试全部通过。
 
 ### 阶段 P6：Status / Diagnose / Repair 期望树
 
@@ -348,7 +348,7 @@ P6 执行记录：
 - 默认 `status` / `diagnose` 保持只读，不执行 renderer；它们通过 dynamic diagnostic cache、tracking digest 和当前 config digest 判断 drift、config stale 与 recent refresh failed。
 - `diagnose --deep` 会为 `codex.skill` 渲染当前 expected tree 并输出文件级差异来源；repair 会重新渲染、应用 trigger patch、写回 project/user runtime，user scope repair 会刷新 native cache。
 - 已移除的旧 instruction / role tracking 不再被当作当前 manifest 的缺失能力隐式修复；旧基线迁移仍按非目标边界处理。
-- P6/P7 合并验证命令：`pnpm --filter @yiliang/aw exec vitest run tests/unit/status-dependencies.test.ts tests/unit/diagnose-command.test.ts tests/unit/repair-command.test.ts tests/unit/adapter-status.test.ts tests/unit/upgrade-command.test.ts tests/unit/cleanup-command.test.ts tests/unit/uninstall-command.test.ts tests/unit/install-state-status-projection.test.ts tests/unit/local-marketplace.test.ts tests/integration/codex-explore-plugin.test.ts`，结果为 10 个测试文件、142 个测试全部通过。
+- P6/P7 合并验证命令：`pnpm --filter @lesliechan721/aw exec vitest run tests/unit/status-dependencies.test.ts tests/unit/diagnose-command.test.ts tests/unit/repair-command.test.ts tests/unit/adapter-status.test.ts tests/unit/upgrade-command.test.ts tests/unit/cleanup-command.test.ts tests/unit/uninstall-command.test.ts tests/unit/install-state-status-projection.test.ts tests/unit/local-marketplace.test.ts tests/integration/codex-explore-plugin.test.ts`，结果为 10 个测试文件、142 个测试全部通过。
 
 ### 阶段 P7：Stale Prune、Cleanup 与卸载清理
 
@@ -519,7 +519,7 @@ P11 执行记录：
 - 该发布判断已由 `/Users/LeslieChan/Desktop/codex` 源码复核支撑：role 文案偏 `codebase questions`，但 `spawn_agent` runtime 会继承父 turn 的有效工具、权限、developer instructions、sandbox/permission 等配置；因此 workflow 可以通过 prompt 要求 explorer 使用当前会话可用的代码库、文档、网络、日志和用户材料。
 - 已将 `plugins/codex-explore/skills/codex-explore/SKILL.md` 和 `agents/openai.yaml` 的公开定位恢复为通用只读探索与多源证据总结；同时保留工具可用性、联网要求、官方文档优先和无法访问时说明限制的约束。
 - 旧会话限制：如果某个已打开 Codex 会话已经带入旧 lightweight instruction，本轮不会修改当前会话上下文；新安装、新刷新和新会话不会再生成或注入旧 instruction / role。
-- 用户复核后，已同步更新 spec、计划、公开文档和作者工具中的 P0/P11 contract 文案，删除旧的代码库专用发布判断。补充验收命令：`node plugins/codex-explore/scripts/render-artifacts.test.mjs`、`node .agents/skills/create-agent-workflows-plugin/scripts/validate_plugin.js plugins/codex-explore`、`pnpm --filter @yiliang/aw exec vitest run tests/integration/codex-explore-plugin.test.ts tests/smoke/build-smoke.test.ts tests/smoke/pack-smoke.test.ts`、`pnpm --filter @yiliang/aw test:smoke:build`、`pnpm --filter @yiliang/aw test:smoke:pack` 均通过；其中常规 Vitest 命令只命中 integration 文件，smoke 文件已按专用 smoke config 单独补跑。
+- 用户复核后，已同步更新 spec、计划、公开文档和作者工具中的 P0/P11 contract 文案，删除旧的代码库专用发布判断。补充验收命令：`node plugins/codex-explore/scripts/render-artifacts.test.mjs`、`node .agents/skills/create-agent-workflows-plugin/scripts/validate_plugin.js plugins/codex-explore`、`pnpm --filter @lesliechan721/aw exec vitest run tests/integration/codex-explore-plugin.test.ts tests/smoke/build-smoke.test.ts tests/smoke/pack-smoke.test.ts`、`pnpm --filter @lesliechan721/aw test:smoke:build`、`pnpm --filter @lesliechan721/aw test:smoke:pack` 均通过；其中常规 Vitest 命令只命中 integration 文件，smoke 文件已按专用 smoke config 单独补跑。
 
 ## 测试重点
 

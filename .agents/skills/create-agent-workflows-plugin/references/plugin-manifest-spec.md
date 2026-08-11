@@ -9,7 +9,7 @@
 | `name` | string | 是 | 小写短横线格式，必须与目录名一致 |
 | `version` | string | 是 | 严格 SemVer，例如 `0.1.0`；插件内容身份变化时必须递增 |
 | `description` | string | 是 | 非空字符串 |
-| `compatibility` | object | 是 | 目前只支持 `compatibility.aw.minVersion`，声明插件 artifact 需要的最低 `@yiliang/aw` CLI 版本；不要声明最低 Codex 或 Claude Code 版本 |
+| `compatibility` | object | 是 | 目前只支持 `compatibility.aw.minVersion`，声明插件 artifact 需要的最低 `@lesliechan721/aw` CLI 版本；不要声明最低 Codex 或 Claude Code 版本 |
 | `skills` | string | 否 | 单个路径，`./` 开头，指向 skills 目录 |
 | `slashCommands` | string | 否 | 单个路径，`./` 开头，指向公共 slash command 源目录；首版只接受根目录直属 `*.md` 和保留 `assets/` |
 | `mcpServers` | string | 否 | 单个路径，`./` 开头，指向 `.mcp.json` |
@@ -29,8 +29,8 @@
 
 AW 版本管理里有三套身份，不能混用：
 
-- CLI version：`@yiliang/aw` 自身的版本，代表命令和运行时能力。
-- Catalog version：`@yiliang/aw-plugins-manifest` 与 `@yiliang/aw-plugins` 的共同 package version，代表一次官方 catalog 快照。
+- CLI version：`@lesliechan721/aw` 自身的版本，代表命令和运行时能力。
+- Catalog version：`@lesliechan721/aw-plugins-manifest` 与 `@lesliechan721/aw-plugins` 的共同 package version，代表一次官方 catalog 快照。
 - Plugin version：单个插件 manifest 的 `version`，代表该插件 artifact 的不可变身份。
 
 插件更新通过 catalog 包独立发布，不要求同步发布 CLI。只要用户当前 CLI 满足 catalog 和插件的 `compatibility.aw.minVersion`，用户就可以看到并安装新的插件版本。
@@ -62,7 +62,7 @@ AW 版本管理里有三套身份，不能混用：
 
 发布门禁不查询 earlier catalog manifest，也不证明全部已发布 `plugin@version` 的全局不可变性。插件 version 是否准确表达内容变化是作者合同；自动门禁只校验 current candidate 内的身份字段和同一 catalog version 的 exact-version package 内容。
 
-`@yiliang/aw-plugins-manifest` sidecar 包和 `@yiliang/aw-plugins` full catalog 包使用相同 schema 2 manifest、catalog version、channel 和 catalog 级最低 CLI 版本。sidecar 只包含 current `catalog-manifest.json` 和必要 package metadata；full 包包含同一份 manifest 以及 current 单版本快照的全部插件 artifact。
+`@lesliechan721/aw-plugins-manifest` sidecar 包和 `@lesliechan721/aw-plugins` full catalog 包使用相同 schema 2 manifest、catalog version、channel 和 catalog 级最低 CLI 版本。sidecar 只包含 current `catalog-manifest.json` 和必要 package metadata；full 包包含同一份 manifest 以及 current 单版本快照的全部插件 artifact。
 
 ## scripts / config block
 
@@ -387,8 +387,8 @@ Catalog staging（生成产物，不手改）
            │  catalog 发布
            ▼
 远程 catalog（独立于 CLI 发布）
-  @yiliang/aw-plugins-manifest       sidecar：current catalog-manifest.json 和 digest 真值
-  @yiliang/aw-plugins                full：同一份 manifest + 当前快照的全部插件 artifact
+  @lesliechan721/aw-plugins-manifest       sidecar：current catalog-manifest.json 和 digest 真值
+  @lesliechan721/aw-plugins                full：同一份 manifest + 当前快照的全部插件 artifact
            │
            │  aw init / install / upgrade 解析 current catalog
            ▼
@@ -396,7 +396,7 @@ Catalog staging（生成产物，不手改）
   ~/.aw/                             catalog cache、active view、config 和 lifecycle active store
 ```
 
-这些层各有职责，排查问题时先确认问题在哪一层。`@yiliang/aw` CLI tarball 不再把 embedded catalog、`plugins-dist/` 或完整插件 artifact 作为正式分发真值；插件更新通过 catalog 包独立发布。
+这些层各有职责，排查问题时先确认问题在哪一层。`@lesliechan721/aw` CLI tarball 不再把 embedded catalog、`plugins-dist/` 或完整插件 artifact 作为正式分发真值；插件更新通过 catalog 包独立发布。
 
 project shared config 位于 `.agent-workflows/plugin-config/`，可提交；`.agent-workflows/plugin-config.local/` 是本机私有覆盖层，默认应被 ignore。平台输出本身通过各文件或目录中的 AW owner marker 标识归属。
 

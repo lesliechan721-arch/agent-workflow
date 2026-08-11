@@ -157,7 +157,7 @@ describe('pack smoke', () => {
     expect(unpackedFiles.some((file) => file.startsWith('.release/'))).toBe(false);
     expect(snapshotEntriesAfter).toEqual(snapshotEntriesBefore);
     await expect(fs.readJson(path.join(unpackedPackageRoot, 'package.json'))).resolves.toMatchObject({
-      name: '@yiliang/aw',
+      name: '@lesliechan721/aw',
       files: ['dist/'],
     });
   });
