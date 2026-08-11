@@ -33,10 +33,28 @@ import {
   PLUGIN_EVAL_SCHEMA_VERSION,
   readPluginEvalTriggerCases,
   type PluginEvalSplit,
+  type PluginEvalProcessManagementEvidence,
   type PluginEvalSuiteReport,
   type PluginEvalTriggerCase,
   type PluginEvalTriggerSuite,
 } from './plugin-eval-contract.js';
+
+const DEFAULT_MANAGED_PROCESS_EVIDENCE: PluginEvalProcessManagementEvidence = {
+  mode: 'managed',
+  inspectionAvailable: true,
+  userAcknowledged: false,
+  descendantCleanupGuaranteed: true,
+};
+
+async function createTriggerTemporaryRoot(
+  workRoot?: string,
+): Promise<Awaited<ReturnType<typeof createCodexEvalTemporaryRoot>>> {
+  if (!workRoot) return createCodexEvalTemporaryRoot('aw-trigger-eval-');
+  await fs.ensureDir(workRoot);
+  return createCodexEvalTemporaryRoot('trigger-', {
+    allocate: () => fs.mkdtemp(path.join(workRoot, 'trigger-')),
+  });
+}
 
 const execFileAsync = promisify(execFile);
 const PASS_THRESHOLD = 0.5;
@@ -416,15 +434,16 @@ async function captureState(
 
 async function isolateTriggerWorkspaceSkills(
   workspaceRoot: string,
-  skillName: string,
+  skillNames: string[],
 ): Promise<void> {
   const skillsRoot = path.join(workspaceRoot, '.agents', 'skills');
+  const allowed = new Set(skillNames);
   const entries = await fs.readdir(skillsRoot).catch((error: NodeJS.ErrnoException) => {
     if (error.code === 'ENOENT') return [];
     throw error;
   });
   await Promise.all(entries.map(async (entry) => {
-    if (entry === skillName) return;
+    if (allowed.has(entry)) return;
     await fs.remove(path.join(skillsRoot, entry));
   }));
 }
@@ -459,9 +478,11 @@ async function runTriggerOnce(options: {
   codexRuntime: CodexEvalRuntimeConfig;
   timeoutMs: number;
   sourceEnv: NodeJS.ProcessEnv;
+  processManagement: PluginEvalProcessManagementEvidence;
+  workRoot?: string;
 }): Promise<TriggerRunEvidence> {
   assertCodexEvalCanStartWork();
-  const temporaryRoot = await createCodexEvalTemporaryRoot('aw-trigger-eval-');
+  const temporaryRoot = await createTriggerTemporaryRoot(options.workRoot);
   const runRoot = temporaryRoot.root;
   const workspaceRoot = path.join(runRoot, 'project');
   const codexHome = path.join(runRoot, 'codex-home');
@@ -481,7 +502,7 @@ async function runTriggerOnce(options: {
       options.evalCase.use_project_rules,
     );
     if (options.suite.isolation === 'strict') {
-      await isolateTriggerWorkspaceSkills(workspaceRoot, options.suite.skill);
+      await isolateTriggerWorkspaceSkills(workspaceRoot, options.suite.skills);
     }
     const skillPath = path.join(
       workspaceRoot,
@@ -572,6 +593,7 @@ async function runTriggerOnce(options: {
       modelProvider: options.codexRuntime.modelProvider,
       sensitiveEnvironmentNames: options.codexRuntime.sensitiveEnvironmentNames,
       isolation: options.suite.isolation,
+      processManagement: options.processManagement,
       configOverrides: options.suite.observeSpawnAgent
         ? [
           'features.multi_agent=true',
@@ -825,10 +847,13 @@ export async function runCodexTriggerSuite(options: {
   sourceEnv?: NodeJS.ProcessEnv;
   reportPath?: string;
   stderr?: (text: string) => void;
+  processManagement?: PluginEvalProcessManagementEvidence;
+  workRoot?: string;
 }): Promise<PluginEvalSuiteReport> {
   const sourceEnv = options.sourceEnv ?? process.env;
   const codexRuntime = options.codexRuntime ?? cleanCodexEvalRuntimeConfig(sourceEnv, options.model);
   const model = options.model ?? codexRuntime.model ?? undefined;
+  const processManagement = options.processManagement ?? DEFAULT_MANAGED_PROCESS_EVIDENCE;
   const corpus = await readPluginEvalTriggerCases(options.pluginRoot, options.suite);
   let cases = options.split === 'all'
     ? corpus.cases
@@ -850,9 +875,12 @@ export async function runCodexTriggerSuite(options: {
       runtimeProbe = await runCodexEvalIsolationProbe({
         subjectRoot: options.subjectRoot,
         skillName: options.suite.skill,
+        skillNames: options.suite.skills,
         codexBin: options.codexBin,
         codexRuntime,
         sourceEnv,
+        processManagement,
+        workRoot: options.workRoot,
       });
     }
     fixture = await loadFixtureModule(options.pluginRoot, options.suite);
@@ -862,6 +890,8 @@ export async function runCodexTriggerSuite(options: {
       schema_version: PLUGIN_EVAL_SCHEMA_VERSION,
       generated_at: new Date().toISOString(),
       suite: options.suite.id,
+      owner_skill: options.suite.skill,
+      participant_skills: options.suite.skills,
       profile: options.profile,
       split: options.split,
       complete: false,
@@ -885,6 +915,7 @@ export async function runCodexTriggerSuite(options: {
     return redactCodexEvalValue({
       id: options.suite.id,
       kind: 'trigger',
+      skills: options.suite.skills,
       profile: options.profile,
       split: options.split,
       outcome: 'incomplete',
@@ -914,6 +945,8 @@ export async function runCodexTriggerSuite(options: {
         codexRuntime,
         timeoutMs: options.suite.perRunTimeoutMs,
         sourceEnv,
+        processManagement,
+        workRoot: options.workRoot,
       }));
     }
     results.push(summarizeTriggerCase(options.suite, evalCase, runs));
@@ -931,6 +964,8 @@ export async function runCodexTriggerSuite(options: {
     schema_version: PLUGIN_EVAL_SCHEMA_VERSION,
     generated_at: new Date().toISOString(),
     suite: options.suite.id,
+    owner_skill: options.suite.skill,
+    participant_skills: options.suite.skills,
     profile: options.profile,
     split: options.split,
     runs_per_case: options.runs,
@@ -967,6 +1002,7 @@ export async function runCodexTriggerSuite(options: {
   return redactCodexEvalValue({
     id: options.suite.id,
     kind: 'trigger',
+    skills: options.suite.skills,
     profile: options.profile,
     split: options.split,
     outcome: !complete ? 'incomplete' : passed ? 'passed' : 'failed',

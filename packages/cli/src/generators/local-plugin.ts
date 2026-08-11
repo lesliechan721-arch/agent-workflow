@@ -22,6 +22,10 @@ import { resolveSupportedPlatforms } from '../utils/platform-support.js';
 import { renderTemplate } from '../utils/template-engine.js';
 import { resolvePlatformEntries } from '../utils/platform-entries.js';
 import { scanNodeImportContract } from '../utils/plugin-script-contract.js';
+import {
+  isSkillAuthorOnlyPath,
+  isSkillCollectionAuthorOnlyPath,
+} from '../utils/skill-authoring.js';
 import { assertTestWritablePath } from '../utils/test-path-fence.js';
 import {
   renderClaudeSlashCommand,
@@ -224,19 +228,27 @@ async function copyBundleRootFile(
   await fs.copyFile(sourcePath, targetPath);
 }
 
-async function assertArtifactSourceTreePortable(rootDir: string, fieldName: string): Promise<void> {
+async function assertArtifactSourceTreePortable(
+  rootDir: string,
+  fieldName: string,
+  relativeRoot = '',
+): Promise<void> {
   const rootStats = await fs.lstat(rootDir);
   if (rootStats.isSymbolicLink() || !rootStats.isDirectory()) {
     throw new Error(`Invalid ${fieldName}: source root must be a regular directory.`);
   }
   const entries = await fs.readdir(rootDir, { withFileTypes: true });
   for (const entry of entries) {
+    const relativePath = relativeRoot
+      ? path.posix.join(relativeRoot, entry.name)
+      : entry.name;
+    if (isSkillAuthorOnlyPath(relativePath)) continue;
     const entryPath = path.join(rootDir, entry.name);
     if (entry.isSymbolicLink()) {
       throw new Error(`Invalid ${fieldName}: symbolic links are not supported (${entry.name}).`);
     }
     if (entry.isDirectory()) {
-      await assertArtifactSourceTreePortable(entryPath, fieldName);
+      await assertArtifactSourceTreePortable(entryPath, fieldName, relativePath);
       continue;
     }
     if (!entry.isFile()) {
@@ -263,7 +275,11 @@ async function copyArtifactSourceDirectories(
           artifactId: target.id,
           index: sourceIndex,
         })),
-        { overwrite: true, dereference: false },
+        {
+          overwrite: true,
+          dereference: false,
+          filter: (source) => !isSkillAuthorOnlyPath(path.relative(sourcePath, source)),
+        },
       );
     }
   }
@@ -304,6 +320,53 @@ async function addDeclaredPathFiles(
   }
 
   return toPlatformRelativePath(relativePath, platform);
+}
+
+async function addDeclaredSkillPathFiles(
+  plugin: PluginMeta,
+  platform: PlatformName,
+  relativePath: string | undefined,
+  targetFiles: Set<string>,
+): Promise<string | undefined> {
+  if (!relativePath) return undefined;
+  const root = stripDotSlash(relativePath);
+  const files = await collectFilesForPath(plugin.rootDir, relativePath);
+  for (const filePath of files) {
+    const skillCollectionPath = path.posix.relative(
+      root.split(path.sep).join('/'),
+      filePath.split(path.sep).join('/'),
+    );
+    if (!isSkillCollectionAuthorOnlyPath(skillCollectionPath)) {
+      targetFiles.add(filePath);
+    }
+  }
+  return toPlatformRelativePath(relativePath, platform);
+}
+
+function relativePathInside(root: string, candidate: string): string | null {
+  const relative = path.posix.relative(root, candidate);
+  if (relative === '..' || relative.startsWith('../') || path.posix.isAbsolute(relative)) {
+    return null;
+  }
+  return relative;
+}
+
+function isDeclaredSkillAuthorOnlyFile(plugin: PluginMeta, filePath: string): boolean {
+  const normalizedFile = filePath.split(path.sep).join('/');
+  if (plugin.manifest.skills) {
+    const staticRoot = stripDotSlash(plugin.manifest.skills).split(path.sep).join('/');
+    const staticRelative = relativePathInside(staticRoot, normalizedFile);
+    if (staticRelative && isSkillCollectionAuthorOnlyPath(staticRelative)) return true;
+  }
+  for (const target of plugin.manifest.artifacts?.targets ?? []) {
+    if (target.target !== 'codex.skill') continue;
+    for (const sourceDir of target.sourceDirs ?? []) {
+      const dynamicRoot = stripDotSlash(sourceDir).split(path.sep).join('/');
+      const dynamicRelative = relativePathInside(dynamicRoot, normalizedFile);
+      if (dynamicRelative && isSkillAuthorOnlyPath(dynamicRelative)) return true;
+    }
+  }
+  return false;
 }
 
 async function addDeclaredLspServerFiles(
@@ -822,7 +885,7 @@ export async function bundleLocalPlugin(
         continue;
       }
 
-      manifest.skills = await addDeclaredPathFiles(
+      manifest.skills = await addDeclaredSkillPathFiles(
         plugin,
         platform,
         plugin.manifest.skills,
@@ -891,7 +954,9 @@ export async function bundleLocalPlugin(
       }
     }
 
-    const sourceFiles = await listFilesRecursively(plugin.rootDir);
+    const sourceFiles = (await listFilesRecursively(plugin.rootDir)).filter(
+      (filePath) => !isDeclaredSkillAuthorOnlyFile(plugin, filePath),
+    );
     if (claudeFiles && buildConfig?.fileRules?.claude) {
       for (const filePath of applyFileRules(
         sourceFiles,

@@ -152,6 +152,14 @@ describe('local-plugin generator', () => {
   it('generates Claude and Codex runtime manifests with explicit bundle-local paths', async () => {
     const repoRoot = await makeTempRepo();
     const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
+    await fs.outputFile(
+      path.join(plugin.rootDir, 'skills', 'commit', 'evals', 'manifest.json'),
+      '{}\n',
+    );
+    await fs.outputFile(
+      path.join(plugin.rootDir, 'skills', 'commit', 'reports', 'run-1', 'summary.json'),
+      '{}\n',
+    );
     plugin.manifest.extensions ??= {};
     plugin.manifest.extensions.hooks ??= [];
     plugin.manifest.extensions.hooks.push({
@@ -176,6 +184,15 @@ describe('local-plugin generator', () => {
     const outputRoot = path.join(repoRoot, 'out', plugin.manifest.name);
 
     const result = await bundleLocalPlugin(plugin, outputRoot);
+
+    for (const platform of ['claude', 'codex']) {
+      await expect(
+        fs.pathExists(path.join(outputRoot, platform, 'skills', 'commit', 'evals')),
+      ).resolves.toBe(false);
+      await expect(
+        fs.pathExists(path.join(outputRoot, platform, 'skills', 'commit', 'reports')),
+      ).resolves.toBe(false);
+    }
 
     expect(Object.keys(result.platformManifests).sort()).toEqual(['claude', 'codex']);
     expect(result.platformManifests).toMatchObject({
@@ -268,6 +285,106 @@ describe('local-plugin generator', () => {
         ],
       },
     });
+  });
+
+  it('keeps Skill evals and reports out of broad fileRules and dynamic source bundles', async () => {
+    const repoRoot = await makeTempRepo();
+    const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
+    const manifest = await readFixturePluginManifest(repoRoot);
+    await fs.move(path.join(pluginRoot, 'skills'), path.join(pluginRoot, 'review-skills'));
+    await Promise.all([
+      fs.outputFile(
+        path.join(pluginRoot, 'review-skills', 'commit', 'evals', 'manifest.json'),
+        '{}\n',
+      ),
+      fs.outputFile(
+        path.join(pluginRoot, 'review-skills', 'commit', 'reports', 'run-1', 'summary.json'),
+        '{}\n',
+      ),
+      fs.outputFile(
+        path.join(pluginRoot, 'templates', 'dynamic', 'SKILL.md'),
+        '---\nname: dynamic\ndescription: Test dynamic Skill.\n---\n',
+      ),
+      fs.outputFile(
+        path.join(pluginRoot, 'templates', 'dynamic', 'agents', 'openai.yaml'),
+        'policy:\n  allow_implicit_invocation: true\n',
+      ),
+      fs.outputFile(
+        path.join(pluginRoot, 'templates', 'dynamic', 'evals', 'manifest.json'),
+        '{}\n',
+      ),
+      fs.outputFile(
+        path.join(pluginRoot, 'templates', 'dynamic', 'reports', 'run-1', 'summary.json'),
+        '{}\n',
+      ),
+    ]);
+    manifest.skills = './review-skills';
+    manifest.artifacts = {
+      targets: [{
+        id: 'dynamic-skill',
+        platform: 'codex',
+        scopes: ['user', 'project'],
+        target: 'codex.skill',
+        projectManagedKind: 'skill',
+        states: ['present'],
+        refreshKeys: [],
+        skillKey: 'dynamic',
+        sourceDirs: ['./templates/dynamic'],
+      }],
+    };
+    manifest.buildConfig = {
+      fileRules: {
+        claude: { include: ['**/*'], exclude: [] },
+        codex: { include: ['**/*'], exclude: [] },
+      },
+    };
+    await writeFixturePluginManifest(repoRoot, manifest);
+
+    const plugin = await readPluginManifest(pluginRoot);
+    const outputRoot = path.join(repoRoot, 'out', plugin.manifest.name);
+    await bundleLocalPlugin(plugin, outputRoot);
+
+    for (const platform of ['claude', 'codex']) {
+      await expect(fs.pathExists(path.join(
+        outputRoot,
+        platform,
+        'review-skills',
+        'commit',
+        'evals',
+      ))).resolves.toBe(false);
+      await expect(fs.pathExists(path.join(
+        outputRoot,
+        platform,
+        'review-skills',
+        'commit',
+        'reports',
+      ))).resolves.toBe(false);
+      await expect(fs.pathExists(path.join(
+        outputRoot,
+        platform,
+        'templates',
+        'dynamic',
+        'evals',
+      ))).resolves.toBe(false);
+      await expect(fs.pathExists(path.join(
+        outputRoot,
+        platform,
+        'templates',
+        'dynamic',
+        'reports',
+      ))).resolves.toBe(false);
+    }
+    const dynamicSourceRoot = path.join(
+      outputRoot,
+      '.agents-plugin',
+      'artifact-sources',
+      'codex',
+      'dynamic-skill',
+      '0',
+    );
+    await expect(fs.pathExists(path.join(dynamicSourceRoot, 'SKILL.md'))).resolves.toBe(true);
+    await expect(fs.pathExists(path.join(dynamicSourceRoot, 'evals'))).resolves.toBe(false);
+    await expect(fs.pathExists(path.join(dynamicSourceRoot, 'reports'))).resolves.toBe(false);
   });
 
   it('does not declare a static Codex skills root for user-only dynamic codex.skill targets', async () => {

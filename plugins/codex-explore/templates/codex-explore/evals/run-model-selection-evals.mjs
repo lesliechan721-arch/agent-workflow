@@ -21,7 +21,7 @@ const DEFAULT_OPTIONS = {
 };
 
 function usage() {
-  return `Usage: node plugins/codex-explore/evals/run-model-selection-evals.mjs [OPTIONS]
+  return `Usage: node plugins/codex-explore/templates/codex-explore/evals/run-model-selection-evals.mjs [OPTIONS]
 
 Runs current-skill model-selection behavior evaluations in clean Codex sessions,
 then checks the raw spawn_agent arguments.

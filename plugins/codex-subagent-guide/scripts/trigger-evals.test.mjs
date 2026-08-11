@@ -7,11 +7,11 @@ import {
   buildCodexArgs,
   createEvalWorkspace,
   readEvalResource,
-} from '../evals/eval-harness.mjs';
+} from '../templates/codex-subagent-guide/evals/eval-harness.mjs';
 import {
   setupTriggerWorkspace,
   TRIGGER_WORKSPACE_FIXTURES,
-} from '../evals/trigger-fixture.mjs';
+} from '../templates/codex-subagent-guide/evals/trigger-fixture.mjs';
 
 const ROLE_NAMES = [
   'codex-subagent-simple',
@@ -33,7 +33,7 @@ async function testEvalCorpus() {
       requiredForRelease: releaseSuite?.requiredForRelease,
     },
     {
-      cases: './evals/trigger-cases.json',
+      cases: './trigger-cases.json',
       isolation: 'strict',
       strictNegativeSplits: ['validation', 'sanity'],
       releaseSplits: ['validation', 'sanity'],
@@ -49,7 +49,7 @@ async function testEvalCorpus() {
       requiredForRelease: compositionSuite?.requiredForRelease,
     },
     {
-      cases: './evals/trigger-composition-cases.json',
+      cases: './trigger-composition-cases.json',
       isolation: 'standard',
       strictNegativeSplits: [],
       releaseSplits: [],
@@ -68,9 +68,9 @@ async function testEvalCorpus() {
   assert.equal(releaseDocument.skill, 'codex-subagent-guide');
   assert.equal(compositionDocument.schemaVersion, 1);
   assert.equal(compositionDocument.skill, 'codex-subagent-guide');
-  assert.equal(releaseCases.length, 26);
+  assert.equal(releaseCases.length, 25);
   assert.equal(releaseCases.filter((entry) => entry.split === 'train').length, 12);
-  assert.equal(releaseCases.filter((entry) => entry.split === 'validation').length, 8);
+  assert.equal(releaseCases.filter((entry) => entry.split === 'validation').length, 7);
   assert.equal(releaseCases.filter((entry) => entry.split === 'sanity').length, 6);
   assert.equal(compositionCases.length, 4);
   assert.equal(compositionCases.filter((entry) => entry.split === 'train').length, 2);
@@ -196,6 +196,8 @@ async function testSpecializedWorkspaceUsesFinalArtifact() {
         },
       );
       assert.ok(args.includes('multi_agent'));
+      assert.ok(args.includes('executed_tool_call_metadata'));
+      assert.ok(args.includes('features.multi_agent_v2.hide_spawn_agent_metadata=true'));
       assert.ok(args.includes('gpt-test'));
       assert.ok(args.includes('model_provider="fixture-provider"'));
       assert.ok(args.includes('shell_environment_policy.exclude=["CODEX_HOME","CUSTOM_TOKEN"]'));

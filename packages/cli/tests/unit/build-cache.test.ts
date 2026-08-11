@@ -132,13 +132,33 @@ describe('build cache input and environment identity', () => {
     const repoRoot = await createRepo();
     const skillPath = path.join(repoRoot, 'plugins', 'demo', 'SKILL.md');
     const linkPath = path.join(repoRoot, 'plugins', 'demo', 'current');
-    const evalPath = path.join(repoRoot, 'plugins', 'demo', 'evals', 'case.json');
+    const evalPath = path.join(
+      repoRoot,
+      'plugins',
+      'demo',
+      'skills',
+      'demo',
+      'evals',
+      'case.json',
+    );
+    const reportPath = path.join(
+      repoRoot,
+      'plugins',
+      'demo',
+      'skills',
+      'demo',
+      'reports',
+      'run-1',
+      'summary.json',
+    );
     const dependencyPath = path.join(repoRoot, 'plugins', 'demo', 'node_modules', 'dep', 'index.js');
     const nestedDistPath = path.join(repoRoot, 'plugins', 'demo', 'runtime', 'dist', 'index.js');
     await fs.mkdir(path.dirname(evalPath), { recursive: true });
+    await fs.mkdir(path.dirname(reportPath), { recursive: true });
     await fs.mkdir(path.dirname(dependencyPath), { recursive: true });
     await fs.mkdir(path.dirname(nestedDistPath), { recursive: true });
     await fs.writeFile(evalPath, 'eval-one\n');
+    await fs.writeFile(reportPath, 'report-one\n');
     await fs.writeFile(dependencyPath, 'dependency-one\n');
     await fs.writeFile(nestedDistPath, 'nested-one\n');
     await fs.symlink('SKILL.md', linkPath);
@@ -148,6 +168,7 @@ describe('build cache input and environment identity', () => {
     expect(await computeBuildInputDigest(repoRoot)).toBe(initialDigest);
 
     await fs.writeFile(evalPath, 'eval-two\n');
+    await fs.writeFile(reportPath, 'report-two\n');
     await fs.writeFile(dependencyPath, 'dependency-two\n');
     expect(await computeBuildInputDigest(repoRoot)).toBe(initialDigest);
 

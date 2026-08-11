@@ -159,7 +159,8 @@ const ARTIFACT_PROJECT_MANAGED_KIND_BY_TARGET = {
   'codex.skill': 'skill',
 };
 const PLUGIN_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
-const PLUGIN_EVAL_SCHEMA_VERSION = 1;
+const PLUGIN_EVAL_SCHEMA_VERSION = 2;
+const PLUGIN_EVAL_CASE_SCHEMA_VERSION = 1;
 const PLUGIN_EVAL_SCOPES = new Set(['user', 'project']);
 const PLUGIN_EVAL_SPLITS = new Set(['train', 'validation', 'sanity', 'all']);
 const PLUGIN_EVAL_TRIGGER_CASE_SPLITS = new Set(['train', 'validation', 'sanity']);
@@ -957,56 +958,36 @@ function validateRealPathBoundary(boundary, candidate, fieldName, boundaryName) 
   return true;
 }
 
-function validateEvalRelativeFile(pluginDir, value, fieldName) {
+function validateEvalRelativeFile(evalDir, value, fieldName) {
   const relativePath = validateNonEmptyString(value, fieldName);
   if (!relativePath) return null;
   const normalized = stripDotSlash(relativePath).split('\\').join('/');
   if (path.isAbsolute(normalized) || normalized.split('/').includes('..')) {
-    error(`${fieldName} must stay inside the plugin root`);
+    error(`${fieldName} must stay inside the Skill eval directory`);
     return null;
   }
-  const absolutePath = path.resolve(pluginDir, normalized);
-  const relativeToRoot = path.relative(pluginDir, absolutePath);
+  const absolutePath = path.resolve(evalDir, normalized);
+  const relativeToRoot = path.relative(evalDir, absolutePath);
   if (relativeToRoot.startsWith('..') || path.isAbsolute(relativeToRoot)) {
-    error(`${fieldName} must stay inside the plugin root`);
+    error(`${fieldName} must stay inside the Skill eval directory`);
     return null;
   }
   if (!fs.existsSync(absolutePath) || !fs.statSync(absolutePath).isFile()) {
     error(`${fieldName} does not exist: ${normalized}`);
     return null;
   }
-  if (!validateRealPathBoundary(pluginDir, absolutePath, fieldName, 'plugin root')) {
+  if (!validateRealPathBoundary(evalDir, absolutePath, fieldName, 'Skill eval directory')) {
     return null;
   }
-  return normalized;
+  return absolutePath;
 }
 
-function validateEvalAssetFile(pluginDir, value, fieldName) {
-  const normalized = validateEvalRelativeFile(pluginDir, value, fieldName);
-  if (normalized && !normalized.startsWith('evals/')) {
-    error(`${fieldName} must stay inside the plugin evals directory`);
-    return null;
-  }
-  if (
-    normalized &&
-    !validateRealPathBoundary(
-      path.join(pluginDir, 'evals'),
-      path.resolve(pluginDir, normalized),
-      fieldName,
-      'plugin evals directory',
-    )
-  ) {
-    return null;
-  }
-  return normalized;
-}
-
-function validateConversationCaseCorpus(pluginDir, suite, fieldName) {
-  const casesPath = validateEvalAssetFile(pluginDir, suite.cases, `${fieldName}.cases`);
+function validateConversationCaseCorpus(evalDir, suite, fieldName) {
+  const casesPath = validateEvalRelativeFile(evalDir, suite.cases, `${fieldName}.cases`);
   if (!casesPath) return;
   let document;
   try {
-    document = JSON.parse(fs.readFileSync(path.join(pluginDir, casesPath), 'utf8'));
+    document = JSON.parse(fs.readFileSync(casesPath, 'utf8'));
   } catch (e) {
     error(`${fieldName}.cases is not valid JSON: ${e.message}`);
     return;
@@ -1080,20 +1061,20 @@ function validateConversationCaseCorpus(pluginDir, suite, fieldName) {
   });
 }
 
-function validateTriggerCaseCorpus(pluginDir, suite, fieldName) {
-  const casesPath = validateEvalAssetFile(pluginDir, suite.cases, `${fieldName}.cases`);
+function validateTriggerCaseCorpus(evalDir, suite, fieldName) {
+  const casesPath = validateEvalRelativeFile(evalDir, suite.cases, `${fieldName}.cases`);
   if (!casesPath) return;
   let document;
   try {
-    document = JSON.parse(fs.readFileSync(path.join(pluginDir, casesPath), 'utf8'));
+    document = JSON.parse(fs.readFileSync(casesPath, 'utf8'));
   } catch (e) {
     error(`${fieldName}.cases is not valid JSON: ${e.message}`);
     return;
   }
   const corpus = expectRecord(document, `${fieldName}.cases document`);
   if (!corpus) return;
-  if (corpus.schemaVersion !== PLUGIN_EVAL_SCHEMA_VERSION) {
-    error(`${fieldName}.cases.schemaVersion must be ${PLUGIN_EVAL_SCHEMA_VERSION}`);
+  if (corpus.schemaVersion !== PLUGIN_EVAL_CASE_SCHEMA_VERSION) {
+    error(`${fieldName}.cases.schemaVersion must be ${PLUGIN_EVAL_CASE_SCHEMA_VERSION}`);
   }
   if (corpus.skill !== suite.skill) {
     error(`${fieldName}.cases.skill must match ${JSON.stringify(suite.skill)}`);
@@ -1165,55 +1146,132 @@ function validateTriggerCaseCorpus(pluginDir, suite, fieldName) {
   }
 }
 
-function validatePluginEvalManifest(pluginDir, pluginManifest) {
-  const evalManifestPath = path.join(pluginDir, 'evals', 'manifest.json');
-  if (!fs.existsSync(evalManifestPath)) return;
+function resolveEvalProfilePlugin(pluginDir, ownerManifest, pluginName, fieldName) {
+  if (pluginName === ownerManifest.name) {
+    return { pluginDir, manifest: ownerManifest };
+  }
+  const companionDir = path.join(path.dirname(pluginDir), pluginName);
+  const manifestPath = path.join(companionDir, '.agents-plugin', 'plugin.json');
+  if (!fs.existsSync(manifestPath)) {
+    error(`${fieldName} must reference repo-local plugin "${pluginName}"`);
+    return null;
+  }
+  let manifest;
+  try {
+    manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  } catch (e) {
+    error(`${fieldName} companion manifest is not valid JSON: ${e.message}`);
+    return null;
+  }
+  if (!isRecord(manifest) || manifest.name !== pluginName) {
+    error(`${fieldName} companion source must declare plugin name "${pluginName}"`);
+    return null;
+  }
+  return { pluginDir: companionDir, manifest };
+}
+
+function validateOnePluginEvalManifest(pluginDir, pluginManifest, evalDir, expectedSkill) {
+  const evalManifestPath = path.join(evalDir, 'manifest.json');
+  const manifestField = path.relative(pluginDir, evalManifestPath).split(path.sep).join('/');
 
   let document;
   try {
     document = JSON.parse(fs.readFileSync(evalManifestPath, 'utf8'));
   } catch (e) {
-    error(`evals/manifest.json is not valid JSON: ${e.message}`);
+    error(`${manifestField} is not valid JSON: ${e.message}`);
     return;
   }
-  const manifest = expectRecord(document, 'evals/manifest.json');
+  const manifest = expectRecord(document, manifestField);
   if (!manifest) return;
+  validateAllowedKeys(
+    manifest,
+    manifestField,
+    ['schemaVersion', 'plugin', 'skill', 'profiles', 'suites'],
+  );
   if (manifest.schemaVersion !== PLUGIN_EVAL_SCHEMA_VERSION) {
-    error(`evals/manifest.json.schemaVersion must be ${PLUGIN_EVAL_SCHEMA_VERSION}`);
+    error(`${manifestField}.schemaVersion must be ${PLUGIN_EVAL_SCHEMA_VERSION}`);
   }
   if (manifest.plugin !== pluginManifest.name) {
     error(
-      `evals/manifest.json.plugin must match plugin name ${JSON.stringify(pluginManifest.name)}`,
+      `${manifestField}.plugin must match plugin name ${JSON.stringify(pluginManifest.name)}`,
     );
+  }
+  const skill = validateNonEmptyString(manifest.skill, `${manifestField}.skill`);
+  if (skill && skill !== expectedSkill) {
+    error(`${manifestField}.skill must match owning Skill ${JSON.stringify(expectedSkill)}`);
+  }
+  if (skill && !collectDeclaredSkillNames(pluginDir, pluginManifest).all.has(skill)) {
+    error(`${manifestField}.skill must reference a declared static or dynamic skill`);
   }
 
   if (!Array.isArray(manifest.profiles) || manifest.profiles.length === 0) {
-    error('evals/manifest.json.profiles must be a non-empty array');
+    error(`${manifestField}.profiles must be a non-empty array`);
     return;
   }
   const profilesById = new Map();
   manifest.profiles.forEach((value, index) => {
-    const fieldName = `evals/manifest.json.profiles[${index}]`;
+    const fieldName = `${manifestField}.profiles[${index}]`;
     const profile = expectRecord(value, fieldName);
     if (!profile) return;
     validateAllowedKeys(
       profile,
       fieldName,
-      ['id', 'scope', 'config', 'runModel', 'requiredForRelease'],
+      ['id', 'scope', 'plugins', 'runModel', 'requiredForRelease'],
     );
     const id = validateNonEmptyString(profile.id, `${fieldName}.id`);
     if (id && !PLUGIN_NAME_PATTERN.test(id)) {
       error(`${fieldName}.id must use lowercase kebab-case`);
     } else if (id && profilesById.has(id)) {
-      error(`evals/manifest.json has duplicate profile id ${JSON.stringify(id)}`);
-    } else if (id) {
-      profilesById.set(id, profile);
+      error(`${manifestField} has duplicate profile id ${JSON.stringify(id)}`);
     }
     if (!PLUGIN_EVAL_SCOPES.has(profile.scope)) {
       error(`${fieldName}.scope must be user or project`);
     }
-    if (profile.config !== undefined && !isRecord(profile.config)) {
-      error(`${fieldName}.config must be an object`);
+    const skillOwners = new Map();
+    const installedPlugins = new Set();
+    if (!Array.isArray(profile.plugins) || profile.plugins.length === 0) {
+      error(`${fieldName}.plugins must be a non-empty array`);
+    } else {
+      profile.plugins.forEach((value, pluginIndex) => {
+        const pluginField = `${fieldName}.plugins[${pluginIndex}]`;
+        const installation = expectRecord(value, pluginField);
+        if (!installation) return;
+        validateAllowedKeys(installation, pluginField, ['name', 'config']);
+        const pluginName = validateNonEmptyString(installation.name, `${pluginField}.name`);
+        if (!pluginName) return;
+        if (!PLUGIN_NAME_PATTERN.test(pluginName)) {
+          error(`${pluginField}.name must use lowercase kebab-case`);
+        }
+        if (installedPlugins.has(pluginName)) {
+          error(`${fieldName}.plugins has duplicate plugin ${JSON.stringify(pluginName)}`);
+          return;
+        }
+        installedPlugins.add(pluginName);
+        if (installation.config !== undefined && !isRecord(installation.config)) {
+          error(`${pluginField}.config must be an object`);
+        }
+        const source = resolveEvalProfilePlugin(
+          pluginDir,
+          pluginManifest,
+          pluginName,
+          `${pluginField}.name`,
+        );
+        if (!source) return;
+        for (const skillName of collectDeclaredSkillNames(source.pluginDir, source.manifest).all) {
+          const existing = skillOwners.get(skillName);
+          if (existing && existing !== pluginName) {
+            error(
+              `${fieldName} installs duplicate Skill key ${JSON.stringify(skillName)} ` +
+              `from plugins ${JSON.stringify(existing)} and ${JSON.stringify(pluginName)}`,
+            );
+          } else {
+            skillOwners.set(skillName, pluginName);
+          }
+        }
+      });
+    }
+    if (!installedPlugins.has(pluginManifest.name)) {
+      error(`${fieldName}.plugins must include owner plugin ${JSON.stringify(pluginManifest.name)}`);
     }
     if (typeof profile.runModel !== 'boolean') {
       error(`${fieldName}.runModel must be boolean`);
@@ -1222,33 +1280,56 @@ function validatePluginEvalManifest(pluginDir, pluginManifest) {
       error(`${fieldName}.requiredForRelease must be boolean`);
     }
     if (profile.scope === 'user' && profile.runModel === true) {
-      error(`${fieldName}: eval schema v1 does not allow real model execution for user scope`);
+      error(`${fieldName}: eval schema v2 does not allow real model execution for user scope`);
+    }
+    if (id && PLUGIN_NAME_PATTERN.test(id) && !profilesById.has(id)) {
+      profilesById.set(id, { ...profile, skillOwners });
     }
   });
   if (!manifest.profiles.some((profile) =>
     isRecord(profile) && profile.scope === 'project' && profile.runModel === true)) {
-    error('evals/manifest.json must define at least one project profile with runModel=true');
+    error(`${manifestField} must define at least one project profile with runModel=true`);
   }
 
   if (!Array.isArray(manifest.suites) || manifest.suites.length === 0) {
-    error('evals/manifest.json.suites must be a non-empty array');
+    error(`${manifestField}.suites must be a non-empty array`);
     return;
   }
   const suiteIds = new Set();
   manifest.suites.forEach((value, index) => {
-    const fieldName = `evals/manifest.json.suites[${index}]`;
+    const fieldName = `${manifestField}.suites[${index}]`;
     const suite = expectRecord(value, fieldName);
     if (!suite) return;
     const id = validateNonEmptyString(suite.id, `${fieldName}.id`);
     if (id && !PLUGIN_NAME_PATTERN.test(id)) {
       error(`${fieldName}.id must use lowercase kebab-case`);
     } else if (id && suiteIds.has(id)) {
-      error(`evals/manifest.json has duplicate suite id ${JSON.stringify(id)}`);
+      error(`${manifestField} has duplicate suite id ${JSON.stringify(id)}`);
     } else if (id) {
       suiteIds.add(id);
     }
     if (suite.kind !== 'command' && suite.kind !== 'conversation' && suite.kind !== 'trigger') {
       error(`${fieldName}.kind must be command, conversation, or trigger`);
+    }
+    const suiteSkills = new Set();
+    if (!Array.isArray(suite.skills) || suite.skills.length === 0) {
+      error(`${fieldName}.skills must be a non-empty array`);
+    } else {
+      suite.skills.forEach((skillName, skillIndex) => {
+        const skillField = `${fieldName}.skills[${skillIndex}]`;
+        const normalized = validateNonEmptyString(skillName, skillField);
+        if (!normalized) return;
+        if (!PLUGIN_NAME_PATTERN.test(normalized)) {
+          error(`${skillField} must use lowercase kebab-case`);
+        } else if (suiteSkills.has(normalized)) {
+          error(`${fieldName}.skills has duplicate Skill ${JSON.stringify(normalized)}`);
+        } else {
+          suiteSkills.add(normalized);
+        }
+      });
+    }
+    if (skill && !suiteSkills.has(skill)) {
+      error(`${fieldName}.skills must include owner Skill ${JSON.stringify(skill)}`);
     }
     if (!Array.isArray(suite.profiles) || suite.profiles.length === 0) {
       error(`${fieldName}.profiles must be a non-empty array`);
@@ -1264,6 +1345,16 @@ function validatePluginEvalManifest(pluginDir, pluginManifest) {
           error(`${fieldName} references unknown profile ${JSON.stringify(profileId)}`);
         } else if (profile.runModel !== true) {
           error(`${fieldName} cannot execute materialize-only profile ${JSON.stringify(profileId)}`);
+        }
+        if (profile) {
+          for (const skillName of suiteSkills) {
+            if (!profile.skillOwners.has(skillName)) {
+              error(
+                `${fieldName} requires Skill ${JSON.stringify(skillName)}, but profile ` +
+                `${JSON.stringify(profileId)} does not install a plugin that declares it`,
+              );
+            }
+          }
         }
       });
     }
@@ -1287,7 +1378,11 @@ function validatePluginEvalManifest(pluginDir, pluginManifest) {
     }
 
     if (suite.kind === 'command') {
-      validateEvalRelativeFile(pluginDir, suite.entry, `${fieldName}.entry`);
+      validateAllowedKeys(suite, fieldName, [
+        'id', 'kind', 'skills', 'entry', 'profiles', 'defaultRuns', 'releaseSplits',
+        'requiredForRelease', 'perRunTimeoutMs', 'suiteTimeoutMs', 'supports',
+      ]);
+      validateEvalRelativeFile(evalDir, suite.entry, `${fieldName}.entry`);
       if (!Number.isInteger(suite.suiteTimeoutMs) || suite.suiteTimeoutMs <= 0) {
         error(`${fieldName}.suiteTimeoutMs must be a positive integer`);
       } else if (suite.suiteTimeoutMs < suite.perRunTimeoutMs) {
@@ -1310,22 +1405,26 @@ function validatePluginEvalManifest(pluginDir, pluginManifest) {
         }
       }
     } else if (suite.kind === 'conversation' || suite.kind === 'trigger') {
-      const skill = validateNonEmptyString(suite.skill, `${fieldName}.skill`);
-      if (skill && !PLUGIN_NAME_PATTERN.test(skill)) {
-        error(`${fieldName}.skill must use lowercase kebab-case`);
-      } else if (skill && !collectDeclaredSkillNames(pluginDir, pluginManifest).all.has(skill)) {
-        error(`${fieldName}.skill must reference a declared static or dynamic skill`);
-      }
+      const normalizedSuite = { ...suite, skill };
       const isolation = suite.isolation ?? 'standard';
       if (isolation !== 'standard' && isolation !== 'strict') {
         error(`${fieldName}.isolation must be standard or strict`);
       }
       if (suite.kind === 'conversation') {
+        validateAllowedKeys(suite, fieldName, [
+          'id', 'kind', 'skills', 'cases', 'profiles', 'defaultRuns', 'releaseSplits',
+          'requiredForRelease', 'perRunTimeoutMs', 'isolation',
+        ]);
         if (Array.isArray(suite.releaseSplits) && suite.releaseSplits.length > 0) {
           error(`${fieldName} cannot declare releaseSplits because conversation cases do not support split filtering`);
         }
-        validateConversationCaseCorpus(pluginDir, suite, fieldName);
+        validateConversationCaseCorpus(evalDir, normalizedSuite, fieldName);
       } else {
+        validateAllowedKeys(suite, fieldName, [
+          'id', 'kind', 'skills', 'cases', 'fixtureModule', 'observeSpawnAgent', 'isolation',
+          'strictNegativeSplits', 'profiles', 'defaultRuns', 'releaseSplits',
+          'requiredForRelease', 'perRunTimeoutMs',
+        ]);
         if (typeof suite.observeSpawnAgent !== 'boolean') {
           error(`${fieldName}.observeSpawnAgent must be boolean`);
         }
@@ -1339,8 +1438,8 @@ function validatePluginEvalManifest(pluginDir, pluginManifest) {
           });
         }
         if (suite.fixtureModule !== undefined) {
-          const fixturePath = validateEvalAssetFile(
-            pluginDir,
+          const fixturePath = validateEvalRelativeFile(
+            evalDir,
             suite.fixtureModule,
             `${fieldName}.fixtureModule`,
           );
@@ -1348,10 +1447,68 @@ function validatePluginEvalManifest(pluginDir, pluginManifest) {
             error(`${fieldName}.fixtureModule must reference an .mjs file`);
           }
         }
-        validateTriggerCaseCorpus(pluginDir, suite, fieldName);
+        validateTriggerCaseCorpus(evalDir, normalizedSuite, fieldName);
       }
     }
   });
+}
+
+function validatePluginEvalManifest(pluginDir, pluginManifest) {
+  const legacyRoot = path.join(pluginDir, 'evals');
+  if (fs.existsSync(legacyRoot)) {
+    error(
+      'Plugin-root evals/ is legacy; put evals/ inside its owning static or dynamic Skill directory.',
+    );
+  }
+  const skillRoots = [];
+  if (typeof pluginManifest.skills === 'string') {
+    const staticSkillsRoot = path.join(
+      pluginDir,
+      normalizeRelativePath(pluginManifest.skills),
+    );
+    if (fs.existsSync(staticSkillsRoot) && fs.statSync(staticSkillsRoot).isDirectory()) {
+      for (const entry of fs.readdirSync(staticSkillsRoot, { withFileTypes: true })) {
+        if (entry.isDirectory()) {
+          skillRoots.push({ skill: entry.name, root: path.join(staticSkillsRoot, entry.name) });
+        }
+      }
+    }
+  }
+  for (const target of pluginManifest.artifacts?.targets ?? []) {
+    if (
+      !target ||
+      typeof target !== 'object' ||
+      target.target !== 'codex.skill' ||
+      typeof target.skillKey !== 'string' ||
+      !Array.isArray(target.sourceDirs)
+    ) {
+      continue;
+    }
+    for (const sourceDir of target.sourceDirs) {
+      if (typeof sourceDir !== 'string') continue;
+      skillRoots.push({
+        skill: target.skillKey,
+        root: path.join(pluginDir, normalizeRelativePath(sourceDir)),
+      });
+    }
+  }
+  const seenSkills = new Set();
+  for (const owner of skillRoots) {
+    const evalDir = path.join(owner.root, 'evals');
+    const manifestPath = path.join(evalDir, 'manifest.json');
+    if (!fs.existsSync(manifestPath)) continue;
+    if (seenSkills.has(owner.skill)) {
+      error(`Skill ${JSON.stringify(owner.skill)} has more than one evals/manifest.json owner`);
+      continue;
+    }
+    seenSkills.add(owner.skill);
+    validateOnePluginEvalManifest(
+      pluginDir,
+      pluginManifest,
+      evalDir,
+      owner.skill,
+    );
+  }
 }
 
 function countCharacters(value) {
@@ -2469,6 +2626,11 @@ function isValidArtifactFilePath(relativePath) {
   );
 }
 
+function isSkillAuthorOnlyPath(relativePath) {
+  const [topLevel] = relativePath.split('/');
+  return topLevel === 'evals' || topLevel === 'reports';
+}
+
 function collectArtifactSourceFiles(rootDir, fieldName, files) {
   const rootStats = fs.lstatSync(rootDir, { throwIfNoEntry: false });
   if (!rootStats?.isDirectory() || rootStats.isSymbolicLink()) return;
@@ -2478,6 +2640,7 @@ function collectArtifactSourceFiles(rootDir, fieldName, files) {
       .sort((left, right) => left.name.localeCompare(right.name));
     for (const entry of entries) {
       const relativePath = parentPath ? `${parentPath}/${entry.name}` : entry.name;
+      if (isSkillAuthorOnlyPath(relativePath)) continue;
       const absolutePath = path.join(currentDir, entry.name);
       if (entry.isSymbolicLink()) {
         error(`${fieldName} contains unsupported symbolic link "${relativePath}"`);
@@ -2523,6 +2686,10 @@ function validateRenderedSkillTree(options) {
     );
   });
   for (const [relativePath, content] of Object.entries(entry.content.files)) {
+    if (isSkillAuthorOnlyPath(relativePath)) {
+      error(`${fieldName}.content.files path "${relativePath}" uses an author-only Skill directory`);
+      continue;
+    }
     if (isValidArtifactFilePath(relativePath) && typeof content === 'string') {
       files.set(relativePath, Buffer.from(content, 'utf8'));
     }

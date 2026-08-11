@@ -9,6 +9,7 @@ import {
   assertProcessTreeInspectionAvailable,
   CODEX_EVAL_PROCESS_TREE_ID_ENV,
   createChildProcessTreeMonitor,
+  createDirectChildProcessMonitor,
   type ChildProcessTreeMonitor,
   processTreeCleanupIsUnconfirmed,
   releaseChildProcessHandles,
@@ -37,8 +38,27 @@ import {
 import {
   validatePluginEvalConversationCaseDocument,
   type PluginEvalIsolation,
+  type PluginEvalProcessManagementEvidence,
   type PluginEvalSuiteReport,
 } from './plugin-eval-contract.js';
+
+const DEFAULT_MANAGED_PROCESS_EVIDENCE: PluginEvalProcessManagementEvidence = {
+  mode: 'managed',
+  inspectionAvailable: true,
+  userAcknowledged: false,
+  descendantCleanupGuaranteed: true,
+};
+
+async function createEvalTemporaryRoot(
+  prefix: string,
+  workRoot?: string,
+): Promise<Awaited<ReturnType<typeof createCodexEvalTemporaryRoot>>> {
+  if (!workRoot) return createCodexEvalTemporaryRoot(prefix);
+  await fs.ensureDir(workRoot);
+  return createCodexEvalTemporaryRoot(prefix, {
+    allocate: () => fs.mkdtemp(path.join(workRoot, prefix)),
+  });
+}
 
 interface AppServerProcess {
   stdin: Writable;
@@ -216,24 +236,25 @@ async function snapshotWorkspace(root: string): Promise<Map<string, string>> {
 
 async function isolateWorkspaceSkills(options: {
   workspaceRoot: string;
-  skillName: string;
-  includeTarget: boolean;
-}): Promise<string | null> {
+  skillNames: string[];
+}): Promise<string[]> {
   const skillsRoot = path.join(options.workspaceRoot, '.agents', 'skills');
-  const targetRoot = path.join(skillsRoot, options.skillName);
+  const allowed = new Set(options.skillNames);
   const entries = await fs.readdir(skillsRoot).catch((error: NodeJS.ErrnoException) => {
     if (error.code === 'ENOENT') return [];
     throw error;
   });
   await Promise.all(entries.map(async (entry) => {
-    if (options.includeTarget && entry === options.skillName) return;
+    if (allowed.has(entry)) return;
     await fs.remove(path.join(skillsRoot, entry));
   }));
-  if (!options.includeTarget) return null;
-  if (!(await fs.pathExists(path.join(targetRoot, 'SKILL.md')))) {
-    throw new Error(`Materialized eval Skill is missing: ${targetRoot}`);
+  const roots = options.skillNames.map((skillName) => path.join(skillsRoot, skillName));
+  for (const root of roots) {
+    if (!(await fs.pathExists(path.join(root, 'SKILL.md')))) {
+      throw new Error(`Materialized eval Skill is missing: ${root}`);
+    }
   }
-  return targetRoot;
+  return roots;
 }
 
 function diffSnapshots(before: Map<string, string>, after: Map<string, string>): string[] {
@@ -267,9 +288,12 @@ export class EvalAppServerSession {
     modelProvider: string;
     sensitiveEnvironmentNames: string[];
     isolation: PluginEvalIsolation;
+    processManagement?: PluginEvalProcessManagementEvidence;
     configOverrides?: readonly string[];
   }) {
     assertCodexEvalCanStartWork();
+    const processManagement = options.processManagement ?? DEFAULT_MANAGED_PROCESS_EVIDENCE;
+    const managed = processManagement.mode === 'managed';
     this.closed = new Promise<void>((resolve) => {
       this.resolveClosed = resolve;
     });
@@ -299,18 +323,19 @@ export class EvalAppServerSession {
     }
     this.process = spawn(options.codexBin, args, {
       cwd: options.cwd,
-      env: {
-        ...options.env,
-        [CODEX_EVAL_PROCESS_TREE_ID_ENV]: this.processTreeId,
-      },
+      env: managed
+        ? { ...options.env, [CODEX_EVAL_PROCESS_TREE_ID_ENV]: this.processTreeId }
+        : { ...options.env },
       shell: false,
-      detached: process.platform !== 'win32',
+      detached: managed && process.platform !== 'win32',
       stdio: ['pipe', 'pipe', 'pipe'],
     }) as unknown as AppServerProcess;
-    this.processTreeMonitor = createChildProcessTreeMonitor(
-      this.process as unknown as ChildProcess,
-      { treeId: this.processTreeId },
-    );
+    this.processTreeMonitor = managed
+      ? createChildProcessTreeMonitor(
+          this.process as unknown as ChildProcess,
+          { treeId: this.processTreeId },
+        )
+      : createDirectChildProcessMonitor(this.process as unknown as ChildProcess);
     this.process.stdout.setEncoding?.('utf8');
     this.process.stderr.setEncoding?.('utf8');
     this.process.stdout.on('data', (chunk: string | Buffer) => {
@@ -512,7 +537,7 @@ async function collectStrictIsolationEvidence(options: {
   session: EvalAppServerSession;
   workspaceRoot: string;
   codexHome: string;
-  allowedSkillRoot: string | null;
+  allowedSkillRoots: string[];
 }): Promise<CodexEvalRpcIsolationEvidence> {
   const [config, requirements] = await Promise.all([
     options.session.sendRequest('config/read', {
@@ -546,7 +571,7 @@ async function collectStrictIsolationEvidence(options: {
     mcpServers,
     codexHome: options.codexHome,
     workspaceRoot: options.workspaceRoot,
-    allowedSkillRoot: options.allowedSkillRoot,
+    allowedSkillRoots: options.allowedSkillRoots,
   });
 }
 
@@ -628,15 +653,21 @@ async function runConversationOnce(options: {
   evalCase: ConversationEvalCase;
   variant: AppServerRunEvidence['variant'];
   skillName: string;
+  skillNames: string[];
   codexBin: string;
   model?: string;
   codexRuntime: CodexEvalRuntimeConfig;
   timeoutMs: number;
   sourceEnv: NodeJS.ProcessEnv;
   isolation: PluginEvalIsolation;
+  processManagement: PluginEvalProcessManagementEvidence;
+  workRoot?: string;
 }): Promise<AppServerRunEvidence> {
   assertCodexEvalCanStartWork();
-  const temporaryRoot = await createCodexEvalTemporaryRoot('aw-ask-me-eval-');
+  const temporaryRoot = await createEvalTemporaryRoot(
+    'conversation-',
+    options.workRoot,
+  );
   const runRoot = temporaryRoot.root;
   const workspaceRoot = path.join(runRoot, 'project');
   const codexHome = path.join(runRoot, 'codex-home');
@@ -653,18 +684,17 @@ async function runConversationOnce(options: {
   const startedAt = Date.now();
   try {
     await fs.copy(options.sourceProjectRoot, workspaceRoot, { dereference: false });
-    let allowedSkillRoot: string | null;
+    let allowedSkillRoots: string[] = [];
     if (options.isolation === 'strict') {
-      allowedSkillRoot = await isolateWorkspaceSkills({
+      const visibleSkills = options.variant === 'with_skill'
+        ? options.skillNames
+        : options.skillNames.filter((skillName) => skillName !== options.skillName);
+      allowedSkillRoots = await isolateWorkspaceSkills({
         workspaceRoot,
-        skillName: options.skillName,
-        includeTarget: options.variant === 'with_skill',
+        skillNames: visibleSkills,
       });
     } else if (options.variant === 'without_skill') {
       await fs.remove(path.join(workspaceRoot, '.agents', 'skills', options.skillName));
-      allowedSkillRoot = null;
-    } else {
-      allowedSkillRoot = path.join(workspaceRoot, '.agents', 'skills', options.skillName);
     }
     const env = buildIsolatedEnv(
       options.sourceEnv,
@@ -680,7 +710,9 @@ async function runConversationOnce(options: {
       }),
     ]);
     const before = await snapshotWorkspace(workspaceRoot);
-    await assertProcessTreeInspectionAvailable();
+    if (options.processManagement.mode === 'managed') {
+      await assertProcessTreeInspectionAvailable();
+    }
     assertCodexEvalCanStartWork();
     session = new EvalAppServerSession({
       codexBin: options.codexBin,
@@ -689,6 +721,7 @@ async function runConversationOnce(options: {
       modelProvider: options.codexRuntime.modelProvider,
       sensitiveEnvironmentNames: options.codexRuntime.sensitiveEnvironmentNames,
       isolation: options.isolation,
+      processManagement: options.processManagement,
     });
     let replyStep = 0;
     let turnResolve: ((value: { complete: boolean }) => void) | undefined;
@@ -788,7 +821,7 @@ async function runConversationOnce(options: {
         session,
         workspaceRoot,
         codexHome,
-        allowedSkillRoot,
+        allowedSkillRoots,
       });
     }
     const threadResult = await session.sendRequest('thread/start', {
@@ -871,22 +904,28 @@ async function runConversationOnce(options: {
 export async function runCodexEvalIsolationProbe(options: {
   subjectRoot: string;
   skillName: string;
+  skillNames?: string[];
   codexBin: string;
   codexRuntime: CodexEvalRuntimeConfig;
   sourceEnv?: NodeJS.ProcessEnv;
+  processManagement?: PluginEvalProcessManagementEvidence;
+  workRoot?: string;
 }): Promise<CodexEvalRpcIsolationEvidence> {
   assertCodexEvalCanStartWork();
   const sourceEnv = options.sourceEnv ?? process.env;
-  const temporaryRoot = await createCodexEvalTemporaryRoot('aw-isolation-probe-');
+  const processManagement = options.processManagement ?? DEFAULT_MANAGED_PROCESS_EVIDENCE;
+  const temporaryRoot = await createEvalTemporaryRoot(
+    'isolation-probe-',
+    options.workRoot,
+  );
   const workspaceRoot = path.join(temporaryRoot.root, 'project');
   const codexHome = path.join(temporaryRoot.root, 'codex-home');
   let session: EvalAppServerSession | undefined;
   try {
     await fs.copy(options.subjectRoot, workspaceRoot, { dereference: false });
-    const allowedSkillRoot = await isolateWorkspaceSkills({
+    const allowedSkillRoots = await isolateWorkspaceSkills({
       workspaceRoot,
-      skillName: options.skillName,
-      includeTarget: true,
+      skillNames: options.skillNames ?? [options.skillName],
     });
     const env = buildIsolatedEnv(
       sourceEnv,
@@ -901,7 +940,9 @@ export async function runCodexEvalIsolationProbe(options: {
         trustedProject: workspaceRoot,
       }),
     ]);
-    await assertProcessTreeInspectionAvailable();
+    if (processManagement.mode === 'managed') {
+      await assertProcessTreeInspectionAvailable();
+    }
     session = new EvalAppServerSession({
       codexBin: options.codexBin,
       cwd: workspaceRoot,
@@ -909,13 +950,14 @@ export async function runCodexEvalIsolationProbe(options: {
       modelProvider: options.codexRuntime.modelProvider,
       sensitiveEnvironmentNames: options.codexRuntime.sensitiveEnvironmentNames,
       isolation: 'strict',
+      processManagement,
     });
     await session.initialize();
     return await collectStrictIsolationEvidence({
       session,
       workspaceRoot,
       codexHome,
-      allowedSkillRoot,
+      allowedSkillRoots,
     });
   } finally {
     try {
@@ -929,6 +971,7 @@ export async function runCodexEvalIsolationProbe(options: {
 export async function runCodexConversationSuite(options: {
   suiteId: string;
   skillName: string;
+  skillNames?: string[];
   casesPath: string;
   subjectRoot: string;
   profile: string;
@@ -941,11 +984,15 @@ export async function runCodexConversationSuite(options: {
   isolation?: PluginEvalIsolation;
   sourceEnv?: NodeJS.ProcessEnv;
   reportPath?: string;
+  processManagement?: PluginEvalProcessManagementEvidence;
+  workRoot?: string;
 }): Promise<PluginEvalSuiteReport> {
+  const skillNames = options.skillNames ?? [options.skillName];
   const sourceEnv = options.sourceEnv ?? process.env;
   const codexRuntime = options.codexRuntime ?? cleanCodexEvalRuntimeConfig(sourceEnv, options.model);
   const model = options.model ?? codexRuntime.model ?? undefined;
   const isolation = options.isolation ?? 'standard';
+  const processManagement = options.processManagement ?? DEFAULT_MANAGED_PROCESS_EVIDENCE;
   let cases = await readConversationCases(options.casesPath, options.skillName);
   if (options.caseId) {
     cases = cases.filter((entry) => entry.id === options.caseId);
@@ -964,6 +1011,8 @@ export async function runCodexConversationSuite(options: {
       schema_version: 1,
       generated_at: new Date().toISOString(),
       suite: options.suiteId,
+      owner_skill: options.skillName,
+      participant_skills: skillNames,
       profile: options.profile,
       complete: false,
       mechanical_passed: false,
@@ -982,6 +1031,7 @@ export async function runCodexConversationSuite(options: {
     return redactCodexEvalValue({
       id: options.suiteId,
       kind: 'conversation',
+      skills: skillNames,
       profile: options.profile,
       split: null,
       outcome: 'incomplete',
@@ -1003,12 +1053,15 @@ export async function runCodexConversationSuite(options: {
         evalCase,
         variant: 'with_skill',
         skillName: options.skillName,
+        skillNames,
         codexBin: options.codexBin,
         model,
         codexRuntime,
         timeoutMs: options.timeoutMs,
         sourceEnv,
         isolation,
+        processManagement,
+        workRoot: options.workRoot,
       });
       assertCodexEvalCanStartWork();
       const withoutSkill = await runConversationOnce({
@@ -1016,12 +1069,15 @@ export async function runCodexConversationSuite(options: {
         evalCase,
         variant: 'without_skill',
         skillName: options.skillName,
+        skillNames,
         codexBin: options.codexBin,
         model,
         codexRuntime,
         timeoutMs: options.timeoutMs,
         sourceEnv,
         isolation,
+        processManagement,
+        workRoot: options.workRoot,
       });
       runs.push({ run: runIndex + 1, with_skill: withSkill, without_skill: withoutSkill });
     }
@@ -1044,6 +1100,8 @@ export async function runCodexConversationSuite(options: {
     schema_version: 1,
     generated_at: new Date().toISOString(),
     suite: options.suiteId,
+    owner_skill: options.skillName,
+    participant_skills: skillNames,
     profile: options.profile,
     complete,
     mechanical_passed: mechanicalPassed,
@@ -1065,6 +1123,7 @@ export async function runCodexConversationSuite(options: {
   return redactCodexEvalValue({
     id: options.suiteId,
     kind: 'conversation',
+    skills: skillNames,
     profile: options.profile,
     split: null,
     outcome: !complete ? 'incomplete' : !mechanicalPassed ? 'failed' : 'needs_review',

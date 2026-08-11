@@ -25,7 +25,9 @@ Source layer
   plugins/marketplace-source.json
   plugins/<name>/.agents-plugin/plugin.json
   plugins/<name>/skills/**
-  plugins/<name>/evals/**
+  plugins/<name>/skills/<skill>/evals/**          [author-only]
+  plugins/<name>/templates/<skill>/evals/**       [author-only]
+  <skill-root>/reports/**                         [author-only]
 
           ↓ pnpm build / catalog staging
 
@@ -52,6 +54,7 @@ Local runtime
 ```
 
 - 仓库源码层是插件作者维护的输入。
+- Skill 根的 `evals/**` 和 `reports/**` 不进入 catalog runtime bundle、安装制品或 runtime digest。eval 工作目录固定在仓库 `.tmp/agent-workflows/evals/`，持久报告留在 owner Skill。
 - catalog staging 是生成物，不手工修改。
 - `@lesliechan721/aw-plugins-manifest` 是 sidecar；`@lesliechan721/aw-plugins` 是同版本 full catalog。
 - CLI version、catalog version 和 plugin version 是三套独立身份。

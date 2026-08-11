@@ -6,43 +6,56 @@
 - `pnpm plugin:test`：确定性脚本、转换和 bundle 合同，不调用模型。
 - `pnpm plugin:eval`：Codex 最终制品 materialization 与真实模型行为。
 
-模型 eval v1 只覆盖 Codex，且只在本地显式运行；不进入常规 CI。Claude 仍由 build、validator 和 `plugin:test` 验证确定性合同，不得据此声称 Claude 模型行为已通过。
+当前模型 eval 只覆盖 Codex，且只在本地显式运行；不进入常规 CI。Claude 仍由 build、validator 和 `plugin:test` 验证确定性合同，不得据此声称 Claude 模型行为已通过。
 
 ## 作者期目录与 manifest
 
-插件 eval 固定放在插件根，不放进声明的 Skill 子树：
+每个 eval 由一个 owner Skill 持有。定义和持久报告固定放在该 Skill 源码根：
 
 ```text
 plugins/<name>/
-├── evals/
-│   ├── manifest.json
-│   ├── trigger-cases.json
-│   ├── trigger-fixture.mjs     # 可选，只准备领域 fixture
-│   ├── evals.json
-│   └── run-specialized-*.mjs   # 可选，只保留领域专用 suite
-└── skills/ 或 templates/
+└── skills/<skill>/ 或 templates/<skill>/
+    ├── SKILL.md
+    ├── evals/
+    │   ├── manifest.json
+    │   ├── trigger-cases.json
+    │   ├── trigger-fixture.mjs     # 可选，只准备领域 fixture
+    │   ├── evals.json
+    │   └── run-specialized-*.mjs   # 可选，只保留领域专用 suite
+    └── reports/
+        ├── evals/<run-id>/
+        └── reviews/<run-id>/
 ```
 
-`evals/**` 是作者期材料，不属于 production runtime bundle。动态 Skill 的评测对象也不是 template，而是中央 materializer 通过真实 staging、renderer、ArtifactPlan 校验和 Codex adapter 得到的最终制品。
+静态 Skill 使用 `skills/<skill>/evals/`。动态 Skill 在目标声明的 `sourceDirs` 中选择唯一包含 `evals/manifest.json` 的源码根；同一个 Skill 不能有多个 eval owner。插件根 `evals/` 已禁用。
 
-`evals/manifest.json` 使用 schema v1：
+`evals/**` 和 `reports/**` 都是作者期材料，不属于 production runtime bundle，也不参与 runtime package digest。动态 Skill 的评测对象不是 template，而是中央 materializer 通过真实 staging、renderer、ArtifactPlan 校验和 Codex adapter 得到的最终制品。
+
+`evals/manifest.json` 使用 schema v2：
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "plugin": "review-workflow",
+  "skill": "review-workflow",
   "profiles": [
     {
       "id": "project-default",
       "scope": "project",
-      "config": {},
+      "plugins": [
+        { "name": "review-workflow", "config": {} },
+        { "name": "review-policy", "config": {} }
+      ],
       "runModel": true,
       "requiredForRelease": true
     },
     {
       "id": "user-default",
       "scope": "user",
-      "config": {},
+      "plugins": [
+        { "name": "review-workflow", "config": {} },
+        { "name": "review-policy", "config": {} }
+      ],
       "runModel": false,
       "requiredForRelease": true
     }
@@ -51,8 +64,8 @@ plugins/<name>/
     {
       "id": "trigger",
       "kind": "trigger",
-      "skill": "review-workflow",
-      "cases": "./evals/trigger-cases.json",
+      "skills": ["review-workflow", "review-policy"],
+      "cases": "./trigger-cases.json",
       "observeSpawnAgent": false,
       "isolation": "strict",
       "strictNegativeSplits": ["validation"],
@@ -68,52 +81,56 @@ plugins/<name>/
 
 Profile 规则：
 
-- v1 平台固定为 Codex。
-- `config` 必须经 AW 配置存储和真实 renderer 消费，不能用字符串替换模拟最终 Skill。
+- v2 平台固定为 Codex。manifest 的 `plugin` 和 `skill` 定义证据 owner。
+- `plugins[]` 按声明顺序安装到同一个隔离 subject；必须包含 owner 插件，名称不能重复。每项 `config` 必须经对应插件的 AW 配置存储和真实 renderer 消费，不能用字符串替换模拟最终 Skill。
+- companion 插件只从当前仓库 `plugins/<name>` 解析。跨插件安装只属于 eval fixture，不形成 production dependency；插件 manifest 仍不支持 `dependencies`。
+- 同一 profile 的已安装插件不能生成重名 Codex Skill。
 - 真实模型只允许 `scope: "project"` 且 `runModel: true` 的 profile。
 - user profile 必须 `runModel: false`；它只证明 native 写入前的确定性 materialized artifact，不声称经过 user native cache 的真实模型运行。
 - 动态插件至少覆盖 default 与一个能改变制品的 non-default config；这些 profile 可以只 materialize，不必都调用模型。
 
 Suite 规则：
 
+- 每个 suite 必须声明非空、无重复的 `skills[]`，并包含 owner Skill。profile 中安装的插件必须能提供全部 participant Skills。
 - `trigger` 由中央 Codex app-server driver 执行，使用 materialized project Skill、隔离 `CODEX_HOME`、重复运行和统一报告。Skill 加载由完成的 `commandExecution` 读取事件确认：命令成功时直接采用；复合命令整体失败时，只有 captured output 明确包含目标 Skill 的 `name` frontmatter 才采用，避免后续搜索失败抹掉已完成的读取，也避免把未成功的读取尝试当成证据。启用 `observeSpawnAgent` 时，实际委派由 V2 `subAgentActivity(kind=started)` 确认。该事件不包含完整 spawn 参数；需要校验 role、model 或 effort 时使用领域 command suite。中央 driver 原生支持 split/runs/case/model/codex-bin，不需要插件 runner。
-- `trigger` 和 `conversation` 都支持 `isolation: "standard" | "strict"`，schema v1 省略时默认为 `standard`。用于发布门禁、触发边界或行为归因的 suite 应显式使用 `strict`；只需要兼容旧语料或调试宿主集成时才使用 `standard`。
+- `trigger` 和 `conversation` 都支持 `isolation: "standard" | "strict"`，schema v2 省略时默认为 `standard`。用于发布门禁、触发边界或行为归因的 suite 应显式使用 `strict`；只需要兼容旧语料或调试宿主集成时才使用 `standard`。
 - trigger corpus 使用 `{ "schemaVersion": 1, "skill": "...", "cases": [...] }`；每个 case 声明 `id`、`split`、`query`、`should_load_skill`，需要检查子代理时再声明 `should_spawn_agent`。
-- `fixtureModule` 只能指向 `evals/*.mjs`，必须导出 `setupTriggerWorkspace({ workspaceRoot, evalCase, env })`；可选的 `captureTriggerWorkspaceState` 返回前后可比较的 JSON 状态。fixture 只能准备临时材料，不能修改 materialized 目标 Skill，也不能覆盖 HOME/CODEX_HOME/XDG/TMP/PATH；strict 模式还禁止修改 `.agents` 和 `.codex` 控制面。
+- `strictNegativeSplits` 对负例使用零容忍：重复运行中任何一次误加载或错误委派都会让该 split 失败，不能用三次中的多数结果掩盖一次错误。
+- `fixtureModule` 只能指向 owner Skill 的 `evals/*.mjs`，必须导出 `setupTriggerWorkspace({ workspaceRoot, evalCase, env })`；可选的 `captureTriggerWorkspaceState` 返回前后可比较的 JSON 状态。fixture 只能准备临时材料，不能修改 materialized participant Skill，也不能覆盖 HOME/CODEX_HOME/XDG/TMP/PATH；strict 模式还禁止修改 `.agents` 和 `.codex` 控制面。
 - `command` 只用于 model-selection、routing、workflow 等领域专用 runner；`supports` 明确中央入口可以透传哪些参数。runner 必须接受 `--output`，并要求中央提供 `AW_PLUGIN_EVAL_PROJECT_ROOT`，不得回退到源码或 template 自行渲染。
+- command runner 同时收到 `AW_PLUGIN_EVAL_OWNER_SKILL`、`AW_PLUGIN_EVAL_PARTICIPANT_SKILLS` 和 `AW_PLUGIN_EVAL_INSTALLED_PLUGINS`。后两项是 JSON 数组。
 - `perRunTimeoutMs` 是单次模型运行时限；`command` 还必须声明独立的 `suiteTimeoutMs` 作为整个领域 runner 的中央兜底，且不得小于 `perRunTimeoutMs`。中央只把前者透传为 `--timeout-ms`，只用后者终止整个子进程。
-- `conversation` 由中央 Codex app-server driver 执行，使用 `skill` 指定 current/baseline 的唯一目标 Skill，适合需要 `request_user_input` 多轮回复的用例；driver 会在 Default 协作模式显式启用该工具，case 保存结构化 `scripted_replies`，不得依赖运行时生成的 question id。strict 模式会在 current 中只保留目标 Skill，并在 baseline 中移除全部 Skill。当前 conversation driver 不支持 split 过滤，因此 `releaseSplits` 必须为空数组。
+- `conversation` 由中央 Codex app-server driver 执行，适合需要 `request_user_input` 多轮回复的用例；driver 会在 Default 协作模式显式启用该工具，case 保存结构化 `scripted_replies`，不得依赖运行时生成的 question id。strict current 只保留 `skills[]` 的精确集合；baseline 只移除 owner Skill，并保留 companion Skills。这样可以测量 owner 的增量作用，不破坏真实组合环境。当前 conversation driver 不支持 split 过滤，因此 `releaseSplits` 必须为空数组。
 - suite 只能引用 `runModel: true` profile。materialize-only profile 不进入 suite。
 - `requiredForRelease` 和 `releaseSplits` 决定无过滤参数运行时的发布证据集合。
 
-`validate_plugin.mjs` 会在 `evals/manifest.json` 存在时检查 schema、路径、profile/suite 引用和 user/project 模型边界。eval manifest 不写入 `.agents-plugin/plugin.json`。
+`validate_plugin.mjs` 会发现每个 Skill 的 `evals/manifest.json`，检查 schema、owner、路径、repo-local companion、Skill 归属、profile/suite 引用和 user/project 模型边界。eval manifest 不写入 `.agents-plugin/plugin.json`。
 
 ## 中央运行入口
 
 只生成最终制品，不启动模型：
 
 ```bash
-pnpm plugin:eval <plugin> --materialize-only --output-dir /tmp/aw-eval
-pnpm plugin:eval --all --materialize-only --output-dir /tmp/aw-eval
+pnpm plugin:eval <plugin> --skill <skill> --materialize-only
 ```
 
 运行一个小范围真实 Codex eval：
 
 ```bash
 pnpm plugin:eval <plugin> \
+  --skill <skill> \
   --suite trigger \
   --split validation \
-  --runs 1 \
-  --output-dir /tmp/aw-eval
+  --runs 1
 ```
 
 本地发布评估直接运行，不传 suite/profile/split 过滤：
 
 ```bash
-pnpm plugin:eval <plugin> --output-dir /tmp/aw-eval
+pnpm plugin:eval <plugin> --skill <skill>
 ```
 
-默认执行 manifest 中所有 release-required suite/split，同时 materialize 所有 profile。常用调试参数还有 `--profile`、`--case`、`--model`、`--codex-bin`。suite 不支持的参数会失败，不能静默忽略。
+一次命令只运行一个 owner Skill。`--skill` 必填，插件级 `--all` 不受支持。跨 Skill 或跨插件组合由该 Skill manifest 的 `skills[]` 和 `profiles[].plugins[]` 明确声明。默认执行该 owner manifest 中所有 release-required suite/split，同时 materialize 所有 profile。常用调试参数还有 `--profile`、`--case`、`--model`、`--codex-bin`。suite 不支持的参数会失败，不能静默忽略。
 
 `--suite`、`--profile`、`--split`、`--case` 都会把 bundle 标为 `complete: false`、`outcome: incomplete`；低于 suite `defaultRuns` 的 `--runs` 也相同。此类局部调试即使机械检查通过也退出 `1`，不能作为发布证据。
 
@@ -123,11 +140,13 @@ strict 模式在启动模型前检查 `/etc/codex`（Windows 对应系统目录�
 
 真实模型 eval 应从普通 Terminal 会话直接运行。不要通过会临时导出或改写用户 keychain search list 的 GUI、沙箱或提权包装器启动；这类外层包装器可能留下失效的 `accountsKeychainExport` 路径，并在 Codex 启动前触发 macOS“找不到钥匙串”弹窗。中央入口在 macOS 检测到该包装器路径时会直接拒绝真实模型 eval，不会修改用户 keychain search list；`--materialize-only` 和确定性测试不执行该检查，也不需要启动 Codex 模型进程。
 
+真实模型 eval 默认还要求 Full Access 可用，以便发现并清理 Codex 的后代进程。检查失败时，入口会在创建报告目录和启动模型前阻断。Windows 当前没有 Job Object containment，也走同一阻断路径。确认可接受风险后，可以显式传 `--allow-unmanaged-processes`；该模式只跟踪直接子进程，timeout、信号或 runner 退出后可能遗留后代进程，报告会记录 `descendantCleanupGuaranteed: false`。它可以用于本地运行，但 release reviewer 必须明确接受这项环境风险。
+
 `pnpm plugin:eval` 是唯一支持的模型 eval 入口。不要直接运行插件 `evals/` 下的 command runner；直接调用既缺少 final-artifact profile/digest，也会因缺少 `AW_PLUGIN_EVAL_PROJECT_ROOT` 失败。
 
 `--allow-environment-skips` 只用于诊断已知环境限制；任何 skip 都必须保持 `incomplete`，不能形成发布通过证据。
 
-规范输出位于 `<output-dir>/<plugin>/evaluation.json`。它记录 plugin/version、Codex version、model、profile/scope、config/bundle/content digest、suite 结果和证据路径。显式指定 output dir 时保留 materialized subjects 和原始 suite report；未指定时临时目录会在命令结束后清理。
+中间产物固定在项目内 `.tmp/agent-workflows/evals/plugins/<plugin>/<skill>/<run-id>/`，命令结束后清理。持久报告固定在 `<owner-skill-root>/reports/evals/<run-id>/`：`run.json` 记录运行状态，`summary.json` 和 `report.md` 用于长期保存，`raw/evaluation.json`、materialized subjects 和 suite trace 用于复核。`raw/` 默认不提交 Git，但不能在 review 完成前删除。CLI 不接受任意 `--output-dir`。
 
 ## 触发评估
 
@@ -179,7 +198,8 @@ strict 模式在启动模型前检查 `/etc/codex`（Windows 对应系统目录�
 
 ## 完成检查
 
-- [ ] `evals/manifest.json` 通过作者 validator。
+- [ ] owner Skill 的 `evals/manifest.json` 通过作者 validator。
+- [ ] `skills[]` 覆盖真实 participant；跨插件 profile 只引用当前仓库插件，且不被误写为 production dependency。
 - [ ] 自动 Skill 有 train/validation/sanity 的正例与 near-miss。
 - [ ] 动态 Skill 覆盖 default/non-default、project/user 最终制品。
 - [ ] 真实模型只运行 Codex project profile，user 只 materialize。
@@ -187,6 +207,7 @@ strict 模式在启动模型前检查 `/etc/codex`（Windows 对应系统目录�
 - [ ] 机械断言优先，定性 checks 都能绑定 trace/diff 证据。
 - [ ] `plugin:test`、materialization 和模型 eval 没有互相冒充。
 - [ ] release required suite 没有 skip、incomplete 或未复核的 `needs_review`。
+- [ ] eval 报告保存在 owner Skill 的 `reports/evals/<run-id>/`；review 报告保存在 `reports/reviews/<run-id>/`。
 
 ## 上游参考
 

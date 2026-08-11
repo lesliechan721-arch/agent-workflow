@@ -14,6 +14,10 @@ import {
   terminatePosixProcessTree,
   terminateWindowsProcessTree,
 } from '../../scripts/eval-plugin-skills.js';
+import {
+  createPluginEvalRunLayout,
+  type EvalRunLayout,
+} from '../../scripts/eval-run-layout.js';
 import { resetCodexEvalSignalShutdownForTests } from '../../scripts/codex-eval-runtime-config.js';
 import {
   assertProcessTreeInspectionAvailable,
@@ -26,6 +30,31 @@ import {
 } from '../setup/test-isolation.js';
 
 const tempDirs: string[] = [];
+let testRunCounter = 0;
+
+function testRunLayoutFactory(outputRoot: string) {
+  return async (options: {
+    repoRoot: string;
+    skillRoot: string;
+    plugin: string;
+    skill: string;
+    runId?: string;
+  }): Promise<EvalRunLayout> => {
+    testRunCounter += 1;
+    const runId = options.runId ?? `20260811T000000Z-${testRunCounter.toString(16).padStart(8, '0')}`;
+    const reportRoot = path.join(outputRoot, options.plugin, options.skill, runId);
+    const rawRoot = path.join(reportRoot, 'raw');
+    const workRoot = path.join(outputRoot, '.tmp', runId);
+    await Promise.all([fs.ensureDir(rawRoot), fs.ensureDir(workRoot)]);
+    return {
+      runId,
+      reportRoot,
+      rawRoot,
+      workRoot,
+      cleanupWork: () => fs.remove(workRoot),
+    };
+  };
+}
 
 function repoRoot(): string {
   return path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
@@ -120,7 +149,7 @@ async function writeCommandPlugin(
   const pluginRoot = path.join(repo, 'plugins', options.name);
   await fs.ensureDir(path.join(pluginRoot, '.agents-plugin'));
   await fs.ensureDir(path.join(pluginRoot, 'skills', options.name, 'agents'));
-  await fs.ensureDir(path.join(pluginRoot, 'evals'));
+  await fs.ensureDir(path.join(pluginRoot, 'skills', options.name, 'evals'));
   await fs.writeJson(path.join(pluginRoot, '.agents-plugin', 'plugin.json'), {
     name: options.name,
     version: '0.1.0',
@@ -153,24 +182,32 @@ async function writeCommandPlugin(
     'utf8',
   );
   await fs.writeFile(
-    path.join(pluginRoot, 'evals', 'runner.mjs'),
+    path.join(pluginRoot, 'skills', options.name, 'evals', 'runner.mjs'),
     options.script,
     'utf8',
   );
-  await fs.writeJson(path.join(pluginRoot, 'evals', 'manifest.json'), {
-    schemaVersion: 1,
+  await fs.writeJson(path.join(
+    pluginRoot,
+    'skills',
+    options.name,
+    'evals',
+    'manifest.json',
+  ), {
+    schemaVersion: 2,
     plugin: options.name,
+    skill: options.name,
     profiles: [{
       id: 'project-default',
       scope: 'project',
-      config: {},
+      plugins: [{ name: options.name, config: {} }],
       runModel: true,
       requiredForRelease: true,
     }],
     suites: [{
       id: 'command',
       kind: 'command',
-      entry: './evals/runner.mjs',
+      skills: [options.name],
+      entry: './runner.mjs',
       profiles: ['project-default'],
       defaultRuns: options.defaultRuns,
       releaseSplits: [],
@@ -187,6 +224,40 @@ afterEach(async () => {
 });
 
 describe('plugin eval runner', () => {
+  it('places durable reports in the owning Skill and temporary work under the repository', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-eval-layout-'));
+    tempDirs.push(root);
+    const skillRoot = path.join(root, 'plugins', 'demo', 'skills', 'demo');
+    await fs.ensureDir(skillRoot);
+    const layout = await createPluginEvalRunLayout({
+      repoRoot: root,
+      skillRoot,
+      plugin: 'demo',
+      skill: 'demo',
+      runId: '20260811T000000Z-00000001',
+    });
+
+    expect(layout.reportRoot).toBe(path.join(
+      skillRoot,
+      'reports',
+      'evals',
+      '20260811T000000Z-00000001',
+    ));
+    expect(layout.workRoot).toBe(path.join(
+      root,
+      '.tmp',
+      'agent-workflows',
+      'evals',
+      'plugins',
+      'demo',
+      'demo',
+      '20260811T000000Z-00000001',
+    ));
+    await layout.cleanupWork();
+    await expect(fs.pathExists(layout.workRoot)).resolves.toBe(false);
+    await expect(fs.pathExists(layout.reportRoot)).resolves.toBe(true);
+  });
+
   it('prints help without treating it as an argument error', async () => {
     let stdout = '';
     const exitCode = await runPluginEvals(['--help'], {
@@ -204,7 +275,12 @@ describe('plugin eval runner', () => {
 
   it('rejects plugin path traversal before resolving a manifest', async () => {
     let stderr = '';
-    const exitCode = await runPluginEvals(['../skill-review', '--materialize-only'], {
+    const exitCode = await runPluginEvals([
+      '../skill-review',
+      '--skill',
+      'skill-review',
+      '--materialize-only',
+    ], {
       repoRoot: repoRoot(),
       stderr: (text) => { stderr += text; },
     });
@@ -215,7 +291,11 @@ describe('plugin eval runner', () => {
 
   it('blocks model eval under a macOS accountsKeychainExport wrapper', async () => {
     let stderr = '';
-    const exitCode = await runPluginEvals(['codex-subagent-guide'], {
+    const exitCode = await runPluginEvals([
+      'codex-subagent-guide',
+      '--skill',
+      'codex-subagent-guide',
+    ], {
       repoRoot: repoRoot(),
       platform: 'darwin',
       readUserKeychainSearchList: async () =>
@@ -239,9 +319,9 @@ describe('plugin eval runner', () => {
 
     const exitCode = await runPluginEvals([
       'codex-subagent-guide',
+      '--skill',
+      'codex-subagent-guide',
       '--materialize-only',
-      '--output-dir',
-      outputRoot,
     ], {
       repoRoot: root,
       platform: 'darwin',
@@ -249,42 +329,143 @@ describe('plugin eval runner', () => {
       env: process.env,
       stdout: () => undefined,
       stderr: () => undefined,
+      createRunLayout: testRunLayoutFactory(outputRoot),
     });
 
     expect(exitCode).toBe(0);
     expect(readUserKeychainSearchList).not.toHaveBeenCalled();
   });
 
-  it('materializes every Codex profile through the real staging and renderer paths', async () => {
-    const root = repoRoot();
-    const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-eval-all-'));
-    tempDirs.push(outputRoot);
+  it('blocks before report allocation or model start when Full Access is unavailable', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-eval-full-access-'));
+    const marker = path.join(root, 'codex-started');
+    const codexBin = path.join(root, 'fake-codex');
+    tempDirs.push(root);
+    await fs.writeFile(codexBin, [
+      '#!/usr/bin/env node',
+      `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'started');`,
+    ].join('\n'), 'utf8');
+    await fs.chmod(codexBin, 0o755);
+    const createRunLayout = vi.fn(testRunLayoutFactory(path.join(root, 'output')));
+    let stderr = '';
+
+    const exitCode = await runPluginEvals([
+      'codex-subagent-guide',
+      '--skill',
+      'codex-subagent-guide',
+      '--codex-bin',
+      codexBin,
+    ], {
+      repoRoot: repoRoot(),
+      platform: 'linux',
+      inspectProcessTree: async () => { throw new Error('process inspection denied'); },
+      stdout: () => undefined,
+      stderr: (text) => { stderr += text; },
+      createRunLayout,
+    });
+
+    expect(exitCode).toBe(2);
+    expect(stderr).toContain('Full Access is required');
+    expect(stderr).toContain('No model process was started');
+    expect(stderr).toContain('--allow-unmanaged-processes');
+    expect(createRunLayout).not.toHaveBeenCalled();
+    await expect(fs.pathExists(marker)).resolves.toBe(false);
+  });
+
+  it('does not claim managed descendant cleanup on Windows without Job Objects', async () => {
+    await expect(assertProcessTreeInspectionAvailable({ platform: 'win32' })).rejects.toThrow(
+      'Job Object containment',
+    );
+  });
+
+  it('runs with an explicit unmanaged confirmation and records the cleanup risk', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-eval-unmanaged-'));
+    const outputRoot = path.join(root, 'output');
+    tempDirs.push(root);
+    await writeCommandPlugin(root, {
+      name: 'unmanaged-demo',
+      script: [
+        "import { mkdir, writeFile } from 'node:fs/promises';",
+        "import path from 'node:path';",
+        "const output = process.argv[process.argv.indexOf('--output') + 1];",
+        "await mkdir(path.dirname(output), { recursive: true });",
+        "await writeFile(output, JSON.stringify({ complete: true, passed: true, summary: {} }));",
+      ].join('\n'),
+      defaultRuns: 1,
+      perRunTimeoutMs: 1_000,
+      suiteTimeoutMs: 2_000,
+      supports: ['codexBin'],
+    });
     registerCurrentTestReadonlyFixtureRoot(root);
     registerCurrentTestWritableStateRoot(outputRoot);
     let stdout = '';
     let stderr = '';
 
     const exitCode = await runPluginEvals([
-      '--all',
-      '--materialize-only',
-      '--output-dir',
-      outputRoot,
+      'unmanaged-demo',
+      '--skill',
+      'unmanaged-demo',
+      '--allow-unmanaged-processes',
+      '--no-inherit-codex-config',
+      '--codex-bin',
+      process.execPath,
     ], {
       repoRoot: root,
       env: process.env,
+      platform: 'win32',
       stdout: (text) => { stdout += text; },
       stderr: (text) => { stderr += text; },
+      createRunLayout: testRunLayoutFactory(outputRoot),
     });
 
     expect(exitCode, stderr).toBe(0);
-    const commandReport = JSON.parse(stdout);
-    expect(commandReport.bundles.map((bundle: { plugin: string }) => bundle.plugin).sort()).toEqual([
-      'ask-me',
-      'codex-explore',
-      'codex-subagent-guide',
-      'git-commit',
-    ]);
-    for (const bundle of commandReport.bundles) {
+    expect(stderr).toContain('WARNING: Full Access process inspection is unavailable');
+    expect(stderr).toContain('only target the direct child');
+    expect(JSON.parse(stdout).bundle.processManagement).toMatchObject({
+      mode: 'unmanaged-confirmed',
+      inspectionAvailable: false,
+      userAcknowledged: true,
+      descendantCleanupGuaranteed: false,
+    });
+  });
+
+  it('materializes every Codex profile one Skill at a time through real staging', async () => {
+    const root = repoRoot();
+    const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-eval-all-'));
+    tempDirs.push(outputRoot);
+    registerCurrentTestReadonlyFixtureRoot(root);
+    registerCurrentTestWritableStateRoot(outputRoot);
+    const targets = [
+      ['ask-me', 'requirements-clarifier'],
+      ['ask-me', 'decision-grill'],
+      ['codex-explore', 'codex-explore'],
+      ['codex-subagent-guide', 'codex-subagent-guide'],
+      ['git-commit', 'commit'],
+    ] as const;
+    const bundles = [];
+    for (const [plugin, skill] of targets) {
+      let stdout = '';
+      let stderr = '';
+      const exitCode = await runPluginEvals([
+        plugin,
+        '--skill',
+        skill,
+        '--materialize-only',
+      ], {
+        repoRoot: root,
+        env: process.env,
+        stdout: (text) => { stdout += text; },
+        stderr: (text) => { stderr += text; },
+        createRunLayout: testRunLayoutFactory(outputRoot),
+      });
+      expect(exitCode, stderr).toBe(0);
+      bundles.push(JSON.parse(stdout).bundle);
+    }
+    expect(bundles.map((bundle: { plugin: string; skill: string }) => [
+      bundle.plugin,
+      bundle.skill,
+    ])).toEqual(targets);
+    for (const bundle of bundles) {
       expect(bundle).toMatchObject({
         platform: 'codex',
         codexVersion: null,
@@ -308,12 +489,16 @@ describe('plugin eval runner', () => {
         }),
       ]));
       await expect(
-        fs.pathExists(path.join(outputRoot, bundle.plugin, 'evaluation.json')),
+        fs.pathExists(path.join(
+          outputRoot,
+          bundle.plugin,
+          bundle.skill,
+        )),
       ).resolves.toBe(true);
     }
 
     for (const pluginName of ['codex-explore', 'codex-subagent-guide']) {
-      const bundle = commandReport.bundles.find(
+      const bundle = bundles.find(
         (entry: { plugin: string }) => entry.plugin === pluginName,
       );
       expect(bundle.subjects).toHaveLength(pluginName === 'codex-explore' ? 5 : 4);
@@ -351,23 +536,24 @@ describe('plugin eval runner', () => {
 
     const exitCode = await runPluginEvals([
       'ask-me',
+      '--skill',
+      'requirements-clarifier',
       '--no-inherit-codex-config',
       '--suite',
-      'requirements-clarifier-behavior',
+      'behavior',
       '--split',
       'validation',
-      '--output-dir',
-      outputRoot,
     ], {
       repoRoot: root,
       env: process.env,
       stdout: () => undefined,
       stderr: (text) => { stderr += text; },
+      createRunLayout: testRunLayoutFactory(outputRoot),
     });
 
-    expect(exitCode).toBe(1);
+    expect(exitCode).toBe(2);
     expect(stderr).toContain(
-      'Conversation suite "requirements-clarifier-behavior" does not support --split.',
+      'Conversation suite "behavior" does not support --split.',
     );
   });
 
@@ -385,6 +571,8 @@ describe('plugin eval runner', () => {
 
       const exitCode = await runPluginEvals([
         'codex-explore',
+        '--skill',
+        'codex-explore',
         '--no-inherit-codex-config',
         '--suite',
         'trigger',
@@ -394,13 +582,13 @@ describe('plugin eval runner', () => {
         '1',
         '--codex-bin',
         codexBin,
-        '--output-dir',
-        outputRoot,
       ], {
         repoRoot: root,
         env: process.env,
         stdout: (text) => { stdout += text; },
         stderr: (text) => { stderr += text; },
+        inspectProcessTree: async () => undefined,
+        createRunLayout: testRunLayoutFactory(outputRoot),
       });
 
       expect(exitCode, stderr).toBe(1);
@@ -408,8 +596,8 @@ describe('plugin eval runner', () => {
       expect(stderr).not.toContain('codex-explore/trigger/validation');
       const commandReport = JSON.parse(stdout);
       expect(
-        commandReport.bundles[0],
-        JSON.stringify(commandReport.bundles[0], null, 2),
+        commandReport.bundle,
+        JSON.stringify(commandReport.bundle, null, 2),
       ).toMatchObject({
         outcome: 'incomplete',
         complete: false,
@@ -420,7 +608,7 @@ describe('plugin eval runner', () => {
           expect.stringContaining('--runs'),
         ]),
       });
-      expect(commandReport.bundles[0].suites).toEqual([
+      expect(commandReport.bundle.suites).toEqual([
         expect.objectContaining({ split: 'all', outcome: 'passed' }),
       ]);
     },
@@ -455,16 +643,16 @@ describe('plugin eval runner', () => {
 
       const exitCode = await runPluginEvals([
         'ask-me',
+        '--skill',
+        'requirements-clarifier',
         '--suite',
-        'requirements-clarifier-trigger',
+        'trigger',
         '--case',
         'p06_explicit_check',
         '--runs',
         '1',
         '--codex-bin',
         codexBin,
-        '--output-dir',
-        outputRoot,
       ], {
         repoRoot: repoRoot(),
         env: {
@@ -475,11 +663,13 @@ describe('plugin eval runner', () => {
         },
         stdout: (text) => { stdout += text; },
         stderr: (text) => { stderr += text; },
+        inspectProcessTree: async () => undefined,
+        createRunLayout: testRunLayoutFactory(outputRoot),
       });
 
       expect(exitCode, stderr).toBe(1);
       const commandReport = JSON.parse(stdout);
-      expect(commandReport.bundles[0], stderr).toMatchObject({
+      expect(commandReport.bundle, stderr).toMatchObject({
         model: 'fixture-model',
         modelProvider: 'fixture-provider',
         credentialSource: 'embedded',
@@ -490,16 +680,20 @@ describe('plugin eval runner', () => {
       expect(stdout).not.toContain('https://example.invalid/v1');
       expect(stderr).not.toContain('fixture-secret');
       expect(stderr).not.toContain('https://example.invalid/v1');
+      const reportRoot = path.resolve(repoRoot(), commandReport.reportDir);
       expect(
-        await fs.readFile(path.join(outputRoot, 'ask-me', 'evaluation.json'), 'utf8'),
+        await fs.readFile(
+          path.join(reportRoot, 'raw', 'evaluation.json'),
+          'utf8',
+        ),
       ).not.toContain('fixture-secret');
       expect(
         await fs.readFile(
           path.join(
-            outputRoot,
-            'ask-me',
+            reportRoot,
+            'raw',
             'reports',
-            'requirements-clarifier-trigger-all-project-default.json',
+            'trigger-all-project-default.json',
           ),
           'utf8',
         ),
@@ -546,10 +740,10 @@ describe('plugin eval runner', () => {
 
     const exitCode = await runPluginEvals([
       'redaction-demo',
+      '--skill',
+      'redaction-demo',
       '--codex-bin',
       process.execPath,
-      '--output-dir',
-      outputRoot,
     ], {
       repoRoot: root,
       env: {
@@ -561,6 +755,8 @@ describe('plugin eval runner', () => {
       },
       stdout: (text) => { stdout += text; },
       stderr: (text) => { stderr += text; },
+      inspectProcessTree: async () => undefined,
+      createRunLayout: testRunLayoutFactory(outputRoot),
     });
 
     expect(exitCode, stderr).toBe(0);
@@ -569,14 +765,13 @@ describe('plugin eval runner', () => {
     expect(stderr).toContain('[redacted] [redacted]\n');
     expect(stderr).not.toContain('command-token');
     expect(stderr).not.toContain('https://private.invalid/v1');
-    const evaluation = await fs.readFile(
-      path.join(outputRoot, 'redaction-demo', 'evaluation.json'),
-      'utf8',
-    );
+    const commandReport = JSON.parse(stdout);
+    const reportRoot = path.resolve(root, commandReport.reportDir);
+    const evaluation = await fs.readFile(path.join(reportRoot, 'raw', 'evaluation.json'), 'utf8');
     expect(evaluation).not.toContain('command-token');
     expect(evaluation).not.toContain('https://private.invalid/v1');
     const persistedReport = await fs.readFile(
-      path.join(outputRoot, 'redaction-demo', 'reports', 'command-project-default.json'),
+      path.join(reportRoot, 'raw', 'reports', 'command-project-default.json'),
       'utf8',
     );
     expect(persistedReport).not.toContain('command-token');
@@ -588,63 +783,95 @@ describe('plugin eval runner', () => {
     expect(persistedReport).toContain('[process-tree-id]');
   });
 
-  it('isolates raw command reports for plugins with the same suite identity', async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-eval-command-isolation-'));
+  it('materializes a repo-local cross-plugin Skill set for one owner suite', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-eval-composed-'));
     const outputRoot = path.join(root, 'output');
     tempDirs.push(root);
     await writeCommandPlugin(root, {
-      name: 'first-command',
+      name: 'owner-demo',
       script: [
+        "import { existsSync } from 'node:fs';",
         "import { mkdir, writeFile } from 'node:fs/promises';",
         "import path from 'node:path';",
-        "const outputIndex = process.argv.indexOf('--output');",
-        'const output = process.argv[outputIndex + 1];',
-        'await mkdir(path.dirname(output), { recursive: true });',
-        "await writeFile(output, JSON.stringify({ complete: true, passed: true, summary: { plugin: 'first' } }));",
+        "const skills = JSON.parse(process.env.AW_PLUGIN_EVAL_PARTICIPANT_SKILLS);",
+        "const plugins = JSON.parse(process.env.AW_PLUGIN_EVAL_INSTALLED_PLUGINS);",
+        "if (!existsSync('.agents/skills/owner-demo/SKILL.md')) process.exit(7);",
+        "if (!existsSync('.agents/skills/companion-demo/SKILL.md')) process.exit(8);",
+        "if (JSON.stringify(skills) !== JSON.stringify(['owner-demo', 'companion-demo'])) process.exit(9);",
+        "if (JSON.stringify(plugins) !== JSON.stringify(['owner-demo', 'companion-demo'])) process.exit(10);",
+        "const output = process.argv[process.argv.indexOf('--output') + 1];",
+        "await mkdir(path.dirname(output), { recursive: true });",
+        "await writeFile(output, JSON.stringify({ complete: true, passed: true, summary: { skills, plugins } }));",
       ].join('\n'),
       defaultRuns: 1,
       perRunTimeoutMs: 1_000,
-      suiteTimeoutMs: 2_000,
-      supports: [],
+      suiteTimeoutMs: 3_000,
+      supports: ['codexBin'],
     });
     await writeCommandPlugin(root, {
-      name: 'second-command',
-      script: "process.stdout.write(JSON.stringify({ complete: true, passed: false, summary: { plugin: 'second' } }));\n",
+      name: 'companion-demo',
+      script: 'process.exit(0);\n',
       defaultRuns: 1,
       perRunTimeoutMs: 1_000,
-      suiteTimeoutMs: 2_000,
+      suiteTimeoutMs: 3_000,
       supports: [],
     });
+    const ownerManifestPath = path.join(
+      root,
+      'plugins',
+      'owner-demo',
+      'skills',
+      'owner-demo',
+      'evals',
+      'manifest.json',
+    );
+    const ownerManifest = await fs.readJson(ownerManifestPath);
+    ownerManifest.profiles[0].plugins.push({ name: 'companion-demo', config: {} });
+    ownerManifest.suites[0].skills.push('companion-demo');
+    await fs.writeJson(ownerManifestPath, ownerManifest, { spaces: 2 });
     registerCurrentTestReadonlyFixtureRoot(root);
     registerCurrentTestWritableStateRoot(outputRoot);
     let stdout = '';
     let stderr = '';
 
     const exitCode = await runPluginEvals([
-      '--all',
-      '--no-inherit-codex-config',
-      '--output-dir',
-      outputRoot,
+      'owner-demo',
+      '--skill',
+      'owner-demo',
+      '--codex-bin',
+      process.execPath,
     ], {
       repoRoot: root,
       env: process.env,
       stdout: (text) => { stdout += text; },
       stderr: (text) => { stderr += text; },
+      inspectProcessTree: async () => undefined,
+      createRunLayout: testRunLayoutFactory(outputRoot),
     });
 
-    expect(exitCode, stderr).toBe(1);
-    const bundles = JSON.parse(stdout).bundles as Array<{
-      plugin: string;
-      suites: Array<{ outcome: string; summary: { plugin: string } }>;
-    }>;
-    expect(bundles.find((bundle) => bundle.plugin === 'first-command')?.suites[0]).toMatchObject({
+    expect(exitCode, stderr).toBe(0);
+    const report = JSON.parse(stdout);
+    expect(report.bundle.subjects[0].installedPlugins).toMatchObject([
+      { name: 'owner-demo' },
+      { name: 'companion-demo' },
+    ]);
+    expect(report.bundle.suites[0]).toMatchObject({
+      skills: ['owner-demo', 'companion-demo'],
       outcome: 'passed',
-      summary: { plugin: 'first' },
     });
-    expect(bundles.find((bundle) => bundle.plugin === 'second-command')?.suites[0]).toMatchObject({
-      outcome: 'failed',
-      summary: { plugin: 'second' },
+  });
+
+  it('rejects plugin-wide --all execution', async () => {
+    let stderr = '';
+    const exitCode = await runPluginEvals([
+      '--all',
+      '--skill',
+      'commit',
+    ], {
+      stderr: (text) => { stderr += text; },
     });
+    expect(exitCode).toBe(2);
+    expect(stderr).toContain('Unknown option "--all"');
   });
 
   it.runIf(process.platform !== 'win32')(
@@ -680,24 +907,26 @@ describe('plugin eval runner', () => {
 
       const exitCode = await runPluginEvals([
         'timeout-demo',
+        '--skill',
+        'timeout-demo',
         '--no-inherit-codex-config',
         '--suite',
         'command',
         '--codex-bin',
         process.execPath,
-        '--output-dir',
-        outputRoot,
       ], {
         repoRoot: root,
         env: process.env,
         stdout: (text) => { stdout += text; },
         stderr: (text) => { stderr += text; },
+        inspectProcessTree: async () => undefined,
+        createRunLayout: testRunLayoutFactory(outputRoot),
       });
 
       expect(exitCode).toBe(1);
       expect(stderr).toContain('Suite exceeded central timeout of 500ms.');
       const commandReport = JSON.parse(stdout);
-      expect(commandReport.bundles[0].suites).toEqual([
+      expect(commandReport.bundle.suites).toEqual([
         expect.objectContaining({
           outcome: 'incomplete',
           complete: false,
@@ -1216,21 +1445,23 @@ describe('plugin eval runner', () => {
       let stderr = '';
       const exitCode = await runPluginEvals([
         'coverage-demo',
+        '--skill',
+        'coverage-demo',
         '--no-inherit-codex-config',
         ...testCase.args,
         '--codex-bin',
         process.execPath,
-        '--output-dir',
-        outputRoot,
       ], {
         repoRoot: root,
         env: process.env,
         stdout: (text) => { stdout += text; },
         stderr: (text) => { stderr += text; },
+        inspectProcessTree: async () => undefined,
+        createRunLayout: testRunLayoutFactory(outputRoot),
       });
 
       expect(exitCode, stderr).toBe(1);
-      const bundle = JSON.parse(stdout).bundles[0];
+      const bundle = JSON.parse(stdout).bundle;
       expect(bundle).toMatchObject({
         outcome: 'incomplete',
         complete: false,
@@ -1272,21 +1503,23 @@ describe('plugin eval runner', () => {
 
     const exitCode = await runPluginEvals([
       'multi-run-demo',
+      '--skill',
+      'multi-run-demo',
       '--no-inherit-codex-config',
       '--codex-bin',
       process.execPath,
-      '--output-dir',
-      outputRoot,
     ], {
       repoRoot: root,
       env: process.env,
       stdout: (text) => { stdout += text; },
       stderr: (text) => { stderr += text; },
+      inspectProcessTree: async () => undefined,
+      createRunLayout: testRunLayoutFactory(outputRoot),
     });
 
     expect(exitCode, stderr).toBe(0);
     const commandReport = JSON.parse(stdout);
-    expect(commandReport.bundles[0].suites).toEqual([
+    expect(commandReport.bundle.suites).toEqual([
       expect.objectContaining({
         outcome: 'passed',
         complete: true,

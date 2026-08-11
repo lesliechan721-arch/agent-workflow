@@ -33,7 +33,8 @@
       "node": [
         "./scripts/render-artifacts.test.mjs",
         "./scripts/trigger-evals.test.mjs",
-        "./scripts/routing-evals.test.mjs"
+        "./scripts/routing-evals.test.mjs",
+        "./scripts/lifecycle-evals.test.mjs"
       ]
     }
   },

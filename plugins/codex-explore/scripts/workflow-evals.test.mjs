@@ -12,8 +12,8 @@ import {
   loadWorkflowEvalSpec,
   parseWorkflowEvalArgs,
   workflowEvalRunCase,
-} from '../evals/run-workflow-evals.mjs';
-import { buildCollaborationTimeline } from '../evals/eval-harness.mjs';
+} from '../templates/codex-explore/evals/run-workflow-evals.mjs';
+import { buildCollaborationTimeline } from '../templates/codex-explore/evals/eval-harness.mjs';
 
 const lifecycleContract = {
   minimum_initial_wait_timeout_ms: 600_000,

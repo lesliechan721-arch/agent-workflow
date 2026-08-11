@@ -1,5 +1,4 @@
 import { createHash } from 'node:crypto';
-import os from 'node:os';
 import path from 'node:path';
 
 import fs from 'fs-extra';
@@ -21,8 +20,10 @@ import {
 
 export interface MaterializePluginEvalOptions {
   plugin: PluginMeta;
+  plugins: PluginMeta[];
   manifest: PluginEvalManifest;
   outputRoot: string;
+  workRoot: string;
   env?: NodeJS.ProcessEnv;
   selectedProfiles?: ReadonlySet<string>;
 }
@@ -32,6 +33,7 @@ interface PreparedEvalBundle {
   stagingRoot: string;
   bundleRoot: string;
   plugin: PluginMeta;
+  bundleDigest: string;
   cleanup(): Promise<void>;
 }
 
@@ -81,8 +83,12 @@ async function digestTree(root: string): Promise<string> {
   return `sha256:${hash.digest('hex')}`;
 }
 
-async function prepareEvalBundle(plugin: PluginMeta): Promise<PreparedEvalBundle> {
-  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-eval-bundle-'));
+async function prepareEvalBundle(
+  plugin: PluginMeta,
+  workRoot: string,
+): Promise<PreparedEvalBundle> {
+  await fs.ensureDir(workRoot);
+  const tempRoot = await fs.mkdtemp(path.join(workRoot, 'bundle-'));
   const prepared = await prepareLocalPluginBundleSource(plugin, { buildMode: 'staging' });
   const bundleRoot = path.join(tempRoot, 'bundle');
   try {
@@ -96,6 +102,7 @@ async function prepareEvalBundle(plugin: PluginMeta): Promise<PreparedEvalBundle
         rootDir: bundleRoot,
         manifestPath: path.join(bundleRoot, '.agents-plugin', 'plugin.json'),
       },
+      bundleDigest: await digestTree(bundleRoot),
       cleanup: async () => {
         await prepared.cleanup();
         await fs.remove(tempRoot);
@@ -165,21 +172,23 @@ async function collectArtifacts(
 async function copyUserMaterializedArtifacts(options: {
   scopeRoot: string;
   env: NodeJS.ProcessEnv;
-  pluginName: string;
+  pluginNames: string[];
 }): Promise<string> {
   const materializedRoot = path.join(options.scopeRoot, 'materialized');
   const skillsRoot = path.join(materializedRoot, '.agents', 'skills');
-  const runtimeSkillsRoot = path.join(
-    options.env.AW_HOME!,
-    'plugins',
-    options.pluginName,
-    'codex',
-    'skills',
-  );
-  if (await fs.pathExists(runtimeSkillsRoot)) {
-    await validateSkillDirectoriesRoot(runtimeSkillsRoot, 'codex.skill');
-    await fs.ensureDir(skillsRoot);
-    await fs.copy(runtimeSkillsRoot, skillsRoot, { overwrite: true, dereference: false });
+  for (const pluginName of options.pluginNames) {
+    const runtimeSkillsRoot = path.join(
+      options.env.AW_HOME!,
+      'plugins',
+      pluginName,
+      'codex',
+      'skills',
+    );
+    if (await fs.pathExists(runtimeSkillsRoot)) {
+      await validateSkillDirectoriesRoot(runtimeSkillsRoot, 'codex.skill');
+      await fs.ensureDir(skillsRoot);
+      await fs.copy(runtimeSkillsRoot, skillsRoot, { overwrite: true, dereference: false });
+    }
   }
 
   const codexHome = options.env.AW_CODEX_HOME!;
@@ -218,11 +227,13 @@ async function materializeStaticCodexSkills(options: {
 }
 
 async function materializeProfile(options: {
-  prepared: PreparedEvalBundle;
+  preparedByName: ReadonlyMap<string, PreparedEvalBundle>;
+  ownerPlugin: PluginMeta;
+  ownerSkill: string;
+  requiredSkills: ReadonlySet<string>;
   profile: PluginEvalProfile;
   outputRoot: string;
   baseEnv: NodeJS.ProcessEnv;
-  bundleDigest: string;
 }): Promise<MaterializedPluginEvalSubject> {
   const scopeRoot = path.join(options.outputRoot, 'subjects', options.profile.id);
   await fs.remove(scopeRoot);
@@ -237,20 +248,31 @@ async function materializeProfile(options: {
   const projectRoot = path.join(scopeRoot, 'project');
   await fs.ensureDir(path.join(projectRoot, '.git'));
 
-  await writePluginConfigStore({
-    pluginName: options.prepared.plugin.manifest.name,
-    scope: options.profile.scope,
-    cwd: projectRoot,
-    values: options.profile.config,
-    env,
+  const installations = options.profile.plugins.map((installation) => {
+    const prepared = options.preparedByName.get(installation.name);
+    if (!prepared) {
+      throw new Error(`Eval profile "${options.profile.id}" references unresolved plugin "${installation.name}".`);
+    }
+    return { installation, prepared };
   });
+  for (const { installation } of installations) {
+    await writePluginConfigStore({
+      pluginName: installation.name,
+      scope: options.profile.scope,
+      cwd: projectRoot,
+      values: installation.config,
+      env,
+    });
+  }
 
-  await materializeStaticCodexSkills({
-    prepared: options.prepared,
-    profile: options.profile,
-    projectRoot,
-    env,
-  });
+  for (const { prepared } of installations) {
+    await materializeStaticCodexSkills({
+      prepared,
+      profile: options.profile,
+      projectRoot,
+      env,
+    });
+  }
 
   const integration = createRebuildIntegration({
     context: {
@@ -262,46 +284,66 @@ async function materializeProfile(options: {
       debugLogger: createNoopDebugLogger(),
     },
   });
-  const target = await integration.buildTarget({
-    plugin: options.prepared.plugin,
-    platform: 'codex',
-    scope: options.profile.scope,
-    cwd: projectRoot,
-    command: 'install',
-    catalog: {
-      rootDir: options.prepared.bundleRoot,
-      source: 'local',
-    },
-    includeHistoricalLifecycleArtifacts: false,
-  });
-  await integration.driver.writeArtifacts(target);
+  for (const { prepared } of installations) {
+    const target = await integration.buildTarget({
+      plugin: prepared.plugin,
+      platform: 'codex',
+      scope: options.profile.scope,
+      cwd: projectRoot,
+      command: 'install',
+      catalog: {
+        rootDir: prepared.bundleRoot,
+        source: 'local',
+      },
+      includeHistoricalLifecycleArtifacts: false,
+    });
+    await integration.driver.writeArtifacts(target);
+  }
 
   const subjectRoot = options.profile.scope === 'project'
     ? projectRoot
     : await copyUserMaterializedArtifacts({
         scopeRoot,
         env,
-        pluginName: options.prepared.plugin.manifest.name,
+        pluginNames: installations.map(({ installation }) => installation.name),
       });
   const artifacts = await collectArtifacts(subjectRoot, subjectRoot);
-  if (!artifacts.some((artifact) => artifact.kind === 'skill')) {
-    throw new Error(
-      `Profile "${options.profile.id}" did not materialize a Codex skill for plugin "${options.prepared.plugin.manifest.name}".`,
-    );
+  const materializedSkills = new Set(artifacts.flatMap((artifact) =>
+    artifact.kind === 'skill' && artifact.key ? [artifact.key] : []));
+  for (const skill of options.requiredSkills) {
+    if (!materializedSkills.has(skill)) {
+      throw new Error(
+        `Profile "${options.profile.id}" did not materialize required Codex Skill "${skill}".`,
+      );
+    }
   }
+
+  const installedPlugins = installations.map(({ installation, prepared }) => ({
+    name: installation.name,
+    version: prepared.plugin.manifest.version,
+    configDigest: sha256(stableJson(installation.config)),
+    bundleDigest: prepared.bundleDigest,
+  }));
+  const compositeBundleDigest = sha256(stableJson(
+    installedPlugins.map(({ name, version, bundleDigest }) => ({ name, version, bundleDigest })),
+  ));
 
   const subject: MaterializedPluginEvalSubject = {
     schemaVersion: PLUGIN_EVAL_SCHEMA_VERSION,
-    plugin: options.prepared.plugin.manifest.name,
-    pluginVersion: options.prepared.plugin.manifest.version,
+    plugin: options.ownerPlugin.manifest.name,
+    skill: options.ownerSkill,
+    pluginVersion: options.ownerPlugin.manifest.version,
     platform: 'codex',
     profile: options.profile.id,
     scope: options.profile.scope,
     modelExecution: options.profile.runModel,
     evidenceLevel: options.profile.scope === 'project' ? 'runtime-project' : 'materialized-user',
     root: path.relative(options.outputRoot, subjectRoot).split(path.sep).join('/'),
-    configDigest: sha256(stableJson(options.profile.config)),
-    bundleDigest: options.bundleDigest,
+    configDigest: sha256(stableJson(
+      options.profile.plugins.map(({ name, config }) => ({ name, config })),
+    )),
+    bundleDigest: compositeBundleDigest,
+    installedPlugins,
     artifacts,
   };
   await fs.writeJson(path.join(scopeRoot, 'subject.json'), subject, { spaces: 2 });
@@ -311,25 +353,82 @@ async function materializeProfile(options: {
 export async function materializePluginEvalSubjects(
   options: MaterializePluginEvalOptions,
 ): Promise<MaterializedPluginEvalSubject[]> {
-  const prepared = await prepareEvalBundle(options.plugin);
+  const sourcePlugins = new Map<string, PluginMeta>();
+  for (const plugin of options.plugins) {
+    const name = plugin.manifest.name;
+    if (sourcePlugins.has(name)) {
+      throw new Error(`Duplicate plugin source for eval materialization: ${name}`);
+    }
+    sourcePlugins.set(name, plugin);
+  }
+  if (!sourcePlugins.has(options.plugin.manifest.name)) {
+    throw new Error(`Owner plugin source is missing: ${options.plugin.manifest.name}`);
+  }
+
+  const requiredPluginNames = [...new Set(options.manifest.profiles.flatMap((profile) =>
+    profile.plugins.map((plugin) => plugin.name)))];
+  const preparedByName = new Map<string, PreparedEvalBundle>();
   try {
-    const bundleDigest = await digestTree(prepared.bundleRoot);
+    for (const pluginName of requiredPluginNames) {
+      const plugin = sourcePlugins.get(pluginName);
+      if (!plugin) {
+        throw new Error(
+          `Eval manifest references repo-local plugin "${pluginName}" but no source was resolved.`,
+        );
+      }
+      preparedByName.set(
+        pluginName,
+        await prepareEvalBundle(plugin, path.join(options.workRoot, pluginName)),
+      );
+    }
+
     const subjects: MaterializedPluginEvalSubject[] = [];
     for (const profile of options.manifest.profiles) {
       if (options.selectedProfiles && !options.selectedProfiles.has(profile.id)) {
         continue;
       }
+      const owners = new Map<string, string>();
+      for (const installation of profile.plugins) {
+        const prepared = preparedByName.get(installation.name)!;
+        const staticSkillsRoot = path.join(prepared.bundleRoot, 'codex', 'skills');
+        const staticSkills = await fs.pathExists(staticSkillsRoot)
+          ? await fs.readdir(staticSkillsRoot, { withFileTypes: true })
+          : [];
+        const declaredSkills = [
+          ...staticSkills.filter((entry) => entry.isDirectory()).map((entry) => entry.name),
+          ...(prepared.plugin.manifest.artifacts?.targets ?? []).flatMap((target) =>
+            target.target === 'codex.skill' && target.skillKey ? [target.skillKey] : []),
+        ];
+        for (const skill of new Set(declaredSkills)) {
+          const existing = owners.get(skill);
+          if (existing && existing !== installation.name) {
+            throw new Error(
+              `Eval profile "${profile.id}" installs duplicate Codex Skill key "${skill}" ` +
+              `from plugins "${existing}" and "${installation.name}".`,
+            );
+          }
+          owners.set(skill, installation.name);
+        }
+      }
+      const requiredSkills = new Set<string>([options.manifest.skill]);
+      for (const suite of options.manifest.suites) {
+        if (suite.profiles.includes(profile.id)) {
+          for (const skill of suite.skills) requiredSkills.add(skill);
+        }
+      }
       subjects.push(await materializeProfile({
-        prepared,
+        preparedByName,
+        ownerPlugin: options.plugin,
+        ownerSkill: options.manifest.skill,
+        requiredSkills,
         profile,
         outputRoot: options.outputRoot,
         baseEnv: options.env ?? process.env,
-        bundleDigest,
       }));
     }
     return subjects;
   } finally {
-    await prepared.cleanup();
+    await Promise.all([...preparedByName.values()].map((prepared) => prepared.cleanup()));
   }
 }
 

@@ -3,12 +3,14 @@
 统一入口会先按 `evals/manifest.json` materialize default/non-default、project/user 最终制品；真实模型只运行 project-default：
 
 ```bash
-pnpm plugin:eval codex-explore --materialize-only --output-dir /tmp/codex-explore-eval
-pnpm plugin:eval codex-explore --suite trigger --split validation --runs 1 --output-dir /tmp/codex-explore-eval
-pnpm plugin:eval codex-explore --output-dir /tmp/codex-explore-release
+pnpm plugin:eval codex-explore --skill codex-explore --materialize-only
+pnpm plugin:eval codex-explore --skill codex-explore --suite trigger --split validation --runs 1
+pnpm plugin:eval codex-explore --skill codex-explore
 ```
 
 最后一条运行全部 release-required suite/split。`pnpm plugin:eval` 是唯一模型评测入口；领域 command runner 缺少中央提供的 final-artifact root 时会直接失败。
+
+真实模型默认要求 Full Access 管理后代进程；无 Full Access 时会在启动前阻断。用户确认风险后可传 `--allow-unmanaged-processes`，但该模式不保证清理后代进程。中间产物固定在项目 `.tmp/agent-workflows/evals/`，持久报告写入本 Skill 的 `reports/evals/<run-id>/`。
 
 ## 触发与 Gate
 
@@ -24,9 +26,9 @@ train 和 validation 包含大型陌生材料、显式调用但 Gate 应拒绝�
 需要已登录且支持 app-server thread/turn 协议、V2 `subAgentActivity` 和 `spawn_agent.agent_type` 的 Codex：
 
 ```bash
-pnpm plugin:eval codex-explore --suite trigger --split train --runs 3 --output-dir /tmp/codex-explore-eval
-pnpm plugin:eval codex-explore --suite trigger --split validation --runs 3 --output-dir /tmp/codex-explore-eval
-pnpm plugin:eval codex-explore --suite trigger --split sanity --runs 3 --output-dir /tmp/codex-explore-eval
+pnpm plugin:eval codex-explore --skill codex-explore --suite trigger --split train --runs 3
+pnpm plugin:eval codex-explore --skill codex-explore --suite trigger --split validation --runs 3
+pnpm plugin:eval codex-explore --skill codex-explore --suite trigger --split sanity --runs 3
 ```
 
 中央 app-server trigger driver 复制 materialized 最终 project 制品，插件 fixture module 只补齐合成材料，并通过隔离的 Codex app-server、只读 sandbox 逐条执行。显式 `$codex-explore` 记为宿主注入；自动触发只接受成功读取 `.agents/skills/codex-explore/SKILL.md` 的 `commandExecution` 完成事件。实际委派只接受 `subAgentActivity(kind=started)`；正向用例在加载和启动事件都出现后立即结束。该事件证明子代理已经启动，但不包含完整 spawn 参数；具体 role 和参数由 model-selection suite 验证。
@@ -56,7 +58,7 @@ runner 从父会话 rollout 的原始 function call 与 output 中提取 collabo
 runner 使用一次性的 `workspace-write` sandbox 观察只读提示词是否被遵守，因此该 runner 报告中的 `read_only_enforcement` 固定为 `instruction-only`；workspace diff 只能检测这次 eval 的最终文件变化，不能提供权限隔离。实际部署时，子代理继承当前 turn 的有效 permission profile、approval policy 和 sandbox：父 turn 已处于权限级只读状态时，子代理继承该限制；父 turn 可写时，`spawn_agent` 不提供把单个子代理独立降为只读的参数，此时仍只有行为只读约束。
 
 ```bash
-pnpm plugin:eval codex-explore --suite workflow --runs 1 --output-dir /tmp/codex-explore-eval
+pnpm plugin:eval codex-explore --skill codex-explore --suite workflow --runs 1
 ```
 
 报告保留最终答复、`spawn_agent` 参数、workspace diff、duration 和可用时的 token usage。常规 `pnpm plugin:test codex-explore` 只测试 runner 和断言，不发起模型调用。
@@ -66,7 +68,7 @@ pnpm plugin:eval codex-explore --suite workflow --runs 1 --output-dir /tmp/codex
 `liveness-evals.json` 使用 project-short-wait 最终制品，在 V1/V2 中运行确定性的一分钟以上只读核验，并覆盖正常推进和缺少决定性来源。该 suite 不参与 release gate。当前 Variant B 合同要求没有主动探测：
 
 ```bash
-pnpm plugin:eval codex-explore --suite liveness --runs 3 --output-dir /tmp/codex-explore-liveness
+pnpm plugin:eval codex-explore --skill codex-explore --suite liveness --runs 3
 ```
 
 报告按用例保留 accepted、probe、`progress` / `blocked`、duration、termination 和可用 token usage。Variant B 必须没有 `send_message` 和非终态状态消息。2026-08-10 的 Variant A 基线中，两个 V2 场景共 6 次运行均发送一次 probe，6 次都得到可接受终态，但 0 次收到 `progress` 或 `blocked`；因此未达到“同一 V2 场景至少 2/3 返回状态”的保留门槛，当前制品采用 B。Variant B 的两个 V2 场景各 3/3 接受，probe 和状态消息均为 0；真实 V1 补充运行也取得可接受终态且没有 probe。
@@ -83,13 +85,13 @@ pnpm plugin:eval codex-explore --suite liveness --runs 3 --output-dir /tmp/codex
 runner 只消费中央 materialized 的当前 skill 和四个 role，并对每次运行的 `spawn_agent` 参数执行机械断言：
 
 ```bash
-pnpm plugin:eval codex-explore --suite model-selection --runs 3 --output-dir /tmp/codex-explore-eval
+pnpm plugin:eval codex-explore --skill codex-explore --suite model-selection --runs 3
 ```
 
 调试单个用例时可先单次运行：
 
 ```bash
-pnpm plugin:eval codex-explore --suite model-selection --runs 1 --case auto_standard --output-dir /tmp/codex-explore-eval
+pnpm plugin:eval codex-explore --skill codex-explore --suite model-selection --runs 1 --case auto_standard
 ```
 
 `codex exec --json` 的简化协作事件不包含模型调度参数，因此 runner 为每次运行在工作区外创建隔离的临时 `CODEX_HOME`，以 `0600` 权限复制当前认证文件，并从临时 session rollout 读取原始 `spawn_agent` arguments。模型 shell 环境不会继承该临时 home 路径；临时认证和 session 在正常完成、启动异常或收到中断信号后都会删除，不写入用户正常 session。报告同时保存参数证据、duration、可用时的 token usage、最终消息和 JSONL event trace；为避免等待完整探索而提前停止的用例没有完整 token usage，这是预期行为。

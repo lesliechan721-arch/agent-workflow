@@ -27,8 +27,8 @@
 - `pnpm test:smoke:pack` — 串行校验 CLI 与 catalog tarball
 - `pnpm test:smoke:fetch` — 校验 catalog fetch / selector / cache fallback 相关 smoke
 - `pnpm plugin:test <plugin>` — 运行单个插件的 Node 脚本测试；`--all` 才会让任一坏插件阻断整轮
-- `pnpm plugin:eval <plugin>` — 按插件根 `evals/manifest.json` materialize Codex 最终制品并运行本地显式模型 eval；`--materialize-only` 不调用模型
-- `node .agents/skills/skill-review/scripts/run_static_skill_evals.mjs <skill> --validate-only` — 校验 `.agents/skills/<name>` 的静态 Skill eval 合同；真实模型运行时另传 suite/output 参数
+- `pnpm plugin:eval <plugin> --skill <skill>` — 按 owner Skill 根 `evals/manifest.json` materialize Codex 最终制品并运行本地显式模型 eval；`--materialize-only` 不调用模型
+- `node .agents/skills/skill-review/scripts/run_static_skill_evals.mjs <skill> --validate-only` — 校验 `.agents/skills/<name>` 的静态 Skill eval 合同；真实模型运行时按需传 suite、split、case、runs 和 model 等参数
 - `pnpm test:smoke:plugin-scripts` — 校验真实插件脚本 staging、依赖闭包和 bundle 布局
 - `make verify-cli` / `make verify-catalog` / `make verify-release` — 分别校验 CLI-only、catalog-only、组合发布链路
 - `pnpm run release:pack:cli` / `make pack-cli` — 生成 CLI 本地 tarball

@@ -345,7 +345,7 @@ function validateRequirements(value: unknown): void {
 function validateSkills(
   value: unknown,
   workspaceRoot: string,
-  allowedSkillRoot: string | null,
+  allowedSkillRoots: string[],
 ): string[] {
   const response = expectRecord(value, 'skills/list response');
   if (!Array.isArray(response.data)) {
@@ -354,6 +354,10 @@ function validateSkills(
   if (response.data.length !== 1) {
     throw new Error('Strict Codex eval skills/list must return exactly one workspace entry.');
   }
+  const expectedSkills = new Map(allowedSkillRoots.map((root) => [
+    canonicalPath(path.join(root, 'SKILL.md')),
+    { root, name: path.basename(root) },
+  ]));
   const paths: string[] = [];
   for (const [index, value] of response.data.entries()) {
     const entry = expectRecord(value, `skills/list.data[${index}]`);
@@ -372,30 +376,31 @@ function validateSkills(
     }
     for (const [skillIndex, skillValue] of entry.skills.entries()) {
       const skill = expectRecord(skillValue, `skills/list.data[${index}].skills[${skillIndex}]`);
-      if (typeof skill.path !== 'string' || !allowedSkillRoot) {
-        throw new Error(`Strict Codex eval found non-target Skill ${String(skill.path)}.`);
+      if (typeof skill.path !== 'string') {
+        throw new Error(`Strict Codex eval found an invalid Skill path ${String(skill.path)}.`);
       }
-      const expectedPath = canonicalPath(path.join(allowedSkillRoot, 'SKILL.md'));
-      const expectedName = path.basename(allowedSkillRoot);
-      if (!isPathInsideOrEqual(allowedSkillRoot, skill.path)) {
+      const normalizedPath = canonicalPath(skill.path);
+      const expected = expectedSkills.get(normalizedPath);
+      if (!expected || !isPathInsideOrEqual(expected.root, skill.path)) {
         throw new Error(`Strict Codex eval found non-target Skill ${skill.path}.`);
       }
       if (
-        canonicalPath(skill.path) !== expectedPath ||
-        skill.name !== expectedName ||
+        skill.name !== expected.name ||
         skill.enabled !== true
       ) {
         throw new Error(`Strict Codex eval found an invalid target Skill ${skill.path}.`);
       }
-      paths.push(canonicalPath(skill.path));
+      paths.push(normalizedPath);
     }
   }
-  const expectedCount = allowedSkillRoot ? 1 : 0;
-  if (paths.length !== expectedCount) {
+  if (
+    paths.length !== expectedSkills.size ||
+    new Set(paths).size !== expectedSkills.size
+  ) {
     throw new Error(
-      allowedSkillRoot
-        ? 'Strict Codex eval did not discover exactly one enabled target Skill.'
-        : 'Strict Codex eval found a Skill in the baseline workspace.',
+      expectedSkills.size > 0
+        ? 'Strict Codex eval did not discover exactly the enabled participant Skills.'
+        : 'Strict Codex eval found a Skill in an empty baseline workspace.',
     );
   }
   return paths.sort((left, right) => left.localeCompare(right));
@@ -418,13 +423,13 @@ export function validateCodexEvalRpcIsolation(options: {
   mcpServers: unknown;
   codexHome: string;
   workspaceRoot: string;
-  allowedSkillRoot: string | null;
+  allowedSkillRoots: string[];
 }): CodexEvalRpcIsolationEvidence {
   const layers = validateCodexEvalConfigIsolation(options);
   const skillPaths = validateSkills(
     options.skills,
     options.workspaceRoot,
-    options.allowedSkillRoot,
+    options.allowedSkillRoots,
   );
   validateMcpServers(options.mcpServers);
   return {

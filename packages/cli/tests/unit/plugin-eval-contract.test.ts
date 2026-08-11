@@ -13,12 +13,16 @@ import { materializePluginEvalSubjects } from '../../scripts/plugin-eval-materia
 
 const tempDirs: string[] = [];
 
+function skillEvalPath(pluginRoot: string, ...segments: string[]): string {
+  return path.join(pluginRoot, 'skills', 'eval-fixture', 'evals', ...segments);
+}
+
 async function createStaticEvalPlugin(): Promise<string> {
   const pluginRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-eval-contract-'));
   tempDirs.push(pluginRoot);
   await fs.ensureDir(path.join(pluginRoot, '.agents-plugin'));
   await fs.ensureDir(path.join(pluginRoot, 'skills', 'eval-fixture', 'agents'));
-  await fs.ensureDir(path.join(pluginRoot, 'evals'));
+  await fs.ensureDir(path.join(pluginRoot, 'skills', 'eval-fixture', 'evals'));
   await fs.writeJson(path.join(pluginRoot, '.agents-plugin', 'plugin.json'), {
     name: 'eval-fixture',
     version: '0.1.0',
@@ -63,7 +67,13 @@ async function createStaticEvalPlugin(): Promise<string> {
     ].join('\n'),
     'utf8',
   );
-  await fs.writeJson(path.join(pluginRoot, 'evals', 'trigger-cases.json'), {
+  await fs.writeJson(path.join(
+    pluginRoot,
+    'skills',
+    'eval-fixture',
+    'evals',
+    'trigger-cases.json',
+  ), {
     schemaVersion: 1,
     skill: 'eval-fixture',
     cases: [{
@@ -73,21 +83,28 @@ async function createStaticEvalPlugin(): Promise<string> {
       should_load_skill: true,
     }],
   }, { spaces: 2 });
-  await fs.writeJson(path.join(pluginRoot, 'evals', 'manifest.json'), {
-    schemaVersion: 1,
+  await fs.writeJson(path.join(
+    pluginRoot,
+    'skills',
+    'eval-fixture',
+    'evals',
+    'manifest.json',
+  ), {
+    schemaVersion: 2,
     plugin: 'eval-fixture',
+    skill: 'eval-fixture',
     profiles: [
       {
         id: 'project-runtime',
         scope: 'project',
-        config: {},
+        plugins: [{ name: 'eval-fixture', config: {} }],
         runModel: true,
         requiredForRelease: true,
       },
       {
         id: 'user-runtime',
         scope: 'user',
-        config: {},
+        plugins: [{ name: 'eval-fixture', config: {} }],
         runModel: false,
         requiredForRelease: true,
       },
@@ -96,8 +113,8 @@ async function createStaticEvalPlugin(): Promise<string> {
       {
         id: 'trigger',
         kind: 'trigger',
-        skill: 'eval-fixture',
-        cases: './evals/trigger-cases.json',
+        skills: ['eval-fixture'],
+        cases: './trigger-cases.json',
         observeSpawnAgent: false,
         isolation: 'standard',
         strictNegativeSplits: ['validation'],
@@ -122,12 +139,16 @@ describe('plugin eval contract and materialization', () => {
     const plugin = await readPluginManifest(pluginRoot);
     const manifest = await readPluginEvalManifest(pluginRoot, 'eval-fixture');
     const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-eval-output-'));
+    const workRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-eval-work-'));
     tempDirs.push(outputRoot);
+    tempDirs.push(workRoot);
 
     const subjects = await materializePluginEvalSubjects({
       plugin,
+      plugins: [plugin],
       manifest,
       outputRoot,
+      workRoot,
       env: process.env,
     });
 
@@ -156,7 +177,7 @@ describe('plugin eval contract and materialization', () => {
 
   it('rejects release splits for conversation suites without split filtering', async () => {
     const pluginRoot = await createStaticEvalPlugin();
-    await fs.writeJson(path.join(pluginRoot, 'evals', 'conversation-cases.json'), {
+    await fs.writeJson(skillEvalPath(pluginRoot, 'conversation-cases.json'), {
       skill_name: 'eval-fixture',
       evals: [{
         id: 'conversation-fixture',
@@ -166,13 +187,13 @@ describe('plugin eval contract and materialization', () => {
         review: { checks: ['Inspects the fixture.'], workspace_unchanged: true },
       }],
     }, { spaces: 2 });
-    const manifestPath = path.join(pluginRoot, 'evals', 'manifest.json');
+    const manifestPath = skillEvalPath(pluginRoot, 'manifest.json');
     const manifest = await fs.readJson(manifestPath);
     manifest.suites = [{
       id: 'conversation',
       kind: 'conversation',
-      skill: 'eval-fixture',
-      cases: './evals/conversation-cases.json',
+      skills: ['eval-fixture'],
+      cases: './conversation-cases.json',
       profiles: ['project-runtime'],
       defaultRuns: 1,
       releaseSplits: ['validation'],
@@ -186,9 +207,9 @@ describe('plugin eval contract and materialization', () => {
     );
   });
 
-  it('parses conversation isolation and keeps the schema-v1 standard default', async () => {
+  it('parses conversation isolation and keeps the schema-v2 standard default', async () => {
     const pluginRoot = await createStaticEvalPlugin();
-    await fs.writeJson(path.join(pluginRoot, 'evals', 'conversation-cases.json'), {
+    await fs.writeJson(skillEvalPath(pluginRoot, 'conversation-cases.json'), {
       skill_name: 'eval-fixture',
       evals: [{
         id: 'conversation-fixture',
@@ -198,13 +219,13 @@ describe('plugin eval contract and materialization', () => {
         review: { checks: ['Inspects the fixture.'], workspace_unchanged: true },
       }],
     }, { spaces: 2 });
-    const manifestPath = path.join(pluginRoot, 'evals', 'manifest.json');
+    const manifestPath = skillEvalPath(pluginRoot, 'manifest.json');
     const manifest = await fs.readJson(manifestPath);
     manifest.suites = [{
       id: 'conversation',
       kind: 'conversation',
-      skill: 'eval-fixture',
-      cases: './evals/conversation-cases.json',
+      skills: ['eval-fixture'],
+      cases: './conversation-cases.json',
       profiles: ['project-runtime'],
       defaultRuns: 1,
       releaseSplits: [],
@@ -231,7 +252,7 @@ describe('plugin eval contract and materialization', () => {
 
   it('rejects model execution for a user profile', async () => {
     const pluginRoot = await createStaticEvalPlugin();
-    const manifestPath = path.join(pluginRoot, 'evals', 'manifest.json');
+    const manifestPath = skillEvalPath(pluginRoot, 'manifest.json');
     const manifest = await fs.readJson(manifestPath);
     manifest.profiles[1].runModel = true;
     await fs.writeJson(manifestPath, manifest, { spaces: 2 });
@@ -243,7 +264,7 @@ describe('plugin eval contract and materialization', () => {
 
   it('rejects unknown eval profile fields', async () => {
     const pluginRoot = await createStaticEvalPlugin();
-    const manifestPath = path.join(pluginRoot, 'evals', 'manifest.json');
+    const manifestPath = skillEvalPath(pluginRoot, 'manifest.json');
     const manifest = await fs.readJson(manifestPath);
     manifest.profiles[0].unsupportedField = true;
     await fs.writeJson(manifestPath, manifest, { spaces: 2 });
@@ -263,19 +284,23 @@ describe('plugin eval contract and materialization', () => {
     const plugin = await readPluginManifest(pluginRoot);
     const manifest = await readPluginEvalManifest(pluginRoot, 'eval-fixture');
     const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-eval-output-'));
+    const workRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-eval-work-'));
     tempDirs.push(outputRoot);
+    tempDirs.push(workRoot);
 
     await expect(materializePluginEvalSubjects({
       plugin,
+      plugins: [plugin],
       manifest,
       outputRoot,
+      workRoot,
       env: process.env,
     })).rejects.toThrow('policy.allow_implicit_invocation 必须是 boolean');
   });
 
   it('rejects trigger cases that do not match the suite observation contract', async () => {
     const pluginRoot = await createStaticEvalPlugin();
-    const casesPath = path.join(pluginRoot, 'evals', 'trigger-cases.json');
+    const casesPath = skillEvalPath(pluginRoot, 'trigger-cases.json');
     const document = await fs.readJson(casesPath);
     document.cases[0].should_spawn_agent = true;
     await fs.writeJson(casesPath, document, { spaces: 2 });
@@ -289,7 +314,7 @@ describe('plugin eval contract and materialization', () => {
     'rejects eval assets whose symlinks resolve outside the plugin root',
     async () => {
       const pluginRoot = await createStaticEvalPlugin();
-      const casesPath = path.join(pluginRoot, 'evals', 'trigger-cases.json');
+      const casesPath = skillEvalPath(pluginRoot, 'trigger-cases.json');
       const outsideRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-eval-outside-'));
       tempDirs.push(outsideRoot);
       const outsideCasesPath = path.join(outsideRoot, 'trigger-cases.json');
@@ -298,7 +323,7 @@ describe('plugin eval contract and materialization', () => {
       await fs.symlink(outsideCasesPath, casesPath);
 
       await expect(readPluginEvalManifest(pluginRoot, 'eval-fixture')).rejects.toThrow(
-        'must stay inside the plugin root',
+        'must stay inside the Skill eval directory',
       );
     },
   );

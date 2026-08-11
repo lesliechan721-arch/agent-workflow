@@ -14,6 +14,7 @@ import {
   type OwnerIdentity,
   SKILL_OWNER_MARKER,
 } from './ownership.js';
+import { isSkillAuthorOnlyPath } from './skill-authoring.js';
 
 export const SKILL_FILE_PATH = 'SKILL.md';
 export const CODEX_OPENAI_YAML_PATH = 'agents/openai.yaml';
@@ -122,6 +123,7 @@ async function collectDirectoryFiles(
     const entries = await fs.readdir(currentDir, { withFileTypes: true });
     for (const entry of entries.sort((left, right) => compareSkillPaths(left.name, right.name))) {
       const relativePath = parentPath ? `${parentPath}/${entry.name}` : entry.name;
+      if (isSkillAuthorOnlyPath(relativePath)) continue;
       if (relativePath === SKILL_OWNER_MARKER) {
         if (ownerMarkerPolicy === 'ignore') continue;
         throw new Error(`Skill source tree 不能声明保留文件 ${SKILL_OWNER_MARKER}。`);
@@ -228,6 +230,11 @@ export async function createDynamicSkillExpectedTree(options: {
     Object.assign(files, await collectDirectoryFiles(sourceDir, 'reject'));
   }
   for (const [relativePath, content] of Object.entries(options.artifact.content?.files ?? {})) {
+    if (isSkillAuthorOnlyPath(relativePath)) {
+      throw new Error(
+        `Skill renderer 不能声明作者专用目录中的文件：${relativePath}`,
+      );
+    }
     if (relativePath === SKILL_OWNER_MARKER) {
       throw new Error(`Skill renderer 不能声明保留文件 ${SKILL_OWNER_MARKER}。`);
     }

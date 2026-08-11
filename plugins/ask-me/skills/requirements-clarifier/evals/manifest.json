@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 2,
+  "plugin": "ask-me",
+  "skill": "requirements-clarifier",
+  "profiles": [
+    {
+      "id": "project-default",
+      "scope": "project",
+      "plugins": [{ "name": "ask-me", "config": {} }],
+      "runModel": true,
+      "requiredForRelease": true
+    },
+    {
+      "id": "user-default",
+      "scope": "user",
+      "plugins": [{ "name": "ask-me", "config": {} }],
+      "runModel": false,
+      "requiredForRelease": true
+    }
+  ],
+  "suites": [
+    {
+      "id": "trigger",
+      "kind": "trigger",
+      "skills": ["requirements-clarifier"],
+      "cases": "./requirements-clarifier-trigger-cases.json",
+      "fixtureModule": "./trigger-fixture.mjs",
+      "observeSpawnAgent": false,
+      "isolation": "strict",
+      "strictNegativeSplits": ["validation"],
+      "profiles": ["project-default"],
+      "defaultRuns": 3,
+      "releaseSplits": ["validation"],
+      "requiredForRelease": true,
+      "perRunTimeoutMs": 180000
+    },
+    {
+      "id": "behavior",
+      "kind": "conversation",
+      "skills": ["requirements-clarifier"],
+      "cases": "./requirements-clarifier-evals.json",
+      "isolation": "strict",
+      "profiles": ["project-default"],
+      "defaultRuns": 1,
+      "releaseSplits": [],
+      "requiredForRelease": true,
+      "perRunTimeoutMs": 300000
+    }
+  ]
+}

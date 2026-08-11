@@ -8,19 +8,20 @@ import {
 import { randomUUID } from 'node:crypto';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
-import os from 'node:os';
 import path from 'node:path';
 
 import fs from 'fs-extra';
 
-import { discoverPlugins, readPluginManifest } from '../src/utils/manifest.js';
+import type { PluginMeta } from '../src/types.js';
+import { readPluginManifest } from '../src/utils/manifest.js';
 import { resolveCliPackageRoot } from '../src/utils/paths.js';
 import { runCodexConversationSuite } from './codex-eval-app-server.js';
 import { assertCodexEvalKeychainWrapperAbsent } from './codex-eval-isolation.js';
+import { resolveCodexEvalProcessManagement } from './codex-eval-process-management.js';
 import {
-  assertProcessTreeInspectionAvailable,
   CODEX_EVAL_PROCESS_TREE_ID_ENV,
   createChildProcessTreeMonitor,
+  createDirectChildProcessMonitor,
   type ChildProcessTreeMonitor,
   processTreeCleanupIsUnconfirmed,
   releaseChildProcessHandles,
@@ -42,14 +43,23 @@ import {
   combinePluginEvalOutcome,
   PLUGIN_EVAL_SCHEMA_VERSION,
   readPluginEvalManifest,
+  readPluginEvalTriggerCases,
+  resolvePluginSkillAuthorRoot,
+  validatePluginEvalConversationCaseDocument,
   type PluginEvaluationBundle,
   type PluginEvalCommandSuite,
   type PluginEvalManifest,
   type PluginEvalOutcome,
+  type PluginEvalProcessManagementEvidence,
   type PluginEvalSplit,
   type PluginEvalSuite,
   type PluginEvalSuiteReport,
 } from './plugin-eval-contract.js';
+import {
+  createPluginEvalRunLayout,
+  writeEvalRunJson,
+  type EvalRunLayout,
+} from './eval-run-layout.js';
 import {
   materializePluginEvalSubjects,
   resolveMaterializedSubjectRoot,
@@ -60,7 +70,7 @@ const REPO_ROOT_ENV = 'AW_PLUGIN_EVAL_REPO_ROOT';
 
 interface ParsedArgs {
   pluginName?: string;
-  all: boolean;
+  skillName?: string;
   suite?: string;
   profile?: string;
   split?: PluginEvalSplit;
@@ -71,9 +81,10 @@ interface ParsedArgs {
   codexConfig?: string;
   inheritCodexConfig: boolean;
   codexBin: string;
-  outputDir?: string;
+  runId?: string;
   materializeOnly: boolean;
   allowEnvironmentSkips: boolean;
+  allowUnmanagedProcesses: boolean;
 }
 
 export interface PluginEvalRunnerOptions {
@@ -83,6 +94,8 @@ export interface PluginEvalRunnerOptions {
   stderr?: (text: string) => void;
   platform?: NodeJS.Platform;
   readUserKeychainSearchList?: () => Promise<string>;
+  inspectProcessTree?: () => Promise<void>;
+  createRunLayout?: typeof createPluginEvalRunLayout;
 }
 
 interface ChildResult {
@@ -93,6 +106,13 @@ interface ChildResult {
   timedOut: boolean;
   processTreeId: string;
 }
+
+const DEFAULT_MANAGED_PROCESS_EVIDENCE: PluginEvalProcessManagementEvidence = {
+  mode: 'managed',
+  inspectionAvailable: true,
+  userAcknowledged: false,
+  descendantCleanupGuaranteed: true,
+};
 
 export { terminatePosixProcessTree, terminateWindowsProcessTree };
 
@@ -118,9 +138,10 @@ function optionValue(args: string[], index: number, flag: string): string {
 
 function usage(): string {
   return [
-    'Usage: pnpm plugin:eval <plugin> | --all [OPTIONS]',
+    'Usage: pnpm plugin:eval <plugin> --skill <skill> [OPTIONS]',
     '',
     'Options:',
+    '  --skill <name>                Select exactly one Skill (required)',
     '  --suite <id>                  Run one suite',
     '  --profile <id>                Select one materialization profile',
     '  --split <train|validation|sanity|all>',
@@ -131,28 +152,25 @@ function usage(): string {
     '  --codex-config <path>         Read model/provider config from this config.toml',
     '  --no-inherit-codex-config     Use a clean official Codex provider config',
     '  --codex-bin <path>            Codex executable (default: codex)',
-    '  --output-dir <path>           Persist subjects and reports',
+    '  --run-id <id>                 Use an explicit unique report run id',
     '  --materialize-only            Do not start real Codex model sessions',
     '  --allow-environment-skips     Diagnostic only; release remains incomplete',
+    '  --allow-unmanaged-processes   Confirm eval without descendant process tracking',
   ].join('\n');
 }
 
 function parseArgs(args: string[]): ParsedArgs {
   const parsed: ParsedArgs = {
-    all: false,
     codexBin: 'codex',
     inheritCodexConfig: true,
     materializeOnly: false,
     allowEnvironmentSkips: false,
+    allowUnmanagedProcesses: false,
   };
   const positional: string[] = [];
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === '--') {
-      continue;
-    }
-    if (arg === '--all') {
-      parsed.all = true;
       continue;
     }
     if (arg === '--materialize-only') {
@@ -163,12 +181,21 @@ function parseArgs(args: string[]): ParsedArgs {
       parsed.allowEnvironmentSkips = true;
       continue;
     }
+    if (arg === '--allow-unmanaged-processes') {
+      parsed.allowUnmanagedProcesses = true;
+      continue;
+    }
     if (arg === '--no-inherit-codex-config') {
       parsed.inheritCodexConfig = false;
       continue;
     }
     if (arg === '-h' || arg === '--help') {
       throw new Error(usage());
+    }
+    if (arg === '--skill') {
+      parsed.skillName = optionValue(args, index, arg);
+      index += 1;
+      continue;
     }
     if (arg === '--suite') {
       parsed.suite = optionValue(args, index, arg);
@@ -219,8 +246,8 @@ function parseArgs(args: string[]): ParsedArgs {
       index += 1;
       continue;
     }
-    if (arg === '--output-dir') {
-      parsed.outputDir = path.resolve(optionValue(args, index, arg));
+    if (arg === '--run-id') {
+      parsed.runId = optionValue(args, index, arg);
       index += 1;
       continue;
     }
@@ -229,11 +256,11 @@ function parseArgs(args: string[]): ParsedArgs {
     }
     positional.push(arg);
   }
-  if (parsed.all && positional.length > 0) {
-    throw new Error('Use either <plugin> or --all, not both.');
-  }
-  if (!parsed.all && positional.length !== 1) {
+  if (positional.length !== 1) {
     throw new Error(usage());
+  }
+  if (!parsed.skillName) {
+    throw new Error('--skill is required.\n\n' + usage());
   }
   if (parsed.caseId && !parsed.suite) {
     throw new Error('--case requires --suite.');
@@ -254,16 +281,20 @@ function parseArgs(args: string[]): ParsedArgs {
       parsed.modelProvider !== undefined ||
       parsed.codexConfig !== undefined ||
       parsed.inheritCodexConfig === false ||
-      parsed.allowEnvironmentSkips
+      parsed.allowEnvironmentSkips ||
+      parsed.allowUnmanagedProcesses
     )
   ) {
     throw new Error(
-      '--materialize-only supports target/profile/output selection, not suite model-run flags.',
+      '--materialize-only supports target/profile selection, not suite model-run flags.',
     );
   }
   parsed.pluginName = positional[0];
   if (parsed.pluginName && !/^[a-z0-9][a-z0-9-]*$/u.test(parsed.pluginName)) {
     throw new Error('Plugin name must use lowercase kebab-case without path separators.');
+  }
+  if (!/^[a-z0-9][a-z0-9-]*$/u.test(parsed.skillName)) {
+    throw new Error('Skill name must use lowercase kebab-case without path separators.');
   }
   return parsed;
 }
@@ -277,6 +308,7 @@ export async function runChild(
     stderr: (text: string) => void;
     redact?: (text: string) => string;
     timeoutMs: number;
+    processManagement?: PluginEvalProcessManagementEvidence;
     spawnChild?: (
       command: string,
       args: string[],
@@ -288,20 +320,25 @@ export async function runChild(
     ) => ChildProcessTreeMonitor;
   },
 ): Promise<ChildResult> {
-  await assertProcessTreeInspectionAvailable();
   assertCodexEvalCanStartWork();
   return new Promise((resolve, reject) => {
     const processTreeId = randomUUID();
+    const processManagement = options.processManagement ?? DEFAULT_MANAGED_PROCESS_EVIDENCE;
+    const managed = processManagement.mode === 'managed';
     const child = (options.spawnChild ?? spawn)(command, args, {
       cwd: options.cwd,
-      env: { ...options.env, [CODEX_EVAL_PROCESS_TREE_ID_ENV]: processTreeId },
+      env: managed
+        ? { ...options.env, [CODEX_EVAL_PROCESS_TREE_ID_ENV]: processTreeId }
+        : { ...options.env },
       shell: false,
-      detached: process.platform !== 'win32',
+      detached: managed && process.platform !== 'win32',
       stdio: ['ignore', 'pipe', 'pipe'],
     }) as ChildProcessWithoutNullStreams;
-    const processTreeMonitor = options.createProcessTreeMonitor
-      ? options.createProcessTreeMonitor(child, processTreeId)
-      : createChildProcessTreeMonitor(child, { treeId: processTreeId });
+    const processTreeMonitor = managed
+      ? options.createProcessTreeMonitor
+        ? options.createProcessTreeMonitor(child, processTreeId)
+        : createChildProcessTreeMonitor(child, { treeId: processTreeId })
+      : createDirectChildProcessMonitor(child);
     let stdout = '';
     let stderr = '';
     let timedOut = false;
@@ -405,7 +442,8 @@ export async function runChild(
           stderr += `${terminationDiagnostics.join('\n')}\n`;
         }
         finish(
-          processTreeCleanupIsUnconfirmed(terminationDiagnostics) && exitCode === 0
+          (processTreeCleanupIsUnconfirmed(terminationDiagnostics) ||
+            terminationDiagnostics.length > 0) && exitCode === 0
             ? 1
             : exitCode,
           signal,
@@ -461,6 +499,9 @@ async function runCommandSuite(options: {
   env: NodeJS.ProcessEnv;
   codexRuntime: CodexEvalRuntimeConfig;
   codexRuntimeHome: string;
+  processManagement: PluginEvalProcessManagementEvidence;
+  installedPluginNames: string[];
+  workRoot: string;
   stderr: (text: string) => void;
 }): Promise<PluginEvalSuiteReport> {
   const sanitize = (report: PluginEvalSuiteReport): PluginEvalSuiteReport =>
@@ -477,6 +518,8 @@ async function runCommandSuite(options: {
   );
   await fs.ensureDir(path.dirname(reportPath));
   await fs.ensureDir(path.dirname(rawReportPath));
+  const commandWorkRoot = path.join(options.workRoot, 'command', reportName);
+  await fs.ensureDir(commandWorkRoot);
   const args = [path.resolve(options.pluginRoot, options.suite.entry.replace(/^\.\//u, ''))];
   if (options.split && supports(options.suite, 'split')) {
     args.push('--split', options.split);
@@ -516,15 +559,25 @@ async function runCommandSuite(options: {
       ),
       AW_PLUGIN_EVAL_PROJECT_ROOT: options.subjectRoot,
       AW_PLUGIN_EVAL_PROFILE: options.profile,
+      AW_PLUGIN_EVAL_SKILL: options.parsed.skillName!,
+      AW_PLUGIN_EVAL_OWNER_SKILL: options.parsed.skillName!,
+      AW_PLUGIN_EVAL_PARTICIPANT_SKILLS: JSON.stringify(options.suite.skills),
+      AW_PLUGIN_EVAL_INSTALLED_PLUGINS: JSON.stringify(options.installedPluginNames),
+      AW_PLUGIN_EVAL_WORK_ROOT: commandWorkRoot,
+      TMPDIR: commandWorkRoot,
+      TEMP: commandWorkRoot,
+      TMP: commandWorkRoot,
     },
     stderr: options.stderr,
     redact: (value) => redactCodexEvalText(value, options.codexRuntime),
     timeoutMs: options.suite.suiteTimeoutMs,
+    processManagement: options.processManagement,
   });
   if (result.timedOut) {
     return sanitize({
       id: options.suite.id,
       kind: 'command',
+      skills: options.suite.skills,
       profile: options.profile,
       split: options.split,
       outcome: 'incomplete',
@@ -558,6 +611,7 @@ async function runCommandSuite(options: {
     return sanitize({
       id: options.suite.id,
       kind: 'command',
+      skills: options.suite.skills,
       profile: options.profile,
       split: options.split,
       outcome,
@@ -577,6 +631,7 @@ async function runCommandSuite(options: {
     return sanitize({
       id: options.suite.id,
       kind: 'command',
+      skills: options.suite.skills,
       profile: options.profile,
       split: options.split,
       outcome: 'incomplete',
@@ -694,6 +749,133 @@ function resolveSuiteSplits(suite: PluginEvalSuite, parsed: ParsedArgs): Array<P
   return suite.releaseSplits.length > 0 ? suite.releaseSplits : [null];
 }
 
+interface PreparedPluginEval {
+  sourcePlugin: PluginMeta;
+  sourcePlugins: PluginMeta[];
+  skillRoot: string;
+  manifest: PluginEvalManifest;
+}
+
+async function preparePluginEval(options: {
+  repoRoot: string;
+  pluginName: string;
+  skillName: string;
+  parsed: ParsedArgs;
+}): Promise<PreparedPluginEval> {
+  const sourcePlugin = await readPluginManifest(
+    path.join(options.repoRoot, 'plugins', options.pluginName),
+  );
+  const skillRoot = await resolvePluginSkillAuthorRoot(
+    sourcePlugin.rootDir,
+    options.skillName,
+  );
+  const manifest = await readPluginEvalManifest(
+    sourcePlugin.rootDir,
+    options.skillName,
+    sourcePlugin.manifest.name,
+  );
+  const pluginNames = [...new Set(manifest.profiles.flatMap((profile) =>
+    profile.plugins.map((plugin) => plugin.name)))];
+  const sourcePlugins: PluginMeta[] = [];
+  for (const pluginName of pluginNames) {
+    const plugin = pluginName === sourcePlugin.manifest.name
+      ? sourcePlugin
+      : await readPluginManifest(path.join(options.repoRoot, 'plugins', pluginName));
+    if (plugin.manifest.name !== pluginName) {
+      throw new Error(
+        `Eval profile requested plugin "${pluginName}" but repo source declares ` +
+        `"${plugin.manifest.name}".`,
+      );
+    }
+    sourcePlugins.push(plugin);
+  }
+
+  const skillOwnersByPlugin = new Map<string, Set<string>>();
+  for (const plugin of sourcePlugins) {
+    const skills = new Set<string>();
+    if (plugin.manifest.skills) {
+      const staticRoot = path.resolve(
+        plugin.rootDir,
+        plugin.manifest.skills.replace(/^\.\//u, ''),
+      );
+      if (await fs.pathExists(staticRoot)) {
+        for (const entry of await fs.readdir(staticRoot, { withFileTypes: true })) {
+          if (entry.isDirectory()) skills.add(entry.name);
+        }
+      }
+    }
+    for (const target of plugin.manifest.artifacts?.targets ?? []) {
+      if (target.target === 'codex.skill' && target.skillKey) skills.add(target.skillKey);
+    }
+    skillOwnersByPlugin.set(plugin.manifest.name, skills);
+  }
+  for (const profile of manifest.profiles) {
+    const owners = new Map<string, string>();
+    for (const installation of profile.plugins) {
+      for (const skill of skillOwnersByPlugin.get(installation.name) ?? []) {
+        const existing = owners.get(skill);
+        if (existing && existing !== installation.name) {
+          throw new Error(
+            `Profile "${profile.id}" installs duplicate Codex Skill key "${skill}" ` +
+            `from plugins "${existing}" and "${installation.name}".`,
+          );
+        }
+        owners.set(skill, installation.name);
+      }
+    }
+    for (const suite of manifest.suites.filter((suite) => suite.profiles.includes(profile.id))) {
+      for (const skill of suite.skills) {
+        if (!owners.has(skill)) {
+          throw new Error(
+            `Suite "${suite.id}" requires Skill "${skill}", but profile ` +
+            `"${profile.id}" does not install a plugin that declares it.`,
+          );
+        }
+      }
+    }
+  }
+  if (
+    options.parsed.profile &&
+    !manifest.profiles.some((profile) => profile.id === options.parsed.profile)
+  ) {
+    throw new Error(`Unknown profile "${options.parsed.profile}".`);
+  }
+  if (options.parsed.materializeOnly) {
+    return { sourcePlugin, sourcePlugins, skillRoot, manifest };
+  }
+  for (const suite of selectedSuites(manifest, options.parsed)) {
+    assertSuiteSupportsRequestedOptions(suite, options.parsed);
+    resolveSuiteProfiles(suite, options.parsed);
+    const splits = resolveSuiteSplits(suite, options.parsed);
+    if (!options.parsed.caseId) continue;
+    if (suite.kind === 'trigger') {
+      const corpus = await readPluginEvalTriggerCases(sourcePlugin.rootDir, suite);
+      const matchingSplit = splits[0];
+      const match = corpus.cases.some((entry) =>
+        entry.id === options.parsed.caseId &&
+        (matchingSplit === null || matchingSplit === 'all' || entry.split === matchingSplit)
+      );
+      if (!match) {
+        throw new Error(`Unknown trigger case: ${options.parsed.caseId}`);
+      }
+    } else if (suite.kind === 'conversation') {
+      const casesPath = path.resolve(
+        sourcePlugin.rootDir,
+        suite.cases.replace(/^\.\//u, ''),
+      );
+      const cases = validatePluginEvalConversationCaseDocument(
+        await fs.readJson(casesPath),
+        manifest.skill,
+        `conversation cases for suite "${suite.id}"`,
+      );
+      if (!cases.some((entry) => entry.id === options.parsed.caseId)) {
+        throw new Error(`Unknown conversation case: ${options.parsed.caseId}`);
+      }
+    }
+  }
+  return { sourcePlugin, sourcePlugins, skillRoot, manifest };
+}
+
 async function readCodexVersion(codexBin: string, env: NodeJS.ProcessEnv): Promise<string | null> {
   try {
     const result = await execFileAsync(codexBin, ['--version'], {
@@ -708,10 +890,13 @@ async function readCodexVersion(codexBin: string, env: NodeJS.ProcessEnv): Promi
 }
 
 async function runOnePlugin(options: {
-  repoRoot: string;
-  pluginName: string;
+  sourcePlugin: PluginMeta;
+  sourcePlugins: PluginMeta[];
+  manifest: PluginEvalManifest;
   parsed: ParsedArgs;
-  rootOutput: string;
+  outputRoot: string;
+  workRoot: string;
+  processManagement: PluginEvalProcessManagementEvidence;
   env: NodeJS.ProcessEnv;
   modelEnv: NodeJS.ProcessEnv;
   codexRuntime?: CodexEvalRuntimeConfig;
@@ -719,26 +904,19 @@ async function runOnePlugin(options: {
   stderr: (text: string) => void;
 }): Promise<PluginEvaluationBundle> {
   assertCodexEvalCanStartWork();
-  const sourcePlugin = await readPluginManifest(
-    path.join(options.repoRoot, 'plugins', options.pluginName),
-  );
-  const manifest = await readPluginEvalManifest(sourcePlugin.rootDir, sourcePlugin.manifest.name);
-  const outputRoot = path.join(options.rootOutput, sourcePlugin.manifest.name);
+  const { sourcePlugin, manifest } = options;
+  const outputRoot = options.outputRoot;
   await fs.ensureDir(outputRoot);
   const selectedProfiles = options.parsed.profile
     ? new Set([options.parsed.profile])
     : undefined;
-  if (
-    options.parsed.profile &&
-    !manifest.profiles.some((profile) => profile.id === options.parsed.profile)
-  ) {
-    throw new Error(`Unknown profile "${options.parsed.profile}".`);
-  }
   assertCodexEvalCanStartWork();
   const subjects = await materializePluginEvalSubjects({
     plugin: sourcePlugin,
+    plugins: options.sourcePlugins,
     manifest,
     outputRoot,
+    workRoot: path.join(options.workRoot, 'materialize'),
     env: options.env,
     selectedProfiles,
   });
@@ -746,7 +924,6 @@ async function runOnePlugin(options: {
   if (!options.parsed.materializeOnly) {
     for (const suite of selectedSuites(manifest, options.parsed)) {
       assertCodexEvalCanStartWork();
-      assertSuiteSupportsRequestedOptions(suite, options.parsed);
       for (const profile of resolveSuiteProfiles(suite, options.parsed)) {
         const subject = subjects.find((entry) => entry.profile === profile);
         if (!subject) {
@@ -777,6 +954,7 @@ async function runOnePlugin(options: {
             const report = await runCodexConversationSuite({
               suiteId: suite.id,
               skillName: suite.skill,
+              skillNames: suite.skills,
               casesPath: path.resolve(sourcePlugin.rootDir, suite.cases.replace(/^\.\//u, '')),
               subjectRoot,
               profile,
@@ -789,6 +967,8 @@ async function runOnePlugin(options: {
               isolation: suite.isolation,
               sourceEnv: options.modelEnv,
               reportPath,
+              processManagement: options.processManagement,
+              workRoot: path.join(options.workRoot, 'conversation'),
             });
             report.reportPath = path.relative(outputRoot, reportPath).split(path.sep).join('/');
             reports.push(report);
@@ -813,6 +993,8 @@ async function runOnePlugin(options: {
               sourceEnv: options.modelEnv,
               reportPath,
               stderr: options.stderr,
+              processManagement: options.processManagement,
+              workRoot: path.join(options.workRoot, 'trigger'),
             });
             report.reportPath = path.relative(outputRoot, reportPath).split(path.sep).join('/');
             reports.push(report);
@@ -829,6 +1011,9 @@ async function runOnePlugin(options: {
               env: options.modelEnv,
               codexRuntime: options.codexRuntime!,
               codexRuntimeHome: options.codexRuntimeHome!,
+              processManagement: options.processManagement,
+              installedPluginNames: subject.installedPlugins.map((plugin) => plugin.name),
+              workRoot: options.workRoot,
               stderr: options.stderr,
             }));
           }
@@ -847,6 +1032,7 @@ async function runOnePlugin(options: {
     schemaVersion: PLUGIN_EVAL_SCHEMA_VERSION,
     generatedAt: new Date().toISOString(),
     plugin: sourcePlugin.manifest.name,
+    skill: manifest.skill,
     pluginVersion: sourcePlugin.manifest.version,
     platform: 'codex',
     codexVersion: options.parsed.materializeOnly
@@ -856,6 +1042,7 @@ async function runOnePlugin(options: {
     modelProvider: options.codexRuntime?.modelProvider ?? null,
     credentialSource: options.codexRuntime?.credentialSource ?? null,
     codexConfigDigest: options.codexRuntime?.evidenceDigest ?? null,
+    processManagement: options.processManagement,
     outcome: coverageComplete ? reportOutcome : 'incomplete',
     complete: coverageComplete && reportsComplete,
     mechanicalPassed: options.parsed.materializeOnly || reports.every(
@@ -870,6 +1057,136 @@ async function runOnePlugin(options: {
     : unredactedBundle;
   await fs.writeJson(path.join(outputRoot, 'evaluation.json'), bundle, { spaces: 2 });
   return bundle;
+}
+
+async function readSourceRevision(options: {
+  repoRoot: string;
+  pluginNames: string[];
+}): Promise<{ gitHead: string | null; inScopeDirty: boolean }> {
+  try {
+    const [head, status] = await Promise.all([
+      execFileAsync('git', ['rev-parse', 'HEAD'], {
+        cwd: options.repoRoot,
+        encoding: 'utf8',
+      }),
+      execFileAsync('git', [
+        'status',
+        '--porcelain=v1',
+        '--',
+        ...options.pluginNames.map((pluginName) => `plugins/${pluginName}`),
+        'packages/cli/scripts',
+        'packages/cli/src',
+        '.agents/skills/create-agent-workflows-plugin',
+        '.agents/skills/skill-review',
+      ], {
+        cwd: options.repoRoot,
+        encoding: 'utf8',
+      }),
+    ]);
+    return {
+      gitHead: head.stdout.trim() || null,
+      inScopeDirty: status.stdout.trim() !== '',
+    };
+  } catch {
+    return { gitHead: null, inScopeDirty: true };
+  }
+}
+
+function publicProcessManagement(
+  value: PluginEvalProcessManagementEvidence,
+): Omit<PluginEvalProcessManagementEvidence, 'diagnostic'> {
+  return {
+    mode: value.mode,
+    inspectionAvailable: value.inspectionAvailable,
+    userAcknowledged: value.userAcknowledged,
+    descendantCleanupGuaranteed: value.descendantCleanupGuaranteed,
+  };
+}
+
+async function writePublishedEvalReport(options: {
+  layout: EvalRunLayout;
+  bundle: PluginEvaluationBundle;
+  sourceRevision: { gitHead: string | null; inScopeDirty: boolean };
+  startedAt: string;
+}): Promise<void> {
+  const processManagement = publicProcessManagement(options.bundle.processManagement);
+  const summary = {
+    schemaVersion: 1,
+    runId: options.layout.runId,
+    plugin: options.bundle.plugin,
+    skill: options.bundle.skill,
+    generatedAt: options.bundle.generatedAt,
+    outcome: options.bundle.outcome,
+    complete: options.bundle.complete,
+    mechanicalPassed: options.bundle.mechanicalPassed,
+    codexVersion: options.bundle.codexVersion,
+    model: options.bundle.model,
+    modelProvider: options.bundle.modelProvider,
+    codexConfigDigest: options.bundle.codexConfigDigest,
+    processManagement,
+    source: options.sourceRevision,
+    subjects: options.bundle.subjects.map((subject) => ({
+      profile: subject.profile,
+      scope: subject.scope,
+      configDigest: subject.configDigest,
+      bundleDigest: subject.bundleDigest,
+      installedPlugins: subject.installedPlugins,
+      artifacts: subject.artifacts.map((artifact) => ({
+        kind: artifact.kind,
+        ...(artifact.key ? { key: artifact.key } : {}),
+        contentDigest: artifact.contentDigest,
+      })),
+    })),
+    suites: options.bundle.suites.map((suite) => ({
+      id: suite.id,
+      kind: suite.kind,
+      skills: suite.skills,
+      profile: suite.profile,
+      split: suite.split,
+      outcome: suite.outcome,
+      complete: suite.complete,
+      mechanicalPassed: suite.mechanicalPassed,
+      qualitativeReview: suite.qualitativeReview,
+      summary: suite.summary,
+    })),
+    diagnostics: options.bundle.diagnostics,
+  };
+  await writeEvalRunJson(options.layout.reportRoot, 'summary.json', summary);
+  const suiteRows = summary.suites.map((suite) =>
+    `| ${suite.id} | ${suite.skills.join(', ')} | ${suite.profile} | ${suite.split ?? '-'} | ${suite.outcome} |`,
+  );
+  const report = [
+    '# Plugin Skill Eval Report',
+    '',
+    `- Plugin: \`${summary.plugin}\``,
+    `- Skill: \`${summary.skill}\``,
+    `- Run: \`${summary.runId}\``,
+    `- Outcome: \`${summary.outcome}\``,
+    `- Complete: \`${summary.complete}\``,
+    `- Process management: \`${processManagement.mode}\``,
+    '',
+    '| Suite | Skills | Profile | Split | Outcome |',
+    '| --- | --- | --- | --- | --- |',
+    ...suiteRows,
+    '',
+    '完整 subject、trace 和 suite 报告保存在同目录的 `raw/`。',
+    '',
+  ].join('\n');
+  await fs.writeFile(path.join(options.layout.reportRoot, 'report.md'), report, 'utf8');
+  await writeEvalRunJson(options.layout.reportRoot, 'run.json', {
+    schemaVersion: 1,
+    type: 'plugin-skill-eval',
+    runId: options.layout.runId,
+    plugin: options.bundle.plugin,
+    skill: options.bundle.skill,
+    status: 'completed',
+    startedAt: options.startedAt,
+    completedAt: new Date().toISOString(),
+    outcome: options.bundle.outcome,
+    processManagement,
+    source: options.sourceRevision,
+    rawDirectory: 'raw',
+  });
 }
 
 export async function runPluginEvals(
@@ -893,79 +1210,164 @@ export async function runPluginEvals(
   const repoRoot = path.resolve(
     options.repoRoot ?? env[REPO_ROOT_ENV] ?? resolveRepoRoot(),
   );
+  let prepared: PreparedPluginEval;
+  try {
+    prepared = await preparePluginEval({
+      repoRoot,
+      pluginName: parsed.pluginName!,
+      skillName: parsed.skillName!,
+      parsed,
+    });
+  } catch (error) {
+    stderr(`${error instanceof Error ? error.message : String(error)}\n`);
+    return 2;
+  }
+  let codexRuntime: CodexEvalRuntimeConfig | undefined;
+  let processManagement: PluginEvalProcessManagementEvidence = {
+    mode: 'not-applicable',
+    inspectionAvailable: false,
+    userAcknowledged: false,
+    descendantCleanupGuaranteed: false,
+  };
   if (!parsed.materializeOnly) {
     try {
       await assertCodexEvalKeychainWrapperAbsent({
         platform: options.platform,
         readUserKeychainSearchList: options.readUserKeychainSearchList,
       });
+      processManagement = await resolveCodexEvalProcessManagement({
+        allowUnmanaged: parsed.allowUnmanagedProcesses,
+        inspect: options.inspectProcessTree,
+        platform: options.platform,
+      });
+      codexRuntime = await resolveCodexEvalRuntimeConfig({
+        sourceEnv: env,
+        inheritUserConfig: parsed.inheritCodexConfig,
+        configPath: parsed.codexConfig,
+        modelOverride: parsed.model,
+        modelProviderOverride: parsed.modelProvider,
+      });
     } catch (error) {
       stderr(`${error instanceof Error ? error.message : String(error)}\n`);
       return 2;
+    }
+    if (processManagement.mode === 'unmanaged-confirmed') {
+      stderr(
+        '[plugin:eval] WARNING: Full Access process inspection is unavailable. ' +
+        'This confirmed run does not track or verify descendant processes. ' +
+        'Timeout and signal cleanup only target the direct child.\n',
+      );
     }
   }
-  const temporaryOutput = parsed.outputDir === undefined;
-  const rootOutput = parsed.outputDir ?? await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-eval-'));
-  let runtimeCapsule: Awaited<ReturnType<typeof createCodexEvalRuntimeCapsule>> | undefined;
+  let layout: EvalRunLayout;
   try {
-    let codexRuntime: CodexEvalRuntimeConfig | undefined;
-    try {
-      codexRuntime = parsed.materializeOnly
-        ? undefined
-        : await resolveCodexEvalRuntimeConfig({
-            sourceEnv: env,
-            inheritUserConfig: parsed.inheritCodexConfig,
-            configPath: parsed.codexConfig,
-            modelOverride: parsed.model,
-            modelProviderOverride: parsed.modelProvider,
-          });
-    } catch (error) {
-      stderr(`${error instanceof Error ? error.message : String(error)}\n`);
-      return 2;
-    }
+    layout = await (options.createRunLayout ?? createPluginEvalRunLayout)({
+      repoRoot,
+      skillRoot: prepared.skillRoot,
+      plugin: parsed.pluginName!,
+      skill: parsed.skillName!,
+      runId: parsed.runId,
+    });
+  } catch (error) {
+    stderr(`${error instanceof Error ? error.message : String(error)}\n`);
+    return 2;
+  }
+  const startedAt = new Date().toISOString();
+  const sourceRevision = await readSourceRevision({
+    repoRoot,
+    pluginNames: prepared.sourcePlugins.map((plugin) => plugin.manifest.name),
+  });
+  await writeEvalRunJson(layout.reportRoot, 'run.json', {
+    schemaVersion: 1,
+    type: 'plugin-skill-eval',
+    runId: layout.runId,
+    plugin: parsed.pluginName,
+    skill: parsed.skillName,
+    status: 'running',
+    startedAt,
+    processManagement: publicProcessManagement(processManagement),
+    source: sourceRevision,
+    rawDirectory: 'raw',
+  });
+  stderr(
+    `[plugin:eval] run=${layout.runId} report=${path.relative(repoRoot, layout.reportRoot)}\n`,
+  );
+  let runtimeCapsule: Awaited<ReturnType<typeof createCodexEvalRuntimeCapsule>> | undefined;
+  let exitCode = 1;
+  try {
     runtimeCapsule = codexRuntime
-      ? await createCodexEvalRuntimeCapsule(codexRuntime, env)
+      ? await createCodexEvalRuntimeCapsule(codexRuntime, env, {
+          allocate: () => fs.mkdtemp(path.join(layout.workRoot, 'runtime-')),
+        })
       : undefined;
-    const pluginNames = parsed.all
-      ? (await discoverPlugins(repoRoot)).map((plugin) => plugin.manifest.name)
-      : [parsed.pluginName!];
-    const bundles: PluginEvaluationBundle[] = [];
-    let hadError = false;
-    for (const pluginName of pluginNames) {
-      assertCodexEvalCanStartWork();
-      try {
-        bundles.push(await runOnePlugin({
-          repoRoot,
-          pluginName,
-          parsed,
-          rootOutput,
-          env,
-          modelEnv: runtimeCapsule?.env ?? env,
-          codexRuntime,
-          codexRuntimeHome: runtimeCapsule?.home,
-          stderr,
-        }));
-      } catch (error) {
-        hadError = true;
-        stderr(`${pluginName}: ${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
-      }
-    }
+    assertCodexEvalCanStartWork();
+    const bundle = await runOnePlugin({
+      sourcePlugin: prepared.sourcePlugin,
+      sourcePlugins: prepared.sourcePlugins,
+      manifest: prepared.manifest,
+      parsed,
+      outputRoot: layout.rawRoot,
+      workRoot: layout.workRoot,
+      processManagement,
+      env,
+      modelEnv: runtimeCapsule?.env ?? env,
+      codexRuntime,
+      codexRuntimeHome: runtimeCapsule?.home,
+      stderr,
+    });
+    await runtimeCapsule?.cleanup();
+    runtimeCapsule = undefined;
+    await writePublishedEvalReport({
+      layout,
+      bundle,
+      sourceRevision,
+      startedAt,
+    });
     stdout(`${JSON.stringify({
       schemaVersion: PLUGIN_EVAL_SCHEMA_VERSION,
-      outputDir: temporaryOutput ? null : rootOutput,
-      bundles,
+      runId: layout.runId,
+      reportDir: path.relative(repoRoot, layout.reportRoot).split(path.sep).join('/'),
+      bundle,
     }, null, 2)}\n`);
-    if (hadError || bundles.some((bundle) =>
-      bundle.outcome === 'failed' || bundle.outcome === 'incomplete')) {
-      return 1;
-    }
-    return 0;
+    exitCode = bundle.outcome === 'failed' || bundle.outcome === 'incomplete' ? 1 : 0;
+  } catch (error) {
+    const message = error instanceof Error ? error.stack ?? error.message : String(error);
+    const safeMessage = codexRuntime ? redactCodexEvalText(message, codexRuntime) : message;
+    stderr(`${parsed.pluginName}: ${safeMessage}\n`);
+    await fs.writeFile(path.join(layout.rawRoot, 'error.txt'), `${safeMessage}\n`, 'utf8');
+    await writeEvalRunJson(layout.reportRoot, 'run.json', {
+      schemaVersion: 1,
+      type: 'plugin-skill-eval',
+      runId: layout.runId,
+      plugin: parsed.pluginName,
+      skill: parsed.skillName,
+      status: 'failed',
+      startedAt,
+      completedAt: new Date().toISOString(),
+      processManagement: publicProcessManagement(processManagement),
+      source: sourceRevision,
+      rawDirectory: 'raw',
+    });
+    exitCode = 1;
   } finally {
-    await runtimeCapsule?.cleanup();
-    if (temporaryOutput) {
-      await fs.remove(rootOutput);
+    try {
+      await runtimeCapsule?.cleanup();
+    } catch (error) {
+      stderr(`Runtime capsule cleanup failed: ${
+        error instanceof Error ? error.message : String(error)
+      }\n`);
+      exitCode = 1;
+    }
+    try {
+      await layout.cleanupWork();
+    } catch (error) {
+      stderr(`Eval work directory cleanup failed: ${
+        error instanceof Error ? error.message : String(error)
+      }\n`);
+      exitCode = 1;
     }
   }
+  return exitCode;
 }
 
 const currentEntryPath = fileURLToPath(import.meta.url);

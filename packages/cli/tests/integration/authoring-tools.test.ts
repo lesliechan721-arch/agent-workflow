@@ -1319,6 +1319,8 @@ describe('authoring tools', () => {
         refBase,
         '.examples',
         'code-review',
+        'review-skills',
+        'review-workflow',
         'evals',
         'evals.json',
       ),
@@ -1470,7 +1472,13 @@ describe('authoring tools', () => {
       {
         document: exampleEvalFixtures,
         skillName: 'review-workflow',
-        skillRoot: path.join(refBase, '.examples', 'code-review'),
+        skillRoot: path.join(
+          refBase,
+          '.examples',
+          'code-review',
+          'review-skills',
+          'review-workflow',
+        ),
         caseCount: 2,
         idKind: 'number',
       },
@@ -1537,7 +1545,7 @@ describe('authoring tools', () => {
     expect(exampleDoc).not.toContain('`plugin/install`');
     expect(exampleDoc).not.toContain('allowInstallOverride');
     expect(exampleDoc).toContain('`slash-commands/`');
-    expect(exampleDoc).toContain('`evals/evals.json`');
+    expect(exampleDoc).toContain('`review-skills/review-workflow/evals/evals.json`');
     expect(exampleDoc).toContain('`${REVIEW_SERVICE_API_KEY}`');
   });
 
@@ -1547,7 +1555,8 @@ describe('authoring tools', () => {
     const pluginDir = path.join(tempRoot, 'eval-demo');
     await fs.ensureDir(path.join(pluginDir, '.agents-plugin'));
     await fs.ensureDir(path.join(pluginDir, 'skills', 'eval-demo', 'agents'));
-    await fs.ensureDir(path.join(pluginDir, 'evals'));
+    const evalDir = path.join(pluginDir, 'skills', 'eval-demo', 'evals');
+    await fs.ensureDir(evalDir);
     await fs.writeJson(
       path.join(pluginDir, '.agents-plugin', 'plugin.json'),
       withDefaultCompatibility({
@@ -1582,7 +1591,7 @@ describe('authoring tools', () => {
       'policy:\n  allow_implicit_invocation: false\n',
       'utf8',
     );
-    await fs.writeJson(path.join(pluginDir, 'evals', 'trigger-cases.json'), {
+    await fs.writeJson(path.join(evalDir, 'trigger-cases.json'), {
       schemaVersion: 1,
       skill: 'eval-demo',
       cases: [{
@@ -1593,22 +1602,23 @@ describe('authoring tools', () => {
       }],
     }, { spaces: 2 });
 
-    const evalManifestPath = path.join(pluginDir, 'evals', 'manifest.json');
+    const evalManifestPath = path.join(evalDir, 'manifest.json');
     const validEvalManifest = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       plugin: 'eval-demo',
+      skill: 'eval-demo',
       profiles: [
         {
           id: 'project-default',
           scope: 'project',
-          config: {},
+          plugins: [{ name: 'eval-demo', config: {} }],
           runModel: true,
           requiredForRelease: true,
         },
         {
           id: 'user-default',
           scope: 'user',
-          config: {},
+          plugins: [{ name: 'eval-demo', config: {} }],
           runModel: false,
           requiredForRelease: true,
         },
@@ -1617,8 +1627,8 @@ describe('authoring tools', () => {
         {
           id: 'trigger',
           kind: 'trigger',
-          skill: 'eval-demo',
-          cases: './evals/trigger-cases.json',
+          skills: ['eval-demo'],
+          cases: './trigger-cases.json',
           observeSpawnAgent: false,
           isolation: 'standard',
           strictNegativeSplits: ['validation'],
@@ -1642,30 +1652,30 @@ describe('authoring tools', () => {
     }, { spaces: 2 });
     await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
       stdout: expect.stringContaining(
-        'evals/manifest.json.profiles[0] has unknown field "unsupportedField"',
+        'skills/eval-demo/evals/manifest.json.profiles[0] has unknown field "unsupportedField"',
       ),
     });
     await fs.writeJson(evalManifestPath, validEvalManifest, { spaces: 2 });
 
     if (process.platform !== 'win32') {
-      const casesPath = path.join(pluginDir, 'evals', 'trigger-cases.json');
+      const casesPath = path.join(evalDir, 'trigger-cases.json');
       const outsideCasesPath = path.join(tempRoot, 'outside-trigger-cases.json');
       await fs.copyFile(casesPath, outsideCasesPath);
       await fs.remove(casesPath);
       await fs.symlink(outsideCasesPath, casesPath);
       await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
-        stdout: expect.stringContaining('must stay inside the plugin root'),
+        stdout: expect.stringContaining('must stay inside the Skill eval directory'),
       });
       await fs.remove(casesPath);
       await fs.copyFile(outsideCasesPath, casesPath);
     }
 
-    const conversationCasesPath = path.join(pluginDir, 'evals', 'conversation-cases.json');
+    const conversationCasesPath = path.join(evalDir, 'conversation-cases.json');
     const conversationSuite = {
       id: 'behavior',
       kind: 'conversation',
-      skill: 'eval-demo',
-      cases: './evals/conversation-cases.json',
+      skills: ['eval-demo'],
+      cases: './conversation-cases.json',
       isolation: 'strict',
       profiles: ['project-default'],
       defaultRuns: 1,
@@ -1746,14 +1756,15 @@ describe('authoring tools', () => {
     });
 
     await fs.writeFile(
-      path.join(pluginDir, 'evals', 'domain-runner.mjs'),
+      path.join(evalDir, 'domain-runner.mjs'),
       'process.stdout.write(JSON.stringify({ complete: true, passed: true }));\n',
       'utf8',
     );
     const commandSuite = {
       id: 'domain',
       kind: 'command',
-      entry: './evals/domain-runner.mjs',
+      skills: ['eval-demo'],
+      entry: './domain-runner.mjs',
       profiles: ['project-default'],
       defaultRuns: 1,
       releaseSplits: [],
@@ -1797,7 +1808,7 @@ describe('authoring tools', () => {
       stdout: expect.stringContaining('references unknown profile "missing-profile"'),
     });
     await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
-      stdout: expect.stringContaining('must stay inside the plugin root'),
+      stdout: expect.stringContaining('must stay inside the Skill eval directory'),
     });
   });
 

@@ -10,11 +10,11 @@ import {
   modelEvalRunCase,
   parseModelEvalArgs,
   summarizeModelEval,
-} from '../evals/run-model-selection-evals.mjs';
+} from '../templates/codex-explore/evals/run-model-selection-evals.mjs';
 import {
   readRolloutEvidenceFromRollouts,
   readSpawnCallsFromRollouts,
-} from '../evals/eval-harness.mjs';
+} from '../templates/codex-explore/evals/eval-harness.mjs';
 
 function testArguments() {
   assert.deepEqual(

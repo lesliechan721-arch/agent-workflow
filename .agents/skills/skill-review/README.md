@@ -24,3 +24,5 @@ node scripts/run_static_skill_evals.mjs <skill-name-or-dir> --validate-only
 release 评审应按 `references/source-map.md` 重新核对当前官方 Agent Skills 文档。
 
 当前仓库静态 Skill 的真实模型 eval 先运行 `pnpm build`，再由 `run_static_skill_evals.mjs` 生成证据；它不是 `plugin:eval` 的别名。
+
+静态和插件 Skill 的 eval 报告保存在 owner Skill 的 `reports/evals/<run-id>/`，完整 review 报告保存在 `reports/reviews/<run-id>/`。临时工作目录统一使用项目 `.tmp/agent-workflows/`。

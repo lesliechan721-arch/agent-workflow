@@ -723,8 +723,12 @@ function installCapsuleSignalHandlers(): void {
 export async function createCodexEvalRuntimeCapsule(
   runtime: CodexEvalRuntimeConfig,
   sourceEnv: NodeJS.ProcessEnv = process.env,
+  options: { allocate?: () => Promise<string> } = {},
 ): Promise<CodexEvalRuntimeCapsule> {
-  const temporaryRoot = await createCodexEvalTemporaryRoot('aw-codex-eval-runtime-');
+  const temporaryRoot = await createCodexEvalTemporaryRoot(
+    'aw-codex-eval-runtime-',
+    options,
+  );
   const root = temporaryRoot.root;
   const home = path.join(root, 'codex-home');
   let cleaned = false;

@@ -126,13 +126,6 @@
       "should_spawn_agent": false
     },
     {
-      "id": "validation_config_help",
-      "split": "validation",
-      "query": "列出 codex-subagent-guide 的四类模型配置键，我只是维护插件配置。",
-      "should_load_skill": false,
-      "should_spawn_agent": false
-    },
-    {
       "id": "validation_thorough_only",
       "split": "validation",
       "query": "认真阅读 src/complex/a.ts 并详细回答，不能使用子代理。",

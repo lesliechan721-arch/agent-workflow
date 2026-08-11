@@ -157,7 +157,7 @@ description: >
 | `scripts/` | 可重复、可测试的确定性逻辑；规范见 `references/skill-scripts.md` |
 | `assets/` | 输出模板、图片、静态数据和其它无需作为指令阅读的资源 |
 
-插件 Skill 的作者期评测放在 `plugins/<name>/evals/`，不放进 Skill 子树。这样 static 和 dynamic Skill 共用同一入口，也不会把语料、runner 或 trace 复制进 production runtime。规范见 `references/skill-evaluation.md`。
+插件 Skill 的作者期评测放在 owner Skill 源码根的 `evals/`，持久证据放在同一根的 `reports/`。构建和安装会排除这两个作者目录，不会把语料、runner 或 trace 复制进 production runtime。规范见 `references/skill-evaluation.md`。
 
 ## 完成检查
 
@@ -169,7 +169,7 @@ description: >
 - [ ] 脆弱步骤有验证门，失败后会修复并重验
 - [ ] 输出格式在确有要求时给出短模板
 - [ ] scripts、references 和 assets 都有明确读取或执行条件
-- [ ] 已在插件根按 `references/skill-evaluation.md` materialize 最终制品，并用真实任务检查结果
+- [ ] 已按 `references/skill-evaluation.md` 为 owner Skill materialize 最终制品，并用真实任务检查结果
 
 ## 上游参考
 

@@ -128,6 +128,67 @@ describe('build smoke', () => {
         fs.pathExists(path.join(outputRoot, '.catalog', 'full', 'plugins', pluginName, 'evals')),
       ).resolves.toBe(false);
     }
+    for (const [pluginName, skillName] of [
+      ['ask-me', 'requirements-clarifier'],
+      ['ask-me', 'decision-grill'],
+      ['git-commit', 'commit'],
+    ]) {
+      for (const platform of ['claude', 'codex']) {
+        for (const authorDirectory of ['evals', 'reports']) {
+          await expect(fs.pathExists(path.join(
+            outputRoot,
+            'plugins',
+            pluginName,
+            platform,
+            'skills',
+            skillName,
+            authorDirectory,
+          ))).resolves.toBe(false);
+        }
+      }
+    }
+    for (const [pluginName, artifactId] of [
+      ['codex-explore', 'codex-explore-skill'],
+      ['codex-subagent-guide', 'codex-subagent-guide-skill'],
+    ]) {
+      await expect(fs.pathExists(path.join(
+        outputRoot,
+        'plugins',
+        pluginName,
+        '.agents-plugin',
+        'artifact-sources',
+        'codex',
+        artifactId,
+        '0',
+        'SKILL.md',
+      ))).resolves.toBe(true);
+      for (const authorDirectory of ['evals', 'reports']) {
+        await expect(fs.pathExists(path.join(
+          outputRoot,
+          'plugins',
+          pluginName,
+          '.agents-plugin',
+          'artifact-sources',
+          'codex',
+          artifactId,
+          '0',
+          authorDirectory,
+        ))).resolves.toBe(false);
+        await expect(fs.pathExists(path.join(
+          outputRoot,
+          '.catalog',
+          'full',
+          'plugins',
+          pluginName,
+          '.agents-plugin',
+          'artifact-sources',
+          'codex',
+          artifactId,
+          '0',
+          authorDirectory,
+        ))).resolves.toBe(false);
+      }
+    }
     const [claudeMarketplace, codexMarketplace] = await Promise.all([
       fs.readJson(path.join(outputRoot, '.claude-plugin', 'marketplace.json')),
       fs.readJson(path.join(outputRoot, '.agents', 'plugins', 'marketplace.json')),

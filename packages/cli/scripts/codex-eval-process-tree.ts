@@ -38,6 +38,50 @@ export interface ChildProcessTreeMonitor {
   terminate(): Promise<string[]>;
 }
 
+export function createDirectChildProcessMonitor(
+  child: ChildProcess,
+): ChildProcessTreeMonitor {
+  let terminationPromise: Promise<string[]> | undefined;
+  return {
+    terminate: () => {
+      terminationPromise ??= new Promise<string[]>((resolve) => {
+        if (child.exitCode !== null || child.signalCode !== null) {
+          resolve([]);
+          return;
+        }
+        let closed = false;
+        child.once('close', () => {
+          closed = true;
+        });
+        try {
+          child.kill('SIGTERM');
+        } catch {
+          // The direct child can close before SIGTERM is delivered.
+        }
+        const forceTimer = setTimeout(() => {
+          if (closed || child.exitCode !== null || child.signalCode !== null) return;
+          try {
+            child.kill('SIGKILL');
+          } catch {
+            // The direct child can close before SIGKILL is delivered.
+          }
+        }, 1_000);
+        forceTimer.unref();
+        const settleTimer = setTimeout(() => {
+          clearTimeout(forceTimer);
+          resolve(
+            closed || child.exitCode !== null || child.signalCode !== null
+              ? []
+              : ['Could not confirm direct eval child termination; descendants are not tracked.'],
+          );
+        }, 2_000);
+        settleTimer.unref();
+      });
+      return terminationPromise;
+    },
+  };
+}
+
 export function processTreeCleanupIsUnconfirmed(diagnostics: readonly string[]): boolean {
   return diagnostics.some((entry) =>
     entry.startsWith(PROCESS_TREE_CLEANUP_UNCONFIRMED_PREFIX) ||
@@ -1000,8 +1044,15 @@ export function createChildProcessTreeMonitor(
   });
 }
 
-export async function assertProcessTreeInspectionAvailable(): Promise<void> {
-  if (process.platform === 'win32') return;
+export async function assertProcessTreeInspectionAvailable(options: {
+  platform?: NodeJS.Platform;
+} = {}): Promise<void> {
+  const platform = options.platform ?? process.platform;
+  if (platform === 'win32') {
+    throw new Error(
+      'Managed Windows descendant cleanup requires Job Object containment, which is not available.',
+    );
+  }
   try {
     await readPosixProcessTable();
   } catch (error) {

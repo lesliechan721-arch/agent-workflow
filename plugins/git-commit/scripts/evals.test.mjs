@@ -17,7 +17,7 @@ import { fileURLToPath } from 'node:url';
 import {
   captureTriggerWorkspaceState,
   setupTriggerWorkspace,
-} from '../evals/trigger-fixture.mjs';
+} from '../skills/commit/evals/trigger-fixture.mjs';
 
 const execFileAsync = promisify(execFile);
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
@@ -74,8 +74,8 @@ async function resolveTestContext() {
 
 async function testEvalCorpora(sourceRoot) {
   const [triggerContent, behaviorContent] = await Promise.all([
-    readFile(path.join(sourceRoot, 'evals', 'trigger-cases.json'), 'utf8'),
-    readFile(path.join(sourceRoot, 'evals', 'behavior-cases.json'), 'utf8'),
+    readFile(path.join(sourceRoot, 'skills', 'commit', 'evals', 'trigger-cases.json'), 'utf8'),
+    readFile(path.join(sourceRoot, 'skills', 'commit', 'evals', 'behavior-cases.json'), 'utf8'),
   ]);
   const document = JSON.parse(triggerContent);
   const behaviorCases = JSON.parse(behaviorContent);

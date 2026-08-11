@@ -25,7 +25,7 @@ const DEFAULT_OPTIONS = {
 };
 
 function usage() {
-  return `Usage: node plugins/codex-subagent-guide/evals/run-routing-evals.mjs [OPTIONS]
+  return `Usage: node plugins/codex-subagent-guide/templates/codex-subagent-guide/evals/run-routing-evals.mjs [OPTIONS]
 
 Runs real V1/V2 spawn routing evaluations and a without-skill baseline, grading raw
 spawn_agent arguments from isolated Codex rollout files.

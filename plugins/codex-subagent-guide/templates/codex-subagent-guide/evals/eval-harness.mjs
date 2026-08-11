@@ -58,7 +58,10 @@ export async function readEvalResource(relativePath) {
   if (typeof context.sourceRoot !== 'string' || context.sourceRoot.trim() === '') {
     throw new Error(`Eval resource is missing from bundle: ${relativePath}`);
   }
-  return readFile(path.join(context.sourceRoot, 'evals', normalized), 'utf8');
+  return readFile(
+    path.join(context.sourceRoot, 'templates', 'codex-subagent-guide', 'evals', normalized),
+    'utf8',
+  );
 }
 
 function parseTomlString(source, key, file) {
@@ -211,8 +214,12 @@ export function buildCodexArgs(workspace, evalCase, options) {
     workspace.root,
     '--enable',
     'multi_agent',
+    '--enable',
+    'executed_tool_call_metadata',
     '--config',
     'skills.include_instructions=true',
+    '--config',
+    'suppress_unstable_features_warning=true',
     '--config',
     `shell_environment_policy.exclude=${codexConfigValue([
       'CODEX_HOME',
@@ -230,7 +237,7 @@ export function buildCodexArgs(workspace, evalCase, options) {
   if (profile === 'v2') {
     args.push(
       '--config',
-      'features.multi_agent_v2.hide_spawn_agent_metadata=false',
+      'features.multi_agent_v2.hide_spawn_agent_metadata=true',
       '--config',
       'features.multi_agent_v2.expose_spawn_agent_model_overrides=true',
     );
@@ -275,49 +282,157 @@ async function listFilesRecursively(root) {
   return nested.flat();
 }
 
-function parseSpawnCallFromRolloutLine(line, rolloutFile, codexHome) {
-  const event = parseExecEventLine(line);
-  const payload = event?.type === 'response_item' ? event.payload : null;
-  if (payload?.type !== 'function_call' || payload.name !== 'spawn_agent') {
-    return null;
-  }
-
-  let args;
+function parseSerializedValue(value) {
+  if (typeof value !== 'string') return value;
   try {
-    args = typeof payload.arguments === 'string'
-      ? JSON.parse(payload.arguments)
-      : payload.arguments;
+    return JSON.parse(value);
   } catch {
-    args = null;
+    return value;
   }
-  return {
-    call_id: typeof payload.call_id === 'string' ? payload.call_id : null,
-    namespace: typeof payload.namespace === 'string' ? payload.namespace : null,
-    arguments: args && typeof args === 'object' && !Array.isArray(args) ? args : null,
-    rollout_file: path.relative(codexHome, rolloutFile),
-  };
+}
+
+function normalizedToolName(value) {
+  if (typeof value !== 'string') return { namespace: null, tool: null };
+  const separator = value.includes('__')
+    ? value.indexOf('__')
+    : value.includes('.')
+      ? value.indexOf('.')
+      : -1;
+  return separator < 0
+    ? { namespace: null, tool: value }
+    : { namespace: value.slice(0, separator), tool: value.slice(separator + (value[separator] === '.' ? 1 : 2)) };
 }
 
 export async function readSpawnCallsFromRollouts(codexHome) {
-  const files = (await listFilesRecursively(path.join(codexHome, 'sessions')))
-    .filter((file) => file.endsWith('.jsonl'));
+  return (await readCollaborationTimelineFromRollouts(codexHome)).filter(
+    (call) => call.tool === 'spawn_agent',
+  );
+}
+
+function agentMessageText(payload) {
+  if (!Array.isArray(payload?.content)) return '';
+  return payload.content
+    .filter((item) => item?.type === 'input_text' && typeof item.text === 'string')
+    .map((item) => item.text)
+    .join('\n');
+}
+
+function agentUpdate(payload, rolloutFile, codexHome, lineNumber) {
+  if (payload?.type !== 'agent_message') return null;
+  const text = agentMessageText(payload);
+  const messageType = text.match(/^Message Type:\s*(MESSAGE|FINAL_ANSWER)\s*$/mu)?.[1];
+  if (!messageType) return null;
+  return {
+    call_id: null,
+    namespace: 'collaboration',
+    tool: 'agent_message',
+    arguments: null,
+    output: {
+      message_type: messageType,
+      status: text.match(/\bstatus=(progress|blocked)\b/u)?.[1] ?? null,
+      task_name: text.match(/^Task name:\s*(.+)\s*$/mu)?.[1] ?? null,
+    },
+    rollout_file: path.relative(codexHome, rolloutFile),
+    line_number: lineNumber,
+  };
+}
+
+export function buildCollaborationTimeline(
+  lines,
+  rolloutFile = 'rollout.jsonl',
+  codexHome = '.',
+) {
   const calls = [];
-  const seen = new Set();
-  for (const file of files) {
-    const content = await readFile(file, 'utf8');
-    for (const line of content.split('\n')) {
-      const call = parseSpawnCallFromRolloutLine(line, file, codexHome);
-      if (!call) {
+  const callsById = new Map();
+  const pendingOutputs = new Map();
+  for (const [index, line] of lines.entries()) {
+    const event = parseExecEventLine(line);
+    const payload = event?.type === 'response_item' ? event.payload : null;
+    const update = agentUpdate(payload, rolloutFile, codexHome, index + 1);
+    if (update) {
+      calls.push(update);
+      continue;
+    }
+    if (payload?.type === 'function_call' && typeof payload.name === 'string') {
+      const normalized = normalizedToolName(payload.name);
+      const callId = typeof payload.call_id === 'string' ? payload.call_id : null;
+      if (callId && callsById.has(callId)) continue;
+      const parsedArguments = parseSerializedValue(payload.arguments);
+      const call = {
+        call_id: callId,
+        namespace: typeof payload.namespace === 'string'
+          ? payload.namespace
+          : normalized.namespace,
+        tool: normalized.tool,
+        arguments:
+          parsedArguments && typeof parsedArguments === 'object' && !Array.isArray(parsedArguments)
+            ? parsedArguments
+            : null,
+        output: callId && pendingOutputs.has(callId) ? pendingOutputs.get(callId) : null,
+        rollout_file: path.relative(codexHome, rolloutFile),
+        line_number: index + 1,
+      };
+      calls.push(call);
+      if (callId) callsById.set(callId, call);
+      continue;
+    }
+    const metadata = payload?.internal_chat_message_metadata_passthrough;
+    const executedCalls = Array.isArray(metadata?.executed_tool_calls)
+      ? metadata.executed_tool_calls
+      : [];
+    for (const [nestedIndex, executedCall] of executedCalls.entries()) {
+      const normalized = normalizedToolName(executedCall?.name);
+      if (!normalized.tool) continue;
+      const directCall = typeof payload.call_id === 'string'
+        ? callsById.get(payload.call_id)
+        : null;
+      if (
+        directCall?.tool === normalized.tool &&
+        (normalized.namespace === null || directCall.namespace === normalized.namespace)
+      ) {
         continue;
       }
-      const identity = call.call_id ?? `${call.rollout_file}:${calls.length}`;
-      if (!seen.has(identity)) {
-        seen.add(identity);
-        calls.push(call);
-      }
+      calls.push({
+        call_id: `executed:${index + 1}:${nestedIndex}`,
+        namespace: normalized.namespace,
+        tool: normalized.tool,
+        arguments:
+          executedCall.arguments &&
+          typeof executedCall.arguments === 'object' &&
+          !Array.isArray(executedCall.arguments)
+            ? executedCall.arguments
+            : null,
+        output: null,
+        rollout_file: path.relative(codexHome, rolloutFile),
+        line_number: index + 1,
+      });
     }
+    if (payload?.type !== 'function_call_output' || typeof payload.call_id !== 'string') {
+      continue;
+    }
+    const output = parseSerializedValue(payload.output);
+    const call = callsById.get(payload.call_id);
+    if (call) call.output = output;
+    else pendingOutputs.set(payload.call_id, output);
   }
   return calls;
+}
+
+export async function readCollaborationTimelineFromRollouts(codexHome) {
+  const files = (await listFilesRecursively(path.join(codexHome, 'sessions')))
+    .filter((file) => file.endsWith('.jsonl'))
+    .sort();
+  const calls = [];
+  for (const file of files) {
+    const content = await readFile(file, 'utf8');
+    calls.push(...buildCollaborationTimeline(content.split('\n'), file, codexHome));
+  }
+  const parentRollouts = new Set(
+    calls.filter((call) => call.tool === 'spawn_agent').map((call) => call.rollout_file),
+  );
+  return parentRollouts.size === 0
+    ? calls
+    : calls.filter((call) => parentRollouts.has(call.rollout_file));
 }
 
 async function pathExists(candidate) {
@@ -410,6 +525,7 @@ export async function runCodexOnce(workspace, evalCase, options) {
         loadEvidence: null,
         spawnEvidence: null,
         spawnCalls: [],
+        collaborationTimeline: [],
       };
       let stderr = '';
       let finalMessage = null;
@@ -531,7 +647,10 @@ export async function runCodexOnce(workspace, evalCase, options) {
         removeInterruptHandlers();
         lines.close();
         try {
-          observed.spawnCalls = await readSpawnCallsFromRollouts(codexHome);
+          observed.collaborationTimeline = await readCollaborationTimelineFromRollouts(codexHome);
+          observed.spawnCalls = observed.collaborationTimeline.filter(
+            (call) => call.tool === 'spawn_agent',
+          );
         } catch (error) {
           stderr = `${stderr}\nFailed to read rollout evidence: ${
             error instanceof Error ? error.message : String(error)
@@ -557,6 +676,7 @@ export async function runCodexOnce(workspace, evalCase, options) {
           load_evidence: observed.loadEvidence,
           spawn_evidence: observed.spawnEvidence,
           spawn_calls: observed.spawnCalls,
+          collaboration_timeline: observed.collaborationTimeline,
           termination,
           exit_code: exitCode,
           signal,

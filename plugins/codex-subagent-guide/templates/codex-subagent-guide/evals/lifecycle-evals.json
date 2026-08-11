@@ -1,0 +1,13 @@
+{
+  "skill_name": "codex-subagent-guide",
+  "evals": [
+    {
+      "id": "wait_for_terminal_result",
+      "prompt": "$codex-subagent-guide 委派已获准。请启动一个 simple 子代理，只读读取 src/simple.ts 并报告 retryLimit 的值。当前没有其它本地工作。你必须等待子代理的真实终态结果后再回答；超时不等于失败。只有当前 schema 提供清理工具时，才在结果已保留后清理。不要修改文件。",
+      "expected": {
+        "minimum_initial_wait_timeout_ms": 600000,
+        "spawn_count": 1
+      }
+    }
+  ]
+}

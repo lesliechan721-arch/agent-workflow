@@ -1,25 +1,26 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "plugin": "codex-subagent-guide",
+  "skill": "codex-subagent-guide",
   "profiles": [
     {
       "id": "project-default",
       "scope": "project",
-      "config": {},
+      "plugins": [{ "name": "codex-subagent-guide", "config": {} }],
       "runModel": true,
       "requiredForRelease": true
     },
     {
       "id": "user-default",
       "scope": "user",
-      "config": {},
+      "plugins": [{ "name": "codex-subagent-guide", "config": {} }],
       "runModel": false,
       "requiredForRelease": true
     },
     {
       "id": "project-nondefault",
       "scope": "project",
-      "config": {
+      "plugins": [{ "name": "codex-subagent-guide", "config": {
         "simpleTaskModel": "eval-simple-model",
         "simpleTaskReasoningEffort": "high",
         "generalTaskModel": "eval-general-model",
@@ -29,14 +30,14 @@
         "planningReviewTaskModel": "eval-plan-review-model",
         "planningReviewTaskReasoningEffort": "high",
         "minimumInitialWaitMinutes": 2
-      },
+      } }],
       "runModel": false,
       "requiredForRelease": true
     },
     {
       "id": "user-nondefault",
       "scope": "user",
-      "config": {
+      "plugins": [{ "name": "codex-subagent-guide", "config": {
         "simpleTaskModel": "eval-simple-model",
         "simpleTaskReasoningEffort": "high",
         "generalTaskModel": "eval-general-model",
@@ -46,7 +47,7 @@
         "planningReviewTaskModel": "eval-plan-review-model",
         "planningReviewTaskReasoningEffort": "high",
         "minimumInitialWaitMinutes": 2
-      },
+      } }],
       "runModel": false,
       "requiredForRelease": true
     }
@@ -55,9 +56,9 @@
     {
       "id": "trigger",
       "kind": "trigger",
-      "skill": "codex-subagent-guide",
-      "cases": "./evals/trigger-cases.json",
-      "fixtureModule": "./evals/trigger-fixture.mjs",
+      "skills": ["codex-subagent-guide"],
+      "cases": "./trigger-cases.json",
+      "fixtureModule": "./trigger-fixture.mjs",
       "observeSpawnAgent": true,
       "isolation": "strict",
       "strictNegativeSplits": ["validation", "sanity"],
@@ -70,9 +71,9 @@
     {
       "id": "trigger-composition",
       "kind": "trigger",
-      "skill": "codex-subagent-guide",
-      "cases": "./evals/trigger-composition-cases.json",
-      "fixtureModule": "./evals/trigger-fixture.mjs",
+      "skills": ["codex-subagent-guide"],
+      "cases": "./trigger-composition-cases.json",
+      "fixtureModule": "./trigger-fixture.mjs",
       "observeSpawnAgent": true,
       "isolation": "standard",
       "strictNegativeSplits": [],
@@ -85,13 +86,27 @@
     {
       "id": "routing",
       "kind": "command",
-      "entry": "./evals/run-routing-evals.mjs",
+      "skills": ["codex-subagent-guide"],
+      "entry": "./run-routing-evals.mjs",
       "profiles": ["project-default"],
       "defaultRuns": 3,
       "releaseSplits": [],
       "requiredForRelease": true,
       "perRunTimeoutMs": 180000,
       "suiteTimeoutMs": 43200000,
+      "supports": ["runs", "case", "codexBin", "timeout"]
+    },
+    {
+      "id": "lifecycle",
+      "kind": "command",
+      "skills": ["codex-subagent-guide"],
+      "entry": "./run-lifecycle-evals.mjs",
+      "profiles": ["project-default"],
+      "defaultRuns": 1,
+      "releaseSplits": [],
+      "requiredForRelease": true,
+      "perRunTimeoutMs": 900000,
+      "suiteTimeoutMs": 3600000,
       "supports": ["runs", "case", "codexBin", "timeout"]
     }
   ]

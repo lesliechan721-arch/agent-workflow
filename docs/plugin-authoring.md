@@ -166,14 +166,20 @@ Lifecycle 必须短、小、幂等，不能直接写 AW 管理的平台输出。
 
 ```bash
 pnpm plugin:test <plugin>
-pnpm plugin:eval <plugin> --materialize-only
+pnpm plugin:eval <plugin> --skill <skill> --materialize-only
+pnpm plugin:eval <plugin> --skill <skill>
 ```
 
 - `scripts.tests.node` 只进入作者测试，不进入 runtime bundle。
 - plugin test 使用隔离 bundle、home 和 project。
+- 每个 eval owner 在自身 Skill 源码根维护 `evals/manifest.json`。插件根 `evals/` 不受支持。
+- `--skill` 必填，一次只运行一个 owner。suite 的 `skills[]` 可以声明多个 participant Skills；profile 的 `plugins[]` 可以按顺序安装当前仓库中的多个插件。这个 eval 组合不形成 production dependency。
+- `evals/**` 和 `reports/**` 是作者期目录，不进入 runtime bundle 或 runtime digest。
 - eval materialization 必须验证最终 Codex Skill 文件和原生调用 metadata。
-- `trigger` 和 `conversation` suite 支持 `isolation: standard|strict`；发布级触发边界和行为归因应使用 `strict`。
+- `trigger` 和 `conversation` suite 支持 `isolation: standard|strict`；发布级触发边界和行为归因应使用 `strict`。strict current 只保留 participants，conversation baseline 只移除 owner。`strictNegativeSplits` 对单次负例错误零容忍。
 - 真实模型 eval 使用文件凭据存储并关闭 secret keychain storage；从普通 Terminal 显式运行，不进入普通 unit/integration。macOS 检测到 `accountsKeychainExport` 包装器路径时会在启动模型前失败，且不会修改用户 keychain search list。
+- 真实模型默认要求 Full Access 管理后代进程。用户显式传 `--allow-unmanaged-processes` 后可以在无 Full Access 时运行，但报告会标记无法保证后代清理。
+- 中间产物固定在项目 `.tmp/agent-workflows/evals/`。持久 eval 和 review 报告分别写入 owner Skill 的 `reports/evals/<run-id>/` 与 `reports/reviews/<run-id>/`。
 
 ## Validation
 
@@ -182,7 +188,7 @@ pnpm plugin:eval <plugin> --materialize-only
 ```bash
 node .agents/skills/create-agent-workflows-plugin/scripts/validate_plugin.mjs plugins/<name>
 pnpm plugin:test <name>
-pnpm plugin:eval <name> --materialize-only
+pnpm plugin:eval <name> --skill <skill> --materialize-only
 pnpm build
 ```
 

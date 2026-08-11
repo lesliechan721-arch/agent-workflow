@@ -13,10 +13,10 @@ code-review/
 │       ├── SKILL.md             # 审查工作流、完成标准和验证循环（含模板变量 {{platformName}}）
 │       ├── agents/
 │       │   └── openai.yaml      # Codex 平台元数据
+│       ├── evals/
+│       │   └── evals.json       # owner Skill 作者期小型、脱敏用例
 │       └── references/
 │           └── review-rules.md  # 审查规则参考文档
-├── evals/
-│   └── evals.json               # 插件根作者期小型、脱敏用例
 ├── scripts/
 │   ├── aw-config.mjs            # 标准 AW config helper
 │   ├── lifecycle.mjs            # install / upgrade / uninstall 生命周期入口
@@ -36,7 +36,7 @@ code-review/
 | 能力 | 在示例中的体现 |
 |------|--------------|
 | Skills | `review-skills/review-workflow/` — 源码 skill 承载实际工作流 |
-| Skill Evals | `evals/evals.json` — 插件根作者期真实 prompt、预期结果和输入 fixture |
+| Skill Evals | `review-skills/review-workflow/evals/evals.json` — owner Skill 作者期真实 prompt、预期结果和输入 fixture |
 | Native invocation metadata | Codex `policy.allow_implicit_invocation` 与 Claude `disable-model-invocation` / `user-invocable` — 直接声明各平台调用行为 |
 | Instructions | `extensions.instructions` — 审查标准，限定 `src/**` 和 `lib/**` 路径 |
 | Permissions | `extensions.permissions` — git 操作权限（allow/ask/deny） |
@@ -55,7 +55,7 @@ code-review/
 
 示例不再使用 Claude 原生 `userConfig` 承载共享配置。跨平台配置统一写在 AW `config.schema`；Claude-only `userConfig` 只应在确实需要 Claude Code 原生能力时使用，详见 `references/claude-only-capabilities.md`。
 
-`evals/evals.json` 属于作者期质量材料，不是 runtime 指令，也不会进入 production runtime bundle。真实插件需要由同目录 `manifest.json` 声明 profile 和 suite 后才能通过 `pnpm plugin:eval` 运行；本示例只保留小型、脱敏的 seed corpus。大型日志、仓库快照和私有输入应保存在独立 eval workspace。
+`review-skills/review-workflow/evals/evals.json` 属于作者期质量材料，不是 runtime 指令，也不会进入 production runtime bundle。真实插件需要由同目录 `manifest.json` 声明 owner、profile 和 suite 后才能通过 `pnpm plugin:eval <plugin> --skill <skill>` 运行；本示例只保留小型、脱敏的 seed corpus。大型日志、仓库快照和私有输入应保存在项目 `.tmp/agent-workflows/evals/` 下的隔离 workspace。
 
 插件 manifest 不支持顶层 `dependencies`。插件需要其它工具或服务时，在 Skill 说明、MCP 声明或 lifecycle 检查中明确表达要求，不得声明插件安装依赖图。
 
@@ -71,7 +71,7 @@ code-review/
 
 **两个平台 runtime bundle 都不包含**：`scripts.tests.node` 测试入口和 test-only helper
 
-**两个平台 runtime bundle 都不包含**：插件根 `evals/**` 作者期语料、runner 和报告
+**两个平台 runtime bundle 都不包含**：Skill 根 `evals/**`、`reports/**` 作者期语料、runner 和报告
 
 **插件 manifest 和平台原生 manifest 都不支持**：`dependencies`。
 

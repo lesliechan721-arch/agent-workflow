@@ -14,3 +14,7 @@ packages/cli/plugins-dist
 .codex/.agent-workflows/
 .agent-workflows/plugin-config.local/
 .worktrees
+.tmp/
+.agents/skills/*/reports/**/raw/
+plugins/*/skills/*/reports/**/raw/
+plugins/*/templates/*/reports/**/raw/

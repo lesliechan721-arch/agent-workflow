@@ -93,7 +93,12 @@ function isExcludedInputPath(relativePath) {
   )) {
     return true;
   }
-  return /^plugins\/[^/]+\/evals(?:\/|$)/.test(normalizedPath);
+  return (
+    /^plugins\/[^/]+\/evals(?:\/|$)/.test(normalizedPath) ||
+    /^plugins\/[^/]+\/(?:skills|templates)\/[^/]+\/(?:evals|reports)(?:\/|$)/.test(
+      normalizedPath,
+    )
+  );
 }
 
 async function computeSymlinkReferentDigest(

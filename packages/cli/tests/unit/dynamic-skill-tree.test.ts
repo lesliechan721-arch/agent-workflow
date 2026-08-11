@@ -67,6 +67,49 @@ describe('dynamic skill tree', () => {
     );
   });
 
+  it('keeps Skill author evals and reports out of the runtime tree and digest', async () => {
+    const root = await makeTempRoot();
+    const source = path.join(root, 'source');
+    await fs.outputFile(path.join(source, 'SKILL.md'), '# skill\n');
+    await fs.outputFile(
+      path.join(source, 'agents', 'openai.yaml'),
+      'policy:\n  allow_implicit_invocation: false\n',
+    );
+    await fs.outputFile(path.join(source, 'evals', 'manifest.json'), '{}\n');
+    await fs.outputFile(path.join(source, 'reports', 'run-1', 'summary.json'), '{}\n');
+
+    const tree = await createDynamicSkillExpectedTree({
+      artifact: {
+        target: 'codex.skill',
+        skillKey: 'example',
+        state: 'present',
+        content: { files: {} },
+      },
+      sourceDirs: [source],
+    });
+
+    expect(tree.files).not.toHaveProperty('evals/manifest.json');
+    expect(tree.files).not.toHaveProperty('reports/run-1/summary.json');
+    expect(Object.keys(tree.files).sort()).toEqual(['SKILL.md', 'agents/openai.yaml']);
+  });
+
+  it('rejects renderer output in author-only Skill directories', async () => {
+    await expect(createDynamicSkillExpectedTree({
+      artifact: {
+        target: 'codex.skill',
+        skillKey: 'example',
+        state: 'present',
+        content: {
+          files: {
+            'SKILL.md': '# skill\n',
+            'agents/openai.yaml': 'policy:\n  allow_implicit_invocation: false\n',
+            'reports/run.json': '{}\n',
+          },
+        },
+      },
+    })).rejects.toThrow('作者专用目录');
+  });
+
   it('preserves Claude frontmatter and writes and reads the complete tree atomically', async () => {
     const root = await makeTempRoot();
     const source = path.join(root, 'source');

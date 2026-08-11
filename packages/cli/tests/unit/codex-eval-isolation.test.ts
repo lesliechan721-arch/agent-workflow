@@ -25,6 +25,7 @@ function validFixture(): {
   codexHome: string;
   workspaceRoot: string;
   allowedSkillRoot: string;
+  allowedSkillRoots: string[];
 } {
   const workspaceRoot = path.resolve('/tmp/aw-eval/project');
   const codexHome = path.resolve('/tmp/aw-eval/codex-home');
@@ -94,6 +95,7 @@ function validFixture(): {
     codexHome,
     workspaceRoot,
     allowedSkillRoot,
+    allowedSkillRoots: [allowedSkillRoot],
   };
 }
 
@@ -184,6 +186,29 @@ describe('Codex eval isolation', () => {
     });
   });
 
+  it('accepts exactly the declared participant Skills', () => {
+    const fixture = validFixture();
+    const companionRoot = path.join(
+      fixture.workspaceRoot,
+      '.agents',
+      'skills',
+      'companion-skill',
+    );
+    const data = fixture.skills.data as Array<Record<string, unknown>>;
+    (data[0].skills as Array<Record<string, unknown>>).push({
+      name: 'companion-skill',
+      path: path.join(companionRoot, 'SKILL.md'),
+      scope: 'repo',
+      enabled: true,
+    });
+    fixture.allowedSkillRoots.push(companionRoot);
+
+    expect(validateCodexEvalRpcIsolation(fixture).skill_paths).toEqual([
+      path.join(companionRoot, 'SKILL.md'),
+      path.join(fixture.allowedSkillRoot, 'SKILL.md'),
+    ].sort());
+  });
+
   it('requires the workspace project config layer to be active', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-isolation-project-'));
     tempDirs.push(root);
@@ -195,6 +220,7 @@ describe('Codex eval isolation', () => {
       'skills',
       'target-skill',
     );
+    fixture.allowedSkillRoots = [fixture.allowedSkillRoot];
     const skillEntry = ((fixture.skills.data as Array<Record<string, unknown>>)[0]
       .skills as Array<Record<string, unknown>>)[0];
     (fixture.skills.data as Array<Record<string, unknown>>)[0].cwd = fixture.workspaceRoot;
@@ -236,7 +262,7 @@ describe('Codex eval isolation', () => {
     data[0].skills = [];
     expect(validateCodexEvalRpcIsolation({
       ...fixture,
-      allowedSkillRoot: null,
+      allowedSkillRoots: [],
     }).skill_paths).toEqual([]);
   });
 
@@ -286,7 +312,7 @@ describe('Codex eval isolation', () => {
         const data = fixture.skills.data as Array<Record<string, unknown>>;
         data[0].skills = [];
       },
-      message: 'did not discover exactly one enabled target Skill',
+      message: 'did not discover exactly the enabled participant Skills',
     },
     {
       name: 'disabled target Skill',
@@ -313,7 +339,7 @@ describe('Codex eval isolation', () => {
           'README.md',
         );
       },
-      message: 'invalid target Skill',
+      message: 'non-target Skill',
     },
     {
       name: 'duplicate target Skill',
@@ -325,7 +351,7 @@ describe('Codex eval isolation', () => {
           enabled: true,
         });
       },
-      message: 'did not discover exactly one enabled target Skill',
+      message: 'did not discover exactly the enabled participant Skills',
     },
     {
       name: 'Skill discovery error',

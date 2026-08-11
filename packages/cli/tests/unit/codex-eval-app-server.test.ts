@@ -84,10 +84,16 @@ describe('Codex app-server eval driver', () => {
       '# Ask Me\n',
       'utf8',
     );
+    await fs.outputFile(
+      path.join(subjectRoot, '.agents', 'skills', 'companion', 'SKILL.md'),
+      '# Companion\n',
+      'utf8',
+    );
     await fs.writeFile(
       path.join(subjectRoot, 'app-server'),
       [
         "const readline = require('node:readline');",
+        "const fs = require('node:fs');",
         "const input = readline.createInterface({ input: process.stdin });",
         "const send = (frame) => process.stdout.write(JSON.stringify(frame) + '\\n');",
         "input.on('line', (line) => {",
@@ -117,7 +123,8 @@ describe('Codex app-server eval driver', () => {
         "      send({ method: 'error', params: { message: 'unexpected answer' } });",
         '      return;',
         '    }',
-        "    send({ method: 'item/completed', params: { item: { type: 'agentMessage', id: 'message-1', text: 'done' } } });",
+        "    const state = `owner=${fs.existsSync('.agents/skills/ask-me/SKILL.md')} companion=${fs.existsSync('.agents/skills/companion/SKILL.md')}`;",
+        "    send({ method: 'item/completed', params: { item: { type: 'agentMessage', id: 'message-1', text: state } } });",
         "    send({ method: 'thread/tokenUsage/updated', params: { tokenUsage: { totalTokens: 7 } } });",
         "    send({ method: 'turn/completed', params: { turn: { id: 'turn-1', status: 'completed' } } });",
         '  }',
@@ -149,6 +156,7 @@ describe('Codex app-server eval driver', () => {
     const report = await runCodexConversationSuite({
       suiteId: 'behavior',
       skillName: 'ask-me',
+      skillNames: ['ask-me', 'companion'],
       casesPath,
       subjectRoot,
       profile: 'project-default',
@@ -175,7 +183,8 @@ describe('Codex app-server eval driver', () => {
     expect(run.without_skill.questions[0].answers).toEqual({
       'runtime-question-id': ['approved'],
     });
-    expect(run.with_skill.finalMessages).toEqual(['done']);
+    expect(run.with_skill.finalMessages).toEqual(['owner=true companion=true']);
+    expect(run.without_skill.finalMessages).toEqual(['owner=false companion=true']);
     expect(run.with_skill.workspaceChanges).toEqual([]);
     expect(JSON.stringify(evidence)).not.toContain('private-server-name');
     expect(JSON.stringify(evidence)).not.toContain('private-installation-id');

@@ -26,7 +26,7 @@ const DEFAULT_OPTIONS = {
 };
 
 function usage() {
-  return `Usage: node plugins/codex-explore/evals/run-workflow-evals.mjs [OPTIONS]
+  return `Usage: node plugins/codex-explore/templates/codex-explore/evals/run-workflow-evals.mjs [OPTIONS]
 
 Runs a current-skill outcome smoke to completion. It checks the selected agent,
 the final evidence contract, workspace changes, and the parent collaboration

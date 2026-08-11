@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import {
   setupTriggerWorkspace,
   TRIGGER_WORKSPACE_FIXTURES,
-} from '../evals/trigger-fixture.mjs';
+} from './trigger-fixture.mjs';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const localPluginRoot = path.resolve(scriptDir, '..');
@@ -252,9 +252,21 @@ test('source package contains only the two redesigned skills', async () => {
 test('trigger corpora preserve balanced adjacent-skill coverage and load project rules', async () => {
   const [requirements, decision] = await Promise.all([
     readJson(
-      path.join(context.sourceRoot, 'evals', 'requirements-clarifier-trigger-cases.json'),
+      path.join(
+        context.sourceRoot,
+        'skills',
+        'requirements-clarifier',
+        'evals',
+        'requirements-clarifier-trigger-cases.json',
+      ),
     ),
-    readJson(path.join(context.sourceRoot, 'evals', 'decision-grill-trigger-cases.json')),
+    readJson(path.join(
+      context.sourceRoot,
+      'skills',
+      'decision-grill',
+      'evals',
+      'decision-grill-trigger-cases.json',
+    )),
   ]);
 
   assertTriggerCorpus(requirements, 'requirements-clarifier');
@@ -404,57 +416,69 @@ test('trigger fixture provides the repository facts used by near-miss cases', as
   }
 });
 
-test('eval manifest delegates both skills to central trigger and conversation drivers', async () => {
-  const manifest = await readJson(path.join(context.sourceRoot, 'evals', 'manifest.json'));
-
-  assert.equal(manifest.schemaVersion, 1);
-  assert.equal(manifest.plugin, 'ask-me');
-  assert.deepEqual(manifest.profiles, [
+test('each Skill owns an independent central eval manifest', async () => {
+  for (const skill of skillNames) {
+    const manifest = await readJson(
+      path.join(context.sourceRoot, 'skills', skill, 'evals', 'manifest.json'),
+    );
+    assert.equal(manifest.schemaVersion, 2);
+    assert.equal(manifest.plugin, 'ask-me');
+    assert.equal(manifest.skill, skill);
+    assert.deepEqual(manifest.profiles, [
     {
       id: 'project-default',
       scope: 'project',
-      config: {},
+      plugins: [{ name: 'ask-me', config: {} }],
       runModel: true,
       requiredForRelease: true,
     },
     {
       id: 'user-default',
       scope: 'user',
-      config: {},
+      plugins: [{ name: 'ask-me', config: {} }],
       runModel: false,
       requiredForRelease: true,
     },
-  ]);
-  assert.deepEqual(
-    manifest.suites.map((suite) => [suite.id, suite.kind, suite.skill]),
-    [
-      ['requirements-clarifier-trigger', 'trigger', 'requirements-clarifier'],
-      ['decision-grill-trigger', 'trigger', 'decision-grill'],
-      ['requirements-clarifier-behavior', 'conversation', 'requirements-clarifier'],
-      ['decision-grill-behavior', 'conversation', 'decision-grill'],
-    ],
-  );
+    ]);
+    assert.deepEqual(
+      manifest.suites.map((suite) => [suite.id, suite.kind]),
+      [['trigger', 'trigger'], ['behavior', 'conversation']],
+    );
 
-  for (const suite of manifest.suites) {
-    assert.deepEqual(suite.profiles, ['project-default']);
-    assert.equal(suite.requiredForRelease, true);
-    assert.equal(suite.isolation, 'strict');
-    if (suite.kind === 'trigger') {
-      assert.equal(suite.defaultRuns, 3);
-      assert.equal(suite.fixtureModule, './evals/trigger-fixture.mjs');
-      assert.deepEqual(suite.releaseSplits, ['validation']);
-      assert.deepEqual(suite.strictNegativeSplits, ['validation']);
-    } else {
-      assert.equal(suite.defaultRuns, 1);
-      assert.deepEqual(suite.releaseSplits, []);
+    for (const suite of manifest.suites) {
+      assert.deepEqual(suite.skills, [skill]);
+      assert.deepEqual(suite.profiles, ['project-default']);
+      assert.equal(suite.requiredForRelease, true);
+      assert.equal(suite.isolation, 'strict');
+      if (suite.kind === 'trigger') {
+        assert.equal(suite.defaultRuns, 3);
+        assert.equal(suite.fixtureModule, './trigger-fixture.mjs');
+        assert.deepEqual(suite.releaseSplits, ['validation']);
+        assert.deepEqual(suite.strictNegativeSplits, ['validation']);
+      } else {
+        assert.equal(suite.defaultRuns, 1);
+        assert.deepEqual(suite.releaseSplits, []);
+      }
     }
   }
 });
 
 test('behavior corpora preserve all redesigned assertions in executable conversation shape', async () => {
   const [requirements, decision] = await Promise.all([
-    readJson(path.join(context.sourceRoot, 'evals', 'requirements-clarifier-evals.json')),
-    readJson(path.join(context.sourceRoot, 'evals', 'decision-grill-evals.json')),
+    readJson(path.join(
+      context.sourceRoot,
+      'skills',
+      'requirements-clarifier',
+      'evals',
+      'requirements-clarifier-evals.json',
+    )),
+    readJson(path.join(
+      context.sourceRoot,
+      'skills',
+      'decision-grill',
+      'evals',
+      'decision-grill-evals.json',
+    )),
   ]);
 
   assertBehaviorCorpus(requirements, 'requirements-clarifier', [
@@ -537,7 +561,10 @@ test('behavior corpora preserve all redesigned assertions in executable conversa
     /完整保留产品负责人在本周五前确认数据驻留条款的委托/,
   );
 
-  const readme = await readFile(path.join(context.sourceRoot, 'evals', 'README.md'), 'utf8');
+  const readme = (await Promise.all(skillNames.map((skill) => readFile(
+    path.join(context.sourceRoot, 'skills', skill, 'evals', 'README.md'),
+    'utf8',
+  )))).join('\n');
   assert.match(readme, /use_project_rules: true/);
   assert.match(readme, /requirements-clarifier-evals\.json/);
   assert.match(readme, /decision-grill-evals\.json/);

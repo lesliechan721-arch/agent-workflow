@@ -30,7 +30,7 @@ const DEFAULT_OPTIONS = {
 };
 
 function usage() {
-  return `Usage: node plugins/codex-explore/evals/run-liveness-evals.mjs [OPTIONS]
+  return `Usage: node plugins/codex-explore/templates/codex-explore/evals/run-liveness-evals.mjs [OPTIONS]
 
 Runs long and blocked exploration cases against a materialized one-minute wait
 profile. The report is comparative ablation evidence, not release evidence.

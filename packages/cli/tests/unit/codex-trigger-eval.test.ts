@@ -29,6 +29,7 @@ function suite(overrides: Partial<PluginEvalTriggerSuite> = {}): PluginEvalTrigg
     id: 'trigger',
     kind: 'trigger',
     skill: 'eval-fixture',
+    skills: ['eval-fixture'],
     cases: './evals/trigger-cases.json',
     observeSpawnAgent: true,
     isolation: 'standard',

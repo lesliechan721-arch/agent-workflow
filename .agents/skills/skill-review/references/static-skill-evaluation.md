@@ -4,7 +4,7 @@
 
 ## 定义与验证
 
-静态 Skill 必须是 `.agents/skills/<name>` 的直接子目录，并在自身 `evals/manifest.json` 声明 `trigger`、`conversation` suite；profile 固定为隐式 `project-default`。可选的 `workspace.copy[]` 使用 repo-root relative `from` 和 subject-relative `to` 准备只读 fixture，不能逃出仓库/subject，也不能覆盖目标 Skill 或 `.codex`。目标包和复制源都不得包含 symlink。
+静态 Skill 必须是 `.agents/skills/<name>` 的直接子目录，并在自身 `evals/manifest.json` 声明 `trigger`、`conversation` suite；profile 固定为隐式 `project-default`。每个 suite 用 `skills[]` 声明参与评估的 repo-local sibling Skills，并必须包含 owner。current 安装全部 participants；conversation baseline 只移除 owner，保留 companions。可选的 `workspace.copy[]` 使用 repo-root relative `from` 和 subject-relative `to` 准备只读 fixture，不能逃出仓库/subject，也不能覆盖任一 participant Skill 或 `.codex`。目标包和复制源都不得包含 symlink。
 
 `evals/behavior_cases.json` 和 `evals/scoring_cases.json` 是 portable 设计与校准语料，不是可执行 release evidence。只有 `evals/manifest.json` 声明且实际完成的 suite/case 才能形成模型行为证据。
 
@@ -18,11 +18,10 @@ node .agents/skills/skill-review/scripts/run_static_skill_evals.mjs \
 ```bash
 node .agents/skills/skill-review/scripts/run_static_skill_evals.mjs \
   <skill-name-or-dir> \
-  --suite trigger --split validation --runs 1 \
-  --output-dir /tmp/static-skill-eval
+  --suite trigger --split validation --runs 1
 ```
 
-不传 `--suite` 时运行所有 release-required suite/split。输出目录必须不存在，也不能位于目标 Skill 或 workspace source 内，防止覆盖旧证据或递归复制。`--validate-only` 总是校验完整本地 corpus shape；构建后的中央 contract 可用时还会返回 `centralContract: true`。
+不传 `--suite` 时运行所有 release-required suite/split。中间产物固定在项目 `.tmp/agent-workflows/evals/static/<skill>/<run-id>/`，完成后清理。持久报告固定在 `<skill-root>/reports/evals/<run-id>/`，不能用 `--output-dir` 改写。`evals/` 和 `reports/` 不进入被测 runtime package 或 package digest。`--validate-only` 总是校验完整本地 corpus shape；构建后的中央 contract 可用时还会返回 `centralContract: true`。
 
 ## Codex 配置与证据
 
@@ -32,13 +31,15 @@ provider 引用的 `env_key` / `env_http_headers` 会按名称透传，但不能
 
 runner 在复制前记录源 package digest、复制后核对 subject package digest，并在模型运行结束后再次确认源未变化。`inspect_skill_target.mjs --evaluation` 会验证整棵 subject Skill，而不只验证 `SKILL.md`。
 
+真实模型运行默认要求 Full Access，以便管理 Codex 后代进程。检查失败时会在启动模型前阻断。用户明确接受后代进程可能遗留的风险后，可传 `--allow-unmanaged-processes`；报告会把该运行标为 `unmanaged-confirmed` 和 `descendantCleanupGuaranteed: false`。
+
 将结果交给静态评审：
 
 ```bash
 node .agents/skills/skill-review/scripts/inspect_skill_target.mjs \
   <skill-name-or-dir> \
-  --evaluation /tmp/static-skill-eval/evaluation.json \
+  --evaluation <skill-root>/reports/evals/<run-id>/raw/evaluation.json \
   --format json
 ```
 
-`needs_review` 必须逐项读取 trace；`incomplete`、`failed` 或未完成的定性复核都不能形成 release pass。真实模型证据只覆盖 Codex。
+`needs_review` 必须逐项读取 trace；`incomplete`、`failed` 或未完成的定性复核都不能形成 release pass。完整 review 报告和 scorecard 保存到 owner Skill 的 `reports/reviews/<review-run-id>/`，中间草稿放项目 `.tmp/agent-workflows/reviews/`。真实模型证据只覆盖 Codex。

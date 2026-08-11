@@ -16,12 +16,14 @@ plugins/<name>/skills/
     │   └── *.md
     ├── scripts/                 # 可选：由 agent 执行的辅助脚本
     │   └── *.js | *.sh
-    └── assets/                  # 可选：模板、图片和静态数据
+    ├── assets/                  # 可选：模板、图片和静态数据
+    ├── evals/                   # 可选：作者期 eval 定义和 fixture
+    └── reports/                 # 可选：持久 eval/review 报告
 ```
 
 一个插件可以包含多个 skill 子目录，每个子目录名即 skill 标识（小写短横线格式）。
 
-作者期触发/行为用例统一放在 `plugins/<name>/evals/`，由 `evals/manifest.json` 连接到对应 Skill/profile。它不是 Skill runtime 资源，不能放进上面的 Skill 子树。完整规则见 `references/skill-evaluation.md`。
+作者期触发/行为用例放在 owner Skill 的 `evals/`，由 `evals/manifest.json` 声明 owner Skill、participant Skills 和安装 profiles。`evals/` 与 `reports/` 是 Skill 子树内的作者目录，但不会进入 runtime bundle 或 runtime digest。完整规则见 `references/skill-evaluation.md`。
 
 ## SKILL.md profile
 

@@ -33,6 +33,23 @@ function contentDigest(content: string): string {
   return createHash('sha256').update(content).digest('hex');
 }
 
+function testEvalLayout(outputRoot: string) {
+  return async (options: { plugin: string; skill: string; runId?: string }) => {
+    const runId = options.runId ?? '20260811T000000Z-00000001';
+    const reportRoot = path.join(outputRoot, options.plugin, options.skill, runId);
+    const rawRoot = path.join(reportRoot, 'raw');
+    const workRoot = path.join(outputRoot, '.tmp', runId);
+    await Promise.all([fs.ensureDir(rawRoot), fs.ensureDir(workRoot)]);
+    return {
+      runId,
+      reportRoot,
+      rawRoot,
+      workRoot,
+      cleanupWork: () => fs.remove(workRoot),
+    };
+  };
+}
+
 afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
@@ -52,25 +69,67 @@ describe('skill-review author tools', () => {
     ].join('\n'), skillRoot)).toBe('quoted-skill');
   });
 
+  it('materializes static participant Skills without author-only directories', async () => {
+    const runner = await import(`${pathToFileURL(staticEvalRunner()).href}?participants`);
+    const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-static-participants-'));
+    tempDirs.push(outputRoot);
+
+    const subjectRoot = await runner.prepareSubject({
+      participantSkills: ['skill-review', 'create-agent-workflows-plugin'],
+      workspace: [],
+    }, outputRoot);
+
+    for (const skillName of ['skill-review', 'create-agent-workflows-plugin']) {
+      await expect(fs.pathExists(path.join(
+        subjectRoot,
+        '.agents',
+        'skills',
+        skillName,
+        'SKILL.md',
+      ))).resolves.toBe(true);
+      await expect(fs.pathExists(path.join(
+        subjectRoot,
+        '.agents',
+        'skills',
+        skillName,
+        'evals',
+      ))).resolves.toBe(false);
+      await expect(fs.pathExists(path.join(
+        subjectRoot,
+        '.agents',
+        'skills',
+        skillName,
+        'reports',
+      ))).resolves.toBe(false);
+    }
+  });
+
   it('inspects dynamic source and materialized final artifacts together', async () => {
     const root = repoRoot();
     const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-skill-review-inspect-'));
     tempDirs.push(outputRoot);
     registerCurrentTestReadonlyFixtureRoot(root);
     registerCurrentTestWritableStateRoot(outputRoot);
+    let stdout = '';
     const exitCode = await runPluginEvals([
       'codex-explore',
+      '--skill',
+      'codex-explore',
       '--materialize-only',
-      '--output-dir',
-      outputRoot,
     ], {
       repoRoot: root,
       env: process.env,
-      stdout: () => undefined,
+      stdout: (text) => { stdout += text; },
       stderr: () => undefined,
+      createRunLayout: testEvalLayout(outputRoot),
     });
     expect(exitCode).toBe(0);
-    const evaluationPath = path.join(outputRoot, 'codex-explore', 'evaluation.json');
+    const evalResult = JSON.parse(stdout);
+    const evaluationPath = path.join(
+      path.resolve(root, evalResult.reportDir),
+      'raw',
+      'evaluation.json',
+    );
 
     const result = await execFileAsync('node', [
       skillScript('inspect_skill_target.mjs'),
@@ -88,8 +147,20 @@ describe('skill-review author tools', () => {
 
     expect(report.target).toMatchObject({ kind: 'aw-plugin', name: 'codex-explore' });
     expect(report.plugin.dynamic_targets).toHaveLength(5);
+    expect(report.source_skills).toHaveLength(1);
     expect(report.source_skills[0].path).toBe('templates/codex-explore/SKILL.md');
-    expect(report.evaluation.profiles).toHaveLength(4);
+    expect(report.eval_manifest).toMatchObject({
+      schemaVersion: 2,
+      plugin: 'codex-explore',
+      skill: 'codex-explore',
+    });
+    expect(report.eval_manifests).toEqual([
+      expect.objectContaining({
+        skill: 'codex-explore',
+        path: 'templates/codex-explore/evals/manifest.json',
+      }),
+    ]);
+    expect(report.evaluation.profiles).toHaveLength(5);
     expect(report.evaluation.profiles).toEqual(expect.arrayContaining([
       expect.objectContaining({
         profile: 'project-nondefault',
@@ -103,7 +174,7 @@ describe('skill-review author tools', () => {
     await expect(
       fs.pathExists(report.evaluation.profiles[0].root),
     ).resolves.toBe(true);
-    expect(report.final_skills).toHaveLength(4);
+    expect(report.final_skills).toHaveLength(5);
     expect(report.issues.filter((issue: { level: string }) => issue.level === 'error')).toEqual([]);
   });
 
@@ -160,7 +231,7 @@ describe('skill-review author tools', () => {
       const codexBin = path.join(tempRoot, 'fake-codex');
       const sourceCodexHome = path.join(tempRoot, 'source-codex-home');
       tempDirs.push(tempRoot);
-      await fs.ensureDir(sourceCodexHome);
+      await Promise.all([fs.ensureDir(sourceCodexHome), fs.ensureDir(outputRoot)]);
       await fs.writeFile(path.join(sourceCodexHome, 'config.toml'), [
         'model = "fixture-model"',
         'model_provider = "fixture-provider"',
@@ -179,11 +250,30 @@ describe('skill-review author tools', () => {
         "if (process.argv.includes('--ignore-user-config')) process.exit(9);",
         "const config = fs.readFileSync(path.join(process.env.CODEX_HOME, 'config.toml'), 'utf8');",
         "if (!config.includes('model_provider = \"fixture-provider\"') || config.includes('[plugins.')) process.exit(10);",
+        "if (process.argv[2] !== 'app-server') process.exit(3);",
         'const send = (value) => process.stdout.write(JSON.stringify(value) + "\\n");',
-        'send({ type: "item.completed", item: { type: "command_execution", status: "completed", exit_code: 0, command: "cat .agents/skills/skill-review/SKILL.md" } });',
-        'send({ type: "turn.completed", usage: { total_tokens: 7 } });',
+        "const readline = require('node:readline');",
+        'const input = readline.createInterface({ input: process.stdin });',
+        "input.on('line', (line) => {",
+        '  const frame = JSON.parse(line);',
+        "  if (frame.method === 'initialize') send({ id: frame.id, result: {} });",
+        "  else if (frame.method === 'config/read') send({ id: frame.id, result: {",
+        "    config: { cli_auth_credentials_store: 'file', mcp_oauth_credentials_store: 'file', include_apps_instructions: false, include_collaboration_mode_instructions: false, mcp_servers: {}, features: { secret_auth_storage: false, default_mode_request_user_input: true, apps: false, plugins: false, remote_plugin: false, plugin_sharing: false, tool_suggest: false, skill_mcp_dependency_install: false }, skills: { bundled: { enabled: false } }, orchestrator: { skills: { enabled: false }, mcp: { enabled: false } } },",
+        "    origins: {}, layers: [{ name: { type: 'system', file: '/etc/codex/config.toml' }, version: '1', config: {} }, { name: { type: 'user', file: path.join(process.env.CODEX_HOME, 'config.toml') }, version: '1', config: {} }, { name: { type: 'project', dotCodexFolder: path.join(frame.params.cwd, '.codex') }, version: '1', config: {} }, { name: { type: 'sessionFlags' }, version: '1', config: {} }],",
+        '  } });',
+        "  else if (frame.method === 'configRequirements/read') send({ id: frame.id, result: { requirements: null } });",
+        "  else if (frame.method === 'skills/list') { const cwd = frame.params.cwds[0]; const skillPath = path.join(cwd, '.agents', 'skills', 'skill-review', 'SKILL.md'); send({ id: frame.id, result: { data: [{ cwd, skills: [{ name: 'skill-review', path: skillPath, scope: 'repo', enabled: true }], errors: [] }] } }); }",
+        "  else if (frame.method === 'mcpServerStatus/list') send({ id: frame.id, result: { data: [], nextCursor: null } });",
+        "  else if (frame.method === 'thread/start') send({ id: frame.id, result: { thread: { id: 'thread-1' } } });",
+        "  else if (frame.method === 'turn/start') {",
+        "    send({ id: frame.id, result: { turn: { id: 'turn-1', status: 'inProgress' } } });",
+        "    send({ method: 'item/completed', params: { threadId: 'thread-1', item: { id: 'read-1', type: 'commandExecution', status: 'completed', exitCode: 0, command: 'cat .agents/skills/skill-review/SKILL.md' } } });",
+        "    send({ method: 'thread/tokenUsage/updated', params: { threadId: 'thread-1', tokenUsage: { totalTokens: 7 } } });",
+        "    send({ method: 'turn/completed', params: { threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed' } } });",
+        '  }',
+        '});',
         'process.on("SIGTERM", () => process.exit(0));',
-        'setTimeout(() => process.exit(0), 100);',
+        'setInterval(() => {}, 1000);',
       ].join('\n'), 'utf8');
       await fs.chmod(codexBin, 0o755);
 
@@ -198,16 +288,18 @@ describe('skill-review author tools', () => {
         '1',
         '--codex-bin',
         codexBin,
-        '--output-dir',
-        outputRoot,
+        '--allow-unmanaged-processes',
       ], {
         cwd: root,
         env: { ...process.env, CODEX_HOME: sourceCodexHome },
         maxBuffer: 10 * 1024 * 1024,
       });
-      expect(JSON.parse(execution.stdout)).toMatchObject({ ok: true, outcome: 'passed' });
+      const executionReport = JSON.parse(execution.stdout);
+      expect(executionReport).toMatchObject({ ok: true, outcome: 'passed' });
+      const persistedReportRoot = path.resolve(root, executionReport.reportDir);
+      tempDirs.push(persistedReportRoot);
 
-      const evaluationPath = path.join(outputRoot, 'evaluation.json');
+      const evaluationPath = path.join(persistedReportRoot, 'raw', 'evaluation.json');
       expect(await fs.readFile(evaluationPath, 'utf8')).not.toContain('fixture-secret');
       const result = await execFileAsync('node', [
         skillScript('inspect_skill_target.mjs'),
@@ -366,7 +458,8 @@ describe('skill-review author tools', () => {
       ]));
 
       const subjectReference = path.join(
-        outputRoot,
+        persistedReportRoot,
+        'raw',
         'subject',
         '.agents',
         'skills',
@@ -434,6 +527,7 @@ describe('skill-review author tools', () => {
         id: 'behavior',
         kind: 'conversation',
         skill: 'fixture',
+        skills: ['fixture'],
         cases: './evals/cases.json',
         defaultRuns: 1,
         releaseSplits: [],
@@ -871,6 +965,10 @@ describe('skill-review author tools', () => {
       .replace(
         '\n\n当前仓库静态 Skill 的真实模型 eval 先运行 `pnpm build`，再由 `run_static_skill_evals.mjs` 生成证据；它不是 `plugin:eval` 的别名。\n',
         '\n',
+      )
+      .replace(
+        '\n静态和插件 Skill 的 eval 报告保存在 owner Skill 的 `reports/evals/<run-id>/`，完整 review 报告保存在 `reports/reviews/<run-id>/`。临时工作目录统一使用项目 `.tmp/agent-workflows/`。\n',
+        '',
       );
     expect(contentDigest(readme)).toBe(
       '46353b81f9ed65b9f436d356d554a88d6f9ec739d7d46f67da0e246c27cb015e',
@@ -907,6 +1005,14 @@ describe('skill-review author tools', () => {
       )
       .replace(
         '   - 当前仓库的 AW 插件或动态 Skill：`references/agent-workflows-plugin.md`\n',
+        '',
+      )
+      .replace(
+        '8. 对当前仓库内的静态或插件 Skill，把最终 `report.md` 和已验证的 `scorecard.json` 保存到 owner Skill 的 `reports/reviews/<run-id>/`；中间草稿只放项目 `.tmp/agent-workflows/reviews/`。不要把报告写进 runtime 资源目录。\n',
+        '',
+      )
+      .replace(
+        '- 当前仓库目标的持久 review 报告已写入 owner Skill；引用的 eval report/run-id 可追溯。\n',
         '',
       );
     expect(contentDigest(skill)).toBe(

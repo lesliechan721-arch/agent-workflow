@@ -45,7 +45,10 @@ export async function readEvalResource(relativePath) {
   if (typeof context.sourceRoot !== 'string' || context.sourceRoot.trim() === '') {
     throw new Error(`Eval resource is missing from bundle: ${relativePath}`);
   }
-  return readFile(path.join(context.sourceRoot, 'evals', normalized), 'utf8');
+  return readFile(
+    path.join(context.sourceRoot, 'templates', 'codex-explore', 'evals', normalized),
+    'utf8',
+  );
 }
 export async function createEvalWorkspace({ configValues = {} } = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'codex-explore-eval-'));

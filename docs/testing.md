@@ -10,7 +10,7 @@
 | Performance gate | `pnpm test:perf:gate` | 预算结果和 fast unit wall-time 门禁 |
 | Smoke | `pnpm test:smoke:*` | 真实 build、pack、fetch 和插件脚本产物 |
 | Plugin test | `pnpm plugin:test <plugin>` | 插件自己的确定性 Node 测试 |
-| Plugin eval | `pnpm plugin:eval <plugin>` | 通过中央 app-server driver 显式运行模型 eval；不进入普通 CI |
+| Plugin eval | `pnpm plugin:eval <plugin> --skill <skill>` | 为一个 owner Skill 通过中央 driver 显式运行模型 eval；不进入普通 CI |
 
 普通测试使用 synthetic catalog、隔离 home 和 fake native runner。不得调用用户真实 Codex/Claude 配置，也不得修改仓库外状态。
 
@@ -155,11 +155,15 @@ AW_PERF_SUMMARY {"name":"..."}
 
 ## Plugin Eval
 
-`pnpm plugin:eval` 只提供 Codex 证据。默认 materialize 所有 profile，并运行所有 `requiredForRelease` suite/split。使用 suite/profile/split/case 过滤，或减少 runs 时，结果固定为 incomplete，不能作为发布证据。
+`pnpm plugin:eval` 只提供 Codex 证据。`--skill` 必填，一次只运行一个 owner Skill；不支持插件级 `--all`。owner manifest 可以用 `skills[]` 声明同一 subject 的 participant Skills，并用 `profiles[].plugins[]` 按顺序安装当前仓库中的多个插件。该组合只用于 eval，不形成 production dependency。默认 materialize 所有 profile，并运行所有 `requiredForRelease` suite/split。使用 suite/profile/split/case 过滤，或减少 runs 时，结果固定为 incomplete，不能作为发布证据。
 
 真实模型运行使用隔离 runtime home，并固定使用文件凭据存储且关闭 secret keychain storage。provider credential 不进入模型 shell，持久化报告必须脱敏。临时 runtime capsule 在成功、失败和中断后清理。
 
-`trigger` 和 `conversation` suite 支持 `isolation: standard|strict`。conversation driver 在 Default 协作模式启用 `request_user_input`。strict 模式只保留目标 Skill，关闭内置 Skill、插件、Apps、MCP 和建议类表面，并在运行前验证有效配置、目标 Skill 和空 MCP 清单。检查失败时结果必须是 incomplete。真实模型 eval 应从普通 Terminal 运行；macOS 检测到 `accountsKeychainExport` 包装器路径时会在启动模型前失败，且不会修改用户 keychain search list。
+`trigger` 和 `conversation` suite 支持 `isolation: standard|strict`。conversation driver 在 Default 协作模式启用 `request_user_input`。strict current 只保留 suite 的 participant Skills；baseline 只移除 owner Skill，并保留 companions。strict 模式关闭内置 Skill、插件、Apps、MCP 和建议类表面，并在运行前验证有效配置、精确 participant Skill 集合和空 MCP 清单。检查失败时结果必须是 incomplete。`strictNegativeSplits` 对任何一次负例误加载或错误委派零容忍。
+
+真实模型 eval 应从普通 Terminal 运行；macOS 检测到 `accountsKeychainExport` 包装器路径时会在启动模型前失败，且不会修改用户 keychain search list。进程树检查默认要求 Full Access；不可用时必须在报告分配和模型启动前阻断。Windows 当前没有 Job Object containment，因此也必须显式传 `--allow-unmanaged-processes`。该降级模式只清理直接子进程，报告必须记录 `descendantCleanupGuaranteed: false`。
+
+插件 eval 中间产物固定在 `.tmp/agent-workflows/evals/plugins/<plugin>/<skill>/<run-id>/`；静态 Skill 使用 `.tmp/agent-workflows/evals/static/<skill>/<run-id>/`。持久 eval 报告固定在 owner Skill 的 `reports/evals/<run-id>/`，review 报告固定在 `reports/reviews/<run-id>/`。构建、安装和 runtime digest 排除 `evals/**` 与 `reports/**`。
 
 ## Pre-commit Checklist
 

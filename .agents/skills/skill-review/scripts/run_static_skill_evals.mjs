@@ -1,15 +1,17 @@
 #!/usr/bin/env node
 
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import {
   access,
   cp,
   lstat,
   mkdir,
+  mkdtemp,
   readFile,
   readdir,
   realpath,
+  rm,
   stat,
   writeFile,
 } from 'node:fs/promises';
@@ -34,7 +36,7 @@ function fail(message) {
 function usage() {
   return `Usage:
   node .agents/skills/skill-review/scripts/run_static_skill_evals.mjs <skill-name-or-dir> --validate-only
-  node .agents/skills/skill-review/scripts/run_static_skill_evals.mjs <skill-name-or-dir> [options] --output-dir <new-dir>
+  node .agents/skills/skill-review/scripts/run_static_skill_evals.mjs <skill-name-or-dir> [options]
 
 Options:
   --suite <id>                    Run one suite; default runs release-required suites
@@ -46,7 +48,8 @@ Options:
   --codex-config <path>           Read model/provider config from this config.toml
   --no-inherit-codex-config       Use a clean official Codex provider config
   --codex-bin <path>              Codex executable; default: codex
-  --output-dir <path>             New directory for subject, traces, and evaluation.json
+  --run-id <id>                  Use an explicit unique report run id
+  --allow-unmanaged-processes    Confirm a run without descendant process tracking
   --validate-only                 Validate target, manifest, corpus, and workspace paths
   -h, --help                      Show this help
 
@@ -88,6 +91,10 @@ function parseArgs(argv) {
       options.inheritCodexConfig = false;
       continue;
     }
+    if (arg === '--allow-unmanaged-processes') {
+      options.allowUnmanagedProcesses = true;
+      continue;
+    }
     if (!arg.startsWith('--')) {
       positional.push(arg);
       continue;
@@ -102,7 +109,7 @@ function parseArgs(argv) {
     else if (arg === '--model-provider') options.modelProvider = value;
     else if (arg === '--codex-config') options.codexConfig = path.resolve(value);
     else if (arg === '--codex-bin') options.codexBin = value;
-    else if (arg === '--output-dir') options.outputDir = path.resolve(value);
+    else if (arg === '--run-id') options.runId = value;
     else fail(`Unknown option: ${arg}`);
   }
   if (options.help) return options;
@@ -117,15 +124,25 @@ function parseArgs(argv) {
   }
   if (options.validateOnly) {
     if (
-      options.outputDir || options.model || options.modelProvider || options.codexConfig ||
-      !options.inheritCodexConfig || options.runs
+      options.runId || options.allowUnmanagedProcesses || options.model ||
+      options.modelProvider || options.codexConfig || !options.inheritCodexConfig || options.runs
     ) {
       fail('--validate-only does not accept output or model-run options.');
     }
-  } else if (!options.outputDir) {
-    fail('--output-dir is required unless --validate-only is used.');
   }
   return options;
+}
+
+function createRunId(date = new Date()) {
+  const timestamp = date.toISOString().replace(/[-:]/gu, '').replace(/\.\d{3}Z$/u, 'Z');
+  return `${timestamp}-${randomUUID().slice(0, 8)}`;
+}
+
+function validateRunId(value) {
+  if (!/^\d{8}T\d{6}Z-[0-9a-f]{8}$/u.test(value)) {
+    fail('--run-id must use YYYYMMDDTHHMMSSZ-xxxxxxxx.');
+  }
+  return value;
 }
 
 async function pathExists(candidate) {
@@ -258,22 +275,24 @@ async function validateSuite(skillRoot, value, index) {
       fail(`suites[${index}] has unsupported release split ${JSON.stringify(split)}.`);
     }
   }
+  const isolation = row.isolation === undefined ? 'standard' : row.isolation;
+  if (isolation !== 'standard' && isolation !== 'strict') {
+    fail(`suites[${index}].isolation must be standard or strict.`);
+  }
   const common = {
     id,
     kind: row.kind,
     skill: nonEmptyString(row.skill, `suites[${index}].skill`),
+    skills: stringArray(row.skills, `suites[${index}].skills`),
     cases: await validateEvalFile(skillRoot, row.cases, `suites[${index}].cases`),
     profiles: [PROFILE],
     defaultRuns: positiveInteger(row.defaultRuns, `suites[${index}].defaultRuns`),
     releaseSplits,
     requiredForRelease: boolean(row.requiredForRelease, `suites[${index}].requiredForRelease`),
     perRunTimeoutMs: positiveInteger(row.perRunTimeoutMs, `suites[${index}].perRunTimeoutMs`),
+    isolation,
   };
   if (row.kind === 'conversation') return common;
-  const isolation = row.isolation === undefined ? 'standard' : row.isolation;
-  if (isolation !== 'standard' && isolation !== 'strict') {
-    fail(`suites[${index}].isolation must be standard or strict.`);
-  }
   const strictNegativeSplits = row.strictNegativeSplits === undefined
     ? []
     : stringArray(row.strictNegativeSplits, `suites[${index}].strictNegativeSplits`, { allowEmpty: true });
@@ -295,7 +314,7 @@ async function validateSuite(skillRoot, value, index) {
   };
 }
 
-async function validateWorkspace(repoRoot, skillName, workspace) {
+async function validateWorkspace(repoRoot, skillNames, workspace) {
   if (workspace === undefined) return [];
   const row = record(workspace, 'workspace');
   if (!Array.isArray(row.copy)) fail('workspace.copy must be an array.');
@@ -316,7 +335,10 @@ async function validateWorkspace(repoRoot, skillName, workspace) {
     await assertNoSymlinks(source, `workspace.copy[${index}].from`);
     const normalizedTarget = path.posix.normalize(to.replaceAll('\\', '/'))
       .replace(/^\.\//u, '');
-    const protectedTargets = ['.codex', `.agents/skills/${skillName}`];
+    const protectedTargets = [
+      '.codex',
+      ...skillNames.map((skillName) => `.agents/skills/${skillName}`),
+    ];
     const overlapsProtectedTarget = protectedTargets.some((protectedTarget) =>
       normalizedTarget === '.' ||
       normalizedTarget === protectedTarget ||
@@ -438,11 +460,26 @@ async function readManifest(skillRoot, skillName) {
     validateSuite(skillRoot, suite, index)));
   if (new Set(suites.map((suite) => suite.id)).size !== suites.length) fail('manifest has duplicate suite ids.');
   if (suites.some((suite) => suite.skill !== skillName)) fail('Every suite.skill must match manifest.skill.');
+  for (const suite of suites) {
+    if (new Set(suite.skills).size !== suite.skills.length) {
+      fail(`Suite ${JSON.stringify(suite.id)} has duplicate participant Skills.`);
+    }
+    if (!suite.skills.includes(skillName)) {
+      fail(`Suite ${JSON.stringify(suite.id)} must include owner Skill ${JSON.stringify(skillName)}.`);
+    }
+    for (const participant of suite.skills) {
+      if (!/^[a-z0-9][a-z0-9-]*$/u.test(participant)) {
+        fail(`Suite ${JSON.stringify(suite.id)} participant Skill must use kebab-case.`);
+      }
+    }
+  }
+  const participantSkills = [...new Set(suites.flatMap((suite) => suite.skills))];
   await Promise.all(suites.map((suite) => validateLocalCases(skillRoot, suite)));
   return {
     path: manifestPath,
     skill: skillName,
-    workspace: await validateWorkspace(REPO_ROOT, skillName, document.workspace),
+    participantSkills,
+    workspace: await validateWorkspace(REPO_ROOT, participantSkills, document.workspace),
     suites,
   };
 }
@@ -461,6 +498,11 @@ export function parseSkillName(content, skillRoot) {
   return name;
 }
 
+function isSkillAuthorOnlyPath(relativePath) {
+  const [topLevel] = relativePath.split(/[\\/]/u).filter(Boolean);
+  return topLevel === 'evals' || topLevel === 'reports';
+}
+
 async function listFiles(root) {
   const files = [];
   async function visit(current, prefix = '') {
@@ -469,6 +511,7 @@ async function listFiles(root) {
     for (const entry of entries) {
       const absolute = path.join(current, entry.name);
       const relative = path.join(prefix, entry.name);
+      if (isSkillAuthorOnlyPath(relative)) continue;
       if (entry.isDirectory()) await visit(absolute, relative);
       else if (entry.isFile()) files.push(relative);
       else if (entry.isSymbolicLink()) fail(`Static eval target cannot contain symlink: ${relative}`);
@@ -494,23 +537,38 @@ async function ensureNewDirectory(directory) {
   await mkdir(directory, { recursive: true });
 }
 
-function assertOutputOutsideInputs(outputDir, skillRoot, manifest) {
-  if (isPathInside(skillRoot, outputDir)) {
-    fail('Output directory cannot be inside the evaluated Skill.');
-  }
-  for (const entry of manifest.workspace) {
-    const source = path.resolve(REPO_ROOT, entry.from);
-    if (isPathInside(source, outputDir)) {
-      fail(`Output directory cannot be inside workspace source ${entry.from}.`);
-    }
-  }
+function staticEvalLayout(skillRoot, skillName, requestedRunId) {
+  const runId = validateRunId(requestedRunId ?? createRunId());
+  return {
+    runId,
+    reportRoot: path.join(skillRoot, 'reports', 'evals', runId),
+    rawRoot: path.join(skillRoot, 'reports', 'evals', runId, 'raw'),
+    workRoot: path.join(
+      REPO_ROOT,
+      '.tmp',
+      'agent-workflows',
+      'evals',
+      'static',
+      skillName,
+      runId,
+    ),
+  };
 }
 
-async function prepareSubject(skillRoot, skillName, manifest, outputDir) {
+async function prepareSubject(manifest, outputDir) {
   const subjectRoot = path.join(outputDir, 'subject');
-  const target = path.join(subjectRoot, '.agents', 'skills', skillName);
-  await mkdir(path.dirname(target), { recursive: true });
-  await cp(skillRoot, target, { recursive: true, force: false, errorOnExist: true });
+  const skillsRoot = path.join(subjectRoot, '.agents', 'skills');
+  await mkdir(skillsRoot, { recursive: true });
+  for (const participant of manifest.participantSkills) {
+    const source = path.join(STATIC_SKILLS_ROOT, participant);
+    const target = path.join(skillsRoot, participant);
+    await cp(source, target, {
+      recursive: true,
+      force: false,
+      errorOnExist: true,
+      filter: (candidate) => !isSkillAuthorOnlyPath(path.relative(source, candidate)),
+    });
+  }
   await mkdir(path.join(subjectRoot, '.git'), { recursive: true });
   for (const entry of manifest.workspace) {
     const source = path.join(REPO_ROOT, entry.from);
@@ -528,14 +586,16 @@ async function loadCentralDrivers() {
     runtime: path.join(root, 'codex-eval-runtime-config.js'),
     trigger: path.join(root, 'codex-trigger-eval.js'),
     conversation: path.join(root, 'codex-eval-app-server.js'),
+    processManagement: path.join(root, 'codex-eval-process-management.js'),
+    isolation: path.join(root, 'codex-eval-isolation.js'),
   };
   for (const file of Object.values(files)) {
     if (!(await pathExists(file))) fail(`Built eval driver not found: ${file}. Run pnpm build first.`);
   }
-  const [contract, runtime, trigger, conversation] = await Promise.all(
+  const [contract, runtime, trigger, conversation, processManagement, isolation] = await Promise.all(
     Object.values(files).map((file) => import(pathToFileURL(file).href)),
   );
-  return { contract, runtime, trigger, conversation };
+  return { contract, runtime, trigger, conversation, processManagement, isolation };
 }
 
 async function validateCentralContracts(drivers, skillRoot, manifest) {
@@ -583,14 +643,52 @@ async function codexVersion(codexBin, env) {
 async function run(options, skillRoot, skillName, manifest) {
   const drivers = await loadCentralDrivers();
   await validateCentralContracts(drivers, skillRoot, manifest);
-  assertOutputOutsideInputs(options.outputDir, skillRoot, manifest);
-  const sourceDigest = await digestTree(skillRoot);
-  await ensureNewDirectory(options.outputDir);
-  const subjectRoot = await prepareSubject(skillRoot, skillName, manifest, options.outputDir);
-  const subjectSkillRoot = path.join(subjectRoot, '.agents', 'skills', skillName);
-  const subjectPackageDigest = await digestTree(subjectSkillRoot);
-  if (subjectPackageDigest !== sourceDigest) {
-    fail('Materialized static Skill digest does not match its source package.');
+  await drivers.isolation.assertCodexEvalKeychainWrapperAbsent({});
+  const processManagement = await drivers.processManagement.resolveCodexEvalProcessManagement({
+    allowUnmanaged: options.allowUnmanagedProcesses === true,
+  });
+  if (processManagement.mode === 'unmanaged-confirmed') {
+    process.stderr.write(
+      '[skill:eval] WARNING: Full Access process inspection is unavailable. ' +
+      'This confirmed run cannot track or verify descendant processes.\n',
+    );
+  }
+  const layout = staticEvalLayout(skillRoot, skillName, options.runId);
+  await ensureNewDirectory(layout.reportRoot);
+  await mkdir(layout.rawRoot, { recursive: true });
+  await ensureNewDirectory(layout.workRoot);
+  options.outputDir = layout.rawRoot;
+  const startedAt = new Date().toISOString();
+  await writeFile(path.join(layout.reportRoot, 'run.json'), `${JSON.stringify({
+    schemaVersion: 1,
+    type: 'static-skill-eval',
+    runId: layout.runId,
+    skill: skillName,
+    participantSkills: manifest.participantSkills,
+    status: 'running',
+    startedAt,
+    processManagement,
+    rawDirectory: 'raw',
+  }, null, 2)}\n`, 'utf8');
+  try {
+  const sourceDigests = Object.fromEntries(await Promise.all(
+    manifest.participantSkills.map(async (participant) => [
+      participant,
+      await digestTree(path.join(STATIC_SKILLS_ROOT, participant)),
+    ]),
+  ));
+  const sourceDigest = sourceDigests[skillName];
+  const subjectRoot = await prepareSubject(manifest, layout.workRoot);
+  const subjectPackageDigests = Object.fromEntries(await Promise.all(
+    manifest.participantSkills.map(async (participant) => [
+      participant,
+      await digestTree(path.join(subjectRoot, '.agents', 'skills', participant)),
+    ]),
+  ));
+  for (const participant of manifest.participantSkills) {
+    if (subjectPackageDigests[participant] !== sourceDigests[participant]) {
+      fail(`Materialized static Skill ${participant} does not match its source package.`);
+    }
   }
   const codexRuntime = await drivers.runtime.resolveCodexEvalRuntimeConfig({
     sourceEnv: process.env,
@@ -602,6 +700,7 @@ async function run(options, skillRoot, skillName, manifest) {
   const runtimeCapsule = await drivers.runtime.createCodexEvalRuntimeCapsule(
     codexRuntime,
     process.env,
+    { allocate: () => mkdtemp(path.join(layout.workRoot, 'runtime-')) },
   );
   const reports = [];
   try {
@@ -627,12 +726,15 @@ async function run(options, skillRoot, skillName, manifest) {
             sourceEnv: runtimeCapsule.env,
             reportPath,
             stderr: (message) => process.stderr.write(message),
+            processManagement,
+            workRoot: path.join(layout.workRoot, 'trigger'),
           });
         } else {
           if (options.split) fail('--split only applies to trigger suites.');
           report = await drivers.conversation.runCodexConversationSuite({
             suiteId: suite.id,
             skillName,
+            skillNames: suite.skills,
             casesPath: path.resolve(skillRoot, suite.cases.replace(/^\.\//u, '')),
             subjectRoot,
             profile: PROFILE,
@@ -642,17 +744,20 @@ async function run(options, skillRoot, skillName, manifest) {
             model: options.model,
             codexRuntime,
             timeoutMs: suite.perRunTimeoutMs,
+            isolation: suite.isolation,
             sourceEnv: runtimeCapsule.env,
             reportPath,
+            processManagement,
+            workRoot: path.join(layout.workRoot, 'conversation'),
           });
         }
         report.reportPath = path.relative(options.outputDir, reportPath).split(path.sep).join('/');
         reports.push(report);
       }
     }
-    const sourceUnchanged = await digestTree(skillRoot) === sourceDigest;
-    const subjectSkill = path.join(subjectRoot, '.agents', 'skills', skillName, 'SKILL.md');
-    const subjectSkillDigest = `sha256:${createHash('sha256').update(await readFile(subjectSkill)).digest('hex')}`;
+    const sourceUnchanged = (await Promise.all(manifest.participantSkills.map(async (participant) =>
+      await digestTree(path.join(STATIC_SKILLS_ROOT, participant)) === sourceDigests[participant])))
+      .every(Boolean);
     const outcome = sourceUnchanged
       ? drivers.contract.combinePluginEvalOutcome(reports)
       : 'incomplete';
@@ -660,16 +765,30 @@ async function run(options, skillRoot, skillName, manifest) {
       ...reports.flatMap((report) => report.diagnostics),
       ...(sourceUnchanged ? [] : ['Static Skill source changed during evaluation.']),
     ];
+    await cp(subjectRoot, path.join(options.outputDir, 'subject'), {
+      recursive: true,
+      force: false,
+      errorOnExist: true,
+    });
     const unredactedEvaluation = {
       schemaVersion: SCHEMA_VERSION,
       generatedAt: new Date().toISOString(),
-      target: { kind: 'static-skill', name: skillName, sourceDigest },
+      target: {
+        kind: 'static-skill',
+        name: skillName,
+        sourceDigest,
+        participantSkills: manifest.participantSkills.map((participant) => ({
+          name: participant,
+          sourceDigest: sourceDigests[participant],
+        })),
+      },
       platform: 'codex',
       codexVersion: await codexVersion(options.codexBin, runtimeCapsule.env),
       model: options.model ?? codexRuntime.model ?? null,
       modelProvider: codexRuntime.modelProvider,
       credentialSource: codexRuntime.credentialSource,
       codexConfigDigest: codexRuntime.evidenceDigest,
+      processManagement,
       outcome,
       complete: sourceUnchanged && reports.every((report) => report.complete),
       mechanicalPassed: sourceUnchanged && reports.every((report) => report.mechanicalPassed),
@@ -679,15 +798,24 @@ async function run(options, skillRoot, skillName, manifest) {
         modelExecution: true,
         evidenceLevel: 'runtime-project',
         root: 'subject',
-        contentDigest: subjectPackageDigest,
-        artifacts: [{
-          kind: 'skill',
-          key: skillName,
-          path: `.agents/skills/${skillName}/SKILL.md`,
-          contentDigest: subjectSkillDigest,
-          packagePath: `.agents/skills/${skillName}`,
-          packageContentDigest: subjectPackageDigest,
-        }],
+        contentDigest: `sha256:${createHash('sha256').update(JSON.stringify(subjectPackageDigests)).digest('hex')}`,
+        artifacts: await Promise.all(manifest.participantSkills.map(async (participant) => {
+          const subjectSkill = path.join(
+            subjectRoot,
+            '.agents',
+            'skills',
+            participant,
+            'SKILL.md',
+          );
+          return {
+            kind: 'skill',
+            key: participant,
+            path: `.agents/skills/${participant}/SKILL.md`,
+            contentDigest: `sha256:${createHash('sha256').update(await readFile(subjectSkill)).digest('hex')}`,
+            packagePath: `.agents/skills/${participant}`,
+            packageContentDigest: subjectPackageDigests[participant],
+          };
+        })),
       }],
       suites: reports,
       diagnostics,
@@ -698,14 +826,94 @@ async function run(options, skillRoot, skillName, manifest) {
     );
     const evaluationPath = path.join(options.outputDir, 'evaluation.json');
     await writeFile(evaluationPath, `${JSON.stringify(evaluation, null, 2)}\n`, 'utf8');
+    const summary = {
+      schemaVersion: 1,
+      runId: layout.runId,
+      skill: skillName,
+      participantSkills: manifest.participantSkills,
+      generatedAt: evaluation.generatedAt,
+      outcome,
+      complete: evaluation.complete,
+      mechanicalPassed: evaluation.mechanicalPassed,
+      codexVersion: evaluation.codexVersion,
+      model: evaluation.model,
+      modelProvider: evaluation.modelProvider,
+      codexConfigDigest: evaluation.codexConfigDigest,
+      processManagement,
+      target: evaluation.target,
+      subjects: evaluation.subjects,
+      suites: reports.map((report) => ({
+        id: report.id,
+        kind: report.kind,
+        skills: report.skills,
+        outcome: report.outcome,
+        complete: report.complete,
+        mechanicalPassed: report.mechanicalPassed,
+        qualitativeReview: report.qualitativeReview,
+        summary: report.summary,
+      })),
+      diagnostics,
+    };
+    await writeFile(
+      path.join(layout.reportRoot, 'summary.json'),
+      `${JSON.stringify(summary, null, 2)}\n`,
+      'utf8',
+    );
+    await writeFile(
+      path.join(layout.reportRoot, 'report.md'),
+      [
+        '# Static Skill Eval Report',
+        '',
+        `- Skill: \`${skillName}\``,
+        `- Participant Skills: \`${manifest.participantSkills.join(', ')}\``,
+        `- Run: \`${layout.runId}\``,
+        `- Outcome: \`${outcome}\``,
+        `- Complete: \`${evaluation.complete}\``,
+        `- Process management: \`${processManagement.mode}\``,
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    await writeFile(path.join(layout.reportRoot, 'run.json'), `${JSON.stringify({
+      schemaVersion: 1,
+      type: 'static-skill-eval',
+      runId: layout.runId,
+      skill: skillName,
+      participantSkills: manifest.participantSkills,
+      status: 'completed',
+      startedAt,
+      completedAt: new Date().toISOString(),
+      outcome,
+      processManagement,
+      rawDirectory: 'raw',
+    }, null, 2)}\n`, 'utf8');
     process.stdout.write(`${JSON.stringify({
       ok: evaluation.complete && outcome !== 'failed' && outcome !== 'incomplete',
       outcome,
-      evaluation: evaluationPath,
+      runId: layout.runId,
+      reportDir: path.relative(REPO_ROOT, layout.reportRoot).split(path.sep).join('/'),
+      evaluation: path.join(layout.reportRoot, 'summary.json'),
     }, null, 2)}\n`);
     if (outcome === 'failed' || outcome === 'incomplete') process.exitCode = 1;
   } finally {
     await runtimeCapsule.cleanup();
+  }
+  } catch (error) {
+    await writeFile(path.join(layout.reportRoot, 'run.json'), `${JSON.stringify({
+      schemaVersion: 1,
+      type: 'static-skill-eval',
+      runId: layout.runId,
+      skill: skillName,
+      participantSkills: manifest.participantSkills,
+      status: 'failed',
+      startedAt,
+      completedAt: new Date().toISOString(),
+      processManagement,
+      rawDirectory: 'raw',
+    }, null, 2)}\n`, 'utf8');
+    throw error;
+  } finally {
+    await rm(layout.workRoot, { recursive: true, force: true });
   }
 }
 
@@ -718,6 +926,13 @@ async function main() {
   const skillRoot = await resolveSkillRoot(options.target);
   const skillName = parseSkillName(await readFile(path.join(skillRoot, 'SKILL.md'), 'utf8'), skillRoot);
   const manifest = await readManifest(skillRoot, skillName);
+  for (const participant of manifest.participantSkills) {
+    const participantRoot = await resolveSkillRoot(participant);
+    parseSkillName(
+      await readFile(path.join(participantRoot, 'SKILL.md'), 'utf8'),
+      participantRoot,
+    );
+  }
   let centralContract = false;
   try {
     const drivers = await loadCentralDrivers();
@@ -730,6 +945,7 @@ async function main() {
     process.stdout.write(`${JSON.stringify({
       ok: true,
       skill: skillName,
+      participantSkills: manifest.participantSkills,
       suites: manifest.suites.map((suite) => suite.id),
       centralContract,
     }, null, 2)}\n`);
@@ -746,4 +962,4 @@ if (isMain) {
   });
 }
 
-export { parseArgs, readManifest, resolveSkillRoot };
+export { parseArgs, prepareSubject, readManifest, resolveSkillRoot };

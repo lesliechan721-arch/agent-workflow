@@ -6,7 +6,7 @@ import path from 'node:path';
 import {
   readSpawnCallsFromRollouts,
   writeJsonReport,
-} from '../evals/eval-harness.mjs';
+} from '../templates/codex-subagent-guide/evals/eval-harness.mjs';
 import {
   evaluateRoutingRun,
   loadRoutingSpec,
@@ -14,7 +14,7 @@ import {
   routingReportStatus,
   routingRunCase,
   summarizeRoutingVariant,
-} from '../evals/run-routing-evals.mjs';
+} from '../templates/codex-subagent-guide/evals/run-routing-evals.mjs';
 
 function testArguments() {
   assert.deepEqual(
@@ -129,15 +129,41 @@ async function testRolloutArgumentEvidence() {
     };
     await writeFile(
       path.join(sessionDir, 'rollout-test.jsonl'),
-      `${JSON.stringify(line)}\n${JSON.stringify(line)}\n`,
+      [
+        JSON.stringify(line),
+        JSON.stringify(line),
+        JSON.stringify({
+          type: 'response_item',
+          payload: {
+            type: 'function_call_output',
+            call_id: 'call-2',
+            internal_chat_message_metadata_passthrough: {
+              executed_tool_calls: [{
+                name: 'collaboration__spawn_agent',
+                arguments: {
+                  agent_type: 'codex-subagent-complex',
+                  message: 'investigate',
+                  fork_turns: 'none',
+                },
+              }],
+            },
+          },
+        }),
+        '',
+      ].join('\n'),
       'utf8',
     );
     const calls = await readSpawnCallsFromRollouts(codexHome);
-    assert.equal(calls.length, 1);
+    assert.equal(calls.length, 2);
     assert.deepEqual(calls[0].arguments, {
       agent_type: 'codex-subagent-simple',
       message: 'verify facts',
       fork_turns: '2',
+    });
+    assert.deepEqual(calls[1].arguments, {
+      agent_type: 'codex-subagent-complex',
+      message: 'investigate',
+      fork_turns: 'none',
     });
   } finally {
     await rm(codexHome, { recursive: true, force: true });

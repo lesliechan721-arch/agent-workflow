@@ -65,6 +65,7 @@ Finding 的证据类型使用：
    ```
    使用脚本给出的权重、coverage、confidence 和 release verdict。
 7. 按 `assets/report-template.md` 输出与当前模式匹配的章节；先给方向、门禁和分数，再给最小改进集。
+8. 对当前仓库内的静态或插件 Skill，把最终 `report.md` 和已验证的 `scorecard.json` 保存到 owner Skill 的 `reports/reviews/<run-id>/`；中间草稿只放项目 `.tmp/agent-workflows/reviews/`。不要把报告写进 runtime 资源目录。
 
 ## 评审完成边界
 
@@ -75,6 +76,7 @@ Finding 的证据类型使用：
 - 每个 P0/P1 都包含证据类型、正确职责层、最小修改和验证方式。
 - pointer、信息层级和完成边界审计已覆盖适用对象。
 - 报告包含 stop decision，且没有未归属或重复计罚的 finding。
+- 当前仓库目标的持久 review 报告已写入 owner Skill；引用的 eval report/run-id 可追溯。
 
 ## 评分纪律
 

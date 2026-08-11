@@ -68,6 +68,18 @@ const EVAL_RESOURCE_PATTERN =
   /(?<![\w./-])(evals\/[A-Za-z0-9_.()/-]+)/gu;
 const SKIP_DIRECTORIES = new Set(['.git', 'node_modules', '__pycache__']);
 
+function isSkillAuthorOnlyPath(relativePath) {
+  const [topLevel] = normalizeRelative(relativePath).split('/').filter(Boolean);
+  return topLevel === 'evals' || topLevel === 'reports';
+}
+
+function isSkillReportPath(relativePath) {
+  const parts = normalizeRelative(relativePath).split('/').filter(Boolean);
+  return parts[0] === 'reports' || (
+    ['skills', 'templates'].includes(parts[0]) && parts[2] === 'reports'
+  );
+}
+
 function isRecord(value) {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -97,6 +109,7 @@ async function digestDirectoryTree(root) {
     for (const entry of entries) {
       const absolute = path.join(current, entry.name);
       const relative = path.join(prefix, entry.name);
+      if (isSkillAuthorOnlyPath(relative)) continue;
       if (entry.isDirectory()) await visit(absolute, relative);
       else if (entry.isFile()) {
         hash.update(normalizeRelative(relative));
@@ -246,6 +259,7 @@ async function walkFiles(root, relative = '') {
     if (entry.isDirectory() && SKIP_DIRECTORIES.has(entry.name)) continue;
     if (entry.isFile() && entry.name.endsWith('.pyc')) continue;
     const next = path.join(relative, entry.name);
+    if (isSkillReportPath(next)) continue;
     if (entry.isDirectory()) files.push(...await walkFiles(root, next));
     else if (entry.isFile()) files.push(normalizeRelative(next));
   }
@@ -492,7 +506,7 @@ async function evalDiagnostics(skillRoot, files) {
       }
       if (
         isRecord(data) &&
-        data.schemaVersion === 1 &&
+        [1, 2].includes(data.schemaVersion) &&
         typeof data.skill === 'string' &&
         Array.isArray(data.suites)
       ) {
@@ -805,8 +819,8 @@ async function readJson(candidate, label) {
 async function inspectEvaluation(evaluationPath, expectedTarget) {
   if (!evaluationPath) return { evaluation: null, issues: [], finalSkillTargets: [], rolePaths: [] };
   const value = await readJson(evaluationPath, 'EvaluationBundle');
-  if (!isRecord(value) || value.schemaVersion !== 1 || value.platform !== 'codex') {
-    throw new Error('EvaluationBundle must use schemaVersion=1 and platform=codex.');
+  if (!isRecord(value) || ![1, 2].includes(value.schemaVersion) || value.platform !== 'codex') {
+    throw new Error('EvaluationBundle must use schemaVersion=1|2 and platform=codex.');
   }
   const issues = [];
   const evaluationTarget = isRecord(value.target)
@@ -1078,6 +1092,7 @@ async function inspectEvaluation(evaluationPath, expectedTarget) {
       path: evaluationPath,
       target: evaluationTarget,
       plugin: value.plugin ?? null,
+      skill: value.skill ?? null,
       version: value.pluginVersion,
       outcome: value.outcome,
       complete: value.complete,
@@ -1097,17 +1112,26 @@ async function inspectEvaluation(evaluationPath, expectedTarget) {
 }
 
 function pluginSourceSkillPaths(files, manifest) {
-  const roots = [];
+  let staticRoot = null;
   if (typeof manifest.skills === 'string') {
-    roots.push(normalizeRelative(path.normalize(manifest.skills.replace(/^\.\//u, ''))).replace(/\/$/u, ''));
+    staticRoot = normalizeRelative(path.normalize(
+      manifest.skills.replace(/^\.\//u, ''),
+    )).replace(/\/$/u, '');
   }
+  const dynamicRoots = new Set(
+    (Array.isArray(manifest.artifacts?.targets) ? manifest.artifacts.targets : [])
+      .filter((target) => isRecord(target) && target.target === 'codex.skill')
+      .flatMap((target) => Array.isArray(target.sourceDirs) ? target.sourceDirs : [])
+      .filter((sourceDir) => typeof sourceDir === 'string' && sourceDir.trim() !== '')
+      .map((sourceDir) => normalizeRelative(path.normalize(
+        sourceDir.replace(/^\.\//u, ''),
+      )).replace(/\/$/u, '')),
+  );
   return files.filter((relative) => {
     if (path.basename(relative) !== 'SKILL.md') return false;
-    if (relative.startsWith('templates/')) return true;
-    if (roots.some((root) => relative === `${root}/SKILL.md` || relative.startsWith(`${root}/`))) return true;
-    return !relative.startsWith('evals/') &&
-      !relative.startsWith('references/') &&
-      !relative.startsWith('scripts/');
+    if (dynamicRoots.has(path.posix.dirname(relative))) return true;
+    if (!staticRoot || !relative.startsWith(`${staticRoot}/`)) return false;
+    return relative.slice(staticRoot.length + 1).split('/').length === 2;
   });
 }
 
@@ -1139,17 +1163,33 @@ async function inspectPlugin(root, options) {
     issues.push(issue('error', 'source.skill-missing', 'No plugin source Skill was found.', manifestPath));
   }
 
-  const evalManifestPath = path.join(root, 'evals', 'manifest.json');
-  const evalManifest = await pathExists(evalManifestPath)
-    ? await readJson(evalManifestPath, 'eval manifest')
-    : null;
-  if (!evalManifest) issues.push(issue('warning', 'eval.manifest-missing', 'Plugin has no evaluation manifest.', evalManifestPath));
-
   const inspectedEvaluation = await inspectEvaluation(options.evaluation, {
     kind: 'aw-plugin',
     name: manifest.name,
   });
   issues.push(...inspectedEvaluation.issues);
+  const evalManifests = [];
+  for (const sourceSkill of sourceSkills) {
+    const skillRoot = path.dirname(path.join(root, sourceSkill.path));
+    const evalManifestPath = path.join(skillRoot, 'evals', 'manifest.json');
+    if (!(await pathExists(evalManifestPath))) continue;
+    evalManifests.push({
+      skill: sourceSkill.report.skill.frontmatter.name,
+      path: normalizeRelative(path.relative(root, evalManifestPath)),
+      manifest: await readJson(evalManifestPath, 'eval manifest'),
+    });
+  }
+  if (evalManifests.length === 0) {
+    issues.push(issue(
+      'warning',
+      'eval.manifest-missing',
+      'Plugin source Skills have no evaluation manifest.',
+      root,
+    ));
+  }
+  const selectedEvalManifest = evalManifests.find(
+    (entry) => entry.skill === inspectedEvaluation.evaluation?.skill,
+  ) ?? evalManifests[0] ?? null;
   const finalSkills = [];
   for (const target of inspectedEvaluation.finalSkillTargets) {
     try {
@@ -1184,7 +1224,8 @@ async function inspectPlugin(root, options) {
       files,
     },
     source_skills: sourceSkills,
-    eval_manifest: evalManifest,
+    eval_manifest: selectedEvalManifest?.manifest ?? null,
+    eval_manifests: evalManifests,
     evaluation: inspectedEvaluation.evaluation,
     final_skills: finalSkills,
     related_toml: relatedToml,

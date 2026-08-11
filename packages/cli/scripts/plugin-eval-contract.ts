@@ -4,23 +4,40 @@ import fs from 'fs-extra';
 
 import type { Scope } from '../src/types.js';
 
-export const PLUGIN_EVAL_SCHEMA_VERSION = 1 as const;
+export const PLUGIN_EVAL_SCHEMA_VERSION = 2 as const;
+export const PLUGIN_EVAL_CASE_SCHEMA_VERSION = 1 as const;
 
 export type PluginEvalSplit = 'train' | 'validation' | 'sanity' | 'all';
 export type PluginEvalOutcome = 'passed' | 'failed' | 'needs_review' | 'incomplete';
 export type PluginEvalIsolation = 'standard' | 'strict';
+export type PluginEvalProcessMode = 'managed' | 'unmanaged-confirmed' | 'not-applicable';
+
+export interface PluginEvalProcessManagementEvidence {
+  mode: PluginEvalProcessMode;
+  inspectionAvailable: boolean;
+  userAcknowledged: boolean;
+  descendantCleanupGuaranteed: boolean;
+  diagnostic?: string;
+}
 
 export interface PluginEvalProfile {
   id: string;
   scope: Scope;
-  config: Record<string, unknown>;
+  plugins: PluginEvalPluginInstallation[];
   runModel: boolean;
   requiredForRelease: boolean;
+}
+
+export interface PluginEvalPluginInstallation {
+  name: string;
+  config: Record<string, unknown>;
 }
 
 export interface PluginEvalCommandSuite {
   id: string;
   kind: 'command';
+  skill: string;
+  skills: string[];
   entry: string;
   profiles: string[];
   defaultRuns: number;
@@ -43,6 +60,7 @@ export interface PluginEvalConversationSuite {
   id: string;
   kind: 'conversation';
   skill: string;
+  skills: string[];
   cases: string;
   profiles: string[];
   defaultRuns: number;
@@ -56,6 +74,7 @@ export interface PluginEvalTriggerSuite {
   id: string;
   kind: 'trigger';
   skill: string;
+  skills: string[];
   cases: string;
   fixtureModule?: string;
   observeSpawnAgent: boolean;
@@ -80,7 +99,7 @@ export interface PluginEvalTriggerCase {
 }
 
 export interface PluginEvalTriggerCaseDocument {
-  schemaVersion: typeof PLUGIN_EVAL_SCHEMA_VERSION;
+  schemaVersion: typeof PLUGIN_EVAL_CASE_SCHEMA_VERSION;
   skill: string;
   cases: PluginEvalTriggerCase[];
 }
@@ -93,6 +112,7 @@ export type PluginEvalSuite =
 export interface PluginEvalManifest {
   schemaVersion: typeof PLUGIN_EVAL_SCHEMA_VERSION;
   plugin: string;
+  skill: string;
   profiles: PluginEvalProfile[];
   suites: PluginEvalSuite[];
 }
@@ -107,6 +127,7 @@ export interface MaterializedPluginEvalArtifact {
 export interface MaterializedPluginEvalSubject {
   schemaVersion: typeof PLUGIN_EVAL_SCHEMA_VERSION;
   plugin: string;
+  skill: string;
   pluginVersion: string;
   platform: 'codex';
   profile: string;
@@ -116,12 +137,19 @@ export interface MaterializedPluginEvalSubject {
   root: string;
   configDigest: string;
   bundleDigest: string;
+  installedPlugins: Array<{
+    name: string;
+    version: string;
+    configDigest: string;
+    bundleDigest: string;
+  }>;
   artifacts: MaterializedPluginEvalArtifact[];
 }
 
 export interface PluginEvalSuiteReport {
   id: string;
   kind: PluginEvalSuite['kind'];
+  skills: string[];
   profile: string;
   split: PluginEvalSplit | null;
   outcome: PluginEvalOutcome;
@@ -137,6 +165,7 @@ export interface PluginEvaluationBundle {
   schemaVersion: typeof PLUGIN_EVAL_SCHEMA_VERSION;
   generatedAt: string;
   plugin: string;
+  skill: string;
   pluginVersion: string;
   platform: 'codex';
   codexVersion: string | null;
@@ -144,6 +173,7 @@ export interface PluginEvaluationBundle {
   modelProvider: string | null;
   credentialSource: 'embedded' | 'environment' | 'openai-auth' | 'none' | null;
   codexConfigDigest: string | null;
+  processManagement: PluginEvalProcessManagementEvidence;
   outcome: PluginEvalOutcome;
   complete: boolean;
   mechanicalPassed: boolean;
@@ -218,38 +248,32 @@ function assertRealPathInside(
   }
 }
 
-function validateRelativeFile(pluginRoot: string, value: unknown, label: string): string {
-  const relativePath = expectString(value, label).replace(/^\.\//, '');
-  if (path.isAbsolute(relativePath) || relativePath.split(/[\\/]/u).includes('..')) {
-    throw new Error(`${label} must stay inside the plugin root.`);
+function validateEvalRelativeFile(
+  pluginRoot: string,
+  evalRoot: string,
+  value: unknown,
+  label: string,
+): string {
+  const inputPath = expectString(value, label);
+  const normalizedInput = inputPath.replace(/^\.\//u, '');
+  if (
+    path.isAbsolute(normalizedInput) ||
+    normalizedInput.split(/[\\/]/u).includes('..')
+  ) {
+    throw new Error(`${label} must stay inside the Skill eval directory.`);
   }
-  const absolutePath = path.resolve(pluginRoot, relativePath);
-  const relativeToRoot = path.relative(pluginRoot, absolutePath);
-  if (relativeToRoot.startsWith('..') || path.isAbsolute(relativeToRoot)) {
-    throw new Error(`${label} must stay inside the plugin root.`);
-  }
-  if (!fs.pathExistsSync(absolutePath)) {
-    throw new Error(`${label} does not exist: ${relativePath}`);
-  }
-  if (!fs.statSync(absolutePath).isFile()) {
-    throw new Error(`${label} must reference a file: ${relativePath}`);
-  }
-  assertRealPathInside(pluginRoot, absolutePath, label, 'plugin root');
-  return `./${relativePath.split(path.sep).join('/')}`;
-}
-
-function validateEvalRelativeFile(pluginRoot: string, value: unknown, label: string): string {
-  const relativePath = validateRelativeFile(pluginRoot, value, label);
-  if (!relativePath.startsWith('./evals/')) {
-    throw new Error(`${label} must stay inside the plugin evals directory.`);
+  const absolutePath = path.resolve(evalRoot, normalizedInput);
+  if (!fs.pathExistsSync(absolutePath) || !fs.statSync(absolutePath).isFile()) {
+    throw new Error(`${label} must reference an existing file: ${inputPath}`);
   }
   assertRealPathInside(
-    path.join(pluginRoot, 'evals'),
-    path.resolve(pluginRoot, relativePath.replace(/^\.\//u, '')),
+    evalRoot,
+    absolutePath,
     label,
-    'plugin evals directory',
+    'Skill eval directory',
   );
-  return relativePath;
+  const pluginRelative = path.relative(pluginRoot, absolutePath).split(path.sep).join('/');
+  return `./${pluginRelative}`;
 }
 
 function parseStringArray(value: unknown, label: string): string[] {
@@ -332,11 +356,15 @@ export function validatePluginEvalConversationCaseDocument(
   });
 }
 
-function parseProfile(value: unknown, index: number): PluginEvalProfile {
+function parseProfile(
+  value: unknown,
+  index: number,
+  ownerPlugin: string,
+): PluginEvalProfile {
   const row = expectRecord(value, `profiles[${index}]`);
   expectOnlyKeys(
     row,
-    ['id', 'scope', 'config', 'runModel', 'requiredForRelease'],
+    ['id', 'scope', 'plugins', 'runModel', 'requiredForRelease'],
     `profiles[${index}]`,
   );
   const id = expectString(row.id, `profiles[${index}].id`);
@@ -347,10 +375,38 @@ function parseProfile(value: unknown, index: number): PluginEvalProfile {
   if (scope !== 'user' && scope !== 'project') {
     throw new Error(`profiles[${index}].scope must be user or project.`);
   }
+  if (!Array.isArray(row.plugins) || row.plugins.length === 0) {
+    throw new Error(`profiles[${index}].plugins must be a non-empty array.`);
+  }
+  const seenPlugins = new Set<string>();
+  const plugins = row.plugins.map((value, pluginIndex) => {
+    const label = `profiles[${index}].plugins[${pluginIndex}]`;
+    const plugin = expectRecord(value, label);
+    expectOnlyKeys(plugin, ['name', 'config'], label);
+    const name = expectString(plugin.name, `${label}.name`);
+    if (!/^[a-z0-9][a-z0-9-]*$/u.test(name)) {
+      throw new Error(`${label}.name must use lowercase kebab-case.`);
+    }
+    if (seenPlugins.has(name)) {
+      throw new Error(`profiles[${index}].plugins has duplicate plugin "${name}".`);
+    }
+    seenPlugins.add(name);
+    return {
+      name,
+      config: plugin.config === undefined
+        ? {}
+        : expectRecord(plugin.config, `${label}.config`),
+    };
+  });
+  if (!seenPlugins.has(ownerPlugin)) {
+    throw new Error(
+      `profiles[${index}].plugins must include owner plugin "${ownerPlugin}".`,
+    );
+  }
   return {
     id,
     scope,
-    config: row.config === undefined ? {} : expectRecord(row.config, `profiles[${index}].config`),
+    plugins,
     runModel: expectBoolean(row.runModel, `profiles[${index}].runModel`),
     requiredForRelease: expectBoolean(
       row.requiredForRelease,
@@ -385,6 +441,8 @@ function parseIsolation(value: unknown, label: string): PluginEvalIsolation {
 
 function parseSuite(
   pluginRoot: string,
+  evalRoot: string,
+  skill: string,
   value: unknown,
   index: number,
   profileIds: ReadonlySet<string>,
@@ -404,6 +462,20 @@ function parseSuite(
       throw new Error(`suites[${index}] references unknown profile "${profile}".`);
     }
   }
+  const skills = parseStringArray(row.skills, `suites[${index}].skills`);
+  const uniqueSkills = new Set<string>();
+  for (const [skillIndex, participant] of skills.entries()) {
+    if (!/^[a-z0-9][a-z0-9-]*$/u.test(participant)) {
+      throw new Error(`suites[${index}].skills[${skillIndex}] must use lowercase kebab-case.`);
+    }
+    if (uniqueSkills.has(participant)) {
+      throw new Error(`suites[${index}].skills has duplicate Skill "${participant}".`);
+    }
+    uniqueSkills.add(participant);
+  }
+  if (!uniqueSkills.has(skill)) {
+    throw new Error(`suites[${index}].skills must include owner Skill "${skill}".`);
+  }
   const rawSplits = row.releaseSplits ?? [];
   if (!Array.isArray(rawSplits)) {
     throw new Error(`suites[${index}].releaseSplits must be an array.`);
@@ -417,6 +489,8 @@ function parseSuite(
   });
   const common = {
     id,
+    skill,
+    skills,
     profiles,
     defaultRuns: expectPositiveInteger(row.defaultRuns, `suites[${index}].defaultRuns`),
     releaseSplits,
@@ -431,24 +505,29 @@ function parseSuite(
   };
 
   if (kind === 'conversation') {
-    const skill = expectString(row.skill, `suites[${index}].skill`);
-    if (!/^[a-z0-9][a-z0-9-]*$/u.test(skill)) {
-      throw new Error(`suites[${index}].skill must use lowercase kebab-case.`);
-    }
+    expectOnlyKeys(row, [
+      'id', 'kind', 'skills', 'cases', 'profiles', 'defaultRuns', 'releaseSplits',
+      'requiredForRelease', 'perRunTimeoutMs', 'isolation',
+    ], `suites[${index}]`);
     return {
       ...common,
       kind,
-      skill,
-      cases: validateEvalRelativeFile(pluginRoot, row.cases, `suites[${index}].cases`),
+      cases: validateEvalRelativeFile(
+        pluginRoot,
+        evalRoot,
+        row.cases,
+        `suites[${index}].cases`,
+      ),
       isolation: parseIsolation(row.isolation, `suites[${index}].isolation`),
     };
   }
 
   if (kind === 'trigger') {
-    const skill = expectString(row.skill, `suites[${index}].skill`);
-    if (!/^[a-z0-9][a-z0-9-]*$/u.test(skill)) {
-      throw new Error(`suites[${index}].skill must use lowercase kebab-case.`);
-    }
+    expectOnlyKeys(row, [
+      'id', 'kind', 'skills', 'cases', 'fixtureModule', 'observeSpawnAgent', 'isolation',
+      'strictNegativeSplits', 'profiles', 'defaultRuns', 'releaseSplits',
+      'requiredForRelease', 'perRunTimeoutMs',
+    ], `suites[${index}]`);
     const isolation = parseIsolation(row.isolation, `suites[${index}].isolation`);
     const rawStrictNegativeSplits = row.strictNegativeSplits ?? [];
     if (!Array.isArray(rawStrictNegativeSplits)) {
@@ -468,6 +547,7 @@ function parseSuite(
       ? undefined
       : validateEvalRelativeFile(
         pluginRoot,
+        evalRoot,
         row.fixtureModule,
         `suites[${index}].fixtureModule`,
       );
@@ -477,8 +557,12 @@ function parseSuite(
     return {
       ...common,
       kind,
-      skill,
-      cases: validateEvalRelativeFile(pluginRoot, row.cases, `suites[${index}].cases`),
+      cases: validateEvalRelativeFile(
+        pluginRoot,
+        evalRoot,
+        row.cases,
+        `suites[${index}].cases`,
+      ),
       ...(fixtureModule ? { fixtureModule } : {}),
       observeSpawnAgent: expectBoolean(
         row.observeSpawnAgent,
@@ -490,6 +574,10 @@ function parseSuite(
   }
 
   const rawSupports = row.supports ?? [];
+  expectOnlyKeys(row, [
+    'id', 'kind', 'skills', 'entry', 'profiles', 'defaultRuns', 'releaseSplits',
+    'requiredForRelease', 'perRunTimeoutMs', 'suiteTimeoutMs', 'supports',
+  ], `suites[${index}]`);
   if (!Array.isArray(rawSupports)) {
     throw new Error(`suites[${index}].supports must be an array.`);
   }
@@ -512,7 +600,12 @@ function parseSuite(
   return {
     ...common,
     kind,
-    entry: validateRelativeFile(pluginRoot, row.entry, `suites[${index}].entry`),
+    entry: validateEvalRelativeFile(
+      pluginRoot,
+      evalRoot,
+      row.entry,
+      `suites[${index}].entry`,
+    ),
     suiteTimeoutMs,
     supports,
   };
@@ -576,9 +669,9 @@ export async function readPluginEvalTriggerCases(
 ): Promise<PluginEvalTriggerCaseDocument> {
   const casesPath = path.resolve(pluginRoot, suite.cases.replace(/^\.\//u, ''));
   const raw = expectRecord(await fs.readJson(casesPath), `trigger cases for suite "${suite.id}"`);
-  if (raw.schemaVersion !== PLUGIN_EVAL_SCHEMA_VERSION) {
+  if (raw.schemaVersion !== PLUGIN_EVAL_CASE_SCHEMA_VERSION) {
     throw new Error(
-      `trigger cases for suite "${suite.id}" must use schemaVersion ${PLUGIN_EVAL_SCHEMA_VERSION}.`,
+      `trigger cases for suite "${suite.id}" must use schemaVersion ${PLUGIN_EVAL_CASE_SCHEMA_VERSION}.`,
     );
   }
   const skill = expectString(raw.skill, `trigger cases for suite "${suite.id}".skill`);
@@ -603,21 +696,122 @@ export async function readPluginEvalTriggerCases(
     }
   }
   return {
-    schemaVersion: PLUGIN_EVAL_SCHEMA_VERSION,
+    schemaVersion: PLUGIN_EVAL_CASE_SCHEMA_VERSION,
     skill,
     cases,
   };
 }
 
+function resolveDeclaredPluginPath(
+  pluginRoot: string,
+  declaredPath: string,
+  label: string,
+): string {
+  const resolved = path.resolve(pluginRoot, declaredPath.replace(/^\.\//u, ''));
+  if (!isPathInsideOrEqual(pluginRoot, resolved)) {
+    throw new Error(`${label} must stay inside the plugin root.`);
+  }
+  return resolved;
+}
+
+export async function resolvePluginSkillAuthorRoot(
+  pluginRoot: string,
+  expectedSkill: string,
+): Promise<string> {
+  if (!/^[a-z0-9][a-z0-9-]*$/u.test(expectedSkill)) {
+    throw new Error('Skill name must use lowercase kebab-case without path separators.');
+  }
+  const pluginManifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
+  const pluginManifest = expectRecord(
+    await fs.readJson(pluginManifestPath),
+    'plugin manifest',
+  );
+  const candidates: string[] = [];
+
+  if (typeof pluginManifest.skills === 'string' && pluginManifest.skills.trim() !== '') {
+    const skillsRoot = resolveDeclaredPluginPath(
+      pluginRoot,
+      pluginManifest.skills,
+      'plugin manifest.skills',
+    );
+    const staticRoot = path.join(skillsRoot, expectedSkill);
+    if (await fs.pathExists(staticRoot) && (await fs.stat(staticRoot)).isDirectory()) {
+      assertRealPathInside(pluginRoot, staticRoot, 'Static Skill root', 'plugin root');
+      candidates.push(staticRoot);
+    }
+  }
+
+  const artifacts = isRecord(pluginManifest.artifacts) &&
+    Array.isArray(pluginManifest.artifacts.targets)
+    ? pluginManifest.artifacts.targets
+    : [];
+  for (const value of artifacts) {
+    if (!isRecord(value) || value.target !== 'codex.skill' || value.skillKey !== expectedSkill) {
+      continue;
+    }
+    for (const [index, sourceDir] of (
+      Array.isArray(value.sourceDirs) ? value.sourceDirs : []
+    ).entries()) {
+      if (typeof sourceDir !== 'string' || sourceDir.trim() === '') continue;
+      const candidate = resolveDeclaredPluginPath(
+        pluginRoot,
+        sourceDir,
+        `codex.skill ${JSON.stringify(expectedSkill)} sourceDirs[${index}]`,
+      );
+      if (await fs.pathExists(candidate) && (await fs.stat(candidate)).isDirectory()) {
+        assertRealPathInside(pluginRoot, candidate, 'Dynamic Skill source directory', 'plugin root');
+        candidates.push(candidate);
+      }
+    }
+  }
+
+  const uniqueCandidates = [...new Set(candidates.map((candidate) => path.resolve(candidate)))];
+  const evalOwners: string[] = [];
+  for (const candidate of uniqueCandidates) {
+    if (await fs.pathExists(path.join(candidate, 'evals', 'manifest.json'))) {
+      evalOwners.push(candidate);
+    }
+  }
+  if (evalOwners.length === 1) return evalOwners[0];
+  if (evalOwners.length > 1) {
+    throw new Error(
+      `Plugin Skill ${JSON.stringify(expectedSkill)} has multiple evals/manifest.json owners: ` +
+      evalOwners.join(', '),
+    );
+  }
+  if (uniqueCandidates.length === 1) return uniqueCandidates[0];
+  if (uniqueCandidates.length === 0) {
+    throw new Error(
+      `Plugin does not declare a Codex Skill source directory for ${JSON.stringify(expectedSkill)}.`,
+    );
+  }
+  throw new Error(
+    `Plugin Skill ${JSON.stringify(expectedSkill)} uses multiple source directories. ` +
+    'Place evals/manifest.json in exactly one source directory.',
+  );
+}
+
 export async function readPluginEvalManifest(
   pluginRoot: string,
+  expectedSkill: string,
   expectedPluginName?: string,
 ): Promise<PluginEvalManifest> {
-  const manifestPath = path.join(pluginRoot, 'evals', 'manifest.json');
+  const skillRoot = await resolvePluginSkillAuthorRoot(pluginRoot, expectedSkill);
+  const evalRoot = path.join(skillRoot, 'evals');
+  const manifestPath = path.join(evalRoot, 'manifest.json');
   if (!(await fs.pathExists(manifestPath))) {
+    const legacyPath = path.join(pluginRoot, 'evals', 'manifest.json');
+    if (await fs.pathExists(legacyPath)) {
+      throw new Error(
+        `Legacy plugin-wide eval manifest is not supported: ${legacyPath}. ` +
+        `Move it to the ${expectedSkill} Skill directory as evals/manifest.json ` +
+        'and use schemaVersion 2.',
+      );
+    }
     throw new Error(`Plugin eval manifest not found: ${manifestPath}`);
   }
   const raw = expectRecord(await fs.readJson(manifestPath), 'eval manifest');
+  expectOnlyKeys(raw, ['schemaVersion', 'plugin', 'skill', 'profiles', 'suites'], 'eval manifest');
   if (raw.schemaVersion !== PLUGIN_EVAL_SCHEMA_VERSION) {
     throw new Error(`eval manifest schemaVersion must be ${PLUGIN_EVAL_SCHEMA_VERSION}.`);
   }
@@ -627,23 +821,33 @@ export async function readPluginEvalManifest(
       `eval manifest.plugin "${plugin}" does not match plugin "${expectedPluginName}".`,
     );
   }
+  const skill = expectString(raw.skill, 'eval manifest.skill');
+  if (!/^[a-z0-9][a-z0-9-]*$/u.test(skill)) {
+    throw new Error('eval manifest.skill must use lowercase kebab-case.');
+  }
+  if (skill !== expectedSkill) {
+    throw new Error(
+      `eval manifest.skill "${skill}" does not match selected Skill "${expectedSkill}".`,
+    );
+  }
   if (!Array.isArray(raw.profiles) || raw.profiles.length === 0) {
     throw new Error('eval manifest.profiles must be a non-empty array.');
   }
-  const profiles = raw.profiles.map(parseProfile);
+  const profiles = raw.profiles.map((profile, index) =>
+    parseProfile(profile, index, plugin));
   assertUniqueIds(profiles, 'profile');
   if (!profiles.some((profile) => profile.scope === 'project' && profile.runModel)) {
     throw new Error('eval manifest must define at least one project profile with runModel=true.');
   }
   if (profiles.some((profile) => profile.scope === 'user' && profile.runModel)) {
-    throw new Error('v1 does not allow real model execution for user-scope profiles.');
+    throw new Error('v2 does not allow real model execution for user-scope profiles.');
   }
   if (!Array.isArray(raw.suites) || raw.suites.length === 0) {
     throw new Error('eval manifest.suites must be a non-empty array.');
   }
   const profileIds = new Set(profiles.map((profile) => profile.id));
   const suites = raw.suites.map((suite, index) =>
-    parseSuite(pluginRoot, suite, index, profileIds));
+    parseSuite(pluginRoot, evalRoot, skill, suite, index, profileIds));
   assertUniqueIds(suites, 'suite');
   for (const suite of suites) {
     for (const profileId of suite.profiles) {
@@ -674,6 +878,7 @@ export async function readPluginEvalManifest(
   return {
     schemaVersion: PLUGIN_EVAL_SCHEMA_VERSION,
     plugin,
+    skill,
     profiles,
     suites,
   };
