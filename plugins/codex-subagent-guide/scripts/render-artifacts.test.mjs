@@ -166,6 +166,8 @@ test('renders four task roles and agent-type-only preset guidance', async () => 
   assert.match(skill.content.skillFile, /`fork_turns: "none"` 或 `fork_context: false`/);
   assert.match(skill.content.skillFile, /只有明确要求继承/);
   assert.match(skill.content.skillFile, /上下文选择独立于 preset\/custom/);
+  assert.match(skill.content.skillFile, /全历史继承会沿用父代理类型，因此省略 `agent_type`/);
+  assert.match(skill.content.skillFile, /不能精确表达最近 N 轮，则停止并说明，不得改用全历史近似/);
 
   assert.match(skill.content.skillFile, /只在需要结果才能继续时调用 `wait_agent`/);
   assert.match(skill.content.skillFile, /至少 `10` 分钟的响应式窗口（`timeout_ms=600000`）/);

@@ -110,6 +110,9 @@ async function testEvalSpec() {
   const skillContext = spec.evals.find((entry) => entry.id === 'skill_rule_full_history_context');
   assert.equal(skillContext.expectations.v1.arguments.fork_context, true);
   assert.equal(skillContext.expectations.v2.arguments.fork_turns, 'all');
+  const missingRole = spec.evals.find((entry) => entry.id === 'missing_preset_role');
+  assert.ok(missingRole.expectations.v1.final_message_includes_any.includes('不包含'));
+  assert.ok(missingRole.expectations.v2.final_message_includes_any.includes('未提供'));
 }
 
 async function testRolloutArgumentEvidence() {
@@ -188,12 +191,38 @@ async function testRolloutArgumentEvidence() {
             },
           },
         }),
+        JSON.stringify({
+          type: 'response_item',
+          payload: {
+            type: 'custom_tool_call',
+            name: 'exec',
+            call_id: 'exec-call-2',
+            input: 'await tools.multi_agent_v1__spawn_agent(argumentsValue);',
+          },
+        }),
+        JSON.stringify({
+          type: 'response_item',
+          payload: {
+            type: 'custom_tool_call_output',
+            call_id: 'exec-call-2',
+            internal_chat_message_metadata_passthrough: {
+              executed_tool_calls: [{
+                name: 'multi_agent_v1__spawn_agent',
+                arguments: {
+                  agent_type: 'codex-subagent-general',
+                  message: 'metadata fallback',
+                  fork_context: false,
+                },
+              }],
+            },
+          },
+        }),
         '',
       ].join('\n'),
       'utf8',
     );
     const calls = await readSpawnCallsFromRollouts(codexHome);
-    assert.equal(calls.length, 3);
+    assert.equal(calls.length, 4);
     assert.deepEqual(calls[0].arguments, {
       agent_type: 'codex-subagent-simple',
       message: 'verify facts',
@@ -209,6 +238,11 @@ async function testRolloutArgumentEvidence() {
       fork_context: false,
       message: 'verify { left: 1, right: 2 }',
       items: [{ type: 'text', text: 'nested evidence' }],
+    });
+    assert.deepEqual(calls[3].arguments, {
+      agent_type: 'codex-subagent-general',
+      message: 'metadata fallback',
+      fork_context: false,
     });
     assert.deepEqual(extractExecToolCalls('await tools.exec_command({ cmd: "pwd" });'), []);
     assert.deepEqual(
@@ -298,6 +332,13 @@ function testMechanicalAssertions() {
     earlyStopReason(
       { stop_on_spawn: true },
       { spawned: true, spawnCalls: [] },
+    ),
+    null,
+  );
+  assert.equal(
+    earlyStopReason(
+      { stop_on_spawn: true },
+      { spawned: true, spawnCalls: [{ arguments: { message: 'verify' } }] },
     ),
     'spawn_observed',
   );

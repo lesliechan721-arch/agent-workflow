@@ -168,8 +168,8 @@
       "files": [],
       "omit_roles": ["codex-subagent-simple"],
       "expectations": {
-        "v1": { "spawn_calls": { "min": 0, "max": 0 }, "final_message_includes_any": ["不可用", "没有", "缺失", "无法"] },
-        "v2": { "spawn_calls": { "min": 0, "max": 0 }, "final_message_includes_any": ["不可用", "没有", "缺失", "无法"] }
+        "v1": { "spawn_calls": { "min": 0, "max": 0 }, "final_message_includes_any": ["不可用", "没有", "缺失", "无法", "不包含", "未提供"] },
+        "v2": { "spawn_calls": { "min": 0, "max": 0 }, "final_message_includes_any": ["不可用", "没有", "缺失", "无法", "不包含", "未提供"] }
       }
     },
     {
