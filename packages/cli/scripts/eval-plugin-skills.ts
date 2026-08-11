@@ -1058,11 +1058,15 @@ async function runOnePlugin(options: {
   return bundle;
 }
 
-async function readSourceRevision(options: {
+export async function readSourceRevision(options: {
   repoRoot: string;
   pluginNames: string[];
 }): Promise<{ gitHead: string | null; inScopeDirty: boolean }> {
   try {
+    const pluginPaths = options.pluginNames.map((pluginName) => `plugins/${pluginName}`);
+    const reportExclusions = options.pluginNames.map(
+      (pluginName) => `:(exclude)plugins/${pluginName}/**/reports/**`,
+    );
     const [head, status] = await Promise.all([
       execFileAsync('git', ['rev-parse', 'HEAD'], {
         cwd: options.repoRoot,
@@ -1072,11 +1076,12 @@ async function readSourceRevision(options: {
         'status',
         '--porcelain=v1',
         '--',
-        ...options.pluginNames.map((pluginName) => `plugins/${pluginName}`),
+        ...pluginPaths,
         'packages/cli/scripts',
         'packages/cli/src',
         '.agents/skills/create-agent-workflows-plugin',
         '.agents/skills/skill-review',
+        ...reportExclusions,
       ], {
         cwd: options.repoRoot,
         encoding: 'utf8',

@@ -1,14 +1,20 @@
-import type { ChildProcess, ChildProcessWithoutNullStreams } from 'node:child_process';
+import {
+  execFile,
+  type ChildProcess,
+  type ChildProcessWithoutNullStreams,
+} from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import os from 'node:os';
 import path from 'node:path';
 import { PassThrough } from 'node:stream';
+import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 
 import fs from 'fs-extra';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  readSourceRevision,
   runChild,
   runPluginEvals,
   terminatePosixProcessTree,
@@ -29,6 +35,7 @@ import {
   registerCurrentTestWritableStateRoot,
 } from '../setup/test-isolation.js';
 
+const execFileAsync = promisify(execFile);
 const tempDirs: string[] = [];
 let testRunCounter = 0;
 
@@ -224,6 +231,40 @@ afterEach(async () => {
 });
 
 describe('plugin eval runner', () => {
+  it('ignores persisted reports but detects plugin source changes', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-eval-revision-'));
+    tempDirs.push(root);
+    registerCurrentTestWritableStateRoot(root);
+    const sourcePath = path.join(root, 'plugins', 'demo', 'templates', 'demo', 'SKILL.md');
+    const reportPath = path.join(
+      root,
+      'plugins',
+      'demo',
+      'templates',
+      'demo',
+      'reports',
+      'evals',
+      '20260812T000000Z-00000001',
+      'summary.json',
+    );
+    await fs.outputFile(sourcePath, '---\nname: demo\n---\n');
+    await execFileAsync('git', ['init'], { cwd: root });
+    await execFileAsync('git', ['add', '.'], { cwd: root });
+    await execFileAsync(
+      'git',
+      ['-c', 'user.name=Eval Test', '-c', 'user.email=eval@example.test', 'commit', '-m', 'initial'],
+      { cwd: root },
+    );
+
+    await fs.outputJson(reportPath, { complete: true });
+    expect(await readSourceRevision({ repoRoot: root, pluginNames: ['demo'] }))
+      .toMatchObject({ inScopeDirty: false });
+
+    await fs.appendFile(sourcePath, '# changed\n');
+    expect(await readSourceRevision({ repoRoot: root, pluginNames: ['demo'] }))
+      .toMatchObject({ inScopeDirty: true });
+  });
+
   it('places durable reports in the owning Skill and temporary work under the repository', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-eval-layout-'));
     tempDirs.push(root);
