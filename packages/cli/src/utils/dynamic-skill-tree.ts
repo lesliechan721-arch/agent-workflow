@@ -11,6 +11,7 @@ import type {
 import {
   assertOwnedSkillPath,
   createSkillOwnerMarkerContent,
+  readSkillOwnerMarker,
   type OwnerIdentity,
   SKILL_OWNER_MARKER,
 } from './ownership.js';
@@ -284,6 +285,48 @@ export function createDynamicSkillTreeContentDigest(tree: DynamicSkillTree): str
   return `sha256:${hash.digest('hex')}`;
 }
 
+export async function skillDirectoryMatchesExpectedTree(
+  rootDir: string,
+  tree: DynamicSkillTree,
+): Promise<boolean> {
+  if (path.basename(rootDir) !== tree.skillKey) return false;
+  const rootStats = await fs.lstat(rootDir).catch(() => null);
+  if (!rootStats?.isDirectory() || rootStats.isSymbolicLink()) return false;
+
+  const expectedFiles = new Map(sortedSkillFileEntries(tree.files));
+  const expectedDirectories = new Set<string>(['']);
+  for (const relativePath of expectedFiles.keys()) {
+    const segments = relativePath.split('/');
+    for (let index = 1; index < segments.length; index += 1) {
+      expectedDirectories.add(segments.slice(0, index).join('/'));
+    }
+  }
+
+  const seenFiles = new Set<string>();
+  const pending = [{ absolutePath: rootDir, relativePath: '' }];
+  while (pending.length > 0) {
+    const current = pending.pop()!;
+    const entries = await fs.readdir(current.absolutePath, { withFileTypes: true });
+    for (const entry of entries) {
+      const relativePath = current.relativePath
+        ? `${current.relativePath}/${entry.name}`
+        : entry.name;
+      if (relativePath === SKILL_OWNER_MARKER || entry.isSymbolicLink()) return false;
+      const absolutePath = path.join(current.absolutePath, entry.name);
+      if (entry.isDirectory()) {
+        if (!expectedDirectories.has(relativePath)) return false;
+        pending.push({ absolutePath, relativePath });
+        continue;
+      }
+      if (!entry.isFile()) return false;
+      const expected = expectedFiles.get(relativePath);
+      if (!expected || !expected.equals(await fs.readFile(absolutePath))) return false;
+      seenFiles.add(relativePath);
+    }
+  }
+  return seenFiles.size === expectedFiles.size;
+}
+
 async function createEmptyStagingTree(
   stagingRoot: string,
   relativePaths: string[],
@@ -339,6 +382,7 @@ export async function writeDynamicSkillTree(
   ownership?: {
     allowedRoot: string;
     identity: OwnerIdentity;
+    allowPristineUnowned?: boolean;
   },
 ): Promise<string[]> {
   const entries = sortedSkillFileEntries(tree.files);
@@ -350,6 +394,16 @@ export async function writeDynamicSkillTree(
     });
   }
   await fs.ensureDir(path.dirname(rootDir));
+  if (ownership?.allowPristineUnowned && await fs.pathExists(rootDir)) {
+    const marker = await readSkillOwnerMarker({
+      skillRoot: rootDir,
+      allowedRoot: ownership.allowedRoot,
+      expectedIdentity: ownership.identity,
+    });
+    if (!marker && !await skillDirectoryMatchesExpectedTree(rootDir, tree)) {
+      throw new Error(`Skill 目标存在 foreign collision：${rootDir}`);
+    }
+  }
   const stagingRoot = await fs.mkdtemp(path.join(path.dirname(rootDir), `.${path.basename(rootDir)}-staging-`));
   const backupRoot = `${stagingRoot}-backup`;
   const targetExists = await fs.pathExists(rootDir);

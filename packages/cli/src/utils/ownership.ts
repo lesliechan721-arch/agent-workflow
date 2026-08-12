@@ -36,7 +36,12 @@ interface OwnedPathComponent {
 }
 
 export type OwnedComponent =
-  | ({ kind: 'skill-directory'; validateHealth?: () => Promise<void> } & OwnedPathComponent)
+  | ({
+      kind: 'skill-directory';
+      validateHealth?: () => Promise<void>;
+      // A pristine markerless catalog tree is absent, not deletion-authorized ownership.
+      unownedIsPristine?: (actualPath: string) => Promise<boolean>;
+    } & OwnedPathComponent)
   | ({ kind: 'owned-text-file' } & OwnedPathComponent)
   | {
       kind: 'managed-block' | 'shared-config';
@@ -472,7 +477,10 @@ async function inspectPathAt(
       if ((error as NodeJS.ErrnoException).code) throw error;
       return 'foreign';
     }
-    if (!marker || !identitiesEqual(marker, component.identity)) return 'foreign';
+    if (!marker) {
+      return await component.unownedIsPristine?.(actualPath) ? 'absent' : 'foreign';
+    }
+    if (!identitiesEqual(marker, component.identity)) return 'foreign';
     if (canonicalPath && path.basename(actualPath) !== component.identity.artifactKey) return 'foreign';
     return 'present';
   }

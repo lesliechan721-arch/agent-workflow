@@ -10,6 +10,7 @@ import {
   createDynamicSkillExpectedTree,
   createDynamicSkillTreeContentDigest,
   readDynamicSkillTree,
+  skillDirectoryMatchesExpectedTree,
   validateSkillDirectoriesRoot,
   writeDynamicSkillTree,
 } from '../../src/utils/dynamic-skill-tree.js';
@@ -174,6 +175,69 @@ describe('dynamic skill tree', () => {
     expect(createDynamicSkillTreeContentDigest(actual!)).toBe(
       createDynamicSkillTreeContentDigest(tree),
     );
+  });
+
+  it('matches only an exact markerless Skill tree', async () => {
+    const root = await makeTempRoot();
+    const skillRoot = path.join(root, 'example');
+    const tree = {
+      skillKey: 'example',
+      files: {
+        'SKILL.md': Buffer.from('# Example\n'),
+        'agents/openai.yaml': Buffer.from('policy:\n  allow_implicit_invocation: true\n'),
+      },
+    };
+    await fs.outputFile(path.join(skillRoot, 'SKILL.md'), tree.files['SKILL.md']);
+    await fs.outputFile(
+      path.join(skillRoot, 'agents', 'openai.yaml'),
+      tree.files['agents/openai.yaml'],
+    );
+
+    await expect(skillDirectoryMatchesExpectedTree(skillRoot, tree)).resolves.toBe(true);
+    await fs.outputFile(path.join(skillRoot, 'extra.md'), 'foreign\n');
+    await expect(skillDirectoryMatchesExpectedTree(skillRoot, tree)).resolves.toBe(false);
+    await fs.remove(path.join(skillRoot, 'extra.md'));
+    await fs.outputJson(path.join(skillRoot, SKILL_OWNER_MARKER), {});
+    await expect(skillDirectoryMatchesExpectedTree(skillRoot, tree)).resolves.toBe(false);
+  });
+
+  it('adopts an exact markerless Skill tree but preserves drifted content', async () => {
+    const root = await makeTempRoot();
+    const skillRoot = path.join(root, 'example');
+    const tree = {
+      skillKey: 'example',
+      files: {
+        'SKILL.md': Buffer.from('# Example\n'),
+        'agents/openai.yaml': Buffer.from('policy:\n  allow_implicit_invocation: true\n'),
+      },
+    };
+    const identity = {
+      owner: 'agent-workflows' as const,
+      plugin: 'example-plugin',
+      artifactKey: 'example',
+      platform: 'codex' as const,
+      scope: 'user' as const,
+    };
+    await fs.outputFile(path.join(skillRoot, 'SKILL.md'), tree.files['SKILL.md']);
+    await fs.outputFile(
+      path.join(skillRoot, 'agents', 'openai.yaml'),
+      tree.files['agents/openai.yaml'],
+    );
+    await writeDynamicSkillTree(skillRoot, tree, {
+      allowedRoot: root,
+      identity,
+      allowPristineUnowned: true,
+    });
+    await expect(fs.readJson(path.join(skillRoot, SKILL_OWNER_MARKER))).resolves.toMatchObject(identity);
+
+    await fs.remove(path.join(skillRoot, SKILL_OWNER_MARKER));
+    await fs.outputFile(path.join(skillRoot, 'SKILL.md'), '# Changed\n');
+    await expect(writeDynamicSkillTree(skillRoot, tree, {
+      allowedRoot: root,
+      identity,
+      allowPristineUnowned: true,
+    })).rejects.toThrow('foreign collision');
+    await expect(fs.readFile(path.join(skillRoot, 'SKILL.md'), 'utf8')).resolves.toBe('# Changed\n');
   });
 
   it('classifies Claude fields that require a host above the AW minimum', async () => {

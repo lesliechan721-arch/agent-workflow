@@ -38,6 +38,7 @@
 - Codex/Claude Skill 原生调用 metadata 来自最终文件树，AW 只校验和保留。
 - MCP、hooks、permissions、roles、instructions、skills 和 apps 保持各自的平台语义。
 - owner marker 是后续 status、cleanup 和 reinstall 的归属依据。
+- markerless Codex user Skill 只有在文件树与当前受信期望树完全一致时，才可按 absent 处理并由 install/reinstall 写入 marker。这个判定不提供删除权限；有 drift、额外文件、符号链接或 foreign marker 时必须 fail closed。
 
 ## Config Rules
 

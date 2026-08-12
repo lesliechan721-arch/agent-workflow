@@ -72,6 +72,8 @@ aw install <plugin...> -p codex|claude|both [-s user|project] [--script-timeout 
 
 `install` 按 current catalog 生成期望组件，检查 live ownership，再写平台原生和 repo-managed 组件。成功后保存 lifecycle active snapshot。
 
+Codex user scope 的 active marketplace 会包含 current catalog 的静态 Skill 源。未安装插件的这些目录没有 owner marker，不代表 partial 安装。只有文件树与独立的受信 current catalog 期望树完全一致时，`install` 才把它视为 pristine catalog 内容并原子写入 owner marker；active marketplace 作为唯一 fallback catalog 时不能用自身证明 pristine。内容变化、多余文件、符号链接或 foreign marker 会继续阻断安装。
+
 ### Upgrade
 
 ```bash
@@ -89,6 +91,8 @@ aw reinstall <plugin> -p codex|claude|both [-s user|project] [--json]
 
 `reinstall` 先删除能证明属于 AW 的目标组件，再按 current catalog 完整重建。它保留 AW config。配置会参与重建后的 artifact 渲染和 lifecycle context。
 
+若旧版或中断状态留下 markerless Codex user Skill，但目录与独立的受信 current catalog 或当前 renderer 期望树完全一致，`reinstall` 会把它视为未安装内容并重新物化，不需要手动删除 `AW_HOME` 或 Codex cache。active marketplace 自身不能作为这项证明。无法证明为 pristine 的目录仍按 foreign collision 保留。
+
 ### Uninstall
 
 ```bash
@@ -104,6 +108,8 @@ aw cleanup <plugin> -p codex|claude|both -s user|project [--json]
 ```
 
 `cleanup` 只删除能通过 owner marker 或平台 ownership 检查证明属于 AW 的现场组件。它不运行 uninstall lifecycle，也不删除 AW config。无法证明归属的组件不会被删除。
+
+完全匹配独立受信期望树的 markerless Codex user Skill 属于 pristine catalog 内容，`cleanup` 把它视为 absent，不删除该 catalog 源；active marketplace 自身不能作为 pristine 证明。后续 `install` 或 `reinstall` 可以直接恢复。任何 drift 或额外内容仍需要用户确认后手动处理。
 
 ## Live Status
 

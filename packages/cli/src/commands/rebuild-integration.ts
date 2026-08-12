@@ -43,6 +43,7 @@ import {
 import {
   createDynamicSkillExpectedTree,
   createDynamicSkillTreeContentDigest,
+  skillDirectoryMatchesExpectedTree,
   validateSkillDirectory,
   writeDynamicSkillTree,
   type DynamicSkillTree,
@@ -161,6 +162,7 @@ function pathComponent(options: {
   path: string;
   allowedRoot: string;
   identity: OwnerIdentity;
+  unownedIsPristine?: (actualPath: string) => Promise<boolean>;
 }): OwnedComponent {
   if (options.kind !== 'skill-directory') return options;
   return {
@@ -1015,6 +1017,12 @@ function dynamicSkillWrite(options: {
     path: options.skillPath,
     allowedRoot: options.allowedRoot,
     identity,
+    ...(options.platform === 'codex' && options.scope === 'user'
+      ? {
+          unownedIsPristine: (actualPath: string) =>
+            skillDirectoryMatchesExpectedTree(actualPath, options.tree),
+        }
+      : {}),
   });
   return {
     artifact: {
@@ -1044,6 +1052,7 @@ function dynamicSkillWrite(options: {
       await writeDynamicSkillTree(options.skillPath, options.tree, {
         allowedRoot: options.allowedRoot,
         identity,
+        allowPristineUnowned: options.platform === 'codex' && options.scope === 'user',
       });
     },
   };
@@ -1109,6 +1118,8 @@ async function buildBundledCodexSkillWrites(options: {
       sourceDirs: [skillSource],
     });
     const skillPath = path.join(targetRoot, entry.name);
+    const canRecoverPristine = options.scope === 'user'
+      && path.resolve(skillSource) !== path.resolve(skillPath);
     const identity = ownerIdentity(
       options.plugin.manifest.name,
       entry.name,
@@ -1120,6 +1131,12 @@ async function buildBundledCodexSkillWrites(options: {
       path: skillPath,
       allowedRoot: targetRoot,
       identity,
+      ...(canRecoverPristine
+        ? {
+            unownedIsPristine: (actualPath: string) =>
+              skillDirectoryMatchesExpectedTree(actualPath, tree),
+          }
+        : {}),
     });
     writes.push({
       artifact: {
@@ -1131,7 +1148,11 @@ async function buildBundledCodexSkillWrites(options: {
       },
       component,
       write: async () => {
-        await writeDynamicSkillTree(skillPath, tree, { allowedRoot: targetRoot, identity });
+        await writeDynamicSkillTree(skillPath, tree, {
+          allowedRoot: targetRoot,
+          identity,
+          allowPristineUnowned: canRecoverPristine,
+        });
       },
     });
   }

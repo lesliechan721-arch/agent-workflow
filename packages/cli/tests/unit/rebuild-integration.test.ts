@@ -24,6 +24,7 @@ import {
   inspectOwnedComponents,
   parseOwnedTextHeader,
   readSkillOwnerMarker,
+  SKILL_OWNER_MARKER,
   writeOwnedTextFile,
   writeSkillOwnerMarker,
 } from '../../src/utils/ownership.js';
@@ -44,6 +45,7 @@ import { requiresCodexNativePlugin } from '../../src/utils/codex-project-surface
 import {
   resolveConfigFileLockPath,
 } from '../../src/utils/plugin-config.js';
+import { initializeLocalMarketplace } from '../../src/utils/local-marketplace.js';
 import {
   applyCodexConfigTransactionFile,
   readCodexConfigFile,
@@ -274,6 +276,193 @@ describe('rebuild adapter integration', () => {
       expect(inspected.inspection.state).toBe('absent');
     },
   );
+
+  it('installs prewarmed Codex static Skills and reinstalls after legacy marker loss', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const catalogRoot = await createSyntheticCatalog({
+      root: isolation.layout.rootDir,
+      pluginRoots: [path.join(repositoryRoot, 'plugins', 'ask-me')],
+    });
+    const catalog = { rootDir: catalogRoot, source: 'local' } as CatalogResolution;
+    await initializeLocalMarketplace({ force: true, env: isolation.env, catalogResolution: catalog });
+    const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', 'ask-me'), {
+      mode: 'bundle',
+    });
+    const configPath = path.join(isolation.layout.codexHomeDir, 'config.toml');
+    const cacheRoot = path.join(
+      isolation.layout.codexHomeDir,
+      'plugins',
+      'cache',
+      'aw',
+      plugin.manifest.name,
+      plugin.manifest.version,
+    );
+    let marketplace = false;
+    let installed = false;
+    const writeConfig = async (): Promise<void> => {
+      await fs.outputFile(configPath, [
+        ...(marketplace ? [
+          '[marketplaces.aw]',
+          `source = ${JSON.stringify(isolation.layout.awHomeDir)}`,
+          'source_type = "local"',
+          '',
+        ] : []),
+        ...(installed ? [
+          `[plugins."${plugin.manifest.name}@aw"]`,
+          'enabled = true',
+          '',
+        ] : []),
+      ].join('\n'));
+    };
+    const runner: NativeCliRunner = async (invocation) => {
+      if (invocation.args[1] === 'marketplace' && invocation.args[2] === 'add') {
+        marketplace = true;
+        await writeConfig();
+      } else if (invocation.args[1] === 'marketplace' && invocation.args[2] === 'remove') {
+        marketplace = false;
+        await writeConfig();
+      } else if (invocation.args[1] === 'add') {
+        installed = true;
+        await fs.copy(
+          path.join(isolation.layout.awHomeDir, 'plugins', plugin.manifest.name),
+          cacheRoot,
+          { overwrite: true },
+        );
+        await writeConfig();
+      } else if (invocation.args[1] === 'remove') {
+        installed = false;
+        await fs.remove(path.dirname(cacheRoot));
+        await writeConfig();
+      }
+      return {
+        exitCode: 0,
+        stdout: invocation.args[1] === 'list' && installed
+          ? `${plugin.manifest.name}@aw\n`
+          : '',
+        stderr: '',
+      };
+    };
+    const context = createCommandExecutionContext({ env: isolation.env, nativeCliRunner: runner });
+    const before = await inspectRebuildTarget({
+      plugin,
+      platform: 'codex',
+      scope: 'user',
+      cwd: isolation.layout.fixtureCwd,
+      catalog,
+      context,
+    });
+    expect(before.inspection.state).toBe('absent');
+
+    const integration = createRebuildIntegration({ context });
+    const build = (command: 'install' | 'reinstall' | 'cleanup') => integration.buildTarget({
+      plugin,
+      platform: 'codex',
+      scope: 'user',
+      cwd: isolation.layout.fixtureCwd,
+      command,
+      catalog,
+      includeHistoricalLifecycleArtifacts: false,
+    });
+    const installTarget = await build('install');
+    const installedResult = await executeRebuildOperation({
+      command: 'install',
+      target: installTarget,
+      driver: integration.driver,
+      activeStore,
+    });
+    expect(installedResult.status, JSON.stringify(installedResult.failures)).toBe('succeeded');
+
+    const staticSkills = installTarget.artifacts.filter((artifact) => artifact.kind === 'skill');
+    expect(staticSkills.length).toBeGreaterThan(0);
+    const removeLegacyMarkers = async (): Promise<void> => {
+      for (const artifact of staticSkills) {
+        await fs.remove(path.join(artifact.path, SKILL_OWNER_MARKER));
+        await fs.remove(path.join(
+          cacheRoot,
+          path.relative(
+            path.join(isolation.layout.awHomeDir, 'plugins', plugin.manifest.name),
+            artifact.path,
+          ),
+          SKILL_OWNER_MARKER,
+        ));
+      }
+    };
+    await removeLegacyMarkers();
+
+    const cleanupTarget = await build('cleanup');
+    const cleanupResult = await executeRebuildOperation({
+      command: 'cleanup',
+      target: cleanupTarget,
+      driver: integration.driver,
+      activeStore,
+    });
+    expect(cleanupResult.status, JSON.stringify(cleanupResult.failures)).toBe('succeeded');
+    const recoveredInstallTarget = await build('install');
+    const recoveredInstallResult = await executeRebuildOperation({
+      command: 'install',
+      target: recoveredInstallTarget,
+      driver: integration.driver,
+      activeStore,
+    });
+    expect(recoveredInstallResult.status, JSON.stringify(recoveredInstallResult.failures))
+      .toBe('succeeded');
+
+    await removeLegacyMarkers();
+
+    const reinstallTarget = await build('reinstall');
+    const reinstalledResult = await executeRebuildOperation({
+      command: 'reinstall',
+      target: reinstallTarget,
+      driver: integration.driver,
+      activeStore,
+    });
+    expect(reinstalledResult.status, JSON.stringify(reinstalledResult.failures)).toBe('succeeded');
+    for (const artifact of staticSkills) {
+      await expect(fs.pathExists(path.join(artifact.path, SKILL_OWNER_MARKER))).resolves.toBe(true);
+    }
+  });
+
+  it('does not let an active marketplace fallback self-authorize markerless Skill drift', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const catalogRoot = await createSyntheticCatalog({
+      root: isolation.layout.rootDir,
+      pluginRoots: [path.join(repositoryRoot, 'plugins', 'ask-me')],
+    });
+    await initializeLocalMarketplace({
+      force: true,
+      env: isolation.env,
+      catalogResolution: { rootDir: catalogRoot, source: 'local' },
+    });
+    const plugin = await readPluginManifest(path.join(
+      isolation.layout.awHomeDir,
+      'plugins',
+      'ask-me',
+    ), { mode: 'bundle' });
+    await fs.appendFile(path.join(
+      plugin.rootDir,
+      'codex',
+      'skills',
+      'decision-grill',
+      'SKILL.md',
+    ), '\nforeign drift\n');
+
+    const inspected = await inspectRebuildTarget({
+      plugin,
+      platform: 'codex',
+      scope: 'user',
+      cwd: isolation.layout.fixtureCwd,
+      catalog: { rootDir: isolation.layout.awHomeDir, source: 'local' },
+      context: createCommandExecutionContext({
+        env: isolation.env,
+        nativeCliRunner: async () => ({ exitCode: 0, stdout: '', stderr: '' }),
+      }),
+    });
+    expect(inspected.inspection.state).toBe('partial');
+    expect(inspected.inspection.components).toContainEqual(expect.objectContaining({
+      state: 'partial',
+      diagnostic: expect.stringContaining('foreign collision'),
+    }));
+  });
 
   it.each([
     ['codex', 'install'],

@@ -277,6 +277,41 @@ describe('ownership inspection and cleanup', () => {
     await expect(fs.readFile(path.join(foreignRoot, 'SKILL.md'), 'utf8')).resolves.toBe('# foreign\n');
   });
 
+  it('treats a verified pristine unowned Skill as absent and preserves drift as foreign', async () => {
+    const root = await makeTempRoot();
+    const skillsRoot = path.join(root, 'skills');
+    const skillRoot = path.join(skillsRoot, 'review');
+    await fs.outputFile(path.join(skillRoot, 'SKILL.md'), '# pristine\n');
+    const component: OwnedComponent = {
+      kind: 'skill-directory',
+      path: skillRoot,
+      allowedRoot: skillsRoot,
+      identity: userIdentity(),
+      unownedIsPristine: async (actualPath) =>
+        await fs.readFile(path.join(actualPath, 'SKILL.md'), 'utf8') === '# pristine\n',
+    };
+
+    await expect(inspectOwnedComponents({ components: [component] })).resolves.toMatchObject({
+      state: 'absent',
+      components: [{ state: 'absent' }],
+    });
+    await expect(cleanupOwnedComponents({ components: [component] })).resolves.toEqual({
+      removed: [],
+      absent: [skillRoot],
+      residual: [],
+      quarantined: [],
+      failures: [],
+    });
+    await expect(fs.pathExists(skillRoot)).resolves.toBe(true);
+
+    await fs.writeFile(path.join(skillRoot, 'SKILL.md'), '# changed\n');
+    await expect(cleanupOwnedComponents({ components: [component] })).resolves.toMatchObject({
+      removed: [],
+      residual: [skillRoot],
+    });
+    await expect(fs.readFile(path.join(skillRoot, 'SKILL.md'), 'utf8')).resolves.toBe('# changed\n');
+  });
+
   it.each(['codex', 'claude'] as const)(
     'reports owned %s Skill health separately from deletion authorization',
     async (platform) => {
