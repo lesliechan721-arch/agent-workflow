@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import {
   access,
@@ -11,7 +11,6 @@ import {
   readFile,
   readdir,
   realpath,
-  rm,
   stat,
   writeFile,
 } from 'node:fs/promises';
@@ -48,6 +47,8 @@ Options:
   --codex-config <path>           Read model/provider config from this config.toml
   --no-inherit-codex-config       Use a clean official Codex provider config
   --codex-bin <path>              Codex executable; default: codex
+  --batch-name <name>             Create a named report batch
+  --batch-id <id>                 Append to an existing report batch
   --run-id <id>                  Use an explicit unique report run id
   --allow-unmanaged-processes    Confirm a run without descendant process tracking
   --validate-only                 Validate target, manifest, corpus, and workspace paths
@@ -109,6 +110,8 @@ function parseArgs(argv) {
     else if (arg === '--model-provider') options.modelProvider = value;
     else if (arg === '--codex-config') options.codexConfig = path.resolve(value);
     else if (arg === '--codex-bin') options.codexBin = value;
+    else if (arg === '--batch-name') options.batchName = value;
+    else if (arg === '--batch-id') options.batchId = value;
     else if (arg === '--run-id') options.runId = value;
     else fail(`Unknown option: ${arg}`);
   }
@@ -119,30 +122,35 @@ function parseArgs(argv) {
     fail('--split must be train, validation, sanity, or all.');
   }
   if (options.caseId && !options.suite) fail('--case requires --suite.');
+  if (
+    options.caseId &&
+    (
+      options.caseId === '.' ||
+      options.caseId === '..' ||
+      options.caseId.includes('/') ||
+      options.caseId.includes('\\') ||
+      options.caseId.includes('\0') ||
+      path.isAbsolute(options.caseId) ||
+      path.win32.isAbsolute(options.caseId)
+    )
+  ) {
+    fail('--case must be one safe report path segment.');
+  }
+  if (!options.validateOnly && (options.batchName ? 1 : 0) + (options.batchId ? 1 : 0) !== 1) {
+    fail('Provide exactly one of --batch-name or --batch-id.');
+  }
   if (!options.inheritCodexConfig && (options.codexConfig || options.modelProvider)) {
     fail('--no-inherit-codex-config cannot be combined with --codex-config or --model-provider.');
   }
   if (options.validateOnly) {
     if (
-      options.runId || options.allowUnmanagedProcesses || options.model ||
+      options.batchName || options.batchId || options.runId || options.allowUnmanagedProcesses || options.model ||
       options.modelProvider || options.codexConfig || !options.inheritCodexConfig || options.runs
     ) {
       fail('--validate-only does not accept output or model-run options.');
     }
   }
   return options;
-}
-
-function createRunId(date = new Date()) {
-  const timestamp = date.toISOString().replace(/[-:]/gu, '').replace(/\.\d{3}Z$/u, 'Z');
-  return `${timestamp}-${randomUUID().slice(0, 8)}`;
-}
-
-function validateRunId(value) {
-  if (!/^\d{8}T\d{6}Z-[0-9a-f]{8}$/u.test(value)) {
-    fail('--run-id must use YYYYMMDDTHHMMSSZ-xxxxxxxx.');
-  }
-  return value;
 }
 
 async function pathExists(candidate) {
@@ -189,6 +197,13 @@ async function resolveSkillRoot(target) {
   await assertNoSymlinks(candidate, 'Static eval target');
   if (!(await pathExists(path.join(candidate, 'SKILL.md')))) {
     fail(`Static eval target has no SKILL.md: ${candidate}`);
+  }
+  const readmePath = path.join(candidate, 'README.md');
+  if (!(await pathExists(readmePath))) {
+    fail(`Static eval target has no README.md: ${candidate}`);
+  }
+  if ((await readFile(readmePath, 'utf8')).trim() === '') {
+    fail(`Static eval target README.md must not be empty: ${candidate}`);
   }
   return candidate;
 }
@@ -619,8 +634,8 @@ export function parseSkillName(content, skillRoot) {
 }
 
 function isSkillAuthorOnlyPath(relativePath) {
-  const [topLevel] = relativePath.split(/[\\/]/u).filter(Boolean);
-  return topLevel === 'evals' || topLevel === 'reports';
+  return relativePath.split(/[\\/]/u).filter(Boolean).some((segment) =>
+    segment === 'evals' || segment === 'reports');
 }
 
 async function listFiles(root) {
@@ -650,29 +665,6 @@ async function digestTree(root) {
     hash.update('\0');
   }
   return `sha256:${hash.digest('hex')}`;
-}
-
-async function ensureNewDirectory(directory) {
-  if (await pathExists(directory)) fail(`Output directory already exists: ${directory}`);
-  await mkdir(directory, { recursive: true });
-}
-
-function staticEvalLayout(skillRoot, skillName, requestedRunId) {
-  const runId = validateRunId(requestedRunId ?? createRunId());
-  return {
-    runId,
-    reportRoot: path.join(skillRoot, 'reports', 'evals', runId),
-    rawRoot: path.join(skillRoot, 'reports', 'evals', runId, 'raw'),
-    workRoot: path.join(
-      REPO_ROOT,
-      '.tmp',
-      'agent-workflows',
-      'evals',
-      'static',
-      skillName,
-      runId,
-    ),
-  };
 }
 
 async function prepareSubject(manifest, outputDir) {
@@ -708,14 +700,15 @@ async function loadCentralDrivers() {
     conversation: path.join(root, 'codex-eval-app-server.js'),
     processManagement: path.join(root, 'codex-eval-process-management.js'),
     isolation: path.join(root, 'codex-eval-isolation.js'),
+    reporting: path.join(root, 'skill-reporting.js'),
   };
   for (const file of Object.values(files)) {
     if (!(await pathExists(file))) fail(`Built eval driver not found: ${file}. Run pnpm build first.`);
   }
-  const [contract, runtime, trigger, conversation, processManagement, isolation] = await Promise.all(
+  const [contract, runtime, trigger, conversation, processManagement, isolation, reporting] = await Promise.all(
     Object.values(files).map((file) => import(pathToFileURL(file).href)),
   );
-  return { contract, runtime, trigger, conversation, processManagement, isolation };
+  return { contract, runtime, trigger, conversation, processManagement, isolation, reporting };
 }
 
 async function validateCentralContracts(drivers, skillRoot, manifest) {
@@ -760,6 +753,66 @@ async function codexVersion(codexBin, env) {
   }
 }
 
+export function staticEvalHarnessRoots(repoRoot = REPO_ROOT) {
+  return [
+    {
+      name: 'packages/cli/dist/scripts',
+      root: path.join(repoRoot, 'packages', 'cli', 'dist', 'scripts'),
+    },
+    {
+      name: 'packages/cli/dist/src',
+      root: path.join(repoRoot, 'packages', 'cli', 'dist', 'src'),
+    },
+    {
+      name: '.agents/skills/skill-review/scripts',
+      root: path.join(repoRoot, '.agents', 'skills', 'skill-review', 'scripts'),
+    },
+  ];
+}
+
+export function applyRunCountCoverage(report, suite, requestedRuns) {
+  if (requestedRuns === undefined || requestedRuns >= suite.defaultRuns) return report;
+  return {
+    ...report,
+    outcome: 'incomplete',
+    complete: false,
+    diagnostics: [
+      ...report.diagnostics,
+      `Requested runs ${requestedRuns} are below the declared default ${suite.defaultRuns}.`,
+    ],
+  };
+}
+
+async function readStaticSourceRevision(participantSkills) {
+  try {
+    const [head, status] = await Promise.all([
+      execFileAsync('git', ['rev-parse', 'HEAD'], {
+        cwd: REPO_ROOT,
+        encoding: 'utf8',
+      }),
+      execFileAsync('git', [
+        'status',
+        '--porcelain=v1',
+        '--',
+        ...participantSkills.map((skill) => `.agents/skills/${skill}`),
+        'packages/cli/scripts',
+        'packages/cli/src',
+        '.agents/skills/skill-review',
+        ':(exclude).agents/reports/**',
+      ], {
+        cwd: REPO_ROOT,
+        encoding: 'utf8',
+      }),
+    ]);
+    return {
+      gitHead: head.stdout.trim() || null,
+      inScopeDirty: status.stdout.trim() !== '',
+    };
+  } catch {
+    return { gitHead: null, inScopeDirty: true };
+  }
+}
+
 async function run(options, skillRoot, skillName, manifest) {
   const drivers = await loadCentralDrivers();
   await validateCentralContracts(drivers, skillRoot, manifest);
@@ -773,12 +826,61 @@ async function run(options, skillRoot, skillName, manifest) {
       'This confirmed run cannot track or verify descendant processes.\n',
     );
   }
-  const layout = staticEvalLayout(skillRoot, skillName, options.runId);
-  await ensureNewDirectory(layout.reportRoot);
-  await mkdir(layout.rawRoot, { recursive: true });
-  await ensureNewDirectory(layout.workRoot);
+  const sourceDigests = Object.fromEntries(await Promise.all(
+    manifest.participantSkills.map(async (participant) => [
+      participant,
+      await digestTree(path.join(STATIC_SKILLS_ROOT, participant)),
+    ]),
+  ));
+  const sourceDigest = sourceDigests[skillName];
+  const sourceRevision = await readStaticSourceRevision(manifest.participantSkills);
+  const authorSourceDigest = await drivers.reporting.computeAuthorSourceDigest(
+    manifest.participantSkills.map((participant) => ({
+      name: participant,
+      root: path.join(STATIC_SKILLS_ROOT, participant),
+    })),
+  );
+  const codexRuntime = await drivers.runtime.resolveCodexEvalRuntimeConfig({
+    sourceEnv: process.env,
+    inheritUserConfig: options.inheritCodexConfig,
+    configPath: options.codexConfig,
+    modelOverride: options.model,
+    modelProviderOverride: options.modelProvider,
+  });
+  const environmentDigest = drivers.reporting.createEnvironmentDigest({
+    nodeVersion: process.version,
+    platform: process.platform,
+    architecture: process.arch,
+  });
+  const modelEnvironmentDigest = drivers.reporting.createEnvironmentDigest({
+    model: options.model ?? codexRuntime.model ?? null,
+    modelProvider: codexRuntime.modelProvider,
+    codexConfigDigest: codexRuntime.evidenceDigest,
+    codexVersion: await codexVersion(options.codexBin, process.env),
+    processManagement,
+  });
+  const harnessDigest = await drivers.reporting.computeAuthorSourceDigest(
+    staticEvalHarnessRoots(),
+  );
+  const requiredTargets = drivers.reporting.staticReleaseTargets(manifest);
+  const layout = await drivers.reporting.createSkillEvalRunLayout({
+    repoRoot: REPO_ROOT,
+    owner: { kind: 'static-skill', skill: skillName },
+    batchName: options.batchName,
+    batchId: options.batchId,
+    runId: options.runId,
+    source: {
+      digest: authorSourceDigest,
+      gitHead: sourceRevision.gitHead,
+      inScopeDirty: sourceRevision.inScopeDirty,
+    },
+    environmentDigest,
+    modelEnvironmentDigest,
+    harnessDigest,
+    requiredTargets,
+  });
   options.outputDir = layout.rawRoot;
-  const startedAt = new Date().toISOString();
+  const startedAt = layout.startedAt;
   await writeFile(path.join(layout.reportRoot, 'run.json'), `${JSON.stringify({
     schemaVersion: 1,
     type: 'static-skill-eval',
@@ -787,17 +889,12 @@ async function run(options, skillRoot, skillName, manifest) {
     participantSkills: manifest.participantSkills,
     status: 'running',
     startedAt,
+    pid: layout.pid,
+    host: layout.host,
     processManagement,
     rawDirectory: 'raw',
   }, null, 2)}\n`, 'utf8');
   try {
-  const sourceDigests = Object.fromEntries(await Promise.all(
-    manifest.participantSkills.map(async (participant) => [
-      participant,
-      await digestTree(path.join(STATIC_SKILLS_ROOT, participant)),
-    ]),
-  ));
-  const sourceDigest = sourceDigests[skillName];
   const subjectRoot = await prepareSubject(manifest, layout.workRoot);
   const subjectPackageDigests = Object.fromEntries(await Promise.all(
     manifest.participantSkills.map(async (participant) => [
@@ -810,13 +907,6 @@ async function run(options, skillRoot, skillName, manifest) {
       fail(`Materialized static Skill ${participant} does not match its source package.`);
     }
   }
-  const codexRuntime = await drivers.runtime.resolveCodexEvalRuntimeConfig({
-    sourceEnv: process.env,
-    inheritUserConfig: options.inheritCodexConfig,
-    configPath: options.codexConfig,
-    modelOverride: options.model,
-    modelProviderOverride: options.modelProvider,
-  });
   const runtimeCapsule = await drivers.runtime.createCodexEvalRuntimeCapsule(
     codexRuntime,
     process.env,
@@ -871,6 +961,7 @@ async function run(options, skillRoot, skillName, manifest) {
             workRoot: path.join(layout.workRoot, 'conversation'),
           });
         }
+        report = applyRunCountCoverage(report, suite, options.runs);
         report.reportPath = path.relative(options.outputDir, reportPath).split(path.sep).join('/');
         reports.push(report);
       }
@@ -994,22 +1085,19 @@ async function run(options, skillRoot, skillName, manifest) {
       ].join('\n'),
       'utf8',
     );
-    await writeFile(path.join(layout.reportRoot, 'run.json'), `${JSON.stringify({
-      schemaVersion: 1,
-      type: 'static-skill-eval',
-      runId: layout.runId,
-      skill: skillName,
-      participantSkills: manifest.participantSkills,
-      status: 'completed',
-      startedAt,
-      completedAt: new Date().toISOString(),
-      outcome,
-      processManagement,
-      rawDirectory: 'raw',
-    }, null, 2)}\n`, 'utf8');
+    const batchSummary = await drivers.reporting.publishEvalRunToBatch({
+      repoRoot: REPO_ROOT,
+      layout,
+      evaluation,
+      caseId: options.caseId,
+      requiredTargets,
+    });
     process.stdout.write(`${JSON.stringify({
       ok: evaluation.complete && outcome !== 'failed' && outcome !== 'incomplete',
       outcome,
+      batchId: layout.batchId,
+      batchDir: path.relative(REPO_ROOT, layout.batchRoot).split(path.sep).join('/'),
+      batchSummary,
       runId: layout.runId,
       reportDir: path.relative(REPO_ROOT, layout.reportRoot).split(path.sep).join('/'),
       evaluation: path.join(layout.reportRoot, 'summary.json'),
@@ -1019,21 +1107,18 @@ async function run(options, skillRoot, skillName, manifest) {
     await runtimeCapsule.cleanup();
   }
   } catch (error) {
-    await writeFile(path.join(layout.reportRoot, 'run.json'), `${JSON.stringify({
-      schemaVersion: 1,
-      type: 'static-skill-eval',
-      runId: layout.runId,
-      skill: skillName,
-      participantSkills: manifest.participantSkills,
-      status: 'failed',
-      startedAt,
-      completedAt: new Date().toISOString(),
-      processManagement,
-      rawDirectory: 'raw',
-    }, null, 2)}\n`, 'utf8');
+    try {
+      await drivers.reporting.failSkillEvalRun({
+        layout,
+      });
+    } catch (refreshError) {
+      process.stderr.write(`Failed to mark the report run as failed: ${
+        refreshError instanceof Error ? refreshError.message : String(refreshError)
+      }\n`);
+    }
     throw error;
   } finally {
-    await rm(layout.workRoot, { recursive: true, force: true });
+    await layout.cleanupWork();
   }
 }
 

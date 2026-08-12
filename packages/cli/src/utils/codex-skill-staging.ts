@@ -10,6 +10,7 @@ export type CodexSkillStagingTree = DynamicSkillTree;
 export async function createCodexSkillExpectedTree(options: {
   artifact: Pick<CodexSkillArtifact, 'target' | 'skillKey' | 'state' | 'content'>;
   sourceDirs?: string[];
+  requireReadme?: boolean;
 }): Promise<CodexSkillStagingTree> {
   return createDynamicSkillExpectedTree(options);
 }

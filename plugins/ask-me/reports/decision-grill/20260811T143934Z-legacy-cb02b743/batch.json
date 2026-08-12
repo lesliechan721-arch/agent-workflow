@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "batchId": "20260811T143934Z-legacy-cb02b743",
+  "name": "legacy",
+  "owner": {
+    "kind": "plugin-skill",
+    "plugin": "ask-me",
+    "skill": "decision-grill"
+  },
+  "status": "open",
+  "createdAt": "2026-08-12T02:58:20.966Z",
+  "updatedAt": "2026-08-12T03:41:04.351Z",
+  "source": {
+    "digest": "legacy:20260811T143934Z-legacy-cb02b743",
+    "gitHead": "98fddb770b208a1111c727be1b9bee8512d55a8b",
+    "inScopeDirty": true
+  },
+  "environmentDigest": "legacy:migrated",
+  "requiredTargets": [
+    "conversation/behavior/project-default/all/all",
+    "materialization/project-default",
+    "materialization/user-default",
+    "trigger/router/project-default/validation/all",
+    "trigger/trigger/project-default/validation/all"
+  ],
+  "migration": {
+    "kind": "legacy-report-layout",
+    "migratedAt": "2026-08-12T02:58:20.966Z"
+  }
+}

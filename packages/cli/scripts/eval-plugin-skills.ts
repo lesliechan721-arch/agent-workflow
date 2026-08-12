@@ -64,6 +64,14 @@ import {
   materializePluginEvalSubjects,
   resolveMaterializedSubjectRoot,
 } from './plugin-eval-materializer.js';
+import {
+  computeAuthorSourceDigest,
+  createEnvironmentDigest,
+  failSkillEvalRun,
+  pluginReleaseTargets,
+  publishEvalRunToBatch,
+  validateSkillReportTargetSegment,
+} from './skill-reporting.js';
 
 const execFileAsync = promisify(execFile);
 const REPO_ROOT_ENV = 'AW_PLUGIN_EVAL_REPO_ROOT';
@@ -81,6 +89,8 @@ interface ParsedArgs {
   codexConfig?: string;
   inheritCodexConfig: boolean;
   codexBin: string;
+  batchName?: string;
+  batchId?: string;
   runId?: string;
   materializeOnly: boolean;
   allowEnvironmentSkips: boolean;
@@ -152,6 +162,8 @@ function usage(): string {
     '  --codex-config <path>         Read model/provider config from this config.toml',
     '  --no-inherit-codex-config     Use a clean official Codex provider config',
     '  --codex-bin <path>            Codex executable (default: codex)',
+    '  --batch-name <name>           Create a named report batch',
+    '  --batch-id <id>               Append to an existing report batch',
     '  --run-id <id>                 Use an explicit unique report run id',
     '  --materialize-only            Do not start real Codex model sessions',
     '  --allow-environment-skips     Diagnostic only; release remains incomplete',
@@ -246,6 +258,16 @@ function parseArgs(args: string[]): ParsedArgs {
       index += 1;
       continue;
     }
+    if (arg === '--batch-name') {
+      parsed.batchName = optionValue(args, index, arg);
+      index += 1;
+      continue;
+    }
+    if (arg === '--batch-id') {
+      parsed.batchId = optionValue(args, index, arg);
+      index += 1;
+      continue;
+    }
     if (arg === '--run-id') {
       parsed.runId = optionValue(args, index, arg);
       index += 1;
@@ -264,6 +286,9 @@ function parseArgs(args: string[]): ParsedArgs {
   }
   if (parsed.caseId && !parsed.suite) {
     throw new Error('--case requires --suite.');
+  }
+  if (parsed.caseId) {
+    validateSkillReportTargetSegment(parsed.caseId, '--case');
   }
   if (!parsed.inheritCodexConfig && (parsed.codexConfig || parsed.modelProvider)) {
     throw new Error(
@@ -687,6 +712,23 @@ function collectCoverageDiagnostics(
   return diagnostics;
 }
 
+function applyRunCountCoverage(
+  report: PluginEvalSuiteReport,
+  suite: PluginEvalSuite,
+  parsed: ParsedArgs,
+): PluginEvalSuiteReport {
+  if (parsed.runs === undefined || parsed.runs >= suite.defaultRuns) return report;
+  return {
+    ...report,
+    outcome: 'incomplete',
+    complete: false,
+    diagnostics: [
+      ...report.diagnostics,
+      `Requested runs ${parsed.runs} are below the declared default ${suite.defaultRuns}.`,
+    ],
+  };
+}
+
 function assertSuiteSupportsRequestedOptions(
   suite: PluginEvalSuite,
   parsed: ParsedArgs,
@@ -970,7 +1012,7 @@ async function runOnePlugin(options: {
               workRoot: path.join(options.workRoot, 'conversation'),
             });
             report.reportPath = path.relative(outputRoot, reportPath).split(path.sep).join('/');
-            reports.push(report);
+            reports.push(applyRunCountCoverage(report, suite, options.parsed));
           } else if (suite.kind === 'trigger') {
             const triggerSplit = split ?? 'all';
             const reportPath = path.join(
@@ -996,9 +1038,9 @@ async function runOnePlugin(options: {
               workRoot: path.join(options.workRoot, 'trigger'),
             });
             report.reportPath = path.relative(outputRoot, reportPath).split(path.sep).join('/');
-            reports.push(report);
+            reports.push(applyRunCountCoverage(report, suite, options.parsed));
           } else {
-            reports.push(await runCommandSuite({
+            reports.push(applyRunCountCoverage(await runCommandSuite({
               pluginName: sourcePlugin.manifest.name,
               suite,
               split,
@@ -1014,7 +1056,7 @@ async function runOnePlugin(options: {
               installedPluginNames: subject.installedPlugins.map((plugin) => plugin.name),
               workRoot: options.workRoot,
               stderr: options.stderr,
-            }));
+            }), suite, options.parsed));
           }
         }
       }
@@ -1111,7 +1153,6 @@ async function writePublishedEvalReport(options: {
   layout: EvalRunLayout;
   bundle: PluginEvaluationBundle;
   sourceRevision: { gitHead: string | null; inScopeDirty: boolean };
-  startedAt: string;
 }): Promise<void> {
   const processManagement = publicProcessManagement(options.bundle.processManagement);
   const summary = {
@@ -1177,20 +1218,6 @@ async function writePublishedEvalReport(options: {
     '',
   ].join('\n');
   await fs.writeFile(path.join(options.layout.reportRoot, 'report.md'), report, 'utf8');
-  await writeEvalRunJson(options.layout.reportRoot, 'run.json', {
-    schemaVersion: 1,
-    type: 'plugin-skill-eval',
-    runId: options.layout.runId,
-    plugin: options.bundle.plugin,
-    skill: options.bundle.skill,
-    status: 'completed',
-    startedAt: options.startedAt,
-    completedAt: new Date().toISOString(),
-    outcome: options.bundle.outcome,
-    processManagement,
-    source: options.sourceRevision,
-    rawDirectory: 'raw',
-  });
 }
 
 export async function runPluginEvals(
@@ -1215,6 +1242,14 @@ export async function runPluginEvals(
     options.repoRoot ?? env[REPO_ROOT_ENV] ?? resolveRepoRoot(),
   );
   let prepared: PreparedPluginEval;
+  if ((parsed.batchName ? 1 : 0) + (parsed.batchId ? 1 : 0) !== 1) {
+    if (options.createRunLayout && !parsed.batchName && !parsed.batchId) {
+      parsed.batchName = 'test-batch';
+    } else {
+      stderr('Provide exactly one of --batch-name or --batch-id.\n');
+      return 2;
+    }
+  }
   try {
     prepared = await preparePluginEval({
       repoRoot,
@@ -1263,24 +1298,58 @@ export async function runPluginEvals(
       );
     }
   }
+  const sourceRevision = await readSourceRevision({
+    repoRoot,
+    pluginNames: prepared.sourcePlugins.map((plugin) => plugin.manifest.name),
+  });
+  const sourceDigest = await computeAuthorSourceDigest(
+    prepared.sourcePlugins.map((plugin) => ({
+      name: plugin.manifest.name,
+      root: plugin.rootDir,
+    })),
+  );
+  const environmentDigest = createEnvironmentDigest({
+    nodeVersion: process.version,
+    platform: process.platform,
+    architecture: process.arch,
+  });
+  const modelEnvironmentDigest = parsed.materializeOnly ? null : createEnvironmentDigest({
+    model: parsed.model ?? codexRuntime?.model ?? null,
+    modelProvider: codexRuntime?.modelProvider ?? null,
+    codexConfigDigest: codexRuntime?.evidenceDigest ?? null,
+    codexVersion: await readCodexVersion(parsed.codexBin, env),
+    processManagement: publicProcessManagement(processManagement),
+  });
+  const harnessRepoRoot = resolveRepoRoot();
+  const harnessDigest = await computeAuthorSourceDigest([
+    { name: 'packages/cli/scripts', root: path.join(harnessRepoRoot, 'packages', 'cli', 'scripts') },
+    { name: 'packages/cli/src', root: path.join(harnessRepoRoot, 'packages', 'cli', 'src') },
+  ]);
+  const requiredTargets = pluginReleaseTargets(prepared.manifest);
   let layout: EvalRunLayout;
   try {
     layout = await (options.createRunLayout ?? createPluginEvalRunLayout)({
       repoRoot,
-      skillRoot: prepared.skillRoot,
       plugin: parsed.pluginName!,
       skill: parsed.skillName!,
+      batchName: parsed.batchName,
+      batchId: parsed.batchId,
       runId: parsed.runId,
+      source: {
+        digest: sourceDigest,
+        gitHead: sourceRevision.gitHead,
+        inScopeDirty: sourceRevision.inScopeDirty,
+      },
+      environmentDigest,
+      modelEnvironmentDigest,
+      harnessDigest,
+      requiredTargets,
     });
   } catch (error) {
     stderr(`${error instanceof Error ? error.message : String(error)}\n`);
     return 2;
   }
-  const startedAt = new Date().toISOString();
-  const sourceRevision = await readSourceRevision({
-    repoRoot,
-    pluginNames: prepared.sourcePlugins.map((plugin) => plugin.manifest.name),
-  });
+  const startedAt = layout.startedAt;
   await writeEvalRunJson(layout.reportRoot, 'run.json', {
     schemaVersion: 1,
     type: 'plugin-skill-eval',
@@ -1289,6 +1358,8 @@ export async function runPluginEvals(
     skill: parsed.skillName,
     status: 'running',
     startedAt,
+    pid: layout.pid,
+    host: layout.host,
     processManagement: publicProcessManagement(processManagement),
     source: sourceRevision,
     rawDirectory: 'raw',
@@ -1325,10 +1396,19 @@ export async function runPluginEvals(
       layout,
       bundle,
       sourceRevision,
-      startedAt,
+    });
+    const batchSummary = await publishEvalRunToBatch({
+      repoRoot,
+      layout,
+      evaluation: bundle,
+      caseId: parsed.caseId,
+      requiredTargets,
     });
     stdout(`${JSON.stringify({
       schemaVersion: PLUGIN_EVAL_SCHEMA_VERSION,
+      batchId: layout.batchId,
+      batchDir: path.relative(repoRoot, layout.batchRoot).split(path.sep).join('/'),
+      batchSummary,
       runId: layout.runId,
       reportDir: path.relative(repoRoot, layout.reportRoot).split(path.sep).join('/'),
       bundle,
@@ -1339,19 +1419,16 @@ export async function runPluginEvals(
     const safeMessage = codexRuntime ? redactCodexEvalText(message, codexRuntime) : message;
     stderr(`${parsed.pluginName}: ${safeMessage}\n`);
     await fs.writeFile(path.join(layout.rawRoot, 'error.txt'), `${safeMessage}\n`, 'utf8');
-    await writeEvalRunJson(layout.reportRoot, 'run.json', {
-      schemaVersion: 1,
-      type: 'plugin-skill-eval',
-      runId: layout.runId,
-      plugin: parsed.pluginName,
-      skill: parsed.skillName,
-      status: 'failed',
-      startedAt,
-      completedAt: new Date().toISOString(),
-      processManagement: publicProcessManagement(processManagement),
-      source: sourceRevision,
-      rawDirectory: 'raw',
-    });
+    try {
+      await failSkillEvalRun({
+        layout,
+        message: safeMessage,
+      });
+    } catch (refreshError) {
+      stderr(`Failed to mark the report run as failed: ${
+        refreshError instanceof Error ? refreshError.message : String(refreshError)
+      }\n`);
+    }
     exitCode = 1;
   } finally {
     try {

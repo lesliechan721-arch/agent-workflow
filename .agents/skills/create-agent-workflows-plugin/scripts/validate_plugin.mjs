@@ -1633,38 +1633,9 @@ function validatePluginEvalManifest(pluginDir, pluginManifest) {
       'Plugin-root evals/ is legacy; put evals/ inside its owning static or dynamic Skill directory.',
     );
   }
-  const skillRoots = [];
-  if (typeof pluginManifest.skills === 'string') {
-    const staticSkillsRoot = path.join(
-      pluginDir,
-      normalizeRelativePath(pluginManifest.skills),
-    );
-    if (fs.existsSync(staticSkillsRoot) && fs.statSync(staticSkillsRoot).isDirectory()) {
-      for (const entry of fs.readdirSync(staticSkillsRoot, { withFileTypes: true })) {
-        if (entry.isDirectory()) {
-          skillRoots.push({ skill: entry.name, root: path.join(staticSkillsRoot, entry.name) });
-        }
-      }
-    }
-  }
-  for (const target of pluginManifest.artifacts?.targets ?? []) {
-    if (
-      !target ||
-      typeof target !== 'object' ||
-      target.target !== 'codex.skill' ||
-      typeof target.skillKey !== 'string' ||
-      !Array.isArray(target.sourceDirs)
-    ) {
-      continue;
-    }
-    for (const sourceDir of target.sourceDirs) {
-      if (typeof sourceDir !== 'string') continue;
-      skillRoots.push({
-        skill: target.skillKey,
-        root: path.join(pluginDir, normalizeRelativePath(sourceDir)),
-      });
-    }
-  }
+  const skillRoots = [...collectDeclaredSkillNames(pluginDir, pluginManifest).all]
+    .sort()
+    .map((skill) => ({ skill, root: path.join(pluginDir, 'skills', skill) }));
   const seenSkills = new Set();
   for (const owner of skillRoots) {
     const evalDir = path.join(owner.root, 'evals');
@@ -2062,6 +2033,36 @@ function validateDeclaredPathsExist(pluginDir, manifest) {
   }
 }
 
+function validateCanonicalSkillLayout(pluginDir, manifest) {
+  if (manifest.skills && normalizeRelativePath(manifest.skills) !== 'skills') {
+    error('skills must be "./skills"');
+  }
+  const pluginReadme = path.join(pluginDir, 'README.md');
+  if (!fs.statSync(pluginReadme, { throwIfNoEntry: false })?.isFile()) {
+    error('Plugin root README.md is required');
+  } else {
+    const content = fs.readFileSync(pluginReadme, 'utf8');
+    if (content.trim() === '') error('Plugin root README.md must not be empty');
+  }
+  const declared = collectDeclaredSkillNames(pluginDir, manifest);
+  for (const skill of declared.all) {
+    const skillRoot = path.join(pluginDir, 'skills', skill);
+    if (!fs.statSync(skillRoot, { throwIfNoEntry: false })?.isDirectory()) {
+      error(`Skill ${JSON.stringify(skill)} must use source root "./skills/${skill}"`);
+      continue;
+    }
+    const skillReadme = path.join(skillRoot, 'README.md');
+    if (!fs.statSync(skillReadme, { throwIfNoEntry: false })?.isFile()) {
+      error(`skills/${skill}/README.md is required`);
+      continue;
+    }
+    const content = fs.readFileSync(skillReadme, 'utf8');
+    if (content.trim() === '') {
+      error(`skills/${skill}/README.md must not be empty`);
+    }
+  }
+}
+
 function validateDeclaredNativeAssets(pluginDir, manifest) {
   const defaults = [
     ['skills', 'skills'],
@@ -2072,6 +2073,35 @@ function validateDeclaredNativeAssets(pluginDir, manifest) {
   for (const [filename, field] of defaults) {
     const fullPath = path.join(pluginDir, filename);
     if (fs.existsSync(fullPath) && !manifest[field]) {
+      if (field === 'skills') {
+        const dynamicSkills = new Set(
+          (Array.isArray(manifest.artifacts?.targets) ? manifest.artifacts.targets : [])
+            .filter((target) => {
+              if (
+                !target ||
+                typeof target !== 'object' ||
+                (target.target !== 'codex.skill' && target.target !== 'claude.skill') ||
+                typeof target.skillKey !== 'string' ||
+                !Array.isArray(target.sourceDirs) ||
+                target.sourceDirs.length === 0
+              ) return false;
+              return target.sourceDirs.every((sourceDir) =>
+                typeof sourceDir === 'string' &&
+                (
+                  normalizeRelativePath(sourceDir) === `skills/${target.skillKey}` ||
+                  normalizeRelativePath(sourceDir).startsWith(`skills/${target.skillKey}/`)
+                ));
+            })
+            .map((target) => target.skillKey),
+        );
+        const entries = fs.readdirSync(fullPath, { withFileTypes: true });
+        if (
+          entries.length > 0 &&
+          entries.every((entry) => entry.isDirectory() && dynamicSkills.has(entry.name))
+        ) {
+          continue;
+        }
+      }
       error(
         `"${filename}" exists but manifest does not declare "${field}" — declare it or remove the file`,
       );
@@ -2147,18 +2177,6 @@ function collectDeclaredSkillNames(pluginDir, manifest) {
     dynamic: dynamicSkillNameSet,
     all: new Set([...staticSkillNames, ...dynamicSkillNames]),
   };
-}
-
-function validateSkillInventory(pluginDir, manifest) {
-  const declared = collectDeclaredSkillNames(pluginDir, manifest);
-
-  for (const skillName of declared.dynamic) {
-    if (declared.static.has(skillName)) {
-      error(
-        `Invalid skill inventory: duplicate skillKey "${skillName}" is declared by both "skills/${skillName}" and a dynamic skill artifact.`,
-      );
-    }
-  }
 }
 
 function isNodeRunnablePath(relativePath) {
@@ -2806,6 +2824,26 @@ function validateArtifactTargetEntry(entry, index, manifest, seen, pluginDir) {
     if (!stats?.isDirectory() || stats.isSymbolicLink()) {
       error(`${sourceField} must point to an existing directory`);
     }
+    if (
+      skillKey &&
+      normalized !== `skills/${skillKey}` &&
+      !normalized.startsWith(`skills/${skillKey}/`)
+    ) {
+      error(`${sourceField} must stay inside "./skills/${skillKey}"`);
+    }
+    if (
+      skillKey &&
+      isSkillAuthorOnlyPath(path.posix.relative(`skills/${skillKey}`, normalized))
+    ) {
+      error(`${sourceField} must not point inside an author-only Skill directory`);
+    }
+  }
+  if (
+    skillKey &&
+    sourceDirs.length > 0 &&
+    !normalizedSourceDirs.includes(`skills/${skillKey}`)
+  ) {
+    error(`${fieldName}.sourceDirs must include "./skills/${skillKey}" so README.md is published`);
   }
 
   return {
@@ -2887,8 +2925,8 @@ function isValidArtifactFilePath(relativePath) {
 }
 
 function isSkillAuthorOnlyPath(relativePath) {
-  const [topLevel] = relativePath.split('/');
-  return topLevel === 'evals' || topLevel === 'reports';
+  return relativePath.split('/').some((segment) =>
+    segment === 'evals' || segment === 'reports');
 }
 
 function collectArtifactSourceFiles(rootDir, fieldName, files) {
@@ -2978,6 +3016,10 @@ function validateRenderedSkillTree(options) {
     } catch (e) {
       error(`${fieldName} final SKILL.md frontmatter is not valid YAML: ${e.message}`);
     }
+  }
+  const readme = files.get('README.md');
+  if (!readme || readme.toString('utf8').trim() === '') {
+    error(`${fieldName} final file tree must contain a non-empty README.md`);
   }
 
   if (declaration.target === 'codex.skill') {
@@ -4048,8 +4090,8 @@ async function validatePluginDir(pluginDir, options) {
   validateNameMatchesDirectory(pluginDir, manifest);
   validateNoBuildOutputDirs(pluginDir);
   validateDeclaredNativeAssets(pluginDir, manifest);
+  validateCanonicalSkillLayout(pluginDir, manifest);
   validatePluginVersionContracts(manifest, options);
-  validateSkillInventory(pluginDir, manifest);
   validatePluginEvalManifest(pluginDir, manifest);
   const artifactRenderEntry = validateScriptsLightweight(pluginDir, manifest);
   validateDynamicArtifactsLightweight(pluginDir, manifest, artifactRenderEntry);

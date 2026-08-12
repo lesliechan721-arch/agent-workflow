@@ -69,9 +69,10 @@ compatibility: Requires the agent-workflows repository, Node.js 20+, and install
    - 插件根 Node 脚本运行 `pnpm plugin:test <plugin>`
    - 改到 manifest、bundle 或安装逻辑时运行相关 `pnpm test:*`
    - 每个 Skill 的作者期用例放在自身源码根 `evals/`，按 `references/skill-evaluation.md` 声明 owner、participants 和 profiles
-   - 先运行 `pnpm plugin:eval <plugin> --skill <skill> --materialize-only` 验证 Codex 最终制品；真实模型 eval 只在本地显式运行
+   - 先运行 `pnpm plugin:eval <plugin> --skill <skill> --batch-name materialization --materialize-only` 验证 Codex 最终制品；真实模型 eval 只在本地显式运行
    - 完成条件：每个修改面有直接确定性测试；重大 Skill 修改有 with-skill/baseline behavior 和适用 trigger evidence；失败已修复并重跑
 8. **交付**
+   - 在批次最后一次运行或 review 发布后，人工更新 Skill README 的最近 eval/review 摘要、仓库相对完整报告路径和被评估 Git commit；不要在仍需追加同批次时修改 README
    - 报告修改的源码文件、运行的验证、未验证项和仍需用户决定的风险
    - 完成条件：明确区分完整通过、轻量预检、模型证据和未运行项
 
@@ -125,10 +126,12 @@ node .agents/skills/create-agent-workflows-plugin/scripts/init_plugin.mjs <plugi
 - Agent Skills portable core 与 Claude/Codex 扩展要明确区分。字段、类型、目标 profile 和版本证据的单一事实源是 `packages/cli/src/utils/skill-frontmatter-capabilities.json`；`scripts/generate_skill_frontmatter_reference.mjs` 把作者字段表生成到 `references/skill-frontmatter-capabilities.generated.md`，不要手改生成表。
 - 默认 validator 按 AW 最低 Claude 2.1.88 profile 校验；`--claude-skill-profile current` 可核对当前官方字段，但不能让高版本字段兼容最低宿主。`--strict-agent-skills` 只接受 portable core。
 - 插件 manifest 不支持 `dependencies`；插件必须独立声明和生成自己的运行时能力。
-- lifecycle 和 renderer 要可重试、幂等；renderer V2 只返回 plan，不直接写 Codex/Claude Skill runtime 或 config。完整静态 Skill 树用 target `sourceDirs`，动态 UTF-8 覆盖用 `content.files`。
-- Skill 根 `evals/**` 和 `reports/**` 是作者期材料，不进入 production runtime bundle 或 runtime digest；动态 Skill 的行为评测必须消费 materialized 最终制品。
+- lifecycle 和 renderer 要可重试、幂等；renderer V2 只返回 plan，不直接写 Codex/Claude Skill runtime 或 config。所有静态和动态 Skill 源码根都固定为 `skills/<skill>`；声明 source 时，target `sourceDirs` 必须包含该规范根，overlay 不能进入名为 `evals` 或 `reports` 的目录。动态 UTF-8 覆盖用 `content.files`，最终 Skill 保留非空 `README.md`。
+- Skill 根 `evals/**` 和插件根 `reports/**` 是作者期材料，不进入 production runtime bundle 或 runtime digest；动态 Skill 的行为评测必须消费 materialized 最终制品。Skill README 属于发布内容，不在构建时剥离。
+- 插件和每个 Skill 都必须有非空 README。插件 README 只介绍插件目标、Skill 和使用边界；Skill README 约定记录最近 eval/review 摘要、仓库相对完整报告路径和被评估 Git commit。该内容没有 marker、自动同步或发布门禁。
 - 每次 `plugin:eval` 只选择一个 owner Skill，但 suite 可以用 `skills[]` 和 repo-local `profiles[].plugins[]` 评估跨 Skill、跨插件组合；这不形成 production dependency。
-- eval 中间产物固定在项目 `.tmp/agent-workflows/evals/`，持久报告固定在 owner Skill 的 `reports/evals/<run-id>/`；review 报告使用 `reports/reviews/<run-id>/`。
+- eval 中间产物固定在项目 `.tmp/agent-workflows/evals/`。插件持久报告固定在 `plugins/<plugin>/reports/<skill>/<batch-id>/`，静态 Skill 使用 `.agents/reports/<skill>/<batch-id>/`；批次下按 eval 类型和 target 组织，review 位于同批次的 `reviews/<mode>/<review-id>/`。
+- 每次 eval 必须用 `--batch-name` 新建批次，或用已有输出的 `--batch-id` 追加同一批次。修改 Skill README 会改变源码摘要；若仍需追加运行或附加 review，应等批次完成后再更新 README。
 - 真实模型 eval 默认要求 Full Access 以管理后代进程；`--allow-unmanaged-processes` 只在用户明确确认无法保证后代清理的风险后使用。
 - `plugin:test` 只验证确定性脚本；`plugin:eval` 只提供 Codex 模型证据，真实模型只运行 project profile，user profile 只做确定性 materialization。
 - Codex project 插件必须有 repo-managed surface；含 Apps 或纯 native-only 的插件不能 project 安装。
@@ -149,8 +152,8 @@ node .agents/skills/create-agent-workflows-plugin/scripts/generate_skill_frontma
 pnpm plugin:test <plugin>
 pnpm plugin:test <plugin> --platform codex --scope project
 pnpm plugin:test <dual-platform-plugin> --platform both --scope project
-pnpm plugin:eval <plugin> --skill <skill> --materialize-only
-pnpm plugin:eval <plugin> --skill <skill> --suite trigger --split validation --runs 1
+pnpm plugin:eval <plugin> --skill <skill> --batch-name materialization --materialize-only
+pnpm plugin:eval <plugin> --skill <skill> --batch-name trigger-validation --suite trigger --split validation --runs 1
 ```
 
 `validate_plugin.mjs` 默认校验 AW source profile；`--strict-agent-skills` 用于仓库内检查是否只使用 Agent Skills portable core，但不是上游 `skills-ref` 的替代品。`--json` 提供机器可解析结果。CLI 未构建或 `packages/cli/dist` 的 manifest contract 已过期时，validator 只做轻量预检；完整 contract 仍需先运行 `pnpm build`。
@@ -163,3 +166,4 @@ pnpm plugin:eval <plugin> --skill <skill> --suite trigger --split validation --r
 - 新建或重大修改的 Skill 有 candidate/value evidence、明确 invocation、局部完成标准、验证循环、自身 `evals/manifest.json` 和真实小型用例
 - Codex/Claude 动态 Skill 的 project/user final artifacts 已 materialize，并保留作者声明的原生调用元数据；真实模型未运行时明确列为未验证
 - 最终回复列出改动、验证结果和未完成项
+- 插件和 Skill README 已补齐；有完成报告的 Skill README 已按人工约定更新，插件 README 不包含 Skill 验证报告

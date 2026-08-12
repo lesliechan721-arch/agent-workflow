@@ -40,7 +40,7 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const pluginRoot = path.resolve(scriptDir, '..');
 const manifestPath = path.resolve(pluginRoot, '.agents-plugin', 'plugin.json');
 const skillTemplatePaths = [
-  path.resolve(pluginRoot, 'templates', CODEX_EXPLORE_SKILL_KEY, 'SKILL.md'),
+  path.resolve(pluginRoot, 'skills', CODEX_EXPLORE_SKILL_KEY, 'SKILL.md'),
 ];
 
 function isRecord(value) {

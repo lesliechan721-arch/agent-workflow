@@ -105,7 +105,7 @@
     },
     {
       "id": "modify-with-script",
-      "prompt": "实际维护 plugins/code-review：只在 review-skills/review-workflow 内增加一个 Node.js JSON 报告 validator。脚本必须非交互，支持 --help，成功时 stdout 输出短 JSON，失败诊断写 stderr 并返回非零；覆盖合法输入、非法 JSON、缺少字段和重复运行。更新该 Skill 的准确调用说明，并添加直接 node:test。不要改变插件 manifest、安装、scope、config、lifecycle、MCP 或其它 Skill。运行 --help、成功、失败、重复运行、node --test 和作者 validator。",
+      "prompt": "实际维护 plugins/code-review：只在 skills/review-workflow 内增加一个 Node.js JSON 报告 validator。脚本必须非交互，支持 --help，成功时 stdout 输出短 JSON，失败诊断写 stderr 并返回非零；覆盖合法输入、非法 JSON、缺少字段和重复运行。更新该 Skill 的准确调用说明，并添加直接 node:test。不要改变插件 manifest、安装、scope、config、lifecycle、MCP 或其它 Skill。运行 --help、成功、失败、重复运行、node --test 和作者 validator。",
       "expected_output": "对既有 Skill 做局部修改；新增可执行 validator 与直接测试，SKILL.md 给出准确接口和验证循环；所有要求的确定性命令和作者 validator 通过。",
       "scripted_replies": [],
       "sandbox": "workspace-write",
@@ -113,20 +113,20 @@
         "platforms": ["codex"],
         "clean_session": true,
         "workspace_unchanged": false,
-        "allowed_workspace_changes": ["plugins/code-review/review-skills/review-workflow/**"],
+        "allowed_workspace_changes": ["plugins/code-review/skills/review-workflow/**"],
         "artifacts": [
           {
-            "path": "plugins/code-review/review-skills/review-workflow/scripts/validate-report.mjs",
+            "path": "plugins/code-review/skills/review-workflow/scripts/validate-report.mjs",
             "exists": true,
             "contains": ["--help"]
           },
           {
-            "path": "plugins/code-review/review-skills/review-workflow/scripts/validate-report.test.mjs",
+            "path": "plugins/code-review/skills/review-workflow/scripts/validate-report.test.mjs",
             "exists": true,
             "contains": ["node:test"]
           },
           {
-            "path": "plugins/code-review/review-skills/review-workflow/SKILL.md",
+            "path": "plugins/code-review/skills/review-workflow/SKILL.md",
             "exists": true,
             "contains": ["scripts/validate-report.mjs"]
           }

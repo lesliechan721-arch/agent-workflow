@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "batchId": "20260811T172058Z-release-review-c91aa8de",
+  "name": "release-review",
+  "owner": {
+    "kind": "plugin-skill",
+    "plugin": "codex-subagent-guide",
+    "skill": "codex-subagent-guide"
+  },
+  "status": "sealed",
+  "createdAt": "2026-08-12T02:59:14.589Z",
+  "updatedAt": "2026-08-12T03:41:04.428Z",
+  "source": {
+    "digest": "legacy:20260811T172058Z-release-review-c91aa8de",
+    "gitHead": null,
+    "gitHeads": [
+      "c695509e7a69fbb4686a7aaa94a784447731d02a",
+      "ea65adf117e822826a27b97e303a4150b96fea34",
+      "71c443dca70d4702bb98da39c86a1fc6288b80d7"
+    ],
+    "inScopeDirty": true
+  },
+  "environmentDigest": "legacy:migrated",
+  "requiredTargets": [
+    "command/lifecycle/project-default/all/all",
+    "command/routing/project-default/all/all",
+    "materialization/project-default",
+    "materialization/project-nondefault",
+    "materialization/user-default",
+    "materialization/user-nondefault",
+    "trigger/trigger/project-default/sanity/all",
+    "trigger/trigger/project-default/validation/all"
+  ],
+  "migration": {
+    "kind": "legacy-report-layout",
+    "migratedAt": "2026-08-12T02:59:14.589Z",
+    "provenance": "mixed-per-run-git-heads"
+  },
+  "sealedAt": "2026-08-12T02:59:14.867Z"
+}

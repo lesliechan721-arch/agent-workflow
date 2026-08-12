@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "batchId": "20260811T104152Z-legacy-dda1bf45",
+  "name": "legacy",
+  "owner": {
+    "kind": "plugin-skill",
+    "plugin": "codex-subagent-guide",
+    "skill": "codex-subagent-guide"
+  },
+  "status": "open",
+  "createdAt": "2026-08-12T02:59:14.894Z",
+  "updatedAt": "2026-08-12T03:41:04.374Z",
+  "source": {
+    "digest": "legacy:20260811T104152Z-legacy-dda1bf45",
+    "gitHead": "03b83a56a43d41c2d0fac570eaebf66c2c51fe3d",
+    "inScopeDirty": false
+  },
+  "environmentDigest": "legacy:migrated",
+  "requiredTargets": [
+    "command/lifecycle/project-default/all/all",
+    "command/routing/project-default/all/all",
+    "materialization/project-default",
+    "materialization/project-nondefault",
+    "materialization/user-default",
+    "materialization/user-nondefault",
+    "trigger/trigger/project-default/sanity/all",
+    "trigger/trigger/project-default/validation/all"
+  ],
+  "migration": {
+    "kind": "legacy-report-layout",
+    "migratedAt": "2026-08-12T02:59:14.894Z"
+  }
+}

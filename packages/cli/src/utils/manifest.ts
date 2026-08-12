@@ -68,6 +68,7 @@ import {
   DEFAULT_SLASH_COMMANDS_PATH,
   resolveSlashCommands,
 } from './slash-commands.js';
+import { isSkillAuthorOnlyPath } from './skill-authoring.js';
 import {
   formatMarketplaceProductsForError,
   normalizeMarketplaceProductToken,
@@ -1706,6 +1707,30 @@ function normalizeArtifactTargetEntry(
   if (sourceDirs && new Set(sourceDirs).size !== sourceDirs.length) {
     throw new Error(`Invalid ${fieldName}.sourceDirs: duplicate source directory.`);
   }
+  if (sourceDirs && skillKey) {
+    const canonicalRoot = `skills/${skillKey}`;
+    const invalidSource = sourceDirs.find((sourceDir) => {
+      const normalized = stripDotSlash(sourceDir);
+      return normalized !== canonicalRoot && !normalized.startsWith(`${canonicalRoot}/`);
+    });
+    if (invalidSource) {
+      throw new Error(
+        `Invalid ${fieldName}.sourceDirs: "${invalidSource}" must stay inside "./${canonicalRoot}".`,
+      );
+    }
+    const authorOnlySource = sourceDirs.find((sourceDir) =>
+      isSkillAuthorOnlyPath(path.posix.relative(canonicalRoot, stripDotSlash(sourceDir))));
+    if (authorOnlySource) {
+      throw new Error(
+        `Invalid ${fieldName}.sourceDirs: "${authorOnlySource}" points inside an author-only Skill directory.`,
+      );
+    }
+    if (!sourceDirs.some((sourceDir) => stripDotSlash(sourceDir) === canonicalRoot)) {
+      throw new Error(
+        `Invalid ${fieldName}.sourceDirs: dynamic Skill sources must include "./${canonicalRoot}" so README.md is published.`,
+      );
+    }
+  }
   if (platform === 'claude' && input.requiresCodexProjectConfig !== undefined) {
     throw new Error(
       `Invalid ${fieldName}.requiresCodexProjectConfig: Claude targets do not support requiresCodexProjectConfig.`,
@@ -2220,6 +2245,9 @@ export function validatePluginManifest(
       ensureString(input.skills, 'skills'),
       'skills',
     );
+    if (stripDotSlash(manifest.skills) !== 'skills') {
+      throw new Error('Invalid plugin manifest: skills must be "./skills".');
+    }
   }
 
   if (input.slashCommands !== undefined) {
@@ -2293,6 +2321,28 @@ async function validateDeclaredNativeAssets(
       }
 
       if (await fs.pathExists(path.join(pluginRoot, defaultPath))) {
+        if (field === 'skills') {
+          const entries = await fs.readdir(path.join(pluginRoot, defaultPath), {
+            withFileTypes: true,
+          });
+          const dynamicSkills = new Set(
+            (manifest.artifacts?.targets ?? [])
+              .filter((target) =>
+                (target.target === 'codex.skill' || target.target === 'claude.skill') &&
+                target.skillKey &&
+                (target.sourceDirs?.length ?? 0) > 0 &&
+                (target.sourceDirs ?? []).every((sourceDir) =>
+                  stripDotSlash(sourceDir) === `skills/${target.skillKey}` ||
+                  stripDotSlash(sourceDir).startsWith(`skills/${target.skillKey}/`)))
+              .map((target) => target.skillKey!),
+          );
+          if (
+            entries.length > 0 &&
+            entries.every((entry) => entry.isDirectory() && dynamicSkills.has(entry.name))
+          ) {
+            return;
+          }
+        }
         throw new Error(
           `Invalid plugin manifest: found ${defaultPath} but missing "${field}" declaration.`,
         );
@@ -2358,14 +2408,6 @@ async function validateSourceSkillInventory(
     .filter((skillKey): skillKey is string => Boolean(skillKey))
     .sort();
   const dynamicSkillNameSet = new Set(dynamicSkillNames);
-
-  for (const skillName of dynamicSkillNames) {
-    if (staticSkillNameSet.has(skillName)) {
-      throw new Error(
-        `Invalid skill inventory: duplicate skillKey "${skillName}" is declared by both "skills/${skillName}" and a dynamic skill artifact.`,
-      );
-    }
-  }
 
   if (!manifest.slashCommands) {
     return;

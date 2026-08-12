@@ -888,21 +888,15 @@ export async function resolvePluginSkillAuthorRoot(
     await fs.readJson(pluginManifestPath),
     'plugin manifest',
   );
-  const candidates: string[] = [];
-
+  const canonicalRoot = path.join(pluginRoot, 'skills', expectedSkill);
+  let declared = false;
   if (typeof pluginManifest.skills === 'string' && pluginManifest.skills.trim() !== '') {
-    const skillsRoot = resolveDeclaredPluginPath(
-      pluginRoot,
-      pluginManifest.skills,
-      'plugin manifest.skills',
-    );
-    const staticRoot = path.join(skillsRoot, expectedSkill);
-    if (await fs.pathExists(staticRoot) && (await fs.stat(staticRoot)).isDirectory()) {
-      assertRealPathInside(pluginRoot, staticRoot, 'Static Skill root', 'plugin root');
-      candidates.push(staticRoot);
+    const skillsRoot = resolveDeclaredPluginPath(pluginRoot, pluginManifest.skills, 'plugin manifest.skills');
+    if (path.resolve(skillsRoot) !== path.resolve(pluginRoot, 'skills')) {
+      throw new Error('plugin manifest.skills must be "./skills".');
     }
+    declared = await fs.pathExists(canonicalRoot);
   }
-
   const artifacts = isRecord(pluginManifest.artifacts) &&
     Array.isArray(pluginManifest.artifacts.targets)
     ? pluginManifest.artifacts.targets
@@ -911,46 +905,34 @@ export async function resolvePluginSkillAuthorRoot(
     if (!isRecord(value) || value.target !== 'codex.skill' || value.skillKey !== expectedSkill) {
       continue;
     }
-    for (const [index, sourceDir] of (
-      Array.isArray(value.sourceDirs) ? value.sourceDirs : []
-    ).entries()) {
+    const sourceDirs = Array.isArray(value.sourceDirs) ? value.sourceDirs : [];
+    for (const [index, sourceDir] of sourceDirs.entries()) {
       if (typeof sourceDir !== 'string' || sourceDir.trim() === '') continue;
       const candidate = resolveDeclaredPluginPath(
         pluginRoot,
         sourceDir,
         `codex.skill ${JSON.stringify(expectedSkill)} sourceDirs[${index}]`,
       );
-      if (await fs.pathExists(candidate) && (await fs.stat(candidate)).isDirectory()) {
-        assertRealPathInside(pluginRoot, candidate, 'Dynamic Skill source directory', 'plugin root');
-        candidates.push(candidate);
+      const relative = path.relative(canonicalRoot, candidate);
+      if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+        throw new Error(
+          `Dynamic Skill source directory must stay inside skills/${expectedSkill}.`,
+        );
       }
+      assertRealPathInside(pluginRoot, candidate, 'Dynamic Skill source directory', 'plugin root');
     }
+    if (sourceDirs.length > 0) declared = true;
   }
-
-  const uniqueCandidates = [...new Set(candidates.map((candidate) => path.resolve(candidate)))];
-  const evalOwners: string[] = [];
-  for (const candidate of uniqueCandidates) {
-    if (await fs.pathExists(path.join(candidate, 'evals', 'manifest.json'))) {
-      evalOwners.push(candidate);
-    }
-  }
-  if (evalOwners.length === 1) return evalOwners[0];
-  if (evalOwners.length > 1) {
-    throw new Error(
-      `Plugin Skill ${JSON.stringify(expectedSkill)} has multiple evals/manifest.json owners: ` +
-      evalOwners.join(', '),
-    );
-  }
-  if (uniqueCandidates.length === 1) return uniqueCandidates[0];
-  if (uniqueCandidates.length === 0) {
+  if (!declared) {
     throw new Error(
       `Plugin does not declare a Codex Skill source directory for ${JSON.stringify(expectedSkill)}.`,
     );
   }
-  throw new Error(
-    `Plugin Skill ${JSON.stringify(expectedSkill)} uses multiple source directories. ` +
-    'Place evals/manifest.json in exactly one source directory.',
-  );
+  if (!(await fs.pathExists(canonicalRoot)) || !(await fs.stat(canonicalRoot)).isDirectory()) {
+    throw new Error(`Plugin Skill source root not found: ${canonicalRoot}`);
+  }
+  assertRealPathInside(pluginRoot, canonicalRoot, 'Skill root', 'plugin root');
+  return canonicalRoot;
 }
 
 export async function readPluginEvalManifest(

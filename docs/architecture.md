@@ -24,10 +24,11 @@
 Source layer
   plugins/marketplace-source.json
   plugins/<name>/.agents-plugin/plugin.json
+  plugins/<name>/README.md
   plugins/<name>/skills/**
+  plugins/<name>/skills/<skill>/README.md
   plugins/<name>/skills/<skill>/evals/**          [author-only]
-  plugins/<name>/templates/<skill>/evals/**       [author-only]
-  <skill-root>/reports/**                         [author-only]
+  plugins/<name>/reports/<skill>/<batch-id>/**    [developer evidence]
 
           ↓ pnpm build / catalog staging
 
@@ -54,7 +55,8 @@ Local runtime
 ```
 
 - 仓库源码层是插件作者维护的输入。
-- Skill 根的 `evals/**` 和 `reports/**` 不进入 catalog runtime bundle、安装制品或 runtime digest。eval 工作目录固定在仓库 `.tmp/agent-workflows/evals/`，持久报告留在 owner Skill。
+- Skill 根的 `evals/**` 和插件根的 `reports/**` 不进入 catalog runtime bundle、安装制品或 runtime digest。Skill `README.md` 是源码文档，会随 Skill 发布，其中的最近报告摘要由作者或 agent 维护，不由构建或 eval 程序改写。
+- 插件报告固定在 `plugins/<plugin>/reports/<skill>/<batch-id>/`，repo-local 静态 Skill 报告固定在 `.agents/reports/<skill>/<batch-id>/`。eval 工作目录固定在仓库 `.tmp/agent-workflows/evals/`。
 - catalog staging 是生成物，不手工修改。
 - `@lesliechan721/aw-plugins-manifest` 是 sidecar；`@lesliechan721/aw-plugins` 是同版本 full catalog。
 - CLI version、catalog version 和 plugin version 是三套独立身份。

@@ -110,7 +110,7 @@
         "states": ["present"],
         "refreshKeys": ["minimumInitialWaitMinutes"],
         "skillKey": "codex-explore",
-        "sourceDirs": ["./templates/codex-explore"]
+        "sourceDirs": ["./skills/codex-explore"]
       },
       {
         "id": "codex-explore-quick-role",

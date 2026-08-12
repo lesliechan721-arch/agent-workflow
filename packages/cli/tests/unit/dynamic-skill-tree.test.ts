@@ -34,6 +34,7 @@ describe('dynamic skill tree', () => {
     const common = path.join(root, 'common');
     const codex = path.join(root, 'codex');
     await fs.outputFile(path.join(common, 'SKILL.md'), '# common\n');
+    await fs.outputFile(path.join(common, 'README.md'), '# Example\n');
     await fs.outputFile(
       path.join(common, 'agents', 'openai.yaml'),
       'policy:\n  allow_implicit_invocation: false\n',
@@ -71,6 +72,7 @@ describe('dynamic skill tree', () => {
     const root = await makeTempRoot();
     const source = path.join(root, 'source');
     await fs.outputFile(path.join(source, 'SKILL.md'), '# skill\n');
+    await fs.outputFile(path.join(source, 'README.md'), '# Example\n');
     await fs.outputFile(
       path.join(source, 'agents', 'openai.yaml'),
       'policy:\n  allow_implicit_invocation: false\n',
@@ -90,7 +92,7 @@ describe('dynamic skill tree', () => {
 
     expect(tree.files).not.toHaveProperty('evals/manifest.json');
     expect(tree.files).not.toHaveProperty('reports/run-1/summary.json');
-    expect(Object.keys(tree.files).sort()).toEqual(['SKILL.md', 'agents/openai.yaml']);
+    expect(Object.keys(tree.files).sort()).toEqual(['README.md', 'SKILL.md', 'agents/openai.yaml']);
   });
 
   it('rejects renderer output in author-only Skill directories', async () => {
@@ -110,6 +112,23 @@ describe('dynamic skill tree', () => {
     })).rejects.toThrow('作者专用目录');
   });
 
+  it('requires a non-empty README in the final dynamic Skill tree', async () => {
+    await expect(createDynamicSkillExpectedTree({
+      artifact: {
+        target: 'codex.skill',
+        skillKey: 'example',
+        state: 'present',
+        content: {
+          files: {
+            'SKILL.md': '# skill\n',
+            'agents/openai.yaml': 'policy:\n  allow_implicit_invocation: true\n',
+          },
+        },
+      },
+      requireReadme: true,
+    })).rejects.toThrow('缺少 README.md');
+  });
+
   it('preserves Claude frontmatter and writes and reads the complete tree atomically', async () => {
     const root = await makeTempRoot();
     const source = path.join(root, 'source');
@@ -118,6 +137,7 @@ describe('dynamic skill tree', () => {
       path.join(source, 'SKILL.md'),
       '---\nname: example\ndescription: Example skill\nversion: 0.1.0\nwhen_to_use: Use for example tasks.\ndisable-model-invocation: "true"\nuser-invocable: "false"\n---\nBody\n',
     );
+    await fs.outputFile(path.join(source, 'README.md'), '# Example\n');
     await fs.outputFile(path.join(source, 'scripts', 'helper.sh'), '#!/bin/sh\n');
 
     const artifact: Pick<ClaudeSkillArtifact, 'target' | 'skillKey' | 'state' | 'content'> = {

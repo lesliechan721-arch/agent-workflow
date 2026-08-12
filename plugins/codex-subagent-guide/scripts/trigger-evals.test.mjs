@@ -7,11 +7,11 @@ import {
   buildCodexArgs,
   createEvalWorkspace,
   readEvalResource,
-} from '../templates/codex-subagent-guide/evals/eval-harness.mjs';
+} from '../skills/codex-subagent-guide/evals/eval-harness.mjs';
 import {
   setupTriggerWorkspace,
   TRIGGER_WORKSPACE_FIXTURES,
-} from '../templates/codex-subagent-guide/evals/trigger-fixture.mjs';
+} from '../skills/codex-subagent-guide/evals/trigger-fixture.mjs';
 
 const ROLE_NAMES = [
   'codex-subagent-simple',

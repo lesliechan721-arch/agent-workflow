@@ -15,6 +15,7 @@ packages/cli/plugins-dist
 .agent-workflows/plugin-config.local/
 .worktrees
 .tmp/
-.agents/skills/*/reports/**/raw/
-plugins/*/skills/*/reports/**/raw/
-plugins/*/templates/*/reports/**/raw/
+.agents/reports/*/**/raw/
+plugins/*/reports/*/**/raw/
+.agents/reports/*/*/.batch.lock
+plugins/*/reports/*/*/.batch.lock

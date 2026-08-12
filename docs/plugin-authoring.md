@@ -46,7 +46,7 @@ CLI version、catalog version 和 plugin version 是三套身份。插件更新�
 
 ## Skills
 
-静态 Skill 放在 manifest `skills` 指向的目录中。每个 Skill 至少有 `SKILL.md`。
+所有静态和动态 Skill 源码都放在 `skills/<skill>/`。manifest `skills` 字段只声明静态 Skill 集合；仅含动态 Skill 的插件可以省略该字段。每个静态 Skill 至少有 `SKILL.md`。
 
 Codex Skill 必须有 `agents/openai.yaml`：
 
@@ -136,6 +136,7 @@ renderer 只输出 ArtifactPlan v2：
       "content": {
         "files": {
           "SKILL.md": "---\nname: example\n---\n# Example\n",
+          "README.md": "# Example\n",
           "agents/openai.yaml": "policy:\n  allow_implicit_invocation: true\n"
         }
       }
@@ -144,7 +145,7 @@ renderer 只输出 ArtifactPlan v2：
 }
 ```
 
-renderer 不能直接写平台目录。rebuild integration 合并 `sourceDirs` 和 `content.files`，校验最终树，再写平台输出与 owner marker。
+renderer 不能直接写平台目录。动态 Skill 声明 source 时，`sourceDirs` 必须包含 `./skills/<skillKey>`；其它 source 只能是该根内的 overlay，不能进入名为 `evals` 或 `reports` 的目录。rebuild integration 合并 `sourceDirs` 和 `content.files`，要求最终树保留非空 `README.md`，再写平台输出与 owner marker。
 
 `aw status` 不执行 renderer。它只检查 live owner 和平台组件，并输出 `present`、`absent`、`partial` 或 `error`。
 
@@ -168,21 +169,22 @@ Lifecycle 必须短、小、幂等，不能直接写 AW 管理的平台输出。
 
 ```bash
 pnpm plugin:test <plugin>
-pnpm plugin:eval <plugin> --skill <skill> --materialize-only
-pnpm plugin:eval <plugin> --skill <skill>
+pnpm plugin:eval <plugin> --skill <skill> --batch-name materialization --materialize-only
+pnpm plugin:eval <plugin> --skill <skill> --batch-name release
 ```
 
 - `scripts.tests.node` 只进入作者测试，不进入 runtime bundle。
 - plugin test 使用隔离 bundle、home 和 project。
 - 每个 eval owner 在自身 Skill 源码根维护 `evals/manifest.json`。插件根 `evals/` 不受支持。
 - `--skill` 必填，一次只运行一个 owner。suite 的 `skills[]` 可以声明多个 participant Skills；profile 的 `plugins[]` 可以按顺序安装当前仓库中的多个插件。这个 eval 组合不形成 production dependency。
-- `evals/**` 和 `reports/**` 是作者期目录，不进入 runtime bundle 或 runtime digest。
+- `evals/**` 和插件根 `reports/**` 是作者期目录，不进入 runtime bundle 或 runtime digest。Skill README 会随 Skill 发布。
 - eval materialization 必须验证最终 Codex Skill 文件和原生调用 metadata。
 - `trigger` 和 `conversation` suite 支持 `isolation: standard|strict`；发布级触发边界和行为归因应使用 `strict`。strict current 只保留 participants，conversation baseline 只移除 owner。单目标 trigger case 使用 `should_load_skill`；多 Skill 竞争路由使用 `expected_loaded_skills` 精确集合，并可设置 `minimumPassRate` 和 `forbidMultipleSkillLoads`。`request_user_input` 等待是 trigger 的正常终止。`strictNegativeSplits` 对单次负例错误零容忍。
 - conversation case 默认只读。需要验证创建或修改行为时，显式使用 `sandbox: workspace-write`，并声明最小 `allowed_workspace_changes` 和非空 `artifacts`；runner 只修改隔离副本，并把越界 diff 或 artifact 断言失败记为 mechanical failure。
 - 真实模型 eval 使用文件凭据存储并关闭 secret keychain storage；从普通 Terminal 显式运行，不进入普通 unit/integration。macOS 检测到 `accountsKeychainExport` 包装器路径时会在启动模型前失败，且不会修改用户 keychain search list。
 - 真实模型默认要求 Full Access 管理后代进程。用户显式传 `--allow-unmanaged-processes` 后可以在无 Full Access 时运行，但报告会标记无法保证后代清理。
-- 中间产物固定在项目 `.tmp/agent-workflows/evals/`。持久 eval 和 review 报告分别写入 owner Skill 的 `reports/evals/<run-id>/` 与 `reports/reviews/<run-id>/`。
+- 每次 eval 用 `--batch-name` 新建批次，或用 `--batch-id` 追加同批次。中间产物固定在项目 `.tmp/agent-workflows/evals/`；持久报告写入 `plugins/<plugin>/reports/<skill>/<batch-id>/`，并按 eval 类型和 target 组织。review 写入同批次，或创建 review-only 批次。
+- 插件和每个 Skill 都必须有非空 README。插件 README 只介绍插件和 Skill；Skill README 约定记录最近 eval/review 摘要、仓库相对完整报告路径和被评估 Git commit。该信息由作者或 agent 在批次完成后维护，没有 marker、自动写入或内容门禁。
 
 ## Validation
 
@@ -192,7 +194,7 @@ pnpm plugin:eval <plugin> --skill <skill>
 node .agents/skills/create-agent-workflows-plugin/scripts/validate_plugin.mjs plugins/<name>
 node .agents/skills/create-agent-workflows-plugin/scripts/validate_plugin.mjs plugins/<name> --claude-skill-profile current
 pnpm plugin:test <name>
-pnpm plugin:eval <name> --skill <skill> --materialize-only
+pnpm plugin:eval <name> --skill <skill> --batch-name materialization --materialize-only
 pnpm build
 ```
 

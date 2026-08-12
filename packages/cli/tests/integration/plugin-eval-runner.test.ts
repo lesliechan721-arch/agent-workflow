@@ -42,22 +42,61 @@ let testRunCounter = 0;
 function testRunLayoutFactory(outputRoot: string) {
   return async (options: {
     repoRoot: string;
-    skillRoot: string;
     plugin: string;
     skill: string;
+    batchName?: string;
+    batchId?: string;
     runId?: string;
+    source: {
+      digest: string;
+      gitHead: string | null;
+      inScopeDirty: boolean;
+    };
+    environmentDigest: string;
+    modelEnvironmentDigest?: string | null;
+    harnessDigest: string;
+    requiredTargets: string[];
   }): Promise<EvalRunLayout> => {
     testRunCounter += 1;
     const runId = options.runId ?? `20260811T000000Z-${testRunCounter.toString(16).padStart(8, '0')}`;
-    const reportRoot = path.join(outputRoot, options.plugin, options.skill, runId);
+    const batchId = options.batchId ?? '20260811T000000Z-test-batch-00000000';
+    const batchRoot = path.join(outputRoot, options.plugin, options.skill, batchId);
+    const reportRoot = path.join(batchRoot, 'evals', 'runs', runId);
     const rawRoot = path.join(reportRoot, 'raw');
     const workRoot = path.join(outputRoot, '.tmp', runId);
     await Promise.all([fs.ensureDir(rawRoot), fs.ensureDir(workRoot)]);
+    const batchPath = path.join(batchRoot, 'batch.json');
+    if (!(await fs.pathExists(batchPath))) {
+      await fs.writeJson(batchPath, {
+        schemaVersion: 1,
+        batchId,
+        name: options.batchName ?? 'test-batch',
+        owner: {
+          kind: 'plugin-skill',
+          plugin: options.plugin,
+          skill: options.skill,
+        },
+        status: 'open',
+        createdAt: '2026-08-11T00:00:00.000Z',
+        updatedAt: '2026-08-11T00:00:00.000Z',
+        source: options.source,
+        environmentDigest: options.environmentDigest,
+        modelEnvironmentDigest: options.modelEnvironmentDigest ?? null,
+        harnessDigest: options.harnessDigest,
+        requiredTargets: options.requiredTargets,
+      }, { spaces: 2 });
+    }
     return {
+      batchId,
+      batchRoot,
+      reportBoundaryRoot: outputRoot,
       runId,
       reportRoot,
       rawRoot,
       workRoot,
+      startedAt: '2026-08-11T00:00:00.000Z',
+      pid: process.pid,
+      host: os.hostname(),
       cleanupWork: () => fs.remove(workRoot),
     };
   };
@@ -184,6 +223,11 @@ async function writeCommandPlugin(
     'utf8',
   );
   await fs.writeFile(
+    path.join(pluginRoot, 'skills', options.name, 'README.md'),
+    `# ${options.name}\n`,
+    'utf8',
+  );
+  await fs.writeFile(
     path.join(pluginRoot, 'skills', options.name, 'agents', 'openai.yaml'),
     'policy:\n  allow_implicit_invocation: false\n',
     'utf8',
@@ -272,16 +316,26 @@ describe('plugin eval runner', () => {
     await fs.ensureDir(skillRoot);
     const layout = await createPluginEvalRunLayout({
       repoRoot: root,
-      skillRoot,
       plugin: 'demo',
       skill: 'demo',
+      batchName: 'layout-test',
       runId: '20260811T000000Z-00000001',
+      source: { digest: 'sha256:test', gitHead: null, inScopeDirty: false },
+      environmentDigest: 'sha256:environment',
+      modelEnvironmentDigest: null,
+      harnessDigest: 'sha256:harness',
+      requiredTargets: [],
     });
 
     expect(layout.reportRoot).toBe(path.join(
-      skillRoot,
+      root,
+      'plugins',
+      'demo',
       'reports',
+      'demo',
+      layout.batchId,
       'evals',
+      'runs',
       '20260811T000000Z-00000001',
     ));
     expect(layout.workRoot).toBe(path.join(
@@ -289,9 +343,10 @@ describe('plugin eval runner', () => {
       '.tmp',
       'agent-workflows',
       'evals',
-      'plugins',
+      'plugin',
       'demo',
       'demo',
+      layout.batchId,
       '20260811T000000Z-00000001',
     ));
     await layout.cleanupWork();
@@ -321,6 +376,8 @@ describe('plugin eval runner', () => {
       '--skill',
       'skill-review',
       '--materialize-only',
+      '--batch-name',
+      'test-batch',
     ], {
       repoRoot: repoRoot(),
       stderr: (text) => { stderr += text; },
@@ -330,12 +387,35 @@ describe('plugin eval runner', () => {
     expect(stderr).toContain('without path separators');
   });
 
+  it('rejects case ids that can escape the report target directory', async () => {
+    let stderr = '';
+    const exitCode = await runPluginEvals([
+      'codex-subagent-guide',
+      '--skill',
+      'codex-subagent-guide',
+      '--suite',
+      'trigger',
+      '--case',
+      '../../escaped',
+      '--batch-name',
+      'test-batch',
+    ], {
+      repoRoot: repoRoot(),
+      stderr: (text) => { stderr += text; },
+    });
+
+    expect(exitCode).toBe(2);
+    expect(stderr).toContain('safe report path segment');
+  });
+
   it('blocks model eval under a macOS accountsKeychainExport wrapper', async () => {
     let stderr = '';
     const exitCode = await runPluginEvals([
       'codex-subagent-guide',
       '--skill',
       'codex-subagent-guide',
+      '--batch-name',
+      'test-batch',
     ], {
       repoRoot: repoRoot(),
       platform: 'darwin',
@@ -650,7 +730,7 @@ describe('plugin eval runner', () => {
         ]),
       });
       expect(commandReport.bundle.suites).toEqual([
-        expect.objectContaining({ split: 'all', outcome: 'passed' }),
+        expect.objectContaining({ split: 'all', outcome: 'incomplete', complete: false }),
       ]);
     },
   );
@@ -1591,7 +1671,8 @@ describe('plugin eval runner', () => {
       });
 
       expect(exitCode, stderr).toBe(1);
-      const bundle = JSON.parse(stdout).bundle;
+      const result = JSON.parse(stdout);
+      const bundle = result.bundle;
       expect(bundle).toMatchObject({
         outcome: 'incomplete',
         complete: false,
@@ -1601,8 +1682,13 @@ describe('plugin eval runner', () => {
         ]),
       });
       expect(bundle.suites).toEqual([
-        expect.objectContaining({ outcome: 'passed', complete: true }),
+        expect.objectContaining(testCase.name === 'runs'
+          ? { outcome: 'incomplete', complete: false }
+          : { outcome: 'passed', complete: true }),
       ]);
+      if (testCase.name === 'runs') {
+        expect(result.batchSummary.eval.releaseOutcome).toBe('incomplete');
+      }
     }
   });
 

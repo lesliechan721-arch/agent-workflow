@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "batchId": "20260811T151406Z-eval-delta-a1f00100",
+  "name": "eval-delta",
+  "owner": {
+    "kind": "plugin-skill",
+    "plugin": "ask-me",
+    "skill": "decision-grill"
+  },
+  "status": "sealed",
+  "createdAt": "2026-08-12T02:58:20.896Z",
+  "updatedAt": "2026-08-12T03:41:04.358Z",
+  "source": {
+    "digest": "legacy:20260811T151406Z-eval-delta-a1f00100",
+    "gitHead": "98fddb770b208a1111c727be1b9bee8512d55a8b",
+    "inScopeDirty": true
+  },
+  "environmentDigest": "legacy:migrated",
+  "requiredTargets": [
+    "conversation/behavior/project-default/all/all",
+    "materialization/project-default",
+    "materialization/user-default",
+    "trigger/router/project-default/validation/all",
+    "trigger/trigger/project-default/validation/all"
+  ],
+  "migration": {
+    "kind": "legacy-report-layout",
+    "migratedAt": "2026-08-12T02:58:20.896Z"
+  },
+  "sealedAt": "2026-08-12T02:58:20.961Z"
+}

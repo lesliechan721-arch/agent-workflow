@@ -20,10 +20,11 @@ node .agents/skills/skill-review/scripts/run_static_skill_evals.mjs \
 ```bash
 node .agents/skills/skill-review/scripts/run_static_skill_evals.mjs \
   <skill-name-or-dir> \
+  --batch-name trigger-validation \
   --suite trigger --split validation --runs 1
 ```
 
-不传 `--suite` 时运行所有 release-required suite/split。中间产物固定在项目 `.tmp/agent-workflows/evals/static/<skill>/<run-id>/`，完成后清理。持久报告固定在 `<skill-root>/reports/evals/<run-id>/`，不能用 `--output-dir` 改写。`evals/` 和 `reports/` 不进入被测 runtime package 或 package digest。`--validate-only` 总是校验完整本地 corpus shape；构建后的中央 contract 可用时还会返回 `centralContract: true`。
+真实运行必须用 `--batch-name` 新建批次或 `--batch-id` 追加批次。不传 `--suite` 时运行所有 release-required suite/split。中间产物固定在项目 `.tmp/agent-workflows/evals/static/<skill>/<batch-id>/<run-id>/`，完成后清理。持久报告固定在 `.agents/reports/<skill>/<batch-id>/`，不能用 `--output-dir` 改写。Skill 根 `evals/` 不进入被测 runtime package 或 package digest。运行前必须执行 `pnpm build`；批次 harness 身份使用实际加载的 `packages/cli/dist` 驱动和当前 review runner 摘要，不使用可能与构建产物不一致的 TypeScript 源码摘要。`--validate-only` 总是校验完整本地 corpus shape；构建后的中央 contract 可用时还会返回 `centralContract: true`。
 
 ## Codex 配置与证据
 
@@ -40,8 +41,10 @@ runner 在复制前记录源 package digest、复制后核对 subject package di
 ```bash
 node .agents/skills/skill-review/scripts/inspect_skill_target.mjs \
   <skill-name-or-dir> \
-  --evaluation <skill-root>/reports/evals/<run-id>/raw/evaluation.json \
+  --evaluation .agents/reports/<skill>/<batch-id>/evals/runs/<run-id>/raw/evaluation.json \
   --format json
 ```
 
-`needs_review` 必须逐项读取 trace；`incomplete`、`failed` 或未完成的定性复核都不能形成 release pass。完整 review 报告和 scorecard 保存到 owner Skill 的 `reports/reviews/<review-run-id>/`，中间草稿放项目 `.tmp/agent-workflows/reviews/`。真实模型证据只覆盖 Codex。
+该命令读取单次运行的原始 `EvaluationBundle`。批次根的 `evals/evaluation.json` 只用于跨运行汇总。
+
+`needs_review` 必须逐项读取 trace；`incomplete`、`failed` 或未完成的定性复核都不能形成 release pass。用 `pnpm review:publish -- --skill <skill> --batch-id <batch-id> --report <report.md> --scorecard <scorecard.json>` 发布 review 并封存批次；review-only 使用 `--batch-name`。中间草稿放项目 `.tmp/agent-workflows/reviews/`。发布后人工更新 Skill README 的最近摘要、仓库相对报告路径和被评估 Git commit。真实模型证据只覆盖 Codex。

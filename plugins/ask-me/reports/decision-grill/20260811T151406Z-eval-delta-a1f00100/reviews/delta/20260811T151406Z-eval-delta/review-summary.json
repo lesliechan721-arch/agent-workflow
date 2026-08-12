@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "completedAt": "2026-08-11T15:14:06.000Z",
+  "mode": "delta",
+  "weightedScore": 91.2,
+  "coverage": 56,
+  "confidence": "low",
+  "release": "pass"
+}

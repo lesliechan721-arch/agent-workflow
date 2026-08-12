@@ -330,17 +330,31 @@ async function addDeclaredSkillPathFiles(
 ): Promise<string | undefined> {
   if (!relativePath) return undefined;
   const root = stripDotSlash(relativePath);
+  const dynamicSkillKeys = new Set(
+    (plugin.manifest.artifacts?.targets ?? [])
+      .filter((target) =>
+        target.platform === platform &&
+        (target.target === 'codex.skill' || target.target === 'claude.skill') &&
+        target.skillKey)
+      .map((target) => target.skillKey!),
+  );
   const files = await collectFilesForPath(plugin.rootDir, relativePath);
+  let added = false;
   for (const filePath of files) {
     const skillCollectionPath = path.posix.relative(
       root.split(path.sep).join('/'),
       filePath.split(path.sep).join('/'),
     );
-    if (!isSkillCollectionAuthorOnlyPath(skillCollectionPath)) {
+    const [skillKey] = skillCollectionPath.split('/');
+    if (
+      !dynamicSkillKeys.has(skillKey ?? '') &&
+      !isSkillCollectionAuthorOnlyPath(skillCollectionPath)
+    ) {
       targetFiles.add(filePath);
+      added = true;
     }
   }
-  return toPlatformRelativePath(relativePath, platform);
+  return added ? toPlatformRelativePath(relativePath, platform) : undefined;
 }
 
 function relativePathInside(root: string, candidate: string): string | null {
@@ -353,20 +367,45 @@ function relativePathInside(root: string, candidate: string): string | null {
 
 function isDeclaredSkillAuthorOnlyFile(plugin: PluginMeta, filePath: string): boolean {
   const normalizedFile = filePath.split(path.sep).join('/');
+  if (normalizedFile === 'reports' || normalizedFile.startsWith('reports/')) return true;
   if (plugin.manifest.skills) {
     const staticRoot = stripDotSlash(plugin.manifest.skills).split(path.sep).join('/');
     const staticRelative = relativePathInside(staticRoot, normalizedFile);
     if (staticRelative && isSkillCollectionAuthorOnlyPath(staticRelative)) return true;
   }
   for (const target of plugin.manifest.artifacts?.targets ?? []) {
-    if (target.target !== 'codex.skill') continue;
+    if (
+      (target.target !== 'codex.skill' && target.target !== 'claude.skill') ||
+      !target.skillKey
+    ) continue;
+    const dynamicRoot = `skills/${target.skillKey}`;
+    const dynamicRelative = relativePathInside(dynamicRoot, normalizedFile);
+    if (dynamicRelative && isSkillAuthorOnlyPath(dynamicRelative)) return true;
     for (const sourceDir of target.sourceDirs ?? []) {
-      const dynamicRoot = stripDotSlash(sourceDir).split(path.sep).join('/');
-      const dynamicRelative = relativePathInside(dynamicRoot, normalizedFile);
-      if (dynamicRelative && isSkillAuthorOnlyPath(dynamicRelative)) return true;
+      const sourceRelative = relativePathInside(
+        stripDotSlash(sourceDir).split(path.sep).join('/'),
+        normalizedFile,
+      );
+      if (sourceRelative && isSkillAuthorOnlyPath(sourceRelative)) return true;
     }
   }
   return false;
+}
+
+function isDynamicSkillSourceFile(
+  plugin: PluginMeta,
+  platform: PlatformName,
+  filePath: string,
+): boolean {
+  const normalizedFile = filePath.split(path.sep).join('/');
+  return (plugin.manifest.artifacts?.targets ?? []).some((target) => {
+    if (
+      target.platform !== platform ||
+      (target.target !== 'codex.skill' && target.target !== 'claude.skill') ||
+      !target.skillKey
+    ) return false;
+    return relativePathInside(`skills/${target.skillKey}`, normalizedFile) !== null;
+  });
 }
 
 async function addDeclaredLspServerFiles(
@@ -959,7 +998,7 @@ export async function bundleLocalPlugin(
     );
     if (claudeFiles && buildConfig?.fileRules?.claude) {
       for (const filePath of applyFileRules(
-        sourceFiles,
+        sourceFiles.filter((filePath) => !isDynamicSkillSourceFile(plugin, 'claude', filePath)),
         buildConfig.fileRules.claude.include,
         buildConfig.fileRules.claude.exclude,
       )) {
@@ -980,7 +1019,7 @@ export async function bundleLocalPlugin(
     }
     if (codexFiles && buildConfig?.fileRules?.codex) {
       for (const filePath of applyFileRules(
-        sourceFiles,
+        sourceFiles.filter((filePath) => !isDynamicSkillSourceFile(plugin, 'codex', filePath)),
         buildConfig.fileRules.codex.include,
         buildConfig.fileRules.codex.exclude,
       )) {
@@ -1055,6 +1094,9 @@ export async function bundleLocalPlugin(
       }
     }
 
+    if (await fs.pathExists(path.join(plugin.rootDir, 'README.md'))) {
+      await copyBundleRootFile(plugin.rootDir, outputRoot, 'README.md');
+    }
     for (const filePath of await collectAwRuntimeFiles(plugin)) {
       await copyBundleRootFile(plugin.rootDir, outputRoot, filePath);
     }

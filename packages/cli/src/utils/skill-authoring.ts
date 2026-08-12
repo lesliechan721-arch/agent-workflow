@@ -5,12 +5,11 @@ function pathSegments(relativePath: string): string[] {
 }
 
 export function isSkillAuthorOnlyPath(relativePath: string): boolean {
-  const [topLevel] = pathSegments(relativePath);
-  return topLevel !== undefined && SKILL_AUTHOR_ONLY_DIRECTORIES.has(topLevel);
+  return pathSegments(relativePath).some((segment) =>
+    SKILL_AUTHOR_ONLY_DIRECTORIES.has(segment));
 }
 
 export function isSkillCollectionAuthorOnlyPath(relativePath: string): boolean {
-  const [, skillRelativeTopLevel] = pathSegments(relativePath);
-  return skillRelativeTopLevel !== undefined &&
-    SKILL_AUTHOR_ONLY_DIRECTORIES.has(skillRelativeTopLevel);
+  return pathSegments(relativePath).slice(1).some((segment) =>
+    SKILL_AUTHOR_ONLY_DIRECTORIES.has(segment));
 }

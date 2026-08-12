@@ -113,7 +113,7 @@
         "states": ["present"],
         "refreshKeys": ["minimumInitialWaitMinutes"],
         "skillKey": "codex-subagent-guide",
-        "sourceDirs": ["./templates/codex-subagent-guide"]
+        "sourceDirs": ["./skills/codex-subagent-guide"]
       },
       {
         "id": "codex-subagent-simple-role",

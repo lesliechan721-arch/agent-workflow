@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "batchId": "20260811T164805Z-review-delta-a1f00100",
+  "name": "review-delta",
+  "owner": {
+    "kind": "static-skill",
+    "skill": "create-agent-workflows-plugin"
+  },
+  "status": "sealed",
+  "createdAt": "2026-08-12T02:59:14.972Z",
+  "updatedAt": "2026-08-12T03:41:04.432Z",
+  "source": {
+    "digest": "legacy:20260811T164805Z-review-delta-a1f00100",
+    "gitHead": null,
+    "inScopeDirty": true
+  },
+  "environmentDigest": "legacy:migrated",
+  "requiredTargets": [
+    "conversation/behavior/project-default/all/all",
+    "materialization/project-default",
+    "trigger/trigger/project-default/sanity/all",
+    "trigger/trigger/project-default/validation/all"
+  ],
+  "migration": {
+    "kind": "legacy-report-layout",
+    "migratedAt": "2026-08-12T02:59:14.972Z"
+  },
+  "sealedAt": "2026-08-12T02:59:15.011Z"
+}

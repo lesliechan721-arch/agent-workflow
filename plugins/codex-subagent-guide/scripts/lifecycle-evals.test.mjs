@@ -5,7 +5,7 @@ import test from 'node:test';
 import {
   evaluateLifecycleTimeline,
   parseLifecycleArgs,
-} from '../templates/codex-subagent-guide/evals/run-lifecycle-evals.mjs';
+} from '../skills/codex-subagent-guide/evals/run-lifecycle-evals.mjs';
 
 const expected = {
   spawn_count: 1,

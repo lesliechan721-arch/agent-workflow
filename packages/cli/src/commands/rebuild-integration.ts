@@ -1159,6 +1159,7 @@ async function buildClaudeWrites(options: {
     const tree = await createDynamicSkillExpectedTree({
       artifact,
       sourceDirs: dynamic.sourceDirs(artifact),
+      requireReadme: true,
     });
     writes.push(dynamicSkillWrite({
       ...options,
@@ -1252,6 +1253,7 @@ async function buildCodexWrites(options: {
     const tree = await createCodexSkillExpectedTree({
       artifact,
       sourceDirs: dynamic.sourceDirs(artifact),
+      requireReadme: true,
     });
     writes.push(dynamicSkillWrite({
       ...options,

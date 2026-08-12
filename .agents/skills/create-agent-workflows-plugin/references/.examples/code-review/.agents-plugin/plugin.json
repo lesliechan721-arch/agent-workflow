@@ -7,7 +7,7 @@
       "minVersion": "0.0.0"
     }
   },
-  "skills": "./review-skills",
+  "skills": "./skills",
   "slashCommands": "./slash-commands",
   "mcpServers": "./.mcp.json",
   "marketplace": {
@@ -113,7 +113,7 @@
   },
   "buildConfig": {
     "templates": {
-      "include": ["review-skills/**/*.md", "slash-commands/*.md"],
+      "include": ["skills/**/*.md", "slash-commands/*.md"],
       "vars": {
         "platformName": { "claude": "Claude Code", "codex": "Codex" },
         "supportsCommands": { "claude": true, "codex": false }

@@ -18,14 +18,14 @@
 需要已登录且支持当前 app-server 协议的 Codex：
 
 ```bash
-pnpm plugin:eval git-commit --skill commit --materialize-only
-pnpm plugin:eval git-commit --skill commit --suite trigger --split validation --runs 1
+pnpm plugin:eval git-commit --skill commit --batch-name materialization --materialize-only
+pnpm plugin:eval git-commit --skill commit --batch-name trigger-validation-debug --suite trigger --split validation --runs 1
 ```
 
 无过滤参数时运行 manifest 声明的 release-required validation suite。需要检查 train 时仍通过中央入口：
 
 ```bash
-pnpm plugin:eval git-commit --skill commit --suite trigger --split train --runs 3
+pnpm plugin:eval git-commit --skill commit --batch-name trigger-train --suite trigger --split train --runs 3
 ```
 
 中央 materializer 先经过真实 staging/bundle 路径生成 project-local Skill，native trigger driver 再把该最终 Skill 放进同时包含已暂存、未暂存和未跟踪内容的临时 Git 仓库。不存在源码 template 回退或可独立执行的插件 trigger runner。
@@ -38,7 +38,7 @@ Codex 的系统、云端和设备托管配置层不能由这些参数统一关�
 
 Windows 上必须通过 `--codex-bin` 提供官方 launcher 选择的原生 `codex.exe` 绝对路径，避免 Node 直接启动 `.cmd` wrapper 的平台差异。
 
-真实模型默认要求 Full Access 管理后代进程；无 Full Access 时会在启动前阻断。用户确认风险后可传 `--allow-unmanaged-processes`，但该模式不保证清理后代进程。中间产物固定在项目 `.tmp/agent-workflows/evals/`，持久报告写入本 Skill 的 `reports/evals/<run-id>/`。
+真实模型默认要求 Full Access 管理后代进程；无 Full Access 时会在启动前阻断。用户确认风险后可传 `--allow-unmanaged-processes`，但该模式不保证清理后代进程。中间产物固定在项目 `.tmp/agent-workflows/evals/`，持久报告写入 `plugins/git-commit/reports/commit/<batch-id>/`。
 
 ## 常规插件测试
 

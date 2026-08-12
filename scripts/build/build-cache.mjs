@@ -95,7 +95,8 @@ function isExcludedInputPath(relativePath) {
   }
   return (
     /^plugins\/[^/]+\/evals(?:\/|$)/.test(normalizedPath) ||
-    /^plugins\/[^/]+\/(?:skills|templates)\/[^/]+\/(?:evals|reports)(?:\/|$)/.test(
+    /^plugins\/[^/]+\/reports(?:\/|$)/.test(normalizedPath) ||
+    /^plugins\/[^/]+\/skills\/[^/]+\/(?:[^/]+\/)*(?:evals|reports)(?:\/|$)/.test(
       normalizedPath,
     )
   );

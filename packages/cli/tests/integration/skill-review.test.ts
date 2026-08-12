@@ -10,6 +10,11 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { runPluginEvals } from '../../scripts/eval-plugin-skills.js';
 import {
+  assertPublishSkillTarget,
+  assertScorecardSkillName,
+  resolveReviewSourceRoots,
+} from '../../scripts/publish-skill-review.js';
+import {
   registerCurrentTestReadonlyFixtureRoot,
   registerCurrentTestWritableStateRoot,
 } from '../setup/test-isolation.js';
@@ -34,17 +39,50 @@ function contentDigest(content: string): string {
 }
 
 function testEvalLayout(outputRoot: string) {
-  return async (options: { plugin: string; skill: string; runId?: string }) => {
+  return async (options: {
+    plugin: string;
+    skill: string;
+    batchName?: string;
+    batchId?: string;
+    runId?: string;
+    source: { digest: string; gitHead: string | null; inScopeDirty: boolean };
+    environmentDigest: string;
+    modelEnvironmentDigest?: string | null;
+    harnessDigest: string;
+    requiredTargets: string[];
+  }) => {
     const runId = options.runId ?? '20260811T000000Z-00000001';
-    const reportRoot = path.join(outputRoot, options.plugin, options.skill, runId);
+    const batchId = options.batchId ?? '20260811T000000Z-test-batch-00000000';
+    const batchRoot = path.join(outputRoot, options.plugin, options.skill, batchId);
+    const reportRoot = path.join(batchRoot, 'evals', 'runs', runId);
     const rawRoot = path.join(reportRoot, 'raw');
     const workRoot = path.join(outputRoot, '.tmp', runId);
     await Promise.all([fs.ensureDir(rawRoot), fs.ensureDir(workRoot)]);
+    await fs.writeJson(path.join(batchRoot, 'batch.json'), {
+      schemaVersion: 1,
+      batchId,
+      name: options.batchName ?? 'test-batch',
+      owner: { kind: 'plugin-skill', plugin: options.plugin, skill: options.skill },
+      status: 'open',
+      createdAt: '2026-08-11T00:00:00.000Z',
+      updatedAt: '2026-08-11T00:00:00.000Z',
+      source: options.source,
+      environmentDigest: options.environmentDigest,
+      modelEnvironmentDigest: options.modelEnvironmentDigest ?? null,
+      harnessDigest: options.harnessDigest,
+      requiredTargets: options.requiredTargets,
+    }, { spaces: 2 });
     return {
+      batchId,
+      batchRoot,
+      reportBoundaryRoot: outputRoot,
       runId,
       reportRoot,
       rawRoot,
       workRoot,
+      startedAt: '2026-08-11T00:00:00.000Z',
+      pid: process.pid,
+      host: os.hostname(),
       cleanupWork: () => fs.remove(workRoot),
     };
   };
@@ -55,6 +93,58 @@ afterEach(async () => {
 });
 
 describe('skill-review author tools', () => {
+  it('requires review publication targets to be real documented Skills', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-review-publish-target-'));
+    tempDirs.push(root);
+    const skillRoot = path.join(root, 'plugins', 'demo', 'skills', 'real-skill');
+    await fs.ensureDir(skillRoot);
+    await fs.writeFile(path.join(skillRoot, 'SKILL.md'), '# Skill\n', 'utf8');
+    await fs.writeFile(path.join(skillRoot, 'README.md'), '# Readme\n', 'utf8');
+
+    await expect(assertPublishSkillTarget(root, {
+      kind: 'plugin-skill',
+      plugin: 'demo',
+      skill: 'real-skill',
+    })).resolves.toBeUndefined();
+    await expect(assertPublishSkillTarget(root, {
+      kind: 'plugin-skill',
+      plugin: 'demo',
+      skill: 'missing-skill',
+    })).rejects.toThrow('missing SKILL.md');
+    expect(() => assertScorecardSkillName('other-skill', 'real-skill')).toThrow(
+      'does not match --skill',
+    );
+  });
+
+  it('uses every static suite participant when publishing review evidence', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-review-static-participants-'));
+    tempDirs.push(root);
+    const ownerRoot = path.join(root, '.agents', 'skills', 'owner-skill');
+    const companionRoot = path.join(root, '.agents', 'skills', 'companion-skill');
+    await Promise.all([
+      fs.outputFile(path.join(ownerRoot, 'SKILL.md'), '# Owner\n'),
+      fs.outputFile(path.join(ownerRoot, 'README.md'), '# Owner\n'),
+      fs.outputJson(path.join(ownerRoot, 'evals', 'manifest.json'), {
+        schemaVersion: 1,
+        skill: 'owner-skill',
+        suites: [
+          { id: 'one', skills: ['owner-skill'] },
+          { id: 'two', skills: ['companion-skill', 'owner-skill'] },
+        ],
+      }),
+      fs.outputFile(path.join(companionRoot, 'SKILL.md'), '# Companion\n'),
+      fs.outputFile(path.join(companionRoot, 'README.md'), '# Companion\n'),
+    ]);
+
+    await expect(resolveReviewSourceRoots(root, {
+      kind: 'static-skill',
+      skill: 'owner-skill',
+    })).resolves.toEqual([
+      { name: 'owner-skill', root: ownerRoot },
+      { name: 'companion-skill', root: companionRoot },
+    ]);
+  });
+
   it('parses a quoted YAML Skill name as its scalar value', async () => {
     const runner = await import(`${pathToFileURL(staticEvalRunner()).href}?quoted-name`);
     const skillRoot = path.join(repoRoot(), '.agents', 'skills', 'quoted-skill');
@@ -67,6 +157,23 @@ describe('skill-review author tools', () => {
       '',
       '# Quoted Skill',
     ].join('\n'), skillRoot)).toBe('quoted-skill');
+    expect(runner.applyRunCountCoverage({
+      outcome: 'passed',
+      complete: true,
+      diagnostics: [],
+    }, { defaultRuns: 3 }, 1)).toMatchObject({
+      outcome: 'incomplete',
+      complete: false,
+      diagnostics: [expect.stringContaining('below the declared default 3')],
+    });
+    expect(runner.staticEvalHarnessRoots('/repo')).toEqual([
+      { name: 'packages/cli/dist/scripts', root: '/repo/packages/cli/dist/scripts' },
+      { name: 'packages/cli/dist/src', root: '/repo/packages/cli/dist/src' },
+      {
+        name: '.agents/skills/skill-review/scripts',
+        root: '/repo/.agents/skills/skill-review/scripts',
+      },
+    ]);
   });
 
   it('materializes static participant Skills without author-only directories', async () => {
@@ -169,6 +276,7 @@ describe('skill-review author tools', () => {
     registerCurrentTestReadonlyFixtureRoot(root);
     registerCurrentTestWritableStateRoot(outputRoot);
     let stdout = '';
+    let stderr = '';
     const exitCode = await runPluginEvals([
       'codex-explore',
       '--skill',
@@ -178,10 +286,10 @@ describe('skill-review author tools', () => {
       repoRoot: root,
       env: process.env,
       stdout: (text) => { stdout += text; },
-      stderr: () => undefined,
+      stderr: (text) => { stderr += text; },
       createRunLayout: testEvalLayout(outputRoot),
     });
-    expect(exitCode).toBe(0);
+    expect(exitCode, stderr).toBe(0);
     const evalResult = JSON.parse(stdout);
     const evaluationPath = path.join(
       path.resolve(root, evalResult.reportDir),
@@ -206,7 +314,7 @@ describe('skill-review author tools', () => {
     expect(report.target).toMatchObject({ kind: 'aw-plugin', name: 'codex-explore' });
     expect(report.plugin.dynamic_targets).toHaveLength(5);
     expect(report.source_skills).toHaveLength(1);
-    expect(report.source_skills[0].path).toBe('templates/codex-explore/SKILL.md');
+    expect(report.source_skills[0].path).toBe('skills/codex-explore/SKILL.md');
     expect(report.eval_manifest).toMatchObject({
       schemaVersion: 2,
       plugin: 'codex-explore',
@@ -215,7 +323,7 @@ describe('skill-review author tools', () => {
     expect(report.eval_manifests).toEqual([
       expect.objectContaining({
         skill: 'codex-explore',
-        path: 'templates/codex-explore/evals/manifest.json',
+        path: 'skills/codex-explore/evals/manifest.json',
       }),
     ]);
     expect(report.evaluation.profiles).toHaveLength(5);
@@ -338,12 +446,14 @@ describe('skill-review author tools', () => {
       const execution = await execFileAsync('node', [
         staticEvalRunner(),
         'skill-review',
+        '--batch-name',
+        'test-run',
         '--suite',
         'trigger',
         '--case',
         'full_skill_package',
         '--runs',
-        '1',
+        '3',
         '--codex-bin',
         codexBin,
         '--allow-unmanaged-processes',
@@ -354,8 +464,9 @@ describe('skill-review author tools', () => {
       });
       const executionReport = JSON.parse(execution.stdout);
       expect(executionReport).toMatchObject({ ok: true, outcome: 'passed' });
+      const persistedBatchRoot = path.resolve(root, executionReport.batchDir);
       const persistedReportRoot = path.resolve(root, executionReport.reportDir);
-      tempDirs.push(persistedReportRoot);
+      tempDirs.push(persistedBatchRoot);
 
       const evaluationPath = path.join(persistedReportRoot, 'raw', 'evaluation.json');
       expect(await fs.readFile(evaluationPath, 'utf8')).not.toContain('fixture-secret');
@@ -554,7 +665,7 @@ describe('skill-review author tools', () => {
       'references',
       '.examples',
       'code-review',
-      'review-skills',
+      'skills',
       'review-workflow',
     );
     await expect(execFileAsync('node', [
@@ -745,6 +856,25 @@ describe('skill-review author tools', () => {
       context_disclosure: 12,
       resources: 5,
     });
+
+    template.review.skill_name = '../wrong-skill';
+    await fs.writeJson(scorecardPath, template, { spaces: 2 });
+    const invalidSkillName = await execFileAsync('node', [
+      skillScript('validate_scorecard.mjs'),
+      scorecardPath,
+      '--format',
+      'json',
+    ], { cwd: root, env: process.env }).then(
+      () => null,
+      (error: { stdout?: string }) => error,
+    );
+    expect(JSON.parse(invalidSkillName!.stdout!)).toMatchObject({
+      valid: false,
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({ code: 'review.skill-name' }),
+      ]),
+    });
+    template.review.skill_name = 'fixture';
 
     template.artifacts.information_hierarchy_map = false;
     await fs.writeJson(scorecardPath, template, { spaces: 2 });
@@ -1021,15 +1151,23 @@ describe('skill-review author tools', () => {
         '',
       )
       .replace(
+        'pnpm review:publish -- --skill <skill> [--plugin <plugin>] --batch-id <id> \\\n  --report <report.md> --scorecard <scorecard.json>\n',
+        '',
+      )
+      .replace(
         '\n\n当前仓库静态 Skill 的真实模型 eval 先运行 `pnpm build`，再由 `run_static_skill_evals.mjs` 生成证据；它不是 `plugin:eval` 的别名。\n',
         '\n',
       )
       .replace(
-        '\n静态和插件 Skill 的 eval 报告保存在 owner Skill 的 `reports/evals/<run-id>/`，完整 review 报告保存在 `reports/reviews/<run-id>/`。临时工作目录统一使用项目 `.tmp/agent-workflows/`。\n',
+        '\n静态 Skill 的报告保存在 `.agents/reports/<skill>/<batch-id>/`。插件 Skill 的报告保存在 `plugins/<plugin>/reports/<skill>/<batch-id>/`。临时工作目录统一使用项目 `.tmp/agent-workflows/`。\n',
+        '',
+      )
+      .replace(
+        '\nSkill README 中的最近 eval/review 摘要、仓库相对报告路径和被评估 Git commit 由作者或 agent 在批次完成后人工更新。程序不写 marker、不自动同步，也不把该段内容作为发布门禁。\n',
         '',
       );
     expect(contentDigest(readme)).toBe(
-      '46353b81f9ed65b9f436d356d554a88d6f9ec739d7d46f67da0e246c27cb015e',
+      '1abc6fe01608c0cf86527e4daecbe17e95cb22eb3b821ab9522bf2fa8e9a06b3',
     );
 
     const skill = (await fs.readFile(path.join(skillRoot, 'SKILL.md'), 'utf8'))
@@ -1066,11 +1204,19 @@ describe('skill-review author tools', () => {
         '',
       )
       .replace(
-        '8. 对当前仓库内的静态或插件 Skill，把最终 `report.md` 和已验证的 `scorecard.json` 保存到 owner Skill 的 `reports/reviews/<run-id>/`；中间草稿只放项目 `.tmp/agent-workflows/reviews/`。不要把报告写进 runtime 资源目录。\n',
+        '8. 对当前仓库内的静态或插件 Skill，用 `pnpm review:publish -- --skill <skill> [--plugin <plugin>] (--batch-id <id>|--batch-name <name>) --report <report.md> --scorecard <scorecard.json>` 发布已验证的 review。`--batch-id` 附加到开放 eval 批次并封存；`--batch-name` 创建 review-only 批次。中间草稿只放项目 `.tmp/agent-workflows/reviews/`。\n',
         '',
       )
       .replace(
-        '- 当前仓库目标的持久 review 报告已写入 owner Skill；引用的 eval report/run-id 可追溯。\n',
+        '9. review 发布后人工更新 Skill README 的最近 eval/review 摘要、仓库相对完整报告路径和被评估 Git commit。不要添加机器 marker，也不要在仍需追加同批次时先修改 README。\n',
+        '',
+      )
+      .replace(
+        '- 当前仓库目标的持久 review 已发布到正确 Skill 批次；引用的 eval batch/run-id 可追溯。\n',
+        '',
+      )
+      .replace(
+        '- Skill README 已按人工约定更新；插件 README 不包含 Skill 验证报告。\n',
         '',
       );
     expect(contentDigest(skill)).toBe(

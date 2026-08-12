@@ -291,46 +291,80 @@ describe('local-plugin generator', () => {
     const repoRoot = await makeTempRepo();
     const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
     const manifest = await readFixturePluginManifest(repoRoot);
-    await fs.move(path.join(pluginRoot, 'skills'), path.join(pluginRoot, 'review-skills'));
     await Promise.all([
       fs.outputFile(
-        path.join(pluginRoot, 'review-skills', 'commit', 'evals', 'manifest.json'),
+        path.join(pluginRoot, 'README.md'),
+        '# Git Commit\n\nPlugin documentation.\n',
+      ),
+      fs.outputFile(
+        path.join(pluginRoot, 'skills', 'commit', 'README.md'),
+        '# Commit\n\nCommit report summary ships with the Skill.\n',
+      ),
+      fs.outputFile(
+        path.join(pluginRoot, 'skills', 'commit', 'evals', 'manifest.json'),
         '{}\n',
       ),
       fs.outputFile(
-        path.join(pluginRoot, 'review-skills', 'commit', 'reports', 'run-1', 'summary.json'),
+        path.join(pluginRoot, 'reports', 'commit', 'batch-1', 'summary.json'),
         '{}\n',
       ),
       fs.outputFile(
-        path.join(pluginRoot, 'templates', 'dynamic', 'SKILL.md'),
+        path.join(pluginRoot, 'skills', 'dynamic', 'SKILL.md'),
         '---\nname: dynamic\ndescription: Test dynamic Skill.\n---\n',
       ),
       fs.outputFile(
-        path.join(pluginRoot, 'templates', 'dynamic', 'agents', 'openai.yaml'),
+        path.join(pluginRoot, 'skills', 'dynamic', 'README.md'),
+        '# Dynamic\n\nDynamic report summary ships with the Skill.\n',
+      ),
+      fs.outputFile(
+        path.join(pluginRoot, 'skills', 'dynamic', 'agents', 'openai.yaml'),
         'policy:\n  allow_implicit_invocation: true\n',
       ),
       fs.outputFile(
-        path.join(pluginRoot, 'templates', 'dynamic', 'evals', 'manifest.json'),
+        path.join(pluginRoot, 'skills', 'dynamic', 'evals', 'manifest.json'),
         '{}\n',
       ),
       fs.outputFile(
-        path.join(pluginRoot, 'templates', 'dynamic', 'reports', 'run-1', 'summary.json'),
-        '{}\n',
+        path.join(pluginRoot, 'skills', 'dynamic', 'base', 'SKILL.md'),
+        '---\nname: dynamic\ndescription: Test rendered dynamic Skill.\n---\n',
+      ),
+      fs.outputFile(
+        path.join(pluginRoot, 'skills', 'dynamic', 'base', 'README.md'),
+        '# Dynamic\n\nRendered dynamic report summary ships with the Skill.\n',
+      ),
+      fs.outputFile(
+        path.join(pluginRoot, 'skills', 'dynamic', 'base', 'agents', 'openai.yaml'),
+        'policy:\n  allow_implicit_invocation: true\n',
+      ),
+      fs.outputFile(
+        path.join(pluginRoot, 'skills', 'dynamic', 'base', 'evals', 'private.json'),
+        '{"secret":"author-only"}\n',
       ),
     ]);
-    manifest.skills = './review-skills';
     manifest.artifacts = {
-      targets: [{
-        id: 'dynamic-skill',
-        platform: 'codex',
-        scopes: ['user', 'project'],
-        target: 'codex.skill',
-        projectManagedKind: 'skill',
-        states: ['present'],
-        refreshKeys: [],
-        skillKey: 'dynamic',
-        sourceDirs: ['./templates/dynamic'],
-      }],
+      targets: [
+        {
+          id: 'dynamic-skill',
+          platform: 'codex',
+          scopes: ['user', 'project'],
+          target: 'codex.skill',
+          projectManagedKind: 'skill',
+          states: ['present'],
+          refreshKeys: [],
+          skillKey: 'dynamic',
+          sourceDirs: ['./skills/dynamic', './skills/dynamic/base'],
+        },
+        {
+          id: 'dynamic-claude-skill',
+          platform: 'claude',
+          scopes: ['user', 'project'],
+          target: 'claude.skill',
+          states: ['present'],
+          refreshKeys: [],
+          skillKey: 'dynamic',
+          sourceDirs: ['./skills/dynamic', './skills/dynamic/base'],
+        },
+      ],
     };
     manifest.buildConfig = {
       fileRules: {
@@ -348,29 +382,26 @@ describe('local-plugin generator', () => {
       await expect(fs.pathExists(path.join(
         outputRoot,
         platform,
-        'review-skills',
+        'skills',
         'commit',
         'evals',
       ))).resolves.toBe(false);
       await expect(fs.pathExists(path.join(
         outputRoot,
         platform,
-        'review-skills',
-        'commit',
         'reports',
+        'commit',
       ))).resolves.toBe(false);
       await expect(fs.pathExists(path.join(
         outputRoot,
         platform,
-        'templates',
+        'skills',
         'dynamic',
-        'evals',
+        'SKILL.md',
       ))).resolves.toBe(false);
       await expect(fs.pathExists(path.join(
         outputRoot,
         platform,
-        'templates',
-        'dynamic',
         'reports',
       ))).resolves.toBe(false);
     }
@@ -383,8 +414,29 @@ describe('local-plugin generator', () => {
       '0',
     );
     await expect(fs.pathExists(path.join(dynamicSourceRoot, 'SKILL.md'))).resolves.toBe(true);
+    await expect(fs.pathExists(path.join(dynamicSourceRoot, 'README.md'))).resolves.toBe(true);
+    await expect(fs.readFile(path.join(dynamicSourceRoot, 'README.md'), 'utf8')).resolves.toContain(
+      'Dynamic report summary ships with the Skill.',
+    );
     await expect(fs.pathExists(path.join(dynamicSourceRoot, 'evals'))).resolves.toBe(false);
+    await expect(fs.pathExists(path.join(dynamicSourceRoot, 'base', 'evals'))).resolves.toBe(false);
     await expect(fs.pathExists(path.join(dynamicSourceRoot, 'reports'))).resolves.toBe(false);
+    await expect(fs.readFile(path.join(
+      outputRoot,
+      '.agents-plugin',
+      'artifact-sources',
+      'codex',
+      'dynamic-skill',
+      '1',
+      'README.md',
+    ), 'utf8')).resolves.toContain('Rendered dynamic report summary ships with the Skill.');
+    await expect(fs.readFile(path.join(outputRoot, 'README.md'), 'utf8')).resolves.toContain(
+      'Plugin documentation.',
+    );
+    await expect(fs.readFile(
+      path.join(outputRoot, 'codex', 'skills', 'commit', 'README.md'),
+      'utf8',
+    )).resolves.toContain('Commit report summary ships with the Skill.');
   });
 
   it('does not declare a static Codex skills root for user-only dynamic codex.skill targets', async () => {

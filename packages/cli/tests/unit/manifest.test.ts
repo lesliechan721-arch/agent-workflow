@@ -402,11 +402,11 @@ describe('manifest utils', () => {
     const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
     const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
     const manifest = await fs.readJson(manifestPath);
-    manifest.skills = './missing-skills';
+    await fs.remove(path.join(pluginRoot, 'skills'));
     await fs.writeJson(manifestPath, manifest, { spaces: 2 });
 
     await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
-      'skills points to "./missing-skills" but path does not exist',
+      'skills points to "./skills" but path does not exist',
     );
   });
 
@@ -1053,8 +1053,7 @@ describe('manifest utils', () => {
       'duplicate dynamic skill owner "claude:project:codex-explore"',
     );
 
-    await fs.ensureDir(path.join(pluginRoot, 'templates', 'real'));
-    await fs.symlink('real', path.join(pluginRoot, 'templates', 'source-link'));
+    await fs.ensureDir(path.join(pluginRoot, 'skills', 'codex-explore', 'base'));
     manifest.artifacts = {
       targets: [{
         id: 'codex-explore-skill',
@@ -1065,12 +1064,45 @@ describe('manifest utils', () => {
         states: ['present'],
         refreshKeys: [],
         skillKey: 'codex-explore',
-        sourceDirs: ['./templates/source-link'],
+        sourceDirs: ['./skills/codex-explore/base'],
       }],
     };
     await writeFixturePluginManifest(repoRoot, manifest);
     await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
-      'expected a directory at "./templates/source-link"',
+      'must include "./skills/codex-explore" so README.md is published',
+    );
+
+    await fs.ensureDir(path.join(pluginRoot, 'skills', 'codex-explore', 'evals'));
+    manifest.artifacts.targets[0]!.sourceDirs = [
+      './skills/codex-explore',
+      './skills/codex-explore/evals',
+    ];
+    await writeFixturePluginManifest(repoRoot, manifest);
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
+      'points inside an author-only Skill directory',
+    );
+
+    await fs.ensureDir(path.join(pluginRoot, 'skills', 'codex-explore', 'real'));
+    await fs.symlink('real', path.join(pluginRoot, 'skills', 'codex-explore', 'source-link'));
+    manifest.artifacts = {
+      targets: [{
+        id: 'codex-explore-skill',
+        platform: 'codex',
+        scopes: ['project'],
+        target: 'codex.skill',
+        projectManagedKind: 'skill',
+        states: ['present'],
+        refreshKeys: [],
+        skillKey: 'codex-explore',
+        sourceDirs: [
+          './skills/codex-explore',
+          './skills/codex-explore/source-link',
+        ],
+      }],
+    };
+    await writeFixturePluginManifest(repoRoot, manifest);
+    await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
+      'expected a directory at "./skills/codex-explore/source-link"',
     );
   });
 

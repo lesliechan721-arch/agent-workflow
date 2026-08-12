@@ -287,6 +287,24 @@ ${renderClaudeInvocationFrontmatter(invocation)}metadata:
 `;
 }
 
+function renderPluginReadme(pluginName, description, skillName) {
+  return `# ${titleCaseSlug(pluginName)}
+
+${description}
+
+${skillName ? `## Skill\n\n- \`${skillName}\`\n` : ''}
+`;
+}
+
+function renderSkillReadme(skillName, description) {
+  return `# ${skillName}
+
+${description}
+
+主要指令见 \`SKILL.md\`。模型 eval 合同位于 \`evals/\`。
+`;
+}
+
 function renderOpenAiYaml(displayName, shortDescription, skillName, invocation) {
   const defaultPrompt = `使用 $${skillName}：${shortDescription.replace(/[。.]$/, '')}。`;
   const allowImplicitInvocation = invocation !== 'manual';
@@ -766,9 +784,14 @@ function main() {
   );
 
   const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
-  const createdPaths = [manifestPath];
+  const pluginReadmePath = path.join(pluginRoot, 'README.md');
+  const createdPaths = [manifestPath, pluginReadmePath];
 
   writeJson(manifestPath, pluginManifest);
+  writeText(
+    pluginReadmePath,
+    renderPluginReadme(pluginName, args.description, initialSkillName),
+  );
 
   if (!args.noSkills) {
     const skillName = initialSkillName;
@@ -776,6 +799,7 @@ function main() {
     const skillDisplayName = titleCaseSlug(skillName);
     const skillShortDescription = initialSkillShortDescription;
     const skillMdPath = path.join(pluginRoot, 'skills', skillName, 'SKILL.md');
+    const skillReadmePath = path.join(pluginRoot, 'skills', skillName, 'README.md');
     const openaiYamlPath = path.join(pluginRoot, 'skills', skillName, 'agents', 'openai.yaml');
 
     const evalManifestPath = path.join(pluginRoot, 'skills', skillName, 'evals', 'manifest.json');
@@ -786,6 +810,7 @@ function main() {
       skillMdPath,
       renderSkillMd(skillName, skillDescription, skillShortDescription, args.skillInvocation),
     );
+    writeText(skillReadmePath, renderSkillReadme(skillName, skillDescription));
     writeText(
       openaiYamlPath,
       renderOpenAiYaml(
@@ -803,6 +828,7 @@ function main() {
     writeJson(behaviorCasesPath, renderBehaviorCases(skillName, skillDescription));
     createdPaths.push(
       skillMdPath,
+      skillReadmePath,
       openaiYamlPath,
       evalManifestPath,
       triggerCasesPath,

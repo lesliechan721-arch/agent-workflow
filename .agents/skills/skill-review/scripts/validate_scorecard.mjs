@@ -159,6 +159,16 @@ function validateAndCalculate(data) {
   }
   const mode = review.mode;
   const direction = review.direction;
+  if (
+    typeof review.skill_name !== 'string' ||
+    !/^[a-z0-9][a-z0-9-]*$/u.test(review.skill_name)
+  ) {
+    diagnostics.push(diagnostic(
+      'error',
+      'review.skill-name',
+      'review.skill_name must use lowercase kebab-case.',
+    ));
+  }
   if (!VALID_MODES.has(mode)) {
     diagnostics.push(diagnostic('error', 'review.mode', `mode must be one of ${[...VALID_MODES].sort().join(', ')}.`));
   }

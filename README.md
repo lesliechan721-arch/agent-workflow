@@ -86,8 +86,8 @@ make test
 - `make test`：运行单元测试和集成测试
 - `pnpm test:perf:gate`：运行独立性能预算和 fast unit wall-time 门禁；预算定义见 [测试指南](docs/testing.md#performance-budgets)
 - `pnpm plugin:test <plugin>`：运行插件确定性 Node 脚本测试，不调用模型
-- `pnpm plugin:eval <plugin> --skill <skill> --materialize-only`：为一个 owner Skill 生成并核验 Codex project/user 最终制品，不调用模型
-- `pnpm plugin:eval <plugin> --skill <skill>`：本地显式运行该 Skill 的 release-required Codex eval；不进入常规 CI
+- `pnpm plugin:eval <plugin> --skill <skill> --batch-name <name> --materialize-only`：为一个 owner Skill 生成并核验 Codex project/user 最终制品，不调用模型
+- `pnpm plugin:eval <plugin> --skill <skill> --batch-name <name>`：本地显式运行该 Skill 的 release-required Codex eval；不进入常规 CI
 - `node .agents/skills/skill-review/scripts/run_static_skill_evals.mjs <skill> --validate-only`：校验当前仓库静态 Skill eval 定义；真实模型运行使用同一脚本
 - `make verify-local`：校验 CLI 本地发布链路（常规测试、性能门禁、build smoke、CLI pack smoke、catalog fetch smoke）
 - `make verify-cli`：校验 CLI-only 发布链路

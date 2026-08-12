@@ -73,6 +73,7 @@ async function writeManifestOnlyPlugin(
     },
     extensions,
   }), { spaces: 2 });
+  await fs.writeFile(path.join(pluginDir, 'README.md'), '# Test Plugin\n', 'utf8');
   return pluginDir;
 }
 
@@ -87,7 +88,28 @@ function validatePluginScriptPath(): string {
   );
 }
 
+async function ensureFixtureReadmes(pluginDir: string): Promise<void> {
+  const pluginReadme = path.join(pluginDir, 'README.md');
+  if (!(await fs.pathExists(pluginReadme))) {
+    await fs.writeFile(pluginReadme, '# Test Plugin\n', 'utf8');
+  }
+  const skillsRoot = path.join(pluginDir, 'skills');
+  if (!(await fs.pathExists(skillsRoot))) return;
+  for (const entry of await fs.readdir(skillsRoot, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const skillReadme = path.join(skillsRoot, entry.name, 'README.md');
+    if (!(await fs.pathExists(skillReadme))) {
+      await fs.writeFile(
+        skillReadme,
+        '# Test Skill\n',
+        'utf8',
+      );
+    }
+  }
+}
+
 async function runValidatePlugin(pluginDir: string, extraArgs: string[] = []) {
+  await ensureFixtureReadmes(pluginDir);
   return execFileAsync('node', [validatePluginScriptPath(), pluginDir, ...extraArgs], {
     cwd: repoRoot(),
     env: process.env,
@@ -116,6 +138,8 @@ async function writeSourcePlugin(
       await fs.writeJson(absolutePath, content, { spaces: 2 });
     }
   }
+
+  await ensureFixtureReadmes(pluginDir);
 
   return { pluginDir, manifestPath };
 }
@@ -476,6 +500,14 @@ describe('authoring tools', () => {
       },
     });
     expect(scaffoldManifest.marketplace.policy).not.toHaveProperty('products');
+    await expect(fs.readFile(
+      path.join(tempRepo, 'plugins', 'repo-check', 'README.md'),
+      'utf8',
+    )).resolves.toContain('检查仓库状态并输出诊断结论。');
+    await expect(fs.readFile(
+      path.join(tempRepo, 'plugins', 'repo-check', 'skills', 'repo-check', 'README.md'),
+      'utf8',
+    )).resolves.toContain('主要指令见 `SKILL.md`');
     await expect(
       fs.pathExists(path.join(tempRepo, 'plugins', 'repo-check', 'skills', 'repo-check', 'SKILL.md')),
     ).resolves.toBe(true);
@@ -1467,7 +1499,7 @@ describe('authoring tools', () => {
         refBase,
         '.examples',
         'code-review',
-        'review-skills',
+        'skills',
         'review-workflow',
         'evals',
         'evals.json',
@@ -1660,7 +1692,7 @@ describe('authoring tools', () => {
           refBase,
           '.examples',
           'code-review',
-          'review-skills',
+          'skills',
           'review-workflow',
         ),
         caseCount: 2,
@@ -1743,7 +1775,7 @@ describe('authoring tools', () => {
     expect(exampleDoc).not.toContain('`plugin/install`');
     expect(exampleDoc).not.toContain('allowInstallOverride');
     expect(exampleDoc).toContain('`slash-commands/`');
-    expect(exampleDoc).toContain('`review-skills/review-workflow/evals/evals.json`');
+    expect(exampleDoc).toContain('`skills/review-workflow/evals/evals.json`');
     expect(exampleDoc).toContain('`${REVIEW_SERVICE_API_KEY}`');
   });
 
@@ -2255,6 +2287,49 @@ describe('authoring tools', () => {
     });
   });
 
+  it('validate_plugin.mjs requires non-empty plugin and Skill README files only', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-readme-authoring-'));
+    tempDirs.push(tempRoot);
+    const { pluginDir } = await writeDynamicArtifactPlugin(tempRoot);
+    await ensureFixtureReadmes(pluginDir);
+    const pluginReadme = path.join(pluginDir, 'README.md');
+    const skillReadme = path.join(
+      pluginDir,
+      'skills',
+      'dynamic-authoring-test',
+      'README.md',
+    );
+    const runDirect = () => execFileAsync('node', [validatePluginScriptPath(), pluginDir], {
+      cwd: repoRoot(),
+      env: process.env,
+      maxBuffer: 10 * 1024 * 1024,
+    });
+
+    await fs.remove(pluginReadme);
+    await expect(runDirect()).rejects.toMatchObject({
+      stdout: expect.stringContaining('Plugin root README.md is required'),
+    });
+    await fs.writeFile(pluginReadme, '\n', 'utf8');
+    await expect(runDirect()).rejects.toMatchObject({
+      stdout: expect.stringContaining('Plugin root README.md must not be empty'),
+    });
+    await fs.writeFile(pluginReadme, '# Dynamic Authoring Test\n', 'utf8');
+    await fs.remove(skillReadme);
+    await expect(runDirect()).rejects.toMatchObject({
+      stdout: expect.stringContaining('skills/dynamic-authoring-test/README.md is required'),
+    });
+    await fs.writeFile(skillReadme, '\n', 'utf8');
+    await expect(runDirect()).rejects.toMatchObject({
+      stdout: expect.stringContaining(
+        'skills/dynamic-authoring-test/README.md must not be empty',
+      ),
+    });
+    await fs.writeFile(skillReadme, '# Dynamic Skill\n', 'utf8');
+    await expect(runDirect()).resolves.toMatchObject({
+      stdout: expect.stringContaining('[PASS] All checks passed.'),
+    });
+  });
+
   it('validate_plugin.mjs validates artifact target platforms against supported products', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-artifact-platforms-'));
     tempDirs.push(tempRoot);
@@ -2315,12 +2390,12 @@ describe('authoring tools', () => {
             states: ['present'],
             refreshKeys: [],
             skillKey: 'claude-dynamic',
-            sourceDirs: ['./templates/claude-dynamic'],
+            sourceDirs: ['./skills/claude-dynamic'],
           }],
         },
       }),
       {
-        'templates/claude-dynamic/SKILL.md': '---\nname: claude-dynamic\ndescription: Dynamic Claude skill.\n---\n\n# Dynamic Claude\n',
+        'skills/claude-dynamic/SKILL.md': '---\nname: claude-dynamic\ndescription: Dynamic Claude skill.\n---\n\n# Dynamic Claude\n',
         'scripts/render-artifacts.mjs': [
           'const context = JSON.parse(await (await import("node:fs/promises")).readFile(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
           'process.stdout.write(JSON.stringify({ version: 2, artifacts: [{',
@@ -2332,7 +2407,7 @@ describe('authoring tools', () => {
       },
     );
     await fs.outputFile(
-      path.join(dynamicClaude.pluginDir, 'templates', 'claude-dynamic', 'assets', 'icon.bin'),
+      path.join(dynamicClaude.pluginDir, 'skills', 'claude-dynamic', 'assets', 'icon.bin'),
       Buffer.from([0, 255, 1]),
     );
     await expect(runValidatePlugin(dynamicClaude.pluginDir)).resolves.toMatchObject({
@@ -2346,8 +2421,8 @@ describe('authoring tools', () => {
         targets: [{
           ...dynamicClaudeManifest.artifacts.targets[0],
           sourceDirs: [
-            './templates/claude-dynamic',
-            './templates/claude-dynamic',
+            './skills/claude-dynamic',
+            './skills/claude-dynamic',
           ],
         }],
       },
@@ -2361,8 +2436,8 @@ describe('authoring tools', () => {
         targets: [{
           ...dynamicClaudeManifest.artifacts.targets[0],
           sourceDirs: [
-            './templates/claude-dynamic',
-            './templates/claude-dynamic/../claude-dynamic',
+            './skills/claude-dynamic',
+            './skills/claude-dynamic/../claude-dynamic',
           ],
         }],
       },
@@ -2374,7 +2449,7 @@ describe('authoring tools', () => {
 
     const dynamicClaudeSource = path.join(
       dynamicClaude.pluginDir,
-      'templates',
+      'skills',
       'claude-dynamic',
     );
     const skillPath = path.join(dynamicClaudeSource, 'SKILL.md');
@@ -2391,14 +2466,46 @@ describe('authoring tools', () => {
     });
     await fs.remove(path.join(dynamicClaudeSource, 'references'));
 
-    const sourceLink = path.join(dynamicClaude.pluginDir, 'templates', 'source-link');
-    await fs.symlink('claude-dynamic', sourceLink);
+    await fs.ensureDir(path.join(dynamicClaudeSource, 'evals'));
     await fs.writeJson(dynamicClaude.manifestPath, {
       ...dynamicClaudeManifest,
       artifacts: {
         targets: [{
           ...dynamicClaudeManifest.artifacts.targets[0],
-          sourceDirs: ['./templates/source-link'],
+          sourceDirs: ['./skills/claude-dynamic/assets'],
+        }],
+      },
+    }, { spaces: 2 });
+    await expect(runValidatePlugin(dynamicClaude.pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining(
+        'sourceDirs must include "./skills/claude-dynamic" so README.md is published',
+      ),
+    });
+    await fs.writeJson(dynamicClaude.manifestPath, {
+      ...dynamicClaudeManifest,
+      artifacts: {
+        targets: [{
+          ...dynamicClaudeManifest.artifacts.targets[0],
+          sourceDirs: [
+            './skills/claude-dynamic',
+            './skills/claude-dynamic/evals',
+          ],
+        }],
+      },
+    }, { spaces: 2 });
+    await expect(runValidatePlugin(dynamicClaude.pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining('must not point inside an author-only Skill directory'),
+    });
+    await fs.writeJson(dynamicClaude.manifestPath, dynamicClaudeManifest, { spaces: 2 });
+
+    const sourceLink = path.join(dynamicClaudeSource, 'source-link');
+    await fs.symlink('.', sourceLink);
+    await fs.writeJson(dynamicClaude.manifestPath, {
+      ...dynamicClaudeManifest,
+      artifacts: {
+        targets: [{
+          ...dynamicClaudeManifest.artifacts.targets[0],
+          sourceDirs: ['./skills/claude-dynamic/source-link'],
         }],
       },
     }, { spaces: 2 });
@@ -2496,6 +2603,7 @@ describe('authoring tools', () => {
       },
     });
     const manifestPath = path.join(pluginDir, '.agents-plugin', 'plugin.json');
+    await ensureFixtureReadmes(pluginDir);
 
     await expect(
       execFileAsync('node', [scriptPath, pluginDir], {
@@ -2780,6 +2888,7 @@ describe('authoring tools', () => {
       ),
       validPluginDir,
     );
+    await ensureFixtureReadmes(validPluginDir);
     await expect(
       execFileAsync('node', [scriptPath, validPluginDir], {
         cwd: repoRoot(),
@@ -3146,6 +3255,7 @@ describe('authoring tools', () => {
       'scripts',
       'validate_plugin.mjs',
     );
+    await ensureFixtureReadmes(pluginDir);
 
     await expect(
       execFileAsync('node', [scriptPath, pluginDir], {
@@ -3224,6 +3334,7 @@ describe('authoring tools', () => {
       ].join('\n'),
       'utf8',
     );
+    await ensureFixtureReadmes(pluginDir);
     await expect(
       execFileAsync('node', [scriptPath, pluginDir], {
         cwd: repoRoot(),
@@ -3329,6 +3440,7 @@ describe('authoring tools', () => {
       'scripts',
       'validate_plugin.mjs',
     );
+    await ensureFixtureReadmes(pluginDir);
     await expect(
       execFileAsync('node', [scriptPath, pluginDir], {
         cwd: repoRoot(),
@@ -3429,6 +3541,7 @@ describe('authoring tools', () => {
       'scripts',
       'validate_plugin.mjs',
     );
+    await ensureFixtureReadmes(pluginDir);
     await expect(
       execFileAsync('node', [scriptPath, pluginDir], {
         cwd: repoRoot(),
@@ -3485,6 +3598,7 @@ describe('authoring tools', () => {
       'scripts',
       'validate_plugin.mjs',
     );
+    await ensureFixtureReadmes(pluginDir);
     await expect(
       execFileAsync('node', [scriptPath, pluginDir], {
         cwd: repoRoot(),
@@ -3524,6 +3638,7 @@ describe('authoring tools', () => {
     );
 
     const skillMdPath = path.join(pluginDir, 'skills', 'frontmatter-test', 'SKILL.md');
+    await ensureFixtureReadmes(pluginDir);
     await fs.writeFile(
       skillMdPath,
       [
@@ -4088,6 +4203,7 @@ describe('authoring tools', () => {
     }), { spaces: 2 });
     await fs.writeJson(path.join(pluginDir, '.mcp.json'), { template: true }, { spaces: 2 });
     await fs.writeJson(path.join(pluginDir, '.app.json'), { template: true }, { spaces: 2 });
+    await ensureFixtureReadmes(pluginDir);
 
     const result = await execFileAsync('node', [scriptPath, pluginDir], {
       cwd: tempRoot,

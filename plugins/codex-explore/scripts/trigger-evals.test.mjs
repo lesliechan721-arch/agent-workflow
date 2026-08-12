@@ -19,8 +19,8 @@ import {
   readEvalResource,
   resolveParentModelOverride,
   shouldStopEarly,
-} from '../templates/codex-explore/evals/eval-harness.mjs';
-import { setupTriggerWorkspace } from '../templates/codex-explore/evals/trigger-fixture.mjs';
+} from '../skills/codex-explore/evals/eval-harness.mjs';
+import { setupTriggerWorkspace } from '../skills/codex-explore/evals/trigger-fixture.mjs';
 
 async function testEvalCorpus() {
   const document = JSON.parse(await readEvalResource('trigger-cases.json'));

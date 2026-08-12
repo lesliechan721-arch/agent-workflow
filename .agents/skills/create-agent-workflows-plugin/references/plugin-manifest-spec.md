@@ -68,7 +68,7 @@ AW 版本管理里有三套身份，不能混用：
 
 `scripts`、`config` 和 `artifacts` 是 AW CLI 自己管理的插件运行时合同，不会写入 `.claude-plugin/plugin.json` 或 `.codex-plugin/plugin.json`。插件脚本测试通过仓库包脚本 `pnpm plugin:test <plugin>` 运行，不通过 `aw` 客户端子命令。
 
-作者期模型评估不增加 plugin manifest 顶层字段。每个 owner Skill 使用自身源码根的 `evals/manifest.json`，由 `pnpm plugin:eval <plugin> --skill <skill>` 读取；`evals/**` 和 `reports/**` 不进入 production runtime bundle。完整 schema、Codex-only 范围和 materialization 规则见 `references/skill-evaluation.md`。
+作者期模型评估不增加 plugin manifest 顶层字段。每个 owner Skill 使用 `skills/<skill>/evals/manifest.json`，由 `pnpm plugin:eval <plugin> --skill <skill> --batch-name <name>` 读取；Skill 根 `evals/**` 和插件根 `reports/**` 不进入 production runtime bundle。完整 schema、Codex-only 范围、批次报告和 materialization 规则见 `references/skill-evaluation.md`。
 
 本节只定义 manifest 字段合同。`aw config` 命令、标准 `aw-config.mjs` helper、lifecycle context、动态 artifact renderer、运行时环境、幂等要求和 `pnpm plugin:test` 写法见 `references/aw-scripts-config-lifecycle.md`。
 
@@ -207,7 +207,7 @@ AW 版本管理里有三套身份，不能混用：
         "states": ["present"],
         "refreshKeys": ["explorerModel", "modelReasoningEffort"],
         "skillKey": "codex-explore",
-        "sourceDirs": ["./templates/common", "./templates/codex"]
+        "sourceDirs": ["./skills/codex-explore"]
       }
     ]
   }
@@ -224,7 +224,7 @@ AW 版本管理里有三套身份，不能混用：
 - 配置写入后，AW 对当前可见 target 运行完整 reinstall。`config set/unset/reset --json` 返回 config receipt v3 和各 target 的 reinstall 结果。
 - 对包含 `project` scope 的 repo-visible dynamic artifact，`refreshKeys` 不能引用 `file` / `directory` 类型配置。project artifact render config 只来自 manifest default 和 project shared config 中可共享的非路径 key；user store、project local store 和路径型 key 只影响本机 effective config、lifecycle 或 helper。
 - `requiresCodexProjectConfig: true` 表示 project scope 写路径需要进入 Codex project config safety preflight。`codex.skill` 不需要该字段，因为它写 `.agents/skills/<skillKey>`，不依赖 `.codex/config.toml`。
-- `codex.skill` 和 `claude.skill` 必须静态声明合法 `skillKey`，并可声明 `sourceDirs`。每个 source directory 必须是插件内存在的 `./` 相对目录，不能重复。AW 按数组顺序合并完整目录；后面的源覆盖前面的同名文件。静态文件按字节复制，符号链接和非普通文件失败。
+- `codex.skill` 和 `claude.skill` 必须静态声明合法 `skillKey`，并可声明 `sourceDirs`。每个 source directory 必须是插件内存在的 `./` 相对目录，不能重复。声明 source 时必须包含规范根 `./skills/<skillKey>`；其它 source 只能位于该根内，且不能进入名为 `evals` 或 `reports` 的作者专用目录。AW 按数组顺序合并完整目录；后面的源覆盖前面的同名文件。静态文件按字节复制，符号链接和非普通文件失败。最终动态 Skill 必须保留非空 `README.md`。
 - Skill artifact 的 V2 `present` content 只能包含 `files`。`files` 是 POSIX 相对路径到 UTF-8 字符串的映射，并在所有 `sourceDirs` 之后覆盖同名文件。path 不能是绝对路径，不能含反斜杠、`.`、`..`，也不能产生文件/目录前缀冲突。
 - 最终 `codex.skill` 必须包含 `SKILL.md` 和 `agents/openai.yaml`，且 `policy.allow_implicit_invocation` 必须是 boolean。project target 的 `projectManagedKind` 必须是 `skill`，且不需要 `requiresCodexProjectConfig`。最终 `claude.skill` 必须包含带合法 YAML frontmatter 的 `SKILL.md`；`disable-model-invocation` 和 `user-invocable` 出现时必须使用目标 profile 支持的原生 boolean token，具体类型、值和大小写规则见 `references/skill-frontmatter-capabilities.generated.md`。推荐使用规范 YAML boolean `true` / `false`。AW 校验并原样写入这些原生字段。Claude target 不接受 `projectManagedKind` 或 `requiresCodexProjectConfig`。
 - `codex.developerInstructionsBlock` 的 `projectManagedKind` 必须是 `instruction`，renderer `present` content 是 instruction 字符串。一个插件可以声明多个 instruction artifact；AW 会按 `artifact.id` 稳定排序后合成为同一个 managed block。`disabled` 只省略该 artifact 的 fragment；只有同一插件没有任何 present instruction artifact 时，AW 才移除或跳过 managed block。
@@ -238,7 +238,8 @@ status 和控制台直接检查 live ownership。写动作必须先明确 platfo
 
 - `skills`、`slashCommands`、`mcpServers`、`apps` 只能写成单个字符串路径，不能写数组或对象。
 - 路径必须以 `./` 开头，不能是绝对路径，不能逃出插件根目录。
-- 插件目录里出现标准入口文件时必须声明对应字段：有 `skills/` → 声明 `skills`，有 `slash-commands/` → 声明 `slashCommands`，有 `.mcp.json` → 声明 `mcpServers`，有 `.app.json` → 声明 `apps`。
+- `skills/` 是所有静态和动态 Skill 的固定源码根。manifest `skills` 字段只声明静态 Skill 集合；仅含动态 Skill 的插件可以省略该字段。混合插件声明静态集合时，同一平台的动态 `skillKey` 不会再作为静态 Skill 打包。
+- 插件目录里出现其它标准入口文件时必须声明对应字段：有 `slash-commands/` → 声明 `slashCommands`，有 `.mcp.json` → 声明 `mcpServers`，有 `.app.json` → 声明 `apps`。
 - `slashCommands` 目录只能包含根目录直属 `*.md` 命令文件和保留 `assets/` 资源目录；`assets/` 下的 Markdown 不生成命令，其它子目录直接失败。
 - 声明的路径必须实际存在，构建和验证时都会检查。
 

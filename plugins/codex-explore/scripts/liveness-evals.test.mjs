@@ -9,7 +9,7 @@ import {
   parseLivenessEvalArgs,
   setupLivenessWorkspace,
   summarizeLivenessRuns,
-} from '../templates/codex-explore/evals/run-liveness-evals.mjs';
+} from '../skills/codex-explore/evals/run-liveness-evals.mjs';
 
 function event(tool, argumentsValue = {}, output = {}) {
   return { tool, arguments: argumentsValue, output };

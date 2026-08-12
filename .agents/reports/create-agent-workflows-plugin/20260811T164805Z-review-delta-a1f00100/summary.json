@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "batchId": "20260811T164805Z-review-delta-a1f00100",
+  "name": "review-delta",
+  "owner": {
+    "kind": "static-skill",
+    "skill": "create-agent-workflows-plugin"
+  },
+  "status": "sealed",
+  "createdAt": "2026-08-12T02:59:14.972Z",
+  "updatedAt": "2026-08-12T03:41:04.432Z",
+  "latestCompletedAt": "2026-08-11T16:48:05.000Z",
+  "source": {
+    "digest": "legacy:20260811T164805Z-review-delta-a1f00100",
+    "gitHead": null,
+    "inScopeDirty": true
+  },
+  "eval": {
+    "runCount": 0,
+    "runs": [],
+    "targetCount": 0,
+    "outcome": "not_run",
+    "complete": false,
+    "mechanicalPassed": false,
+    "releaseRequired": 4,
+    "releaseCovered": 0,
+    "releaseOutcome": "incomplete",
+    "missingTargets": [
+      "conversation/behavior/project-default/all/all",
+      "materialization/project-default",
+      "trigger/trigger/project-default/sanity/all",
+      "trigger/trigger/project-default/validation/all"
+    ],
+    "targets": []
+  },
+  "review": {
+    "mode": "delta",
+    "reviewId": "20260811T164805Z-a1f001",
+    "completedAt": "2026-08-11T16:48:05.000Z",
+    "reportPath": "reviews/delta/20260811T164805Z-a1f001/report.md",
+    "scorecardPath": "reviews/delta/20260811T164805Z-a1f001/scorecard.json",
+    "weightedScore": 80.2,
+    "coverage": 100,
+    "confidence": "high",
+    "release": "pass-after-fixes"
+  },
+  "diagnostics": []
+}

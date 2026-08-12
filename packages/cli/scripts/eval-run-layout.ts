@@ -3,87 +3,39 @@ import path from 'node:path';
 
 import fs from 'fs-extra';
 
-export interface EvalRunLayout {
-  runId: string;
-  workRoot: string;
-  reportRoot: string;
-  rawRoot: string;
-  cleanupWork(): Promise<void>;
-}
+import {
+  createSkillEvalRunLayout,
+  type SkillEvalRunLayout,
+  type SkillReportSourceIdentity,
+} from './skill-reporting.js';
 
-function timestampId(date = new Date()): string {
-  return date.toISOString().replace(/[-:]/gu, '').replace(/\.\d{3}Z$/u, 'Z');
-}
-
-export function createEvalRunId(date = new Date()): string {
-  return `${timestampId(date)}-${randomUUID().slice(0, 8)}`;
-}
-
-function validateSegment(value: string, label: string): string {
-  if (!/^[a-z0-9][a-z0-9-]*$/u.test(value)) {
-    throw new Error(`${label} must use lowercase kebab-case.`);
-  }
-  return value;
-}
-
-function validateRunId(value: string): string {
-  if (!/^\d{8}T\d{6}Z-[0-9a-f]{8}$/u.test(value)) {
-    throw new Error('--run-id must use YYYYMMDDTHHMMSSZ-xxxxxxxx.');
-  }
-  return value;
-}
-
-async function makeExclusiveDirectory(directory: string): Promise<void> {
-  await fs.ensureDir(path.dirname(directory));
-  await fs.mkdir(directory);
-}
+export type EvalRunLayout = SkillEvalRunLayout;
 
 export async function createPluginEvalRunLayout(options: {
   repoRoot: string;
-  skillRoot: string;
   plugin: string;
   skill: string;
+  batchName?: string;
+  batchId?: string;
   runId?: string;
+  source: SkillReportSourceIdentity;
+  environmentDigest: string;
+  modelEnvironmentDigest?: string | null;
+  harnessDigest: string;
+  requiredTargets: string[];
 }): Promise<EvalRunLayout> {
-  const plugin = validateSegment(options.plugin, 'plugin');
-  const skill = validateSegment(options.skill, 'skill');
-  const runId = validateRunId(options.runId ?? createEvalRunId());
-  const relativeTarget = path.join('plugins', plugin, skill, runId);
-  const workRoot = path.join(
-    options.repoRoot,
-    '.tmp',
-    'agent-workflows',
-    'evals',
-    relativeTarget,
-  );
-  const resolvedSkillRoot = path.resolve(options.skillRoot);
-  const relativeSkillRoot = path.relative(options.repoRoot, resolvedSkillRoot);
-  if (
-    relativeSkillRoot === '..' ||
-    relativeSkillRoot.startsWith(`..${path.sep}`) ||
-    path.isAbsolute(relativeSkillRoot)
-  ) {
-    throw new Error('Skill report directory must stay inside the repository.');
-  }
-  const reportRoot = path.join(resolvedSkillRoot, 'reports', 'evals', runId);
-  await makeExclusiveDirectory(workRoot);
-  try {
-    await makeExclusiveDirectory(reportRoot);
-    const rawRoot = path.join(reportRoot, 'raw');
-    await fs.mkdir(rawRoot);
-    return {
-      runId,
-      workRoot,
-      reportRoot,
-      rawRoot,
-      cleanupWork: async () => {
-        await fs.remove(workRoot);
-      },
-    };
-  } catch (error) {
-    await fs.remove(workRoot);
-    throw error;
-  }
+  return createSkillEvalRunLayout({
+    repoRoot: options.repoRoot,
+    owner: { kind: 'plugin-skill', plugin: options.plugin, skill: options.skill },
+    batchName: options.batchName,
+    batchId: options.batchId,
+    runId: options.runId,
+    source: options.source,
+    environmentDigest: options.environmentDigest,
+    modelEnvironmentDigest: options.modelEnvironmentDigest,
+    harnessDigest: options.harnessDigest,
+    requiredTargets: options.requiredTargets,
+  });
 }
 
 export async function writeEvalRunJson(

@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "completedAt": "2026-08-11T17:20:58.000Z",
+  "mode": "release",
+  "weightedScore": 90.4,
+  "coverage": 100,
+  "confidence": "high",
+  "release": "pass"
+}

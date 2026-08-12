@@ -5,13 +5,13 @@
 中央入口会先 materialize 最终 project/user 制品。以下命令只生成制品，不启动模型：
 
 ```bash
-pnpm plugin:eval ask-me --skill requirements-clarifier --materialize-only
+pnpm plugin:eval ask-me --skill requirements-clarifier --batch-name materialization --materialize-only
 ```
 
 本地发布评估一次运行一个 owner Skill：
 
 ```bash
-pnpm plugin:eval ask-me --skill requirements-clarifier
+pnpm plugin:eval ask-me --skill requirements-clarifier --batch-name release
 ```
 
 `decision-grill` 的命令和语料说明位于其自身 `evals/README.md`。
@@ -36,4 +36,4 @@ trigger corpus 有 20 条用例：10 条正例和 10 条近似负例，train 与
 3. app-server driver 将 `scripted_replies.answers_by_index` 映射到运行时 question id，并保存完整事件、问题、答复、最终消息、token usage 和 workspace diff。
 4. repo-local `skill-review` 按 `review.checks` 复核真实 trace。`workspace_unchanged` 必须通过。
 
-模型 eval 只覆盖 Codex。真实模型默认要求 Full Access；用户确认风险后可用 `--allow-unmanaged-processes` 降级运行，但不能保证后代进程清理。中间产物固定在项目 `.tmp/agent-workflows/evals/`；持久报告写入对应 owner Skill 的 `reports/evals/<run-id>/`。Claude 只通过 build、validator 和 `plugin:test` 验证确定性合同，不能把 Codex 或确定性测试结果报告成 Claude 模型行为证据。
+模型 eval 只覆盖 Codex。真实模型默认要求 Full Access；用户确认风险后可用 `--allow-unmanaged-processes` 降级运行，但不能保证后代进程清理。中间产物固定在项目 `.tmp/agent-workflows/evals/`；持久报告写入 `plugins/ask-me/reports/requirements-clarifier/<batch-id>/`。Claude 只通过 build、validator 和 `plugin:test` 验证确定性合同，不能把 Codex 或确定性测试结果报告成 Claude 模型行为证据。

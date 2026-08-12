@@ -15,12 +15,15 @@ AW 插件同时检查三层材料：
 ```bash
 node .agents/skills/create-agent-workflows-plugin/scripts/validate_plugin.mjs plugins/<name>
 pnpm plugin:test <name> --platform codex --scope project
-pnpm plugin:eval <name> --skill <owner-skill> --materialize-only
+pnpm plugin:eval <name> --skill <owner-skill> \
+  --batch-name materialization --materialize-only
 node .agents/skills/skill-review/scripts/inspect_skill_target.mjs \
   plugins/<name> \
-  --evaluation <owner-skill-root>/reports/evals/<run-id>/raw/evaluation.json \
+  --evaluation plugins/<name>/reports/<owner-skill>/<batch-id>/evals/runs/<run-id>/raw/evaluation.json \
   --format json
 ```
+
+`inspect_skill_target.mjs` 读取单次运行的原始 `EvaluationBundle`。批次根的 `evals/evaluation.json` 是跨运行聚合，不是该命令的输入。
 
 对每个源码 Skill 和 required project final `SKILL.md` 分别应用主工作流的静态诊断；renderer/config 改变内容时，还要比较 default 与 non-default profile。user subject 只提供 materialized evidence，不声称经过 Codex native cache 模型运行。
 
@@ -29,13 +32,15 @@ node .agents/skills/skill-review/scripts/inspect_skill_target.mjs \
 release 模式再显式运行：
 
 ```bash
-pnpm plugin:eval <name> --skill <owner-skill>
+pnpm plugin:eval <name> --skill <owner-skill> --batch-name release
 ```
 
-一次命令只运行一个 owner Skill。跨 Skill 或跨插件组合由 owner manifest 的 `skills[]` 和 `profiles[].plugins[]` 声明；companion 插件必须来自当前仓库。strict current 只保留 participant Skills，conversation baseline 只移除 owner。这个组合只属于 eval fixture，不形成 production dependency。
+一次命令只运行一个 owner Skill，并用 `--batch-name` 新建或 `--batch-id` 追加批次。跨 Skill 或跨插件组合由 owner manifest 的 `skills[]` 和 `profiles[].plugins[]` 声明；companion 插件必须来自当前仓库。strict current 只保留 participant Skills，conversation baseline 只移除 owner。这个组合只属于 eval fixture，不形成 production dependency。
 
 release-required suite 必须 complete；不得用 `--allow-environment-skips` 形成发布证据。真实模型默认要求 Full Access；若用户用 `--allow-unmanaged-processes` 确认降级运行，review 必须明确记录后代进程清理不受保证。`needs_review` 或 `qualitativeReview=required` 必须读取对应 trace 逐项判分。Codex 版本、model、profile、已安装插件、participant Skills、config digest、bundle digest 和 content digest 应随报告保存，防止混用不同制品。
 
-eval 报告固定保存在 `<owner-skill-root>/reports/evals/<run-id>/`。最终 review 的 `report.md` 和 `scorecard.json` 固定保存在 `<owner-skill-root>/reports/reviews/<review-run-id>/`；只把临时草稿放到项目 `.tmp/agent-workflows/reviews/`。
+eval 报告固定保存在 `plugins/<name>/reports/<owner-skill>/<batch-id>/`。验证 scorecard 后，用 `pnpm review:publish -- --plugin <name> --skill <owner-skill> --batch-id <batch-id> --report <report.md> --scorecard <scorecard.json>` 发布并封存该批次；没有 eval 时用 `--batch-name` 创建 review-only 批次。只把临时草稿放到项目 `.tmp/agent-workflows/reviews/`。
+
+发布后人工更新 Skill README 的最近 eval/review 摘要、仓库相对完整报告路径和被评估 Git commit。程序不会自动改写 README；插件 README 不记录 Skill 验证信息。
 
 所有模型行为结论仅覆盖 Codex。`plugin:test` 只能证明确定性行为；`plugin:eval` 的真实 suite 才能证明模型行为。插件级 release verdict 取 required profiles/suites 中最差门禁，不用平均分掩盖失败。

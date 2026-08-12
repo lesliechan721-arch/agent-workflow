@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "target": "command/routing/project-default/all/all",
+  "kind": "command",
+  "runId": "20260811T152944Z-294f98f2",
+  "generatedAt": "2026-08-11T15:51:10.606Z",
+  "profile": "project-default",
+  "suite": "routing",
+  "split": "all",
+  "case": "all",
+  "outcome": "incomplete",
+  "complete": false,
+  "mechanicalPassed": false,
+  "qualitativeReview": "not_required",
+  "requiredForRelease": true,
+  "reportPath": null,
+  "summary": {
+    "expected_results": 72,
+    "completed_results": 5,
+    "current_passed": 2,
+    "current_total": 3,
+    "baseline_passed": 1,
+    "baseline_total": 2,
+    "raw_evidence_missing": 1,
+    "load_evidence_missing": 0
+  },
+  "diagnostics": []
+}

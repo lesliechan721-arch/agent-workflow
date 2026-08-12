@@ -9,7 +9,7 @@ node .agents/skills/skill-review/scripts/run_static_skill_evals.mjs \
   create-agent-workflows-plugin --validate-only
 ```
 
-中间产物固定写入项目 `.tmp/agent-workflows/evals/static/`，完成后清理。持久结果写入当前 Skill 的 `reports/evals/<run-id>/`。
+中间产物固定写入项目 `.tmp/agent-workflows/evals/static/`，完成后清理。持久结果写入 `.agents/reports/create-agent-workflows-plugin/<batch-id>/`。
 
 真实 Codex eval 复用 CLI 已有的隔离 trigger driver 和 app-server behavior driver，因此先构建 CLI：
 
@@ -24,6 +24,7 @@ pnpm build
 ```bash
 node .agents/skills/skill-review/scripts/run_static_skill_evals.mjs \
   create-agent-workflows-plugin \
+  --batch-name trigger-train \
   --suite trigger --split train --runs 3
 ```
 
@@ -32,6 +33,7 @@ node .agents/skills/skill-review/scripts/run_static_skill_evals.mjs \
 ```bash
 node .agents/skills/skill-review/scripts/run_static_skill_evals.mjs \
   create-agent-workflows-plugin \
+  --batch-name trigger-validation \
   --suite trigger --split validation --runs 3
 ```
 
@@ -40,6 +42,7 @@ node .agents/skills/skill-review/scripts/run_static_skill_evals.mjs \
 ```bash
 node .agents/skills/skill-review/scripts/run_static_skill_evals.mjs \
   create-agent-workflows-plugin \
+  --batch-name trigger-sanity \
   --suite trigger --split sanity --runs 3
 ```
 
@@ -50,7 +53,8 @@ node .agents/skills/skill-review/scripts/run_static_skill_evals.mjs \
 ```bash
 node .agents/skills/skill-review/scripts/run_static_skill_evals.mjs \
   create-agent-workflows-plugin \
+  --batch-name behavior \
   --suite behavior --runs 1
 ```
 
-不传 `--suite` 时运行 validation、sanity trigger 和 behavior。输出目录必须不存在，runner 不覆盖旧证据。behavior 的机械门验证运行完整、改动路径和声明的最终文件；`review.checks` 仍由 `skill-review` 对照 trace 做定性判分。真实模型证据当前只覆盖 Codex，不能据此声称 Claude 行为通过。
+真实运行必须使用 `--batch-name` 新建批次，或用已有输出中的 `--batch-id` 追加批次。不传 `--suite` 时运行 validation、sanity trigger 和 behavior。输出目录必须不存在，runner 不覆盖旧证据。behavior 的机械门验证运行完整、改动路径和声明的最终文件；`review.checks` 仍由 `skill-review` 对照 trace 做定性判分。真实模型证据当前只覆盖 Codex，不能据此声称 Claude 行为通过。

@@ -24,6 +24,7 @@
     "test:smoke:fetch": "pnpm --filter @lesliechan721/aw test:smoke:fetch",
     "plugin:test": "pnpm --filter @lesliechan721/aw plugin:test --",
     "plugin:eval": "pnpm --filter @lesliechan721/aw plugin:eval --",
+    "review:publish": "pnpm --filter @lesliechan721/aw review:publish --",
     "test:smoke:plugin-scripts": "pnpm --filter @lesliechan721/aw test:smoke:plugin-scripts",
     "pack:cli": "node scripts/release/pack-cli.mjs",
     "release:verify:cli": "pnpm test && pnpm test:perf:gate && pnpm test:smoke:build && pnpm test:smoke:pack:cli && pnpm test:smoke:fetch",

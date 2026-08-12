@@ -228,6 +228,7 @@ export async function validateSkillDirectoriesRoot(
 export async function createDynamicSkillExpectedTree(options: {
   artifact: Pick<CodexSkillArtifact | ClaudeSkillArtifact, 'target' | 'skillKey' | 'state' | 'content'>;
   sourceDirs?: string[];
+  requireReadme?: boolean;
 }): Promise<DynamicSkillTree> {
   const skillKey = options.artifact.skillKey?.trim();
   if (!skillKey) {
@@ -257,6 +258,12 @@ export async function createDynamicSkillExpectedTree(options: {
     skillKey,
     files,
   });
+  if (options.requireReadme) {
+    const readme = files['README.md'];
+    if (!readme || readme.toString('utf8').trim() === '') {
+      throw new Error(`${options.artifact.target} "${skillKey}" 缺少 README.md 内容。`);
+    }
+  }
 
   return { skillKey, files };
 }

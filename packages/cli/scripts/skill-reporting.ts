@@ -1,0 +1,1085 @@
+import { createHash, randomUUID } from 'node:crypto';
+import { open as openFile } from 'node:fs/promises';
+import { hostname } from 'node:os';
+import path from 'node:path';
+
+import fs from 'fs-extra';
+
+const BATCH_SCHEMA_VERSION = 1 as const;
+const BATCH_ID_PATTERN = /^\d{8}T\d{6}Z-[a-z0-9](?:[a-z0-9-]{0,47})-[0-9a-f]{8}$/u;
+const RUN_ID_PATTERN = /^\d{8}T\d{6}Z-[0-9a-f]{8}$/u;
+
+export type SkillReportOwner =
+  | { kind: 'plugin-skill'; plugin: string; skill: string }
+  | { kind: 'static-skill'; skill: string };
+
+export interface SkillReportSourceIdentity {
+  digest: string;
+  gitHead: string | null;
+  gitHeads?: string[];
+  inScopeDirty: boolean;
+}
+
+interface SkillReportBatch {
+  schemaVersion: typeof BATCH_SCHEMA_VERSION;
+  batchId: string;
+  name: string;
+  owner: SkillReportOwner;
+  status: 'open' | 'sealed';
+  createdAt: string;
+  updatedAt: string;
+  sealedAt?: string;
+  source: SkillReportSourceIdentity;
+  environmentDigest: string;
+  modelEnvironmentDigest?: string | null;
+  harnessDigest?: string;
+  requiredTargets: string[];
+}
+
+export interface SkillEvalRunLayout {
+  batchId: string;
+  batchRoot: string;
+  reportBoundaryRoot: string;
+  runId: string;
+  workRoot: string;
+  reportRoot: string;
+  rawRoot: string;
+  startedAt: string;
+  pid: number;
+  host: string;
+  cleanupWork(): Promise<void>;
+}
+
+interface EvaluationSubjectLike {
+  profile: string;
+  scope: string;
+  configDigest?: string;
+  bundleDigest?: string;
+  contentDigest?: string;
+  artifacts?: Array<{ kind: string; key?: string; contentDigest: string }>;
+}
+
+interface EvaluationSuiteLike {
+  id: string;
+  kind: 'trigger' | 'conversation' | 'command';
+  profile?: string;
+  split?: string | null;
+  outcome: 'passed' | 'failed' | 'needs_review' | 'incomplete';
+  complete: boolean;
+  mechanicalPassed: boolean;
+  qualitativeReview?: string;
+  reportPath?: string;
+  summary?: Record<string, unknown>;
+  diagnostics?: string[];
+}
+
+export interface EvaluationLike {
+  generatedAt: string;
+  outcome: 'passed' | 'failed' | 'needs_review' | 'incomplete';
+  complete: boolean;
+  mechanicalPassed: boolean;
+  subjects: EvaluationSubjectLike[];
+  suites: EvaluationSuiteLike[];
+  diagnostics: string[];
+  model?: string | null;
+  modelProvider?: string | null;
+  codexVersion?: string | null;
+}
+
+interface TargetSummary {
+  schemaVersion: 1;
+  target: string;
+  kind: 'materialization' | 'trigger' | 'conversation' | 'command';
+  runId: string;
+  generatedAt: string;
+  profile: string;
+  suite: string | null;
+  split: string;
+  case: string;
+  outcome: 'passed' | 'failed' | 'needs_review' | 'incomplete';
+  complete: boolean;
+  mechanicalPassed: boolean;
+  qualitativeReview: string;
+  requiredForRelease: boolean;
+  reportPath: string | null;
+  summary: Record<string, unknown>;
+  diagnostics: string[];
+}
+
+interface ReviewSummary {
+  mode: string;
+  reviewId: string;
+  completedAt: string;
+  reportPath: string;
+  scorecardPath: string;
+  weightedScore: number | null;
+  coverage: number | null;
+  confidence: string | null;
+  release: string | null;
+}
+
+interface RunSummary {
+  runId: string;
+  status: 'running' | 'completed' | 'failed';
+  completedAt: string | null;
+  outcome: 'passed' | 'failed' | 'needs_review' | 'incomplete' | null;
+  complete: boolean;
+  mechanicalPassed: boolean;
+  reportPath: string;
+}
+
+interface BatchSummary {
+  schemaVersion: 1;
+  batchId: string;
+  name: string;
+  owner: SkillReportOwner;
+  status: 'open' | 'sealed';
+  createdAt: string;
+  updatedAt: string;
+  latestCompletedAt: string | null;
+  source: SkillReportSourceIdentity;
+  eval: {
+    runCount: number;
+    runs: RunSummary[];
+    targetCount: number;
+    outcome: 'passed' | 'failed' | 'needs_review' | 'incomplete' | 'not_run';
+    complete: boolean;
+    mechanicalPassed: boolean;
+    releaseRequired: number;
+    releaseCovered: number;
+    releaseOutcome: 'passed' | 'failed' | 'needs_review' | 'incomplete' | 'not_run';
+    missingTargets: string[];
+    targets: TargetSummary[];
+  };
+  review: ReviewSummary | null;
+  diagnostics: string[];
+}
+
+function timestampId(date = new Date()): string {
+  return date.toISOString().replace(/[-:]/gu, '').replace(/\.\d{3}Z$/u, 'Z');
+}
+
+function assertSegment(value: string, label: string): void {
+  if (!/^[a-z0-9][a-z0-9-]*$/u.test(value)) {
+    throw new Error(`${label} must use lowercase kebab-case.`);
+  }
+}
+
+export function createSkillReportBatchId(name: string, date = new Date()): string {
+  assertSegment(name, 'Batch name');
+  if (name.length > 48) throw new Error('Batch name must contain at most 48 characters.');
+  return `${timestampId(date)}-${name}-${randomUUID().slice(0, 8)}`;
+}
+
+function validateBatchId(value: string): string {
+  if (!BATCH_ID_PATTERN.test(value)) {
+    throw new Error(
+      '--batch-id must use YYYYMMDDTHHMMSSZ-<kebab-name>-xxxxxxxx.',
+    );
+  }
+  return value;
+}
+
+function createRunId(date = new Date()): string {
+  return `${timestampId(date)}-${randomUUID().slice(0, 8)}`;
+}
+
+function validateRunId(value: string, label = '--run-id'): string {
+  if (!RUN_ID_PATTERN.test(value)) {
+    throw new Error(`${label} must use YYYYMMDDTHHMMSSZ-xxxxxxxx.`);
+  }
+  return value;
+}
+
+export function resolveSkillReportRoot(repoRoot: string, owner: SkillReportOwner): string {
+  return owner.kind === 'plugin-skill'
+    ? path.join(repoRoot, 'plugins', owner.plugin, 'reports', owner.skill)
+    : path.join(repoRoot, '.agents', 'reports', owner.skill);
+}
+
+async function assertSafeSkillReportPath(repoRoot: string, candidatePath: string): Promise<void> {
+  const root = path.resolve(repoRoot);
+  const candidate = path.resolve(candidatePath);
+  const relative = path.relative(root, candidate);
+  if (
+    relative === '' ||
+    relative === '..' ||
+    relative.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(relative)
+  ) {
+    throw new Error(`Skill report path must stay inside the repository: ${candidate}.`);
+  }
+  let current = root;
+  for (const segment of relative.split(path.sep)) {
+    current = path.join(current, segment);
+    const stats = await fs.lstat(current).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return null;
+      throw error;
+    });
+    if (stats?.isSymbolicLink()) {
+      throw new Error(`Skill report path cannot contain a symbolic link: ${current}.`);
+    }
+  }
+}
+
+function ownerKey(owner: SkillReportOwner): string {
+  return owner.kind === 'plugin-skill'
+    ? `plugin:${owner.plugin}:${owner.skill}`
+    : `static:${owner.skill}`;
+}
+
+function sameOwner(left: SkillReportOwner, right: SkillReportOwner): boolean {
+  return ownerKey(left) === ownerKey(right);
+}
+
+async function writeJsonAtomic(filePath: string, value: unknown): Promise<void> {
+  await fs.ensureDir(path.dirname(filePath));
+  const temporary = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
+  await fs.writeJson(temporary, value, { spaces: 2 });
+  await fs.rename(temporary, filePath);
+}
+
+async function writeTextAtomic(filePath: string, value: string): Promise<void> {
+  await fs.ensureDir(path.dirname(filePath));
+  const temporary = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
+  await fs.writeFile(temporary, value, 'utf8');
+  await fs.rename(temporary, filePath);
+}
+
+async function acquireBatchLock(batchRoot: string): Promise<() => Promise<void>> {
+  const lockPath = path.join(batchRoot, '.batch.lock');
+  const deadline = Date.now() + 30_000;
+  while (true) {
+    try {
+      const handle = await openFile(lockPath, 'wx');
+      await handle.writeFile(`${JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() })}\n`);
+      await handle.close();
+      return () => fs.remove(lockPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      if (Date.now() >= deadline) {
+        throw new Error(`Timed out waiting for report batch lock: ${lockPath}.`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
+}
+
+async function withBatchLock<T>(batchRoot: string, action: () => Promise<T>): Promise<T> {
+  const release = await acquireBatchLock(batchRoot);
+  try {
+    return await action();
+  } finally {
+    await release();
+  }
+}
+
+async function readBatch(batchRoot: string): Promise<SkillReportBatch> {
+  const batch = await fs.readJson(path.join(batchRoot, 'batch.json')) as SkillReportBatch;
+  if (batch.schemaVersion !== BATCH_SCHEMA_VERSION) {
+    throw new Error(`Unsupported report batch schema: ${batch.schemaVersion}.`);
+  }
+  return batch;
+}
+
+function batchNameFromId(batchId: string): string {
+  return batchId.replace(/^\d{8}T\d{6}Z-/u, '').replace(/-[0-9a-f]{8}$/u, '');
+}
+
+export async function createSkillEvalRunLayout(options: {
+  repoRoot: string;
+  owner: SkillReportOwner;
+  batchName?: string;
+  batchId?: string;
+  runId?: string;
+  source: SkillReportSourceIdentity;
+  environmentDigest: string;
+  modelEnvironmentDigest?: string | null;
+  harnessDigest: string;
+  requiredTargets: string[];
+}): Promise<SkillEvalRunLayout> {
+  if ((options.batchName ? 1 : 0) + (options.batchId ? 1 : 0) !== 1) {
+    throw new Error('Provide exactly one of --batch-name or --batch-id.');
+  }
+  if (options.owner.kind === 'plugin-skill') assertSegment(options.owner.plugin, 'Plugin name');
+  assertSegment(options.owner.skill, 'Skill name');
+  const batchId = options.batchId
+    ? validateBatchId(options.batchId)
+    : createSkillReportBatchId(options.batchName!);
+  const runId = validateRunId(options.runId ?? createRunId());
+  const reportRootBase = resolveSkillReportRoot(options.repoRoot, options.owner);
+  const batchRoot = path.join(reportRootBase, batchId);
+  await assertSafeSkillReportPath(options.repoRoot, batchRoot);
+  const now = new Date().toISOString();
+  if (options.batchName) {
+    await fs.ensureDir(reportRootBase);
+    await assertSafeSkillReportPath(options.repoRoot, reportRootBase);
+    await fs.mkdir(batchRoot);
+    await assertSafeSkillReportPath(options.repoRoot, batchRoot);
+    const batch: SkillReportBatch = {
+      schemaVersion: BATCH_SCHEMA_VERSION,
+      batchId,
+      name: options.batchName,
+      owner: options.owner,
+      status: 'open',
+      createdAt: now,
+      updatedAt: now,
+      source: options.source,
+      environmentDigest: options.environmentDigest,
+      modelEnvironmentDigest: options.modelEnvironmentDigest ?? null,
+      harnessDigest: options.harnessDigest,
+      requiredTargets: [...new Set(options.requiredTargets)].sort(),
+    };
+    await writeJsonAtomic(path.join(batchRoot, 'batch.json'), batch);
+  } else if (!(await fs.pathExists(batchRoot))) {
+    throw new Error(`Report batch does not exist: ${batchId}.`);
+  }
+
+  const reportRoot = path.join(batchRoot, 'evals', 'runs', runId);
+  const workRoot = path.join(
+    options.repoRoot,
+    '.tmp',
+    'agent-workflows',
+    'evals',
+    ownerKey(options.owner).replaceAll(':', path.sep),
+    batchId,
+    runId,
+  );
+  const startedAt = new Date().toISOString();
+  const host = hostname();
+  await withBatchLock(batchRoot, async () => {
+    const batch = await readBatch(batchRoot);
+    await recoverInterruptedRunsUnlocked(batchRoot);
+    if (!sameOwner(batch.owner, options.owner)) {
+      throw new Error(`Report batch ${batchId} belongs to another Skill.`);
+    }
+    if (batch.status === 'sealed') {
+      throw new Error(`Report batch ${batchId} is sealed.`);
+    }
+    if (batch.source.digest !== options.source.digest) {
+      throw new Error(`Report batch ${batchId} uses a different source digest.`);
+    }
+    if (batch.environmentDigest !== options.environmentDigest) {
+      throw new Error(`Report batch ${batchId} uses a different materialization environment.`);
+    }
+    if (!batch.harnessDigest || batch.harnessDigest !== options.harnessDigest) {
+      throw new Error(`Report batch ${batchId} uses a different eval harness.`);
+    }
+    const modelEnvironmentDigest = options.modelEnvironmentDigest ?? null;
+    if (
+      modelEnvironmentDigest &&
+      batch.modelEnvironmentDigest &&
+      batch.modelEnvironmentDigest !== modelEnvironmentDigest
+    ) {
+      throw new Error(`Report batch ${batchId} uses a different model environment.`);
+    }
+    const requiredTargets = [...new Set(options.requiredTargets)].sort();
+    if (JSON.stringify(batch.requiredTargets) !== JSON.stringify(requiredTargets)) {
+      throw new Error(`Report batch ${batchId} uses a different release target contract.`);
+    }
+    await fs.ensureDir(path.dirname(reportRoot));
+    await fs.mkdir(reportRoot, { recursive: false });
+    try {
+      await fs.mkdir(path.join(reportRoot, 'raw'));
+      await fs.ensureDir(workRoot);
+      await writeJsonAtomic(path.join(reportRoot, 'run.json'), {
+        schemaVersion: 1,
+        runId,
+        status: 'running',
+        startedAt,
+        pid: process.pid,
+        host,
+        modelEnvironmentDigest,
+      });
+      if (modelEnvironmentDigest && !batch.modelEnvironmentDigest) {
+        batch.modelEnvironmentDigest = modelEnvironmentDigest;
+        batch.updatedAt = startedAt;
+        await writeJsonAtomic(path.join(batchRoot, 'batch.json'), batch);
+      }
+    } catch (error) {
+      await Promise.all([fs.remove(reportRoot), fs.remove(workRoot)]);
+      throw error;
+    }
+  });
+  return {
+    batchId,
+    batchRoot,
+    reportBoundaryRoot: options.repoRoot,
+    runId,
+    workRoot,
+    reportRoot,
+    rawRoot: path.join(reportRoot, 'raw'),
+    startedAt,
+    pid: process.pid,
+    host,
+    cleanupWork: () => fs.remove(workRoot),
+  };
+}
+
+async function listSourceFiles(root: string): Promise<string[]> {
+  const files: string[] = [];
+  async function visit(current: string, prefix = ''): Promise<void> {
+    const entries = await fs.readdir(current, { withFileTypes: true });
+    entries.sort((left, right) => left.name.localeCompare(right.name));
+    for (const entry of entries) {
+      const relative = prefix ? path.posix.join(prefix, entry.name) : entry.name;
+      if (relative === 'reports' || relative.startsWith('reports/')) continue;
+      const absolute = path.join(current, entry.name);
+      if (entry.isSymbolicLink()) {
+        throw new Error(`Author source cannot contain a symlink: ${absolute}`);
+      }
+      if (entry.isDirectory()) await visit(absolute, relative);
+      else if (entry.isFile()) files.push(relative);
+    }
+  }
+  await visit(root);
+  return files;
+}
+
+export async function computeAuthorSourceDigest(
+  roots: Array<{ name: string; root: string }>,
+): Promise<string> {
+  const hash = createHash('sha256');
+  for (const entry of [...roots].sort((left, right) => left.name.localeCompare(right.name))) {
+    hash.update(entry.name);
+    hash.update('\0');
+    for (const relative of await listSourceFiles(entry.root)) {
+      const contents = await fs.readFile(path.join(entry.root, relative));
+      hash.update(relative);
+      hash.update('\0');
+      hash.update(contents);
+      hash.update('\0');
+    }
+  }
+  return `sha256:${hash.digest('hex')}`;
+}
+
+export function createEnvironmentDigest(value: unknown): string {
+  return `sha256:${createHash('sha256').update(JSON.stringify(value)).digest('hex')}`;
+}
+
+export function pluginReleaseTargets(manifest: {
+  profiles: Array<{ id: string; requiredForRelease: boolean }>;
+  suites: Array<{
+    id: string;
+    kind: string;
+    profiles: string[];
+    releaseSplits: string[];
+    requiredForRelease: boolean;
+  }>;
+}): string[] {
+  const targets = manifest.profiles
+    .filter((profile) => profile.requiredForRelease)
+    .map((profile) => `materialization/${profile.id}`);
+  for (const suite of manifest.suites.filter((entry) => entry.requiredForRelease)) {
+    for (const profile of suite.profiles) {
+      for (const split of suite.releaseSplits.length > 0 ? suite.releaseSplits : ['all']) {
+        targets.push(`${suite.kind}/${suite.id}/${profile}/${split}/all`);
+      }
+    }
+  }
+  return [...new Set(targets)].sort();
+}
+
+export function staticReleaseTargets(manifest: {
+  suites: Array<{
+    id: string;
+    kind: string;
+    releaseSplits: string[];
+    requiredForRelease: boolean;
+  }>;
+}): string[] {
+  const targets = ['materialization/project-default'];
+  for (const suite of manifest.suites.filter((entry) => entry.requiredForRelease)) {
+    for (const split of suite.releaseSplits.length > 0 ? suite.releaseSplits : ['all']) {
+      targets.push(`${suite.kind}/${suite.id}/project-default/${split}/all`);
+    }
+  }
+  return targets.sort();
+}
+
+export function validateSkillReportTargetSegment(value: string, label: string): string {
+  if (
+    value.length === 0 ||
+    value === '.' ||
+    value === '..' ||
+    value.includes('/') ||
+    value.includes('\\') ||
+    value.includes('\0') ||
+    path.isAbsolute(value) ||
+    path.win32.isAbsolute(value)
+  ) {
+    throw new Error(`${label} must be one safe report path segment.`);
+  }
+  return value;
+}
+
+function targetKey(parts: Array<string | null | undefined>): string {
+  return parts.map((part, index) => validateSkillReportTargetSegment(
+    part || 'all',
+    `Eval target segment ${index + 1}`,
+  )).join('/');
+}
+
+async function writeTargetReport(options: {
+  batchRoot: string;
+  summary: TargetSummary;
+  allowExistingMaterialization?: boolean;
+  allowDuplicate?: boolean;
+}): Promise<void> {
+  const evalRoot = path.resolve(options.batchRoot, 'evals');
+  const parent = path.resolve(evalRoot, options.summary.target);
+  const relativeParent = path.relative(evalRoot, parent);
+  if (
+    relativeParent === '..' ||
+    relativeParent.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(relativeParent)
+  ) {
+    throw new Error(`Eval target escapes the report batch: ${options.summary.target}.`);
+  }
+  if (await fs.pathExists(parent)) {
+    const existing = await fs.readdir(parent);
+    if (!options.allowExistingMaterialization && !options.allowDuplicate && existing.length > 0) {
+      throw new Error(`Eval target already exists in this batch: ${options.summary.target}.`);
+    }
+  }
+  const root = path.join(parent, options.summary.runId);
+  await fs.mkdir(root, { recursive: true });
+  await writeJsonAtomic(path.join(root, 'summary.json'), options.summary);
+  const markdown = [
+    '# Eval Target Report',
+    '',
+    `- Target: \`${options.summary.target}\``,
+    `- Run: \`${options.summary.runId}\``,
+    `- Outcome: \`${options.summary.outcome}\``,
+    `- Complete: \`${options.summary.complete}\``,
+    `- Mechanical passed: \`${options.summary.mechanicalPassed}\``,
+    `- Required for release: \`${options.summary.requiredForRelease}\``,
+    '',
+    options.summary.reportPath
+      ? `原始目标报告位于运行目录的 \`${options.summary.reportPath}\`。`
+      : '该目标没有独立原始报告。',
+    '',
+  ].join('\n');
+  await writeTextAtomic(path.join(root, 'report.md'), markdown);
+}
+
+async function assertSuiteTargetsAvailable(options: {
+  batchRoot: string;
+  evaluation: EvaluationLike;
+  caseId?: string;
+  allowDuplicateTargets?: boolean;
+}): Promise<void> {
+  if (options.allowDuplicateTargets) return;
+  const targets = options.evaluation.suites.map((suite) => targetKey([
+    suite.kind,
+    suite.id,
+    suite.profile ?? 'project-default',
+    suite.split ?? 'all',
+    options.caseId ?? 'all',
+  ]));
+  if (new Set(targets).size !== targets.length) {
+    throw new Error('An eval run cannot publish the same suite target more than once.');
+  }
+  for (const target of targets) {
+    const root = path.join(options.batchRoot, 'evals', target);
+    if (await fs.pathExists(root) && (await fs.readdir(root)).length > 0) {
+      throw new Error(`Eval target already exists in this batch: ${target}.`);
+    }
+  }
+}
+
+async function collectTargetSummaries(batchRoot: string): Promise<TargetSummary[]> {
+  const evalRoot = path.join(batchRoot, 'evals');
+  if (!(await fs.pathExists(evalRoot))) return [];
+  const summaries: TargetSummary[] = [];
+  async function visit(current: string, relative = ''): Promise<void> {
+    const entries = await fs.readdir(current, { withFileTypes: true });
+    for (const entry of entries) {
+      const nextRelative = relative ? path.posix.join(relative, entry.name) : entry.name;
+      if (nextRelative === 'runs' || nextRelative.startsWith('runs/')) continue;
+      const absolute = path.join(current, entry.name);
+      if (entry.isDirectory()) await visit(absolute, nextRelative);
+      else if (entry.isFile() && entry.name === 'summary.json') {
+        summaries.push(await fs.readJson(absolute) as TargetSummary);
+      }
+    }
+  }
+  await visit(evalRoot);
+  return summaries.sort((left, right) => left.target.localeCompare(right.target));
+}
+
+function combineOutcomes(
+  values: Array<'passed' | 'failed' | 'needs_review' | 'incomplete'>,
+): 'passed' | 'failed' | 'needs_review' | 'incomplete' | 'not_run' {
+  if (values.length === 0) return 'not_run';
+  if (values.includes('failed')) return 'failed';
+  if (values.includes('incomplete')) return 'incomplete';
+  if (values.includes('needs_review')) return 'needs_review';
+  return 'passed';
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+async function recoverInterruptedRunsUnlocked(batchRoot: string): Promise<void> {
+  const runsRoot = path.join(batchRoot, 'evals', 'runs');
+  if (!(await fs.pathExists(runsRoot))) return;
+  const currentHost = hostname();
+  for (const runId of await fs.readdir(runsRoot)) {
+    const runPath = path.join(runsRoot, runId, 'run.json');
+    if (!(await fs.pathExists(runPath))) continue;
+    const run = await fs.readJson(runPath) as Record<string, unknown>;
+    if (
+      run.status !== 'running' ||
+      run.host !== currentHost ||
+      !Number.isInteger(run.pid) ||
+      isProcessAlive(run.pid as number)
+    ) continue;
+    await writeJsonAtomic(runPath, {
+      ...run,
+      status: 'failed',
+      completedAt: new Date().toISOString(),
+      outcome: 'failed',
+      failureReason: 'The eval process ended before it published a terminal result.',
+    });
+  }
+}
+
+async function readRunSummaries(batchRoot: string): Promise<RunSummary[]> {
+  const runsRoot = path.join(batchRoot, 'evals', 'runs');
+  if (!(await fs.pathExists(runsRoot))) return [];
+  const values: RunSummary[] = [];
+  for (const runId of await fs.readdir(runsRoot)) {
+    const runPath = path.join(runsRoot, runId, 'run.json');
+    if (!(await fs.pathExists(runPath))) continue;
+    const run = await fs.readJson(runPath) as {
+      status?: 'running' | 'completed' | 'failed';
+      completedAt?: string;
+      outcome?: 'passed' | 'failed' | 'needs_review' | 'incomplete';
+    };
+    const summaryPath = path.join(runsRoot, runId, 'summary.json');
+    const summary = await fs.pathExists(summaryPath)
+      ? await fs.readJson(summaryPath) as {
+          outcome?: 'passed' | 'failed' | 'needs_review' | 'incomplete';
+          complete?: boolean;
+          mechanicalPassed?: boolean;
+        }
+      : null;
+    const status = run.status ?? (run.completedAt ? 'completed' : 'running');
+    values.push({
+      runId,
+      status,
+      completedAt: run.completedAt ?? null,
+      outcome: status === 'failed' ? 'failed' : summary?.outcome ?? run.outcome ?? null,
+      complete: status === 'completed' && summary?.complete === true,
+      mechanicalPassed: status === 'completed' && summary?.mechanicalPassed === true,
+      reportPath: `evals/runs/${runId}/report.md`,
+    });
+  }
+  return values.sort((left, right) => left.runId.localeCompare(right.runId));
+}
+
+async function readReview(batchRoot: string): Promise<ReviewSummary | null> {
+  const reviewsRoot = path.join(batchRoot, 'reviews');
+  if (!(await fs.pathExists(reviewsRoot))) return null;
+  const reports: ReviewSummary[] = [];
+  for (const mode of await fs.readdir(reviewsRoot)) {
+    const modeRoot = path.join(reviewsRoot, mode);
+    for (const reviewId of await fs.readdir(modeRoot)) {
+      const root = path.join(modeRoot, reviewId);
+      const scorecardPath = path.join(root, 'scorecard.json');
+      const reportPath = path.join(root, 'report.md');
+      if (!(await fs.pathExists(scorecardPath)) || !(await fs.pathExists(reportPath))) continue;
+      const reviewSummaryPath = path.join(root, 'review-summary.json');
+      const calculated = await fs.pathExists(reviewSummaryPath)
+        ? await fs.readJson(reviewSummaryPath) as Record<string, unknown>
+        : {};
+      const stats = await fs.stat(reportPath);
+      const completedAt = typeof calculated.completedAt === 'string'
+        ? calculated.completedAt
+        : stats.mtime.toISOString();
+      reports.push({
+        mode,
+        reviewId,
+        completedAt,
+        reportPath: path.relative(batchRoot, reportPath).split(path.sep).join('/'),
+        scorecardPath: path.relative(batchRoot, scorecardPath).split(path.sep).join('/'),
+        weightedScore: typeof calculated.weightedScore === 'number'
+          ? calculated.weightedScore
+          : null,
+        coverage: typeof calculated.coverage === 'number' ? calculated.coverage : null,
+        confidence: typeof calculated.confidence === 'string' ? calculated.confidence : null,
+        release: typeof calculated.release === 'string' ? calculated.release : null,
+      });
+    }
+  }
+  return reports.sort((left, right) => right.completedAt.localeCompare(left.completedAt))[0] ?? null;
+}
+
+async function refreshBatchSummary(batchRoot: string): Promise<BatchSummary> {
+  const batch = await readBatch(batchRoot);
+  const targets = await collectTargetSummaries(batchRoot);
+  const required = new Set(batch.requiredTargets);
+  const covered = new Set(targets.filter((target) => required.has(target.target)).map((target) => target.target));
+  const missingTargets = batch.requiredTargets.filter((target) => !covered.has(target));
+  const requiredTargets = targets.filter((target) => required.has(target.target));
+  const runs = await readRunSummaries(batchRoot);
+  const completedRuns = runs.filter((run) => run.completedAt !== null);
+  const completionTimes = completedRuns.map((run) => run.completedAt!);
+  const failedRuns = completedRuns.filter((run) => run.status === 'failed');
+  const runOutcomes = completedRuns
+    .map((run) => run.outcome)
+    .filter((outcome): outcome is Exclude<RunSummary['outcome'], null> => outcome !== null);
+  const review = await readReview(batchRoot);
+  const latestCompletedAt = [...completionTimes, ...(review ? [review.completedAt] : [])]
+    .sort((left, right) => right.localeCompare(left))[0] ?? null;
+  const summary: BatchSummary = {
+    schemaVersion: 1,
+    batchId: batch.batchId,
+    name: batch.name,
+    owner: batch.owner,
+    status: batch.status,
+    createdAt: batch.createdAt,
+    updatedAt: new Date().toISOString(),
+    latestCompletedAt,
+    source: batch.source,
+    eval: {
+      runCount: completedRuns.length,
+      runs,
+      targetCount: targets.length,
+      outcome: combineOutcomes(runOutcomes.length > 0
+        ? runOutcomes
+        : targets.map((target) => target.outcome)),
+      complete: completedRuns.length > 0 &&
+        completedRuns.every((run) => run.complete) &&
+        targets.every((target) => target.complete),
+      mechanicalPassed: completedRuns.length > 0 &&
+        completedRuns.every((run) => run.mechanicalPassed) &&
+        targets.every((target) => target.mechanicalPassed),
+      releaseRequired: required.size,
+      releaseCovered: covered.size,
+      releaseOutcome: failedRuns.length > 0
+        ? 'failed'
+        : missingTargets.length > 0
+          ? 'incomplete'
+          : combineOutcomes(requiredTargets.map((target) => target.outcome)),
+      missingTargets,
+      targets,
+    },
+    review,
+    diagnostics: failedRuns.map((run) => `Eval run ${run.runId} failed before publication.`),
+  };
+  await writeJsonAtomic(path.join(batchRoot, 'summary.json'), summary);
+  await writeJsonAtomic(path.join(batchRoot, 'evals', 'evaluation.json'), {
+    schemaVersion: 1,
+    generatedAt: summary.updatedAt,
+    batchId: summary.batchId,
+    owner: summary.owner,
+    source: summary.source,
+    outcome: summary.eval.releaseOutcome,
+    complete: summary.eval.runCount > 0 &&
+      summary.eval.releaseOutcome !== 'failed' &&
+      summary.eval.releaseCovered === summary.eval.releaseRequired &&
+      summary.eval.targets.filter((target) => target.requiredForRelease).every((target) => target.complete),
+    mechanicalPassed: summary.eval.mechanicalPassed && summary.eval.targets
+      .filter((target) => target.requiredForRelease)
+      .every((target) => target.mechanicalPassed),
+    targets: summary.eval.targets,
+    diagnostics: summary.diagnostics,
+  });
+  const runRows = runs.map((run) =>
+    `| ${run.runId} | ${run.status} | ${run.outcome ?? '-'} | ${run.complete} |`,
+  );
+  const targetRows = targets.map((target) =>
+    `| ${target.target} | ${target.runId} | ${target.outcome} | ${target.complete} |`,
+  );
+  await writeTextAtomic(path.join(batchRoot, 'report.md'), [
+    '# Skill Verification Batch Report',
+    '',
+    `- Batch: \`${summary.batchId}\``,
+    `- Name: \`${summary.name}\``,
+    `- Owner: \`${ownerKey(summary.owner)}\``,
+    `- Status: \`${summary.status}\``,
+    `- Eval outcome: \`${summary.eval.outcome}\``,
+    `- Release outcome: \`${summary.eval.releaseOutcome}\``,
+    `- Release coverage: \`${summary.eval.releaseCovered}/${summary.eval.releaseRequired}\``,
+    `- Source: \`${summary.source.digest}\``,
+    '',
+    '| Run | Status | Outcome | Complete |',
+    '| --- | --- | --- | --- |',
+    ...runRows,
+    '',
+    '| Target | Run | Outcome | Complete |',
+    '| --- | --- | --- | --- |',
+    ...targetRows,
+    '',
+    summary.review
+      ? `Review: \`${summary.review.mode}\`, release \`${summary.review.release ?? 'unknown'}\`.`
+      : 'Review: 尚未发布。',
+    '',
+  ].join('\n'));
+  batch.updatedAt = summary.updatedAt;
+  await writeJsonAtomic(path.join(batchRoot, 'batch.json'), batch);
+  return summary;
+}
+
+export async function publishEvalRunToBatch(options: {
+  repoRoot: string;
+  layout: SkillEvalRunLayout;
+  evaluation: EvaluationLike;
+  caseId?: string;
+  requiredTargets: string[];
+  allowDuplicateTargets?: boolean;
+}): Promise<BatchSummary> {
+  await assertSafeSkillReportPath(options.layout.reportBoundaryRoot, options.layout.batchRoot);
+  const summary = await withBatchLock(options.layout.batchRoot, async () => {
+    const batch = await readBatch(options.layout.batchRoot);
+    if (batch.status === 'sealed') throw new Error(`Report batch ${batch.batchId} is sealed.`);
+    const runPath = path.join(options.layout.reportRoot, 'run.json');
+    const run = await fs.readJson(runPath) as Record<string, unknown>;
+    if (run.status !== 'running') {
+      throw new Error(`Eval run ${options.layout.runId} is not running.`);
+    }
+    await assertSuiteTargetsAvailable({
+      batchRoot: options.layout.batchRoot,
+      evaluation: options.evaluation,
+      caseId: options.caseId,
+      allowDuplicateTargets: options.allowDuplicateTargets,
+    });
+    const required = new Set(options.requiredTargets);
+    for (const subject of options.evaluation.subjects) {
+      const target = targetKey(['materialization', subject.profile]);
+      await writeTargetReport({
+        batchRoot: options.layout.batchRoot,
+        allowExistingMaterialization: true,
+        summary: {
+          schemaVersion: 1,
+          target,
+          kind: 'materialization',
+          runId: options.layout.runId,
+          generatedAt: options.evaluation.generatedAt,
+          profile: subject.profile,
+          suite: null,
+          split: 'all',
+          case: 'all',
+          outcome: 'passed',
+          complete: true,
+          mechanicalPassed: true,
+          qualitativeReview: 'not_required',
+          requiredForRelease: required.has(target),
+          reportPath: null,
+          summary: {
+            scope: subject.scope,
+            ...(subject.configDigest ? { configDigest: subject.configDigest } : {}),
+            ...(subject.bundleDigest ? { bundleDigest: subject.bundleDigest } : {}),
+            ...(subject.contentDigest ? { contentDigest: subject.contentDigest } : {}),
+            artifacts: subject.artifacts ?? [],
+          },
+          diagnostics: [],
+        },
+      });
+    }
+    for (const suite of options.evaluation.suites) {
+      const target = targetKey([
+        suite.kind,
+        suite.id,
+        suite.profile ?? 'project-default',
+        suite.split ?? 'all',
+        options.caseId ?? 'all',
+      ]);
+      await writeTargetReport({
+        batchRoot: options.layout.batchRoot,
+        allowDuplicate: options.allowDuplicateTargets,
+        summary: {
+          schemaVersion: 1,
+          target,
+          kind: suite.kind,
+          runId: options.layout.runId,
+          generatedAt: options.evaluation.generatedAt,
+          profile: suite.profile ?? 'project-default',
+          suite: suite.id,
+          split: suite.split ?? 'all',
+          case: options.caseId ?? 'all',
+          outcome: suite.outcome,
+          complete: suite.complete,
+          mechanicalPassed: suite.mechanicalPassed,
+          qualitativeReview: suite.qualitativeReview ?? 'not_required',
+          requiredForRelease: required.has(target),
+          reportPath: suite.reportPath ?? null,
+          summary: suite.summary ?? {},
+          diagnostics: suite.diagnostics ?? [],
+        },
+      });
+    }
+    await writeJsonAtomic(runPath, {
+      ...run,
+      status: 'completed',
+      completedAt: new Date().toISOString(),
+      outcome: options.evaluation.outcome,
+    });
+    return refreshBatchSummary(options.layout.batchRoot);
+  });
+  return summary;
+}
+
+export async function failSkillEvalRun(options: {
+  layout: SkillEvalRunLayout;
+  message?: string;
+}): Promise<BatchSummary> {
+  await assertSafeSkillReportPath(options.layout.reportBoundaryRoot, options.layout.batchRoot);
+  return withBatchLock(options.layout.batchRoot, async () => {
+    const batch = await readBatch(options.layout.batchRoot);
+    if (batch.status === 'sealed') throw new Error(`Report batch ${batch.batchId} is sealed.`);
+    const runPath = path.join(options.layout.reportRoot, 'run.json');
+    const run = await fs.readJson(runPath) as Record<string, unknown>;
+    await writeJsonAtomic(runPath, {
+      ...run,
+      status: 'failed',
+      completedAt: new Date().toISOString(),
+      outcome: 'failed',
+      ...(options.message ? { failureReason: options.message } : {}),
+    });
+    return refreshBatchSummary(options.layout.batchRoot);
+  });
+}
+
+export async function refreshSkillReportBatch(options: {
+  repoRoot: string;
+  owner: SkillReportOwner;
+  batchId: string;
+}): Promise<BatchSummary> {
+  const batchRoot = path.join(
+    resolveSkillReportRoot(options.repoRoot, options.owner),
+    validateBatchId(options.batchId),
+  );
+  await assertSafeSkillReportPath(options.repoRoot, batchRoot);
+  const summary = await withBatchLock(batchRoot, async () => {
+    const batch = await readBatch(batchRoot);
+    if (!sameOwner(batch.owner, options.owner)) throw new Error('Report batch owner mismatch.');
+    await recoverInterruptedRunsUnlocked(batchRoot);
+    return refreshBatchSummary(batchRoot);
+  });
+  return summary;
+}
+
+async function sealBatchUnlocked(
+  batchRoot: string,
+  owner: SkillReportOwner,
+): Promise<BatchSummary> {
+  const batch = await readBatch(batchRoot);
+  if (!sameOwner(batch.owner, owner)) throw new Error('Review batch owner mismatch.');
+  if (batch.status === 'sealed') throw new Error(`Report batch ${batch.batchId} is sealed.`);
+  await recoverInterruptedRunsUnlocked(batchRoot);
+  const runs = await readRunSummaries(batchRoot);
+  if (runs.some((run) => run.status === 'running')) {
+    throw new Error(`Report batch ${batch.batchId} still has a running eval.`);
+  }
+  batch.status = 'sealed';
+  batch.sealedAt = new Date().toISOString();
+  batch.updatedAt = batch.sealedAt;
+  await writeJsonAtomic(path.join(batchRoot, 'batch.json'), batch);
+  return refreshBatchSummary(batchRoot);
+}
+
+export async function sealSkillReportBatch(options: {
+  repoRoot: string;
+  owner: SkillReportOwner;
+  batchId: string;
+}): Promise<BatchSummary> {
+  const batchRoot = path.join(
+    resolveSkillReportRoot(options.repoRoot, options.owner),
+    validateBatchId(options.batchId),
+  );
+  await assertSafeSkillReportPath(options.repoRoot, batchRoot);
+  const summary = await withBatchLock(
+    batchRoot,
+    () => sealBatchUnlocked(batchRoot, options.owner),
+  );
+  return summary;
+}
+
+export async function publishSkillReviewToBatch(options: {
+  repoRoot: string;
+  owner: SkillReportOwner;
+  batchName?: string;
+  batchId?: string;
+  source: SkillReportSourceIdentity;
+  report: string;
+  scorecard: unknown;
+  calculated: {
+    mode: string;
+    weightedScore: number | null;
+    coverage: number | null;
+    confidence: string | null;
+    release: string | null;
+  };
+  reviewId?: string;
+}): Promise<BatchSummary> {
+  if ((options.batchName ? 1 : 0) + (options.batchId ? 1 : 0) !== 1) {
+    throw new Error('Provide exactly one of --batch-name or --batch-id.');
+  }
+  assertSegment(options.owner.skill, 'Skill name');
+  if (options.owner.kind === 'plugin-skill') assertSegment(options.owner.plugin, 'Plugin name');
+  const reportRoot = resolveSkillReportRoot(options.repoRoot, options.owner);
+  const batchId = options.batchId
+    ? validateBatchId(options.batchId)
+    : createSkillReportBatchId(options.batchName!);
+  const reviewId = validateRunId(options.reviewId ?? createRunId(), '--review-id');
+  const batchRoot = path.join(reportRoot, batchId);
+  await assertSafeSkillReportPath(options.repoRoot, batchRoot);
+  const now = new Date().toISOString();
+  if (options.batchName) {
+    await fs.ensureDir(reportRoot);
+    await assertSafeSkillReportPath(options.repoRoot, reportRoot);
+    await fs.mkdir(batchRoot);
+    await assertSafeSkillReportPath(options.repoRoot, batchRoot);
+    await writeJsonAtomic(path.join(batchRoot, 'batch.json'), {
+      schemaVersion: BATCH_SCHEMA_VERSION,
+      batchId,
+      name: options.batchName,
+      owner: options.owner,
+      status: 'open',
+      createdAt: now,
+      updatedAt: now,
+      source: options.source,
+      environmentDigest: createEnvironmentDigest({ reviewOnly: true }),
+      requiredTargets: [],
+    } satisfies SkillReportBatch);
+  }
+  const summary = await withBatchLock(batchRoot, async () => {
+    const batch = await readBatch(batchRoot);
+    if (!sameOwner(batch.owner, options.owner)) throw new Error('Review batch owner mismatch.');
+    if (batch.status === 'sealed') throw new Error(`Report batch ${batchId} is sealed.`);
+    if (batch.source.digest !== options.source.digest) {
+      throw new Error(`Report batch ${batchId} uses a different source digest.`);
+    }
+    await recoverInterruptedRunsUnlocked(batchRoot);
+    const runs = await readRunSummaries(batchRoot);
+    if (runs.some((run) => run.status === 'running')) {
+      throw new Error(`Report batch ${batch.batchId} still has a running eval.`);
+    }
+    const reviewRoot = path.join(batchRoot, 'reviews', options.calculated.mode, reviewId);
+    await fs.ensureDir(path.dirname(reviewRoot));
+    await fs.mkdir(reviewRoot, { recursive: false });
+    await writeTextAtomic(path.join(reviewRoot, 'report.md'), options.report);
+    await writeJsonAtomic(path.join(reviewRoot, 'scorecard.json'), options.scorecard);
+    await writeJsonAtomic(path.join(reviewRoot, 'review-summary.json'), {
+      schemaVersion: 1,
+      completedAt: now,
+      ...options.calculated,
+    });
+    return sealBatchUnlocked(batchRoot, options.owner);
+  });
+  return summary;
+}
+
+export function reportBatchName(batchId: string): string {
+  return batchNameFromId(validateBatchId(batchId));
+}

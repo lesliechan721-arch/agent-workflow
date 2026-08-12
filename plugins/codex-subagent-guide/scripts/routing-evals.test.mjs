@@ -11,7 +11,7 @@ import {
   readSpawnCallsFromRollouts,
   removeEvalDirectory,
   writeJsonReport,
-} from '../templates/codex-subagent-guide/evals/eval-harness.mjs';
+} from '../skills/codex-subagent-guide/evals/eval-harness.mjs';
 import {
   evaluateRoutingRun,
   loadRoutingSpec,
@@ -20,7 +20,7 @@ import {
   routingRunCase,
   shouldRetryTransportFailure,
   summarizeRoutingVariant,
-} from '../templates/codex-subagent-guide/evals/run-routing-evals.mjs';
+} from '../skills/codex-subagent-guide/evals/run-routing-evals.mjs';
 
 function testArguments() {
   assert.deepEqual(
