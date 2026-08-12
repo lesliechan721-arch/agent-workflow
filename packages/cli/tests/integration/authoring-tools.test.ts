@@ -737,9 +737,19 @@ describe('authoring tools', () => {
     const dualManifest = await fs.readJson(
       path.join(dualPluginRoot, '.agents-plugin', 'plugin.json'),
     );
-    expect(dualManifest.version).toBe('0.2.0');
+    expect(dualManifest.version).toBe('0.1.0');
     expect(dualManifest.skills).toBe('./skills');
     expect(dualManifest.interface.capabilities).toContain('Skills');
+    await expect(fs.readJson(path.join(
+      tempRepo,
+      '.changes',
+      'plugins',
+      'git-commit-add-release-notes.json',
+    ))).resolves.toMatchObject({
+      schemaVersion: 1,
+      plugin: 'git-commit',
+      bump: 'minor',
+    });
     const dualSkillRoot = path.join(dualPluginRoot, 'skills', 'release-notes');
     await expect(fs.readFile(path.join(dualSkillRoot, 'SKILL.md'), 'utf8')).resolves.toEqual(
       expect.stringContaining('disable-model-invocation: true'),
@@ -940,6 +950,76 @@ describe('authoring tools', () => {
     }
   });
 
+  const transactionalReleaseApplyTest = process.platform === 'win32' ? it.skip : it;
+  transactionalReleaseApplyTest('rolls back every manifest and intent when release application fails', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-authoring-release-apply-'));
+    tempDirs.push(tempRoot);
+    const tempRepo = path.join(tempRoot, 'repo');
+    const pluginRoot = path.join(tempRepo, 'plugins');
+    const alpha = await writeSourcePlugin(
+      pluginRoot,
+      'alpha-release',
+      createBaseManifest('alpha-release'),
+    );
+    const beta = await writeSourcePlugin(
+      pluginRoot,
+      'beta-release',
+      createBaseManifest('beta-release'),
+    );
+    const intentRoot = path.join(tempRepo, '.changes', 'plugins');
+    const alphaIntentPath = path.join(intentRoot, 'alpha-release.json');
+    const betaIntentPath = path.join(intentRoot, 'beta-release.json');
+    await fs.outputJson(alphaIntentPath, {
+      schemaVersion: 1,
+      plugin: 'alpha-release',
+      bump: 'patch',
+      summary: 'Patch alpha release.',
+    });
+    await fs.outputJson(betaIntentPath, {
+      schemaVersion: 1,
+      plugin: 'beta-release',
+      bump: 'minor',
+      summary: 'Update beta release.',
+    });
+    const applyPath = createAwPluginScriptPath('apply_plugin_releases.mjs');
+    const applyArgs = [applyPath, '--all', '--repo-root', tempRepo];
+
+    const betaManifestRoot = path.dirname(beta.manifestPath);
+    await fs.chmod(betaManifestRoot, 0o555);
+    try {
+      await expect(execFileAsync('node', applyArgs, {
+        cwd: repoRoot(),
+        env: process.env,
+      })).rejects.toBeDefined();
+    } finally {
+      await fs.chmod(betaManifestRoot, 0o755);
+    }
+    await expect(fs.readJson(alpha.manifestPath)).resolves.toMatchObject({ version: '0.1.0' });
+    await expect(fs.readJson(beta.manifestPath)).resolves.toMatchObject({ version: '0.1.0' });
+    await expect(fs.pathExists(alphaIntentPath)).resolves.toBe(true);
+    await expect(fs.pathExists(betaIntentPath)).resolves.toBe(true);
+
+    await fs.chmod(intentRoot, 0o555);
+    try {
+      await expect(execFileAsync('node', applyArgs, {
+        cwd: repoRoot(),
+        env: process.env,
+      })).rejects.toBeDefined();
+    } finally {
+      await fs.chmod(intentRoot, 0o755);
+    }
+    await expect(fs.readJson(alpha.manifestPath)).resolves.toMatchObject({ version: '0.1.0' });
+    await expect(fs.readJson(beta.manifestPath)).resolves.toMatchObject({ version: '0.1.0' });
+    await expect(fs.pathExists(alphaIntentPath)).resolves.toBe(true);
+    await expect(fs.pathExists(betaIntentPath)).resolves.toBe(true);
+
+    await execFileAsync('node', applyArgs, { cwd: repoRoot(), env: process.env });
+    await expect(fs.readJson(alpha.manifestPath)).resolves.toMatchObject({ version: '0.1.1' });
+    await expect(fs.readJson(beta.manifestPath)).resolves.toMatchObject({ version: '0.2.0' });
+    await expect(fs.pathExists(alphaIntentPath)).resolves.toBe(false);
+    await expect(fs.pathExists(betaIntentPath)).resolves.toBe(false);
+  });
+
   const productionVersionCheckTest = fs.existsSync(
     path.join(repoRoot(), 'packages', 'cli', 'dist'),
   ) ? it : it.skip;
@@ -998,7 +1078,47 @@ describe('authoring tools', () => {
 
     const checkerPath = createAwPluginScriptPath('check_plugin_versions.mjs');
     const bumpPath = createAwPluginScriptPath('bump_plugin_version.mjs');
+    const addChangePath = createAwPluginScriptPath('add_plugin_change.mjs');
+    const applyReleasesPath = createAwPluginScriptPath('apply_plugin_releases.mjs');
     const skillMdPath = path.join(pluginDir, 'skills', 'versioned-skill', 'SKILL.md');
+    await execFileAsync('node', [
+      addChangePath,
+      'versioned-plugin',
+      '--bump',
+      'patch',
+      '--summary',
+      'Intent-only release gate fixture.',
+      '--id',
+      'intent-only-release-gate',
+      '--repo-root',
+      tempRepo,
+    ], { cwd: repoRoot(), env: process.env });
+    let intentOnlyReleaseError: { stdout?: string } | undefined;
+    try {
+      await execFileAsync('node', [
+        checkerPath,
+        '--all',
+        '--mode',
+        'release',
+        '--json',
+        '--repo-root',
+        tempRepo,
+      ], { cwd: repoRoot(), env: process.env, maxBuffer: 10 * 1024 * 1024 });
+    } catch (error) {
+      intentOnlyReleaseError = error as { stdout?: string };
+    }
+    expect(intentOnlyReleaseError?.stdout).toBeTruthy();
+    expect(JSON.parse(intentOnlyReleaseError!.stdout!).checks[0]).toMatchObject({
+      plugin: 'versioned-plugin',
+      status: 'unappliedReleaseIntent',
+      productionChanged: false,
+    });
+    await fs.remove(path.join(
+      tempRepo,
+      '.changes',
+      'plugins',
+      'intent-only-release-gate.json',
+    ));
     await fs.appendFile(skillMdPath, '\nChanged production behavior.\n', 'utf8');
 
     let missingBumpError: { stdout?: string } | undefined;
@@ -1017,7 +1137,7 @@ describe('authoring tools', () => {
     const missingBumpReport = JSON.parse(missingBumpError!.stdout!);
     expect(missingBumpReport.ok).toBe(false);
     expect(missingBumpReport.checks[0]).toMatchObject({
-      status: 'missingVersionBump',
+      status: 'missingReleaseIntent',
       productionChanged: true,
     });
     expect(missingBumpReport.checks[0].changedPaths).toContain(
@@ -1025,10 +1145,66 @@ describe('authoring tools', () => {
     );
 
     await execFileAsync('node', [
-      bumpPath,
+      addChangePath,
       'versioned-plugin',
       '--bump',
       'minor',
+      '--summary',
+      'Change versioned plugin behavior.',
+      '--id',
+      'versioned-plugin-change',
+      '--repo-root',
+      tempRepo,
+    ], { cwd: repoRoot(), env: process.env });
+    const planned = await execFileAsync('node', [
+      checkerPath,
+      'versioned-plugin',
+      '--json',
+      '--repo-root',
+      tempRepo,
+    ], { cwd: repoRoot(), env: process.env, maxBuffer: 10 * 1024 * 1024 });
+    expect(JSON.parse(planned.stdout).checks[0]).toMatchObject({
+      status: 'releasePlanned',
+      plannedBump: 'minor',
+      targetVersion: '0.2.0',
+    });
+    await runGit(tempRepo, ['add', 'plugins', '.changes']);
+    await runGit(tempRepo, [
+      '-c',
+      'user.name=AW Test',
+      '-c',
+      'user.email=aw-test@example.invalid',
+      'commit',
+      '-m',
+      'planned plugin change',
+    ]);
+    await fs.appendFile(skillMdPath, '\nSecond development iteration.\n', 'utf8');
+    const repeatedDevelopment = await execFileAsync('node', [
+      checkerPath,
+      'versioned-plugin',
+      '--json',
+      '--repo-root',
+      tempRepo,
+    ], { cwd: repoRoot(), env: process.env, maxBuffer: 10 * 1024 * 1024 });
+    expect(JSON.parse(repeatedDevelopment.stdout).checks[0]).toMatchObject({
+      status: 'releasePlanned',
+      baseVersion: '0.1.0',
+      currentVersion: '0.1.0',
+      targetVersion: '0.2.0',
+    });
+    await expect(execFileAsync('node', [
+      checkerPath,
+      'versioned-plugin',
+      '--mode',
+      'release',
+      '--repo-root',
+      tempRepo,
+    ], { cwd: repoRoot(), env: process.env })).rejects.toMatchObject({
+      stdout: expect.stringContaining('unappliedReleaseIntent'),
+    });
+    await execFileAsync('node', [
+      applyReleasesPath,
+      'versioned-plugin',
       '--repo-root',
       tempRepo,
     ], { cwd: repoRoot(), env: process.env });
@@ -1077,7 +1253,7 @@ describe('authoring tools', () => {
       '--repo-root',
       tempRepo,
     ], { cwd: repoRoot(), env: process.env })).rejects.toMatchObject({
-      stdout: expect.stringContaining('missingVersionBump'),
+      stdout: expect.stringContaining('missingReleaseIntent'),
     });
 
     await fs.writeFile(skillReadmePath, '# Versioned Skill\n', 'utf8');
@@ -1131,6 +1307,47 @@ describe('authoring tools', () => {
       status: 'new',
       currentVersion: '0.1.0',
     });
+    await execFileAsync('node', [
+      addChangePath,
+      'new-plugin',
+      '--bump',
+      'patch',
+      '--summary',
+      'New plugin release intent fixture.',
+      '--id',
+      'new-plugin-release-gate',
+      '--repo-root',
+      tempRepo,
+    ], { cwd: repoRoot(), env: process.env });
+    let newPluginReleaseError: { stdout?: string } | undefined;
+    try {
+      await execFileAsync('node', [
+        checkerPath,
+        '--all',
+        '--mode',
+        'release',
+        '--json',
+        '--repo-root',
+        tempRepo,
+      ], { cwd: repoRoot(), env: process.env, maxBuffer: 10 * 1024 * 1024 });
+    } catch (error) {
+      newPluginReleaseError = error as { stdout?: string };
+    }
+    expect(newPluginReleaseError?.stdout).toBeTruthy();
+    const newPluginReleaseReport = JSON.parse(newPluginReleaseError!.stdout!);
+    expect(newPluginReleaseReport.checks.find(
+      (check: { plugin: string }) => check.plugin === 'new-plugin',
+    )).toMatchObject({
+      status: 'unappliedReleaseIntent',
+      currentVersion: '0.1.0',
+      targetVersion: '0.1.1',
+    });
+    await fs.remove(path.join(
+      tempRepo,
+      '.changes',
+      'plugins',
+      'new-plugin-release-gate.json',
+    ));
 
     await fs.writeJson(
       path.join(tempRepo, 'plugins', 'marketplace-source.json'),

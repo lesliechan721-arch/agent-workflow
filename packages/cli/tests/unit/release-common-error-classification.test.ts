@@ -1,3 +1,7 @@
+import os from 'node:os';
+import path from 'node:path';
+
+import fs from 'fs-extra';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
@@ -164,5 +168,33 @@ describe('release common registry error classification', () => {
       version: '1.0.0',
     });
     expect(downloadCatalogPackageArchive).not.toHaveBeenCalled();
+  });
+
+  it('reads and disposes the publisher-only plugin release ledger', async () => {
+    const packageRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-release-ledger-'));
+    const dispose = vi.fn(async () => fs.remove(packageRoot));
+    const ledger = { schemaVersion: 1, records: [] };
+    await fs.writeJson(path.join(packageRoot, 'plugin-release-ledger.json'), ledger);
+    const adapter = await createCatalogRegistryAdapter({
+      registryUrl: 'https://registry.example.test/',
+      marketplace: {
+        resolveCatalogPackageIdentityByDistTag: vi.fn(async () => ({
+          packageName: '@lesliechan721/aw-plugins-manifest',
+          version: '2.0.0-beta.1',
+        })),
+        downloadCatalogPackageArchive: vi.fn(async () => ({
+          packageRoot,
+          rawManifest: { schemaVersion: 2 },
+          dispose,
+        })),
+      },
+    });
+
+    await expect(adapter.readChannelReleaseLedger('beta')).resolves.toMatchObject({
+      status: 'ready',
+      version: '2.0.0-beta.1',
+      rawLedger: ledger,
+    });
+    expect(dispose).toHaveBeenCalledOnce();
   });
 });

@@ -144,7 +144,7 @@ describe('build smoke', () => {
     }
     expect(missingBumpError?.stdout).toBeTruthy();
     expect(JSON.parse(missingBumpError!.stdout!).checks[0]).toMatchObject({
-      status: 'missingVersionBump',
+      status: 'missingReleaseIntent',
       productionChanged: true,
     });
 
@@ -155,24 +155,29 @@ describe('build smoke', () => {
         'skills',
         'create-aw-plugin',
         'scripts',
-        'bump_plugin_version.mjs',
+        'add_plugin_change.mjs',
       ),
       'version-gate-smoke',
       '--bump',
       'minor',
+      '--summary',
+      'Change smoke fixture production behavior.',
+      '--id',
+      'version-gate-smoke-change',
       '--repo-root',
       tempRepo,
     ], { cwd: root, env: process.env });
-    const bumped = await execFileAsync('node', [
+    const planned = await execFileAsync('node', [
       checkerPath,
       'version-gate-smoke',
       '--json',
       '--repo-root',
       tempRepo,
     ], { cwd: root, env: process.env, maxBuffer: 10 * 1024 * 1024 });
-    expect(JSON.parse(bumped.stdout).checks[0]).toMatchObject({
-      status: 'versionBumped',
-      currentVersion: '0.2.0',
+    expect(JSON.parse(planned.stdout).checks[0]).toMatchObject({
+      status: 'releasePlanned',
+      currentVersion: '0.1.0',
+      targetVersion: '0.2.0',
     });
   }, 120_000);
 
@@ -638,10 +643,23 @@ describe('build smoke', () => {
       fs.readJson(path.join(outputRoot, '.catalog', 'sidecar', 'package.json')),
     ).resolves.toMatchObject({
       name: '@lesliechan721/aw-plugins-manifest',
-      files: ['catalog-manifest.json'],
+      files: ['catalog-manifest.json', 'plugin-release-ledger.json'],
       awCatalog: {
         kind: 'sidecar',
       },
+    });
+    await expect(
+      fs.readJson(path.join(outputRoot, '.catalog', 'development-receipt.json')),
+    ).resolves.toMatchObject({
+      schemaVersion: 1,
+      phase: 'development',
+      publishable: false,
+      entries: expect.arrayContaining([
+        expect.objectContaining({
+          name: 'ask-me',
+          contentDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+        }),
+      ]),
     });
     await expect(
       fs.readJson(path.join(outputRoot, '.catalog', 'full', 'package.json')),

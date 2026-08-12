@@ -105,8 +105,8 @@
     },
     {
       "id": "add-static-skill",
-      "prompt": "实际维护 plugins/code-review：新增一个 audit-report 静态 Skill，用于把已有审查结果整理为可复核的审计报告。该 Skill 风险低，允许模型发现。先检查现有插件与调用元数据，再运行 add_skill.mjs；完成全部 TODO，把 eval starter 换成真实小型用例，并按现有格式更新插件 README。保持其它能力不变，确认插件版本由 0.2.0 递增为 0.3.0，最后运行作者 validator。不要修改 marketplace-source、平台 manifest、plugins-dist 或 runtime cache。",
-      "expected_output": "向现有插件新增完整 audit-report 静态 Skill；双平台调用元数据和 owner eval 一致；插件根 README 已补充条目；plugin version 为 0.3.0；作者 validator 通过。",
+      "prompt": "实际维护 plugins/code-review：新增一个 audit-report 静态 Skill，用于把已有审查结果整理为可复核的审计报告。该 Skill 风险低，允许模型发现。先检查现有插件与调用元数据，再运行 add_skill.mjs；完成全部 TODO，把 eval starter 换成真实小型用例，并按现有格式更新插件 README。保持其它能力不变，确认已创建 minor release intent 且插件版本保留 0.2.0，最后运行作者 validator。不要修改 marketplace-source、平台 manifest、plugins-dist 或 runtime cache。",
+      "expected_output": "向现有插件新增完整 audit-report 静态 Skill；双平台调用元数据和 owner eval 一致；插件根 README 已补充条目；plugin version 保留 0.2.0，并有 minor release intent；作者 validator 通过。",
       "scripted_replies": [],
       "sandbox": "workspace-write",
       "review": {
@@ -116,7 +116,8 @@
         "allowed_workspace_changes": [
           "plugins/code-review/.agents-plugin/plugin.json",
           "plugins/code-review/README.md",
-          "plugins/code-review/skills/audit-report/**"
+          "plugins/code-review/skills/audit-report/**",
+          ".changes/plugins/**"
         ],
         "artifacts": [
           {
@@ -124,7 +125,7 @@
             "exists": true,
             "json": {
               "name": "code-review",
-              "version": "0.3.0",
+              "version": "0.2.0",
               "skills": "./skills"
             }
           },
@@ -157,15 +158,15 @@
         "checks": [
           "trace 先读现有 manifest、README 和 Skill，再按路由读取设计、触发、manifest 与 eval reference",
           "trace 实际运行 add_skill.mjs，随后完成领域内容、真实 eval starter 和插件 README",
-          "diff 只包含新 Skill、插件 README 和 manifest 的 skills/version 必要变化",
+          "diff 只包含新 Skill、插件 README、manifest 的 skills 必要变化和 release intent",
           "trace 最后运行作者 validator；失败时修复并重跑"
         ]
       }
     },
     {
       "id": "modify-with-script",
-      "prompt": "实际维护 plugins/code-review：只在 skills/review-workflow 内增加一个 Node.js JSON 报告 validator。脚本必须非交互，支持 --help，成功时 stdout 输出短 JSON，失败诊断写 stderr 并返回非零；覆盖合法输入、非法 JSON、缺少字段和重复运行。更新该 Skill 的准确调用说明，并添加直接 node:test。该变化进入 production bundle，使用 bump_plugin_version.mjs 把版本从 0.2.0 递增到 0.2.1；manifest 除 version 外不得改变。不要改变安装、scope、config、lifecycle、MCP 或其它 Skill。运行 --help、成功、失败、重复运行、node --test 和作者 validator。",
-      "expected_output": "对既有 Skill 做局部修改；新增可执行 validator 与直接测试，SKILL.md 给出准确接口和验证循环；plugin version 为 0.2.1；所有确定性命令、版本门禁和作者 validator 通过。",
+      "prompt": "实际维护 plugins/code-review：只在 skills/review-workflow 内增加一个 Node.js JSON 报告 validator。脚本必须非交互，支持 --help，成功时 stdout 输出短 JSON，失败诊断写 stderr 并返回非零；覆盖合法输入、非法 JSON、缺少字段和重复运行。更新该 Skill 的准确调用说明，并添加直接 node:test。该变化进入 production bundle，使用 add_plugin_change.mjs 创建 code-review 的 patch release intent；插件版本保留 0.2.0。不要改变安装、scope、config、lifecycle、MCP 或其它 Skill。运行 --help、成功、失败、重复运行、node --test 和作者 validator。",
+      "expected_output": "对既有 Skill 做局部修改；新增可执行 validator 与直接测试，SKILL.md 给出准确接口和验证循环；plugin version 保留 0.2.0，并有 patch release intent；所有确定性命令、作者门禁和 validator 通过。",
       "scripted_replies": [],
       "sandbox": "workspace-write",
       "review": {
@@ -174,7 +175,8 @@
         "workspace_unchanged": false,
         "allowed_workspace_changes": [
           "plugins/code-review/.agents-plugin/plugin.json",
-          "plugins/code-review/skills/review-workflow/**"
+          "plugins/code-review/skills/review-workflow/**",
+          ".changes/plugins/**"
         ],
         "artifacts": [
           {
@@ -182,7 +184,7 @@
             "exists": true,
             "json": {
               "name": "code-review",
-              "version": "0.2.1"
+              "version": "0.2.0"
             }
           },
           {
@@ -203,7 +205,7 @@
         ],
         "checks": [
           "trace 先读取现有 manifest、目标 Skill 和直接测试，再读取 skill-scripts 与 skill-evaluation",
-          "diff 只触及目标 Skill 子树和 manifest version，没有改变其它 manifest 字段、安装、scope、config、lifecycle 或 MCP",
+          "diff 只触及目标 Skill 子树和 release intent，没有改变 manifest、安装、scope、config、lifecycle 或 MCP",
           "trace 运行 --help、成功、失败、重复运行和 node --test，并记录退出码和 stdout/stderr 合同",
           "trace 最后运行作者 validator；失败时修复并重跑"
         ]

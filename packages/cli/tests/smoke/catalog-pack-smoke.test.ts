@@ -131,7 +131,23 @@ describe('catalog pack smoke', () => {
     const sidecarPackageJson = await fs.readJson(path.join(unpackedSidecarRoot, 'package.json'));
     const fullPackageJson = await fs.readJson(path.join(unpackedFullRoot, 'package.json'));
 
-    expect(sidecarFiles).toEqual(['catalog-manifest.json', 'package.json']);
+    expect(sidecarFiles).toEqual([
+      'catalog-manifest.json',
+      'package.json',
+      'plugin-release-ledger.json',
+    ]);
+    await expect(
+      fs.readJson(path.join(unpackedSidecarRoot, 'plugin-release-ledger.json')),
+    ).resolves.toMatchObject({
+      schemaVersion: 1,
+      records: expect.arrayContaining([
+        expect.objectContaining({
+          plugin: expect.any(String),
+          version: expect.any(String),
+          contentDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+        }),
+      ]),
+    });
     expect(sidecarManifestText).toBe(canonicalManifestText);
     expect(fullManifestText).toBe(canonicalManifestText);
     expect(sidecarManifest).toMatchObject({

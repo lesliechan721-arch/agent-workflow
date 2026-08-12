@@ -57,6 +57,28 @@ async function calculateArtifactPathDigest(filePath: string): Promise<string> {
   return calculateFileDigest(filePath);
 }
 
+const VERSIONED_PLUGIN_MANIFEST_PATHS = new Set([
+  '.agents-plugin/plugin.json',
+  '.claude-plugin/plugin.json',
+  '.codex-plugin/plugin.json',
+]);
+
+async function calculateContentPathDigest(
+  pluginRoot: string,
+  relativePath: string,
+): Promise<string> {
+  if (!VERSIONED_PLUGIN_MANIFEST_PATHS.has(relativePath)) {
+    return calculateArtifactPathDigest(path.join(pluginRoot, relativePath));
+  }
+  const filePath = path.join(pluginRoot, relativePath);
+  const stat = await fs.lstat(filePath);
+  if (stat.isSymbolicLink()) {
+    return createSha256Digest(`symlink:${await fs.readlink(filePath)}`);
+  }
+  const manifest = await fs.readJson(filePath) as Record<string, unknown>;
+  return createSha256Digest(stableStringify({ ...manifest, version: '<plugin-version>' }));
+}
+
 export function calculateCatalogEntryManifestDigest(
   manifest: PluginManifestSource | CatalogManifestEntry,
 ): string {
@@ -71,6 +93,20 @@ export async function calculateCatalogEntryArtifactDigest(
     files.map(async (relativePath) => ({
       path: relativePath,
       digest: await calculateArtifactPathDigest(path.join(pluginRoot, relativePath)),
+    })),
+  );
+
+  return createSha256Digest(stableStringify(fileEntries));
+}
+
+export async function calculateCatalogEntryContentDigest(
+  pluginRoot: string,
+): Promise<string> {
+  const files = await listFilesRecursively(pluginRoot);
+  const fileEntries = await Promise.all(
+    files.map(async (relativePath) => ({
+      path: relativePath,
+      digest: await calculateContentPathDigest(pluginRoot, relativePath),
     })),
   );
 

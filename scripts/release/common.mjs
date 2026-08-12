@@ -22,6 +22,7 @@ export const defaultCatalogOutputRoot = path.join(cliPackageRoot, 'plugins-dist'
 export const catalogReleaseStagingRoot = path.join(releaseRoot, 'catalog-staging');
 export const sidecarCatalogPackageName = '@lesliechan721/aw-plugins-manifest';
 export const fullCatalogPackageName = '@lesliechan721/aw-plugins';
+export const pluginReleaseLedgerFilename = 'plugin-release-ledger.json';
 
 const cachedCatalogModules = new Map();
 
@@ -670,19 +671,54 @@ export async function prepareCatalogRelease(options = {}) {
     targetChannelVersion = null,
   } = options;
   const sourceRepoRoot = options.sourceRepoRoot ?? repoRoot;
-  const [{ pluginStaging, bundleLayout }, stagedCandidate] = await Promise.all([
-    resolveCatalogModules(options.catalogModules, options.cliDistRoot),
-    resolveCatalogModules(options.catalogModules, options.cliDistRoot).then(({ pluginStaging }) =>
-      pluginStaging.stageCatalogArtifacts({
-        repoRoot: sourceRepoRoot,
-        outputRoot,
-        ...(catalogVersion ? { catalogVersion } : {}),
-        ...(channel ? { channel } : {}),
-      })),
-  ]);
+  const { pluginStaging, bundleLayout } = await resolveCatalogModules(
+    options.catalogModules,
+    options.cliDistRoot,
+  );
+  const developmentReceipt = typeof pluginStaging.readPluginDevelopmentReceipt === 'function'
+    ? await pluginStaging.readPluginDevelopmentReceipt(outputRoot)
+    : null;
+  const existingManifest = typeof pluginStaging.readStagedCatalogManifest === 'function'
+    ? await pluginStaging.readStagedCatalogManifest(outputRoot)
+    : null;
+  const resolvedCatalogVersion = catalogVersion ?? existingManifest?.catalogVersion;
+  if (!resolvedCatalogVersion) {
+    throw new Error('Catalog release requires a catalog version.');
+  }
+  const resolvedChannel = normalizeChannel(channel, resolvedCatalogVersion);
+  if (
+    resolvedChannel === 'latest'
+    && developmentReceipt?.entries.some((entry) => entry.targetVersion !== null)
+  ) {
+    const pendingPlugins = developmentReceipt.entries
+      .filter((entry) => entry.targetVersion !== null)
+      .map((entry) => entry.name)
+      .join(', ');
+    throw new Error(
+      `Stable catalog release has unapplied plugin release intents: ${pendingPlugins}. `
+      + 'Run apply_plugin_releases.mjs and rebuild first.',
+    );
+  }
+  const previousReleaseLedger = options.previousReleaseLedger
+    ?? { schemaVersion: 1, records: [] };
+  const pluginVersionOverrides = resolvedChannel === 'beta' && developmentReceipt
+    ? pluginStaging.resolveBetaPluginVersionOverrides(
+      developmentReceipt,
+      previousReleaseLedger,
+    )
+    : {};
+  const stagedCandidate = await pluginStaging.stageCatalogArtifacts({
+    repoRoot: sourceRepoRoot,
+    outputRoot,
+    phase: 'release',
+    previousReleaseLedger,
+    pluginVersionOverrides,
+    catalogVersion: resolvedCatalogVersion,
+    channel: resolvedChannel,
+  });
   await validateCatalogReleaseCandidate({
     stagedManifest: stagedCandidate.manifest,
-    targetChannel: channel,
+    targetChannel: resolvedChannel,
     targetChannelVersion,
     catalogModules: options.catalogModules,
     cliDistRoot: options.cliDistRoot,
@@ -757,6 +793,47 @@ export async function createCatalogRegistryAdapter(options = {}) {
         };
       }
     },
+    async readChannelReleaseLedger(channel) {
+      let identity;
+      try {
+        identity = await marketplace.resolveCatalogPackageIdentityByDistTag(
+          sidecarCatalogPackageName,
+          channel,
+          registryEnv,
+        );
+      } catch (error) {
+        if (isMissingRegistryPackageError(error)) return { status: 'missing' };
+        return {
+          status: 'error',
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+      const archive = await marketplace.downloadCatalogPackageArchive(identity, registryEnv);
+      try {
+        try {
+          return {
+            status: 'ready',
+            version: identity.version,
+            rawLedger: JSON.parse(
+              await fs.readFile(
+                path.join(archive.packageRoot, pluginReleaseLedgerFilename),
+                'utf8',
+              ),
+            ),
+            rawManifest: archive.rawManifest,
+          };
+        } catch (error) {
+          if (error?.code !== 'ENOENT') throw error;
+          return {
+            status: 'legacy',
+            version: identity.version,
+            rawManifest: archive.rawManifest,
+          };
+        }
+      } finally {
+        await archive.dispose();
+      }
+    },
     async verifyExistingPackage(kind, context) {
       const packageName = packageNameForKind(kind);
       let identity;
@@ -825,6 +902,40 @@ async function resolveCurrentChannelVersion(options) {
     await registry.readChannelPackageIdentity(options.channel),
     options.channel,
   );
+}
+
+async function resolvePublishedPluginReleaseLedger(options) {
+  const { registry, pluginStaging } = options;
+  if (typeof registry?.readChannelReleaseLedger !== 'function') {
+    return { schemaVersion: 1, records: [] };
+  }
+  const results = await Promise.all(
+    ['latest', 'beta'].map((channel) => registry.readChannelReleaseLedger(channel)),
+  );
+  const ledgers = [];
+  for (const [index, result] of results.entries()) {
+    const channel = index === 0 ? 'latest' : 'beta';
+    if (!result || result.status === 'missing') continue;
+    if (result.status === 'error') {
+      const detail = result.error ? ` ${result.error}` : '';
+      throw new Error(`Unable to read current ${channel} plugin release ledger.${detail}`.trim());
+    }
+    if (result.status === 'ready') {
+      ledgers.push(pluginStaging.validatePluginReleaseLedger(result.rawLedger));
+      continue;
+    }
+    if (result.status === 'legacy') {
+      try {
+        const manifest = pluginStaging.validateCatalogManifest(result.rawManifest);
+        ledgers.push(pluginStaging.createLegacyPluginReleaseLedger(manifest));
+      } catch {
+        // Schema 1 packages do not have enough data to seed the new ledger.
+      }
+      continue;
+    }
+    throw new Error(`Registry returned an invalid ${channel} plugin release ledger status.`);
+  }
+  return pluginStaging.mergePluginReleaseLedgers(...ledgers);
 }
 
 async function verifyCatalogPackageCandidate(kind, publishContext) {
@@ -916,6 +1027,10 @@ async function stageCatalogReleasePreflight(options = {}) {
       registry,
       targetChannelVersion: options.targetChannelVersion,
     });
+    const previousReleaseLedger = await resolvePublishedPluginReleaseLedger({
+      registry,
+      pluginStaging: catalogModules.pluginStaging,
+    });
     const staged = await prepareCatalogRelease({
       outputRoot,
       catalogVersion: stagedCatalogVersion,
@@ -924,6 +1039,7 @@ async function stageCatalogReleasePreflight(options = {}) {
       catalogModules,
       cliDistRoot: snapshot.cliDistRoot,
       sourceRepoRoot: snapshot.root,
+      previousReleaseLedger,
     });
     const publishContext = {
       channel,

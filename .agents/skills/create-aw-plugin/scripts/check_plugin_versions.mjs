@@ -21,10 +21,11 @@ function readOptionValue(args, index, flag) {
 function printUsage() {
   console.log(`Usage:
   node .agents/skills/create-aw-plugin/scripts/check_plugin_versions.mjs \\
-    (<plugin-name> | --all) [--base <git-ref>] [--json] [--repo-root .]
+    (<plugin-name> | --all) [--mode author|release] [--base <git-ref>] [--json] [--repo-root .]
 
 Options:
   --all               Check every plugin changed relative to the Git base.
+  --mode <mode>       author requires a release intent; release requires a version bump. Default: author.
   --base <git-ref>    Git comparison base. Default: HEAD.
   --json              Emit one schema v1 JSON document.
   --repo-root <path>  Repository root. Default: current directory.
@@ -37,6 +38,7 @@ function parseArgs(argv) {
   const options = {
     all: false,
     base: 'HEAD',
+    mode: 'author',
     json: false,
     repoRoot: '.',
     pluginNames: [],
@@ -64,7 +66,12 @@ function parseArgs(argv) {
     const { value, nextIndex } = readOptionValue(args, index, flag);
     index = nextIndex;
     if (flag === '--base') options.base = value;
-    else if (flag === '--repo-root') options.repoRoot = value;
+    else if (flag === '--mode') {
+      if (value !== 'author' && value !== 'release') {
+        fail('--mode must be "author" or "release".');
+      }
+      options.mode = value;
+    } else if (flag === '--repo-root') options.repoRoot = value;
     else fail(`Unknown option: ${flag}`);
   }
   if (options.all && options.pluginNames.length > 0) {

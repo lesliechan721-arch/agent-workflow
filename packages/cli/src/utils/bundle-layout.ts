@@ -25,6 +25,10 @@ import {
 import { scanNodeImportContract } from './plugin-script-contract.js';
 import { getArtifactSourceBundleRelativePath } from './artifact-sources.js';
 import { validateSkillDirectory } from './dynamic-skill-tree.js';
+import {
+  PLUGIN_RELEASE_LEDGER_FILENAME,
+  validatePluginReleaseLedger,
+} from './plugin-release.js';
 
 const NODE_RUNTIME_EXTENSIONS = new Set(['.js', '.mjs', '.cjs']);
 export const CATALOG_STAGING_DIRNAME = '.catalog';
@@ -753,6 +757,7 @@ async function validateCatalogStagingLayout(rootDir: string): Promise<void> {
     canonicalManifestPath,
     path.join(sidecarPackageRoot, 'package.json'),
     sidecarManifestPath,
+    path.join(sidecarPackageRoot, PLUGIN_RELEASE_LEDGER_FILENAME),
     path.join(fullPackageRoot, 'package.json'),
     fullManifestPath,
   ];
@@ -773,6 +778,9 @@ async function validateCatalogStagingLayout(rootDir: string): Promise<void> {
 
   const manifest = validateCatalogManifest(
     await readJsonFile<unknown>(canonicalManifestPath),
+  );
+  validatePluginReleaseLedger(
+    await readJsonFile<unknown>(path.join(sidecarPackageRoot, PLUGIN_RELEASE_LEDGER_FILENAME)),
   );
   const [sidecarPackageJson, fullPackageJson] = await Promise.all([
     readJsonObject(path.join(sidecarPackageRoot, 'package.json'), 'catalog sidecar package.json'),
@@ -826,11 +834,14 @@ async function validateCatalogStagingLayout(rootDir: string): Promise<void> {
 
   const sidecarFiles = await listFilesRecursively(sidecarPackageRoot);
   if (
-    sidecarFiles.length !== 2 ||
+    sidecarFiles.length !== 3 ||
     sidecarFiles[0] !== CATALOG_MANIFEST_FILENAME ||
-    sidecarFiles[1] !== 'package.json'
+    sidecarFiles[1] !== 'package.json' ||
+    sidecarFiles[2] !== PLUGIN_RELEASE_LEDGER_FILENAME
   ) {
-    throw new Error('Invalid catalog sidecar package: expected only package.json and catalog-manifest.json.');
+    throw new Error(
+      'Invalid catalog sidecar package: expected only package.json, catalog-manifest.json, and plugin-release-ledger.json.',
+    );
   }
 
   await validateBundleLayout(fullPackageRoot);

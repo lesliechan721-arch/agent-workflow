@@ -61,17 +61,17 @@ compatibility: Requires the agent-workflows repository, Node.js 20+, and install
    - Dynamic Artifacts → 静态声明 target，renderer 只输出 `ArtifactPlan`
    - 完成条件：每个声明能力都有对应源码文件、字段和直接测试；没有修改生成目录或加入未请求能力
 5. **管理插件版本**
-   - `add_skill.mjs` 对稳定版本默认递增 minor；可显式选择 major、minor、patch 或更高的精确版本
-   - 其它 production bundle 变化使用 `scripts/bump_plugin_version.mjs` 显式递增版本
-   - prerelease 或含 build metadata 的当前版本必须提供精确的更高 SemVer，不能自动递增
+   - `add_skill.mjs` 默认创建 minor release intent，不直接修改 plugin version
+   - 其它 production bundle 变化使用 `scripts/add_plugin_change.mjs` 声明 major、minor 或 patch
+   - 开发和 CI 反复修改时保留源码 manifest 中最近稳定版本；不要把 SemVer 当作编辑计数器
    - Skill `evals/**`、插件 `reports/**` 和 test-only 文件不进入 production bundle；Skill README 和 runtime 文件进入 production bundle
-   - 完成条件：production bundle 有变化时 plugin version 高于 Git 基线；只有作者期材料变化时不做无意义 bump
+   - 完成条件：production bundle 有变化时存在对应 release intent；只有作者期材料变化时不创建 intent
 6. **构建**
    - 运行 `pnpm build` 生成本地 staging/runtime bundle
    - 完成条件：命令 exit 0，目标 staging/runtime artifact 存在，且生成物只由构建产生
 7. **验证并修复**
    - 运行 `scripts/validate_plugin.mjs`
-   - validator 对仓库内插件默认用 `HEAD` 检查版本；CI 或分支对比用 `--version-base <git-ref>`
+   - validator 对仓库内插件默认用 `HEAD` 运行 author 门禁；CI 或分支对比用 `--version-base <git-ref>`
    - 需要检查全部变更插件时运行 `pnpm plugin:version:check -- --base <git-ref>`
    - 校验失败时按错误修复并重跑，直到通过
    - 默认 Claude profile 是 AW 最低支持版本 2.1.88；`current` profile 只用于核对当前字段，不改变 AW 的最低版本兼容门
@@ -131,16 +131,31 @@ node .agents/skills/create-aw-plugin/scripts/add_skill.mjs <plugin-name> \
   --skill-description "Skill 的用户目标和使用时机" \
   [--skill-short-description "25–64 字符 UI 摘要"] \
   [--skill-invocation model|manual|claude-model-only] \
-  [--bump major|minor|patch | --version <semver>] \
+  [--bump major|minor|patch] \
   [--repo-root .]
 ```
 
-- 命令只新增一个静态 Skill，并在同一次写入中更新 manifest 和 plugin version；冲突时不留下部分文件
+- 命令只新增一个静态 Skill，并在同一次写入中更新 manifest 能力和创建 release intent；冲突时不留下部分文件
 - 双平台或 Codex 插件生成 `agents/openai.yaml` 和 eval starter；Claude-only 插件不生成不可运行的 Codex v2 eval
 - 命令不修改插件根 README；完成 Skill 内容后按现有 README 结构人工补充条目
 - dynamic Skill、slash command 或现有目录使用相同名称时直接失败
 
-只递增版本：
+其它 production 变化创建 release intent：
+
+```bash
+node .agents/skills/create-aw-plugin/scripts/add_plugin_change.mjs <plugin-name> \
+  --bump major|minor|patch --summary "变更摘要"
+```
+
+稳定发布时统一应用 intent：
+
+```bash
+node .agents/skills/create-aw-plugin/scripts/apply_plugin_releases.mjs --all
+pnpm build
+pnpm plugin:version:check:release -- --base <git-ref>
+```
+
+`bump_plugin_version.mjs` 只保留为显式的单插件版本维护工具，不用于普通开发循环：
 
 ```bash
 node .agents/skills/create-aw-plugin/scripts/bump_plugin_version.mjs <plugin-name> \
@@ -152,9 +167,10 @@ node .agents/skills/create-aw-plugin/scripts/bump_plugin_version.mjs <plugin-nam
 - `.agents-plugin/plugin.json` 是唯一手动维护的 manifest；不要手写 `.claude-plugin/plugin.json` 或 `.codex-plugin/plugin.json`。
 - 插件名、skill 名使用小写短横线格式，并与目录名一致。
 - `version` 和 `compatibility.aw.minVersion` 使用严格 SemVer。CLI version、catalog version 和 plugin version 是三套身份。
-- production bundle 因插件源码变化而改变时必须提高 plugin version；`check_plugin_versions.mjs` 使用当前 CLI bundler 比较 Git 基线和工作树，不负责推断 CLI bundler 自身变化造成的产物变化。
+- production bundle 因插件源码变化而改变时必须创建 release intent；author 门禁检查 intent，release 门禁才要求版本已提高。`check_plugin_versions.mjs` 不负责推断 CLI bundler 自身变化造成的产物变化。
 - build metadata 不提高 SemVer precedence，不能作为插件升级版本。
-- Catalog 分为 `@lesliechan721/aw-plugins-manifest` sidecar 包和 `@lesliechan721/aw-plugins` full catalog 包；插件作者只维护源码，不手改包内产物。
+- 普通构建的 development receipt 不可发布；beta version 只在临时 staging 中生成，stable 发布才更新源码 manifest。
+- Catalog 分为 `@lesliechan721/aw-plugins-manifest` sidecar 包和 `@lesliechan721/aw-plugins` full catalog 包；sidecar 的发布账本保证 `plugin@version` 跨 beta/latest 不可变。插件作者只维护源码，不手改包内产物。
 - 不在插件 manifest 声明最低 Codex / Claude Code 版本；AW CLI 内置门槛当前为 Codex `>= 0.145.0`、Claude Code `>= 2.1.88`。
 - `marketplace.policy.products` 同时约束 build 裁剪、平台 marketplace、安装/升级门禁和 `pnpm plugin:test` 平台选择。
 - `skills`、`mcpServers`、`apps`、`slashCommands` 使用单个 `./` 相对路径，且路径必须存在。

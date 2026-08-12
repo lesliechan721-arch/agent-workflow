@@ -40,25 +40,32 @@
 
 CLI version、catalog version 和 plugin version 是三套身份。插件更新通常只发布 catalog，不要求发布 CLI。
 
-修改插件 production bundle 时必须提高 `.agents-plugin/plugin.json` 的 plugin version。稳定版本可以使用作者工具递增；prerelease 或含 build metadata 的版本必须指定精确的更高 SemVer：
+开发期间修改 production bundle 时，不直接提高 `.agents-plugin/plugin.json` 的 plugin version。先提交 release intent：
 
 ```bash
-node .agents/skills/create-aw-plugin/scripts/bump_plugin_version.mjs <plugin-name> \
-  (--bump major|minor|patch | --version <semver>)
+pnpm plugin:change:add <plugin-name> --bump major|minor|patch --summary "变更摘要"
 ```
 
-检查 Git 基线与工作树中全部变更插件：
+作者门禁要求 production 变化有 release intent，但允许开发和 CI 反复修改而不递增 SemVer：
 
 ```bash
 pnpm build
 pnpm plugin:version:check -- --base <git-ref>
 ```
 
-该检查使用当前 CLI bundler 比较插件源码产生的 production bundle。Skill `evals/**`、插件 `reports/**` 和 test-only 文件不要求 bump；随插件发布的 README、Skill、manifest 和 runtime 脚本变化要求 bump。它不判断 CLI bundler 自身变化造成的产物差异。
+稳定发布前统一应用 intent，然后运行 release 门禁：
+
+```bash
+pnpm plugin:release:apply --all
+pnpm build
+pnpm plugin:version:check:release -- --base <git-ref>
+```
+
+普通构建生成不可发布的 `development-receipt.json`，使用排除 version 字段后的 `contentDigest` 标识开发内容。Beta 发布只在临时 staging 中生成 `x.y.z-beta.N`；相同内容复用已发布 beta 版本，变化内容才增加 `N`。Stable 发布才把目标版本写入源码 manifest。Skill `evals/**`、插件 `reports/**` 和 test-only 文件不进入 production bundle，因此不需要 release intent。
 
 `@lesliechan721/aw-plugins-manifest` sidecar 与 `@lesliechan721/aw-plugins` full catalog 使用同一份 schema 2 `catalog-manifest.json`。manifest 只描述 current 单版本快照，并记录 catalog 最低 CLI 版本、sidecar/full package identity，以及每个 current plugin 的 version、最低 CLI 版本、`artifactDigest` 和 `manifestDigest`。
 
-作者不手改 catalog manifest、platform marketplace 或 staging 输出。发布流程校验 current candidate 内的最低 CLI 版本和 digest；同一 catalog version 的 exact-version sidecar/full package 内容不可改变。
+作者不手改 catalog manifest、platform marketplace 或 staging 输出。Sidecar 额外包含发布端专用的 `plugin-release-ledger.json`，用于保证 `plugin@version` 跨 beta/latest 对应唯一 digest；运行时 catalog schema 仍为 2。同一 catalog version 的 exact-version sidecar/full package 内容不可改变。
 
 ## Skills
 
@@ -89,7 +96,7 @@ Skill 的触发行为只由平台原生元数据决定。AW 校验并保留这�
 
 作者脚手架创建初始 Skill 时要求独立的 `--skill-description`。`--skill-invocation` 支持 `model`、`manual` 和 `claude-model-only`，默认 `model`。字段、类型和宿主版本支持状态由 `packages/cli/src/utils/skill-frontmatter-capabilities.json` 统一定义；作者 validator 默认检查 Claude Code 2.1.88 profile，`--claude-skill-profile current` 只核对当前文档字段，不改变最低版本发布门。
 
-向现有插件新增一个静态 Skill 使用 `scripts/add_skill.mjs`。该命令默认对稳定 plugin version 做 minor bump，并按插件支持平台生成调用元数据；它不修改插件 README，也不代替 extensions、dynamic artifact 或其它能力的直接设计与编辑。
+向现有插件新增一个静态 Skill 使用 `scripts/add_skill.mjs`。该命令默认创建 minor release intent，不直接修改 plugin version，并按插件支持平台生成调用元数据；它不修改插件 README，也不代替 extensions、dynamic artifact 或其它能力的直接设计与编辑。
 
 作者不需要、也不能在插件 manifest 中声明最低 Codex 或 Claude Code 版本。宿主版本门禁由 CLI 统一维护。
 
@@ -214,7 +221,7 @@ pnpm build
 node .agents/skills/create-aw-plugin/scripts/validate_plugin.mjs plugins/<name>
 node .agents/skills/create-aw-plugin/scripts/validate_plugin.mjs plugins/<name> --claude-skill-profile current
 node .agents/skills/create-aw-plugin/scripts/validate_plugin.mjs plugins/<name> --version-base <git-ref>
-node .agents/skills/create-aw-plugin/scripts/check_plugin_versions.mjs --all --base <git-ref>
+node .agents/skills/create-aw-plugin/scripts/check_plugin_versions.mjs --all --mode author --base <git-ref>
 pnpm plugin:test <name>
 pnpm plugin:eval <name> --skill <skill> --batch-name materialization --materialize-only
 ```

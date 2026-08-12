@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 
-const STAMP_SCHEMA_VERSION = 5;
+const STAMP_SCHEMA_VERSION = 6;
 const DEFAULT_LOCK_TIMEOUT_MS = 20 * 60 * 1000;
 const DEFAULT_POLL_INTERVAL_MS = 100;
 
@@ -21,6 +21,7 @@ const INPUT_PATHS = [
   'packages/cli/src',
   'packages/cli/scripts',
   'plugins',
+  '.changes',
 ];
 
 const OUTPUT_ROOTS = [
@@ -40,6 +41,8 @@ const REQUIRED_OUTPUTS = [
   { path: 'packages/cli/plugins-dist/.agents/plugins/marketplace.json', type: 'marketplace' },
   { path: 'packages/cli/plugins-dist/.catalog/catalog-manifest.json', type: 'catalog' },
   { path: 'packages/cli/plugins-dist/.catalog/sidecar/catalog-manifest.json', type: 'catalog' },
+  { path: 'packages/cli/plugins-dist/.catalog/sidecar/plugin-release-ledger.json', type: 'ledger' },
+  { path: 'packages/cli/plugins-dist/.catalog/development-receipt.json', type: 'receipt' },
   {
     path: 'packages/cli/plugins-dist/.catalog/sidecar/package.json',
     type: 'package',
@@ -465,6 +468,23 @@ async function validateRequiredOutputs(repoRoot) {
             !Array.isArray(parsed.entries) ||
             !parsed.packages ||
             typeof parsed.packages !== 'object')
+        ) {
+          return { valid: false, reason: `incomplete output ${output.path}` };
+        }
+        if (
+          output.type === 'ledger'
+          && (parsed.schemaVersion !== 1 || !Array.isArray(parsed.records))
+        ) {
+          return { valid: false, reason: `incomplete output ${output.path}` };
+        }
+        if (
+          output.type === 'receipt'
+          && (
+            parsed.schemaVersion !== 1
+            || parsed.phase !== 'development'
+            || parsed.publishable !== false
+            || !Array.isArray(parsed.entries)
+          )
         ) {
           return { valid: false, reason: `incomplete output ${output.path}` };
         }

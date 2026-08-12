@@ -63,19 +63,22 @@ AW 版本管理里有三套身份，不能混用：
 作者版本工具：
 
 ```bash
-node .agents/skills/create-aw-plugin/scripts/bump_plugin_version.mjs <plugin-name> \
-  (--bump major|minor|patch | --version <semver>)
+node .agents/skills/create-aw-plugin/scripts/add_plugin_change.mjs <plugin-name> \
+  --bump major|minor|patch --summary "变更摘要"
 node .agents/skills/create-aw-plugin/scripts/check_plugin_versions.mjs \
-  --all --base <git-ref>
+  --all --mode author --base <git-ref>
+node .agents/skills/create-aw-plugin/scripts/apply_plugin_releases.mjs --all
+node .agents/skills/create-aw-plugin/scripts/check_plugin_versions.mjs \
+  --all --mode release --base <git-ref>
 ```
 
-`bump_plugin_version.mjs` 只修改源码 manifest 的 plugin version。稳定版本可以显式选择 major、minor 或 patch；当前版本含 prerelease 或 build metadata 时必须传精确的更高 `--version`。build metadata 不提高 SemVer precedence，不能用来形成可升级版本。
+Release intent 位于 `.changes/plugins/*.json`。它声明 plugin、major/minor/patch 和摘要。多个 intent 指向同一插件时取最高 bump。开发期间源码 manifest 保留最近稳定版本；`apply_plugin_releases.mjs` 在稳定发布前统一提高版本并消费 intent。`bump_plugin_version.mjs` 只保留为显式的单插件维护工具。build metadata 不提高 SemVer precedence，不能用来形成可升级版本。
 
-`check_plugin_versions.mjs` 用当前已构建 CLI 的 staging bundler 分别物化 Git 基线插件和工作树插件，再忽略 plugin version 字段本身比较 production bundle。production bundle 变化但 version 没有提高时失败；版本提高但 bundle 没有变化时只警告。Skill `evals/**`、插件 `reports/**` 和 test-only 文件由 bundler 排除，不要求 bump；随 bundle 发布的 README、Skill、manifest 和 runtime 脚本变化要求 bump。该门禁只判断插件源码变化，不判断 CLI bundler 自身变化造成的产物差异。
+`check_plugin_versions.mjs` 用当前已构建 CLI 的 staging bundler 分别物化 Git 基线插件和工作树插件，再忽略 plugin version 字段本身比较 production bundle。`author` 模式要求 production 变化有 release intent；`release` 模式要求版本已提高且 intent 已消费。Skill `evals/**`、插件 `reports/**` 和 test-only 文件由 bundler 排除，不要求 intent；随 bundle 发布的 README、Skill、manifest 和 runtime 脚本变化要求 intent。该门禁只判断插件源码变化，不判断 CLI bundler 自身变化造成的产物差异。
 
-发布门禁不查询 earlier catalog manifest，也不证明全部已发布 `plugin@version` 的全局不可变性。插件 version 是否准确表达内容变化是作者合同；自动门禁只校验 current candidate 内的身份字段和同一 catalog version 的 exact-version package 内容。
+普通构建生成不可发布的 `development-receipt.json`。其中的 `contentDigest` 排除生成 manifest 的 version 字段，用来识别反复开发内容。Beta 发布按 release intent 在临时 staging 中物化 `x.y.z-beta.N`；相同 contentDigest 复用 beta 版本，变化内容才提高 `N`。Stable 发布要求 intent 已应用。
 
-`@lesliechan721/aw-plugins-manifest` sidecar 包和 `@lesliechan721/aw-plugins` full catalog 包使用相同 schema 2 manifest、catalog version、channel 和 catalog 级最低 CLI 版本。sidecar 只包含 current `catalog-manifest.json` 和必要 package metadata；full 包包含同一份 manifest 以及 current 单版本快照的全部插件 artifact。
+`@lesliechan721/aw-plugins-manifest` sidecar 包和 `@lesliechan721/aw-plugins` full catalog 包使用相同 schema 2 manifest、catalog version、channel 和 catalog 级最低 CLI 版本。sidecar 包含 current `catalog-manifest.json`、发布端专用 `plugin-release-ledger.json` 和必要 package metadata；full 包包含同一份 manifest 以及 current 单版本快照的全部插件 artifact。账本合并 beta/latest 已发布身份，并阻断相同 `plugin@version` 对应不同 digest；它不改变运行时 catalog schema。
 
 ## scripts / config block
 

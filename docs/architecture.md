@@ -66,6 +66,9 @@ Local runtime
 - `@lesliechan721/aw-plugins-manifest` 是 sidecar；`@lesliechan721/aw-plugins` 是同版本 full catalog。
 - CLI version、catalog version 和 plugin version 是三套独立身份。
 - catalog manifest 使用 schema 2，只描述 current 单版本快照。它记录 catalog 最低 CLI 版本、sidecar/full package identity，以及每个 current plugin 的版本、最低 CLI 版本、`artifactDigest` 和 `manifestDigest`。
+- 普通构建生成不可发布的 development receipt，以 `contentDigest` 标识插件内容；release intent 声明下一次稳定版本的 bump 类型。
+- Beta 发布在临时 staging 中物化 prerelease plugin version。Stable 发布统一应用 intent 后才更新源码 manifest。
+- Sidecar 包包含发布端专用的 `plugin-release-ledger.json`。发布门禁合并 beta/latest 账本，保证同一 `plugin@version` 不会对应不同 digest。运行时 catalog manifest 仍使用 schema 2。
 - 发布门禁要求目标 channel 的 catalog version 单调不降低。同一 catalog version 的 sidecar/full 包已存在时，待发布 package 必须与 registry 中的 exact-version package 字节相同。
 - strict catalog cache 按 selector、registry source identity、integrity、manifest digest 和 CLI compatibility 隔离。并发写入使用 immutable entry、原子 selector publication 和有界 lock。
 - active marketplace 只供平台原生能力读取。`AW_HOME` 同盘 sibling coordination root 提供 lifecycle lease 和 runtime lease；同时需要两者时，固定按 lifecycle、runtime 的顺序获取。runtime lease 串行根替换、user config 及 Codex user Skill overlay 的写入，lifecycle lease 保护 active snapshot。只读检查不获取排他租约，也不创建 coordination 状态。operation lock 也位于 sibling root，不进入被替换目录。重建必须保留 strict catalog cache、AW config store、Codex user Skill overlay 和 lifecycle active snapshot。

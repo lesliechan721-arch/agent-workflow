@@ -69,8 +69,7 @@ Options:
   --skill-short-description <text>
                                 Skill UI summary (25-64 characters). Default: description.
   --skill-invocation <mode>     model | manual | claude-model-only. Default: model.
-  --bump <kind>                 major | minor | patch. Default: minor.
-  --version <semver>            Exact higher plugin version. Mutually exclusive with --bump.
+  --bump <kind>                 Planned major | minor | patch release. Default: minor.
   --repo-root <path>            Repository root. Default: current directory.
   -h, --help                    Show this help message.
 
@@ -123,9 +122,6 @@ function parseArgs(argv) {
           fail('--bump must be one of "major", "minor", or "patch".');
         }
         options.bump = value;
-        break;
-      case '--version':
-        options.version = value;
         break;
       case '--repo-root':
         options.repoRoot = value;
@@ -285,21 +281,26 @@ function main() {
 
   const nextVersion = resolveNextPluginVersion(manifest.version, {
     bump: args.bump,
-    version: args.version,
     defaultBump: 'minor',
   });
   const nextManifest = structuredClone(manifest);
-  nextManifest.version = nextVersion;
   addSkillsCapability(nextManifest);
+
+  const intentRoot = path.join(repoRoot, '.changes', 'plugins');
+  const intentPath = path.join(intentRoot, `${pluginName}-add-${skillName}.json`);
+  if (fs.existsSync(intentPath)) fail(`Release intent already exists: ${intentPath}`);
 
   const skillsRoot = path.join(pluginRoot, 'skills');
   const finalSkillRoot = path.join(skillsRoot, skillName);
   const stageRoot = fs.mkdtempSync(path.join(pluginRoot, '.aw-add-skill-'));
   const stageSkillRoot = path.join(stageRoot, skillName);
   const stagedManifestPath = path.join(stageRoot, 'plugin.json');
+  const stagedIntentPath = path.join(stageRoot, 'release-intent.json');
   const skillsRootExisted = fs.existsSync(skillsRoot);
+  const intentRootExisted = fs.existsSync(intentRoot);
   let installedSkill = false;
   let installedManifest = false;
+  let installedIntent = false;
   try {
     const created = createSkillFiles(stageSkillRoot, {
       pluginName,
@@ -311,14 +312,24 @@ function main() {
       supportsClaude: platforms.claude,
     });
     writeJson(stagedManifestPath, nextManifest);
+    writeJson(stagedIntentPath, {
+      schemaVersion: 1,
+      plugin: pluginName,
+      bump: args.bump ?? 'minor',
+      summary: `Add static Skill ${skillName}.`,
+    });
     fs.mkdirSync(skillsRoot, { recursive: true });
     fs.renameSync(stageSkillRoot, finalSkillRoot);
     installedSkill = true;
     installedManifest = true;
     fs.writeFileSync(manifestPath, fs.readFileSync(stagedManifestPath));
+    fs.mkdirSync(intentRoot, { recursive: true });
+    fs.renameSync(stagedIntentPath, intentPath);
+    installedIntent = true;
 
     console.log(`[OK] Added static Skill ${JSON.stringify(skillName)} to plugin ${JSON.stringify(pluginName)}.`);
-    console.log(`[OK] Plugin version: ${manifest.version} -> ${nextVersion}`);
+    console.log(`[OK] Planned plugin release: ${manifest.version} -> ${nextVersion}`);
+    console.log(`  - ${intentPath}`);
     for (const relativePath of created) {
       console.log(`  - ${path.join(finalSkillRoot, relativePath)}`);
     }
@@ -330,12 +341,16 @@ function main() {
     }
     console.log(`[WARN] Plugin README was not changed: ${path.join(pluginRoot, 'README.md')}`);
   } catch (error) {
+    if (installedIntent && fs.existsSync(intentPath)) fs.rmSync(intentPath, { force: true });
     if (installedSkill && fs.existsSync(finalSkillRoot)) {
       fs.rmSync(finalSkillRoot, { recursive: true, force: true });
     }
     if (installedManifest) fs.writeFileSync(manifestPath, originalManifestText, 'utf8');
     if (!skillsRootExisted && fs.existsSync(skillsRoot) && fs.readdirSync(skillsRoot).length === 0) {
       fs.rmdirSync(skillsRoot);
+    }
+    if (!intentRootExisted && fs.existsSync(intentRoot) && fs.readdirSync(intentRoot).length === 0) {
+      fs.rmdirSync(intentRoot);
     }
     throw error;
   } finally {
