@@ -9,25 +9,29 @@ import { describe, expect, it } from 'vitest';
 const execFileAsync = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
 
-async function reportBatchRoots(): Promise<string[]> {
-  const roots: string[] = [];
-  const staticRoot = path.join(repoRoot, '.agents', 'reports');
-  if (await fs.pathExists(staticRoot)) {
-    for (const skill of await fs.readdir(staticRoot)) {
-      const skillRoot = path.join(staticRoot, skill);
-      for (const batch of await fs.readdir(skillRoot)) roots.push(path.join(skillRoot, batch));
-    }
+async function committedReportBatches(): Promise<Array<{ files: string[]; root: string }>> {
+  const { stdout } = await execFileAsync('git', [
+    'ls-files',
+    '-z',
+    '--',
+    '.agents/reports/**',
+    'plugins/*/reports/**',
+  ], { cwd: repoRoot });
+  const batches = new Map<string, string[]>();
+  for (const file of stdout.split('\0')) {
+    if (!file) continue;
+    const match = file.match(
+      /^((?:\.agents\/reports\/[^/]+|plugins\/[^/]+\/reports\/[^/]+)\/[^/]+)\/(.+)$/,
+    );
+    if (!match) throw new Error(`Invalid committed Skill report path: ${file}`);
+    const root = path.join(repoRoot, match[1]);
+    const files = batches.get(root) ?? [];
+    files.push(match[2]);
+    batches.set(root, files);
   }
-  const pluginsRoot = path.join(repoRoot, 'plugins');
-  for (const plugin of await fs.readdir(pluginsRoot)) {
-    const reportsRoot = path.join(pluginsRoot, plugin, 'reports');
-    if (!(await fs.pathExists(reportsRoot))) continue;
-    for (const skill of await fs.readdir(reportsRoot)) {
-      const skillRoot = path.join(reportsRoot, skill);
-      for (const batch of await fs.readdir(skillRoot)) roots.push(path.join(skillRoot, batch));
-    }
-  }
-  return roots.sort();
+  return [...batches]
+    .map(([root, files]) => ({ files: files.sort(), root }))
+    .sort((left, right) => left.root.localeCompare(right.root));
 }
 
 async function isIgnored(relativePath: string): Promise<boolean> {
@@ -44,13 +48,13 @@ async function isIgnored(relativePath: string): Promise<boolean> {
 
 describe('committed Skill report layout', () => {
   it('keeps only a human report and compact schema v2 summary per published batch', async () => {
-    const batches = await reportBatchRoots();
+    const batches = await committedReportBatches();
     expect(batches.length).toBeGreaterThan(0);
-    for (const batchRoot of batches) {
-      expect((await fs.readdir(batchRoot)).sort()).toEqual(['report.md', 'summary.json']);
-      await expect(fs.readFile(path.join(batchRoot, 'report.md'), 'utf8'))
+    for (const batch of batches) {
+      expect(batch.files).toEqual(['report.md', 'summary.json']);
+      await expect(fs.readFile(path.join(batch.root, 'report.md'), 'utf8'))
         .resolves.not.toHaveLength(0);
-      await expect(fs.readJson(path.join(batchRoot, 'summary.json'))).resolves.toMatchObject({
+      await expect(fs.readJson(path.join(batch.root, 'summary.json'))).resolves.toMatchObject({
         schemaVersion: 2,
         reportPath: 'report.md',
       });
