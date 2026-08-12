@@ -1,5 +1,14 @@
 # Changelog
 
+## v4
+
+- Added a minimum-effective-control audit before completion-boundary scoring.
+- Replaced the standalone resource dimension with minimum necessary control and merged resource checks into context disclosure.
+- Added independent complexity and reducibility verdicts plus effective quality caps.
+- Enforced bidirectional score/verdict consistency and the full/release minimum-control audit requirement.
+- Added advisory control-surface metrics and over-specification regression cases.
+- Required current pruning evidence instead of only future stop discipline.
+
 ## v3.1
 
 - Added an untrusted-object boundary and a strong-evidence-first review phase.

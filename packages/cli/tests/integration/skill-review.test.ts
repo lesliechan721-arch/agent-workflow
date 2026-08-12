@@ -378,11 +378,11 @@ describe('skill-review author tools', () => {
       expect(report.issues.filter((issue: { level: string }) => issue.level === 'error')).toEqual([]);
       if (skillName === 'skill-review') {
         expect(report.evals.trigger).toEqual({ total: 24, positive: 12, negative: 12 });
-        expect(report.evals.behavior_cases).toBe(6);
-        expect(report.evals.conversation_cases).toBe(6);
-        expect(report.evals.portable_behavior_specs).toBe(25);
+        expect(report.evals.behavior_cases).toBe(8);
+        expect(report.evals.conversation_cases).toBe(8);
+        expect(report.evals.portable_behavior_specs).toBe(29);
         expect(report.evals.behavior_evidence_note).toContain('not executable release evidence');
-        expect(report.evals.scoring_cases).toBe(11);
+        expect(report.evals.scoring_cases).toBe(17);
         expect(report.scripts.count).toBe(3);
         expect(report.references.missing).toEqual([]);
         expect(report.pointers).toMatchObject({
@@ -763,6 +763,11 @@ describe('skill-review author tools', () => {
       '',
       'See references/missing.md.',
       'Use evals/present.json and evals/missing.json.',
+      'If validation fails, you must stop.',
+      '**Gate completion:** verify the result.',
+      '```text',
+      'Result: <value>',
+      '```',
     ].join('\n'), 'utf8');
     await fs.writeFile(
       path.join(skillRoot, 'references', 'fixture', 'SKILL.md'),
@@ -797,6 +802,12 @@ describe('skill-review author tools', () => {
     expect(report.target.kind).toBe('static-skill');
     expect(report.skill.frontmatter.name).toBe('wrong-name');
     expect(report.references.reachable).toContain('evals/present.json');
+    expect(report.skill.body_metrics).toMatchObject({
+      mandatory_modal_count: 1,
+      conditional_branch_count: 1,
+      named_completion_gate_count: 1,
+      fixed_output_field_count: 1,
+    });
     expect(report.references.missing.map((entry: { target: string }) => entry.target)).toEqual(
       expect.arrayContaining(['references/missing.md', 'evals/missing.json']),
     );
@@ -822,6 +833,13 @@ describe('skill-review author tools', () => {
       mode: 'release',
       direction: 'aligned',
       notes: '',
+    };
+    base.complexity = {
+      verdict: 'proportionate',
+      reducibility: 'minor',
+      minimal_behavior_contract: [
+        'Apply only the controls required by the evidenced target workflow.',
+      ],
     };
     for (const key of Object.keys(base.artifacts)) {
       base.artifacts[key] = true;
@@ -868,6 +886,9 @@ describe('skill-review author tools', () => {
         confidence,
         unknown_ids: [`U-${dimension.id}`],
       }));
+      scorecard.dimensions.find(
+        (dimension: { id: string }) => dimension.id === 'minimum_control',
+      ).score = Math.max(score, 4);
       return scorecard;
     };
 
@@ -885,11 +906,11 @@ describe('skill-review author tools', () => {
       passedReport.dimensions.map((dimension: { id: string; weight: number }) =>
         [dimension.id, dimension.weight]),
     )).toMatchObject({
-      specification: 7,
+      specification: 6,
       scope_composition: 8,
-      instruction_design: 12,
-      context_disclosure: 12,
-      resources: 5,
+      instruction_design: 10,
+      minimum_control: 14,
+      context_disclosure: 10,
     });
 
     const invalidSkillName = structuredClone(base);
@@ -898,6 +919,15 @@ describe('skill-review author tools', () => {
       valid: false,
       diagnostics: expect.arrayContaining([
         expect.objectContaining({ code: 'review.skill-name' }),
+      ]),
+    });
+
+    const missingComplexity = structuredClone(base);
+    missingComplexity.complexity = undefined;
+    expect(await validate(missingComplexity)).toMatchObject({
+      valid: false,
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({ code: 'complexity.mode-required' }),
       ]),
     });
 
@@ -910,10 +940,96 @@ describe('skill-review author tools', () => {
       valid: true,
     });
 
+    const missingMinimumControlAudit = structuredClone(base);
+    missingMinimumControlAudit.artifacts.minimum_effective_control_audit = false;
+    expect(await validate(missingMinimumControlAudit)).toMatchObject({
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({ code: 'complexity.audit-required' }),
+      ]),
+      valid: false,
+    });
+
+    const overSpecified = structuredClone(base);
+    overSpecified.review.direction = 'at-risk';
+    overSpecified.complexity = {
+      verdict: 'over-specified',
+      reducibility: 'significant',
+      minimal_behavior_contract: [
+        'Preserve the evidenced safety and behavior invariants.',
+        'Validate the final integrated result before completion.',
+      ],
+    };
+    overSpecified.findings = [{
+      id: 'F-control',
+      severity: 'P2',
+      evidence_types: ['heuristic'],
+      dimension: 'minimum_control',
+      location: 'SKILL.md:20',
+      problem: 'Mandatory bookkeeping exceeds the evidenced behavior contract.',
+    }];
+    const overSpecifiedDimension = overSpecified.dimensions.find(
+      (dimension: { id: string }) => dimension.id === 'minimum_control',
+    );
+    overSpecifiedDimension.score = 3;
+    overSpecifiedDimension.finding_ids = ['F-control'];
+    expect(await validate(overSpecified)).toMatchObject({
+      complexity: { verdict: 'over-specified', reducibility: 'significant' },
+      score: {
+        weighted_score: 94.4,
+        quality_band: 'excellent',
+        effective_quality_band: 'adequate',
+        quality_cap_reason: 'over-specified',
+        release: 'provisional',
+      },
+      valid: true,
+    });
+
+    for (const [verdict, reducibility] of [
+      ['minimal', 'almost-none'],
+      ['proportionate', 'minor'],
+    ] as const) {
+      const mislabeled = structuredClone(overSpecified);
+      mislabeled.review.direction = 'aligned';
+      mislabeled.complexity.verdict = verdict;
+      mislabeled.complexity.reducibility = reducibility;
+      expect(await validate(mislabeled)).toMatchObject({
+        valid: false,
+        diagnostics: expect.arrayContaining([
+          expect.objectContaining({ code: 'complexity.score' }),
+        ]),
+      });
+    }
+
+    const overEngineered = structuredClone(overSpecified);
+    overEngineered.review.direction = 'drifted';
+    overEngineered.complexity.verdict = 'over-engineered';
+    overEngineered.complexity.reducibility = 'redesign';
+    const overEngineeredDimension = overEngineered.dimensions.find(
+      (dimension: { id: string }) => dimension.id === 'minimum_control',
+    );
+    overEngineeredDimension.score = 2;
+    expect(await validate(overEngineered)).toMatchObject({
+      score: {
+        weighted_score: 91.6,
+        effective_quality_band: 'weak',
+        release: 'provisional',
+      },
+      valid: true,
+    });
+
+    const alignedOverSpecified = structuredClone(overSpecified);
+    alignedOverSpecified.review.direction = 'aligned';
+    expect(await validate(alignedOverSpecified)).toMatchObject({
+      valid: false,
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({ code: 'complexity.direction' }),
+      ]),
+    });
+
     const lowQuality = scoreAllWithUnknowns(2.5);
     expect(await validate(lowQuality)).toMatchObject({
       score: {
-        weighted_score: 50,
+        weighted_score: 54.2,
         quality_band: 'poor',
         release: 'pass',
       },
@@ -928,7 +1044,7 @@ describe('skill-review author tools', () => {
     ] as const) {
       expect(await validate(scoreAllWithUnknowns(score))).toMatchObject({
         score: {
-          weighted_score: score * 20,
+          weighted_score: score * 20 + Math.max(0, 4 - score) * 2.8,
           quality_band: qualityBand,
           release: 'pass',
         },
@@ -1073,7 +1189,7 @@ describe('skill-review author tools', () => {
       (dimension: { id: string }) => dimension.id === 'triggering',
     ).finding_ids = ['F-shared'];
     duplicatePenalty.dimensions.find(
-      (dimension: { id: string }) => dimension.id === 'resources',
+      (dimension: { id: string }) => dimension.id === 'context_disclosure',
     ).finding_ids = ['F-shared'];
     expect(await validate(duplicatePenalty)).toMatchObject({
       valid: false,
@@ -1108,6 +1224,11 @@ describe('skill-review author tools', () => {
 
     const quick = structuredClone(base);
     quick.review.mode = 'quick';
+    quick.complexity = {
+      verdict: null,
+      reducibility: null,
+      minimal_behavior_contract: [],
+    };
     quick.dimensions = quick.dimensions.map((dimension: Record<string, unknown>) => ({
       ...dimension,
       score: null,
@@ -1126,14 +1247,48 @@ describe('skill-review author tools', () => {
       score: {
         weighted_score: null,
         quality_band: null,
-        coverage_percent: 27,
+        coverage_percent: 24,
         release: 'provisional',
       },
       valid: true,
     });
 
+    const quickMissingAudit = structuredClone(base);
+    quickMissingAudit.review.mode = 'quick';
+    quickMissingAudit.artifacts.minimum_effective_control_audit = false;
+    quickMissingAudit.dimensions = quickMissingAudit.dimensions.map(
+      (dimension: Record<string, unknown>) => ({
+        ...dimension,
+        score: null,
+        confidence: 'unknown',
+        evidence: [],
+        finding_ids: [],
+        unknown_ids: [],
+      }),
+    );
+    for (const id of ['specification', 'problem_value', 'minimum_control']) {
+      const dimension = quickMissingAudit.dimensions.find(
+        (entry: { id: string }) => entry.id === id,
+      );
+      dimension.score = 5;
+      dimension.confidence = 'high';
+      dimension.evidence = ['quick audit fixture evidence'];
+    }
+    expect(await validate(quickMissingAudit)).toMatchObject({
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({ code: 'cap.minimum-control' }),
+      ]),
+      score: { release: 'provisional' },
+      valid: true,
+    });
+
     const delta = structuredClone(base);
     delta.review.mode = 'delta';
+    delta.complexity = {
+      verdict: null,
+      reducibility: null,
+      minimal_behavior_contract: [],
+    };
     delta.artifacts.previous_version = true;
     delta.dimensions = delta.dimensions.map((dimension: Record<string, unknown>) => ({
       ...dimension,
@@ -1157,6 +1312,15 @@ describe('skill-review author tools', () => {
         release: 'pass',
       },
       valid: true,
+    });
+
+    const orphanReducibility = structuredClone(delta);
+    orphanReducibility.complexity.reducibility = 'redesign';
+    expect(await validate(orphanReducibility)).toMatchObject({
+      valid: false,
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({ code: 'complexity.verdict-required' }),
+      ]),
     });
 
     const emptyDelta = structuredClone(delta);
@@ -1225,13 +1389,11 @@ describe('skill-review author tools', () => {
     missingOptional.review.mode = 'full';
     missingOptional.findings = undefined;
     missingOptional.unknowns = undefined;
-    missingOptional.artifacts = undefined;
     const omittedFields = await validate(missingOptional);
     expect(omittedFields).toMatchObject({ valid: true });
     expect(omittedFields.diagnostics.map(
       (entry: { code: string }) => entry.code,
     )).not.toEqual(expect.arrayContaining([
-      'artifacts.type',
       'findings.type',
       'unknowns.type',
     ]));
@@ -1269,15 +1431,15 @@ describe('skill-review author tools', () => {
       valid: true,
     });
 
-    for (const [confidences, label] of [
+    for (const [confidences, label, expectedIndex] of [
       [[
         'high', 'high', 'high', 'high', 'high', 'low',
-        'unknown', 'low', 'high', 'unknown', 'unknown', 'unknown',
-      ], 'medium'],
+        'low', 'low', 'high', 'unknown', 'unknown', 'unknown',
+      ], 'medium', 0.63],
       [[
         'high', 'high', 'high', 'high', 'high', 'high',
         'high', 'low', 'high', 'unknown', 'medium', 'unknown',
-      ], 'high'],
+      ], 'high', 0.8],
     ] as const) {
       const boundary = structuredClone(base);
       boundary.dimensions.forEach((dimension: Record<string, unknown>, index: number) => {
@@ -1285,7 +1447,7 @@ describe('skill-review author tools', () => {
       });
       expect(await validate(boundary)).toMatchObject({
         score: {
-          confidence_index: label === 'medium' ? 0.6 : 0.8,
+          confidence_index: expectedIndex,
           confidence: label,
           release: 'pass',
         },
@@ -1297,17 +1459,17 @@ describe('skill-review author tools', () => {
   it('keeps evaluated upstream content unchanged outside documented project adapters', async () => {
     const skillRoot = path.join(repoRoot(), '.agents', 'skills', 'skill-review');
     const exactHashes: Record<string, string> = {
-      'CHANGELOG.md': 'f380791fdd80918874ddf3ac39bbc42beeb919e81e31314289229a77bfe3a5ca',
-      'assets/report-template.md': '89f7045e8174d0a5c2238b1224c2f14c763329324f5ac8d0db4e4c8c42f73111',
-      'assets/scorecard-template.json': 'b61488ecef58b49dca4cb8fd86e37b3eb4378f9f1f0f460391cb49d88630ebb4',
-      'evals/behavior_cases.json': '72c90f0a3d577487bfd641b45bb1486f5e0aa8699dcc47292cc7c32de97e0053',
-      'evals/scoring_cases.json': '031edafd2728e7731169d505390e84f47f3b10c7e7484a6fda4881b214932cdc',
+      'CHANGELOG.md': '88205c64f6fe200fe989941d0ac52f053f61d6db9ce192fe479967dd65aab9d8',
+      'assets/report-template.md': '67b5f5fd2ecf1880f6d446dd0a8f48c290e95486252daf634f811572be418c6a',
+      'assets/scorecard-template.json': '93e6fae3a76d2bfa447047769da9587dfb4473c08be437f3f325a35e63f17233',
+      'evals/behavior_cases.json': 'dceb0145076da44f652168dfec12546c7ec1aa98dc9ec3e1843f7afb44618e4a',
+      'evals/scoring_cases.json': '7a9715f0549a0215856a11d32f94c7212a7606b02d7e7ea4498c4ea136681d3f',
       'evals/trigger-cases.json': '67447dd4808b9642eea60bc7e46274cf799069625f35ef077661bb951b65d122',
       'references/architecture-boundaries.md': '73546c91c0219892c584c5ff64fd192814eb080137c744b2f72fbcd62119eb15',
-      'references/delta-review.md': 'a4827eb63b62f98725821daede648eae27c4fef43c10aae89ee1d981645fb356',
-      'references/review-dimensions.md': '5f9ec995612818326925b653fe184391ccb1f502f4c2bf898eeea680858c8a89',
+      'references/delta-review.md': '4822793652c376d573d300e71d2d1f4a26dde7f43ede7aa4d7d51d2213de6ee1',
+      'references/review-dimensions.md': 'ecb0d21f7fb4a7dc391840f57c7e02ea4889667ddf8d9c0c48f37baa8369840c',
       'references/scripts-and-resources.md': '1f1c30e5201e1bdc8a0728fc0207a002ffb93d2d8c5115c097fbcda09c3ff7b7',
-      'references/source-map.md': '48567b80f7f10b4793926016d14a3288135039636d6842db00fd9845f9c2188f',
+      'references/source-map.md': '1fbce765ded4d6995f299a0169f5bda805ec01c49f71cc3795e8856667bb0828',
     };
     for (const [relative, expected] of Object.entries(exactHashes)) {
       expect(contentDigest(await fs.readFile(path.join(skillRoot, relative), 'utf8'))).toBe(expected);
@@ -1349,7 +1511,7 @@ describe('skill-review author tools', () => {
         '',
       );
     expect(contentDigest(readme)).toBe(
-      'ec3182e53968bb1af37c598c9535c1629e1688843cc56b67d408878f8f6c3963',
+      '398f660d1f287fc8e335ee95125f0c42d8933b17f607d62a6ba36cd3233c3e63',
     );
 
     const skill = (await fs.readFile(path.join(skillRoot, 'SKILL.md'), 'utf8'))
@@ -1398,7 +1560,7 @@ describe('skill-review author tools', () => {
         '',
       );
     expect(contentDigest(skill)).toBe(
-      '86b37cfb9fb4b031c13246244278fc6f8950a9d11e53c57f9bfb6f6b3e534000',
+      '2299ff2b79131e6b5f4f7bc9e3f4723f6297eef20fba40e3d78a0eac3b165105',
     );
 
     const scoringModel = (
@@ -1414,7 +1576,7 @@ describe('skill-review author tools', () => {
         '',
       );
     expect(contentDigest(scoringModel)).toBe(
-      'ffdc996293ea30e6502562acfcb6af7cd2ccbec24ae6c9951404e1ff2d16a468',
+      '0e8cfb63b45ea30be5411bbbd863c2707e77b360dd584d4cf282232c1ef504d4',
     );
   });
 });

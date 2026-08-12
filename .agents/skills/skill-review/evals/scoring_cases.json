@@ -2,7 +2,7 @@
   {
     "id": "minimal-knowledge-skill",
     "scenario": "目标清楚、description有trigger eval、正文简洁、无确定性逻辑，因此没有scripts或references。",
-    "expected": ["scripts和resources可得4-5分", "absence不视为缺陷", "总体可pass"]
+    "expected": ["scripts和context_disclosure可得4-5分", "absence不视为缺陷", "总体可pass"]
   },
   {
     "id": "invalid-frontmatter",
@@ -46,12 +46,42 @@
   },
   {
     "id": "low-score-no-blocker",
-    "scenario": "full/release的12个维度都有可追溯的2.5分，总分50，所有gate通过且没有P0/P1。",
+    "scenario": "full/release除minimum_control为4且判为proportionate外，其它维度都有可追溯的2.5分；所有gate通过且没有P0/P1。",
     "expected": ["quality band为poor", "总分不单独改变发布结论", "不自动输出redesign"]
   },
   {
     "id": "quick-and-delta-no-aggregate",
     "scenario": "quick只评三个维度，delta只评一个受影响维度。",
     "expected": ["两个模式weighted_score都为null", "quality_band为null", "coverage仍报告已评估权重"]
+  },
+  {
+    "id": "over-specified-caps-quality",
+    "scenario": "其它维度均为4.5，但minimum_control为3，复杂度为over-specified且有P2 finding。",
+    "expected": ["raw quality band可以较高", "effective quality band不高于adequate", "方向不能aligned", "release为provisional"]
+  },
+  {
+    "id": "over-engineered-caps-quality",
+    "scenario": "Skill以完整runbook替代模型判断，minimum_control为2，复杂度为over-engineered。",
+    "expected": ["effective quality band不高于weak", "方向必须drifted", "需要minimum_control finding"]
+  },
+  {
+    "id": "proportionate-fragile-workflow",
+    "scenario": "精确控制全部由事故证据和破坏性操作约束支持，minimum_control为4.5且复杂度为proportionate。",
+    "expected": ["不应用复杂度质量上限", "允许pass", "不按控制词数量自动扣分"]
+  },
+  {
+    "id": "minimum-contract-required",
+    "scenario": "full review填写全部维度，但没有最小行为合同或复杂度结论。",
+    "expected": ["scorecard无效", "报告complexity.mode-required或complexity.contract-required"]
+  },
+  {
+    "id": "complexity-label-cannot-bypass-cap",
+    "scenario": "release scorecard的minimum_control为3且有P2 finding，但complexity标为proportionate、direction标为aligned。",
+    "expected": ["scorecard无效", "报告complexity.score", "不能凭无效结果发布为release pass"]
+  },
+  {
+    "id": "minimum-control-audit-required",
+    "scenario": "full/release填写了复杂度结论和所有维度，但minimum_effective_control_audit为false。",
+    "expected": ["scorecard无效", "报告complexity.audit-required", "quick/delta只保留高分warning"]
   }
 ]

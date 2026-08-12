@@ -1,16 +1,16 @@
 # Source Map
 
-本文件区分发布依据与设计启发。最后核验：2026-08-08。release 模式必须重新打开标记为 current-check 的官方来源。
+本文件区分发布依据与设计启发。最后核验：2026-08-12。release 模式必须重新打开标记为 current-check 的官方来源。
 
 ## Normative / official sources
 
 | 主题 | 权威来源 | 本地用途 | current-check |
 | --- | --- | --- | ---: |
 | Agent Skill 结构、frontmatter、渐进式披露、文件引用 | https://agentskills.io/specification | package-validity 与规范评分 | yes |
-| 范围、上下文、控制校准、模板、checklist、validation loop | https://agentskills.io/skill-creation/best-practices | instruction、scope、context 评分 | yes |
+| 范围、上下文、最小控制、模型自由度、模板、checklist、validation loop | https://agentskills.io/skill-creation/best-practices | instruction、minimum-control、scope、context 评分 | yes |
 | description 和 trigger eval | https://agentskills.io/skill-creation/optimizing-descriptions | triggering 评分 | yes |
 | scripts 的依赖、路径、接口和安全 | https://agentskills.io/skill-creation/using-scripts | scripts 评分 | yes |
-| behavior eval、baseline、assertion、trace 和迭代 | https://agentskills.io/skill-creation/evaluating-skills | evals 与 problem-value 评分 | yes |
+| behavior eval、最小基线、ablation、assertion、trace 和迭代 | https://agentskills.io/skill-creation/evaluating-skills | evals、minimum-control 与 problem-value 评分 | yes |
 
 客户端特有调用字段、tool schema、角色配置和权限声明以目标客户端当前文档或源码为 normative 来源，不由本包预先假定。
 

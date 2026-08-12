@@ -5,12 +5,18 @@
     "direction": "aligned",
     "notes": ""
   },
+  "complexity": {
+    "verdict": null,
+    "reducibility": null,
+    "minimal_behavior_contract": []
+  },
   "artifacts": {
     "official_validation": false,
     "current_sources_checked": false,
     "pointer_audit": false,
     "information_hierarchy_map": false,
     "completion_boundary_audit": false,
+    "minimum_effective_control_audit": false,
     "trigger_eval_results": false,
     "behavior_eval_results": false,
     "regression_eval_results": false,
@@ -28,10 +34,10 @@
     {"id": "triggering", "score": null, "confidence": "unknown", "evidence": [], "finding_ids": [], "unknown_ids": [], "summary": ""},
     {"id": "scope_composition", "score": null, "confidence": "unknown", "evidence": [], "finding_ids": [], "unknown_ids": [], "summary": ""},
     {"id": "instruction_design", "score": null, "confidence": "unknown", "evidence": [], "finding_ids": [], "unknown_ids": [], "summary": ""},
+    {"id": "minimum_control", "score": null, "confidence": "unknown", "evidence": [], "finding_ids": [], "unknown_ids": [], "summary": ""},
     {"id": "context_disclosure", "score": null, "confidence": "unknown", "evidence": [], "finding_ids": [], "unknown_ids": [], "summary": ""},
     {"id": "architecture", "score": null, "confidence": "unknown", "evidence": [], "finding_ids": [], "unknown_ids": [], "summary": ""},
     {"id": "scripts", "score": null, "confidence": "unknown", "evidence": [], "finding_ids": [], "unknown_ids": [], "summary": ""},
-    {"id": "resources", "score": null, "confidence": "unknown", "evidence": [], "finding_ids": [], "unknown_ids": [], "summary": ""},
     {"id": "evals", "score": null, "confidence": "unknown", "evidence": [], "finding_ids": [], "unknown_ids": [], "summary": ""},
     {"id": "reliability", "score": null, "confidence": "unknown", "evidence": [], "finding_ids": [], "unknown_ids": [], "summary": ""},
     {"id": "maintainability", "score": null, "confidence": "unknown", "evidence": [], "finding_ids": [], "unknown_ids": [], "summary": ""}

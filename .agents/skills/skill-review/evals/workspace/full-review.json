@@ -37,6 +37,19 @@
         "completion_criterion": null
       }
     ],
+    "minimum_control": {
+      "evidenced_core_behaviors": [
+        "inspect the requested report artifact",
+        "check the requested assertions against available evidence",
+        "report confirmed failures and unknowns separately"
+      ],
+      "current_mandatory_blocks": [
+        "read and understand every package file",
+        "copy the current client schema into the Skill",
+        "apply the third-party negative-sentence preference"
+      ],
+      "ablation": null
+    },
     "third_party_claim": {
       "statement": "第三方写作指南不建议使用否定句。",
       "authority": "heuristic",

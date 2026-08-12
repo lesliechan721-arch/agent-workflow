@@ -38,14 +38,14 @@
     {
       "id": "full-review-from-evidence",
       "prompt": "使用 $skill-review 对 fixtures/full-review.json 做 full review。静态诊断和语义审计材料已经提供，只读分析并给出方向、门禁、优势、缺陷和最小改进集。",
-      "expected_output": "使用新版证据权威和多维评分，完成 pointer、信息层级和完成边界审计；缺失的 behavior evidence 只降低置信度。",
+      "expected_output": "使用新版证据权威和多维评分，先完成最小有效控制审计，再完成 pointer、信息层级和完成边界审计；缺失的 behavior evidence 只降低置信度。",
       "files": [],
       "scripted_replies": [],
       "review": {
         "workspace_unchanged": true,
         "checks": [
           "先给方向和门禁",
-          "完成 Invocation/Pointer Audit、Information Hierarchy Map 和 Completion Boundary Audit",
+          "完成 Minimum Effective Control、Invocation/Pointer、Information Hierarchy 和 Completion Boundary 四项审计",
           "把第三方写作观点标为 heuristic，且不单独升级为 P0/P1",
           "质量分与证据置信度分开",
           "同一根因只在一个主维度扣分",
@@ -79,7 +79,7 @@
         "workspace_unchanged": true,
         "checks": [
           "不因 description 同义词数量增加而提高 triggering 评价",
-          "允许聚焦的 flat peer reference，并把 scattering 归入资源组织",
+          "允许聚焦的 flat peer reference，并把 scattering 归入context_disclosure",
           "没有 ablation 时不武断删除疑似 no-op 指令",
           "客户端支持未知时不把调用字段说成通用规范"
         ]
@@ -98,6 +98,39 @@
           "不把 user materialization 说成模型通过",
           "needs_review 保持 release gate 未完成",
           "结论只覆盖 Codex"
+        ]
+      }
+    },
+    {
+      "id": "minimum-control-over-specified",
+      "prompt": "使用 $skill-review 对 fixtures/over-specified-review.json 做定向 quick review。先生成最小行为合同，再判断控制必要性。只读分析，不修改文件。",
+      "expected_output": "即使所有规则分别正确，也识别无充分依据的阶段、artifact和固定报告为过度规定；给出over-specified、at-risk和以delete/relax优先的建议。",
+      "files": [],
+      "scripted_replies": [],
+      "review": {
+        "workspace_unchanged": true,
+        "checks": [
+          "最小行为合同不超过8条且不复制现有五阶段结构",
+          "复杂度结论为over-specified，方向不是aligned",
+          "minimum_control不高于3",
+          "区分应保留的安全不变量与应放宽的bookkeeping",
+          "没有ablation时使用needs-ablation，不继续新增规则"
+        ]
+      }
+    },
+    {
+      "id": "minimum-control-proportionate",
+      "prompt": "使用 $skill-review 对 fixtures/fragile-control-review.json 做定向 quick review。只读分析，不修改文件。",
+      "expected_output": "根据事故证据、平台约束和不可逆操作，判断精确控制基本适当，不按正文长度或控制词数量自动处罚。",
+      "files": [],
+      "scripted_replies": [],
+      "review": {
+        "workspace_unchanged": true,
+        "checks": [
+          "复杂度结论为proportionate",
+          "minimum_control可得4或更高",
+          "保留备份、writer cutover、固定命令和checksum门禁",
+          "只建议局部压缩，不删除有证据的脆弱步骤"
         ]
       }
     }

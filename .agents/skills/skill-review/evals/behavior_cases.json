@@ -6,7 +6,7 @@
       "使用全部12个适用评分维度",
       "分数由scorecard脚本计算而非手算",
       "单独报告发布门禁、coverage和confidence",
-      "完成pointer、information hierarchy和completion boundary审计"
+      "先完成minimum effective control，再完成pointer、information hierarchy和completion boundary审计"
     ]
   },
   {
@@ -168,7 +168,8 @@
     "prompt": "reviewer怀疑一条指令没有作用，但没有ablation。",
     "assertions": [
       "不武断判定no-op",
-      "建议通过基线和ablation验证后再删除"
+      "标记needs-ablation并建议通过基线验证后再删除",
+      "多个强制规则必要性未知时minimum_control不评为4-5"
     ]
   },
   {
@@ -219,6 +220,43 @@
       "不声称eval已经执行或通过",
       "不提高行为可靠性、trigger稳定性或release evidence评分",
       "把需要的实际结果记录为unknown"
+    ]
+  },
+  {
+    "id": "correct-but-over-specified",
+    "prompt": "一个merge Skill的拓扑、安全和验证规则都正确，但正文为每个阶段设置Gate completion、固定中间artifact和六字段报告；只有少量真实失败证据。",
+    "assertions": [
+      "先生成不超过8条的最小行为合同",
+      "复杂度判为over-specified而不是因规则正确给strong",
+      "minimum_control不高于3",
+      "优先delete或relax，不继续补边界"
+    ]
+  },
+  {
+    "id": "fragile-control-is-proportionate",
+    "prompt": "数据库迁移Skill包含精确步骤、备份、校验和停止门禁；每个强制步骤都对应事故记录或平台硬约束。",
+    "assertions": [
+      "不按长度或must数量自动扣分",
+      "复杂度可判为proportionate",
+      "保留脆弱操作的精确顺序和prohibition"
+    ]
+  },
+  {
+    "id": "short-but-over-controlled",
+    "prompt": "一个很短的开放式review Skill要求固定五阶段、三份中间表和逐项证明，但没有对应失败证据。",
+    "assertions": [
+      "不因token少而判为minimal",
+      "识别固定阶段和artifact对模型自由度的限制",
+      "复杂度判为over-specified"
+    ]
+  },
+  {
+    "id": "clear-unnecessary-step",
+    "prompt": "某步骤有清晰、可检查、覆盖完整的完成条件，但最小行为合同不需要该步骤。",
+    "assertions": [
+      "先判定步骤不必要",
+      "不因completion boundary优秀而加分",
+      "优先删除或放宽该步骤"
     ]
   }
 ]

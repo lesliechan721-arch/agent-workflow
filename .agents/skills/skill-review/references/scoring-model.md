@@ -1,21 +1,21 @@
 # Scoring Model
 
-任何维度评分都使用本文件和 `scripts/validate_scorecard.mjs`。quick/delta 可以评价局部维度，但不计算加权总分或 quality band。
+任何维度评分都使用本文件和 `scripts/validate_scorecard.mjs`。quick/delta 可以评价局部维度，但不计算加权总分或 raw/effective quality band。
 
 ## 维度与权重
 
 | ID | 维度 | 权重 |
 | --- | --- | ---: |
-| `specification` | 规范与包完整性 | 7 |
+| `specification` | 规范与包完整性 | 6 |
 | `problem_value` | 问题基础与实际价值 | 8 |
-| `triggering` | 调用策略、触发条件与 Context Pointer | 12 |
+| `triggering` | 调用策略、触发条件与 Context Pointer | 10 |
 | `scope_composition` | 范围、边界与组合性 | 8 |
-| `instruction_design` | 程序、完成边界与控制校准 | 12 |
-| `context_disclosure` | 信息层级、上下文负载与渐进式披露 | 12 |
+| `instruction_design` | 程序与完成边界 | 10 |
+| `minimum_control` | 最小充分控制与模型自由度 | 14 |
+| `context_disclosure` | 信息层级、资源与渐进式披露 | 10 |
 | `architecture` | 职责归属与自然语言状态机风险 | 10 |
-| `scripts` | 脚本与确定性自动化 | 8 |
-| `resources` | 资源可达性、Co-location 与用途 | 5 |
-| `evals` | 评测、验证与证据驱动迭代 | 10 |
+| `scripts` | 脚本与确定性自动化 | 7 |
+| `evals` | 评测、验证与证据驱动迭代 | 9 |
 | `reliability` | 可靠性、安全与兼容性 | 4 |
 | `maintainability` | 剪枝、事实源与变更纪律 | 4 |
 
@@ -57,15 +57,27 @@ Finding 可以包含多个证据类型。P0/P1 至少包含一个 `observed`、`
 
 `weighted_score = Σ(weight × score / 5) ÷ assessed_weight × 100`
 
-只有 full/release 且 12 个维度全部完成时计算 `weighted_score` 和 quality band。quick/delta 的这两个字段为 `null`。
+只有 full/release 且 12 个维度全部完成时计算 `weighted_score` 和 raw/effective quality band。quick/delta 的这些字段为 `null`。
 
 同时报告：
 
 - coverage：已评估权重占 100 的比例。
 - confidence index：high=1.0、medium=0.7、low=0.4、unknown=0，按已评估权重加权。
-- quality band：90–100 excellent；80–89.5 strong；70–79.5 adequate；60–69.5 weak；<60 poor。
+- raw quality band：90–100 excellent；80–89.5 strong；70–79.5 adequate；60–69.5 weak；<60 poor。
+- effective quality band：先使用 raw quality band，再应用复杂度上限；`over-specified` 不高于 `adequate`，`over-engineered` 不高于 `weak`。
 
-总分和 quality band 只用于定位薄弱维度、比较同一 Skill 的版本和观察趋势。它们不决定发布结论，也不用于直接比较用途或结构不同的 Skill。
+总分和 raw quality band 只用于定位薄弱维度、比较同一 Skill 的版本和观察趋势。报告以 effective quality band 为总体质量结论。它们不用于直接比较用途或结构不同的 Skill。
+
+## 复杂度结论
+
+full/release 必须在评分前完成最小有效控制审计，并给出独立结论：
+
+- `minimal`：强制规则均有明确依据，无法在保留核心行为时实质缩短。
+- `proportionate`：控制强度与任务脆弱度匹配，只有局部可选简化。
+- `over-specified`：主体正确，但多个 always-loaded 强制规则、阶段或 artifact 缺少足够依据，合理策略空间受到限制。
+- `over-engineered`：Skill 接近完整 runbook 或人工 SOP，控制结构替代了模型应承担的领域判断。
+
+同时报告 reducibility：`almost-none`、`minor`、`significant`、`core-plus-reference` 或 `redesign`。`minimal` 和 `proportionate` 要求 `minimum_control` 高于 3；`over-specified` 必须关联该维度 finding，方向不能为 `aligned`；`over-engineered` 必须关联该维度 finding，方向为 `drifted`。缺少 ablation 时可以使用 `needs-ablation`；当多个强制规则的必要性仍未知时，不能把最小控制维度评为 4–5。
 
 ## 证据上限提示
 
@@ -74,6 +86,7 @@ Finding 可以包含多个证据类型。P0/P1 至少包含一个 `observed`、`
 - 没有 trigger eval 结果，`triggering` 通常不高于 3。
 - 没有 pointer audit，`triggering` 通常不高于 4。
 - 没有 completion-boundary audit，`instruction_design` 通常不高于 4。
+- full/release 没有 minimum-effective-control audit 时 scorecard 无效；quick/delta 没有该审计时，`minimum_control` 通常不高于 3。
 - 没有 information-hierarchy map，`context_disclosure` 通常不高于 4。
 - 有脚本但未做安全静态检查、`--help` 或样例运行，`scripts` 通常不高于 3。
 - 没有 trigger、behavior、regression、ablation 或 trace 证据，`evals` 通常不高于 2。
@@ -124,8 +137,9 @@ Finding 可以包含多个证据类型。P0/P1 至少包含一个 `observed`、`
 3. quick 模式 → `provisional`。
 4. delta 模式没有 previous version → `provisional`。
 5. 任一必需 gate 为 `unknown` → `provisional`。
-6. full/release coverage 低于 100%，或总体 confidence 低于 medium → `provisional`。
-7. release 模式未核对 current-check 来源 → `provisional`。
-8. 其余情况 → `pass`。
+6. 复杂度结论为 `over-specified` 或 `over-engineered`，且没有更高优先级 P0/P1 结论 → `provisional`。
+7. full/release coverage 低于 100%，或总体 confidence 低于 medium → `provisional`。
+8. release 模式未核对 current-check 来源 → `provisional`。
+9. 其余情况 → `pass`。
 
-方向独立报告：`aligned`、`at-risk`、`drifted`。需要根本重构时使用 `drifted` 和改进路线表达，不用未经校准的分数自动产生 `redesign` 发布结论。
+方向独立报告：`aligned`、`at-risk`、`drifted`。`over-specified` 至少为 `at-risk`；`over-engineered` 为 `drifted`。需要根本重构时使用 `drifted` 和改进路线表达，不用未经校准的分数自动产生 `redesign` 发布结论。
