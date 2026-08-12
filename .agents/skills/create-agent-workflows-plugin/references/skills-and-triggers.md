@@ -138,7 +138,7 @@ policy:
 
 ### 配方 1：保守手动触发
 
-适合 `deploy`、`release` 等有副作用的流程。`git-commit` 按插件约定保留自动触发，不属于这一配方。
+适合 `deploy`、`release` 等有副作用的流程。
 
 ```yaml
 # SKILL.md
@@ -211,7 +211,7 @@ Skill 的调用行为是 Skill 设计的一部分。作者直接在平台原生�
 ## 调试检查点
 
 - 自动触发不符合预期 → 先检查 `SKILL.md` 的 `description` 是否足够具体，再看 `allow_implicit_invocation`。不要靠 `default_prompt` 修正自动触发边界。
-- 有副作用的流程 → 默认关掉 Codex 隐式调用和 Claude 模型调用；`git-commit` 按插件约定保留自动触发。
+- 有副作用的流程 → 默认关掉 Codex 隐式调用和 Claude 模型调用。
 - 不要把 Claude slash command 当作双端公共协议；手动触发命令请用公共 `slashCommands`，Codex 侧会生成 `allow_implicit_invocation: false` 的入口 Skill。
 - `disable-model-invocation: true` 不等于 Claude 不能手动调用（用户仍可调用）。
 

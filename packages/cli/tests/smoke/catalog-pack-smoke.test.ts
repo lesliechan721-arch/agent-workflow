@@ -159,7 +159,7 @@ describe('catalog pack smoke', () => {
     expect(JSON.stringify(sidecarManifest)).not.toContain('"catalogManifestDigest"');
     expect(fullFiles).toContain('.claude-plugin/marketplace.json');
     expect(fullFiles).toContain('.agents/plugins/marketplace.json');
-    expect(fullFiles).toContain('plugins/git-commit/.agents-plugin/plugin.json');
+    expect(fullFiles).toContain('plugins/git/.agents-plugin/plugin.json');
     expect(sidecarPackageJson).toMatchObject({
       name: '@lesliechan721/aw-plugins-manifest',
       version: sidecarManifest.catalogVersion,

@@ -1,4 +1,4 @@
-# commit
+# git-commit
 
 创建用户明确授权的新本地 Git commit。该 Skill 保留范围外 index 和 worktree 状态，并在提交后验证结果。
 

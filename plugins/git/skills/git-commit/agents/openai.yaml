@@ -1,7 +1,7 @@
 interface:
   display_name: "Git Commit"
   short_description: "核对用户授权范围与适用提交规范，创建内容准确且可追溯的本地 Git 提交"
-  default_prompt: "使用 $commit 核对当前改动，并按仓库规范完成 Git 提交。"
+  default_prompt: "使用 $git-commit 核对当前改动，并按仓库规范完成 Git 提交。"
 
 policy:
   allow_implicit_invocation: true

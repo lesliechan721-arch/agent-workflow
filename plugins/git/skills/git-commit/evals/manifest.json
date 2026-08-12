@@ -1,19 +1,19 @@
 {
   "schemaVersion": 2,
-  "plugin": "git-commit",
-  "skill": "commit",
+  "plugin": "git",
+  "skill": "git-commit",
   "profiles": [
     {
       "id": "project-default",
       "scope": "project",
-      "plugins": [{ "name": "git-commit", "config": {} }],
+      "plugins": [{ "name": "git", "config": {} }],
       "runModel": true,
       "requiredForRelease": true
     },
     {
       "id": "user-default",
       "scope": "user",
-      "plugins": [{ "name": "git-commit", "config": {} }],
+      "plugins": [{ "name": "git", "config": {} }],
       "runModel": false,
       "requiredForRelease": true
     }
@@ -22,7 +22,7 @@
     {
       "id": "trigger",
       "kind": "trigger",
-      "skills": ["commit"],
+      "skills": ["git-commit"],
       "cases": "./trigger-cases.json",
       "fixtureModule": "./trigger-fixture.mjs",
       "observeSpawnAgent": false,

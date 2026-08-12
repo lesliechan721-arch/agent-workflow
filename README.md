@@ -9,7 +9,7 @@ Agent Workflows 是一个面向 Codex 和 Claude Code 的插件工作流仓库�
 ```bash
 npm install -g @lesliechan721/aw
 aw init
-aw install git-commit -p both
+aw install git -p both
 aw status
 ```
 
@@ -26,8 +26,8 @@ aw
 常用短选项示例：
 
 ```bash
-aw install git-commit -p codex -s user
-aw install git-commit -p codex -s project
+aw install git -p codex -s user
+aw install git -p codex -s project
 ```
 
 `aw init` 用来预热远程 catalog 和 artifact cache。它会先读取 `@lesliechan721/aw-plugins-manifest`，再获取同版本 `@lesliechan721/aw-plugins` 并校验 digest；它不安装或升级插件，也不主动 materialize 本机 native runtime。需要 user scope native runtime 的写命令会在真正调用平台前同步 active runtime；纯 Codex project 路径只读使用 current catalog，不会为了写当前仓库产物去注册用户级 Codex runtime。绑定真实插件 target 的写命令需要显式传 `-p codex|claude|both`。
@@ -37,9 +37,9 @@ aw install git-commit -p codex -s project
 常用排障命令：
 
 ```bash
-aw status git-commit --verbose
-aw cleanup git-commit -p codex -s project
-aw reinstall git-commit -p codex -s user
+aw status git --verbose
+aw cleanup git -p codex -s project
+aw reinstall git -p codex -s user
 aw config list codex-explore -s user
 aw config set codex-explore standardModel gpt-5.6-terra -s user
 aw config set codex-explore standardReasoningEffort max -s user
@@ -60,7 +60,7 @@ Skill 的触发行为只由平台原生元数据决定。Codex 使用 `agents/op
 | 插件 | 说明 | 支持平台 |
 |------|------|----------|
 | `ask-me` | 实施前澄清会影响结果或造成返工的关键歧义，并协作制定、比较或评审计划与重要决策 | Codex / Claude Code |
-| `git-commit` | 在用户请求提交时，按用户或仓库适用规范完成 Git 提交 | Codex / Claude Code |
+| `git` | 在用户请求提交时，按用户或仓库适用规范完成 Git 提交 | Codex / Claude Code |
 | `codex-explore` | 为 Codex 提供通用只读探索流程 | Codex |
 | `codex-subagent-guide` | 在委派已获授权后按任务类型指导子代理参数、fork、响应式等待与条件清理 | Codex |
 

@@ -561,7 +561,7 @@ describe('plugin eval runner', () => {
       ['ask-me', 'decision-grill'],
       ['codex-explore', 'codex-explore'],
       ['codex-subagent-guide', 'codex-subagent-guide'],
-      ['git-commit', 'commit'],
+      ['git', 'git-commit'],
     ] as const;
     const bundles = [];
     for (const [plugin, skill] of targets) {

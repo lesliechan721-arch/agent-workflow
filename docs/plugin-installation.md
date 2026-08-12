@@ -10,7 +10,7 @@
 ```bash
 npm install -g @lesliechan721/aw
 aw init
-aw install git-commit -p both
+aw install git -p both
 aw status
 ```
 
@@ -21,9 +21,9 @@ aw status
 绑定插件 target 的写命令必须明确平台：
 
 ```bash
-aw install git-commit -p codex -s user
-aw install git-commit -p codex -s project
-aw install git-commit -p both -s user
+aw install git -p codex -s user
+aw install git -p codex -s project
+aw install git -p both -s user
 ```
 
 - `-p, --platform`：`codex`、`claude` 或 `both`
@@ -109,9 +109,9 @@ aw cleanup <plugin> -p codex|claude|both -s user|project [--json]
 
 ```bash
 aw status
-aw status git-commit -p codex -s project
-aw status git-commit -p codex -s project --verbose
-aw status git-commit -p codex -s project --json
+aw status git -p codex -s project
+aw status git -p codex -s project --verbose
+aw status git -p codex -s project --json
 ```
 
 `status` 读取 current catalog、live owner marker 和平台原生组件。它不运行 lifecycle 或 renderer，不刷新 marketplace，也不创建配置目录。
@@ -135,7 +135,7 @@ status v3 JSON 示例：
     "catalogVersion": "1.2.0"
   },
   "filters": {
-    "plugins": ["git-commit"],
+    "plugins": ["git"],
     "platform": "codex",
     "scope": "project",
     "cwd": "/workspace"
@@ -143,7 +143,7 @@ status v3 JSON 示例：
   "targets": [
     {
       "target": {
-        "plugin": "git-commit",
+        "plugin": "git",
         "platform": "codex",
         "scope": "project",
         "cwd": "/workspace"
@@ -228,25 +228,25 @@ MCP、apps、hooks、permissions、roles、instructions、skills 和 slash comma
 状态为 `absent`：
 
 ```bash
-aw install git-commit -p codex -s project
+aw install git -p codex -s project
 ```
 
 状态为 `partial`：
 
 ```bash
-aw reinstall git-commit -p codex -s project
+aw reinstall git -p codex -s project
 ```
 
 只删除已证明属于 AW 的现场组件：
 
 ```bash
-aw cleanup git-commit -p codex -s project
+aw cleanup git -p codex -s project
 ```
 
 只删除配置：
 
 ```bash
-aw config reset git-commit -s project --yes
+aw config reset git -s project --yes
 ```
 
 原生命令超时后，先运行 `aw status --verbose`。如果组件是 `partial`，运行 `reinstall`；如果只需要删除 AW-owned 输出，运行 `cleanup`。

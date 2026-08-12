@@ -54,7 +54,7 @@
     {
       "id": "use_installed_plugin",
       "split": "train",
-      "query": "用已经安装的 git-commit 插件提交当前改动。",
+      "query": "用已经安装的 git 插件提交当前改动。",
       "should_load_skill": false,
       "tags": ["near-miss", "plugin-use"]
     },

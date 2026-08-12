@@ -17,7 +17,7 @@ import { fileURLToPath } from 'node:url';
 import {
   captureTriggerWorkspaceState,
   setupTriggerWorkspace,
-} from '../skills/commit/evals/trigger-fixture.mjs';
+} from '../skills/git-commit/evals/trigger-fixture.mjs';
 
 const execFileAsync = promisify(execFile);
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
@@ -62,8 +62,8 @@ async function resolveTestContext() {
     };
   }
   const context = JSON.parse(await readFile(contextPath, 'utf8'));
-  assert.equal(context.plugin.name, 'git-commit');
-  assert.equal(context.plugin.version, '0.1.8');
+  assert.equal(context.plugin.name, 'git');
+  assert.equal(context.plugin.version, '0.1.0');
   assert.equal(context.event, 'test');
   return {
     sourceRoot: context.sourceRoot,
@@ -74,14 +74,14 @@ async function resolveTestContext() {
 
 async function testEvalCorpora(sourceRoot) {
   const [triggerContent, behaviorContent] = await Promise.all([
-    readFile(path.join(sourceRoot, 'skills', 'commit', 'evals', 'trigger-cases.json'), 'utf8'),
-    readFile(path.join(sourceRoot, 'skills', 'commit', 'evals', 'behavior-cases.json'), 'utf8'),
+    readFile(path.join(sourceRoot, 'skills', 'git-commit', 'evals', 'trigger-cases.json'), 'utf8'),
+    readFile(path.join(sourceRoot, 'skills', 'git-commit', 'evals', 'behavior-cases.json'), 'utf8'),
   ]);
   const document = JSON.parse(triggerContent);
   const behaviorCases = JSON.parse(behaviorContent);
   const { cases } = document;
   assert.equal(document.schemaVersion, 1);
-  assert.equal(document.skill, 'commit');
+  assert.equal(document.skill, 'git-commit');
   assert.equal(cases.length, 20);
   assert.equal(cases.filter((entry) => entry.split === 'train').length, 12);
   assert.equal(cases.filter((entry) => entry.split === 'validation').length, 8);
@@ -106,7 +106,7 @@ async function testEvalCorpora(sourceRoot) {
     assert.ok(entry, `Missing required eval case ${id}`);
     assert.equal(entry.should_load_skill, shouldLoad);
   }
-  assert.equal(cases.some((entry) => entry.query.includes('$commit')), false);
+  assert.equal(cases.some((entry) => entry.query.includes('$git-commit')), false);
   assert.match(cases.find((entry) => entry.id === 'english_commit').query, /useful summary/);
   assert.match(cases.find((entry) => entry.id === 'scoped_fix_commit').query, /body/);
   assert.match(cases.find((entry) => entry.id === 'terse_commit').query, /commti/);
@@ -186,7 +186,7 @@ function assertCoreCommitContract(skill) {
 
 async function testSkillRenders(context) {
   const source = await readFile(
-    path.join(context.sourceRoot, 'skills', 'commit', 'SKILL.md'),
+    path.join(context.sourceRoot, 'skills', 'git-commit', 'SKILL.md'),
     'utf8',
   );
 
@@ -201,7 +201,7 @@ async function testSkillRenders(context) {
           context.bundleRoot,
           context.platform,
           'skills',
-          'commit',
+          'git-commit',
           'SKILL.md',
         ),
         'utf8',
@@ -211,7 +211,7 @@ async function testSkillRenders(context) {
           context.bundleRoot,
           context.platform,
           'skills',
-          'commit',
+          'git-commit',
           'agents',
           'openai.yaml',
         ),
@@ -220,7 +220,7 @@ async function testSkillRenders(context) {
     ]);
     assert.match(
       bundledOpenai,
-      /default_prompt: "使用 \$commit 核对当前改动，并按仓库规范完成 Git 提交。"/,
+      /default_prompt: "使用 \$git-commit 核对当前改动，并按仓库规范完成 Git 提交。"/,
     );
     assert.match(bundledOpenai, /allow_implicit_invocation: true/);
     assertCoreCommitContract(bundledSkill);
@@ -417,7 +417,7 @@ async function main() {
   await testPartialStagingBehavior();
   await testMergeInProgressDetection();
   await testCherryPickConflictDetection();
-  console.log('git-commit eval and Git behavior tests passed');
+  console.log('git / git-commit eval and Git behavior tests passed');
 }
 
 main().catch((error) => {

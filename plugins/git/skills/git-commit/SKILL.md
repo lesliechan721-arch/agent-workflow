@@ -1,9 +1,9 @@
 ---
-name: commit
+name: git-commit
 description: 当用户要求实际创建新的本地 Git commit 时使用，包括“提交并推送”中的 commit 步骤。仅拟写或评审 commit message、查看或暂存改动、推送已有提交，或执行 merge、amend、rebase、cherry-pick、revert、tag 时不要使用。
 ---
 
-# Commit
+# Git Commit
 
 只提交用户授权改动，不主动改变范围外的 index、worktree 或既有历史。本 skill 不执行 push；范围无法精确隔离、存在未解决冲突或进行中的 Git 操作时停止并报告。
 

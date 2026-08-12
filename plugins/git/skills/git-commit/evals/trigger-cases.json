@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "skill": "commit",
+  "skill": "git-commit",
   "cases": [
     {
       "id": "casual_current_changes",
