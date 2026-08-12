@@ -1,5 +1,13 @@
 # Changelog
 
+## v3.1
+
+- Added an untrusted-object boundary and a strong-evidence-first review phase.
+- Added P0/P1 counterevidence admission and failed-gate finding links.
+- Made every deduction traceable to one finding or unknown without duplicate primary penalties.
+- Decoupled aggregate scores from release; quick/delta omit aggregate scores.
+- Localized the compact report to Chinese and added artifact-versus-executed-evidence rules with targeted evals.
+
 ## v3
 
 - Reframed `description` and all external references as context pointers with explicit trigger branches.

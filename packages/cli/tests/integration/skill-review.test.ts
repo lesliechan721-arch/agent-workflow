@@ -369,11 +369,11 @@ describe('skill-review author tools', () => {
       expect(report.issues.filter((issue: { level: string }) => issue.level === 'error')).toEqual([]);
       if (skillName === 'skill-review') {
         expect(report.evals.trigger).toEqual({ total: 24, positive: 12, negative: 12 });
-        expect(report.evals.behavior_cases).toBe(5);
-        expect(report.evals.conversation_cases).toBe(5);
-        expect(report.evals.portable_behavior_specs).toBe(21);
+        expect(report.evals.behavior_cases).toBe(6);
+        expect(report.evals.conversation_cases).toBe(6);
+        expect(report.evals.portable_behavior_specs).toBe(25);
         expect(report.evals.behavior_evidence_note).toContain('not executable release evidence');
-        expect(report.evals.scoring_cases).toBe(8);
+        expect(report.evals.scoring_cases).toBe(11);
         expect(report.scripts.count).toBe(3);
         expect(report.references.missing).toEqual([]);
         expect(report.pointers).toMatchObject({
@@ -801,46 +801,72 @@ describe('skill-review author tools', () => {
     );
   });
 
-  it('computes release gates without score overrides or quick-mode passes', async () => {
+  it('validates traceable scores, admitted blockers, and mode-specific verdicts', async () => {
     const root = repoRoot();
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-skill-review-scorecard-'));
     tempDirs.push(tempRoot);
-    const template = await fs.readJson(
+    const base = await fs.readJson(
       path.join(root, '.agents', 'skills', 'skill-review', 'assets', 'scorecard-template.json'),
     );
-    template.review = {
+    base.review = {
       skill_name: 'fixture',
       mode: 'release',
       direction: 'aligned',
       notes: '',
     };
-    for (const key of Object.keys(template.artifacts)) {
-      template.artifacts[key] = true;
+    for (const key of Object.keys(base.artifacts)) {
+      base.artifacts[key] = true;
     }
-    template.dimensions = template.dimensions.map((dimension: Record<string, unknown>) => ({
+    base.dimensions = base.dimensions.map((dimension: Record<string, unknown>) => ({
       ...dimension,
       score: 5,
       confidence: 'high',
       evidence: ['fixture evidence'],
     }));
-    template.gates = template.gates.map((gate: Record<string, unknown>) => ({
+    base.gates = base.gates.map((gate: Record<string, unknown>) => ({
       ...gate,
       status: 'pass',
       reason: '',
     }));
     const scorecardPath = path.join(tempRoot, 'scorecard.json');
-    await fs.writeJson(scorecardPath, template, { spaces: 2 });
+    const validate = async (scorecard: Record<string, unknown>) => {
+      await fs.writeJson(scorecardPath, scorecard, { spaces: 2 });
+      const execution = await execFileAsync('node', [
+        skillScript('validate_scorecard.mjs'),
+        scorecardPath,
+        '--format',
+        'json',
+      ], { cwd: root, env: process.env }).then(
+        (result) => result,
+        (error: { stdout?: string }) => {
+          if (!error.stdout) throw error;
+          return { stdout: error.stdout };
+        },
+      );
+      return JSON.parse(execution.stdout);
+    };
+    const scoreAllWithUnknowns = (score: number, confidence = 'medium') => {
+      const scorecard = structuredClone(base);
+      scorecard.unknowns = scorecard.dimensions.map((dimension: { id: string }) => ({
+        id: `U-${dimension.id}`,
+        dimension: dimension.id,
+        description: `The ${dimension.id} quality gap is not yet verified by behavior evidence.`,
+        required_evidence: `Run the ${dimension.id} verification case.`,
+      }));
+      scorecard.dimensions = scorecard.dimensions.map((dimension: { id: string }) => ({
+        ...dimension,
+        score,
+        confidence,
+        unknown_ids: [`U-${dimension.id}`],
+      }));
+      return scorecard;
+    };
 
-    const passed = await execFileAsync('node', [
-      skillScript('validate_scorecard.mjs'),
-      scorecardPath,
-      '--format',
-      'json',
-    ], { cwd: root, env: process.env });
-    const passedReport = JSON.parse(passed.stdout);
+    const passedReport = await validate(base);
     expect(passedReport).toMatchObject({
       score: {
         weighted_score: 100,
+        quality_band: 'excellent',
         coverage_percent: 100,
         release: 'pass',
       },
@@ -857,151 +883,210 @@ describe('skill-review author tools', () => {
       resources: 5,
     });
 
-    template.review.skill_name = '../wrong-skill';
-    await fs.writeJson(scorecardPath, template, { spaces: 2 });
-    const invalidSkillName = await execFileAsync('node', [
-      skillScript('validate_scorecard.mjs'),
-      scorecardPath,
-      '--format',
-      'json',
-    ], { cwd: root, env: process.env }).then(
-      () => null,
-      (error: { stdout?: string }) => error,
-    );
-    expect(JSON.parse(invalidSkillName!.stdout!)).toMatchObject({
+    const invalidSkillName = structuredClone(base);
+    invalidSkillName.review.skill_name = '../wrong-skill';
+    expect(await validate(invalidSkillName)).toMatchObject({
       valid: false,
       diagnostics: expect.arrayContaining([
         expect.objectContaining({ code: 'review.skill-name' }),
       ]),
     });
-    template.review.skill_name = 'fixture';
 
-    template.artifacts.information_hierarchy_map = false;
-    await fs.writeJson(scorecardPath, template, { spaces: 2 });
-    const missingHierarchy = await execFileAsync('node', [
-      skillScript('validate_scorecard.mjs'),
-      scorecardPath,
-      '--format',
-      'json',
-    ], { cwd: root, env: process.env });
-    expect(JSON.parse(missingHierarchy.stdout)).toMatchObject({
+    const missingHierarchy = structuredClone(base);
+    missingHierarchy.artifacts.information_hierarchy_map = false;
+    expect(await validate(missingHierarchy)).toMatchObject({
       diagnostics: expect.arrayContaining([
         expect.objectContaining({ code: 'cap.information-hierarchy' }),
       ]),
       valid: true,
     });
-    template.artifacts.information_hierarchy_map = true;
 
-    template.gates[0].status = 'fail';
-    template.gates[0].reason = 'Invalid package.';
-    await fs.writeJson(scorecardPath, template, { spaces: 2 });
-    const failedGate = await execFileAsync('node', [
-      skillScript('validate_scorecard.mjs'),
-      scorecardPath,
-      '--format',
-      'json',
-    ], { cwd: root, env: process.env });
-    expect(JSON.parse(failedGate.stdout)).toMatchObject({
+    const lowQuality = scoreAllWithUnknowns(2.5);
+    expect(await validate(lowQuality)).toMatchObject({
       score: {
-        weighted_score: 100,
+        weighted_score: 50,
+        quality_band: 'poor',
+        release: 'pass',
+      },
+      valid: true,
+    });
+
+    for (const [score, qualityBand] of [
+      [3, 'weak'],
+      [3.5, 'adequate'],
+      [4, 'strong'],
+      [4.5, 'excellent'],
+    ] as const) {
+      expect(await validate(scoreAllWithUnknowns(score))).toMatchObject({
+        score: {
+          weighted_score: score * 20,
+          quality_band: qualityBand,
+          release: 'pass',
+        },
+        valid: true,
+      });
+    }
+
+    const missingEvidence = structuredClone(base);
+    for (const dimension of missingEvidence.dimensions) dimension.evidence = [''];
+    expect(await validate(missingEvidence)).toMatchObject({
+      valid: false,
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({ code: 'dimension.evidence' }),
+        expect.objectContaining({ code: 'dimension.no-evidence' }),
+      ]),
+    });
+
+    const unlinkedGate = structuredClone(base);
+    unlinkedGate.gates[0].status = 'fail';
+    unlinkedGate.gates[0].reason = 'Invalid package.';
+    expect(await validate(unlinkedGate)).toMatchObject({
+      valid: false,
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({ code: 'gate.finding-required' }),
+      ]),
+    });
+
+    const blocked = structuredClone(base);
+    blocked.findings = [{
+      id: 'F-package',
+      severity: 'P0',
+      evidence_types: ['structural'],
+      dimension: 'specification',
+      location: 'SKILL.md:1',
+      problem: 'The package name is invalid.',
+      affected_scenario: 'The target client rejects the package before loading the Skill.',
+      evidence: ['The declared name contains an invalid character.'],
+      counterevidence: ['The target schema was checked and defines no exception for this character.'],
+      correct_owner: 'Skill',
+      minimal_change: 'Replace the invalid character in the name.',
+      validation: 'Run the package validator again.',
+    }];
+    blocked.dimensions.find(
+      (dimension: { id: string }) => dimension.id === 'specification',
+    ).score = 4.5;
+    blocked.dimensions.find(
+      (dimension: { id: string }) => dimension.id === 'specification',
+    ).finding_ids = ['F-package'];
+    blocked.gates[0].status = 'fail';
+    blocked.gates[0].reason = 'The package name is invalid.';
+    blocked.gates[0].finding_ids = ['F-package'];
+    expect(await validate(blocked)).toMatchObject({
+      score: {
         release: 'fail',
       },
       valid: true,
     });
 
-    template.review.mode = 'quick';
-    template.gates[0].status = 'pass';
-    template.gates[0].reason = '';
-    await fs.writeJson(scorecardPath, template, { spaces: 2 });
-    const quick = await execFileAsync('node', [
-      skillScript('validate_scorecard.mjs'),
-      scorecardPath,
-      '--format',
-      'json',
-    ], { cwd: root, env: process.env });
-    expect(JSON.parse(quick.stdout)).toMatchObject({
-      score: {
-        weighted_score: 100,
-        release: 'provisional',
-      },
-      valid: true,
+    const invalidOwner = structuredClone(blocked);
+    invalidOwner.findings[0].correct_owner = 'Banana';
+    expect(await validate(invalidOwner)).toMatchObject({
+      valid: false,
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({ code: 'finding.owner' }),
+      ]),
     });
 
-    template.review.mode = 'release';
-    template.artifacts.current_sources_checked = [];
-    await fs.writeJson(scorecardPath, template, { spaces: 2 });
-    const staleSources = await execFileAsync('node', [
-      skillScript('validate_scorecard.mjs'),
-      scorecardPath,
-      '--format',
-      'json',
-    ], { cwd: root, env: process.env });
-    expect(JSON.parse(staleSources.stdout)).toMatchObject({
-      score: { release: 'provisional' },
-      valid: true,
-    });
-
-    template.review.mode = 'delta';
-    template.artifacts.current_sources_checked = true;
-    template.artifacts.previous_version = {};
-    await fs.writeJson(scorecardPath, template, { spaces: 2 });
-    const missingPrevious = await execFileAsync('node', [
-      skillScript('validate_scorecard.mjs'),
-      scorecardPath,
-      '--format',
-      'json',
-    ], { cwd: root, env: process.env });
-    expect(JSON.parse(missingPrevious.stdout)).toMatchObject({
-      score: { release: 'provisional' },
-      valid: true,
-    });
-
-    template.review.mode = 'full';
-    template.artifacts.previous_version = true;
-    template.findings = [{
+    const weakAuthority = structuredClone(base);
+    weakAuthority.review.mode = 'full';
+    weakAuthority.findings = [{
       id: 'F-heuristic',
       severity: 'P1',
       evidence_types: ['heuristic'],
       dimension: 'triggering',
       location: 'SKILL.md:1',
       problem: 'A heuristic-only complaint.',
+      affected_scenario: 'A future query could fail to load the Skill.',
+      evidence: ['A third-party writing guide prefers another phrase.'],
+      counterevidence: ['No target trace or official rule supports the complaint.'],
       correct_owner: 'Skill',
       minimal_change: 'No change without stronger evidence.',
       validation: 'Run a behavior eval.',
     }];
-    await fs.writeJson(scorecardPath, template, { spaces: 2 });
-    const weakAuthority = await execFileAsync('node', [
-      skillScript('validate_scorecard.mjs'),
-      scorecardPath,
-      '--format',
-      'json',
-    ], { cwd: root, env: process.env }).then(
-      () => null,
-      (error: { stdout?: string }) => error,
+    const weakTriggering = weakAuthority.dimensions.find(
+      (dimension: { id: string }) => dimension.id === 'triggering',
     );
-    expect(weakAuthority?.stdout).toBeTruthy();
-    expect(JSON.parse(weakAuthority!.stdout!)).toMatchObject({
+    weakTriggering.score = 4.5;
+    weakTriggering.finding_ids = ['F-heuristic'];
+    expect(await validate(weakAuthority)).toMatchObject({
       valid: false,
       diagnostics: expect.arrayContaining([
         expect.objectContaining({ code: 'finding.authority-severity' }),
       ]),
     });
 
-    template.findings = [{
+    const missingAdmission = structuredClone(base);
+    missingAdmission.review.mode = 'full';
+    missingAdmission.findings = [{
+      id: 'F-incomplete',
+      severity: 'P1',
+      evidence_types: ['structural'],
+      dimension: 'architecture',
+      location: 'SKILL.md:20',
+      problem: 'The lifecycle rule is internally inconsistent.',
+      correct_owner: 'Skill',
+      minimal_change: 'Remove the conflicting rule.',
+      validation: 'Run the lifecycle fixture.',
+    }];
+    const incompleteArchitecture = missingAdmission.dimensions.find(
+      (dimension: { id: string }) => dimension.id === 'architecture',
+    );
+    incompleteArchitecture.score = 4.5;
+    incompleteArchitecture.finding_ids = ['F-incomplete'];
+    expect(await validate(missingAdmission)).toMatchObject({
+      valid: false,
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({ code: 'finding.required-field' }),
+        expect.objectContaining({ code: 'finding.admission-evidence' }),
+        expect.objectContaining({ code: 'finding.admission-counterevidence' }),
+      ]),
+    });
+
+    const untraceableScore = structuredClone(base);
+    untraceableScore.review.mode = 'full';
+    untraceableScore.dimensions[0].score = 4.5;
+    expect(await validate(untraceableScore)).toMatchObject({
+      valid: false,
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({ code: 'dimension.untraceable-score' }),
+      ]),
+    });
+
+    const duplicatePenalty = structuredClone(base);
+    duplicatePenalty.review.mode = 'full';
+    duplicatePenalty.findings = [{
+      id: 'F-shared',
+      severity: 'P2',
+      evidence_types: ['heuristic'],
+      dimension: 'triggering',
+    }];
+    duplicatePenalty.dimensions.find(
+      (dimension: { id: string }) => dimension.id === 'triggering',
+    ).finding_ids = ['F-shared'];
+    duplicatePenalty.dimensions.find(
+      (dimension: { id: string }) => dimension.id === 'resources',
+    ).finding_ids = ['F-shared'];
+    expect(await validate(duplicatePenalty)).toMatchObject({
+      valid: false,
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({ code: 'dimension.finding-dimension' }),
+        expect.objectContaining({ code: 'finding.multiple-dimensions' }),
+      ]),
+    });
+
+    const legacyEvidence = structuredClone(base);
+    legacyEvidence.review.mode = 'full';
+    legacyEvidence.findings = [{
       id: 'F-legacy',
       severity: 'P2',
       evidence_types: null,
       evidence_type: 'heuristic',
       dimension: 'triggering',
     }];
-    await fs.writeJson(scorecardPath, template, { spaces: 2 });
-    const legacyEvidence = await execFileAsync('node', [
-      skillScript('validate_scorecard.mjs'),
-      scorecardPath,
-      '--format',
-      'json',
-    ], { cwd: root, env: process.env });
-    expect(JSON.parse(legacyEvidence.stdout)).toMatchObject({
+    legacyEvidence.dimensions.find(
+      (dimension: { id: string }) => dimension.id === 'triggering',
+    ).finding_ids = ['F-legacy'];
+    expect(await validate(legacyEvidence)).toMatchObject({
       findings: [{
         id: 'F-legacy',
         evidence_types: ['heuristic'],
@@ -1012,23 +1097,137 @@ describe('skill-review author tools', () => {
       valid: true,
     });
 
-    const missingOptional = structuredClone(template);
+    const quick = structuredClone(base);
+    quick.review.mode = 'quick';
+    quick.dimensions = quick.dimensions.map((dimension: Record<string, unknown>) => ({
+      ...dimension,
+      score: null,
+      confidence: 'unknown',
+      evidence: [],
+      finding_ids: [],
+      unknown_ids: [],
+    }));
+    for (const id of ['specification', 'problem_value', 'triggering']) {
+      const dimension = quick.dimensions.find((entry: { id: string }) => entry.id === id);
+      dimension.score = 5;
+      dimension.confidence = 'high';
+      dimension.evidence = ['quick fixture evidence'];
+    }
+    expect(await validate(quick)).toMatchObject({
+      score: {
+        weighted_score: null,
+        quality_band: null,
+        coverage_percent: 27,
+        release: 'provisional',
+      },
+      valid: true,
+    });
+
+    const delta = structuredClone(base);
+    delta.review.mode = 'delta';
+    delta.artifacts.previous_version = true;
+    delta.dimensions = delta.dimensions.map((dimension: Record<string, unknown>) => ({
+      ...dimension,
+      score: null,
+      confidence: 'unknown',
+      evidence: [],
+      finding_ids: [],
+      unknown_ids: [],
+    }));
+    const affectedArchitecture = delta.dimensions.find(
+      (dimension: { id: string }) => dimension.id === 'architecture',
+    );
+    affectedArchitecture.score = 5;
+    affectedArchitecture.confidence = 'high';
+    affectedArchitecture.evidence = ['delta fixture evidence'];
+    expect(await validate(delta)).toMatchObject({
+      score: {
+        weighted_score: null,
+        quality_band: null,
+        coverage_percent: 10,
+        release: 'pass',
+      },
+      valid: true,
+    });
+
+    const emptyDelta = structuredClone(delta);
+    emptyDelta.dimensions = emptyDelta.dimensions.map((dimension: Record<string, unknown>) => ({
+      ...dimension,
+      score: null,
+      confidence: 'unknown',
+      evidence: [],
+    }));
+    expect(await validate(emptyDelta)).toMatchObject({
+      score: { weighted_score: null, coverage_percent: 0, release: 'provisional' },
+      valid: false,
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({ code: 'mode.delta-scope' }),
+      ]),
+    });
+
+    const missingPrevious = structuredClone(delta);
+    missingPrevious.artifacts.previous_version = false;
+    expect(await validate(missingPrevious)).toMatchObject({
+      score: { release: 'provisional' },
+      valid: true,
+    });
+
+    const incompleteFull = structuredClone(base);
+    incompleteFull.review.mode = 'full';
+    incompleteFull.dimensions[0] = {
+      ...incompleteFull.dimensions[0],
+      score: null,
+      confidence: 'unknown',
+      evidence: [],
+    };
+    expect(await validate(incompleteFull)).toMatchObject({
+      score: { weighted_score: null, release: 'provisional' },
+      valid: false,
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({ code: 'dimension.mode-required' }),
+      ]),
+    });
+
+    const staleSources = structuredClone(base);
+    staleSources.artifacts.current_sources_checked = false;
+    expect(await validate(staleSources)).toMatchObject({
+      score: { release: 'provisional' },
+      valid: true,
+    });
+
+    const stringArtifact = structuredClone(base);
+    stringArtifact.artifacts.current_sources_checked = 'false';
+    expect(await validate(stringArtifact)).toMatchObject({
+      score: { release: 'provisional' },
+      valid: false,
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({ code: 'artifacts.value' }),
+      ]),
+    });
+
+    const lowConfidence = structuredClone(base);
+    for (const dimension of lowConfidence.dimensions) dimension.confidence = 'low';
+    expect(await validate(lowConfidence)).toMatchObject({
+      score: { confidence: 'low', release: 'provisional' },
+      valid: true,
+    });
+
+    const missingOptional = structuredClone(base);
     missingOptional.review.mode = 'full';
     missingOptional.findings = undefined;
+    missingOptional.unknowns = undefined;
     missingOptional.artifacts = undefined;
-    await fs.writeJson(scorecardPath, missingOptional, { spaces: 2 });
-    const omittedFields = await execFileAsync('node', [
-      skillScript('validate_scorecard.mjs'),
-      scorecardPath,
-      '--format',
-      'json',
-    ], { cwd: root, env: process.env });
-    expect(JSON.parse(omittedFields.stdout)).toMatchObject({ valid: true });
-    expect(JSON.parse(omittedFields.stdout).diagnostics.map(
+    const omittedFields = await validate(missingOptional);
+    expect(omittedFields).toMatchObject({ valid: true });
+    expect(omittedFields.diagnostics.map(
       (entry: { code: string }) => entry.code,
-    )).not.toEqual(expect.arrayContaining(['artifacts.type', 'findings.type']));
+    )).not.toEqual(expect.arrayContaining([
+      'artifacts.type',
+      'findings.type',
+      'unknowns.type',
+    ]));
 
-    const explicitNulls = structuredClone(template);
+    const explicitNulls = structuredClone(base);
     explicitNulls.review.mode = 'full';
     explicitNulls.findings = [{
       id: null,
@@ -1040,18 +1239,7 @@ describe('skill-review author tools', () => {
     explicitNulls.dimensions[0].evidence = null;
     explicitNulls.dimensions[0].summary = null;
     explicitNulls.gates[0].reason = null;
-    await fs.writeJson(scorecardPath, explicitNulls, { spaces: 2 });
-    const invalidNulls = await execFileAsync('node', [
-      skillScript('validate_scorecard.mjs'),
-      scorecardPath,
-      '--format',
-      'json',
-    ], { cwd: root, env: process.env }).then(
-      () => null,
-      (error: { stdout?: string }) => error,
-    );
-    expect(invalidNulls?.stdout).toBeTruthy();
-    expect(JSON.parse(invalidNulls!.stdout!).diagnostics).toEqual(expect.arrayContaining([
+    expect((await validate(explicitNulls)).diagnostics).toEqual(expect.arrayContaining([
       expect.objectContaining({ code: 'dimension.confidence' }),
       expect.objectContaining({ code: 'dimension.evidence' }),
       expect.objectContaining({ code: 'dimension.summary' }),
@@ -1059,82 +1247,67 @@ describe('skill-review author tools', () => {
       expect.objectContaining({ code: 'finding.id' }),
     ]));
 
-    const halfEven = structuredClone(template);
-    halfEven.review.mode = 'full';
-    halfEven.findings = [];
-    halfEven.dimensions = halfEven.dimensions.map((dimension: Record<string, unknown>) => ({
-      ...dimension,
-      score: null,
-      confidence: 'unknown',
-      evidence: [],
-    }));
-    for (const [id, score] of [
-      ['specification', 0],
-      ['triggering', 0],
-      ['resources', 1.5],
-    ] as const) {
-      const dimension = halfEven.dimensions.find(
-        (entry: { id: string }) => entry.id === id,
-      );
-      dimension.score = score;
-      dimension.confidence = 'high';
-      dimension.evidence = ['rounding fixture'];
-    }
-    await fs.writeJson(scorecardPath, halfEven, { spaces: 2 });
-    const rounded = await execFileAsync('node', [
-      skillScript('validate_scorecard.mjs'),
-      scorecardPath,
-      '--format',
-      'json',
-    ], { cwd: root, env: process.env });
-    expect(JSON.parse(rounded.stdout)).toMatchObject({
-      score: {
-        weighted_score: 6.2,
-        coverage_percent: 24,
-      },
-      valid: true,
-    });
-
-    const confidenceBoundary = structuredClone(template);
+    const confidenceBoundary = structuredClone(base);
     confidenceBoundary.review.mode = 'full';
-    confidenceBoundary.findings = [];
     for (const dimension of confidenceBoundary.dimensions) {
       dimension.confidence = ['specification', 'problem_value', 'architecture']
         .includes(dimension.id) ? 'medium' : 'high';
     }
-    await fs.writeJson(scorecardPath, confidenceBoundary, { spaces: 2 });
-    const confidenceRounded = await execFileAsync('node', [
-      skillScript('validate_scorecard.mjs'),
-      scorecardPath,
-      '--format',
-      'json',
-    ], { cwd: root, env: process.env });
-    expect(JSON.parse(confidenceRounded.stdout)).toMatchObject({
+    expect(await validate(confidenceBoundary)).toMatchObject({
       score: {
         confidence_index: 0.93,
       },
       valid: true,
     });
+
+    for (const [confidences, label] of [
+      [[
+        'high', 'high', 'high', 'high', 'high', 'low',
+        'unknown', 'low', 'high', 'unknown', 'unknown', 'unknown',
+      ], 'medium'],
+      [[
+        'high', 'high', 'high', 'high', 'high', 'high',
+        'high', 'low', 'high', 'unknown', 'medium', 'unknown',
+      ], 'high'],
+    ] as const) {
+      const boundary = structuredClone(base);
+      boundary.dimensions.forEach((dimension: Record<string, unknown>, index: number) => {
+        dimension.confidence = confidences[index];
+      });
+      expect(await validate(boundary)).toMatchObject({
+        score: {
+          confidence_index: label === 'medium' ? 0.6 : 0.8,
+          confidence: label,
+          release: 'pass',
+        },
+        valid: true,
+      });
+    }
   });
 
   it('keeps evaluated upstream content unchanged outside documented project adapters', async () => {
     const skillRoot = path.join(repoRoot(), '.agents', 'skills', 'skill-review');
     const exactHashes: Record<string, string> = {
-      'CHANGELOG.md': 'e46024c71eb030a91be37f494044ef4d3622046c4ca46ecf97cc34efdca33177',
-      'assets/report-template.md': 'e3df054e886822baa603d92be723089e53468c1d9905160cb242886b47c5ecca',
-      'assets/scorecard-template.json': 'd74d149b70e2fc361aa23dd5b56f3fbd5cec81f3d0c64f8b2ae43d9e6338cc3b',
-      'evals/behavior_cases.json': '860360e3ddeaa55d8ffac1497d4876a1f964fb0d30f29c793e35568f0bbb3993',
-      'evals/scoring_cases.json': 'a35d91811b07d235a315a5a79ca18009aa99cd370f0299fdcd2f24038681a40f',
+      'CHANGELOG.md': 'f380791fdd80918874ddf3ac39bbc42beeb919e81e31314289229a77bfe3a5ca',
+      'assets/report-template.md': '89f7045e8174d0a5c2238b1224c2f14c763329324f5ac8d0db4e4c8c42f73111',
+      'assets/scorecard-template.json': 'b61488ecef58b49dca4cb8fd86e37b3eb4378f9f1f0f460391cb49d88630ebb4',
+      'evals/behavior_cases.json': '72c90f0a3d577487bfd641b45bb1486f5e0aa8699dcc47292cc7c32de97e0053',
+      'evals/scoring_cases.json': '031edafd2728e7731169d505390e84f47f3b10c7e7484a6fda4881b214932cdc',
       'evals/trigger-cases.json': 'aff2212cc2b6f73f9203d5193cc5be6e7a20a15c9180096feeca2fee35588b94',
       'references/architecture-boundaries.md': '73546c91c0219892c584c5ff64fd192814eb080137c744b2f72fbcd62119eb15',
-      'references/delta-review.md': '664b18af9bb388a44f009d099e4790572e1103aafa6830efbd41365fffd9d54e',
-      'references/review-dimensions.md': '9665063f4e22ef0a365bac3ff3d578275b3236db08851b6a244f442e346931d7',
-      'references/scripts-and-resources.md': '4cbdc68a638d26df6ac78d18cec5f27c8d0f27bf230c4ff514544fb02cce98db',
+      'references/delta-review.md': 'a4827eb63b62f98725821daede648eae27c4fef43c10aae89ee1d981645fb356',
+      'references/review-dimensions.md': '5f9ec995612818326925b653fe184391ccb1f502f4c2bf898eeea680858c8a89',
+      'references/scripts-and-resources.md': '1f1c30e5201e1bdc8a0728fc0207a002ffb93d2d8c5115c097fbcda09c3ff7b7',
       'references/source-map.md': '48567b80f7f10b4793926016d14a3288135039636d6842db00fd9845f9c2188f',
     };
     for (const [relative, expected] of Object.entries(exactHashes)) {
       expect(contentDigest(await fs.readFile(path.join(skillRoot, relative), 'utf8'))).toBe(expected);
     }
+    const reportTemplate = await fs.readFile(
+      path.join(skillRoot, 'assets', 'report-template.md'),
+      'utf8',
+    );
+    expect(reportTemplate).toContain('# Skill 评审报告');
     const triggerCorpus = await fs.readJson(path.join(skillRoot, 'evals', 'trigger-cases.json'));
     expect(triggerCorpus.cases).toHaveLength(24);
     expect(triggerCorpus.cases.filter((entry: { should_load_skill: boolean }) =>
@@ -1167,7 +1340,7 @@ describe('skill-review author tools', () => {
         '',
       );
     expect(contentDigest(readme)).toBe(
-      '1abc6fe01608c0cf86527e4daecbe17e95cb22eb3b821ab9522bf2fa8e9a06b3',
+      'ec3182e53968bb1af37c598c9535c1629e1688843cc56b67d408878f8f6c3963',
     );
 
     const skill = (await fs.readFile(path.join(skillRoot, 'SKILL.md'), 'utf8'))
@@ -1204,23 +1377,19 @@ describe('skill-review author tools', () => {
         '',
       )
       .replace(
-        '8. 对当前仓库内的静态或插件 Skill，用 `pnpm review:publish -- --skill <skill> [--plugin <plugin>] (--batch-id <id>|--batch-name <name>) --report <report.md> --scorecard <scorecard.json>` 发布已验证的 review。`--batch-id` 附加到开放 eval 批次并封存；`--batch-name` 创建 review-only 批次。中间草稿只放项目 `.tmp/agent-workflows/reviews/`。\n',
+        '8. release 模式或用户明确要求持久化时，用 `pnpm review:publish -- --skill <skill> [--plugin <plugin>] (--batch-id <id>|--batch-name <name>) --report <report.md> --scorecard <scorecard.json>` 发布；中间草稿只放项目 `.tmp/agent-workflows/reviews/`。\n',
         '',
       )
       .replace(
-        '9. review 发布后人工更新 Skill README 的最近 eval/review 摘要、仓库相对完整报告路径和被评估 Git commit。不要添加机器 marker，也不要在仍需追加同批次时先修改 README。\n',
+        '9. 发布后人工更新 Skill README 的最近摘要、报告路径和被评估 Git commit；不要添加机器 marker。\n',
         '',
       )
       .replace(
-        '- 当前仓库目标的持久 review 已发布到正确 Skill 批次；引用的 eval batch/run-id 可追溯。\n',
-        '',
-      )
-      .replace(
-        '- Skill README 已按人工约定更新；插件 README 不包含 Skill 验证报告。\n',
+        '- 需要持久化时，review、eval 引用和 Skill README 已归入正确批次。\n',
         '',
       );
     expect(contentDigest(skill)).toBe(
-      '1cbae6df82e51919f1e8e8005c21e75be135abae645ed5047c527b9d712fb4de',
+      '86b37cfb9fb4b031c13246244278fc6f8950a9d11e53c57f9bfb6f6b3e534000',
     );
 
     const scoringModel = (
@@ -1232,11 +1401,11 @@ describe('skill-review author tools', () => {
         '',
       )
       .replace(
-        '4. release 模式 coverage 不足、关键 gate 为 unknown 或未核对 current-check 来源 → `provisional`。',
-        '4. release 模式 coverage 不足或关键 gate 为 unknown → `provisional`。',
+        '7. release 模式未核对 current-check 来源 → `provisional`。\n',
+        '',
       );
     expect(contentDigest(scoringModel)).toBe(
-      '724f35ee3eba304271aaa40d1593725bd79c093d6d3dcea5ded820ebc234bb68',
+      'ffdc996293ea30e6502562acfcb6af7cd2ccbec24ae6c9951404e1ff2d16a468',
     );
   });
 });

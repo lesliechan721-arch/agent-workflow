@@ -1,6 +1,6 @@
 # Scoring Model
 
-任何带分数的评审都使用本文件和 `scripts/validate_scorecard.mjs`。
+任何维度评分都使用本文件和 `scripts/validate_scorecard.mjs`。quick/delta 可以评价局部维度，但不计算加权总分或 quality band。
 
 ## 维度与权重
 
@@ -57,11 +57,15 @@ Finding 可以包含多个证据类型。P0/P1 至少包含一个 `observed`、`
 
 `weighted_score = Σ(weight × score / 5) ÷ assessed_weight × 100`
 
+只有 full/release 且 12 个维度全部完成时计算 `weighted_score` 和 quality band。quick/delta 的这两个字段为 `null`。
+
 同时报告：
 
 - coverage：已评估权重占 100 的比例。
 - confidence index：high=1.0、medium=0.7、low=0.4、unknown=0，按已评估权重加权。
 - quality band：90–100 excellent；80–89.5 strong；70–79.5 adequate；60–69.5 weak；<60 poor。
+
+总分和 quality band 只用于定位薄弱维度、比较同一 Skill 的版本和观察趋势。它们不决定发布结论，也不用于直接比较用途或结构不同的 Skill。
 
 ## 证据上限提示
 
@@ -95,7 +99,21 @@ Finding 可以包含多个证据类型。P0/P1 至少包含一个 `observed`、`
 - **P2**：有限范围的质量、维护、证据或测试问题。
 - **Advisory**：heuristic、未来兼容性、产品/runtime 建议，默认不要求增加 Skill 文本。
 
-同一根因只设一个主维度。finding 必须包含位置、正确 owner、最小修改和验证方式。
+同一根因只设一个主维度。分数只能在 finding 和 unknown ledger 完成后填写；低于 5 的分数必须关联至少一个 finding 或 unknown。同一 finding 只能直接关联一个主维度。
+
+## Finding Admission Gate
+
+任何 P0/P1 在进入报告或失败 gate 前必须包含：
+
+1. **Location**：问题的精确位置。
+2. **Affected scenario**：目标场景及会产生的具体失败。
+3. **Evidence**：直接支持结论的 observed、normative 或 structural 证据。
+4. **Owner**：问题属于 Skill、schema、client、runtime、script、role、eval、project 还是 user。
+5. **Counterevidence**：已检查的规则、schema、上下文、兼容声明或例外，以及它们为何不能推翻该 finding。
+6. **Minimal fix**：最小修改；优先删除、替换或迁移，不默认追加规则。
+7. **Verification**：证明修复关闭问题的方法。
+
+无法明确 affected scenario、没有直接证据，或 counterevidence 尚未检查时，不得发布为 P0/P1；降为 P2、Advisory 或 unknown。失败 gate 必须通过 `finding_ids` 关联至少一个严重性相同且已通过本 gate 的 finding；gate 的 `reason` 不能替代 finding 证据。
 
 ## 发布结论
 
@@ -104,8 +122,10 @@ Finding 可以包含多个证据类型。P0/P1 至少包含一个 `observed`、`
 1. 任一 P0 gate/finding → `fail`。
 2. 任一 P1 gate/finding → `pass-after-fixes`。
 3. quick 模式 → `provisional`。
-4. release 模式 coverage 不足、关键 gate 为 unknown 或未核对 current-check 来源 → `provisional`。
-5. delta 模式没有 previous version → `provisional`。
-6. 无阻断时：score ≥85 → `pass`；70–84.5 → `pass-after-fixes`；<70 → `redesign`。
+4. delta 模式没有 previous version → `provisional`。
+5. 任一必需 gate 为 `unknown` → `provisional`。
+6. full/release coverage 低于 100%，或总体 confidence 低于 medium → `provisional`。
+7. release 模式未核对 current-check 来源 → `provisional`。
+8. 其余情况 → `pass`。
 
-方向独立报告：`aligned`、`at-risk`、`drifted`。
+方向独立报告：`aligned`、`at-risk`、`drifted`。需要根本重构时使用 `drifted` 和改进路线表达，不用未经校准的分数自动产生 `redesign` 发布结论。

@@ -38,5 +38,20 @@
     "id": "environment-source-of-truth",
     "scenario": "Skill大量复制当前schema字段，而运行时始终提供完整schema。",
     "expected": ["maintainability或context_disclosure降分", "建议使用environment lookup", "不要求为每个字段新增政策"]
+  },
+  {
+    "id": "traceability-contract",
+    "scenario": "一个维度为4.5分但没有finding/unknown；package-validity为fail但没有关联P0 finding。",
+    "expected": ["scorecard无效", "报告dimension.untraceable-score和gate.finding-required", "评分和gate都不能绕过证据ledger"]
+  },
+  {
+    "id": "low-score-no-blocker",
+    "scenario": "full/release的12个维度都有可追溯的2.5分，总分50，所有gate通过且没有P0/P1。",
+    "expected": ["quality band为poor", "总分不单独改变发布结论", "不自动输出redesign"]
+  },
+  {
+    "id": "quick-and-delta-no-aggregate",
+    "scenario": "quick只评三个维度，delta只评一个受影响维度。",
+    "expected": ["两个模式weighted_score都为null", "quality_band为null", "coverage仍报告已评估权重"]
   }
 ]

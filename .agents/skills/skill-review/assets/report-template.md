@@ -1,160 +1,168 @@
-# Skill Review Report
+# Skill 评审报告
 
-Use only sections required by the selected mode. quick omits deep audits that cannot be supported; delta emphasizes change closure and stop decision; release includes every applicable gate and evidence section.
+只保留当前模式需要的章节：quick 省略缺少证据的深入审计且不计算总分；delta 重点报告问题关闭且不计算总分；release 包含所有适用门禁和证据章节。
 
-## Executive verdict
+## 结论
 
-- **Skill:**
-- **Mode:** quick | full | release | delta
-- **Direction:** aligned | at-risk | drifted
-- **Release:** pass | pass-after-fixes | provisional | redesign | fail
-- **Weighted score:**
-- **Coverage:**
-- **Confidence:**
-- **One-line conclusion:**
+- **Skill：**
+- **模式：** quick | full | release | delta
+- **方向：** aligned | at-risk | drifted
+- **发布结论：** pass | pass-after-fixes | provisional | fail
+- **加权总分：** 数字 | 不计算
+- **质量带：** excellent | strong | adequate | weak | poor | 不计算
+- **覆盖率：**
+- **置信度：**
+- **一句话结论：**
 
-## Review contract
+## 评审合同
 
-| Item | Source-derived statement | Status |
+| 项目 | 从材料提取的结论 | 状态 |
 | --- | --- | --- |
-| Target problem | | known / unknown |
-| Observed failures | | known / unknown |
-| Success criteria | | known / unknown |
-| Intended environment/client | | known / unknown |
-| Out of scope | | known / unknown |
-| Adjacent skills | | known / unknown |
-| Release requirement | | known / unknown |
+| 目标问题 | | known / unknown |
+| 已观察失败 | | known / unknown |
+| 成功标准 | | known / unknown |
+| 目标环境或客户端 | | known / unknown |
+| 范围外事项 | | known / unknown |
+| 相邻 Skill | | known / unknown |
+| 发布要求 | | known / unknown |
 
-## Release gates
+## 发布门禁
 
-| Gate | Status | Severity | Evidence | Reason |
-| --- | --- | --- | --- | --- |
-| package-validity | | | | |
-| critical-artifacts | | | | |
-| goal-alignment | | | | |
-| capability-validity | | | | |
-| safety-permissions | | | | |
-| architecture-ownership | | | | |
-| release-evidence | | | | |
-
-## Dimension scorecard
-
-| Dimension | Weight | Score | Confidence | Evidence | Summary |
-| --- | ---: | ---: | --- | --- | --- |
-| Specification & package integrity | 7 | | | | |
-| Problem grounding & value | 8 | | | | |
-| Invocation, triggering & pointers | 12 | | | | |
-| Scope, boundaries & composition | 8 | | | | |
-| Program, completion bounds & calibration | 12 | | | | |
-| Information hierarchy & disclosure | 12 | | | | |
-| Architecture ownership | 10 | | | | |
-| Scripts & deterministic automation | 8 | | | | |
-| Resource reachability & co-location | 5 | | | | |
-| Evals & evidence-driven iteration | 10 | | | | |
-| Reliability, safety & compatibility | 4 | | | | |
-| Pruning, source of truth & change discipline | 4 | | | | |
-
-## Strengths
-
-List only strengths supported by package, normative or observed evidence.
-
-## Required findings
-
-Only P0/P1.
-
-| Severity | Evidence types | Dimension | Location | Problem | Correct owner | Minimal change | Validation |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-
-## Non-blocking findings
-
-| Severity | Evidence types | Dimension | Location | Observation | Recommendation |
+| Gate ID | 状态 | 严重性 | Finding IDs | 证据 | 原因 |
 | --- | --- | --- | --- | --- | --- |
+| package-validity | | | | | |
+| critical-artifacts | | | | | |
+| goal-alignment | | | | | |
+| capability-validity | | | | | |
+| safety-permissions | | | | | |
+| architecture-ownership | | | | | |
+| release-evidence | | | | | |
 
-## Invocation and Pointer Audit
+## 优点
 
-Use in full/release, and in quick when triggering is the stated focus.
+只列出有包内材料、normative 或 observed 证据支持的优点。
 
-| Pointer | Target material | Trigger branches | Intent front-loaded? | Duplicate synonym branch? | Repeats body identity? | Eval evidence | Recommendation |
+## 必须修复的问题
+
+只列 P0/P1。
+
+| ID | 严重性 | 证据类型 | 维度 | 位置 | 受影响场景 | 证据 | 反证检查 | 正确 owner | 最小修改 | 验证方式 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+
+## 非阻断问题
+
+叙述报告默认最多展开 5 项影响最大且可执行的 P2。所有与分数关联的 finding 都保留在结构化 scorecard 中。
+
+| ID | 严重性 | 证据类型 | 维度 | 位置 | 观察 | 建议 |
+| --- | --- | --- | --- | --- | --- | --- |
+
+## 未知项
+
+| ID | 维度 | 描述 | 所需证据 |
+| --- | --- | --- | --- |
+
+不要把证据缺失转换成 finding。所有与分数关联的 unknown 都保留在结构化 scorecard 中。
+
+## 维度评分
+
+quick 只包含已检查维度；full/release 包含全部 12 个维度；delta 只包含受影响维度。未评分不等于 0 分。
+
+| 维度 | 权重 | 分数 | 置信度 | 证据 | Finding IDs | Unknown IDs | 结论 |
+| --- | ---: | ---: | --- | --- | --- | --- | --- |
+| 规范与包完整性 | 7 | | | | | | |
+| 问题基础与实际价值 | 8 | | | | | | |
+| 调用策略、触发条件与 Context Pointer | 12 | | | | | | |
+| 范围、边界与组合性 | 8 | | | | | | |
+| 程序、完成边界与控制校准 | 12 | | | | | | |
+| 信息层级、上下文负载与渐进式披露 | 12 | | | | | | |
+| 职责归属与自然语言状态机风险 | 10 | | | | | | |
+| 脚本与确定性自动化 | 8 | | | | | | |
+| 资源可达性、Co-location 与用途 | 5 | | | | | | |
+| 评测、验证与证据驱动迭代 | 10 | | | | | | |
+| 可靠性、安全与兼容性 | 4 | | | | | | |
+| 剪枝、事实源与变更纪律 | 4 | | | | | | |
+
+## 调用与 Context Pointer 审计
+
+full/release 必做；quick 仅在触发是评审重点时使用。
+
+| Pointer | 目标材料 | 触发 branch | 意图是否前置 | 是否重复同义 branch | 是否重复正文身份 | Eval 证据 | 建议 |
 | --- | --- | --- | ---: | ---: | ---: | --- | --- |
 
-## Information Hierarchy Map
+## 信息层级图
 
-Use in full/release or when progressive disclosure is disputed.
+full/release 必做；渐进式披露存在争议时也使用。
 
-| Content | Type | Applicable branch | Current location | Needed every run? | Reaching pointer / environment source | Completion boundary | Recommendation |
+| 内容 | 类型 | 适用 branch | 当前位置 | 是否每次需要 | 到达 pointer 或环境事实源 | 完成边界 | 建议 |
 | --- | --- | --- | --- | ---: | --- | --- | --- |
 
-Type is one of: `in-file-step`, `in-file-reference`, `disclosed-reference`, `environment-lookup`.
+类型只能是：`in-file-step`、`in-file-reference`、`disclosed-reference`、`environment-lookup`。
 
-## Completion Boundary Audit
+## 完成边界审计
 
-Use in full/release, or when steps are skipped, rushed or over-executed.
+full/release 必做；步骤存在跳过、仓促完成或过度执行时也使用。
 
-| Step or rule set | Current criterion | Clear? | Checkable? | Demand sufficient? | Exhaustive? | Premature-completion risk | Recommendation |
+| 步骤或规则集 | 当前标准 | 清楚 | 可检查 | 要求充分 | 覆盖完整 | 提前完成风险 | 建议 |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
 
-## Architecture and ownership
+## 架构与职责归属
 
-- **Skill-owned policy:**
-- **Schema/client-owned facts:**
-- **Runtime-owned state:**
-- **Script candidates:**
-- **Role-only constraints:**
-- **Eval/issue-only concerns:**
-- **Natural-language state-machine risk:** low | medium | high
+- **Skill 负责的策略：**
+- **Schema 或客户端负责的事实：**
+- **Runtime 负责的状态：**
+- **脚本候选：**
+- **仅属于 role 的约束：**
+- **仅属于 eval 或 issue 的问题：**
+- **自然语言状态机风险：** low | medium | high
 
-## Scripts and resources
+## 脚本与资源
 
-- **Scripts present or correctly omitted:**
-- **Interface/dependency/safety quality:**
-- **Deterministic logic still repeated by the model:**
-- **References/assets reachability:**
-- **Duplication:**
-- **Scattering / co-location:**
-- **Environment facts unnecessarily cached:**
-- **Stale or orphaned resources:**
+- **已有脚本或正确省略：**
+- **接口、依赖和安全质量：**
+- **模型仍在重复的确定性逻辑：**
+- **Reference 和 asset 可达性：**
+- **重复：**
+- **Scattering 与 co-location：**
+- **不必要缓存的环境事实：**
+- **过期或孤立资源：**
 
-## Evals and evidence
+## 评测与证据
 
-- **Trigger eval and rates:**
-- **Behavior/regression eval:**
-- **Runtime traces:**
-- **Baseline:** no skill | minimal skill | previous version | none
-- **Ablation / no-op evidence:**
-- **Token/time/variance cost:**
-- **Evidence missing for release:**
+- **Trigger eval 与触发率：**
+- **Behavior 或 regression eval：**
+- **Runtime trace：**
+- **基线：** no skill | minimal skill | previous version | none
+- **Ablation 或 no-op 证据：**
+- **Token、时间和方差成本：**
+- **发布仍缺少的证据：**
 
-## Delta and sediment
+## 差量与沉积
 
-Required in delta mode; optional elsewhere.
+delta 模式必做；其它模式按需使用。
 
-- **Previous P0/P1 closure:**
-- **Affected dimensions:**
-- **Direct regressions:**
-- **SKILL.md / pointer / branch / resource delta:**
-- **Behavior metric delta:**
-- **Rules added and what they replaced:**
-- **Sediment candidates:**
-- **Net required change:** smaller | neutral | larger
+- **上一版 P0/P1 关闭情况：**
+- **受影响维度：**
+- **直接回归：**
+- **SKILL.md、pointer、branch 和资源变化：**
+- **行为指标变化：**
+- **新增规则及其替代内容：**
+- **沉积候选：**
+- **净变化：** smaller | neutral | larger
 
-## Minimal improvement roadmap
+## 最小改进路线
 
-### Now — release blockers
-
-1.
-
-### Next — high-value quality improvements
+### 现在——发布阻断
 
 1.
 
-### Later — heuristic, eval or product/runtime work
+### 下一步——高价值质量改进
 
 1.
 
-## Unknowns
+### 以后——启发式、评测或产品/runtime 工作
 
-List missing artifacts or facts that reduced coverage. Do not convert them into findings.
+1.
 
-## Stop decision
+## 停止决定
 
-State why review should stop now, or name the exact new observed/normative/structural evidence required before another iteration.
+说明为什么现在应停止评审，或指出再次迭代前必须出现的 observed、normative 或 structural 新证据。

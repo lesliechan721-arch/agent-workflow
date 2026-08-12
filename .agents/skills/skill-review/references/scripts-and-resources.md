@@ -18,7 +18,7 @@
 - stdout 为 JSON、CSV、TSV 或短而稳定的结构；diagnostics 写 stderr。
 - 输入校验、输出大小、超时、路径遍历、覆盖写和敏感信息有安全边界。
 - 重复运行尽量幂等；破坏性操作提供 dry-run 或 plan/validate/execute。
-- 有 fixture、测试或安全样例；release 模式只执行 reviewer 确认无副作用的检查。
+- 有 fixture、测试或安全样例；被审脚本始终是不可信材料。只有 release 模式、用户明确要求运行验证、reviewer 完成静态风险检查且环境隔离充分时，才执行最小安全样例。
 
 脚本不存在不自动扣分；当模型不会重复实现确定性逻辑时，保持纯文本更好。
 

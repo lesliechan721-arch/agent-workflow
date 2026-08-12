@@ -20,14 +20,14 @@ const DIMENSIONS = {
   maintainability: ['Pruning, source of truth & change discipline', 4],
 };
 
-const REQUIRED_GATES = new Set([
-  'package-validity',
-  'critical-artifacts',
-  'goal-alignment',
-  'capability-validity',
-  'safety-permissions',
-  'architecture-ownership',
-  'release-evidence',
+const REQUIRED_GATES = new Map([
+  ['package-validity', 'P0'],
+  ['critical-artifacts', 'P0'],
+  ['goal-alignment', 'P0'],
+  ['capability-validity', 'P0'],
+  ['safety-permissions', 'P0'],
+  ['architecture-ownership', 'P1'],
+  ['release-evidence', 'P1'],
 ]);
 const CONFIDENCE_VALUES = { high: 1, medium: 0.7, low: 0.4, unknown: 0 };
 const VALID_MODES = new Set(['quick', 'full', 'release', 'delta']);
@@ -42,6 +42,23 @@ const VALID_EVIDENCE = new Set([
   'inferred',
 ]);
 const STRONG_EVIDENCE = new Set(['observed', 'normative', 'structural']);
+const ARTIFACT_FIELDS = new Set([
+  'official_validation',
+  'current_sources_checked',
+  'pointer_audit',
+  'information_hierarchy_map',
+  'completion_boundary_audit',
+  'trigger_eval_results',
+  'behavior_eval_results',
+  'regression_eval_results',
+  'ablation_results',
+  'runtime_traces',
+  'scripts_present',
+  'scripts_checked',
+  'compatibility_claims',
+  'compatibility_verified',
+  'previous_version',
+]);
 const VALID_OWNERS = new Set([
   'Skill',
   'Schema',
@@ -76,14 +93,6 @@ function confidenceLabel(index, coverage) {
   if (coverage === 100 && index >= 0.8) return 'high';
   if (coverage >= 80 && index >= 0.6) return 'medium';
   return 'low';
-}
-
-function pythonTruthy(value) {
-  if (value === null || value === undefined || value === false) return false;
-  if (typeof value === 'number') return value !== 0;
-  if (typeof value === 'string' || Array.isArray(value)) return value.length > 0;
-  if (isRecord(value)) return Object.keys(value).length > 0;
-  return Boolean(value);
 }
 
 function roundPythonFloat(value, digits) {
@@ -151,6 +160,25 @@ function normalizedEvidenceTypes(finding, index, diagnostics) {
   return values;
 }
 
+function normalizedIdList(raw, field, label, diagnostics) {
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw) || raw.some((value) => typeof value !== 'string' || value.trim() === '')) {
+    diagnostics.push(diagnostic(
+      'error',
+      `${field}.type`,
+      `${label} must be a list of non-empty string ids.`,
+    ));
+    return [];
+  }
+  const values = [];
+  for (const value of raw) {
+    if (values.includes(value)) {
+      diagnostics.push(diagnostic('error', `${field}.duplicate`, `${label} contains duplicate id ${JSON.stringify(value)}.`));
+    } else values.push(value);
+  }
+  return values;
+}
+
 function validateAndCalculate(data) {
   const diagnostics = [];
   const review = isRecord(data.review) ? data.review : {};
@@ -180,205 +208,15 @@ function validateAndCalculate(data) {
   if (data.artifacts !== undefined && !isRecord(data.artifacts)) {
     diagnostics.push(diagnostic('error', 'artifacts.type', 'artifacts must be an object.'));
   }
-
-  const rawDimensions = Array.isArray(data.dimensions) ? data.dimensions : [];
-  if (!Array.isArray(data.dimensions)) {
-    diagnostics.push(diagnostic('error', 'dimensions.type', 'dimensions must be a list.'));
+  for (const [field, value] of Object.entries(artifacts)) {
+    if (ARTIFACT_FIELDS.has(field) && typeof value !== 'boolean') {
+      diagnostics.push(diagnostic(
+        'error',
+        'artifacts.value',
+        `artifacts.${field} must be a boolean.`,
+      ));
+    }
   }
-  const seen = new Set();
-  const scoredRows = [];
-  let assessedWeight = 0;
-  let weightedPoints = 0;
-  let confidencePoints = 0;
-
-  for (const item of rawDimensions) {
-    if (!isRecord(item)) {
-      diagnostics.push(diagnostic('error', 'dimension.item', 'Every dimension entry must be an object.'));
-      continue;
-    }
-    const dimensionId = item.id;
-    if (!Object.hasOwn(DIMENSIONS, dimensionId)) {
-      diagnostics.push(diagnostic('error', 'dimension.id', `Unknown dimension id: ${JSON.stringify(dimensionId)}.`));
-      continue;
-    }
-    if (seen.has(dimensionId)) {
-      diagnostics.push(diagnostic('error', 'dimension.duplicate', `Duplicate dimension: ${dimensionId}.`));
-      continue;
-    }
-    seen.add(dimensionId);
-    const [title, weight] = DIMENSIONS[dimensionId];
-    let score = Object.hasOwn(item, 'score') ? item.score : null;
-    let confidence = Object.hasOwn(item, 'confidence') ? item.confidence : 'unknown';
-    let evidence = Object.hasOwn(item, 'evidence') ? item.evidence : [];
-    let summary = Object.hasOwn(item, 'summary') ? item.summary : '';
-
-    if (!Object.hasOwn(CONFIDENCE_VALUES, confidence)) {
-      diagnostics.push(diagnostic('error', 'dimension.confidence', `Invalid confidence for ${dimensionId}: ${JSON.stringify(confidence)}.`));
-      confidence = 'unknown';
-    }
-    if (!Array.isArray(evidence) || evidence.some((value) => typeof value !== 'string')) {
-      diagnostics.push(diagnostic('error', 'dimension.evidence', `evidence for ${dimensionId} must be a list of strings.`));
-      evidence = [];
-    }
-    if (typeof summary !== 'string') {
-      diagnostics.push(diagnostic('error', 'dimension.summary', `summary for ${dimensionId} must be a string.`));
-      summary = '';
-    }
-    if (score !== null) {
-      if (typeof score !== 'number' || !Number.isFinite(score) || score < 0 || score > 5) {
-        diagnostics.push(diagnostic('error', 'dimension.score', `score for ${dimensionId} must be null or a number from 0 to 5.`));
-        score = null;
-      } else if (!Number.isInteger(score * 2)) {
-        diagnostics.push(diagnostic('error', 'dimension.step', `score for ${dimensionId} must use 0.5 increments.`));
-        score = null;
-      }
-    }
-
-    let weighted = null;
-    if (score !== null) {
-      assessedWeight += weight;
-      weighted = weight * score / 5;
-      weightedPoints += weighted;
-      confidencePoints += weight * CONFIDENCE_VALUES[confidence];
-      if (evidence.length === 0) {
-        diagnostics.push(diagnostic('warning', 'dimension.no-evidence', `${dimensionId} has a score but no evidence location.`));
-      }
-    }
-    scoredRows.push({
-      id: dimensionId,
-      title,
-      weight,
-      score,
-      weighted,
-      confidence,
-      evidence,
-      summary,
-    });
-  }
-
-  const missingDimensions = Object.keys(DIMENSIONS).filter((id) => !seen.has(id)).sort();
-  if (missingDimensions.length > 0) {
-    diagnostics.push(diagnostic('error', 'dimension.missing', `Missing dimensions: ${missingDimensions.join(', ')}`));
-  }
-
-  const coverage = assessedWeight;
-  const totalScore = assessedWeight > 0 ? weightedPoints / assessedWeight * 100 : null;
-  const confidenceIndex = assessedWeight > 0
-    ? confidencePoints / assessedWeight
-    : null;
-  const rowById = Object.fromEntries(scoredRows.map((row) => [row.id, row]));
-  const capWarning = (dimensionId, maximum, condition, code, message) => {
-    const score = rowById[dimensionId]?.score;
-    if (score !== null && score !== undefined && score > maximum && !condition) {
-      diagnostics.push(diagnostic('warning', code, message));
-    }
-  };
-  capWarning(
-    'triggering',
-    3,
-    pythonTruthy(artifacts.trigger_eval_results),
-    'cap.triggering-eval',
-    'Triggering score exceeds 3 without trigger eval results; explain or lower the score.',
-  );
-  capWarning(
-    'triggering',
-    4,
-    pythonTruthy(artifacts.pointer_audit),
-    'cap.triggering-pointer',
-    'Triggering score exceeds 4 without an invocation/pointer audit.',
-  );
-  capWarning(
-    'instruction_design',
-    4,
-    pythonTruthy(artifacts.completion_boundary_audit),
-    'cap.completion-boundary',
-    'Instruction-design score exceeds 4 without a completion-boundary audit.',
-  );
-  capWarning(
-    'context_disclosure',
-    4,
-    pythonTruthy(artifacts.information_hierarchy_map),
-    'cap.information-hierarchy',
-    'Context/disclosure score exceeds 4 without an information-hierarchy map.',
-  );
-  capWarning(
-    'evals',
-    2,
-    [
-      artifacts.trigger_eval_results,
-      artifacts.behavior_eval_results,
-      artifacts.regression_eval_results,
-      artifacts.ablation_results,
-      artifacts.runtime_traces,
-    ].some(pythonTruthy),
-    'cap.evals',
-    'Evals score exceeds 2 without eval results, ablation, or runtime traces.',
-  );
-  if (pythonTruthy(artifacts.scripts_present)) {
-    capWarning(
-      'scripts',
-      3,
-      pythonTruthy(artifacts.scripts_checked),
-      'cap.scripts',
-      'Scripts score exceeds 3 although scripts were not checked.',
-    );
-  }
-  if (pythonTruthy(artifacts.compatibility_claims)) {
-    capWarning(
-      'reliability',
-      3,
-      pythonTruthy(artifacts.compatibility_verified),
-      'cap.reliability',
-      'Reliability score exceeds 3 with unverified compatibility claims.',
-    );
-  }
-  if (mode === 'delta') {
-    capWarning(
-      'maintainability',
-      3,
-      pythonTruthy(artifacts.previous_version),
-      'cap.delta',
-      'Maintainability score exceeds 3 in delta mode without a previous version.',
-    );
-  }
-
-  const rawGates = Array.isArray(data.gates) ? data.gates : [];
-  if (!Array.isArray(data.gates)) {
-    diagnostics.push(diagnostic('error', 'gates.type', 'gates must be a list.'));
-  }
-  const gates = [];
-  const gateIds = new Set();
-  for (const gate of rawGates) {
-    if (!isRecord(gate)) {
-      diagnostics.push(diagnostic('error', 'gate.item', 'Every gate must be an object.'));
-      continue;
-    }
-    const gateId = gate.id;
-    const status = gate.status;
-    const severity = gate.severity;
-    let reason = Object.hasOwn(gate, 'reason') ? gate.reason : '';
-    if (typeof gateId !== 'string') {
-      diagnostics.push(diagnostic('error', 'gate.id', 'Gate id must be a string.'));
-      continue;
-    }
-    if (gateIds.has(gateId)) {
-      diagnostics.push(diagnostic('error', 'gate.duplicate', `Duplicate gate: ${gateId}.`));
-      continue;
-    }
-    gateIds.add(gateId);
-    if (!VALID_GATE_STATUS.has(status)) diagnostics.push(diagnostic('error', 'gate.status', `Invalid status for ${gateId}: ${JSON.stringify(status)}.`));
-    if (!VALID_SEVERITY.has(severity)) diagnostics.push(diagnostic('error', 'gate.severity', `Invalid severity for ${gateId}: ${JSON.stringify(severity)}.`));
-    if (typeof reason !== 'string') {
-      diagnostics.push(diagnostic('error', 'gate.reason', `Reason for ${gateId} must be a string.`));
-      reason = '';
-    }
-    if ((status === 'fail' || status === 'unknown') && reason.trim() === '') {
-      diagnostics.push(diagnostic('warning', 'gate.no-reason', `Gate ${gateId} is ${status} but has no reason.`));
-    }
-    gates.push({ id: gateId, status, severity, reason });
-  }
-  const missingGates = [...REQUIRED_GATES].filter((id) => !gateIds.has(id)).sort();
-  if (missingGates.length > 0) diagnostics.push(diagnostic('error', 'gate.missing', `Missing required gates: ${missingGates.join(', ')}`));
 
   const rawFindings = Array.isArray(data.findings) ? data.findings : [];
   if (data.findings !== undefined && !Array.isArray(data.findings)) {
@@ -409,8 +247,9 @@ function validateAndCalculate(data) {
     if (!Object.hasOwn(DIMENSIONS, finding.dimension)) {
       diagnostics.push(diagnostic('error', 'finding.dimension', `Finding #${index} has invalid dimension ${JSON.stringify(finding.dimension)}.`));
     }
+    const isRequiredFinding = finding.severity === 'P0' || finding.severity === 'P1';
     if (
-      (finding.severity === 'P0' || finding.severity === 'P1') &&
+      isRequiredFinding &&
       !evidenceTypes.some((value) => STRONG_EVIDENCE.has(value))
     ) {
       diagnostics.push(diagnostic(
@@ -422,13 +261,30 @@ function validateAndCalculate(data) {
     const owner = finding.correct_owner ?? '';
     if (owner !== '' && !VALID_OWNERS.has(owner)) {
       diagnostics.push(diagnostic(
-        'warning',
+        isRequiredFinding ? 'error' : 'warning',
         'finding.owner',
         `Finding #${index} uses non-standard owner ${JSON.stringify(owner)}; expected one of ${[...VALID_OWNERS].sort().join(', ')}.`,
       ));
     }
-    if (finding.severity === 'P0' || finding.severity === 'P1') {
-      for (const field of ['location', 'problem', 'correct_owner', 'minimal_change', 'validation']) {
+    let evidence = Object.hasOwn(finding, 'evidence') ? finding.evidence : [];
+    let counterevidence = Object.hasOwn(finding, 'counterevidence') ? finding.counterevidence : [];
+    if (!Array.isArray(evidence) || evidence.some((value) => typeof value !== 'string' || value.trim() === '')) {
+      diagnostics.push(diagnostic('error', 'finding.evidence', `Finding #${index} evidence must be a list of non-empty strings.`));
+      evidence = [];
+    }
+    if (!Array.isArray(counterevidence) || counterevidence.some((value) => typeof value !== 'string' || value.trim() === '')) {
+      diagnostics.push(diagnostic('error', 'finding.counterevidence', `Finding #${index} counterevidence must be a list of non-empty strings.`));
+      counterevidence = [];
+    }
+    if (isRequiredFinding) {
+      for (const field of [
+        'location',
+        'problem',
+        'affected_scenario',
+        'correct_owner',
+        'minimal_change',
+        'validation',
+      ]) {
         if (typeof finding[field] !== 'string' || finding[field].trim() === '') {
           diagnostics.push(diagnostic(
             'error',
@@ -437,11 +293,410 @@ function validateAndCalculate(data) {
           ));
         }
       }
+      if (evidence.length === 0) {
+        diagnostics.push(diagnostic(
+          'error',
+          'finding.admission-evidence',
+          `Finding #${index} (${finding.severity}) requires direct evidence.`,
+        ));
+      }
+      if (counterevidence.length === 0) {
+        diagnostics.push(diagnostic(
+          'error',
+          'finding.admission-counterevidence',
+          `Finding #${index} (${finding.severity}) requires checked counterevidence.`,
+        ));
+      }
     }
-    const normalized = { ...finding, id: findingId, evidence_types: evidenceTypes };
+    const normalized = {
+      ...finding,
+      id: findingId,
+      evidence_types: evidenceTypes,
+      evidence,
+      counterevidence,
+    };
     delete normalized.evidence_type;
     findings.push(normalized);
   }
+  const findingById = new Map(findings.map((finding) => [finding.id, finding]));
+
+  const rawUnknowns = Array.isArray(data.unknowns) ? data.unknowns : [];
+  if (data.unknowns !== undefined && !Array.isArray(data.unknowns)) {
+    diagnostics.push(diagnostic('error', 'unknowns.type', 'unknowns must be a list.'));
+  }
+  const unknowns = [];
+  const unknownIds = new Set();
+  for (let offset = 0; offset < rawUnknowns.length; offset += 1) {
+    const index = offset + 1;
+    const unknown = rawUnknowns[offset];
+    if (!isRecord(unknown)) {
+      diagnostics.push(diagnostic('error', 'unknown.item', `Unknown #${index} must be an object.`));
+      continue;
+    }
+    let unknownId = Object.hasOwn(unknown, 'id') ? unknown.id : `unknown-${index}`;
+    if (typeof unknownId !== 'string' || unknownId.trim() === '') {
+      diagnostics.push(diagnostic('error', 'unknown.id', `Unknown #${index} must have a non-empty id.`));
+      unknownId = `unknown-${index}`;
+    }
+    if (unknownIds.has(unknownId)) {
+      diagnostics.push(diagnostic('error', 'unknown.duplicate', `Duplicate unknown id: ${unknownId}.`));
+    }
+    unknownIds.add(unknownId);
+    if (!Object.hasOwn(DIMENSIONS, unknown.dimension)) {
+      diagnostics.push(diagnostic('error', 'unknown.dimension', `Unknown #${index} has invalid dimension ${JSON.stringify(unknown.dimension)}.`));
+    }
+    for (const field of ['description', 'required_evidence']) {
+      if (typeof unknown[field] !== 'string' || unknown[field].trim() === '') {
+        diagnostics.push(diagnostic('error', 'unknown.required-field', `Unknown #${index} requires non-empty field ${JSON.stringify(field)}.`));
+      }
+    }
+    unknowns.push({ ...unknown, id: unknownId });
+  }
+  const unknownById = new Map(unknowns.map((unknown) => [unknown.id, unknown]));
+
+  const rawDimensions = Array.isArray(data.dimensions) ? data.dimensions : [];
+  if (!Array.isArray(data.dimensions)) {
+    diagnostics.push(diagnostic('error', 'dimensions.type', 'dimensions must be a list.'));
+  }
+  const seen = new Set();
+  const scoredRows = [];
+  let assessedWeight = 0;
+  let weightedPoints = 0;
+  let confidencePoints = 0;
+  const findingAssignments = new Map();
+  const unknownAssignments = new Map();
+
+  for (const item of rawDimensions) {
+    if (!isRecord(item)) {
+      diagnostics.push(diagnostic('error', 'dimension.item', 'Every dimension entry must be an object.'));
+      continue;
+    }
+    const dimensionId = item.id;
+    if (!Object.hasOwn(DIMENSIONS, dimensionId)) {
+      diagnostics.push(diagnostic('error', 'dimension.id', `Unknown dimension id: ${JSON.stringify(dimensionId)}.`));
+      continue;
+    }
+    if (seen.has(dimensionId)) {
+      diagnostics.push(diagnostic('error', 'dimension.duplicate', `Duplicate dimension: ${dimensionId}.`));
+      continue;
+    }
+    seen.add(dimensionId);
+    const [title, weight] = DIMENSIONS[dimensionId];
+    let score = Object.hasOwn(item, 'score') ? item.score : null;
+    let confidence = Object.hasOwn(item, 'confidence') ? item.confidence : 'unknown';
+    let evidence = Object.hasOwn(item, 'evidence') ? item.evidence : [];
+    const dimensionFindingIds = normalizedIdList(
+      item.finding_ids,
+      'dimension.finding-ids',
+      `finding_ids for ${dimensionId}`,
+      diagnostics,
+    );
+    const dimensionUnknownIds = normalizedIdList(
+      item.unknown_ids,
+      'dimension.unknown-ids',
+      `unknown_ids for ${dimensionId}`,
+      diagnostics,
+    );
+    let summary = Object.hasOwn(item, 'summary') ? item.summary : '';
+
+    if (!Object.hasOwn(CONFIDENCE_VALUES, confidence)) {
+      diagnostics.push(diagnostic('error', 'dimension.confidence', `Invalid confidence for ${dimensionId}: ${JSON.stringify(confidence)}.`));
+      confidence = 'unknown';
+    }
+    if (
+      !Array.isArray(evidence) ||
+      evidence.some((value) => typeof value !== 'string' || value.trim() === '')
+    ) {
+      diagnostics.push(diagnostic('error', 'dimension.evidence', `evidence for ${dimensionId} must be a list of non-empty strings.`));
+      evidence = [];
+    }
+    if (typeof summary !== 'string') {
+      diagnostics.push(diagnostic('error', 'dimension.summary', `summary for ${dimensionId} must be a string.`));
+      summary = '';
+    }
+    if (score !== null) {
+      if (typeof score !== 'number' || !Number.isFinite(score) || score < 0 || score > 5) {
+        diagnostics.push(diagnostic('error', 'dimension.score', `score for ${dimensionId} must be null or a number from 0 to 5.`));
+        score = null;
+      } else if (!Number.isInteger(score * 2)) {
+        diagnostics.push(diagnostic('error', 'dimension.step', `score for ${dimensionId} must use 0.5 increments.`));
+        score = null;
+      }
+    }
+
+    for (const findingId of dimensionFindingIds) {
+      const finding = findingById.get(findingId);
+      if (!finding) {
+        diagnostics.push(diagnostic('error', 'dimension.finding-reference', `${dimensionId} references unknown finding ${JSON.stringify(findingId)}.`));
+        continue;
+      }
+      if (finding.dimension !== dimensionId) {
+        diagnostics.push(diagnostic(
+          'error',
+          'dimension.finding-dimension',
+          `${dimensionId} references finding ${JSON.stringify(findingId)} whose primary dimension is ${JSON.stringify(finding.dimension)}.`,
+        ));
+      }
+      const assignments = findingAssignments.get(findingId) ?? new Set();
+      assignments.add(dimensionId);
+      findingAssignments.set(findingId, assignments);
+    }
+    for (const unknownId of dimensionUnknownIds) {
+      const unknown = unknownById.get(unknownId);
+      if (!unknown) {
+        diagnostics.push(diagnostic('error', 'dimension.unknown-reference', `${dimensionId} references unknown evidence gap ${JSON.stringify(unknownId)}.`));
+        continue;
+      }
+      if (unknown.dimension !== dimensionId) {
+        diagnostics.push(diagnostic(
+          'error',
+          'dimension.unknown-dimension',
+          `${dimensionId} references unknown ${JSON.stringify(unknownId)} whose primary dimension is ${JSON.stringify(unknown.dimension)}.`,
+        ));
+      }
+      const assignments = unknownAssignments.get(unknownId) ?? new Set();
+      assignments.add(dimensionId);
+      unknownAssignments.set(unknownId, assignments);
+    }
+    if (
+      score !== null && score < 5 &&
+      dimensionFindingIds.length === 0 && dimensionUnknownIds.length === 0
+    ) {
+      diagnostics.push(diagnostic(
+        'error',
+        'dimension.untraceable-score',
+        `${dimensionId} has score ${score} below 5 but no finding_ids or unknown_ids.`,
+      ));
+    }
+
+    let weighted = null;
+    if (score !== null) {
+      assessedWeight += weight;
+      weighted = weight * score / 5;
+      weightedPoints += weighted;
+      confidencePoints += weight * CONFIDENCE_VALUES[confidence];
+      if (evidence.length === 0) {
+        diagnostics.push(diagnostic('error', 'dimension.no-evidence', `${dimensionId} has a score but no evidence location.`));
+      }
+    }
+    scoredRows.push({
+      id: dimensionId,
+      title,
+      weight,
+      score,
+      weighted,
+      confidence,
+      evidence,
+      finding_ids: dimensionFindingIds,
+      unknown_ids: dimensionUnknownIds,
+      summary,
+    });
+  }
+
+  const missingDimensions = Object.keys(DIMENSIONS).filter((id) => !seen.has(id)).sort();
+  if (missingDimensions.length > 0) {
+    diagnostics.push(diagnostic('error', 'dimension.missing', `Missing dimensions: ${missingDimensions.join(', ')}`));
+  }
+
+  const scoredCount = scoredRows.filter((row) => row.score !== null).length;
+  if (mode === 'quick') {
+    if (scoredCount > 5) {
+      diagnostics.push(diagnostic('error', 'mode.quick-scope', `Quick mode may score at most 5 dimensions; received ${scoredCount}.`));
+    } else if (scoredCount < 3) {
+      diagnostics.push(diagnostic('warning', 'mode.quick-scope', `Quick mode normally scores 3-5 dimensions; received ${scoredCount}.`));
+    }
+  }
+  if (mode === 'delta' && scoredCount === 0) {
+    diagnostics.push(diagnostic('error', 'mode.delta-scope', 'Delta mode must score at least one affected dimension.'));
+  }
+  if (mode === 'full' || mode === 'release') {
+    const unscored = scoredRows.filter((row) => row.score === null).map((row) => row.id);
+    if (unscored.length > 0) {
+      diagnostics.push(diagnostic(
+        'error',
+        'dimension.mode-required',
+        `${mode} mode requires scores for all 12 dimensions; missing: ${unscored.join(', ')}.`,
+      ));
+    }
+  }
+
+  for (const finding of findings) {
+    const assignments = findingAssignments.get(finding.id);
+    if (!assignments || assignments.size === 0) {
+      diagnostics.push(diagnostic('error', 'finding.unassigned', `Finding ${JSON.stringify(finding.id)} is not linked from its primary dimension.`));
+    } else if (assignments.size > 1) {
+      diagnostics.push(diagnostic('error', 'finding.multiple-dimensions', `Finding ${JSON.stringify(finding.id)} is linked from multiple dimensions.`));
+    }
+  }
+  for (const unknown of unknowns) {
+    const assignments = unknownAssignments.get(unknown.id);
+    if (!assignments || assignments.size === 0) {
+      diagnostics.push(diagnostic('error', 'unknown.unassigned', `Unknown ${JSON.stringify(unknown.id)} is not linked from its primary dimension.`));
+    } else if (assignments.size > 1) {
+      diagnostics.push(diagnostic('error', 'unknown.multiple-dimensions', `Unknown ${JSON.stringify(unknown.id)} is linked from multiple dimensions.`));
+    }
+  }
+
+  const coverage = assessedWeight;
+  const aggregateEligible = (
+    (mode === 'full' || mode === 'release') && assessedWeight === 100
+  );
+  const totalScore = aggregateEligible ? weightedPoints / assessedWeight * 100 : null;
+  const confidenceIndex = assessedWeight > 0
+    ? confidencePoints / assessedWeight
+    : null;
+  const normalizedScore = totalScore === null ? null : roundPythonFloat(totalScore, 1);
+  const normalizedConfidenceIndex = confidenceIndex === null
+    ? null
+    : roundPythonFloat(confidenceIndex, 2);
+  const overallConfidence = confidenceLabel(normalizedConfidenceIndex, coverage);
+  const rowById = Object.fromEntries(scoredRows.map((row) => [row.id, row]));
+  const capWarning = (dimensionId, maximum, condition, code, message) => {
+    const score = rowById[dimensionId]?.score;
+    if (score !== null && score !== undefined && score > maximum && !condition) {
+      diagnostics.push(diagnostic('warning', code, message));
+    }
+  };
+  capWarning(
+    'triggering',
+    3,
+    artifacts.trigger_eval_results === true,
+    'cap.triggering-eval',
+    'Triggering score exceeds 3 without trigger eval results; explain or lower the score.',
+  );
+  capWarning(
+    'triggering',
+    4,
+    artifacts.pointer_audit === true,
+    'cap.triggering-pointer',
+    'Triggering score exceeds 4 without an invocation/pointer audit.',
+  );
+  capWarning(
+    'instruction_design',
+    4,
+    artifacts.completion_boundary_audit === true,
+    'cap.completion-boundary',
+    'Instruction-design score exceeds 4 without a completion-boundary audit.',
+  );
+  capWarning(
+    'context_disclosure',
+    4,
+    artifacts.information_hierarchy_map === true,
+    'cap.information-hierarchy',
+    'Context/disclosure score exceeds 4 without an information-hierarchy map.',
+  );
+  capWarning(
+    'evals',
+    2,
+    [
+      artifacts.trigger_eval_results,
+      artifacts.behavior_eval_results,
+      artifacts.regression_eval_results,
+      artifacts.ablation_results,
+      artifacts.runtime_traces,
+    ].some((value) => value === true),
+    'cap.evals',
+    'Evals score exceeds 2 without eval results, ablation, or runtime traces.',
+  );
+  if (artifacts.scripts_present === true) {
+    capWarning(
+      'scripts',
+      3,
+      artifacts.scripts_checked === true,
+      'cap.scripts',
+      'Scripts score exceeds 3 although scripts were not checked.',
+    );
+  }
+  if (artifacts.compatibility_claims === true) {
+    capWarning(
+      'reliability',
+      3,
+      artifacts.compatibility_verified === true,
+      'cap.reliability',
+      'Reliability score exceeds 3 with unverified compatibility claims.',
+    );
+  }
+  if (mode === 'delta') {
+    capWarning(
+      'maintainability',
+      3,
+      artifacts.previous_version === true,
+      'cap.delta',
+      'Maintainability score exceeds 3 in delta mode without a previous version.',
+    );
+  }
+
+  const rawGates = Array.isArray(data.gates) ? data.gates : [];
+  if (!Array.isArray(data.gates)) {
+    diagnostics.push(diagnostic('error', 'gates.type', 'gates must be a list.'));
+  }
+  const gates = [];
+  const gateIds = new Set();
+  for (const gate of rawGates) {
+    if (!isRecord(gate)) {
+      diagnostics.push(diagnostic('error', 'gate.item', 'Every gate must be an object.'));
+      continue;
+    }
+    const gateId = gate.id;
+    const status = gate.status;
+    const severity = gate.severity;
+    const gateFindingIds = normalizedIdList(
+      gate.finding_ids,
+      'gate.finding-ids',
+      `finding_ids for gate ${JSON.stringify(gateId)}`,
+      diagnostics,
+    );
+    let reason = Object.hasOwn(gate, 'reason') ? gate.reason : '';
+    if (typeof gateId !== 'string') {
+      diagnostics.push(diagnostic('error', 'gate.id', 'Gate id must be a string.'));
+      continue;
+    }
+    if (gateIds.has(gateId)) {
+      diagnostics.push(diagnostic('error', 'gate.duplicate', `Duplicate gate: ${gateId}.`));
+      continue;
+    }
+    gateIds.add(gateId);
+    if (!VALID_GATE_STATUS.has(status)) diagnostics.push(diagnostic('error', 'gate.status', `Invalid status for ${gateId}: ${JSON.stringify(status)}.`));
+    if (!VALID_SEVERITY.has(severity)) diagnostics.push(diagnostic('error', 'gate.severity', `Invalid severity for ${gateId}: ${JSON.stringify(severity)}.`));
+    const requiredSeverity = REQUIRED_GATES.get(gateId);
+    if (requiredSeverity && severity !== requiredSeverity) {
+      diagnostics.push(diagnostic('error', 'gate.required-severity', `Gate ${gateId} must use severity ${requiredSeverity}.`));
+    }
+    if (typeof reason !== 'string') {
+      diagnostics.push(diagnostic('error', 'gate.reason', `Reason for ${gateId} must be a string.`));
+      reason = '';
+    }
+    if (status === 'fail' && reason.trim() === '') {
+      diagnostics.push(diagnostic('error', 'gate.no-reason', `Gate ${gateId} is fail but has no reason.`));
+    } else if (status === 'unknown' && reason.trim() === '') {
+      diagnostics.push(diagnostic('warning', 'gate.no-reason', `Gate ${gateId} is unknown but has no reason.`));
+    }
+    if (status === 'fail') {
+      if (gateFindingIds.length === 0) {
+        diagnostics.push(diagnostic('error', 'gate.finding-required', `Failed gate ${gateId} must reference an admitted finding.`));
+      }
+      for (const findingId of gateFindingIds) {
+        const finding = findingById.get(findingId);
+        if (!finding) {
+          diagnostics.push(diagnostic('error', 'gate.finding-reference', `Gate ${gateId} references unknown finding ${JSON.stringify(findingId)}.`));
+        } else if (finding.severity !== severity) {
+          diagnostics.push(diagnostic(
+            'error',
+            'gate.finding-severity',
+            `Gate ${gateId} severity ${severity} does not match finding ${JSON.stringify(findingId)} severity ${finding.severity}.`,
+          ));
+        }
+      }
+    } else if (gateFindingIds.length > 0) {
+      diagnostics.push(diagnostic('error', 'gate.unexpected-findings', `Gate ${gateId} may reference findings only when status is fail.`));
+    }
+    if (mode === 'release' && gateId === 'release-evidence' && status === 'not_applicable') {
+      diagnostics.push(diagnostic('error', 'gate.release-evidence-required', 'release-evidence cannot be not_applicable in release mode.'));
+    }
+    gates.push({ id: gateId, status, severity, finding_ids: gateFindingIds, reason });
+  }
+  const missingGates = [...REQUIRED_GATES.keys()].filter((id) => !gateIds.has(id)).sort();
+  if (missingGates.length > 0) diagnostics.push(diagnostic('error', 'gate.missing', `Missing required gates: ${missingGates.join(', ')}`));
 
   const hasP0Gate = gates.some((gate) => gate.status === 'fail' && gate.severity === 'P0');
   const hasP1Gate = gates.some((gate) => gate.status === 'fail' && gate.severity === 'P1');
@@ -452,33 +707,29 @@ function validateAndCalculate(data) {
   if (hasP0Gate || hasP0Finding) release = 'fail';
   else if (hasP1Gate || hasP1Finding) release = 'pass-after-fixes';
   else if (mode === 'quick') release = 'provisional';
+  else if (mode === 'delta' && (scoredCount === 0 || artifacts.previous_version !== true)) release = 'provisional';
+  else if (criticalUnknown) release = 'provisional';
   else if (
-    mode === 'release' &&
-    (coverage < 100 || criticalUnknown || !pythonTruthy(artifacts.current_sources_checked))
+    (mode === 'full' || mode === 'release') &&
+    (coverage < 100 || overallConfidence === 'low')
   ) release = 'provisional';
-  else if (mode === 'delta' && !pythonTruthy(artifacts.previous_version)) release = 'provisional';
-  else if (totalScore === null) release = 'provisional';
-  else if (totalScore >= 85) release = 'pass';
-  else if (totalScore >= 70) release = 'pass-after-fixes';
-  else release = 'redesign';
+  else if (mode === 'release' && artifacts.current_sources_checked !== true) release = 'provisional';
+  else release = 'pass';
 
   const errorCount = diagnostics.filter((entry) => entry.level === 'error').length;
   return {
     review,
     score: {
-      weighted_score: totalScore === null
-        ? null
-        : roundPythonFloat(totalScore, 1),
+      weighted_score: normalizedScore,
       coverage_percent: coverage,
-      confidence_index: confidenceIndex === null
-        ? null
-        : roundPythonFloat(confidenceIndex, 2),
-      confidence: confidenceLabel(confidenceIndex, coverage),
-      quality_band: qualityBand(totalScore),
+      confidence_index: normalizedConfidenceIndex,
+      confidence: overallConfidence,
+      quality_band: qualityBand(normalizedScore),
       release,
     },
     dimensions: scoredRows,
     gates,
+    unknowns,
     findings,
     diagnostics,
     valid: errorCount === 0,
@@ -487,13 +738,17 @@ function validateAndCalculate(data) {
 
 function renderText(result) {
   const score = result.score;
+  const scoreText = score.weighted_score === null
+    ? 'not calculated'
+    : `${score.weighted_score} / 100 (${score.quality_band})`;
   const lines = [
     `Skill: ${result.review.skill_name ?? ''}`,
     `Mode / direction: ${result.review.mode ?? ''} / ${result.review.direction ?? ''}`,
-    `Score: ${score.weighted_score} / 100 (${score.quality_band})`,
+    `Score: ${scoreText}`,
     `Coverage: ${score.coverage_percent}%`,
     `Confidence: ${score.confidence} (${score.confidence_index})`,
     `Release: ${score.release}`,
+    `Ledger: ${result.findings.length} findings, ${result.unknowns.length} unknowns`,
     'Dimensions:',
   ];
   for (const row of result.dimensions) {
