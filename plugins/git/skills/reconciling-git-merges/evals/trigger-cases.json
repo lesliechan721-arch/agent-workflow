@@ -1,0 +1,154 @@
+{
+  "schemaVersion": 1,
+  "skill": "reconciling-git-merges",
+  "cases": [
+    {
+      "id": "source_01",
+      "split": "train",
+      "query": "A merge is already stopped with MERGE_HEAD and conflicts in config.py. Use the commits and tests to resolve it and finish.",
+      "expected_loaded_skills": [
+        "reconciling-git-merges"
+      ]
+    },
+    {
+      "id": "source_02",
+      "split": "train",
+      "query": "Git merged this cleanly, but main optimized Logger.log_all while feature added a FilteredLogger.log override. Check that the combined behavior still preserves both intents.",
+      "expected_loaded_skills": [
+        "reconciling-git-merges"
+      ]
+    },
+    {
+      "id": "source_03",
+      "split": "train",
+      "query": "把 feature 合并进 main：main 把金额 API 从元改成了分，feature 新增的 invoice 调用方仍按元格式化；两个分支改的是不同文件。",
+      "expected_loaded_skills": [
+        "reconciling-git-merges"
+      ]
+    },
+    {
+      "id": "source_04",
+      "split": "train",
+      "query": "One branch moved service.py into core/service.py and the other added a consumer importing the old path. The merge is textually clean; reconcile it.",
+      "expected_loaded_skills": [
+        "reconciling-git-merges"
+      ]
+    },
+    {
+      "id": "source_05",
+      "split": "train",
+      "query": "Resolve this rename/delete conflict, preserve the reasons behind both changes, run the project checks, and complete the merge.",
+      "expected_loaded_skills": [
+        "reconciling-git-merges"
+      ]
+    },
+    {
+      "id": "source_06",
+      "split": "train",
+      "query": "Both branches pass their own tests, but after a clean merge the integration tests fail around schema defaults and serialization. Fix the merge rather than either branch in isolation.",
+      "expected_loaded_skills": [
+        "reconciling-git-merges"
+      ]
+    },
+    {
+      "id": "source_07",
+      "split": "train",
+      "query": "一个分支 revert 了旧鉴权实现，另一个分支继续基于旧实现修改缓存。审查并完成这次 merge，别把 clean merge 当成正确。",
+      "expected_loaded_skills": [
+        "reconciling-git-merges"
+      ]
+    },
+    {
+      "id": "source_08",
+      "split": "validation",
+      "query": "The merge conflict represents incompatible seven-day privacy retention and ninety-day audit retention, with no stated priority. Handle it from repository evidence without inventing a compromise.",
+      "expected_loaded_skills": [
+        "reconciling-git-merges"
+      ]
+    },
+    {
+      "id": "source_09",
+      "split": "validation",
+      "query": "git auto-mergd the files, but one side changed transaction retry semantics and the other changed idempotency handling. Validate their composition before committing.",
+      "expected_loaded_skills": [
+        "reconciling-git-merges"
+      ]
+    },
+    {
+      "id": "source_10",
+      "split": "validation",
+      "query": "请继续当前 merge。冲突文件之外，双方还分别修改了同一个权限契约的生产者和消费者，需要一起验证。",
+      "expected_loaded_skills": [
+        "reconciling-git-merges"
+      ]
+    },
+    {
+      "id": "source_11",
+      "split": "train",
+      "query": "feature is strictly ahead of main; fast-forward main with --ff-only.",
+      "expected_loaded_skills": []
+    },
+    {
+      "id": "source_12",
+      "split": "train",
+      "query": "git merge reports Already up to date. Confirm it and make no changes.",
+      "expected_loaded_skills": []
+    },
+    {
+      "id": "source_13",
+      "split": "train",
+      "query": "Merge feature into main. There are no known conflicts or related changes; just use the repository's normal Git workflow.",
+      "expected_loaded_skills": []
+    },
+    {
+      "id": "source_14",
+      "split": "train",
+      "query": "两个分支已经分叉，但一边只改 docs/，另一边只新增独立 examples/ 脚本，Git 可以 clean merge。按普通流程合并。",
+      "expected_loaded_skills": []
+    },
+    {
+      "id": "source_15",
+      "split": "train",
+      "query": "Both branches touched utils.py: one fixes a comment typo and the other changes an unrelated test helper. The merge is clean and the changes are independent.",
+      "expected_loaded_skills": []
+    },
+    {
+      "id": "source_16",
+      "split": "train",
+      "query": "Resolve the conflicts while rebasing my feature branch onto main.",
+      "expected_loaded_skills": []
+    },
+    {
+      "id": "source_17",
+      "split": "train",
+      "query": "cherry-pick 这个提交时冲突了，帮我继续 cherry-pick。",
+      "expected_loaded_skills": []
+    },
+    {
+      "id": "source_18",
+      "split": "validation",
+      "query": "Run git pull --ff-only to synchronize my local main branch.",
+      "expected_loaded_skills": []
+    },
+    {
+      "id": "source_19",
+      "split": "validation",
+      "query": "Write a SQL MERGE statement that upserts customer rows.",
+      "expected_loaded_skills": []
+    },
+    {
+      "id": "source_20",
+      "split": "validation",
+      "query": "Explain when to use git merge instead of rebase; do not change my repository.",
+      "expected_loaded_skills": []
+    },
+    {
+      "id": "ordinary_local_commit",
+      "split": "validation",
+      "query": "当前改动已经完成。请核对暂存范围并创建一个新的本地 Git commit。",
+      "expected_loaded_skills": [
+        "git-commit"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,383 @@
+import { spawn } from 'node:child_process';
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import process from 'node:process';
+import { fileURLToPath } from 'node:url';
+
+const evalDir = path.dirname(fileURLToPath(import.meta.url));
+const skillKey = 'reconciling-git-merges';
+const defaults = {
+  runs: 1,
+  timeoutMs: 300_000,
+  codexBin: 'codex',
+  model: 'gpt-5.6-luna',
+  caseId: undefined,
+  output: undefined,
+};
+
+function usage() {
+  return [
+    'Usage: run-merge-evals.mjs [options]',
+    '  --runs N          Runs per current/baseline variant (default: 1)',
+    '  --case ID         Run one case from evals.json',
+    '  --model MODEL     Codex model (default: gpt-5.6-luna)',
+    '  --codex-bin PATH  Codex executable (default: codex)',
+    '  --timeout-ms MS   Timeout per model run (default: 300000)',
+    '  --output PATH     Write the JSON report to PATH',
+    'Exit 0 means every current run passed its mechanical checks.',
+  ].join('\n');
+}
+
+function valueAfter(argv, index, flag) {
+  const value = argv[index + 1];
+  if (!value || value.startsWith('--')) throw new Error(`${flag} requires a value.`);
+  return value;
+}
+
+export function parseArgs(argv) {
+  const options = { ...defaults, help: false };
+  for (let index = 0; index < argv.length; index += 1) {
+    const flag = argv[index];
+    if (flag === '-h' || flag === '--help') {
+      options.help = true;
+      continue;
+    }
+    const value = valueAfter(argv, index, flag);
+    index += 1;
+    if (flag === '--runs' || flag === '--timeout-ms') {
+      const parsed = Number(value);
+      if (!Number.isInteger(parsed) || parsed <= 0) {
+        throw new Error(`${flag} must be a positive integer.`);
+      }
+      if (flag === '--runs') options.runs = parsed;
+      else options.timeoutMs = parsed;
+    } else if (flag === '--case') options.caseId = value;
+    else if (flag === '--model') options.model = value;
+    else if (flag === '--codex-bin') options.codexBin = value;
+    else if (flag === '--output') options.output = path.resolve(value);
+    else throw new Error(`Unknown option: ${flag}`);
+  }
+  return options;
+}
+
+async function readEvalResource(relativePath, encoding = 'utf8') {
+  const normalized = path.normalize(relativePath);
+  if (normalized === '..' || normalized.startsWith(`..${path.sep}`) || path.isAbsolute(normalized)) {
+    throw new Error(`Eval resource must stay inside evals/: ${relativePath}`);
+  }
+  try {
+    return await readFile(path.join(evalDir, normalized), encoding);
+  } catch (error) {
+    if (error?.code !== 'ENOENT' || !process.env.AW_PLUGIN_CONTEXT) throw error;
+  }
+  const context = JSON.parse(await readFile(process.env.AW_PLUGIN_CONTEXT, 'utf8'));
+  return readFile(
+    path.join(context.sourceRoot, 'skills', skillKey, 'evals', normalized),
+    encoding,
+  );
+}
+
+export async function loadCases(caseId) {
+  const document = JSON.parse(await readEvalResource('evals.json'));
+  if (document?.skill_name !== skillKey || !Array.isArray(document.evals)) {
+    throw new Error(`evals.json must describe ${skillKey}.`);
+  }
+  const cases = caseId
+    ? document.evals.filter((entry) => entry.id === caseId)
+    : document.evals;
+  if (cases.length === 0) throw new Error(`Unknown merge eval case: ${caseId}`);
+  return cases;
+}
+
+function execFile(command, args, options = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      ...options,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => { stdout += chunk; });
+    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.on('error', reject);
+    child.on('close', (code, signal) => resolve({ code, signal, stdout, stderr }));
+  });
+}
+
+function isolatedGitEnv() {
+  const env = { ...process.env };
+  for (const name of Object.keys(env)) {
+    if (name.startsWith('GIT_')) delete env[name];
+  }
+  return {
+    ...env,
+    GIT_CONFIG_NOSYSTEM: '1',
+    GIT_CONFIG_GLOBAL: process.platform === 'win32' ? 'NUL' : '/dev/null',
+    GIT_TERMINAL_PROMPT: '0',
+  };
+}
+
+async function git(root, args, { allowFailure = false } = {}) {
+  const result = await execFile('git', args, {
+    cwd: root,
+    env: isolatedGitEnv(),
+  });
+  if (!allowFailure && result.code !== 0) {
+    throw new Error(`git ${args.join(' ')} failed: ${result.stderr || result.stdout}`);
+  }
+  return result;
+}
+
+async function snapshot(root) {
+  const [head, refs, index, status, diff] = await Promise.all([
+    git(root, ['rev-parse', 'HEAD']),
+    git(root, ['show-ref']),
+    git(root, ['ls-files', '-s']),
+    git(root, ['status', '--porcelain=v1', '--untracked-files=all']),
+    git(root, ['diff', '--binary', 'HEAD']),
+  ]);
+  return { head: head.stdout, refs: refs.stdout, index: index.stdout, status: status.stdout, diff: diff.stdout };
+}
+
+function finalMessage(stdout) {
+  let message = '';
+  for (const line of stdout.split('\n')) {
+    try {
+      const event = JSON.parse(line);
+      if (event.type === 'item.completed' && event.item?.type === 'agent_message') {
+        message = event.item.text ?? event.item.content ?? message;
+      }
+    } catch {
+      // Codex JSONL can contain non-event diagnostics. Ignore them.
+    }
+  }
+  return typeof message === 'string' ? message : JSON.stringify(message);
+}
+
+async function prepareWorkspace(evalCase, withSkill) {
+  const materializedRoot = process.env.AW_PLUGIN_EVAL_PROJECT_ROOT;
+  if (!materializedRoot) {
+    throw new Error('AW_PLUGIN_EVAL_PROJECT_ROOT is required; run through pnpm plugin:eval.');
+  }
+  const root = await mkdtemp(path.join(os.tmpdir(), 'reconciling-git-merges-eval-'));
+  const fixtureName = evalCase.files[0].replace('evals/files/', '');
+  try {
+    if (fixtureName.endsWith('.bundle')) {
+      const bundle = path.join(root, fixtureName);
+      await writeFile(bundle, await readEvalResource(`files/${fixtureName}`, null));
+      const repo = path.join(root, 'repo');
+      const cloned = await execFile('git', ['clone', '--quiet', bundle, repo], {
+        env: isolatedGitEnv(),
+      });
+      if (cloned.code !== 0) throw new Error(`git clone failed: ${cloned.stderr}`);
+      await rm(bundle, { force: true });
+      await cp(path.join(materializedRoot, '.agents'), path.join(repo, '.agents'), { recursive: true });
+      if (!withSkill) {
+        await rm(path.join(repo, '.agents', 'skills', skillKey), { recursive: true, force: true });
+      }
+      await git(repo, ['config', 'user.name', 'Merge Skill Eval']);
+      await git(repo, ['config', 'user.email', 'merge-skill-eval@example.invalid']);
+      return { root, repo };
+    }
+    const archive = path.join(root, fixtureName);
+    await writeFile(archive, await readEvalResource(`files/${fixtureName}`, null));
+    const extracted = await execFile('tar', ['-xzf', archive, '-C', root]);
+    if (extracted.code !== 0) throw new Error(`tar extraction failed: ${extracted.stderr}`);
+    await rm(archive, { force: true });
+    const repo = path.join(root, 'analysis-only-dirty-worktree');
+    await cp(path.join(materializedRoot, '.agents'), path.join(repo, '.agents'), { recursive: true });
+    if (!withSkill) {
+      await rm(path.join(repo, '.agents', 'skills', skillKey), { recursive: true, force: true });
+    }
+    return { root, repo };
+  } catch (error) {
+    await rm(root, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+function runtimePrompt(evalCase) {
+  if (evalCase.id === 'ambiguous_retention') {
+    return '当前仓库已检出 main。合并 origin/feature。只解决仓库证据支持的内容；不要发明新的数据保留策略。';
+  }
+  if (evalCase.id === 'semantic_same_file') {
+    return '当前仓库已检出 main。合并 origin/feature。Git 应能 clean merge。保留 main 中基础 Logger 的批量 fast path，以及 feature 中 FilteredLogger hook 的语义；运行测试并完成合并。';
+  }
+  if (evalCase.id === 'semantic_cross_file') {
+    return '当前仓库已检出 main。合并 origin/feature。Main 已把 subtotal 改为返回整数分值，feature 新增的 invoice renderer 仍按元处理。保留双方意图，验证并完成合并。';
+  }
+  return '只分析将 origin/feature 合并到 main 的文本和语义风险；不要执行 merge，也不要改变 refs、暂存区或工作树内容。报告契约交互、建议的最小修复和验证方案。';
+}
+
+async function runCodex(repo, prompt, options) {
+  const args = [
+    'exec', '--json', '--skip-git-repo-check', '--color', 'never', '--sandbox', 'workspace-write',
+    '--cd', repo, '--model', options.model, '--config', 'skills.include_instructions=true', prompt,
+  ];
+  const child = spawn(options.codexBin, args, {
+    cwd: repo,
+    env: process.env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let stdout = '';
+  let stderr = '';
+  child.stdout.setEncoding('utf8');
+  child.stderr.setEncoding('utf8');
+  child.stdout.on('data', (chunk) => { stdout += chunk; });
+  child.stderr.on('data', (chunk) => { stderr += chunk; });
+  const result = await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      child.kill('SIGTERM');
+      resolve({ code: null, signal: 'SIGTERM', timedOut: true });
+    }, options.timeoutMs);
+    child.on('error', (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on('close', (code, signal) => {
+      clearTimeout(timer);
+      resolve({ code, signal, timedOut: false });
+    });
+  });
+  return { ...result, stdout, stderr, final_message: finalMessage(stdout) };
+}
+
+async function mergeCommitState(repo) {
+  const parents = await git(repo, ['rev-list', '--parents', '-n', '1', 'HEAD']);
+  return parents.stdout.trim().split(/\s+/).length - 1;
+}
+
+export function analysisMessageChecks(message) {
+  const text = typeof message === 'string' ? message : '';
+  return [
+    {
+      name: 'identifies_unit_contract',
+      passed: /(?:cents?|整数分|分值)/iu.test(text) && /(?:dollars?|invoice|元)/iu.test(text),
+      evidence: text,
+    },
+    {
+      name: 'proposes_boundary_conversion',
+      passed: /(?:\/\s*100|除以\s*100|乘以\s*0\.01|转换为元|convert\w*\s+(?:cents?\s+to\s+dollars?|to\s+dollars?))/iu.test(text),
+      evidence: text,
+    },
+    {
+      name: 'proposes_verification',
+      passed: /(?:test|测试|unittest)/iu.test(text),
+      evidence: text,
+    },
+  ];
+}
+
+export async function committedControlPaths(repo) {
+  const result = await git(repo, ['ls-tree', '-r', '--name-only', 'HEAD', '--', '.agents']);
+  return result.stdout.trim().split('\n').filter(Boolean);
+}
+
+export async function evaluateCase(evalCase, repo, before, run) {
+  const after = await snapshot(repo);
+  const checks = [];
+  const add = (name, passed, evidence) => checks.push({ name, passed, evidence });
+  add('model_completed', !run.timedOut && run.code === 0, `code=${run.code} signal=${run.signal ?? ''}`);
+  if (evalCase.id === 'analysis_only_dirty_worktree') {
+    add('repository_unchanged', JSON.stringify(after) === JSON.stringify(before), 'HEAD, refs, index, status, and diff');
+    checks.push(...analysisMessageChecks(run.final_message));
+  } else if (evalCase.id === 'ambiguous_retention') {
+    add('no_new_commit', after.head === before.head, `before=${before.head.trim()} after=${after.head.trim()}`);
+    add('conflict_left_uncommitted', after.status.includes('UU retention.py'), after.status);
+    add('states_incompatible_windows', /(?:7|七).*(?:90|九十)|(?:90|九十).*(?:7|七)/su.test(run.final_message), run.final_message);
+  } else {
+    add('merge_commit', await mergeCommitState(repo) === 2, `parents=${await mergeCommitState(repo)}`);
+    const tests = await execFile('python3', ['-m', 'unittest'], { cwd: repo, env: process.env });
+    add('tests_pass', tests.code === 0, tests.stderr || tests.stdout);
+    const controlPaths = await committedControlPaths(repo);
+    add('control_files_not_committed', controlPaths.length === 0, controlPaths.join('\n'));
+  }
+  return { passed: checks.every((check) => check.passed), checks, before, after };
+}
+
+async function runVariant(evalCase, variant, options) {
+  const runs = [];
+  for (let index = 0; index < options.runs; index += 1) {
+    const workspace = await prepareWorkspace(evalCase, variant === 'current');
+    try {
+      const before = await snapshot(workspace.repo);
+      const model = await runCodex(workspace.repo, runtimePrompt(evalCase), options);
+      const evaluation = await evaluateCase(evalCase, workspace.repo, before, model);
+      runs.push({ run: index + 1, model, evaluation });
+    } finally {
+      await rm(workspace.root, { recursive: true, force: true });
+    }
+  }
+  return {
+    variant,
+    complete: runs.every((entry) => !entry.model.timedOut && entry.model.code === 0),
+    passed: runs.every((entry) => entry.evaluation.passed),
+    runs,
+  };
+}
+
+async function writeReport(report, output) {
+  const text = `${JSON.stringify(report, null, 2)}\n`;
+  if (output) {
+    await mkdir(path.dirname(output), { recursive: true });
+    await writeFile(output, text, 'utf8');
+  }
+  process.stdout.write(text);
+}
+
+async function main() {
+  let options;
+  try {
+    options = parseArgs(process.argv.slice(2));
+  } catch (error) {
+    process.stderr.write(`${error.message}\n\n${usage()}\n`);
+    process.exitCode = 2;
+    return;
+  }
+  if (options.help) {
+    process.stdout.write(`${usage()}\n`);
+    return;
+  }
+  const cases = await loadCases(options.caseId);
+  const results = [];
+  let environmentError = null;
+  try {
+    for (const evalCase of cases) {
+      process.stderr.write(`${evalCase.id}: current and baseline\n`);
+      results.push({
+        id: evalCase.id,
+        current: await runVariant(evalCase, 'current', options),
+        baseline: await runVariant(evalCase, 'baseline', options),
+      });
+    }
+  } catch (error) {
+    environmentError = error instanceof Error ? error.stack ?? error.message : String(error);
+  }
+  const complete = !environmentError && results.length === cases.length && results.every((entry) => entry.current.complete && entry.baseline.complete);
+  const passed = complete && results.every((entry) => entry.current.passed);
+  const report = {
+    schema_version: 2,
+    generated_at: new Date().toISOString(),
+    complete,
+    passed,
+    ...(environmentError ? { environment_error: environmentError } : {}),
+    case_results: cases.map((evalCase) => {
+      const result = results.find((entry) => entry.id === evalCase.id);
+      const caseComplete = result?.current.complete === true && result?.baseline.complete === true;
+      const casePassed = caseComplete && result.current.passed === true;
+      return { id: evalCase.id, outcome: caseComplete ? (casePassed ? 'passed' : 'failed') : 'incomplete', complete: caseComplete, mechanical_passed: casePassed };
+    }),
+    results,
+  };
+  await writeReport(report, options.output);
+  if (!passed) process.exitCode = 1;
+}
+
+const isMain = process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
+if (isMain) main().catch((error) => {
+  process.stderr.write(`${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
+  process.exitCode = 1;
+});
