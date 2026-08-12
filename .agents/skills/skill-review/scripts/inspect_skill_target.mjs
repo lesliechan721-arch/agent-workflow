@@ -31,6 +31,20 @@ const PROTOCOL_MARKERS = [
   'status=progress', 'status=blocked', 'send_message', 'send_input', 'wait_agent',
   'followup_task', 'close_agent', 'interrupt_agent', 'spawn_agent',
 ];
+const MANDATORY_MODAL_PATTERNS = [
+  /(?:必须|不得|只能|务必|严禁|不允许)/gu,
+  /\b(?:must|shall|required|never)\b/giu,
+  /\bdo not\b/giu,
+];
+const CONDITIONAL_BRANCH_PATTERNS = [
+  /(?:如果|若|仅当|只有在|否则|除非)/gu,
+  /\b(?:if|unless|otherwise|only when)\b/giu,
+];
+const NAMED_COMPLETION_GATE_PATTERN =
+  /(?:\*\*)?(?:gate completion|intent completion|repair completion|validation completion|completion gate|完成门禁|完成条件|意图完成|修复完成)(?:\*\*)?[：:]/giu;
+const FENCED_BLOCK_PATTERN = /```[^\n]*\n([\s\S]*?)```/gu;
+const FIXED_OUTPUT_FIELD_PATTERN =
+  /^(?:[-*]\s*)?(?:\*\*)?[^：:\n]{1,50}(?:\*\*)?[：:]\s*(?:<[^>]+>|\[[^\]]+\]|$)/u;
 const POINTER_CONDITION_PATTERNS = [
   /(?:^|[\s|：；;])(?:当|若|如果|仅在|只在)/u,
   /计分前/u,
@@ -147,6 +161,21 @@ function countOccurrences(text, terms) {
   return terms.reduce((total, term) => total + lower.split(term.toLowerCase()).length - 1, 0);
 }
 
+function countPatternMatches(text, patterns) {
+  return patterns.reduce(
+    (total, pattern) => total + [...text.matchAll(pattern)].length,
+    0,
+  );
+}
+
+function fixedOutputFieldCount(text) {
+  let count = 0;
+  for (const match of text.matchAll(FENCED_BLOCK_PATTERN)) {
+    count += match[1].split('\n').filter((line) => FIXED_OUTPUT_FIELD_PATTERN.test(line.trim())).length;
+  }
+  return count;
+}
+
 function repeatedParagraphCount(text) {
   const counts = new Map();
   for (const raw of text.split(/\n\s*\n/u)) {
@@ -178,6 +207,10 @@ function textMetrics(text) {
     estimated_tokens: Math.max(1, Math.ceil(bytes / 4)),
     headings: [...text.matchAll(/^#{1,6}\s+/gmu)].length,
     control_markers: control,
+    mandatory_modal_count: countPatternMatches(text, MANDATORY_MODAL_PATTERNS),
+    conditional_branch_count: countPatternMatches(text, CONDITIONAL_BRANCH_PATTERNS),
+    named_completion_gate_count: [...text.matchAll(NAMED_COMPLETION_GATE_PATTERN)].length,
+    fixed_output_field_count: fixedOutputFieldCount(text),
     lifecycle_markers: lifecycle,
     protocol_markers: protocol,
     backtick_terms: [...text.matchAll(/`([^`\n]+)`/gu)].length,
@@ -676,6 +709,10 @@ async function comparePrevious(previousPath, currentBody) {
       bytes: newMetrics.bytes - oldMetrics.bytes,
       estimated_tokens: newMetrics.estimated_tokens - oldMetrics.estimated_tokens,
       control_markers: newMetrics.control_markers - oldMetrics.control_markers,
+      mandatory_modal_count: newMetrics.mandatory_modal_count - oldMetrics.mandatory_modal_count,
+      conditional_branch_count: newMetrics.conditional_branch_count - oldMetrics.conditional_branch_count,
+      named_completion_gate_count: newMetrics.named_completion_gate_count - oldMetrics.named_completion_gate_count,
+      fixed_output_field_count: newMetrics.fixed_output_field_count - oldMetrics.fixed_output_field_count,
       lifecycle_markers: newMetrics.lifecycle_markers - oldMetrics.lifecycle_markers,
       protocol_markers: newMetrics.protocol_markers - oldMetrics.protocol_markers,
       repeated_paragraphs: newMetrics.repeated_paragraphs - oldMetrics.repeated_paragraphs,
@@ -1304,6 +1341,7 @@ function renderText(report) {
     `Package: ${report.package.total_files} files, ${report.package.total_bytes} bytes`,
     `Body: ${metrics.lines} lines, ${metrics.characters} chars, ~${metrics.estimated_tokens} tokens`,
     `Control/lifecycle/protocol markers: ${metrics.control_markers}/${metrics.lifecycle_markers}/${metrics.protocol_markers}`,
+    `Control surface hints: ${metrics.mandatory_modal_count} mandatory modals, ${metrics.conditional_branch_count} conditional branches, ${metrics.named_completion_gate_count} named completion gates, ${metrics.fixed_output_field_count} fixed output fields`,
     `Natural-language state-machine risk: ${metrics.state_machine_risk}`,
     `References: ${report.references.reachable.length - 1} reachable, ${report.references.missing.length} missing, ${report.references.unreachable_runtime_resources.length} unreachable`,
     `Pointer hints: ${report.pointers.total} entries, ${report.pointers.weak_signal_lines.length} without an obvious condition marker`,
@@ -1316,6 +1354,7 @@ function renderText(report) {
   if (report.previous_comparison) {
     const delta = report.previous_comparison.delta;
     lines.push(`Delta: lines ${delta.lines >= 0 ? '+' : ''}${delta.lines}, chars ${delta.characters >= 0 ? '+' : ''}${delta.characters}, tokens ${delta.estimated_tokens >= 0 ? '+' : ''}${delta.estimated_tokens}, control ${delta.control_markers >= 0 ? '+' : ''}${delta.control_markers}, lifecycle ${delta.lifecycle_markers >= 0 ? '+' : ''}${delta.lifecycle_markers}`);
+    lines.push(`Control surface delta: mandatory ${delta.mandatory_modal_count >= 0 ? '+' : ''}${delta.mandatory_modal_count}, branches ${delta.conditional_branch_count >= 0 ? '+' : ''}${delta.conditional_branch_count}, completion gates ${delta.named_completion_gate_count >= 0 ? '+' : ''}${delta.named_completion_gate_count}, output fields ${delta.fixed_output_field_count >= 0 ? '+' : ''}${delta.fixed_output_field_count}`);
   }
   if (report.related_toml.identical_instruction_groups.length > 0) {
     lines.push('Identical role instruction groups:');

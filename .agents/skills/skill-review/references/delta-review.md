@@ -13,6 +13,7 @@ delta 只给受影响维度局部分数，不重新计算加权总分或 quality
 3. `SKILL.md`、pointer、branch、资源、脚本和 eval 的复杂度变化。
 4. 新出现的 observed、normative 或 structural 证据。
 5. 行为指标是否改善，以及新增内容是否值得其 context/cognitive load。
+6. 最小行为合同、`minimum_control` 分数、复杂度结论和 reducibility 是否发生变化。
 
 纯 heuristic 或 inferred 边界不升级为新的发布阻断项。
 
@@ -24,6 +25,8 @@ delta 只给受影响维度局部分数，不重新计算加权总分或 quality
 - 它替换、合并或删除了什么旧内容。
 - 对应哪个 behavior/regression eval。
 - 净效果是 smaller、neutral 还是 larger。
+
+同时重新检查本轮修改触达的旧强制规则。不能只证明“没有继续增加”，还要确认当前版本的沉积候选已删除、放宽或进入 ablation。
 
 如果一条旧规则没有当前目标、证据或测试支持，只因“删除可能危险”而保留，标记为 sediment candidate，通过 ablation 决定是否删除。
 

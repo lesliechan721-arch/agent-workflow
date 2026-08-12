@@ -27,7 +27,7 @@ metadata:
 ## 评审模式
 
 - **quick**：材料不完整或用户只要快速检查；完成入口 gate、静态诊断、通常最相关的 3–5 个维度、已确认 finding 和 unknown，不计算总分，也不作发布通过结论。
-- **full**：检查完整技能包；完成全部 12 个维度和三项语义审计。默认模式。
+- **full**：检查完整技能包；完成全部 12 个维度和四项语义审计。默认模式。
 - **release**：在 full 基础上核对当前官方规范，安全验证可运行脚本，并要求 trigger、behavior 或等价发布证据。
 - **delta**：有上一版时，只复核旧问题、受影响维度、直接回归、复杂度变化和新证据；不计算新的总分。
 
@@ -66,15 +66,16 @@ Finding 的证据类型使用：
    - release 模式或需要判断证据权威：`references/source-map.md`，并重新核对其中标记为 current-check 的官方来源。
    - 当前仓库静态 Skill 的 release 评审或用户明确要求真实 eval：读取 `references/static-skill-evaluation.md` 和 `evals/manifest.json`；先运行 `node scripts/run_static_skill_evals.mjs <skill-dir-or-name> --validate-only`。
    - 当前仓库的 AW 插件或动态 Skill：`references/agent-workflows-plugin.md`
-5. 按模式完成第二阶段和语义审计：full/release 完成全部三项；quick 只检查相关范围；delta 只检查受影响对象。
+5. 按模式完成第二阶段和语义审计：full/release 完成全部四项；quick 只检查相关范围；delta 只检查受影响对象。先完成最小有效控制审计，再评价现有结构。
+   - **Minimum Effective Control Audit**：只根据目标问题、真实失败、硬性规范、领域事实和操作脆弱性，先写不超过 8 条的最小行为合同；简单 Skill 可以更少。再按行为块把现有强制规则分类为 `keep-invariant`、`keep-default`、`relax`、`move`、`delete` 或 `needs-ablation`。
    - **Invocation/Pointer Audit**：description 和每个外部指针是否说明目标及真正不同的触发 branch。
    - **Information Hierarchy Map**：把内容分类为 in-file step、in-file reference、disclosed reference 或 environment lookup。
-   - **Completion Boundary Audit**：关键步骤是否有清晰、可检查且覆盖充分的完成标准。
+   - **Completion Boundary Audit**：只对前述审计决定保留为强制流程的关键步骤，检查其完成标准是否清晰、可检查且覆盖充分。
 6. 先完成 evidence、unknown 和 finding；P0/P1 通过 Finding Admission Gate，失败 gate 关联同严重性 finding 后，才填写 `assets/scorecard-template.json` 并运行：
    ```bash
    node scripts/validate_scorecard.mjs <scorecard.json> --format json
    ```
-   使用脚本给出的权重、coverage、confidence、quality band 和 release verdict；quick/delta 总分为 `null`。
+   使用脚本给出的权重、coverage、confidence、raw/effective quality band、复杂度结论和 release verdict；quick/delta 总分为 `null`。
 7. 按 `assets/report-template.md` 输出。报告所有 P0/P1，默认只展开影响最大的 5 项 P2，其余保留在 scorecard ledger。
 8. release 模式或用户明确要求持久化时，用 `pnpm review:publish -- --skill <skill> [--plugin <plugin>] (--batch-id <id>|--batch-name <name>) --report <report.md> --scorecard <scorecard.json>` 发布；完整 eval/review 证据和草稿只放项目 `.tmp/agent-workflows/`，正式目录只保留人读报告和精简摘要。
 9. 发布后人工更新 Skill README 的最近正式报告摘要、报告路径和被评估 Git commit；不要添加机器 marker。
@@ -85,7 +86,7 @@ Finding 的证据类型使用：
 - 所有 gate 都被判定为 `pass`、`fail`、`unknown` 或 `not_applicable`。
 - 每个 P0/P1 都通过 Finding Admission Gate；每个失败 gate 都关联相同严重性的已接纳 finding。
 - 报告包含 stop decision，且没有未归属或重复计罚的 finding。
-- quick 只完成所选维度；full/release 完成全部 12 个维度和适用审计；delta 完成旧 finding、受影响维度和直接回归。quick/delta 不计算总分。
+- quick 只完成所选维度；full/release 完成全部 12 个维度、最小行为合同、复杂度结论和适用审计；delta 完成旧 finding、受影响维度和直接回归。quick/delta 不计算总分。
 - 需要持久化时，正式报告和 Skill README 已归入正确批次，机械 eval/review 证据仍只位于 `.tmp`。
 
 ## 评分纪律
@@ -95,6 +96,8 @@ Finding 的证据类型使用：
 - 同一根因只在一个主维度扣分；其它维度只说明影响。
 - scripts、references 或 assets 正确省略时可以高分；文件数量不是质量指标。
 - 优先删除、替换、合并或改用环境事实源；新增自然语言条件必须有行为或规范证据。
+- 现有强制规则承担相同的必要性证明责任；无法说明删除或放宽后会增加哪种目标失败时，改为 `needs-ablation`，不得仅因规则内部正确而给高分。
+- 默认改进顺序为 delete → relax → move → rewrite → add。复杂度信号只触发语义审计，不自动形成 finding。
 - Tool/schema 已直接提供的事实不在 Skill 中维护缓存，除非 Skill 需要记录稳定选择、理由或非显然 gotcha。
 - Skill 以自然语言维护计时、额度、pending、跨 actor 握手、乱序事件或取消/关闭竞态时，先判定职责归属，再决定是否修改文本。
 - 第三方写作启发只能形成 heuristic finding；不得冒充 Agent Skills 官方规范。

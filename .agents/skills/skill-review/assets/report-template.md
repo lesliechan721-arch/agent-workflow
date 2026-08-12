@@ -7,9 +7,12 @@
 - **Skill：**
 - **模式：** quick | full | release | delta
 - **方向：** aligned | at-risk | drifted
+- **复杂度：** minimal | proportionate | over-specified | over-engineered
+- **可缩减程度：** almost-none | minor | significant | core-plus-reference | redesign
 - **发布结论：** pass | pass-after-fixes | provisional | fail
 - **加权总分：** 数字 | 不计算
-- **质量带：** excellent | strong | adequate | weak | poor | 不计算
+- **原始质量带：** excellent | strong | adequate | weak | poor | 不计算
+- **有效质量带：** excellent | strong | adequate | weak | poor | 不计算
 - **覆盖率：**
 - **置信度：**
 - **一句话结论：**
@@ -69,16 +72,16 @@ quick 只包含已检查维度；full/release 包含全部 12 个维度；delta 
 
 | 维度 | 权重 | 分数 | 置信度 | 证据 | Finding IDs | Unknown IDs | 结论 |
 | --- | ---: | ---: | --- | --- | --- | --- | --- |
-| 规范与包完整性 | 7 | | | | | | |
+| 规范与包完整性 | 6 | | | | | | |
 | 问题基础与实际价值 | 8 | | | | | | |
-| 调用策略、触发条件与 Context Pointer | 12 | | | | | | |
+| 调用策略、触发条件与 Context Pointer | 10 | | | | | | |
 | 范围、边界与组合性 | 8 | | | | | | |
-| 程序、完成边界与控制校准 | 12 | | | | | | |
-| 信息层级、上下文负载与渐进式披露 | 12 | | | | | | |
+| 程序与完成边界 | 10 | | | | | | |
+| 最小充分控制与模型自由度 | 14 | | | | | | |
+| 信息层级、资源与渐进式披露 | 10 | | | | | | |
 | 职责归属与自然语言状态机风险 | 10 | | | | | | |
-| 脚本与确定性自动化 | 8 | | | | | | |
-| 资源可达性、Co-location 与用途 | 5 | | | | | | |
-| 评测、验证与证据驱动迭代 | 10 | | | | | | |
+| 脚本与确定性自动化 | 7 | | | | | | |
+| 评测、验证与证据驱动迭代 | 9 | | | | | | |
 | 可靠性、安全与兼容性 | 4 | | | | | | |
 | 剪枝、事实源与变更纪律 | 4 | | | | | | |
 
@@ -89,18 +92,46 @@ full/release 必做；quick 仅在触发是评审重点时使用。
 | Pointer | 目标材料 | 触发 branch | 意图是否前置 | 是否重复同义 branch | 是否重复正文身份 | Eval 证据 | 建议 |
 | --- | --- | --- | ---: | ---: | ---: | --- | --- |
 
+## 最小有效控制审计
+
+full/release 必做，并在填写维度评分和完成边界审计前完成。quick 在复杂度是评审重点时使用。
+
+### 最小行为合同
+
+只根据目标问题、真实失败、硬性规范、领域事实和操作脆弱性写不超过 8 条；不要复制现有章节组织。
+
+1.
+
+### 控制面
+
+| Signal | Count / observation | Risk |
+| --- | ---: | --- |
+| Mandatory stages | | |
+| Hard gates | | |
+| Fixed intermediate artifacts | | |
+| Prohibitions | | |
+| Conditional branches | | |
+| Fixed output fields | | |
+
+### 必要性映射与简化候选
+
+| 当前行为块 | 改变的行为 | 依据 | 当前控制类型 | 模型默认能否处理 | 处理建议 | 删除或放宽风险 |
+| --- | --- | --- | --- | ---: | --- | --- |
+
+处理建议只能是：`keep-invariant`、`keep-default`、`relax`、`move`、`delete`、`needs-ablation`。
+
 ## 信息层级图
 
-full/release 必做；渐进式披露存在争议时也使用。
+full/release 必做；渐进式披露存在争议时也使用。先完成最小有效控制审计；不为应删除的内容寻找新位置。
 
-| 内容 | 类型 | 适用 branch | 当前位置 | 是否每次需要 | 到达 pointer 或环境事实源 | 完成边界 | 建议 |
+| 内容 | 类型 | 适用 branch | 当前位置 | 是否每次需要 | 到达 pointer 或环境事实源 | 最小控制结论 | 建议 |
 | --- | --- | --- | --- | ---: | --- | --- | --- |
 
 类型只能是：`in-file-step`、`in-file-reference`、`disclosed-reference`、`environment-lookup`。
 
 ## 完成边界审计
 
-full/release 必做；步骤存在跳过、仓促完成或过度执行时也使用。
+full/release 必做；步骤存在跳过、仓促完成或过度执行时也使用。只列最小有效控制审计决定保留为强制流程的步骤。
 
 | 步骤或规则集 | 当前标准 | 清楚 | 可检查 | 要求充分 | 覆盖完整 | 提前完成风险 | 建议 |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
@@ -145,6 +176,7 @@ delta 模式必做；其它模式按需使用。
 - **直接回归：**
 - **SKILL.md、pointer、branch 和资源变化：**
 - **行为指标变化：**
+- **最小行为合同与复杂度结论变化：**
 - **新增规则及其替代内容：**
 - **沉积候选：**
 - **净变化：** smaller | neutral | larger

@@ -6,16 +6,16 @@ import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 const DIMENSIONS = {
-  specification: ['Specification & package integrity', 7],
+  specification: ['Specification & package integrity', 6],
   problem_value: ['Problem grounding & value', 8],
-  triggering: ['Invocation, triggering & context pointers', 12],
+  triggering: ['Invocation, triggering & context pointers', 10],
   scope_composition: ['Scope, boundaries & composition', 8],
-  instruction_design: ['Program, completion bounds & calibration', 12],
-  context_disclosure: ['Information hierarchy & progressive disclosure', 12],
+  instruction_design: ['Program & completion bounds', 10],
+  minimum_control: ['Minimum necessary control & model latitude', 14],
+  context_disclosure: ['Information hierarchy, resources & disclosure', 10],
   architecture: ['Architecture ownership', 10],
-  scripts: ['Scripts & deterministic automation', 8],
-  resources: ['Resource reachability & co-location', 5],
-  evals: ['Evals & evidence-driven iteration', 10],
+  scripts: ['Scripts & deterministic automation', 7],
+  evals: ['Evals & evidence-driven iteration', 9],
   reliability: ['Reliability, safety & compatibility', 4],
   maintainability: ['Pruning, source of truth & change discipline', 4],
 };
@@ -32,6 +32,19 @@ const REQUIRED_GATES = new Map([
 const CONFIDENCE_VALUES = { high: 1, medium: 0.7, low: 0.4, unknown: 0 };
 const VALID_MODES = new Set(['quick', 'full', 'release', 'delta']);
 const VALID_DIRECTIONS = new Set(['aligned', 'at-risk', 'drifted']);
+const VALID_COMPLEXITY_VERDICTS = new Set([
+  'minimal',
+  'proportionate',
+  'over-specified',
+  'over-engineered',
+]);
+const VALID_REDUCIBILITY = new Set([
+  'almost-none',
+  'minor',
+  'significant',
+  'core-plus-reference',
+  'redesign',
+]);
 const VALID_GATE_STATUS = new Set(['pass', 'fail', 'unknown', 'not_applicable']);
 const VALID_SEVERITY = new Set(['P0', 'P1', 'P2', 'Advisory']);
 const VALID_EVIDENCE = new Set([
@@ -48,6 +61,7 @@ const ARTIFACT_FIELDS = new Set([
   'pointer_audit',
   'information_hierarchy_map',
   'completion_boundary_audit',
+  'minimum_effective_control_audit',
   'trigger_eval_results',
   'behavior_eval_results',
   'regression_eval_results',
@@ -86,6 +100,18 @@ function qualityBand(score) {
   if (score >= 70) return 'adequate';
   if (score >= 60) return 'weak';
   return 'poor';
+}
+
+function effectiveQualityBand(rawBand, complexityVerdict) {
+  if (rawBand === null) return null;
+  const order = ['poor', 'weak', 'adequate', 'strong', 'excellent'];
+  const caps = {
+    'over-specified': 'adequate',
+    'over-engineered': 'weak',
+  };
+  const cap = caps[complexityVerdict];
+  if (!cap) return rawBand;
+  return order[Math.min(order.indexOf(rawBand), order.indexOf(cap))];
 }
 
 function confidenceLabel(index, coverage) {
@@ -204,6 +230,82 @@ function validateAndCalculate(data) {
     diagnostics.push(diagnostic('error', 'review.direction', `direction must be one of ${[...VALID_DIRECTIONS].sort().join(', ')}.`));
   }
 
+  const rawComplexity = isRecord(data.complexity) ? data.complexity : {};
+  if (data.complexity !== undefined && !isRecord(data.complexity)) {
+    diagnostics.push(diagnostic('error', 'complexity.type', 'complexity must be an object.'));
+  }
+  let complexityVerdict = Object.hasOwn(rawComplexity, 'verdict')
+    ? rawComplexity.verdict
+    : null;
+  let reducibility = Object.hasOwn(rawComplexity, 'reducibility')
+    ? rawComplexity.reducibility
+    : null;
+  let minimalBehaviorContract = Object.hasOwn(rawComplexity, 'minimal_behavior_contract')
+    ? rawComplexity.minimal_behavior_contract
+    : [];
+  if (complexityVerdict !== null && !VALID_COMPLEXITY_VERDICTS.has(complexityVerdict)) {
+    diagnostics.push(diagnostic(
+      'error',
+      'complexity.verdict',
+      `complexity.verdict must be null or one of ${[...VALID_COMPLEXITY_VERDICTS].sort().join(', ')}.`,
+    ));
+    complexityVerdict = null;
+  }
+  if (reducibility !== null && !VALID_REDUCIBILITY.has(reducibility)) {
+    diagnostics.push(diagnostic(
+      'error',
+      'complexity.reducibility',
+      `complexity.reducibility must be null or one of ${[...VALID_REDUCIBILITY].sort().join(', ')}.`,
+    ));
+    reducibility = null;
+  }
+  if (
+    !Array.isArray(minimalBehaviorContract) ||
+    minimalBehaviorContract.some((value) => typeof value !== 'string' || value.trim() === '')
+  ) {
+    diagnostics.push(diagnostic(
+      'error',
+      'complexity.contract',
+      'complexity.minimal_behavior_contract must be a list of non-empty strings.',
+    ));
+    minimalBehaviorContract = [];
+  } else if (minimalBehaviorContract.length > 8) {
+    diagnostics.push(diagnostic(
+      'error',
+      'complexity.contract-size',
+      'complexity.minimal_behavior_contract may contain at most 8 items.',
+    ));
+  }
+  const complexityAssessed = complexityVerdict !== null;
+  if (!complexityAssessed && reducibility !== null) {
+    diagnostics.push(diagnostic(
+      'error',
+      'complexity.verdict-required',
+      'A reducibility verdict requires a complexity verdict.',
+    ));
+  }
+  if (complexityAssessed && reducibility === null) {
+    diagnostics.push(diagnostic(
+      'error',
+      'complexity.reducibility-required',
+      'An assessed complexity verdict requires reducibility.',
+    ));
+  }
+  if (complexityAssessed && minimalBehaviorContract.length === 0) {
+    diagnostics.push(diagnostic(
+      'error',
+      'complexity.contract-required',
+      'An assessed complexity verdict requires a minimal behavior contract.',
+    ));
+  }
+  if ((mode === 'full' || mode === 'release') && !complexityAssessed) {
+    diagnostics.push(diagnostic(
+      'error',
+      'complexity.mode-required',
+      `${mode} mode requires a complexity verdict and minimum effective control audit.`,
+    ));
+  }
+
   const artifacts = isRecord(data.artifacts) ? data.artifacts : {};
   if (data.artifacts !== undefined && !isRecord(data.artifacts)) {
     diagnostics.push(diagnostic('error', 'artifacts.type', 'artifacts must be an object.'));
@@ -216,6 +318,16 @@ function validateAndCalculate(data) {
         `artifacts.${field} must be a boolean.`,
       ));
     }
+  }
+  if (
+    (mode === 'full' || mode === 'release') &&
+    artifacts.minimum_effective_control_audit !== true
+  ) {
+    diagnostics.push(diagnostic(
+      'error',
+      'complexity.audit-required',
+      `${mode} mode requires artifacts.minimum_effective_control_audit to be true.`,
+    ));
   }
 
   const rawFindings = Array.isArray(data.findings) ? data.findings : [];
@@ -551,6 +663,93 @@ function validateAndCalculate(data) {
     : roundPythonFloat(confidenceIndex, 2);
   const overallConfidence = confidenceLabel(normalizedConfidenceIndex, coverage);
   const rowById = Object.fromEntries(scoredRows.map((row) => [row.id, row]));
+  const minimumControl = rowById.minimum_control;
+  if (minimumControl?.score !== null && minimumControl?.score !== undefined && !complexityAssessed) {
+    diagnostics.push(diagnostic(
+      'error',
+      'complexity.verdict-required',
+      'A scored minimum_control dimension requires a complexity verdict.',
+    ));
+  }
+  if (complexityAssessed && (minimumControl?.score === null || minimumControl?.score === undefined)) {
+    diagnostics.push(diagnostic(
+      'error',
+      'complexity.dimension-required',
+      'An assessed complexity verdict requires a scored minimum_control dimension.',
+    ));
+  }
+  if (
+    (complexityVerdict === 'minimal' || complexityVerdict === 'proportionate') &&
+    minimumControl?.score !== null &&
+    minimumControl?.score !== undefined &&
+    minimumControl.score <= 3
+  ) {
+    diagnostics.push(diagnostic(
+      'error',
+      'complexity.score',
+      `${complexityVerdict} requires minimum_control score above 3.`,
+    ));
+  }
+  if (complexityVerdict === 'over-specified') {
+    if (direction === 'aligned') {
+      diagnostics.push(diagnostic(
+        'error',
+        'complexity.direction',
+        'An over-specified Skill cannot use aligned direction.',
+      ));
+    }
+    if ((minimumControl?.finding_ids ?? []).length === 0) {
+      diagnostics.push(diagnostic(
+        'error',
+        'complexity.finding-required',
+        'An over-specified verdict must reference a minimum_control finding.',
+      ));
+    }
+    if (minimumControl?.score !== null && minimumControl?.score > 3) {
+      diagnostics.push(diagnostic(
+        'error',
+        'complexity.score',
+        'An over-specified verdict requires minimum_control score 3 or lower.',
+      ));
+    }
+    if (reducibility === 'almost-none' || reducibility === 'minor') {
+      diagnostics.push(diagnostic(
+        'error',
+        'complexity.reducibility-mismatch',
+        'An over-specified verdict requires significant or larger reducibility.',
+      ));
+    }
+  }
+  if (complexityVerdict === 'over-engineered') {
+    if (direction !== 'drifted') {
+      diagnostics.push(diagnostic(
+        'error',
+        'complexity.direction',
+        'An over-engineered Skill must use drifted direction.',
+      ));
+    }
+    if ((minimumControl?.finding_ids ?? []).length === 0) {
+      diagnostics.push(diagnostic(
+        'error',
+        'complexity.finding-required',
+        'An over-engineered verdict must reference a minimum_control finding.',
+      ));
+    }
+    if (minimumControl?.score !== null && minimumControl?.score > 2) {
+      diagnostics.push(diagnostic(
+        'error',
+        'complexity.score',
+        'An over-engineered verdict requires minimum_control score 2 or lower.',
+      ));
+    }
+    if (reducibility === 'almost-none' || reducibility === 'minor') {
+      diagnostics.push(diagnostic(
+        'error',
+        'complexity.reducibility-mismatch',
+        'An over-engineered verdict requires significant or larger reducibility.',
+      ));
+    }
+  }
   const capWarning = (dimensionId, maximum, condition, code, message) => {
     const score = rowById[dimensionId]?.score;
     if (score !== null && score !== undefined && score > maximum && !condition) {
@@ -577,6 +776,13 @@ function validateAndCalculate(data) {
     artifacts.completion_boundary_audit === true,
     'cap.completion-boundary',
     'Instruction-design score exceeds 4 without a completion-boundary audit.',
+  );
+  capWarning(
+    'minimum_control',
+    3,
+    artifacts.minimum_effective_control_audit === true || mode === 'full' || mode === 'release',
+    'cap.minimum-control',
+    'Minimum-control score exceeds 3 without a minimum-effective-control audit.',
   );
   capWarning(
     'context_disclosure',
@@ -703,12 +909,15 @@ function validateAndCalculate(data) {
   const hasP0Finding = findings.some((finding) => finding.severity === 'P0');
   const hasP1Finding = findings.some((finding) => finding.severity === 'P1');
   const criticalUnknown = gates.some((gate) => gate.status === 'unknown' && REQUIRED_GATES.has(gate.id));
+  const rawQualityBand = qualityBand(normalizedScore);
+  const effectiveBand = effectiveQualityBand(rawQualityBand, complexityVerdict);
   let release;
   if (hasP0Gate || hasP0Finding) release = 'fail';
   else if (hasP1Gate || hasP1Finding) release = 'pass-after-fixes';
   else if (mode === 'quick') release = 'provisional';
   else if (mode === 'delta' && (scoredCount === 0 || artifacts.previous_version !== true)) release = 'provisional';
   else if (criticalUnknown) release = 'provisional';
+  else if (complexityVerdict === 'over-specified' || complexityVerdict === 'over-engineered') release = 'provisional';
   else if (
     (mode === 'full' || mode === 'release') &&
     (coverage < 100 || overallConfidence === 'low')
@@ -719,12 +928,19 @@ function validateAndCalculate(data) {
   const errorCount = diagnostics.filter((entry) => entry.level === 'error').length;
   return {
     review,
+    complexity: {
+      verdict: complexityVerdict,
+      reducibility,
+      minimal_behavior_contract: minimalBehaviorContract,
+    },
     score: {
       weighted_score: normalizedScore,
       coverage_percent: coverage,
       confidence_index: normalizedConfidenceIndex,
       confidence: overallConfidence,
-      quality_band: qualityBand(normalizedScore),
+      quality_band: rawQualityBand,
+      effective_quality_band: effectiveBand,
+      quality_cap_reason: effectiveBand !== rawQualityBand ? complexityVerdict : null,
       release,
     },
     dimensions: scoredRows,
@@ -744,7 +960,9 @@ function renderText(result) {
   const lines = [
     `Skill: ${result.review.skill_name ?? ''}`,
     `Mode / direction: ${result.review.mode ?? ''} / ${result.review.direction ?? ''}`,
+    `Complexity: ${result.complexity.verdict ?? 'not assessed'} / ${result.complexity.reducibility ?? 'not assessed'}`,
     `Score: ${scoreText}`,
+    `Effective quality: ${score.effective_quality_band ?? 'not calculated'}`,
     `Coverage: ${score.coverage_percent}%`,
     `Confidence: ${score.confidence} (${score.confidence_index})`,
     `Release: ${score.release}`,
