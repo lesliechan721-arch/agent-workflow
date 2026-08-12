@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "plugin": "git",
-  "skill": "resolving-merge-conflicts",
+  "skill": "reconciling-git-merges",
   "profiles": [
     {
       "id": "project-default",
@@ -22,11 +22,11 @@
     {
       "id": "router",
       "kind": "trigger",
-      "skills": ["resolving-merge-conflicts", "git-commit"],
+      "skills": ["reconciling-git-merges", "git-commit"],
       "cases": "./trigger-cases.json",
       "observeSpawnAgent": false,
       "isolation": "strict",
-      "strictNegativeSplits": [],
+      "strictNegativeSplits": ["validation"],
       "minimumPassRate": 0.8,
       "forbidMultipleSkillLoads": true,
       "profiles": ["project-default"],
@@ -37,15 +37,17 @@
     },
     {
       "id": "behavior",
-      "kind": "conversation",
-      "skills": ["resolving-merge-conflicts", "git-commit"],
-      "cases": "./behavior-cases.json",
-      "isolation": "strict",
+      "kind": "command",
+      "skills": ["reconciling-git-merges", "git-commit"],
+      "entry": "./run-merge-evals.mjs",
+      "cases": "./evals.json",
       "profiles": ["project-default"],
       "defaultRuns": 1,
       "releaseSplits": [],
       "requiredForRelease": true,
-      "perRunTimeoutMs": 300000
+      "perRunTimeoutMs": 300000,
+      "suiteTimeoutMs": 3000000,
+      "supports": ["runs", "case", "model", "codexBin", "timeout"]
     }
   ]
 }

@@ -18,6 +18,12 @@ import {
   captureTriggerWorkspaceState,
   setupTriggerWorkspace,
 } from '../skills/git-commit/evals/trigger-fixture.mjs';
+import {
+  analysisMessageChecks,
+  committedControlPaths,
+  loadCases as loadMergeCases,
+  parseArgs as parseMergeEvalArgs,
+} from '../skills/reconciling-git-merges/evals/run-merge-evals.mjs';
 
 const execFileAsync = promisify(execFile);
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
@@ -76,9 +82,9 @@ async function testEvalCorpora(sourceRoot) {
   const [
     triggerContent,
     behaviorContent,
-    conflictTriggerContent,
-    conflictBehaviorContent,
-    conflictManifestContent,
+    mergeTriggerContent,
+    mergeEvalContent,
+    mergeManifestContent,
   ] = await Promise.all([
     readFile(
       path.join(sourceRoot, 'skills', 'git-commit', 'evals', 'trigger-cases.json'),
@@ -89,15 +95,15 @@ async function testEvalCorpora(sourceRoot) {
       'utf8',
     ),
     readFile(
-      path.join(sourceRoot, 'skills', 'resolving-merge-conflicts', 'evals', 'trigger-cases.json'),
+      path.join(sourceRoot, 'skills', 'reconciling-git-merges', 'evals', 'trigger-cases.json'),
       'utf8',
     ),
     readFile(
-      path.join(sourceRoot, 'skills', 'resolving-merge-conflicts', 'evals', 'behavior-cases.json'),
+      path.join(sourceRoot, 'skills', 'reconciling-git-merges', 'evals', 'evals.json'),
       'utf8',
     ),
     readFile(
-      path.join(sourceRoot, 'skills', 'resolving-merge-conflicts', 'evals', 'manifest.json'),
+      path.join(sourceRoot, 'skills', 'reconciling-git-merges', 'evals', 'manifest.json'),
       'utf8',
     ),
   ]);
@@ -172,16 +178,18 @@ async function testEvalCorpora(sourceRoot) {
     );
   }
 
-  const conflictDocument = JSON.parse(conflictTriggerContent);
-  const conflictCases = conflictDocument.cases;
-  const participants = new Set(['resolving-merge-conflicts', 'git-commit']);
-  assert.equal(conflictDocument.schemaVersion, 1);
-  assert.equal(conflictDocument.skill, 'resolving-merge-conflicts');
-  assert.equal(conflictCases.length, 20);
-  assert.equal(conflictCases.filter((entry) => entry.split === 'train').length, 12);
-  assert.equal(conflictCases.filter((entry) => entry.split === 'validation').length, 8);
-  assert.equal(new Set(conflictCases.map((entry) => entry.id)).size, conflictCases.length);
-  for (const entry of conflictCases) {
+  const mergeDocument = JSON.parse(mergeTriggerContent);
+  const mergeCases = mergeDocument.cases;
+  const participants = new Set(['reconciling-git-merges', 'git-commit']);
+  assert.equal(mergeDocument.schemaVersion, 1);
+  assert.equal(mergeDocument.skill, 'reconciling-git-merges');
+  assert.equal(mergeCases.length, 21);
+  assert.equal(mergeCases.filter((entry) => entry.split === 'train').length, 14);
+  assert.equal(mergeCases.filter((entry) => entry.split === 'validation').length, 7);
+  assert.equal(new Set(mergeCases.map((entry) => entry.id)).size, mergeCases.length);
+  assert.equal(mergeCases.filter((entry) => entry.expected_loaded_skills.length === 1).length, 11);
+  assert.equal(mergeCases.filter((entry) => entry.expected_loaded_skills.length === 0).length, 10);
+  for (const entry of mergeCases) {
     assert.equal(Array.isArray(entry.expected_loaded_skills), true);
     assert.equal(
       entry.expected_loaded_skills.every((skill) => participants.has(skill)),
@@ -192,40 +200,70 @@ async function testEvalCorpora(sourceRoot) {
       entry.expected_loaded_skills.length,
     );
   }
-  const expectedConflictRouting = new Map([
-    ['resolve_merge_conflict', ['resolving-merge-conflicts']],
-    ['continue_rebase', ['resolving-merge-conflicts']],
-    ['normal_commit', ['git-commit']],
-    ['commit_and_push', ['git-commit']],
-    ['explain_markers', []],
-    ['abort_rebase', []],
-    ['cherry_pick_conflict', []],
-    ['start_new_merge', []],
+  const expectedMergeRouting = new Map([
+    ['source_01', ['reconciling-git-merges']],
+    ['source_02', ['reconciling-git-merges']],
+    ['source_08', ['reconciling-git-merges']],
+    ['source_11', []],
+    ['source_12', []],
+    ['source_13', []],
+    ['source_16', []],
+    ['source_17', []],
+    ['ordinary_local_commit', ['git-commit']],
   ]);
-  for (const [id, expectedSkills] of expectedConflictRouting) {
-    const entry = conflictCases.find((candidate) => candidate.id === id);
-    assert.ok(entry, `Missing required conflict routing case ${id}`);
+  for (const [id, expectedSkills] of expectedMergeRouting) {
+    const entry = mergeCases.find((candidate) => candidate.id === id);
+    assert.ok(entry, `Missing required merge routing case ${id}`);
     assert.deepEqual(entry.expected_loaded_skills, expectedSkills);
   }
 
-  const conflictBehavior = JSON.parse(conflictBehaviorContent);
-  const conflictManifest = JSON.parse(conflictManifestContent);
-  assert.equal(conflictBehavior.skill_name, 'resolving-merge-conflicts');
-  assert.equal(conflictBehavior.evals.length, 3);
+  const mergeEvals = JSON.parse(mergeEvalContent);
+  const mergeManifest = JSON.parse(mergeManifestContent);
+  assert.equal(mergeEvals.skill_name, 'reconciling-git-merges');
+  assert.equal(mergeEvals.evals.length, 4);
   assert.deepEqual(
-    conflictBehavior.evals.map((entry) => entry.id),
-    ['preserve-compatible-intents', 'ask-on-incompatible-intents', 'rebase-side-semantics'],
+    mergeEvals.evals.map((entry) => entry.id),
+    [
+      'ambiguous_retention',
+      'semantic_same_file',
+      'semantic_cross_file',
+      'analysis_only_dirty_worktree',
+    ],
   );
-  for (const entry of conflictBehavior.evals) {
-    assert.equal(Array.isArray(entry.scripted_replies), true);
-    assert.equal(entry.review.workspace_unchanged, true);
-    assert.ok(entry.review.checks.length >= 2);
+  for (const entry of mergeEvals.evals) {
+    assert.equal(typeof entry.prompt, 'string');
+    assert.equal(typeof entry.expected_output, 'string');
+    assert.equal(entry.files.length, 1);
+    const fixturePath = path.join(sourceRoot, 'skills', 'reconciling-git-merges', entry.files[0]);
+    assert.ok((await readFile(fixturePath)).length > 0);
   }
-  const behaviorSuite = conflictManifest.suites.find((suite) => suite.id === 'behavior');
-  assert.ok(behaviorSuite);
-  assert.equal(behaviorSuite.kind, 'conversation');
-  assert.deepEqual(behaviorSuite.skills, ['resolving-merge-conflicts', 'git-commit']);
-  assert.equal(behaviorSuite.cases, './behavior-cases.json');
+  assert.equal(mergeManifest.skill, 'reconciling-git-merges');
+  assert.equal(mergeManifest.suites.length, 2);
+  const routerSuite = mergeManifest.suites.find((suite) => suite.id === 'router');
+  const behaviorSuite = mergeManifest.suites.find((suite) => suite.id === 'behavior');
+  assert.equal(routerSuite.kind, 'trigger');
+  assert.deepEqual(routerSuite.skills, ['reconciling-git-merges', 'git-commit']);
+  assert.equal(routerSuite.forbidMultipleSkillLoads, true);
+  assert.equal(routerSuite.cases, './trigger-cases.json');
+  assert.equal(behaviorSuite.kind, 'command');
+  assert.deepEqual(behaviorSuite.skills, ['reconciling-git-merges', 'git-commit']);
+  assert.equal(behaviorSuite.entry, './run-merge-evals.mjs');
+  assert.equal(behaviorSuite.cases, './evals.json');
+  assert.equal(behaviorSuite.requiredForRelease, true);
+  assert.deepEqual(
+    (await loadMergeCases()).map((entry) => entry.id),
+    mergeEvals.evals.map((entry) => entry.id),
+  );
+  assert.deepEqual(parseMergeEvalArgs(['--runs', '2', '--case', 'semantic_same_file']), {
+    runs: 2,
+    timeoutMs: 300000,
+    codexBin: 'codex',
+    model: 'gpt-5.6-luna',
+    caseId: 'semantic_same_file',
+    output: undefined,
+    help: false,
+  });
+  assert.throws(() => parseMergeEvalArgs(['--runs', '0']), /positive integer/);
 }
 
 function assertRenderedSkill(skill) {
@@ -263,21 +301,24 @@ function assertCoreCommitContract(skill) {
   assert.match(skill, /琐碎单点改动可省略 body/);
 }
 
-function assertCoreConflictContract(skill) {
-  assert.match(skill, /查看完整 `git status`、相关历史和冲突文件/);
-  assert.match(skill, /理解 base、ours、theirs 和相关提交分别要实现什么/);
-  assert.match(skill, /能分别说明两侧意图后再解决；无法说明时停止并询问用户/);
-  assert.match(skill, /可以兼容时保留两侧意图/);
-  assert.match(skill, /不要发明新行为，不要批量选择 ours\/theirs/);
-  assert.match(skill, /确认没有未合并路径或残留冲突标记/);
-  assert.match(skill, /继续当前 merge 或 rebase/);
+function assertCoreMergeContract(skill) {
+  assert.match(skill, /检查当前状态和相关历史/);
+  assert.match(skill, /仅分析时不得改变 refs、index 或 worktree/);
+  assert.match(skill, /若只是 fast-forward 或 already up to date/);
+  assert.match(skill, /Clean merge 只证明文本兼容，不证明组合行为正确/);
+  assert.match(skill, /跨文件追踪行为、契约和依赖/);
+  assert.match(skill, /兼容时保留双方意图/);
+  assert.match(skill, /只做具体交互所需的集成修改，不发明行为/);
+  assert.match(skill, /运行项目要求的检查，以及能覆盖双方交互的针对性测试/);
+  assert.match(skill, /只在用户要求且验证通过后完成/);
+  assert.match(skill, /不得在未被要求时推送/);
 }
 
 async function testSkillRenders(context) {
-  const [source, conflictSource] = await Promise.all([
+  const [source, mergeSource] = await Promise.all([
     readFile(path.join(context.sourceRoot, 'skills', 'git-commit', 'SKILL.md'), 'utf8'),
     readFile(
-      path.join(context.sourceRoot, 'skills', 'resolving-merge-conflicts', 'SKILL.md'),
+      path.join(context.sourceRoot, 'skills', 'reconciling-git-merges', 'SKILL.md'),
       'utf8',
     ),
   ]);
@@ -286,18 +327,18 @@ async function testSkillRenders(context) {
   assert.equal(source.includes('user-invocable:'), false);
   assert.equal(source.includes('metadata:'), false);
   assert.match(
-    conflictSource,
-    /当用户需要解决正在进行的 Git merge 或 rebase 冲突时使用/,
+    mergeSource,
+    /当 Git merge 需要协调双方意图时使用/,
   );
-  assert.equal(conflictSource.includes('user-invocable:'), false);
-  assert.equal(conflictSource.includes('metadata:'), false);
+  assert.equal(mergeSource.includes('user-invocable:'), false);
+  assert.equal(mergeSource.includes('metadata:'), false);
 
   if (context.platform) {
     const [
       bundledSkill,
       bundledOpenai,
-      bundledConflictSkill,
-      bundledConflictOpenai,
+      bundledMergeSkill,
+      bundledMergeOpenai,
     ] = await Promise.all([
       readFile(
         path.join(
@@ -325,7 +366,7 @@ async function testSkillRenders(context) {
           context.bundleRoot,
           context.platform,
           'skills',
-          'resolving-merge-conflicts',
+          'reconciling-git-merges',
           'SKILL.md',
         ),
         'utf8',
@@ -335,7 +376,7 @@ async function testSkillRenders(context) {
           context.bundleRoot,
           context.platform,
           'skills',
-          'resolving-merge-conflicts',
+          'reconciling-git-merges',
           'agents',
           'openai.yaml',
         ),
@@ -348,22 +389,22 @@ async function testSkillRenders(context) {
     );
     assert.match(bundledOpenai, /allow_implicit_invocation: true/);
     assert.match(
-      bundledConflictOpenai,
-      /default_prompt: "使用 \$resolving-merge-conflicts 理解两侧意图，解决并完成当前 Git merge 或 rebase 冲突。"/,
+      bundledMergeOpenai,
+      /default_prompt: "使用 \$reconciling-git-merges 协调 Git merge 双方意图并验证组合结果。"/,
     );
-    assert.match(bundledConflictOpenai, /allow_implicit_invocation: true/);
+    assert.match(bundledMergeOpenai, /allow_implicit_invocation: true/);
     assertCoreCommitContract(bundledSkill);
-    assertCoreConflictContract(bundledConflictSkill);
+    assertCoreMergeContract(bundledMergeSkill);
     assert.ok(['codex', 'claude'].includes(context.platform));
     assertRenderedSkill(bundledSkill);
-    assertRenderedSkill(bundledConflictSkill);
+    assertRenderedSkill(bundledMergeSkill);
     return;
   }
 
   assertCoreCommitContract(source);
-  assertCoreConflictContract(conflictSource);
+  assertCoreMergeContract(mergeSource);
   assertRenderedSkill(source);
-  assertRenderedSkill(conflictSource);
+  assertRenderedSkill(mergeSource);
 }
 
 async function testWorkspaceFixture() {
@@ -541,6 +582,28 @@ async function testCherryPickConflictDetection() {
   }
 }
 
+async function testMergeEvalAssertions() {
+  const goodAnalysis = 'subtotal 返回整数分值，invoice 按元格式化。建议在边界除以 100，并运行 unittest 验证。';
+  assert.equal(analysisMessageChecks(goodAnalysis).every((entry) => entry.passed), true);
+  assert.equal(
+    analysisMessageChecks('仓库未修改。').some((entry) => !entry.passed),
+    true,
+  );
+
+  const root = await mkdtemp(path.join(os.tmpdir(), 'git-merge-control-paths-'));
+  try {
+    await initializeRepository(root);
+    assert.deepEqual(await committedControlPaths(root), []);
+    await mkdir(path.join(root, '.agents'), { recursive: true });
+    await writeFile(path.join(root, '.agents', 'control.txt'), 'control\n', 'utf8');
+    await git(root, ['add', '--', '.agents/control.txt']);
+    await git(root, ['commit', '--quiet', '-m', 'test: add control file']);
+    assert.deepEqual(await committedControlPaths(root), ['.agents/control.txt']);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
 async function main() {
   const context = await resolveTestContext();
   await testEvalCorpora(context.sourceRoot);
@@ -550,6 +613,7 @@ async function main() {
   await testPartialStagingBehavior();
   await testMergeInProgressDetection();
   await testCherryPickConflictDetection();
+  await testMergeEvalAssertions();
   console.log('git skill eval and Git behavior tests passed');
 }
 
