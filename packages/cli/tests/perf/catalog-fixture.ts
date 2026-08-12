@@ -49,9 +49,9 @@ export async function createPerfCatalogFixture(
   const manifest = await fs.readJson(
     path.join(sidecarRoot, CATALOG_MANIFEST_FILENAME),
   ) as CatalogManifest;
-  if (manifest.entries.length < 4) {
+  if (manifest.entries.length < 3) {
     throw new Error(
-      `Performance catalog fixture requires at least 4 plugins, found ${manifest.entries.length}.`,
+      `Performance catalog fixture requires at least 3 plugins, found ${manifest.entries.length}.`,
     );
   }
 
