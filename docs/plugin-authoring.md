@@ -32,13 +32,29 @@
 - 顶层 `dependencies` 不受支持。validator 会明确返回 unsupported。
 - `interface` 只提供展示信息，不开启运行时能力。
 
-完整字段见 `.agents/skills/create-agent-workflows-plugin/references/plugin-manifest-spec.md`。
+完整字段见 `.agents/skills/create-aw-plugin/references/plugin-manifest-spec.md`。
 
 进一步阅读：`references/skills-and-triggers.md`、`references/skill-design.md`、`references/skill-scripts.md` 和 `references/skill-evaluation.md`。
 
 ## Version and Catalog
 
 CLI version、catalog version 和 plugin version 是三套身份。插件更新通常只发布 catalog，不要求发布 CLI。
+
+修改插件 production bundle 时必须提高 `.agents-plugin/plugin.json` 的 plugin version。稳定版本可以使用作者工具递增；prerelease 或含 build metadata 的版本必须指定精确的更高 SemVer：
+
+```bash
+node .agents/skills/create-aw-plugin/scripts/bump_plugin_version.mjs <plugin-name> \
+  (--bump major|minor|patch | --version <semver>)
+```
+
+检查 Git 基线与工作树中全部变更插件：
+
+```bash
+pnpm build
+pnpm plugin:version:check -- --base <git-ref>
+```
+
+该检查使用当前 CLI bundler 比较插件源码产生的 production bundle。Skill `evals/**`、插件 `reports/**` 和 test-only 文件不要求 bump；随插件发布的 README、Skill、manifest 和 runtime 脚本变化要求 bump。它不判断 CLI bundler 自身变化造成的产物差异。
 
 `@lesliechan721/aw-plugins-manifest` sidecar 与 `@lesliechan721/aw-plugins` full catalog 使用同一份 schema 2 `catalog-manifest.json`。manifest 只描述 current 单版本快照，并记录 catalog 最低 CLI 版本、sidecar/full package identity，以及每个 current plugin 的 version、最低 CLI 版本、`artifactDigest` 和 `manifestDigest`。
 
@@ -72,6 +88,8 @@ user-invocable: true
 Skill 的触发行为只由平台原生元数据决定。AW 校验并保留这些字段，不用 config 或 CLI flag 改写它们。公共 slash command 生成的 Codex 入口固定为 manual-only。
 
 作者脚手架创建初始 Skill 时要求独立的 `--skill-description`。`--skill-invocation` 支持 `model`、`manual` 和 `claude-model-only`，默认 `model`。字段、类型和宿主版本支持状态由 `packages/cli/src/utils/skill-frontmatter-capabilities.json` 统一定义；作者 validator 默认检查 Claude Code 2.1.88 profile，`--claude-skill-profile current` 只核对当前文档字段，不改变最低版本发布门。
+
+向现有插件新增一个静态 Skill 使用 `scripts/add_skill.mjs`。该命令默认对稳定 plugin version 做 minor bump，并按插件支持平台生成调用元数据；它不修改插件 README，也不代替 extensions、dynamic artifact 或其它能力的直接设计与编辑。
 
 作者不需要、也不能在插件 manifest 中声明最低 Codex 或 Claude Code 版本。宿主版本门禁由 CLI 统一维护。
 
@@ -191,11 +209,13 @@ pnpm plugin:eval <plugin> --skill <skill> --batch-name release
 维护插件后至少运行：
 
 ```bash
-node .agents/skills/create-agent-workflows-plugin/scripts/validate_plugin.mjs plugins/<name>
-node .agents/skills/create-agent-workflows-plugin/scripts/validate_plugin.mjs plugins/<name> --claude-skill-profile current
+pnpm build
+node .agents/skills/create-aw-plugin/scripts/validate_plugin.mjs plugins/<name>
+node .agents/skills/create-aw-plugin/scripts/validate_plugin.mjs plugins/<name> --claude-skill-profile current
+node .agents/skills/create-aw-plugin/scripts/validate_plugin.mjs plugins/<name> --version-base <git-ref>
+node .agents/skills/create-aw-plugin/scripts/check_plugin_versions.mjs --all --base <git-ref>
 pnpm plugin:test <name>
 pnpm plugin:eval <name> --skill <skill> --batch-name materialization --materialize-only
-pnpm build
 ```
 
 改变 manifest 或平台能力时，同时更新作者 reference、示例和 fixture。

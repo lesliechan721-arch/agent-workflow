@@ -29,7 +29,7 @@
 - [x] `--takeover-shared-runtime` 不再是公开入口。shared runtime owner 冲突只能作为写命令 blocker、diagnostic 或结构化下一步暴露。
 - [x] `cleanup --dependency-index --prune-stale <token> --yes` 是 dependency index 的唯一显式维护入口，不能复用旧 repair 语义。
 - [x] TUI 可以消费结构化 `nextSteps` 推导推荐动作，但不能显示 raw command，不能渲染字符串 `nextSteps` 正文，也不能出现 `诊断`、`repair`、`修复安装`、`openRepair`、`openDiagnose` 等用户可见入口。
-- [x] 本轮会影响插件基础架构、adapter 行为、scope 语义、分发/安装流程和插件作者可见能力；实施时必须同步检查 `.agents/skills/create-agent-workflows-plugin/`、公开文档和测试夹具。
+- [x] 本轮会影响插件基础架构、adapter 行为、scope 语义、分发/安装流程和插件作者可见能力；实施时必须同步检查 `.agents/skills/create-aw-plugin/`、公开文档和测试夹具。
 - [x] 每个阶段必须补齐行为测试。阶段内待办、测试验收和阶段验收都完成后，才能把该阶段标记为完成。
 - [x] 文件清单是起始范围。实现中发现同一职责在其它文件中，也要补充到计划或提交说明。
 
@@ -57,7 +57,7 @@
 - [x] 阶段 4 / 6 共享 `packages/cli/src/commands/install-state-removal.ts` 和 cleanup 删除 helper。阶段 4 负责可清理项和归属边界，阶段 6 只能复用该语义，不能另写一套删除规则。
 - [x] 阶段 5 / 7 共享 dependency protection、shared runtime owner 和 adapter 写入相关文件。owner 冲突、依赖保护和写命令 blocker 的 reason code 需要先统一，再分别接入 install、upgrade、uninstall、reinstall。
 - [x] 阶段 8 与阶段 2 / 3 共享 `packages/cli/src/commands/console-model.ts`、`packages/cli/src/commands/console.ts`、`packages/cli/src/commands/console-wizard.ts`、`packages/cli/src/commands/discovery.ts`、`packages/cli/src/output/model.ts` 和 TUI 测试。阶段 2 是 `packages/cli/src/output/model.ts` 里 status / receipt / nextSteps 公开结构化模型的 owner；阶段 8 只能在阶段 2 合同稳定后串行接入 TUI 页面消费所需字段。TUI 只消费结构化模型，不能从 CLI 文案反解析。
-- [x] 阶段 9 涉及 `README.md`、`docs/` 和 `.agents/skills/create-agent-workflows-plugin/`。文档改动必须在命令合同稳定后收口，避免先写错公开入口。
+- [x] 阶段 9 涉及 `README.md`、`docs/` 和 `.agents/skills/create-aw-plugin/`。文档改动必须在命令合同稳定后收口，避免先写错公开入口。
 
 ## 阶段依赖关系图
 
@@ -539,12 +539,12 @@ graph TD
 - [x] `docs/plugin-authoring.md`
 - [x] `docs/coding-conventions.md`
 - [x] `docs/testing.md`
-- [x] `.agents/skills/create-agent-workflows-plugin/SKILL.md`
-- [x] `.agents/skills/create-agent-workflows-plugin/references/plugin-manifest-spec.md`
-- [x] `.agents/skills/create-agent-workflows-plugin/references/aw-scripts-config-lifecycle.md`
-- [x] `.agents/skills/create-agent-workflows-plugin/references/comprehensive-example.md`
-- [x] `.agents/skills/create-agent-workflows-plugin/references/skills-and-triggers.md`
-- [x] `.agents/skills/create-agent-workflows-plugin/references/.examples/**`
+- [x] `.agents/skills/create-aw-plugin/SKILL.md`
+- [x] `.agents/skills/create-aw-plugin/references/plugin-manifest-spec.md`
+- [x] `.agents/skills/create-aw-plugin/references/aw-scripts-config-lifecycle.md`
+- [x] `.agents/skills/create-aw-plugin/references/comprehensive-example.md`
+- [x] `.agents/skills/create-aw-plugin/references/skills-and-triggers.md`
+- [x] `.agents/skills/create-aw-plugin/references/.examples/**`
 - [x] `packages/cli/tests/unit/public-docs.test.ts`
 - [x] `packages/cli/tests/integration/authoring-tools.test.ts`
 - [x] `packages/cli/tests/helpers/minimal-plugin-install-state-fixtures.ts`
@@ -557,7 +557,7 @@ graph TD
 - [x] 更新安装文档中的 status、install adopt、uninstall、cleanup、reinstall、dependency index、shared runtime、transaction marker 和 TUI 章节。
 - [x] 技术细节文档强调 install record 是唯一安装真值，辅助证据只作为诊断、cleanup / reinstall 删除范围或 command blocker。
 - [x] 插件作者文档说明 cleanup / reinstall 的恢复模型、配置默认保留、dynamic diagnostic cache 的诊断定位和 project adopt 的新入口。
-- [x] 更新 `.agents/skills/create-agent-workflows-plugin/` 中关于 lifecycle、dynamic artifacts、config refresh、repair install、adopt existing、shared runtime takeover 的描述。
+- [x] 更新 `.agents/skills/create-aw-plugin/` 中关于 lifecycle、dynamic artifacts、config refresh、repair install、adopt existing、shared runtime takeover 的描述。
 - [x] 更新作者工具示例和夹具里调用旧命令或旧状态的内容。
 - [x] 更新 public docs 测试，阻止公开文档继续出现旧命令示例或旧恢复入口。
 - [x] 如果保留历史说明里的 `repair` 字样，必须清楚说明“目标模型不提供”，不能给出可执行命令。
@@ -586,7 +586,7 @@ graph TD
 - [x] `packages/cli/tests/**`
 - [x] `README.md`
 - [x] `docs/**`
-- [x] `.agents/skills/create-agent-workflows-plugin/**`
+- [x] `.agents/skills/create-aw-plugin/**`
 
 待办：
 
@@ -720,7 +720,7 @@ graph TD
 - [x] 运行 `pnpm test:integration`。
 - [x] 运行 `pnpm test:smoke:build`。
 - [x] 运行 `pnpm test:smoke:plugin-scripts`。
-- [x] 针对 `README.md`、`docs/`、`.agents/skills/create-agent-workflows-plugin/`、`packages/cli/src/commands/console*`、`packages/cli/src/commands/status.ts` 执行旧公开入口检查，确认 `aw repair`、`repair --dependency-index`、`cleanup --plan`、`--takeover-shared-runtime`、`needsRepair`、`residual`、`adoptable` 不再作为用户可执行路径或公开状态出现。
+- [x] 针对 `README.md`、`docs/`、`.agents/skills/create-aw-plugin/`、`packages/cli/src/commands/console*`、`packages/cli/src/commands/status.ts` 执行旧公开入口检查，确认 `aw repair`、`repair --dependency-index`、`cleanup --plan`、`--takeover-shared-runtime`、`needsRepair`、`residual`、`adoptable` 不再作为用户可执行路径或公开状态出现。
 - [x] 手工验证一条 codex project fresh clone 认领链路：无本机 record、有可验证 shared artifacts 时 status 为 `external` + `claimableProjectArtifacts`，普通 install 失败，`install --adopt-existing` 成功后变为 `installed`。
 - [x] 手工验证一条 cleanup 链路：损坏 record 或 marker-only 残留可以直接 cleanup，配置默认保留，重复 cleanup 稳定。
 - [x] 手工验证一条 reinstall 链路：healthy installed 和可安全 cleanupRequired 都能保留配置重建；external 或 claimable project artifacts 在新安装前停止。

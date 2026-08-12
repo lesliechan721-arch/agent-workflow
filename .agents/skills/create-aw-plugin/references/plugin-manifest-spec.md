@@ -60,6 +60,19 @@ AW 版本管理里有三套身份，不能混用：
 - current candidate 中每个插件都必须提供与 artifact 和 manifest 对应的 digest，并声明不高于 catalog 级门槛的最低 CLI 版本。作者改变 manifest、runtime 文件、脚本、静态资源、最低 CLI 版本或平台能力时，应发布新的插件 `version`。
 - 同一 catalog version 的 sidecar/full exact-version package 内容不可改变。要发布不同快照，必须提高 catalog version。
 
+作者版本工具：
+
+```bash
+node .agents/skills/create-aw-plugin/scripts/bump_plugin_version.mjs <plugin-name> \
+  (--bump major|minor|patch | --version <semver>)
+node .agents/skills/create-aw-plugin/scripts/check_plugin_versions.mjs \
+  --all --base <git-ref>
+```
+
+`bump_plugin_version.mjs` 只修改源码 manifest 的 plugin version。稳定版本可以显式选择 major、minor 或 patch；当前版本含 prerelease 或 build metadata 时必须传精确的更高 `--version`。build metadata 不提高 SemVer precedence，不能用来形成可升级版本。
+
+`check_plugin_versions.mjs` 用当前已构建 CLI 的 staging bundler 分别物化 Git 基线插件和工作树插件，再忽略 plugin version 字段本身比较 production bundle。production bundle 变化但 version 没有提高时失败；版本提高但 bundle 没有变化时只警告。Skill `evals/**`、插件 `reports/**` 和 test-only 文件由 bundler 排除，不要求 bump；随 bundle 发布的 README、Skill、manifest 和 runtime 脚本变化要求 bump。该门禁只判断插件源码变化，不判断 CLI bundler 自身变化造成的产物差异。
+
 发布门禁不查询 earlier catalog manifest，也不证明全部已发布 `plugin@version` 的全局不可变性。插件 version 是否准确表达内容变化是作者合同；自动门禁只校验 current candidate 内的身份字段和同一 catalog version 的 exact-version package 内容。
 
 `@lesliechan721/aw-plugins-manifest` sidecar 包和 `@lesliechan721/aw-plugins` full catalog 包使用相同 schema 2 manifest、catalog version、channel 和 catalog 级最低 CLI 版本。sidecar 只包含 current `catalog-manifest.json` 和必要 package metadata；full 包包含同一份 manifest 以及 current 单版本快照的全部插件 artifact。

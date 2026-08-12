@@ -219,7 +219,7 @@ run 在批次锁内预留，target 发布和终态写入使用同一个锁事务
 
 `workspace-write` 只作用于每次运行的隔离临时副本，关闭网络写入能力，并要求非空的允许改动路径和最终 artifact 断言。机械门对当前版本检查改动路径、文件存在、文本和 JSON 子集；baseline 使用相同 sandbox 和输入，并保留自己的 diff、artifact digest、token 和时间。只读 case 省略 `sandbox`，默认保持 `read-only`。
 
-`init_plugin.mjs` 会生成 trigger train/validation/sanity 和一个可写 behavior starter。starter 只提供合法结构；发布前必须替换为领域真实任务、near-miss、允许改动路径和可区分的断言。
+`init_plugin.mjs` 和 `add_skill.mjs` 会为支持 Codex 的新 Skill 生成 trigger train/validation/sanity 和一个可写 behavior starter。starter 只提供合法结构；发布前必须替换为领域真实任务、near-miss、允许改动路径和可区分的断言。当前 v2 模型 eval 固定运行 Codex；Claude-only 插件的 `add_skill.mjs` 不生成不可运行的 eval manifest，作者只运行确定性校验并明确记录模型行为未验证。
 
 需要 `request_user_input` 时，回复按步骤和问题索引保存，例如：
 

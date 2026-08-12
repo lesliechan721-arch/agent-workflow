@@ -4,18 +4,30 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import {
+  compareStrictSemVer as compareSemVer,
+  parseStrictSemVer as parseSemVer,
+} from './lib/semver.mjs';
+import {
+  MAX_CODEX_SHORT_DESCRIPTION_LEN,
+  MIN_CODEX_SHORT_DESCRIPTION_LEN,
+  SKILL_INVOCATION_MODES,
+  renderBehaviorCases,
+  renderEvalManifest,
+  renderOpenAiYaml,
+  renderPluginReadme,
+  renderSkillMd,
+  renderSkillReadme,
+  renderTriggerCases,
+  titleCaseSlug,
+} from './lib/skill-scaffold.mjs';
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 function fail(message) {
   console.error(`[ERROR] ${message}`);
   process.exit(1);
 }
-
-const STRICT_SEMVER_PATTERN =
-  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|(?:[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))(?:\.(?:0|[1-9]\d*|(?:[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)))*)?)?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
-const MIN_CODEX_SHORT_DESCRIPTION_LEN = 25;
-const MAX_CODEX_SHORT_DESCRIPTION_LEN = 64;
-const SKILL_INVOCATION_MODES = new Set(['model', 'manual', 'claude-model-only']);
 
 function requireHyphenName(value, fieldName) {
   if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value)) {
@@ -34,13 +46,6 @@ function requireCharacterRange(value, fieldName, minLength, maxLength) {
   return value;
 }
 
-function titleCaseSlug(value) {
-  return value
-    .split('-')
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(' ');
-}
-
 function ensureParentDir(filePath) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
 }
@@ -55,87 +60,20 @@ function writeJson(filePath, content) {
   fs.writeFileSync(filePath, `${JSON.stringify(content, null, 2)}\n`, 'utf8');
 }
 
-function yamlString(value) {
-  return JSON.stringify(String(value));
-}
-
 function parseStrictSemVer(value, fieldName) {
-  const stringValue = String(value);
-  const match = stringValue.match(STRICT_SEMVER_PATTERN);
-  if (!match) {
-    fail(`${fieldName} must be a strict SemVer 2.0.0 string, got "${stringValue}".`);
+  try {
+    return parseSemVer(value, fieldName);
+  } catch (error) {
+    fail(error.message);
   }
-
-  return {
-    raw: stringValue,
-    major: Number(match[1]),
-    minor: Number(match[2]),
-    patch: Number(match[3]),
-    prerelease: match[4] ? match[4].split('.') : [],
-  };
-}
-
-function comparePrereleaseIdentifier(left, right) {
-  const leftNumeric = /^\d+$/.test(left);
-  const rightNumeric = /^\d+$/.test(right);
-
-  if (leftNumeric && rightNumeric) {
-    return Number(left) - Number(right);
-  }
-  if (leftNumeric) {
-    return -1;
-  }
-  if (rightNumeric) {
-    return 1;
-  }
-  if (left < right) {
-    return -1;
-  }
-  if (left > right) {
-    return 1;
-  }
-  return 0;
 }
 
 function compareStrictSemVer(left, right) {
-  const leftVersion = parseStrictSemVer(left, 'version');
-  const rightVersion = parseStrictSemVer(right, 'version');
-
-  for (const key of ['major', 'minor', 'patch']) {
-    if (leftVersion[key] !== rightVersion[key]) {
-      return leftVersion[key] - rightVersion[key];
-    }
+  try {
+    return compareSemVer(left, right);
+  } catch (error) {
+    fail(error.message);
   }
-
-  const leftPrerelease = leftVersion.prerelease;
-  const rightPrerelease = rightVersion.prerelease;
-  if (leftPrerelease.length === 0 && rightPrerelease.length === 0) {
-    return 0;
-  }
-  if (leftPrerelease.length === 0) {
-    return 1;
-  }
-  if (rightPrerelease.length === 0) {
-    return -1;
-  }
-
-  const maxLength = Math.max(leftPrerelease.length, rightPrerelease.length);
-  for (let index = 0; index < maxLength; index += 1) {
-    const leftIdentifier = leftPrerelease[index];
-    const rightIdentifier = rightPrerelease[index];
-    if (leftIdentifier === undefined) {
-      return -1;
-    }
-    if (rightIdentifier === undefined) {
-      return 1;
-    }
-    const result = comparePrereleaseIdentifier(leftIdentifier, rightIdentifier);
-    if (result !== 0) {
-      return result;
-    }
-  }
-
-  return 0;
 }
 
 function buildPluginManifest(pluginName, version, minVersion, description, displayName, shortDescription, opts) {
@@ -230,234 +168,6 @@ function buildPluginManifest(pluginName, version, minVersion, description, displ
   }
 
   return manifest;
-}
-
-function renderClaudeInvocationFrontmatter(invocation) {
-  if (invocation === 'manual') {
-    return 'user-invocable: true\ndisable-model-invocation: true\n';
-  }
-  if (invocation === 'claude-model-only') {
-    return 'user-invocable: false\n';
-  }
-  return '';
-}
-
-function renderSkillMd(skillName, skillDescription, shortDescription, invocation) {
-  const skillTitle = titleCaseSlug(skillName);
-  return `---
-name: ${skillName}
-description: ${yamlString(skillDescription)}
-${renderClaudeInvocationFrontmatter(invocation)}metadata:
-  short-description: ${yamlString(shortDescription)}
----
-
-# ${skillTitle}
-
-目标：[TODO: 写清用户要完成的结果，以及没有本 skill 时 agent 容易做错什么]。
-
-完成标准：
-
-- [TODO: 可观察、可验证的成功结果]
-
-## 前置判断
-
-- [TODO: 需要读取的输入、状态或授权边界]
-
-## 工作流
-
-1. [TODO: 第一步，以及为什么需要这一步]
-   完成条件：[TODO: 可检查的第一步结果]
-2. [TODO: 第二步]
-   完成条件：[TODO: 可检查的第二步结果]
-3. [TODO: 运行验证；失败时修复并重跑]
-   完成条件：[TODO: 验证通过，或失败已修复并重验]
-
-## 验证
-
-- [TODO: 验证命令、检查表或输出断言]
-
-## 输出
-
-- [TODO: 交付文件、数据或回复结构]
-
-## Gotchas / 边界
-
-- [TODO: 没有明确说明时 agent 容易误判的项目事实]
-- [TODO: 禁止、需要确认或不能扩大范围的操作]
-`;
-}
-
-function renderPluginReadme(pluginName, description, skillName) {
-  return `# ${titleCaseSlug(pluginName)}
-
-${description}
-
-${skillName ? `## Skill\n\n- \`${skillName}\`\n` : ''}
-`;
-}
-
-function renderSkillReadme(skillName, description) {
-  return `# ${skillName}
-
-${description}
-
-主要指令见 \`SKILL.md\`。模型 eval 合同位于 \`evals/\`。
-`;
-}
-
-function renderOpenAiYaml(displayName, shortDescription, skillName, invocation) {
-  const defaultPrompt = `使用 $${skillName}：${shortDescription.replace(/[。.]$/, '')}。`;
-  const allowImplicitInvocation = invocation !== 'manual';
-  return `interface:
-  display_name: ${yamlString(displayName)}
-  short_description: ${yamlString(shortDescription)}
-  default_prompt: ${yamlString(defaultPrompt)}
-policy:
-  allow_implicit_invocation: ${allowImplicitInvocation}
-`;
-}
-
-function renderEvalManifest(pluginName, skillName) {
-  return {
-    schemaVersion: 2,
-    plugin: pluginName,
-    skill: skillName,
-    profiles: [
-      {
-        id: 'project-default',
-        scope: 'project',
-        plugins: [{ name: pluginName, config: {} }],
-        runModel: true,
-        requiredForRelease: true,
-      },
-      {
-        id: 'user-default',
-        scope: 'user',
-        plugins: [{ name: pluginName, config: {} }],
-        runModel: false,
-        requiredForRelease: true,
-      },
-    ],
-    suites: [
-      {
-        id: 'trigger',
-        kind: 'trigger',
-        skills: [skillName],
-        cases: './trigger-cases.json',
-        observeSpawnAgent: false,
-        isolation: 'strict',
-        strictNegativeSplits: ['validation', 'sanity'],
-        profiles: ['project-default'],
-        defaultRuns: 3,
-        releaseSplits: ['validation', 'sanity'],
-        requiredForRelease: true,
-        perRunTimeoutMs: 180000,
-      },
-      {
-        id: 'behavior',
-        kind: 'conversation',
-        skills: [skillName],
-        cases: './evals.json',
-        isolation: 'strict',
-        profiles: ['project-default'],
-        defaultRuns: 1,
-        releaseSplits: [],
-        requiredForRelease: true,
-        perRunTimeoutMs: 300000,
-      },
-    ],
-  };
-}
-
-function renderTriggerCases(skillName, skillDescription, invocation) {
-  const explicitPrefix = invocation === 'manual' ? `使用 $${skillName}，` : '';
-  const validationPositive = invocation === 'manual'
-    ? `${explicitPrefix}请使用真实输入完成目标工作流。`
-    : `请使用真实输入完成以下目标：${skillDescription}。`;
-  const sanityPositive = invocation === 'manual'
-    ? `${explicitPrefix}请完成该 Skill 的主要目标。`
-    : `请完成以下主要目标：${skillDescription}。`;
-  const implicitNegative = invocation === 'manual'
-    ? '请不要调用任何 Skill，只解释如何完成相邻任务；这不是目标 Skill 的显式请求。'
-    : `解释一个共享术语但职责不同的相邻任务；不要执行以下目标：${skillDescription}。`;
-  return {
-    schemaVersion: 1,
-    skill: skillName,
-    cases: [
-      {
-        id: 'primary_train_positive',
-        split: 'train',
-        query: `${explicitPrefix}${skillDescription}。`,
-        should_load_skill: true,
-        tags: [invocation, 'positive', 'starter'],
-      },
-      {
-        id: 'primary_train_negative',
-        split: 'train',
-        query: implicitNegative,
-        should_load_skill: false,
-        tags: ['near-miss', 'negative', 'starter'],
-      },
-      {
-        id: 'primary_validation_positive',
-        split: 'validation',
-        query: validationPositive,
-        should_load_skill: true,
-        tags: [invocation, 'positive', 'starter'],
-      },
-      {
-        id: 'primary_validation_negative',
-        split: 'validation',
-        query: '只处理一个共享关键词但目标不同的近似任务，不要调用该 Skill。',
-        should_load_skill: false,
-        tags: ['near-miss', 'negative', 'starter'],
-      },
-      {
-        id: 'primary_sanity_positive',
-        split: 'sanity',
-        query: sanityPositive,
-        should_load_skill: true,
-        tags: [invocation, 'positive', 'starter'],
-      },
-      {
-        id: 'primary_sanity_negative',
-        split: 'sanity',
-        query: '执行另一个职责边界外的任务；即使出现相同术语，也不要加载该 Skill。',
-        should_load_skill: false,
-        tags: ['near-miss', 'negative', 'starter'],
-      },
-    ],
-  };
-}
-
-function renderBehaviorCases(skillName, skillDescription) {
-  return {
-    skill_name: skillName,
-    evals: [
-      {
-        id: 'complete_primary_workflow',
-        prompt: `使用 $${skillName} 完成以下目标：${skillDescription}。把可交付结果写入 eval-output/result.md；不要修改 eval-output/ 之外的文件。`,
-        expected_output: '完成真实工作流，并生成可复核的 eval-output/result.md。作者应把本 starter 替换为领域真实任务和断言。',
-        scripted_replies: [],
-        sandbox: 'workspace-write',
-        review: {
-          workspace_unchanged: false,
-          allowed_workspace_changes: ['eval-output/**'],
-          artifacts: [
-            {
-              path: 'eval-output/result.md',
-              exists: true,
-            },
-          ],
-          checks: [
-            'trace 读取并执行 owner Skill，而不是只解释计划',
-            '结果满足 Skill 的完成标准，并包含可核验的领域证据',
-            '作者已把 starter prompt、near-miss 和断言替换为真实任务材料',
-          ],
-        },
-      },
-    ],
-  };
 }
 
 function renderMcpJson() {
@@ -568,7 +278,7 @@ ${configTest}${lifecycleTest}`;
 
 function printUsage() {
   console.log(`Usage:
-  node .agents/skills/create-agent-workflows-plugin/scripts/init_plugin.mjs <plugin_name> --description "..."
+  node .agents/skills/create-aw-plugin/scripts/init_plugin.mjs <plugin_name> --description "..."
 
 Options:
   --description <text>          Plugin description. Required.

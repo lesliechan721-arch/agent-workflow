@@ -58,13 +58,13 @@
 
 - `packages/cli/src/types.ts` 的 `PluginDependencyEntry` 只有 `name`、`target`、`inheritInstallOptions` 和 `when`。
 - `packages/cli/src/utils/manifest.ts` 当前只允许这些字段，并拒绝 `version`、`range`、`marketplace`、`source`、`optional`、`dev`、`peer` 和 platform override。
-- `docs/plugin-authoring.md` 和 `.agents/skills/create-agent-workflows-plugin/SKILL.md` 也明确首版依赖不支持版本或 range。
+- `docs/plugin-authoring.md` 和 `.agents/skills/create-aw-plugin/SKILL.md` 也明确首版依赖不支持版本或 range。
 - 状态输出中的 `dependencies` 是只读投影，包含 declared、resolved、satisfied、missing、catalogDrift 等信息，但没有依赖版本比较结果，也没有“不满足最低依赖版本”的稳定状态。
 
 ### 插件作者工具和公开文档必须同步调整
 
-- `.agents/skills/create-agent-workflows-plugin/` 目前把 `--version <semver>` 作为脚手架参数，但仍说明依赖不能写版本。
-- `.agents/skills/create-agent-workflows-plugin/references/plugin-manifest-spec.md` 和 `docs/plugin-authoring.md` 都把源码 manifest 作为唯一手写真值，并描述现有 dependencies 字段白名单。
+- `.agents/skills/create-aw-plugin/` 目前把 `--version <semver>` 作为脚手架参数，但仍说明依赖不能写版本。
+- `.agents/skills/create-aw-plugin/references/plugin-manifest-spec.md` 和 `docs/plugin-authoring.md` 都把源码 manifest 作为唯一手写真值，并描述现有 dependencies 字段白名单。
 - 项目维护原则要求：改动插件基础架构、manifest/schema、adapter 行为、scope 语义、分发/安装流程，或任何会影响插件作者使用方式的能力时，必须同步检查插件作者工具、模板、示例和测试夹具。
 
 ## 已确认决策
@@ -122,7 +122,7 @@
 - 定义升级状态、异常状态、CLI 输出、JSON 和 TUI 展示需要表达的版本信息。
 - 定义移除 embedded catalog 后 `aw init`、`uninstall`、`repair`、`reinstall`、主控制台和发现类入口的用户可见行为边界。
 - 定义 legacy install record、旧本地 catalog config 和旧缓存的运行时兼容合同。
-- 纳入 `.agents/skills/create-agent-workflows-plugin/`、`docs/plugin-authoring.md`、`docs/plugin-installation.md`、`docs/plugin-installation-technical-details.md`、`docs/testing.md` 和架构文档的维护边界。
+- 纳入 `.agents/skills/create-aw-plugin/`、`docs/plugin-authoring.md`、`docs/plugin-installation.md`、`docs/plugin-installation-technical-details.md`、`docs/testing.md` 和架构文档的维护边界。
 
 ### 非目标
 
@@ -880,6 +880,8 @@ TUI 首页和详情页继续沿用前置 Spec 的状态模型和“不可展示 
 - 构建后的插件 staging 目录、`@lesliechan721/aw-plugins-manifest` manifest 包和 `@lesliechan721/aw-plugins` artifact 包内容都是生成产物，不手改；远程 artifact 必须由发布流程生成。
 
 脚手架和校验工具应在作者创建、验证或发布插件时尽早发现非法版本，而不是等用户安装时失败。至少要在创建或校验阶段阻断缺失 `compatibility.aw.minVersion`、非法插件 `version`、非法插件最低 CLI 版本、非法 `dependencies.plugins[].minVersion`、仍使用旧式 `dependencies.plugins[].version` / `range` 字段，以及插件最低 CLI 版本高于目标 catalog 级最低 CLI 版本的情况。
+
+当前 repo-local 作者入口位于 `.agents/skills/create-aw-plugin/scripts/`：`add_skill.mjs` 向现有插件新增一个静态 Skill 并默认做 minor bump，`bump_plugin_version.mjs` 执行显式 SemVer 递增，`check_plugin_versions.mjs` 用当前 CLI bundler 比较 Git 基线和工作树插件的 production bundle。该源码门禁不替代 catalog 发布身份校验，也不检查 CLI bundler 自身变化造成的全插件产物差异。
 
 ## 验收标准
 

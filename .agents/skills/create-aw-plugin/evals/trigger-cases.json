@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "skill": "create-agent-workflows-plugin",
+  "skill": "create-aw-plugin",
   "cases": [
     {
       "id": "release_notes_plugin",
@@ -15,6 +15,13 @@
       "query": "在这个仓库的 plugins/ 下加一个最小 changelog 插件，同时支持 Codex 和 Claude Code，不要预生成 MCP 或 lifecycle。",
       "should_load_skill": true,
       "tags": ["implicit", "create"]
+    },
+    {
+      "id": "add_static_skill_to_existing_plugin",
+      "split": "train",
+      "query": "给现有 plugins/code-review 新增一个 audit-report 静态 Skill，补齐双平台调用元数据、eval 和插件版本递增。",
+      "should_load_skill": true,
+      "tags": ["implicit", "maintain", "add-skill", "version"]
     },
     {
       "id": "maintain_existing_skill_script",
@@ -73,9 +80,16 @@
       "tags": ["near-miss", "cli-explanation"]
     },
     {
+      "id": "bump_cli_package_version",
+      "split": "train",
+      "query": "只把根 package.json 和 packages/cli/package.json 的 AW CLI 版本改成下一个 beta，不维护任何 plugins 目录。",
+      "should_load_skill": false,
+      "tags": ["near-miss", "cli-version"]
+    },
+    {
       "id": "review_skill_quality",
       "split": "train",
-      "query": "给 .agents/skills/create-agent-workflows-plugin 做一次只读评分和发布门禁检查。",
+      "query": "给 .agents/skills/create-aw-plugin 做一次只读评分和发布门禁检查。",
       "should_load_skill": false,
       "tags": ["near-miss", "review"]
     },

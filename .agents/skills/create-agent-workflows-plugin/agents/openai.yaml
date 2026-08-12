@@ -1,6 +1,0 @@
-interface:
-  display_name: "Agent Workflows Plugin Creator"
-  short_description: "按当前 manifest 和 bundle 规则创建插件"
-  default_prompt: "使用 $create-agent-workflows-plugin 创建或维护 agent-workflows 插件。"
-policy:
-  allow_implicit_invocation: true

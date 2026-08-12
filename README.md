@@ -142,7 +142,7 @@ make release CLI_VERSION=1.0.0 CATALOG_VERSION=1.2.0
 - `packages/cli/`：发布包 `@lesliechan721/aw` 的源码、测试和 build 脚本
 - `plugins/`：插件源码，只维护 `.agents-plugin/plugin.json`、`marketplace-source.json` 和插件能力文件
 - `scripts/release/`：版本同步、CLI / catalog tarball 打包、本地安装和发布编排脚本
-- `.agents/skills/create-agent-workflows-plugin/`：创建和维护插件的作者工具
+- `.agents/skills/create-aw-plugin/`：创建、增量维护并检查插件版本的作者工具
 - `.agents/skills/skill-review/`：只读评审标准静态 Skill 或 AW 插件 Skill，并核对最终 Codex 制品和 eval 证据
 - `docs/`：公开架构、安装、测试和作者文档
 - `docs/dev/`：开发过程记录，不作为公开使用文档

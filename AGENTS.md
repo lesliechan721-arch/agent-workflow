@@ -6,11 +6,11 @@
 
 ## Overview
 
-`pnpm` monorepo，工作区定义在 `pnpm-workspace.yaml`。CLI 发布包是 `packages/cli`（`@lesliechan721/aw`）；插件通过独立的 sidecar/full catalog 包 `@lesliechan721/aw-plugins-manifest` 和 `@lesliechan721/aw-plugins` 分发。插件源码在 `plugins/`，插件作者工具在 `.agents/skills/create-agent-workflows-plugin/`，标准静态/AW 插件 Skill 的只读评审工具在 `.agents/skills/skill-review/`。根目录 `README.md` 面向项目使用者，`docs/` 放公开维护文档，`docs/dev/` 只作开发过程记录。
+`pnpm` monorepo，工作区定义在 `pnpm-workspace.yaml`。CLI 发布包是 `packages/cli`（`@lesliechan721/aw`）；插件通过独立的 sidecar/full catalog 包 `@lesliechan721/aw-plugins-manifest` 和 `@lesliechan721/aw-plugins` 分发。插件源码在 `plugins/`，插件作者工具在 `.agents/skills/create-aw-plugin/`，标准静态/AW 插件 Skill 的只读评审工具在 `.agents/skills/skill-review/`。根目录 `README.md` 面向项目使用者，`docs/` 放公开维护文档，`docs/dev/` 只作开发过程记录。
 
 ## Maintenance Principles
 
-- 改动插件基础架构、manifest/schema、adapter 行为、scope 语义、分发/安装流程，或任何会影响插件作者使用方式的能力时，必须同时检查 `.agents/skills/create-agent-workflows-plugin/`。如果插件作者技能、模板、示例或测试夹具不再准确，要在同一轮修改中更新，避免运行时能力和作者文档脱节。
+- 改动插件基础架构、manifest/schema、adapter 行为、scope 语义、分发/安装流程，或任何会影响插件作者使用方式的能力时，必须同时检查 `.agents/skills/create-aw-plugin/`。如果插件作者技能、模板、示例或测试夹具不再准确，要在同一轮修改中更新，避免运行时能力和作者文档脱节。
 
 ## Build & Test Commands
 
@@ -27,6 +27,7 @@
 - `pnpm test:smoke:pack` — 串行校验 CLI 与 catalog tarball
 - `pnpm test:smoke:fetch` — 校验 catalog fetch / selector / cache fallback 相关 smoke
 - `pnpm plugin:test <plugin>` — 运行单个插件的 Node 脚本测试；`--all` 才会让任一坏插件阻断整轮
+- `pnpm plugin:version:check -- --base <git-ref>` — 使用当前 production bundler 检查相对 Git 基线发生变化的插件是否递增 plugin version；先运行 `pnpm build`
 - `pnpm plugin:eval <plugin> --skill <skill> --batch-name <name>` — 按 owner Skill 根 `evals/manifest.json` materialize Codex 最终制品并运行本地显式模型 eval；`--materialize-only` 不调用模型，后续运行用输出的 `--batch-id` 追加同一批次
 - `node .agents/skills/skill-review/scripts/run_static_skill_evals.mjs <skill> --validate-only` — 校验 `.agents/skills/<name>` 的静态 Skill eval 合同；真实模型运行必须传 `--batch-name` 或 `--batch-id`，并按需传 suite、split、case、runs 和 model 等参数
 - `pnpm test:smoke:plugin-scripts` — 校验真实插件脚本 staging、依赖闭包和 bundle 布局

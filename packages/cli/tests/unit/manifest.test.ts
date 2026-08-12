@@ -267,7 +267,15 @@ describe('manifest utils', () => {
   it('rejects non-strict SemVer plugin versions in source manifests', async () => {
     const repoRoot = await makeTempRepo();
     const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
-    const invalidVersions = ['v1.2.3', '1.2', '^1.2.3', 'latest', '1.2.3 || 2.0.0'];
+    const invalidVersions = [
+      'v1.2.3',
+      '1.2',
+      '^1.2.3',
+      'latest',
+      '1.2.3 || 2.0.0',
+      '1.2.3-',
+      '1.2.3-+meta',
+    ];
 
     for (const version of invalidVersions) {
       const manifest = await readFixturePluginManifest(repoRoot);

@@ -28,7 +28,7 @@ function fail(message) {
 
 function usage() {
   process.stdout.write(`Usage:
-  node .agents/skills/create-agent-workflows-plugin/scripts/generate_skill_frontmatter_reference.mjs [--check|--write]
+  node .agents/skills/create-aw-plugin/scripts/generate_skill_frontmatter_reference.mjs [--check|--write]
 
 Options:
   --check  Fail if the committed generated reference differs from the registry.

@@ -1,10 +1,10 @@
 ---
-name: create-agent-workflows-plugin
-description: 仅当用户明确要求在 `agent-workflows` 仓库创建或维护 `plugins/<name>/` 插件时使用；用于设计插件内 Agent Skill、编写或调整 manifest 与平台能力、运行作者校验并修复 bundle 问题。不用于安装或使用插件、仓库外的通用 Skill 编写，或单纯解释 CLI。
+name: create-aw-plugin
+description: 仅当用户明确要求在 `agent-workflows` 仓库创建或维护 `plugins/<name>/` 插件时使用；用于设计插件能力、向现有插件新增静态 Skill、管理插件版本、运行作者校验并修复 bundle 问题。不用于安装或使用插件、仓库外的通用 Skill 编写，或单纯解释 CLI。
 compatibility: Requires the agent-workflows repository, Node.js 20+, and installed workspace dependencies.
 ---
 
-# Create Agent Workflows Plugin
+# Create AW Plugin
 
 在当前仓库创建或维护 agent-workflows 插件。插件默认同时支持 Codex 和 Claude Code，也可以通过 `marketplace.policy.products` 收窄到单个平台。
 
@@ -27,6 +27,7 @@ compatibility: Requires the agent-workflows repository, Node.js 20+, and install
 | Dynamic Artifacts | `references/plugin-manifest-spec.md` 的 `artifacts.targets`、`references/aw-scripts-config-lifecycle.md` 的 renderer | 静态 / 动态边界见 `references/extensions-spec.md` |
 | Claude 专属能力 | `references/claude-only-capabilities.md` | 使用 buildConfig 时读 `references/build-config-spec.md` |
 | 综合能力或产物预览 | `references/comprehensive-example.md` | 再按实际能力打开上面的单项 reference |
+| 插件版本递增或门禁 | `references/plugin-manifest-spec.md` 的 version / compatibility block | production bundle 边界见 `references/skill-evaluation.md` |
 
 不要为了“混合型插件”一次加载全部文档；按 manifest 中实际声明的能力逐项读取。
 
@@ -46,6 +47,8 @@ compatibility: Requires the agent-workflows repository, Node.js 20+, and install
    - 完成条件：能力选择已与任务范围对齐；涉及创建或重大重写 Skill 时，baseline gap、invocation、Skill-specific description、信息层级和 eval strategy 均已确定，且不能证明 Skill 增量时使用更简单能力或不创建
 3. **创建骨架**
    - 新插件可运行 `scripts/init_plugin.mjs`
+   - 向现有插件新增一个静态 Skill 时运行 `scripts/add_skill.mjs`；不要用它修改其它能力
+   - MCP、Apps、config、lifecycle、slashCommands、extensions 和 dynamic artifacts 直接按对应 reference 修改源码，不先转换成通用更新计划
    - 创建 Skill 时显式传 `--skill-invocation`；省略时采用 `model`
    - 只保留用户请求的能力，不预先生成 MCP、Apps、lifecycle 或 config
    - 完成条件：骨架的能力、调用元数据、独立 Skill description 和 eval starter 与上一步决定一致
@@ -57,21 +60,29 @@ compatibility: Requires the agent-workflows repository, Node.js 20+, and install
    - AW Config / Lifecycle → 声明 `config` 和插件根 `scripts`
    - Dynamic Artifacts → 静态声明 target，renderer 只输出 `ArtifactPlan`
    - 完成条件：每个声明能力都有对应源码文件、字段和直接测试；没有修改生成目录或加入未请求能力
-5. **构建**
+5. **管理插件版本**
+   - `add_skill.mjs` 对稳定版本默认递增 minor；可显式选择 major、minor、patch 或更高的精确版本
+   - 其它 production bundle 变化使用 `scripts/bump_plugin_version.mjs` 显式递增版本
+   - prerelease 或含 build metadata 的当前版本必须提供精确的更高 SemVer，不能自动递增
+   - Skill `evals/**`、插件 `reports/**` 和 test-only 文件不进入 production bundle；Skill README 和 runtime 文件进入 production bundle
+   - 完成条件：production bundle 有变化时 plugin version 高于 Git 基线；只有作者期材料变化时不做无意义 bump
+6. **构建**
    - 运行 `pnpm build` 生成本地 staging/runtime bundle
    - 完成条件：命令 exit 0，目标 staging/runtime artifact 存在，且生成物只由构建产生
-6. **验证并修复**
+7. **验证并修复**
    - 运行 `scripts/validate_plugin.mjs`
+   - validator 对仓库内插件默认用 `HEAD` 检查版本；CI 或分支对比用 `--version-base <git-ref>`
+   - 需要检查全部变更插件时运行 `pnpm plugin:version:check -- --base <git-ref>`
    - 校验失败时按错误修复并重跑，直到通过
    - 默认 Claude profile 是 AW 最低支持版本 2.1.88；`current` profile 只用于核对当前字段，不改变 AW 的最低版本兼容门
    - 完成条件：默认 profile 通过；额外 profile 的结果与用途已区分为通过、诊断或未运行
-7. **测试**
+8. **测试**
    - 插件根 Node 脚本运行 `pnpm plugin:test <plugin>`
    - 改到 manifest、bundle 或安装逻辑时运行相关 `pnpm test:*`
    - 每个 Skill 的作者期用例放在自身源码根 `evals/`，按 `references/skill-evaluation.md` 声明 owner、participants 和 profiles
    - 先运行 `pnpm plugin:eval <plugin> --skill <skill> --batch-name materialization --materialize-only` 验证 Codex 最终制品；真实模型 eval 只在本地显式运行
    - 完成条件：每个修改面有直接确定性测试；重大 Skill 修改有 with-skill/baseline behavior 和适用 trigger evidence；失败已修复并重跑
-8. **交付**
+9. **交付**
    - 在批次最后一次运行或 review 发布后，人工更新 Skill README 的最近 eval/review 摘要、仓库相对完整报告路径和被评估 Git commit；不要在仍需追加同批次时修改 README
    - 报告修改的源码文件、运行的验证、未验证项和仍需用户决定的风险
    - 完成条件：明确区分完整通过、轻量预检、模型证据和未运行项
@@ -79,7 +90,7 @@ compatibility: Requires the agent-workflows repository, Node.js 20+, and install
 ## 脚手架
 
 ```bash
-node .agents/skills/create-agent-workflows-plugin/scripts/init_plugin.mjs <plugin-name> \
+node .agents/skills/create-aw-plugin/scripts/init_plugin.mjs <plugin-name> \
   --description "插件描述" \
   --display-name "Display Name" \
   --short-description "简短 UI 描述" \
@@ -98,7 +109,7 @@ node .agents/skills/create-agent-workflows-plugin/scripts/init_plugin.mjs <plugi
   [--repo-root .]
 ```
 
-运行 `node .agents/skills/create-agent-workflows-plugin/scripts/init_plugin.mjs --help` 查看完整参数。
+运行 `node .agents/skills/create-aw-plugin/scripts/init_plugin.mjs --help` 查看完整参数。
 
 - 默认创建带 skill 的最小插件，调用策略为 `model`：Claude 允许模型发现，Codex 写入 `allow_implicit_invocation: true`
 - `--skill-invocation manual` 同步生成 Claude manual-only 和 Codex implicit false；`claude-model-only` 隐藏 Claude 用户入口，但 Codex 没有完全等价能力，仍允许模型与显式调用
@@ -112,11 +123,37 @@ node .agents/skills/create-agent-workflows-plugin/scripts/init_plugin.mjs <plugi
 - `--catalog-min-version` 提供目标 catalog 的作者校验上下文
 - 脚手架不改 `plugins/marketplace-source.json`，也不生成平台 manifest
 
+向现有插件新增一个静态 Skill：
+
+```bash
+node .agents/skills/create-aw-plugin/scripts/add_skill.mjs <plugin-name> \
+  --skill-name <name> \
+  --skill-description "Skill 的用户目标和使用时机" \
+  [--skill-short-description "25–64 字符 UI 摘要"] \
+  [--skill-invocation model|manual|claude-model-only] \
+  [--bump major|minor|patch | --version <semver>] \
+  [--repo-root .]
+```
+
+- 命令只新增一个静态 Skill，并在同一次写入中更新 manifest 和 plugin version；冲突时不留下部分文件
+- 双平台或 Codex 插件生成 `agents/openai.yaml` 和 eval starter；Claude-only 插件不生成不可运行的 Codex v2 eval
+- 命令不修改插件根 README；完成 Skill 内容后按现有 README 结构人工补充条目
+- dynamic Skill、slash command 或现有目录使用相同名称时直接失败
+
+只递增版本：
+
+```bash
+node .agents/skills/create-aw-plugin/scripts/bump_plugin_version.mjs <plugin-name> \
+  (--bump major|minor|patch | --version <semver>)
+```
+
 ## 跨能力 Gotchas
 
 - `.agents-plugin/plugin.json` 是唯一手动维护的 manifest；不要手写 `.claude-plugin/plugin.json` 或 `.codex-plugin/plugin.json`。
 - 插件名、skill 名使用小写短横线格式，并与目录名一致。
 - `version` 和 `compatibility.aw.minVersion` 使用严格 SemVer。CLI version、catalog version 和 plugin version 是三套身份。
+- production bundle 因插件源码变化而改变时必须提高 plugin version；`check_plugin_versions.mjs` 使用当前 CLI bundler 比较 Git 基线和工作树，不负责推断 CLI bundler 自身变化造成的产物变化。
+- build metadata 不提高 SemVer precedence，不能作为插件升级版本。
 - Catalog 分为 `@lesliechan721/aw-plugins-manifest` sidecar 包和 `@lesliechan721/aw-plugins` full catalog 包；插件作者只维护源码，不手改包内产物。
 - 不在插件 manifest 声明最低 Codex / Claude Code 版本；AW CLI 内置门槛当前为 Codex `>= 0.145.0`、Claude Code `>= 2.1.88`。
 - `marketplace.policy.products` 同时约束 build 裁剪、平台 marketplace、安装/升级门禁和 `pnpm plugin:test` 平台选择。
@@ -142,12 +179,16 @@ node .agents/skills/create-agent-workflows-plugin/scripts/init_plugin.mjs <plugi
 ## 验证入口
 
 ```bash
-node .agents/skills/create-agent-workflows-plugin/scripts/validate_plugin.mjs plugins/<name>
-node .agents/skills/create-agent-workflows-plugin/scripts/validate_plugin.mjs \
+node .agents/skills/create-aw-plugin/scripts/validate_plugin.mjs plugins/<name>
+node .agents/skills/create-aw-plugin/scripts/validate_plugin.mjs \
   plugins/<name> --strict-agent-skills
-node .agents/skills/create-agent-workflows-plugin/scripts/validate_plugin.mjs \
+node .agents/skills/create-aw-plugin/scripts/validate_plugin.mjs \
   plugins/<name> --claude-skill-profile current
-node .agents/skills/create-agent-workflows-plugin/scripts/generate_skill_frontmatter_reference.mjs \
+node .agents/skills/create-aw-plugin/scripts/validate_plugin.mjs \
+  plugins/<name> --version-base <git-ref>
+node .agents/skills/create-aw-plugin/scripts/check_plugin_versions.mjs \
+  --all --base <git-ref>
+node .agents/skills/create-aw-plugin/scripts/generate_skill_frontmatter_reference.mjs \
   --check
 pnpm plugin:test <plugin>
 pnpm plugin:test <plugin> --platform codex --scope project
@@ -156,14 +197,14 @@ pnpm plugin:eval <plugin> --skill <skill> --batch-name materialization --materia
 pnpm plugin:eval <plugin> --skill <skill> --batch-name trigger-validation --suite trigger --split validation --runs 1
 ```
 
-`validate_plugin.mjs` 默认校验 AW source profile；`--strict-agent-skills` 用于仓库内检查是否只使用 Agent Skills portable core，但不是上游 `skills-ref` 的替代品。`--json` 提供机器可解析结果。CLI 未构建或 `packages/cli/dist` 的 manifest contract 已过期时，validator 只做轻量预检；完整 contract 仍需先运行 `pnpm build`。
+`validate_plugin.mjs` 默认校验 AW source profile，并对仓库内正式插件使用 `HEAD` 做版本检查；`--strict-agent-skills` 用于仓库内检查是否只使用 Agent Skills portable core，但不是上游 `skills-ref` 的替代品。`--json` 提供机器可解析结果。CLI 未构建、Git 不可用或 `packages/cli/dist` 的 manifest contract 已过期时，单插件 validator 警告并只做可用的轻量预检；独立全仓版本门禁在这些条件下失败。
 
 ## 完成条件
 
 - 只修改用户请求所需的插件源码和直接关联测试/文档
 - 没有手改生成目录、runtime cache 或 marketplace 产物
 - `validate_plugin.mjs` 通过，相关确定性测试通过
-- 新建或重大修改的 Skill 有 candidate/value evidence、明确 invocation、局部完成标准、验证循环、自身 `evals/manifest.json` 和真实小型用例
+- 新建或重大修改的 Skill 有 candidate/value evidence、明确 invocation、局部完成标准和验证循环；支持 Codex 时有自身 `evals/manifest.json` 和真实小型用例，Claude-only 时明确记录当前只完成确定性验证
 - Codex/Claude 动态 Skill 的 project/user final artifacts 已 materialize，并保留作者声明的原生调用元数据；真实模型未运行时明确列为未验证
 - 最终回复列出改动、验证结果和未完成项
 - 插件和 Skill README 已补齐；有完成报告的 Skill README 已按人工约定更新，插件 README 不包含 Skill 验证报告

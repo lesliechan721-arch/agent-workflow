@@ -120,7 +120,7 @@ aw config list <plugin> --scope project --local
 
 ## 标准配置 Helper
 
-新插件推荐直接复用 `.agents/skills/create-agent-workflows-plugin/assets/aw-config.mjs`，脚手架 `--with-config-api` 会自动复制它。helper 支持两个命令：
+新插件推荐直接复用 `.agents/skills/create-aw-plugin/assets/aw-config.mjs`，脚手架 `--with-config-api` 会自动复制它。helper 支持两个命令：
 
 ```bash
 node scripts/aw-config.mjs get apiKey

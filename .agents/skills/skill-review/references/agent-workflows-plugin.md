@@ -13,7 +13,8 @@ AW 插件同时检查三层材料：
 先运行作者校验与确定性检查：
 
 ```bash
-node .agents/skills/create-agent-workflows-plugin/scripts/validate_plugin.mjs plugins/<name>
+node .agents/skills/create-aw-plugin/scripts/validate_plugin.mjs plugins/<name>
+node .agents/skills/create-aw-plugin/scripts/check_plugin_versions.mjs <name> --base <git-ref>
 pnpm plugin:test <name> --platform codex --scope project
 pnpm plugin:eval <name> --skill <owner-skill> \
   --batch-name materialization --materialize-only

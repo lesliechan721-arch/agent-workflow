@@ -1,9 +1,0 @@
-{
-  "schemaVersion": 1,
-  "completedAt": "2026-08-11T16:48:05.000Z",
-  "mode": "delta",
-  "weightedScore": 80.2,
-  "coverage": 100,
-  "confidence": "high",
-  "release": "pass-after-fixes"
-}

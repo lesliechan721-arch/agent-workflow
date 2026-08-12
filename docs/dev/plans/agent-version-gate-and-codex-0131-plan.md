@@ -22,7 +22,7 @@
 - Codex user scope 写入主链路改为 Codex native CLI：`codex plugin add/remove` 与 `codex plugin marketplace add/list/remove`。`codex plugin add/remove` 成功后还必须通过本地证据证明 native 状态已经落地；AW 不能手写或手删 Codex config/cache 来伪装 native 成功。
 - Codex app-server RPC 在本期只作为 verbose native view 只读诊断。`plugin/list`、`plugin/installed`、`plugin/read` 不参与写命令 hard gate，也不能授权 cleanup、takeover 或 marketplace removal。
 - Codex user-scope hooks 进入 `.codex-plugin/plugin.json` 的 native `hooks` 字段；Codex project scope 继续写 repo-managed `.codex/hooks.json`。本期不迁移旧 user-scope AW-managed `.codex/hooks.json` hook groups。
-- 修改插件基础架构、manifest/schema、adapter 行为、scope 语义、分发/安装流程或插件作者可见能力时，必须同步检查 `.agents/skills/create-agent-workflows-plugin/`、公开文档和相关 fixtures。
+- 修改插件基础架构、manifest/schema、adapter 行为、scope 语义、分发/安装流程或插件作者可见能力时，必须同步检查 `.agents/skills/create-aw-plugin/`、公开文档和相关 fixtures。
 - 每个阶段必须补齐对应行为测试。阶段内的待办、测试验收和阶段验收都完成后，才能把该阶段标记为已完成。
 - 文件清单是起始范围；实现时如果发现同一职责在其它文件中，也要同步纳入计划或提交说明。
 
@@ -465,12 +465,12 @@ graph TD
 - [x] `docs/plugin-installation-technical-details.md`
 - [x] `docs/architecture.md`
 - [x] `docs/testing.md`
-- [x] `.agents/skills/create-agent-workflows-plugin/SKILL.md`
-- [x] `.agents/skills/create-agent-workflows-plugin/references/plugin-manifest-spec.md`
-- [x] `.agents/skills/create-agent-workflows-plugin/references/extensions-spec.md`
-- [x] `.agents/skills/create-agent-workflows-plugin/references/skills-and-triggers.md`
-- [x] `.agents/skills/create-agent-workflows-plugin/references/comprehensive-example.md`
-- [x] `.agents/skills/create-agent-workflows-plugin/scripts/validate_plugin.mjs`
+- [x] `.agents/skills/create-aw-plugin/SKILL.md`
+- [x] `.agents/skills/create-aw-plugin/references/plugin-manifest-spec.md`
+- [x] `.agents/skills/create-aw-plugin/references/extensions-spec.md`
+- [x] `.agents/skills/create-aw-plugin/references/skills-and-triggers.md`
+- [x] `.agents/skills/create-aw-plugin/references/comprehensive-example.md`
+- [x] `.agents/skills/create-aw-plugin/scripts/validate_plugin.mjs`
 - [x] `packages/cli/tests/integration/authoring-tools.test.ts`
 - [x] `packages/cli/tests/unit/public-docs.test.ts`
 - [x] `packages/cli/tests/smoke/build-smoke.test.ts`
@@ -614,7 +614,7 @@ graph TD
 - [x] 运行 `pnpm test:integration`。
 - [x] 运行 `pnpm test:smoke:build`。
 - [x] 运行 `pnpm test:smoke:plugin-scripts`。
-- [x] 核对 `docs/plugin-authoring.md`、`docs/plugin-installation.md`、`docs/architecture.md`、`.agents/skills/create-agent-workflows-plugin/` 与实现一致。
+- [x] 核对 `docs/plugin-authoring.md`、`docs/plugin-installation.md`、`docs/architecture.md`、`.agents/skills/create-aw-plugin/` 与实现一致。
 - [x] 用 fake runner 覆盖 Codex/Claude supported、missing、probeFailed、unparseable、tooOld 五类状态。
 - [x] 用 isolated env 验证 `upgrade --all`、`--platform both`、Codex project scope、config refresh、主控制台写动作和 verbose native view 诊断的端到端行为。
 - [x] 检查 `git diff`，确认只修改本需求相关代码、测试、文档和 fixture，没有顺手重构或无关格式化。

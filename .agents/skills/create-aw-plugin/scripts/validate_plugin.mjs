@@ -7,6 +7,8 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import { checkPluginVersions } from './lib/plugin-version-check.mjs';
+
 const require = createRequire(import.meta.url);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -162,6 +164,7 @@ const PLUGIN_EVAL_COMMAND_SUPPORTS = new Set([
 ]);
 let yamlParser = null;
 let skillFrontmatterCapabilityRegistry = null;
+let pluginVersionCheckResult = null;
 
 function error(msg) {
   errors.push(msg);
@@ -416,7 +419,7 @@ async function tryLoadCliManifestTools() {
 // ---------------------------------------------------------------------------
 
 const STRICT_SEMVER_PATTERN =
-  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|(?:[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))(?:\.(?:0|[1-9]\d*|(?:[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)))*)?)?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
+  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|(?:[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))(?:\.(?:0|[1-9]\d*|(?:[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)))*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
 
 function parseStrictSemVer(value) {
   const stringValue = String(value);
@@ -4036,6 +4039,7 @@ Options:
   --strict-agent-skills        Allow only Agent Skills portable core frontmatter.
   --claude-skill-profile <minimum|current>
                                Validate Claude fields at AW minimum 2.1.88 (default) or current docs.
+  --version-base <git-ref>     Compare the production bundle against this Git base. Default: HEAD.
   --json                       Emit one machine-readable JSON result to stdout.
   -h, --help                   Show this help message.
 `);
@@ -4101,6 +4105,36 @@ async function validatePluginDir(pluginDir, options) {
   validateExtensionNameUniqueness(manifest);
   validateSkills(pluginDir, manifest, options);
   validateSlashCommands(pluginDir, manifest);
+
+  if (errors.length === 0) {
+    const repoRoot = path.resolve(__dirname, '..', '..', '..', '..');
+    const canonicalPluginRoot = path.join(repoRoot, 'plugins', manifest.name ?? '');
+    if (path.resolve(pluginDir) === canonicalPluginRoot) {
+      try {
+        pluginVersionCheckResult = await checkPluginVersions({
+          repoRoot,
+          base: options.versionBase,
+          pluginNames: [manifest.name],
+        });
+        const check = pluginVersionCheckResult.checks[0];
+        for (const message of check?.warnings ?? []) {
+          warn(`plugin version check: ${message}`);
+        }
+        for (const message of check?.errors ?? []) {
+          error(`plugin version check: ${message}`);
+        }
+      } catch (versionError) {
+        if (
+          versionError?.code === 'bundlerUnavailable'
+          || versionError?.code === 'gitUnavailable'
+        ) {
+          warn(`plugin version check skipped: ${versionError.message}`);
+        } else {
+          error(`plugin version check failed: ${versionError.message}`);
+        }
+      }
+    }
+  }
 }
 
 function parseArgs(argv) {
@@ -4110,6 +4144,7 @@ function parseArgs(argv) {
     catalogMinVersion: null,
     strictAgentSkills: false,
     claudeSkillProfile: 'minimum',
+    versionBase: 'HEAD',
     json: args.includes('--json'),
   };
 
@@ -4139,6 +4174,15 @@ function parseArgs(argv) {
         );
       }
       options.claudeSkillProfile = value;
+      continue;
+    }
+    if (arg === '--version-base') {
+      const value = args[index + 1];
+      if (!value || value.startsWith('--')) {
+        exitCliError('--version-base requires a value.', options.json);
+      }
+      index += 1;
+      options.versionBase = value;
       continue;
     }
     if (!arg.startsWith('--')) {
@@ -4186,6 +4230,7 @@ async function main() {
     catalogMinVersion: args.catalogMinVersion,
     strictAgentSkills: args.strictAgentSkills,
     claudeSkillProfile: args.claudeSkillProfile,
+    versionBase: args.versionBase,
   });
 
   if (args.json) {
@@ -4194,6 +4239,7 @@ async function main() {
       profile: args.strictAgentSkills ? 'agent-skills-portable-core' : 'aw-source',
       claudeSkillProfile: args.claudeSkillProfile,
       pluginDirectory: resolved,
+      versionCheck: pluginVersionCheckResult,
       warnings,
       errors,
     }, null, 2));

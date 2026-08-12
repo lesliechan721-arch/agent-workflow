@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "skill": "create-agent-workflows-plugin",
+  "skill": "create-aw-plugin",
   "workspace": {
     "copy": [
       { "from": "package.json", "to": "package.json" },
@@ -15,11 +15,11 @@
       },
       { "from": "plugins/marketplace-source.json", "to": "plugins/marketplace-source.json" },
       {
-        "from": ".agents/skills/create-agent-workflows-plugin/references/.examples/code-review",
+        "from": ".agents/skills/create-aw-plugin/references/.examples/code-review",
         "to": "plugins/code-review"
       },
       {
-        "from": ".agents/skills/create-agent-workflows-plugin/evals/AGENTS.md",
+        "from": ".agents/skills/create-aw-plugin/evals/AGENTS.md",
         "to": "AGENTS.md"
       }
     ]
@@ -28,8 +28,8 @@
     {
       "id": "trigger",
       "kind": "trigger",
-      "skill": "create-agent-workflows-plugin",
-      "skills": ["create-agent-workflows-plugin"],
+      "skill": "create-aw-plugin",
+      "skills": ["create-aw-plugin"],
       "cases": "./evals/trigger-cases.json",
       "observeSpawnAgent": false,
       "isolation": "strict",
@@ -42,8 +42,8 @@
     {
       "id": "behavior",
       "kind": "conversation",
-      "skill": "create-agent-workflows-plugin",
-      "skills": ["create-agent-workflows-plugin"],
+      "skill": "create-aw-plugin",
+      "skills": ["create-aw-plugin"],
       "cases": "./evals/evals.json",
       "isolation": "strict",
       "defaultRuns": 1,

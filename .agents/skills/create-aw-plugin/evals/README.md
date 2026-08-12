@@ -1,15 +1,15 @@
 # Create Plugin Skill Evals
 
-本目录评估 repo-local `create-agent-workflows-plugin` Skill 自身，不属于插件 production bundle，也不通过 `pnpm plugin:eval` 冒充 `plugins/<name>`。
+本目录评估 repo-local `create-aw-plugin` Skill 自身，不属于插件 production bundle，也不通过 `pnpm plugin:eval` 冒充 `plugins/<name>`。
 
 静态 Skill 统一由 `skill-review` 的 runner 评估。先做确定性合同检查：
 
 ```bash
 node .agents/skills/skill-review/scripts/run_static_skill_evals.mjs \
-  create-agent-workflows-plugin --validate-only
+  create-aw-plugin --validate-only
 ```
 
-中间产物固定写入项目 `.tmp/agent-workflows/evals/static/`，完成后清理。持久结果写入 `.agents/reports/create-agent-workflows-plugin/<batch-id>/`。
+中间产物固定写入项目 `.tmp/agent-workflows/evals/static/`，完成后清理。持久结果写入 `.agents/reports/create-aw-plugin/<batch-id>/`。
 
 真实 Codex eval 复用 CLI 已有的隔离 trigger driver 和 app-server behavior driver，因此先构建 CLI：
 
@@ -23,7 +23,7 @@ pnpm build
 
 ```bash
 node .agents/skills/skill-review/scripts/run_static_skill_evals.mjs \
-  create-agent-workflows-plugin \
+  create-aw-plugin \
   --batch-name trigger-train \
   --suite trigger --split train --runs 3
 ```
@@ -32,7 +32,7 @@ node .agents/skills/skill-review/scripts/run_static_skill_evals.mjs \
 
 ```bash
 node .agents/skills/skill-review/scripts/run_static_skill_evals.mjs \
-  create-agent-workflows-plugin \
+  create-aw-plugin \
   --batch-name trigger-validation \
   --suite trigger --split validation --runs 3
 ```
@@ -41,7 +41,7 @@ node .agents/skills/skill-review/scripts/run_static_skill_evals.mjs \
 
 ```bash
 node .agents/skills/skill-review/scripts/run_static_skill_evals.mjs \
-  create-agent-workflows-plugin \
+  create-aw-plugin \
   --batch-name trigger-sanity \
   --suite trigger --split sanity --runs 3
 ```
@@ -52,7 +52,7 @@ node .agents/skills/skill-review/scripts/run_static_skill_evals.mjs \
 
 ```bash
 node .agents/skills/skill-review/scripts/run_static_skill_evals.mjs \
-  create-agent-workflows-plugin \
+  create-aw-plugin \
   --batch-name behavior \
   --suite behavior --runs 1
 ```

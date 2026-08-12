@@ -40,7 +40,7 @@
 
 - `install-state` / `status` / `console-model` / `cleanup` / `reinstall` / `index.ts`
 - `docs/plugin-installation.md`、`docs/architecture.md`
-- `.agents/skills/create-agent-workflows-plugin/`
+- `.agents/skills/create-aw-plugin/`
 - 依赖旧状态词、旧命令和旧 flag 的单元测试 / 集成测试 / 文档测试
 
 这样可以避免底层四态已经切换完成，但 CLI help、状态页、TUI、文档或测试还在继续暴露 `repair`、`cleanup --plan`、`--takeover-shared-runtime`、`needsRepair` / `adoptable` / `residual` / `externallyManaged` 的半成品状态。

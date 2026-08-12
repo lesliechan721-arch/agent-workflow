@@ -1,11 +1,17 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  assertValidVersion,
   createCatalogRegistryAdapter,
   isMissingRegistryPackageError,
 } from '../../../../scripts/release/common.mjs';
 
 describe('release common registry error classification', () => {
+  it('rejects empty prerelease identifiers in release versions', () => {
+    expect(() => assertValidVersion('1.2.3-')).toThrow('Invalid version');
+    expect(() => assertValidVersion('1.2.3-+meta')).toThrow('Invalid version');
+  });
+
   it('treats absent packages and dist-tags as missing', () => {
     expect(isMissingRegistryPackageError(new Error('HTTP 404 from registry'))).toBe(true);
     expect(isMissingRegistryPackageError(new Error('Registry dist-tag beta is missing for @lesliechan721/aw-plugins-manifest.'))).toBe(true);

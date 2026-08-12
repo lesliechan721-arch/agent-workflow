@@ -182,11 +182,11 @@ describe('skill-review author tools', () => {
     tempDirs.push(outputRoot);
 
     const subjectRoot = await runner.prepareSubject({
-      participantSkills: ['skill-review', 'create-agent-workflows-plugin'],
+      participantSkills: ['skill-review', 'create-aw-plugin'],
       workspace: [],
     }, outputRoot);
 
-    for (const skillName of ['skill-review', 'create-agent-workflows-plugin']) {
+    for (const skillName of ['skill-review', 'create-aw-plugin']) {
       await expect(fs.pathExists(path.join(
         subjectRoot,
         '.agents',
@@ -215,7 +215,7 @@ describe('skill-review author tools', () => {
     const runner = await import(`${pathToFileURL(staticEvalRunner()).href}?authoring-subject`);
     const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-static-authoring-subject-'));
     tempDirs.push(outputRoot);
-    const skillName = 'create-agent-workflows-plugin';
+    const skillName = 'create-aw-plugin';
     const skillRoot = path.join(repoRoot(), '.agents', 'skills', skillName);
     const manifest = await runner.readManifest(skillRoot, skillName);
     const subjectRoot = await runner.prepareSubject(manifest, outputRoot);
@@ -353,7 +353,7 @@ describe('skill-review author tools', () => {
 
   it('reviews itself and another project-local static Skill without treating nested examples as targets', async () => {
     const root = repoRoot();
-    for (const skillName of ['skill-review', 'create-agent-workflows-plugin']) {
+    for (const skillName of ['skill-review', 'create-aw-plugin']) {
       const result = await execFileAsync('node', [
         skillScript('inspect_skill_target.mjs'),
         skillName,
@@ -668,7 +668,7 @@ describe('skill-review author tools', () => {
       root,
       '.agents',
       'skills',
-      'create-agent-workflows-plugin',
+      'create-aw-plugin',
       'references',
       '.examples',
       'code-review',

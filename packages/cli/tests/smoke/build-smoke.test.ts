@@ -72,6 +72,110 @@ afterEach(async () => {
 describe('build smoke', () => {
   const root = repoRoot();
 
+  it('enforces plugin production changes with the built authoring version gate', async () => {
+    const snapshot = await requireBuildSnapshot();
+    const tempRoot = await createSmokeTempRoot(
+      'aw-authoring-version-gate-smoke-',
+      'authoring version gate smoke temp root',
+    );
+    const tempRepo = path.join(tempRoot, 'repo');
+    const pluginRoot = path.join(tempRepo, 'plugins', 'version-gate-smoke');
+    const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
+    await fs.ensureDir(path.dirname(manifestPath));
+    await fs.ensureSymlink(
+      snapshot.cliDistRoot,
+      path.join(tempRepo, 'packages', 'cli', 'dist'),
+      'dir',
+    );
+    await fs.writeJson(manifestPath, {
+      name: 'version-gate-smoke',
+      version: '0.1.0',
+      description: 'Baseline version gate smoke plugin.',
+      compatibility: {
+        aw: {
+          minVersion: '0.0.0',
+        },
+      },
+      marketplace: {
+        category: 'workflow',
+        strict: true,
+        policy: {
+          installation: 'AVAILABLE',
+          authentication: 'ON_INSTALL',
+        },
+      },
+    }, { spaces: 2 });
+    await fs.writeFile(path.join(pluginRoot, 'README.md'), '# Version Gate Smoke\n', 'utf8');
+
+    await execFileAsync('git', ['init'], { cwd: tempRepo, env: process.env });
+    await execFileAsync('git', ['add', 'plugins'], { cwd: tempRepo, env: process.env });
+    await execFileAsync('git', [
+      '-c',
+      'user.name=AW Test',
+      '-c',
+      'user.email=aw-test@example.invalid',
+      'commit',
+      '-m',
+      'baseline',
+    ], { cwd: tempRepo, env: process.env });
+
+    const manifest = await fs.readJson(manifestPath);
+    manifest.description = 'Changed production version gate smoke plugin.';
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+    const checkerPath = path.join(
+      root,
+      '.agents',
+      'skills',
+      'create-aw-plugin',
+      'scripts',
+      'check_plugin_versions.mjs',
+    );
+    let missingBumpError: { stdout?: string } | undefined;
+    try {
+      await execFileAsync('node', [
+        checkerPath,
+        'version-gate-smoke',
+        '--json',
+        '--repo-root',
+        tempRepo,
+      ], { cwd: root, env: process.env, maxBuffer: 10 * 1024 * 1024 });
+    } catch (error) {
+      missingBumpError = error as { stdout?: string };
+    }
+    expect(missingBumpError?.stdout).toBeTruthy();
+    expect(JSON.parse(missingBumpError!.stdout!).checks[0]).toMatchObject({
+      status: 'missingVersionBump',
+      productionChanged: true,
+    });
+
+    await execFileAsync('node', [
+      path.join(
+        root,
+        '.agents',
+        'skills',
+        'create-aw-plugin',
+        'scripts',
+        'bump_plugin_version.mjs',
+      ),
+      'version-gate-smoke',
+      '--bump',
+      'minor',
+      '--repo-root',
+      tempRepo,
+    ], { cwd: root, env: process.env });
+    const bumped = await execFileAsync('node', [
+      checkerPath,
+      'version-gate-smoke',
+      '--json',
+      '--repo-root',
+      tempRepo,
+    ], { cwd: root, env: process.env, maxBuffer: 10 * 1024 * 1024 });
+    expect(JSON.parse(bumped.stdout).checks[0]).toMatchObject({
+      status: 'versionBumped',
+      currentVersion: '0.2.0',
+    });
+  }, 120_000);
+
   it('ensures the build and produces plugins-dist through the compiled bundle script', async () => {
     const snapshot = await requireBuildSnapshot();
     const outputRoot = snapshot.catalogOutputRoot;
