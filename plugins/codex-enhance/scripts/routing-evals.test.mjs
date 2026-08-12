@@ -16,6 +16,7 @@ import {
   evaluateRoutingRun,
   loadRoutingSpec,
   parseRoutingArgs,
+  routingCaseResults,
   routingReportStatus,
   routingRunCase,
   shouldRetryTransportFailure,
@@ -125,8 +126,11 @@ async function testEvalSpec() {
   assert.equal(skillContext.expectations.v1.arguments.fork_context, true);
   assert.equal(skillContext.expectations.v2.arguments.fork_turns, 'all');
   const missingRole = spec.evals.find((entry) => entry.id === 'missing_preset_role');
-  assert.ok(missingRole.expectations.v1.final_message_includes_any.includes('不包含'));
-  assert.ok(missingRole.expectations.v2.final_message_includes_any.includes('未提供'));
+  assert.equal(missingRole.expectations.v1.block_reason, 'preset_role_unavailable');
+  assert.equal(missingRole.expectations.v2.block_reason, 'preset_role_unavailable');
+  const blockedRunCase = routingRunCase(missingRole, 'v2', 'with_skill');
+  assert.match(blockedRunCase.query, /ROUTING_BLOCK_REASON=<reason>/u);
+  assert.match(blockedRunCase.query, /preset_role_unavailable/u);
 }
 
 async function testRolloutArgumentEvidence() {
@@ -376,14 +380,14 @@ function testMechanicalAssertions() {
     termination: 'spawn_observed',
     exit_code: 0,
     spawn_calls: [],
-    final_message: '部分历史不可用。',
+    final_message: '当前接口不能表达部分历史。\nROUTING_BLOCK_REASON=partial_history_unsupported',
   };
   assert.equal(
     evaluateRoutingRun(
       missingRawArguments,
       {
         spawn_calls: { min: 0, max: 0 },
-        final_message_includes_any: ['部分历史'],
+        block_reason: 'partial_history_unsupported',
       },
       'without_skill',
     ).passed,
@@ -480,7 +484,7 @@ function testReportStatus() {
     expectations: {
       v2: {
         spawn_calls: { min: 0, max: 0 },
-        final_message_includes_any: ['冲突'],
+        block_reason: 'routing_override_conflict',
       },
     },
   };
@@ -491,9 +495,19 @@ function testReportStatus() {
     termination: 'completed',
     exit_code: 0,
     spawn_calls: [],
-    final_message: '字段冲突，不能启动。',
+    final_message: '这些字段不能同时使用。\nROUTING_BLOCK_REASON=routing_override_conflict',
   };
   const current = summarizeRoutingVariant(entry, 'v2', 'with_skill', [completed], 0.5);
+  const lexicalOnly = evaluateRoutingRun(
+    { ...completed, final_message: '字段冲突，不能启动。' },
+    entry.expectations.v2,
+    'with_skill',
+  );
+  assert.equal(lexicalOnly.passed, false);
+  assert.equal(
+    lexicalOnly.assertions.find((assertion) => assertion.name === 'block_reason').passed,
+    false,
+  );
   const baseline = summarizeRoutingVariant(
     entry,
     'v2',
@@ -513,6 +527,26 @@ function testReportStatus() {
     complete: true,
     passed: true,
   });
+  assert.deepEqual(
+    routingCaseResults([entry], [current, baseline], ['v2'], ['with_skill', 'without_skill']),
+    [{
+      id: 'example',
+      outcome: 'passed',
+      complete: true,
+      mechanical_passed: true,
+      summary: { expected_results: 2, completed_results: 2 },
+    }],
+  );
+  assert.deepEqual(
+    routingCaseResults([entry], [current], ['v2'], ['with_skill', 'without_skill'])[0],
+    {
+      id: 'example',
+      outcome: 'incomplete',
+      complete: false,
+      mechanical_passed: false,
+      summary: { expected_results: 2, completed_results: 1 },
+    },
+  );
 }
 
 async function main() {

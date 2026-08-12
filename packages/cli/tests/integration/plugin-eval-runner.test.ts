@@ -56,6 +56,7 @@ function testRunLayoutFactory(outputRoot: string) {
     modelEnvironmentDigest?: string | null;
     harnessDigest: string;
     requiredTargets: string[];
+    targetCompositions?: Record<string, string[]>;
   }): Promise<EvalRunLayout> => {
     testRunCounter += 1;
     const runId = options.runId ?? `20260811T000000Z-${testRunCounter.toString(16).padStart(8, '0')}`;
@@ -84,6 +85,7 @@ function testRunLayoutFactory(outputRoot: string) {
         modelEnvironmentDigest: options.modelEnvironmentDigest ?? null,
         harnessDigest: options.harnessDigest,
         requiredTargets: options.requiredTargets,
+        targetCompositions: options.targetCompositions ?? {},
       }, { spaces: 2 });
     }
     return {
@@ -222,6 +224,16 @@ async function writeCommandPlugin(
     ].join('\n'),
     'utf8',
   );
+  if (options.supports.includes('case')) {
+    await fs.writeJson(
+      path.join(pluginRoot, 'skills', options.name, 'evals', 'cases.json'),
+      {
+        skill_name: options.name,
+        evals: [{ id: 'selected_case' }],
+      },
+      { spaces: 2 },
+    );
+  }
   await fs.writeFile(
     path.join(pluginRoot, 'skills', options.name, 'README.md'),
     `# ${options.name}\n`,
@@ -259,6 +271,7 @@ async function writeCommandPlugin(
       kind: 'command',
       skills: [options.name],
       entry: './runner.mjs',
+      ...(options.supports.includes('case') ? { cases: './cases.json' } : {}),
       profiles: ['project-default'],
       defaultRuns: options.defaultRuns,
       releaseSplits: [],
@@ -648,6 +661,46 @@ describe('plugin eval runner', () => {
     }
   });
 
+  it('records command case composition contracts in the report batch', async () => {
+    const root = repoRoot();
+    const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-eval-composition-'));
+    tempDirs.push(outputRoot);
+    registerCurrentTestReadonlyFixtureRoot(root);
+    registerCurrentTestWritableStateRoot(outputRoot);
+    let stdout = '';
+    let stderr = '';
+    const exitCode = await runPluginEvals([
+      'codex-enhance',
+      '--skill',
+      'codex-subagent-guide',
+      '--materialize-only',
+    ], {
+      repoRoot: root,
+      env: process.env,
+      stdout: (text) => { stdout += text; },
+      stderr: (text) => { stderr += text; },
+      createRunLayout: testRunLayoutFactory(outputRoot),
+    });
+    expect(exitCode, stderr).toBe(0);
+    const result = JSON.parse(stdout);
+    const batch = await fs.readJson(path.join(
+      outputRoot,
+      'codex-enhance',
+      'codex-subagent-guide',
+      result.batchId,
+      'batch.json',
+    ));
+    expect(batch.targetCompositions).toMatchObject({
+      'command/lifecycle/project-default/all/all': [
+        'command/lifecycle/project-default/all/wait_for_terminal_result',
+      ],
+    });
+    expect(batch.targetCompositions['command/routing/project-default/all/all']).toHaveLength(18);
+    expect(batch.targetCompositions['command/routing/project-default/all/all']).toContain(
+      'command/routing/project-default/all/project_rule_partial_context',
+    );
+  });
+
   it('rejects suite flags that the selected driver cannot honor', async () => {
     const root = repoRoot();
     const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-eval-flags-'));
@@ -903,6 +956,73 @@ describe('plugin eval runner', () => {
     );
     expect(persistedReport).toContain('[redacted]');
     expect(persistedReport).toContain('[process-tree-id]');
+  });
+
+  it('keeps a full command target retryable when one reported case is incomplete', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-eval-incomplete-case-'));
+    const outputRoot = path.join(root, 'output');
+    tempDirs.push(root);
+    await writeCommandPlugin(root, {
+      name: 'incomplete-case-demo',
+      script: [
+        'process.stdout.write(JSON.stringify({',
+        '  passed: false,',
+        '  case_results: [{ id: "selected_case", outcome: "incomplete", complete: false, mechanical_passed: false }],',
+        '}));',
+        'process.exitCode = 1;',
+      ].join('\n'),
+      defaultRuns: 1,
+      perRunTimeoutMs: 1_000,
+      suiteTimeoutMs: 2_000,
+      supports: ['case', 'codexBin'],
+    });
+    registerCurrentTestReadonlyFixtureRoot(root);
+    registerCurrentTestWritableStateRoot(outputRoot);
+    let stdout = '';
+    let stderr = '';
+
+    const exitCode = await runPluginEvals([
+      'incomplete-case-demo',
+      '--skill',
+      'incomplete-case-demo',
+      '--no-inherit-codex-config',
+      '--codex-bin',
+      process.execPath,
+    ], {
+      repoRoot: root,
+      env: process.env,
+      stdout: (text) => { stdout += text; },
+      stderr: (text) => { stderr += text; },
+      inspectProcessTree: async () => undefined,
+      createRunLayout: testRunLayoutFactory(outputRoot),
+    });
+
+    expect(exitCode, stderr).toBe(1);
+    const result = JSON.parse(stdout);
+    expect(result.bundle.suites).toEqual([
+      expect.objectContaining({
+        outcome: 'incomplete',
+        complete: false,
+        mechanicalPassed: false,
+      }),
+    ]);
+    expect(result.batchSummary.eval).toMatchObject({
+      releaseOutcome: 'incomplete',
+      complete: false,
+      mechanicalPassed: false,
+    });
+    expect(result.batchSummary.eval.targets).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        target: 'command/command/project-default/all/all',
+        outcome: 'incomplete',
+        complete: false,
+      }),
+      expect.objectContaining({
+        target: 'command/command/project-default/all/selected_case',
+        outcome: 'incomplete',
+        complete: false,
+      }),
+    ]));
   });
 
   it('forwards an explicit model to a supporting command suite', async () => {
@@ -1629,7 +1749,13 @@ describe('plugin eval runner', () => {
     tempDirs.push(root);
     await writeCommandPlugin(root, {
       name: 'coverage-demo',
-      script: 'process.stdout.write(JSON.stringify({ complete: true, passed: true }));\n',
+      script: [
+        'process.stdout.write(JSON.stringify({',
+        '  complete: true,',
+        '  passed: true,',
+        '  case_results: [{ id: "selected_case", outcome: "passed", complete: true, mechanical_passed: true }],',
+        '}));',
+      ].join('\n'),
       defaultRuns: 2,
       perRunTimeoutMs: 1_000,
       suiteTimeoutMs: 2_000,
@@ -1643,7 +1769,7 @@ describe('plugin eval runner', () => {
       { name: 'split', args: ['--split', 'validation'], diagnostic: '--split' },
       {
         name: 'case',
-        args: ['--suite', 'command', '--case', 'selected-case'],
+        args: ['--suite', 'command', '--case', 'selected_case'],
         diagnostic: '--case',
       },
       { name: 'runs', args: ['--runs', '1'], diagnostic: '--runs' },

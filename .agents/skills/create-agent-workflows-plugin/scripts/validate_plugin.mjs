@@ -1534,7 +1534,7 @@ function validateOnePluginEvalManifest(pluginDir, pluginManifest, evalDir, expec
 
     if (suite.kind === 'command') {
       validateAllowedKeys(suite, fieldName, [
-        'id', 'kind', 'skills', 'entry', 'profiles', 'defaultRuns', 'releaseSplits',
+        'id', 'kind', 'skills', 'entry', 'cases', 'profiles', 'defaultRuns', 'releaseSplits',
         'requiredForRelease', 'perRunTimeoutMs', 'suiteTimeoutMs', 'supports',
       ]);
       validateEvalRelativeFile(evalDir, suite.entry, `${fieldName}.entry`);
@@ -1557,6 +1557,39 @@ function validateOnePluginEvalManifest(pluginDir, pluginManifest, evalDir, expec
           !suite.supports.includes('split')
         ) {
           error(`${fieldName} declares releaseSplits but does not support split`);
+        }
+        const supportsCase = suite.supports.includes('case');
+        if (supportsCase && suite.cases === undefined) {
+          error(`${fieldName}.cases is required when supports includes case`);
+        } else if (!supportsCase && suite.cases !== undefined) {
+          error(`${fieldName}.cases requires supports to include case`);
+        }
+        if (supportsCase && suite.cases !== undefined) {
+          const casesPath = validateEvalRelativeFile(evalDir, suite.cases, `${fieldName}.cases`);
+          if (casesPath) {
+            try {
+              const casesDocument = JSON.parse(fs.readFileSync(casesPath, 'utf8'));
+              if (!isRecord(casesDocument) || casesDocument.skill_name !== skill) {
+                error(`${fieldName}.cases.skill_name must match ${JSON.stringify(skill)}`);
+              } else if (!Array.isArray(casesDocument.evals) || casesDocument.evals.length === 0) {
+                error(`${fieldName}.cases.evals must be a non-empty array`);
+              } else {
+                const caseIds = new Set();
+                casesDocument.evals.forEach((entry, caseIndex) => {
+                  const caseField = `${fieldName}.cases.evals[${caseIndex}]`;
+                  if (!isRecord(entry) || typeof entry.id !== 'string' || !/^[a-z0-9_]+$/.test(entry.id)) {
+                    error(`${caseField}.id must use lowercase snake_case`);
+                  } else if (caseIds.has(entry.id)) {
+                    error(`${fieldName}.cases has duplicate case id ${JSON.stringify(entry.id)}`);
+                  } else {
+                    caseIds.add(entry.id);
+                  }
+                });
+              }
+            } catch (cause) {
+              error(`${fieldName}.cases is not valid JSON: ${cause.message}`);
+            }
+          }
         }
       }
     } else if (suite.kind === 'conversation' || suite.kind === 'trigger') {

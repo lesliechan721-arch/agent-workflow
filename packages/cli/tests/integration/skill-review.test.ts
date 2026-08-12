@@ -50,6 +50,7 @@ function testEvalLayout(outputRoot: string) {
     modelEnvironmentDigest?: string | null;
     harnessDigest: string;
     requiredTargets: string[];
+    targetCompositions?: Record<string, string[]>;
   }) => {
     const runId = options.runId ?? '20260811T000000Z-00000001';
     const batchId = options.batchId ?? '20260811T000000Z-test-batch-00000000';
@@ -71,6 +72,7 @@ function testEvalLayout(outputRoot: string) {
       modelEnvironmentDigest: options.modelEnvironmentDigest ?? null,
       harnessDigest: options.harnessDigest,
       requiredTargets: options.requiredTargets,
+      targetCompositions: options.targetCompositions ?? {},
     }, { spaces: 2 });
     return {
       batchId,

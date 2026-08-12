@@ -155,7 +155,7 @@ AW_PERF_SUMMARY {"name":"..."}
 
 ## Plugin Eval
 
-`pnpm plugin:eval` 只提供 Codex 证据。`--skill` 必填，一次只运行一个 owner Skill；不支持插件级 `--all`。每次运行必须用 `--batch-name <name>` 新建批次，或用已有输出中的 `--batch-id <id>` 追加同一批次。owner manifest 可以用 `skills[]` 声明同一 subject 的 participant Skills，并用 `profiles[].plugins[]` 按顺序安装当前仓库中的多个插件。该组合只用于 eval，不形成 production dependency。默认 materialize 所有 profile，并运行所有 `requiredForRelease` suite/split。使用 suite/profile/split/case 过滤，或减少 runs 时，单次结果固定为 incomplete；低于 `defaultRuns` 的 target 也固定为 incomplete。同一源码、materialization 环境、模型环境、中央 harness 和 target 合同的多个局部运行可由批次汇总计算 release target 覆盖；materialize-only 批次允许由首个真实模型运行固定模型环境。静态 Skill runner 执行 `packages/cli/dist` 驱动，因此真实运行前先执行 `pnpm build`，harness 摘要也以该构建产物和当前 review runner 为准。
+`pnpm plugin:eval` 只提供 Codex 证据。`--skill` 必填，一次只运行一个 owner Skill；不支持插件级 `--all`。每次运行必须用 `--batch-name <name>` 新建批次，或用已有输出中的 `--batch-id <id>` 恢复或追加同一批次。owner manifest 可以用 `skills[]` 声明同一 subject 的 participant Skills，并用 `profiles[].plugins[]` 按顺序安装当前仓库中的多个插件。该组合只用于 eval，不形成 production dependency。默认 materialize 所有 profile，并运行所有 `requiredForRelease` suite/split。使用 suite/profile/split/case 过滤，或减少 runs 时，单次结果固定为 incomplete；低于 `defaultRuns` 的 target 也固定为 incomplete。同一源码、materialization subject、模型环境、中央 harness、case 集和 target 合同的多个局部运行可由批次汇总计算 release target 覆盖；incomplete target 可补跑，command suite 声明 `cases` 后可由完整 case 集组合 `/all` target，历史 attempt 和失败 run 保留为 provenance。materialize-only 批次允许由首个真实模型运行固定模型环境。静态 Skill runner 执行 `packages/cli/dist` 驱动，因此真实运行前先执行 `pnpm build`，harness 摘要也以该构建产物和当前 review runner 为准。
 
 真实模型运行使用隔离 runtime home，并固定使用文件凭据存储且关闭 secret keychain storage。provider credential 不进入模型 shell，持久化报告必须脱敏。临时 runtime capsule 在成功、失败和中断后清理。
 

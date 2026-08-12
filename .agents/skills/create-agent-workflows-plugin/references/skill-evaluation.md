@@ -110,7 +110,7 @@ Suite 规则：
 - trigger 只判断路由，不等待完整澄清会话。未读取目标 Skill，并调用 `request_user_input` 时，以 `waiting_on_user_input` 正常结束，不计为 timeout 或 execution error。
 - `strictNegativeSplits` 对负例使用零容忍：重复运行中任何一次误加载或错误委派都会让该 split 失败，不能用三次中的多数结果掩盖一次错误。
 - `fixtureModule` 只能指向 owner Skill 的 `evals/*.mjs`，必须导出 `setupTriggerWorkspace({ workspaceRoot, evalCase, env })`；可选的 `captureTriggerWorkspaceState` 返回前后可比较的 JSON 状态。fixture 只能准备临时材料，不能修改 materialized participant Skill，也不能覆盖 HOME/CODEX_HOME/XDG/TMP/PATH；strict 模式还禁止修改 `.agents` 和 `.codex` 控制面。
-- `command` 只用于 model-selection、routing、workflow 等领域专用 runner；`supports` 明确中央入口可以透传哪些参数。runner 必须接受 `--output`，并要求中央提供 `AW_PLUGIN_EVAL_PROJECT_ROOT`，不得回退到源码或 template 自行渲染。
+- `command` 只用于 model-selection、routing、workflow 等领域专用 runner；`supports` 明确中央入口可以透传哪些参数。支持 `case` 时必须用 `cases` 指向同一 eval 目录中的 `{ skill_name, evals[] }` case 文档，并在报告中返回覆盖所选 case 的 `case_results[]`；每项包含 `id`、`outcome`、`complete` 和 `mechanical_passed`。中央据此从中断的 full run 保存已完成 case，并组合分批证据。runner 必须接受 `--output`，并要求中央提供 `AW_PLUGIN_EVAL_PROJECT_ROOT`，不得回退到源码或 template 自行渲染。
 - command runner 同时收到 `AW_PLUGIN_EVAL_OWNER_SKILL`、`AW_PLUGIN_EVAL_PARTICIPANT_SKILLS` 和 `AW_PLUGIN_EVAL_INSTALLED_PLUGINS`。后两项是 JSON 数组。
 - `perRunTimeoutMs` 是单次模型运行时限；`command` 还必须声明独立的 `suiteTimeoutMs` 作为整个领域 runner 的中央兜底，且不得小于 `perRunTimeoutMs`。中央只把前者透传为 `--timeout-ms`，只用后者终止整个子进程。
 - `conversation` 由中央 Codex app-server driver 执行，适合需要 `request_user_input` 多轮回复的用例；driver 会在 Default 协作模式显式启用该工具，case 保存结构化 `scripted_replies`，不得依赖运行时生成的 question id。strict current 只保留 `skills[]` 的精确集合；baseline 只移除 owner Skill，并保留 companion Skills。这样可以测量 owner 的增量作用，不破坏真实组合环境。当前 conversation driver 不支持 split 过滤，因此 `releaseSplits` 必须为空数组。
@@ -147,7 +147,7 @@ pnpm plugin:eval <plugin> --skill <skill> --batch-name release
 
 一次命令只运行一个 owner Skill。`--skill` 必填，插件级 `--all` 不受支持。每次运行还必须用 `--batch-name <name>` 新建批次，或用前一次输出中的 `--batch-id <id>` 追加同一批次；二者只能提供一个。跨 Skill 或跨插件组合由该 Skill manifest 的 `skills[]` 和 `profiles[].plugins[]` 明确声明。默认执行该 owner manifest 中所有 release-required suite/split，同时 materialize 所有 profile。常用调试参数还有 `--profile`、`--case`、`--model`、`--codex-bin`。suite 不支持的参数会失败，不能静默忽略。
 
-`--suite`、`--profile`、`--split`、`--case` 都会把单次 bundle 标为 `complete: false`、`outcome: incomplete`；低于 suite `defaultRuns` 的 `--runs` 还会把对应 target 本身标为 `incomplete`，不能作为 release target 通过证据。此类局部运行即使机械检查通过也退出 `1`。只有相同批次中所有 release target 都被完整、通过的 target 报告覆盖时，批次汇总才能给出完整 release 结果；不同源码摘要、materialization 环境、模型环境、harness 或 target 合同不能混入同一批次。
+`--suite`、`--profile`、`--split`、`--case` 都会把单次 bundle 标为 `complete: false`、`outcome: incomplete`；低于 suite `defaultRuns` 的 `--runs` 还会把对应 target 本身标为 `incomplete`，不能作为 release target 通过证据。此类局部运行即使机械检查通过也退出 `1`。使用同一 `--batch-id` 可以补跑 missing 或 incomplete target；历史 attempt 和失败 run 会保留，但最新完整 attempt 进入有效汇总。声明 `cases` 的 command suite 在全部 case target 完整后，中央会把它们组合成 `/all` release target。只有相同批次中所有 release target 都被完整、通过的有效 target 覆盖时，批次汇总才能给出完整 release 结果；不同源码摘要、materialization subject、模型环境、harness、case 集或 target 合同不能混入同一批次。
 
 真实模型默认使用 `gpt-5.6-luna`；`--model` 可显式覆盖。当前 `CODEX_HOME/config.toml` 只提供选中的 `model_providers.<id>`、provider 连接配置及其它允许的 model 设置，不再决定默认模型；不会继承用户 plugins、skills、MCP、agents 或其它配置。所有中央 eval 都把 `cli_auth_credentials_store` 和 `mcp_oauth_credentials_store` 固定为 `file`，并关闭 `features.secret_auth_storage`，因此临时 Codex 进程不应访问 macOS 钥匙串。可用 `--model-provider <id>`、`--codex-config <path>` 显式选择 provider 来源，或用 `--no-inherit-codex-config` 回到干净的官方默认 provider。provider 引用的环境变量按名称透传，但隔离保留变量会被拒绝，command runner 也不会继承其它宿主 secret；配置内 bearer 只写入 `0600` 临时 runtime home，非官方 provider 一律不复制官方 auth。凭据变量排除出模型 shell，endpoint、token、header 或环境变量值在写持久报告前统一脱敏；临时 capsule 在正常结束、失败和进程信号中清理。
 
@@ -163,7 +163,7 @@ strict 模式在启动模型前检查 `/etc/codex`（Windows 对应系统目录�
 
 中间产物固定在项目内 `.tmp/agent-workflows/evals/plugin/<plugin>/<skill>/<batch-id>/<run-id>/`，命令结束后清理。持久报告固定在 `plugins/<plugin>/reports/<skill>/<batch-id>/`：`evals/runs/<run-id>/run.json` 记录运行状态，按类型和 target 组织的摘要用于聚合，批次根 `summary.json` 和 `report.md` 用于长期保存。`raw/` 默认不提交 Git，但不能在 review 完成前删除。CLI 不接受任意 `--output-dir`。
 
-run 在批次锁内预留，target 发布和终态写入使用同一个锁事务。若本机进程在写入终态前结束，后续 refresh、append 或 review 会把该 run 恢复为 `failed`，避免批次永久停在 `running`。
+run 在批次锁内预留，target 发布和终态写入使用同一个锁事务。若本机进程在写入终态前结束，后续 refresh、append 或 review 会把该 run 恢复为 `failed`，避免批次永久停在 `running`。失败 run 只保留 provenance 和诊断；它留下的 missing target 补齐后，不再永久把 release 结论固定为 failed。
 
 持久 `reports/` 不属于被评估源码，中央 source revision 检查会忽略该目录；插件源码、README、eval 夹具、脚本和作者/评审工具的未提交修改仍会令 `source.inScopeDirty=true`。
 

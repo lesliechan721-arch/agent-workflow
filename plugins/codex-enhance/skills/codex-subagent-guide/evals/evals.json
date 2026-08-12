@@ -107,7 +107,7 @@
       "expected_output": "V2 的正整数 fork 可与简单 role 组合；V1 不伪造部分历史。",
       "files": [],
       "expectations": {
-        "v1": { "spawn_calls": { "min": 0, "max": 0 }, "final_message_includes_any": ["不支持", "无法", "部分历史"] },
+        "v1": { "spawn_calls": { "min": 0, "max": 0 }, "block_reason": "partial_history_unsupported" },
         "v2": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": "codex-subagent-simple", "model": null, "reasoning_effort": null, "fork_context": null, "fork_turns": "2" }, "present_arguments": ["message"] }
       }
     },
@@ -117,7 +117,7 @@
       "expected_output": "V2 部分 fork 可与显式 model 组合；V1 停止。",
       "files": [],
       "expectations": {
-        "v1": { "spawn_calls": { "min": 0, "max": 0 }, "final_message_includes_any": ["不支持", "无法", "部分历史"] },
+        "v1": { "spawn_calls": { "min": 0, "max": 0 }, "block_reason": "partial_history_unsupported" },
         "v2": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": null, "model": "gpt-5.6-terra", "reasoning_effort": null, "fork_context": null, "fork_turns": "3" }, "present_arguments": ["message"] }
       }
     },
@@ -138,7 +138,7 @@
       "files": [],
       "expectations": {
         "v1": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": null, "model": "gpt-5.6-terra", "reasoning_effort": null, "fork_context": true, "fork_turns": null }, "present_arguments": ["message"] },
-        "v2": { "spawn_calls": { "min": 0, "max": 0 }, "final_message_includes_any": ["冲突", "互斥", "不能同时", "无法同时"] }
+        "v2": { "spawn_calls": { "min": 0, "max": 0 }, "block_reason": "routing_override_conflict" }
       }
     },
     {
@@ -147,7 +147,7 @@
       "expected_output": "项目规则的部分历史要求同样生效；V2 与简单 role 组合，V1 不伪造支持。",
       "files": [],
       "expectations": {
-        "v1": { "spawn_calls": { "min": 0, "max": 0 }, "final_message_includes_any": ["不支持", "无法", "部分历史"] },
+        "v1": { "spawn_calls": { "min": 0, "max": 0 }, "block_reason": "partial_history_unsupported" },
         "v2": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": "codex-subagent-simple", "model": null, "reasoning_effort": null, "fork_context": null, "fork_turns": "2" }, "present_arguments": ["message"] }
       }
     },
@@ -168,8 +168,8 @@
       "files": [],
       "omit_roles": ["codex-subagent-simple"],
       "expectations": {
-        "v1": { "spawn_calls": { "min": 0, "max": 0 }, "final_message_includes_any": ["不可用", "没有", "缺失", "无法", "不包含", "未提供"] },
-        "v2": { "spawn_calls": { "min": 0, "max": 0 }, "final_message_includes_any": ["不可用", "没有", "缺失", "无法", "不包含", "未提供"] }
+        "v1": { "spawn_calls": { "min": 0, "max": 0 }, "block_reason": "preset_role_unavailable" },
+        "v2": { "spawn_calls": { "min": 0, "max": 0 }, "block_reason": "preset_role_unavailable" }
       }
     },
     {
@@ -178,8 +178,8 @@
       "expected_output": "固定 role 与显式 model 冲突时停止。",
       "files": [],
       "expectations": {
-        "v1": { "spawn_calls": { "min": 0, "max": 0 }, "final_message_includes_any": ["冲突", "互斥", "不能同时", "无法同时"] },
-        "v2": { "spawn_calls": { "min": 0, "max": 0 }, "final_message_includes_any": ["冲突", "互斥", "不能同时", "无法同时"] }
+        "v1": { "spawn_calls": { "min": 0, "max": 0 }, "block_reason": "routing_override_conflict" },
+        "v2": { "spawn_calls": { "min": 0, "max": 0 }, "block_reason": "routing_override_conflict" }
       }
     }
   ]

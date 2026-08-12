@@ -39,6 +39,7 @@ export interface PluginEvalCommandSuite {
   skill: string;
   skills: string[];
   entry: string;
+  cases?: string;
   profiles: string[];
   defaultRuns: number;
   releaseSplits: PluginEvalSplit[];
@@ -160,8 +161,18 @@ export interface PluginEvalSuiteReport {
   mechanicalPassed: boolean;
   qualitativeReview: 'not_required' | 'required' | 'passed' | 'failed';
   reportPath?: string;
+  caseResults?: PluginEvalCommandCaseResult[];
   summary: Record<string, unknown>;
   diagnostics: string[];
+}
+
+export interface PluginEvalCommandCaseResult {
+  id: string;
+  outcome: PluginEvalOutcome;
+  complete: boolean;
+  mechanicalPassed: boolean;
+  summary?: Record<string, unknown>;
+  diagnostics?: string[];
 }
 
 export interface PluginEvaluationBundle {
@@ -704,7 +715,7 @@ function parseSuite(
 
   const rawSupports = row.supports ?? [];
   expectOnlyKeys(row, [
-    'id', 'kind', 'skills', 'entry', 'profiles', 'defaultRuns', 'releaseSplits',
+    'id', 'kind', 'skills', 'entry', 'cases', 'profiles', 'defaultRuns', 'releaseSplits',
     'requiredForRelease', 'perRunTimeoutMs', 'suiteTimeoutMs', 'supports',
   ], `suites[${index}]`);
   if (!Array.isArray(rawSupports)) {
@@ -726,6 +737,20 @@ function parseSuite(
       `suites[${index}].suiteTimeoutMs must be greater than or equal to perRunTimeoutMs.`,
     );
   }
+  const cases = row.cases === undefined
+    ? undefined
+    : validateEvalRelativeFile(
+      pluginRoot,
+      evalRoot,
+      row.cases,
+      `suites[${index}].cases`,
+    );
+  if (supports.includes('case') && !cases) {
+    throw new Error(`suites[${index}].cases is required when supports includes case.`);
+  }
+  if (cases && !supports.includes('case')) {
+    throw new Error(`suites[${index}].cases requires supports to include case.`);
+  }
   return {
     ...common,
     kind,
@@ -735,9 +760,35 @@ function parseSuite(
       row.entry,
       `suites[${index}].entry`,
     ),
+    ...(cases ? { cases } : {}),
     suiteTimeoutMs,
     supports,
   };
+}
+
+function validatePluginEvalCommandCaseDocument(
+  value: unknown,
+  skill: string,
+  label: string,
+): void {
+  const document = expectRecord(value, label);
+  if (document.skill_name !== skill) {
+    throw new Error(`${label}.skill_name must be ${JSON.stringify(skill)}.`);
+  }
+  if (!Array.isArray(document.evals) || document.evals.length === 0) {
+    throw new Error(`${label}.evals must be a non-empty array.`);
+  }
+  const ids = document.evals.map((entry, index) => {
+    const row = expectRecord(entry, `${label}.evals[${index}]`);
+    const id = expectString(row.id, `${label}.evals[${index}].id`);
+    if (!/^[a-z0-9_]+$/u.test(id)) {
+      throw new Error(`${label}.evals[${index}].id must use lowercase letters, digits, and underscores.`);
+    }
+    return id;
+  });
+  if (new Set(ids).size !== ids.length) {
+    throw new Error(`${label}.evals contains duplicate ids.`);
+  }
 }
 
 function parseTriggerCase(
@@ -1016,6 +1067,13 @@ export async function readPluginEvalManifest(
         await fs.readJson(casesPath),
         suite.skill,
         `conversation cases for suite "${suite.id}"`,
+      );
+    } else if (suite.cases) {
+      const casesPath = path.resolve(pluginRoot, suite.cases.replace(/^\.\//u, ''));
+      validatePluginEvalCommandCaseDocument(
+        await fs.readJson(casesPath),
+        suite.skill,
+        `command cases for suite "${suite.id}"`,
       );
     }
   }

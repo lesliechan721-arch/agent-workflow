@@ -7,6 +7,7 @@ import {
   createSkillEvalRunLayout,
   type SkillEvalRunLayout,
   type SkillReportSourceIdentity,
+  type SkillReportTargetCompositions,
 } from './skill-reporting.js';
 
 export type EvalRunLayout = SkillEvalRunLayout;
@@ -23,6 +24,7 @@ export async function createPluginEvalRunLayout(options: {
   modelEnvironmentDigest?: string | null;
   harnessDigest: string;
   requiredTargets: string[];
+  targetCompositions?: SkillReportTargetCompositions;
 }): Promise<EvalRunLayout> {
   return createSkillEvalRunLayout({
     repoRoot: options.repoRoot,
@@ -35,6 +37,7 @@ export async function createPluginEvalRunLayout(options: {
     modelEnvironmentDigest: options.modelEnvironmentDigest,
     harnessDigest: options.harnessDigest,
     requiredTargets: options.requiredTargets,
+    targetCompositions: options.targetCompositions,
   });
 }
 
