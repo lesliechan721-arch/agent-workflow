@@ -15,7 +15,14 @@ packages/cli/plugins-dist
 .agent-workflows/plugin-config.local/
 .worktrees
 .tmp/
-.agents/reports/*/**/raw/
-plugins/*/reports/*/**/raw/
-.agents/reports/*/*/.batch.lock
-plugins/*/reports/*/*/.batch.lock
+# Skill report roots only track a published human report and compact summary.
+.agents/reports/**
+!.agents/reports/*/
+!.agents/reports/*/*/
+!.agents/reports/*/*/report.md
+!.agents/reports/*/*/summary.json
+plugins/*/reports/**
+!plugins/*/reports/*/
+!plugins/*/reports/*/*/
+!plugins/*/reports/*/*/report.md
+!plugins/*/reports/*/*/summary.json

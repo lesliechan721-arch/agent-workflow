@@ -188,7 +188,7 @@ description: >
 | `scripts/` | 可重复、可测试的确定性逻辑；规范见 `references/skill-scripts.md` |
 | `assets/` | 输出模板、图片、静态数据和其它无需作为指令阅读的资源 |
 
-插件 Skill 的作者期评测放在 owner Skill 源码根的 `evals/`，持久证据放在同一根的 `reports/`。构建和安装会排除这两个作者目录，不会把语料、runner 或 trace 复制进 production runtime。规范见 `references/skill-evaluation.md`。
+插件 Skill 的作者期评测定义放在 owner Skill 源码根的 `evals/`，完整工作证据放在项目 `.tmp/agent-workflows/evals/`，正式人读报告放在插件根 `reports/<skill>/<batch-id>/`。构建和安装会排除 eval 定义与正式报告，不会把语料、runner 或 trace 复制进 production runtime。规范见 `references/skill-evaluation.md`。
 
 ## 完成检查
 

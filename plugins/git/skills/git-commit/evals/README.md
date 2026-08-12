@@ -38,7 +38,7 @@ Codex 的系统、云端和设备托管配置层不能由这些参数统一关�
 
 Windows 上必须通过 `--codex-bin` 提供官方 launcher 选择的原生 `codex.exe` 绝对路径，避免 Node 直接启动 `.cmd` wrapper 的平台差异。
 
-真实模型默认要求 Full Access 管理后代进程；无 Full Access 时会在启动前阻断。用户确认风险后可传 `--allow-unmanaged-processes`，但该模式不保证清理后代进程。中间产物固定在项目 `.tmp/agent-workflows/evals/`，持久报告写入 `plugins/git/reports/git-commit/<batch-id>/`。
+真实模型默认要求 Full Access 管理后代进程；无 Full Access 时会在启动前阻断。用户确认风险后可传 `--allow-unmanaged-processes`，但该模式不保证清理后代进程。完整批次固定在项目 `.tmp/agent-workflows/evals/`；`review:publish` 只把正式 `report.md` 和 `summary.json` 写入 `plugins/git/reports/git-commit/<batch-id>/`。
 
 ## 常规插件测试
 

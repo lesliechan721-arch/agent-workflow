@@ -322,7 +322,7 @@ describe('plugin eval runner', () => {
       .toMatchObject({ inScopeDirty: true });
   });
 
-  it('places durable reports in the owning Skill and temporary work under the repository', async () => {
+  it('places the complete eval batch and run work under the repository temporary root', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-eval-layout-'));
     tempDirs.push(root);
     const skillRoot = path.join(root, 'plugins', 'demo', 'skills', 'demo');
@@ -342,9 +342,11 @@ describe('plugin eval runner', () => {
 
     expect(layout.reportRoot).toBe(path.join(
       root,
-      'plugins',
+      '.tmp',
+      'agent-workflows',
+      'evals',
+      'plugin',
       'demo',
-      'reports',
       'demo',
       layout.batchId,
       'evals',
@@ -360,11 +362,19 @@ describe('plugin eval runner', () => {
       'demo',
       'demo',
       layout.batchId,
+      'work',
       '20260811T000000Z-00000001',
     ));
     await layout.cleanupWork();
     await expect(fs.pathExists(layout.workRoot)).resolves.toBe(false);
     await expect(fs.pathExists(layout.reportRoot)).resolves.toBe(true);
+    await expect(fs.pathExists(path.join(
+      root,
+      'plugins',
+      'demo',
+      'reports',
+      'demo',
+    ))).resolves.toBe(false);
   });
 
   it('prints help without treating it as an argument error', async () => {

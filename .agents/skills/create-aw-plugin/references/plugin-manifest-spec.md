@@ -81,7 +81,7 @@ node .agents/skills/create-aw-plugin/scripts/check_plugin_versions.mjs \
 
 `scripts`、`config` 和 `artifacts` 是 AW CLI 自己管理的插件运行时合同，不会写入 `.claude-plugin/plugin.json` 或 `.codex-plugin/plugin.json`。插件脚本测试通过仓库包脚本 `pnpm plugin:test <plugin>` 运行，不通过 `aw` 客户端子命令。
 
-作者期模型评估不增加 plugin manifest 顶层字段。每个 owner Skill 使用 `skills/<skill>/evals/manifest.json`，由 `pnpm plugin:eval <plugin> --skill <skill> --batch-name <name>` 读取；Skill 根 `evals/**` 和插件根 `reports/**` 不进入 production runtime bundle。完整 schema、Codex-only 范围、批次报告和 materialization 规则见 `references/skill-evaluation.md`。
+作者期模型评估不增加 plugin manifest 顶层字段。每个 owner Skill 使用 `skills/<skill>/evals/manifest.json`，由 `pnpm plugin:eval <plugin> --skill <skill> --batch-name <name>` 读取；Skill 根 `evals/**` 和插件根 `reports/**` 不进入 production runtime bundle。完整 schema、Codex-only 范围、临时批次、正式报告和 materialization 规则见 `references/skill-evaluation.md`。
 
 本节只定义 manifest 字段合同。`aw config` 命令、标准 `aw-config.mjs` helper、lifecycle context、动态 artifact renderer、运行时环境、幂等要求和 `pnpm plugin:test` 写法见 `references/aw-scripts-config-lifecycle.md`。
 

@@ -20,7 +20,7 @@ pnpm plugin:eval <name> --skill <owner-skill> \
   --batch-name materialization --materialize-only
 node .agents/skills/skill-review/scripts/inspect_skill_target.mjs \
   plugins/<name> \
-  --evaluation plugins/<name>/reports/<owner-skill>/<batch-id>/evals/runs/<run-id>/raw/evaluation.json \
+  --evaluation .tmp/agent-workflows/evals/plugin/<name>/<owner-skill>/<batch-id>/evals/runs/<run-id>/raw/evaluation.json \
   --format json
 ```
 
@@ -40,8 +40,8 @@ pnpm plugin:eval <name> --skill <owner-skill> --batch-name release
 
 release-required suite 必须 complete；不得用 `--allow-environment-skips` 形成发布证据。真实模型默认要求 Full Access；若用户用 `--allow-unmanaged-processes` 确认降级运行，review 必须明确记录后代进程清理不受保证。`needs_review` 或 `qualitativeReview=required` 必须读取对应 trace 逐项判分。Codex 版本、model、profile、已安装插件、participant Skills、config digest、bundle digest 和 content digest 应随报告保存，防止混用不同制品。
 
-eval 报告固定保存在 `plugins/<name>/reports/<owner-skill>/<batch-id>/`。验证 scorecard 后，用 `pnpm review:publish -- --plugin <name> --skill <owner-skill> --batch-id <batch-id> --report <report.md> --scorecard <scorecard.json>` 发布并封存该批次；没有 eval 时用 `--batch-name` 创建 review-only 批次。只把临时草稿放到项目 `.tmp/agent-workflows/reviews/`。
+完整 eval/review 批次固定保存在 `.tmp/agent-workflows/evals/plugin/<name>/<owner-skill>/<batch-id>/`。验证 scorecard 后，用 `pnpm review:publish -- --plugin <name> --skill <owner-skill> --batch-id <batch-id> --report <report.md> --scorecard <scorecard.json>` 发布正式 `report.md` 和 schema v2 `summary.json`，并封存临时批次；没有 eval 时用 `--batch-name` 创建 review-only 批次。正式目录位于 `plugins/<name>/reports/<owner-skill>/<batch-id>/`，其它证据和草稿只保留在 `.tmp/agent-workflows/`。
 
-发布后人工更新 Skill README 的最近 eval/review 摘要、仓库相对完整报告路径和被评估 Git commit。程序不会自动改写 README；插件 README 不记录 Skill 验证信息。
+发布后人工更新 Skill README 的最近正式报告摘要、仓库相对路径和被评估 Git commit。程序不会自动改写 README；插件 README 不记录 Skill 验证信息。
 
 所有模型行为结论仅覆盖 Codex。`plugin:test` 只能证明确定性行为；`plugin:eval` 的真实 suite 才能证明模型行为。插件级 release verdict 取 required profiles/suites 中最差门禁，不用平均分掩盖失败。

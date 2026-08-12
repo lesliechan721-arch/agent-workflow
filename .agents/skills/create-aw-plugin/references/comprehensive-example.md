@@ -73,7 +73,7 @@ code-review/
 
 **两个平台 runtime bundle 都不包含**：`scripts.tests.node` 测试入口和 test-only helper
 
-**两个平台 runtime bundle 都不包含**：Skill 根 `evals/**`、插件根 `reports/**` 作者期语料、runner 和报告；Skill README 随 Skill 发布
+**两个平台 runtime bundle 都不包含**：Skill 根 `evals/**` 和插件根 `reports/**`；完整 eval 工作证据只保存在项目 `.tmp/agent-workflows/evals/`，Skill README 随 Skill 发布
 
 **插件 manifest 和平台原生 manifest 都不支持**：`dependencies`。
 

@@ -57,8 +57,7 @@ async function makeRepo(): Promise<string> {
       '',
       '## 最近验证',
       '',
-      '- 最近 eval：暂无已完成报告。',
-      '- 最近 review：暂无已完成报告。',
+      '- 最近正式报告：暂无。',
       '',
     ].join('\n'),
     'utf8',
@@ -144,6 +143,23 @@ describe('Skill report batches', () => {
       releaseRequired: 2,
       releaseOutcome: 'incomplete',
     });
+    expect(first.batchRoot).toBe(path.join(
+      repoRoot,
+      '.tmp',
+      'agent-workflows',
+      'evals',
+      'plugin',
+      'demo-plugin',
+      'demo-skill',
+      first.batchId,
+    ));
+    await expect(fs.pathExists(path.join(
+      repoRoot,
+      'plugins',
+      'demo-plugin',
+      'reports',
+      'demo-skill',
+    ))).resolves.toBe(false);
 
     const second = await createSkillEvalRunLayout({
       repoRoot,
@@ -193,14 +209,20 @@ describe('Skill report batches', () => {
     await expect(fs.pathExists(path.join(first.batchRoot, 'summary.json'))).resolves.toBe(true);
     await expect(fs.pathExists(path.join(first.batchRoot, 'report.md'))).resolves.toBe(true);
 
-    const sealed = await publishSkillReviewToBatch({
+    const published = await publishSkillReviewToBatch({
       repoRoot,
       owner,
       batchId: first.batchId,
       reviewId: '20260812T010400Z-00000003',
       source,
       report: '# Review\n',
-      scorecard: { review: { mode: 'release' } },
+      scorecard: {
+        review: { mode: 'release' },
+        findings: [
+          { severity: 'P2' },
+          { severity: 'Advisory' },
+        ],
+      },
       calculated: {
         mode: 'release',
         weightedScore: 92,
@@ -209,8 +231,54 @@ describe('Skill report batches', () => {
         release: 'pass',
       },
     });
-    expect(sealed.status).toBe('sealed');
-    expect(sealed.review).toMatchObject({ mode: 'release', release: 'pass' });
+    expect(published).toEqual(expect.objectContaining({
+      schemaVersion: 2,
+      batchId: first.batchId,
+      name: 'release-check',
+      owner,
+      source: {
+        commits: [source.gitHead],
+        inScopeDirty: false,
+      },
+      eval: {
+        releaseOutcome: 'passed',
+        covered: 2,
+        required: 2,
+      },
+      review: expect.objectContaining({
+        reviewId: '20260812T010400Z-00000003',
+        mode: 'release',
+        verdict: 'pass',
+        weightedScore: 92,
+        coveragePercent: 100,
+        confidence: 'high',
+        findings: { p0: 0, p1: 0, p2: 1, advisory: 1 },
+      }),
+      reportPath: 'report.md',
+    }));
+    const publishedRoot = path.join(
+      repoRoot,
+      'plugins',
+      'demo-plugin',
+      'reports',
+      'demo-skill',
+      first.batchId,
+    );
+    await expect(fs.readdir(publishedRoot)).resolves.toEqual(['report.md', 'summary.json']);
+    await expect(fs.readFile(path.join(publishedRoot, 'report.md'), 'utf8'))
+      .resolves.toBe('# Review\n');
+    await expect(fs.readJson(path.join(publishedRoot, 'summary.json')))
+      .resolves.toEqual(published);
+    await expect(fs.pathExists(path.join(
+      first.batchRoot,
+      'reviews',
+      'release',
+      '20260812T010400Z-00000003',
+      'scorecard.json',
+    ))).resolves.toBe(true);
+    await expect(fs.readJson(path.join(first.batchRoot, 'batch.json'))).resolves.toMatchObject({
+      status: 'sealed',
+    });
     await expect(createSkillEvalRunLayout({
       repoRoot,
       owner,
@@ -220,7 +288,7 @@ describe('Skill report batches', () => {
       modelEnvironmentDigest,
       harnessDigest,
       requiredTargets,
-    })).rejects.toThrow('is sealed');
+    })).rejects.toThrow('already published');
 
     await expect(fs.readFile(pluginReadmePath, 'utf8')).resolves.toBe(pluginReadme);
     await expect(fs.readFile(skillReadmePath, 'utf8')).resolves.toBe(skillReadme);
@@ -525,7 +593,7 @@ describe('Skill report batches', () => {
     await expect(fs.readFile(
       path.join(repoRoot, 'plugins', 'demo-plugin', 'skills', 'demo-skill', 'README.md'),
       'utf8',
-    )).resolves.toContain('- 最近 eval：暂无已完成报告。');
+    )).resolves.toContain('- 最近正式报告：暂无。');
   });
 
   it('rejects incompatible appends and duplicate suite targets before publishing target files', async () => {
@@ -739,14 +807,14 @@ describe('Skill report batches', () => {
     });
   });
 
-  it('rejects a report root symlink before writing outside the repository', async () => {
+  it('rejects a published report root symlink without blocking temporary eval evidence', async () => {
     const repoRoot = await makeRepo();
     const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-report-outside-'));
     tempDirs.push(outside);
     const pluginRoot = path.join(repoRoot, 'plugins', 'demo-plugin');
     await fs.symlink(outside, path.join(pluginRoot, 'reports'));
 
-    await expect(createSkillEvalRunLayout({
+    const layout = await createSkillEvalRunLayout({
       repoRoot,
       owner,
       batchName: 'symlink-report-root',
@@ -756,6 +824,29 @@ describe('Skill report batches', () => {
       modelEnvironmentDigest,
       harnessDigest,
       requiredTargets,
+    });
+    const result = evaluation({ generatedAt: '2026-08-12T03:35:30.000Z' });
+    await completeRun(layout, result, result.generatedAt);
+    await publishEvalRunToBatch({
+      repoRoot,
+      layout,
+      evaluation: result,
+      requiredTargets,
+    });
+    await expect(publishSkillReviewToBatch({
+      repoRoot,
+      owner,
+      batchId: layout.batchId,
+      source,
+      report: '# Review\n',
+      scorecard: { review: { mode: 'release' }, findings: [] },
+      calculated: {
+        mode: 'release',
+        weightedScore: 90,
+        coverage: 100,
+        confidence: 'high',
+        release: 'pass',
+      },
     })).rejects.toThrow('cannot contain a symbolic link');
     await expect(fs.readdir(outside)).resolves.toEqual([]);
   });
@@ -877,11 +968,22 @@ describe('Skill report batches', () => {
         release: 'pass',
       },
     });
-    await expect(fs.readJson(path.join(
+    expect(summary.eval).toEqual({ releaseOutcome: 'not_run', covered: 0, required: 0 });
+    await expect(fs.readdir(path.join(
       repoRoot,
       'plugins',
       'demo-plugin',
       'reports',
+      'demo-skill',
+      summary.batchId,
+    ))).resolves.toEqual(['report.md', 'summary.json']);
+    await expect(fs.readJson(path.join(
+      repoRoot,
+      '.tmp',
+      'agent-workflows',
+      'evals',
+      'plugin',
+      'demo-plugin',
       'demo-skill',
       summary.batchId,
       'evals',
@@ -892,6 +994,284 @@ describe('Skill report batches', () => {
       mechanicalPassed: false,
     });
   });
+
+  it('publishes the same compact contract for a static Skill and preserves source commits', async () => {
+    const repoRoot = await makeRepo();
+    const staticOwner: SkillReportOwner = { kind: 'static-skill', skill: 'static-demo' };
+    const staticRoot = path.join(repoRoot, '.agents', 'skills', 'static-demo');
+    await fs.ensureDir(staticRoot);
+    await fs.writeFile(path.join(staticRoot, 'SKILL.md'), '# Static Demo\n', 'utf8');
+    await fs.writeFile(path.join(staticRoot, 'README.md'), '# Static Demo\n', 'utf8');
+    const staticSource: SkillReportSourceIdentity = {
+      digest: 'sha256:static-source',
+      gitHead: 'cccccccccccccccc',
+      gitHeads: ['aaaaaaaaaaaaaaaa', 'bbbbbbbbbbbbbbbb'],
+      inScopeDirty: true,
+    };
+    const summary = await publishSkillReviewToBatch({
+      repoRoot,
+      owner: staticOwner,
+      batchName: 'static-review',
+      reviewId: '20260812T051000Z-00000009',
+      source: staticSource,
+      report: '# Static Review\n',
+      scorecard: {
+        review: { mode: 'quick' },
+        findings: [
+          { severity: 'P0' },
+          { severity: 'P1' },
+          { severity: 'P2' },
+          { severity: 'Advisory' },
+        ],
+      },
+      calculated: {
+        mode: 'quick',
+        weightedScore: null,
+        coverage: null,
+        confidence: null,
+        release: 'provisional',
+      },
+    });
+    expect(summary).toMatchObject({
+      owner: staticOwner,
+      source: {
+        commits: [
+          'aaaaaaaaaaaaaaaa',
+          'bbbbbbbbbbbbbbbb',
+          'cccccccccccccccc',
+        ],
+        inScopeDirty: true,
+      },
+      eval: { releaseOutcome: 'not_run', covered: 0, required: 0 },
+      review: {
+        mode: 'quick',
+        verdict: 'provisional',
+        weightedScore: null,
+        coveragePercent: null,
+        confidence: null,
+        findings: { p0: 1, p1: 1, p2: 1, advisory: 1 },
+      },
+    });
+    await expect(fs.readdir(path.join(
+      repoRoot,
+      '.agents',
+      'reports',
+      'static-demo',
+      summary.batchId,
+    ))).resolves.toEqual(['report.md', 'summary.json']);
+    await expect(fs.pathExists(path.join(
+      repoRoot,
+      '.tmp',
+      'agent-workflows',
+      'evals',
+      'static',
+      'static-demo',
+      summary.batchId,
+      'batch.json',
+    ))).resolves.toBe(true);
+  });
+
+  it('rejects an empty review before allocating a batch', async () => {
+    const repoRoot = await makeRepo();
+    await expect(publishSkillReviewToBatch({
+      repoRoot,
+      owner,
+      batchName: 'empty-review',
+      source,
+      report: ' \n',
+      scorecard: { review: { mode: 'release' }, findings: [] },
+      calculated: {
+        mode: 'release',
+        weightedScore: 90,
+        coverage: 100,
+        confidence: 'high',
+        release: 'pass',
+      },
+    })).rejects.toThrow('must not be empty');
+    await expect(fs.pathExists(path.join(
+      repoRoot,
+      '.tmp',
+      'agent-workflows',
+      'evals',
+      'plugin',
+      'demo-plugin',
+      'demo-skill',
+    ))).resolves.toBe(false);
+  });
+
+  it('does not overwrite an existing formal report or seal the temporary batch', async () => {
+    const repoRoot = await makeRepo();
+    const layout = await createSkillEvalRunLayout({
+      repoRoot,
+      owner,
+      batchName: 'published-collision',
+      runId: '20260812T052000Z-0000000a',
+      source,
+      environmentDigest,
+      modelEnvironmentDigest,
+      harnessDigest,
+      requiredTargets,
+    });
+    const result = evaluation({ generatedAt: '2026-08-12T05:21:00.000Z' });
+    await completeRun(layout, result, result.generatedAt);
+    await publishEvalRunToBatch({
+      repoRoot,
+      layout,
+      evaluation: result,
+      requiredTargets,
+    });
+    const publishedRoot = path.join(
+      repoRoot,
+      'plugins',
+      'demo-plugin',
+      'reports',
+      'demo-skill',
+      layout.batchId,
+    );
+    await fs.ensureDir(publishedRoot);
+    await fs.writeFile(path.join(publishedRoot, 'report.md'), '# Existing\n', 'utf8');
+    await expect(publishSkillReviewToBatch({
+      repoRoot,
+      owner,
+      batchId: layout.batchId,
+      source,
+      report: '# Replacement\n',
+      scorecard: { review: { mode: 'release' }, findings: [] },
+      calculated: {
+        mode: 'release',
+        weightedScore: 90,
+        coverage: 100,
+        confidence: 'high',
+        release: 'pass',
+      },
+    })).rejects.toThrow('already published');
+    await expect(fs.readFile(path.join(publishedRoot, 'report.md'), 'utf8'))
+      .resolves.toBe('# Existing\n');
+    await expect(fs.readJson(path.join(layout.batchRoot, 'batch.json'))).resolves.toMatchObject({
+      status: 'open',
+    });
+    await expect(fs.pathExists(path.join(layout.batchRoot, 'reviews'))).resolves.toBe(false);
+  });
+
+  it('does not remove an existing review when a review id is reused', async () => {
+    const repoRoot = await makeRepo();
+    const layout = await createSkillEvalRunLayout({
+      repoRoot,
+      owner,
+      batchName: 'review-id-collision',
+      runId: '20260812T052100Z-0000000b',
+      source,
+      environmentDigest,
+      modelEnvironmentDigest,
+      harnessDigest,
+      requiredTargets,
+    });
+    const result = evaluation({ generatedAt: '2026-08-12T05:22:00.000Z' });
+    await completeRun(layout, result, result.generatedAt);
+    await publishEvalRunToBatch({
+      repoRoot,
+      layout,
+      evaluation: result,
+      requiredTargets,
+    });
+    const reviewId = '20260812T052200Z-0000000c';
+    const reviewRoot = path.join(layout.batchRoot, 'reviews', 'release', reviewId);
+    await fs.ensureDir(reviewRoot);
+    await fs.writeFile(path.join(reviewRoot, 'sentinel.txt'), 'keep\n', 'utf8');
+
+    await expect(publishSkillReviewToBatch({
+      repoRoot,
+      owner,
+      batchId: layout.batchId,
+      reviewId,
+      source,
+      report: '# Replacement\n',
+      scorecard: { review: { mode: 'release' }, findings: [] },
+      calculated: {
+        mode: 'release',
+        weightedScore: 90,
+        coverage: 100,
+        confidence: 'high',
+        release: 'pass',
+      },
+    })).rejects.toThrow('already exists in report batch');
+    await expect(fs.readFile(path.join(reviewRoot, 'sentinel.txt'), 'utf8'))
+      .resolves.toBe('keep\n');
+    await expect(fs.readJson(path.join(layout.batchRoot, 'batch.json'))).resolves.toMatchObject({
+      status: 'open',
+    });
+    await expect(fs.pathExists(path.join(
+      repoRoot,
+      'plugins',
+      'demo-plugin',
+      'reports',
+      'demo-skill',
+      layout.batchId,
+    ))).resolves.toBe(false);
+  });
+
+  it.runIf(process.platform !== 'win32')(
+    'does not add review evidence when formal staging cannot start',
+    async () => {
+      const repoRoot = await makeRepo();
+      const layout = await createSkillEvalRunLayout({
+        repoRoot,
+        owner,
+        batchName: 'formal-staging-failure',
+        runId: '20260812T052300Z-0000000d',
+        source,
+        environmentDigest,
+        modelEnvironmentDigest,
+        harnessDigest,
+        requiredTargets,
+      });
+      const result = evaluation({ generatedAt: '2026-08-12T05:24:00.000Z' });
+      await completeRun(layout, result, result.generatedAt);
+      await publishEvalRunToBatch({
+        repoRoot,
+        layout,
+        evaluation: result,
+        requiredTargets,
+      });
+      const reportRoot = path.join(
+        repoRoot,
+        'plugins',
+        'demo-plugin',
+        'reports',
+        'demo-skill',
+      );
+      await fs.ensureDir(reportRoot);
+      await fs.chmod(reportRoot, 0o500);
+      try {
+        await expect(publishSkillReviewToBatch({
+          repoRoot,
+          owner,
+          batchId: layout.batchId,
+          reviewId: '20260812T052400Z-0000000e',
+          source,
+          report: '# Review\n',
+          scorecard: { review: { mode: 'release' }, findings: [] },
+          calculated: {
+            mode: 'release',
+            weightedScore: 90,
+            coverage: 100,
+            confidence: 'high',
+            release: 'pass',
+          },
+        })).rejects.toThrow();
+      } finally {
+        await fs.chmod(reportRoot, 0o700);
+      }
+      await expect(fs.pathExists(path.join(layout.batchRoot, 'reviews'))).resolves.toBe(false);
+      await expect(fs.readJson(path.join(layout.batchRoot, 'summary.json'))).resolves.toMatchObject({
+        status: 'open',
+        review: null,
+      });
+      await expect(fs.readJson(path.join(layout.batchRoot, 'batch.json'))).resolves.toMatchObject({
+        status: 'open',
+      });
+    },
+  );
 
   it('validates a review id before creating a review-only batch', async () => {
     const repoRoot = await makeRepo();
@@ -936,8 +1316,8 @@ describe('Skill report batches', () => {
     await fs.writeFile(
       readmePath,
       readme.replace(
-        '- 最近 eval：暂无已完成报告。',
-        '- 最近 eval：`some-batch`，结果 `failed`。',
+        '- 最近正式报告：暂无。',
+        '- 最近正式报告：`some-batch`，结论 `fail`。',
       ),
       'utf8',
     );

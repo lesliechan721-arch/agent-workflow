@@ -9,7 +9,7 @@ node .agents/skills/skill-review/scripts/run_static_skill_evals.mjs \
   create-aw-plugin --validate-only
 ```
 
-中间产物固定写入项目 `.tmp/agent-workflows/evals/static/`，完成后清理。持久结果写入 `.agents/reports/create-aw-plugin/<batch-id>/`。
+完整批次固定写入项目 `.tmp/agent-workflows/evals/static/`；`review:publish` 只把正式 `report.md` 和 `summary.json` 写入 `.agents/reports/create-aw-plugin/<batch-id>/`。
 
 真实 Codex eval 复用 CLI 已有的隔离 trigger driver 和 app-server behavior driver，因此先构建 CLI：
 

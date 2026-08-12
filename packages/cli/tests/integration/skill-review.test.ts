@@ -1341,12 +1341,16 @@ describe('skill-review author tools', () => {
         '\n',
       )
       .replace(
-        '\n静态 Skill 的报告保存在 `.agents/reports/<skill>/<batch-id>/`。插件 Skill 的报告保存在 `plugins/<plugin>/reports/<skill>/<batch-id>/`。临时工作目录统一使用项目 `.tmp/agent-workflows/`。\n',
+        '\n完整 eval/review 批次保存在 `.tmp/agent-workflows/evals/`。`review:publish` 生成的静态 Skill 正式报告位于 `.agents/reports/<skill>/<batch-id>/`，插件 Skill 正式报告位于 `plugins/<plugin>/reports/<skill>/<batch-id>/`；每个正式目录只含 `report.md` 和 `summary.json`。\n',
         '',
       )
       .replace(
-        '\nSkill README 中的最近 eval/review 摘要、仓库相对报告路径和被评估 Git commit 由作者或 agent 在批次完成后人工更新。程序不写 marker、不自动同步，也不把该段内容作为发布门禁。\n',
+        '\nSkill README 中的最近正式报告摘要、仓库相对路径和被评估 Git commit 由作者或 agent 在 `review:publish` 后人工更新。程序不写 marker、不自动同步，也不把该段内容作为发布门禁。\n',
         '',
+      )
+      .replace(
+        '- 最近正式报告：暂无。',
+        '- 最近 eval：暂无已完成报告。\n- 最近 review：暂无已完成报告。',
       );
     expect(contentDigest(readme)).toBe(
       'ec3182e53968bb1af37c598c9535c1629e1688843cc56b67d408878f8f6c3963',
@@ -1386,15 +1390,15 @@ describe('skill-review author tools', () => {
         '',
       )
       .replace(
-        '8. release 模式或用户明确要求持久化时，用 `pnpm review:publish -- --skill <skill> [--plugin <plugin>] (--batch-id <id>|--batch-name <name>) --report <report.md> --scorecard <scorecard.json>` 发布；中间草稿只放项目 `.tmp/agent-workflows/reviews/`。\n',
+        '8. release 模式或用户明确要求持久化时，用 `pnpm review:publish -- --skill <skill> [--plugin <plugin>] (--batch-id <id>|--batch-name <name>) --report <report.md> --scorecard <scorecard.json>` 发布；完整 eval/review 证据和草稿只放项目 `.tmp/agent-workflows/`，正式目录只保留人读报告和精简摘要。\n',
         '',
       )
       .replace(
-        '9. 发布后人工更新 Skill README 的最近摘要、报告路径和被评估 Git commit；不要添加机器 marker。\n',
+        '9. 发布后人工更新 Skill README 的最近正式报告摘要、报告路径和被评估 Git commit；不要添加机器 marker。\n',
         '',
       )
       .replace(
-        '- 需要持久化时，review、eval 引用和 Skill README 已归入正确批次。\n',
+        '- 需要持久化时，正式报告和 Skill README 已归入正确批次，机械 eval/review 证据仍只位于 `.tmp`。\n',
         '',
       );
     expect(contentDigest(skill)).toBe(

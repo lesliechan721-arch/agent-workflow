@@ -6,6 +6,4 @@
 
 ## 最近验证
 
-- 最近 eval：`20260811T143944Z-legacy-d2591459`，结果 `passed`，release `incomplete`，覆盖 `2/4`。
-- 完整 eval 批次报告：`plugins/ask-me/reports/requirements-clarifier/20260811T143944Z-legacy-d2591459/report.md` @ `98fddb770b208a1111c727be1b9bee8512d55a8b`。
-- 最近 review：暂无已完成报告。
+- 最近正式报告：暂无。

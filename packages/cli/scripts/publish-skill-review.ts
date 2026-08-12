@@ -9,6 +9,7 @@ import { readPluginEvalManifest } from './plugin-eval-contract.js';
 import {
   computeAuthorSourceDigest,
   publishSkillReviewToBatch,
+  resolveSkillReportRoot,
   type SkillReportOwner,
 } from './skill-reporting.js';
 
@@ -30,8 +31,8 @@ function usage(): string {
     'Usage: pnpm review:publish -- --skill <name> [--plugin <name>] [OPTIONS]',
     '',
     'Options:',
-    '  --batch-name <name>  Create a review-only batch',
-    '  --batch-id <id>      Attach the review to an open eval batch',
+    '  --batch-name <name>  Create and publish a review-only batch',
+    '  --batch-id <id>      Publish from an open temporary eval batch',
     '  --review-id <id>     Use an explicit review id',
     '  --report <path>      Markdown review draft',
     '  --scorecard <path>   JSON scorecard draft',
@@ -247,6 +248,10 @@ async function main(): Promise<void> {
   process.stdout.write(`${JSON.stringify({
     ok: true,
     batchId: summary.batchId,
+    reportDir: path.relative(
+      repoRoot,
+      path.join(resolveSkillReportRoot(repoRoot, owner), summary.batchId),
+    ).split(path.sep).join('/'),
     summary,
   }, null, 2)}\n`);
 }

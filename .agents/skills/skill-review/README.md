@@ -29,11 +29,10 @@ release 评审应按 `references/source-map.md` 重新核对当前官方 Agent S
 
 当前仓库静态 Skill 的真实模型 eval 先运行 `pnpm build`，再由 `run_static_skill_evals.mjs` 生成证据；它不是 `plugin:eval` 的别名。
 
-静态 Skill 的报告保存在 `.agents/reports/<skill>/<batch-id>/`。插件 Skill 的报告保存在 `plugins/<plugin>/reports/<skill>/<batch-id>/`。临时工作目录统一使用项目 `.tmp/agent-workflows/`。
+完整 eval/review 批次保存在 `.tmp/agent-workflows/evals/`。`review:publish` 生成的静态 Skill 正式报告位于 `.agents/reports/<skill>/<batch-id>/`，插件 Skill 正式报告位于 `plugins/<plugin>/reports/<skill>/<batch-id>/`；每个正式目录只含 `report.md` 和 `summary.json`。
 
-Skill README 中的最近 eval/review 摘要、仓库相对报告路径和被评估 Git commit 由作者或 agent 在批次完成后人工更新。程序不写 marker、不自动同步，也不把该段内容作为发布门禁。
+Skill README 中的最近正式报告摘要、仓库相对路径和被评估 Git commit 由作者或 agent 在 `review:publish` 后人工更新。程序不写 marker、不自动同步，也不把该段内容作为发布门禁。
 
 ## 最近验证
 
-- 最近 eval：暂无已完成报告。
-- 最近 review：暂无已完成报告。
+- 最近正式报告：暂无。

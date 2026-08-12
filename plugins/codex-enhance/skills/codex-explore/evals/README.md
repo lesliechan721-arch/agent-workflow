@@ -10,7 +10,7 @@ pnpm plugin:eval codex-enhance --skill codex-explore --batch-name release
 
 最后一条运行全部 release-required suite/split。`pnpm plugin:eval` 是唯一模型评测入口；领域 command runner 缺少中央提供的 final-artifact root 时会直接失败。
 
-真实模型默认要求 Full Access 管理后代进程；无 Full Access 时会在启动前阻断。用户确认风险后可传 `--allow-unmanaged-processes`，但该模式不保证清理后代进程。中间产物固定在项目 `.tmp/agent-workflows/evals/`，持久报告写入 `plugins/codex-enhance/reports/codex-explore/<batch-id>/`。
+真实模型默认要求 Full Access 管理后代进程；无 Full Access 时会在启动前阻断。用户确认风险后可传 `--allow-unmanaged-processes`，但该模式不保证清理后代进程。完整批次固定在项目 `.tmp/agent-workflows/evals/`；`review:publish` 只把正式 `report.md` 和 `summary.json` 写入 `plugins/codex-enhance/reports/codex-explore/<batch-id>/`。
 
 ## 触发与 Gate
 

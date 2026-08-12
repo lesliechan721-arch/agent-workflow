@@ -28,7 +28,12 @@ Source layer
   plugins/<name>/skills/**
   plugins/<name>/skills/<skill>/README.md
   plugins/<name>/skills/<skill>/evals/**          [author-only]
-  plugins/<name>/reports/<skill>/<batch-id>/**    [developer evidence]
+  plugins/<name>/reports/<skill>/<batch-id>/      [formal source history]
+    ├── report.md
+    └── summary.json
+
+Temporary evaluation layer
+  .tmp/agent-workflows/evals/**                   [complete local evidence]
 
           ↓ pnpm build / catalog staging
 
@@ -55,8 +60,8 @@ Local runtime
 ```
 
 - 仓库源码层是插件作者维护的输入。
-- Skill 根的 `evals/**` 和插件根的 `reports/**` 不进入 catalog runtime bundle、安装制品或 runtime digest。Skill `README.md` 是源码文档，会随 Skill 发布，其中的最近报告摘要由作者或 agent 维护，不由构建或 eval 程序改写。
-- 插件报告固定在 `plugins/<plugin>/reports/<skill>/<batch-id>/`，repo-local 静态 Skill 报告固定在 `.agents/reports/<skill>/<batch-id>/`。eval 工作目录固定在仓库 `.tmp/agent-workflows/evals/`。
+- Skill 根的 `evals/**` 和插件根的正式 `reports/**` 不进入 catalog runtime bundle、安装制品或 runtime digest。Skill `README.md` 是源码文档，会随 Skill 发布，其中的最近正式报告摘要由作者或 agent 维护，不由构建或 eval 程序改写。
+- 完整 eval/review 批次固定在仓库 `.tmp/agent-workflows/evals/`，不进入 Git。显式 `review:publish` 后，插件正式报告写到 `plugins/<plugin>/reports/<skill>/<batch-id>/`，repo-local 静态 Skill 写到 `.agents/reports/<skill>/<batch-id>/`；每个正式目录只含 `report.md` 和 schema v2 `summary.json`。
 - catalog staging 是生成物，不手工修改。
 - `@lesliechan721/aw-plugins-manifest` 是 sidecar；`@lesliechan721/aw-plugins` 是同版本 full catalog。
 - CLI version、catalog version 和 plugin version 是三套独立身份。

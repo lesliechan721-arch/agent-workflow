@@ -13,4 +13,4 @@ pnpm plugin:eval ask-me --skill decision-grill --batch-name release
 
 `decision-grill-evals.json` 包含 15 个会话用例。原 10 条继续作为协议回归；新增用例降低提示度，并检查依赖顺序、静默遗漏、用户决定不被代答、共享理解确认和纠错后重开分支。conversation baseline 只移除 owner Skill，并保留 `requirements-clarifier`。
 
-真实模型默认要求 Full Access。无 Full Access 时会在模型启动前阻断；用户确认风险后可传 `--allow-unmanaged-processes`。中间产物固定在项目 `.tmp/agent-workflows/evals/`，持久报告写入 `plugins/ask-me/reports/decision-grill/<batch-id>/`。
+真实模型默认要求 Full Access。无 Full Access 时会在模型启动前阻断；用户确认风险后可传 `--allow-unmanaged-processes`。完整批次固定在项目 `.tmp/agent-workflows/evals/`；`review:publish` 只把正式 `report.md` 和 `summary.json` 写入 `plugins/ask-me/reports/decision-grill/<batch-id>/`。

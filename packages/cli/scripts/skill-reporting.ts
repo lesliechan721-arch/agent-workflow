@@ -6,6 +6,7 @@ import path from 'node:path';
 import fs from 'fs-extra';
 
 const BATCH_SCHEMA_VERSION = 1 as const;
+const PUBLISHED_SUMMARY_SCHEMA_VERSION = 2 as const;
 const BATCH_ID_PATTERN = /^\d{8}T\d{6}Z-[a-z0-9](?:[a-z0-9-]{0,47})-[0-9a-f]{8}$/u;
 const RUN_ID_PATTERN = /^\d{8}T\d{6}Z-[0-9a-f]{8}$/u;
 
@@ -168,6 +169,100 @@ interface BatchSummary {
   diagnostics: string[];
 }
 
+interface SkillReviewCalculation {
+  mode: string;
+  weightedScore: number | null;
+  coverage: number | null;
+  confidence: string | null;
+  release: string | null;
+}
+
+export interface PublishedSkillReportSummary {
+  schemaVersion: typeof PUBLISHED_SUMMARY_SCHEMA_VERSION;
+  batchId: string;
+  name: string;
+  owner: SkillReportOwner;
+  publishedAt: string;
+  source: {
+    commits: string[];
+    inScopeDirty: boolean;
+  };
+  eval: {
+    releaseOutcome: BatchSummary['eval']['releaseOutcome'];
+    covered: number;
+    required: number;
+  };
+  review: {
+    reviewId: string;
+    mode: string;
+    verdict: string | null;
+    weightedScore: number | null;
+    coveragePercent: number | null;
+    confidence: string | null;
+    findings: {
+      p0: number;
+      p1: number;
+      p2: number;
+      advisory: number;
+    };
+  };
+  reportPath: 'report.md';
+}
+
+function publishedSummaryFromReview(options: {
+  batchSummary: BatchSummary;
+  reviewId: string;
+  publishedAt: string;
+  scorecard: unknown;
+  calculated: SkillReviewCalculation;
+}): PublishedSkillReportSummary {
+  const counts = { p0: 0, p1: 0, p2: 0, advisory: 0 };
+  if (options.scorecard && typeof options.scorecard === 'object') {
+    const findings = (options.scorecard as { findings?: unknown }).findings;
+    if (Array.isArray(findings)) {
+      for (const finding of findings) {
+        const severity = finding && typeof finding === 'object'
+          ? (finding as { severity?: unknown }).severity
+          : null;
+        if (severity === 'P0') counts.p0 += 1;
+        else if (severity === 'P1') counts.p1 += 1;
+        else if (severity === 'P2') counts.p2 += 1;
+        else if (severity === 'Advisory') counts.advisory += 1;
+      }
+    }
+  }
+  const commits = [...new Set([
+    ...(options.batchSummary.source.gitHeads ?? []),
+    ...(options.batchSummary.source.gitHead ? [options.batchSummary.source.gitHead] : []),
+  ])];
+  return {
+    schemaVersion: PUBLISHED_SUMMARY_SCHEMA_VERSION,
+    batchId: options.batchSummary.batchId,
+    name: options.batchSummary.name,
+    owner: options.batchSummary.owner,
+    publishedAt: options.publishedAt,
+    source: {
+      commits,
+      inScopeDirty: options.batchSummary.source.inScopeDirty,
+    },
+    eval: {
+      releaseOutcome: options.batchSummary.eval.releaseOutcome,
+      covered: options.batchSummary.eval.releaseCovered,
+      required: options.batchSummary.eval.releaseRequired,
+    },
+    review: {
+      reviewId: options.reviewId,
+      mode: options.calculated.mode,
+      verdict: options.calculated.release,
+      weightedScore: options.calculated.weightedScore,
+      coveragePercent: options.calculated.coverage,
+      confidence: options.calculated.confidence,
+      findings: counts,
+    },
+    reportPath: 'report.md',
+  };
+}
+
 function timestampId(date = new Date()): string {
   return date.toISOString().replace(/[-:]/gu, '').replace(/\.\d{3}Z$/u, 'Z');
 }
@@ -208,6 +303,27 @@ export function resolveSkillReportRoot(repoRoot: string, owner: SkillReportOwner
   return owner.kind === 'plugin-skill'
     ? path.join(repoRoot, 'plugins', owner.plugin, 'reports', owner.skill)
     : path.join(repoRoot, '.agents', 'reports', owner.skill);
+}
+
+export function resolveSkillEvalRoot(repoRoot: string, owner: SkillReportOwner): string {
+  return owner.kind === 'plugin-skill'
+    ? path.join(
+        repoRoot,
+        '.tmp',
+        'agent-workflows',
+        'evals',
+        'plugin',
+        owner.plugin,
+        owner.skill,
+      )
+    : path.join(
+        repoRoot,
+        '.tmp',
+        'agent-workflows',
+        'evals',
+        'static',
+        owner.skill,
+      );
 }
 
 async function assertSafeSkillReportPath(repoRoot: string, candidatePath: string): Promise<void> {
@@ -326,9 +442,16 @@ export async function createSkillEvalRunLayout(options: {
     ? validateBatchId(options.batchId)
     : createSkillReportBatchId(options.batchName!);
   const runId = validateRunId(options.runId ?? createRunId());
-  const reportRootBase = resolveSkillReportRoot(options.repoRoot, options.owner);
+  const reportRootBase = resolveSkillEvalRoot(options.repoRoot, options.owner);
   const batchRoot = path.join(reportRootBase, batchId);
+  const publishedBatchRoot = path.join(
+    resolveSkillReportRoot(options.repoRoot, options.owner),
+    batchId,
+  );
   await assertSafeSkillReportPath(options.repoRoot, batchRoot);
+  if (await fs.pathExists(publishedBatchRoot)) {
+    throw new Error(`Report batch ${batchId} is already published.`);
+  }
   const now = new Date().toISOString();
   if (options.batchName) {
     await fs.ensureDir(reportRootBase);
@@ -357,12 +480,8 @@ export async function createSkillEvalRunLayout(options: {
 
   const reportRoot = path.join(batchRoot, 'evals', 'runs', runId);
   const workRoot = path.join(
-    options.repoRoot,
-    '.tmp',
-    'agent-workflows',
-    'evals',
-    ownerKey(options.owner).replaceAll(':', path.sep),
-    batchId,
+    batchRoot,
+    'work',
     runId,
   );
   const startedAt = new Date().toISOString();
@@ -1171,7 +1290,7 @@ export async function refreshSkillReportBatch(options: {
   batchId: string;
 }): Promise<BatchSummary> {
   const batchRoot = path.join(
-    resolveSkillReportRoot(options.repoRoot, options.owner),
+    resolveSkillEvalRoot(options.repoRoot, options.owner),
     validateBatchId(options.batchId),
   );
   await assertSafeSkillReportPath(options.repoRoot, batchRoot);
@@ -1209,7 +1328,7 @@ export async function sealSkillReportBatch(options: {
   batchId: string;
 }): Promise<BatchSummary> {
   const batchRoot = path.join(
-    resolveSkillReportRoot(options.repoRoot, options.owner),
+    resolveSkillEvalRoot(options.repoRoot, options.owner),
     validateBatchId(options.batchId),
   );
   await assertSafeSkillReportPath(options.repoRoot, batchRoot);
@@ -1228,31 +1347,29 @@ export async function publishSkillReviewToBatch(options: {
   source: SkillReportSourceIdentity;
   report: string;
   scorecard: unknown;
-  calculated: {
-    mode: string;
-    weightedScore: number | null;
-    coverage: number | null;
-    confidence: string | null;
-    release: string | null;
-  };
+  calculated: SkillReviewCalculation;
   reviewId?: string;
-}): Promise<BatchSummary> {
+}): Promise<PublishedSkillReportSummary> {
   if ((options.batchName ? 1 : 0) + (options.batchId ? 1 : 0) !== 1) {
     throw new Error('Provide exactly one of --batch-name or --batch-id.');
   }
   assertSegment(options.owner.skill, 'Skill name');
   if (options.owner.kind === 'plugin-skill') assertSegment(options.owner.plugin, 'Plugin name');
+  if (options.report.trim() === '') throw new Error('Review report must not be empty.');
+  const evalRoot = resolveSkillEvalRoot(options.repoRoot, options.owner);
   const reportRoot = resolveSkillReportRoot(options.repoRoot, options.owner);
   const batchId = options.batchId
     ? validateBatchId(options.batchId)
     : createSkillReportBatchId(options.batchName!);
   const reviewId = validateRunId(options.reviewId ?? createRunId(), '--review-id');
-  const batchRoot = path.join(reportRoot, batchId);
+  const batchRoot = path.join(evalRoot, batchId);
+  const publishedBatchRoot = path.join(reportRoot, batchId);
   await assertSafeSkillReportPath(options.repoRoot, batchRoot);
+  await assertSafeSkillReportPath(options.repoRoot, publishedBatchRoot);
   const now = new Date().toISOString();
   if (options.batchName) {
-    await fs.ensureDir(reportRoot);
-    await assertSafeSkillReportPath(options.repoRoot, reportRoot);
+    await fs.ensureDir(evalRoot);
+    await assertSafeSkillReportPath(options.repoRoot, evalRoot);
     await fs.mkdir(batchRoot);
     await assertSafeSkillReportPath(options.repoRoot, batchRoot);
     await writeJsonAtomic(path.join(batchRoot, 'batch.json'), {
@@ -1267,8 +1384,10 @@ export async function publishSkillReviewToBatch(options: {
       environmentDigest: createEnvironmentDigest({ reviewOnly: true }),
       requiredTargets: [],
     } satisfies SkillReportBatch);
+  } else if (!(await fs.pathExists(batchRoot))) {
+    throw new Error(`Report batch does not exist: ${batchId}.`);
   }
-  const summary = await withBatchLock(batchRoot, async () => {
+  return withBatchLock(batchRoot, async () => {
     const batch = await readBatch(batchRoot);
     if (!sameOwner(batch.owner, options.owner)) throw new Error('Review batch owner mismatch.');
     if (batch.status === 'sealed') throw new Error(`Report batch ${batchId} is sealed.`);
@@ -1280,19 +1399,70 @@ export async function publishSkillReviewToBatch(options: {
     if (runs.some((run) => run.status === 'running')) {
       throw new Error(`Report batch ${batch.batchId} still has a running eval.`);
     }
+    if (await fs.pathExists(publishedBatchRoot)) {
+      throw new Error(`Report batch ${batchId} is already published.`);
+    }
     const reviewRoot = path.join(batchRoot, 'reviews', options.calculated.mode, reviewId);
-    await fs.ensureDir(path.dirname(reviewRoot));
-    await fs.mkdir(reviewRoot, { recursive: false });
-    await writeTextAtomic(path.join(reviewRoot, 'report.md'), options.report);
-    await writeJsonAtomic(path.join(reviewRoot, 'scorecard.json'), options.scorecard);
-    await writeJsonAtomic(path.join(reviewRoot, 'review-summary.json'), {
-      schemaVersion: 1,
-      completedAt: now,
-      ...options.calculated,
-    });
-    return sealBatchUnlocked(batchRoot, options.owner);
+    const stagingRoot = path.join(
+      reportRoot,
+      `.${batchId}.${process.pid}.${randomUUID()}.tmp`,
+    );
+    if (await fs.pathExists(reviewRoot)) {
+      throw new Error(`Review ${reviewId} already exists in report batch ${batchId}.`);
+    }
+    let reviewCreated = false;
+    let sealed = false;
+    try {
+      const batchSummary = await refreshBatchSummary(batchRoot);
+      const publishedSummary = publishedSummaryFromReview({
+        batchSummary,
+        reviewId,
+        publishedAt: now,
+        scorecard: options.scorecard,
+        calculated: options.calculated,
+      });
+      await assertSafeSkillReportPath(options.repoRoot, reportRoot);
+      await fs.ensureDir(reportRoot);
+      await assertSafeSkillReportPath(options.repoRoot, reportRoot);
+      await fs.mkdir(stagingRoot);
+      await writeTextAtomic(path.join(stagingRoot, 'report.md'), options.report);
+      await writeJsonAtomic(path.join(stagingRoot, 'summary.json'), publishedSummary);
+      await fs.ensureDir(path.dirname(reviewRoot));
+      await fs.mkdir(reviewRoot, { recursive: false });
+      reviewCreated = true;
+      await writeTextAtomic(path.join(reviewRoot, 'report.md'), options.report);
+      await writeJsonAtomic(path.join(reviewRoot, 'scorecard.json'), options.scorecard);
+      await writeJsonAtomic(path.join(reviewRoot, 'review-summary.json'), {
+        schemaVersion: 1,
+        completedAt: now,
+        ...options.calculated,
+      });
+      await refreshBatchSummary(batchRoot);
+      sealed = true;
+      await sealBatchUnlocked(batchRoot, options.owner);
+      await fs.rename(stagingRoot, publishedBatchRoot);
+      return publishedSummary;
+    } catch (error) {
+      try {
+        await fs.remove(stagingRoot);
+        if (reviewCreated) await fs.remove(reviewRoot);
+        if (sealed) {
+          const current = await readBatch(batchRoot);
+          current.status = 'open';
+          delete current.sealedAt;
+          current.updatedAt = new Date().toISOString();
+          await writeJsonAtomic(path.join(batchRoot, 'batch.json'), current);
+        }
+        if (reviewCreated) await refreshBatchSummary(batchRoot);
+      } catch (rollbackError) {
+        throw new AggregateError(
+          [error, rollbackError],
+          `Review publication failed and rollback did not complete for batch ${batchId}.`,
+        );
+      }
+      throw error;
+    }
   });
-  return summary;
 }
 
 export function reportBatchName(batchId: string): string {

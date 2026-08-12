@@ -202,8 +202,8 @@ pnpm plugin:eval <plugin> --skill <skill> --batch-name release
 - conversation case 默认只读。需要验证创建或修改行为时，显式使用 `sandbox: workspace-write`，并声明最小 `allowed_workspace_changes` 和非空 `artifacts`；runner 只修改隔离副本，并把越界 diff 或 artifact 断言失败记为 mechanical failure。
 - 真实模型 eval 使用文件凭据存储并关闭 secret keychain storage；从普通 Terminal 显式运行，不进入普通 unit/integration。macOS 检测到 `accountsKeychainExport` 包装器路径时会在启动模型前失败，且不会修改用户 keychain search list。
 - 真实模型默认要求 Full Access 管理后代进程。用户显式传 `--allow-unmanaged-processes` 后可以在无 Full Access 时运行，但报告会标记无法保证后代清理。
-- 每次 eval 用 `--batch-name` 新建批次，或用 `--batch-id` 恢复或追加同批次。批次会校验源码、materialization subject、模型环境、harness、case 集和 target contract。中间产物固定在项目 `.tmp/agent-workflows/evals/`；持久报告写入 `plugins/<plugin>/reports/<skill>/<batch-id>/`，并按 eval 类型和 target 组织。review 写入同批次，或创建 review-only 批次。
-- 插件和每个 Skill 都必须有非空 README。插件 README 只介绍插件和 Skill；Skill README 约定记录最近 eval/review 摘要、仓库相对完整报告路径和被评估 Git commit。该信息由作者或 agent 在批次完成后维护，没有 marker、自动写入或内容门禁。
+- 每次 eval 用 `--batch-name` 新建临时批次，或用 `--batch-id` 恢复或追加同批次。批次会校验源码、materialization subject、模型环境、harness、case 集和 target contract。完整 run、target、raw、scorecard 和自动汇总固定在项目 `.tmp/agent-workflows/evals/`。`review:publish` 把人读 `report.md` 和 schema v2 `summary.json` 发布到 `plugins/<plugin>/reports/<skill>/<batch-id>/`；review-only 使用 `--batch-name`。
+- 插件和每个 Skill 都必须有非空 README。插件 README 只介绍插件和 Skill；Skill README 约定记录最近正式报告摘要、仓库相对路径和被评估 Git commit。该信息由作者或 agent 在 `review:publish` 后维护，没有 marker、自动写入或内容门禁。
 
 ## Validation
 

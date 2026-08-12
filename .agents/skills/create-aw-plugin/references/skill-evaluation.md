@@ -10,7 +10,7 @@
 
 ## 作者期目录与 manifest
 
-每个 eval 由一个 owner Skill 持有。eval 定义放在 Skill 源码根，持久报告放在插件级报告根：
+每个 eval 由一个 owner Skill 持有。eval 定义放在 Skill 源码根，完整工作批次放在项目临时目录；只有正式 review 进入插件级报告根：
 
 ```text
 plugins/<name>/
@@ -25,20 +25,24 @@ plugins/<name>/
 │       ├── evals.json
 │       └── run-specialized-*.mjs   # 可选，只保留领域专用 suite
 └── reports/<skill>/<batch-id>/
-    ├── batch.json
-    ├── summary.json
-    ├── report.md
-    ├── evals/
-    │   ├── runs/<run-id>/
-    │   └── <kind>/<target...>/<run-id>/
-    └── reviews/<mode>/<review-id>/
+    ├── report.md                 # 人工整理的正式报告
+    └── summary.json              # schema v2 高层索引
+
+.tmp/agent-workflows/evals/plugin/<name>/<skill>/<batch-id>/
+├── batch.json
+├── summary.json
+├── report.md
+├── evals/
+│   ├── runs/<run-id>/
+│   └── <kind>/<target...>/<run-id>/
+└── reviews/<mode>/<review-id>/
 ```
 
 静态和动态 Skill 都使用 `skills/<skill>` 作为源码根。动态 Skill 声明 source 时必须包含该规范根；其它 `sourceDirs` 必须留在根内，且不能进入名为 `evals` 或 `reports` 的作者专用目录。eval owner 固定为规范根中唯一的 `evals/manifest.json`；同一个 Skill 不能有多个 eval owner。插件根 `evals/` 已禁用。
 
-Skill 源码中名为 `evals` 或 `reports` 的目录和插件根 `reports/**` 都是作者期材料，不属于 production runtime bundle，也不参与 runtime package digest。Skill README 是发布内容，随 Skill 原样进入最终制品。动态 Skill 的评测对象不是源码占位文本，而是中央 materializer 通过真实 staging、renderer、ArtifactPlan 校验和 Codex adapter 得到的最终制品。
+Skill 源码中名为 `evals` 或 `reports` 的目录和插件根 `reports/**` 都是作者期材料，不属于 production runtime bundle，也不参与 runtime package digest。`evals/**` 和正式报告属于 Git 源码；完整工作批次位于 `.tmp/`，不进入 Git。Skill README 是发布内容，随 Skill 原样进入最终制品。动态 Skill 的评测对象不是源码占位文本，而是中央 materializer 通过真实 staging、renderer、ArtifactPlan 校验和 Codex adapter 得到的最终制品。
 
-每个批次只属于一个 owner Skill，可以聚合同一源码、materialization 环境、中央 eval harness 和 release target 合同下的多次运行。首个真实模型运行会固定该批次的模型、provider、Codex 版本和进程管理环境；此前的 `--materialize-only` 运行可以留在同一批次。`materialization`、`trigger`、`conversation`、`command` 是第一层 eval 类型，后续路径表示 suite、profile、split、case 等具体 target。批次根的 `summary.json` 和 `report.md` 是统一汇总；`raw/` 默认不提交，但在 review 完成前保留。
+每个临时批次只属于一个 owner Skill，可以聚合同一源码、materialization 环境、中央 eval harness 和 release target 合同下的多次运行。首个真实模型运行会固定该批次的模型、provider、Codex 版本和进程管理环境；此前的 `--materialize-only` 运行可以留在同一批次。`materialization`、`trigger`、`conversation`、`command` 是第一层 eval 类型，后续路径表示 suite、profile、split、case 等具体 target。临时批次保存统一自动汇总和完整 raw 证据，供追加运行和 review 使用。
 
 `evals/manifest.json` 使用 schema v2：
 
@@ -149,7 +153,7 @@ pnpm plugin:eval <plugin> --skill <skill> --batch-name release
 
 `--suite`、`--profile`、`--split`、`--case` 都会把单次 bundle 标为 `complete: false`、`outcome: incomplete`；低于 suite `defaultRuns` 的 `--runs` 还会把对应 target 本身标为 `incomplete`，不能作为 release target 通过证据。此类局部运行即使机械检查通过也退出 `1`。使用同一 `--batch-id` 可以补跑 missing 或 incomplete target；历史 attempt 和失败 run 会保留，但最新完整 attempt 进入有效汇总。声明 `cases` 的 command suite 在全部 case target 完整后，中央会把它们组合成 `/all` release target。只有相同批次中所有 release target 都被完整、通过的有效 target 覆盖时，批次汇总才能给出完整 release 结果；不同源码摘要、materialization subject、模型环境、harness、case 集或 target 合同不能混入同一批次。
 
-真实模型默认使用 `gpt-5.6-luna`；`--model` 可显式覆盖。当前 `CODEX_HOME/config.toml` 只提供选中的 `model_providers.<id>`、provider 连接配置及其它允许的 model 设置，不再决定默认模型；不会继承用户 plugins、skills、MCP、agents 或其它配置。所有中央 eval 都把 `cli_auth_credentials_store` 和 `mcp_oauth_credentials_store` 固定为 `file`，并关闭 `features.secret_auth_storage`，因此临时 Codex 进程不应访问 macOS 钥匙串。可用 `--model-provider <id>`、`--codex-config <path>` 显式选择 provider 来源，或用 `--no-inherit-codex-config` 回到干净的官方默认 provider。provider 引用的环境变量按名称透传，但隔离保留变量会被拒绝，command runner 也不会继承其它宿主 secret；配置内 bearer 只写入 `0600` 临时 runtime home，非官方 provider 一律不复制官方 auth。凭据变量排除出模型 shell，endpoint、token、header 或环境变量值在写持久报告前统一脱敏；临时 capsule 在正常结束、失败和进程信号中清理。
+真实模型默认使用 `gpt-5.6-luna`；`--model` 可显式覆盖。当前 `CODEX_HOME/config.toml` 只提供选中的 `model_providers.<id>`、provider 连接配置及其它允许的 model 设置，不再决定默认模型；不会继承用户 plugins、skills、MCP、agents 或其它配置。所有中央 eval 都把 `cli_auth_credentials_store` 和 `mcp_oauth_credentials_store` 固定为 `file`，并关闭 `features.secret_auth_storage`，因此临时 Codex 进程不应访问 macOS 钥匙串。可用 `--model-provider <id>`、`--codex-config <path>` 显式选择 provider 来源，或用 `--no-inherit-codex-config` 回到干净的官方默认 provider。provider 引用的环境变量按名称透传，但隔离保留变量会被拒绝，command runner 也不会继承其它宿主 secret；配置内 bearer 只写入 `0600` 临时 runtime home，非官方 provider 一律不复制官方 auth。凭据变量排除出模型 shell，endpoint、token、header 或环境变量值在写任何 eval 证据前统一脱敏；临时 capsule 在正常结束、失败和进程信号中清理。
 
 strict 模式在启动模型前检查 `/etc/codex`（Windows 对应系统目录）和 macOS `com.openai.codex` 的受管配置键；启动 app-server 后再读取有效 config layers、requirements、Skill 清单和 MCP 清单。检测到系统、MDM、云端或旧式 managed config、非目标 Skill、MCP server、Skill discovery error，或任一关闭项未生效时，suite 以 `incomplete` 结束，不产生发布通过证据。报告的 `environment.isolation` 保存这些检查结果。
 
@@ -161,13 +165,41 @@ strict 模式在启动模型前检查 `/etc/codex`（Windows 对应系统目录�
 
 `--allow-environment-skips` 只用于诊断已知环境限制；任何 skip 都必须保持 `incomplete`，不能形成发布通过证据。
 
-中间产物固定在项目内 `.tmp/agent-workflows/evals/plugin/<plugin>/<skill>/<batch-id>/<run-id>/`，命令结束后清理。持久报告固定在 `plugins/<plugin>/reports/<skill>/<batch-id>/`：`evals/runs/<run-id>/run.json` 记录运行状态，按类型和 target 组织的摘要用于聚合，批次根 `summary.json` 和 `report.md` 用于长期保存。`raw/` 默认不提交 Git，但不能在 review 完成前删除。CLI 不接受任意 `--output-dir`。
+完整批次固定在项目内 `.tmp/agent-workflows/evals/plugin/<plugin>/<skill>/<batch-id>/`。其中 `work/<run-id>/` 在命令结束后清理；run、target、raw、scorecard 和自动汇总保留到用户清理 `.tmp`。CLI 不接受任意 `--output-dir`。
+
+`pnpm review:publish` 是唯一的正式发布动作。它验证人读 Markdown 和 scorecard，把完整 review 留在临时批次，并原子写入 `plugins/<plugin>/reports/<skill>/<batch-id>/{report.md,summary.json}`。正式 `summary.json` 使用 schema v2，只保存 owner、来源 commit、eval 发布结果与覆盖、review 结论、分数、置信度和 finding 数量；不保存 run、target、digest、trace 或 scorecard。正式目录不可覆盖，发布后临时批次封存但不自动删除。
+
+正式摘要合同：
+
+```json
+{
+  "schemaVersion": 2,
+  "batchId": "...",
+  "name": "release",
+  "owner": { "kind": "plugin-skill", "plugin": "...", "skill": "..." },
+  "publishedAt": "...",
+  "source": { "commits": ["..."], "inScopeDirty": false },
+  "eval": { "releaseOutcome": "passed", "covered": 5, "required": 5 },
+  "review": {
+    "reviewId": "...",
+    "mode": "release",
+    "verdict": "pass",
+    "weightedScore": 90.4,
+    "coveragePercent": 100,
+    "confidence": "high",
+    "findings": { "p0": 0, "p1": 0, "p2": 0, "advisory": 0 }
+  },
+  "reportPath": "report.md"
+}
+```
+
+review-only 使用 `releaseOutcome: "not_run"` 和 `covered/required: 0/0`。quick、delta 或证据不足的 review 可以把分数、覆盖率或置信度写为 `null`。
 
 run 在批次锁内预留，target 发布和终态写入使用同一个锁事务。若本机进程在写入终态前结束，后续 refresh、append 或 review 会把该 run 恢复为 `failed`，避免批次永久停在 `running`。失败 run 只保留 provenance 和诊断；它留下的 missing target 补齐后，不再永久把 release 结论固定为 failed。
 
-持久 `reports/` 不属于被评估源码，中央 source revision 检查会忽略该目录；插件源码、README、eval 夹具、脚本和作者/评审工具的未提交修改仍会令 `source.inScopeDirty=true`。
+正式 `reports/` 不属于被评估源码，中央 source revision 检查会忽略该目录；插件源码、README、eval 夹具、脚本和作者/评审工具的未提交修改仍会令 `source.inScopeDirty=true`。
 
-插件和每个 Skill 都必须有非空 README。插件 README 只介绍插件目标、Skill 和使用边界；Skill README 约定记录最近 eval/review 摘要、仓库相对完整报告路径和被评估 Git commit。程序不写 marker、不自动更新，也不验证该段内容。应在批次最后一次运行或 review 发布后人工更新；如果仍需使用 `--batch-id` 追加运行或附加 review，先不要修改 README，因为 README 属于源码摘要。
+插件和每个 Skill 都必须有非空 README。插件 README 只介绍插件目标、Skill 和使用边界；Skill README 约定记录最近正式报告摘要、仓库相对路径和被评估 Git commit。程序不写 marker、不自动更新，也不验证该段内容。只在 `review:publish` 成功并封存批次后人工更新 README；普通 eval 不产生可提交报告。
 
 ## 触发评估
 
@@ -256,8 +288,8 @@ run 在批次锁内预留，target 发布和终态写入使用同一个锁事务
 - [ ] 机械断言优先，定性 checks 都能绑定 trace/diff 证据。
 - [ ] `plugin:test`、materialization 和模型 eval 没有互相冒充。
 - [ ] release required suite 没有 skip、incomplete 或未复核的 `needs_review`。
-- [ ] eval 与 review 报告保存在对应 owner 的 `<report-root>/<skill>/<batch-id>/`，批次根有统一摘要。
-- [ ] 批次完成后已人工更新 Skill README 的最近报告摘要、仓库相对报告路径和被评估 commit；插件 README 不包含 Skill 验证报告。
+- [ ] 完整 eval/review 证据位于 `.tmp`，正式报告目录只包含人读 `report.md` 和 schema v2 `summary.json`。
+- [ ] `review:publish` 后已人工更新 Skill README 的最近正式报告摘要、仓库相对路径和被评估 commit；插件 README 不包含 Skill 验证报告。
 
 ## 上游参考
 

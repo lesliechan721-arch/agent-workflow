@@ -76,8 +76,8 @@ Finding 的证据类型使用：
    ```
    使用脚本给出的权重、coverage、confidence、quality band 和 release verdict；quick/delta 总分为 `null`。
 7. 按 `assets/report-template.md` 输出。报告所有 P0/P1，默认只展开影响最大的 5 项 P2，其余保留在 scorecard ledger。
-8. release 模式或用户明确要求持久化时，用 `pnpm review:publish -- --skill <skill> [--plugin <plugin>] (--batch-id <id>|--batch-name <name>) --report <report.md> --scorecard <scorecard.json>` 发布；中间草稿只放项目 `.tmp/agent-workflows/reviews/`。
-9. 发布后人工更新 Skill README 的最近摘要、报告路径和被评估 Git commit；不要添加机器 marker。
+8. release 模式或用户明确要求持久化时，用 `pnpm review:publish -- --skill <skill> [--plugin <plugin>] (--batch-id <id>|--batch-name <name>) --report <report.md> --scorecard <scorecard.json>` 发布；完整 eval/review 证据和草稿只放项目 `.tmp/agent-workflows/`，正式目录只保留人读报告和精简摘要。
+9. 发布后人工更新 Skill README 的最近正式报告摘要、报告路径和被评估 Git commit；不要添加机器 marker。
 
 ## 评审完成边界
 
@@ -86,7 +86,7 @@ Finding 的证据类型使用：
 - 每个 P0/P1 都通过 Finding Admission Gate；每个失败 gate 都关联相同严重性的已接纳 finding。
 - 报告包含 stop decision，且没有未归属或重复计罚的 finding。
 - quick 只完成所选维度；full/release 完成全部 12 个维度和适用审计；delta 完成旧 finding、受影响维度和直接回归。quick/delta 不计算总分。
-- 需要持久化时，review、eval 引用和 Skill README 已归入正确批次。
+- 需要持久化时，正式报告和 Skill README 已归入正确批次，机械 eval/review 证据仍只位于 `.tmp`。
 
 ## 评分纪律
 
