@@ -40,15 +40,14 @@ aw install git-commit -p codex -s project
 aw status git-commit --verbose
 aw cleanup git-commit -p codex -s project
 aw reinstall git-commit -p codex -s user
-aw config list codex-explore -s user
-aw config set codex-explore standardModel gpt-5.6-terra -s user
-aw config set codex-explore standardReasoningEffort max -s user
-aw config set codex-explore minimumInitialWaitMinutes 15 -s user
-aw config unset codex-explore minimumInitialWaitMinutes -s user
-aw config reset codex-explore -s user --yes
-aw config set codex-subagent-guide planningReviewTaskModel gpt-5.6-sol -s user
-aw config set codex-subagent-guide planningReviewTaskReasoningEffort xhigh -s user
-aw config set codex-subagent-guide minimumInitialWaitMinutes 15 -s user
+aw config list codex-enhance -s user
+aw config set codex-enhance standardModel gpt-5.6-terra -s user
+aw config set codex-enhance standardReasoningEffort max -s user
+aw config set codex-enhance planningReviewTaskModel gpt-5.6-sol -s user
+aw config set codex-enhance planningReviewTaskReasoningEffort xhigh -s user
+aw config set codex-enhance minimumInitialWaitMinutes 15 -s user
+aw config unset codex-enhance minimumInitialWaitMinutes -s user
+aw config reset codex-enhance -s user --yes
 ```
 
 `aw cleanup` 删除当前 target 中带有效 AW ownership 的现场组件，不运行 uninstall lifecycle。`aw reinstall` 先清理 AW-owned 组件，再按 current catalog 重建。`uninstall`、`cleanup` 和 `reinstall` 都保留 AW 自管配置；配置只由 `aw config reset` 删除。最后一次成功 lifecycle 输入单独保存在 lifecycle active store 中，只供下一次 uninstall 运行对应脚本；它不是安装状态账本。
@@ -61,10 +60,9 @@ Skill 的触发行为只由平台原生元数据决定。Codex 使用 `agents/op
 |------|------|----------|
 | `ask-me` | 实施前澄清会影响结果或造成返工的关键歧义，并协作制定、比较或评审计划与重要决策 | Codex / Claude Code |
 | `git-commit` | 在用户请求提交时，按用户或仓库适用规范完成 Git 提交 | Codex / Claude Code |
-| `codex-explore` | 为 Codex 提供通用只读探索流程 | Codex |
-| `codex-subagent-guide` | 在委派已获授权后按任务类型指导子代理参数、fork、响应式等待与条件清理 | Codex |
+| `codex-enhance` | 通过通用只读探索和已授权子代理编排两个 Skill 增强 Codex | Codex |
 
-`codex-explore` 是 Codex 通用只读探索 workflow，可用于代码库、文档、网络资料、日志和用户材料的证据搜索与总结；具体能访问哪些来源取决于当前会话工具、权限、联网策略和用户提供的上下文。
+`codex-enhance` 提供 `codex-explore` 和 `codex-subagent-guide` 两个 Skill。`codex-explore` 是 Codex 通用只读探索 workflow，可用于代码库、文档、网络资料、日志和用户材料的证据搜索与总结；具体能访问哪些来源取决于当前会话工具、权限、联网策略和用户提供的上下文。
 
 `codex-explore` 按探索深度提供 quick、standard 和 deep 三档预设 role，无法明确分档时使用 standard。每档 role 的 model 和 reasoning effort 都能独立配置，默认分别为 `gpt-5.6-luna/medium`、`gpt-5.6-luna/high` 和 `gpt-5.6-luna/xhigh`。用户显式指定 model 或 reasoning effort 时改用不锁定参数的 custom role，只透传用户指定的字段。
 

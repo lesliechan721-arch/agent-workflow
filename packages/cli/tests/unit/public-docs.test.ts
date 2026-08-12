@@ -190,10 +190,11 @@ describe('public docs', () => {
     expect(docs).toContain('Claude Code `>= 2.1.88`');
   });
 
-  it('keeps the README codex-explore description aligned with the public contract', async () => {
+  it('keeps the README codex-enhance description aligned with the public contract', async () => {
     const readme = await readRepoFile('README.md');
 
-    expect(readme).toContain('| `codex-explore` | 为 Codex 提供通用只读探索流程 | Codex |');
+    expect(readme).toContain('| `codex-enhance` | 通过通用只读探索和已授权子代理编排两个 Skill 增强 Codex | Codex |');
+    expect(readme).toContain('`codex-explore` 和 `codex-subagent-guide` 两个 Skill');
     expect(readme).toContain('代码库、文档、网络资料、日志和用户材料');
     expect(readme).toContain('每档 role 的 model 和 reasoning effort 都能独立配置');
   });

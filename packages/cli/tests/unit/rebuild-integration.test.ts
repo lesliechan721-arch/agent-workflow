@@ -1383,7 +1383,7 @@ describe('rebuild adapter integration', () => {
       : cacheManifestPath)).toBe(true);
   });
 
-  it.each(['codex-explore', 'codex-subagent-guide'])(
+  it.each(['codex-enhance'])(
     'installs %s dynamic user Skills through the active manifest and real cache copy',
     async (pluginName) => {
       const isolation = getCurrentSourceTestIsolation();
@@ -2807,9 +2807,9 @@ describe('rebuild adapter integration', () => {
     },
   );
 
-  it('closes representative Codex project writes for four first-party plugins', async () => {
+  it('closes representative Codex project writes for three first-party plugins', async () => {
     const isolation = getCurrentSourceTestIsolation();
-    const firstPartyNames = ['git-commit', 'ask-me', 'codex-explore', 'codex-subagent-guide'];
+    const firstPartyNames = ['git-commit', 'ask-me', 'codex-enhance'];
     const catalogRoot = await createSyntheticCatalog({
       root: isolation.layout.rootDir,
       pluginRoots: firstPartyNames.map((name) => path.join(repositoryRoot, 'plugins', name)),

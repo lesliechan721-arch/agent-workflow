@@ -1,0 +1,223 @@
+{
+  "schemaVersion": 1,
+  "skill": "codex-explore",
+  "cases": [
+    {
+      "id": "cross_module_fact",
+      "split": "train",
+      "query": "我刚接手这个陌生 monorepo。请从 repo/ 下至少三个服务和共享配置里查清 checkout 风控开关从入口到 worker 的完整传递路径，给出文件与行号证据；不要修改代码。",
+      "should_load_skill": true,
+      "should_spawn_agent": true
+    },
+    {
+      "id": "official_docs_and_logs",
+      "split": "train",
+      "query": "线上升级后偶发 401。请结合 docs/vendor/ 下多版本官方接口说明和 logs/ 下四段长日志，核验究竟是哪次协议变化造成的，并区分直接证据和推断。",
+      "should_load_skill": true,
+      "should_spawn_agent": true
+    },
+    {
+      "id": "large_user_materials",
+      "split": "train",
+      "query": "materials/ 里是十几份访谈和会议记录。帮我筛选所有关于续费失败原因的原始证据，标出冲突说法和材料位置，最后只给简短结论。",
+      "should_load_skill": true,
+      "should_spawn_agent": true
+    },
+    {
+      "id": "external_repository_trace",
+      "split": "train",
+      "query": "请调查 repo/ 这个我没接触过的外部代码库，确认审计事件在 API、队列、持久化和前端四个模块中的字段名称是否一致，并给可核验的路径证据。",
+      "should_load_skill": true,
+      "should_spawn_agent": true
+    },
+    {
+      "id": "incident_timeline",
+      "split": "train",
+      "query": "reports/audit/ 有跨三天的审计日志，docs/runbooks/ 有多份处理手册。请重建故障时间线并核对每个关键节点的来源，不确定处不要猜。",
+      "should_load_skill": true,
+      "should_spawn_agent": true
+    },
+    {
+      "id": "explicit_known_file",
+      "split": "train",
+      "query": "$codex-explore 只打开 known/settings.ts，告诉我 DEFAULT_REGION 的值和行号，不要查看其它文件。",
+      "should_load_skill": true,
+      "should_spawn_agent": false
+    },
+    {
+      "id": "skill_design_review",
+      "split": "train",
+      "query": "评估一下 plugins/codex-enhance 这套 skill 的设计是否合理，指出缺陷、严重性和修改建议。相关实现只有 README.md 与 workflow.md 两个已知文件。",
+      "should_load_skill": false,
+      "should_spawn_agent": false
+    },
+    {
+      "id": "large_pr_review",
+      "split": "train",
+      "query": "请 review changes/large-pr.diff，判断有哪些真实 bug，按严重性排序并给修改建议。",
+      "should_load_skill": false,
+      "should_spawn_agent": false
+    },
+    {
+      "id": "readonly_deep_code_review",
+      "split": "train",
+      "query": "请对这个陌生大型仓库做一次深入、只读的代码 review，全面找出真实 bug，判断严重性并给修改建议；不要修改代码。",
+      "should_load_skill": false,
+      "should_spawn_agent": false
+    },
+    {
+      "id": "two_known_files",
+      "split": "train",
+      "query": "请对照 known/settings.ts 和 known/constants.ts，确认 DEFAULT_REGION 是否一致。",
+      "should_load_skill": false,
+      "should_spawn_agent": false
+    },
+    {
+      "id": "implementation_task",
+      "split": "train",
+      "query": "根据 known/parser-spec.md 实现一个解析器并补测试，直接修改 repo/shared/parser.ts。",
+      "should_load_skill": false,
+      "should_spawn_agent": false
+    },
+    {
+      "id": "small_cross_check",
+      "split": "train",
+      "query": "独立核对一下 docs/vendor/api-v2.md 和 docs/vendor/migration.md 里 timeout 默认值是否一致，只需要这两个已知段落。",
+      "should_load_skill": false,
+      "should_spawn_agent": false
+    },
+    {
+      "id": "composite_review_exploration",
+      "split": "train",
+      "query": "review changes/large-pr.diff 前，先在这个陌生 repo 的网关、任务和存储模块中把 deleteSafely 的全部调用点与数据流查清并列出文件证据；探索结果返回后我再判断 bug 和严重性。",
+      "should_load_skill": true,
+      "should_spawn_agent": true
+    },
+    {
+      "id": "feature_flag_validation",
+      "split": "validation",
+      "query": "老板让我确认这个陌生仓库里的 regional_checkout 标志是否真的覆盖全部调用链。请搜索 repo/ 的网关、结算、任务和共享模块，整理可复核证据。",
+      "should_load_skill": true,
+      "should_spawn_agent": true
+    },
+    {
+      "id": "standards_research_validation",
+      "split": "validation",
+      "query": "请从 docs/standards/ 的多份规范、docs/vendor/ 的官方说明和 reports/audit/ 的现场记录中核验重试语义，来源冲突要单列。",
+      "should_load_skill": true,
+      "should_spawn_agent": true
+    },
+    {
+      "id": "long_audit_validation",
+      "split": "validation",
+      "query": "reports/audit/ 日志很多而且边界不清楚。请找出同一 request id 在三天内经过了哪些组件，并为每个跳转给出原始记录位置。",
+      "should_load_skill": true,
+      "should_spawn_agent": true
+    },
+    {
+      "id": "explicit_small_validation",
+      "split": "validation",
+      "query": "$codex-explore 读取 known/constants.ts 里 RETRY_LIMIT 的定义，返回值和行号即可。",
+      "should_load_skill": true,
+      "should_spawn_agent": false
+    },
+    {
+      "id": "workflow_quality_validation",
+      "split": "validation",
+      "query": "请评价 plugins/codex-enhance/workflow.md 的 Gate 设计，判断是否过度复杂并提出重构建议。",
+      "should_load_skill": false,
+      "should_spawn_agent": false
+    },
+    {
+      "id": "pr_defect_validation",
+      "split": "validation",
+      "query": "审查 changes/large-pr.diff，找出会导致数据丢失的缺陷并建议怎么改。",
+      "should_load_skill": false,
+      "should_spawn_agent": false
+    },
+    {
+      "id": "composite_implementation_validation",
+      "split": "validation",
+      "query": "我要给这个陌生 repo 加 regional_checkout。实现前先跨网关、结算、任务和共享配置搜索全部扩展点与现有调用链，给出可核验路径；主流程之后再负责修改和测试。",
+      "should_load_skill": true,
+      "should_spawn_agent": true
+    },
+    {
+      "id": "single_constant_validation",
+      "split": "validation",
+      "query": "用 rg 在 known/constants.ts 里查一下 RETRY_LIMIT 在第几行。",
+      "should_load_skill": false,
+      "should_spawn_agent": false
+    },
+    {
+      "id": "casual_unknown_repo",
+      "split": "sanity",
+      "query": "这仓库我完全不熟，regional_checkout 到底从哪传到哪？repo/ 里文件一堆，帮我翻清楚，最后把出处列一下。",
+      "should_load_skill": true,
+      "should_spawn_agent": true
+    },
+    {
+      "id": "typo_unknown_repo",
+      "split": "sanity",
+      "query": "这个陌生 monorepo 文件一堆，帮我跨网关、结算、任务和共享配置把 regional_checkout 的调用连路查清，出处别漏。",
+      "should_load_skill": true,
+      "should_spawn_agent": true
+    },
+    {
+      "id": "terse_long_logs",
+      "split": "sanity",
+      "query": "日志太多了，帮我沿 req-9 把 reports/audit/ 里三天的链路捋出来，出处别漏。",
+      "should_load_skill": true,
+      "should_spawn_agent": true
+    },
+    {
+      "id": "casual_material_conflicts",
+      "split": "sanity",
+      "query": "materials/ 有十来份访谈和会议记录，帮我找续费失败的共同原因，还有哪些说法互相打架，标一下原文位置。",
+      "should_load_skill": true,
+      "should_spawn_agent": true
+    },
+    {
+      "id": "plain_name_small_request",
+      "split": "sanity",
+      "query": "请用 codex-explore 看一下 known/constants.ts 的 RETRY_LIMIT，给我值和行号就行。",
+      "should_load_skill": true,
+      "should_spawn_agent": false
+    },
+    {
+      "id": "composite_review_boundary",
+      "split": "sanity",
+      "query": "review changes/large-pr.diff 前先把 deleteSafely 在这个陌生 repo 的所有调用点和数据流查清，再判断 bug 严重性并给修改建议。",
+      "should_load_skill": true,
+      "should_spawn_agent": true
+    },
+    {
+      "id": "composite_write_boundary",
+      "split": "sanity",
+      "query": "我要给这个陌生 repo 加 regional_checkout，先搜索所有扩展点和调用链，然后直接修改代码并补测试。",
+      "should_load_skill": true,
+      "should_spawn_agent": true
+    },
+    {
+      "id": "casual_two_known_files",
+      "split": "sanity",
+      "query": "就看 known/settings.ts 和 known/constants.ts，这俩 DEFAULT_REGION 对不对得上？",
+      "should_load_skill": false,
+      "should_spawn_agent": false
+    },
+    {
+      "id": "typo_known_file_near_miss",
+      "split": "sanity",
+      "query": "就看 known/constants.ts，查一下 RETRY_LIMT 的定义和值，不要读其他文件。",
+      "should_load_skill": false,
+      "should_spawn_agent": false
+    },
+    {
+      "id": "incidental_plugin_name",
+      "split": "sanity",
+      "query": "plugins/codex-enhance/.agents-plugin/plugin.json 里的版本号是多少？只读这个文件。",
+      "should_load_skill": false,
+      "should_spawn_agent": false
+    }
+  ]
+}

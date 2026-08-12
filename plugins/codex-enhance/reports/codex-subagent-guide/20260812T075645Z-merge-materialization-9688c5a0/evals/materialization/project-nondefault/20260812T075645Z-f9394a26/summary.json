@@ -1,0 +1,131 @@
+{
+  "schemaVersion": 1,
+  "target": "materialization/project-nondefault",
+  "kind": "materialization",
+  "runId": "20260812T075645Z-f9394a26",
+  "generatedAt": "2026-08-12T07:56:47.834Z",
+  "profile": "project-nondefault",
+  "suite": null,
+  "split": "all",
+  "case": "all",
+  "outcome": "passed",
+  "complete": true,
+  "mechanicalPassed": true,
+  "qualitativeReview": "not_required",
+  "requiredForRelease": true,
+  "reportPath": null,
+  "summary": {
+    "scope": "project",
+    "configDigest": "sha256:ff0d99c7621d61c0495c1dd1a21f07f679e71dc77d56890e0c512b14a75ce6c3",
+    "bundleDigest": "sha256:38f3d6f06dfb7ef1528cce31a9d95b1e19d126344a654f0a963efa3fe9e5ab49",
+    "artifacts": [
+      {
+        "kind": "config",
+        "path": ".agent-workflows/plugin-config/codex-enhance/config.json",
+        "contentDigest": "sha256:8b8a67e4bde2fb80d3c6a664fd5e51dc8f61267f6b90859bef5b358ad794d308"
+      },
+      {
+        "kind": "skill",
+        "key": "codex-explore",
+        "path": ".agents/skills/codex-explore/.agent-workflows-owner.json",
+        "contentDigest": "sha256:4158ea5791f35b84e508d606ec308886dafd937b2ff86692d1b0034d85188347"
+      },
+      {
+        "kind": "skill",
+        "key": "codex-explore",
+        "path": ".agents/skills/codex-explore/agents/openai.yaml",
+        "contentDigest": "sha256:3ac7473076da2e83166301d3817a111bfc00f6f685e80d7252f5e88f18726a4e"
+      },
+      {
+        "kind": "skill",
+        "key": "codex-explore",
+        "path": ".agents/skills/codex-explore/README.md",
+        "contentDigest": "sha256:90a142d17b345a253c838a90b3049fc83f560bd48bec9f23f14e2b51db9d0df3"
+      },
+      {
+        "kind": "skill",
+        "key": "codex-explore",
+        "path": ".agents/skills/codex-explore/SKILL.md",
+        "contentDigest": "sha256:d52706e45b731efb9b88163c972cca4d5be84ff1d877bdf766ef47ccc5c25012"
+      },
+      {
+        "kind": "skill",
+        "key": "codex-subagent-guide",
+        "path": ".agents/skills/codex-subagent-guide/.agent-workflows-owner.json",
+        "contentDigest": "sha256:c8bece1bc02d5eef07b9ced53e3bcc6e6df04f6b1d360f2198bc066ee314c384"
+      },
+      {
+        "kind": "skill",
+        "key": "codex-subagent-guide",
+        "path": ".agents/skills/codex-subagent-guide/agents/openai.yaml",
+        "contentDigest": "sha256:4bc5443c5cfb2e74831cde88f605463dfdf55effbf3d08816f6e255cc9591100"
+      },
+      {
+        "kind": "skill",
+        "key": "codex-subagent-guide",
+        "path": ".agents/skills/codex-subagent-guide/README.md",
+        "contentDigest": "sha256:90b3551f5c9a4cff8c9ff508ba9e6b2b5a5e4150181346a975cb6b18c63421aa"
+      },
+      {
+        "kind": "skill",
+        "key": "codex-subagent-guide",
+        "path": ".agents/skills/codex-subagent-guide/SKILL.md",
+        "contentDigest": "sha256:dece21d07e053ad185c532b38f859e5c5e86c5dcf473f13fb85dabd5df53c2d8"
+      },
+      {
+        "kind": "agent",
+        "key": "aw-codex-enhance-codex-explore-custom",
+        "path": ".codex/agents/aw-codex-enhance-codex-explore-custom.toml",
+        "contentDigest": "sha256:1025e722fdfbd2d9d2d4fd365503cecca2778a445f15f596097c02beb337f5db"
+      },
+      {
+        "kind": "agent",
+        "key": "aw-codex-enhance-codex-explore-deep",
+        "path": ".codex/agents/aw-codex-enhance-codex-explore-deep.toml",
+        "contentDigest": "sha256:e5d49d7208b9a0a1f964049907e39563900b81d71a3baadf9873852ae48a35d5"
+      },
+      {
+        "kind": "agent",
+        "key": "aw-codex-enhance-codex-explore-quick",
+        "path": ".codex/agents/aw-codex-enhance-codex-explore-quick.toml",
+        "contentDigest": "sha256:12da01a9251091788f68575ea78f04c5fe355dfc7113495bde008c50b3fa952e"
+      },
+      {
+        "kind": "agent",
+        "key": "aw-codex-enhance-codex-explore-standard",
+        "path": ".codex/agents/aw-codex-enhance-codex-explore-standard.toml",
+        "contentDigest": "sha256:56dc3455c55cb80485e8aa84fb95fd27897fd189604f452e2e868185c128a3fe"
+      },
+      {
+        "kind": "agent",
+        "key": "aw-codex-enhance-codex-subagent-complex",
+        "path": ".codex/agents/aw-codex-enhance-codex-subagent-complex.toml",
+        "contentDigest": "sha256:4aa540120b024a38fa3abbd6b4021c8c8b96fc669b6f296f34e7a90a2ea7107e"
+      },
+      {
+        "kind": "agent",
+        "key": "aw-codex-enhance-codex-subagent-general",
+        "path": ".codex/agents/aw-codex-enhance-codex-subagent-general.toml",
+        "contentDigest": "sha256:c3c65f2f6fea1934d9a34ec007836b5d8efa6ba02e7d963e278af8870e528f79"
+      },
+      {
+        "kind": "agent",
+        "key": "aw-codex-enhance-codex-subagent-plan-review",
+        "path": ".codex/agents/aw-codex-enhance-codex-subagent-plan-review.toml",
+        "contentDigest": "sha256:ecc20e279b7d02af8bc832646d39aedec4da2a3d4389dc518be4e8cb224b73ba"
+      },
+      {
+        "kind": "agent",
+        "key": "aw-codex-enhance-codex-subagent-simple",
+        "path": ".codex/agents/aw-codex-enhance-codex-subagent-simple.toml",
+        "contentDigest": "sha256:0cb9363712fc2050e9991e1bd93a495179bd3d78b2bae7a8cfc7ce06a1fc1ef0"
+      },
+      {
+        "kind": "instruction",
+        "path": ".codex/config.toml",
+        "contentDigest": "sha256:1321bd6090144e7dda681ac40ec95ab7b589a2f47582c4707e29005238968f09"
+      }
+    ]
+  },
+  "diagnostics": []
+}

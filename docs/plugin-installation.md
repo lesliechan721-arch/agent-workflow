@@ -162,12 +162,12 @@ status v3 JSON 示例：
 ## Config
 
 ```bash
-aw config list codex-explore -s user --json
-aw config get codex-explore standardModel -s user --json
-aw config set codex-explore standardModel gpt-5.6-terra -s user --json
-aw config set codex-explore minimumInitialWaitMinutes 15 -s user --json
-aw config unset codex-explore standardModel -s user --json
-aw config reset codex-explore -s user --yes --json
+aw config list codex-enhance -s user --json
+aw config get codex-enhance standardModel -s user --json
+aw config set codex-enhance standardModel gpt-5.6-terra -s user --json
+aw config set codex-enhance minimumInitialWaitMinutes 15 -s user --json
+aw config unset codex-enhance standardModel -s user --json
+aw config reset codex-enhance -s user --yes --json
 ```
 
 `minimumInitialWaitMinutes` 设置首次响应式等待的最小单次窗口，不是存活探测前的累计等待预算。

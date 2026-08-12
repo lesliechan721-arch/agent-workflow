@@ -118,8 +118,7 @@ describe('build smoke', () => {
     for (const pluginName of [
       'ask-me',
       'git-commit',
-      'codex-explore',
-      'codex-subagent-guide',
+      'codex-enhance',
     ]) {
       await expect(
         fs.pathExists(path.join(outputRoot, 'plugins', pluginName, 'evals')),
@@ -148,8 +147,8 @@ describe('build smoke', () => {
       }
     }
     for (const [pluginName, artifactId] of [
-      ['codex-explore', 'codex-explore-skill'],
-      ['codex-subagent-guide', 'codex-subagent-guide-skill'],
+      ['codex-enhance', 'codex-explore-skill'],
+      ['codex-enhance', 'codex-subagent-guide-skill'],
     ]) {
       await expect(fs.pathExists(path.join(
         outputRoot,
@@ -204,8 +203,7 @@ describe('build smoke', () => {
     ]);
     expect(codexMarketplace.plugins.map((plugin: { name: string }) => plugin.name).sort()).toEqual([
       'ask-me',
-      'codex-explore',
-      'codex-subagent-guide',
+      'codex-enhance',
       'git-commit',
     ]);
     expect(codexMarketplace).toMatchObject({
@@ -220,15 +218,8 @@ describe('build smoke', () => {
           }),
         }),
         expect.objectContaining({
-          name: 'codex-explore',
-          source: './plugins/codex-explore',
-          policy: expect.objectContaining({
-            products: ['CODEX'],
-          }),
-        }),
-        expect.objectContaining({
-          name: 'codex-subagent-guide',
-          source: './plugins/codex-subagent-guide',
+          name: 'codex-enhance',
+          source: './plugins/codex-enhance',
           policy: expect.objectContaining({
             products: ['CODEX'],
           }),
@@ -297,14 +288,37 @@ describe('build smoke', () => {
       path.join(
         outputRoot,
         'plugins',
-        'codex-subagent-guide',
+        'codex-enhance',
         '.codex-plugin',
         'plugin.json',
       ),
       path.join(
         outputRoot,
         'plugins',
-        'codex-subagent-guide',
+        'codex-enhance',
+        '.agents-plugin',
+        'artifact-sources',
+        'codex',
+        'codex-explore-skill',
+        '0',
+        'SKILL.md',
+      ),
+      path.join(
+        outputRoot,
+        'plugins',
+        'codex-enhance',
+        '.agents-plugin',
+        'artifact-sources',
+        'codex',
+        'codex-explore-skill',
+        '0',
+        'agents',
+        'openai.yaml',
+      ),
+      path.join(
+        outputRoot,
+        'plugins',
+        'codex-enhance',
         '.agents-plugin',
         'artifact-sources',
         'codex',
@@ -315,7 +329,7 @@ describe('build smoke', () => {
       path.join(
         outputRoot,
         'plugins',
-        'codex-subagent-guide',
+        'codex-enhance',
         '.agents-plugin',
         'artifact-sources',
         'codex',
@@ -327,7 +341,7 @@ describe('build smoke', () => {
       path.join(
         outputRoot,
         'plugins',
-        'codex-subagent-guide',
+        'codex-enhance',
         'scripts',
         'render-artifacts.mjs',
       ),
@@ -339,7 +353,7 @@ describe('build smoke', () => {
         path.join(
           outputRoot,
           'plugins',
-          'codex-subagent-guide',
+          'codex-enhance',
           '.claude-plugin',
           'plugin.json',
         ),
@@ -350,17 +364,24 @@ describe('build smoke', () => {
         path.join(
           outputRoot,
           'plugins',
-          'codex-subagent-guide',
+          'codex-enhance',
           '.agents-plugin',
           'plugin.json',
         ),
       ),
     ).resolves.toMatchObject({
+      name: 'codex-enhance',
       interface: {
-        capabilities: ['Skills', 'Agents'],
+        capabilities: ['Skills', 'Instructions', 'Agents'],
       },
       config: {
         schema: {
+          quickModel: { type: 'string', default: 'gpt-5.6-luna' },
+          quickReasoningEffort: { type: 'enum', default: 'medium' },
+          standardModel: { type: 'string', default: 'gpt-5.6-luna' },
+          standardReasoningEffort: { type: 'enum', default: 'high' },
+          deepModel: { type: 'string', default: 'gpt-5.6-luna' },
+          deepReasoningEffort: { type: 'enum', default: 'xhigh' },
           simpleTaskModel: {
             type: 'string',
             default: 'gpt-5.6-luna',
@@ -404,7 +425,36 @@ describe('build smoke', () => {
         },
       },
       artifacts: {
-        targets: [
+        targets: expect.arrayContaining([
+          expect.objectContaining({
+            id: 'codex-explore-skill',
+            target: 'codex.skill',
+            skillKey: 'codex-explore',
+            refreshKeys: ['minimumInitialWaitMinutes'],
+          }),
+          ...[
+            [
+              'codex-explore-quick-role',
+              'codex-explore-quick',
+              ['quickModel', 'quickReasoningEffort'],
+            ],
+            [
+              'codex-explore-standard-role',
+              'codex-explore-standard',
+              ['standardModel', 'standardReasoningEffort'],
+            ],
+            [
+              'codex-explore-deep-role',
+              'codex-explore-deep',
+              ['deepModel', 'deepReasoningEffort'],
+            ],
+            ['codex-explore-custom-role', 'codex-explore-custom', []],
+          ].map(([id, roleKey, refreshKeys]) => expect.objectContaining({
+            id,
+            target: 'codex.agentRole',
+            roleKey,
+            refreshKeys,
+          })),
           expect.objectContaining({
             id: 'codex-subagent-guide-skill',
             target: 'codex.skill',
@@ -438,89 +488,16 @@ describe('build smoke', () => {
             roleKey,
             refreshKeys,
           })),
-        ],
-      },
-    });
-    await expect(
-      fs.readJson(path.join(outputRoot, 'plugins', 'codex-explore', '.codex-plugin', 'plugin.json')),
-    ).resolves.toMatchObject({
-      name: 'codex-explore',
-    });
-    await expect(
-      fs.readJson(path.join(outputRoot, 'plugins', 'codex-explore', '.agents-plugin', 'plugin.json')),
-    ).resolves.toMatchObject({
-      config: {
-        schema: {
-          quickModel: { type: 'string', default: 'gpt-5.6-luna' },
-          quickReasoningEffort: { type: 'enum', default: 'medium' },
-          standardModel: { type: 'string', default: 'gpt-5.6-luna' },
-          standardReasoningEffort: { type: 'enum', default: 'high' },
-          deepModel: { type: 'string', default: 'gpt-5.6-luna' },
-          deepReasoningEffort: { type: 'enum', default: 'xhigh' },
-        },
-      },
-      scripts: {
-        artifacts: {
-          render: {
-            runner: 'node',
-            path: './scripts/render-artifacts.mjs',
-          },
-        },
-      },
-      artifacts: {
-        targets: expect.arrayContaining([
-          expect.objectContaining({
-            id: 'codex-explore-skill',
-            platform: 'codex',
-            target: 'codex.skill',
-            skillKey: 'codex-explore',
-          }),
-          ...[
-            [
-              'codex-explore-quick-role',
-              'codex-explore-quick',
-              ['quickModel', 'quickReasoningEffort'],
-            ],
-            [
-              'codex-explore-standard-role',
-              'codex-explore-standard',
-              ['standardModel', 'standardReasoningEffort'],
-            ],
-            [
-              'codex-explore-deep-role',
-              'codex-explore-deep',
-              ['deepModel', 'deepReasoningEffort'],
-            ],
-            ['codex-explore-custom-role', 'codex-explore-custom', []],
-          ].map(([id, roleKey, refreshKeys]) => expect.objectContaining({
-            id,
-            platform: 'codex',
-            target: 'codex.agentRole',
-            requiresCodexProjectConfig: true,
-            roleKey,
-            refreshKeys,
-          })),
         ]),
       },
     });
-    await Promise.all([
-      path.join(outputRoot, 'plugins', 'codex-explore', 'scripts', 'render-artifacts.mjs'),
-      path.join(outputRoot, 'plugins', 'codex-explore', '.agents-plugin', 'artifact-sources', 'codex', 'codex-explore-skill', '0', 'SKILL.md'),
-      path.join(outputRoot, 'plugins', 'codex-explore', '.agents-plugin', 'artifact-sources', 'codex', 'codex-explore-skill', '0', 'agents', 'openai.yaml'),
-    ].map(async (requiredPath) => {
-      await expect(fs.pathExists(requiredPath)).resolves.toBe(true);
-    }));
-    await Promise.all([
-      path.join(outputRoot, 'plugins', 'codex-explore', 'codex', 'roles', 'codex-explorer.md'),
-      path.join(outputRoot, 'plugins', 'codex-explore', 'codex', 'instructions', 'lightweight.md'),
-    ].map(async (removedPath) => {
-      await expect(fs.pathExists(removedPath)).resolves.toBe(false);
-    }));
     await expect(
-      fs.pathExists(path.join(outputRoot, 'plugins', 'codex-explore', '.claude-plugin', 'plugin.json')),
-    ).resolves.toBe(false);
+      fs.readJson(path.join(outputRoot, 'plugins', 'codex-enhance', '.codex-plugin', 'plugin.json')),
+    ).resolves.toMatchObject({
+      name: 'codex-enhance',
+    });
     await expect(
-      fs.pathExists(path.join(outputRoot, 'plugins', 'codex-explore', 'claude')),
+      fs.pathExists(path.join(outputRoot, 'plugins', 'codex-enhance', 'claude')),
     ).resolves.toBe(false);
     expect(canonicalCatalogManifestText).toBe(sidecarCatalogManifestText);
     expect(canonicalCatalogManifestText).toBe(fullCatalogManifestText);

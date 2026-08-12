@@ -390,7 +390,7 @@ describe('plugin eval runner', () => {
   it('rejects case ids that can escape the report target directory', async () => {
     let stderr = '';
     const exitCode = await runPluginEvals([
-      'codex-subagent-guide',
+      'codex-enhance',
       '--skill',
       'codex-subagent-guide',
       '--suite',
@@ -411,7 +411,7 @@ describe('plugin eval runner', () => {
   it('blocks model eval under a macOS accountsKeychainExport wrapper', async () => {
     let stderr = '';
     const exitCode = await runPluginEvals([
-      'codex-subagent-guide',
+      'codex-enhance',
       '--skill',
       'codex-subagent-guide',
       '--batch-name',
@@ -439,7 +439,7 @@ describe('plugin eval runner', () => {
     });
 
     const exitCode = await runPluginEvals([
-      'codex-subagent-guide',
+      'codex-enhance',
       '--skill',
       'codex-subagent-guide',
       '--materialize-only',
@@ -471,7 +471,7 @@ describe('plugin eval runner', () => {
     let stderr = '';
 
     const exitCode = await runPluginEvals([
-      'codex-subagent-guide',
+      'codex-enhance',
       '--skill',
       'codex-subagent-guide',
       '--codex-bin',
@@ -559,8 +559,8 @@ describe('plugin eval runner', () => {
     const targets = [
       ['ask-me', 'requirements-clarifier'],
       ['ask-me', 'decision-grill'],
-      ['codex-explore', 'codex-explore'],
-      ['codex-subagent-guide', 'codex-subagent-guide'],
+      ['codex-enhance', 'codex-explore'],
+      ['codex-enhance', 'codex-subagent-guide'],
       ['git-commit', 'commit'],
     ] as const;
     const bundles = [];
@@ -618,11 +618,12 @@ describe('plugin eval runner', () => {
       ).resolves.toBe(true);
     }
 
-    for (const pluginName of ['codex-explore', 'codex-subagent-guide']) {
+    for (const skillName of ['codex-explore', 'codex-subagent-guide']) {
       const bundle = bundles.find(
-        (entry: { plugin: string }) => entry.plugin === pluginName,
+        (entry: { plugin: string; skill: string }) =>
+          entry.plugin === 'codex-enhance' && entry.skill === skillName,
       );
-      expect(bundle.subjects).toHaveLength(pluginName === 'codex-explore' ? 5 : 4);
+      expect(bundle.subjects).toHaveLength(skillName === 'codex-explore' ? 5 : 4);
       const defaultProfile = bundle.subjects.find(
         (entry: { profile: string }) => entry.profile === 'project-default',
       );
@@ -636,7 +637,7 @@ describe('plugin eval runner', () => {
         expect.objectContaining({ kind: 'agent' }),
         expect.objectContaining({ kind: 'instruction' }),
       ]));
-      if (pluginName === 'codex-explore') {
+      if (skillName === 'codex-explore') {
         expect(bundle.subjects).toContainEqual(expect.objectContaining({
           profile: 'project-short-wait',
           scope: 'project',
@@ -691,7 +692,7 @@ describe('plugin eval runner', () => {
       let stderr = '';
 
       const exitCode = await runPluginEvals([
-        'codex-explore',
+        'codex-enhance',
         '--skill',
         'codex-explore',
         '--no-inherit-codex-config',
@@ -713,8 +714,8 @@ describe('plugin eval runner', () => {
       });
 
       expect(exitCode, stderr).toBe(1);
-      expect(stderr).toContain('codex-explore/trigger/all');
-      expect(stderr).not.toContain('codex-explore/trigger/validation');
+      expect(stderr).toContain('codex-enhance/trigger/all');
+      expect(stderr).not.toContain('codex-enhance/trigger/validation');
       const commandReport = JSON.parse(stdout);
       expect(
         commandReport.bundle,
