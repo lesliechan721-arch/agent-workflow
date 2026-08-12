@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "batchId": "20260812T075645Z-merge-materialization-9688c5a0",
+  "name": "merge-materialization",
+  "owner": {
+    "kind": "plugin-skill",
+    "plugin": "codex-enhance",
+    "skill": "codex-subagent-guide"
+  },
+  "status": "open",
+  "createdAt": "2026-08-12T07:56:45.738Z",
+  "updatedAt": "2026-08-12T07:56:47.855Z",
+  "source": {
+    "digest": "sha256:121e68d5ee571f82fc97240b3c8cf42c7ad054ac9c3d18a48cd7dbb89955c97a",
+    "gitHead": "1c128b86030f853dab3f92267f4e3d47149e564c",
+    "inScopeDirty": true
+  },
+  "environmentDigest": "sha256:0f7461c09757962daa82654a11c8862cbd11c96ae7b784d392bb0a83c0d7fb0d",
+  "modelEnvironmentDigest": null,
+  "harnessDigest": "sha256:676c6314df40d6c6071e738c8d21d3501aa6d1f0b79bd4cf84531e84326efa55",
+  "requiredTargets": [
+    "command/lifecycle/project-default/all/all",
+    "command/routing/project-default/all/all",
+    "materialization/project-default",
+    "materialization/project-nondefault",
+    "materialization/user-default",
+    "materialization/user-nondefault",
+    "trigger/trigger/project-default/sanity/all",
+    "trigger/trigger/project-default/validation/all"
+  ]
+}

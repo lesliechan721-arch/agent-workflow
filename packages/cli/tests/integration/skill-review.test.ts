@@ -278,7 +278,7 @@ describe('skill-review author tools', () => {
     let stdout = '';
     let stderr = '';
     const exitCode = await runPluginEvals([
-      'codex-explore',
+      'codex-enhance',
       '--skill',
       'codex-explore',
       '--materialize-only',
@@ -299,7 +299,7 @@ describe('skill-review author tools', () => {
 
     const result = await execFileAsync('node', [
       skillScript('inspect_skill_target.mjs'),
-      'codex-explore',
+      'codex-enhance',
       '--evaluation',
       evaluationPath,
       '--format',
@@ -311,21 +311,28 @@ describe('skill-review author tools', () => {
     });
     const report = JSON.parse(result.stdout);
 
-    expect(report.target).toMatchObject({ kind: 'aw-plugin', name: 'codex-explore' });
-    expect(report.plugin.dynamic_targets).toHaveLength(5);
-    expect(report.source_skills).toHaveLength(1);
-    expect(report.source_skills[0].path).toBe('skills/codex-explore/SKILL.md');
+    expect(report.target).toMatchObject({ kind: 'aw-plugin', name: 'codex-enhance' });
+    expect(report.plugin.dynamic_targets).toHaveLength(10);
+    expect(report.source_skills).toHaveLength(2);
+    expect(report.source_skills).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: 'skills/codex-explore/SKILL.md' }),
+      expect.objectContaining({ path: 'skills/codex-subagent-guide/SKILL.md' }),
+    ]));
     expect(report.eval_manifest).toMatchObject({
       schemaVersion: 2,
-      plugin: 'codex-explore',
+      plugin: 'codex-enhance',
       skill: 'codex-explore',
     });
-    expect(report.eval_manifests).toEqual([
+    expect(report.eval_manifests).toEqual(expect.arrayContaining([
       expect.objectContaining({
         skill: 'codex-explore',
         path: 'skills/codex-explore/evals/manifest.json',
       }),
-    ]);
+      expect.objectContaining({
+        skill: 'codex-subagent-guide',
+        path: 'skills/codex-subagent-guide/evals/manifest.json',
+      }),
+    ]));
     expect(report.evaluation.profiles).toHaveLength(5);
     expect(report.evaluation.profiles).toEqual(expect.arrayContaining([
       expect.objectContaining({
@@ -340,7 +347,7 @@ describe('skill-review author tools', () => {
     await expect(
       fs.pathExists(report.evaluation.profiles[0].root),
     ).resolves.toBe(true);
-    expect(report.final_skills).toHaveLength(5);
+    expect(report.final_skills).toHaveLength(10);
     expect(report.issues.filter((issue: { level: string }) => issue.level === 'error')).toEqual([]);
   });
 
