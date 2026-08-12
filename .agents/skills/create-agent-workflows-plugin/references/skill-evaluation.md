@@ -152,6 +152,8 @@ strict 模式在启动模型前检查 `/etc/codex`（Windows 对应系统目录�
 
 中间产物固定在项目内 `.tmp/agent-workflows/evals/plugins/<plugin>/<skill>/<run-id>/`，命令结束后清理。持久报告固定在 `<owner-skill-root>/reports/evals/<run-id>/`：`run.json` 记录运行状态，`summary.json` 和 `report.md` 用于长期保存，`raw/evaluation.json`、materialized subjects 和 suite trace 用于复核。`raw/` 默认不提交 Git，但不能在 review 完成前删除。CLI 不接受任意 `--output-dir`。
 
+持久 `reports/` 不属于被评估源码，中央 source revision 检查会忽略该目录；插件源码、eval 夹具、脚本和作者/评审工具的未提交修改仍会令 `source.inScopeDirty=true`。
+
 ## 触发评估
 
 只有允许模型自动发现的 Skill 才把自动触发率作为验收门。固定 manual Skill 仍要保持 description 精确，但验收重点是不会误触发且 `$skill-name` 显式入口可用。

@@ -25,6 +25,10 @@ const DEFAULT_OPTIONS = {
 };
 const MAX_TRANSIENT_TRANSPORT_RETRIES = 2;
 const TOOL_ROUTER_ERROR = /codex_core::tools::router: error=([^\n]+)/u;
+const ROUTING_ONLY_INSTRUCTION = [
+  '本用例只评估委派选择和 spawn_agent 参数，不需要子代理结果。',
+  '若发起委派，在 spawn_agent 返回后立即结束当前回复；不要等待或清理子代理。',
+].join('');
 
 function usage() {
   return `Usage: node plugins/codex-subagent-guide/templates/codex-subagent-guide/evals/run-routing-evals.mjs [OPTIONS]
@@ -314,7 +318,7 @@ export function summarizeRoutingVariant(entry, profile, variant, runs, threshold
 export function routingRunCase(entry, profile, variant) {
   const expected = entry.expectations[profile];
   return {
-    query: entry.prompt,
+    query: `${entry.prompt}\n\n${ROUTING_ONLY_INSTRUCTION}`,
     explicit_skill: true,
     should_load_skill: variant === 'with_skill',
     should_spawn_agent: expected.spawn_calls.min > 0,

@@ -5,6 +5,7 @@ import path from 'node:path';
 
 import {
   earlyStopReason,
+  executionErrorEvidence,
   extractExecToolCalls,
   readEvalResource,
   readSpawnCallsFromRollouts,
@@ -108,7 +109,10 @@ async function testEvalSpec() {
   const full = spec.evals.find((entry) => entry.id === 'full_history');
   assert.equal(full.expectations.v1.arguments.fork_context, true);
   assert.equal(full.expectations.v2.arguments.fork_turns, 'all');
-  assert.equal(routingRunCase(full, 'v2', 'with_skill').stop_on_spawn, true);
+  const fullRunCase = routingRunCase(full, 'v2', 'with_skill');
+  assert.equal(fullRunCase.stop_on_spawn, true);
+  assert.match(fullRunCase.query, /不需要子代理结果/u);
+  assert.match(fullRunCase.query, /不要等待或清理子代理/u);
   const fullCustom = spec.evals.find((entry) => entry.id === 'full_history_custom_override');
   assert.equal(fullCustom.expectations.v1.arguments.model, 'gpt-5.6-terra');
   assert.equal(fullCustom.expectations.v1.arguments.fork_context, true);
@@ -450,6 +454,22 @@ function testTransportRetryGate() {
   assert.equal(
     shouldRetryTransportFailure({ execution_error: true, stderr: 'ordinary timeout' }, 0),
     false,
+  );
+  assert.deepEqual(
+    JSON.parse(executionErrorEvidence({
+      execution_error: true,
+      termination: 'timeout',
+      exit_code: 0,
+      signal: null,
+      stderr: 'Reading additional input from stdin...',
+    })),
+    {
+      termination: 'timeout',
+      exit_code: 0,
+      signal: null,
+      stderr: 'Reading additional input from stdin...',
+      error_events: [],
+    },
   );
 }
 

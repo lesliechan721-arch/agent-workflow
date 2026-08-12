@@ -894,6 +894,9 @@ export function executionErrorEvidence(run) {
     return [];
   });
   return JSON.stringify({
+    termination: run.termination ?? null,
+    exit_code: run.exit_code ?? null,
+    signal: run.signal ?? null,
     stderr: run.stderr ?? null,
     error_events: eventErrors,
   });
