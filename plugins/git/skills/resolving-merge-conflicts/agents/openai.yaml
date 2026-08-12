@@ -1,0 +1,7 @@
+interface:
+  display_name: "Resolve Merge Conflicts"
+  short_description: "理解两侧变更意图，安全解决正在进行的 Git merge 或 rebase 冲突并验证结果"
+  default_prompt: "使用 $resolving-merge-conflicts 理解两侧意图，解决并完成当前 Git merge 或 rebase 冲突。"
+
+policy:
+  allow_implicit_invocation: true

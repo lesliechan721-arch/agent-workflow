@@ -73,9 +73,33 @@ async function resolveTestContext() {
 }
 
 async function testEvalCorpora(sourceRoot) {
-  const [triggerContent, behaviorContent] = await Promise.all([
-    readFile(path.join(sourceRoot, 'skills', 'git-commit', 'evals', 'trigger-cases.json'), 'utf8'),
-    readFile(path.join(sourceRoot, 'skills', 'git-commit', 'evals', 'behavior-cases.json'), 'utf8'),
+  const [
+    triggerContent,
+    behaviorContent,
+    conflictTriggerContent,
+    conflictBehaviorContent,
+    conflictManifestContent,
+  ] = await Promise.all([
+    readFile(
+      path.join(sourceRoot, 'skills', 'git-commit', 'evals', 'trigger-cases.json'),
+      'utf8',
+    ),
+    readFile(
+      path.join(sourceRoot, 'skills', 'git-commit', 'evals', 'behavior-cases.json'),
+      'utf8',
+    ),
+    readFile(
+      path.join(sourceRoot, 'skills', 'resolving-merge-conflicts', 'evals', 'trigger-cases.json'),
+      'utf8',
+    ),
+    readFile(
+      path.join(sourceRoot, 'skills', 'resolving-merge-conflicts', 'evals', 'behavior-cases.json'),
+      'utf8',
+    ),
+    readFile(
+      path.join(sourceRoot, 'skills', 'resolving-merge-conflicts', 'evals', 'manifest.json'),
+      'utf8',
+    ),
   ]);
   const document = JSON.parse(triggerContent);
   const behaviorCases = JSON.parse(behaviorContent);
@@ -147,6 +171,61 @@ async function testEvalCorpora(sourceRoot) {
       `Missing required behavior assertion for ${id}`,
     );
   }
+
+  const conflictDocument = JSON.parse(conflictTriggerContent);
+  const conflictCases = conflictDocument.cases;
+  const participants = new Set(['resolving-merge-conflicts', 'git-commit']);
+  assert.equal(conflictDocument.schemaVersion, 1);
+  assert.equal(conflictDocument.skill, 'resolving-merge-conflicts');
+  assert.equal(conflictCases.length, 20);
+  assert.equal(conflictCases.filter((entry) => entry.split === 'train').length, 12);
+  assert.equal(conflictCases.filter((entry) => entry.split === 'validation').length, 8);
+  assert.equal(new Set(conflictCases.map((entry) => entry.id)).size, conflictCases.length);
+  for (const entry of conflictCases) {
+    assert.equal(Array.isArray(entry.expected_loaded_skills), true);
+    assert.equal(
+      entry.expected_loaded_skills.every((skill) => participants.has(skill)),
+      true,
+    );
+    assert.equal(
+      new Set(entry.expected_loaded_skills).size,
+      entry.expected_loaded_skills.length,
+    );
+  }
+  const expectedConflictRouting = new Map([
+    ['resolve_merge_conflict', ['resolving-merge-conflicts']],
+    ['continue_rebase', ['resolving-merge-conflicts']],
+    ['normal_commit', ['git-commit']],
+    ['commit_and_push', ['git-commit']],
+    ['explain_markers', []],
+    ['abort_rebase', []],
+    ['cherry_pick_conflict', []],
+    ['start_new_merge', []],
+  ]);
+  for (const [id, expectedSkills] of expectedConflictRouting) {
+    const entry = conflictCases.find((candidate) => candidate.id === id);
+    assert.ok(entry, `Missing required conflict routing case ${id}`);
+    assert.deepEqual(entry.expected_loaded_skills, expectedSkills);
+  }
+
+  const conflictBehavior = JSON.parse(conflictBehaviorContent);
+  const conflictManifest = JSON.parse(conflictManifestContent);
+  assert.equal(conflictBehavior.skill_name, 'resolving-merge-conflicts');
+  assert.equal(conflictBehavior.evals.length, 3);
+  assert.deepEqual(
+    conflictBehavior.evals.map((entry) => entry.id),
+    ['preserve-compatible-intents', 'ask-on-incompatible-intents', 'rebase-side-semantics'],
+  );
+  for (const entry of conflictBehavior.evals) {
+    assert.equal(Array.isArray(entry.scripted_replies), true);
+    assert.equal(entry.review.workspace_unchanged, true);
+    assert.ok(entry.review.checks.length >= 2);
+  }
+  const behaviorSuite = conflictManifest.suites.find((suite) => suite.id === 'behavior');
+  assert.ok(behaviorSuite);
+  assert.equal(behaviorSuite.kind, 'conversation');
+  assert.deepEqual(behaviorSuite.skills, ['resolving-merge-conflicts', 'git-commit']);
+  assert.equal(behaviorSuite.cases, './behavior-cases.json');
 }
 
 function assertRenderedSkill(skill) {
@@ -184,18 +263,42 @@ function assertCoreCommitContract(skill) {
   assert.match(skill, /琐碎单点改动可省略 body/);
 }
 
+function assertCoreConflictContract(skill) {
+  assert.match(skill, /查看完整 `git status`、相关历史和冲突文件/);
+  assert.match(skill, /理解 base、ours、theirs 和相关提交分别要实现什么/);
+  assert.match(skill, /能分别说明两侧意图后再解决；无法说明时停止并询问用户/);
+  assert.match(skill, /可以兼容时保留两侧意图/);
+  assert.match(skill, /不要发明新行为，不要批量选择 ours\/theirs/);
+  assert.match(skill, /确认没有未合并路径或残留冲突标记/);
+  assert.match(skill, /继续当前 merge 或 rebase/);
+}
+
 async function testSkillRenders(context) {
-  const source = await readFile(
-    path.join(context.sourceRoot, 'skills', 'git-commit', 'SKILL.md'),
-    'utf8',
-  );
+  const [source, conflictSource] = await Promise.all([
+    readFile(path.join(context.sourceRoot, 'skills', 'git-commit', 'SKILL.md'), 'utf8'),
+    readFile(
+      path.join(context.sourceRoot, 'skills', 'resolving-merge-conflicts', 'SKILL.md'),
+      'utf8',
+    ),
+  ]);
 
   assert.match(source, /当用户要求实际创建新的本地 Git commit 时使用/);
   assert.equal(source.includes('user-invocable:'), false);
   assert.equal(source.includes('metadata:'), false);
+  assert.match(
+    conflictSource,
+    /当用户需要解决正在进行的 Git merge 或 rebase 冲突时使用/,
+  );
+  assert.equal(conflictSource.includes('user-invocable:'), false);
+  assert.equal(conflictSource.includes('metadata:'), false);
 
   if (context.platform) {
-    const [bundledSkill, bundledOpenai] = await Promise.all([
+    const [
+      bundledSkill,
+      bundledOpenai,
+      bundledConflictSkill,
+      bundledConflictOpenai,
+    ] = await Promise.all([
       readFile(
         path.join(
           context.bundleRoot,
@@ -217,20 +320,50 @@ async function testSkillRenders(context) {
         ),
         'utf8',
       ),
+      readFile(
+        path.join(
+          context.bundleRoot,
+          context.platform,
+          'skills',
+          'resolving-merge-conflicts',
+          'SKILL.md',
+        ),
+        'utf8',
+      ),
+      readFile(
+        path.join(
+          context.bundleRoot,
+          context.platform,
+          'skills',
+          'resolving-merge-conflicts',
+          'agents',
+          'openai.yaml',
+        ),
+        'utf8',
+      ),
     ]);
     assert.match(
       bundledOpenai,
       /default_prompt: "使用 \$git-commit 核对当前改动，并按仓库规范完成 Git 提交。"/,
     );
     assert.match(bundledOpenai, /allow_implicit_invocation: true/);
+    assert.match(
+      bundledConflictOpenai,
+      /default_prompt: "使用 \$resolving-merge-conflicts 理解两侧意图，解决并完成当前 Git merge 或 rebase 冲突。"/,
+    );
+    assert.match(bundledConflictOpenai, /allow_implicit_invocation: true/);
     assertCoreCommitContract(bundledSkill);
+    assertCoreConflictContract(bundledConflictSkill);
     assert.ok(['codex', 'claude'].includes(context.platform));
     assertRenderedSkill(bundledSkill);
+    assertRenderedSkill(bundledConflictSkill);
     return;
   }
 
   assertCoreCommitContract(source);
+  assertCoreConflictContract(conflictSource);
   assertRenderedSkill(source);
+  assertRenderedSkill(conflictSource);
 }
 
 async function testWorkspaceFixture() {
@@ -417,7 +550,7 @@ async function main() {
   await testPartialStagingBehavior();
   await testMergeInProgressDetection();
   await testCherryPickConflictDetection();
-  console.log('git / git-commit eval and Git behavior tests passed');
+  console.log('git skill eval and Git behavior tests passed');
 }
 
 main().catch((error) => {

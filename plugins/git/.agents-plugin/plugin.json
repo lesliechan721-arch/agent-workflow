@@ -1,7 +1,7 @@
 {
   "name": "git",
   "version": "0.1.0",
-  "description": "在用户明确要求创建新的本地 Git commit 时，核对授权范围并创建符合适用规范的提交。",
+  "description": "提供本地 Git 提交，以及正在进行的 merge 或 rebase 冲突解决工作流。",
   "compatibility": {
     "aw": {
       "minVersion": "0.0.0"
@@ -10,7 +10,7 @@
   "skills": "./skills",
   "marketplace": {
     "category": "workflow",
-    "tags": ["git", "commit"],
+    "tags": ["git", "commit", "merge", "rebase", "conflicts"],
     "strict": true,
     "policy": {
       "installation": "AVAILABLE",
@@ -18,8 +18,8 @@
     }
   },
   "interface": {
-    "displayName": "Git Commit",
-    "shortDescription": "核对用户授权范围与适用提交规范，创建内容准确且可追溯的本地 Git 提交",
+    "displayName": "Git Workflows",
+    "shortDescription": "精确创建本地提交，或理解两侧意图并解决正在进行的 merge 和 rebase 冲突",
     "capabilities": ["Skills"]
   },
   "scripts": {

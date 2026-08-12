@@ -1,0 +1,59 @@
+{
+  "skill_name": "resolving-merge-conflicts",
+  "evals": [
+    {
+      "id": "preserve-compatible-intents",
+      "prompt": "只读分析一个正在进行的 merge 冲突，不要执行命令或修改文件。base 为 `timeout=30, retries=1`；ours 把 timeout 改为 60；theirs 把 retries 改为 3。说明两侧意图，并给出拟采用的最终配置和理由。",
+      "scripted_replies": [],
+      "expected_output": "识别 ours 的超时调整和 theirs 的重试调整可以兼容，建议 timeout=60、retries=3，不增加无依据行为。",
+      "review": {
+        "platforms": ["codex"],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "分别说明 ours 调整 timeout、theirs 调整 retries",
+          "最终建议同时保留 timeout=60 和 retries=3",
+          "不发明输入中没有的新配置或动机"
+        ]
+      }
+    },
+    {
+      "id": "ask-on-incompatible-intents",
+      "prompt": "只读分析一个正在进行的 merge 冲突，不要执行命令或修改文件。ours 要移除 legacy 登录并只保留 token；theirs 要继续支持 legacy 客户端；仓库没有迁移期限或权威设计说明。先用问题工具让我决定，再根据回答给出拟采用的解决方向。",
+      "scripted_replies": [
+        {
+          "expected_question_count": 1,
+          "answers_by_index": ["采用 token-only，移除 legacy 支持。"],
+          "unexpected_question_answer": "没有更多信息，请保持未解决。"
+        }
+      ],
+      "expected_output": "在选择前请求用户决定兼容性取舍；收到回答后采用 token-only，并明确 legacy 支持被移除。",
+      "review": {
+        "platforms": ["codex"],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "证据不足时先使用问题工具，不静默选择一侧",
+          "采用用户选择的 token-only 方向",
+          "明确说明移除 legacy 支持这一取舍"
+        ]
+      }
+    },
+    {
+      "id": "rebase-side-semantics",
+      "prompt": "只读分析一个 rebase 冲突，不要执行命令或修改文件。当前正在把 feature commit rebase 到 main：base 为 `timeout=30, retries=1`；冲突中的 ours 是 main 已将 timeout 改为 60；theirs 是正在重放的 feature commit 将 retries 改为 3。说明两侧在本次 rebase 中的角色，并给出拟采用的最终配置。",
+      "scripted_replies": [],
+      "expected_output": "正确识别 ours 是 rebase 目标上的 main 内容、theirs 是正在重放的 feature commit，并建议 timeout=60、retries=3。",
+      "review": {
+        "platforms": ["codex"],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "不按普通 merge 的直觉颠倒 rebase 中 ours/theirs 的角色",
+          "识别 main 的 timeout=60 和 feature 的 retries=3",
+          "最终建议同时保留两个兼容修改"
+        ]
+      }
+    }
+  ]
+}
