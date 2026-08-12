@@ -198,10 +198,11 @@ pnpm plugin:eval <plugin> --skill <skill> --batch-name release
 - `evals/**` 和插件根 `reports/**` 是作者期目录，不进入 runtime bundle 或 runtime digest。Skill README 会随 Skill 发布。
 - eval materialization 必须验证最终 Codex Skill 文件和原生调用 metadata。
 - `trigger` 和 `conversation` suite 支持 `isolation: standard|strict`；发布级触发边界和行为归因应使用 `strict`。strict current 只保留 participants，conversation baseline 只移除 owner。单目标 trigger case 使用 `should_load_skill`；多 Skill 竞争路由使用 `expected_loaded_skills` 精确集合，并可设置 `minimumPassRate` 和 `forbidMultipleSkillLoads`。`request_user_input` 等待是 trigger 的正常终止。`strictNegativeSplits` 对单次负例错误零容忍。
+- command suite 支持 `case` 时必须声明 `cases` 文档，并返回标准 `case_results[]`。中央会从中断的 full run 保存已完成 case；使用同一 `--batch-id` 补齐其余 case 后，可把完整 case target 组合为 `/all` release target。旧 attempt 仍保留。
 - conversation case 默认只读。需要验证创建或修改行为时，显式使用 `sandbox: workspace-write`，并声明最小 `allowed_workspace_changes` 和非空 `artifacts`；runner 只修改隔离副本，并把越界 diff 或 artifact 断言失败记为 mechanical failure。
 - 真实模型 eval 使用文件凭据存储并关闭 secret keychain storage；从普通 Terminal 显式运行，不进入普通 unit/integration。macOS 检测到 `accountsKeychainExport` 包装器路径时会在启动模型前失败，且不会修改用户 keychain search list。
 - 真实模型默认要求 Full Access 管理后代进程。用户显式传 `--allow-unmanaged-processes` 后可以在无 Full Access 时运行，但报告会标记无法保证后代清理。
-- 每次 eval 用 `--batch-name` 新建批次，或用 `--batch-id` 追加同批次。中间产物固定在项目 `.tmp/agent-workflows/evals/`；持久报告写入 `plugins/<plugin>/reports/<skill>/<batch-id>/`，并按 eval 类型和 target 组织。review 写入同批次，或创建 review-only 批次。
+- 每次 eval 用 `--batch-name` 新建批次，或用 `--batch-id` 恢复或追加同批次。批次会校验源码、materialization subject、模型环境、harness、case 集和 target contract。中间产物固定在项目 `.tmp/agent-workflows/evals/`；持久报告写入 `plugins/<plugin>/reports/<skill>/<batch-id>/`，并按 eval 类型和 target 组织。review 写入同批次，或创建 review-only 批次。
 - 插件和每个 Skill 都必须有非空 README。插件 README 只介绍插件和 Skill；Skill README 约定记录最近 eval/review 摘要、仓库相对完整报告路径和被评估 Git commit。该信息由作者或 agent 在批次完成后维护，没有 marker、自动写入或内容门禁。
 
 ## Validation

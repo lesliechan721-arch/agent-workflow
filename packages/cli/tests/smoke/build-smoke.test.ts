@@ -191,15 +191,15 @@ describe('build smoke', () => {
       fs.pathExists(path.join(outputRoot, '.claude-plugin', 'marketplace.json')),
     ).resolves.toBe(true);
     await expect(
-      fs.pathExists(path.join(outputRoot, 'plugins', 'git-commit', '.codex-plugin', 'plugin.json')),
+      fs.pathExists(path.join(outputRoot, 'plugins', 'git', '.codex-plugin', 'plugin.json')),
     ).resolves.toBe(true);
     await expect(
       fs.pathExists(path.join(outputRoot, 'plugins', 'ask-me', '.claude-plugin', 'plugin.json')),
     ).resolves.toBe(true);
     await expect(
-      fs.readJson(path.join(outputRoot, 'plugins', 'git-commit', '.agents-plugin', 'plugin.json')),
+      fs.readJson(path.join(outputRoot, 'plugins', 'git', '.agents-plugin', 'plugin.json')),
     ).resolves.toMatchObject({
-      name: 'git-commit',
+      name: 'git',
     });
     await expect(
       fs.readJson(path.join(outputRoot, 'plugins', 'ask-me', '.agents-plugin', 'plugin.json')),
@@ -221,7 +221,7 @@ describe('build smoke', () => {
     });
     for (const pluginName of [
       'ask-me',
-      'git-commit',
+      'git',
       'codex-enhance',
     ]) {
       await expect(
@@ -234,7 +234,7 @@ describe('build smoke', () => {
     for (const [pluginName, skillName] of [
       ['ask-me', 'requirements-clarifier'],
       ['ask-me', 'decision-grill'],
-      ['git-commit', 'commit'],
+      ['git', 'git-commit'],
     ]) {
       for (const platform of ['claude', 'codex']) {
         for (const authorDirectory of ['evals', 'reports']) {
@@ -303,12 +303,12 @@ describe('build smoke', () => {
     ]);
     expect(claudeMarketplace.plugins.map((plugin: { name: string }) => plugin.name).sort()).toEqual([
       'ask-me',
-      'git-commit',
+      'git',
     ]);
     expect(codexMarketplace.plugins.map((plugin: { name: string }) => plugin.name).sort()).toEqual([
       'ask-me',
       'codex-enhance',
-      'git-commit',
+      'git',
     ]);
     expect(codexMarketplace).toMatchObject({
       owner: claudeMarketplace.owner,
@@ -627,8 +627,8 @@ describe('build smoke', () => {
           manifestDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
         }),
         expect.objectContaining({
-          name: 'git-commit',
-          source: './plugins/git-commit',
+          name: 'git',
+          source: './plugins/git',
           artifactDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
           manifestDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
         }),
@@ -653,7 +653,7 @@ describe('build smoke', () => {
       },
     });
     await expect(
-      fs.pathExists(path.join(outputRoot, '.catalog', 'full', 'plugins', 'git-commit', '.agents-plugin', 'plugin.json')),
+      fs.pathExists(path.join(outputRoot, '.catalog', 'full', 'plugins', 'git', '.agents-plugin', 'plugin.json')),
     ).resolves.toBe(true);
   });
 

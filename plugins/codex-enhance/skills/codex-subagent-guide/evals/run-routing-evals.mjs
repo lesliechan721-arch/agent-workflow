@@ -25,6 +25,12 @@ const DEFAULT_OPTIONS = {
 };
 const MAX_TRANSIENT_TRANSPORT_RETRIES = 2;
 const TOOL_ROUTER_ERROR = /codex_core::tools::router: error=([^\n]+)/u;
+const BLOCK_REASON_MARKER = /^ROUTING_BLOCK_REASON=([a-z_]+)$/gmu;
+const BLOCK_REASONS = new Set([
+  'partial_history_unsupported',
+  'preset_role_unavailable',
+  'routing_override_conflict',
+]);
 const ROUTING_ONLY_INSTRUCTION = [
   '本用例只评估委派选择和 spawn_agent 参数，不需要子代理结果。',
   '若发起委派，在 spawn_agent 返回后立即结束当前回复；不要等待或清理子代理。',
@@ -141,13 +147,11 @@ function validateExpected(expected, label) {
   ) {
     throw new Error(`${label}.present_arguments must be a string array.`);
   }
-  if (
-    expected.final_message_includes_any !== undefined &&
-    (!Array.isArray(expected.final_message_includes_any) ||
-      expected.final_message_includes_any.length === 0 ||
-      expected.final_message_includes_any.some((value) => typeof value !== 'string'))
-  ) {
-    throw new Error(`${label}.final_message_includes_any must be a non-empty string array.`);
+  if (expected.block_reason !== undefined && !BLOCK_REASONS.has(expected.block_reason)) {
+    throw new Error(`${label}.block_reason must be a supported routing block reason.`);
+  }
+  if (expected.block_reason !== undefined && expected.spawn_calls.max !== 0) {
+    throw new Error(`${label}.block_reason requires spawn_calls.max to be 0.`);
   }
 }
 
@@ -265,16 +269,19 @@ export function evaluateRoutingRun(run, expected, variant) {
       evidence: `actual=${valueEvidence(calls[0]?.arguments, key)}`,
     });
   }
-  if (expected.final_message_includes_any) {
+  if (expected.block_reason) {
     const finalMessage = run.final_message ?? '';
-    const matched = expected.final_message_includes_any.find((text) =>
-      finalMessage.includes(text));
+    const reasons = [...finalMessage.matchAll(BLOCK_REASON_MARKER)].map((match) => match[1]);
+    const explanation = finalMessage.replace(BLOCK_REASON_MARKER, '').trim();
     assertions.push({
-      name: 'final_message_includes_any',
-      passed: Boolean(matched),
-      evidence: matched
-        ? `matched=${JSON.stringify(matched)}`
-        : `expected one of ${JSON.stringify(expected.final_message_includes_any)}`,
+      name: 'final_message_explanation',
+      passed: explanation.length > 0,
+      evidence: `characters=${[...explanation].length}`,
+    });
+    assertions.push({
+      name: 'block_reason',
+      passed: reasons.length === 1 && reasons[0] === expected.block_reason,
+      evidence: `expected=${JSON.stringify(expected.block_reason)} actual=${JSON.stringify(reasons)}`,
     });
   }
   return {
@@ -317,8 +324,16 @@ export function summarizeRoutingVariant(entry, profile, variant, runs, threshold
 
 export function routingRunCase(entry, profile, variant) {
   const expected = entry.expectations[profile];
+  const blockReasonInstruction = expected.block_reason
+    ? [
+      '若不调用 spawn_agent，请先用自然语言说明阻断，再在末尾另起一行输出结构化原因。',
+      `格式为 ROUTING_BLOCK_REASON=<reason>；reason 只能是 ${[...BLOCK_REASONS].join('、')}。`,
+    ].join('')
+    : '';
   return {
-    query: `${entry.prompt}\n\n${ROUTING_ONLY_INSTRUCTION}`,
+    query: [entry.prompt, ROUTING_ONLY_INSTRUCTION, blockReasonInstruction]
+      .filter(Boolean)
+      .join('\n\n'),
     explicit_skill: true,
     should_load_skill: variant === 'with_skill',
     should_spawn_agent: expected.spawn_calls.min > 0,
@@ -336,6 +351,24 @@ export function routingReportStatus(results, expectedResultCount) {
     complete,
     passed: complete && current.every((result) => result.passed),
   };
+}
+
+export function routingCaseResults(entries, results, profiles, variants) {
+  const expectedResultCount = profiles.length * variants.length;
+  return entries.map((entry) => {
+    const caseResults = results.filter((result) => result.id === entry.id);
+    const status = routingReportStatus(caseResults, expectedResultCount);
+    return {
+      id: entry.id,
+      outcome: status.complete ? (status.passed ? 'passed' : 'failed') : 'incomplete',
+      complete: status.complete,
+      mechanical_passed: status.passed,
+      summary: {
+        expected_results: expectedResultCount,
+        completed_results: caseResults.length,
+      },
+    };
+  });
 }
 
 function thrownExecutionError(error) {
@@ -488,6 +521,7 @@ async function run(options) {
       raw_evidence_missing: rawEvidenceMissing,
       load_evidence_missing: loadEvidenceMissing,
     },
+    case_results: routingCaseResults(selected, results, profiles, variants),
     results,
   };
   await writeJsonReport(report, options.output);

@@ -24,7 +24,7 @@
     { "id": "broken_reference_fix", "split": "validation", "query": "修复 SKILL.md 中指向不存在 reference 的路径，不需要审查其它内容。", "should_load_skill": false },
     { "id": "run_skill_inspector", "split": "validation", "query": "运行这个 Skill 自带的 inspect_skill_target.mjs，把 JSON 原样给我。", "should_load_skill": false },
     { "id": "explain_skill_flow", "split": "validation", "query": "解释这个 Skill 的执行流程，不要审核、评分或提出修改。", "should_load_skill": false },
-    { "id": "plugin_release_review", "split": "validation", "query": "给 git-commit 插件做一次 Skill 发布检查，核对 manifest、materialized Codex Skill 和 eval 证据。", "should_load_skill": true },
+    { "id": "plugin_release_review", "split": "validation", "query": "给 git 插件做一次 Skill 发布检查，核对 manifest、materialized Codex Skill 和 eval 证据。", "should_load_skill": true },
     { "id": "plugin_typescript_review", "split": "validation", "query": "review plugins/codex-explore 的 TypeScript 实现质量和性能，不需要检查 Skill。", "should_load_skill": false }
   ]
 }

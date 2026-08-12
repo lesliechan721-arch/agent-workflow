@@ -2501,6 +2501,30 @@ describe('authoring tools', () => {
       stdout: expect.stringContaining('[PASS] All checks passed.'),
     });
 
+    await fs.writeJson(path.join(evalDir, 'command-cases.json'), {
+      skill_name: 'eval-demo',
+      evals: [{ id: 'selected_case' }],
+    }, { spaces: 2 });
+    await fs.writeJson(evalManifestPath, {
+      ...validEvalManifest,
+      suites: [{
+        ...commandSuite,
+        cases: './command-cases.json',
+        supports: ['case'],
+      }],
+    }, { spaces: 2 });
+    await expect(runValidatePlugin(pluginDir)).resolves.toMatchObject({
+      stdout: expect.stringContaining('[PASS] All checks passed.'),
+    });
+
+    await fs.writeJson(evalManifestPath, {
+      ...validEvalManifest,
+      suites: [{ ...commandSuite, supports: ['case'] }],
+    }, { spaces: 2 });
+    await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining('cases is required when supports includes case'),
+    });
+
     await fs.writeJson(evalManifestPath, {
       ...validEvalManifest,
       suites: [{ ...commandSuite, suiteTimeoutMs: 9_999 }],

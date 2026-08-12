@@ -371,6 +371,17 @@ async function run(options) {
         0,
       ),
     },
+    case_results: selectedCases.map((entry) => {
+      const result = results.find((candidate) => candidate.id === entry.id);
+      const caseComplete = result?.complete === true;
+      const casePassed = result?.passed === true;
+      return {
+        id: entry.id,
+        outcome: caseComplete ? (casePassed ? 'passed' : 'failed') : 'incomplete',
+        complete: caseComplete,
+        mechanical_passed: casePassed,
+      };
+    }),
     results,
   };
   const output = `${JSON.stringify(report, null, 2)}\n`;

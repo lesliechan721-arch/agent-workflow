@@ -45,7 +45,7 @@ try {
   const snapshotPluginManifest = await fs.readFile(path.join(
     snapshot.catalogOutputRoot,
     'plugins',
-    'git-commit',
+    'git',
     '.agents-plugin',
     'plugin.json',
   ));
@@ -81,7 +81,7 @@ try {
       fullUnpackRoot,
       'package',
       'plugins',
-      'git-commit',
+      'git',
       '.agents-plugin',
       'plugin.json',
     )),

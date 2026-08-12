@@ -50,6 +50,7 @@ function testEvalLayout(outputRoot: string) {
     modelEnvironmentDigest?: string | null;
     harnessDigest: string;
     requiredTargets: string[];
+    targetCompositions?: Record<string, string[]>;
   }) => {
     const runId = options.runId ?? '20260811T000000Z-00000001';
     const batchId = options.batchId ?? '20260811T000000Z-test-batch-00000000';
@@ -71,6 +72,7 @@ function testEvalLayout(outputRoot: string) {
       modelEnvironmentDigest: options.modelEnvironmentDigest ?? null,
       harnessDigest: options.harnessDigest,
       requiredTargets: options.requiredTargets,
+      targetCompositions: options.targetCompositions ?? {},
     }, { spaces: 2 });
     return {
       batchId,
@@ -1300,7 +1302,7 @@ describe('skill-review author tools', () => {
       'assets/scorecard-template.json': 'b61488ecef58b49dca4cb8fd86e37b3eb4378f9f1f0f460391cb49d88630ebb4',
       'evals/behavior_cases.json': '72c90f0a3d577487bfd641b45bb1486f5e0aa8699dcc47292cc7c32de97e0053',
       'evals/scoring_cases.json': '031edafd2728e7731169d505390e84f47f3b10c7e7484a6fda4881b214932cdc',
-      'evals/trigger-cases.json': 'aff2212cc2b6f73f9203d5193cc5be6e7a20a15c9180096feeca2fee35588b94',
+      'evals/trigger-cases.json': '67447dd4808b9642eea60bc7e46274cf799069625f35ef077661bb951b65d122',
       'references/architecture-boundaries.md': '73546c91c0219892c584c5ff64fd192814eb080137c744b2f72fbcd62119eb15',
       'references/delta-review.md': 'a4827eb63b62f98725821daede648eae27c4fef43c10aae89ee1d981645fb356',
       'references/review-dimensions.md': '5f9ec995612818326925b653fe184391ccb1f502f4c2bf898eeea680858c8a89',

@@ -1,0 +1,30 @@
+{
+  "name": "git",
+  "version": "0.1.0",
+  "description": "提供本地 Git 提交，以及正在进行的 merge 或 rebase 冲突解决工作流。",
+  "compatibility": {
+    "aw": {
+      "minVersion": "0.0.0"
+    }
+  },
+  "skills": "./skills",
+  "marketplace": {
+    "category": "workflow",
+    "tags": ["git", "commit", "merge", "rebase", "conflicts"],
+    "strict": true,
+    "policy": {
+      "installation": "AVAILABLE",
+      "authentication": "ON_INSTALL"
+    }
+  },
+  "interface": {
+    "displayName": "Git Workflows",
+    "shortDescription": "精确创建本地提交，或理解两侧意图并解决正在进行的 merge 和 rebase 冲突",
+    "capabilities": ["Skills"]
+  },
+  "scripts": {
+    "tests": {
+      "node": ["./scripts/evals.test.mjs"]
+    }
+  }
+}

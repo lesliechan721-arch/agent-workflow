@@ -212,6 +212,17 @@ async function main() {
       passed: results.filter((entry) => entry.passed).length,
       failed: results.filter((entry) => !entry.passed).length,
     },
+    case_results: cases.map((evalCase) => {
+      const result = results.find((entry) => entry.id === evalCase.id);
+      const caseComplete = result?.complete === true;
+      const casePassed = caseComplete && result.passed === true;
+      return {
+        id: evalCase.id,
+        outcome: caseComplete ? (casePassed ? 'passed' : 'failed') : 'incomplete',
+        complete: caseComplete,
+        mechanical_passed: casePassed,
+      };
+    }),
     results,
   };
   await writeJsonReport(report, options.output);

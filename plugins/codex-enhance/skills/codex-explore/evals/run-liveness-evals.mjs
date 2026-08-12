@@ -414,7 +414,22 @@ async function run(options) {
     requested_model_override: options.model ?? null,
     sandbox: 'workspace-write',
     read_only_enforcement: 'instruction-only',
+    complete: results.length === selected.length && results.every((result) =>
+      result.runs.length === options.runs &&
+      result.runs.every((run) => !run.execution_error)),
     passed: results.every((result) => result.passed),
+    case_results: selected.map((entry) => {
+      const result = results.find((candidate) => candidate.id === entry.id);
+      const caseComplete = result?.runs.length === options.runs &&
+        result.runs.every((run) => !run.execution_error);
+      const casePassed = caseComplete && result.passed === true;
+      return {
+        id: entry.id,
+        outcome: caseComplete ? (casePassed ? 'passed' : 'failed') : 'incomplete',
+        complete: caseComplete,
+        mechanical_passed: casePassed,
+      };
+    }),
     results,
   };
   const output = `${JSON.stringify(report, null, 2)}\n`;

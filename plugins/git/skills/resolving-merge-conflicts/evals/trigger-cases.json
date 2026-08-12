@@ -1,0 +1,126 @@
+{
+  "schemaVersion": 1,
+  "skill": "resolving-merge-conflicts",
+  "cases": [
+    {
+      "id": "resolve_merge_conflict",
+      "split": "train",
+      "query": "当前 merge 已经冲突了。请理解 main 和 feature 两边的改动意图，解决冲突并完成这次合并。",
+      "expected_loaded_skills": ["resolving-merge-conflicts"]
+    },
+    {
+      "id": "resolve_rebase_conflict",
+      "split": "train",
+      "query": "rebase 停在冲突上了，帮我逐个处理并把这次 rebase 继续完。",
+      "expected_loaded_skills": ["resolving-merge-conflicts"]
+    },
+    {
+      "id": "keep_both_changes",
+      "split": "train",
+      "query": "这次合并的同一个配置文件两边都改了。请查清两边为什么改，尽量保留两边意图并解决当前冲突。",
+      "expected_loaded_skills": ["resolving-merge-conflicts"]
+    },
+    {
+      "id": "conflicts_fixed_continue",
+      "split": "train",
+      "query": "冲突内容我已经改好了，请先检查是否真的解决，再继续当前 merge，别遗漏测试。",
+      "expected_loaded_skills": ["resolving-merge-conflicts"]
+    },
+    {
+      "id": "english_merge_conflict",
+      "split": "train",
+      "query": "Resolve the in-progress merge conflicts by preserving both changes where possible, run the checks, and finish the merge.",
+      "expected_loaded_skills": ["resolving-merge-conflicts"]
+    },
+    {
+      "id": "english_rebase_conflict",
+      "split": "train",
+      "query": "The rebase stopped on conflicts. Inspect the intent of each side, resolve them, and continue until the rebase completes.",
+      "expected_loaded_skills": ["resolving-merge-conflicts"]
+    },
+    {
+      "id": "normal_commit",
+      "split": "train",
+      "query": "当前功能已经改完，核对范围后创建一个新的本地 Git commit。",
+      "expected_loaded_skills": ["git-commit"]
+    },
+    {
+      "id": "commit_and_push",
+      "split": "train",
+      "query": "把已暂存改动提交并推送到当前远端分支。",
+      "expected_loaded_skills": ["git-commit"]
+    },
+    {
+      "id": "explain_markers",
+      "split": "train",
+      "query": "只解释一下 <<<<<<<、======= 和 >>>>>>> 这些标记各表示什么，不要修改仓库。",
+      "expected_loaded_skills": []
+    },
+    {
+      "id": "abort_rebase",
+      "split": "train",
+      "query": "不要解决了，直接中止当前 rebase，恢复到开始前。",
+      "expected_loaded_skills": []
+    },
+    {
+      "id": "cherry_pick_conflict",
+      "split": "train",
+      "query": "当前 cherry-pick 冲突了，帮我处理并继续 cherry-pick。",
+      "expected_loaded_skills": []
+    },
+    {
+      "id": "start_new_merge",
+      "split": "train",
+      "query": "现在没有进行中的 Git 操作，请把 feature 分支 merge 到 main；如果冲突再处理。",
+      "expected_loaded_skills": []
+    },
+    {
+      "id": "typo_conflicts",
+      "split": "validation",
+      "query": "git megre 卡在 confilcts 了，查清楚两边改动后帮我解掉并继续。",
+      "expected_loaded_skills": ["resolving-merge-conflicts"]
+    },
+    {
+      "id": "both_modified_status",
+      "split": "validation",
+      "query": "git status 显示 both modified。请不要简单选 ours 或 theirs，理解意图后完成当前合并。",
+      "expected_loaded_skills": ["resolving-merge-conflicts"]
+    },
+    {
+      "id": "continue_rebase",
+      "split": "validation",
+      "query": "继续这个正在进行的 rebase，把后续每一批冲突都解决并验证，直到完成。",
+      "expected_loaded_skills": ["resolving-merge-conflicts"]
+    },
+    {
+      "id": "verify_and_finish_merge",
+      "split": "validation",
+      "query": "我手工处理了 merge conflict。请核对没有残留标记、跑完项目检查并 finish the merge。",
+      "expected_loaded_skills": ["resolving-merge-conflicts"]
+    },
+    {
+      "id": "draft_commit_message",
+      "split": "validation",
+      "query": "根据当前 diff 拟一条 merge commit message，但不要解决冲突、暂存或提交。",
+      "expected_loaded_skills": []
+    },
+    {
+      "id": "rebase_squash",
+      "split": "validation",
+      "query": "启动交互式 rebase，把最近三个 commit squash 成一个。",
+      "expected_loaded_skills": []
+    },
+    {
+      "id": "pasted_conflict_explanation",
+      "split": "validation",
+      "query": "我粘贴了一段冲突文本，但这里不是 Git 仓库。请建议合并后的文本，不要执行 Git 命令。",
+      "expected_loaded_skills": []
+    },
+    {
+      "id": "revert_conflict",
+      "split": "validation",
+      "query": "git revert 产生冲突了，请解决并继续 revert。",
+      "expected_loaded_skills": []
+    }
+  ]
+}

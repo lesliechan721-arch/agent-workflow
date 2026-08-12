@@ -169,7 +169,8 @@ describe('Skill report batches', () => {
     });
     expect(secondSummary.eval).toMatchObject({
       runCount: 2,
-      targetCount: 3,
+      targetCount: 2,
+      attemptCount: 3,
       releaseCovered: 2,
       releaseRequired: 2,
       releaseOutcome: 'passed',
@@ -225,6 +226,268 @@ describe('Skill report batches', () => {
     await expect(fs.readFile(skillReadmePath, 'utf8')).resolves.toBe(skillReadme);
   });
 
+  it('retries incomplete targets while preserving every attempt', async () => {
+    const repoRoot = await makeRepo();
+    const first = await createSkillEvalRunLayout({
+      repoRoot,
+      owner,
+      batchName: 'retry-incomplete',
+      runId: '20260812T011000Z-00000011',
+      source,
+      environmentDigest,
+      modelEnvironmentDigest,
+      harnessDigest,
+      requiredTargets,
+    });
+    const incomplete: EvaluationLike = {
+      ...evaluation({ generatedAt: '2026-08-12T01:11:00.000Z', includeTrigger: true }),
+      outcome: 'incomplete',
+      complete: false,
+      mechanicalPassed: false,
+      suites: [{
+        id: 'trigger',
+        kind: 'trigger',
+        profile: 'project-default',
+        split: 'validation',
+        outcome: 'incomplete',
+        complete: false,
+        mechanicalPassed: false,
+      }],
+    };
+    await completeRun(first, incomplete, '2026-08-12T01:11:00.000Z');
+    const firstSummary = await publishEvalRunToBatch({
+      repoRoot,
+      layout: first,
+      evaluation: incomplete,
+      requiredTargets,
+    });
+    expect(firstSummary.eval.releaseOutcome).toBe('incomplete');
+
+    const retry = await createSkillEvalRunLayout({
+      repoRoot,
+      owner,
+      batchId: first.batchId,
+      runId: '20260812T011200Z-00000012',
+      source,
+      environmentDigest,
+      modelEnvironmentDigest,
+      harnessDigest,
+      requiredTargets,
+    });
+    const passed = evaluation({
+      generatedAt: '2026-08-12T01:13:00.000Z',
+      includeTrigger: true,
+    });
+    await completeRun(retry, passed, '2026-08-12T01:13:00.000Z');
+    const retriedSummary = await publishEvalRunToBatch({
+      repoRoot,
+      layout: retry,
+      evaluation: passed,
+      requiredTargets,
+    });
+    expect(retriedSummary.eval).toMatchObject({
+      targetCount: 2,
+      attemptCount: 4,
+      releaseCovered: 2,
+      releaseOutcome: 'passed',
+      complete: true,
+      mechanicalPassed: true,
+    });
+    expect(retriedSummary.eval.targetAttempts.filter((attempt) =>
+      attempt.target === 'trigger/trigger/project-default/validation/all')).toHaveLength(2);
+    expect(retriedSummary.eval.targets.find((target) =>
+      target.target === 'trigger/trigger/project-default/validation/all')).toMatchObject({
+      runId: retry.runId,
+      outcome: 'passed',
+      complete: true,
+    });
+  });
+
+  it('composes complete command cases and does not let an interrupted run poison release', async () => {
+    const repoRoot = await makeRepo();
+    const commandRequiredTargets = [
+      'materialization/project-default',
+      'command/routing/project-default/all/all',
+    ];
+    const targetCompositions = {
+      'command/routing/project-default/all/all': [
+        'command/routing/project-default/all/case_a',
+        'command/routing/project-default/all/case_b',
+      ],
+    };
+    const interrupted = await createSkillEvalRunLayout({
+      repoRoot,
+      owner,
+      batchName: 'compose-cases',
+      runId: '20260812T012000Z-00000013',
+      source,
+      environmentDigest,
+      modelEnvironmentDigest,
+      harnessDigest,
+      requiredTargets: commandRequiredTargets,
+      targetCompositions,
+    });
+    await fs.writeJson(path.join(interrupted.reportRoot, 'run.json'), {
+      schemaVersion: 1,
+      runId: interrupted.runId,
+      status: 'failed',
+      completedAt: '2026-08-12T01:21:00.000Z',
+    }, { spaces: 2 });
+
+    const fullRun = await createSkillEvalRunLayout({
+      repoRoot,
+      owner,
+      batchId: interrupted.batchId,
+      runId: '20260812T012200Z-00000014',
+      source,
+      environmentDigest,
+      modelEnvironmentDigest,
+      harnessDigest,
+      requiredTargets: commandRequiredTargets,
+      targetCompositions,
+    });
+    const partialFullEvaluation: EvaluationLike = {
+      generatedAt: '2026-08-12T01:22:30.000Z',
+      outcome: 'incomplete',
+      complete: false,
+      mechanicalPassed: false,
+      subjects: [{ profile: 'project-default', scope: 'project' }],
+      suites: [{
+        id: 'routing',
+        kind: 'command',
+        profile: 'project-default',
+        split: null,
+        outcome: 'incomplete',
+        complete: false,
+        mechanicalPassed: false,
+        caseResults: [
+          { id: 'case_a', outcome: 'passed', complete: true, mechanicalPassed: true },
+          { id: 'case_b', outcome: 'incomplete', complete: false, mechanicalPassed: false },
+        ],
+      }],
+      diagnostics: [],
+    };
+    await completeRun(fullRun, partialFullEvaluation, partialFullEvaluation.generatedAt);
+    const partialSummary = await publishEvalRunToBatch({
+      repoRoot,
+      layout: fullRun,
+      evaluation: partialFullEvaluation,
+      requiredTargets: commandRequiredTargets,
+    });
+    expect(partialSummary.eval.releaseOutcome).toBe('incomplete');
+    expect(partialSummary.eval.targets.find((target) =>
+      target.target === 'command/routing/project-default/all/case_a')).toMatchObject({
+      outcome: 'passed',
+      complete: true,
+    });
+
+    const retry = await createSkillEvalRunLayout({
+      repoRoot,
+      owner,
+      batchId: interrupted.batchId,
+      runId: '20260812T012300Z-00000015',
+      source,
+      environmentDigest,
+      modelEnvironmentDigest,
+      harnessDigest,
+      requiredTargets: commandRequiredTargets,
+      targetCompositions,
+    });
+    const retryEvaluation: EvaluationLike = {
+      generatedAt: '2026-08-12T01:23:30.000Z',
+      outcome: 'incomplete',
+      complete: false,
+      mechanicalPassed: true,
+      subjects: [{ profile: 'project-default', scope: 'project' }],
+      suites: [{
+        id: 'routing',
+        kind: 'command',
+        profile: 'project-default',
+        split: null,
+        outcome: 'passed',
+        complete: true,
+        mechanicalPassed: true,
+      }],
+      diagnostics: ['--case selected a debug subset of suite cases.'],
+    };
+    await completeRun(retry, retryEvaluation, retryEvaluation.generatedAt);
+    const summary = await publishEvalRunToBatch({
+      repoRoot,
+      layout: retry,
+      evaluation: retryEvaluation,
+      caseId: 'case_b',
+      requiredTargets: commandRequiredTargets,
+    });
+    expect(summary.eval).toMatchObject({
+      releaseCovered: 2,
+      releaseRequired: 2,
+      releaseOutcome: 'passed',
+      complete: true,
+      mechanicalPassed: true,
+    });
+    expect(summary.diagnostics).toContain(
+      `Eval run ${interrupted.runId} failed before publication.`,
+    );
+    const composed = summary.eval.targets.find((target) =>
+      target.target === 'command/routing/project-default/all/all');
+    expect(composed).toMatchObject({
+      outcome: 'passed',
+      complete: true,
+      mechanicalPassed: true,
+      requiredForRelease: true,
+      summary: {
+        composition: [
+          { target: 'command/routing/project-default/all/case_a' },
+          { target: 'command/routing/project-default/all/case_b' },
+        ],
+      },
+    });
+  });
+
+  it('rejects a changed materialized subject before publishing an append', async () => {
+    const repoRoot = await makeRepo();
+    const first = await createSkillEvalRunLayout({
+      repoRoot,
+      owner,
+      batchName: 'subject-contract',
+      runId: '20260812T013000Z-00000016',
+      source,
+      environmentDigest,
+      modelEnvironmentDigest,
+      harnessDigest,
+      requiredTargets,
+    });
+    const initial: EvaluationLike = {
+      ...evaluation({ generatedAt: '2026-08-12T01:31:00.000Z' }),
+      subjects: [{ profile: 'project-default', scope: 'project', contentDigest: 'sha256:a' }],
+    };
+    await completeRun(first, initial, initial.generatedAt);
+    await publishEvalRunToBatch({ repoRoot, layout: first, evaluation: initial, requiredTargets });
+
+    const append = await createSkillEvalRunLayout({
+      repoRoot,
+      owner,
+      batchId: first.batchId,
+      runId: '20260812T013200Z-00000017',
+      source,
+      environmentDigest,
+      modelEnvironmentDigest,
+      harnessDigest,
+      requiredTargets,
+    });
+    const changed: EvaluationLike = {
+      ...evaluation({ generatedAt: '2026-08-12T01:33:00.000Z' }),
+      subjects: [{ profile: 'project-default', scope: 'project', contentDigest: 'sha256:b' }],
+    };
+    await completeRun(append, changed, changed.generatedAt);
+    await expect(publishEvalRunToBatch({
+      repoRoot,
+      layout: append,
+      evaluation: changed,
+      requiredTargets,
+    })).rejects.toThrow('Materialized subject differs from earlier batch evidence');
+  });
+
   it('records a failed invocation as the latest completed eval', async () => {
     const repoRoot = await makeRepo();
     const layout = await createSkillEvalRunLayout({
@@ -254,7 +517,7 @@ describe('Skill report batches', () => {
       outcome: 'failed',
       complete: false,
       mechanicalPassed: false,
-      releaseOutcome: 'failed',
+      releaseOutcome: 'incomplete',
     });
     expect(summary.diagnostics).toContain(
       `Eval run ${layout.runId} failed before publication.`,
@@ -326,6 +589,21 @@ describe('Skill report batches', () => {
       batchId: first.batchId,
       source,
       environmentDigest,
+      modelEnvironmentDigest,
+      harnessDigest,
+      requiredTargets,
+      targetCompositions: {
+        'trigger/trigger/project-default/validation/all': [
+          'trigger/trigger/project-default/validation/case_a',
+        ],
+      },
+    })).rejects.toThrow('different release composition contract');
+    await expect(createSkillEvalRunLayout({
+      repoRoot,
+      owner,
+      batchId: first.batchId,
+      source,
+      environmentDigest,
       modelEnvironmentDigest: 'sha256:different-model',
       harnessDigest,
       requiredTargets,
@@ -362,7 +640,7 @@ describe('Skill report batches', () => {
       layout: duplicate,
       evaluation: duplicateEvaluation,
       requiredTargets,
-    })).rejects.toThrow('Eval target already exists in this batch');
+    })).rejects.toThrow('Eval target already has terminal evidence in this batch');
     await expect(fs.pathExists(path.join(
       first.batchRoot,
       'evals',

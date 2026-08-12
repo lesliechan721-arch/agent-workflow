@@ -512,21 +512,21 @@ describe('rebuild adapter integration', () => {
     const cwd = await fs.realpath(isolation.layout.fixtureCwd);
     const catalogRoot = await createSyntheticCatalog({
       root: isolation.layout.rootDir,
-      pluginRoots: [path.join(repositoryRoot, 'plugins', 'git-commit')],
+      pluginRoots: [path.join(repositoryRoot, 'plugins', 'git')],
     });
-    const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', 'git-commit'), {
+    const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', 'git'), {
       mode: 'bundle',
     });
     const skillsRoot = path.join(cwd, '.agents', 'skills');
-    const skillRoot = path.join(skillsRoot, 'commit');
+    const skillRoot = path.join(skillsRoot, 'git-commit');
     await fs.outputFile(path.join(skillRoot, 'SKILL.md'), '# Commit\n');
     await writeSkillOwnerMarker({
       skillRoot,
       allowedRoot: skillsRoot,
       identity: {
         owner: 'agent-workflows',
-        plugin: 'git-commit',
-        artifactKey: 'commit',
+        plugin: 'git',
+        artifactKey: 'git-commit',
         platform: 'codex',
         scope: 'project',
       },
@@ -545,10 +545,10 @@ describe('rebuild adapter integration', () => {
     });
     expect(inspected.inspection).toMatchObject({
       state: 'partial',
-      components: [expect.objectContaining({
+      components: expect.arrayContaining([expect.objectContaining({
         state: 'partial',
         diagnostic: expect.stringContaining('agents/openai.yaml'),
-      })],
+      })]),
     });
   });
 
@@ -1295,9 +1295,9 @@ describe('rebuild adapter integration', () => {
     const isolation = getCurrentSourceTestIsolation();
     const catalogRoot = await createSyntheticCatalog({
       root: isolation.layout.rootDir,
-      pluginRoots: [path.join(repositoryRoot, 'plugins', 'git-commit')],
+      pluginRoots: [path.join(repositoryRoot, 'plugins', 'git')],
     });
-    const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', 'git-commit'), {
+    const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', 'git'), {
       mode: 'bundle',
     });
     const configPath = path.join(isolation.layout.codexHomeDir, 'config.toml');
@@ -1887,9 +1887,9 @@ describe('rebuild adapter integration', () => {
     const isolation = getCurrentSourceTestIsolation();
     const catalogRoot = await createSyntheticCatalog({
       root: isolation.layout.rootDir,
-      pluginRoots: [path.join(repositoryRoot, 'plugins', 'git-commit')],
+      pluginRoots: [path.join(repositoryRoot, 'plugins', 'git')],
     });
-    const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', 'git-commit'), {
+    const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', 'git'), {
       mode: 'bundle',
     });
     const configPath = path.join(isolation.layout.codexHomeDir, 'config.toml');
@@ -2132,9 +2132,9 @@ describe('rebuild adapter integration', () => {
     const isolation = getCurrentSourceTestIsolation();
     const catalogRoot = await createSyntheticCatalog({
       root: isolation.layout.rootDir,
-      pluginRoots: [path.join(repositoryRoot, 'plugins', 'git-commit')],
+      pluginRoots: [path.join(repositoryRoot, 'plugins', 'git')],
     });
-    const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', 'git-commit'), {
+    const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', 'git'), {
       mode: 'bundle',
     });
     const pluginA = plugin.manifest.name;
@@ -2809,7 +2809,7 @@ describe('rebuild adapter integration', () => {
 
   it('closes representative Codex project writes for three first-party plugins', async () => {
     const isolation = getCurrentSourceTestIsolation();
-    const firstPartyNames = ['git-commit', 'ask-me', 'codex-enhance'];
+    const firstPartyNames = ['git', 'ask-me', 'codex-enhance'];
     const catalogRoot = await createSyntheticCatalog({
       root: isolation.layout.rootDir,
       pluginRoots: firstPartyNames.map((name) => path.join(repositoryRoot, 'plugins', name)),
@@ -3057,7 +3057,7 @@ describe('rebuild adapter integration', () => {
   );
 
   it.each([
-    ['static', path.join(repositoryRoot, 'plugins', 'git-commit')],
+    ['static', path.join(repositoryRoot, 'plugins', 'git')],
     ['slash', path.join(
       repositoryRoot,
       'packages/cli/tests/fixtures/codex-project-repo-managed/plugins/slashCommands-only',

@@ -47,6 +47,7 @@ import {
   resolvePluginSkillAuthorRoot,
   validatePluginEvalConversationCaseDocument,
   type PluginEvaluationBundle,
+  type PluginEvalCommandCaseResult,
   type PluginEvalCommandSuite,
   type PluginEvalManifest,
   type PluginEvalOutcome,
@@ -511,6 +512,68 @@ function parseCommandReport(
   throw new Error('Suite did not produce one JSON report.');
 }
 
+async function parseCommandCaseResults(
+  report: Record<string, unknown>,
+  options: {
+    pluginRoot: string;
+    suite: PluginEvalCommandSuite;
+    caseId?: string;
+  },
+): Promise<PluginEvalCommandCaseResult[] | undefined> {
+  if (!supports(options.suite, 'case')) return undefined;
+  const expectedIds = options.caseId
+    ? [options.caseId]
+    : await readCommandSuiteCaseIds(options.pluginRoot, options.suite);
+  if (!Array.isArray(report.case_results)) {
+    throw new Error('Case-capable command suite must return case_results.');
+  }
+  const results = report.case_results.map((value, index) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error(`case_results[${index}] must be an object.`);
+    }
+    const row = value as Record<string, unknown>;
+    if (typeof row.id !== 'string' || !/^[a-z0-9_]+$/u.test(row.id)) {
+      throw new Error(`case_results[${index}].id must use lowercase snake_case.`);
+    }
+    if (!['passed', 'failed', 'needs_review', 'incomplete'].includes(String(row.outcome))) {
+      throw new Error(`case_results[${index}].outcome is invalid.`);
+    }
+    if (typeof row.complete !== 'boolean' || typeof row.mechanical_passed !== 'boolean') {
+      throw new Error(`case_results[${index}] must declare complete and mechanical_passed.`);
+    }
+    const summary = row.summary;
+    const diagnostics = row.diagnostics;
+    if (summary !== undefined && (!summary || typeof summary !== 'object' || Array.isArray(summary))) {
+      throw new Error(`case_results[${index}].summary must be an object.`);
+    }
+    if (
+      diagnostics !== undefined &&
+      (!Array.isArray(diagnostics) || diagnostics.some((entry) => typeof entry !== 'string'))
+    ) {
+      throw new Error(`case_results[${index}].diagnostics must be a string array.`);
+    }
+    return {
+      id: row.id,
+      outcome: row.outcome as PluginEvalOutcome,
+      complete: row.complete,
+      mechanicalPassed: row.mechanical_passed,
+      ...(summary ? { summary: summary as Record<string, unknown> } : {}),
+      ...(diagnostics ? { diagnostics: diagnostics as string[] } : {}),
+    };
+  });
+  const actualIds = results.map((result) => result.id).sort();
+  if (
+    new Set(actualIds).size !== actualIds.length ||
+    JSON.stringify(actualIds) !== JSON.stringify([...expectedIds].sort())
+  ) {
+    throw new Error(
+      `case_results must cover exactly ${JSON.stringify([...expectedIds].sort())}; ` +
+      `received ${JSON.stringify(actualIds)}.`,
+    );
+  }
+  return results;
+}
+
 async function runCommandSuite(options: {
   pluginName: string;
   suite: PluginEvalCommandSuite;
@@ -624,9 +687,15 @@ async function runCommandSuite(options: {
       ),
       options.codexRuntime,
     );
+    const caseResults = await parseCommandCaseResults(report, {
+      pluginRoot: options.pluginRoot,
+      suite: options.suite,
+      caseId: options.parsed.caseId,
+    });
     await fs.writeJson(reportPath, report, { spaces: 2 });
-    const complete = report.complete !== false;
-    const passed = report.passed === true && result.exitCode === 0;
+    const complete = report.complete !== false &&
+      (caseResults === undefined || caseResults.every((entry) => entry.complete));
+    const passed = complete && report.passed === true && result.exitCode === 0;
     const outcome: PluginEvalOutcome = !complete
       ? 'incomplete'
       : passed
@@ -643,6 +712,7 @@ async function runCommandSuite(options: {
       mechanicalPassed: passed,
       qualitativeReview: 'not_required',
       reportPath: path.relative(options.outputRoot, reportPath).split(path.sep).join('/'),
+      ...(caseResults ? { caseResults } : {}),
       summary: report.summary && typeof report.summary === 'object'
         ? report.summary as Record<string, unknown>
         : {},
@@ -722,6 +792,13 @@ function applyRunCountCoverage(
     ...report,
     outcome: 'incomplete',
     complete: false,
+    ...(report.caseResults ? {
+      caseResults: report.caseResults.map((caseResult) => ({
+        ...caseResult,
+        outcome: 'incomplete',
+        complete: false,
+      })),
+    } : {}),
     diagnostics: [
       ...report.diagnostics,
       `Requested runs ${parsed.runs} are below the declared default ${suite.defaultRuns}.`,
@@ -795,6 +872,34 @@ interface PreparedPluginEval {
   sourcePlugins: PluginMeta[];
   skillRoot: string;
   manifest: PluginEvalManifest;
+}
+
+async function readCommandSuiteCaseIds(
+  pluginRoot: string,
+  suite: PluginEvalCommandSuite,
+): Promise<string[]> {
+  if (!suite.cases) return [];
+  const document = await fs.readJson(
+    path.resolve(pluginRoot, suite.cases.replace(/^\.\//u, '')),
+  ) as { evals?: Array<{ id?: unknown }> };
+  return (document.evals ?? []).map((entry) => String(entry.id));
+}
+
+async function releaseTargetCompositions(
+  prepared: PreparedPluginEval,
+): Promise<Record<string, string[]>> {
+  const compositions: Record<string, string[]> = {};
+  for (const suite of prepared.manifest.suites) {
+    if (suite.kind !== 'command' || !suite.requiredForRelease || !suite.cases) continue;
+    const caseIds = await readCommandSuiteCaseIds(prepared.sourcePlugin.rootDir, suite);
+    for (const profile of suite.profiles) {
+      for (const split of suite.releaseSplits.length > 0 ? suite.releaseSplits : ['all']) {
+        const prefix = `command/${suite.id}/${profile}/${split}`;
+        compositions[`${prefix}/all`] = caseIds.map((caseId) => `${prefix}/${caseId}`);
+      }
+    }
+  }
+  return compositions;
 }
 
 async function preparePluginEval(options: {
@@ -911,6 +1016,11 @@ async function preparePluginEval(options: {
       );
       if (!cases.some((entry) => entry.id === options.parsed.caseId)) {
         throw new Error(`Unknown conversation case: ${options.parsed.caseId}`);
+      }
+    } else if (suite.cases) {
+      const caseIds = await readCommandSuiteCaseIds(sourcePlugin.rootDir, suite);
+      if (!caseIds.includes(options.parsed.caseId)) {
+        throw new Error(`Unknown command case: ${options.parsed.caseId}`);
       }
     }
   }
@@ -1192,6 +1302,7 @@ async function writePublishedEvalReport(options: {
       complete: suite.complete,
       mechanicalPassed: suite.mechanicalPassed,
       qualitativeReview: suite.qualitativeReview,
+      caseResults: suite.caseResults,
       summary: suite.summary,
     })),
     diagnostics: options.bundle.diagnostics,
@@ -1326,6 +1437,7 @@ export async function runPluginEvals(
     { name: 'packages/cli/src', root: path.join(harnessRepoRoot, 'packages', 'cli', 'src') },
   ]);
   const requiredTargets = pluginReleaseTargets(prepared.manifest);
+  const targetCompositions = await releaseTargetCompositions(prepared);
   let layout: EvalRunLayout;
   try {
     layout = await (options.createRunLayout ?? createPluginEvalRunLayout)({
@@ -1344,6 +1456,7 @@ export async function runPluginEvals(
       modelEnvironmentDigest,
       harnessDigest,
       requiredTargets,
+      targetCompositions,
     });
   } catch (error) {
     stderr(`${error instanceof Error ? error.message : String(error)}\n`);

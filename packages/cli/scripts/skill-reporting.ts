@@ -34,7 +34,10 @@ interface SkillReportBatch {
   modelEnvironmentDigest?: string | null;
   harnessDigest?: string;
   requiredTargets: string[];
+  targetCompositions?: SkillReportTargetCompositions;
 }
+
+export type SkillReportTargetCompositions = Record<string, string[]>;
 
 export interface SkillEvalRunLayout {
   batchId: string;
@@ -69,6 +72,14 @@ interface EvaluationSuiteLike {
   mechanicalPassed: boolean;
   qualitativeReview?: string;
   reportPath?: string;
+  caseResults?: Array<{
+    id: string;
+    outcome: 'passed' | 'failed' | 'needs_review' | 'incomplete';
+    complete: boolean;
+    mechanicalPassed: boolean;
+    summary?: Record<string, unknown>;
+    diagnostics?: string[];
+  }>;
   summary?: Record<string, unknown>;
   diagnostics?: string[];
 }
@@ -142,6 +153,7 @@ interface BatchSummary {
     runCount: number;
     runs: RunSummary[];
     targetCount: number;
+    attemptCount: number;
     outcome: 'passed' | 'failed' | 'needs_review' | 'incomplete' | 'not_run';
     complete: boolean;
     mechanicalPassed: boolean;
@@ -150,6 +162,7 @@ interface BatchSummary {
     releaseOutcome: 'passed' | 'failed' | 'needs_review' | 'incomplete' | 'not_run';
     missingTargets: string[];
     targets: TargetSummary[];
+    targetAttempts: TargetSummary[];
   };
   review: ReviewSummary | null;
   diagnostics: string[];
@@ -297,12 +310,18 @@ export async function createSkillEvalRunLayout(options: {
   modelEnvironmentDigest?: string | null;
   harnessDigest: string;
   requiredTargets: string[];
+  targetCompositions?: SkillReportTargetCompositions;
 }): Promise<SkillEvalRunLayout> {
   if ((options.batchName ? 1 : 0) + (options.batchId ? 1 : 0) !== 1) {
     throw new Error('Provide exactly one of --batch-name or --batch-id.');
   }
   if (options.owner.kind === 'plugin-skill') assertSegment(options.owner.plugin, 'Plugin name');
   assertSegment(options.owner.skill, 'Skill name');
+  const requiredTargets = [...new Set(options.requiredTargets)].sort();
+  const targetCompositions = normalizeTargetCompositions(
+    options.targetCompositions,
+    requiredTargets,
+  );
   const batchId = options.batchId
     ? validateBatchId(options.batchId)
     : createSkillReportBatchId(options.batchName!);
@@ -328,7 +347,8 @@ export async function createSkillEvalRunLayout(options: {
       environmentDigest: options.environmentDigest,
       modelEnvironmentDigest: options.modelEnvironmentDigest ?? null,
       harnessDigest: options.harnessDigest,
-      requiredTargets: [...new Set(options.requiredTargets)].sort(),
+      requiredTargets,
+      targetCompositions,
     };
     await writeJsonAtomic(path.join(batchRoot, 'batch.json'), batch);
   } else if (!(await fs.pathExists(batchRoot))) {
@@ -373,9 +393,15 @@ export async function createSkillEvalRunLayout(options: {
     ) {
       throw new Error(`Report batch ${batchId} uses a different model environment.`);
     }
-    const requiredTargets = [...new Set(options.requiredTargets)].sort();
     if (JSON.stringify(batch.requiredTargets) !== JSON.stringify(requiredTargets)) {
       throw new Error(`Report batch ${batchId} uses a different release target contract.`);
+    }
+    const batchTargetCompositions = normalizeTargetCompositions(
+      batch.targetCompositions,
+      batch.requiredTargets,
+    );
+    if (JSON.stringify(batchTargetCompositions) !== JSON.stringify(targetCompositions)) {
+      throw new Error(`Report batch ${batchId} uses a different release composition contract.`);
     }
     await fs.ensureDir(path.dirname(reportRoot));
     await fs.mkdir(reportRoot, { recursive: false });
@@ -514,6 +540,38 @@ export function validateSkillReportTargetSegment(value: string, label: string): 
   return value;
 }
 
+function validateTarget(value: string, label: string): string {
+  const parts = value.split('/');
+  if (parts.length === 0) throw new Error(`${label} must be a report target.`);
+  return parts.map((part, index) =>
+    validateSkillReportTargetSegment(part, `${label} segment ${index + 1}`)).join('/');
+}
+
+function normalizeTargetCompositions(
+  value: SkillReportTargetCompositions | undefined,
+  requiredTargets: readonly string[],
+): SkillReportTargetCompositions {
+  const required = new Set(requiredTargets);
+  const normalized: SkillReportTargetCompositions = {};
+  for (const target of Object.keys(value ?? {}).sort()) {
+    const normalizedTarget = validateTarget(target, 'Composition target');
+    if (!required.has(normalizedTarget)) {
+      throw new Error(`Composition target is not required for release: ${normalizedTarget}.`);
+    }
+    const components = value?.[target];
+    if (!Array.isArray(components) || components.length === 0) {
+      throw new Error(`Composition target ${normalizedTarget} must have components.`);
+    }
+    const normalizedComponents = [...new Set(components.map((component, index) =>
+      validateTarget(component, `Composition target ${normalizedTarget} component ${index + 1}`)))].sort();
+    if (normalizedComponents.includes(normalizedTarget)) {
+      throw new Error(`Composition target cannot include itself: ${normalizedTarget}.`);
+    }
+    normalized[normalizedTarget] = normalizedComponents;
+  }
+  return normalized;
+}
+
 function targetKey(parts: Array<string | null | undefined>): string {
   return parts.map((part, index) => validateSkillReportTargetSegment(
     part || 'all',
@@ -569,24 +627,39 @@ async function assertSuiteTargetsAvailable(options: {
   evaluation: EvaluationLike;
   caseId?: string;
   allowDuplicateTargets?: boolean;
-}): Promise<void> {
-  if (options.allowDuplicateTargets) return;
-  const targets = options.evaluation.suites.map((suite) => targetKey([
-    suite.kind,
-    suite.id,
-    suite.profile ?? 'project-default',
-    suite.split ?? 'all',
-    options.caseId ?? 'all',
-  ]));
+}): Promise<Set<string>> {
+  const targets = options.evaluation.suites.flatMap((suite) => {
+    const base = [
+      suite.kind,
+      suite.id,
+      suite.profile ?? 'project-default',
+      suite.split ?? 'all',
+    ];
+    return [
+      targetKey([...base, options.caseId ?? 'all']),
+      ...(options.caseId
+        ? []
+        : (suite.caseResults ?? []).map((caseResult) =>
+          targetKey([...base, caseResult.id]))),
+    ];
+  });
   if (new Set(targets).size !== targets.length) {
     throw new Error('An eval run cannot publish the same suite target more than once.');
   }
+  if (options.allowDuplicateTargets) return new Set(targets);
+  const attempts = await collectTargetSummaries(options.batchRoot);
+  const latestByTarget = latestTargetAttempts(attempts);
+  const retryable = new Set<string>();
   for (const target of targets) {
-    const root = path.join(options.batchRoot, 'evals', target);
-    if (await fs.pathExists(root) && (await fs.readdir(root)).length > 0) {
-      throw new Error(`Eval target already exists in this batch: ${target}.`);
+    const existing = latestByTarget.get(target);
+    if (!existing) continue;
+    if (!existing.complete || existing.outcome === 'incomplete') {
+      retryable.add(target);
+      continue;
     }
+    throw new Error(`Eval target already has terminal evidence in this batch: ${target}.`);
   }
+  return retryable;
 }
 
 async function collectTargetSummaries(batchRoot: string): Promise<TargetSummary[]> {
@@ -607,6 +680,111 @@ async function collectTargetSummaries(batchRoot: string): Promise<TargetSummary[
   }
   await visit(evalRoot);
   return summaries.sort((left, right) => left.target.localeCompare(right.target));
+}
+
+function compareTargetAttempts(left: TargetSummary, right: TargetSummary): number {
+  return left.generatedAt.localeCompare(right.generatedAt) || left.runId.localeCompare(right.runId);
+}
+
+function latestTargetAttempts(attempts: readonly TargetSummary[]): Map<string, TargetSummary> {
+  const latest = new Map<string, TargetSummary>();
+  for (const attempt of attempts) {
+    const current = latest.get(attempt.target);
+    if (!current || compareTargetAttempts(current, attempt) < 0) {
+      latest.set(attempt.target, attempt);
+    }
+  }
+  return latest;
+}
+
+function composedTargetSummary(
+  target: string,
+  components: readonly TargetSummary[],
+): TargetSummary {
+  const latest = [...components].sort(compareTargetAttempts).at(-1)!;
+  const outcomes = components.map((component) => component.outcome);
+  const qualitativeReview = components.some((component) => component.qualitativeReview === 'required')
+    ? 'required'
+    : 'not_required';
+  return {
+    schemaVersion: 1,
+    target,
+    kind: latest.kind,
+    runId: latest.runId,
+    generatedAt: latest.generatedAt,
+    profile: latest.profile,
+    suite: latest.suite,
+    split: latest.split,
+    case: 'all',
+    outcome: combineOutcomes(outcomes) as TargetSummary['outcome'],
+    complete: components.every((component) => component.complete),
+    mechanicalPassed: components.every((component) => component.mechanicalPassed),
+    qualitativeReview,
+    requiredForRelease: true,
+    reportPath: null,
+    summary: {
+      composition: components.map((component) => ({
+        target: component.target,
+        runId: component.runId,
+        generatedAt: component.generatedAt,
+      })),
+    },
+    diagnostics: components.flatMap((component) => component.diagnostics),
+  };
+}
+
+function effectiveTargetSummaries(
+  attempts: readonly TargetSummary[],
+  compositions: SkillReportTargetCompositions,
+): TargetSummary[] {
+  const effective = latestTargetAttempts(attempts);
+  for (const [target, componentTargets] of Object.entries(compositions)) {
+    const direct = effective.get(target);
+    if (direct?.complete && direct.outcome !== 'incomplete') continue;
+    const components = componentTargets.map((component) => effective.get(component));
+    if (components.some((component) => !component)) continue;
+    effective.set(target, composedTargetSummary(target, components as TargetSummary[]));
+  }
+  return [...effective.values()].sort((left, right) => left.target.localeCompare(right.target));
+}
+
+function materializationSummary(subject: EvaluationSubjectLike): Record<string, unknown> {
+  return {
+    scope: subject.scope,
+    ...(subject.configDigest ? { configDigest: subject.configDigest } : {}),
+    ...(subject.bundleDigest ? { bundleDigest: subject.bundleDigest } : {}),
+    ...(subject.contentDigest ? { contentDigest: subject.contentDigest } : {}),
+    artifacts: [...(subject.artifacts ?? [])].sort((left, right) =>
+      `${left.kind}:${left.key ?? ''}:${left.contentDigest}`.localeCompare(
+        `${right.kind}:${right.key ?? ''}:${right.contentDigest}`,
+      )),
+  };
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    const row = value as Record<string, unknown>;
+    return `{${Object.keys(row).sort().map((key) =>
+      `${JSON.stringify(key)}:${stableJson(row[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'undefined';
+}
+
+async function assertMaterializedSubjectsCompatible(
+  batchRoot: string,
+  subjects: readonly EvaluationSubjectLike[],
+): Promise<void> {
+  const existing = latestTargetAttempts(await collectTargetSummaries(batchRoot));
+  for (const subject of subjects) {
+    const target = targetKey(['materialization', subject.profile]);
+    const previous = existing.get(target);
+    if (!previous) continue;
+    const currentIdentity = materializationSummary(subject);
+    if (stableJson(previous.summary) !== stableJson(currentIdentity)) {
+      throw new Error(`Materialized subject differs from earlier batch evidence: ${target}.`);
+    }
+  }
 }
 
 function combineOutcomes(
@@ -725,7 +903,12 @@ async function readReview(batchRoot: string): Promise<ReviewSummary | null> {
 
 async function refreshBatchSummary(batchRoot: string): Promise<BatchSummary> {
   const batch = await readBatch(batchRoot);
-  const targets = await collectTargetSummaries(batchRoot);
+  const targetAttempts = await collectTargetSummaries(batchRoot);
+  const targetCompositions = normalizeTargetCompositions(
+    batch.targetCompositions,
+    batch.requiredTargets,
+  );
+  const targets = effectiveTargetSummaries(targetAttempts, targetCompositions);
   const required = new Set(batch.requiredTargets);
   const covered = new Set(targets.filter((target) => required.has(target.target)).map((target) => target.target));
   const missingTargets = batch.requiredTargets.filter((target) => !covered.has(target));
@@ -734,9 +917,6 @@ async function refreshBatchSummary(batchRoot: string): Promise<BatchSummary> {
   const completedRuns = runs.filter((run) => run.completedAt !== null);
   const completionTimes = completedRuns.map((run) => run.completedAt!);
   const failedRuns = completedRuns.filter((run) => run.status === 'failed');
-  const runOutcomes = completedRuns
-    .map((run) => run.outcome)
-    .filter((outcome): outcome is Exclude<RunSummary['outcome'], null> => outcome !== null);
   const review = await readReview(batchRoot);
   const latestCompletedAt = [...completionTimes, ...(review ? [review.completedAt] : [])]
     .sort((left, right) => right.localeCompare(left))[0] ?? null;
@@ -754,24 +934,23 @@ async function refreshBatchSummary(batchRoot: string): Promise<BatchSummary> {
       runCount: completedRuns.length,
       runs,
       targetCount: targets.length,
-      outcome: combineOutcomes(runOutcomes.length > 0
-        ? runOutcomes
-        : targets.map((target) => target.outcome)),
-      complete: completedRuns.length > 0 &&
-        completedRuns.every((run) => run.complete) &&
-        targets.every((target) => target.complete),
-      mechanicalPassed: completedRuns.length > 0 &&
-        completedRuns.every((run) => run.mechanicalPassed) &&
+      attemptCount: targetAttempts.length,
+      outcome: targets.length > 0
+        ? combineOutcomes(targets.map((target) => target.outcome))
+        : failedRuns.length > 0
+          ? 'failed'
+          : 'not_run',
+      complete: targets.length > 0 && targets.every((target) => target.complete),
+      mechanicalPassed: targets.length > 0 &&
         targets.every((target) => target.mechanicalPassed),
       releaseRequired: required.size,
       releaseCovered: covered.size,
-      releaseOutcome: failedRuns.length > 0
-        ? 'failed'
-        : missingTargets.length > 0
-          ? 'incomplete'
-          : combineOutcomes(requiredTargets.map((target) => target.outcome)),
+      releaseOutcome: missingTargets.length > 0
+        ? 'incomplete'
+        : combineOutcomes(requiredTargets.map((target) => target.outcome)),
       missingTargets,
       targets,
+      targetAttempts,
     },
     review,
     diagnostics: failedRuns.map((run) => `Eval run ${run.runId} failed before publication.`),
@@ -785,13 +964,16 @@ async function refreshBatchSummary(batchRoot: string): Promise<BatchSummary> {
     source: summary.source,
     outcome: summary.eval.releaseOutcome,
     complete: summary.eval.runCount > 0 &&
-      summary.eval.releaseOutcome !== 'failed' &&
+      summary.eval.releaseOutcome === 'passed' &&
       summary.eval.releaseCovered === summary.eval.releaseRequired &&
       summary.eval.targets.filter((target) => target.requiredForRelease).every((target) => target.complete),
-    mechanicalPassed: summary.eval.mechanicalPassed && summary.eval.targets
+    mechanicalPassed: summary.eval.releaseRequired > 0 &&
+      summary.eval.releaseCovered === summary.eval.releaseRequired &&
+      summary.eval.targets
       .filter((target) => target.requiredForRelease)
       .every((target) => target.mechanicalPassed),
     targets: summary.eval.targets,
+    targetAttempts: summary.eval.targetAttempts,
     diagnostics: summary.diagnostics,
   });
   const runRows = runs.map((run) =>
@@ -810,6 +992,7 @@ async function refreshBatchSummary(batchRoot: string): Promise<BatchSummary> {
     `- Eval outcome: \`${summary.eval.outcome}\``,
     `- Release outcome: \`${summary.eval.releaseOutcome}\``,
     `- Release coverage: \`${summary.eval.releaseCovered}/${summary.eval.releaseRequired}\``,
+    `- Target attempts: \`${summary.eval.attemptCount}\``,
     `- Source: \`${summary.source.digest}\``,
     '',
     '| Run | Status | Outcome | Complete |',
@@ -847,13 +1030,17 @@ export async function publishEvalRunToBatch(options: {
     if (run.status !== 'running') {
       throw new Error(`Eval run ${options.layout.runId} is not running.`);
     }
-    await assertSuiteTargetsAvailable({
+    await assertMaterializedSubjectsCompatible(
+      options.layout.batchRoot,
+      options.evaluation.subjects,
+    );
+    const retryableTargets = await assertSuiteTargetsAvailable({
       batchRoot: options.layout.batchRoot,
       evaluation: options.evaluation,
       caseId: options.caseId,
       allowDuplicateTargets: options.allowDuplicateTargets,
     });
-    const required = new Set(options.requiredTargets);
+    const required = new Set(batch.requiredTargets);
     for (const subject of options.evaluation.subjects) {
       const target = targetKey(['materialization', subject.profile]);
       await writeTargetReport({
@@ -875,13 +1062,7 @@ export async function publishEvalRunToBatch(options: {
           qualitativeReview: 'not_required',
           requiredForRelease: required.has(target),
           reportPath: null,
-          summary: {
-            scope: subject.scope,
-            ...(subject.configDigest ? { configDigest: subject.configDigest } : {}),
-            ...(subject.bundleDigest ? { bundleDigest: subject.bundleDigest } : {}),
-            ...(subject.contentDigest ? { contentDigest: subject.contentDigest } : {}),
-            artifacts: subject.artifacts ?? [],
-          },
+          summary: materializationSummary(subject),
           diagnostics: [],
         },
       });
@@ -896,7 +1077,7 @@ export async function publishEvalRunToBatch(options: {
       ]);
       await writeTargetReport({
         batchRoot: options.layout.batchRoot,
-        allowDuplicate: options.allowDuplicateTargets,
+        allowDuplicate: options.allowDuplicateTargets || retryableTargets.has(target),
         summary: {
           schemaVersion: 1,
           target,
@@ -917,6 +1098,40 @@ export async function publishEvalRunToBatch(options: {
           diagnostics: suite.diagnostics ?? [],
         },
       });
+      if (!options.caseId) {
+        for (const caseResult of suite.caseResults ?? []) {
+          const caseTarget = targetKey([
+            suite.kind,
+            suite.id,
+            suite.profile ?? 'project-default',
+            suite.split ?? 'all',
+            caseResult.id,
+          ]);
+          await writeTargetReport({
+            batchRoot: options.layout.batchRoot,
+            allowDuplicate: options.allowDuplicateTargets || retryableTargets.has(caseTarget),
+            summary: {
+              schemaVersion: 1,
+              target: caseTarget,
+              kind: suite.kind,
+              runId: options.layout.runId,
+              generatedAt: options.evaluation.generatedAt,
+              profile: suite.profile ?? 'project-default',
+              suite: suite.id,
+              split: suite.split ?? 'all',
+              case: caseResult.id,
+              outcome: caseResult.outcome,
+              complete: caseResult.complete,
+              mechanicalPassed: caseResult.mechanicalPassed,
+              qualitativeReview: 'not_required',
+              requiredForRelease: false,
+              reportPath: suite.reportPath ?? null,
+              summary: caseResult.summary ?? {},
+              diagnostics: caseResult.diagnostics ?? [],
+            },
+          });
+        }
+      }
     }
     await writeJsonAtomic(runPath, {
       ...run,

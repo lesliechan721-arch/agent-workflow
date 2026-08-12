@@ -33,7 +33,7 @@ pnpm plugin:eval codex-enhance --skill codex-subagent-guide --batch-name trigger
 
 ## Routing 参数评估
 
-`evals.json` 覆盖四个预设 role、复杂只读任务不误入 simple、`model` / `reasoning_effort` / `agent_type` 逐字段自定义、多子任务间的 override 隔离、V1/V2 干净上下文、V2 部分历史与 override、全历史继承、来自 AGENTS.md 或其它 skill 的 context 要求、显式参数冲突和缺失 role。runner 对每个 case 运行 V1/V2，并用相同 prompt 对比 `with_skill` 与 `without_skill`；显式 `$skill` 作为宿主注入证据，隐式加载只接受实际 `SKILL.md` 读取事件。spawn 路由只用隔离 rollout 中的原始 `spawn_agent` arguments 评分，不根据 query、最终说明或调用摘要猜测证据。V1 通过 rollout 中的 `exec` 工具调用源码读取同一原始参数，并只接受内联的 JSON-like 字面量参数；spawn 事件先到但原始参数尚不可用时，runner 等待 rollout 输出元数据，仍无法机械取证才保持 incomplete。明确的模型传输瞬断最多重试两次，普通 timeout 或行为错误不重试。
+`evals.json` 覆盖四个预设 role、复杂只读任务不误入 simple、`model` / `reasoning_effort` / `agent_type` 逐字段自定义、多子任务间的 override 隔离、V1/V2 干净上下文、V2 部分历史与 override、全历史继承、来自 AGENTS.md 或其它 skill 的 context 要求、显式参数冲突和缺失 role。runner 对每个 case 运行 V1/V2，并用相同 prompt 对比 `with_skill` 与 `without_skill`；显式 `$skill` 作为宿主注入证据，隐式加载只接受实际 `SKILL.md` 读取事件。spawn 路由只用隔离 rollout 中的原始 `spawn_agent` arguments 评分，不根据 query、最终说明或调用摘要猜测证据。零 spawn 仍是阻断用例的硬门禁；解释只检查非空，并用单行 `ROUTING_BLOCK_REASON=<枚举>` 记录结构化原因，不维护自然语言同义词表。V1 通过 rollout 中的 `exec` 工具调用源码读取同一原始参数，并只接受内联的 JSON-like 字面量参数；spawn 事件先到但原始参数尚不可用时，runner 等待 rollout 输出元数据，仍无法机械取证才保持 incomplete。明确的模型传输瞬断最多重试两次，普通 timeout 或行为错误不重试。
 
 ```bash
 pnpm plugin:eval codex-enhance --skill codex-subagent-guide --batch-name routing --suite routing --runs 3
@@ -44,6 +44,8 @@ pnpm plugin:eval codex-enhance --skill codex-subagent-guide --batch-name routing
 ```bash
 pnpm plugin:eval codex-enhance --skill codex-subagent-guide --batch-name routing-debug --suite routing --runs 1 --case partial_preset
 ```
+
+发布批次中断后，用同一 `--batch-id` 和默认 runs 补跑缺失 case。中央报告保留旧 attempt，并在 `evals.json` 声明的 18 个 case 都有完整证据后组合出 routing `/all` target。
 
 runner 默认用 `gpt-5.6-luna` 运行 V1 和 V2；中央 `plugin:eval --model` 同时覆盖两者，runner 内部仍可用 `--v1-model` / `--v2-model` 分别调整。lifecycle 使用同一个中央模型覆盖。临时 home 只复制现有认证文件且权限设为 `0600`，模型 shell 环境不继承该路径，结束或中断后会删除。任何认证、网络、CLI 或 schema 环境错误都会令报告 `complete: false` 并返回非零，不会静默跳过。
 
