@@ -14,6 +14,7 @@ import {
   settleAppServerProcessCleanup,
 } from '../../scripts/codex-eval-app-server.js';
 import { resolveCodexEvalRuntimeConfig } from '../../scripts/codex-eval-runtime-config.js';
+import { createDirectChildProcessMonitor } from '../../scripts/codex-eval-process-tree.js';
 
 const tempDirs: string[] = [];
 
@@ -72,6 +73,25 @@ describe('Codex app-server eval driver', () => {
     expect(stdout.destroyed).toBe(true);
     expect(stderr.destroyed).toBe(true);
     expect(unref).toHaveBeenCalledOnce();
+  });
+
+  it('settles direct child cleanup as soon as the child closes', async () => {
+    vi.useFakeTimers();
+    try {
+      const child = Object.assign(new EventEmitter(), {
+        exitCode: null,
+        signalCode: null,
+        kill: vi.fn(() => true),
+      }) as unknown as ChildProcess;
+
+      const termination = createDirectChildProcessMonitor(child).terminate();
+      child.emit('close', 0, null);
+
+      await expect(termination).resolves.toEqual([]);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('answers dynamic request_user_input ids and preserves baseline evidence', async () => {

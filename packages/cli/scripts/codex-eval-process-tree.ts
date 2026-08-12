@@ -50,15 +50,28 @@ export function createDirectChildProcessMonitor(
           return;
         }
         let closed = false;
-        child.once('close', () => {
+        let settled = false;
+        let forceTimer: ReturnType<typeof setTimeout> | undefined;
+        let settleTimer: ReturnType<typeof setTimeout> | undefined;
+        const settle = (diagnostics: string[]) => {
+          if (settled) return;
+          settled = true;
+          if (forceTimer) clearTimeout(forceTimer);
+          if (settleTimer) clearTimeout(settleTimer);
+          child.off('close', onClose);
+          resolve(diagnostics);
+        };
+        const onClose = () => {
           closed = true;
-        });
+          settle([]);
+        };
+        child.once('close', onClose);
         try {
           child.kill('SIGTERM');
         } catch {
           // The direct child can close before SIGTERM is delivered.
         }
-        const forceTimer = setTimeout(() => {
+        forceTimer = setTimeout(() => {
           if (closed || child.exitCode !== null || child.signalCode !== null) return;
           try {
             child.kill('SIGKILL');
@@ -66,16 +79,13 @@ export function createDirectChildProcessMonitor(
             // The direct child can close before SIGKILL is delivered.
           }
         }, 1_000);
-        forceTimer.unref();
-        const settleTimer = setTimeout(() => {
-          clearTimeout(forceTimer);
-          resolve(
+        settleTimer = setTimeout(() => {
+          settle(
             closed || child.exitCode !== null || child.signalCode !== null
               ? []
               : ['Could not confirm direct eval child termination; descendants are not tracked.'],
           );
         }, 2_000);
-        settleTimer.unref();
       });
       return terminationPromise;
     },
