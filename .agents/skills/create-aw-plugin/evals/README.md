@@ -9,13 +9,13 @@ node .agents/skills/skill-review/scripts/run_static_skill_evals.mjs \
   create-aw-plugin --validate-only
 ```
 
-Eval Audit 结构检查使用共享 validator。当前历史 corpus 采用兼容模式；新增或会驱动修改、发布的 case 必须补齐 metadata，再对相应文档使用 `--strict`：
+Eval Audit 结构检查使用共享 validator。当前 corpus 已补齐 Case Admission metadata，必须使用 `--strict`；其它历史文档仍可先使用兼容模式迁移：
 
 ```bash
 node .agents/skills/skill-review/scripts/validate_eval_cases.mjs \
-  .agents/skills/create-aw-plugin/evals/trigger-cases.json --format json
+  .agents/skills/create-aw-plugin/evals/trigger-cases.json --strict --format json
 node .agents/skills/skill-review/scripts/validate_eval_cases.mjs \
-  .agents/skills/create-aw-plugin/evals/evals.json --format json
+  .agents/skills/create-aw-plugin/evals/evals.json --strict --format json
 ```
 
 只根据 train 结果调整 description：

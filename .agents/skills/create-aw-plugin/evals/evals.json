@@ -106,6 +106,27 @@
     },
     {
       "id": "create-manual-side-effect",
+      "eval_type": "outcome",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "new-manual-plugin-with-auditable-evals",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "repository": "agent-workflows-eval-fixture",
+        "target_plugin_absent": true,
+        "external_side_effect": true,
+        "codex_authoring_supported": true
+      },
+      "oracle": {
+        "rationale": "A new side-effecting Skill must use explicit invocation while preserving the same minimal plugin, author Eval, and validation contracts as other new plugins.",
+        "rule_refs": [
+          "SKILL.md#创建与维护工作流",
+          "SKILL.md#脚手架",
+          "references/skill-evaluation.md#完成检查"
+        ],
+        "confidence": "high",
+        "allowed_variance": "Skill wording and domain cases may differ; manual invocation, source boundaries, customized Evals, and author validation must hold."
+      },
       "prompt": "在当前 agent-workflows 评测仓库中实际创建 plugins/release-publisher。它是双平台最小插件，只含一个会发布制品的 release-publisher Skill。该工作流有外部副作用，必须只允许用户显式调用。使用作者脚手架并显式传入 manual 调用策略，替换全部 TODO，保留并定制作者期 eval starter，然后运行作者 validator；不要修改 marketplace-source 或任何生成目录。",
       "expected_output": "创建 manual-only source plugin；Claude user-invocable 为 true 且禁用模型调用，Codex allow_implicit_invocation 为 false；存在 owner Skill eval；作者 validator 通过。",
       "scripted_replies": [],
@@ -155,6 +176,27 @@
     },
     {
       "id": "add-static-skill",
+      "eval_type": "outcome",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "existing-plugin-static-skill-addition",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "repository": "agent-workflows-eval-fixture",
+        "target_plugin": "code-review",
+        "target_plugin_version": "0.2.0",
+        "target_skill_absent": true
+      },
+      "oracle": {
+        "rationale": "Adding one static Skill to an existing plugin must preserve existing capabilities while adding invocation metadata, real owner Evals, README documentation, and a release intent.",
+        "rule_refs": [
+          "SKILL.md#创建与维护工作流",
+          "SKILL.md#脚手架",
+          "references/skill-evaluation.md#完成检查"
+        ],
+        "confidence": "high",
+        "allowed_variance": "Skill wording and case content may differ; the source boundary, invocation policy, README entry, release intent, and validation result must hold."
+      },
       "prompt": "实际维护 plugins/code-review：新增一个 audit-report 静态 Skill，用于把已有审查结果整理为可复核的审计报告。该 Skill 风险低，允许模型发现。先检查现有插件与调用元数据，再运行 add_skill.mjs；完成全部 TODO，把 eval starter 换成真实小型用例，并按现有格式更新插件 README。保持其它能力不变，确认已创建 minor release intent 且插件版本保留 0.2.0，最后运行作者 validator。不要修改 marketplace-source、平台 manifest、plugins-dist 或 runtime cache。",
       "expected_output": "向现有插件新增完整 audit-report 静态 Skill；双平台调用元数据和 owner eval 一致；插件根 README 已补充条目；plugin version 保留 0.2.0，并有 minor release intent；作者 validator 通过。",
       "scripted_replies": [],
@@ -215,6 +257,27 @@
     },
     {
       "id": "modify-with-script",
+      "eval_type": "outcome",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "existing-plugin-skill-script-maintenance",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "repository": "agent-workflows-eval-fixture",
+        "target_plugin": "code-review",
+        "target_skill": "review-workflow",
+        "node_test_supported": true
+      },
+      "oracle": {
+        "rationale": "A deterministic Skill script must expose the requested interface, have direct tests, stay within the target Skill, and record the production bundle change with a release intent.",
+        "rule_refs": [
+          "SKILL.md#阅读路由",
+          "SKILL.md#创建与维护工作流",
+          "SKILL.md#完成条件"
+        ],
+        "confidence": "high",
+        "allowed_variance": "The implementation may differ; the CLI contract, direct tests, narrow source diff, release intent, and author validation must hold."
+      },
       "prompt": "实际维护 plugins/code-review：只在 skills/review-workflow 内增加一个 Node.js JSON 报告 validator。脚本必须非交互，支持 --help，成功时 stdout 输出短 JSON，失败诊断写 stderr 并返回非零；覆盖合法输入、非法 JSON、缺少字段和重复运行。更新该 Skill 的准确调用说明，并添加直接 node:test。该变化进入 production bundle，使用 add_plugin_change.mjs 创建 code-review 的 patch release intent；插件版本保留 0.2.0。不要改变安装、scope、config、lifecycle、MCP 或其它 Skill。运行 --help、成功、失败、重复运行、node --test 和作者 validator。",
       "expected_output": "对既有 Skill 做局部修改；新增可执行 validator 与直接测试，SKILL.md 给出准确接口和验证循环；plugin version 保留 0.2.0，并有 patch release intent；所有确定性命令、作者门禁和 validator 通过。",
       "scripted_replies": [],
@@ -263,6 +326,27 @@
     },
     {
       "id": "repair-dynamic-artifact-renderer",
+      "eval_type": "outcome",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "existing-dynamic-artifact-repair",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "repository": "agent-workflows-eval-fixture",
+        "target_plugin": "dynamic-artifact-fixture",
+        "renderer_contract": "ArtifactPlan-v1",
+        "manifest_contract": "ArtifactPlan-v2"
+      },
+      "oracle": {
+        "rationale": "The repair must align the renderer with the existing static target and V2 ArtifactPlan contract without expanding the source diff or claiming an unavailable production build.",
+        "rule_refs": [
+          "SKILL.md#阅读路由",
+          "SKILL.md#创建与维护工作流",
+          "SKILL.md#跨能力 Gotchas"
+        ],
+        "confidence": "high",
+        "allowed_variance": "The code shape may differ; V2 output, config consumption, target identity, narrow changes, release intent, and the stated build limitation must hold."
+      },
       "prompt": "实际修复 plugins/dynamic-artifact-fixture 的 bundle 作者校验。该 Codex-only 插件声明一个配置驱动的 codex.developerInstructionsBlock，但 renderer 仍输出旧的 ArtifactPlan V1。先读取现有 manifest、renderer 和 Skill，再按 Dynamic Artifacts 路由核对静态 target 与 V2 renderer 合同。只把 renderer 改为从 AW_PLUGIN_CONTEXT 读取 config.values，并返回与 manifest 完全一致的 V2 plan；不要直接写 .codex、.agents、runtime cache、marketplace 或生成目录。该 production 变化使用 add_plugin_change.mjs 创建 patch release intent，并显式传 --id dynamic-artifact-fixture-renderer；稳定 plugin version 保持 0.1.0。当前隔离 workspace 没有完整 build 输入，不要运行 pnpm build，把 production bundle 列为未验证；运行作者 validator，失败时修复并重跑。不要增加其它能力。",
       "expected_output": "局部修复 dynamic artifact renderer；manifest 静态 target 不变；renderer 返回 V2 ArtifactPlan 并消费 config；存在固定名称的 patch release intent且稳定版本保持 0.1.0；作者 validator 通过，production bundle 明确列为未验证。",
       "scripted_replies": [],
