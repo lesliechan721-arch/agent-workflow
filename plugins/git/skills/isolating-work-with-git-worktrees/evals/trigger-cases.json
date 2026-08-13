@@ -1,0 +1,203 @@
+{
+  "schemaVersion": 1,
+  "skill": "isolating-work-with-git-worktrees",
+  "cases": [
+    {
+      "id": "source_01",
+      "split": "train",
+      "query": "main 上还有我没提交的调试修改。请另外开一个 git worktree，从 origin/main 创建 hotfix 分支修复登录问题，不要碰当前工作区。",
+      "workspace_fixture": "dirty_main",
+      "expected_loaded_skills": ["isolating-work-with-git-worktrees"]
+    },
+    {
+      "id": "source_02",
+      "split": "train",
+      "query": "Use a separate worktree for this feature so I can keep working on the current branch in parallel.",
+      "expected_loaded_skills": ["isolating-work-with-git-worktrees"]
+    },
+    {
+      "id": "source_03",
+      "split": "train",
+      "query": "我需要同时检出 release/2.x 和 main，对两个版本分别复现这个回归；请为第二个分支准备隔离工作区。",
+      "expected_loaded_skills": ["isolating-work-with-git-worktrees"]
+    },
+    {
+      "id": "source_04",
+      "split": "train",
+      "query": "Implement the migration plan, but leave my current uncommitted refactor exactly as it is. Set up an isolated checkout first.",
+      "workspace_fixture": "dirty_feature",
+      "expected_loaded_skills": ["isolating-work-with-git-worktrees"]
+    },
+    {
+      "id": "source_05",
+      "split": "train",
+      "query": "平台已经为 task-482 登录修复创建了合适的 worktree。请确认后在这里把 src/login.ts 的超时从 30 改为 60，不要再创建嵌套工作区。",
+      "workspace_fixture": "linked_feature",
+      "expected_loaded_skills": ["isolating-work-with-git-worktrees"]
+    },
+    {
+      "id": "source_06",
+      "split": "train",
+      "query": "Create a throwaway linked worktree at the current commit to test the code generator without disturbing my branch.",
+      "expected_loaded_skills": ["isolating-work-with-git-worktrees"]
+    },
+    {
+      "id": "source_07",
+      "split": "train",
+      "query": "当前分支正在跑长时间实验，我还要从 main 开始处理一个紧急 bug；用 worktree 把两个任务分开。",
+      "workspace_fixture": "dirty_feature",
+      "expected_loaded_skills": ["isolating-work-with-git-worktrees"]
+    },
+    {
+      "id": "source_08",
+      "split": "validation",
+      "query": "plz make a wrktree for the release fix; dont stash or reset anything in my current checkout",
+      "workspace_fixture": "dirty_main",
+      "expected_loaded_skills": ["isolating-work-with-git-worktrees"]
+    },
+    {
+      "id": "source_09",
+      "split": "validation",
+      "query": "在不改变当前 index 和未跟踪文件的前提下，检出另一个分支执行代码修改和测试。",
+      "workspace_fixture": "dirty_mixed_feature",
+      "expected_loaded_skills": ["isolating-work-with-git-worktrees"]
+    },
+    {
+      "id": "source_10",
+      "split": "validation",
+      "query": "The harness already put the release fix in a suitable isolated checkout. Verify it, update src/login.ts from 30 to 60, and keep using it instead of creating a manual worktree.",
+      "workspace_fixture": "linked_feature",
+      "expected_loaded_skills": ["isolating-work-with-git-worktrees"]
+    },
+    {
+      "id": "source_11",
+      "split": "train",
+      "query": "在当前干净的 feature 分支里修改按钮文案并运行现有测试，不需要额外工作区。",
+      "expected_loaded_skills": []
+    },
+    {
+      "id": "source_12",
+      "split": "train",
+      "query": "只读检查 main 和 feature 的 diff，告诉我有哪些 API 变化，不要修改文件。",
+      "expected_loaded_skills": []
+    },
+    {
+      "id": "source_13",
+      "split": "train",
+      "query": "Explain how git worktree differs from git clone.",
+      "expected_loaded_skills": []
+    },
+    {
+      "id": "source_14",
+      "split": "train",
+      "query": "List all existing worktrees and prune stale administrative entries.",
+      "expected_loaded_skills": []
+    },
+    {
+      "id": "source_15",
+      "split": "train",
+      "query": "这个实验会重写 shared refs、删除 tags 并运行 aggressive gc；给我一个完全独立的仓库副本。",
+      "expected_loaded_skills": []
+    },
+    {
+      "id": "source_16",
+      "split": "train",
+      "query": "Switch this clean checkout from main to feature and continue working here; no parallel checkout is needed.",
+      "workspace_fixture": "clean_main",
+      "expected_loaded_skills": []
+    },
+    {
+      "id": "source_17",
+      "split": "train",
+      "query": "解决当前 worktree 里的 git merge 冲突，并保留双方行为。",
+      "workspace_fixture": "merge_conflict",
+      "expected_loaded_skills": ["reconciling-git-merges"]
+    },
+    {
+      "id": "source_18",
+      "split": "validation",
+      "query": "把当前未提交修改 stash 起来，然后更新 main。",
+      "workspace_fixture": "dirty_main",
+      "expected_loaded_skills": []
+    },
+    {
+      "id": "source_19",
+      "split": "validation",
+      "query": "Show me the directory tree under src/worktree and summarize the files.",
+      "expected_loaded_skills": []
+    },
+    {
+      "id": "source_20",
+      "split": "validation",
+      "query": "删除已经不用的 /tmp/project-hotfix worktree；里面没有任务代码需要继续开发。",
+      "expected_loaded_skills": []
+    },
+    {
+      "id": "sanity_parallel_branch",
+      "split": "sanity",
+      "query": "我还要保留当前分支的未完成工作，请用另一个 worktree 从 main 开始实现搜索修复。",
+      "workspace_fixture": "dirty_feature",
+      "expected_loaded_skills": ["isolating-work-with-git-worktrees"]
+    },
+    {
+      "id": "sanity_preserve_local_state",
+      "split": "sanity",
+      "query": "不要改动这个 checkout 的 index 和未跟踪文件；另建隔离工作目录完成发布脚本修改。",
+      "workspace_fixture": "dirty_mixed_feature",
+      "expected_loaded_skills": ["isolating-work-with-git-worktrees"]
+    },
+    {
+      "id": "sanity_reuse_platform_isolation",
+      "split": "sanity",
+      "query": "平台已经把任务放进合适的 linked worktree。确认当前隔离后就在这里把 src/button.ts 的按钮文案从 Save 改为 Submit，并保留 docs 草稿；不要重复创建 worktree。",
+      "workspace_fixture": "linked_dirty_feature",
+      "expected_loaded_skills": ["isolating-work-with-git-worktrees"]
+    },
+    {
+      "id": "sanity_list_worktrees",
+      "split": "sanity",
+      "query": "列出这个仓库现有的 Git worktree 和对应分支，不要创建、删除或修改任何内容。",
+      "expected_loaded_skills": []
+    },
+    {
+      "id": "sanity_full_clone",
+      "split": "sanity",
+      "query": "我需要独立的 refs、对象库和 hooks 来做破坏性实验，请准备一个完整 clone。",
+      "expected_loaded_skills": []
+    },
+    {
+      "id": "sanity_local_commit",
+      "split": "sanity",
+      "query": "当前工作区的实现已经完成，请核对暂存范围并创建一个新的本地 Git commit。",
+      "workspace_fixture": "commit_ready",
+      "expected_loaded_skills": ["git-commit"]
+    },
+    {
+      "id": "sanity_merge_conflict",
+      "split": "sanity",
+      "query": "当前 linked worktree 里的 merge 已因冲突停止。请根据双方提交和测试协调意图并完成合并。",
+      "workspace_fixture": "merge_conflict",
+      "expected_loaded_skills": ["reconciling-git-merges"]
+    },
+    {
+      "id": "sanity_dirty_new_task",
+      "split": "sanity",
+      "query": "当前 checkout 里还有未提交的支付表单改动，请不要碰。请另外把 src/login.ts 的登录超时从 30 改为 60，两个任务的文件和 Git 状态不要混在一起。",
+      "workspace_fixture": "dirty_feature",
+      "expected_loaded_skills": ["isolating-work-with-git-worktrees"]
+    },
+    {
+      "id": "sanity_parallel_test",
+      "split": "sanity",
+      "query": "当前 checkout 正在跑长时间实验。请在另一个工作目录检出 release/2.x 并运行兼容性测试，不要切换或修改当前 checkout。",
+      "expected_loaded_skills": ["isolating-work-with-git-worktrees"]
+    },
+    {
+      "id": "sanity_dirty_same_branch",
+      "split": "sanity",
+      "query": "当前 feature 分支有未提交的支付表单改动。请继续完成这个功能，把 src/button.ts 的支付按钮文案从 Save 改为 Submit，并保留现有修改。",
+      "workspace_fixture": "dirty_feature",
+      "expected_loaded_skills": []
+    }
+  ]
+}
