@@ -677,6 +677,35 @@ async function readBuildLockOwner(lockPath) {
   }
 }
 
+function readBuildLockOwnerPid(owner) {
+  try {
+    const pid = JSON.parse(owner)?.pid;
+    return Number.isInteger(pid) && pid > 0 ? pid : null;
+  } catch {
+    return null;
+  }
+}
+
+function isProcessAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if (error?.code === 'ESRCH') {
+      return false;
+    }
+    return null;
+  }
+}
+
+function staleBuildLockError(lockPath, owner, pid) {
+  return new Error(
+    `Build lock owner PID ${pid} is not running for ${lockPath}. ` +
+    `Current owner metadata: ${owner}. The lock was not recovered automatically. ` +
+    'Stop all build processes, then remove the lock offline before retrying.',
+  );
+}
+
 function buildLockTimeoutError(lockPath, owner, waitedMs) {
   return new Error(
     `Timed out after ${waitedMs}ms waiting for build lock ${lockPath}. ` +
@@ -690,6 +719,7 @@ export async function acquireBuildLock(repoRoot, options = {}) {
   const lockTimeoutMs = options.lockTimeoutMs ?? DEFAULT_LOCK_TIMEOUT_MS;
   const pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
   const startedAt = Date.now();
+  let waitReported = false;
   await fs.mkdir(cacheDir, { recursive: true });
 
   while (true) {
@@ -745,10 +775,23 @@ export async function acquireBuildLock(repoRoot, options = {}) {
       }
     }
 
+    const owner = await readBuildLockOwner(lockPath);
+    const ownerPid = readBuildLockOwnerPid(owner);
+    if (ownerPid !== null && isProcessAlive(ownerPid) === false) {
+      throw staleBuildLockError(lockPath, owner, ownerPid);
+    }
+    if (!waitReported) {
+      console.error(
+        `Build lock is held; waiting up to ${lockTimeoutMs}ms for ${lockPath}. ` +
+        `Current owner metadata: ${owner}`,
+      );
+      waitReported = true;
+    }
+
     if (Date.now() - startedAt >= lockTimeoutMs) {
       throw buildLockTimeoutError(
         lockPath,
-        await readBuildLockOwner(lockPath),
+        owner,
         lockTimeoutMs,
       );
     }
