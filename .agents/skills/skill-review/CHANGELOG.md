@@ -1,5 +1,23 @@
 # Changelog
 
+## v4.2
+
+- Routed by the requested review deliverable instead of Skill-related input terms.
+- Kept trigger and behavior eval authoring outside the review trigger boundary.
+- Reduced every eval case to one default run; targeted regressions do not require a full-suite rerun.
+- Separated trigger activation from near-miss target reads and added a balanced sanity split.
+- Split reachable local packages from supplied evidence before inventory and diagnostics.
+- Stopped evidence-only reviews before full resources when no target content can be assessed.
+- Prevented summary labels and workflow authorization gaps from satisfying P0/P1 admission.
+- Kept quick and delta reviews off the full scoring, template, and scorecard path.
+- Required owner and migration candidates before prose state-machine fallbacks.
+- Required complete CLI entrypoint inspection and a safe `--help` probe before interface findings.
+- Made evidence-only routing precede inventory and made CLI help probes mandatory in quick self-review.
+- Required separate publication and README authorization states in evidence-only early-stop reports.
+- Kept source fixtures outside Codex Skill discovery and made evidence-only resource routing consistent with full review and finding admission.
+- Made all three CLI help paths work without workspace dependencies in materialized runtime packages.
+- Allowed the exact parent directories created by the draft-persistence eval.
+
 ## v4.1
 
 - Made unspecified review requests default to quick; full now requires an explicit complete or scored review request.

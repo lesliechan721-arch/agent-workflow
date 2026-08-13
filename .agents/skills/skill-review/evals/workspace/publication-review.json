@@ -4,6 +4,10 @@
     "name": "review-ready-helper"
   },
   "mode": "full",
+  "request": {
+    "formal_publish": false,
+    "register_readme": false
+  },
   "evaluation": {
     "complete": true,
     "outcome": "passed",

@@ -236,6 +236,89 @@ describe('skill-review author tools', () => {
         'reports',
       ))).resolves.toBe(false);
     }
+
+    const materializedReviewRoot = path.join(
+      subjectRoot,
+      '.agents',
+      'skills',
+      'skill-review',
+    );
+    for (const scriptName of [
+      'inspect_skill_target.mjs',
+      'run_static_skill_evals.mjs',
+      'validate_scorecard.mjs',
+    ]) {
+      const result = await execFileAsync('node', [
+        path.join(materializedReviewRoot, 'scripts', scriptName),
+        '--help',
+      ], { cwd: subjectRoot, env: process.env });
+      expect(result.stdout, scriptName).toContain('Usage:');
+    }
+  });
+
+  it('allows only the draft artifact and its required parent directories', async () => {
+    const cases = await fs.readJson(path.join(
+      repoRoot(),
+      '.agents',
+      'skills',
+      'skill-review',
+      'evals',
+      'evals.json',
+    ));
+    const draftCase = cases.evals.find(
+      (entry: { id: string }) => entry.id === 'draft-persistence-does-not-publish',
+    );
+
+    expect(draftCase.review.allowed_workspace_changes).toEqual([
+      '.tmp/',
+      '.tmp/agent-workflows/',
+      '.tmp/agent-workflows/reviews/',
+      '.tmp/agent-workflows/reviews/draft-only-helper.md',
+    ]);
+    expect(draftCase.review.artifacts).toEqual([
+      expect.objectContaining({
+        path: '.tmp/agent-workflows/reviews/draft-only-helper.md',
+        exists: true,
+        contains: expect.arrayContaining(['quick', 'unknown']),
+      }),
+    ]);
+  });
+
+  it('keeps the near-miss Skill outside repo discovery and materializes it as a fixture', async () => {
+    const root = repoRoot();
+    const skillsRoot = path.join(root, '.agents', 'skills');
+    const skillRoot = path.join(skillsRoot, 'skill-review');
+    const fixtureSource = path.join(
+      root,
+      '.agents',
+      'fixtures',
+      'skill-review',
+      'near-miss-skill',
+    );
+    const oldDiscoveryPath = path.join(
+      skillRoot,
+      'evals',
+      'workspace',
+      'near-miss-skill',
+      'SKILL.md',
+    );
+
+    expect(path.relative(skillsRoot, fixtureSource).startsWith(`..${path.sep}`)).toBe(true);
+    await expect(fs.pathExists(oldDiscoveryPath)).resolves.toBe(false);
+    await expect(fs.pathExists(path.join(fixtureSource, 'SKILL.md'))).resolves.toBe(true);
+
+    const runner = await import(`${pathToFileURL(staticEvalRunner()).href}?near-miss-fixture`);
+    const manifest = await runner.readManifest(skillRoot, 'skill-review');
+    const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-static-near-miss-'));
+    tempDirs.push(outputRoot);
+    const subjectRoot = await runner.prepareSubject(manifest, outputRoot);
+
+    await expect(fs.pathExists(path.join(
+      subjectRoot,
+      'fixtures',
+      'near-miss-skill',
+      'SKILL.md',
+    ))).resolves.toBe(true);
   });
 
   it('prepares an isolated authoring subject whose scaffold passes its bundled validator', async () => {
@@ -402,7 +485,7 @@ describe('skill-review author tools', () => {
       expect(report.evals.parse_errors).toEqual([]);
       expect(report.issues.filter((issue: { level: string }) => issue.level === 'error')).toEqual([]);
       if (skillName === 'skill-review') {
-        expect(report.evals.trigger).toEqual({ total: 24, positive: 12, negative: 12 });
+        expect(report.evals.trigger).toEqual({ total: 32, positive: 16, negative: 16 });
         expect(report.evals.behavior_cases).toBe(14);
         expect(report.evals.conversation_cases).toBe(14);
         expect(report.evals.portable_behavior_specs).toBe(35);
@@ -1484,16 +1567,16 @@ describe('skill-review author tools', () => {
   it('keeps evaluated upstream content unchanged outside documented project adapters', async () => {
     const skillRoot = path.join(repoRoot(), '.agents', 'skills', 'skill-review');
     const exactHashes: Record<string, string> = {
-      'CHANGELOG.md': '351980105bc8098ea97ab6bc2127d714dfd56ee160b088837685e3a1b57a24ab',
+      'CHANGELOG.md': 'eba6682d8a279af2cabc847a17b29ff08453099dcaf47d1d8582e86df3d9c97d',
       'assets/report-template.md': '28c599394feabf73eabea1f6ba2fd41999cb80303dea4746a0a23728beb8d883',
       'assets/scorecard-template.json': '93e6fae3a76d2bfa447047769da9587dfb4473c08be437f3f325a35e63f17233',
       'evals/behavior_cases.json': '936b6c67d6e6cd4873109f6af916977edf9a1b3eafc335150ed2fde4f1eb82dc',
       'evals/scoring_cases.json': '7a9715f0549a0215856a11d32f94c7212a7606b02d7e7ea4498c4ea136681d3f',
-      'evals/trigger-cases.json': '67447dd4808b9642eea60bc7e46274cf799069625f35ef077661bb951b65d122',
-      'references/architecture-boundaries.md': '73546c91c0219892c584c5ff64fd192814eb080137c744b2f72fbcd62119eb15',
+      'evals/trigger-cases.json': 'bc97e65565a48329c7dfa22eb20a172a6bcca132101a85e28b3216374956a629',
+      'references/architecture-boundaries.md': '29e757176d8d8e9fc00c43b17132714623d28ada56f6d427388c347b9d0f87d3',
       'references/delta-review.md': '4822793652c376d573d300e71d2d1f4a26dde7f43ede7aa4d7d51d2213de6ee1',
       'references/review-dimensions.md': 'ecb0d21f7fb4a7dc391840f57c7e02ea4889667ddf8d9c0c48f37baa8369840c',
-      'references/scripts-and-resources.md': '1f1c30e5201e1bdc8a0728fc0207a002ffb93d2d8c5115c097fbcda09c3ff7b7',
+      'references/scripts-and-resources.md': '7f5f2b16a8da05a757d0f3ca571821c4d8947c9df4e83fba6ed6ee8bc6bba68f',
       'references/source-map.md': '1fbce765ded4d6995f299a0169f5bda805ec01c49f71cc3795e8856667bb0828',
     };
     for (const [relative, expected] of Object.entries(exactHashes)) {
@@ -1505,11 +1588,15 @@ describe('skill-review author tools', () => {
     );
     expect(reportTemplate).toContain('# Skill 评审报告');
     const triggerCorpus = await fs.readJson(path.join(skillRoot, 'evals', 'trigger-cases.json'));
-    expect(triggerCorpus.cases).toHaveLength(24);
+    expect(triggerCorpus.cases).toHaveLength(32);
     expect(triggerCorpus.cases.filter((entry: { should_load_skill: boolean }) =>
-      entry.should_load_skill)).toHaveLength(12);
+      entry.should_load_skill)).toHaveLength(16);
     expect(new Set(triggerCorpus.cases.map((entry: { split: string }) => entry.split))).toEqual(
-      new Set(['train', 'validation']),
+      new Set(['train', 'validation', 'sanity']),
+    );
+    const evalManifest = await fs.readJson(path.join(skillRoot, 'evals', 'manifest.json'));
+    expect(evalManifest.suites.map((suite: { defaultRuns: number }) => suite.defaultRuns)).toEqual(
+      [1, 1],
     );
 
     const readme = (await fs.readFile(path.join(skillRoot, 'README.md'), 'utf8'))
@@ -1585,7 +1672,7 @@ describe('skill-review author tools', () => {
         '',
       );
     expect(contentDigest(skill)).toBe(
-      '6ef28a69154708be4979f1b7dc0617049837cde48b558e27e477e6e0f844d0ce',
+      '5b2c6474777c8a6cf3d000b7908bebb9246ba78e2093ad85c6878a886479d799',
     );
 
     const scoringModel = (
