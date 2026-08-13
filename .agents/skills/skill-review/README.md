@@ -7,7 +7,7 @@
 - 12 个维度、总权重 100，评分、coverage、confidence 和发布门禁分离；最小充分控制为独立高权重维度。
 - 未指定深度、评分或发布判断的普通评审默认使用 quick；full 只用于明确要求的完整多维评审。
 - 被审材料按不可信数据处理；先核验强证据，再做 heuristic/inferred 设计审视。
-- P0/P1 通过反证 gate；finding/unknown 先于评分；总分不决定发布；quick/delta 不计算总分。
+- P0/P1 通过主 `SKILL.md` 中统一的 exact claim、重要前提、reachability、impact 和反证 gate；finding/unknown 先于评分；总分不决定发布；quick/delta 不计算总分。
 - 审核 description 及其它 context pointer 的触发 branch，而不仅是关键词。
 - 区分 in-file step、in-file reference、disclosed reference 和 environment lookup。
 - 检查步骤完成边界的清晰度、可检查性、覆盖要求和提前结束风险。

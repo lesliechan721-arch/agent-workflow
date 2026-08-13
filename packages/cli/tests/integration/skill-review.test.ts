@@ -666,8 +666,8 @@ describe('skill-review author tools', () => {
       expect(report.issues.filter((issue: { level: string }) => issue.level === 'error')).toEqual([]);
       if (skillName === 'skill-review') {
         expect(report.evals.trigger).toEqual({ total: 32, positive: 16, negative: 16 });
-        expect(report.evals.behavior_cases).toBe(15);
-        expect(report.evals.conversation_cases).toBe(15);
+        expect(report.evals.behavior_cases).toBe(19);
+        expect(report.evals.conversation_cases).toBe(19);
         expect(report.evals.portable_behavior_specs).toBe(37);
         expect(report.evals.behavior_evidence_note).toContain('not executable release evidence');
         expect(report.evals.scoring_cases).toBe(20);
@@ -1500,7 +1500,28 @@ describe('skill-review author tools', () => {
       dimension: 'specification',
       location: 'SKILL.md:1',
       problem: 'The package name is invalid.',
+      material_premises: [
+        {
+          premise: 'The declared name contains an invalid character.',
+          source_role: 'target frontmatter',
+          evidence: 'SKILL.md:1 declares the invalid name.',
+          status: 'supported',
+        },
+        {
+          premise: 'The target schema rejects that character.',
+          source_role: 'target schema',
+          evidence: 'The applicable schema permits no exception.',
+          status: 'supported',
+        },
+      ],
       affected_scenario: 'The target client rejects the package before loading the Skill.',
+      reachability: {
+        kind: 'entry-gate',
+        path: 'The target client validates frontmatter before loading the Skill.',
+        evidence: 'The package validator rejects the declared name.',
+        status: 'supported',
+      },
+      impact: 'The package cannot load in the target client.',
       evidence: ['The declared name contains an invalid character.'],
       counterevidence: ['The target schema was checked and defines no exception for this character.'],
       correct_owner: 'Skill',
@@ -1532,6 +1553,36 @@ describe('skill-review author tools', () => {
       ]),
     });
 
+    const unsupportedPremise = structuredClone(blocked);
+    unsupportedPremise.findings[0].material_premises[0].status = 'unknown';
+    expect(await validate(unsupportedPremise)).toMatchObject({
+      valid: false,
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({ code: 'finding.admission-premise-support' }),
+      ]),
+    });
+
+    const unreachable = structuredClone(blocked);
+    unreachable.findings[0].reachability.status = 'unknown';
+    expect(await validate(unreachable)).toMatchObject({
+      valid: false,
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({ code: 'finding.admission-reachability' }),
+      ]),
+    });
+
+    const missingImpact = structuredClone(blocked);
+    missingImpact.findings[0].impact = '';
+    expect(await validate(missingImpact)).toMatchObject({
+      valid: false,
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({
+          code: 'finding.required-field',
+          message: expect.stringContaining('impact'),
+        }),
+      ]),
+    });
+
     const weakAuthority = structuredClone(base);
     weakAuthority.review.mode = 'full';
     weakAuthority.findings = [{
@@ -1541,7 +1592,22 @@ describe('skill-review author tools', () => {
       dimension: 'triggering',
       location: 'SKILL.md:1',
       problem: 'A heuristic-only complaint.',
+      material_premises: [
+        {
+          premise: 'A third-party guide prefers another phrase.',
+          source_role: 'third-party heuristic',
+          evidence: 'The cited guide contains that preference.',
+          status: 'supported',
+        },
+      ],
       affected_scenario: 'A future query could fail to load the Skill.',
+      reachability: {
+        kind: 'execution-path',
+        path: 'A future query reaches the target description.',
+        evidence: 'The target client uses the description for routing.',
+        status: 'supported',
+      },
+      impact: 'The Skill could fail to load for that future query.',
       evidence: ['A third-party writing guide prefers another phrase.'],
       counterevidence: ['No target trace or official rule supports the complaint.'],
       correct_owner: 'Skill',
@@ -1582,6 +1648,8 @@ describe('skill-review author tools', () => {
       valid: false,
       diagnostics: expect.arrayContaining([
         expect.objectContaining({ code: 'finding.required-field' }),
+        expect.objectContaining({ code: 'finding.admission-premises' }),
+        expect.objectContaining({ code: 'finding.admission-reachability' }),
         expect.objectContaining({ code: 'finding.admission-evidence' }),
         expect.objectContaining({ code: 'finding.admission-counterevidence' }),
       ]),

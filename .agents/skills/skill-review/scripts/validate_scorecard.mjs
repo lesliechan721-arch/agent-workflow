@@ -58,6 +58,8 @@ const VALID_EVIDENCE = new Set([
   'inferred',
 ]);
 const STRONG_EVIDENCE = new Set(['observed', 'normative', 'structural']);
+const VALID_PREMISE_STATUS = new Set(['supported', 'unsupported', 'unknown']);
+const VALID_REACHABILITY_KIND = new Set(['entry-gate', 'execution-path']);
 const ARTIFACT_FIELDS = new Set([
   'official_validation',
   'current_sources_checked',
@@ -196,6 +198,93 @@ function normalizedEvidenceTypes(finding, index, diagnostics) {
     if (!values.includes(value)) values.push(value);
   }
   return values;
+}
+
+function normalizedMaterialPremises(finding, index, diagnostics) {
+  const raw = finding.material_premises;
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) {
+    diagnostics.push(diagnostic(
+      'error',
+      'finding.material-premises',
+      `Finding #${index} material_premises must be a list.`,
+    ));
+    return [];
+  }
+  const values = [];
+  for (let offset = 0; offset < raw.length; offset += 1) {
+    const premise = raw[offset];
+    if (!isRecord(premise)) {
+      diagnostics.push(diagnostic(
+        'error',
+        'finding.material-premise',
+        `Finding #${index} material premise #${offset + 1} must be an object.`,
+      ));
+      continue;
+    }
+    let valid = true;
+    for (const field of ['premise', 'source_role', 'evidence']) {
+      if (typeof premise[field] !== 'string' || premise[field].trim() === '') {
+        diagnostics.push(diagnostic(
+          'error',
+          'finding.material-premise-field',
+          `Finding #${index} material premise #${offset + 1} requires non-empty field ${JSON.stringify(field)}.`,
+        ));
+        valid = false;
+      }
+    }
+    if (!VALID_PREMISE_STATUS.has(premise.status)) {
+      diagnostics.push(diagnostic(
+        'error',
+        'finding.material-premise-status',
+        `Finding #${index} material premise #${offset + 1} has invalid status ${JSON.stringify(premise.status)}.`,
+      ));
+      valid = false;
+    }
+    if (valid) values.push(premise);
+  }
+  return values;
+}
+
+function normalizedReachability(finding, index, diagnostics) {
+  const raw = finding.reachability;
+  if (raw === undefined) return null;
+  if (!isRecord(raw)) {
+    diagnostics.push(diagnostic(
+      'error',
+      'finding.reachability',
+      `Finding #${index} reachability must be an object.`,
+    ));
+    return null;
+  }
+  let valid = true;
+  if (!VALID_REACHABILITY_KIND.has(raw.kind)) {
+    diagnostics.push(diagnostic(
+      'error',
+      'finding.reachability-kind',
+      `Finding #${index} has invalid reachability kind ${JSON.stringify(raw.kind)}.`,
+    ));
+    valid = false;
+  }
+  for (const field of ['path', 'evidence']) {
+    if (typeof raw[field] !== 'string' || raw[field].trim() === '') {
+      diagnostics.push(diagnostic(
+        'error',
+        'finding.reachability-field',
+        `Finding #${index} reachability requires non-empty field ${JSON.stringify(field)}.`,
+      ));
+      valid = false;
+    }
+  }
+  if (!VALID_PREMISE_STATUS.has(raw.status)) {
+    diagnostics.push(diagnostic(
+      'error',
+      'finding.reachability-status',
+      `Finding #${index} has invalid reachability status ${JSON.stringify(raw.status)}.`,
+    ));
+    valid = false;
+  }
+  return valid ? raw : null;
 }
 
 function normalizedIdList(raw, field, label, diagnostics) {
@@ -393,6 +482,8 @@ function validateAndCalculate(data) {
       diagnostics.push(diagnostic('error', 'finding.dimension', `Finding #${index} has invalid dimension ${JSON.stringify(finding.dimension)}.`));
     }
     const isRequiredFinding = finding.severity === 'P0' || finding.severity === 'P1';
+    const materialPremises = normalizedMaterialPremises(finding, index, diagnostics);
+    const reachability = normalizedReachability(finding, index, diagnostics);
     if (
       isRequiredFinding &&
       !evidenceTypes.some((value) => STRONG_EVIDENCE.has(value))
@@ -426,6 +517,7 @@ function validateAndCalculate(data) {
         'location',
         'problem',
         'affected_scenario',
+        'impact',
         'correct_owner',
         'minimal_change',
         'validation',
@@ -437,6 +529,26 @@ function validateAndCalculate(data) {
             `Finding #${index} (${finding.severity}) requires non-empty field ${JSON.stringify(field)}.`,
           ));
         }
+      }
+      if (materialPremises.length === 0) {
+        diagnostics.push(diagnostic(
+          'error',
+          'finding.admission-premises',
+          `Finding #${index} (${finding.severity}) requires material premises with direct sources.`,
+        ));
+      } else if (materialPremises.some((premise) => premise.status !== 'supported')) {
+        diagnostics.push(diagnostic(
+          'error',
+          'finding.admission-premise-support',
+          `Finding #${index} (${finding.severity}) has an unsupported or unknown material premise.`,
+        ));
+      }
+      if (!reachability || reachability.status !== 'supported') {
+        diagnostics.push(diagnostic(
+          'error',
+          'finding.admission-reachability',
+          `Finding #${index} (${finding.severity}) requires supported entry-gate or execution-path reachability.`,
+        ));
       }
       if (evidence.length === 0) {
         diagnostics.push(diagnostic(
@@ -457,6 +569,8 @@ function validateAndCalculate(data) {
       ...finding,
       id: findingId,
       evidence_types: evidenceTypes,
+      material_premises: materialPremises,
+      reachability,
       evidence,
       counterevidence,
     };

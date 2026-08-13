@@ -40,11 +40,31 @@ Finding 的证据类型使用：
 
 - `observed`：trace、复现、测试或用户确认的失败。
 - `normative`：官方规范、目标 runtime/schema、项目硬规则或用户明确要求。
-- `structural`：被审包内可直接验证的断裂引用、无效配置、矛盾或不可执行关系。
+- `structural`：被审包、适用 schema 或配置中的直接材料本身蕴含 finding 的 exact claim，形成断裂引用、无效配置、矛盾或不可执行关系。它不得依赖材料未说明的 runtime 事实、动作顺序、术语解释、Skill 共载行为、用户动作或其它重要前提。涉及跨文件矛盾、生命周期或组合行为时，相关规则必须具有相容的适用条件并位于同一可达路径；解析失败、schema 无效或必需引用缺失属于入口级机械失败，不要求补造运行时路径。
 - `heuristic`：第三方设计原则、可读性模式或经验性建议。
 - `inferred`：尚未验证的未来风险或静态推演。
 
 只有 `observed`、`normative` 或 `structural` 能单独支持 P0/P1；纯 `heuristic` 或 `inferred` 默认最多是 P2。
+
+证据只能证明其所在层级：description 证明声明的触发边界，query 证明测试输入，expected output 证明 eval oracle，example 证明一种可能路径；它们都不能单独证明客户端实际加载、runtime 事实或最终失败。
+
+严重性统一使用：P0 是发布硬阻断；P1 是有强证据表明会在目标场景造成实质且重复的失败；P2 是有限范围的质量、维护、证据或测试问题；Advisory 是 heuristic、未来兼容性或产品/runtime 建议。
+
+## Finding Admission Gate
+
+任何 P0/P1 在进入报告或失败 gate 前必须包含：
+
+1. **Location**：问题的精确位置。
+2. **Exact claim**：`problem` 只陈述直接证据支持的结论，不比证据更强。
+3. **Material premises**：列出每个重要前提、来源角色、直接证据和支持结论；所有重要前提必须为 `supported`。
+4. **Affected scenario 与 reachability**：说明目标环境中的具体失败，以及如何进入该路径；记录路径或入口、直接证据和支持结论。解析、schema 或必需引用错误使用 `entry-gate`，其它执行关系使用 `execution-path`。
+5. **Material impact**：说明该可达问题为什么造成核心失败、重复错误、安全问题或目标范围内的实质错误。
+6. **Evidence 与 counterevidence**：记录直接证据，以及检查过的相反规则、schema、fixture、上下文、兼容声明、例外和合理替代解释。
+7. **Owner、minimal change 与 validation**：根因属于 Skill、schema、client、runtime、script、role、eval、project 或 user，并给出最小动作和关闭证据。
+
+任一重要前提未支持、reachability 不是 `supported`、impact 仍是推测、存在尚未排除的合理解释，或 owner 不明确时，不得发布为 P0/P1；降为 P2、Advisory 或 unknown。owner 未证明为 Skill 时，`minimal_change` 不得要求修改生产 `SKILL.md`。
+
+Quick 模式中，依赖 runtime 事实、动作顺序、跨 Skill 组合、客户端路由或术语解释的 finding，默认是 P1 candidate、P2 或 unknown；只有 observed failure、适用于目标的 normative violation，或不依赖补充假设的直接 structural 缺陷才能成为最终 P0/P1。
 
 ## 两阶段评审
 
@@ -77,7 +97,7 @@ Finding 的证据类型使用：
    - **Information Hierarchy Map**：把内容分类为 in-file step、in-file reference、disclosed reference 或 environment lookup。
    - **Completion Boundary Audit**：只对前述审计决定保留为强制流程的关键步骤，检查其完成标准是否清晰、可检查且覆盖充分。
    - **Eval Case Audit**：先检查错误代价、测试层级、oracle、现实性和场景族，再解释运行不确定性和 eval-driven 修改安全；不把每个失败自动转换为 Skill 补丁。
-6. 先完成 evidence、unknown 和 finding；P0/P1 通过 Finding Admission Gate，失败 gate 关联同严重性 finding。evidence-only 的风险标签、诊断摘要或请求状态不能替代精确 target location、直接失败证据和 counterevidence；缺少其中任一项时最多为 P2 或 unknown。评审工作流没有入口、材料不足或用户未授权某项操作，不是被审 Skill 的 finding。仅有足够目标内容的 full/release 填写 `assets/scorecard-template.json` 并运行：
+6. 先完成 evidence、unknown 和 finding；P0/P1 通过本文件的 Finding Admission Gate，失败 gate 关联同严重性 finding。evidence-only 的风险标签、诊断摘要或请求状态不能替代 gate 字段。评审工作流没有入口、材料不足或用户未授权某项操作，不是被审 Skill 的 finding。仅有足够目标内容的 full/release 填写 `assets/scorecard-template.json` 并运行：
    ```bash
    node scripts/validate_scorecard.mjs <scorecard.json> --format json
    ```

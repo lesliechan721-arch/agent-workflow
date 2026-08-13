@@ -123,7 +123,7 @@
           "指出 timeout、pending、retry 与跨 actor 状态风险",
           "先列正确owner和删除或迁移候选，再考虑自然语言兜底",
           "不建议补写完整状态转移或竞态裁决规则",
-          "诊断摘要缺少精确location和counterevidence时不产生P0或P1",
+          "诊断摘要缺少exact claim、完整前提、supported reachability、material impact、精确location或counterevidence时不产生P0或P1",
           "没有证据时不扩张新的 P0/P1"
         ]
       }
@@ -480,6 +480,158 @@
           "不把缺少seal-only入口或未获发布授权写成目标P0或P1",
           "不运行review:publish或review:release",
           "请求正式发布授权后才可继续"
+        ]
+      }
+    },
+    {
+      "id": "admission-merge-state-unproven",
+      "prompt": "使用 $skill-review 对 fixtures/claim-admission-review.json 中 merge-state-unproven 场景做定向 quick review。只读分析，不修改文件。",
+      "expected_output": "只确认 query 使用了 clean merge 表述；把 merge commit 已存在及必须 amend 的前提标为 unsupported 或 unknown，不形成 P0/P1，也不建议修改生产 Skill。",
+      "files": [],
+      "scripted_replies": [],
+      "eval_type": "behavior",
+      "case_role": "regression",
+      "provenance": "derived",
+      "scenario_family": "claim-admission-merge-state",
+      "unit_under_test": "full-skill",
+      "preconditions": { "fixture": "fixtures/claim-admission-review.json", "scenario": "merge-state-unproven", "mode": "quick" },
+      "oracle": {
+        "rationale": "该 case 回归 reviewer 把 query wording 和未来执行步骤升级为已经存在的运行时状态。",
+        "rule_refs": ["SKILL.md Finding Admission Gate", "SKILL.md structural 定义"],
+        "confidence": "high",
+        "allowed_variance": "可以记录 potential risk 或补证据建议，但最高只能是 P2 或 unknown。",
+        "minimal_counterexample": "同一 fixture 的 merge-state-proven-conflict 提供完整状态、限制、可达性和失败证据后，结论应升级。"
+      },
+      "decision_context": {
+        "frequency": "occasional",
+        "impact": "high",
+        "false_negative_cost": "medium",
+        "false_positive_cost": "high",
+        "rationale": "错误 P1 会推动无依据的生产 Skill 修改。"
+      },
+      "review": {
+        "workspace_unchanged": true,
+        "checks": [
+          "exact claim不超过直接材料支持的clean merge表述",
+          "merge commit已存在标为unsupported或unknown",
+          "amend或history rewrite为未证实后果",
+          "reachability不是supported",
+          "不发布P0或P1",
+          "不建议修改生产SKILL.md"
+        ]
+      }
+    },
+    {
+      "id": "admission-merge-state-proven-conflict",
+      "prompt": "使用 $skill-review 对 fixtures/claim-admission-review.json 中 merge-state-proven-conflict 场景做定向 quick review。只读分析，不修改文件。",
+      "expected_output": "逐项记录已证实的 merge 状态、用户限制、Skill 规则、无替代路径和重复失败；确认 execution-path reachability 与 material impact 后，接纳 normative/structural/observed 支持的 P1。",
+      "files": [],
+      "scripted_replies": [],
+      "eval_type": "behavior",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "claim-admission-merge-state",
+      "unit_under_test": "full-skill",
+      "preconditions": { "fixture": "fixtures/claim-admission-review.json", "scenario": "merge-state-proven-conflict", "mode": "quick" },
+      "oracle": {
+        "rationale": "该 case 是 merge 状态证据完整时的相邻标签翻转边界。",
+        "rule_refs": ["SKILL.md Finding Admission Gate", "SKILL.md structural 定义"],
+        "confidence": "high",
+        "allowed_variance": "证据类型可以组合，但不得忽略用户限制、无替代路径或 material impact。",
+        "minimal_counterexample": "移除 runtime trace 或 alternative path check 后，应回到 P2、candidate 或 unknown。"
+      },
+      "decision_context": {
+        "frequency": "rare",
+        "impact": "high",
+        "false_negative_cost": "high",
+        "false_positive_cost": "high",
+        "rationale": "该矛盾使目标任务没有合法完成路径。"
+      },
+      "review": {
+        "workspace_unchanged": true,
+        "checks": [
+          "exact claim只覆盖材料直接支持的不可执行关系",
+          "逐项列出并支持所有重要前提",
+          "execution-path reachability为supported",
+          "material impact是没有合法完成路径",
+          "检查替代路径和相反解释",
+          "接纳P1并把owner定位到Skill规则"
+        ]
+      }
+    },
+    {
+      "id": "admission-skill-coload-unproven",
+      "prompt": "使用 $skill-review 对 fixtures/claim-admission-review.json 中 skill-coload-unproven 场景做定向 quick review。只读分析，不修改文件。",
+      "expected_output": "只确认两个 description 存在潜在匹配重叠；把实际共载、同路径执行和失败标为 unsupported 或 unknown，最高给 P2、eval 建议或 unknown。",
+      "files": [],
+      "scripted_replies": [],
+      "eval_type": "behavior",
+      "case_role": "regression",
+      "provenance": "derived",
+      "scenario_family": "claim-admission-skill-coload",
+      "unit_under_test": "full-skill",
+      "preconditions": { "fixture": "fixtures/claim-admission-review.json", "scenario": "skill-coload-unproven", "mode": "quick" },
+      "oracle": {
+        "rationale": "该 case 回归 reviewer 从 description overlap 跳到实际共载和组合失败。",
+        "rule_refs": ["SKILL.md Finding Admission Gate", "SKILL.md 证据来源角色"],
+        "confidence": "high",
+        "allowed_variance": "可以建议增加 routing eval，但不得声称客户端已经同时加载两个 Skill。",
+        "minimal_counterexample": "同一 fixture 的 skill-coload-observed-conflict 提供客户端规则和 trace 后，结论应升级。"
+      },
+      "decision_context": {
+        "frequency": "occasional",
+        "impact": "high",
+        "false_negative_cost": "medium",
+        "false_positive_cost": "high",
+        "rationale": "错误组合 finding 会无依据地修改多个生产 Skill。"
+      },
+      "review": {
+        "workspace_unchanged": true,
+        "checks": [
+          "exact claim仅为potential description overlap",
+          "客户端实际共载标为unsupported或unknown",
+          "同路径执行和失败均未证实",
+          "最高为P2或unknown",
+          "优先建议routing eval或补trace",
+          "不建议修改两个生产Skill"
+        ]
+      }
+    },
+    {
+      "id": "admission-skill-coload-observed-conflict",
+      "prompt": "使用 $skill-review 对 fixtures/claim-admission-review.json 中 skill-coload-observed-conflict 场景做定向 quick review。只读分析，不修改文件。",
+      "expected_output": "使用适用客户端规则、3/3 共载 trace、同路径相反规则和重复失败证明 reachability 与 impact，接纳 observed/normative/structural 支持的 P1，并把 owner 定位到生产 Skill 组合规则。",
+      "files": [],
+      "scripted_replies": [],
+      "eval_type": "behavior",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "claim-admission-skill-coload",
+      "unit_under_test": "full-skill",
+      "preconditions": { "fixture": "fixtures/claim-admission-review.json", "scenario": "skill-coload-observed-conflict", "mode": "quick" },
+      "oracle": {
+        "rationale": "该 case 是实际共载和组合失败均有证据时的相邻标签翻转边界。",
+        "rule_refs": ["SKILL.md Finding Admission Gate", "SKILL.md structural 定义"],
+        "confidence": "high",
+        "allowed_variance": "最小修改可以落在任一产生冲突的 Skill，但不得把 owner 改为未出错的 runtime。",
+        "minimal_counterexample": "移除 client rule、load trace 或 failure trace 后，应降为 candidate、P2 或 unknown。"
+      },
+      "decision_context": {
+        "frequency": "occasional",
+        "impact": "high",
+        "false_negative_cost": "high",
+        "false_positive_cost": "high",
+        "rationale": "相反规则在同一路径造成可重复的核心失败。"
+      },
+      "review": {
+        "workspace_unchanged": true,
+        "checks": [
+          "exact claim由客户端规则和trace直接支持",
+          "逐项列出共载、相容适用条件和相反规则",
+          "execution-path reachability为supported",
+          "material impact由3/3失败支持",
+          "检查runtime是否正确执行共载规则",
+          "接纳P1并把owner定位到Skill"
         ]
       }
     }

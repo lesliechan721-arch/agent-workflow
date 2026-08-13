@@ -51,8 +51,27 @@
 
 只列 P0/P1。
 
-| ID | 严重性 | 证据类型 | 维度 | 位置 | 受影响场景 | 证据 | 反证检查 | 正确 owner | 最小修改 | 验证方式 |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+每个 finding 使用一个块，避免把 Admission Gate 压缩进超宽表格。
+
+### `<Finding ID>`
+
+- **严重性 / 证据类型 / 维度：**
+- **位置：**
+- **Exact claim（`problem`）：**
+- **重要前提：**
+
+  | Premise | Source role | Evidence | Status |
+  | --- | --- | --- | --- |
+  | | | | supported / unsupported / unknown |
+
+- **受影响场景：**
+- **Reachability：** `entry-gate | execution-path`；path；evidence；`supported | unsupported | unknown`
+- **Material impact：**
+- **直接证据：**
+- **反证检查和合理替代解释：**
+- **正确 owner：**
+- **最小修改：**
+- **验证方式：**
 
 ## 非阻断问题
 

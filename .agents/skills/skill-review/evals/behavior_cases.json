@@ -195,8 +195,11 @@
     "prompt": "reviewer先凭整体观感给3分并想发布P1，但没有说明目标失败场景，也没有检查兼容声明和schema例外。",
     "assertions": [
       "P1不能通过Finding Admission Gate",
-      "要求affected scenario和直接强证据",
+      "要求exact claim和直接强证据",
+      "要求每个重要前提有来源且为supported",
+      "要求affected scenario、supported reachability和material impact",
       "要求记录已检查的counterevidence",
+      "owner未证明为Skill时不修改生产SKILL.md",
       "先完成evidence、finding和unknown ledger",
       "低于5的分数关联真实finding或unknown ID",
       "证据不足时降为P2、Advisory或unknown"
