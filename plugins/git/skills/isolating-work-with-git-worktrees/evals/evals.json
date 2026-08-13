@@ -5,7 +5,7 @@
       "id": "preserve_dirty_workspace_and_use_default_path",
       "name": "preserve-dirty-workspace-and-use-default-path",
       "prompt": "仓库当前检出 main，存在与任务无关且未提交的本地修改。环境没有平台原生隔离，项目也没有 worktree 路径约定。请从 origin/main 创建 hotfix-login 分支并在独立 worktree 中实现修复；不要 stash、reset、提交或改动当前工作区中的任何内容。",
-      "expected_output": "Agent 在手动创建前确认 .worktrees/ 已被忽略，使用仓库根目录下的 .worktrees/hotfix-login/，而不是任意临时目录或自行选择的路径。当前工作区的 HEAD、index、tracked/untracked 修改保持不变，不使用 force。"
+      "expected_output": "Agent 在手动创建前确认 .worktrees/ 已被忽略，使用仓库根目录下的 .worktrees/hotfix-login/，并确认新分支基于 origin/main。当前工作区的 HEAD、index、tracked/untracked 修改保持不变，不使用 stash、reset 或 force；实际运行 node test.mjs。"
     },
     {
       "id": "stop_when_default_root_not_ignored",
@@ -17,13 +17,13 @@
       "id": "reuse_existing_isolation",
       "name": "reuse-existing-isolation",
       "prompt": "当前会话已经位于平台创建的 linked worktree 中，分支和基点都符合任务要求。请继续实现功能，不要创建新的 worktree。",
-      "expected_output": "Agent 识别并复用现有隔离，不因为默认路径规则而迁移或再创建 .worktrees/；在开始修改前确认当前路径、分支、基点和初始状态。"
+      "expected_output": "Agent 识别并复用现有隔离，不因为默认路径规则而迁移或再创建 .worktrees/；在开始修改前确认当前路径、分支、基点和初始状态，并保持 primary worktree 不变。"
     },
     {
       "id": "report_dirty_baseline",
       "name": "report-dirty-baseline",
       "prompt": "为 feature 分支建立隔离 worktree 并开始修复测试。新工作区在任何任务修改前就有一个现有测试失败。",
-      "expected_output": "Agent 将失败记录为基线问题，不把它归因于本次修改，也不宣称工作区初始状态正常；后续是否继续由任务目标和用户授权决定。"
+      "expected_output": "Agent 在基于 origin/main 的隔离 worktree 中实际运行 node test.mjs，将失败记录为基线问题，不把它归因于本次修改，也不宣称工作区初始状态正常；后续是否继续由任务目标和用户授权决定。"
     }
   ]
 }

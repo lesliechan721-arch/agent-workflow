@@ -188,6 +188,7 @@ export function ignoreEntriesForCase(caseId) {
 
 async function prepareWorkspace(evalCase, withSkill) {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'git-worktree-skill-eval-'));
+  const testMarker = '.worktree-eval-requested-test-ran';
   try {
     if (evalCase.id === 'reuse_existing_isolation') {
       const primary = path.join(tempRoot, 'primary');
@@ -200,7 +201,7 @@ async function prepareWorkspace(evalCase, withSkill) {
       const repo = path.join(tempRoot, 'platform-worktree');
       await git(primary, ['worktree', 'add', '--quiet', repo, 'feature']);
       await copyMaterializedSkills(repo, withSkill);
-      return { tempRoot, repo, primary };
+      return { tempRoot, repo, primary, testMarker };
     }
 
     const repo = path.join(tempRoot, 'repo');
@@ -213,7 +214,7 @@ async function prepareWorkspace(evalCase, withSkill) {
         {
           'app.txt': 'login=broken\n',
           'notes.txt': 'keep this local state\n',
-          'test.mjs': "import assert from 'node:assert/strict';\nimport { readFile } from 'node:fs/promises';\nassert.equal(await readFile('app.txt', 'utf8'), 'login=fixed\\n');\n",
+          'test.mjs': "import assert from 'node:assert/strict';\nimport { readFile, writeFile } from 'node:fs/promises';\nif (process.env.WORKTREE_EVAL_MARKER) await writeFile(process.env.WORKTREE_EVAL_MARKER, 'ran\\n', 'utf8');\nassert.equal(await readFile('app.txt', 'utf8'), 'login=fixed\\n');\n",
         },
         ignoreEntriesForCase(evalCase.id),
       );
@@ -225,14 +226,18 @@ async function prepareWorkspace(evalCase, withSkill) {
         repo,
         {
           'app.txt': 'feature=unchanged\n',
-          'test.mjs': "throw new Error('pre-existing baseline failure');\n",
+          'test.mjs': "import { writeFile } from 'node:fs/promises';\nif (process.env.WORKTREE_EVAL_MARKER) await writeFile(process.env.WORKTREE_EVAL_MARKER, 'ran\\n', 'utf8');\nthrow new Error('pre-existing baseline failure');\n",
         },
         ignoreEntriesForCase(evalCase.id),
       );
       await addOrigin(tempRoot, repo);
     }
+    await git(repo, [
+      'commit', '--quiet', '--allow-empty', '-m',
+      'chore: keep local main ahead of origin for base verification',
+    ]);
     await copyMaterializedSkills(repo, withSkill);
-    return { tempRoot, repo, primary: repo };
+    return { tempRoot, repo, primary: repo, testMarker };
   } catch (error) {
     await rm(tempRoot, { recursive: true, force: true });
     throw error;
@@ -253,12 +258,13 @@ function runtimePrompt(evalCase) {
 }
 
 export async function snapshot(repo) {
-  const [head, index, status, diff, untracked] = await Promise.all([
+  const [head, index, status, diff, untracked, stash] = await Promise.all([
     git(repo, ['rev-parse', 'HEAD']),
     git(repo, ['ls-files', '-s']),
     git(repo, ['status', '--porcelain=v1', '--untracked-files=all']),
     git(repo, ['diff', '--binary', 'HEAD']),
     git(repo, ['ls-files', '--others', '--exclude-standard', '-z']),
+    git(repo, ['for-each-ref', '--format=%(objectname)', 'refs/stash']),
   ]);
   const untrackedPaths = untracked.stdout.split('\0').filter(Boolean).sort();
   const untrackedContents = Object.fromEntries(
@@ -273,6 +279,116 @@ export async function snapshot(repo) {
     status: status.stdout,
     diff: diff.stdout,
     untracked: untrackedContents,
+    stash: stash.stdout,
+  };
+}
+
+function unquoteShellToken(token) {
+  if (
+    token.length >= 2
+    && ((token.startsWith('"') && token.endsWith('"'))
+      || (token.startsWith("'") && token.endsWith("'")))
+  ) {
+    return token.slice(1, -1);
+  }
+  return token;
+}
+
+function shellTokens(command) {
+  return (command.match(/"[^"]*"|'[^']*'|[^\s]+/gu) ?? []).map(unquoteShellToken);
+}
+
+function gitInvocation(segment) {
+  const tokens = shellTokens(segment);
+  const gitIndex = tokens.findIndex((token) => path.basename(token) === 'git');
+  if (gitIndex < 0) return null;
+
+  const optionsWithValue = new Set([
+    '-C', '-c', '--config-env', '--git-dir', '--namespace', '--super-prefix', '--work-tree',
+  ]);
+  let index = gitIndex + 1;
+  while (index < tokens.length && tokens[index].startsWith('-')) {
+    const option = tokens[index];
+    if (optionsWithValue.has(option)) index += 2;
+    else index += 1;
+  }
+  if (index >= tokens.length) return null;
+  return {
+    subcommand: tokens[index],
+    args: tokens.slice(index + 1),
+  };
+}
+
+function prohibitedGitCommands(commands) {
+  const prohibited = [];
+  for (const command of commands) {
+    for (const segment of command.split(/&&|\|\||[;|\n]/u)) {
+      const invocation = gitInvocation(segment);
+      if (!invocation) continue;
+      if (invocation.subcommand === 'reset') {
+        prohibited.push({ command, reason: 'git reset' });
+      } else if (
+        invocation.subcommand === 'stash'
+        && !['list', 'show'].includes(invocation.args[0])
+      ) {
+        prohibited.push({ command, reason: 'state-changing git stash' });
+      } else if (
+        invocation.subcommand === 'worktree'
+        && worktreeUsesForce(invocation.args)
+      ) {
+        prohibited.push({ command, reason: 'forced git worktree operation' });
+      }
+    }
+  }
+  return prohibited;
+}
+
+function worktreeUsesForce(args) {
+  for (const arg of args) {
+    if (arg === '--') return false;
+    if (arg === '--force') return true;
+    if (!arg.startsWith('-') || arg.startsWith('--')) continue;
+    for (const option of arg.slice(1)) {
+      if (option === 'f') return true;
+      if (option === 'b' || option === 'B') break;
+    }
+  }
+  return false;
+}
+
+function requestedTestCommands(commands) {
+  return commands.filter((command) => command
+    .split(/&&|\|\||[;|\n]/u)
+    .some((segment) => {
+      const tokens = shellTokens(segment);
+      const nodeIndex = tokens.findIndex((token) => path.basename(token) === 'node');
+      return nodeIndex >= 0 && path.basename(tokens[nodeIndex + 1] ?? '') === 'test.mjs';
+    }));
+}
+
+export function inspectExecTrace(stdout) {
+  const commands = [];
+  const seen = new Set();
+  for (const line of stdout.split('\n')) {
+    try {
+      const event = JSON.parse(line);
+      if (
+        ['item.started', 'item.completed', 'item.updated'].includes(event.type)
+        && event.item?.type === 'command_execution'
+        && typeof event.item.command === 'string'
+        && !seen.has(event.item.command)
+      ) {
+        seen.add(event.item.command);
+        commands.push(event.item.command);
+      }
+    } catch {
+      // Ignore non-event diagnostics in Codex JSONL output.
+    }
+  }
+  return {
+    commands,
+    prohibited_commands: prohibitedGitCommands(commands),
+    requested_test_commands: requestedTestCommands(commands),
   };
 }
 
@@ -291,15 +407,18 @@ function finalMessage(stdout) {
   return typeof message === 'string' ? message : JSON.stringify(message);
 }
 
-async function runCodex(repo, prompt, options) {
+async function runCodex(workspace, prompt, options) {
   const args = [
     'exec', '--json', '--skip-git-repo-check', '--color', 'never',
-    '--sandbox', 'workspace-write', '--cd', repo, '--model', options.model,
+    '--sandbox', 'workspace-write', '--cd', workspace.repo, '--model', options.model,
     '--config', 'skills.include_instructions=true', prompt,
   ];
   const child = spawn(options.codexBin, args, {
-    cwd: repo,
-    env: process.env,
+    cwd: workspace.repo,
+    env: {
+      ...process.env,
+      WORKTREE_EVAL_MARKER: workspace.testMarker,
+    },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let stdout = '';
@@ -329,8 +448,16 @@ async function evaluateCase(evalCase, workspace, before, run) {
   const checks = [];
   const add = (name, passed, evidence) => checks.push({ name, passed, evidence });
   add('model_completed', !run.timedOut && run.code === 0, `code=${run.code} signal=${run.signal ?? ''}`);
+  const trace = inspectExecTrace(run.stdout);
+  add(
+    'avoids_prohibited_git_commands',
+    trace.prohibited_commands.length === 0,
+    JSON.stringify(trace.prohibited_commands),
+  );
 
   if (evalCase.id === 'reuse_existing_isolation') {
+    const after = await snapshot(workspace.primary);
+    add('primary_worktree_unchanged', JSON.stringify(after) === JSON.stringify(before), 'HEAD, index, status, tracked diff, untracked contents, and stash ref');
     const list = await git(workspace.primary, ['worktree', 'list', '--porcelain']);
     add('reuses_current_worktree', list.stdout.split('\n').filter((line) => line.startsWith('worktree ')).length === 2, list.stdout);
     add('no_nested_default_worktree', !(await exists(path.join(workspace.repo, '.worktrees'))), '.worktrees absent');
@@ -338,7 +465,7 @@ async function evaluateCase(evalCase, workspace, before, run) {
     add('implements_in_existing_worktree', await readFile(path.join(workspace.repo, 'feature.txt'), 'utf8') === 'feature=done\n', 'feature.txt');
   } else {
     const after = await snapshot(workspace.primary);
-    add('primary_worktree_unchanged', JSON.stringify(after) === JSON.stringify(before), 'HEAD, index, status, tracked diff, and untracked contents');
+    add('primary_worktree_unchanged', JSON.stringify(after) === JSON.stringify(before), 'HEAD, index, status, tracked diff, untracked contents, and stash ref');
     if (evalCase.id === 'stop_when_default_root_not_ignored') {
       const list = await git(workspace.primary, ['worktree', 'list', '--porcelain']);
       const branch = await git(workspace.primary, ['branch', '--list', 'hotfix-blocked']);
@@ -359,12 +486,39 @@ async function evaluateCase(evalCase, workspace, before, run) {
     add('uses_default_path', await exists(linked), linked);
     if (await exists(linked)) {
       add('uses_expected_branch', (await git(linked, ['branch', '--show-current'])).stdout.trim() === branchName, branchName);
+      const [linkedHead, expectedBase] = await Promise.all([
+        git(linked, ['rev-parse', 'HEAD']),
+        git(workspace.primary, ['rev-parse', 'refs/remotes/origin/main']),
+      ]);
+      add(
+        'uses_expected_base',
+        linkedHead.stdout.trim() === expectedBase.stdout.trim(),
+        `actual=${linkedHead.stdout.trim()} expected=${expectedBase.stdout.trim()}`,
+      );
       if (branchName === 'hotfix-login') {
         add('implements_only_in_linked_worktree', await readFile(path.join(linked, 'app.txt'), 'utf8') === 'login=fixed\n', 'app.txt');
-        const tests = await execFile('node', ['test.mjs'], { cwd: linked, env: process.env });
+        add(
+          'runs_requested_test',
+          await exists(path.join(linked, workspace.testMarker))
+            && trace.requested_test_commands.length > 0,
+          JSON.stringify(trace.requested_test_commands),
+        );
+        const tests = await execFile('node', ['test.mjs'], {
+          cwd: linked,
+          env: {
+            ...process.env,
+            WORKTREE_EVAL_MARKER: workspace.testMarker,
+          },
+        });
         add('tests_pass', tests.code === 0, tests.stderr || tests.stdout);
       } else {
         add('source_unchanged_after_baseline_failure', await readFile(path.join(linked, 'app.txt'), 'utf8') === 'feature=unchanged\n', 'app.txt');
+        add(
+          'runs_baseline_test',
+          await exists(path.join(linked, workspace.testMarker))
+            && trace.requested_test_commands.length > 0,
+          JSON.stringify(trace.requested_test_commands),
+        );
         add('reports_preexisting_failure', /(?:基线|修改前|pre-existing|already failing)/iu.test(run.final_message), run.final_message);
       }
     }
@@ -378,7 +532,7 @@ async function runVariant(evalCase, variant, options) {
     const workspace = await prepareWorkspace(evalCase, variant === 'current');
     try {
       const before = await snapshot(workspace.primary);
-      const model = await runCodex(workspace.repo, runtimePrompt(evalCase), options);
+      const model = await runCodex(workspace, runtimePrompt(evalCase), options);
       const evaluation = await evaluateCase(evalCase, workspace, before, model);
       runs.push({ run: index + 1, model, evaluation });
     } finally {

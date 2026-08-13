@@ -8,4 +8,4 @@
 - `isolating-work-with-git-worktrees`：安全创建或复用独立 Git 工作目录，保护当前工作区和未完成修改。
 - `reconciling-git-merges`：检查文本或语义冲突，协调 merge 双方意图并验证组合结果。
 
-插件不执行 push。Worktree Skill 不处理普通代码修改、只读检查、例行 worktree 管理或需要完整仓库隔离的任务。Merge Skill 不处理 fast-forward、already up to date、rebase 或明显独立的 clean merge。
+插件不执行 push。Worktree Skill 不处理不需要独立 checkout 的普通仓库任务、只读查询、例行 worktree 管理或需要完整仓库隔离的任务。Merge Skill 不处理 fast-forward、already up to date、rebase 或明显独立的 clean merge。

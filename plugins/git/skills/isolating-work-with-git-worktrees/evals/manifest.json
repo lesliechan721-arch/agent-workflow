@@ -38,6 +38,7 @@
         "git-commit"
       ],
       "cases": "./trigger-cases.json",
+      "fixtureModule": "./trigger-fixture.mjs",
       "observeSpawnAgent": false,
       "isolation": "strict",
       "strictNegativeSplits": [

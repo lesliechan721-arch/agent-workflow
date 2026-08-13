@@ -26,10 +26,15 @@ import {
 } from '../skills/reconciling-git-merges/evals/run-merge-evals.mjs';
 import {
   ignoreEntriesForCase as worktreeIgnoreEntriesForCase,
+  inspectExecTrace as inspectWorktreeExecTrace,
   loadCases as loadWorktreeCases,
   parseArgs as parseWorktreeEvalArgs,
   snapshot as snapshotWorktreeRepository,
 } from '../skills/isolating-work-with-git-worktrees/evals/run-worktree-evals.mjs';
+import {
+  captureTriggerWorkspaceState as captureWorktreeTriggerWorkspaceState,
+  setupTriggerWorkspace as setupWorktreeTriggerWorkspace,
+} from '../skills/isolating-work-with-git-worktrees/evals/trigger-fixture.mjs';
 
 const execFileAsync = promisify(execFile);
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
@@ -94,6 +99,7 @@ async function testEvalCorpora(sourceRoot) {
     worktreeTriggerContent,
     worktreeEvalContent,
     worktreeManifestContent,
+    worktreeEvalReadmeContent,
   ] = await Promise.all([
     readFile(
       path.join(sourceRoot, 'skills', 'git-commit', 'evals', 'trigger-cases.json'),
@@ -142,6 +148,16 @@ async function testEvalCorpora(sourceRoot) {
         'isolating-work-with-git-worktrees',
         'evals',
         'manifest.json',
+      ),
+      'utf8',
+    ),
+    readFile(
+      path.join(
+        sourceRoot,
+        'skills',
+        'isolating-work-with-git-worktrees',
+        'evals',
+        'README.md',
       ),
       'utf8',
     ),
@@ -313,20 +329,20 @@ async function testEvalCorpora(sourceRoot) {
   ]);
   assert.equal(worktreeDocument.schemaVersion, 1);
   assert.equal(worktreeDocument.skill, 'isolating-work-with-git-worktrees');
-  assert.equal(worktreeCases.length, 27);
+  assert.equal(worktreeCases.length, 30);
   assert.equal(worktreeCases.filter((entry) => entry.split === 'train').length, 14);
   assert.equal(worktreeCases.filter((entry) => entry.split === 'validation').length, 6);
-  assert.equal(worktreeCases.filter((entry) => entry.split === 'sanity').length, 7);
+  assert.equal(worktreeCases.filter((entry) => entry.split === 'sanity').length, 10);
   assert.equal(new Set(worktreeCases.map((entry) => entry.id)).size, worktreeCases.length);
   assert.equal(
     worktreeCases.filter((entry) =>
       entry.expected_loaded_skills.includes('isolating-work-with-git-worktrees'),
     ).length,
-    13,
+    15,
   );
   assert.equal(
     worktreeCases.filter((entry) => entry.expected_loaded_skills.length === 0).length,
-    11,
+    12,
   );
   for (const entry of worktreeCases) {
     assert.equal(Array.isArray(entry.expected_loaded_skills), true);
@@ -352,6 +368,9 @@ async function testEvalCorpora(sourceRoot) {
     ['sanity_list_worktrees', []],
     ['sanity_local_commit', ['git-commit']],
     ['sanity_merge_conflict', ['reconciling-git-merges']],
+    ['sanity_dirty_new_task', ['isolating-work-with-git-worktrees']],
+    ['sanity_parallel_test', ['isolating-work-with-git-worktrees']],
+    ['sanity_dirty_same_branch', []],
   ]);
   for (const [id, expectedSkills] of expectedWorktreeRouting) {
     const entry = worktreeCases.find((candidate) => candidate.id === id);
@@ -363,6 +382,34 @@ async function testEvalCorpora(sourceRoot) {
       entry.query.includes('$isolating-work-with-git-worktrees'),
     ),
     false,
+  );
+  const worktreeFixtures = new Set([
+    'clean_main',
+    'commit_ready',
+    'dirty_feature',
+    'dirty_main',
+    'dirty_mixed_feature',
+    'linked_dirty_feature',
+    'linked_feature',
+    'merge_conflict',
+  ]);
+  assert.equal(
+    worktreeCases.every((entry) =>
+      entry.workspace_fixture === undefined || worktreeFixtures.has(entry.workspace_fixture),
+    ),
+    true,
+  );
+  assert.match(
+    worktreeCases.find((entry) => entry.id === 'sanity_dirty_new_task').query,
+    /两个任务的文件和 Git 状态不要混在一起/,
+  );
+  assert.match(
+    worktreeCases.find((entry) => entry.id === 'sanity_dirty_same_branch').query,
+    /继续完成这个功能/,
+  );
+  assert.match(
+    worktreeCases.find((entry) => entry.id === 'sanity_parallel_test').query,
+    /运行兼容性测试/,
   );
   const releaseParticipants = new Set(
     worktreeCases
@@ -416,6 +463,9 @@ async function testEvalCorpora(sourceRoot) {
   assert.equal(worktreeBehaviorSuite.entry, './run-worktree-evals.mjs');
   assert.equal(worktreeBehaviorSuite.cases, './evals.json');
   assert.equal(worktreeBehaviorSuite.requiredForRelease, true);
+  assert.equal(worktreeRouterSuite.fixtureModule, './trigger-fixture.mjs');
+  assert.match(worktreeEvalReadmeContent, /--batch-name release\b/);
+  assert.equal(worktreeEvalReadmeContent.includes('--runs 1'), false);
   assert.deepEqual(
     (await loadWorktreeCases()).map((entry) => entry.id),
     worktreeEvals.evals.map((entry) => entry.id),
@@ -486,7 +536,8 @@ function assertCoreMergeContract(skill) {
 function assertCoreWorktreeContract(skill) {
   assert.match(skill, /已有满足要求的 worktree 或 sandbox；有则复用，不重复创建/);
   assert.match(skill, /共享对象库和多数 refs/);
-  assert.match(skill, /需要仓库级隔离时改用独立 clone 或平台 sandbox/);
+  assert.match(skill, /需要仓库级隔离时改用独立 clone/);
+  assert.match(skill, /只有平台明确提供独立 refs 与对象库时/);
   assert.match(skill, /优先使用平台原生的 worktree\/隔离能力/);
   assert.match(skill, /默认使用仓库根目录下的 `.worktrees\/<分支或任务名>\/`/);
   assert.match(skill, /创建前确认 `.worktrees\/` 已被忽略/);
@@ -496,7 +547,7 @@ function assertCoreWorktreeContract(skill) {
   assert.match(skill, /创建失败时不得静默退回当前工作区/);
   assert.match(skill, /确认隔离工作区的路径、基点、分支和初始状态/);
   assert.match(skill, /若已有失败，先报告，不要归因于本次工作/);
-  assert.match(skill, /将任务修改限制在该工作区，并报告路径与分支/);
+  assert.match(skill, /将任务操作及其产生的修改限制在该工作区，并报告路径与分支/);
   assert.match(skill, /仅在用户要求且无未保存工作后使用 `git worktree remove`/);
   assert.match(skill, /不要直接删除目录、强制清理或顺带删除分支/);
 }
@@ -530,8 +581,13 @@ async function testSkillRenders(context) {
   assert.equal(mergeSource.includes('metadata:'), false);
   assert.match(
     worktreeSource,
-    /当编码任务需要独立 Git 工作目录以保护当前工作区或并行检出另一分支时使用/,
+    /当任务需要独立 Git 工作目录以保护当前工作区或并行检出另一分支/,
   );
+  assert.match(worktreeSource, /不触碰当前未完成工作的情况下处理另一个独立任务/);
+  assert.match(worktreeSource, /若现有环境已提供所需隔离则复用/);
+  assert.match(worktreeSource, /不要仅因工作区有未提交修改/);
+  assert.match(worktreeSource, /继续当前 checkout 中的同一任务且没有隔离需求/);
+  assert.match(worktreeSource, /不需要独立 checkout 的只读检查/);
   assert.equal(worktreeSource.includes('user-invocable:'), false);
   assert.equal(worktreeSource.includes('metadata:'), false);
 
@@ -769,6 +825,161 @@ async function testWorktreeIgnoreFixtures() {
   }
 }
 
+async function createWorktreeTriggerFixture(fixture) {
+  const cleanupRoot = await mkdtemp(path.join(os.tmpdir(), 'git-worktree-trigger-fixture-'));
+  const workspaceRoot = path.join(cleanupRoot, 'project');
+  const home = path.join(cleanupRoot, 'home');
+  await Promise.all([
+    mkdir(path.join(workspaceRoot, '.agents'), { recursive: true }),
+    mkdir(home, { recursive: true }),
+  ]);
+  await writeFile(path.join(workspaceRoot, '.agents', 'preserved.txt'), 'control\n', 'utf8');
+  const context = {
+    workspaceRoot,
+    evalCase: { workspace_fixture: fixture },
+    env: { ...process.env, HOME: home },
+  };
+  const setup = await setupWorktreeTriggerWorkspace(context);
+  context.env = { ...context.env, ...setup.environment };
+  return { cleanupRoot, context };
+}
+
+async function testWorktreeTriggerFixtures() {
+  const fixtureChecks = [
+    ['clean_main', 'main', ''],
+    ['dirty_main', 'main', ' M src/form.ts\n'],
+    ['dirty_feature', 'feature', ' M src/form.ts\n'],
+    [
+      'dirty_mixed_feature',
+      'feature',
+      'M  README.md\n M src/form.ts\n?? notes/local.txt\n',
+    ],
+    ['commit_ready', 'feature', 'M  src/button.ts\n'],
+  ];
+  for (const [fixture, expectedBranch, expectedStatus] of fixtureChecks) {
+    const { cleanupRoot, context } = await createWorktreeTriggerFixture(fixture);
+    try {
+      assert.equal((await git(context.workspaceRoot, ['branch', '--show-current'], context.env)).stdout.trim(), expectedBranch);
+      assert.equal(
+        (await git(
+          context.workspaceRoot,
+          ['status', '--porcelain=v1', '--untracked-files=all'],
+          context.env,
+        )).stdout,
+        expectedStatus,
+      );
+      const [originMain, main, originUrl] = await Promise.all([
+        git(context.workspaceRoot, ['rev-parse', '--verify', 'refs/remotes/origin/main'], context.env),
+        git(context.workspaceRoot, ['rev-parse', '--verify', 'refs/heads/main'], context.env),
+        git(context.workspaceRoot, ['remote', 'get-url', 'origin'], context.env),
+      ]);
+      assert.equal(originMain.stdout, main.stdout);
+      assert.notEqual(originUrl.stdout.trim(), '');
+      assert.equal(
+        await readFile(path.join(context.workspaceRoot, '.agents', 'preserved.txt'), 'utf8'),
+        'control\n',
+      );
+      const state = await captureWorktreeTriggerWorkspaceState(context);
+      assert.equal(await captureWorktreeTriggerWorkspaceState(context), state);
+    } finally {
+      await rm(cleanupRoot, { recursive: true, force: true });
+    }
+  }
+
+  for (const fixture of ['linked_feature', 'linked_dirty_feature']) {
+    const { cleanupRoot, context } = await createWorktreeTriggerFixture(fixture);
+    try {
+      const worktrees = await git(context.workspaceRoot, ['worktree', 'list', '--porcelain'], context.env);
+      assert.equal((worktrees.stdout.match(/^worktree /gm) ?? []).length, 2);
+      assert.equal((await git(context.workspaceRoot, ['branch', '--show-current'], context.env)).stdout.trim(), 'feature');
+      const status = await git(
+        context.workspaceRoot,
+        ['status', '--porcelain=v1', '--untracked-files=all'],
+        context.env,
+      );
+      assert.equal(status.stdout, fixture === 'linked_feature' ? '' : ' M src/form.ts\n');
+    } finally {
+      await rm(cleanupRoot, { recursive: true, force: true });
+    }
+  }
+
+  const { cleanupRoot, context } = await createWorktreeTriggerFixture('merge_conflict');
+  try {
+    await git(context.workspaceRoot, ['rev-parse', '--verify', 'MERGE_HEAD'], context.env);
+    const status = await git(
+      context.workspaceRoot,
+      ['status', '--porcelain=v1', '--untracked-files=all'],
+      context.env,
+    );
+    assert.match(status.stdout, /^UU src\/conflict\.ts$/m);
+  } finally {
+    await rm(cleanupRoot, { recursive: true, force: true });
+  }
+
+  const invalidRoot = await mkdtemp(path.join(os.tmpdir(), 'git-worktree-trigger-invalid-'));
+  try {
+    const workspaceRoot = path.join(invalidRoot, 'project');
+    const home = path.join(invalidRoot, 'home');
+    await Promise.all([mkdir(workspaceRoot), mkdir(home)]);
+    await assert.rejects(
+      setupWorktreeTriggerWorkspace({
+        workspaceRoot,
+        evalCase: { workspace_fixture: 'invented' },
+        env: { ...process.env, HOME: home },
+      }),
+      /Unsupported worktree trigger fixture/,
+    );
+  } finally {
+    await rm(invalidRoot, { recursive: true, force: true });
+  }
+}
+
+function worktreeExecTrace(commands) {
+  return commands.map((command) => JSON.stringify({
+    type: 'item.completed',
+    item: {
+      type: 'command_execution',
+      status: 'completed',
+      exit_code: 0,
+      command,
+    },
+  })).join('\n');
+}
+
+function testWorktreeExecTraceAssertions() {
+  const safe = inspectWorktreeExecTrace(worktreeExecTrace([
+    'git status --short',
+    'git stash list',
+    'git stash show -p',
+    'git worktree add .worktrees/feature origin/main',
+    'cd .worktrees/feature && node test.mjs',
+  ]));
+  assert.deepEqual(safe.prohibited_commands, []);
+  assert.deepEqual(safe.requested_test_commands, [
+    'cd .worktrees/feature && node test.mjs',
+  ]);
+
+  const prohibited = inspectWorktreeExecTrace(worktreeExecTrace([
+    'git stash push --include-untracked',
+    'git reset --hard HEAD',
+    'git worktree add --force .worktrees/feature feature',
+    'git -C repo worktree remove -f .worktrees/old',
+    'git worktree add -ff .worktrees/feature feature',
+    'git worktree add -qf .worktrees/feature feature',
+  ]));
+  assert.deepEqual(
+    prohibited.prohibited_commands.map((entry) => entry.reason),
+    [
+      'state-changing git stash',
+      'git reset',
+      'forced git worktree operation',
+      'forced git worktree operation',
+      'forced git worktree operation',
+      'forced git worktree operation',
+    ],
+  );
+}
+
 async function initializeRepository(root) {
   await git(root, ['init', '--quiet']);
   await git(root, ['branch', '-M', 'main']);
@@ -892,6 +1103,8 @@ async function main() {
   await testHostileGitConfigurationIsIgnored();
   await testWorktreeSnapshotTracksUntrackedContent();
   await testWorktreeIgnoreFixtures();
+  await testWorktreeTriggerFixtures();
+  testWorktreeExecTraceAssertions();
   await testPartialStagingBehavior();
   await testMergeInProgressDetection();
   await testCherryPickConflictDetection();
