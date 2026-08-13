@@ -88,6 +88,9 @@ function assertRequirementsClarifierContract(skill) {
   assert.match(skill, /猜错后的返工大于现在提问的成本/);
   assert.match(skill, /不要仅因非平凡实现需要 agent 自查而使用/);
   assert.match(skill, /权威规范和现有实现已覆盖行为、范围与验收/);
+  assert.match(skill, /只给宽泛目标不等于授权 agent 决定这些事项/);
+  assert.match(skill, /已有或已批准计划.*实施阶段仍有此类局部缺口.*使用本 Skill/);
+  assert.match(skill, /用户明确授权采用默认值/);
   assert.match(skill, /明确希望通过逐轮访谈.*使用 decision-grill/);
   assert.match(skill, /用最少问题补齐足够实施的需求边界/);
   assert.match(skill, /单项影响有限，但多项合在一起会决定功能形态时，也应先澄清/);
@@ -99,6 +102,10 @@ function assertDecisionGrillContract(skill) {
   assert.match(skill, /计划、决策或想法进行逐轮访谈/);
   assert.match(skill, /产物是经过讨论的共享理解/);
   assert.match(skill, /不是 agent 为完成其它任务安排的内部计划/);
+  assert.match(skill, /用户需要通过逐轮访谈/);
+  assert.match(skill, /实现具体结果或执行已有计划时.*局部歧义，使用 requirements-clarifier/);
+  assert.match(skill, /用户或外层工作流要求.*逐轮推演.*仍使用本 Skill/);
+  assert.match(skill, /一次性说明、比较、评估、推荐或评审应直接回答/);
   assert.match(skill, /只需补齐局部需求歧义，使用 `requirements-clarifier`/);
   assert.match(skill, /明确要求围绕该决定进行逐轮访谈时.*覆盖实施语境/);
   assert.match(skill, /建立决策树/);
@@ -163,6 +170,16 @@ function assertRoutingCorpus(document) {
     document.cases.find((entry) => entry.id === 'export_grill').expected_loaded_skills,
     ['decision-grill'],
   );
+  assert.deepEqual(
+    document.cases.find((entry) => entry.id === 'approved_plan_implementation_gap')
+      .expected_loaded_skills,
+    ['requirements-clarifier'],
+  );
+  const conventionOverride = document.cases.find(
+    (entry) => entry.id === 'export_override_convention',
+  );
+  assert.match(conventionOverride.query, /现在开始实现订单导出/);
+  assert.doesNotMatch(conventionOverride.query, /先实现其它部分/);
   assert.deepEqual(
     document.cases.find((entry) => entry.id === 'runner_explain').expected_loaded_skills,
     [],
@@ -457,6 +474,18 @@ test('trigger fixture provides the repository facts used by near-miss cases', as
       await readFile(path.join(root, 'src', 'features', 'invoices', 'export.ts'), 'utf8'),
       /current-filter/,
     );
+    assert.match(
+      await readFile(path.join(root, 'src', 'features', 'orders', 'list.ts'), 'utf8'),
+      /customer[\s\S]*amount[\s\S]*created_at/,
+    );
+    assert.match(
+      await readFile(path.join(root, 'src', 'features', 'settings', 'page.ts'), 'utf8'),
+      /settingsPrimaryButtonColor = 'gray'/,
+    );
+    assert.match(
+      await readFile(path.join(root, 'src', 'styles', 'button-colors.ts'), 'utf8'),
+      /primaryButtonBlue = '#2563eb'/,
+    );
     const accountPause = await readFile(
       path.join(root, 'spec', 'account-pause.md'),
       'utf8',
@@ -618,6 +647,12 @@ test('behavior corpora preserve all redesigned assertions in executable conversa
     requirements.evals.find((entry) => entry.id === 'question-shape').scripted_replies.length,
     0,
   );
+  const transparentDefault = requirements.evals.find(
+    (entry) => entry.id === 'transparent-default',
+  );
+  assert.match(transparentDefault.prompt, /除空状态样式外/);
+  assert.match(transparentDefault.prompt, /数据对象与范围.*验收都已明确/);
+  assert.equal(transparentDefault.scripted_replies.length, 0);
   assert.equal(
     decision.evals.find((entry) => entry.id === 'challenge-assumption')
       .scripted_replies.length,
@@ -656,6 +691,10 @@ test('behavior corpora preserve all redesigned assertions in executable conversa
     decision.evals.find((entry) => entry.id === 'low-prompt-frontier')
       .scripted_replies.length,
     2,
+  );
+  assert.match(
+    decision.evals.find((entry) => entry.id === 'low-prompt-frontier').prompt,
+    /内部成员、受邀外部合作伙伴或公开访客.*仅受邀项目、同组织跨项目或公开访问/,
   );
   assert.equal(
     decision.evals.find((entry) => entry.id === 'shared-understanding-confirmation')

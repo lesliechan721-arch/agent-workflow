@@ -116,6 +116,7 @@ interface AppServerRunEvidence {
   complete: boolean;
   mechanicalPassed: boolean;
   hostSourceAccessAbsent: boolean | null;
+  scriptedReplyMismatches: string[];
   durationMs: number;
   questions: Array<{
     requestId: string;
@@ -861,6 +862,7 @@ async function runConversationOnce(options: {
   const workspaceRoot = path.join(runRoot, 'project');
   const codexHome = path.join(runRoot, 'codex-home');
   const diagnostics: string[] = [];
+  const scriptedReplyMismatches: string[] = [];
   const questions: AppServerRunEvidence['questions'] = [];
   const finalMessages: string[] = [];
   const eventTrace: unknown[] = [];
@@ -943,7 +945,7 @@ async function runConversationOnce(options: {
         }
         const scripted = options.evalCase.scriptedReplies[replyStep];
         if (!scripted) {
-          diagnostics.push(`Unexpected request_user_input step ${replyStep + 1}.`);
+          scriptedReplyMismatches.push(`Unexpected request_user_input step ${replyStep + 1}.`);
         }
         const fallback = scripted?.unexpectedQuestionAnswer ?? '请停止提问并交还控制。';
         const normalizedQuestions = params.questions.map((value, index) => {
@@ -964,7 +966,7 @@ async function runConversationOnce(options: {
           scripted?.expectedQuestionCount !== undefined &&
           scripted.expectedQuestionCount !== normalizedQuestions.length
         ) {
-          diagnostics.push(
+          scriptedReplyMismatches.push(
             `request_user_input step ${replyStep + 1} expected ${scripted.expectedQuestionCount} questions but received ${normalizedQuestions.length}.`,
           );
         }
@@ -1062,7 +1064,7 @@ async function runConversationOnce(options: {
       diagnostics.push('Codex eval accessed a forbidden host source root.');
     }
     if (replyStep < options.evalCase.scriptedReplies.length) {
-      diagnostics.push(
+      scriptedReplyMismatches.push(
         `${options.evalCase.scriptedReplies.length - replyStep} scripted reply step(s) were unused.`,
       );
     }
@@ -1078,6 +1080,7 @@ async function runConversationOnce(options: {
       }
     }
     if (options.variant === 'with_skill') {
+      diagnostics.push(...scriptedReplyMismatches);
       for (const [index, expectation] of options.evalCase.artifacts.entries()) {
         diagnostics.push(...validateWorkspaceArtifact(expectation, workspaceArtifacts[index]!));
       }
@@ -1087,6 +1090,7 @@ async function runConversationOnce(options: {
       complete: completed.complete,
       mechanicalPassed: completed.complete && diagnostics.length === 0,
       hostSourceAccessAbsent,
+      scriptedReplyMismatches,
       durationMs: Date.now() - startedAt,
       questions,
       finalMessages,
@@ -1108,6 +1112,7 @@ async function runConversationOnce(options: {
       complete: false,
       mechanicalPassed: false,
       hostSourceAccessAbsent,
+      scriptedReplyMismatches,
       durationMs: Date.now() - startedAt,
       questions,
       finalMessages,
