@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 2,
+  "batchId": "20260813T042102Z-self-release-2026-08-13-52537d97",
+  "name": "self-release-2026-08-13",
+  "owner": {
+    "kind": "static-skill",
+    "skill": "skill-review"
+  },
+  "publishedAt": "2026-08-13T05:15:44.774Z",
+  "source": {
+    "commits": [
+      "e3ec40af4b65f7e6bfb2e834c490c0cf55a532be"
+    ],
+    "inScopeDirty": false
+  },
+  "eval": {
+    "releaseOutcome": "failed",
+    "covered": 3,
+    "required": 3
+  },
+  "review": {
+    "reviewId": "20260813T051544Z-e298ed52",
+    "mode": "release",
+    "verdict": "pass-after-fixes",
+    "weightedScore": 74.7,
+    "coveragePercent": 100,
+    "confidence": "high",
+    "findings": {
+      "p0": 0,
+      "p1": 3,
+      "p2": 3,
+      "advisory": 0
+    }
+  },
+  "reportPath": "report.md"
+}
