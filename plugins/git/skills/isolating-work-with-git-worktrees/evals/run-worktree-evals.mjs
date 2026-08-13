@@ -23,6 +23,11 @@ const defaults = {
   caseId: undefined,
   output: undefined,
 };
+const GIT_METADATA_WRITE_CASES = new Set([
+  'preserve_dirty_workspace_and_use_default_path',
+  'stop_when_default_root_not_ignored',
+  'report_dirty_baseline',
+]);
 
 function usage() {
   return [
@@ -367,10 +372,7 @@ function finalMessage(stdout) {
 }
 
 async function runCodex(workspace, prompt, options) {
-  const metadataArgs = [
-    'preserve_dirty_workspace_and_use_default_path',
-    'report_dirty_baseline',
-  ].includes(workspace.caseId)
+  const metadataArgs = worktreeCaseAllowsGitWrites(workspace.caseId)
     ? await gitMetadataWritableArgs(workspace.repo, workspace.tempRoot)
     : [];
   const args = [
@@ -397,6 +399,10 @@ async function runCodex(workspace, prompt, options) {
   child.stderr.on('data', (chunk) => { stderr += chunk; });
   const result = await waitForEvalChild(child, options.timeoutMs);
   return { ...result, stdout, stderr, final_message: finalMessage(stdout) };
+}
+
+export function worktreeCaseAllowsGitWrites(caseId) {
+  return GIT_METADATA_WRITE_CASES.has(caseId);
 }
 
 async function evaluateCase(evalCase, workspace, before, run) {

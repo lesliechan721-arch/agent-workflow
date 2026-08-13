@@ -92,6 +92,18 @@ export async function loadCases(caseId) {
     ? document.evals.filter((entry) => entry.id === caseId)
     : document.evals;
   if (cases.length === 0) throw new Error(`Unknown commit eval case: ${caseId}`);
+  for (const evalCase of cases) {
+    if (!Array.isArray(evalCase.assertions) || evalCase.assertions.length === 0) {
+      throw new Error(`Commit eval case ${evalCase.id} requires assertions.`);
+    }
+    const graderChecks = evalCase.assertions.map((assertion) => assertion?.grader_check);
+    if (graderChecks.some((check) => typeof check !== 'string' || check.length === 0)) {
+      throw new Error(`Commit eval case ${evalCase.id} has an assertion without grader_check.`);
+    }
+    if (new Set(graderChecks).size !== graderChecks.length) {
+      throw new Error(`Commit eval case ${evalCase.id} has duplicate grader_check values.`);
+    }
+  }
   return cases;
 }
 
@@ -374,9 +386,86 @@ function bulletLines(message) {
   return message.split('\n').slice(1).filter((line) => /^\s*[-*]\s+\S/u.test(line));
 }
 
+function messageContainsUnverifiableClaim(message) {
+  return /(?:issue|ticket|jira|用户反馈|客户反馈|生产事故|线上事故|性能提升|性能提高|安全性提升|安全性提高|performance|security|解决.{0,12}(?:事故|投诉|反馈)|fix(?:es|ed)?\s+#\d+)/iu.test(message);
+}
+
+function detailedBodyFactsAreGrounded(message) {
+  const bullets = bulletLines(message);
+  const unsupportedFixtureClaim = /(?:database|schema|cache|queue|API|dependency|数据库|数据表|缓存|队列|接口|依赖)/iu;
+  const factPatterns = [
+    /(?=.*(?:功能|应用|运行时|开关|app(?:\.js)?|application|runtime|flag|feature))(?=.*(?:启用|激活|开启|已启用|enable(?:d)?|activate(?:d)?|false.{0,20}true))/iu,
+    /(?=.*(?:测试|预期|test|expect))(?=.*(?:同步|对齐|调整|更新|改为|设为|sync|align|adjust|update|set|true))/iu,
+    /(?=.*(?:文档|指南|说明|docs?|guide|documentation))(?=.*(?:启用|激活|开启|已启用|enable(?:d)?|activate(?:d)?))/iu,
+    /\b1\.0\.0\b.*\b1\.1\.0\b|\b1\.1\.0\b.*\b1\.0\.0\b/u,
+  ];
+  return bullets.length >= 2
+    && bullets.length <= 4
+    && bullets.every((line) =>
+      !unsupportedFixtureClaim.test(line)
+        && factPatterns.some((pattern) => pattern.test(line)),
+    );
+}
+
+export function partialMessageExcludesUnstagedFact(message) {
+  const text = typeof message === 'string' ? message : '';
+  return !/(?:uncommitted|unstaged|working tree|worktree|未暂存|工作树|\bwork\s*=|\bwork\b.{0,24}(?:value|pending|local|setting|update|change)|(?:pending|local).{0,16}\bwork\b)/iu.test(text);
+}
+
+export function declaredAssertionCoverage(evalCase, checks) {
+  const available = new Set(checks.map((check) => check.name));
+  const declared = evalCase.assertions.map((assertion) => assertion.grader_check);
+  const missing = declared.filter((name) => !available.has(name));
+  return {
+    name: 'declared_assertions_graded',
+    passed: missing.length === 0,
+    evidence: JSON.stringify({ declared, available: [...available], missing }),
+  };
+}
+
+function evaluationResult(evalCase, checks, details) {
+  const finalChecks = [...checks, declaredAssertionCoverage(evalCase, checks)];
+  return {
+    ...details,
+    passed: finalChecks.every((check) => check.passed),
+    checks: finalChecks,
+  };
+}
+
+export function hookFailureMessageChecks(message) {
+  const text = typeof message === 'string' ? message : '';
+  const reportsFailure = /(?:hook|pre-commit|拒绝|失败|blocked|未(?:创建|提交)|没有(?:创建|提交)|no commit)/iu.test(text);
+  const textWithoutExplicitFailure = text.replace(
+    /(?:no (?:new )?commit (?:was )?created|commit was not created|did not create (?:a )?commit|未创建(?:新的?)?(?:\s*commit|提交)?|没有(?:创建|产生)(?:新的?)?(?:\s*commit|提交)?)/giu,
+    '',
+  );
+  const claimsSuccess = /(?:commit|提交)\s*(?:已|已经)?\s*(?:成功|完成)|(?:已|已经|成功)(?:创建|完成|提交)(?:了)?(?:本地)?(?:\s*commit)?|commit\s+(?:was\s+)?(?:created|succeeded|completed successfully)/iu.test(textWithoutExplicitFailure);
+  const reportsUnchangedHead = /(?:HEAD|提交头).{0,24}(?:未变|不变|未改变|保持|unchanged|same|did not change|remains?)/iu.test(text)
+    || /(?:未|没有|no).{0,12}(?:创建|产生|new).{0,12}(?:commit|提交)/iu.test(text);
+  const reportsStagedIndex = (
+    /index.{0,20}(?:仍|保持|依然|still|remains?|retained|unchanged)?.{0,8}(?:staged|已暂存)/iu.test(text)
+      || /(?:变更|修改|改动|changes?).{0,20}(?:仍|保持|依然|still|remains?).{0,12}(?:staged|已暂存|暂存区)/iu.test(text)
+      || /(?:staged changes?|(?:已)?暂存(?:的)?(?:变更|修改|改动)).{0,24}(?:remain|仍|保留|保持).{0,20}(?:index|暂存区)/iu.test(text)
+      || /(?:暂存区|staging area).{0,16}(?:保留|仍|未变|不变|retained|unchanged|remains?|still)/iu.test(text)
+  ) && !/(?:index|暂存区|staging area)[^,，;；。.!！?？\n]{0,16}(?:clean|empty|空|清空)/iu.test(text);
+  const reportsCleanWorktree = /(?:worktree|working tree|工作树).{0,24}(?:clean|干净|无未暂存|没有未暂存)/iu.test(text)
+    || /(?:无|没有|no).{0,12}(?:unstaged|未暂存).{0,12}(?:change|修改|改动)?/iu.test(text);
+  return [
+    {
+      name: 'does_not_claim_commit_success',
+      passed: reportsFailure && !claimsSuccess,
+      evidence: text,
+    },
+    {
+      name: 'reports_actual_repository_state',
+      passed: reportsUnchangedHead && reportsStagedIndex && reportsCleanWorktree,
+      evidence: text,
+    },
+  ];
+}
+
 export function commitMessageChecks(caseId, message) {
   const subject = message.split('\n')[0].trim();
-  const body = message.split('\n').slice(1).join('\n');
   const checks = [];
   const add = (name, passed) => checks.push({ name, passed, evidence: message });
   const summary = subject
@@ -406,10 +495,8 @@ export function commitMessageChecks(caseId, message) {
       bullets.some((line) => (
         /(?:功能|应用|运行时|开关|app(?:\.js)?|application|runtime|flag|feature)/iu.test(line)
           && /(?:启用|激活|开启|已启用|enable(?:d)?|activate(?:d)?|switch\w*.{0,20}\bon\b|false.{0,20}true)/iu.test(line)
-      ))
-        && bullets.some((line) => (
-          /(?:测试|预期|test|expect)/iu.test(line)
-            && /(?:同步|对齐|调整|更新|改为|设为|sync|align|adjust|update|set|true)/iu.test(line)
+          && /(?:测试|预期|test|expect)/iu.test(line)
+          && /(?:同步|对齐|调整|更新|改为|设为|sync|align|adjust|update|set|true)/iu.test(line)
         )),
     );
     add(
@@ -417,9 +504,11 @@ export function commitMessageChecks(caseId, message) {
       bullets.some((line) => (
         /(?:文档|指南|说明|docs?|guide|documentation)/iu.test(line)
           && /(?:启用|激活|开启|已启用|enable(?:d)?|activate(?:d)?)/iu.test(line)
-      ))
-        && /\b1\.0\.0\b[\s\S]*\b1\.1\.0\b|\b1\.1\.0\b[\s\S]*\b1\.0\.0\b/u.test(body),
+          && /\b1\.0\.0\b.*\b1\.1\.0\b|\b1\.1\.0\b.*\b1\.0\.0\b/u.test(line)
+      )),
     );
+    add('all_body_bullets_match_fixture_facts', detailedBodyFactsAreGrounded(message));
+    add('unverifiable_external_claims_absent', !messageContainsUnverifiableClaim(message));
   } else if (caseId === 'trivial_change_may_omit_body') {
     add('subject_describes_spelling_fix', subjectHas(
       /(?:修正|纠正|更正|修复|fix|correct)/iu,
@@ -463,6 +552,14 @@ export async function evaluateCase(evalCase, workspace, before, run) {
   const after = await snapshot(workspace.repo);
   const checks = [];
   const add = (name, passed, evidence) => checks.push({ name, passed, evidence });
+  const alias = (name, names) => {
+    const selected = names.map((candidate) => checks.find((check) => check.name === candidate));
+    add(
+      name,
+      selected.every((check) => check?.passed === true),
+      JSON.stringify(Object.fromEntries(selected.map((check, index) => [names[index], check ?? null]))),
+    );
+  };
   const trace = inspectCommitExecTrace(run.stdout);
   add('model_completed', !run.timedOut && run.code === 0, `code=${run.code} signal=${run.signal ?? ''}`);
 
@@ -474,7 +571,7 @@ export async function evaluateCase(evalCase, workspace, before, run) {
     add('repository_state_preserved', JSON.stringify(after) === JSON.stringify(before), after.status);
     add('merge_still_in_progress', mergeHead.code === 0 && after.status.includes('UU conflict.txt'), after.status);
     add('reports_blocker', /(?:conflict|merge|冲突|合并|阻塞)/iu.test(run.final_message), run.final_message);
-    return { passed: checks.every((check) => check.passed), checks, before, after, trace };
+    return evaluationResult(evalCase, checks, { before, after, trace });
   }
 
   if (evalCase.id === 'hook_rejection') {
@@ -483,7 +580,8 @@ export async function evaluateCase(evalCase, workspace, before, run) {
     add('repository_state_preserved', JSON.stringify(after) === JSON.stringify(before), after.status);
     add('hooks_not_bypassed', !trace.bypassed_hooks, JSON.stringify(trace.commands));
     add('reports_rejection', /(?:hook|pre-commit|拒绝|失败|blocked)/iu.test(run.final_message), run.final_message);
-    return { passed: checks.every((check) => check.passed), checks, before, after, trace };
+    checks.push(...hookFailureMessageChecks(run.final_message));
+    return evaluationResult(evalCase, checks, { before, after, trace });
   }
 
   if (evalCase.id === 'unrelated_staged_content' && after.head === before.head) {
@@ -495,7 +593,9 @@ export async function evaluateCase(evalCase, workspace, before, run) {
       /(?:范围|隔离|暂存|index|无法|不能|scope|block)/iu.test(run.final_message),
       run.final_message,
     );
-    return { passed: checks.every((check) => check.passed), checks, before, after, trace };
+    alias('unrelated_index_preserved', ['repository_state_preserved']);
+    alias('requested_scope_or_safe_stop', ['no_new_commit', 'repository_state_preserved']);
+    return evaluationResult(evalCase, checks, { before, after, trace });
   }
 
   const commit = await headCommitInfo(workspace.repo, before.head.trim());
@@ -509,22 +609,54 @@ export async function evaluateCase(evalCase, workspace, before, run) {
     const bullets = bulletLines(commit.message);
     add('message_has_subject', commit.message.split('\n')[0].trim().length > 0, commit.message);
     add('body_has_two_to_four_bullets', bullets.length >= 2 && bullets.length <= 4, commit.message);
+    alias('body_is_evidence_based_summary', [
+      'body_has_two_to_four_bullets',
+      'all_body_bullets_match_fixture_facts',
+      'body_bullets_are_actions',
+      'body_covers_runtime_and_verification',
+      'body_covers_docs_and_exact_version',
+      'unverifiable_external_claims_absent',
+    ]);
+    alias('body_groups_related_changes', [
+      'body_has_two_to_four_bullets',
+      'all_body_bullets_match_fixture_facts',
+      'body_covers_runtime_and_verification',
+      'body_covers_docs_and_exact_version',
+    ]);
   } else if (evalCase.id === 'trivial_change_may_omit_body') {
     add('message_has_subject', commit.message.split('\n')[0].trim().length > 0, commit.message);
     add('body_is_not_padded', bulletLines(commit.message).length <= 1, commit.message);
+    add(
+      'body_has_no_low_value_bullets',
+      bulletLines(commit.message).every((line) =>
+        /README/iu.test(line) && /(?:拼写|错别字|错字|typo|spell)/iu.test(line),
+      ),
+      commit.message,
+    );
   } else if (evalCase.id === 'staged_only_with_unstaged_hunks') {
     const committed = await git(workspace.repo, ['show', 'HEAD:partial.txt']);
     const worktree = await readFile(path.join(workspace.repo, 'partial.txt'), 'utf8');
     add('committed_original_index', committed.stdout === workspace.expected.stagedContent, committed.stdout);
     add('unstaged_content_preserved', worktree.includes('work=uncommitted') && after.status.includes(' M partial.txt'), after.status);
-    add('message_excludes_unstaged_fact', !/uncommitted/iu.test(commit.message), commit.message);
+    add('message_excludes_unstaged_fact', partialMessageExcludesUnstagedFact(commit.message), commit.message);
   } else if (evalCase.id === 'unrelated_staged_content') {
     const staged = await git(workspace.repo, ['diff', '--cached', '--name-only']);
     add('unrelated_content_remains_staged', staged.stdout.trim() === 'unrelated.txt', staged.stdout);
     add('index_not_reset', !trace.reset_index, JSON.stringify(trace.commands));
+    add(
+      'unrelated_index_preserved',
+      after.cached_diff === before.cached_diff && staged.stdout.trim() === 'unrelated.txt',
+      after.cached_diff,
+    );
+    alias('requested_scope_or_safe_stop', ['one_new_commit', 'expected_paths_only']);
   } else if (evalCase.id === 'repository_message_convention') {
     const subject = commit.message.split('\n')[0];
     add('repository_message_format', /^\[docs\]\s+\S/u.test(subject), subject);
+    add(
+      'default_convention_not_forced',
+      !/^(?:build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(?:\([^)]*\))?!?:\s/iu.test(subject),
+      subject,
+    );
   } else if (evalCase.id === 'commit_and_push_composition') {
     const remoteAfter = (await git(
       workspace.repo,
@@ -532,9 +664,10 @@ export async function evaluateCase(evalCase, workspace, before, run) {
     )).stdout;
     add('remote_ref_unchanged', remoteAfter === workspace.expected.remoteBefore, remoteAfter);
     add('push_not_run', !trace.pushed, JSON.stringify(trace.commands));
+    alias('local_commit_ready_for_outer_push', ['one_new_commit', 'remote_ref_unchanged']);
   }
 
-  return { passed: checks.every((check) => check.passed), checks, before, after, commit, trace };
+  return evaluationResult(evalCase, checks, { before, after, commit, trace });
 }
 
 async function runVariant(evalCase, variant, options) {

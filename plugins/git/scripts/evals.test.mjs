@@ -21,9 +21,12 @@ import {
 } from '../skills/git-commit/evals/trigger-fixture.mjs';
 import {
   commitMessageChecks,
+  declaredAssertionCoverage,
+  hookFailureMessageChecks,
   inspectCommitExecTrace,
   loadCases as loadCommitCases,
   parseArgs as parseCommitEvalArgs,
+  partialMessageExcludesUnstagedFact,
 } from '../skills/git-commit/evals/run-commit-evals.mjs';
 import {
   analysisMessageChecks,
@@ -43,6 +46,7 @@ import {
   loadCases as loadWorktreeCases,
   parseArgs as parseWorktreeEvalArgs,
   snapshot as snapshotWorktreeRepository,
+  worktreeCaseAllowsGitWrites,
 } from '../skills/isolating-work-with-git-worktrees/evals/run-worktree-evals.mjs';
 import {
   captureTriggerWorkspaceState as captureWorktreeTriggerWorkspaceState,
@@ -227,6 +231,9 @@ async function testEvalCorpora(sourceRoot) {
   assert.match(cases.find((entry) => entry.id === 'terse_commit').query, /commti/);
 
   assert.equal(behaviorDocument.skill_name, 'git-commit');
+  assert.equal(behaviorDocument.policy.optimization, 'critical');
+  assert.equal(behaviorDocument.policy.false_negative_cost, 'high');
+  assert.equal(behaviorDocument.policy.false_positive_cost, 'high');
   assert.equal(Array.isArray(behaviorCases), true);
   assert.equal(behaviorCases.length, 8);
   assert.equal(new Set(behaviorCases.map((entry) => entry.id)).size, behaviorCases.length);
@@ -237,32 +244,72 @@ async function testEvalCorpora(sourceRoot) {
     assert.ok(entry.assertions.length >= 2);
     assert.equal(
       entry.assertions.every(
-        (assertion) => typeof assertion === 'string' && assertion.trim() !== '',
+        (assertion) =>
+          typeof assertion?.text === 'string'
+          && assertion.text.trim() !== ''
+          && assertion.grader === 'script'
+          && typeof assertion.grader_check === 'string'
+          && assertion.grader_check.trim() !== ''
+          && typeof assertion.allowed_variance === 'string'
+          && assertion.allowed_variance.trim() !== '',
       ),
       true,
     );
+    assert.equal(
+      new Set(entry.assertions.map((assertion) => assertion.grader_check)).size,
+      entry.assertions.length,
+    );
+    assert.equal(
+      declaredAssertionCoverage(
+        entry,
+        entry.assertions.map((assertion) => ({ name: assertion.grader_check })),
+      ).passed,
+      true,
+    );
+    assert.equal(declaredAssertionCoverage(entry, []).passed, false);
   }
   const expectedBehaviorContracts = new Map([
     [
       'detailed_body_for_nontrivial_change',
-      'body 包含 2 到 4 条有排查价值且可由 diff 证实的变更事实',
+      [
+        'body 包含 2 到 4 条有排查价值且可由 diff 证实的变更事实',
+        'body_is_evidence_based_summary',
+      ],
     ],
-    ['trivial_change_may_omit_body', '允许只使用准确标题而省略 body'],
-    ['staged_only_with_unstaged_hunks', 'message 只描述实际提交内容'],
+    [
+      'trivial_change_may_omit_body',
+      ['允许只使用准确标题而省略 body', 'body_is_not_padded'],
+    ],
+    [
+      'staged_only_with_unstaged_hunks',
+      ['message 只描述实际提交内容', 'message_excludes_unstaged_fact'],
+    ],
     [
       'unrelated_staged_content',
-      '只提交用户指定的两个文件，或在无法安全隔离时停止',
+      [
+        '只提交用户指定的两个文件，或在无法安全隔离时停止',
+        'requested_scope_or_safe_stop',
+      ],
     ],
-    ['repository_message_convention', '优先遵守仓库格式'],
-    ['commit_and_push_composition', '结果可由外层流程继续 push'],
-    ['conflict_or_operation_in_progress', '不继续对应历史操作'],
-    ['hook_rejection', '不绕过 hooks'],
+    ['repository_message_convention', ['优先遵守仓库格式', 'repository_message_format']],
+    [
+      'commit_and_push_composition',
+      ['结果可由外层流程继续 push', 'local_commit_ready_for_outer_push'],
+    ],
+    [
+      'conflict_or_operation_in_progress',
+      ['不继续对应历史操作', 'repository_state_preserved'],
+    ],
+    ['hook_rejection', ['不绕过 hooks', 'hooks_not_bypassed']],
   ]);
-  for (const [id, expectedAssertion] of expectedBehaviorContracts) {
+  for (const [id, [expectedText, expectedGraderCheck]] of expectedBehaviorContracts) {
     const entry = behaviorCases.find((candidate) => candidate.id === id);
     assert.ok(entry, `Missing required behavior case ${id}`);
     assert.ok(
-      entry.assertions.includes(expectedAssertion),
+      entry.assertions.some(
+        (assertion) =>
+          assertion.text === expectedText && assertion.grader_check === expectedGraderCheck,
+      ),
       `Missing required behavior assertion for ${id}`,
     );
   }
@@ -500,6 +547,7 @@ async function testEvalCorpora(sourceRoot) {
   const worktreeEvals = JSON.parse(worktreeEvalContent);
   const worktreeManifest = JSON.parse(worktreeManifestContent);
   assert.equal(worktreeEvals.skill_name, 'isolating-work-with-git-worktrees');
+  assert.equal(worktreeEvals.policy.optimization, 'critical');
   assert.deepEqual(
     worktreeEvals.evals.map((entry) => entry.id),
     [
@@ -559,6 +607,8 @@ async function testEvalCorpora(sourceRoot) {
     },
   );
   assert.throws(() => parseWorktreeEvalArgs(['--timeout-ms', '0']), /positive integer/);
+  assert.equal(worktreeCaseAllowsGitWrites('stop_when_default_root_not_ignored'), true);
+  assert.equal(worktreeCaseAllowsGitWrites('reuse_existing_isolation'), false);
 }
 
 function assertRenderedSkill(skill) {
@@ -1071,6 +1121,115 @@ function testCommitMessageAssertions() {
     commitMessageChecks('detailed_body_for_nontrivial_change', detailedChinese)
       .every((check) => check.passed),
     true,
+  );
+  assert.equal(
+    commitMessageChecks(
+      'detailed_body_for_nontrivial_change',
+      `${detailedChinese}\n- 解决线上事故并关联 issue #42`,
+    ).find((check) => check.name === 'unverifiable_external_claims_absent').passed,
+    false,
+  );
+  assert.equal(
+    commitMessageChecks(
+      'detailed_body_for_nontrivial_change',
+      `${detailed}\n- Update the database schema for the application feature`,
+    ).find((check) => check.name === 'all_body_bullets_match_fixture_facts').passed,
+    false,
+  );
+  assert.equal(
+    commitMessageChecks(
+      'detailed_body_for_nontrivial_change',
+      [
+        'feat: activate the application',
+        '',
+        '- Switch the application runtime flag from false to true and align test expectations',
+        '- Mark the guide feature as enabled and bump 1.0.0 to 1.1.0',
+        '- Enable the application feature and update the database schema',
+      ].join('\n'),
+    ).find((check) => check.name === 'all_body_bullets_match_fixture_facts').passed,
+    false,
+  );
+  assert.equal(
+    commitMessageChecks(
+      'detailed_body_for_nontrivial_change',
+      `${detailed}\n- Improve security for the application feature`,
+    ).find((check) => check.name === 'unverifiable_external_claims_absent').passed,
+    false,
+  );
+  assert.equal(
+    commitMessageChecks(
+      'detailed_body_for_nontrivial_change',
+      [
+        'feat: activate the application',
+        '',
+        '- Enable the application runtime flag',
+        '- Align test expectations',
+        '- Mark the guide feature as enabled',
+        '- Bump 1.0.0 to 1.1.0',
+      ].join('\n'),
+    ).some((check) => !check.passed),
+    true,
+  );
+  assert.equal(
+    hookFailureMessageChecks(
+      'pre-commit hook 失败，未创建 commit。HEAD 未变，index 仍 staged，worktree clean。',
+    ).every((check) => check.passed),
+    true,
+  );
+  assert.equal(
+    hookFailureMessageChecks(
+      'pre-commit hook failed; no commit was created. HEAD is unchanged; staged changes remain in the index; working tree is clean.',
+    ).every((check) => check.passed),
+    true,
+  );
+  assert.equal(
+    hookFailureMessageChecks(
+      'pre-commit hook failed; no commit created. HEAD unchanged; staged changes remain in the index; working tree clean.',
+    ).every((check) => check.passed),
+    true,
+  );
+  assert.equal(
+    hookFailureMessageChecks(
+      'pre-commit hook failed; no commit created. HEAD unchanged; staged changes remain in the index, working tree clean.',
+    ).every((check) => check.passed),
+    true,
+  );
+  assert.equal(
+    hookFailureMessageChecks(
+      'pre-commit hook failed; no commit created. HEAD unchanged; staged changes remain in the index; working tree is clean.',
+    ).find((check) => check.name === 'does_not_claim_commit_success').passed,
+    true,
+  );
+  assert.equal(
+    hookFailureMessageChecks(
+      'pre-commit hook 失败，没有创建提交。HEAD 未改变；已暂存修改仍保留在 index；工作树干净。',
+    ).every((check) => check.passed),
+    true,
+  );
+  assert.equal(
+    hookFailureMessageChecks(
+      'pre-commit hook 失败，未创建提交。HEAD 未变；暂存修改仍在 index；工作树干净。',
+    ).every((check) => check.passed),
+    true,
+  );
+  assert.equal(
+    hookFailureMessageChecks('pre-commit hook 失败，但 commit 成功。')
+      .find((check) => check.name === 'does_not_claim_commit_success').passed,
+    false,
+  );
+  assert.equal(
+    partialMessageExcludesUnstagedFact('chore: 记录选定的暂存内容'),
+    true,
+  );
+  assert.equal(
+    partialMessageExcludesUnstagedFact('chore: Update the work value to the pending local setting'),
+    false,
+  );
+  assert.equal(
+    hookFailureMessageChecks(
+      'pre-commit hook 失败。HEAD advanced，index is clean，worktree is clean。',
+    ).find((check) => check.name === 'reports_actual_repository_state').passed,
+    false,
   );
   assert.equal(
     commitMessageChecks(

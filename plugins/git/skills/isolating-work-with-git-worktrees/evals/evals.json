@@ -1,29 +1,106 @@
 {
   "skill_name": "isolating-work-with-git-worktrees",
+  "policy": {
+    "optimization": "critical",
+    "false_negative_cost": "high",
+    "false_positive_cost": "high",
+    "rationale": "漏掉隔离或错误复用会污染用户当前工作，错误阻止安全隔离则会阻断明确要求的独立任务。"
+  },
   "evals": [
     {
       "id": "preserve_dirty_workspace_and_use_default_path",
       "name": "preserve-dirty-workspace-and-use-default-path",
+      "eval_type": "outcome",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "manual_worktree_creation",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "current_checkout": "main，包含与任务无关的 tracked 和 untracked 修改",
+        "platform_isolation": "none",
+        "project_path_convention": "none",
+        "default_root_ignored": true,
+        "remote_base": "origin/main"
+      },
       "prompt": "仓库当前检出 main，存在与任务无关且未提交的本地修改。环境没有平台原生隔离，项目也没有 worktree 路径约定。请从 origin/main 创建 hotfix-login 分支并在独立 worktree 中实现修复；不要 stash、reset、提交或改动当前工作区中的任何内容。",
-      "expected_output": "Agent 在手动创建前确认 .worktrees/ 已被忽略，使用仓库根目录下的 .worktrees/hotfix-login/，并确认新分支基于 origin/main。当前工作区的 HEAD、index、tracked/untracked 修改保持不变，不使用 stash、reset 或 force；实际运行 node test.mjs。"
+      "expected_output": "Agent 在手动创建前确认 .worktrees/ 已被忽略，使用仓库根目录下的 .worktrees/hotfix-login/，并确认新分支基于 origin/main。当前工作区的 HEAD、index、tracked/untracked 修改保持不变，不使用 stash、reset 或 force；实际运行 node test.mjs。",
+      "oracle": {
+        "rationale": "没有平台隔离和项目路径约定时，Skill 规定使用已忽略的默认根，并保护当前无关工作。",
+        "rule_refs": ["SKILL.md:6-10"],
+        "confidence": "high",
+        "allowed_variance": "允许等价只读检查和命令顺序；路径、基点、保护状态及测试结果必须一致。"
+      }
     },
     {
       "id": "stop_when_default_root_not_ignored",
       "name": "stop-when-default-root-not-ignored",
+      "eval_type": "outcome",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "manual_worktree_creation",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "current_checkout": "main，包含与任务无关的本地修改",
+        "platform_isolation": "none",
+        "project_path_convention": "none",
+        "default_root_ignored": false,
+        "git_metadata_writable": true
+      },
       "prompt": "仓库当前检出 main，存在与任务无关且未提交的本地修改。环境没有平台原生隔离和项目 worktree 路径约定，.worktrees/ 也没有被忽略。请为 hotfix-blocked 准备隔离工作区；不要修改 .gitignore 或当前工作区。",
-      "expected_output": "Agent 确认 .worktrees/ 未被忽略后停止，报告需要明确决定的阻塞项；不创建 worktree 或分支，不修改 .gitignore、HEAD、index、tracked/untracked 内容。"
+      "expected_output": "Agent 确认 .worktrees/ 未被忽略后停止，报告需要明确决定的阻塞项；即使 Git metadata 可写，也不创建 worktree 或分支，不修改 .gitignore、HEAD、index、tracked/untracked 内容。",
+      "oracle": {
+        "rationale": "默认根未忽略时，Skill 明确要求先报告并取得处理方式；sandbox 不应代替模型做出停止决定。",
+        "rule_refs": ["SKILL.md:8"],
+        "confidence": "high",
+        "allowed_variance": "允许不同阻塞说明和只读检查，但不得创建 worktree、分支或改变仓库状态。",
+        "minimal_counterexample": "仅将 .worktrees/ 改为已忽略后，应在默认路径创建隔离 worktree。"
+      }
     },
     {
       "id": "reuse_existing_isolation",
       "name": "reuse-existing-isolation",
+      "eval_type": "outcome",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "reuse_platform_isolation",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "current_checkout": "平台已创建且符合任务要求的 linked worktree",
+        "branch": "feature",
+        "base": "符合任务要求"
+      },
       "prompt": "当前会话已经位于平台创建的 linked worktree 中，分支和基点都符合任务要求。请继续实现功能，不要创建新的 worktree。",
-      "expected_output": "Agent 识别并复用现有隔离，不因为默认路径规则而迁移或再创建 .worktrees/；在开始修改前确认当前路径、分支、基点和初始状态，并保持 primary worktree 不变。"
+      "expected_output": "Agent 识别并复用现有隔离，不因为默认路径规则而迁移或再创建 .worktrees/；在开始修改前确认当前路径、分支、基点和初始状态，并保持 primary worktree 不变。",
+      "oracle": {
+        "rationale": "Skill 明确规定现有环境已提供合适隔离时复用，不重复创建。",
+        "rule_refs": ["SKILL.md:3", "SKILL.md:6", "SKILL.md:10-12"],
+        "confidence": "high",
+        "allowed_variance": "允许不同检查顺序，但只能修改现有 linked worktree 中的目标文件，不得新增 worktree。",
+        "minimal_counterexample": "若当前会话不在满足要求的隔离环境中，则应进入安全创建分支。"
+      }
     },
     {
       "id": "report_dirty_baseline",
       "name": "report-dirty-baseline",
+      "eval_type": "outcome",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "baseline_failure_attribution",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "current_checkout": "main",
+        "new_worktree_base": "origin/main",
+        "baseline_test": "在任何任务修改前固定失败"
+      },
       "prompt": "为 feature 分支建立隔离 worktree 并开始修复测试。新工作区在任何任务修改前就有一个现有测试失败。",
-      "expected_output": "Agent 在基于 origin/main 的隔离 worktree 中实际运行 node test.mjs，将失败记录为基线问题，不把它归因于本次修改，也不宣称工作区初始状态正常；后续是否继续由任务目标和用户授权决定。"
+      "expected_output": "Agent 在基于 origin/main 的隔离 worktree 中实际运行 node test.mjs，将失败记录为基线问题，不把它归因于本次修改，也不宣称工作区初始状态正常；后续是否继续由任务目标和用户授权决定。",
+      "oracle": {
+        "rationale": "Skill 要求在任务操作前检查初始状态，并先报告已有失败而不归因于本次工作。",
+        "rule_refs": ["SKILL.md:10"],
+        "confidence": "high",
+        "allowed_variance": "允许不同失败摘要，但测试必须在修改前运行，目标文件保持不变，并明确标记 pre-existing baseline。",
+        "minimal_counterexample": "若基线检查通过，则可以继续任务修改，不应报告已有失败。"
+      }
     }
   ]
 }
