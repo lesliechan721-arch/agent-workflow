@@ -591,19 +591,121 @@ describe('authoring tools', () => {
     );
     await expect(fs.pathExists(modelTriggerCasesPath)).resolves.toBe(true);
     const modelTriggerCases = await fs.readJson(modelTriggerCasesPath) as {
-      cases: Array<{ query: string; should_load_skill: boolean }>;
+      policy: {
+        optimization: string;
+        false_negative_cost: string;
+        false_positive_cost: string;
+      };
+      cases: Array<{
+        query: string;
+        should_load_skill: boolean;
+        eval_type: string;
+        case_role: string;
+        provenance: string;
+        scenario_family: string;
+        unit_under_test: string;
+        preconditions: Record<string, unknown>;
+        oracle: {
+          rationale: string;
+          rule_refs: string[];
+          confidence: string;
+          allowed_variance: string;
+          minimal_counterexample?: string;
+        };
+      }>;
     };
+    expect(modelTriggerCases.policy).toMatchObject({
+      optimization: 'balanced',
+      false_negative_cost: 'high',
+      false_positive_cost: 'high',
+    });
     expect(modelTriggerCases.cases
       .filter((entry) => entry.should_load_skill)
       .every((entry) => entry.query.includes(
         '检查仓库状态、执行风险核验并生成结构化诊断报告工作流',
       ))).toBe(true);
+    expect(modelTriggerCases.cases.every((entry) => (
+      entry.eval_type === 'trigger'
+      && entry.scenario_family === 'primary-invocation-boundary'
+      && Object.keys(entry.preconditions).length > 0
+      && entry.oracle.rationale.length > 0
+      && entry.oracle.rule_refs.length > 0
+      && entry.oracle.allowed_variance.length > 0
+    ))).toBe(true);
+    expect(modelTriggerCases.cases
+      .filter((entry) => !entry.should_load_skill)
+      .every((entry) => (
+        entry.case_role === 'boundary'
+        && entry.provenance === 'boundary'
+        && typeof entry.oracle.minimal_counterexample === 'string'
+      ))).toBe(true);
     expect(JSON.stringify(modelTriggerCases)).not.toContain('$repo-check');
-    await expect(
-      fs.pathExists(
-        path.join(tempRepo, 'plugins', 'repo-check', 'skills', 'repo-check', 'evals', 'evals.json'),
-      ),
-    ).resolves.toBe(true);
+    const modelBehaviorCasesPath = path.join(
+      tempRepo,
+      'plugins',
+      'repo-check',
+      'skills',
+      'repo-check',
+      'evals',
+      'evals.json',
+    );
+    const modelBehaviorCases = await fs.readJson(modelBehaviorCasesPath) as {
+      policy: {
+        optimization: string;
+        false_negative_cost: string;
+        false_positive_cost: string;
+      };
+      evals: Array<{
+        eval_type: string;
+        case_role: string;
+        provenance: string;
+        scenario_family: string;
+        unit_under_test: string;
+        preconditions: Record<string, unknown>;
+        oracle: {
+          confidence: string;
+          rule_refs: string[];
+        };
+      }>;
+    };
+    expect(modelBehaviorCases.policy).toMatchObject({
+      optimization: 'precision-first',
+      false_negative_cost: 'medium',
+      false_positive_cost: 'high',
+    });
+    expect(modelBehaviorCases.evals[0]).toMatchObject({
+      eval_type: 'outcome',
+      case_role: 'diagnostic',
+      provenance: 'representative-synthetic',
+      scenario_family: 'primary-workflow-outcome',
+      unit_under_test: 'full-skill',
+      oracle: {
+        confidence: 'low',
+      },
+    });
+    const evalCaseValidatorPath = path.join(
+      repoRoot(),
+      '.agents',
+      'skills',
+      'skill-review',
+      'scripts',
+      'validate_eval_cases.mjs',
+    );
+    for (const evalCasesPath of [modelTriggerCasesPath, modelBehaviorCasesPath]) {
+      const validation = await execFileAsync(
+        'node',
+        [evalCaseValidatorPath, evalCasesPath, '--strict', '--format', 'json'],
+        { cwd: repoRoot(), env: process.env },
+      );
+      expect(JSON.parse(validation.stdout)).toMatchObject({
+        mode: 'strict',
+        valid: true,
+        summary: {
+          errors: 0,
+          warnings: 0,
+        },
+      });
+    }
     await expect(
       fs.readJson(path.join(tempRepo, 'plugins', 'repo-check', '.app.json')),
     ).resolves.toMatchObject({
@@ -670,7 +772,19 @@ describe('authoring tools', () => {
     );
     const manualTriggerCases = await fs.readJson(
       path.join(manualRoot, 'evals', 'trigger-cases.json'),
-    ) as { cases: Array<{ query: string; should_load_skill: boolean }> };
+    ) as {
+      policy: {
+        optimization: string;
+        false_negative_cost: string;
+        false_positive_cost: string;
+      };
+      cases: Array<{ query: string; should_load_skill: boolean }>;
+    };
+    expect(manualTriggerCases.policy).toMatchObject({
+      optimization: 'precision-first',
+      false_negative_cost: 'medium',
+      false_positive_cost: 'high',
+    });
     expect(manualTriggerCases.cases
       .filter((entry) => entry.should_load_skill)
       .every((entry) => entry.query.includes('$manual-workflow'))).toBe(true);
@@ -774,6 +888,22 @@ describe('authoring tools', () => {
     await expect(
       fs.readJson(path.join(dualSkillRoot, 'evals', 'manifest.json')),
     ).resolves.toMatchObject({ plugin: 'git-commit', skill: 'release-notes' });
+    await expect(
+      fs.readJson(path.join(dualSkillRoot, 'evals', 'trigger-cases.json')),
+    ).resolves.toMatchObject({
+      policy: {
+        optimization: 'precision-first',
+        false_negative_cost: 'medium',
+        false_positive_cost: 'high',
+      },
+      cases: expect.arrayContaining([
+        expect.objectContaining({
+          eval_type: 'trigger',
+          scenario_family: 'primary-invocation-boundary',
+          oracle: expect.objectContaining({ confidence: 'medium' }),
+        }),
+      ]),
+    });
     await expect(fs.readFile(dualReadmePath, 'utf8')).resolves.toBe(dualReadmeBefore);
 
     const manifestBeforeCollision = await fs.readFile(
@@ -2285,6 +2415,9 @@ describe('authoring tools', () => {
     expect(skillDoc).toContain('`references/skill-design.md`');
     expect(skillDoc).toContain('`references/skill-scripts.md`');
     expect(skillDoc).toContain('`references/skill-evaluation.md`');
+    expect(skillDoc).toContain('validate_eval_cases.mjs');
+    expect(skillDoc).toContain('只有通过 Case Admission 且归因为 `skill-defect` 的失败');
+    expect(skillDoc).toContain('eval-change-safety');
     expect(skillDoc).toContain('`references/slash-commands.md`');
     expect(skillDoc).toContain('`--with-mcp` / `--with-apps`');
     expect(skillDoc).not.toContain('不在插件 manifest 声明最低 Codex / Claude Code 版本');
@@ -2398,12 +2531,23 @@ describe('authoring tools', () => {
     expect(skillEvaluationDoc).toContain('真实模型只允许 `scope: "project"`');
     expect(skillEvaluationDoc).toContain('user profile 必须 `runModel: false`');
     expect(skillEvaluationDoc).toContain('本仓库不增加第二个 judge 模型');
+    expect(skillEvaluationDoc).toContain('## Eval Case Audit 作者合同');
+    expect(skillEvaluationDoc).toContain('`.agents/skills/skill-review/assets/eval-case-template.json`');
+    expect(skillEvaluationDoc).toContain('`eval-validity`、`release-evidence` 和 `eval-change-safety`');
+    expect(skillEvaluationDoc).toContain('positive recall、false-negative rate、negative specificity');
+    expect(skillEvaluationDoc).toContain('只有通过 Case Admission 且归因为 `skill-defect` 的失败');
+    expect(skillEvaluationDoc).toContain('同族变体、minimal pair、相反标签 near-miss');
     expect(skillEvaluationDoc).not.toContain('当前仓库没有统一的跨平台模型 eval runner');
     expect(awScriptsDoc).toContain('作者 validator 执行 renderer fixture 时使用同一最小环境合同');
     expect(awScriptsDoc).toContain('不会把父进程的其它环境变量传给插件 renderer');
     expect(creatorTriggerFixtures).toMatchObject({
       schemaVersion: 1,
       skill: 'create-aw-plugin',
+      policy: {
+        optimization: 'balanced',
+        false_negative_cost: 'high',
+        false_positive_cost: 'high',
+      },
     });
     expect(creatorTriggerFixtures.cases).toHaveLength(28);
     expect(
@@ -2436,11 +2580,48 @@ describe('authoring tools', () => {
         (entry: { query: string }) => entry.query.includes('$create-aw-plugin'),
       ),
     ).toBe(false);
+    const evalAuthoringTriggerCase = creatorTriggerFixtures.cases.find(
+      (entry: { id: string }) => entry.id === 'sanity_add_plugin_skill_eval',
+    );
+    const readOnlyReviewTriggerCase = creatorTriggerFixtures.cases.find(
+      (entry: { id: string }) => entry.id === 'sanity_review_plugin_skill',
+    );
+    expect(evalAuthoringTriggerCase).toMatchObject({
+      eval_type: 'trigger',
+      case_role: 'representative',
+      provenance: 'representative-synthetic',
+      scenario_family: 'plugin-eval-authoring-vs-read-only-review',
+      oracle: {
+        confidence: 'high',
+      },
+    });
+    expect(readOnlyReviewTriggerCase).toMatchObject({
+      eval_type: 'trigger',
+      case_role: 'boundary',
+      provenance: 'boundary',
+      scenario_family: 'plugin-eval-authoring-vs-read-only-review',
+      oracle: {
+        confidence: 'high',
+        minimal_counterexample: expect.any(String),
+      },
+    });
+    expect(creatorEvalFixtures.policy).toMatchObject({
+      optimization: 'precision-first',
+      false_negative_cost: 'medium',
+      false_positive_cost: 'high',
+    });
     const createModelInvokedCase = creatorEvalFixtures.evals.find(
       (entry: { id: string }) => entry.id === 'create-model-invoked',
     );
     expect(createModelInvokedCase).toMatchObject({
       expected_output: expect.stringContaining('plugin version 保持 0.1.0 且没有 release intent'),
+      eval_type: 'outcome',
+      case_role: 'representative',
+      provenance: 'observed',
+      scenario_family: 'new-model-plugin-with-auditable-evals',
+      oracle: {
+        confidence: 'high',
+      },
       review: {
         allowed_workspace_changes: ['plugins/release-notes/**'],
         artifacts: expect.arrayContaining([
@@ -2448,9 +2629,16 @@ describe('authoring tools', () => {
             path: 'plugins/release-notes/.agents-plugin/plugin.json',
             json: expect.objectContaining({ version: '0.1.0' }),
           }),
+          expect.objectContaining({
+            path: 'plugins/release-notes/skills/release-notes/evals/trigger-cases.json',
+          }),
+          expect.objectContaining({
+            path: 'plugins/release-notes/skills/release-notes/evals/evals.json',
+          }),
         ]),
         checks: expect.arrayContaining([
           expect.stringContaining('没有创建 release intent'),
+          expect.stringContaining('policy、场景族、oracle'),
         ]),
       },
     });
@@ -2475,7 +2663,7 @@ describe('authoring tools', () => {
         skillName: 'create-aw-plugin',
         skillRoot: creatorSkillRoot,
         caseCount: 5,
-        idKind: 'string',
+        executable: true,
       },
       {
         document: exampleEvalFixtures,
@@ -2488,19 +2676,25 @@ describe('authoring tools', () => {
           'review-workflow',
         ),
         caseCount: 2,
-        idKind: 'number',
+        executable: false,
       },
     ];
     for (const suite of evalSuites) {
       expect(suite.document.skill_name).toBe(suite.skillName);
       expect(suite.document.evals).toHaveLength(suite.caseCount);
+      expect(suite.document.policy).toMatchObject({
+        optimization: expect.any(String),
+        false_negative_cost: expect.any(String),
+        false_positive_cost: expect.any(String),
+        rationale: expect.any(String),
+      });
       const ids = suite.document.evals.map((evalCase: { id: unknown }) => evalCase.id);
       expect(new Set(ids).size).toBe(ids.length);
 
       for (const evalCase of suite.document.evals) {
-        if (suite.idKind === 'string') {
-          expect(typeof evalCase.id).toBe('string');
-          expect(evalCase.id.trim().length).toBeGreaterThan(0);
+        expect(typeof evalCase.id).toBe('string');
+        expect(evalCase.id.trim().length).toBeGreaterThan(0);
+        if (suite.executable) {
           expect(Array.isArray(evalCase.scripted_replies)).toBe(true);
           expect(evalCase.review).toMatchObject({
             platforms: ['codex'],
@@ -2523,10 +2717,22 @@ describe('authoring tools', () => {
             ).toBe(true);
           }
         } else {
-          expect(Number.isInteger(evalCase.id)).toBe(true);
-          expect(evalCase.id).toBeGreaterThan(0);
           expect(Array.isArray(evalCase.files)).toBe(true);
           expect(evalCase).not.toHaveProperty('assertions');
+          expect(evalCase).toMatchObject({
+            eval_type: expect.any(String),
+            case_role: expect.any(String),
+            provenance: expect.any(String),
+            scenario_family: expect.any(String),
+            unit_under_test: expect.any(String),
+            preconditions: expect.any(Object),
+            oracle: {
+              rationale: expect.any(String),
+              rule_refs: expect.any(Array),
+              confidence: expect.any(String),
+              allowed_variance: expect.any(String),
+            },
+          });
 
           for (const file of evalCase.files) {
             expect(typeof file).toBe('string');
@@ -2544,12 +2750,49 @@ describe('authoring tools', () => {
       }
     }
 
+    const evalAuditValidatorPath = path.join(
+      root,
+      '.agents',
+      'skills',
+      'skill-review',
+      'scripts',
+      'validate_eval_cases.mjs',
+    );
+    for (const [casePath, strict] of [
+      [path.join(creatorSkillRoot, 'evals', 'trigger-cases.json'), false],
+      [path.join(creatorSkillRoot, 'evals', 'evals.json'), false],
+      [path.join(
+        refBase,
+        '.examples',
+        'code-review',
+        'skills',
+        'review-workflow',
+        'evals',
+        'evals.json',
+      ), true],
+    ] as const) {
+      const result = await execFileAsync(
+        'node',
+        [
+          evalAuditValidatorPath,
+          casePath,
+          ...(strict ? ['--strict'] : []),
+          '--format',
+          'json',
+        ],
+        { cwd: root, env: process.env },
+      );
+      expect(JSON.parse(result.stdout)).toMatchObject({ valid: true });
+    }
+
     const authoringDoc = await fs.readFile(path.join(root, 'docs', 'plugin-authoring.md'), 'utf8');
     expect(authoringDoc).toContain('references/plugin-manifest-spec.md');
     expect(authoringDoc).toContain('references/skills-and-triggers.md');
     expect(authoringDoc).toContain('references/skill-design.md');
     expect(authoringDoc).toContain('references/skill-scripts.md');
     expect(authoringDoc).toContain('references/skill-evaluation.md');
+    expect(authoringDoc).toContain('validate_eval_cases.mjs');
+    expect(authoringDoc).toContain('只有通过 Case Admission 且归因为 `skill-defect` 的失败');
     expect(authoringDoc).toContain('Skill 的触发行为只由平台原生元数据决定');
     expect(authoringDoc).toContain('作者不需要、也不能在插件 manifest 中声明最低 Codex 或 Claude Code 版本');
     expect(authoringDoc).not.toContain('references/project-plugin-contract.md');

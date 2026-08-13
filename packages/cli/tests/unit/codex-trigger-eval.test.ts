@@ -500,6 +500,7 @@ describe('Codex native trigger eval driver', () => {
     async () => {
       const fixture = await createFixture();
       const reportPath = path.join(fixture.pluginRoot, 'report.json');
+      const onCaseCompleted = vi.fn(async () => undefined);
       const report = await runCodexTriggerSuite({
         suite: suite({ fixtureModule: './evals/fixture.mjs' }),
         split: 'validation',
@@ -507,9 +508,12 @@ describe('Codex native trigger eval driver', () => {
         pluginRoot: fixture.pluginRoot,
         profile: 'project-default',
         runs: 1,
+        caseIds: ['load_and_spawn'],
         codexBin: fixture.codexBin,
         sourceEnv: process.env,
         reportPath,
+        stopOnIncomplete: true,
+        onCaseCompleted,
       });
       expect(report, JSON.stringify(report, null, 2)).toMatchObject({
         kind: 'trigger',
@@ -517,6 +521,13 @@ describe('Codex native trigger eval driver', () => {
         complete: true,
         mechanicalPassed: true,
       });
+      expect(onCaseCompleted).toHaveBeenCalledWith(expect.objectContaining({
+        caseId: 'load_and_spawn',
+        report: expect.objectContaining({
+          complete: true,
+          caseResults: [expect.objectContaining({ id: 'load_and_spawn' })],
+        }),
+      }));
       const evidence = await fs.readJson(reportPath);
       expect(evidence.environment.codex_version).toBe('codex-fake 1.0');
       expect(evidence.environment.isolation).toMatchObject({

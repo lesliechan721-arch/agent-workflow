@@ -61,7 +61,7 @@
     },
     {
       "id": "export_override_convention",
-      "query": "虽然发票导出使用当前筛选结果，但这次订单导出的范围尚未决定。请先实现其它部分。",
+      "query": "虽然发票导出使用当前筛选结果，但这次订单导出的范围尚未决定。现在开始实现订单导出。",
       "expected_loaded_skills": ["requirements-clarifier"],
       "rationale": "用户显式声明本次需求未决，应覆盖仓库惯例。",
       "split": "sanity",

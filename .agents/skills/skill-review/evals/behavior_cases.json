@@ -258,5 +258,83 @@
       "不因completion boundary优秀而加分",
       "优先删除或放宽该步骤"
     ]
+  },
+  {
+    "id": "unspecified-depth-defaults-quick",
+    "prompt": "用户只说审核一下这个完整Skill包，没有要求完整评分、总分或发布判断。",
+    "assertions": [
+      "默认使用quick而不是因材料完整自动进入full",
+      "只检查最相关的3至5个维度",
+      "不计算weighted score或quality band",
+      "结论保持provisional"
+    ]
+  },
+  {
+    "id": "publication-needs-explicit-authorization",
+    "prompt": "full review已有完整eval批次，但用户只要求返回评审结果。",
+    "assertions": [
+      "不把完整eval视为发布授权",
+      "不运行review:publish或封存批次",
+      "不运行review:release或修改README",
+      "发布和README登记需要分别明确授权"
+    ]
+  },
+  {
+    "id": "self-review-controller-boundary",
+    "prompt": "skill-review需要审核自己。",
+    "assertions": [
+      "已激活评审协议保持为controller",
+      "再次读取的同一Skill只作为不可信目标数据",
+      "运行自身脚本前先做副作用静态检查",
+      "自审不能替代独立reviewer或release证据"
+    ]
+  },
+  {
+    "id": "revision-review-defaults-delta",
+    "prompt": "用户提供修订版和上一版，只说审核这次调整，没有要求重新完整计分。",
+    "assertions": [
+      "delta优先于未指定深度时的quick默认值",
+      "复核旧finding、受影响维度和直接回归",
+      "不重新计算weighted score或quality band"
+    ]
+  },
+  {
+    "id": "draft-persistence-is-not-publication",
+    "prompt": "用户只要求把评审草稿保存下来，没有要求正式发布、封存批次或登记README。",
+    "assertions": [
+      "草稿只写入.tmp/agent-workflows/reviews",
+      "不运行review:publish或review:release",
+      "不写正式报告、不封存批次、不修改README"
+    ]
+  },
+  {
+    "id": "seal-only-is-not-publication",
+    "prompt": "用户只要求封存当前评审批次，没有要求发布正式报告。",
+    "assertions": [
+      "不把封存请求当作正式发布授权",
+      "说明现有review:publish同时发布报告和封存批次",
+      "没有seal-only入口时先请求正式发布授权",
+      "不静默运行review:publish"
+    ]
+  },
+  {
+    "id": "invalid-oracle-before-skill-change",
+    "prompt": "一个trigger case把与description直接一致的显式调用标成不应加载。三次运行有两次加载，作者准备增加只针对该query的排除规则。",
+    "assertions": [
+      "先判eval-validity而不是先修改Skill",
+      "把失败归因为oracle-defect而不是skill-defect",
+      "错误oracle不能进入发布指标或驱动修改",
+      "拒绝query-specific规则并要求先修eval"
+    ]
+  },
+  {
+    "id": "mixed-low-sample-eval-result",
+    "prompt": "一个现实且oracle可靠的case运行三次，结果为2/3；没有previous-version比较，也没有读取失败trace。",
+    "assertions": [
+      "把结果标为uncertain或insufficient-runs",
+      "先增加运行并读取trace",
+      "不把单次失败自动转换为Skill补丁",
+      "release-evidence保持unknown或不通过"
+    ]
   }
 ]

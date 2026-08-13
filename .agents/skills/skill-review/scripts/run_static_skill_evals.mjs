@@ -2,6 +2,7 @@
 
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
+import { realpathSync } from 'node:fs';
 import {
   access,
   cp,
@@ -14,13 +15,19 @@ import {
   stat,
   writeFile,
 } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import YAML from 'yaml';
-
 const execFileAsync = promisify(execFile);
+const requireFromScript = createRequire(import.meta.url);
+let yamlModule;
+
+function yaml() {
+  yamlModule ??= requireFromScript('yaml');
+  return yamlModule;
+}
 const SCRIPT_ROOT = path.dirname(fileURLToPath(import.meta.url));
 const REVIEW_SKILL_ROOT = path.dirname(SCRIPT_ROOT);
 const REPO_ROOT = path.resolve(REVIEW_SKILL_ROOT, '..', '..', '..');
@@ -624,7 +631,7 @@ export function parseSkillName(content, skillRoot) {
   if (!match) fail(`SKILL.md has no valid frontmatter: ${skillRoot}`);
   let frontmatter;
   try {
-    frontmatter = record(YAML.parse(match[1]), 'SKILL.md frontmatter');
+    frontmatter = record(yaml().parse(match[1]), 'SKILL.md frontmatter');
   } catch (error) {
     fail(`SKILL.md has invalid YAML frontmatter: ${error instanceof Error ? error.message : String(error)}`);
   }
@@ -776,9 +783,129 @@ export function applyRunCountCoverage(report, suite, requestedRuns) {
     ...report,
     outcome: 'incomplete',
     complete: false,
+    ...(report.caseResults ? {
+      caseResults: report.caseResults.map((entry) => ({
+        ...entry,
+        outcome: 'incomplete',
+        complete: false,
+      })),
+    } : {}),
     diagnostics: [
       ...report.diagnostics,
       `Requested runs ${requestedRuns} are below the declared default ${suite.defaultRuns}.`,
+    ],
+  };
+}
+
+async function staticSuiteCaseIds(skillRoot, suite, split) {
+  const document = await readJson(
+    path.resolve(skillRoot, suite.cases.replace(/^\.\//u, '')),
+    `${suite.id} cases`,
+  );
+  if (suite.kind === 'trigger') {
+    return document.cases
+      .filter((entry) => !split || split === 'all' || entry.split === split)
+      .map((entry) => entry.id);
+  }
+  return document.evals.map((entry) => entry.id);
+}
+
+async function staticReleaseTargetCompositions(skillRoot, manifest) {
+  const compositions = {};
+  for (const suite of manifest.suites.filter((entry) => entry.requiredForRelease)) {
+    for (const split of suite.releaseSplits.length > 0 ? suite.releaseSplits : ['all']) {
+      const prefix = `${suite.kind}/${suite.id}/${PROFILE}/${split}`;
+      const caseIds = await staticSuiteCaseIds(skillRoot, suite, split);
+      compositions[`${prefix}/all`] = caseIds.map((caseId) => `${prefix}/${caseId}`);
+    }
+  }
+  return compositions;
+}
+
+function staticBatchReportPath(runId, reportPath) {
+  return reportPath
+    ? path.posix.join('evals', 'runs', runId, 'raw', reportPath)
+    : undefined;
+}
+
+function staticCaseResultFromTarget(target) {
+  return {
+    id: target.case,
+    outcome: target.outcome,
+    complete: target.complete,
+    mechanicalPassed: target.mechanicalPassed,
+    qualitativeReview: target.qualitativeReview,
+    ...(staticBatchReportPath(target.runId, target.reportPath)
+      ? { reportPath: staticBatchReportPath(target.runId, target.reportPath) }
+      : {}),
+    sourceRunId: target.runId,
+    reused: true,
+    summary: target.summary,
+    diagnostics: target.diagnostics,
+  };
+}
+
+async function writeStaticCaseIndex(outputDir, suite, split, cases) {
+  const name = [suite.id, split, 'case-index'].filter(Boolean).join('-');
+  const reportPath = path.join(outputDir, 'reports', `${name}.json`);
+  await mkdir(path.dirname(reportPath), { recursive: true });
+  await writeFile(reportPath, `${JSON.stringify({
+    schema_version: 1,
+    type: 'eval-case-index',
+    generated_at: new Date().toISOString(),
+    suite: suite.id,
+    kind: suite.kind,
+    profile: PROFILE,
+    split: split ?? 'all',
+    cases: cases.map((entry) => ({
+      id: entry.id,
+      outcome: entry.outcome,
+      complete: entry.complete,
+      mechanical_passed: entry.mechanicalPassed,
+      qualitative_review: entry.qualitativeReview ?? 'not_required',
+      source_run_id: entry.sourceRunId ?? null,
+      reused: entry.reused === true,
+      report_path: entry.reportPath ?? null,
+    })),
+  }, null, 2)}\n`, 'utf8');
+  return path.relative(outputDir, reportPath).split(path.sep).join('/');
+}
+
+function aggregateStaticCaseReport(suite, split, expectedIds, cases, reportPath) {
+  const byId = new Map(cases.map((entry) => [entry.id, entry]));
+  const ordered = expectedIds.flatMap((id) => byId.has(id) ? [byId.get(id)] : []);
+  const missing = expectedIds.filter((id) => !byId.has(id));
+  const complete = missing.length === 0 && ordered.every((entry) => entry.complete);
+  const outcome = !complete || ordered.some((entry) => entry.outcome === 'incomplete')
+    ? 'incomplete'
+    : ordered.some((entry) => entry.outcome === 'failed')
+      ? 'failed'
+      : ordered.some((entry) => entry.outcome === 'needs_review')
+        ? 'needs_review'
+        : 'passed';
+  return {
+    id: suite.id,
+    kind: suite.kind,
+    skills: suite.skills,
+    profile: PROFILE,
+    split,
+    outcome,
+    complete,
+    mechanicalPassed: ordered.every((entry) => entry.mechanicalPassed),
+    qualitativeReview: suite.kind === 'conversation' ? 'required' : 'not_required',
+    reportPath,
+    caseResults: ordered,
+    summary: {
+      cases: expectedIds.length,
+      completed: ordered.filter((entry) => entry.complete).length,
+      passed: ordered.filter((entry) => entry.outcome === 'passed').length,
+      failed: ordered.filter((entry) => entry.outcome === 'failed').length,
+      needsReview: ordered.filter((entry) => entry.outcome === 'needs_review').length,
+      incomplete: missing.length + ordered.filter((entry) => !entry.complete).length,
+    },
+    diagnostics: [
+      ...(missing.length > 0 ? [`Missing case evidence: ${missing.join(', ')}.`] : []),
+      ...ordered.flatMap((entry) => entry.diagnostics ?? []),
     ],
   };
 }
@@ -816,14 +943,15 @@ async function readStaticSourceRevision(participantSkills) {
 async function run(options, skillRoot, skillName, manifest) {
   const drivers = await loadCentralDrivers();
   await validateCentralContracts(drivers, skillRoot, manifest);
-  await drivers.isolation.assertCodexEvalKeychainWrapperAbsent({});
   const processManagement = await drivers.processManagement.resolveCodexEvalProcessManagement({
     allowUnmanaged: options.allowUnmanagedProcesses === true,
+    sourceEnv: process.env,
+    preflight: () => drivers.isolation.assertCodexEvalKeychainWrapperAbsent({}),
   });
   if (processManagement.mode === 'unmanaged-confirmed') {
     process.stderr.write(
-      '[skill:eval] WARNING: Full Access process inspection is unavailable. ' +
-      'This confirmed run cannot track or verify descendant processes.\n',
+      '[skill:eval] WARNING: unmanaged process cleanup was explicitly confirmed. ' +
+      'No process-tree inspection was used, and this run cannot track or verify descendants.\n',
     );
   }
   const sourceDigests = Object.fromEntries(await Promise.all(
@@ -863,6 +991,7 @@ async function run(options, skillRoot, skillName, manifest) {
     staticEvalHarnessRoots(),
   );
   const requiredTargets = drivers.reporting.staticReleaseTargets(manifest);
+  const targetCompositions = await staticReleaseTargetCompositions(skillRoot, manifest);
   const layout = await drivers.reporting.createSkillEvalRunLayout({
     repoRoot: REPO_ROOT,
     owner: { kind: 'static-skill', skill: skillName },
@@ -878,6 +1007,7 @@ async function run(options, skillRoot, skillName, manifest) {
     modelEnvironmentDigest,
     harnessDigest,
     requiredTargets,
+    targetCompositions,
   });
   options.outputDir = layout.rawRoot;
   const startedAt = layout.startedAt;
@@ -894,6 +1024,11 @@ async function run(options, skillRoot, skillName, manifest) {
     processManagement,
     rawDirectory: 'raw',
   }, null, 2)}\n`, 'utf8');
+  process.stderr.write(
+    '[skill:eval] Model evals can run for tens of minutes or hours. Keep this process ' +
+      'session open and use the longest responsive wait that the tool allows. A wait timeout ' +
+      'is not an eval failure. Do not start separate status-poll commands.\n',
+  );
   try {
   const subjectRoot = await prepareSubject(manifest, layout.workRoot);
   const subjectPackageDigests = Object.fromEntries(await Promise.all(
@@ -907,6 +1042,31 @@ async function run(options, skillRoot, skillName, manifest) {
       fail(`Materialized static Skill ${participant} does not match its source package.`);
     }
   }
+  const staticSubjects = [{
+    profile: PROFILE,
+    scope: 'project',
+    modelExecution: true,
+    evidenceLevel: 'runtime-project',
+    root: 'subject',
+    contentDigest: `sha256:${createHash('sha256').update(JSON.stringify(subjectPackageDigests)).digest('hex')}`,
+    artifacts: await Promise.all(manifest.participantSkills.map(async (participant) => {
+      const subjectSkill = path.join(
+        subjectRoot,
+        '.agents',
+        'skills',
+        participant,
+        'SKILL.md',
+      );
+      return {
+        kind: 'skill',
+        key: participant,
+        path: `.agents/skills/${participant}/SKILL.md`,
+        contentDigest: `sha256:${createHash('sha256').update(await readFile(subjectSkill)).digest('hex')}`,
+        packagePath: `.agents/skills/${participant}`,
+        packageContentDigest: subjectPackageDigests[participant],
+      };
+    })),
+  }];
   const runtimeCapsule = await drivers.runtime.createCodexEvalRuntimeCapsule(
     codexRuntime,
     process.env,
@@ -915,21 +1075,88 @@ async function run(options, skillRoot, skillName, manifest) {
   const reports = [];
   try {
     await mkdir(path.join(options.outputDir, 'reports'), { recursive: true });
-    for (const suite of selectedSuites(manifest, options)) {
+    suiteLoop: for (const suite of selectedSuites(manifest, options)) {
       for (const split of selectedSplits(suite, options)) {
         const reportName = [suite.id, split].filter(Boolean).join('-');
         const reportPath = path.join(options.outputDir, 'reports', `${reportName}.json`);
         process.stderr.write(`[skill:eval] ${skillName}/${reportName}\n`);
-        let report;
+        const declaredCaseIds = await staticSuiteCaseIds(skillRoot, suite, split);
+        const expectedCaseIds = options.caseId
+          ? declaredCaseIds.filter((id) => id === options.caseId)
+          : declaredCaseIds;
+        if (expectedCaseIds.length === 0) fail(`Unknown ${suite.kind} case: ${options.caseId}`);
+        const targets = expectedCaseIds.map((caseId) =>
+          drivers.reporting.createSkillEvalTargetKey([
+            suite.kind,
+            suite.id,
+            PROFILE,
+            split ?? 'all',
+            caseId,
+          ]));
+        const plan = await drivers.reporting.resolveSkillEvalTargetPlan({ layout, targets });
+        const targetByCase = new Map(targets.map((target, index) => [
+          expectedCaseIds[index],
+          target,
+        ]));
+        const caseResults = plan.reusable.map(staticCaseResultFromTarget);
+        const pendingCaseIds = expectedCaseIds.filter((caseId) =>
+          plan.pending.includes(targetByCase.get(caseId)));
+        if (plan.reusable.length > 0) {
+          process.stderr.write(
+            `[skill:eval] reuse=${plan.reusable.length} pending=${pendingCaseIds.length} ` +
+            `suite=${suite.id} split=${split ?? 'all'}\n`,
+          );
+        }
+        const recordCase = async (checkpoint) => {
+          let report = applyRunCountCoverage({
+            ...checkpoint.report,
+            reportPath: checkpoint.report.reportPath
+              ? path.relative(options.outputDir, checkpoint.report.reportPath).split(path.sep).join('/')
+              : undefined,
+          }, suite, options.runs);
+          await drivers.reporting.publishEvalRunCheckpoint({
+            layout,
+            evaluation: {
+              generatedAt: new Date().toISOString(),
+              outcome: report.outcome,
+              complete: report.complete,
+              mechanicalPassed: report.mechanicalPassed,
+              subjects: staticSubjects,
+              suites: [report],
+              diagnostics: report.diagnostics,
+            },
+            caseId: checkpoint.caseId,
+          });
+          const source = report.caseResults?.find((entry) => entry.id === checkpoint.caseId);
+          caseResults.push({
+            id: checkpoint.caseId,
+            outcome: source?.outcome ?? report.outcome,
+            complete: source?.complete ?? report.complete,
+            mechanicalPassed: source?.mechanicalPassed ?? report.mechanicalPassed,
+            qualitativeReview: source?.qualitativeReview ?? report.qualitativeReview,
+            ...(report.reportPath ? {
+              reportPath: staticBatchReportPath(layout.runId, report.reportPath),
+            } : {}),
+            sourceRunId: layout.runId,
+            reused: false,
+            summary: source?.summary ?? report.summary,
+            diagnostics: source?.diagnostics ?? report.diagnostics,
+          });
+          return report;
+        };
+
+        let executionReport = null;
         if (suite.kind === 'trigger') {
-          report = await drivers.trigger.runCodexTriggerSuite({
+          executionReport = pendingCaseIds.length === 0
+            ? null
+            : await drivers.trigger.runCodexTriggerSuite({
             suite,
             split,
             subjectRoot,
             pluginRoot: skillRoot,
             profile: PROFILE,
             runs: options.runs ?? suite.defaultRuns,
-            caseId: options.caseId,
+            caseIds: pendingCaseIds,
             codexBin: options.codexBin,
             model: options.model,
             codexRuntime,
@@ -938,10 +1165,14 @@ async function run(options, skillRoot, skillName, manifest) {
             stderr: (message) => process.stderr.write(message),
             processManagement,
             workRoot: path.join(layout.workRoot, 'trigger'),
+            stopOnIncomplete: true,
+            onCaseCompleted: recordCase,
           });
         } else {
           if (options.split) fail('--split only applies to trigger suites.');
-          report = await drivers.conversation.runCodexConversationSuite({
+          executionReport = pendingCaseIds.length === 0
+            ? null
+            : await drivers.conversation.runCodexConversationSuite({
             suiteId: suite.id,
             skillName,
             skillNames: suite.skills,
@@ -949,7 +1180,7 @@ async function run(options, skillRoot, skillName, manifest) {
             subjectRoot,
             profile: PROFILE,
             runs: options.runs ?? suite.defaultRuns,
-            caseId: options.caseId,
+            caseIds: pendingCaseIds,
             codexBin: options.codexBin,
             model: options.model,
             codexRuntime,
@@ -961,11 +1192,50 @@ async function run(options, skillRoot, skillName, manifest) {
             forbiddenHostRoots: manifest.participantSkills.map((participant) =>
               path.join(STATIC_SKILLS_ROOT, participant)),
             workRoot: path.join(layout.workRoot, 'conversation'),
+            stopOnIncomplete: true,
+            onCaseCompleted: recordCase,
           });
         }
-        report = applyRunCountCoverage(report, suite, options.runs);
-        report.reportPath = path.relative(options.outputDir, reportPath).split(path.sep).join('/');
+        if (
+          executionReport?.outcome === 'incomplete' &&
+          (executionReport.caseResults?.length ?? 0) === 0
+        ) {
+          const report = applyRunCountCoverage({
+            ...executionReport,
+            reportPath: executionReport.reportPath
+              ? path.relative(options.outputDir, executionReport.reportPath).split(path.sep).join('/')
+              : undefined,
+          }, suite, options.runs);
+          await drivers.reporting.publishEvalRunCheckpoint({
+            layout,
+            evaluation: {
+              generatedAt: new Date().toISOString(),
+              outcome: report.outcome,
+              complete: report.complete,
+              mechanicalPassed: report.mechanicalPassed,
+              subjects: staticSubjects,
+              suites: [report],
+              diagnostics: report.diagnostics,
+            },
+          });
+          reports.push(report);
+          break suiteLoop;
+        }
+        const indexPath = await writeStaticCaseIndex(
+          options.outputDir,
+          suite,
+          split,
+          caseResults,
+        );
+        const report = aggregateStaticCaseReport(
+          suite,
+          split,
+          expectedCaseIds,
+          caseResults,
+          indexPath,
+        );
         reports.push(report);
+        if (report.outcome === 'incomplete') break suiteLoop;
       }
     }
     const sourceUnchanged = (await Promise.all(manifest.participantSkills.map(async (participant) =>
@@ -1005,31 +1275,7 @@ async function run(options, skillRoot, skillName, manifest) {
       outcome,
       complete: sourceUnchanged && reports.every((report) => report.complete),
       mechanicalPassed: sourceUnchanged && reports.every((report) => report.mechanicalPassed),
-      subjects: [{
-        profile: PROFILE,
-        scope: 'project',
-        modelExecution: true,
-        evidenceLevel: 'runtime-project',
-        root: 'subject',
-        contentDigest: `sha256:${createHash('sha256').update(JSON.stringify(subjectPackageDigests)).digest('hex')}`,
-        artifacts: await Promise.all(manifest.participantSkills.map(async (participant) => {
-          const subjectSkill = path.join(
-            subjectRoot,
-            '.agents',
-            'skills',
-            participant,
-            'SKILL.md',
-          );
-          return {
-            kind: 'skill',
-            key: participant,
-            path: `.agents/skills/${participant}/SKILL.md`,
-            contentDigest: `sha256:${createHash('sha256').update(await readFile(subjectSkill)).digest('hex')}`,
-            packagePath: `.agents/skills/${participant}`,
-            packageContentDigest: subjectPackageDigests[participant],
-          };
-        })),
-      }],
+      subjects: staticSubjects,
       suites: reports,
       diagnostics,
     };
@@ -1063,6 +1309,7 @@ async function run(options, skillRoot, skillName, manifest) {
         complete: report.complete,
         mechanicalPassed: report.mechanicalPassed,
         qualitativeReview: report.qualitativeReview,
+        caseResults: report.caseResults,
         summary: report.summary,
       })),
       diagnostics,
@@ -1087,12 +1334,9 @@ async function run(options, skillRoot, skillName, manifest) {
       ].join('\n'),
       'utf8',
     );
-    const batchSummary = await drivers.reporting.publishEvalRunToBatch({
-      repoRoot: REPO_ROOT,
+    const batchSummary = await drivers.reporting.completeSkillEvalRun({
       layout,
       evaluation,
-      caseId: options.caseId,
-      requiredTargets,
     });
     process.stdout.write(`${JSON.stringify({
       ok: evaluation.complete && outcome !== 'failed' && outcome !== 'incomplete',
@@ -1161,7 +1405,8 @@ async function main() {
   await run(options, skillRoot, skillName, manifest);
 }
 
-const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+const isMain = process.argv[1] &&
+  realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
 if (isMain) {
   await main().catch((error) => {
     process.stderr.write(`${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);

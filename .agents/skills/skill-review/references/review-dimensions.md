@@ -178,24 +178,20 @@ full/release 模式使用本量表，并完成全部 12 个维度的 0–5 分�
 
 详细检查见 `references/scripts-and-resources.md`。
 
-## 10. 评测、验证与证据驱动迭代（9）
+## 10. Eval 设计、Oracle 有效性与修改安全（9）
 
-eval、benchmark、trace 或测试文件存在只证明 artifact 和测试设计存在，不证明它们已经运行或通过。只有实际运行结果、可核验日志或 trace、用户确认的复现，或 reviewer 在安全条件下执行并记录的结果，才能作为 observed behavior evidence。未执行的 eval 只能支持结构和测试设计评价，不得提高行为可靠性、trigger 稳定性或发布证据分数。
+存在 eval，或 eval 结果被用于评分、发布或修改 Skill 时，读取 `references/eval-audit.md`。先审核 suite，再使用其结果评价 Skill。
 
-检查：
+本维度只评四组内容：
 
-- 是否有 trigger、behavior、regression 和必要的安全/兼容性 eval。
-- 每个重要规则是否对应真实失败和可观察 assertion。
-- 是否读取执行 trace，不只看最终输出。
-- 是否使用 clean context，并比较无 Skill、最小 Skill、上一版或当前版。
-- 是否记录质量、token、时间和方差等成本收益。
-- 是否测试 pointer 到达、完成边界、near-miss、脚本输出及架构减法。
-- assertion 是否可验证、不脆弱；机械断言优先用脚本，人类判断用于难量化质量。
-- 是否通过 ablation 判断某条指令是否 no-op，或是否可删除。
-- 是否使用最小行为合同作为基线，并同时测试过度执行、无用中间产物和合理策略被阻断。
-- 是否有停止条件，避免 pass rate 停滞后继续追加规则。
+1. **目标与代价**：是否声明 recall-first、precision-first、balanced 或 critical；是否分别评估 false negative 和 false positive 的现实代价。
+2. **Case 与 oracle 有效性**：测试层级、unit under test、前提、oracle rationale、rule refs、observable assertion、allowed variance 和 minimal counterexample 是否成立。
+3. **现实性与覆盖**：provenance、case role、scenario family、near-miss、minimal pair 和真实用户措辞是否可靠；challenge 和 diagnostic case 是否没有主导发布结论。
+4. **结果与修改安全**：是否有实际运行、适用 baseline、trace、方差与成本；失败是否先归因；eval-driven 修改是否经过相邻边界和固定 validation/sanity/regression 回归。
 
-高分：重要规则有行为证据和基线。低分：只有静态文案审美，每轮 review 只追加文本。
+对 trigger 或其它二元决策分别报告 positive recall、false-negative rate、negative specificity 和 false-positive rate。没有明确错误代价政策时，不把它们压缩为一个总准确率。
+
+高分：关键 oracle 与现实性可靠，有重复运行和适用 baseline，eval-driven 修改经过净收益与回归验证。低分：错误或不现实用例、混合测试层级、少量随机结果或 challenge case 直接驱动 Skill 增加规则。
 
 ## 11. 可靠性、安全与兼容性（4）
 

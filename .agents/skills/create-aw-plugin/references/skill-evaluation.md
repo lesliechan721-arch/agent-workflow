@@ -119,7 +119,7 @@ Suite 规则：
 - `command` 只用于 model-selection、routing、workflow 等领域专用 runner；`supports` 明确中央入口可以透传哪些参数。支持 `case` 时必须用 `cases` 指向同一 eval 目录中的 `{ skill_name, evals[] }` case 文档，并在报告中返回覆盖所选 case 的 `case_results[]`；每项包含 `id`、`outcome`、`complete` 和 `mechanical_passed`。中央据此从中断的 full run 保存已完成 case，并组合分批证据。runner 必须接受 `--output`，并要求中央提供 `AW_PLUGIN_EVAL_PROJECT_ROOT`，不得回退到源码或 template 自行渲染。
 - command runner 同时收到 `AW_PLUGIN_EVAL_OWNER_SKILL`、`AW_PLUGIN_EVAL_PARTICIPANT_SKILLS` 和 `AW_PLUGIN_EVAL_INSTALLED_PLUGINS`。后两项是 JSON 数组。
 - `perRunTimeoutMs` 是单次模型运行时限；`command` 还必须声明独立的 `suiteTimeoutMs` 作为整个领域 runner 的中央兜底，且不得小于 `perRunTimeoutMs`。中央只把前者透传为 `--timeout-ms`，只用后者终止整个子进程。
-- `conversation` 由中央 Codex app-server driver 执行，适合需要 `request_user_input` 多轮回复的用例；driver 会在 Default 协作模式显式启用该工具，case 保存结构化 `scripted_replies`，不得依赖运行时生成的 question id。strict current 只保留 `skills[]` 的精确集合；baseline 只移除 owner Skill，并保留 companion Skills。模型工作副本位于源码树外，runner 还会审计 trace；current 或 baseline 读取宿主 participant 源码时机械失败。这样可以测量 owner 的增量作用，不破坏真实组合环境。当前 conversation driver 不支持 split 过滤，因此 `releaseSplits` 必须为空数组。
+- `conversation` 由中央 Codex app-server driver 执行，适合需要 `request_user_input` 多轮回复的用例；driver 会在 Default 协作模式显式启用该工具，case 保存结构化 `scripted_replies`，不得依赖运行时生成的 question id。`scripted_replies` 是 current 的行为断言，并用于向两个 variant 提供相同步骤的回答；current 的步骤、问题数或未消费回复不匹配会机械失败，baseline 的同类差异只保存为比较证据。baseline 的完成、隔离、宿主源码访问和 workspace 安全仍属于机械门禁。strict current 只保留 `skills[]` 的精确集合；baseline 只移除 owner Skill，并保留 companion Skills。模型工作副本位于源码树外，runner 还会审计 trace；current 或 baseline 读取宿主 participant 源码时机械失败。这样可以测量 owner 的增量作用，不破坏真实组合环境。当前 conversation driver 不支持 split 过滤，因此 `releaseSplits` 必须为空数组。
 - suite 只能引用 `runModel: true` profile。materialize-only profile 不进入 suite。
 - `requiredForRelease` 和 `releaseSplits` 决定无过滤参数运行时的发布证据集合。
 
@@ -153,7 +153,11 @@ pnpm plugin:eval <plugin> --skill <skill> --batch-name release
 
 一次命令只运行一个 owner Skill。`--skill` 必填，插件级 `--all` 不受支持。每次运行还必须用 `--batch-name <name>` 新建批次，或用前一次输出中的 `--batch-id <id>` 追加同一批次；二者只能提供一个。跨 Skill 或跨插件组合由该 Skill manifest 的 `skills[]` 和 `profiles[].plugins[]` 明确声明。默认执行该 owner manifest 中所有 release-required suite/split，同时 materialize 所有 profile。常用调试参数还有 `--profile`、`--case`、`--model`、`--codex-bin`。suite 不支持的参数会失败，不能静默忽略。
 
-`--suite`、`--profile`、`--split`、`--case` 都会把单次 bundle 标为 `complete: false`、`outcome: incomplete`；低于 suite `defaultRuns` 的 `--runs` 还会把对应 target 本身标为 `incomplete`，不能作为 release target 通过证据。此类局部运行即使机械检查通过也退出 `1`。使用同一 `--batch-id` 可以补跑 missing 或 incomplete target；历史 attempt 和失败 run 会保留，但最新完整 attempt 进入有效汇总。声明 `cases` 的 command suite 在全部 case target 完整后，中央会把它们组合成 `/all` release target。只有相同批次中所有 release target 都被完整、通过的有效 target 覆盖时，批次汇总才能给出完整 release 结果；不同源码摘要、materialization subject、模型环境、harness、case 集或 target 合同不能混入同一批次。
+`--suite`、`--profile`、`--split`、`--case` 都会把单次 bundle 标为 `complete: false`、`outcome: incomplete`；低于 suite `defaultRuns` 的 `--runs` 还会把对应 target 本身标为 `incomplete`，不能作为 release target 通过证据。此类局部运行即使机械检查通过也退出 `1`。使用同一 `--batch-id` 可以补跑 missing 或 incomplete target；历史 attempt 和失败 run 会保留，但最新完整 attempt 进入有效汇总。声明 `cases` 的 suite 在全部 case target 完整后，中央会把它们组合成 `/all` release target。只有相同批次中所有 release target 都被完整、通过的有效 target 覆盖时，批次汇总才能给出完整 release 结果；不同源码摘要、materialization subject、模型环境、harness、case 集或 target 合同不能混入同一批次。
+
+中央入口在每个 case 的全部 repetitions 结束后原子发布检查点。case 返回 `incomplete` 或运行环境异常时，当前命令停止，不再启动后续 case。再次用同一 `--batch-id` 运行时，入口复用已有的 terminal case，重跑 incomplete 或 missing case。当前未完成 case 的全部 repetitions 会重新运行；不会从某个 repetition 中间继续。`failed` 和 `needs_review` 也是 terminal 结果，默认不会自动重跑。没有 case 合同的 suite 仍以整个 suite 为恢复单位。进程在 run 终态写入前退出时，已发布的 case 检查点仍可复用；后续追加会把旧 run 标为 `failed`。
+
+真实模型 eval 可能运行几十分钟到数小时。agent 启动命令时，首个执行调用应直接使用工具允许的最大 `yield_time_ms`。工具返回进程 session 后，后续等待应继续使用同一个 session，并直接使用单次调用允许的最大响应式等待时间。一次等待超时只表示本次等待窗口结束，不表示 eval 失败。不要使用短周期 wait 循环，也不要另开 `sleep`、`ps`、报告目录、日志文件、Git 或其它命令轮询状态。
 
 真实模型默认使用 `gpt-5.6-luna`；`--model` 可显式覆盖。当前 `CODEX_HOME/config.toml` 只提供选中的 `model_providers.<id>`、provider 连接配置及其它允许的 model 设置，不再决定默认模型；不会继承用户 plugins、skills、MCP、agents 或其它配置。所有中央 eval 都把 `cli_auth_credentials_store` 和 `mcp_oauth_credentials_store` 固定为 `file`，并关闭 `features.secret_auth_storage`，因此临时 Codex 进程不应访问 macOS 钥匙串。可用 `--model-provider <id>`、`--codex-config <path>` 显式选择 provider 来源，或用 `--no-inherit-codex-config` 回到干净的官方默认 provider。provider 引用的环境变量按名称透传，但隔离保留变量会被拒绝，command runner 也不会继承其它宿主 secret；配置内 bearer 只写入 `0600` 临时 runtime home，非官方 provider 一律不复制官方 auth。凭据变量排除出模型 shell，endpoint、token、header 或环境变量值在写任何 eval 证据前统一脱敏；临时 capsule 在正常结束、失败和进程信号中清理。
 
@@ -161,7 +165,9 @@ strict 模式在启动模型前检查 `/etc/codex`（Windows 对应系统目录�
 
 真实模型 eval 应从普通 Terminal 会话直接运行。不要通过会临时导出或改写用户 keychain search list 的 GUI、沙箱或提权包装器启动；这类外层包装器可能留下失效的 `accountsKeychainExport` 路径，并在 Codex 启动前触发 macOS“找不到钥匙串”弹窗。中央入口在 macOS 检测到该包装器路径时会直接拒绝真实模型 eval，不会修改用户 keychain search list；`--materialize-only` 和确定性测试不执行该检查，也不需要启动 Codex 模型进程。
 
-真实模型 eval 默认还要求 Full Access 可用，以便发现并清理 Codex 的后代进程。检查失败时，入口会在创建报告目录和启动模型前阻断。Windows 当前没有 Job Object containment，也走同一阻断路径。确认可接受风险后，可以显式传 `--allow-unmanaged-processes`；该模式只跟踪直接子进程，timeout、信号或 runner 退出后可能遗留后代进程，报告会记录 `descendantCleanupGuaranteed: false`。它可以用于本地运行，但 release reviewer 必须明确接受这项环境风险。
+真实模型 eval 默认还要求 Full Access 可用，以便发现并清理 Codex 的后代进程。入口先检查原始 `CODEX_PERMISSION_PROFILE`，再执行 macOS keychain 检查或进程树探测。来源为 `workspace` 或 `read-only` 且没有 `--allow-unmanaged-processes` 时，入口立即阻断；不会执行 keychain 检查、进程树探测、报告目录分配或模型启动。单次 `sandbox_permissions=require_escalated` 不等于整个会话的 Full Access，并且会保留原始受限 profile；不得用单次提权重试该门禁，也不能把提权后的探测成功记录为 `managed`。
+
+用户明确选择 `--allow-unmanaged-processes` 时，受限来源直接进入 `unmanaged-confirmed`，不执行进程树探测。该模式只跟踪直接子进程，timeout、信号或 runner 退出后可能遗留后代进程，报告会记录 `descendantCleanupGuaranteed: false`。Windows 当前没有 Job Object containment，也必须使用该显式降级选择。agent 不得自行添加参数；如果用户尚未选择，必须停下并让用户选择“切换整个会话到 Full Access”或“明确使用 `--allow-unmanaged-processes`”。CLI 只能把参数视为调用方确认，不能证明参数由人还是模型添加。真正的人工确认必须由 Codex 审批或 UI 层保证。release reviewer 必须明确接受降级运行的环境风险。
 
 `pnpm plugin:eval` 是唯一支持的模型 eval 入口。不要直接运行插件 `evals/` 下的 command runner；直接调用既缺少 final-artifact profile/digest，也会因缺少 `AW_PLUGIN_EVAL_PROJECT_ROOT` 失败。
 
@@ -169,7 +175,7 @@ strict 模式在启动模型前检查 `/etc/codex`（Windows 对应系统目录�
 
 完整批次固定在项目内 `.tmp/agent-workflows/evals/plugin/<plugin>/<skill>/<batch-id>/`。其中 `work/<run-id>/` 在命令结束后清理；run、target、raw、scorecard 和自动汇总保留到用户清理 `.tmp`。CLI 不接受任意 `--output-dir`。
 
-`pnpm review:publish` 是唯一的正式报告发布动作。full/release 评审消费完整 eval 后默认执行；执行前应说明目标正式目录、批次封存后不能追加 eval，以及 release 模式会继续登记 README。命令验证人读 Markdown 和 scorecard，把完整 review 留在临时批次，并原子写入 `plugins/<plugin>/reports/<skill>/<batch-id>/{report.md,summary.json}`。正式 `summary.json` 使用 schema v2，只保存 owner、来源 commit、eval 发布结果与覆盖、review 结论、分数、置信度和 finding 数量；不保存 run、target、digest、trace 或 scorecard。正式目录不可覆盖，发布后临时批次封存但不自动删除。full 模式到此结束，不更新 Skill README。
+`pnpm review:publish` 是唯一的正式报告发布动作，只在用户明确要求发布时执行。执行前应说明目标正式目录和批次封存后不能追加 eval。命令验证人读 Markdown 和 scorecard，把完整 review 留在临时批次，并原子写入 `plugins/<plugin>/reports/<skill>/<batch-id>/{report.md,summary.json}`。正式 `summary.json` 使用 schema v2，只保存 owner、来源 commit、eval 发布结果与覆盖、review 结论、分数、置信度和 finding 数量；不保存 run、target、digest、trace 或 scorecard。正式目录不可覆盖，发布后临时批次封存但不自动删除。该命令不更新 Skill README。
 
 正式摘要合同：
 
@@ -197,11 +203,54 @@ strict 模式在启动模型前检查 `/etc/codex`（Windows 对应系统目录�
 
 review-only 使用 `releaseOutcome: "not_run"` 和 `covered/required: 0/0`。quick、delta 或证据不足的 review 可以把分数、覆盖率或置信度写为 `null`。
 
-run 在批次锁内预留，target 发布和终态写入使用同一个锁事务。若本机进程在写入终态前结束，后续 refresh、append 或 review 会把该 run 恢复为 `failed`，避免批次永久停在 `running`。失败 run 只保留 provenance 和诊断；它留下的 missing target 补齐后，不再永久把 release 结论固定为 failed。
+run 在批次锁内预留。每个 case target 在独立的批次锁事务中原子发布；全部工作结束后，run 终态在后续锁事务中写入。若本机进程在写入终态前结束，后续 refresh、append 或 review 会把该 run 恢复为 `failed`，但保留已发布检查点，避免批次永久停在 `running`。失败 run 只保留 provenance 和诊断；它留下的 missing target 补齐后，不再永久把 release 结论固定为 failed。
 
 正式 `reports/` 不属于被评估源码，中央 source revision 检查会忽略该目录；插件源码、README、eval 夹具、脚本和作者/评审工具的未提交修改仍会令 `source.inScopeDirty=true`。
 
-插件和每个 Skill 都必须有非空 README。插件 README 只介绍插件目标、Skill 和使用边界；Skill README 约定记录最近已 release 的正式报告摘要、仓库相对路径和被评估 Git commit。release 模式的 `review:publish` 在正式报告写入并封存批次后登记 README；登记失败不回滚正式报告，可以用 `pnpm review:release -- --plugin <plugin> --skill <skill> --batch-id <batch-id>` 重试。已经发布的 full/release 报告也可以用该命令以后登记。README 登记会改变 production source，必须由现有或新增 release intent 覆盖；普通 eval 和 full 报告发布不改变 README。
+插件和每个 Skill 都必须有非空 README。插件 README 只介绍插件目标、Skill 和使用边界；Skill README 约定记录最近已 release 的正式报告摘要、仓库相对路径和被评估 Git commit。只有用户另行明确要求登记时，才运行 `pnpm review:release -- --plugin <plugin> --skill <skill> --batch-id <batch-id>` 更新 README。登记失败不回滚正式报告，可以重试同一命令。README 登记会改变 production source，必须由现有或新增 release intent 覆盖；普通 eval 和报告发布不改变 README。
+
+## Eval Case Audit 作者合同
+
+可执行 runner 合同和 Eval 决策审核是两个层次。`evals/manifest.json`、trigger 字段和 conversation `review` 字段继续控制运行。Audit metadata 只说明用例能否用于修改或发布，不改变 runner 行为。
+
+每个有正负决策的 suite 在 case 文档顶层声明 `policy`：
+
+```json
+{
+  "policy": {
+    "optimization": "balanced",
+    "false_negative_cost": "high",
+    "false_positive_cost": "high",
+    "rationale": "说明两类错误影响，以及为什么选择该优化方向。"
+  }
+}
+```
+
+`optimization` 只使用 `recall-first`、`precision-first`、`balanced` 或 `critical`。错误代价只使用 `low`、`medium`、`high` 或 `critical`。正负例数量相同不表示两类错误代价相同。
+
+会进入 train、validation、sanity、regression、发布判断或当前修改的 case，应补齐：
+
+- `eval_type`：`trigger`、`gate`、`routing`、`behavior`、`outcome` 或 `cost`；每个 assertion 只检查一个主层级。
+- `case_role`、`provenance` 和 `scenario_family`；runner split 仍只使用 `train`、`validation` 和 `sanity`，`regression`、`boundary`、`challenge`、`diagnostic` 是 role，不是新 split。
+- `unit_under_test` 和会改变 oracle 的 `preconditions`。
+- `oracle.rationale`、非空 `rule_refs`、`confidence` 和 `allowed_variance`。
+- boundary 或 regression case 的 `oracle.minimal_counterexample`。
+- 可从输出、trace、文件或仓库状态判定的机械期望或断言。
+
+审计字段模板以 `.agents/skills/skill-review/assets/eval-case-template.json` 为准。它们并入当前可执行 case，不另建一份平行语料。历史 case 可以渐进迁移；缺少 metadata 时只能作为低置信诊断信号，不能单独驱动 Skill 修改或发布。
+
+`init_plugin.mjs` 和 `add_skill.mjs` 生成的 trigger starter 带有中等置信 synthetic/boundary metadata，behavior starter 标为低置信 diagnostic。它们用于提示完整结构，不是领域发布证据。发布前必须替换 prompt、near-miss、场景族、oracle 和断言，并按真实错误代价调整 policy 与 role。
+
+先用兼容模式检查历史文档；它把缺失的 admission metadata 报为 warning：
+
+```bash
+node .agents/skills/skill-review/scripts/validate_eval_cases.mjs \
+  plugins/<plugin>/skills/<skill>/evals/trigger-cases.json --format json
+node .agents/skills/skill-review/scripts/validate_eval_cases.mjs \
+  plugins/<plugin>/skills/<skill>/evals/evals.json --format json
+```
+
+会用于发布或当前修改的 case 补全后，对对应文档增加 `--strict`。`validate_plugin.mjs` 仍负责可执行作者合同；`validate_eval_cases.mjs` 只做确定性结构检查。它不能判断 oracle 语义、现实性或 trace 是否正确，也不能替代 `eval-validity`、`release-evidence` 和 `eval-change-safety` 三个评审门禁。
 
 ## 触发评估
 
@@ -215,6 +264,8 @@ run 在批次锁内预留，target 发布和终态写入使用同一个锁事务
 - 每条在干净 project session 中运行至少 3 次；只根据 train 调 description，用 validation/sanity 检查泛化。
 - 单目标正例默认要求命中率高于 `0.5`，负例默认低于 `0.5`；需要 validation 零误触时把该 split 放进 `strictNegativeSplits`。相邻 Skill 路由应使用 `expected_loaded_skills` 和更高的 `minimumPassRate`，不能只检查 owner Skill 是否未加载。
 - 自动触发 train/validation/sanity 不写 `$skill-name`；显式调用另放 smoke。manual Skill 的正向验收使用显式调用 smoke，负例验证未显式调用时不误加载。
+- 重要触发边界使用同一 `scenario_family` 的 minimal pair，只改变一个决定性条件。不要用多条同义改写冒充多个场景族。
+- 分别报告 positive recall、false-negative rate、negative specificity 和 false-positive rate。不要把所有结果压成一个总准确率。
 
 漏触发时扩大用户意图或场景类别；误触发时收紧相邻任务边界。不要把失败 query 原词逐个堆进 description。
 
@@ -265,7 +316,15 @@ run 在批次锁内预留，target 发布和终态写入使用同一个锁事务
 }
 ```
 
-中央 app-server driver 在运行时把这些答案映射到真实 question id，并保存问题、答复、最终消息、token usage、事件 trace 和 workspace diff。
+中央 app-server driver 在运行时把这些答案映射到真实 question id，并保存问题、答复、最终消息、token usage、事件 trace 和 workspace diff。baseline 没有复现 current 的提问步骤时，未消费回复保留为对照证据，不把预期增量误报为 owner failure。
+
+## 从 Eval 结果到 Skill 修改
+
+先审 suite，再解释运行结果。`1/3`、`2/3` 或其它混合低样本结果表示证据不足；先增加运行并读取 trace，不能直接向 Skill 增加窄规则。
+
+每个失败先归因为 `skill-defect`、`oracle-defect`、`fixture-defect`、`grader-defect`、`runtime-or-tool-defect`、`model-variance`、`stale-case`、`insufficient-runs`、`expected-tradeoff` 或 `unknown`。只有通过 Case Admission 且归因为 `skill-defect` 的失败可以进入 Skill 修改候选。
+
+Eval-driven 修改必须面向场景族。修改后重跑原 case、同族变体、minimal pair、相反标签 near-miss、固定 validation/sanity 和关键 regression，并记录质量、token、时间和复杂度变化。只让单个 query 转绿，或已知错误 oracle 仍驱动修改时，不接受该修改。
 
 ## 结果与定性复核
 
@@ -281,17 +340,20 @@ run 在批次锁内预留，target 发布和终态写入使用同一个锁事务
 ## 完成检查
 
 - [ ] owner Skill 的 `evals/manifest.json` 通过作者 validator。
+- [ ] suite 已声明 optimization policy 和正负错误代价；关键 case 已通过 Case Admission 结构检查。
 - [ ] `skills[]` 覆盖真实 participant；跨插件 profile 只引用当前仓库插件，且不被误写为 production dependency。
 - [ ] 自动 Skill 有 train/validation/sanity 的正例与 near-miss。
+- [ ] 重要边界有 minimal pair；报告分开显示 positive recall 和 negative specificity。
 - [ ] 动态 Skill 覆盖 default/non-default、project/user 最终制品。
 - [ ] 真实模型只运行 Codex project profile，user 只 materialize。
 - [ ] current 与 baseline 使用相同输入和干净上下文。
 - [ ] 写入行为只使用隔离 `workspace-write`，并有最小允许改动路径和最终 artifact 机械断言。
 - [ ] 机械断言优先，定性 checks 都能绑定 trace/diff 证据。
+- [ ] Eval failure 已完成归因；只有 `skill-defect` 驱动修改，并已重跑同族、相反标签和固定回归集。
 - [ ] `plugin:test`、materialization 和模型 eval 没有互相冒充。
 - [ ] release required suite 没有 skip、incomplete 或未复核的 `needs_review`。
 - [ ] 完整 eval/review 证据位于 `.tmp`，正式报告目录只包含人读 `report.md` 和 schema v2 `summary.json`。
-- [ ] full/release 完整评审已执行 `review:publish`；release 登记的 Skill README 指向对应正式报告，full 报告不要求登记；插件 README 不包含 Skill 验证报告。
+- [ ] 用户要求发布时已执行 `review:publish`；用户另行要求登记时，Skill README 指向对应正式报告；插件 README 不包含 Skill 验证报告。
 
 ## 上游参考
 

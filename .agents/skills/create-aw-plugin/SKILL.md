@@ -83,11 +83,16 @@ compatibility: Requires the agent-workflows repository, Node.js 20+, and install
    - 改到 manifest、bundle 或安装逻辑时运行相关 `pnpm test:*`
    - 每个 Skill 的作者期用例放在自身源码根 `evals/`，按 `references/skill-evaluation.md` 声明 owner、participants 和 profiles
    - `evals/README.md` 只记录该 owner 特有的 corpus、suite、命令、runner 限制和历史结果；不要复制全仓权限、隔离、进程、批次、发布或平台证据规则
+   - 新增或修改 case 后，运行 `.agents/skills/skill-review/scripts/validate_eval_cases.mjs`；历史文档先用兼容模式，发布或当前修改使用的文档补全 Case Admission metadata 后增加 `--strict`
+   - Eval 失败先检查 oracle、fixture、grader、runtime 和运行方差；只有通过 Case Admission 且归因为 `skill-defect` 的失败可以驱动 Skill 修改
+   - Eval-driven 修改后重跑原 case、同族变体、minimal pair、相反标签 near-miss、固定 validation/sanity 和关键 regression
    - 先运行 `pnpm plugin:eval <plugin> --skill <skill> --batch-name materialization --materialize-only` 验证 Codex 最终制品；真实模型 eval 只在本地显式运行
-   - 完成条件：每个修改面有直接确定性测试；重大 Skill 修改有 with-skill/baseline behavior 和适用 trigger evidence；失败已修复并重跑
+   - 启动真实模型 eval 前，检查用户是否已明确选择整个会话使用 Full Access，或明确选择 `--allow-unmanaged-processes`。用户未选择时必须停下询问；不得自行添加该参数，也不得请求单次提权
+   - 真实模型 eval 启动后保留同一进程会话。首轮和后续等待都使用工具允许的最长响应式等待时间；等待超时不表示 eval 失败，不要另开短周期状态轮询命令
+   - 完成条件：每个修改面有直接确定性测试；重大 Skill 修改有 with-skill/baseline behavior、适用 trigger evidence、有效 oracle 和 eval-change-safety 回归；失败已归因、修复并重跑
 9. **交付**
-   - full/release 评审消费完整 eval 后默认执行 `review:publish`；full 只生成正式报告，release 再把报告登记到 Skill README
-   - 已发布的 full/release 报告可用 `review:release` 以后登记；插件 Skill README 变化必须由现有或新增 release intent 覆盖
+   - 评审默认只返回结果；用户明确要求发布时才执行 `review:publish`，该命令生成正式报告并封存批次，但不修改 Skill README
+   - 只有用户另行明确要求登记时，才在批次封存后运行 `review:release`；插件 Skill README 变化必须由现有或新增 release intent 覆盖
    - 报告修改的源码文件、运行的验证、未验证项和仍需用户决定的风险
    - 完成条件：明确区分完整通过、轻量预检、模型证据和未运行项
 
@@ -119,7 +124,7 @@ node .agents/skills/create-aw-plugin/scripts/init_plugin.mjs <plugin-name> \
 - `--skill-invocation manual` 同步生成 Claude manual-only 和 Codex implicit false；`claude-model-only` 隐藏 Claude 用户入口，但 Codex 没有完全等价能力，仍允许模型与显式调用
 - 创建初始 Skill 时 `--skill-description` 必填，不能回退到插件 description
 - `--skill-short-description` 只控制初始 Skill 的 UI metadata，必须为 25–64 字符；省略时只回退到 `--skill-description`
-- 初始 Skill 同时生成 `evals/manifest.json`、trigger train/validation/sanity starter 和一个可写 behavior starter；发布前必须换成真实任务与断言
+- 初始 Skill 同时生成 `evals/manifest.json`、带 policy/Case Admission metadata 的 trigger train/validation/sanity starter 和一个可写 behavior diagnostic starter；发布前必须换成真实任务、oracle 与断言
 - `--no-skills` 创建不含 skill 的插件
 - `--with-mcp` / `--with-apps` 只在确实需要时使用
 - `--with-config-api` / `--with-lifecycle` 添加插件根脚本和 Node 测试样板
@@ -193,6 +198,10 @@ node .agents/skills/create-aw-plugin/scripts/check_plugin_versions.mjs \
   --all --base <git-ref>
 node .agents/skills/create-aw-plugin/scripts/generate_skill_frontmatter_reference.mjs \
   --check
+node .agents/skills/skill-review/scripts/validate_eval_cases.mjs \
+  plugins/<plugin>/skills/<skill>/evals/trigger-cases.json --format json
+node .agents/skills/skill-review/scripts/validate_eval_cases.mjs \
+  plugins/<plugin>/skills/<skill>/evals/evals.json --format json
 pnpm plugin:test <plugin>
 pnpm plugin:test <plugin> --platform codex --scope project
 pnpm plugin:test <dual-platform-plugin> --platform both --scope project
@@ -207,7 +216,8 @@ pnpm plugin:eval <plugin> --skill <skill> --batch-name trigger-validation --suit
 - 只修改用户请求所需的插件源码和直接关联测试/文档
 - 没有手改生成目录、runtime cache 或 marketplace 产物
 - `validate_plugin.mjs` 通过，相关确定性测试通过
-- 新建或重大修改的 Skill 有 candidate/value evidence、明确 invocation、局部完成标准和验证循环；支持 Codex 时有自身 `evals/manifest.json` 和真实小型用例，Claude-only 时明确记录当前只完成确定性验证
+- 新建或重大修改的 Skill 有 candidate/value evidence、明确 invocation、局部完成标准和验证循环；支持 Codex 时有自身 `evals/manifest.json`、错误代价 policy 和通过 Case Admission 的真实小型用例，Claude-only 时明确记录当前只完成确定性验证
+- Eval-driven 修改只来自已归因为 `skill-defect` 的有效 case，并已通过同族、minimal pair、相反标签和固定回归集检查
 - Codex/Claude 动态 Skill 的 project/user final artifacts 已 materialize，并保留作者声明的原生调用元数据；真实模型未运行时明确列为未验证
 - 最终回复列出改动、验证结果和未完成项
 - 插件和 Skill README 已补齐；有 release 登记的 Skill README 指向对应正式报告，只有 full 报告时不要求更新；插件 README 不包含 Skill 验证报告

@@ -40,6 +40,8 @@
 | safety-permissions | | | | | |
 | architecture-ownership | | | | | |
 | release-evidence | | | | | |
+| eval-validity | | | | | |
+| eval-change-safety | | | | | |
 
 ## 优点
 
@@ -81,13 +83,13 @@ quick 只包含已检查维度；full/release 包含全部 12 个维度；delta 
 | 信息层级、资源与渐进式披露 | 10 | | | | | | |
 | 职责归属与自然语言状态机风险 | 10 | | | | | | |
 | 脚本与确定性自动化 | 7 | | | | | | |
-| 评测、验证与证据驱动迭代 | 9 | | | | | | |
+| Eval 设计、Oracle 有效性与修改安全 | 9 | | | | | | |
 | 可靠性、安全与兼容性 | 4 | | | | | | |
 | 剪枝、事实源与变更纪律 | 4 | | | | | | |
 
 ## 调用与 Context Pointer 审计
 
-full/release 必做；quick 仅在触发是评审重点时使用。
+full/release 在目标有可调用 description 或外部 pointer 时使用；否则记录 `not_applicable` 和理由。quick 仅在触发是评审重点时使用。
 
 | Pointer | 目标材料 | 触发 branch | 意图是否前置 | 是否重复同义 branch | 是否重复正文身份 | Eval 证据 | 建议 |
 | --- | --- | --- | ---: | ---: | ---: | --- | --- |
@@ -122,7 +124,7 @@ full/release 必做，并在填写维度评分和完成边界审计前完成。q
 
 ## 信息层级图
 
-full/release 必做；渐进式披露存在争议时也使用。先完成最小有效控制审计；不为应删除的内容寻找新位置。
+full/release 在目标有 references、assets、环境事实源或需要分层的长内容时使用；否则记录 `not_applicable` 和理由。渐进式披露存在争议时也使用。先完成最小有效控制审计；不为应删除的内容寻找新位置。
 
 | 内容 | 类型 | 适用 branch | 当前位置 | 是否每次需要 | 到达 pointer 或环境事实源 | 最小控制结论 | 建议 |
 | --- | --- | --- | --- | ---: | --- | --- | --- |
@@ -131,7 +133,7 @@ full/release 必做；渐进式披露存在争议时也使用。先完成最小�
 
 ## 完成边界审计
 
-full/release 必做；步骤存在跳过、仓促完成或过度执行时也使用。只列最小有效控制审计决定保留为强制流程的步骤。
+full/release 在最小有效控制审计保留了多步骤强制流程时使用；否则记录 `not_applicable` 和理由。步骤存在跳过、仓促完成或过度执行时也使用。只列决定保留为强制流程的步骤。
 
 | 步骤或规则集 | 当前标准 | 清楚 | 可检查 | 要求充分 | 覆盖完整 | 提前完成风险 | 建议 |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
@@ -157,15 +159,22 @@ full/release 必做；步骤存在跳过、仓促完成或过度执行时也使�
 - **不必要缓存的环境事实：**
 - **过期或孤立资源：**
 
-## 评测与证据
+## Eval Case Audit
 
-- **Trigger eval 与触发率：**
-- **Behavior 或 regression eval：**
-- **Runtime trace：**
-- **基线：** no skill | minimal skill | previous version | none
-- **Ablation 或 no-op 证据：**
-- **Token、时间和方差成本：**
+存在 eval，或当前判断使用 eval 结果时，使用 `assets/eval-audit-report-template.md` 的适用部分。至少报告：
+
+- **Optimization policy 与错误代价：**
+- **门禁：** eval-validity | release-evidence | eval-change-safety
+- **Suite 构成：** case、scenario-family、minimal-pair 以及 representative/regression/boundary/challenge/diagnostic 数量
+- **Case Admission：** oracle、前提、rule trace、现实性和发布计入决策
+- **二元决策指标：** positive recall、false-negative rate、negative specificity、false-positive rate
+- **Mixed / uncertain cases：**
+- **Baseline、trace、token/time 和方差：**
+- **Failure triage：**
+- **Eval-driven 修改决策：** accept | reject | collect-more-data | fix-eval-first | accepted-risk
 - **发布仍缺少的证据：**
+
+没有 eval-driven 修改时，`eval-change-safety` 填 `not_applicable`。不要把所有结果压缩为一个总通过率。
 
 ## 差量与沉积
 

@@ -198,6 +198,8 @@ Lifecycle 必须短、小、幂等，不能直接写 AW 管理的平台输出。
 pnpm plugin:test <plugin>
 pnpm plugin:eval <plugin> --skill <skill> --batch-name materialization --materialize-only
 pnpm plugin:eval <plugin> --skill <skill> --batch-name release
+node .agents/skills/skill-review/scripts/validate_eval_cases.mjs \
+  plugins/<plugin>/skills/<skill>/evals/<cases-file>.json --format json
 ```
 
 - `scripts.tests.node` 只进入作者测试，不进入 runtime bundle。
@@ -206,13 +208,17 @@ pnpm plugin:eval <plugin> --skill <skill> --batch-name release
 - `--skill` 必填，一次只运行一个 owner。suite 的 `skills[]` 可以声明多个 participant Skills；profile 的 `plugins[]` 可以按顺序安装当前仓库中的多个插件。这个 eval 组合不形成 production dependency。
 - `evals/**` 和插件根 `reports/**` 是作者期目录，不进入 runtime bundle 或 runtime digest。Skill README 会随 Skill 发布。
 - eval materialization 必须验证最终 Codex Skill 文件和原生调用 metadata。
-- `trigger` 和 `conversation` suite 支持 `isolation: standard|strict`；发布级触发边界和行为归因应使用 `strict`。strict current 只保留 participants，conversation baseline 只移除 owner。单目标 trigger case 使用 `should_load_skill`；多 Skill 竞争路由使用 `expected_loaded_skills` 精确集合，并可设置 `minimumPassRate` 和 `forbidMultipleSkillLoads`。`request_user_input` 等待是 trigger 的正常终止。`strictNegativeSplits` 对单次负例错误零容忍。
-- command suite 支持 `case` 时必须声明 `cases` 文档，并返回标准 `case_results[]`。中央会从中断的 full run 保存已完成 case；使用同一 `--batch-id` 补齐其余 case 后，可把完整 case target 组合为 `/all` release target。旧 attempt 仍保留。
+- 有正负决策的 suite 声明 optimization policy、false-negative cost 和 false-positive cost。会驱动修改或发布的 case 声明 `eval_type`、`case_role`、`provenance`、`scenario_family`、`unit_under_test`、`preconditions` 和带依据的 oracle；boundary/regression 还要给出 minimal counterexample。
+- `validate_eval_cases.mjs` 默认以兼容模式报告历史 metadata 缺口；关键 case 补全后使用 `--strict`。它只检查结构，不能替代 oracle 语义复核、真实运行或发布门禁。
+- Eval failure 先归因。只有通过 Case Admission 且归因为 `skill-defect` 的失败可以驱动 Skill 修改；修改后重跑同族变体、minimal pair、相反标签、固定 validation/sanity 和关键 regression。
+- `trigger` 和 `conversation` suite 支持 `isolation: standard|strict`；发布级触发边界和行为归因应使用 `strict`。strict current 只保留 participants，conversation baseline 只移除 owner。conversation 的 `scripted_replies` 是 current 行为断言；baseline 的步骤、问题数或未消费回复差异保留为比较证据，不导致机械失败，但完成、隔离和 workspace 安全仍是机械门禁。单目标 trigger case 使用 `should_load_skill`；多 Skill 竞争路由使用 `expected_loaded_skills` 精确集合，并可设置 `minimumPassRate` 和 `forbidMultipleSkillLoads`。`request_user_input` 等待是 trigger 的正常终止。`strictNegativeSplits` 对单次负例错误零容忍。
+- command suite 支持 `case` 时必须声明 `cases` 文档，并返回标准 `case_results[]`。中央在每个 case 的全部 repetitions 后发布检查点，遇到 `incomplete` 时停止。使用同一 `--batch-id` 时，terminal case 被复用，incomplete 或 missing case 的全部 repetitions 重新运行；完整 case target 可以组合为 `/all` release target。没有 case 合同的 suite 整体重跑，旧 attempt 仍保留。
 - conversation case 默认只读。需要验证创建或修改行为时，显式使用 `sandbox: workspace-write`，并声明最小 `allowed_workspace_changes` 和非空 `artifacts`；runner 只修改隔离副本，并把越界 diff 或 artifact 断言失败记为 mechanical failure。
 - 真实模型 eval 使用文件凭据存储并关闭 secret keychain storage；从普通 Terminal 显式运行，不进入普通 unit/integration。macOS 检测到 `accountsKeychainExport` 包装器路径时会在启动模型前失败，且不会修改用户 keychain search list。
-- 真实模型默认要求 Full Access 管理后代进程。用户显式传 `--allow-unmanaged-processes` 后可以在无 Full Access 时运行，但报告会标记无法保证后代清理。
-- 每次 eval 用 `--batch-name` 新建临时批次，或用 `--batch-id` 恢复或追加同批次。批次会校验源码、materialization subject、模型环境、harness、case 集和 target contract。完整 run、target、raw、scorecard 和自动汇总固定在项目 `.tmp/agent-workflows/evals/`。full/release 完整评审默认用 `review:publish` 把人读 `report.md` 和 schema v2 `summary.json` 发布到 `plugins/<plugin>/reports/<skill>/<batch-id>/`；review-only 使用 `--batch-name`。
-- 插件和每个 Skill 都必须有非空 README。插件 README 只介绍插件和 Skill；Skill README 约定记录最近已 release 的正式报告。full 发布不更新 README；release 模式自动登记，或用 `review:release` 把已经发布的 full/release 报告以后登记。插件 Skill README 登记属于 production source 变化，必须由 release intent 覆盖。
+- 真实模型默认要求整个会话使用 Full Access 管理后代进程。`workspace` 或 `read-only` 来源没有显式参数时，会在 keychain、进程树、报告分配和模型启动前阻断。单次 `sandbox_permissions=require_escalated` 不等于 Full Access，不得用它重试。用户明确选择 `--allow-unmanaged-processes` 时进入 `unmanaged-confirmed` 并跳过进程树探测；agent 不得自行添加参数。CLI 不能证明参数由人添加，人工确认必须由 Codex 审批或 UI 层保证。
+- 真实模型 eval 可能运行几十分钟到数小时。保留同一个进程 session，首轮和后续等待都直接使用工具允许的最长响应式等待时间。等待超时不是失败；不要另开短周期状态轮询命令。
+- 每次 eval 用 `--batch-name` 新建临时批次，或用 `--batch-id` 恢复或追加同批次。批次会校验源码、materialization subject、模型环境、harness、case 集和 target contract。完整 run、target、raw、scorecard 和自动汇总固定在项目 `.tmp/agent-workflows/evals/`。用户明确要求发布时，用 `review:publish` 把人读 `report.md` 和 schema v2 `summary.json` 发布到 `plugins/<plugin>/reports/<skill>/<batch-id>/`；review-only 使用 `--batch-name`。
+- 插件和每个 Skill 都必须有非空 README。插件 README 只介绍插件和 Skill；Skill README 约定记录最近已 release 的正式报告。`review:publish` 不更新 README；用户另行明确要求登记时，使用 `review:release`。插件 Skill README 登记属于 production source 变化，必须由 release intent 覆盖。
 
 ## Validation
 

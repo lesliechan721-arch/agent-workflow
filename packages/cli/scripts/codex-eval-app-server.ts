@@ -37,6 +37,7 @@ import {
 } from './codex-eval-isolation.js';
 import {
   validatePluginEvalConversationCaseDocument,
+  type PluginEvalCaseCheckpoint,
   type PluginEvalIsolation,
   type PluginEvalProcessManagementEvidence,
   type PluginEvalSuiteReport,
@@ -115,6 +116,7 @@ interface AppServerRunEvidence {
   complete: boolean;
   mechanicalPassed: boolean;
   hostSourceAccessAbsent: boolean | null;
+  scriptedReplyMismatches: string[];
   durationMs: number;
   questions: Array<{
     requestId: string;
@@ -135,6 +137,25 @@ interface AppServerRunEvidence {
   eventTrace: unknown[];
   isolation: CodexEvalRpcIsolationEvidence | null;
   stderr?: string;
+}
+
+interface ConversationCaseResult {
+  id: string;
+  prompt: string;
+  expected_output: string;
+  checks: string[];
+  runs: Array<{
+    run: number;
+    with_skill: AppServerRunEvidence;
+    without_skill: AppServerRunEvidence;
+  }>;
+}
+
+async function writeJsonAtomic(filePath: string, value: unknown): Promise<void> {
+  await fs.ensureDir(path.dirname(filePath));
+  const temporary = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
+  await fs.writeJson(temporary, value, { spaces: 2 });
+  await fs.rename(temporary, filePath);
 }
 
 interface PendingRequest {
@@ -841,6 +862,7 @@ async function runConversationOnce(options: {
   const workspaceRoot = path.join(runRoot, 'project');
   const codexHome = path.join(runRoot, 'codex-home');
   const diagnostics: string[] = [];
+  const scriptedReplyMismatches: string[] = [];
   const questions: AppServerRunEvidence['questions'] = [];
   const finalMessages: string[] = [];
   const eventTrace: unknown[] = [];
@@ -923,7 +945,7 @@ async function runConversationOnce(options: {
         }
         const scripted = options.evalCase.scriptedReplies[replyStep];
         if (!scripted) {
-          diagnostics.push(`Unexpected request_user_input step ${replyStep + 1}.`);
+          scriptedReplyMismatches.push(`Unexpected request_user_input step ${replyStep + 1}.`);
         }
         const fallback = scripted?.unexpectedQuestionAnswer ?? '请停止提问并交还控制。';
         const normalizedQuestions = params.questions.map((value, index) => {
@@ -944,7 +966,7 @@ async function runConversationOnce(options: {
           scripted?.expectedQuestionCount !== undefined &&
           scripted.expectedQuestionCount !== normalizedQuestions.length
         ) {
-          diagnostics.push(
+          scriptedReplyMismatches.push(
             `request_user_input step ${replyStep + 1} expected ${scripted.expectedQuestionCount} questions but received ${normalizedQuestions.length}.`,
           );
         }
@@ -1042,7 +1064,7 @@ async function runConversationOnce(options: {
       diagnostics.push('Codex eval accessed a forbidden host source root.');
     }
     if (replyStep < options.evalCase.scriptedReplies.length) {
-      diagnostics.push(
+      scriptedReplyMismatches.push(
         `${options.evalCase.scriptedReplies.length - replyStep} scripted reply step(s) were unused.`,
       );
     }
@@ -1058,6 +1080,7 @@ async function runConversationOnce(options: {
       }
     }
     if (options.variant === 'with_skill') {
+      diagnostics.push(...scriptedReplyMismatches);
       for (const [index, expectation] of options.evalCase.artifacts.entries()) {
         diagnostics.push(...validateWorkspaceArtifact(expectation, workspaceArtifacts[index]!));
       }
@@ -1067,6 +1090,7 @@ async function runConversationOnce(options: {
       complete: completed.complete,
       mechanicalPassed: completed.complete && diagnostics.length === 0,
       hostSourceAccessAbsent,
+      scriptedReplyMismatches,
       durationMs: Date.now() - startedAt,
       questions,
       finalMessages,
@@ -1088,6 +1112,7 @@ async function runConversationOnce(options: {
       complete: false,
       mechanicalPassed: false,
       hostSourceAccessAbsent,
+      scriptedReplyMismatches,
       durationMs: Date.now() - startedAt,
       questions,
       finalMessages,
@@ -1190,6 +1215,7 @@ export async function runCodexConversationSuite(options: {
   profile: string;
   runs: number;
   caseId?: string;
+  caseIds?: string[];
   codexBin: string;
   model?: string;
   codexRuntime?: CodexEvalRuntimeConfig;
@@ -1200,6 +1226,8 @@ export async function runCodexConversationSuite(options: {
   processManagement?: PluginEvalProcessManagementEvidence;
   forbiddenHostRoots?: string[];
   workRoot?: string;
+  onCaseCompleted?: (checkpoint: PluginEvalCaseCheckpoint) => Promise<void>;
+  stopOnIncomplete?: boolean;
 }): Promise<PluginEvalSuiteReport> {
   const skillNames = options.skillNames ?? [options.skillName];
   const sourceEnv = options.sourceEnv ?? process.env;
@@ -1211,10 +1239,22 @@ export async function runCodexConversationSuite(options: {
     [options.subjectRoot, ...(options.forbiddenHostRoots ?? [])],
   );
   let cases = await readConversationCases(options.casesPath, options.skillName);
+  if (options.caseId && options.caseIds) {
+    throw new Error('runCodexConversationSuite cannot combine caseId and caseIds.');
+  }
   if (options.caseId) {
     cases = cases.filter((entry) => entry.id === options.caseId);
     if (cases.length === 0) {
       throw new Error(`Unknown conversation case: ${options.caseId}`);
+    }
+  }
+  if (options.caseIds) {
+    const requested = new Set(options.caseIds);
+    cases = cases.filter((entry) => requested.has(entry.id));
+    const found = new Set(cases.map((entry) => entry.id));
+    const missing = [...requested].filter((id) => !found.has(id));
+    if (missing.length > 0) {
+      throw new Error(`Unknown conversation cases: ${missing.join(', ')}`);
     }
   }
   let hostIsolation: CodexEvalHostIsolationEvidence | null = null;
@@ -1243,7 +1283,7 @@ export async function runCodexConversationSuite(options: {
     }, codexRuntime);
     if (options.reportPath) {
       await fs.ensureDir(path.dirname(options.reportPath));
-      await fs.writeJson(options.reportPath, report, { spaces: 2 });
+      await writeJsonAtomic(options.reportPath, report);
     }
     return redactCodexEvalValue({
       id: options.suiteId,
@@ -1260,7 +1300,83 @@ export async function runCodexConversationSuite(options: {
       diagnostics: [diagnostic],
     }, codexRuntime);
   }
-  const results = [];
+  const allRunsFor = (caseResults: ConversationCaseResult[]): AppServerRunEvidence[] =>
+    caseResults.flatMap((entry) => entry.runs).flatMap((run) => [
+      run.with_skill,
+      run.without_skill,
+    ]);
+  const createSuiteReport = (
+    caseResults: ConversationCaseResult[],
+    reportPath = options.reportPath,
+  ): PluginEvalSuiteReport => {
+    const allRuns = allRunsFor(caseResults);
+    const complete = caseResults.length > 0 && allRuns.every((run) => run.complete);
+    const mechanicalPassed = complete && allRuns.every((run) => run.mechanicalPassed);
+    return redactCodexEvalValue({
+      id: options.suiteId,
+      kind: 'conversation',
+      skills: skillNames,
+      profile: options.profile,
+      split: null,
+      outcome: !complete ? 'incomplete' : !mechanicalPassed ? 'failed' : 'needs_review',
+      complete,
+      mechanicalPassed,
+      qualitativeReview: 'required',
+      ...(reportPath ? { reportPath } : {}),
+      caseResults: caseResults.map((result) => {
+        const runs = allRunsFor([result]);
+        const caseComplete = runs.every((run) => run.complete);
+        const caseMechanicalPassed = caseComplete && runs.every((run) => run.mechanicalPassed);
+        return {
+          id: result.id,
+          outcome: !caseComplete
+            ? 'incomplete'
+            : !caseMechanicalPassed
+              ? 'failed'
+              : 'needs_review',
+          complete: caseComplete,
+          mechanicalPassed: caseMechanicalPassed,
+          qualitativeReview: 'required',
+          summary: { runs: runs.length },
+          diagnostics: runs.flatMap((run) => run.diagnostics),
+        };
+      }),
+      summary: { cases: caseResults.length, runs: allRuns.length },
+      diagnostics: allRuns.flatMap((run) => run.diagnostics),
+    }, codexRuntime) as PluginEvalSuiteReport;
+  };
+  const writeProgressReport = async (
+    caseResults: ConversationCaseResult[],
+  ): Promise<void> => {
+    if (!options.reportPath) return;
+    const allRuns = allRunsFor(caseResults);
+    const complete = caseResults.length === cases.length && allRuns.every((run) => run.complete);
+    const mechanicalPassed = complete && allRuns.every((run) => run.mechanicalPassed);
+    const runtimeProbe = allRuns.find((run) => run.isolation)?.isolation ?? null;
+    const report = redactCodexEvalValue({
+      schema_version: 1,
+      generated_at: new Date().toISOString(),
+      suite: options.suiteId,
+      owner_skill: options.skillName,
+      participant_skills: skillNames,
+      profile: options.profile,
+      complete,
+      mechanical_passed: mechanicalPassed,
+      qualitative_review: 'required',
+      environment: {
+        isolation: codexEvalIsolationEvidence({
+          mode: isolation,
+          host: hostIsolation,
+          runtimeProbe,
+        }),
+        codex_runtime: codexEvalRuntimeEvidence(codexRuntime),
+      },
+      results: caseResults,
+    }, codexRuntime);
+    await writeJsonAtomic(options.reportPath, report);
+  };
+
+  const results: ConversationCaseResult[] = [];
   for (const evalCase of cases) {
     const runs = [];
     for (let runIndex = 0; runIndex < options.runs; runIndex += 1) {
@@ -1300,60 +1416,29 @@ export async function runCodexConversationSuite(options: {
       });
       runs.push({ run: runIndex + 1, with_skill: withSkill, without_skill: withoutSkill });
     }
-    results.push({
+    const caseResult: ConversationCaseResult = {
       id: evalCase.id,
       prompt: evalCase.prompt,
       expected_output: evalCase.expectedOutput,
       checks: evalCase.checks,
       runs,
+    };
+    results.push(caseResult);
+    await writeProgressReport(results);
+    await options.onCaseCompleted?.({
+      caseId: evalCase.id,
+      report: createSuiteReport([caseResult]),
     });
+    if (options.stopOnIncomplete && !createSuiteReport([caseResult]).complete) break;
   }
-  const allRuns = results.flatMap((entry) => entry.runs).flatMap((run) => [
-    run.with_skill,
-    run.without_skill,
-  ]);
-  const complete = allRuns.every((run) => run.complete);
+  const allRuns = allRunsFor(results);
+  const complete = results.length === cases.length && allRuns.every((run) => run.complete);
   const mechanicalPassed = complete && allRuns.every((run) => run.mechanicalPassed);
-  const runtimeProbe = allRuns.find((run) => run.isolation)?.isolation ?? null;
-  const report = redactCodexEvalValue({
-    schema_version: 1,
-    generated_at: new Date().toISOString(),
-    suite: options.suiteId,
-    owner_skill: options.skillName,
-    participant_skills: skillNames,
-    profile: options.profile,
-    complete,
-    mechanical_passed: mechanicalPassed,
-    qualitative_review: 'required',
-    environment: {
-      isolation: codexEvalIsolationEvidence({
-        mode: isolation,
-        host: hostIsolation,
-        runtimeProbe,
-      }),
-      codex_runtime: codexEvalRuntimeEvidence(codexRuntime),
-    },
-    results,
-  }, codexRuntime);
-  if (options.reportPath) {
-    await fs.ensureDir(path.dirname(options.reportPath));
-    await fs.writeJson(options.reportPath, report, { spaces: 2 });
-  }
-  return redactCodexEvalValue({
-    id: options.suiteId,
-    kind: 'conversation',
-    skills: skillNames,
-    profile: options.profile,
-    split: null,
-    outcome: !complete ? 'incomplete' : !mechanicalPassed ? 'failed' : 'needs_review',
+  await writeProgressReport(results);
+  return {
+    ...createSuiteReport(results),
     complete,
     mechanicalPassed,
-    qualitativeReview: 'required',
-    ...(options.reportPath ? { reportPath: options.reportPath } : {}),
-    summary: {
-      cases: results.length,
-      runs: allRuns.length,
-    },
-    diagnostics: allRuns.flatMap((run) => run.diagnostics),
-  }, codexRuntime);
+    outcome: !complete ? 'incomplete' : !mechanicalPassed ? 'failed' : 'needs_review',
+  };
 }

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { realpathSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
@@ -15,7 +16,7 @@ const DIMENSIONS = {
   context_disclosure: ['Information hierarchy, resources & disclosure', 10],
   architecture: ['Architecture ownership', 10],
   scripts: ['Scripts & deterministic automation', 7],
-  evals: ['Evals & evidence-driven iteration', 9],
+  evals: ['Eval design, oracle validity & change safety', 9],
   reliability: ['Reliability, safety & compatibility', 4],
   maintainability: ['Pruning, source of truth & change discipline', 4],
 };
@@ -28,6 +29,8 @@ const REQUIRED_GATES = new Map([
   ['safety-permissions', 'P0'],
   ['architecture-ownership', 'P1'],
   ['release-evidence', 'P1'],
+  ['eval-validity', 'P1'],
+  ['eval-change-safety', 'P1'],
 ]);
 const CONFIDENCE_VALUES = { high: 1, medium: 0.7, low: 0.4, unknown: 0 };
 const VALID_MODES = new Set(['quick', 'full', 'release', 'delta']);
@@ -67,6 +70,15 @@ const ARTIFACT_FIELDS = new Set([
   'regression_eval_results',
   'ablation_results',
   'runtime_traces',
+  'eval_audit_applicable',
+  'eval_case_audit',
+  'eval_error_cost_policy',
+  'eval_baseline_assessed',
+  'eval_variance_assessed',
+  'eval_failure_triage',
+  'eval_driven_change',
+  'eval_change_regressions',
+  'eval_known_invalid_oracle',
   'scripts_present',
   'scripts_checked',
   'compatibility_claims',
@@ -318,6 +330,27 @@ function validateAndCalculate(data) {
         `artifacts.${field} must be a boolean.`,
       ));
     }
+  }
+  const evalAuditApplicable = artifacts.eval_audit_applicable === true;
+  const evalAuditSignals = [
+    'trigger_eval_results',
+    'behavior_eval_results',
+    'regression_eval_results',
+    'eval_case_audit',
+    'eval_error_cost_policy',
+    'eval_baseline_assessed',
+    'eval_variance_assessed',
+    'eval_failure_triage',
+    'eval_driven_change',
+    'eval_change_regressions',
+    'eval_known_invalid_oracle',
+  ];
+  if (!evalAuditApplicable && evalAuditSignals.some((field) => artifacts[field] === true)) {
+    diagnostics.push(diagnostic(
+      'error',
+      'eval-audit.applicability',
+      'Eval audit evidence or an eval-driven change requires artifacts.eval_audit_applicable=true.',
+    ));
   }
   if (
     (mode === 'full' || mode === 'release') &&
@@ -791,19 +824,53 @@ function validateAndCalculate(data) {
     'cap.information-hierarchy',
     'Context/disclosure score exceeds 4 without an information-hierarchy map.',
   );
-  capWarning(
-    'evals',
-    2,
-    [
+  if (evalAuditApplicable) {
+    const evalExecutionEvidence = [
       artifacts.trigger_eval_results,
       artifacts.behavior_eval_results,
       artifacts.regression_eval_results,
-      artifacts.ablation_results,
       artifacts.runtime_traces,
-    ].some((value) => value === true),
-    'cap.evals',
-    'Evals score exceeds 2 without eval results, ablation, or runtime traces.',
-  );
+    ].some((value) => value === true);
+    if (artifacts.eval_known_invalid_oracle === true && artifacts.eval_driven_change === true) {
+      capWarning(
+        'evals',
+        1,
+        false,
+        'cap.evals-invalid-oracle',
+        'Evals score exceeds 1 although a known invalid oracle drives the current change.',
+      );
+    } else if (artifacts.eval_case_audit !== true) {
+      capWarning(
+        'evals',
+        2,
+        false,
+        'cap.evals-case-audit',
+        'Evals score exceeds 2 without a Case Admission Audit.',
+      );
+    } else if (!evalExecutionEvidence) {
+      capWarning(
+        'evals',
+        3,
+        false,
+        'cap.evals-execution',
+        'Evals score exceeds 3 without executed eval or runtime trace evidence.',
+      );
+    } else {
+      const resultDecisionComplete = [
+        artifacts.eval_error_cost_policy,
+        artifacts.eval_baseline_assessed,
+        artifacts.eval_variance_assessed,
+        artifacts.eval_failure_triage,
+      ].every((value) => value === true);
+      capWarning(
+        'evals',
+        4,
+        resultDecisionComplete,
+        'cap.evals-result-decision',
+        'Evals score exceeds 4 without error-cost policy, baseline assessment, variance analysis, and failure triage.',
+      );
+    }
+  }
   if (artifacts.scripts_present === true) {
     capWarning(
       'scripts',
@@ -903,6 +970,78 @@ function validateAndCalculate(data) {
   }
   const missingGates = [...REQUIRED_GATES.keys()].filter((id) => !gateIds.has(id)).sort();
   if (missingGates.length > 0) diagnostics.push(diagnostic('error', 'gate.missing', `Missing required gates: ${missingGates.join(', ')}`));
+
+  const gateById = new Map(gates.map((gate) => [gate.id, gate]));
+  const evalValidity = gateById.get('eval-validity');
+  const evalChangeSafety = gateById.get('eval-change-safety');
+  if (evalValidity) {
+    if (evalAuditApplicable && evalValidity.status === 'not_applicable') {
+      diagnostics.push(diagnostic(
+        'error',
+        'gate.eval-validity-applicable',
+        'eval-validity cannot be not_applicable when eval evidence is in review scope.',
+      ));
+    }
+    if (!evalAuditApplicable && evalValidity.status !== 'not_applicable') {
+      diagnostics.push(diagnostic(
+        'error',
+        'gate.eval-validity-not-applicable',
+        'eval-validity must be not_applicable when no eval evidence is in review scope.',
+      ));
+    }
+    if (
+      evalValidity.status === 'pass' &&
+      (
+        artifacts.eval_case_audit !== true ||
+        artifacts.eval_error_cost_policy !== true ||
+        artifacts.eval_known_invalid_oracle === true
+      )
+    ) {
+      diagnostics.push(diagnostic(
+        'error',
+        'gate.eval-validity-evidence',
+        'eval-validity pass requires a completed Case Admission Audit, an error-cost policy, and no known invalid oracle.',
+      ));
+    }
+    if (artifacts.eval_known_invalid_oracle === true && evalValidity.status !== 'fail') {
+      diagnostics.push(diagnostic(
+        'error',
+        'gate.eval-validity-known-invalid',
+        'A known invalid oracle requires eval-validity=fail.',
+      ));
+    }
+  }
+  const evalDrivenChange = artifacts.eval_driven_change === true;
+  if (evalChangeSafety) {
+    if (evalDrivenChange && evalChangeSafety.status === 'not_applicable') {
+      diagnostics.push(diagnostic(
+        'error',
+        'gate.eval-change-safety-applicable',
+        'eval-change-safety cannot be not_applicable for an eval-driven change.',
+      ));
+    }
+    if (!evalDrivenChange && evalChangeSafety.status !== 'not_applicable') {
+      diagnostics.push(diagnostic(
+        'error',
+        'gate.eval-change-safety-not-applicable',
+        'eval-change-safety must be not_applicable when no eval-driven change is in review scope.',
+      ));
+    }
+    if (
+      evalChangeSafety.status === 'pass' &&
+      (
+        evalValidity?.status !== 'pass' ||
+        artifacts.eval_failure_triage !== true ||
+        artifacts.eval_change_regressions !== true
+      )
+    ) {
+      diagnostics.push(diagnostic(
+        'error',
+        'gate.eval-change-safety-evidence',
+        'eval-change-safety pass requires eval-validity pass, failure triage, and change regression evidence.',
+      ));
+    }
+  }
 
   const hasP0Gate = gates.some((gate) => gate.status === 'fail' && gate.severity === 'P0');
   const hasP1Gate = gates.some((gate) => gate.status === 'fail' && gate.severity === 'P1');
@@ -1015,7 +1154,8 @@ async function main() {
   }
 }
 
-const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+const isMain = process.argv[1] &&
+  realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
 if (isMain) await main();
 
 export { validateAndCalculate };

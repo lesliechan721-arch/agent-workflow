@@ -1,19 +1,34 @@
 #!/usr/bin/env node
 
 import { createHash } from 'node:crypto';
+import { realpathSync } from 'node:fs';
 import { readFile, readdir, stat } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
-import YAML from 'yaml';
-
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = path.resolve(scriptDirectory, '..', '..', '..', '..');
-const requireFromCli = createRequire(path.join(repositoryRoot, 'packages', 'cli', 'package.json'));
-const { minimatch } = requireFromCli('minimatch');
-const { parseTOML } = requireFromCli('toml-eslint-parser');
+const requireFromScript = createRequire(import.meta.url);
+let yamlModule;
+let cliParsingDependencies;
+
+function yaml() {
+  yamlModule ??= requireFromScript('yaml');
+  return yamlModule;
+}
+
+function loadCliParsingDependencies() {
+  if (!cliParsingDependencies) {
+    const requireFromCli = createRequire(path.join(repositoryRoot, 'packages', 'cli', 'package.json'));
+    cliParsingDependencies = {
+      minimatch: requireFromCli('minimatch').minimatch,
+      parseTOML: requireFromCli('toml-eslint-parser').parseTOML,
+    };
+  }
+  return cliParsingDependencies;
+}
 
 const CONTROL_MARKERS = [
   '只有', '仅当', '否则', '如果', '若', '之后', '然后', '直到', '同时最多',
@@ -328,7 +343,7 @@ async function inventory(root) {
 function splitSkill(content, label) {
   const match = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?/u.exec(content);
   if (!match) throw new Error(`${label} must start with valid YAML frontmatter.`);
-  const frontmatter = YAML.parse(match[1]);
+  const frontmatter = yaml().parse(match[1]);
   if (!isRecord(frontmatter)) throw new Error(`${label} frontmatter must be an object.`);
   return { frontmatter, body: content.slice(match[0].length) };
 }
@@ -626,6 +641,7 @@ async function expandGlobPattern(patternValue, skillRoot) {
       searchRoot = parent;
     }
     if (!searchRoot || !(await pathExists(searchRoot))) continue;
+    const { minimatch } = loadCliParsingDependencies();
     for (const relative of await walkFiles(searchRoot)) {
       const absolute = path.join(searchRoot, relative);
       if (minimatch(normalizeRelative(absolute), normalizeRelative(pattern), { dot: true })) {
@@ -658,6 +674,7 @@ async function inspectRoles(paths) {
   for (const rolePath of [...new Set(paths)].filter((candidate) => candidate.endsWith('.toml')).sort()) {
     try {
       const content = await readFile(rolePath, 'utf8');
+      const { parseTOML } = loadCliParsingDependencies();
       const ast = parseTOML(content);
       const topLevel = ast.body[0];
       const instruction = readTopLevelTomlString(topLevel, 'developer_instructions');
@@ -725,7 +742,7 @@ async function inspectCodexMetadata(skillRoot) {
   const metadataPath = path.join(skillRoot, 'agents', 'openai.yaml');
   if (!(await isFile(metadataPath))) return null;
   const content = await readFile(metadataPath, 'utf8');
-  const parsed = YAML.parse(content);
+  const parsed = yaml().parse(content);
   if (!isRecord(parsed)) throw new Error('agents/openai.yaml must contain a YAML object.');
   return {
     path: 'agents/openai.yaml',
@@ -1387,7 +1404,8 @@ async function main() {
   }
 }
 
-const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+const isMain = process.argv[1] &&
+  realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
 if (isMain) await main();
 
 export { buildReport, textMetrics };

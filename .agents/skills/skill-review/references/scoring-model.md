@@ -15,7 +15,7 @@
 | `context_disclosure` | 信息层级、资源与渐进式披露 | 10 |
 | `architecture` | 职责归属与自然语言状态机风险 | 10 |
 | `scripts` | 脚本与确定性自动化 | 7 |
-| `evals` | 评测、验证与证据驱动迭代 | 9 |
+| `evals` | Eval 设计、Oracle 有效性与修改安全 | 9 |
 | `reliability` | 可靠性、安全与兼容性 | 4 |
 | `maintainability` | 剪枝、事实源与变更纪律 | 4 |
 
@@ -89,7 +89,10 @@ full/release 必须在评分前完成最小有效控制审计，并给出独立�
 - full/release 没有 minimum-effective-control audit 时 scorecard 无效；quick/delta 没有该审计时，`minimum_control` 通常不高于 3。
 - 没有 information-hierarchy map，`context_disclosure` 通常不高于 4。
 - 有脚本但未做安全静态检查、`--help` 或样例运行，`scripts` 通常不高于 3。
-- 没有 trigger、behavior、regression、ablation 或 trace 证据，`evals` 通常不高于 2。
+- 只有 eval 文件，没有 Case Admission Audit，`evals` 通常不高于 2。
+- Case 设计、oracle 和现实性已审计，但没有实际运行，`evals` 通常不高于 3。
+- 有运行但没有适用 baseline、方差解释、错误代价政策或 failure triage，`evals` 通常不高于 4。
+- 已知错误 oracle 仍驱动当前修改，`evals` 通常不高于 1。
 - 有具体兼容性声明但未验证，`reliability` 通常不高于 3。
 - delta 模式没有上一版，`maintainability` 通常不高于 3。
 
@@ -101,9 +104,16 @@ full/release 必须在评分前完成最小有效控制审计，并给出独立�
 4. `capability-validity`：核心流程不依赖不存在、未公开或被禁止的能力。
 5. `safety-permissions`：不会静默越权、泄露敏感数据或执行不受控副作用。
 6. `architecture-ownership`：核心正确性不依赖无法可靠维护的自然语言 runtime 状态机。
-7. `release-evidence`：release 模式具备足以支持发布结论的触发和行为证据。
+7. `release-evidence`：release 模式具备真实运行、适用 baseline、trace、重复运行、质量和成本证据。
+8. `eval-validity`：仅在被审 Skill 含 eval，或当前判断使用 eval 结果时适用；关键 case 的层级、前提、oracle、assertion、现实性和版本关系可靠。已知错误、陈旧或 diagnostic-only case 不进入发布指标。
+9. `eval-change-safety`：仅在 eval 已驱动或准备驱动当前修改时适用；失败已正确归因，修复经过同族变体、minimal pair、固定 validation/sanity、关键 regression 和复杂度回归。
 
 门禁状态：`pass`、`fail`、`unknown`、`not_applicable`。高分不能覆盖门禁失败。
+
+- `eval-validity=fail`：当前 suite 不得继续驱动 Skill 修改；先修复、重新裁决或移除错误用例。
+- `eval-validity=unknown`：eval 只能作为诊断信号，不能单独形成 P0/P1 或发布结论。
+- `eval-change-safety=fail`：拒绝当前 eval-driven 修改，即使目标 case 已转为通过。
+- 没有 eval 或 eval 结果时，`eval-validity=not_applicable`；没有 eval-driven 修改时，`eval-change-safety=not_applicable`。
 
 ## Finding 严重性
 

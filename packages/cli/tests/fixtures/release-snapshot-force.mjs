@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { promisify } from 'node:util';
+import { isDeepStrictEqual, promisify } from 'node:util';
 
 import { createBuildSnapshot } from '../../../../scripts/build/build-cache.mjs';
 import { packCli } from '../../../../scripts/release/common.mjs';
@@ -42,13 +42,13 @@ const snapshot = await createBuildSnapshot(repoRoot);
 let forceBuild;
 try {
   const snapshotCliIndex = await fs.readFile(path.join(snapshot.cliDistRoot, 'index.js'));
-  const snapshotPluginManifest = await fs.readFile(path.join(
+  const snapshotPluginManifest = JSON.parse(await fs.readFile(path.join(
     snapshot.catalogOutputRoot,
     'plugins',
     'git',
     '.agents-plugin',
     'plugin.json',
-  ));
+  ), 'utf8'));
   const npmExecPath = process.env.npm_execpath?.trim();
   if (!npmExecPath) {
     throw new Error('release snapshot force fixture requires npm_execpath.');
@@ -84,10 +84,13 @@ try {
       'git',
       '.agents-plugin',
       'plugin.json',
-    )),
+    ), 'utf8').then((contents) => JSON.parse(contents)),
     fs.readFile(path.join(fullUnpackRoot, 'package', 'catalog-manifest.json'), 'utf8')
       .then((contents) => JSON.parse(contents)),
   ]);
+  const packedPluginEntry = fullManifest.entries.find(
+    (entry) => entry.name === snapshotPluginManifest.name,
+  );
 
   await snapshot.cleanup();
   const [snapshotExists, catalogStages, forceIntents, buildLockExists] = await Promise.all([
@@ -103,7 +106,13 @@ try {
     generationMatches: catalog.generationId === snapshot.generationId,
     outputDigestMatches: catalog.outputDigest === snapshot.outputDigest,
     cliBytesMatch: packedCliIndex.equals(snapshotCliIndex),
-    catalogBytesMatch: packedPluginManifest.equals(snapshotPluginManifest),
+    catalogSnapshotContentMatches: isDeepStrictEqual(
+      { ...packedPluginManifest, version: snapshotPluginManifest.version },
+      snapshotPluginManifest,
+    ),
+    catalogReleaseVersionMatches: typeof packedPluginManifest.version === 'string'
+      && packedPluginEntry !== undefined
+      && packedPluginManifest.version === packedPluginEntry.version,
     snapshotRemoved: !snapshotExists,
     remainingCatalogStages: catalogStages.filter((entry) => entry.startsWith('catalog-')).length,
     remainingForceIntents: forceIntents.length,

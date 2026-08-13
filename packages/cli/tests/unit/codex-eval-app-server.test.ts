@@ -173,6 +173,7 @@ describe('Codex app-server eval driver', () => {
       }],
     }, { spaces: 2 });
     const reportPath = path.join(outputRoot, 'behavior.json');
+    const onCaseCompleted = vi.fn(async () => undefined);
 
     const report = await runCodexConversationSuite({
       suiteId: 'behavior',
@@ -182,10 +183,13 @@ describe('Codex app-server eval driver', () => {
       subjectRoot,
       profile: 'project-default',
       runs: 1,
+      caseIds: ['dynamic-question-id'],
       codexBin: process.execPath,
       timeoutMs: 10_000,
       sourceEnv: process.env,
       reportPath,
+      stopOnIncomplete: true,
+      onCaseCompleted,
     });
 
     expect(report).toMatchObject({
@@ -195,6 +199,13 @@ describe('Codex app-server eval driver', () => {
       qualitativeReview: 'required',
       summary: { cases: 1, runs: 2 },
     });
+    expect(onCaseCompleted).toHaveBeenCalledWith(expect.objectContaining({
+      caseId: 'dynamic-question-id',
+      report: expect.objectContaining({
+        complete: true,
+        caseResults: [expect.objectContaining({ id: 'dynamic-question-id' })],
+      }),
+    }));
     const evidence = await fs.readJson(reportPath);
     const run = evidence.results[0].runs[0];
     expect(run.with_skill.questions[0].requestId).toBe('17');
@@ -218,6 +229,114 @@ describe('Codex app-server eval driver', () => {
     expect(JSON.stringify(evidence)).not.toContain('private-server-name');
     expect(JSON.stringify(evidence)).not.toContain('private-installation-id');
     expect(JSON.stringify(evidence)).not.toContain('private-plan-type');
+  });
+
+  it('treats scripted reply mismatches as current assertions and baseline evidence', async () => {
+    const subjectRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-app-server-replies-'));
+    const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-app-server-replies-report-'));
+    tempDirs.push(subjectRoot, outputRoot);
+    await fs.outputFile(
+      path.join(subjectRoot, '.agents', 'skills', 'ask-me', 'SKILL.md'),
+      '# Ask Me\n',
+    );
+    await fs.writeFile(path.join(subjectRoot, 'app-server'), [
+      "const fs = require('node:fs');",
+      "const readline = require('node:readline');",
+      "const input = readline.createInterface({ input: process.stdin });",
+      "const send = (frame) => process.stdout.write(JSON.stringify(frame) + '\\n');",
+      "const finish = (text) => {",
+      "  send({ method: 'item/completed', params: { item: { type: 'agentMessage', id: 'message-1', phase: 'final_answer', text } } });",
+      "  send({ method: 'turn/completed', params: { turn: { id: 'turn-1', status: 'completed' } } });",
+      "};",
+      "input.on('line', (line) => {",
+      "  const frame = JSON.parse(line);",
+      "  if (frame.method === 'initialize') send({ id: frame.id, result: {} });",
+      "  else if (frame.method === 'thread/start') send({ id: frame.id, result: { thread: { id: 'thread-1' } } });",
+      "  else if (frame.method === 'turn/start') {",
+      "    send({ id: frame.id, result: { turn: { id: 'turn-1' } } });",
+      "    const ownerPresent = fs.existsSync('.agents/skills/ask-me/SKILL.md');",
+      "    const prompt = frame.params?.input?.[0]?.text ?? '';",
+      "    if (ownerPresent && prompt === 'owner-asks') {",
+      "      send({ id: 17, method: 'item/tool/requestUserInput', params: {",
+      "        questions: [{ id: 'choice', header: 'Choice', question: 'Proceed?', options: null }],",
+      "      } });",
+      "    } else finish(`owner=${ownerPresent}`);",
+      "  } else if (frame.id === 17 && frame.result) finish('owner=true');",
+      "});",
+    ].join('\n'), 'utf8');
+    const scriptedReplies = [{
+      expected_question_count: 1,
+      answers_by_index: ['approved'],
+      unexpected_question_answer: 'stop',
+    }];
+    const casesPath = path.join(subjectRoot, 'cases.json');
+    await fs.writeJson(casesPath, {
+      skill_name: 'ask-me',
+      evals: [
+        behaviorCase('baseline-difference', {
+          prompt: 'owner-asks',
+          scripted_replies: scriptedReplies,
+        }),
+        behaviorCase('current-mismatch', {
+          prompt: 'owner-does-not-ask',
+          scripted_replies: scriptedReplies,
+        }),
+      ],
+    });
+
+    const baselineReportPath = path.join(outputRoot, 'baseline-difference.json');
+    await expect(runCodexConversationSuite({
+      suiteId: 'behavior',
+      skillName: 'ask-me',
+      casesPath,
+      subjectRoot,
+      profile: 'project-default',
+      caseId: 'baseline-difference',
+      runs: 1,
+      codexBin: process.execPath,
+      timeoutMs: 10_000,
+      sourceEnv: process.env,
+      reportPath: baselineReportPath,
+    })).resolves.toMatchObject({
+      outcome: 'needs_review',
+      complete: true,
+      mechanicalPassed: true,
+    });
+    const baselineEvidence = await fs.readJson(baselineReportPath);
+    const baselineRun = baselineEvidence.results[0].runs[0];
+    expect(baselineRun.with_skill.scriptedReplyMismatches).toEqual([]);
+    expect(baselineRun.without_skill.scriptedReplyMismatches).toEqual([
+      '1 scripted reply step(s) were unused.',
+    ]);
+    expect(baselineRun.without_skill.diagnostics).toEqual([]);
+
+    const currentReportPath = path.join(outputRoot, 'current-mismatch.json');
+    await expect(runCodexConversationSuite({
+      suiteId: 'behavior',
+      skillName: 'ask-me',
+      casesPath,
+      subjectRoot,
+      profile: 'project-default',
+      caseId: 'current-mismatch',
+      runs: 1,
+      codexBin: process.execPath,
+      timeoutMs: 10_000,
+      sourceEnv: process.env,
+      reportPath: currentReportPath,
+    })).resolves.toMatchObject({
+      outcome: 'failed',
+      complete: true,
+      mechanicalPassed: false,
+      diagnostics: expect.arrayContaining([
+        '1 scripted reply step(s) were unused.',
+      ]),
+    });
+    const currentEvidence = await fs.readJson(currentReportPath);
+    const currentRun = currentEvidence.results[0].runs[0];
+    expect(currentRun.with_skill.diagnostics).toContain(
+      '1 scripted reply step(s) were unused.',
+    );
+    expect(currentRun.without_skill.diagnostics).toEqual([]);
   });
 
   it('rejects participant source and materialized subject reads outside the copied workspace', async () => {

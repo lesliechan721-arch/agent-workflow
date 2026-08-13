@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { pathToFileURL } from 'node:url';
@@ -32,6 +32,7 @@ import {
 import {
   PLUGIN_EVAL_SCHEMA_VERSION,
   readPluginEvalTriggerCases,
+  type PluginEvalCaseCheckpoint,
   type PluginEvalSplit,
   type PluginEvalProcessManagementEvidence,
   type PluginEvalSuiteReport,
@@ -163,6 +164,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function sha256(value: string | Buffer): string {
   return `sha256:${createHash('sha256').update(value).digest('hex')}`;
+}
+
+async function writeJsonAtomic(filePath: string, value: unknown): Promise<void> {
+  await fs.ensureDir(path.dirname(filePath));
+  const temporary = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
+  await fs.writeJson(temporary, value, { spaces: 2 });
+  await fs.rename(temporary, filePath);
 }
 
 function stableJson(value: unknown): string {
@@ -986,6 +994,7 @@ export async function runCodexTriggerSuite(options: {
   profile: string;
   runs: number;
   caseId?: string;
+  caseIds?: string[];
   codexBin: string;
   model?: string;
   codexRuntime?: CodexEvalRuntimeConfig;
@@ -994,6 +1003,8 @@ export async function runCodexTriggerSuite(options: {
   stderr?: (text: string) => void;
   processManagement?: PluginEvalProcessManagementEvidence;
   workRoot?: string;
+  onCaseCompleted?: (checkpoint: PluginEvalCaseCheckpoint) => Promise<void>;
+  stopOnIncomplete?: boolean;
 }): Promise<PluginEvalSuiteReport> {
   const sourceEnv = options.sourceEnv ?? process.env;
   const codexRuntime = options.codexRuntime ?? cleanCodexEvalRuntimeConfig(sourceEnv, options.model);
@@ -1003,8 +1014,20 @@ export async function runCodexTriggerSuite(options: {
   let cases = options.split === 'all'
     ? corpus.cases
     : corpus.cases.filter((entry) => entry.split === options.split);
+  if (options.caseId && options.caseIds) {
+    throw new Error('runCodexTriggerSuite cannot combine caseId and caseIds.');
+  }
   if (options.caseId) {
     cases = cases.filter((entry) => entry.id === options.caseId);
+  }
+  if (options.caseIds) {
+    const requested = new Set(options.caseIds);
+    cases = cases.filter((entry) => requested.has(entry.id));
+    const found = new Set(cases.map((entry) => entry.id));
+    const missing = [...requested].filter((id) => !found.has(id));
+    if (missing.length > 0) {
+      throw new Error(`Unknown trigger cases: ${missing.join(', ')}`);
+    }
   }
   if (cases.length === 0) {
     throw new Error(
@@ -1055,7 +1078,7 @@ export async function runCodexTriggerSuite(options: {
     }, codexRuntime);
     if (options.reportPath) {
       await fs.ensureDir(path.dirname(options.reportPath));
-      await fs.writeJson(options.reportPath, report, { spaces: 2 });
+      await writeJsonAtomic(options.reportPath, report);
     }
     return redactCodexEvalValue({
       id: options.suite.id,
@@ -1072,6 +1095,109 @@ export async function runCodexTriggerSuite(options: {
       diagnostics: [diagnostic],
     }, codexRuntime);
   }
+  const participantSkillDigests = Object.fromEntries(await Promise.all(
+    options.suite.skills.map(async (skillName) => [
+      skillName,
+      sha256(await fs.readFile(path.join(
+        options.subjectRoot,
+        '.agents',
+        'skills',
+        skillName,
+        'SKILL.md',
+      ))),
+    ]),
+  ));
+  const codexVersion = await readCodexVersion(options.codexBin, sourceEnv);
+
+  const createSuiteReport = (
+    caseResults: TriggerCaseSummary[],
+    reportPath = options.reportPath,
+  ): PluginEvalSuiteReport => {
+    const complete = caseResults.length > 0 && caseResults.every((result) => result.complete);
+    const passed = complete && caseResults.every((result) => result.passed);
+    return redactCodexEvalValue({
+      id: options.suite.id,
+      kind: 'trigger',
+      skills: options.suite.skills,
+      profile: options.profile,
+      split: options.split,
+      outcome: !complete ? 'incomplete' : passed ? 'passed' : 'failed',
+      complete,
+      mechanicalPassed: passed,
+      qualitativeReview: 'not_required',
+      ...(reportPath ? { reportPath } : {}),
+      caseResults: caseResults.map((result) => ({
+        id: result.id,
+        outcome: !result.complete ? 'incomplete' : result.passed ? 'passed' : 'failed',
+        complete: result.complete,
+        mechanicalPassed: result.passed,
+        qualitativeReview: 'not_required',
+        summary: {
+          split: result.split,
+          expected: result.expected,
+          observed: result.observed,
+        },
+        diagnostics: result.runs.flatMap((run) => run.diagnostics),
+      })),
+      summary: {
+        cases: caseResults.length,
+        passed: caseResults.filter((result) => result.passed).length,
+        failed: caseResults.filter((result) => !result.passed).length,
+      },
+      diagnostics: caseResults.flatMap((result) =>
+        result.runs.flatMap((run) => run.diagnostics)),
+    }, codexRuntime) as PluginEvalSuiteReport;
+  };
+
+  const writeProgressReport = async (
+    caseResults: TriggerCaseSummary[],
+  ): Promise<void> => {
+    if (!options.reportPath) return;
+    const complete = caseResults.length === cases.length &&
+      caseResults.every((result) => result.complete);
+    const passed = complete && caseResults.every((result) => result.passed);
+    const report = redactCodexEvalValue({
+      schema_version: PLUGIN_EVAL_SCHEMA_VERSION,
+      generated_at: new Date().toISOString(),
+      suite: options.suite.id,
+      owner_skill: options.suite.skill,
+      participant_skills: options.suite.skills,
+      profile: options.profile,
+      split: options.split,
+      runs_per_case: options.runs,
+      threshold: PASS_THRESHOLD,
+      route_minimum_pass_rate: options.suite.minimumPassRate ?? null,
+      forbid_multiple_skill_loads: options.suite.forbidMultipleSkillLoads,
+      model: model ?? null,
+      complete,
+      passed,
+      environment: {
+        codex_version: codexVersion,
+        isolation: {
+          ...codexEvalIsolationEvidence({
+            mode: options.suite.isolation,
+            host: hostIsolation,
+            runtimeProbe,
+          }),
+          app_server_protocol: true,
+          project_rules_ignored_by_default: true,
+        },
+        codex_runtime: codexEvalRuntimeEvidence(codexRuntime),
+        skill_sha256: participantSkillDigests[options.suite.skill],
+        participant_skill_sha256: participantSkillDigests,
+        corpus_sha256: sha256(stableJson(corpus)),
+      },
+      summary: {
+        cases: cases.length,
+        completed: caseResults.length,
+        passed: caseResults.filter((result) => result.passed).length,
+        failed: caseResults.filter((result) => !result.passed).length,
+      },
+      results: caseResults,
+    }, codexRuntime);
+    await writeJsonAtomic(options.reportPath, report);
+  };
+
   const results: TriggerCaseSummary[] = [];
   for (const evalCase of cases) {
     const runs: TriggerRunEvidence[] = [];
@@ -1094,77 +1220,22 @@ export async function runCodexTriggerSuite(options: {
         workRoot: options.workRoot,
       }));
     }
-    results.push(summarizeTriggerCase(options.suite, evalCase, runs));
+    const caseResult = summarizeTriggerCase(options.suite, evalCase, runs);
+    results.push(caseResult);
+    await writeProgressReport(results);
+    await options.onCaseCompleted?.({
+      caseId: evalCase.id,
+      report: createSuiteReport([caseResult]),
+    });
+    if (options.stopOnIncomplete && !caseResult.complete) break;
   }
-  const complete = results.every((result) => result.complete);
+  const complete = results.length === cases.length && results.every((result) => result.complete);
   const passed = complete && results.every((result) => result.passed);
-  const participantSkillDigests = Object.fromEntries(await Promise.all(
-    options.suite.skills.map(async (skillName) => [
-      skillName,
-      sha256(await fs.readFile(path.join(
-        options.subjectRoot,
-        '.agents',
-        'skills',
-        skillName,
-        'SKILL.md',
-      ))),
-    ]),
-  ));
-  const report = redactCodexEvalValue({
-    schema_version: PLUGIN_EVAL_SCHEMA_VERSION,
-    generated_at: new Date().toISOString(),
-    suite: options.suite.id,
-    owner_skill: options.suite.skill,
-    participant_skills: options.suite.skills,
-    profile: options.profile,
-    split: options.split,
-    runs_per_case: options.runs,
-    threshold: PASS_THRESHOLD,
-    route_minimum_pass_rate: options.suite.minimumPassRate ?? null,
-    forbid_multiple_skill_loads: options.suite.forbidMultipleSkillLoads,
-    model: model ?? null,
-    complete,
-    passed,
-    environment: {
-      codex_version: await readCodexVersion(options.codexBin, sourceEnv),
-      isolation: {
-        ...codexEvalIsolationEvidence({
-          mode: options.suite.isolation,
-          host: hostIsolation,
-          runtimeProbe,
-        }),
-        app_server_protocol: true,
-        project_rules_ignored_by_default: true,
-      },
-      codex_runtime: codexEvalRuntimeEvidence(codexRuntime),
-      skill_sha256: participantSkillDigests[options.suite.skill],
-      participant_skill_sha256: participantSkillDigests,
-      corpus_sha256: sha256(stableJson(corpus)),
-    },
-    summary: {
-      cases: results.length,
-      passed: results.filter((result) => result.passed).length,
-      failed: results.filter((result) => !result.passed).length,
-    },
-    results,
-  }, codexRuntime);
-  if (options.reportPath) {
-    await fs.ensureDir(path.dirname(options.reportPath));
-    await fs.writeJson(options.reportPath, report, { spaces: 2 });
-  }
-  return redactCodexEvalValue({
-    id: options.suite.id,
-    kind: 'trigger',
-    skills: options.suite.skills,
-    profile: options.profile,
-    split: options.split,
-    outcome: !complete ? 'incomplete' : passed ? 'passed' : 'failed',
+  await writeProgressReport(results);
+  return {
+    ...createSuiteReport(results),
     complete,
     mechanicalPassed: passed,
-    qualitativeReview: 'not_required',
-    ...(options.reportPath ? { reportPath: options.reportPath } : {}),
-    summary: report.summary,
-    diagnostics: results.flatMap((result) =>
-      result.runs.flatMap((run) => run.diagnostics)),
-  }, codexRuntime);
+    outcome: !complete ? 'incomplete' : passed ? 'passed' : 'failed',
+  };
 }

@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
@@ -33,10 +32,6 @@ function skillScript(name: string): string {
 
 function staticEvalRunner(): string {
   return skillScript('run_static_skill_evals.mjs');
-}
-
-function contentDigest(content: string): string {
-  return createHash('sha256').update(content).digest('hex');
 }
 
 function testEvalLayout(outputRoot: string) {
@@ -123,6 +118,24 @@ describe('skill-review author tools', () => {
     expect(resolveReviewDraftPath(root, path.join(root, 'absolute-review.md'))).toBe(
       path.join(root, 'absolute-review.md'),
     );
+  });
+
+  it('keeps formal report publication separate from README registration', async () => {
+    const [source, authoringSkill] = await Promise.all([
+      fs.readFile(
+        path.join(repoRoot(), 'packages', 'cli', 'scripts', 'publish-skill-review.ts'),
+        'utf8',
+      ),
+      fs.readFile(
+        path.join(repoRoot(), '.agents', 'skills', 'create-aw-plugin', 'SKILL.md'),
+        'utf8',
+      ),
+    ]);
+    expect(source).not.toContain('releasePublishedSkillReview');
+    expect(source).toContain('It does not update the Skill README.');
+    expect(source).toContain('Use review:release as a separate, explicit README registration action.');
+    expect(authoringSkill).not.toContain('release 模式或后续 `review:release` 才登记 README');
+    expect(authoringSkill).toContain('只有用户另行明确要求登记时，才在批次封存后运行 `review:release`');
   });
 
   it('uses every static suite participant when publishing review evidence', async () => {
@@ -218,6 +231,248 @@ describe('skill-review author tools', () => {
         'reports',
       ))).resolves.toBe(false);
     }
+
+    const materializedReviewRoot = path.join(
+      subjectRoot,
+      '.agents',
+      'skills',
+      'skill-review',
+    );
+    for (const scriptName of [
+      'inspect_skill_target.mjs',
+      'run_static_skill_evals.mjs',
+      'validate_eval_cases.mjs',
+      'validate_scorecard.mjs',
+    ]) {
+      const result = await execFileAsync('node', [
+        path.join(materializedReviewRoot, 'scripts', scriptName),
+        '--help',
+      ], { cwd: subjectRoot, env: process.env });
+      expect(result.stdout, scriptName).toContain('Usage:');
+    }
+  });
+
+  it('materializes the shared Eval Audit validator required by create-aw-plugin cases', async () => {
+    const runner = await import(`${pathToFileURL(staticEvalRunner()).href}?create-plugin-audit`);
+    const skillRoot = path.join(repoRoot(), '.agents', 'skills', 'create-aw-plugin');
+    const manifest = await runner.readManifest(skillRoot, 'create-aw-plugin');
+    const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-create-plugin-audit-'));
+    tempDirs.push(outputRoot);
+
+    expect(manifest.participantSkills).toEqual(['create-aw-plugin']);
+    const subjectRoot = await runner.prepareSubject(manifest, outputRoot);
+    const validator = path.join(
+      subjectRoot,
+      '.agents',
+      'skills',
+      'skill-review',
+      'scripts',
+      'validate_eval_cases.mjs',
+    );
+    await expect(fs.pathExists(validator)).resolves.toBe(true);
+    const result = await execFileAsync('node', [validator, '--help'], {
+      cwd: subjectRoot,
+      env: process.env,
+    });
+    expect(result.stdout).toContain('Usage: validate_eval_cases.mjs');
+  });
+
+  it('validates eval audit metadata while keeping legacy case files reviewable', async () => {
+    const root = repoRoot();
+    const validator = skillScript('validate_eval_cases.mjs');
+    const runValidator = async (filePath: string, strict = false) => {
+      const args = [validator, filePath, '--format', 'json'];
+      if (strict) args.push('--strict');
+      const execution = await execFileAsync('node', args, { cwd: root, env: process.env }).then(
+        (result) => result,
+        (error: { stdout?: string }) => {
+          if (!error.stdout) throw error;
+          return { stdout: error.stdout };
+        },
+      );
+      return JSON.parse(execution.stdout);
+    };
+
+    const example = await runValidator(path.join(
+      root,
+      '.agents',
+      'skills',
+      'skill-review',
+      'assets',
+      'eval-case-example.json',
+    ));
+    expect(example).toMatchObject({
+      valid: true,
+      mode: 'compatible',
+      summary: { cases: 1, scenario_families: 1, errors: 0, warnings: 0 },
+    });
+
+    const legacy = await runValidator(path.join(
+      root,
+      '.agents',
+      'skills',
+      'skill-review',
+      'evals',
+      'trigger-cases.json',
+    ));
+    expect(legacy.valid).toBe(true);
+    expect(legacy.summary.errors).toBe(0);
+    expect(legacy.summary.warnings).toBeGreaterThan(0);
+
+    const strictLegacy = await runValidator(path.join(
+      root,
+      '.agents',
+      'skills',
+      'skill-review',
+      'evals',
+      'trigger-cases.json',
+    ), true);
+    expect(strictLegacy.valid).toBe(false);
+    expect(strictLegacy.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ level: 'error', code: 'oracle.missing' }),
+    ]));
+
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-eval-case-audit-'));
+    tempDirs.push(tempRoot);
+    const invalidPath = path.join(tempRoot, 'invalid.json');
+    await fs.writeJson(invalidPath, {
+      policy: {
+        optimization: 'balanced',
+        false_negative_cost: 'high',
+        false_positive_cost: 'high',
+        rationale: 'Both errors affect the target workflow.',
+      },
+      evals: [
+        {
+          id: 'mixed-layer',
+          eval_type: 'trigger',
+          split: 'validation',
+          case_role: 'representative',
+          provenance: 'derived',
+          scenario_family: 'fixture',
+          unit_under_test: 'description',
+          preconditions: {},
+          expected: { should_load_skill: true, outcome: 'complete' },
+          oracle: {
+            rationale: 'Fixture oracle.',
+            rule_refs: ['SKILL.md description'],
+            confidence: 'high',
+            allowed_variance: 'Only loading is under test.',
+          },
+        },
+        { id: 'mixed-layer' },
+      ],
+    });
+    const invalid = await runValidator(invalidPath);
+    expect(invalid.valid).toBe(false);
+    expect(invalid.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'case.layer-mixing' }),
+      expect.objectContaining({ code: 'case.duplicate-id' }),
+    ]));
+
+    const invalidEnumsPath = path.join(tempRoot, 'invalid-enums.json');
+    await fs.writeJson(invalidEnumsPath, {
+      policy: {
+        optimization: 'unsupported',
+        false_negative_cost: 'high',
+        false_positive_cost: 'high',
+        rationale: 'Both errors affect the target workflow.',
+      },
+      cases: [
+        {
+          id: 'invalid-enums',
+          eval_type: 'trigger',
+          split: 'production',
+          case_role: 'representative',
+          provenance: 'derived',
+          scenario_family: 'fixture',
+          unit_under_test: 'description',
+          preconditions: {},
+          should_load_skill: true,
+          oracle: {
+            rationale: 'Fixture oracle.',
+            rule_refs: ['SKILL.md description'],
+            confidence: 'high',
+            allowed_variance: 'Only loading is under test.',
+          },
+        },
+      ],
+    });
+    const invalidEnums = await runValidator(invalidEnumsPath);
+    expect(invalidEnums).toMatchObject({
+      valid: false,
+      mode: 'compatible',
+      summary: { errors: 2 },
+    });
+    expect(invalidEnums.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ level: 'error', code: 'suite.policy-optimization' }),
+      expect.objectContaining({ level: 'error', code: 'case.split' }),
+    ]));
+  });
+
+  it('allows only the draft artifact and its required parent directories', async () => {
+    const cases = await fs.readJson(path.join(
+      repoRoot(),
+      '.agents',
+      'skills',
+      'skill-review',
+      'evals',
+      'evals.json',
+    ));
+    const draftCase = cases.evals.find(
+      (entry: { id: string }) => entry.id === 'draft-persistence-does-not-publish',
+    );
+
+    expect(draftCase.review.allowed_workspace_changes).toEqual([
+      '.tmp/',
+      '.tmp/agent-workflows/',
+      '.tmp/agent-workflows/reviews/',
+      '.tmp/agent-workflows/reviews/draft-only-helper.md',
+    ]);
+    expect(draftCase.review.artifacts).toEqual([
+      expect.objectContaining({
+        path: '.tmp/agent-workflows/reviews/draft-only-helper.md',
+        exists: true,
+        contains: expect.arrayContaining(['quick', 'unknown']),
+      }),
+    ]);
+  });
+
+  it('keeps the near-miss Skill outside repo discovery and materializes it as a fixture', async () => {
+    const root = repoRoot();
+    const skillsRoot = path.join(root, '.agents', 'skills');
+    const skillRoot = path.join(skillsRoot, 'skill-review');
+    const fixtureSource = path.join(
+      root,
+      '.agents',
+      'fixtures',
+      'skill-review',
+      'near-miss-skill',
+    );
+    const oldDiscoveryPath = path.join(
+      skillRoot,
+      'evals',
+      'workspace',
+      'near-miss-skill',
+      'SKILL.md',
+    );
+
+    expect(path.relative(skillsRoot, fixtureSource).startsWith(`..${path.sep}`)).toBe(true);
+    await expect(fs.pathExists(oldDiscoveryPath)).resolves.toBe(false);
+    await expect(fs.pathExists(path.join(fixtureSource, 'SKILL.md'))).resolves.toBe(true);
+
+    const runner = await import(`${pathToFileURL(staticEvalRunner()).href}?near-miss-fixture`);
+    const manifest = await runner.readManifest(skillRoot, 'skill-review');
+    const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-static-near-miss-'));
+    tempDirs.push(outputRoot);
+    const subjectRoot = await runner.prepareSubject(manifest, outputRoot);
+
+    await expect(fs.pathExists(path.join(
+      subjectRoot,
+      'fixtures',
+      'near-miss-skill',
+      'SKILL.md',
+    ))).resolves.toBe(true);
   });
 
   it('prepares an isolated authoring subject whose scaffold passes its bundled validator', async () => {
@@ -384,17 +639,17 @@ describe('skill-review author tools', () => {
       expect(report.evals.parse_errors).toEqual([]);
       expect(report.issues.filter((issue: { level: string }) => issue.level === 'error')).toEqual([]);
       if (skillName === 'skill-review') {
-        expect(report.evals.trigger).toEqual({ total: 24, positive: 12, negative: 12 });
-        expect(report.evals.behavior_cases).toBe(8);
-        expect(report.evals.conversation_cases).toBe(8);
-        expect(report.evals.portable_behavior_specs).toBe(29);
+        expect(report.evals.trigger).toEqual({ total: 32, positive: 16, negative: 16 });
+        expect(report.evals.behavior_cases).toBe(15);
+        expect(report.evals.conversation_cases).toBe(15);
+        expect(report.evals.portable_behavior_specs).toBe(37);
         expect(report.evals.behavior_evidence_note).toContain('not executable release evidence');
-        expect(report.evals.scoring_cases).toBe(17);
-        expect(report.scripts.count).toBe(3);
+        expect(report.evals.scoring_cases).toBe(20);
+        expect(report.scripts.count).toBe(4);
         expect(report.references.missing).toEqual([]);
         expect(report.pointers).toMatchObject({
-          total: 7,
-          conditional_signals: 7,
+          total: 8,
+          conditional_signals: 8,
           weak_signal_lines: [],
         });
       } else {
@@ -475,11 +730,17 @@ describe('skill-review author tools', () => {
         '--allow-unmanaged-processes',
       ], {
         cwd: root,
-        env: { ...process.env, CODEX_HOME: sourceCodexHome },
+        env: {
+          ...process.env,
+          CODEX_HOME: sourceCodexHome,
+          CODEX_PERMISSION_PROFILE: ':workspace',
+        },
         maxBuffer: 10 * 1024 * 1024,
       });
       const executionReport = JSON.parse(execution.stdout);
       expect(executionReport).toMatchObject({ ok: true, outcome: 'passed' });
+      expect(execution.stderr).toContain('use the longest responsive wait that the tool allows');
+      expect(execution.stderr).toContain('A wait timeout is not an eval failure');
       const persistedBatchRoot = path.resolve(root, executionReport.batchDir);
       const persistedReportRoot = path.resolve(root, executionReport.reportDir);
       tempDirs.push(persistedBatchRoot);
@@ -505,6 +766,12 @@ describe('skill-review author tools', () => {
       expect(report.issues.filter((issue: { level: string }) => issue.level === 'error')).toEqual([]);
 
       const validEvaluation = await fs.readJson(evaluationPath);
+      expect(validEvaluation.processManagement).toMatchObject({
+        mode: 'unmanaged-confirmed',
+        inspectionAvailable: false,
+        userAcknowledged: true,
+        descendantCleanupGuaranteed: false,
+      });
       const failedEvidencePath = path.join(outputRoot, 'failed-evidence.json');
       await fs.writeJson(failedEvidencePath, {
         ...validEvaluation,
@@ -851,6 +1118,7 @@ describe('skill-review author tools', () => {
     for (const key of Object.keys(base.artifacts)) {
       base.artifacts[key] = true;
     }
+    base.artifacts.eval_known_invalid_oracle = false;
     base.dimensions = base.dimensions.map((dimension: Record<string, unknown>) => ({
       ...dimension,
       score: 5,
@@ -918,6 +1186,73 @@ describe('skill-review author tools', () => {
       instruction_design: 10,
       minimum_control: 14,
       context_disclosure: 10,
+    });
+
+    const noEvalAudit = structuredClone(base);
+    for (const field of [
+      'trigger_eval_results',
+      'behavior_eval_results',
+      'regression_eval_results',
+      'eval_audit_applicable',
+      'eval_case_audit',
+      'eval_error_cost_policy',
+      'eval_baseline_assessed',
+      'eval_variance_assessed',
+      'eval_failure_triage',
+      'eval_driven_change',
+      'eval_change_regressions',
+      'eval_known_invalid_oracle',
+    ]) noEvalAudit.artifacts[field] = false;
+    for (const gateId of ['eval-validity', 'eval-change-safety']) {
+      const gate = noEvalAudit.gates.find((entry: { id: string }) => entry.id === gateId);
+      gate.status = 'not_applicable';
+      gate.reason = gateId === 'eval-validity'
+        ? 'No eval evidence is in review scope.'
+        : 'No eval-driven change is in review scope.';
+    }
+    expect(await validate(noEvalAudit)).toMatchObject({ valid: true });
+
+    const unauditedEval = structuredClone(base);
+    unauditedEval.artifacts.eval_case_audit = false;
+    for (const gateId of ['eval-validity', 'eval-change-safety']) {
+      const gate = unauditedEval.gates.find((entry: { id: string }) => entry.id === gateId);
+      gate.status = 'unknown';
+      gate.reason = 'Case Admission evidence is incomplete.';
+    }
+    expect(await validate(unauditedEval)).toMatchObject({
+      valid: true,
+      score: { release: 'provisional' },
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({ code: 'cap.evals-case-audit' }),
+      ]),
+    });
+
+    const missingErrorCostPolicy = structuredClone(base);
+    missingErrorCostPolicy.artifacts.eval_error_cost_policy = false;
+    expect(await validate(missingErrorCostPolicy)).toMatchObject({
+      valid: false,
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({ code: 'gate.eval-validity-evidence' }),
+      ]),
+    });
+
+    const unsafeEvalChange = structuredClone(base);
+    unsafeEvalChange.artifacts.eval_change_regressions = false;
+    expect(await validate(unsafeEvalChange)).toMatchObject({
+      valid: false,
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({ code: 'gate.eval-change-safety-evidence' }),
+      ]),
+    });
+
+    const invalidOracleChange = structuredClone(base);
+    invalidOracleChange.artifacts.eval_known_invalid_oracle = true;
+    expect(await validate(invalidOracleChange)).toMatchObject({
+      valid: false,
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({ code: 'cap.evals-invalid-oracle' }),
+        expect.objectContaining({ code: 'gate.eval-validity-known-invalid' }),
+      ]),
     });
 
     const invalidSkillName = structuredClone(base);
@@ -1461,137 +1796,5 @@ describe('skill-review author tools', () => {
         valid: true,
       });
     }
-  });
-
-  it('keeps evaluated upstream content unchanged outside documented project adapters', async () => {
-    const skillRoot = path.join(repoRoot(), '.agents', 'skills', 'skill-review');
-    const exactHashes: Record<string, string> = {
-      'CHANGELOG.md': '88205c64f6fe200fe989941d0ac52f053f61d6db9ce192fe479967dd65aab9d8',
-      'assets/report-template.md': '67b5f5fd2ecf1880f6d446dd0a8f48c290e95486252daf634f811572be418c6a',
-      'assets/scorecard-template.json': '93e6fae3a76d2bfa447047769da9587dfb4473c08be437f3f325a35e63f17233',
-      'evals/behavior_cases.json': 'dceb0145076da44f652168dfec12546c7ec1aa98dc9ec3e1843f7afb44618e4a',
-      'evals/scoring_cases.json': '7a9715f0549a0215856a11d32f94c7212a7606b02d7e7ea4498c4ea136681d3f',
-      'evals/trigger-cases.json': '67447dd4808b9642eea60bc7e46274cf799069625f35ef077661bb951b65d122',
-      'references/architecture-boundaries.md': '73546c91c0219892c584c5ff64fd192814eb080137c744b2f72fbcd62119eb15',
-      'references/delta-review.md': '4822793652c376d573d300e71d2d1f4a26dde7f43ede7aa4d7d51d2213de6ee1',
-      'references/review-dimensions.md': 'ecb0d21f7fb4a7dc391840f57c7e02ea4889667ddf8d9c0c48f37baa8369840c',
-      'references/scripts-and-resources.md': '1f1c30e5201e1bdc8a0728fc0207a002ffb93d2d8c5115c097fbcda09c3ff7b7',
-      'references/source-map.md': '1fbce765ded4d6995f299a0169f5bda805ec01c49f71cc3795e8856667bb0828',
-    };
-    for (const [relative, expected] of Object.entries(exactHashes)) {
-      expect(contentDigest(await fs.readFile(path.join(skillRoot, relative), 'utf8'))).toBe(expected);
-    }
-    const reportTemplate = await fs.readFile(
-      path.join(skillRoot, 'assets', 'report-template.md'),
-      'utf8',
-    );
-    expect(reportTemplate).toContain('# Skill 评审报告');
-    const triggerCorpus = await fs.readJson(path.join(skillRoot, 'evals', 'trigger-cases.json'));
-    expect(triggerCorpus.cases).toHaveLength(24);
-    expect(triggerCorpus.cases.filter((entry: { should_load_skill: boolean }) =>
-      entry.should_load_skill)).toHaveLength(12);
-    expect(new Set(triggerCorpus.cases.map((entry: { split: string }) => entry.split))).toEqual(
-      new Set(['train', 'validation']),
-    );
-
-    const readme = (await fs.readFile(path.join(skillRoot, 'README.md'), 'utf8'))
-      .replace('node scripts/inspect_skill_target.mjs', 'python3 scripts/inspect_skill.py')
-      .replace('node scripts/validate_scorecard.mjs', 'python3 scripts/validate_scorecard.py')
-      .replace(
-        'node scripts/run_static_skill_evals.mjs <skill-name-or-dir> --validate-only\n',
-        '',
-      )
-      .replace(
-        'pnpm review:publish -- --skill <skill> [--plugin <plugin>] --batch-id <id> \\\n  --report <report.md> --scorecard <scorecard.json>\n',
-        '',
-      )
-      .replace(
-        'pnpm review:release -- --skill <skill> [--plugin <plugin>] --batch-id <id>\n',
-        '',
-      )
-      .replace(
-        '\n\n当前仓库静态 Skill 的真实模型 eval 先运行 `pnpm build`，再由 `run_static_skill_evals.mjs` 生成证据；它不是 `plugin:eval` 的别名。\n',
-        '\n',
-      )
-      .replace(
-        '\n完整 eval/review 批次保存在 `.tmp/agent-workflows/evals/`。full/release 评审消费完整 eval 后默认执行 `review:publish`；通过、失败或 `incomplete` 都发布，只有用户明确要求草稿时例外。`review:publish` 生成的静态 Skill 正式报告位于 `.agents/reports/<skill>/<batch-id>/`，插件 Skill 正式报告位于 `plugins/<plugin>/reports/<skill>/<batch-id>/`；每个正式目录只含 `report.md` 和 `summary.json`。\n',
-        '',
-      )
-      .replace(
-        '\nfull 模式发布不更新 Skill README。release 模式在报告发布后自动用 `review:release` 登记 README；已经发布的 full/release 报告也可以以后显式登记。登记只改变 README，不修改正式报告或临时批次；插件 README 变化属于 production source，必须由 release intent 覆盖。\n',
-        '',
-      )
-      .replace(
-        '- 最近正式报告：暂无。',
-        '- 最近 eval：暂无已完成报告。\n- 最近 review：暂无已完成报告。',
-      );
-    expect(contentDigest(readme)).toBe(
-      '398f660d1f287fc8e335ee95125f0c42d8933b17f607d62a6ba36cd3233c3e63',
-    );
-
-    const skill = (await fs.readFile(path.join(skillRoot, 'SKILL.md'), 'utf8'))
-      .replace(
-        [
-          'description: >-',
-          '  当用户的主要目标是评估已有的静态或 agent-workflows 插件 Agent Skill、',
-          '  草稿或修订版的质量、风险或发布就绪性时使用；适用于快速、完整或发布',
-          '  审核、差量复核、质量比较、触发边界诊断和多维评分。即使只提供',
-          '  SKILL.md、一个 Skill 组件、执行 trace 或 eval 结果，也仅在用户需要',
-          '  finding、评分、风险、发布门禁、问题关闭情况或最小改进集时使用。若',
-          '  主要目标仅是从零创建、直接改写或修复 Skill、实现脚本或 eval、运行',
-          '  Skill 或脚本、做语法或解析检查、查询规范、解释流程，或普通代码/文档',
-          '  review，不要使用。',
-          '',
-        ].join('\n'),
-        'description: 当需要审核、评分、发布检查、比较或重构 Agent Skill 及其 SKILL.md、description、references、scripts、assets、evals 或相关角色配置时使用；评估调用与触发、范围、程序与完成边界、信息层级与渐进式披露、架构职责、脚本、资源、行为证据、安全和维护性，给出发布门禁、分数及最小改进集。不要用于普通代码或文档 review。\n',
-      )
-      .replace(
-        'compatibility: Requires the agent-workflows repository, Node.js 20+, installed workspace dependencies, and current Agent Skills documentation access for release reviews.\n',
-        'compatibility: Bundled validators require Python 3.11+; release reviews should be able to access the current Agent Skills documentation.\n',
-      )
-      .replace(
-        'node scripts/inspect_skill_target.mjs <skill-dir-or-SKILL.md-or-plugin>',
-        'python3 scripts/inspect_skill.py <skill-dir-or-SKILL.md>',
-      )
-      .replace('node scripts/validate_scorecard.mjs', 'python3 scripts/validate_scorecard.py')
-      .replace(
-        '   - 当前仓库静态 Skill 的 release 评审或用户明确要求真实 eval：读取 `references/static-skill-evaluation.md` 和 `evals/manifest.json`；先运行 `node scripts/run_static_skill_evals.mjs <skill-dir-or-name> --validate-only`。\n',
-        '',
-      )
-      .replace(
-        '   - 当前仓库的 AW 插件或动态 Skill：`references/agent-workflows-plugin.md`\n',
-        '',
-      )
-      .replace(
-        '8. 当前仓库 Skill 已运行完整 eval 并完成 full/release 评审时，默认用 `pnpm review:publish -- --skill <skill> [--plugin <plugin>] --batch-id <id> --report <report.md> --scorecard <scorecard.json>` 发布；执行前先说明正式目录、批次将被封存且不能追加 eval，以及当前模式是否会登记 README。通过、失败或 `incomplete` 只影响报告结论，不取消发布。只有用户明确要求草稿时才停在 `.tmp`。quick/delta 或没有完整 eval 的评审只在用户明确要求持久化时发布；review-only 使用 `--batch-name`。完整 eval/review 证据和草稿只放项目 `.tmp/agent-workflows/`，正式目录只保留人读报告和精简摘要。\n',
-        '',
-      )
-      .replace(
-        '9. `review:publish` 固化报告并封存批次，不因 full 模式更新 Skill README。release 模式会在发布后把该报告登记到 README；已经发布的 full/release 报告也可以用 `pnpm review:release -- --skill <skill> [--plugin <plugin>] --batch-id <id>` 以后登记。插件 Skill 的 README 登记属于 production source 变化，必须由现有或新增 release intent 覆盖。\n',
-        '',
-      )
-      .replace(
-        '- 当前仓库完整 eval 后的 full/release 评审已执行 `review:publish`，除非用户明确要求草稿；机械 eval/review 证据仍只位于 `.tmp`。full 模式不更新 Skill README；release 模式已完成 README 登记，或明确报告登记失败并提供可重试的 `review:release` 命令。\n',
-        '',
-      );
-    expect(contentDigest(skill)).toBe(
-      '2299ff2b79131e6b5f4f7bc9e3f4723f6297eef20fba40e3d78a0eac3b165105',
-    );
-
-    const scoringModel = (
-      await fs.readFile(path.join(skillRoot, 'references', 'scoring-model.md'), 'utf8')
-    )
-      .replace('validate_scorecard.mjs', 'validate_scorecard.py')
-      .replace(
-        '- 没有 information-hierarchy map，`context_disclosure` 通常不高于 4。\n',
-        '',
-      )
-      .replace(
-        '7. release 模式未核对 current-check 来源 → `provisional`。\n',
-        '',
-      );
-    expect(contentDigest(scoringModel)).toBe(
-      '0e8cfb63b45ea30be5411bbbd863c2707e77b360dd584d4cf282232c1ef504d4',
-    );
   });
 });

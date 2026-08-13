@@ -1,0 +1,6 @@
+{
+  "schemaVersion": 1,
+  "plugin": "ask-me",
+  "bump": "patch",
+  "summary": "修复需求澄清与决策访谈的触发边界"
+}

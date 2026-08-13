@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   acquireBuildLock,
@@ -675,31 +675,56 @@ describe('build cache lock ownership', () => {
     expect(await fs.readdir(intentRoot)).toEqual([]);
   });
 
-  it('never steals crash, invalid-owner, or PID-reuse locks', async () => {
+  it('fails fast when the recorded build lock owner is not running', async () => {
+    const repoRoot = await createRepo();
+    const lockPath = path.join(repoRoot, '.release', 'cache', 'build.lock');
+    const owner = JSON.stringify({ pid: 999_999, token: 'dead' });
+    await fs.mkdir(lockPath, { recursive: true });
+    await fs.writeFile(path.join(lockPath, 'owner.json'), owner);
+    const startedAt = Date.now();
+
+    const error = await acquireBuildLock(repoRoot, {
+      lockTimeoutMs: 10_000,
+      pollIntervalMs: 5,
+    }).then(() => null, (caught) => caught as Error);
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
+    expect(error?.message).toContain('Build lock owner PID 999999 is not running');
+    expect(error?.message).toContain(owner);
+    expect(error?.message).toContain('not recovered automatically');
+    expect(error?.message).toContain('remove the lock offline');
+    await expect(fs.readFile(path.join(lockPath, 'owner.json'), 'utf8')).resolves.toBe(owner);
+  });
+
+  it('reports once while waiting and never steals invalid-owner or live locks', async () => {
     const repoRoot = await createRepo();
     const lockPath = path.join(repoRoot, '.release', 'cache', 'build.lock');
     const cases = [
-      { name: 'crashed stale owner', owner: JSON.stringify({ pid: 999_999, token: 'dead' }) },
       { name: 'invalid owner', owner: '{invalid' },
       { name: 'PID reuse', owner: JSON.stringify({ pid: process.pid, token: 'reused' }) },
     ];
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
 
-    for (const testCase of cases) {
-      await fs.rm(lockPath, { recursive: true, force: true });
-      await fs.mkdir(lockPath, { recursive: true });
-      await fs.writeFile(path.join(lockPath, 'owner.json'), testCase.owner);
-      const oldTime = new Date(Date.now() - 60_000);
-      await fs.utimes(lockPath, oldTime, oldTime);
+    try {
+      for (const testCase of cases) {
+        await fs.rm(lockPath, { recursive: true, force: true });
+        await fs.mkdir(lockPath, { recursive: true });
+        await fs.writeFile(path.join(lockPath, 'owner.json'), testCase.owner);
+        const oldTime = new Date(Date.now() - 60_000);
+        await fs.utimes(lockPath, oldTime, oldTime);
 
-      const error = await acquireBuildLock(repoRoot, {
-        lockTimeoutMs: 25,
-        pollIntervalMs: 5,
-      }).then(() => null, (caught) => caught as Error);
-      expect(error?.message, testCase.name).toContain(lockPath);
-      expect(error?.message, testCase.name).toContain('not recovered automatically');
-      expect(error?.message, testCase.name).toContain('remove the lock offline');
-      await expect(fs.readFile(path.join(lockPath, 'owner.json'), 'utf8'))
-        .resolves.toBe(testCase.owner);
+        const error = await acquireBuildLock(repoRoot, {
+          lockTimeoutMs: 25,
+          pollIntervalMs: 5,
+        }).then(() => null, (caught) => caught as Error);
+        expect(error?.message, testCase.name).toContain(lockPath);
+        expect(error?.message, testCase.name).toContain('not recovered automatically');
+        expect(error?.message, testCase.name).toContain('remove the lock offline');
+        await expect(fs.readFile(path.join(lockPath, 'owner.json'), 'utf8'))
+          .resolves.toBe(testCase.owner);
+      }
+      expect(consoleError).toHaveBeenCalledTimes(cases.length);
+    } finally {
+      consoleError.mockRestore();
     }
   });
 

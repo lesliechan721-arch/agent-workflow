@@ -83,5 +83,20 @@
     "id": "minimum-control-audit-required",
     "scenario": "full/release填写了复杂度结论和所有维度，但minimum_effective_control_audit为false。",
     "expected": ["scorecard无效", "报告complexity.audit-required", "quick/delta只保留高分warning"]
+  },
+  {
+    "id": "eval-files-without-case-audit",
+    "scenario": "Skill有大量eval文件，但关键case没有layer、oracle rationale、rule refs、scenario family或现实性审核，也没有运行结果。",
+    "expected": ["evals通常不高于2", "eval-validity为unknown", "case数量不作为发布证据"]
+  },
+  {
+    "id": "invalid-oracle-drives-change",
+    "scenario": "已知错误oracle仍驱动当前Skill增加规则，目标case转为通过，但没有minimal pair、validation、sanity或regression回归。",
+    "expected": ["evals通常不高于1", "eval-validity fail", "eval-change-safety fail", "拒绝当前修改"]
+  },
+  {
+    "id": "audited-suite-without-execution",
+    "scenario": "Case layer、oracle、现实性和错误代价已审计，但没有任何实际模型运行或trace。",
+    "expected": ["evals通常不高于3", "不能提高行为可靠性", "release-evidence为unknown"]
   }
 ]

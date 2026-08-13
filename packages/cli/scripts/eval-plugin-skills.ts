@@ -47,6 +47,7 @@ import {
   resolvePluginSkillAuthorRoot,
   validatePluginEvalConversationCaseDocument,
   type PluginEvaluationBundle,
+  type PluginEvalCaseResult,
   type PluginEvalCommandCaseResult,
   type PluginEvalCommandSuite,
   type PluginEvalManifest,
@@ -66,12 +67,17 @@ import {
   resolveMaterializedSubjectRoot,
 } from './plugin-eval-materializer.js';
 import {
+  completeSkillEvalRun,
   computeAuthorSourceDigest,
+  createSkillEvalTargetKey,
   createEnvironmentDigest,
   failSkillEvalRun,
   pluginReleaseTargets,
+  publishEvalRunCheckpoint,
   publishEvalRunToBatch,
+  resolveSkillEvalTargetPlan,
   validateSkillReportTargetSegment,
+  type SkillEvalTargetSummary,
 } from './skill-reporting.js';
 
 const execFileAsync = promisify(execFile);
@@ -590,10 +596,16 @@ async function runCommandSuite(options: {
   installedPluginNames: string[];
   workRoot: string;
   stderr: (text: string) => void;
+  timeoutMs?: number;
 }): Promise<PluginEvalSuiteReport> {
   const sanitize = (report: PluginEvalSuiteReport): PluginEvalSuiteReport =>
     redactCodexEvalValue(report, options.codexRuntime);
-  const reportName = [options.suite.id, options.split, options.profile]
+  const reportName = [
+    options.suite.id,
+    options.split,
+    options.profile,
+    options.parsed.caseId,
+  ]
     .filter(Boolean)
     .join('-');
   const reportPath = path.join(options.outputRoot, 'reports', `${reportName}.json`);
@@ -657,7 +669,7 @@ async function runCommandSuite(options: {
     },
     stderr: options.stderr,
     redact: (value) => redactCodexEvalText(value, options.codexRuntime),
-    timeoutMs: options.suite.suiteTimeoutMs,
+    timeoutMs: options.timeoutMs ?? options.suite.suiteTimeoutMs,
     processManagement: options.processManagement,
   });
   if (result.timedOut) {
@@ -673,7 +685,7 @@ async function runCommandSuite(options: {
       qualitativeReview: 'not_required',
       summary: {},
       diagnostics: [
-        `Suite exceeded central timeout of ${options.suite.suiteTimeoutMs}ms.`,
+        `Suite exceeded central timeout of ${options.timeoutMs ?? options.suite.suiteTimeoutMs}ms.`,
         `exitCode=${result.exitCode}, signal=${result.signal}`,
         ...(result.stderr.trim() ? [result.stderr.trim()] : []),
       ],
@@ -885,16 +897,53 @@ async function readCommandSuiteCaseIds(
   return (document.evals ?? []).map((entry) => String(entry.id));
 }
 
+async function readSuiteCaseIds(options: {
+  pluginRoot: string;
+  manifestSkill: string;
+  suite: PluginEvalSuite;
+  split: PluginEvalSplit | null;
+}): Promise<string[]> {
+  if (options.suite.kind === 'command') {
+    return options.suite.cases
+      ? readCommandSuiteCaseIds(options.pluginRoot, options.suite)
+      : [];
+  }
+  if (options.suite.kind === 'trigger') {
+    const corpus = await readPluginEvalTriggerCases(options.pluginRoot, options.suite);
+    return corpus.cases
+      .filter((entry) =>
+        !options.split || options.split === 'all' || entry.split === options.split)
+      .map((entry) => entry.id);
+  }
+  const casesPath = path.resolve(
+    options.pluginRoot,
+    options.suite.cases.replace(/^\.\//u, ''),
+  );
+  return validatePluginEvalConversationCaseDocument(
+    await fs.readJson(casesPath),
+    options.manifestSkill,
+    `conversation cases for suite "${options.suite.id}"`,
+  ).map((entry) => String(entry.id));
+}
+
 async function releaseTargetCompositions(
   prepared: PreparedPluginEval,
 ): Promise<Record<string, string[]>> {
   const compositions: Record<string, string[]> = {};
   for (const suite of prepared.manifest.suites) {
-    if (suite.kind !== 'command' || !suite.requiredForRelease || !suite.cases) continue;
-    const caseIds = await readCommandSuiteCaseIds(prepared.sourcePlugin.rootDir, suite);
+    if (!suite.requiredForRelease || (suite.kind === 'command' && !suite.cases)) continue;
     for (const profile of suite.profiles) {
-      for (const split of suite.releaseSplits.length > 0 ? suite.releaseSplits : ['all']) {
-        const prefix = `command/${suite.id}/${profile}/${split}`;
+      const splits: PluginEvalSplit[] = suite.releaseSplits.length > 0
+        ? suite.releaseSplits
+        : ['all'];
+      for (const split of splits) {
+        const caseIds = await readSuiteCaseIds({
+          pluginRoot: prepared.sourcePlugin.rootDir,
+          manifestSkill: prepared.manifest.skill,
+          suite,
+          split,
+        });
+        const prefix = `${suite.kind}/${suite.id}/${profile}/${split}`;
         compositions[`${prefix}/all`] = caseIds.map((caseId) => `${prefix}/${caseId}`);
       }
     }
@@ -1040,6 +1089,173 @@ async function readCodexVersion(codexBin: string, env: NodeJS.ProcessEnv): Promi
   }
 }
 
+function normalizedSuiteReportPath(
+  reportPath: string | undefined,
+  outputRoot: string,
+): string | undefined {
+  if (!reportPath) return undefined;
+  const relative = path.isAbsolute(reportPath)
+    ? path.relative(outputRoot, reportPath)
+    : reportPath;
+  return relative.split(path.sep).join('/');
+}
+
+function batchRawReportPath(runId: string, reportPath: string | null): string | undefined {
+  return reportPath
+    ? path.posix.join('evals', 'runs', runId, 'raw', reportPath)
+    : undefined;
+}
+
+function targetSummaryCaseResult(target: SkillEvalTargetSummary): PluginEvalCaseResult {
+  return {
+    id: target.case,
+    outcome: target.outcome,
+    complete: target.complete,
+    mechanicalPassed: target.mechanicalPassed,
+    qualitativeReview: target.qualitativeReview as PluginEvalCaseResult['qualitativeReview'],
+    ...(batchRawReportPath(target.runId, target.reportPath)
+      ? { reportPath: batchRawReportPath(target.runId, target.reportPath) }
+      : {}),
+    sourceRunId: target.runId,
+    reused: true,
+    summary: target.summary,
+    diagnostics: target.diagnostics,
+  };
+}
+
+function effectiveCaseResultFromReport(
+  caseId: string,
+  report: PluginEvalSuiteReport,
+): PluginEvalCaseResult {
+  const source = report.caseResults?.find((entry) => entry.id === caseId);
+  const complete = report.complete && (source?.complete ?? true);
+  const outcome: PluginEvalOutcome = !complete ||
+    report.outcome === 'incomplete' || source?.outcome === 'incomplete'
+    ? 'incomplete'
+    : report.outcome === 'failed' || source?.outcome === 'failed'
+      ? 'failed'
+      : report.outcome === 'needs_review' || source?.outcome === 'needs_review'
+        ? 'needs_review'
+        : 'passed';
+  return {
+    id: caseId,
+    outcome,
+    complete,
+    mechanicalPassed: report.mechanicalPassed && (source?.mechanicalPassed ?? true),
+    qualitativeReview: source?.qualitativeReview ?? report.qualitativeReview,
+    summary: source?.summary ?? report.summary,
+    diagnostics: [...new Set([
+      ...(source?.diagnostics ?? []),
+      ...report.diagnostics,
+    ])],
+  };
+}
+
+async function writeCaseEvidenceIndex(options: {
+  outputRoot: string;
+  suite: PluginEvalSuite;
+  profile: string;
+  split: PluginEvalSplit | null;
+  cases: PluginEvalCaseResult[];
+}): Promise<string> {
+  const name = [options.suite.id, options.split, options.profile, 'case-index']
+    .filter(Boolean)
+    .join('-');
+  const reportPath = path.join(options.outputRoot, 'reports', `${name}.json`);
+  await fs.ensureDir(path.dirname(reportPath));
+  const temporary = `${reportPath}.${process.pid}.${randomUUID()}.tmp`;
+  await fs.writeJson(temporary, {
+    schema_version: 1,
+    type: 'eval-case-index',
+    generated_at: new Date().toISOString(),
+    suite: options.suite.id,
+    kind: options.suite.kind,
+    profile: options.profile,
+    split: options.split ?? 'all',
+    cases: options.cases.map((entry) => ({
+      id: entry.id,
+      outcome: entry.outcome,
+      complete: entry.complete,
+      mechanical_passed: entry.mechanicalPassed,
+      qualitative_review: entry.qualitativeReview ?? 'not_required',
+      source_run_id: entry.sourceRunId ?? null,
+      reused: entry.reused === true,
+      report_path: entry.reportPath ?? null,
+    })),
+  }, { spaces: 2 });
+  await fs.rename(temporary, reportPath);
+  return path.relative(options.outputRoot, reportPath).split(path.sep).join('/');
+}
+
+function aggregateCaseSuiteReport(options: {
+  suite: PluginEvalSuite;
+  profile: string;
+  split: PluginEvalSplit | null;
+  expectedCaseIds: string[];
+  cases: PluginEvalCaseResult[];
+  reportPath: string;
+}): PluginEvalSuiteReport {
+  const byId = new Map(options.cases.map((entry) => [entry.id, entry]));
+  const ordered = options.expectedCaseIds.flatMap((id) => {
+    const entry = byId.get(id);
+    return entry ? [entry] : [];
+  });
+  const missing = options.expectedCaseIds.filter((id) => !byId.has(id));
+  const complete = missing.length === 0 && ordered.every((entry) => entry.complete);
+  const outcome: PluginEvalOutcome = !complete || ordered.some((entry) =>
+    entry.outcome === 'incomplete')
+    ? 'incomplete'
+    : ordered.some((entry) => entry.outcome === 'failed')
+      ? 'failed'
+      : ordered.some((entry) => entry.outcome === 'needs_review')
+        ? 'needs_review'
+        : 'passed';
+  const qualitativeReview = options.suite.kind === 'conversation' || ordered.some((entry) =>
+    entry.qualitativeReview === 'required')
+    ? 'required'
+    : 'not_required';
+  return {
+    id: options.suite.id,
+    kind: options.suite.kind,
+    skills: options.suite.skills,
+    profile: options.profile,
+    split: options.split,
+    outcome,
+    complete,
+    mechanicalPassed: ordered.every((entry) => entry.mechanicalPassed),
+    qualitativeReview,
+    reportPath: options.reportPath,
+    caseResults: ordered,
+    summary: {
+      cases: options.expectedCaseIds.length,
+      completed: ordered.filter((entry) => entry.complete).length,
+      passed: ordered.filter((entry) => entry.outcome === 'passed').length,
+      failed: ordered.filter((entry) => entry.outcome === 'failed').length,
+      needsReview: ordered.filter((entry) => entry.outcome === 'needs_review').length,
+      incomplete: missing.length + ordered.filter((entry) => !entry.complete).length,
+    },
+    diagnostics: [
+      ...(missing.length > 0 ? [`Missing case evidence: ${missing.join(', ')}.`] : []),
+      ...ordered.flatMap((entry) => entry.diagnostics ?? []),
+    ],
+  };
+}
+
+function checkpointEvaluation(
+  subjects: PluginEvaluationBundle['subjects'],
+  report: PluginEvalSuiteReport,
+): Parameters<typeof publishEvalRunCheckpoint>[0]['evaluation'] {
+  return {
+    generatedAt: new Date().toISOString(),
+    outcome: report.outcome,
+    complete: report.complete,
+    mechanicalPassed: report.mechanicalPassed,
+    subjects,
+    suites: [report],
+    diagnostics: report.diagnostics,
+  };
+}
+
 async function runOnePlugin(options: {
   sourcePlugin: PluginMeta;
   sourcePlugins: PluginMeta[];
@@ -1052,6 +1268,7 @@ async function runOnePlugin(options: {
   modelEnv: NodeJS.ProcessEnv;
   codexRuntime?: CodexEvalRuntimeConfig;
   codexRuntimeHome?: string;
+  layout?: EvalRunLayout;
   stderr: (text: string) => void;
 }): Promise<PluginEvaluationBundle> {
   assertCodexEvalCanStartWork();
@@ -1073,7 +1290,8 @@ async function runOnePlugin(options: {
   });
   const reports: PluginEvalSuiteReport[] = [];
   if (!options.parsed.materializeOnly) {
-    for (const suite of selectedSuites(manifest, options.parsed)) {
+    if (!options.layout) throw new Error('Real model eval requires a report run layout.');
+    suiteLoop: for (const suite of selectedSuites(manifest, options.parsed)) {
       assertCodexEvalCanStartWork();
       for (const profile of resolveSuiteProfiles(suite, options.parsed)) {
         const subject = subjects.find((entry) => entry.profile === profile);
@@ -1087,88 +1305,266 @@ async function runOnePlugin(options: {
             `[plugin:eval] ${sourcePlugin.manifest.name}/${suite.id}` +
               `${split ? `/${split}` : ''} (${profile})\n`,
           );
-          if (suite.kind === 'conversation') {
-            const skillPath = path.join(
-              subjectRoot,
-              '.agents',
-              'skills',
-              suite.skill,
-              'SKILL.md',
-            );
-            if (!(await fs.pathExists(skillPath))) {
-              throw new Error(
-                `Conversation suite "${suite.id}" could not find materialized skill ` +
-                  `"${suite.skill}" in profile "${profile}".`,
+          const declaredCaseIds = await readSuiteCaseIds({
+            pluginRoot: sourcePlugin.rootDir,
+            manifestSkill: manifest.skill,
+            suite,
+            split,
+          });
+          const expectedCaseIds = options.parsed.caseId
+            ? declaredCaseIds.filter((id) => id === options.parsed.caseId)
+            : declaredCaseIds;
+          if (declaredCaseIds.length > 0 && expectedCaseIds.length === 0) {
+            throw new Error(`Unknown ${suite.kind} case: ${options.parsed.caseId}`);
+          }
+
+          if (expectedCaseIds.length > 0) {
+            const targets = expectedCaseIds.map((caseId) => createSkillEvalTargetKey([
+              suite.kind,
+              suite.id,
+              profile,
+              split ?? 'all',
+              caseId,
+            ]));
+            const plan = await resolveSkillEvalTargetPlan({
+              layout: options.layout,
+              targets,
+            });
+            const targetByCase = new Map(targets.map((target, index) => [
+              expectedCaseIds[index],
+              target,
+            ]));
+            const caseResults = plan.reusable.map(targetSummaryCaseResult);
+            const pendingCaseIds = expectedCaseIds.filter((caseId) =>
+              plan.pending.includes(targetByCase.get(caseId)!));
+            if (plan.reusable.length > 0) {
+              options.stderr(
+                `[plugin:eval] reuse=${plan.reusable.length} pending=${pendingCaseIds.length} ` +
+                `suite=${suite.id} profile=${profile} split=${split ?? 'all'}\n`,
               );
             }
-            const reportPath = path.join(outputRoot, 'reports', `${suite.id}-${profile}.json`);
-            const report = await runCodexConversationSuite({
-              suiteId: suite.id,
-              skillName: suite.skill,
-              skillNames: suite.skills,
-              casesPath: path.resolve(sourcePlugin.rootDir, suite.cases.replace(/^\.\//u, '')),
-              subjectRoot,
-              profile,
-              runs: options.parsed.runs ?? suite.defaultRuns,
-              caseId: options.parsed.caseId,
-              codexBin: options.parsed.codexBin,
-              model: options.parsed.model,
-              codexRuntime: options.codexRuntime,
-              timeoutMs: suite.perRunTimeoutMs,
-              isolation: suite.isolation,
-              sourceEnv: options.modelEnv,
-              reportPath,
-              processManagement: options.processManagement,
-              forbiddenHostRoots: options.sourcePlugins.map((plugin) => plugin.rootDir),
-              workRoot: path.join(options.workRoot, 'conversation'),
-            });
-            report.reportPath = path.relative(outputRoot, reportPath).split(path.sep).join('/');
-            reports.push(applyRunCountCoverage(report, suite, options.parsed));
-          } else if (suite.kind === 'trigger') {
-            const triggerSplit = split ?? 'all';
-            const reportPath = path.join(
+
+            const recordCase = async (
+              caseId: string,
+              rawReport: PluginEvalSuiteReport,
+            ): Promise<PluginEvalSuiteReport> => {
+              const report = applyRunCountCoverage({
+                ...rawReport,
+                reportPath: normalizedSuiteReportPath(rawReport.reportPath, outputRoot),
+              }, suite, options.parsed);
+              await publishEvalRunCheckpoint({
+                layout: options.layout!,
+                evaluation: checkpointEvaluation(subjects, report),
+                caseId,
+              });
+              const effective = effectiveCaseResultFromReport(caseId, report);
+              caseResults.push({
+                ...effective,
+                ...(report.reportPath ? {
+                  reportPath: batchRawReportPath(options.layout!.runId, report.reportPath),
+                } : {}),
+                sourceRunId: options.layout!.runId,
+                reused: false,
+              });
+              return report;
+            };
+
+            const recordedCaseCount = caseResults.length;
+            let executionReport: PluginEvalSuiteReport | null = null;
+            if (pendingCaseIds.length > 0 && suite.kind === 'conversation') {
+              const skillPath = path.join(
+                subjectRoot,
+                '.agents',
+                'skills',
+                suite.skill,
+                'SKILL.md',
+              );
+              if (!(await fs.pathExists(skillPath))) {
+                throw new Error(
+                  `Conversation suite "${suite.id}" could not find materialized skill ` +
+                    `"${suite.skill}" in profile "${profile}".`,
+                );
+              }
+              const reportPath = path.join(outputRoot, 'reports', `${suite.id}-${profile}.json`);
+              executionReport = await runCodexConversationSuite({
+                suiteId: suite.id,
+                skillName: suite.skill,
+                skillNames: suite.skills,
+                casesPath: path.resolve(sourcePlugin.rootDir, suite.cases.replace(/^\.\//u, '')),
+                subjectRoot,
+                profile,
+                runs: options.parsed.runs ?? suite.defaultRuns,
+                caseIds: pendingCaseIds,
+                codexBin: options.parsed.codexBin,
+                model: options.parsed.model,
+                codexRuntime: options.codexRuntime,
+                timeoutMs: suite.perRunTimeoutMs,
+                isolation: suite.isolation,
+                sourceEnv: options.modelEnv,
+                reportPath,
+                processManagement: options.processManagement,
+                forbiddenHostRoots: options.sourcePlugins.map((plugin) => plugin.rootDir),
+                workRoot: path.join(options.workRoot, 'conversation'),
+                stopOnIncomplete: true,
+                onCaseCompleted: async (checkpoint) => {
+                  await recordCase(checkpoint.caseId, checkpoint.report);
+                },
+              });
+            } else if (pendingCaseIds.length > 0 && suite.kind === 'trigger') {
+              const triggerSplit = split ?? 'all';
+              const reportPath = path.join(
+                outputRoot,
+                'reports',
+                `${suite.id}-${triggerSplit}-${profile}.json`,
+              );
+              executionReport = await runCodexTriggerSuite({
+                suite,
+                split: triggerSplit,
+                subjectRoot,
+                pluginRoot: sourcePlugin.rootDir,
+                profile,
+                runs: options.parsed.runs ?? suite.defaultRuns,
+                caseIds: pendingCaseIds,
+                codexBin: options.parsed.codexBin,
+                model: options.parsed.model,
+                codexRuntime: options.codexRuntime,
+                sourceEnv: options.modelEnv,
+                reportPath,
+                stderr: options.stderr,
+                processManagement: options.processManagement,
+                workRoot: path.join(options.workRoot, 'trigger'),
+                stopOnIncomplete: true,
+                onCaseCompleted: async (checkpoint) => {
+                  await recordCase(checkpoint.caseId, checkpoint.report);
+                },
+              });
+            } else if (pendingCaseIds.length > 0 && suite.kind === 'command') {
+              const deadline = Date.now() + suite.suiteTimeoutMs;
+              for (const caseId of pendingCaseIds) {
+                const remaining = Math.max(1, deadline - Date.now());
+                const rawReport = await runCommandSuite({
+                  pluginName: sourcePlugin.manifest.name,
+                  suite,
+                  split,
+                  profile,
+                  subjectRoot,
+                  pluginRoot: sourcePlugin.rootDir,
+                  outputRoot,
+                  parsed: { ...options.parsed, caseId },
+                  env: options.modelEnv,
+                  codexRuntime: options.codexRuntime!,
+                  codexRuntimeHome: options.codexRuntimeHome!,
+                  processManagement: options.processManagement,
+                  installedPluginNames: subject.installedPlugins.map((plugin) => plugin.name),
+                  workRoot: options.workRoot,
+                  stderr: options.stderr,
+                  timeoutMs: remaining,
+                });
+                executionReport = await recordCase(caseId, rawReport);
+                if (rawReport.outcome === 'incomplete') break;
+              }
+            }
+
+            if (
+              executionReport?.outcome === 'incomplete' &&
+              caseResults.length === recordedCaseCount
+            ) {
+              const report = applyRunCountCoverage({
+                ...executionReport,
+                reportPath: normalizedSuiteReportPath(executionReport.reportPath, outputRoot),
+              }, suite, options.parsed);
+              await publishEvalRunCheckpoint({
+                layout: options.layout,
+                evaluation: checkpointEvaluation(subjects, report),
+              });
+              reports.push(report);
+              break suiteLoop;
+            }
+
+            const indexPath = await writeCaseEvidenceIndex({
               outputRoot,
-              'reports',
-              `${suite.id}-${triggerSplit}-${profile}.json`,
-            );
-            const report = await runCodexTriggerSuite({
               suite,
-              split: triggerSplit,
-              subjectRoot,
-              pluginRoot: sourcePlugin.rootDir,
               profile,
-              runs: options.parsed.runs ?? suite.defaultRuns,
-              caseId: options.parsed.caseId,
-              codexBin: options.parsed.codexBin,
-              model: options.parsed.model,
-              codexRuntime: options.codexRuntime,
-              sourceEnv: options.modelEnv,
-              reportPath,
-              stderr: options.stderr,
-              processManagement: options.processManagement,
-              workRoot: path.join(options.workRoot, 'trigger'),
-            });
-            report.reportPath = path.relative(outputRoot, reportPath).split(path.sep).join('/');
-            reports.push(applyRunCountCoverage(report, suite, options.parsed));
-          } else {
-            reports.push(applyRunCountCoverage(await runCommandSuite({
-              pluginName: sourcePlugin.manifest.name,
-              suite,
               split,
+              cases: caseResults,
+            });
+            const report = aggregateCaseSuiteReport({
+              suite,
               profile,
-              subjectRoot,
-              pluginRoot: sourcePlugin.rootDir,
-              outputRoot,
-              parsed: options.parsed,
-              env: options.modelEnv,
-              codexRuntime: options.codexRuntime!,
-              codexRuntimeHome: options.codexRuntimeHome!,
-              processManagement: options.processManagement,
-              installedPluginNames: subject.installedPlugins.map((plugin) => plugin.name),
-              workRoot: options.workRoot,
-              stderr: options.stderr,
-            }), suite, options.parsed));
+              split,
+              expectedCaseIds,
+              cases: caseResults,
+              reportPath: indexPath,
+            });
+            reports.push(report);
+            if (report.outcome === 'incomplete') break suiteLoop;
+            continue;
           }
+
+          const target = createSkillEvalTargetKey([
+            suite.kind,
+            suite.id,
+            profile,
+            split ?? 'all',
+            'all',
+          ]);
+          const plan = await resolveSkillEvalTargetPlan({
+            layout: options.layout,
+            targets: [target],
+          });
+          if (plan.reusable.length > 0) {
+            const reused = plan.reusable[0];
+            const reference = targetSummaryCaseResult(reused);
+            const reportPath = await writeCaseEvidenceIndex({
+              outputRoot,
+              suite,
+              profile,
+              split,
+              cases: [reference],
+            });
+            reports.push({
+              id: suite.id,
+              kind: suite.kind,
+              skills: suite.skills,
+              profile,
+              split,
+              outcome: reused.outcome,
+              complete: reused.complete,
+              mechanicalPassed: reused.mechanicalPassed,
+              qualitativeReview:
+                reused.qualitativeReview as PluginEvalSuiteReport['qualitativeReview'],
+              reportPath,
+              summary: { ...reused.summary, reusedFromRun: reused.runId },
+              diagnostics: reused.diagnostics,
+            });
+            continue;
+          }
+          if (suite.kind !== 'command') {
+            throw new Error(`Suite "${suite.id}" did not expose its declared cases.`);
+          }
+          const report = applyRunCountCoverage(await runCommandSuite({
+            pluginName: sourcePlugin.manifest.name,
+            suite,
+            split,
+            profile,
+            subjectRoot,
+            pluginRoot: sourcePlugin.rootDir,
+            outputRoot,
+            parsed: options.parsed,
+            env: options.modelEnv,
+            codexRuntime: options.codexRuntime!,
+            codexRuntimeHome: options.codexRuntimeHome!,
+            processManagement: options.processManagement,
+            installedPluginNames: subject.installedPlugins.map((plugin) => plugin.name),
+            workRoot: options.workRoot,
+            stderr: options.stderr,
+          }), suite, options.parsed);
+          await publishEvalRunCheckpoint({
+            layout: options.layout,
+            evaluation: checkpointEvaluation(subjects, report),
+          });
+          reports.push(report);
+          if (report.outcome === 'incomplete') break suiteLoop;
         }
       }
     }
@@ -1382,12 +1778,13 @@ export async function runPluginEvals(
   };
   if (!parsed.materializeOnly) {
     try {
-      await assertCodexEvalKeychainWrapperAbsent({
-        platform: options.platform,
-        readUserKeychainSearchList: options.readUserKeychainSearchList,
-      });
       processManagement = await resolveCodexEvalProcessManagement({
         allowUnmanaged: parsed.allowUnmanagedProcesses,
+        sourceEnv: env,
+        preflight: () => assertCodexEvalKeychainWrapperAbsent({
+          platform: options.platform,
+          readUserKeychainSearchList: options.readUserKeychainSearchList,
+        }),
         inspect: options.inspectProcessTree,
         platform: options.platform,
       });
@@ -1404,8 +1801,8 @@ export async function runPluginEvals(
     }
     if (processManagement.mode === 'unmanaged-confirmed') {
       stderr(
-        '[plugin:eval] WARNING: Full Access process inspection is unavailable. ' +
-        'This confirmed run does not track or verify descendant processes. ' +
+        '[plugin:eval] WARNING: unmanaged process cleanup was explicitly confirmed. ' +
+        'No process-tree inspection was used, and this run does not track or verify descendants. ' +
         'Timeout and signal cleanup only target the direct child.\n',
       );
     }
@@ -1481,6 +1878,13 @@ export async function runPluginEvals(
   stderr(
     `[plugin:eval] run=${layout.runId} report=${path.relative(repoRoot, layout.reportRoot)}\n`,
   );
+  if (!parsed.materializeOnly) {
+    stderr(
+      '[plugin:eval] Model evals can run for tens of minutes or hours. Keep this process ' +
+        'session open and use the longest responsive wait that the tool allows. A wait timeout ' +
+        'is not an eval failure. Do not start separate status-poll commands.\n',
+    );
+  }
   let runtimeCapsule: Awaited<ReturnType<typeof createCodexEvalRuntimeCapsule>> | undefined;
   let exitCode = 1;
   try {
@@ -1502,6 +1906,7 @@ export async function runPluginEvals(
       modelEnv: runtimeCapsule?.env ?? env,
       codexRuntime,
       codexRuntimeHome: runtimeCapsule?.home,
+      layout,
       stderr,
     });
     await runtimeCapsule?.cleanup();
@@ -1511,13 +1916,15 @@ export async function runPluginEvals(
       bundle,
       sourceRevision,
     });
-    const batchSummary = await publishEvalRunToBatch({
-      repoRoot,
-      layout,
-      evaluation: bundle,
-      caseId: parsed.caseId,
-      requiredTargets,
-    });
+    const batchSummary = parsed.materializeOnly
+      ? await publishEvalRunToBatch({
+          repoRoot,
+          layout,
+          evaluation: bundle,
+          caseId: parsed.caseId,
+          requiredTargets,
+        })
+      : await completeSkillEvalRun({ layout, evaluation: bundle });
     stdout(`${JSON.stringify({
       schemaVersion: PLUGIN_EVAL_SCHEMA_VERSION,
       batchId: layout.batchId,

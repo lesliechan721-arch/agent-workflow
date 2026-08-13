@@ -1,0 +1,6 @@
+{
+  "schemaVersion": 1,
+  "plugin": "git",
+  "bump": "minor",
+  "summary": "新增安全创建或复用 Git worktree 的隔离工作流。"
+}

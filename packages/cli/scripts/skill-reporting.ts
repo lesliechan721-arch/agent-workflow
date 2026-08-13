@@ -1,9 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { open as openFile } from 'node:fs/promises';
 import { hostname } from 'node:os';
 import path from 'node:path';
 
 import fs from 'fs-extra';
+
+import { acquireProcessLock } from '../src/utils/process-lock.js';
 
 const BATCH_SCHEMA_VERSION = 1 as const;
 const PUBLISHED_SUMMARY_SCHEMA_VERSION = 2 as const;
@@ -78,6 +79,10 @@ interface EvaluationSuiteLike {
     outcome: 'passed' | 'failed' | 'needs_review' | 'incomplete';
     complete: boolean;
     mechanicalPassed: boolean;
+    qualitativeReview?: string;
+    reportPath?: string;
+    sourceRunId?: string;
+    reused?: boolean;
     summary?: Record<string, unknown>;
     diagnostics?: string[];
   }>;
@@ -98,7 +103,7 @@ export interface EvaluationLike {
   codexVersion?: string | null;
 }
 
-interface TargetSummary {
+export interface SkillEvalTargetSummary {
   schemaVersion: 1;
   target: string;
   kind: 'materialization' | 'trigger' | 'conversation' | 'command';
@@ -116,6 +121,13 @@ interface TargetSummary {
   reportPath: string | null;
   summary: Record<string, unknown>;
   diagnostics: string[];
+}
+
+type TargetSummary = SkillEvalTargetSummary;
+
+export interface SkillEvalTargetPlan {
+  pending: string[];
+  reusable: SkillEvalTargetSummary[];
 }
 
 interface ReviewSummary {
@@ -387,22 +399,12 @@ async function writeTextAtomic(filePath: string, value: string): Promise<void> {
 }
 
 async function acquireBatchLock(batchRoot: string): Promise<() => Promise<void>> {
-  const lockPath = path.join(batchRoot, '.batch.lock');
-  const deadline = Date.now() + 30_000;
-  while (true) {
-    try {
-      const handle = await openFile(lockPath, 'wx');
-      await handle.writeFile(`${JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() })}\n`);
-      await handle.close();
-      return () => fs.remove(lockPath);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-      if (Date.now() >= deadline) {
-        throw new Error(`Timed out waiting for report batch lock: ${lockPath}.`);
-      }
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-  }
+  const lease = await acquireProcessLock({
+    lockPath: path.join(batchRoot, '.batch.lock'),
+    timeoutMs: 30_000,
+    pollMs: 50,
+  });
+  return () => lease.release();
 }
 
 async function withBatchLock<T>(batchRoot: string, action: () => Promise<T>): Promise<T> {
@@ -702,12 +704,16 @@ function normalizeTargetCompositions(
   return normalized;
 }
 
-function targetKey(parts: Array<string | null | undefined>): string {
+export function createSkillEvalTargetKey(
+  parts: Array<string | null | undefined>,
+): string {
   return parts.map((part, index) => validateSkillReportTargetSegment(
     part || 'all',
     `Eval target segment ${index + 1}`,
   )).join('/');
 }
+
+const targetKey = createSkillEvalTargetKey;
 
 async function writeTargetReport(options: {
   batchRoot: string;
@@ -732,8 +738,22 @@ async function writeTargetReport(options: {
     }
   }
   const root = path.join(parent, options.summary.runId);
-  await fs.mkdir(root, { recursive: true });
-  await writeJsonAtomic(path.join(root, 'summary.json'), options.summary);
+  if (await fs.pathExists(root)) {
+    if (options.allowExistingMaterialization) {
+      const current = await fs.readJson(path.join(root, 'summary.json')) as TargetSummary;
+      if (
+        current.kind === 'materialization' &&
+        options.summary.kind === 'materialization' &&
+        current.target === options.summary.target &&
+        current.profile === options.summary.profile &&
+        stableJson(current.summary) === stableJson(options.summary.summary)
+      ) return;
+    }
+    throw new Error(
+      `Eval target attempt already exists for run ${options.summary.runId}: ` +
+      options.summary.target,
+    );
+  }
   const markdown = [
     '# Eval Target Report',
     '',
@@ -749,7 +769,17 @@ async function writeTargetReport(options: {
       : '该目标没有独立原始报告。',
     '',
   ].join('\n');
-  await writeTextAtomic(path.join(root, 'report.md'), markdown);
+  await fs.ensureDir(parent);
+  const staging = `${root}.${process.pid}.${randomUUID()}.tmp`;
+  await fs.mkdir(staging);
+  try {
+    await writeJsonAtomic(path.join(staging, 'summary.json'), options.summary);
+    await writeTextAtomic(path.join(staging, 'report.md'), markdown);
+    await fs.rename(staging, root);
+  } catch (error) {
+    await fs.remove(staging);
+    throw error;
+  }
 }
 
 async function assertSuiteTargetsAvailable(options: {
@@ -802,6 +832,7 @@ async function collectTargetSummaries(batchRoot: string): Promise<TargetSummary[
       const nextRelative = relative ? path.posix.join(relative, entry.name) : entry.name;
       if (nextRelative === 'runs' || nextRelative.startsWith('runs/')) continue;
       const absolute = path.join(current, entry.name);
+      if (entry.isDirectory() && entry.name.endsWith('.tmp')) continue;
       if (entry.isDirectory()) await visit(absolute, nextRelative);
       else if (entry.isFile() && entry.name === 'summary.json') {
         summaries.push(await fs.readJson(absolute) as TargetSummary);
@@ -1143,6 +1174,194 @@ async function refreshBatchSummary(batchRoot: string): Promise<BatchSummary> {
   return summary;
 }
 
+async function readRunningEvalRun(
+  layout: SkillEvalRunLayout,
+): Promise<{ runPath: string; run: Record<string, unknown> }> {
+  const runPath = path.join(layout.reportRoot, 'run.json');
+  const run = await fs.readJson(runPath) as Record<string, unknown>;
+  if (run.status !== 'running') {
+    throw new Error(`Eval run ${layout.runId} is not running.`);
+  }
+  return { runPath, run };
+}
+
+async function publishEvaluationTargetsUnlocked(options: {
+  layout: SkillEvalRunLayout;
+  evaluation: EvaluationLike;
+  batch: SkillReportBatch;
+  caseId?: string;
+  allowDuplicateTargets?: boolean;
+}): Promise<void> {
+  await assertMaterializedSubjectsCompatible(
+    options.layout.batchRoot,
+    options.evaluation.subjects,
+  );
+  const retryableTargets = await assertSuiteTargetsAvailable({
+    batchRoot: options.layout.batchRoot,
+    evaluation: options.evaluation,
+    caseId: options.caseId,
+    allowDuplicateTargets: options.allowDuplicateTargets,
+  });
+  const required = new Set(options.batch.requiredTargets);
+  for (const subject of options.evaluation.subjects) {
+    const target = targetKey(['materialization', subject.profile]);
+    await writeTargetReport({
+      batchRoot: options.layout.batchRoot,
+      allowExistingMaterialization: true,
+      summary: {
+        schemaVersion: 1,
+        target,
+        kind: 'materialization',
+        runId: options.layout.runId,
+        generatedAt: options.evaluation.generatedAt,
+        profile: subject.profile,
+        suite: null,
+        split: 'all',
+        case: 'all',
+        outcome: 'passed',
+        complete: true,
+        mechanicalPassed: true,
+        qualitativeReview: 'not_required',
+        requiredForRelease: required.has(target),
+        reportPath: null,
+        summary: materializationSummary(subject),
+        diagnostics: [],
+      },
+    });
+  }
+  for (const suite of options.evaluation.suites) {
+    const target = targetKey([
+      suite.kind,
+      suite.id,
+      suite.profile ?? 'project-default',
+      suite.split ?? 'all',
+      options.caseId ?? 'all',
+    ]);
+    await writeTargetReport({
+      batchRoot: options.layout.batchRoot,
+      allowDuplicate: options.allowDuplicateTargets || retryableTargets.has(target),
+      summary: {
+        schemaVersion: 1,
+        target,
+        kind: suite.kind,
+        runId: options.layout.runId,
+        generatedAt: options.evaluation.generatedAt,
+        profile: suite.profile ?? 'project-default',
+        suite: suite.id,
+        split: suite.split ?? 'all',
+        case: options.caseId ?? 'all',
+        outcome: suite.outcome,
+        complete: suite.complete,
+        mechanicalPassed: suite.mechanicalPassed,
+        qualitativeReview: suite.qualitativeReview ?? 'not_required',
+        requiredForRelease: required.has(target),
+        reportPath: suite.reportPath ?? null,
+        summary: suite.summary ?? {},
+        diagnostics: suite.diagnostics ?? [],
+      },
+    });
+    if (!options.caseId) {
+      for (const caseResult of suite.caseResults ?? []) {
+        const caseTarget = targetKey([
+          suite.kind,
+          suite.id,
+          suite.profile ?? 'project-default',
+          suite.split ?? 'all',
+          caseResult.id,
+        ]);
+        await writeTargetReport({
+          batchRoot: options.layout.batchRoot,
+          allowDuplicate: options.allowDuplicateTargets || retryableTargets.has(caseTarget),
+          summary: {
+            schemaVersion: 1,
+            target: caseTarget,
+            kind: suite.kind,
+            runId: options.layout.runId,
+            generatedAt: options.evaluation.generatedAt,
+            profile: suite.profile ?? 'project-default',
+            suite: suite.id,
+            split: suite.split ?? 'all',
+            case: caseResult.id,
+            outcome: caseResult.outcome,
+            complete: caseResult.complete,
+            mechanicalPassed: caseResult.mechanicalPassed,
+            qualitativeReview:
+              caseResult.qualitativeReview ?? suite.qualitativeReview ?? 'not_required',
+            requiredForRelease: required.has(caseTarget),
+            reportPath: caseResult.reportPath ?? suite.reportPath ?? null,
+            summary: caseResult.summary ?? {},
+            diagnostics: caseResult.diagnostics ?? [],
+          },
+        });
+      }
+    }
+  }
+}
+
+export async function resolveSkillEvalTargetPlan(options: {
+  layout: SkillEvalRunLayout;
+  targets: string[];
+}): Promise<SkillEvalTargetPlan> {
+  await assertSafeSkillReportPath(options.layout.reportBoundaryRoot, options.layout.batchRoot);
+  return withBatchLock(options.layout.batchRoot, async () => {
+    const batch = await readBatch(options.layout.batchRoot);
+    if (batch.status === 'sealed') throw new Error(`Report batch ${batch.batchId} is sealed.`);
+    await readRunningEvalRun(options.layout);
+    const requested = [...new Set(options.targets.map((target, index) =>
+      validateTarget(target, `Requested eval target ${index + 1}`)))];
+    const effective = new Map(effectiveTargetSummaries(
+      await collectTargetSummaries(options.layout.batchRoot),
+      normalizeTargetCompositions(batch.targetCompositions, batch.requiredTargets),
+    ).map((target) => [target.target, target]));
+    const pending: string[] = [];
+    const reusable: TargetSummary[] = [];
+    for (const target of requested) {
+      const existing = effective.get(target);
+      if (existing?.complete && existing.outcome !== 'incomplete') {
+        reusable.push(existing);
+      } else {
+        pending.push(target);
+      }
+    }
+    return { pending, reusable };
+  });
+}
+
+export async function publishEvalRunCheckpoint(options: {
+  layout: SkillEvalRunLayout;
+  evaluation: EvaluationLike;
+  caseId?: string;
+  allowDuplicateTargets?: boolean;
+}): Promise<BatchSummary> {
+  await assertSafeSkillReportPath(options.layout.reportBoundaryRoot, options.layout.batchRoot);
+  return withBatchLock(options.layout.batchRoot, async () => {
+    const batch = await readBatch(options.layout.batchRoot);
+    if (batch.status === 'sealed') throw new Error(`Report batch ${batch.batchId} is sealed.`);
+    await readRunningEvalRun(options.layout);
+    await publishEvaluationTargetsUnlocked({ ...options, batch });
+    return refreshBatchSummary(options.layout.batchRoot);
+  });
+}
+
+export async function completeSkillEvalRun(options: {
+  layout: SkillEvalRunLayout;
+  evaluation: EvaluationLike;
+}): Promise<BatchSummary> {
+  await assertSafeSkillReportPath(options.layout.reportBoundaryRoot, options.layout.batchRoot);
+  return withBatchLock(options.layout.batchRoot, async () => {
+    const batch = await readBatch(options.layout.batchRoot);
+    if (batch.status === 'sealed') throw new Error(`Report batch ${batch.batchId} is sealed.`);
+    const { runPath, run } = await readRunningEvalRun(options.layout);
+    await writeJsonAtomic(runPath, {
+      ...run,
+      status: 'completed',
+      completedAt: new Date().toISOString(),
+      outcome: options.evaluation.outcome,
+    });
+    return refreshBatchSummary(options.layout.batchRoot);
+  });
+}
+
 export async function publishEvalRunToBatch(options: {
   repoRoot: string;
   layout: SkillEvalRunLayout;
@@ -1152,117 +1371,11 @@ export async function publishEvalRunToBatch(options: {
   allowDuplicateTargets?: boolean;
 }): Promise<BatchSummary> {
   await assertSafeSkillReportPath(options.layout.reportBoundaryRoot, options.layout.batchRoot);
-  const summary = await withBatchLock(options.layout.batchRoot, async () => {
+  return withBatchLock(options.layout.batchRoot, async () => {
     const batch = await readBatch(options.layout.batchRoot);
     if (batch.status === 'sealed') throw new Error(`Report batch ${batch.batchId} is sealed.`);
-    const runPath = path.join(options.layout.reportRoot, 'run.json');
-    const run = await fs.readJson(runPath) as Record<string, unknown>;
-    if (run.status !== 'running') {
-      throw new Error(`Eval run ${options.layout.runId} is not running.`);
-    }
-    await assertMaterializedSubjectsCompatible(
-      options.layout.batchRoot,
-      options.evaluation.subjects,
-    );
-    const retryableTargets = await assertSuiteTargetsAvailable({
-      batchRoot: options.layout.batchRoot,
-      evaluation: options.evaluation,
-      caseId: options.caseId,
-      allowDuplicateTargets: options.allowDuplicateTargets,
-    });
-    const required = new Set(batch.requiredTargets);
-    for (const subject of options.evaluation.subjects) {
-      const target = targetKey(['materialization', subject.profile]);
-      await writeTargetReport({
-        batchRoot: options.layout.batchRoot,
-        allowExistingMaterialization: true,
-        summary: {
-          schemaVersion: 1,
-          target,
-          kind: 'materialization',
-          runId: options.layout.runId,
-          generatedAt: options.evaluation.generatedAt,
-          profile: subject.profile,
-          suite: null,
-          split: 'all',
-          case: 'all',
-          outcome: 'passed',
-          complete: true,
-          mechanicalPassed: true,
-          qualitativeReview: 'not_required',
-          requiredForRelease: required.has(target),
-          reportPath: null,
-          summary: materializationSummary(subject),
-          diagnostics: [],
-        },
-      });
-    }
-    for (const suite of options.evaluation.suites) {
-      const target = targetKey([
-        suite.kind,
-        suite.id,
-        suite.profile ?? 'project-default',
-        suite.split ?? 'all',
-        options.caseId ?? 'all',
-      ]);
-      await writeTargetReport({
-        batchRoot: options.layout.batchRoot,
-        allowDuplicate: options.allowDuplicateTargets || retryableTargets.has(target),
-        summary: {
-          schemaVersion: 1,
-          target,
-          kind: suite.kind,
-          runId: options.layout.runId,
-          generatedAt: options.evaluation.generatedAt,
-          profile: suite.profile ?? 'project-default',
-          suite: suite.id,
-          split: suite.split ?? 'all',
-          case: options.caseId ?? 'all',
-          outcome: suite.outcome,
-          complete: suite.complete,
-          mechanicalPassed: suite.mechanicalPassed,
-          qualitativeReview: suite.qualitativeReview ?? 'not_required',
-          requiredForRelease: required.has(target),
-          reportPath: suite.reportPath ?? null,
-          summary: suite.summary ?? {},
-          diagnostics: suite.diagnostics ?? [],
-        },
-      });
-      if (!options.caseId) {
-        for (const caseResult of suite.caseResults ?? []) {
-          const caseTarget = targetKey([
-            suite.kind,
-            suite.id,
-            suite.profile ?? 'project-default',
-            suite.split ?? 'all',
-            caseResult.id,
-          ]);
-          await writeTargetReport({
-            batchRoot: options.layout.batchRoot,
-            allowDuplicate: options.allowDuplicateTargets || retryableTargets.has(caseTarget),
-            summary: {
-              schemaVersion: 1,
-              target: caseTarget,
-              kind: suite.kind,
-              runId: options.layout.runId,
-              generatedAt: options.evaluation.generatedAt,
-              profile: suite.profile ?? 'project-default',
-              suite: suite.id,
-              split: suite.split ?? 'all',
-              case: caseResult.id,
-              outcome: caseResult.outcome,
-              complete: caseResult.complete,
-              mechanicalPassed: caseResult.mechanicalPassed,
-              qualitativeReview: 'not_required',
-              requiredForRelease: false,
-              reportPath: suite.reportPath ?? null,
-              summary: caseResult.summary ?? {},
-              diagnostics: caseResult.diagnostics ?? [],
-            },
-          });
-        }
-      }
-    }
+    const { runPath, run } = await readRunningEvalRun(options.layout);
+    await publishEvaluationTargetsUnlocked({ ...options, batch });
     await writeJsonAtomic(runPath, {
       ...run,
       status: 'completed',
@@ -1271,7 +1384,6 @@ export async function publishEvalRunToBatch(options: {
     });
     return refreshBatchSummary(options.layout.batchRoot);
   });
-  return summary;
 }
 
 export async function failSkillEvalRun(options: {

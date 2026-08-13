@@ -1,0 +1,2 @@
+name = "fixture-reviewer"
+instructions = "Return the normalized fixture result."

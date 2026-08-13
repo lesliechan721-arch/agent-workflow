@@ -18,7 +18,25 @@ const IMPLEMENTATION_REPO_FILES = {
     '};',
     '',
   ].join('\n'),
-  'src/features/orders/list.ts': 'export function listOrders() { return []; }\n',
+  'src/features/orders/list.ts': [
+    'export interface Order {',
+    '  id: string;',
+    '  customer: string;',
+    '  amount: number;',
+    '  created_at: string;',
+    '}',
+    '',
+    'export function listOrders(): Order[] { return []; }',
+    '',
+  ].join('\n'),
+  'src/features/settings/page.ts': [
+    "export const settingsPrimaryButtonColor = 'gray';",
+    '',
+  ].join('\n'),
+  'src/styles/button-colors.ts': [
+    "export const primaryButtonBlue = '#2563eb';",
+    '',
+  ].join('\n'),
   'src/logging/format-entry.ts': 'export function formatEntry(value) { return String(value); }\n',
   'src/parser.py': 'def parse(value):\n    return value\n',
   'tests/parser_test.py': [

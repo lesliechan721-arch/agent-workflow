@@ -5,12 +5,15 @@ import fs from 'fs-extra';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
+  completeSkillEvalRun,
   computeAuthorSourceDigest,
   createSkillEvalRunLayout,
+  publishEvalRunCheckpoint,
   publishEvalRunToBatch,
   publishSkillReviewToBatch,
   refreshSkillReportBatch,
   releasePublishedSkillReview,
+  resolveSkillEvalTargetPlan,
   type EvaluationLike,
   type SkillEvalRunLayout,
   type SkillReportOwner,
@@ -601,6 +604,173 @@ describe('Skill report batches', () => {
         ],
       },
     });
+  });
+
+  it('keeps a completed case checkpoint reusable after its run is interrupted', async () => {
+    const repoRoot = await makeRepo();
+    const commandRequiredTargets = [
+      'materialization/project-default',
+      'command/routing/project-default/all/all',
+    ];
+    const targetCompositions = {
+      'command/routing/project-default/all/all': [
+        'command/routing/project-default/all/case_a',
+        'command/routing/project-default/all/case_b',
+      ],
+    };
+    const interrupted = await createSkillEvalRunLayout({
+      repoRoot,
+      owner,
+      batchName: 'checkpoint-interruption',
+      runId: '20260812T012400Z-00000018',
+      source,
+      environmentDigest,
+      modelEnvironmentDigest,
+      harnessDigest,
+      requiredTargets: commandRequiredTargets,
+      targetCompositions,
+    });
+    const caseEvaluation = (caseId: string, generatedAt: string): EvaluationLike => ({
+      generatedAt,
+      outcome: 'passed',
+      complete: true,
+      mechanicalPassed: true,
+      subjects: [{ profile: 'project-default', scope: 'project' }],
+      suites: [{
+        id: 'routing',
+        kind: 'command',
+        profile: 'project-default',
+        split: null,
+        outcome: 'passed',
+        complete: true,
+        mechanicalPassed: true,
+        caseResults: [{
+          id: caseId,
+          outcome: 'passed',
+          complete: true,
+          mechanicalPassed: true,
+        }],
+      }],
+      diagnostics: [],
+    });
+    await publishEvalRunCheckpoint({
+      layout: interrupted,
+      evaluation: caseEvaluation('case_a', '2026-08-12T01:24:30.000Z'),
+      caseId: 'case_a',
+    });
+    await expect(fs.readJson(path.join(interrupted.reportRoot, 'run.json'))).resolves.toMatchObject({
+      status: 'running',
+    });
+    const interruptedRun = await fs.readJson(path.join(interrupted.reportRoot, 'run.json'));
+    await fs.writeJson(path.join(interrupted.reportRoot, 'run.json'), {
+      ...interruptedRun,
+      pid: 2_147_483_647,
+    }, { spaces: 2 });
+
+    const resumed = await createSkillEvalRunLayout({
+      repoRoot,
+      owner,
+      batchId: interrupted.batchId,
+      runId: '20260812T012500Z-00000019',
+      source,
+      environmentDigest,
+      modelEnvironmentDigest,
+      harnessDigest,
+      requiredTargets: commandRequiredTargets,
+      targetCompositions,
+    });
+    await expect(fs.readJson(path.join(interrupted.reportRoot, 'run.json'))).resolves.toMatchObject({
+      status: 'failed',
+      outcome: 'failed',
+    });
+    await expect(resolveSkillEvalTargetPlan({
+      layout: resumed,
+      targets: targetCompositions['command/routing/project-default/all/all'],
+    })).resolves.toMatchObject({
+      pending: ['command/routing/project-default/all/case_b'],
+      reusable: [expect.objectContaining({
+        target: 'command/routing/project-default/all/case_a',
+        runId: interrupted.runId,
+        complete: true,
+      })],
+    });
+
+    const resumedEvaluation = caseEvaluation('case_b', '2026-08-12T01:25:30.000Z');
+    await publishEvalRunCheckpoint({
+      layout: resumed,
+      evaluation: resumedEvaluation,
+      caseId: 'case_b',
+    });
+    const summary = await completeSkillEvalRun({
+      layout: resumed,
+      evaluation: resumedEvaluation,
+    });
+    expect(summary.eval).toMatchObject({
+      releaseCovered: 2,
+      releaseRequired: 2,
+      releaseOutcome: 'passed',
+      complete: true,
+    });
+    expect(summary.diagnostics).toContain(
+      `Eval run ${interrupted.runId} failed before publication.`,
+    );
+  });
+
+  it('recovers a dead batch lock and ignores an unfinished target staging directory', async () => {
+    const repoRoot = await makeRepo();
+    const layout = await createSkillEvalRunLayout({
+      repoRoot,
+      owner,
+      batchName: 'checkpoint-staging',
+      runId: '20260812T012600Z-0000001a',
+      source,
+      environmentDigest,
+      modelEnvironmentDigest,
+      harnessDigest,
+      requiredTargets,
+    });
+    const target = 'trigger/trigger/project-default/validation/case_a';
+    const stagingRoot = path.join(
+      layout.batchRoot,
+      'evals',
+      ...target.split('/'),
+      `${layout.runId}.${process.pid}.tmp`,
+    );
+    await fs.ensureDir(stagingRoot);
+    await fs.writeJson(path.join(stagingRoot, 'summary.json'), {
+      schemaVersion: 1,
+      target,
+      kind: 'trigger',
+      runId: layout.runId,
+      generatedAt: '2026-08-12T01:26:30.000Z',
+      profile: 'project-default',
+      suite: 'trigger',
+      split: 'validation',
+      case: 'case_a',
+      outcome: 'passed',
+      complete: true,
+      mechanicalPassed: true,
+      qualitativeReview: 'not_required',
+      requiredForRelease: false,
+      reportPath: null,
+      summary: {},
+      diagnostics: [],
+    }, { spaces: 2 });
+    const lockRoot = path.join(layout.batchRoot, '.batch.lock');
+    await fs.ensureDir(lockRoot);
+    await fs.writeJson(path.join(lockRoot, 'owner.json'), {
+      schemaVersion: 1,
+      token: '00000000-0000-4000-8000-000000000000',
+      pid: 2_147_483_647,
+      processStartIdentity: 'dead-process',
+      acquiredAt: '2026-08-12T01:26:00.000Z',
+    }, { spaces: 2 });
+
+    await expect(resolveSkillEvalTargetPlan({
+      layout,
+      targets: [target],
+    })).resolves.toEqual({ pending: [target], reusable: [] });
+    await expect(fs.pathExists(lockRoot)).resolves.toBe(false);
   });
 
   it('rejects a changed materialized subject before publishing an append', async () => {
