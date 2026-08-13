@@ -77,8 +77,8 @@ Finding 的证据类型使用：
    ```
    使用脚本给出的权重、coverage、confidence、raw/effective quality band、复杂度结论和 release verdict；quick/delta 总分为 `null`。
 7. 按 `assets/report-template.md` 输出。报告所有 P0/P1，默认只展开影响最大的 5 项 P2，其余保留在 scorecard ledger。
-8. release 模式或用户明确要求持久化时，用 `pnpm review:publish -- --skill <skill> [--plugin <plugin>] (--batch-id <id>|--batch-name <name>) --report <report.md> --scorecard <scorecard.json>` 发布；完整 eval/review 证据和草稿只放项目 `.tmp/agent-workflows/`，正式目录只保留人读报告和精简摘要。
-9. 发布后人工更新 Skill README 的最近正式报告摘要、报告路径和被评估 Git commit；不要添加机器 marker。
+8. 当前仓库 Skill 已运行完整 eval 并完成 full/release 评审时，默认用 `pnpm review:publish -- --skill <skill> [--plugin <plugin>] --batch-id <id> --report <report.md> --scorecard <scorecard.json>` 发布；执行前先说明正式目录、批次将被封存且不能追加 eval，以及当前模式是否会登记 README。通过、失败或 `incomplete` 只影响报告结论，不取消发布。只有用户明确要求草稿时才停在 `.tmp`。quick/delta 或没有完整 eval 的评审只在用户明确要求持久化时发布；review-only 使用 `--batch-name`。完整 eval/review 证据和草稿只放项目 `.tmp/agent-workflows/`，正式目录只保留人读报告和精简摘要。
+9. `review:publish` 固化报告并封存批次，不因 full 模式更新 Skill README。release 模式会在发布后把该报告登记到 README；已经发布的 full/release 报告也可以用 `pnpm review:release -- --skill <skill> [--plugin <plugin>] --batch-id <id>` 以后登记。插件 Skill 的 README 登记属于 production source 变化，必须由现有或新增 release intent 覆盖。
 
 ## 评审完成边界
 
@@ -87,7 +87,7 @@ Finding 的证据类型使用：
 - 每个 P0/P1 都通过 Finding Admission Gate；每个失败 gate 都关联相同严重性的已接纳 finding。
 - 报告包含 stop decision，且没有未归属或重复计罚的 finding。
 - quick 只完成所选维度；full/release 完成全部 12 个维度、最小行为合同、复杂度结论和适用审计；delta 完成旧 finding、受影响维度和直接回归。quick/delta 不计算总分。
-- 需要持久化时，正式报告和 Skill README 已归入正确批次，机械 eval/review 证据仍只位于 `.tmp`。
+- 当前仓库完整 eval 后的 full/release 评审已执行 `review:publish`，除非用户明确要求草稿；机械 eval/review 证据仍只位于 `.tmp`。full 模式不更新 Skill README；release 模式已完成 README 登记，或明确报告登记失败并提供可重试的 `review:release` 命令。
 
 ## 评分纪律
 

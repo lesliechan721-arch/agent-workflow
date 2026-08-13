@@ -42,6 +42,8 @@ plugins/<name>/
 
 Skill 源码中名为 `evals` 或 `reports` 的目录和插件根 `reports/**` 都是作者期材料，不属于 production runtime bundle，也不参与 runtime package digest。`evals/**` 和正式报告属于 Git 源码；完整工作批次位于 `.tmp/`，不进入 Git。Skill README 是发布内容，随 Skill 原样进入最终制品。动态 Skill 的评测对象不是源码占位文本，而是中央 materializer 通过真实 staging、renderer、ArtifactPlan 校验和 Codex adapter 得到的最终制品。
 
+每个 owner 的 `evals/README.md` 只说明自己的 corpus、suite、具体运行命令、专用 runner 限制和历史结果。全仓统一的权限、隔离、进程管理、凭据、批次布局、发布路径和平台证据边界只在本文及 CLI `--help` 维护，不复制到各 Skill。
+
 每个临时批次只属于一个 owner Skill，可以聚合同一源码、materialization 环境、中央 eval harness 和 release target 合同下的多次运行。首个真实模型运行会固定该批次的模型、provider、Codex 版本和进程管理环境；此前的 `--materialize-only` 运行可以留在同一批次。`materialization`、`trigger`、`conversation`、`command` 是第一层 eval 类型，后续路径表示 suite、profile、split、case 等具体 target。临时批次保存统一自动汇总和完整 raw 证据，供追加运行和 review 使用。
 
 `evals/manifest.json` 使用 schema v2：
@@ -167,7 +169,7 @@ strict 模式在启动模型前检查 `/etc/codex`（Windows 对应系统目录�
 
 完整批次固定在项目内 `.tmp/agent-workflows/evals/plugin/<plugin>/<skill>/<batch-id>/`。其中 `work/<run-id>/` 在命令结束后清理；run、target、raw、scorecard 和自动汇总保留到用户清理 `.tmp`。CLI 不接受任意 `--output-dir`。
 
-`pnpm review:publish` 是唯一的正式发布动作。它验证人读 Markdown 和 scorecard，把完整 review 留在临时批次，并原子写入 `plugins/<plugin>/reports/<skill>/<batch-id>/{report.md,summary.json}`。正式 `summary.json` 使用 schema v2，只保存 owner、来源 commit、eval 发布结果与覆盖、review 结论、分数、置信度和 finding 数量；不保存 run、target、digest、trace 或 scorecard。正式目录不可覆盖，发布后临时批次封存但不自动删除。
+`pnpm review:publish` 是唯一的正式报告发布动作。full/release 评审消费完整 eval 后默认执行；执行前应说明目标正式目录、批次封存后不能追加 eval，以及 release 模式会继续登记 README。命令验证人读 Markdown 和 scorecard，把完整 review 留在临时批次，并原子写入 `plugins/<plugin>/reports/<skill>/<batch-id>/{report.md,summary.json}`。正式 `summary.json` 使用 schema v2，只保存 owner、来源 commit、eval 发布结果与覆盖、review 结论、分数、置信度和 finding 数量；不保存 run、target、digest、trace 或 scorecard。正式目录不可覆盖，发布后临时批次封存但不自动删除。full 模式到此结束，不更新 Skill README。
 
 正式摘要合同：
 
@@ -199,7 +201,7 @@ run 在批次锁内预留，target 发布和终态写入使用同一个锁事务
 
 正式 `reports/` 不属于被评估源码，中央 source revision 检查会忽略该目录；插件源码、README、eval 夹具、脚本和作者/评审工具的未提交修改仍会令 `source.inScopeDirty=true`。
 
-插件和每个 Skill 都必须有非空 README。插件 README 只介绍插件目标、Skill 和使用边界；Skill README 约定记录最近正式报告摘要、仓库相对路径和被评估 Git commit。程序不写 marker、不自动更新，也不验证该段内容。只在 `review:publish` 成功并封存批次后人工更新 README；普通 eval 不产生可提交报告。
+插件和每个 Skill 都必须有非空 README。插件 README 只介绍插件目标、Skill 和使用边界；Skill README 约定记录最近已 release 的正式报告摘要、仓库相对路径和被评估 Git commit。release 模式的 `review:publish` 在正式报告写入并封存批次后登记 README；登记失败不回滚正式报告，可以用 `pnpm review:release -- --plugin <plugin> --skill <skill> --batch-id <batch-id>` 重试。已经发布的 full/release 报告也可以用该命令以后登记。README 登记会改变 production source，必须由现有或新增 release intent 覆盖；普通 eval 和 full 报告发布不改变 README。
 
 ## 触发评估
 
@@ -289,7 +291,7 @@ run 在批次锁内预留，target 发布和终态写入使用同一个锁事务
 - [ ] `plugin:test`、materialization 和模型 eval 没有互相冒充。
 - [ ] release required suite 没有 skip、incomplete 或未复核的 `needs_review`。
 - [ ] 完整 eval/review 证据位于 `.tmp`，正式报告目录只包含人读 `report.md` 和 schema v2 `summary.json`。
-- [ ] `review:publish` 后已人工更新 Skill README 的最近正式报告摘要、仓库相对路径和被评估 commit；插件 README 不包含 Skill 验证报告。
+- [ ] full/release 完整评审已执行 `review:publish`；release 登记的 Skill README 指向对应正式报告，full 报告不要求登记；插件 README 不包含 Skill 验证报告。
 
 ## 上游参考
 

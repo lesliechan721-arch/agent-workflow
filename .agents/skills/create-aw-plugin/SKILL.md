@@ -80,10 +80,12 @@ compatibility: Requires the agent-workflows repository, Node.js 20+, and install
    - 插件根 Node 脚本运行 `pnpm plugin:test <plugin>`
    - 改到 manifest、bundle 或安装逻辑时运行相关 `pnpm test:*`
    - 每个 Skill 的作者期用例放在自身源码根 `evals/`，按 `references/skill-evaluation.md` 声明 owner、participants 和 profiles
+   - `evals/README.md` 只记录该 owner 特有的 corpus、suite、命令、runner 限制和历史结果；不要复制全仓权限、隔离、进程、批次、发布或平台证据规则
    - 先运行 `pnpm plugin:eval <plugin> --skill <skill> --batch-name materialization --materialize-only` 验证 Codex 最终制品；真实模型 eval 只在本地显式运行
    - 完成条件：每个修改面有直接确定性测试；重大 Skill 修改有 with-skill/baseline behavior 和适用 trigger evidence；失败已修复并重跑
 9. **交付**
-   - 只有 `review:publish` 生成正式报告后，才人工更新 Skill README 的最近正式报告摘要、仓库相对路径和被评估 Git commit；普通 eval 不产生可提交报告
+   - full/release 评审消费完整 eval 后默认执行 `review:publish`；full 只生成正式报告，release 再把报告登记到 Skill README
+   - 已发布的 full/release 报告可用 `review:release` 以后登记；插件 Skill README 变化必须由现有或新增 release intent 覆盖
    - 报告修改的源码文件、运行的验证、未验证项和仍需用户决定的风险
    - 完成条件：明确区分完整通过、轻量预检、模型证据和未运行项
 
@@ -181,10 +183,10 @@ node .agents/skills/create-aw-plugin/scripts/bump_plugin_version.mjs <plugin-nam
 - 插件 manifest 不支持 `dependencies`；插件必须独立声明和生成自己的运行时能力。
 - lifecycle 和 renderer 要可重试、幂等；renderer V2 只返回 plan，不直接写 Codex/Claude Skill runtime 或 config。所有静态和动态 Skill 源码根都固定为 `skills/<skill>`；声明 source 时，target `sourceDirs` 必须包含该规范根，overlay 不能进入名为 `evals` 或 `reports` 的目录。动态 UTF-8 覆盖用 `content.files`，最终 Skill 保留非空 `README.md`。
 - Skill 根 `evals/**` 和插件根 `reports/**` 是作者期材料，不进入 production runtime bundle 或 runtime digest；动态 Skill 的行为评测必须消费 materialized 最终制品。Skill README 属于发布内容，不在构建时剥离。
-- 插件和每个 Skill 都必须有非空 README。插件 README 只介绍插件目标、Skill 和使用边界；Skill README 约定记录最近正式报告摘要、仓库相对路径和被评估 Git commit。该内容没有 marker、自动同步或发布门禁。
+- 插件和每个 Skill 都必须有非空 README。插件 README 只介绍插件目标、Skill 和使用边界；Skill README 约定记录最近已 release 的正式报告摘要、仓库相对路径和被评估 Git commit。full 报告只进入正式 reports 目录，不自动改变 README。
 - 每次 `plugin:eval` 只选择一个 owner Skill，但 suite 可以用 `skills[]` 和 repo-local `profiles[].plugins[]` 评估跨 Skill、跨插件组合；这不形成 production dependency。
-- 完整 eval 批次固定在项目 `.tmp/agent-workflows/evals/`，包含 run、target、raw、scorecard 和自动汇总。显式 `review:publish` 后，插件正式报告写到 `plugins/<plugin>/reports/<skill>/<batch-id>/`，静态 Skill 写到 `.agents/reports/<skill>/<batch-id>/`；正式目录只含 `report.md` 和 `summary.json`。
-- 每次 eval 必须用 `--batch-name` 新建批次，或用已有输出的 `--batch-id` 追加同一临时批次。修改 Skill README 会改变源码摘要；必须等 `review:publish` 封存批次后再更新 README。
+- 完整 eval 批次固定在项目 `.tmp/agent-workflows/evals/`，包含 run、target、raw、scorecard 和自动汇总。`review:publish` 后，插件正式报告写到 `plugins/<plugin>/reports/<skill>/<batch-id>/`，静态 Skill 写到 `.agents/reports/<skill>/<batch-id>/`；正式目录只含 `report.md` 和 `summary.json`。
+- 每次 eval 必须用 `--batch-name` 新建批次，或用已有输出的 `--batch-id` 追加同一临时批次。`review:publish` 不修改 full 报告对应的 README；release 模式或后续 `review:release` 才登记 README。该登记会改变插件 production source，必须在批次封存后执行并由 release intent 覆盖。
 - 真实模型 eval 默认要求 Full Access 以管理后代进程；`--allow-unmanaged-processes` 只在用户明确确认无法保证后代清理的风险后使用。
 - `plugin:test` 只验证确定性脚本；`plugin:eval` 只提供 Codex 模型证据，真实模型只运行 project profile，user profile 只做确定性 materialization。
 - Codex project 插件必须有 repo-managed surface；含 Apps 或纯 native-only 的插件不能 project 安装。
@@ -223,4 +225,4 @@ pnpm plugin:eval <plugin> --skill <skill> --batch-name trigger-validation --suit
 - 新建或重大修改的 Skill 有 candidate/value evidence、明确 invocation、局部完成标准和验证循环；支持 Codex 时有自身 `evals/manifest.json` 和真实小型用例，Claude-only 时明确记录当前只完成确定性验证
 - Codex/Claude 动态 Skill 的 project/user final artifacts 已 materialize，并保留作者声明的原生调用元数据；真实模型未运行时明确列为未验证
 - 最终回复列出改动、验证结果和未完成项
-- 插件和 Skill README 已补齐；有正式报告的 Skill README 已按人工约定更新，插件 README 不包含 Skill 验证报告
+- 插件和 Skill README 已补齐；有 release 登记的 Skill README 指向对应正式报告，只有 full 报告时不要求更新；插件 README 不包含 Skill 验证报告

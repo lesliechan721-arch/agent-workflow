@@ -12,6 +12,7 @@ import { runPluginEvals } from '../../scripts/eval-plugin-skills.js';
 import {
   assertPublishSkillTarget,
   assertScorecardSkillName,
+  resolveReviewDraftPath,
   resolveReviewSourceRoots,
 } from '../../scripts/publish-skill-review.js';
 import {
@@ -115,6 +116,12 @@ describe('skill-review author tools', () => {
     })).rejects.toThrow('missing SKILL.md');
     expect(() => assertScorecardSkillName('other-skill', 'real-skill')).toThrow(
       'does not match --skill',
+    );
+    expect(resolveReviewDraftPath(root, '.tmp/review.md')).toBe(
+      path.join(root, '.tmp', 'review.md'),
+    );
+    expect(resolveReviewDraftPath(root, path.join(root, 'absolute-review.md'))).toBe(
+      path.join(root, 'absolute-review.md'),
     );
   });
 
@@ -1499,15 +1506,19 @@ describe('skill-review author tools', () => {
         '',
       )
       .replace(
+        'pnpm review:release -- --skill <skill> [--plugin <plugin>] --batch-id <id>\n',
+        '',
+      )
+      .replace(
         '\n\n当前仓库静态 Skill 的真实模型 eval 先运行 `pnpm build`，再由 `run_static_skill_evals.mjs` 生成证据；它不是 `plugin:eval` 的别名。\n',
         '\n',
       )
       .replace(
-        '\n完整 eval/review 批次保存在 `.tmp/agent-workflows/evals/`。`review:publish` 生成的静态 Skill 正式报告位于 `.agents/reports/<skill>/<batch-id>/`，插件 Skill 正式报告位于 `plugins/<plugin>/reports/<skill>/<batch-id>/`；每个正式目录只含 `report.md` 和 `summary.json`。\n',
+        '\n完整 eval/review 批次保存在 `.tmp/agent-workflows/evals/`。full/release 评审消费完整 eval 后默认执行 `review:publish`；通过、失败或 `incomplete` 都发布，只有用户明确要求草稿时例外。`review:publish` 生成的静态 Skill 正式报告位于 `.agents/reports/<skill>/<batch-id>/`，插件 Skill 正式报告位于 `plugins/<plugin>/reports/<skill>/<batch-id>/`；每个正式目录只含 `report.md` 和 `summary.json`。\n',
         '',
       )
       .replace(
-        '\nSkill README 中的最近正式报告摘要、仓库相对路径和被评估 Git commit 由作者或 agent 在 `review:publish` 后人工更新。程序不写 marker、不自动同步，也不把该段内容作为发布门禁。\n',
+        '\nfull 模式发布不更新 Skill README。release 模式在报告发布后自动用 `review:release` 登记 README；已经发布的 full/release 报告也可以以后显式登记。登记只改变 README，不修改正式报告或临时批次；插件 README 变化属于 production source，必须由 release intent 覆盖。\n',
         '',
       )
       .replace(
@@ -1552,15 +1563,15 @@ describe('skill-review author tools', () => {
         '',
       )
       .replace(
-        '8. release 模式或用户明确要求持久化时，用 `pnpm review:publish -- --skill <skill> [--plugin <plugin>] (--batch-id <id>|--batch-name <name>) --report <report.md> --scorecard <scorecard.json>` 发布；完整 eval/review 证据和草稿只放项目 `.tmp/agent-workflows/`，正式目录只保留人读报告和精简摘要。\n',
+        '8. 当前仓库 Skill 已运行完整 eval 并完成 full/release 评审时，默认用 `pnpm review:publish -- --skill <skill> [--plugin <plugin>] --batch-id <id> --report <report.md> --scorecard <scorecard.json>` 发布；执行前先说明正式目录、批次将被封存且不能追加 eval，以及当前模式是否会登记 README。通过、失败或 `incomplete` 只影响报告结论，不取消发布。只有用户明确要求草稿时才停在 `.tmp`。quick/delta 或没有完整 eval 的评审只在用户明确要求持久化时发布；review-only 使用 `--batch-name`。完整 eval/review 证据和草稿只放项目 `.tmp/agent-workflows/`，正式目录只保留人读报告和精简摘要。\n',
         '',
       )
       .replace(
-        '9. 发布后人工更新 Skill README 的最近正式报告摘要、报告路径和被评估 Git commit；不要添加机器 marker。\n',
+        '9. `review:publish` 固化报告并封存批次，不因 full 模式更新 Skill README。release 模式会在发布后把该报告登记到 README；已经发布的 full/release 报告也可以用 `pnpm review:release -- --skill <skill> [--plugin <plugin>] --batch-id <id>` 以后登记。插件 Skill 的 README 登记属于 production source 变化，必须由现有或新增 release intent 覆盖。\n',
         '',
       )
       .replace(
-        '- 需要持久化时，正式报告和 Skill README 已归入正确批次，机械 eval/review 证据仍只位于 `.tmp`。\n',
+        '- 当前仓库完整 eval 后的 full/release 评审已执行 `review:publish`，除非用户明确要求草稿；机械 eval/review 证据仍只位于 `.tmp`。full 模式不更新 Skill README；release 模式已完成 README 登记，或明确报告登记失败并提供可重试的 `review:release` 命令。\n',
         '',
       );
     expect(contentDigest(skill)).toBe(

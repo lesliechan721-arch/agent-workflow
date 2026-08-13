@@ -1,16 +1,12 @@
 # Codex Subagent Guide Eval
 
-统一入口会先按 `evals/manifest.json` materialize default/non-default、project/user 最终制品；真实模型只运行 project-default：
+该 manifest 覆盖 default/non-default 和 project/user 最终制品；模型用例位于 project-default：
 
 ```bash
 pnpm plugin:eval codex-enhance --skill codex-subagent-guide --batch-name materialization --materialize-only
 pnpm plugin:eval codex-enhance --skill codex-subagent-guide --batch-name trigger-validation-debug --suite trigger --split validation --runs 1
 pnpm plugin:eval codex-enhance --skill codex-subagent-guide --batch-name release
 ```
-
-最后一条运行全部 release-required suite/split。`pnpm plugin:eval` 是唯一模型评测入口；routing runner 缺少中央提供的 final-artifact root 时会直接失败。
-
-真实模型默认要求 Full Access 管理后代进程；无 Full Access 时会在启动前阻断。用户确认风险后可传 `--allow-unmanaged-processes`，但该模式不保证清理后代进程。完整批次固定在项目 `.tmp/agent-workflows/evals/`；`review:publish` 只把正式 `report.md` 和 `summary.json` 写入 `plugins/codex-enhance/reports/codex-subagent-guide/<batch-id>/`。
 
 ## 触发评估
 
@@ -22,7 +18,7 @@ strict 发布语料分成 train（12）、validation（7）和不参与 descript
 
 standard 组合性诊断语料另有 4 条。它检查临时安装的上游 skill 只授权、不提供代理管理时加载，以及专用 fixture skill 已完整拥有委派生命周期时不叠加加载。该 suite 会写临时 `.agents/` fixture，因此不作为发布证据。
 
-每条 query 默认在干净会话运行三次，以 `0.5` 为分界。strict 发布 suite 的 validation 和 sanity 禁止加载或禁止委派负例使用零容忍，任意一次误触发都失败。`$skill` 记录为宿主显式注入，隐式加载只接受成功读取 `SKILL.md` 的执行事件；spawn 还要求原始 rollout 参数证据。中央 native trigger driver 使用只读临时 workspace 和隔离 `CODEX_HOME`；常规插件测试只检查语料、fixture 和领域 grader，不调用模型。
+每条 query 默认在干净会话运行三次，以 `0.5` 为分界。strict 发布 suite 的 validation 和 sanity 禁止加载或禁止委派负例使用零容忍，任意一次误触发都失败。`$skill` 记录为宿主显式注入，隐式加载只接受成功读取 `SKILL.md` 的执行事件；spawn 还要求原始 rollout 参数证据。
 
 ```bash
 pnpm plugin:eval codex-enhance --skill codex-subagent-guide --batch-name trigger-train --suite trigger --split train --runs 3
@@ -45,9 +41,9 @@ pnpm plugin:eval codex-enhance --skill codex-subagent-guide --batch-name routing
 pnpm plugin:eval codex-enhance --skill codex-subagent-guide --batch-name routing-debug --suite routing --runs 1 --case partial_preset
 ```
 
-发布批次中断后，用同一 `--batch-id` 和默认 runs 补跑缺失 case。中央报告保留旧 attempt，并在 `evals.json` 声明的 18 个 case 都有完整证据后组合出 routing `/all` target。
+`evals.json` 声明的 18 个 case 都有完整证据后，routing suite 才组合出 `/all` target。
 
-runner 默认用 `gpt-5.6-luna` 运行 V1 和 V2；中央 `plugin:eval --model` 同时覆盖两者，runner 内部仍可用 `--v1-model` / `--v2-model` 分别调整。lifecycle 使用同一个中央模型覆盖。临时 home 只复制现有认证文件且权限设为 `0600`，模型 shell 环境不继承该路径，结束或中断后会删除。任何认证、网络、CLI 或 schema 环境错误都会令报告 `complete: false` 并返回非零，不会静默跳过。
+runner 默认用 `gpt-5.6-luna` 运行 V1 和 V2；`plugin:eval --model` 同时覆盖两者，runner 内部仍可用 `--v1-model` / `--v2-model` 分别调整。lifecycle 使用同一个模型覆盖。
 
 如果 stdout 只给出简化的协作事件，却没有可读取的隔离 rollout 原始参数，runner 也会标记 `raw_evidence_missing` 和 `complete: false`；最终说明或调用事件不能替代参数证据。
 

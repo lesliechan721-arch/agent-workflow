@@ -209,6 +209,17 @@ export interface PublishedSkillReportSummary {
   reportPath: 'report.md';
 }
 
+export interface ReleasedSkillReview {
+  batchId: string;
+  owner: SkillReportOwner;
+  reportPath: string;
+  readmePath: string;
+  changed: boolean;
+  sourceChanged: boolean;
+  pluginReleaseIntentMayBeRequired: boolean;
+  summary: PublishedSkillReportSummary;
+}
+
 function publishedSummaryFromReview(options: {
   batchSummary: BatchSummary;
   reviewId: string;
@@ -1463,6 +1474,154 @@ export async function publishSkillReviewToBatch(options: {
       throw error;
     }
   });
+}
+
+function isNullableString(value: unknown): value is string | null {
+  return value === null || typeof value === 'string';
+}
+
+function isNullableNumber(value: unknown): value is number | null {
+  return value === null || typeof value === 'number';
+}
+
+function assertPublishedSummary(
+  value: unknown,
+  owner: SkillReportOwner,
+  batchId: string,
+): asserts value is PublishedSkillReportSummary {
+  if (!value || typeof value !== 'object') {
+    throw new Error('Published review summary must be a JSON object.');
+  }
+  const summary = value as PublishedSkillReportSummary;
+  if (summary.schemaVersion !== PUBLISHED_SUMMARY_SCHEMA_VERSION) {
+    throw new Error(`Published review summary must use schema ${PUBLISHED_SUMMARY_SCHEMA_VERSION}.`);
+  }
+  if (summary.batchId !== batchId) throw new Error('Published review batch id mismatch.');
+  if (!summary.owner || !sameOwner(summary.owner, owner)) {
+    throw new Error('Published review owner mismatch.');
+  }
+  if (summary.reportPath !== 'report.md') {
+    throw new Error('Published review summary must point to report.md.');
+  }
+  if (!summary.review || !['full', 'release'].includes(summary.review.mode)) {
+    throw new Error('Only a published full or release review can be released to Skill README.');
+  }
+  if (
+    !isNullableString(summary.review.verdict) ||
+    !isNullableNumber(summary.review.weightedScore) ||
+    !isNullableNumber(summary.review.coveragePercent) ||
+    !isNullableString(summary.review.confidence)
+  ) {
+    throw new Error('Published review summary has an invalid review result.');
+  }
+  if (
+    !summary.source ||
+    !Array.isArray(summary.source.commits) ||
+    !summary.source.commits.every((commit) => typeof commit === 'string') ||
+    typeof summary.source.inScopeDirty !== 'boolean'
+  ) {
+    throw new Error('Published review summary has an invalid source identity.');
+  }
+  if (
+    !summary.eval ||
+    typeof summary.eval.releaseOutcome !== 'string' ||
+    typeof summary.eval.covered !== 'number' ||
+    typeof summary.eval.required !== 'number'
+  ) {
+    throw new Error('Published review summary has an invalid eval result.');
+  }
+}
+
+function inlineValue(value: string | number | null): string {
+  return `\`${value ?? 'unknown'}\``;
+}
+
+function releasedReviewSection(
+  summary: PublishedSkillReportSummary,
+  reportPath: string,
+): string {
+  const source = summary.source.commits.length > 0
+    ? summary.source.commits.map((commit) => `\`${commit}\``).join('、')
+    : '`unknown`';
+  return [
+    '## 最近验证',
+    '',
+    `- 最近正式报告：${inlineValue(summary.review.mode)}，结论 ${inlineValue(summary.review.verdict)}，` +
+      `加权分 ${inlineValue(summary.review.weightedScore)}，coverage ` +
+      `${inlineValue(summary.review.coveragePercent === null
+        ? null
+        : `${summary.review.coveragePercent}%`)}，confidence ` +
+      `${inlineValue(summary.review.confidence)}；eval release ` +
+      `${inlineValue(summary.eval.releaseOutcome)}，覆盖 ` +
+      `${inlineValue(`${summary.eval.covered}/${summary.eval.required}`)}。`,
+    `- 报告：\`${reportPath}\`；评估来源：${source}；` +
+      `范围内源码${summary.source.inScopeDirty ? '有' : '无'}未提交修改。`,
+  ].join('\n');
+}
+
+export function updateReleasedReviewReadme(
+  readme: string,
+  summary: PublishedSkillReportSummary,
+  reportPath: string,
+): string {
+  const heading = /^## 最近验证\s*$/gmu;
+  const matches = [...readme.matchAll(heading)];
+  if (matches.length > 1) throw new Error('Skill README contains multiple 最近验证 sections.');
+  const section = releasedReviewSection(summary, reportPath);
+  if (matches.length === 0) return `${readme.trimEnd()}\n\n${section}\n`;
+  const start = matches[0]!.index!;
+  const afterHeading = start + matches[0]![0].length;
+  const nextHeading = /^##\s+.+$/gmu;
+  nextHeading.lastIndex = afterHeading;
+  const next = nextHeading.exec(readme);
+  const end = next?.index ?? readme.length;
+  const before = readme.slice(0, start).trimEnd();
+  const after = readme.slice(end).trim();
+  return [before, section, after].filter((part) => part !== '').join('\n\n') + '\n';
+}
+
+export async function releasePublishedSkillReview(options: {
+  repoRoot: string;
+  owner: SkillReportOwner;
+  batchId: string;
+}): Promise<ReleasedSkillReview> {
+  assertSegment(options.owner.skill, 'Skill name');
+  if (options.owner.kind === 'plugin-skill') assertSegment(options.owner.plugin, 'Plugin name');
+  const batchId = validateBatchId(options.batchId);
+  const publishedRoot = path.join(resolveSkillReportRoot(options.repoRoot, options.owner), batchId);
+  const summaryPath = path.join(publishedRoot, 'summary.json');
+  const reportPath = path.join(publishedRoot, 'report.md');
+  const skillRoot = options.owner.kind === 'plugin-skill'
+    ? path.join(options.repoRoot, 'plugins', options.owner.plugin, 'skills', options.owner.skill)
+    : path.join(options.repoRoot, '.agents', 'skills', options.owner.skill);
+  const readmePath = path.join(skillRoot, 'README.md');
+  await Promise.all([
+    assertSafeSkillReportPath(options.repoRoot, summaryPath),
+    assertSafeSkillReportPath(options.repoRoot, reportPath),
+    assertSafeSkillReportPath(options.repoRoot, readmePath),
+  ]);
+  const [rawSummary, report, readme] = await Promise.all([
+    fs.readJson(summaryPath) as Promise<unknown>,
+    fs.readFile(reportPath, 'utf8'),
+    fs.readFile(readmePath, 'utf8'),
+  ]);
+  assertPublishedSummary(rawSummary, options.owner, batchId);
+  if (report.trim() === '') throw new Error('Published review report must not be empty.');
+  const relativeReportPath = path.relative(options.repoRoot, reportPath).split(path.sep).join('/');
+  const relativeReadmePath = path.relative(options.repoRoot, readmePath).split(path.sep).join('/');
+  const updatedReadme = updateReleasedReviewReadme(readme, rawSummary, relativeReportPath);
+  const changed = updatedReadme !== readme;
+  if (changed) await writeTextAtomic(readmePath, updatedReadme);
+  return {
+    batchId,
+    owner: options.owner,
+    reportPath: relativeReportPath,
+    readmePath: relativeReadmePath,
+    changed,
+    sourceChanged: changed,
+    pluginReleaseIntentMayBeRequired: changed && options.owner.kind === 'plugin-skill',
+    summary: rawSummary,
+  };
 }
 
 export function reportBatchName(batchId: string): string {

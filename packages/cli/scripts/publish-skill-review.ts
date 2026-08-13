@@ -9,6 +9,7 @@ import { readPluginEvalManifest } from './plugin-eval-contract.js';
 import {
   computeAuthorSourceDigest,
   publishSkillReviewToBatch,
+  releasePublishedSkillReview,
   resolveSkillReportRoot,
   type SkillReportOwner,
 } from './skill-reporting.js';
@@ -34,8 +35,8 @@ function usage(): string {
     '  --batch-name <name>  Create and publish a review-only batch',
     '  --batch-id <id>      Publish from an open temporary eval batch',
     '  --review-id <id>     Use an explicit review id',
-    '  --report <path>      Markdown review draft',
-    '  --scorecard <path>   JSON scorecard draft',
+    '  --report <path>      Markdown review draft; relative paths use the repository root',
+    '  --scorecard <path>   JSON scorecard draft; relative paths use the repository root',
   ].join('\n');
 }
 
@@ -61,8 +62,8 @@ function parseArgs(args: string[]): ParsedArgs {
     else if (flag === '--batch-name') parsed.batchName = value;
     else if (flag === '--batch-id') parsed.batchId = value;
     else if (flag === '--review-id') parsed.reviewId = value;
-    else if (flag === '--report') parsed.report = path.resolve(value);
-    else if (flag === '--scorecard') parsed.scorecard = path.resolve(value);
+    else if (flag === '--report') parsed.report = value;
+    else if (flag === '--scorecard') parsed.scorecard = value;
     else throw new Error(`Unknown option: ${flag}`);
   }
   if (parsed.help) return parsed;
@@ -75,6 +76,10 @@ function parseArgs(args: string[]): ParsedArgs {
 
 function resolveRepoRoot(): string {
   return path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
+}
+
+export function resolveReviewDraftPath(repoRoot: string, value: string): string {
+  return path.isAbsolute(value) ? path.normalize(value) : path.resolve(repoRoot, value);
 }
 
 async function sourceRevision(repoRoot: string, owner: SkillReportOwner): Promise<{
@@ -191,14 +196,16 @@ async function main(): Promise<void> {
     return;
   }
   const repoRoot = resolveRepoRoot();
+  const reportPath = resolveReviewDraftPath(repoRoot, parsed.report!);
+  const scorecardPath = resolveReviewDraftPath(repoRoot, parsed.scorecard!);
   const owner: SkillReportOwner = parsed.plugin
     ? { kind: 'plugin-skill', plugin: parsed.plugin, skill: parsed.skill! }
     : { kind: 'static-skill', skill: parsed.skill! };
   await assertPublishSkillTarget(repoRoot, owner);
   const roots = await resolveReviewSourceRoots(repoRoot, owner);
   const [report, scorecard, revision, digest] = await Promise.all([
-    fs.readFile(parsed.report!, 'utf8'),
-    fs.readJson(parsed.scorecard!),
+    fs.readFile(reportPath, 'utf8'),
+    fs.readJson(scorecardPath),
     sourceRevision(repoRoot, owner),
     computeAuthorSourceDigest(roots),
   ]);
@@ -212,7 +219,7 @@ async function main(): Promise<void> {
   );
   const validation = await execFileAsync(process.execPath, [
     validator,
-    parsed.scorecard!,
+    scorecardPath,
     '--format',
     'json',
   ], { cwd: repoRoot, encoding: 'utf8' });
@@ -245,13 +252,34 @@ async function main(): Promise<void> {
       release: result.score.release,
     },
   });
+  const reportDir = path.relative(
+    repoRoot,
+    path.join(resolveSkillReportRoot(repoRoot, owner), summary.batchId),
+  ).split(path.sep).join('/');
+  let released: Awaited<ReturnType<typeof releasePublishedSkillReview>> | null = null;
+  if (result.review.mode === 'release') {
+    try {
+      released = await releasePublishedSkillReview({
+        repoRoot,
+        owner,
+        batchId: summary.batchId,
+      });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `Review was published and the batch was sealed at ${reportDir}, ` +
+          `but Skill README release failed: ${detail}. ` +
+          `Retry with pnpm review:release -- --skill ${owner.skill}` +
+          `${owner.kind === 'plugin-skill' ? ` --plugin ${owner.plugin}` : ''} ` +
+          `--batch-id ${summary.batchId}.`,
+      );
+    }
+  }
   process.stdout.write(`${JSON.stringify({
     ok: true,
     batchId: summary.batchId,
-    reportDir: path.relative(
-      repoRoot,
-      path.join(resolveSkillReportRoot(repoRoot, owner), summary.batchId),
-    ).split(path.sep).join('/'),
+    reportDir,
+    released,
     summary,
   }, null, 2)}\n`);
 }
