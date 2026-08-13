@@ -33,6 +33,20 @@
       "releaseSplits": ["validation"],
       "requiredForRelease": true,
       "perRunTimeoutMs": 180000
+    },
+    {
+      "id": "behavior",
+      "kind": "command",
+      "skills": ["git-commit"],
+      "entry": "./run-commit-evals.mjs",
+      "cases": "./behavior-cases.json",
+      "profiles": ["project-default"],
+      "defaultRuns": 1,
+      "releaseSplits": [],
+      "requiredForRelease": true,
+      "perRunTimeoutMs": 300000,
+      "suiteTimeoutMs": 5400000,
+      "supports": ["runs", "case", "model", "codexBin", "timeout"]
     }
   ]
 }

@@ -5,6 +5,10 @@ import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
+import { waitForEvalChild } from '../../../scripts/eval-child-process.mjs';
+import { gitMetadataWritableArgs } from '../../../scripts/eval-git-permissions.mjs';
+import { isolateMaterializedSkills } from '../../../scripts/eval-participant-skills.mjs';
+
 const evalDir = path.dirname(fileURLToPath(import.meta.url));
 const skillKey = 'reconciling-git-merges';
 const defaults = {
@@ -132,14 +136,25 @@ async function git(root, args, { allowFailure = false } = {}) {
 }
 
 async function snapshot(root) {
-  const [head, refs, index, status, diff] = await Promise.all([
+  const [head, refs, index, status, diff, retentionContent] = await Promise.all([
     git(root, ['rev-parse', 'HEAD']),
     git(root, ['show-ref']),
     git(root, ['ls-files', '-s']),
     git(root, ['status', '--porcelain=v1', '--untracked-files=all']),
     git(root, ['diff', '--binary', 'HEAD']),
+    readFile(path.join(root, 'retention.py'), 'utf8').catch((error) => {
+      if (error?.code === 'ENOENT') return null;
+      throw error;
+    }),
   ]);
-  return { head: head.stdout, refs: refs.stdout, index: index.stdout, status: status.stdout, diff: diff.stdout };
+  return {
+    head: head.stdout,
+    refs: refs.stdout,
+    index: index.stdout,
+    status: status.stdout,
+    diff: diff.stdout,
+    retentionContent,
+  };
 }
 
 function finalMessage(stdout) {
@@ -175,9 +190,7 @@ async function prepareWorkspace(evalCase, withSkill) {
       if (cloned.code !== 0) throw new Error(`git clone failed: ${cloned.stderr}`);
       await rm(bundle, { force: true });
       await cp(path.join(materializedRoot, '.agents'), path.join(repo, '.agents'), { recursive: true });
-      if (!withSkill) {
-        await rm(path.join(repo, '.agents', 'skills', skillKey), { recursive: true, force: true });
-      }
+      await isolateMaterializedSkills(path.join(repo, '.agents'), skillKey, withSkill);
       await git(repo, ['config', 'user.name', 'Merge Skill Eval']);
       await git(repo, ['config', 'user.email', 'merge-skill-eval@example.invalid']);
       return { root, repo };
@@ -189,9 +202,7 @@ async function prepareWorkspace(evalCase, withSkill) {
     await rm(archive, { force: true });
     const repo = path.join(root, 'analysis-only-dirty-worktree');
     await cp(path.join(materializedRoot, '.agents'), path.join(repo, '.agents'), { recursive: true });
-    if (!withSkill) {
-      await rm(path.join(repo, '.agents', 'skills', skillKey), { recursive: true, force: true });
-    }
+    await isolateMaterializedSkills(path.join(repo, '.agents'), skillKey, withSkill);
     return { root, repo };
   } catch (error) {
     await rm(root, { recursive: true, force: true });
@@ -212,14 +223,21 @@ function runtimePrompt(evalCase) {
   return '只分析将 origin/feature 合并到 main 的文本和语义风险；不要执行 merge，也不要改变 refs、暂存区或工作树内容。报告契约交互、建议的最小修复和验证方案。';
 }
 
-async function runCodex(repo, prompt, options) {
+async function runCodex(repo, prompt, options, { allowGitWrites, evalRoot }) {
+  const metadataArgs = allowGitWrites
+    ? await gitMetadataWritableArgs(repo, evalRoot)
+    : [];
   const args = [
     'exec', '--json', '--skip-git-repo-check', '--color', 'never', '--sandbox', 'workspace-write',
-    '--cd', repo, '--model', options.model, '--config', 'skills.include_instructions=true', prompt,
+    ...metadataArgs,
+    '--cd', repo, '--model', options.model,
+    '--config', 'approval_policy="never"',
+    '--config', 'skills.include_instructions=true', prompt,
   ];
   const child = spawn(options.codexBin, args, {
     cwd: repo,
     env: process.env,
+    detached: process.platform !== 'win32',
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let stdout = '';
@@ -228,26 +246,19 @@ async function runCodex(repo, prompt, options) {
   child.stderr.setEncoding('utf8');
   child.stdout.on('data', (chunk) => { stdout += chunk; });
   child.stderr.on('data', (chunk) => { stderr += chunk; });
-  const result = await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      child.kill('SIGTERM');
-      resolve({ code: null, signal: 'SIGTERM', timedOut: true });
-    }, options.timeoutMs);
-    child.on('error', (error) => {
-      clearTimeout(timer);
-      reject(error);
-    });
-    child.on('close', (code, signal) => {
-      clearTimeout(timer);
-      resolve({ code, signal, timedOut: false });
-    });
-  });
+  const result = await waitForEvalChild(child, options.timeoutMs);
   return { ...result, stdout, stderr, final_message: finalMessage(stdout) };
 }
 
-async function mergeCommitState(repo) {
-  const parents = await git(repo, ['rev-list', '--parents', '-n', '1', 'HEAD']);
-  return parents.stdout.trim().split(/\s+/).length - 1;
+export async function mergeCommitState(repo, beforeHead) {
+  const [parents, count] = await Promise.all([
+    git(repo, ['rev-list', '--parents', '-n', '1', 'HEAD']),
+    git(repo, ['rev-list', '--first-parent', '--count', `${beforeHead}..HEAD`]),
+  ]);
+  return {
+    mainlineCount: Number(count.stdout.trim()),
+    parentCount: parents.stdout.trim().split(/\s+/).length - 1,
+  };
 }
 
 export function analysisMessageChecks(message) {
@@ -276,6 +287,34 @@ export async function committedControlPaths(repo) {
   return result.stdout.trim().split('\n').filter(Boolean);
 }
 
+export function ambiguousRetentionChecks(content, message, originalContent) {
+  const text = typeof message === 'string' ? message : '';
+  return [
+    {
+      name: 'original_conflict_content_unchanged',
+      passed: typeof originalContent === 'string' && content === originalContent,
+      evidence: content,
+    },
+    {
+      name: 'conflict_markers_preserved',
+      passed: /^<<<<<<< \S.*$/mu.test(content)
+        && /^=======$/mu.test(content)
+        && /^>>>>>>> \S.*$/mu.test(content),
+      evidence: content,
+    },
+    {
+      name: 'states_incompatible_windows',
+      passed: /(?:7|七).*(?:90|九十)|(?:90|九十).*(?:7|七)/su.test(text),
+      evidence: text,
+    },
+    {
+      name: 'requires_product_decision',
+      passed: /(?:(?:需要|尚待|等待|无法|不能|缺少).{0,40}(?:决定|裁决|优先级|产品)|(?:产品|优先级).{0,40}(?:决定|确认|澄清)|(?:need|require|await|pending|cannot|insufficient|unclear).{0,50}(?:product|decision|priority|evidence)|(?:product|decision|priority).{0,50}(?:need|required|pending|unclear))/isu.test(text),
+      evidence: text,
+    },
+  ];
+}
+
 export async function evaluateCase(evalCase, repo, before, run) {
   const after = await snapshot(repo);
   const checks = [];
@@ -287,9 +326,19 @@ export async function evaluateCase(evalCase, repo, before, run) {
   } else if (evalCase.id === 'ambiguous_retention') {
     add('no_new_commit', after.head === before.head, `before=${before.head.trim()} after=${after.head.trim()}`);
     add('conflict_left_uncommitted', after.status.includes('UU retention.py'), after.status);
-    add('states_incompatible_windows', /(?:7|七).*(?:90|九十)|(?:90|九十).*(?:7|七)/su.test(run.final_message), run.final_message);
+    checks.push(...ambiguousRetentionChecks(
+      after.retentionContent,
+      run.final_message,
+      before.retentionContent,
+    ));
   } else {
-    add('merge_commit', await mergeCommitState(repo) === 2, `parents=${await mergeCommitState(repo)}`);
+    const commit = await mergeCommitState(repo, before.head.trim());
+    add(
+      'one_new_merge_commit',
+      commit.mainlineCount === 1,
+      `first_parent_count=${commit.mainlineCount}`,
+    );
+    add('merge_commit', commit.parentCount === 2, `parents=${commit.parentCount}`);
     const tests = await execFile('python3', ['-m', 'unittest'], { cwd: repo, env: process.env });
     add('tests_pass', tests.code === 0, tests.stderr || tests.stdout);
     const controlPaths = await committedControlPaths(repo);
@@ -304,7 +353,10 @@ async function runVariant(evalCase, variant, options) {
     const workspace = await prepareWorkspace(evalCase, variant === 'current');
     try {
       const before = await snapshot(workspace.repo);
-      const model = await runCodex(workspace.repo, runtimePrompt(evalCase), options);
+      const model = await runCodex(workspace.repo, runtimePrompt(evalCase), options, {
+        allowGitWrites: evalCase.id !== 'analysis_only_dirty_worktree',
+        evalRoot: workspace.root,
+      });
       const evaluation = await evaluateCase(evalCase, workspace.repo, before, model);
       runs.push({ run: index + 1, model, evaluation });
     } finally {

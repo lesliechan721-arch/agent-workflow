@@ -1,8 +1,8 @@
 # 评估说明
 
-`trigger-cases.json` 将源 Skill 的触发查询适配为 AW schema v2 trigger corpus。运行触发评估时，每条查询至少运行三次。重点观察 fast-forward、already up to date、普通 merge 请求、rebase 和明显独立的 clean merge是否保持不触发。
+`trigger-cases.json` 将源 Skill 的触发查询适配为 AW schema v2 trigger corpus。`trigger-fixture.mjs` 为 validation 的冲突、语义合并和相邻 commit 路由准备小型 Git 状态。运行触发评估时，每条查询至少运行三次。重点观察 fast-forward、already up to date、普通 merge 请求、rebase 和明显独立的 clean merge 是否保持不触发。
 
-`evals.json` 和 `files/` 保留源 Skill 的四个 Git 行为用例及附件。`run-merge-evals.mjs` 在全新工作区中分别运行 current 与 baseline，并机械检查合并结果、测试和只读不变量。
+`evals.json` 和 `files/` 保留源 Skill 的四个 Git 行为用例及附件。`run-merge-evals.mjs` 在全新工作区中分别运行 current 与 baseline，并机械检查只产生一个双父合并提交、测试通过和只读不变量。三个写用例只向内层 Codex 开放该临时仓库的 Git metadata；analysis-only 用例保持 metadata 只读。
 
 第四个用例开始前，记录 `HEAD`、refs、index、worktree 和 `README.md` 的本地差异；运行后应完全一致。
 

@@ -62,6 +62,7 @@
       "id": "source_08",
       "split": "validation",
       "query": "The merge conflict represents incompatible seven-day privacy retention and ninety-day audit retention, with no stated priority. Handle it from repository evidence without inventing a compromise.",
+      "workspace_fixture": "ambiguous_retention",
       "expected_loaded_skills": [
         "reconciling-git-merges"
       ]
@@ -70,6 +71,7 @@
       "id": "source_09",
       "split": "validation",
       "query": "git auto-mergd the files, but one side changed transaction retry semantics and the other changed idempotency handling. Validate their composition before committing.",
+      "workspace_fixture": "semantic_retry",
       "expected_loaded_skills": [
         "reconciling-git-merges"
       ]
@@ -78,6 +80,7 @@
       "id": "source_10",
       "split": "validation",
       "query": "请继续当前 merge。冲突文件之外，双方还分别修改了同一个权限契约的生产者和消费者，需要一起验证。",
+      "workspace_fixture": "semantic_permissions",
       "expected_loaded_skills": [
         "reconciling-git-merges"
       ]
@@ -146,6 +149,7 @@
       "id": "ordinary_local_commit",
       "split": "validation",
       "query": "当前改动已经完成。请核对暂存范围并创建一个新的本地 Git commit。",
+      "workspace_fixture": "commit_ready",
       "expected_loaded_skills": [
         "git-commit"
       ]

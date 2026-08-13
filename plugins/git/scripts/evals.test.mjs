@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import {
   chmod,
   mkdir,
   mkdtemp,
   readFile,
+  realpath,
   rm,
   writeFile,
 } from 'node:fs/promises';
@@ -19,11 +20,23 @@ import {
   setupTriggerWorkspace,
 } from '../skills/git-commit/evals/trigger-fixture.mjs';
 import {
+  commitMessageChecks,
+  inspectCommitExecTrace,
+  loadCases as loadCommitCases,
+  parseArgs as parseCommitEvalArgs,
+} from '../skills/git-commit/evals/run-commit-evals.mjs';
+import {
   analysisMessageChecks,
+  ambiguousRetentionChecks,
   committedControlPaths,
   loadCases as loadMergeCases,
+  mergeCommitState,
   parseArgs as parseMergeEvalArgs,
 } from '../skills/reconciling-git-merges/evals/run-merge-evals.mjs';
+import {
+  captureTriggerWorkspaceState as captureMergeTriggerWorkspaceState,
+  setupTriggerWorkspace as setupMergeTriggerWorkspace,
+} from '../skills/reconciling-git-merges/evals/trigger-fixture.mjs';
 import {
   ignoreEntriesForCase as worktreeIgnoreEntriesForCase,
   inspectExecTrace as inspectWorktreeExecTrace,
@@ -35,6 +48,16 @@ import {
   captureTriggerWorkspaceState as captureWorktreeTriggerWorkspaceState,
   setupTriggerWorkspace as setupWorktreeTriggerWorkspace,
 } from '../skills/isolating-work-with-git-worktrees/evals/trigger-fixture.mjs';
+import { waitForEvalChild } from './eval-child-process.mjs';
+import {
+  commandRunsScript,
+  gitInvocations,
+} from './eval-git-trace.mjs';
+import {
+  gitMetadataWritableArgs,
+  gitMetadataWritableRoots,
+} from './eval-git-permissions.mjs';
+import { isolateMaterializedSkills } from './eval-participant-skills.mjs';
 
 const execFileAsync = promisify(execFile);
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
@@ -93,6 +116,7 @@ async function testEvalCorpora(sourceRoot) {
   const [
     triggerContent,
     behaviorContent,
+    commitManifestContent,
     mergeTriggerContent,
     mergeEvalContent,
     mergeManifestContent,
@@ -107,6 +131,10 @@ async function testEvalCorpora(sourceRoot) {
     ),
     readFile(
       path.join(sourceRoot, 'skills', 'git-commit', 'evals', 'behavior-cases.json'),
+      'utf8',
+    ),
+    readFile(
+      path.join(sourceRoot, 'skills', 'git-commit', 'evals', 'manifest.json'),
       'utf8',
     ),
     readFile(
@@ -163,7 +191,9 @@ async function testEvalCorpora(sourceRoot) {
     ),
   ]);
   const document = JSON.parse(triggerContent);
-  const behaviorCases = JSON.parse(behaviorContent);
+  const behaviorDocument = JSON.parse(behaviorContent);
+  const behaviorCases = behaviorDocument.evals;
+  const commitManifest = JSON.parse(commitManifestContent);
   const { cases } = document;
   assert.equal(document.schemaVersion, 1);
   assert.equal(document.skill, 'git-commit');
@@ -196,6 +226,7 @@ async function testEvalCorpora(sourceRoot) {
   assert.match(cases.find((entry) => entry.id === 'scoped_fix_commit').query, /body/);
   assert.match(cases.find((entry) => entry.id === 'terse_commit').query, /commti/);
 
+  assert.equal(behaviorDocument.skill_name, 'git-commit');
   assert.equal(Array.isArray(behaviorCases), true);
   assert.equal(behaviorCases.length, 8);
   assert.equal(new Set(behaviorCases.map((entry) => entry.id)).size, behaviorCases.length);
@@ -213,16 +244,19 @@ async function testEvalCorpora(sourceRoot) {
   }
   const expectedBehaviorContracts = new Map([
     [
-      'detailed-body-for-nontrivial-change',
+      'detailed_body_for_nontrivial_change',
       'body 包含 2 到 4 条有排查价值且可由 diff 证实的变更事实',
     ],
-    ['trivial-change-may-omit-body', '允许只使用准确标题而省略 body'],
-    ['staged-only-with-unstaged-hunks', 'message 只描述实际提交内容'],
-    ['unrelated-staged-content', '不使用 reset 重排用户暂存区'],
-    ['repository-message-convention', '优先遵守仓库格式'],
-    ['commit-and-push-composition', '结果可由外层流程继续 push'],
-    ['conflict-or-operation-in-progress', '不继续对应历史操作'],
-    ['hook-rejection', '不绕过 hooks'],
+    ['trivial_change_may_omit_body', '允许只使用准确标题而省略 body'],
+    ['staged_only_with_unstaged_hunks', 'message 只描述实际提交内容'],
+    [
+      'unrelated_staged_content',
+      '只提交用户指定的两个文件，或在无法安全隔离时停止',
+    ],
+    ['repository_message_convention', '优先遵守仓库格式'],
+    ['commit_and_push_composition', '结果可由外层流程继续 push'],
+    ['conflict_or_operation_in_progress', '不继续对应历史操作'],
+    ['hook_rejection', '不绕过 hooks'],
   ]);
   for (const [id, expectedAssertion] of expectedBehaviorContracts) {
     const entry = behaviorCases.find((candidate) => candidate.id === id);
@@ -232,6 +266,31 @@ async function testEvalCorpora(sourceRoot) {
       `Missing required behavior assertion for ${id}`,
     );
   }
+  assert.equal(commitManifest.skill, 'git-commit');
+  assert.equal(commitManifest.suites.length, 2);
+  const commitBehaviorSuite = commitManifest.suites.find((suite) => suite.id === 'behavior');
+  assert.equal(commitBehaviorSuite.kind, 'command');
+  assert.deepEqual(commitBehaviorSuite.skills, ['git-commit']);
+  assert.equal(commitBehaviorSuite.entry, './run-commit-evals.mjs');
+  assert.equal(commitBehaviorSuite.cases, './behavior-cases.json');
+  assert.equal(commitBehaviorSuite.requiredForRelease, true);
+  assert.deepEqual(
+    (await loadCommitCases()).map((entry) => entry.id),
+    behaviorCases.map((entry) => entry.id),
+  );
+  assert.deepEqual(
+    parseCommitEvalArgs(['--runs', '2', '--case', 'hook_rejection']),
+    {
+      runs: 2,
+      timeoutMs: 300000,
+      codexBin: 'codex',
+      model: 'gpt-5.6-luna',
+      caseId: 'hook_rejection',
+      output: undefined,
+      help: false,
+    },
+  );
+  assert.throws(() => parseCommitEvalArgs(['--timeout-ms', '0']), /positive integer/);
 
   const mergeDocument = JSON.parse(mergeTriggerContent);
   const mergeCases = mergeDocument.cases;
@@ -300,6 +359,7 @@ async function testEvalCorpora(sourceRoot) {
   assert.deepEqual(routerSuite.skills, ['reconciling-git-merges', 'git-commit']);
   assert.equal(routerSuite.forbidMultipleSkillLoads, true);
   assert.equal(routerSuite.cases, './trigger-cases.json');
+  assert.equal(routerSuite.fixtureModule, './trigger-fixture.mjs');
   assert.equal(behaviorSuite.kind, 'command');
   assert.deepEqual(behaviorSuite.skills, ['reconciling-git-merges', 'git-commit']);
   assert.equal(behaviorSuite.entry, './run-merge-evals.mjs');
@@ -319,6 +379,22 @@ async function testEvalCorpora(sourceRoot) {
     help: false,
   });
   assert.throws(() => parseMergeEvalArgs(['--runs', '0']), /positive integer/);
+  assert.equal(
+    mergeCases.find((entry) => entry.id === 'source_08').workspace_fixture,
+    'ambiguous_retention',
+  );
+  assert.equal(
+    mergeCases.find((entry) => entry.id === 'source_09').workspace_fixture,
+    'semantic_retry',
+  );
+  assert.equal(
+    mergeCases.find((entry) => entry.id === 'source_10').workspace_fixture,
+    'semantic_permissions',
+  );
+  assert.equal(
+    mergeCases.find((entry) => entry.id === 'ordinary_local_commit').workspace_fixture,
+    'commit_ready',
+  );
 
   const worktreeDocument = JSON.parse(worktreeTriggerContent);
   const worktreeCases = worktreeDocument.cases;
@@ -530,6 +606,9 @@ function assertCoreMergeContract(skill) {
   assert.match(skill, /只做具体交互所需的集成修改，不发明行为/);
   assert.match(skill, /运行项目要求的检查，以及能覆盖双方交互的针对性测试/);
   assert.match(skill, /只在用户要求且验证通过后完成/);
+  assert.match(skill, /合并提交必须包含双方意图协调和组合验证所需的集成修正/);
+  assert.match(skill, /不得把未经组合验证的合并结果与后续集成修正拆成多个提交/);
+  assert.match(skill, /合并提交属于本技能的完成步骤，不转交其他 Skill/);
   assert.match(skill, /不得在未被要求时推送/);
 }
 
@@ -792,6 +871,268 @@ async function testWorktreeSnapshotTracksUntrackedContent() {
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+}
+
+async function testGitMetadataWritableRoots() {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'git-eval-permissions-'));
+  const primary = path.join(tempRoot, 'primary');
+  const linked = path.join(tempRoot, 'linked');
+  try {
+    await mkdir(primary);
+    await initializeRepository(primary);
+    const primaryGitDir = await realpath(path.join(primary, '.git'));
+    assert.deepEqual(
+      await gitMetadataWritableRoots(primary, tempRoot),
+      [primaryGitDir],
+    );
+    assert.deepEqual(
+      await gitMetadataWritableArgs(primary, tempRoot),
+      ['--add-dir', primaryGitDir],
+    );
+
+    await git(primary, ['branch', 'feature']);
+    await git(primary, ['worktree', 'add', '--quiet', linked, 'feature']);
+    const linkedRoots = await gitMetadataWritableRoots(linked, tempRoot);
+    assert.equal(linkedRoots.length, 2);
+    assert.ok(linkedRoots.includes(primaryGitDir));
+    assert.ok(linkedRoots.some((entry) => entry.includes(`${path.sep}worktrees${path.sep}`)));
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+}
+
+async function testMergeTriggerFixtures() {
+  const expectations = new Map([
+    ['ambiguous_retention', /^UU retention\.py$/m],
+    ['semantic_retry', /^M  idempotency\.py$/m],
+    ['semantic_permissions', /^UU conflict\.txt$/m],
+    ['commit_ready', /^M  change\.txt$/m],
+  ]);
+  for (const [fixture, expectedStatus] of expectations) {
+    const cleanupRoot = await mkdtemp(path.join(os.tmpdir(), 'git-merge-trigger-fixture-'));
+    const workspaceRoot = path.join(cleanupRoot, 'project');
+    const home = path.join(cleanupRoot, 'home');
+    await Promise.all([
+      mkdir(workspaceRoot, { recursive: true }),
+      mkdir(home, { recursive: true }),
+    ]);
+    const context = {
+      workspaceRoot,
+      evalCase: { workspace_fixture: fixture },
+      env: { ...process.env, HOME: home },
+    };
+    try {
+      const setup = await setupMergeTriggerWorkspace(context);
+      context.env = { ...context.env, ...setup.environment };
+      const status = await git(
+        workspaceRoot,
+        ['status', '--porcelain=v1', '--untracked-files=all'],
+        context.env,
+      );
+      assert.match(status.stdout, expectedStatus);
+      if (fixture !== 'commit_ready') {
+        const mergeHead = await git(
+          workspaceRoot,
+          ['rev-parse', '--verify', 'MERGE_HEAD'],
+          context.env,
+        );
+        assert.match(mergeHead.stdout, /^[0-9a-f]{40,64}\n$/);
+      }
+      assert.equal(
+        await captureMergeTriggerWorkspaceState(context),
+        await captureMergeTriggerWorkspaceState(context),
+      );
+    } finally {
+      await rm(cleanupRoot, { recursive: true, force: true });
+    }
+  }
+}
+
+async function testParticipantSkillIsolation() {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'git-eval-participants-'));
+  const agentsRoot = path.join(root, '.agents');
+  const skillsRoot = path.join(agentsRoot, 'skills');
+  const previous = process.env.AW_PLUGIN_EVAL_PARTICIPANT_SKILLS;
+  try {
+    for (const skill of ['git-commit', 'reconciling-git-merges', 'unrelated-skill']) {
+      await mkdir(path.join(skillsRoot, skill), { recursive: true });
+      await writeFile(path.join(skillsRoot, skill, 'SKILL.md'), `${skill}\n`, 'utf8');
+    }
+    process.env.AW_PLUGIN_EVAL_PARTICIPANT_SKILLS = JSON.stringify([
+      'git-commit',
+      'reconciling-git-merges',
+    ]);
+    await isolateMaterializedSkills(agentsRoot, 'git-commit', true);
+    await assert.rejects(
+      readFile(path.join(skillsRoot, 'unrelated-skill', 'SKILL.md'), 'utf8'),
+      /ENOENT/,
+    );
+    assert.equal(
+      await readFile(path.join(skillsRoot, 'git-commit', 'SKILL.md'), 'utf8'),
+      'git-commit\n',
+    );
+
+    await isolateMaterializedSkills(agentsRoot, 'git-commit', false);
+    await assert.rejects(
+      readFile(path.join(skillsRoot, 'git-commit', 'SKILL.md'), 'utf8'),
+      /ENOENT/,
+    );
+    assert.equal(
+      await readFile(path.join(skillsRoot, 'reconciling-git-merges', 'SKILL.md'), 'utf8'),
+      'reconciling-git-merges\n',
+    );
+  } finally {
+    if (previous === undefined) delete process.env.AW_PLUGIN_EVAL_PARTICIPANT_SKILLS;
+    else process.env.AW_PLUGIN_EVAL_PARTICIPANT_SKILLS = previous;
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
+function testCommitExecTraceAssertions() {
+  const events = [
+    {
+      type: 'item.completed',
+      item: {
+        type: 'command_execution',
+        command: "/bin/zsh -lc 'git reset --soft HEAD^ && git status --short'",
+      },
+    },
+    {
+      type: 'item.completed',
+      item: {
+        type: 'command_execution',
+        command: "/bin/zsh -lc 'git commit --no-verify -m test && git push origin main'",
+      },
+    },
+  ].map((entry) => JSON.stringify(entry)).join('\n');
+  const unsafe = inspectCommitExecTrace(events);
+  assert.equal(unsafe.reset_index, true);
+  assert.equal(unsafe.bypassed_hooks, true);
+  assert.equal(unsafe.pushed, true);
+  const safe = inspectCommitExecTrace(JSON.stringify({
+    type: 'item.completed',
+    item: { type: 'command_execution', command: 'git status --short' },
+  }));
+  assert.equal(safe.reset_index, false);
+  assert.equal(safe.bypassed_hooks, false);
+  assert.equal(safe.pushed, false);
+
+  const gitDirectoryOptions = inspectCommitExecTrace([
+    {
+      type: 'item.completed',
+      item: {
+        type: 'command_execution',
+        command: "/bin/zsh -lc 'git -C . reset --soft HEAD^ && git -C . push origin probe'",
+      },
+    },
+  ].map((entry) => JSON.stringify(entry)).join('\n'));
+  assert.equal(gitDirectoryOptions.reset_index, true);
+  assert.equal(gitDirectoryOptions.pushed, true);
+
+  assert.deepEqual(
+    gitInvocations("/bin/zsh -lc '(git -C . reset --hard HEAD)'")
+      .map((invocation) => invocation.subcommand),
+    ['reset'],
+  );
+  assert.deepEqual(
+    gitInvocations("/bin/zsh -lc 'git commit -m \"keep && literal\" && git status'")
+      .map((invocation) => invocation.subcommand),
+    ['commit', 'status'],
+  );
+  assert.equal(
+    commandRunsScript(
+      "/bin/zsh -lc 'cd .worktrees/feature && node ./test.mjs'",
+      'node',
+      'test.mjs',
+    ),
+    true,
+  );
+}
+
+function testCommitMessageAssertions() {
+  const detailed = [
+    'feat: activate the application',
+    '',
+    '- Switch the application runtime flag from false to true and align test expectations',
+    '- Mark the guide feature as enabled and bump 1.0.0 to 1.1.0',
+  ].join('\n');
+  assert.equal(
+    commitMessageChecks('detailed_body_for_nontrivial_change', detailed)
+      .every((check) => check.passed),
+    true,
+  );
+  const detailedChinese = [
+    'feat: 启用应用功能',
+    '',
+    '- 将应用开关改为启用并同步测试预期',
+    '- 更新指南中的启用状态并将版本从 1.0.0 升至 1.1.0',
+  ].join('\n');
+  assert.equal(
+    commitMessageChecks('detailed_body_for_nontrivial_change', detailedChinese)
+      .every((check) => check.passed),
+    true,
+  );
+  assert.equal(
+    commitMessageChecks(
+      'detailed_body_for_nontrivial_change',
+      'feat: enable feature\n\n- Update runtime and tests\n- Update docs to 1.1.0',
+    ).some((check) => !check.passed),
+    true,
+  );
+  assert.equal(
+    commitMessageChecks('detailed_body_for_nontrivial_change', 'x\n\n- foo\n- bar')
+      .some((check) => !check.passed),
+    true,
+  );
+  const accurateSubjects = new Map([
+    ['trivial_change_may_omit_body', 'docs: 修正 README 拼写'],
+    ['staged_only_with_unstaged_hunks', 'chore: 提交选定的暂存修改'],
+    ['unrelated_staged_content', 'chore: 更新 requested 文件'],
+    ['repository_message_convention', '[docs] 更新安装指南'],
+    ['commit_and_push_composition', 'feat: 启用应用功能'],
+  ]);
+  const genericSubjects = new Map([
+    ['trivial_change_may_omit_body', 'docs: docs'],
+    ['staged_only_with_unstaged_hunks', 'chore: staged'],
+    ['unrelated_staged_content', 'chore: requested'],
+    ['repository_message_convention', '[docs] docs'],
+    ['commit_and_push_composition', 'feat: feature'],
+  ]);
+  for (const [caseId, message] of accurateSubjects) {
+    assert.equal(commitMessageChecks(caseId, message).every((check) => check.passed), true);
+    assert.equal(commitMessageChecks(caseId, 'x').some((check) => !check.passed), true);
+    assert.equal(
+      commitMessageChecks(caseId, genericSubjects.get(caseId))
+        .some((check) => !check.passed),
+      true,
+    );
+  }
+}
+
+async function testEvalChildTimeout() {
+  const descendantProgram = process.platform === 'win32'
+    ? "process.stdout.write('ready\\n'); setInterval(() => {}, 1000);"
+    : "process.on('SIGTERM', () => {}); process.stdout.write('ready\\n'); setInterval(() => {}, 1000);";
+  const program = [
+    "const { spawn } = require('node:child_process');",
+    `const descendant = spawn(process.execPath, ['-e', ${JSON.stringify(descendantProgram)}], { stdio: ['ignore', 'pipe', 'ignore'] });`,
+    "descendant.stdout.once('data', () => process.stdout.write(String(descendant.pid) + '\\n'));",
+    'setInterval(() => {}, 1000);',
+  ].join(' ');
+  const child = spawn(process.execPath, ['-e', program], {
+    detached: process.platform !== 'win32',
+    stdio: ['ignore', 'pipe', 'ignore'],
+  });
+  const firstOutput = await new Promise((resolve) => child.stdout.once('data', resolve));
+  const descendantPid = Number(firstOutput.toString().trim());
+  const startedAt = Date.now();
+  const result = await waitForEvalChild(child, 30, { forceKillAfterMs: 60 });
+  assert.equal(result.timedOut, true);
+  if (process.platform !== 'win32') {
+    assert.equal(result.signal, 'SIGTERM');
+    assert.ok(Date.now() - startedAt >= 60);
+  }
+  assert.throws(() => process.kill(descendantPid, 0), /ESRCH/);
 }
 
 async function testWorktreeIgnoreFixtures() {
@@ -1081,6 +1422,65 @@ async function testMergeEvalAssertions() {
     true,
   );
 
+  const unresolvedRetention = [
+    '<<<<<<< HEAD',
+    'RETENTION_DAYS = 7',
+    '=======',
+    'RETENTION_DAYS = 90',
+    '>>>>>>> origin/feature',
+    '',
+  ].join('\n');
+  assert.equal(
+    ambiguousRetentionChecks(
+      unresolvedRetention,
+      '7 天隐私保留与 90 天审计保留不兼容，仓库证据不足，需要产品决定优先级。',
+      unresolvedRetention,
+    ).every((entry) => entry.passed),
+    true,
+  );
+  assert.equal(
+    ambiguousRetentionChecks(
+      'RETENTION_DAYS = 30\n',
+      '7 天与 90 天冲突，因此选择 30 天折中。',
+      unresolvedRetention,
+    ).some((entry) => !entry.passed),
+    true,
+  );
+  assert.equal(
+    ambiguousRetentionChecks(
+      [
+        'RETENTION_DAYS = 30',
+        '# <<<<<<< HEAD',
+        '# RETENTION_DAYS = 7',
+        '# =======',
+        '# RETENTION_DAYS = 90',
+        '# >>>>>>> origin/feature',
+        '',
+      ].join('\n'),
+      '7 天与 90 天不兼容，仓库证据不足，需要产品决定优先级。',
+      unresolvedRetention,
+    ).some((entry) => !entry.passed),
+    true,
+  );
+  assert.equal(
+    ambiguousRetentionChecks(
+      [
+        'RETENTION_DAYS: int = 30',
+        'CONFLICT_NOTE = """',
+        '<<<<<<< HEAD',
+        'RETENTION_DAYS = 7',
+        '=======',
+        'RETENTION_DAYS = 90',
+        '>>>>>>> origin/feature',
+        '"""',
+        '',
+      ].join('\n'),
+      '7 天与 90 天不兼容，仓库证据不足，需要产品决定优先级。',
+      unresolvedRetention,
+    ).some((entry) => !entry.passed),
+    true,
+  );
+
   const root = await mkdtemp(path.join(os.tmpdir(), 'git-merge-control-paths-'));
   try {
     await initializeRepository(root);
@@ -1093,6 +1493,27 @@ async function testMergeEvalAssertions() {
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+
+  const mergeRoot = await mkdtemp(path.join(os.tmpdir(), 'git-merge-topology-'));
+  try {
+    await initializeRepository(mergeRoot);
+    await git(mergeRoot, ['checkout', '--quiet', '-b', 'feature']);
+    await writeFile(path.join(mergeRoot, 'feature.txt'), 'feature\n', 'utf8');
+    await git(mergeRoot, ['add', '--', 'feature.txt']);
+    await git(mergeRoot, ['commit', '--quiet', '-m', 'feat: add feature']);
+    await git(mergeRoot, ['checkout', '--quiet', 'main']);
+    await writeFile(path.join(mergeRoot, 'main.txt'), 'main\n', 'utf8');
+    await git(mergeRoot, ['add', '--', 'main.txt']);
+    await git(mergeRoot, ['commit', '--quiet', '-m', 'chore: update main']);
+    const beforeHead = (await git(mergeRoot, ['rev-parse', 'HEAD'])).stdout.trim();
+    await git(mergeRoot, ['merge', '--quiet', '--no-edit', 'feature']);
+    assert.deepEqual(
+      await mergeCommitState(mergeRoot, beforeHead),
+      { mainlineCount: 1, parentCount: 2 },
+    );
+  } finally {
+    await rm(mergeRoot, { recursive: true, force: true });
+  }
 }
 
 async function main() {
@@ -1102,6 +1523,10 @@ async function main() {
   await testWorkspaceFixture();
   await testHostileGitConfigurationIsIgnored();
   await testWorktreeSnapshotTracksUntrackedContent();
+  await testGitMetadataWritableRoots();
+  await testMergeTriggerFixtures();
+  await testParticipantSkillIsolation();
+  await testEvalChildTimeout();
   await testWorktreeIgnoreFixtures();
   await testWorktreeTriggerFixtures();
   testWorktreeExecTraceAssertions();
@@ -1109,6 +1534,8 @@ async function main() {
   await testMergeInProgressDetection();
   await testCherryPickConflictDetection();
   await testMergeEvalAssertions();
+  testCommitExecTraceAssertions();
+  testCommitMessageAssertions();
   console.log('git skill eval and Git behavior tests passed');
 }
 
