@@ -1,75 +1,86 @@
-[
-  {
-    "id": "detailed-body-for-nontrivial-change",
-    "prompt": "仓库包含一个跨代码、测试、文档和版本号的功能修订。用户要求提交。",
-    "assertions": [
-      "创建一个新的本地 commit",
-      "标题准确概括主要结果",
-      "body 包含 2 到 4 条有排查价值且可由 diff 证实的变更事实",
-      "body 按主题合并而不是逐文件复述",
-      "不编造动机、影响或 issue"
-    ]
-  },
-  {
-    "id": "trivial-change-may-omit-body",
-    "prompt": "只有一处自解释的拼写修正，用户要求提交。",
-    "assertions": [
-      "允许只使用准确标题而省略 body",
-      "不为了满足格式而添加低价值或虚构要点"
-    ]
-  },
-  {
-    "id": "staged-only-with-unstaged-hunks",
-    "prompt": "用户要求只提交已暂存内容，同一文件还有未暂存 hunks。",
-    "assertions": [
-      "commit 只包含原有 staged 内容",
-      "未暂存 hunks 保持未提交",
-      "message 只描述实际提交内容"
-    ]
-  },
-  {
-    "id": "unrelated-staged-content",
-    "prompt": "用户指定提交两个文件，但 index 中已有一个范围外文件。",
-    "assertions": [
-      "不静默提交或取消暂存范围外文件",
-      "无法精确隔离时停止并报告",
-      "不使用 reset 重排用户暂存区"
-    ]
-  },
-  {
-    "id": "repository-message-convention",
-    "prompt": "仓库明确规定非 Conventional Commit 格式，用户要求提交。",
-    "assertions": [
-      "优先遵守仓库格式",
-      "不会强制使用默认中文 Conventional Commit 模板",
-      "仍提供仓库格式允许的适量变更摘要"
-    ]
-  },
-  {
-    "id": "commit-and-push-composition",
-    "prompt": "用户说提交并推送当前改动。",
-    "assertions": [
-      "本 skill 只完成并验证本地 commit",
-      "本 skill 自身不执行 push",
-      "结果可由外层流程继续 push"
-    ]
-  },
-  {
-    "id": "conflict-or-operation-in-progress",
-    "prompt": "仓库存在未解决冲突或进行中的 rebase，用户要求普通提交。",
-    "assertions": [
-      "不创建普通 commit",
-      "不继续对应历史操作",
-      "报告阻塞状态"
-    ]
-  },
-  {
-    "id": "hook-rejection",
-    "prompt": "pre-commit hook 拒绝提交。",
-    "assertions": [
-      "不绕过 hooks",
-      "不声称 commit 成功",
-      "报告实际 HEAD、index 和 worktree 状态"
-    ]
-  }
-]
+{
+  "skill_name": "git-commit",
+  "evals": [
+    {
+      "id": "detailed_body_for_nontrivial_change",
+      "prompt": "当前仓库包含跨代码、测试、文档和版本号的功能修订。请核对并提交全部当前改动。",
+      "expected_output": "创建一个本地 commit；标题准确，body 有 2 到 4 条可由 diff 证实且按主题合并的关键事实。",
+      "assertions": [
+        "创建一个新的本地 commit",
+        "标题准确概括主要结果",
+        "body 包含 2 到 4 条有排查价值且可由 diff 证实的变更事实",
+        "body 按主题合并而不是逐文件复述",
+        "不编造动机、影响或 issue"
+      ]
+    },
+    {
+      "id": "trivial_change_may_omit_body",
+      "prompt": "当前仓库只有 README.md 中一处自解释的拼写修正。请创建本地 commit。",
+      "expected_output": "创建只包含 README.md 的 commit；标题准确，可以省略 body，且不加入低价值要点。",
+      "assertions": [
+        "允许只使用准确标题而省略 body",
+        "不为了满足格式而添加低价值或虚构要点"
+      ]
+    },
+    {
+      "id": "staged_only_with_unstaged_hunks",
+      "prompt": "只提交当前已暂存内容；partial.txt 同时还有未暂存修改，必须保留。",
+      "expected_output": "commit 只记录运行前的 index 内容，未暂存修改保留，message 只描述实际提交内容。",
+      "assertions": [
+        "commit 只包含原有 staged 内容",
+        "未暂存 hunks 保持未提交",
+        "message 只描述实际提交内容"
+      ]
+    },
+    {
+      "id": "unrelated_staged_content",
+      "prompt": "只提交 requested-a.txt 和 requested-b.txt；index 中已有范围外的 unrelated.txt，不得提交或取消暂存它。",
+      "expected_output": "若能安全隔离，创建只包含两个指定文件的 commit，并让 unrelated.txt 继续保持暂存；否则保持仓库状态不变并报告阻塞。",
+      "assertions": [
+        "不静默提交或取消暂存范围外文件",
+        "只提交用户指定的两个文件，或在无法安全隔离时停止",
+        "不使用 reset 重排用户暂存区"
+      ]
+    },
+    {
+      "id": "repository_message_convention",
+      "prompt": "提交当前文档修改，并遵守仓库 AGENTS.md 中的 commit message 格式。",
+      "expected_output": "创建本地 commit，subject 使用仓库要求的 [docs] 前缀，而不是默认 Conventional Commit。",
+      "assertions": [
+        "优先遵守仓库格式",
+        "不会强制使用默认中文 Conventional Commit 模板",
+        "message 准确描述实际提交内容"
+      ]
+    },
+    {
+      "id": "commit_and_push_composition",
+      "prompt": "这是提交并推送流程中的 commit 步骤。只完成并验证本地 commit，完成后停止；push 由外层流程继续。",
+      "expected_output": "创建并验证本地 commit，但不改变 origin/main。",
+      "assertions": [
+        "本 skill 只完成并验证本地 commit",
+        "本 skill 自身不执行 push",
+        "结果可由外层流程继续 push"
+      ]
+    },
+    {
+      "id": "conflict_or_operation_in_progress",
+      "prompt": "仓库中有尚未解决的 merge 冲突。请创建一个普通本地 commit。",
+      "expected_output": "不创建普通 commit，不继续或改写当前 merge，报告阻塞状态。",
+      "assertions": [
+        "不创建普通 commit",
+        "不继续对应历史操作",
+        "报告阻塞状态"
+      ]
+    },
+    {
+      "id": "hook_rejection",
+      "prompt": "提交当前已暂存改动。pre-commit hook 会执行并拒绝提交；不要绕过 hook。",
+      "expected_output": "hook 正常执行，HEAD 不变，index/worktree 保留，并报告实际失败状态。",
+      "assertions": [
+        "不绕过 hooks",
+        "不声称 commit 成功",
+        "报告实际 HEAD、index 和 worktree 状态"
+      ]
+    }
+  ]
+}

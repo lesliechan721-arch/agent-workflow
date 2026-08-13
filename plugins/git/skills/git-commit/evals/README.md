@@ -7,20 +7,22 @@
 - 不根据 validation 结果反向修改 description；先在 train 上迭代，最后只用 validation 检查泛化。
 - 显式 `$git-commit` 由 Codex 在模型运行前直接注入，不会产生隐式加载所需的 shell 读取事件，因此不放进隐式触发 corpus；常规插件测试改为验证 portable frontmatter 与真实 Codex bundle 元数据。
 
-## 行为设计用例
+## 行为评测
 
-`behavior-cases.json` 保存 8 条提交行为设计用例，覆盖非琐碎 body、琐碎提交、部分暂存、范围外已暂存内容、仓库 message 规范、提交后继续 push、进行中的 Git 操作和 hook 拒绝。
+`behavior-cases.json` 和 `run-commit-evals.mjs` 定义 8 条可写 command 用例，覆盖非琐碎 body、琐碎提交、部分暂存、范围外已暂存内容、仓库 message 规范、提交后继续 push、进行中的 Git 操作和 hook 拒绝。
 
-这些用例由 `pnpm plugin:test git` 校验结构和核心合同，但不在 `evals/manifest.json` 中声明为模型 suite，因为它们需要创建真实 commit 的 Git 行为 runner。
+runner 在独立临时仓库中运行 current 与 no-Skill baseline，并机械检查 HEAD、refs、index、worktree、commit 内容、remote ref 和 hook 状态。只有需要创建 commit 的内层 Codex 进程能写该临时仓库的 Git metadata。
 
 ## 运行真实触发评测
 
 ```bash
 pnpm plugin:eval git --skill git-commit --batch-name materialization --materialize-only
 pnpm plugin:eval git --skill git-commit --batch-name trigger-validation-debug --suite trigger --split validation --runs 1
+pnpm plugin:eval git --skill git-commit --batch-name behavior-debug --suite behavior --case staged_only_with_unstaged_hunks
+pnpm plugin:eval git --skill git-commit --batch-name release
 ```
 
-该 manifest 的 release target 是 validation suite。检查 train：
+该 manifest 的 release targets 包含 trigger validation 和全部 behavior cases。检查 train：
 
 ```bash
 pnpm plugin:eval git --skill git-commit --batch-name trigger-train --suite trigger --split train --runs 3

@@ -5,6 +5,14 @@ import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
+import { waitForEvalChild } from '../../../scripts/eval-child-process.mjs';
+import { gitMetadataWritableArgs } from '../../../scripts/eval-git-permissions.mjs';
+import {
+  commandRunsScript,
+  gitInvocations,
+} from '../../../scripts/eval-git-trace.mjs';
+import { isolateMaterializedSkills } from '../../../scripts/eval-participant-skills.mjs';
+
 const evalDir = path.dirname(fileURLToPath(import.meta.url));
 const skillKey = 'isolating-work-with-git-worktrees';
 const defaults = {
@@ -172,12 +180,7 @@ async function copyMaterializedSkills(repo, withSkill) {
   await cp(path.join(materializedRoot, '.agents'), path.join(repo, '.agents'), {
     recursive: true,
   });
-  if (!withSkill) {
-    await rm(path.join(repo, '.agents', 'skills', skillKey), {
-      recursive: true,
-      force: true,
-    });
-  }
+  await isolateMaterializedSkills(path.join(repo, '.agents'), skillKey, withSkill);
 }
 
 export function ignoreEntriesForCase(caseId) {
@@ -201,7 +204,7 @@ async function prepareWorkspace(evalCase, withSkill) {
       const repo = path.join(tempRoot, 'platform-worktree');
       await git(primary, ['worktree', 'add', '--quiet', repo, 'feature']);
       await copyMaterializedSkills(repo, withSkill);
-      return { tempRoot, repo, primary, testMarker };
+      return { tempRoot, repo, primary, testMarker, caseId: evalCase.id };
     }
 
     const repo = path.join(tempRoot, 'repo');
@@ -237,7 +240,7 @@ async function prepareWorkspace(evalCase, withSkill) {
       'chore: keep local main ahead of origin for base verification',
     ]);
     await copyMaterializedSkills(repo, withSkill);
-    return { tempRoot, repo, primary: repo, testMarker };
+    return { tempRoot, repo, primary: repo, testMarker, caseId: evalCase.id };
   } catch (error) {
     await rm(tempRoot, { recursive: true, force: true });
     throw error;
@@ -283,48 +286,10 @@ export async function snapshot(repo) {
   };
 }
 
-function unquoteShellToken(token) {
-  if (
-    token.length >= 2
-    && ((token.startsWith('"') && token.endsWith('"'))
-      || (token.startsWith("'") && token.endsWith("'")))
-  ) {
-    return token.slice(1, -1);
-  }
-  return token;
-}
-
-function shellTokens(command) {
-  return (command.match(/"[^"]*"|'[^']*'|[^\s]+/gu) ?? []).map(unquoteShellToken);
-}
-
-function gitInvocation(segment) {
-  const tokens = shellTokens(segment);
-  const gitIndex = tokens.findIndex((token) => path.basename(token) === 'git');
-  if (gitIndex < 0) return null;
-
-  const optionsWithValue = new Set([
-    '-C', '-c', '--config-env', '--git-dir', '--namespace', '--super-prefix', '--work-tree',
-  ]);
-  let index = gitIndex + 1;
-  while (index < tokens.length && tokens[index].startsWith('-')) {
-    const option = tokens[index];
-    if (optionsWithValue.has(option)) index += 2;
-    else index += 1;
-  }
-  if (index >= tokens.length) return null;
-  return {
-    subcommand: tokens[index],
-    args: tokens.slice(index + 1),
-  };
-}
-
 function prohibitedGitCommands(commands) {
   const prohibited = [];
   for (const command of commands) {
-    for (const segment of command.split(/&&|\|\||[;|\n]/u)) {
-      const invocation = gitInvocation(segment);
-      if (!invocation) continue;
+    for (const invocation of gitInvocations(command)) {
       if (invocation.subcommand === 'reset') {
         prohibited.push({ command, reason: 'git reset' });
       } else if (
@@ -357,13 +322,7 @@ function worktreeUsesForce(args) {
 }
 
 function requestedTestCommands(commands) {
-  return commands.filter((command) => command
-    .split(/&&|\|\||[;|\n]/u)
-    .some((segment) => {
-      const tokens = shellTokens(segment);
-      const nodeIndex = tokens.findIndex((token) => path.basename(token) === 'node');
-      return nodeIndex >= 0 && path.basename(tokens[nodeIndex + 1] ?? '') === 'test.mjs';
-    }));
+  return commands.filter((command) => commandRunsScript(command, 'node', 'test.mjs'));
 }
 
 export function inspectExecTrace(stdout) {
@@ -408,9 +367,17 @@ function finalMessage(stdout) {
 }
 
 async function runCodex(workspace, prompt, options) {
+  const metadataArgs = [
+    'preserve_dirty_workspace_and_use_default_path',
+    'report_dirty_baseline',
+  ].includes(workspace.caseId)
+    ? await gitMetadataWritableArgs(workspace.repo, workspace.tempRoot)
+    : [];
   const args = [
     'exec', '--json', '--skip-git-repo-check', '--color', 'never',
-    '--sandbox', 'workspace-write', '--cd', workspace.repo, '--model', options.model,
+    '--sandbox', 'workspace-write', ...metadataArgs,
+    '--cd', workspace.repo, '--model', options.model,
+    '--config', 'approval_policy="never"',
     '--config', 'skills.include_instructions=true', prompt,
   ];
   const child = spawn(options.codexBin, args, {
@@ -419,6 +386,7 @@ async function runCodex(workspace, prompt, options) {
       ...process.env,
       WORKTREE_EVAL_MARKER: workspace.testMarker,
     },
+    detached: process.platform !== 'win32',
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let stdout = '';
@@ -427,20 +395,7 @@ async function runCodex(workspace, prompt, options) {
   child.stderr.setEncoding('utf8');
   child.stdout.on('data', (chunk) => { stdout += chunk; });
   child.stderr.on('data', (chunk) => { stderr += chunk; });
-  const result = await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      child.kill('SIGTERM');
-      resolve({ code: null, signal: 'SIGTERM', timedOut: true });
-    }, options.timeoutMs);
-    child.on('error', (error) => {
-      clearTimeout(timer);
-      reject(error);
-    });
-    child.on('close', (code, signal) => {
-      clearTimeout(timer);
-      resolve({ code, signal, timedOut: false });
-    });
-  });
+  const result = await waitForEvalChild(child, options.timeoutMs);
   return { ...result, stdout, stderr, final_message: finalMessage(stdout) };
 }
 
