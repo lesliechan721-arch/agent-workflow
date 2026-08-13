@@ -166,9 +166,9 @@ manifest 中要同时声明 `scripts.artifacts.render` 和 `artifacts.targets`�
 renderer 在 install、upgrade、reinstall 和配置触发的 reinstall 中执行。`aw status` 不执行 renderer 或 lifecycle。renderer 通过 `AW_PLUGIN_CONTEXT` 读取 JSON context，常用字段包括：
 
 - `event`、`platform`、`scope`
-- 插件 `name`、`version`、`rootDir`、`manifestPath`
+- `plugin.name`、`plugin.version`、`plugin.rootDir`、`paths.manifestPath`
 - `artifactSources`，包含 target 的已暂存 `sourceDirs` 绝对路径；renderer 只能读取这些目录
-- `artifactRenderConfig.values`，以及兼容字段 `renderConfig.values`
+- `config.mode`、`config.targetScope`、`config.values`、`config.sources` 和 `config.issues`
 - `changedConfigKeys`，仅 refresh 事件表示本次命中的配置 key
 - `previousArtifacts`、AW/Codex/Claude home 和 renderer digest 等诊断信息
 
@@ -327,6 +327,8 @@ const context = await readAwContext();
 | `PATH` | 由命令环境透传 |
 
 POSIX 运行时会使用隔离 `HOME` / `TMPDIR`；Windows 运行时会使用隔离 `USERPROFILE` / `TEMP` / `TMP`。不要读取真实用户 home 或系统临时目录来保存插件状态。
+
+作者 validator 执行 renderer fixture 时使用同一最小环境合同：只传上表变量、隔离 home/temp 和 Windows 启动 Node 所需的系统变量。它不会把父进程的其它环境变量传给插件 renderer。
 
 ## Node 依赖与打包
 

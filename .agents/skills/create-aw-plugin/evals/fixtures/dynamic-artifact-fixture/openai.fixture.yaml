@@ -1,0 +1,6 @@
+interface:
+  display_name: "Dynamic Artifact Fixture"
+  short_description: "修复并验证动态 artifact renderer 的最小评测工作流"
+  default_prompt: "使用 $dynamic-artifact-fixture 验证动态 artifact。"
+policy:
+  allow_implicit_invocation: false

@@ -127,11 +127,15 @@ async function ensureFixtureReadmes(pluginDir: string): Promise<void> {
   }
 }
 
-async function runValidatePlugin(pluginDir: string, extraArgs: string[] = []) {
+async function runValidatePlugin(
+  pluginDir: string,
+  extraArgs: string[] = [],
+  env: NodeJS.ProcessEnv = process.env,
+) {
   await ensureFixtureReadmes(pluginDir);
   return execFileAsync('node', [validatePluginScriptPath(), pluginDir, ...extraArgs], {
     cwd: repoRoot(),
-    env: process.env,
+    env,
     maxBuffer: 10 * 1024 * 1024,
   });
 }
@@ -2170,6 +2174,10 @@ describe('authoring tools', () => {
       path.join(refBase, 'skill-evaluation.md'),
       'utf8',
     );
+    const awScriptsDoc = await fs.readFile(
+      path.join(refBase, 'aw-scripts-config-lifecycle.md'),
+      'utf8',
+    );
     const skillFrontmatterCapabilitiesDoc = await fs.readFile(
       path.join(refBase, 'skill-frontmatter-capabilities.generated.md'),
       'utf8',
@@ -2201,12 +2209,16 @@ describe('authoring tools', () => {
     expect(skillDoc).not.toContain('同步 `.claude-plugin/plugin.json` 和 `.codex-plugin/plugin.json`');
     expect(skillDoc).not.toContain('默认把插件注册到两份 marketplace manifest');
     expect(skillDoc).toContain('不要为了“混合型插件”一次加载全部文档');
+    expect(skillDoc).toContain('按变更面构建');
+    expect(skillDoc).toContain('只有 `evals/**`、`reports/**` 或 test-only 材料变化时默认跳过 build');
+    expect(skillDoc).toContain('版本/catalog、dynamic artifact、eval/review 和 platform scope 的细节按上面的阅读路由');
+    expect(skillDoc).not.toContain('Catalog 分为 `@lesliechan721/aw-plugins-manifest`');
     expect(skillDoc).toContain('`references/skill-design.md`');
     expect(skillDoc).toContain('`references/skill-scripts.md`');
     expect(skillDoc).toContain('`references/skill-evaluation.md`');
     expect(skillDoc).toContain('`references/slash-commands.md`');
     expect(skillDoc).toContain('`--with-mcp` / `--with-apps`');
-    expect(skillDoc).toContain('不在插件 manifest 声明最低 Codex / Claude Code 版本');
+    expect(skillDoc).not.toContain('不在插件 manifest 声明最低 Codex / Claude Code 版本');
     expect(skillDoc).toContain('`--strict-agent-skills`');
     expect(skillDoc).toContain('`references/skill-frontmatter-capabilities.generated.md`');
     expect(skillDoc).not.toContain('`plugin/install`');
@@ -2250,6 +2262,8 @@ describe('authoring tools', () => {
     expect(triggersDoc).toContain('`brand_color`：可选；填写时必须是 `#RRGGBB`');
     expect(triggersDoc).toContain('缺失或空值会被 Codex loader 丢弃');
     expect(triggersDoc).not.toContain('自动格式化 kebab-case');
+    expect(triggersDoc).toContain('release intent；稳定 plugin version 保持不变');
+    expect(triggersDoc).not.toContain('manifest `skills` 字段和 plugin version');
     expect(skillFrontmatterCapabilitiesDoc).toContain('| `when_to_use` | claude |');
     expect(skillFrontmatterCapabilitiesDoc).toContain(
       '| `background` | claude | no | boolean-or-string-or-binary-number | claude-current | true/false/yes/no/on/off/1/0 | case-insensitive | introduced 2.1.218 |',
@@ -2313,6 +2327,8 @@ describe('authoring tools', () => {
     expect(skillEvaluationDoc).toContain('user profile 必须 `runModel: false`');
     expect(skillEvaluationDoc).toContain('本仓库不增加第二个 judge 模型');
     expect(skillEvaluationDoc).not.toContain('当前仓库没有统一的跨平台模型 eval runner');
+    expect(awScriptsDoc).toContain('作者 validator 执行 renderer fixture 时使用同一最小环境合同');
+    expect(awScriptsDoc).toContain('不会把父进程的其它环境变量传给插件 renderer');
     expect(creatorTriggerFixtures).toMatchObject({
       schemaVersion: 1,
       skill: 'create-aw-plugin',
@@ -2368,7 +2384,7 @@ describe('authoring tools', () => {
         document: creatorEvalFixtures,
         skillName: 'create-aw-plugin',
         skillRoot: creatorSkillRoot,
-        caseCount: 4,
+        caseCount: 5,
         idKind: 'string',
       },
       {
@@ -2994,6 +3010,36 @@ describe('authoring tools', () => {
     }, { spaces: 2 });
     await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
       stdout: expect.stringContaining('unknown config key "missingConfigKey"'),
+    });
+  });
+
+  it('validate_plugin.mjs isolates the dynamic artifact renderer fixture environment', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-dynamic-artifact-env-'));
+    tempDirs.push(tempRoot);
+    const { pluginDir } = await writeDynamicArtifactPlugin(tempRoot);
+    const rendererPath = path.join(pluginDir, 'scripts', 'render-artifacts.mjs');
+    const renderer = await fs.readFile(rendererPath, 'utf8');
+    await fs.writeFile(
+      rendererPath,
+      [
+        'if (process.env.AW_VALIDATOR_SECRET_SENTINEL) throw new Error("parent secret leaked");',
+        'if (!process.env.AW_PLUGIN_CONTEXT) throw new Error("missing renderer context");',
+        'if (process.env.AW_PLUGIN_NAME !== "dynamic-authoring-test") throw new Error("missing plugin identity");',
+        'if (process.env.AW_PLUGIN_EVENT !== "install") throw new Error("missing fixture event");',
+        'const context = JSON.parse((await import("node:fs")).readFileSync(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
+        'if (context.config.mode !== "artifact-render") throw new Error("missing config mode");',
+        'if (context.config.values.explorerModel !== "gpt-5.4-mini") throw new Error("missing config values");',
+        'if (context.renderConfig || context.artifactRenderConfig) throw new Error("validator-only context alias");',
+        renderer,
+      ].join('\n'),
+      'utf8',
+    );
+
+    await expect(runValidatePlugin(pluginDir, [], {
+      ...process.env,
+      AW_VALIDATOR_SECRET_SENTINEL: 'must-not-reach-renderer',
+    })).resolves.toMatchObject({
+      stdout: expect.stringContaining('[PASS] All checks passed.'),
     });
   });
 

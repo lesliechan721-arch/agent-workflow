@@ -66,9 +66,10 @@ compatibility: Requires the agent-workflows repository, Node.js 20+, and install
    - 开发和 CI 反复修改时保留源码 manifest 中最近稳定版本；不要把 SemVer 当作编辑计数器
    - Skill `evals/**`、插件 `reports/**` 和 test-only 文件不进入 production bundle；Skill README 和 runtime 文件进入 production bundle
    - 完成条件：production bundle 有变化时存在对应 release intent；只有作者期材料变化时不创建 intent
-6. **构建**
-   - 运行 `pnpm build` 生成本地 staging/runtime bundle
-   - 完成条件：命令 exit 0，目标 staging/runtime artifact 存在，且生成物只由构建产生
+6. **按变更面构建**
+   - 新建插件，或 manifest、README、Skill、runtime 脚本、bundle / 安装合同等 production bundle 输入变化时，运行 `pnpm build` 生成本地 staging/runtime bundle
+   - 只有 `evals/**`、`reports/**` 或 test-only 材料变化时默认跳过 build；用户或隔离环境明确限制 build 时也不强行运行，并把对应 production artifact 列为未验证
+   - 完成条件：需要 build 时命令 exit 0，目标 staging/runtime artifact 存在且只由构建产生；跳过时原因能追溯到 author-only 变更或明确限制
 7. **验证并修复**
    - 运行 `scripts/validate_plugin.mjs`
    - validator 对仓库内插件默认用 `HEAD` 运行 author 门禁；CI 或分支对比用 `--version-base <git-ref>`
@@ -166,33 +167,16 @@ node .agents/skills/create-aw-plugin/scripts/bump_plugin_version.mjs <plugin-nam
 
 ## 跨能力 Gotchas
 
+这里只保留所有作者分支都需要的源码与安全不变量。版本/catalog、dynamic artifact、eval/review 和 platform scope 的细节按上面的阅读路由进入对应 reference。
+
 - `.agents-plugin/plugin.json` 是唯一手动维护的 manifest；不要手写 `.claude-plugin/plugin.json` 或 `.codex-plugin/plugin.json`。
 - 插件名、skill 名使用小写短横线格式，并与目录名一致。
-- `version` 和 `compatibility.aw.minVersion` 使用严格 SemVer。CLI version、catalog version 和 plugin version 是三套身份。
-- production bundle 因插件源码变化而改变时必须创建 release intent；author 门禁检查 intent，release 门禁才要求版本已提高。`check_plugin_versions.mjs` 不负责推断 CLI bundler 自身变化造成的产物变化。
-- build metadata 不提高 SemVer precedence，不能作为插件升级版本。
-- 普通构建的 development receipt 不可发布；beta version 只在临时 staging 中生成，stable 发布才更新源码 manifest。
-- Catalog 分为 `@lesliechan721/aw-plugins-manifest` sidecar 包和 `@lesliechan721/aw-plugins` full catalog 包；sidecar 的发布账本保证 `plugin@version` 跨 beta/latest 不可变。插件作者只维护源码，不手改包内产物。
-- 不在插件 manifest 声明最低 Codex / Claude Code 版本；AW CLI 内置门槛当前为 Codex `>= 0.145.0`、Claude Code `>= 2.1.88`。
-- `marketplace.policy.products` 同时约束 build 裁剪、平台 marketplace、安装/升级门禁和 `pnpm plugin:test` 平台选择。
+- production bundle 因插件源码变化而改变时必须创建 release intent；author 门禁检查 intent，release 门禁才要求版本已提高。
 - `skills`、`mcpServers`、`apps`、`slashCommands` 使用单个 `./` 相对路径，且路径必须存在。
 - 面向 Codex 的静态 skill 必须带 `agents/openai.yaml`，并显式声明 `policy.allow_implicit_invocation`。
 - Skill 的调用方式是 Skill 设计的一部分。Codex 使用 `agents/openai.yaml` 的 `policy.allow_implicit_invocation`；Claude 使用 `SKILL.md` frontmatter 的 `disable-model-invocation` 与 `user-invocable`。AW 原样保留这些字段。
-- Agent Skills portable core 与 Claude/Codex 扩展要明确区分。字段、类型、目标 profile 和版本证据的单一事实源是 `packages/cli/src/utils/skill-frontmatter-capabilities.json`；`scripts/generate_skill_frontmatter_reference.mjs` 把作者字段表生成到 `references/skill-frontmatter-capabilities.generated.md`，不要手改生成表。
-- 默认 validator 按 AW 最低 Claude 2.1.88 profile 校验；`--claude-skill-profile current` 可核对当前官方字段，但不能让高版本字段兼容最低宿主。`--strict-agent-skills` 只接受 portable core。
 - 插件 manifest 不支持 `dependencies`；插件必须独立声明和生成自己的运行时能力。
-- lifecycle 和 renderer 要可重试、幂等；renderer V2 只返回 plan，不直接写 Codex/Claude Skill runtime 或 config。所有静态和动态 Skill 源码根都固定为 `skills/<skill>`；声明 source 时，target `sourceDirs` 必须包含该规范根，overlay 不能进入名为 `evals` 或 `reports` 的目录。动态 UTF-8 覆盖用 `content.files`，最终 Skill 保留非空 `README.md`。
-- Skill 根 `evals/**` 和插件根 `reports/**` 是作者期材料，不进入 production runtime bundle 或 runtime digest；动态 Skill 的行为评测必须消费 materialized 最终制品。Skill README 属于发布内容，不在构建时剥离。
-- 插件和每个 Skill 都必须有非空 README。插件 README 只介绍插件目标、Skill 和使用边界；Skill README 约定记录最近已 release 的正式报告摘要、仓库相对路径和被评估 Git commit。full 报告只进入正式 reports 目录，不自动改变 README。
-- 每次 `plugin:eval` 只选择一个 owner Skill，但 suite 可以用 `skills[]` 和 repo-local `profiles[].plugins[]` 评估跨 Skill、跨插件组合；这不形成 production dependency。
-- 完整 eval 批次固定在项目 `.tmp/agent-workflows/evals/`，包含 run、target、raw、scorecard 和自动汇总。`review:publish` 后，插件正式报告写到 `plugins/<plugin>/reports/<skill>/<batch-id>/`，静态 Skill 写到 `.agents/reports/<skill>/<batch-id>/`；正式目录只含 `report.md` 和 `summary.json`。
-- 每次 eval 必须用 `--batch-name` 新建批次，或用已有输出的 `--batch-id` 追加同一临时批次。`review:publish` 不修改 full 报告对应的 README；release 模式或后续 `review:release` 才登记 README。该登记会改变插件 production source，必须在批次封存后执行并由 release intent 覆盖。
-- 真实模型 eval 默认要求 Full Access 以管理后代进程；`--allow-unmanaged-processes` 只在用户明确确认无法保证后代清理的风险后使用。
-- `plugin:test` 只验证确定性脚本；`plugin:eval` 只提供 Codex 模型证据，真实模型只运行 project profile，user profile 只做确定性 materialization。
-- Codex project 插件必须有 repo-managed surface；含 Apps 或纯 native-only 的插件不能 project 安装。
 - `plugins/marketplace-source.json`、`packages/cli/plugins-dist/`、`~/.aw/` 和平台 manifest 都不是单插件作者手改入口。
-
-字段全集、scope、状态投影、receipt 和分发细节留在对应 reference 与公开文档，不复制进主指令。
 
 ## 验证入口
 

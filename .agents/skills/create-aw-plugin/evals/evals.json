@@ -210,6 +210,46 @@
           "trace 最后运行作者 validator；失败时修复并重跑"
         ]
       }
+    },
+    {
+      "id": "repair-dynamic-artifact-renderer",
+      "prompt": "实际修复 plugins/dynamic-artifact-fixture 的 bundle 作者校验。该 Codex-only 插件声明一个配置驱动的 codex.developerInstructionsBlock，但 renderer 仍输出旧的 ArtifactPlan V1。先读取现有 manifest、renderer 和 Skill，再按 Dynamic Artifacts 路由核对静态 target 与 V2 renderer 合同。只把 renderer 改为从 AW_PLUGIN_CONTEXT 读取 config.values，并返回与 manifest 完全一致的 V2 plan；不要直接写 .codex、.agents、runtime cache、marketplace 或生成目录。该 production 变化使用 add_plugin_change.mjs 创建 patch release intent，并显式传 --id dynamic-artifact-fixture-renderer；稳定 plugin version 保持 0.1.0。当前隔离 workspace 没有完整 build 输入，不要运行 pnpm build，把 production bundle 列为未验证；运行作者 validator，失败时修复并重跑。不要增加其它能力。",
+      "expected_output": "局部修复 dynamic artifact renderer；manifest 静态 target 不变；renderer 返回 V2 ArtifactPlan 并消费 config；存在固定名称的 patch release intent且稳定版本保持 0.1.0；作者 validator 通过，production bundle 明确列为未验证。",
+      "scripted_replies": [],
+      "sandbox": "workspace-write",
+      "review": {
+        "platforms": ["codex"],
+        "clean_session": true,
+        "workspace_unchanged": false,
+        "allowed_workspace_changes": [
+          "plugins/dynamic-artifact-fixture/scripts/render-artifacts.mjs",
+          ".changes/plugins/**"
+        ],
+        "artifacts": [
+          {
+            "path": "plugins/dynamic-artifact-fixture/scripts/render-artifacts.mjs",
+            "exists": true,
+            "contains": ["AW_PLUGIN_CONTEXT", "config.values", "version: 2", "dynamic-instructions", "codex.developerInstructionsBlock"],
+            "not_contains": ["version: 1", ".codex/config.toml", ".agents/skills"]
+          },
+          {
+            "path": ".changes/plugins/dynamic-artifact-fixture-renderer.json",
+            "exists": true,
+            "json": {
+              "schemaVersion": 1,
+              "plugin": "dynamic-artifact-fixture",
+              "bump": "patch"
+            }
+          }
+        ],
+        "checks": [
+          "trace 先读现有 manifest、renderer 和 Skill，再读取 plugin-manifest-spec 的 artifacts.targets 与 aw-scripts-config-lifecycle 的 renderer 章节",
+          "diff 只包含 renderer 和 release intent，没有改变 manifest、Skill、marketplace、生成目录或平台/runtime cache",
+          "renderer 从 AW_PLUGIN_CONTEXT 的 config.values 读取 message，并返回与静态声明一致的 V2 id、platform、target、state 和 refreshKeys",
+          "trace 使用 add_plugin_change.mjs 的固定 --id dynamic-artifact-fixture-renderer 创建 patch intent，plugin version 保持 0.1.0",
+          "trace 因隔离 workspace 缺少完整 build 输入而不运行 pnpm build，把 production bundle 列为未验证，并运行 validate_plugin.mjs 到通过；失败时修复并重跑"
+        ]
+      }
     }
   ]
 }

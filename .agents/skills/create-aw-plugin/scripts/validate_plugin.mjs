@@ -3238,11 +3238,14 @@ function runArtifactRendererFixture(pluginDir, manifest, renderEntry, declaratio
             version: manifest.version,
             rootDir: pluginDir,
           },
-          rootDir: pluginDir,
-          manifestPath: path.join(pluginDir, '.agents-plugin', 'plugin.json'),
-          config: { schema: manifest.config?.schema ?? {}, values },
-          renderConfig: { values },
-          artifactRenderConfig: { values },
+          config: {
+            mode: 'artifact-render',
+            targetScope: scope,
+            schema: manifest.config?.schema ?? {},
+            values,
+            sources: Object.fromEntries(Object.keys(values).map((key) => [key, 'default'])),
+            issues: [],
+          },
           changedConfigKeys: [],
           previousArtifacts: [],
           artifactSources: scopedDeclarations.map((target) => ({
@@ -3251,18 +3254,59 @@ function runArtifactRendererFixture(pluginDir, manifest, renderEntry, declaratio
             sourceDirs: target.sourceDirs.map((sourceDir) =>
               path.join(pluginDir, normalizeRelativePath(sourceDir))),
           })),
-          awHome: path.join(tempRoot, 'aw-home'),
-          codexHome: path.join(tempRoot, 'codex-home'),
-          claudeHome: path.join(tempRoot, 'claude-home'),
+          paths: {
+            awHome: path.join(tempRoot, 'aw-home'),
+            codexHome: path.join(tempRoot, 'codex-home'),
+            claudeHome: path.join(tempRoot, 'claude-home'),
+            manifestPath: path.join(pluginDir, '.agents-plugin', 'plugin.json'),
+            configStores: {
+              user: path.join(tempRoot, 'config-user.json'),
+              project: path.join(tempRoot, 'config-project.json'),
+            },
+          },
+          renderer: {
+            runner: renderEntry.runner,
+            path: renderEntry.path,
+            args: renderEntry.args ?? [],
+            manifestDigest: 'author-validator-fixture',
+            rendererDigest: 'author-validator-fixture',
+          },
         }),
         'utf8',
       );
+      const rendererHome = path.join(tempRoot, 'home');
+      const rendererTemp = path.join(tempRoot, 'tmp');
+      fs.mkdirSync(rendererHome, { recursive: true });
+      fs.mkdirSync(rendererTemp, { recursive: true });
+      const rendererEnv = {
+        AW_HOME: path.join(tempRoot, 'aw-home'),
+        AW_CODEX_HOME: path.join(tempRoot, 'codex-home'),
+        AW_CLAUDE_HOME: path.join(tempRoot, 'claude-home'),
+        PATH: process.env.PATH ?? process.env.Path ?? '',
+        AW_PLUGIN_CONTEXT: contextPath,
+        AW_PLUGIN_ROOT: pluginDir,
+        AW_PLUGIN_NAME: typeof manifest.name === 'string' ? manifest.name : '',
+        AW_PLUGIN_VERSION: typeof manifest.version === 'string' ? manifest.version : '',
+        AW_PLUGIN_EVENT: 'install',
+        AW_PLUGIN_PLATFORM: platform,
+        AW_PLUGIN_SCOPE: scope,
+      };
+      if (process.platform === 'win32') {
+        rendererEnv.USERPROFILE = rendererHome;
+        rendererEnv.TEMP = rendererTemp;
+        rendererEnv.TMP = rendererTemp;
+        if (process.env.SystemRoot) rendererEnv.SystemRoot = process.env.SystemRoot;
+        if (process.env.ComSpec) rendererEnv.ComSpec = process.env.ComSpec;
+      } else {
+        rendererEnv.HOME = rendererHome;
+        rendererEnv.TMPDIR = rendererTemp;
+      }
       const result = spawnSync(
         process.execPath,
         [path.join(pluginDir, renderEntry.path), ...(renderEntry.args ?? [])],
         {
           cwd: pluginDir,
-          env: { ...process.env, AW_PLUGIN_CONTEXT: contextPath },
+          env: rendererEnv,
           encoding: 'utf8',
           timeout: 5000,
           maxBuffer: 1024 * 1024,

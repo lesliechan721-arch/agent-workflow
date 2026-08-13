@@ -19,6 +19,30 @@
         "to": "plugins/code-review"
       },
       {
+        "from": ".agents/skills/create-aw-plugin/evals/fixtures/dynamic-artifact-fixture/plugin.json.fixture",
+        "to": "plugins/dynamic-artifact-fixture/.agents-plugin/plugin.json"
+      },
+      {
+        "from": ".agents/skills/create-aw-plugin/evals/fixtures/dynamic-artifact-fixture/plugin-readme.fixture.md",
+        "to": "plugins/dynamic-artifact-fixture/README.md"
+      },
+      {
+        "from": ".agents/skills/create-aw-plugin/evals/fixtures/dynamic-artifact-fixture/render-artifacts.fixture.mjs",
+        "to": "plugins/dynamic-artifact-fixture/scripts/render-artifacts.mjs"
+      },
+      {
+        "from": ".agents/skills/create-aw-plugin/evals/fixtures/dynamic-artifact-fixture/skill.fixture.md",
+        "to": "plugins/dynamic-artifact-fixture/skills/dynamic-artifact-fixture/SKILL.md"
+      },
+      {
+        "from": ".agents/skills/create-aw-plugin/evals/fixtures/dynamic-artifact-fixture/skill-readme.fixture.md",
+        "to": "plugins/dynamic-artifact-fixture/skills/dynamic-artifact-fixture/README.md"
+      },
+      {
+        "from": ".agents/skills/create-aw-plugin/evals/fixtures/dynamic-artifact-fixture/openai.fixture.yaml",
+        "to": "plugins/dynamic-artifact-fixture/skills/dynamic-artifact-fixture/agents/openai.yaml"
+      },
+      {
         "from": ".agents/skills/create-aw-plugin/evals/AGENTS.md",
         "to": "AGENTS.md"
       }

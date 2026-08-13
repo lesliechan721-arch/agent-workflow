@@ -1,0 +1,50 @@
+{
+  "name": "dynamic-artifact-fixture",
+  "version": "0.1.0",
+  "description": "Fixture for repairing a dynamic artifact renderer.",
+  "compatibility": {
+    "aw": {
+      "minVersion": "0.0.0"
+    }
+  },
+  "skills": "./skills",
+  "marketplace": {
+    "category": "workflow",
+    "strict": true,
+    "policy": {
+      "installation": "AVAILABLE",
+      "authentication": "ON_INSTALL",
+      "products": ["CODEX"]
+    }
+  },
+  "scripts": {
+    "artifacts": {
+      "render": {
+        "runner": "node",
+        "path": "./scripts/render-artifacts.mjs"
+      }
+    }
+  },
+  "config": {
+    "schema": {
+      "message": {
+        "type": "string",
+        "default": "Use repository-local workflow guidance."
+      }
+    }
+  },
+  "artifacts": {
+    "targets": [
+      {
+        "id": "dynamic-instructions",
+        "platform": "codex",
+        "scopes": ["project"],
+        "target": "codex.developerInstructionsBlock",
+        "projectManagedKind": "instruction",
+        "states": ["present"],
+        "refreshKeys": ["message"],
+        "requiresCodexProjectConfig": true
+      }
+    ]
+  }
+}
