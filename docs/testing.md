@@ -1,5 +1,7 @@
 # Testing Guidelines
 
+`pnpm test` 使用默认 Vitest 配置，只运行 unit 和 integration 测试。Performance 和 smoke 测试使用下方的独立命令，不包含在 `pnpm test` 中。
+
 ## Test Layers
 
 | 层 | 命令 | 责任 |
@@ -8,9 +10,22 @@
 | Integration | `pnpm test:integration` | CLI 入口、作者工具、五个写命令和平台 adapter 组合 |
 | Performance | `pnpm test:perf` | 独立性能预算；不进入普通 unit |
 | Performance gate | `pnpm test:perf:gate` | 预算结果和 fast unit wall-time 门禁 |
-| Smoke | `pnpm test:smoke:*` | 真实 build、pack、fetch 和插件脚本产物 |
+| Smoke | 见下方命令表 | 真实 build、pack、fetch 和插件脚本产物 |
 | Plugin test | `pnpm plugin:test <plugin>` | 插件自己的确定性 Node 测试 |
 | Plugin eval | `pnpm plugin:eval <plugin> --skill <skill> --batch-name <name>` | 为一个 owner Skill 通过中央 driver 显式运行模型 eval；不进入普通 CI |
+
+### Coverage and Smoke Commands
+
+| 命令 | 责任 |
+|------|------|
+| `pnpm test:coverage` | 运行默认 unit/integration 测试并生成覆盖率报告 |
+| `pnpm test:smoke` | 运行完整 smoke suite |
+| `pnpm test:smoke:build` | 校验 `pnpm build` 产物 |
+| `pnpm test:smoke:pack:cli` | 校验 CLI tarball 内容 |
+| `pnpm test:smoke:pack:catalog` | 校验 sidecar/full catalog tarball 内容 |
+| `pnpm test:smoke:pack` | 串行校验 CLI 与 catalog tarball |
+| `pnpm test:smoke:fetch` | 校验 sidecar/full catalog fetch、channel/version 选择、current catalog cache 复用，以及不兼容 catalog 直接失败且不下载 full tarball |
+| `pnpm test:smoke:plugin-scripts` | 校验真实插件脚本 staging、依赖闭包和 bundle 布局 |
 
 普通测试使用 synthetic catalog、隔离 home 和 fake native runner。不得调用用户真实 Codex/Claude 配置，也不得修改仓库外状态。
 

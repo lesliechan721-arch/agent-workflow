@@ -148,7 +148,7 @@ make release CLI_VERSION=1.0.0 CATALOG_VERSION=1.2.0
 - `scripts/release/`：版本同步、CLI / catalog tarball 打包、本地安装和发布编排脚本
 - `.agents/skills/create-aw-plugin/`：创建、增量维护并检查插件版本的作者工具
 - `.agents/skills/skill-review/`：只读评审标准静态 Skill 或 AW 插件 Skill，并核对最终 Codex 制品和 eval 证据
-- `docs/`：公开架构、编码约定和测试文档
+- `docs/`：公开维护文档
 - `docs/dev/`：开发过程记录，不作为公开使用文档
 
 `CLAUDE.md` 是指向 `AGENTS.md` 的符号链接，用来让 Codex 和 Claude Code 共用同一份项目指令。
@@ -158,6 +158,7 @@ make release CLI_VERSION=1.0.0 CATALOG_VERSION=1.2.0
 - `docs/architecture.md`：CLI 源码布局和三层分发模型
 - `docs/coding-conventions.md`：TypeScript 风格、边界和关键类型
 - `docs/testing.md`：测试分层和提交前检查
+- `docs/plugin-maintenance.md`：插件作者合同、同步规则和版本门禁
 
 ## 生成物原则
 
