@@ -62,6 +62,7 @@ function createRunner(
       instance.stdin.write('\r');
       await nextTurn();
       const value = await result;
+      frames.push(...instance.frames);
       instance.unmount();
       instance.cleanup();
       return value;
@@ -396,7 +397,8 @@ describe('config set wizard entry', () => {
     const frameText = frames.join('\n');
     expect(frameText).toContain('aw config set --scope user --value-json -- json-string value not-json');
     expect(frameText).not.toContain('"not-json"');
-    expect(frameText).toContain('Invalid JSON value for --value-json');
+    expect(frameText).toContain('操作失败。详细原因请查看退出后的命令结果或调试日志。');
+    expect(frameText).not.toContain('Invalid JSON value for --value-json');
     expect(captured.readStdout()).toBe('');
     expect(captured.readStderr()).toContain('Invalid JSON value for --value-json');
   });
@@ -432,7 +434,8 @@ describe('config set wizard entry', () => {
     const frameText = frames.join('\n');
     expect(frameText).toContain('aw config set --scope user --value-json -- json-number value not-json');
     expect(frameText).not.toContain('aw config set --scope user --value-json -- json-number value null');
-    expect(frameText).toContain('Invalid JSON value for --value-json');
+    expect(frameText).toContain('操作失败。详细原因请查看退出后的命令结果或调试日志。');
+    expect(frameText).not.toContain('Invalid JSON value for --value-json');
     expect(captured.readStdout()).toBe('');
     expect(captured.readStderr()).toContain('Invalid JSON value for --value-json');
   });
@@ -565,7 +568,8 @@ describe('config set wizard entry', () => {
 
     expect(exitCode).toBe(1);
     expect(mocks.applyPluginConfigWrite).not.toHaveBeenCalled();
-    expect(frames.join('\n')).toContain('操作失败：Config "value" must be a number.');
+    expect(frames.join('\n')).toContain('操作失败。详细原因请查看退出后的命令结果或调试日志。');
+    expect(frames.join('\n')).not.toContain('Config "value" must be a number.');
     expect(captured.readStdout()).toBe('');
     expect(captured.readStderr()).toContain('Config "value" must be a number.');
   });

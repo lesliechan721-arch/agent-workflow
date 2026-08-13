@@ -10,6 +10,7 @@ import type {
   ReceiptTargetResult,
   Scope,
 } from '../types.js';
+import type { RebuildActionEvent } from '../output/model.js';
 import { probeAgentVersion } from '../utils/agent-version.js';
 import { createNoopDebugLogger } from '../output/debug-log.js';
 import { createNoopReporter } from '../output/reporter.js';
@@ -62,6 +63,62 @@ export interface RebuildCommandTestHooks {
 }
 
 let rebuildCommandTestHooks: RebuildCommandTestHooks | undefined;
+
+async function emitRebuildActionEvent(
+  runtime: RebuildExecutionContext,
+  event: RebuildActionEvent,
+): Promise<void> {
+  await runtime.reporter.event(event);
+  await runtime.debugLogger.log(event);
+}
+
+async function withRebuildActionEvent<T>(options: {
+  runtime: RebuildExecutionContext;
+  command: RebuildCommand;
+  identity: RebuildTargetIdentity;
+  name: 'operation.lock' | 'operation.release';
+  operation: () => Promise<T>;
+}): Promise<T> {
+  const source = {
+    plugin: options.identity.pluginName,
+    platform: options.identity.platform,
+    scope: options.identity.scope,
+    action: options.command,
+  };
+  const startedAt = Date.now();
+  await emitRebuildActionEvent(options.runtime, {
+    type: 'rebuild:action',
+    source,
+    data: { name: options.name, phase: 'start' },
+  });
+  try {
+    const result = await options.operation();
+    await emitRebuildActionEvent(options.runtime, {
+      type: 'rebuild:action',
+      source,
+      data: {
+        name: options.name,
+        phase: 'success',
+        durationMs: Math.max(0, Date.now() - startedAt),
+      },
+    });
+    return result;
+  } catch (error) {
+    await emitRebuildActionEvent(options.runtime, {
+      type: 'rebuild:action',
+      source,
+      data: {
+        name: options.name,
+        phase: 'failure',
+        durationMs: Math.max(0, Date.now() - startedAt),
+        message: options.name === 'operation.lock'
+          ? '获取操作锁失败。'
+          : '释放操作锁失败。',
+      },
+    });
+    throw error;
+  }
+}
 
 export function setRebuildCommandTestHooksForTests(
   hooks: RebuildCommandTestHooks | undefined,
@@ -327,7 +384,13 @@ export async function runRebuildCommand(options: {
       }
       let operationLock;
       try {
-        operationLock = await activeStore.acquireOperation!(identity);
+        operationLock = await withRebuildActionEvent({
+          runtime,
+          command: options.command,
+          identity,
+          name: 'operation.lock',
+          operation: () => activeStore.acquireOperation!(identity),
+        });
       } catch (error) {
         results.push(failedResult(
           options.command,
@@ -359,6 +422,7 @@ export async function runRebuildCommand(options: {
           target,
           driver: integration.driver,
           activeStore: operationHeldStore,
+          onActionEvent: (event) => emitRebuildActionEvent(runtime, event),
         });
       } catch (error) {
         result = failedResult(
@@ -369,7 +433,13 @@ export async function runRebuildCommand(options: {
       }
       result.actions.unshift({ name: 'operation.lock', status: 'succeeded' });
       try {
-        await releaseRebuildOperationLease(operationLock);
+        await withRebuildActionEvent({
+          runtime,
+          command: options.command,
+          identity,
+          name: 'operation.release',
+          operation: () => releaseRebuildOperationLease(operationLock),
+        });
         result.actions.push({ name: 'operation.release', status: 'succeeded' });
       } catch (error) {
         result = appendOperationReleaseFailure(

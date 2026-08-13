@@ -36,7 +36,12 @@ vi.mock('../../src/utils/project-boundary.js', async (importOriginal) => ({
   ensureProjectPrivateStateIgnore: vi.fn(async () => ({ updated: false })),
 }));
 
-import type { RebuildCommandResult } from '../../src/commands/rebuild-command.js';
+import type {
+  RebuildCommandResult,
+  RebuildCommandRuntime,
+} from '../../src/commands/rebuild-command.js';
+import type { CommandEvent } from '../../src/output/model.js';
+import { createRebuildProgressFeed } from '../../src/output/rebuild-progress.js';
 import type { PlatformName, PluginMeta, ReceiptTargetIdentity, Scope } from '../../src/types.js';
 import {
   applyPluginConfigWrite,
@@ -149,10 +154,10 @@ async function createFixture(
 
 function createReinstallMock(options: {
   fail?: (platform: PlatformName, scope: Scope) => boolean;
-  beforeReturn?: () => Promise<void> | void;
+  beforeReturn?: (runtime: RebuildCommandRuntime) => Promise<void> | void;
 } = {}) {
-  return vi.fn(async (pluginNames, rawOptions) => {
-    await options.beforeReturn?.();
+  return vi.fn(async (pluginNames, rawOptions, runtime: RebuildCommandRuntime) => {
+    await options.beforeReturn?.(runtime);
     const target: ReceiptTargetIdentity = {
       pluginName: pluginNames[0]!,
       platform: rawOptions.platform as PlatformName,
@@ -186,6 +191,49 @@ afterEach(async () => {
 });
 
 describe('config write full reinstall apply', () => {
+  it('passes the active progress reporter into config-triggered reinstall', async () => {
+    const fixture = await createFixture();
+    mocks.visible.add('codex:user');
+    const events: CommandEvent[] = [];
+    const progress = createRebuildProgressFeed();
+    const reinstall = createReinstallMock({
+      beforeReturn: async (runtime) => runtime.reporter?.event({
+        type: 'rebuild:action',
+        source: {
+          plugin: fixture.plugin.manifest.name,
+          platform: 'codex',
+          scope: 'user',
+          action: 'reinstall',
+        },
+        data: { name: 'artifacts.write', phase: 'start' },
+      }),
+    });
+
+    await applyPluginConfigWrite({
+      plugin: fixture.plugin,
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      request: { updates: { mode: 'fast' } },
+      reinstallCommandImpl: reinstall,
+      rebuildRuntime: {
+        reporter: {
+          event: (event) => { events.push(event); progress.addEvent(event); },
+          notice: (notice) => progress.addNotice(notice),
+        },
+      },
+    });
+
+    expect(events).toEqual([expect.objectContaining({
+      type: 'rebuild:action',
+      source: expect.objectContaining({ action: 'reinstall' }),
+    })]);
+    expect(progress.get().current).toEqual({
+      target: 'configurable-plugin · Codex/当前用户',
+      phase: '写入插件文件',
+    });
+  });
+
   it('validates before creating a config store or running reinstall', async () => {
     const fixture = await createFixture();
     const reinstall = createReinstallMock();

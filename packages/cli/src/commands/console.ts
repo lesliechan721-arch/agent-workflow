@@ -2,7 +2,6 @@ import { createElement } from 'react';
 
 import {
   type CliExecutionContext,
-  type CommandNotice,
   type CommandReporter,
   withCommandReporterSession,
 } from './runtime.js';
@@ -38,7 +37,11 @@ import {
   type ResetPluginConfigWriteReceipt,
 } from '../utils/plugin-config-write.js';
 import { Dashboard, type DashboardResult } from '../tui/dashboard.js';
-import { formatNotice } from '../output/reporter.js';
+import {
+  createRebuildProgressFeed,
+  type RebuildProgressFeed,
+  type RebuildProgressSnapshot,
+} from '../output/rebuild-progress.js';
 
 export type DashboardWriteAction =
   | 'install'
@@ -64,6 +67,9 @@ export interface DashboardController {
   cwd: string;
   getNotices?: () => string[];
   subscribeNotices?: (listener: (notices: string[]) => void) => () => void;
+  getProgress?: () => RebuildProgressSnapshot;
+  subscribeProgress?: (listener: (progress: RebuildProgressSnapshot) => void) => () => void;
+  resetProgress?: () => void;
   load: () => Promise<ConsoleItemsLoadResult>;
   execute: (
     action: DashboardWriteAction,
@@ -82,31 +88,6 @@ export interface DashboardController {
     item: LiveConsoleItem,
     location: DashboardConfigLocation,
   ) => Promise<ResetPluginConfigWriteReceipt>;
-}
-
-interface DashboardNoticeFeed {
-  add: (notice: CommandNotice) => void;
-  get: () => string[];
-  subscribe: (listener: (notices: string[]) => void) => () => void;
-}
-
-function createDashboardNoticeFeed(limit = 20): DashboardNoticeFeed {
-  let notices: string[] = [];
-  const listeners = new Set<(value: string[]) => void>();
-  return {
-    add(notice) {
-      const line = formatNotice(notice);
-      if (notices.includes(line)) return;
-      notices = [...notices, line].slice(-limit);
-      for (const listener of listeners) listener(notices);
-    },
-    get: () => notices,
-    subscribe(listener) {
-      listeners.add(listener);
-      listener(notices);
-      return () => listeners.delete(listener);
-    },
-  };
 }
 
 export function stateLabel(state: LiveStatusState): string {
@@ -138,13 +119,18 @@ export function dashboardActions(
 
 export function createDashboardController(
   context: CliExecutionContext,
-  noticeFeed?: DashboardNoticeFeed,
+  progressFeed?: RebuildProgressFeed,
 ): DashboardController {
   return {
     cwd: context.cwd,
-    ...(noticeFeed ? {
-      getNotices: noticeFeed.get,
-      subscribeNotices: noticeFeed.subscribe,
+    ...(progressFeed ? {
+      getNotices: () => progressFeed.get().messages,
+      subscribeNotices: (listener: (notices: string[]) => void) => progressFeed.subscribe(
+        (progress) => listener(progress.messages),
+      ),
+      getProgress: progressFeed.get,
+      subscribeProgress: progressFeed.subscribe,
+      resetProgress: progressFeed.clearCurrent,
     } : {}),
     load: () => loadConsoleItemsResult({
       cwd: context.cwd,
@@ -233,11 +219,11 @@ export function formatInteractiveConsoleUnavailableMessage(
 }
 
 export async function runConsoleController(context: CliExecutionContext): Promise<number> {
-  const noticeFeed = createDashboardNoticeFeed();
-  const controller = createDashboardController(context, noticeFeed);
+  const progressFeed = createRebuildProgressFeed();
+  const controller = createDashboardController(context, progressFeed);
   const sessionReporter: CommandReporter = {
-    event: () => {},
-    notice: (notice) => noticeFeed.add(notice),
+    event: (event) => progressFeed.addEvent(event),
+    notice: (notice) => progressFeed.addNotice(notice),
   };
   const result = await withCommandReporterSession(context.reporter, sessionReporter, () =>
     context.tuiRunner.launch<DashboardResult>({

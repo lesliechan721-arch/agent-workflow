@@ -1257,6 +1257,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           cwd: context.cwd,
           env: context.env,
           nativeCliRunner: context.nativeCliRunner,
+          rebuildRuntime: context,
           catalogChannel: rawOptions.catalogChannel,
           catalogVersion: rawOptions.catalogVersion,
           request: {
@@ -1410,6 +1411,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           cwd: context.cwd,
           env: context.env,
           nativeCliRunner: context.nativeCliRunner,
+          rebuildRuntime: context,
           catalogChannel: rawOptions.catalogChannel,
           catalogVersion: rawOptions.catalogVersion,
           request: {
@@ -1537,6 +1539,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           cwd: context.cwd,
           env: context.env,
           nativeCliRunner: context.nativeCliRunner,
+          rebuildRuntime: context,
           catalogChannel: rawOptions.catalogChannel,
           catalogVersion: rawOptions.catalogVersion,
           ...(error ? { pluginError: error } : {}),

@@ -13,13 +13,15 @@ aw install git -p both
 aw status
 ```
 
-直接运行 `aw` 会进入插件管理控制台，从同一个入口完成安装、升级、配置、卸载、清理、重新应用配置和状态排查。`install`、`uninstall`、`upgrade`、`config`、`status`、`cleanup`、`reinstall` 这些子命令保留给脚本化调用；非 TTY 或 CI 环境下直接运行 `aw` 会确定性失败，并提示可复制命令和 `--json` 输出入口。
+直接运行 `aw` 会进入响应式 Ink 插件管理仪表盘，从同一个入口完成安装、升级、配置、卸载、清理、重新应用配置和状态排查。宽终端同时显示插件、操作和目标/状态；窄终端退化为单栏页面，空间不足时提示调整终端尺寸。状态位于目标详情层，写操作位于操作层，配置位于插件的配置页。使用方向键或 `j/k` 移动，`Tab` 或 `h/l` 切换区域，`Enter` 选择，`Esc` 或 `b` 返回，`r` 刷新，`q` 退出；输出较长时使用 `PgUp/PgDn`。
+
+`install`、`upgrade`、`reinstall`、`uninstall`、`cleanup` 五个写命令，以及缺少必要参数的 `config` 命令，只在真实 TTY、human 输出且非 CI 时进入轻量向导。参数完整时直接执行；CI、非 TTY 和 `--json` 始终使用确定性脚本路径。向导开始运行前可以取消；写入开始后的 `Ctrl-C` 不终止正在进行的写入，而是在当前操作完成后退出。
 
 ```bash
 aw
 ```
 
-脚本化写命令默认输出只展示用户能理解的完成结果和下一步；需要机器合同时加 `--json`，stdout 会是单一 JSON receipt。`--verbose` 展开诊断到 stderr，`--debug` 生成脱敏 debug log 并隐含 verbose。五个写命令的 receipt 使用 schema v3。`aw status --json` 使用 schema v3，只按现场 ownership 和平台组件报告 `present`、`absent`、`partial`、`error`。配置读写合同也使用 config v3。
+脚本化写命令默认输出只展示用户能理解的完成结果和下一步；需要机器合同时加 `--json`，stdout 会是单一 JSON receipt。`--verbose` 展开诊断到 stderr，`--debug` 生成脱敏 debug log 并隐含 verbose。仪表盘和向导在运行页显示当前 target、真实 rebuild 阶段、已用时和最近消息，不显示百分比。该结构化进度是内部 human/TUI 事件通道，不进入 receipt，也不改变 JSON 合同；普通 human 模式不会额外打印事件，verbose 事件只写 stderr。五个写命令的 receipt 使用 schema v3。`aw status --json` 使用 schema v3，只按现场 ownership 和平台组件报告 `present`、`absent`、`partial`、`error`。配置读写合同也使用 config v3。
 
 `install`、`uninstall`、`upgrade` 默认写入 user scope；需要项目级产物时再显式传 `-s project`。Codex project scope 不会启用用户级 native plugin，而是写当前仓库的 `.agents/skills`、`.codex/config.toml`、`.codex/hooks.json`、`.codex/rules/` 和 `.codex/agents/`。这些文件中的 AW owner marker 提供写入和清理边界。
 

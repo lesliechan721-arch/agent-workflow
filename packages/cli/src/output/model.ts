@@ -11,6 +11,8 @@ import type {
   NextStepInstruction,
   NextStepsPayloadBoundary,
   PlatformName,
+  RebuildActionEvent as SharedRebuildActionEvent,
+  RebuildActionEventData as SharedRebuildActionEventData,
   Scope,
 } from '../types.js';
 import { getAgentVersionRequirement } from '../utils/agent-version.js';
@@ -83,6 +85,9 @@ export interface CatalogResolutionEventData {
   reasonCode?: string;
 }
 
+export type RebuildActionEventData = SharedRebuildActionEventData;
+export type RebuildActionEvent = SharedRebuildActionEvent;
+
 export type CommandEventType =
   | 'native:marketplace'
   | 'native:rpc'
@@ -92,6 +97,7 @@ export type CommandEventType =
 
 export type CommandEventData =
   | Record<string, unknown>
+  | RebuildActionEventData
   | NativeMarketplaceEventData
   | NativeRpcEventData
   | NativePostCheckEventData

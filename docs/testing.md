@@ -72,6 +72,27 @@ status 测试只允许 `present`、`absent`、`partial`、`error`。至少覆盖
 
 `status --json` 使用 `schemaVersion: 3`。stdout 只包含一个 JSON 对象；verbose/debug 和错误说明写 stderr。
 
+### TUI and structured progress
+
+TUI 单元和入口测试必须使用真实 Ink mount，并覆盖以下合同：
+
+- 裸 `aw` 的宽/窄 viewport 退化、区域/单页导航和终端尺寸生命周期
+- 写命令与 config 缺参向导的确认、运行前取消，以及运行中 `Ctrl-C` 完成后退出
+- `rebuild:action` 的 start/终态配对、顺序、duration、source target 和失败后的 recovery/cleanup
+- 多 target 更新当前 target 时不串线；当前阶段来自真实动作，不显示百分比
+- 最近 8 条可见消息、50 条内存上限、notice/warning/failure 和结果页保留
+- sensitive config、event message 和 native raw invocation/data 不进入 frame、stdout 或 stderr
+- session reporter 在 TUI 结束后恢复；debug logger 对每个事件仍只接收一次
+
+相关定向命令：
+
+```bash
+pnpm --filter @lesliechan721/aw exec vitest run tests/unit/rebuild-operations.test.ts tests/unit/rebuild-progress.test.ts tests/unit/console.test.tsx tests/unit/tui-real-progress.test.tsx tests/unit/wizard.test.tsx tests/unit/wizard-entry.test.tsx
+pnpm --filter @lesliechan721/aw exec vitest run tests/integration/write-commands.test.ts tests/integration/cli-entry-json-harness.test.ts
+```
+
+JSON harness 必须继续断言 v3 schema、单一 stdout 对象和 stderr 诊断边界。测试使用隔离 home、synthetic catalog 和 fake native runner，不调用真实用户平台命令。
+
 ### Config
 
 配置测试覆盖 manifest default、user、project shared 和 project local 合并。project repo-visible artifact 不得受 user、project local 或路径型私有值影响。

@@ -1,7 +1,7 @@
 import { createElement } from 'react';
 
 import type { PlatformSelection, PluginConfigSchemaField, Scope } from '../types.js';
-import { formatNotice } from '../output/reporter.js';
+import { createRebuildProgressFeed } from '../output/rebuild-progress.js';
 import { CommandWizard } from '../tui/wizard.js';
 import type { LiveConsoleItem, LiveStatusTarget } from './status.js';
 import {
@@ -84,21 +84,21 @@ export async function runCommandWizard<T>(
   context: CliExecutionContext,
   request: CommandWizardRequest<T>,
 ): Promise<CommandWizardResult<T>> {
-  const notices: string[] = [];
+  const progress = createRebuildProgressFeed();
   const sessionReporter: CommandReporter = {
-    event: () => {},
-    notice: (notice) => {
-      const line = formatNotice(notice);
-      if (!notices.includes(line)) notices.push(line);
-    },
+    event: (event) => progress.addEvent(event),
+    notice: (notice) => progress.addNotice(notice),
   };
   const result = await withCommandReporterSession(context.reporter, sessionReporter, () =>
     context.tuiRunner.launch<CommandWizardResult<T>>({
       input: context.stdin,
       output: context.tuiOutput,
-      render: (complete) => createElement(CommandWizard<T>, { request, onComplete: complete }),
+      render: (complete) => createElement(CommandWizard<T>, {
+        request,
+        progress,
+        onComplete: complete,
+      }),
     }));
-  for (const notice of notices) context.io.stderr(`${notice}\n`);
   if (result.error !== undefined) throw result.error;
   return result;
 }

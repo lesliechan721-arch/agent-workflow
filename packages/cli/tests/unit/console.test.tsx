@@ -12,6 +12,7 @@ import {
   emitCommandEvent,
   emitCommandNotice,
 } from '../../src/commands/runtime.js';
+import { createRebuildProgressFeed } from '../../src/output/rebuild-progress.js';
 import type { ConsoleItemsLoadResult, LiveConsoleItem } from '../../src/commands/status.js';
 import {
   Dashboard,
@@ -152,6 +153,26 @@ function frameRows(instance: ReturnType<typeof render>): number {
   return instance.lastFrame()?.split('\n').length ?? 0;
 }
 
+const unsafeTuiText = [
+  'codex --version',
+  'claude plugins list',
+  '/Users/alice/Private Project/private.json',
+  'C:\\Users\\alice\\Private Project\\private.json',
+  '\\\\server\\Private Share\\private.json',
+  'sk-proj-123456789',
+  'Authorization: Bearer abcdef',
+  'Bearer qwerty',
+  'password=hunter2',
+].join(' | ');
+
+function expectTuiTextProjected(frame: string): void {
+  for (const fragment of [
+    'codex --version', 'claude plugins', '/Users/alice', 'Project/private.json',
+    'C:\\Users', '\\\\server', 'Private Share', 'sk-proj', 'Authorization',
+    'Bearer', 'hunter2',
+  ]) expect(frame).not.toContain(fragment);
+}
+
 async function writeInput(
   instance: ReturnType<typeof render>,
   ...inputs: string[]
@@ -203,6 +224,7 @@ function withConfigController(value: ConsoleItemsLoadResult): DashboardControlle
       target: { pluginName: 'demo', platform: 'codex', scope: 'user' },
       action: 'reinstall',
       state: 'completed',
+      message: unsafeTuiText,
     }],
     warnings: [],
   });
@@ -345,6 +367,50 @@ describe('dashboard rendering and input', () => {
     expect(small.lastFrame()).toContain('终端空间不足');
   });
 
+  it('projects production status component identities without cwd or path labels', async () => {
+    const value = loaded([item('production-shape', 'partial')]);
+    const target = value.items[0]!.targets[0]!;
+    target.target.cwd = '/Users/alice/Private Project';
+    target.components = [
+      {
+        kind: 'managed-block',
+        artifactKey: 'settings',
+        label: '/Users/alice/Private Project/private.json',
+        state: 'present',
+      },
+      {
+        kind: 'owned-text-file',
+        artifactKey: 'commands',
+        label: 'C:\\Users\\alice\\Private Project\\private.json',
+        state: 'partial',
+      },
+      {
+        kind: 'skill-directory',
+        artifactKey: 'skill',
+        label: '\\\\server\\Private Share\\private.json',
+        state: 'error',
+        error: 'private diagnostic',
+      },
+    ];
+    const controller = fakeController(value);
+    controller.cwd = 'C:\\Users\\alice\\Private Project';
+    const three = render(<Dashboard controller={controller} onComplete={() => undefined} size={{ columns: 110, rows: 18 }} />);
+    const single = render(<Dashboard controller={controller} onComplete={() => undefined} size={{ columns: 80, rows: 18 }} />);
+    await nextTurn();
+    await nextTurn();
+    await writeInput(single, '\r');
+
+    for (const frame of [three.lastFrame() ?? '', single.lastFrame() ?? '']) {
+      expect(frame).toContain('当前项目');
+      expect(frame).toContain('managed-block · ●');
+      expect(frame).toContain('owned-text-file · ◐');
+      expect(frame).toContain('skill-directory · ×');
+      for (const fragment of ['alice', 'Private Project', 'Private Share', 'private', 'private diagnostic']) {
+        expect(frame).not.toContain(fragment);
+      }
+    }
+  });
+
   it('navigates plugin, target, action and cancels an inline destructive confirmation', async () => {
     const controller = fakeController(loaded([item('demo', 'present')]));
     const instance = render(<Dashboard controller={controller} onComplete={() => undefined} size={{ columns: 80, rows: 18 }} />);
@@ -378,10 +444,13 @@ describe('dashboard rendering and input', () => {
     expect(instance.lastFrame()).toContain('0s');
     write.resolve({
       overallState: 'succeeded',
-      targetResults: Array.from({ length: 10 }, () => ({
+      targetResults: Array.from({ length: 10 }, (_, index) => ({
         target: { pluginName: 'demo', platform: 'codex', scope: 'user' },
         action: 'uninstall',
         state: 'completed' as const,
+        ...(index === 9 ? {
+          message: unsafeTuiText,
+        } : {}),
       })),
       warnings: [],
     });
@@ -392,10 +461,11 @@ describe('dashboard rendering and input', () => {
     expect(controller.load).toHaveBeenCalledTimes(2);
     expect(instance.lastFrame()).toContain('结果：succeeded');
     expect(instance.lastFrame()).toContain('↓ 还有');
+    expectTuiTextProjected(instance.frames.join('\n'));
     expect(frameRows(instance)).toBeLessThanOrEqual(16);
   });
 
-  it('scrolls through all write warnings in a 60x16 frame', async () => {
+  it('projects write warnings to one fixed summary in a 60x16 frame', async () => {
     const value = loaded([item('demo', 'absent')]);
     const controller = fakeController(value);
     controller.execute = vi.fn().mockResolvedValue({
@@ -409,14 +479,42 @@ describe('dashboard rendering and input', () => {
     await nextTurn();
     await writeInput(instance, ...Array.from({ length: 8 }, () => '\u001B[6~'));
 
-    expect(instance.lastFrame()).toContain('警告：warning-11');
+    expect(instance.lastFrame()).toContain('警告：收到 12 条警告');
     expect(instance.lastFrame()).toContain('PgUp/PgDn 输出');
+    expect(frameRows(instance)).toBeLessThanOrEqual(16);
+  });
+
+  it('scrolls dashboard progress from the first to last entry with at most eight messages', async () => {
+    const controller = fakeController(loaded([item('demo', 'absent')]));
+    const progress = createRebuildProgressFeed();
+    controller.getProgress = progress.get;
+    controller.subscribeProgress = progress.subscribe;
+    const instance = render(<Dashboard controller={controller} onComplete={() => undefined} size={{ columns: 60, rows: 16 }} />);
+    await nextTurn();
+    for (let index = 0; index < 12; index += 1) {
+      progress.addNotice({
+        level: 'notice',
+        message: unsafeTuiText,
+        source: { plugin: `notice-${index}`, platform: 'codex', scope: 'user' },
+      });
+    }
+    await nextTurn();
+    await nextTurn();
+    await writeInput(instance, '\u001B[6~', '\u001B[6~');
+
+    expect(instance.lastFrame()).toContain('notice-11');
+    expect((instance.lastFrame()?.match(/收到通知/g) ?? []).length).toBeLessThanOrEqual(8);
+    await writeInput(instance, '\u001B[5~', '\u001B[5~');
+    expect(instance.lastFrame()).toContain('notice-0');
+    expect((instance.lastFrame()?.match(/收到通知/g) ?? []).length).toBeLessThanOrEqual(8);
+    expectTuiTextProjected(instance.frames.join('\n'));
     expect(frameRows(instance)).toBeLessThanOrEqual(16);
   });
 
   it('scrolls to a late component error in target details', async () => {
     const targetItem = item('details', 'partial');
     targetItem.targets[0]!.components = Array.from({ length: 14 }, (_, index) => ({
+      kind: 'owned-text-file' as const,
       artifactKey: `component-${index}`,
       label: index === 13 ? 'Late component error' : `Component ${index}`,
       state: index === 13 ? 'error' as const : 'present' as const,
@@ -426,13 +524,15 @@ describe('dashboard rendering and input', () => {
     await nextTurn();
     await writeInput(instance, '\r', ...Array.from({ length: 10 }, () => ']'));
 
-    expect(instance.lastFrame()).toContain('Late component error · late failure');
+    expect(instance.lastFrame()).toContain('owned-text-file · ×');
+    expect(instance.lastFrame()).not.toContain('Late component error');
     expect(instance.lastFrame()).toContain('[/] 详情');
   });
 
   it('resets detail scroll when refresh replaces the target at the same index', async () => {
     const oldItem = item('identity', 'present');
     oldItem.targets[0]!.components = Array.from({ length: 20 }, (_, index) => ({
+      kind: 'owned-text-file' as const,
       artifactKey: `old-component-${index}`,
       label: index === 19 ? '旧尾部组件' : `旧组件 ${index}`,
       state: 'present' as const,
@@ -440,6 +540,7 @@ describe('dashboard rendering and input', () => {
     const refreshedItem = item('identity', 'present');
     refreshedItem.targets[0]!.target.platform = 'claude';
     refreshedItem.targets[0]!.components = Array.from({ length: 20 }, (_, index) => ({
+      kind: 'owned-text-file' as const,
       artifactKey: `new-component-${index}`,
       label: index === 19 ? '新尾部组件' : `新组件 ${index}`,
       state: 'present' as const,
@@ -451,7 +552,8 @@ describe('dashboard rendering and input', () => {
     const instance = render(<Dashboard controller={controller} onComplete={() => undefined} size={{ columns: 60, rows: 16 }} />);
     await nextTurn();
     await writeInput(instance, '\r', ...Array.from({ length: 5 }, () => ']'));
-    expect(instance.lastFrame()).toContain('旧尾部组件');
+    expect(instance.lastFrame()).toContain('owned-text-file · ●');
+    expect(instance.lastFrame()).not.toContain('旧尾部组件');
 
     await writeInput(instance, 'r');
     await nextTurn();
@@ -460,21 +562,22 @@ describe('dashboard rendering and input', () => {
     expect(controller.load).toHaveBeenCalledTimes(2);
     expect(instance.lastFrame()).toContain('目标：claude/user');
     expect(instance.lastFrame()).toContain('状态：● 已就绪');
-    expect(instance.lastFrame()).toContain('组件：● 新组件 0');
+    expect(instance.lastFrame()).toContain('owned-text-file · ●');
     expect(instance.lastFrame()).not.toContain('新尾部组件');
   });
 
   it('recovers after a write failure and still performs automatic refresh', async () => {
     const value = loaded([item('demo', 'absent')]);
     const controller = fakeController(value);
-    controller.execute = vi.fn().mockRejectedValue(new Error('write broke'));
+    controller.execute = vi.fn().mockRejectedValue(new Error(unsafeTuiText));
     const instance = render(<Dashboard controller={controller} onComplete={() => undefined} size={{ columns: 60, rows: 16 }} />);
     await nextTurn();
     await writeInput(instance, '\r', '\r', '\r');
     await nextTurn();
 
     expect(controller.load).toHaveBeenCalledTimes(2);
-    expect(instance.lastFrame()).toContain('失败：write broke');
+    expect(instance.lastFrame()).toContain('操作失败。详细原因请查看退出后的命令结果或调试日志。');
+    expectTuiTextProjected(instance.frames.join('\n'));
     expect(instance.lastFrame()).toContain('下一步');
   });
 
@@ -515,6 +618,7 @@ describe('dashboard rendering and input', () => {
       { updates: { token: 'new-secret' } },
     );
     expect(instance.frames.join('\n')).not.toContain('new-secret');
+    expectTuiTextProjected(instance.frames.join('\n'));
   });
 
   it('clears dirty state when save succeeds but config and status refresh fail', async () => {
@@ -543,14 +647,15 @@ describe('dashboard rendering and input', () => {
 
   it('keeps a failed save dirty and asks before leaving', async () => {
     const controller = withConfigController(loaded([item('demo', 'present')]));
-    vi.mocked(controller.saveConfig).mockRejectedValueOnce(new Error('disk full'));
+    vi.mocked(controller.saveConfig).mockRejectedValueOnce(new Error(unsafeTuiText));
     const instance = render(<Dashboard controller={controller} onComplete={() => undefined} size={{ columns: 60, rows: 16 }} />);
     await nextTurn();
     await writeInput(instance, '\r', '\r', '\u001B[B', '\u001B[B', '\u001B[B', '\u001B[B', '\r');
     await nextTurn();
     await writeInput(instance, 'd', 's');
     await nextTurn();
-    expect(instance.lastFrame()).toContain('保存失败：disk full');
+    expect(instance.lastFrame()).toContain('配置保存失败。详细原因请查看退出后的命令结果或调试日志。');
+    expectTuiTextProjected(instance.frames.join('\n'));
     await writeInput(instance, 'b');
     expect(instance.lastFrame()).toContain('有未保存变更');
   });
@@ -698,28 +803,32 @@ describe('dashboard rendering and input', () => {
     );
   });
 
-  it('scrolls to the last config apply result', async () => {
+  it('scrolls through projected config progress while showing at most eight messages', async () => {
     const controller = withConfigController(loaded([item('demo', 'present')]));
-    controller.saveConfig = vi.fn().mockResolvedValue({
-      overallState: 'succeeded',
-      targetResults: Array.from({ length: 10 }, (_, index) => ({
-        target: { pluginName: 'demo', platform: 'codex' as const, scope: 'user' as const },
-        action: 'reinstall' as const,
-        state: 'completed' as const,
-        message: index === 9 ? 'final-apply-result' : `apply-${index}`,
-      })),
-      warnings: [],
-    });
+    const progress = createRebuildProgressFeed();
+    controller.getProgress = progress.get;
+    controller.subscribeProgress = progress.subscribe;
     const instance = render(<Dashboard controller={controller} onComplete={() => undefined} size={{ columns: 60, rows: 16 }} />);
     await nextTurn();
     await writeInput(instance, '\r', '\r', '\u001B[B', '\u001B[B', '\u001B[B', '\u001B[B', '\r');
     await nextTurn();
-    await writeInput(instance, 'd', 's');
+    for (let index = 0; index < 12; index += 1) {
+      progress.addNotice({
+        level: 'notice',
+        message: unsafeTuiText,
+        source: { plugin: `notice-${index}`, platform: 'codex', scope: 'user' },
+      });
+    }
     await nextTurn();
     await nextTurn();
-    await writeInput(instance, ...Array.from({ length: 15 }, () => '\u001B[6~'));
+    await writeInput(instance, '\u001B[6~', '\u001B[6~');
 
-    expect(instance.lastFrame()).toContain('final-apply-result');
+    expect(instance.lastFrame()).toContain('notice-11');
+    expect((instance.lastFrame()?.match(/收到通知/g) ?? [])).toHaveLength(6);
+    await writeInput(instance, '\u001B[5~', '\u001B[5~');
+    expect(instance.lastFrame()).toContain('notice-0');
+    expect((instance.lastFrame()?.match(/收到通知/g) ?? []).length).toBeLessThanOrEqual(8);
+    expectTuiTextProjected(instance.frames.join('\n'));
     expect(instance.lastFrame()).toContain('PgUp/PgDn 消息');
   });
 
@@ -727,6 +836,7 @@ describe('dashboard rendering and input', () => {
     const manyItems = Array.from({ length: 18 }, (_, index) => item(`plugin-${index}`, 'present'));
     const selectedTarget = manyItems[0]!.targets[0]!;
     selectedTarget.components = Array.from({ length: 20 }, (_, index) => ({
+      kind: 'owned-text-file' as const,
       artifactKey: `component-${index}`,
       label: `Component ${index}`,
       state: 'present' as const,
@@ -800,7 +910,21 @@ describe('dashboard rendering and input', () => {
     const debugLog = vi.fn();
     mocks.installWriteCommand.mockImplementationOnce(async (_plugins, _options, context) => {
       await emitCommandEvent(context, { type: 'lifecycle:verbose', message: 'verbose event' });
-      await emitCommandNotice(context, { level: 'notice', message: '生命周期已完成' });
+      await emitCommandEvent(context, {
+        type: 'rebuild:action',
+        source: { plugin: 'demo', platform: 'codex', scope: 'user', action: 'install' },
+        data: { name: 'artifacts.write', phase: 'start' },
+      });
+      await emitCommandEvent(context, {
+        type: 'rebuild:action',
+        source: { plugin: 'demo', platform: 'codex', scope: 'user', action: 'install' },
+        data: { name: 'artifacts.write', phase: 'success', durationMs: 4 },
+      });
+      await emitCommandNotice(context, {
+        level: 'notice',
+        message: unsafeTuiText,
+        source: { plugin: 'demo', platform: 'codex', scope: 'user' },
+      });
       return { overallState: 'succeeded', targetResults: [], warnings: [] };
     });
     const launch = vi.fn(async (request) => {
@@ -809,7 +933,9 @@ describe('dashboard rendering and input', () => {
       await nextTurn();
       await writeInput(instance, '\r', '\r', '\r');
       await nextTurn();
-      expect(instance.lastFrame()).toContain('生命周期已完成');
+      expect(instance.lastFrame()).toContain('通知：Codex / demo / 当前用户：收到通知');
+      expectTuiTextProjected(instance.frames.join('\n'));
+      expect(instance.lastFrame()).toContain('demo · Codex/当前用户 · 写入插件文件');
       expect(instance.lastFrame()).toContain('结果：succeeded');
       return completed;
     });
@@ -825,6 +951,7 @@ describe('dashboard rendering and input', () => {
     expect(stdout).not.toHaveBeenCalled();
     expect(stderr).not.toHaveBeenCalled();
     expect(debugLog).toHaveBeenCalledWith(expect.objectContaining({ type: 'lifecycle:verbose' }));
+    expect(debugLog).toHaveBeenCalledWith(expect.objectContaining({ type: 'rebuild:action' }));
     expect(debugLog).toHaveBeenCalledWith(expect.objectContaining({ type: 'notice:notice' }));
     await emitCommandNotice(context, { level: 'notice', message: '会话后通知' });
     expect(stdout).toHaveBeenCalledWith(expect.stringContaining('会话后通知'));

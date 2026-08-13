@@ -21,6 +21,9 @@ import type {
   LiveStatusTarget,
 } from '../commands/status.js';
 import type { ReceiptTargetResult } from '../types.js';
+import {
+  type RebuildProgressSnapshot,
+} from '../output/rebuild-progress.js';
 import { resolveTuiSizePolicy } from './layout.js';
 import { tuiTheme } from './theme.js';
 
@@ -233,8 +236,14 @@ function itemState(item: LiveConsoleItem): LiveStatusState {
     ?? 'absent';
 }
 
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+function receiptTargetLabel(entry: ReceiptTargetResult): string {
+  const platform = entry.target.platform === 'codex'
+    ? 'codex'
+    : entry.target.platform === 'claude' ? 'claude' : 'unknown';
+  const scope = entry.target.scope === 'user'
+    ? 'user'
+    : entry.target.scope === 'project' ? 'project' : 'unknown';
+  return `${platform}/${scope}`;
 }
 
 function receiptLines(result: {
@@ -243,18 +252,25 @@ function receiptLines(result: {
   warnings?: Array<string | { message?: string }>;
   applySkippedReason?: string;
 }): string[] {
-  const lines = [`结果：${result.overallState}`];
+  const overallState = result.overallState === 'succeeded' || result.overallState === 'failed'
+    ? result.overallState
+    : 'unknown';
+  const lines = [`结果：${overallState}`];
   for (const entry of result.targetResults) {
-    lines.push(
-      `${entry.target.platform}/${entry.target.scope}: ${entry.state}`
-      + (entry.message ? ` · ${entry.message}` : '')
-      + (entry.errorCode ? ` · ${entry.errorCode}` : ''),
-    );
+    const state = entry.state === 'completed' || entry.state === 'failed' ? entry.state : 'unknown';
+    lines.push(`${receiptTargetLabel(entry)}: ${state}`);
   }
-  for (const warning of result.warnings ?? []) {
-    lines.push(`警告：${typeof warning === 'string' ? warning : warning.message ?? String(warning)}`);
+  if ((result.warnings?.length ?? 0) > 0) {
+    lines.push(`警告：收到 ${result.warnings!.length} 条警告，详情请查看退出后的命令结果或调试日志。`);
   }
-  if (result.applySkippedReason) lines.push(`应用：${result.applySkippedReason}`);
+  const applyLabels: Record<string, string> = {
+    noVisibleTarget: '没有可重装的当前目标。',
+    currentCatalogUnavailable: '当前 catalog 不可用。',
+    noConfigChange: '配置没有变化。',
+  };
+  if (result.applySkippedReason && applyLabels[result.applySkippedReason]) {
+    lines.push(`应用：${applyLabels[result.applySkippedReason]}`);
+  }
   if (result.overallState === 'failed') lines.push('下一步：修复错误后重试，或按 r 刷新状态。');
   return lines;
 }
@@ -265,16 +281,15 @@ function spinnerFrame(elapsed: number): string {
 
 function DashboardHeader(props: {
   loaded?: ConsoleItemsLoadResult;
-  cwd: string;
 }): React.JSX.Element {
   const catalog = props.loaded?.status.catalog;
   return (
     <Box flexDirection="column">
       <Text bold color={tuiTheme.colors.accent} wrap="truncate-end">AW</Text>
-      <Text color={tuiTheme.colors.muted} wrap="truncate-end">cwd: {props.cwd}</Text>
+      <Text color={tuiTheme.colors.muted} wrap="truncate-end">当前项目</Text>
       <Text wrap="truncate-end">
         Catalog: {catalog?.catalogVersion ?? '未知'} · {catalog?.source ?? '未知来源'}
-        {catalog?.error ? ` · 错误：${catalog.error.message}` : ''}
+        {catalog?.error ? ' · Catalog 读取失败。详情请查看退出后的命令结果或调试日志。' : ''}
       </Text>
     </Box>
   );
@@ -359,14 +374,17 @@ function targetDetailLines(
       { key: 'state', text: `状态：${stateLabel(target.state)}` },
       ...target.components.map((component, index) => ({
         key: `component:${component.artifactKey}:${index}`,
-        text: `组件：${component.state === 'present' ? '●' : component.state === 'absent' ? '○' : '×'} ${component.label}${component.error ? ` · ${component.error}` : ''}`,
+        text: `${component.kind} · ${component.state === 'present' ? '●' : component.state === 'absent' ? '○' : component.state === 'partial' ? '◐' : '×'}`,
       })),
       ...target.errors.map((error, index) => ({
         key: `error:${error.code}:${index}`,
-        text: `错误：${error.message}`,
+        text: '错误：目标状态检查失败。详情请查看退出后的命令结果或调试日志。',
         error: true,
       })),
-      ...(target.recommendation ? [{ key: 'recommendation', text: `建议：${target.recommendation.command}` }] : []),
+      ...(target.recommendation ? [{
+        key: 'recommendation',
+        text: '建议：退出控制台后运行对应的修复命令。',
+      }] : []),
     ] : []),
   ];
 }
@@ -413,6 +431,7 @@ function ConfigPage(props: {
   rows: number;
   active: boolean;
   notices: string[];
+  progress?: RebuildProgressSnapshot;
   onBack: () => void;
   onExit: () => void;
   onStatusLoaded: (loaded: ConsoleItemsLoadResult) => void;
@@ -446,6 +465,7 @@ function ConfigPage(props: {
   }, [props.onExit]);
 
   const read = useCallback(async (next: DashboardConfigLocation) => {
+    props.controller.resetProgress?.();
     setBusy({ label: '读取配置', startedAt: Date.now() });
     try {
       setData(await props.controller.readConfig(props.item, next));
@@ -453,15 +473,17 @@ function ConfigPage(props: {
       setIndex(0);
       setUpdates({});
       setRemoveKeys(new Set());
-    } catch (error) {
-      setMessage(`配置读取失败：${errorText(error)}`);
+    } catch {
+      setMessage('配置读取失败。请退出后使用 aw config list 检查，或查看调试日志。');
     } finally {
       finishBusy();
     }
   }, [finishBusy, props.controller, props.item]);
 
   useEffect(() => { void read(initialLocation); }, []);
-  useEffect(() => { setMessageOffset(0); }, [message, props.notices]);
+  useEffect(() => {
+    setMessageOffset(Math.max(0, [...(message?.split('\n') ?? []), ...props.notices].length - 1));
+  }, [message, props.notices]);
   useEffect(() => {
     if (!busy) return undefined;
     const timer = setInterval(() => setElapsed(Math.floor((Date.now() - busy.startedAt) / 1000)), 1000);
@@ -473,6 +495,7 @@ function ConfigPage(props: {
       setMessage('没有待保存的变更。');
       return;
     }
+    props.controller.resetProgress?.();
     setBusy({ label: `保存 ${props.item.pluginName} 配置`, startedAt: Date.now() });
     let successMessage: string | undefined;
     try {
@@ -485,8 +508,8 @@ function ConfigPage(props: {
       setRemoveKeys(new Set());
       setEditing(false);
       setMessage(successMessage);
-    } catch (error) {
-      setMessage(`保存失败：${errorText(error)}`);
+    } catch {
+      setMessage('配置保存失败。详细原因请查看退出后的命令结果或调试日志。');
       finishBusy();
       return;
     }
@@ -494,13 +517,13 @@ function ConfigPage(props: {
     const refreshErrors: string[] = [];
     try {
       setData(await props.controller.readConfig(props.item, location));
-    } catch (error) {
-      refreshErrors.push(`配置：${errorText(error)}`);
+    } catch {
+      refreshErrors.push('配置读取失败');
     }
     try {
       props.onStatusLoaded(await props.controller.load());
-    } catch (error) {
-      refreshErrors.push(`状态：${errorText(error)}`);
+    } catch {
+      refreshErrors.push('状态读取失败');
     }
     if (refreshErrors.length > 0) {
       setMessage(`已保存；自动刷新失败：${refreshErrors.join('；')}\n${successMessage}`);
@@ -510,6 +533,7 @@ function ConfigPage(props: {
 
   const reset = useCallback(async () => {
     setConfirm(undefined);
+    props.controller.resetProgress?.();
     setBusy({ label: `重置 ${props.item.pluginName} 配置`, startedAt: Date.now() });
     let successMessage: string | undefined;
     try {
@@ -519,8 +543,8 @@ function ConfigPage(props: {
       setRemoveKeys(new Set());
       setEditing(false);
       setMessage(successMessage);
-    } catch (error) {
-      setMessage(`重置失败：${errorText(error)}`);
+    } catch {
+      setMessage('配置重置失败。详细原因请查看退出后的命令结果或调试日志。');
       finishBusy();
       return;
     }
@@ -528,13 +552,13 @@ function ConfigPage(props: {
     const refreshErrors: string[] = [];
     try {
       setData(await props.controller.readConfig(props.item, location));
-    } catch (error) {
-      refreshErrors.push(`配置：${errorText(error)}`);
+    } catch {
+      refreshErrors.push('配置读取失败');
     }
     try {
       props.onStatusLoaded(await props.controller.load());
-    } catch (error) {
-      refreshErrors.push(`状态：${errorText(error)}`);
+    } catch {
+      refreshErrors.push('状态读取失败');
     }
     if (refreshErrors.length > 0) {
       setMessage(`已重置；自动刷新失败：${refreshErrors.join('；')}\n${successMessage}`);
@@ -641,7 +665,7 @@ function ConfigPage(props: {
   const readFields = new Map(data?.read.fields.map((entry) => [entry.key, entry]));
   const locationLabel = configLocations.find((entry) => sameLocation(entry, location))?.label;
   const messageLines = [...(message?.split('\n') ?? []), ...props.notices];
-  const messageRows = Math.min(3, messageLines.length);
+  const messageRows = Math.min(8, messageLines.length);
   const transientRows = busy || confirm ? 1 : 0;
   const editorValues = editing && field
     ? field.type === 'boolean' ? [true, false] : field.type === 'enum' ? field.enumValues ?? [] : []
@@ -659,7 +683,11 @@ function ConfigPage(props: {
     <Box flexDirection="column" paddingX={1} height={props.rows} overflow="hidden">
       <Text bold color={tuiTheme.colors.accent} wrap="truncate-end">AW · {props.item.pluginName} 配置</Text>
       <Text wrap="truncate-end">位置：{locationLabel}（Tab/Shift+Tab 切换）</Text>
-      {busy ? <Text wrap="truncate-end">{spinnerFrame(elapsed)} {busy.label} · {elapsed}s</Text> : null}
+      {busy ? <Text wrap="truncate-end">
+        {spinnerFrame(elapsed)} {props.progress?.current
+          ? `${props.progress.current.target} · ${props.progress.current.phase}`
+          : busy.label} · {elapsed}s
+      </Text> : null}
       {confirm ? <Text color={tuiTheme.statusColors.warning}>
         {confirm.kind === 'reset' ? '确认重置当前层？' : '有未保存变更，确认放弃？'} y/n
       </Text> : null}
@@ -721,8 +749,8 @@ export function Dashboard(props: {
   const [elapsed, setElapsed] = useState(0);
   const [detailsOffset, setDetailsOffset] = useState(0);
   const [outputOffset, setOutputOffset] = useState(0);
-  const [sessionNotices, setSessionNotices] = useState<string[]>(
-    () => props.controller.getNotices?.() ?? [],
+  const [sessionProgress, setSessionProgress] = useState<RebuildProgressSnapshot>(
+    () => props.controller.getProgress?.() ?? { messages: props.controller.getNotices?.() ?? [] },
   );
   const exitAfterBusy = useRef(false);
 
@@ -730,12 +758,17 @@ export function Dashboard(props: {
     dispatch({ type: 'load-start' });
     try {
       dispatch({ type: 'load-success', loaded: await props.controller.load() });
-    } catch (error) {
-      dispatch({ type: 'load-error', message: errorText(error) });
+    } catch {
+      dispatch({ type: 'load-error', message: '状态读取失败。请退出后使用 aw status 检查，或查看调试日志。' });
     }
   }, [props.controller]);
 
-  useEffect(() => props.controller.subscribeNotices?.(setSessionNotices), [props.controller]);
+  useEffect(() => {
+    if (props.controller.subscribeProgress) {
+      return props.controller.subscribeProgress(setSessionProgress);
+    }
+    return props.controller.subscribeNotices?.((messages) => setSessionProgress({ messages }));
+  }, [props.controller]);
   useEffect(() => { void load(); }, [load]);
   useEffect(() => {
     if (!state.busy) return undefined;
@@ -748,10 +781,20 @@ export function Dashboard(props: {
   const actions = selectedActions(state);
 
   useEffect(() => { setDetailsOffset(0); }, [state.page, state.selectedPluginName, state.selectedTargetId]);
-  useEffect(() => { setOutputOffset(0); }, [state.notice, sessionNotices, state.loadError, state.loaded?.status.errors]);
+  useEffect(() => {
+    const count = [
+      ...(state.notice?.split('\n') ?? []),
+      ...sessionProgress.messages,
+      ...(state.loadError ? [state.loadError] : []),
+      ...(state.loaded?.status.errors ?? []),
+    ].length;
+    setOutputOffset(Math.max(0, count - 1));
+  }, [state.notice, sessionProgress, state.loadError, state.loaded?.status.errors]);
 
   const busyText = state.busy
-    ? `${spinnerFrame(elapsed)} ${state.busy.action} · ${state.busy.target} · ${elapsed}s${state.busy.exitAfter ? ' · 完成后退出' : ''}`
+    ? `${spinnerFrame(elapsed)} ${sessionProgress.current
+      ? `${sessionProgress.current.target} · ${sessionProgress.current.phase}`
+      : `${state.busy.action} · ${state.busy.target}`} · ${elapsed}s${state.busy.exitAfter ? ' · 完成后退出' : ''}`
     : undefined;
   const activityText = busyText
     ?? (state.confirm
@@ -759,11 +802,11 @@ export function Dashboard(props: {
       : state.loading ? '⠋ 正在刷新状态…' : undefined);
   const outputLines = [
     ...(state.notice?.split('\n') ?? []),
-    ...sessionNotices,
+    ...sessionProgress.messages,
     ...(state.loadError ? [`错误：${state.loadError}`] : []),
-    ...(state.loaded?.status.errors.map((error) => `错误：${error.message}`) ?? []),
+    ...(state.loaded?.status.errors.map(() => '错误：状态读取失败。详情请查看退出后的命令结果或调试日志。') ?? []),
   ];
-  const outputRows = Math.min(4, outputLines.length);
+  const outputRows = Math.min(8, outputLines.length);
   const clampedOutputOffset = Math.min(outputOffset, Math.max(0, outputLines.length - 1));
   const outputWindow = viewport(outputLines.length, clampedOutputOffset, outputRows);
   const bodyRows = Math.max(1, policy.rows - 3 - (activityText ? 1 : 0) - outputRows - 1);
@@ -779,6 +822,7 @@ export function Dashboard(props: {
 
   const execute = useCallback(async (action: DashboardWriteAction) => {
     if (!target) return;
+    props.controller.resetProgress?.();
     dispatch({
       type: 'busy-start',
       action: actionLabels[action],
@@ -788,13 +832,13 @@ export function Dashboard(props: {
     let notice: string;
     try {
       notice = receiptLines(await props.controller.execute(action, target)).join('\n');
-    } catch (error) {
-      notice = `失败：${errorText(error)}\n下一步：修复错误后重试，或按 r 刷新状态。`;
+    } catch {
+      notice = '操作失败。详细原因请查看退出后的命令结果或调试日志。\n下一步：修复错误后重试，或按 r 刷新状态。';
     }
     try {
       dispatch({ type: 'load-success', loaded: await props.controller.load() });
-    } catch (error) {
-      notice += `\n自动刷新失败：${errorText(error)}`;
+    } catch {
+      notice += '\n自动刷新失败。请退出后使用 aw status 检查，或查看调试日志。';
     }
     dispatch({ type: 'busy-end', notice });
     const shouldExit = exitAfterBusy.current;
@@ -887,7 +931,8 @@ export function Dashboard(props: {
           target={target}
           rows={policy.rows}
           active={active}
-          notices={sessionNotices}
+          notices={sessionProgress.messages}
+          progress={sessionProgress}
           onBack={() => dispatch({ type: 'page', page: 'dashboard' })}
           onExit={() => props.onComplete({ exitCode: 0 })}
           onStatusLoaded={(loaded) => dispatch({ type: 'load-success', loaded })}
@@ -908,7 +953,7 @@ export function Dashboard(props: {
 
   return (
     <Box flexDirection="column" paddingX={1} height={policy.rows} overflow="hidden">
-      <DashboardHeader loaded={state.loaded} cwd={props.controller.cwd} />
+      <DashboardHeader loaded={state.loaded} />
       {activityText ? <Text color={state.confirm ? tuiTheme.statusColors.warning : undefined} wrap="truncate-end">{activityText}</Text> : null}
       {policy.mode === 'three-column' ? (
         <Box height={bodyRows} overflow="hidden">

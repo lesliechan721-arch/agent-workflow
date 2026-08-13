@@ -5,6 +5,9 @@ import type {
   PlatformName,
   PluginLifecycleEvent,
   PluginMeta,
+  RebuildActionEvent,
+  RebuildActionName,
+  RebuildCommand,
   Scope,
 } from '../types.js';
 import {
@@ -33,7 +36,7 @@ import {
   validateOwnerIdentity,
 } from '../utils/ownership.js';
 
-export type RebuildCommand = 'install' | 'upgrade' | 'cleanup' | 'reinstall' | 'uninstall';
+export type { RebuildActionName, RebuildCommand } from '../types.js';
 
 export interface RebuildTargetIdentity {
   pluginName: string;
@@ -53,24 +56,6 @@ export interface DesiredTarget {
   artifacts: readonly GeneratedArtifact[];
   lifecycleSource: PluginMeta;
 }
-
-export type RebuildActionName =
-  | 'preflight.inspect'
-  | 'stale.cleanup'
-  | 'native.write'
-  | 'artifacts.write'
-  | 'active.prepare'
-  | 'active.discard'
-  | `lifecycle.${PluginLifecycleEvent}`
-  | 'active.promote'
-  | 'postcheck.inspect'
-  | 'recovery.cleanup'
-  | 'cleanup.owned'
-  | 'active.read'
-  | 'active.remove'
-  | 'active.release'
-  | 'operation.lock'
-  | 'operation.release';
 
 export interface RebuildAction {
   name: RebuildActionName;
@@ -232,6 +217,13 @@ interface ResultAccumulator {
   failures: RebuildFailure[];
 }
 
+interface RebuildActionEvents {
+  command: RebuildCommand;
+  target: RebuildTargetIdentity;
+  emit: ((event: RebuildActionEvent) => void | Promise<void>) | undefined;
+  now: () => number;
+}
+
 function createAccumulator(): ResultAccumulator {
   return {
     actions: [],
@@ -246,6 +238,31 @@ function createAccumulator(): ResultAccumulator {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+const REBUILD_ACTION_FAILURE_MESSAGES: Record<RebuildActionName, string> = {
+  'operation.lock': '获取操作锁失败。',
+  'preflight.inspect': '检查当前组件失败。',
+  'stale.cleanup': '清理过期组件失败。',
+  'native.write': '写入平台插件失败。',
+  'artifacts.write': '写入插件文件失败。',
+  'active.prepare': '准备生命周期快照失败。',
+  'active.discard': '丢弃生命周期快照失败。',
+  'lifecycle.install': '运行安装生命周期失败。',
+  'lifecycle.upgrade': '运行升级生命周期失败。',
+  'lifecycle.uninstall': '运行卸载生命周期失败。',
+  'active.promote': '启用生命周期快照失败。',
+  'postcheck.inspect': '检查写入结果失败。',
+  'recovery.cleanup': '清理失败写入失败。',
+  'cleanup.owned': '清理 AW 组件失败。',
+  'active.read': '读取生命周期快照失败。',
+  'active.remove': '删除生命周期快照失败。',
+  'active.release': '释放生命周期快照失败。',
+  'operation.release': '释放操作锁失败。',
+};
+
+function rebuildActionFailureMessage(name: RebuildActionName): string {
+  return REBUILD_ACTION_FAILURE_MESSAGES[name];
 }
 
 export async function releaseRebuildOperationLease(lock: ProcessLockLease): Promise<void> {
@@ -319,13 +336,63 @@ async function action<T>(
   accumulator: ResultAccumulator,
   name: RebuildActionName,
   operation: () => Promise<T>,
+  events: RebuildActionEvents,
+  failureMessage?: (value: T) => string | null | undefined,
 ): Promise<T> {
+  const startedAt = events.now();
+  await events.emit?.({
+    type: 'rebuild:action',
+    source: {
+      plugin: events.target.pluginName,
+      platform: events.target.platform,
+      scope: events.target.scope,
+      action: events.command,
+    },
+    data: { name, phase: 'start' },
+  });
   try {
     const value = await operation();
-    accumulator.actions.push({ name, status: 'succeeded' });
+    const message = failureMessage?.(value);
+    accumulator.actions.push({ name, status: message ? 'failed' : 'succeeded' });
+    await events.emit?.({
+      type: 'rebuild:action',
+      source: {
+        plugin: events.target.pluginName,
+        platform: events.target.platform,
+        scope: events.target.scope,
+        action: events.command,
+      },
+      data: message
+        ? {
+            name,
+            phase: 'failure',
+            durationMs: Math.max(0, events.now() - startedAt),
+            message: rebuildActionFailureMessage(name),
+          }
+        : {
+            name,
+            phase: 'success',
+            durationMs: Math.max(0, events.now() - startedAt),
+          },
+    });
     return value;
   } catch (error) {
     accumulator.actions.push({ name, status: 'failed' });
+    await events.emit?.({
+      type: 'rebuild:action',
+      source: {
+        plugin: events.target.pluginName,
+        platform: events.target.platform,
+        scope: events.target.scope,
+        action: events.command,
+      },
+      data: {
+        name,
+        phase: 'failure',
+        durationMs: Math.max(0, events.now() - startedAt),
+        message: rebuildActionFailureMessage(name),
+      },
+    });
     throw error;
   }
 }
@@ -442,11 +509,6 @@ function recordInspectionResiduals(
   );
 }
 
-function markLastActionFailed(accumulator: ResultAccumulator, name: RebuildActionName): void {
-  const entry = accumulator.actions.at(-1);
-  if (entry?.name === name) entry.status = 'failed';
-}
-
 function postcheckMessage(
   accumulator: ResultAccumulator,
   inspection: OwnershipInspection,
@@ -491,17 +553,28 @@ async function cleanupTarget(
   store: RebuildActiveStore,
   accumulator: ResultAccumulator,
   ownedAction: 'cleanup.owned' | 'recovery.cleanup',
+  events: RebuildActionEvents,
 ): Promise<{ phase: RebuildFailure['phase']; message: string } | null> {
   accumulator.cleanupAttempted = true;
   try {
-    const cleanup = await action(accumulator, ownedAction, () => cleanupOwned(target, driver));
+    const cleanup = await action(
+      accumulator,
+      ownedAction,
+      () => cleanupOwned(target, driver),
+      events,
+      (value) => value.failures[0]?.message
+        ?? (value.residual.length > 0
+          ? `Ownership cleanup left residual components: ${value.residual.join(', ')}`
+          : value.quarantined.length > 0
+            ? `Ownership cleanup left quarantined components: ${value.quarantined.join(', ')}`
+            : undefined),
+    );
     mergeCleanup(accumulator, cleanup, ownedAction);
     if (
       cleanup.failures.length > 0
       || cleanup.residual.length > 0
       || cleanup.quarantined.length > 0
     ) {
-      markLastActionFailed(accumulator, ownedAction);
       return {
         phase: ownedAction,
         message: cleanup.failures[0]?.message
@@ -517,7 +590,7 @@ async function cleanupTarget(
   }
 
   try {
-    await action(accumulator, 'active.remove', () => store.remove(target));
+    await action(accumulator, 'active.remove', () => store.remove(target), events);
   } catch (error) {
     const message = errorMessage(error);
     accumulator.failures.push({ phase: 'active.remove', message });
@@ -533,8 +606,9 @@ async function materializeTarget(options: {
   driver: RebuildTargetDriver;
   store: RebuildActiveStore;
   accumulator: ResultAccumulator;
+  events: RebuildActionEvents;
 }): Promise<RebuildResult> {
-  const { command, lifecycleEvent, target, driver, store, accumulator } = options;
+  const { command, lifecycleEvent, target, driver, store, accumulator, events } = options;
   let inspection: OwnershipInspection;
   try {
     inspection = await action(
@@ -544,6 +618,8 @@ async function materializeTarget(options: {
         components: target.ownedComponents,
         nativeProbe: driver.probeNative,
       })),
+      events,
+      collisionMessage,
     );
   } catch (error) {
     return failed(command, target, accumulator, 'preflight.inspect', errorMessage(error));
@@ -551,7 +627,7 @@ async function materializeTarget(options: {
   const collision = collisionMessage(inspection);
   if (collision) {
     recordInspectionResiduals(accumulator, inspection);
-    return failed(command, target, accumulator, 'preflight', collision);
+    return failed(command, target, accumulator, 'preflight.inspect', collision);
   }
 
   const desiredComponents = new Set(target.desiredOwnedComponents ?? target.ownedComponents);
@@ -567,13 +643,17 @@ async function materializeTarget(options: {
         accumulator,
         'stale.cleanup',
         () => cleanupOwned(target, driver, staleComponents),
+        events,
+        (value) => value.failures[0]?.message
+          ?? (value.residual.length > 0
+            ? `Stale cleanup left residual components: ${value.residual.join(', ')}`
+            : undefined),
       );
     } catch (error) {
       return failed(command, target, accumulator, 'stale.cleanup', errorMessage(error));
     }
     mergeCleanup(accumulator, stale, 'stale.cleanup');
     if (stale.failures.length > 0 || stale.residual.length > 0) {
-      markLastActionFailed(accumulator, 'stale.cleanup');
       const message = stale.failures[0]?.message
         ?? `Stale cleanup left residual components: ${stale.residual.join(', ')}`;
       return failed(command, target, accumulator, 'stale.cleanup', message);
@@ -585,26 +665,29 @@ async function materializeTarget(options: {
   try {
     if (target.requiresNative) {
       failurePhase = 'native.write';
-      await action(accumulator, failurePhase, () => driver.writeNative(target));
+      await action(accumulator, failurePhase, () => driver.writeNative(target), events);
     }
     failurePhase = 'artifacts.write';
-    const writtenArtifacts = await action(
+    await action(
       accumulator,
       failurePhase,
-      () => driver.writeArtifacts(target),
+      async () => {
+        const writtenArtifacts = await driver.writeArtifacts(target);
+        bindWrittenArtifacts(target, writtenArtifacts);
+      },
+      events,
     );
-    bindWrittenArtifacts(target, writtenArtifacts);
     failurePhase = 'active.prepare';
-    prepared = await action(accumulator, failurePhase, () => store.prepare(target));
+    prepared = await action(accumulator, failurePhase, () => store.prepare(target), events);
     failurePhase = `lifecycle.${lifecycleEvent}`;
     await action(accumulator, failurePhase, () => driver.runLifecycle({
       event: lifecycleEvent,
       target,
       plugin: target.lifecycleSource,
       artifacts: target.artifacts,
-    }));
+    }), events);
     failurePhase = 'active.promote';
-    await action(accumulator, failurePhase, () => store.promote(prepared!));
+    await action(accumulator, failurePhase, () => store.promote(prepared!), events);
     failurePhase = 'postcheck.inspect';
     await action(accumulator, failurePhase, async () => {
       const optional = new Set(target.optionalOwnedComponents ?? []);
@@ -616,13 +699,13 @@ async function materializeTarget(options: {
       }));
       const postcheckFailure = postcheckMessage(accumulator, postcheck);
       if (postcheckFailure) throw new Error(postcheckFailure);
-    });
+    }, events);
     return succeeded(command, target, accumulator);
   } catch (error) {
     const primary = errorMessage(error);
     if (prepared) {
       try {
-        await action(accumulator, 'active.discard', () => store.discard(prepared!));
+        await action(accumulator, 'active.discard', () => store.discard(prepared!), events);
       } catch (discardError) {
         accumulator.failures.push({
           phase: 'active.discard',
@@ -630,7 +713,7 @@ async function materializeTarget(options: {
         });
       }
     }
-    await cleanupTarget(target, driver, store, accumulator, 'recovery.cleanup');
+    await cleanupTarget(target, driver, store, accumulator, 'recovery.cleanup', events);
     return failed(command, target, accumulator, failurePhase, primary);
   }
 }
@@ -641,6 +724,7 @@ async function executeCleanup(options: {
   driver: RebuildTargetDriver;
   store: RebuildActiveStore;
   accumulator: ResultAccumulator;
+  events: RebuildActionEvents;
 }): Promise<RebuildResult> {
   const cleanupError = await cleanupTarget(
     options.target,
@@ -648,6 +732,7 @@ async function executeCleanup(options: {
     options.store,
     options.accumulator,
     'cleanup.owned',
+    options.events,
   );
   if (cleanupError) {
     return failed(
@@ -666,8 +751,9 @@ async function executeUninstall(options: {
   driver: RebuildTargetDriver;
   store: RebuildActiveStore;
   accumulator: ResultAccumulator;
+  events: RebuildActionEvents;
 }): Promise<RebuildResult> {
-  const { target, driver, store, accumulator } = options;
+  const { target, driver, store, accumulator, events } = options;
   let inspection: OwnershipInspection;
   try {
     inspection = await action(
@@ -677,9 +763,16 @@ async function executeUninstall(options: {
         components: target.ownedComponents,
         nativeProbe: driver.probeNative,
       })),
+      events,
+      collisionMessage,
     );
   } catch (error) {
     return failed('uninstall', target, accumulator, 'preflight.inspect', errorMessage(error));
+  }
+  const preflightCollision = collisionMessage(inspection);
+  if (preflightCollision) {
+    recordInspectionResiduals(accumulator, inspection);
+    return failed('uninstall', target, accumulator, 'preflight.inspect', preflightCollision);
   }
   let snapshot: ReadLifecycleActiveSnapshot | null;
   const stableRead = store.readStable !== undefined;
@@ -688,6 +781,7 @@ async function executeUninstall(options: {
       accumulator,
       'active.read',
       () => (store.readStable ?? store.read)(target),
+      events,
     );
   } catch (error) {
     const message = `Active lifecycle snapshot is corrupt. Run cleanup to remove live outputs without lifecycle: ${errorMessage(error)}`;
@@ -697,16 +791,11 @@ async function executeUninstall(options: {
     const live = inspection.components.filter((component) => component.state !== 'absent');
     if (live.length === 0) return succeeded('uninstall', target, accumulator);
     if (!target.plugin.manifest.scripts?.lifecycle?.uninstall) {
-      const cleanupError = await cleanupTarget(target, driver, store, accumulator, 'cleanup.owned');
+      const cleanupError = await cleanupTarget(target, driver, store, accumulator, 'cleanup.owned', events);
       if (cleanupError) {
         return failed('uninstall', target, accumulator, cleanupError.phase, cleanupError.message);
       }
       return succeeded('uninstall', target, accumulator);
-    }
-    const collision = collisionMessage(inspection);
-    if (collision) {
-      recordInspectionResiduals(accumulator, inspection);
-      return failed('uninstall', target, accumulator, 'preflight', collision);
     }
     pushUnique(
       accumulator.residual,
@@ -721,19 +810,6 @@ async function executeUninstall(options: {
     );
   }
 
-  const collision = collisionMessage(inspection);
-  if (collision) {
-    recordInspectionResiduals(accumulator, inspection);
-    if (stableRead && store.releaseRead) {
-      try {
-        await action(accumulator, 'active.release', () => store.releaseRead!(snapshot!));
-      } catch (error) {
-        accumulator.failures.push({ phase: 'active.release', message: errorMessage(error) });
-      }
-    }
-    return failed('uninstall', target, accumulator, 'preflight', collision);
-  }
-
   const historical = restoreLifecycleActiveScriptInputs(snapshot);
   let lifecycleError: unknown;
   try {
@@ -742,13 +818,13 @@ async function executeUninstall(options: {
       target,
       plugin: historical.currentPlugin,
       artifacts: historical.artifacts,
-    }));
+    }), events);
   } catch (error) {
     lifecycleError = error;
   }
   if (stableRead && store.releaseRead) {
     try {
-      await action(accumulator, 'active.release', () => store.releaseRead!(snapshot!));
+      await action(accumulator, 'active.release', () => store.releaseRead!(snapshot!), events);
     } catch (error) {
       const message = errorMessage(error);
       accumulator.failures.push({ phase: 'active.release', message });
@@ -767,7 +843,7 @@ async function executeUninstall(options: {
     );
   }
 
-  const cleanupError = await cleanupTarget(target, driver, store, accumulator, 'cleanup.owned');
+  const cleanupError = await cleanupTarget(target, driver, store, accumulator, 'cleanup.owned', events);
   if (cleanupError) {
     return failed('uninstall', target, accumulator, cleanupError.phase, cleanupError.message);
   }
@@ -779,9 +855,17 @@ export async function executeRebuildOperation(options: {
   target: DesiredTarget;
   driver: RebuildTargetDriver;
   activeStore: RebuildActiveStore;
+  onActionEvent?: (event: RebuildActionEvent) => void | Promise<void>;
+  now?: () => number;
 }): Promise<RebuildResult> {
   const accumulator = createAccumulator();
   const store = options.activeStore;
+  const events: RebuildActionEvents = {
+    command: options.command,
+    target: options.target.identity,
+    emit: options.onActionEvent,
+    now: options.now ?? Date.now,
+  };
   try {
     validateDesiredTarget(options.target);
   } catch (error) {
@@ -801,6 +885,7 @@ export async function executeRebuildOperation(options: {
         accumulator,
         'operation.lock',
         () => store.acquireOperation!(options.target.identity),
+        events,
       );
     } catch (error) {
       return failed(
@@ -815,7 +900,7 @@ export async function executeRebuildOperation(options: {
 
   let result: RebuildResult;
   try {
-    result = await executeRebuildOperationLocked(options, accumulator, store);
+    result = await executeRebuildOperationLocked(options, accumulator, store, events);
   } catch (error) {
     result = failed(options.command, options.target, accumulator, 'preflight', errorMessage(error));
   }
@@ -825,6 +910,7 @@ export async function executeRebuildOperation(options: {
         accumulator,
         'operation.release',
         () => releaseRebuildOperationLease(operationLock!),
+        events,
       );
     } catch (error) {
       const message = errorMessage(error);
@@ -843,9 +929,12 @@ async function executeRebuildOperationLocked(
     target: DesiredTarget;
     driver: RebuildTargetDriver;
     activeStore: RebuildActiveStore;
+    onActionEvent?: (event: RebuildActionEvent) => void | Promise<void>;
+    now?: () => number;
   },
   accumulator: ResultAccumulator,
   store: RebuildActiveStore,
+  events: RebuildActionEvents,
 ): Promise<RebuildResult> {
 
   if (options.command === 'install' || options.command === 'upgrade') {
@@ -856,6 +945,7 @@ async function executeRebuildOperationLocked(
       driver: options.driver,
       store,
       accumulator,
+      events,
     });
   }
   if (options.command === 'cleanup') {
@@ -865,6 +955,7 @@ async function executeRebuildOperationLocked(
       driver: options.driver,
       store,
       accumulator,
+      events,
     });
   }
   if (options.command === 'uninstall') {
@@ -873,7 +964,35 @@ async function executeRebuildOperationLocked(
       driver: options.driver,
       store,
       accumulator,
+      events,
     });
+  }
+
+  let inspection: OwnershipInspection;
+  try {
+    inspection = await action(
+      accumulator,
+      'preflight.inspect',
+      () => withOwnershipLease(options.target, options.driver, () => inspectOwnedComponents({
+        components: options.target.ownedComponents,
+        nativeProbe: options.driver.probeNative,
+      })),
+      events,
+      collisionMessage,
+    );
+  } catch (error) {
+    return failed(
+      'reinstall',
+      options.target,
+      accumulator,
+      'preflight.inspect',
+      errorMessage(error),
+    );
+  }
+  const collision = collisionMessage(inspection);
+  if (collision) {
+    recordInspectionResiduals(accumulator, inspection);
+    return failed('reinstall', options.target, accumulator, 'preflight.inspect', collision);
   }
 
   const cleanupResult = await executeCleanup({
@@ -882,6 +1001,7 @@ async function executeRebuildOperationLocked(
     driver: options.driver,
     store,
     accumulator,
+    events,
   });
   if (cleanupResult.status === 'failed') return cleanupResult;
   return materializeTarget({
@@ -891,6 +1011,7 @@ async function executeRebuildOperationLocked(
     driver: options.driver,
     store,
     accumulator,
+    events,
   });
 }
 
@@ -899,6 +1020,8 @@ export async function executeRebuildTargets(options: {
   targets: readonly DesiredTarget[];
   driver: RebuildTargetDriver;
   activeStore: RebuildActiveStore;
+  onActionEvent?: (event: RebuildActionEvent) => void | Promise<void>;
+  now?: () => number;
 }): Promise<RebuildResult[]> {
   const results: RebuildResult[] = [];
   for (const target of options.targets) {
@@ -907,6 +1030,8 @@ export async function executeRebuildTargets(options: {
       target,
       driver: options.driver,
       activeStore: options.activeStore,
+      ...(options.onActionEvent ? { onActionEvent: options.onActionEvent } : {}),
+      ...(options.now ? { now: options.now } : {}),
     }));
   }
   return results;

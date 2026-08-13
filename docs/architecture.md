@@ -187,6 +187,15 @@ cache publication 必须满足：
 - 错误说明和 verbose/debug 文本写 stderr，不污染 JSON stdout。
 - 写命令失败时 receipt 保留失败 target，并返回非零退出码。
 
+### Human/TUI progress
+
+- 裸 `aw` 使用响应式 Ink 仪表盘。宽视口同时显示插件、操作和目标/状态，窄视口使用单栏页面，过小视口只显示尺寸提示。状态信息位于目标详情，写操作位于操作区，配置位于插件配置页。
+- 五个写命令和缺少必要参数的 config 命令只在真实 TTY、human 模式且非 CI 时进入轻量向导。完整参数、CI、非 TTY 和 `--json` 不进入向导。
+- 运行前取消直接退出。真实写入开始后的 `Ctrl-C` 只登记“完成后退出”，不取消底层写操作。
+- rebuild action 边界发出 `rebuild:action` 事件。source 固定包含 plugin、platform、scope 和 command；data 固定包含动作名和 start/success/failure，终态包含 duration。失败消息在进入可见日志前脱敏。
+- 仪表盘和命令向导在会话 reporter 中消费 action event 与 notice，不直接写 stdout/stderr。它们显示当前 target、真实中文阶段、elapsed 和最近 8 条消息，内存最多保留 50 条；结果页保留最近消息和 human receipt 摘要。无 action event 的读取只显示通用 spinner。
+- `rebuild:action` 只服务 human、TUI、verbose 和 debug 诊断，不进入 v3 JSON receipt。普通 human reporter 忽略 event；verbose 写 stderr；`--json` stdout 仍只包含一个对象。
+
 ## Key Paths
 
 - `packages/cli/scripts/bundle-plugins.ts`：生成 catalog staging。

@@ -11,6 +11,7 @@ import {
   uninstallWriteCommand,
   upgradeWriteCommand,
 } from '../../src/commands/write-commands.js';
+import type { CommandEvent } from '../../src/output/model.js';
 import type { CatalogResolution } from '../../src/types.js';
 import type { NativeCliRunner } from '../../src/utils/native-cli.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
@@ -104,10 +105,19 @@ describe('five write commands', () => {
       }
       throw new Error(`Unexpected native call: ${invocation.command} ${invocation.args.join(' ')}`);
     };
+    const reported: CommandEvent[] = [];
+    const debugged: CommandEvent[] = [];
     const runtime = {
       env: isolation.env,
       nativeCliRunner: runner,
       catalogResolution: { rootDir: catalogRoot, source: 'local' } as CatalogResolution,
+      reporter: {
+        event: (event: CommandEvent) => { reported.push(event); },
+        notice: () => {},
+      },
+      debugLogger: {
+        log: (event: CommandEvent) => { debugged.push(event); },
+      },
     };
     const options = {
       cwd: isolation.layout.fixtureCwd,
@@ -129,5 +139,19 @@ describe('five write commands', () => {
     expect(results.map((result) => result.rebuildResults[0]?.command)).toEqual([
       'install', 'upgrade', 'reinstall', 'uninstall', 'cleanup',
     ]);
+    const actionEvents = reported.filter((event) => event.type === 'rebuild:action');
+    expect(actionEvents.length).toBeGreaterThan(0);
+    expect(debugged.filter((event) => event.type === 'rebuild:action')).toEqual(actionEvents);
+    for (let index = 0; index < actionEvents.length; index += 2) {
+      const start = actionEvents[index]!;
+      const terminal = actionEvents[index + 1]!;
+      expect(start.data).toMatchObject({ phase: 'start' });
+      expect(terminal.data).toMatchObject({
+        name: (start.data as { name: string }).name,
+        phase: expect.stringMatching(/^(?:success|failure)$/),
+        durationMs: expect.any(Number),
+      });
+      expect(terminal.source).toEqual(start.source);
+    }
   });
 });

@@ -16,7 +16,7 @@ import {
   executeRebuildOperation,
   executeRebuildTargets,
 } from '../../src/commands/rebuild-operations.js';
-import type { GeneratedArtifact, PluginMeta } from '../../src/types.js';
+import type { GeneratedArtifact, PluginMeta, RebuildActionEvent } from '../../src/types.js';
 import type {
   PreparedLifecycleActiveSnapshot,
   ReadLifecycleActiveSnapshot,
@@ -252,6 +252,101 @@ async function collectRelativeImportGraph(entryPath: string): Promise<Set<string
 }
 
 describe('rebuild operation happy paths', () => {
+  it('emits one ordered start and terminal event for every successful action', async () => {
+    const fixture = createFixture();
+    const events: RebuildActionEvent[] = [];
+    let clock = 0;
+    const result = await executeRebuildOperation({
+      command: 'install',
+      target: fixture.target,
+      driver: fixture.driver,
+      activeStore: fixture.store,
+      onActionEvent: (event) => events.push(event),
+      now: () => { clock += 7; return clock; },
+    });
+
+    expect(result.status).toBe('succeeded');
+    expect(events.map((event) => `${event.data.name}:${event.data.phase}`)).toEqual(
+      result.actions.flatMap((entry) => [
+        `${entry.name}:start`,
+        `${entry.name}:${entry.status === 'succeeded' ? 'success' : 'failure'}`,
+      ]),
+    );
+    expect(events.every((event) => event.source.plugin === 'active-plugin'
+      && event.source.platform === 'codex'
+      && event.source.scope === 'user'
+      && event.source.action === 'install')).toBe(true);
+    expect(events.filter((event) => event.data.phase !== 'start').every(
+      (event) => event.data.durationMs === 7,
+    )).toBe(true);
+  });
+
+  it('emits a safe failure before preserving recovery cleanup semantics', async () => {
+    const fixture = createFixture();
+    const events: RebuildActionEvent[] = [];
+    fixture.driver.writeNative = async () => {
+      fixture.states.native = 'present';
+      throw new Error(
+        'codex plugin add --path /Users/alice/plugin C:\\Users\\alice\\plugin token=plain-secret',
+      );
+    };
+    const result = await executeRebuildOperation({
+      command: 'install',
+      target: fixture.target,
+      driver: fixture.driver,
+      activeStore: fixture.store,
+      onActionEvent: (event) => events.push(event),
+    });
+
+    expect(result.status).toBe('failed');
+    expect(events).toContainEqual(expect.objectContaining({
+      data: expect.objectContaining({
+        name: 'native.write',
+        phase: 'failure',
+        message: '写入平台插件失败。',
+      }),
+    }));
+    expect(JSON.stringify(events)).not.toContain('plain-secret');
+    expect(JSON.stringify(events)).not.toContain('/Users/alice');
+    expect(JSON.stringify(events)).not.toContain('C:\\Users');
+    expect(JSON.stringify(events)).not.toContain('codex plugin add');
+    expect(events.some((event) => event.data.name === 'recovery.cleanup')).toBe(true);
+    expect(fixture.cleanupCalls.native).toBe(1);
+    for (const name of new Set(events.map((event) => event.data.name))) {
+      expect(events.filter((event) => event.data.name === name).map((event) => event.data.phase))
+        .toEqual(['start', expect.stringMatching(/^(?:success|failure)$/)]);
+    }
+  });
+
+  it('keeps sequential target event sources separate', async () => {
+    const first = createFixture({ name: 'first', requiresNative: false });
+    const second = createFixture({ name: 'second', requiresNative: false });
+    const fixtures = new Map([
+      ['first', first],
+      ['second', second],
+    ]);
+    const events: RebuildActionEvent[] = [];
+    const driver: RebuildTargetDriver = {
+      writeNative: async () => {},
+      writeArtifacts: async (target) => {
+        fixtures.get(target.identity.pluginName)!.states.artifact = 'present';
+      },
+      runLifecycle: async () => {},
+    };
+    const results = await executeRebuildTargets({
+      command: 'install',
+      targets: [first.target, second.target],
+      driver,
+      activeStore: first.store,
+      onActionEvent: (event) => events.push(event),
+    });
+
+    expect(results.map((result) => result.status)).toEqual(['succeeded', 'succeeded']);
+    const sources = events.map((event) => event.source.plugin);
+    expect(sources.slice(0, sources.lastIndexOf('first') + 1).every((name) => name === 'first')).toBe(true);
+    expect(sources.slice(sources.indexOf('second')).every((name) => name === 'second')).toBe(true);
+  });
+
   it('serializes the complete operation window for one target', async () => {
     const fixture = createFixture();
     const lockPath = path.join(
@@ -661,6 +756,31 @@ describe('rebuild operation failures', () => {
     expect(fixture.log).toEqual([]);
   });
 
+  it.each<RebuildCommand>(['install', 'upgrade', 'reinstall', 'uninstall'])(
+    'reports a %s ownership collision as one failed preflight inspection',
+    async (command) => {
+      const fixture = createFixture({ initial: 'foreign' });
+      const events: RebuildActionEvent[] = [];
+      const result = await executeRebuildOperation({
+        command,
+        target: fixture.target,
+        driver: fixture.driver,
+        activeStore: fixture.store,
+        onActionEvent: (event) => events.push(event),
+      });
+
+      expect(result.status).toBe('failed');
+      if (result.status === 'failed') expect(result.error.phase).toBe('preflight.inspect');
+      expect(result.actions).toEqual([{ name: 'preflight.inspect', status: 'failed' }]);
+      expect(events.map((event) => `${event.data.name}:${event.data.phase}`)).toEqual([
+        'preflight.inspect:start',
+        'preflight.inspect:failure',
+      ]);
+      expect(fixture.log).toEqual(['inspect.native', 'inspect.artifact']);
+      expect(result.cleanupAttempted).toBe(false);
+    },
+  );
+
   it('fails a foreign collision with zero writes', async () => {
     const fixture = createFixture({ initial: 'foreign' });
     const result = await executeRebuildOperation({
@@ -674,12 +794,37 @@ describe('rebuild operation failures', () => {
   it('fails a probe error with zero writes', async () => {
     const fixture = createFixture({ requiresNative: false });
     fixture.fail.add('preflight.inspect');
+    const events: RebuildActionEvent[] = [];
     const result = await executeRebuildOperation({
-      command: 'install', target: fixture.target, driver: fixture.driver, activeStore: fixture.store,
+      command: 'install',
+      target: fixture.target,
+      driver: fixture.driver,
+      activeStore: fixture.store,
+      onActionEvent: (event) => events.push(event),
     });
     expect(result.status).toBe('failed');
+    if (result.status === 'failed') expect(result.error.phase).toBe('preflight.inspect');
+    expect(result.actions).toEqual([{ name: 'preflight.inspect', status: 'failed' }]);
+    expect(events.map((event) => `${event.data.name}:${event.data.phase}`)).toEqual([
+      'preflight.inspect:start',
+      'preflight.inspect:failure',
+    ]);
     expect(fixture.log).toEqual(['inspect.artifact']);
     expect(result.cleanupAttempted).toBe(false);
+  });
+
+  it('reports a partial ownership inspection as a failed preflight action', async () => {
+    const fixture = createFixture({ initial: 'partial', requiresNative: false });
+    const result = await executeRebuildOperation({
+      command: 'install',
+      target: fixture.target,
+      driver: fixture.driver,
+      activeStore: fixture.store,
+    });
+
+    expect(result.status).toBe('failed');
+    if (result.status === 'failed') expect(result.error.phase).toBe('preflight.inspect');
+    expect(result.actions).toEqual([{ name: 'preflight.inspect', status: 'failed' }]);
   });
 
   it('stops after stale cleanup fails and does not start materialization', async () => {

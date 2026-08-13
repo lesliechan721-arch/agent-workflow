@@ -11,6 +11,50 @@ export type CommandAction =
   | 'cleanup'
   | 'config'
   | 'status';
+export type RebuildCommand = 'install' | 'upgrade' | 'cleanup' | 'reinstall' | 'uninstall';
+export type RebuildActionName =
+  | 'preflight.inspect'
+  | 'stale.cleanup'
+  | 'native.write'
+  | 'artifacts.write'
+  | 'active.prepare'
+  | 'active.discard'
+  | `lifecycle.${PluginLifecycleEvent}`
+  | 'active.promote'
+  | 'postcheck.inspect'
+  | 'recovery.cleanup'
+  | 'cleanup.owned'
+  | 'active.read'
+  | 'active.remove'
+  | 'active.release'
+  | 'operation.lock'
+  | 'operation.release';
+export type RebuildActionEventData =
+  | {
+      name: RebuildActionName;
+      phase: 'start';
+    }
+  | {
+      name: RebuildActionName;
+      phase: 'success';
+      durationMs: number;
+    }
+  | {
+      name: RebuildActionName;
+      phase: 'failure';
+      durationMs: number;
+      message?: string;
+    };
+export interface RebuildActionEvent {
+  type: 'rebuild:action';
+  source: {
+    plugin: string;
+    platform: PlatformName;
+    scope: Scope;
+    action: RebuildCommand;
+  };
+  data: RebuildActionEventData;
+}
 export type StrictSemVerString = string;
 export type CliVersion = StrictSemVerString;
 export type CatalogVersion = StrictSemVerString;
