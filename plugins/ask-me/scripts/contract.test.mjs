@@ -692,7 +692,10 @@ test('behavior corpora preserve all redesigned assertions in executable conversa
   assert.match(readme, /use_project_rules: true/);
   assert.match(readme, /requirements-clarifier-evals\.json/);
   assert.match(readme, /decision-grill-evals\.json/);
-  assert.match(readme, /Claude.*不能把 Codex/s);
+  assert.doesNotMatch(
+    readme,
+    /(Full Access|allow-unmanaged-processes|后代进程|完整批次|review:publish|Claude.*不能把 Codex)/s,
+  );
 });
 
 test('prepared bundle renders the platform question tool for both skills', async () => {

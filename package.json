@@ -29,6 +29,7 @@
     "plugin:version:check": "node .agents/skills/create-aw-plugin/scripts/check_plugin_versions.mjs --all --mode author",
     "plugin:version:check:release": "node .agents/skills/create-aw-plugin/scripts/check_plugin_versions.mjs --all --mode release",
     "review:publish": "pnpm --filter @lesliechan721/aw review:publish --",
+    "review:release": "pnpm --filter @lesliechan721/aw review:release --",
     "test:smoke:plugin-scripts": "pnpm --filter @lesliechan721/aw test:smoke:plugin-scripts",
     "pack:cli": "node scripts/release/pack-cli.mjs",
     "release:verify:cli": "pnpm test && pnpm test:perf:gate && pnpm test:smoke:build && pnpm test:smoke:pack:cli && pnpm test:smoke:fetch",

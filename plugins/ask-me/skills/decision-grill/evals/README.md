@@ -1,6 +1,6 @@
 # Decision Grill 作者期评测
 
-本目录由 `decision-grill` 持有。确定性 `plugin:test` 不调用模型，不能替代 Codex 行为证据。
+本目录由 `decision-grill` 持有。
 
 ```bash
 pnpm plugin:eval ask-me --skill decision-grill --batch-name materialization --materialize-only
@@ -12,5 +12,3 @@ pnpm plugin:eval ask-me --skill decision-grill --batch-name release
 `ask-me-routing-cases.json` 是双 Skill 路由矩阵。它用 `expected_loaded_skills` 精确区分 `decision-grill`、`requirements-clarifier`、不加载和同时加载。8 条核心 validation 用例是发布门禁，每条运行 10 次；6 条事实、显式调用和委托补充用例属于 sanity。正确路由至少为 90%，任何同时加载都失败。报告还记录首个和全部已加载 Skill、问题工具等待、最终响应和终止原因。
 
 `decision-grill-evals.json` 包含 15 个会话用例。原 10 条继续作为协议回归；新增用例降低提示度，并检查依赖顺序、静默遗漏、用户决定不被代答、共享理解确认和纠错后重开分支。conversation baseline 只移除 owner Skill，并保留 `requirements-clarifier`。
-
-真实模型默认要求 Full Access。无 Full Access 时会在模型启动前阻断；用户确认风险后可传 `--allow-unmanaged-processes`。完整批次固定在项目 `.tmp/agent-workflows/evals/`；`review:publish` 只把正式 `report.md` 和 `summary.json` 写入 `plugins/ask-me/reports/decision-grill/<batch-id>/`。

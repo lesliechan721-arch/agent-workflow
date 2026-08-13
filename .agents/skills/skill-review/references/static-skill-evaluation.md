@@ -47,4 +47,4 @@ node .agents/skills/skill-review/scripts/inspect_skill_target.mjs \
 
 该命令读取单次运行的原始 `EvaluationBundle`。批次根的 `evals/evaluation.json` 只用于跨运行汇总。
 
-`needs_review` 必须逐项读取 trace；`incomplete`、`failed` 或未完成的定性复核都不能形成 release pass。用 `pnpm review:publish -- --skill <skill> --batch-id <batch-id> --report <report.md> --scorecard <scorecard.json>` 发布正式人读报告和 schema v2 摘要，并封存临时批次；review-only 使用 `--batch-name`。中间草稿放项目 `.tmp/agent-workflows/reviews/`。发布后人工更新 Skill README 的最近正式报告摘要、仓库相对路径和被评估 Git commit。真实模型证据只覆盖 Codex。
+`needs_review` 必须逐项读取 trace；`incomplete`、`failed` 或未完成的定性复核都不能形成 release pass。完整 eval 的 full/release 评审默认用 `pnpm review:publish -- --skill <skill> --batch-id <batch-id> --report <report.md> --scorecard <scorecard.json>` 发布正式人读报告和 schema v2 摘要，并封存临时批次；review-only 使用 `--batch-name`。中间草稿放项目 `.tmp/agent-workflows/reviews/`。full 模式不更新 Skill README；release 模式发布后自动登记，已发布 full/release 报告也可用 `pnpm review:release -- --skill <skill> --batch-id <batch-id>` 以后登记。真实模型证据只覆盖 Codex。

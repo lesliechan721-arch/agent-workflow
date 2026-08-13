@@ -10,6 +10,7 @@ import {
   publishEvalRunToBatch,
   publishSkillReviewToBatch,
   refreshSkillReportBatch,
+  releasePublishedSkillReview,
   type EvaluationLike,
   type SkillEvalRunLayout,
   type SkillReportOwner,
@@ -292,6 +293,96 @@ describe('Skill report batches', () => {
 
     await expect(fs.readFile(pluginReadmePath, 'utf8')).resolves.toBe(pluginReadme);
     await expect(fs.readFile(skillReadmePath, 'utf8')).resolves.toBe(skillReadme);
+  });
+
+  it('releases an existing full review to Skill README without changing the formal report', async () => {
+    const repoRoot = await makeRepo();
+    const readmePath = path.join(
+      repoRoot,
+      'plugins',
+      'demo-plugin',
+      'skills',
+      'demo-skill',
+      'README.md',
+    );
+    const originalReadme = await fs.readFile(readmePath, 'utf8');
+    const published = await publishSkillReviewToBatch({
+      repoRoot,
+      owner,
+      batchName: 'full-review',
+      reviewId: '20260812T010500Z-00000004',
+      source,
+      report: '# Full Review\n',
+      scorecard: { review: { mode: 'full' }, findings: [] },
+      calculated: {
+        mode: 'full',
+        weightedScore: 84.5,
+        coverage: 100,
+        confidence: 'high',
+        release: 'pass-after-fixes',
+      },
+    });
+    await expect(fs.readFile(readmePath, 'utf8')).resolves.toBe(originalReadme);
+    const formalReportPath = path.join(
+      repoRoot,
+      'plugins',
+      'demo-plugin',
+      'reports',
+      'demo-skill',
+      published.batchId,
+      'report.md',
+    );
+    const formalReport = await fs.readFile(formalReportPath, 'utf8');
+
+    const released = await releasePublishedSkillReview({
+      repoRoot,
+      owner,
+      batchId: published.batchId,
+    });
+    expect(released).toMatchObject({
+      changed: true,
+      sourceChanged: true,
+      pluginReleaseIntentMayBeRequired: true,
+      readmePath: 'plugins/demo-plugin/skills/demo-skill/README.md',
+      reportPath: `plugins/demo-plugin/reports/demo-skill/${published.batchId}/report.md`,
+    });
+    await expect(fs.readFile(readmePath, 'utf8')).resolves.toContain(
+      '- 最近正式报告：`full`，结论 `pass-after-fixes`，加权分 `84.5`',
+    );
+    await expect(fs.readFile(readmePath, 'utf8')).resolves.toContain(
+      `plugins/demo-plugin/reports/demo-skill/${published.batchId}/report.md`,
+    );
+    await expect(fs.readFile(formalReportPath, 'utf8')).resolves.toBe(formalReport);
+
+    await expect(releasePublishedSkillReview({
+      repoRoot,
+      owner,
+      batchId: published.batchId,
+    })).resolves.toMatchObject({ changed: false, sourceChanged: false });
+  });
+
+  it('does not release a quick or delta report to Skill README', async () => {
+    const repoRoot = await makeRepo();
+    const published = await publishSkillReviewToBatch({
+      repoRoot,
+      owner,
+      batchName: 'delta-review',
+      source,
+      report: '# Delta Review\n',
+      scorecard: { review: { mode: 'delta' }, findings: [] },
+      calculated: {
+        mode: 'delta',
+        weightedScore: null,
+        coverage: 50,
+        confidence: 'medium',
+        release: 'provisional',
+      },
+    });
+    await expect(releasePublishedSkillReview({
+      repoRoot,
+      owner,
+      batchId: published.batchId,
+    })).rejects.toThrow('Only a published full or release review');
   });
 
   it('retries incomplete targets while preserving every attempt', async () => {

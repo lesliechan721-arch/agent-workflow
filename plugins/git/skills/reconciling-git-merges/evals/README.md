@@ -16,4 +16,4 @@ pnpm plugin:eval git --skill reconciling-git-merges --batch-name materialization
 pnpm plugin:eval git --skill reconciling-git-merges --batch-name router-validation --suite router --split validation --runs 1
 ```
 
-中央 manifest 运行 materialization、trigger 路由和四个 Git fixture 行为用例。`pnpm plugin:test git` 只确定性校验 runner、合同和附件；真实模型行为仅由 `pnpm plugin:eval` 证明。
+该 manifest 运行 materialization、trigger 路由和四个 Git fixture 行为用例。
