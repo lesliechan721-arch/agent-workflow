@@ -1,0 +1,22 @@
+{
+  "target": {
+    "kind": "static-skill",
+    "name": "revised-helper"
+  },
+  "request": {
+    "goal": "Review this adjustment",
+    "depth": null,
+    "rescore_requested": false
+  },
+  "previous_version": {
+    "available": true,
+    "open_findings": ["F-OLD-1"]
+  },
+  "revision": {
+    "changed_areas": ["triggering", "scope_composition"],
+    "claimed_fix": "F-OLD-1"
+  },
+  "evidence": [
+    "Both the previous and revised Skill versions are available."
+  ]
+}

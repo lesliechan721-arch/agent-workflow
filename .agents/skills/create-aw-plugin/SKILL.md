@@ -88,8 +88,8 @@ compatibility: Requires the agent-workflows repository, Node.js 20+, and install
    - 真实模型 eval 启动后保留同一进程会话。首轮和后续等待都使用工具允许的最长响应式等待时间；等待超时不表示 eval 失败，不要另开短周期状态轮询命令
    - 完成条件：每个修改面有直接确定性测试；重大 Skill 修改有 with-skill/baseline behavior 和适用 trigger evidence；失败已修复并重跑
 9. **交付**
-   - full/release 评审消费完整 eval 后默认执行 `review:publish`；full 只生成正式报告，release 再把报告登记到 Skill README
-   - 已发布的 full/release 报告可用 `review:release` 以后登记；插件 Skill README 变化必须由现有或新增 release intent 覆盖
+   - 评审默认只返回结果；用户明确要求发布时才执行 `review:publish`，该命令生成正式报告并封存批次，但不修改 Skill README
+   - 只有用户另行明确要求登记时，才在批次封存后运行 `review:release`；插件 Skill README 变化必须由现有或新增 release intent 覆盖
    - 报告修改的源码文件、运行的验证、未验证项和仍需用户决定的风险
    - 完成条件：明确区分完整通过、轻量预检、模型证据和未运行项
 

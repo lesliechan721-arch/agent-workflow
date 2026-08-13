@@ -2,6 +2,7 @@
 
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
+import { realpathSync } from 'node:fs';
 import {
   access,
   cp,
@@ -14,13 +15,19 @@ import {
   stat,
   writeFile,
 } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import YAML from 'yaml';
-
 const execFileAsync = promisify(execFile);
+const requireFromScript = createRequire(import.meta.url);
+let yamlModule;
+
+function yaml() {
+  yamlModule ??= requireFromScript('yaml');
+  return yamlModule;
+}
 const SCRIPT_ROOT = path.dirname(fileURLToPath(import.meta.url));
 const REVIEW_SKILL_ROOT = path.dirname(SCRIPT_ROOT);
 const REPO_ROOT = path.resolve(REVIEW_SKILL_ROOT, '..', '..', '..');
@@ -624,7 +631,7 @@ export function parseSkillName(content, skillRoot) {
   if (!match) fail(`SKILL.md has no valid frontmatter: ${skillRoot}`);
   let frontmatter;
   try {
-    frontmatter = record(YAML.parse(match[1]), 'SKILL.md frontmatter');
+    frontmatter = record(yaml().parse(match[1]), 'SKILL.md frontmatter');
   } catch (error) {
     fail(`SKILL.md has invalid YAML frontmatter: ${error instanceof Error ? error.message : String(error)}`);
   }
@@ -1398,7 +1405,8 @@ async function main() {
   await run(options, skillRoot, skillName, manifest);
 }
 
-const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+const isMain = process.argv[1] &&
+  realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
 if (isMain) {
   await main().catch((error) => {
     process.stderr.write(`${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);

@@ -167,9 +167,9 @@ conversation case 默认只读。执行写入型作者任务时，case 必须显
 
 case-capable suite 在每个 case 的全部 repetitions 后发布原子检查点。case 为 `incomplete` 时当前运行停止。同一 `--batch-id` 的下一次运行复用 terminal case，并重跑 incomplete 或 missing case；未完成 case 的全部 repetitions 会重新运行。没有 case 合同的 suite 仍整体重跑。真实模型 eval 可能运行几十分钟到数小时。调用方应保留同一个进程 session，并在首轮和后续等待中直接使用工具允许的最长响应式等待时间。等待超时不是 eval 失败。不要使用短周期 wait，也不要另开 `sleep`、`ps`、报告文件、Git 或其它状态轮询命令。
 
-插件完整 eval 批次固定在 `.tmp/agent-workflows/evals/plugin/<plugin>/<skill>/<batch-id>/`；静态 Skill 使用 `.tmp/agent-workflows/evals/static/<skill>/<batch-id>/`。批次内保存 run、target、raw、scorecard 和自动汇总；只有 `work/<run-id>/` 在单次命令结束后清理。full/release 完整评审默认执行 `review:publish`；插件正式报告写到 `plugins/<plugin>/reports/<skill>/<batch-id>/{report.md,summary.json}`，静态 Skill 写到 `.agents/reports/<skill>/<batch-id>/{report.md,summary.json}`。构建、安装和 runtime digest 排除 Skill `evals/**` 与插件 `reports/**`，但保留 Skill README。
+插件完整 eval 批次固定在 `.tmp/agent-workflows/evals/plugin/<plugin>/<skill>/<batch-id>/`；静态 Skill 使用 `.tmp/agent-workflows/evals/static/<skill>/<batch-id>/`。批次内保存 run、target、raw、scorecard 和自动汇总；只有 `work/<run-id>/` 在单次命令结束后清理。用户明确要求发布时执行 `review:publish`；插件正式报告写到 `plugins/<plugin>/reports/<skill>/<batch-id>/{report.md,summary.json}`，静态 Skill 写到 `.agents/reports/<skill>/<batch-id>/{report.md,summary.json}`。构建、安装和 runtime digest 排除 Skill `evals/**` 与插件 `reports/**`，但保留 Skill README。
 
-full 模式发布不更新 Skill README。release 模式在报告发布和批次封存后登记 README；已经发布的 full/release 报告也可用 `review:release` 以后登记。插件 Skill README 登记属于 production source 变化，必须由 release intent 覆盖；普通 eval 不产生可提交报告。
+`review:publish` 不更新 Skill README。用户另行明确要求登记时，使用 `review:release` 更新已经发布的 full/release 报告记录。插件 Skill README 登记属于 production source 变化，必须由 release intent 覆盖；普通 eval 不产生可提交报告。
 
 ## Pre-commit Checklist
 

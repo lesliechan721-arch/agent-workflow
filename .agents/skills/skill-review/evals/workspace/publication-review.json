@@ -1,0 +1,21 @@
+{
+  "target": {
+    "kind": "static-skill",
+    "name": "review-ready-helper"
+  },
+  "mode": "full",
+  "request": {
+    "formal_publish": false,
+    "register_readme": false
+  },
+  "evaluation": {
+    "complete": true,
+    "outcome": "passed",
+    "qualitative_review": "complete",
+    "batch_status": "open"
+  },
+  "evidence": [
+    "The requested deliverable is a full review response.",
+    "The evaluation batch is complete and remains open."
+  ]
+}

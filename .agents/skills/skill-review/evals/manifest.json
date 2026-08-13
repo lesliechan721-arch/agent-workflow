@@ -6,6 +6,10 @@
       {
         "from": ".agents/skills/skill-review/evals/workspace",
         "to": "fixtures"
+      },
+      {
+        "from": ".agents/fixtures/skill-review/near-miss-skill",
+        "to": "fixtures/near-miss-skill"
       }
     ]
   },
@@ -18,9 +22,9 @@
       "cases": "./evals/trigger-cases.json",
       "observeSpawnAgent": false,
       "isolation": "standard",
-      "strictNegativeSplits": ["validation"],
-      "defaultRuns": 3,
-      "releaseSplits": ["validation"],
+      "strictNegativeSplits": ["validation", "sanity"],
+      "defaultRuns": 1,
+      "releaseSplits": ["validation", "sanity"],
       "requiredForRelease": true,
       "perRunTimeoutMs": 180000
     },

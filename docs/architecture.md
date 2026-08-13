@@ -61,7 +61,7 @@ Local runtime
 
 - 仓库源码层是插件作者维护的输入。
 - Skill 根的 `evals/**` 和插件根的正式 `reports/**` 不进入 catalog runtime bundle、安装制品或 runtime digest。Skill `README.md` 是源码文档，会随 Skill 发布；只有 release 登记会把正式报告摘要写入该文件，full 报告发布不会。
-- 完整 eval/review 批次固定在仓库 `.tmp/agent-workflows/evals/`，不进入 Git。full/release 完整评审默认执行 `review:publish`；插件正式报告写到 `plugins/<plugin>/reports/<skill>/<batch-id>/`，repo-local 静态 Skill 写到 `.agents/reports/<skill>/<batch-id>/`；每个正式目录只含 `report.md` 和 schema v2 `summary.json`。`review:release` 只把已发布 full/release 报告登记到 Skill README，不修改正式报告或临时批次。
+- 完整 eval/review 批次固定在仓库 `.tmp/agent-workflows/evals/`，不进入 Git。用户明确要求发布时执行 `review:publish`；插件正式报告写到 `plugins/<plugin>/reports/<skill>/<batch-id>/`，repo-local 静态 Skill 写到 `.agents/reports/<skill>/<batch-id>/`；每个正式目录只含 `report.md` 和 schema v2 `summary.json`。`review:publish` 不更新 README；用户另行明确要求登记时执行 `review:release`，该命令不修改正式报告或临时批次。
 - catalog staging 是生成物，不手工修改。
 - `@lesliechan721/aw-plugins-manifest` 是 sidecar；`@lesliechan721/aw-plugins` 是同版本 full catalog。
 - CLI version、catalog version 和 plugin version 是三套独立身份。

@@ -9,7 +9,6 @@ import { readPluginEvalManifest } from './plugin-eval-contract.js';
 import {
   computeAuthorSourceDigest,
   publishSkillReviewToBatch,
-  releasePublishedSkillReview,
   resolveSkillReportRoot,
   type SkillReportOwner,
 } from './skill-reporting.js';
@@ -37,6 +36,9 @@ function usage(): string {
     '  --review-id <id>     Use an explicit review id',
     '  --report <path>      Markdown review draft; relative paths use the repository root',
     '  --scorecard <path>   JSON scorecard draft; relative paths use the repository root',
+    '',
+    'Publishes the report and seals the batch. It does not update the Skill README.',
+    'Use review:release as a separate, explicit README registration action.',
   ].join('\n');
 }
 
@@ -256,30 +258,11 @@ async function main(): Promise<void> {
     repoRoot,
     path.join(resolveSkillReportRoot(repoRoot, owner), summary.batchId),
   ).split(path.sep).join('/');
-  let released: Awaited<ReturnType<typeof releasePublishedSkillReview>> | null = null;
-  if (result.review.mode === 'release') {
-    try {
-      released = await releasePublishedSkillReview({
-        repoRoot,
-        owner,
-        batchId: summary.batchId,
-      });
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      throw new Error(
-        `Review was published and the batch was sealed at ${reportDir}, ` +
-          `but Skill README release failed: ${detail}. ` +
-          `Retry with pnpm review:release -- --skill ${owner.skill}` +
-          `${owner.kind === 'plugin-skill' ? ` --plugin ${owner.plugin}` : ''} ` +
-          `--batch-id ${summary.batchId}.`,
-      );
-    }
-  }
   process.stdout.write(`${JSON.stringify({
     ok: true,
     batchId: summary.batchId,
     reportDir,
-    released,
+    released: null,
     summary,
   }, null, 2)}\n`);
 }
