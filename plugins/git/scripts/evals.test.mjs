@@ -24,6 +24,12 @@ import {
   loadCases as loadMergeCases,
   parseArgs as parseMergeEvalArgs,
 } from '../skills/reconciling-git-merges/evals/run-merge-evals.mjs';
+import {
+  ignoreEntriesForCase as worktreeIgnoreEntriesForCase,
+  loadCases as loadWorktreeCases,
+  parseArgs as parseWorktreeEvalArgs,
+  snapshot as snapshotWorktreeRepository,
+} from '../skills/isolating-work-with-git-worktrees/evals/run-worktree-evals.mjs';
 
 const execFileAsync = promisify(execFile);
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
@@ -85,6 +91,9 @@ async function testEvalCorpora(sourceRoot) {
     mergeTriggerContent,
     mergeEvalContent,
     mergeManifestContent,
+    worktreeTriggerContent,
+    worktreeEvalContent,
+    worktreeManifestContent,
   ] = await Promise.all([
     readFile(
       path.join(sourceRoot, 'skills', 'git-commit', 'evals', 'trigger-cases.json'),
@@ -104,6 +113,36 @@ async function testEvalCorpora(sourceRoot) {
     ),
     readFile(
       path.join(sourceRoot, 'skills', 'reconciling-git-merges', 'evals', 'manifest.json'),
+      'utf8',
+    ),
+    readFile(
+      path.join(
+        sourceRoot,
+        'skills',
+        'isolating-work-with-git-worktrees',
+        'evals',
+        'trigger-cases.json',
+      ),
+      'utf8',
+    ),
+    readFile(
+      path.join(
+        sourceRoot,
+        'skills',
+        'isolating-work-with-git-worktrees',
+        'evals',
+        'evals.json',
+      ),
+      'utf8',
+    ),
+    readFile(
+      path.join(
+        sourceRoot,
+        'skills',
+        'isolating-work-with-git-worktrees',
+        'evals',
+        'manifest.json',
+      ),
       'utf8',
     ),
   ]);
@@ -264,6 +303,136 @@ async function testEvalCorpora(sourceRoot) {
     help: false,
   });
   assert.throws(() => parseMergeEvalArgs(['--runs', '0']), /positive integer/);
+
+  const worktreeDocument = JSON.parse(worktreeTriggerContent);
+  const worktreeCases = worktreeDocument.cases;
+  const worktreeParticipants = new Set([
+    'isolating-work-with-git-worktrees',
+    'reconciling-git-merges',
+    'git-commit',
+  ]);
+  assert.equal(worktreeDocument.schemaVersion, 1);
+  assert.equal(worktreeDocument.skill, 'isolating-work-with-git-worktrees');
+  assert.equal(worktreeCases.length, 27);
+  assert.equal(worktreeCases.filter((entry) => entry.split === 'train').length, 14);
+  assert.equal(worktreeCases.filter((entry) => entry.split === 'validation').length, 6);
+  assert.equal(worktreeCases.filter((entry) => entry.split === 'sanity').length, 7);
+  assert.equal(new Set(worktreeCases.map((entry) => entry.id)).size, worktreeCases.length);
+  assert.equal(
+    worktreeCases.filter((entry) =>
+      entry.expected_loaded_skills.includes('isolating-work-with-git-worktrees'),
+    ).length,
+    13,
+  );
+  assert.equal(
+    worktreeCases.filter((entry) => entry.expected_loaded_skills.length === 0).length,
+    11,
+  );
+  for (const entry of worktreeCases) {
+    assert.equal(Array.isArray(entry.expected_loaded_skills), true);
+    assert.equal(
+      entry.expected_loaded_skills.every((skill) => worktreeParticipants.has(skill)),
+      true,
+    );
+    assert.equal(
+      new Set(entry.expected_loaded_skills).size,
+      entry.expected_loaded_skills.length,
+    );
+  }
+  const expectedWorktreeRouting = new Map([
+    ['source_01', ['isolating-work-with-git-worktrees']],
+    ['source_08', ['isolating-work-with-git-worktrees']],
+    ['source_10', ['isolating-work-with-git-worktrees']],
+    ['source_11', []],
+    ['source_13', []],
+    ['source_15', []],
+    ['source_17', ['reconciling-git-merges']],
+    ['source_20', []],
+    ['sanity_parallel_branch', ['isolating-work-with-git-worktrees']],
+    ['sanity_list_worktrees', []],
+    ['sanity_local_commit', ['git-commit']],
+    ['sanity_merge_conflict', ['reconciling-git-merges']],
+  ]);
+  for (const [id, expectedSkills] of expectedWorktreeRouting) {
+    const entry = worktreeCases.find((candidate) => candidate.id === id);
+    assert.ok(entry, `Missing required worktree routing case ${id}`);
+    assert.deepEqual(entry.expected_loaded_skills, expectedSkills);
+  }
+  assert.equal(
+    worktreeCases.some((entry) =>
+      entry.query.includes('$isolating-work-with-git-worktrees'),
+    ),
+    false,
+  );
+  const releaseParticipants = new Set(
+    worktreeCases
+      .filter((entry) => ['validation', 'sanity'].includes(entry.split))
+      .flatMap((entry) => entry.expected_loaded_skills),
+  );
+  assert.deepEqual(
+    [...releaseParticipants].sort(),
+    [...worktreeParticipants].sort(),
+  );
+
+  const worktreeEvals = JSON.parse(worktreeEvalContent);
+  const worktreeManifest = JSON.parse(worktreeManifestContent);
+  assert.equal(worktreeEvals.skill_name, 'isolating-work-with-git-worktrees');
+  assert.deepEqual(
+    worktreeEvals.evals.map((entry) => entry.id),
+    [
+      'preserve_dirty_workspace_and_use_default_path',
+      'stop_when_default_root_not_ignored',
+      'reuse_existing_isolation',
+      'report_dirty_baseline',
+    ],
+  );
+  for (const entry of worktreeEvals.evals) {
+    assert.equal(typeof entry.name, 'string');
+    assert.equal(typeof entry.prompt, 'string');
+    assert.equal(typeof entry.expected_output, 'string');
+  }
+  assert.equal(worktreeManifest.skill, 'isolating-work-with-git-worktrees');
+  assert.equal(worktreeManifest.suites.length, 2);
+  const worktreeRouterSuite = worktreeManifest.suites.find((suite) => suite.id === 'router');
+  const worktreeBehaviorSuite = worktreeManifest.suites.find((suite) => suite.id === 'behavior');
+  assert.equal(worktreeRouterSuite.id, 'router');
+  assert.equal(worktreeRouterSuite.kind, 'trigger');
+  assert.deepEqual(worktreeRouterSuite.skills, [
+    'isolating-work-with-git-worktrees',
+    'reconciling-git-merges',
+    'git-commit',
+  ]);
+  assert.equal(worktreeRouterSuite.forbidMultipleSkillLoads, true);
+  assert.equal(worktreeRouterSuite.minimumPassRate, 0.8);
+  assert.equal(worktreeRouterSuite.cases, './trigger-cases.json');
+  assert.deepEqual(worktreeRouterSuite.strictNegativeSplits, ['validation', 'sanity']);
+  assert.deepEqual(worktreeRouterSuite.releaseSplits, ['validation', 'sanity']);
+  assert.equal(worktreeBehaviorSuite.kind, 'command');
+  assert.deepEqual(worktreeBehaviorSuite.skills, [
+    'isolating-work-with-git-worktrees',
+    'reconciling-git-merges',
+    'git-commit',
+  ]);
+  assert.equal(worktreeBehaviorSuite.entry, './run-worktree-evals.mjs');
+  assert.equal(worktreeBehaviorSuite.cases, './evals.json');
+  assert.equal(worktreeBehaviorSuite.requiredForRelease, true);
+  assert.deepEqual(
+    (await loadWorktreeCases()).map((entry) => entry.id),
+    worktreeEvals.evals.map((entry) => entry.id),
+  );
+  assert.deepEqual(
+    parseWorktreeEvalArgs(['--runs', '2', '--case', 'reuse_existing_isolation']),
+    {
+      runs: 2,
+      timeoutMs: 300000,
+      codexBin: 'codex',
+      model: 'gpt-5.6-luna',
+      caseId: 'reuse_existing_isolation',
+      output: undefined,
+      help: false,
+    },
+  );
+  assert.throws(() => parseWorktreeEvalArgs(['--timeout-ms', '0']), /positive integer/);
 }
 
 function assertRenderedSkill(skill) {
@@ -314,11 +483,38 @@ function assertCoreMergeContract(skill) {
   assert.match(skill, /不得在未被要求时推送/);
 }
 
+function assertCoreWorktreeContract(skill) {
+  assert.match(skill, /已有满足要求的 worktree 或 sandbox；有则复用，不重复创建/);
+  assert.match(skill, /共享对象库和多数 refs/);
+  assert.match(skill, /需要仓库级隔离时改用独立 clone 或平台 sandbox/);
+  assert.match(skill, /优先使用平台原生的 worktree\/隔离能力/);
+  assert.match(skill, /默认使用仓库根目录下的 `.worktrees\/<分支或任务名>\/`/);
+  assert.match(skill, /创建前确认 `.worktrees\/` 已被忽略/);
+  assert.match(skill, /不得擅自修改并提交 `.gitignore`/);
+  assert.match(skill, /不得 stash、reset、discard 当前无关修改/);
+  assert.match(skill, /不得用 force 抢占已有 worktree 或已检出分支/);
+  assert.match(skill, /创建失败时不得静默退回当前工作区/);
+  assert.match(skill, /确认隔离工作区的路径、基点、分支和初始状态/);
+  assert.match(skill, /若已有失败，先报告，不要归因于本次工作/);
+  assert.match(skill, /将任务修改限制在该工作区，并报告路径与分支/);
+  assert.match(skill, /仅在用户要求且无未保存工作后使用 `git worktree remove`/);
+  assert.match(skill, /不要直接删除目录、强制清理或顺带删除分支/);
+}
+
 async function testSkillRenders(context) {
-  const [source, mergeSource] = await Promise.all([
+  const [source, mergeSource, worktreeSource] = await Promise.all([
     readFile(path.join(context.sourceRoot, 'skills', 'git-commit', 'SKILL.md'), 'utf8'),
     readFile(
       path.join(context.sourceRoot, 'skills', 'reconciling-git-merges', 'SKILL.md'),
+      'utf8',
+    ),
+    readFile(
+      path.join(
+        context.sourceRoot,
+        'skills',
+        'isolating-work-with-git-worktrees',
+        'SKILL.md',
+      ),
       'utf8',
     ),
   ]);
@@ -332,6 +528,12 @@ async function testSkillRenders(context) {
   );
   assert.equal(mergeSource.includes('user-invocable:'), false);
   assert.equal(mergeSource.includes('metadata:'), false);
+  assert.match(
+    worktreeSource,
+    /当编码任务需要独立 Git 工作目录以保护当前工作区或并行检出另一分支时使用/,
+  );
+  assert.equal(worktreeSource.includes('user-invocable:'), false);
+  assert.equal(worktreeSource.includes('metadata:'), false);
 
   if (context.platform) {
     const [
@@ -339,6 +541,8 @@ async function testSkillRenders(context) {
       bundledOpenai,
       bundledMergeSkill,
       bundledMergeOpenai,
+      bundledWorktreeSkill,
+      bundledWorktreeOpenai,
     ] = await Promise.all([
       readFile(
         path.join(
@@ -382,6 +586,27 @@ async function testSkillRenders(context) {
         ),
         'utf8',
       ),
+      readFile(
+        path.join(
+          context.bundleRoot,
+          context.platform,
+          'skills',
+          'isolating-work-with-git-worktrees',
+          'SKILL.md',
+        ),
+        'utf8',
+      ),
+      readFile(
+        path.join(
+          context.bundleRoot,
+          context.platform,
+          'skills',
+          'isolating-work-with-git-worktrees',
+          'agents',
+          'openai.yaml',
+        ),
+        'utf8',
+      ),
     ]);
     assert.match(
       bundledOpenai,
@@ -393,18 +618,27 @@ async function testSkillRenders(context) {
       /default_prompt: "使用 \$reconciling-git-merges 协调 Git merge 双方意图并验证组合结果。"/,
     );
     assert.match(bundledMergeOpenai, /allow_implicit_invocation: true/);
+    assert.match(
+      bundledWorktreeOpenai,
+      /default_prompt: "使用 \$isolating-work-with-git-worktrees：安全创建或复用 Git worktree/,
+    );
+    assert.match(bundledWorktreeOpenai, /allow_implicit_invocation: true/);
     assertCoreCommitContract(bundledSkill);
     assertCoreMergeContract(bundledMergeSkill);
+    assertCoreWorktreeContract(bundledWorktreeSkill);
     assert.ok(['codex', 'claude'].includes(context.platform));
     assertRenderedSkill(bundledSkill);
     assertRenderedSkill(bundledMergeSkill);
+    assertRenderedSkill(bundledWorktreeSkill);
     return;
   }
 
   assertCoreCommitContract(source);
   assertCoreMergeContract(mergeSource);
+  assertCoreWorktreeContract(worktreeSource);
   assertRenderedSkill(source);
   assertRenderedSkill(mergeSource);
+  assertRenderedSkill(worktreeSource);
 }
 
 async function testWorkspaceFixture() {
@@ -486,6 +720,52 @@ async function testHostileGitConfigurationIsIgnored() {
     await assert.rejects(readFile(sentinelPath, 'utf8'), /ENOENT/);
   } finally {
     await rm(hostileRoot, { recursive: true, force: true });
+  }
+}
+
+async function testWorktreeSnapshotTracksUntrackedContent() {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'git-worktree-snapshot-test-'));
+  try {
+    await initializeRepository(root);
+    const scratch = path.join(root, 'scratch.txt');
+    await writeFile(scratch, 'original untracked content\n', 'utf8');
+    const before = await snapshotWorktreeRepository(root);
+    await writeFile(scratch, 'mutated untracked content\n', 'utf8');
+    const after = await snapshotWorktreeRepository(root);
+    assert.notDeepEqual(after, before);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
+async function testWorktreeIgnoreFixtures() {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'git-worktree-ignore-test-'));
+  const ignored = path.join(root, 'ignored');
+  const unignored = path.join(root, 'unignored');
+  try {
+    await Promise.all([mkdir(ignored), mkdir(unignored)]);
+    await Promise.all([
+      git(ignored, ['init', '--quiet']),
+      git(unignored, ['init', '--quiet']),
+    ]);
+    await Promise.all([
+      writeFile(
+        path.join(ignored, '.gitignore'),
+        `${worktreeIgnoreEntriesForCase('preserve_dirty_workspace_and_use_default_path').join('\n')}\n`,
+        'utf8',
+      ),
+      writeFile(
+        path.join(unignored, '.gitignore'),
+        `${worktreeIgnoreEntriesForCase('stop_when_default_root_not_ignored').join('\n')}\n`,
+        'utf8',
+      ),
+    ]);
+    await git(ignored, ['check-ignore', '--quiet', '--no-index', '.worktrees/probe']);
+    await assert.rejects(
+      git(unignored, ['check-ignore', '--quiet', '--no-index', '.worktrees/probe']),
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 }
 
@@ -610,6 +890,8 @@ async function main() {
   await testSkillRenders(context);
   await testWorkspaceFixture();
   await testHostileGitConfigurationIsIgnored();
+  await testWorktreeSnapshotTracksUntrackedContent();
+  await testWorktreeIgnoreFixtures();
   await testPartialStagingBehavior();
   await testMergeInProgressDetection();
   await testCherryPickConflictDetection();
