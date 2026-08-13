@@ -84,7 +84,7 @@
     {
       "id": "manage_existing_agent",
       "split": "train",
-      "query": "委派已经获准且 agent_alpha 正在运行。请按现有子代理工作流说明下一步怎样等待它；不要再启动新 agent。",
+      "query": "委派已经获准且 agent_alpha 正在运行。请说明下一步怎样等待它；不要实际调用任何 agent 工具，也不要再启动新 agent。",
       "should_load_skill": true,
       "should_spawn_agent": false
     },
@@ -135,7 +135,7 @@
     {
       "id": "validation_explicit_boundary",
       "split": "validation",
-      "query": "$codex-subagent-guide 我已经有一个运行中的 agent_beta；告诉我 timeout 后该怎么处理，但不要新建 agent。",
+      "query": "$codex-subagent-guide 我已经有一个运行中的 agent_beta；告诉我 timeout 后该怎么处理，但不要调用任何 agent 工具，也不要新建 agent。",
       "should_load_skill": true,
       "should_spawn_agent": false
     },

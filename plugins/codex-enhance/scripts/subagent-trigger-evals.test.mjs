@@ -13,12 +13,19 @@ import {
   TRIGGER_WORKSPACE_FIXTURES,
 } from '../skills/codex-subagent-guide/evals/trigger-fixture.mjs';
 
-const ROLE_NAMES = [
+const GUIDE_ROLE_NAMES = [
   'codex-subagent-simple',
   'codex-subagent-general',
   'codex-subagent-complex',
   'codex-subagent-plan-review',
 ];
+const EXPLORE_ROLE_NAMES = [
+  'codex-explore-quick',
+  'codex-explore-standard',
+  'codex-explore-deep',
+  'codex-explore-custom',
+];
+const ROLE_NAMES = [...GUIDE_ROLE_NAMES, ...EXPLORE_ROLE_NAMES];
 
 async function testEvalCorpus() {
   const manifest = JSON.parse(await readEvalResource('manifest.json'));
@@ -99,6 +106,7 @@ async function testEvalCorpus() {
   const expectedContracts = new Map([
     ['authorized_simple_lookup', [true, true]],
     ['specialized_workflow_owns_lifecycle', [false, false]],
+    ['manage_existing_agent', [true, false]],
     ['explicit_skill_without_authority', [true, false]],
     ['validation_should_we_delegate', [false, false]],
     ['sanity_existing_cleanup', [true, false]],
@@ -108,6 +116,18 @@ async function testEvalCorpus() {
     assert.ok(entry, `Missing required eval case ${id}`);
     assert.equal(entry.should_load_skill, shouldLoad);
     assert.equal(entry.should_spawn_agent, shouldSpawn);
+  }
+  assert.match(
+    releaseCases.find((entry) => entry.id === 'manage_existing_agent').query,
+    /不要实际调用任何 agent 工具/,
+  );
+  for (const id of [
+    'specialized_workflow_owns_lifecycle',
+    'validation_specialized_workflow_owner',
+    'sanity_specialized_owner_native',
+  ]) {
+    const entry = compositionCases.find((candidate) => candidate.id === id);
+    assert.match(entry.query, /不要.*调用任何 agent 工具/);
   }
 }
 
@@ -151,7 +171,7 @@ async function testFixtureVariants() {
   }
 }
 
-async function writeFinalSubject(root) {
+async function writeFinalSubject(root, { omitRole, duplicateRole } = {}) {
   const skillRoot = path.join(root, '.agents', 'skills', 'codex-subagent-guide');
   const roleRoot = path.join(root, '.codex', 'agents');
   await Promise.all([
@@ -160,7 +180,7 @@ async function writeFinalSubject(root) {
   ]);
   await writeFile(path.join(skillRoot, 'SKILL.md'), '# Materialized Guide\n', 'utf8');
   await writeFile(path.join(root, '.codex', 'config.toml'), '# materialized config\n', 'utf8');
-  await Promise.all(ROLE_NAMES.map((name) => writeFile(
+  await Promise.all(ROLE_NAMES.filter((name) => name !== omitRole).map((name) => writeFile(
     path.join(roleRoot, `aw-guide-${name}.toml`),
     [
       `name = ${JSON.stringify(name)}`,
@@ -170,6 +190,18 @@ async function writeFinalSubject(root) {
     ].join('\n'),
     'utf8',
   )));
+  if (duplicateRole) {
+    await writeFile(
+      path.join(roleRoot, `duplicate-${duplicateRole}.toml`),
+      [
+        `name = ${JSON.stringify(duplicateRole)}`,
+        `description = ${JSON.stringify(`Duplicate role ${duplicateRole}`)}`,
+        'developer_instructions = "Read-only role."',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+  }
 }
 
 async function testSpecializedWorkspaceUsesFinalArtifact() {
@@ -182,7 +214,10 @@ async function testSpecializedWorkspaceUsesFinalArtifact() {
     const baseline = await createEvalWorkspace({ withSkill: false, fixture: 'default' });
     try {
       assert.equal(await readFile(current.skillPath, 'utf8'), '# Materialized Guide\n');
-      assert.deepEqual(current.roles.map((role) => role.roleFile.name).sort(), [...ROLE_NAMES].sort());
+      assert.deepEqual(
+        current.roles.map((role) => role.roleFile.name).sort(),
+        [...GUIDE_ROLE_NAMES].sort(),
+      );
       await assert.rejects(readFile(baseline.skillPath, 'utf8'), /ENOENT/);
       await assert.rejects(readFile(path.join(current.root, '.codex', 'config.toml'), 'utf8'), /ENOENT/);
       const args = buildCodexArgs(
@@ -224,6 +259,32 @@ async function testSpecializedWorkspaceUsesFinalArtifact() {
   }
 }
 
+async function testGuideRoleValidation() {
+  const cases = [
+    {
+      options: { omitRole: 'codex-subagent-simple' },
+      expected: /role codex-subagent-simple exactly once, got 0/,
+    },
+    {
+      options: { duplicateRole: 'codex-subagent-general' },
+      expected: /role codex-subagent-general exactly once, got 2/,
+    },
+  ];
+  for (const entry of cases) {
+    const subject = await mkdtemp(path.join(os.tmpdir(), 'subagent-invalid-subject-'));
+    const previous = process.env.AW_PLUGIN_EVAL_PROJECT_ROOT;
+    try {
+      await writeFinalSubject(subject, entry.options);
+      process.env.AW_PLUGIN_EVAL_PROJECT_ROOT = subject;
+      await assert.rejects(createEvalWorkspace(), entry.expected);
+    } finally {
+      if (previous === undefined) delete process.env.AW_PLUGIN_EVAL_PROJECT_ROOT;
+      else process.env.AW_PLUGIN_EVAL_PROJECT_ROOT = previous;
+      await rm(subject, { recursive: true, force: true });
+    }
+  }
+}
+
 async function testMissingFinalArtifactFails() {
   const previous = process.env.AW_PLUGIN_EVAL_PROJECT_ROOT;
   delete process.env.AW_PLUGIN_EVAL_PROJECT_ROOT;
@@ -239,6 +300,7 @@ async function main() {
   await testEvalCorpus();
   await testFixtureVariants();
   await testSpecializedWorkspaceUsesFinalArtifact();
+  await testGuideRoleValidation();
   await testMissingFinalArtifactFails();
   console.log('codex-subagent-guide trigger assets and specialized harness tests passed');
 }

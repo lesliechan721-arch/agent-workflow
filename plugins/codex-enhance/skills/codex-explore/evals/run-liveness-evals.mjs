@@ -220,16 +220,26 @@ function livenessMetrics(run) {
 }
 
 function invokesVerifier(call) {
-  if (call?.tool !== 'exec_command' || typeof call.arguments?.cmd !== 'string') {
+  if (call?.tool === 'exec_command' && typeof call.arguments?.cmd === 'string') {
+    return /(?:^|[\s;&|])node\s+(?:\.\/)?docs\/liveness\/verify-records\.mjs(?:$|[\s;&|])/u
+      .test(call.arguments.cmd);
+  }
+  if (
+    call?.tool !== 'exec' ||
+    typeof call.arguments?.input !== 'string' ||
+    call.output === null ||
+    call.output === undefined
+  ) {
     return false;
   }
-  return /(?:^|[\s;&|])node\s+(?:\.\/)?docs\/liveness\/verify-records\.mjs(?:$|[\s;&|])/u
-    .test(call.arguments.cmd);
+  return /\btools\.exec_command\s*\(\s*\{[\s\S]{0,4000}?\bcmd\s*:\s*["'`]node\s+(?:\.\/)?docs\/liveness\/verify-records\.mjs(?:[\s;&|"'`])/u
+    .test(call.arguments.input);
 }
 
 export function evaluateLivenessRun(run, expected, probeEnabled) {
   const finalMessage = run.final_message ?? '';
   const spawnCalls = Array.isArray(run.spawn_calls) ? run.spawn_calls : [];
+  const leafTraceAvailable = run.leaf_trace_available === true;
   const metrics = livenessMetrics(run);
   const assertions = [
     {
@@ -280,10 +290,16 @@ export function evaluateLivenessRun(run, expected, probeEnabled) {
     },
     {
       name: 'verifier_invoked_by_leaf',
-      passed: (run.leaf_tool_calls ?? []).some(invokesVerifier),
-      evidence: JSON.stringify(
-        (run.leaf_tool_calls ?? []).filter((call) => call?.tool === 'exec_command'),
-      ),
+      passed: leafTraceAvailable
+        ? (run.leaf_tool_calls ?? []).some(invokesVerifier)
+        : null,
+      evidence: leafTraceAvailable
+        ? JSON.stringify(
+          (run.leaf_tool_calls ?? []).filter(
+            (call) => ['exec_command', 'exec'].includes(call?.tool),
+          ),
+        )
+        : 'child rollout trace is unavailable',
     },
     evaluateParentScopeIsolation(
       run.collaboration_timeline,
@@ -302,7 +318,8 @@ export function evaluateLivenessRun(run, expected, probeEnabled) {
     });
   }
   return {
-    passed: assertions.every((assertion) => assertion.passed),
+    complete: leafTraceAvailable,
+    passed: leafTraceAvailable && assertions.every((assertion) => assertion.passed === true),
     assertions,
     metrics,
   };
@@ -398,6 +415,9 @@ async function run(options) {
     }
     results.push({
       id: entry.id,
+      complete: runs.every(
+        (result) => !result.execution_error && result.evaluation.complete,
+      ),
       passed: runs.every((result) => result.evaluation.passed),
       summary: summarizeLivenessRuns(runs),
       runs,
@@ -415,13 +435,11 @@ async function run(options) {
     sandbox: 'workspace-write',
     read_only_enforcement: 'instruction-only',
     complete: results.length === selected.length && results.every((result) =>
-      result.runs.length === options.runs &&
-      result.runs.every((run) => !run.execution_error)),
-    passed: results.every((result) => result.passed),
+      result.runs.length === options.runs && result.complete),
+    passed: results.every((result) => result.complete && result.passed),
     case_results: selected.map((entry) => {
       const result = results.find((candidate) => candidate.id === entry.id);
-      const caseComplete = result?.runs.length === options.runs &&
-        result.runs.every((run) => !run.execution_error);
+      const caseComplete = result?.runs.length === options.runs && result.complete === true;
       const casePassed = caseComplete && result.passed === true;
       return {
         id: entry.id,

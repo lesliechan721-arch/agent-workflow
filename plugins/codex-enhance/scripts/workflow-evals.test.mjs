@@ -172,6 +172,18 @@ async function testSpecAndAssertions() {
     evaluateParentScopeIsolation([
       spawnEvent(),
       waitEvent(),
+      lifecycleEvent('exec', {
+        input: 'const result = await tools.exec_command({cmd:"rg timeout docs/liveness/records"}); text(result.output);',
+      }, 'Script completed'),
+      messageEvent(),
+    ], ['docs/liveness/records']).passed,
+    false,
+  );
+
+  assert.equal(
+    evaluateParentScopeIsolation([
+      spawnEvent(),
+      waitEvent(),
       lifecycleEvent('update_plan', { step: '等待 docs/ 探索' }),
       messageEvent(),
     ], ['docs/']).passed,

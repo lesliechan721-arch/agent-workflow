@@ -24,6 +24,12 @@ import {
 
 const evalDir = path.dirname(fileURLToPath(import.meta.url));
 const SKILL_KEY = 'codex-subagent-guide';
+const GUIDE_ROLE_NAMES = [
+  'codex-subagent-simple',
+  'codex-subagent-general',
+  'codex-subagent-complex',
+  'codex-subagent-plan-review',
+];
 export { TRIGGER_WORKSPACE_FIXTURES };
 const ROOT_DEVELOPER_INSTRUCTIONS = [
   'Follow the user request and applicable skills.',
@@ -75,10 +81,7 @@ function parseTomlString(source, key, file) {
 async function readMaterializedRoles(root) {
   const roleRoot = path.join(root, '.codex', 'agents');
   const files = (await readdir(roleRoot)).filter((file) => file.endsWith('.toml')).sort();
-  if (files.length !== 4) {
-    throw new Error(`Materialized codex-subagent-guide must contain four roles, got ${files.length}.`);
-  }
-  return Promise.all(files.map(async (file) => {
+  const roles = await Promise.all(files.map(async (file) => {
     const rolePath = path.join(roleRoot, file);
     const source = await readFile(rolePath, 'utf8');
     const name = parseTomlString(source, 'name', file);
@@ -88,6 +91,15 @@ async function readMaterializedRoles(root) {
       rolePath,
     };
   }));
+  return GUIDE_ROLE_NAMES.map((name) => {
+    const matches = roles.filter((role) => role.roleFile.name === name);
+    if (matches.length !== 1) {
+      throw new Error(
+        `Materialized codex-subagent-guide must contain role ${name} exactly once, got ${matches.length}.`,
+      );
+    }
+    return matches[0];
+  });
 }
 
 export async function createEvalWorkspace({ withSkill = true, fixture = 'default' } = {}) {

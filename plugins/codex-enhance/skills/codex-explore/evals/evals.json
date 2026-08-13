@@ -233,6 +233,28 @@
       ]
     },
     {
+      "id": "hidden_explicit_reasoning",
+      "prompt": "$codex-explore 使用 reasoning_effort=xhigh，从 reports/audit/ 的多日记录和 docs/runbooks/ 中重建 request=req-9 的组件时间线。",
+      "expected_output": "schema 未公开用户显式指定的 reasoning_effort 时不启动子代理，并说明能力限制。",
+      "files": [],
+      "config_values": {},
+      "codex_config": {
+        "features.multi_agent_v2.enabled": true,
+        "features.multi_agent_v2.hide_spawn_agent_metadata": true,
+        "features.multi_agent_v2.expose_spawn_agent_model_overrides": false
+      },
+      "wait_for_completion": true,
+      "expected": {
+        "spawn_calls": { "min": 0, "max": 0 },
+        "allowed_environment_errors": ["must match the configured schema"],
+        "final_message_includes_any": ["reasoning_effort", "推理强度"]
+      },
+      "assertions": [
+        "没有调用 spawn_agent",
+        "最终答复指出当前 schema 无法表达用户显式 reasoning_effort"
+      ]
+    },
+    {
       "id": "invalid_explicit_values",
       "prompt": "$codex-explore 使用 model=definitely-unavailable-model、reasoning_effort=turbo，从 docs/vendor/ 和 logs/ 中核验升级后的 401 原因。若调度参数不可用，不要删除字段或切换预设重试。",
       "expected_output": "无效显式值最多尝试一次；custom role 不降级到预设。",

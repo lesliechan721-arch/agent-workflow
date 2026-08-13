@@ -56,6 +56,7 @@ async function testEvalSpec() {
       'custom_reasoning_only',
       'hidden_fields_preset',
       'hidden_explicit_field',
+      'hidden_explicit_reasoning',
       'invalid_explicit_values',
     ],
   );
@@ -78,6 +79,8 @@ async function testEvalSpec() {
 
   const hiddenExplicit = spec.evals.find((entry) => entry.id === 'hidden_explicit_field');
   assert.equal(modelEvalRunCase(hiddenExplicit).should_spawn_agent, false);
+  const hiddenReasoning = spec.evals.find((entry) => entry.id === 'hidden_explicit_reasoning');
+  assert.equal(modelEvalRunCase(hiddenReasoning).should_spawn_agent, false);
 }
 
 async function testRolloutArgumentEvidence() {
@@ -101,20 +104,89 @@ async function testRolloutArgumentEvidence() {
         call_id: 'call-1',
       },
     };
+    const parentMeta = {
+      type: 'session_meta',
+      payload: { id: 'parent-thread', source: 'cli' },
+    };
+    const childMeta = {
+      type: 'session_meta',
+      payload: {
+        id: 'child-thread',
+        source: {
+          subagent: {
+            thread_spawn: {
+              parent_thread_id: 'parent-thread',
+              agent_path: '/root/trace_evidence',
+            },
+          },
+        },
+      },
+    };
     await writeFile(
       path.join(sessionDir, 'rollout-test.jsonl'),
-      `${JSON.stringify(line)}\n${JSON.stringify(line)}\n`,
+      `${JSON.stringify(parentMeta)}\n${JSON.stringify(line)}\n${JSON.stringify(line)}\n`,
       'utf8',
     );
     await writeFile(
       path.join(sessionDir, 'rollout-leaf.jsonl'),
-      `${JSON.stringify({
+      `${JSON.stringify(childMeta)}\n${JSON.stringify({
+        type: 'event_msg',
+        payload: {
+          type: 'item_completed',
+          item: {
+            type: 'CommandExecution',
+            id: 'leaf-call-1',
+            command: ['/bin/zsh', '-lc', 'pwd && node docs/liveness/verify-records.mjs'],
+            parsed_cmd: [
+              { type: 'read', cmd: 'pwd' },
+              { type: 'unknown', cmd: 'node docs/liveness/verify-records.mjs' },
+            ],
+            status: 'completed',
+            exit_code: 0,
+          },
+        },
+      })}\n${JSON.stringify({
         type: 'response_item',
         payload: {
-          type: 'function_call',
-          name: 'exec_command',
-          arguments: JSON.stringify({ cmd: 'node docs/liveness/verify-records.mjs' }),
-          call_id: 'leaf-call-1',
+          type: 'custom_tool_call',
+          name: 'exec',
+          call_id: 'leaf-code-call-1',
+          input: 'const result = await tools.exec_command({cmd:"node docs/liveness/verify-records.mjs"}); text(result.output);',
+        },
+      })}\n${JSON.stringify({
+        type: 'response_item',
+        payload: {
+          type: 'custom_tool_call_output',
+          call_id: 'leaf-code-call-1',
+          output: 'Script completed',
+        },
+      })}\n`,
+      'utf8',
+    );
+    await writeFile(
+      path.join(sessionDir, 'rollout-unlinked.jsonl'),
+      `${JSON.stringify({
+        type: 'session_meta',
+        payload: {
+          id: 'unlinked-thread',
+          source: {
+            subagent: {
+              thread_spawn: { parent_thread_id: 'other-parent' },
+            },
+          },
+        },
+      })}\n${JSON.stringify({
+        type: 'event_msg',
+        payload: {
+          type: 'item_completed',
+          item: {
+            type: 'CommandExecution',
+            id: 'unlinked-call-1',
+            command: ['/bin/zsh', '-lc', 'node unrelated.mjs'],
+            parsed_cmd: [{ type: 'unknown', cmd: 'node unrelated.mjs' }],
+            status: 'completed',
+            exit_code: 0,
+          },
         },
       })}\n`,
       'utf8',
@@ -130,12 +202,23 @@ async function testRolloutArgumentEvidence() {
       fork_turns: 'none',
     });
     const evidence = await readRolloutEvidenceFromRollouts(codexHome);
+    assert.equal(evidence.leaf_trace_available, true);
+    assert.deepEqual(evidence.leaf_trace.child_threads, [{
+      thread_id: 'child-thread',
+      parent_thread_id: 'parent-thread',
+      agent_path: '/root/trace_evidence',
+    }]);
     assert.equal(evidence.parent_calls.length, 1);
-    assert.equal(evidence.leaf_calls.length, 1);
-    assert.equal(evidence.leaf_calls[0].tool, 'exec_command');
-    assert.deepEqual(evidence.leaf_calls[0].arguments, {
-      cmd: 'node docs/liveness/verify-records.mjs',
+    assert.equal(evidence.leaf_calls.length, 2);
+    const commandCall = evidence.leaf_calls.find((call) => call.tool === 'exec_command');
+    assert.deepEqual(commandCall.arguments, {
+      cmd: 'pwd && node docs/liveness/verify-records.mjs',
     });
+    const codeCall = evidence.leaf_calls.find((call) => call.tool === 'exec');
+    assert.deepEqual(codeCall.arguments, {
+      input: 'const result = await tools.exec_command({cmd:"node docs/liveness/verify-records.mjs"}); text(result.output);',
+    });
+    assert.equal(codeCall.output, 'Script completed');
   } finally {
     await rm(codexHome, { recursive: true, force: true });
   }

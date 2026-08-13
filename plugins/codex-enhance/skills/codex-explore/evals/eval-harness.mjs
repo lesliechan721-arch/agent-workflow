@@ -257,10 +257,69 @@ export function buildCollaborationTimeline(
 
   for (const [index, line] of lines.entries()) {
     const event = parseExecEventLine(line);
+    const completedItem = event?.type === 'event_msg' && event.payload?.type === 'item_completed'
+      ? event.payload.item
+      : null;
+    if (completedItem?.type === 'CommandExecution') {
+      const parsedCommands = Array.isArray(completedItem.parsed_cmd)
+        ? completedItem.parsed_cmd
+          .filter((entry) => typeof entry?.cmd === 'string')
+          .map((entry) => entry.cmd)
+        : [];
+      const rawCommand = Array.isArray(completedItem.command)
+        ? completedItem.command.at(-1)
+        : completedItem.command;
+      const command = typeof rawCommand === 'string'
+        ? rawCommand
+        : parsedCommands.join('\n') || null;
+      if (command) {
+        calls.push({
+          call_id: typeof completedItem.id === 'string'
+            ? `command:${completedItem.id}`
+            : `command:${index + 1}`,
+          namespace: null,
+          tool: 'exec_command',
+          arguments: { cmd: command },
+          output: {
+            exit_code: Number.isInteger(completedItem.exit_code)
+              ? completedItem.exit_code
+              : null,
+            status: completedItem.status ?? null,
+          },
+          rollout_file: path.relative(codexHome, rolloutFile),
+          line_number: index + 1,
+        });
+      }
+      continue;
+    }
     const payload = event?.type === 'response_item' ? event.payload : null;
     const update = agentUpdate(payload, rolloutFile, codexHome, index + 1);
     if (update) {
       calls.push(update);
+      continue;
+    }
+    if (payload?.type === 'custom_tool_call' && typeof payload.name === 'string') {
+      const callId = typeof payload.call_id === 'string' ? payload.call_id : null;
+      if (callId && callsById.has(callId)) {
+        continue;
+      }
+      const call = {
+        call_id: callId,
+        namespace: null,
+        tool: payload.name,
+        arguments: typeof payload.input === 'string'
+          ? { input: payload.input }
+          : null,
+        output: callId && pendingOutputs.has(callId)
+          ? pendingOutputs.get(callId)
+          : null,
+        rollout_file: path.relative(codexHome, rolloutFile),
+        line_number: index + 1,
+      };
+      calls.push(call);
+      if (callId) {
+        callsById.set(callId, call);
+      }
       continue;
     }
     if (payload?.type === 'function_call' && typeof payload.name === 'string') {
@@ -332,7 +391,10 @@ export function buildCollaborationTimeline(
       });
     }
 
-    if (payload?.type !== 'function_call_output' || typeof payload.call_id !== 'string') {
+    if (
+      !['function_call_output', 'custom_tool_call_output'].includes(payload?.type) ||
+      typeof payload.call_id !== 'string'
+    ) {
       continue;
     }
     const output = parseSerializedValue(payload.output);
@@ -347,27 +409,84 @@ export function buildCollaborationTimeline(
   return calls;
 }
 
+function rolloutIdentity(lines) {
+  for (const line of lines) {
+    const event = parseExecEventLine(line);
+    if (event?.type !== 'session_meta' || !event.payload) {
+      continue;
+    }
+    const threadSpawn = event.payload.source?.subagent?.thread_spawn;
+    return {
+      threadId: typeof event.payload.id === 'string' ? event.payload.id : null,
+      parentThreadId: typeof threadSpawn?.parent_thread_id === 'string'
+        ? threadSpawn.parent_thread_id
+        : null,
+      agentPath: typeof threadSpawn?.agent_path === 'string'
+        ? threadSpawn.agent_path
+        : null,
+    };
+  }
+  return { threadId: null, parentThreadId: null, agentPath: null };
+}
+
 export async function readRolloutEvidenceFromRollouts(codexHome) {
   const files = (await listFilesRecursively(path.join(codexHome, 'sessions')))
     .filter((file) => file.endsWith('.jsonl'))
     .sort();
-  const calls = [];
+  const rollouts = [];
   for (const file of files) {
     const content = await readFile(file, 'utf8');
-    calls.push(...buildCollaborationTimeline(content.split('\n'), file, codexHome));
+    const lines = content.split('\n');
+    const identity = rolloutIdentity(lines);
+    const calls = buildCollaborationTimeline(lines, file, codexHome).map((call) => ({
+      ...call,
+      thread_id: identity.threadId,
+      parent_thread_id: identity.parentThreadId,
+    }));
+    rollouts.push({ file, calls, ...identity });
   }
 
-  const parentRollouts = new Set(
-    calls
-      .filter((call) => call.tool === 'spawn_agent')
-      .map((call) => call.rollout_file),
+  const rootParents = rollouts.filter(
+    (rollout) =>
+      rollout.parentThreadId === null &&
+      rollout.calls.some((call) => call.tool === 'spawn_agent'),
   );
-  if (parentRollouts.size === 0) {
-    return { parent_calls: calls, leaf_calls: [] };
+  const fallbackParents = rootParents.length > 0
+    ? rootParents
+    : rollouts.filter((rollout) =>
+      rollout.calls.some((call) => call.tool === 'spawn_agent'));
+  const descendantParentIds = new Set(
+    rootParents.map((rollout) => rollout.threadId).filter(Boolean),
+  );
+  const descendants = [];
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const rollout of rollouts) {
+      if (
+        descendants.includes(rollout) ||
+        !rollout.parentThreadId ||
+        !descendantParentIds.has(rollout.parentThreadId)
+      ) {
+        continue;
+      }
+      descendants.push(rollout);
+      if (rollout.threadId) descendantParentIds.add(rollout.threadId);
+      changed = true;
+    }
   }
   return {
-    parent_calls: calls.filter((call) => parentRollouts.has(call.rollout_file)),
-    leaf_calls: calls.filter((call) => !parentRollouts.has(call.rollout_file)),
+    parent_calls: fallbackParents.flatMap((rollout) => rollout.calls),
+    leaf_calls: descendants.flatMap((rollout) => rollout.calls),
+    leaf_trace_available: rootParents.length > 0 && descendants.length > 0,
+    leaf_trace: {
+      parent_thread_ids: rootParents.map((rollout) => rollout.threadId),
+      child_threads: descendants.map((rollout) => ({
+        thread_id: rollout.threadId,
+        parent_thread_id: rollout.parentThreadId,
+        agent_path: rollout.agentPath,
+      })),
+    },
   };
 }
 
@@ -490,6 +609,8 @@ export async function runCodexOnce(workspace, evalCase, options) {
         spawnCalls: [],
         collaborationTimeline: [],
         leafToolCalls: [],
+        leafTraceAvailable: false,
+        leafTrace: null,
       };
       let stderr = '';
       let finalMessage = null;
@@ -617,6 +738,8 @@ export async function runCodexOnce(workspace, evalCase, options) {
           const rolloutEvidence = await readRolloutEvidenceFromRollouts(codexHome);
           observed.collaborationTimeline = rolloutEvidence.parent_calls;
           observed.leafToolCalls = rolloutEvidence.leaf_calls;
+          observed.leafTraceAvailable = rolloutEvidence.leaf_trace_available;
+          observed.leafTrace = rolloutEvidence.leaf_trace;
           observed.spawnCalls = spawnCalls(observed.collaborationTimeline);
         } catch (error) {
           stderr = `${stderr}\nFailed to read rollout evidence: ${
@@ -644,6 +767,8 @@ export async function runCodexOnce(workspace, evalCase, options) {
           spawn_calls: observed.spawnCalls,
           collaboration_timeline: observed.collaborationTimeline,
           leaf_tool_calls: observed.leafToolCalls,
+          leaf_trace_available: observed.leafTraceAvailable,
+          leaf_trace: observed.leafTrace,
           termination,
           exit_code: exitCode,
           signal,

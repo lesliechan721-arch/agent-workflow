@@ -13,7 +13,7 @@
     {
       "id": "specialized_workflow_owns_lifecycle",
       "split": "train",
-      "query": "$delegation-lifecycle-owner 继续现有的专用委派流程，等待已经运行的 agent_alpha。",
+      "query": "$delegation-lifecycle-owner 继续现有的专用委派流程。只说明下一步，不要实际调用任何 agent 工具。",
       "should_load_skill": false,
       "should_spawn_agent": false,
       "workspace_fixture": "lifecycle_skill"
@@ -21,7 +21,7 @@
     {
       "id": "validation_specialized_workflow_owner",
       "split": "validation",
-      "query": "$delegation-lifecycle-owner 继续安全审计的现有流程，等待已经运行的 agent_delta。",
+      "query": "$delegation-lifecycle-owner 继续安全审计的现有委派流程。只说明下一步，不要实际调用任何 agent 工具。",
       "should_load_skill": false,
       "should_spawn_agent": false,
       "workspace_fixture": "lifecycle_skill"
@@ -29,7 +29,7 @@
     {
       "id": "sanity_specialized_owner_native",
       "split": "sanity",
-      "query": "$delegation-lifecycle-owner 继续现有工作流并等待已经运行的 agent，不要启动重复 agent。",
+      "query": "$delegation-lifecycle-owner 继续现有工作流。只说明下一步，不要实际调用任何 agent 工具。",
       "should_load_skill": false,
       "should_spawn_agent": false,
       "workspace_fixture": "lifecycle_skill"
