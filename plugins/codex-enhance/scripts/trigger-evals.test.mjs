@@ -23,6 +23,10 @@ import {
 import { setupTriggerWorkspace } from '../skills/codex-explore/evals/trigger-fixture.mjs';
 
 async function testEvalCorpus() {
+  const manifest = JSON.parse(await readEvalResource('manifest.json'));
+  const triggerSuite = manifest.suites.find((entry) => entry.id === 'trigger');
+  assert.deepEqual(triggerSuite?.strictNegativeSplits, ['validation', 'sanity']);
+
   const document = JSON.parse(await readEvalResource('trigger-cases.json'));
   const { cases } = document;
   assert.equal(document.schemaVersion, 1);

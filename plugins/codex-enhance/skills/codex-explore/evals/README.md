@@ -29,7 +29,7 @@ pnpm plugin:eval codex-enhance --skill codex-explore --batch-name trigger-sanity
 
 插件 fixture module 只补齐合成材料。显式 `$codex-explore` 记为宿主注入；自动触发只接受成功读取 `.agents/skills/codex-explore/SKILL.md` 的 `commandExecution` 完成事件。实际委派只接受 `subAgentActivity(kind=started)`；正向用例在加载和启动事件都出现后立即结束。该事件证明子代理已经启动，但不包含完整 spawn 参数；具体 role 和参数由 model-selection suite 验证。
 
-默认每条运行 3 次，以 `0.5` 为分界：正例加载/调用率必须高于分界，反例必须低于分界。
+默认每条运行 3 次。正例加载/调用率必须高于 `0.5`；validation 和 sanity 负例采用零容忍，任意一次误加载或错误委派都会失败。
 
 2026-08-11 的旧合同曾把纯 diff review 设为不加载负例；后续审计确认，“真实 bug”与“数据丢失”不能只凭三行 diff 判断，fixture 中的定义、调用点和数据流边界也未知。当前合同要求加载 Skill 并委派事实探索，最终 review 判断留在主代理。该历史批次不再作为当前触发合同的通过证据。
 

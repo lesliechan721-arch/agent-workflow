@@ -1,38 +1,137 @@
 {
   "schemaVersion": 1,
   "skill": "codex-subagent-guide",
+  "policy": {
+    "optimization": "critical",
+    "false_negative_cost": "high",
+    "false_positive_cost": "critical",
+    "rationale": "漏选通用或探索 owner 会丢失专用编排；同时加载两个 owner 会重复管理同一委派和生命周期，因此错误路由不能由多数结果抵消。"
+  },
   "cases": [
     {
       "id": "authorization_only_requires_guide",
+      "eval_type": "routing",
       "split": "train",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "delegation-owner-routing",
+      "unit_under_test": "full-skill",
       "query": "$delegation-authorizer 核对 src/simple.ts 的事实并整理证据。",
-      "should_load_skill": true,
+      "preconditions": {
+        "participant_skills": ["codex-subagent-guide", "codex-explore"],
+        "workspace_fixture": "authorization_skill",
+        "fixture_contract": "delegation-authorizer 只授予委派权限，不选择 role 或管理生命周期"
+      },
+      "expected_loaded_skills": ["codex-subagent-guide"],
       "should_spawn_agent": true,
-      "workspace_fixture": "authorization_skill"
+      "workspace_fixture": "authorization_skill",
+      "oracle": {
+        "rationale": "上游 Skill 只授权委派，没有专用生命周期 owner；任务来源少且边界清楚，不满足 codex-explore Gate，因此只能由通用 guide 管理。",
+        "rule_refs": ["../SKILL.md#Codex Subagent Guide", "../../codex-explore/SKILL.md#Gate"],
+        "confidence": "high",
+        "allowed_variance": "允许加载非 participant 的 delegation-authorizer；participant 精确集合必须只有 codex-subagent-guide，并且必须启动一次子代理。"
+      }
     },
     {
       "id": "specialized_workflow_owns_lifecycle",
+      "eval_type": "routing",
       "split": "train",
+      "case_role": "boundary",
+      "provenance": "representative-synthetic",
+      "scenario_family": "specialized-owner-exclusion",
+      "unit_under_test": "full-skill",
       "query": "$delegation-lifecycle-owner 继续现有的专用委派流程。只说明下一步，不要实际调用任何 agent 工具。",
-      "should_load_skill": false,
+      "preconditions": {
+        "participant_skills": ["codex-subagent-guide", "codex-explore"],
+        "workspace_fixture": "lifecycle_skill",
+        "fixture_contract": "delegation-lifecycle-owner 已完整拥有 role、等待和清理"
+      },
+      "expected_loaded_skills": [],
       "should_spawn_agent": false,
-      "workspace_fixture": "lifecycle_skill"
+      "workspace_fixture": "lifecycle_skill",
+      "oracle": {
+        "rationale": "专用 Skill 已完整拥有委派生命周期，两个插件 Skill 都不得叠加接管；用户也明确禁止 agent 工具。",
+        "rule_refs": ["../SKILL.md#Codex Subagent Guide", "../../codex-explore/SKILL.md#Gate"],
+        "confidence": "high",
+        "allowed_variance": "允许加载非 participant 的 lifecycle owner；两个 participant 都不得加载，也不得启动子代理。",
+        "minimal_counterexample": "把专用 lifecycle owner 替换为只授权的 delegation-authorizer 后，应加载 codex-subagent-guide 并启动子代理。"
+      }
     },
     {
       "id": "validation_specialized_workflow_owner",
+      "eval_type": "routing",
       "split": "validation",
+      "case_role": "boundary",
+      "provenance": "derived",
+      "scenario_family": "specialized-owner-exclusion",
+      "unit_under_test": "full-skill",
       "query": "$delegation-lifecycle-owner 继续安全审计的现有委派流程。只说明下一步，不要实际调用任何 agent 工具。",
-      "should_load_skill": false,
+      "preconditions": {
+        "participant_skills": ["codex-subagent-guide", "codex-explore"],
+        "workspace_fixture": "lifecycle_skill",
+        "fixture_contract": "delegation-lifecycle-owner 已完整拥有 role、等待和清理"
+      },
+      "expected_loaded_skills": [],
       "should_spawn_agent": false,
-      "workspace_fixture": "lifecycle_skill"
+      "workspace_fixture": "lifecycle_skill",
+      "oracle": {
+        "rationale": "任务主题变为安全审计不改变 owner；专用生命周期 Skill 仍排除两个插件 Skill。",
+        "rule_refs": ["../SKILL.md#Codex Subagent Guide", "../../codex-explore/SKILL.md#Gate"],
+        "confidence": "high",
+        "allowed_variance": "允许加载非 participant 的 lifecycle owner；两个 participant 都不得加载，也不得启动子代理。",
+        "minimal_counterexample": "移除专用 lifecycle owner，并由用户直接授权安全审核委派后，应加载 codex-subagent-guide。"
+      }
+    },
+    {
+      "id": "real_explore_owner_route",
+      "eval_type": "routing",
+      "split": "validation",
+      "case_role": "boundary",
+      "provenance": "derived",
+      "scenario_family": "delegation-owner-routing",
+      "unit_under_test": "full-skill",
+      "query": "我授权在这个任务中使用子代理。这个陌生 monorepo 文件很多。请跨网关、结算、任务和共享配置搜索 regional_checkout 的完整传递路径，只返回可核验文件证据，不做最终缺陷判断，也不要修改代码。",
+      "preconditions": {
+        "participant_skills": ["codex-subagent-guide", "codex-explore"],
+        "workspace_fixture": "explore_route",
+        "user_authorization": "用户明确授权本任务使用子代理",
+        "plugin_instruction": "codex-explore Gate 通过时授予该专用工作流的子代理使用权限"
+      },
+      "expected_loaded_skills": ["codex-explore"],
+      "should_spawn_agent": true,
+      "workspace_fixture": "explore_route",
+      "oracle": {
+        "rationale": "任务是陌生大型代码库中的可分离事实探索，codex-explore 是专用 owner；codex-subagent-guide 明确不得接管已有专用 Skill 管理的委派。",
+        "rule_refs": ["../../codex-explore/SKILL.md#Gate", "../SKILL.md#Codex Subagent Guide", "../../../.agents-plugin/plugin.json#extensions"],
+        "confidence": "high",
+        "allowed_variance": "participant 精确集合必须只有 codex-explore，并且必须启动一次子代理；role 细节由专用 command suite 验证。",
+        "minimal_counterexample": "保持相同用户授权，只把大范围事实探索改为边界清楚的常规文档实现后，应加载 codex-subagent-guide，而不是 codex-explore。"
+      }
     },
     {
       "id": "sanity_specialized_owner_native",
+      "eval_type": "routing",
       "split": "sanity",
+      "case_role": "boundary",
+      "provenance": "derived",
+      "scenario_family": "specialized-owner-exclusion",
+      "unit_under_test": "full-skill",
       "query": "$delegation-lifecycle-owner 继续现有工作流。只说明下一步，不要实际调用任何 agent 工具。",
-      "should_load_skill": false,
+      "preconditions": {
+        "participant_skills": ["codex-subagent-guide", "codex-explore"],
+        "workspace_fixture": "lifecycle_skill",
+        "fixture_contract": "delegation-lifecycle-owner 已完整拥有 role、等待和清理"
+      },
+      "expected_loaded_skills": [],
       "should_spawn_agent": false,
-      "workspace_fixture": "lifecycle_skill"
+      "workspace_fixture": "lifecycle_skill",
+      "oracle": {
+        "rationale": "简短口语请求仍明确指向专用 owner；两个插件 Skill 都不得重叠加载或启动新 agent。",
+        "rule_refs": ["../SKILL.md#Codex Subagent Guide", "../../codex-explore/SKILL.md#Gate"],
+        "confidence": "high",
+        "allowed_variance": "允许加载非 participant 的 lifecycle owner；两个 participant 都不得加载，也不得启动子代理。",
+        "minimal_counterexample": "改为已授权且没有专用 owner 的通用任务后，应加载 codex-subagent-guide。"
+      }
     }
   ]
 }

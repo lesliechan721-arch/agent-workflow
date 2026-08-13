@@ -28,7 +28,7 @@ then checks the raw spawn_agent arguments.
 
 Options:
   --runs <count>                Repetitions per case (default: 3)
-  --threshold <rate>            Pass boundary (default: 0.5)
+  --threshold <rate>            Non-critical pass boundary (default: 0.5)
   --timeout-ms <milliseconds>   Per-run safety timeout (default: 180000)
   --codex-bin <path>            Codex executable (default: codex)
   --model <model>               Optional parent model override
@@ -256,7 +256,7 @@ export function evaluateModelSelectionRun(run, expected) {
   };
 }
 
-export function summarizeModelEval(entry, runs, threshold) {
+export function summarizeModelEval(entry, runs, threshold, optimization = 'balanced') {
   const gradedRuns = runs.map((run) => ({
     ...run,
     evaluation: evaluateModelSelectionRun(run, entry.expected),
@@ -266,12 +266,17 @@ export function summarizeModelEval(entry, runs, threshold) {
   const passRate = runnable.length === 0
     ? null
     : runnable.filter((run) => run.evaluation.passed).length / gradedRuns.length;
+  const passed = passRate === null
+    ? null
+    : optimization === 'critical'
+      ? runnable.every((run) => run.evaluation.passed)
+      : passRate > threshold;
   return {
     id: entry.id,
     expected_output: entry.expected_output,
     expected: entry.expected,
     pass_rate: passRate,
-    passed: passRate === null ? null : passRate > threshold,
+    passed,
     complete: environmentSkips === 0,
     environment_skips: environmentSkips,
     runs: gradedRuns,
@@ -340,7 +345,12 @@ async function run(options) {
         await rm(workspace.root, { recursive: true, force: true });
       }
     }
-    results.push(summarizeModelEval(entry, runs, options.threshold));
+    results.push(summarizeModelEval(
+      entry,
+      runs,
+      options.threshold,
+      spec.policy?.optimization,
+    ));
   }
 
   const reportStatus = modelEvalReportStatus(
@@ -353,6 +363,7 @@ async function run(options) {
     skill_name: spec.skill_name,
     runs_per_case: options.runs,
     threshold: options.threshold,
+    optimization: spec.policy?.optimization ?? 'balanced',
     requested_model_override: options.model ?? null,
     allow_environment_skips: options.allowEnvironmentSkips,
     complete: reportStatus.complete,

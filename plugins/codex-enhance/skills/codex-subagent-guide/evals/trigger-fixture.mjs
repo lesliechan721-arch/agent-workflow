@@ -15,6 +15,7 @@ export const TRIGGER_WORKSPACE_FIXTURES = new Set([
   'project_authorization',
   'authorization_skill',
   'lifecycle_skill',
+  'explore_route',
 ]);
 
 async function writeSkill(root, name, lines) {
@@ -67,6 +68,24 @@ async function writeCaseFixture(root, fixture) {
       'This skill fully owns role selection, spawn parameters, waiting, recovery, and cleanup.',
       'Do not load a general subagent-management skill and do not spawn a duplicate agent.',
     ]);
+    return;
+  }
+  if (fixture === 'explore_route') {
+    const routeFiles = {
+      'repo/gateway/checkout.ts': 'export const checkoutFlag = regionalCheckout;\n',
+      'repo/settlement/checkout.ts': 'export function settle(input) { return input.regionalCheckout; }\n',
+      'repo/tasks/checkout.ts': 'export function enqueue(input) { return input.regionalCheckout; }\n',
+      'repo/shared/config.ts': 'export const regionalCheckout = true;\n',
+      ...Object.fromEntries(Array.from({ length: 24 }, (_, index) => [
+        `repo/modules/module-${String(index + 1).padStart(2, '0')}/handler.ts`,
+        `export const unrelatedFeature${index + 1} = true;\n`,
+      ])),
+    };
+    await Promise.all(Object.entries(routeFiles).map(async ([relativePath, content]) => {
+      const target = path.join(root, relativePath);
+      await mkdir(path.dirname(target), { recursive: true });
+      await writeFile(target, content, 'utf8');
+    }));
     return;
   }
   throw new Error(`Unsupported trigger workspace fixture: ${fixture}`);

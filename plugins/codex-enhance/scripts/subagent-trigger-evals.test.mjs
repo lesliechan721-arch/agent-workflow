@@ -50,15 +50,21 @@ async function testEvalCorpus() {
   assert.deepEqual(
     {
       cases: compositionSuite?.cases,
+      skills: compositionSuite?.skills,
       isolation: compositionSuite?.isolation,
       strictNegativeSplits: compositionSuite?.strictNegativeSplits,
+      minimumPassRate: compositionSuite?.minimumPassRate,
+      forbidMultipleSkillLoads: compositionSuite?.forbidMultipleSkillLoads,
       releaseSplits: compositionSuite?.releaseSplits,
       requiredForRelease: compositionSuite?.requiredForRelease,
     },
     {
       cases: './trigger-composition-cases.json',
+      skills: ['codex-subagent-guide', 'codex-explore'],
       isolation: 'standard',
-      strictNegativeSplits: [],
+      strictNegativeSplits: ['validation', 'sanity'],
+      minimumPassRate: 1,
+      forbidMultipleSkillLoads: true,
       releaseSplits: [],
       requiredForRelease: false,
     },
@@ -79,12 +85,24 @@ async function testEvalCorpus() {
   assert.equal(releaseCases.filter((entry) => entry.split === 'train').length, 12);
   assert.equal(releaseCases.filter((entry) => entry.split === 'validation').length, 7);
   assert.equal(releaseCases.filter((entry) => entry.split === 'sanity').length, 6);
-  assert.equal(compositionCases.length, 4);
+  assert.equal(compositionCases.length, 5);
   assert.equal(compositionCases.filter((entry) => entry.split === 'train').length, 2);
-  assert.equal(compositionCases.filter((entry) => entry.split === 'validation').length, 1);
+  assert.equal(compositionCases.filter((entry) => entry.split === 'validation').length, 2);
   assert.equal(compositionCases.filter((entry) => entry.split === 'sanity').length, 1);
   assert.equal(new Set(cases.map((entry) => entry.id)).size, cases.length);
   assert.equal(cases.every((entry) => typeof entry.should_spawn_agent === 'boolean'), true);
+  assert.equal(
+    compositionCases.every((entry) => (
+      Array.isArray(entry.expected_loaded_skills) && entry.should_load_skill === undefined
+    )),
+    true,
+  );
+  assert.deepEqual(compositionDocument.policy, {
+    optimization: 'critical',
+    false_negative_cost: 'high',
+    false_positive_cost: 'critical',
+    rationale: '漏选通用或探索 owner 会丢失专用编排；同时加载两个 owner 会重复管理同一委派和生命周期，因此错误路由不能由多数结果抵消。',
+  });
   assert.equal(
     releaseCases.every((entry) => !['authorization_skill', 'lifecycle_skill'].includes(
       entry.workspace_fixture,
@@ -92,7 +110,7 @@ async function testEvalCorpus() {
     true,
   );
   assert.equal(
-    compositionCases.every((entry) => ['authorization_skill', 'lifecycle_skill'].includes(
+    compositionCases.every((entry) => ['authorization_skill', 'lifecycle_skill', 'explore_route'].includes(
       entry.workspace_fixture,
     )),
     true,
@@ -105,7 +123,6 @@ async function testEvalCorpus() {
 
   const expectedContracts = new Map([
     ['authorized_simple_lookup', [true, true]],
-    ['specialized_workflow_owns_lifecycle', [false, false]],
     ['manage_existing_agent', [true, false]],
     ['explicit_skill_without_authority', [true, false]],
     ['validation_should_we_delegate', [false, false]],
@@ -115,6 +132,19 @@ async function testEvalCorpus() {
     const entry = cases.find((candidate) => candidate.id === id);
     assert.ok(entry, `Missing required eval case ${id}`);
     assert.equal(entry.should_load_skill, shouldLoad);
+    assert.equal(entry.should_spawn_agent, shouldSpawn);
+  }
+  const expectedRouteContracts = new Map([
+    ['authorization_only_requires_guide', [['codex-subagent-guide'], true]],
+    ['specialized_workflow_owns_lifecycle', [[], false]],
+    ['real_explore_owner_route', [['codex-explore'], true]],
+    ['validation_specialized_workflow_owner', [[], false]],
+    ['sanity_specialized_owner_native', [[], false]],
+  ]);
+  for (const [id, [loadedSkills, shouldSpawn]] of expectedRouteContracts) {
+    const entry = compositionCases.find((candidate) => candidate.id === id);
+    assert.ok(entry, `Missing required composition eval case ${id}`);
+    assert.deepEqual(entry.expected_loaded_skills, loadedSkills);
     assert.equal(entry.should_spawn_agent, shouldSpawn);
   }
   assert.match(
@@ -134,7 +164,7 @@ async function testEvalCorpus() {
 async function testFixtureVariants() {
   assert.deepEqual(
     [...TRIGGER_WORKSPACE_FIXTURES],
-    ['default', 'project_authorization', 'authorization_skill', 'lifecycle_skill'],
+    ['default', 'project_authorization', 'authorization_skill', 'lifecycle_skill', 'explore_route'],
   );
   for (const fixture of TRIGGER_WORKSPACE_FIXTURES) {
     const root = await mkdtemp(path.join(os.tmpdir(), `subagent-fixture-${fixture}-`));
@@ -163,6 +193,16 @@ async function testFixtureVariants() {
             'utf8',
           ),
           /fully owns role selection/,
+        );
+      }
+      if (fixture === 'explore_route') {
+        assert.match(
+          await readFile(path.join(root, 'repo', 'shared', 'config.ts'), 'utf8'),
+          /regionalCheckout/,
+        );
+        assert.match(
+          await readFile(path.join(root, 'repo', 'modules', 'module-24', 'handler.ts'), 'utf8'),
+          /unrelatedFeature24/,
         );
       }
     } finally {
