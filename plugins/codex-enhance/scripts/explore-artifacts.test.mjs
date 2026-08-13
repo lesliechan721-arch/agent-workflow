@@ -193,10 +193,11 @@ async function testRenderedArtifactsAndSkillContract() {
   assert.match(text, /`quick` → `codex-explore-quick`/);
   assert.match(text, /`standard` → `codex-explore-standard`/);
   assert.match(text, /`deep` → `codex-explore-deep`/);
-  assert.match(text, /`codex-explore-custom`.*永不自动选择/s);
-  assert.match(text, /任一显式字段未公开时立即停止/);
+  assert.match(text, /`codex-explore-custom`.*不自动选择/s);
+  assert.match(text, /先记录用户显式指定的.*再检查 `spawn_agent` schema/);
+  assert.match(text, /任一字段无法原样传递时立即停止/);
   assert.match(text, /不选择 role，也不调用 `spawn_agent`/);
-  assert.match(text, /不得删除、替换、降级或改用预设 role/);
+  assert.match(text, /不得删除字段或改用预设 role/);
   assert.match(text, /有 `fork_turns` 时传 `"none"`/);
   assert.match(text, /有 `fork_context` 时传 `false`/);
   assert.match(text, /`message` 必须自包含范围、来源、具体问题、探索深度/);

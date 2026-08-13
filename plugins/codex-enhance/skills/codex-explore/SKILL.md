@@ -24,14 +24,14 @@ Gate 只判断拟委派的子任务，不判断顶层任务类型。拟委派范
 - 最终判断、写操作、提权、登录、购买、发布或其它外部副作用无法与探索分离。
 - 用户要求权限级只读，但当前 turn 无法确认该边界及其对子代理的继承。
 
-Gate 通过后先记录当前请求中用户显式指定的 `model` 和 `reasoning_effort`，再检查当前 `spawn_agent` schema。任一显式字段未公开时立即停止，说明无法表达该字段，不选择 role，也不调用 `spawn_agent`。全部显式字段均可表达后，只有 schema 公开 `agent_type` 且允许所选 role 时才启动；否则按委派失败处理，不改用其它 role。
+Gate 通过后，先记录用户显式指定的 `model` 和 `reasoning_effort`，再检查 `spawn_agent` schema。任一字段无法原样传递时立即停止，不选择 role，也不调用 `spawn_agent`。`agent_type` 不支持目标 role 时也停止，不降级。
 
 ## 委派
 
 只使用 Codex Explore 自带 role，不得改用默认子代理、内置 `explorer` 或其它 role。
 
 Role 选择顺序：
-1. 上述预检确认全部用户显式字段均可表达后，选择 `{{customRoleKey}}`，并原样透传全部显式指定的 `model` 和 `reasoning_effort`。不得删除、替换、降级或改用预设 role。
+1. 预检通过且用户显式指定 `model` 或 `reasoning_effort` 时，选择 `{{customRoleKey}}`，原样透传全部显式字段；不得删除字段或改用预设 role。
 2. 用户只显式指定 `quick`、`standard` 或 `deep` 时，选择对应预设 role。
 3. 否则按任务判断；无法明确分档时选择 standard。
 
@@ -40,7 +40,7 @@ Role 选择顺序：
 - `standard` → `{{standardRoleKey}}`：常规跨文件、跨模块或多来源追踪，包含适度归纳或来源冲突。
 - `deep` → `{{deepRoleKey}}`：高歧义、强冲突、复杂因果、范围特别大或要求高完整性。
 
-调用预设 role 时不传 `model` 或 `reasoning_effort`；`{{customRoleKey}}` 永不自动选择。已公开的显式字段在调用时因参数值被拒绝，按启动失败处理，不静默重试。
+预设 role 不传 `model` 或 `reasoning_effort`；`{{customRoleKey}}` 不自动选择。显式字段被拒绝时停止，不重试或降级。
 
 按当前 schema 启动所选 role，并使用干净上下文：有 `fork_turns` 时传 `"none"`，有 `fork_context` 时传 `false`。`message` 必须自包含范围、来源、具体问题、探索深度、必要定位和任务特有输出要求；无法安全提供必要上下文时不委派。不要重复 role 已提供的只读和通用证据规则。
 
