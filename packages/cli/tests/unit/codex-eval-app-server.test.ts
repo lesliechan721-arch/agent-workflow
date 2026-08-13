@@ -173,6 +173,7 @@ describe('Codex app-server eval driver', () => {
       }],
     }, { spaces: 2 });
     const reportPath = path.join(outputRoot, 'behavior.json');
+    const onCaseCompleted = vi.fn(async () => undefined);
 
     const report = await runCodexConversationSuite({
       suiteId: 'behavior',
@@ -182,10 +183,13 @@ describe('Codex app-server eval driver', () => {
       subjectRoot,
       profile: 'project-default',
       runs: 1,
+      caseIds: ['dynamic-question-id'],
       codexBin: process.execPath,
       timeoutMs: 10_000,
       sourceEnv: process.env,
       reportPath,
+      stopOnIncomplete: true,
+      onCaseCompleted,
     });
 
     expect(report).toMatchObject({
@@ -195,6 +199,13 @@ describe('Codex app-server eval driver', () => {
       qualitativeReview: 'required',
       summary: { cases: 1, runs: 2 },
     });
+    expect(onCaseCompleted).toHaveBeenCalledWith(expect.objectContaining({
+      caseId: 'dynamic-question-id',
+      report: expect.objectContaining({
+        complete: true,
+        caseResults: [expect.objectContaining({ id: 'dynamic-question-id' })],
+      }),
+    }));
     const evidence = await fs.readJson(reportPath);
     const run = evidence.results[0].runs[0];
     expect(run.with_skill.questions[0].requestId).toBe('17');

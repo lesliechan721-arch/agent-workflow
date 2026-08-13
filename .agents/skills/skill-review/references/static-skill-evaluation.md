@@ -26,6 +26,8 @@ node .agents/skills/skill-review/scripts/run_static_skill_evals.mjs \
 
 真实运行必须用 `--batch-name` 新建批次或 `--batch-id` 追加批次。不传 `--suite` 时运行所有 release-required suite/split。完整批次固定在项目 `.tmp/agent-workflows/evals/static/<skill>/<batch-id>/`；其中 `work/<run-id>/` 完成后清理，其余机械证据保留供 review 使用。`review:publish` 生成的正式报告固定在 `.agents/reports/<skill>/<batch-id>/{report.md,summary.json}`。两个入口都不能用 `--output-dir` 改写。Skill 根 `evals/` 不进入被测 runtime package 或 package digest。运行前必须执行 `pnpm build`；批次 harness 身份使用实际加载的 `packages/cli/dist` 驱动和当前 review runner 摘要，不使用可能与构建产物不一致的 TypeScript 源码摘要。`--validate-only` 总是校验完整本地 corpus shape；构建后的中央 contract 可用时还会返回 `centralContract: true`。
 
+runner 在每个 case 的全部 repetitions 结束后发布检查点。case 为 `incomplete` 时停止当前命令。再次使用同一 `--batch-id` 时，runner 复用 terminal case，并重跑 incomplete 或 missing case；当前未完成 case 的全部 repetitions 会重新运行。没有 case 合同的 suite 以整个 suite 为恢复单位。真实模型 eval 可能运行几十分钟到数小时。保留同一个进程 session，首轮和后续等待都直接使用工具允许的最长响应式等待时间。等待超时不表示 eval 失败。不得另开短周期 wait、`sleep`、`ps`、报告文件或其它状态轮询命令。
+
 ## Codex 配置与证据
 
 默认模型为 `gpt-5.6-luna`。当前 `CODEX_HOME/config.toml` 只提供选中的 `model_providers.<id>`、provider 连接配置及其它允许的 model 设置，不再决定默认模型；不会继承 plugins、skills、MCP、agents 或其它用户配置。`--model`、`--model-provider`、`--codex-config` 可显式覆盖；`--no-inherit-codex-config` 使用干净的官方默认 provider。
@@ -34,7 +36,7 @@ provider 引用的 `env_key` / `env_http_headers` 会按名称透传，但不能
 
 runner 在复制前记录源 package digest、复制后核对 subject package digest，并在模型运行结束后再次确认源未变化。`inspect_skill_target.mjs --evaluation` 会验证整棵 subject Skill，而不只验证 `SKILL.md`。
 
-真实模型运行默认要求 Full Access，以便管理 Codex 后代进程。检查失败时会在启动模型前阻断。用户明确接受后代进程可能遗留的风险后，可传 `--allow-unmanaged-processes`；报告会把该运行标为 `unmanaged-confirmed` 和 `descendantCleanupGuaranteed: false`。
+真实模型运行默认要求整个会话使用 Full Access，以便管理 Codex 后代进程。runner 先检查原始 `CODEX_PERMISSION_PROFILE`。`workspace` 或 `read-only` 来源没有显式参数时，会在 keychain 检查、进程树探测、报告分配和模型启动前阻断。单次 `sandbox_permissions=require_escalated` 不等于 Full Access；不得请求单次提权重试。用户明确选择 `--allow-unmanaged-processes` 后，受限来源直接进入 `unmanaged-confirmed` 并跳过进程树探测；报告记录 `descendantCleanupGuaranteed: false`。agent 不得自行添加该参数。用户未选择时必须停下，让用户选择切换整个会话到 Full Access，或明确使用该参数。CLI 不能证明参数由人添加；人工确认必须由 Codex 审批或 UI 层保证。
 
 将结果交给静态评审：
 

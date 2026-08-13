@@ -475,11 +475,17 @@ describe('skill-review author tools', () => {
         '--allow-unmanaged-processes',
       ], {
         cwd: root,
-        env: { ...process.env, CODEX_HOME: sourceCodexHome },
+        env: {
+          ...process.env,
+          CODEX_HOME: sourceCodexHome,
+          CODEX_PERMISSION_PROFILE: ':workspace',
+        },
         maxBuffer: 10 * 1024 * 1024,
       });
       const executionReport = JSON.parse(execution.stdout);
       expect(executionReport).toMatchObject({ ok: true, outcome: 'passed' });
+      expect(execution.stderr).toContain('use the longest responsive wait that the tool allows');
+      expect(execution.stderr).toContain('A wait timeout is not an eval failure');
       const persistedBatchRoot = path.resolve(root, executionReport.batchDir);
       const persistedReportRoot = path.resolve(root, executionReport.reportDir);
       tempDirs.push(persistedBatchRoot);
@@ -505,6 +511,12 @@ describe('skill-review author tools', () => {
       expect(report.issues.filter((issue: { level: string }) => issue.level === 'error')).toEqual([]);
 
       const validEvaluation = await fs.readJson(evaluationPath);
+      expect(validEvaluation.processManagement).toMatchObject({
+        mode: 'unmanaged-confirmed',
+        inspectionAvailable: false,
+        userAcknowledged: true,
+        descendantCleanupGuaranteed: false,
+      });
       const failedEvidencePath = path.join(outputRoot, 'failed-evidence.json');
       await fs.writeJson(failedEvidencePath, {
         ...validEvaluation,
@@ -1560,6 +1572,14 @@ describe('skill-review author tools', () => {
       )
       .replace(
         '   - 当前仓库的 AW 插件或动态 Skill：`references/agent-workflows-plugin.md`\n',
+        '',
+      )
+      .replace(
+        [
+          '   - 启动真实模型 eval 前，用户必须明确选择整个会话使用 Full Access，或明确选择 `--allow-unmanaged-processes`。用户未选择时停下询问；不得自行添加该参数，也不得请求单次提权。',
+          '   - 真实模型 eval 启动后保留同一进程会话。首轮和后续等待都使用工具允许的最长响应式等待时间；等待超时不表示 eval 失败，不要另开短周期状态轮询命令。',
+          '',
+        ].join('\n'),
         '',
       )
       .replace(

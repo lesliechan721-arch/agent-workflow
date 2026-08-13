@@ -209,6 +209,35 @@ describe('public docs', () => {
     expect(docs).toContain('Claude Code `>= 2.1.88`');
   });
 
+  it('documents the model eval permission, resume, and long-wait controls', async () => {
+    const workflowSkills = await Promise.all([
+      readRepoFile('.agents/skills/create-aw-plugin/SKILL.md'),
+      readRepoFile('.agents/skills/skill-review/SKILL.md'),
+    ]);
+    for (const skill of workflowSkills) {
+      expect(skill).toMatch(/用户未选择时(?:必须)?停下询问/u);
+      expect(skill).toContain('不得自行添加该参数');
+      expect(skill).toContain('不得请求单次提权');
+      expect(skill).toContain('最长响应式等待时间');
+    }
+
+    const docs = await readCombinedFiles([
+      '.agents/skills/create-aw-plugin/references/skill-evaluation.md',
+      '.agents/skills/skill-review/references/static-skill-evaluation.md',
+      '.agents/skills/skill-review/references/agent-workflows-plugin.md',
+      'docs/testing.md',
+      'docs/plugin-authoring.md',
+    ]);
+    expect(docs).toContain('`CODEX_PERMISSION_PROFILE`');
+    expect(docs).toContain('单次 `sandbox_permissions=require_escalated` 不等于');
+    expect(docs).toContain('CLI 不能证明参数由人添加');
+    expect(docs).toContain('人工确认必须由 Codex 审批或 UI 层保证');
+    expect(docs).toContain('terminal case');
+    expect(docs).toContain('incomplete 或 missing case');
+    expect(docs).toContain('等待超时不表示 eval 失败');
+    expect(docs).toContain('不要使用短周期 wait');
+  });
+
   it('keeps the README codex-enhance description aligned with the public contract', async () => {
     const readme = await readRepoFile('README.md');
 

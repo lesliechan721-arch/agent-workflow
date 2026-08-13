@@ -161,18 +161,29 @@ export interface PluginEvalSuiteReport {
   mechanicalPassed: boolean;
   qualitativeReview: 'not_required' | 'required' | 'passed' | 'failed';
   reportPath?: string;
-  caseResults?: PluginEvalCommandCaseResult[];
+  caseResults?: PluginEvalCaseResult[];
   summary: Record<string, unknown>;
   diagnostics: string[];
 }
 
-export interface PluginEvalCommandCaseResult {
+export interface PluginEvalCaseResult {
   id: string;
   outcome: PluginEvalOutcome;
   complete: boolean;
   mechanicalPassed: boolean;
+  qualitativeReview?: PluginEvalSuiteReport['qualitativeReview'];
+  reportPath?: string;
+  sourceRunId?: string;
+  reused?: boolean;
   summary?: Record<string, unknown>;
   diagnostics?: string[];
+}
+
+export type PluginEvalCommandCaseResult = PluginEvalCaseResult;
+
+export interface PluginEvalCaseCheckpoint {
+  caseId: string;
+  report: PluginEvalSuiteReport;
 }
 
 export interface PluginEvaluationBundle {

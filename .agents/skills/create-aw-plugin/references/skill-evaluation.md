@@ -153,7 +153,11 @@ pnpm plugin:eval <plugin> --skill <skill> --batch-name release
 
 一次命令只运行一个 owner Skill。`--skill` 必填，插件级 `--all` 不受支持。每次运行还必须用 `--batch-name <name>` 新建批次，或用前一次输出中的 `--batch-id <id>` 追加同一批次；二者只能提供一个。跨 Skill 或跨插件组合由该 Skill manifest 的 `skills[]` 和 `profiles[].plugins[]` 明确声明。默认执行该 owner manifest 中所有 release-required suite/split，同时 materialize 所有 profile。常用调试参数还有 `--profile`、`--case`、`--model`、`--codex-bin`。suite 不支持的参数会失败，不能静默忽略。
 
-`--suite`、`--profile`、`--split`、`--case` 都会把单次 bundle 标为 `complete: false`、`outcome: incomplete`；低于 suite `defaultRuns` 的 `--runs` 还会把对应 target 本身标为 `incomplete`，不能作为 release target 通过证据。此类局部运行即使机械检查通过也退出 `1`。使用同一 `--batch-id` 可以补跑 missing 或 incomplete target；历史 attempt 和失败 run 会保留，但最新完整 attempt 进入有效汇总。声明 `cases` 的 command suite 在全部 case target 完整后，中央会把它们组合成 `/all` release target。只有相同批次中所有 release target 都被完整、通过的有效 target 覆盖时，批次汇总才能给出完整 release 结果；不同源码摘要、materialization subject、模型环境、harness、case 集或 target 合同不能混入同一批次。
+`--suite`、`--profile`、`--split`、`--case` 都会把单次 bundle 标为 `complete: false`、`outcome: incomplete`；低于 suite `defaultRuns` 的 `--runs` 还会把对应 target 本身标为 `incomplete`，不能作为 release target 通过证据。此类局部运行即使机械检查通过也退出 `1`。使用同一 `--batch-id` 可以补跑 missing 或 incomplete target；历史 attempt 和失败 run 会保留，但最新完整 attempt 进入有效汇总。声明 `cases` 的 suite 在全部 case target 完整后，中央会把它们组合成 `/all` release target。只有相同批次中所有 release target 都被完整、通过的有效 target 覆盖时，批次汇总才能给出完整 release 结果；不同源码摘要、materialization subject、模型环境、harness、case 集或 target 合同不能混入同一批次。
+
+中央入口在每个 case 的全部 repetitions 结束后原子发布检查点。case 返回 `incomplete` 或运行环境异常时，当前命令停止，不再启动后续 case。再次用同一 `--batch-id` 运行时，入口复用已有的 terminal case，重跑 incomplete 或 missing case。当前未完成 case 的全部 repetitions 会重新运行；不会从某个 repetition 中间继续。`failed` 和 `needs_review` 也是 terminal 结果，默认不会自动重跑。没有 case 合同的 suite 仍以整个 suite 为恢复单位。进程在 run 终态写入前退出时，已发布的 case 检查点仍可复用；后续追加会把旧 run 标为 `failed`。
+
+真实模型 eval 可能运行几十分钟到数小时。agent 启动命令时，首个执行调用应直接使用工具允许的最大 `yield_time_ms`。工具返回进程 session 后，后续等待应继续使用同一个 session，并直接使用单次调用允许的最大响应式等待时间。一次等待超时只表示本次等待窗口结束，不表示 eval 失败。不要使用短周期 wait 循环，也不要另开 `sleep`、`ps`、报告目录、日志文件、Git 或其它命令轮询状态。
 
 真实模型默认使用 `gpt-5.6-luna`；`--model` 可显式覆盖。当前 `CODEX_HOME/config.toml` 只提供选中的 `model_providers.<id>`、provider 连接配置及其它允许的 model 设置，不再决定默认模型；不会继承用户 plugins、skills、MCP、agents 或其它配置。所有中央 eval 都把 `cli_auth_credentials_store` 和 `mcp_oauth_credentials_store` 固定为 `file`，并关闭 `features.secret_auth_storage`，因此临时 Codex 进程不应访问 macOS 钥匙串。可用 `--model-provider <id>`、`--codex-config <path>` 显式选择 provider 来源，或用 `--no-inherit-codex-config` 回到干净的官方默认 provider。provider 引用的环境变量按名称透传，但隔离保留变量会被拒绝，command runner 也不会继承其它宿主 secret；配置内 bearer 只写入 `0600` 临时 runtime home，非官方 provider 一律不复制官方 auth。凭据变量排除出模型 shell，endpoint、token、header 或环境变量值在写任何 eval 证据前统一脱敏；临时 capsule 在正常结束、失败和进程信号中清理。
 
@@ -161,7 +165,9 @@ strict 模式在启动模型前检查 `/etc/codex`（Windows 对应系统目录�
 
 真实模型 eval 应从普通 Terminal 会话直接运行。不要通过会临时导出或改写用户 keychain search list 的 GUI、沙箱或提权包装器启动；这类外层包装器可能留下失效的 `accountsKeychainExport` 路径，并在 Codex 启动前触发 macOS“找不到钥匙串”弹窗。中央入口在 macOS 检测到该包装器路径时会直接拒绝真实模型 eval，不会修改用户 keychain search list；`--materialize-only` 和确定性测试不执行该检查，也不需要启动 Codex 模型进程。
 
-真实模型 eval 默认还要求 Full Access 可用，以便发现并清理 Codex 的后代进程。检查失败时，入口会在创建报告目录和启动模型前阻断。Windows 当前没有 Job Object containment，也走同一阻断路径。确认可接受风险后，可以显式传 `--allow-unmanaged-processes`；该模式只跟踪直接子进程，timeout、信号或 runner 退出后可能遗留后代进程，报告会记录 `descendantCleanupGuaranteed: false`。它可以用于本地运行，但 release reviewer 必须明确接受这项环境风险。
+真实模型 eval 默认还要求 Full Access 可用，以便发现并清理 Codex 的后代进程。入口先检查原始 `CODEX_PERMISSION_PROFILE`，再执行 macOS keychain 检查或进程树探测。来源为 `workspace` 或 `read-only` 且没有 `--allow-unmanaged-processes` 时，入口立即阻断；不会执行 keychain 检查、进程树探测、报告目录分配或模型启动。单次 `sandbox_permissions=require_escalated` 不等于整个会话的 Full Access，并且会保留原始受限 profile；不得用单次提权重试该门禁，也不能把提权后的探测成功记录为 `managed`。
+
+用户明确选择 `--allow-unmanaged-processes` 时，受限来源直接进入 `unmanaged-confirmed`，不执行进程树探测。该模式只跟踪直接子进程，timeout、信号或 runner 退出后可能遗留后代进程，报告会记录 `descendantCleanupGuaranteed: false`。Windows 当前没有 Job Object containment，也必须使用该显式降级选择。agent 不得自行添加参数；如果用户尚未选择，必须停下并让用户选择“切换整个会话到 Full Access”或“明确使用 `--allow-unmanaged-processes`”。CLI 只能把参数视为调用方确认，不能证明参数由人还是模型添加。真正的人工确认必须由 Codex 审批或 UI 层保证。release reviewer 必须明确接受降级运行的环境风险。
 
 `pnpm plugin:eval` 是唯一支持的模型 eval 入口。不要直接运行插件 `evals/` 下的 command runner；直接调用既缺少 final-artifact profile/digest，也会因缺少 `AW_PLUGIN_EVAL_PROJECT_ROOT` 失败。
 
@@ -197,7 +203,7 @@ strict 模式在启动模型前检查 `/etc/codex`（Windows 对应系统目录�
 
 review-only 使用 `releaseOutcome: "not_run"` 和 `covered/required: 0/0`。quick、delta 或证据不足的 review 可以把分数、覆盖率或置信度写为 `null`。
 
-run 在批次锁内预留，target 发布和终态写入使用同一个锁事务。若本机进程在写入终态前结束，后续 refresh、append 或 review 会把该 run 恢复为 `failed`，避免批次永久停在 `running`。失败 run 只保留 provenance 和诊断；它留下的 missing target 补齐后，不再永久把 release 结论固定为 failed。
+run 在批次锁内预留。每个 case target 在独立的批次锁事务中原子发布；全部工作结束后，run 终态在后续锁事务中写入。若本机进程在写入终态前结束，后续 refresh、append 或 review 会把该 run 恢复为 `failed`，但保留已发布检查点，避免批次永久停在 `running`。失败 run 只保留 provenance 和诊断；它留下的 missing target 补齐后，不再永久把 release 结论固定为 failed。
 
 正式 `reports/` 不属于被评估源码，中央 source revision 检查会忽略该目录；插件源码、README、eval 夹具、脚本和作者/评审工具的未提交修改仍会令 `source.inScopeDirty=true`。
 

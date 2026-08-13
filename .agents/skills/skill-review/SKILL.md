@@ -66,6 +66,8 @@ Finding 的证据类型使用：
    - release 模式或需要判断证据权威：`references/source-map.md`，并重新核对其中标记为 current-check 的官方来源。
    - 当前仓库静态 Skill 的 release 评审或用户明确要求真实 eval：读取 `references/static-skill-evaluation.md` 和 `evals/manifest.json`；先运行 `node scripts/run_static_skill_evals.mjs <skill-dir-or-name> --validate-only`。
    - 当前仓库的 AW 插件或动态 Skill：`references/agent-workflows-plugin.md`
+   - 启动真实模型 eval 前，用户必须明确选择整个会话使用 Full Access，或明确选择 `--allow-unmanaged-processes`。用户未选择时停下询问；不得自行添加该参数，也不得请求单次提权。
+   - 真实模型 eval 启动后保留同一进程会话。首轮和后续等待都使用工具允许的最长响应式等待时间；等待超时不表示 eval 失败，不要另开短周期状态轮询命令。
 5. 按模式完成第二阶段和语义审计：full/release 完成全部四项；quick 只检查相关范围；delta 只检查受影响对象。先完成最小有效控制审计，再评价现有结构。
    - **Minimum Effective Control Audit**：只根据目标问题、真实失败、硬性规范、领域事实和操作脆弱性，先写不超过 8 条的最小行为合同；简单 Skill 可以更少。再按行为块把现有强制规则分类为 `keep-invariant`、`keep-default`、`relax`、`move`、`delete` 或 `needs-ablation`。
    - **Invocation/Pointer Audit**：description 和每个外部指针是否说明目标及真正不同的触发 branch。
