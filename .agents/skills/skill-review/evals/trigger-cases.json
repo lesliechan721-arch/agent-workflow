@@ -1,6 +1,12 @@
 {
   "schemaVersion": 1,
   "skill": "skill-review",
+  "policy": {
+    "optimization": "balanced",
+    "false_negative_cost": "high",
+    "false_positive_cost": "high",
+    "rationale": "漏触发会失去专用评审合同；误触发会把实现、运行或解释请求错误转成只读评审。"
+  },
   "cases": [
     { "id": "full_skill_package", "split": "train", "query": "帮我完整审核这个 Agent Skill 包，包含 SKILL.md、references、scripts、assets 和 evals，并按维度评分。", "should_load_skill": true },
     { "id": "description_misfire", "split": "train", "query": "这个 skill 的 description 总是误触发，帮我检查 context pointer、near-miss 和 trigger eval。", "should_load_skill": true },
@@ -18,8 +24,58 @@
     { "id": "state_machine_review", "split": "validation", "query": "这个技能越修越长，判断是否在用自然语言维护状态机，并提出架构性减法。", "should_load_skill": true },
     { "id": "provisional_quick_review", "split": "validation", "query": "我只有一份 SKILL.md，先给 provisional quick review，缺失材料标 unknown。", "should_load_skill": true },
     { "id": "agent_script_review", "split": "validation", "query": "检查技能内脚本是否适合 agent 使用：相对路径、help、非交互、JSON 输出、错误和安全默认值。", "should_load_skill": true },
-    { "id": "quality_gate_eval", "split": "validation", "query": "评估这个 Skill 现有的多维评分、发布门禁、completion boundary audit 和 behavior eval 是否充分，并按优先级指出缺口。", "should_load_skill": true },
-    { "id": "behavior_eval_generation", "split": "validation", "query": "给 fixtures/near-miss-skill 新建十条 behavior eval，直接输出 JSON，不做质量评审。", "should_load_skill": false },
+    {
+      "id": "quality_gate_eval",
+      "split": "validation",
+      "query": "评估这个 Skill 现有的多维评分、发布门禁、completion boundary audit 和 behavior eval 是否充分，并按优先级指出缺口。",
+      "should_load_skill": true,
+      "eval_type": "trigger",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "eval-review-vs-eval-authoring",
+      "unit_under_test": "description",
+      "preconditions": { "target_skill_available": true, "invocation_mode": "implicit" },
+      "oracle": {
+        "rationale": "用户要求评价已有 Skill 的评审机制和 eval 充分性，交付是质量 finding 和优先级。",
+        "rule_refs": ["SKILL.md frontmatter description"],
+        "confidence": "high",
+        "allowed_variance": "可以选择 quick 或 full，但必须加载 skill-review。",
+        "minimal_counterexample": "若用户要求直接创建 behavior eval，目标从质量评审变为实现，标签应翻转。"
+      },
+      "decision_context": {
+        "frequency": "occasional",
+        "impact": "high",
+        "false_negative_cost": "high",
+        "false_positive_cost": "high",
+        "rationale": "该边界直接区分只读评审和实现交付。"
+      }
+    },
+    {
+      "id": "behavior_eval_generation",
+      "split": "validation",
+      "query": "给 fixtures/near-miss-skill 新建十条 behavior eval，直接输出 JSON，不做质量评审。",
+      "should_load_skill": false,
+      "eval_type": "trigger",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "eval-review-vs-eval-authoring",
+      "unit_under_test": "description",
+      "preconditions": { "target_skill_available": true, "invocation_mode": "implicit" },
+      "oracle": {
+        "rationale": "用户要求创建 eval，并明确不要质量评审；skill-review 的 description 排除 eval 实现。",
+        "rule_refs": ["SKILL.md frontmatter description"],
+        "confidence": "high",
+        "allowed_variance": "可以使用其它作者工具，但不能加载 skill-review 作为执行协议。",
+        "minimal_counterexample": "把交付改为审核现有 behavior eval 是否充分时，标签应翻转。"
+      },
+      "decision_context": {
+        "frequency": "occasional",
+        "impact": "high",
+        "false_negative_cost": "not_applicable",
+        "false_positive_cost": "high",
+        "rationale": "误触发会阻止用户要求的实现交付。"
+      }
+    },
     { "id": "writing_for_agents", "split": "validation", "query": "参考 writing-for-agents 帮我改 fixtures/near-miss-project/AGENTS.md，但不是 Agent Skill 评审", "should_load_skill": false },
     { "id": "broken_reference_fix", "split": "validation", "query": "把 fixtures/near-miss-skill/SKILL.md 中的 format.md 改到 output.md，并创建该文件；不审查其它内容。", "should_load_skill": false },
     { "id": "run_skill_inspector", "split": "validation", "query": "运行 fixtures/near-miss-skill/scripts/inspect_skill_target.mjs，把 JSON 原样给我。", "should_load_skill": false },

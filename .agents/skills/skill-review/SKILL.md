@@ -65,15 +65,18 @@ Finding 的证据类型使用：
    - Skill 含脚本、references、assets，或反复重做确定性逻辑：`references/scripts-and-resources.md`
    - delta 模式或需要比较上一版：`references/delta-review.md`
    - release 模式或需要判断证据权威：`references/source-map.md`，并重新核对其中标记为 current-check 的官方来源。
+   - 被审 Skill 含 eval，或 eval 结果将用于评分、发布或修改 Skill：`references/eval-audit.md`。先审核 suite 和 oracle，再使用运行结果评价 Skill。对可达 case 文档运行 `node scripts/validate_eval_cases.mjs <eval-cases.json> --format json`；诊断是结构线索，不代替语义裁决。`--strict` 只用于已经选定为发布或修改依据的 case 文档。
+   - Eval 审计需要结构化记录时，报告使用 `assets/eval-audit-report-template.md`；case metadata 和运行结果分别使用 `assets/eval-case-template.json`、`assets/eval-results-template.json`，最小合法形状见 `assets/eval-case-example.json`。
    - 当前仓库静态 Skill 的 release 评审，或用户明确要求真实 eval 或正式发布：读取 `references/static-skill-evaluation.md` 和 `evals/manifest.json`；真实 eval 前先运行 `node scripts/run_static_skill_evals.mjs <skill-dir-or-name> --validate-only`。
    - 当前仓库的 AW 插件或动态 Skill：`references/agent-workflows-plugin.md`
    - 启动真实模型 eval 前，用户必须明确选择整个会话使用 Full Access，或明确选择 `--allow-unmanaged-processes`。用户未选择时停下询问；不得自行添加该参数，也不得请求单次提权。
    - 真实模型 eval 启动后保留同一进程会话。首轮和后续等待都使用工具允许的最长响应式等待时间；等待超时不表示 eval 失败，不要另开短周期状态轮询命令。
-5. 按模式完成第二阶段和语义审计。full/release 必须完成最小有效控制审计；其它三项只在对应对象存在时完成，不适用时记录理由，不展开空表。quick 只检查相关范围；delta 只检查受影响对象。先完成最小有效控制审计，再评价现有结构。
+5. 按模式完成第二阶段和语义审计。full/release 必须完成最小有效控制审计；其它四项只在对应对象存在时完成，不适用时记录理由，不展开空表。quick 只检查相关范围；delta 只检查受影响对象。先完成最小有效控制审计，再评价现有结构。
    - **Minimum Effective Control Audit**：只根据目标问题、真实失败、硬性规范、领域事实和操作脆弱性，先写不超过 8 条的最小行为合同；简单 Skill 可以更少。再按行为块把现有强制规则分类为 `keep-invariant`、`keep-default`、`relax`、`move`、`delete` 或 `needs-ablation`。
    - **Invocation/Pointer Audit**：description 和每个外部指针是否说明目标及真正不同的触发 branch。
    - **Information Hierarchy Map**：把内容分类为 in-file step、in-file reference、disclosed reference 或 environment lookup。
    - **Completion Boundary Audit**：只对前述审计决定保留为强制流程的关键步骤，检查其完成标准是否清晰、可检查且覆盖充分。
+   - **Eval Case Audit**：先检查错误代价、测试层级、oracle、现实性和场景族，再解释运行不确定性和 eval-driven 修改安全；不把每个失败自动转换为 Skill 补丁。
 6. 先完成 evidence、unknown 和 finding；P0/P1 通过 Finding Admission Gate，失败 gate 关联同严重性 finding。evidence-only 的风险标签、诊断摘要或请求状态不能替代精确 target location、直接失败证据和 counterevidence；缺少其中任一项时最多为 P2 或 unknown。评审工作流没有入口、材料不足或用户未授权某项操作，不是被审 Skill 的 finding。仅有足够目标内容的 full/release 填写 `assets/scorecard-template.json` 并运行：
    ```bash
    node scripts/validate_scorecard.mjs <scorecard.json> --format json
@@ -86,6 +89,7 @@ Finding 的证据类型使用：
 
 - 已检查范围、未检查范围、finding、unknown 和 coverage 清楚。
 - 当前模式适用的 gate 都被判定为 `pass`、`fail`、`unknown` 或 `not_applicable`；未提供的评审材料不会形成失败 gate，但 local-package 内已声明的必需资源缺失仍可使 gate 失败。
+- 存在 eval 或当前判断使用 eval 结果时，`eval-validity`、`release-evidence` 和适用的 `eval-change-safety` 已判定；错误、陈旧、低置信或 diagnostic-only case 没有静默进入发布指标。
 - 每个 P0/P1 都通过 Finding Admission Gate；每个失败 gate 都关联相同严重性的已接纳 finding。
 - 报告包含 stop decision，且没有未归属或重复计罚的 finding。
 - quick 只完成所选 3–5 个维度并使用短报告；full/release 完成全部 12 个维度、最小行为合同、复杂度结论和适用审计；delta 完成旧 finding、受影响维度和直接回归。quick/delta 不创建 scorecard，也不计算总分。
@@ -98,6 +102,10 @@ Finding 的证据类型使用：
 - 同一根因只在一个主维度扣分；其它维度只说明影响。
 - scripts、references 或 assets 正确省略时可以高分；文件数量不是质量指标。
 - runtime materialization 正确省略 author-only `evals/` 或 `reports/` 时不是目标缺陷；只有 repo source/release 分支能证明应存在时才形成 finding。
+- Eval 文件存在只证明测试资产存在，不证明行为已验证。先区分 trigger、Gate、routing、behavior、outcome 和 cost；纯 trigger case 不同时断言后续编排结果。
+- 正负例数量平衡不表示 false negative 与 false positive 代价相等。分别报告 recall 和 specificity，并按实际错误代价解释。
+- 1/3、2/3 等混合结果默认表示证据不足。先增加运行、读取 trace 并完成失败归因，不直接修改 Skill。非满分结果也只有在净风险和回归分析支持时才修复。
+- Eval 失败只有归因为 `skill-defect`，且 oracle、现实性和前提通过审计时，才能驱动 Skill 修改。改动必须面向场景族，并重跑 minimal pair、固定 validation/sanity 和关键 regression。
 - 优先删除、替换、合并或改用环境事实源；新增自然语言条件必须有行为或规范证据。
 - 现有强制规则承担相同的必要性证明责任；无法说明删除或放宽后会增加哪种目标失败时，改为 `needs-ablation`，不得仅因规则内部正确而给高分。
 - 默认改进顺序为 delete → relax → move → rewrite → add。复杂度信号只触发语义审计，不自动形成 finding。

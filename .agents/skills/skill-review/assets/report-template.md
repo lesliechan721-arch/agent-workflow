@@ -40,6 +40,8 @@
 | safety-permissions | | | | | |
 | architecture-ownership | | | | | |
 | release-evidence | | | | | |
+| eval-validity | | | | | |
+| eval-change-safety | | | | | |
 
 ## 优点
 
@@ -81,7 +83,7 @@ quick 只包含已检查维度；full/release 包含全部 12 个维度；delta 
 | 信息层级、资源与渐进式披露 | 10 | | | | | | |
 | 职责归属与自然语言状态机风险 | 10 | | | | | | |
 | 脚本与确定性自动化 | 7 | | | | | | |
-| 评测、验证与证据驱动迭代 | 9 | | | | | | |
+| Eval 设计、Oracle 有效性与修改安全 | 9 | | | | | | |
 | 可靠性、安全与兼容性 | 4 | | | | | | |
 | 剪枝、事实源与变更纪律 | 4 | | | | | | |
 
@@ -157,15 +159,22 @@ full/release 在最小有效控制审计保留了多步骤强制流程时使用�
 - **不必要缓存的环境事实：**
 - **过期或孤立资源：**
 
-## 评测与证据
+## Eval Case Audit
 
-- **Trigger eval 与触发率：**
-- **Behavior 或 regression eval：**
-- **Runtime trace：**
-- **基线：** no skill | minimal skill | previous version | none
-- **Ablation 或 no-op 证据：**
-- **Token、时间和方差成本：**
+存在 eval，或当前判断使用 eval 结果时，使用 `assets/eval-audit-report-template.md` 的适用部分。至少报告：
+
+- **Optimization policy 与错误代价：**
+- **门禁：** eval-validity | release-evidence | eval-change-safety
+- **Suite 构成：** case、scenario-family、minimal-pair 以及 representative/regression/boundary/challenge/diagnostic 数量
+- **Case Admission：** oracle、前提、rule trace、现实性和发布计入决策
+- **二元决策指标：** positive recall、false-negative rate、negative specificity、false-positive rate
+- **Mixed / uncertain cases：**
+- **Baseline、trace、token/time 和方差：**
+- **Failure triage：**
+- **Eval-driven 修改决策：** accept | reject | collect-more-data | fix-eval-first | accepted-risk
 - **发布仍缺少的证据：**
+
+没有 eval-driven 修改时，`eval-change-safety` 填 `not_applicable`。不要把所有结果压缩为一个总通过率。
 
 ## 差量与沉积
 

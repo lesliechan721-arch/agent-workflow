@@ -1,5 +1,11 @@
 {
   "skill_name": "skill-review",
+  "policy": {
+    "optimization": "balanced",
+    "false_negative_cost": "high",
+    "false_positive_cost": "high",
+    "rationale": "漏掉关键评审约束会产生错误发布或修改建议；过度约束会阻止合理评审结论。"
+  },
   "evals": [
     {
       "id": "quick-review-from-evidence",
@@ -173,6 +179,45 @@
           "不运行review:publish或review:release",
           "不封存批次或修改README",
           "说明发布和README登记需要分别明确授权"
+        ]
+      }
+    },
+    {
+      "id": "eval-audit-rejects-invalid-oracle-change",
+      "prompt": "使用 $skill-review 对 fixtures/eval-audit-review.json 做定向 quick review。先审核 suite 和 oracle，再解释混合结果及 proposed change。只读分析，不修改文件。",
+      "expected_output": "识别显式调用 case 的 oracle 与目标 description 矛盾，把失败归因为 oracle-defect；把 1/3 混合结果视为不确定证据，拒绝用它增加窄规则，并分别判定三个 eval 门禁。",
+      "files": [],
+      "scripted_replies": [],
+      "eval_type": "behavior",
+      "case_role": "regression",
+      "provenance": "observed",
+      "scenario_family": "eval-oracle-and-change-safety",
+      "unit_under_test": "full-skill",
+      "preconditions": { "fixture": "fixtures/eval-audit-review.json", "mode": "quick" },
+      "oracle": {
+        "rationale": "本 case 复现 skill-review 缺少 oracle 和 eval-driven 修改安全标准的问题。",
+        "rule_refs": ["SKILL.md Eval Case Audit", "references/eval-audit.md"],
+        "confidence": "high",
+        "allowed_variance": "报告格式可以不同，但必须先判 oracle，再判断修改安全。",
+        "minimal_counterexample": "若 oracle 与目标规则一致、结果稳定且回归完成，则可以接受面向场景族的修改。"
+      },
+      "decision_context": {
+        "frequency": "occasional",
+        "impact": "high",
+        "false_negative_cost": "high",
+        "false_positive_cost": "high",
+        "rationale": "错误接受或拒绝 eval-driven 修改都会造成设计漂移。"
+      },
+      "review": {
+        "workspace_unchanged": true,
+        "checks": [
+          "先审核suite和oracle，再使用运行结果评价Skill",
+          "指出显式调用预期false与目标description直接矛盾",
+          "failure triage归因为oracle-defect而不是skill-defect",
+          "把1/3或2/3混合结果标为uncertain并要求更多运行和trace归因",
+          "eval-validity为fail，release-evidence不通过或unknown，eval-change-safety为fail",
+          "拒绝proposed change，不建议增加query-specific规则",
+          "不修改workspace"
         ]
       }
     },

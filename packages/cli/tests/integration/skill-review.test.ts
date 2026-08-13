@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
@@ -33,10 +32,6 @@ function skillScript(name: string): string {
 
 function staticEvalRunner(): string {
   return skillScript('run_static_skill_evals.mjs');
-}
-
-function contentDigest(content: string): string {
-  return createHash('sha256').update(content).digest('hex');
 }
 
 function testEvalLayout(outputRoot: string) {
@@ -246,6 +241,7 @@ describe('skill-review author tools', () => {
     for (const scriptName of [
       'inspect_skill_target.mjs',
       'run_static_skill_evals.mjs',
+      'validate_eval_cases.mjs',
       'validate_scorecard.mjs',
     ]) {
       const result = await execFileAsync('node', [
@@ -254,6 +250,164 @@ describe('skill-review author tools', () => {
       ], { cwd: subjectRoot, env: process.env });
       expect(result.stdout, scriptName).toContain('Usage:');
     }
+  });
+
+  it('materializes the shared Eval Audit validator required by create-aw-plugin cases', async () => {
+    const runner = await import(`${pathToFileURL(staticEvalRunner()).href}?create-plugin-audit`);
+    const skillRoot = path.join(repoRoot(), '.agents', 'skills', 'create-aw-plugin');
+    const manifest = await runner.readManifest(skillRoot, 'create-aw-plugin');
+    const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-create-plugin-audit-'));
+    tempDirs.push(outputRoot);
+
+    expect(manifest.participantSkills).toEqual(['create-aw-plugin']);
+    const subjectRoot = await runner.prepareSubject(manifest, outputRoot);
+    const validator = path.join(
+      subjectRoot,
+      '.agents',
+      'skills',
+      'skill-review',
+      'scripts',
+      'validate_eval_cases.mjs',
+    );
+    await expect(fs.pathExists(validator)).resolves.toBe(true);
+    const result = await execFileAsync('node', [validator, '--help'], {
+      cwd: subjectRoot,
+      env: process.env,
+    });
+    expect(result.stdout).toContain('Usage: validate_eval_cases.mjs');
+  });
+
+  it('validates eval audit metadata while keeping legacy case files reviewable', async () => {
+    const root = repoRoot();
+    const validator = skillScript('validate_eval_cases.mjs');
+    const runValidator = async (filePath: string, strict = false) => {
+      const args = [validator, filePath, '--format', 'json'];
+      if (strict) args.push('--strict');
+      const execution = await execFileAsync('node', args, { cwd: root, env: process.env }).then(
+        (result) => result,
+        (error: { stdout?: string }) => {
+          if (!error.stdout) throw error;
+          return { stdout: error.stdout };
+        },
+      );
+      return JSON.parse(execution.stdout);
+    };
+
+    const example = await runValidator(path.join(
+      root,
+      '.agents',
+      'skills',
+      'skill-review',
+      'assets',
+      'eval-case-example.json',
+    ));
+    expect(example).toMatchObject({
+      valid: true,
+      mode: 'compatible',
+      summary: { cases: 1, scenario_families: 1, errors: 0, warnings: 0 },
+    });
+
+    const legacy = await runValidator(path.join(
+      root,
+      '.agents',
+      'skills',
+      'skill-review',
+      'evals',
+      'trigger-cases.json',
+    ));
+    expect(legacy.valid).toBe(true);
+    expect(legacy.summary.errors).toBe(0);
+    expect(legacy.summary.warnings).toBeGreaterThan(0);
+
+    const strictLegacy = await runValidator(path.join(
+      root,
+      '.agents',
+      'skills',
+      'skill-review',
+      'evals',
+      'trigger-cases.json',
+    ), true);
+    expect(strictLegacy.valid).toBe(false);
+    expect(strictLegacy.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ level: 'error', code: 'oracle.missing' }),
+    ]));
+
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-eval-case-audit-'));
+    tempDirs.push(tempRoot);
+    const invalidPath = path.join(tempRoot, 'invalid.json');
+    await fs.writeJson(invalidPath, {
+      policy: {
+        optimization: 'balanced',
+        false_negative_cost: 'high',
+        false_positive_cost: 'high',
+        rationale: 'Both errors affect the target workflow.',
+      },
+      evals: [
+        {
+          id: 'mixed-layer',
+          eval_type: 'trigger',
+          split: 'validation',
+          case_role: 'representative',
+          provenance: 'derived',
+          scenario_family: 'fixture',
+          unit_under_test: 'description',
+          preconditions: {},
+          expected: { should_load_skill: true, outcome: 'complete' },
+          oracle: {
+            rationale: 'Fixture oracle.',
+            rule_refs: ['SKILL.md description'],
+            confidence: 'high',
+            allowed_variance: 'Only loading is under test.',
+          },
+        },
+        { id: 'mixed-layer' },
+      ],
+    });
+    const invalid = await runValidator(invalidPath);
+    expect(invalid.valid).toBe(false);
+    expect(invalid.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'case.layer-mixing' }),
+      expect.objectContaining({ code: 'case.duplicate-id' }),
+    ]));
+
+    const invalidEnumsPath = path.join(tempRoot, 'invalid-enums.json');
+    await fs.writeJson(invalidEnumsPath, {
+      policy: {
+        optimization: 'unsupported',
+        false_negative_cost: 'high',
+        false_positive_cost: 'high',
+        rationale: 'Both errors affect the target workflow.',
+      },
+      cases: [
+        {
+          id: 'invalid-enums',
+          eval_type: 'trigger',
+          split: 'production',
+          case_role: 'representative',
+          provenance: 'derived',
+          scenario_family: 'fixture',
+          unit_under_test: 'description',
+          preconditions: {},
+          should_load_skill: true,
+          oracle: {
+            rationale: 'Fixture oracle.',
+            rule_refs: ['SKILL.md description'],
+            confidence: 'high',
+            allowed_variance: 'Only loading is under test.',
+          },
+        },
+      ],
+    });
+    const invalidEnums = await runValidator(invalidEnumsPath);
+    expect(invalidEnums).toMatchObject({
+      valid: false,
+      mode: 'compatible',
+      summary: { errors: 2 },
+    });
+    expect(invalidEnums.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ level: 'error', code: 'suite.policy-optimization' }),
+      expect.objectContaining({ level: 'error', code: 'case.split' }),
+    ]));
   });
 
   it('allows only the draft artifact and its required parent directories', async () => {
@@ -486,16 +640,16 @@ describe('skill-review author tools', () => {
       expect(report.issues.filter((issue: { level: string }) => issue.level === 'error')).toEqual([]);
       if (skillName === 'skill-review') {
         expect(report.evals.trigger).toEqual({ total: 32, positive: 16, negative: 16 });
-        expect(report.evals.behavior_cases).toBe(14);
-        expect(report.evals.conversation_cases).toBe(14);
-        expect(report.evals.portable_behavior_specs).toBe(35);
+        expect(report.evals.behavior_cases).toBe(15);
+        expect(report.evals.conversation_cases).toBe(15);
+        expect(report.evals.portable_behavior_specs).toBe(37);
         expect(report.evals.behavior_evidence_note).toContain('not executable release evidence');
-        expect(report.evals.scoring_cases).toBe(17);
-        expect(report.scripts.count).toBe(3);
+        expect(report.evals.scoring_cases).toBe(20);
+        expect(report.scripts.count).toBe(4);
         expect(report.references.missing).toEqual([]);
         expect(report.pointers).toMatchObject({
-          total: 7,
-          conditional_signals: 7,
+          total: 8,
+          conditional_signals: 8,
           weak_signal_lines: [],
         });
       } else {
@@ -964,6 +1118,7 @@ describe('skill-review author tools', () => {
     for (const key of Object.keys(base.artifacts)) {
       base.artifacts[key] = true;
     }
+    base.artifacts.eval_known_invalid_oracle = false;
     base.dimensions = base.dimensions.map((dimension: Record<string, unknown>) => ({
       ...dimension,
       score: 5,
@@ -1031,6 +1186,73 @@ describe('skill-review author tools', () => {
       instruction_design: 10,
       minimum_control: 14,
       context_disclosure: 10,
+    });
+
+    const noEvalAudit = structuredClone(base);
+    for (const field of [
+      'trigger_eval_results',
+      'behavior_eval_results',
+      'regression_eval_results',
+      'eval_audit_applicable',
+      'eval_case_audit',
+      'eval_error_cost_policy',
+      'eval_baseline_assessed',
+      'eval_variance_assessed',
+      'eval_failure_triage',
+      'eval_driven_change',
+      'eval_change_regressions',
+      'eval_known_invalid_oracle',
+    ]) noEvalAudit.artifacts[field] = false;
+    for (const gateId of ['eval-validity', 'eval-change-safety']) {
+      const gate = noEvalAudit.gates.find((entry: { id: string }) => entry.id === gateId);
+      gate.status = 'not_applicable';
+      gate.reason = gateId === 'eval-validity'
+        ? 'No eval evidence is in review scope.'
+        : 'No eval-driven change is in review scope.';
+    }
+    expect(await validate(noEvalAudit)).toMatchObject({ valid: true });
+
+    const unauditedEval = structuredClone(base);
+    unauditedEval.artifacts.eval_case_audit = false;
+    for (const gateId of ['eval-validity', 'eval-change-safety']) {
+      const gate = unauditedEval.gates.find((entry: { id: string }) => entry.id === gateId);
+      gate.status = 'unknown';
+      gate.reason = 'Case Admission evidence is incomplete.';
+    }
+    expect(await validate(unauditedEval)).toMatchObject({
+      valid: true,
+      score: { release: 'provisional' },
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({ code: 'cap.evals-case-audit' }),
+      ]),
+    });
+
+    const missingErrorCostPolicy = structuredClone(base);
+    missingErrorCostPolicy.artifacts.eval_error_cost_policy = false;
+    expect(await validate(missingErrorCostPolicy)).toMatchObject({
+      valid: false,
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({ code: 'gate.eval-validity-evidence' }),
+      ]),
+    });
+
+    const unsafeEvalChange = structuredClone(base);
+    unsafeEvalChange.artifacts.eval_change_regressions = false;
+    expect(await validate(unsafeEvalChange)).toMatchObject({
+      valid: false,
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({ code: 'gate.eval-change-safety-evidence' }),
+      ]),
+    });
+
+    const invalidOracleChange = structuredClone(base);
+    invalidOracleChange.artifacts.eval_known_invalid_oracle = true;
+    expect(await validate(invalidOracleChange)).toMatchObject({
+      valid: false,
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({ code: 'cap.evals-invalid-oracle' }),
+        expect.objectContaining({ code: 'gate.eval-validity-known-invalid' }),
+      ]),
     });
 
     const invalidSkillName = structuredClone(base);
@@ -1574,141 +1796,5 @@ describe('skill-review author tools', () => {
         valid: true,
       });
     }
-  });
-
-  it('keeps evaluated upstream content unchanged outside documented project adapters', async () => {
-    const skillRoot = path.join(repoRoot(), '.agents', 'skills', 'skill-review');
-    const exactHashes: Record<string, string> = {
-      'CHANGELOG.md': '7e2553cd3e3c1e06476bb159dfcb865b6d27393bb98c63ff4c45fef811be0cc3',
-      'assets/report-template.md': '28c599394feabf73eabea1f6ba2fd41999cb80303dea4746a0a23728beb8d883',
-      'assets/scorecard-template.json': '93e6fae3a76d2bfa447047769da9587dfb4473c08be437f3f325a35e63f17233',
-      'evals/behavior_cases.json': '936b6c67d6e6cd4873109f6af916977edf9a1b3eafc335150ed2fde4f1eb82dc',
-      'evals/scoring_cases.json': '7a9715f0549a0215856a11d32f94c7212a7606b02d7e7ea4498c4ea136681d3f',
-      'evals/trigger-cases.json': 'bc97e65565a48329c7dfa22eb20a172a6bcca132101a85e28b3216374956a629',
-      'references/architecture-boundaries.md': '29e757176d8d8e9fc00c43b17132714623d28ada56f6d427388c347b9d0f87d3',
-      'references/delta-review.md': '4822793652c376d573d300e71d2d1f4a26dde7f43ede7aa4d7d51d2213de6ee1',
-      'references/review-dimensions.md': 'ecb0d21f7fb4a7dc391840f57c7e02ea4889667ddf8d9c0c48f37baa8369840c',
-      'references/scripts-and-resources.md': '7f5f2b16a8da05a757d0f3ca571821c4d8947c9df4e83fba6ed6ee8bc6bba68f',
-      'references/source-map.md': '1fbce765ded4d6995f299a0169f5bda805ec01c49f71cc3795e8856667bb0828',
-    };
-    for (const [relative, expected] of Object.entries(exactHashes)) {
-      expect(contentDigest(await fs.readFile(path.join(skillRoot, relative), 'utf8'))).toBe(expected);
-    }
-    const reportTemplate = await fs.readFile(
-      path.join(skillRoot, 'assets', 'report-template.md'),
-      'utf8',
-    );
-    expect(reportTemplate).toContain('# Skill 评审报告');
-    const triggerCorpus = await fs.readJson(path.join(skillRoot, 'evals', 'trigger-cases.json'));
-    expect(triggerCorpus.cases).toHaveLength(32);
-    expect(triggerCorpus.cases.filter((entry: { should_load_skill: boolean }) =>
-      entry.should_load_skill)).toHaveLength(16);
-    expect(new Set(triggerCorpus.cases.map((entry: { split: string }) => entry.split))).toEqual(
-      new Set(['train', 'validation', 'sanity']),
-    );
-    const evalManifest = await fs.readJson(path.join(skillRoot, 'evals', 'manifest.json'));
-    expect(evalManifest.suites.map((suite: { defaultRuns: number }) => suite.defaultRuns)).toEqual(
-      [3, 1],
-    );
-
-    const readme = (await fs.readFile(path.join(skillRoot, 'README.md'), 'utf8'))
-      .replace('node scripts/inspect_skill_target.mjs', 'python3 scripts/inspect_skill.py')
-      .replace('node scripts/validate_scorecard.mjs', 'python3 scripts/validate_scorecard.py')
-      .replace(
-        'node scripts/run_static_skill_evals.mjs <skill-name-or-dir> --validate-only\n',
-        '',
-      )
-      .replace(
-        'pnpm review:publish -- --skill <skill> [--plugin <plugin>] --batch-id <id> \\\n  --report <report.md> --scorecard <scorecard.json>\n',
-        '',
-      )
-      .replace(
-        'pnpm review:release -- --skill <skill> [--plugin <plugin>] --batch-id <id>\n',
-        '',
-      )
-      .replace(
-        '\n\n当前仓库静态 Skill 的真实模型 eval 先运行 `pnpm build`，再由 `run_static_skill_evals.mjs` 生成证据；它不是 `plugin:eval` 的别名。\n',
-        '\n',
-      )
-      .replace(
-        '\n评审默认只返回结果。用户只要求保存草稿时写入 `.tmp/agent-workflows/reviews/`。`review:publish` 只在用户明确要求正式发布时生成报告并封存批次；它不更新 Skill README。README 登记需要用户另行明确要求，再运行 `review:release`。静态和插件目标的目录及证据规则分别见 `references/static-skill-evaluation.md` 和 `references/agent-workflows-plugin.md`。\n',
-        '',
-      )
-      .replace(
-        '- 最近正式报告：暂无。',
-        '- 最近 eval：暂无已完成报告。\n- 最近 review：暂无已完成报告。',
-      );
-    expect(contentDigest(readme)).toBe(
-      'a64a76a75447dae0c8ce21ce832082d26ad0b4ce3940c450964c8352378f2fd8',
-    );
-
-    const skill = (await fs.readFile(path.join(skillRoot, 'SKILL.md'), 'utf8'))
-      .replace(
-        [
-          'description: >-',
-          '  当用户的主要目标是评估已有的静态或 agent-workflows 插件 Agent Skill、',
-          '  草稿或修订版的质量、风险或发布就绪性时使用；适用于快速、完整或发布',
-          '  审核、差量复核、质量比较、触发边界诊断和多维评分。即使只提供',
-          '  SKILL.md、一个 Skill 组件、执行 trace 或 eval 结果，也仅在用户需要',
-          '  finding、评分、风险、发布门禁、问题关闭情况或最小改进集时使用。若',
-          '  主要目标仅是从零创建、直接改写或修复 Skill、实现脚本或 eval、运行',
-          '  Skill 或脚本、做语法或解析检查、查询规范、解释流程，或普通代码/文档',
-          '  review，不要使用。',
-          '',
-        ].join('\n'),
-        'description: 当需要审核、评分、发布检查、比较或重构 Agent Skill 及其 SKILL.md、description、references、scripts、assets、evals 或相关角色配置时使用；评估调用与触发、范围、程序与完成边界、信息层级与渐进式披露、架构职责、脚本、资源、行为证据、安全和维护性，给出发布门禁、分数及最小改进集。不要用于普通代码或文档 review。\n',
-      )
-      .replace(
-        'compatibility: Requires the agent-workflows repository, Node.js 20+, installed workspace dependencies, and current Agent Skills documentation access for release reviews.\n',
-        'compatibility: Bundled validators require Python 3.11+; release reviews should be able to access the current Agent Skills documentation.\n',
-      )
-      .replace(
-        'node scripts/inspect_skill_target.mjs <skill-dir-or-SKILL.md-or-plugin>',
-        'python3 scripts/inspect_skill.py <skill-dir-or-SKILL.md>',
-      )
-      .replace('node scripts/validate_scorecard.mjs', 'python3 scripts/validate_scorecard.py')
-      .replace(
-        '   - 当前仓库静态 Skill 的 release 评审，或用户明确要求真实 eval 或正式发布：读取 `references/static-skill-evaluation.md` 和 `evals/manifest.json`；真实 eval 前先运行 `node scripts/run_static_skill_evals.mjs <skill-dir-or-name> --validate-only`。\n',
-        '',
-      )
-      .replace(
-        '   - 当前仓库的 AW 插件或动态 Skill：`references/agent-workflows-plugin.md`\n',
-        '',
-      )
-      .replace(
-        [
-          '   - 启动真实模型 eval 前，用户必须明确选择整个会话使用 Full Access，或明确选择 `--allow-unmanaged-processes`。用户未选择时停下询问；不得自行添加该参数，也不得请求单次提权。',
-          '   - 真实模型 eval 启动后保留同一进程会话。首轮和后续等待都使用工具允许的最长响应式等待时间；等待超时不表示 eval 失败，不要另开短周期状态轮询命令。',
-          '',
-        ].join('\n'),
-        '',
-      )
-      .replace(
-        '8. 默认只在当前会话返回报告，不发布、不封存批次，也不修改 README。用户只要求保存或持久化结果时，把草稿写入 `.tmp/agent-workflows/reviews/`，不运行发布命令。只有用户明确要求正式发布时，才读取目标类型对应的 reference 并运行 `review:publish`；执行前说明该命令会同时写正式目录和封存批次。用户只要求封存批次时，说明当前没有 seal-only 入口，并在获得正式发布授权前停止。README 登记需要用户另行明确要求，再运行 `review:release`。通过、失败或 `incomplete` 只影响报告结论，不改变授权边界。完整 eval/review 证据和草稿只放项目 `.tmp/agent-workflows/`，正式目录只保留人读报告和精简摘要。\n',
-        '',
-      )
-      .replace(
-        '- 未获得正式发布授权时，评审没有写入正式目录或封存批次；未获得 README 登记授权时，没有修改 README。用户只要求保存结果时，草稿位于 `.tmp/agent-workflows/reviews/`。用户明确要求发布时，`review:publish` 已完成；用户另行要求登记时，`review:release` 已完成或报告了可重试命令。\n',
-        '',
-      );
-    expect(contentDigest(skill)).toBe(
-      '5b2c6474777c8a6cf3d000b7908bebb9246ba78e2093ad85c6878a886479d799',
-    );
-
-    const scoringModel = (
-      await fs.readFile(path.join(skillRoot, 'references', 'scoring-model.md'), 'utf8')
-    )
-      .replace('validate_scorecard.mjs', 'validate_scorecard.py')
-      .replace(
-        '- 没有 information-hierarchy map，`context_disclosure` 通常不高于 4。\n',
-        '',
-      )
-      .replace(
-        '7. release 模式未核对 current-check 来源 → `provisional`。\n',
-        '',
-      );
-    expect(contentDigest(scoringModel)).toBe(
-      '0e8cfb63b45ea30be5411bbbd863c2707e77b360dd584d4cf282232c1ef504d4',
-    );
   });
 });

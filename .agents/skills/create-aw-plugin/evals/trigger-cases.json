@@ -1,6 +1,12 @@
 {
   "schemaVersion": 1,
   "skill": "create-aw-plugin",
+  "policy": {
+    "optimization": "balanced",
+    "false_negative_cost": "high",
+    "false_positive_cost": "high",
+    "rationale": "Missing an authoring request leaves an AW plugin unsupported, while loading for review, installation, use, or generic Skill work can mutate the wrong scope."
+  },
   "cases": [
     {
       "id": "release_notes_plugin",
@@ -175,6 +181,25 @@
       "split": "sanity",
       "query": "给现有 plugins/repo-health 的 owner Skill 增加可执行 behavior eval 和 materialization 验证，不要改安装流程。",
       "should_load_skill": true,
+      "eval_type": "trigger",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "plugin-eval-authoring-vs-read-only-review",
+      "unit_under_test": "description",
+      "preconditions": {
+        "repository": "agent-workflows",
+        "target_is_plugin_source": true,
+        "requested_action": "implement-eval"
+      },
+      "oracle": {
+        "rationale": "The request changes an existing plugins/<name> owner Skill and its executable eval, which is an explicit create-aw-plugin responsibility.",
+        "rule_refs": [
+          "SKILL.md#frontmatter.description",
+          "SKILL.md#阅读路由"
+        ],
+        "confidence": "high",
+        "allowed_variance": "The implementation plan may differ; create-aw-plugin must load before the plugin eval is modified."
+      },
       "tags": ["implicit", "maintain", "eval"]
     },
     {
@@ -189,6 +214,26 @@
       "split": "sanity",
       "query": "只读评审 plugins/repo-health 中 Skill 的触发质量和发布证据，输出评分，不要修复。",
       "should_load_skill": false,
+      "eval_type": "trigger",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "plugin-eval-authoring-vs-read-only-review",
+      "unit_under_test": "description",
+      "preconditions": {
+        "repository": "agent-workflows",
+        "target_is_plugin_source": true,
+        "requested_action": "read-only-review"
+      },
+      "oracle": {
+        "rationale": "The request explicitly asks only for quality review and forbids repair, so it belongs to skill-review rather than the authoring Skill.",
+        "rule_refs": [
+          "SKILL.md#frontmatter.description",
+          "SKILL.md#Create AW Plugin"
+        ],
+        "confidence": "high",
+        "allowed_variance": "The review method may differ; create-aw-plugin must remain unloaded.",
+        "minimal_counterexample": "Change only the requested action from read-only review to implementing the reported Eval fixes; the expected label flips to load."
+      },
       "tags": ["near-miss", "review"]
     },
     {

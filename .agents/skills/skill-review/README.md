@@ -17,11 +17,14 @@
 - 将官方规范、包内结构问题、第三方 heuristic 和 reviewer 推演分开定级。
 - 通过 delta review、ablation 和 stop decision 防止 Skill 只增不减。
 - 静态控制面计数只触发语义审计，不自动判定缺陷。
+- 存在 eval 时先审 suite、错误代价、case 层级、oracle 和现实性，再解释运行结果。
+- 用 `eval-validity` 和 `eval-change-safety` 阻止错误 oracle、混合低样本结果或单 case 过拟合驱动 Skill 修改。
 
 ## 使用
 
 ```bash
 node scripts/inspect_skill_target.mjs /path/to/skill --format json
+node scripts/validate_eval_cases.mjs /path/to/eval-cases.json --format json
 cp assets/scorecard-template.json review.json
 node scripts/validate_scorecard.mjs review.json --format json
 node scripts/run_static_skill_evals.mjs <skill-name-or-dir> --validate-only
@@ -31,6 +34,8 @@ pnpm review:release -- --skill <skill> [--plugin <plugin>] --batch-id <id>
 ```
 
 release 评审应按 `references/source-map.md` 重新核对当前官方 Agent Skills 文档。
+
+`validate_eval_cases.mjs` 默认兼容历史 case：确定性结构错误会失败，缺少发布级 audit metadata 只给 warning。只对已经选定为发布或修改依据的 case 文档使用 `--strict`。
 
 当前仓库静态 Skill 的真实模型 eval 先运行 `pnpm build`，再由 `run_static_skill_evals.mjs` 生成证据；它不是 `plugin:eval` 的别名。
 

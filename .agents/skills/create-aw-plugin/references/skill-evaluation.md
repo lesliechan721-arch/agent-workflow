@@ -209,6 +209,49 @@ run 在批次锁内预留。每个 case target 在独立的批次锁事务中原
 
 插件和每个 Skill 都必须有非空 README。插件 README 只介绍插件目标、Skill 和使用边界；Skill README 约定记录最近已 release 的正式报告摘要、仓库相对路径和被评估 Git commit。只有用户另行明确要求登记时，才运行 `pnpm review:release -- --plugin <plugin> --skill <skill> --batch-id <batch-id>` 更新 README。登记失败不回滚正式报告，可以重试同一命令。README 登记会改变 production source，必须由现有或新增 release intent 覆盖；普通 eval 和报告发布不改变 README。
 
+## Eval Case Audit 作者合同
+
+可执行 runner 合同和 Eval 决策审核是两个层次。`evals/manifest.json`、trigger 字段和 conversation `review` 字段继续控制运行。Audit metadata 只说明用例能否用于修改或发布，不改变 runner 行为。
+
+每个有正负决策的 suite 在 case 文档顶层声明 `policy`：
+
+```json
+{
+  "policy": {
+    "optimization": "balanced",
+    "false_negative_cost": "high",
+    "false_positive_cost": "high",
+    "rationale": "说明两类错误影响，以及为什么选择该优化方向。"
+  }
+}
+```
+
+`optimization` 只使用 `recall-first`、`precision-first`、`balanced` 或 `critical`。错误代价只使用 `low`、`medium`、`high` 或 `critical`。正负例数量相同不表示两类错误代价相同。
+
+会进入 train、validation、sanity、regression、发布判断或当前修改的 case，应补齐：
+
+- `eval_type`：`trigger`、`gate`、`routing`、`behavior`、`outcome` 或 `cost`；每个 assertion 只检查一个主层级。
+- `case_role`、`provenance` 和 `scenario_family`；runner split 仍只使用 `train`、`validation` 和 `sanity`，`regression`、`boundary`、`challenge`、`diagnostic` 是 role，不是新 split。
+- `unit_under_test` 和会改变 oracle 的 `preconditions`。
+- `oracle.rationale`、非空 `rule_refs`、`confidence` 和 `allowed_variance`。
+- boundary 或 regression case 的 `oracle.minimal_counterexample`。
+- 可从输出、trace、文件或仓库状态判定的机械期望或断言。
+
+审计字段模板以 `.agents/skills/skill-review/assets/eval-case-template.json` 为准。它们并入当前可执行 case，不另建一份平行语料。历史 case 可以渐进迁移；缺少 metadata 时只能作为低置信诊断信号，不能单独驱动 Skill 修改或发布。
+
+`init_plugin.mjs` 和 `add_skill.mjs` 生成的 trigger starter 带有中等置信 synthetic/boundary metadata，behavior starter 标为低置信 diagnostic。它们用于提示完整结构，不是领域发布证据。发布前必须替换 prompt、near-miss、场景族、oracle 和断言，并按真实错误代价调整 policy 与 role。
+
+先用兼容模式检查历史文档；它把缺失的 admission metadata 报为 warning：
+
+```bash
+node .agents/skills/skill-review/scripts/validate_eval_cases.mjs \
+  plugins/<plugin>/skills/<skill>/evals/trigger-cases.json --format json
+node .agents/skills/skill-review/scripts/validate_eval_cases.mjs \
+  plugins/<plugin>/skills/<skill>/evals/evals.json --format json
+```
+
+会用于发布或当前修改的 case 补全后，对对应文档增加 `--strict`。`validate_plugin.mjs` 仍负责可执行作者合同；`validate_eval_cases.mjs` 只做确定性结构检查。它不能判断 oracle 语义、现实性或 trace 是否正确，也不能替代 `eval-validity`、`release-evidence` 和 `eval-change-safety` 三个评审门禁。
+
 ## 触发评估
 
 只有允许模型自动发现的 Skill 才把自动触发率作为验收门。固定 manual Skill 仍要保持 description 精确，但验收重点是不会误触发且 `$skill-name` 显式入口可用。
@@ -221,6 +264,8 @@ run 在批次锁内预留。每个 case target 在独立的批次锁事务中原
 - 每条在干净 project session 中运行至少 3 次；只根据 train 调 description，用 validation/sanity 检查泛化。
 - 单目标正例默认要求命中率高于 `0.5`，负例默认低于 `0.5`；需要 validation 零误触时把该 split 放进 `strictNegativeSplits`。相邻 Skill 路由应使用 `expected_loaded_skills` 和更高的 `minimumPassRate`，不能只检查 owner Skill 是否未加载。
 - 自动触发 train/validation/sanity 不写 `$skill-name`；显式调用另放 smoke。manual Skill 的正向验收使用显式调用 smoke，负例验证未显式调用时不误加载。
+- 重要触发边界使用同一 `scenario_family` 的 minimal pair，只改变一个决定性条件。不要用多条同义改写冒充多个场景族。
+- 分别报告 positive recall、false-negative rate、negative specificity 和 false-positive rate。不要把所有结果压成一个总准确率。
 
 漏触发时扩大用户意图或场景类别；误触发时收紧相邻任务边界。不要把失败 query 原词逐个堆进 description。
 
@@ -273,6 +318,14 @@ run 在批次锁内预留。每个 case target 在独立的批次锁事务中原
 
 中央 app-server driver 在运行时把这些答案映射到真实 question id，并保存问题、答复、最终消息、token usage、事件 trace 和 workspace diff。baseline 没有复现 current 的提问步骤时，未消费回复保留为对照证据，不把预期增量误报为 owner failure。
 
+## 从 Eval 结果到 Skill 修改
+
+先审 suite，再解释运行结果。`1/3`、`2/3` 或其它混合低样本结果表示证据不足；先增加运行并读取 trace，不能直接向 Skill 增加窄规则。
+
+每个失败先归因为 `skill-defect`、`oracle-defect`、`fixture-defect`、`grader-defect`、`runtime-or-tool-defect`、`model-variance`、`stale-case`、`insufficient-runs`、`expected-tradeoff` 或 `unknown`。只有通过 Case Admission 且归因为 `skill-defect` 的失败可以进入 Skill 修改候选。
+
+Eval-driven 修改必须面向场景族。修改后重跑原 case、同族变体、minimal pair、相反标签 near-miss、固定 validation/sanity 和关键 regression，并记录质量、token、时间和复杂度变化。只让单个 query 转绿，或已知错误 oracle 仍驱动修改时，不接受该修改。
+
 ## 结果与定性复核
 
 `EvaluationBundle` outcome：
@@ -287,13 +340,16 @@ run 在批次锁内预留。每个 case target 在独立的批次锁事务中原
 ## 完成检查
 
 - [ ] owner Skill 的 `evals/manifest.json` 通过作者 validator。
+- [ ] suite 已声明 optimization policy 和正负错误代价；关键 case 已通过 Case Admission 结构检查。
 - [ ] `skills[]` 覆盖真实 participant；跨插件 profile 只引用当前仓库插件，且不被误写为 production dependency。
 - [ ] 自动 Skill 有 train/validation/sanity 的正例与 near-miss。
+- [ ] 重要边界有 minimal pair；报告分开显示 positive recall 和 negative specificity。
 - [ ] 动态 Skill 覆盖 default/non-default、project/user 最终制品。
 - [ ] 真实模型只运行 Codex project profile，user 只 materialize。
 - [ ] current 与 baseline 使用相同输入和干净上下文。
 - [ ] 写入行为只使用隔离 `workspace-write`，并有最小允许改动路径和最终 artifact 机械断言。
 - [ ] 机械断言优先，定性 checks 都能绑定 trace/diff 证据。
+- [ ] Eval failure 已完成归因；只有 `skill-defect` 驱动修改，并已重跑同族、相反标签和固定回归集。
 - [ ] `plugin:test`、materialization 和模型 eval 没有互相冒充。
 - [ ] release required suite 没有 skip、incomplete 或未复核的 `needs_review`。
 - [ ] 完整 eval/review 证据位于 `.tmp`，正式报告目录只包含人读 `report.md` 和 schema v2 `summary.json`。
