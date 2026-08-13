@@ -741,14 +741,27 @@ async function listConfigStoreDirectoryPluginNames(storeRoot: string): Promise<s
 export async function listPluginConfigStorePluginNames(options: {
   cwd: string;
   env?: NodeJS.ProcessEnv;
+  scope?: Scope;
+  projectLayer?: ProjectConfigStoreLayer;
 }): Promise<string[]> {
   const projectRoot = resolveAwProjectRoot(options.cwd);
-  const [user, projectShared, projectLocal] = await Promise.all([
-    listConfigStoreDirectoryPluginNames(path.join(resolveAwHome(options.env), CONFIG_DIR)),
-    listConfigStoreDirectoryPluginNames(path.join(projectRoot, '.agent-workflows', CONFIG_DIR)),
-    listConfigStoreDirectoryPluginNames(path.join(projectRoot, '.agent-workflows', 'plugin-config.local')),
-  ]);
-  return [...new Set([...user, ...projectShared, ...projectLocal])].sort((left, right) =>
+  const storeRoots = options.scope === 'user'
+    ? [path.join(resolveAwHome(options.env), CONFIG_DIR)]
+    : options.scope === 'project'
+      ? [path.join(
+          projectRoot,
+          '.agent-workflows',
+          options.projectLayer === 'local' ? 'plugin-config.local' : CONFIG_DIR,
+        )]
+      : [
+          path.join(resolveAwHome(options.env), CONFIG_DIR),
+          path.join(projectRoot, '.agent-workflows', CONFIG_DIR),
+          path.join(projectRoot, '.agent-workflows', 'plugin-config.local'),
+        ];
+  const pluginNames = (await Promise.all(
+    storeRoots.map((storeRoot) => listConfigStoreDirectoryPluginNames(storeRoot)),
+  )).flat();
+  return [...new Set(pluginNames)].sort((left, right) =>
     left.localeCompare(right),
   );
 }
@@ -792,6 +805,7 @@ export async function patchPluginConfigStore(options: {
   cwd: string;
   updates: Record<string, unknown>;
   removeKeys?: string[];
+  requireExistingRemoveKeys?: boolean;
   env?: NodeJS.ProcessEnv;
   projectLayer?: ProjectConfigStoreLayer;
 }): Promise<PluginConfigStoreReceipt & { updatedKeys: string[]; removedKeys: string[] }> {
@@ -809,6 +823,10 @@ export async function patchPluginConfigStore(options: {
         const current = (await fs.pathExists(filePath))
           ? await readStoreFile(filePath)
           : {};
+        if (options.requireExistingRemoveKeys) {
+          const missingKey = removedKeys.find((key) => !Object.hasOwn(current, key));
+          if (missingKey) throw new Error(`Unknown config key "${missingKey}".`);
+        }
         const next = { ...current };
         for (const key of removedKeys) {
           delete next[key];
@@ -1827,6 +1845,51 @@ async function buildManifestFieldEntries(options: {
   return fields;
 }
 
+async function buildLegacyStoreFieldEntries(options: {
+  pluginName: string;
+  scope: Scope | 'effective';
+  projectLayer: 'shared' | 'local';
+  cwd: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<ConfigFieldEntry[]> {
+  const locations = options.scope === 'effective'
+    ? [
+        { scope: 'user' as const, projectLayer: 'shared' as const, sourceLayer: 'user' as const },
+        { scope: 'project' as const, projectLayer: 'shared' as const, sourceLayer: 'project' as const },
+        { scope: 'project' as const, projectLayer: 'local' as const, sourceLayer: 'local' as const },
+      ]
+    : [{
+        scope: options.scope,
+        projectLayer: options.projectLayer,
+        sourceLayer: options.scope === 'user'
+          ? 'user' as const
+          : options.projectLayer === 'local' ? 'local' as const : 'project' as const,
+      }];
+  const fields = new Map<string, ConfigFieldEntry>();
+  for (const location of locations) {
+    const store = await readPluginConfigStore({
+      pluginName: options.pluginName,
+      scope: location.scope,
+      ...(location.scope === 'project' ? { projectLayer: location.projectLayer } : {}),
+      cwd: options.cwd,
+      env: options.env,
+    });
+    for (const key of Object.keys(store.values)) {
+      fields.set(key, {
+        key,
+        title: key,
+        kind: 'manifest',
+        reserved: false,
+        writable: false,
+        valueState: 'configured',
+        effectiveValue: '[redacted]',
+        sourceLayer: location.sourceLayer,
+      });
+    }
+  }
+  return [...fields.values()].sort((left, right) => left.key.localeCompare(right.key));
+}
+
 export async function resolvePluginConfigSchemaAccess(options: {
   pluginName: string;
   currentPlugin?: PluginMeta | null;
@@ -1887,7 +1950,13 @@ export async function resolveConfigRead(options: {
         cwd: options.cwd,
         env: options.env,
       })
-    : [];
+    : await buildLegacyStoreFieldEntries({
+        pluginName,
+        scope: options.scope,
+        projectLayer: options.projectLayer,
+        cwd: options.cwd,
+        env: options.env,
+      });
 
   return {
     pluginName,

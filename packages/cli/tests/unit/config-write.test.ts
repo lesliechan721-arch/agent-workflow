@@ -44,6 +44,7 @@ import {
 } from '../../src/utils/plugin-config-write.js';
 import {
   readPluginConfigStore,
+  resolveConfigRead,
   writePluginConfigStore,
 } from '../../src/utils/plugin-config.js';
 import { registerCurrentTestWritableStateRoot } from '../setup/test-isolation.js';
@@ -505,5 +506,143 @@ describe('config write full reinstall apply', () => {
       cwd: fixture.cwd,
       env: fixture.env,
     })).exists).toBe(false);
+  });
+
+  it.each([
+    { scope: 'user' as const, projectLayer: undefined },
+    { scope: 'project' as const, projectLayer: 'shared' as const },
+    { scope: 'project' as const, projectLayer: 'local' as const },
+  ])('removes one legacy $scope/$projectLayer key without deleting the store', async ({ scope, projectLayer }) => {
+    const fixture = await createFixture('legacy-plugin');
+    await writePluginConfigStore({
+      pluginName: 'legacy-plugin',
+      scope,
+      ...(projectLayer ? { projectLayer } : {}),
+      cwd: fixture.cwd,
+      env: fixture.env,
+      values: { removeMe: 'old', keepMe: 'kept' },
+    });
+    const reinstall = createReinstallMock();
+
+    const receipt = await applyPluginConfigWrite({
+      plugin: null,
+      pluginError: new Error('catalog unavailable'),
+      pluginName: 'legacy-plugin',
+      scope,
+      ...(projectLayer ? { projectLayer } : {}),
+      cwd: fixture.cwd,
+      env: fixture.env,
+      request: { removeKeys: ['removeMe'] },
+      reinstallCommandImpl: reinstall,
+    });
+    const store = await readPluginConfigStore({
+      pluginName: 'legacy-plugin',
+      scope,
+      ...(projectLayer ? { projectLayer } : {}),
+      cwd: fixture.cwd,
+      env: fixture.env,
+    });
+
+    expect(receipt).toMatchObject({
+      configWrite: 'succeeded',
+      overallState: 'succeeded',
+      removedKeys: ['removeMe'],
+      applySkippedReason: 'currentCatalogUnavailable',
+      targetResults: [],
+    });
+    expect(reinstall).not.toHaveBeenCalled();
+    expect(store.exists).toBe(true);
+    expect(store.values).toEqual({ keepMe: 'kept' });
+  });
+
+  it('keeps an empty legacy store after removing its last key', async () => {
+    const fixture = await createFixture('legacy-plugin');
+    await writePluginConfigStore({
+      pluginName: 'legacy-plugin',
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      values: { only: 'old' },
+    });
+
+    await applyPluginConfigWrite({
+      plugin: null,
+      pluginName: 'legacy-plugin',
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      request: { removeKeys: ['only'] },
+    });
+    const store = await readPluginConfigStore({
+      pluginName: 'legacy-plugin',
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+    });
+
+    expect(store.exists).toBe(true);
+    expect(store.values).toEqual({});
+  });
+
+  it('reads only legacy keys from the selected project local store and redacts their values', async () => {
+    const fixture = await createFixture('legacy-plugin');
+    await writePluginConfigStore({
+      pluginName: 'legacy-plugin',
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      values: { userOnly: 'user secret' },
+    });
+    await writePluginConfigStore({
+      pluginName: 'legacy-plugin',
+      scope: 'project',
+      projectLayer: 'local',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      values: { localOnly: 'local secret' },
+    });
+
+    const result = await resolveConfigRead({
+      pluginName: 'legacy-plugin',
+      plugin: null,
+      scope: 'project',
+      projectLayer: 'local',
+      cwd: fixture.cwd,
+      env: fixture.env,
+    });
+
+    expect(result.fields).toEqual([expect.objectContaining({
+      key: 'localOnly',
+      effectiveValue: '[redacted]',
+      sourceLayer: 'local',
+    })]);
+    expect(JSON.stringify(result)).not.toContain('user secret');
+    expect(JSON.stringify(result)).not.toContain('local secret');
+  });
+
+  it('rejects an unknown legacy key without changing the store', async () => {
+    const fixture = await createFixture('legacy-plugin');
+    await writePluginConfigStore({
+      pluginName: 'legacy-plugin',
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      values: { known: 'old' },
+    });
+
+    await expect(applyPluginConfigWrite({
+      plugin: null,
+      pluginName: 'legacy-plugin',
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      request: { removeKeys: ['missing'] },
+    })).rejects.toThrow('Unknown config key "missing".');
+    expect((await readPluginConfigStore({
+      pluginName: 'legacy-plugin',
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+    })).values).toEqual({ known: 'old' });
   });
 });

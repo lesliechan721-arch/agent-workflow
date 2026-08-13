@@ -389,27 +389,83 @@ export async function applyPluginConfigWrite(options: {
   if (!requestedPluginName) throw new Error('Plugin name is required for config write.');
   const pluginName = assertSafePluginConfigSegment(requestedPluginName);
   const projectLayer = options.scope === 'project' ? (options.projectLayer ?? 'shared') : 'shared';
-  const schemaAccess = await resolvePluginConfigSchemaAccess({
-    pluginName,
-    currentPlugin: options.plugin,
-    currentPluginError: options.pluginError,
-    scope: options.scope,
-    projectLayer,
-    cwd: options.cwd,
-    env: options.env,
-  });
-  const schemaPlugin = schemaAccess.plugin;
-  const schema = schemaPlugin?.manifest.config?.schema;
-  if (!schema || !schemaPlugin) {
-    throw new Error(`configSchemaUnavailable: Plugin "${pluginName}" does not declare an AW config schema.`);
-  }
-
   const requestedUpdates = options.request.updates ?? {};
   const requestedRemoveKeys = uniqueInOrder(options.request.removeKeys ?? []);
   const duplicateKeys = requestedRemoveKeys.filter((key) => Object.hasOwn(requestedUpdates, key));
   if (duplicateKeys.length > 0) {
     throw new Error(`Config write cannot update and remove the same key: ${duplicateKeys.join(', ')}.`);
   }
+
+  let schemaAccess;
+  try {
+    schemaAccess = await resolvePluginConfigSchemaAccess({
+      pluginName,
+      currentPlugin: options.plugin,
+      currentPluginError: options.pluginError,
+      scope: options.scope,
+      projectLayer,
+      cwd: options.cwd,
+      env: options.env,
+    });
+  } catch {
+    schemaAccess = { pluginName, plugin: null };
+  }
+  const schemaPlugin = schemaAccess.plugin;
+  const schema = schemaPlugin?.manifest.config?.schema;
+  if (!schema || !schemaPlugin) {
+    if (Object.keys(requestedUpdates).length === 0 && requestedRemoveKeys.length > 0) {
+      const store = await readPluginConfigStore({
+        pluginName,
+        scope: options.scope,
+        projectLayer,
+        cwd: options.cwd,
+        env: options.env,
+      });
+      const missingKeys = requestedRemoveKeys.filter((key) => !Object.hasOwn(store.values, key));
+      if (missingKeys.length > 0) {
+        throw new Error(`Unknown config key "${missingKeys[0]}".`);
+      }
+      const warnings: Array<ProjectBoundaryWarning | string> = [];
+      if (options.scope === 'project' && projectLayer === 'shared') {
+        await assertProjectSharedConfigPathVisible({ cwd: options.cwd, pluginName });
+      }
+      if (options.scope === 'project' && projectLayer === 'local') {
+        const ignore = await ensureProjectPrivateStateIgnore({ cwd: options.cwd, targetPath: store.path });
+        if (ignore.warning) warnings.push(ignore.warning);
+      }
+      await patchPluginConfigStore({
+        pluginName,
+        scope: options.scope,
+        projectLayer,
+        cwd: options.cwd,
+        env: options.env,
+        updates: {},
+        removeKeys: requestedRemoveKeys,
+        requireExistingRemoveKeys: true,
+      });
+      return {
+        plugin: pluginName,
+        scope: options.scope,
+        projectLayer,
+        updatedKeys: [],
+        removedKeys: requestedRemoveKeys,
+        effective: {
+          values: {},
+          sources: {},
+          issues: [],
+          ignoredUnknownKeys: [],
+        },
+        configWrite: 'succeeded',
+        overallState: 'succeeded',
+        targetResults: [],
+        applySkippedReason: 'currentCatalogUnavailable',
+        otherProjectsRequireReinstall: false,
+        warnings,
+      };
+    }
+    throw new Error(`configSchemaUnavailable: Plugin "${pluginName}" does not declare an AW config schema.`);
+  }
+
   for (const key of requestedRemoveKeys) {
     if (!schema[key]) throw new Error(`Unknown config key "${key}".`);
   }

@@ -39,4 +39,54 @@ describe('CLI entry v3', () => {
     ], { io: output.io })).toBe(1);
     expect(output.stderr()).toContain("unknown option '--dependency-index'");
   });
+
+  it.each([
+    ['install'],
+    ['upgrade'],
+    ['uninstall'],
+    ['reinstall'],
+    ['cleanup'],
+  ])('prints copyable plain usage when non-interactive %s arguments are missing', async (command) => {
+    const output = capture();
+    expect(await runCli([command], { interactive: false, io: output.io })).toBe(1);
+    expect(output.stdout()).toBe('');
+    expect(output.stderr()).toContain(`Usage: aw ${command}`);
+    expect(output.stderr()).not.toContain('\u001B[');
+  });
+
+  it.each([
+    ['list'],
+    ['get'],
+    ['set'],
+    ['unset'],
+    ['reset'],
+  ])('prints copyable plain usage when non-interactive config %s arguments are missing', async (command) => {
+    const output = capture();
+    expect(await runCli(['config', command], { interactive: false, io: output.io })).toBe(1);
+    expect(output.stdout()).toBe('');
+    expect(output.stderr()).toContain(`Usage: aw config ${command}`);
+    expect(output.stderr()).not.toContain('\u001B[');
+  });
+
+  it('rejects upgrade --all with explicit plugins before execution', async () => {
+    const output = capture();
+    expect(await runCli([
+      'upgrade', 'git-commit', '--all', '--platform', 'codex',
+    ], { interactive: false, io: output.io })).toBe(1);
+    expect(output.stdout()).toBe('');
+    expect(output.stderr()).toContain('不能同时使用插件名和 `--all`');
+  });
+
+  it.each([
+    { name: 'write JSON', argv: ['install', '--json'], env: process.env },
+    { name: 'config JSON', argv: ['config', 'set', '--json'], env: process.env },
+    { name: 'write CI', argv: ['install'], env: { ...process.env, CI: '1' } },
+    { name: 'config CI', argv: ['config', 'set'], env: { ...process.env, CI: '1' } },
+  ])('never starts a TUI for missing $name arguments', async ({ argv, env }) => {
+    const output = capture();
+    expect(await runCli(argv, { interactive: true, env, io: output.io })).toBe(1);
+    expect(output.stdout()).toBe('');
+    expect(output.stderr()).toContain('Usage: aw');
+    expect(output.stderr()).not.toContain('\u001B[');
+  });
 });

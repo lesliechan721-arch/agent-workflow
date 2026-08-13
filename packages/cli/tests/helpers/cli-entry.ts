@@ -1,3 +1,5 @@
+import { PassThrough } from 'node:stream';
+
 import type { CliIo, CliRuntimeOptions } from '../../src/index.js';
 
 import {
@@ -23,6 +25,19 @@ export interface CliEntryResult {
   stdout: string;
   stderr: string;
   parseJsonStdout: <T = unknown>() => T;
+}
+
+export function createTtyRuntimeStreams(): Pick<
+  CliRuntimeOptions,
+  'stdin' | 'stdout' | 'promptOutputSink'
+> {
+  const stdin = new PassThrough() as PassThrough & { isTTY?: boolean };
+  stdin.isTTY = true;
+  return {
+    stdin,
+    stdout: { isTTY: true },
+    promptOutputSink: { isTTY: true, write: () => true },
+  };
 }
 
 export type RunCliEntryOptions = SafeCliRuntimeOptions & {

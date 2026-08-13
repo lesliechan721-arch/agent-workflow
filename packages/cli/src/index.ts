@@ -14,10 +14,19 @@ import {
   uninstallWriteCommand as uninstallCommand,
   upgradeWriteCommand as upgradeCommand,
 } from './commands/write-commands.js';
+import type { RebuildCommandResult } from './commands/rebuild-command.js';
 import {
+  dashboardActions,
   formatInteractiveConsoleUnavailableMessage,
   runConsoleController,
 } from './commands/console.js';
+import {
+  runCommandWizard,
+  toWizardCandidates,
+  type CommandWizardCommand,
+  type CommandWizardPluginCandidate,
+  type CommandWizardSelection,
+} from './commands/wizard.js';
 import {
   createCliExecutionContext,
   emitCommandEvent,
@@ -26,7 +35,7 @@ import {
   type CliIo,
   type CommandDiagnosticsInput,
 } from './commands/runtime.js';
-import { statusCommand } from './commands/status.js';
+import { loadConsoleItemsResult, statusCommand } from './commands/status.js';
 import {
   normalizeUninstallCommandOptions,
   normalizeCatalogSelectorOptions,
@@ -56,8 +65,10 @@ import { resolveCliPackageRoot } from './utils/paths.js';
 import { isCatalogResolutionError, resolveCatalogPlugins } from './utils/plugin-catalog.js';
 import {
   assertSafePluginConfigSegment,
+  coercePluginConfigUpdates,
   findConfigFieldEntry,
   hasConfigReadContent,
+  listPluginConfigStorePluginNames,
   readPluginConfigStore,
   renderPluginConfigValueForDisplay,
   resolveConfigRead,
@@ -68,7 +79,16 @@ import {
   resetPluginConfigWithHelper,
 } from './utils/plugin-config-write.js';
 import { assertStrictSemVer } from './utils/manifest.js';
-import type { ConfigFieldEntry, PluginMeta, Scope } from './types.js';
+import {
+  formatConfigCommandValue,
+  parseConfigValue,
+} from './utils/config-value.js';
+import type {
+  ConfigFieldEntry,
+  PlatformSelection,
+  PluginMeta,
+  Scope,
+} from './types.js';
 
 export type { CliIo } from './commands/runtime.js';
 export type CliRuntimeOptions = CliExecutionContextInput;
@@ -141,45 +161,358 @@ function toCliDiagnosticsOptions(
   };
 }
 
-function assertInstallPluginsProvided(pluginNames: string[]): void {
-  if (pluginNames.length > 0) {
-    return;
-  }
-  throw new Error(
-    'install 命令至少需要一个插件名。运行 `aw` 打开交互控制台，或运行 `aw install <plugin>`。',
-  );
+type WriteWizardCommand = Extract<
+  CommandWizardCommand,
+  'install' | 'upgrade' | 'reinstall' | 'uninstall' | 'cleanup'
+>;
+
+function isWizardAvailable(
+  context: CliExecutionContext,
+  rawOptions: { json?: boolean },
+): boolean {
+  return context.interactive && context.isTty && !context.isCi && rawOptions.json !== true;
 }
 
-function assertUninstallPluginsProvided(pluginNames: string[]): void {
-  if (pluginNames.length > 0) {
-    return;
-  }
-  throw new Error(
-    'uninstall 命令至少需要一个插件名。运行 `aw` 打开交互控制台，或运行 `aw uninstall <plugin>`。',
-  );
+function shellQuote(value: string): string {
+  return /^[A-Za-z0-9_./:@+-]+$/.test(value)
+    ? value
+    : `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
-function assertUpgradeRequestProvided(pluginNames: string[], upgradeAll: boolean): void {
-  if (pluginNames.length > 0 || upgradeAll) {
-    return;
-  }
-  throw new Error(
-    'upgrade 命令至少需要一个插件名，或传入 `--all`。运行 `aw` 打开交互控制台，或运行 `aw upgrade <plugin>` / `aw upgrade --all`。',
-  );
+function shellCommand(tokens: string[]): string {
+  return tokens.map(shellQuote).join(' ');
 }
 
-function assertCleanupRequestProvided(pluginNames: string[]): void {
-  if (pluginNames.length === 1) {
-    return;
-  }
-  throw new Error('cleanup 命令当前只支持单个插件目标。');
+function optionTokens(flag: string, value: string | undefined): string[] {
+  return value === undefined ? [] : [flag, value];
 }
 
-function assertReinstallRequestProvided(pluginNames: string[]): void {
-  if (pluginNames.length === 1) {
-    return;
+function catalogSelectorTokens(rawOptions: {
+  catalogChannel?: string;
+  catalogVersion?: string;
+}): string[] {
+  return [
+    ...optionTokens('--catalog-channel', rawOptions.catalogChannel),
+    ...optionTokens('--catalog-version', rawOptions.catalogVersion),
+  ];
+}
+
+function writeCommandUsage(command: WriteWizardCommand): string {
+  const cardinality = command === 'reinstall' || command === 'cleanup' ? '<plugin>' : '<plugin...>';
+  const scope = command === 'cleanup' ? ' --scope <project|user>' : ' [--scope <project|user>]';
+  const all = command === 'upgrade' ? ' 或 aw upgrade --all --platform both --scope user' : '';
+  return [
+    `${command} 命令缺少必要参数。`,
+    `Usage: aw ${command} ${cardinality} --platform <codex|claude|both>${scope}`,
+    `Example: aw ${command} example-plugin --platform codex --scope user${all}`,
+  ].join('\n');
+}
+
+function configCommandUsage(command: 'list' | 'get' | 'set' | 'unset' | 'reset'): string {
+  const argumentsByCommand = {
+    list: '<plugin>',
+    get: '<plugin> [key]',
+    set: '<plugin> <key> <value>',
+    unset: '<plugin> <key>',
+    reset: '<plugin> --scope <project|user> --yes',
+  } as const;
+  return [
+    `config ${command} 命令缺少必要参数。`,
+    `Usage: aw config ${command} ${argumentsByCommand[command]}`,
+    `Example: aw config ${command} example-plugin${command === 'set' ? ' key value' : command === 'unset' ? ' key' : command === 'reset' ? ' --scope user --yes' : ''}`,
+  ].join('\n');
+}
+
+function assertUpgradeAllConflict(pluginNames: string[], all: boolean): void {
+  if (all && pluginNames.length > 0) {
+    throw new Error('upgrade 命令不能同时使用插件名和 `--all`。');
   }
-  throw new Error('reinstall 命令当前只支持单个插件目标。');
+}
+
+function equivalentWriteCommand(
+  command: WriteWizardCommand,
+  selection: CommandWizardSelection,
+  rawOptions: RawWriteWizardOptions,
+): string {
+  return shellCommand(buildEquivalentWriteCommandTokens(command, selection, rawOptions));
+}
+
+export function buildEquivalentWriteCommandTokens(
+  command: WriteWizardCommand,
+  selection: CommandWizardSelection,
+  rawOptions: RawWriteWizardOptions,
+): string[] {
+  const all = command === 'upgrade' && rawOptions.all === true;
+  return [
+    'aw',
+    command,
+    ...(all ? ['--all'] : []),
+    '--platform',
+    selection.platform ?? 'both',
+    '--scope',
+    selection.scope ?? 'user',
+    ...(command === 'install' || command === 'upgrade' || command === 'reinstall'
+      ? catalogSelectorTokens(rawOptions)
+      : []),
+    ...(command === 'cleanup' ? [] : optionTokens('--script-timeout', rawOptions.scriptTimeout)),
+    ...(!all && selection.plugins.length > 0 ? ['--', ...selection.plugins] : []),
+  ];
+}
+
+interface EquivalentConfigCommandOptions {
+  command: 'list' | 'get' | 'set' | 'unset' | 'reset';
+  plugin: string;
+  key?: string;
+  value?: string;
+  scope?: string;
+  projectLayer?: 'shared' | 'local';
+  valueJson?: boolean;
+  confirmed?: boolean;
+  catalogChannel?: string;
+  catalogVersion?: string;
+}
+
+function equivalentConfigCommand(options: EquivalentConfigCommandOptions): string {
+  return shellCommand(buildEquivalentConfigCommandTokens(options));
+}
+
+export function buildEquivalentConfigCommandTokens(
+  options: EquivalentConfigCommandOptions,
+): string[] {
+  return [
+    'aw',
+    'config',
+    options.command,
+    ...optionTokens('--scope', options.scope),
+    ...(options.projectLayer === 'local' ? ['--local'] : []),
+    ...(options.valueJson ? ['--value-json'] : []),
+    ...(options.command === 'reset' ? [] : catalogSelectorTokens(options)),
+    ...(options.confirmed ? ['--yes'] : []),
+    '--',
+    options.plugin,
+    ...(options.key === undefined ? [] : [options.key]),
+    ...(options.value === undefined ? [] : [options.value]),
+  ];
+}
+
+function writeCandidateEligibility(
+  command: WriteWizardCommand,
+  candidate: CommandWizardPluginCandidate,
+  selection: CommandWizardSelection,
+): { selectable: boolean; reason?: string } {
+  const targets = candidate.targets.filter((target) =>
+    target.target.scope === (selection.scope ?? 'user')
+    && (selection.platform === 'both' || target.target.platform === selection.platform));
+  if (targets.length === 0) {
+    return { selectable: false, reason: 'current bundle 不支持所选平台和范围' };
+  }
+  const selectable = targets.every((target) => dashboardActions({
+    pluginName: candidate.pluginName,
+    targets: candidate.targets,
+  }, target).includes(command));
+  return selectable
+    ? { selectable: true }
+    : { selectable: false, reason: `live status 不允许 ${command}` };
+}
+
+async function loadWizardCandidates(
+  context: CliExecutionContext,
+  rawOptions: { scope?: string; platform?: string },
+): Promise<CommandWizardPluginCandidate[]> {
+  const loaded = await loadConsoleItemsResult({
+    cwd: context.cwd,
+    scope: rawOptions.scope as Scope | undefined,
+    platform: rawOptions.platform as PlatformSelection | undefined,
+    includeCatalogOnly: true,
+  }, context);
+  return toWizardCandidates(loaded.items);
+}
+
+interface ConfigWizardStoreLocation {
+  scope: Scope;
+  projectLayer: 'shared' | 'local';
+}
+
+function mergeWizardCandidates(
+  current: CommandWizardPluginCandidate[],
+  stored: CommandWizardPluginCandidate[],
+): CommandWizardPluginCandidate[] {
+  const merged = new Map(current.map((candidate) => [candidate.pluginName, candidate]));
+  for (const candidate of stored) {
+    const existing = merged.get(candidate.pluginName);
+    if (!existing) {
+      merged.set(candidate.pluginName, candidate);
+    } else if (!existing.configSchema) {
+      merged.set(candidate.pluginName, { ...candidate, ...existing });
+    }
+  }
+  return [...merged.values()];
+}
+
+async function loadStoredConfigWizardCandidates(
+  context: CliExecutionContext,
+  locations: ConfigWizardStoreLocation[],
+  options: { includeEmptyStores?: boolean } = {},
+): Promise<CommandWizardPluginCandidate[]> {
+  const keysByPlugin = new Map<string, Set<string>>();
+  for (const location of locations) {
+    const pluginNames = await listPluginConfigStorePluginNames({
+      cwd: context.cwd,
+      env: context.env,
+      scope: location.scope,
+      ...(location.scope === 'project' ? { projectLayer: location.projectLayer } : {}),
+    });
+    for (const pluginName of pluginNames) {
+      const store = await readPluginConfigStore({
+        pluginName,
+        scope: location.scope,
+        ...(location.scope === 'project' ? { projectLayer: location.projectLayer } : {}),
+        cwd: context.cwd,
+        env: context.env,
+      });
+      const keys = Object.keys(store.values);
+      if (!store.exists || (keys.length === 0 && options.includeEmptyStores !== true)) continue;
+      const existing = keysByPlugin.get(pluginName) ?? new Set<string>();
+      for (const key of keys) existing.add(key);
+      keysByPlugin.set(pluginName, existing);
+    }
+  }
+  return [...keysByPlugin]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([pluginName, keys]) => ({
+      pluginName,
+      targets: [],
+      configKeys: [...keys].sort((left, right) => left.localeCompare(right)),
+    }));
+}
+
+function configReadStoreLocations(rawOptions: RawConfigOptions): ConfigWizardStoreLocation[] {
+  if (rawOptions.local) return [{ scope: 'project', projectLayer: 'local' }];
+  if (rawOptions.scope === 'user') return [{ scope: 'user', projectLayer: 'shared' }];
+  if (rawOptions.scope === 'project') return [{ scope: 'project', projectLayer: 'shared' }];
+  return [
+    { scope: 'user', projectLayer: 'shared' },
+    { scope: 'project', projectLayer: 'shared' },
+    { scope: 'project', projectLayer: 'local' },
+  ];
+}
+
+function overallResultState(value: { overallState: 'succeeded' | 'failed' }): 'succeeded' | 'failed' {
+  return value.overallState;
+}
+
+interface RawWriteWizardOptions extends RawDiagnosticsOptions {
+  all?: boolean;
+  scope?: string;
+  platform?: string;
+  catalogChannel?: string;
+  catalogVersion?: string;
+  scriptTimeout?: string;
+  json?: boolean;
+}
+
+async function executeWriteCommand(
+  command: WriteWizardCommand,
+  pluginNames: string[],
+  rawOptions: RawWriteWizardOptions,
+  context: CliExecutionContext,
+): Promise<RebuildCommandResult> {
+  const raw = { cwd: context.cwd, ...rawOptions };
+  const commandOptions = command === 'install'
+    ? normalizeInstallCommandOptions(raw)
+    : command === 'upgrade'
+      ? normalizeUpgradeCommandOptions(raw)
+      : command === 'uninstall'
+        ? normalizeUninstallCommandOptions(raw)
+        : command === 'cleanup'
+          ? normalizeCleanupCommandOptions(raw)
+          : normalizeReinstallCommandOptions(raw);
+  await emitCommandEvent(context, {
+    type: 'options:normalized',
+    data: { plugins: pluginNames, options: commandOptions },
+  });
+  switch (command) {
+    case 'install': return installCommand(pluginNames, commandOptions, context);
+    case 'upgrade': return upgradeCommand(pluginNames, commandOptions, context);
+    case 'uninstall': return uninstallCommand(pluginNames, commandOptions, context);
+    case 'cleanup': return cleanupCommand(pluginNames, commandOptions, context);
+    case 'reinstall': return reinstallCommand(pluginNames, commandOptions, context);
+  }
+}
+
+async function runWriteCommandAction(
+  command: WriteWizardCommand,
+  pluginNames: string[],
+  rawOptions: RawWriteWizardOptions,
+  context: CliExecutionContext,
+): Promise<{ cancelled: true } | { cancelled: false; result: RebuildCommandResult }> {
+  if ((command === 'cleanup' || command === 'reinstall') && pluginNames.length > 1) {
+    throw new Error(`${command} 命令当前只支持单个插件目标。`);
+  }
+  if (command === 'upgrade') assertUpgradeAllConflict(pluginNames, rawOptions.all === true);
+
+  const missingPlugin = pluginNames.length === 0 && !(command === 'upgrade' && rawOptions.all === true);
+  const missingPlatform = rawOptions.platform === undefined;
+  const missingScope = command === 'cleanup' && rawOptions.scope === undefined;
+  const missing = missingPlugin || missingPlatform || missingScope;
+
+  // Validate every value already supplied by the caller before opening the TUI.
+  const validationOptions = {
+    cwd: context.cwd,
+    ...rawOptions,
+    platform: rawOptions.platform ?? 'both',
+    ...(command === 'cleanup' ? { scope: rawOptions.scope ?? 'user' } : {}),
+  };
+  if (command === 'install') normalizeInstallCommandOptions(validationOptions);
+  else if (command === 'upgrade') normalizeUpgradeCommandOptions(validationOptions);
+  else if (command === 'uninstall') normalizeUninstallCommandOptions(validationOptions);
+  else if (command === 'cleanup') normalizeCleanupCommandOptions(validationOptions);
+  else normalizeReinstallCommandOptions(validationOptions);
+
+  if (!missing) {
+    return {
+      cancelled: false,
+      result: await executeWriteCommand(command, pluginNames, rawOptions, context),
+    };
+  }
+  if (!isWizardAvailable(context, rawOptions)) {
+    throw new Error(writeCommandUsage(command));
+  }
+
+  const candidates = missingPlugin ? await loadWizardCandidates(context, {
+    scope: rawOptions.scope,
+    platform: rawOptions.platform,
+  }) : [];
+  const result = await runCommandWizard(context, {
+    command,
+    candidates,
+    initial: {
+      plugins: pluginNames,
+      platform: rawOptions.platform as PlatformSelection | undefined,
+      scope: (rawOptions.scope ?? 'user') as Scope,
+    },
+    pluginMode: missingPlugin
+      ? command === 'cleanup' || command === 'reinstall' ? 'single' : 'multiple'
+      : 'none',
+    promptForPlatform: missingPlatform,
+    promptForScope: missingScope,
+    destructive: command === 'uninstall' || command === 'cleanup',
+    equivalentCommand: (selection) => equivalentWriteCommand(
+      command,
+      selection,
+      rawOptions,
+    ),
+    isPluginSelectable: (candidate, selection) =>
+      writeCandidateEligibility(command, candidate, selection),
+    resultState: overallResultState,
+    execute: (selection) => executeWriteCommand(command, selection.plugins, {
+      ...rawOptions,
+      platform: selection.platform,
+      scope: selection.scope,
+    }, context),
+  });
+  if (result.cancelled) return { cancelled: true };
+  return { cancelled: false, result: result.value! };
 }
 
 function addCatalogSelectorOptions<T extends Command>(
@@ -342,9 +675,12 @@ function writeConfigApplyNotice(
   },
 ): void {
   if (receipt.targetResults.length === 0) {
-    writeLine(write, receipt.applySkippedReason === 'noConfigChange'
+    const message = receipt.applySkippedReason === 'noConfigChange'
       ? '配置内容没有变化，因此没有运行 reinstall。'
-      : '配置已保存。当前没有可见的 AW 安装目标，因此没有应用配置。');
+      : receipt.applySkippedReason === 'currentCatalogUnavailable'
+        ? '配置已保存。当前插件或 config schema 不可定位，因此没有运行 reinstall。'
+        : '配置已保存。当前没有可见的 AW 安装目标，因此没有应用配置。';
+    writeLine(write, message);
   } else {
     const completed = receipt.targetResults.filter((entry) => entry.state === 'completed').length;
     const failed = receipt.targetResults.filter((entry) => entry.state === 'failed');
@@ -521,41 +857,19 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         } & RawDiagnosticsOptions,
       ) => {
         const context = createActionContext('install', rawOptions);
-        const receipt = await runActionWithContext(
-          context,
-          async () => {
-            assertInstallPluginsProvided(plugins ?? []);
-            const commandOptions = normalizeInstallCommandOptions({
-              cwd,
-              ...rawOptions,
-            });
-            await emitCommandEvent(context, {
-              type: 'options:normalized',
-              data: {
-                plugins: plugins ?? [],
-                options: commandOptions,
-              },
-            });
-            const result = await installCommand(plugins ?? [], commandOptions, context);
-            return {
-              result,
-              groups: [{
-                scope: commandOptions.scope,
-                platforms: result.platforms,
-                plugins: result.plugins,
-              }],
-            };
-          },
-        );
+        const outcome = await runActionWithContext(context, () =>
+          runWriteCommandAction('install', plugins ?? [], rawOptions, context));
+        if (outcome.cancelled) return;
+        const receipt = outcome.result;
         if (rawOptions.json) {
-          writeJsonReceipt(io.stdout, buildRebuildReceiptJson('install', receipt.result));
+          writeJsonReceipt(io.stdout, buildRebuildReceiptJson('install', receipt));
         } else {
-          for (const line of renderRebuildReceipt('install', receipt.result)) {
+          for (const line of renderRebuildReceipt('install', receipt)) {
             writeLine(io.stdout, line);
           }
         }
-        writeWarnings(io.stderr, receipt.result.warnings, { actionableOnly: true });
-        commandExitState.exitCode = resolveCommandReceiptExitCode(receipt.result);
+        writeWarnings(io.stderr, receipt.warnings, { actionableOnly: true });
+        commandExitState.exitCode = resolveCommandReceiptExitCode(receipt);
       },
     );
 
@@ -579,41 +893,19 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       } & RawDiagnosticsOptions,
     ) => {
       const context = createActionContext('uninstall', rawOptions);
-      const receipt = await runActionWithContext(
-        context,
-        async () => {
-          assertUninstallPluginsProvided(plugins ?? []);
-          const commandOptions = normalizeUninstallCommandOptions({
-            cwd,
-            ...rawOptions,
-          });
-          await emitCommandEvent(context, {
-            type: 'options:normalized',
-            data: {
-              plugins: plugins ?? [],
-              options: commandOptions,
-            },
-          });
-          const result = await uninstallCommand(plugins ?? [], commandOptions, context);
-          return {
-            result,
-            groups: [{
-              scope: commandOptions.scope,
-              platforms: result.platforms,
-              plugins: result.plugins,
-            }],
-          };
-        },
-      );
+      const outcome = await runActionWithContext(context, () =>
+        runWriteCommandAction('uninstall', plugins ?? [], rawOptions, context));
+      if (outcome.cancelled) return;
+      const receipt = outcome.result;
       if (rawOptions.json) {
-        writeJsonReceipt(io.stdout, buildRebuildReceiptJson('uninstall', receipt.result));
+        writeJsonReceipt(io.stdout, buildRebuildReceiptJson('uninstall', receipt));
       } else {
-        for (const line of renderRebuildReceipt('uninstall', receipt.result)) {
+        for (const line of renderRebuildReceipt('uninstall', receipt)) {
           writeLine(io.stdout, line);
         }
       }
-      writeWarnings(io.stderr, receipt.result.warnings, { actionableOnly: true });
-      commandExitState.exitCode = resolveCommandReceiptExitCode(receipt.result);
+      writeWarnings(io.stderr, receipt.warnings, { actionableOnly: true });
+      commandExitState.exitCode = resolveCommandReceiptExitCode(receipt);
     });
 
   addCatalogSelectorOptions(
@@ -643,41 +935,19 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         } & RawDiagnosticsOptions,
       ) => {
         const context = createActionContext('upgrade', rawOptions);
-        const receipt = await runActionWithContext(
-          context,
-          async () => {
-            assertUpgradeRequestProvided(plugins ?? [], rawOptions.all === true);
-            const commandOptions = normalizeUpgradeCommandOptions({
-              cwd,
-              ...rawOptions,
-            });
-            await emitCommandEvent(context, {
-              type: 'options:normalized',
-              data: {
-                plugins: plugins ?? [],
-                options: commandOptions,
-              },
-            });
-            const result = await upgradeCommand(plugins ?? [], commandOptions, context);
-            return {
-              result,
-              groups: [{
-                scope: commandOptions.scope,
-                platforms: result.platforms,
-                plugins: result.plugins,
-              }],
-            };
-          },
-        );
+        const outcome = await runActionWithContext(context, () =>
+          runWriteCommandAction('upgrade', plugins ?? [], rawOptions, context));
+        if (outcome.cancelled) return;
+        const receipt = outcome.result;
         if (rawOptions.json) {
-          writeJsonReceipt(io.stdout, buildRebuildReceiptJson('upgrade', receipt.result));
+          writeJsonReceipt(io.stdout, buildRebuildReceiptJson('upgrade', receipt));
         } else {
-          for (const line of renderRebuildReceipt('upgrade', receipt.result)) {
+          for (const line of renderRebuildReceipt('upgrade', receipt)) {
             writeLine(io.stdout, line);
           }
         }
-        writeWarnings(io.stderr, receipt.result.warnings, { actionableOnly: true });
-        commandExitState.exitCode = resolveCommandReceiptExitCode(receipt.result);
+        writeWarnings(io.stderr, receipt.warnings, { actionableOnly: true });
+        commandExitState.exitCode = resolveCommandReceiptExitCode(receipt);
       },
     );
 
@@ -699,24 +969,10 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       } & RawDiagnosticsOptions,
     ) => {
       const context = createActionContext('cleanup', rawOptions);
-      const result = await runActionWithContext(
-        context,
-        async () => {
-          const commandOptions = normalizeCleanupCommandOptions({
-            cwd,
-            ...rawOptions,
-          });
-          assertCleanupRequestProvided(plugins ?? []);
-          await emitCommandEvent(context, {
-            type: 'options:normalized',
-            data: {
-              plugins: plugins ?? [],
-              options: commandOptions,
-            },
-          });
-          return cleanupCommand(plugins ?? [], commandOptions, context);
-        },
-      );
+      const outcome = await runActionWithContext(context, () =>
+        runWriteCommandAction('cleanup', plugins ?? [], rawOptions, context));
+      if (outcome.cancelled) return;
+      const result = outcome.result;
       if (rawOptions.json) {
         writeJsonReceipt(io.stdout, buildRebuildReceiptJson('cleanup', result));
       } else {
@@ -752,42 +1008,20 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       } & RawDiagnosticsOptions,
     ) => {
       const context = createActionContext('reinstall', rawOptions);
-      const receipt = await runActionWithContext(
-        context,
-        async () => {
-          const commandOptions = normalizeReinstallCommandOptions({
-            cwd,
-            ...rawOptions,
-          });
-          assertReinstallRequestProvided(plugins ?? []);
-          await emitCommandEvent(context, {
-            type: 'options:normalized',
-            data: {
-              plugins: plugins ?? [],
-              options: commandOptions,
-            },
-          });
-          const result = await reinstallCommand(plugins ?? [], commandOptions, context);
-          return {
-            result,
-            groups: [{
-              scope: commandOptions.scope,
-              platforms: result.platforms,
-              plugins: result.plugins,
-            }],
-          };
-        },
-      );
+      const outcome = await runActionWithContext(context, () =>
+        runWriteCommandAction('reinstall', plugins ?? [], rawOptions, context));
+      if (outcome.cancelled) return;
+      const receipt = outcome.result;
       if (rawOptions.json) {
-        writeJsonReceipt(io.stdout, buildRebuildReceiptJson('reinstall', receipt.result));
+        writeJsonReceipt(io.stdout, buildRebuildReceiptJson('reinstall', receipt));
       } else {
-        const lines = renderRebuildReceipt('reinstall', receipt.result);
+        const lines = renderRebuildReceipt('reinstall', receipt);
         for (const line of lines) {
           writeLine(io.stdout, line);
         }
       }
-      writeWarnings(io.stderr, receipt.result.warnings, { actionableOnly: true });
-      commandExitState.exitCode = resolveCommandReceiptExitCode(receipt.result);
+      writeWarnings(io.stderr, receipt.warnings, { actionableOnly: true });
+      commandExitState.exitCode = resolveCommandReceiptExitCode(receipt);
     });
 
   const config = program
@@ -796,7 +1030,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
 
   config
     .command('list')
-    .argument('<plugin>')
+    .argument('[plugin]')
     .option('--catalog-channel <dist-tag>', 'use a specific current catalog dist-tag for this command')
     .option('--catalog-version <semver>', 'use a specific current catalog version for this command')
     .option('-s, --scope <scope>', 'read only project or user config')
@@ -805,13 +1039,16 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('-v, --verbose', 'show command diagnostics', false)
     .option('-D, --debug', 'write debug diagnostics to a log file', false)
     .option('--log-file <path>', 'write debug diagnostics to the specified file')
-    .action(async (pluginName: string, rawOptions: RawConfigOptions) => {
+    .action(async (pluginName: string | undefined, rawOptions: RawConfigOptions) => {
       const context = createActionContext('config:list', rawOptions);
-      const resolved = await runActionWithContext(context, async () => {
+      const outcome = await runActionWithContext(context, async () => {
+        resolveConfigProjectLayer(rawOptions);
+        if (!rawOptions.local) resolveConfigReadResolution(rawOptions.scope);
+        const execute = async (selectedPlugin: string) => {
         const projectLayer = resolveConfigProjectLayer(rawOptions);
-        const { plugin, error } = await loadConfigPluginLookup(pluginName, context);
+        const { plugin, error } = await loadConfigPluginLookup(selectedPlugin, context);
         const result = await resolveConfigRead({
-          pluginName,
+          pluginName: selectedPlugin,
           plugin,
           ...(error ? { pluginError: error } : {}),
           scope: rawOptions.local ? 'project' : resolveConfigReadResolution(rawOptions.scope),
@@ -821,31 +1058,64 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         });
         if (!plugin && !hasConfigReadContent(result)) {
           throw new Error(
-            `Unknown plugin "${pluginName}". Use \`aw config reset ${pluginName} -s user --yes\` or ` +
-              `\`aw config reset ${pluginName} -s project --yes\` to clean leftover config stores.`,
+            `Unknown plugin "${selectedPlugin}". Use \`aw config reset ${selectedPlugin} -s user --yes\` or ` +
+              `\`aw config reset ${selectedPlugin} -s project --yes\` to clean leftover config stores.`,
           );
         }
         return result;
+        };
+        if (pluginName) return { cancelled: false as const, pluginName, value: await execute(pluginName) };
+        if (!isWizardAvailable(context, rawOptions)) throw new Error(configCommandUsage('list'));
+        const currentCandidates = await loadWizardCandidates(context, {});
+        const storedCandidates = await loadStoredConfigWizardCandidates(
+          context,
+          configReadStoreLocations(rawOptions),
+        );
+        const candidates = mergeWizardCandidates(currentCandidates, storedCandidates);
+        if (candidates.length === 0) {
+          throw new Error('No plugin config candidates exist in the selected location.');
+        }
+        const result = await runCommandWizard(context, {
+          command: 'config:list',
+          candidates,
+          initial: { plugins: [], scope: rawOptions.scope as Scope | undefined },
+          pluginMode: 'single',
+          equivalentCommand: (selection) => equivalentConfigCommand({
+            command: 'list',
+            plugin: selection.plugins[0]!,
+            scope: rawOptions.scope,
+            projectLayer: rawOptions.local ? 'local' : 'shared',
+            catalogChannel: rawOptions.catalogChannel,
+            catalogVersion: rawOptions.catalogVersion,
+          }),
+          execute: (selection) => execute(selection.plugins[0]!),
+        });
+        return result.cancelled
+          ? { cancelled: true as const }
+          : { cancelled: false as const, pluginName: result.selection!.plugins[0]!, value: result.value! };
       });
+      if (outcome.cancelled) return;
+      const resolved = outcome.value;
+      const selectedPluginName = outcome.pluginName;
       if (rawOptions.json) {
         writeJsonReceipt(io.stdout, {
           ok: true,
           configSchemaVersion: 3,
           command: 'config:list',
-          plugin: pluginName,
+          plugin: selectedPluginName,
           scope: rawOptions.local ? 'project' : rawOptions.scope ?? 'effective',
           projectLayer: rawOptions.local ? 'local' : 'shared',
           ...(resolved.schema ? { schema: resolved.schema } : {}),
           fields: resolved.fields,
         });
       } else {
-        writeConfigReadHuman(io.stdout, resolved, pluginName);
+        writeConfigReadHuman(io.stdout, resolved, selectedPluginName);
       }
     });
 
   config
     .command('get')
-    .argument('<plugin>')
+    .argument('[plugin]')
     .argument('[key]')
     .option('--catalog-channel <dist-tag>', 'use a specific current catalog dist-tag for this command')
     .option('--catalog-version <semver>', 'use a specific current catalog version for this command')
@@ -855,13 +1125,16 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('-v, --verbose', 'show command diagnostics', false)
     .option('-D, --debug', 'write debug diagnostics to a log file', false)
     .option('--log-file <path>', 'write debug diagnostics to the specified file')
-    .action(async (pluginName: string, key: string | undefined, rawOptions: RawConfigOptions) => {
+    .action(async (pluginName: string | undefined, key: string | undefined, rawOptions: RawConfigOptions) => {
       const context = createActionContext('config:get', rawOptions);
-      const resolved = await runActionWithContext(context, async () => {
+      const outcome = await runActionWithContext(context, async () => {
+        resolveConfigProjectLayer(rawOptions);
+        if (!rawOptions.local) resolveConfigReadResolution(rawOptions.scope);
+        const execute = async (selectedPlugin: string) => {
         const projectLayer = resolveConfigProjectLayer(rawOptions);
-        const { plugin, error } = await loadConfigPluginLookup(pluginName, context);
+        const { plugin, error } = await loadConfigPluginLookup(selectedPlugin, context);
         const result = await resolveConfigRead({
-          pluginName,
+          pluginName: selectedPlugin,
           plugin,
           ...(error ? { pluginError: error } : {}),
           scope: rawOptions.local ? 'project' : resolveConfigReadResolution(rawOptions.scope),
@@ -871,8 +1144,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         });
         if (!plugin && !hasConfigReadContent(result)) {
           throw new Error(
-            `Unknown plugin "${pluginName}". Use \`aw config reset ${pluginName} -s user --yes\` or ` +
-              `\`aw config reset ${pluginName} -s project --yes\` to clean leftover config stores.`,
+            `Unknown plugin "${selectedPlugin}". Use \`aw config reset ${selectedPlugin} -s user --yes\` or ` +
+              `\`aw config reset ${selectedPlugin} -s project --yes\` to clean leftover config stores.`,
           );
         }
         if (!key) {
@@ -890,13 +1163,47 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           throw new Error(`Unknown config key "${key}".`);
         }
         return result;
+        };
+        if (pluginName) return { cancelled: false as const, pluginName, value: await execute(pluginName) };
+        if (!isWizardAvailable(context, rawOptions)) throw new Error(configCommandUsage('get'));
+        const currentCandidates = await loadWizardCandidates(context, {});
+        const storedCandidates = await loadStoredConfigWizardCandidates(
+          context,
+          configReadStoreLocations(rawOptions),
+        );
+        const candidates = mergeWizardCandidates(currentCandidates, storedCandidates);
+        if (candidates.length === 0) {
+          throw new Error('No plugin config candidates exist in the selected location.');
+        }
+        const result = await runCommandWizard(context, {
+          command: 'config:get',
+          candidates,
+          initial: { plugins: [], key, scope: rawOptions.scope as Scope | undefined },
+          pluginMode: 'single',
+          equivalentCommand: (selection) => equivalentConfigCommand({
+            command: 'get',
+            plugin: selection.plugins[0]!,
+            key,
+            scope: rawOptions.scope,
+            projectLayer: rawOptions.local ? 'local' : 'shared',
+            catalogChannel: rawOptions.catalogChannel,
+            catalogVersion: rawOptions.catalogVersion,
+          }),
+          execute: (selection) => execute(selection.plugins[0]!),
+        });
+        return result.cancelled
+          ? { cancelled: true as const }
+          : { cancelled: false as const, pluginName: result.selection!.plugins[0]!, value: result.value! };
       });
+      if (outcome.cancelled) return;
+      const resolved = outcome.value;
+      const selectedPluginName = outcome.pluginName;
       if (rawOptions.json) {
         writeJsonReceipt(io.stdout, {
           ok: true,
           configSchemaVersion: 3,
           command: 'config:get',
-          plugin: pluginName,
+          plugin: selectedPluginName,
           key,
           scope: rawOptions.local ? 'project' : rawOptions.scope ?? 'effective',
           projectLayer: rawOptions.local ? 'local' : 'shared',
@@ -904,15 +1211,15 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           fields: resolved.fields,
         });
       } else {
-        writeConfigReadHuman(io.stdout, resolved, pluginName);
+        writeConfigReadHuman(io.stdout, resolved, selectedPluginName);
       }
     });
 
   config
     .command('set')
-    .argument('<plugin>')
-    .argument('<key>')
-    .argument('<value>')
+    .argument('[plugin]')
+    .argument('[key]')
+    .argument('[value]')
     .option('--catalog-channel <dist-tag>', 'use a specific current catalog dist-tag for this command')
     .option('--catalog-version <semver>', 'use a specific current catalog version for this command')
     .option('-s, --scope <scope>', 'project or user')
@@ -923,21 +1230,28 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('-D, --debug', 'write debug diagnostics to a log file', false)
     .option('--log-file <path>', 'write debug diagnostics to the specified file')
     .action(async (
-      pluginName: string,
-      key: string,
-      rawValue: string,
+      pluginName: string | undefined,
+      key: string | undefined,
+      rawValue: string | undefined,
       rawOptions: RawConfigOptions,
     ) => {
       const context = createActionContext('config:set', rawOptions);
-      const receipt = await runActionWithContext(context, async () => {
+      const outcome = await runActionWithContext(context, async () => {
         const scope = resolveConfigWriteScope(rawOptions.scope);
         const projectLayer = resolveConfigProjectLayer(rawOptions);
-        const { plugin, error } = await loadConfigPluginLookup(pluginName, context);
-        const inputValue = rawOptions.valueJson ? JSON.parse(rawValue) : rawValue;
+        const execute = async (selectedPlugin: string, selectedKey: string, inputValue: unknown) => {
+        const { plugin, error } = await loadConfigPluginLookup(selectedPlugin, context);
+        if (!plugin) throw new Error(`Unknown plugin "${selectedPlugin}".`);
+        if (!plugin.manifest.config?.schema) {
+          throw new Error(`configSchemaUnavailable: Plugin "${selectedPlugin}" does not declare an AW config schema.`);
+        }
+        if (!plugin.manifest.config.schema[selectedKey]) {
+          throw new Error(`Unknown config key "${selectedKey}".`);
+        }
         const writeReceipt = await applyPluginConfigWrite({
           plugin,
           ...(error ? { pluginError: error } : {}),
-          pluginName,
+          pluginName: selectedPlugin,
           scope,
           projectLayer,
           cwd: context.cwd,
@@ -946,7 +1260,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           catalogChannel: rawOptions.catalogChannel,
           catalogVersion: rawOptions.catalogVersion,
           request: {
-            updates: { [key]: inputValue },
+            updates: { [selectedKey]: inputValue },
           },
         });
         return {
@@ -955,8 +1269,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           command: 'config:set',
           ...writeReceipt,
           affectedFields: [{
-            key,
-            title: plugin?.manifest.config?.schema?.[key]?.title ?? key,
+            key: selectedKey,
+            title: plugin?.manifest.config?.schema?.[selectedKey]?.title ?? selectedKey,
             kind: 'manifest' as const,
             reserved: false,
             action: 'set' as const,
@@ -964,11 +1278,90 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             ...(scope === 'project' ? { projectLayer } : {}),
           }],
         };
+        };
+
+        if (pluginName && key && rawValue !== undefined) {
+          const inputValue = parseConfigValue(rawValue, rawOptions.valueJson === true);
+          return {
+            cancelled: false as const,
+            key,
+            value: await execute(pluginName, key, inputValue),
+          };
+        }
+        if (!isWizardAvailable(context, rawOptions)) throw new Error(configCommandUsage('set'));
+        const candidates = await loadWizardCandidates(context, {});
+        if (pluginName) {
+          const candidate = candidates.find((entry) => entry.pluginName === pluginName);
+          if (!candidate) throw new Error(`Unknown plugin "${pluginName}".`);
+          if (!candidate.configSchema) {
+            throw new Error(`configSchemaUnavailable: Plugin "${pluginName}" does not declare an AW config schema.`);
+          }
+          if (key && !candidate.configSchema?.[key]) throw new Error(`Unknown config key "${key}".`);
+        }
+        const configurableCandidates = candidates.filter((candidate) => candidate.configSchema);
+        if (configurableCandidates.length === 0) {
+          throw new Error('configSchemaUnavailable: No current plugin declares an AW config schema.');
+        }
+        const result = await runCommandWizard(context, {
+          command: 'config:set',
+          candidates: configurableCandidates,
+          initial: {
+            plugins: pluginName ? [pluginName] : [],
+            key,
+            ...(rawValue !== undefined ? { value: rawValue } : {}),
+            scope,
+            projectLayer,
+          },
+          pluginMode: pluginName ? 'none' : 'single',
+          valueJson: rawOptions.valueJson === true,
+          promptForKey: key === undefined,
+          promptForValue: rawValue === undefined,
+          equivalentCommand: (selection) => {
+            const field = candidates.find((entry) => entry.pluginName === selection.plugins[0])
+              ?.configSchema?.[selection.key ?? ''];
+            return equivalentConfigCommand({
+              command: 'set',
+              plugin: selection.plugins[0]!,
+              key: selection.key!,
+              value: field?.sensitive
+                ? rawOptions.valueJson ? '"<sensitive-value>"' : '<sensitive-value>'
+                : formatConfigCommandValue(selection.value, rawOptions.valueJson === true),
+              scope: selection.scope ?? 'user',
+              projectLayer: selection.projectLayer,
+              valueJson: rawOptions.valueJson,
+              catalogChannel: rawOptions.catalogChannel,
+              catalogVersion: rawOptions.catalogVersion,
+            });
+          },
+          commandIsTemplate: (selection) => candidates.find(
+            (entry) => entry.pluginName === selection.plugins[0],
+          )?.configSchema?.[selection.key ?? '']?.sensitive === true,
+          resultState: overallResultState,
+          execute: async (selection) => {
+            const selectedPlugin = selection.plugins[0]!;
+            const selectedKey = selection.key!;
+            const schema = candidates.find((entry) => entry.pluginName === selectedPlugin)!.configSchema!;
+            const updates = await coercePluginConfigUpdates({
+              schema,
+              updates: {
+                [selectedKey]: parseConfigValue(selection.value, rawOptions.valueJson === true),
+              },
+              cwd: context.cwd,
+            });
+            return execute(selectedPlugin, selectedKey, updates[selectedKey]);
+          },
+        });
+        return result.cancelled
+          ? { cancelled: true as const }
+          : { cancelled: false as const, key: result.selection!.key!, value: result.value! };
       });
+      if (outcome.cancelled) return;
+      const receipt = outcome.value;
+      const selectedKey = outcome.key;
       if (rawOptions.json) {
         writeJsonReceipt(io.stdout, receipt);
       } else {
-        writeLine(io.stdout, `已写入 ${receipt.plugin}.${key}（${configLayerLabel(receipt.scope, receipt.projectLayer)}配置）。`);
+        writeLine(io.stdout, `已写入 ${receipt.plugin}.${selectedKey}（${configLayerLabel(receipt.scope, receipt.projectLayer)}配置）。`);
         if (receipt.projectLayer === 'local') {
           writeProjectLocalConfigNotice(io.stdout);
         }
@@ -979,8 +1372,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
 
   config
     .command('unset')
-    .argument('<plugin>')
-    .argument('<key>')
+    .argument('[plugin]')
+    .argument('[key]')
     .option('--catalog-channel <dist-tag>', 'use a specific current catalog dist-tag for this command')
     .option('--catalog-version <semver>', 'use a specific current catalog version for this command')
     .option('-s, --scope <scope>', 'project or user')
@@ -989,27 +1382,29 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('-v, --verbose', 'show command diagnostics', false)
     .option('-D, --debug', 'write debug diagnostics to a log file', false)
     .option('--log-file <path>', 'write debug diagnostics to the specified file')
-    .action(async (pluginName: string, key: string, rawOptions: RawConfigOptions) => {
+    .action(async (pluginName: string | undefined, key: string | undefined, rawOptions: RawConfigOptions) => {
       const context = createActionContext('config:unset', rawOptions);
-      const receipt = await runActionWithContext(context, async () => {
+      const outcome = await runActionWithContext(context, async () => {
         const scope = resolveConfigWriteScope(rawOptions.scope);
         const projectLayer = resolveConfigProjectLayer(rawOptions);
-        const { plugin, error } = await loadConfigPluginLookup(pluginName, context);
-        if (plugin && !plugin.manifest.config?.schema?.[key]) {
-          throw new Error(`Unknown config key "${key}".`);
+        const execute = async (selectedPlugin: string, selectedKey: string) => {
+        const { plugin, error } = await loadConfigPluginLookup(selectedPlugin, context);
+        if (plugin?.manifest.config?.schema && !plugin.manifest.config.schema[selectedKey]) {
+          throw new Error(`Unknown config key "${selectedKey}".`);
         }
         const store = await readPluginConfigStore({
-          pluginName,
+          pluginName: selectedPlugin,
           scope,
           ...(scope === 'project' ? { projectLayer } : {}),
           cwd: context.cwd,
           env: context.env,
         });
-        const existed = Object.hasOwn(store.values, key);
+        const existed = Object.hasOwn(store.values, selectedKey);
+        if (!plugin && !existed) throw new Error(`Unknown config key "${selectedKey}".`);
         const writeReceipt = await applyPluginConfigWrite({
           plugin,
           ...(error ? { pluginError: error } : {}),
-          pluginName,
+          pluginName: selectedPlugin,
           scope,
           projectLayer,
           cwd: context.cwd,
@@ -1018,7 +1413,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           catalogChannel: rawOptions.catalogChannel,
           catalogVersion: rawOptions.catalogVersion,
           request: {
-            removeKeys: [key],
+            removeKeys: [selectedKey],
           },
         });
         return {
@@ -1026,11 +1421,11 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           receiptSchemaVersion: 3,
           command: 'config:unset',
           ...writeReceipt,
-          removedKey: key,
+          removedKey: selectedKey,
           existed,
           affectedFields: [{
-            key,
-            title: plugin?.manifest.config?.schema?.[key]?.title ?? key,
+            key: selectedKey,
+            title: plugin?.manifest.config?.schema?.[selectedKey]?.title ?? selectedKey,
             kind: 'manifest' as const,
             reserved: false,
             action: 'unset' as const,
@@ -1038,7 +1433,46 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             ...(scope === 'project' ? { projectLayer } : {}),
           }],
         };
+        };
+        if (pluginName && key) {
+          return { cancelled: false as const, value: await execute(pluginName, key) };
+        }
+        if (!isWizardAvailable(context, rawOptions)) throw new Error(configCommandUsage('unset'));
+        const currentCandidates = (await loadWizardCandidates(context, {}))
+          .filter((candidate) => candidate.configSchema);
+        const storedCandidates = await loadStoredConfigWizardCandidates(context, [{ scope, projectLayer }]);
+        const candidates = mergeWizardCandidates(currentCandidates, storedCandidates);
+        if (pluginName && !candidates.some((entry) => entry.pluginName === pluginName)) {
+          throw new Error(`Unknown plugin "${pluginName}".`);
+        }
+        if (candidates.length === 0) {
+          throw new Error('No plugin config candidates exist in the selected location.');
+        }
+        const result = await runCommandWizard(context, {
+          command: 'config:unset',
+          candidates,
+          initial: { plugins: pluginName ? [pluginName] : [], key, scope, projectLayer },
+          pluginMode: pluginName ? 'none' : 'single',
+          promptForKey: key === undefined,
+          destructive: true,
+          equivalentCommand: (selection) => equivalentConfigCommand({
+            command: 'unset',
+            plugin: selection.plugins[0]!,
+            key: selection.key!,
+            scope: selection.scope ?? 'user',
+            projectLayer: selection.projectLayer,
+            catalogChannel: rawOptions.catalogChannel,
+            catalogVersion: rawOptions.catalogVersion,
+          }),
+          resultState: overallResultState,
+          execute: (selection) => execute(selection.plugins[0]!, selection.key!),
+        });
+        return result.cancelled
+          ? { cancelled: true as const }
+          : { cancelled: false as const, value: result.value! };
       });
+      if (outcome.cancelled) return;
+      const receipt = outcome.value;
       if (rawOptions.json) {
         writeJsonReceipt(io.stdout, receipt);
       } else {
@@ -1055,7 +1489,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
 
   config
     .command('reset')
-    .argument('<plugin>')
+    .argument('[plugin]')
     .option('-s, --scope <scope>', 'project or user')
     .option('--local', 'reset only the current project local override layer', false)
     .option('-y, --yes', 'confirm destructive reset', false)
@@ -1063,37 +1497,42 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('-v, --verbose', 'show command diagnostics', false)
     .option('-D, --debug', 'write debug diagnostics to a log file', false)
     .option('--log-file <path>', 'write debug diagnostics to the specified file')
-    .action(async (pluginName: string, rawOptions: RawConfigOptions) => {
+    .action(async (pluginName: string | undefined, rawOptions: RawConfigOptions) => {
       const context = createActionContext('config:reset', rawOptions);
-      const receipt = await runActionWithContext(context, async () => {
-        assertSafePluginConfigSegment(pluginName);
-        const scope = resolveConfigWriteScope(rawOptions.scope);
-        const projectLayer = resolveConfigProjectLayer(rawOptions);
+      const outcome = await runActionWithContext(context, async () => {
+        const execute = async (
+          selectedPlugin: string,
+          selectedScope: Scope,
+          projectLayer: 'shared' | 'local',
+          confirmed: boolean,
+        ) => {
+        assertSafePluginConfigSegment(selectedPlugin);
         const store = await readPluginConfigStore({
-          pluginName,
-          scope,
-          ...(scope === 'project' ? { projectLayer } : {}),
+          pluginName: selectedPlugin,
+          scope: selectedScope,
+          ...(selectedScope === 'project' ? { projectLayer } : {}),
           cwd: context.cwd,
           env: context.env,
         });
-        if (store.exists && !rawOptions.yes) {
+        if (store.exists && !confirmed) {
           throw new Error(
-            `Reset requires confirmation. Re-run \`aw config reset ${pluginName} -s ${scope}${projectLayer === 'local' ? ' --local' : ''} --yes\` to delete this store.`,
+            `Reset requires confirmation. Re-run \`aw config reset ${selectedPlugin} -s ${selectedScope}${projectLayer === 'local' ? ' --local' : ''} --yes\` to delete this store.`,
           );
         }
-        const { plugin, error } = await loadConfigPluginLookup(pluginName, context);
+        const { plugin, error } = await loadConfigPluginLookup(selectedPlugin, context);
+        if (!plugin && !store.exists) throw new Error(`Unknown plugin "${selectedPlugin}".`);
         const affectedFields = await describeResetAffectedFields({
-          pluginName,
+          pluginName: selectedPlugin,
           ...(plugin ? { plugin } : {}),
           ...(error ? { pluginError: error } : {}),
-          scope,
+          scope: selectedScope,
           projectLayer,
           cwd: context.cwd,
           env: context.env,
         });
         const resetReceipt = await resetPluginConfigWithHelper({
-          pluginName,
-          scope,
+          pluginName: selectedPlugin,
+          scope: selectedScope,
           projectLayer,
           cwd: context.cwd,
           env: context.env,
@@ -1110,7 +1549,84 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           ...resetReceipt,
           affectedFields,
         };
+        };
+
+        const scope = resolveConfigWriteScope(rawOptions.scope);
+        const projectLayer = resolveConfigProjectLayer(rawOptions);
+        const needsWizard = pluginName === undefined || rawOptions.yes !== true;
+        if (!needsWizard) {
+          return {
+            cancelled: false as const,
+            value: await execute(pluginName, scope, projectLayer, true),
+          };
+        }
+        if (!isWizardAvailable(context, rawOptions)) {
+          if (!pluginName) throw new Error(configCommandUsage('reset'));
+          return {
+            cancelled: false as const,
+            value: await execute(pluginName, scope, projectLayer, false),
+          };
+        }
+        const currentCandidates = pluginName ? [] : await loadWizardCandidates(context, {});
+        const candidatesByScope = new Map<Scope, CommandWizardPluginCandidate[]>();
+        if (!pluginName && (rawOptions.scope === undefined || scope === 'user')) {
+          candidatesByScope.set('user', mergeWizardCandidates(
+            currentCandidates,
+            await loadStoredConfigWizardCandidates(
+              context,
+              [{ scope: 'user', projectLayer: 'shared' }],
+              { includeEmptyStores: true },
+            ),
+          ));
+        }
+        if (!pluginName && (rawOptions.scope === undefined || scope === 'project')) {
+          candidatesByScope.set('project', mergeWizardCandidates(
+            currentCandidates,
+            await loadStoredConfigWizardCandidates(
+              context,
+              [{ scope: 'project', projectLayer }],
+              { includeEmptyStores: true },
+            ),
+          ));
+        }
+        const candidates = mergeWizardCandidates(
+          candidatesByScope.get('user') ?? [],
+          candidatesByScope.get('project') ?? [],
+        );
+        if (!pluginName && candidates.length === 0) {
+          throw new Error('No plugin config candidates exist in the selected location.');
+        }
+        const result = await runCommandWizard(context, {
+          command: 'config:reset',
+          candidates,
+          initial: { plugins: pluginName ? [pluginName] : [], scope, projectLayer },
+          pluginMode: pluginName ? 'none' : 'single',
+          promptForScope: rawOptions.scope === undefined,
+          destructive: true,
+          isPluginVisible: (candidate, selection) => candidatesByScope
+            .get(selection.scope ?? 'user')
+            ?.some((entry) => entry.pluginName === candidate.pluginName) !== false,
+          equivalentCommand: (selection) => equivalentConfigCommand({
+            command: 'reset',
+            plugin: selection.plugins[0]!,
+            scope: selection.scope ?? 'user',
+            projectLayer: selection.projectLayer,
+            confirmed: true,
+          }),
+          resultState: overallResultState,
+          execute: (selection) => execute(
+            selection.plugins[0]!,
+            selection.scope ?? 'user',
+            selection.projectLayer ?? 'shared',
+            true,
+          ),
+        });
+        return result.cancelled
+          ? { cancelled: true as const }
+          : { cancelled: false as const, value: result.value! };
       });
+      if (outcome.cancelled) return;
+      const receipt = outcome.value;
       if (rawOptions.json) {
         writeJsonReceipt(io.stdout, receipt);
       } else {
