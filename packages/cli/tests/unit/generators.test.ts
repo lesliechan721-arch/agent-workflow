@@ -287,7 +287,7 @@ describe('local-plugin generator', () => {
     });
   });
 
-  it('keeps Skill evals and reports out of broad fileRules and dynamic source bundles', async () => {
+  it('excludes top-level Skill author directories but preserves nested domain directories', async () => {
     const repoRoot = await makeTempRepo();
     const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
     const manifest = await readFixturePluginManifest(repoRoot);
@@ -303,6 +303,10 @@ describe('local-plugin generator', () => {
       fs.outputFile(
         path.join(pluginRoot, 'skills', 'commit', 'evals', 'manifest.json'),
         '{}\n',
+      ),
+      fs.outputFile(
+        path.join(pluginRoot, 'skills', 'commit', 'references', 'evals', 'contract.md'),
+        '# Eval contract\n',
       ),
       fs.outputFile(
         path.join(pluginRoot, 'reports', 'commit', 'batch-1', 'summary.json'),
@@ -323,6 +327,10 @@ describe('local-plugin generator', () => {
       fs.outputFile(
         path.join(pluginRoot, 'skills', 'dynamic', 'evals', 'manifest.json'),
         '{}\n',
+      ),
+      fs.outputFile(
+        path.join(pluginRoot, 'skills', 'dynamic', 'references', 'evals', 'contract.md'),
+        '# Dynamic eval contract\n',
       ),
       fs.outputFile(
         path.join(pluginRoot, 'skills', 'dynamic', 'base', 'SKILL.md'),
@@ -386,6 +394,15 @@ describe('local-plugin generator', () => {
         'commit',
         'evals',
       ))).resolves.toBe(false);
+      await expect(fs.readFile(path.join(
+        outputRoot,
+        platform,
+        'skills',
+        'commit',
+        'references',
+        'evals',
+        'contract.md',
+      ), 'utf8')).resolves.toBe('# Eval contract\n');
       await expect(fs.pathExists(path.join(
         outputRoot,
         platform,
@@ -419,8 +436,28 @@ describe('local-plugin generator', () => {
       'Dynamic report summary ships with the Skill.',
     );
     await expect(fs.pathExists(path.join(dynamicSourceRoot, 'evals'))).resolves.toBe(false);
-    await expect(fs.pathExists(path.join(dynamicSourceRoot, 'base', 'evals'))).resolves.toBe(false);
+    await expect(fs.readFile(path.join(
+      dynamicSourceRoot,
+      'references',
+      'evals',
+      'contract.md',
+    ), 'utf8')).resolves.toBe('# Dynamic eval contract\n');
+    await expect(fs.readJson(path.join(
+      dynamicSourceRoot,
+      'base',
+      'evals',
+      'private.json',
+    ))).resolves.toEqual({ secret: 'author-only' });
     await expect(fs.pathExists(path.join(dynamicSourceRoot, 'reports'))).resolves.toBe(false);
+    await expect(fs.pathExists(path.join(
+      outputRoot,
+      '.agents-plugin',
+      'artifact-sources',
+      'codex',
+      'dynamic-skill',
+      '1',
+      'evals',
+    ))).resolves.toBe(false);
     await expect(fs.readFile(path.join(
       outputRoot,
       '.agents-plugin',

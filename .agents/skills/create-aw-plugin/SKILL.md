@@ -65,11 +65,11 @@ compatibility: Requires the agent-workflows repository, Node.js 20+, and install
    - 向已有插件新增 Skill 时，`add_skill.mjs` 默认创建 minor release intent，不直接修改 plugin version
    - 已有插件的其它 production bundle 变化使用 `scripts/add_plugin_change.mjs` 声明 major、minor 或 patch
    - 开发和 CI 反复修改时保留源码 manifest 中最近稳定版本；不要把 SemVer 当作编辑计数器
-   - Skill `evals/**`、插件 `reports/**` 和 test-only 文件不进入 production bundle；Skill README 和 runtime 文件进入 production bundle
+   - Skill 根的直接子目录 `evals/**`、`reports/**`、插件根 `reports/**` 和 test-only 文件不进入 production bundle；更深层的同名目录、Skill README 和其它 runtime 文件进入 production bundle
    - 完成条件：新插件保持初始 version 且没有 intent；已有插件的 production bundle 有变化时存在对应 intent；只有作者期材料变化时不创建 intent
 6. **按变更面构建**
    - 新建插件，或 manifest、README、Skill、runtime 脚本、bundle / 安装合同等 production bundle 输入变化时，运行 `pnpm build` 生成本地 staging/runtime bundle
-   - 只有 `evals/**`、`reports/**` 或 test-only 材料变化时默认跳过 build；用户或隔离环境明确限制 build 时也不强行运行，并把对应 production artifact 列为未验证
+   - 只有上述顶层作者目录或 test-only 材料变化时默认跳过 build；用户或隔离环境明确限制 build 时也不强行运行，并把对应 production artifact 列为未验证
    - 完成条件：需要 build 时命令 exit 0，目标 staging/runtime artifact 存在且只由构建产生；跳过时原因能追溯到 author-only 变更或明确限制
 7. **验证并修复**
    - 运行 `scripts/validate_plugin.mjs`

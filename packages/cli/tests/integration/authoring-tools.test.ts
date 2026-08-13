@@ -2409,7 +2409,7 @@ describe('authoring tools', () => {
     expect(skillDoc).not.toContain('默认把插件注册到两份 marketplace manifest');
     expect(skillDoc).toContain('不要为了“混合型插件”一次加载全部文档');
     expect(skillDoc).toContain('按变更面构建');
-    expect(skillDoc).toContain('只有 `evals/**`、`reports/**` 或 test-only 材料变化时默认跳过 build');
+    expect(skillDoc).toContain('只有上述顶层作者目录或 test-only 材料变化时默认跳过 build');
     expect(skillDoc).toContain('版本/catalog、dynamic artifact、eval/review 和 platform scope 的细节按上面的阅读路由');
     expect(skillDoc).not.toContain('Catalog 分为 `@lesliechan721/aw-plugins-manifest`');
     expect(skillDoc).toContain('`references/skill-design.md`');
@@ -3589,6 +3589,25 @@ describe('authoring tools', () => {
     }, { spaces: 2 });
     await expect(runValidatePlugin(dynamicClaude.pluginDir)).rejects.toMatchObject({
       stdout: expect.stringContaining('must not point inside an author-only Skill directory'),
+    });
+    await fs.outputFile(
+      path.join(dynamicClaudeSource, 'references', 'evals', 'contract.md'),
+      '# Runtime eval contract\n',
+    );
+    await fs.writeJson(dynamicClaude.manifestPath, {
+      ...dynamicClaudeManifest,
+      artifacts: {
+        targets: [{
+          ...dynamicClaudeManifest.artifacts.targets[0],
+          sourceDirs: [
+            './skills/claude-dynamic',
+            './skills/claude-dynamic/references/evals',
+          ],
+        }],
+      },
+    }, { spaces: 2 });
+    await expect(runValidatePlugin(dynamicClaude.pluginDir)).resolves.toMatchObject({
+      stdout: expect.stringContaining('[PASS] All checks passed.'),
     });
     await fs.writeJson(dynamicClaude.manifestPath, dynamicClaudeManifest, { spaces: 2 });
 

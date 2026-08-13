@@ -169,6 +169,9 @@ describe('skill-review author tools', () => {
 
   it('parses a quoted YAML Skill name as its scalar value', async () => {
     const runner = await import(`${pathToFileURL(staticEvalRunner()).href}?quoted-name`);
+    const inspector = await import(
+      `${pathToFileURL(skillScript('inspect_skill_target.mjs')).href}?author-only-paths`,
+    );
     const skillRoot = path.join(repoRoot(), '.agents', 'skills', 'quoted-skill');
 
     expect(runner.parseSkillName([
@@ -196,6 +199,15 @@ describe('skill-review author tools', () => {
         root: '/repo/.agents/skills/skill-review/scripts',
       },
     ]);
+    for (const [relativePath, authorOnly] of [
+      ['evals/cases.json', true],
+      ['reports/review.md', true],
+      ['assets/reports/template.md', false],
+      ['references/evals/contract.md', false],
+    ] as const) {
+      expect(runner.isSkillAuthorOnlyPath(relativePath)).toBe(authorOnly);
+      expect(inspector.isSkillAuthorOnlyPath(relativePath)).toBe(authorOnly);
+    }
   });
 
   it('materializes static participant Skills without author-only directories', async () => {
@@ -277,7 +289,7 @@ describe('skill-review author tools', () => {
     expect(result.stdout).toContain('Usage: validate_eval_cases.mjs');
   });
 
-  it('validates eval audit metadata while keeping legacy case files reviewable', async () => {
+  it('validates admitted release case files and audit diagnostics', async () => {
     const root = repoRoot();
     const validator = skillScript('validate_eval_cases.mjs');
     const runValidator = async (filePath: string, strict = false) => {
@@ -307,7 +319,7 @@ describe('skill-review author tools', () => {
       summary: { cases: 1, scenario_families: 1, errors: 0, warnings: 0 },
     });
 
-    const legacy = await runValidator(path.join(
+    const triggerCases = await runValidator(path.join(
       root,
       '.agents',
       'skills',
@@ -315,11 +327,12 @@ describe('skill-review author tools', () => {
       'evals',
       'trigger-cases.json',
     ));
-    expect(legacy.valid).toBe(true);
-    expect(legacy.summary.errors).toBe(0);
-    expect(legacy.summary.warnings).toBeGreaterThan(0);
+    expect(triggerCases).toMatchObject({
+      valid: true,
+      summary: { errors: 0, warnings: 0 },
+    });
 
-    const strictLegacy = await runValidator(path.join(
+    const strictTriggerCases = await runValidator(path.join(
       root,
       '.agents',
       'skills',
@@ -327,10 +340,23 @@ describe('skill-review author tools', () => {
       'evals',
       'trigger-cases.json',
     ), true);
-    expect(strictLegacy.valid).toBe(false);
-    expect(strictLegacy.diagnostics).toEqual(expect.arrayContaining([
-      expect.objectContaining({ level: 'error', code: 'oracle.missing' }),
-    ]));
+    expect(strictTriggerCases).toMatchObject({
+      valid: true,
+      summary: { errors: 0, warnings: 0 },
+    });
+
+    const strictBehaviorCases = await runValidator(path.join(
+      root,
+      '.agents',
+      'skills',
+      'skill-review',
+      'evals',
+      'evals.json',
+    ), true);
+    expect(strictBehaviorCases).toMatchObject({
+      valid: true,
+      summary: { errors: 0, warnings: 0 },
+    });
 
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-eval-case-audit-'));
     tempDirs.push(tempRoot);
@@ -1018,6 +1044,58 @@ describe('skill-review author tools', () => {
     });
     await expect(runner.readManifest(fixtureRoot, 'fixture')).rejects.toThrow(
       'cannot contain symlinks',
+    );
+
+    await fs.writeJson(path.join(fixtureRoot, 'evals', 'manifest.json'), {
+      schemaVersion: 1,
+      skill: 'fixture',
+      suites: [{
+        id: 'trigger',
+        kind: 'trigger',
+        skill: 'fixture',
+        skills: ['fixture'],
+        cases: './evals/cases.json',
+        fixtureModule: './evals/trigger-fixture.mjs',
+        observeSpawnAgent: false,
+        defaultRuns: 1,
+        releaseSplits: ['validation'],
+        requiredForRelease: true,
+        perRunTimeoutMs: 1_000,
+      }],
+    });
+    await expect(runner.readManifest(fixtureRoot, 'fixture')).rejects.toThrow(
+      'fixtureModule is not supported for static Skill evals',
+    );
+
+    await fs.writeJson(path.join(fixtureRoot, 'evals', 'cases.json'), {
+      schemaVersion: 1,
+      skill: 'fixture',
+      cases: [{
+        id: 'workspace_fixture',
+        split: 'validation',
+        query: 'Review the fixture.',
+        should_load_skill: true,
+        workspace_fixture: 'repository_state',
+      }],
+    });
+    await fs.writeJson(path.join(fixtureRoot, 'evals', 'manifest.json'), {
+      schemaVersion: 1,
+      skill: 'fixture',
+      suites: [{
+        id: 'trigger',
+        kind: 'trigger',
+        skill: 'fixture',
+        skills: ['fixture'],
+        cases: './evals/cases.json',
+        observeSpawnAgent: false,
+        defaultRuns: 1,
+        releaseSplits: ['validation'],
+        requiredForRelease: true,
+        perRunTimeoutMs: 1_000,
+      }],
+    });
+    await expect(runner.readManifest(fixtureRoot, 'fixture')).rejects.toThrow(
+      'workspace_fixture is not supported for static Skill evals',
     );
   });
 

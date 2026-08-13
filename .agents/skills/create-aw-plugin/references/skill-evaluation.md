@@ -38,9 +38,9 @@ plugins/<name>/
 └── reviews/<mode>/<review-id>/
 ```
 
-静态和动态 Skill 都使用 `skills/<skill>` 作为源码根。动态 Skill 声明 source 时必须包含该规范根；其它 `sourceDirs` 必须留在根内，且不能进入名为 `evals` 或 `reports` 的作者专用目录。eval owner 固定为规范根中唯一的 `evals/manifest.json`；同一个 Skill 不能有多个 eval owner。插件根 `evals/` 已禁用。
+静态和动态 Skill 都使用 `skills/<skill>` 作为源码根。动态 Skill 声明 source 时必须包含该规范根；其它 `sourceDirs` 必须留在根内，且不能进入 Skill 根的直接子目录 `evals/` 或 `reports/`。更深层的同名领域目录可以进入 runtime。eval owner 固定为规范根中唯一的 `evals/manifest.json`；同一个 Skill 不能有多个 eval owner。插件根 `evals/` 已禁用。
 
-Skill 源码中名为 `evals` 或 `reports` 的目录和插件根 `reports/**` 都是作者期材料，不属于 production runtime bundle，也不参与 runtime package digest。`evals/**` 和正式报告属于 Git 源码；完整工作批次位于 `.tmp/`，不进入 Git。Skill README 是发布内容，随 Skill 原样进入最终制品。动态 Skill 的评测对象不是源码占位文本，而是中央 materializer 通过真实 staging、renderer、ArtifactPlan 校验和 Codex adapter 得到的最终制品。
+Skill 根的直接子目录 `evals/`、`reports/` 和插件根 `reports/**` 都是作者期材料，不属于 production runtime bundle，也不参与 runtime package digest。更深层的同名目录按普通 runtime 资源处理。`evals/**` 和正式报告属于 Git 源码；完整工作批次位于 `.tmp/`，不进入 Git。Skill README 是发布内容，随 Skill 原样进入最终制品。动态 Skill 的评测对象不是源码占位文本，而是中央 materializer 通过真实 staging、renderer、ArtifactPlan 校验和 Codex adapter 得到的最终制品。
 
 每个 owner 的 `evals/README.md` 只说明自己的 corpus、suite、具体运行命令、专用 runner 限制和历史结果。全仓统一的权限、隔离、进程管理、凭据、批次布局、发布路径和平台证据边界只在本文及 CLI `--help` 维护，不复制到各 Skill。
 
