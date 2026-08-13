@@ -14,7 +14,6 @@ import type { OwnedComponent, OwnershipInspectionState } from '../../src/utils/o
 import { OWNED_TEXT_HEADER_PREFIX, writeSkillOwnerMarker } from '../../src/utils/ownership.js';
 import { resolveClaudePaths } from '../../src/utils/paths.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
-import { createFakeConsoleDriver, createFakePrompt } from '../helpers/fake-console.js';
 
 function plugin(name: string, products: Array<'CODEX' | 'CLAUDE'> = ['CODEX', 'CLAUDE']): PluginMeta {
   return {
@@ -584,26 +583,16 @@ describe('live status command', () => {
       }),
     ]);
 
-    const prompt = createFakePrompt([
-      { method: 'select', value: 'claude-project-native' },
-      { method: 'select', value: 'claude-project-native\0claude\0project' },
-      { method: 'select', value: '__back' },
-      { method: 'select', value: '__exit' },
-    ]);
     const context = createCliExecutionContext({
       cwd, env: isolation.env, interactive: true, nativeCliRunner,
-      prompt, consoleDriver: createFakeConsoleDriver(),
     });
     Object.assign(context, {
       catalogResolution: runtime.catalogResolution,
       catalogPlugins: runtime.catalogPlugins,
     });
-    const { runConsoleController } = await import('../../src/commands/console.js');
-    await expect(runConsoleController(context)).resolves.toBe(0);
-    const actionCall = prompt.calls.find((call) =>
-      call.method === 'select'
-      && (call.options as { message?: string }).message === '选择操作');
-    expect(JSON.stringify(actionCall?.options)).toContain('upgrade');
+    const { createDashboardController, dashboardActions } = await import('../../src/commands/console.js');
+    const loaded = await createDashboardController(context).load();
+    expect(dashboardActions(loaded.items[0]!, loaded.items[0]!.targets[0]!)).toContain('upgrade');
   });
 
   it('never runs an uninstalled dynamic renderer for explicit status, no-argument status, or the bare console', async () => {
@@ -639,15 +628,15 @@ describe('live status command', () => {
       env,
       interactive: true,
       nativeCliRunner: runtime.nativeCliRunner,
-      prompt: createFakePrompt([{ method: 'select', value: '__exit' }]),
-      consoleDriver: createFakeConsoleDriver(),
     });
     Object.assign(context, {
       catalogResolution: runtime.catalogResolution,
       catalogPlugins: runtime.catalogPlugins,
     });
-    const { runConsoleController } = await import('../../src/commands/console.js');
-    await expect(runConsoleController(context)).resolves.toBe(0);
+    const { createDashboardController } = await import('../../src/commands/console.js');
+    await expect(createDashboardController(context).load()).resolves.toMatchObject({
+      status: { schemaVersion: 3 },
+    });
     expect(await filesystemSnapshot(isolation.layout.rootDir)).toEqual(before);
     expect(await fs.pathExists(env.AW_RENDER_SENTINEL)).toBe(false);
     expect(await fs.pathExists(path.join(isolation.layout.awHomeDir, 'renderer-ran'))).toBe(false);

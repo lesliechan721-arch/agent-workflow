@@ -20,6 +20,7 @@ import { resolveAwHome } from '../utils/paths.js';
 import { assertTestWritablePath } from '../utils/test-path-fence.js';
 import type { Scope } from '../types.js';
 import { createInkPrompt } from '../tui/prompt.js';
+import { createInkTuiRunner, type TuiRunner } from '../tui/runner.js';
 
 export type {
   CommandEvent,
@@ -187,7 +188,8 @@ export interface CliExecutionContext extends CommandExecutionContext {
   stdin: NodeJS.ReadableStream;
   isTty: boolean;
   isCi: boolean;
-  consoleDriver: CliConsoleDriver;
+  tuiRunner: TuiRunner;
+  tuiOutput: CliPromptOutputSink;
 }
 
 export interface CliExecutionContextInput extends CommandExecutionContextInput {
@@ -196,7 +198,7 @@ export interface CliExecutionContextInput extends CommandExecutionContextInput {
   stdin?: NodeJS.ReadableStream;
   stdout?: { isTTY?: boolean };
   promptOutputSink?: CliPromptOutputSink;
-  consoleDriver?: CliConsoleDriver;
+  tuiRunner?: TuiRunner;
 }
 
 export interface CliPromptOutputSink {
@@ -204,27 +206,42 @@ export interface CliPromptOutputSink {
   isTTY?: boolean;
 }
 
-export interface CliConsoleView {
-  title: string;
-  lines: string[];
+interface ReporterRoute {
+  current: CommandReporter;
 }
 
-export interface CliConsoleDriver {
-  render: (view: CliConsoleView) => unknown | Promise<unknown>;
+const reporterRoutes = new WeakMap<CommandReporter, ReporterRoute>();
+
+function createSessionAwareReporter(defaultReporter: CommandReporter): CommandReporter {
+  const route: ReporterRoute = { current: defaultReporter };
+  const reporter: CommandReporter = {
+    event: (event) => route.current.event(event),
+    notice: (notice) => route.current.notice(notice),
+  };
+  reporterRoutes.set(reporter, route);
+  return reporter;
+}
+
+export async function withCommandReporterSession<T>(
+  reporter: CommandReporter,
+  sessionReporter: CommandReporter,
+  task: () => Promise<T>,
+): Promise<T> {
+  const route = reporterRoutes.get(reporter);
+  if (!route) return task();
+  const previous = route.current;
+  route.current = sessionReporter;
+  try {
+    return await task();
+  } finally {
+    route.current = previous;
+  }
 }
 
 function createDefaultIo(): CliIo {
   return {
     stdout: (text) => process.stdout.write(text),
     stderr: (text) => process.stderr.write(text),
-  };
-}
-
-function createDefaultConsoleDriver(io: CliIo): CliConsoleDriver {
-  return {
-    render: ({ title, lines }) => {
-      io.stderr(`\u001B[2J\u001B[H== ${title} ==\n${lines.join('\n')}\n`);
-    },
   };
 }
 
@@ -1058,8 +1075,11 @@ export function createCliExecutionContext(
   const isTty = stdinIsTty && stdoutIsTty && promptOutputIsTty;
   const isCi = isTruthy(env.CI);
   const hasInjectedPrompt = Boolean(input.prompt);
-  const requestedInteractive = input.interactive ?? (hasInjectedPrompt ? true : isTty);
-  const interactive = requestedInteractive && !isCi && (isTty || hasInjectedPrompt);
+  const hasInjectedTuiRunner = Boolean(input.tuiRunner);
+  const requestedInteractive = input.interactive ?? (hasInjectedPrompt || hasInjectedTuiRunner ? true : isTty);
+  const interactive = requestedInteractive
+    && !isCi
+    && (isTty || hasInjectedPrompt || hasInjectedTuiRunner);
   const diagnostics = createCommandDiagnostics({
     ...input.diagnostics,
     metadata: {
@@ -1075,7 +1095,9 @@ export function createCliExecutionContext(
       interactiveEnabled: interactive,
     },
   }, env);
-  const reporter = input.reporter ?? createIoReporter(io, diagnostics);
+  const reporter = createSessionAwareReporter(
+    input.reporter ?? createIoReporter(io, diagnostics),
+  );
   const debugLogger = input.debugLogger ?? createFileDebugLogger(diagnostics);
   const prompt = input.prompt ?? (interactive
     ? createInkPrompt({
@@ -1083,7 +1105,7 @@ export function createCliExecutionContext(
         outputSink: promptOutputSink,
       })
     : createUnavailablePrompt());
-  const consoleDriver = input.consoleDriver ?? createDefaultConsoleDriver(io);
+  const tuiRunner = input.tuiRunner ?? createInkTuiRunner();
   const commandContext = createCommandExecutionContext({
     ...input,
     env,
@@ -1101,6 +1123,7 @@ export function createCliExecutionContext(
     stdin,
     isTty,
     isCi,
-    consoleDriver,
+    tuiRunner,
+    tuiOutput: promptOutputSink,
   };
 }
