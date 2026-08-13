@@ -1567,7 +1567,7 @@ describe('skill-review author tools', () => {
   it('keeps evaluated upstream content unchanged outside documented project adapters', async () => {
     const skillRoot = path.join(repoRoot(), '.agents', 'skills', 'skill-review');
     const exactHashes: Record<string, string> = {
-      'CHANGELOG.md': 'eba6682d8a279af2cabc847a17b29ff08453099dcaf47d1d8582e86df3d9c97d',
+      'CHANGELOG.md': '7e2553cd3e3c1e06476bb159dfcb865b6d27393bb98c63ff4c45fef811be0cc3',
       'assets/report-template.md': '28c599394feabf73eabea1f6ba2fd41999cb80303dea4746a0a23728beb8d883',
       'assets/scorecard-template.json': '93e6fae3a76d2bfa447047769da9587dfb4473c08be437f3f325a35e63f17233',
       'evals/behavior_cases.json': '936b6c67d6e6cd4873109f6af916977edf9a1b3eafc335150ed2fde4f1eb82dc',
@@ -1596,7 +1596,7 @@ describe('skill-review author tools', () => {
     );
     const evalManifest = await fs.readJson(path.join(skillRoot, 'evals', 'manifest.json'));
     expect(evalManifest.suites.map((suite: { defaultRuns: number }) => suite.defaultRuns)).toEqual(
-      [1, 1],
+      [3, 1],
     );
 
     const readme = (await fs.readFile(path.join(skillRoot, 'README.md'), 'utf8'))

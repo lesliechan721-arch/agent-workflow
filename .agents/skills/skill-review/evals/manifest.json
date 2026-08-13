@@ -23,7 +23,7 @@
       "observeSpawnAgent": false,
       "isolation": "standard",
       "strictNegativeSplits": ["validation", "sanity"],
-      "defaultRuns": 1,
+      "defaultRuns": 3,
       "releaseSplits": ["validation", "sanity"],
       "requiredForRelease": true,
       "perRunTimeoutMs": 180000
