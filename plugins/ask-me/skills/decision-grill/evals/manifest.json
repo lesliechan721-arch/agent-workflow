@@ -55,12 +55,24 @@
       "id": "behavior",
       "kind": "conversation",
       "skills": ["decision-grill", "requirements-clarifier"],
-      "cases": "./decision-grill-evals.json",
+      "cases": "./decision-grill-release-evals.json",
       "isolation": "strict",
       "profiles": ["project-default"],
       "defaultRuns": 1,
       "releaseSplits": [],
       "requiredForRelease": true,
+      "perRunTimeoutMs": 300000
+    },
+    {
+      "id": "behavior-diagnostic",
+      "kind": "conversation",
+      "skills": ["decision-grill", "requirements-clarifier"],
+      "cases": "./decision-grill-evals.json",
+      "isolation": "strict",
+      "profiles": ["project-default"],
+      "defaultRuns": 1,
+      "releaseSplits": [],
+      "requiredForRelease": false,
       "perRunTimeoutMs": 300000
     }
   ]

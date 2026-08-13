@@ -1,0 +1,132 @@
+{
+  "skill_name": "requirements-clarifier",
+  "policy": {
+    "optimization": "recall-first",
+    "false_negative_cost": "high",
+    "false_positive_cost": "medium",
+    "rationale": "漏掉结果级歧义可能生成错误成品；误问会中断实施，但通常可以立即恢复。"
+  },
+  "evals": [
+    {
+      "id": "natural-mixed-ambiguity",
+      "eval_type": "behavior",
+      "case_role": "representative",
+      "provenance": "derived",
+      "scenario_family": "fact-default-user-intent",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "current_owner_skill_available": true,
+        "baseline_owner_skill_available": false,
+        "companion_skill_available_in_both": true,
+        "baseline_kind": "without-owner-skill",
+        "repository_lookup_required": false
+      },
+      "oracle": {
+        "rationale": "验证码期限是已知事实，缓存容器是内部可逆选择，现有用户宽限期是会改变用户流程的产品决定。",
+        "rule_refs": ["SKILL.md#处理不确定项", "SKILL.md#提问"],
+        "confidence": "high",
+        "allowed_variance": "问题措辞、选项顺序和交接格式可以不同，但不能重问已知事实或把产品决定静默设为默认。"
+      },
+      "prompt": "准备给注册流程加邮箱验证。项目规范写明验证码 10 分钟失效；缓存容器属于内部实现；但现有未验证用户是立即被拦截，还是有 7 天宽限期，还没有决定。先帮我把实施前需求收住，暂时不要改文件。",
+      "scripted_replies": [
+        {
+          "expected_question_count": 1,
+          "answers_by_index": ["现有未验证用户立即被拦截，完成邮箱验证后才能继续。其他产品行为已经明确，请交接。"],
+          "unexpected_question_answer": "我暂时不知道，请保留未解决项并交接。"
+        }
+      ],
+      "expected_output": "采用验证码期限，对内部缓存选择使用合理默认，只确认会改变现有用户流程的宽限期，并在回答后交接。",
+      "files": [],
+      "review": {
+        "platforms": ["codex"],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "采用已知的 10 分钟验证码期限，不把缓存容器交给用户决定",
+          "只询问现有未验证用户是立即拦截还是保留宽限期",
+          "收到回答后交还原任务，不继续制造问题"
+        ]
+      }
+    },
+    {
+      "id": "natural-combined-ambiguities",
+      "eval_type": "behavior",
+      "case_role": "representative",
+      "provenance": "derived",
+      "scenario_family": "combined-small-ambiguities",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "current_owner_skill_available": true,
+        "baseline_owner_skill_available": false,
+        "companion_skill_available_in_both": true,
+        "baseline_kind": "without-owner-skill",
+        "repository_lookup_required": false
+      },
+      "oracle": {
+        "rationale": "归属、可见性和取消反馈各自不大，但组合后决定收藏功能的整体用户体验。",
+        "rule_refs": ["SKILL.md#处理不确定项", "SKILL.md#提问"],
+        "confidence": "high",
+        "allowed_variance": "三个问题的顺序和措辞可以不同；可以使用一个问题工具调用，但必须分别确认三项。"
+      },
+      "prompt": "我要给商品页加收藏。现在只知道要能收藏和取消；收藏归谁、别人能否看到、取消后用户会看到什么都没定。这三项可以分别选择，任何一项都不限制另外两项。请先把需求弄清楚，暂时不要改文件。",
+      "scripted_replies": [
+        {
+          "expected_question_count": 3,
+          "answers_by_index": [
+            "收藏属于当前用户。",
+            "收藏默认私有。",
+            "取消后显示简短确认。其他需求已经明确，请交接。"
+          ],
+          "unexpected_question_answer": "我暂时不知道，请保留未解决项并交接。"
+        }
+      ],
+      "expected_output": "识别三项歧义的组合影响，在一轮内分别确认，并在回答后交接。",
+      "files": [],
+      "review": {
+        "platforms": ["codex"],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "分别确认收藏归属、可见性和取消反馈",
+          "不因每一项单独影响有限而静默采用默认",
+          "收到回答后整理确认结果并交还原任务"
+        ]
+      }
+    },
+    {
+      "id": "natural-engineering-evidence",
+      "eval_type": "behavior",
+      "case_role": "representative",
+      "provenance": "derived",
+      "scenario_family": "engineering-validation",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "current_owner_skill_available": true,
+        "baseline_owner_skill_available": false,
+        "companion_skill_available_in_both": true,
+        "baseline_kind": "without-owner-skill",
+        "repository_has_performance_data": false
+      },
+      "oracle": {
+        "rationale": "验收口径已经明确，但能否达到目标只能通过工程验证确定，用户偏好不能替代性能证据。",
+        "rule_refs": ["SKILL.md#处理不确定项", "SKILL.md#结束"],
+        "confidence": "high",
+        "allowed_variance": "可以建议不同的验证准备工作，但不能要求用户主观决定技术可行性，也不能在澄清阶段运行压测。"
+      },
+      "prompt": "我们准备让现有服务支持总吞吐 10 万 QPS。验收是在固定生产规格集群上跑标准负载 30 分钟，P99 不超过 200 ms，错误率低于 0.1%。仓库里没有性能数据。请先完成实施前的需求检查，暂时不要改文件。",
+      "scripted_replies": [],
+      "expected_output": "不向用户询问技术可行性，把性能目标列为待验证事项，并交还原任务。",
+      "files": [],
+      "review": {
+        "platforms": ["codex"],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "不要求用户主观确认 10 万 QPS 是否可行",
+          "把性能目标和验收口径列为待验证事项",
+          "不运行压测或制作原型，并交还原任务"
+        ]
+      }
+    }
+  ]
+}
