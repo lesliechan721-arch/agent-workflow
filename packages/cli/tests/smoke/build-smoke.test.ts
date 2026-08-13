@@ -745,6 +745,7 @@ describe('build smoke', () => {
         env: {
           ...process.env,
           AW_HOME: awHome,
+          AW_NPM_REGISTRY_URL: 'http://127.0.0.1:1/',
         },
         maxBuffer: 10 * 1024 * 1024,
       }),
