@@ -4,7 +4,6 @@
 
 - Routed by the requested review deliverable instead of Skill-related input terms.
 - Kept trigger and behavior eval authoring outside the review trigger boundary.
-- Reduced every eval case to one default run; targeted regressions do not require a full-suite rerun.
 - Separated trigger activation from near-miss target reads and added a balanced sanity split.
 - Split reachable local packages from supplied evidence before inventory and diagnostics.
 - Stopped evidence-only reviews before full resources when no target content can be assessed.
