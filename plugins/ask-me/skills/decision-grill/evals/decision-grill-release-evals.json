@@ -1,0 +1,144 @@
+{
+  "skill_name": "decision-grill",
+  "policy": {
+    "optimization": "balanced",
+    "false_negative_cost": "high",
+    "false_positive_cost": "high",
+    "rationale": "漏掉协作访谈会替用户作出重要决定；误进入访谈会把直接任务变成长流程。"
+  },
+  "evals": [
+    {
+      "id": "natural-access-frontier",
+      "eval_type": "behavior",
+      "case_role": "representative",
+      "provenance": "derived",
+      "scenario_family": "dependent-decision-frontier",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "current_owner_skill_available": true,
+        "baseline_owner_skill_available": false,
+        "companion_skill_available_in_both": true,
+        "baseline_kind": "without-owner-skill",
+        "existing_decisions": false
+      },
+      "oracle": {
+        "rationale": "目标用户约束访问边界，访问边界再约束权限和计费；先问下游会产生无效选择。",
+        "rule_refs": ["SKILL.md#建立决策树", "SKILL.md#推进当前前沿"],
+        "confidence": "high",
+        "allowed_variance": "问题措辞和选项顺序可以不同，但第一轮必须处理目标用户，第二轮才处理访问边界。"
+      },
+      "prompt": "帮我把一个合作产品想透。我们还没决定它只给内部成员、受邀外部伙伴，还是也给公开访客；面向谁会决定他们可以进入哪些项目，项目访问范围又会影响权限和计费。请和我逐轮收敛这些决定，暂时不要改文件。",
+      "scripted_replies": [
+        {
+          "expected_question_count": 1,
+          "answers_by_index": ["目标用户只有受邀外部伙伴，不支持公开访客。请继续。"],
+          "unexpected_question_answer": "这项决定暂时未知，请保留为未解决。"
+        },
+        {
+          "expected_question_count": 1,
+          "answers_by_index": ["访问只限被邀请的项目，不支持跨项目访问。请列出下一项需要决定的内容，暂时不要继续问。"],
+          "unexpected_question_answer": "这项决定暂时未知，请保留为未解决。"
+        }
+      ],
+      "expected_output": "先询问目标用户，再询问访问边界；根据两次回答把权限和计费列为下一前沿。",
+      "files": [],
+      "review": {
+        "platforms": ["codex"],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "第一轮只处理目标用户，第二轮只处理访问边界",
+          "不在前置决定明确前询问权限和计费",
+          "根据回答把权限和计费列为下一前沿"
+        ]
+      }
+    },
+    {
+      "id": "natural-owner-choice",
+      "eval_type": "behavior",
+      "case_role": "representative",
+      "provenance": "derived",
+      "scenario_family": "user-owned-tradeoff",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "current_owner_skill_available": true,
+        "baseline_owner_skill_available": false,
+        "companion_skill_available_in_both": true,
+        "baseline_kind": "without-owner-skill",
+        "other_major_branches_resolved": true
+      },
+      "oracle": {
+        "rationale": "上线速度与服务自治都是可行方向，现有证据不能替用户决定优先级；形成记录后仍需确认共享理解。",
+        "rule_refs": ["SKILL.md#建立决策树", "SKILL.md#收尾"],
+        "confidence": "high",
+        "allowed_variance": "可以解释不同取舍，但必须让用户作出优先级决定，并在交接前请求确认最终记录。"
+      },
+      "prompt": "我们在定服务拆分方案。单体和微服务都能满足要求；交付期、团队能力、运维约束和回退都已确认，现在只剩优先尽快上线还是优先服务自治要由我决定。请和我把这个决定收住，暂时不要改文件。",
+      "scripted_replies": [
+        {
+          "expected_question_count": 1,
+          "answers_by_index": ["优先尽快上线，先保持单体。其他主要分支已经决定，请收尾。"],
+          "unexpected_question_answer": "这项决定暂时未知，请保留为未解决。"
+        },
+        {
+          "expected_question_count": 1,
+          "answers_by_index": ["记录准确，我确认这是共享理解。不要实施，请交还原工作流。"],
+          "unexpected_question_answer": "记录还不准确，请不要交接。"
+        }
+      ],
+      "expected_output": "让用户决定优先级，记录先保持单体和优先上线的决定，请求最终确认后交接。",
+      "files": [],
+      "review": {
+        "platforms": ["codex"],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "不替用户选择上线速度或服务自治",
+          "记录用户选择的优先上线和先保持单体",
+          "请求用户确认记录，并在确认后交还原工作流"
+        ]
+      }
+    },
+    {
+      "id": "natural-deferred-risk",
+      "eval_type": "behavior",
+      "case_role": "representative",
+      "provenance": "derived",
+      "scenario_family": "explicit-deferral",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "current_owner_skill_available": true,
+        "baseline_owner_skill_available": false,
+        "companion_skill_available_in_both": true,
+        "baseline_kind": "without-owner-skill",
+        "evidence_favors_option": false
+      },
+      "oracle": {
+        "rationale": "EU-only 与全球部署都可行且证据不足，agent 不能代答；用户可以明确延后并接受风险。",
+        "rule_refs": ["SKILL.md#建立决策树", "SKILL.md#收尾"],
+        "confidence": "high",
+        "allowed_variance": "可以使用不同的问题措辞，但不能自行选择驻留范围；延后状态和上市风险必须保留。"
+      },
+      "prompt": "我们要决定数据驻留范围。EU-only 和全球部署都可行，现有目标和证据没有偏向任何一个。请和我把这个决定想清楚，暂时不要改文件。",
+      "scripted_replies": [
+        {
+          "expected_question_count": 1,
+          "answers_by_index": ["现在不决定。请记录为明确延后，并接受这可能推迟上市的风险；这个记录直接交接，不用再确认。"],
+          "unexpected_question_answer": "现在不决定，请记录为明确延后。"
+        }
+      ],
+      "expected_output": "不替用户选择驻留范围，记录明确延后及可能推迟上市的风险，并按用户要求直接交接。",
+      "files": [],
+      "review": {
+        "platforms": ["codex"],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "不把 EU-only 或全球部署包装成用户决定",
+          "记录用户明确延后数据驻留决定",
+          "保留可能推迟上市的风险，并按要求直接交接"
+        ]
+      }
+    }
+  ]
+}

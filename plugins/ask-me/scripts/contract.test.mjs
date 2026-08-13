@@ -119,8 +119,50 @@ function assertDecisionGrillContract(skill) {
   assert.match(skill, /确认前不修改文件、不做原型/);
 }
 
+function assertAuditPolicy(document) {
+  assert.equal(['recall-first', 'precision-first', 'balanced', 'critical']
+    .includes(document.policy.optimization), true);
+  assert.equal(['low', 'medium', 'high', 'critical']
+    .includes(document.policy.false_negative_cost), true);
+  assert.equal(['low', 'medium', 'high', 'critical']
+    .includes(document.policy.false_positive_cost), true);
+  assert.equal(typeof document.policy.rationale, 'string');
+  assert.equal(document.policy.rationale.length > 0, true);
+}
+
+function assertCaseAdmission(entry, evalType) {
+  assert.equal(entry.eval_type, evalType);
+  assert.equal(['representative', 'regression', 'boundary', 'challenge', 'diagnostic']
+    .includes(entry.case_role), true);
+  assert.equal([
+    'observed',
+    'derived',
+    'representative-synthetic',
+    'boundary',
+    'challenge',
+    'mechanism-probe',
+  ].includes(entry.provenance), true);
+  assert.equal(typeof entry.scenario_family, 'string');
+  assert.equal(entry.scenario_family.length > 0, true);
+  assert.equal(typeof entry.unit_under_test, 'string');
+  assert.equal(entry.unit_under_test.length > 0, true);
+  assert.equal(typeof entry.preconditions, 'object');
+  assert.equal(Array.isArray(entry.preconditions), false);
+  assert.equal(typeof entry.oracle.rationale, 'string');
+  assert.equal(entry.oracle.rationale.length > 0, true);
+  assert.equal(entry.oracle.rule_refs.length > 0, true);
+  assert.equal(['high', 'medium', 'low'].includes(entry.oracle.confidence), true);
+  assert.equal(typeof entry.oracle.allowed_variance, 'string');
+  assert.equal(entry.oracle.allowed_variance.length > 0, true);
+  if (entry.case_role === 'boundary' || entry.case_role === 'regression') {
+    assert.equal(typeof entry.oracle.minimal_counterexample, 'string');
+    assert.equal(entry.oracle.minimal_counterexample.length > 0, true);
+  }
+}
+
 function assertTriggerCorpus(document, skillName) {
   const { cases } = document;
+  assertAuditPolicy(document);
   assert.equal(document.schemaVersion, 1);
   assert.equal(document.skill, skillName);
   assert.equal(cases.length, 20);
@@ -139,14 +181,12 @@ function assertTriggerCorpus(document, skillName) {
     5,
   );
   assert.equal(cases.every((entry) => typeof entry.use_project_rules === 'boolean'), true);
-  assert.equal(
-    cases.every((entry) => typeof entry.rationale === 'string' && entry.rationale.length > 0),
-    true,
-  );
+  cases.forEach((entry) => assertCaseAdmission(entry, 'trigger'));
 }
 
 function assertRoutingCorpus(document) {
   const participants = new Set(['decision-grill', 'requirements-clarifier']);
+  assertAuditPolicy(document);
   assert.equal(document.schemaVersion, 1);
   assert.equal(document.skill, 'decision-grill');
   assert.equal(document.cases.length, 14);
@@ -160,7 +200,7 @@ function assertRoutingCorpus(document) {
     assert.equal(new Set(entry.expected_loaded_skills).size, entry.expected_loaded_skills.length);
     assert.equal('should_load_skill' in entry, false);
     assert.equal(entry.use_project_rules, true);
-    assert.equal(typeof entry.rationale, 'string');
+    assertCaseAdmission(entry, 'routing');
   }
   assert.deepEqual(
     document.cases.find((entry) => entry.id === 'export_clarify').expected_loaded_skills,
@@ -190,17 +230,20 @@ function assertRoutingCorpus(document) {
   );
 }
 
-function assertBehaviorCorpus(document, skillName, expectedIds) {
+function assertBehaviorCorpus(document, skillName, expectedIds, expectedRole) {
+  assertAuditPolicy(document);
   assert.equal(document.skill_name, skillName);
   assert.deepEqual(document.evals.map((entry) => entry.id), expectedIds);
 
   for (const entry of document.evals) {
+    assertCaseAdmission(entry, 'behavior');
+    assert.equal(entry.case_role, expectedRole);
     assert.equal(entry.prompt.includes(`$${skillName}`), false);
     assert.equal(Array.isArray(entry.scripted_replies), true);
     assert.equal(typeof entry.expected_output, 'string');
     assert.equal(entry.expected_output.length > 0, true);
     assert.deepEqual(entry.files, []);
-    assert.deepEqual(entry.review.platforms, ['codex', 'claude']);
+    assert.equal(entry.review.platforms.includes('codex'), true);
     assert.equal(entry.review.clean_session, true);
     assert.equal(entry.review.workspace_unchanged, true);
     assert.equal(entry.review.checks.length >= 3, true);
@@ -557,8 +600,17 @@ test('each Skill owns an independent central eval manifest', async () => {
     assert.deepEqual(
       manifest.suites.map((suite) => [suite.id, suite.kind]),
       skill === 'decision-grill'
-        ? [['trigger', 'trigger'], ['router', 'trigger'], ['behavior', 'conversation']]
-        : [['trigger', 'trigger'], ['behavior', 'conversation']],
+        ? [
+            ['trigger', 'trigger'],
+            ['router', 'trigger'],
+            ['behavior', 'conversation'],
+            ['behavior-diagnostic', 'conversation'],
+          ]
+        : [
+            ['trigger', 'trigger'],
+            ['behavior', 'conversation'],
+            ['behavior-diagnostic', 'conversation'],
+          ],
     );
 
     for (const suite of manifest.suites) {
@@ -573,7 +625,7 @@ test('each Skill owns an independent central eval manifest', async () => {
         );
       }
       assert.deepEqual(suite.profiles, ['project-default']);
-      assert.equal(suite.requiredForRelease, true);
+      assert.equal(suite.requiredForRelease, suite.id !== 'behavior-diagnostic');
       assert.equal(suite.isolation, 'strict');
       if (suite.id === 'trigger') {
         assert.equal(suite.defaultRuns, 3);
@@ -590,13 +642,19 @@ test('each Skill owns an independent central eval manifest', async () => {
       } else {
         assert.equal(suite.defaultRuns, 1);
         assert.deepEqual(suite.releaseSplits, []);
+        assert.equal(
+          suite.cases,
+          suite.id === 'behavior'
+            ? `./${skill}-release-evals.json`
+            : `./${skill}-evals.json`,
+        );
       }
     }
   }
 });
 
 test('behavior corpora preserve all redesigned assertions in executable conversation shape', async () => {
-  const [requirements, decision] = await Promise.all([
+  const [requirements, requirementsRelease, decision, decisionRelease] = await Promise.all([
     readJson(path.join(
       context.sourceRoot,
       'skills',
@@ -607,9 +665,23 @@ test('behavior corpora preserve all redesigned assertions in executable conversa
     readJson(path.join(
       context.sourceRoot,
       'skills',
+      'requirements-clarifier',
+      'evals',
+      'requirements-clarifier-release-evals.json',
+    )),
+    readJson(path.join(
+      context.sourceRoot,
+      'skills',
       'decision-grill',
       'evals',
       'decision-grill-evals.json',
+    )),
+    readJson(path.join(
+      context.sourceRoot,
+      'skills',
+      'decision-grill',
+      'evals',
+      'decision-grill-release-evals.json',
     )),
   ]);
 
@@ -624,7 +696,12 @@ test('behavior corpora preserve all redesigned assertions in executable conversa
     'question-shape',
     'stop-with-no-gap',
     'handoff-on-stop',
-  ]);
+  ], 'diagnostic');
+  assertBehaviorCorpus(requirementsRelease, 'requirements-clarifier', [
+    'natural-mixed-ambiguity',
+    'natural-combined-ambiguities',
+    'natural-engineering-evidence',
+  ], 'representative');
   assertBehaviorCorpus(decision, 'decision-grill', [
     'goal-boundary',
     'read-before-question',
@@ -641,7 +718,43 @@ test('behavior corpora preserve all redesigned assertions in executable conversa
     'user-decision-not-self-answer',
     'shared-understanding-confirmation',
     'reopen-on-correction',
-  ]);
+  ], 'diagnostic');
+  assertBehaviorCorpus(decisionRelease, 'decision-grill', [
+    'natural-access-frontier',
+    'natural-owner-choice',
+    'natural-deferred-risk',
+  ], 'representative');
+
+  for (const entry of [...requirementsRelease.evals, ...decisionRelease.evals]) {
+    assert.doesNotMatch(entry.prompt, /使用问题工具|只询问|第一轮请|收到回答后/);
+    assert.deepEqual(
+      {
+        current_owner_skill_available:
+          entry.preconditions.current_owner_skill_available,
+        baseline_owner_skill_available:
+          entry.preconditions.baseline_owner_skill_available,
+        companion_skill_available_in_both:
+          entry.preconditions.companion_skill_available_in_both,
+        baseline_kind: entry.preconditions.baseline_kind,
+      },
+      {
+        current_owner_skill_available: true,
+        baseline_owner_skill_available: false,
+        companion_skill_available_in_both: true,
+        baseline_kind: 'without-owner-skill',
+      },
+    );
+  }
+  assert.match(
+    decisionRelease.evals.find((entry) => entry.id === 'natural-access-frontier').prompt,
+    /面向谁会决定.*项目.*访问范围又会影响权限和计费/,
+  );
+  assert.match(
+    requirementsRelease.evals.find(
+      (entry) => entry.id === 'natural-combined-ambiguities',
+    ).prompt,
+    /三项可以分别选择.*不限制另外两项/,
+  );
 
   assert.equal(
     requirements.evals.find((entry) => entry.id === 'question-shape').scripted_replies.length,
@@ -730,7 +843,10 @@ test('behavior corpora preserve all redesigned assertions in executable conversa
   )))).join('\n');
   assert.match(readme, /use_project_rules: true/);
   assert.match(readme, /requirements-clarifier-evals\.json/);
+  assert.match(readme, /requirements-clarifier-release-evals\.json/);
   assert.match(readme, /decision-grill-evals\.json/);
+  assert.match(readme, /decision-grill-release-evals\.json/);
+  assert.match(readme, /behavior-diagnostic/);
   assert.doesNotMatch(
     readme,
     /(Full Access|allow-unmanaged-processes|后代进程|完整批次|review:publish|Claude.*不能把 Codex)/s,

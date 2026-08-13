@@ -38,12 +38,24 @@
       "id": "behavior",
       "kind": "conversation",
       "skills": ["requirements-clarifier", "decision-grill"],
-      "cases": "./requirements-clarifier-evals.json",
+      "cases": "./requirements-clarifier-release-evals.json",
       "isolation": "strict",
       "profiles": ["project-default"],
       "defaultRuns": 1,
       "releaseSplits": [],
       "requiredForRelease": true,
+      "perRunTimeoutMs": 300000
+    },
+    {
+      "id": "behavior-diagnostic",
+      "kind": "conversation",
+      "skills": ["requirements-clarifier", "decision-grill"],
+      "cases": "./requirements-clarifier-evals.json",
+      "isolation": "strict",
+      "profiles": ["project-default"],
+      "defaultRuns": 1,
+      "releaseSplits": [],
+      "requiredForRelease": false,
       "perRunTimeoutMs": 300000
     }
   ]
