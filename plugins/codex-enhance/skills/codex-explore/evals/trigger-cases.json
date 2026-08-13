@@ -55,15 +55,15 @@
       "id": "large_pr_review",
       "split": "train",
       "query": "请 review changes/large-pr.diff，判断有哪些真实 bug，按严重性排序并给修改建议。",
-      "should_load_skill": false,
-      "should_spawn_agent": false
+      "should_load_skill": true,
+      "should_spawn_agent": true
     },
     {
       "id": "readonly_deep_code_review",
       "split": "train",
       "query": "请对这个陌生大型仓库做一次深入、只读的代码 review，全面找出真实 bug，判断严重性并给修改建议；不要修改代码。",
-      "should_load_skill": false,
-      "should_spawn_agent": false
+      "should_load_skill": true,
+      "should_spawn_agent": true
     },
     {
       "id": "two_known_files",
@@ -132,8 +132,8 @@
       "id": "pr_defect_validation",
       "split": "validation",
       "query": "审查 changes/large-pr.diff，找出会导致数据丢失的缺陷并建议怎么改。",
-      "should_load_skill": false,
-      "should_spawn_agent": false
+      "should_load_skill": true,
+      "should_spawn_agent": true
     },
     {
       "id": "composite_implementation_validation",

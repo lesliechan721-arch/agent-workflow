@@ -377,6 +377,16 @@ export function evaluateParentScopeIsolation(calls, delegatedSourcePrefixes) {
     if (call?.tool === 'exec_command' && typeof call.arguments?.cmd === 'string') {
       return [call.arguments.cmd];
     }
+    const codeModeInput = call?.arguments?.input ?? call?.arguments?.code;
+    if (
+      call?.tool === 'exec' &&
+      typeof codeModeInput === 'string' &&
+      call.output !== null &&
+      call.output !== undefined &&
+      /\btools\.(?:exec_command|view_image|read_mcp_resource)\s*\(/u.test(codeModeInput)
+    ) {
+      return [codeModeInput];
+    }
     if (call?.tool === 'view_image' && typeof call.arguments?.path === 'string') {
       return [call.arguments.path];
     }

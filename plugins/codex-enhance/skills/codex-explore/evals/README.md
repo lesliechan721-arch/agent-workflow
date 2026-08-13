@@ -15,7 +15,7 @@ pnpm plugin:eval codex-enhance --skill codex-explore --batch-name release
 - `should_load_skill`：Codex 是否加载 `codex-explore`。
 - `should_spawn_agent`：skill 加载后，Gate 是否实际调用 `spawn_agent`。
 
-train 和 validation 包含大型陌生材料、显式调用但 Gate 应拒绝、纯 review 判断、写操作、少量已知来源，以及 review / 实现任务中可独立分离的大范围只读探索。sanity 额外覆盖口语、简短请求、普通名称调用和复合任务边界。不要根据 validation 或 sanity 结果反向修改已有用例；先在 train 上迭代，最后只用 validation 和 sanity 检查泛化。
+train 和 validation 包含大型陌生材料、显式调用但 Gate 应拒绝、少量已知来源，以及由主代理隐式或按用户提示从 review / 实现任务中分离的大范围只读探索。要求判断真实缺陷或数据丢失的 diff review 需要在陌生仓库中核对定义、调用点和数据流，因此也是正向探索用例；最终缺陷判定和修改建议仍由主代理负责。sanity 额外覆盖口语、简短请求、普通名称调用和复合任务边界。不要根据 validation 或 sanity 结果反向修改已有用例；先在 train 上迭代，最后只用 validation 和 sanity 检查泛化。
 
 ## 运行
 
@@ -31,7 +31,7 @@ pnpm plugin:eval codex-enhance --skill codex-explore --batch-name trigger-sanity
 
 默认每条运行 3 次，以 `0.5` 为分界：正例加载/调用率必须高于分界，反例必须低于分界。
 
-2026-08-11 使用当前 description 与 app-server observer 的结果：train 中纯 diff review 为 0/3 加载、0/3 启动，明确包含跨仓库事实探索的复合 review 为 3/3 加载、3/3 启动；未用于调参的 validation 8/8 个用例和 sanity 10/10 个用例均在每例 3 次运行中通过。
+2026-08-11 的旧合同曾把纯 diff review 设为不加载负例；后续审计确认，“真实 bug”与“数据丢失”不能只凭三行 diff 判断，fixture 中的定义、调用点和数据流边界也未知。当前合同要求加载 Skill 并委派事实探索，最终 review 判断留在主代理。该历史批次不再作为当前触发合同的通过证据。
 
 ## 完整结果 smoke
 
@@ -67,11 +67,11 @@ pnpm plugin:eval codex-enhance --skill codex-explore --batch-name workflow-debug
 pnpm plugin:eval codex-enhance --skill codex-explore --batch-name liveness --suite liveness --runs 3
 ```
 
-报告按用例保留 accepted、probe、`progress` / `blocked`、duration、termination 和可用 token usage。Variant B 必须没有 `send_message` 和非终态状态消息。2026-08-10 的 Variant A 基线中，两个 V2 场景共 6 次运行均发送一次 probe，6 次都得到可接受终态，但 0 次收到 `progress` 或 `blocked`；因此未达到“同一 V2 场景至少 2/3 返回状态”的保留门槛，当前制品采用 B。Variant B 的两个 V2 场景各 3/3 接受，probe 和状态消息均为 0；真实 V1 补充运行也取得可接受终态且没有 probe。
+报告按用例保留 accepted、probe、`progress` / `blocked`、duration、termination 和可用 token usage。叶子工具证据只接受 child `session_meta.source.subagent.thread_spawn.parent_thread_id` 与父 thread ID 的直接关联，并从该 child rollout 的已完成 `CommandExecution`，或有输出的 code-mode `custom_tool_call(name="exec")` 直接读取调用；child rollout 不可用时用例保持 `incomplete`，不按文件归属或最终文案推断。Variant B 必须没有 `send_message` 和非终态状态消息。2026-08-10 的 Variant A 基线中，两个 V2 场景共 6 次运行均发送一次 probe，6 次都得到可接受终态，但 0 次收到 `progress` 或 `blocked`；因此未达到“同一 V2 场景至少 2/3 返回状态”的保留门槛，当前制品采用 B。Variant B 的两个 V2 场景各 3/3 接受，probe 和状态消息均为 0；真实 V1 补充运行也取得可接受终态且没有 probe。
 
 ## Role 与模型选择行为
 
-`evals.json` 的 10 个真实工作流用例覆盖：
+`evals.json` 的 11 个真实工作流用例覆盖：
 
 - 根据任务复杂度自动选择 quick、standard 或 deep，并确认预设 role 不传 `model` / `reasoning_effort`
 - 用户同时或逐字段显式指定时使用 custom role，只透传显式字段

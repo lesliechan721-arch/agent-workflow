@@ -58,6 +58,7 @@ function runResult(finalMessage, timeline) {
     usage: { input_tokens: 100, output_tokens: 50 },
     spawn_calls: [timeline[0]],
     collaboration_timeline: timeline,
+    leaf_trace_available: true,
     leaf_tool_calls: [event(
       'exec_command',
       { cmd: 'node docs/liveness/verify-records.mjs' },
@@ -141,6 +142,32 @@ async function testEvaluation() {
   const noProbeTimeline = passingTimeline();
   const noProbeRun = runResult(finalMessage, noProbeTimeline);
   assert.equal(evaluateLivenessRun(noProbeRun, expected, false).passed, true);
+  const codeModeVerifierRun = {
+    ...noProbeRun,
+    leaf_tool_calls: [event(
+      'exec',
+      {
+        input: 'const result = await tools.exec_command({cmd:"node docs/liveness/verify-records.mjs"}); text(result.output);',
+      },
+      'Script completed',
+    )],
+  };
+  assert.equal(
+    evaluateLivenessRun(codeModeVerifierRun, expected, false).passed,
+    true,
+  );
+  const compoundVerifierRun = {
+    ...noProbeRun,
+    leaf_tool_calls: [event(
+      'exec_command',
+      { cmd: 'pwd && node docs/liveness/verify-records.mjs' },
+      { exit_code: 0 },
+    )],
+  };
+  assert.equal(
+    evaluateLivenessRun(compoundVerifierRun, expected, false).passed,
+    true,
+  );
 
   const v1Timeline = [
     event(
@@ -197,6 +224,24 @@ async function testEvaluation() {
       (assertion) => assertion.name === 'verifier_invoked_by_leaf',
     )?.passed,
     false,
+  );
+
+  const missingLeafTraceEvaluation = evaluateLivenessRun(
+    {
+      ...noProbeRun,
+      leaf_trace_available: false,
+      leaf_tool_calls: [],
+    },
+    expected,
+    false,
+  );
+  assert.equal(missingLeafTraceEvaluation.complete, false);
+  assert.equal(missingLeafTraceEvaluation.passed, false);
+  assert.equal(
+    missingLeafTraceEvaluation.assertions.find(
+      (assertion) => assertion.name === 'verifier_invoked_by_leaf',
+    )?.passed,
+    null,
   );
 
   const probeTimeline = passingTimeline({ withProbe: true });

@@ -1,6 +1,6 @@
 ---
 name: codex-explore
-description: 当任务需要在范围大、边界不明或陌生的代码库、文档集、日志、网页或用户材料中搜索、筛选并核验可引用事实时使用；代码 review、缺陷分析、质量判断、修改或实现任务，只有请求明确包含可独立完成的大范围只读事实探索时才使用。不得把 review、缺陷判定、质量评价、严重性分级或修改建议本身交给子代理，即使任务只读、范围很大、要求深入分析或独立复核；也不用于单个或少量已知文件、diff 或段落的定向读取与评价。
+description: 当任务本身或其中可分离的子任务需要在范围大、边界不明或陌生的代码库、文档集、日志、网页或用户材料中搜索、筛选并核验可引用事实时使用；review、缺陷分析、质量判断、修改或实现任务中的此类探索也适用，由主代理自行分离，不要求用户显式提出。只委派事实探索，最终 review、缺陷判定、质量评价、严重性分级、修改建议和实现保留给主代理；少量已知来源的定向读取通常无需委派。
 compatibility: 仅适用于支持 spawn_agent.agent_type，且已安装 codex-explore-quick、codex-explore-standard、codex-explore-deep、codex-explore-custom roles 的 Codex。
 metadata:
   short-description: 从大型或边界不明的材料中进行行为只读的证据探索与核验
@@ -24,14 +24,14 @@ Gate 只判断拟委派的子任务，不判断顶层任务类型。拟委派范
 - 最终判断、写操作、提权、登录、购买、发布或其它外部副作用无法与探索分离。
 - 用户要求权限级只读，但当前 turn 无法确认该边界及其对子代理的继承。
 
-Gate 通过后按下节选择 role，并检查当前 `spawn_agent` schema。只有 schema 公开 `agent_type` 且允许所选 role 时才启动；否则按委派失败处理，不改用其它 role。
+Gate 通过后先记录当前请求中用户显式指定的 `model` 和 `reasoning_effort`，再检查当前 `spawn_agent` schema。任一显式字段未公开时立即停止，说明无法表达该字段，不选择 role，也不调用 `spawn_agent`。全部显式字段均可表达后，只有 schema 公开 `agent_type` 且允许所选 role 时才启动；否则按委派失败处理，不改用其它 role。
 
 ## 委派
 
 只使用 Codex Explore 自带 role，不得改用默认子代理、内置 `explorer` 或其它 role。
 
 Role 选择顺序：
-1. 用户在当前请求中显式指定 `model` 或 `reasoning_effort` 时，选择 `{{customRoleKey}}`，只透传用户显式指定且当前 schema 支持的字段。无法满足时不得删除、替换、降级或改用预设 role。
+1. 上述预检确认全部用户显式字段均可表达后，选择 `{{customRoleKey}}`，并原样透传全部显式指定的 `model` 和 `reasoning_effort`。不得删除、替换、降级或改用预设 role。
 2. 用户只显式指定 `quick`、`standard` 或 `deep` 时，选择对应预设 role。
 3. 否则按任务判断；无法明确分档时选择 standard。
 
@@ -40,7 +40,7 @@ Role 选择顺序：
 - `standard` → `{{standardRoleKey}}`：常规跨文件、跨模块或多来源追踪，包含适度归纳或来源冲突。
 - `deep` → `{{deepRoleKey}}`：高歧义、强冲突、复杂因果、范围特别大或要求高完整性。
 
-调用预设 role 时不传 `model` 或 `reasoning_effort`；`{{customRoleKey}}` 永不自动选择。显式模型字段不可用或参数错误按启动失败处理，不静默重试。
+调用预设 role 时不传 `model` 或 `reasoning_effort`；`{{customRoleKey}}` 永不自动选择。已公开的显式字段在调用时因参数值被拒绝，按启动失败处理，不静默重试。
 
 按当前 schema 启动所选 role，并使用干净上下文：有 `fork_turns` 时传 `"none"`，有 `fork_context` 时传 `false`。`message` 必须自包含范围、来源、具体问题、探索深度、必要定位和任务特有输出要求；无法安全提供必要上下文时不委派。不要重复 role 已提供的只读和通用证据规则。
 

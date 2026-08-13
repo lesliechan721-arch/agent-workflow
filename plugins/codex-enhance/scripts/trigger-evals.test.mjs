@@ -31,16 +31,18 @@ async function testEvalCorpus() {
   assert.equal(cases.filter((entry) => entry.split === 'train').length, 13);
   assert.equal(cases.filter((entry) => entry.split === 'validation').length, 8);
   assert.equal(cases.filter((entry) => entry.split === 'sanity').length, 10);
-  assert.equal(cases.filter((entry) => entry.should_load_skill).length, 19);
-  assert.equal(cases.filter((entry) => !entry.should_load_skill).length, 12);
-  assert.equal(cases.filter((entry) => entry.should_spawn_agent).length, 16);
+  assert.equal(cases.filter((entry) => entry.should_load_skill).length, 22);
+  assert.equal(cases.filter((entry) => !entry.should_load_skill).length, 9);
+  assert.equal(cases.filter((entry) => entry.should_spawn_agent).length, 19);
   assert.equal(new Set(cases.map((entry) => entry.id)).size, cases.length);
 
   const expectedContracts = new Map([
     ['cross_module_fact', [true, true]],
     ['explicit_known_file', [true, false]],
     ['skill_design_review', [false, false]],
-    ['readonly_deep_code_review', [false, false]],
+    ['large_pr_review', [true, true]],
+    ['readonly_deep_code_review', [true, true]],
+    ['pr_defect_validation', [true, true]],
     ['plain_name_small_request', [true, false]],
     ['composite_write_boundary', [true, true]],
     ['typo_known_file_near_miss', [false, false]],

@@ -194,7 +194,9 @@ async function testRenderedArtifactsAndSkillContract() {
   assert.match(text, /`standard` → `codex-explore-standard`/);
   assert.match(text, /`deep` → `codex-explore-deep`/);
   assert.match(text, /`codex-explore-custom`.*永不自动选择/s);
-  assert.match(text, /无法满足时不得删除、替换、降级或改用预设 role/);
+  assert.match(text, /任一显式字段未公开时立即停止/);
+  assert.match(text, /不选择 role，也不调用 `spawn_agent`/);
+  assert.match(text, /不得删除、替换、降级或改用预设 role/);
   assert.match(text, /有 `fork_turns` 时传 `"none"`/);
   assert.match(text, /有 `fork_context` 时传 `false`/);
   assert.match(text, /`message` 必须自包含范围、来源、具体问题、探索深度/);
