@@ -38,7 +38,7 @@ code-review/
 | 能力 | 在示例中的体现 |
 |------|--------------|
 | Skills | `skills/review-workflow/` — 源码 skill 承载实际工作流 |
-| Skill Evals | `skills/review-workflow/evals/evals.json` — owner Skill 作者期真实 prompt、预期结果和输入 fixture |
+| Skill Evals | `skills/review-workflow/evals/evals.json` — owner Skill 作者期真实 prompt、错误代价 policy、Case Admission metadata、预期结果和输入 fixture |
 | Native invocation metadata | Codex `policy.allow_implicit_invocation` 与 Claude `disable-model-invocation` / `user-invocable` — 直接声明各平台调用行为 |
 | Instructions | `extensions.instructions` — 审查标准，限定 `src/**` 和 `lib/**` 路径 |
 | Permissions | `extensions.permissions` — git 操作权限（allow/ask/deny） |
@@ -57,7 +57,7 @@ code-review/
 
 示例不再使用 Claude 原生 `userConfig` 承载共享配置。跨平台配置统一写在 AW `config.schema`；Claude-only `userConfig` 只应在确实需要 Claude Code 原生能力时使用，详见 `references/claude-only-capabilities.md`。
 
-`skills/review-workflow/evals/evals.json` 属于作者期质量材料，不是 runtime 指令，也不会进入 production runtime bundle。真实插件需要由同目录 `manifest.json` 声明 owner、profile 和 suite 后才能通过 `pnpm plugin:eval <plugin> --skill <skill> --batch-name <name>` 运行；本示例只保留小型、脱敏的 seed corpus。大型日志、仓库快照和私有输入应保存在项目 `.tmp/agent-workflows/evals/` 下的隔离 workspace。
+`skills/review-workflow/evals/evals.json` 属于作者期质量材料，不是 runtime 指令，也不会进入 production runtime bundle。真实插件需要由同目录 `manifest.json` 声明 owner、profile 和 suite 后才能通过 `pnpm plugin:eval <plugin> --skill <skill> --batch-name <name>` 运行；本示例只保留小型、脱敏的 seed corpus，并示范 policy、scenario family、oracle 和边界 minimal counterexample。大型日志、仓库快照和私有输入应保存在项目 `.tmp/agent-workflows/evals/` 下的隔离 workspace。
 
 插件 manifest 不支持顶层 `dependencies`。插件需要其它工具或服务时，在 Skill 说明、MCP 声明或 lifecycle 检查中明确表达要求，不得声明插件安装依赖图。
 

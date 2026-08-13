@@ -13,6 +13,10 @@
         "from": "packages/cli/src/utils/skill-frontmatter-capabilities.json",
         "to": "packages/cli/src/utils/skill-frontmatter-capabilities.json"
       },
+      {
+        "from": ".agents/skills/skill-review/scripts/validate_eval_cases.mjs",
+        "to": ".agents/skills/skill-review/scripts/validate_eval_cases.mjs"
+      },
       { "from": "plugins/marketplace-source.json", "to": "plugins/marketplace-source.json" },
       {
         "from": ".agents/skills/create-aw-plugin/references/.examples/code-review",

@@ -1,0 +1,56 @@
+{
+  "skill_name": "example-skill",
+  "policy": {
+    "optimization": "precision-first",
+    "false_negative_cost": "medium",
+    "false_positive_cost": "high",
+    "rationale": "误触发会加载较重流程；漏触发通常仍可由基础工具完成。"
+  },
+  "evals": [
+    {
+      "id": "representative_trigger",
+      "eval_type": "trigger",
+      "split": "validation",
+      "case_role": "representative",
+      "provenance": "derived",
+      "scenario_family": "core-user-intent",
+      "unit_under_test": "description",
+      "query": "请审核这份已有 Agent Skill 的发布质量。",
+      "preconditions": {
+        "target_skill_available": true,
+        "invocation_mode": "implicit"
+      },
+      "expected": {
+        "should_load_skill": true
+      },
+      "assertions": [
+        {
+          "text": "运行 trace 显示目标 Skill 已成功读取。",
+          "grader": "structured",
+          "criticality": "major",
+          "allowed_variance": "读取命令和后续评审深度可以不同。"
+        }
+      ],
+      "oracle": {
+        "rationale": "用户核心意图是评价已有 Skill 的质量和发布条件。",
+        "rule_refs": ["SKILL.md frontmatter description"],
+        "confidence": "high",
+        "allowed_variance": "可以选择 quick、full 或 release，但必须先加载评审 Skill。",
+        "minimal_counterexample": "若用户要求直接编写新 Skill，目标不再是质量评审，标签应翻转。"
+      },
+      "decision_context": {
+        "frequency": "common",
+        "impact": "high",
+        "false_negative_cost": "high",
+        "false_positive_cost": "medium",
+        "rationale": "漏触发会失去专用评审合同。"
+      },
+      "run_policy": {
+        "initial_runs": 3,
+        "expand_on_mixed_result": 10,
+        "critical": false,
+        "source": "evals/manifest.json#suites/trigger.defaultRuns"
+      }
+    }
+  ]
+}

@@ -1,0 +1,55 @@
+{
+  "target": {
+    "skill_name": "audit-helper",
+    "description": "Use when the user explicitly invokes $audit-helper or asks for a quality audit of an existing artifact.",
+    "rule_refs": [
+      "Explicit $audit-helper invocation is in scope.",
+      "Do not add query-specific exclusion phrases."
+    ]
+  },
+  "suite": {
+    "policy": {
+      "optimization": "balanced",
+      "false_negative_cost": "high",
+      "false_positive_cost": "high",
+      "rationale": "漏掉显式调用会阻止用户选择；误触发会进入较重审核。"
+    },
+    "cases": [
+      {
+        "id": "explicit_audit_invocation",
+        "eval_type": "trigger",
+        "split": "validation",
+        "case_role": "representative",
+        "provenance": "representative-synthetic",
+        "scenario_family": "explicit-invocation",
+        "unit_under_test": "description",
+        "query": "使用 $audit-helper 审核这份已有规则。",
+        "preconditions": { "skill_available": true },
+        "expected": { "should_load_skill": false },
+        "oracle": {
+          "rationale": "审核请求可能较短，因此不应加载。",
+          "rule_refs": ["未绑定目标规则"],
+          "confidence": "high",
+          "allowed_variance": "无"
+        }
+      }
+    ]
+  },
+  "results": {
+    "runs": 3,
+    "passes": 1,
+    "fails": 2,
+    "mixed": true,
+    "observed": "两次运行按显式调用加载 Skill，一次运行未加载。",
+    "trace_available": true,
+    "baseline": "none",
+    "failure_triage": "unassigned"
+  },
+  "proposed_change": {
+    "text": "在 description 增加：短审核请求一律不要加载。",
+    "applied": false,
+    "validation_rerun": false,
+    "sanity_rerun": false,
+    "regression_rerun": false
+  }
+}

@@ -316,5 +316,25 @@
       "没有seal-only入口时先请求正式发布授权",
       "不静默运行review:publish"
     ]
+  },
+  {
+    "id": "invalid-oracle-before-skill-change",
+    "prompt": "一个trigger case把与description直接一致的显式调用标成不应加载。三次运行有两次加载，作者准备增加只针对该query的排除规则。",
+    "assertions": [
+      "先判eval-validity而不是先修改Skill",
+      "把失败归因为oracle-defect而不是skill-defect",
+      "错误oracle不能进入发布指标或驱动修改",
+      "拒绝query-specific规则并要求先修eval"
+    ]
+  },
+  {
+    "id": "mixed-low-sample-eval-result",
+    "prompt": "一个现实且oracle可靠的case运行三次，结果为2/3；没有previous-version比较，也没有读取失败trace。",
+    "assertions": [
+      "把结果标为uncertain或insufficient-runs",
+      "先增加运行并读取trace",
+      "不把单次失败自动转换为Skill补丁",
+      "release-evidence保持unknown或不通过"
+    ]
   }
 ]

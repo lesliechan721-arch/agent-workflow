@@ -198,6 +198,8 @@ Lifecycle 必须短、小、幂等，不能直接写 AW 管理的平台输出。
 pnpm plugin:test <plugin>
 pnpm plugin:eval <plugin> --skill <skill> --batch-name materialization --materialize-only
 pnpm plugin:eval <plugin> --skill <skill> --batch-name release
+node .agents/skills/skill-review/scripts/validate_eval_cases.mjs \
+  plugins/<plugin>/skills/<skill>/evals/<cases-file>.json --format json
 ```
 
 - `scripts.tests.node` 只进入作者测试，不进入 runtime bundle。
@@ -206,6 +208,9 @@ pnpm plugin:eval <plugin> --skill <skill> --batch-name release
 - `--skill` 必填，一次只运行一个 owner。suite 的 `skills[]` 可以声明多个 participant Skills；profile 的 `plugins[]` 可以按顺序安装当前仓库中的多个插件。这个 eval 组合不形成 production dependency。
 - `evals/**` 和插件根 `reports/**` 是作者期目录，不进入 runtime bundle 或 runtime digest。Skill README 会随 Skill 发布。
 - eval materialization 必须验证最终 Codex Skill 文件和原生调用 metadata。
+- 有正负决策的 suite 声明 optimization policy、false-negative cost 和 false-positive cost。会驱动修改或发布的 case 声明 `eval_type`、`case_role`、`provenance`、`scenario_family`、`unit_under_test`、`preconditions` 和带依据的 oracle；boundary/regression 还要给出 minimal counterexample。
+- `validate_eval_cases.mjs` 默认以兼容模式报告历史 metadata 缺口；关键 case 补全后使用 `--strict`。它只检查结构，不能替代 oracle 语义复核、真实运行或发布门禁。
+- Eval failure 先归因。只有通过 Case Admission 且归因为 `skill-defect` 的失败可以驱动 Skill 修改；修改后重跑同族变体、minimal pair、相反标签、固定 validation/sanity 和关键 regression。
 - `trigger` 和 `conversation` suite 支持 `isolation: standard|strict`；发布级触发边界和行为归因应使用 `strict`。strict current 只保留 participants，conversation baseline 只移除 owner。conversation 的 `scripted_replies` 是 current 行为断言；baseline 的步骤、问题数或未消费回复差异保留为比较证据，不导致机械失败，但完成、隔离和 workspace 安全仍是机械门禁。单目标 trigger case 使用 `should_load_skill`；多 Skill 竞争路由使用 `expected_loaded_skills` 精确集合，并可设置 `minimumPassRate` 和 `forbidMultipleSkillLoads`。`request_user_input` 等待是 trigger 的正常终止。`strictNegativeSplits` 对单次负例错误零容忍。
 - command suite 支持 `case` 时必须声明 `cases` 文档，并返回标准 `case_results[]`。中央在每个 case 的全部 repetitions 后发布检查点，遇到 `incomplete` 时停止。使用同一 `--batch-id` 时，terminal case 被复用，incomplete 或 missing case 的全部 repetitions 重新运行；完整 case target 可以组合为 `/all` release target。没有 case 合同的 suite 整体重跑，旧 attempt 仍保留。
 - conversation case 默认只读。需要验证创建或修改行为时，显式使用 `sandbox: workspace-write`，并声明最小 `allowed_workspace_changes` 和非空 `artifacts`；runner 只修改隔离副本，并把越界 diff 或 artifact 断言失败记为 mechanical failure。

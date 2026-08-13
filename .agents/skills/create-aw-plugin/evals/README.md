@@ -9,6 +9,15 @@ node .agents/skills/skill-review/scripts/run_static_skill_evals.mjs \
   create-aw-plugin --validate-only
 ```
 
+Eval Audit 结构检查使用共享 validator。当前历史 corpus 采用兼容模式；新增或会驱动修改、发布的 case 必须补齐 metadata，再对相应文档使用 `--strict`：
+
+```bash
+node .agents/skills/skill-review/scripts/validate_eval_cases.mjs \
+  .agents/skills/create-aw-plugin/evals/trigger-cases.json --format json
+node .agents/skills/skill-review/scripts/validate_eval_cases.mjs \
+  .agents/skills/create-aw-plugin/evals/evals.json --format json
+```
+
 只根据 train 结果调整 description：
 
 ```bash
@@ -48,3 +57,5 @@ node .agents/skills/skill-review/scripts/run_static_skill_evals.mjs \
 ```
 
 本 Skill 不传 `--suite` 时运行 validation、sanity trigger 和 behavior。behavior 的机械门验证运行完整、改动路径和声明的最终文件；`review.checks` 由 `skill-review` 对照 trace 做定性判分。
+
+触发结果分别解释 positive recall 和 negative specificity。混合低样本结果先增加运行并检查 trace。失败只有在 oracle、fixture、grader、runtime 和方差排除后归因为 `skill-defect`，才可以驱动 Skill 修改；修改后重跑同族 minimal pair、validation、sanity 和关键 regression。
