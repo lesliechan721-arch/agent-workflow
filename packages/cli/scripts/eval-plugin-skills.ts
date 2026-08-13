@@ -1119,6 +1119,7 @@ async function runOnePlugin(options: {
               sourceEnv: options.modelEnv,
               reportPath,
               processManagement: options.processManagement,
+              forbiddenHostRoots: options.sourcePlugins.map((plugin) => plugin.rootDir),
               workRoot: path.join(options.workRoot, 'conversation'),
             });
             report.reportPath = path.relative(outputRoot, reportPath).split(path.sep).join('/');

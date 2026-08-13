@@ -27,9 +27,9 @@
 - `pnpm test:smoke:pack` — 串行校验 CLI 与 catalog tarball
 - `pnpm test:smoke:fetch` — 校验 catalog fetch / selector / cache fallback 相关 smoke
 - `pnpm plugin:test <plugin>` — 运行单个插件的 Node 脚本测试；`--all` 才会让任一坏插件阻断整轮
-- `pnpm plugin:change:add <plugin> --bump <kind> --summary <text>` — 为开发期 production 变化添加 release intent，不直接递增 plugin version
-- `pnpm plugin:version:check -- --base <git-ref>` — 作者门禁：使用当前 production bundler 检查相对 Git 基线的 production 变化是否有 release intent；先运行 `pnpm build`
-- `pnpm plugin:release:apply --all` / `pnpm plugin:version:check:release -- --base <git-ref>` — 稳定发布前统一应用 intent，并校验 plugin version 已递增
+- `pnpm plugin:change:add <plugin> --bump <kind> --summary <text>` — 为已有插件的开发期 production 变化添加 release intent，不直接递增 plugin version
+- `pnpm plugin:version:check -- --base <git-ref>` — 作者门禁：使用当前 production bundler 检查已有插件相对 Git 基线的 production 变化是否有 release intent；新插件保留初始 version 且不创建 intent；先运行 `pnpm build`
+- `pnpm plugin:release:apply --all` / `pnpm plugin:version:check:release -- --base <git-ref>` — 稳定发布前统一应用 intent（没有 intent 时成功跳过），并校验 plugin version 已递增
 - `pnpm plugin:eval <plugin> --skill <skill> --batch-name <name>` — 按 owner Skill 根 `evals/manifest.json` materialize Codex 最终制品并运行本地显式模型 eval；`--materialize-only` 不调用模型，后续运行用输出的 `--batch-id` 追加同一批次
 - `node .agents/skills/skill-review/scripts/run_static_skill_evals.mjs <skill> --validate-only` — 校验 `.agents/skills/<name>` 的静态 Skill eval 合同；真实模型运行必须传 `--batch-name` 或 `--batch-id`，并按需传 suite、split、case、runs 和 model 等参数
 - `pnpm test:smoke:plugin-scripts` — 校验真实插件脚本 staging、依赖闭包和 bundle 布局

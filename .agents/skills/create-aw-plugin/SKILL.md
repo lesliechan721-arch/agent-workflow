@@ -61,11 +61,12 @@ compatibility: Requires the agent-workflows repository, Node.js 20+, and install
    - Dynamic Artifacts → 静态声明 target，renderer 只输出 `ArtifactPlan`
    - 完成条件：每个声明能力都有对应源码文件、字段和直接测试；没有修改生成目录或加入未请求能力
 5. **管理插件版本**
-   - `add_skill.mjs` 默认创建 minor release intent，不直接修改 plugin version
-   - 其它 production bundle 变化使用 `scripts/add_plugin_change.mjs` 声明 major、minor 或 patch
+   - 新插件保留脚手架写入的初始 version（默认 `0.1.0`），首版不创建 release intent
+   - 向已有插件新增 Skill 时，`add_skill.mjs` 默认创建 minor release intent，不直接修改 plugin version
+   - 已有插件的其它 production bundle 变化使用 `scripts/add_plugin_change.mjs` 声明 major、minor 或 patch
    - 开发和 CI 反复修改时保留源码 manifest 中最近稳定版本；不要把 SemVer 当作编辑计数器
    - Skill `evals/**`、插件 `reports/**` 和 test-only 文件不进入 production bundle；Skill README 和 runtime 文件进入 production bundle
-   - 完成条件：production bundle 有变化时存在对应 release intent；只有作者期材料变化时不创建 intent
+   - 完成条件：新插件保持初始 version 且没有 intent；已有插件的 production bundle 有变化时存在对应 intent；只有作者期材料变化时不创建 intent
 6. **按变更面构建**
    - 新建插件，或 manifest、README、Skill、runtime 脚本、bundle / 安装合同等 production bundle 输入变化时，运行 `pnpm build` 生成本地 staging/runtime bundle
    - 只有 `evals/**`、`reports/**` 或 test-only 材料变化时默认跳过 build；用户或隔离环境明确限制 build 时也不强行运行，并把对应 production artifact 列为未验证
@@ -143,14 +144,14 @@ node .agents/skills/create-aw-plugin/scripts/add_skill.mjs <plugin-name> \
 - 命令不修改插件根 README；完成 Skill 内容后按现有 README 结构人工补充条目
 - dynamic Skill、slash command 或现有目录使用相同名称时直接失败
 
-其它 production 变化创建 release intent：
+已有插件的其它 production 变化创建 release intent：
 
 ```bash
 node .agents/skills/create-aw-plugin/scripts/add_plugin_change.mjs <plugin-name> \
   --bump major|minor|patch --summary "变更摘要"
 ```
 
-稳定发布时统一应用 intent：
+稳定发布时统一应用 intent；没有 intent 时 `--all` 成功跳过：
 
 ```bash
 node .agents/skills/create-aw-plugin/scripts/apply_plugin_releases.mjs --all
@@ -171,7 +172,7 @@ node .agents/skills/create-aw-plugin/scripts/bump_plugin_version.mjs <plugin-nam
 
 - `.agents-plugin/plugin.json` 是唯一手动维护的 manifest；不要手写 `.claude-plugin/plugin.json` 或 `.codex-plugin/plugin.json`。
 - 插件名、skill 名使用小写短横线格式，并与目录名一致。
-- production bundle 因插件源码变化而改变时必须创建 release intent；author 门禁检查 intent，release 门禁才要求版本已提高。
+- 新插件保留初始 version，首版不创建 release intent；已有插件的 production bundle 因源码变化而改变时必须创建 intent，author 门禁检查 intent，release 门禁才要求版本已提高。
 - `skills`、`mcpServers`、`apps`、`slashCommands` 使用单个 `./` 相对路径，且路径必须存在。
 - 面向 Codex 的静态 skill 必须带 `agents/openai.yaml`，并显式声明 `policy.allow_implicit_invocation`。
 - Skill 的调用方式是 Skill 设计的一部分。Codex 使用 `agents/openai.yaml` 的 `policy.allow_implicit_invocation`；Claude 使用 `SKILL.md` frontmatter 的 `disable-model-invocation` 与 `user-invocable`。AW 原样保留这些字段。

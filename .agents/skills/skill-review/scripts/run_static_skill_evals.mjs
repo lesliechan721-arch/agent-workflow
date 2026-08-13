@@ -958,6 +958,8 @@ async function run(options, skillRoot, skillName, manifest) {
             sourceEnv: runtimeCapsule.env,
             reportPath,
             processManagement,
+            forbiddenHostRoots: manifest.participantSkills.map((participant) =>
+              path.join(STATIC_SKILLS_ROOT, participant)),
             workRoot: path.join(layout.workRoot, 'conversation'),
           });
         }

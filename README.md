@@ -129,7 +129,7 @@ make beta-release CLI_VERSION=1.0.0-beta.17 CATALOG_VERSION=1.2.0-beta.1
 
 这条链路会同步根目录和 `packages/cli/package.json` 的 CLI 版本，校验 beta catalog version，跑 CLI + catalog 发布校验，并以 `beta` dist-tag 发布两类包，适合灰度验证和联调。
 
-插件 production 变化先通过 `pnpm plugin:change:add <plugin> --bump <kind> --summary <text>` 创建 release intent。Beta 发布会在临时 staging 中生成插件 prerelease version，不修改源码 manifest。
+新插件保留初始 version，首版不创建 release intent。已有插件的 production 变化先通过 `pnpm plugin:change:add <plugin> --bump <kind> --summary <text>` 创建 intent。Beta 发布会在临时 staging 中生成插件 prerelease version，不修改源码 manifest。
 
 ### 3. 正式版发布
 
@@ -139,7 +139,7 @@ make release CLI_VERSION=1.0.0 CATALOG_VERSION=1.2.0
 
 正式版的 CLI version 和 catalog version 都必须是 stable SemVer，不允许带 prerelease 后缀。流程会同步 CLI 版本、校验 catalog 版本、执行完整校验，并把 CLI 与 catalog 包发布到 `latest`。
 
-正式发布前先运行 `pnpm plugin:release:apply --all`，重新构建，并运行 `pnpm plugin:version:check:release -- --base <git-ref>`。该步骤只在稳定发布边界更新插件 manifest version。
+正式发布前先运行 `pnpm plugin:release:apply --all`，重新构建，并运行 `pnpm plugin:version:check:release -- --base <git-ref>`。没有 release intent 时 apply 命令成功跳过；该步骤只在稳定发布边界更新插件 manifest version。
 
 ## 仓库结构
 

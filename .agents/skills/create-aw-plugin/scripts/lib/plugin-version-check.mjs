@@ -317,32 +317,16 @@ async function checkOnePlugin(options) {
   }
   if (!baseRoot) {
     const pendingIntent = releasePlans.get(pluginName);
-    if (mode === 'release' && pendingIntent) {
-      let targetVersion = null;
-      try {
-        targetVersion = resolvePluginReleasePlan(
-          currentDocument.manifest.version,
-          pendingIntent,
-        ).targetVersion;
-      } catch (error) {
-        return createCheckResult(pluginName, {
-          ok: false,
-          status: 'invalidReleaseIntent',
-          currentVersion: currentDocument.manifest.version,
-          productionChanged: true,
-          errors: [error.message],
-        });
-      }
+    if (pendingIntent) {
       return createCheckResult(pluginName, {
         ok: false,
-        status: 'unappliedReleaseIntent',
+        status: 'unexpectedReleaseIntent',
         currentVersion: currentDocument.manifest.version,
         productionChanged: true,
         plannedBump: pendingIntent.bump,
-        targetVersion,
         releaseIntentFiles: pendingIntent.files,
         errors: [
-          `Plugin ${pluginName} still has release intent files; apply them before a stable release.`,
+          `New plugin ${pluginName} must keep its initial version without release intent files.`,
         ],
       });
     }

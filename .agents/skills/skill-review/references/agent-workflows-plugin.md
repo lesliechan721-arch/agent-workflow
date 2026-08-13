@@ -36,7 +36,7 @@ release 模式再显式运行：
 pnpm plugin:eval <name> --skill <owner-skill> --batch-name release
 ```
 
-一次命令只运行一个 owner Skill，并用 `--batch-name` 新建或 `--batch-id` 追加批次。跨 Skill 或跨插件组合由 owner manifest 的 `skills[]` 和 `profiles[].plugins[]` 声明；companion 插件必须来自当前仓库。strict current 只保留 participant Skills，conversation baseline 只移除 owner。这个组合只属于 eval fixture，不形成 production dependency。
+一次命令只运行一个 owner Skill，并用 `--batch-name` 新建或 `--batch-id` 追加批次。跨 Skill 或跨插件组合由 owner manifest 的 `skills[]` 和 `profiles[].plugins[]` 声明；companion 插件必须来自当前仓库。strict current 只保留 participant Skills，conversation baseline 只移除 owner。conversation 模型工作副本位于源码树外；trace 读取宿主 participant 插件源码时机械失败。这个组合只属于 eval fixture，不形成 production dependency。
 
 release-required suite 必须 complete；不得用 `--allow-environment-skips` 形成发布证据。真实模型默认要求 Full Access；若用户用 `--allow-unmanaged-processes` 确认降级运行，review 必须明确记录后代进程清理不受保证。`needs_review` 或 `qualitativeReview=required` 必须读取对应 trace 逐项判分。Codex 版本、model、profile、已安装插件、participant Skills、config digest、bundle digest 和 content digest 应随报告保存，防止混用不同制品。
 

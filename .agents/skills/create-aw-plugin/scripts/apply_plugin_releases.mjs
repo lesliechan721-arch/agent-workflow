@@ -13,6 +13,8 @@ function printUsage() {
   console.log(`Usage:
   node .agents/skills/create-aw-plugin/scripts/apply_plugin_releases.mjs \\
     [<plugin-name> ... | --all] [--repo-root .]
+
+With --all or no plugin names, an empty intent set is a successful no-op.
 `);
 }
 
@@ -82,7 +84,10 @@ try {
   const selected = args.all || args.plugins.length === 0
     ? [...plans.keys()].sort()
     : [...new Set(args.plugins)].sort();
-  if (selected.length === 0) throw new Error('No plugin release intents to apply.');
+  if (selected.length === 0) {
+    console.log('[OK] No plugin release intents to apply.');
+    process.exit(0);
+  }
 
   const writes = [];
   const consumedFiles = [];

@@ -25,7 +25,8 @@ function printUsage() {
 
 Options:
   --all               Check every plugin changed relative to the Git base.
-  --mode <mode>       author requires a release intent; release requires a version bump. Default: author.
+  --mode <mode>       For changed existing plugins, author requires a release intent and release requires
+                      a version bump. New plugins keep their initial version without an intent. Default: author.
   --base <git-ref>    Git comparison base. Default: HEAD.
   --json              Emit one schema v1 JSON document.
   --repo-root <path>  Repository root. Default: current directory.

@@ -4,7 +4,7 @@
     {
       "id": "create-model-invoked",
       "prompt": "在当前 agent-workflows 评测仓库中实际创建 plugins/release-notes。它是双平台最小插件，只含一个 release-notes Skill；该 Skill 根据当前分支变更生成结构化发布说明，风险低，应允许模型自动发现。使用作者脚手架并显式传入 model 调用策略，替换全部 TODO，保留脚手架生成的作者期 eval 并把 starter 调整为该领域的真实任务。运行作者 validator；不要运行 pnpm build，也不要修改 marketplace-source、平台 manifest、plugins-dist 或 runtime cache。",
-      "expected_output": "创建最小 source plugin；Claude 保持模型自动调用，Codex allow_implicit_invocation 为 true；存在 owner Skill eval manifest/cases；轻量作者 validator 通过。",
+      "expected_output": "创建最小 source plugin；plugin version 保持 0.1.0 且没有 release intent；Claude 保持模型自动调用，Codex allow_implicit_invocation 为 true；存在 owner Skill eval manifest/cases；轻量作者 validator 通过。",
       "scripted_replies": [],
       "sandbox": "workspace-write",
       "review": {
@@ -18,6 +18,7 @@
             "exists": true,
             "json": {
               "name": "release-notes",
+              "version": "0.1.0",
               "skills": "./skills"
             }
           },
@@ -50,7 +51,7 @@
           "trace 按路由读取 skill-design、skills-and-triggers、plugin-manifest-spec 和 skill-evaluation",
           "trace 实际运行 init_plugin.mjs、替换 TODO，并运行 validate_plugin.mjs 到通过",
           "Skill description 是 release-notes 专属发现描述，不回退为插件级摘要",
-          "没有创建 MCP、hooks、lifecycle、平台 manifest、marketplace 修改或生成目录"
+          "没有创建 release intent、MCP、hooks、lifecycle、平台 manifest、marketplace 修改或生成目录"
         ]
       }
     },

@@ -4,7 +4,7 @@
 
 ## 定义与验证
 
-静态 Skill 必须是 `.agents/skills/<name>` 的直接子目录，并在自身 `evals/manifest.json` 声明 `trigger`、`conversation` suite；profile 固定为隐式 `project-default`。每个 suite 用 `skills[]` 声明参与评估的 repo-local sibling Skills，并必须包含 owner。current 安装全部 participants；conversation baseline 只移除 owner，保留 companions。可选的 `workspace.copy[]` 使用 repo-root relative `from` 和 subject-relative `to` 准备只读 fixture，不能逃出仓库/subject，也不能覆盖任一 participant Skill 或 `.codex`。目标包和复制源都不得包含 symlink。
+静态 Skill 必须是 `.agents/skills/<name>` 的直接子目录，并在自身 `evals/manifest.json` 声明 `trigger`、`conversation` suite；profile 固定为隐式 `project-default`。每个 suite 用 `skills[]` 声明参与评估的 repo-local sibling Skills，并必须包含 owner。current 安装全部 participants；conversation baseline 只移除 owner，保留 companions。conversation 模型工作副本位于源码树外；trace 读取宿主 participant 源码时机械失败，避免 baseline 绕过安装边界。可选的 `workspace.copy[]` 使用 repo-root relative `from` 和 subject-relative `to` 准备只读 fixture，不能逃出仓库/subject，也不能覆盖任一 participant Skill 或 `.codex`。目标包和复制源都不得包含 symlink。
 
 `evals/behavior_cases.json` 和 `evals/scoring_cases.json` 是 portable 设计与校准语料，不是可执行 release evidence。只有 `evals/manifest.json` 声明且实际完成的 suite/case 才能形成模型行为证据。
 

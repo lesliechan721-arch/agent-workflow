@@ -40,20 +40,22 @@
 
 CLI version、catalog version 和 plugin version 是三套身份。插件更新通常只发布 catalog，不要求发布 CLI。
 
-开发期间修改 production bundle 时，不直接提高 `.agents-plugin/plugin.json` 的 plugin version。先提交 release intent：
+新插件使用 manifest 中的初始 version，脚手架默认使用 `0.1.0`，首版不创建 release intent。
+
+开发期间修改已有插件的 production bundle 时，不直接提高 `.agents-plugin/plugin.json` 的 plugin version。先提交 release intent：
 
 ```bash
 pnpm plugin:change:add <plugin-name> --bump major|minor|patch --summary "变更摘要"
 ```
 
-作者门禁要求 production 变化有 release intent，但允许开发和 CI 反复修改而不递增 SemVer：
+作者门禁要求已有插件的 production 变化有 release intent，但允许开发和 CI 反复修改而不递增 SemVer：
 
 ```bash
 pnpm build
 pnpm plugin:version:check -- --base <git-ref>
 ```
 
-稳定发布前统一应用 intent，然后运行 release 门禁：
+稳定发布前统一应用 intent，然后运行 release 门禁；没有 intent 时 `--all` 成功跳过：
 
 ```bash
 pnpm plugin:release:apply --all

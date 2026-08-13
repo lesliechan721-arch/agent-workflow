@@ -433,6 +433,13 @@ describe('authoring tools', () => {
       'scripts',
       'init_plugin.mjs',
     );
+    const initHelp = await execFileAsync('node', [scriptPath, '--help'], {
+      cwd: repoRoot(),
+      env: process.env,
+    });
+    expect(initHelp.stdout).toContain(
+      'New plugin scaffolds keep the initial version and do not create a release intent.',
+    );
 
     await expect(
       execFileAsync(
@@ -523,6 +530,9 @@ describe('authoring tools', () => {
       },
     });
     expect(scaffoldManifest.marketplace.policy).not.toHaveProperty('products');
+    await expect(
+      fs.pathExists(path.join(tempRepo, '.changes', 'plugins')),
+    ).resolves.toBe(false);
     await expect(fs.readFile(
       path.join(tempRepo, 'plugins', 'repo-check', 'README.md'),
       'utf8',
@@ -1085,6 +1095,20 @@ describe('authoring tools', () => {
     const addChangePath = createAwPluginScriptPath('add_plugin_change.mjs');
     const applyReleasesPath = createAwPluginScriptPath('apply_plugin_releases.mjs');
     const skillMdPath = path.join(pluginDir, 'skills', 'versioned-skill', 'SKILL.md');
+    const checkerHelp = await execFileAsync('node', [checkerPath, '--help'], {
+      cwd: repoRoot(),
+      env: process.env,
+    });
+    expect(checkerHelp.stdout).toContain(
+      'New plugins keep their initial version without an intent.',
+    );
+    const applyHelp = await execFileAsync('node', [applyReleasesPath, '--help'], {
+      cwd: repoRoot(),
+      env: process.env,
+    });
+    expect(applyHelp.stdout).toContain(
+      'an empty intent set is a successful no-op',
+    );
     await execFileAsync('node', [
       addChangePath,
       'versioned-plugin',
@@ -1307,10 +1331,34 @@ describe('authoring tools', () => {
       '--repo-root',
       tempRepo,
     ], { cwd: repoRoot(), env: process.env });
-    expect(JSON.parse(newPlugin.stdout).checks[0]).toMatchObject({
+    const newPluginCheck = JSON.parse(newPlugin.stdout).checks[0];
+    expect(newPluginCheck).toMatchObject({
       status: 'new',
       currentVersion: '0.1.0',
+      productionChanged: true,
+      releaseIntentFiles: [],
     });
+    const newPluginRelease = await execFileAsync('node', [
+      checkerPath,
+      'new-plugin',
+      '--mode',
+      'release',
+      '--json',
+      '--repo-root',
+      tempRepo,
+    ], { cwd: repoRoot(), env: process.env });
+    expect(JSON.parse(newPluginRelease.stdout).checks[0]).toMatchObject({
+      status: 'new',
+      currentVersion: '0.1.0',
+      releaseIntentFiles: [],
+    });
+    const emptyReleaseApply = await execFileAsync('node', [
+      applyReleasesPath,
+      '--all',
+      '--repo-root',
+      tempRepo,
+    ], { cwd: repoRoot(), env: process.env });
+    expect(emptyReleaseApply.stdout).toContain('No plugin release intents to apply.');
     await execFileAsync('node', [
       addChangePath,
       'new-plugin',
@@ -1323,6 +1371,24 @@ describe('authoring tools', () => {
       '--repo-root',
       tempRepo,
     ], { cwd: repoRoot(), env: process.env });
+    let newPluginAuthorError: { stdout?: string } | undefined;
+    try {
+      await execFileAsync('node', [
+        checkerPath,
+        'new-plugin',
+        '--json',
+        '--repo-root',
+        tempRepo,
+      ], { cwd: repoRoot(), env: process.env, maxBuffer: 10 * 1024 * 1024 });
+    } catch (error) {
+      newPluginAuthorError = error as { stdout?: string };
+    }
+    expect(newPluginAuthorError?.stdout).toBeTruthy();
+    expect(JSON.parse(newPluginAuthorError!.stdout!).checks[0]).toMatchObject({
+      status: 'unexpectedReleaseIntent',
+      currentVersion: '0.1.0',
+      releaseIntentFiles: ['new-plugin-release-gate.json'],
+    });
     let newPluginReleaseError: { stdout?: string } | undefined;
     try {
       await execFileAsync('node', [
@@ -1342,9 +1408,9 @@ describe('authoring tools', () => {
     expect(newPluginReleaseReport.checks.find(
       (check: { plugin: string }) => check.plugin === 'new-plugin',
     )).toMatchObject({
-      status: 'unappliedReleaseIntent',
+      status: 'unexpectedReleaseIntent',
       currentVersion: '0.1.0',
-      targetVersion: '0.1.1',
+      releaseIntentFiles: ['new-plugin-release-gate.json'],
     });
     await fs.remove(path.join(
       tempRepo,
@@ -2202,6 +2268,9 @@ describe('authoring tools', () => {
 
     expect(skillDoc).toContain('`plugins/marketplace-source.json`');
     expect(skillDoc).toContain('`pnpm build`');
+    expect(skillDoc).toContain(
+      '新插件保留脚手架写入的初始 version（默认 `0.1.0`），首版不创建 release intent',
+    );
     expect(skillDoc).toContain('`.claude-plugin/plugin.json`');
     expect(skillDoc).toContain('`.codex-plugin/plugin.json`');
     expect(skillDoc).toContain('所有插件都必须有 `.agents-plugin/plugin.json`');
@@ -2234,6 +2303,9 @@ describe('authoring tools', () => {
     expect(manifestSpecDoc).not.toContain('npx eslint *');
     expect(manifestSpecDoc).not.toContain('npx prettier *');
     expect(manifestSpecDoc).toContain('插件 manifest 不声明 per-plugin 宿主 agent 版本');
+    expect(manifestSpecDoc).toContain(
+      '新插件保留 manifest 中的初始 version，脚手架默认使用 `0.1.0`，首版不创建 release intent',
+    );
     expect(manifestSpecDoc).toContain('Codex `>= 0.145.0`、Claude Code `>= 2.1.88`');
     expect(() =>
       validatePluginManifest(
@@ -2364,6 +2436,24 @@ describe('authoring tools', () => {
         (entry: { query: string }) => entry.query.includes('$create-aw-plugin'),
       ),
     ).toBe(false);
+    const createModelInvokedCase = creatorEvalFixtures.evals.find(
+      (entry: { id: string }) => entry.id === 'create-model-invoked',
+    );
+    expect(createModelInvokedCase).toMatchObject({
+      expected_output: expect.stringContaining('plugin version 保持 0.1.0 且没有 release intent'),
+      review: {
+        allowed_workspace_changes: ['plugins/release-notes/**'],
+        artifacts: expect.arrayContaining([
+          expect.objectContaining({
+            path: 'plugins/release-notes/.agents-plugin/plugin.json',
+            json: expect.objectContaining({ version: '0.1.0' }),
+          }),
+        ]),
+        checks: expect.arrayContaining([
+          expect.stringContaining('没有创建 release intent'),
+        ]),
+      },
+    });
     const evalContractResult = await execFileAsync(
       'node',
       [

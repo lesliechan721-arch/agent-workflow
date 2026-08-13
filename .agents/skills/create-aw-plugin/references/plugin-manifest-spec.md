@@ -72,9 +72,9 @@ node .agents/skills/create-aw-plugin/scripts/check_plugin_versions.mjs \
   --all --mode release --base <git-ref>
 ```
 
-Release intent 位于 `.changes/plugins/*.json`。它声明 plugin、major/minor/patch 和摘要。多个 intent 指向同一插件时取最高 bump。开发期间源码 manifest 保留最近稳定版本；`apply_plugin_releases.mjs` 在稳定发布前统一提高版本并消费 intent。`bump_plugin_version.mjs` 只保留为显式的单插件维护工具。build metadata 不提高 SemVer precedence，不能用来形成可升级版本。
+新插件保留 manifest 中的初始 version，脚手架默认使用 `0.1.0`，首版不创建 release intent。`check_plugin_versions.mjs` 将无 Git 基线且没有 intent 的新插件判定为 `new`，并拒绝新插件的多余 intent。已有插件的 release intent 位于 `.changes/plugins/*.json`。它声明 plugin、major/minor/patch 和摘要。多个 intent 指向同一插件时取最高 bump。开发期间源码 manifest 保留最近稳定版本；`apply_plugin_releases.mjs` 在稳定发布前统一提高版本并消费 intent，`--all` 在没有 intent 时成功跳过。`bump_plugin_version.mjs` 只保留为显式的单插件维护工具。build metadata 不提高 SemVer precedence，不能用来形成可升级版本。
 
-`check_plugin_versions.mjs` 用当前已构建 CLI 的 staging bundler 分别物化 Git 基线插件和工作树插件，再忽略 plugin version 字段本身比较 production bundle。`author` 模式要求 production 变化有 release intent；`release` 模式要求版本已提高且 intent 已消费。Skill `evals/**`、插件 `reports/**` 和 test-only 文件由 bundler 排除，不要求 intent；随 bundle 发布的 README、Skill、manifest 和 runtime 脚本变化要求 intent。该门禁只判断插件源码变化，不判断 CLI bundler 自身变化造成的产物差异。
+`check_plugin_versions.mjs` 用当前已构建 CLI 的 staging bundler 分别物化 Git 基线插件和工作树插件，再忽略 plugin version 字段本身比较 production bundle。对于已有插件，`author` 模式要求 production 变化有 release intent；`release` 模式要求版本已提高且 intent 已消费。Skill `evals/**`、插件 `reports/**` 和 test-only 文件由 bundler 排除，不要求 intent；随 bundle 发布的 README、Skill、manifest 和 runtime 脚本变化要求 intent。该门禁只判断插件源码变化，不判断 CLI bundler 自身变化造成的产物差异。
 
 普通构建生成不可发布的 `development-receipt.json`。其中的 `contentDigest` 排除生成 manifest 的 version 字段，用来识别反复开发内容。Beta 发布按 release intent 在临时 staging 中物化 `x.y.z-beta.N`；相同 contentDigest 复用 beta 版本，变化内容才提高 `N`。Stable 发布要求 intent 已应用。
 

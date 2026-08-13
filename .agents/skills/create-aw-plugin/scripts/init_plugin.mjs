@@ -302,6 +302,7 @@ Options:
   -h, --help                    Show this help message.
 
 Note:
+  New plugin scaffolds keep the initial version and do not create a release intent.
   New skill scaffolds default to model invocation and generate an eval starter.
 `);
 }

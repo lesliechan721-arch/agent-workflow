@@ -220,6 +220,88 @@ describe('Codex app-server eval driver', () => {
     expect(JSON.stringify(evidence)).not.toContain('private-plan-type');
   });
 
+  it('rejects participant source and materialized subject reads outside the copied workspace', async () => {
+    const sourceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-app-server-source-'));
+    const subjectRoot = path.join(sourceRoot, 'subject');
+    const subjectOwnerRoot = path.join(subjectRoot, '.agents', 'skills', 'ask-me');
+    const forbiddenRoot = path.join(sourceRoot, 'host-owner');
+    const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-app-server-host-report-'));
+    const workRoot = path.join(sourceRoot, 'batch-work');
+    tempDirs.push(sourceRoot, outputRoot);
+    await fs.outputFile(
+      path.join(subjectOwnerRoot, 'SKILL.md'),
+      '# Ask Me\n',
+    );
+    await fs.outputFile(path.join(forbiddenRoot, 'SKILL.md'), '# Host Owner\n');
+    await fs.writeFile(
+      path.join(subjectRoot, 'app-server'),
+      [
+        "const fs = require('node:fs');",
+        "const readline = require('node:readline');",
+        `const forbiddenRoot = ${JSON.stringify(forbiddenRoot)};`,
+        `const subjectOwnerRoot = ${JSON.stringify(subjectOwnerRoot)};`,
+        "const input = readline.createInterface({ input: process.stdin });",
+        "const send = (frame) => process.stdout.write(JSON.stringify(frame) + '\\n');",
+        "input.on('line', (line) => {",
+        "  const frame = JSON.parse(line);",
+        "  if (frame.method === 'initialize') send({ id: frame.id, result: {} });",
+        "  else if (frame.method === 'thread/start') send({ id: frame.id, result: { thread: { id: 'thread-1' } } });",
+        "  else if (frame.method === 'turn/start') {",
+        "    send({ id: frame.id, result: { turn: { id: 'turn-1' } } });",
+        "    const ownerPresent = fs.existsSync('.agents/skills/ask-me/SKILL.md');",
+        "    const prompt = frame.params?.input?.[0]?.text ?? '';",
+        "    const targetRoot = prompt.includes('materialized subject') ? subjectOwnerRoot : forbiddenRoot;",
+        "    if (!ownerPresent) send({ method: 'item/completed', params: { item: { type: 'commandExecution', id: 'command-1', command: `sed -n 1p ${targetRoot}/SKILL.md`, status: 'completed' } } });",
+        "    send({ method: 'item/completed', params: { item: { type: 'agentMessage', id: 'message-1', phase: 'final_answer', text: `cwd=${process.cwd()} owner=${ownerPresent}` } } });",
+        "    send({ method: 'turn/completed', params: { turn: { id: 'turn-1', status: 'completed' } } });",
+        "  }",
+        "});",
+      ].join('\n'),
+      'utf8',
+    );
+    const casesPath = path.join(subjectRoot, 'cases.json');
+    await fs.writeJson(casesPath, {
+      skill_name: 'ask-me',
+      evals: [
+        behaviorCase('participant-source-read', { prompt: 'Read participant source.' }),
+        behaviorCase('materialized-subject-read', { prompt: 'Read materialized subject.' }),
+      ],
+    });
+    const reportPath = path.join(outputRoot, 'behavior.json');
+
+    const report = await runCodexConversationSuite({
+      suiteId: 'behavior',
+      skillName: 'ask-me',
+      casesPath,
+      subjectRoot,
+      profile: 'project-default',
+      runs: 1,
+      codexBin: process.execPath,
+      timeoutMs: 10_000,
+      sourceEnv: process.env,
+      reportPath,
+      forbiddenHostRoots: [forbiddenRoot],
+      workRoot,
+    });
+
+    expect(report).toMatchObject({
+      outcome: 'failed',
+      complete: true,
+      mechanicalPassed: false,
+      diagnostics: expect.arrayContaining([
+        'Codex eval accessed a forbidden host source root.',
+      ]),
+    });
+    const evidence = await fs.readJson(reportPath);
+    for (const result of evidence.results) {
+      const run = result.runs[0];
+      expect(run.with_skill.hostSourceAccessAbsent).toBe(true);
+      expect(run.without_skill.hostSourceAccessAbsent).toBe(false);
+      expect(run.with_skill.finalMessages[0]).not.toContain(sourceRoot);
+      expect(run.without_skill.finalMessages[0]).not.toContain(sourceRoot);
+    }
+  });
+
   it('runs bounded workspace-write cases and records mechanical artifact evidence', async () => {
     const subjectRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-app-server-write-'));
     const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-app-server-write-report-'));

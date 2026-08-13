@@ -114,6 +114,7 @@ interface AppServerRunEvidence {
   variant: 'with_skill' | 'without_skill';
   complete: boolean;
   mechanicalPassed: boolean;
+  hostSourceAccessAbsent: boolean | null;
   durationMs: number;
   questions: Array<{
     requestId: string;
@@ -181,6 +182,35 @@ const CODEX_EVAL_APP_SERVER_OVERRIDES = [
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function comparablePath(value: string): string {
+  const normalized = value.replaceAll('\\', '/');
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+}
+
+function containsForbiddenHostRoot(value: unknown, forbiddenHostRoots: string[]): boolean {
+  if (typeof value === 'string') {
+    const candidate = comparablePath(value);
+    return forbiddenHostRoots.some((root) => candidate.includes(comparablePath(root)));
+  }
+  if (Array.isArray(value)) {
+    return value.some((entry) => containsForbiddenHostRoot(entry, forbiddenHostRoots));
+  }
+  if (isRecord(value)) {
+    return Object.values(value).some((entry) =>
+      containsForbiddenHostRoot(entry, forbiddenHostRoots));
+  }
+  return false;
+}
+
+async function canonicalForbiddenHostRoots(roots: string[]): Promise<string[]> {
+  const values = await Promise.all(roots.map(async (root) => {
+    const resolved = path.resolve(root);
+    const real = await fs.realpath(resolved).catch(() => resolved);
+    return [resolved, real];
+  }));
+  return [...new Set(values.flat())];
 }
 
 function requestId(value: unknown): string | undefined {
@@ -799,12 +829,13 @@ async function runConversationOnce(options: {
   sourceEnv: NodeJS.ProcessEnv;
   isolation: PluginEvalIsolation;
   processManagement: PluginEvalProcessManagementEvidence;
+  forbiddenHostRoots: string[];
   workRoot?: string;
 }): Promise<AppServerRunEvidence> {
   assertCodexEvalCanStartWork();
   const temporaryRoot = await createEvalTemporaryRoot(
     'conversation-',
-    options.workRoot,
+    options.forbiddenHostRoots.length > 0 ? undefined : options.workRoot,
   );
   const runRoot = temporaryRoot.root;
   const workspaceRoot = path.join(runRoot, 'project');
@@ -1004,6 +1035,12 @@ async function runConversationOnce(options: {
       options.evalCase.artifacts.map((expectation) =>
         readWorkspaceArtifactEvidence(workspaceRoot, expectation)),
     );
+    const hostSourceAccessAbsent = options.forbiddenHostRoots.length > 0
+      ? !containsForbiddenHostRoot(eventTrace, options.forbiddenHostRoots)
+      : null;
+    if (hostSourceAccessAbsent === false) {
+      diagnostics.push('Codex eval accessed a forbidden host source root.');
+    }
     if (replyStep < options.evalCase.scriptedReplies.length) {
       diagnostics.push(
         `${options.evalCase.scriptedReplies.length - replyStep} scripted reply step(s) were unused.`,
@@ -1029,6 +1066,7 @@ async function runConversationOnce(options: {
       variant: options.variant,
       complete: completed.complete,
       mechanicalPassed: completed.complete && diagnostics.length === 0,
+      hostSourceAccessAbsent,
       durationMs: Date.now() - startedAt,
       questions,
       finalMessages,
@@ -1041,10 +1079,15 @@ async function runConversationOnce(options: {
       ...(session.stderr.trim() ? { stderr: session.stderr.trim() } : {}),
     });
   } catch (error) {
+    const hostSourceAccessAbsent = options.forbiddenHostRoots.length > 0 &&
+      containsForbiddenHostRoot(eventTrace, options.forbiddenHostRoots)
+      ? false
+      : null;
     const evidence: AppServerRunEvidence = {
       variant: options.variant,
       complete: false,
       mechanicalPassed: false,
+      hostSourceAccessAbsent,
       durationMs: Date.now() - startedAt,
       questions,
       finalMessages,
@@ -1155,6 +1198,7 @@ export async function runCodexConversationSuite(options: {
   sourceEnv?: NodeJS.ProcessEnv;
   reportPath?: string;
   processManagement?: PluginEvalProcessManagementEvidence;
+  forbiddenHostRoots?: string[];
   workRoot?: string;
 }): Promise<PluginEvalSuiteReport> {
   const skillNames = options.skillNames ?? [options.skillName];
@@ -1163,6 +1207,9 @@ export async function runCodexConversationSuite(options: {
   const model = options.model ?? codexRuntime.model ?? undefined;
   const isolation = options.isolation ?? 'standard';
   const processManagement = options.processManagement ?? DEFAULT_MANAGED_PROCESS_EVIDENCE;
+  const forbiddenHostRoots = await canonicalForbiddenHostRoots(
+    [options.subjectRoot, ...(options.forbiddenHostRoots ?? [])],
+  );
   let cases = await readConversationCases(options.casesPath, options.skillName);
   if (options.caseId) {
     cases = cases.filter((entry) => entry.id === options.caseId);
@@ -1231,6 +1278,7 @@ export async function runCodexConversationSuite(options: {
         sourceEnv,
         isolation,
         processManagement,
+        forbiddenHostRoots,
         workRoot: options.workRoot,
       });
       assertCodexEvalCanStartWork();
@@ -1247,6 +1295,7 @@ export async function runCodexConversationSuite(options: {
         sourceEnv,
         isolation,
         processManagement,
+        forbiddenHostRoots,
         workRoot: options.workRoot,
       });
       runs.push({ run: runIndex + 1, with_skill: withSkill, without_skill: withoutSkill });
