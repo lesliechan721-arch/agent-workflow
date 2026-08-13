@@ -165,9 +165,9 @@ conversation case 默认只读。执行写入型作者任务时，case 必须显
 
 真实模型 eval 应从普通 Terminal 运行；macOS 检测到 `accountsKeychainExport` 包装器路径时会在启动模型前失败，且不会修改用户 keychain search list。进程树检查默认要求 Full Access；不可用时必须在报告分配和模型启动前阻断。Windows 当前没有 Job Object containment，因此也必须显式传 `--allow-unmanaged-processes`。该降级模式只清理直接子进程，报告必须记录 `descendantCleanupGuaranteed: false`。
 
-插件完整 eval 批次固定在 `.tmp/agent-workflows/evals/plugin/<plugin>/<skill>/<batch-id>/`；静态 Skill 使用 `.tmp/agent-workflows/evals/static/<skill>/<batch-id>/`。批次内保存 run、target、raw、scorecard 和自动汇总；只有 `work/<run-id>/` 在单次命令结束后清理。full/release 完整评审默认执行 `review:publish`；插件正式报告写到 `plugins/<plugin>/reports/<skill>/<batch-id>/{report.md,summary.json}`，静态 Skill 写到 `.agents/reports/<skill>/<batch-id>/{report.md,summary.json}`。构建、安装和 runtime digest 排除 Skill `evals/**` 与插件 `reports/**`，但保留 Skill README。
+插件完整 eval 批次固定在 `.tmp/agent-workflows/evals/plugin/<plugin>/<skill>/<batch-id>/`；静态 Skill 使用 `.tmp/agent-workflows/evals/static/<skill>/<batch-id>/`。批次内保存 run、target、raw、scorecard 和自动汇总；只有 `work/<run-id>/` 在单次命令结束后清理。用户明确要求发布时执行 `review:publish`；插件正式报告写到 `plugins/<plugin>/reports/<skill>/<batch-id>/{report.md,summary.json}`，静态 Skill 写到 `.agents/reports/<skill>/<batch-id>/{report.md,summary.json}`。构建、安装和 runtime digest 排除 Skill `evals/**` 与插件 `reports/**`，但保留 Skill README。
 
-full 模式发布不更新 Skill README。release 模式在报告发布和批次封存后登记 README；已经发布的 full/release 报告也可用 `review:release` 以后登记。插件 Skill README 登记属于 production source 变化，必须由 release intent 覆盖；普通 eval 不产生可提交报告。
+`review:publish` 不更新 Skill README。用户另行明确要求登记时，使用 `review:release` 更新已经发布的 full/release 报告记录。插件 Skill README 登记属于 production source 变化，必须由 release intent 覆盖；普通 eval 不产生可提交报告。
 
 ## Pre-commit Checklist
 

@@ -40,8 +40,8 @@ pnpm plugin:eval <name> --skill <owner-skill> --batch-name release
 
 release-required suite 必须 complete；不得用 `--allow-environment-skips` 形成发布证据。真实模型默认要求 Full Access；若用户用 `--allow-unmanaged-processes` 确认降级运行，review 必须明确记录后代进程清理不受保证。`needs_review` 或 `qualitativeReview=required` 必须读取对应 trace 逐项判分。Codex 版本、model、profile、已安装插件、participant Skills、config digest、bundle digest 和 content digest 应随报告保存，防止混用不同制品。
 
-完整 eval/review 批次固定保存在 `.tmp/agent-workflows/evals/plugin/<name>/<owner-skill>/<batch-id>/`。full/release 评审消费完整 eval 批次并验证 scorecard 后，默认用 `pnpm review:publish -- --plugin <name> --skill <owner-skill> --batch-id <batch-id> --report <report.md> --scorecard <scorecard.json>` 发布正式 `report.md` 和 schema v2 `summary.json`，并封存临时批次。eval 通过、失败或 `incomplete` 只影响正式结论，不取消发布；只有用户明确要求草稿时才让报告停在 `.tmp`。没有完整 eval 但用户要求持久化时，用 `--batch-name` 创建 review-only 批次。正式目录位于 `plugins/<name>/reports/<owner-skill>/<batch-id>/`，其它证据和草稿只保留在 `.tmp/agent-workflows/`。
+完整 eval/review 批次固定保存在 `.tmp/agent-workflows/evals/plugin/<name>/<owner-skill>/<batch-id>/`。评审默认只返回结果。用户明确要求发布时，用 `pnpm review:publish -- --plugin <name> --skill <owner-skill> --batch-id <batch-id> --report <report.md> --scorecard <scorecard.json>` 发布正式 `report.md` 和 schema v2 `summary.json`，并封存临时批次。eval 通过、失败或 `incomplete` 只影响正式结论，不改变发布授权。没有完整 eval 但用户要求发布时，用 `--batch-name` 创建 review-only 批次。正式目录位于 `plugins/<name>/reports/<owner-skill>/<batch-id>/`，其它证据和草稿只保留在 `.tmp/agent-workflows/`。
 
-full 模式发布不更新 Skill README。release 模式在正式报告写入并封存批次后自动登记 README；若登记失败，正式报告保持有效，并可用 `pnpm review:release -- --plugin <name> --skill <owner-skill> --batch-id <batch-id>` 重试。已经发布的 full 报告也可以用同一命令以后登记。README 登记属于 production source 变化，必须由现有或新增 release intent 覆盖；插件 README 不记录 Skill 验证信息。
+`review:publish` 不更新 Skill README。用户另行明确要求登记时，用 `pnpm review:release -- --plugin <name> --skill <owner-skill> --batch-id <batch-id>` 更新 README。登记失败不影响已经发布的正式报告，可以重试同一命令。README 登记属于 production source 变化，必须由现有或新增 release intent 覆盖；插件 README 不记录 Skill 验证信息。
 
 所有模型行为结论仅覆盖 Codex。`plugin:test` 只能证明确定性行为；`plugin:eval` 的真实 suite 才能证明模型行为。插件级 release verdict 取 required profiles/suites 中最差门禁，不用平均分掩盖失败。

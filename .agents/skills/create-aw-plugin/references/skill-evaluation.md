@@ -169,7 +169,7 @@ strict 模式在启动模型前检查 `/etc/codex`（Windows 对应系统目录�
 
 完整批次固定在项目内 `.tmp/agent-workflows/evals/plugin/<plugin>/<skill>/<batch-id>/`。其中 `work/<run-id>/` 在命令结束后清理；run、target、raw、scorecard 和自动汇总保留到用户清理 `.tmp`。CLI 不接受任意 `--output-dir`。
 
-`pnpm review:publish` 是唯一的正式报告发布动作。full/release 评审消费完整 eval 后默认执行；执行前应说明目标正式目录、批次封存后不能追加 eval，以及 release 模式会继续登记 README。命令验证人读 Markdown 和 scorecard，把完整 review 留在临时批次，并原子写入 `plugins/<plugin>/reports/<skill>/<batch-id>/{report.md,summary.json}`。正式 `summary.json` 使用 schema v2，只保存 owner、来源 commit、eval 发布结果与覆盖、review 结论、分数、置信度和 finding 数量；不保存 run、target、digest、trace 或 scorecard。正式目录不可覆盖，发布后临时批次封存但不自动删除。full 模式到此结束，不更新 Skill README。
+`pnpm review:publish` 是唯一的正式报告发布动作，只在用户明确要求发布时执行。执行前应说明目标正式目录和批次封存后不能追加 eval。命令验证人读 Markdown 和 scorecard，把完整 review 留在临时批次，并原子写入 `plugins/<plugin>/reports/<skill>/<batch-id>/{report.md,summary.json}`。正式 `summary.json` 使用 schema v2，只保存 owner、来源 commit、eval 发布结果与覆盖、review 结论、分数、置信度和 finding 数量；不保存 run、target、digest、trace 或 scorecard。正式目录不可覆盖，发布后临时批次封存但不自动删除。该命令不更新 Skill README。
 
 正式摘要合同：
 
@@ -201,7 +201,7 @@ run 在批次锁内预留，target 发布和终态写入使用同一个锁事务
 
 正式 `reports/` 不属于被评估源码，中央 source revision 检查会忽略该目录；插件源码、README、eval 夹具、脚本和作者/评审工具的未提交修改仍会令 `source.inScopeDirty=true`。
 
-插件和每个 Skill 都必须有非空 README。插件 README 只介绍插件目标、Skill 和使用边界；Skill README 约定记录最近已 release 的正式报告摘要、仓库相对路径和被评估 Git commit。release 模式的 `review:publish` 在正式报告写入并封存批次后登记 README；登记失败不回滚正式报告，可以用 `pnpm review:release -- --plugin <plugin> --skill <skill> --batch-id <batch-id>` 重试。已经发布的 full/release 报告也可以用该命令以后登记。README 登记会改变 production source，必须由现有或新增 release intent 覆盖；普通 eval 和 full 报告发布不改变 README。
+插件和每个 Skill 都必须有非空 README。插件 README 只介绍插件目标、Skill 和使用边界；Skill README 约定记录最近已 release 的正式报告摘要、仓库相对路径和被评估 Git commit。只有用户另行明确要求登记时，才运行 `pnpm review:release -- --plugin <plugin> --skill <skill> --batch-id <batch-id>` 更新 README。登记失败不回滚正式报告，可以重试同一命令。README 登记会改变 production source，必须由现有或新增 release intent 覆盖；普通 eval 和报告发布不改变 README。
 
 ## 触发评估
 
@@ -291,7 +291,7 @@ run 在批次锁内预留，target 发布和终态写入使用同一个锁事务
 - [ ] `plugin:test`、materialization 和模型 eval 没有互相冒充。
 - [ ] release required suite 没有 skip、incomplete 或未复核的 `needs_review`。
 - [ ] 完整 eval/review 证据位于 `.tmp`，正式报告目录只包含人读 `report.md` 和 schema v2 `summary.json`。
-- [ ] full/release 完整评审已执行 `review:publish`；release 登记的 Skill README 指向对应正式报告，full 报告不要求登记；插件 README 不包含 Skill 验证报告。
+- [ ] 用户要求发布时已执行 `review:publish`；用户另行要求登记时，Skill README 指向对应正式报告；插件 README 不包含 Skill 验证报告。
 
 ## 上游参考
 

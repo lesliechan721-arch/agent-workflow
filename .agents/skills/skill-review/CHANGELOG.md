@@ -1,5 +1,15 @@
 # Changelog
 
+## v4.1
+
+- Made unspecified review requests default to quick; full now requires an explicit complete or scored review request.
+- Made revision review select delta before the unspecified-depth quick default.
+- Made report publication, batch sealing, and README registration explicit user-authorized actions.
+- Kept draft persistence in `.tmp` separate from formal publication and batch sealing.
+- Prevented a seal-only request from implicitly authorizing formal report publication.
+- Kept target-specific publication commands in the static and plugin references instead of the always-loaded workflow.
+- Added a self-review controller/data boundary and regression cases for review depth, publication authorization, and self-review isolation.
+
 ## v4
 
 - Added a minimum-effective-control audit before completion-boundary scoring.

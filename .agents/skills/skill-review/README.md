@@ -5,6 +5,7 @@
 ## 设计重点
 
 - 12 个维度、总权重 100，评分、coverage、confidence 和发布门禁分离；最小充分控制为独立高权重维度。
+- 未指定深度、评分或发布判断的普通评审默认使用 quick；full 只用于明确要求的完整多维评审。
 - 被审材料按不可信数据处理；先核验强证据，再做 heuristic/inferred 设计审视。
 - P0/P1 通过反证 gate；finding/unknown 先于评分；总分不决定发布；quick/delta 不计算总分。
 - 审核 description 及其它 context pointer 的触发 branch，而不仅是关键词。
@@ -33,9 +34,7 @@ release 评审应按 `references/source-map.md` 重新核对当前官方 Agent S
 
 当前仓库静态 Skill 的真实模型 eval 先运行 `pnpm build`，再由 `run_static_skill_evals.mjs` 生成证据；它不是 `plugin:eval` 的别名。
 
-完整 eval/review 批次保存在 `.tmp/agent-workflows/evals/`。full/release 评审消费完整 eval 后默认执行 `review:publish`；通过、失败或 `incomplete` 都发布，只有用户明确要求草稿时例外。`review:publish` 生成的静态 Skill 正式报告位于 `.agents/reports/<skill>/<batch-id>/`，插件 Skill 正式报告位于 `plugins/<plugin>/reports/<skill>/<batch-id>/`；每个正式目录只含 `report.md` 和 `summary.json`。
-
-full 模式发布不更新 Skill README。release 模式在报告发布后自动用 `review:release` 登记 README；已经发布的 full/release 报告也可以以后显式登记。登记只改变 README，不修改正式报告或临时批次；插件 README 变化属于 production source，必须由 release intent 覆盖。
+评审默认只返回结果。用户只要求保存草稿时写入 `.tmp/agent-workflows/reviews/`。`review:publish` 只在用户明确要求正式发布时生成报告并封存批次；它不更新 Skill README。README 登记需要用户另行明确要求，再运行 `review:release`。静态和插件目标的目录及证据规则分别见 `references/static-skill-evaluation.md` 和 `references/agent-workflows-plugin.md`。
 
 ## 最近验证
 

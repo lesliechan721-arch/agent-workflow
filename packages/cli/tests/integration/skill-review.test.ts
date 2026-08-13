@@ -125,6 +125,24 @@ describe('skill-review author tools', () => {
     );
   });
 
+  it('keeps formal report publication separate from README registration', async () => {
+    const [source, authoringSkill] = await Promise.all([
+      fs.readFile(
+        path.join(repoRoot(), 'packages', 'cli', 'scripts', 'publish-skill-review.ts'),
+        'utf8',
+      ),
+      fs.readFile(
+        path.join(repoRoot(), '.agents', 'skills', 'create-aw-plugin', 'SKILL.md'),
+        'utf8',
+      ),
+    ]);
+    expect(source).not.toContain('releasePublishedSkillReview');
+    expect(source).toContain('It does not update the Skill README.');
+    expect(source).toContain('Use review:release as a separate, explicit README registration action.');
+    expect(authoringSkill).not.toContain('release 模式或后续 `review:release` 才登记 README');
+    expect(authoringSkill).toContain('只有用户另行明确要求登记时，才在批次封存后运行 `review:release`');
+  });
+
   it('uses every static suite participant when publishing review evidence', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-review-static-participants-'));
     tempDirs.push(root);
@@ -385,9 +403,9 @@ describe('skill-review author tools', () => {
       expect(report.issues.filter((issue: { level: string }) => issue.level === 'error')).toEqual([]);
       if (skillName === 'skill-review') {
         expect(report.evals.trigger).toEqual({ total: 24, positive: 12, negative: 12 });
-        expect(report.evals.behavior_cases).toBe(8);
-        expect(report.evals.conversation_cases).toBe(8);
-        expect(report.evals.portable_behavior_specs).toBe(29);
+        expect(report.evals.behavior_cases).toBe(14);
+        expect(report.evals.conversation_cases).toBe(14);
+        expect(report.evals.portable_behavior_specs).toBe(35);
         expect(report.evals.behavior_evidence_note).toContain('not executable release evidence');
         expect(report.evals.scoring_cases).toBe(17);
         expect(report.scripts.count).toBe(3);
@@ -1466,10 +1484,10 @@ describe('skill-review author tools', () => {
   it('keeps evaluated upstream content unchanged outside documented project adapters', async () => {
     const skillRoot = path.join(repoRoot(), '.agents', 'skills', 'skill-review');
     const exactHashes: Record<string, string> = {
-      'CHANGELOG.md': '88205c64f6fe200fe989941d0ac52f053f61d6db9ce192fe479967dd65aab9d8',
-      'assets/report-template.md': '67b5f5fd2ecf1880f6d446dd0a8f48c290e95486252daf634f811572be418c6a',
+      'CHANGELOG.md': '351980105bc8098ea97ab6bc2127d714dfd56ee160b088837685e3a1b57a24ab',
+      'assets/report-template.md': '28c599394feabf73eabea1f6ba2fd41999cb80303dea4746a0a23728beb8d883',
       'assets/scorecard-template.json': '93e6fae3a76d2bfa447047769da9587dfb4473c08be437f3f325a35e63f17233',
-      'evals/behavior_cases.json': 'dceb0145076da44f652168dfec12546c7ec1aa98dc9ec3e1843f7afb44618e4a',
+      'evals/behavior_cases.json': '936b6c67d6e6cd4873109f6af916977edf9a1b3eafc335150ed2fde4f1eb82dc',
       'evals/scoring_cases.json': '7a9715f0549a0215856a11d32f94c7212a7606b02d7e7ea4498c4ea136681d3f',
       'evals/trigger-cases.json': '67447dd4808b9642eea60bc7e46274cf799069625f35ef077661bb951b65d122',
       'references/architecture-boundaries.md': '73546c91c0219892c584c5ff64fd192814eb080137c744b2f72fbcd62119eb15',
@@ -1514,11 +1532,7 @@ describe('skill-review author tools', () => {
         '\n',
       )
       .replace(
-        '\n完整 eval/review 批次保存在 `.tmp/agent-workflows/evals/`。full/release 评审消费完整 eval 后默认执行 `review:publish`；通过、失败或 `incomplete` 都发布，只有用户明确要求草稿时例外。`review:publish` 生成的静态 Skill 正式报告位于 `.agents/reports/<skill>/<batch-id>/`，插件 Skill 正式报告位于 `plugins/<plugin>/reports/<skill>/<batch-id>/`；每个正式目录只含 `report.md` 和 `summary.json`。\n',
-        '',
-      )
-      .replace(
-        '\nfull 模式发布不更新 Skill README。release 模式在报告发布后自动用 `review:release` 登记 README；已经发布的 full/release 报告也可以以后显式登记。登记只改变 README，不修改正式报告或临时批次；插件 README 变化属于 production source，必须由 release intent 覆盖。\n',
+        '\n评审默认只返回结果。用户只要求保存草稿时写入 `.tmp/agent-workflows/reviews/`。`review:publish` 只在用户明确要求正式发布时生成报告并封存批次；它不更新 Skill README。README 登记需要用户另行明确要求，再运行 `review:release`。静态和插件目标的目录及证据规则分别见 `references/static-skill-evaluation.md` 和 `references/agent-workflows-plugin.md`。\n',
         '',
       )
       .replace(
@@ -1526,7 +1540,7 @@ describe('skill-review author tools', () => {
         '- 最近 eval：暂无已完成报告。\n- 最近 review：暂无已完成报告。',
       );
     expect(contentDigest(readme)).toBe(
-      '398f660d1f287fc8e335ee95125f0c42d8933b17f607d62a6ba36cd3233c3e63',
+      'a64a76a75447dae0c8ce21ce832082d26ad0b4ce3940c450964c8352378f2fd8',
     );
 
     const skill = (await fs.readFile(path.join(skillRoot, 'SKILL.md'), 'utf8'))
@@ -1555,7 +1569,7 @@ describe('skill-review author tools', () => {
       )
       .replace('node scripts/validate_scorecard.mjs', 'python3 scripts/validate_scorecard.py')
       .replace(
-        '   - 当前仓库静态 Skill 的 release 评审或用户明确要求真实 eval：读取 `references/static-skill-evaluation.md` 和 `evals/manifest.json`；先运行 `node scripts/run_static_skill_evals.mjs <skill-dir-or-name> --validate-only`。\n',
+        '   - 当前仓库静态 Skill 的 release 评审，或用户明确要求真实 eval 或正式发布：读取 `references/static-skill-evaluation.md` 和 `evals/manifest.json`；真实 eval 前先运行 `node scripts/run_static_skill_evals.mjs <skill-dir-or-name> --validate-only`。\n',
         '',
       )
       .replace(
@@ -1563,19 +1577,15 @@ describe('skill-review author tools', () => {
         '',
       )
       .replace(
-        '8. 当前仓库 Skill 已运行完整 eval 并完成 full/release 评审时，默认用 `pnpm review:publish -- --skill <skill> [--plugin <plugin>] --batch-id <id> --report <report.md> --scorecard <scorecard.json>` 发布；执行前先说明正式目录、批次将被封存且不能追加 eval，以及当前模式是否会登记 README。通过、失败或 `incomplete` 只影响报告结论，不取消发布。只有用户明确要求草稿时才停在 `.tmp`。quick/delta 或没有完整 eval 的评审只在用户明确要求持久化时发布；review-only 使用 `--batch-name`。完整 eval/review 证据和草稿只放项目 `.tmp/agent-workflows/`，正式目录只保留人读报告和精简摘要。\n',
+        '8. 默认只在当前会话返回报告，不发布、不封存批次，也不修改 README。用户只要求保存或持久化结果时，把草稿写入 `.tmp/agent-workflows/reviews/`，不运行发布命令。只有用户明确要求正式发布时，才读取目标类型对应的 reference 并运行 `review:publish`；执行前说明该命令会同时写正式目录和封存批次。用户只要求封存批次时，说明当前没有 seal-only 入口，并在获得正式发布授权前停止。README 登记需要用户另行明确要求，再运行 `review:release`。通过、失败或 `incomplete` 只影响报告结论，不改变授权边界。完整 eval/review 证据和草稿只放项目 `.tmp/agent-workflows/`，正式目录只保留人读报告和精简摘要。\n',
         '',
       )
       .replace(
-        '9. `review:publish` 固化报告并封存批次，不因 full 模式更新 Skill README。release 模式会在发布后把该报告登记到 README；已经发布的 full/release 报告也可以用 `pnpm review:release -- --skill <skill> [--plugin <plugin>] --batch-id <id>` 以后登记。插件 Skill 的 README 登记属于 production source 变化，必须由现有或新增 release intent 覆盖。\n',
-        '',
-      )
-      .replace(
-        '- 当前仓库完整 eval 后的 full/release 评审已执行 `review:publish`，除非用户明确要求草稿；机械 eval/review 证据仍只位于 `.tmp`。full 模式不更新 Skill README；release 模式已完成 README 登记，或明确报告登记失败并提供可重试的 `review:release` 命令。\n',
+        '- 未获得正式发布授权时，评审没有写入正式目录或封存批次；未获得 README 登记授权时，没有修改 README。用户只要求保存结果时，草稿位于 `.tmp/agent-workflows/reviews/`。用户明确要求发布时，`review:publish` 已完成；用户另行要求登记时，`review:release` 已完成或报告了可重试命令。\n',
         '',
       );
     expect(contentDigest(skill)).toBe(
-      '2299ff2b79131e6b5f4f7bc9e3f4723f6297eef20fba40e3d78a0eac3b165105',
+      '6ef28a69154708be4979f1b7dc0617049837cde48b558e27e477e6e0f844d0ce',
     );
 
     const scoringModel = (

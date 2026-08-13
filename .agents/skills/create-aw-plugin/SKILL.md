@@ -84,8 +84,8 @@ compatibility: Requires the agent-workflows repository, Node.js 20+, and install
    - 先运行 `pnpm plugin:eval <plugin> --skill <skill> --batch-name materialization --materialize-only` 验证 Codex 最终制品；真实模型 eval 只在本地显式运行
    - 完成条件：每个修改面有直接确定性测试；重大 Skill 修改有 with-skill/baseline behavior 和适用 trigger evidence；失败已修复并重跑
 9. **交付**
-   - full/release 评审消费完整 eval 后默认执行 `review:publish`；full 只生成正式报告，release 再把报告登记到 Skill README
-   - 已发布的 full/release 报告可用 `review:release` 以后登记；插件 Skill README 变化必须由现有或新增 release intent 覆盖
+   - 评审默认只返回结果；用户明确要求发布时才执行 `review:publish`，该命令生成正式报告并封存批次，但不修改 Skill README
+   - 用户另行明确要求登记时才执行 `review:release`；插件 Skill README 变化必须由现有或新增 release intent 覆盖
    - 报告修改的源码文件、运行的验证、未验证项和仍需用户决定的风险
    - 完成条件：明确区分完整通过、轻量预检、模型证据和未运行项
 
@@ -186,7 +186,7 @@ node .agents/skills/create-aw-plugin/scripts/bump_plugin_version.mjs <plugin-nam
 - 插件和每个 Skill 都必须有非空 README。插件 README 只介绍插件目标、Skill 和使用边界；Skill README 约定记录最近已 release 的正式报告摘要、仓库相对路径和被评估 Git commit。full 报告只进入正式 reports 目录，不自动改变 README。
 - 每次 `plugin:eval` 只选择一个 owner Skill，但 suite 可以用 `skills[]` 和 repo-local `profiles[].plugins[]` 评估跨 Skill、跨插件组合；这不形成 production dependency。
 - 完整 eval 批次固定在项目 `.tmp/agent-workflows/evals/`，包含 run、target、raw、scorecard 和自动汇总。`review:publish` 后，插件正式报告写到 `plugins/<plugin>/reports/<skill>/<batch-id>/`，静态 Skill 写到 `.agents/reports/<skill>/<batch-id>/`；正式目录只含 `report.md` 和 `summary.json`。
-- 每次 eval 必须用 `--batch-name` 新建批次，或用已有输出的 `--batch-id` 追加同一临时批次。`review:publish` 不修改 full 报告对应的 README；release 模式或后续 `review:release` 才登记 README。该登记会改变插件 production source，必须在批次封存后执行并由 release intent 覆盖。
+- 每次 eval 必须用 `--batch-name` 新建批次，或用已有输出的 `--batch-id` 追加同一临时批次。`review:publish` 不修改 README；只有用户另行明确要求登记时，才在批次封存后运行 `review:release`。该登记会改变插件 production source，必须由 release intent 覆盖。
 - 真实模型 eval 默认要求 Full Access 以管理后代进程；`--allow-unmanaged-processes` 只在用户明确确认无法保证后代清理的风险后使用。
 - `plugin:test` 只验证确定性脚本；`plugin:eval` 只提供 Codex 模型证据，真实模型只运行 project profile，user profile 只做确定性 materialization。
 - Codex project 插件必须有 repo-managed surface；含 Apps 或纯 native-only 的插件不能 project 安装。

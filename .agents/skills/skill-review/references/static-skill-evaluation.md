@@ -24,7 +24,7 @@ node .agents/skills/skill-review/scripts/run_static_skill_evals.mjs \
   --suite trigger --split validation --runs 1
 ```
 
-真实运行必须用 `--batch-name` 新建批次或 `--batch-id` 追加批次。不传 `--suite` 时运行所有 release-required suite/split。完整批次固定在项目 `.tmp/agent-workflows/evals/static/<skill>/<batch-id>/`；其中 `work/<run-id>/` 完成后清理，其余机械证据保留供 review 使用。`review:publish` 生成的正式报告固定在 `.agents/reports/<skill>/<batch-id>/{report.md,summary.json}`。两个入口都不能用 `--output-dir` 改写。Skill 根 `evals/` 不进入被测 runtime package 或 package digest。运行前必须执行 `pnpm build`；批次 harness 身份使用实际加载的 `packages/cli/dist` 驱动和当前 review runner 摘要，不使用可能与构建产物不一致的 TypeScript 源码摘要。`--validate-only` 总是校验完整本地 corpus shape；构建后的中央 contract 可用时还会返回 `centralContract: true`。
+真实运行必须用 `--batch-name` 新建批次或 `--batch-id` 追加批次。不传 `--suite` 时运行所有 release-required suite/split。完整批次固定在项目 `.tmp/agent-workflows/evals/static/<skill>/<batch-id>/`；其中 `work/<run-id>/` 完成后清理，其余机械证据保留供 review 使用。用户明确要求发布时，`review:publish` 生成的正式报告固定在 `.agents/reports/<skill>/<batch-id>/{report.md,summary.json}`。两个入口都不能用 `--output-dir` 改写。Skill 根 `evals/` 不进入被测 runtime package 或 package digest。运行前必须执行 `pnpm build`；批次 harness 身份使用实际加载的 `packages/cli/dist` 驱动和当前 review runner 摘要，不使用可能与构建产物不一致的 TypeScript 源码摘要。`--validate-only` 总是校验完整本地 corpus shape；构建后的中央 contract 可用时还会返回 `centralContract: true`。
 
 ## Codex 配置与证据
 
@@ -47,4 +47,4 @@ node .agents/skills/skill-review/scripts/inspect_skill_target.mjs \
 
 该命令读取单次运行的原始 `EvaluationBundle`。批次根的 `evals/evaluation.json` 只用于跨运行汇总。
 
-`needs_review` 必须逐项读取 trace；`incomplete`、`failed` 或未完成的定性复核都不能形成 release pass。完整 eval 的 full/release 评审默认用 `pnpm review:publish -- --skill <skill> --batch-id <batch-id> --report <report.md> --scorecard <scorecard.json>` 发布正式人读报告和 schema v2 摘要，并封存临时批次；review-only 使用 `--batch-name`。中间草稿放项目 `.tmp/agent-workflows/reviews/`。full 模式不更新 Skill README；release 模式发布后自动登记，已发布 full/release 报告也可用 `pnpm review:release -- --skill <skill> --batch-id <batch-id>` 以后登记。真实模型证据只覆盖 Codex。
+`needs_review` 必须逐项读取 trace；`incomplete`、`failed` 或未完成的定性复核都不能形成 release pass。评审默认只返回结果。用户明确要求发布时，用 `pnpm review:publish -- --skill <skill> --batch-id <batch-id> --report <report.md> --scorecard <scorecard.json>` 发布正式人读报告和 schema v2 摘要，并封存临时批次；review-only 使用 `--batch-name`。`review:publish` 不修改 Skill README。用户另行明确要求登记时，再用 `pnpm review:release -- --skill <skill> --batch-id <batch-id>` 更新 README。中间草稿放项目 `.tmp/agent-workflows/reviews/`。真实模型证据只覆盖 Codex。
