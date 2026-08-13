@@ -56,7 +56,6 @@ async function readPublicContractFiles(): Promise<Array<{ file: string; content:
 const runtimeDocs = [
   'README.md',
   'docs/architecture.md',
-  'docs/plugin-installation.md',
   'docs/testing.md',
 ];
 
@@ -145,31 +144,31 @@ describe('public docs', () => {
   });
 
   it('documents the four live target states without the removed state model', async () => {
-    const installation = await readRepoFile('docs/plugin-installation.md');
+    const architecture = await readRepoFile('docs/architecture.md');
 
     for (const state of ['`present`', '`absent`', '`partial`', '`error`']) {
-      expect(installation).toContain(state);
+      expect(architecture).toContain(state);
     }
-    expect(installation).toContain('`partial` | 只存在部分组件');
-    expect(installation).toContain('`error` | catalog、发现或组件检查失败');
-    expect(installation).not.toMatch(
+    expect(architecture).toContain('`partial` | 只存在部分组件');
+    expect(architecture).toContain('`error` | catalog、发现或组件检查失败');
+    expect(architecture).not.toMatch(
       /cleanupRequired|notInstalled|installedHistorical|recordCorrupted|nativeMarker|dependencyProtected/u,
     );
   });
 
   it('keeps cleanup, reinstall, config retention, and lifecycle active boundaries explicit', async () => {
-    const docs = await readCombinedFiles(['README.md', 'docs/architecture.md', 'docs/plugin-installation.md']);
+    const docs = await readCombinedFiles(['README.md', 'docs/architecture.md']);
 
     expect(docs).toContain('`cleanup` 不运行 uninstall lifecycle');
-    expect(docs).toContain('`reinstall` 先删除能证明属于 AW 的目标组件');
+    expect(docs).toContain('`reinstall`：清理 AW-owned 组件');
     expect(docs).toContain('只有 `aw config reset` 删除 config store');
     expect(docs).toContain('lifecycle active snapshot');
-    expect(docs).toContain('snapshot 不表示插件已安装');
+    expect(docs).toContain('它不决定插件是否存在');
     expect(docs).not.toMatch(/--remove-config|--adopt-existing|aw repair|dependency-index/u);
   });
 
   it('documents strict current-only catalog cache and direct compatibility failure', async () => {
-    const docs = await readCombinedFiles(['docs/architecture.md', 'docs/plugin-installation.md', 'docs/testing.md']);
+    const docs = await readCombinedFiles(['docs/architecture.md', 'docs/testing.md']);
 
     expect(docs).toContain('immutable entry');
     expect(docs).toContain('原子 selector publication');
@@ -184,7 +183,6 @@ describe('public docs', () => {
   it('documents plugin dependencies as unsupported in runtime and author contracts', async () => {
     const docs = await readCombinedFiles([
       'docs/architecture.md',
-      'docs/plugin-installation.md',
       '.agents/skills/create-aw-plugin/references/plugin-manifest-spec.md',
       '.agents/skills/create-aw-plugin/references/comprehensive-example.md',
     ]);
@@ -197,8 +195,7 @@ describe('public docs', () => {
   it('keeps native Skill invocation metadata and platform versions public', async () => {
     const docs = await readCombinedFiles([
       'README.md',
-      'docs/plugin-installation.md',
-      'docs/plugin-authoring.md',
+      'docs/architecture.md',
       '.agents/skills/create-aw-plugin/references/skills-and-triggers.md',
     ]);
 
@@ -226,7 +223,6 @@ describe('public docs', () => {
       '.agents/skills/skill-review/references/static-skill-evaluation.md',
       '.agents/skills/skill-review/references/agent-workflows-plugin.md',
       'docs/testing.md',
-      'docs/plugin-authoring.md',
     ]);
     expect(docs).toContain('`CODEX_PERMISSION_PROFILE`');
     expect(docs).toContain('单次 `sandbox_permissions=require_escalated` 不等于');

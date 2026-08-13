@@ -2785,17 +2785,22 @@ describe('authoring tools', () => {
       expect(JSON.parse(result.stdout)).toMatchObject({ valid: true });
     }
 
-    const authoringDoc = await fs.readFile(path.join(root, 'docs', 'plugin-authoring.md'), 'utf8');
-    expect(authoringDoc).toContain('references/plugin-manifest-spec.md');
-    expect(authoringDoc).toContain('references/skills-and-triggers.md');
-    expect(authoringDoc).toContain('references/skill-design.md');
-    expect(authoringDoc).toContain('references/skill-scripts.md');
-    expect(authoringDoc).toContain('references/skill-evaluation.md');
-    expect(authoringDoc).toContain('validate_eval_cases.mjs');
-    expect(authoringDoc).toContain('只有通过 Case Admission 且归因为 `skill-defect` 的失败');
-    expect(authoringDoc).toContain('Skill 的触发行为只由平台原生元数据决定');
-    expect(authoringDoc).toContain('作者不需要、也不能在插件 manifest 中声明最低 Codex 或 Claude Code 版本');
-    expect(authoringDoc).not.toContain('references/project-plugin-contract.md');
+    const authoringSkill = await fs.readFile(path.join(creatorSkillRoot, 'SKILL.md'), 'utf8');
+    expect(authoringSkill).toContain('references/plugin-manifest-spec.md');
+    expect(authoringSkill).toContain('references/skills-and-triggers.md');
+    expect(authoringSkill).toContain('references/skill-design.md');
+    expect(authoringSkill).toContain('references/skill-scripts.md');
+    expect(authoringSkill).toContain('references/skill-evaluation.md');
+    expect(authoringSkill).toContain('validate_eval_cases.mjs');
+    expect(authoringSkill).toContain('只有通过 Case Admission 且归因为 `skill-defect` 的失败');
+    expect(authoringSkill).not.toContain('references/project-plugin-contract.md');
+
+    const publicReadme = await fs.readFile(path.join(root, 'README.md'), 'utf8');
+    expect(publicReadme).toContain('Skill 的触发行为只由平台原生元数据决定');
+
+    const manifestSpec = await fs.readFile(path.join(refBase, 'plugin-manifest-spec.md'), 'utf8');
+    expect(manifestSpec).toContain('插件 manifest 不声明 per-plugin 宿主 agent 版本');
+    expect(manifestSpec).toContain('作者不需要添加');
 
     const exampleDoc = await fs.readFile(
       path.join(refBase, 'comprehensive-example.md'),

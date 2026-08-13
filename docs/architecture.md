@@ -194,5 +194,4 @@ cache publication 必须满足：
 - `packages/cli/tests/unit/local-marketplace.test.ts`：strict cache、lock 和 publication 回归。
 - `packages/cli/tests/perf/performance-budget.test.ts`：cache、marketplace、live status/console 和 remote deadline 预算。
 - `.agents/skills/create-aw-plugin/`：插件作者工具与参考合同。
-- `docs/plugin-installation.md`：CLI 使用与状态说明。
 - `docs/testing.md`：测试分层和门禁。

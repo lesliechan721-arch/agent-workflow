@@ -32,7 +32,7 @@ aw install git -p codex -s project
 
 `aw init` 用来预热远程 catalog 和 artifact cache。它会先读取 `@lesliechan721/aw-plugins-manifest`，再获取同版本 `@lesliechan721/aw-plugins` 并校验 digest；它不安装或升级插件，也不主动 materialize 本机 native runtime。需要 user scope native runtime 的写命令会在真正调用平台前同步 active runtime；纯 Codex project 路径只读使用 current catalog，不会为了写当前仓库产物去注册用户级 Codex runtime。绑定真实插件 target 的写命令需要显式传 `-p codex|claude|both`。
 
-`aw status` 和主控制台首页优先使用合法的 catalog cache；安装、升级和普通初始化会检查远程 catalog。`aw init --force` 跳过 cache 快路径并强制尝试远程刷新；如果 resolver 只能返回 cache fallback，命令会拒绝该结果并报错。catalog deadline、cache TTL、原生命令 timeout 和离线 fallback 的完整合同见 [插件安装指南](docs/plugin-installation.md#catalog-与原生命令环境变量)。
+`aw status` 和主控制台首页优先使用合法的 catalog cache；安装、升级和普通初始化会检查远程 catalog。`aw init --force` 跳过 cache 快路径并强制尝试远程刷新；如果 resolver 只能返回 cache fallback，命令会拒绝该结果并报错。
 
 常用排障命令：
 
@@ -148,15 +148,13 @@ make release CLI_VERSION=1.0.0 CATALOG_VERSION=1.2.0
 - `scripts/release/`：版本同步、CLI / catalog tarball 打包、本地安装和发布编排脚本
 - `.agents/skills/create-aw-plugin/`：创建、增量维护并检查插件版本的作者工具
 - `.agents/skills/skill-review/`：只读评审标准静态 Skill 或 AW 插件 Skill，并核对最终 Codex 制品和 eval 证据
-- `docs/`：公开架构、安装、测试和作者文档
+- `docs/`：公开架构、编码约定和测试文档
 - `docs/dev/`：开发过程记录，不作为公开使用文档
 
 `CLAUDE.md` 是指向 `AGENTS.md` 的符号链接，用来让 Codex 和 Claude Code 共用同一份项目指令。
 
 ## 文档
 
-- `docs/plugin-installation.md`：安装、升级、状态检查和排障
-- `docs/plugin-authoring.md`：插件 manifest、hooks、Skill 原生调用元数据与 scope 语义
 - `docs/architecture.md`：CLI 源码布局和三层分发模型
 - `docs/coding-conventions.md`：TypeScript 风格、边界和关键类型
 - `docs/testing.md`：测试分层和提交前检查

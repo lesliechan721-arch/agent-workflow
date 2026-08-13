@@ -158,7 +158,7 @@
     {
       "id": "installation_docs_only",
       "split": "validation",
-      "query": "只更新 docs/plugin-installation.md 的 aw install 排障说明，不改插件源码和作者合同。",
+      "query": "只更新 README.md 的 aw install 排障说明，不改插件源码和作者合同。",
       "should_load_skill": false,
       "tags": ["near-miss", "documentation"]
     },

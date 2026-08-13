@@ -47,5 +47,3 @@
 - @docs/architecture.md — CLI 源码布局、三层分发模型、关键路径
 - @docs/coding-conventions.md — TypeScript 风格、边界约定、核心类型
 - @docs/testing.md — 测试规范、提交前检查清单
-- @docs/plugin-authoring.md — 插件 manifest 约定、skill 触发规则、scope 语义
-- @docs/plugin-installation.md — `aw` 安装、升级、状态检查与排障指南
