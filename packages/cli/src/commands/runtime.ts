@@ -1,7 +1,7 @@
 import os from 'node:os';
 import path from 'node:path';
 import { createInterface } from 'node:readline/promises';
-import { PassThrough, Writable } from 'node:stream';
+import { Writable } from 'node:stream';
 
 import { createFileDebugLogger } from '../output/debug-log.js';
 import type {
@@ -19,6 +19,7 @@ import { NativeCliError, getDefaultNativeCliRunner } from '../utils/native-cli.j
 import { resolveAwHome } from '../utils/paths.js';
 import { assertTestWritablePath } from '../utils/test-path-fence.js';
 import type { Scope } from '../types.js';
+import { createInkPrompt } from '../tui/prompt.js';
 
 export type {
   CommandEvent,
@@ -422,10 +423,6 @@ function createPromptActionResult<T>(action: Exclude<CliPromptAction, 'select'>)
   };
 }
 
-function createCancelledPromptResult<T>(): CliPromptResult<T> {
-  return createPromptActionResult('cancel');
-}
-
 function unwrapPromptResult<T>(
   result: CliPromptResult<T>,
   message = 'Interactive prompt cancelled.',
@@ -434,56 +431,6 @@ function unwrapPromptResult<T>(
     throw new Error(message);
   }
   return result.value;
-}
-
-function isPromptCancellationError(error: unknown): boolean {
-  return error instanceof Error &&
-    (error.name === 'ExitPromptError' || error.name === 'AbortPromptError');
-}
-
-interface InquirerPromptContext {
-  input?: NodeJS.ReadableStream;
-  output?: NodeJS.WritableStream;
-  clearPromptOnDone?: boolean;
-  signal?: AbortSignal;
-}
-
-interface InquirerPromptModule {
-  select: (options: {
-    message: string;
-    choices: Array<{
-      name: string;
-      value: string;
-      description?: string;
-      short?: string;
-      disabled?: boolean | string;
-    }>;
-    default?: string;
-    pageSize?: number;
-    loop?: boolean;
-  }, context?: InquirerPromptContext) => Promise<string>;
-  confirm: (options: {
-    message: string;
-    default?: boolean;
-  }, context?: InquirerPromptContext) => Promise<boolean>;
-  input: (options: {
-    message: string;
-    default?: string;
-  }, context?: InquirerPromptContext) => Promise<string>;
-  password: (options: {
-    message: string;
-    mask?: boolean;
-  }, context?: InquirerPromptContext) => Promise<string>;
-}
-
-let inquirerPromptModulePromise: Promise<InquirerPromptModule> | null = null;
-
-async function loadInquirerPromptModule(): Promise<InquirerPromptModule> {
-  if (!inquirerPromptModulePromise) {
-    const moduleName = '@inquirer/prompts';
-    inquirerPromptModulePromise = import(moduleName) as Promise<InquirerPromptModule>;
-  }
-  return inquirerPromptModulePromise;
 }
 
 function shouldPromptConfigKey(
@@ -593,38 +540,6 @@ function resolveTypedPromptAction(
   return null;
 }
 
-function resolveChunkPromptAction(
-  chunk: Buffer | string,
-  options: PromptInteractionOptions = {},
-): Exclude<CliPromptAction, 'select'> | null {
-  const text = typeof chunk === 'string' ? chunk : chunk.toString('utf8');
-  const mode = options.mode ?? 'text';
-
-  if (text === '\u0003') {
-    return 'exit';
-  }
-
-  if (text === '\u001B') {
-    if (mode === 'menu') {
-      return options.allowBack ? 'back' : 'exit';
-    }
-    return 'cancel';
-  }
-
-  if (mode !== 'menu') {
-    return null;
-  }
-
-  if (text === 'b' || text === 'B') {
-    return options.allowBack ? 'back' : null;
-  }
-  if (text === 'q' || text === 'Q') {
-    return options.allowExit ?? true ? 'exit' : null;
-  }
-
-  return null;
-}
-
 function resolveChoiceResult(
   value: string,
   choices: CliPromptChoice[],
@@ -647,63 +562,6 @@ function createMutedOutput(outputSink: CliPromptOutputSink): NodeJS.WritableStre
   }) as NodeJS.WritableStream & { isTTY?: boolean };
   mutedOutput.isTTY = outputSink.isTTY;
   return mutedOutput;
-}
-
-function createPromptInputProxy(options: {
-  input: NodeJS.ReadableStream;
-  promptOptions: PromptInteractionOptions;
-  onAction: (action: Exclude<CliPromptAction, 'select'>) => void;
-}): {
-  input: NodeJS.ReadableStream;
-  close: () => void;
-} {
-  const proxied = new PassThrough() as PassThrough & {
-    isTTY?: boolean;
-    setRawMode?: (mode: boolean) => unknown;
-  };
-  const source = options.input as NodeJS.ReadableStream & {
-    isTTY?: boolean;
-    isRaw?: boolean;
-    setRawMode?: (mode: boolean) => unknown;
-  };
-  const sourceWasRaw = source.isRaw === true;
-  proxied.isTTY = source.isTTY;
-  if (typeof source.setRawMode === 'function') {
-    proxied.setRawMode = (mode: boolean) => source.setRawMode?.(mode);
-  }
-
-  const onData = (chunk: Buffer | string) => {
-    const action = resolveChunkPromptAction(chunk, options.promptOptions);
-    if (action) {
-      options.onAction(action);
-      return;
-    }
-    proxied.write(chunk);
-  };
-  const onEnd = () => proxied.end();
-  const onClose = () => proxied.end();
-  const onError = (error: Error) => proxied.destroy(error);
-
-  source.on('data', onData);
-  source.on('end', onEnd);
-  source.on('close', onClose);
-  source.on('error', onError);
-  source.resume();
-
-  return {
-    input: proxied,
-    close: () => {
-      source.off('data', onData);
-      source.off('end', onEnd);
-      source.off('close', onClose);
-      source.off('error', onError);
-      if (source.isTTY && typeof source.setRawMode === 'function') {
-        source.setRawMode(sourceWasRaw);
-      }
-      source.pause();
-      proxied.end();
-    },
-  };
 }
 
 export interface ReadlinePromptOptions {
@@ -1024,199 +882,6 @@ export function createReadlinePrompt(options: ReadlinePromptOptions = {}): CliPr
   };
 }
 
-interface InquirerPromptOptions extends ReadlinePromptOptions {
-  fallback?: CliPrompt;
-}
-
-async function runPromptWithFallback<T>(options: {
-  run: (module: InquirerPromptModule, context: InquirerPromptContext) => Promise<T>;
-  fallback?: () => Promise<CliPromptResult<T>>;
-  input: NodeJS.ReadableStream;
-  outputSink: CliPromptOutputSink;
-  promptOptions?: PromptInteractionOptions;
-  resolveValue?: (value: T) => CliPromptResult<T>;
-}): Promise<CliPromptResult<T>> {
-  let interceptedAction: Exclude<CliPromptAction, 'select'> | null = null;
-  try {
-    const module = await loadInquirerPromptModule();
-    const output = createPromptWritable(options.outputSink);
-    const controller = new AbortController();
-    const proxy = createPromptInputProxy({
-      input: options.input,
-      promptOptions: options.promptOptions ?? {},
-      onAction: (action) => {
-        if (interceptedAction) {
-          return;
-        }
-        interceptedAction = action;
-        controller.abort();
-      },
-    });
-    try {
-      const value = await options.run(module, {
-        input: proxy.input,
-        output,
-        clearPromptOnDone: true,
-        signal: controller.signal,
-      });
-      return options.resolveValue ? options.resolveValue(value) : createPromptResult(value);
-    } finally {
-      proxy.close();
-    }
-  } catch (error) {
-    if (isPromptCancellationError(error)) {
-      return interceptedAction
-        ? createPromptActionResult(interceptedAction)
-        : createCancelledPromptResult();
-    }
-    if (options.fallback) {
-      return options.fallback();
-    }
-    throw error;
-  }
-}
-
-export function createInquirerPrompt(options: InquirerPromptOptions = {}): CliPrompt {
-  const input = options.input ?? process.stdin;
-  const outputSink = options.outputSink ?? process.stderr;
-  const fallback = options.fallback;
-
-  const select: NonNullable<CliPrompt['select']> = async ({ message, choices, defaultValue, pageSize }) =>
-      runPromptWithFallback({
-        input,
-        outputSink,
-        promptOptions: {
-          mode: 'menu',
-          allowBack: choices.some((choice) => choice.role === 'back'),
-          allowExit: true,
-        },
-        fallback: fallback?.select
-          ? () => fallback.select!({ message, choices, defaultValue, pageSize })
-          : undefined,
-        resolveValue: (value) => resolveChoiceResult(value, choices),
-        run: (module, context) => module.select({
-          message,
-          choices: choices.map((choice) => ({
-            name: choice.label,
-            value: choice.value,
-            description: choice.description,
-            short: choice.short,
-            disabled: choice.disabled,
-          })),
-          default: defaultValue,
-          pageSize,
-          loop: false,
-        }, context),
-      });
-  const multiSelect: NonNullable<CliPrompt['multiSelect']> = async ({ message, choices, defaultValues, pageSize }) =>
-      fallback?.multiSelect
-        ? fallback.multiSelect({ message, choices, defaultValues, pageSize })
-        : createCancelledPromptResult();
-  const confirm: NonNullable<CliPrompt['confirm']> = async ({ message, defaultValue }) =>
-      runPromptWithFallback({
-        input,
-        outputSink,
-        promptOptions: {
-          mode: 'confirm',
-        },
-        fallback: fallback?.confirm
-          ? () => fallback.confirm!({ message, defaultValue })
-          : undefined,
-        run: (module, context) => module.confirm({
-          message,
-          default: defaultValue,
-        }, context),
-      });
-  const inputPrompt: NonNullable<CliPrompt['input']> = async ({ message, defaultValue }) =>
-      runPromptWithFallback({
-        input,
-        outputSink,
-        promptOptions: {
-          mode: 'text',
-        },
-        fallback: fallback?.input
-          ? () => fallback.input!({ message, defaultValue })
-          : undefined,
-        run: (module, context) => module.input({
-          message,
-          default: defaultValue,
-        }, context),
-      });
-  const passwordPrompt: NonNullable<CliPrompt['password']> = async ({ message, mask }) =>
-      runPromptWithFallback({
-        input,
-        outputSink,
-        promptOptions: {
-          mode: 'text',
-        },
-        fallback: fallback?.password
-          ? () => fallback.password!({ message, mask })
-          : undefined,
-        run: (module, context) => module.password({
-          message,
-          mask,
-        }, context),
-      });
-
-  return {
-    select,
-    multiSelect,
-    confirm,
-    input: inputPrompt,
-    password: passwordPrompt,
-    selectPlatform: async ({ available, defaultValue, message }) =>
-      unwrapPromptResult(await select({
-        message: message ?? '选择目标平台',
-        choices: available.map((value) => ({
-          value,
-          label: value === 'both' ? 'Codex + Claude Code' : value === 'codex' ? 'Codex' : 'Claude Code',
-        })),
-        defaultValue,
-      })),
-    selectScope: async ({ defaultValue = 'user' }) =>
-      unwrapPromptResult(await select({
-        message: '选择安装范围',
-        choices: [
-          { value: 'user', label: 'user' },
-          { value: 'project', label: 'project' },
-        ],
-        defaultValue,
-      })),
-    selectPlugins: async ({ command, candidates, defaultValues, allowMultiple }) => {
-      const choices = candidates.map((candidate) => ({
-        value: candidate.id,
-        label: `${candidate.pluginName}${candidate.platform ? ` / ${candidate.platform}` : ''}${candidate.scope ? ` / ${candidate.scope}` : ''}`,
-        disabled: candidate.selectable ? undefined : candidate.disabledReason ?? true,
-      }));
-      return allowMultiple
-        ? unwrapPromptResult(await multiSelect({
-            message: `选择要${command === 'install' ? '安装' : command === 'uninstall' ? '卸载' : '升级'}的插件`,
-            choices,
-            defaultValues,
-          }))
-        : [unwrapPromptResult(await select({
-            message: `选择要${command === 'install' ? '安装' : command === 'uninstall' ? '卸载' : '升级'}的插件`,
-            choices,
-            defaultValue: defaultValues?.[0],
-          }))];
-    },
-    selectUpgradeMode: async ({ canUpgradeAll }) =>
-      unwrapPromptResult(await select({
-        message: '选择升级方式',
-        choices: [
-          {
-            value: 'all',
-            label: '全部可升级插件',
-            disabled: canUpgradeAll ? undefined : '当前存在需要显式处理的插件，不能使用全部升级',
-          },
-          { value: 'select', label: '手动选择插件' },
-        ],
-        defaultValue: canUpgradeAll ? 'all' : 'select',
-      })),
-    configurePlugin: fallback?.configurePlugin,
-  };
-}
-
 function serializeInvocation(invocation: NativeCliInvocation): Record<string, unknown> {
   return {
     command: invocation.command,
@@ -1413,10 +1078,9 @@ export function createCliExecutionContext(
   const reporter = input.reporter ?? createIoReporter(io, diagnostics);
   const debugLogger = input.debugLogger ?? createFileDebugLogger(diagnostics);
   const prompt = input.prompt ?? (interactive
-    ? createInquirerPrompt({
+    ? createInkPrompt({
         input: stdin,
         outputSink: promptOutputSink,
-        fallback: createReadlinePrompt({ input: stdin, outputSink: promptOutputSink }),
       })
     : createUnavailablePrompt());
   const consoleDriver = input.consoleDriver ?? createDefaultConsoleDriver(io);

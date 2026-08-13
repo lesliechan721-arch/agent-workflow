@@ -27,7 +27,7 @@ describe('package metadata', () => {
     });
   });
 
-  it('declares Node.js >=20 for the published CLI package and the workspace root', async () => {
+  it('declares Node.js >=22 for the published CLI package and the workspace root', async () => {
     const [rootPackageJson, cliPackageJson] = await Promise.all([
       readPackageJson('package.json'),
       readPackageJson('packages/cli/package.json'),
@@ -35,14 +35,24 @@ describe('package metadata', () => {
 
     expect(rootPackageJson).toMatchObject({
       engines: {
-        node: '>=20',
+        node: '>=22',
       },
     });
     expect(cliPackageJson).toMatchObject({
       engines: {
-        node: '>=20',
+        node: '>=22',
+      },
+      dependencies: {
+        '@inkjs/ui': '^2.0.0',
+        ink: '^7.1.1',
+        react: '^19.2.8',
+      },
+      devDependencies: {
+        '@types/react': expect.stringMatching(/^\^19\./),
+        'ink-testing-library': '^4.0.0',
       },
     });
+    expect((cliPackageJson.dependencies as Record<string, string>)['@inquirer/prompts']).toBeUndefined();
   });
 
   it('keeps the formal test gates on the bounded default Vitest pool', async () => {

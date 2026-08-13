@@ -3,9 +3,10 @@
   "compilerOptions": {
     "outDir": "dist",
     "rootDir": ".",
+    "jsx": "react-jsx",
     "noEmit": false,
     "noUnusedLocals": true,
     "noUnusedParameters": true
   },
-  "include": ["index.ts", "src/**/*.ts", "scripts/**/*.ts", "vitest.config.ts"]
+  "include": ["index.ts", "src/**/*.ts", "src/**/*.tsx", "scripts/**/*.ts", "vitest.config.ts"]
 }

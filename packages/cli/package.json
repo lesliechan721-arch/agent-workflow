@@ -3,7 +3,7 @@
   "version": "0.1.0-beta.1",
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "publishConfig": {
     "access": "public",
@@ -37,17 +37,21 @@
     "prepack": "pnpm --dir ../.. build:ensure"
   },
   "dependencies": {
-    "@inquirer/prompts": "^7.8.4",
+    "@inkjs/ui": "^2.0.0",
     "commander": "^14.0.1",
     "fs-extra": "^11.3.0",
+    "ink": "^7.1.1",
     "minimatch": "^10.2.5",
+    "react": "^19.2.8",
     "toml-eslint-parser": "^1.0.3",
     "yaml": "^2.8.3"
   },
   "devDependencies": {
     "@types/fs-extra": "^11.0.4",
     "@types/node": "^24.0.0",
+    "@types/react": "^19.2.18",
     "@vitest/coverage-v8": "^3.2.4",
+    "ink-testing-library": "^4.0.0",
     "typescript": "^5.9.3",
     "vitest": "^3.2.4"
   }

@@ -4,7 +4,7 @@ Agent Workflows 是一个面向 Codex 和 Claude Code 的插件工作流仓库�
 
 ## 快速使用
 
-需要 `Node.js >= 20`。
+需要 `Node.js >= 22`。
 
 ```bash
 npm install -g @lesliechan721/aw

@@ -298,56 +298,6 @@ describe('command runtime', () => {
     });
   });
 
-  it('pauses stdin and restores raw mode after an inquirer prompt closes', async () => {
-    const select = vi.fn(async (_options: unknown, context: {
-      input?: NodeJS.ReadableStream & { setRawMode?: (mode: boolean) => unknown };
-    }) => {
-      context.input?.setRawMode?.(true);
-      return 'menu-exit';
-    });
-    vi.doMock('@inquirer/prompts', () => ({
-      select,
-    }));
-
-    const { createInquirerPrompt } = await import('../../src/commands/runtime.js');
-    const input = new PassThrough() as PassThrough & {
-      isTTY?: boolean;
-      isRaw?: boolean;
-      setRawMode?: (mode: boolean) => unknown;
-    };
-    input.isTTY = true;
-    input.isRaw = false;
-    const setRawMode = vi.fn((mode: boolean) => {
-      input.isRaw = mode;
-    });
-    input.setRawMode = setRawMode;
-    const resume = vi.spyOn(input, 'resume');
-    const pause = vi.spyOn(input, 'pause');
-    const prompt = createInquirerPrompt({
-      input,
-      outputSink: {
-        isTTY: true,
-        write: vi.fn(),
-      },
-    });
-
-    await expect(prompt.select!({
-      message: '选择功能',
-      choices: [
-        { value: 'first', label: 'First' },
-        { value: 'menu-exit', label: '退出', role: 'exit' },
-      ],
-    })).resolves.toMatchObject({
-      action: 'exit',
-      cancelled: false,
-    });
-
-    expect(setRawMode).toHaveBeenLastCalledWith(false);
-    expect(input.isRaw).toBe(false);
-    expect(resume).toHaveBeenCalled();
-    expect(pause).toHaveBeenCalled();
-  });
-
   it('keeps status debug logs in the system temp dir by default', async () => {
     const { createCommandDiagnostics } = await import('../../src/commands/runtime.js');
     const isolation = getCurrentSourceTestIsolation();
