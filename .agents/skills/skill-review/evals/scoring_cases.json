@@ -7,7 +7,7 @@
   {
     "id": "invalid-frontmatter",
     "scenario": "name含大写且目录名不一致，但其它维度良好。",
-    "expected": ["package-validity fail", "release fail", "总分不能覆盖门禁"]
+    "expected": ["package-validity fail", "设计结论为fail", "发布就绪度为blocked", "总分不能覆盖门禁"]
   },
   {
     "id": "broad-description-no-eval",
@@ -47,7 +47,7 @@
   {
     "id": "low-score-no-blocker",
     "scenario": "full/release除minimum_control为4且判为proportionate外，其它维度都有可追溯的2.5分；所有gate通过且没有P0/P1。",
-    "expected": ["quality band为poor", "总分不单独改变发布结论", "不自动输出redesign"]
+    "expected": ["quality band为poor", "设计结论仍为pass", "发布就绪度仍为ready", "总分不单独改变结论"]
   },
   {
     "id": "quick-and-delta-no-aggregate",
@@ -57,17 +57,17 @@
   {
     "id": "over-specified-caps-quality",
     "scenario": "其它维度均为4.5，但minimum_control为3，复杂度为over-specified且有P2 finding。",
-    "expected": ["raw quality band可以较高", "effective quality band不高于adequate", "方向不能aligned", "release为provisional"]
+    "expected": ["raw quality band可以较高", "effective quality band不高于adequate", "方向不能aligned", "设计结论为needs-fixes", "发布就绪度为provisional"]
   },
   {
     "id": "over-engineered-caps-quality",
     "scenario": "Skill以完整runbook替代模型判断，minimum_control为2，复杂度为over-engineered。",
-    "expected": ["effective quality band不高于weak", "方向必须drifted", "需要minimum_control finding"]
+    "expected": ["effective quality band不高于weak", "方向必须drifted", "设计结论为redesign", "发布就绪度为blocked", "需要minimum_control finding"]
   },
   {
     "id": "proportionate-fragile-workflow",
     "scenario": "精确控制全部由事故证据和破坏性操作约束支持，minimum_control为4.5且复杂度为proportionate。",
-    "expected": ["不应用复杂度质量上限", "允许pass", "不按控制词数量自动扣分"]
+    "expected": ["不应用复杂度质量上限", "设计结论允许pass且发布就绪度允许ready", "不按控制词数量自动扣分"]
   },
   {
     "id": "minimum-contract-required",
@@ -77,7 +77,7 @@
   {
     "id": "complexity-label-cannot-bypass-cap",
     "scenario": "release scorecard的minimum_control为3且有P2 finding，但complexity标为proportionate、direction标为aligned。",
-    "expected": ["scorecard无效", "报告complexity.score", "不能凭无效结果发布为release pass"]
+    "expected": ["scorecard无效", "报告complexity.score", "不能凭无效结果发布为ready"]
   },
   {
     "id": "minimum-control-audit-required",

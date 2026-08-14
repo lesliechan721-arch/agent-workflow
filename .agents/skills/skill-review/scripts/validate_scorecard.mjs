@@ -1164,19 +1164,34 @@ function validateAndCalculate(data) {
   const criticalUnknown = gates.some((gate) => gate.status === 'unknown' && REQUIRED_GATES.has(gate.id));
   const rawQualityBand = qualityBand(normalizedScore);
   const effectiveBand = effectiveQualityBand(rawQualityBand, complexityVerdict);
-  let release;
-  if (hasP0Gate || hasP0Finding) release = 'fail';
-  else if (hasP1Gate || hasP1Finding) release = 'pass-after-fixes';
-  else if (mode === 'quick') release = 'provisional';
-  else if (mode === 'delta' && (scoredCount === 0 || artifacts.previous_version !== true)) release = 'provisional';
-  else if (criticalUnknown) release = 'provisional';
-  else if (complexityVerdict === 'over-specified' || complexityVerdict === 'over-engineered') release = 'provisional';
+  let design;
+  if (hasP0Gate || hasP0Finding) design = 'fail';
+  else if (hasP1Gate || hasP1Finding) design = 'needs-fixes';
+  else if (complexityVerdict === 'over-engineered' || direction === 'drifted') design = 'redesign';
+  else if (complexityVerdict === 'over-specified') design = 'needs-fixes';
+  else if (mode === 'quick') design = 'not-assessed';
+  else if (mode === 'delta' && (scoredCount === 0 || artifacts.previous_version !== true)) design = 'not-assessed';
   else if (
     (mode === 'full' || mode === 'release') &&
     (coverage < 100 || overallConfidence === 'low')
-  ) release = 'provisional';
-  else if (mode === 'release' && artifacts.current_sources_checked !== true) release = 'provisional';
-  else release = 'pass';
+  ) design = 'not-assessed';
+  else design = 'pass';
+
+  let releaseReadiness;
+  if (
+    hasP0Gate || hasP0Finding || hasP1Gate || hasP1Finding ||
+    design === 'redesign'
+  ) releaseReadiness = 'blocked';
+  else if (mode === 'quick' || mode === 'delta') releaseReadiness = 'not-assessed';
+  else if (criticalUnknown) releaseReadiness = 'provisional';
+  else if (complexityVerdict === 'over-specified') releaseReadiness = 'provisional';
+  else if (
+    (mode === 'full' || mode === 'release') &&
+    (coverage < 100 || overallConfidence === 'low')
+  ) releaseReadiness = 'provisional';
+  else if (mode === 'release' && artifacts.current_sources_checked !== true) {
+    releaseReadiness = 'provisional';
+  } else releaseReadiness = 'ready';
 
   const errorCount = diagnostics.filter((entry) => entry.level === 'error').length;
   return {
@@ -1186,6 +1201,16 @@ function validateAndCalculate(data) {
       reducibility,
       minimal_behavior_contract: minimalBehaviorContract,
     },
+    decision: {
+      design,
+      release_readiness: releaseReadiness,
+      complexity: complexityVerdict ?? 'not-assessed',
+      evidence: {
+        coverage_percent: coverage,
+        confidence_index: normalizedConfidenceIndex,
+        confidence: overallConfidence,
+      },
+    },
     score: {
       weighted_score: normalizedScore,
       coverage_percent: coverage,
@@ -1194,7 +1219,6 @@ function validateAndCalculate(data) {
       quality_band: rawQualityBand,
       effective_quality_band: effectiveBand,
       quality_cap_reason: effectiveBand !== rawQualityBand ? complexityVerdict : null,
-      release,
     },
     dimensions: scoredRows,
     gates,
@@ -1212,13 +1236,13 @@ function renderText(result) {
     : `${score.weighted_score} / 100 (${score.quality_band})`;
   const lines = [
     `Skill: ${result.review.skill_name ?? ''}`,
-    `Mode / direction: ${result.review.mode ?? ''} / ${result.review.direction ?? ''}`,
-    `Complexity: ${result.complexity.verdict ?? 'not assessed'} / ${result.complexity.reducibility ?? 'not assessed'}`,
+    `Mode: ${result.review.mode ?? ''}`,
+    `Decision: design ${result.decision.design} / release readiness ${result.decision.release_readiness}`,
+    `Complexity: ${result.decision.complexity}`,
     `Score: ${scoreText}`,
     `Effective quality: ${score.effective_quality_band ?? 'not calculated'}`,
     `Coverage: ${score.coverage_percent}%`,
     `Confidence: ${score.confidence} (${score.confidence_index})`,
-    `Release: ${score.release}`,
     `Ledger: ${result.findings.length} findings, ${result.unknowns.length} unknowns`,
     'Dimensions:',
   ];

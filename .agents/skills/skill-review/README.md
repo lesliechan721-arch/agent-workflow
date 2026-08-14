@@ -5,6 +5,9 @@
 ## 设计重点
 
 - 12 个维度、总权重 100，评分、coverage、confidence 和发布门禁分离；最小充分控制为独立高权重维度。
+- 人读主报告采用行动优先结构；完整执行审计，但只按 finding、决策关键 unknown 和结论变化向主报告展示异常。
+- 顶层分开报告设计结论、发布就绪度、复杂度和证据状态；不再使用 `pass-after-fixes` 混合设计缺陷与证据缺口。
+- full/release 使用 `review.md`、`review-appendix.md` 和 `scorecard.json` 三个制品；总分、完整 gate、12 维、admission 和专项审计不进入主报告顶层。
 - 未指定深度、评分或发布判断的普通评审默认使用 quick；full 只用于明确要求的完整多维评审。
 - 被审材料按不可信数据处理；先核验强证据，再做 heuristic/inferred 设计审视。
 - P0/P1 通过主 `SKILL.md` 中统一的 exact claim、重要前提、reachability、impact 和反证 gate；finding/unknown 先于评分；总分不决定发布；quick/delta 不计算总分。

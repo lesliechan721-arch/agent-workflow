@@ -1,6 +1,6 @@
 # Scoring Model
 
-full/release 的维度评分使用本文件和 `scripts/validate_scorecard.mjs`。quick/delta 按 `SKILL.md` 评价局部维度，不读取本文件，也不计算加权总分或 raw/effective quality band。
+full/release 的维度评分使用本文件和 `scripts/validate_scorecard.mjs`。quick/delta 按 `SKILL.md` 评价局部维度，不读取本文件，也不计算加权总分或 raw/effective quality band。总分和 quality band 只进入技术附录与 JSON，不作为人读主报告的顶层结论。
 
 ## 维度与权重
 
@@ -66,7 +66,7 @@ Finding 可以包含多个证据类型。P0/P1 至少包含一个 `observed`、`
 - raw quality band：90–100 excellent；80–89.5 strong；70–79.5 adequate；60–69.5 weak；<60 poor。
 - effective quality band：先使用 raw quality band，再应用复杂度上限；`over-specified` 不高于 `adequate`，`over-engineered` 不高于 `weak`。
 
-总分和 raw quality band 只用于定位薄弱维度、比较同一 Skill 的版本和观察趋势。报告以 effective quality band 为总体质量结论。它们不用于直接比较用途或结构不同的 Skill。
+总分和 raw/effective quality band 只用于定位薄弱维度、比较同一 Skill 的版本和观察趋势。它们不定义设计结论或发布就绪度，也不用于直接比较用途或结构不同的 Skill。
 
 ## 复杂度结论
 
@@ -77,7 +77,7 @@ full/release 必须在评分前完成最小有效控制审计，并给出独立�
 - `over-specified`：主体正确，但多个 always-loaded 强制规则、阶段或 artifact 缺少足够依据，合理策略空间受到限制。
 - `over-engineered`：Skill 接近完整 runbook 或人工 SOP，控制结构替代了模型应承担的领域判断。
 
-同时报告 reducibility：`almost-none`、`minor`、`significant`、`core-plus-reference` 或 `redesign`。`minimal` 和 `proportionate` 要求 `minimum_control` 高于 3；`over-specified` 必须关联该维度 finding，方向不能为 `aligned`；`over-engineered` 必须关联该维度 finding，方向为 `drifted`。缺少 ablation 时可以使用 `needs-ablation`；当多个强制规则的必要性仍未知时，不能把最小控制维度评为 4–5。
+JSON 同时保存 reducibility：`almost-none`、`minor`、`significant`、`core-plus-reference` 或 `redesign`。`minimal` 和 `proportionate` 要求 `minimum_control` 高于 3；`over-specified` 必须关联该维度 finding，内部方向不能为 `aligned`；`over-engineered` 必须关联该维度 finding，内部方向为 `drifted`。方向和 reducibility 是技术诊断，不进入主报告顶层。缺少 ablation 时可以使用 `needs-ablation`；当多个强制规则的必要性仍未知时，不能把最小控制维度评为 4–5。
 
 ## 证据上限提示
 
@@ -121,18 +121,28 @@ full/release 必须在评分前完成最小有效控制审计，并给出独立�
 
 同一根因只设一个主维度。分数只能在 finding 和 unknown ledger 完成后填写；低于 5 的分数必须关联至少一个 finding 或 unknown。同一 finding 只能直接关联一个主维度。失败 gate 必须通过 `finding_ids` 关联至少一个严重性相同且已通过 Admission Gate 的 finding；gate 的 `reason` 不能替代 finding 证据。
 
-## 发布结论
+## 设计结论与发布就绪度
 
-按顺序：
+validator 分开计算 `decision.design` 和 `decision.release_readiness`。不得再使用 `pass-after-fixes`。
+
+设计结论按顺序：
 
 1. 任一 P0 gate/finding → `fail`。
-2. 任一 P1 gate/finding → `pass-after-fixes`。
-3. quick 模式 → `provisional`。
-4. delta 模式没有 previous version → `provisional`。
-5. 任一必需 gate 为 `unknown` → `provisional`。
-6. 复杂度结论为 `over-specified` 或 `over-engineered`，且没有更高优先级 P0/P1 结论 → `provisional`。
-7. full/release coverage 低于 100%，或总体 confidence 低于 medium → `provisional`。
-8. release 模式未核对 current-check 来源 → `provisional`。
-9. 其余情况 → `pass`。
+2. 任一 P1 gate/finding → `needs-fixes`。
+3. 复杂度为 `over-engineered`，或内部方向为 `drifted` → `redesign`。
+4. 复杂度为 `over-specified` → `needs-fixes`。
+5. quick，或缺少可用 previous version 的 delta → `not-assessed`。
+6. full/release coverage 低于 100%，或总体 confidence 为 low → `not-assessed`。
+7. 其余情况 → `pass`。
 
-方向独立报告：`aligned`、`at-risk`、`drifted`。`over-specified` 至少为 `at-risk`；`over-engineered` 为 `drifted`。需要根本重构时使用 `drifted` 和改进路线表达，不用未经校准的分数自动产生 `redesign` 发布结论。
+发布就绪度按顺序：
+
+1. 任一 P0/P1 gate/finding，或设计结论为 `redesign` → `blocked`。
+2. quick/delta → `not-assessed`。
+3. 任一必需 gate 为 `unknown` → `provisional`。
+4. 复杂度为 `over-specified` → `provisional`。
+5. full/release coverage 低于 100%，或总体 confidence 为 low → `provisional`。
+6. release 模式未核对 current-check 来源 → `provisional`。
+7. 其余情况 → `ready`。
+
+因此，“没有 P0/P1，但缺少 runtime/eval 证据”应输出设计 `pass` 和发布 `provisional`。低总分本身不改变这两个结论。内部方向仍保存为 `aligned`、`at-risk` 或 `drifted`；`over-specified` 至少为 `at-risk`，`over-engineered` 为 `drifted`。

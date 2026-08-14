@@ -29,7 +29,8 @@
         "release_outcome": "failed"
       },
       "review": {
-        "verdict": "pass-after-fixes",
+        "design": "needs-fixes",
+        "release_readiness": "blocked",
         "p1_findings": 3
       }
     }

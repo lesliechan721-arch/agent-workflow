@@ -140,9 +140,20 @@ describe('skill-review author tools', () => {
 
   it('keeps eval reachability, quick control scope, and report currentness explicit', async () => {
     const reviewRoot = path.join(repoRoot(), '.agents', 'skills', 'skill-review');
-    const [skill, evalAudit, staticEvaluation, readme, manifest, behaviorDocument] =
+    const [
+      skill,
+      reportTemplate,
+      appendixTemplate,
+      evalAudit,
+      staticEvaluation,
+      readme,
+      manifest,
+      behaviorDocument,
+    ] =
       await Promise.all([
         fs.readFile(path.join(reviewRoot, 'SKILL.md'), 'utf8'),
+        fs.readFile(path.join(reviewRoot, 'assets', 'report-template.md'), 'utf8'),
+        fs.readFile(path.join(reviewRoot, 'assets', 'review-appendix-template.md'), 'utf8'),
         fs.readFile(path.join(reviewRoot, 'references', 'eval-audit.md'), 'utf8'),
         fs.readFile(path.join(reviewRoot, 'references', 'static-skill-evaluation.md'), 'utf8'),
         fs.readFile(path.join(reviewRoot, 'README.md'), 'utf8'),
@@ -155,6 +166,16 @@ describe('skill-review author tools', () => {
     );
     expect(skill).toContain('quick/delta 只在用户关注或所选范围包含');
     expect(skill).toContain('当最小有效控制审计适用时，先完成该审计');
+    expect(skill).toContain('assets/review-appendix-template.md');
+    expect(skill).not.toContain('## Human Report Discipline');
+    expect(reportTemplate).toContain('设计结论：');
+    expect(reportTemplate).toContain('发布就绪度：');
+    expect(reportTemplate).toContain('默认最多 3 项');
+    expect(reportTemplate).toContain('删除空章节和 `not_applicable` 章节');
+    expect(reportTemplate).toContain('同一事实只在一个权威位置展开');
+    expect(reportTemplate).not.toContain('## 维度评分');
+    expect(appendixTemplate).toContain('Appendix C — Full Scorecard');
+    expect(appendixTemplate).toContain('Finding Admission Records');
     expect(evalAudit).toContain('未被 manifest 引用');
     expect(evalAudit).toContain('portable/calibration');
     expect(staticEvaluation).toContain('README 只是登记索引');
@@ -732,7 +753,7 @@ describe('skill-review author tools', () => {
         expect(report.scripts.count).toBe(4);
         expect(report.references.missing).toEqual([]);
         expect(report.pointers).toMatchObject({
-          total: 8,
+          total: 9,
           conditional_signals: 8,
           weak_signal_lines: [],
         });
@@ -1305,11 +1326,15 @@ describe('skill-review author tools', () => {
 
     const passedReport = await validate(base);
     expect(passedReport).toMatchObject({
+      decision: {
+        design: 'pass',
+        release_readiness: 'ready',
+        complexity: 'proportionate',
+      },
       score: {
         weighted_score: 100,
         quality_band: 'excellent',
         coverage_percent: 100,
-        release: 'pass',
       },
       valid: true,
     });
@@ -1357,7 +1382,7 @@ describe('skill-review author tools', () => {
     }
     expect(await validate(unauditedEval)).toMatchObject({
       valid: true,
-      score: { release: 'provisional' },
+      decision: { design: 'pass', release_readiness: 'provisional' },
       diagnostics: expect.arrayContaining([
         expect.objectContaining({ code: 'cap.evals-case-audit' }),
       ]),
@@ -1452,12 +1477,12 @@ describe('skill-review author tools', () => {
     overSpecifiedDimension.finding_ids = ['F-control'];
     expect(await validate(overSpecified)).toMatchObject({
       complexity: { verdict: 'over-specified', reducibility: 'significant' },
+      decision: { design: 'needs-fixes', release_readiness: 'provisional' },
       score: {
         weighted_score: 94.4,
         quality_band: 'excellent',
         effective_quality_band: 'adequate',
         quality_cap_reason: 'over-specified',
-        release: 'provisional',
       },
       valid: true,
     });
@@ -1487,10 +1512,10 @@ describe('skill-review author tools', () => {
     );
     overEngineeredDimension.score = 2;
     expect(await validate(overEngineered)).toMatchObject({
+      decision: { design: 'redesign', release_readiness: 'blocked' },
       score: {
         weighted_score: 91.6,
         effective_quality_band: 'weak',
-        release: 'provisional',
       },
       valid: true,
     });
@@ -1506,10 +1531,10 @@ describe('skill-review author tools', () => {
 
     const lowQuality = scoreAllWithUnknowns(2.5);
     expect(await validate(lowQuality)).toMatchObject({
+      decision: { design: 'pass', release_readiness: 'ready' },
       score: {
         weighted_score: 54.2,
         quality_band: 'poor',
-        release: 'pass',
       },
       valid: true,
     });
@@ -1521,10 +1546,10 @@ describe('skill-review author tools', () => {
       [4.5, 'excellent'],
     ] as const) {
       expect(await validate(scoreAllWithUnknowns(score))).toMatchObject({
+        decision: { design: 'pass', release_readiness: 'ready' },
         score: {
           weighted_score: score * 20 + Math.max(0, 4 - score) * 2.8,
           quality_band: qualityBand,
-          release: 'pass',
         },
         valid: true,
       });
@@ -1596,9 +1621,7 @@ describe('skill-review author tools', () => {
     blocked.gates[0].reason = 'The package name is invalid.';
     blocked.gates[0].finding_ids = ['F-package'];
     expect(await validate(blocked)).toMatchObject({
-      score: {
-        release: 'fail',
-      },
+      decision: { design: 'fail', release_readiness: 'blocked' },
       valid: true,
     });
 
@@ -1790,11 +1813,11 @@ describe('skill-review author tools', () => {
       dimension.evidence = ['quick fixture evidence'];
     }
     expect(await validate(quick)).toMatchObject({
+      decision: { design: 'not-assessed', release_readiness: 'not-assessed' },
       score: {
         weighted_score: null,
         quality_band: null,
         coverage_percent: 24,
-        release: 'provisional',
       },
       valid: true,
     });
@@ -1824,7 +1847,7 @@ describe('skill-review author tools', () => {
       diagnostics: expect.arrayContaining([
         expect.objectContaining({ code: 'cap.minimum-control' }),
       ]),
-      score: { release: 'provisional' },
+      decision: { design: 'not-assessed', release_readiness: 'not-assessed' },
       valid: true,
     });
 
@@ -1851,11 +1874,11 @@ describe('skill-review author tools', () => {
     affectedArchitecture.confidence = 'high';
     affectedArchitecture.evidence = ['delta fixture evidence'];
     expect(await validate(delta)).toMatchObject({
+      decision: { design: 'pass', release_readiness: 'not-assessed' },
       score: {
         weighted_score: null,
         quality_band: null,
         coverage_percent: 10,
-        release: 'pass',
       },
       valid: true,
     });
@@ -1877,7 +1900,8 @@ describe('skill-review author tools', () => {
       evidence: [],
     }));
     expect(await validate(emptyDelta)).toMatchObject({
-      score: { weighted_score: null, coverage_percent: 0, release: 'provisional' },
+      decision: { design: 'not-assessed', release_readiness: 'not-assessed' },
+      score: { weighted_score: null, coverage_percent: 0 },
       valid: false,
       diagnostics: expect.arrayContaining([
         expect.objectContaining({ code: 'mode.delta-scope' }),
@@ -1887,7 +1911,7 @@ describe('skill-review author tools', () => {
     const missingPrevious = structuredClone(delta);
     missingPrevious.artifacts.previous_version = false;
     expect(await validate(missingPrevious)).toMatchObject({
-      score: { release: 'provisional' },
+      decision: { design: 'not-assessed', release_readiness: 'not-assessed' },
       valid: true,
     });
 
@@ -1900,7 +1924,8 @@ describe('skill-review author tools', () => {
       evidence: [],
     };
     expect(await validate(incompleteFull)).toMatchObject({
-      score: { weighted_score: null, release: 'provisional' },
+      decision: { design: 'not-assessed', release_readiness: 'provisional' },
+      score: { weighted_score: null },
       valid: false,
       diagnostics: expect.arrayContaining([
         expect.objectContaining({ code: 'dimension.mode-required' }),
@@ -1910,14 +1935,14 @@ describe('skill-review author tools', () => {
     const staleSources = structuredClone(base);
     staleSources.artifacts.current_sources_checked = false;
     expect(await validate(staleSources)).toMatchObject({
-      score: { release: 'provisional' },
+      decision: { design: 'pass', release_readiness: 'provisional' },
       valid: true,
     });
 
     const stringArtifact = structuredClone(base);
     stringArtifact.artifacts.current_sources_checked = 'false';
     expect(await validate(stringArtifact)).toMatchObject({
-      score: { release: 'provisional' },
+      decision: { design: 'pass', release_readiness: 'provisional' },
       valid: false,
       diagnostics: expect.arrayContaining([
         expect.objectContaining({ code: 'artifacts.value' }),
@@ -1927,7 +1952,8 @@ describe('skill-review author tools', () => {
     const lowConfidence = structuredClone(base);
     for (const dimension of lowConfidence.dimensions) dimension.confidence = 'low';
     expect(await validate(lowConfidence)).toMatchObject({
-      score: { confidence: 'low', release: 'provisional' },
+      decision: { design: 'not-assessed', release_readiness: 'provisional' },
+      score: { confidence: 'low' },
       valid: true,
     });
 
@@ -1992,10 +2018,10 @@ describe('skill-review author tools', () => {
         dimension.confidence = confidences[index];
       });
       expect(await validate(boundary)).toMatchObject({
+        decision: { design: 'pass', release_readiness: 'ready' },
         score: {
           confidence_index: expectedIndex,
           confidence: label,
-          release: 'pass',
         },
         valid: true,
       });

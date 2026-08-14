@@ -13,7 +13,7 @@ metadata:
 
 # Skill Review
 
-目标是判断 Skill 是否以最小、可验证、职责归属正确的机制解决真实问题，而不是让它覆盖所有理论边界。
+目标是判断 Skill 是否以最小、可验证、职责归属正确的机制解决真实问题，而不是让它覆盖所有理论边界。完整执行审计，但主报告只按异常和决策需要展示结果。
 
 ## 被审对象边界
 
@@ -31,6 +31,10 @@ metadata:
 - **full**：用户明确要求完整、多维或计分评审时使用；检查完整技能包，完成全部 12 个维度、最小有效控制审计和其它适用语义审计。
 - **release**：在 full 基础上核对当前官方规范，安全验证可运行脚本，并要求 trigger、behavior 或等价发布证据。
 - **delta**：主要目标是复核修订版、旧 finding 或比较上一版时使用；只复核旧问题、受影响维度、直接回归、复杂度变化和新证据，不计算新的总分。
+
+## 报告输出
+
+full/release 使用 `assets/report-template.md` 生成人读主报告，使用 `assets/review-appendix-template.md` 保存完整审计，并保留结构化 scorecard。主报告顶层分开报告设计结论和发布就绪度；详细值与映射以 `references/scoring-model.md` 为准。quick/delta 使用步骤 7 的短报告，不机械填充完整模板；材料不足时使用 `not-assessed`，不把证据不足写成设计缺陷。
 
 ## 固定评审合同
 
@@ -101,8 +105,8 @@ Quick 模式中，依赖 runtime 事实、动作顺序、跨 Skill 组合、客�
    ```bash
    node scripts/validate_scorecard.mjs <scorecard.json> --format json
    ```
-   使用脚本给出的权重、coverage、confidence、raw/effective quality band、复杂度结论和 release verdict。
-7. quick 直接输出检查范围、provisional 结论、已确认 finding、unknown、所选维度和停止决定；delta 直接输出旧问题关闭情况、受影响维度、回归、unknown 和停止决定。两者不计算总分。full/release 才读取并使用 `assets/report-template.md`；报告所有 P0/P1，默认只展开影响最大的 5 项 P2，其余保留在 scorecard ledger。evidence-only 早停也不能省略交付授权：请求涉及保存、正式发布、封存或 README 时，必须说明实际未执行的动作；正式发布和 README 登记需要分别明确授权，并说明当前 `review:publish` 会同时写正式报告和封存批次，没有 seal-only 入口。
+   使用脚本给出的 `decision.design`、`decision.release_readiness`、复杂度、coverage、confidence、权重和 raw/effective quality band。总分和 quality band 只进入附录与 JSON。
+7. quick 只输出结论、最多 3 个 finding、决策关键 unknown 和下一步；delta 只输出旧问题关闭情况、新回归、净复杂度变化、受影响维度和停止决定。两者不计算总分。full/release 才读取并使用 `assets/report-template.md` 和 `assets/review-appendix-template.md`；主报告遵守模板内的压缩规则，完整审计进入附录或 scorecard。evidence-only 早停也不能省略交付授权：请求涉及保存、正式发布、封存或 README 时，必须说明实际未执行的动作；正式发布和 README 登记需要分别明确授权，并说明当前 `review:publish` 会同时写正式报告和封存批次，没有 seal-only 入口。
 8. 默认只在当前会话返回报告，不发布、不封存批次，也不修改 README。用户只要求保存或持久化结果时，把草稿写入 `.tmp/agent-workflows/reviews/`，不运行发布命令。只有用户明确要求正式发布时，才读取目标类型对应的 reference 并运行 `review:publish`；执行前说明该命令会同时写正式目录和封存批次。用户只要求封存批次时，说明当前没有 seal-only 入口，并在获得正式发布授权前停止。README 登记需要用户另行明确要求，再运行 `review:release`。通过、失败或 `incomplete` 只影响报告结论，不改变授权边界。完整 eval/review 证据和草稿只放项目 `.tmp/agent-workflows/`，正式目录只保留人读报告和精简摘要。
 
 ## 评审完成边界
@@ -135,4 +139,4 @@ Quick 模式中，依赖 runtime 事实、动作顺序、跨 Skill 组合、客�
 
 ## 停止条件
 
-当评审合同清楚、核心行为已有验证方案、没有证据支持的 P0/P1，且继续修改只会增加 context、状态或维护负担时，给出通过或带 advisory 通过并停止。delta 模式没有新 `observed`、`normative` 或 `structural` 证据时，不扩张新的发布阻断项。
+当评审合同清楚、核心行为已有验证方案、没有证据支持的 P0/P1，且继续修改只会增加 context、状态或维护负担时，给出设计 `pass` 并停止。缺少发布运行证据时单独把发布就绪度设为 `provisional`，不得改写成“修复后通过”。delta 模式没有新 `observed`、`normative` 或 `structural` 证据时，不扩张新的发布阻断项。
