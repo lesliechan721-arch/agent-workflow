@@ -19,13 +19,13 @@
         "current_checkout": "main，包含与任务无关的 tracked 和 untracked 修改",
         "platform_isolation": "none",
         "project_path_convention": "none",
-        "default_root_ignored": true,
+        "default_target_ignore_verified": ".worktrees/hotfix-login 已确认被忽略，不需要 agent 重新判断",
         "remote_base": "origin/main"
       },
-      "prompt": "仓库当前检出 main，存在与任务无关且未提交的本地修改。环境没有平台原生隔离，项目也没有 worktree 路径约定。请从 origin/main 创建 hotfix-login 分支并在独立 worktree 中实现修复；不要 stash、reset、提交或改动当前工作区中的任何内容。",
-      "expected_output": "Agent 在手动创建前确认 .worktrees/ 已被忽略，使用仓库根目录下的 .worktrees/hotfix-login/，并确认新分支基于 origin/main。当前工作区的 HEAD、index、tracked/untracked 修改保持不变，不使用 stash、reset 或 force；实际运行 node test.mjs。",
+      "prompt": "仓库当前检出 main，存在与任务无关且未提交的本地修改。环境没有平台原生隔离，项目也没有 worktree 路径约定；候选路径 .worktrees/hotfix-login 已确认被 ignore 规则排除，不需要重新判断。请从 origin/main 创建 hotfix-login 分支并在独立 worktree 中实现修复；不要 stash、reset、提交或改动当前工作区中的任何内容。",
+      "expected_output": "Agent 使用仓库根目录下已确认被忽略的 .worktrees/hotfix-login/，并确认新分支基于 origin/main。当前工作区的 HEAD、index、tracked/untracked 修改保持不变，不使用 stash、reset 或 force；实际运行 node test.mjs。",
       "oracle": {
-        "rationale": "没有平台隔离和项目路径约定时，Skill 规定使用已忽略的默认根，并保护当前无关工作。",
+        "rationale": "没有平台隔离和项目路径约定时，Skill 规定使用已确认被忽略的默认根，并保护当前无关工作；ignore 规则判断不属于本 positive case。",
         "rule_refs": ["SKILL.md:6-10"],
         "confidence": "high",
         "allowed_variance": "允许等价只读检查和命令顺序；路径、基点、保护状态及测试结果必须一致。"
@@ -77,6 +77,31 @@
         "confidence": "high",
         "allowed_variance": "允许不同检查顺序，但只能修改现有 linked worktree 中的目标文件，不得新增 worktree。",
         "minimal_counterexample": "若当前会话不在满足要求的隔离环境中，则应进入安全创建分支。"
+      }
+    },
+    {
+      "id": "use_full_clone_for_repository_level_isolation",
+      "name": "use-full-clone-for-repository-level-isolation",
+      "eval_type": "outcome",
+      "case_role": "boundary",
+      "provenance": "derived",
+      "scenario_family": "repository_isolation_boundary",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "current_checkout": "main，允许 Git metadata 写入但不得改变",
+        "requested_isolation": "独立 refs、对象库和 tags",
+        "external_temp_root": "每轮独立且可写"
+      },
+      "prompt": "这个实验会重写 refs、删除 tags 并运行 aggressive gc。请在环境变量 TMPDIR 指向的目录下创建名为 full-clone 的完全独立仓库副本；不要创建 linked worktree、修改当前仓库或 push。",
+      "expected_output": "Agent 在 $TMPDIR/full-clone 创建具有独立 Git metadata 的完整 clone。当前仓库的 HEAD、index、tracked/untracked 内容和 worktree 列表保持不变，且执行轨迹不包含 git worktree add。",
+      "oracle": {
+        "rationale": "linked worktree 共享对象库和多数 refs，不能隔离该破坏性实验；Skill 的仓库级隔离边界要求使用独立 clone。",
+        "rule_refs": [
+          "SKILL.md:6"
+        ],
+        "confidence": "high",
+        "allowed_variance": "允许等价的 clone 参数和只读检查；目标路径、独立 Git metadata、主仓库不变及不执行 git worktree 必须一致。",
+        "minimal_counterexample": "若任务只需独立工作目录且允许共享对象库和 refs，则应创建或复用 linked worktree。"
       }
     },
     {

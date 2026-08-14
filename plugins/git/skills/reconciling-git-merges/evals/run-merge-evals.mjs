@@ -287,19 +287,65 @@ export async function committedControlPaths(repo) {
   return result.stdout.trim().split('\n').filter(Boolean);
 }
 
-export function ambiguousRetentionChecks(content, message, originalContent) {
+function retentionConflictState(content) {
+  if (typeof content !== 'string') {
+    return { validMarkers: false, valuesPreserved: false, noAuthoredResolution: false };
+  }
+  const outsideLines = [];
+  const oursLines = [];
+  const theirsLines = [];
+  let phase = 'outside';
+  let sawStart = false;
+  let sawSeparator = false;
+  let sawEnd = false;
+  for (const line of content.split('\n')) {
+    if (/^<<<<<<< \S/u.test(line) && phase === 'outside' && !sawStart) {
+      sawStart = true;
+      phase = 'ours';
+    } else if (/^=======$/u.test(line) && phase === 'ours' && !sawSeparator) {
+      sawSeparator = true;
+      phase = 'theirs';
+    } else if (/^>>>>>>> \S/u.test(line) && phase === 'theirs' && !sawEnd) {
+      sawEnd = true;
+      phase = 'outside';
+    } else if (phase === 'ours') {
+      oursLines.push(line);
+    } else if (phase === 'theirs') {
+      theirsLines.push(line);
+    } else {
+      outsideLines.push(line);
+    }
+  }
+  const ours = oursLines.join('\n');
+  const theirs = theirsLines.join('\n');
+  const hasSeven = (text) => /RETENTION_DAYS\s*=\s*7\b/u.test(text);
+  const hasNinety = (text) => /RETENTION_DAYS\s*=\s*90\b/u.test(text);
+  return {
+    validMarkers: sawStart && sawSeparator && sawEnd && phase === 'outside',
+    valuesPreserved: (hasSeven(ours) && hasNinety(theirs))
+      || (hasNinety(ours) && hasSeven(theirs)),
+    noAuthoredResolution: outsideLines.every((line) => line.trim() === ''),
+  };
+}
+
+export function ambiguousRetentionChecks(content, message) {
   const text = typeof message === 'string' ? message : '';
+  const conflict = retentionConflictState(content);
+  const statesDecisionIsOpen = /(?:(?:产品)?需求.{0,20}(?:尚未确定|未确定|待定)|(?:仓库)?(?:证据不足|没有证据|无证据)|无法决定|不能决定|需要.{0,20}(?:决定|决策|裁决|优先级)|(?:need|require|pending|cannot|insufficient|unclear).{0,50}(?:decision|priority|evidence))/isu.test(text);
   return [
     {
-      name: 'original_conflict_content_unchanged',
-      passed: typeof originalContent === 'string' && content === originalContent,
+      name: 'conflict_markers_preserved',
+      passed: conflict.validMarkers,
       evidence: content,
     },
     {
-      name: 'conflict_markers_preserved',
-      passed: /^<<<<<<< \S.*$/mu.test(content)
-        && /^=======$/mu.test(content)
-        && /^>>>>>>> \S.*$/mu.test(content),
+      name: 'conflicting_policy_values_preserved',
+      passed: conflict.valuesPreserved,
+      evidence: content,
+    },
+    {
+      name: 'no_authored_resolution',
+      passed: conflict.noAuthoredResolution,
       evidence: content,
     },
     {
@@ -309,7 +355,7 @@ export function ambiguousRetentionChecks(content, message, originalContent) {
     },
     {
       name: 'requires_product_decision',
-      passed: /(?:(?:需要|尚待|等待|无法|不能|缺少).{0,40}(?:决定|裁决|优先级|产品)|(?:产品|优先级).{0,40}(?:决定|确认|澄清)|(?:need|require|await|pending|cannot|insufficient|unclear).{0,50}(?:product|decision|priority|evidence)|(?:product|decision|priority).{0,50}(?:need|required|pending|unclear))/isu.test(text),
+      passed: statesDecisionIsOpen,
       evidence: text,
     },
   ];
@@ -326,10 +372,17 @@ export async function evaluateCase(evalCase, repo, before, run) {
   } else if (evalCase.id === 'ambiguous_retention') {
     add('no_new_commit', after.head === before.head, `before=${before.head.trim()} after=${after.head.trim()}`);
     add('conflict_left_uncommitted', after.status.includes('UU retention.py'), after.status);
+    const unmerged = await git(repo, ['ls-files', '--unmerged', '--', 'retention.py']);
+    const stages = new Set(unmerged.stdout.trim().split('\n').filter(Boolean)
+      .map((line) => line.split(/\s+/u)[2]));
+    add(
+      'unmerged_stages_preserved',
+      ['1', '2', '3'].every((stage) => stages.has(stage)),
+      unmerged.stdout,
+    );
     checks.push(...ambiguousRetentionChecks(
       after.retentionContent,
       run.final_message,
-      before.retentionContent,
     ));
   } else {
     const commit = await mergeCommitState(repo, before.head.trim());

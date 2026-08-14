@@ -47,6 +47,7 @@ import {
   parseArgs as parseWorktreeEvalArgs,
   snapshot as snapshotWorktreeRepository,
   worktreeCaseAllowsGitWrites,
+  worktreePathsOutsideRoot,
 } from '../skills/isolating-work-with-git-worktrees/evals/run-worktree-evals.mjs';
 import {
   captureTriggerWorkspaceState as captureWorktreeTriggerWorkspaceState,
@@ -125,6 +126,7 @@ async function testEvalCorpora(sourceRoot) {
     mergeEvalContent,
     mergeManifestContent,
     worktreeTriggerContent,
+    worktreeDiagnosticTriggerContent,
     worktreeEvalContent,
     worktreeManifestContent,
     worktreeEvalReadmeContent,
@@ -160,6 +162,16 @@ async function testEvalCorpora(sourceRoot) {
         'isolating-work-with-git-worktrees',
         'evals',
         'trigger-cases.json',
+      ),
+      'utf8',
+    ),
+    readFile(
+      path.join(
+        sourceRoot,
+        'skills',
+        'isolating-work-with-git-worktrees',
+        'evals',
+        'trigger-diagnostic-cases.json',
       ),
       'utf8',
     ),
@@ -452,10 +464,13 @@ async function testEvalCorpora(sourceRoot) {
   ]);
   assert.equal(worktreeDocument.schemaVersion, 1);
   assert.equal(worktreeDocument.skill, 'isolating-work-with-git-worktrees');
-  assert.equal(worktreeCases.length, 30);
-  assert.equal(worktreeCases.filter((entry) => entry.split === 'train').length, 14);
+  assert.equal(worktreeDocument.policy.optimization, 'recall-first');
+  assert.equal(worktreeDocument.policy.false_negative_cost, 'high');
+  assert.equal(worktreeDocument.policy.false_positive_cost, 'medium');
+  assert.equal(worktreeCases.length, 28);
+  assert.equal(worktreeCases.filter((entry) => entry.split === 'train').length, 13);
   assert.equal(worktreeCases.filter((entry) => entry.split === 'validation').length, 6);
-  assert.equal(worktreeCases.filter((entry) => entry.split === 'sanity').length, 10);
+  assert.equal(worktreeCases.filter((entry) => entry.split === 'sanity').length, 9);
   assert.equal(new Set(worktreeCases.map((entry) => entry.id)).size, worktreeCases.length);
   assert.equal(
     worktreeCases.filter((entry) =>
@@ -465,7 +480,7 @@ async function testEvalCorpora(sourceRoot) {
   );
   assert.equal(
     worktreeCases.filter((entry) => entry.expected_loaded_skills.length === 0).length,
-    12,
+    10,
   );
   for (const entry of worktreeCases) {
     assert.equal(Array.isArray(entry.expected_loaded_skills), true);
@@ -484,7 +499,6 @@ async function testEvalCorpora(sourceRoot) {
     ['source_10', ['isolating-work-with-git-worktrees']],
     ['source_11', []],
     ['source_13', []],
-    ['source_15', []],
     ['source_17', ['reconciling-git-merges']],
     ['source_20', []],
     ['sanity_parallel_branch', ['isolating-work-with-git-worktrees']],
@@ -500,6 +514,24 @@ async function testEvalCorpora(sourceRoot) {
     assert.ok(entry, `Missing required worktree routing case ${id}`);
     assert.deepEqual(entry.expected_loaded_skills, expectedSkills);
   }
+  const worktreeDiagnosticDocument = JSON.parse(worktreeDiagnosticTriggerContent);
+  assert.equal(worktreeDiagnosticDocument.policy.optimization, 'recall-first');
+  assert.equal(worktreeDiagnosticDocument.policy.false_positive_cost, 'low');
+  assert.deepEqual(
+    worktreeDiagnosticDocument.cases.map((entry) => entry.id),
+    ['source_15', 'sanity_full_clone'],
+  );
+  const fullCloneDiagnostic = worktreeDiagnosticDocument.cases.find(
+    (entry) => entry.id === 'source_15',
+  );
+  assert.equal(fullCloneDiagnostic.case_role, 'diagnostic');
+  assert.equal(fullCloneDiagnostic.oracle.confidence, 'medium');
+  assert.match(fullCloneDiagnostic.oracle.rationale, /expected-tradeoff/);
+  const fullCloneSanityDiagnostic = worktreeDiagnosticDocument.cases.find(
+    (entry) => entry.id === 'sanity_full_clone',
+  );
+  assert.equal(fullCloneSanityDiagnostic.split, 'sanity');
+  assert.equal(fullCloneSanityDiagnostic.case_role, 'diagnostic');
   assert.equal(
     worktreeCases.some((entry) =>
       entry.query.includes('$isolating-work-with-git-worktrees'),
@@ -554,6 +586,7 @@ async function testEvalCorpora(sourceRoot) {
       'preserve_dirty_workspace_and_use_default_path',
       'stop_when_default_root_not_ignored',
       'reuse_existing_isolation',
+      'use_full_clone_for_repository_level_isolation',
       'report_dirty_baseline',
     ],
   );
@@ -563,8 +596,11 @@ async function testEvalCorpora(sourceRoot) {
     assert.equal(typeof entry.expected_output, 'string');
   }
   assert.equal(worktreeManifest.skill, 'isolating-work-with-git-worktrees');
-  assert.equal(worktreeManifest.suites.length, 2);
+  assert.equal(worktreeManifest.suites.length, 3);
   const worktreeRouterSuite = worktreeManifest.suites.find((suite) => suite.id === 'router');
+  const worktreeDiagnosticRouterSuite = worktreeManifest.suites.find(
+    (suite) => suite.id === 'router-diagnostic',
+  );
   const worktreeBehaviorSuite = worktreeManifest.suites.find((suite) => suite.id === 'behavior');
   assert.equal(worktreeRouterSuite.id, 'router');
   assert.equal(worktreeRouterSuite.kind, 'trigger');
@@ -578,6 +614,13 @@ async function testEvalCorpora(sourceRoot) {
   assert.equal(worktreeRouterSuite.cases, './trigger-cases.json');
   assert.deepEqual(worktreeRouterSuite.strictNegativeSplits, ['validation', 'sanity']);
   assert.deepEqual(worktreeRouterSuite.releaseSplits, ['validation', 'sanity']);
+  assert.equal(worktreeDiagnosticRouterSuite.kind, 'trigger');
+  assert.equal(
+    worktreeDiagnosticRouterSuite.cases,
+    './trigger-diagnostic-cases.json',
+  );
+  assert.deepEqual(worktreeDiagnosticRouterSuite.releaseSplits, []);
+  assert.equal(worktreeDiagnosticRouterSuite.requiredForRelease, false);
   assert.equal(worktreeBehaviorSuite.kind, 'command');
   assert.deepEqual(worktreeBehaviorSuite.skills, [
     'isolating-work-with-git-worktrees',
@@ -608,6 +651,10 @@ async function testEvalCorpora(sourceRoot) {
   );
   assert.throws(() => parseWorktreeEvalArgs(['--timeout-ms', '0']), /positive integer/);
   assert.equal(worktreeCaseAllowsGitWrites('stop_when_default_root_not_ignored'), true);
+  assert.equal(
+    worktreeCaseAllowsGitWrites('use_full_clone_for_repository_level_isolation'),
+    true,
+  );
   assert.equal(worktreeCaseAllowsGitWrites('reuse_existing_isolation'), false);
 }
 
@@ -712,6 +759,7 @@ async function testSkillRenders(context) {
     worktreeSource,
     /当任务需要独立 Git 工作目录以保护当前工作区或并行检出另一分支/,
   );
+  assert.match(worktreeSource, /需要独立 refs\/对象库的完整仓库隔离/);
   assert.match(worktreeSource, /不触碰当前未完成工作的情况下处理另一个独立任务/);
   assert.match(worktreeSource, /若现有环境已提供所需隔离则复用/);
   assert.match(worktreeSource, /不要仅因工作区有未提交修改/);
@@ -1097,6 +1145,15 @@ function testCommitExecTraceAssertions() {
     ),
     true,
   );
+  const observedNestedQuoteCommand = String.raw`/bin/zsh -lc 'node test.mjs; test_status=$?; printf '"'TEST_EXIT=%s\\n' \""'$test_status"; git diff -- app.txt; git status --short --branch; printf '"'\\nMAIN_STATUS\\n'; git -C ../.. status --short --branch"`;
+  assert.equal(
+    commandRunsScript(observedNestedQuoteCommand, 'node', 'test.mjs'),
+    true,
+  );
+  assert.equal(
+    commandRunsScript("/bin/zsh -lc 'echo \"node test.mjs\"'", 'node', 'test.mjs'),
+    false,
+  );
 }
 
 function testCommitMessageAssertions() {
@@ -1167,7 +1224,33 @@ function testCommitMessageAssertions() {
         '- Mark the guide feature as enabled',
         '- Bump 1.0.0 to 1.1.0',
       ].join('\n'),
-    ).some((check) => !check.passed),
+    ).every((check) => check.passed),
+    true,
+  );
+  assert.equal(
+    commitMessageChecks(
+      'detailed_body_for_nontrivial_change',
+      [
+        'feat: 启用功能并同步版本',
+        '',
+        '- 将应用功能开关及对应测试期望值切换为启用状态',
+        '- 更新使用指南以反映功能已启用',
+        '- 将项目版本从 1.0.0 升级至 1.1.0',
+      ].join('\n'),
+    ).every((check) => check.passed),
+    true,
+  );
+  assert.equal(
+    commitMessageChecks(
+      'detailed_body_for_nontrivial_change',
+      [
+        'feat: 启用功能并升级版本',
+        '',
+        '- 将应用功能开关设为启用状态，并把期望值同步为 true',
+        '- 更新使用指南以反映功能已启用',
+        '- 将版本号从 1.0.0 升至 1.1.0',
+      ].join('\n'),
+    ).every((check) => check.passed),
     true,
   );
   assert.equal(
@@ -1211,6 +1294,24 @@ function testCommitMessageAssertions() {
       'pre-commit hook 失败，未创建提交。HEAD 未变；暂存修改仍在 index；工作树干净。',
     ).every((check) => check.passed),
     true,
+  );
+  const observedHookFailure = [
+    '提交未创建：pre-commit hook 已拒绝提交，且未绕过 hook。',
+    '',
+    '- HEAD 仍为 `3657841 chore: initialize commit fixture`',
+    '- `src/app.js` 改动仍保持暂存状态',
+    '- 工作区没有额外未暂存改动',
+  ].join('\n');
+  assert.equal(
+    hookFailureMessageChecks(observedHookFailure, '3657841abcdef').every((check) => check.passed),
+    true,
+  );
+  assert.equal(
+    hookFailureMessageChecks(
+      observedHookFailure.replace('3657841', 'deadbee'),
+      '3657841abcdef',
+    ).find((check) => check.name === 'reports_actual_repository_state').passed,
+    false,
   );
   assert.equal(
     hookFailureMessageChecks('pre-commit hook 失败，但 commit 成功。')
@@ -1266,6 +1367,11 @@ function testCommitMessageAssertions() {
       true,
     );
   }
+  assert.equal(
+    commitMessageChecks('unrelated_staged_content', '修改 requested 文件')
+      .every((check) => check.passed),
+    true,
+  );
 }
 
 async function testEvalChildTimeout() {
@@ -1446,7 +1552,7 @@ function worktreeExecTrace(commands) {
   })).join('\n');
 }
 
-function testWorktreeExecTraceAssertions() {
+async function testWorktreeExecTraceAssertions() {
   const safe = inspectWorktreeExecTrace(worktreeExecTrace([
     'git status --short',
     'git stash list',
@@ -1478,6 +1584,36 @@ function testWorktreeExecTraceAssertions() {
       'forced git worktree operation',
     ],
   );
+
+  const evalRoot = path.resolve(os.tmpdir(), 'worktree-eval-root');
+  assert.deepEqual(
+    worktreePathsOutsideRoot([
+      `worktree ${path.join(evalRoot, 'repo')}`,
+      `worktree ${path.join(evalRoot, 'repo', '.worktrees', 'feature')}`,
+      '',
+    ].join('\n'), evalRoot),
+    [],
+  );
+  assert.deepEqual(
+    worktreePathsOutsideRoot(`worktree ${path.resolve(os.tmpdir(), 'outside-worktree')}\n`, evalRoot),
+    [path.resolve(os.tmpdir(), 'outside-worktree')],
+  );
+
+  const createdRoot = await mkdtemp(path.join(os.tmpdir(), 'git-worktree-containment-'));
+  const canonicalRoot = await realpath(createdRoot);
+  try {
+    const repo = path.join(canonicalRoot, 'repo');
+    await mkdir(repo);
+    await initializeRepository(repo);
+    await git(repo, ['branch', 'feature']);
+    await git(repo, [
+      'worktree', 'add', '--quiet', path.join(canonicalRoot, 'linked'), 'feature',
+    ]);
+    const worktrees = await git(repo, ['worktree', 'list', '--porcelain']);
+    assert.deepEqual(worktreePathsOutsideRoot(worktrees.stdout, canonicalRoot), []);
+  } finally {
+    await rm(canonicalRoot, { recursive: true, force: true });
+  }
 }
 
 async function initializeRepository(root) {
@@ -1593,7 +1729,28 @@ async function testMergeEvalAssertions() {
     ambiguousRetentionChecks(
       unresolvedRetention,
       '7 天隐私保留与 90 天审计保留不兼容，仓库证据不足，需要产品决定优先级。',
+    ).every((entry) => entry.passed),
+    true,
+  );
+  assert.equal(
+    ambiguousRetentionChecks(
       unresolvedRetention,
+      [
+        'main 要求保留 7 天，origin/feature 要求保留 90 天，两者不兼容。',
+        'README 明确说明产品需求尚未确定，仓库没有证据支持优先选择任一策略。',
+        '请提供权威决策后，我再解决冲突并运行测试。',
+      ].join('\n'),
+    ).every((entry) => entry.passed),
+    true,
+  );
+  assert.equal(
+    ambiguousRetentionChecks(
+      unresolvedRetention,
+      [
+        'main 要求保留 7 天，origin/feature 要求保留 90 天。',
+        'README 明确说明需求尚未确定，仓库没有证据支持选择任一策略。',
+        '因此未擅自解决或提交，合并保持暂停。',
+      ].join('\n'),
     ).every((entry) => entry.passed),
     true,
   );
@@ -1601,7 +1758,6 @@ async function testMergeEvalAssertions() {
     ambiguousRetentionChecks(
       'RETENTION_DAYS = 30\n',
       '7 天与 90 天冲突，因此选择 30 天折中。',
-      unresolvedRetention,
     ).some((entry) => !entry.passed),
     true,
   );
@@ -1617,7 +1773,6 @@ async function testMergeEvalAssertions() {
         '',
       ].join('\n'),
       '7 天与 90 天不兼容，仓库证据不足，需要产品决定优先级。',
-      unresolvedRetention,
     ).some((entry) => !entry.passed),
     true,
   );
@@ -1635,9 +1790,15 @@ async function testMergeEvalAssertions() {
         '',
       ].join('\n'),
       '7 天与 90 天不兼容，仓库证据不足，需要产品决定优先级。',
-      unresolvedRetention,
     ).some((entry) => !entry.passed),
     true,
+  );
+  assert.equal(
+    ambiguousRetentionChecks(
+      unresolvedRetention,
+      '7 天与 90 天不兼容，但先保持冲突。',
+    ).find((entry) => entry.name === 'requires_product_decision').passed,
+    false,
   );
 
   const root = await mkdtemp(path.join(os.tmpdir(), 'git-merge-control-paths-'));
@@ -1688,7 +1849,7 @@ async function main() {
   await testEvalChildTimeout();
   await testWorktreeIgnoreFixtures();
   await testWorktreeTriggerFixtures();
-  testWorktreeExecTraceAssertions();
+  await testWorktreeExecTraceAssertions();
   await testPartialStagingBehavior();
   await testMergeInProgressDetection();
   await testCherryPickConflictDetection();
