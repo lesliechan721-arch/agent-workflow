@@ -28,6 +28,10 @@ node .agents/skills/skill-review/scripts/run_static_skill_evals.mjs \
 
 runner 在每个 case 的全部 repetitions 结束后发布检查点。case 为 `incomplete` 时停止当前命令。再次使用同一 `--batch-id` 时，runner 复用 terminal case，并重跑 incomplete 或 missing case；当前未完成 case 的全部 repetitions 会重新运行。没有 case 合同的 suite 以整个 suite 为恢复单位。真实模型 eval 可能运行几十分钟到数小时。保留同一个进程 session，首轮和后续等待都直接使用工具允许的最长响应式等待时间。等待超时不表示 eval 失败。不得另开短周期 wait、`sleep`、`ps`、报告文件或其它状态轮询命令。
 
+## 正式报告发现与当前性
+
+静态 Skill 的正式报告以 `.agents/reports/<skill>/*/summary.json` 为事实源，README 只是登记索引。README 没有登记不能证明正式报告不存在。判断当前 `release-evidence` 时，先枚举正式 summary，再比较其 source commit 和 `inScopeDirty` 与当前目标。报告来源或当前目标任一 `inScopeDirty=true` 时，相同 commit 仍不足以证明内容相同，必须有匹配的封存 package digest；digest 缺失或不匹配时，当前证据为 `unknown`。来源不匹配的报告只记为 historical evidence：保留旧 pass/fail 和 finding，但不能替代当前版本的 release evidence。
+
 ## Codex 配置与证据
 
 默认模型为 `gpt-5.6-luna`。当前 `CODEX_HOME/config.toml` 只提供选中的 `model_providers.<id>`、provider 连接配置及其它允许的 model 设置，不再决定默认模型；不会继承 plugins、skills、MCP、agents 或其它用户配置。`--model`、`--model-provider`、`--codex-config` 可显式覆盖；`--no-inherit-codex-config` 使用干净的官方默认 provider。

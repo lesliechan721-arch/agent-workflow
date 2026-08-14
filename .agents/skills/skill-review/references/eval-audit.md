@@ -15,12 +15,14 @@
 本审计层补充现有可执行 eval 合同，不替换它：
 
 - `evals/manifest.json` 继续定义 suite、participant、`defaultRuns`、发布 split 和执行隔离。
+- local-package 目标存在 manifest 时，quick、full、release 和 delta 都先读取它，只把 `suites[].cases` 指向的文档视为可执行 case。evidence-only 仍只使用用户提供的材料，不搜索缺失的 manifest。
 - 可执行 trigger split 仍是 `train`、`validation` 和 `sanity`。`regression`、`boundary`、`challenge`、`diagnostic` 是 case role，不是新的 runner split。
 - `manifest.suites[].kind` 是执行入口。`eval_type` 是本审计使用的决策层。一个 trigger suite 中的相邻 Skill 竞争 case 可以把 `eval_type` 标为 `routing`。
 - trigger 的机械期望仍使用 `should_load_skill` 或 `expected_loaded_skills`。conversation 的机械和定性断言仍使用 `review.artifacts` 与 `review.checks`。
 - audit metadata 可以作为额外字段放入现有 case 文档。当前 runner 忽略这些字段，`scripts/validate_eval_cases.mjs` 读取它们。
 - 实际运行次数以 manifest 和运行报告为准。case 内的 `run_policy` 只说明扩样决策，不能覆盖 manifest。
 - conversation baseline 会移除 owner Skill，但保留 companion Skills。纯 trigger eval 不强制使用无 Skill baseline；改动 description 时应比较上一版或固定 validation/sanity。
+- 未被 manifest 引用的 JSON 不自动形成可执行 suite。若包内 inspector 或权威 reference 把它标为 portable/calibration，它只用于设计或人工校准，不运行 `validate_eval_cases.mjs`，也不进入 release evidence。当前 `skill-review` 的 `evals/behavior_cases.json` 和 `evals/scoring_cases.json` 属于此类资料。
 
 历史 case 可以渐进迁移。缺少 metadata 时，先把 oracle 置信度或门禁标为 `unknown`。不要把缺少 metadata 自动升级为 P0/P1。会进入 train、validation、sanity、regression、发布判断或当前修改的 case，必须先完成下面的 Case Admission 检查。
 

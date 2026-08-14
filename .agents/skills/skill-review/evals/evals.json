@@ -195,7 +195,7 @@
       "provenance": "boundary",
       "scenario_family": "minimum-control-calibration",
       "unit_under_test": "full-skill",
-      "preconditions": { "fixture": "fixtures/over-specified-review.json", "mode": "quick" },
+      "preconditions": { "fixture": "fixtures/over-specified-review.json", "mode": "quick", "selected_dimensions": ["minimum_control"] },
       "oracle": {
         "rationale": "该 case 是 minimum-control 判为 over-specified 的校准边界。",
         "rule_refs": ["SKILL.md Minimum Effective Control Audit", "SKILL.md 评分纪律"],
@@ -206,6 +206,7 @@
       "review": {
         "workspace_unchanged": true,
         "checks": [
+          "quick所选范围包含minimum_control，因此先执行精简Minimum Effective Control Audit",
           "最小行为合同不超过8条且不复制现有五阶段结构",
           "复杂度结论为over-specified，方向不是aligned",
           "minimum_control不高于3",
@@ -225,7 +226,7 @@
       "provenance": "boundary",
       "scenario_family": "minimum-control-calibration",
       "unit_under_test": "full-skill",
-      "preconditions": { "fixture": "fixtures/fragile-control-review.json", "mode": "quick" },
+      "preconditions": { "fixture": "fixtures/fragile-control-review.json", "mode": "quick", "selected_dimensions": ["minimum_control"] },
       "oracle": {
         "rationale": "该 case 是 minimum-control 判为 proportionate 的相邻校准边界。",
         "rule_refs": ["SKILL.md Minimum Effective Control Audit", "SKILL.md 评分纪律"],
@@ -236,6 +237,7 @@
       "review": {
         "workspace_unchanged": true,
         "checks": [
+          "quick所选范围包含minimum_control，因此先执行精简Minimum Effective Control Audit",
           "复杂度结论为proportionate",
           "minimum_control可得4或更高",
           "保留备份、writer cutover、固定命令和checksum门禁",
@@ -246,7 +248,7 @@
     {
       "id": "unspecified-depth-defaults-quick",
       "prompt": "使用 $skill-review 审核 fixtures/default-depth-review.json。用户没有指定评审深度、评分或发布判断。只读分析，不修改文件。",
-      "expected_output": "普通未指定深度的评审默认使用 quick，检查最相关维度并给 provisional 结论，不计算总分。",
+      "expected_output": "普通未指定深度的评审默认使用 quick，检查最相关维度并给 provisional 结论，不计算总分；不把 Minimum Effective Control Audit 当作所有 quick 的无条件步骤。",
       "files": [],
       "scripted_replies": [],
       "eval_type": "behavior",
@@ -269,7 +271,9 @@
           "只检查最相关的3至5个维度",
           "不计算weighted score或quality band",
           "结论为provisional",
-          "不因目标包完整而自动升级为full"
+          "不因目标包完整而自动升级为full",
+          "不会仅因模式是quick而无条件执行Minimum Effective Control Audit",
+          "若所选范围包含minimum_control、instruction_design、architecture或completion boundary，则先执行精简审计"
         ]
       }
     },
@@ -303,6 +307,67 @@
           "不运行review:publish或review:release",
           "不封存批次或修改README",
           "说明发布和README登记需要分别明确授权"
+        ]
+      }
+    },
+    {
+      "id": "release-evidence-distinguishes-registration-and-currentness",
+      "prompt": "使用 $skill-review 对 fixtures/release-evidence-review.json 做定向 quick review。材料已提供，只核对 release evidence 的存在性和当前性；不搜索其它文件，不修改 workspace。",
+      "expected_output": "README 未登记不能证明没有正式报告；比较正式 summary 的 source 与当前目标后，把旧失败报告记为 historical fail，并把当前版本的 release-evidence 判为 unknown。",
+      "files": [],
+      "scripted_replies": [],
+      "eval_type": "behavior",
+      "case_role": "regression",
+      "provenance": "derived",
+      "scenario_family": "release-evidence-currentness",
+      "unit_under_test": "full-skill",
+      "preconditions": { "fixture": "fixtures/release-evidence-review.json", "mode": "quick", "current_release_evidence": false },
+      "oracle": {
+        "rationale": "本 case 复现 reviewer 把 README 未登记误解为没有正式报告，并忽略旧报告 source 已过期的问题。",
+        "rule_refs": ["references/static-skill-evaluation.md 正式报告发现与当前性", "SKILL.md 评审完成边界"],
+        "confidence": "high",
+        "allowed_variance": "可以使用 stale、historical 或过期等措辞，但必须区分报告存在性、登记状态和当前性。",
+        "minimal_counterexample": "若正式 summary 的 source 与当前目标匹配，且 required release eval 和定性复核均完整通过，则当前 release-evidence 可以通过。"
+      },
+      "review": {
+        "workspace_unchanged": true,
+        "checks": [
+          "不因README没有登记而断言不存在正式报告",
+          "使用fixture中的正式summary而不搜索其它文件",
+          "比较正式summary的source commit、inScopeDirty和package digest与当前目标",
+          "当前证据为unknown，同时记录旧报告的historical fail",
+          "不把旧报告当作当前版本的release pass或当前fail",
+          "不修改workspace"
+        ]
+      }
+    },
+    {
+      "id": "release-evidence-dirty-source-requires-digest",
+      "prompt": "使用 $skill-review 对 fixtures/release-evidence-dirty-review.json 做定向 quick review。只判断 dirty source 的 release evidence currentness；不搜索其它文件，不修改 workspace。",
+      "expected_output": "相同 commit 不能证明两个 dirty source 内容相同；没有匹配的封存 package digest 时，把当前 release-evidence 判为 unknown。",
+      "files": [],
+      "scripted_replies": [],
+      "eval_type": "behavior",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "release-evidence-currentness",
+      "unit_under_test": "full-skill",
+      "preconditions": { "fixture": "fixtures/release-evidence-dirty-review.json", "mode": "quick", "source_commit_matches": true, "source_dirty": true, "package_digest_available": false },
+      "oracle": {
+        "rationale": "相同 commit 下的未提交内容可以不同；没有匹配 digest 时，正式报告不能证明当前目标内容与被评版本相同。",
+        "rule_refs": ["references/static-skill-evaluation.md 正式报告发现与当前性"],
+        "confidence": "high",
+        "allowed_variance": "可以使用 dirty、未提交改动或 source identity 不确定等措辞，但不能把 commit 相同当作充分证据。",
+        "minimal_counterexample": "若双方 dirty source 具有匹配的封存 package digest，且 required release eval 和定性复核均完整通过，则当前 release-evidence 可以通过。"
+      },
+      "review": {
+        "workspace_unchanged": true,
+        "checks": [
+          "任一source为dirty时相同commit不足以证明内容相同",
+          "dirty source必须有匹配的封存package digest才能证明currentness",
+          "digest缺失时当前release-evidence为unknown",
+          "不把fixture中的passed结果当作当前release pass",
+          "不修改workspace"
         ]
       }
     },

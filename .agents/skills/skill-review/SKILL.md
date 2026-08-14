@@ -85,13 +85,13 @@ Quick 模式中，依赖 runtime 事实、动作顺序、跨 Skill 组合、客�
    - Skill 含脚本、references、assets，或反复重做确定性逻辑：`references/scripts-and-resources.md`
    - delta 模式或需要比较上一版：`references/delta-review.md`
    - release 模式或需要判断证据权威：`references/source-map.md`，并重新核对其中标记为 current-check 的官方来源。
-   - 被审 Skill 含 eval，或 eval 结果将用于评分、发布或修改 Skill：`references/eval-audit.md`。先审核 suite 和 oracle，再使用运行结果评价 Skill。对可达 case 文档运行 `node scripts/validate_eval_cases.mjs <eval-cases.json> --format json`；诊断是结构线索，不代替语义裁决。`--strict` 只用于已经选定为发布或修改依据的 case 文档。
+   - 被审 Skill 含 eval，或 eval 结果将用于评分、发布或修改 Skill：`references/eval-audit.md`。先审核 suite 和 oracle，再使用运行结果评价 Skill。local-package 目标存在 `evals/manifest.json` 时，任何模式都先读取它，只用 `suites[].cases` 确定可执行 case reachability；evidence-only 不搜索未提供的 manifest。对这些文档或当前材料明确声明的可执行 case 文档运行 `node scripts/validate_eval_cases.mjs <eval-cases.json> --format json`；未被 manifest 引用的 portable/calibration 文档不运行该 validator，也不作为 release evidence。诊断是结构线索，不代替语义裁决。`--strict` 只用于已经选定为发布或修改依据的 case 文档。
    - Eval 审计需要结构化记录时，报告使用 `assets/eval-audit-report-template.md`；case metadata 和运行结果分别使用 `assets/eval-case-template.json`、`assets/eval-results-template.json`，最小合法形状见 `assets/eval-case-example.json`。
-   - 当前仓库静态 Skill 的 release 评审，或用户明确要求真实 eval 或正式发布：读取 `references/static-skill-evaluation.md` 和 `evals/manifest.json`；真实 eval 前先运行 `node scripts/run_static_skill_evals.mjs <skill-dir-or-name> --validate-only`。
+   - 当前仓库静态 Skill 的 release 评审，或用户明确要求真实 eval 或正式发布：读取 `references/static-skill-evaluation.md`；manifest reachability 按上一分支处理。真实 eval 前先运行 `node scripts/run_static_skill_evals.mjs <skill-dir-or-name> --validate-only`。
    - 当前仓库的 AW 插件或动态 Skill：`references/agent-workflows-plugin.md`
    - 启动真实模型 eval 前，用户必须明确选择整个会话使用 Full Access，或明确选择 `--allow-unmanaged-processes`。用户未选择时停下询问；不得自行添加该参数，也不得请求单次提权。
    - 真实模型 eval 启动后保留同一进程会话。首轮和后续等待都使用工具允许的最长响应式等待时间；等待超时不表示 eval 失败，不要另开短周期状态轮询命令。
-5. 按模式完成第二阶段和语义审计。full/release 必须完成最小有效控制审计；其它四项只在对应对象存在时完成，不适用时记录理由，不展开空表。quick 只检查相关范围；delta 只检查受影响对象。先完成最小有效控制审计，再评价现有结构。
+5. 按模式完成第二阶段和语义审计。full/release 必须完成最小有效控制审计。quick/delta 只在用户关注或所选范围包含 `minimum_control`、`instruction_design`、`architecture` 或 completion boundary 时执行精简审计；只写当前范围所需的最小行为合同并分类相关行为块，不展开完整控制表。其它四项只在对应对象存在时完成，不适用时记录理由，不展开空表。quick 只检查相关范围；delta 只检查受影响对象。当最小有效控制审计适用时，先完成该审计，再评价现有结构。
    - **Minimum Effective Control Audit**：只根据目标问题、真实失败、硬性规范、领域事实和操作脆弱性，先写不超过 8 条的最小行为合同；简单 Skill 可以更少。再按行为块把现有强制规则分类为 `keep-invariant`、`keep-default`、`relax`、`move`、`delete` 或 `needs-ablation`。
    - **Invocation/Pointer Audit**：description 和每个外部指针是否说明目标及真正不同的触发 branch。
    - **Information Hierarchy Map**：把内容分类为 in-file step、in-file reference、disclosed reference 或 environment lookup。
@@ -112,7 +112,7 @@ Quick 模式中，依赖 runtime 事实、动作顺序、跨 Skill 组合、客�
 - 存在 eval 或当前判断使用 eval 结果时，`eval-validity`、`release-evidence` 和适用的 `eval-change-safety` 已判定；错误、陈旧、低置信或 diagnostic-only case 没有静默进入发布指标。
 - 每个 P0/P1 都通过 Finding Admission Gate；每个失败 gate 都关联相同严重性的已接纳 finding。
 - 报告包含 stop decision，且没有未归属或重复计罚的 finding。
-- quick 只完成所选 3–5 个维度并使用短报告；full/release 完成全部 12 个维度、最小行为合同、复杂度结论和适用审计；delta 完成旧 finding、受影响维度和直接回归。quick/delta 不创建 scorecard，也不计算总分。
+- quick 只完成所选 3–5 个维度并使用短报告；full/release 完成全部 12 个维度、最小行为合同、复杂度结论和适用审计；delta 完成旧 finding、受影响维度和直接回归。quick/delta 只有在步骤 5 的适用条件成立时提交精简最小行为合同；两者不创建 scorecard，也不计算总分。
 - 未获得正式发布授权时，评审没有写入正式目录或封存批次；未获得 README 登记授权时，没有修改 README。用户只要求保存结果时，草稿位于 `.tmp/agent-workflows/reviews/`。用户明确要求发布时，`review:publish` 已完成；用户另行要求登记时，`review:release` 已完成或报告了可重试命令。
 
 ## 评分纪律

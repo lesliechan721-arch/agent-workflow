@@ -138,6 +138,64 @@ describe('skill-review author tools', () => {
     expect(authoringSkill).toContain('只有用户另行明确要求登记时，才在批次封存后运行 `review:release`');
   });
 
+  it('keeps eval reachability, quick control scope, and report currentness explicit', async () => {
+    const reviewRoot = path.join(repoRoot(), '.agents', 'skills', 'skill-review');
+    const [skill, evalAudit, staticEvaluation, readme, manifest, behaviorDocument] =
+      await Promise.all([
+        fs.readFile(path.join(reviewRoot, 'SKILL.md'), 'utf8'),
+        fs.readFile(path.join(reviewRoot, 'references', 'eval-audit.md'), 'utf8'),
+        fs.readFile(path.join(reviewRoot, 'references', 'static-skill-evaluation.md'), 'utf8'),
+        fs.readFile(path.join(reviewRoot, 'README.md'), 'utf8'),
+        fs.readJson(path.join(reviewRoot, 'evals', 'manifest.json')),
+        fs.readJson(path.join(reviewRoot, 'evals', 'evals.json')),
+      ]);
+
+    expect(skill).toContain(
+      '任何模式都先读取它，只用 `suites[].cases` 确定可执行 case reachability',
+    );
+    expect(skill).toContain('quick/delta 只在用户关注或所选范围包含');
+    expect(skill).toContain('当最小有效控制审计适用时，先完成该审计');
+    expect(evalAudit).toContain('未被 manifest 引用');
+    expect(evalAudit).toContain('portable/calibration');
+    expect(staticEvaluation).toContain('README 只是登记索引');
+    expect(staticEvaluation).toContain('source commit');
+    expect(staticEvaluation).toContain('任一 `inScopeDirty=true` 时');
+    expect(readme).toContain('最近登记的正式报告：暂无');
+    expect(manifest.suites.map((suite: { cases: string }) => suite.cases)).toEqual([
+      './evals/trigger-cases.json',
+      './evals/evals.json',
+    ]);
+
+    const defaultQuick = behaviorDocument.evals.find(
+      (entry: { id: string }) => entry.id === 'unspecified-depth-defaults-quick',
+    );
+    expect(defaultQuick.review.checks).toContain(
+      '不会仅因模式是quick而无条件执行Minimum Effective Control Audit',
+    );
+    const focusedQuick = behaviorDocument.evals.find(
+      (entry: { id: string }) => entry.id === 'minimum-control-over-specified',
+    );
+    expect(focusedQuick.preconditions.selected_dimensions).toEqual(['minimum_control']);
+
+    const releaseEvidence = behaviorDocument.evals.find(
+      (entry: { id: string }) => entry.id === 'release-evidence-distinguishes-registration-and-currentness',
+    );
+    expect(releaseEvidence.review.checks).toEqual(expect.arrayContaining([
+      '不因README没有登记而断言不存在正式报告',
+      '比较正式summary的source commit、inScopeDirty和package digest与当前目标',
+      '当前证据为unknown，同时记录旧报告的historical fail',
+    ]));
+
+    const dirtyReleaseEvidence = behaviorDocument.evals.find(
+      (entry: { id: string }) => entry.id === 'release-evidence-dirty-source-requires-digest',
+    );
+    expect(dirtyReleaseEvidence.review.checks).toEqual(expect.arrayContaining([
+      '任一source为dirty时相同commit不足以证明内容相同',
+      'dirty source必须有匹配的封存package digest才能证明currentness',
+      'digest缺失时当前release-evidence为unknown',
+    ]));
+  });
+
   it('uses every static suite participant when publishing review evidence', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-review-static-participants-'));
     tempDirs.push(root);
@@ -666,9 +724,9 @@ describe('skill-review author tools', () => {
       expect(report.issues.filter((issue: { level: string }) => issue.level === 'error')).toEqual([]);
       if (skillName === 'skill-review') {
         expect(report.evals.trigger).toEqual({ total: 32, positive: 16, negative: 16 });
-        expect(report.evals.behavior_cases).toBe(19);
-        expect(report.evals.conversation_cases).toBe(19);
-        expect(report.evals.portable_behavior_specs).toBe(37);
+        expect(report.evals.behavior_cases).toBe(21);
+        expect(report.evals.conversation_cases).toBe(21);
+        expect(report.evals.portable_behavior_specs).toBe(39);
         expect(report.evals.behavior_evidence_note).toContain('not executable release evidence');
         expect(report.evals.scoring_cases).toBe(20);
         expect(report.scripts.count).toBe(4);

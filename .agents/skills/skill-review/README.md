@@ -41,6 +41,6 @@ release 评审应按 `references/source-map.md` 重新核对当前官方 Agent S
 
 评审默认只返回结果。用户只要求保存草稿时写入 `.tmp/agent-workflows/reviews/`。`review:publish` 只在用户明确要求正式发布时生成报告并封存批次；它不更新 Skill README。README 登记需要用户另行明确要求，再运行 `review:release`。静态和插件目标的目录及证据规则分别见 `references/static-skill-evaluation.md` 和 `references/agent-workflows-plugin.md`。
 
-## 最近验证
+## 最近登记
 
-- 最近正式报告：暂无。
+- 最近登记的正式报告：暂无。正式报告发布与 README 登记分离；是否存在未登记报告以 `.agents/reports/skill-review/` 为准。
