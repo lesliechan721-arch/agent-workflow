@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 2,
+  "batchId": "20260813T164655Z-full-review-20260814-materialization-c2fcf984",
+  "name": "full-review-20260814-materialization",
+  "owner": {
+    "kind": "plugin-skill",
+    "plugin": "ask-me",
+    "skill": "requirements-clarifier"
+  },
+  "publishedAt": "2026-08-13T20:47:30.627Z",
+  "source": {
+    "commits": [
+      "6d089c2a930d3211a4e561a86228c2ccc3eb4b6c"
+    ],
+    "inScopeDirty": false
+  },
+  "eval": {
+    "releaseOutcome": "failed",
+    "covered": 4,
+    "required": 4
+  },
+  "review": {
+    "reviewId": "20260813T204730Z-e6bc63c1",
+    "mode": "full",
+    "verdict": "pass-after-fixes",
+    "weightedScore": 86,
+    "coveragePercent": 100,
+    "confidence": "high",
+    "findings": {
+      "p0": 0,
+      "p1": 1,
+      "p2": 3,
+      "advisory": 0
+    }
+  },
+  "reportPath": "report.md"
+}

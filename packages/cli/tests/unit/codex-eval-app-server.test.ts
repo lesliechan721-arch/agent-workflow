@@ -143,7 +143,8 @@ describe('Codex app-server eval driver', () => {
         "      send({ method: 'error', params: { message: 'unexpected answer' } });",
         '      return;',
         '    }',
-        "    const state = `owner=${fs.existsSync('.agents/skills/ask-me/SKILL.md')} companion=${fs.existsSync('.agents/skills/companion/SKILL.md')}`;",
+        "    const fixture = fs.readFileSync('docs/eval-context.md', 'utf8').trim();",
+        "    const state = `owner=${fs.existsSync('.agents/skills/ask-me/SKILL.md')} companion=${fs.existsSync('.agents/skills/companion/SKILL.md')} fixture=${fixture}`;",
         "    send({ method: 'item/completed', params: { item: { type: 'agentMessage', id: 'commentary-1', phase: 'commentary', text: 'Preparing the final answer.' } } });",
         "    send({ method: 'item/completed', params: { item: { type: 'agentMessage', id: 'message-1', phase: 'final_answer', text: state } } });",
         "    send({ method: 'thread/tokenUsage/updated', params: { tokenUsage: { totalTokens: 7 } } });",
@@ -166,6 +167,9 @@ describe('Codex app-server eval driver', () => {
         }],
         expected_output: 'Finish after the reply.',
         files: [],
+        workspace_files: {
+          'docs/eval-context.md': 'known-project-fact\n',
+        },
         review: {
           workspace_unchanged: true,
           checks: ['Uses the scripted reply.'],
@@ -207,6 +211,7 @@ describe('Codex app-server eval driver', () => {
       }),
     }));
     const evidence = await fs.readJson(reportPath);
+    expect(evidence.results[0].workspace_files).toEqual(['docs/eval-context.md']);
     const run = evidence.results[0].runs[0];
     expect(run.with_skill.questions[0].requestId).toBe('17');
     expect(run.with_skill.questions[0].answers).toEqual({
@@ -215,8 +220,12 @@ describe('Codex app-server eval driver', () => {
     expect(run.without_skill.questions[0].answers).toEqual({
       'runtime-question-id': ['approved'],
     });
-    expect(run.with_skill.finalMessages).toEqual(['owner=true companion=true']);
-    expect(run.without_skill.finalMessages).toEqual(['owner=false companion=true']);
+    expect(run.with_skill.finalMessages).toEqual([
+      'owner=true companion=true fixture=known-project-fact',
+    ]);
+    expect(run.without_skill.finalMessages).toEqual([
+      'owner=false companion=true fixture=known-project-fact',
+    ]);
     expect(run.with_skill.eventTrace).toEqual(expect.arrayContaining([
       expect.objectContaining({
         method: 'item/completed',

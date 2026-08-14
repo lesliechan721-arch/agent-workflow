@@ -260,6 +260,18 @@ const ACCOUNT_PAUSE_REPO_FILES = {
   ].join('\n'),
 };
 
+const ACCOUNT_PAUSE_GAP_REPO_FILES = {
+  ...TYPESCRIPT_SERVICE_FILES,
+  ...ACCOUNT_PAUSE_REPO_FILES,
+  'docs/account-pause.md': [
+    '# Account pause',
+    '',
+    'The repository has no approved specification for account pause behavior.',
+    'The implementation must define effects on sign-in, billing, and data access.',
+    '',
+  ].join('\n'),
+};
+
 const SESSION_MIGRATION_REPO_FILES = {
   ...TYPESCRIPT_SERVICE_FILES,
   'db/migrations/README.md': [
@@ -305,6 +317,7 @@ export const TRIGGER_WORKSPACE_FIXTURES = new Set([
   'default',
   'neutral_export_repo',
   'implementation_repo',
+  'account_pause_gap_repo',
   'account_pause_repo',
   'session_migration_repo',
 ]);
@@ -318,11 +331,13 @@ export async function setupTriggerWorkspace({ workspaceRoot, evalCase }) {
 
   const files = fixture === 'neutral_export_repo'
     ? NEUTRAL_EXPORT_REPO_FILES
-    : {
-      ...IMPLEMENTATION_REPO_FILES,
-      ...(fixture === 'account_pause_repo' ? ACCOUNT_PAUSE_REPO_FILES : {}),
-      ...(fixture === 'session_migration_repo' ? SESSION_MIGRATION_REPO_FILES : {}),
-    };
+    : fixture === 'account_pause_gap_repo'
+      ? ACCOUNT_PAUSE_GAP_REPO_FILES
+      : {
+        ...IMPLEMENTATION_REPO_FILES,
+        ...(fixture === 'account_pause_repo' ? ACCOUNT_PAUSE_REPO_FILES : {}),
+        ...(fixture === 'session_migration_repo' ? SESSION_MIGRATION_REPO_FILES : {}),
+      };
 
   await Promise.all(Object.entries(files).map(async ([relativePath, content]) => {
     const target = path.join(workspaceRoot, relativePath);

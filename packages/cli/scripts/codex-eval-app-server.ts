@@ -105,6 +105,7 @@ interface ConversationEvalCase {
   scriptedReplies: ScriptedReply[];
   expectedOutput: string;
   checks: string[];
+  workspaceFiles: Record<string, string>;
   workspaceUnchanged: boolean;
   sandbox: 'read-only' | 'workspace-write';
   allowedWorkspaceChanges: string[];
@@ -144,6 +145,7 @@ interface ConversationCaseResult {
   prompt: string;
   expected_output: string;
   checks: string[];
+  workspace_files: string[];
   runs: Array<{
     run: number;
     with_skill: AppServerRunEvidence;
@@ -809,6 +811,12 @@ async function readConversationCases(
         normalizeScriptedReply(entry, `evals[${index}].scripted_replies[${replyIndex}]`)),
       expectedOutput: value.expected_output,
       checks: review.checks as string[],
+      workspaceFiles: isRecord(value.workspace_files)
+        ? Object.fromEntries(Object.entries(value.workspace_files).map(([relativePath, content]) => [
+            relativePath,
+            content as string,
+          ]))
+        : {},
       workspaceUnchanged: review.workspace_unchanged === true,
       sandbox: value.sandbox === 'workspace-write' ? 'workspace-write' : 'read-only',
       allowedWorkspaceChanges: Array.isArray(review.allowed_workspace_changes)
@@ -828,6 +836,37 @@ async function readConversationCases(
         : [],
     };
   });
+}
+
+async function materializeConversationWorkspaceFiles(
+  workspaceRoot: string,
+  workspaceFiles: Record<string, string>,
+): Promise<void> {
+  for (const [relativePath, content] of Object.entries(workspaceFiles)) {
+    const segments = relativePath.split('/');
+    const fileName = segments.pop()!;
+    let parent = workspaceRoot;
+    for (const segment of segments) {
+      parent = path.join(parent, segment);
+      if (await fs.pathExists(parent)) {
+        const stat = await fs.lstat(parent);
+        if (!stat.isDirectory() || stat.isSymbolicLink()) {
+          throw new Error(
+            `Conversation workspace file has an unsafe parent path: ${relativePath}`,
+          );
+        }
+      } else {
+        await fs.mkdir(parent);
+      }
+    }
+    const target = path.join(parent, fileName);
+    if (await fs.pathExists(target)) {
+      throw new Error(
+        `Conversation workspace file conflicts with materialized subject: ${relativePath}`,
+      );
+    }
+    await fs.writeFile(target, content, 'utf8');
+  }
 }
 
 export function extractAppServerThreadId(result: unknown): string {
@@ -875,6 +914,7 @@ async function runConversationOnce(options: {
   const startedAt = Date.now();
   try {
     await fs.copy(options.sourceProjectRoot, workspaceRoot, { dereference: false });
+    await materializeConversationWorkspaceFiles(workspaceRoot, options.evalCase.workspaceFiles);
     let allowedSkillRoots: string[] = [];
     if (options.isolation === 'strict') {
       const visibleSkills = options.variant === 'with_skill'
@@ -1421,6 +1461,7 @@ export async function runCodexConversationSuite(options: {
       prompt: evalCase.prompt,
       expected_output: evalCase.expectedOutput,
       checks: evalCase.checks,
+      workspace_files: Object.keys(evalCase.workspaceFiles),
       runs,
     };
     results.push(caseResult);

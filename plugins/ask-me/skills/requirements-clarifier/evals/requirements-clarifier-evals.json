@@ -11,9 +11,9 @@
       "id": "known-fact-before-question",
       "eval_type": "behavior",
       "case_role": "diagnostic",
-      "provenance": "mechanism-probe",
+      "provenance": "derived",
       "scenario_family": "fact-before-question",
-      "unit_under_test": "instructions",
+      "unit_under_test": "full-skill",
       "preconditions": { "task_facts_are_complete": true },
       "oracle": {
         "rationale": "已知分页约定不应重复询问，默认排序是唯一会改变用户结果的未决项。",
@@ -21,7 +21,7 @@
         "confidence": "high",
         "allowed_variance": "排序问题的措辞和选项可以不同，但不能重问每页数量或继续扩张问题。"
       },
-      "prompt": "准备给用户列表加分页。现有项目约定每页 50 条；默认排序没有规定，而且会影响用户先看到哪些记录。请采用已知页数约定，并使用问题工具只确认默认排序；收到回答后直接交接，不要继续提问或修改文件。",
+      "prompt": "准备给用户列表加分页。项目现有约定是每页 50 条，但默认排序还没有规定，这会影响用户先看到哪些记录。请先把实施前需求收住，暂时不要改文件。",
       "scripted_replies": [
         {
           "expected_question_count": 1,
@@ -149,9 +149,9 @@
       "id": "dependent-frontier",
       "eval_type": "behavior",
       "case_role": "diagnostic",
-      "provenance": "mechanism-probe",
+      "provenance": "derived",
       "scenario_family": "dependent-question-frontier",
-      "unit_under_test": "instructions",
+      "unit_under_test": "full-skill",
       "preconditions": { "question_dependency_is_explicit": true },
       "oracle": {
         "rationale": "是否允许外部访客决定权限模型，权限模型再决定审计行为，因此只能先问上游。",
@@ -159,7 +159,7 @@
         "confidence": "high",
         "allowed_variance": "可以用不同选项描述访客范围，但不能在第一轮询问权限或审计细节。"
       },
-      "prompt": "准备实现访客协作功能。是否允许外部访客会决定权限模型，权限模型再决定审计行为。第一轮请使用问题工具只询问是否允许外部访客，不要提前询问权限或审计细节；收到回答后重新检查并直接交接，不要开始第二轮提问或修改文件。",
+      "prompt": "准备实现访客协作功能。目前还没有决定是否允许外部访客；这个选择会影响权限模型，权限模型又会影响审计行为。请先把实施前需求收住，暂时不要改文件。",
       "scripted_replies": [
         {
           "expected_question_count": 1,
@@ -306,27 +306,27 @@
       "id": "handoff-on-stop",
       "eval_type": "behavior",
       "case_role": "diagnostic",
-      "provenance": "mechanism-probe",
+      "provenance": "derived",
       "scenario_family": "handoff-with-open-risk",
-      "unit_under_test": "instructions",
+      "unit_under_test": "full-skill",
       "preconditions": { "user_declines_more_questions": true },
       "oracle": {
-        "rationale": "用户停止回答时仍需区分已确认、默认和待验证项，并保留返工风险。",
+        "rationale": "用户停止回答时仍需区分已确认的导出范围、沿用的编码惯例和待压测的大数据导出方式，并说明实施路径可能返工。",
         "rule_refs": ["SKILL.md#结束"],
         "confidence": "high",
         "allowed_variance": "交接格式可以不同，但不能隐去未解决项或声称需求完全稳定。"
       },
-      "prompt": "实施前澄清即将结束：一项已确认，一项采用现有惯例，一项需要压测；用户表示不再回答。请交接，不要继续提问或修改文件。",
+      "prompt": "订单导出先这样：只导出当前筛选结果；CSV 编码沿用项目现有的 UTF-8 约定；超过 10 万行时能否同步导出还要压测。我现在不想再回答问题，请先把需求检查收住，暂时不要改文件。",
       "scripted_replies": [],
-      "expected_output": "区分已确认、关键默认和待验证或未解决事项，说明未解决项可能带来的返工风险，不声称需求已经完全稳定。",
+      "expected_output": "记录已确认的当前筛选范围、沿用的 UTF-8 约定和待压测的大数据导出方式；说明错误选择同步或异步路径可能造成超时或实施返工，不声称需求已经完全稳定。",
       "files": [],
       "review": {
         "platforms": ["codex", "claude"],
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [
-          "区分已确认、关键默认和待验证或未解决事项",
-          "说明未解决项可能带来的返工风险",
+          "区分已确认的当前筛选范围、沿用的 UTF-8 约定和待压测的大数据导出方式",
+          "说明错误选择同步或异步路径可能造成超时或实施返工",
           "不声称需求已经完全稳定"
         ]
       }

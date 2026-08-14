@@ -1106,6 +1106,29 @@ function validateConversationCaseCorpus(evalDir, suite, fieldName) {
       });
     }
     validateNonEmptyString(entry.expected_output, `${caseField}.expected_output`);
+    if (entry.workspace_files !== undefined) {
+      const workspaceFiles = expectRecord(
+        entry.workspace_files,
+        `${caseField}.workspace_files`,
+      );
+      if (workspaceFiles) {
+        const workspaceFileEntries = Object.entries(workspaceFiles);
+        if (workspaceFileEntries.length === 0) {
+          error(`${caseField}.workspace_files must contain at least one file`);
+        }
+        workspaceFileEntries.forEach(([relativePath, content]) => {
+          validateEvalWorkspacePath(
+            relativePath,
+            `${caseField}.workspace_files.${relativePath}`,
+            { allowTreePattern: false },
+          );
+          validateNonEmptyString(
+            content,
+            `${caseField}.workspace_files.${relativePath}`,
+          );
+        });
+      }
+    }
     const review = expectRecord(entry.review, `${caseField}.review`);
     if (review) {
       if (!Array.isArray(review.checks) || review.checks.length === 0 || review.checks.some(

@@ -250,6 +250,55 @@ describe('plugin eval contract and materialization', () => {
     );
   });
 
+  it('accepts bounded conversation workspace files and rejects unsafe paths', async () => {
+    const pluginRoot = await createStaticEvalPlugin();
+    const casesPath = skillEvalPath(pluginRoot, 'conversation-cases.json');
+    await fs.writeJson(casesPath, {
+      skill_name: 'eval-fixture',
+      evals: [{
+        id: 'read_workspace_fact',
+        prompt: 'Read docs/eval-context.md before answering.',
+        scripted_replies: [],
+        expected_output: 'Use the workspace fact.',
+        workspace_files: {
+          'docs/eval-context.md': 'Known project fact.\n',
+        },
+        review: { checks: ['Uses the workspace fact.'], workspace_unchanged: true },
+      }],
+    }, { spaces: 2 });
+    const manifestPath = skillEvalPath(pluginRoot, 'manifest.json');
+    const manifest = await fs.readJson(manifestPath);
+    manifest.suites = [{
+      id: 'conversation',
+      kind: 'conversation',
+      skills: ['eval-fixture'],
+      cases: './conversation-cases.json',
+      profiles: ['project-runtime'],
+      defaultRuns: 1,
+      releaseSplits: [],
+      requiredForRelease: true,
+      perRunTimeoutMs: 10_000,
+    }];
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+
+    await expect(readPluginEvalManifest(pluginRoot, 'eval-fixture')).resolves.toMatchObject({
+      suites: [expect.objectContaining({ kind: 'conversation' })],
+    });
+
+    const cases = await fs.readJson(casesPath);
+    cases.evals[0].workspace_files = { '../escape.md': 'escape' };
+    await fs.writeJson(casesPath, cases, { spaces: 2 });
+    await expect(readPluginEvalManifest(pluginRoot, 'eval-fixture')).rejects.toThrow(
+      'must be a normalized POSIX path inside the eval workspace',
+    );
+
+    cases.evals[0].workspace_files = { '.agents/skills/escape.md': 'escape' };
+    await fs.writeJson(casesPath, cases, { spaces: 2 });
+    await expect(readPluginEvalManifest(pluginRoot, 'eval-fixture')).rejects.toThrow(
+      'must not target an eval control directory',
+    );
+  });
+
   it('accepts bounded workspace-write conversation cases with artifact assertions', async () => {
     const pluginRoot = await createStaticEvalPlugin();
     await fs.writeJson(skillEvalPath(pluginRoot, 'conversation-cases.json'), {
