@@ -41,11 +41,11 @@
       "entry": "./run-commit-evals.mjs",
       "cases": "./behavior-cases.json",
       "profiles": ["project-default"],
-      "defaultRuns": 1,
+      "defaultRuns": 3,
       "releaseSplits": [],
       "requiredForRelease": true,
       "perRunTimeoutMs": 300000,
-      "suiteTimeoutMs": 5400000,
+      "suiteTimeoutMs": 16200000,
       "supports": ["runs", "case", "model", "codexBin", "timeout"]
     }
   ]

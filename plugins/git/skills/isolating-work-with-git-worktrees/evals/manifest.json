@@ -94,11 +94,11 @@
       "profiles": [
         "project-default"
       ],
-      "defaultRuns": 1,
+      "defaultRuns": 3,
       "releaseSplits": [],
       "requiredForRelease": true,
       "perRunTimeoutMs": 300000,
-      "suiteTimeoutMs": 3000000,
+      "suiteTimeoutMs": 10800000,
       "supports": [
         "runs",
         "case",

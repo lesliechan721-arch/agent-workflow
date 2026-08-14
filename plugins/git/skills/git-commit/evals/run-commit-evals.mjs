@@ -399,12 +399,22 @@ function detailedBodyFactCoverage(message) {
     ['docs', /(?=.*(?:文档|指南|说明|docs?|guide|documentation))(?=.*(?:启用|激活|开启|已启用|enable(?:d)?|activate(?:d)?))/iu],
     ['version', /\b1\.0\.0\b.*\b1\.1\.0\b|\b1\.1\.0\b.*\b1\.0\.0\b/u],
   ]);
+  const groupingPatterns = new Map([
+    ['runtime', /(?=.*(?:运行时|开关|\bapp\.js\b|runtime|flag))(?=.*(?:启用|激活|开启|已启用|enable(?:d)?|activate(?:d)?|false.{0,20}true))/iu],
+    ['verification', factPatterns.get('verification')],
+    ['docs', factPatterns.get('docs')],
+    ['version', factPatterns.get('version')],
+  ]);
   const matchedFacts = bullets.map((line) => [...factPatterns]
+    .filter(([, pattern]) => pattern.test(line))
+    .map(([name]) => name));
+  const groupedFacts = bullets.map((line) => [...groupingPatterns]
     .filter(([, pattern]) => pattern.test(line))
     .map(([name]) => name));
   return {
     bullets,
     covered: new Set(matchedFacts.flat()),
+    groupsRelatedFacts: groupedFacts.some((facts) => facts.length >= 2),
     allGrounded: bullets.length >= 2
       && bullets.length <= 4
       && bullets.every((line, index) =>
@@ -507,6 +517,7 @@ export function commitMessageChecks(caseId, message) {
       coverage.covered.has('docs') && coverage.covered.has('version'),
     );
     add('all_body_bullets_match_fixture_facts', coverage.allGrounded);
+    add('body_avoids_per_file_restatement', coverage.groupsRelatedFacts);
     add('unverifiable_external_claims_absent', !messageContainsUnverifiableClaim(message));
   } else if (caseId === 'trivial_change_may_omit_body') {
     add('subject_describes_spelling_fix', subjectHas(
@@ -620,6 +631,7 @@ export async function evaluateCase(evalCase, workspace, before, run) {
       'all_body_bullets_match_fixture_facts',
       'body_covers_runtime_and_verification',
       'body_covers_docs_and_exact_version',
+      'body_avoids_per_file_restatement',
     ]);
   } else if (evalCase.id === 'trivial_change_may_omit_body') {
     add('message_has_subject', commit.message.split('\n')[0].trim().length > 0, commit.message);

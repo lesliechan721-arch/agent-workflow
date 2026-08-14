@@ -75,7 +75,7 @@
         "workspace_fixture": "none",
         "invocation": "model-discovery"
       },
-      "query": "只提交 README.md 和 docs/install.md 这次文档调整，其它本地改动别动。",
+      "query": "只提交 README.md 和 docs/notes.md 这次文档调整，其它本地改动别动。",
       "should_load_skill": true,
       "oracle": {
         "rationale": "用户目标符合 git-commit description 的正向触发条件。",

@@ -17,7 +17,7 @@ pnpm plugin:eval git --skill isolating-work-with-git-worktrees --batch-name sour
 3. 仓库级隔离请求是否创建完整 clone，而不是 linked worktree，并保持主仓库不变；
 4. 修改前已有测试失败时，是否正确标记为基线问题。
 
-fixture 只覆盖这些高价值边界，不枚举所有 `git worktree` 命令与低概率故障模式。
+fixture 只覆盖这些高价值边界，不枚举所有 `git worktree` 命令与低概率故障模式。Release 默认对每个 behavior case 的 current 和 baseline 各运行 3 次。
 
 ## AW 验证
 

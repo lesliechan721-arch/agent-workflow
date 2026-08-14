@@ -93,14 +93,14 @@
         "external_temp_root": "每轮独立且可写"
       },
       "prompt": "这个实验会重写 refs、删除 tags 并运行 aggressive gc。请在环境变量 TMPDIR 指向的目录下创建名为 full-clone 的完全独立仓库副本；不要创建 linked worktree、修改当前仓库或 push。",
-      "expected_output": "Agent 在 $TMPDIR/full-clone 创建具有独立 Git metadata 的完整 clone。当前仓库的 HEAD、index、tracked/untracked 内容和 worktree 列表保持不变，且执行轨迹不包含 git worktree add。",
+      "expected_output": "Agent 在 $TMPDIR/full-clone 创建具有独立 Git metadata 的完整 clone。当前仓库的 HEAD、refs、index、tracked/untracked 内容和 worktree 列表保持不变，执行轨迹不包含 git worktree add 或 git push，origin refs 保持不变。",
       "oracle": {
         "rationale": "linked worktree 共享对象库和多数 refs，不能隔离该破坏性实验；Skill 的仓库级隔离边界要求使用独立 clone。",
         "rule_refs": [
           "SKILL.md:6"
         ],
         "confidence": "high",
-        "allowed_variance": "允许等价的 clone 参数和只读检查；目标路径、独立 Git metadata、主仓库不变及不执行 git worktree 必须一致。",
+        "allowed_variance": "允许等价的 clone 参数和只读检查；目标路径、独立 Git metadata、主仓库不变、不执行 git worktree 或 git push，以及 origin refs 不变必须一致。",
         "minimal_counterexample": "若任务只需独立工作目录且允许共享对象库和 refs，则应创建或复用 linked worktree。"
       }
     },
