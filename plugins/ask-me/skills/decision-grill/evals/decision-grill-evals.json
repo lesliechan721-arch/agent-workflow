@@ -162,9 +162,9 @@
       "id": "reopen-existing-decision",
       "eval_type": "behavior",
       "case_role": "diagnostic",
-      "provenance": "mechanism-probe",
+      "provenance": "derived",
       "scenario_family": "preserve-existing-decision",
-      "unit_under_test": "instructions",
+      "unit_under_test": "full-skill",
       "preconditions": { "existing_decision_is_well_supported": true },
       "oracle": {
         "rationale": "微服务决定已有充分依据和重评条件，只需处理首批迁移范围。",
@@ -172,7 +172,7 @@
         "confidence": "high",
         "allowed_variance": "可以简短说明沿用已有决定，但不能重新打开微服务选择或开始第二轮。"
       },
-      "prompt": "我们正在逐轮定稿架构迁移计划。团队已决定采用微服务，理由充分、后果清楚，也定义了重新评估条件；现在只剩首批迁移单个低风险服务还是一个完整业务域必须由我决定。第一轮请使用问题工具只询问这个迁移范围；收到回答后判断是否需要重开微服务决定并交接，不要开始第二轮提问或修改文件。",
+      "prompt": "我们在收尾架构迁移计划。团队已经决定采用微服务，理由、主要后果和重新评估条件都记录清楚了。现在只剩首批迁移一个低风险服务，还是迁移一个完整业务域没有决定。请和我把计划收住，暂时不要改文件。",
       "scripted_replies": [
         {
           "expected_question_count": 1,
@@ -226,9 +226,9 @@
       "id": "avoid-exhaustion",
       "eval_type": "behavior",
       "case_role": "diagnostic",
-      "provenance": "mechanism-probe",
+      "provenance": "derived",
       "scenario_family": "stop-before-low-impact-detail",
-      "unit_under_test": "instructions",
+      "unit_under_test": "full-skill",
       "preconditions": { "only_one_major_decision_remains": true },
       "oracle": {
         "rationale": "试点规模是最后一个重要决定，回答后剩余内容只有低影响命名和未来优化。",
@@ -236,7 +236,7 @@
         "confidence": "high",
         "allowed_variance": "记录格式可以不同，但不能开始第二轮询问低影响细节。"
       },
-      "prompt": "外层协作规划工作流即将收尾，只剩试点采用 30 人还是 100 人必须由我决定。第一轮请使用问题工具只询问试点规模；收到回答后，如果我说明其他主要方向、取舍和验证方式都已明确，只剩低影响命名和未来优化，就直接收尾，不要开始第二轮提问或修改文件。",
+      "prompt": "这份试点计划基本定好了，主要方向、取舍和验证方式都已经明确，只剩采用 30 人还是 100 人试点需要我决定。命名和未来优化可以以后再谈。请和我把计划收住，暂时不要改文件。",
       "scripted_replies": [
         {
           "expected_question_count": 1,
@@ -423,9 +423,9 @@
       "id": "shared-understanding-confirmation",
       "eval_type": "behavior",
       "case_role": "diagnostic",
-      "provenance": "mechanism-probe",
+      "provenance": "derived",
       "scenario_family": "shared-understanding-confirmation",
-      "unit_under_test": "instructions",
+      "unit_under_test": "full-skill",
       "preconditions": { "important_branches_are_complete": true, "record_is_unconfirmed": true },
       "oracle": {
         "rationale": "重要分支已经处理，但用户尚未确认最终记录，不能直接交接或实施。",
@@ -433,7 +433,7 @@
         "confidence": "high",
         "allowed_variance": "确认问题措辞可以不同，但必须在确认前保持只读，并在确认后交还工作流。"
       },
-      "prompt": "决策访谈的重要分支已经处理完：目标是把文档检索中位时间降到 3 分钟；先做 30 人试点；数据驻留由安全负责人周五确认；P95 延迟列为待验证。我还没有确认最终决策记录。请按访谈协议收尾并完成确认门禁，不要修改文件。",
+      "prompt": "我们刚讨论完内部文档检索计划：目标是把检索中位时间降到 3 分钟，先做 30 人试点，数据驻留由安全负责人周五确认，P95 延迟需要验证。我还没有看过最终记录。请把这轮讨论收住，暂时不要改文件。",
       "scripted_replies": [
         {
           "expected_question_count": 1,

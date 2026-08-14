@@ -29,7 +29,7 @@ trigger corpus 有 20 条用例：10 条正例和 10 条近似负例，train 与
 
 `requirements-clarifier-release-evals.json` 包含 3 个低提示代表性会话用例，覆盖事实／默认／用户决定三路处理、多项小歧义的组合影响和工程待验证事项。它是发布必需的 behavior suite。
 
-`requirements-clarifier-evals.json` 保留 10 个强提示协议探针，覆盖透明默认、依赖前沿、冲突、问题形态、停止和交接。它属于非发布 `behavior-diagnostic` suite，不进入默认发布结果。真实仓库事实查找由带 `trigger-fixture.mjs` 的 trigger suite 验证。
+`requirements-clarifier-evals.json` 保留 10 个非发布诊断用例，覆盖透明默认、依赖前沿、冲突、问题形态、停止和交接。`known-fact-before-question`、`dependent-frontier` 和 `handoff-on-stop` 使用低提示自然任务，其余用例继续隔离检查单条正文规则。它属于 `behavior-diagnostic` suite，不进入默认发布结果。真实仓库事实查找由带 `trigger-fixture.mjs` 的 trigger suite 验证。
 
 行为 prompt 使用完整的自然任务描述，不显式写 `$skill-name`。这样 baseline 不会因为寻找不存在的 Skill 而产生额外成本或偏离任务。每个用例分别在全新的 Codex app-server 会话中运行：
 

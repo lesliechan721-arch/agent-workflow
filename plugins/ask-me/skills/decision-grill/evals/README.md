@@ -13,4 +13,4 @@ pnpm plugin:eval ask-me --skill decision-grill --batch-name release
 
 `decision-grill-release-evals.json` 包含 3 个低提示代表性会话用例，检查依赖前沿、用户所有的取舍、明确延后和最终确认。它是发布必需的 behavior suite。
 
-`decision-grill-evals.json` 保留 15 个强提示协议探针，检查单条正文规则和多轮机制。它属于非发布 `behavior-diagnostic` suite，不进入默认发布结果。conversation baseline 只移除 owner Skill，并保留 `requirements-clarifier`。
+`decision-grill-evals.json` 保留 15 个非发布诊断用例。多数用例隔离检查单条正文规则；`reopen-existing-decision`、`avoid-exhaustion` 和 `shared-understanding-confirmation` 使用低提示自然任务检查完整 Skill。它属于 `behavior-diagnostic` suite，不进入默认发布结果。conversation baseline 只移除 owner Skill，并保留 `requirements-clarifier`。

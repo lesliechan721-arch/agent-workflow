@@ -227,22 +227,22 @@
       "eval_type": "routing",
       "case_role": "boundary",
       "provenance": "boundary",
-      "scenario_family": "complete-spec-vs-local-gap",
+      "scenario_family": "read-only-spec-review",
       "unit_under_test": "description",
-      "preconditions": { "participant_skills_available": true, "project_rules_enabled": true, "authoritative_spec_is_complete": true },
-      "query": "严格按 spec/account-pause.md 实现。文档中的行为、恢复和验收都已批准。",
+      "preconditions": { "participant_skills_available": true, "project_rules_enabled": true, "current_task_is_read_only_review": true },
+      "query": "只读审阅 spec/account-pause.md：概括它已覆盖的行为、恢复和验收，并报告文档本身仍有的缺口。当前任务只需要审阅结论，不进入需求确认或实施；不要运行测试或修改文件。",
       "expected_loaded_skills": [],
       "oracle": {
-        "rationale": "权威规范完整，应直接实施。",
-        "rule_refs": ["requirements-clarifier/SKILL.md frontmatter description", "plugin.json#extensions.instructions/quality-gate"],
+        "rationale": "当前交付是一次性只读规范评审，不是实现任务或逐轮访谈；发现缺口时也应直接报告。",
+        "rule_refs": ["requirements-clarifier/SKILL.md frontmatter description", "decision-grill/SKILL.md frontmatter description"],
         "confidence": "high",
-        "allowed_variance": "可以先读规范和列内部计划，但不能加载任一 participant Skill。",
-        "minimal_counterexample": "若规范仍缺少会改变用户行为或验收的决定，则应只加载 requirements-clarifier。"
+        "allowed_variance": "可以读取规范并报告已覆盖内容和可见缺口，但不能加载任一 participant Skill，也不能开始需求确认或实施。",
+        "minimal_counterexample": "若当前任务改为实施该功能，且规范缺口会改变用户行为或验收，则应只加载 requirements-clarifier。"
       },
       "split": "sanity",
       "use_project_rules": true,
       "workspace_fixture": "account_pause_repo",
-      "tags": ["implementation", "complete-spec"]
+      "tags": ["read-only-review", "spec-gap-reporting"]
     },
     {
       "id": "delegated",

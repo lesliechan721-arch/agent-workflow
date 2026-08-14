@@ -91,7 +91,7 @@
       "provenance": "representative-synthetic",
       "scenario_family": "account-lifecycle-behavior",
       "unit_under_test": "description",
-      "preconditions": { "implicit_invocation": true },
+      "preconditions": { "implicit_invocation": true, "account_lifecycle_code_available": true, "approved_pause_spec_absent": true },
       "query": "增加暂停账号功能，尽量复用现有代码。",
       "should_load_skill": true,
       "oracle": {
@@ -101,7 +101,8 @@
         "allowed_variance": "可以先查现有生命周期规则，但没有规范时必须加载 requirements-clarifier。"
       },
       "split": "train",
-      "use_project_rules": true
+      "use_project_rules": true,
+      "workspace_fixture": "account_pause_gap_repo"
     },
     {
       "id": "p06_explicit_check",
@@ -248,11 +249,11 @@
       "provenance": "boundary",
       "scenario_family": "delegated-defaults",
       "unit_under_test": "description",
-      "preconditions": { "user_authorized_defaults": true },
-      "query": "这是内部工具，普通交互和实现细节都用合理默认，不用问我；涉及数据删除再停。",
+      "preconditions": { "user_authorized_defaults": true, "implementation_target_is_explicit": true },
+      "query": "在 src/logging/format-entry.ts 增加 formatDebugContext(value)，这是内部调试辅助函数；输出格式和实现细节都用合理默认，不用问我。不要删除数据；如果确实需要删除，再停下来确认。",
       "should_load_skill": false,
       "oracle": {
-        "rationale": "用户已经授权普通默认，并明确了需要升级的边界。",
+        "rationale": "用户给出了具体的内部实现任务，已经授权普通默认，并明确了需要升级的边界。",
         "rule_refs": ["SKILL.md frontmatter description"],
         "confidence": "high",
         "allowed_variance": "可以说明所用默认，但不能加载 requirements-clarifier。",

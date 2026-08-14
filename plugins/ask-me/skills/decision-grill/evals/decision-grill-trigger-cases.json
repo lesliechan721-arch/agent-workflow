@@ -371,14 +371,14 @@
       "provenance": "boundary",
       "scenario_family": "implementation-interview-vs-clarification",
       "unit_under_test": "description",
-      "preconditions": { "implementation_context": true, "companion_skill_available": true },
+      "preconditions": { "implementation_context": true, "iterative_interview_requested": false },
       "query": "实现导出功能，但导出全部还是当前筛选结果还没定。",
       "should_load_skill": false,
       "oracle": {
-        "rationale": "这是具体实施需求的关键歧义，应使用 requirements-clarifier。",
+        "rationale": "这是具体实施需求的关键歧义，不是逐轮决策访谈；单 Skill trigger suite 只要求 decision-grill 不加载。",
         "rule_refs": ["SKILL.md frontmatter description"],
         "confidence": "high",
-        "allowed_variance": "可以直接询问或加载相邻 Skill，但不能加载 decision-grill。",
+        "allowed_variance": "可以直接询问或通过其它可用机制处理，但不能加载 decision-grill；跨 Skill 选择由 router suite 验证。",
         "minimal_counterexample": "若用户要求围绕范围、权限和格式逐轮压力测试并形成共享方案，则应加载 decision-grill。"
       },
       "split": "train",

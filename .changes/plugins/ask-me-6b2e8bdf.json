@@ -2,5 +2,5 @@
   "schemaVersion": 1,
   "plugin": "ask-me",
   "bump": "patch",
-  "summary": "修复需求澄清与决策访谈的触发边界"
+  "summary": "修复决策访谈依赖前沿、双技能触发边界与评测合同"
 }

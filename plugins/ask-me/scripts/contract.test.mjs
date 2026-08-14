@@ -69,7 +69,7 @@ function assertSharedSkillContract(skill, skillName) {
   assert.match(skill, /^description: .+何时使用|^description: .+时使用/m);
   assert.match(skill, /先只读查看/);
   assert.match(skill, /已经说明或能查到的事实直接采用|能查到的事实自行确认/);
-  assert.match(skill, /互相独立时每轮最多三题/);
+  assert.match(skill, /(?:互相独立|确认独立)时每轮最多三题/);
   assert.match(skill, /适合列选项时使用 \{\{questionTool\}\}/);
   assert.match(skill, /待验证/);
   assert.match(skill, /交还原任务|交还原工作流/);
@@ -91,7 +91,8 @@ function assertRequirementsClarifierContract(skill) {
   assert.match(skill, /只给宽泛目标不等于授权 agent 决定这些事项/);
   assert.match(skill, /已有或已批准计划.*实施阶段仍有此类局部缺口.*使用本 Skill/);
   assert.match(skill, /用户明确授权采用默认值/);
-  assert.match(skill, /明确希望通过逐轮访谈.*使用 decision-grill/);
+  assert.match(skill, /明确希望当前任务本身通过逐轮访谈.*功能、权限或验收.*使用 decision-grill/);
+  assert.match(skill, /^description: "仅当当前任务是实现或修改具体结果.*逐轮访谈.*即使已有或已批准计划/m);
   assert.match(skill, /用最少问题补齐足够实施的需求边界/);
   assert.match(skill, /单项影响有限，但多项合在一起会决定功能形态时，也应先澄清/);
   assert.match(skill, /已确认 \/ 采用的关键默认 \/ 待验证或未解决/);
@@ -102,16 +103,20 @@ function assertDecisionGrillContract(skill) {
   assert.match(skill, /计划、决策或想法进行逐轮访谈/);
   assert.match(skill, /产物是经过讨论的共享理解/);
   assert.match(skill, /不是 agent 为完成其它任务安排的内部计划/);
-  assert.match(skill, /用户需要通过逐轮访谈/);
+  assert.match(skill, /当前任务本身需要通过逐轮访谈/);
   assert.match(skill, /实现具体结果或执行已有计划时.*局部歧义，使用 requirements-clarifier/);
   assert.match(skill, /用户或外层工作流要求.*逐轮推演.*仍使用本 Skill/);
   assert.match(skill, /一次性说明、比较、评估、推荐或评审应直接回答/);
+  assert.match(skill, /^description: "仅当当前任务本身需要通过逐轮访谈.*一次性说明.*实现具体结果或执行已有计划/m);
   assert.match(skill, /只需补齐局部需求歧义，使用 `requirements-clarifier`/);
   assert.match(skill, /明确要求围绕该决定进行逐轮访谈时.*覆盖实施语境/);
   assert.match(skill, /建立决策树/);
   assert.match(skill, /事实由 agent 查明/);
   assert.match(skill, /不要替用户作出仍属于用户的决定/);
   assert.match(skill, /收到回答后重新计算当前前沿/);
+  assert.match(skill, /已经明确给出依赖链.*尚未决定的最上游节点/);
+  assert.match(skill, /不要在它之前自行插入新的发现问题/);
+  assert.match(skill, /不能确认问题互相独立时.*每轮只问当前最上游的一题/);
   assert.match(skill, /不要为了完整而穷举低影响细节/);
   assert.match(skill, /主题与边界 \/ 已定决定 \/ 明确委托 \/ 待验证 \/ 延后及风险 \/ 未解决/);
   assert.match(skill, /请用户确认记录是否准确反映共享理解/);
@@ -228,6 +233,12 @@ function assertRoutingCorpus(document) {
     document.cases.find((entry) => entry.id === 'export_clarify').workspace_fixture,
     'neutral_export_repo',
   );
+  const fullSpec = document.cases.find((entry) => entry.id === 'full_spec');
+  assert.match(fullSpec.query, /只读审阅/);
+  assert.match(fullSpec.query, /不进入需求确认或实施/);
+  assert.match(fullSpec.query, /不要运行测试或修改文件/);
+  assert.equal(fullSpec.preconditions.current_task_is_read_only_review, true);
+  assert.doesNotMatch(fullSpec.query, /需要用户确认的关键需求歧义/);
 }
 
 function assertBehaviorCorpus(document, skillName, expectedIds, expectedRole) {
@@ -421,6 +432,26 @@ test('trigger corpora preserve balanced single-Skill coverage and exact routing'
     false,
   );
   assert.equal(
+    decision.cases.find((entry) => entry.id === 'n09_implementation_ambiguity')
+      .preconditions.iterative_interview_requested,
+    false,
+  );
+  assert.equal(
+    'companion_skill_available' in decision.cases.find(
+      (entry) => entry.id === 'n09_implementation_ambiguity',
+    ).preconditions,
+    false,
+  );
+  assert.equal(
+    requirements.cases.find((entry) => entry.id === 'p05_account_pause')
+      .workspace_fixture,
+    'account_pause_gap_repo',
+  );
+  assert.match(
+    requirements.cases.find((entry) => entry.id === 'n03_delegated_defaults').query,
+    /src\/logging\/format-entry\.ts.*formatDebugContext\(value\)/,
+  );
+  assert.equal(
     decision.cases.find((entry) => entry.id === 'n08_agent_internal_planning')
       .workspace_fixture,
     'implementation_repo',
@@ -473,16 +504,18 @@ test('trigger fixture provides the repository facts used by near-miss cases', as
     'default',
     'neutral_export_repo',
     'implementation_repo',
+    'account_pause_gap_repo',
     'account_pause_repo',
     'session_migration_repo',
   ]);
   const roots = await Promise.all([
     mkdtemp(path.join(os.tmpdir(), 'ask-me-neutral-export-fixture-')),
     mkdtemp(path.join(os.tmpdir(), 'ask-me-trigger-fixture-')),
+    mkdtemp(path.join(os.tmpdir(), 'ask-me-account-gap-fixture-')),
     mkdtemp(path.join(os.tmpdir(), 'ask-me-account-fixture-')),
     mkdtemp(path.join(os.tmpdir(), 'ask-me-session-fixture-')),
   ]);
-  const [neutralRoot, root, accountRoot, sessionRoot] = roots;
+  const [neutralRoot, root, accountGapRoot, accountRoot, sessionRoot] = roots;
   try {
     await Promise.all([
       setupTriggerWorkspace({
@@ -492,6 +525,10 @@ test('trigger fixture provides the repository facts used by near-miss cases', as
       setupTriggerWorkspace({
         workspaceRoot: root,
         evalCase: { workspace_fixture: 'implementation_repo' },
+      }),
+      setupTriggerWorkspace({
+        workspaceRoot: accountGapRoot,
+        evalCase: { workspace_fixture: 'account_pause_gap_repo' },
       }),
       setupTriggerWorkspace({
         workspaceRoot: accountRoot,
@@ -555,6 +592,14 @@ test('trigger fixture provides the repository facts used by near-miss cases', as
     assert.match(
       await readFile(path.join(accountRoot, 'src', 'accounts', 'pause-account.ts'), 'utf8'),
       /not implemented/,
+    );
+    assert.match(
+      await readFile(path.join(accountGapRoot, 'docs', 'account-pause.md'), 'utf8'),
+      /no approved specification/,
+    );
+    await assert.rejects(
+      readFile(path.join(accountGapRoot, 'spec', 'account-pause.md'), 'utf8'),
+      { code: 'ENOENT' },
     );
     assert.match(
       await readFile(path.join(accountRoot, 'src', 'auth', 'sign-in.ts'), 'utf8'),
@@ -755,6 +800,17 @@ test('behavior corpora preserve all redesigned assertions in executable conversa
     ).prompt,
     /三项可以分别选择.*不限制另外两项/,
   );
+  const engineeringEvidence = requirementsRelease.evals.find(
+    (entry) => entry.id === 'natural-engineering-evidence',
+  );
+  assert.equal(engineeringEvidence.preconditions.implementation_inputs_complete, false);
+  assert.match(engineeringEvidence.prompt, /没有服务源码.*具体规格.*标准负载定义/);
+  assert.match(engineeringEvidence.oracle.allowed_variance, /一至三个缺失的客观实施输入/);
+  assert.equal(engineeringEvidence.scripted_replies.length, 1);
+  assert.equal(
+    'expected_question_count' in engineeringEvidence.scripted_replies[0],
+    false,
+  );
 
   assert.equal(
     requirements.evals.find((entry) => entry.id === 'question-shape').scripted_replies.length,
@@ -813,6 +869,31 @@ test('behavior corpora preserve all redesigned assertions in executable conversa
     decision.evals.find((entry) => entry.id === 'shared-understanding-confirmation')
       .scripted_replies[0].expected_question_count,
     1,
+  );
+  for (const id of [
+    'reopen-existing-decision',
+    'avoid-exhaustion',
+    'shared-understanding-confirmation',
+  ]) {
+    assert.doesNotMatch(
+      decision.evals.find((entry) => entry.id === id).prompt,
+      /第一轮请使用问题工具|按访谈协议|确认门禁/,
+    );
+  }
+  for (const id of [
+    'known-fact-before-question',
+    'dependent-frontier',
+    'handoff-on-stop',
+  ]) {
+    assert.doesNotMatch(
+      requirements.evals.find((entry) => entry.id === id).prompt,
+      /第一轮请使用问题工具|使用问题工具只确认|请交接/,
+    );
+  }
+  assert.match(
+    requirements.evals.find((entry) => entry.id === 'handoff-on-stop')
+      .review.checks.join('\n'),
+    /同步或异步路径可能造成超时或实施返工/,
   );
   assert.equal(
     decision.evals.find((entry) => entry.id === 'reopen-on-correction')
