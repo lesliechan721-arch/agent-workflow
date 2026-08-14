@@ -149,6 +149,7 @@ describe('command wizard', () => {
         execute,
       }}
       progress={progress}
+      size={{ columns: 80, rows: 18 }}
       onComplete={() => undefined}
     />);
     await nextTurn();

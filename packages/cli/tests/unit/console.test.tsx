@@ -1,4 +1,5 @@
 import { render } from 'ink-testing-library';
+import { cloneElement, type ReactElement } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -1088,7 +1089,10 @@ describe('dashboard rendering and input', () => {
     });
     const launch = vi.fn(async (request) => {
       let completed = { exitCode: 1 };
-      const instance = render(request.render((result) => { completed = result; }));
+      const dashboard = request.render((result) => { completed = result; }) as ReactElement<{
+        size?: { columns: number; rows: number };
+      }>;
+      const instance = render(cloneElement(dashboard, { size: { columns: 80, rows: 18 } }));
       await nextTurn();
       await writeInput(instance, '\r', '\r', '\r');
       await nextTurn();
