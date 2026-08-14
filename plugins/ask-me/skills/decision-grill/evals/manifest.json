@@ -27,10 +27,10 @@
       "fixtureModule": "./trigger-fixture.mjs",
       "observeSpawnAgent": false,
       "isolation": "strict",
-      "strictNegativeSplits": ["validation"],
+      "strictNegativeSplits": ["validation", "sanity"],
       "profiles": ["project-default"],
       "defaultRuns": 3,
-      "releaseSplits": ["validation"],
+      "releaseSplits": ["validation", "sanity"],
       "requiredForRelease": true,
       "perRunTimeoutMs": 180000
     },
@@ -47,7 +47,7 @@
       "forbidMultipleSkillLoads": true,
       "profiles": ["project-default"],
       "defaultRuns": 10,
-      "releaseSplits": ["validation"],
+      "releaseSplits": ["validation", "sanity"],
       "requiredForRelease": true,
       "perRunTimeoutMs": 180000
     },

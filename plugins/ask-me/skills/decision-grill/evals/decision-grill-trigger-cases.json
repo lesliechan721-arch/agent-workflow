@@ -198,6 +198,25 @@
         "confidence": "high",
         "allowed_variance": "访谈问题可以不同，但必须加载 decision-grill。"
       },
+      "split": "sanity",
+      "use_project_rules": true
+    },
+    {
+      "id": "p11_colloquial_decision_interview",
+      "eval_type": "trigger",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "colloquial-decision-interview",
+      "unit_under_test": "description",
+      "preconditions": { "implicit_invocation": true },
+      "query": "这事我拿不准。你每次问我一个最要紧的问题，跟我一起把 API 版本切换方向定下来，最后把我们定下的内容记好。",
+      "should_load_skill": true,
+      "oracle": {
+        "rationale": "口语请求仍明确要求逐轮提问、共同决定和形成共享记录。",
+        "rule_refs": ["SKILL.md frontmatter description"],
+        "confidence": "high",
+        "allowed_variance": "可以使用不同访谈起点，但必须加载 decision-grill。"
+      },
       "split": "validation",
       "use_project_rules": true
     },
@@ -405,6 +424,86 @@
       "split": "train",
       "use_project_rules": true,
       "workspace_fixture": "implementation_repo"
+    },
+    {
+      "id": "s01_colloquial_interview",
+      "eval_type": "trigger",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "colloquial-decision-interview",
+      "unit_under_test": "description",
+      "preconditions": { "implicit_invocation": true },
+      "query": "咱们别一下子拍板。一个问题一个问题地聊发布节奏和回退条件，等我俩都认同了再收尾。",
+      "should_load_skill": true,
+      "oracle": {
+        "rationale": "用户用口语明确要求逐轮共同决定并形成共享理解。",
+        "rule_refs": ["SKILL.md frontmatter description"],
+        "confidence": "high",
+        "allowed_variance": "访谈措辞可以不同，但必须加载 decision-grill。"
+      },
+      "split": "sanity",
+      "use_project_rules": true
+    },
+    {
+      "id": "s02_short_recommendation",
+      "eval_type": "trigger",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "recommendation-vs-interview",
+      "unit_under_test": "description",
+      "preconditions": { "implicit_invocation": true },
+      "query": "单体还是微服务？直接给建议。",
+      "should_load_skill": false,
+      "oracle": {
+        "rationale": "短请求仍是一次性推荐，没有协作访谈意图。",
+        "rule_refs": ["SKILL.md frontmatter description"],
+        "confidence": "high",
+        "allowed_variance": "推荐内容可以不同，但不能加载 decision-grill。",
+        "minimal_counterexample": "若用户要求一个问题一个问题地共同选择方向，则应加载。"
+      },
+      "split": "sanity",
+      "use_project_rules": true
+    },
+    {
+      "id": "s03_long_context_direct_review",
+      "eval_type": "trigger",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "plan-review-vs-revision",
+      "unit_under_test": "description",
+      "preconditions": { "implicit_invocation": true, "plan_is_provided": true },
+      "query": "迁移计划已经列出三阶段切流、双写观察、失败回滚和负责人。我只要一次性评审：直接指出遗漏、风险和最小改进，不要进入逐轮讨论。",
+      "should_load_skill": false,
+      "oracle": {
+        "rationale": "长上下文没有改变交付类型；用户仍只要一次性评审。",
+        "rule_refs": ["SKILL.md frontmatter description"],
+        "confidence": "high",
+        "allowed_variance": "评审深度可以不同，但不能加载 decision-grill。",
+        "minimal_counterexample": "若用户要求逐轮修改这些阶段并共同确认取舍，则应加载。"
+      },
+      "split": "sanity",
+      "use_project_rules": true
+    },
+    {
+      "id": "s04_complete_implementation",
+      "eval_type": "trigger",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "internal-planning-vs-collaboration",
+      "unit_under_test": "description",
+      "preconditions": { "approved_plan_is_complete": true },
+      "query": "严格按 docs/approved-migration.md 实现。你自己安排步骤并直接完成，不要和我讨论方案。",
+      "should_load_skill": false,
+      "oracle": {
+        "rationale": "完整批准的实施任务只需要 agent 内部规划。",
+        "rule_refs": ["SKILL.md frontmatter description"],
+        "confidence": "high",
+        "allowed_variance": "内部步骤可以不同，但不能加载 decision-grill。",
+        "minimal_counterexample": "若用户要求逐轮重审迁移方向和回退取舍，则应加载。"
+      },
+      "split": "sanity",
+      "use_project_rules": true,
+      "workspace_fixture": "session_migration_repo"
     }
   ]
 }

@@ -120,6 +120,25 @@
         "confidence": "high",
         "allowed_variance": "检查范围可以不同，但必须加载 requirements-clarifier。"
       },
+      "split": "sanity",
+      "use_project_rules": true
+    },
+    {
+      "id": "p11_notification_scope",
+      "eval_type": "trigger",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "notification-behavior",
+      "unit_under_test": "description",
+      "preconditions": { "implicit_invocation": true },
+      "query": "通知中心你先帮我做起来，但哪些人能收到、已读状态要不要跨设备同步，我还没想好。",
+      "should_load_skill": true,
+      "oracle": {
+        "rationale": "接收范围和已读同步会改变用户可见行为与验收。",
+        "rule_refs": ["SKILL.md frontmatter description"],
+        "confidence": "high",
+        "allowed_variance": "可以先检查现有通知约定，但没有约定时必须加载 requirements-clarifier。"
+      },
       "split": "validation",
       "use_project_rules": true
     },
@@ -408,6 +427,87 @@
       "split": "validation",
       "use_project_rules": true,
       "workspace_fixture": "implementation_repo"
+    },
+    {
+      "id": "s01_billing_filter_ambiguity",
+      "eval_type": "trigger",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "filter-defaults",
+      "unit_under_test": "description",
+      "preconditions": { "implicit_invocation": true },
+      "query": "给账单页加筛选。默认时间范围和要不要记住上次条件都没定，先弄清楚再做。",
+      "should_load_skill": true,
+      "oracle": {
+        "rationale": "默认范围和状态保留会改变用户看到的结果与交互。",
+        "rule_refs": ["SKILL.md frontmatter description"],
+        "confidence": "high",
+        "allowed_variance": "可以先检查现有筛选约定，但没有约定时必须加载 requirements-clarifier。"
+      },
+      "split": "sanity",
+      "use_project_rules": true
+    },
+    {
+      "id": "s02_decision_interview",
+      "eval_type": "trigger",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "decision-interview-vs-clarification",
+      "unit_under_test": "description",
+      "preconditions": { "companion_skill_available": true, "implementation_context": false },
+      "query": "一个问题一个问题地和我推演团队权限模型，压力测试到我们形成共同决定。",
+      "should_load_skill": false,
+      "oracle": {
+        "rationale": "当前任务是协作决策访谈，不是具体实施前的局部澄清。",
+        "rule_refs": ["SKILL.md frontmatter description"],
+        "confidence": "high",
+        "allowed_variance": "可以加载 decision-grill，但不能加载 requirements-clarifier。",
+        "minimal_counterexample": "若用户要求立即实现，且只需补齐一个会改变验收的权限缺口，则应加载 requirements-clarifier。"
+      },
+      "split": "sanity",
+      "use_project_rules": false
+    },
+    {
+      "id": "s03_fully_specified_helper",
+      "eval_type": "trigger",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "fully-specified-internal-change",
+      "unit_under_test": "description",
+      "preconditions": { "name_location_and_behavior_are_explicit": true },
+      "query": "在 src/logging/format-entry.ts 加 formatTraceContext(value)，行为与 formatEntry 完全相同。直接实现。",
+      "should_load_skill": false,
+      "oracle": {
+        "rationale": "位置、名称和行为都明确，剩余选择是内部实现。",
+        "rule_refs": ["SKILL.md frontmatter description"],
+        "confidence": "high",
+        "allowed_variance": "实现细节可以不同，但不能加载 requirements-clarifier。",
+        "minimal_counterexample": "若输出语义或用户可见范围没有定义，则应加载。"
+      },
+      "split": "sanity",
+      "use_project_rules": true,
+      "workspace_fixture": "implementation_repo"
+    },
+    {
+      "id": "s04_complete_account_spec",
+      "eval_type": "trigger",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "complete-spec-vs-ambiguity",
+      "unit_under_test": "description",
+      "preconditions": { "authoritative_spec_is_complete": true },
+      "query": "严格按 spec/account-pause.md 实现账号暂停。登录、计费、通知、恢复和验收全部以该批准文档为准。",
+      "should_load_skill": false,
+      "oracle": {
+        "rationale": "权威规范已覆盖用户行为和验收，没有关键需求缺口。",
+        "rule_refs": ["SKILL.md frontmatter description"],
+        "confidence": "high",
+        "allowed_variance": "可以先读取规范并制定内部计划，但不能加载 requirements-clarifier。",
+        "minimal_counterexample": "若规范缺少暂停后的登录、计费或恢复行为，则应加载。"
+      },
+      "split": "sanity",
+      "use_project_rules": true,
+      "workspace_fixture": "account_pause_repo"
     }
   ]
 }

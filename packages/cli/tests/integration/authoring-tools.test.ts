@@ -2978,6 +2978,9 @@ describe('authoring tools', () => {
       prompt: 'Review the fixture.',
       scripted_replies: [],
       expected_output: 'Return a review.',
+      workspace_files: {
+        'docs/eval-context.md': 'Known project fact.\n',
+      },
       review: { checks: ['Reviews the fixture.'], workspace_unchanged: true },
     };
     await fs.writeJson(conversationCasesPath, {
@@ -2988,6 +2991,38 @@ describe('authoring tools', () => {
     await expect(runValidatePlugin(pluginDir)).resolves.toMatchObject({
       stdout: expect.stringContaining('[PASS] All checks passed.'),
     });
+
+    const invalidWorkspaceFiles = [
+      {
+        workspaceFiles: {},
+        expectedError: 'workspace_files must contain at least one file',
+      },
+      {
+        workspaceFiles: { '../escape.md': 'escape' },
+        expectedError: 'must be a normalized POSIX path inside the eval workspace',
+      },
+      {
+        workspaceFiles: { '.agents/escape.md': 'escape' },
+        expectedError: 'must not target an eval control directory',
+      },
+      {
+        workspaceFiles: { 'docs/empty.md': '   ' },
+        expectedError: 'workspace_files.docs/empty.md must not be empty',
+      },
+    ];
+    for (const { workspaceFiles, expectedError } of invalidWorkspaceFiles) {
+      await fs.writeJson(conversationCasesPath, {
+        skill_name: 'eval-demo',
+        evals: [{ ...validConversationCase, workspace_files: workspaceFiles }],
+      }, { spaces: 2 });
+      await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
+        stdout: expect.stringContaining(expectedError),
+      });
+    }
+    await fs.writeJson(conversationCasesPath, {
+      skill_name: 'eval-demo',
+      evals: [validConversationCase],
+    }, { spaces: 2 });
 
     await fs.writeJson(evalManifestPath, {
       ...conversationManifest,

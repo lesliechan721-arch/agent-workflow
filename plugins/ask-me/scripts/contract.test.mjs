@@ -170,13 +170,12 @@ function assertTriggerCorpus(document, skillName) {
   assertAuditPolicy(document);
   assert.equal(document.schemaVersion, 1);
   assert.equal(document.skill, skillName);
-  assert.equal(cases.length, 20);
-  assert.equal(new Set(cases.map((entry) => entry.id)).size, 20);
+  assert.equal(cases.length, 25);
+  assert.equal(new Set(cases.map((entry) => entry.id)).size, 25);
   assert.equal(cases.every((entry) => /^[a-z0-9][a-z0-9_]*$/.test(entry.id)), true);
   assert.equal(cases.filter((entry) => entry.split === 'train').length, 10);
   assert.equal(cases.filter((entry) => entry.split === 'validation').length, 10);
-  assert.equal(cases.filter((entry) => entry.should_load_skill).length, 10);
-  assert.equal(cases.filter((entry) => !entry.should_load_skill).length, 10);
+  assert.equal(cases.filter((entry) => entry.split === 'sanity').length, 5);
   assert.equal(
     cases.filter((entry) => entry.split === 'train' && entry.should_load_skill).length,
     5,
@@ -185,19 +184,38 @@ function assertTriggerCorpus(document, skillName) {
     cases.filter((entry) => entry.split === 'validation' && entry.should_load_skill).length,
     5,
   );
+  assert.equal(
+    cases.filter((entry) => entry.split === 'sanity' && entry.should_load_skill).length,
+    2,
+  );
+  assert.equal(
+    cases.filter((entry) => entry.split === 'sanity' && !entry.should_load_skill).length,
+    3,
+  );
+  assert.equal(
+    cases.filter((entry) => entry.split !== 'sanity')
+      .every((entry) => !entry.query.includes(`$${skillName}`)),
+    true,
+  );
   assert.equal(cases.every((entry) => typeof entry.use_project_rules === 'boolean'), true);
   cases.forEach((entry) => assertCaseAdmission(entry, 'trigger'));
 }
 
-function assertRoutingCorpus(document) {
+function assertExactRoutingCorpus(document, skillName, expectedCounts) {
   const participants = new Set(['decision-grill', 'requirements-clarifier']);
   assertAuditPolicy(document);
   assert.equal(document.schemaVersion, 1);
-  assert.equal(document.skill, 'decision-grill');
-  assert.equal(document.cases.length, 14);
-  assert.equal(new Set(document.cases.map((entry) => entry.id)).size, 14);
-  assert.equal(document.cases.filter((entry) => entry.split === 'validation').length, 8);
-  assert.equal(document.cases.filter((entry) => entry.split === 'sanity').length, 6);
+  assert.equal(document.skill, skillName);
+  assert.equal(document.cases.length, expectedCounts.total);
+  assert.equal(new Set(document.cases.map((entry) => entry.id)).size, expectedCounts.total);
+  assert.equal(
+    document.cases.filter((entry) => entry.split === 'validation').length,
+    expectedCounts.validation,
+  );
+  assert.equal(
+    document.cases.filter((entry) => entry.split === 'sanity').length,
+    expectedCounts.sanity,
+  );
   for (const entry of document.cases) {
     assert.equal(['validation', 'sanity'].includes(entry.split), true);
     assert.equal(Array.isArray(entry.expected_loaded_skills), true);
@@ -207,6 +225,14 @@ function assertRoutingCorpus(document) {
     assert.equal(entry.use_project_rules, true);
     assertCaseAdmission(entry, 'routing');
   }
+}
+
+function assertRoutingCorpus(document) {
+  assertExactRoutingCorpus(document, 'decision-grill', {
+    total: 14,
+    validation: 8,
+    sanity: 6,
+  });
   assert.deepEqual(
     document.cases.find((entry) => entry.id === 'export_clarify').expected_loaded_skills,
     ['requirements-clarifier'],
@@ -241,6 +267,29 @@ function assertRoutingCorpus(document) {
   assert.doesNotMatch(fullSpec.query, /需要用户确认的关键需求歧义/);
 }
 
+function assertRequirementsRoutingCorpus(document) {
+  assertExactRoutingCorpus(document, 'requirements-clarifier', {
+    total: 9,
+    validation: 6,
+    sanity: 3,
+  });
+  assert.deepEqual(
+    document.cases.find((entry) => entry.id === 'implementation_clarify')
+      .expected_loaded_skills,
+    ['requirements-clarifier'],
+  );
+  assert.deepEqual(
+    document.cases.find((entry) => entry.id === 'implementation_grill')
+      .expected_loaded_skills,
+    ['decision-grill'],
+  );
+  assert.deepEqual(
+    document.cases.find((entry) => entry.id === 'fully_specified_helper')
+      .expected_loaded_skills,
+    [],
+  );
+}
+
 function assertBehaviorCorpus(document, skillName, expectedIds, expectedRole) {
   assertAuditPolicy(document);
   assert.equal(document.skill_name, skillName);
@@ -254,6 +303,16 @@ function assertBehaviorCorpus(document, skillName, expectedIds, expectedRole) {
     assert.equal(typeof entry.expected_output, 'string');
     assert.equal(entry.expected_output.length > 0, true);
     assert.deepEqual(entry.files, []);
+    if (entry.workspace_files !== undefined) {
+      assert.equal(typeof entry.workspace_files, 'object');
+      assert.equal(Array.isArray(entry.workspace_files), false);
+      assert.equal(Object.keys(entry.workspace_files).length > 0, true);
+      assert.equal(
+        Object.values(entry.workspace_files).every((content) =>
+          typeof content === 'string' && content.length > 0),
+        true,
+      );
+    }
     assert.equal(entry.review.platforms.includes('codex'), true);
     assert.equal(entry.review.clean_session, true);
     assert.equal(entry.review.workspace_unchanged, true);
@@ -366,7 +425,7 @@ test('source package contains only the two redesigned skills', async () => {
 });
 
 test('trigger corpora preserve balanced single-Skill coverage and exact routing', async () => {
-  const [requirements, decision, routing] = await Promise.all([
+  const [requirements, decision, routing, requirementsRouting] = await Promise.all([
     readJson(
       path.join(
         context.sourceRoot,
@@ -390,11 +449,28 @@ test('trigger corpora preserve balanced single-Skill coverage and exact routing'
       'evals',
       'ask-me-routing-cases.json',
     )),
+    readJson(path.join(
+      context.sourceRoot,
+      'skills',
+      'requirements-clarifier',
+      'evals',
+      'requirements-clarifier-routing-cases.json',
+    )),
   ]);
 
   assertTriggerCorpus(requirements, 'requirements-clarifier');
   assertTriggerCorpus(decision, 'decision-grill');
   assertRoutingCorpus(routing);
+  assertRequirementsRoutingCorpus(requirementsRouting);
+
+  assert.equal(
+    requirements.cases.find((entry) => entry.id === 'p06_explicit_check').split,
+    'sanity',
+  );
+  assert.equal(
+    decision.cases.find((entry) => entry.id === 'p10_explicit_skill_plan').split,
+    'sanity',
+  );
 
   assert.equal(
     requirements.cases.find((entry) => entry.id === 'n05_decision_planning')
@@ -644,18 +720,12 @@ test('each Skill owns an independent central eval manifest', async () => {
     ]);
     assert.deepEqual(
       manifest.suites.map((suite) => [suite.id, suite.kind]),
-      skill === 'decision-grill'
-        ? [
-            ['trigger', 'trigger'],
-            ['router', 'trigger'],
-            ['behavior', 'conversation'],
-            ['behavior-diagnostic', 'conversation'],
-          ]
-        : [
-            ['trigger', 'trigger'],
-            ['behavior', 'conversation'],
-            ['behavior-diagnostic', 'conversation'],
-          ],
+      [
+        ['trigger', 'trigger'],
+        ['router', 'trigger'],
+        ['behavior', 'conversation'],
+        ['behavior-diagnostic', 'conversation'],
+      ],
     );
 
     for (const suite of manifest.suites) {
@@ -675,12 +745,18 @@ test('each Skill owns an independent central eval manifest', async () => {
       if (suite.id === 'trigger') {
         assert.equal(suite.defaultRuns, 3);
         assert.equal(suite.fixtureModule, './trigger-fixture.mjs');
-        assert.deepEqual(suite.releaseSplits, ['validation']);
-        assert.deepEqual(suite.strictNegativeSplits, ['validation']);
+        assert.deepEqual(suite.releaseSplits, ['validation', 'sanity']);
+        assert.deepEqual(suite.strictNegativeSplits, ['validation', 'sanity']);
       } else if (suite.id === 'router') {
         assert.equal(suite.defaultRuns, 10);
         assert.equal(suite.fixtureModule, './trigger-fixture.mjs');
-        assert.deepEqual(suite.releaseSplits, ['validation']);
+        assert.equal(
+          suite.cases,
+          skill === 'decision-grill'
+            ? './ask-me-routing-cases.json'
+            : './requirements-clarifier-routing-cases.json',
+        );
+        assert.deepEqual(suite.releaseSplits, ['validation', 'sanity']);
         assert.deepEqual(suite.strictNegativeSplits, []);
         assert.equal(suite.minimumPassRate, 0.9);
         assert.equal(suite.forbidMultipleSkillLoads, true);
@@ -800,6 +876,28 @@ test('behavior corpora preserve all redesigned assertions in executable conversa
     ).prompt,
     /三项可以分别选择.*不限制另外两项/,
   );
+  const naturalOwnerChoice = decisionRelease.evals.find(
+    (entry) => entry.id === 'natural-owner-choice',
+  );
+  assert.equal(naturalOwnerChoice.preconditions.repository_lookup_required, true);
+  assert.match(naturalOwnerChoice.prompt, /docs\/service-split-decisions\.md/);
+  assert.match(
+    naturalOwnerChoice.workspace_files['docs/service-split-decisions.md'],
+    /交付期限为八周.*唯一未决事项/s,
+  );
+  assert.match(naturalOwnerChoice.review.checks.join('\n'), /读取并采用文档/);
+
+  const naturalMixedAmbiguity = requirementsRelease.evals.find(
+    (entry) => entry.id === 'natural-mixed-ambiguity',
+  );
+  assert.equal(naturalMixedAmbiguity.preconditions.repository_lookup_required, true);
+  assert.match(naturalMixedAmbiguity.prompt, /docs\/registration-verification\.md/);
+  assert.match(
+    naturalMixedAmbiguity.workspace_files['docs/registration-verification.md'],
+    /十分钟后失效.*内部可逆实现/s,
+  );
+  assert.match(naturalMixedAmbiguity.review.checks.join('\n'), /读取项目文档/);
+
   const engineeringEvidence = requirementsRelease.evals.find(
     (entry) => entry.id === 'natural-engineering-evidence',
   );
@@ -810,6 +908,11 @@ test('behavior corpora preserve all redesigned assertions in executable conversa
   assert.equal(
     'expected_question_count' in engineeringEvidence.scripted_replies[0],
     false,
+  );
+  assert.match(engineeringEvidence.review.checks.join('\n'), /单轮最多询问三个/);
+  assert.match(
+    engineeringEvidence.review.checks.join('\n'),
+    /在既定验收口径下达到性能目标列为待验证事项/,
   );
 
   assert.equal(
@@ -827,6 +930,9 @@ test('behavior corpora preserve all redesigned assertions in executable conversa
       .scripted_replies.length,
     0,
   );
+  const decisionFrontier = decision.evals.find((entry) => entry.id === 'decision-frontier');
+  assert.match(decisionFrontier.expected_output, /第一轮只讨论目标用户/);
+  assert.match(decisionFrontier.review.checks.join('\n'), /只列出访问边界/);
   assert.equal(
     decision.evals.find((entry) => entry.id === 'main-alternatives')
       .scripted_replies.length,
@@ -917,6 +1023,8 @@ test('behavior corpora preserve all redesigned assertions in executable conversa
     decisionRecord.review.checks.join('\n'),
     /完整保留产品负责人在本周五前确认数据驻留条款的委托/,
   );
+  assert.match(decisionRecord.review.checks.join('\n'), /不生成空的未解决项/);
+  assert.match(decisionRecord.review.checks.join('\n'), /每月查询量不超过 50 万次/);
 
   const readme = (await Promise.all(skillNames.map((skill) => readFile(
     path.join(context.sourceRoot, 'skills', skill, 'evals', 'README.md'),

@@ -380,6 +380,21 @@ function validateConversationReply(value: unknown, label: string): void {
   expectString(reply.unexpected_question_answer, `${label}.unexpected_question_answer`);
 }
 
+function validateConversationWorkspaceFiles(value: unknown, label: string): void {
+  if (value === undefined) return;
+  const files = expectRecord(value, label);
+  const entries = Object.entries(files);
+  if (entries.length === 0) {
+    throw new Error(`${label} must contain at least one file.`);
+  }
+  for (const [relativePath, content] of entries) {
+    parseEvalWorkspacePath(relativePath, `${label}.${relativePath}`, {
+      allowTreePattern: false,
+    });
+    expectString(content, `${label}.${relativePath}`);
+  }
+}
+
 export function validatePluginEvalConversationCaseDocument(
   value: unknown,
   expectedSkill: string,
@@ -419,6 +434,10 @@ export function validatePluginEvalConversationCaseDocument(
         `${label}.evals[${index}].scripted_replies[${replyIndex}]`,
       ));
     expectString(row.expected_output, `${label}.evals[${index}].expected_output`);
+    validateConversationWorkspaceFiles(
+      row.workspace_files,
+      `${label}.evals[${index}].workspace_files`,
+    );
     const review = expectRecord(row.review, `${label}.evals[${index}].review`);
     parseStringArray(review.checks, `${label}.evals[${index}].review.checks`);
     if (review.workspace_unchanged !== undefined) {
