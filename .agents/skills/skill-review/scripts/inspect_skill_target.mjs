@@ -1408,4 +1408,4 @@ const isMain = process.argv[1] &&
   realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
 if (isMain) await main();
 
-export { buildReport, textMetrics };
+export { buildReport, isSkillAuthorOnlyPath, textMetrics };

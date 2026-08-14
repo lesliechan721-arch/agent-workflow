@@ -2984,8 +2984,8 @@ function isValidArtifactFilePath(relativePath) {
 }
 
 function isSkillAuthorOnlyPath(relativePath) {
-  return relativePath.split('/').some((segment) =>
-    segment === 'evals' || segment === 'reports');
+  const [topLevel] = relativePath.split('/').filter(Boolean);
+  return topLevel === 'evals' || topLevel === 'reports';
 }
 
 function collectArtifactSourceFiles(rootDir, fieldName, files) {

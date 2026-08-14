@@ -138,6 +138,99 @@ describe('skill-review author tools', () => {
     expect(authoringSkill).toContain('只有用户另行明确要求登记时，才在批次封存后运行 `review:release`');
   });
 
+  it('keeps eval reachability, quick control scope, and report currentness explicit', async () => {
+    const reviewRoot = path.join(repoRoot(), '.agents', 'skills', 'skill-review');
+    const [
+      skill,
+      reportTemplate,
+      appendixTemplate,
+      evalAudit,
+      staticEvaluation,
+      pluginEvaluation,
+      scoringModel,
+      readme,
+      manifest,
+      behaviorDocument,
+    ] =
+      await Promise.all([
+        fs.readFile(path.join(reviewRoot, 'SKILL.md'), 'utf8'),
+        fs.readFile(path.join(reviewRoot, 'assets', 'report-template.md'), 'utf8'),
+        fs.readFile(path.join(reviewRoot, 'assets', 'review-appendix-template.md'), 'utf8'),
+        fs.readFile(path.join(reviewRoot, 'references', 'eval-audit.md'), 'utf8'),
+        fs.readFile(path.join(reviewRoot, 'references', 'static-skill-evaluation.md'), 'utf8'),
+        fs.readFile(path.join(reviewRoot, 'references', 'agent-workflows-plugin.md'), 'utf8'),
+        fs.readFile(path.join(reviewRoot, 'references', 'scoring-model.md'), 'utf8'),
+        fs.readFile(path.join(reviewRoot, 'README.md'), 'utf8'),
+        fs.readJson(path.join(reviewRoot, 'evals', 'manifest.json')),
+        fs.readJson(path.join(reviewRoot, 'evals', 'evals.json')),
+      ]);
+
+    expect(skill).toContain(
+      '任何模式都先读取它，只用 `suites[].cases` 确定可执行 case reachability',
+    );
+    expect(skill).toContain('quick/delta 只在用户关注或所选范围包含');
+    expect(skill).toContain('当最小有效控制审计适用时，先完成该审计');
+    expect(skill).toContain('assets/review-appendix-template.md');
+    expect(skill).not.toContain('启动真实模型 eval 前');
+    expect(skill).not.toContain('真实模型 eval 启动后');
+    expect(skill).not.toContain('## Human Report Discipline');
+    expect(reportTemplate).toContain('设计结论：');
+    expect(reportTemplate).toContain('发布就绪度：');
+    expect(reportTemplate).toContain('默认最多 3 项');
+    expect(reportTemplate).toContain('删除空章节和 `not_applicable` 章节');
+    expect(reportTemplate).toContain('同一事实只在一个权威位置展开');
+    expect(reportTemplate).not.toContain('## 维度评分');
+    expect(appendixTemplate).toContain('Appendix C — Full Scorecard');
+    expect(appendixTemplate).toContain('Finding Admission Records');
+    expect(evalAudit).toContain('未被 manifest 引用');
+    expect(evalAudit).toContain('portable/calibration');
+    expect(staticEvaluation).toContain('README 只是登记索引');
+    expect(staticEvaluation).toContain('source commit');
+    expect(staticEvaluation).toContain('任一 `inScopeDirty=true` 时');
+    expect(pluginEvaluation).toContain('不是普通 quick/full 评审的无条件前置步骤');
+    expect(pluginEvaluation).toContain('只有 release 模式，或用户明确要求运行验证');
+    expect(scoringModel).toContain('目标没有 eval，且当前判断未使用任何 eval 结果时');
+    expect(scoringModel).not.toContain('没有 eval 或 eval 结果时');
+    expect(readme).toContain('最近登记的正式报告：暂无');
+    expect(manifest.suites.map((suite: { cases: string }) => suite.cases)).toEqual([
+      './evals/trigger-cases.json',
+      './evals/evals.json',
+    ]);
+    expect(manifest.suites.map((suite: { defaultRuns: number }) => suite.defaultRuns)).toEqual([
+      3,
+      3,
+    ]);
+
+    const defaultQuick = behaviorDocument.evals.find(
+      (entry: { id: string }) => entry.id === 'unspecified-depth-defaults-quick',
+    );
+    expect(defaultQuick.review.checks).toContain(
+      '不会仅因模式是quick而无条件执行Minimum Effective Control Audit',
+    );
+    const focusedQuick = behaviorDocument.evals.find(
+      (entry: { id: string }) => entry.id === 'minimum-control-over-specified',
+    );
+    expect(focusedQuick.preconditions.selected_dimensions).toEqual(['minimum_control']);
+
+    const releaseEvidence = behaviorDocument.evals.find(
+      (entry: { id: string }) => entry.id === 'release-evidence-distinguishes-registration-and-currentness',
+    );
+    expect(releaseEvidence.review.checks).toEqual(expect.arrayContaining([
+      '不因README没有登记而断言不存在正式报告',
+      '比较正式summary的source commit、inScopeDirty和package digest与当前目标',
+      '当前证据为unknown，同时记录旧报告的historical fail',
+    ]));
+
+    const dirtyReleaseEvidence = behaviorDocument.evals.find(
+      (entry: { id: string }) => entry.id === 'release-evidence-dirty-source-requires-digest',
+    );
+    expect(dirtyReleaseEvidence.review.checks).toEqual(expect.arrayContaining([
+      '任一source为dirty时相同commit不足以证明内容相同',
+      'dirty source必须有匹配的封存package digest才能证明currentness',
+      'digest缺失时当前release-evidence为unknown',
+    ]));
+  });
+
   it('uses every static suite participant when publishing review evidence', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-review-static-participants-'));
     tempDirs.push(root);
@@ -169,6 +262,9 @@ describe('skill-review author tools', () => {
 
   it('parses a quoted YAML Skill name as its scalar value', async () => {
     const runner = await import(`${pathToFileURL(staticEvalRunner()).href}?quoted-name`);
+    const inspector = await import(
+      `${pathToFileURL(skillScript('inspect_skill_target.mjs')).href}?author-only-paths`,
+    );
     const skillRoot = path.join(repoRoot(), '.agents', 'skills', 'quoted-skill');
 
     expect(runner.parseSkillName([
@@ -196,6 +292,15 @@ describe('skill-review author tools', () => {
         root: '/repo/.agents/skills/skill-review/scripts',
       },
     ]);
+    for (const [relativePath, authorOnly] of [
+      ['evals/cases.json', true],
+      ['reports/review.md', true],
+      ['assets/reports/template.md', false],
+      ['references/evals/contract.md', false],
+    ] as const) {
+      expect(runner.isSkillAuthorOnlyPath(relativePath)).toBe(authorOnly);
+      expect(inspector.isSkillAuthorOnlyPath(relativePath)).toBe(authorOnly);
+    }
   });
 
   it('materializes static participant Skills without author-only directories', async () => {
@@ -277,7 +382,7 @@ describe('skill-review author tools', () => {
     expect(result.stdout).toContain('Usage: validate_eval_cases.mjs');
   });
 
-  it('validates eval audit metadata while keeping legacy case files reviewable', async () => {
+  it('validates admitted release case files and audit diagnostics', async () => {
     const root = repoRoot();
     const validator = skillScript('validate_eval_cases.mjs');
     const runValidator = async (filePath: string, strict = false) => {
@@ -307,7 +412,7 @@ describe('skill-review author tools', () => {
       summary: { cases: 1, scenario_families: 1, errors: 0, warnings: 0 },
     });
 
-    const legacy = await runValidator(path.join(
+    const triggerCases = await runValidator(path.join(
       root,
       '.agents',
       'skills',
@@ -315,11 +420,12 @@ describe('skill-review author tools', () => {
       'evals',
       'trigger-cases.json',
     ));
-    expect(legacy.valid).toBe(true);
-    expect(legacy.summary.errors).toBe(0);
-    expect(legacy.summary.warnings).toBeGreaterThan(0);
+    expect(triggerCases).toMatchObject({
+      valid: true,
+      summary: { errors: 0, warnings: 0 },
+    });
 
-    const strictLegacy = await runValidator(path.join(
+    const strictTriggerCases = await runValidator(path.join(
       root,
       '.agents',
       'skills',
@@ -327,10 +433,23 @@ describe('skill-review author tools', () => {
       'evals',
       'trigger-cases.json',
     ), true);
-    expect(strictLegacy.valid).toBe(false);
-    expect(strictLegacy.diagnostics).toEqual(expect.arrayContaining([
-      expect.objectContaining({ level: 'error', code: 'oracle.missing' }),
-    ]));
+    expect(strictTriggerCases).toMatchObject({
+      valid: true,
+      summary: { errors: 0, warnings: 0 },
+    });
+
+    const strictBehaviorCases = await runValidator(path.join(
+      root,
+      '.agents',
+      'skills',
+      'skill-review',
+      'evals',
+      'evals.json',
+    ), true);
+    expect(strictBehaviorCases).toMatchObject({
+      valid: true,
+      summary: { errors: 0, warnings: 0 },
+    });
 
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-eval-case-audit-'));
     tempDirs.push(tempRoot);
@@ -640,15 +759,15 @@ describe('skill-review author tools', () => {
       expect(report.issues.filter((issue: { level: string }) => issue.level === 'error')).toEqual([]);
       if (skillName === 'skill-review') {
         expect(report.evals.trigger).toEqual({ total: 32, positive: 16, negative: 16 });
-        expect(report.evals.behavior_cases).toBe(15);
-        expect(report.evals.conversation_cases).toBe(15);
-        expect(report.evals.portable_behavior_specs).toBe(37);
+        expect(report.evals.behavior_cases).toBe(21);
+        expect(report.evals.conversation_cases).toBe(21);
+        expect(report.evals.portable_behavior_specs).toBe(39);
         expect(report.evals.behavior_evidence_note).toContain('not executable release evidence');
         expect(report.evals.scoring_cases).toBe(20);
         expect(report.scripts.count).toBe(4);
         expect(report.references.missing).toEqual([]);
         expect(report.pointers).toMatchObject({
-          total: 8,
+          total: 9,
           conditional_signals: 8,
           weak_signal_lines: [],
         });
@@ -1019,6 +1138,58 @@ describe('skill-review author tools', () => {
     await expect(runner.readManifest(fixtureRoot, 'fixture')).rejects.toThrow(
       'cannot contain symlinks',
     );
+
+    await fs.writeJson(path.join(fixtureRoot, 'evals', 'manifest.json'), {
+      schemaVersion: 1,
+      skill: 'fixture',
+      suites: [{
+        id: 'trigger',
+        kind: 'trigger',
+        skill: 'fixture',
+        skills: ['fixture'],
+        cases: './evals/cases.json',
+        fixtureModule: './evals/trigger-fixture.mjs',
+        observeSpawnAgent: false,
+        defaultRuns: 1,
+        releaseSplits: ['validation'],
+        requiredForRelease: true,
+        perRunTimeoutMs: 1_000,
+      }],
+    });
+    await expect(runner.readManifest(fixtureRoot, 'fixture')).rejects.toThrow(
+      'fixtureModule is not supported for static Skill evals',
+    );
+
+    await fs.writeJson(path.join(fixtureRoot, 'evals', 'cases.json'), {
+      schemaVersion: 1,
+      skill: 'fixture',
+      cases: [{
+        id: 'workspace_fixture',
+        split: 'validation',
+        query: 'Review the fixture.',
+        should_load_skill: true,
+        workspace_fixture: 'repository_state',
+      }],
+    });
+    await fs.writeJson(path.join(fixtureRoot, 'evals', 'manifest.json'), {
+      schemaVersion: 1,
+      skill: 'fixture',
+      suites: [{
+        id: 'trigger',
+        kind: 'trigger',
+        skill: 'fixture',
+        skills: ['fixture'],
+        cases: './evals/cases.json',
+        observeSpawnAgent: false,
+        defaultRuns: 1,
+        releaseSplits: ['validation'],
+        requiredForRelease: true,
+        perRunTimeoutMs: 1_000,
+      }],
+    });
+    await expect(runner.readManifest(fixtureRoot, 'fixture')).rejects.toThrow(
+      'workspace_fixture is not supported for static Skill evals',
+    );
   });
 
   it('reports standard static Skill contract errors without promoting nested fixture Skills', async () => {
@@ -1169,11 +1340,15 @@ describe('skill-review author tools', () => {
 
     const passedReport = await validate(base);
     expect(passedReport).toMatchObject({
+      decision: {
+        design: 'pass',
+        release_readiness: 'ready',
+        complexity: 'proportionate',
+      },
       score: {
         weighted_score: 100,
         quality_band: 'excellent',
         coverage_percent: 100,
-        release: 'pass',
       },
       valid: true,
     });
@@ -1221,7 +1396,7 @@ describe('skill-review author tools', () => {
     }
     expect(await validate(unauditedEval)).toMatchObject({
       valid: true,
-      score: { release: 'provisional' },
+      decision: { design: 'pass', release_readiness: 'provisional' },
       diagnostics: expect.arrayContaining([
         expect.objectContaining({ code: 'cap.evals-case-audit' }),
       ]),
@@ -1316,12 +1491,12 @@ describe('skill-review author tools', () => {
     overSpecifiedDimension.finding_ids = ['F-control'];
     expect(await validate(overSpecified)).toMatchObject({
       complexity: { verdict: 'over-specified', reducibility: 'significant' },
+      decision: { design: 'needs-fixes', release_readiness: 'provisional' },
       score: {
         weighted_score: 94.4,
         quality_band: 'excellent',
         effective_quality_band: 'adequate',
         quality_cap_reason: 'over-specified',
-        release: 'provisional',
       },
       valid: true,
     });
@@ -1351,10 +1526,10 @@ describe('skill-review author tools', () => {
     );
     overEngineeredDimension.score = 2;
     expect(await validate(overEngineered)).toMatchObject({
+      decision: { design: 'redesign', release_readiness: 'blocked' },
       score: {
         weighted_score: 91.6,
         effective_quality_band: 'weak',
-        release: 'provisional',
       },
       valid: true,
     });
@@ -1370,10 +1545,10 @@ describe('skill-review author tools', () => {
 
     const lowQuality = scoreAllWithUnknowns(2.5);
     expect(await validate(lowQuality)).toMatchObject({
+      decision: { design: 'pass', release_readiness: 'ready' },
       score: {
         weighted_score: 54.2,
         quality_band: 'poor',
-        release: 'pass',
       },
       valid: true,
     });
@@ -1385,10 +1560,10 @@ describe('skill-review author tools', () => {
       [4.5, 'excellent'],
     ] as const) {
       expect(await validate(scoreAllWithUnknowns(score))).toMatchObject({
+        decision: { design: 'pass', release_readiness: 'ready' },
         score: {
           weighted_score: score * 20 + Math.max(0, 4 - score) * 2.8,
           quality_band: qualityBand,
-          release: 'pass',
         },
         valid: true,
       });
@@ -1422,7 +1597,28 @@ describe('skill-review author tools', () => {
       dimension: 'specification',
       location: 'SKILL.md:1',
       problem: 'The package name is invalid.',
+      material_premises: [
+        {
+          premise: 'The declared name contains an invalid character.',
+          source_role: 'target frontmatter',
+          evidence: 'SKILL.md:1 declares the invalid name.',
+          status: 'supported',
+        },
+        {
+          premise: 'The target schema rejects that character.',
+          source_role: 'target schema',
+          evidence: 'The applicable schema permits no exception.',
+          status: 'supported',
+        },
+      ],
       affected_scenario: 'The target client rejects the package before loading the Skill.',
+      reachability: {
+        kind: 'entry-gate',
+        path: 'The target client validates frontmatter before loading the Skill.',
+        evidence: 'The package validator rejects the declared name.',
+        status: 'supported',
+      },
+      impact: 'The package cannot load in the target client.',
       evidence: ['The declared name contains an invalid character.'],
       counterevidence: ['The target schema was checked and defines no exception for this character.'],
       correct_owner: 'Skill',
@@ -1439,9 +1635,7 @@ describe('skill-review author tools', () => {
     blocked.gates[0].reason = 'The package name is invalid.';
     blocked.gates[0].finding_ids = ['F-package'];
     expect(await validate(blocked)).toMatchObject({
-      score: {
-        release: 'fail',
-      },
+      decision: { design: 'fail', release_readiness: 'blocked' },
       valid: true,
     });
 
@@ -1454,6 +1648,36 @@ describe('skill-review author tools', () => {
       ]),
     });
 
+    const unsupportedPremise = structuredClone(blocked);
+    unsupportedPremise.findings[0].material_premises[0].status = 'unknown';
+    expect(await validate(unsupportedPremise)).toMatchObject({
+      valid: false,
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({ code: 'finding.admission-premise-support' }),
+      ]),
+    });
+
+    const unreachable = structuredClone(blocked);
+    unreachable.findings[0].reachability.status = 'unknown';
+    expect(await validate(unreachable)).toMatchObject({
+      valid: false,
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({ code: 'finding.admission-reachability' }),
+      ]),
+    });
+
+    const missingImpact = structuredClone(blocked);
+    missingImpact.findings[0].impact = '';
+    expect(await validate(missingImpact)).toMatchObject({
+      valid: false,
+      diagnostics: expect.arrayContaining([
+        expect.objectContaining({
+          code: 'finding.required-field',
+          message: expect.stringContaining('impact'),
+        }),
+      ]),
+    });
+
     const weakAuthority = structuredClone(base);
     weakAuthority.review.mode = 'full';
     weakAuthority.findings = [{
@@ -1463,7 +1687,22 @@ describe('skill-review author tools', () => {
       dimension: 'triggering',
       location: 'SKILL.md:1',
       problem: 'A heuristic-only complaint.',
+      material_premises: [
+        {
+          premise: 'A third-party guide prefers another phrase.',
+          source_role: 'third-party heuristic',
+          evidence: 'The cited guide contains that preference.',
+          status: 'supported',
+        },
+      ],
       affected_scenario: 'A future query could fail to load the Skill.',
+      reachability: {
+        kind: 'execution-path',
+        path: 'A future query reaches the target description.',
+        evidence: 'The target client uses the description for routing.',
+        status: 'supported',
+      },
+      impact: 'The Skill could fail to load for that future query.',
       evidence: ['A third-party writing guide prefers another phrase.'],
       counterevidence: ['No target trace or official rule supports the complaint.'],
       correct_owner: 'Skill',
@@ -1504,6 +1743,8 @@ describe('skill-review author tools', () => {
       valid: false,
       diagnostics: expect.arrayContaining([
         expect.objectContaining({ code: 'finding.required-field' }),
+        expect.objectContaining({ code: 'finding.admission-premises' }),
+        expect.objectContaining({ code: 'finding.admission-reachability' }),
         expect.objectContaining({ code: 'finding.admission-evidence' }),
         expect.objectContaining({ code: 'finding.admission-counterevidence' }),
       ]),
@@ -1586,11 +1827,11 @@ describe('skill-review author tools', () => {
       dimension.evidence = ['quick fixture evidence'];
     }
     expect(await validate(quick)).toMatchObject({
+      decision: { design: 'not-assessed', release_readiness: 'not-assessed' },
       score: {
         weighted_score: null,
         quality_band: null,
         coverage_percent: 24,
-        release: 'provisional',
       },
       valid: true,
     });
@@ -1620,7 +1861,7 @@ describe('skill-review author tools', () => {
       diagnostics: expect.arrayContaining([
         expect.objectContaining({ code: 'cap.minimum-control' }),
       ]),
-      score: { release: 'provisional' },
+      decision: { design: 'not-assessed', release_readiness: 'not-assessed' },
       valid: true,
     });
 
@@ -1647,11 +1888,11 @@ describe('skill-review author tools', () => {
     affectedArchitecture.confidence = 'high';
     affectedArchitecture.evidence = ['delta fixture evidence'];
     expect(await validate(delta)).toMatchObject({
+      decision: { design: 'pass', release_readiness: 'not-assessed' },
       score: {
         weighted_score: null,
         quality_band: null,
         coverage_percent: 10,
-        release: 'pass',
       },
       valid: true,
     });
@@ -1673,7 +1914,8 @@ describe('skill-review author tools', () => {
       evidence: [],
     }));
     expect(await validate(emptyDelta)).toMatchObject({
-      score: { weighted_score: null, coverage_percent: 0, release: 'provisional' },
+      decision: { design: 'not-assessed', release_readiness: 'not-assessed' },
+      score: { weighted_score: null, coverage_percent: 0 },
       valid: false,
       diagnostics: expect.arrayContaining([
         expect.objectContaining({ code: 'mode.delta-scope' }),
@@ -1683,7 +1925,7 @@ describe('skill-review author tools', () => {
     const missingPrevious = structuredClone(delta);
     missingPrevious.artifacts.previous_version = false;
     expect(await validate(missingPrevious)).toMatchObject({
-      score: { release: 'provisional' },
+      decision: { design: 'not-assessed', release_readiness: 'not-assessed' },
       valid: true,
     });
 
@@ -1696,7 +1938,8 @@ describe('skill-review author tools', () => {
       evidence: [],
     };
     expect(await validate(incompleteFull)).toMatchObject({
-      score: { weighted_score: null, release: 'provisional' },
+      decision: { design: 'not-assessed', release_readiness: 'provisional' },
+      score: { weighted_score: null },
       valid: false,
       diagnostics: expect.arrayContaining([
         expect.objectContaining({ code: 'dimension.mode-required' }),
@@ -1706,14 +1949,14 @@ describe('skill-review author tools', () => {
     const staleSources = structuredClone(base);
     staleSources.artifacts.current_sources_checked = false;
     expect(await validate(staleSources)).toMatchObject({
-      score: { release: 'provisional' },
+      decision: { design: 'pass', release_readiness: 'provisional' },
       valid: true,
     });
 
     const stringArtifact = structuredClone(base);
     stringArtifact.artifacts.current_sources_checked = 'false';
     expect(await validate(stringArtifact)).toMatchObject({
-      score: { release: 'provisional' },
+      decision: { design: 'pass', release_readiness: 'provisional' },
       valid: false,
       diagnostics: expect.arrayContaining([
         expect.objectContaining({ code: 'artifacts.value' }),
@@ -1723,7 +1966,8 @@ describe('skill-review author tools', () => {
     const lowConfidence = structuredClone(base);
     for (const dimension of lowConfidence.dimensions) dimension.confidence = 'low';
     expect(await validate(lowConfidence)).toMatchObject({
-      score: { confidence: 'low', release: 'provisional' },
+      decision: { design: 'not-assessed', release_readiness: 'provisional' },
+      score: { confidence: 'low' },
       valid: true,
     });
 
@@ -1788,10 +2032,10 @@ describe('skill-review author tools', () => {
         dimension.confidence = confidences[index];
       });
       expect(await validate(boundary)).toMatchObject({
+        decision: { design: 'pass', release_readiness: 'ready' },
         score: {
           confidence_index: expectedIndex,
           confidence: label,
-          release: 'pass',
         },
         valid: true,
       });

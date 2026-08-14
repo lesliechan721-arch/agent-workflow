@@ -5,8 +5,8 @@
     "assertions": [
       "使用全部12个适用评分维度",
       "分数由scorecard脚本计算而非手算",
-      "单独报告发布门禁、coverage和confidence",
-      "先完成minimum effective control，再完成pointer、information hierarchy和completion boundary审计"
+      "顶层分开报告设计结论、发布就绪度、复杂度和证据状态",
+      "主报告只显示异常，完整门禁、评分和审计放入技术附件"
     ]
   },
   {
@@ -14,7 +14,7 @@
     "prompt": "只提供SKILL.md进行quick review。",
     "assertions": [
       "缺失组件标记为unknown而非猜测",
-      "结论为provisional",
+      "设计结论和发布就绪度为not-assessed",
       "不计算weighted score或quality band",
       "不会把缺失scripts自动判为缺陷"
     ]
@@ -195,8 +195,11 @@
     "prompt": "reviewer先凭整体观感给3分并想发布P1，但没有说明目标失败场景，也没有检查兼容声明和schema例外。",
     "assertions": [
       "P1不能通过Finding Admission Gate",
-      "要求affected scenario和直接强证据",
+      "要求exact claim和直接强证据",
+      "要求每个重要前提有来源且为supported",
+      "要求affected scenario、supported reachability和material impact",
       "要求记录已检查的counterevidence",
+      "owner未证明为Skill时不修改生产SKILL.md",
       "先完成evidence、finding和unknown ledger",
       "低于5的分数关联真实finding或unknown ID",
       "证据不足时降为P2、Advisory或unknown"
@@ -207,9 +210,9 @@
     "prompt": "一个Skill总分50，但所有gate通过且没有P0/P1；另一个总分95，但有已接纳P1。",
     "assertions": [
       "50分Skill的quality band较低但不因分数自动失败",
-      "95分Skill得到pass-after-fixes",
+      "95分Skill的设计结论为needs-fixes且发布就绪度为blocked",
       "总分不覆盖gate或finding",
-      "不自动输出redesign发布结论"
+      "不因总分自动输出redesign设计结论"
     ]
   },
   {
@@ -227,7 +230,7 @@
     "prompt": "一个merge Skill的拓扑、安全和验证规则都正确，但正文为每个阶段设置Gate completion、固定中间artifact和六字段报告；只有少量真实失败证据。",
     "assertions": [
       "先生成不超过8条的最小行为合同",
-      "复杂度判为over-specified而不是因规则正确给strong",
+      "复杂度判为over-specified，设计结论为needs-fixes且发布就绪度为provisional",
       "minimum_control不高于3",
       "优先delete或relax，不继续补边界"
     ]
@@ -266,7 +269,8 @@
       "默认使用quick而不是因材料完整自动进入full",
       "只检查最相关的3至5个维度",
       "不计算weighted score或quality band",
-      "结论保持provisional"
+      "不作设计pass或发布ready结论",
+      "不把Minimum Effective Control Audit当作所有quick的无条件步骤"
     ]
   },
   {
@@ -277,6 +281,25 @@
       "不运行review:publish或封存批次",
       "不运行review:release或修改README",
       "发布和README登记需要分别明确授权"
+    ]
+  },
+  {
+    "id": "release-evidence-currentness",
+    "prompt": "README没有登记报告，但正式目录存在一个来源已过期且结果为failed的报告；当前目标没有匹配的release evidence。",
+    "assertions": [
+      "不因README未登记而断言正式报告不存在",
+      "比较正式summary的commit、inScopeDirty和digest与当前目标",
+      "当前release-evidence为unknown",
+      "旧报告单独记录为historical fail"
+    ]
+  },
+  {
+    "id": "dirty-release-evidence-needs-digest",
+    "prompt": "正式报告和当前目标位于同一commit，但双方都有未提交修改，且没有可比较的封存package digest。",
+    "assertions": [
+      "不把commit相同当作充分currentness证据",
+      "要求匹配的封存package digest",
+      "digest缺失时release-evidence为unknown"
     ]
   },
   {

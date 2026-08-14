@@ -361,11 +361,11 @@ async function validateSuite(skillRoot, value, index) {
   if (strictNegativeSplits.some((split) => !['train', 'validation', 'sanity'].includes(split))) {
     fail(`suites[${index}].strictNegativeSplits contains an unsupported split.`);
   }
-  const fixtureModule = row.fixtureModule === undefined
-    ? undefined
-    : await validateEvalFile(skillRoot, row.fixtureModule, `suites[${index}].fixtureModule`);
-  if (fixtureModule && !fixtureModule.endsWith('.mjs')) {
-    fail(`suites[${index}].fixtureModule must reference an .mjs file.`);
+  if (row.fixtureModule !== undefined) {
+    fail(
+      `suites[${index}].fixtureModule is not supported for static Skill evals; ` +
+      'use declarative workspace.copy fixtures.',
+    );
   }
   return {
     ...common,
@@ -381,7 +381,6 @@ async function validateSuite(skillRoot, value, index) {
         row.forbidMultipleSkillLoads,
         `suites[${index}].forbidMultipleSkillLoads`,
       ),
-    ...(fixtureModule ? { fixtureModule } : {}),
   };
 }
 
@@ -451,7 +450,6 @@ async function validateLocalCases(skillRoot, suite) {
     }
     const ids = new Set();
     const splits = new Set();
-    let hasWorkspaceFixture = false;
     for (const [index, value] of document.cases.entries()) {
       const row = record(value, `${suite.id}.cases[${index}]`);
       const id = nonEmptyString(row.id, `${suite.id}.cases[${index}].id`);
@@ -497,16 +495,15 @@ async function validateLocalCases(skillRoot, suite) {
         boolean(row.should_spawn_agent, `${suite.id}.cases[${index}].should_spawn_agent`);
       }
       if (row.workspace_fixture !== undefined) {
-        nonEmptyString(row.workspace_fixture, `${suite.id}.cases[${index}].workspace_fixture`);
-        hasWorkspaceFixture = true;
+        fail(
+          `${suite.id}.cases[${index}].workspace_fixture is not supported for static ` +
+          'Skill evals; use manifest.workspace.copy.',
+        );
       }
       if (row.use_project_rules !== undefined) {
         boolean(row.use_project_rules, `${suite.id}.cases[${index}].use_project_rules`);
       }
       if (row.tags !== undefined) stringArray(row.tags, `${suite.id}.cases[${index}].tags`);
-    }
-    if (hasWorkspaceFixture && !suite.fixtureModule) {
-      fail(`${suite.id} cases require fixtureModule because workspace_fixture is used.`);
     }
     for (const split of suite.releaseSplits) {
       if (split !== 'all' && !splits.has(split)) fail(`${suite.id} has no cases for release split ${split}.`);
@@ -641,8 +638,8 @@ export function parseSkillName(content, skillRoot) {
 }
 
 function isSkillAuthorOnlyPath(relativePath) {
-  return relativePath.split(/[\\/]/u).filter(Boolean).some((segment) =>
-    segment === 'evals' || segment === 'reports');
+  const [topLevel] = relativePath.split(/[\\/]/u).filter(Boolean);
+  return topLevel === 'evals' || topLevel === 'reports';
 }
 
 async function listFiles(root) {
@@ -1414,4 +1411,10 @@ if (isMain) {
   });
 }
 
-export { parseArgs, prepareSubject, readManifest, resolveSkillRoot };
+export {
+  isSkillAuthorOnlyPath,
+  parseArgs,
+  prepareSubject,
+  readManifest,
+  resolveSkillRoot,
+};

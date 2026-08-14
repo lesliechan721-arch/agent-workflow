@@ -4,7 +4,7 @@
 
 ## 定义与验证
 
-静态 Skill 必须是 `.agents/skills/<name>` 的直接子目录，并在自身 `evals/manifest.json` 声明 `trigger`、`conversation` suite；profile 固定为隐式 `project-default`。每个 suite 用 `skills[]` 声明参与评估的 repo-local sibling Skills，并必须包含 owner。current 安装全部 participants；conversation baseline 只移除 owner，保留 companions。`scripted_replies` 是 current 行为断言；baseline 的交互步骤差异只保存为比较证据，不能使 required suite 机械失败。baseline 的完成、隔离、宿主源码访问和 workspace 安全仍是机械门禁。conversation 模型工作副本位于源码树外；trace 读取宿主 participant 源码时机械失败，避免 baseline 绕过安装边界。可选的 `workspace.copy[]` 使用 repo-root relative `from` 和 subject-relative `to` 准备只读 fixture，不能逃出仓库/subject，也不能覆盖任一 participant Skill 或 `.codex`。目标包和复制源都不得包含 symlink。
+静态 Skill 必须是 `.agents/skills/<name>` 的直接子目录，并在自身 `evals/manifest.json` 声明 `trigger`、`conversation` suite；profile 固定为隐式 `project-default`。每个 suite 用 `skills[]` 声明参与评估的 repo-local sibling Skills，并必须包含 owner。current 安装全部 participants；conversation baseline 只移除 owner，保留 companions。`scripted_replies` 是 current 行为断言；baseline 的交互步骤差异只保存为比较证据，不能使 required suite 机械失败。baseline 的完成、隔离、宿主源码访问和 workspace 安全仍是机械门禁。conversation 模型工作副本位于源码树外；trace 读取宿主 participant 源码时机械失败，避免 baseline 绕过安装边界。可选的 `workspace.copy[]` 使用 repo-root relative `from` 和 subject-relative `to` 准备只读 fixture，不能逃出仓库/subject，也不能覆盖任一 participant Skill 或 `.codex`。目标包和复制源都不得包含 symlink。静态 Skill eval 不执行目标提供的 fixture module；manifest 的 `fixtureModule` 和 trigger case 的 `workspace_fixture` 不受支持。需要的 fixture 必须通过 `workspace.copy[]` 声明。
 
 `evals/behavior_cases.json` 和 `evals/scoring_cases.json` 是 portable 设计与校准语料，不是可执行 release evidence。只有 `evals/manifest.json` 声明且实际完成的 suite/case 才能形成模型行为证据。
 
@@ -27,6 +27,10 @@ node .agents/skills/skill-review/scripts/run_static_skill_evals.mjs \
 真实运行必须用 `--batch-name` 新建批次或 `--batch-id` 追加批次。不传 `--suite` 时运行所有 release-required suite/split。完整批次固定在项目 `.tmp/agent-workflows/evals/static/<skill>/<batch-id>/`；其中 `work/<run-id>/` 完成后清理，其余机械证据保留供 review 使用。用户明确要求发布时，`review:publish` 生成的正式报告固定在 `.agents/reports/<skill>/<batch-id>/{report.md,summary.json}`。两个入口都不能用 `--output-dir` 改写。Skill 根 `evals/` 不进入被测 runtime package 或 package digest。运行前必须执行 `pnpm build`；批次 harness 身份使用实际加载的 `packages/cli/dist` 驱动和当前 review runner 摘要，不使用可能与构建产物不一致的 TypeScript 源码摘要。`--validate-only` 总是校验完整本地 corpus shape；构建后的中央 contract 可用时还会返回 `centralContract: true`。
 
 runner 在每个 case 的全部 repetitions 结束后发布检查点。case 为 `incomplete` 时停止当前命令。再次使用同一 `--batch-id` 时，runner 复用 terminal case，并重跑 incomplete 或 missing case；当前未完成 case 的全部 repetitions 会重新运行。没有 case 合同的 suite 以整个 suite 为恢复单位。真实模型 eval 可能运行几十分钟到数小时。保留同一个进程 session，首轮和后续等待都直接使用工具允许的最长响应式等待时间。等待超时不表示 eval 失败。不得另开短周期 wait、`sleep`、`ps`、报告文件或其它状态轮询命令。
+
+## 正式报告发现与当前性
+
+静态 Skill 的正式报告以 `.agents/reports/<skill>/*/summary.json` 为事实源，README 只是登记索引。README 没有登记不能证明正式报告不存在。判断当前 `release-evidence` 时，先枚举正式 summary，再比较其 source commit 和 `inScopeDirty` 与当前目标。报告来源或当前目标任一 `inScopeDirty=true` 时，相同 commit 仍不足以证明内容相同，必须有匹配的封存 package digest；digest 缺失或不匹配时，当前证据为 `unknown`。来源不匹配的报告只记为 historical evidence：保留旧 pass/fail 和 finding，但不能替代当前版本的 release evidence。
 
 ## Codex 配置与证据
 

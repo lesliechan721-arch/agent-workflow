@@ -1,0 +1,57 @@
+{
+  "target": {
+    "kind": "review-evidence",
+    "name": "claim-admission-regression"
+  },
+  "scenarios": [
+    {
+      "id": "merge-state-unproven",
+      "candidate_claim": "A clean merge has already created a merge commit, so every integration correction requires amend or history rewrite.",
+      "materials": {
+        "trigger_query": "Git merged this cleanly. Reconcile both branches and keep the integration correction in the merge result.",
+        "skill_rules": [
+          "Only when MERGE_HEAD exists, continue an already active merge.",
+          "Otherwise inspect ancestry and preview the merge first.",
+          "For a new execution request, run git merge --no-commit --no-ff only after the preview."
+        ],
+        "runtime_state": null,
+        "trace": null
+      }
+    },
+    {
+      "id": "merge-state-proven-conflict",
+      "candidate_claim": "The confirmed state and production rule leave no permitted completion path without amend or history rewrite.",
+      "materials": {
+        "runtime_trace": "git show -s --format=%P HEAD reports two parents; MERGE_HEAD is absent because the merge commit already exists.",
+        "user_requirement": "Do not amend or rewrite existing history.",
+        "skill_rule": "All later integration corrections for this task must be inserted into that existing merge commit.",
+        "task_requirement": "The integration correction is required before the task can complete.",
+        "alternative_path_check": "The target materials define no other permitted completion path.",
+        "reproduced_failure": "Following the Skill rule requires a forbidden history rewrite; following the user requirement violates the Skill completion rule."
+      }
+    },
+    {
+      "id": "skill-coload-unproven",
+      "candidate_claim": "Two potentially overlapping descriptions make both Skills load and issue conflicting actions in the same run.",
+      "materials": {
+        "skill_a_description": "Review or clarify a proposed implementation plan.",
+        "skill_b_description": "Review an existing implementation requirement before coding.",
+        "client_coload_rule": null,
+        "load_trace": null,
+        "execution_trace": null
+      }
+    },
+    {
+      "id": "skill-coload-observed-conflict",
+      "candidate_claim": "The two production Skills impose irreconcilable actions on one reachable request and cause a repeatable failure.",
+      "materials": {
+        "client_rule": "The target client loads every matching project Skill for this request type.",
+        "load_trace": "The same request loaded skill-a and skill-b in three of three runs.",
+        "skill_a_rule": "Before the first file edit, call reserve-write.",
+        "skill_b_rule": "For this request, do not call any tool before the first file edit.",
+        "applicability": "Both rules apply before the same first file edit and neither declares an exception.",
+        "failure_trace": "All three runs stopped before editing because no action could satisfy both rules."
+      }
+    }
+  ]
+}

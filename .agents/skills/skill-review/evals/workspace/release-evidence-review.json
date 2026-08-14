@@ -1,0 +1,42 @@
+{
+  "target": {
+    "kind": "static-skill",
+    "name": "review-evidence-helper"
+  },
+  "mode": "quick",
+  "request": {
+    "scope": "release-evidence-currentness",
+    "formal_publish": false,
+    "register_readme": false
+  },
+  "current_source": {
+    "git_head": "current-review-head",
+    "inScopeDirty": false,
+    "package_digest": "sha256:current-package"
+  },
+  "readme": {
+    "latest_registered_report": null
+  },
+  "formal_reports": [
+    {
+      "batch_id": "old-release-batch",
+      "source": {
+        "git_head": "old-review-head",
+        "inScopeDirty": false,
+        "package_digest": "sha256:old-package"
+      },
+      "eval": {
+        "release_outcome": "failed"
+      },
+      "review": {
+        "design": "needs-fixes",
+        "release_readiness": "blocked",
+        "p1_findings": 3
+      }
+    }
+  ],
+  "evidence": [
+    "The formal report exists but its source does not match the current target.",
+    "README registration is a separate action from formal report publication."
+  ]
+}

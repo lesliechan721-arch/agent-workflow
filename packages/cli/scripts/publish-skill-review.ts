@@ -228,11 +228,11 @@ async function main(): Promise<void> {
   const result = JSON.parse(validation.stdout) as {
     valid: boolean;
     review: { skill_name?: string; mode?: string };
+    decision: { release_readiness: string | null };
     score: {
       weighted_score: number | null;
       coverage_percent: number | null;
       confidence: string | null;
-      release: string | null;
     };
   };
   if (!result.valid || !result.review.mode) throw new Error('Scorecard validation failed.');
@@ -251,7 +251,7 @@ async function main(): Promise<void> {
       weightedScore: result.score.weighted_score,
       coverage: result.score.coverage_percent,
       confidence: result.score.confidence,
-      release: result.score.release,
+      release: result.decision.release_readiness,
     },
   });
   const reportDir = path.relative(

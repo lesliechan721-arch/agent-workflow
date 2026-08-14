@@ -69,7 +69,7 @@ describe('dynamic skill tree', () => {
     );
   });
 
-  it('keeps Skill author evals and reports out of the runtime tree and digest', async () => {
+  it('excludes top-level author directories and preserves nested domain directories', async () => {
     const root = await makeTempRoot();
     const source = path.join(root, 'source');
     await fs.outputFile(path.join(source, 'SKILL.md'), '# skill\n');
@@ -80,6 +80,14 @@ describe('dynamic skill tree', () => {
     );
     await fs.outputFile(path.join(source, 'evals', 'manifest.json'), '{}\n');
     await fs.outputFile(path.join(source, 'reports', 'run-1', 'summary.json'), '{}\n');
+    await fs.outputFile(
+      path.join(source, 'references', 'evals', 'contract.md'),
+      '# Eval contract\n',
+    );
+    await fs.outputFile(
+      path.join(source, 'assets', 'reports', 'template.md'),
+      '# Report template\n',
+    );
 
     const tree = await createDynamicSkillExpectedTree({
       artifact: {
@@ -93,7 +101,15 @@ describe('dynamic skill tree', () => {
 
     expect(tree.files).not.toHaveProperty('evals/manifest.json');
     expect(tree.files).not.toHaveProperty('reports/run-1/summary.json');
-    expect(Object.keys(tree.files).sort()).toEqual(['README.md', 'SKILL.md', 'agents/openai.yaml']);
+    expect(tree.files['references/evals/contract.md']?.toString()).toBe('# Eval contract\n');
+    expect(tree.files['assets/reports/template.md']?.toString()).toBe('# Report template\n');
+    expect(Object.keys(tree.files).sort()).toEqual([
+      'README.md',
+      'SKILL.md',
+      'agents/openai.yaml',
+      'assets/reports/template.md',
+      'references/evals/contract.md',
+    ]);
   });
 
   it('rejects renderer output in author-only Skill directories', async () => {

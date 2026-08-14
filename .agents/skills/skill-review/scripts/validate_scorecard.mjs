@@ -58,6 +58,8 @@ const VALID_EVIDENCE = new Set([
   'inferred',
 ]);
 const STRONG_EVIDENCE = new Set(['observed', 'normative', 'structural']);
+const VALID_PREMISE_STATUS = new Set(['supported', 'unsupported', 'unknown']);
+const VALID_REACHABILITY_KIND = new Set(['entry-gate', 'execution-path']);
 const ARTIFACT_FIELDS = new Set([
   'official_validation',
   'current_sources_checked',
@@ -196,6 +198,93 @@ function normalizedEvidenceTypes(finding, index, diagnostics) {
     if (!values.includes(value)) values.push(value);
   }
   return values;
+}
+
+function normalizedMaterialPremises(finding, index, diagnostics) {
+  const raw = finding.material_premises;
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) {
+    diagnostics.push(diagnostic(
+      'error',
+      'finding.material-premises',
+      `Finding #${index} material_premises must be a list.`,
+    ));
+    return [];
+  }
+  const values = [];
+  for (let offset = 0; offset < raw.length; offset += 1) {
+    const premise = raw[offset];
+    if (!isRecord(premise)) {
+      diagnostics.push(diagnostic(
+        'error',
+        'finding.material-premise',
+        `Finding #${index} material premise #${offset + 1} must be an object.`,
+      ));
+      continue;
+    }
+    let valid = true;
+    for (const field of ['premise', 'source_role', 'evidence']) {
+      if (typeof premise[field] !== 'string' || premise[field].trim() === '') {
+        diagnostics.push(diagnostic(
+          'error',
+          'finding.material-premise-field',
+          `Finding #${index} material premise #${offset + 1} requires non-empty field ${JSON.stringify(field)}.`,
+        ));
+        valid = false;
+      }
+    }
+    if (!VALID_PREMISE_STATUS.has(premise.status)) {
+      diagnostics.push(diagnostic(
+        'error',
+        'finding.material-premise-status',
+        `Finding #${index} material premise #${offset + 1} has invalid status ${JSON.stringify(premise.status)}.`,
+      ));
+      valid = false;
+    }
+    if (valid) values.push(premise);
+  }
+  return values;
+}
+
+function normalizedReachability(finding, index, diagnostics) {
+  const raw = finding.reachability;
+  if (raw === undefined) return null;
+  if (!isRecord(raw)) {
+    diagnostics.push(diagnostic(
+      'error',
+      'finding.reachability',
+      `Finding #${index} reachability must be an object.`,
+    ));
+    return null;
+  }
+  let valid = true;
+  if (!VALID_REACHABILITY_KIND.has(raw.kind)) {
+    diagnostics.push(diagnostic(
+      'error',
+      'finding.reachability-kind',
+      `Finding #${index} has invalid reachability kind ${JSON.stringify(raw.kind)}.`,
+    ));
+    valid = false;
+  }
+  for (const field of ['path', 'evidence']) {
+    if (typeof raw[field] !== 'string' || raw[field].trim() === '') {
+      diagnostics.push(diagnostic(
+        'error',
+        'finding.reachability-field',
+        `Finding #${index} reachability requires non-empty field ${JSON.stringify(field)}.`,
+      ));
+      valid = false;
+    }
+  }
+  if (!VALID_PREMISE_STATUS.has(raw.status)) {
+    diagnostics.push(diagnostic(
+      'error',
+      'finding.reachability-status',
+      `Finding #${index} has invalid reachability status ${JSON.stringify(raw.status)}.`,
+    ));
+    valid = false;
+  }
+  return valid ? raw : null;
 }
 
 function normalizedIdList(raw, field, label, diagnostics) {
@@ -393,6 +482,8 @@ function validateAndCalculate(data) {
       diagnostics.push(diagnostic('error', 'finding.dimension', `Finding #${index} has invalid dimension ${JSON.stringify(finding.dimension)}.`));
     }
     const isRequiredFinding = finding.severity === 'P0' || finding.severity === 'P1';
+    const materialPremises = normalizedMaterialPremises(finding, index, diagnostics);
+    const reachability = normalizedReachability(finding, index, diagnostics);
     if (
       isRequiredFinding &&
       !evidenceTypes.some((value) => STRONG_EVIDENCE.has(value))
@@ -426,6 +517,7 @@ function validateAndCalculate(data) {
         'location',
         'problem',
         'affected_scenario',
+        'impact',
         'correct_owner',
         'minimal_change',
         'validation',
@@ -437,6 +529,26 @@ function validateAndCalculate(data) {
             `Finding #${index} (${finding.severity}) requires non-empty field ${JSON.stringify(field)}.`,
           ));
         }
+      }
+      if (materialPremises.length === 0) {
+        diagnostics.push(diagnostic(
+          'error',
+          'finding.admission-premises',
+          `Finding #${index} (${finding.severity}) requires material premises with direct sources.`,
+        ));
+      } else if (materialPremises.some((premise) => premise.status !== 'supported')) {
+        diagnostics.push(diagnostic(
+          'error',
+          'finding.admission-premise-support',
+          `Finding #${index} (${finding.severity}) has an unsupported or unknown material premise.`,
+        ));
+      }
+      if (!reachability || reachability.status !== 'supported') {
+        diagnostics.push(diagnostic(
+          'error',
+          'finding.admission-reachability',
+          `Finding #${index} (${finding.severity}) requires supported entry-gate or execution-path reachability.`,
+        ));
       }
       if (evidence.length === 0) {
         diagnostics.push(diagnostic(
@@ -457,6 +569,8 @@ function validateAndCalculate(data) {
       ...finding,
       id: findingId,
       evidence_types: evidenceTypes,
+      material_premises: materialPremises,
+      reachability,
       evidence,
       counterevidence,
     };
@@ -1050,19 +1164,34 @@ function validateAndCalculate(data) {
   const criticalUnknown = gates.some((gate) => gate.status === 'unknown' && REQUIRED_GATES.has(gate.id));
   const rawQualityBand = qualityBand(normalizedScore);
   const effectiveBand = effectiveQualityBand(rawQualityBand, complexityVerdict);
-  let release;
-  if (hasP0Gate || hasP0Finding) release = 'fail';
-  else if (hasP1Gate || hasP1Finding) release = 'pass-after-fixes';
-  else if (mode === 'quick') release = 'provisional';
-  else if (mode === 'delta' && (scoredCount === 0 || artifacts.previous_version !== true)) release = 'provisional';
-  else if (criticalUnknown) release = 'provisional';
-  else if (complexityVerdict === 'over-specified' || complexityVerdict === 'over-engineered') release = 'provisional';
+  let design;
+  if (hasP0Gate || hasP0Finding) design = 'fail';
+  else if (hasP1Gate || hasP1Finding) design = 'needs-fixes';
+  else if (complexityVerdict === 'over-engineered' || direction === 'drifted') design = 'redesign';
+  else if (complexityVerdict === 'over-specified') design = 'needs-fixes';
+  else if (mode === 'quick') design = 'not-assessed';
+  else if (mode === 'delta' && (scoredCount === 0 || artifacts.previous_version !== true)) design = 'not-assessed';
   else if (
     (mode === 'full' || mode === 'release') &&
     (coverage < 100 || overallConfidence === 'low')
-  ) release = 'provisional';
-  else if (mode === 'release' && artifacts.current_sources_checked !== true) release = 'provisional';
-  else release = 'pass';
+  ) design = 'not-assessed';
+  else design = 'pass';
+
+  let releaseReadiness;
+  if (
+    hasP0Gate || hasP0Finding || hasP1Gate || hasP1Finding ||
+    design === 'redesign'
+  ) releaseReadiness = 'blocked';
+  else if (mode === 'quick' || mode === 'delta') releaseReadiness = 'not-assessed';
+  else if (criticalUnknown) releaseReadiness = 'provisional';
+  else if (complexityVerdict === 'over-specified') releaseReadiness = 'provisional';
+  else if (
+    (mode === 'full' || mode === 'release') &&
+    (coverage < 100 || overallConfidence === 'low')
+  ) releaseReadiness = 'provisional';
+  else if (mode === 'release' && artifacts.current_sources_checked !== true) {
+    releaseReadiness = 'provisional';
+  } else releaseReadiness = 'ready';
 
   const errorCount = diagnostics.filter((entry) => entry.level === 'error').length;
   return {
@@ -1072,6 +1201,16 @@ function validateAndCalculate(data) {
       reducibility,
       minimal_behavior_contract: minimalBehaviorContract,
     },
+    decision: {
+      design,
+      release_readiness: releaseReadiness,
+      complexity: complexityVerdict ?? 'not-assessed',
+      evidence: {
+        coverage_percent: coverage,
+        confidence_index: normalizedConfidenceIndex,
+        confidence: overallConfidence,
+      },
+    },
     score: {
       weighted_score: normalizedScore,
       coverage_percent: coverage,
@@ -1080,7 +1219,6 @@ function validateAndCalculate(data) {
       quality_band: rawQualityBand,
       effective_quality_band: effectiveBand,
       quality_cap_reason: effectiveBand !== rawQualityBand ? complexityVerdict : null,
-      release,
     },
     dimensions: scoredRows,
     gates,
@@ -1098,13 +1236,13 @@ function renderText(result) {
     : `${score.weighted_score} / 100 (${score.quality_band})`;
   const lines = [
     `Skill: ${result.review.skill_name ?? ''}`,
-    `Mode / direction: ${result.review.mode ?? ''} / ${result.review.direction ?? ''}`,
-    `Complexity: ${result.complexity.verdict ?? 'not assessed'} / ${result.complexity.reducibility ?? 'not assessed'}`,
+    `Mode: ${result.review.mode ?? ''}`,
+    `Decision: design ${result.decision.design} / release readiness ${result.decision.release_readiness}`,
+    `Complexity: ${result.decision.complexity}`,
     `Score: ${scoreText}`,
     `Effective quality: ${score.effective_quality_band ?? 'not calculated'}`,
     `Coverage: ${score.coverage_percent}%`,
     `Confidence: ${score.confidence} (${score.confidence_index})`,
-    `Release: ${score.release}`,
     `Ledger: ${result.findings.length} findings, ${result.unknowns.length} unknowns`,
     'Dimensions:',
   ];
