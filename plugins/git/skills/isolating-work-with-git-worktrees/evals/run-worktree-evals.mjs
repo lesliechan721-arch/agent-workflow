@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
@@ -15,6 +15,7 @@ import { isolateMaterializedSkills } from '../../../scripts/eval-participant-ski
 
 const evalDir = path.dirname(fileURLToPath(import.meta.url));
 const skillKey = 'isolating-work-with-git-worktrees';
+const REPOSITORY_ISOLATION_CASE = 'use_full_clone_for_repository_level_isolation';
 const defaults = {
   runs: 1,
   timeoutMs: 300_000,
@@ -23,6 +24,12 @@ const defaults = {
   caseId: undefined,
   output: undefined,
 };
+const GIT_METADATA_WRITE_CASES = new Set([
+  'preserve_dirty_workspace_and_use_default_path',
+  'stop_when_default_root_not_ignored',
+  'report_dirty_baseline',
+  REPOSITORY_ISOLATION_CASE,
+]);
 
 function usage() {
   return [
@@ -190,9 +197,13 @@ export function ignoreEntriesForCase(caseId) {
 }
 
 async function prepareWorkspace(evalCase, withSkill) {
-  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'git-worktree-skill-eval-'));
+  const tempRoot = await realpath(
+    await mkdtemp(path.join(os.tmpdir(), 'git-worktree-skill-eval-')),
+  );
+  const externalTempRoot = path.join(tempRoot, 'external-temp');
   const testMarker = '.worktree-eval-requested-test-ran';
   try {
+    await mkdir(externalTempRoot, { recursive: true });
     if (evalCase.id === 'reuse_existing_isolation') {
       const primary = path.join(tempRoot, 'primary');
       await initializeRepository(
@@ -204,7 +215,9 @@ async function prepareWorkspace(evalCase, withSkill) {
       const repo = path.join(tempRoot, 'platform-worktree');
       await git(primary, ['worktree', 'add', '--quiet', repo, 'feature']);
       await copyMaterializedSkills(repo, withSkill);
-      return { tempRoot, repo, primary, testMarker, caseId: evalCase.id };
+      return {
+        tempRoot, externalTempRoot, repo, primary, testMarker, caseId: evalCase.id,
+      };
     }
 
     const repo = path.join(tempRoot, 'repo');
@@ -240,7 +253,9 @@ async function prepareWorkspace(evalCase, withSkill) {
       'chore: keep local main ahead of origin for base verification',
     ]);
     await copyMaterializedSkills(repo, withSkill);
-    return { tempRoot, repo, primary: repo, testMarker, caseId: evalCase.id };
+    return {
+      tempRoot, externalTempRoot, repo, primary: repo, testMarker, caseId: evalCase.id,
+    };
   } catch (error) {
     await rm(tempRoot, { recursive: true, force: true });
     throw error;
@@ -249,13 +264,16 @@ async function prepareWorkspace(evalCase, withSkill) {
 
 function runtimePrompt(evalCase) {
   if (evalCase.id === 'preserve_dirty_workspace_and_use_default_path') {
-    return '当前 main 工作区有与任务无关的未提交修改。没有平台隔离，也没有项目 worktree 路径约定。请从 origin/main 创建 hotfix-login 分支，在独立工作区把 app.txt 改为 login=fixed，并运行 node test.mjs。不要 stash、reset、提交或改动当前工作区的任何内容。';
+    return '当前 main 工作区有与任务无关的未提交修改。没有平台隔离，也没有项目 worktree 路径约定；候选路径 .worktrees/hotfix-login 已确认被 ignore 规则排除，不需要重新判断。请从 origin/main 创建 hotfix-login 分支，在独立工作区把 app.txt 改为 login=fixed，并运行 node test.mjs。不要 stash、reset、提交或改动当前工作区的任何内容。';
   }
   if (evalCase.id === 'stop_when_default_root_not_ignored') {
     return '当前 main 工作区有与任务无关的未提交修改。没有平台隔离和项目 worktree 路径约定，.worktrees/ 也未被忽略。请为 hotfix-blocked 准备隔离工作区。不要修改 .gitignore、创建其他目录、stash、reset 或改动当前工作区。';
   }
   if (evalCase.id === 'reuse_existing_isolation') {
     return '当前会话已经位于平台创建的 linked worktree，feature 分支和基点符合要求。请直接在这里把 feature.txt 改为 feature=done。不要创建新的 worktree。';
+  }
+  if (evalCase.id === REPOSITORY_ISOLATION_CASE) {
+    return '这个实验会重写 refs、删除 tags 并运行 aggressive gc。请在环境变量 TMPDIR 指向的目录下创建名为 full-clone 的完全独立仓库副本；不要创建 linked worktree、修改当前仓库或 push。';
   }
   return '请从 origin/main 为 feature 分支建立隔离 worktree。在任何任务修改前，先运行 node test.mjs 作为基线检查。该检查失败后停止，不要修改 app.txt；报告失败属于修改前的基线状态。';
 }
@@ -351,6 +369,16 @@ export function inspectExecTrace(stdout) {
   };
 }
 
+export function worktreePathsOutsideRoot(porcelain, root) {
+  return porcelain.split('\n')
+    .filter((line) => line.startsWith('worktree '))
+    .map((line) => line.slice('worktree '.length))
+    .filter((worktreePath) => {
+      const relative = path.relative(root, worktreePath);
+      return relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative);
+    });
+}
+
 function finalMessage(stdout) {
   let message = '';
   for (const line of stdout.split('\n')) {
@@ -367,23 +395,24 @@ function finalMessage(stdout) {
 }
 
 async function runCodex(workspace, prompt, options) {
-  const metadataArgs = [
-    'preserve_dirty_workspace_and_use_default_path',
-    'report_dirty_baseline',
-  ].includes(workspace.caseId)
+  const metadataArgs = worktreeCaseAllowsGitWrites(workspace.caseId)
     ? await gitMetadataWritableArgs(workspace.repo, workspace.tempRoot)
     : [];
+  const containedPrompt = `${prompt}\n\n评测安全边界：如需仓库外临时路径，只能使用环境变量 TMPDIR 指向的目录；这不是项目 worktree 路径约定。`;
   const args = [
     'exec', '--json', '--skip-git-repo-check', '--color', 'never',
     '--sandbox', 'workspace-write', ...metadataArgs,
     '--cd', workspace.repo, '--model', options.model,
     '--config', 'approval_policy="never"',
-    '--config', 'skills.include_instructions=true', prompt,
+    '--config', 'skills.include_instructions=true', containedPrompt,
   ];
   const child = spawn(options.codexBin, args, {
     cwd: workspace.repo,
     env: {
       ...process.env,
+      TMPDIR: workspace.externalTempRoot,
+      TMP: workspace.externalTempRoot,
+      TEMP: workspace.externalTempRoot,
       WORKTREE_EVAL_MARKER: workspace.testMarker,
     },
     detached: process.platform !== 'win32',
@@ -399,6 +428,10 @@ async function runCodex(workspace, prompt, options) {
   return { ...result, stdout, stderr, final_message: finalMessage(stdout) };
 }
 
+export function worktreeCaseAllowsGitWrites(caseId) {
+  return GIT_METADATA_WRITE_CASES.has(caseId);
+}
+
 async function evaluateCase(evalCase, workspace, before, run) {
   const checks = [];
   const add = (name, passed, evidence) => checks.push({ name, passed, evidence });
@@ -409,6 +442,52 @@ async function evaluateCase(evalCase, workspace, before, run) {
     trace.prohibited_commands.length === 0,
     JSON.stringify(trace.prohibited_commands),
   );
+  const worktrees = await git(workspace.primary, ['worktree', 'list', '--porcelain']);
+  const outsideWorktrees = worktreePathsOutsideRoot(worktrees.stdout, workspace.tempRoot);
+  add(
+    'worktrees_contained_in_eval_root',
+    outsideWorktrees.length === 0,
+    JSON.stringify(outsideWorktrees),
+  );
+
+  if (evalCase.id === REPOSITORY_ISOLATION_CASE) {
+    const after = await snapshot(workspace.primary);
+    add('primary_worktree_unchanged', JSON.stringify(after) === JSON.stringify(before), 'HEAD, index, status, tracked diff, untracked contents, and stash ref');
+    add(
+      'does_not_create_linked_worktree',
+      worktrees.stdout.split('\n').filter((line) => line.startsWith('worktree ')).length === 1,
+      worktrees.stdout,
+    );
+    const worktreeAdds = trace.commands.filter((command) =>
+      gitInvocations(command).some((invocation) =>
+        invocation.subcommand === 'worktree' && invocation.args[0] === 'add'));
+    add('does_not_run_worktree_add', worktreeAdds.length === 0, JSON.stringify(worktreeAdds));
+    const cloneRoot = path.join(workspace.externalTempRoot, 'full-clone');
+    const cloneGitDir = path.join(cloneRoot, '.git');
+    add('creates_full_clone', await exists(cloneGitDir), cloneGitDir);
+    if (await exists(cloneGitDir)) {
+      const [absoluteGitDir, commonDir] = await Promise.all([
+        git(cloneRoot, ['rev-parse', '--absolute-git-dir'], { allowFailure: true }),
+        git(cloneRoot, ['rev-parse', '--git-common-dir'], { allowFailure: true }),
+      ]);
+      const resolvedCommonDir = commonDir.code === 0
+        ? path.resolve(cloneRoot, commonDir.stdout.trim())
+        : '';
+      add(
+        'clone_has_independent_git_metadata',
+        absoluteGitDir.code === 0
+          && path.resolve(absoluteGitDir.stdout.trim()) === path.resolve(cloneGitDir)
+          && resolvedCommonDir === path.resolve(cloneGitDir),
+        `gitDir=${absoluteGitDir.stdout.trim()} commonDir=${commonDir.stdout.trim()}`,
+      );
+      add(
+        'clone_does_not_use_alternates',
+        !(await exists(path.join(cloneGitDir, 'objects', 'info', 'alternates'))),
+        path.join(cloneGitDir, 'objects', 'info', 'alternates'),
+      );
+    }
+    return { passed: checks.every((check) => check.passed), checks };
+  }
 
   if (evalCase.id === 'reuse_existing_isolation') {
     const after = await snapshot(workspace.primary);

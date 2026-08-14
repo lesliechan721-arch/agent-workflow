@@ -59,6 +59,29 @@
       "perRunTimeoutMs": 180000
     },
     {
+      "id": "router-diagnostic",
+      "kind": "trigger",
+      "skills": [
+        "isolating-work-with-git-worktrees",
+        "reconciling-git-merges",
+        "git-commit"
+      ],
+      "cases": "./trigger-diagnostic-cases.json",
+      "fixtureModule": "./trigger-fixture.mjs",
+      "observeSpawnAgent": false,
+      "isolation": "strict",
+      "strictNegativeSplits": [],
+      "minimumPassRate": 0.8,
+      "forbidMultipleSkillLoads": true,
+      "profiles": [
+        "project-default"
+      ],
+      "defaultRuns": 3,
+      "releaseSplits": [],
+      "requiredForRelease": false,
+      "perRunTimeoutMs": 180000
+    },
+    {
       "id": "behavior",
       "kind": "command",
       "skills": [

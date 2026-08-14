@@ -67,6 +67,23 @@ function unwrapShellCommand(command) {
   return match ? unquoteShellToken(match[1]) : command;
 }
 
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+}
+
+function containsDirectScriptInvocation(command, executable, script) {
+  const withoutWrapperPrefix = command.replace(
+    /^(?:\S*\/)?(?:bash|sh|zsh)\s+-(?:c|lc)\s+['"]?/u,
+    '',
+  );
+  const executablePattern = `(?:\\S*\\/)?${escapeRegExp(executable)}`;
+  const scriptPattern = `(?:\\.?\\/)?${escapeRegExp(script)}`;
+  return new RegExp(
+    `(?:^|&&|\\|\\||[;|\\n({])\\s*${executablePattern}\\s+['"]?${scriptPattern}(?=['"\\s;&|)\\]}]|$)`,
+    'u',
+  ).test(withoutWrapperPrefix);
+}
+
 function gitInvocation(segment) {
   const tokens = shellTokens(segment);
   const normalizeControlToken = (token) => token
@@ -101,7 +118,7 @@ export function gitInvocations(command) {
 }
 
 export function commandRunsScript(command, executable, script) {
-  return splitShellSegments(unwrapShellCommand(command)).some((segment) => {
+  const parsedInvocation = splitShellSegments(unwrapShellCommand(command)).some((segment) => {
     const tokens = shellTokens(segment).map((token) => token
       .replace(/^[({]+/u, '')
       .replace(/[)}]+$/u, ''));
@@ -111,4 +128,5 @@ export function commandRunsScript(command, executable, script) {
     return executableIndex >= 0
       && path.basename(tokens[executableIndex + 1] ?? '') === script;
   });
+  return parsedInvocation || containsDirectScriptInvocation(command, executable, script);
 }
