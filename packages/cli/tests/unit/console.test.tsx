@@ -125,6 +125,7 @@ function fakeController(value: ConsoleItemsLoadResult): DashboardController {
       targetResults: [],
       warnings: [],
     }),
+    reportError: vi.fn(),
     readConfig: vi.fn(),
     saveConfig: vi.fn(),
     resetConfig: vi.fn(),
@@ -268,6 +269,29 @@ beforeEach(() => {
 });
 
 describe('dashboard controller and reducer', () => {
+  it('records a caught dashboard failure in redacted diagnostics only', async () => {
+    const reportEvent = vi.fn();
+    const debugLog = vi.fn();
+    const context = createCliExecutionContext({
+      reporter: { event: reportEvent, notice: vi.fn() },
+      debugLogger: { log: debugLog },
+      diagnostics: { commandName: 'console' },
+    });
+    const controller = createDashboardController(context);
+
+    await controller.reportError(new Error('catalog failed with token=hunter2'));
+
+    expect(reportEvent).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'command:error',
+      message: '控制台操作失败。',
+    }));
+    expect(JSON.stringify(reportEvent.mock.calls)).not.toContain('hunter2');
+    expect(debugLog).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'command:error',
+      message: 'catalog failed with token=[REDACTED]',
+    }));
+  });
+
   it('keeps the legacy action matrix exactly', () => {
     expect(dashboardActions(item('demo', 'absent'), item('demo', 'absent').targets[0]!)).toEqual([
       'install', 'config', 'refresh', 'back', 'exit',
@@ -280,6 +304,11 @@ describe('dashboard controller and reducer', () => {
     ]);
     expect(dashboardActions(item('demo', 'error', false), item('demo', 'error').targets[0]!)).toEqual([
       'cleanup', 'refresh', 'back', 'exit',
+    ]);
+    const emptyConfig = item('empty-config', 'present');
+    emptyConfig.plugin!.manifest.config = { schema: {} };
+    expect(dashboardActions(emptyConfig, emptyConfig.targets[0]!)).toEqual([
+      'reinstall', 'upgrade', 'uninstall', 'cleanup', 'refresh', 'back', 'exit',
     ]);
   });
 
@@ -566,16 +595,60 @@ describe('dashboard rendering and input', () => {
     expect(instance.lastFrame()).not.toContain('新尾部组件');
   });
 
+  it('blocks writes while refreshing and ignores an older load result', async () => {
+    const stale = deferred<ConsoleItemsLoadResult>();
+    const fresh = deferred<ConsoleItemsLoadResult>();
+    const controller = fakeController(loaded([item('demo', 'absent')]));
+    controller.load = vi.fn()
+      .mockResolvedValueOnce(loaded([item('demo', 'absent')]))
+      .mockImplementationOnce(() => stale.promise)
+      .mockImplementationOnce(() => fresh.promise);
+    const instance = render(<Dashboard controller={controller} onComplete={() => undefined} size={{ columns: 60, rows: 16 }} />);
+    await nextTurn();
+    await writeInput(instance, '\r', '\r');
+
+    instance.stdin.write('r');
+    instance.stdin.write('\r');
+    await nextTurn();
+    expect(controller.execute).not.toHaveBeenCalled();
+    expect(instance.lastFrame()).toContain('正在刷新状态');
+
+    instance.stdin.write('r');
+    await nextTurn();
+    fresh.resolve(loaded([item('demo', 'present')]));
+    await nextTurn();
+    stale.resolve(loaded([item('demo', 'absent')]));
+    await nextTurn();
+
+    expect(controller.load).toHaveBeenCalledTimes(3);
+    expect(controller.execute).not.toHaveBeenCalled();
+    expect(instance.lastFrame()).toContain('重装');
+  });
+
+  it('records a failed dashboard load before showing the safe error', async () => {
+    const failure = new Error('status token=hunter2');
+    const controller = fakeController(loaded([item('demo', 'absent')]));
+    controller.load = vi.fn().mockRejectedValue(failure);
+    const instance = render(<Dashboard controller={controller} onComplete={() => undefined} size={{ columns: 60, rows: 16 }} />);
+    await nextTurn();
+
+    expect(controller.reportError).toHaveBeenCalledWith(failure);
+    expect(instance.lastFrame()).toContain('状态读取失败');
+    expectTuiTextProjected(instance.frames.join('\n'));
+  });
+
   it('recovers after a write failure and still performs automatic refresh', async () => {
     const value = loaded([item('demo', 'absent')]);
     const controller = fakeController(value);
-    controller.execute = vi.fn().mockRejectedValue(new Error(unsafeTuiText));
+    const failure = new Error(unsafeTuiText);
+    controller.execute = vi.fn().mockRejectedValue(failure);
     const instance = render(<Dashboard controller={controller} onComplete={() => undefined} size={{ columns: 60, rows: 16 }} />);
     await nextTurn();
     await writeInput(instance, '\r', '\r', '\r');
     await nextTurn();
 
     expect(controller.load).toHaveBeenCalledTimes(2);
+    expect(controller.reportError).toHaveBeenCalledWith(failure);
     expect(instance.lastFrame()).toContain('操作失败。详细原因请查看退出后的命令结果或调试日志。');
     expectTuiTextProjected(instance.frames.join('\n'));
     expect(instance.lastFrame()).toContain('下一步');
@@ -623,12 +696,14 @@ describe('dashboard rendering and input', () => {
 
   it('clears dirty state when save succeeds but config and status refresh fail', async () => {
     const controller = withConfigController(loaded([item('demo', 'present')]));
+    const readFailure = new Error('read broke');
+    const statusFailure = new Error('status broke');
     vi.mocked(controller.readConfig)
       .mockResolvedValueOnce(await controller.readConfig(item('demo', 'present'), { scope: 'user', projectLayer: 'shared' }))
-      .mockRejectedValueOnce(new Error('read broke'));
+      .mockRejectedValueOnce(readFailure);
     vi.mocked(controller.load)
       .mockResolvedValueOnce(loaded([item('demo', 'present')]))
-      .mockRejectedValueOnce(new Error('status broke'));
+      .mockRejectedValueOnce(statusFailure);
     const instance = render(<Dashboard controller={controller} onComplete={() => undefined} size={{ columns: 60, rows: 16 }} />);
     await nextTurn();
     await writeInput(instance, '\r', '\r', '\u001B[B', '\u001B[B', '\u001B[B', '\u001B[B', '\r');
@@ -638,6 +713,8 @@ describe('dashboard rendering and input', () => {
     await nextTurn();
 
     expect(controller.saveConfig).toHaveBeenCalledTimes(1);
+    expect(controller.reportError).toHaveBeenCalledWith(readFailure);
+    expect(controller.reportError).toHaveBeenCalledWith(statusFailure);
     expect(instance.lastFrame()).toContain('已保存；自动刷新失败');
     expect(instance.lastFrame()).not.toContain('保存失败');
     await writeInput(instance, 'b');
@@ -647,13 +724,15 @@ describe('dashboard rendering and input', () => {
 
   it('keeps a failed save dirty and asks before leaving', async () => {
     const controller = withConfigController(loaded([item('demo', 'present')]));
-    vi.mocked(controller.saveConfig).mockRejectedValueOnce(new Error(unsafeTuiText));
+    const failure = new Error(unsafeTuiText);
+    vi.mocked(controller.saveConfig).mockRejectedValueOnce(failure);
     const instance = render(<Dashboard controller={controller} onComplete={() => undefined} size={{ columns: 60, rows: 16 }} />);
     await nextTurn();
     await writeInput(instance, '\r', '\r', '\u001B[B', '\u001B[B', '\u001B[B', '\u001B[B', '\r');
     await nextTurn();
     await writeInput(instance, 'd', 's');
     await nextTurn();
+    expect(controller.reportError).toHaveBeenCalledWith(failure);
     expect(instance.lastFrame()).toContain('配置保存失败。详细原因请查看退出后的命令结果或调试日志。');
     expectTuiTextProjected(instance.frames.join('\n'));
     await writeInput(instance, 'b');
@@ -782,8 +861,8 @@ describe('dashboard rendering and input', () => {
       read: {
         pluginName: 'demo', scope: 'user' as const, projectLayer: 'shared' as const,
         fields: [
-          { key: 'mode', title: 'Mode', kind: 'manifest' as const, reserved: false, writable: true, valueState: 'configured' as const, effectiveValue: 'slow', sourceLayer: 'user' as const },
-          { key: 'enabled', title: 'Enabled', kind: 'manifest' as const, reserved: false, writable: true, valueState: 'configured' as const, effectiveValue: false, sourceLayer: 'user' as const },
+          { key: 'mode', title: 'Mode', kind: 'manifest' as const, reserved: false, writable: true, valueState: 'configured' as const, effectiveValue: 'slow', sourceLayer: 'user' as const, storedValue: 'slow', storedSourceLayer: 'user' as const },
+          { key: 'enabled', title: 'Enabled', kind: 'manifest' as const, reserved: false, writable: true, valueState: 'configured' as const, effectiveValue: false, sourceLayer: 'user' as const, storedValue: false, storedSourceLayer: 'user' as const },
         ],
       },
     };
@@ -800,6 +879,42 @@ describe('dashboard rendering and input', () => {
       expect.objectContaining({ pluginName: 'demo' }),
       { scope: 'user', projectLayer: 'shared' },
       { updates: { mode: 'slow', enabled: false } },
+    );
+  });
+
+  it('keeps current string and number values when Enter accepts each text editor default', async () => {
+    const value = loaded([item('demo', 'present')]);
+    value.items[0]!.targets[0]!.target.scope = 'project';
+    const controller = fakeController(value);
+    controller.readConfig = vi.fn().mockResolvedValue({
+      location: { scope: 'project', projectLayer: 'shared' },
+      model: {
+        pluginName: 'demo', allowedScopes: ['user', 'project'], initialScope: 'project', requiredKeys: [],
+        fields: [
+          { key: 'label', type: 'string', label: 'Label', required: false, sensitive: false, configured: true, currentValue: 'local-label' },
+          { key: 'count', type: 'number', label: 'Count', required: false, sensitive: false, configured: true, currentValue: 99 },
+        ],
+      },
+      read: {
+        pluginName: 'demo', scope: 'project', projectLayer: 'shared',
+        fields: [
+          { key: 'label', title: 'Label', kind: 'manifest', reserved: false, writable: true, valueState: 'configured', effectiveValue: 'local-label', sourceLayer: 'local', storedValue: 'shared-label', storedSourceLayer: 'project' },
+          { key: 'count', title: 'Count', kind: 'manifest', reserved: false, writable: true, valueState: 'configured', effectiveValue: 99, sourceLayer: 'local', storedValue: 42, storedSourceLayer: 'project' },
+        ],
+      },
+    });
+    controller.saveConfig = vi.fn().mockResolvedValue({ overallState: 'succeeded', targetResults: [], warnings: [] });
+    const instance = render(<Dashboard controller={controller} onComplete={() => undefined} size={{ columns: 60, rows: 16 }} />);
+    await nextTurn();
+    await writeInput(instance, '\r', '\r', '\u001B[B', '\u001B[B', '\u001B[B', '\u001B[B', '\r');
+    await nextTurn();
+    await writeInput(instance, '\r', '\r', '\u001B[B', '\r', '\r', 's');
+    await nextTurn();
+
+    expect(controller.saveConfig).toHaveBeenCalledWith(
+      expect.objectContaining({ pluginName: 'demo' }),
+      { scope: 'project', projectLayer: 'shared' },
+      { updates: { label: 'shared-label', count: 42 } },
     );
   });
 

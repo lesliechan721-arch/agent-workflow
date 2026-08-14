@@ -484,7 +484,8 @@ function ConfigPage(props: {
       setIndex(0);
       setUpdates({});
       setRemoveKeys(new Set());
-    } catch {
+    } catch (error) {
+      await props.controller.reportError(error);
       setMessage('配置读取失败。请退出后使用 aw config list 检查，或查看调试日志。');
     } finally {
       finishBusy();
@@ -519,7 +520,8 @@ function ConfigPage(props: {
       setRemoveKeys(new Set());
       setEditing(false);
       setMessage(successMessage);
-    } catch {
+    } catch (error) {
+      await props.controller.reportError(error);
       setMessage('配置保存失败。详细原因请查看退出后的命令结果或调试日志。');
       finishBusy();
       return;
@@ -528,12 +530,14 @@ function ConfigPage(props: {
     const refreshErrors: string[] = [];
     try {
       setData(await props.controller.readConfig(props.item, location));
-    } catch {
+    } catch (error) {
+      await props.controller.reportError(error);
       refreshErrors.push('配置读取失败');
     }
     try {
       props.onStatusLoaded(await props.controller.load());
-    } catch {
+    } catch (error) {
+      await props.controller.reportError(error);
       refreshErrors.push('状态读取失败');
     }
     if (refreshErrors.length > 0) {
@@ -554,7 +558,8 @@ function ConfigPage(props: {
       setRemoveKeys(new Set());
       setEditing(false);
       setMessage(successMessage);
-    } catch {
+    } catch (error) {
+      await props.controller.reportError(error);
       setMessage('配置重置失败。详细原因请查看退出后的命令结果或调试日志。');
       finishBusy();
       return;
@@ -563,12 +568,14 @@ function ConfigPage(props: {
     const refreshErrors: string[] = [];
     try {
       setData(await props.controller.readConfig(props.item, location));
-    } catch {
+    } catch (error) {
+      await props.controller.reportError(error);
       refreshErrors.push('配置读取失败');
     }
     try {
       props.onStatusLoaded(await props.controller.load());
-    } catch {
+    } catch (error) {
+      await props.controller.reportError(error);
       refreshErrors.push('状态读取失败');
     }
     if (refreshErrors.length > 0) {
@@ -645,8 +652,8 @@ function ConfigPage(props: {
         const current = readFields.get(field.key);
         const initialValue = Object.hasOwn(updates, field.key)
           ? updates[field.key]
-          : !field.sensitive && current?.effectiveValue !== undefined && current.effectiveValue !== null
-            ? current.effectiveValue
+          : !field.sensitive && current?.storedValue !== undefined
+            ? current.storedValue
             : field.defaultValue;
         const initialIndex = values.findIndex((value) => Object.is(value, initialValue));
         setEnumIndex(initialIndex < 0 ? 0 : initialIndex);
@@ -674,6 +681,8 @@ function ConfigPage(props: {
   }
 
   const readFields = new Map(data?.read.fields.map((entry) => [entry.key, entry]));
+  const storedTextEditorValue = field ? readFields.get(field.key)?.storedValue : undefined;
+  const textEditorCurrentValue = storedTextEditorValue ?? field?.defaultValue;
   const locationLabel = configLocations.find((entry) => sameLocation(entry, location))?.label;
   const messageLines = [...(message?.split('\n') ?? []), ...props.notices];
   const messageRows = Math.min(8, messageLines.length);
@@ -735,7 +744,11 @@ function ConfigPage(props: {
         ? field.sensitive || field.type === 'file' || field.type === 'directory'
           ? <PasswordInput onSubmit={submitText} />
           : <TextInput
-              defaultValue={typeof updates[field.key] === 'string' ? String(updates[field.key]) : undefined}
+              defaultValue={Object.hasOwn(updates, field.key)
+                ? String(updates[field.key])
+                : textEditorCurrentValue === undefined || textEditorCurrentValue === null
+                  ? undefined
+                  : String(textEditorCurrentValue)}
               onSubmit={submitText}
             />
         : null}
@@ -765,13 +778,25 @@ export function Dashboard(props: {
     () => props.controller.getProgress?.() ?? { messages: props.controller.getNotices?.() ?? [] },
   );
   const exitAfterBusy = useRef(false);
+  const loadSequence = useRef(0);
+  const loadPending = useRef(false);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (): Promise<boolean> => {
+    const sequence = ++loadSequence.current;
+    loadPending.current = true;
     dispatch({ type: 'load-start' });
     try {
-      dispatch({ type: 'load-success', loaded: await props.controller.load() });
-    } catch {
+      const loaded = await props.controller.load();
+      if (sequence !== loadSequence.current) return true;
+      dispatch({ type: 'load-success', loaded });
+      return true;
+    } catch (error) {
+      await props.controller.reportError(error);
+      if (sequence !== loadSequence.current) return true;
       dispatch({ type: 'load-error', message: '状态读取失败。请退出后使用 aw status 检查，或查看调试日志。' });
+      return false;
+    } finally {
+      if (sequence === loadSequence.current) loadPending.current = false;
     }
   }, [props.controller]);
 
@@ -834,7 +859,7 @@ export function Dashboard(props: {
   }, [clampedDetailsOffset, clampedOutputOffset, detailsOffset, outputOffset]);
 
   const execute = useCallback(async (action: DashboardWriteAction) => {
-    if (!target) return;
+    if (!target || loadPending.current) return;
     props.controller.resetProgress?.();
     dispatch({
       type: 'busy-start',
@@ -845,19 +870,18 @@ export function Dashboard(props: {
     let notice: string;
     try {
       notice = receiptLines(await props.controller.execute(action, target)).join('\n');
-    } catch {
+    } catch (error) {
+      await props.controller.reportError(error);
       notice = '操作失败。详细原因请查看退出后的命令结果或调试日志。\n下一步：修复错误后重试，或按 r 刷新状态。';
     }
-    try {
-      dispatch({ type: 'load-success', loaded: await props.controller.load() });
-    } catch {
+    if (!(await load())) {
       notice += '\n自动刷新失败。请退出后使用 aw status 检查，或查看调试日志。';
     }
     dispatch({ type: 'busy-end', notice });
     const shouldExit = exitAfterBusy.current;
     exitAfterBusy.current = false;
     if (shouldExit) props.onComplete({ exitCode: 0 });
-  }, [props.controller, props.onComplete, target]);
+  }, [load, props.controller, props.onComplete, target]);
 
   function activateAction(action: DashboardAction | undefined): void {
     if (!action) return;
@@ -890,6 +914,7 @@ export function Dashboard(props: {
       return;
     }
     if (input === 'r') { void load(); return; }
+    if (state.loading || loadPending.current) return;
     if (key.pageUp || key.pageDown) {
       setOutputOffset((value) => scrollOffset(value, outputLines.length, outputRows, key.pageUp ? -1 : 1));
       return;

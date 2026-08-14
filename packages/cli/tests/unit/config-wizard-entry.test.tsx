@@ -102,6 +102,15 @@ const pluginWithoutSchema = {
   },
 };
 
+const pluginWithEmptySchema = {
+  ...plugin,
+  manifest: {
+    ...plugin.manifest,
+    name: 'empty-config',
+    config: { schema: {} },
+  },
+};
+
 const jsonPlugin = {
   ...plugin,
   manifest: {
@@ -884,6 +893,60 @@ describe('config set wizard entry', () => {
     expect(launch).not.toHaveBeenCalled();
     expect(mocks.applyPluginConfigWrite).not.toHaveBeenCalled();
     expect(captured.readStderr()).toContain('configSchemaUnavailable');
+  });
+
+  it('rejects an empty config schema before mounting the set wizard', async () => {
+    const { runCli } = await import('../../src/index.js');
+    mocks.loadConsoleItemsResult.mockResolvedValue({
+      catalogUnavailable: false,
+      status: {
+        schemaVersion: 3,
+        catalog: {},
+        filters: { plugins: [], platform: 'both', cwd: '/workspace' },
+        targets: [],
+        errors: [],
+      },
+      items: [{ pluginName: 'empty-config', version: '1.0.0', plugin: pluginWithEmptySchema, targets: [] }],
+    });
+    const captured = createCapturedCliIo();
+    const launch = vi.fn();
+
+    const exitCode = await runCli(['config', 'set'], {
+      cwd: '/workspace', env: { CI: undefined }, interactive: true, io: captured.io,
+      tuiRunner: { launch } as never,
+      ...createTtyRuntimeStreams(),
+    });
+
+    expect(exitCode).toBe(1);
+    expect(launch).not.toHaveBeenCalled();
+    expect(captured.readStderr()).toContain('configSchemaUnavailable');
+  });
+
+  it('rejects an empty config schema before mounting the unset wizard', async () => {
+    const { runCli } = await import('../../src/index.js');
+    mocks.loadConsoleItemsResult.mockResolvedValue({
+      catalogUnavailable: false,
+      status: {
+        schemaVersion: 3,
+        catalog: {},
+        filters: { plugins: [], platform: 'both', cwd: '/workspace' },
+        targets: [],
+        errors: [],
+      },
+      items: [{ pluginName: 'empty-config', version: '1.0.0', plugin: pluginWithEmptySchema, targets: [] }],
+    });
+    const captured = createCapturedCliIo();
+    const launch = vi.fn();
+
+    const exitCode = await runCli(['config', 'unset'], {
+      cwd: '/workspace', env: { CI: undefined }, interactive: true, io: captured.io,
+      tuiRunner: { launch } as never,
+      ...createTtyRuntimeStreams(),
+    });
+
+    expect(exitCode).toBe(1);
+    expect(launch).not.toHaveBeenCalled();
+    expect(captured.readStderr()).toContain('No plugin config candidates');
   });
 
   it('rejects a complete unknown plugin write before calling the helper', async () => {

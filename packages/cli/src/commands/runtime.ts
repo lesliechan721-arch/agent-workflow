@@ -985,8 +985,10 @@ async function emitRuntimeEvent(
   runtime: Pick<CommandExecutionContext, 'reporter' | 'debugLogger'>,
   event: CommandEvent,
 ): Promise<void> {
-  await runtime.reporter.event(event);
-  await runtime.debugLogger.log(event);
+  await Promise.allSettled([
+    Promise.resolve().then(() => runtime.reporter.event(event)),
+    Promise.resolve().then(() => runtime.debugLogger.log(event)),
+  ]);
 }
 
 export async function emitCommandEvent(
@@ -1003,13 +1005,15 @@ export async function emitCommandNotice(
   context: CommandExecutionContext,
   notice: CommandNotice,
 ): Promise<void> {
-  await context.reporter.notice(notice);
-  await context.debugLogger.log({
-    type: `notice:${notice.level}`,
-    commandName: context.diagnostics.commandName,
-    message: notice.message,
-    data: notice.identity ? { identity: notice.identity } : undefined,
-  });
+  await Promise.allSettled([
+    Promise.resolve().then(() => context.reporter.notice(notice)),
+    Promise.resolve().then(() => context.debugLogger.log({
+      type: `notice:${notice.level}`,
+      commandName: context.diagnostics.commandName,
+      message: notice.message,
+      data: notice.identity ? { identity: notice.identity } : undefined,
+    })),
+  ]);
 }
 
 export function isCommandExecutionContext(

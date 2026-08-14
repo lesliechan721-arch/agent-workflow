@@ -371,6 +371,10 @@ function hasSelectableWriteCandidate(
     writeCandidateEligibility(command, candidate, { ...selection, platform, scope }).selectable)));
 }
 
+function hasConfigSchemaKeys(candidate: CommandWizardPluginCandidate): boolean {
+  return candidate.configSchema !== undefined && Object.keys(candidate.configSchema).length > 0;
+}
+
 async function loadWizardCandidates(
   context: CliExecutionContext,
   rawOptions: { scope?: string; platform?: string },
@@ -629,36 +633,61 @@ function parseBareConsoleOptions(
       continue;
     }
     if (token === '--log-file') {
-      parsed.logFile = argv[index + 1];
+      parsed.logFile = readBareConsoleOptionValue(argv[index + 1], '--log-file <path>');
       index += 1;
       continue;
     }
     if (token.startsWith('--log-file=')) {
-      parsed.logFile = token.slice('--log-file='.length);
+      parsed.logFile = readBareConsoleOptionValue(
+        token.slice('--log-file='.length),
+        '--log-file <path>',
+      );
       continue;
     }
     if (token === '--catalog-channel') {
-      parsed.catalogChannel = argv[index + 1];
+      parsed.catalogChannel = readBareConsoleOptionValue(
+        argv[index + 1],
+        '--catalog-channel <dist-tag>',
+      );
       index += 1;
       continue;
     }
     if (token.startsWith('--catalog-channel=')) {
-      parsed.catalogChannel = token.slice('--catalog-channel='.length);
+      parsed.catalogChannel = readBareConsoleOptionValue(
+        token.slice('--catalog-channel='.length),
+        '--catalog-channel <dist-tag>',
+      );
       continue;
     }
     if (token === '--catalog-version') {
-      parsed.catalogVersion = argv[index + 1];
+      parsed.catalogVersion = readBareConsoleOptionValue(
+        argv[index + 1],
+        '--catalog-version <semver>',
+      );
       index += 1;
       continue;
     }
     if (token.startsWith('--catalog-version=')) {
-      parsed.catalogVersion = token.slice('--catalog-version='.length);
+      parsed.catalogVersion = readBareConsoleOptionValue(
+        token.slice('--catalog-version='.length),
+        '--catalog-version <semver>',
+      );
       continue;
     }
     return null;
   }
 
   return parsed;
+}
+
+function readBareConsoleOptionValue(
+  value: string | undefined,
+  option: string,
+): string {
+  if (!value || value.startsWith('-')) {
+    throw new Error(`option '${option}' argument missing`);
+  }
+  return value;
 }
 
 async function runActionWithContext<T>(
@@ -677,28 +706,32 @@ async function runActionWithContext<T>(
   try {
     const result = await action();
     await emitCommandEvent(context, { type: 'command:success' });
-    await context.debugLogger.flush?.();
+    await Promise.allSettled([
+      Promise.resolve().then(() => context.debugLogger.flush?.()),
+    ]);
     if (context.diagnostics.debug && context.debugLogger.logFile) {
       writeLine(context.io.stderr, `调试日志：${context.debugLogger.logFile}`);
     }
     return result;
   } catch (error) {
     if (error instanceof WizardExecutionError) {
-      await context.reporter.event({
-        type: 'command:error',
-        commandName: context.diagnostics.commandName,
-        message: error.message,
-        data: { name: error.name },
-      });
       const diagnostic = error.diagnostic;
-      await context.debugLogger.log(redactValue({
-        type: 'command:error',
-        commandName: context.diagnostics.commandName,
-        message: diagnostic instanceof Error ? diagnostic.message : error.message,
-        data: diagnostic instanceof Error
-          ? { name: diagnostic.name, stack: diagnostic.stack }
-          : { result: diagnostic },
-      }) as Parameters<typeof context.debugLogger.log>[0]);
+      await Promise.allSettled([
+        Promise.resolve().then(() => context.reporter.event({
+          type: 'command:error',
+          commandName: context.diagnostics.commandName,
+          message: error.message,
+          data: { name: error.name },
+        })),
+        Promise.resolve().then(() => context.debugLogger.log(redactValue({
+          type: 'command:error',
+          commandName: context.diagnostics.commandName,
+          message: diagnostic instanceof Error ? diagnostic.message : error.message,
+          data: diagnostic instanceof Error
+            ? { name: diagnostic.name, stack: diagnostic.stack }
+            : { result: diagnostic },
+        }) as Parameters<typeof context.debugLogger.log>[0])),
+      ]);
     } else {
       await emitCommandEvent(context, {
         type: 'command:error',
@@ -711,7 +744,9 @@ async function runActionWithContext<T>(
           : undefined,
       });
     }
-    await context.debugLogger.flush?.();
+    await Promise.allSettled([
+      Promise.resolve().then(() => context.debugLogger.flush?.()),
+    ]);
     if (context.diagnostics.debug && context.debugLogger.logFile) {
       writeLine(context.io.stderr, `调试日志：${context.debugLogger.logFile}`);
     }
@@ -1388,12 +1423,12 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         if (pluginName) {
           const candidate = candidates.find((entry) => entry.pluginName === pluginName);
           if (!candidate) throw new Error(`Unknown plugin "${pluginName}".`);
-          if (!candidate.configSchema) {
+          if (!hasConfigSchemaKeys(candidate)) {
             throw new Error(`configSchemaUnavailable: Plugin "${pluginName}" does not declare an AW config schema.`);
           }
           if (key && !candidate.configSchema?.[key]) throw new Error(`Unknown config key "${key}".`);
         }
-        const configurableCandidates = candidates.filter((candidate) => candidate.configSchema);
+        const configurableCandidates = candidates.filter(hasConfigSchemaKeys);
         if (configurableCandidates.length === 0) {
           throw new Error('configSchemaUnavailable: No current plugin declares an AW config schema.');
         }
@@ -1523,7 +1558,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         }
         if (!isWizardAvailable(context, rawOptions)) throw new Error(configCommandUsage('unset'));
         const currentCandidates = (await loadWizardCandidates(context, {}))
-          .filter((candidate) => candidate.configSchema);
+          .filter(hasConfigSchemaKeys);
         const storedCandidates = await loadStoredConfigWizardCandidates(context, [{ scope, projectLayer }]);
         const candidates = mergeWizardCandidates(currentCandidates, storedCandidates);
         if (pluginName && !candidates.some((entry) => entry.pluginName === pluginName)) {
@@ -1805,8 +1840,7 @@ export async function runCli(
           normalizeCatalogSelectorOptions(bareConsoleOptions),
         ),
         diagnostics: {
-          ...options.diagnostics,
-          commandName: 'console',
+          ...toCliDiagnosticsOptions('console', bareConsoleOptions, options.diagnostics),
           metadata: {
             ...options.diagnostics?.metadata,
             rawArgv: argv,

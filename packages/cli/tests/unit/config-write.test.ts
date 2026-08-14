@@ -632,6 +632,54 @@ describe('config write full reinstall apply', () => {
     expect(store.values).toEqual({});
   });
 
+  it('keeps selected project shared values separate from project local effective values', async () => {
+    const fixture = await createFixture();
+    fixture.plugin.manifest.config!.schema.label = { type: 'string' };
+    fixture.plugin.manifest.config!.schema.count = { type: 'number' };
+    await writePluginConfigStore({
+      pluginName: fixture.plugin.manifest.name,
+      scope: 'project',
+      projectLayer: 'shared',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      values: { label: 'shared-label', count: 42 },
+    });
+    await writePluginConfigStore({
+      pluginName: fixture.plugin.manifest.name,
+      scope: 'project',
+      projectLayer: 'local',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      values: { label: 'local-label', count: 99 },
+    });
+
+    const result = await resolveConfigRead({
+      pluginName: fixture.plugin.manifest.name,
+      plugin: fixture.plugin,
+      scope: 'project',
+      projectLayer: 'shared',
+      cwd: fixture.cwd,
+      env: fixture.env,
+    });
+
+    expect(result.fields).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        key: 'label',
+        effectiveValue: 'local-label',
+        sourceLayer: 'local',
+        storedValue: 'shared-label',
+        storedSourceLayer: 'project',
+      }),
+      expect.objectContaining({
+        key: 'count',
+        effectiveValue: 99,
+        sourceLayer: 'local',
+        storedValue: 42,
+        storedSourceLayer: 'project',
+      }),
+    ]));
+  });
+
   it('reads only legacy keys from the selected project local store and redacts their values', async () => {
     const fixture = await createFixture('legacy-plugin');
     await writePluginConfigStore({

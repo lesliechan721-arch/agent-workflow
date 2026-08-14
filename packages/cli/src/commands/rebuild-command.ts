@@ -68,8 +68,10 @@ async function emitRebuildActionEvent(
   runtime: RebuildExecutionContext,
   event: RebuildActionEvent,
 ): Promise<void> {
-  await runtime.reporter.event(event);
-  await runtime.debugLogger.log(event);
+  await Promise.allSettled([
+    Promise.resolve().then(() => runtime.reporter.event(event)),
+    Promise.resolve().then(() => runtime.debugLogger.log(event)),
+  ]);
 }
 
 async function withRebuildActionEvent<T>(options: {
@@ -91,18 +93,9 @@ async function withRebuildActionEvent<T>(options: {
     source,
     data: { name: options.name, phase: 'start' },
   });
+  let result: T;
   try {
-    const result = await options.operation();
-    await emitRebuildActionEvent(options.runtime, {
-      type: 'rebuild:action',
-      source,
-      data: {
-        name: options.name,
-        phase: 'success',
-        durationMs: Math.max(0, Date.now() - startedAt),
-      },
-    });
-    return result;
+    result = await options.operation();
   } catch (error) {
     await emitRebuildActionEvent(options.runtime, {
       type: 'rebuild:action',
@@ -118,6 +111,16 @@ async function withRebuildActionEvent<T>(options: {
     });
     throw error;
   }
+  await emitRebuildActionEvent(options.runtime, {
+    type: 'rebuild:action',
+    source,
+    data: {
+      name: options.name,
+      phase: 'success',
+      durationMs: Math.max(0, Date.now() - startedAt),
+    },
+  });
+  return result;
 }
 
 export function setRebuildCommandTestHooksForTests(

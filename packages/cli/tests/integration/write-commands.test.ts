@@ -107,16 +107,40 @@ describe('five write commands', () => {
     };
     const reported: CommandEvent[] = [];
     const debugged: CommandEvent[] = [];
+    let reporterFailureInjected = false;
+    let debugFailureInjected = false;
     const runtime = {
       env: isolation.env,
       nativeCliRunner: runner,
       catalogResolution: { rootDir: catalogRoot, source: 'local' } as CatalogResolution,
       reporter: {
-        event: (event: CommandEvent) => { reported.push(event); },
+        event: (event: CommandEvent) => {
+          reported.push(event);
+          if (
+            !reporterFailureInjected
+            && event.type === 'rebuild:action'
+            && (event.data as { name?: string; phase?: string } | undefined)?.name === 'operation.lock'
+            && (event.data as { phase?: string } | undefined)?.phase === 'success'
+          ) {
+            reporterFailureInjected = true;
+            throw new Error('reporter terminal event failed');
+          }
+        },
         notice: () => {},
       },
       debugLogger: {
-        log: (event: CommandEvent) => { debugged.push(event); },
+        log: (event: CommandEvent) => {
+          debugged.push(event);
+          if (
+            !debugFailureInjected
+            && event.type === 'rebuild:action'
+            && (event.data as { name?: string; phase?: string } | undefined)?.name === 'artifacts.write'
+            && (event.data as { phase?: string } | undefined)?.phase === 'success'
+          ) {
+            debugFailureInjected = true;
+            throw new Error('debug terminal event failed');
+          }
+        },
       },
     };
     const options = {
@@ -142,6 +166,8 @@ describe('five write commands', () => {
     const actionEvents = reported.filter((event) => event.type === 'rebuild:action');
     expect(actionEvents.length).toBeGreaterThan(0);
     expect(debugged.filter((event) => event.type === 'rebuild:action')).toEqual(actionEvents);
+    expect(reporterFailureInjected).toBe(true);
+    expect(debugFailureInjected).toBe(true);
     for (let index = 0; index < actionEvents.length; index += 2) {
       const start = actionEvents[index]!;
       const terminal = actionEvents[index + 1]!;

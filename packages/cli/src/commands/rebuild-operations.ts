@@ -265,6 +265,17 @@ function rebuildActionFailureMessage(name: RebuildActionName): string {
   return REBUILD_ACTION_FAILURE_MESSAGES[name];
 }
 
+async function emitRebuildAction(
+  events: RebuildActionEvents,
+  event: RebuildActionEvent,
+): Promise<void> {
+  try {
+    await events.emit?.(event);
+  } catch {
+    // Progress diagnostics must not change the rebuild result.
+  }
+}
+
 export async function releaseRebuildOperationLease(lock: ProcessLockLease): Promise<void> {
   let lastError: unknown;
   for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -340,7 +351,7 @@ async function action<T>(
   failureMessage?: (value: T) => string | null | undefined,
 ): Promise<T> {
   const startedAt = events.now();
-  await events.emit?.({
+  await emitRebuildAction(events, {
     type: 'rebuild:action',
     source: {
       plugin: events.target.pluginName,
@@ -350,35 +361,15 @@ async function action<T>(
     },
     data: { name, phase: 'start' },
   });
+  let value: T;
+  let message: string | null | undefined;
   try {
-    const value = await operation();
-    const message = failureMessage?.(value);
+    value = await operation();
+    message = failureMessage?.(value);
     accumulator.actions.push({ name, status: message ? 'failed' : 'succeeded' });
-    await events.emit?.({
-      type: 'rebuild:action',
-      source: {
-        plugin: events.target.pluginName,
-        platform: events.target.platform,
-        scope: events.target.scope,
-        action: events.command,
-      },
-      data: message
-        ? {
-            name,
-            phase: 'failure',
-            durationMs: Math.max(0, events.now() - startedAt),
-            message: rebuildActionFailureMessage(name),
-          }
-        : {
-            name,
-            phase: 'success',
-            durationMs: Math.max(0, events.now() - startedAt),
-          },
-    });
-    return value;
   } catch (error) {
     accumulator.actions.push({ name, status: 'failed' });
-    await events.emit?.({
+    await emitRebuildAction(events, {
       type: 'rebuild:action',
       source: {
         plugin: events.target.pluginName,
@@ -395,6 +386,28 @@ async function action<T>(
     });
     throw error;
   }
+  await emitRebuildAction(events, {
+    type: 'rebuild:action',
+    source: {
+      plugin: events.target.pluginName,
+      platform: events.target.platform,
+      scope: events.target.scope,
+      action: events.command,
+    },
+    data: message
+      ? {
+          name,
+          phase: 'failure',
+          durationMs: Math.max(0, events.now() - startedAt),
+          message: rebuildActionFailureMessage(name),
+        }
+      : {
+          name,
+          phase: 'success',
+          durationMs: Math.max(0, events.now() - startedAt),
+        },
+  });
+  return value;
 }
 
 function validateDesiredTarget(target: DesiredTarget): void {

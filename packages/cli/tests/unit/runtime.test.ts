@@ -20,6 +20,30 @@ afterEach(() => {
 });
 
 describe('command runtime', () => {
+  it('keeps a successful native result when diagnostic sinks fail', async () => {
+    const { createCommandExecutionContext } = await import('../../src/commands/runtime.js');
+    const reportEvent = vi.fn((event: { type: string }) => {
+      if (event.type === 'native:success') throw new Error('reporter sink failed');
+    });
+    const debugLog = vi.fn((event: { type: string }) => {
+      if (event.type === 'native:success') throw new Error('debug sink failed');
+    });
+    const context = createCommandExecutionContext({
+      nativeCliRunner: vi.fn(async () => ({ exitCode: 0, stdout: 'ok', stderr: '' })),
+      reporter: { event: reportEvent, notice: vi.fn() },
+      debugLogger: { log: debugLog },
+      diagnostics: { commandName: 'install' },
+    });
+
+    await expect(context.nativeCliRunner({ command: 'codex', args: ['--version'] })).resolves.toEqual({
+      exitCode: 0,
+      stdout: 'ok',
+      stderr: '',
+    });
+    expect(reportEvent).toHaveBeenCalledWith(expect.objectContaining({ type: 'native:success' }));
+    expect(debugLog).toHaveBeenCalledWith(expect.objectContaining({ type: 'native:success' }));
+  });
+
   it('uses the injected prompt output sink instead of stdout', async () => {
     const { createReadlinePrompt } = await import('../../src/commands/runtime.js');
     const input = Readable.from(['\n']);

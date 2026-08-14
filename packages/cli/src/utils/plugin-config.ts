@@ -1704,10 +1704,17 @@ async function buildManifestFieldEntries(options: {
   }
 
   const projectRoot = resolveAwProjectRoot(options.cwd);
-  const [userStore, projectLocalStore] = await Promise.all([
+  const [userStore, projectStore, projectLocalStore] = await Promise.all([
     readPluginConfigStore({
       pluginName: options.plugin.manifest.name,
       scope: 'user',
+      cwd: options.cwd,
+      env: options.env,
+    }),
+    readPluginConfigStore({
+      pluginName: options.plugin.manifest.name,
+      scope: 'project',
+      projectLayer: 'shared',
       cwd: options.cwd,
       env: options.env,
     }),
@@ -1720,6 +1727,7 @@ async function buildManifestFieldEntries(options: {
     }),
   ]);
   const userPlainEntries = getStoreEntries(userStore.values);
+  const projectPlainEntries = getStoreEntries(projectStore.values);
   const localPlainEntries = getStoreEntries(projectLocalStore.values);
   const effective = await resolveEffectivePluginConfig({
     pluginName: options.plugin.manifest.name,
@@ -1755,6 +1763,8 @@ async function buildManifestFieldEntries(options: {
             valueState: 'configured',
             effectiveValue: redactValue(field, value),
             sourceLayer: 'user',
+            storedValue: redactValue(field, value),
+            storedSourceLayer: 'user',
           });
         } catch {
           fields.push({
@@ -1805,6 +1815,8 @@ async function buildManifestFieldEntries(options: {
             valueState: 'configured',
             effectiveValue: redactValue(field, value),
             sourceLayer: 'local',
+            storedValue: redactValue(field, value),
+            storedSourceLayer: 'local',
           });
         } catch {
           fields.push({
@@ -1819,6 +1831,27 @@ async function buildManifestFieldEntries(options: {
       continue;
     }
 
+    let storedProjectValue: {
+      storedValue: PluginConfigValue | '[redacted]';
+      storedSourceLayer: 'project';
+    } | undefined;
+    if (options.scope === 'project' && Object.hasOwn(projectPlainEntries, key)) {
+      try {
+        const value = await coercePluginConfigValue({
+          key,
+          field,
+          value: projectPlainEntries[key],
+          projectRoot,
+        });
+        storedProjectValue = {
+          storedValue: redactValue(field, value),
+          storedSourceLayer: 'project',
+        };
+      } catch {
+        storedProjectValue = undefined;
+      }
+    }
+
     const source = effective.sources[key];
     const layer = toConfigSourceLayer(source);
     if (source === 'default') {
@@ -1826,6 +1859,7 @@ async function buildManifestFieldEntries(options: {
         ...base,
         effectiveValue: effective.redactedValues[key] ?? null,
         sourceLayer: 'default',
+        ...storedProjectValue,
       });
       continue;
     }
@@ -1836,10 +1870,11 @@ async function buildManifestFieldEntries(options: {
         valueState: issue ? 'invalid' : 'configured',
         effectiveValue: issue ? null : effective.redactedValues[key] ?? null,
         sourceLayer: layer,
+        ...storedProjectValue,
       });
       continue;
     }
-    fields.push(base);
+    fields.push({ ...base, ...storedProjectValue });
   }
 
   return fields;

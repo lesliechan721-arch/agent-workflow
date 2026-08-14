@@ -347,6 +347,25 @@ describe('rebuild operation happy paths', () => {
     expect(sources.slice(sources.indexOf('second')).every((name) => name === 'second')).toBe(true);
   });
 
+  it('keeps a successful write when a terminal diagnostic event fails', async () => {
+    const fixture = createFixture();
+    const result = await executeRebuildOperation({
+      command: 'install',
+      target: fixture.target,
+      driver: fixture.driver,
+      activeStore: fixture.store,
+      onActionEvent: async (event) => {
+        if (event.data.name === 'artifacts.write' && event.data.phase === 'success') {
+          throw new Error('diagnostic sink failed');
+        }
+      },
+    });
+
+    expect(result.status).toBe('succeeded');
+    expect(result.actions).toContainEqual({ name: 'artifacts.write', status: 'succeeded' });
+    expect(result.actions).not.toContainEqual({ name: 'recovery.cleanup', status: 'succeeded' });
+  });
+
   it('serializes the complete operation window for one target', async () => {
     const fixture = createFixture();
     const lockPath = path.join(

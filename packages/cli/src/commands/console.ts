@@ -42,6 +42,7 @@ import {
   type RebuildProgressFeed,
   type RebuildProgressSnapshot,
 } from '../output/rebuild-progress.js';
+import { redactValue } from '../output/redact.js';
 
 export type DashboardWriteAction =
   | 'install'
@@ -75,6 +76,7 @@ export interface DashboardController {
     action: DashboardWriteAction,
     target: LiveStatusTarget,
   ) => Promise<RebuildCommandResult>;
+  reportError: (error: unknown) => Promise<void>;
   readConfig: (
     item: LiveConsoleItem,
     location: DashboardConfigLocation,
@@ -103,6 +105,11 @@ export function targetIdentity(target: LiveStatusTarget): string {
   return `${target.target.plugin}\0${target.target.platform}\0${target.target.scope}`;
 }
 
+function hasConfigSchemaKeys(item: LiveConsoleItem): boolean {
+  const schema = item.plugin?.manifest.config?.schema;
+  return schema !== undefined && Object.keys(schema).length > 0;
+}
+
 export function dashboardActions(
   item: LiveConsoleItem,
   target: LiveStatusTarget,
@@ -112,7 +119,7 @@ export function dashboardActions(
   if (target.state === 'present' || target.state === 'partial') actions.push('reinstall');
   if (target.state === 'present') actions.push('upgrade', 'uninstall');
   if (target.state !== 'absent') actions.push('cleanup');
-  if (item.plugin?.manifest.config?.schema) actions.push('config');
+  if (hasConfigSchemaKeys(item)) actions.push('config');
   actions.push('refresh', 'back', 'exit');
   return actions;
 }
@@ -150,25 +157,45 @@ export function createDashboardController(
         case 'cleanup': return cleanupWriteCommand([target.target.plugin], options, context);
       }
     },
+    async reportError(error) {
+      const diagnostic = redactValue({
+        type: 'command:error',
+        commandName: context.diagnostics.commandName,
+        message: error instanceof Error ? error.message : String(error),
+        data: error instanceof Error
+          ? { name: error.name, stack: error.stack }
+          : undefined,
+      }) as Parameters<typeof context.debugLogger.log>[0];
+      await Promise.allSettled([
+        Promise.resolve().then(() => context.reporter.event({
+          type: 'command:error',
+          commandName: context.diagnostics.commandName,
+          message: '控制台操作失败。',
+          data: { name: 'DashboardWriteError' },
+        })),
+        Promise.resolve().then(() => context.debugLogger.log(diagnostic)),
+      ]);
+    },
     async readConfig(item, location) {
-      if (!item.plugin?.manifest.config?.schema) {
+      const plugin = item.plugin;
+      if (!plugin || !hasConfigSchemaKeys(item)) {
         throw new Error(`Plugin "${item.pluginName}" 没有配置 schema。`);
       }
       const effective = await resolveEffectivePluginConfig({
         pluginName: item.pluginName,
-        manifest: item.plugin.manifest,
+        manifest: plugin.manifest,
         cwd: context.cwd,
         env: context.env,
       });
       const model = createPluginConfigFormModel({
         pluginName: item.pluginName,
-        manifest: item.plugin.manifest,
+        manifest: plugin.manifest,
         effective,
         initialScope: location.scope,
       });
       const read = await resolveConfigRead({
         pluginName: item.pluginName,
-        plugin: item.plugin,
+        plugin,
         scope: location.scope,
         projectLayer: location.projectLayer,
         cwd: context.cwd,
