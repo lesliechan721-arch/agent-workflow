@@ -1,4 +1,4 @@
-import { Box, Text, useInput } from 'ink';
+import { Text, useInput, useWindowSize } from 'ink';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import type {
@@ -7,11 +7,13 @@ import type {
   CommandWizardResult,
   CommandWizardSelection,
 } from '../commands/wizard.js';
+import { WIZARD_FAILURE_MESSAGE } from '../commands/wizard.js';
 import type { CliPromptChoice, CliPromptResult } from '../commands/runtime.js';
 import {
   type RebuildProgressFeed,
   type RebuildProgressSnapshot,
 } from '../output/rebuild-progress.js';
+import { renderEquivalentCommandDisplays } from '../output/equivalent-command.js';
 import {
   ConfirmView,
   MultiSelectView,
@@ -101,6 +103,20 @@ function valueField<T>(request: CommandWizardRequest<T>, selection: CommandWizar
   return selectedCandidate(request, selection)?.configSchema?.[selection.key ?? ''];
 }
 
+function isPrivateField(field: ReturnType<typeof valueField>): boolean {
+  return field?.sensitive === true || field?.type === 'file' || field?.type === 'directory';
+}
+
+function equivalentCommandDisplays<T>(
+  request: CommandWizardRequest<T>,
+  selection: CommandWizardSelection,
+): Array<{ label: string; text: string }> {
+  return (request.equivalentCommandTokens
+      ? renderEquivalentCommandDisplays(request.equivalentCommandTokens(selection))
+      : undefined)
+    ?? [{ label: 'POSIX shell 命令', text: request.equivalentCommand(selection) }];
+}
+
 function parseValue(raw: string, valueJson = false): unknown {
   if (valueJson) return raw;
   return raw;
@@ -142,6 +158,7 @@ function BusyView(props: {
   messages: string[];
   messageOffset: number;
   startedAt: number;
+  size?: { columns: number; rows: number };
 }): React.JSX.Element {
   const [elapsed, setElapsed] = useState(0);
   useEffect(() => {
@@ -150,9 +167,13 @@ function BusyView(props: {
   }, [props.startedAt]);
   const frame = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'][elapsed % 10];
   return (
-    <PromptFrame title={`${frame} 正在执行 ${props.command}`} help="Ctrl-C 将在当前写入完成后退出">
-      <Text>目标：{props.target}</Text>
-      {props.phase ? <Text>阶段：{props.phase}</Text> : null}
+    <PromptFrame
+      title={`${frame} 正在执行 ${props.command}`}
+      help="PgUp/PgDn 消息 · Ctrl-C 完成后退出"
+      size={props.size}
+    >
+      <Text wrap="truncate-end">目标：{props.target}</Text>
+      {props.phase ? <Text wrap="truncate-end">阶段：{props.phase}</Text> : null}
       <Text color={tuiTheme.colors.muted}>已用时：{elapsed}s</Text>
       <MessageWindow messages={props.messages} offset={props.messageOffset} />
     </PromptFrame>
@@ -163,52 +184,38 @@ function receiptLines(value: unknown): string[] {
   if (!value || typeof value !== 'object') return [];
   const receipt = value as {
     overallState?: unknown;
-    targetResults?: Array<{
-      target?: { pluginName?: unknown; platform?: unknown; scope?: unknown };
-      state?: unknown;
-      message?: unknown;
-    }>;
+    targetResults?: unknown[];
   };
   if (typeof receipt.overallState !== 'string' || !Array.isArray(receipt.targetResults)) return [];
   const overallState = receipt.overallState === 'succeeded' || receipt.overallState === 'failed'
     ? receipt.overallState
     : 'unknown';
-  return [
-    `收据：${overallState}`,
-    ...receipt.targetResults.map((entry) => {
-      const plugin = typeof entry.target?.pluginName === 'string'
-        && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(entry.target.pluginName)
-        ? entry.target.pluginName
-        : undefined;
-      const platform = entry.target?.platform === 'codex' || entry.target?.platform === 'claude'
-        ? entry.target.platform
-        : undefined;
-      const scope = entry.target?.scope === 'user' || entry.target?.scope === 'project'
-        ? entry.target.scope
-        : undefined;
-      const target = [plugin, platform, scope]
-        .filter((part): part is string => part !== undefined)
-        .join('/');
-      const state = entry.state === 'completed' || entry.state === 'failed'
-        ? entry.state
-        : 'unknown';
-      return `${target || 'target'}：${state}`;
-    }),
-  ];
+  return [`收据：${overallState}`];
+}
+
+interface WizardExecutionState<T> {
+  selection: CommandWizardSelection;
+  value?: T;
+  failed: boolean;
+  unexpectedFailure: boolean;
 }
 
 export function CommandWizard<T>(props: {
   request: CommandWizardRequest<T>;
   progress?: RebuildProgressFeed;
   onComplete: (result: CommandWizardResult<T>) => void;
+  size?: { columns: number; rows: number };
 }): React.JSX.Element {
+  const windowSize = useWindowSize();
+  const size = props.size ?? windowSize;
+  const selectionRows = Math.max(1, size.rows - 3);
   const [selection, setSelection] = useState<CommandWizardSelection>(() => ({
     ...props.request.initial,
     plugins: [...props.request.initial.plugins],
   }));
   const [page, setPage] = useState<Page>(() => nextPage(props.request));
   const [startedAt, setStartedAt] = useState(0);
-  const [executionResult, setExecutionResult] = useState<CommandWizardResult<T>>();
+  const [executionResult, setExecutionResult] = useState<WizardExecutionState<T>>();
   const [progress, setProgress] = useState<RebuildProgressSnapshot>(
     () => props.progress?.get() ?? { messages: [] },
   );
@@ -238,7 +245,13 @@ export function CommandWizard<T>(props: {
       || input.toLowerCase() === 'q'
       || (key.ctrl && input === 'c');
     if (page === 'result' && closeRequested) {
-      props.onComplete(executionResult!);
+      props.onComplete(executionResult!.failed
+        ? { cancelled: false, selection: executionResult!.selection, failed: true }
+        : {
+            cancelled: false,
+            selection: executionResult!.selection,
+            value: executionResult!.value,
+          });
       return;
     }
     if (page === 'busy' && closeRequested) {
@@ -274,15 +287,29 @@ export function CommandWizard<T>(props: {
     setPage('busy');
     try {
       const value = await props.request.execute(finalSelection);
-      const result = { cancelled: false, selection: finalSelection, value };
-      if (exitAfterBusy.current) props.onComplete(result);
+      const failed = props.request.resultState?.(value) === 'failed';
+      const result: WizardExecutionState<T> = {
+        selection: finalSelection,
+        value,
+        failed,
+        unexpectedFailure: false,
+      };
+      if (exitAfterBusy.current) props.onComplete(failed
+        ? { cancelled: false, selection: finalSelection, failed: true }
+        : { cancelled: false, selection: finalSelection, value });
       else {
         setExecutionResult(result);
         setPage('result');
       }
-    } catch (error) {
-      const result = { cancelled: false, selection: finalSelection, error };
-      if (exitAfterBusy.current) props.onComplete(result);
+    } catch {
+      const result: WizardExecutionState<T> = {
+        selection: finalSelection,
+        failed: true,
+        unexpectedFailure: true,
+      };
+      if (exitAfterBusy.current) {
+        props.onComplete({ cancelled: false, selection: finalSelection, failed: true });
+      }
       else {
         setExecutionResult(result);
         setPage('result');
@@ -300,6 +327,7 @@ export function CommandWizard<T>(props: {
         { value: 'both', label: '全部支持平台' },
       ]}
       defaultValue="both"
+      size={size}
       onComplete={(result) => handlePrompt('platform', result, (platform) => ({
         platform: platform as CommandWizardSelection['platform'],
       }))}
@@ -314,6 +342,7 @@ export function CommandWizard<T>(props: {
         { value: 'project', label: 'project' },
       ]}
       defaultValue="user"
+      size={size}
       onComplete={(result) => handlePrompt('scope', result, (scope) => ({
         scope: scope as CommandWizardSelection['scope'],
       }))}
@@ -325,6 +354,8 @@ export function CommandWizard<T>(props: {
           key="plugins"
           message={`选择要${commandLabel(props.request.command)}的插件`}
           choices={choices}
+          pageSize={selectionRows}
+          size={size}
           onComplete={(result) => {
             if (result.action === 'select' && (result.value?.length ?? 0) === 0) return;
             handlePrompt('plugins', result, (plugins) => ({ plugins }));
@@ -334,6 +365,8 @@ export function CommandWizard<T>(props: {
           key="plugins"
           message={`选择要${commandLabel(props.request.command)}的插件`}
           choices={choices}
+          pageSize={selectionRows}
+          size={size}
           onComplete={(result) => handlePrompt('plugins', result, (plugin) => ({ plugins: [plugin] }))}
         />;
   }
@@ -342,6 +375,8 @@ export function CommandWizard<T>(props: {
       key="key"
       message="选择配置项"
       choices={keyChoices(props.request, selection)}
+      pageSize={selectionRows}
+      size={size}
       onComplete={(result) => handlePrompt('key', result, (key) => ({ key }))}
     />;
   }
@@ -355,6 +390,7 @@ export function CommandWizard<T>(props: {
         message={message}
         choices={[{ value: 'true', label: 'true' }, { value: 'false', label: 'false' }]}
         defaultValue={field.default === false ? 'false' : 'true'}
+        size={size}
         onComplete={(result) => handlePrompt('value', result, (value) => ({
           value: valueJson ? value : value === 'true',
         }))}
@@ -371,12 +407,15 @@ export function CommandWizard<T>(props: {
         defaultValue={typeof field.default === 'string'
           ? valueJson ? JSON.stringify(field.default) : field.default
           : valueJson ? JSON.stringify(field.values?.[0]) : field.values?.[0]}
+        pageSize={selectionRows}
+        size={size}
         onComplete={(result) => handlePrompt('value', result, (value) => ({ value }))}
       />;
     }
-    if (field?.sensitive) {
+    if (isPrivateField(field)) {
       return <PasswordInputView
         message={message}
+        size={size}
         onComplete={(result) => handlePrompt('value', result, (value) => ({
           value: parseValue(value, valueJson),
         }))}
@@ -384,6 +423,7 @@ export function CommandWizard<T>(props: {
     }
     return <TextInputView
       message={message}
+      size={size}
       defaultValue={field?.default === undefined
         ? undefined
         : valueJson ? JSON.stringify(field.default) : String(field.default)}
@@ -400,24 +440,22 @@ export function CommandWizard<T>(props: {
       messages={progress.messages}
       messageOffset={messageOffset}
       startedAt={startedAt}
+      size={size}
     />;
   }
   if (page === 'result') {
-    const isTemplate = props.request.commandIsTemplate?.(selection) === true;
-    const failed = executionResult?.error !== undefined
-      || (executionResult?.value !== undefined
-        && props.request.resultState?.(executionResult.value) === 'failed');
+    const failed = executionResult?.failed === true;
     const receipt = receiptLines(executionResult?.value);
-    return <PromptFrame title="执行结果" help="Enter 退出并输出稳定收据 · q 退出">
+    return <PromptFrame
+      title="执行结果"
+      help="PgUp/PgDn 消息 · Enter/q 退出"
+      size={size}
+    >
       <Text color={failed ? tuiTheme.statusColors.error : tuiTheme.statusColors.success}>
-        {executionResult?.error
-          ? '操作失败。详细原因请查看退出后的命令结果或调试日志。'
+        {executionResult?.unexpectedFailure
+          ? WIZARD_FAILURE_MESSAGE
           : failed ? '操作失败。' : '操作已完成。'}
       </Text>
-      <Text>{isTemplate ? '命令模板' : '等价命令'}：{props.request.equivalentCommand(selection)}</Text>
-      {isTemplate
-        ? <Text color={tuiTheme.colors.muted}>请先替换 '&lt;sensitive-value&gt;'，再执行命令。</Text>
-        : null}
       <MessageWindow messages={progress.messages} offset={messageOffset} />
       {receipt.map((line, index) => (
         <Text key={`receipt:${index}:${line}`} wrap="truncate-end">{line}</Text>
@@ -426,21 +464,27 @@ export function CommandWizard<T>(props: {
   }
   const isTemplate = props.request.commandIsTemplate?.(selection) === true;
   return (
-    <Box flexDirection="column">
-      <PromptFrame title="确认参数" help="y 执行 · n 取消 · Esc 取消 · Ctrl-C 退出">
-        <Text>操作：{commandLabel(props.request.command)}</Text>
-        <Text>插件：{selection.plugins.join(', ')}</Text>
-        {selection.platform ? <Text>平台：{selection.platform}</Text> : null}
-        {selection.scope ? <Text>范围：{selection.scope}</Text> : null}
-        {selection.key ? <Text>配置项：{selection.key}</Text> : null}
-        <Text wrap="wrap">{isTemplate ? '命令模板' : '等价命令'}：{props.request.equivalentCommand(selection)}</Text>
-        {isTemplate
-          ? <Text color={tuiTheme.colors.muted}>请先替换 '&lt;sensitive-value&gt;'，再执行命令。</Text>
-          : null}
-        {props.request.destructive
-          ? <Text color={tuiTheme.statusColors.warning}>此操作会删除已有内容。</Text>
-          : null}
-      </PromptFrame>
+    <PromptFrame
+      title="确认参数"
+      help="y 执行 · n 取消 · Esc 取消 · Ctrl-C 退出"
+      size={size}
+    >
+      <Text wrap="truncate-end">操作：{commandLabel(props.request.command)}</Text>
+      <Text wrap="truncate-end">插件：{selection.plugins.join(', ')}</Text>
+      {selection.platform ? <Text wrap="truncate-end">平台：{selection.platform}</Text> : null}
+      {selection.scope ? <Text wrap="truncate-end">范围：{selection.scope}</Text> : null}
+      {selection.key ? <Text wrap="truncate-end">配置项：{selection.key}</Text> : null}
+      {equivalentCommandDisplays(props.request, selection).map((display) => (
+        <Text key={display.label} wrap="truncate-end">
+          {isTemplate ? `${display.label}模板` : display.label}：{display.text}
+        </Text>
+      ))}
+      {isTemplate
+        ? <Text color={tuiTheme.colors.muted} wrap="truncate-end">命令模板；替换占位符后执行。</Text>
+        : null}
+      {props.request.destructive
+        ? <Text color={tuiTheme.statusColors.warning}>此操作会删除已有内容。</Text>
+        : null}
       <ConfirmView
         message="执行以上命令？"
         defaultValue={true}
@@ -452,6 +496,6 @@ export function CommandWizard<T>(props: {
           void execute();
         }}
       />
-    </Box>
+    </PromptFrame>
   );
 }

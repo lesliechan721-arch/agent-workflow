@@ -14,6 +14,7 @@ import {
   ConfirmView,
   MultiSelectView,
   PasswordInputView,
+  PromptFrame,
   SelectView,
   TextInputView,
 } from './views.js';
@@ -151,7 +152,9 @@ export function createInkPrompt(options: InkPromptOptions = {}): CliPrompt {
       input,
       output,
       render: (complete) => (
-        <ConfirmView message={message} defaultValue={defaultValue} onComplete={complete} />
+        <PromptFrame title="确认" help="y 确认 · n 拒绝 · Esc 取消 · Ctrl-C 退出">
+          <ConfirmView message={message} defaultValue={defaultValue} onComplete={complete} />
+        </PromptFrame>
       ),
     });
 

@@ -97,6 +97,17 @@ function viewport(count: number, selected: number, capacity: number): Viewport {
   };
 }
 
+function messageViewport(count: number, offset: number, capacity: number): Viewport {
+  if (count === 0 || capacity <= 0) return { indexes: [], hiddenAbove: 0, hiddenBelow: count };
+  const visibleCount = Math.min(count, capacity);
+  const start = Math.min(Math.max(offset, 0), Math.max(0, count - visibleCount));
+  return {
+    indexes: Array.from({ length: visibleCount }, (_, index) => start + index),
+    hiddenAbove: start,
+    hiddenBelow: count - start - visibleCount,
+  };
+}
+
 function scrollOffset(offset: number, count: number, capacity: number, delta: -1 | 1): number {
   const pageSize = Math.max(1, capacity - 2);
   return Math.min(Math.max(offset + delta * pageSize, 0), Math.max(0, count - 1));
@@ -482,7 +493,7 @@ function ConfigPage(props: {
 
   useEffect(() => { void read(initialLocation); }, []);
   useEffect(() => {
-    setMessageOffset(Math.max(0, [...(message?.split('\n') ?? []), ...props.notices].length - 1));
+    setMessageOffset(Math.max(0, [...(message?.split('\n') ?? []), ...props.notices].length - 8));
   }, [message, props.notices]);
   useEffect(() => {
     if (!busy) return undefined;
@@ -674,8 +685,8 @@ function ConfigPage(props: {
   const fieldRows = Math.max(1, props.rows - 2 - transientRows - editorRows - messageRows - 1);
   const fieldWindow = viewport(data?.model.fields.length ?? 0, index, fieldRows);
   const editorWindow = viewport(editorValues.length, enumIndex, Math.max(0, editorRows - 1));
-  const clampedMessageOffset = Math.min(messageOffset, Math.max(0, messageLines.length - 1));
-  const messageWindow = viewport(messageLines.length, clampedMessageOffset, messageRows);
+  const clampedMessageOffset = Math.min(messageOffset, Math.max(0, messageLines.length - messageRows));
+  const messageWindow = messageViewport(messageLines.length, clampedMessageOffset, messageRows);
   useEffect(() => {
     if (messageOffset !== clampedMessageOffset) setMessageOffset(clampedMessageOffset);
   }, [clampedMessageOffset, messageOffset, messageRows]);
@@ -695,10 +706,11 @@ function ConfigPage(props: {
       {fieldWindow.indexes.map((fieldIndex) => {
         const entry = data!.model.fields[fieldIndex]!;
         const current = readFields.get(entry.key);
+        const privateValue = entry.sensitive || entry.type === 'file' || entry.type === 'directory';
         const staged = Object.hasOwn(updates, entry.key)
-          ? entry.sensitive ? '待更新' : String(updates[entry.key])
+          ? privateValue ? '待更新' : String(updates[entry.key])
           : removeKeys.has(entry.key) ? '待清除'
-            : entry.sensitive
+            : privateValue
               ? (current?.effectiveValue !== undefined && current.effectiveValue !== null ? '已配置' : '未配置')
               : String(current?.effectiveValue ?? '未配置');
         return <Text key={entry.key} bold={fieldIndex === index} wrap="truncate-end">
@@ -720,7 +732,7 @@ function ConfigPage(props: {
         </Box>
       ) : null}
       {editing && field && field.type !== 'enum' && field.type !== 'boolean'
-        ? field.sensitive
+        ? field.sensitive || field.type === 'file' || field.type === 'directory'
           ? <PasswordInput onSubmit={submitText} />
           : <TextInput
               defaultValue={typeof updates[field.key] === 'string' ? String(updates[field.key]) : undefined}
@@ -788,7 +800,7 @@ export function Dashboard(props: {
       ...(state.loadError ? [state.loadError] : []),
       ...(state.loaded?.status.errors ?? []),
     ].length;
-    setOutputOffset(Math.max(0, count - 1));
+    setOutputOffset(Math.max(0, count - 8));
   }, [state.notice, sessionProgress, state.loadError, state.loaded?.status.errors]);
 
   const busyText = state.busy
@@ -807,9 +819,10 @@ export function Dashboard(props: {
     ...(state.loaded?.status.errors.map(() => '错误：状态读取失败。详情请查看退出后的命令结果或调试日志。') ?? []),
   ];
   const outputRows = Math.min(8, outputLines.length);
-  const clampedOutputOffset = Math.min(outputOffset, Math.max(0, outputLines.length - 1));
-  const outputWindow = viewport(outputLines.length, clampedOutputOffset, outputRows);
-  const bodyRows = Math.max(1, policy.rows - 3 - (activityText ? 1 : 0) - outputRows - 1);
+  const clampedOutputOffset = Math.min(outputOffset, Math.max(0, outputLines.length - outputRows));
+  const outputWindow = messageViewport(outputLines.length, clampedOutputOffset, outputRows);
+  const outputHintRows = Number(outputWindow.hiddenAbove > 0) + Number(outputWindow.hiddenBelow > 0);
+  const bodyRows = Math.max(1, policy.rows - 3 - (activityText ? 1 : 0) - outputRows - outputHintRows - 1);
   const innerPanelRows = Math.max(1, bodyRows - (policy.mode === 'three-column' ? 2 : 0));
   const targetListRows = Math.min(4, Math.max(2, Math.floor(innerPanelRows / 2)));
   const detailsRows = Math.max(0, innerPanelRows - targetListRows);

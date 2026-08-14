@@ -51,6 +51,7 @@ export interface CommandWizardRequest<T> {
   promptForValue?: boolean;
   destructive?: boolean;
   equivalentCommand: (selection: CommandWizardSelection) => string;
+  equivalentCommandTokens?: (selection: CommandWizardSelection) => string[];
   commandIsTemplate?: (selection: CommandWizardSelection) => boolean;
   resultState?: (value: T) => 'succeeded' | 'failed';
   isPluginVisible?: (
@@ -68,7 +69,19 @@ export interface CommandWizardResult<T> {
   cancelled: boolean;
   selection?: CommandWizardSelection;
   value?: T;
-  error?: unknown;
+  failed?: boolean;
+}
+
+export const WIZARD_FAILURE_MESSAGE = '操作失败。详细原因请使用 --debug 查看日志。';
+
+export class WizardExecutionError extends Error {
+  readonly diagnostic: unknown;
+
+  constructor(diagnostic: unknown) {
+    super(WIZARD_FAILURE_MESSAGE);
+    this.name = 'WizardExecutionError';
+    this.diagnostic = diagnostic;
+  }
 }
 
 export function toWizardCandidates(items: LiveConsoleItem[]): CommandWizardPluginCandidate[] {
@@ -85,20 +98,34 @@ export async function runCommandWizard<T>(
   request: CommandWizardRequest<T>,
 ): Promise<CommandWizardResult<T>> {
   const progress = createRebuildProgressFeed();
+  let diagnostic: unknown;
   const sessionReporter: CommandReporter = {
     event: (event) => progress.addEvent(event),
     notice: (notice) => progress.addNotice(notice),
+  };
+  const safeRequest: CommandWizardRequest<T> = {
+    ...request,
+    execute: async (selection) => {
+      try {
+        const value = await request.execute(selection);
+        if (request.resultState?.(value) === 'failed') diagnostic = value;
+        return value;
+      } catch (error) {
+        diagnostic = error;
+        throw error;
+      }
+    },
   };
   const result = await withCommandReporterSession(context.reporter, sessionReporter, () =>
     context.tuiRunner.launch<CommandWizardResult<T>>({
       input: context.stdin,
       output: context.tuiOutput,
       render: (complete) => createElement(CommandWizard<T>, {
-        request,
+        request: safeRequest,
         progress,
         onComplete: complete,
       }),
     }));
-  if (result.error !== undefined) throw result.error;
+  if (result.failed) throw new WizardExecutionError(diagnostic);
   return result;
 }

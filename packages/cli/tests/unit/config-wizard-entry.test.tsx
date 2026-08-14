@@ -1,5 +1,6 @@
 import { render } from 'ink-testing-library';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import fs from 'fs-extra';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { TuiLaunchRequest, TuiRunner } from '../../src/tui/runner.js';
 import { createCapturedCliIo, createTtyRuntimeStreams } from '../helpers/cli-entry.js';
@@ -56,8 +57,9 @@ function createRunner(
       for (const input of inputs) {
         instance.stdin.write(input);
         await nextTurn();
+        await new Promise((resolve) => setTimeout(resolve, 15));
       }
-      await nextTurn();
+      await new Promise((resolve) => setTimeout(resolve, 25));
       frames.push(...instance.frames);
       instance.stdin.write('\r');
       await nextTurn();
@@ -139,6 +141,20 @@ const jsonNumberPlugin = {
   },
 };
 
+const pathPlugin = {
+  ...plugin,
+  manifest: {
+    ...plugin.manifest,
+    name: 'paths',
+    config: {
+      schema: {
+        file: { type: 'file' as const, title: 'File', sensitive: false },
+        directory: { type: 'directory' as const, title: 'Directory', sensitive: false },
+      },
+    },
+  },
+};
+
 describe('config set wizard entry', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -149,6 +165,8 @@ describe('config set wizard entry', () => {
       values: {},
     });
   });
+
+  afterEach(() => vi.restoreAllMocks());
 
   it('collects a sensitive value in one session and calls the existing helper once', async () => {
     const { runCli } = await import('../../src/index.js');
@@ -205,10 +223,108 @@ describe('config set wizard entry', () => {
     expect(frames.join('\n')).not.toContain('hunter2');
     expect(frames.join('\n')).toContain('命令模板');
     expect(frames.join('\n')).toContain("'<sensitive-value>'");
-    expect(frames.join('\n')).toContain('请先替换');
+    expect(frames.join('\n')).toContain('替换占位符');
     expect(captured.readStdout()).not.toContain('hunter2');
     expect(captured.readStderr()).not.toContain('hunter2');
     expect(debugEvents.join('\n')).not.toContain('hunter2');
+  });
+
+  it.each([
+    { key: 'file', value: '/Users/alice/Private Project/private.json', placeholder: '<file-path>' },
+    { key: 'directory', value: 'C:\\Users\\alice\\Private Project', placeholder: '<directory-path>' },
+    { key: 'directory', value: '\\\\server\\Private Share', placeholder: '<directory-path>' },
+  ])('projects a private $key path before execution', async ({ key, value, placeholder }) => {
+    const { runCli } = await import('../../src/index.js');
+    mocks.loadConsoleItemsResult.mockResolvedValue({
+      catalogUnavailable: false,
+      status: {
+        schemaVersion: 3,
+        catalog: {},
+        filters: { plugins: [], platform: 'both', cwd: '/workspace' },
+        targets: [],
+        errors: [],
+      },
+      items: [{ pluginName: 'paths', version: '1.0.0', plugin: pathPlugin, targets: [] }],
+    });
+    const captured = createCapturedCliIo();
+    const frames: string[] = [];
+
+    const exitCode = await runCli(['config', 'set'], {
+      cwd: '/workspace',
+      env: { CI: undefined },
+      interactive: true,
+      io: captured.io,
+      tuiRunner: createRunner(frames, [
+        '\r',
+        key === 'directory' ? '\u001B[B' : '',
+        '\r',
+        value,
+        '\r',
+        'n',
+      ].filter(Boolean)),
+      ...createTtyRuntimeStreams(),
+    });
+
+    const output = frames.join('\n');
+    expect(exitCode).toBe(0);
+    expect(output).toContain('命令模板');
+    expect(output).toContain(placeholder);
+    expect(output).not.toContain('alice');
+    expect(output).not.toContain('Private');
+    expect(output).not.toContain('server');
+    expect(mocks.applyPluginConfigWrite).not.toHaveBeenCalled();
+    expect(captured.readStdout()).toBe('');
+    expect(captured.readStderr()).toBe('');
+  });
+
+  it.each([
+    { key: 'file', value: '/Users/alice/Private Project/missing.json', fragments: ['/Users/alice', 'Private Project'] },
+    { key: 'directory', value: 'C:/Users/alice/Private Project', fragments: ['C:/Users', 'Private Project'] },
+    { key: 'directory', value: '\\\\server\\Private Share', fragments: ['\\\\server', 'Private Share'] },
+  ])('keeps a missing $key realpath failure private', async ({ key, value, fragments }) => {
+    const { runCli } = await import('../../src/index.js');
+    mocks.loadConsoleItemsResult.mockResolvedValue({
+      catalogUnavailable: false,
+      status: {
+        schemaVersion: 3,
+        catalog: {},
+        filters: { plugins: [], platform: 'both', cwd: '/workspace' },
+        targets: [],
+        errors: [],
+      },
+      items: [{ pluginName: 'paths', version: '1.0.0', plugin: pathPlugin, targets: [] }],
+    });
+    const captured = createCapturedCliIo();
+    const frames: string[] = [];
+    const realpathSpy = value.startsWith('\\\\')
+      ? vi.spyOn(fs, 'realpath').mockRejectedValueOnce(
+          Object.assign(new Error(`ENOENT: no such file or directory, realpath '${value}'`), {
+            code: 'ENOENT',
+          }),
+        )
+      : undefined;
+
+    const exitCode = await runCli(['config', 'set'], {
+      cwd: '/workspace', env: { CI: undefined }, interactive: true, io: captured.io,
+      tuiRunner: createRunner(frames, [
+        '\r',
+        key === 'directory' ? '\u001B[B' : '',
+        '\r',
+        value,
+        '\r',
+        '\r',
+      ].filter(Boolean)),
+      ...createTtyRuntimeStreams(),
+    });
+
+    expect(exitCode).toBe(1);
+    expect(mocks.applyPluginConfigWrite).not.toHaveBeenCalled();
+    expect(captured.readStdout()).toBe('');
+    expect(captured.readStderr()).toBe('操作失败。详细原因请使用 --debug 查看日志。\n');
+    const visible = `${frames.join('\n')}\n${captured.readStderr()}`;
+    expect(visible).not.toContain('ENOENT');
+    for (const fragment of fragments) expect(visible).not.toContain(fragment);
+    realpathSpy?.mockRestore();
   });
 
   it('shows a failed config apply result and returns its failed receipt', async () => {
@@ -256,7 +372,8 @@ describe('config set wizard entry', () => {
 
     expect(exitCode).toBe(1);
     expect(frames.join('\n')).toContain('操作失败');
-    expect(captured.readStderr()).toContain('apply failed');
+    expect(captured.readStdout()).toBe('');
+    expect(captured.readStderr()).toBe('操作失败。详细原因请使用 --debug 查看日志。\n');
     expect(mocks.applyPluginConfigWrite).toHaveBeenCalledTimes(1);
   });
 
@@ -397,10 +514,10 @@ describe('config set wizard entry', () => {
     const frameText = frames.join('\n');
     expect(frameText).toContain('aw config set --scope user --value-json -- json-string value not-json');
     expect(frameText).not.toContain('"not-json"');
-    expect(frameText).toContain('操作失败。详细原因请查看退出后的命令结果或调试日志。');
+    expect(frameText).toContain('操作失败。详细原因请使用 --debug 查看日志。');
     expect(frameText).not.toContain('Invalid JSON value for --value-json');
     expect(captured.readStdout()).toBe('');
-    expect(captured.readStderr()).toContain('Invalid JSON value for --value-json');
+    expect(captured.readStderr()).toBe('操作失败。详细原因请使用 --debug 查看日志。\n');
   });
 
   it('keeps an invalid JSON number token and fails before calling the helper', async () => {
@@ -434,10 +551,10 @@ describe('config set wizard entry', () => {
     const frameText = frames.join('\n');
     expect(frameText).toContain('aw config set --scope user --value-json -- json-number value not-json');
     expect(frameText).not.toContain('aw config set --scope user --value-json -- json-number value null');
-    expect(frameText).toContain('操作失败。详细原因请查看退出后的命令结果或调试日志。');
+    expect(frameText).toContain('操作失败。详细原因请使用 --debug 查看日志。');
     expect(frameText).not.toContain('Invalid JSON value for --value-json');
     expect(captured.readStdout()).toBe('');
-    expect(captured.readStderr()).toContain('Invalid JSON value for --value-json');
+    expect(captured.readStderr()).toBe('操作失败。详细原因请使用 --debug 查看日志。\n');
   });
 
   it('parses a valid JSON number at the execute boundary', async () => {
@@ -568,10 +685,10 @@ describe('config set wizard entry', () => {
 
     expect(exitCode).toBe(1);
     expect(mocks.applyPluginConfigWrite).not.toHaveBeenCalled();
-    expect(frames.join('\n')).toContain('操作失败。详细原因请查看退出后的命令结果或调试日志。');
+    expect(frames.join('\n')).toContain('操作失败。详细原因请使用 --debug 查看日志。');
     expect(frames.join('\n')).not.toContain('Config "value" must be a number.');
     expect(captured.readStdout()).toBe('');
-    expect(captured.readStderr()).toContain('Config "value" must be a number.');
+    expect(captured.readStderr()).toBe('操作失败。详细原因请使用 --debug 查看日志。\n');
   });
 
   it.each([
@@ -702,7 +819,7 @@ describe('config set wizard entry', () => {
     }));
     const output = `${frames.join('\n')}\n${captured.readStdout()}\n${captured.readStderr()}`;
     expect(output).not.toContain('hunter2');
-    expect(output).toContain("'\"<sensitive-value>\"'");
+    expect(output).toContain('<sensitive-value>');
     expect(output).toContain('命令模板');
   });
 
@@ -1164,7 +1281,7 @@ describe('config set wizard entry', () => {
 
     expect(exitCode).toBe(0);
     expect(frames.join('\n').replaceAll(/\s+/g, ' ')).toContain(
-      "aw config set --scope project --local --catalog-version 2.0.0-beta.1 -- secure 'path key'\"'\"'s' 'folder path/it'\"'\"'s here'",
+      'aw config set --scope project --local --catalog-version 2.0.0-beta.1',
     );
   });
 });

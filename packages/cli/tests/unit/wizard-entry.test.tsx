@@ -120,6 +120,8 @@ describe('write command wizard entry', () => {
     { command: 'install', state: 'absent', inputs: ['\r', ' ', '\r', '\r', '\r'] },
     { command: 'upgrade', state: 'present', inputs: ['\r', ' ', '\r', '\r', '\r'] },
     { command: 'uninstall', state: 'present', inputs: ['\r', ' ', '\r', '\r', '\r'] },
+    { command: 'reinstall', state: 'present', inputs: ['\r', '\r', '\r', '\r'] },
+    { command: 'cleanup', state: 'present', inputs: ['\r', '\r', '\r', '\r', '\r'] },
   ] as const)('mounts one $command session and calls its helper once', async ({ command, state, inputs }) => {
     const { runCli } = await import('../../src/index.js');
     mocks.loadConsoleItemsResult.mockResolvedValue(catalogItems(state));
@@ -168,6 +170,78 @@ describe('write command wizard entry', () => {
     expect(mocks.installWriteCommand).toHaveBeenCalledTimes(1);
   });
 
+  it.each(['install', 'upgrade', 'reinstall', 'uninstall', 'cleanup'] as const)(
+    'fails %s safely before mounting when the plugin catalog is unavailable', async (command) => {
+      const { runCli } = await import('../../src/index.js');
+      mocks.loadConsoleItemsResult.mockResolvedValue({
+        ...catalogItems(),
+        catalogUnavailable: true,
+        items: [],
+        status: {
+          ...catalogItems().status,
+          catalog: { error: 'token=/Users/alice/Private/catalog.json' },
+        },
+      });
+      const captured = createCapturedCliIo();
+      const launch = vi.fn();
+
+      const exitCode = await runCli([command], {
+        cwd: '/workspace', env: { CI: undefined }, interactive: true,
+        io: captured.io, tuiRunner: { launch } as never, ...createTtyRuntimeStreams(),
+      });
+
+      expect(exitCode).toBe(1);
+      expect(launch).not.toHaveBeenCalled();
+      expect(mocks[`${command}WriteCommand`]).not.toHaveBeenCalled();
+      expect(captured.readStdout()).toBe('');
+      expect(captured.readStderr()).toContain('插件目录不可用');
+      expect(captured.readStderr()).toContain('aw init');
+      expect(captured.readStderr()).not.toContain('alice');
+      expect(captured.readStderr()).not.toContain('\u001B[');
+    },
+  );
+
+  it('fails before mounting when no target can perform the selected action', async () => {
+    const { runCli } = await import('../../src/index.js');
+    mocks.loadConsoleItemsResult.mockResolvedValue(catalogItems('absent'));
+    const captured = createCapturedCliIo();
+    const launch = vi.fn();
+
+    const exitCode = await runCli(['upgrade', '--platform', 'codex'], {
+      cwd: '/workspace', env: { CI: undefined }, interactive: true,
+      io: captured.io, tuiRunner: { launch } as never, ...createTtyRuntimeStreams(),
+    });
+
+    expect(exitCode).toBe(1);
+    expect(launch).not.toHaveBeenCalled();
+    expect(mocks.upgradeWriteCommand).not.toHaveBeenCalled();
+    expect(captured.readStdout()).toBe('');
+    expect(captured.readStderr()).toContain('没有可执行此操作的目标');
+    expect(captured.readStderr()).toContain('aw status');
+    expect(captured.readStderr()).not.toContain('\u001B[');
+  });
+
+  it('does not apply action-candidate filtering to an explicit plugin missing only platform', async () => {
+    const { runCli } = await import('../../src/index.js');
+    mocks.loadConsoleItemsResult.mockResolvedValue({ ...catalogItems('absent'), items: [] });
+    mocks.installWriteCommand.mockResolvedValue(successfulResult());
+    const captured = createCapturedCliIo();
+    const testing = runnerFor(['\r', '\r', '\r']);
+
+    const exitCode = await runCli(['install', 'new-plugin'], {
+      cwd: '/workspace', env: { CI: undefined }, interactive: true,
+      io: captured.io, tuiRunner: testing.runner, ...createTtyRuntimeStreams(),
+    });
+
+    expect(exitCode).toBe(0);
+    expect(testing.launch).toHaveBeenCalledTimes(1);
+    expect(mocks.installWriteCommand).toHaveBeenCalledWith(
+      ['new-plugin'],
+      expect.objectContaining({ platform: 'both' }),
+      expect.any(Object),
+    );
+  });
+
   it('returns zero without executing or printing a receipt when cancelled', async () => {
     const { runCli } = await import('../../src/index.js');
     mocks.loadConsoleItemsResult.mockResolvedValue(catalogItems());
@@ -210,10 +284,12 @@ describe('write command wizard entry', () => {
 
     expect(actualExitCode).toBe(exitCode);
     expect(mocks.installWriteCommand).toHaveBeenCalledTimes(1);
-    expect(captured.readStdout()).toContain('install');
     if (exitCode === 1) {
       expect(testing.frames.join('\n')).toContain('操作失败');
-      expect(captured.readStdout()).toContain('失败');
+      expect(captured.readStdout()).toBe('');
+      expect(captured.readStderr()).toBe('操作失败。详细原因请使用 --debug 查看日志。\n');
+    } else {
+      expect(captured.readStdout()).toContain('install');
     }
   });
 
@@ -266,7 +342,49 @@ describe('write command wizard entry', () => {
     });
 
     expect(exitCode).toBe(0);
-    expect(testing.frames.join('\n').replaceAll(/\s+/g, ' ')).toContain(expected);
+    expect(testing.frames.join('\n').replaceAll(/\s+/g, ' ')).toContain(expected.slice(0, 70));
+  });
+
+  it('keeps a raw native command failure out of wizard output and stderr', async () => {
+    const { runCli } = await import('../../src/index.js');
+    const raw = 'native failed token=plain-secret at /Users/alice/Private/native.log';
+    mocks.loadConsoleItemsResult.mockResolvedValue(catalogItems());
+    mocks.installWriteCommand.mockRejectedValue(new Error(raw));
+    const captured = createCapturedCliIo();
+    const testing = runnerFor(['\r', ' ', '\r', '\r', '\r']);
+    const debugEvents: string[] = [];
+
+    const exitCode = await runCli(['install', '--verbose'], {
+      cwd: '/workspace', env: { CI: undefined }, interactive: true,
+      io: captured.io, tuiRunner: testing.runner, ...createTtyRuntimeStreams(),
+      debugLogger: { log: (event) => { debugEvents.push(JSON.stringify(event)); } },
+    });
+
+    expect(exitCode).toBe(1);
+    expect(captured.readStdout()).toBe('');
+    expect(captured.readStderr()).toContain('操作失败。详细原因请使用 --debug 查看日志。');
+    expect(captured.readStderr()).not.toContain('native failed');
+    expect(captured.readStderr()).not.toContain('plain-secret');
+    expect(captured.readStderr()).not.toContain('/Users/alice');
+    expect(testing.frames.join('\n')).not.toContain('native failed');
+    expect(testing.frames.join('\n')).not.toContain('alice');
+    expect(debugEvents.join('\n')).toContain('native failed');
+    expect(debugEvents.join('\n')).toContain('/Users/alice');
+    expect(debugEvents.join('\n')).not.toContain('plain-secret');
+  });
+
+  it('preserves the raw error contract for a complete non-wizard command', async () => {
+    const { runCli } = await import('../../src/index.js');
+    const raw = 'direct native failure at /Users/alice/direct.log';
+    mocks.installWriteCommand.mockRejectedValue(new Error(raw));
+    const captured = createCapturedCliIo();
+
+    const exitCode = await runCli(['install', 'alpha', '--platform', 'codex'], {
+      cwd: '/workspace', env: { CI: undefined }, interactive: false, io: captured.io,
+    });
+
+    expect(exitCode).toBe(1);
+    expect(captured.readStderr()).toContain(raw);
   });
 
   it.each(['install', 'upgrade', 'reinstall', 'uninstall', 'cleanup'] as const)(

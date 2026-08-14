@@ -23,6 +23,7 @@ import {
 import {
   runCommandWizard,
   toWizardCandidates,
+  WizardExecutionError,
   type CommandWizardCommand,
   type CommandWizardPluginCandidate,
   type CommandWizardSelection,
@@ -53,6 +54,10 @@ import {
   isCommandWarningError,
 } from './types.js';
 import { formatWarnings } from './output/reporter.js';
+import { redactValue } from './output/redact.js';
+import {
+  renderShellCommand,
+} from './output/equivalent-command.js';
 import {
   buildRebuildReceiptJson,
   buildInitFailureReceiptJson,
@@ -86,6 +91,7 @@ import {
 import type {
   ConfigFieldEntry,
   PlatformSelection,
+  PluginConfigSchemaField,
   PluginMeta,
   Scope,
 } from './types.js';
@@ -173,14 +179,8 @@ function isWizardAvailable(
   return context.interactive && context.isTty && !context.isCi && rawOptions.json !== true;
 }
 
-function shellQuote(value: string): string {
-  return /^[A-Za-z0-9_./:@+-]+$/.test(value)
-    ? value
-    : `'${value.replaceAll("'", `'"'"'`)}'`;
-}
-
 function shellCommand(tokens: string[]): string {
-  return tokens.map(shellQuote).join(' ');
+  return renderShellCommand(tokens, 'posix');
 }
 
 function optionTokens(flag: string, value: string | undefined): string[] {
@@ -276,6 +276,48 @@ function equivalentConfigCommand(options: EquivalentConfigCommandOptions): strin
   return shellCommand(buildEquivalentConfigCommandTokens(options));
 }
 
+function equivalentConfigCommandProjection(
+  resolve: (selection: CommandWizardSelection) => EquivalentConfigCommandOptions,
+): {
+  equivalentCommand: (selection: CommandWizardSelection) => string;
+  equivalentCommandTokens: (selection: CommandWizardSelection) => string[];
+} {
+  return {
+    equivalentCommand: (selection) => equivalentConfigCommand(resolve(selection)),
+    equivalentCommandTokens: (selection) => buildEquivalentConfigCommandTokens(resolve(selection)),
+  };
+}
+
+function configSetEquivalentOptions(
+  selection: CommandWizardSelection,
+  candidates: CommandWizardPluginCandidate[],
+  rawOptions: RawConfigOptions,
+): EquivalentConfigCommandOptions {
+  const field = candidates.find((entry) => entry.pluginName === selection.plugins[0])
+    ?.configSchema?.[selection.key ?? ''];
+  const placeholder = configFieldPlaceholder(field);
+  return {
+    command: 'set',
+    plugin: selection.plugins[0]!,
+    key: selection.key!,
+    value: placeholder
+      ? rawOptions.valueJson ? JSON.stringify(placeholder) : placeholder
+      : formatConfigCommandValue(selection.value, rawOptions.valueJson === true),
+    scope: selection.scope ?? 'user',
+    projectLayer: selection.projectLayer,
+    valueJson: rawOptions.valueJson,
+    catalogChannel: rawOptions.catalogChannel,
+    catalogVersion: rawOptions.catalogVersion,
+  };
+}
+
+function configFieldPlaceholder(field: PluginConfigSchemaField | undefined): string | undefined {
+  if (field?.sensitive) return '<sensitive-value>';
+  if (field?.type === 'file') return '<file-path>';
+  if (field?.type === 'directory') return '<directory-path>';
+  return undefined;
+}
+
 export function buildEquivalentConfigCommandTokens(
   options: EquivalentConfigCommandOptions,
 ): string[] {
@@ -313,6 +355,20 @@ function writeCandidateEligibility(
   return selectable
     ? { selectable: true }
     : { selectable: false, reason: `live status 不允许 ${command}` };
+}
+
+function hasSelectableWriteCandidate(
+  command: WriteWizardCommand,
+  candidates: CommandWizardPluginCandidate[],
+  selection: CommandWizardSelection,
+  options: { missingPlatform: boolean; missingScope: boolean },
+): boolean {
+  const platforms: PlatformSelection[] = options.missingPlatform
+    ? ['codex', 'claude', 'both']
+    : [selection.platform ?? 'both'];
+  const scopes: Scope[] = options.missingScope ? ['user', 'project'] : [selection.scope ?? 'user'];
+  return candidates.some((candidate) => platforms.some((platform) => scopes.some((scope) =>
+    writeCandidateEligibility(command, candidate, { ...selection, platform, scope }).selectable)));
 }
 
 async function loadWizardCandidates(
@@ -479,18 +535,33 @@ async function runWriteCommandAction(
     throw new Error(writeCommandUsage(command));
   }
 
-  const candidates = missingPlugin ? await loadWizardCandidates(context, {
+  const loaded = await loadConsoleItemsResult({
+    cwd: context.cwd,
     scope: rawOptions.scope,
     platform: rawOptions.platform,
-  }) : [];
+    includeCatalogOnly: true,
+  }, context);
+  if (loaded.catalogUnavailable) {
+    throw new Error(
+      '插件目录不可用。请运行 `aw init` 或 `aw init --force`，或使用完整参数重试。',
+    );
+  }
+  const candidates = missingPlugin ? toWizardCandidates(loaded.items) : [];
+  const initialSelection: CommandWizardSelection = {
+    plugins: pluginNames,
+    platform: rawOptions.platform as PlatformSelection | undefined,
+    scope: (rawOptions.scope ?? 'user') as Scope,
+  };
+  if (missingPlugin && !hasSelectableWriteCandidate(command, candidates, initialSelection, {
+    missingPlatform,
+    missingScope,
+  })) {
+    throw new Error('没有可执行此操作的目标。请运行 `aw status` 检查当前状态。');
+  }
   const result = await runCommandWizard(context, {
     command,
     candidates,
-    initial: {
-      plugins: pluginNames,
-      platform: rawOptions.platform as PlatformSelection | undefined,
-      scope: (rawOptions.scope ?? 'user') as Scope,
-    },
+    initial: initialSelection,
     pluginMode: missingPlugin
       ? command === 'cleanup' || command === 'reinstall' ? 'single' : 'multiple'
       : 'none',
@@ -498,6 +569,11 @@ async function runWriteCommandAction(
     promptForScope: missingScope,
     destructive: command === 'uninstall' || command === 'cleanup',
     equivalentCommand: (selection) => equivalentWriteCommand(
+      command,
+      selection,
+      rawOptions,
+    ),
+    equivalentCommandTokens: (selection) => buildEquivalentWriteCommandTokens(
       command,
       selection,
       rawOptions,
@@ -607,16 +683,34 @@ async function runActionWithContext<T>(
     }
     return result;
   } catch (error) {
-    await emitCommandEvent(context, {
-      type: 'command:error',
-      message: error instanceof Error ? error.message : String(error),
-      data: error instanceof Error
-        ? {
-            name: error.name,
-            stack: error.stack,
-          }
-        : undefined,
-    });
+    if (error instanceof WizardExecutionError) {
+      await context.reporter.event({
+        type: 'command:error',
+        commandName: context.diagnostics.commandName,
+        message: error.message,
+        data: { name: error.name },
+      });
+      const diagnostic = error.diagnostic;
+      await context.debugLogger.log(redactValue({
+        type: 'command:error',
+        commandName: context.diagnostics.commandName,
+        message: diagnostic instanceof Error ? diagnostic.message : error.message,
+        data: diagnostic instanceof Error
+          ? { name: diagnostic.name, stack: diagnostic.stack }
+          : { result: diagnostic },
+      }) as Parameters<typeof context.debugLogger.log>[0]);
+    } else {
+      await emitCommandEvent(context, {
+        type: 'command:error',
+        message: error instanceof Error ? error.message : String(error),
+        data: error instanceof Error
+          ? {
+              name: error.name,
+              stack: error.stack,
+            }
+          : undefined,
+      });
+    }
     await context.debugLogger.flush?.();
     if (context.diagnostics.debug && context.debugLogger.logFile) {
       writeLine(context.io.stderr, `调试日志：${context.debugLogger.logFile}`);
@@ -1080,14 +1174,14 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           candidates,
           initial: { plugins: [], scope: rawOptions.scope as Scope | undefined },
           pluginMode: 'single',
-          equivalentCommand: (selection) => equivalentConfigCommand({
+          ...equivalentConfigCommandProjection((selection) => ({
             command: 'list',
             plugin: selection.plugins[0]!,
             scope: rawOptions.scope,
             projectLayer: rawOptions.local ? 'local' : 'shared',
             catalogChannel: rawOptions.catalogChannel,
             catalogVersion: rawOptions.catalogVersion,
-          }),
+          })),
           execute: (selection) => execute(selection.plugins[0]!),
         });
         return result.cancelled
@@ -1180,7 +1274,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           candidates,
           initial: { plugins: [], key, scope: rawOptions.scope as Scope | undefined },
           pluginMode: 'single',
-          equivalentCommand: (selection) => equivalentConfigCommand({
+          ...equivalentConfigCommandProjection((selection) => ({
             command: 'get',
             plugin: selection.plugins[0]!,
             key,
@@ -1188,7 +1282,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             projectLayer: rawOptions.local ? 'local' : 'shared',
             catalogChannel: rawOptions.catalogChannel,
             catalogVersion: rawOptions.catalogVersion,
-          }),
+          })),
           execute: (selection) => execute(selection.plugins[0]!),
         });
         return result.cancelled
@@ -1317,26 +1411,14 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           valueJson: rawOptions.valueJson === true,
           promptForKey: key === undefined,
           promptForValue: rawValue === undefined,
-          equivalentCommand: (selection) => {
-            const field = candidates.find((entry) => entry.pluginName === selection.plugins[0])
-              ?.configSchema?.[selection.key ?? ''];
-            return equivalentConfigCommand({
-              command: 'set',
-              plugin: selection.plugins[0]!,
-              key: selection.key!,
-              value: field?.sensitive
-                ? rawOptions.valueJson ? '"<sensitive-value>"' : '<sensitive-value>'
-                : formatConfigCommandValue(selection.value, rawOptions.valueJson === true),
-              scope: selection.scope ?? 'user',
-              projectLayer: selection.projectLayer,
-              valueJson: rawOptions.valueJson,
-              catalogChannel: rawOptions.catalogChannel,
-              catalogVersion: rawOptions.catalogVersion,
-            });
-          },
+          ...equivalentConfigCommandProjection((selection) =>
+            configSetEquivalentOptions(selection, candidates, rawOptions)),
           commandIsTemplate: (selection) => candidates.find(
             (entry) => entry.pluginName === selection.plugins[0],
-          )?.configSchema?.[selection.key ?? '']?.sensitive === true,
+          )?.configSchema?.[selection.key ?? ''] !== undefined
+            && configFieldPlaceholder(candidates.find(
+              (entry) => entry.pluginName === selection.plugins[0],
+            )?.configSchema?.[selection.key ?? '']) !== undefined,
           resultState: overallResultState,
           execute: async (selection) => {
             const selectedPlugin = selection.plugins[0]!;
@@ -1457,7 +1539,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           pluginMode: pluginName ? 'none' : 'single',
           promptForKey: key === undefined,
           destructive: true,
-          equivalentCommand: (selection) => equivalentConfigCommand({
+          ...equivalentConfigCommandProjection((selection) => ({
             command: 'unset',
             plugin: selection.plugins[0]!,
             key: selection.key!,
@@ -1465,7 +1547,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             projectLayer: selection.projectLayer,
             catalogChannel: rawOptions.catalogChannel,
             catalogVersion: rawOptions.catalogVersion,
-          }),
+          })),
           resultState: overallResultState,
           execute: (selection) => execute(selection.plugins[0]!, selection.key!),
         });
@@ -1609,13 +1691,13 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           isPluginVisible: (candidate, selection) => candidatesByScope
             .get(selection.scope ?? 'user')
             ?.some((entry) => entry.pluginName === candidate.pluginName) !== false,
-          equivalentCommand: (selection) => equivalentConfigCommand({
+          ...equivalentConfigCommandProjection((selection) => ({
             command: 'reset',
             plugin: selection.plugins[0]!,
             scope: selection.scope ?? 'user',
             projectLayer: selection.projectLayer,
             confirmed: true,
-          }),
+          })),
           resultState: overallResultState,
           execute: (selection) => execute(
             selection.plugins[0]!,

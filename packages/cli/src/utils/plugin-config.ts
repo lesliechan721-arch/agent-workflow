@@ -2061,7 +2061,9 @@ export function createPluginConfigFormModel(options: {
       min: field.min,
       max: field.max,
       configured: options.effective.values[key] !== undefined,
-      currentValue: field.sensitive ? undefined : options.effective.values[key],
+      currentValue: field.sensitive || isPathTypeField(field)
+        ? undefined
+        : options.effective.values[key],
     })),
   };
 }

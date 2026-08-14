@@ -484,12 +484,12 @@ describe('dashboard rendering and input', () => {
     expect(frameRows(instance)).toBeLessThanOrEqual(16);
   });
 
-  it('scrolls dashboard progress from the first to last entry with at most eight messages', async () => {
+  it('scrolls dashboard progress from the first to last entry with exactly eight messages', async () => {
     const controller = fakeController(loaded([item('demo', 'absent')]));
     const progress = createRebuildProgressFeed();
     controller.getProgress = progress.get;
     controller.subscribeProgress = progress.subscribe;
-    const instance = render(<Dashboard controller={controller} onComplete={() => undefined} size={{ columns: 60, rows: 16 }} />);
+    const instance = render(<Dashboard controller={controller} onComplete={() => undefined} size={{ columns: 80, rows: 18 }} />);
     await nextTurn();
     for (let index = 0; index < 12; index += 1) {
       progress.addNotice({
@@ -503,12 +503,12 @@ describe('dashboard rendering and input', () => {
     await writeInput(instance, '\u001B[6~', '\u001B[6~');
 
     expect(instance.lastFrame()).toContain('notice-11');
-    expect((instance.lastFrame()?.match(/收到通知/g) ?? []).length).toBeLessThanOrEqual(8);
+    expect((instance.lastFrame()?.match(/收到通知/g) ?? [])).toHaveLength(8);
     await writeInput(instance, '\u001B[5~', '\u001B[5~');
     expect(instance.lastFrame()).toContain('notice-0');
-    expect((instance.lastFrame()?.match(/收到通知/g) ?? []).length).toBeLessThanOrEqual(8);
+    expect((instance.lastFrame()?.match(/收到通知/g) ?? [])).toHaveLength(8);
     expectTuiTextProjected(instance.frames.join('\n'));
-    expect(frameRows(instance)).toBeLessThanOrEqual(16);
+    expect(frameRows(instance)).toBeLessThanOrEqual(18);
   });
 
   it('scrolls to a late component error in target details', async () => {
@@ -803,12 +803,12 @@ describe('dashboard rendering and input', () => {
     );
   });
 
-  it('scrolls through projected config progress while showing at most eight messages', async () => {
+  it('scrolls through projected config progress while showing exactly eight messages', async () => {
     const controller = withConfigController(loaded([item('demo', 'present')]));
     const progress = createRebuildProgressFeed();
     controller.getProgress = progress.get;
     controller.subscribeProgress = progress.subscribe;
-    const instance = render(<Dashboard controller={controller} onComplete={() => undefined} size={{ columns: 60, rows: 16 }} />);
+    const instance = render(<Dashboard controller={controller} onComplete={() => undefined} size={{ columns: 80, rows: 18 }} />);
     await nextTurn();
     await writeInput(instance, '\r', '\r', '\u001B[B', '\u001B[B', '\u001B[B', '\u001B[B', '\r');
     await nextTurn();
@@ -824,12 +824,56 @@ describe('dashboard rendering and input', () => {
     await writeInput(instance, '\u001B[6~', '\u001B[6~');
 
     expect(instance.lastFrame()).toContain('notice-11');
-    expect((instance.lastFrame()?.match(/收到通知/g) ?? [])).toHaveLength(6);
+    expect((instance.lastFrame()?.match(/收到通知/g) ?? [])).toHaveLength(8);
     await writeInput(instance, '\u001B[5~', '\u001B[5~');
     expect(instance.lastFrame()).toContain('notice-0');
-    expect((instance.lastFrame()?.match(/收到通知/g) ?? []).length).toBeLessThanOrEqual(8);
+    expect((instance.lastFrame()?.match(/收到通知/g) ?? [])).toHaveLength(8);
     expectTuiTextProjected(instance.frames.join('\n'));
     expect(instance.lastFrame()).toContain('PgUp/PgDn 消息');
+  });
+
+  it.each([
+    { type: 'file' as const, value: '/Users/alice/Private Project/private.json' },
+    { type: 'directory' as const, value: 'C:\\Users\\alice\\Private Project' },
+    { type: 'directory' as const, value: '\\\\server\\Private Share' },
+  ])('keeps a dashboard $type value private while saving the full value', async ({ type, value }) => {
+    const controller = withConfigController(loaded([item('demo', 'present')]));
+    controller.readConfig = vi.fn().mockResolvedValue({
+      location: { scope: 'user', projectLayer: 'shared' },
+      model: {
+        pluginName: 'demo', allowedScopes: ['user'], initialScope: 'user', requiredKeys: [],
+        fields: [{
+          key: 'location', type, label: 'Location', required: false,
+          sensitive: false, configured: true, currentValue: value,
+        }],
+      },
+      read: {
+        pluginName: 'demo', scope: 'user', projectLayer: 'shared',
+        fields: [{
+          key: 'location', title: 'Location', kind: 'manifest', reserved: false, writable: true,
+          valueState: 'configured', effectiveValue: value, sourceLayer: 'user',
+        }],
+      },
+    });
+    const instance = render(<Dashboard controller={controller} onComplete={() => undefined} size={{ columns: 80, rows: 18 }} />);
+    await nextTurn();
+    await writeInput(instance, '\r', '\r', '\u001B[B', '\u001B[B', '\u001B[B', '\u001B[B', '\r');
+    await nextTurn();
+    expect(instance.lastFrame()).toContain('已配置');
+    expectTuiTextProjected(instance.frames.join('\n'));
+
+    await writeInput(instance, '\r', value, '\r');
+    expect(instance.lastFrame()).toContain('待更新');
+    expectTuiTextProjected(instance.frames.join('\n'));
+    await writeInput(instance, 's');
+    await nextTurn();
+
+    expect(controller.saveConfig).toHaveBeenCalledWith(
+      expect.objectContaining({ pluginName: 'demo' }),
+      { scope: 'user', projectLayer: 'shared' },
+      { updates: { location: value } },
+    );
+    expectTuiTextProjected(instance.frames.join('\n'));
   });
 
   it('keeps growing dashboard and config selections visible within 60x16 and 110x18 frames', async () => {

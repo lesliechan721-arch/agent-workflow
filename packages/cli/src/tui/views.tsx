@@ -41,13 +41,15 @@ export function PromptFrame(props: {
   title: string;
   help: string;
   children: ReactNode;
+  size?: { columns: number; rows: number };
 }): React.JSX.Element {
-  const { columns, rows } = useWindowSize();
+  const windowSize = useWindowSize();
+  const { columns, rows } = props.size ?? windowSize;
   const policy = resolveTuiSizePolicy(columns, rows);
 
   if (policy.mode === 'three-column') {
     return (
-      <Box width="100%" gap={2} paddingX={1}>
+      <Box width="100%" height={policy.rows} overflow="hidden" gap={2} paddingX={1}>
         <Box width="24%" borderStyle="round" borderColor={tuiTheme.colors.border} paddingX={1}>
           <Text bold color={tuiTheme.colors.accent}>{props.title}</Text>
         </Box>
@@ -60,11 +62,11 @@ export function PromptFrame(props: {
   }
 
   return (
-    <Box flexDirection="column" paddingX={1}>
+    <Box flexDirection="column" height={policy.rows} overflow="hidden" paddingX={1}>
       {policy.message ? <Text color={tuiTheme.statusColors.warning}>{policy.message}</Text> : null}
       <Text bold color={tuiTheme.colors.accent}>{props.title}</Text>
-      <Box flexDirection="column" marginTop={1}>{props.children}</Box>
-      <Box marginTop={1}><Text color={tuiTheme.colors.muted}>{props.help}</Text></Box>
+      <Box flexDirection="column">{props.children}</Box>
+      <Text color={tuiTheme.colors.muted}>{props.help}</Text>
     </Box>
   );
 }
@@ -114,6 +116,7 @@ export function SelectView(props: {
   choices: CliPromptChoice[];
   defaultValue?: string;
   pageSize?: number;
+  size?: { columns: number; rows: number };
   onComplete: Complete<string>;
 }): React.JSX.Element {
   const [focusedIndex, setFocusedIndex] = useState(() =>
@@ -142,7 +145,11 @@ export function SelectView(props: {
   const visibleChoices = visibleChoiceEntries(props.choices, focusedIndex, props.pageSize);
 
   return (
-    <PromptFrame title={props.message} help="↑/↓ 移动 · Enter 选择 · Esc 返回 · q 退出">
+    <PromptFrame
+      title={props.message}
+      help="↑/↓ 移动 · Enter 选择 · Esc 返回 · q 退出"
+      size={props.size}
+    >
       {visibleChoices.map(({ choice, index }) => (
         <Text
           key={choice.value}
@@ -165,6 +172,7 @@ export function MultiSelectView(props: {
   choices: CliPromptChoice[];
   defaultValues?: string[];
   pageSize?: number;
+  size?: { columns: number; rows: number };
   onComplete: Complete<string[]>;
 }): React.JSX.Element {
   const [focusedIndex, setFocusedIndex] = useState(() =>
@@ -201,7 +209,11 @@ export function MultiSelectView(props: {
   const visibleChoices = visibleChoiceEntries(props.choices, focusedIndex, props.pageSize);
 
   return (
-    <PromptFrame title={props.message} help="↑/↓ 移动 · Space 切换 · Enter 完成 · Esc 返回 · q 退出">
+    <PromptFrame
+      title={props.message}
+      help="↑/↓ 移动 · Space 切换 · Enter 完成 · Esc 返回 · q 退出"
+      size={props.size}
+    >
       {visibleChoices.map(({ choice, index }) => (
         <Text
           key={choice.value}
@@ -225,24 +237,26 @@ export function ConfirmView(props: {
 }): React.JSX.Element {
   useGlobalPromptKeys({ mode: 'confirm', onComplete: props.onComplete });
   return (
-    <PromptFrame title={props.message} help="y 确认 · n 拒绝 · Esc 取消 · Ctrl-C 退出">
+    <Box flexDirection="column">
+      <Text>{props.message}</Text>
       <ConfirmInput
         defaultChoice={props.defaultValue === false ? 'cancel' : 'confirm'}
         onConfirm={() => props.onComplete(selected(true))}
         onCancel={() => props.onComplete(selected(false))}
       />
-    </PromptFrame>
+    </Box>
   );
 }
 
 export function TextInputView(props: {
   message: string;
   defaultValue?: string;
+  size?: { columns: number; rows: number };
   onComplete: Complete<string>;
 }): React.JSX.Element {
   useGlobalPromptKeys({ mode: 'text', onComplete: props.onComplete });
   return (
-    <PromptFrame title={props.message} help="Enter 完成 · Esc 取消 · Ctrl-C 退出">
+    <PromptFrame title={props.message} help="Enter 完成 · Esc 取消 · Ctrl-C 退出" size={props.size}>
       <TextInput
         defaultValue={props.defaultValue}
         onSubmit={(value) => props.onComplete(selected(
@@ -255,11 +269,16 @@ export function TextInputView(props: {
 
 export function PasswordInputView(props: {
   message: string;
+  size?: { columns: number; rows: number };
   onComplete: Complete<string>;
 }): React.JSX.Element {
   useGlobalPromptKeys({ mode: 'text', onComplete: props.onComplete });
   return (
-    <PromptFrame title={props.message} help="输入已隐藏 · Enter 完成 · Esc 取消 · Ctrl-C 退出">
+    <PromptFrame
+      title={props.message}
+      help="输入已隐藏 · Enter 完成 · Esc 取消 · Ctrl-C 退出"
+      size={props.size}
+    >
       <PasswordInput onSubmit={(value) => props.onComplete(selected(value))} />
     </PromptFrame>
   );
