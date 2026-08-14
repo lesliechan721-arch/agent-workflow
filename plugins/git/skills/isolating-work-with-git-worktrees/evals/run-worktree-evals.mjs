@@ -177,6 +177,7 @@ async function addOrigin(tempRoot, repo) {
   if (cloned.code !== 0) throw new Error(`git clone --bare failed: ${cloned.stderr}`);
   await git(repo, ['remote', 'add', 'origin', origin]);
   await git(repo, ['fetch', '--quiet', 'origin']);
+  return origin;
 }
 
 async function copyMaterializedSkills(repo, withSkill) {
@@ -221,6 +222,7 @@ async function prepareWorkspace(evalCase, withSkill) {
     }
 
     const repo = path.join(tempRoot, 'repo');
+    let origin;
     if (
       evalCase.id === 'preserve_dirty_workspace_and_use_default_path'
       || evalCase.id === 'stop_when_default_root_not_ignored'
@@ -234,7 +236,7 @@ async function prepareWorkspace(evalCase, withSkill) {
         },
         ignoreEntriesForCase(evalCase.id),
       );
-      await addOrigin(tempRoot, repo);
+      origin = await addOrigin(tempRoot, repo);
       await writeFile(path.join(repo, 'notes.txt'), 'uncommitted user notes\n', 'utf8');
       await writeFile(path.join(repo, 'scratch.txt'), 'untracked user scratch\n', 'utf8');
     } else {
@@ -246,15 +248,25 @@ async function prepareWorkspace(evalCase, withSkill) {
         },
         ignoreEntriesForCase(evalCase.id),
       );
-      await addOrigin(tempRoot, repo);
+      origin = await addOrigin(tempRoot, repo);
     }
     await git(repo, [
       'commit', '--quiet', '--allow-empty', '-m',
       'chore: keep local main ahead of origin for base verification',
     ]);
     await copyMaterializedSkills(repo, withSkill);
+    const primaryRefsBefore = (await git(repo, ['show-ref'])).stdout;
+    const originRefsBefore = (await git(origin, ['show-ref'])).stdout;
     return {
-      tempRoot, externalTempRoot, repo, primary: repo, testMarker, caseId: evalCase.id,
+      tempRoot,
+      externalTempRoot,
+      repo,
+      primary: repo,
+      origin,
+      primaryRefsBefore,
+      originRefsBefore,
+      testMarker,
+      caseId: evalCase.id,
     };
   } catch (error) {
     await rm(tempRoot, { recursive: true, force: true });
@@ -366,6 +378,8 @@ export function inspectExecTrace(stdout) {
     commands,
     prohibited_commands: prohibitedGitCommands(commands),
     requested_test_commands: requestedTestCommands(commands),
+    pushed: commands.some((command) =>
+      gitInvocations(command).some((invocation) => invocation.subcommand === 'push')),
   };
 }
 
@@ -453,6 +467,12 @@ async function evaluateCase(evalCase, workspace, before, run) {
   if (evalCase.id === REPOSITORY_ISOLATION_CASE) {
     const after = await snapshot(workspace.primary);
     add('primary_worktree_unchanged', JSON.stringify(after) === JSON.stringify(before), 'HEAD, index, status, tracked diff, untracked contents, and stash ref');
+    const primaryRefsAfter = (await git(workspace.primary, ['show-ref'])).stdout;
+    add(
+      'primary_refs_unchanged',
+      primaryRefsAfter === workspace.primaryRefsBefore,
+      primaryRefsAfter,
+    );
     add(
       'does_not_create_linked_worktree',
       worktrees.stdout.split('\n').filter((line) => line.startsWith('worktree ')).length === 1,
@@ -462,6 +482,13 @@ async function evaluateCase(evalCase, workspace, before, run) {
       gitInvocations(command).some((invocation) =>
         invocation.subcommand === 'worktree' && invocation.args[0] === 'add'));
     add('does_not_run_worktree_add', worktreeAdds.length === 0, JSON.stringify(worktreeAdds));
+    add('does_not_push', !trace.pushed, JSON.stringify(trace.commands));
+    const originRefsAfter = (await git(workspace.origin, ['show-ref'])).stdout;
+    add(
+      'origin_refs_unchanged',
+      originRefsAfter === workspace.originRefsBefore,
+      originRefsAfter,
+    );
     const cloneRoot = path.join(workspace.externalTempRoot, 'full-clone');
     const cloneGitDir = path.join(cloneRoot, '.git');
     add('creates_full_clone', await exists(cloneGitDir), cloneGitDir);

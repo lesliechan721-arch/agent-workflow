@@ -35,6 +35,7 @@ import {
   loadCases as loadMergeCases,
   mergeCommitState,
   parseArgs as parseMergeEvalArgs,
+  semanticMergeOutcomeChecks,
 } from '../skills/reconciling-git-merges/evals/run-merge-evals.mjs';
 import {
   captureTriggerWorkspaceState as captureMergeTriggerWorkspaceState,
@@ -241,6 +242,7 @@ async function testEvalCorpora(sourceRoot) {
   assert.match(cases.find((entry) => entry.id === 'english_commit').query, /useful summary/);
   assert.match(cases.find((entry) => entry.id === 'scoped_fix_commit').query, /body/);
   assert.match(cases.find((entry) => entry.id === 'terse_commit').query, /commti/);
+  assert.match(cases.find((entry) => entry.id === 'specific_files').query, /docs\/notes\.md/);
 
   assert.equal(behaviorDocument.skill_name, 'git-commit');
   assert.equal(behaviorDocument.policy.optimization, 'critical');
@@ -333,6 +335,8 @@ async function testEvalCorpora(sourceRoot) {
   assert.equal(commitBehaviorSuite.entry, './run-commit-evals.mjs');
   assert.equal(commitBehaviorSuite.cases, './behavior-cases.json');
   assert.equal(commitBehaviorSuite.requiredForRelease, true);
+  assert.equal(commitBehaviorSuite.defaultRuns, 3);
+  assert.equal(commitBehaviorSuite.suiteTimeoutMs, 16200000);
   assert.deepEqual(
     (await loadCommitCases()).map((entry) => entry.id),
     behaviorCases.map((entry) => entry.id),
@@ -424,6 +428,8 @@ async function testEvalCorpora(sourceRoot) {
   assert.equal(behaviorSuite.entry, './run-merge-evals.mjs');
   assert.equal(behaviorSuite.cases, './evals.json');
   assert.equal(behaviorSuite.requiredForRelease, true);
+  assert.equal(behaviorSuite.defaultRuns, 3);
+  assert.equal(behaviorSuite.suiteTimeoutMs, 9000000);
   assert.deepEqual(
     (await loadMergeCases()).map((entry) => entry.id),
     mergeEvals.evals.map((entry) => entry.id),
@@ -454,6 +460,22 @@ async function testEvalCorpora(sourceRoot) {
     mergeCases.find((entry) => entry.id === 'ordinary_local_commit').workspace_fixture,
     'commit_ready',
   );
+  const alignedMergeFixtures = new Map([
+    ['source_01', 'ambiguous_retention'],
+    ['source_02', 'semantic_retry'],
+    ['source_03', 'semantic_permissions'],
+    ['source_11', 'fast_forward'],
+    ['source_12', 'up_to_date'],
+    ['source_13', 'independent_clean_merge'],
+    ['source_15', 'same_file_independent_merge'],
+    ['source_16', 'rebase_conflict'],
+    ['source_17', 'cherry_pick_conflict'],
+  ]);
+  for (const [id, fixture] of alignedMergeFixtures) {
+    const entry = mergeCases.find((candidate) => candidate.id === id);
+    assert.equal(entry.workspace_fixture, fixture);
+    assert.equal(entry.preconditions.workspace_fixture, fixture);
+  }
 
   const worktreeDocument = JSON.parse(worktreeTriggerContent);
   const worktreeCases = worktreeDocument.cases;
@@ -630,6 +652,8 @@ async function testEvalCorpora(sourceRoot) {
   assert.equal(worktreeBehaviorSuite.entry, './run-worktree-evals.mjs');
   assert.equal(worktreeBehaviorSuite.cases, './evals.json');
   assert.equal(worktreeBehaviorSuite.requiredForRelease, true);
+  assert.equal(worktreeBehaviorSuite.defaultRuns, 3);
+  assert.equal(worktreeBehaviorSuite.suiteTimeoutMs, 10800000);
   assert.equal(worktreeRouterSuite.fixtureModule, './trigger-fixture.mjs');
   assert.match(worktreeEvalReadmeContent, /--batch-name release\b/);
   assert.equal(worktreeEvalReadmeContent.includes('--runs 1'), false);
@@ -1001,12 +1025,18 @@ async function testGitMetadataWritableRoots() {
 
 async function testMergeTriggerFixtures() {
   const expectations = new Map([
-    ['ambiguous_retention', /^UU retention\.py$/m],
-    ['semantic_retry', /^M  idempotency\.py$/m],
-    ['semantic_permissions', /^UU conflict\.txt$/m],
-    ['commit_ready', /^M  change\.txt$/m],
+    ['ambiguous_retention', { status: /^UU retention\.py$/m, operation: 'merge' }],
+    ['semantic_retry', { status: /^M  idempotency\.py$/m, operation: 'merge' }],
+    ['semantic_permissions', { status: /^UU conflict\.txt$/m, operation: 'merge' }],
+    ['commit_ready', { status: /^M  change\.txt$/m }],
+    ['fast_forward', { status: /^$/u, relation: 'fast-forward' }],
+    ['up_to_date', { status: /^$/u, relation: 'up-to-date' }],
+    ['independent_clean_merge', { status: /^$/u, relation: 'clean-merge' }],
+    ['same_file_independent_merge', { status: /^$/u, relation: 'clean-merge' }],
+    ['rebase_conflict', { status: /^UU conflict\.txt$/m, operation: 'rebase' }],
+    ['cherry_pick_conflict', { status: /^UU conflict\.txt$/m, operation: 'cherry-pick' }],
   ]);
-  for (const [fixture, expectedStatus] of expectations) {
+  for (const [fixture, expectation] of expectations) {
     const cleanupRoot = await mkdtemp(path.join(os.tmpdir(), 'git-merge-trigger-fixture-'));
     const workspaceRoot = path.join(cleanupRoot, 'project');
     const home = path.join(cleanupRoot, 'home');
@@ -1027,14 +1057,40 @@ async function testMergeTriggerFixtures() {
         ['status', '--porcelain=v1', '--untracked-files=all'],
         context.env,
       );
-      assert.match(status.stdout, expectedStatus);
-      if (fixture !== 'commit_ready') {
+      assert.match(status.stdout, expectation.status);
+      if (expectation.operation === 'merge') {
         const mergeHead = await git(
           workspaceRoot,
           ['rev-parse', '--verify', 'MERGE_HEAD'],
           context.env,
         );
         assert.match(mergeHead.stdout, /^[0-9a-f]{40,64}\n$/);
+      } else if (expectation.operation === 'rebase') {
+        const fullStatus = await git(workspaceRoot, ['status'], context.env);
+        assert.match(fullStatus.stdout, /rebase in progress/iu);
+      } else if (expectation.operation === 'cherry-pick') {
+        const cherryPickHead = await git(
+          workspaceRoot,
+          ['rev-parse', '--verify', 'CHERRY_PICK_HEAD'],
+          context.env,
+        );
+        assert.match(cherryPickHead.stdout, /^[0-9a-f]{40,64}\n$/);
+      } else if (expectation.relation === 'fast-forward') {
+        const [main, feature] = await Promise.all([
+          git(workspaceRoot, ['rev-parse', 'main'], context.env),
+          git(workspaceRoot, ['rev-parse', 'feature'], context.env),
+        ]);
+        assert.notEqual(main.stdout, feature.stdout);
+        await git(workspaceRoot, ['merge-base', '--is-ancestor', 'main', 'feature'], context.env);
+      } else if (expectation.relation === 'up-to-date') {
+        const [main, feature] = await Promise.all([
+          git(workspaceRoot, ['rev-parse', 'main'], context.env),
+          git(workspaceRoot, ['rev-parse', 'feature'], context.env),
+        ]);
+        assert.equal(main.stdout, feature.stdout);
+      } else if (expectation.relation === 'clean-merge') {
+        await git(workspaceRoot, ['merge', '--no-commit', '--no-ff', 'feature'], context.env);
+        await git(workspaceRoot, ['merge', '--abort'], context.env);
       }
       assert.equal(
         await captureMergeTriggerWorkspaceState(context),
@@ -1224,8 +1280,8 @@ function testCommitMessageAssertions() {
         '- Mark the guide feature as enabled',
         '- Bump 1.0.0 to 1.1.0',
       ].join('\n'),
-    ).every((check) => check.passed),
-    true,
+    ).find((check) => check.name === 'body_avoids_per_file_restatement').passed,
+    false,
   );
   assert.equal(
     commitMessageChecks(
@@ -1253,6 +1309,61 @@ function testCommitMessageAssertions() {
     ).every((check) => check.passed),
     true,
   );
+  const perFileRestatement = [
+    'feat: 启用应用功能',
+    '',
+    '- 在 src/app.js 启用应用功能',
+    '- 在 tests/app.test.js 将测试预期更新为 true',
+    '- 在 docs/guide.md 说明功能已启用',
+    '- 将 VERSION 从 1.0.0 更新为 1.1.0',
+  ].join('\n');
+  assert.equal(
+    commitMessageChecks('detailed_body_for_nontrivial_change', perFileRestatement)
+      .find((check) => check.name === 'body_avoids_per_file_restatement').passed,
+    false,
+  );
+  const crossGroupedSummary = [
+    'feat: activate the application',
+    '',
+    '- Enable the application runtime flag and update guide documentation to show it enabled',
+    '- Align test expectations and bump 1.0.0 to 1.1.0',
+  ].join('\n');
+  assert.equal(
+    commitMessageChecks('detailed_body_for_nontrivial_change', crossGroupedSummary)
+      .every((check) => check.passed),
+    true,
+  );
+  const applicationGuideRestatement = [
+    'feat: activate the application',
+    '',
+    '- Enable the application runtime flag',
+    '- Align test expectations',
+    '- Update the application guide to show it enabled',
+    '- Bump 1.0.0 to 1.1.0',
+  ].join('\n');
+  assert.equal(
+    commitMessageChecks('detailed_body_for_nontrivial_change', applicationGuideRestatement)
+      .find((check) => check.name === 'body_avoids_per_file_restatement').passed,
+    false,
+  );
+  for (const docsBullet of [
+    '- 更新应用功能指南，说明功能已启用',
+    '- Update the application feature guide to show it enabled',
+  ]) {
+    const featureGuideRestatement = [
+      'feat: 启用应用功能',
+      '',
+      '- 启用应用运行时开关',
+      '- 更新测试预期为 true',
+      docsBullet,
+      '- 将版本从 1.0.0 升至 1.1.0',
+    ].join('\n');
+    assert.equal(
+      commitMessageChecks('detailed_body_for_nontrivial_change', featureGuideRestatement)
+        .find((check) => check.name === 'body_avoids_per_file_restatement').passed,
+      false,
+    );
+  }
   assert.equal(
     hookFailureMessageChecks(
       'pre-commit hook 失败，未创建 commit。HEAD 未变，index 仍 staged，worktree clean。',
@@ -1564,6 +1675,7 @@ async function testWorktreeExecTraceAssertions() {
   assert.deepEqual(safe.requested_test_commands, [
     'cd .worktrees/feature && node test.mjs',
   ]);
+  assert.equal(safe.pushed, false);
 
   const prohibited = inspectWorktreeExecTrace(worktreeExecTrace([
     'git stash push --include-untracked',
@@ -1572,6 +1684,7 @@ async function testWorktreeExecTraceAssertions() {
     'git -C repo worktree remove -f .worktrees/old',
     'git worktree add -ff .worktrees/feature feature',
     'git worktree add -qf .worktrees/feature feature',
+    'cd "$TMPDIR/full-clone" && git push --force origin main',
   ]));
   assert.deepEqual(
     prohibited.prohibited_commands.map((entry) => entry.reason),
@@ -1584,6 +1697,7 @@ async function testWorktreeExecTraceAssertions() {
       'forced git worktree operation',
     ],
   );
+  assert.equal(prohibited.pushed, true);
 
   const evalRoot = path.resolve(os.tmpdir(), 'worktree-eval-root');
   assert.deepEqual(
@@ -1800,6 +1914,85 @@ async function testMergeEvalAssertions() {
     ).find((entry) => entry.name === 'requires_product_decision').passed,
     false,
   );
+
+  const semanticRoot = await mkdtemp(path.join(os.tmpdir(), 'git-merge-semantic-oracle-'));
+  try {
+    await writeFile(
+      path.join(semanticRoot, 'logger.py'),
+      [
+        'class Logger:',
+        '    def __init__(self):',
+        '        self.entries = []',
+        '    def log(self, message):',
+        '        self.entries.append(message)',
+        '    def log_all(self, messages):',
+        '        if type(self) is Logger:',
+        '            self.entries.extend(messages)',
+        '        else:',
+        '            for message in messages:',
+        '                self.log(message)',
+        '',
+        'class FilteredLogger(Logger):',
+        '    def log(self, message):',
+        "        if 'secret' not in message:",
+        '            super().log(message)',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    assert.equal(
+      (await semanticMergeOutcomeChecks(semanticRoot, 'semantic_same_file'))
+        .every((entry) => entry.passed),
+      true,
+    );
+    await writeFile(
+      path.join(semanticRoot, 'logger.py'),
+      [
+        'class Logger:',
+        '    def __init__(self):',
+        '        self.entries = []',
+        '    def log(self, message):',
+        '        self.entries.append(message)',
+        '    def log_all(self, messages):',
+        '        self.entries.extend(messages)',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    assert.equal(
+      (await semanticMergeOutcomeChecks(semanticRoot, 'semantic_same_file'))
+        .some((entry) => !entry.passed),
+      true,
+    );
+
+    await writeFile(
+      path.join(semanticRoot, 'pricing.py'),
+      'def subtotal(prices):\n    return sum(round(price * 100) for price in prices)\n',
+      'utf8',
+    );
+    await writeFile(
+      path.join(semanticRoot, 'invoice.py'),
+      "from pricing import subtotal\n\ndef render_total(prices):\n    return f'${subtotal(prices) / 100:.2f}'\n",
+      'utf8',
+    );
+    assert.equal(
+      (await semanticMergeOutcomeChecks(semanticRoot, 'semantic_cross_file'))
+        .every((entry) => entry.passed),
+      true,
+    );
+    await writeFile(
+      path.join(semanticRoot, 'invoice.py'),
+      "from pricing import subtotal\n\ndef render_total(prices):\n    return f'${subtotal(prices):.2f}'\n",
+      'utf8',
+    );
+    assert.equal(
+      (await semanticMergeOutcomeChecks(semanticRoot, 'semantic_cross_file'))
+        .some((entry) => !entry.passed),
+      true,
+    );
+  } finally {
+    await rm(semanticRoot, { recursive: true, force: true });
+  }
 
   const root = await mkdtemp(path.join(os.tmpdir(), 'git-merge-control-paths-'));
   try {

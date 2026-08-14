@@ -43,11 +43,11 @@
       "entry": "./run-merge-evals.mjs",
       "cases": "./evals.json",
       "profiles": ["project-default"],
-      "defaultRuns": 1,
+      "defaultRuns": 3,
       "releaseSplits": [],
       "requiredForRelease": true,
       "perRunTimeoutMs": 300000,
-      "suiteTimeoutMs": 3000000,
+      "suiteTimeoutMs": 9000000,
       "supports": ["runs", "case", "model", "codexBin", "timeout"]
     }
   ]

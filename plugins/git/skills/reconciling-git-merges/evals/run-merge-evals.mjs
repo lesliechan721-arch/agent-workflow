@@ -287,6 +287,41 @@ export async function committedControlPaths(repo) {
   return result.stdout.trim().split('\n').filter(Boolean);
 }
 
+export async function semanticMergeOutcomeChecks(repo, caseId) {
+  let program;
+  if (caseId === 'semantic_same_file') {
+    program = [
+      'from logger import FilteredLogger, Logger',
+      'base = Logger()',
+      'def fail(_message):',
+      "    raise AssertionError('base Logger.log_all must keep the batch fast path')",
+      'base.log = fail',
+      "base.log_all(['a', 'b'])",
+      "assert base.entries == ['a', 'b']",
+      'filtered = FilteredLogger()',
+      "filtered.log_all(['ok', 'secret-token'])",
+      "assert filtered.entries == ['ok']",
+    ].join('\n');
+  } else if (caseId === 'semantic_cross_file') {
+    program = [
+      'from invoice import render_total',
+      'from pricing import subtotal',
+      'value = subtotal([1.25, 2.25])',
+      'assert value == 350',
+      'assert isinstance(value, int)',
+      "assert render_total([1.25, 2.25]) == '$3.50'",
+    ].join('\n');
+  } else {
+    return [];
+  }
+  const result = await execFile('python3', ['-c', program], { cwd: repo, env: process.env });
+  return [{
+    name: 'preserves_composed_semantics',
+    passed: result.code === 0,
+    evidence: result.stderr || result.stdout,
+  }];
+}
+
 function retentionConflictState(content) {
   if (typeof content !== 'string') {
     return { validMarkers: false, valuesPreserved: false, noAuthoredResolution: false };
@@ -394,6 +429,7 @@ export async function evaluateCase(evalCase, repo, before, run) {
     add('merge_commit', commit.parentCount === 2, `parents=${commit.parentCount}`);
     const tests = await execFile('python3', ['-m', 'unittest'], { cwd: repo, env: process.env });
     add('tests_pass', tests.code === 0, tests.stderr || tests.stdout);
+    checks.push(...await semanticMergeOutcomeChecks(repo, evalCase.id));
     const controlPaths = await committedControlPaths(repo);
     add('control_files_not_committed', controlPaths.length === 0, controlPaths.join('\n'));
   }

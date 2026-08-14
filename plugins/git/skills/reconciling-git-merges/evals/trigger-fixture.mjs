@@ -11,6 +11,12 @@ const FIXTURES = new Set([
   'semantic_retry',
   'semantic_permissions',
   'commit_ready',
+  'fast_forward',
+  'up_to_date',
+  'independent_clean_merge',
+  'same_file_independent_merge',
+  'rebase_conflict',
+  'cherry_pick_conflict',
 ]);
 
 function sha256(value) {
@@ -51,6 +57,11 @@ async function writeProjectFiles(root) {
   await writeFile(path.join(root, 'permission_consumer.py'), 'ALLOWED = {"reader"}\n', 'utf8');
   await writeFile(path.join(root, 'conflict.txt'), 'mode=base\n', 'utf8');
   await writeFile(path.join(root, 'change.txt'), 'state=before\n', 'utf8');
+  await writeFile(
+    path.join(root, 'utils.py'),
+    '# Helper notes\n\n\ndef helper():\n    return "base"\n',
+    'utf8',
+  );
 }
 
 async function initializeRepository(root, env) {
@@ -63,7 +74,7 @@ async function initializeRepository(root, env) {
   await git(root, [
     'add', '--', '.gitignore', 'README.md', 'retention.py', 'retry.py',
     'idempotency.py', 'permission_source.py', 'permission_consumer.py',
-    'conflict.txt', 'change.txt',
+    'conflict.txt', 'change.txt', 'utils.py',
   ], env);
   await git(root, ['commit', '--quiet', '-m', 'chore: initialize merge fixture'], env);
 }
@@ -124,6 +135,80 @@ async function setupSemanticPermissions(root, env) {
   }
 }
 
+async function setupFastForward(root, env) {
+  await git(root, ['switch', '--quiet', '-c', 'feature'], env);
+  await commitFile(root, env, 'change.txt', 'state=feature\n', 'feat: add feature change');
+  await git(root, ['switch', '--quiet', 'main'], env);
+}
+
+async function setupUpToDate(root, env) {
+  await git(root, ['branch', 'feature'], env);
+}
+
+async function setupIndependentCleanMerge(root, env) {
+  await git(root, ['switch', '--quiet', '-c', 'feature'], env);
+  await commitFile(root, env, 'change.txt', 'state=feature\n', 'feat: add independent feature');
+  await git(root, ['switch', '--quiet', 'main'], env);
+  await commitFile(
+    root,
+    env,
+    'README.md',
+    '# Merge trigger fixture\n\nMain documentation update.\n',
+    'docs: update main notes',
+  );
+}
+
+async function setupSameFileIndependentMerge(root, env) {
+  await git(root, ['switch', '--quiet', '-c', 'feature'], env);
+  await commitFile(
+    root,
+    env,
+    'utils.py',
+    '# Helper notes\n\n\ndef helper():\n    return "feature"\n',
+    'test: update helper fixture',
+  );
+  await git(root, ['switch', '--quiet', 'main'], env);
+  await commitFile(
+    root,
+    env,
+    'utils.py',
+    '# Corrected helper notes\n\n\ndef helper():\n    return "base"\n',
+    'docs: fix helper comment',
+  );
+}
+
+async function setupRebaseConflict(root, env) {
+  await git(root, ['switch', '--quiet', '-c', 'feature'], env);
+  await commitFile(root, env, 'conflict.txt', 'mode=feature\n', 'feat: change mode');
+  await git(root, ['switch', '--quiet', 'main'], env);
+  await commitFile(root, env, 'conflict.txt', 'mode=main\n', 'fix: change mode');
+  await git(root, ['switch', '--quiet', 'feature'], env);
+  let conflicted = false;
+  try {
+    await git(root, ['rebase', 'main'], env);
+  } catch {
+    conflicted = true;
+  }
+  if (!conflicted) throw new Error('rebase_conflict did not produce the expected conflict.');
+}
+
+async function setupCherryPickConflict(root, env) {
+  await git(root, ['switch', '--quiet', '-c', 'feature'], env);
+  await commitFile(root, env, 'conflict.txt', 'mode=feature\n', 'feat: change mode');
+  const featureCommit = (await git(root, ['rev-parse', 'HEAD'], env)).stdout.trim();
+  await git(root, ['switch', '--quiet', 'main'], env);
+  await commitFile(root, env, 'conflict.txt', 'mode=main\n', 'fix: change mode');
+  let conflicted = false;
+  try {
+    await git(root, ['cherry-pick', featureCommit], env);
+  } catch {
+    conflicted = true;
+  }
+  if (!conflicted) {
+    throw new Error('cherry_pick_conflict did not produce the expected conflict.');
+  }
+}
+
 export async function setupTriggerWorkspace(context) {
   const fixture = context.evalCase.workspace_fixture ?? 'clean_main';
   if (!FIXTURES.has(fixture)) {
@@ -149,6 +234,18 @@ export async function setupTriggerWorkspace(context) {
   } else if (fixture === 'commit_ready') {
     await writeFile(path.join(context.workspaceRoot, 'change.txt'), 'state=ready\n', 'utf8');
     await git(context.workspaceRoot, ['add', '--', 'change.txt'], env);
+  } else if (fixture === 'fast_forward') {
+    await setupFastForward(context.workspaceRoot, env);
+  } else if (fixture === 'up_to_date') {
+    await setupUpToDate(context.workspaceRoot, env);
+  } else if (fixture === 'independent_clean_merge') {
+    await setupIndependentCleanMerge(context.workspaceRoot, env);
+  } else if (fixture === 'same_file_independent_merge') {
+    await setupSameFileIndependentMerge(context.workspaceRoot, env);
+  } else if (fixture === 'rebase_conflict') {
+    await setupRebaseConflict(context.workspaceRoot, env);
+  } else if (fixture === 'cherry_pick_conflict') {
+    await setupCherryPickConflict(context.workspaceRoot, env);
   }
   return { environment };
 }

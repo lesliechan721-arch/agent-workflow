@@ -21,10 +21,11 @@
           "reconciling-git-merges",
           "git-commit"
         ],
-        "workspace_fixture": "none",
+        "workspace_fixture": "ambiguous_retention",
         "invocation": "model-discovery"
       },
-      "query": "A merge is already stopped with MERGE_HEAD and conflicts in config.py. Use the commits and tests to resolve it and finish.",
+      "query": "A merge is already stopped with MERGE_HEAD and a conflict in retention.py. Use the commits and repository evidence to reconcile it without inventing policy.",
+      "workspace_fixture": "ambiguous_retention",
       "expected_loaded_skills": [
         "reconciling-git-merges"
       ],
@@ -50,10 +51,11 @@
           "reconciling-git-merges",
           "git-commit"
         ],
-        "workspace_fixture": "none",
+        "workspace_fixture": "semantic_retry",
         "invocation": "model-discovery"
       },
-      "query": "Git merged this cleanly, but main optimized Logger.log_all while feature added a FilteredLogger.log override. Check that the combined behavior still preserves both intents.",
+      "query": "The current merge combined a larger retry budget with request-key idempotency in another file. Check that the composed behavior preserves both intents before committing.",
+      "workspace_fixture": "semantic_retry",
       "expected_loaded_skills": [
         "reconciling-git-merges"
       ],
@@ -79,10 +81,11 @@
           "reconciling-git-merges",
           "git-commit"
         ],
-        "workspace_fixture": "none",
+        "workspace_fixture": "semantic_permissions",
         "invocation": "model-discovery"
       },
-      "query": "把 feature 合并进 main：main 把金额 API 从元改成了分，feature 新增的 invoice 调用方仍按元格式化；两个分支改的是不同文件。",
+      "query": "把 feature 合并进 main：main 把权限角色改成 member，feature 的消费者仍加入 auditor；冲突文件之外还有跨文件契约要协调。",
+      "workspace_fixture": "semantic_permissions",
       "expected_loaded_skills": [
         "reconciling-git-merges"
       ],
@@ -108,10 +111,11 @@
           "reconciling-git-merges",
           "git-commit"
         ],
-        "workspace_fixture": "none",
+        "workspace_fixture": "semantic_retry",
         "invocation": "model-discovery"
       },
-      "query": "One branch moved service.py into core/service.py and the other added a consumer importing the old path. The merge is textually clean; reconcile it.",
+      "query": "Main changed retry.py while feature changed idempotency.py. The current merge is textually clean, but the behaviors interact; reconcile them before committing.",
+      "workspace_fixture": "semantic_retry",
       "expected_loaded_skills": [
         "reconciling-git-merges"
       ],
@@ -137,10 +141,11 @@
           "reconciling-git-merges",
           "git-commit"
         ],
-        "workspace_fixture": "none",
+        "workspace_fixture": "ambiguous_retention",
         "invocation": "model-discovery"
       },
-      "query": "Resolve this rename/delete conflict, preserve the reasons behind both changes, run the project checks, and complete the merge.",
+      "query": "retention.py conflicts between seven-day privacy retention and ninety-day audit retention. Use repository evidence, and do not invent a compromise.",
+      "workspace_fixture": "ambiguous_retention",
       "expected_loaded_skills": [
         "reconciling-git-merges"
       ],
@@ -166,10 +171,11 @@
           "reconciling-git-merges",
           "git-commit"
         ],
-        "workspace_fixture": "none",
+        "workspace_fixture": "semantic_retry",
         "invocation": "model-discovery"
       },
-      "query": "Both branches pass their own tests, but after a clean merge the integration tests fail around schema defaults and serialization. Fix the merge rather than either branch in isolation.",
+      "query": "The current clean merge combines a larger retry budget with new request-key idempotency. Validate the interaction and fix the merge rather than either branch alone.",
+      "workspace_fixture": "semantic_retry",
       "expected_loaded_skills": [
         "reconciling-git-merges"
       ],
@@ -195,10 +201,11 @@
           "reconciling-git-merges",
           "git-commit"
         ],
-        "workspace_fixture": "none",
+        "workspace_fixture": "semantic_permissions",
         "invocation": "model-discovery"
       },
-      "query": "一个分支 revert 了旧鉴权实现，另一个分支继续基于旧实现修改缓存。审查并完成这次 merge，别把 clean merge 当成正确。",
+      "query": "当前 merge 有 conflict.txt 冲突，双方还分别修改了权限生产者和消费者。协调双方意图并验证组合结果。",
+      "workspace_fixture": "semantic_permissions",
       "expected_loaded_skills": [
         "reconciling-git-merges"
       ],
@@ -314,10 +321,11 @@
           "reconciling-git-merges",
           "git-commit"
         ],
-        "workspace_fixture": "none",
+        "workspace_fixture": "fast_forward",
         "invocation": "model-discovery"
       },
       "query": "feature is strictly ahead of main; fast-forward main with --ff-only.",
+      "workspace_fixture": "fast_forward",
       "expected_loaded_skills": [],
       "oracle": {
         "rationale": "用户目标属于 reconciling-git-merges description 明确排除的近似任务。",
@@ -342,10 +350,11 @@
           "reconciling-git-merges",
           "git-commit"
         ],
-        "workspace_fixture": "none",
+        "workspace_fixture": "up_to_date",
         "invocation": "model-discovery"
       },
-      "query": "git merge reports Already up to date. Confirm it and make no changes.",
+      "query": "git merge feature reports Already up to date. Confirm it and make no changes.",
+      "workspace_fixture": "up_to_date",
       "expected_loaded_skills": [],
       "oracle": {
         "rationale": "用户目标属于 reconciling-git-merges description 明确排除的近似任务。",
@@ -370,10 +379,11 @@
           "reconciling-git-merges",
           "git-commit"
         ],
-        "workspace_fixture": "none",
+        "workspace_fixture": "independent_clean_merge",
         "invocation": "model-discovery"
       },
-      "query": "Merge feature into main. There are no known conflicts or related changes; just use the repository's normal Git workflow.",
+      "query": "Merge feature into main. Main only changed README.md and feature only changed change.txt; use the repository's normal Git workflow.",
+      "workspace_fixture": "independent_clean_merge",
       "expected_loaded_skills": [],
       "oracle": {
         "rationale": "用户目标属于 reconciling-git-merges description 明确排除的近似任务。",
@@ -398,10 +408,11 @@
           "reconciling-git-merges",
           "git-commit"
         ],
-        "workspace_fixture": "none",
+        "workspace_fixture": "independent_clean_merge",
         "invocation": "model-discovery"
       },
-      "query": "两个分支已经分叉，但一边只改 docs/，另一边只新增独立 examples/ 脚本，Git 可以 clean merge。按普通流程合并。",
+      "query": "两个分支已经分叉，但 main 只改 README.md，feature 只改独立的 change.txt，Git 可以 clean merge。按普通流程合并。",
+      "workspace_fixture": "independent_clean_merge",
       "expected_loaded_skills": [],
       "oracle": {
         "rationale": "用户目标属于 reconciling-git-merges description 明确排除的近似任务。",
@@ -426,10 +437,11 @@
           "reconciling-git-merges",
           "git-commit"
         ],
-        "workspace_fixture": "none",
+        "workspace_fixture": "same_file_independent_merge",
         "invocation": "model-discovery"
       },
-      "query": "Both branches touched utils.py: one fixes a comment typo and the other changes an unrelated test helper. The merge is clean and the changes are independent.",
+      "query": "Both branches touched utils.py: main fixes the top comment and feature changes the unrelated helper fixture. The merge is clean and the changes are independent.",
+      "workspace_fixture": "same_file_independent_merge",
       "expected_loaded_skills": [],
       "oracle": {
         "rationale": "用户目标属于 reconciling-git-merges description 明确排除的近似任务。",
@@ -454,10 +466,11 @@
           "reconciling-git-merges",
           "git-commit"
         ],
-        "workspace_fixture": "none",
+        "workspace_fixture": "rebase_conflict",
         "invocation": "model-discovery"
       },
       "query": "Resolve the conflicts while rebasing my feature branch onto main.",
+      "workspace_fixture": "rebase_conflict",
       "expected_loaded_skills": [],
       "oracle": {
         "rationale": "用户目标属于 reconciling-git-merges description 明确排除的近似任务。",
@@ -482,10 +495,11 @@
           "reconciling-git-merges",
           "git-commit"
         ],
-        "workspace_fixture": "none",
+        "workspace_fixture": "cherry_pick_conflict",
         "invocation": "model-discovery"
       },
       "query": "cherry-pick 这个提交时冲突了，帮我继续 cherry-pick。",
+      "workspace_fixture": "cherry_pick_conflict",
       "expected_loaded_skills": [],
       "oracle": {
         "rationale": "用户目标属于 reconciling-git-merges description 明确排除的近似任务。",
