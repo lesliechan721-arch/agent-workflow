@@ -44,6 +44,12 @@ function testArguments() {
 async function testEvalSpec() {
   const spec = await loadModelEvalSpec();
   assert.equal(spec.skill_name, 'codex-explore');
+  assert.deepEqual(spec.policy, {
+    optimization: 'critical',
+    false_negative_cost: 'high',
+    false_positive_cost: 'critical',
+    rationale: '漏选或错选 role 会降低探索质量；忽略显式字段，或在字段不可表达时仍启动，会违反用户参数和失败关闭边界。',
+  });
   assert.deepEqual(
     spec.evals.map((entry) => entry.id),
     [
@@ -72,6 +78,18 @@ async function testEvalSpec() {
       );
     }
     assert.equal(entry.assertions.length > 0, true);
+    assert.equal(entry.eval_type, 'routing');
+    assert.equal(typeof entry.scenario_family, 'string');
+    assert.equal(typeof entry.preconditions, 'object');
+    assert.equal(typeof entry.oracle?.rationale, 'string');
+    assert.equal(
+      entry.assertions.every((assertion) => (
+        typeof assertion.text === 'string' &&
+        assertion.grader === 'script' &&
+        typeof assertion.allowed_variance === 'string'
+      )),
+      true,
+    );
   }
   const v1 = spec.evals.find((entry) => entry.id === 'v1_auto_standard');
   assert.equal(v1.parent_model, 'gpt-5.5');
@@ -364,12 +382,39 @@ function testEnvironmentSkipReportStatus() {
   assert.deepEqual(modelEvalReportStatus([result], true), { complete: false, passed: true });
 }
 
+function testCriticalPolicyRequiresEveryRunnablePass() {
+  const entry = {
+    id: 'critical_route',
+    expected_output: 'test',
+    expected: { spawn_calls: { min: 0, max: 0 } },
+  };
+  const passingRun = {
+    execution_error: false,
+    termination: 'completed',
+    exit_code: 0,
+    spawn_calls: [],
+  };
+  const failingRun = {
+    ...passingRun,
+    spawn_calls: [{ arguments: { agent_type: 'codex-explore-standard' } }],
+  };
+  const result = summarizeModelEval(
+    entry,
+    [passingRun, passingRun, failingRun],
+    0.5,
+    'critical',
+  );
+  assert.equal(result.pass_rate, 2 / 3);
+  assert.equal(result.passed, false);
+}
+
 async function main() {
   testArguments();
   await testEvalSpec();
   await testRolloutArgumentEvidence();
   testMechanicalAssertions();
   testEnvironmentSkipReportStatus();
+  testCriticalPolicyRequiresEveryRunnablePass();
   console.log('model selection eval tests passed');
 }
 

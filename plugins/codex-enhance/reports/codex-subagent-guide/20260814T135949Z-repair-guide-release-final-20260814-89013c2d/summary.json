@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 2,
+  "batchId": "20260814T135949Z-repair-guide-release-final-20260814-89013c2d",
+  "name": "repair-guide-release-final-20260814",
+  "owner": {
+    "kind": "plugin-skill",
+    "plugin": "codex-enhance",
+    "skill": "codex-subagent-guide"
+  },
+  "publishedAt": "2026-08-14T15:40:04.877Z",
+  "source": {
+    "commits": [
+      "4efcc101e1b0b217ede0f17d1fa5b366879578fc"
+    ],
+    "inScopeDirty": true
+  },
+  "eval": {
+    "releaseOutcome": "passed",
+    "covered": 10,
+    "required": 10
+  },
+  "review": {
+    "reviewId": "20260814T154004Z-a79fa8a8",
+    "mode": "full",
+    "verdict": "pass",
+    "weightedScore": 94.6,
+    "coveragePercent": 100,
+    "confidence": "high",
+    "findings": {
+      "p0": 0,
+      "p1": 0,
+      "p2": 1,
+      "advisory": 0
+    }
+  },
+  "reportPath": "report.md"
+}

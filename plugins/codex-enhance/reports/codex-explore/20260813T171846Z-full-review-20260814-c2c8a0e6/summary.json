@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 2,
+  "batchId": "20260813T171846Z-full-review-20260814-c2c8a0e6",
+  "name": "full-review-20260814",
+  "owner": {
+    "kind": "plugin-skill",
+    "plugin": "codex-enhance",
+    "skill": "codex-explore"
+  },
+  "publishedAt": "2026-08-13T19:49:24.954Z",
+  "source": {
+    "commits": [
+      "4efcc101e1b0b217ede0f17d1fa5b366879578fc"
+    ],
+    "inScopeDirty": false
+  },
+  "eval": {
+    "releaseOutcome": "failed",
+    "covered": 8,
+    "required": 8
+  },
+  "review": {
+    "reviewId": "20260813T194924Z-0cfd81b9",
+    "mode": "full",
+    "verdict": "pass-after-fixes",
+    "weightedScore": 85.8,
+    "coveragePercent": 100,
+    "confidence": "high",
+    "findings": {
+      "p0": 0,
+      "p1": 1,
+      "p2": 2,
+      "advisory": 0
+    }
+  },
+  "reportPath": "report.md"
+}

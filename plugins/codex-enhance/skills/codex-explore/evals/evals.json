@@ -1,8 +1,29 @@
 {
   "skill_name": "codex-explore",
+  "policy": {
+    "optimization": "critical",
+    "false_negative_cost": "high",
+    "false_positive_cost": "critical",
+    "rationale": "漏选或错选 role 会降低探索质量；忽略显式字段，或在字段不可表达时仍启动，会违反用户参数和失败关闭边界。"
+  },
   "evals": [
     {
       "id": "auto_quick",
+      "eval_type": "routing",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "preset-role-selection",
+      "unit_under_test": "instructions",
+      "preconditions": {
+        "spawn_schema": "V2 公开 agent_type、model、reasoning_effort 和 fork_turns",
+        "required_roles": ["codex-explore-quick", "codex-explore-standard", "codex-explore-deep", "codex-explore-custom"]
+      },
+      "oracle": {
+        "rationale": "问题窄、歧义低，但候选日志很多，符合 quick；预设 role 不应携带动态模型覆盖字段。",
+        "rule_refs": ["SKILL.md#委派"],
+        "confidence": "high",
+        "allowed_variance": "message 和 task_name 可变化；agent_type、模型字段缺省和干净上下文参数不得变化。"
+      },
       "prompt": "$codex-explore reports/audit/ 有很多候选日志，但问题很窄且没有冲突：只定位 request=req-9 首次和最后一次出现的组件，给出原始记录位置；不要做原因分析。",
       "expected_output": "自动选择 quick role，只传 agent_type，不传 model 或 reasoning_effort。",
       "files": [],
@@ -23,12 +44,37 @@
         "present_arguments": ["message", "task_name"]
       },
       "assertions": [
-        "窄范围、低歧义定位选择 codex-explore-quick",
-        "预设 role 不传 model 或 reasoning_effort"
+        {
+          "text": "窄范围、低歧义定位选择 codex-explore-quick",
+          "grader": "script",
+          "criticality": "major",
+          "allowed_variance": "message 和 task_name 可变化；agent_type 必须精确匹配。"
+        },
+        {
+          "text": "预设 role 不传 model 或 reasoning_effort",
+          "grader": "script",
+          "criticality": "major",
+          "allowed_variance": "两个覆盖字段都必须缺省。"
+        }
       ]
     },
     {
       "id": "auto_standard",
+      "eval_type": "routing",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "preset-role-selection",
+      "unit_under_test": "instructions",
+      "preconditions": {
+        "spawn_schema": "V2 公开 agent_type、model、reasoning_effort 和 fork_turns",
+        "required_roles": ["codex-explore-quick", "codex-explore-standard", "codex-explore-deep", "codex-explore-custom"]
+      },
+      "oracle": {
+        "rationale": "常规跨模块追踪包含适度归纳，且没有 deep 信号，默认应选择 standard。",
+        "rule_refs": ["SKILL.md#委派"],
+        "confidence": "high",
+        "allowed_variance": "message 和 task_name 可变化；agent_type、模型字段缺省和干净上下文参数不得变化。"
+      },
       "prompt": "$codex-explore 请从 repo/ 的网关、结算、任务和共享模块中追踪 regional_checkout 的完整传递路径，核对字段是否一致并给出可复核文件证据；不要修改代码。",
       "expected_output": "自动选择默认 standard role，只传 agent_type。",
       "files": [],
@@ -49,12 +95,38 @@
         "present_arguments": ["message", "task_name"]
       },
       "assertions": [
-        "常规跨模块追踪选择 codex-explore-standard",
-        "预设 role 不传 model 或 reasoning_effort"
+        {
+          "text": "常规跨模块追踪选择 codex-explore-standard",
+          "grader": "script",
+          "criticality": "major",
+          "allowed_variance": "message 和 task_name 可变化；agent_type 必须精确匹配。"
+        },
+        {
+          "text": "预设 role 不传 model 或 reasoning_effort",
+          "grader": "script",
+          "criticality": "major",
+          "allowed_variance": "两个覆盖字段都必须缺省。"
+        }
       ]
     },
     {
       "id": "v1_auto_standard",
+      "eval_type": "routing",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "context-schema-routing",
+      "unit_under_test": "instructions",
+      "preconditions": {
+        "spawn_schema": "V1 公开 agent_type 和 fork_context，但不公开 fork_turns",
+        "parent_model": "gpt-5.5"
+      },
+      "oracle": {
+        "rationale": "相同 standard 任务在 V1 必须用 fork_context=false 精确表达干净上下文，不得发送 V2 字段。",
+        "rule_refs": ["SKILL.md#委派"],
+        "confidence": "high",
+        "allowed_variance": "message 可变化；agent_type、fork_context 和 fork_turns 缺省状态不得变化。",
+        "minimal_counterexample": "切换到 V2 schema 后，干净上下文参数应翻转为 fork_turns=none，并省略 fork_context。"
+      },
       "prompt": "$codex-explore 请从 repo/ 的网关、结算、任务和共享模块中追踪 regional_checkout 的完整传递路径，核对字段是否一致并给出可复核文件证据；不要修改代码。",
       "expected_output": "V1 自动选择默认 standard role，使用 fork_context: false 启动干净上下文。",
       "files": [],
@@ -75,12 +147,37 @@
         "present_arguments": ["message"]
       },
       "assertions": [
-        "V1 常规跨模块追踪选择 codex-explore-standard",
-        "V1 传 fork_context: false 且不传 fork_turns"
+        {
+          "text": "V1 常规跨模块追踪选择 codex-explore-standard",
+          "grader": "script",
+          "criticality": "major",
+          "allowed_variance": "message 可变化；agent_type 必须精确匹配。"
+        },
+        {
+          "text": "V1 传 fork_context: false 且不传 fork_turns",
+          "grader": "script",
+          "criticality": "major",
+          "allowed_variance": "fork_context 必须为 false，fork_turns 必须缺省。"
+        }
       ]
     },
     {
       "id": "auto_deep",
+      "eval_type": "routing",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "preset-role-selection",
+      "unit_under_test": "instructions",
+      "preconditions": {
+        "spawn_schema": "V2 公开 agent_type、model、reasoning_effort 和 fork_turns",
+        "required_roles": ["codex-explore-quick", "codex-explore-standard", "codex-explore-deep", "codex-explore-custom"]
+      },
+      "oracle": {
+        "rationale": "材料边界未知、证据冲突、因果复杂且完整性优先，符合 deep 的全部核心信号。",
+        "rule_refs": ["SKILL.md#委派"],
+        "confidence": "high",
+        "allowed_variance": "message 和 task_name 可变化；agent_type、模型字段缺省和干净上下文参数不得变化。"
+      },
       "prompt": "$codex-explore materials/、docs/vendor/ 和 reports/audit/ 中材料很多、说法冲突且边界未知。请深入重建续费失败的复杂因果链，穷尽相互矛盾的证据并说明无法确认之处，完整性优先。",
       "expected_output": "自动选择 deep role，只传 agent_type。",
       "files": [],
@@ -101,12 +198,37 @@
         "present_arguments": ["message", "task_name"]
       },
       "assertions": [
-        "高歧义、强冲突和高完整性要求选择 codex-explore-deep",
-        "预设 role 不传 model 或 reasoning_effort"
+        {
+          "text": "高歧义、强冲突和高完整性要求选择 codex-explore-deep",
+          "grader": "script",
+          "criticality": "major",
+          "allowed_variance": "message 和 task_name 可变化；agent_type 必须精确匹配。"
+        },
+        {
+          "text": "预设 role 不传 model 或 reasoning_effort",
+          "grader": "script",
+          "criticality": "major",
+          "allowed_variance": "两个覆盖字段都必须缺省。"
+        }
       ]
     },
     {
       "id": "custom_both_fields",
+      "eval_type": "routing",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "explicit-routing-overrides",
+      "unit_under_test": "instructions",
+      "preconditions": {
+        "spawn_schema": "V2 公开 agent_type、model、reasoning_effort 和 fork_turns",
+        "custom_role": "codex-explore-custom 不锁定模型参数"
+      },
+      "oracle": {
+        "rationale": "用户同时显式指定 model 和 reasoning_effort 时，custom role 必须完整原样透传两个字段。",
+        "rule_refs": ["SKILL.md#Gate", "SKILL.md#委派"],
+        "confidence": "high",
+        "allowed_variance": "message 和 task_name 可变化；custom role 与两个显式字段必须精确匹配。"
+      },
       "prompt": "$codex-explore 使用 model=gpt-5.6-sol、reasoning_effort=xhigh，从 materials/ 的访谈、会议记录和汇总表中筛选续费失败原因，标出冲突和材料位置。",
       "expected_output": "显式 model 和 reasoning_effort 使用 custom role，并原样透传两个字段。",
       "files": [],
@@ -127,12 +249,37 @@
         "present_arguments": ["message", "task_name"]
       },
       "assertions": [
-        "显式字段选择 codex-explore-custom",
-        "model 与 reasoning_effort 均原样透传"
+        {
+          "text": "显式字段选择 codex-explore-custom",
+          "grader": "script",
+          "criticality": "critical",
+          "allowed_variance": "message 和 task_name 可变化；agent_type 必须精确匹配。"
+        },
+        {
+          "text": "model 与 reasoning_effort 均原样透传",
+          "grader": "script",
+          "criticality": "critical",
+          "allowed_variance": "两个字段必须与用户值完全一致。"
+        }
       ]
     },
     {
       "id": "custom_model_only",
+      "eval_type": "routing",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "explicit-routing-overrides",
+      "unit_under_test": "instructions",
+      "preconditions": {
+        "spawn_schema": "V2 公开 agent_type、model、reasoning_effort 和 fork_turns",
+        "custom_role": "codex-explore-custom 不锁定模型参数"
+      },
+      "oracle": {
+        "rationale": "只显式指定 model 时，应使用 custom role，只透传 model，不能补默认 reasoning_effort。",
+        "rule_refs": ["SKILL.md#Gate", "SKILL.md#委派"],
+        "confidence": "high",
+        "allowed_variance": "message 和 task_name 可变化；custom role、model 值和 reasoning_effort 缺省状态不得变化。"
+      },
       "prompt": "$codex-explore 使用 model=gpt-5.6-sol，从 repo/ 至少三个服务中核验 regional_checkout 的调用链并给出文件证据。",
       "expected_output": "显式 model 使用 custom role，只传 model。",
       "files": [],
@@ -153,12 +300,37 @@
         "present_arguments": ["message", "task_name"]
       },
       "assertions": [
-        "只透传用户指定的 model",
-        "未指定的 reasoning_effort 不存在"
+        {
+          "text": "只透传用户指定的 model",
+          "grader": "script",
+          "criticality": "critical",
+          "allowed_variance": "model 必须与用户值完全一致。"
+        },
+        {
+          "text": "未指定的 reasoning_effort 不存在",
+          "grader": "script",
+          "criticality": "major",
+          "allowed_variance": "reasoning_effort 必须缺省。"
+        }
       ]
     },
     {
       "id": "custom_reasoning_only",
+      "eval_type": "routing",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "explicit-routing-overrides",
+      "unit_under_test": "instructions",
+      "preconditions": {
+        "spawn_schema": "V2 公开 agent_type、model、reasoning_effort 和 fork_turns",
+        "custom_role": "codex-explore-custom 不锁定模型参数"
+      },
+      "oracle": {
+        "rationale": "只显式指定 reasoning_effort 时，应使用 custom role，只透传该字段，不能补默认 model。",
+        "rule_refs": ["SKILL.md#Gate", "SKILL.md#委派"],
+        "confidence": "high",
+        "allowed_variance": "message 和 task_name 可变化；custom role、reasoning_effort 值和 model 缺省状态不得变化。"
+      },
       "prompt": "$codex-explore 使用 reasoning_effort=xhigh，从 reports/audit/ 的多日记录和 docs/runbooks/ 中重建 request=req-9 的组件时间线。",
       "expected_output": "显式 reasoning_effort 使用 custom role，只传 reasoning_effort。",
       "files": [],
@@ -179,12 +351,38 @@
         "present_arguments": ["message", "task_name"]
       },
       "assertions": [
-        "只透传用户指定的 reasoning_effort",
-        "未指定的 model 不存在"
+        {
+          "text": "只透传用户指定的 reasoning_effort",
+          "grader": "script",
+          "criticality": "critical",
+          "allowed_variance": "reasoning_effort 必须与用户值完全一致。"
+        },
+        {
+          "text": "未指定的 model 不存在",
+          "grader": "script",
+          "criticality": "major",
+          "allowed_variance": "model 必须缺省。"
+        }
       ]
     },
     {
       "id": "hidden_fields_preset",
+      "eval_type": "routing",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "hidden-override-fields",
+      "unit_under_test": "instructions",
+      "preconditions": {
+        "spawn_schema": "V2 公开 agent_type 和 fork_turns，但隐藏 model 与 reasoning_effort",
+        "request_overrides": "用户没有显式指定 model 或 reasoning_effort"
+      },
+      "oracle": {
+        "rationale": "预设 role 的模型配置由 role 持有；schema 隐藏动态覆盖字段不应阻止仅用 agent_type 的 preset。",
+        "rule_refs": ["SKILL.md#Gate", "SKILL.md#委派"],
+        "confidence": "high",
+        "allowed_variance": "允许环境报告已声明的 schema 错误；成功调用时只能包含 preset agent_type 和干净上下文参数。",
+        "minimal_counterexample": "在相同 schema 下显式增加 model 或 reasoning_effort 后，行为应翻转为零次 spawn 并说明能力限制。"
+      },
       "prompt": "$codex-explore 用 standard 深度从 reports/audit/ 的多日记录和 docs/runbooks/ 中重建 request=req-9 的组件时间线，并为每个跳转给出来源。",
       "expected_output": "schema 隐藏覆盖字段时，预设 role 仍可只凭 agent_type 启动。",
       "files": [],
@@ -206,12 +404,38 @@
         "present_arguments": ["message", "task_name"]
       },
       "assertions": [
-        "隐藏字段不影响预设 role",
-        "调用中不存在 model 与 reasoning_effort"
+        {
+          "text": "隐藏字段不影响预设 role",
+          "grader": "script",
+          "criticality": "major",
+          "allowed_variance": "允许已声明的环境 schema 错误；发生调用时 agent_type 必须为 standard。"
+        },
+        {
+          "text": "调用中不存在 model 与 reasoning_effort",
+          "grader": "script",
+          "criticality": "critical",
+          "allowed_variance": "发生调用时两个隐藏字段都必须缺省。"
+        }
       ]
     },
     {
       "id": "hidden_explicit_field",
+      "eval_type": "routing",
+      "case_role": "regression",
+      "provenance": "observed",
+      "scenario_family": "hidden-override-fields",
+      "unit_under_test": "instructions",
+      "preconditions": {
+        "spawn_schema": "V2 公开 agent_type 和 fork_turns，但隐藏 model 与 reasoning_effort",
+        "request_overrides": "用户显式指定 model"
+      },
+      "oracle": {
+        "rationale": "显式 model 无法由当前 schema 原样传递时必须失败关闭；旧版本曾丢弃字段后错误启动。",
+        "rule_refs": ["SKILL.md#Gate", "SKILL.md#委派"],
+        "confidence": "high",
+        "allowed_variance": "能力限制说明可换词；spawn 次数必须为零，并应指出字段不可表达。",
+        "minimal_counterexample": "移除显式 model 后，相同任务应使用 preset role；公开 model 字段后应使用 custom role 并原样透传。"
+      },
       "prompt": "$codex-explore 使用 model=gpt-5.6-sol，从 repo/ 至少三个服务中核验 regional_checkout 的调用链并给出文件证据。",
       "expected_output": "schema 未公开用户显式指定字段时不启动子代理，并说明能力限制。",
       "files": [],
@@ -228,12 +452,38 @@
         "final_message_includes_any": ["未公开", "不支持", "无法"]
       },
       "assertions": [
-        "没有调用 spawn_agent",
-        "最终答复说明当前 schema 无法满足用户显式 model"
+        {
+          "text": "没有调用 spawn_agent",
+          "grader": "script",
+          "criticality": "critical",
+          "allowed_variance": "spawn 次数必须精确为零。"
+        },
+        {
+          "text": "最终答复说明当前 schema 无法满足用户显式 model",
+          "grader": "script",
+          "criticality": "major",
+          "allowed_variance": "允许未公开、不支持或无法等同表述。"
+        }
       ]
     },
     {
       "id": "hidden_explicit_reasoning",
+      "eval_type": "routing",
+      "case_role": "boundary",
+      "provenance": "derived",
+      "scenario_family": "hidden-override-fields",
+      "unit_under_test": "instructions",
+      "preconditions": {
+        "spawn_schema": "V2 公开 agent_type 和 fork_turns，但隐藏 model 与 reasoning_effort",
+        "request_overrides": "用户显式指定 reasoning_effort"
+      },
+      "oracle": {
+        "rationale": "显式 reasoning_effort 与显式 model 适用同一个预检和失败关闭合同，不能被删除或替换。",
+        "rule_refs": ["SKILL.md#Gate", "SKILL.md#委派"],
+        "confidence": "high",
+        "allowed_variance": "能力限制说明可换词；spawn 次数必须为零，并应点名 reasoning_effort 或推理强度。",
+        "minimal_counterexample": "移除显式 reasoning_effort 后，相同任务应使用 preset role；公开该字段后应使用 custom role 并原样透传。"
+      },
       "prompt": "$codex-explore 使用 reasoning_effort=xhigh，从 reports/audit/ 的多日记录和 docs/runbooks/ 中重建 request=req-9 的组件时间线。",
       "expected_output": "schema 未公开用户显式指定的 reasoning_effort 时不启动子代理，并说明能力限制。",
       "files": [],
@@ -250,12 +500,38 @@
         "final_message_includes_any": ["reasoning_effort", "推理强度"]
       },
       "assertions": [
-        "没有调用 spawn_agent",
-        "最终答复指出当前 schema 无法表达用户显式 reasoning_effort"
+        {
+          "text": "没有调用 spawn_agent",
+          "grader": "script",
+          "criticality": "critical",
+          "allowed_variance": "spawn 次数必须精确为零。"
+        },
+        {
+          "text": "最终答复指出当前 schema 无法表达用户显式 reasoning_effort",
+          "grader": "script",
+          "criticality": "major",
+          "allowed_variance": "允许 reasoning_effort 或推理强度等同表述。"
+        }
       ]
     },
     {
       "id": "invalid_explicit_values",
+      "eval_type": "routing",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "invalid-explicit-overrides",
+      "unit_under_test": "instructions",
+      "preconditions": {
+        "spawn_schema": "V2 公开 agent_type、model、reasoning_effort 和 fork_turns",
+        "request_overrides": "用户显式值不可用或非法"
+      },
+      "oracle": {
+        "rationale": "schema 公开字段不等于运行时接受任意值；拒绝后必须保留原值并停止，不能切换 preset 重试。",
+        "rule_refs": ["SKILL.md#Gate", "SKILL.md#委派"],
+        "confidence": "high",
+        "allowed_variance": "可以在调用前拒绝，或按原值调用一次后失败；不得发生第二次或降级调用。",
+        "minimal_counterexample": "把两个显式值改为受支持值后，应使用 custom role 成功启动并原样透传。"
+      },
       "prompt": "$codex-explore 使用 model=definitely-unavailable-model、reasoning_effort=turbo，从 docs/vendor/ 和 logs/ 中核验升级后的 401 原因。若调度参数不可用，不要删除字段或切换预设重试。",
       "expected_output": "无效显式值最多尝试一次；custom role 不降级到预设。",
       "files": [],
@@ -276,9 +552,24 @@
         "final_message_includes_any": ["不可用", "不支持", "无效", "失败", "无法"]
       },
       "assertions": [
-        "spawn_agent 调用次数不超过一次",
-        "如果调用，使用 custom role 并保留显式无效字段",
-        "不得切换到 quick、standard 或 deep 重试"
+        {
+          "text": "spawn_agent 调用次数不超过一次",
+          "grader": "script",
+          "criticality": "critical",
+          "allowed_variance": "允许零次或一次调用，不允许更多调用。"
+        },
+        {
+          "text": "如果调用，使用 custom role 并保留显式无效字段",
+          "grader": "script",
+          "criticality": "critical",
+          "allowed_variance": "零次调用时不适用；一次调用时三个字段必须精确匹配。"
+        },
+        {
+          "text": "不得切换到 quick、standard 或 deep 重试",
+          "grader": "script",
+          "criticality": "critical",
+          "allowed_variance": "不得出现任何 preset role 的后续调用。"
+        }
       ]
     }
   ]

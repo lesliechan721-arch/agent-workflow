@@ -16,9 +16,9 @@ strict 发布语料分成 train（12）、validation（7）和不参与 descript
 - 只询问是否应该委派、概念文档、安装配置、明确禁止子代理等 near miss，不加载也不启动。
 - 显式调用 skill 或管理已有 agent 时加载 skill，但不额外 spawn。
 
-standard 组合性诊断语料另有 4 条。它检查临时安装的上游 skill 只授权、不提供代理管理时加载，以及专用 fixture skill 已完整拥有委派生命周期时不叠加加载。涉及已存在 agent 的 trigger 用例只验证 Skill 路由，并明确禁止调用不存在的 runtime actor；真实等待由 lifecycle suite 负责。该 suite 会写临时 `.agents/` fixture，因此不作为发布证据。
+standard 组合性诊断语料另有 5 条，并把 `codex-subagent-guide` 与 `codex-explore` 同时列为 participant。它使用精确 loaded-skill 集合检查：只授权、不提供代理管理时由 guide 接管；真实的大范围事实探索只由 explore 接管；专用 fixture skill 已完整拥有委派生命周期时，两者都不叠加加载。涉及已存在 agent 的 trigger 用例只验证 Skill 路由，并明确禁止调用不存在的 runtime actor；真实等待由 lifecycle suite 负责。该 suite 会写临时 `.agents/` fixture，因此不作为发布证据。
 
-每条 query 默认在干净会话运行三次，以 `0.5` 为分界。strict 发布 suite 的 validation 和 sanity 禁止加载或禁止委派负例使用零容忍，任意一次误触发都失败。`$skill` 记录为宿主显式注入，隐式加载只接受成功读取 `SKILL.md` 的执行事件；spawn 还要求原始 rollout 参数证据。
+每条 query 默认在干净会话运行三次。普通 trigger 以 `0.5` 为分界；trigger-composition 的精确 loaded-skill 路由要求 `1.0`，并禁止同时加载两个 participant。strict 发布 suite 的 validation 和 sanity 禁止加载或禁止委派负例使用零容忍，任意一次误触发都失败。`$skill` 记录为宿主显式注入，隐式加载只接受成功读取 `SKILL.md` 的执行事件；spawn 还要求原始 rollout 参数证据。
 
 ```bash
 pnpm plugin:eval codex-enhance --skill codex-subagent-guide --batch-name trigger-train --suite trigger --split train --runs 3
