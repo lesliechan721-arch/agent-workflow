@@ -207,16 +207,24 @@ describe('public docs', () => {
   });
 
   it('documents the model eval permission, resume, and long-wait controls', async () => {
-    const workflowSkills = await Promise.all([
+    const [authoringSkill, reviewSkill, reviewEvalReferences] = await Promise.all([
       readRepoFile('.agents/skills/create-aw-plugin/SKILL.md'),
       readRepoFile('.agents/skills/skill-review/SKILL.md'),
+      readCombinedFiles([
+        '.agents/skills/skill-review/references/static-skill-evaluation.md',
+        '.agents/skills/skill-review/references/agent-workflows-plugin.md',
+      ]),
     ]);
-    for (const skill of workflowSkills) {
-      expect(skill).toMatch(/用户未选择时(?:必须)?停下询问/u);
-      expect(skill).toContain('不得自行添加该参数');
-      expect(skill).toContain('不得请求单次提权');
-      expect(skill).toContain('最长响应式等待时间');
+    for (const contract of [authoringSkill, reviewEvalReferences]) {
+      expect(contract).toMatch(/用户未选择时(?:必须)?停下询问/u);
+      expect(contract).toContain('不得自行添加该参数');
+      expect(contract).toContain('不得请求单次提权');
+      expect(contract).toContain('最长响应式等待时间');
     }
+    expect(reviewSkill).toContain('references/static-skill-evaluation.md');
+    expect(reviewSkill).toContain('references/agent-workflows-plugin.md');
+    expect(reviewSkill).not.toContain('启动真实模型 eval 前');
+    expect(reviewSkill).not.toContain('真实模型 eval 启动后');
 
     const docs = await readCombinedFiles([
       '.agents/skills/create-aw-plugin/references/skill-evaluation.md',

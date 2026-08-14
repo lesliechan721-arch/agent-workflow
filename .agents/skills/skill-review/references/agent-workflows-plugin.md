@@ -10,7 +10,16 @@ AW 插件同时检查三层材料：
 2. 最终制品：由中央 materializer 生成的 Codex project/user subjects；动态 Skill 不以源模板代替最终制品。
 3. 证据：确定性插件测试、EvaluationBundle、suite report 和真实 trace。corpus 或 materialized artifact 本身不是模型通过证据。
 
-先运行作者校验与确定性检查：
+## 静态检查与执行型验证
+
+普通 quick/full 评审先做源码和已有制品的静态检查，不执行目标插件的 test、renderer 或 materialization：
+
+```bash
+node .agents/skills/skill-review/scripts/inspect_skill_target.mjs \
+  plugins/<name> --format json
+```
+
+下列命令不是普通 quick/full 评审的无条件前置步骤。只有 release 模式，或用户明确要求运行验证，并且 reviewer 已完成副作用检查、确认风险可控和隔离充分时，才运行：
 
 ```bash
 node .agents/skills/create-aw-plugin/scripts/validate_plugin.mjs plugins/<name>
@@ -23,6 +32,8 @@ node .agents/skills/skill-review/scripts/inspect_skill_target.mjs \
   --evaluation .tmp/agent-workflows/evals/plugin/<name>/<owner-skill>/<batch-id>/evals/runs/<run-id>/raw/evaluation.json \
   --format json
 ```
+
+没有执行授权或没有可用的既有结果时，把确定性运行和 materialized evidence 标为 `unknown`；不要把未运行写成目标缺陷。
 
 `inspect_skill_target.mjs` 读取单次运行的原始 `EvaluationBundle`。批次根的 `evals/evaluation.json` 是跨运行聚合，不是该命令的输入。
 

@@ -113,7 +113,7 @@ JSON 同时保存 reducibility：`almost-none`、`minor`、`significant`、`core
 - `eval-validity=fail`：当前 suite 不得继续驱动 Skill 修改；先修复、重新裁决或移除错误用例。
 - `eval-validity=unknown`：eval 只能作为诊断信号，不能单独形成 P0/P1 或发布结论。
 - `eval-change-safety=fail`：拒绝当前 eval-driven 修改，即使目标 case 已转为通过。
-- 没有 eval 或 eval 结果时，`eval-validity=not_applicable`；没有 eval-driven 修改时，`eval-change-safety=not_applicable`。
+- 目标没有 eval，且当前判断未使用任何 eval 结果时，`eval-validity=not_applicable`；没有 eval-driven 修改时，`eval-change-safety=not_applicable`。
 
 ## Finding 与 gate 关联
 

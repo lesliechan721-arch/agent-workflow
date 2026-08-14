@@ -146,6 +146,8 @@ describe('skill-review author tools', () => {
       appendixTemplate,
       evalAudit,
       staticEvaluation,
+      pluginEvaluation,
+      scoringModel,
       readme,
       manifest,
       behaviorDocument,
@@ -156,6 +158,8 @@ describe('skill-review author tools', () => {
         fs.readFile(path.join(reviewRoot, 'assets', 'review-appendix-template.md'), 'utf8'),
         fs.readFile(path.join(reviewRoot, 'references', 'eval-audit.md'), 'utf8'),
         fs.readFile(path.join(reviewRoot, 'references', 'static-skill-evaluation.md'), 'utf8'),
+        fs.readFile(path.join(reviewRoot, 'references', 'agent-workflows-plugin.md'), 'utf8'),
+        fs.readFile(path.join(reviewRoot, 'references', 'scoring-model.md'), 'utf8'),
         fs.readFile(path.join(reviewRoot, 'README.md'), 'utf8'),
         fs.readJson(path.join(reviewRoot, 'evals', 'manifest.json')),
         fs.readJson(path.join(reviewRoot, 'evals', 'evals.json')),
@@ -167,6 +171,8 @@ describe('skill-review author tools', () => {
     expect(skill).toContain('quick/delta 只在用户关注或所选范围包含');
     expect(skill).toContain('当最小有效控制审计适用时，先完成该审计');
     expect(skill).toContain('assets/review-appendix-template.md');
+    expect(skill).not.toContain('启动真实模型 eval 前');
+    expect(skill).not.toContain('真实模型 eval 启动后');
     expect(skill).not.toContain('## Human Report Discipline');
     expect(reportTemplate).toContain('设计结论：');
     expect(reportTemplate).toContain('发布就绪度：');
@@ -181,10 +187,18 @@ describe('skill-review author tools', () => {
     expect(staticEvaluation).toContain('README 只是登记索引');
     expect(staticEvaluation).toContain('source commit');
     expect(staticEvaluation).toContain('任一 `inScopeDirty=true` 时');
+    expect(pluginEvaluation).toContain('不是普通 quick/full 评审的无条件前置步骤');
+    expect(pluginEvaluation).toContain('只有 release 模式，或用户明确要求运行验证');
+    expect(scoringModel).toContain('目标没有 eval，且当前判断未使用任何 eval 结果时');
+    expect(scoringModel).not.toContain('没有 eval 或 eval 结果时');
     expect(readme).toContain('最近登记的正式报告：暂无');
     expect(manifest.suites.map((suite: { cases: string }) => suite.cases)).toEqual([
       './evals/trigger-cases.json',
       './evals/evals.json',
+    ]);
+    expect(manifest.suites.map((suite: { defaultRuns: number }) => suite.defaultRuns)).toEqual([
+      3,
+      3,
     ]);
 
     const defaultQuick = behaviorDocument.evals.find(

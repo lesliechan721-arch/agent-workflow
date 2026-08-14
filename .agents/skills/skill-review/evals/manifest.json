@@ -34,7 +34,7 @@
       "skill": "skill-review",
       "skills": ["skill-review"],
       "cases": "./evals/evals.json",
-      "defaultRuns": 1,
+      "defaultRuns": 3,
       "releaseSplits": [],
       "requiredForRelease": true,
       "perRunTimeoutMs": 300000
