@@ -16,6 +16,7 @@ import type {
   LocalMarketplaceConfig,
 } from '../types.js';
 import {
+  CATALOG_SOURCES_FILE,
   CURRENT_CATALOG_MANIFEST_FILE,
   CURRENT_CATALOG_MANIFEST_PACKAGE,
 } from '../constants.js';
@@ -1613,13 +1614,15 @@ function serializeCatalogSelectorForReuse(selector: CatalogSelector): string {
   });
 }
 
-const LOCAL_MARKETPLACE_RUNTIME_STATE_DIRS = new Set([
+const LOCAL_MARKETPLACE_RUNTIME_STATE_ENTRIES = new Set([
+  CATALOG_SOURCES_FILE,
   'catalog-cache',
   'plugin-config',
   'lifecycle-active',
 ]);
 
-const LOCAL_MARKETPLACE_REPLACEMENT_STATE_DIRS = [
+const LOCAL_MARKETPLACE_REPLACEMENT_STATE_ENTRIES = [
+  CATALOG_SOURCES_FILE,
   'plugin-config',
   'lifecycle-active',
 ] as const;
@@ -1649,7 +1652,7 @@ async function listFilesRecursively(rootDir: string, relativeRoot = ''): Promise
     if (relativeRoot === '' && entry.name === 'config.json') {
       continue;
     }
-    if (relativeRoot === '' && LOCAL_MARKETPLACE_RUNTIME_STATE_DIRS.has(entry.name)) {
+    if (relativeRoot === '' && LOCAL_MARKETPLACE_RUNTIME_STATE_ENTRIES.has(entry.name)) {
       continue;
     }
 
@@ -2130,20 +2133,20 @@ export async function resolveReadOnlyCatalogResolution(
   throw currentCatalogError;
 }
 
-async function moveLocalReplacementStateDirectories(
+async function moveLocalReplacementStateEntries(
   sourceRoot: string,
   targetRoot: string,
 ): Promise<void> {
-  for (const directoryName of LOCAL_MARKETPLACE_REPLACEMENT_STATE_DIRS) {
-    const sourceDir = path.join(sourceRoot, directoryName);
-    if (!(await fs.pathExists(sourceDir))) {
+  for (const entryName of LOCAL_MARKETPLACE_REPLACEMENT_STATE_ENTRIES) {
+    const sourcePath = path.join(sourceRoot, entryName);
+    if (!(await fs.pathExists(sourcePath))) {
       continue;
     }
-    const targetDir = path.join(targetRoot, directoryName);
-    if (await fs.pathExists(targetDir)) {
-      throw new Error(`Active marketplace runtime state 目标已存在：${targetDir}`);
+    const targetPath = path.join(targetRoot, entryName);
+    if (await fs.pathExists(targetPath)) {
+      throw new Error(`Active marketplace runtime state 目标已存在：${targetPath}`);
     }
-    await fs.move(sourceDir, targetDir, { overwrite: false });
+    await fs.move(sourcePath, targetPath, { overwrite: false });
   }
 }
 
@@ -2226,7 +2229,7 @@ async function replaceDirectoryAtomically(
     if (targetExists) {
       await fs.move(targetDir, backupDir, { overwrite: true });
       await localMarketplaceAfterTargetMovedToBackupForTests?.();
-      await moveLocalReplacementStateDirectories(backupDir, stagingDir);
+      await moveLocalReplacementStateEntries(backupDir, stagingDir);
     }
 
     await fs.move(stagingDir, targetDir, { overwrite: false });
@@ -2243,10 +2246,10 @@ async function replaceDirectoryAtomically(
           if (!stagingPublished) unexpectedTargetQuarantine = failedTargetDir;
         }
         if (await fs.pathExists(stagingDir)) {
-          await moveLocalReplacementStateDirectories(stagingDir, backupDir);
+          await moveLocalReplacementStateEntries(stagingDir, backupDir);
         }
         if (stagingPublished && await fs.pathExists(failedTargetDir)) {
-          await moveLocalReplacementStateDirectories(failedTargetDir, backupDir);
+          await moveLocalReplacementStateEntries(failedTargetDir, backupDir);
         }
         await fs.move(backupDir, targetDir, { overwrite: true });
         if (stagingPublished) await fs.remove(failedTargetDir);

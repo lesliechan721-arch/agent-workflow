@@ -2717,6 +2717,65 @@ function normalizeCatalogManifestEntry(
   return entry;
 }
 
+export interface NormalizedCatalogManifestBase {
+  catalogVersion: CatalogManifest['catalogVersion'];
+  channel: CatalogChannel;
+  compatibility: PluginCompatibility;
+}
+
+export function normalizeCatalogManifestBase(
+  input: Record<string, unknown>,
+  fieldName: string,
+): NormalizedCatalogManifestBase {
+  const catalogVersion = assertStrictSemVer(input.catalogVersion, `${fieldName}.catalogVersion`);
+  const channel = assertCatalogChannel(input.channel, `${fieldName}.channel`);
+  assertCatalogChannelVersionContract({
+    channel,
+    version: catalogVersion,
+    fieldName: `${fieldName}.catalogVersion`,
+    kind: 'catalog',
+  });
+  const compatibility = normalizePluginCompatibility(
+    input.compatibility,
+    `${fieldName}.compatibility`,
+    { allowMissing: false },
+  );
+  return { catalogVersion, channel, compatibility };
+}
+
+export function normalizeCatalogManifestEntries(
+  rawEntries: unknown,
+  base: NormalizedCatalogManifestBase,
+  fieldName: string,
+): CatalogManifestEntry[] {
+  if (!Array.isArray(rawEntries)) {
+    throw new Error(`Invalid ${fieldName}.entries: expected an array.`);
+  }
+  const entries = rawEntries.map((entry, index) =>
+    normalizeCatalogManifestEntry(entry, `${fieldName}.entries[${index}]`),
+  );
+  const entriesByName = new Map<string, CatalogManifestEntry>();
+  for (const entry of entries) {
+    if (entriesByName.has(entry.name)) {
+      throw new Error(`Invalid ${fieldName}.entries: duplicate plugin "${entry.name}".`);
+    }
+    entriesByName.set(entry.name, entry);
+    assertCatalogChannelVersionContract({
+      channel: base.channel,
+      version: entry.version,
+      fieldName: `${fieldName}.entries.${entry.name}.version`,
+      kind: 'plugin',
+    });
+    assertPluginMinVersionWithinCatalogBounds({
+      pluginName: entry.name,
+      pluginMinVersion: entry.compatibility.aw.minVersion,
+      catalogMinVersion: base.compatibility.aw.minVersion,
+      fieldName: `${fieldName}.entries.${entry.name}.compatibility.aw.minVersion`,
+    });
+  }
+  return entries;
+}
+
 export function validateCatalogManifest(
   rawManifest: unknown,
 ): CatalogManifest {
@@ -2734,17 +2793,7 @@ export function validateCatalogManifest(
     throw new Error('Invalid catalog manifest.schemaVersion: expected 2.');
   }
 
-  const catalogVersion = assertStrictSemVer(input.catalogVersion, 'catalog manifest.catalogVersion');
-  const channel = assertCatalogChannel(input.channel, 'catalog manifest.channel');
-  assertCatalogChannelVersionContract({
-    channel,
-    version: catalogVersion,
-    fieldName: 'catalog manifest.catalogVersion',
-    kind: 'catalog',
-  });
-  const compatibility = normalizePluginCompatibility(input.compatibility, 'catalog manifest.compatibility', {
-    allowMissing: false,
-  });
+  const base = normalizeCatalogManifestBase(input, 'catalog manifest');
   const packages = assertObject(input.packages, 'catalog manifest.packages');
   assertAllowedKeys(packages, 'catalog manifest.packages', ['sidecar', 'full']);
   const sidecar = normalizeCatalogManifestPackageIdentity(packages.sidecar, 'catalog manifest.packages.sidecar', {
@@ -2754,45 +2803,20 @@ export function validateCatalogManifest(
     requireManifestPath: true,
   });
   for (const [label, identity] of [['sidecar', sidecar], ['full', full]] as const) {
-    if (identity.version !== catalogVersion) {
-      throw new Error(`Invalid catalog manifest.packages.${label}.version: must match catalogVersion ${catalogVersion}.`);
+    if (identity.version !== base.catalogVersion) {
+      throw new Error(`Invalid catalog manifest.packages.${label}.version: must match catalogVersion ${base.catalogVersion}.`);
     }
-    if (identity.channel !== channel) {
-      throw new Error(`Invalid catalog manifest.packages.${label}.channel: must match channel ${channel}.`);
+    if (identity.channel !== base.channel) {
+      throw new Error(`Invalid catalog manifest.packages.${label}.channel: must match channel ${base.channel}.`);
     }
   }
-
-  if (!Array.isArray(input.entries)) {
-    throw new Error('Invalid catalog manifest.entries: expected an array.');
-  }
-  const entries = input.entries.map((entry, index) =>
-    normalizeCatalogManifestEntry(entry, `catalog manifest.entries[${index}]`),
-  );
-  const entriesByName = new Map<string, CatalogManifestEntry>();
-  for (const entry of entries) {
-    if (entriesByName.has(entry.name)) {
-      throw new Error(`Invalid catalog manifest.entries: duplicate plugin "${entry.name}".`);
-    }
-    entriesByName.set(entry.name, entry);
-    assertCatalogChannelVersionContract({
-      channel,
-      version: entry.version,
-      fieldName: `catalog manifest.entries.${entry.name}.version`,
-      kind: 'plugin',
-    });
-    assertPluginMinVersionWithinCatalogBounds({
-      pluginName: entry.name,
-      pluginMinVersion: entry.compatibility.aw.minVersion,
-      catalogMinVersion: compatibility.aw.minVersion,
-      fieldName: `catalog manifest.entries.${entry.name}.compatibility.aw.minVersion`,
-    });
-  }
+  const entries = normalizeCatalogManifestEntries(input.entries, base, 'catalog manifest');
 
   return {
     schemaVersion: 2,
-    catalogVersion,
-    channel,
-    compatibility,
+    catalogVersion: base.catalogVersion,
+    channel: base.channel,
+    compatibility: base.compatibility,
     packages: {
       sidecar,
       full,

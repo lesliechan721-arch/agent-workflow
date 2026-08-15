@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   acquireCurrentCatalogCacheLease,
   buildCurrentCatalogCacheKey,
+  calculateBundleFingerprint,
   initializeLocalMarketplace,
   markCurrentCatalogCacheEntryValidated,
   readCliPackageInfo,
@@ -21,9 +22,19 @@ import {
   type CurrentCatalogCacheIdentity,
   type CurrentCatalogCacheObservation,
 } from '../../src/utils/local-marketplace.js';
+import { CATALOG_SOURCES_FILE } from '../../src/constants.js';
+import {
+  addCatalogSource,
+  createDefaultCatalogSourcesConfig,
+  readCatalogSourcesConfigSnapshot,
+  replaceCatalogSourcesConfig,
+} from '../../src/utils/catalog-sources.js';
 import { getCodexHome, resolveCurrentCatalogCacheEntryDir } from '../../src/utils/paths.js';
 import { SKILL_OWNER_MARKER } from '../../src/utils/ownership.js';
-import { patchPluginConfigStore } from '../../src/utils/plugin-config.js';
+import {
+  patchPluginConfigStore,
+  setAtomicConfigBeforeRenameHookForTests,
+} from '../../src/utils/plugin-config.js';
 import { acquireLifecycleOperationLock } from '../../src/utils/lifecycle-active-store.js';
 import { withActiveMarketplaceRuntimeLease } from '../../src/utils/active-marketplace-runtime-lock.js';
 import { writeDynamicSkillTree } from '../../src/utils/dynamic-skill-tree.js';
@@ -136,11 +147,47 @@ async function embeddedResolution(
 afterEach(async () => {
   setLocalMarketplaceAfterStagingPreparedForTests(undefined);
   setLocalMarketplaceAfterTargetMovedToBackupForTests(undefined);
+  setAtomicConfigBeforeRenameHookForTests(undefined);
   vi.restoreAllMocks();
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
 
 describe('strict current catalog cache', () => {
+  it.each([
+    { force: false, label: 'normal' },
+    { force: true, label: 'force' },
+  ])('preserves catalog sources bytes through a $label marketplace rebuild', async ({ force }) => {
+    const workspace = await makeWorkspace();
+    const resolution = await embeddedResolution(workspace.embeddedRoot);
+    await initializeLocalMarketplace({
+      force: true,
+      env: workspace.env,
+      catalogResolution: resolution,
+    });
+    const sourcePath = path.join(workspace.awHome, CATALOG_SOURCES_FILE);
+    const sourceBytes = Buffer.from(
+      `${JSON.stringify(createDefaultCatalogSourcesConfig(), null, 4)}\n`,
+    );
+    const fingerprintBefore = await calculateBundleFingerprint(workspace.awHome);
+    await fs.writeFile(sourcePath, sourceBytes);
+    await expect(calculateBundleFingerprint(workspace.awHome)).resolves.toBe(fingerprintBefore);
+    if (!force) {
+      await fs.appendFile(
+        path.join(workspace.awHome, 'plugins', 'git-commit', 'README.md'),
+        '\nactive drift\n',
+      );
+    }
+
+    const rebuilt = await initializeLocalMarketplace({
+      force,
+      env: workspace.env,
+      catalogResolution: resolution,
+    });
+
+    expect(rebuilt.changed).toBe(true);
+    await expect(fs.readFile(sourcePath)).resolves.toEqual(sourceBytes);
+  });
+
   it('rebuilds drifted active static content without treating runtime state as drift', async () => {
     const workspace = await makeWorkspace();
     const resolution = await embeddedResolution(workspace.embeddedRoot);
@@ -885,6 +932,119 @@ describe('strict current catalog cache', () => {
       await configWrite?.catch(() => undefined);
       await operationLease?.release().catch(() => undefined);
     }
+  });
+
+  it('lets a catalog source CAS finish after a marketplace replacement without losing it', async () => {
+    const workspace = await makeWorkspace();
+    const resolution = await embeddedResolution(workspace.embeddedRoot);
+    await initializeLocalMarketplace({
+      force: true,
+      env: workspace.env,
+      catalogResolution: resolution,
+    });
+    const initial = await readCatalogSourcesConfigSnapshot(workspace.env);
+    const nextConfig = await addCatalogSource(initial.config, {
+      id: 'replacement-race',
+      type: 'git',
+      primary: false,
+      url: 'https://example.test/replacement-race.git',
+      refPolicy: { type: 'explicit', ref: 'refs/heads/main' },
+    }, path.dirname(workspace.awHome));
+    let mutation: ReturnType<typeof replaceCatalogSourcesConfig> | undefined;
+    setLocalMarketplaceAfterTargetMovedToBackupForTests(async () => {
+      expect(await fs.pathExists(workspace.awHome)).toBe(false);
+      let settled = false;
+      mutation = replaceCatalogSourcesConfig({
+        config: nextConfig,
+        expectedDigest: initial.digest,
+        env: workspace.env,
+      });
+      void mutation.then(
+        () => { settled = true; },
+        () => { settled = true; },
+      );
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(settled).toBe(false);
+      expect(await fs.pathExists(workspace.awHome)).toBe(false);
+    });
+
+    const rebuilt = await initializeLocalMarketplace({
+      force: true,
+      env: workspace.env,
+      catalogResolution: resolution,
+    });
+
+    expect(rebuilt.changed).toBe(true);
+    await expect(mutation).resolves.toMatchObject({ config: nextConfig });
+    await expect(readCatalogSourcesConfigSnapshot(workspace.env)).resolves.toMatchObject({
+      config: nextConfig,
+      materialized: true,
+    });
+    await expect(validateLocalMarketplaceLayout(workspace.awHome)).resolves.toBeUndefined();
+  });
+
+  it('lets a catalog source CAS finish after marketplace replacement rollback', async () => {
+    const workspace = await makeWorkspace();
+    const resolution = await embeddedResolution(workspace.embeddedRoot);
+    await initializeLocalMarketplace({
+      force: true,
+      env: workspace.env,
+      catalogResolution: resolution,
+    });
+    const marketplaceConfigPath = path.join(workspace.awHome, 'config.json');
+    const marketplaceConfigBefore = await fs.readFile(marketplaceConfigPath);
+    const sourcePath = path.join(workspace.awHome, CATALOG_SOURCES_FILE);
+    const sourceBytesBefore = Buffer.from(
+      `${JSON.stringify(createDefaultCatalogSourcesConfig(), null, 4)}\n`,
+    );
+    await fs.writeFile(sourcePath, sourceBytesBefore);
+    const initial = await readCatalogSourcesConfigSnapshot(workspace.env);
+    const nextConfig = await addCatalogSource(initial.config, {
+      id: 'rollback-race',
+      type: 'git',
+      primary: false,
+      url: 'https://example.test/rollback-race.git',
+      refPolicy: { type: 'cliChannel' },
+    }, path.dirname(workspace.awHome));
+    let mutation: ReturnType<typeof replaceCatalogSourcesConfig> | undefined;
+    setLocalMarketplaceAfterTargetMovedToBackupForTests(async () => {
+      expect(await fs.pathExists(workspace.awHome)).toBe(false);
+      mutation = replaceCatalogSourcesConfig({
+        config: nextConfig,
+        expectedDigest: initial.digest,
+        env: workspace.env,
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(await fs.pathExists(workspace.awHome)).toBe(false);
+    });
+    const realMove: typeof fs.move = fs.move.bind(fs);
+    const moveSpy = vi.spyOn(fs, 'move').mockImplementation(async (...args) => {
+      if (
+        String(args[0]).includes(`${path.sep}.aw-local-marketplace-staging${path.sep}`)
+        && path.resolve(String(args[1])) === path.resolve(workspace.awHome)
+      ) {
+        throw new Error('injected catalog source replacement rollback');
+      }
+      return realMove(...args);
+    });
+    setAtomicConfigBeforeRenameHookForTests(async () => {
+      await expect(fs.readFile(sourcePath)).resolves.toEqual(sourceBytesBefore);
+    });
+
+    await expect(initializeLocalMarketplace({
+      force: true,
+      env: workspace.env,
+      catalogResolution: resolution,
+    })).rejects.toThrow('injected catalog source replacement rollback');
+    moveSpy.mockRestore();
+
+    await expect(mutation).resolves.toMatchObject({ config: nextConfig });
+    await expect(fs.readFile(marketplaceConfigPath)).resolves.toEqual(marketplaceConfigBefore);
+    await expect(readCatalogSourcesConfigSnapshot(workspace.env)).resolves.toMatchObject({
+      config: nextConfig,
+      materialized: true,
+    });
+    await expect(validateLocalMarketplaceLayout(workspace.awHome)).resolves.toBeUndefined();
   });
 
   it('allows missing or damaged cache during rebuild and preserves the old cache on publish failure', async () => {

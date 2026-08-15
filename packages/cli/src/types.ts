@@ -59,6 +59,9 @@ export type StrictSemVerString = string;
 export type CliVersion = StrictSemVerString;
 export type CatalogVersion = StrictSemVerString;
 export type PluginVersion = StrictSemVerString;
+export type CatalogSourceId = string;
+export type PluginId = string;
+export type SourceIdentity = string;
 export type AgentVersionStatus = 'supported' | 'missing' | 'probeFailed' | 'unparseable' | 'tooOld';
 export type AgentVersionReasonCode =
   | 'agentVersionMissing'
@@ -72,6 +75,34 @@ export type NextStepKind = 'uiAction' | 'cliCommand' | 'manual';
 export type ManualNextStepKind = 'guidance' | 'blocker' | 'documentation';
 export type TargetWriteState = 'completed' | 'failed';
 export type ReceiptOverallState = 'succeeded' | 'failed';
+
+export type CatalogGitRefPolicy =
+  | { type: 'explicit'; ref: string }
+  | { type: 'cliChannel' };
+
+interface CatalogSourceBase {
+  id: CatalogSourceId;
+  primary: boolean;
+}
+
+export interface GitCatalogSource extends CatalogSourceBase {
+  type: 'git';
+  url: string;
+  refPolicy: CatalogGitRefPolicy;
+  subdir?: string;
+}
+
+export interface PathCatalogSource extends CatalogSourceBase {
+  type: 'path';
+  path: string;
+}
+
+export type CatalogSource = GitCatalogSource | PathCatalogSource;
+
+export interface CatalogSourcesConfig {
+  schemaVersion: 1;
+  sources: CatalogSource[];
+}
 
 export interface NextStepInstruction {
   kind: NextStepKind;
@@ -549,6 +580,19 @@ export interface CatalogManifest {
     full: CatalogManifestPackageIdentity;
   };
   entries: CatalogManifestEntry[];
+}
+
+export interface CatalogManifestV3Entry extends CatalogManifestEntry {
+  name: PluginId;
+  contentDigest: string;
+}
+
+export interface CatalogManifestV3 {
+  schemaVersion: 3;
+  catalogVersion: CatalogVersion;
+  channel: CatalogChannel;
+  compatibility: PluginCompatibility;
+  entries: CatalogManifestV3Entry[];
 }
 
 export interface PlatformPluginManifest {

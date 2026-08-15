@@ -6,6 +6,13 @@ export const CODEX_MARKETPLACE_PATH = '.agents/plugins/marketplace.json';
 export const CURRENT_CATALOG_MANIFEST_FILE = 'catalog-manifest.json';
 export const CURRENT_CATALOG_MANIFEST_PACKAGE = '@lesliechan721/aw-plugins-manifest';
 export const CURRENT_CATALOG_FULL_PACKAGE = '@lesliechan721/aw-plugins';
+export const CATALOG_SOURCES_FILE = 'catalog-sources.json';
+export const CATALOG_SOURCES_SCHEMA_VERSION = 1;
+export const CATALOG_SOURCE_IDENTITY_VERSION = 1;
+export const OFFICIAL_CATALOG_SOURCE_URL =
+  'https://github.com/lesliechan721-arch/agent-workflow.git';
+export const CATALOG_LATEST_REF = 'refs/heads/catalog/latest';
+export const CATALOG_BETA_REF = 'refs/heads/catalog/beta';
 export const DEFAULT_AGENT_VERSION_PROBE_TIMEOUT_MS = 5000;
 export const MINIMUM_AGENT_VERSIONS = {
   codex: '0.145.0',
