@@ -13,7 +13,6 @@ import {
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const localPluginRoot = path.resolve(scriptDir, '..');
 const pluginVersion = '0.1.0';
-const qualityGate = '开始非平凡实现前，先依据当前对话和仓库检查需求。检查本身不要求加载 Skill；只有检查后仍存在多种合理理解，且选错会明显影响交付结果、功能范围或验收，或多项小歧义合起来会决定成品形态时，才使用 `requirements-clarifier`。\n\n能从现有上下文查明、有明确项目惯例、容易调整、只涉及内部实现或用户已授权采用默认值的事项不必追问；会影响用户预期的关键默认值应明确说明，不要静默假设。';
 const skillNames = ['requirements-clarifier', 'decision-grill'];
 
 async function readJson(filePath) {
@@ -61,67 +60,6 @@ function assertOpenAiMetadata(openaiYaml, skillName) {
   assert.equal(shortDescriptionLength <= 64, true);
   assert.match(defaultPrompt, new RegExp(`\\$${skillName}`));
   assert.match(openaiYaml, /^policy:\n  allow_implicit_invocation: true$/m);
-}
-
-function assertSharedSkillContract(skill, skillName) {
-  assert.equal(skill.includes('[TODO:'), false);
-  assert.match(skill, new RegExp(`^name: ${skillName}$`, 'm'));
-  assert.match(skill, /^description: .+何时使用|^description: .+时使用/m);
-  assert.match(skill, /先只读查看/);
-  assert.match(skill, /已经说明或能查到的事实直接采用|能查到的事实自行确认/);
-  assert.match(skill, /(?:互相独立|确认独立)时每轮最多三题/);
-  assert.match(skill, /适合列选项时使用 \{\{questionTool\}\}/);
-  assert.match(skill, /待验证/);
-  assert.match(skill, /交还原任务|交还原工作流/);
-  assert.equal(skill.includes('request_user_input'), false);
-  assert.equal(skill.includes('AskUserQuestion'), false);
-  assert.doesNotMatch(skill, /^user-invocable:\s*false$/m);
-  assert.doesNotMatch(skill, /^disable-model-invocation:\s*true$/m);
-}
-
-function assertRequirementsClarifierContract(skill) {
-  assertSharedSkillContract(skill, 'requirements-clarifier');
-  assert.match(skill, /不是把所有细节都问一遍/);
-  assert.match(skill, /询问用户/);
-  assert.match(skill, /采用默认/);
-  assert.match(skill, /列为待验证/);
-  assert.match(skill, /猜错后的返工大于现在提问的成本/);
-  assert.match(skill, /不要仅因非平凡实现需要 agent 自查而使用/);
-  assert.match(skill, /权威规范和现有实现已覆盖行为、范围与验收/);
-  assert.match(skill, /只给宽泛目标不等于授权 agent 决定这些事项/);
-  assert.match(skill, /已有或已批准计划.*实施阶段仍有此类局部缺口.*使用本 Skill/);
-  assert.match(skill, /用户明确授权采用默认值/);
-  assert.match(skill, /明确希望当前任务本身通过逐轮访谈.*功能、权限或验收.*使用 decision-grill/);
-  assert.match(skill, /^description: "仅当当前任务是实现或修改具体结果.*逐轮访谈.*即使已有或已批准计划/m);
-  assert.match(skill, /用最少问题补齐足够实施的需求边界/);
-  assert.match(skill, /单项影响有限，但多项合在一起会决定功能形态时，也应先澄清/);
-  assert.match(skill, /已确认 \/ 采用的关键默认 \/ 待验证或未解决/);
-}
-
-function assertDecisionGrillContract(skill) {
-  assertSharedSkillContract(skill, 'decision-grill');
-  assert.match(skill, /计划、决策或想法进行逐轮访谈/);
-  assert.match(skill, /产物是经过讨论的共享理解/);
-  assert.match(skill, /不是 agent 为完成其它任务安排的内部计划/);
-  assert.match(skill, /当前任务本身需要通过逐轮访谈/);
-  assert.match(skill, /实现具体结果或执行已有计划时.*局部歧义，使用 requirements-clarifier/);
-  assert.match(skill, /用户或外层工作流要求.*逐轮推演.*仍使用本 Skill/);
-  assert.match(skill, /一次性说明、比较、评估、推荐或评审应直接回答/);
-  assert.match(skill, /^description: "仅当当前任务本身需要通过逐轮访谈.*一次性说明.*实现具体结果或执行已有计划/m);
-  assert.match(skill, /只需补齐局部需求歧义，使用 `requirements-clarifier`/);
-  assert.match(skill, /明确要求围绕该决定进行逐轮访谈时.*覆盖实施语境/);
-  assert.match(skill, /建立决策树/);
-  assert.match(skill, /事实由 agent 查明/);
-  assert.match(skill, /不要替用户作出仍属于用户的决定/);
-  assert.match(skill, /收到回答后重新计算当前前沿/);
-  assert.match(skill, /已经明确给出依赖链.*尚未决定的最上游节点/);
-  assert.match(skill, /不要在它之前自行插入新的发现问题/);
-  assert.match(skill, /不能确认问题互相独立时.*每轮只问当前最上游的一题/);
-  assert.match(skill, /不要为了完整而穷举低影响细节/);
-  assert.match(skill, /主题与边界 \/ 已定决定 \/ 明确委托 \/ 待验证 \/ 延后及风险 \/ 未解决/);
-  assert.match(skill, /请用户确认记录是否准确反映共享理解/);
-  assert.match(skill, /逐项给出决定不等于确认最终记录/);
-  assert.match(skill, /确认前不修改文件、不做原型/);
 }
 
 function assertAuditPolicy(document) {
@@ -249,8 +187,7 @@ function assertRoutingCorpus(document) {
   const conventionOverride = document.cases.find(
     (entry) => entry.id === 'export_override_convention',
   );
-  assert.match(conventionOverride.query, /现在开始实现订单导出/);
-  assert.doesNotMatch(conventionOverride.query, /先实现其它部分/);
+  assert.deepEqual(conventionOverride.expected_loaded_skills, ['requirements-clarifier']);
   assert.deepEqual(
     document.cases.find((entry) => entry.id === 'runner_explain').expected_loaded_skills,
     [],
@@ -260,11 +197,7 @@ function assertRoutingCorpus(document) {
     'neutral_export_repo',
   );
   const fullSpec = document.cases.find((entry) => entry.id === 'full_spec');
-  assert.match(fullSpec.query, /只读审阅/);
-  assert.match(fullSpec.query, /不进入需求确认或实施/);
-  assert.match(fullSpec.query, /不要运行测试或修改文件/);
   assert.equal(fullSpec.preconditions.current_task_is_read_only_review, true);
-  assert.doesNotMatch(fullSpec.query, /需要用户确认的关键需求歧义/);
 }
 
 function assertRequirementsRoutingCorpus(document) {
@@ -352,17 +285,11 @@ test('manifest declares two skills and the implementation requirements gate', as
   assert.equal('products' in manifest.marketplace.policy, false);
   assert.equal(manifest.interface.displayName, 'Ask Me');
   assert.deepEqual(manifest.interface.capabilities, ['Skills', 'Instructions']);
-  assert.deepEqual(manifest.extensions, {
-    instructions: [
-      {
-        name: 'quality-gate',
-        title: '实施前需求检查',
-        content: qualityGate,
-      },
-    ],
-  });
-  assert.equal(qualityGate.includes('decision-grill'), false);
-  assert.match(qualityGate, /检查本身不要求加载 Skill/);
+  assert.equal(manifest.extensions.instructions.length, 1);
+  assert.equal(manifest.extensions.instructions[0].name, 'quality-gate');
+  assert.equal(manifest.extensions.instructions[0].title, '实施前需求检查');
+  assert.equal(typeof manifest.extensions.instructions[0].content, 'string');
+  assert.equal(manifest.extensions.instructions[0].content.length > 0, true);
   assert.deepEqual(manifest.buildConfig, {
     templates: {
       include: ['skills/**/*.md'],
@@ -382,46 +309,26 @@ test('manifest declares two skills and the implementation requirements gate', as
   assert.equal('artifacts' in manifest, false);
 });
 
-test('source package contains only the two redesigned skills', async () => {
+test('source package contains the declared Skill file structures', async () => {
   const skillDirectories = (await readdir(path.join(context.sourceRoot, 'skills'))).sort();
   assert.deepEqual(skillDirectories, [...skillNames].sort());
 
-  const [requirementsSkill, requirementsOpenAi, decisionSkill, decisionOpenAi] =
-    await Promise.all([
-      readFile(
-        path.join(context.sourceRoot, 'skills', 'requirements-clarifier', 'SKILL.md'),
-        'utf8',
-      ),
-      readFile(
-        path.join(
-          context.sourceRoot,
-          'skills',
-          'requirements-clarifier',
-          'agents',
-          'openai.yaml',
-        ),
-        'utf8',
-      ),
-      readFile(
-        path.join(context.sourceRoot, 'skills', 'decision-grill', 'SKILL.md'),
-        'utf8',
-      ),
-      readFile(
-        path.join(
-          context.sourceRoot,
-          'skills',
-          'decision-grill',
-          'agents',
-          'openai.yaml',
-        ),
-        'utf8',
-      ),
-    ]);
-
-  assertRequirementsClarifierContract(requirementsSkill);
-  assertDecisionGrillContract(decisionSkill);
-  assertOpenAiMetadata(requirementsOpenAi, 'requirements-clarifier');
-  assertOpenAiMetadata(decisionOpenAi, 'decision-grill');
+  for (const skillName of skillNames) {
+    const skillRoot = path.join(context.sourceRoot, 'skills', skillName);
+    const skillEntries = await readdir(skillRoot, { withFileTypes: true });
+    assert.deepEqual(
+      skillEntries
+        .map((entry) => `${entry.name}:${entry.isDirectory() ? 'directory' : 'file'}`)
+        .sort(),
+      [
+        'README.md:file',
+        'SKILL.md:file',
+        'agents:directory',
+        'evals:directory',
+      ],
+    );
+    assert.deepEqual(await readdir(path.join(skillRoot, 'agents')), ['openai.yaml']);
+  }
 });
 
 test('trigger corpora preserve balanced single-Skill coverage and exact routing', async () => {
@@ -523,18 +430,10 @@ test('trigger corpora preserve balanced single-Skill coverage and exact routing'
       .workspace_fixture,
     'account_pause_gap_repo',
   );
-  assert.match(
-    requirements.cases.find((entry) => entry.id === 'n03_delegated_defaults').query,
-    /src\/logging\/format-entry\.ts.*formatDebugContext\(value\)/,
-  );
   assert.equal(
     decision.cases.find((entry) => entry.id === 'n08_agent_internal_planning')
       .workspace_fixture,
     'implementation_repo',
-  );
-  assert.match(
-    requirements.cases.find((entry) => entry.id === 'n07_internal_planning').query,
-    /docs\/approved-migration\.md/,
   );
   assert.equal(
     requirements.cases.find((entry) => entry.id === 'n06_complete_spec')
@@ -545,18 +444,6 @@ test('trigger corpora preserve balanced single-Skill coverage and exact routing'
     requirements.cases.find((entry) => entry.id === 'n07_internal_planning')
       .workspace_fixture,
     'session_migration_repo',
-  );
-  assert.match(
-    requirements.cases.find((entry) => entry.id === 'n10_easy_default').query,
-    /formatDebugContext\(value\)/,
-  );
-  assert.match(
-    decision.cases.find((entry) => entry.id === 'n01_observed_runner_explanation').query,
-    /MCP\/CI runner.*实现难度/,
-  );
-  assert.match(
-    decision.cases.find((entry) => entry.id === 'p04_runner_choice_to_plan').query,
-    /关键取舍逐项问我.*形成落地计划/,
   );
   assert.equal(
     decision.cases.find((entry) => entry.id === 'n02_solution_comparison')
@@ -774,7 +661,7 @@ test('each Skill owns an independent central eval manifest', async () => {
   }
 });
 
-test('behavior corpora preserve all redesigned assertions in executable conversation shape', async () => {
+test('behavior corpora preserve executable conversation shape', async () => {
   const [requirements, requirementsRelease, decision, decisionRelease] = await Promise.all([
     readJson(path.join(
       context.sourceRoot,
@@ -847,7 +734,6 @@ test('behavior corpora preserve all redesigned assertions in executable conversa
   ], 'representative');
 
   for (const entry of [...requirementsRelease.evals, ...decisionRelease.evals]) {
-    assert.doesNotMatch(entry.prompt, /使用问题工具|只询问|第一轮请|收到回答后/);
     assert.deepEqual(
       {
         current_owner_skill_available:
@@ -866,180 +752,6 @@ test('behavior corpora preserve all redesigned assertions in executable conversa
       },
     );
   }
-  assert.match(
-    decisionRelease.evals.find((entry) => entry.id === 'natural-access-frontier').prompt,
-    /面向谁会决定.*项目.*访问范围又会影响权限和计费/,
-  );
-  assert.match(
-    requirementsRelease.evals.find(
-      (entry) => entry.id === 'natural-combined-ambiguities',
-    ).prompt,
-    /三项可以分别选择.*不限制另外两项/,
-  );
-  const naturalOwnerChoice = decisionRelease.evals.find(
-    (entry) => entry.id === 'natural-owner-choice',
-  );
-  assert.equal(naturalOwnerChoice.preconditions.repository_lookup_required, true);
-  assert.match(naturalOwnerChoice.prompt, /docs\/service-split-decisions\.md/);
-  assert.match(
-    naturalOwnerChoice.workspace_files['docs/service-split-decisions.md'],
-    /交付期限为八周.*唯一未决事项/s,
-  );
-  assert.match(naturalOwnerChoice.review.checks.join('\n'), /读取并采用文档/);
-
-  const naturalMixedAmbiguity = requirementsRelease.evals.find(
-    (entry) => entry.id === 'natural-mixed-ambiguity',
-  );
-  assert.equal(naturalMixedAmbiguity.preconditions.repository_lookup_required, true);
-  assert.match(naturalMixedAmbiguity.prompt, /docs\/registration-verification\.md/);
-  assert.match(
-    naturalMixedAmbiguity.workspace_files['docs/registration-verification.md'],
-    /十分钟后失效.*内部可逆实现/s,
-  );
-  assert.match(naturalMixedAmbiguity.review.checks.join('\n'), /读取项目文档/);
-
-  const engineeringEvidence = requirementsRelease.evals.find(
-    (entry) => entry.id === 'natural-engineering-evidence',
-  );
-  assert.equal(engineeringEvidence.preconditions.implementation_inputs_complete, false);
-  assert.match(engineeringEvidence.prompt, /没有服务源码.*具体规格.*标准负载定义/);
-  assert.match(engineeringEvidence.oracle.allowed_variance, /一至三个缺失的客观实施输入/);
-  assert.equal(engineeringEvidence.scripted_replies.length, 1);
-  assert.equal(
-    'expected_question_count' in engineeringEvidence.scripted_replies[0],
-    false,
-  );
-  assert.match(engineeringEvidence.review.checks.join('\n'), /单轮最多询问三个/);
-  assert.match(
-    engineeringEvidence.review.checks.join('\n'),
-    /在既定验收口径下达到性能目标列为待验证事项/,
-  );
-
-  assert.equal(
-    requirements.evals.find((entry) => entry.id === 'question-shape').scripted_replies.length,
-    0,
-  );
-  const transparentDefault = requirements.evals.find(
-    (entry) => entry.id === 'transparent-default',
-  );
-  assert.match(transparentDefault.prompt, /除空状态样式外/);
-  assert.match(transparentDefault.prompt, /数据对象与范围.*验收都已明确/);
-  assert.equal(transparentDefault.scripted_replies.length, 0);
-  assert.equal(
-    decision.evals.find((entry) => entry.id === 'challenge-assumption')
-      .scripted_replies.length,
-    0,
-  );
-  const decisionFrontier = decision.evals.find((entry) => entry.id === 'decision-frontier');
-  assert.match(decisionFrontier.expected_output, /第一轮只讨论目标用户/);
-  assert.match(decisionFrontier.review.checks.join('\n'), /只列出访问边界/);
-  assert.equal(
-    decision.evals.find((entry) => entry.id === 'main-alternatives')
-      .scripted_replies.length,
-    0,
-  );
-  assert.equal(
-    decision.evals.find((entry) => entry.id === 'reopen-existing-decision')
-      .scripted_replies[0].expected_question_count,
-    1,
-  );
-  assert.equal(
-    decision.evals.find((entry) => entry.id === 'avoid-exhaustion')
-      .scripted_replies[0].expected_question_count,
-    1,
-  );
-  assert.equal(
-    requirements.evals.find((entry) => entry.id === 'combined-small-ambiguities')
-      .scripted_replies[0].expected_question_count,
-    3,
-  );
-  assert.match(
-    requirements.evals.find((entry) => entry.id === 'question-shape').prompt,
-    /外层实现工作流现在进入需求澄清阶段/,
-  );
-  assert.match(
-    decision.evals.find((entry) => entry.id === 'decision-record').prompt,
-    /外层协作决策访谈现在进入决策记录阶段/,
-  );
-
-  assert.equal(
-    decision.evals.find((entry) => entry.id === 'low-prompt-frontier')
-      .scripted_replies.length,
-    2,
-  );
-  assert.match(
-    decision.evals.find((entry) => entry.id === 'low-prompt-frontier').prompt,
-    /内部成员、受邀外部合作伙伴或公开访客.*仅受邀项目、同组织跨项目或公开访问/,
-  );
-  assert.equal(
-    decision.evals.find((entry) => entry.id === 'shared-understanding-confirmation')
-      .scripted_replies[0].expected_question_count,
-    1,
-  );
-  for (const id of [
-    'reopen-existing-decision',
-    'avoid-exhaustion',
-    'shared-understanding-confirmation',
-  ]) {
-    assert.doesNotMatch(
-      decision.evals.find((entry) => entry.id === id).prompt,
-      /第一轮请使用问题工具|按访谈协议|确认门禁/,
-    );
-  }
-  for (const id of [
-    'known-fact-before-question',
-    'dependent-frontier',
-    'handoff-on-stop',
-  ]) {
-    assert.doesNotMatch(
-      requirements.evals.find((entry) => entry.id === id).prompt,
-      /第一轮请使用问题工具|使用问题工具只确认|请交接/,
-    );
-  }
-  assert.match(
-    requirements.evals.find((entry) => entry.id === 'handoff-on-stop')
-      .review.checks.join('\n'),
-    /同步或异步路径可能造成超时或实施返工/,
-  );
-  assert.equal(
-    decision.evals.find((entry) => entry.id === 'reopen-on-correction')
-      .scripted_replies.length,
-    2,
-  );
-
-  const readBeforeQuestion = decision.evals.find(
-    (entry) => entry.id === 'read-before-question',
-  );
-  assert.match(readBeforeQuestion.prompt, /减少设计稿评审中的版本来回传递/);
-  assert.match(readBeforeQuestion.prompt, /3–10 人的独立设计团队/);
-  assert.match(readBeforeQuestion.prompt, /2027 年第一季度完成 12 周试点/);
-  assert.match(readBeforeQuestion.prompt, /不要在本轮提问/);
-  assert.equal(readBeforeQuestion.scripted_replies.length, 0);
-  assert.match(readBeforeQuestion.review.checks.join('\n'), /具体路线图事实/);
-
-  const decisionRecord = decision.evals.find((entry) => entry.id === 'decision-record');
-  assert.match(decisionRecord.prompt, /产品负责人在本周五前确认数据驻留条款/);
-  assert.match(
-    decisionRecord.review.checks.join('\n'),
-    /完整保留产品负责人在本周五前确认数据驻留条款的委托/,
-  );
-  assert.match(decisionRecord.review.checks.join('\n'), /不生成空的未解决项/);
-  assert.match(decisionRecord.review.checks.join('\n'), /每月查询量不超过 50 万次/);
-
-  const readme = (await Promise.all(skillNames.map((skill) => readFile(
-    path.join(context.sourceRoot, 'skills', skill, 'evals', 'README.md'),
-    'utf8',
-  )))).join('\n');
-  assert.match(readme, /use_project_rules: true/);
-  assert.match(readme, /requirements-clarifier-evals\.json/);
-  assert.match(readme, /requirements-clarifier-release-evals\.json/);
-  assert.match(readme, /decision-grill-evals\.json/);
-  assert.match(readme, /decision-grill-release-evals\.json/);
-  assert.match(readme, /behavior-diagnostic/);
-  assert.doesNotMatch(
-    readme,
-    /(Full Access|allow-unmanaged-processes|后代进程|完整批次|review:publish|Claude.*不能把 Codex)/s,
-  );
 });
 
 test('prepared bundle renders the platform question tool for both skills', async () => {
@@ -1052,6 +764,10 @@ test('prepared bundle renders the platform question tool for both skills', async
   );
   assert.equal(platformManifest.name, 'ask-me');
   assert.equal(platformManifest.skills, `./${context.platform}/skills`);
+  assert.deepEqual(
+    (await readdir(path.join(context.bundleRoot, context.platform, 'skills'))).sort(),
+    [...skillNames].sort(),
+  );
 
   const expectedTool = context.platform === 'codex'
     ? '`request_user_input`'
@@ -1072,17 +788,13 @@ test('prepared bundle renders the platform question tool for both skills', async
       readFile(path.join(skillRoot, 'agents', 'openai.yaml'), 'utf8'),
     ]);
 
-    if (skillName === 'requirements-clarifier') {
-      assertRequirementsClarifierContract(
-        skill.replaceAll(expectedTool, '{{questionTool}}'),
-      );
-    } else {
-      assertDecisionGrillContract(skill.replaceAll(expectedTool, '{{questionTool}}'));
-    }
+    assert.match(skill, new RegExp(`^name: ${skillName}$`, 'm'));
     assert.equal(skill.includes(expectedTool), true);
     assert.equal(skill.includes(`\`${expectedTool}\``), false);
     assert.equal(skill.includes(otherTool), false);
     assert.equal(skill.includes('{{questionTool}}'), false);
+    // Static contract exception: unresolved author placeholders can ship to users; behavior test is not suitable because placeholder absence is a deterministic artifact property.
+    assert.equal(skill.includes('[TODO:'), false);
     assertOpenAiMetadata(openaiYaml, skillName);
   }
 

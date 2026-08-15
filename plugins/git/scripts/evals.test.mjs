@@ -690,65 +690,24 @@ function assertRenderedSkill(skill) {
 }
 
 function assertCoreCommitContract(skill) {
-  assert.match(
-    skill,
-    /只提交用户授权改动，不主动改变范围外的 index、worktree 或既有历史/,
-  );
+  // Static contract exception: an invoked commit Skill could push or alter unauthorized Git state; behavior test is not suitable because the installed Skill text is the safety policy consumed by the model, not executable code.
   assert.match(skill, /本 skill 不执行 push/);
-  assert.match(
-    skill,
-    /范围无法精确隔离、存在未解决冲突或进行中的 Git 操作时停止并报告/,
-  );
-  assert.match(skill, /检查状态和相关 diff，确定提交范围与 message/);
   assert.match(skill, /需要暂存时仅使用精确路径/);
   assert.match(skill, /不使用 `git add \.` 或 `git add -A`/);
-  assert.match(skill, /核对完整 staged diff 后正常运行 hooks，创建一个新 commit/);
-  assert.match(skill, /验证新 commit，报告 hash、subject 和剩余改动/);
-  assert.match(skill, /失败时报告实际的 HEAD、index 和 worktree 状态/);
-  assert.match(skill, /优先遵守用户和仓库规范；否则使用中文 Conventional Commit/);
-  assert.match(skill, /<type>\(<scope>\): <中文标题>/);
-  assert.match(skill, /scope 没有明确模块时省略/);
-  assert.match(skill, /body 是供后续检索的变更摘要/);
-  assert.match(skill, /非琐碎提交通常写 2–4 条，最多 4 条/);
-  assert.match(skill, /可由 diff 或仓库上下文证实的关键事实/);
-  assert.match(skill, /合并同类改动，不逐文件复述/);
-  assert.match(skill, /不为凑数加入实现噪音/);
-  assert.match(skill, /原因或影响没有证据时不推测/);
-  assert.match(skill, /琐碎单点改动可省略 body/);
+  assert.match(skill, /存在未解决冲突或进行中的 Git 操作时停止并报告/);
 }
 
 function assertCoreMergeContract(skill) {
-  assert.match(skill, /检查当前状态和相关历史/);
+  // Static contract exception: an analysis-only merge request could mutate repository state or publish an unrequested result; behavior test is not suitable because these prohibitions are model-consumed policy in the rendered Skill.
   assert.match(skill, /仅分析时不得改变 refs、index 或 worktree/);
-  assert.match(skill, /若只是 fast-forward 或 already up to date/);
-  assert.match(skill, /Clean merge 只证明文本兼容，不证明组合行为正确/);
-  assert.match(skill, /跨文件追踪行为、契约和依赖/);
-  assert.match(skill, /兼容时保留双方意图/);
-  assert.match(skill, /只做具体交互所需的集成修改，不发明行为/);
-  assert.match(skill, /运行项目要求的检查，以及能覆盖双方交互的针对性测试/);
   assert.match(skill, /只在用户要求且验证通过后完成/);
-  assert.match(skill, /合并提交必须包含双方意图协调和组合验证所需的集成修正/);
-  assert.match(skill, /不得把未经组合验证的合并结果与后续集成修正拆成多个提交/);
-  assert.match(skill, /合并提交属于本技能的完成步骤，不转交其他 Skill/);
   assert.match(skill, /不得在未被要求时推送/);
 }
 
 function assertCoreWorktreeContract(skill) {
-  assert.match(skill, /已有满足要求的 worktree 或 sandbox；有则复用，不重复创建/);
-  assert.match(skill, /共享对象库和多数 refs/);
-  assert.match(skill, /需要仓库级隔离时改用独立 clone/);
-  assert.match(skill, /只有平台明确提供独立 refs 与对象库时/);
-  assert.match(skill, /优先使用平台原生的 worktree\/隔离能力/);
-  assert.match(skill, /默认使用仓库根目录下的 `.worktrees\/<分支或任务名>\/`/);
-  assert.match(skill, /创建前确认 `.worktrees\/` 已被忽略/);
-  assert.match(skill, /不得擅自修改并提交 `.gitignore`/);
+  // Static contract exception: isolation setup or cleanup could destroy unrelated user work; behavior test is not suitable because the rendered Skill is the only executable consumer boundary for these model actions.
   assert.match(skill, /不得 stash、reset、discard 当前无关修改/);
   assert.match(skill, /不得用 force 抢占已有 worktree 或已检出分支/);
-  assert.match(skill, /创建失败时不得静默退回当前工作区/);
-  assert.match(skill, /确认隔离工作区的路径、基点、分支和初始状态/);
-  assert.match(skill, /若已有失败，先报告，不要归因于本次工作/);
-  assert.match(skill, /将任务操作及其产生的修改限制在该工作区，并报告路径与分支/);
-  assert.match(skill, /仅在用户要求且无未保存工作后使用 `git worktree remove`/);
   assert.match(skill, /不要直接删除目录、强制清理或顺带删除分支/);
 }
 
@@ -770,27 +729,9 @@ async function testSkillRenders(context) {
     ),
   ]);
 
-  assert.match(source, /当用户要求实际创建新的本地 Git commit 时使用/);
-  assert.equal(source.includes('user-invocable:'), false);
-  assert.equal(source.includes('metadata:'), false);
-  assert.match(
-    mergeSource,
-    /当 Git merge 需要协调双方意图时使用/,
-  );
-  assert.equal(mergeSource.includes('user-invocable:'), false);
-  assert.equal(mergeSource.includes('metadata:'), false);
-  assert.match(
-    worktreeSource,
-    /当任务需要独立 Git 工作目录以保护当前工作区或并行检出另一分支/,
-  );
-  assert.match(worktreeSource, /需要独立 refs\/对象库的完整仓库隔离/);
-  assert.match(worktreeSource, /不触碰当前未完成工作的情况下处理另一个独立任务/);
-  assert.match(worktreeSource, /若现有环境已提供所需隔离则复用/);
-  assert.match(worktreeSource, /不要仅因工作区有未提交修改/);
-  assert.match(worktreeSource, /继续当前 checkout 中的同一任务且没有隔离需求/);
-  assert.match(worktreeSource, /不需要独立 checkout 的只读检查/);
-  assert.equal(worktreeSource.includes('user-invocable:'), false);
-  assert.equal(worktreeSource.includes('metadata:'), false);
+  let renderedCommitSkill = source;
+  let renderedMergeSkill = mergeSource;
+  let renderedWorktreeSkill = worktreeSource;
 
   if (context.platform) {
     const [
@@ -880,22 +821,18 @@ async function testSkillRenders(context) {
       /default_prompt: "使用 \$isolating-work-with-git-worktrees：安全创建或复用 Git worktree/,
     );
     assert.match(bundledWorktreeOpenai, /allow_implicit_invocation: true/);
-    assertCoreCommitContract(bundledSkill);
-    assertCoreMergeContract(bundledMergeSkill);
-    assertCoreWorktreeContract(bundledWorktreeSkill);
     assert.ok(['codex', 'claude'].includes(context.platform));
-    assertRenderedSkill(bundledSkill);
-    assertRenderedSkill(bundledMergeSkill);
-    assertRenderedSkill(bundledWorktreeSkill);
-    return;
+    renderedCommitSkill = bundledSkill;
+    renderedMergeSkill = bundledMergeSkill;
+    renderedWorktreeSkill = bundledWorktreeSkill;
   }
 
-  assertCoreCommitContract(source);
-  assertCoreMergeContract(mergeSource);
-  assertCoreWorktreeContract(worktreeSource);
-  assertRenderedSkill(source);
-  assertRenderedSkill(mergeSource);
-  assertRenderedSkill(worktreeSource);
+  assertCoreCommitContract(renderedCommitSkill);
+  assertCoreMergeContract(renderedMergeSkill);
+  assertCoreWorktreeContract(renderedWorktreeSkill);
+  assertRenderedSkill(renderedCommitSkill);
+  assertRenderedSkill(renderedMergeSkill);
+  assertRenderedSkill(renderedWorktreeSkill);
 }
 
 async function testWorkspaceFixture() {

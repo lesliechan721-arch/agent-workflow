@@ -158,6 +158,9 @@ describe('pack smoke', () => {
     expect(snapshotEntriesAfter).toEqual(snapshotEntriesBefore);
     await expect(fs.readJson(path.join(unpackedPackageRoot, 'package.json'))).resolves.toMatchObject({
       name: '@lesliechan721/aw',
+      engines: {
+        node: '>=22',
+      },
       files: ['dist/'],
     });
   });

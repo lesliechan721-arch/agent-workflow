@@ -389,7 +389,7 @@ describe('marketplace bundle', () => {
     await expect(validateBundleLayout(embeddedRoot)).resolves.toBeUndefined();
   });
 
-  it('builds Claude bundle hooks with public and native events under strict validation', async () => {
+  it('wires generated Claude hooks through the strict bundle manifest boundary', async () => {
     const repoRoot = await makeTempRepo();
     const manifestPath = path.join(repoRoot, 'plugins', 'git-commit', '.agents-plugin', 'plugin.json');
     const manifest = await fs.readJson(manifestPath);
@@ -413,37 +413,18 @@ describe('marketplace bundle', () => {
 
     const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
     tempDirs.push(embeddedRoot);
+    const pluginRoot = path.join(embeddedRoot, 'plugins', 'git-commit');
 
     await expect(validateBundleLayout(embeddedRoot)).resolves.toBeUndefined();
-    await expect(
-      fs.readJson(path.join(embeddedRoot, 'plugins', 'git-commit', 'claude', 'hooks', 'hooks.json')),
-    ).resolves.toEqual({
-      hooks: {
-        Notification: [
-          {
-            matcher: '*',
-            hooks: [{ type: 'command', command: 'echo claude notification' }],
-          },
-        ],
-        PreToolUse: [
-          {
-            matcher: 'Bash',
-            hooks: [{ type: 'command', command: 'echo git hook' }],
-          },
-        ],
-        SessionStart: [
-          {
-            matcher: 'startup|resume|clear',
-            hooks: [{ type: 'command', command: 'echo shared session start' }],
-          },
-        ],
-      },
-    });
-    await expect(
-      fs.readJson(path.join(embeddedRoot, 'plugins', 'git-commit', '.claude-plugin', 'plugin.json')),
-    ).resolves.toMatchObject({
+    const claudeManifest = await fs.readJson(
+      path.join(pluginRoot, '.claude-plugin', 'plugin.json'),
+    );
+    expect(claudeManifest).toMatchObject({
       hooks: './claude/hooks/hooks.json',
     });
+    await expect(
+      fs.pathExists(path.resolve(pluginRoot, claudeManifest.hooks)),
+    ).resolves.toBe(true);
   });
 
   it('rejects rendered native assets and hooks with invalid bundle semantics', async () => {

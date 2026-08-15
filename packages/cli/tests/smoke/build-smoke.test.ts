@@ -181,6 +181,79 @@ describe('build smoke', () => {
     });
   }, 120_000);
 
+  it('validates static Skill evals against the built central driver', async () => {
+    const snapshot = await requireBuildSnapshot();
+    const tempRoot = await createSmokeTempRoot(
+      'aw-static-eval-central-contract-smoke-',
+      'static eval central contract smoke temp root',
+    );
+    const tempRepo = path.join(tempRoot, 'repo');
+    const runnerPath = path.join(
+      tempRepo,
+      '.agents',
+      'skills',
+      'skill-review',
+      'scripts',
+      'run_static_skill_evals.mjs',
+    );
+    const evalManifest = await fs.readJson(path.join(
+      root,
+      '.agents',
+      'skills',
+      'create-aw-plugin',
+      'evals',
+      'manifest.json',
+    )) as {
+      workspace: {
+        copy: Array<{ from: string }>;
+      };
+    };
+
+    await fs.copy(
+      path.join(root, '.agents', 'skills', 'create-aw-plugin'),
+      path.join(tempRepo, '.agents', 'skills', 'create-aw-plugin'),
+    );
+    await fs.copy(
+      path.join(
+        root,
+        '.agents',
+        'skills',
+        'skill-review',
+        'scripts',
+        'run_static_skill_evals.mjs',
+      ),
+      runnerPath,
+    );
+    for (const entry of evalManifest.workspace.copy) {
+      const target = path.join(tempRepo, entry.from);
+      if (!(await fs.pathExists(target))) {
+        await fs.copy(path.join(root, entry.from), target);
+      }
+    }
+    await fs.copy(
+      await fs.realpath(path.join(root, 'node_modules', 'yaml')),
+      path.join(tempRepo, 'node_modules', 'yaml'),
+    );
+    await fs.ensureSymlink(
+      snapshot.cliDistRoot,
+      path.join(tempRepo, 'packages', 'cli', 'dist'),
+      'dir',
+    );
+
+    const result = await execFileAsync(
+      'node',
+      [runnerPath, 'create-aw-plugin', '--validate-only'],
+      { cwd: tempRepo, env: process.env, maxBuffer: 10 * 1024 * 1024 },
+    );
+
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      ok: true,
+      skill: 'create-aw-plugin',
+      suites: ['trigger', 'behavior'],
+      centralContract: true,
+    });
+  });
+
   it('ensures the build and produces plugins-dist through the compiled bundle script', async () => {
     const snapshot = await requireBuildSnapshot();
     const outputRoot = snapshot.catalogOutputRoot;

@@ -2314,7 +2314,66 @@ describe('authoring tools', () => {
     });
   });
 
-  it('keeps authoring docs aligned with the build-bundle model', async () => {
+  it('validates the documented minimum plugin manifest example', async () => {
+    const root = repoRoot();
+    const manifestSpecDoc = await fs.readFile(
+      path.join(
+        root,
+        '.agents',
+        'skills',
+        'create-aw-plugin',
+        'references',
+        'plugin-manifest-spec.md',
+      ),
+      'utf8',
+    );
+
+    expect(() =>
+      validatePluginManifest(
+        path.join(os.tmpdir(), 'documented-plugin'),
+        extractJsonFenceAfter(manifestSpecDoc, '## 最小 manifest 示例'),
+      ),
+    ).not.toThrow();
+  });
+
+  it('keeps the generated Skill frontmatter reference current', async () => {
+    await execFileAsync(
+      'node',
+      [
+        createAwPluginScriptPath('generate_skill_frontmatter_reference.mjs'),
+        '--check',
+      ],
+      { cwd: repoRoot(), env: process.env },
+    );
+  });
+
+  it('validates the create-aw-plugin static eval contract', async () => {
+    const root = repoRoot();
+    const result = await execFileAsync(
+      'node',
+      [
+        path.join(
+          root,
+          '.agents',
+          'skills',
+          'skill-review',
+          'scripts',
+          'run_static_skill_evals.mjs',
+        ),
+        'create-aw-plugin',
+        '--validate-only',
+      ],
+      { cwd: root, env: process.env },
+    );
+
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      ok: true,
+      skill: 'create-aw-plugin',
+      suites: ['trigger', 'behavior'],
+    });
+  });
+
+  it('validates the checked-in authoring eval corpora with the shared validator', async () => {
     const root = repoRoot();
     const creatorSkillRoot = path.join(
       root,
@@ -2322,435 +2381,7 @@ describe('authoring tools', () => {
       'skills',
       'create-aw-plugin',
     );
-    const refBase = path.join(
-      creatorSkillRoot,
-      'references',
-    );
-    const skillDoc = await fs.readFile(
-      path.join(creatorSkillRoot, 'SKILL.md'),
-      'utf8',
-    );
-    const manifestSpecDoc = await fs.readFile(
-      path.join(refBase, 'plugin-manifest-spec.md'),
-      'utf8',
-    );
-    const triggersDoc = await fs.readFile(
-      path.join(refBase, 'skills-and-triggers.md'),
-      'utf8',
-    );
-    const extensionsSpecDoc = await fs.readFile(
-      path.join(refBase, 'extensions-spec.md'),
-      'utf8',
-    );
-    const slashCommandsDoc = await fs.readFile(
-      path.join(refBase, 'slash-commands.md'),
-      'utf8',
-    );
-    const claudeOnlyDoc = await fs.readFile(
-      path.join(refBase, 'claude-only-capabilities.md'),
-      'utf8',
-    );
-    const buildConfigDoc = await fs.readFile(
-      path.join(refBase, 'build-config-spec.md'),
-      'utf8',
-    );
-    const mcpAppsDoc = await fs.readFile(
-      path.join(refBase, 'mcp-and-apps.md'),
-      'utf8',
-    );
-    const skillDesignDoc = await fs.readFile(
-      path.join(refBase, 'skill-design.md'),
-      'utf8',
-    );
-    const skillScriptsDoc = await fs.readFile(
-      path.join(refBase, 'skill-scripts.md'),
-      'utf8',
-    );
-    const skillEvaluationDoc = await fs.readFile(
-      path.join(refBase, 'skill-evaluation.md'),
-      'utf8',
-    );
-    const awScriptsDoc = await fs.readFile(
-      path.join(refBase, 'aw-scripts-config-lifecycle.md'),
-      'utf8',
-    );
-    const skillFrontmatterCapabilitiesDoc = await fs.readFile(
-      path.join(refBase, 'skill-frontmatter-capabilities.generated.md'),
-      'utf8',
-    );
-    const creatorEvalFixtures = await fs.readJson(
-      path.join(creatorSkillRoot, 'evals', 'evals.json'),
-    );
-    const creatorTriggerFixtures = await fs.readJson(
-      path.join(creatorSkillRoot, 'evals', 'trigger-cases.json'),
-    );
-    const exampleEvalFixtures = await fs.readJson(
-      path.join(
-        refBase,
-        '.examples',
-        'code-review',
-        'skills',
-        'review-workflow',
-        'evals',
-        'evals.json',
-      ),
-    );
-
-    expect(skillDoc).toContain('`plugins/marketplace-source.json`');
-    expect(skillDoc).toContain('`pnpm build`');
-    expect(skillDoc).toContain(
-      '新插件保留脚手架写入的初始 version（默认 `0.1.0`），首版不创建 release intent',
-    );
-    expect(skillDoc).toContain('`.claude-plugin/plugin.json`');
-    expect(skillDoc).toContain('`.codex-plugin/plugin.json`');
-    expect(skillDoc).toContain('所有插件都必须有 `.agents-plugin/plugin.json`');
-    expect(skillDoc).not.toContain('唯一必需的文件始终只有 `.agents-plugin/plugin.json`');
-    expect(skillDoc).not.toContain('同步 `.claude-plugin/plugin.json` 和 `.codex-plugin/plugin.json`');
-    expect(skillDoc).not.toContain('默认把插件注册到两份 marketplace manifest');
-    expect(skillDoc).toContain('不要为了“混合型插件”一次加载全部文档');
-    expect(skillDoc).toContain('按变更面构建');
-    expect(skillDoc).toContain('只有上述顶层作者目录或 test-only 材料变化时默认跳过 build');
-    expect(skillDoc).toContain('版本/catalog、dynamic artifact、eval/review 和 platform scope 的细节按上面的阅读路由');
-    expect(skillDoc).not.toContain('Catalog 分为 `@lesliechan721/aw-plugins-manifest`');
-    expect(skillDoc).toContain('`references/skill-design.md`');
-    expect(skillDoc).toContain('`references/skill-scripts.md`');
-    expect(skillDoc).toContain('`references/skill-evaluation.md`');
-    expect(skillDoc).toContain('validate_eval_cases.mjs');
-    expect(skillDoc).toContain('只有通过 Case Admission 且归因为 `skill-defect` 的失败');
-    expect(skillDoc).toContain('eval-change-safety');
-    expect(skillDoc).toContain('`references/slash-commands.md`');
-    expect(skillDoc).toContain('`--with-mcp` / `--with-apps`');
-    expect(skillDoc).not.toContain('不在插件 manifest 声明最低 Codex / Claude Code 版本');
-    expect(skillDoc).toContain('`--strict-agent-skills`');
-    expect(skillDoc).toContain('`references/skill-frontmatter-capabilities.generated.md`');
-    expect(skillDoc).not.toContain('`plugin/install`');
-    expect(skillDoc).not.toContain('`plugin/uninstall`');
-
-    expect(manifestSpecDoc).toContain('`plugins/marketplace-source.json`');
-    expect(manifestSpecDoc).toContain('不是运行时 marketplace manifest');
-    expect(manifestSpecDoc).toContain('packages/cli/plugins-dist/');
-    expect(manifestSpecDoc).toContain('`policy.allow_implicit_invocation`');
-    expect(manifestSpecDoc).toContain('`disable-model-invocation`');
-    expect(manifestSpecDoc).toContain('`user-invocable`');
-    expect(manifestSpecDoc).toContain('原生元数据是唯一真值');
-    expect(manifestSpecDoc).not.toContain('npx eslint *');
-    expect(manifestSpecDoc).not.toContain('npx prettier *');
-    expect(manifestSpecDoc).toContain('插件 manifest 不声明 per-plugin 宿主 agent 版本');
-    expect(manifestSpecDoc).toContain(
-      '新插件保留 manifest 中的初始 version，脚手架默认使用 `0.1.0`，首版不创建 release intent',
-    );
-    expect(manifestSpecDoc).toContain('Codex `>= 0.145.0`、Claude Code `>= 2.1.88`');
-    expect(() =>
-      validatePluginManifest(
-        '/tmp/coding-standards',
-        extractJsonFenceAfter(manifestSpecDoc, '## 最小 manifest 示例'),
-      ),
-    ).not.toThrow();
-
-    expect(triggersDoc).toContain('两个平台的触发开关完全独立');
-    expect(triggersDoc).toContain('`policy.allow_implicit_invocation`');
-    expect(triggersDoc).toContain('`disable-model-invocation`');
-    expect(triggersDoc).toContain('`user-invocable`');
-    expect(triggersDoc).toContain('面向 Codex 时必需');
-    expect(triggersDoc).toContain('`when_to_use`');
-    expect(triggersDoc).toContain('`known-field-not-supported-by-target-version`');
-    expect(triggersDoc).toContain('`packages/cli/src/utils/skill-frontmatter-capabilities.json`');
-    expect(triggersDoc).toContain('`references/skill-frontmatter-capabilities.generated.md`');
-    expect(triggersDoc).toContain('`model`（默认）');
-    expect(triggersDoc).toContain(
-      'Codex 侧会生成 `allow_implicit_invocation: false` 的入口 Skill',
-    );
-    expect(triggersDoc).toContain('不会把 `repo-check` 自动转换成 `Repo Check`');
-    expect(triggersDoc).toContain('`command`：`stdio` 场景下启动本地 MCP server 的命令');
-    expect(triggersDoc).toContain('portable core');
-    expect(triggersDoc).toContain('数组形式和 `shell` 属于 Claude 扩展');
-    expect(triggersDoc).toContain('`brand_color`：可选；填写时必须是 `#RRGGBB`');
-    expect(triggersDoc).toContain('缺失或空值会被 Codex loader 丢弃');
-    expect(triggersDoc).not.toContain('自动格式化 kebab-case');
-    expect(triggersDoc).toContain('release intent；稳定 plugin version 保持不变');
-    expect(triggersDoc).not.toContain('manifest `skills` 字段和 plugin version');
-    expect(skillFrontmatterCapabilitiesDoc).toContain('| `when_to_use` | claude |');
-    expect(skillFrontmatterCapabilitiesDoc).toContain(
-      '| `background` | claude | no | boolean-or-string-or-binary-number | claude-current | true/false/yes/no/on/off/1/0 | case-insensitive | introduced 2.1.218 |',
-    );
-    expect(skillFrontmatterCapabilitiesDoc).toContain('| `version` | claude |');
-    expect(skillFrontmatterCapabilitiesDoc).toContain('required is an AW authoring/package policy');
-    const capabilityReferenceCheck = await execFileAsync(
-      'node',
-      [
-        path.join(
-          creatorSkillRoot,
-          'scripts',
-          'generate_skill_frontmatter_reference.mjs',
-        ),
-        '--check',
-      ],
-      { cwd: root, env: process.env },
-    );
-    expect(capabilityReferenceCheck.stdout).toContain('[PASS]');
-    expect(extensionsSpecDoc).toContain('`command` 是公共 hook contract 的必填字段');
-    expect(extensionsSpecDoc).toContain('`extensions.hooks` 不是 Claude Code / Codex 原生 hook 事件全集');
-    expect(extensionsSpecDoc).toContain('公共 `session_start` 只覆盖 `startup / resume / clear`');
-    expect(extensionsSpecDoc).toContain('`extensions.nativeHooks.<platform>`');
-    expect(extensionsSpecDoc).toContain('matcherless 事件不要写 `matcher`');
-    expect(extensionsSpecDoc).toContain('`agentOverrides` 不用于 `nativeHooks`');
-    expect(extensionsSpecDoc).toContain('`session_stop` 已从公共 hook 中移除');
-    expect(extensionsSpecDoc).toContain('`.codex-plugin/plugin.json` 的 `hooks` 字段');
-    expect(extensionsSpecDoc).toContain('| Codex project scope | `.codex/hooks.json` |');
-    expect(extensionsSpecDoc).not.toContain('`command` 已从公共 hook contract 移除');
-
-    expect(slashCommandsDoc).toMatch(/公共 `slashCommands` 是源码层唯一的(?:跨平台)?手动命令作者入口/);
-    expect(
-      slashCommandsDoc.includes('Claude runtime 得到 generated `claude/commands/<name>.md`')
-      || slashCommandsDoc.includes('支持 Claude 时得到原生 `/command`'),
-    ).toBe(true);
-    expect(slashCommandsDoc).toContain('Codex generated skill 会固定写入 `policy.allow_implicit_invocation: false`');
-    expect(claudeOnlyDoc).toContain('公共 `slashCommands` 不是 Claude 专属能力');
-    expect(claudeOnlyDoc).not.toContain('## 公共 slashCommands');
-    expect(buildConfigDoc).toContain('不会排除 manifest 已声明的能力路径');
-    expect(mcpAppsDoc).toContain('`${user_config.KEY}` 是 Claude runtime 的原生占位符');
-    expect(skillDesignDoc).toContain('## 先判断是否应该做成 skill');
-    expect(skillDesignDoc).toContain('## Skill candidate brief');
-    expect(skillDesignDoc).toContain('Information Hierarchy Map');
-    expect(skillDesignDoc).toContain('## 分离三种 description');
-    expect(skillDesignDoc).toContain('portable core');
-    expect(skillDesignDoc).toContain('description');
-    expect(skillDesignDoc).toContain('skills-ref validate <skill-directory>');
-    expect(skillScriptsDoc).toContain('`skills/<skill>/scripts/`');
-    expect(skillScriptsDoc).toContain('非交互');
-    expect(skillEvaluationDoc).toContain('触发评估');
-    expect(skillEvaluationDoc).toContain('输出与多轮行为评估');
-    expect(skillEvaluationDoc).toContain('`evals/evals.json`');
-    expect(skillEvaluationDoc).toContain('`evals/manifest.json`');
-    expect(skillEvaluationDoc).toContain('`pnpm plugin:eval`');
-    expect(skillEvaluationDoc).toContain('`trigger` 由中央 Codex app-server driver 执行');
-    expect(skillEvaluationDoc).toContain('`subAgentActivity(kind=started)`');
-    expect(skillEvaluationDoc).toContain('`fixtureModule`');
-    expect(skillEvaluationDoc).toContain('`AW_PLUGIN_EVAL_PROJECT_ROOT`');
-    expect(skillEvaluationDoc).not.toContain('run-trigger-evals.mjs');
-    expect(skillEvaluationDoc).toContain('真实模型只允许 `scope: "project"`');
-    expect(skillEvaluationDoc).toContain('user profile 必须 `runModel: false`');
-    expect(skillEvaluationDoc).toContain('本仓库不增加第二个 judge 模型');
-    expect(skillEvaluationDoc).toContain('## Eval Case Audit 作者合同');
-    expect(skillEvaluationDoc).toContain('`.agents/skills/skill-review/assets/eval-case-template.json`');
-    expect(skillEvaluationDoc).toContain('`eval-validity`、`release-evidence` 和 `eval-change-safety`');
-    expect(skillEvaluationDoc).toContain('positive recall、false-negative rate、negative specificity');
-    expect(skillEvaluationDoc).toContain('只有通过 Case Admission 且归因为 `skill-defect` 的失败');
-    expect(skillEvaluationDoc).toContain('同族变体、minimal pair、相反标签 near-miss');
-    expect(skillEvaluationDoc).not.toContain('当前仓库没有统一的跨平台模型 eval runner');
-    expect(awScriptsDoc).toContain('作者 validator 执行 renderer fixture 时使用同一最小环境合同');
-    expect(awScriptsDoc).toContain('不会把父进程的其它环境变量传给插件 renderer');
-    expect(creatorTriggerFixtures).toMatchObject({
-      schemaVersion: 1,
-      skill: 'create-aw-plugin',
-      policy: {
-        optimization: 'balanced',
-        false_negative_cost: 'high',
-        false_positive_cost: 'high',
-      },
-    });
-    expect(creatorTriggerFixtures.cases).toHaveLength(28);
-    expect(
-      creatorTriggerFixtures.cases.filter(
-        (entry: { should_load_skill: boolean }) => entry.should_load_skill,
-      ),
-    ).toHaveLength(14);
-    expect(
-      creatorTriggerFixtures.cases.filter(
-        (entry: { should_load_skill: boolean }) => !entry.should_load_skill,
-      ),
-    ).toHaveLength(14);
-    expect(
-      creatorTriggerFixtures.cases.filter(
-        (entry: { split: string }) => entry.split === 'train',
-      ),
-    ).toHaveLength(14);
-    expect(
-      creatorTriggerFixtures.cases.filter(
-        (entry: { split: string }) => entry.split === 'validation',
-      ),
-    ).toHaveLength(8);
-    expect(
-      creatorTriggerFixtures.cases.filter(
-        (entry: { split: string }) => entry.split === 'sanity',
-      ),
-    ).toHaveLength(6);
-    expect(
-      creatorTriggerFixtures.cases.some(
-        (entry: { query: string }) => entry.query.includes('$create-aw-plugin'),
-      ),
-    ).toBe(false);
-    const evalAuthoringTriggerCase = creatorTriggerFixtures.cases.find(
-      (entry: { id: string }) => entry.id === 'sanity_add_plugin_skill_eval',
-    );
-    const readOnlyReviewTriggerCase = creatorTriggerFixtures.cases.find(
-      (entry: { id: string }) => entry.id === 'sanity_review_plugin_skill',
-    );
-    expect(evalAuthoringTriggerCase).toMatchObject({
-      eval_type: 'trigger',
-      case_role: 'representative',
-      provenance: 'representative-synthetic',
-      scenario_family: 'plugin-eval-authoring-vs-read-only-review',
-      oracle: {
-        confidence: 'high',
-      },
-    });
-    expect(readOnlyReviewTriggerCase).toMatchObject({
-      eval_type: 'trigger',
-      case_role: 'boundary',
-      provenance: 'boundary',
-      scenario_family: 'plugin-eval-authoring-vs-read-only-review',
-      oracle: {
-        confidence: 'high',
-        minimal_counterexample: expect.any(String),
-      },
-    });
-    expect(creatorEvalFixtures.policy).toMatchObject({
-      optimization: 'precision-first',
-      false_negative_cost: 'medium',
-      false_positive_cost: 'high',
-    });
-    const createModelInvokedCase = creatorEvalFixtures.evals.find(
-      (entry: { id: string }) => entry.id === 'create-model-invoked',
-    );
-    expect(createModelInvokedCase).toMatchObject({
-      expected_output: expect.stringContaining('plugin version 保持 0.1.0 且没有 release intent'),
-      eval_type: 'outcome',
-      case_role: 'representative',
-      provenance: 'observed',
-      scenario_family: 'new-model-plugin-with-auditable-evals',
-      oracle: {
-        confidence: 'high',
-      },
-      review: {
-        allowed_workspace_changes: ['plugins/release-notes/**'],
-        artifacts: expect.arrayContaining([
-          expect.objectContaining({
-            path: 'plugins/release-notes/.agents-plugin/plugin.json',
-            json: expect.objectContaining({ version: '0.1.0' }),
-          }),
-          expect.objectContaining({
-            path: 'plugins/release-notes/skills/release-notes/evals/trigger-cases.json',
-          }),
-          expect.objectContaining({
-            path: 'plugins/release-notes/skills/release-notes/evals/evals.json',
-          }),
-        ]),
-        checks: expect.arrayContaining([
-          expect.stringContaining('没有创建 release intent'),
-          expect.stringContaining('policy、场景族、oracle'),
-        ]),
-      },
-    });
-    const evalContractResult = await execFileAsync(
-      'node',
-      [
-        path.join(root, '.agents', 'skills', 'skill-review', 'scripts', 'run_static_skill_evals.mjs'),
-        'create-aw-plugin',
-        '--validate-only',
-      ],
-      { cwd: root, env: process.env },
-    );
-    expect(JSON.parse(evalContractResult.stdout)).toMatchObject({
-      ok: true,
-      skill: 'create-aw-plugin',
-      suites: ['trigger', 'behavior'],
-      centralContract: true,
-    });
-    const evalSuites = [
-      {
-        document: creatorEvalFixtures,
-        skillName: 'create-aw-plugin',
-        skillRoot: creatorSkillRoot,
-        caseCount: 5,
-        executable: true,
-      },
-      {
-        document: exampleEvalFixtures,
-        skillName: 'review-workflow',
-        skillRoot: path.join(
-          refBase,
-          '.examples',
-          'code-review',
-          'skills',
-          'review-workflow',
-        ),
-        caseCount: 2,
-        executable: false,
-      },
-    ];
-    for (const suite of evalSuites) {
-      expect(suite.document.skill_name).toBe(suite.skillName);
-      expect(suite.document.evals).toHaveLength(suite.caseCount);
-      expect(suite.document.policy).toMatchObject({
-        optimization: expect.any(String),
-        false_negative_cost: expect.any(String),
-        false_positive_cost: expect.any(String),
-        rationale: expect.any(String),
-      });
-      const ids = suite.document.evals.map((evalCase: { id: unknown }) => evalCase.id);
-      expect(new Set(ids).size).toBe(ids.length);
-
-      for (const evalCase of suite.document.evals) {
-        expect(typeof evalCase.id).toBe('string');
-        expect(evalCase.id.trim().length).toBeGreaterThan(0);
-        if (suite.executable) {
-          expect(Array.isArray(evalCase.scripted_replies)).toBe(true);
-          expect(evalCase.review).toMatchObject({
-            platforms: ['codex'],
-            clean_session: true,
-            workspace_unchanged: false,
-          });
-          expect(evalCase.sandbox).toBe('workspace-write');
-          expect(evalCase.review.allowed_workspace_changes.length).toBeGreaterThan(0);
-          expect(evalCase.review.artifacts.length).toBeGreaterThan(0);
-          expect(evalCase.review.checks.length).toBeGreaterThanOrEqual(4);
-
-          for (const artifact of evalCase.review.artifacts) {
-            expect(typeof artifact.path).toBe('string');
-            expect(
-              evalCase.review.allowed_workspace_changes.some((pattern: string) => {
-                if (!pattern.endsWith('/**')) return artifact.path === pattern;
-                const prefix = pattern.slice(0, -3);
-                return artifact.path === prefix || artifact.path.startsWith(`${prefix}/`);
-              }),
-            ).toBe(true);
-          }
-        } else {
-          expect(Array.isArray(evalCase.files)).toBe(true);
-          expect(evalCase).not.toHaveProperty('assertions');
-          expect(evalCase).toMatchObject({
-            eval_type: expect.any(String),
-            case_role: expect.any(String),
-            provenance: expect.any(String),
-            scenario_family: expect.any(String),
-            unit_under_test: expect.any(String),
-            preconditions: expect.any(Object),
-            oracle: {
-              rationale: expect.any(String),
-              rule_refs: expect.any(Array),
-              confidence: expect.any(String),
-              allowed_variance: expect.any(String),
-            },
-          });
-
-          for (const file of evalCase.files) {
-            expect(typeof file).toBe('string');
-            expect(file.trim().length).toBeGreaterThan(0);
-            expect(path.isAbsolute(file) || path.win32.isAbsolute(file)).toBe(false);
-            const relativeFile = path.posix.normalize(file.replaceAll('\\', '/'));
-            expect(relativeFile === '..' || relativeFile.startsWith('../')).toBe(false);
-            await expect(
-              fs.pathExists(path.join(suite.skillRoot, relativeFile)),
-            ).resolves.toBe(true);
-          }
-        }
-        expect(evalCase.prompt.trim().length).toBeGreaterThan(0);
-        expect(evalCase.expected_output.trim().length).toBeGreaterThan(0);
-      }
-    }
-
-    const evalAuditValidatorPath = path.join(
+    const validatorPath = path.join(
       root,
       '.agents',
       'skills',
@@ -2758,65 +2389,45 @@ describe('authoring tools', () => {
       'scripts',
       'validate_eval_cases.mjs',
     );
-    for (const [casePath, strict] of [
-      [path.join(creatorSkillRoot, 'evals', 'trigger-cases.json'), false],
-      [path.join(creatorSkillRoot, 'evals', 'evals.json'), false],
-      [path.join(
-        refBase,
-        '.examples',
-        'code-review',
-        'skills',
-        'review-workflow',
-        'evals',
-        'evals.json',
-      ), true],
-    ] as const) {
+    const cases = [
+      {
+        path: path.join(creatorSkillRoot, 'evals', 'trigger-cases.json'),
+        strict: false,
+      },
+      {
+        path: path.join(creatorSkillRoot, 'evals', 'evals.json'),
+        strict: false,
+      },
+      {
+        path: path.join(
+          creatorSkillRoot,
+          'references',
+          '.examples',
+          'code-review',
+          'skills',
+          'review-workflow',
+          'evals',
+          'evals.json',
+        ),
+        strict: true,
+      },
+    ];
+
+    for (const evalCase of cases) {
       const result = await execFileAsync(
         'node',
         [
-          evalAuditValidatorPath,
-          casePath,
-          ...(strict ? ['--strict'] : []),
+          validatorPath,
+          evalCase.path,
+          ...(evalCase.strict ? ['--strict'] : []),
           '--format',
           'json',
         ],
         { cwd: root, env: process.env },
       );
-      expect(JSON.parse(result.stdout)).toMatchObject({ valid: true });
+
+      expect(JSON.parse(result.stdout), evalCase.path).toMatchObject({ valid: true });
     }
-
-    const authoringSkill = await fs.readFile(path.join(creatorSkillRoot, 'SKILL.md'), 'utf8');
-    expect(authoringSkill).toContain('references/plugin-manifest-spec.md');
-    expect(authoringSkill).toContain('references/skills-and-triggers.md');
-    expect(authoringSkill).toContain('references/skill-design.md');
-    expect(authoringSkill).toContain('references/skill-scripts.md');
-    expect(authoringSkill).toContain('references/skill-evaluation.md');
-    expect(authoringSkill).toContain('validate_eval_cases.mjs');
-    expect(authoringSkill).toContain('只有通过 Case Admission 且归因为 `skill-defect` 的失败');
-    expect(authoringSkill).not.toContain('references/project-plugin-contract.md');
-
-    const publicReadme = await fs.readFile(path.join(root, 'README.md'), 'utf8');
-    expect(publicReadme).toContain('Skill 的触发行为只由平台原生元数据决定');
-
-    const manifestSpec = await fs.readFile(path.join(refBase, 'plugin-manifest-spec.md'), 'utf8');
-    expect(manifestSpec).toContain('插件 manifest 不声明 per-plugin 宿主 agent 版本');
-    expect(manifestSpec).toContain('作者不需要添加');
-
-    const exampleDoc = await fs.readFile(
-      path.join(refBase, 'comprehensive-example.md'),
-      'utf8',
-    );
-    expect(exampleDoc).toContain('Codex 安装时生成的 repo-managed artifacts');
-    expect(exampleDoc).toContain('`extensions.nativeHooks.codex`');
-    expect(exampleDoc).toContain('codex plugin marketplace add/list');
-    expect(exampleDoc).toContain('写入前仍要求本机 Codex `>= 0.145.0`');
-    expect(exampleDoc).toContain('`policy.allow_implicit_invocation`');
-    expect(exampleDoc).toContain('`disable-model-invocation`');
-    expect(exampleDoc).not.toContain('`plugin/install`');
-    expect(exampleDoc).not.toContain('allowInstallOverride');
-    expect(exampleDoc).toContain('`slash-commands/`');
-    expect(exampleDoc).toContain('`skills/review-workflow/evals/evals.json`');
-    expect(exampleDoc).toContain('`${REVIEW_SERVICE_API_KEY}`');
   });
 
   it('validate_plugin.mjs validates optional plugin eval manifests', async () => {

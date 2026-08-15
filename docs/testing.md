@@ -29,6 +29,32 @@
 
 普通测试使用 synthetic catalog、隔离 home 和 fake native runner。不得调用用户真实 Codex/Claude 配置，也不得修改仓库外状态。
 
+## Test Value Gate
+
+每个新增或修改的确定性测试必须先证明它保护可观察风险。测试只允许锁定以下价值之一：
+
+- 生产行为：通过真实公共入口、helper、lifecycle、renderer、validator 或 bundle 路径观察输入、输出、副作用和状态转换。
+- 失败边界：验证无效输入、失败传播、恢复、隔离、安全或原子性合同。
+- 结构化公开合同：解析并断言对消费者公开的 JSON、manifest、schema、receipt、status、artifact plan 或平台产物。公开兼容范围（例如 npm `engines` 和 agent minimum compatibility）必须在 package、bundle、catalog 或其它真实发布产物层验证。
+
+以下测试不通过门禁：
+
+- 读取源码、脚本、配置或文档，再用字符串、快照或正则匹配固定文本。
+- 锁定内部函数排列、私有调用顺序、局部变量、源文件布局或其它实现细节，但没有可观察风险。
+- 仅镜像当前 package、plugin 或 release version，或仅镜像依赖版本。这些版本值只能作为边界 fixture，用于验证兼容性比较、选择、迁移或拒绝行为；这不禁止在真实产物层验证公开兼容范围。
+- 在 unit、integration、smoke 或 plugin test 中重复已经由更合适层级完整覆盖的同一风险。每个风险只由最低且足够真实的层级负责；跨层测试必须增加新的边界证据。
+- 测试文档 prose。文档准确性由评审、链接检查或示例所调用的真实入口验证，不锁定叙述句子。
+
+Skill 和 prompt 的确定性测试只保留结构、模板、平台元数据、关键禁止项和最小安全不变量。需要模型理解、判断、路由、措辞或任务完成质量的语义合同必须交给 eval，不得用 prose 正则或固定句子代替 eval。
+
+只有当静态文本本身是消费者读取的公开合同，而且没有合适的行为测试时，才允许静态断言。例外必须在测试断言旁使用以下精确格式，并填写可观察风险和不适合行为测试的具体原因：
+
+```ts
+// Static contract exception: <可观察风险>; behavior test is not suitable because <原因>.
+```
+
+方便实现、已有快照或覆盖率不足都不是例外原因。
+
 ## Build Reuse
 
 `scripts/build/ensure-cli-build.mjs` 只在输入、输出和 package identity 都匹配 generation stamp 时复用 build。并发 build 使用 lock；测试覆盖输入变化、输出变化、symlink、并发 owner 和 snapshot 隔离。

@@ -7,6 +7,7 @@
 - 使用 `pnpm@10.33.0` 和 Node.js `>=22`。
 - `pnpm build` 编译 CLI，并生成本地 catalog staging 和 runtime bundle。项目没有独立的 `typecheck` 命令；构建过程包含 TypeScript 类型检查。
 - `packages/cli/dist/` 和 `packages/cli/plugins-dist/` 是生成目录，不要手工修改。
+- 新增或修改测试时，必须先通过[测试指南](docs/testing.md)中的 Test Value Gate：测试可观察行为或公开合同，不得用固定文本、固定版本或实现细节代替行为验证。
 
 ## 按任务读取
 

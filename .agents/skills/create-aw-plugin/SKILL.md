@@ -81,6 +81,8 @@ compatibility: Requires the agent-workflows repository, Node.js 20+, and install
 8. **测试**
    - 插件根 Node 脚本运行 `pnpm plugin:test <plugin>`
    - 改到 manifest、bundle 或安装逻辑时运行相关 `pnpm test:*`
+   - 确定性测试必须执行真实 helper、lifecycle、renderer、validator 或 bundle 路径，并断言可观察行为、失败边界或结构化公开合同；不得读取源码、脚本、配置或文档后用 prose 正则、固定文本、固定版本或实现细节冒充行为验证
+   - Skill 和 prompt 的确定性测试只保留结构、模板、平台元数据、关键禁止项和最小安全不变量；模型需要理解、判断、路由或完成任务的语义合同使用 eval
    - 每个 Skill 的作者期用例放在自身源码根 `evals/`，按 `references/skill-evaluation.md` 声明 owner、participants 和 profiles
    - `evals/README.md` 只记录该 owner 特有的 corpus、suite、命令、runner 限制和历史结果；不要复制全仓权限、隔离、进程、批次、发布或平台证据规则
    - 新增或修改 case 后，运行 `.agents/skills/skill-review/scripts/validate_eval_cases.mjs`；历史文档先用兼容模式，发布或当前修改使用的文档补全 Case Admission metadata 后增加 `--strict`
@@ -88,7 +90,7 @@ compatibility: Requires the agent-workflows repository, Node.js 20+, and install
    - Eval-driven 修改后重跑原 case、同族变体、minimal pair、相反标签 near-miss、固定 validation/sanity 和关键 regression
    - 先运行 `pnpm plugin:eval <plugin> --skill <skill> --batch-name materialization --materialize-only` 验证 Codex 最终制品；真实模型 eval 只在本地显式运行
    - 启动真实模型 eval 前，检查用户是否已明确选择整个会话使用 Full Access，或明确选择 `--allow-unmanaged-processes`。用户未选择时必须停下询问；不得自行添加该参数，也不得请求单次提权
-   - 真实模型 eval 启动后保留同一进程会话。首轮和后续等待都使用工具允许的最长响应式等待时间；等待超时不表示 eval 失败，不要另开短周期状态轮询命令
+   - 真实模型 eval 启动后保留同一进程会话。首轮和后续等待都使用工具允许的最长响应式等待时间；等待超时不表示 eval 失败。不得另开 shell `sleep`、`ps`、报告文件、Git 或其它状态轮询命令；不得使用短 `wait` 循环
    - 完成条件：每个修改面有直接确定性测试；重大 Skill 修改有 with-skill/baseline behavior、适用 trigger evidence、有效 oracle 和 eval-change-safety 回归；失败已归因、修复并重跑
 9. **交付**
    - 评审默认只返回结果；用户明确要求发布时才执行 `review:publish`，该命令生成正式报告并封存批次，但不修改 Skill README

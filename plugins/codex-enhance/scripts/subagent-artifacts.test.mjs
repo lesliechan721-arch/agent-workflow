@@ -126,7 +126,7 @@ function artifactsFrom(plan) {
   };
 }
 
-test('renders four task roles and agent-type-only preset guidance', async () => {
+test('renders four task roles with required metadata and safety invariants', async () => {
   const { skill, roles } = artifactsFrom(await renderArtifactPlan(createContext()));
   const openaiYaml = await readFile(
     new URL('agents/openai.yaml', pathToFileURL(`${artifactSourcePath}/`)),
@@ -141,80 +141,28 @@ test('renders four task roles and agent-type-only preset guidance', async () => 
       role.content.roleFile.developer_instructions,
       renderSubagentRoleDeveloperInstructions(),
     );
-    assert.match(role.content.roleFile.developer_instructions, /完成或无法继续时直接返回/);
-    assert.match(role.content.roleFile.developer_instructions, /阻塞原因和未解决项/);
-    assert.equal(role.content.roleFile.developer_instructions.includes('存活探测'), false);
-    assert.equal(role.content.roleFile.developer_instructions.includes('status=progress'), false);
-    assert.equal(role.content.roleFile.developer_instructions.includes('status=blocked'), false);
-    assert.ok(skill.content.skillFile.includes(`| \`${expected.roleKey}\` |`));
   }
 
-  assert.match(skill.content.skillFile, /\| 简单 \|/);
-  assert.match(skill.content.skillFile, /\| 通用 \|/);
-  assert.match(skill.content.skillFile, /\| 复杂 \|/);
-  assert.match(skill.content.skillFile, /\| 计划与审核 \|/);
+  // Static contract exception: rendered instructions must not grant delegation authority; behavior test is not suitable because the prohibition is consumed directly by the model.
+  assert.match(skill.content.skillFile, /本 skill 不授予或判断委派权限/);
+
+  // Static contract exception: unavailable presets must not trigger an unapproved model override; behavior test is not suitable because the renderer only emits model instructions.
+  assert.match(skill.content.skillFile, /role 不可用时停止，不改用动态 model override/);
+
+  // Static contract exception: rendered waiting instructions must prohibit active polling; behavior test is not suitable because no deterministic runner executes model tool choices.
   assert.match(
     skill.content.skillFile,
-    /子代理委派已由用户、适用 AGENTS.md 或其它 skill 明确授权，且没有专用 skill 管理本次委派/,
+    /不得使用 shell `sleep`、短 wait 循环、周期性查询、文件、Git、测试状态或重复进度询问进行监控/,
   );
-  assert.match(skill.content.skillFile, /本 skill 不授予或判断委派权限/);
-  assert.match(skill.content.skillFile, /只要求判断、讨论或建议是否需要委派或多 Agent 并行，不要使用/);
-  assert.equal(skill.content.skillFile.includes('委派必须已经获准'), false);
-  assert.match(skill.content.skillFile, /显式指定 `model`、`reasoning_effort` 或 `agent_type`/);
-  assert.match(skill.content.skillFile, /按其作用域作为自定义任务/);
-  assert.match(skill.content.skillFile, /否则按最终交付物选择 preset/);
-  assert.match(skill.content.skillFile, /计划或审核优先于前置探索/);
-  assert.match(skill.content.skillFile, /复杂实现或调试优先于通用/);
-  assert.match(skill.content.skillFile, /只读不等于简单/);
-  assert.match(skill.content.skillFile, /按范围、歧义、冲突、因果推理和完整性要求判断复杂度/);
-  assert.match(skill.content.skillFile, /preset 只传表中的 `agent_type`/);
-  assert.match(skill.content.skillFile, /role 不可用时停止/);
-  assert.match(skill.content.skillFile, /不改用动态 model override/);
-  assert.match(skill.content.skillFile, /自定义任务只传作用于该子任务/);
-  assert.match(skill.content.skillFile, /不可用或冲突时停止/);
-  assert.match(skill.content.skillFile, /不猜测、试探或降级/);
-  assert.equal(skill.content.skillFile.includes('整体作为自定义任务'), false);
-  assert.equal(skill.content.skillFile.includes('service_tier'), false);
-  assert.equal(skill.content.skillFile.includes('gpt-5.6-luna'), false);
-  assert.equal(skill.content.skillFile.includes('gpt-5.6-terra'), false);
-  assert.equal(skill.content.skillFile.includes('gpt-5.6-sol'), false);
 
-  assert.match(skill.content.skillFile, /默认使用干净上下文/);
-  assert.match(skill.content.skillFile, /约束、成功标准、验证要求和预期输出/);
-  assert.match(skill.content.skillFile, /`fork_turns: "none"` 或 `fork_context: false`/);
-  assert.match(skill.content.skillFile, /只有明确要求继承/);
-  assert.match(skill.content.skillFile, /上下文选择独立于 preset\/custom/);
-  assert.match(skill.content.skillFile, /全历史继承会沿用父代理类型，因此省略 `agent_type`/);
-  assert.match(skill.content.skillFile, /不能精确表达最近 N 轮，则停止并说明，不得改用全历史近似/);
+  assert.doesNotMatch(skill.content.skillFile, /{{[^}]+}}/);
 
-  assert.match(skill.content.skillFile, /只在需要结果才能继续时调用 `wait_agent`/);
-  assert.match(skill.content.skillFile, /至少 `10` 分钟的响应式窗口（`timeout_ms=600000`）/);
-  assert.match(skill.content.skillFile, /超时不是失败/);
-  assert.match(skill.content.skillFile, /不短于前次且不超过上限的窗口/);
-  assert.match(skill.content.skillFile, /只有工具结果或通知明确表示终态时才算完成/);
-  assert.match(skill.content.skillFile, /不得使用 shell `sleep`、短 wait 循环、周期性查询/);
-  assert.match(skill.content.skillFile, /文件、Git、测试状态或重复进度询问进行监控/);
-  assert.match(skill.content.skillFile, /当前工具提供 `close_agent` 时/);
-  assert.match(skill.content.skillFile, /所需结果或终态信息已保留/);
-  assert.match(skill.content.skillFile, /目标及其后代均不再需要后续调用后关闭/);
-  assert.equal(skill.content.skillFile.includes('follow-up'), false);
-  assert.equal(skill.content.skillFile.includes('重复 spawn'), false);
-  assert.equal(skill.content.skillFile.includes('存活探测'), false);
-  assert.equal(skill.content.skillFile.includes('status=progress'), false);
-  assert.equal(skill.content.skillFile.includes('status=blocked'), false);
+  // Static contract exception: Codex consumes Skill frontmatter and invocation metadata as text; behavior test is not suitable because ArtifactPlan does not parse these platform metadata files.
+  assert.match(skill.content.skillFile, /name: codex-subagent-guide/);
   assert.match(
     skill.content.skillFile,
     /compatibility: Requires Codex multi-agent spawn_agent\.agent_type and the four bundled roles/,
   );
-  assert.equal(skill.content.skillFile.includes('时是 V1'), false);
-  assert.equal(skill.content.skillFile.includes('时是 V2'), false);
-  assert.equal(skill.content.skillFile.includes('催促后等待'), false);
-  assert.equal(skill.content.skillFile.includes('非中断收敛请求'), false);
-  assert.equal(skill.content.skillFile.includes('list_agents'), false);
-  assert.equal(skill.content.skillFile.includes('interrupt_agent'), false);
-  assert.ok(skill.content.skillFile.split('\n').length <= 65);
-  assert.equal(skill.content.skillFile.includes('{{spawnParameterGuidance}}'), false);
-  assert.equal(skill.content.skillFile.includes('{{minimumInitialWaitMinutes}}'), false);
   assert.match(openaiYaml, /allow_implicit_invocation: true/);
   assert.match(skill.content.skillFile, new RegExp(`short-description: ${SHORT_DESCRIPTION}`));
   assert.match(openaiYaml, new RegExp(`short_description: "${SHORT_DESCRIPTION}"`));
@@ -265,25 +213,6 @@ test('treats blank configured values as their task defaults', async () => {
   const simple = roles.get('codex-subagent-simple');
   assert.equal(simple.content.roleFile.model, 'gpt-5.6-luna');
   assert.equal(simple.content.roleFile.model_reasoning_effort, 'max');
-});
-
-test('does not read legacy six-category config keys', async () => {
-  const { roles } = artifactsFrom(
-    await renderArtifactPlan(
-      createContext({
-        explorationModel: 'legacy-exploration',
-        reviewModel: 'legacy-review',
-        generalReasoningEffort: 'low',
-      }),
-    ),
-  );
-
-  assert.equal(roles.get('codex-subagent-simple').content.roleFile.model, 'gpt-5.6-luna');
-  assert.equal(roles.get('codex-subagent-plan-review').content.roleFile.model, 'gpt-5.6-sol');
-  assert.equal(
-    roles.get('codex-subagent-general').content.roleFile.model_reasoning_effort,
-    'medium',
-  );
 });
 
 test('rejects unsupported platforms', async () => {
