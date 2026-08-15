@@ -406,6 +406,14 @@ describe('catalog source identity v1', () => {
     expect(() => canonicalizeCatalogGitUrl('not-a-url')).toThrow('absolute URL');
     expect(() => canonicalizeCatalogGitUrl('https://user:secret@example.test/repo.git'))
       .toThrow('credentials');
-    expect(() => canonicalizeCatalogGitUrl('file:///tmp/catalog')).toThrow('protocol');
+    expect(canonicalizeCatalogGitUrl('file:///tmp/catalog')).toBe('file:///tmp/catalog');
+    expect(canonicalizeCatalogGitUrl('/tmp/catalog/')).toBe('/tmp/catalog');
+    expect(() => canonicalizeCatalogGitUrl('http://example.test/repo.git')).toThrow('protocol');
+    expect(() => canonicalizeCatalogGitUrl('git://example.test/repo.git')).toThrow('protocol');
+    expect(() => canonicalizeCatalogGitUrl('ext::helper repo')).toThrow();
+    expect(() => canonicalizeCatalogGitUrl('https://example.test/repo.git?token=secret'))
+      .toThrow('query strings');
+    expect(() => canonicalizeCatalogGitUrl('https://example.test/repo.git#main'))
+      .toThrow('fragments');
   });
 });

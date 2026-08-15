@@ -611,7 +611,7 @@ export function assertManifestPlatformSupport(
   });
 }
 
-function ensurePluginName(value: unknown, fieldName: string): string {
+export function ensurePluginName(value: unknown, fieldName: string): string {
   const name = ensureString(value, fieldName);
   if (!PLUGIN_NAME_PATTERN.test(name)) {
     throw new Error(`Invalid ${fieldName}: expected lowercase hyphen-case.`);

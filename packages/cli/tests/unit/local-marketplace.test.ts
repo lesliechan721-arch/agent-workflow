@@ -14,6 +14,7 @@ import {
   readCliPackageInfo,
   readCurrentCatalogCacheEntry,
   readCurrentCatalogCacheEntryBySelector,
+  setLocalMarketplaceAfterCatalogCachePreservedForTests,
   setLocalMarketplaceAfterTargetMovedToBackupForTests,
   setLocalMarketplaceAfterStagingPreparedForTests,
   validateLocalMarketplaceLayout,
@@ -22,9 +23,22 @@ import {
   type CurrentCatalogCacheIdentity,
   type CurrentCatalogCacheObservation,
 } from '../../src/utils/local-marketplace.js';
+import { calculateCatalogSourceIdentity } from '../../src/utils/catalog-source-identity.js';
+import {
+  catalogSourceCacheInternal,
+} from '../../src/utils/catalog-source-cache.js';
+import { catalogPathProviderInternal } from '../../src/utils/path-catalog-provider.js';
+import { catalogGitProviderInternal } from '../../src/utils/git-catalog-provider.js';
+import {
+  CatalogLeaseEscapeError,
+  withResolvedCatalogPlugin,
+  withResolvedMultiSourceCatalog,
+  type CatalogSourceProviderSet,
+} from '../../src/utils/multi-source-catalog.js';
 import { CATALOG_SOURCES_FILE } from '../../src/constants.js';
 import {
   addCatalogSource,
+  calculateCatalogSourcesConfigDigest,
   createDefaultCatalogSourcesConfig,
   readCatalogSourcesConfigSnapshot,
   replaceCatalogSourcesConfig,
@@ -39,10 +53,32 @@ import { acquireLifecycleOperationLock } from '../../src/utils/lifecycle-active-
 import { withActiveMarketplaceRuntimeLease } from '../../src/utils/active-marketplace-runtime-lock.js';
 import { writeDynamicSkillTree } from '../../src/utils/dynamic-skill-tree.js';
 import type { ProcessLockLease } from '../../src/utils/process-lock.js';
-import type { CatalogResolution, CatalogSelector } from '../../src/types.js';
+import type {
+  CatalogResolution,
+  CatalogSelector,
+  CatalogSourcesConfig,
+} from '../../src/types.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
+import { createCatalogSnapshotFixture, git } from '../helpers/catalog-source-fixture.js';
 
 const tempDirs: string[] = [];
+const {
+  persistCatalogSourceObjectFault,
+  readCatalogSourceCache,
+  resolveCatalogSourceCacheLocation,
+  withCatalogSourceCacheLease,
+  withCatalogSourceCacheLock,
+} = catalogSourceCacheInternal;
+const resolveGitCatalogSource = catalogGitProviderInternal.resolve;
+const resolvePathCatalogSource = catalogPathProviderInternal.resolve;
+
+function deferred(): { promise: Promise<void>; resolve(): void } {
+  let resolve!: () => void;
+  return {
+    promise: new Promise<void>((done) => { resolve = done; }),
+    resolve,
+  };
+}
 
 function fixturePath(...segments: string[]): string {
   return path.resolve(
@@ -146,6 +182,7 @@ async function embeddedResolution(
 
 afterEach(async () => {
   setLocalMarketplaceAfterStagingPreparedForTests(undefined);
+  setLocalMarketplaceAfterCatalogCachePreservedForTests(undefined);
   setLocalMarketplaceAfterTargetMovedToBackupForTests(undefined);
   setAtomicConfigBeforeRenameHookForTests(undefined);
   vi.restoreAllMocks();
@@ -153,6 +190,387 @@ afterEach(async () => {
 });
 
 describe('strict current catalog cache', () => {
+  it('holds the sibling cache lease before reading the multi-source config snapshot', async () => {
+    const workspace = await makeWorkspace();
+    const resolution = await embeddedResolution(workspace.embeddedRoot);
+    await initializeLocalMarketplace({
+      force: true,
+      env: workspace.env,
+      catalogResolution: resolution,
+    });
+    const customPrimaryRoot = path.join(path.dirname(workspace.awHome), 'custom-primary');
+    const secondaryRoot = path.join(path.dirname(workspace.awHome), 'secondary');
+    await Promise.all([
+      createCatalogSnapshotFixture(customPrimaryRoot, 'primary-plugin'),
+      createCatalogSnapshotFixture(secondaryRoot, 'secondary-plugin'),
+    ]);
+    const config: CatalogSourcesConfig = {
+      schemaVersion: 1,
+      sources: [
+        { id: 'custom-primary', type: 'path', primary: true, path: customPrimaryRoot },
+        { id: 'secondary', type: 'path', primary: false, path: secondaryRoot },
+      ],
+    };
+    const initial = await readCatalogSourcesConfigSnapshot(workspace.env);
+    await replaceCatalogSourcesConfig({
+      config,
+      expectedDigest: initial.digest,
+      env: workspace.env,
+    });
+    const expectedDigest = calculateCatalogSourcesConfigDigest(config);
+    const targetMoved = deferred();
+    const releaseReplacement = deferred();
+    setLocalMarketplaceAfterTargetMovedToBackupForTests(async () => {
+      targetMoved.resolve();
+      await releaseReplacement.promise;
+    });
+
+    const replacement = initializeLocalMarketplace({
+      force: true,
+      env: workspace.env,
+      catalogResolution: resolution,
+    });
+    await targetMoved.promise;
+    const invoked: string[] = [];
+    const providers: CatalogSourceProviderSet = {
+      path: async (source, providerOptions) => {
+        invoked.push(source.id);
+        return resolvePathCatalogSource(source, providerOptions);
+      },
+      git: async (source) => {
+        invoked.push(source.id);
+        throw new Error(`Unexpected Git source "${source.id}".`);
+      },
+    };
+    let settled = false;
+    const catalog = withResolvedMultiSourceCatalog({
+      cliVersion: '1.0.0',
+      freshnessPolicy: 'cacheFirst',
+      env: workspace.env,
+      providers,
+      consume: (resolved) => ({
+        sourceIds: resolved.sources.map((item) => item.sourceId),
+        primarySourceId: resolved.primarySourceId,
+        configDigest: resolved.configDigest,
+      }),
+    }).finally(() => { settled = true; });
+    await new Promise<void>((done) => setImmediate(done));
+    expect(settled).toBe(false);
+    expect(invoked).toEqual([]);
+
+    releaseReplacement.resolve();
+    await replacement;
+    const resolved = await catalog;
+    expect(resolved.sourceIds).toEqual(['custom-primary', 'secondary']);
+    expect(resolved.primarySourceId).toBe('custom-primary');
+    expect(resolved.configDigest).toBe(expectedDigest);
+    expect(invoked.sort()).toEqual(['custom-primary', 'secondary']);
+    const lease = await acquireCurrentCatalogCacheLease(workspace.env, { timeoutMs: 100 });
+    await expect(lease.release()).resolves.toBe(true);
+  });
+
+  it('releases the sibling cache lease when multi-source resolution throws', async () => {
+    const workspace = await makeWorkspace();
+    const config: CatalogSourcesConfig = {
+      schemaVersion: 1,
+      sources: [{
+        id: 'custom-primary',
+        type: 'path',
+        primary: true,
+        path: path.join(path.dirname(workspace.awHome), 'custom-primary'),
+      }],
+    };
+    await expect(withResolvedMultiSourceCatalog({
+      cliVersion: '1.0.0',
+      freshnessPolicy: 'cacheFirst',
+      sourceIds: ['missing'],
+      configSnapshot: {
+        config,
+        digest: calculateCatalogSourcesConfigDigest(config),
+        materialized: true,
+      },
+      env: workspace.env,
+      consume: () => undefined,
+    })).rejects.toThrow('Catalog source "missing" does not exist');
+
+    const lease = await acquireCurrentCatalogCacheLease(workspace.env, { timeoutMs: 100 });
+    await expect(lease.release()).resolves.toBe(true);
+  });
+
+  it('isolates shared lease waiter cancellation and keeps the remaining waiter active', async () => {
+    const workspace = await makeWorkspace();
+    const holder = await acquireCurrentCatalogCacheLease(workspace.env);
+    const firstController = new AbortController();
+    let firstRan = false;
+    let secondRan = false;
+    const first = withCatalogSourceCacheLease({
+      env: workspace.env,
+      signal: firstController.signal,
+      action: async () => { firstRan = true; },
+    });
+    const second = withCatalogSourceCacheLease({
+      env: workspace.env,
+      action: async () => { secondRan = true; },
+    });
+    await new Promise<void>((done) => setImmediate(done));
+    firstController.abort(new Error('cancel only first lease waiter'));
+    await expect(first).rejects.toThrow('cancel only first lease waiter');
+    expect(firstRan).toBe(false);
+    expect(secondRan).toBe(false);
+
+    await holder.release();
+    await second;
+    expect(secondRan).toBe(true);
+  });
+
+  it('releases an abandoned underlying lease after every waiter cancels', async () => {
+    const workspace = await makeWorkspace();
+    const lockParent = path.join(path.dirname(workspace.awHome), '.aw-local-marketplace-staging');
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const holder = await acquireCurrentCatalogCacheLease(workspace.env);
+      const controllers = [new AbortController(), new AbortController()];
+      let actions = 0;
+      const waiters = controllers.map((controller) => withCatalogSourceCacheLease({
+        env: workspace.env,
+        signal: controller.signal,
+        action: async () => { actions += 1; },
+      }));
+      await new Promise<void>((done) => setImmediate(done));
+      controllers.forEach((controller, index) => controller.abort(new Error(`cancel waiter ${index}`)));
+      await Promise.all(waiters.map((waiter) => expect(waiter).rejects.toThrow('cancel waiter')));
+      expect(actions).toBe(0);
+      await holder.release();
+      expect((await fs.readdir(lockParent)).filter((entry) => entry.includes('.catalog-cache-'))).toEqual([]);
+    }
+  });
+
+  it('fully stops repeated already-aborted shared lease acquisition before rejection', async () => {
+    const workspace = await makeWorkspace();
+    const lockParent = path.join(path.dirname(workspace.awHome), '.aw-local-marketplace-staging');
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const controller = new AbortController();
+      controller.abort(new Error(`already aborted ${attempt}`));
+      await expect(withCatalogSourceCacheLease({
+        env: workspace.env,
+        signal: controller.signal,
+        action: async () => {
+          throw new Error('already-aborted action must not run');
+        },
+      })).rejects.toThrow(`already aborted ${attempt}`);
+      const entries = await fs.readdir(lockParent).catch(() => [] as string[]);
+      expect(entries.filter((entry) => entry.includes('.catalog-cache-'))).toEqual([]);
+    }
+  });
+
+  it('keeps plugin paths valid in the callback and blocks their escape before replacement', async () => {
+    const workspace = await makeWorkspace();
+    const resolution = await embeddedResolution(workspace.embeddedRoot);
+    await initializeLocalMarketplace({
+      force: true,
+      env: workspace.env,
+      catalogResolution: resolution,
+    });
+    const sourceRoot = path.join(path.dirname(workspace.awHome), 'selector-callback-source');
+    await createCatalogSnapshotFixture(sourceRoot);
+    const config: CatalogSourcesConfig = {
+      schemaVersion: 1,
+      sources: [{ id: 'custom', type: 'path', primary: true, path: sourceRoot }],
+    };
+    const initial = await readCatalogSourcesConfigSnapshot(workspace.env);
+    await replaceCatalogSourcesConfig({
+      config,
+      expectedDigest: initial.digest,
+      env: workspace.env,
+    });
+    const callbackEntered = deferred();
+    const replacementStaged = deferred();
+    const allowCallbackRead = deferred();
+    setLocalMarketplaceAfterStagingPreparedForTests(async () => {
+      replacementStaged.resolve();
+    });
+    let callbackReadName: string | undefined;
+
+    const selected = withResolvedCatalogPlugin({
+      selector: 'custom/demo',
+      cliVersion: '1.0.0',
+      freshnessPolicy: 'cacheFirst',
+      env: workspace.env,
+      consume: async ({ pluginId, plugin }) => {
+        callbackEntered.resolve();
+        await allowCallbackRead.promise;
+        const manifest = await fs.readJson(plugin.manifestPath);
+        callbackReadName = manifest.name as string;
+        return { pluginId, evidence: { path: plugin.manifestPath } };
+      },
+    });
+    await callbackEntered.promise;
+    let replacementSettled = false;
+    const replacement = initializeLocalMarketplace({
+      force: true,
+      env: workspace.env,
+      catalogResolution: resolution,
+    }).finally(() => { replacementSettled = true; });
+    await replacementStaged.promise;
+    await new Promise<void>((done) => setImmediate(done));
+    expect(replacementSettled).toBe(false);
+
+    allowCallbackRead.resolve();
+    await expect(selected).rejects.toBeInstanceOf(CatalogLeaseEscapeError);
+    expect(callbackReadName).toBe('demo');
+    await replacement;
+    const lease = await acquireCurrentCatalogCacheLease(workspace.env, { timeoutMs: 100 });
+    await expect(lease.release()).resolves.toBe(true);
+  });
+
+  it('publishes source cache state only after a paused root replacement completes', async () => {
+    const workspace = await makeWorkspace();
+    const resolution = await embeddedResolution(workspace.embeddedRoot);
+    await initializeLocalMarketplace({
+      force: true,
+      env: workspace.env,
+      catalogResolution: resolution,
+    });
+    const sourceRoot = path.join(path.dirname(workspace.awHome), 'path-catalog-source');
+    await createCatalogSnapshotFixture(sourceRoot);
+    const source = {
+      id: 'local',
+      type: 'path' as const,
+      primary: true,
+      path: sourceRoot,
+    };
+    const gitWork = path.join(path.dirname(workspace.awHome), 'git-catalog-work');
+    const gitRemote = path.join(path.dirname(workspace.awHome), 'git-catalog-remote.git');
+    await fs.ensureDir(gitWork);
+    await git(gitWork, ['init', '--initial-branch=main']);
+    await git(gitWork, ['config', 'user.email', 'test@example.test']);
+    await git(gitWork, ['config', 'user.name', 'AW Test']);
+    await createCatalogSnapshotFixture(path.join(gitWork, 'catalog'));
+    await git(gitWork, ['add', '.']);
+    await git(gitWork, ['commit', '-m', 'catalog']);
+    await git(path.dirname(gitWork), ['clone', '--bare', gitWork, gitRemote]);
+    const gitSource = {
+      id: 'official',
+      type: 'git' as const,
+      primary: false,
+      url: gitRemote,
+      refPolicy: { type: 'explicit' as const, ref: 'main' },
+      subdir: 'catalog',
+    };
+    const faultSource = { ...source, id: 'fault-source', primary: false };
+    const faultIdentity = await calculateCatalogSourceIdentity(faultSource);
+    const faultLocation = resolveCatalogSourceCacheLocation({
+      sourceId: faultSource.id,
+      sourceIdentity: faultIdentity,
+      env: workspace.env,
+    });
+    const cacheCopied = deferred();
+    const releaseReplacement = deferred();
+    setLocalMarketplaceAfterCatalogCachePreservedForTests(async () => {
+      cacheCopied.resolve();
+      await releaseReplacement.promise;
+    });
+
+    const replacement = initializeLocalMarketplace({
+      force: true,
+      env: workspace.env,
+      catalogResolution: resolution,
+    });
+    await cacheCopied.promise;
+    let publicationSettled = false;
+    let gitPublicationSettled = false;
+    let faultSettled = false;
+    const publication = resolvePathCatalogSource(source, {
+      cliVersion: '1.0.0',
+      freshnessPolicy: 'forceRemote',
+      env: workspace.env,
+    }).finally(() => { publicationSettled = true; });
+    const gitPublication = resolveGitCatalogSource(gitSource, {
+      cliVersion: '1.0.0',
+      freshnessPolicy: 'forceRemote',
+      env: workspace.env,
+    }).finally(() => { gitPublicationSettled = true; });
+    const faultWrite = persistCatalogSourceObjectFault({
+      location: faultLocation,
+      reason: 'test-only sanitized cleanup fault',
+    }).finally(() => { faultSettled = true; });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(publicationSettled).toBe(false);
+    expect(gitPublicationSettled).toBe(false);
+    expect(faultSettled).toBe(false);
+
+    releaseReplacement.resolve();
+    await replacement;
+    const published = await publication;
+    const publishedGit = await gitPublication;
+    await faultWrite;
+    await expect(fs.pathExists(published.rootDir)).resolves.toBe(true);
+    await expect(fs.pathExists(publishedGit.rootDir)).resolves.toBe(true);
+    expect(path.relative(workspace.awHome, published.rootDir).startsWith('..')).toBe(false);
+    await expect(fs.pathExists(faultLocation.objectsFaultPath)).resolves.toBe(true);
+  });
+
+  it('preserves completed source entries, selectors, faults, and retained object locks', async () => {
+    const workspace = await makeWorkspace();
+    const resolution = await embeddedResolution(workspace.embeddedRoot);
+    await initializeLocalMarketplace({
+      force: true,
+      env: workspace.env,
+      catalogResolution: resolution,
+    });
+    const sourceRoot = path.join(path.dirname(workspace.awHome), 'preserved-path-catalog');
+    await createCatalogSnapshotFixture(sourceRoot);
+    const source = {
+      id: 'local',
+      type: 'path' as const,
+      primary: true,
+      path: sourceRoot,
+    };
+    const published = await resolvePathCatalogSource(source, {
+      cliVersion: '1.0.0',
+      freshnessPolicy: 'forceRemote',
+      env: workspace.env,
+    });
+    const sourceIdentity = await calculateCatalogSourceIdentity(source);
+    const location = resolveCatalogSourceCacheLocation({
+      sourceId: source.id,
+      sourceIdentity,
+      env: workspace.env,
+    });
+    await expect(withCatalogSourceCacheLock({
+      location,
+      name: 'objects',
+      retainLockOnError: () => true,
+      action: async () => {
+        await persistCatalogSourceObjectFault({
+          location,
+          reason: 'test-only sanitized cleanup fault',
+        });
+        throw new Error('retain test object lock');
+      },
+    })).rejects.toThrow('retain test object lock');
+    const ownerPath = path.join(location.locksDir, 'objects.lock', 'owner.json');
+    const ownerBefore = await fs.readFile(ownerPath, 'utf8');
+
+    await initializeLocalMarketplace({
+      force: true,
+      env: workspace.env,
+      catalogResolution: resolution,
+    });
+
+    await expect(fs.pathExists(published.rootDir)).resolves.toBe(true);
+    await expect(readCatalogSourceCache({
+      location,
+      sourceId: source.id,
+      sourceIdentity,
+      requestedRef: 'path',
+      cliVersion: '1.0.0',
+    })).resolves.toMatchObject({
+      metadata: { entryKey: published.cacheEntryKey },
+    });
+    await expect(fs.pathExists(location.objectsFaultPath)).resolves.toBe(true);
+    await expect(fs.readFile(ownerPath, 'utf8')).resolves.toBe(ownerBefore);
+  });
+
   it.each([
     { force: false, label: 'normal' },
     { force: true, label: 'force' },

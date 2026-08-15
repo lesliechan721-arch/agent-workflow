@@ -40,6 +40,25 @@ function realFileSystem(overrides: Partial<ProcessLockFileSystem> = {}): Process
 }
 
 describe('process lock lease', () => {
+  it('stops a lock contender when its AbortSignal fires', async () => {
+    const target = lockPath('abort-contender');
+    const owner = await acquireProcessLock({ lockPath: target });
+    const controller = new AbortController();
+    const reason = new Error('lock deadline reached');
+    const startedAt = Date.now();
+    const contender = acquireProcessLock({
+      lockPath: target,
+      timeoutMs: 10_000,
+      pollMs: 10,
+      signal: controller.signal,
+    });
+    setTimeout(() => controller.abort(reason), 20);
+
+    await expect(contender).rejects.toBe(reason);
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
+    await owner.release();
+  });
+
   it('retries when the observed owner releases before recovery lstat', async () => {
     const target = lockPath('release-before-lstat');
     const owner = await acquireProcessLock({ lockPath: target });

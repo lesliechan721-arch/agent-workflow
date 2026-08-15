@@ -104,6 +104,28 @@ export interface CatalogSourcesConfig {
   sources: CatalogSource[];
 }
 
+export interface CatalogSourceResolution {
+  sourceId: CatalogSourceId;
+  sourceIdentity: SourceIdentity;
+  requestedRef: string;
+  resolvedCommit: string;
+  rootDir: string;
+  manifest: CatalogManifestV3;
+  manifestDigest: string;
+  snapshotDigest: string;
+  cacheEntryKey: string;
+  source: 'remote' | 'cache' | 'path';
+  cacheFallback: boolean;
+  remoteFailure?: string;
+}
+
+export interface CatalogProviderRuntimeOptions {
+  cliVersion: CliVersion;
+  freshnessPolicy: CatalogFreshnessPolicy;
+  env?: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
+}
+
 export interface NextStepInstruction {
   kind: NextStepKind;
   label: string;

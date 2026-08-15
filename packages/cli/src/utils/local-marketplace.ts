@@ -1629,6 +1629,8 @@ const LOCAL_MARKETPLACE_REPLACEMENT_STATE_ENTRIES = [
 
 let localMarketplaceAfterStagingPreparedForTests:
   ((stagingDir: string) => Promise<void>) | undefined;
+let localMarketplaceAfterCatalogCachePreservedForTests:
+  ((stagingDir: string) => Promise<void>) | undefined;
 let localMarketplaceAfterTargetMovedToBackupForTests:
   (() => Promise<void>) | undefined;
 
@@ -1642,6 +1644,12 @@ export function setLocalMarketplaceAfterTargetMovedToBackupForTests(
   hook: (() => Promise<void>) | undefined,
 ): void {
   localMarketplaceAfterTargetMovedToBackupForTests = hook;
+}
+
+export function setLocalMarketplaceAfterCatalogCachePreservedForTests(
+  hook: ((stagingDir: string) => Promise<void>) | undefined,
+): void {
+  localMarketplaceAfterCatalogCachePreservedForTests = hook;
 }
 
 async function listFilesRecursively(rootDir: string, relativeRoot = ''): Promise<string[]> {
@@ -2457,6 +2465,7 @@ export async function initializeLocalMarketplace(
           await replayOwnedDynamicSkillOverlays(inspection.awHome, stagingDir, env);
           await validateLocalMarketplaceLayout(stagingDir);
           await preserveLocalCatalogCache(inspection.awHome, stagingDir);
+          await localMarketplaceAfterCatalogCachePreservedForTests?.(stagingDir);
           await replaceDirectoryAtomically(inspection.awHome, stagingDir);
         });
       });

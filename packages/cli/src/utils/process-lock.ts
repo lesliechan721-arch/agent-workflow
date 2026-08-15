@@ -420,8 +420,17 @@ async function tryRecoverLock(options: {
   graceMs: number;
   fileSystem: ProcessLockFileSystem;
   identityReader: (pid: number) => Promise<string | null>;
+  persistentFaultPath?: string;
   hooks?: ProcessLockTestHooks;
 }): Promise<boolean> {
+  if (options.persistentFaultPath) {
+    try {
+      await options.fileSystem.lstat(options.persistentFaultPath);
+      throw new Error(`Process lock has a persistent fault marker: ${options.persistentFaultPath}`);
+    } catch (error) {
+      if (!isMissing(error)) throw error;
+    }
+  }
   const ownerPath = path.join(options.lockPath, 'owner.json');
   const lockStat = await options.fileSystem.lstat(options.lockPath);
   if (lockStat.isSymbolicLink() || !lockStat.isDirectory()) {
@@ -525,6 +534,8 @@ export async function acquireProcessLock(options: {
   lockPath: string;
   timeoutMs?: number;
   pollMs?: number;
+  signal?: AbortSignal;
+  persistentFaultPath?: string;
   malformedOwnerGraceMs?: number;
   fileSystem?: ProcessLockFileSystem;
   processStartIdentityReader?: (pid: number) => Promise<string | null>;
@@ -537,7 +548,50 @@ export async function acquireProcessLock(options: {
   const graceMs = options.malformedOwnerGraceMs ?? 250;
   const startedAt = Date.now();
 
+  if (
+    options.persistentFaultPath
+    && path.dirname(options.persistentFaultPath) !== path.dirname(options.lockPath)
+  ) {
+    throw new Error('Process lock persistent fault marker must be a sibling of the lock path.');
+  }
+
+  const throwIfAborted = (): void => {
+    if (!options.signal?.aborted) return;
+    if (options.signal.reason instanceof Error) throw options.signal.reason;
+    const error = new Error(`Process lock acquisition aborted: ${options.lockPath}`);
+    error.name = 'AbortError';
+    throw error;
+  };
+  const waitForPoll = async (): Promise<void> => {
+    throwIfAborted();
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(finish, pollMs);
+      const abort = (): void => {
+        clearTimeout(timeout);
+        options.signal?.removeEventListener('abort', abort);
+        try { throwIfAborted(); } catch (error) { reject(error); }
+      };
+      function finish(): void {
+        options.signal?.removeEventListener('abort', abort);
+        resolve();
+      }
+      options.signal?.addEventListener('abort', abort, { once: true });
+      if (options.signal?.aborted) abort();
+    });
+  };
+  const throwIfPersistentlyFaulted = async (): Promise<void> => {
+    if (!options.persistentFaultPath) return;
+    try {
+      await fileSystem.lstat(options.persistentFaultPath);
+      throw new Error(`Process lock has a persistent fault marker: ${options.persistentFaultPath}`);
+    } catch (error) {
+      if (!isMissing(error)) throw error;
+    }
+  };
+
   while (true) {
+    throwIfAborted();
+    await throwIfPersistentlyFaulted();
     const owner: ProcessLockOwner = {
       schemaVersion: 1,
       token: crypto.randomUUID(),
@@ -551,6 +605,7 @@ export async function acquireProcessLock(options: {
       await fileSystem.mkdir(options.lockPath);
       created = true;
       await options.testHooks?.afterMkdir?.();
+      throwIfAborted();
       const ownerContents = `${JSON.stringify(owner, null, 2)}\n`;
       ownerTempPath = `${options.lockPath}.owner-${crypto.randomUUID()}.tmp`;
       await fileSystem.writeFile(
@@ -559,6 +614,7 @@ export async function acquireProcessLock(options: {
         { flag: 'wx' },
       );
       await options.testHooks?.afterOwnerTempWritten?.(ownerTempPath);
+      throwIfAborted();
       const ownerPath = path.join(options.lockPath, 'owner.json');
       await fileSystem.link(ownerTempPath, ownerPath);
       const published = await readOwnerFile(fileSystem, ownerPath);
@@ -692,11 +748,13 @@ export async function acquireProcessLock(options: {
       if (!isExists(error)) throw error;
     }
     try {
+      await throwIfPersistentlyFaulted();
       if (await tryRecoverLock({
         lockPath: options.lockPath,
         graceMs,
         fileSystem,
         identityReader,
+        persistentFaultPath: options.persistentFaultPath,
         hooks: options.testHooks,
       })) continue;
     } catch (error) {
@@ -706,7 +764,7 @@ export async function acquireProcessLock(options: {
         if (Date.now() - startedAt >= timeoutMs) {
           throw new Error(`Timed out waiting for process lock: ${options.lockPath}`);
         }
-        await new Promise<void>((resolve) => setTimeout(resolve, pollMs));
+        await waitForPoll();
         continue;
       }
       throw error;
@@ -714,6 +772,6 @@ export async function acquireProcessLock(options: {
     if (Date.now() - startedAt >= timeoutMs) {
       throw new Error(`Timed out waiting for process lock: ${options.lockPath}`);
     }
-    await new Promise<void>((resolve) => setTimeout(resolve, pollMs));
+    await waitForPoll();
   }
 }

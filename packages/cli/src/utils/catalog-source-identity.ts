@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import fs from 'fs-extra';
 
@@ -7,7 +8,7 @@ import { CATALOG_SOURCE_IDENTITY_VERSION } from '../constants.js';
 import type { CatalogSource, SourceIdentity } from '../types.js';
 
 const SCP_GIT_URL_PATTERN = /^([^@/:\s]+)@([^/:\s]+):(.+)$/;
-const ALLOWED_GIT_URL_PROTOCOLS = new Set(['git:', 'http:', 'https:', 'ssh:']);
+const ALLOWED_GIT_URL_PROTOCOLS = new Set(['file:', 'https:', 'ssh:']);
 
 function normalizeGitPath(pathname: string): string {
   const normalized = pathname.replace(/\/+$/, '');
@@ -30,6 +31,12 @@ export function canonicalizeCatalogGitUrl(value: string): string {
     return `scp-${pathKind}:${username}@${hostUrl.hostname.toLowerCase()}:${normalizeGitPath(pathname)}`;
   }
 
+  if (path.isAbsolute(value)) {
+    const normalized = path.normalize(value).replace(/[\\/]+$/, '');
+    if (!normalized) throw new Error('Invalid catalog Git path: expected a repository path.');
+    return normalized;
+  }
+
   let url: URL;
   try {
     url = new URL(value);
@@ -39,11 +46,25 @@ export function canonicalizeCatalogGitUrl(value: string): string {
   if (!ALLOWED_GIT_URL_PROTOCOLS.has(url.protocol)) {
     throw new Error(`Invalid catalog Git URL protocol "${url.protocol}".`);
   }
-  if (!url.hostname || url.password || (url.username && url.protocol !== 'ssh:')) {
+  if (
+    (url.protocol !== 'file:' && !url.hostname)
+    || (url.protocol === 'file:' && url.hostname !== '')
+    || url.password
+    || (url.username && url.protocol !== 'ssh:')
+  ) {
     throw new Error('Invalid catalog Git URL: embedded credentials are not allowed.');
   }
   if (url.search || url.hash) {
     throw new Error('Invalid catalog Git URL: query strings and fragments are not allowed.');
+  }
+
+  if (url.protocol === 'https:' && url.username) {
+    throw new Error('Invalid catalog Git URL: embedded credentials are not allowed.');
+  }
+  if (url.protocol === 'file:') {
+    const filePath = fileURLToPath(url);
+    if (!path.isAbsolute(filePath)) throw new Error('Invalid catalog Git file URL: expected an absolute path.');
+    return pathToFileURL(normalizeGitPath(filePath)).href;
   }
 
   const username = url.username ? `${url.username}@` : '';
