@@ -1,6 +1,8 @@
 # skill-review
 
-面向 Agent Skill 的多维度、证据化、可计算评审包。
+本文件面向人类维护者，说明 `skill-review` Agent 工作流的用途和入口。Agent 执行评审时读取 [`SKILL.md`](SKILL.md)，并按其中的路由选择 reference。
+
+该工作流提供面向 Agent Skill 的多维度、证据化、可计算评审。
 
 ## 设计重点
 

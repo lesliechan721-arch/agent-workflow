@@ -2,6 +2,8 @@
 
 Agent Workflows 是一个面向 Codex 和 Claude Code 的插件工作流仓库。这里维护插件源码、作者工具和发布为 `@lesliechan721/aw` 的 CLI；插件通过 `@lesliechan721/aw-plugins-manifest` sidecar 包和 `@lesliechan721/aw-plugins` full catalog 包分发。CLI 解析当前 catalog，把插件按平台和 scope 安装到 Codex / Claude Code 对应位置。
 
+本文是项目入口，负责 CLI 快速使用、仓库级开发入口和发版路径。系统合同、编码规则、测试规则和插件专用工作流按下方[文档职责](#文档职责)分别维护。
+
 ## 快速使用
 
 需要 `Node.js >= 22`。
@@ -80,35 +82,17 @@ make build
 make test
 ```
 
-常用命令：
+推荐入口：
 
 - `make build`：编译 `@lesliechan721/aw`，并生成本地 catalog staging / runtime bundle
 - `make test`：运行单元测试和集成测试
-- `pnpm test:perf:gate`：运行独立性能预算和 fast unit wall-time 门禁；预算定义见 [测试指南](docs/testing.md#performance-budgets)
-- `pnpm plugin:test <plugin>`：运行插件确定性 Node 脚本测试，不调用模型
-- `pnpm plugin:eval <plugin> --skill <skill> --batch-name <name> --materialize-only`：为一个 owner Skill 生成并核验 Codex project/user 最终制品，不调用模型
-- `pnpm plugin:eval <plugin> --skill <skill> --batch-name <name>`：本地显式运行该 Skill 的 release-required Codex eval；不进入常规 CI
-- `node .agents/skills/skill-review/scripts/run_static_skill_evals.mjs <skill> --validate-only`：校验当前仓库静态 Skill eval 定义；真实模型运行使用同一脚本
 - `make verify-local`：校验 CLI 本地发布链路（常规测试、性能门禁、build smoke、CLI pack smoke、catalog fetch smoke）
-- `make verify-cli`：校验 CLI-only 发布链路
-- `make verify-catalog`：校验 catalog-only 发布链路
-- `make verify-release`：校验 CLI + catalog 组合发布链路
-- `make pack-cli`：输出 CLI tarball 到 `.release/tarballs/`
-- `make pack-catalog CATALOG_VERSION=1.2.0-beta.1`：输出 sidecar/full catalog tarball
-- `make pack CATALOG_VERSION=1.2.0-beta.1`：同时输出 CLI 与 catalog tarball
+- `make verify-cli`、`make verify-catalog`、`make verify-release`：分别校验 CLI、catalog 或组合发布链路
 - `make local-install`：打包 CLI 并执行本地 `npm install -g`，验证最终安装链路
 - `make beta-release CLI_VERSION=1.0.0-beta.17 CATALOG_VERSION=1.2.0-beta.1`：校验并发布 CLI 测试版和 beta catalog
 - `make release CLI_VERSION=1.0.0 CATALOG_VERSION=1.2.0`：校验并发布 CLI 正式版和 latest catalog
 
-如果更习惯直接调用脚本，也可以使用：
-
-- `pnpm run release:local`：本地开发安装流程
-- `pnpm run release:pack:cli`：生成 CLI tarball
-- `pnpm run release:pack:catalog -- --catalog-version 1.2.0-beta.1`：生成 catalog tarball
-- `pnpm run release:publish:cli:beta` / `pnpm run release:publish:cli:latest`：只发布当前已经写入版本的 CLI 包
-- `pnpm run release:publish:catalog:beta -- --catalog-version 1.2.0-beta.1`：只发布 beta catalog
-- `pnpm run release:publish:beta -- --cli-version 1.0.0-beta.17 --catalog-version 1.2.0-beta.1`：组合发布测试版
-- `pnpm publish:cli`：发布当前已经写入的正式版 CLI，兼容旧入口
+测试层级和完整验证命令见[测试指南](docs/testing.md)。插件创建、确定性测试、模型 Eval 和评审入口见[插件维护指南](docs/plugin-maintenance.md)。
 
 ## 本地开发与发版流程
 
@@ -155,12 +139,20 @@ make release CLI_VERSION=1.0.0 CATALOG_VERSION=1.2.0
 
 `CLAUDE.md` 是指向 `AGENTS.md` 的符号链接，用来让 Codex 和 Claude Code 共用同一份项目指令。
 
-## 文档
+## 文档职责
 
-- `docs/architecture.md`：CLI 源码布局和三层分发模型
-- `docs/coding-conventions.md`：TypeScript 风格、边界和关键类型
-- `docs/testing.md`：测试分层和提交前检查
-- `docs/plugin-maintenance.md`：插件作者合同、同步规则和版本门禁
+详细规则只在一个权威入口维护。其它入口只保留短摘要和链接。
+
+| 入口 | 主要读者 | 责任 |
+|------|----------|------|
+| 本 README | 用户与维护者 | CLI 快速使用、核心开发入口和仓库级发版路径 |
+| [架构说明](docs/architecture.md) | 维护者 | CLI 系统结构、模块边界和稳定产品合同 |
+| [编码约定](docs/coding-conventions.md) | 维护者 | TypeScript 实现约定 |
+| [测试指南](docs/testing.md) | 维护者 | 测试书写、层级选择和验证命令 |
+| [插件维护指南](docs/plugin-maintenance.md) | 维护者 | 插件源码边界、维护入口和仓库级验证 |
+| [create-aw-plugin README](.agents/skills/create-aw-plugin/README.md) | 维护者 | 插件作者 Agent 工作流的人类入口 |
+| [skill-review README](.agents/skills/skill-review/README.md) | 维护者 | Skill 评审 Agent 工作流的人类入口 |
+| [AGENTS.md](AGENTS.md) | Agent | 按任务路由到上述权威入口和专用 Skill |
 
 ## 生成物原则
 

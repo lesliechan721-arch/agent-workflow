@@ -7,12 +7,12 @@
 - 使用 `pnpm@10.33.0` 和 Node.js `>=22`。
 - `pnpm build` 编译 CLI，并生成本地 catalog staging 和 runtime bundle。项目没有独立的 `typecheck` 命令；构建过程包含 TypeScript 类型检查。
 - `packages/cli/dist/` 和 `packages/cli/plugins-dist/` 是生成目录，不要手工修改。
-- 新增或修改测试时，必须先通过[测试指南](docs/testing.md)中的 Test Value Gate：测试可观察行为或公开合同，不得用固定文本、固定版本或实现细节代替行为验证。
 
 ## 按任务读取
 
-- 修改 CLI 写入流程、status、config、catalog/cache、平台边界或分发模型时，读取[架构说明](docs/architecture.md)。
+- 修改 CLI 行为、公开合同、写入流程、status、config、catalog/cache、平台边界或分发模型时，读取[架构说明](docs/architecture.md)。
 - 修改 TypeScript 时，读取[编码约定](docs/coding-conventions.md)。
-- 添加测试、修改公开合同或选择验证命令时，读取[测试指南](docs/testing.md)。
-- 创建或修改插件，或修改 manifest/schema、adapter、scope、分发/安装流程及作者合同工具时，读取[插件维护指南](docs/plugin-maintenance.md)。
+- 添加或修改测试、选择测试层级或选择验证命令时，读取[测试指南](docs/testing.md)，并先通过 Test Value Gate。
+- 创建或维护 `plugins/<name>/` 时，使用 [create-aw-plugin](.agents/skills/create-aw-plugin/SKILL.md)。修改 manifest/schema、adapter、scope、插件分发/安装流程或作者合同工具时，读取[插件维护指南](docs/plugin-maintenance.md)和相关架构说明。
+- 只读评审静态 Skill 或插件 Skill 时，使用 [skill-review](.agents/skills/skill-review/SKILL.md)。
 - 执行本地安装、打包或发布时，读取 README 的[开发与发版流程](README.md#本地开发与发版流程)。

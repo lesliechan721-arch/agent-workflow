@@ -1,5 +1,7 @@
 # Architecture
 
+本文件面向仓库维护者，负责 CLI 系统结构、模块边界和稳定产品合同。TypeScript 实现方式见[编码约定](coding-conventions.md)，测试设计见[测试指南](testing.md)，插件专用工作流见[插件维护指南](plugin-maintenance.md)。
+
 ## CLI Source Layout (`packages/cli/src`)
 
 - `commands/write-commands.ts` 是 `install`、`upgrade`、`reinstall`、`uninstall`、`cleanup` 的公开写入口。
@@ -17,6 +19,23 @@
 - `types.ts` 保存跨模块公开类型。插件 manifest 不支持顶层 `dependencies`。
 
 写命令和 status 只根据 current catalog、live ownership 和平台组件执行。
+
+### Core Types
+
+- `PluginManifestSource`：插件源码 manifest。
+- `PluginMeta`：manifest 加 bundle root 和 manifest path。
+- `CatalogResolution`：current catalog identity、selector 和 strict cache 证据。
+- `OwnedComponent` 与 `OwnerIdentity`：可检查、可删除的平台组件及其归属。
+- `DesiredTarget` 与 `RebuildResult`：rebuild 的目标输入和统一结果。
+- `StatusJsonPayload`：status v3 公开结构。
+- `ArtifactPlan`：renderer 和 AW apply 之间的 v2 数据合同。
+
+### Module Invariants
+
+- renderer 只返回 `ArtifactPlan`，不直接写平台文件。
+- 写入前必须验证 scope、path boundary、target identity 和最终 Skill tree。
+- Codex/Claude Skill 原生调用 metadata 来自最终文件树，AW 只校验和保留。
+- command 分支不得新增另一套安装状态投影、依赖图或平台输出记录。
 
 ## Three-Layer Distribution Model
 
@@ -60,8 +79,8 @@ Local runtime
 ```
 
 - 仓库源码层是插件作者维护的输入。
-- Skill 根的 `evals/**` 和插件根的正式 `reports/**` 不进入 catalog runtime bundle、安装制品或 runtime digest。Skill `README.md` 是源码文档，会随 Skill 发布；只有 release 登记会把正式报告摘要写入该文件，full 报告发布不会。
-- 完整 eval/review 批次固定在仓库 `.tmp/agent-workflows/evals/`，不进入 Git。用户明确要求发布时执行 `review:publish`；插件正式报告写到 `plugins/<plugin>/reports/<skill>/<batch-id>/`，repo-local 静态 Skill 写到 `.agents/reports/<skill>/<batch-id>/`；每个正式目录只含 `report.md` 和 schema v2 `summary.json`。`review:publish` 不更新 README；用户另行明确要求登记时执行 `review:release`，该命令不修改正式报告或临时批次。
+- Skill 根的 `evals/**` 和插件根的正式 `reports/**` 不进入 catalog runtime bundle、安装制品或 runtime digest。Skill `README.md` 是 production source，会随 Skill 发布。
+- `.tmp/agent-workflows/evals/**` 只保存本地临时证据，不进入 Git 或 runtime bundle。插件正式报告位于 `plugins/<plugin>/reports/`，repo-local 静态 Skill 正式报告位于 `.agents/reports/`。Eval、评审、发布和登记步骤由 [create-aw-plugin](../.agents/skills/create-aw-plugin/README.md) 与 [skill-review](../.agents/skills/skill-review/README.md) 工作流定义。
 - catalog staging 是生成物，不手工修改。
 - `@lesliechan721/aw-plugins-manifest` 是 sidecar；`@lesliechan721/aw-plugins` 是同版本 full catalog。
 - CLI version、catalog version 和 plugin version 是三套独立身份。
@@ -126,6 +145,8 @@ normalize target
 
 `absent` 建议运行 `aw install`。`partial` 建议运行 `aw reinstall`。`error` 保留错误并继续检查其它 target。
 
+catalog 不可用和 bundle 不可用必须分别报告，不能合并成不可定位的通用状态错误。
+
 status v3 JSON 结构：
 
 ```json
@@ -149,6 +170,7 @@ status 是只读操作。它不运行 lifecycle 或 renderer，不刷新 marketp
 - config 写入只对当前可定位 target 运行完整 reinstall。
 - `uninstall`、`cleanup` 和 `reinstall` 不删除 config。
 - `config reset` 是删除 config store 的唯一入口。
+- sensitive config value 不进入 receipt、stderr 或 debug log。
 
 ## Platform Boundaries
 
@@ -157,6 +179,7 @@ status 是只读操作。它不运行 lifecycle 或 renderer，不刷新 marketp
 - Codex project 目标只写当前仓库的 `.agents/skills/`、`.codex/config.toml`、`.codex/hooks.json`、`.codex/rules/` 和 `.codex/agents/`。
 - Codex project 写入前要求 Codex `>= 0.145.0`；Claude 写入要求 Claude Code `>= 2.1.88`。
 - MCP、apps、hooks、permissions、roles、instructions、skills 和 slash commands 仍是平台能力，不属于状态存储层。
+- 公共 slash command 在 Claude 输出为 command，在 Codex 输出为 manual-only Skill。
 
 ## Catalog Freshness and Cache
 
@@ -174,6 +197,9 @@ cache publication 必须满足：
 - 较旧的远程观察不能覆盖较新的观察。
 - registry source identity 不同的 selector index 互不复用。
 - lock 等待有 deadline，释放时必须验证 owner token。
+- 冲突 observation 不得污染已经提交的 entry。
+- corrupt entry 必须隔离，后续 writer 仍能正常发布。
+- cache 缺失或损坏不得阻断 active marketplace 重建。
 - active marketplace 重建失败时，原 strict cache 保持可读。
 
 按 `latest` 或 `beta` channel 选择的 current catalog，其 `compatibility.aw.minVersion` 高于当前 CLI 时，resolver 直接返回 `awVersionTooLow`。显式选择 exact catalog version 且版本不兼容时返回 `explicitCatalogIncompatible`。两种情况都不选择更早的 catalog version。
@@ -196,14 +222,13 @@ cache publication 必须满足：
 - 向导执行失败后只向 human stderr 输出固定安全错误；原始执行错误只进入遵守脱敏规则的 debug 事件。完整参数的非 TUI 命令保留原有错误合同。
 - 运行前取消直接退出。真实写入开始后的 `Ctrl-C` 只登记“完成后退出”，不取消底层写操作。
 - rebuild action 边界发出 `rebuild:action` 事件。source 固定包含 plugin、platform、scope 和 command；data 固定包含动作名和 start/success/failure，终态包含 duration。失败消息在进入可见日志前脱敏。
-- 仪表盘和命令向导在会话 reporter 中消费 action event 与 notice，不直接写 stdout/stderr。它们显示当前 target、真实中文阶段、elapsed 和最近 8 条消息，内存最多保留 50 条；结果页保留最近消息和 human receipt 摘要。无 action event 的读取只显示通用 spinner。
+- 仪表盘和命令向导在会话 reporter 中消费 action event 与 notice，不直接写 stdout/stderr。它们显示当前 target、真实中文阶段、elapsed 和最近 8 条消息，内存最多保留 50 条；多 target 更新不能串线。结果页保留最近消息和 human receipt 摘要。无 action event 的读取只显示通用 spinner。
+- sensitive config、未脱敏 event message 和 native raw invocation/data 不进入 frame、stdout 或 stderr。
+- TUI 结束后必须恢复 session reporter；每个事件只向 debug logger 发送一次。
 - `rebuild:action` 只服务 human、TUI、verbose 和 debug 诊断，不进入 v3 JSON receipt。普通 human reporter 忽略 event；verbose 写 stderr；`--json` stdout 仍只包含一个对象。
 
 ## Key Paths
 
 - `packages/cli/scripts/bundle-plugins.ts`：生成 catalog staging。
 - `packages/cli/scripts/plugin-staging.ts`：生成 sidecar/full catalog 输入。
-- `packages/cli/tests/unit/local-marketplace.test.ts`：strict cache、lock 和 publication 回归。
-- `packages/cli/tests/perf/performance-budget.test.ts`：cache、marketplace、live status/console 和 remote deadline 预算。
-- `.agents/skills/create-aw-plugin/`：插件作者工具与参考合同。
-- `docs/testing.md`：测试分层和门禁。
+- `.agents/skills/create-aw-plugin/`：插件作者工作流与参考合同。
