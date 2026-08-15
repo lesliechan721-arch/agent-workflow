@@ -446,9 +446,24 @@ function resolveFallback(scope) {
   return resolveFromStores({ pluginName, schema, scope, stores, projectRoot });
 }
 
+function printUsage() {
+  process.stdout.write(`Usage:
+  node aw-config.mjs get <key> [--scope effective|user|project|project-local]
+  node aw-config.mjs json [--scope effective|user|project|project-local]
+
+Options:
+  --scope <scope>  Read effective, user, project, or project-local config. Default: effective.
+  -h, --help       Show this help message.
+`);
+}
+
 function parseArgs(argv) {
   const args = argv.slice(2);
   const command = args.shift();
+  if (command === '-h' || command === '--help') {
+    printUsage();
+    process.exit(0);
+  }
   let scope = 'effective';
   const positional = [];
 

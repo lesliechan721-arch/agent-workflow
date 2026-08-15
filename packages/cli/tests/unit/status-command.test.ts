@@ -595,6 +595,43 @@ describe('live status command', () => {
     expect(dashboardActions(loaded.items[0]!, loaded.items[0]!.targets[0]!)).toContain('upgrade');
   });
 
+  it('accepts Claude local-scope plugins without treating them as project installs', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const cwd = await fs.realpath(isolation.layout.fixtureCwd);
+    const current = plugin('git', ['CLAUDE']);
+    current.manifest.extensions = undefined;
+    const claudePaths = resolveClaudePaths(cwd, 'project', isolation.env);
+    await fs.outputJson(claudePaths.installedPluginsPath, {
+      plugins: {
+        'figma@claude-plugins-official': [{
+          scope: 'local',
+          projectPath: path.join(isolation.layout.rootDir, 'other-project'),
+          version: '2.1.7',
+        }],
+        'git@aw': [{
+          scope: 'local',
+          projectPath: cwd,
+          version: '1.2.3',
+        }],
+      },
+    });
+
+    const result = await statusCommand(['git'], {
+      cwd, platform: 'claude', scope: 'project', json: true,
+    }, {
+      env: isolation.env,
+      catalogResolution: catalog(),
+      catalogPlugins: [current],
+      nativeCliRunner: async () => ({ exitCode: 0, stdout: '', stderr: '' }),
+    });
+
+    expect(result.payload.targets[0]).toMatchObject({
+      target: { plugin: 'git', platform: 'claude', scope: 'project' },
+      state: 'absent',
+      errors: [],
+    });
+  });
+
   it('never runs an uninstalled dynamic renderer for explicit status, no-argument status, or the bare console', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const cwd = await fs.realpath(isolation.layout.fixtureCwd);
