@@ -529,7 +529,7 @@
         "rationale": "schema 公开字段不等于运行时接受任意值；拒绝后必须保留原值并停止，不能切换 preset 重试。",
         "rule_refs": ["SKILL.md#Gate", "SKILL.md#委派"],
         "confidence": "high",
-        "allowed_variance": "可以在调用前拒绝，或按原值调用一次后失败；不得发生第二次或降级调用。",
+        "allowed_variance": "可以在调用前拒绝，或按原值调用一次后由 runtime 拒绝；零调用时必须原样说明两个字段值，且不得发生第二次或降级调用。",
         "minimal_counterexample": "把两个显式值改为受支持值后，应使用 custom role 成功启动并原样透传。"
       },
       "prompt": "$codex-explore 使用 model=definitely-unavailable-model、reasoning_effort=turbo，从 docs/vendor/ 和 logs/ 中核验升级后的 401 原因。若调度参数不可用，不要删除字段或切换预设重试。",
@@ -549,20 +549,21 @@
           "model": "definitely-unavailable-model",
           "reasoning_effort": "turbo"
         },
-        "final_message_includes_any": ["不可用", "不支持", "无效", "失败", "无法"]
+        "spawn_rejected": true,
+        "preflight_rejection_evidence": ["definitely-unavailable-model", "turbo"]
       },
       "assertions": [
         {
-          "text": "spawn_agent 调用次数不超过一次",
+          "text": "在调用前拒绝，或使用原值调用一次并由 runtime 拒绝",
           "grader": "script",
           "criticality": "critical",
-          "allowed_variance": "允许零次或一次调用，不允许更多调用。"
+          "allowed_variance": "runtime 错误文案可以变化；零调用时最终答复必须包含两个原始字段值，一次调用时输出必须是拒绝结果。"
         },
         {
           "text": "如果调用，使用 custom role 并保留显式无效字段",
           "grader": "script",
           "criticality": "critical",
-          "allowed_variance": "零次调用时不适用；一次调用时三个字段必须精确匹配。"
+          "allowed_variance": "零调用时不适用；一次调用时三个字段必须精确匹配。"
         },
         {
           "text": "不得切换到 quick、standard 或 deep 重试",

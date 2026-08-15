@@ -11,6 +11,15 @@
       "requiredForRelease": true
     },
     {
+      "id": "project-timeout",
+      "scope": "project",
+      "plugins": [{ "name": "codex-enhance", "config": {
+        "minimumInitialWaitMinutes": 1
+      } }],
+      "runModel": true,
+      "requiredForRelease": true
+    },
+    {
       "id": "user-default",
       "scope": "user",
       "plugins": [{ "name": "codex-enhance", "config": {} }],
@@ -106,6 +115,20 @@
       "entry": "./run-lifecycle-evals.mjs",
       "cases": "./lifecycle-evals.json",
       "profiles": ["project-default"],
+      "defaultRuns": 1,
+      "releaseSplits": [],
+      "requiredForRelease": true,
+      "perRunTimeoutMs": 900000,
+      "suiteTimeoutMs": 3600000,
+      "supports": ["runs", "case", "model", "codexBin", "timeout"]
+    },
+    {
+      "id": "lifecycle-timeout",
+      "kind": "command",
+      "skills": ["codex-subagent-guide"],
+      "entry": "./run-lifecycle-evals.mjs",
+      "cases": "./lifecycle-timeout-evals.json",
+      "profiles": ["project-timeout"],
       "defaultRuns": 1,
       "releaseSplits": [],
       "requiredForRelease": true,

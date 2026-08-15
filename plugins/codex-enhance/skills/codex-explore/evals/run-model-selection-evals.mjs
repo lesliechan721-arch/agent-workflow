@@ -106,6 +106,24 @@ function validateExpected(expected, id) {
   ) {
     throw new Error(`${id}.expected.spawn_calls must define a valid integer range.`);
   }
+  if (
+    expected.spawn_rejected !== undefined &&
+    typeof expected.spawn_rejected !== 'boolean'
+  ) {
+    throw new Error(`${id}.expected.spawn_rejected must be a boolean.`);
+  }
+  if (
+    expected.preflight_rejection_evidence !== undefined &&
+    (
+      !Array.isArray(expected.preflight_rejection_evidence) ||
+      expected.preflight_rejection_evidence.length === 0 ||
+      expected.preflight_rejection_evidence.some(
+        (value) => typeof value !== 'string' || value.trim() === '',
+      )
+    )
+  ) {
+    throw new Error(`${id}.expected.preflight_rejection_evidence must be a non-empty string array.`);
+  }
 }
 
 function validateEvalCase(entry, index) {
@@ -176,6 +194,21 @@ function evaluateArguments(call, expectedArguments, label) {
   });
 }
 
+function spawnRejected(call) {
+  if (!call || call.output === undefined || call.output === null) return false;
+  if (
+    typeof call.output === 'object' &&
+    !Array.isArray(call.output) &&
+    typeof call.output.task_name === 'string' &&
+    call.output.task_name.trim() !== ''
+  ) {
+    return false;
+  }
+  return typeof call.output === 'string'
+    ? call.output.trim() !== ''
+    : true;
+}
+
 export function evaluateModelSelectionRun(run, expected) {
   const calls = run.spawn_calls ?? [];
   const errorEvents = (run.event_trace ?? []).filter(
@@ -234,6 +267,19 @@ export function evaluateModelSelectionRun(run, expected) {
       name: `present_arguments.${key}`,
       passed: Object.hasOwn(args ?? {}, key),
       evidence: `actual=${valueEvidence(args, key)}`,
+    });
+  }
+  if (expected.spawn_rejected !== undefined) {
+    const runtimeRejected = spawnRejected(calls[0]);
+    const preflightEvidence = expected.preflight_rejection_evidence ?? [];
+    const preflightRejected = calls.length === 0 &&
+      preflightEvidence.length > 0 &&
+      preflightEvidence.every((value) => (run.final_message ?? '').includes(value));
+    const rejected = runtimeRejected || preflightRejected;
+    assertions.push({
+      name: 'spawn_rejected',
+      passed: rejected === expected.spawn_rejected,
+      evidence: `expected=${expected.spawn_rejected} actual=${rejected} mode=${runtimeRejected ? 'runtime' : preflightRejected ? 'preflight' : 'none'} output=${JSON.stringify(calls[0]?.output ?? null)}`,
     });
   }
   if (expected.final_message_includes_any) {

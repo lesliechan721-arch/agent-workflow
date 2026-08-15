@@ -112,10 +112,19 @@ export function evaluateLifecycleTimeline(calls, expected) {
     `minimum=${expected.minimum_initial_wait_timeout_ms} actual=${firstTimeout ?? 'missing'}`,
   );
   const timedOutWaits = waitIndexes.filter((index) => waitTimedOut(timeline[index]));
+  const timeoutObserved = timedOutWaits.length > 0;
+  const timeoutFollowedByWait = timeoutObserved
+    ? timedOutWaits.every((index) => waitIndexes.some((later) => later > index))
+    : expected.require_timeout !== true;
+  add(
+    'timeout_observed',
+    expected.require_timeout !== true || timeoutObserved,
+    `required=${expected.require_timeout === true} timed_out=${JSON.stringify(timedOutWaits)}`,
+  );
   add(
     'timeout_followed_by_wait',
-    timedOutWaits.every((index) => waitIndexes.some((later) => later > index)),
-    `timed_out=${JSON.stringify(timedOutWaits)} waits=${JSON.stringify(waitIndexes)}`,
+    timeoutFollowedByWait,
+    `required=${expected.require_timeout === true} timed_out=${JSON.stringify(timedOutWaits)} waits=${JSON.stringify(waitIndexes)}`,
   );
   add(
     'terminal_result_observed',
@@ -132,16 +141,35 @@ export function evaluateLifecycleTimeline(calls, expected) {
   return { passed: assertions.every((entry) => entry.passed), assertions };
 }
 
-async function loadCases(caseId) {
-  const document = JSON.parse(await readEvalResource('lifecycle-evals.json'));
+export function selectLifecycleCases(document, { caseId, profile }) {
   if (document?.skill_name !== 'codex-subagent-guide' || !Array.isArray(document.evals)) {
     throw new Error('lifecycle-evals.json must describe codex-subagent-guide.');
   }
+  const profileCases = document.evals.filter(
+    (entry) => !Array.isArray(entry.profiles) || entry.profiles.includes(profile),
+  );
   const cases = caseId
-    ? document.evals.filter((entry) => entry.id === caseId)
-    : document.evals;
-  if (cases.length === 0) throw new Error(`Unknown lifecycle case: ${caseId}`);
+    ? profileCases.filter((entry) => entry.id === caseId)
+    : profileCases;
+  if (cases.length === 0) {
+    throw new Error(`Unknown lifecycle case for profile ${profile}: ${caseId ?? 'all'}`);
+  }
   return cases;
+}
+
+async function loadCases(caseId) {
+  const documents = await Promise.all([
+    'lifecycle-evals.json',
+    'lifecycle-timeout-evals.json',
+  ].map(async (resource) => JSON.parse(await readEvalResource(resource))));
+  const document = {
+    skill_name: 'codex-subagent-guide',
+    evals: documents.flatMap((entry) => entry.evals ?? []),
+  };
+  return selectLifecycleCases(document, {
+    caseId,
+    profile: process.env.AW_PLUGIN_EVAL_PROFILE ?? 'project-default',
+  });
 }
 
 async function runCase(evalCase, options) {

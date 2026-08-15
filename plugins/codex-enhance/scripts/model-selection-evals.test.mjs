@@ -326,7 +326,6 @@ function testMechanicalAssertions() {
       execution_error: false,
       termination: 'completed',
       exit_code: 0,
-      final_message: '启动失败。',
       spawn_calls: [
         {
           arguments: {
@@ -334,21 +333,111 @@ function testMechanicalAssertions() {
             model: 'definitely-unavailable-model',
             reasoning_effort: 'turbo',
           },
+          output: 'runtime rejected the model',
         },
-        { arguments: { agent_type: 'codex-explore-deep' } },
+        {
+          arguments: { agent_type: 'codex-explore-deep' },
+          output: { task_name: '/root/retry' },
+        },
       ],
     },
     {
-      spawn_calls: { min: 0, max: 1 },
+      spawn_calls: { min: 1, max: 1 },
       arguments_if_called: {
         agent_type: 'codex-explore-custom',
         model: 'definitely-unavailable-model',
         reasoning_effort: 'turbo',
       },
-      final_message_includes_any: ['失败'],
+      spawn_rejected: true,
     },
   );
   assert.equal(silentRetry.passed, false);
+
+  const rejectedWithoutKeyword = evaluateModelSelectionRun(
+    {
+      execution_error: false,
+      termination: 'completed',
+      exit_code: 0,
+      final_message: '调度器拒绝了这个参数。',
+      spawn_calls: [{
+        arguments: {
+          agent_type: 'codex-explore-custom',
+          model: 'definitely-unavailable-model',
+          reasoning_effort: 'turbo',
+        },
+        output: 'runtime rejected the model',
+      }],
+    },
+    {
+      spawn_calls: { min: 1, max: 1 },
+      arguments_if_called: {
+        agent_type: 'codex-explore-custom',
+        model: 'definitely-unavailable-model',
+        reasoning_effort: 'turbo',
+      },
+      spawn_rejected: true,
+    },
+  );
+  assert.equal(rejectedWithoutKeyword.passed, true);
+
+  const preflightRejected = evaluateModelSelectionRun(
+    {
+      execution_error: false,
+      termination: 'completed',
+      exit_code: 0,
+      final_message: 'model=definitely-unavailable-model 与 reasoning_effort=turbo 不能原样传递。',
+      spawn_calls: [],
+    },
+    {
+      spawn_calls: { min: 0, max: 1 },
+      spawn_rejected: true,
+      preflight_rejection_evidence: ['definitely-unavailable-model', 'turbo'],
+    },
+  );
+  assert.equal(preflightRejected.passed, true);
+
+  const unexplainedPreflightStop = evaluateModelSelectionRun(
+    {
+      execution_error: false,
+      termination: 'completed',
+      exit_code: 0,
+      final_message: '参数不能使用。',
+      spawn_calls: [],
+    },
+    {
+      spawn_calls: { min: 0, max: 1 },
+      spawn_rejected: true,
+      preflight_rejection_evidence: ['definitely-unavailable-model', 'turbo'],
+    },
+  );
+  assert.equal(unexplainedPreflightStop.passed, false);
+
+  const misleadingFailureText = evaluateModelSelectionRun(
+    {
+      execution_error: false,
+      termination: 'completed',
+      exit_code: 0,
+      final_message: '启动失败。',
+      spawn_calls: [{
+        arguments: {
+          agent_type: 'codex-explore-custom',
+          model: 'definitely-unavailable-model',
+          reasoning_effort: 'turbo',
+        },
+        output: { task_name: '/root/unexpected-success' },
+      }],
+    },
+    {
+      spawn_calls: { min: 1, max: 1 },
+      arguments_if_called: {
+        agent_type: 'codex-explore-custom',
+        model: 'definitely-unavailable-model',
+        reasoning_effort: 'turbo',
+      },
+      spawn_rejected: true,
+    },
+  );
+  assert.equal(misleadingFailureText.passed, false);
 }
 
 function testEnvironmentSkipReportStatus() {

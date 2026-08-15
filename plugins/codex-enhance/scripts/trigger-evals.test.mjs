@@ -31,13 +31,13 @@ async function testEvalCorpus() {
   const { cases } = document;
   assert.equal(document.schemaVersion, 1);
   assert.equal(document.skill, 'codex-explore');
-  assert.equal(cases.length, 31);
+  assert.equal(cases.length, 30);
   assert.equal(cases.filter((entry) => entry.split === 'train').length, 13);
-  assert.equal(cases.filter((entry) => entry.split === 'validation').length, 8);
+  assert.equal(cases.filter((entry) => entry.split === 'validation').length, 7);
   assert.equal(cases.filter((entry) => entry.split === 'sanity').length, 10);
-  assert.equal(cases.filter((entry) => entry.should_load_skill).length, 22);
+  assert.equal(cases.filter((entry) => entry.should_load_skill).length, 21);
   assert.equal(cases.filter((entry) => !entry.should_load_skill).length, 9);
-  assert.equal(cases.filter((entry) => entry.should_spawn_agent).length, 19);
+  assert.equal(cases.filter((entry) => entry.should_spawn_agent).length, 18);
   assert.equal(new Set(cases.map((entry) => entry.id)).size, cases.length);
 
   const expectedContracts = new Map([
@@ -46,7 +46,8 @@ async function testEvalCorpus() {
     ['skill_design_review', [false, false]],
     ['large_pr_review', [true, true]],
     ['readonly_deep_code_review', [true, true]],
-    ['pr_defect_validation', [true, true]],
+    ['known_spec_quality_boundary', [false, false]],
+    ['composite_review_exploration', [true, true]],
     ['plain_name_small_request', [true, false]],
     ['composite_write_boundary', [true, true]],
     ['typo_known_file_near_miss', [false, false]],
