@@ -56,11 +56,7 @@ async function waitForFrame(instance: ReturnType<typeof render>, text: string): 
 }
 
 async function waitForCondition(condition: () => boolean): Promise<void> {
-  for (let turn = 0; turn < 50; turn += 1) {
-    if (condition()) return;
-    await nextTurn();
-  }
-  throw new Error('Condition did not settle.');
+  await vi.waitUntil(condition, { timeout: 1_000, interval: 10 });
 }
 
 function pluginFixture(rootDir: string, name: string): PluginMeta {

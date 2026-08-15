@@ -378,7 +378,9 @@ describe('build smoke', () => {
       ),
     );
     for (const { skillName, platform, skill, openaiYaml } of askMeSkills) {
-      expect(skill).toContain('互相独立时每轮最多三题');
+      expect(skill).toContain(skillName === 'decision-grill'
+        ? '确认独立时每轮最多三题'
+        : '互相独立时每轮最多三题');
       expect(skill).not.toMatch(/^disable-model-invocation:\s*true$/m);
       if (platform === 'codex') {
         expect(skill).toContain('使用 `request_user_input`');
