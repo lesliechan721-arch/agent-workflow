@@ -1,6 +1,6 @@
 # Codex Subagent Guide Eval
 
-该 manifest 覆盖 default/non-default 和 project/user 最终制品；模型用例位于 project-default：
+该 manifest 覆盖 default/non-default、project/user 最终制品和 lifecycle 专用 timeout profile；普通模型用例位于 project-default：
 
 ```bash
 pnpm plugin:eval codex-enhance --skill codex-subagent-guide --batch-name materialization --materialize-only
@@ -49,10 +49,11 @@ runner 默认用 `gpt-5.6-luna` 运行 V1 和 V2；`plugin:eval --model` 同时�
 
 ## 等待与清理评估
 
-`lifecycle-evals.json` 提供最小真实 timeline 用例。它要求模型启动一个 simple 子代理，首次等待不少于 10 分钟，timeout 后继续等待，只有观察到真实终态结果才完成；如果当前 schema 提供清理工具，清理必须在结果已保留之后。runner 从隔离 rollout 读取真实 collaboration timeline，不用最终文案代替工具证据。
+`lifecycle-evals.json` 提供两条最小真实 timeline 用例。正常路径要求模型启动一个 simple 子代理，首次等待不少于 10 分钟，并且只有观察到真实终态结果才完成。timeout 路径使用独立的 1 分钟 profile；子代理必须运行一个 75 秒只读 helper，使首次 wait 确定超时，然后再次等待到真实终态。如果当前 schema 提供清理工具，清理必须在结果已保留之后。runner 从隔离 rollout 读取真实 collaboration timeline，不用最终文案代替工具证据。
 
 ```bash
 pnpm plugin:eval codex-enhance --skill codex-subagent-guide --batch-name lifecycle --suite lifecycle --runs 1
+pnpm plugin:eval codex-enhance --skill codex-subagent-guide --batch-name lifecycle-timeout --suite lifecycle-timeout --runs 1
 ```
 
-渲染单测继续验证等待与清理规则进入最终 `SKILL.md`；lifecycle suite 验证一条真实正常完成路径。罕见乱序、强制取消和不存在的清理工具分支不扩展为复杂模型门禁。
+渲染单测继续验证等待与清理规则进入最终 `SKILL.md`；lifecycle suite 分别验证正常终态路径和真实 timeout 后继续等待路径。确定性 timeline 测试还覆盖缺少 timeout、timeout 后没有再次等待和过早清理的失败情况。罕见乱序、强制取消和不存在的清理工具分支不扩展为复杂模型门禁。

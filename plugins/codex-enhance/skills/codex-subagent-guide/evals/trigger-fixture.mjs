@@ -3,6 +3,15 @@ import path from 'node:path';
 
 const FIXTURE_FILES = {
   'src/simple.ts': 'export const retryLimit = 3;\n',
+  'scripts/delayed-simple.mjs': [
+    "import { readFile } from 'node:fs/promises';",
+    'await new Promise((resolve) => setTimeout(resolve, 75_000));',
+    "const source = await readFile(new URL('../src/simple.ts', import.meta.url), 'utf8');",
+    "const match = source.match(/retryLimit\\s*=\\s*(\\d+)/u);",
+    "if (!match) throw new Error('retryLimit was not found.');",
+    "process.stdout.write(`retryLimit=${match[1]}\\n`);",
+    '',
+  ].join('\n'),
   'src/general.ts': 'export function formatResult(value) { return String(value); }\n',
   'src/complex/a.ts': 'export async function acquire(lock) { return lock.acquire(); }\n',
   'src/complex/b.ts': 'export async function release(lock) { return lock.release(); }\n',

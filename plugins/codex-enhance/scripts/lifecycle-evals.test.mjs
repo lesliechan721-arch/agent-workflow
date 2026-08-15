@@ -5,11 +5,13 @@ import test from 'node:test';
 import {
   evaluateLifecycleTimeline,
   parseLifecycleArgs,
+  selectLifecycleCases,
 } from '../skills/codex-subagent-guide/evals/run-lifecycle-evals.mjs';
 
 const expected = {
   spawn_count: 1,
   minimum_initial_wait_timeout_ms: 600_000,
+  require_timeout: true,
 };
 
 function call(tool, argumentsValue = null, output = null) {
@@ -66,6 +68,59 @@ test('rejects a timed-out wait without another wait', () => {
   assert.equal(
     result.assertions.find((entry) => entry.name === 'timeout_followed_by_wait')?.passed,
     false,
+  );
+});
+
+test('rejects a required timeout that was not observed', () => {
+  const result = evaluateLifecycleTimeline([
+    call('spawn_agent'),
+    call('wait_agent', { timeout_ms: 600_000 }, { status: { evidence: { completed: 'done' } } }),
+  ], expected);
+
+  assert.equal(result.passed, false);
+  assert.equal(
+    result.assertions.find((entry) => entry.name === 'timeout_observed')?.passed,
+    false,
+  );
+  assert.equal(
+    result.assertions.find((entry) => entry.name === 'timeout_followed_by_wait')?.passed,
+    false,
+  );
+});
+
+test('accepts a normal terminal path when timeout coverage is not required', () => {
+  const result = evaluateLifecycleTimeline([
+    call('spawn_agent'),
+    call('wait_agent', { timeout_ms: 600_000 }, { status: { evidence: { completed: 'done' } } }),
+    call('agent_message', null, { message_type: 'FINAL_ANSWER' }),
+  ], { ...expected, require_timeout: false });
+
+  assert.equal(result.passed, true);
+});
+
+test('selects lifecycle cases for the active materialization profile', () => {
+  const document = {
+    skill_name: 'codex-subagent-guide',
+    evals: [
+      { id: 'normal', profiles: ['project-default'] },
+      { id: 'timeout', profiles: ['project-timeout'] },
+    ],
+  };
+
+  assert.deepEqual(
+    selectLifecycleCases(document, { profile: 'project-default' }).map((entry) => entry.id),
+    ['normal'],
+  );
+  assert.deepEqual(
+    selectLifecycleCases(document, { profile: 'project-timeout' }).map((entry) => entry.id),
+    ['timeout'],
+  );
+  assert.throws(
+    () => selectLifecycleCases(document, {
+      caseId: 'normal',
+      profile: 'project-timeout',
+    }),
+    /Unknown lifecycle case for profile project-timeout: normal/,
   );
 });
 
