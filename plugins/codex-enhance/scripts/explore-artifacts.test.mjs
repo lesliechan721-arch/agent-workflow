@@ -130,6 +130,7 @@ function assertRoleArtifact(plan, expected) {
   const instructions = role.content.roleFile.developer_instructions;
   assert.ok([...instructions].length <= 1_000);
   assert.ok(instructions.split('\n').length <= 30);
+  // Static contract exception: role artifact 缺少只读、禁止未授权委派或敏感数据保护指令会取消子代理安全边界; behavior test is not suitable because 这些指令是模型消费的最终 artifact 安全合同，确定性 runner 无法证明模型行为.
   assert.match(instructions, /只读事实调查，不做最终判断、建议或修改/);
   assert.match(instructions, /不得读取或调用 `codex-explore` skill/);
   assert.match(instructions, /不得委派或管理代理/);
@@ -178,6 +179,7 @@ async function testRenderedArtifactsAndSkillContract() {
   for (const heading of ['## Gate', '## 委派', '## 不变量', '## 等待与整合']) {
     assert.match(text, new RegExp(heading));
   }
+  // Static contract exception: Skill artifact 缺少权限边界、参数不可表达时 fail-closed 或敏感数据保护规则会允许不安全降级; behavior test is not suitable because 这些规则是模型消费的最终 artifact 安全合同，确定性 runner 无法证明模型行为.
   assert.match(text, /父 turn 可写时只能提供行为只读，不得描述为权限隔离/);
   assert.match(text, /任一字段无法原样传递时立即停止/);
   assert.match(text, /不得删除字段或改用预设 role/);

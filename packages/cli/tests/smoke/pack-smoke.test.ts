@@ -127,6 +127,7 @@ afterAll(async () => {
 
 describe('pack smoke', () => {
   it('packs the CLI tarball without the staged plugins-dist snapshot', async () => {
+    const packageRoot = path.join(repoRoot(), 'packages', 'cli');
     const { packageRoot: unpackedPackageRoot } = await preparePackedCli();
     const unpackedFiles = await listFilesRecursively(unpackedPackageRoot);
     await expect(fs.pathExists(path.join(unpackedPackageRoot, 'dist', 'index.js'))).resolves.toBe(true);
@@ -137,12 +138,32 @@ describe('pack smoke', () => {
       .toBe(false);
     expect(unpackedFiles.some((file) => file.includes('build-snapshots'))).toBe(false);
     expect(unpackedFiles.some((file) => file.startsWith('.release/'))).toBe(false);
-    await expect(fs.readJson(path.join(unpackedPackageRoot, 'package.json'))).resolves.toMatchObject({
+    const unpackedPackageJson = await fs.readJson(
+      path.join(unpackedPackageRoot, 'package.json'),
+    ) as { version: string };
+    expect(unpackedPackageJson).toMatchObject({
       name: '@lesliechan721/aw',
       engines: {
         node: '>=22',
       },
       files: ['dist/'],
+    });
+
+    await fs.ensureSymlink(
+      path.join(packageRoot, 'node_modules'),
+      path.join(unpackedPackageRoot, 'node_modules'),
+    );
+    await expect(execFileAsync(
+      process.execPath,
+      [path.join(unpackedPackageRoot, 'dist', 'index.js'), '--version'],
+      {
+        cwd: unpackedPackageRoot,
+        env: process.env,
+        maxBuffer: 10 * 1024 * 1024,
+      },
+    )).resolves.toMatchObject({
+      stdout: `${unpackedPackageJson.version}\n`,
+      stderr: '',
     });
   });
 
