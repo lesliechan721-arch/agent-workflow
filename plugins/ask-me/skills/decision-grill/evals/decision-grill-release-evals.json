@@ -19,19 +19,20 @@
         "baseline_owner_skill_available": false,
         "companion_skill_available_in_both": true,
         "baseline_kind": "without-owner-skill",
+        "product_goal_known": true,
         "existing_decisions": false
       },
       "oracle": {
-        "rationale": "目标用户约束访问边界，访问边界再约束权限和计费；先问下游会产生无效选择。",
+        "rationale": "产品目标已经明确，目标用户是当前最上游的未决事项；目标用户约束访问边界，访问边界再约束权限和计费。",
         "rule_refs": ["SKILL.md#建立决策树", "SKILL.md#推进当前前沿"],
         "confidence": "high",
-        "allowed_variance": "问题措辞和选项顺序可以不同，但第一轮必须处理目标用户，第二轮才处理访问边界。"
+        "allowed_variance": "可以复述已知产品目标，问题措辞和选项顺序可以不同，但第一轮必须处理目标用户，第二轮才处理访问边界。"
       },
-      "prompt": "帮我把一个合作产品想透。我们还没决定它只给内部成员、受邀外部伙伴，还是也给公开访客；面向谁会决定他们可以进入哪些项目，项目访问范围又会影响权限和计费。请和我逐轮收敛这些决定，暂时不要改文件。",
+      "prompt": "帮我把一个合作产品想透。产品目标已经明确：让组织内成员与外部合作方在受控项目空间共享交付进展，这个目标本身不限定开放对象。我们还没决定它只给内部成员、受邀外部伙伴，还是也给公开访客；面向谁会决定他们可以进入哪些项目，项目访问范围又会影响权限和计费。请和我逐轮收敛这些决定，暂时不要改文件。",
       "scripted_replies": [
         {
           "expected_question_count": 1,
-          "answers_by_index": ["目标用户只有受邀外部伙伴，不支持公开访客。请继续。"],
+          "answers_by_index": ["目标用户包括组织内成员和受邀外部伙伴，不支持公开访客。请继续。"],
           "unexpected_question_answer": "这项决定暂时未知，请保留为未解决。"
         },
         {
@@ -40,13 +41,14 @@
           "unexpected_question_answer": "这项决定暂时未知，请保留为未解决。"
         }
       ],
-      "expected_output": "先询问目标用户，再询问访问边界；根据两次回答把权限和计费列为下一前沿。",
+      "expected_output": "采用已知产品目标，先询问目标用户，再询问访问边界；根据两次回答把权限和计费列为下一前沿。",
       "files": [],
       "review": {
         "platforms": ["codex"],
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [
+          "采用 prompt 中已明确的产品目标，不重新询问产品目标",
           "第一轮只处理目标用户，第二轮只处理访问边界",
           "不在前置决定明确前询问权限和计费",
           "根据回答把权限和计费列为下一前沿"

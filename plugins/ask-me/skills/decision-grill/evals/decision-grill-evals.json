@@ -229,12 +229,15 @@
       "provenance": "derived",
       "scenario_family": "stop-before-low-impact-detail",
       "unit_under_test": "full-skill",
-      "preconditions": { "only_one_major_decision_remains": true },
+      "preconditions": {
+        "only_one_major_decision_remains": true,
+        "final_confirmation_required": true
+      },
       "oracle": {
-        "rationale": "试点规模是最后一个重要决定，回答后剩余内容只有低影响命名和未来优化。",
+        "rationale": "试点规模是最后一个重要决定，回答后剩余内容只有低影响命名和未来优化；最终记录仍需用户确认后才能交接。",
         "rule_refs": ["SKILL.md#建立决策树", "SKILL.md#收尾"],
         "confidence": "high",
-        "allowed_variance": "记录格式可以不同，但不能开始第二轮询问低影响细节。"
+        "allowed_variance": "记录格式可以不同；第二轮可以且必须只确认最终记录，不能询问低影响细节。"
       },
       "prompt": "这份试点计划基本定好了，主要方向、取舍和验证方式都已经明确，只剩采用 30 人还是 100 人试点需要我决定。命名和未来优化可以以后再谈。请和我把计划收住，暂时不要改文件。",
       "scripted_replies": [
@@ -242,9 +245,14 @@
           "expected_question_count": 1,
           "answers_by_index": ["采用 30 人试点。其他主要方向、取舍和验证方式都已明确，只剩低影响命名和未来优化，请收尾。"],
           "unexpected_question_answer": "我暂时不知道，请先记录为未解决项。"
+        },
+        {
+          "expected_question_count": 1,
+          "answers_by_index": ["最终记录准确，我确认这是共享理解。不要实施，请交还原工作流。"],
+          "unexpected_question_answer": "最终记录还不准确，请不要交接。"
         }
       ],
-      "expected_output": "只询问试点规模；采用 30 人试点后不进入低影响细节，不声称穷尽所有理论问题，并按完成条件收尾。",
+      "expected_output": "先询问试点规模；采用 30 人试点后不进入低影响细节，只请求确认最终记录，并在确认后交还原工作流。",
       "files": [],
       "review": {
         "platforms": ["codex", "claude"],
@@ -253,7 +261,8 @@
         "checks": [
           "只询问试点规模，并采用 30 人试点的回答",
           "不继续进入低影响细节",
-          "按完成条件收尾，不开始第二轮提问"
+          "第二轮只请求最终记录确认，不询问其它事项",
+          "用户确认最终记录后交还原工作流"
         ]
       }
     },

@@ -17,6 +17,14 @@ const IMPLEMENTATION_REPO_FILES = {
     "  permission: 'list:read',",
     '};',
     '',
+    'export function exportInvoicesCsv(rows) {',
+    '  const header = invoiceExportPolicy.fields.join(\',\');',
+    '  const body = rows.map((row) =>',
+    '    invoiceExportPolicy.fields.map((field) => String(row[field])).join(\',\'),',
+    '  );',
+    "  return [header, ...body].join('\\n');",
+    '}',
+    '',
   ].join('\n'),
   'src/features/orders/list.ts': [
     'export interface Order {',
@@ -114,6 +122,19 @@ const IMPLEMENTATION_REPO_FILES = {
   ].join('\n'),
   'docs/deletion.md': '# Deletion\nDeleted accounts can be restored for 30 days.\n',
   'docs/network.md': '# Network\nIPv6 is not enabled in the current deployment.\n',
+};
+
+const EXPORT_POLICY_ONLY_REPO_FILES = {
+  ...IMPLEMENTATION_REPO_FILES,
+  'src/features/invoices/export.ts': [
+    'export const invoiceExportPolicy = {',
+    "  format: 'csv',",
+    "  range: 'current-filter',",
+    "  fields: ['id', 'customer', 'amount', 'created_at'],",
+    "  permission: 'list:read',",
+    '};',
+    '',
+  ].join('\n'),
 };
 
 const TYPESCRIPT_SERVICE_FILES = {
@@ -316,6 +337,7 @@ const SESSION_MIGRATION_REPO_FILES = {
 export const TRIGGER_WORKSPACE_FIXTURES = new Set([
   'default',
   'neutral_export_repo',
+  'export_policy_only_repo',
   'implementation_repo',
   'account_pause_gap_repo',
   'account_pause_repo',
@@ -331,13 +353,15 @@ export async function setupTriggerWorkspace({ workspaceRoot, evalCase }) {
 
   const files = fixture === 'neutral_export_repo'
     ? NEUTRAL_EXPORT_REPO_FILES
-    : fixture === 'account_pause_gap_repo'
-      ? ACCOUNT_PAUSE_GAP_REPO_FILES
-      : {
-        ...IMPLEMENTATION_REPO_FILES,
-        ...(fixture === 'account_pause_repo' ? ACCOUNT_PAUSE_REPO_FILES : {}),
-        ...(fixture === 'session_migration_repo' ? SESSION_MIGRATION_REPO_FILES : {}),
-      };
+    : fixture === 'export_policy_only_repo'
+      ? EXPORT_POLICY_ONLY_REPO_FILES
+      : fixture === 'account_pause_gap_repo'
+        ? ACCOUNT_PAUSE_GAP_REPO_FILES
+        : {
+          ...IMPLEMENTATION_REPO_FILES,
+          ...(fixture === 'account_pause_repo' ? ACCOUNT_PAUSE_REPO_FILES : {}),
+          ...(fixture === 'session_migration_repo' ? SESSION_MIGRATION_REPO_FILES : {}),
+        };
 
   await Promise.all(Object.entries(files).map(async ([relativePath, content]) => {
     const target = path.join(workspaceRoot, relativePath);

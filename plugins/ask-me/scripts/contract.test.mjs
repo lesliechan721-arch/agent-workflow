@@ -269,9 +269,9 @@ function assertRoutingCorpus(document) {
 
 function assertRequirementsRoutingCorpus(document) {
   assertExactRoutingCorpus(document, 'requirements-clarifier', {
-    total: 9,
+    total: 10,
     validation: 6,
-    sanity: 3,
+    sanity: 4,
   });
   assert.deepEqual(
     document.cases.find((entry) => entry.id === 'implementation_clarify')
@@ -288,6 +288,19 @@ function assertRequirementsRoutingCorpus(document) {
       .expected_loaded_skills,
     [],
   );
+  const existingConvention = document.cases.find(
+    (entry) => entry.id === 'existing_convention',
+  );
+  assert.deepEqual(existingConvention.expected_loaded_skills, []);
+  assert.equal(existingConvention.workspace_fixture, 'implementation_repo');
+  assert.match(existingConvention.query, /exportInvoicesCsv.*exportOrdersCsv/);
+
+  const missingExportFlow = document.cases.find(
+    (entry) => entry.id === 'existing_policy_missing_flow',
+  );
+  assert.deepEqual(missingExportFlow.expected_loaded_skills, ['requirements-clarifier']);
+  assert.equal(missingExportFlow.workspace_fixture, 'export_policy_only_repo');
+  assert.equal(missingExportFlow.scenario_family, existingConvention.scenario_family);
 }
 
 function assertBehaviorCorpus(document, skillName, expectedIds, expectedRole) {
@@ -579,6 +592,7 @@ test('trigger fixture provides the repository facts used by near-miss cases', as
   assert.deepEqual([...TRIGGER_WORKSPACE_FIXTURES], [
     'default',
     'neutral_export_repo',
+    'export_policy_only_repo',
     'implementation_repo',
     'account_pause_gap_repo',
     'account_pause_repo',
@@ -586,17 +600,22 @@ test('trigger fixture provides the repository facts used by near-miss cases', as
   ]);
   const roots = await Promise.all([
     mkdtemp(path.join(os.tmpdir(), 'ask-me-neutral-export-fixture-')),
+    mkdtemp(path.join(os.tmpdir(), 'ask-me-policy-only-export-fixture-')),
     mkdtemp(path.join(os.tmpdir(), 'ask-me-trigger-fixture-')),
     mkdtemp(path.join(os.tmpdir(), 'ask-me-account-gap-fixture-')),
     mkdtemp(path.join(os.tmpdir(), 'ask-me-account-fixture-')),
     mkdtemp(path.join(os.tmpdir(), 'ask-me-session-fixture-')),
   ]);
-  const [neutralRoot, root, accountGapRoot, accountRoot, sessionRoot] = roots;
+  const [neutralRoot, policyOnlyRoot, root, accountGapRoot, accountRoot, sessionRoot] = roots;
   try {
     await Promise.all([
       setupTriggerWorkspace({
         workspaceRoot: neutralRoot,
         evalCase: { workspace_fixture: 'neutral_export_repo' },
+      }),
+      setupTriggerWorkspace({
+        workspaceRoot: policyOnlyRoot,
+        evalCase: { workspace_fixture: 'export_policy_only_repo' },
       }),
       setupTriggerWorkspace({
         workspaceRoot: root,
@@ -628,8 +647,14 @@ test('trigger fixture provides the repository facts used by near-miss cases', as
     );
     assert.match(
       await readFile(path.join(root, 'src', 'features', 'invoices', 'export.ts'), 'utf8'),
-      /current-filter/,
+      /current-filter[\s\S]*exportInvoicesCsv/,
     );
+    const policyOnlyExport = await readFile(
+      path.join(policyOnlyRoot, 'src', 'features', 'invoices', 'export.ts'),
+      'utf8',
+    );
+    assert.match(policyOnlyExport, /invoiceExportPolicy/);
+    assert.doesNotMatch(policyOnlyExport, /exportInvoicesCsv/);
     assert.match(
       await readFile(path.join(root, 'src', 'features', 'orders', 'list.ts'), 'utf8'),
       /customer[\s\S]*amount[\s\S]*created_at/,
@@ -868,7 +893,7 @@ test('behavior corpora preserve all redesigned assertions in executable conversa
   }
   assert.match(
     decisionRelease.evals.find((entry) => entry.id === 'natural-access-frontier').prompt,
-    /面向谁会决定.*项目.*访问范围又会影响权限和计费/,
+    /产品目标已经明确.*面向谁会决定.*项目.*访问范围又会影响权限和计费/,
   );
   assert.match(
     requirementsRelease.evals.find(
@@ -943,11 +968,13 @@ test('behavior corpora preserve all redesigned assertions in executable conversa
       .scripted_replies[0].expected_question_count,
     1,
   );
-  assert.equal(
-    decision.evals.find((entry) => entry.id === 'avoid-exhaustion')
-      .scripted_replies[0].expected_question_count,
-    1,
+  const avoidExhaustion = decision.evals.find((entry) => entry.id === 'avoid-exhaustion');
+  assert.equal(avoidExhaustion.scripted_replies.length, 2);
+  assert.deepEqual(
+    avoidExhaustion.scripted_replies.map((reply) => reply.expected_question_count),
+    [1, 1],
   );
+  assert.match(avoidExhaustion.review.checks.join('\n'), /最终记录.*确认/);
   assert.equal(
     requirements.evals.find((entry) => entry.id === 'combined-small-ambiguities')
       .scripted_replies[0].expected_question_count,

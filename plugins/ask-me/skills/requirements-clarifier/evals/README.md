@@ -25,7 +25,7 @@ trigger corpus 有 25 条用例：train 与 validation 各 10 条，另有 5 条
 - 依赖现有代码、规范或测试的 near-miss 使用 `trigger-fixture.mjs` 准备小型脱敏仓库，避免空工作区改变触发判断。
 - 隐式用例在干净 project session 中各运行至少三次。只根据 train 调整 description，再用 validation 检查泛化。
 
-`requirements-clarifier-routing-cases.json` 是本 owner 的精确双 Skill 路由门禁。6 条 validation 用例覆盖局部实施歧义、实施语境中的协作访谈、纯决策访谈、一次性评审、已完整定义的内部修改和已批准计划的局部缺口；3 条 sanity 用例覆盖两个显式入口和已有惯例。两个 split 都是发布门禁；每条运行 10 次，正确路由至少为 90%，任何同时加载都失败。
+`requirements-clarifier-routing-cases.json` 是本 owner 的精确双 Skill 路由门禁。6 条 validation 用例覆盖局部实施歧义、实施语境中的协作访谈、纯决策访谈、一次性评审、已完整定义的内部修改和已批准计划的局部缺口；4 条 sanity 用例覆盖两个显式入口，以及完整可调用惯例和只有策略对象的相反 minimal pair。两个 split 都是发布门禁；每条运行 10 次，正确路由至少为 90%，任何同时加载都失败。
 
 ## 行为评测
 
