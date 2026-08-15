@@ -1,7 +1,7 @@
 ---
 name: create-aw-plugin
 description: 仅当用户明确要求在 `agent-workflows` 仓库创建或维护 `plugins/<name>/` 插件时使用；用于设计插件能力、向现有插件新增静态 Skill、管理插件版本、运行作者校验并修复 bundle 问题。不用于安装或使用插件、仓库外的通用 Skill 编写，或单纯解释 CLI。
-compatibility: Requires the agent-workflows repository, Node.js 20+, and installed workspace dependencies.
+compatibility: Requires the agent-workflows repository, Node.js 22+, and installed workspace dependencies.
 ---
 
 # Create AW Plugin
@@ -82,94 +82,22 @@ compatibility: Requires the agent-workflows repository, Node.js 20+, and install
    - 插件根 Node 脚本运行 `pnpm plugin:test <plugin>`
    - 改到 manifest、bundle 或安装逻辑时运行相关 `pnpm test:*`
    - 每个 Skill 的作者期用例放在自身源码根 `evals/`，按 `references/skill-evaluation.md` 声明 owner、participants 和 profiles
-   - `evals/README.md` 只记录该 owner 特有的 corpus、suite、命令、runner 限制和历史结果；不要复制全仓权限、隔离、进程、批次、发布或平台证据规则
-   - 新增或修改 case 后，运行 `.agents/skills/skill-review/scripts/validate_eval_cases.mjs`；历史文档先用兼容模式，发布或当前修改使用的文档补全 Case Admission metadata 后增加 `--strict`
+   - `evals/README.md` 只记录 owner 特有信息；完整权限、隔离、进程、批次和发布合同留在 `references/skill-evaluation.md`
+   - 新增或修改 case 后运行 `validate_eval_cases.mjs`；当前修改或发布使用的文档增加 `--strict`
    - Eval 失败先检查 oracle、fixture、grader、runtime 和运行方差；只有通过 Case Admission 且归因为 `skill-defect` 的失败可以驱动 Skill 修改
    - Eval-driven 修改后重跑原 case、同族变体、minimal pair、相反标签 near-miss、固定 validation/sanity 和关键 regression
-   - 先运行 `pnpm plugin:eval <plugin> --skill <skill> --batch-name materialization --materialize-only` 验证 Codex 最终制品；真实模型 eval 只在本地显式运行
-   - 启动真实模型 eval 前，检查用户是否已明确选择整个会话使用 Full Access，或明确选择 `--allow-unmanaged-processes`。用户未选择时必须停下询问；不得自行添加该参数，也不得请求单次提权
-   - 真实模型 eval 启动后保留同一进程会话。首轮和后续等待都使用工具允许的最长响应式等待时间；等待超时不表示 eval 失败，不要另开短周期状态轮询命令
+   - 先 materialize 最终制品；真实模型 eval 只在本地显式运行，并严格遵守 `references/skill-evaluation.md` 的权限、进程和等待合同
    - 完成条件：每个修改面有直接确定性测试；重大 Skill 修改有 with-skill/baseline behavior、适用 trigger evidence、有效 oracle 和 eval-change-safety 回归；失败已归因、修复并重跑
 9. **交付**
-   - 评审默认只返回结果；用户明确要求发布时才执行 `review:publish`，该命令生成正式报告并封存批次，但不修改 Skill README
-   - 只有用户另行明确要求登记时，才在批次封存后运行 `review:release`；插件 Skill README 变化必须由现有或新增 release intent 覆盖
    - 报告修改的源码文件、运行的验证、未验证项和仍需用户决定的风险
+   - 正式报告发布和 Skill README 登记必须分别获得用户明确授权；命令、封存和 release intent 合同见 `references/skill-evaluation.md`
    - 完成条件：明确区分完整通过、轻量预检、模型证据和未运行项
 
 ## 脚手架
 
-```bash
-node .agents/skills/create-aw-plugin/scripts/init_plugin.mjs <plugin-name> \
-  --description "插件描述" \
-  --display-name "Display Name" \
-  --short-description "简短 UI 描述" \
-  [--skill-name <name>] \
-  --skill-description "skill 的用户目标和使用时机" \
-  [--skill-short-description "skill 的简短 UI 摘要"] \
-  [--skill-invocation model|manual|claude-model-only] \
-  [--no-skills] \
-  [--with-mcp] \
-  [--with-apps] \
-  [--with-config-api] \
-  [--with-lifecycle] \
-  [--version 0.1.0] \
-  [--min-version 0.0.0] \
-  [--catalog-min-version 0.0.0] \
-  [--repo-root .]
-```
+新插件使用 `scripts/init_plugin.mjs`；向已有插件新增静态 Skill 使用 `scripts/add_skill.mjs`；其它 production 变化使用 `scripts/add_plugin_change.mjs` 创建 release intent。先运行对应脚本的 `--help`，只传本次任务需要的能力和显式 `--skill-invocation`。
 
-运行 `node .agents/skills/create-aw-plugin/scripts/init_plugin.mjs --help` 查看完整参数。
-
-- 默认创建带 skill 的最小插件，调用策略为 `model`：Claude 允许模型发现，Codex 写入 `allow_implicit_invocation: true`
-- `--skill-invocation manual` 同步生成 Claude manual-only 和 Codex implicit false；`claude-model-only` 隐藏 Claude 用户入口，但 Codex 没有完全等价能力，仍允许模型与显式调用
-- 创建初始 Skill 时 `--skill-description` 必填，不能回退到插件 description
-- `--skill-short-description` 只控制初始 Skill 的 UI metadata，必须为 25–64 字符；省略时只回退到 `--skill-description`
-- 初始 Skill 同时生成 `evals/manifest.json`、带 policy/Case Admission metadata 的 trigger train/validation/sanity starter 和一个可写 behavior diagnostic starter；发布前必须换成真实任务、oracle 与断言
-- `--no-skills` 创建不含 skill 的插件
-- `--with-mcp` / `--with-apps` 只在确实需要时使用
-- `--with-config-api` / `--with-lifecycle` 添加插件根脚本和 Node 测试样板
-- `--min-version` 写入插件 `compatibility.aw.minVersion`
-- `--catalog-min-version` 提供目标 catalog 的作者校验上下文
-- 脚手架不改 `plugins/marketplace-source.json`，也不生成平台 manifest
-
-向现有插件新增一个静态 Skill：
-
-```bash
-node .agents/skills/create-aw-plugin/scripts/add_skill.mjs <plugin-name> \
-  --skill-name <name> \
-  --skill-description "Skill 的用户目标和使用时机" \
-  [--skill-short-description "25–64 字符 UI 摘要"] \
-  [--skill-invocation model|manual|claude-model-only] \
-  [--bump major|minor|patch] \
-  [--repo-root .]
-```
-
-- 命令只新增一个静态 Skill，并在同一次写入中更新 manifest 能力和创建 release intent；冲突时不留下部分文件
-- 双平台或 Codex 插件生成 `agents/openai.yaml` 和 eval starter；Claude-only 插件不生成不可运行的 Codex v2 eval
-- 命令不修改插件根 README；完成 Skill 内容后按现有 README 结构人工补充条目
-- dynamic Skill、slash command 或现有目录使用相同名称时直接失败
-
-已有插件的其它 production 变化创建 release intent：
-
-```bash
-node .agents/skills/create-aw-plugin/scripts/add_plugin_change.mjs <plugin-name> \
-  --bump major|minor|patch --summary "变更摘要"
-```
-
-稳定发布时统一应用 intent；没有 intent 时 `--all` 成功跳过：
-
-```bash
-node .agents/skills/create-aw-plugin/scripts/apply_plugin_releases.mjs --all
-pnpm build
-pnpm plugin:version:check:release -- --base <git-ref>
-```
-
-`bump_plugin_version.mjs` 只保留为显式的单插件版本维护工具，不用于普通开发循环：
-
-```bash
-node .agents/skills/create-aw-plugin/scripts/bump_plugin_version.mjs <plugin-name> \
-  (--bump major|minor|patch | --version <semver>)
-```
+稳定版本应用、单插件显式 bump 和版本门禁的命令只在版本分支使用，见 `references/plugin-manifest-spec.md` 的 version / compatibility block。
 
 ## 跨能力 Gotchas
 
@@ -206,8 +134,10 @@ pnpm plugin:test <plugin>
 pnpm plugin:test <plugin> --platform codex --scope project
 pnpm plugin:test <dual-platform-plugin> --platform both --scope project
 pnpm plugin:eval <plugin> --skill <skill> --batch-name materialization --materialize-only
-pnpm plugin:eval <plugin> --skill <skill> --batch-name trigger-validation --suite trigger --split validation --runs 1
+pnpm plugin:eval <plugin> --skill <skill> --batch-name trigger-validation --suite trigger --split validation --runs 3
 ```
+
+带 `--suite` / `--split` 的命令只完成所选 target，batch 仍为 `incomplete`；正式发布评估使用 `references/skill-evaluation.md` 中不带过滤参数的入口。
 
 `validate_plugin.mjs` 默认校验 AW source profile，并对仓库内正式插件使用 `HEAD` 做版本检查；`--strict-agent-skills` 用于仓库内检查是否只使用 Agent Skills portable core，但不是上游 `skills-ref` 的替代品。`--json` 提供机器可解析结果。CLI 未构建、Git 不可用或 `packages/cli/dist` 的 manifest contract 已过期时，单插件 validator 警告并只做可用的轻量预检；独立全仓版本门禁在这些条件下失败。
 

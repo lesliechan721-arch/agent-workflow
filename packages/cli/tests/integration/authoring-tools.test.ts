@@ -1853,6 +1853,38 @@ describe('authoring tools', () => {
     expect(helpResult.stdout).toContain('--skill-invocation <mode>');
   });
 
+  it('standard aw-config helper exposes help without manifest or store discovery', async () => {
+    const helperPath = path.join(
+      repoRoot(),
+      '.agents',
+      'skills',
+      'create-aw-plugin',
+      'assets',
+      'aw-config.mjs',
+    );
+
+    const [shortHelp, longHelp] = await Promise.all([
+      execFileAsync('node', [helperPath, '-h'], {
+        cwd: repoRoot(),
+        env: process.env,
+        maxBuffer: 10 * 1024 * 1024,
+      }),
+      execFileAsync('node', [helperPath, '--help'], {
+        cwd: repoRoot(),
+        env: process.env,
+        maxBuffer: 10 * 1024 * 1024,
+      }),
+    ]);
+
+    for (const result of [shortHelp, longHelp]) {
+      expect(result.stdout).toContain('Usage:');
+      expect(result.stdout).toContain('get <key>');
+      expect(result.stdout).toContain('json');
+      expect(result.stdout).toContain('--scope <scope>');
+      expect(result.stderr).toBe('');
+    }
+  });
+
   it('standard aw-config helper prefers AW_PLUGIN_CONTEXT without manifest or store discovery', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-helper-context-'));
     tempDirs.push(tempRoot);
