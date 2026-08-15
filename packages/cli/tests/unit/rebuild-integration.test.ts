@@ -210,7 +210,7 @@ async function writeClaudeGlobalConsumerState(options: {
   plugins: Record<string, Array<{
     name: string;
     marketplace: string;
-    scope: 'user' | 'project';
+    scope: 'user' | 'project' | 'local';
     projectPath?: string;
     version: string;
   }>>;
@@ -3457,12 +3457,19 @@ describe('rebuild adapter integration', () => {
     {
       label: 'different plugins in user and project scopes',
       remainingName: 'other-claude',
+      remainingScope: 'project' as const,
     },
     {
       label: 'the same plugin in user and project scopes',
       remainingName: 'shared-claude',
+      remainingScope: 'project' as const,
     },
-  ])('keeps the Claude marketplace for $label', async ({ remainingName }) => {
+    {
+      label: 'a plugin in local scope',
+      remainingName: 'local-claude',
+      remainingScope: 'local' as const,
+    },
+  ])('keeps the Claude marketplace for $label', async ({ remainingName, remainingScope }) => {
     const isolation = getCurrentSourceTestIsolation();
     const cwd = isolation.layout.fixtureCwd;
     const pluginName = remainingName === 'shared-claude' ? remainingName : 'removed-claude';
@@ -3474,7 +3481,7 @@ describe('rebuild adapter integration', () => {
     const remainingRecord = {
       name: remainingName,
       marketplace: 'aw',
-      scope: 'project' as const,
+      scope: remainingScope,
       projectPath: path.join(path.dirname(cwd), 'other-project'),
       version: '1.0.0',
     };
@@ -3517,6 +3524,8 @@ describe('rebuild adapter integration', () => {
     expect(result.status, JSON.stringify(result.failures)).toBe('succeeded');
     expect(calls).toContain(`claude plugin uninstall ${pluginName}@aw --scope user`);
     expect(calls).not.toContain('claude plugin marketplace remove aw');
+    expect((await fs.readJson(paths.installedPluginsPath)).plugins[`${remainingName}@aw`])
+      .toEqual(expect.arrayContaining([expect.objectContaining({ scope: remainingScope })]));
   });
 
   it('re-reads global Claude consumers after native uninstall', async () => {

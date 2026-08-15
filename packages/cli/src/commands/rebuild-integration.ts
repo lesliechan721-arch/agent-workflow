@@ -2230,17 +2230,19 @@ async function assertCodexNativeInstallState(options: {
   await assertExpectedPayload();
 }
 
+type ClaudeNativeScope = Scope | 'local';
+
 interface ClaudeNativeRecord {
   name: string;
   marketplace: string;
-  scope: Scope;
+  scope: ClaudeNativeScope;
   projectPath?: string;
   version: string;
 }
 
 interface ClaudeMarketplaceConsumer {
   name: string;
-  scope: Scope;
+  scope: ClaudeNativeScope;
   projectPath?: string;
 }
 
@@ -2415,7 +2417,12 @@ async function readClaudeNativeState(options: {
       const record = entry as Record<string, unknown>;
       const version = nonEmptyString(record.version);
       if (!version) throw new Error(`Claude installed_plugins 记录 ${pluginKey} 缺少 version。`);
-      if (record.scope !== undefined && record.scope !== 'user' && record.scope !== 'project') {
+      if (
+        record.scope !== undefined
+        && record.scope !== 'user'
+        && record.scope !== 'project'
+        && record.scope !== 'local'
+      ) {
         throw new Error(`Claude installed_plugins 记录 ${pluginKey} 的 scope 无效。`);
       }
       if (record.projectPath !== undefined && typeof record.projectPath !== 'string') {
@@ -2428,7 +2435,7 @@ async function readClaudeNativeState(options: {
         marketplace: typeof record.marketplace === 'string'
           ? record.marketplace
           : pluginKey.includes('@') ? pluginKey.slice(pluginKey.indexOf('@') + 1) : MARKETPLACE_NAME,
-        scope: record.scope === 'project' ? 'project' : 'user',
+        scope: record.scope === 'project' || record.scope === 'local' ? record.scope : 'user',
         ...(typeof record.projectPath === 'string' ? { projectPath: record.projectPath } : {}),
         version,
       });
@@ -2453,17 +2460,17 @@ async function readClaudeNativeState(options: {
   }
   if (settingsRecord?.scope !== undefined
     && settingsRecord.scope !== 'user'
-    && settingsRecord.scope !== 'project') {
+    && settingsRecord.scope !== 'project'
+    && settingsRecord.scope !== 'local') {
     throw new Error(`Claude settings plugin 记录 ${options.pluginName} 的 scope 无效。`);
   }
   if (settingsRecord?.projectPath !== undefined && typeof settingsRecord.projectPath !== 'string') {
     throw new Error(`Claude settings plugin 记录 ${options.pluginName} 的 projectPath 无效。`);
   }
   const settingsMatchesScope = settingsRecord
+    && (settingsRecord.scope ?? 'user') === options.scope
     && (options.scope === 'user'
-      ? settingsRecord.scope !== 'project'
-      : settingsRecord.scope === 'project'
-        && path.normalize((settingsRecord.projectPath as string | undefined) ?? '') === projectPath);
+      || path.normalize((settingsRecord.projectPath as string | undefined) ?? '') === projectPath);
   const canonicalEvidence = matchingRecords.some((record) => record.marketplace === MARKETPLACE_NAME)
     || Boolean(settingsMatchesScope && settingsRecord?.marketplace === MARKETPLACE_NAME)
     || enabledPluginEvidence;
@@ -2497,7 +2504,7 @@ async function readClaudeNativeState(options: {
       ?? (pluginKey.endsWith(`@${MARKETPLACE_NAME}`)
         ? pluginKey.slice(0, -`@${MARKETPLACE_NAME}`.length)
         : pluginKey);
-    const scope = record.scope === 'project' ? 'project' : 'user';
+    const scope = record.scope === 'project' || record.scope === 'local' ? record.scope : 'user';
     marketplaceConsumers.push({
       name,
       scope,
