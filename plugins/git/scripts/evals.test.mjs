@@ -741,6 +741,8 @@ function assertCoreWorktreeContract(skill) {
   assert.match(skill, /优先使用平台原生的 worktree\/隔离能力/);
   assert.match(skill, /默认使用仓库根目录下的 `.worktrees\/<分支或任务名>\/`/);
   assert.match(skill, /创建前确认 `.worktrees\/` 已被忽略/);
+  assert.match(skill, /若未忽略，立即停止并取得明确处理方式/);
+  assert.match(skill, /不得创建 worktree、分支或改用其他路径/);
   assert.match(skill, /不得擅自修改并提交 `.gitignore`/);
   assert.match(skill, /不得 stash、reset、discard 当前无关修改/);
   assert.match(skill, /不得用 force 抢占已有 worktree 或已检出分支/);
@@ -1333,6 +1335,54 @@ function testCommitMessageAssertions() {
       .every((check) => check.passed),
     true,
   );
+  const observedGroupedSummary = [
+    'feat: 启用功能并同步版本与说明',
+    '',
+    '- 将应用功能状态切换为启用，并同步测试期望值',
+    '- 更新使用指南以反映功能已启用',
+    '- 将项目版本从 1.0.0 升级至 1.1.0',
+  ].join('\n');
+  assert.equal(
+    commitMessageChecks('detailed_body_for_nontrivial_change', observedGroupedSummary)
+      .every((check) => check.passed),
+    true,
+  );
+  const naturalGroupedSummary = [
+    'feat: activate the application',
+    '',
+    '- Activate the application and align test expectations',
+    '- Update the guide to show the feature enabled',
+    '- Bump 1.0.0 to 1.1.0',
+  ].join('\n');
+  assert.equal(
+    commitMessageChecks('detailed_body_for_nontrivial_change', naturalGroupedSummary)
+      .every((check) => check.passed),
+    true,
+  );
+  const runtimeAndDocsGroupedSummary = [
+    'feat: activate the application',
+    '',
+    '- Activate the application and update the guide to show it enabled',
+    '- Align test expectations',
+    '- Bump 1.0.0 to 1.1.0',
+  ].join('\n');
+  assert.equal(
+    commitMessageChecks('detailed_body_for_nontrivial_change', runtimeAndDocsGroupedSummary)
+      .every((check) => check.passed),
+    true,
+  );
+  const coordinatedRuntimeAndDocsSummary = [
+    'feat: activate the application',
+    '',
+    '- Enable the application and document it in the guide',
+    '- Align test expectations',
+    '- Bump 1.0.0 to 1.1.0',
+  ].join('\n');
+  assert.equal(
+    commitMessageChecks('detailed_body_for_nontrivial_change', coordinatedRuntimeAndDocsSummary)
+      .every((check) => check.passed),
+    true,
+  );
   const applicationGuideRestatement = [
     'feat: activate the application',
     '',
@@ -1343,6 +1393,19 @@ function testCommitMessageAssertions() {
   ].join('\n');
   assert.equal(
     commitMessageChecks('detailed_body_for_nontrivial_change', applicationGuideRestatement)
+      .find((check) => check.name === 'body_avoids_per_file_restatement').passed,
+    false,
+  );
+  const imperativeGuideRestatement = [
+    'feat: activate the application',
+    '',
+    '- Enable the application runtime flag',
+    '- Align test expectations',
+    '- Enable the application feature in the guide',
+    '- Bump 1.0.0 to 1.1.0',
+  ].join('\n');
+  assert.equal(
+    commitMessageChecks('detailed_body_for_nontrivial_change', imperativeGuideRestatement)
       .find((check) => check.name === 'body_avoids_per_file_restatement').passed,
     false,
   );
@@ -1417,6 +1480,56 @@ function testCommitMessageAssertions() {
     hookFailureMessageChecks(observedHookFailure, '3657841abcdef').every((check) => check.passed),
     true,
   );
+  const observedCurrentHead = [
+    '提交未创建：pre-commit hook 按预期拒绝了提交，且未绕过。',
+    '',
+    '- 当前 HEAD：`19742a5 chore: initialize commit fixture`',
+    '- 暂存改动仍保留：`src/app.js`',
+    '- 工作区无未暂存改动',
+  ].join('\n');
+  assert.equal(
+    hookFailureMessageChecks(observedCurrentHead, '19742a5abcdef').every(
+      (check) => check.passed,
+    ),
+    true,
+  );
+  const observedCurrentHeadWithStateVerb = [
+    '提交未创建：pre-commit hook 按预期拒绝了提交，未绕过。',
+    '',
+    '- HEAD 仍为 `0016db5`',
+    '- 暂存改动仍保留：`src/app.js`',
+    '- 工作区无未暂存改动',
+  ].join('\n');
+  assert.equal(
+    hookFailureMessageChecks(observedCurrentHeadWithStateVerb, '0016db5abcdef').every(
+      (check) => check.passed,
+    ),
+    true,
+  );
+  assert.equal(
+    hookFailureMessageChecks(
+      observedCurrentHead.replace('19742a5', 'deadbee'),
+      '19742a5abcdef',
+    ).find((check) => check.name === 'reports_actual_repository_state').passed,
+    false,
+  );
+  assert.equal(
+    hookFailureMessageChecks(
+      '提交未创建。HEAD 未变，暂存改动仍保留，工作区无未暂存改动。',
+      '19742a5abcdef',
+    ).find((check) => check.name === 'reports_actual_repository_state').passed,
+    false,
+  );
+  for (const deniedState of [
+    '提交未创建。当前 HEAD：19742a5。staged changes do not remain. working tree is not clean.',
+    '提交未创建。当前 HEAD：19742a5。暂存改动未保留，工作区不干净。',
+  ]) {
+    assert.equal(
+      hookFailureMessageChecks(deniedState, '19742a5abcdef')
+        .find((check) => check.name === 'reports_actual_repository_state').passed,
+      false,
+    );
+  }
   assert.equal(
     hookFailureMessageChecks(
       observedHookFailure.replace('3657841', 'deadbee'),
@@ -1826,6 +1939,17 @@ async function testCherryPickConflictDetection() {
 async function testMergeEvalAssertions() {
   const goodAnalysis = 'subtotal 返回整数分值，invoice 按元格式化。建议在边界除以 100，并运行 unittest 验证。';
   assert.equal(analysisMessageChecks(goodAnalysis).every((entry) => entry.passed), true);
+  const decimalAnalysis = [
+    'subtotal 返回整数分值，invoice 按元格式化。',
+    '建议使用 Decimal(cents) / Decimal(100) 做边界转换，并运行 unittest 验证。',
+  ].join('\n');
+  assert.equal(analysisMessageChecks(decimalAnalysis).every((entry) => entry.passed), true);
+  assert.equal(
+    analysisMessageChecks(
+      'subtotal 返回整数分值，invoice 按元格式化。错误地乘以 Decimal(100)，然后运行 unittest。',
+    ).find((entry) => entry.name === 'proposes_boundary_conversion').passed,
+    false,
+  );
   assert.equal(
     analysisMessageChecks('仓库未修改。').some((entry) => !entry.passed),
     true,
@@ -1843,6 +1967,17 @@ async function testMergeEvalAssertions() {
     ambiguousRetentionChecks(
       unresolvedRetention,
       '7 天隐私保留与 90 天审计保留不兼容，仓库证据不足，需要产品决定优先级。',
+    ).every((entry) => entry.passed),
+    true,
+  );
+  assert.equal(
+    ambiguousRetentionChecks(
+      unresolvedRetention,
+      [
+        'retention.py 冲突：RETENTION_DAYS 应为 7 还是 90。',
+        '仓库没有更高优先级证据决定取舍，当前 merge 保持暂停。',
+        '请明确应保留 7 天还是 90 天。',
+      ].join('\n'),
     ).every((entry) => entry.passed),
     true,
   );
@@ -1912,6 +2047,13 @@ async function testMergeEvalAssertions() {
       unresolvedRetention,
       '7 天与 90 天不兼容，但先保持冲突。',
     ).find((entry) => entry.name === 'requires_product_decision').passed,
+    false,
+  );
+  assert.equal(
+    ambiguousRetentionChecks(
+      unresolvedRetention,
+      '7 天与 90 天不兼容。我建议折中采用 30 天，请确认这个方案。',
+    ).find((entry) => entry.name === 'does_not_invent_retention_value').passed,
     false,
   );
 
