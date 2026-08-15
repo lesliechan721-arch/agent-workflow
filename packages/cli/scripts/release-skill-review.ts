@@ -19,7 +19,7 @@ function usage(): string {
     'Usage: pnpm review:release -- --skill <name> [--plugin <name>] --batch-id <id>',
     '',
     'Updates the Skill README to point to an existing published full or release review.',
-    'For plugin Skills, this changes the production source and may require a release intent.',
+    'For plugin Skills, this changes the production source and requires a higher source manifest version.',
   ].join('\n');
 }
 

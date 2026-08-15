@@ -432,6 +432,7 @@ function parseStrictSemVer(value) {
     minor: Number(match[2]),
     patch: Number(match[3]),
     prerelease: match[4] ? match[4].split('.') : [],
+    build: match[5] ? match[5].split('.') : [],
   };
 }
 
@@ -537,8 +538,13 @@ function validateManifestLightweight(manifest) {
   if (manifest.name && !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(manifest.name)) {
     error(`manifest name "${manifest.name}" is not lowercase-hyphen-case`);
   }
-  if (manifest.version && !STRICT_SEMVER_PATTERN.test(manifest.version)) {
-    error(`manifest.version must be a strict SemVer 2.0.0 string, got "${manifest.version}"`);
+  if (manifest.version) {
+    const pluginVersion = parseStrictSemVer(manifest.version);
+    if (!pluginVersion) {
+      error(`manifest.version must be a strict SemVer 2.0.0 string, got "${manifest.version}"`);
+    } else if (pluginVersion.prerelease.length > 0 || pluginVersion.build.length > 0) {
+      error('manifest.version must be a stable SemVer without prerelease or build metadata');
+    }
   }
 
   if (manifest.marketplace) {

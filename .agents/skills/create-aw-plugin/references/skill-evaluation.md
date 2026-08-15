@@ -207,7 +207,7 @@ run 在批次锁内预留。每个 case target 在独立的批次锁事务中原
 
 正式 `reports/` 不属于被评估源码，中央 source revision 检查会忽略该目录；插件源码、README、eval 夹具、脚本和作者/评审工具的未提交修改仍会令 `source.inScopeDirty=true`。
 
-插件和每个 Skill 都必须有非空 README。插件 README 只介绍插件目标、Skill 和使用边界；Skill README 约定记录最近已 release 的正式报告摘要、仓库相对路径和被评估 Git commit。只有用户另行明确要求登记时，才运行 `pnpm review:release -- --plugin <plugin> --skill <skill> --batch-id <batch-id>` 更新 README。登记失败不回滚正式报告，可以重试同一命令。README 登记会改变 production source，必须由现有或新增 release intent 覆盖；普通 eval 和报告发布不改变 README。
+插件和每个 Skill 都必须有非空 README。插件 README 只介绍插件目标、Skill 和使用边界；Skill README 约定记录最近已 release 的正式报告摘要、仓库相对路径和被评估 Git commit。只有用户另行明确要求登记时，才运行 `pnpm review:release -- --plugin <plugin> --skill <skill> --batch-id <batch-id>` 更新 README。登记失败不回滚正式报告，可以重试同一命令。README 登记会改变 production source，必须在同一改动中直接提高插件 manifest version；普通 eval 和报告发布不改变 README。
 
 ## Eval Case Audit 作者合同
 

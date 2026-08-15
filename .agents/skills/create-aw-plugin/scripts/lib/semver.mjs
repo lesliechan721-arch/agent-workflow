@@ -1,8 +1,6 @@
 const STRICT_SEMVER_PATTERN =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|(?:[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))(?:\.(?:0|[1-9]\d*|(?:[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)))*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
 
-export const PLUGIN_VERSION_BUMPS = new Set(['major', 'minor', 'patch']);
-
 export function parseStrictSemVer(value, fieldName = 'version') {
   const stringValue = String(value);
   const match = stringValue.match(STRICT_SEMVER_PATTERN);
@@ -63,39 +61,4 @@ export function compareStrictSemVer(left, right) {
   }
 
   return 0;
-}
-
-function incrementStableVersion(version, bump) {
-  if (!PLUGIN_VERSION_BUMPS.has(bump)) {
-    throw new Error('--bump must be one of "major", "minor", or "patch".');
-  }
-  if (version.prerelease.length > 0 || version.build.length > 0) {
-    throw new Error(
-      `Plugin version ${JSON.stringify(version.raw)} contains prerelease or build metadata; use --version with an exact higher SemVer.`,
-    );
-  }
-
-  if (bump === 'major') return `${version.major + 1}.0.0`;
-  if (bump === 'minor') return `${version.major}.${version.minor + 1}.0`;
-  return `${version.major}.${version.minor}.${version.patch + 1}`;
-}
-
-export function resolveNextPluginVersion(currentValue, options = {}) {
-  const current = parseStrictSemVer(currentValue, 'plugin version');
-  const hasExactVersion = options.version !== undefined;
-  const hasBump = options.bump !== undefined;
-  if (hasExactVersion && hasBump) {
-    throw new Error('--version and --bump are mutually exclusive.');
-  }
-
-  const next = hasExactVersion
-    ? parseStrictSemVer(options.version, '--version').raw
-    : incrementStableVersion(current, options.bump ?? options.defaultBump);
-
-  if (compareStrictSemVer(next, current.raw) <= 0) {
-    throw new Error(
-      `New plugin version ${JSON.stringify(next)} must have higher SemVer precedence than ${JSON.stringify(current.raw)}.`,
-    );
-  }
-  return next;
 }

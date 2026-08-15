@@ -7,10 +7,6 @@ import { promisify } from 'node:util';
 import { pathToFileURL } from 'node:url';
 
 import { compareStrictSemVer, parseStrictSemVer } from './semver.mjs';
-import {
-  readPluginReleasePlans,
-  resolvePluginReleasePlan,
-} from './plugin-release-intents.mjs';
 
 const execFileAsync = promisify(execFile);
 const EXPECTED_MANIFEST_CONTRACT_VERSION = 3;
@@ -26,6 +22,17 @@ export class PluginVersionCheckError extends Error {
 
 function codedError(code, message) {
   return new PluginVersionCheckError(code, message);
+}
+
+function parseStablePluginVersion(version, fieldName) {
+  const parsed = parseStrictSemVer(version, fieldName);
+  if (parsed.prerelease.length > 0 || parsed.build.length > 0) {
+    throw codedError(
+      'invalidPlugin',
+      `${fieldName} must be a stable SemVer without prerelease or build metadata.`,
+    );
+  }
+  return parsed;
 }
 
 async function runGit(repoRoot, args, options = {}) {
@@ -241,9 +248,6 @@ function createCheckResult(pluginName, values = {}) {
     productionChanged: values.productionChanged ?? null,
     baseDigest: values.baseDigest ?? null,
     currentDigest: values.currentDigest ?? null,
-    plannedBump: values.plannedBump ?? null,
-    targetVersion: values.targetVersion ?? null,
-    releaseIntentFiles: values.releaseIntentFiles ?? [],
     changedPaths: values.changedPaths ?? [],
     warnings: values.warnings ?? [],
     errors: values.errors ?? [],
@@ -257,8 +261,6 @@ async function checkOnePlugin(options) {
     pluginName,
     bundler,
     tempRoot,
-    mode,
-    releasePlans,
   } = options;
   if (!PLUGIN_NAME_PATTERN.test(pluginName)) {
     return createCheckResult(pluginName, {
@@ -283,18 +285,6 @@ async function checkOnePlugin(options) {
     });
   }
   if (!currentExists) {
-    const pendingIntent = releasePlans.get(pluginName);
-    if (mode === 'release' && pendingIntent) {
-      return createCheckResult(pluginName, {
-        ok: false,
-        status: 'unappliedReleaseIntent',
-        plannedBump: pendingIntent.bump,
-        releaseIntentFiles: pendingIntent.files,
-        errors: [
-          `Plugin ${pluginName} still has release intent files; apply them before a stable release.`,
-        ],
-      });
-    }
     return createCheckResult(pluginName, { status: 'deleted' });
   }
 
@@ -307,7 +297,7 @@ async function checkOnePlugin(options) {
         `Current manifest name ${JSON.stringify(currentDocument.manifest.name)} does not match ${JSON.stringify(pluginName)}.`,
       );
     }
-    parseStrictSemVer(currentDocument.manifest.version, 'current plugin version');
+    parseStablePluginVersion(currentDocument.manifest.version, 'current plugin version');
   } catch (error) {
     return createCheckResult(pluginName, {
       ok: false,
@@ -316,20 +306,6 @@ async function checkOnePlugin(options) {
     });
   }
   if (!baseRoot) {
-    const pendingIntent = releasePlans.get(pluginName);
-    if (pendingIntent) {
-      return createCheckResult(pluginName, {
-        ok: false,
-        status: 'unexpectedReleaseIntent',
-        currentVersion: currentDocument.manifest.version,
-        productionChanged: true,
-        plannedBump: pendingIntent.bump,
-        releaseIntentFiles: pendingIntent.files,
-        errors: [
-          `New plugin ${pluginName} must keep its initial version without release intent files.`,
-        ],
-      });
-    }
     return createCheckResult(pluginName, {
       status: 'new',
       currentVersion: currentDocument.manifest.version,
@@ -359,18 +335,6 @@ async function checkOnePlugin(options) {
   const baseVersion = baseDocument.manifest.version;
   const currentVersion = currentDocument.manifest.version;
   const precedence = compareStrictSemVer(currentVersion, baseVersion);
-  let releasePlan = null;
-  try {
-    releasePlan = resolvePluginReleasePlan(currentVersion, releasePlans.get(pluginName));
-  } catch (error) {
-    return createCheckResult(pluginName, {
-      ok: false,
-      status: 'invalidReleaseIntent',
-      baseVersion,
-      currentVersion,
-      errors: [error.message],
-    });
-  }
   baseDocument.manifest.version = currentVersion;
   await fs.writeFile(
     baseDocument.manifestPath,
@@ -402,9 +366,6 @@ async function checkOnePlugin(options) {
     productionChanged,
     baseDigest: baseBundle.digest,
     currentDigest: currentBundle.digest,
-    plannedBump: releasePlan?.bump ?? null,
-    targetVersion: releasePlan?.targetVersion ?? null,
-    releaseIntentFiles: releasePlan?.files ?? [],
     changedPaths,
   };
 
@@ -423,43 +384,6 @@ async function checkOnePlugin(options) {
       status: 'nonIncreasingVersion',
       errors: [
         `Plugin version changed from ${baseVersion} to ${currentVersion} without higher SemVer precedence.`,
-      ],
-    });
-  }
-  if (mode === 'author') {
-    if (productionChanged && precedence === 0 && !releasePlan) {
-      return createCheckResult(pluginName, {
-        ...common,
-        ok: false,
-        status: 'missingReleaseIntent',
-        errors: [
-          `Production bundle changed but plugin ${pluginName} has no release intent.`,
-        ],
-      });
-    }
-    if (productionChanged && precedence === 0) {
-      return createCheckResult(pluginName, {
-        ...common,
-        status: 'releasePlanned',
-      });
-    }
-    if (!productionChanged && releasePlan) {
-      return createCheckResult(pluginName, {
-        ...common,
-        status: 'intentOnly',
-        warnings: [
-          `Plugin ${pluginName} has a release intent, but its production bundle is unchanged.`,
-        ],
-      });
-    }
-  }
-  if (mode === 'release' && releasePlan) {
-    return createCheckResult(pluginName, {
-      ...common,
-      ok: false,
-      status: 'unappliedReleaseIntent',
-      errors: [
-        `Plugin ${pluginName} still has release intent files; apply them before a stable release.`,
       ],
     });
   }
@@ -516,20 +440,10 @@ async function listChangedPluginNames(repoRoot, baseCommit) {
 export async function checkPluginVersions(options = {}) {
   const repoRoot = path.resolve(options.repoRoot ?? '.');
   const requestedBase = options.base ?? 'HEAD';
-  const mode = options.mode ?? 'author';
-  if (mode !== 'author' && mode !== 'release') {
-    throw codedError('usage', 'Plugin version check mode must be "author" or "release".');
-  }
   const baseCommit = await resolveBaseCommit(repoRoot, requestedBase);
-  const [bundler, releasePlans] = await Promise.all([
-    loadProductionBundler(repoRoot),
-    readPluginReleasePlans(repoRoot),
-  ]);
+  const bundler = await loadProductionBundler(repoRoot);
   const pluginNames = options.all
-    ? [...new Set([
-      ...await listChangedPluginNames(repoRoot, baseCommit),
-      ...(mode === 'release' ? releasePlans.keys() : []),
-    ])].sort()
+    ? await listChangedPluginNames(repoRoot, baseCommit)
     : [...new Set(options.pluginNames ?? [])].sort();
   if (pluginNames.length === 0 && !options.all) {
     throw codedError('usage', 'Provide a plugin name or use --all.');
@@ -545,14 +459,11 @@ export async function checkPluginVersions(options = {}) {
         pluginName,
         bundler,
         tempRoot,
-        mode,
-        releasePlans,
       }));
     }
     return {
-      schemaVersion: 1,
+      schemaVersion: 2,
       ok: checks.every((check) => check.ok),
-      mode,
       requestedBase,
       baseCommit,
       checkedPlugins: pluginNames.length,
@@ -572,9 +483,6 @@ export function formatPluginVersionCheck(result) {
     lines.push(`${check.ok ? '[PASS]' : '[FAIL]'} ${check.plugin}: ${check.status}`);
     if (check.baseVersion || check.currentVersion) {
       lines.push(`  version: ${check.baseVersion ?? '(new)'} -> ${check.currentVersion ?? '(deleted)'}`);
-    }
-    if (check.targetVersion) {
-      lines.push(`  planned: ${check.plannedBump} -> ${check.targetVersion}`);
     }
     for (const changedPath of check.changedPaths) lines.push(`  changed: ${changedPath}`);
     for (const warning of check.warnings) lines.push(`  warning: ${warning}`);

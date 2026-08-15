@@ -12,7 +12,6 @@ import {
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const localPluginRoot = path.resolve(scriptDir, '..');
-const pluginVersion = '0.1.0';
 const skillNames = ['requirements-clarifier', 'decision-grill'];
 
 async function readJson(filePath) {
@@ -21,22 +20,28 @@ async function readJson(filePath) {
 
 async function resolveContext() {
   if (!process.env.AW_PLUGIN_CONTEXT) {
+    const manifest = await readJson(path.join(localPluginRoot, '.agents-plugin', 'plugin.json'));
     return {
       sourceRoot: localPluginRoot,
       bundleRoot: localPluginRoot,
       platform: null,
+      pluginVersion: manifest.version,
     };
   }
 
   const context = await readJson(process.env.AW_PLUGIN_CONTEXT);
+  const sourceManifest = await readJson(
+    path.join(context.sourceRoot, '.agents-plugin', 'plugin.json'),
+  );
   assert.equal(context.event, 'test');
   assert.equal(context.plugin.name, 'ask-me');
-  assert.equal(context.plugin.version, pluginVersion);
+  assert.equal(context.plugin.version, sourceManifest.version);
   assert.ok(['codex', 'claude'].includes(context.platform));
   return {
     sourceRoot: context.sourceRoot,
     bundleRoot: context.plugin.rootDir,
     platform: context.platform,
+    pluginVersion: sourceManifest.version,
   };
 }
 
@@ -285,7 +290,7 @@ test('manifest declares two skills and the implementation requirements gate', as
   );
 
   assert.equal(manifest.name, 'ask-me');
-  assert.equal(manifest.version, pluginVersion);
+  assert.equal(manifest.version, context.pluginVersion);
   assert.equal(manifest.skills, './skills');
   assert.deepEqual(manifest.marketplace, {
     category: 'workflow',

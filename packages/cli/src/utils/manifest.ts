@@ -2479,6 +2479,12 @@ export async function validateSourcePluginManifest(
     compatibilityMode: 'defaulted',
     defaultMinVersion: DEFAULT_SOURCE_PLUGIN_AW_MIN_VERSION,
   });
+  const parsedVersion = parseStrictSemVer(manifest.version, 'plugin manifest.version');
+  if (parsedVersion.prerelease.length > 0 || parsedVersion.build.length > 0) {
+    throw new Error(
+      'Invalid plugin manifest.version: expected a stable SemVer without prerelease or build metadata.',
+    );
+  }
   await validateDeclaredNativeAssets(pluginRoot, manifest);
   await validateDeclaredAssetPathsExist(pluginRoot, manifest);
   await Promise.all([

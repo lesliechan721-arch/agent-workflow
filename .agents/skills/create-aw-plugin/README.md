@@ -2,7 +2,7 @@
 
 本文件面向人类维护者，说明 `create-aw-plugin` Agent 工作流的用途和阅读入口。仓库级插件边界和发布入口见[插件维护指南](../../../docs/plugin-maintenance.md)。
 
-该 Skill 为本仓库创建或维护同时支持 Codex 和 Claude Code 的插件。它管理源码 manifest、静态 Skill 增量脚手架、开发期 release intent、稳定版本应用、动态 artifact、作者校验和 bundle 验证。
+该 Skill 为本仓库创建或维护同时支持 Codex 和 Claude Code 的插件。它管理源码 manifest、静态 Skill 增量脚手架、manifest-first 稳定版本、动态 artifact、作者校验和 bundle 验证。
 
 ## 阅读入口
 

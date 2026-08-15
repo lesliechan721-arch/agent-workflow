@@ -302,7 +302,7 @@ Options:
   -h, --help                    Show this help message.
 
 Note:
-  New plugin scaffolds keep the initial version and do not create a release intent.
+  New plugin scaffolds keep the initial stable version. Later production changes update the source manifest version directly.
   New skill scaffolds default to model invocation and generate an eval starter.
 `);
 }
@@ -435,7 +435,11 @@ function main() {
   const args = parseArgs(process.argv);
 
   const pluginName = requireHyphenName(args.pluginName, 'plugin_name');
-  const version = parseStrictSemVer(args.version, '--version').raw;
+  const parsedVersion = parseStrictSemVer(args.version, '--version');
+  if (parsedVersion.prerelease.length > 0 || parsedVersion.build.length > 0) {
+    fail('--version must be a stable SemVer without prerelease or build metadata.');
+  }
+  const version = parsedVersion.raw;
   const catalogMinVersion = args.catalogMinVersion === undefined
     ? null
     : parseStrictSemVer(args.catalogMinVersion, '--catalog-min-version').raw;

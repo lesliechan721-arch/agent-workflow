@@ -288,6 +288,22 @@ describe('manifest utils', () => {
     }
   });
 
+  it('rejects prerelease and build metadata only in source plugin manifests', async () => {
+    const repoRoot = await makeTempRepo();
+    const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
+
+    for (const version of ['1.2.3-beta.1', '1.2.3+build.1']) {
+      const manifest = await readFixturePluginManifest(repoRoot);
+      manifest.version = version;
+      await writeFixturePluginManifest(repoRoot, manifest);
+
+      await expect(readPluginManifest(pluginRoot)).rejects.toThrow(
+        'Invalid plugin manifest.version: expected a stable SemVer without prerelease or build metadata.',
+      );
+      expect(validatePluginManifest(pluginRoot, manifest).version).toBe(version);
+    }
+  });
+
   it('parses valid strict SemVer strings and preserves the original raw value', () => {
     const versions = [
       '1.2.3',

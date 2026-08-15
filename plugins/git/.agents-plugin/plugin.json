@@ -1,6 +1,6 @@
 {
   "name": "git",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "提供本地 Git 提交、worktree 隔离，以及需要协调双方意图的 Git merge 工作流。",
   "compatibility": {
     "aw": {

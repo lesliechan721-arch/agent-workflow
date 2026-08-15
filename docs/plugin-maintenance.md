@@ -21,6 +21,6 @@
 ## 验证与版本
 
 - 使用 `pnpm plugin:test <plugin>` 运行单个插件的确定性脚本测试，失败时返回非零。使用 `pnpm plugin:test --all` 检查全部插件；任一插件失败时整轮返回非零。
-- 插件版本、release intent 和作者门禁命令以 [create-aw-plugin 工作流](../.agents/skills/create-aw-plugin/README.md)路由的 `SKILL.md` 和 reference 为准。
+- 插件版本和作者门禁命令以 [create-aw-plugin 工作流](../.agents/skills/create-aw-plugin/README.md)路由的 `SKILL.md` 和 reference 为准。
 - 通用确定性测试的分层、价值门禁和验证选择见[测试指南](testing.md)。
-- 稳定发布时应用 release intent 和检查版本的流程见 README 的[正式版发布](../README.md#3-正式版发布)。
+- 稳定发布时检查源码 manifest version 的流程见 README 的[正式版发布](../README.md#3-正式版发布)。

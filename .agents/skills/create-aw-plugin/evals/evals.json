@@ -30,7 +30,7 @@
         "allowed_variance": "Skill wording and domain cases may differ; the plugin boundary, invocation policy, Eval policy, oracle metadata, allowed changes, and validator outcomes must hold."
       },
       "prompt": "在当前 agent-workflows 评测仓库中实际创建 plugins/release-notes。它是双平台最小插件，只含一个 release-notes Skill；该 Skill 根据当前分支变更生成结构化发布说明，风险低，应允许模型自动发现。使用作者脚手架并显式传入 model 调用策略，替换全部 TODO，保留脚手架生成的作者期 eval 并把 starter 调整为该领域的真实任务、oracle 和断言。对两份 case 文档运行 Eval Case Audit validator，再运行作者 validator；不要运行 pnpm build，也不要修改 marketplace-source、平台 manifest、plugins-dist 或 runtime cache。",
-      "expected_output": "创建最小 source plugin；plugin version 保持 0.1.0 且没有 release intent；Claude 保持模型自动调用，Codex allow_implicit_invocation 为 true；owner Eval 包含错误代价 policy、Case Admission metadata 和真实用例；Eval Case Audit 与轻量作者 validator 通过。",
+      "expected_output": "创建最小 source plugin；plugin version 保持初始稳定版本 0.1.0；Claude 保持模型自动调用，Codex allow_implicit_invocation 为 true；owner Eval 包含错误代价 policy、Case Admission metadata 和真实用例；Eval Case Audit 与轻量作者 validator 通过。",
       "scripted_replies": [],
       "sandbox": "workspace-write",
       "review": {
@@ -100,7 +100,7 @@
           "trace 实际运行 init_plugin.mjs、替换 TODO，并运行两份 Eval Case Audit 校验和 validate_plugin.mjs 到通过",
           "Skill description 是 release-notes 专属发现描述，不回退为插件级摘要",
           "trigger 和 behavior case 已从 starter 调整为 release-notes 的真实场景，并保留 policy、场景族、oracle 和可观察断言",
-          "没有创建 release intent、MCP、hooks、lifecycle、平台 manifest、marketplace 修改或生成目录"
+          "没有创建额外版本文件、MCP、hooks、lifecycle、平台 manifest、marketplace 修改或生成目录"
         ]
       }
     },
@@ -188,17 +188,17 @@
         "target_skill_absent": true
       },
       "oracle": {
-        "rationale": "Adding one static Skill to an existing plugin must preserve existing capabilities while adding invocation metadata, real owner Evals, README documentation, and a release intent.",
+        "rationale": "Adding one static Skill to an existing plugin must preserve existing capabilities while adding invocation metadata, real owner Evals, README documentation, and a higher source manifest version.",
         "rule_refs": [
           "SKILL.md#创建与维护工作流",
           "SKILL.md#脚手架",
           "references/skill-evaluation.md#完成检查"
         ],
         "confidence": "high",
-        "allowed_variance": "Skill wording and case content may differ; the source boundary, invocation policy, README entry, release intent, and validation result must hold."
+        "allowed_variance": "Skill wording and case content may differ; the source boundary, invocation policy, README entry, manifest version, and validation result must hold."
       },
-      "prompt": "实际维护 plugins/code-review：新增一个 audit-report 静态 Skill，用于把已有审查结果整理为可复核的审计报告。该 Skill 风险低，允许模型发现。先检查现有插件与调用元数据，再运行 add_skill.mjs；完成全部 TODO，把 eval starter 换成真实小型用例，并按现有格式更新插件 README。保持其它能力不变，确认已创建 minor release intent 且插件版本保留 0.2.0，最后运行作者 validator。不要修改 marketplace-source、平台 manifest、plugins-dist 或 runtime cache。",
-      "expected_output": "向现有插件新增完整 audit-report 静态 Skill；双平台调用元数据和 owner eval 一致；插件根 README 已补充条目；plugin version 保留 0.2.0，并有 minor release intent；作者 validator 通过。",
+      "prompt": "实际维护 plugins/code-review：新增一个 audit-report 静态 Skill，用于把已有审查结果整理为可复核的审计报告。该 Skill 风险低，允许模型发现。先检查现有插件与调用元数据，再运行 add_skill.mjs；完成全部 TODO，把 eval starter 换成真实小型用例，并按现有格式更新插件 README。保持其它能力不变，把稳定 plugin version 从 0.2.0 直接提高到 0.3.0，最后运行作者 validator。不要修改 marketplace-source、平台 manifest、plugins-dist 或 runtime cache。",
+      "expected_output": "向现有插件新增完整 audit-report 静态 Skill；双平台调用元数据和 owner eval 一致；插件根 README 已补充条目；稳定 plugin version 直接提高到 0.3.0；作者 validator 通过。",
       "scripted_replies": [],
       "sandbox": "workspace-write",
       "review": {
@@ -208,8 +208,7 @@
         "allowed_workspace_changes": [
           "plugins/code-review/.agents-plugin/plugin.json",
           "plugins/code-review/README.md",
-          "plugins/code-review/skills/audit-report/**",
-          ".changes/plugins/**"
+          "plugins/code-review/skills/audit-report/**"
         ],
         "artifacts": [
           {
@@ -217,7 +216,7 @@
             "exists": true,
             "json": {
               "name": "code-review",
-              "version": "0.2.0",
+              "version": "0.3.0",
               "skills": "./skills"
             }
           },
@@ -250,7 +249,7 @@
         "checks": [
           "trace 先读现有 manifest、README 和 Skill，再按路由读取设计、触发、manifest 与 eval reference",
           "trace 实际运行 add_skill.mjs，随后完成领域内容、真实 eval starter 和插件 README",
-          "diff 只包含新 Skill、插件 README、manifest 的 skills 必要变化和 release intent",
+          "diff 只包含新 Skill、插件 README、manifest 的 skills 必要变化和稳定 version 提高",
           "trace 最后运行作者 validator；失败时修复并重跑"
         ]
       }
@@ -269,17 +268,17 @@
         "node_test_supported": true
       },
       "oracle": {
-        "rationale": "A deterministic Skill script must expose the requested interface, have direct tests, stay within the target Skill, and record the production bundle change with a release intent.",
+        "rationale": "A deterministic Skill script must expose the requested interface, have direct tests, stay within the target Skill, and increase the source manifest version for the production bundle change.",
         "rule_refs": [
           "SKILL.md#阅读路由",
           "SKILL.md#创建与维护工作流",
           "SKILL.md#完成条件"
         ],
         "confidence": "high",
-        "allowed_variance": "The implementation may differ; the CLI contract, direct tests, narrow source diff, release intent, and author validation must hold."
+        "allowed_variance": "The implementation may differ; the CLI contract, direct tests, narrow source diff, manifest version, and author validation must hold."
       },
-      "prompt": "实际维护 plugins/code-review：只在 skills/review-workflow 内增加一个 Node.js JSON 报告 validator。脚本必须非交互，支持 --help，成功时 stdout 输出短 JSON，失败诊断写 stderr 并返回非零；覆盖合法输入、非法 JSON、缺少字段和重复运行。更新该 Skill 的准确调用说明，并添加直接 node:test。该变化进入 production bundle，使用 add_plugin_change.mjs 创建 code-review 的 patch release intent；插件版本保留 0.2.0。不要改变安装、scope、config、lifecycle、MCP 或其它 Skill。运行 --help、成功、失败、重复运行、node --test 和作者 validator。",
-      "expected_output": "对既有 Skill 做局部修改；新增可执行 validator 与直接测试，SKILL.md 给出准确接口和验证循环；plugin version 保留 0.2.0，并有 patch release intent；所有确定性命令、作者门禁和 validator 通过。",
+      "prompt": "实际维护 plugins/code-review：只在 skills/review-workflow 内增加一个 Node.js JSON 报告 validator。脚本必须非交互，支持 --help，成功时 stdout 输出短 JSON，失败诊断写 stderr 并返回非零；覆盖合法输入、非法 JSON、缺少字段和重复运行。更新该 Skill 的准确调用说明，并添加直接 node:test。该变化进入 production bundle，把稳定 plugin version 从 0.2.0 直接提高到 0.2.1。不要改变安装、scope、config、lifecycle、MCP 或其它 Skill。运行 --help、成功、失败、重复运行、node --test 和作者 validator。",
+      "expected_output": "对既有 Skill 做局部修改；新增可执行 validator 与直接测试，SKILL.md 给出准确接口和验证循环；稳定 plugin version 直接提高到 0.2.1；所有确定性命令、作者门禁和 validator 通过。",
       "scripted_replies": [],
       "sandbox": "workspace-write",
       "review": {
@@ -288,8 +287,7 @@
         "workspace_unchanged": false,
         "allowed_workspace_changes": [
           "plugins/code-review/.agents-plugin/plugin.json",
-          "plugins/code-review/skills/review-workflow/**",
-          ".changes/plugins/**"
+          "plugins/code-review/skills/review-workflow/**"
         ],
         "artifacts": [
           {
@@ -297,7 +295,7 @@
             "exists": true,
             "json": {
               "name": "code-review",
-              "version": "0.2.0"
+              "version": "0.2.1"
             }
           },
           {
@@ -318,7 +316,7 @@
         ],
         "checks": [
           "trace 先读取现有 manifest、目标 Skill 和直接测试，再读取 skill-scripts 与 skill-evaluation",
-          "diff 只触及目标 Skill 子树和 release intent，没有改变 manifest、安装、scope、config、lifecycle 或 MCP",
+          "diff 只触及目标 Skill 子树和 manifest version，没有改变安装、scope、config、lifecycle、MCP 或其它能力",
           "trace 运行 --help、成功、失败、重复运行和 node --test，并记录退出码和 stdout/stderr 合同",
           "trace 最后运行作者 validator；失败时修复并重跑"
         ]
@@ -345,10 +343,10 @@
           "SKILL.md#跨能力 Gotchas"
         ],
         "confidence": "high",
-        "allowed_variance": "The code shape may differ; V2 output, config consumption, target identity, narrow changes, release intent, and the stated build limitation must hold."
+        "allowed_variance": "The code shape may differ; V2 output, config consumption, target identity, narrow changes, manifest version, and the stated build limitation must hold."
       },
-      "prompt": "实际修复 plugins/dynamic-artifact-fixture 的 bundle 作者校验。该 Codex-only 插件声明一个配置驱动的 codex.developerInstructionsBlock，但 renderer 仍输出旧的 ArtifactPlan V1。先读取现有 manifest、renderer 和 Skill，再按 Dynamic Artifacts 路由核对静态 target 与 V2 renderer 合同。只把 renderer 改为从 AW_PLUGIN_CONTEXT 读取 config.values，并返回与 manifest 完全一致的 V2 plan；不要直接写 .codex、.agents、runtime cache、marketplace 或生成目录。该 production 变化使用 add_plugin_change.mjs 创建 patch release intent，并显式传 --id dynamic-artifact-fixture-renderer；稳定 plugin version 保持 0.1.0。当前隔离 workspace 没有完整 build 输入，不要运行 pnpm build，把 production bundle 列为未验证；运行作者 validator，失败时修复并重跑。不要增加其它能力。",
-      "expected_output": "局部修复 dynamic artifact renderer；manifest 静态 target 不变；renderer 返回 V2 ArtifactPlan 并消费 config；存在固定名称的 patch release intent且稳定版本保持 0.1.0；作者 validator 通过，production bundle 明确列为未验证。",
+      "prompt": "实际修复 plugins/dynamic-artifact-fixture 的 bundle 作者校验。该 Codex-only 插件声明一个配置驱动的 codex.developerInstructionsBlock，但 renderer 仍输出旧的 ArtifactPlan V1。先读取现有 manifest、renderer 和 Skill，再按 Dynamic Artifacts 路由核对静态 target 与 V2 renderer 合同。只把 renderer 改为从 AW_PLUGIN_CONTEXT 读取 config.values，并返回与 manifest 完全一致的 V2 plan；不要直接写 .codex、.agents、runtime cache、marketplace 或生成目录。该 production 变化把稳定 plugin version 从 0.1.0 直接提高到 0.1.1。当前隔离 workspace 没有完整 build 输入，不要运行 pnpm build，把 production bundle 列为未验证；运行作者 validator，失败时修复并重跑。不要增加其它能力。",
+      "expected_output": "局部修复 dynamic artifact renderer；manifest 静态 target 不变；renderer 返回 V2 ArtifactPlan 并消费 config；稳定 plugin version 直接提高到 0.1.1；作者 validator 通过，production bundle 明确列为未验证。",
       "scripted_replies": [],
       "sandbox": "workspace-write",
       "review": {
@@ -356,8 +354,8 @@
         "clean_session": true,
         "workspace_unchanged": false,
         "allowed_workspace_changes": [
-          "plugins/dynamic-artifact-fixture/scripts/render-artifacts.mjs",
-          ".changes/plugins/**"
+          "plugins/dynamic-artifact-fixture/.agents-plugin/plugin.json",
+          "plugins/dynamic-artifact-fixture/scripts/render-artifacts.mjs"
         ],
         "artifacts": [
           {
@@ -367,20 +365,19 @@
             "not_contains": ["version: 1", ".codex/config.toml", ".agents/skills"]
           },
           {
-            "path": ".changes/plugins/dynamic-artifact-fixture-renderer.json",
+            "path": "plugins/dynamic-artifact-fixture/.agents-plugin/plugin.json",
             "exists": true,
             "json": {
-              "schemaVersion": 1,
-              "plugin": "dynamic-artifact-fixture",
-              "bump": "patch"
+              "name": "dynamic-artifact-fixture",
+              "version": "0.1.1"
             }
           }
         ],
         "checks": [
           "trace 先读现有 manifest、renderer 和 Skill，再读取 plugin-manifest-spec 的 artifacts.targets 与 aw-scripts-config-lifecycle 的 renderer 章节",
-          "diff 只包含 renderer 和 release intent，没有改变 manifest、Skill、marketplace、生成目录或平台/runtime cache",
+          "diff 只包含 renderer 和 manifest version，没有改变静态 target、Skill、marketplace、生成目录或平台/runtime cache",
           "renderer 从 AW_PLUGIN_CONTEXT 的 config.values 读取 message，并返回与静态声明一致的 V2 id、platform、target、state 和 refreshKeys",
-          "trace 使用 add_plugin_change.mjs 的固定 --id dynamic-artifact-fixture-renderer 创建 patch intent，plugin version 保持 0.1.0",
+          "trace 直接把稳定 plugin version 从 0.1.0 提高到 0.1.1，没有创建额外版本文件",
           "trace 因隔离 workspace 缺少完整 build 输入而不运行 pnpm build，把 production bundle 列为未验证，并运行 validate_plugin.mjs 到通过；失败时修复并重跑"
         ]
       }

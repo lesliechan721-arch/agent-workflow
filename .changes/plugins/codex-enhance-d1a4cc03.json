@@ -1,6 +1,0 @@
-{
-  "schemaVersion": 1,
-  "plugin": "codex-enhance",
-  "bump": "patch",
-  "summary": "校正 Explore 自动事实探索范围并修复显式字段失败关闭"
-}

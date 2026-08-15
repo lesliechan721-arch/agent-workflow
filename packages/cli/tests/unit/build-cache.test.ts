@@ -56,8 +56,6 @@ async function writeRequiredOutputs(repoRoot: string, generation = 1): Promise<v
       contents = `{"schemaVersion":1,"entries":[],"packages":{},"generation":${generation}}\n`;
     } else if (relativePath.endsWith('plugin-release-ledger.json')) {
       contents = `{"schemaVersion":1,"records":[],"generation":${generation}}\n`;
-    } else if (relativePath.endsWith('development-receipt.json')) {
-      contents = `{"schemaVersion":1,"phase":"development","publishable":false,"gitCommit":null,"dirty":null,"entries":[],"generation":${generation}}\n`;
     } else if (relativePath.endsWith('sidecar/package.json')) {
       contents = `{"name":"@lesliechan721/aw-plugins-manifest","files":[],"generation":${generation}}\n`;
     } else if (relativePath.endsWith('full/package.json')) {

@@ -42,7 +42,6 @@ const REQUIRED_OUTPUTS = [
   { path: 'packages/cli/plugins-dist/.catalog/catalog-manifest.json', type: 'catalog' },
   { path: 'packages/cli/plugins-dist/.catalog/sidecar/catalog-manifest.json', type: 'catalog' },
   { path: 'packages/cli/plugins-dist/.catalog/sidecar/plugin-release-ledger.json', type: 'ledger' },
-  { path: 'packages/cli/plugins-dist/.catalog/development-receipt.json', type: 'receipt' },
   {
     path: 'packages/cli/plugins-dist/.catalog/sidecar/package.json',
     type: 'package',

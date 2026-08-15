@@ -3,7 +3,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-import { PLUGIN_VERSION_BUMPS, parseStrictSemVer, resolveNextPluginVersion } from './lib/semver.mjs';
+import { parseStrictSemVer } from './lib/semver.mjs';
 import {
   MAX_CODEX_SHORT_DESCRIPTION_LEN,
   MIN_CODEX_SHORT_DESCRIPTION_LEN,
@@ -69,7 +69,6 @@ Options:
   --skill-short-description <text>
                                 Skill UI summary (25-64 characters). Default: description.
   --skill-invocation <mode>     model | manual | claude-model-only. Default: model.
-  --bump <kind>                 Planned major | minor | patch release. Default: minor.
   --repo-root <path>            Repository root. Default: current directory.
   -h, --help                    Show this help message.
 
@@ -116,12 +115,6 @@ function parseArgs(argv) {
           fail('--skill-invocation must be one of "model", "manual", or "claude-model-only".');
         }
         options.skillInvocation = value;
-        break;
-      case '--bump':
-        if (!PLUGIN_VERSION_BUMPS.has(value)) {
-          fail('--bump must be one of "major", "minor", or "patch".');
-        }
-        options.bump = value;
         break;
       case '--repo-root':
         options.repoRoot = value;
@@ -269,7 +262,10 @@ function main() {
   if (manifest.name !== pluginName) {
     fail(`Plugin manifest name ${JSON.stringify(manifest.name)} does not match directory ${JSON.stringify(pluginName)}.`);
   }
-  parseStrictSemVer(manifest.version, 'plugin version');
+  const parsedVersion = parseStrictSemVer(manifest.version, 'plugin version');
+  if (parsedVersion.prerelease.length > 0 || parsedVersion.build.length > 0) {
+    fail('plugin version must be a stable SemVer without prerelease or build metadata.');
+  }
   const platforms = resolveSupportedPlatforms(manifest);
   if (!platforms.codex && !platforms.claude) {
     fail('Plugin must support at least one of CODEX or CLAUDE.');
@@ -279,28 +275,17 @@ function main() {
   }
   assertSkillNameAvailable(pluginRoot, manifest, skillName);
 
-  const nextVersion = resolveNextPluginVersion(manifest.version, {
-    bump: args.bump,
-    defaultBump: 'minor',
-  });
   const nextManifest = structuredClone(manifest);
   addSkillsCapability(nextManifest);
-
-  const intentRoot = path.join(repoRoot, '.changes', 'plugins');
-  const intentPath = path.join(intentRoot, `${pluginName}-add-${skillName}.json`);
-  if (fs.existsSync(intentPath)) fail(`Release intent already exists: ${intentPath}`);
 
   const skillsRoot = path.join(pluginRoot, 'skills');
   const finalSkillRoot = path.join(skillsRoot, skillName);
   const stageRoot = fs.mkdtempSync(path.join(pluginRoot, '.aw-add-skill-'));
   const stageSkillRoot = path.join(stageRoot, skillName);
   const stagedManifestPath = path.join(stageRoot, 'plugin.json');
-  const stagedIntentPath = path.join(stageRoot, 'release-intent.json');
   const skillsRootExisted = fs.existsSync(skillsRoot);
-  const intentRootExisted = fs.existsSync(intentRoot);
   let installedSkill = false;
   let installedManifest = false;
-  let installedIntent = false;
   try {
     const created = createSkillFiles(stageSkillRoot, {
       pluginName,
@@ -312,24 +297,13 @@ function main() {
       supportsClaude: platforms.claude,
     });
     writeJson(stagedManifestPath, nextManifest);
-    writeJson(stagedIntentPath, {
-      schemaVersion: 1,
-      plugin: pluginName,
-      bump: args.bump ?? 'minor',
-      summary: `Add static Skill ${skillName}.`,
-    });
     fs.mkdirSync(skillsRoot, { recursive: true });
     fs.renameSync(stageSkillRoot, finalSkillRoot);
     installedSkill = true;
     installedManifest = true;
     fs.writeFileSync(manifestPath, fs.readFileSync(stagedManifestPath));
-    fs.mkdirSync(intentRoot, { recursive: true });
-    fs.renameSync(stagedIntentPath, intentPath);
-    installedIntent = true;
 
     console.log(`[OK] Added static Skill ${JSON.stringify(skillName)} to plugin ${JSON.stringify(pluginName)}.`);
-    console.log(`[OK] Planned plugin release: ${manifest.version} -> ${nextVersion}`);
-    console.log(`  - ${intentPath}`);
     for (const relativePath of created) {
       console.log(`  - ${path.join(finalSkillRoot, relativePath)}`);
     }
@@ -339,18 +313,15 @@ function main() {
     if (args.skillInvocation === 'claude-model-only' && platforms.codex) {
       console.log('[WARN] Codex has no hidden-user-entry equivalent; Codex remains model-invocable and explicitly invocable.');
     }
+    console.log(`[WARN] Increase the stable version directly in ${manifestPath} before validation.`);
     console.log(`[WARN] Plugin README was not changed: ${path.join(pluginRoot, 'README.md')}`);
   } catch (error) {
-    if (installedIntent && fs.existsSync(intentPath)) fs.rmSync(intentPath, { force: true });
     if (installedSkill && fs.existsSync(finalSkillRoot)) {
       fs.rmSync(finalSkillRoot, { recursive: true, force: true });
     }
     if (installedManifest) fs.writeFileSync(manifestPath, originalManifestText, 'utf8');
     if (!skillsRootExisted && fs.existsSync(skillsRoot) && fs.readdirSync(skillsRoot).length === 0) {
       fs.rmdirSync(skillsRoot);
-    }
-    if (!intentRootExisted && fs.existsSync(intentRoot) && fs.readdirSync(intentRoot).length === 0) {
-      fs.rmdirSync(intentRoot);
     }
     throw error;
   } finally {

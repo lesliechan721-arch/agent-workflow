@@ -1,6 +1,6 @@
 {
   "name": "codex-enhance",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "通过只读证据探索和通用子代理编排两个技能增强 Codex 的多代理工作流。",
   "compatibility": {
     "aw": {

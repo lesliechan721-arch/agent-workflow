@@ -32,12 +32,11 @@ export {
 } from '../src/utils/manifest.js';
 export {
   appendCatalogToPluginReleaseLedger,
+  assertStablePluginVersion,
   createLegacyPluginReleaseLedger,
   mergePluginReleaseLedgers,
-  PLUGIN_DEVELOPMENT_RECEIPT_FILENAME,
   PLUGIN_RELEASE_LEDGER_FILENAME,
   resolveBetaPluginVersionOverrides,
-  validatePluginDevelopmentReceipt,
   validatePluginReleaseLedger,
 } from '../src/utils/plugin-release.js';
 export {
@@ -101,12 +100,10 @@ import { readJsonFile } from '../src/utils/json.js';
 import { resolveCliPackageRoot } from '../src/utils/paths.js';
 import {
   appendCatalogToPluginReleaseLedger,
-  createPluginDevelopmentReceipt,
-  type PluginDevelopmentReceipt,
+  assertStablePluginVersion,
   type PluginReleaseLedger,
-  PLUGIN_DEVELOPMENT_RECEIPT_FILENAME,
   PLUGIN_RELEASE_LEDGER_FILENAME,
-  validatePluginDevelopmentReceipt,
+  resolveBetaPluginVersionOverrides,
 } from '../src/utils/plugin-release.js';
 
 export type {
@@ -124,7 +121,6 @@ export interface CatalogStageOptions {
   catalogVersion?: string;
   channel?: CatalogChannel;
   phase?: 'development' | 'release';
-  pluginVersionOverrides?: Readonly<Record<string, string>>;
   previousReleaseLedger?: PluginReleaseLedger;
 }
 
@@ -149,7 +145,6 @@ export interface CatalogPackageMetadata {
 export interface CatalogStageResult {
   manifest: CatalogManifest;
   releaseLedger: PluginReleaseLedger;
-  developmentReceipt: PluginDevelopmentReceipt | null;
   canonicalManifestPath: string;
   sidecarPackageRoot: string;
   fullPackageRoot: string;
@@ -334,30 +329,12 @@ async function rewriteBundledPluginVersions(
   }
 }
 
-function getDevelopmentReceiptPath(outputRoot: string): string {
-  return path.join(getCatalogStagingRoot(outputRoot), PLUGIN_DEVELOPMENT_RECEIPT_FILENAME);
-}
-
-export async function readPluginDevelopmentReceipt(
-  outputRoot: string,
-): Promise<PluginDevelopmentReceipt> {
-  return validatePluginDevelopmentReceipt(
-    await readJsonFile<unknown>(getDevelopmentReceiptPath(outputRoot)),
-  );
-}
-
 export async function stageCatalogArtifacts(
   options: CatalogStageOptions,
 ): Promise<CatalogStageResult> {
   const repoRoot = options.repoRoot ?? path.resolve(resolveCliPackageRoot(), '..', '..');
   const phase = options.phase ?? 'development';
-  const priorDevelopmentReceipt = phase === 'release'
-    ? await readPluginDevelopmentReceipt(options.outputRoot)
-    : null;
-  if (options.pluginVersionOverrides) {
-    await rewriteBundledPluginVersions(options.outputRoot, options.pluginVersionOverrides);
-  }
-  const [{ version, publishConfig }, plugins] = await Promise.all([
+  const [{ version, publishConfig }, sourcePlugins] = await Promise.all([
     readCliPackageMetadata(repoRoot),
     resolvePluginsFromCatalog(options.outputRoot),
   ]);
@@ -366,26 +343,30 @@ export async function stageCatalogArtifacts(
     'catalog version',
   );
   const channel = options.channel ?? detectCatalogChannel(catalogVersion);
-  const minAwVersion = resolveCatalogMinAwVersion(plugins);
-  const contentDigestEntries = await Promise.all(plugins.map(async (plugin) => [
+  for (const plugin of sourcePlugins) {
+    assertStablePluginVersion(plugin.manifest.version, `${plugin.manifest.name} source version`);
+  }
+  const contentDigestEntries = await Promise.all(sourcePlugins.map(async (plugin) => [
     plugin.manifest.name,
     await calculateCatalogEntryContentDigest(
       path.join(options.outputRoot, 'plugins', plugin.manifest.name),
     ),
   ] as const));
   const contentDigests = new Map(contentDigestEntries);
-  if (priorDevelopmentReceipt) {
-    const priorByName = new Map(
-      priorDevelopmentReceipt.entries.map((entry) => [entry.name, entry]),
-    );
-    for (const [pluginName, contentDigest] of contentDigests) {
-      if (priorByName.get(pluginName)?.contentDigest !== contentDigest) {
-        throw new Error(
-          `Release staging content for plugin ${pluginName} does not match the development receipt.`,
-        );
-      }
-    }
+  const previousReleaseLedger: PluginReleaseLedger = options.previousReleaseLedger
+    ?? { schemaVersion: 1, records: [] };
+  if (phase === 'release' && channel === 'beta') {
+    const overrides = resolveBetaPluginVersionOverrides({
+      plugins: sourcePlugins,
+      contentDigests,
+      ledger: previousReleaseLedger,
+    });
+    await rewriteBundledPluginVersions(options.outputRoot, overrides);
   }
+  const plugins = phase === 'release' && channel === 'beta'
+    ? await resolvePluginsFromCatalog(options.outputRoot)
+    : sourcePlugins;
+  const minAwVersion = resolveCatalogMinAwVersion(plugins);
   const entries = await Promise.all(
     plugins.map((plugin) =>
       createCatalogManifestEntryFromPlugin(
@@ -421,18 +402,10 @@ export async function stageCatalogArtifacts(
 
   const manifest = validateCatalogManifest(manifestBase);
   const releaseLedger = appendCatalogToPluginReleaseLedger({
-    previous: options.previousReleaseLedger ?? { schemaVersion: 1, records: [] },
+    previous: previousReleaseLedger,
     manifest,
     contentDigests,
   });
-  const developmentReceipt = phase === 'development'
-    ? await createPluginDevelopmentReceipt({
-      repoRoot,
-      catalogVersion,
-      plugins,
-      contentDigests,
-    })
-    : priorDevelopmentReceipt;
   const stagingRoot = getCatalogStagingRoot(options.outputRoot);
   const canonicalManifestPath = getCanonicalCatalogManifestPath(options.outputRoot);
   const sidecarPackageRoot = getCatalogSidecarPackageRoot(options.outputRoot);
@@ -443,9 +416,6 @@ export async function stageCatalogArtifacts(
     canonicalManifestPath,
     manifest,
   );
-  if (phase === 'development') {
-    await writeCanonicalJsonFile(getDevelopmentReceiptPath(options.outputRoot), developmentReceipt);
-  }
   const releaseLedgerContent = `${JSON.stringify(releaseLedger, null, 2)}\n`;
   await writeCatalogPackageContents({
     outputRoot: options.outputRoot,
@@ -474,7 +444,6 @@ export async function stageCatalogArtifacts(
   return {
     manifest,
     releaseLedger,
-    developmentReceipt,
     canonicalManifestPath,
     sidecarPackageRoot,
     fullPackageRoot,

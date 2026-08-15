@@ -108,8 +108,12 @@ async function resolveTestContext() {
     };
   }
   const context = JSON.parse(await readFile(contextPath, 'utf8'));
+  const sourceManifest = JSON.parse(await readFile(
+    path.join(context.sourceRoot, '.agents-plugin', 'plugin.json'),
+    'utf8',
+  ));
   assert.equal(context.plugin.name, 'git');
-  assert.equal(context.plugin.version, '0.1.0');
+  assert.equal(context.plugin.version, sourceManifest.version);
   assert.equal(context.event, 'test');
   return {
     sourceRoot: context.sourceRoot,

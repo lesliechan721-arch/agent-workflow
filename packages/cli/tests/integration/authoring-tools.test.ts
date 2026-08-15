@@ -438,8 +438,36 @@ describe('authoring tools', () => {
       env: process.env,
     });
     expect(initHelp.stdout).toContain(
-      'New plugin scaffolds keep the initial version and do not create a release intent.',
+      'New plugin scaffolds keep the initial stable version.',
     );
+
+    for (const [pluginName, version] of [
+      ['prerelease-version', '1.2.3-beta.1'],
+      ['build-version', '1.2.3+build.1'],
+    ]) {
+      await expect(execFileAsync(
+        'node',
+        [
+          scriptPath,
+          pluginName,
+          '--description',
+          '用于验证源码插件稳定版本约束的示例插件。',
+          '--no-skills',
+          '--version',
+          version,
+          '--repo-root',
+          tempRepo,
+        ],
+        { cwd: repoRoot(), env: process.env },
+      )).rejects.toMatchObject({
+        stderr: expect.stringContaining(
+          '--version must be a stable SemVer without prerelease or build metadata.',
+        ),
+      });
+      await expect(
+        fs.pathExists(path.join(tempRepo, 'plugins', pluginName)),
+      ).resolves.toBe(false);
+    }
 
     await expect(
       execFileAsync(
@@ -849,7 +877,7 @@ describe('authoring tools', () => {
     const dualReadmePath = path.join(dualPluginRoot, 'README.md');
     await fs.writeFile(dualReadmePath, '# Git Commit\n\nExisting documentation.\n', 'utf8');
     const dualReadmeBefore = await fs.readFile(dualReadmePath, 'utf8');
-    await execFileAsync('node', [
+    const dualAdded = await execFileAsync('node', [
       scriptPath,
       'git-commit',
       '--skill-name',
@@ -868,16 +896,8 @@ describe('authoring tools', () => {
     expect(dualManifest.version).toBe('0.1.0');
     expect(dualManifest.skills).toBe('./skills');
     expect(dualManifest.interface.capabilities).toContain('Skills');
-    await expect(fs.readJson(path.join(
-      tempRepo,
-      '.changes',
-      'plugins',
-      'git-commit-add-release-notes.json',
-    ))).resolves.toMatchObject({
-      schemaVersion: 1,
-      plugin: 'git-commit',
-      bump: 'minor',
-    });
+    expect(dualAdded.stdout).toContain('Increase the stable version directly');
+    await expect(fs.pathExists(path.join(tempRepo, '.changes'))).resolves.toBe(false);
     const dualSkillRoot = path.join(dualPluginRoot, 'skills', 'release-notes');
     await expect(fs.readFile(path.join(dualSkillRoot, 'SKILL.md'), 'utf8')).resolves.toEqual(
       expect.stringContaining('disable-model-invocation: true'),
@@ -1034,136 +1054,6 @@ describe('authoring tools', () => {
       .resolves.toBe(false);
   });
 
-  it('bumps stable versions and rejects invalid or ambiguous SemVer without a built CLI', async () => {
-    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-authoring-version-bump-'));
-    tempDirs.push(tempRoot);
-    const tempRepo = path.join(tempRoot, 'repo');
-    const { manifestPath } = await writeSourcePlugin(
-      path.join(tempRepo, 'plugins'),
-      'version-bump-only',
-      createBaseManifest('version-bump-only'),
-    );
-    const bumpPath = createAwPluginScriptPath('bump_plugin_version.mjs');
-
-    await execFileAsync('node', [
-      bumpPath,
-      'version-bump-only',
-      '--bump',
-      'minor',
-      '--repo-root',
-      tempRepo,
-    ], { cwd: repoRoot(), env: process.env });
-    await expect(fs.readJson(manifestPath)).resolves.toMatchObject({ version: '0.2.0' });
-
-    const prereleaseManifest = await fs.readJson(manifestPath);
-    prereleaseManifest.version = '0.2.1-beta.1';
-    await fs.writeJson(manifestPath, prereleaseManifest, { spaces: 2 });
-    await expect(execFileAsync('node', [
-      bumpPath,
-      'version-bump-only',
-      '--bump',
-      'patch',
-      '--repo-root',
-      tempRepo,
-    ], { cwd: repoRoot(), env: process.env })).rejects.toMatchObject({
-      stderr: expect.stringContaining('use --version with an exact higher SemVer'),
-    });
-    await execFileAsync('node', [
-      bumpPath,
-      'version-bump-only',
-      '--version',
-      '0.2.1',
-      '--repo-root',
-      tempRepo,
-    ], { cwd: repoRoot(), env: process.env });
-
-    for (const invalidVersion of ['1.2.3-', '1.2.3-+meta']) {
-      const invalidManifest = await fs.readJson(manifestPath);
-      invalidManifest.version = invalidVersion;
-      await fs.writeJson(manifestPath, invalidManifest, { spaces: 2 });
-      await expect(execFileAsync('node', [
-        bumpPath,
-        'version-bump-only',
-        '--bump',
-        'patch',
-        '--repo-root',
-        tempRepo,
-      ], { cwd: repoRoot(), env: process.env })).rejects.toMatchObject({
-        stderr: expect.stringContaining('must be a strict SemVer 2.0.0 string'),
-      });
-    }
-  });
-
-  const transactionalReleaseApplyTest = process.platform === 'win32' ? it.skip : it;
-  transactionalReleaseApplyTest('rolls back every manifest and intent when release application fails', async () => {
-    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-authoring-release-apply-'));
-    tempDirs.push(tempRoot);
-    const tempRepo = path.join(tempRoot, 'repo');
-    const pluginRoot = path.join(tempRepo, 'plugins');
-    const alpha = await writeSourcePlugin(
-      pluginRoot,
-      'alpha-release',
-      createBaseManifest('alpha-release'),
-    );
-    const beta = await writeSourcePlugin(
-      pluginRoot,
-      'beta-release',
-      createBaseManifest('beta-release'),
-    );
-    const intentRoot = path.join(tempRepo, '.changes', 'plugins');
-    const alphaIntentPath = path.join(intentRoot, 'alpha-release.json');
-    const betaIntentPath = path.join(intentRoot, 'beta-release.json');
-    await fs.outputJson(alphaIntentPath, {
-      schemaVersion: 1,
-      plugin: 'alpha-release',
-      bump: 'patch',
-      summary: 'Patch alpha release.',
-    });
-    await fs.outputJson(betaIntentPath, {
-      schemaVersion: 1,
-      plugin: 'beta-release',
-      bump: 'minor',
-      summary: 'Update beta release.',
-    });
-    const applyPath = createAwPluginScriptPath('apply_plugin_releases.mjs');
-    const applyArgs = [applyPath, '--all', '--repo-root', tempRepo];
-
-    const betaManifestRoot = path.dirname(beta.manifestPath);
-    await fs.chmod(betaManifestRoot, 0o555);
-    try {
-      await expect(execFileAsync('node', applyArgs, {
-        cwd: repoRoot(),
-        env: process.env,
-      })).rejects.toBeDefined();
-    } finally {
-      await fs.chmod(betaManifestRoot, 0o755);
-    }
-    await expect(fs.readJson(alpha.manifestPath)).resolves.toMatchObject({ version: '0.1.0' });
-    await expect(fs.readJson(beta.manifestPath)).resolves.toMatchObject({ version: '0.1.0' });
-    await expect(fs.pathExists(alphaIntentPath)).resolves.toBe(true);
-    await expect(fs.pathExists(betaIntentPath)).resolves.toBe(true);
-
-    await fs.chmod(intentRoot, 0o555);
-    try {
-      await expect(execFileAsync('node', applyArgs, {
-        cwd: repoRoot(),
-        env: process.env,
-      })).rejects.toBeDefined();
-    } finally {
-      await fs.chmod(intentRoot, 0o755);
-    }
-    await expect(fs.readJson(alpha.manifestPath)).resolves.toMatchObject({ version: '0.1.0' });
-    await expect(fs.readJson(beta.manifestPath)).resolves.toMatchObject({ version: '0.1.0' });
-    await expect(fs.pathExists(alphaIntentPath)).resolves.toBe(true);
-    await expect(fs.pathExists(betaIntentPath)).resolves.toBe(true);
-
-    await execFileAsync('node', applyArgs, { cwd: repoRoot(), env: process.env });
-    await expect(fs.readJson(alpha.manifestPath)).resolves.toMatchObject({ version: '0.1.1' });
-    await expect(fs.readJson(beta.manifestPath)).resolves.toMatchObject({ version: '0.2.0' });
-    await expect(fs.pathExists(alphaIntentPath)).resolves.toBe(false);
-    await expect(fs.pathExists(betaIntentPath)).resolves.toBe(false);
-  });
-
   const productionVersionCheckTest = fs.existsSync(
     path.join(repoRoot(), 'packages', 'cli', 'dist'),
   ) ? it : it.skip;
@@ -1221,62 +1111,17 @@ describe('authoring tools', () => {
     ]);
 
     const checkerPath = createAwPluginScriptPath('check_plugin_versions.mjs');
-    const bumpPath = createAwPluginScriptPath('bump_plugin_version.mjs');
-    const addChangePath = createAwPluginScriptPath('add_plugin_change.mjs');
-    const applyReleasesPath = createAwPluginScriptPath('apply_plugin_releases.mjs');
     const skillMdPath = path.join(pluginDir, 'skills', 'versioned-skill', 'SKILL.md');
-    const checkerHelp = await execFileAsync('node', [checkerPath, '--help'], {
-      cwd: repoRoot(),
-      env: process.env,
-    });
-    expect(checkerHelp.stdout).toContain(
-      'New plugins keep their initial version without an intent.',
-    );
-    const applyHelp = await execFileAsync('node', [applyReleasesPath, '--help'], {
-      cwd: repoRoot(),
-      env: process.env,
-    });
-    expect(applyHelp.stdout).toContain(
-      'an empty intent set is a successful no-op',
-    );
-    await execFileAsync('node', [
-      addChangePath,
+    await expect(execFileAsync('node', [
+      checkerPath,
       'versioned-plugin',
-      '--bump',
-      'patch',
-      '--summary',
-      'Intent-only release gate fixture.',
-      '--id',
-      'intent-only-release-gate',
+      '--mode',
+      'author',
       '--repo-root',
       tempRepo,
-    ], { cwd: repoRoot(), env: process.env });
-    let intentOnlyReleaseError: { stdout?: string } | undefined;
-    try {
-      await execFileAsync('node', [
-        checkerPath,
-        '--all',
-        '--mode',
-        'release',
-        '--json',
-        '--repo-root',
-        tempRepo,
-      ], { cwd: repoRoot(), env: process.env, maxBuffer: 10 * 1024 * 1024 });
-    } catch (error) {
-      intentOnlyReleaseError = error as { stdout?: string };
-    }
-    expect(intentOnlyReleaseError?.stdout).toBeTruthy();
-    expect(JSON.parse(intentOnlyReleaseError!.stdout!).checks[0]).toMatchObject({
-      plugin: 'versioned-plugin',
-      status: 'unappliedReleaseIntent',
-      productionChanged: false,
+    ], { cwd: repoRoot(), env: process.env })).rejects.toMatchObject({
+      stderr: expect.stringContaining('Unknown option: --mode'),
     });
-    await fs.remove(path.join(
-      tempRepo,
-      '.changes',
-      'plugins',
-      'intent-only-release-gate.json',
-    ));
     await fs.appendFile(skillMdPath, '\nChanged production behavior.\n', 'utf8');
 
     let missingBumpError: { stdout?: string } | undefined;
@@ -1294,79 +1139,22 @@ describe('authoring tools', () => {
     expect(missingBumpError?.stdout).toBeTruthy();
     const missingBumpReport = JSON.parse(missingBumpError!.stdout!);
     expect(missingBumpReport.ok).toBe(false);
+    expect(missingBumpReport.schemaVersion).toBe(2);
+    expect(missingBumpReport).not.toHaveProperty('mode');
     expect(missingBumpReport.checks[0]).toMatchObject({
-      status: 'missingReleaseIntent',
+      status: 'missingVersionBump',
       productionChanged: true,
     });
+    expect(missingBumpReport.checks[0]).not.toHaveProperty('plannedBump');
+    expect(missingBumpReport.checks[0]).not.toHaveProperty('targetVersion');
+    expect(missingBumpReport.checks[0]).not.toHaveProperty('releaseIntentFiles');
     expect(missingBumpReport.checks[0].changedPaths).toContain(
       'codex/skills/versioned-skill/SKILL.md',
     );
 
-    await execFileAsync('node', [
-      addChangePath,
-      'versioned-plugin',
-      '--bump',
-      'minor',
-      '--summary',
-      'Change versioned plugin behavior.',
-      '--id',
-      'versioned-plugin-change',
-      '--repo-root',
-      tempRepo,
-    ], { cwd: repoRoot(), env: process.env });
-    const planned = await execFileAsync('node', [
-      checkerPath,
-      'versioned-plugin',
-      '--json',
-      '--repo-root',
-      tempRepo,
-    ], { cwd: repoRoot(), env: process.env, maxBuffer: 10 * 1024 * 1024 });
-    expect(JSON.parse(planned.stdout).checks[0]).toMatchObject({
-      status: 'releasePlanned',
-      plannedBump: 'minor',
-      targetVersion: '0.2.0',
-    });
-    await runGit(tempRepo, ['add', 'plugins', '.changes']);
-    await runGit(tempRepo, [
-      '-c',
-      'user.name=AW Test',
-      '-c',
-      'user.email=aw-test@example.invalid',
-      'commit',
-      '-m',
-      'planned plugin change',
-    ]);
-    await fs.appendFile(skillMdPath, '\nSecond development iteration.\n', 'utf8');
-    const repeatedDevelopment = await execFileAsync('node', [
-      checkerPath,
-      'versioned-plugin',
-      '--json',
-      '--repo-root',
-      tempRepo,
-    ], { cwd: repoRoot(), env: process.env, maxBuffer: 10 * 1024 * 1024 });
-    expect(JSON.parse(repeatedDevelopment.stdout).checks[0]).toMatchObject({
-      status: 'releasePlanned',
-      baseVersion: '0.1.0',
-      currentVersion: '0.1.0',
-      targetVersion: '0.2.0',
-    });
-    await expect(execFileAsync('node', [
-      checkerPath,
-      'versioned-plugin',
-      '--mode',
-      'release',
-      '--repo-root',
-      tempRepo,
-    ], { cwd: repoRoot(), env: process.env })).rejects.toMatchObject({
-      stdout: expect.stringContaining('unappliedReleaseIntent'),
-    });
-    await execFileAsync('node', [
-      applyReleasesPath,
-      'versioned-plugin',
-      '--repo-root',
-      tempRepo,
-    ], { cwd: repoRoot(), env: process.env });
-    await expect(fs.readJson(manifestPath)).resolves.toMatchObject({ version: '0.2.0' });
+    const changedManifest = await fs.readJson(manifestPath);
+    changedManifest.version = '0.2.0';
+    await fs.writeJson(manifestPath, changedManifest, { spaces: 2 });
     const bumped = await execFileAsync('node', [
       checkerPath,
       'versioned-plugin',
@@ -1374,8 +1162,12 @@ describe('authoring tools', () => {
       '--repo-root',
       tempRepo,
     ], { cwd: repoRoot(), env: process.env, maxBuffer: 10 * 1024 * 1024 });
-    expect(JSON.parse(bumped.stdout).checks[0].status).toBe('versionBumped');
-
+    expect(JSON.parse(bumped.stdout).checks[0]).toMatchObject({
+      status: 'versionBumped',
+      baseVersion: '0.1.0',
+      currentVersion: '0.2.0',
+      productionChanged: true,
+    });
     await runGit(tempRepo, ['add', 'plugins']);
     await runGit(tempRepo, [
       '-c',
@@ -1411,42 +1203,38 @@ describe('authoring tools', () => {
       '--repo-root',
       tempRepo,
     ], { cwd: repoRoot(), env: process.env })).rejects.toMatchObject({
-      stdout: expect.stringContaining('missingReleaseIntent'),
+      stdout: expect.stringContaining('missingVersionBump'),
     });
 
     await fs.writeFile(skillReadmePath, '# Versioned Skill\n', 'utf8');
-    const manifest = await fs.readJson(manifestPath);
-    manifest.version = '0.2.0+metadata';
-    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
-    await expect(execFileAsync('node', [
+    for (const invalidVersion of ['0.2.1-beta.1', '0.2.0+metadata']) {
+      const invalidManifest = await fs.readJson(manifestPath);
+      invalidManifest.version = invalidVersion;
+      await fs.writeJson(manifestPath, invalidManifest, { spaces: 2 });
+      await expect(execFileAsync('node', [
+        checkerPath,
+        'versioned-plugin',
+        '--repo-root',
+        tempRepo,
+      ], { cwd: repoRoot(), env: process.env })).rejects.toMatchObject({
+        stdout: expect.stringContaining('stable SemVer'),
+      });
+    }
+
+    const versionOnlyManifest = await fs.readJson(manifestPath);
+    versionOnlyManifest.version = '0.2.1';
+    await fs.writeJson(manifestPath, versionOnlyManifest, { spaces: 2 });
+    const versionOnly = await execFileAsync('node', [
       checkerPath,
       'versioned-plugin',
+      '--json',
       '--repo-root',
       tempRepo,
-    ], { cwd: repoRoot(), env: process.env })).rejects.toMatchObject({
-      stdout: expect.stringContaining('nonIncreasingVersion'),
-    });
-
-    await expect(execFileAsync('node', [
-      bumpPath,
-      'versioned-plugin',
-      '--bump',
-      'patch',
-      '--repo-root',
-      tempRepo,
-    ], { cwd: repoRoot(), env: process.env })).rejects.toMatchObject({
-      stderr: expect.stringContaining('use --version with an exact higher SemVer'),
-    });
-    await execFileAsync('node', [
-      bumpPath,
-      'versioned-plugin',
-      '--version',
-      '0.2.1-beta.1',
-      '--repo-root',
-      tempRepo,
-    ], { cwd: repoRoot(), env: process.env });
-    await expect(fs.readJson(manifestPath)).resolves.toMatchObject({
-      version: '0.2.1-beta.1',
+    ], { cwd: repoRoot(), env: process.env, maxBuffer: 10 * 1024 * 1024 });
+    expect(JSON.parse(versionOnly.stdout).checks[0]).toMatchObject({
+      status: 'versionOnly',
+      currentVersion: '0.2.1',
+      warnings: [expect.stringContaining('production bundle is unchanged')],
     });
 
     await writeSourcePlugin(
@@ -1461,93 +1249,14 @@ describe('authoring tools', () => {
       '--repo-root',
       tempRepo,
     ], { cwd: repoRoot(), env: process.env });
-    const newPluginCheck = JSON.parse(newPlugin.stdout).checks[0];
+    const newPluginReport = JSON.parse(newPlugin.stdout);
+    expect(newPluginReport.schemaVersion).toBe(2);
+    const newPluginCheck = newPluginReport.checks[0];
     expect(newPluginCheck).toMatchObject({
       status: 'new',
       currentVersion: '0.1.0',
       productionChanged: true,
-      releaseIntentFiles: [],
     });
-    const newPluginRelease = await execFileAsync('node', [
-      checkerPath,
-      'new-plugin',
-      '--mode',
-      'release',
-      '--json',
-      '--repo-root',
-      tempRepo,
-    ], { cwd: repoRoot(), env: process.env });
-    expect(JSON.parse(newPluginRelease.stdout).checks[0]).toMatchObject({
-      status: 'new',
-      currentVersion: '0.1.0',
-      releaseIntentFiles: [],
-    });
-    const emptyReleaseApply = await execFileAsync('node', [
-      applyReleasesPath,
-      '--all',
-      '--repo-root',
-      tempRepo,
-    ], { cwd: repoRoot(), env: process.env });
-    expect(emptyReleaseApply.stdout).toContain('No plugin release intents to apply.');
-    await execFileAsync('node', [
-      addChangePath,
-      'new-plugin',
-      '--bump',
-      'patch',
-      '--summary',
-      'New plugin release intent fixture.',
-      '--id',
-      'new-plugin-release-gate',
-      '--repo-root',
-      tempRepo,
-    ], { cwd: repoRoot(), env: process.env });
-    let newPluginAuthorError: { stdout?: string } | undefined;
-    try {
-      await execFileAsync('node', [
-        checkerPath,
-        'new-plugin',
-        '--json',
-        '--repo-root',
-        tempRepo,
-      ], { cwd: repoRoot(), env: process.env, maxBuffer: 10 * 1024 * 1024 });
-    } catch (error) {
-      newPluginAuthorError = error as { stdout?: string };
-    }
-    expect(newPluginAuthorError?.stdout).toBeTruthy();
-    expect(JSON.parse(newPluginAuthorError!.stdout!).checks[0]).toMatchObject({
-      status: 'unexpectedReleaseIntent',
-      currentVersion: '0.1.0',
-      releaseIntentFiles: ['new-plugin-release-gate.json'],
-    });
-    let newPluginReleaseError: { stdout?: string } | undefined;
-    try {
-      await execFileAsync('node', [
-        checkerPath,
-        '--all',
-        '--mode',
-        'release',
-        '--json',
-        '--repo-root',
-        tempRepo,
-      ], { cwd: repoRoot(), env: process.env, maxBuffer: 10 * 1024 * 1024 });
-    } catch (error) {
-      newPluginReleaseError = error as { stdout?: string };
-    }
-    expect(newPluginReleaseError?.stdout).toBeTruthy();
-    const newPluginReleaseReport = JSON.parse(newPluginReleaseError!.stdout!);
-    expect(newPluginReleaseReport.checks.find(
-      (check: { plugin: string }) => check.plugin === 'new-plugin',
-    )).toMatchObject({
-      status: 'unexpectedReleaseIntent',
-      currentVersion: '0.1.0',
-      releaseIntentFiles: ['new-plugin-release-gate.json'],
-    });
-    await fs.remove(path.join(
-      tempRepo,
-      '.changes',
-      'plugins',
-      'new-plugin-release-gate.json',
-    ));
 
     await fs.writeJson(
       path.join(tempRepo, 'plugins', 'marketplace-source.json'),

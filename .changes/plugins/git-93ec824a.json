@@ -1,6 +1,0 @@
-{
-  "schemaVersion": 1,
-  "plugin": "git",
-  "bump": "patch",
-  "summary": "修正语义合并在组合验证前过早提交的问题。"
-}

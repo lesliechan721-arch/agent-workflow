@@ -61,12 +61,11 @@ compatibility: Requires the agent-workflows repository, Node.js 22+, and install
    - Dynamic Artifacts → 静态声明 target，renderer 只输出 `ArtifactPlan`
    - 完成条件：每个声明能力都有对应源码文件、字段和直接测试；没有修改生成目录或加入未请求能力
 5. **管理插件版本**
-   - 新插件保留脚手架写入的初始 version（默认 `0.1.0`），首版不创建 release intent
-   - 向已有插件新增 Skill 时，`add_skill.mjs` 默认创建 minor release intent，不直接修改 plugin version
-   - 已有插件的其它 production bundle 变化使用 `scripts/add_plugin_change.mjs` 声明 major、minor 或 patch
-   - 开发和 CI 反复修改时保留源码 manifest 中最近稳定版本；不要把 SemVer 当作编辑计数器
+   - 新插件保留脚手架写入的初始稳定 version（默认 `0.1.0`）
+   - 已有插件的 production bundle 变化直接提高 `.agents-plugin/plugin.json` 中的稳定 version；按兼容性影响选择 major、minor 或 patch
+   - `add_skill.mjs` 只创建 Skill 骨架和必要 manifest 能力字段；作者随后直接编辑 manifest version
    - Skill 根的直接子目录 `evals/**`、`reports/**`、插件根 `reports/**` 和 test-only 文件不进入 production bundle；更深层的同名目录、Skill README 和其它 runtime 文件进入 production bundle
-   - 完成条件：新插件保持初始 version 且没有 intent；已有插件的 production bundle 有变化时存在对应 intent；只有作者期材料变化时不创建 intent
+   - 完成条件：新插件保持初始稳定 version；已有插件的 production bundle 有变化时 manifest version 已提高；只有作者期材料变化时不提高版本
 6. **按变更面构建**
    - 新建插件，或 manifest、README、Skill、runtime 脚本、bundle / 安装合同等 production bundle 输入变化时，运行 `pnpm build` 生成本地 staging/runtime bundle
    - 只有上述顶层作者目录或 test-only 材料变化时默认跳过 build；用户或隔离环境明确限制 build 时也不强行运行，并把对应 production artifact 列为未验证
@@ -92,14 +91,14 @@ compatibility: Requires the agent-workflows repository, Node.js 22+, and install
    - 完成条件：每个修改面有直接确定性测试；重大 Skill 修改有 with-skill/baseline behavior、适用 trigger evidence、有效 oracle 和 eval-change-safety 回归；失败已归因、修复并重跑
 9. **交付**
    - 报告修改的源码文件、运行的验证、未验证项和仍需用户决定的风险
-   - 正式报告发布和 Skill README 登记必须分别获得用户明确授权；命令、封存和 release intent 合同见 `references/skill-evaluation.md`
+   - 正式报告发布和 Skill README 登记必须分别获得用户明确授权；命令、封存和版本合同见 `references/skill-evaluation.md`
    - 完成条件：明确区分完整通过、轻量预检、模型证据和未运行项
 
 ## 脚手架
 
-新插件使用 `scripts/init_plugin.mjs`；向已有插件新增静态 Skill 使用 `scripts/add_skill.mjs`；其它 production 变化使用 `scripts/add_plugin_change.mjs` 创建 release intent。先运行对应脚本的 `--help`，只传本次任务需要的能力和显式 `--skill-invocation`。
+新插件使用 `scripts/init_plugin.mjs`；向已有插件新增静态 Skill 使用 `scripts/add_skill.mjs`；其它 production 变化直接修改目标源码。先运行对应脚本的 `--help`，只传本次任务需要的能力和显式 `--skill-invocation`。
 
-稳定版本应用、单插件显式 bump 和版本门禁的命令只在版本分支使用，见 `references/plugin-manifest-spec.md` 的 version / compatibility block。
+源码稳定版本和版本门禁见 `references/plugin-manifest-spec.md` 的 version / compatibility block。
 
 ## 跨能力 Gotchas
 
@@ -107,7 +106,7 @@ compatibility: Requires the agent-workflows repository, Node.js 22+, and install
 
 - `.agents-plugin/plugin.json` 是唯一手动维护的 manifest；不要手写 `.claude-plugin/plugin.json` 或 `.codex-plugin/plugin.json`。
 - 插件名、skill 名使用小写短横线格式，并与目录名一致。
-- 新插件保留初始 version，首版不创建 release intent；已有插件的 production bundle 因源码变化而改变时必须创建 intent，author 门禁检查 intent，release 门禁才要求版本已提高。
+- 新插件保留初始稳定 version；已有插件的 production bundle 因源码变化而改变时，必须在同一改动中直接提高 manifest version。
 - `skills`、`mcpServers`、`apps`、`slashCommands` 使用单个 `./` 相对路径，且路径必须存在。
 - 面向 Codex 的静态 skill 必须带 `agents/openai.yaml`，并显式声明 `policy.allow_implicit_invocation`。
 - Skill 的调用方式是 Skill 设计的一部分。Codex 使用 `agents/openai.yaml` 的 `policy.allow_implicit_invocation`；Claude 使用 `SKILL.md` frontmatter 的 `disable-model-invocation` 与 `user-invocable`。AW 原样保留这些字段。

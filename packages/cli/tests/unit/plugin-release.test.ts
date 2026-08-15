@@ -14,9 +14,8 @@ import { calculateCatalogEntryContentDigest } from '../../src/utils/catalog-dige
 import * as manifest from '../../src/utils/manifest.js';
 import {
   appendCatalogToPluginReleaseLedger,
-  createPluginDevelopmentReceipt,
+  mergePluginReleaseLedgers,
   resolveBetaPluginVersionOverrides,
-  type PluginDevelopmentReceipt,
   type PluginReleaseLedger,
 } from '../../src/utils/plugin-release.js';
 
@@ -51,22 +50,26 @@ function createManifest(options: {
   version: string;
   artifactDigest?: string;
   manifestDigest?: string;
+  catalogVersion?: string;
+  channel?: 'latest' | 'beta';
 }): CatalogManifest {
+  const catalogVersion = options.catalogVersion ?? '2.0.0-beta.1';
+  const channel = options.channel ?? 'beta';
   return {
     schemaVersion: 2,
-    catalogVersion: '2.0.0-beta.1',
-    channel: 'beta',
+    catalogVersion,
+    channel,
     compatibility: { aw: { minVersion: '0.0.0' } },
     packages: {
       sidecar: {
         name: '@lesliechan721/aw-plugins-manifest',
-        version: '2.0.0-beta.1',
-        channel: 'beta',
+        version: catalogVersion,
+        channel,
       },
       full: {
         name: '@lesliechan721/aw-plugins',
-        version: '2.0.0-beta.1',
-        channel: 'beta',
+        version: catalogVersion,
+        channel,
         manifestPath: './catalog-manifest.json',
       },
     },
@@ -98,7 +101,7 @@ afterEach(async () => {
 });
 
 describe('plugin release workflow', () => {
-  it('materializes beta versions only in release staging and blocks unapplied stable releases', async () => {
+  it('materializes beta versions only in release staging and keeps the source stable', async () => {
     const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-release-stage-'));
     tempDirs.push(repoRoot);
     await fs.copy(
@@ -110,23 +113,18 @@ describe('plugin release workflow', () => {
       ),
       repoRoot,
     );
-    await fs.outputJson(path.join(repoRoot, '.changes', 'plugins', 'git-change.json'), {
-      schemaVersion: 1,
-      plugin: 'git-commit',
-      bump: 'minor',
-      summary: 'Add beta behavior.',
-    });
+    const sourceManifestPath = path.join(
+      repoRoot,
+      'plugins',
+      'git-commit',
+      '.agents-plugin',
+      'plugin.json',
+    );
+    const sourceManifest = await fs.readJson(sourceManifestPath);
+    await fs.writeJson(sourceManifestPath, { ...sourceManifest, version: '0.2.0' }, { spaces: 2 });
     const outputRoot = path.join(repoRoot, 'output');
     await bundlePlugins({ repoRoot, outputRoot, buildMode: 'staging' });
     const catalogModules = { pluginStaging, bundleLayout, manifest };
-
-    await expect(prepareCatalogRelease({
-      outputRoot,
-      catalogVersion: '9.0.0',
-      channel: 'latest',
-      sourceRepoRoot: repoRoot,
-      catalogModules,
-    })).rejects.toThrow('unapplied plugin release intents: git-commit');
 
     const staged = await prepareCatalogRelease({
       outputRoot,
@@ -138,45 +136,19 @@ describe('plugin release workflow', () => {
     expect(staged.manifest.entries).toEqual([
       expect.objectContaining({ name: 'git-commit', version: '0.2.0-beta.1' }),
     ]);
-    await expect(fs.readJson(path.join(
-      repoRoot,
-      'plugins',
-      'git-commit',
-      '.agents-plugin',
-      'plugin.json',
-    ))).resolves.toMatchObject({ version: '0.1.0' });
-  });
+    await expect(fs.readJson(sourceManifestPath)).resolves.toMatchObject({ version: '0.2.0' });
 
-  it('turns release intents into one development target without changing the base version', async () => {
-    const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-release-'));
-    tempDirs.push(repoRoot);
-    await fs.outputJson(path.join(repoRoot, '.changes', 'plugins', 'ask-fix.json'), {
-      schemaVersion: 1,
-      plugin: 'ask-me',
-      bump: 'patch',
-      summary: 'Fix ask behavior.',
+    await bundlePlugins({ repoRoot, outputRoot, buildMode: 'staging' });
+    const stable = await prepareCatalogRelease({
+      outputRoot,
+      catalogVersion: '9.0.0',
+      channel: 'latest',
+      sourceRepoRoot: repoRoot,
+      catalogModules,
     });
-    await fs.outputJson(path.join(repoRoot, '.changes', 'plugins', 'ask-feature.json'), {
-      schemaVersion: 1,
-      plugin: 'ask-me',
-      bump: 'minor',
-      summary: 'Add ask behavior.',
-    });
-
-    const receipt = await createPluginDevelopmentReceipt({
-      repoRoot,
-      catalogVersion: '2.0.0-beta.1',
-      plugins: [createPlugin('ask-me')],
-      contentDigests: new Map([['ask-me', DIGEST_A]]),
-    });
-
-    expect(receipt.entries[0]).toMatchObject({
-      name: 'ask-me',
-      baseVersion: '1.0.0',
-      plannedBump: 'minor',
-      targetVersion: '1.1.0',
-      intentFiles: ['ask-feature.json', 'ask-fix.json'],
-    });
+    expect(stable.manifest.entries).toEqual([
+      expect.objectContaining({ name: 'git-commit', version: '0.2.0' }),
+    ]);
   });
 
   it('reuses a beta version for identical content and increments it for changed content', () => {
@@ -192,30 +164,133 @@ describe('plugin release workflow', () => {
         catalogVersion: '2.0.0-beta.1',
       }],
     };
-    const receipt: PluginDevelopmentReceipt = {
+    const plugins = [createPlugin('ask-me', '1.1.0')];
+    expect(resolveBetaPluginVersionOverrides({
+      plugins,
+      contentDigests: new Map([['ask-me', DIGEST_A]]),
+      ledger,
+    })).toEqual({
+      'ask-me': '1.1.0-beta.1',
+    });
+    expect(resolveBetaPluginVersionOverrides({
+      plugins,
+      contentDigests: new Map([['ask-me', DIGEST_C]]),
+      ledger,
+    })).toEqual({
+      'ask-me': '1.1.0-beta.2',
+    });
+  });
+
+  it('keeps a stable version after latest publication and rejects changed content', () => {
+    const ledger: PluginReleaseLedger = {
       schemaVersion: 1,
-      phase: 'development',
-      publishable: false,
-      catalogVersion: '2.0.0-beta.2',
-      gitCommit: null,
-      dirty: null,
-      entries: [{
-        name: 'ask-me',
-        baseVersion: '1.0.0',
+      records: [{
+        plugin: 'ask-me',
+        version: '1.1.0',
         contentDigest: DIGEST_A,
-        plannedBump: 'minor',
-        targetVersion: '1.1.0',
-        intentFiles: ['ask-change.json'],
+        artifactDigest: DIGEST_B,
+        manifestDigest: DIGEST_C,
+        channel: 'latest',
+        catalogVersion: '2.0.0',
+      }],
+    };
+    const plugins = [createPlugin('ask-me', '1.1.0')];
+
+    expect(resolveBetaPluginVersionOverrides({
+      plugins,
+      contentDigests: new Map([['ask-me', DIGEST_A]]),
+      ledger,
+    })).toEqual({});
+    expect(() => resolveBetaPluginVersionOverrides({
+      plugins,
+      contentDigests: new Map([['ask-me', DIGEST_C]]),
+      ledger,
+    })).toThrow('Increase the source plugin version');
+  });
+
+  it('keeps a stable identity first published on beta and promotes its ledger channel on latest', () => {
+    const previous: PluginReleaseLedger = {
+      schemaVersion: 1,
+      records: [{
+        plugin: 'ask-me',
+        version: '1.1.0',
+        contentDigest: DIGEST_A,
+        artifactDigest: DIGEST_B,
+        manifestDigest: DIGEST_C,
+        channel: 'beta',
+        catalogVersion: '2.0.0-beta.1',
+      }],
+    };
+    expect(resolveBetaPluginVersionOverrides({
+      plugins: [createPlugin('ask-me', '1.1.0')],
+      contentDigests: new Map([['ask-me', DIGEST_A]]),
+      ledger: previous,
+    })).toEqual({});
+
+    const promoted = appendCatalogToPluginReleaseLedger({
+      previous,
+      manifest: createManifest({
+        version: '1.1.0',
+        artifactDigest: DIGEST_B,
+        manifestDigest: DIGEST_C,
+        catalogVersion: '2.0.0',
+        channel: 'latest',
+      }),
+      contentDigests: new Map([['ask-me', DIGEST_A]]),
+    });
+    expect(promoted.records).toEqual([
+      expect.objectContaining({
+        plugin: 'ask-me',
+        version: '1.1.0',
+        channel: 'latest',
+        catalogVersion: '2.0.0',
+      }),
+    ]);
+  });
+
+  it('keeps latest metadata when a beta ledger enriches the same legacy identity', () => {
+    const latest: PluginReleaseLedger = {
+      schemaVersion: 1,
+      records: [{
+        plugin: 'ask-me',
+        version: '1.1.0',
+        contentDigest: null,
+        artifactDigest: DIGEST_B,
+        manifestDigest: DIGEST_C,
+        channel: 'latest',
+        catalogVersion: '2.0.0',
+      }],
+    };
+    const beta: PluginReleaseLedger = {
+      schemaVersion: 1,
+      records: [{
+        plugin: 'ask-me',
+        version: '1.1.0',
+        contentDigest: DIGEST_A,
+        artifactDigest: DIGEST_B,
+        manifestDigest: DIGEST_C,
+        channel: 'beta',
+        catalogVersion: '2.1.0-beta.1',
       }],
     };
 
-    expect(resolveBetaPluginVersionOverrides(receipt, ledger)).toEqual({
-      'ask-me': '1.1.0-beta.1',
-    });
-    receipt.entries[0]!.contentDigest = DIGEST_C;
-    expect(resolveBetaPluginVersionOverrides(receipt, ledger)).toEqual({
-      'ask-me': '1.1.0-beta.2',
-    });
+    expect(mergePluginReleaseLedgers(latest, beta).records).toEqual([
+      {
+        ...latest.records[0],
+        contentDigest: DIGEST_A,
+      },
+    ]);
+  });
+
+  it('rejects prerelease or build metadata in the source plugin version', () => {
+    const ledger: PluginReleaseLedger = { schemaVersion: 1, records: [] };
+    for (const version of ['1.1.0-beta.1', '1.1.0+build.1']) {
+      expect(() => resolveBetaPluginVersionOverrides({
+        plugins: [createPlugin('ask-me', version)],
+        contentDigests: new Map([['ask-me', DIGEST_A]]),
+        ledger,
+      })).toThrow('expected a stable SemVer');
+    }
   });
 
   it('rejects one plugin version that maps to different published digests', () => {
@@ -241,6 +316,42 @@ describe('plugin release workflow', () => {
       }),
       contentDigests: new Map([['ask-me', DIGEST_A]]),
     })).toThrow('ask-me@1.1.0-beta.1 maps to different digests');
+  });
+
+  it('rejects reuse of an older published plugin identity', () => {
+    const previous: PluginReleaseLedger = {
+      schemaVersion: 1,
+      records: [
+        {
+          plugin: 'ask-me',
+          version: '1.1.0',
+          contentDigest: DIGEST_A,
+          artifactDigest: DIGEST_B,
+          manifestDigest: DIGEST_C,
+          channel: 'latest',
+          catalogVersion: '2.0.0',
+        },
+        {
+          plugin: 'ask-me',
+          version: '1.2.0',
+          contentDigest: DIGEST_B,
+          artifactDigest: DIGEST_C,
+          manifestDigest: DIGEST_A,
+          channel: 'latest',
+          catalogVersion: '3.0.0',
+        },
+      ],
+    };
+
+    expect(() => appendCatalogToPluginReleaseLedger({
+      previous,
+      manifest: createManifest({
+        version: '1.1.0',
+        artifactDigest: DIGEST_B,
+        manifestDigest: DIGEST_C,
+      }),
+      contentDigests: new Map([['ask-me', DIGEST_A]]),
+    })).toThrow('must not be lower than published 1.2.0');
   });
 
   it('keeps contentDigest stable when only generated manifest versions change', async () => {

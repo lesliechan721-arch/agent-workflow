@@ -675,9 +675,6 @@ export async function prepareCatalogRelease(options = {}) {
     options.catalogModules,
     options.cliDistRoot,
   );
-  const developmentReceipt = typeof pluginStaging.readPluginDevelopmentReceipt === 'function'
-    ? await pluginStaging.readPluginDevelopmentReceipt(outputRoot)
-    : null;
   const existingManifest = typeof pluginStaging.readStagedCatalogManifest === 'function'
     ? await pluginStaging.readStagedCatalogManifest(outputRoot)
     : null;
@@ -686,33 +683,13 @@ export async function prepareCatalogRelease(options = {}) {
     throw new Error('Catalog release requires a catalog version.');
   }
   const resolvedChannel = normalizeChannel(channel, resolvedCatalogVersion);
-  if (
-    resolvedChannel === 'latest'
-    && developmentReceipt?.entries.some((entry) => entry.targetVersion !== null)
-  ) {
-    const pendingPlugins = developmentReceipt.entries
-      .filter((entry) => entry.targetVersion !== null)
-      .map((entry) => entry.name)
-      .join(', ');
-    throw new Error(
-      `Stable catalog release has unapplied plugin release intents: ${pendingPlugins}. `
-      + 'Run apply_plugin_releases.mjs and rebuild first.',
-    );
-  }
   const previousReleaseLedger = options.previousReleaseLedger
     ?? { schemaVersion: 1, records: [] };
-  const pluginVersionOverrides = resolvedChannel === 'beta' && developmentReceipt
-    ? pluginStaging.resolveBetaPluginVersionOverrides(
-      developmentReceipt,
-      previousReleaseLedger,
-    )
-    : {};
   const stagedCandidate = await pluginStaging.stageCatalogArtifacts({
     repoRoot: sourceRepoRoot,
     outputRoot,
     phase: 'release',
     previousReleaseLedger,
-    pluginVersionOverrides,
     catalogVersion: resolvedCatalogVersion,
     channel: resolvedChannel,
   });
