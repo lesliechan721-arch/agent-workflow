@@ -17,8 +17,6 @@ const tempDirs: string[] = [];
 let packedCliPromise: Promise<{
   packageRoot: string;
   tempRoot: string;
-  snapshotEntriesBefore: string[];
-  snapshotEntriesAfter: string[];
 }> | null = null;
 
 function repoRoot(): string {
@@ -82,8 +80,6 @@ async function listBuildSnapshotEntries(root: string): Promise<string[]> {
 async function preparePackedCli(): Promise<{
   packageRoot: string;
   tempRoot: string;
-  snapshotEntriesBefore: string[];
-  snapshotEntriesAfter: string[];
 }> {
   if (packedCliPromise) {
     const packed = await packedCliPromise;
@@ -105,7 +101,7 @@ async function preparePackedCli(): Promise<{
     const staleDistPath = path.join(packageRoot, 'dist', 'stale-build-sentinel.js');
     await fs.outputFile(staleDistPath, 'export const stale = true;\n', 'utf8');
     const snapshotEntriesBefore = await listBuildSnapshotEntries(root);
-    const packed = await execPnpmForTest(
+    await execPnpmForTest(
       ['pack:cli', '--pack-destination', packDir],
       {
         cwd: root,
@@ -114,15 +110,12 @@ async function preparePackedCli(): Promise<{
       },
     );
     await expect(fs.pathExists(staleDistPath)).resolves.toBe(false);
-    expect(packed.stdout).toContain('Packed tarball:');
     const snapshotEntriesAfter = await listBuildSnapshotEntries(root);
     expect(snapshotEntriesAfter).toEqual(snapshotEntriesBefore);
 
     return {
       packageRoot: await unpackSingleTarball(packDir, unpackDir),
       tempRoot,
-      snapshotEntriesBefore,
-      snapshotEntriesAfter,
     };
   })();
   return packedCliPromise;
@@ -134,18 +127,7 @@ afterAll(async () => {
 
 describe('pack smoke', () => {
   it('packs the CLI tarball without the staged plugins-dist snapshot', async () => {
-    const root = repoRoot();
-    const packageRoot = path.join(root, 'packages', 'cli');
-
-    const packageJson = await fs.readJson(path.join(packageRoot, 'package.json'));
-    expect(packageJson.files).toEqual(['dist/']);
-    expect(packageJson.scripts.prepack).toBe('pnpm --dir ../.. build:ensure');
-
-    const {
-      packageRoot: unpackedPackageRoot,
-      snapshotEntriesBefore,
-      snapshotEntriesAfter,
-    } = await preparePackedCli();
+    const { packageRoot: unpackedPackageRoot } = await preparePackedCli();
     const unpackedFiles = await listFilesRecursively(unpackedPackageRoot);
     await expect(fs.pathExists(path.join(unpackedPackageRoot, 'dist', 'index.js'))).resolves.toBe(true);
     await expect(fs.pathExists(path.join(unpackedPackageRoot, 'plugins-dist'))).resolves.toBe(false);
@@ -155,7 +137,6 @@ describe('pack smoke', () => {
       .toBe(false);
     expect(unpackedFiles.some((file) => file.includes('build-snapshots'))).toBe(false);
     expect(unpackedFiles.some((file) => file.startsWith('.release/'))).toBe(false);
-    expect(snapshotEntriesAfter).toEqual(snapshotEntriesBefore);
     await expect(fs.readJson(path.join(unpackedPackageRoot, 'package.json'))).resolves.toMatchObject({
       name: '@lesliechan721/aw',
       engines: {

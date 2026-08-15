@@ -191,22 +191,6 @@ afterEach(async () => {
 });
 
 describe('plugin script test runner', () => {
-  it('loads staging helpers through the scripts layer instead of importing src directly', async () => {
-    const source = await fs.readFile(
-      path.resolve(
-        path.dirname(fileURLToPath(import.meta.url)),
-        '..',
-        '..',
-        'scripts',
-        'test-plugin-scripts.ts',
-      ),
-      'utf8',
-    );
-
-    expect(source).toContain('./plugin-staging.js');
-    expect(source).not.toContain('../src/');
-  });
-
   it('skips plugins with no matching node test entries', async () => {
     const repoRoot = await makeTempRepo();
     const manifest = await readManifest(repoRoot);

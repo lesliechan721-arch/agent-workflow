@@ -433,7 +433,6 @@ describe('config set wizard entry', () => {
     }));
     const summary = frames.join('\n').replaceAll(/\s+/g, ' ');
     expect(summary).toContain(`aw config set --scope user --value-json -- json-config mode '\"slow\"'`);
-    expect(JSON.parse('"slow"')).toBe('slow');
   });
 
   it('rejects invalid JSON before calling the helper', async () => {

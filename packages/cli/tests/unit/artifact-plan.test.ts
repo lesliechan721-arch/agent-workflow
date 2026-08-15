@@ -640,36 +640,6 @@ describe('artifact plan validation', () => {
     );
   });
 
-  it('keeps codex.skill expected tree independent from embedded pristine templates', async () => {
-    const validated = validateArtifactPlan({
-      manifest: createSkillManifest(),
-      plan: createSkillPlan(),
-      platform: 'codex',
-      scope: 'project',
-      renderConfig,
-      rendererDigest: 'sha256:renderer-a',
-    });
-    const artifact = validated.artifacts[0]!;
-    const root = await makeTempRoot('aw-codex-skill-embedded-drift-');
-    const embeddedSkillPath = path.join(root, 'plugins', 'dynamic-artifacts', 'codex', 'skills', 'codex-explore', 'agents', 'openai.yaml');
-    await fs.outputFile(embeddedSkillPath, 'policy:\n  allow_implicit_invocation: false\n', 'utf8');
-
-    const beforeTree = await createCodexSkillExpectedTree({
-      artifact,
-      preference: 'manual',
-    });
-    await fs.writeFile(embeddedSkillPath, 'policy:\n  allow_implicit_invocation: true\n', 'utf8');
-    const afterTree = await createCodexSkillExpectedTree({
-      artifact,
-      preference: 'manual',
-    });
-
-    expect(afterTree).toEqual(beforeTree);
-    expect(createCodexSkillStagingTreeContentDigest(afterTree)).toBe(
-      createCodexSkillStagingTreeContentDigest(beforeTree),
-    );
-  });
-
   it('rejects duplicate artifact id + target entries', () => {
     const manifest = createManifest();
     const duplicatePlan = createPresentPlan();

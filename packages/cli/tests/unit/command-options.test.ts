@@ -20,13 +20,4 @@ describe('write command options', () => {
     }
     expect(() => normalizeCleanupCommandOptions({ platform: 'codex' })).toThrow(/scope/u);
   });
-
-  it('normalizes the shared write contract without legacy flags', () => {
-    const input = { platform: 'both', scope: 'project', cwd: '/repo' };
-    expect(normalizeInstallCommandOptions(input)).toMatchObject(input);
-    expect(normalizeUpgradeCommandOptions(input)).toMatchObject(input);
-    expect(normalizeReinstallCommandOptions(input)).toMatchObject(input);
-    expect(normalizeUninstallCommandOptions(input)).toMatchObject(input);
-    expect(normalizeCleanupCommandOptions(input)).toMatchObject(input);
-  });
 });

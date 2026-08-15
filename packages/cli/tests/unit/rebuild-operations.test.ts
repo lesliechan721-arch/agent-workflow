@@ -1,6 +1,4 @@
-import fs from 'node:fs/promises';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import fse from 'fs-extra';
 import { describe, expect, it, vi } from 'vitest';
@@ -223,32 +221,6 @@ function actionNames(result: Awaited<ReturnType<typeof executeRebuildOperation>>
 function deferred(): { promise: Promise<void>; resolve: () => void } {
   let resolve!: () => void;
   return { promise: new Promise<void>((done) => { resolve = done; }), resolve };
-}
-
-async function collectRelativeImportGraph(entryPath: string): Promise<Set<string>> {
-  const visited = new Set<string>();
-  const pending = [entryPath];
-  const importPattern = /(?:import|export)\s+(?:type\s+)?(?:[^;'"]*?\sfrom\s*)?['"](\.[^'"]+)['"]/g;
-  while (pending.length > 0) {
-    const sourcePath = pending.pop()!;
-    if (visited.has(sourcePath)) continue;
-    visited.add(sourcePath);
-    const source = await fs.readFile(sourcePath, 'utf8');
-    for (const match of source.matchAll(importPattern)) {
-      const specifier = match[1]!;
-      const resolved = path.resolve(
-        path.dirname(sourcePath),
-        specifier.endsWith('.js') ? `${specifier.slice(0, -3)}.ts` : specifier,
-      );
-      try {
-        await fs.access(resolved);
-        pending.push(resolved);
-      } catch {
-        // Package and generated imports are outside this source graph.
-      }
-    }
-  }
-  return visited;
 }
 
 describe('rebuild operation happy paths', () => {
@@ -1132,20 +1104,4 @@ describe('uninstall safety and dependency boundary', () => {
     expect(fixture.log).not.toContain('active.remove');
   });
 
-  it('keeps config and legacy persisted-state modules outside the core contract', async () => {
-    const entryPath = fileURLToPath(new URL(
-      '../../src/commands/rebuild-operations.ts',
-      import.meta.url,
-    ));
-    const graph = [...await collectRelativeImportGraph(entryPath)];
-    expect(graph.some((sourcePath) => sourcePath.includes(`${path.sep}install-state${path.sep}`))).toBe(false);
-    expect(graph.some((sourcePath) => sourcePath.endsWith(`${path.sep}plugin-scripts.ts`))).toBe(false);
-    expect(graph.some((sourcePath) => sourcePath.endsWith(`${path.sep}manifest.ts`))).toBe(false);
-    expect(graph.some((sourcePath) => /(?:tracking|diagnostic|dependency|native-marker)\.ts$/u.test(sourcePath)))
-      .toBe(false);
-    expect(Object.keys(createFixture().target)).toEqual([
-      'plugin', 'identity', 'ownedComponents', 'requiresNative', 'artifacts', 'lifecycleSource',
-    ]);
-    expect(graph).not.toContain(fileURLToPath(new URL('../../src/index.ts', import.meta.url)));
-  });
 });

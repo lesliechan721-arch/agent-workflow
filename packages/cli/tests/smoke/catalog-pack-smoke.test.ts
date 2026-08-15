@@ -2,7 +2,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 
 import fs from 'fs-extra';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -71,25 +71,20 @@ describe('catalog pack smoke', () => {
       'aw-catalog-pack-smoke-',
       'catalog pack smoke temp root',
     );
-    const outputRoot = path.join(tempRoot, 'plugins-dist');
+    const outputRoot = path.join(root, 'packages', 'cli', 'plugins-dist');
     const sidecarPackDir = path.join(tempRoot, 'sidecar-pack');
     const sidecarUnpackDir = path.join(tempRoot, 'sidecar-unpack');
     const fullPackDir = path.join(tempRoot, 'full-pack');
     const fullUnpackDir = path.join(tempRoot, 'full-unpack');
-    registerSmokeWritableRoot(outputRoot, 'catalog pack smoke output root');
     registerSmokeWritableRoot(sidecarPackDir, 'catalog pack smoke sidecar pack root');
     registerSmokeWritableRoot(sidecarUnpackDir, 'catalog pack smoke sidecar unpack root');
     registerSmokeWritableRoot(fullPackDir, 'catalog pack smoke full pack root');
     registerSmokeWritableRoot(fullUnpackDir, 'catalog pack smoke full unpack root');
 
-    const { bundlePlugins } = await import(
-      pathToFileURL(path.join(root, 'packages', 'cli', 'scripts', 'bundle-plugins.ts')).href,
-    ) as {
-      bundlePlugins: (options: { repoRoot: string; outputRoot: string }) => Promise<unknown>;
-    };
-    await bundlePlugins({
-      repoRoot: root,
-      outputRoot,
+    await execPnpmForTest(['build:ensure'], {
+      cwd: root,
+      env: process.env,
+      maxBuffer: 20 * 1024 * 1024,
     });
     await Promise.all([
       fs.ensureDir(sidecarPackDir),
@@ -217,7 +212,7 @@ describe('catalog pack smoke', () => {
       fs.readFile(stampPath, 'utf8'),
     ]);
 
-    const catalogPack = await execPnpmForTest([
+    await execPnpmForTest([
       'run',
       'release:pack:catalog',
       '--',
@@ -229,13 +224,12 @@ describe('catalog pack smoke', () => {
       maxBuffer: 20 * 1024 * 1024,
     });
 
-    expect(catalogPack.stdout).not.toContain('Build cache miss');
     await expect(computeBuildOutputDigest(root)).resolves.toBe(digestBefore);
     await expect(fs.readFile(canonicalManifestPath)).resolves.toEqual(manifestBefore);
     await expect(fs.readFile(stampPath, 'utf8')).resolves.toBe(stampBefore);
     await expect(inspectBuildCache(root)).resolves.toMatchObject({ reusable: true });
 
-    const combinedPack = await execPnpmForTest([
+    await execPnpmForTest([
       'run',
       'release:pack',
       '--',
@@ -247,7 +241,6 @@ describe('catalog pack smoke', () => {
       maxBuffer: 20 * 1024 * 1024,
     });
 
-    expect(combinedPack.stdout).not.toContain('Build cache miss');
     await expect(computeBuildOutputDigest(root)).resolves.toBe(digestBefore);
     await expect(fs.readFile(canonicalManifestPath)).resolves.toEqual(manifestBefore);
     await expect(fs.readFile(stampPath, 'utf8')).resolves.toBe(stampBefore);

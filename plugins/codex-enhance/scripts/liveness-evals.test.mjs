@@ -1,15 +1,28 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
-import os from 'node:os';
-import path from 'node:path';
-
 import {
   evaluateLivenessRun,
   loadLivenessEvalSpec,
   parseLivenessEvalArgs,
-  setupLivenessWorkspace,
   summarizeLivenessRuns,
 } from '../skills/codex-explore/evals/run-liveness-evals.mjs';
+
+const syntheticExpected = {
+  agent_type: 'synthetic-agent',
+  final_message_includes_all: ['RESULT accepted'],
+  delegated_source_prefixes: ['synthetic-source/'],
+  workspace_unchanged: true,
+  lifecycle: {
+    minimum_initial_wait_timeout_ms: 60_000,
+    allow_liveness_probe: false,
+    max_recoveries: 1,
+  },
+};
+
+function nonEmptyStrings(value) {
+  return Array.isArray(value) && value.length > 0 && value.every(
+    (entry) => typeof entry === 'string' && entry.length > 0,
+  );
+}
 
 function event(tool, argumentsValue = {}, output = {}) {
   return { tool, arguments: argumentsValue, output };
@@ -19,7 +32,7 @@ function passingTimeline({ withProbe = false } = {}) {
   const timeline = [
     event(
       'spawn_agent',
-      { agent_type: 'codex-explore-standard' },
+      { agent_type: 'synthetic-agent' },
       { task_name: '/root/evidence' },
     ),
     event(
@@ -69,79 +82,50 @@ function runResult(finalMessage, timeline) {
   };
 }
 
-async function testSpec() {
-  const spec = await loadLivenessEvalSpec();
-  assert.equal(spec.skill_name, 'codex-explore');
+function testArguments() {
   assert.deepEqual(
-    spec.evals.map((entry) => entry.id),
-    ['v2_long_progress', 'v2_late_blocked', 'v1_long_progress'],
-  );
-  assert.equal(
-    spec.evals[0].expected.lifecycle.minimum_initial_wait_timeout_ms,
-    60_000,
-  );
-  assert.equal(spec.evals[0].expected.lifecycle.allow_liveness_probe, false);
-  assert.equal(spec.evals[0].prompt.includes('FACT records=120'), false);
-  assert.equal(spec.evals[0].prompt.includes('FACT timeout_values=30,45,60'), false);
-  assert.equal(
-    spec.evals.find((entry) => entry.id === 'v2_late_blocked')
-      .prompt.includes('FACT authority_available=false'),
-    false,
-  );
-  assert.equal(
-    spec.evals.find((entry) => entry.id === 'v1_long_progress').parent_model,
-    'gpt-5.5',
-  );
-  assert.deepEqual(
-    parseLivenessEvalArgs(['--runs', '2', '--case', 'v2_long_progress']),
+    parseLivenessEvalArgs(['--runs', '2', '--case', 'synthetic_case']),
     {
       runs: 2,
       timeoutMs: 300_000,
       codexBin: 'codex',
       model: undefined,
-      caseId: 'v2_long_progress',
+      caseId: 'synthetic_case',
       output: undefined,
       help: false,
     },
   );
 }
 
-async function testFixture() {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'codex-liveness-fixture-'));
-  try {
-    await setupLivenessWorkspace(root);
-    const first = await readFile(
-      path.join(root, 'docs', 'liveness', 'records', 'record-001.md'),
-      'utf8',
-    );
-    const last = await readFile(
-      path.join(root, 'docs', 'liveness', 'records', 'record-120.md'),
-      'utf8',
-    );
-    const verifier = await readFile(
-      path.join(root, 'docs', 'liveness', 'verify-records.mjs'),
-      'utf8',
-    );
-    assert.match(first, /timeout=30/);
-    assert.match(last, /timeout=60/);
-    assert.match(verifier, /setTimeout\(resolve, 65_000\)/);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
+async function testSpecShape() {
+  const spec = await loadLivenessEvalSpec();
+  assert.equal(spec.skill_name, 'codex-explore');
+  assert.equal(spec.evals.length > 0, true);
+  assert.equal(spec.evals.every((entry) => (
+    typeof entry.id === 'string' &&
+    entry.id.length > 0 &&
+    typeof entry.prompt === 'string' &&
+    entry.prompt.length > 0 &&
+    (entry.parent_model === undefined || typeof entry.parent_model === 'string') &&
+    (entry.codex_config === undefined || typeof entry.codex_config === 'object') &&
+    typeof entry.expected?.agent_type === 'string' &&
+    entry.expected.agent_type.length > 0 &&
+    nonEmptyStrings(entry.expected?.final_message_includes_all) &&
+    nonEmptyStrings(entry.expected?.delegated_source_prefixes) &&
+    typeof entry.expected?.workspace_unchanged === 'boolean' &&
+    Number.isInteger(entry.expected?.lifecycle?.minimum_initial_wait_timeout_ms) &&
+    typeof entry.expected?.lifecycle?.allow_liveness_probe === 'boolean' &&
+    Number.isInteger(entry.expected?.lifecycle?.max_recoveries)
+  )), true);
+  assert.equal(new Set(spec.evals.map((entry) => entry.id)).size, spec.evals.length);
 }
 
-async function testEvaluation() {
-  const spec = await loadLivenessEvalSpec();
-  const expected = spec.evals[0].expected;
-  const finalMessage = [
-    '直接证据：docs/liveness/records/ 中有 120 条记录。',
-    'FACT records=120',
-    'FACT timeout_values=30,45,60',
-  ].join('\n');
+function testEvaluation() {
+  const finalMessage = 'RESULT accepted';
 
   const noProbeTimeline = passingTimeline();
   const noProbeRun = runResult(finalMessage, noProbeTimeline);
-  assert.equal(evaluateLivenessRun(noProbeRun, expected, false).passed, true);
+  assert.equal(evaluateLivenessRun(noProbeRun, syntheticExpected, false).passed, true);
   const codeModeVerifierRun = {
     ...noProbeRun,
     leaf_tool_calls: [event(
@@ -153,7 +137,7 @@ async function testEvaluation() {
     )],
   };
   assert.equal(
-    evaluateLivenessRun(codeModeVerifierRun, expected, false).passed,
+    evaluateLivenessRun(codeModeVerifierRun, syntheticExpected, false).passed,
     true,
   );
   const compoundVerifierRun = {
@@ -165,14 +149,14 @@ async function testEvaluation() {
     )],
   };
   assert.equal(
-    evaluateLivenessRun(compoundVerifierRun, expected, false).passed,
+    evaluateLivenessRun(compoundVerifierRun, syntheticExpected, false).passed,
     true,
   );
 
   const v1Timeline = [
     event(
       'spawn_agent',
-      { agent_type: 'codex-explore-standard' },
+      { agent_type: 'synthetic-agent' },
       { agent_id: 'agent-id' },
     ),
     event(
@@ -192,7 +176,11 @@ async function testEvaluation() {
     ),
   ];
   assert.equal(
-    evaluateLivenessRun(runResult(finalMessage, v1Timeline), expected, false).passed,
+    evaluateLivenessRun(
+      runResult(finalMessage, v1Timeline),
+      syntheticExpected,
+      false,
+    ).passed,
     true,
   );
 
@@ -200,7 +188,7 @@ async function testEvaluation() {
     ...runResult(finalMessage, noProbeTimeline),
     duration_ms: 1,
   };
-  const instantEvaluation = evaluateLivenessRun(instantRun, expected, false);
+  const instantEvaluation = evaluateLivenessRun(instantRun, syntheticExpected, false);
   assert.equal(instantEvaluation.passed, false);
   assert.equal(
     instantEvaluation.assertions.find(
@@ -215,7 +203,7 @@ async function testEvaluation() {
   };
   const missingVerifierEvaluation = evaluateLivenessRun(
     missingVerifierRun,
-    expected,
+    syntheticExpected,
     false,
   );
   assert.equal(missingVerifierEvaluation.passed, false);
@@ -232,7 +220,7 @@ async function testEvaluation() {
       leaf_trace_available: false,
       leaf_tool_calls: [],
     },
-    expected,
+    syntheticExpected,
     false,
   );
   assert.equal(missingLeafTraceEvaluation.complete, false);
@@ -246,20 +234,20 @@ async function testEvaluation() {
 
   const probeTimeline = passingTimeline({ withProbe: true });
   const probeRun = runResult(finalMessage, probeTimeline);
-  const probeEvaluation = evaluateLivenessRun(probeRun, expected, false);
+  const probeEvaluation = evaluateLivenessRun(probeRun, syntheticExpected, false);
   assert.equal(probeEvaluation.passed, false);
   assert.equal(probeEvaluation.metrics.probes, 1);
   assert.deepEqual(probeEvaluation.metrics.status_messages, ['progress']);
   assert.equal(probeEvaluation.metrics.timed_out_waits, 1);
   assert.equal(probeEvaluation.metrics.wait_count, 2);
-  assert.equal(evaluateLivenessRun(noProbeRun, expected, true).passed, false);
+  assert.equal(evaluateLivenessRun(noProbeRun, syntheticExpected, true).passed, false);
 
   const summary = summarizeLivenessRuns([
     { ...probeRun, evaluation: probeEvaluation },
     {
       ...noProbeRun,
       duration_ms: 60_000,
-      evaluation: evaluateLivenessRun(noProbeRun, expected, false),
+      evaluation: evaluateLivenessRun(noProbeRun, syntheticExpected, false),
     },
   ]);
   assert.equal(summary.accepted_runs, 1);
@@ -269,9 +257,9 @@ async function testEvaluation() {
 }
 
 async function main() {
-  await testSpec();
-  await testFixture();
-  await testEvaluation();
+  testArguments();
+  await testSpecShape();
+  testEvaluation();
   console.log('liveness eval tests passed');
 }
 

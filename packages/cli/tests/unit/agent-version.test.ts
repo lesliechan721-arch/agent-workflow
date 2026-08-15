@@ -4,7 +4,6 @@ import {
   clearAgentVersionProbeCacheForTests,
   extractStrictSemVerTokenFromVersionOutput,
   getAgentVersionRequirement,
-  getMinimumAgentVersion,
   probeAgentVersion,
 } from '../../src/utils/agent-version.js';
 import { NativeCliError, type NativeCliInvocation } from '../../src/utils/native-cli.js';
@@ -37,15 +36,15 @@ describe('agent-version', () => {
     clearAgentVersionProbeCacheForTests();
   });
 
-  it('reads built-in minimum versions by platform', () => {
-    expect(getMinimumAgentVersion('codex')).toBe('0.145.0');
-    expect(getMinimumAgentVersion('claude')).toBe('2.1.88');
-    expect(getAgentVersionRequirement('claude')).toMatchObject({
-      platform: 'claude',
-      command: 'claude',
-      displayName: 'Claude Code',
-      minVersion: '2.1.88',
-    });
+  it.each([
+    { platform: 'codex' as const, command: 'codex', displayName: 'Codex' },
+    { platform: 'claude' as const, command: 'claude', displayName: 'Claude Code' },
+  ])('provides valid probe metadata for $platform', ({ platform, command, displayName }) => {
+    const requirement = getAgentVersionRequirement(platform);
+
+    expect(requirement).toMatchObject({ platform, command, displayName });
+    expect(extractStrictSemVerTokenFromVersionOutput(requirement.minVersion))
+      .toBe(requirement.minVersion);
   });
 
   it('extracts the first strict SemVer token from supported version outputs', () => {

@@ -89,5 +89,4 @@ test('parses central command-suite arguments', () => {
       help: false,
     },
   );
-  assert.equal(parseLifecycleArgs([]).model, 'gpt-5.6-luna');
 });

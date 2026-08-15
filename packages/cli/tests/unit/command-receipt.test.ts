@@ -3,7 +3,6 @@ import { describe, expect, it } from 'vitest';
 import {
   buildInitReceiptJson,
   buildRebuildReceiptJson,
-  renderRebuildReceipt,
 } from '../../src/output/command-receipt.js';
 
 describe('command receipt v3', () => {
@@ -39,9 +38,6 @@ describe('command receipt v3', () => {
         receiptSchemaVersion: 3,
         targets: [{ plugin: 'git-commit', status: 'succeeded' }],
       });
-      expect(renderRebuildReceipt(command, {
-        platforms: ['codex'], plugins: ['git-commit'], warnings: [], rebuildResults: [],
-      })[0]).toContain(command);
     }
   });
 

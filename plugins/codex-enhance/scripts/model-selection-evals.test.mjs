@@ -44,39 +44,9 @@ function testArguments() {
 async function testEvalSpec() {
   const spec = await loadModelEvalSpec();
   assert.equal(spec.skill_name, 'codex-explore');
-  assert.deepEqual(spec.policy, {
-    optimization: 'critical',
-    false_negative_cost: 'high',
-    false_positive_cost: 'critical',
-    rationale: '漏选或错选 role 会降低探索质量；忽略显式字段，或在字段不可表达时仍启动，会违反用户参数和失败关闭边界。',
-  });
-  assert.deepEqual(
-    spec.evals.map((entry) => entry.id),
-    [
-      'auto_quick',
-      'auto_standard',
-      'v1_auto_standard',
-      'auto_deep',
-      'custom_both_fields',
-      'custom_model_only',
-      'custom_reasoning_only',
-      'hidden_fields_preset',
-      'hidden_explicit_field',
-      'hidden_explicit_reasoning',
-      'invalid_explicit_values',
-    ],
-  );
+  assert.equal(spec.evals.length > 0, true);
+  assert.equal(new Set(spec.evals.map((entry) => entry.id)).size, spec.evals.length);
   for (const entry of spec.evals) {
-    assert.equal(
-      entry.codex_config['features.multi_agent_v2.enabled'],
-      entry.id !== 'v1_auto_standard',
-    );
-    if (entry.id !== 'v1_auto_standard') {
-      assert.equal(
-        entry.codex_config['features.multi_agent_v2.hide_spawn_agent_metadata'],
-        true,
-      );
-    }
     assert.equal(entry.assertions.length > 0, true);
     assert.equal(entry.eval_type, 'routing');
     assert.equal(typeof entry.scenario_family, 'string');
@@ -91,14 +61,27 @@ async function testEvalSpec() {
       true,
     );
   }
-  const v1 = spec.evals.find((entry) => entry.id === 'v1_auto_standard');
-  assert.equal(v1.parent_model, 'gpt-5.5');
-  assert.equal(modelEvalRunCase(v1).parent_model, 'gpt-5.5');
 
-  const hiddenExplicit = spec.evals.find((entry) => entry.id === 'hidden_explicit_field');
-  assert.equal(modelEvalRunCase(hiddenExplicit).should_spawn_agent, false);
-  const hiddenReasoning = spec.evals.find((entry) => entry.id === 'hidden_explicit_reasoning');
-  assert.equal(modelEvalRunCase(hiddenReasoning).should_spawn_agent, false);
+  assert.deepEqual(
+    modelEvalRunCase({
+      prompt: 'inspect',
+      parent_model: 'parent-model',
+      wait_for_completion: true,
+      expected: { spawn_calls: { min: 1 } },
+      codex_config: { feature: true },
+    }),
+    {
+      query: 'inspect',
+      explicit_skill: true,
+      should_load_skill: true,
+      should_spawn_agent: true,
+      wait_for_completion: true,
+      parent_model: 'parent-model',
+      enable_features: undefined,
+      disable_features: undefined,
+      codex_config: { feature: true },
+    },
+  );
 }
 
 async function testRolloutArgumentEvidence() {

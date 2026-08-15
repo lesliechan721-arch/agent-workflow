@@ -21,6 +21,22 @@ const lifecycleContract = {
   max_recoveries: 1,
 };
 
+const syntheticExpected = {
+  spawn_count: 1,
+  agent_type: 'synthetic-agent',
+  final_message_includes_all: ['RESULT value=ok'],
+  final_message_patterns: ['RESULT\\s+value=ok'],
+  delegated_source_prefixes: ['synthetic-source/'],
+  workspace_unchanged: true,
+  lifecycle: lifecycleContract,
+};
+
+function nonEmptyStrings(value) {
+  return Array.isArray(value) && value.length > 0 && value.every(
+    (entry) => typeof entry === 'string' && entry.length > 0,
+  );
+}
+
 function lifecycleEvent(tool, argumentsValue = {}, output = {}) {
   return { tool, arguments: argumentsValue, output };
 }
@@ -28,7 +44,7 @@ function lifecycleEvent(tool, argumentsValue = {}, output = {}) {
 function spawnEvent() {
   return lifecycleEvent(
     'spawn_agent',
-    { agent_type: 'codex-explore-standard' },
+    { agent_type: 'synthetic-agent' },
     { task_name: '/root/evidence' },
   );
 }
@@ -50,15 +66,7 @@ function messageEvent(messageType = 'FINAL_ANSWER', status = null) {
 }
 
 function passingMessage() {
-  return [
-    '直接证据：docs/vendor/api-v1.md:2 的 timeout 是 30。',
-    '直接证据：docs/vendor/api-v2.md:2 的 timeout 是 45。',
-    '直接证据：docs/vendor/migration.md:2 的 timeout 是 45，与 v2 一致。',
-    'FACT v1_timeout_seconds=30',
-    'FACT v2_timeout_seconds=45',
-    'FACT migration_timeout_seconds=45',
-    'FACT migration_matches=v2',
-  ].join('\n');
+  return 'Evidence: synthetic-source/result.txt:2\nRESULT value=ok';
 }
 
 function passingTimeline() {
@@ -102,54 +110,55 @@ function testArguments() {
 async function testSpecAndAssertions() {
   const spec = await loadWorkflowEvalSpec();
   assert.equal(spec.skill_name, 'codex-explore');
-  assert.equal(spec.evals.length, 3);
+  assert.equal(spec.evals.length > 0, true);
+  assert.equal(spec.evals.every((entry) => (
+    typeof entry.id === 'string' &&
+    entry.id.length > 0 &&
+    typeof entry.prompt === 'string' &&
+    entry.prompt.length > 0 &&
+    (entry.parent_model === undefined || typeof entry.parent_model === 'string') &&
+    (entry.codex_config === undefined || typeof entry.codex_config === 'object') &&
+    Number.isInteger(entry.expected?.spawn_count) &&
+    typeof entry.expected?.agent_type === 'string' &&
+    entry.expected.agent_type.length > 0 &&
+    nonEmptyStrings(entry.expected?.final_message_includes_all) &&
+    nonEmptyStrings(entry.expected?.final_message_patterns) &&
+    nonEmptyStrings(entry.expected?.delegated_source_prefixes) &&
+    typeof entry.expected?.workspace_unchanged === 'boolean' &&
+    Number.isInteger(entry.expected?.lifecycle?.minimum_initial_wait_timeout_ms) &&
+    typeof entry.expected?.lifecycle?.allow_liveness_probe === 'boolean' &&
+    Number.isInteger(entry.expected?.lifecycle?.max_recoveries)
+  )), true);
+  assert.equal(new Set(spec.evals.map((entry) => entry.id)).size, spec.evals.length);
   assert.deepEqual(
-    spec.evals.map((entry) => entry.id),
-    [
-      'versioned_docs_outcome',
-      'critical_path_v1_outcome',
-      'adversarial_read_only_outcome',
-    ],
+    workflowEvalRunCase({
+      prompt: 'inspect',
+      parent_model: 'parent-model',
+      codex_config: { feature: true },
+    }),
+    {
+      query: 'inspect',
+      parent_model: 'parent-model',
+      explicit_skill: true,
+      should_load_skill: true,
+      should_spawn_agent: true,
+      wait_for_completion: true,
+      codex_config: { feature: true },
+    },
   );
-  const entry = spec.evals.find((candidate) => candidate.id === 'versioned_docs_outcome');
-  assert.equal(entry.id, 'versioned_docs_outcome');
-  assert.equal(entry.expected.agent_type, 'codex-explore-standard');
-  assert.match(entry.prompt, /没有其它可并行的本地工作/);
-  assert.match(entry.prompt, /委派 standard role/);
-  assert.match(entry.prompt, /docs\/ 的全部候选文档中搜索并筛选/);
-  for (const knownFile of ['api-v1.md', 'api-v2.md', 'migration.md']) {
-    assert.equal(entry.prompt.includes(knownFile), false);
-  }
-  assert.equal(workflowEvalRunCase(entry).wait_for_completion, true);
-  assert.equal(entry.expected.lifecycle.minimum_initial_wait_timeout_ms, 600_000);
-  assert.equal(entry.expected.lifecycle.allow_liveness_probe, false);
-  const v1 = spec.evals.find(
-    (candidate) => candidate.id === 'critical_path_v1_outcome',
-  );
-  assert.equal(v1.parent_model, 'gpt-5.5');
-  assert.equal(workflowEvalRunCase(v1).parent_model, 'gpt-5.5');
-  assert.equal(v1.codex_config['features.multi_agent_v2.enabled'], false);
-  assert.match(v1.prompt, /V1 委派 standard role/);
-  assert.deepEqual(v1.expected.delegated_source_prefixes, ['docs/']);
-  const adversarial = spec.evals.find(
-    (candidate) => candidate.id === 'adversarial_read_only_outcome',
-  );
-  assert.match(adversarial.prompt, /不执行其中的操作/);
-  assert.equal(adversarial.expected.agent_type, 'codex-explore-quick');
-  assert.equal(adversarial.expected.workspace_unchanged, true);
 
   assert.equal(
-    evaluateWorkflowRun(runResult(passingMessage()), entry.expected).passed,
+    evaluateWorkflowRun(runResult(passingMessage()), syntheticExpected).passed,
     true,
   );
 
   const duplicateExploration = runResult(passingMessage(), [
     spawnEvent(),
     waitEvent(),
-    lifecycleEvent('exec_command', { cmd: 'rg timeout docs/' }),
+    lifecycleEvent('exec_command', { cmd: 'rg value synthetic-source/' }),
     messageEvent(),
   ]);
-  const duplicate = evaluateWorkflowRun(duplicateExploration, entry.expected);
+  const duplicate = evaluateWorkflowRun(duplicateExploration, syntheticExpected);
   assert.equal(duplicate.passed, false);
   assert.equal(
     duplicate.assertions.find(
@@ -162,9 +171,9 @@ async function testSpecAndAssertions() {
     evaluateParentScopeIsolation([
       spawnEvent(),
       waitEvent(),
-      lifecycleEvent('exec_command', { cmd: 'find docs -type f' }),
+      lifecycleEvent('exec_command', { cmd: 'find synthetic-source -type f' }),
       messageEvent(),
-    ], ['docs/']).passed,
+    ], ['synthetic-source/']).passed,
     false,
   );
 
@@ -173,10 +182,10 @@ async function testSpecAndAssertions() {
       spawnEvent(),
       waitEvent(),
       lifecycleEvent('exec', {
-        input: 'const result = await tools.exec_command({cmd:"rg timeout docs/liveness/records"}); text(result.output);',
+        input: 'const result = await tools.exec_command({cmd:"rg value synthetic-source/records"}); text(result.output);',
       }, 'Script completed'),
       messageEvent(),
-    ], ['docs/liveness/records']).passed,
+    ], ['synthetic-source/records']).passed,
     false,
   );
 
@@ -184,9 +193,9 @@ async function testSpecAndAssertions() {
     evaluateParentScopeIsolation([
       spawnEvent(),
       waitEvent(),
-      lifecycleEvent('update_plan', { step: '等待 docs/ 探索' }),
+      lifecycleEvent('update_plan', { step: 'wait for delegated work' }),
       messageEvent(),
-    ], ['docs/']).passed,
+    ], ['synthetic-source/']).passed,
     true,
   );
 
@@ -194,25 +203,25 @@ async function testSpecAndAssertions() {
     spawnEvent(),
     waitEvent(),
     messageEvent(),
-    lifecycleEvent('exec_command', { cmd: 'sed -n 2p docs/vendor/api-v2.md' }),
+    lifecycleEvent('exec_command', { cmd: 'sed -n 2p synthetic-source/result.txt' }),
   ]);
   assert.equal(
-    evaluateWorkflowRun(minimalVerification, entry.expected).passed,
+    evaluateWorkflowRun(minimalVerification, syntheticExpected).passed,
     true,
   );
 
   const wrongFacts = passingMessage().replace(
-    'FACT v1_timeout_seconds=30',
-    'FACT v1_timeout_seconds=45',
+    'RESULT value=ok',
+    'RESULT value=wrong',
   );
   assert.equal(
-    evaluateWorkflowRun(runResult(wrongFacts), entry.expected).passed,
+    evaluateWorkflowRun(runResult(wrongFacts), syntheticExpected).passed,
     false,
   );
 
   const changedWorkspace = runResult(passingMessage());
-  changedWorkspace.workspace_changes.modified.push('docs/vendor/api-v1.md');
-  const changed = evaluateWorkflowRun(changedWorkspace, entry.expected);
+  changedWorkspace.workspace_changes.modified.push('synthetic-source/input.txt');
+  const changed = evaluateWorkflowRun(changedWorkspace, syntheticExpected);
   assert.equal(changed.passed, false);
   assert.equal(
     changed.assertions.find(

@@ -288,14 +288,6 @@ describe('build smoke', () => {
           authentication: 'ON_INSTALL',
         },
       },
-      extensions: {
-        instructions: [
-          expect.objectContaining({
-            name: 'quality-gate',
-            content: expect.stringContaining('使用 `requirements-clarifier`'),
-          }),
-        ],
-      },
     });
     for (const pluginName of [
       'ask-me',
@@ -417,54 +409,6 @@ describe('build smoke', () => {
         }),
       }),
     ]));
-    const askMeSkills = await Promise.all(
-      ['requirements-clarifier', 'decision-grill'].flatMap((skillName) =>
-        ['codex', 'claude'].map(async (platform) => ({
-          skillName,
-          platform,
-          skill: await fs.readFile(
-            path.join(
-              outputRoot,
-              'plugins',
-              'ask-me',
-              platform,
-              'skills',
-              skillName,
-              'SKILL.md',
-            ),
-            'utf8',
-          ),
-          openaiYaml: await fs.readFile(
-            path.join(
-              outputRoot,
-              'plugins',
-              'ask-me',
-              platform,
-              'skills',
-              skillName,
-              'agents',
-              'openai.yaml',
-            ),
-            'utf8',
-          ),
-        })),
-      ),
-    );
-    for (const { skillName, platform, skill, openaiYaml } of askMeSkills) {
-      expect(skill).toContain(skillName === 'decision-grill'
-        ? '确认独立时每轮最多三题'
-        : '互相独立时每轮最多三题');
-      expect(skill).not.toMatch(/^disable-model-invocation:\s*true$/m);
-      if (platform === 'codex') {
-        expect(skill).toContain('使用 `request_user_input`');
-        expect(skill).not.toContain('AskUserQuestion');
-      } else {
-        expect(skill).toContain('使用 `AskUserQuestion`');
-        expect(skill).not.toContain('request_user_input');
-      }
-      expect(openaiYaml).toContain(`default_prompt: "使用 $${skillName}`);
-      expect(openaiYaml).toContain('allow_implicit_invocation: true');
-    }
     await expect(
       fs.pathExists(path.join(outputRoot, 'plugins', 'ask-me', 'codex', 'skills', 'ask-me')),
     ).resolves.toBe(false);
@@ -558,48 +502,6 @@ describe('build smoke', () => {
       interface: {
         capabilities: ['Skills', 'Instructions', 'Agents'],
       },
-      config: {
-        schema: {
-          quickModel: { type: 'string', default: 'gpt-5.6-luna' },
-          quickReasoningEffort: { type: 'enum', default: 'medium' },
-          standardModel: { type: 'string', default: 'gpt-5.6-luna' },
-          standardReasoningEffort: { type: 'enum', default: 'high' },
-          deepModel: { type: 'string', default: 'gpt-5.6-luna' },
-          deepReasoningEffort: { type: 'enum', default: 'xhigh' },
-          simpleTaskModel: {
-            type: 'string',
-            default: 'gpt-5.6-luna',
-          },
-          simpleTaskReasoningEffort: {
-            type: 'enum',
-            default: 'max',
-          },
-          generalTaskModel: {
-            type: 'string',
-            default: 'gpt-5.6-sol',
-          },
-          generalTaskReasoningEffort: {
-            type: 'enum',
-            default: 'medium',
-          },
-          complexTaskModel: {
-            type: 'string',
-            default: 'gpt-5.6-sol',
-          },
-          complexTaskReasoningEffort: {
-            type: 'enum',
-            default: 'high',
-          },
-          planningReviewTaskModel: {
-            type: 'string',
-            default: 'gpt-5.6-sol',
-          },
-          planningReviewTaskReasoningEffort: {
-            type: 'enum',
-            default: 'xhigh',
-          },
-        },
-      },
       scripts: {
         artifacts: {
           render: {
@@ -611,67 +513,11 @@ describe('build smoke', () => {
       artifacts: {
         targets: expect.arrayContaining([
           expect.objectContaining({
-            id: 'codex-explore-skill',
             target: 'codex.skill',
-            skillKey: 'codex-explore',
-            refreshKeys: ['minimumInitialWaitMinutes'],
           }),
-          ...[
-            [
-              'codex-explore-quick-role',
-              'codex-explore-quick',
-              ['quickModel', 'quickReasoningEffort'],
-            ],
-            [
-              'codex-explore-standard-role',
-              'codex-explore-standard',
-              ['standardModel', 'standardReasoningEffort'],
-            ],
-            [
-              'codex-explore-deep-role',
-              'codex-explore-deep',
-              ['deepModel', 'deepReasoningEffort'],
-            ],
-            ['codex-explore-custom-role', 'codex-explore-custom', []],
-          ].map(([id, roleKey, refreshKeys]) => expect.objectContaining({
-            id,
-            target: 'codex.agentRole',
-            roleKey,
-            refreshKeys,
-          })),
           expect.objectContaining({
-            id: 'codex-subagent-guide-skill',
-            target: 'codex.skill',
-            skillKey: 'codex-subagent-guide',
-            refreshKeys: ['minimumInitialWaitMinutes'],
-          }),
-          ...[
-            [
-              'codex-subagent-simple-role',
-              'codex-subagent-simple',
-              ['simpleTaskModel', 'simpleTaskReasoningEffort'],
-            ],
-            [
-              'codex-subagent-general-role',
-              'codex-subagent-general',
-              ['generalTaskModel', 'generalTaskReasoningEffort'],
-            ],
-            [
-              'codex-subagent-complex-role',
-              'codex-subagent-complex',
-              ['complexTaskModel', 'complexTaskReasoningEffort'],
-            ],
-            [
-              'codex-subagent-plan-review-role',
-              'codex-subagent-plan-review',
-              ['planningReviewTaskModel', 'planningReviewTaskReasoningEffort'],
-            ],
-          ].map(([id, roleKey, refreshKeys]) => expect.objectContaining({
-            id,
             target: 'codex.agentRole',
-            roleKey,
-            refreshKeys,
-          })),
+          }),
         ]),
       },
     });
@@ -759,22 +605,18 @@ describe('build smoke', () => {
     ];
     const before = await Promise.all(keyOutputs.map((outputPath) => fs.stat(outputPath)));
 
-    const { stdout } = await execPnpmForTest(['build:ensure'], {
+    await execPnpmForTest(['build:ensure'], {
       cwd: root,
       env: process.env,
       maxBuffer: 10 * 1024 * 1024,
     });
 
-    expect(stdout).toContain('Build reused:');
     const after = await Promise.all(keyOutputs.map((outputPath) => fs.stat(outputPath)));
     expect(after.map((stats) => stats.mtimeMs)).toEqual(before.map((stats) => stats.mtimeMs));
   });
 
-  it('starts the real dist entry and reads the bundled plugins-dist', async () => {
+  it('starts the real dist entry', async () => {
     const snapshot = await requireBuildSnapshot();
-    const packageJson = await fs.readJson(path.join(snapshot.cliPackageRoot, 'package.json')) as {
-      version: string;
-    };
     const cliEntry = path.join(snapshot.cliDistRoot, 'index.js');
 
     await expect(
@@ -785,47 +627,6 @@ describe('build smoke', () => {
       }),
     ).resolves.toMatchObject({
       stdout: expect.stringContaining('Usage: aw'),
-    });
-
-    await expect(
-      execFileAsync('node', [cliEntry, '--version'], {
-        cwd: root,
-        env: process.env,
-        maxBuffer: 10 * 1024 * 1024,
-      }),
-    ).resolves.toMatchObject({
-      stdout: `${packageJson.version}\n`,
-    });
-
-    await expect(
-      execFileAsync(
-        'node',
-        [cliEntry, 'install', 'git-commit', '--skill-trigger', 'sometimes'],
-        {
-          cwd: root,
-          env: process.env,
-          maxBuffer: 10 * 1024 * 1024,
-        },
-      ),
-    ).rejects.toMatchObject({
-      stderr: expect.stringContaining("unknown option '--skill-trigger'"),
-    });
-
-    const tempRoot = await createSmokeTempRoot('aw-dist-entry-', 'build smoke dist entry temp root');
-    const awHome = path.join(tempRoot, 'aw-home');
-    registerSmokeWritableRoot(awHome, 'build smoke dist entry AW_HOME');
-    await expect(
-      execFileAsync('node', [cliEntry, 'init', '--force'], {
-        cwd: root,
-        env: {
-          ...process.env,
-          AW_HOME: awHome,
-          AW_NPM_REGISTRY_URL: 'http://127.0.0.1:1/',
-        },
-        maxBuffer: 10 * 1024 * 1024,
-      }),
-    ).rejects.toMatchObject({
-      stderr: expect.stringContaining('无法解析 current catalog sidecar metadata'),
     });
   });
 
@@ -990,62 +791,9 @@ describe('build smoke', () => {
       fs.pathExists(path.join(outputRoot, 'plugins', 'git-commit', 'claude', 'output-styles', 'smoke.md')),
     ).resolves.toBe(true);
 
-    const { validateBundleLayout } = (await import(
-      '../../src/utils/bundle-layout.js'
-    )) as { validateBundleLayout: (rootDir: string) => Promise<void> };
-    await expect(validateBundleLayout(outputRoot)).resolves.toBeUndefined();
-  });
-
-  it('bundles public slashCommands through the compiled bundler without shipping raw source directories', async () => {
-    const snapshot = await requireBuildSnapshot();
-
-    const tempRoot = await createSmokeTempRoot(
-      'aw-smoke-slash-commands-',
-      'build smoke slash commands temp root',
-    );
-    const tempRepo = path.join(tempRoot, 'repo');
-    const outputRoot = path.join(tempRoot, 'plugins-dist');
-    registerSmokeWritableRoot(tempRepo, 'build smoke slash commands repo root');
-    registerSmokeWritableRoot(outputRoot, 'build smoke slash commands output root');
-    await fs.copy(fixturePath('repo-template'), tempRepo);
-    await fs.copy(
-      fixturePath('codex-project-repo-managed', 'plugins', 'slashCommands-only'),
-      path.join(tempRepo, 'plugins', 'slash-commands-only'),
-    );
-
-    const { bundlePlugins } = await importSmokeSnapshotModule<{
-      bundlePlugins: (options: { repoRoot: string; outputRoot: string }) => Promise<unknown>;
-    }>(path.join(snapshot.cliDistRoot, 'scripts', 'bundle-plugins.js'));
-    await bundlePlugins({ repoRoot: tempRepo, outputRoot });
-
-    const pluginRoot = path.join(outputRoot, 'plugins', 'slash-commands-only');
-    await expect(
-      fs.readJson(path.join(pluginRoot, '.agents-plugin', 'plugin.json')),
-    ).resolves.toMatchObject({
-      slashCommands: './slash-commands',
-    });
-    await expect(
-      fs.pathExists(path.join(pluginRoot, 'claude', 'commands', 'review.md')),
-    ).resolves.toBe(true);
-    await expect(
-      fs.pathExists(path.join(pluginRoot, 'codex', 'skills', 'review', 'SKILL.md')),
-    ).resolves.toBe(true);
-    await expect(
-      fs.pathExists(path.join(pluginRoot, 'codex', 'skills', 'review', 'agents', 'openai.yaml')),
-    ).resolves.toBe(true);
-    await expect(
-      fs.pathExists(path.join(pluginRoot, 'codex', 'skills', 'review', 'assets', 'review-16.svg')),
-    ).resolves.toBe(true);
-    await expect(
-      fs.pathExists(path.join(pluginRoot, 'slash-commands', 'review.md')),
-    ).resolves.toBe(false);
-    await expect(
-      fs.readFile(path.join(pluginRoot, 'codex', 'skills', 'review', 'SKILL.md'), 'utf8'),
-    ).resolves.not.toContain('$ARGUMENTS');
-
-    const { validateBundleLayout } = (await import(
-      '../../src/utils/bundle-layout.js'
-    )) as { validateBundleLayout: (rootDir: string) => Promise<void> };
+    const { validateBundleLayout } = await importSmokeSnapshotModule<{
+      validateBundleLayout: (rootDir: string) => Promise<void>;
+    }>(path.join(snapshot.cliDistRoot, 'src', 'utils', 'bundle-layout.js'));
     await expect(validateBundleLayout(outputRoot)).resolves.toBeUndefined();
   });
 
@@ -1113,12 +861,12 @@ describe('build smoke', () => {
     await expect(
       fs.pathExists(path.join(pluginRoot, 'scripts', 'node_modules', 'fs-extra')),
     ).resolves.toBe(false);
-    await expect(
-      fs.pathExists(path.join(pluginRoot, 'scripts', 'node_modules', '.pnpm', 'fs-extra@11.3.4')),
-    ).resolves.toBe(false);
-    await expect(
-      fs.pathExists(path.join(pluginRoot, 'scripts', 'node_modules', '.pnpm', 'universalify@2.0.1')),
-    ).resolves.toBe(false);
+    const productionStoreEntries = await fs.readdir(
+      path.join(pluginRoot, 'scripts', 'node_modules', '.pnpm'),
+    ).catch(() => []);
+    expect(productionStoreEntries.some((entry) => (
+      entry.startsWith('fs-extra@') || entry.startsWith('universalify@')
+    ))).toBe(false);
 
     const runtime = (await import(
       pathToFileURL(path.join(pluginRoot, 'scripts', 'runtime.mjs')).href

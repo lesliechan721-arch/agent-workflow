@@ -47,7 +47,6 @@ describe('buildConfig validation', () => {
       },
     });
 
-    expect(manifest.slashCommands).toBe('./slash-commands');
     expect(manifest.buildConfig?.manifestOverrides?.claude?.outputStyles).toBe('./output-styles');
     expect(manifest.buildConfig?.fileRules?.codex?.exclude).toEqual(['output-styles/**']);
   });

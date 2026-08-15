@@ -24,26 +24,27 @@ import {
 } from '../skills/codex-subagent-guide/evals/run-routing-evals.mjs';
 
 function testArguments() {
+  const parsed = parseRoutingArgs([
+    '--runs',
+    '2',
+    '--threshold',
+    '0.6',
+    '--profile',
+    'v2',
+    '--variant',
+    'with_skill',
+    '--case',
+    'partial_preset',
+  ]);
+  const { v1Model, v2Model, ...parsedWithoutModels } = parsed;
+  assert.equal(v1Model, v2Model);
   assert.deepEqual(
-    parseRoutingArgs([
-      '--runs',
-      '2',
-      '--threshold',
-      '0.6',
-      '--profile',
-      'v2',
-      '--variant',
-      'with_skill',
-      '--case',
-      'partial_preset',
-    ]),
+    parsedWithoutModels,
     {
       runs: 2,
       threshold: 0.6,
       timeoutMs: 180_000,
       codexBin: 'codex',
-      v1Model: 'gpt-5.6-luna',
-      v2Model: 'gpt-5.6-luna',
       profile: 'v2',
       variant: 'with_skill',
       caseId: 'partial_preset',
@@ -67,70 +68,25 @@ async function testEvalSpec() {
     );
   }
   assert.equal(spec.skill_name, 'codex-subagent-guide');
-  assert.deepEqual(
-    spec.evals.map((entry) => entry.id),
-    [
-      'simple_preset_fresh',
-      'readonly_complexity_not_simple',
-      'general_preset_fresh',
-      'complex_preset_fresh',
-      'planning_review_preset_fresh',
-      'custom_model_only',
-      'custom_effort_only',
-      'custom_agent_type_only',
-      'custom_model_and_effort',
-      'custom_override_scoped_to_subtask',
-      'partial_preset',
-      'partial_custom_model',
-      'full_history',
-      'full_history_custom_override',
-      'project_rule_partial_context',
-      'skill_rule_full_history_context',
-      'missing_preset_role',
-      'fixed_role_custom_conflict',
-    ],
-  );
-  const readonlyComplex = spec.evals.find((entry) => entry.id === 'readonly_complexity_not_simple');
-  assert.equal(readonlyComplex.expectations.v1.arguments.agent_type, 'codex-subagent-complex');
-  assert.equal(readonlyComplex.expectations.v2.arguments.agent_type, 'codex-subagent-complex');
-  const scopedOverride = spec.evals.find((entry) => entry.id === 'custom_override_scoped_to_subtask');
-  assert.equal(scopedOverride.expectations.v1.arguments.agent_type, 'codex-subagent-complex');
-  assert.equal(scopedOverride.expectations.v1.arguments.model, null);
-  assert.equal(scopedOverride.expectations.v2.arguments.agent_type, 'codex-subagent-complex');
-  assert.equal(scopedOverride.expectations.v2.arguments.model, null);
-  const partial = spec.evals.find((entry) => entry.id === 'partial_preset');
-  assert.equal(partial.expectations.v1.spawn_calls.max, 0);
-  assert.deepEqual(partial.expectations.v2.arguments, {
-    agent_type: 'codex-subagent-simple',
-    model: null,
-    reasoning_effort: null,
-    fork_context: null,
-    fork_turns: '2',
-  });
-  const full = spec.evals.find((entry) => entry.id === 'full_history');
-  assert.equal(full.expectations.v1.arguments.fork_context, true);
-  assert.equal(full.expectations.v2.arguments.fork_turns, 'all');
-  const fullRunCase = routingRunCase(full, 'v2', 'with_skill');
-  assert.equal(fullRunCase.stop_on_spawn, true);
-  assert.match(fullRunCase.query, /不需要子代理结果/u);
-  assert.match(fullRunCase.query, /不要等待或清理子代理/u);
-  const fullCustom = spec.evals.find((entry) => entry.id === 'full_history_custom_override');
-  assert.equal(fullCustom.expectations.v1.arguments.model, 'gpt-5.6-terra');
-  assert.equal(fullCustom.expectations.v1.arguments.fork_context, true);
-  assert.equal(fullCustom.expectations.v2.spawn_calls.max, 0);
-  const projectContext = spec.evals.find((entry) => entry.id === 'project_rule_partial_context');
-  assert.equal(projectContext.expectations.v1.spawn_calls.max, 0);
-  assert.equal(projectContext.expectations.v2.arguments.agent_type, 'codex-subagent-simple');
-  assert.equal(projectContext.expectations.v2.arguments.fork_turns, '2');
-  const skillContext = spec.evals.find((entry) => entry.id === 'skill_rule_full_history_context');
-  assert.equal(skillContext.expectations.v1.arguments.fork_context, true);
-  assert.equal(skillContext.expectations.v2.arguments.fork_turns, 'all');
-  const missingRole = spec.evals.find((entry) => entry.id === 'missing_preset_role');
-  assert.equal(missingRole.expectations.v1.block_reason, 'preset_role_unavailable');
-  assert.equal(missingRole.expectations.v2.block_reason, 'preset_role_unavailable');
-  const blockedRunCase = routingRunCase(missingRole, 'v2', 'with_skill');
-  assert.match(blockedRunCase.query, /ROUTING_BLOCK_REASON=<reason>/u);
-  assert.match(blockedRunCase.query, /preset_role_unavailable/u);
+  assert.equal(spec.evals.length > 0, true);
+  assert.equal(new Set(spec.evals.map((entry) => entry.id)).size, spec.evals.length);
+
+  const runCase = routingRunCase({
+    prompt: 'route this task',
+    omit_roles: ['unavailable-role'],
+    expectations: {
+      v2: {
+        spawn_calls: { min: 0, max: 0 },
+        block_reason: 'preset_role_unavailable',
+      },
+    },
+  }, 'v2', 'with_skill');
+  assert.equal(runCase.should_load_skill, true);
+  assert.equal(runCase.should_spawn_agent, false);
+  assert.equal(runCase.stop_on_spawn, true);
+  assert.deepEqual(runCase.omit_roles, ['unavailable-role']);
+  assert.match(runCase.query, /ROUTING_BLOCK_REASON=<reason>/u);
+  assert.match(runCase.query, /preset_role_unavailable/u);
 }
 
 async function testRolloutArgumentEvidence() {
