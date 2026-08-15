@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 2,
+  "batchId": "20260814T163457Z-full-review-20260815-26578fda",
+  "name": "full-review-20260815",
+  "owner": {
+    "kind": "plugin-skill",
+    "plugin": "git",
+    "skill": "isolating-work-with-git-worktrees"
+  },
+  "publishedAt": "2026-08-14T17:31:53.252Z",
+  "source": {
+    "commits": [
+      "dee3f9851ad41298318148d243b9403f96aabdb4"
+    ],
+    "inScopeDirty": false
+  },
+  "eval": {
+    "releaseOutcome": "failed",
+    "covered": 5,
+    "required": 5
+  },
+  "review": {
+    "reviewId": "20260814T173153Z-e9b2255a",
+    "mode": "release",
+    "verdict": "blocked",
+    "weightedScore": 84.7,
+    "coveragePercent": 100,
+    "confidence": "high",
+    "findings": {
+      "p0": 0,
+      "p1": 1,
+      "p2": 3,
+      "advisory": 0
+    }
+  },
+  "reportPath": "report.md"
+}
