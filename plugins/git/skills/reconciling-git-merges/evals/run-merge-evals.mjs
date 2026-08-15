@@ -271,7 +271,7 @@ export function analysisMessageChecks(message) {
     },
     {
       name: 'proposes_boundary_conversion',
-      passed: /(?:\/\s*100|除以\s*100|乘以\s*0\.01|转换为元|convert\w*\s+(?:cents?\s+to\s+dollars?|to\s+dollars?))/iu.test(text),
+      passed: /(?:\/\s*(?:Decimal\s*\(\s*)?100\s*\)?|除以\s*100|乘以\s*0\.01|转换为元|convert\w*\s+(?:cents?\s+to\s+dollars?|to\s+dollars?))/iu.test(text),
       evidence: text,
     },
     {
@@ -366,7 +366,10 @@ function retentionConflictState(content) {
 export function ambiguousRetentionChecks(content, message) {
   const text = typeof message === 'string' ? message : '';
   const conflict = retentionConflictState(content);
-  const statesDecisionIsOpen = /(?:(?:产品)?需求.{0,20}(?:尚未确定|未确定|待定)|(?:仓库)?(?:证据不足|没有证据|无证据)|无法决定|不能决定|需要.{0,20}(?:决定|决策|裁决|优先级)|(?:need|require|pending|cannot|insufficient|unclear).{0,50}(?:decision|priority|evidence))/isu.test(text);
+  const statesDecisionIsOpen = /(?:(?:产品)?需求.{0,20}(?:尚未确定|未确定|待定)|(?:仓库)?(?:证据不足|没有证据|无证据)|无法决定|不能决定|需要.{0,20}(?:决定|决策|裁决|优先级)|(?:need|require|pending|cannot|insufficient|unclear).{0,50}(?:decision|priority|evidence))/isu.test(text)
+    || /请.{0,20}(?:明确|确认|选择|决定|裁决|提供|告知).{0,40}(?:7|七|90|九十|策略|方案|优先级|取舍)/su.test(text);
+  const retentionValues = [...text.matchAll(/(?:^|[^\d])(\d+)\s*(?:天|days?)(?![A-Za-z])/giu)]
+    .map((match) => match[1]);
   return [
     {
       name: 'conflict_markers_preserved',
@@ -391,6 +394,11 @@ export function ambiguousRetentionChecks(content, message) {
     {
       name: 'requires_product_decision',
       passed: statesDecisionIsOpen,
+      evidence: text,
+    },
+    {
+      name: 'does_not_invent_retention_value',
+      passed: retentionValues.every((value) => value === '7' || value === '90'),
       evidence: text,
     },
   ];

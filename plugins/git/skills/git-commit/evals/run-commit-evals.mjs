@@ -393,28 +393,25 @@ function messageContainsUnverifiableClaim(message) {
 function detailedBodyFactCoverage(message) {
   const bullets = bulletLines(message);
   const unsupportedFixtureClaim = /(?:database|schema|cache|queue|API|dependency|数据库|数据表|缓存|队列|接口|依赖)/iu;
-  const factPatterns = new Map([
-    ['runtime', /(?=.*(?:功能|应用|运行时|开关|app(?:\.js)?|application|runtime|flag|feature))(?=.*(?:启用|激活|开启|已启用|enable(?:d)?|activate(?:d)?|false.{0,20}true))/iu],
-    ['verification', /(?=.*(?:测试|预期|期望|test|expect))(?=.*(?:同步|对齐|调整|更新|改为|设为|切换|启用状态|sync|align|adjust|update|set|switch|enabled?|true))/iu],
-    ['docs', /(?=.*(?:文档|指南|说明|docs?|guide|documentation))(?=.*(?:启用|激活|开启|已启用|enable(?:d)?|activate(?:d)?))/iu],
-    ['version', /\b1\.0\.0\b.*\b1\.1\.0\b|\b1\.1\.0\b.*\b1\.0\.0\b/u],
+  const runtimeAction = /(?:启用|激活|开启|已启用|enable(?:d)?|activate(?:d)?|false.{0,20}true)/iu;
+  const explicitRuntime = /(?:运行时|开关|\bapp(?:\.js)?\b|runtime|flag|应用功能(?:状态|开关)|功能(?:状态|开关))/iu;
+  const genericRuntime = /(?:启用|激活|开启|enable|activate).{0,20}(?:应用|功能|application|feature)/iu;
+  const genericRuntimeOnlyInDocs = /(?:(?:应用|功能|application|feature)(?:(?!\b(?:and|then|document|update)\b|并|同时|以及|记录|更新).){0,20}(?:in|within|for)\s+(?:the\s+)?(?:文档|指南|说明|docs?|guide|documentation)|(?:(?:在|于).{0,8}(?:文档|指南|说明)|(?:文档|指南|说明)(?:中|内|里)).{0,20}(?:应用|功能|application|feature))/iu;
+  const factMatchers = new Map([
+    ['runtime', (line) =>
+      (explicitRuntime.test(line) && runtimeAction.test(line))
+        || (genericRuntime.test(line) && !genericRuntimeOnlyInDocs.test(line))],
+    ['verification', (line) => /(?=.*(?:测试|预期|期望|test|expect))(?=.*(?:同步|对齐|调整|更新|改为|设为|切换|启用状态|sync|align|adjust|update|set|switch|enabled?|true))/iu.test(line)],
+    ['docs', (line) => /(?=.*(?:文档|指南|说明|docs?|guide|documentation))(?=.*(?:启用|激活|开启|已启用|enable(?:d)?|activate(?:d)?))/iu.test(line)],
+    ['version', (line) => /\b1\.0\.0\b.*\b1\.1\.0\b|\b1\.1\.0\b.*\b1\.0\.0\b/u.test(line)],
   ]);
-  const groupingPatterns = new Map([
-    ['runtime', /(?=.*(?:运行时|开关|\bapp\.js\b|runtime|flag))(?=.*(?:启用|激活|开启|已启用|enable(?:d)?|activate(?:d)?|false.{0,20}true))/iu],
-    ['verification', factPatterns.get('verification')],
-    ['docs', factPatterns.get('docs')],
-    ['version', factPatterns.get('version')],
-  ]);
-  const matchedFacts = bullets.map((line) => [...factPatterns]
-    .filter(([, pattern]) => pattern.test(line))
-    .map(([name]) => name));
-  const groupedFacts = bullets.map((line) => [...groupingPatterns]
-    .filter(([, pattern]) => pattern.test(line))
+  const matchedFacts = bullets.map((line) => [...factMatchers]
+    .filter(([, matches]) => matches(line))
     .map(([name]) => name));
   return {
     bullets,
     covered: new Set(matchedFacts.flat()),
-    groupsRelatedFacts: groupedFacts.some((facts) => facts.length >= 2),
+    groupsRelatedFacts: matchedFacts.some((facts) => facts.length >= 2),
     allGrounded: bullets.length >= 2
       && bullets.length <= 4
       && bullets.every((line, index) =>
@@ -457,21 +454,30 @@ export function hookFailureMessageChecks(message, expectedHead = '') {
     '',
   );
   const claimsSuccess = /(?:commit|提交)\s*(?:已|已经)?\s*(?:成功|完成)|(?:已|已经|成功)(?:创建|完成|提交)(?:了)?(?:本地)?(?:\s*commit)?|commit\s+(?:was\s+)?(?:created|succeeded|completed successfully)/iu.test(textWithoutExplicitFailure);
-  const reportsExpectedHead = expectedHeadPrefix.length > 0
-    && /(?:HEAD|提交头).{0,24}(?:仍为|仍是|保持|remains?(?:\s+at)?)/iu.test(text)
-    && (text.includes(normalizedExpectedHead) || text.includes(expectedHeadPrefix));
+  const expectedHeadCandidates = /^[0-9a-f]{7,64}$/iu.test(normalizedExpectedHead)
+    ? [normalizedExpectedHead, expectedHeadPrefix]
+    : [];
+  const reportsExpectedHead = expectedHeadCandidates.some((candidate) =>
+    new RegExp(`(?:HEAD|提交头)[^\\n]{0,48}${candidate}(?![0-9a-f])`, 'iu').test(text));
   const reportsUnchangedHead = (
-    /(?:HEAD|提交头).{0,24}(?:未变|不变|未改变|unchanged|same|did not change)/iu.test(text)
-      || reportsExpectedHead
+    normalizedExpectedHead.length > 0
+      ? reportsExpectedHead
+      : /(?:HEAD|提交头).{0,24}(?:未变|不变|未改变|unchanged|same|did not change)/iu.test(text)
   ) && !/(?:HEAD|提交头).{0,24}(?:\badvanced\b|前进|已改变|已更新|\bchanged\b|\bupdated\b)/iu.test(text);
+  const deniesStagedIndex = /(?:staged changes?|(?:已)?暂存(?:的)?(?:变更|修改|改动)|index|暂存区).{0,24}(?:do(?:es)? not remain|not retained|no longer remain|未保留|没有保留|不再保留|已清空|is not staged)/iu.test(text);
   const reportsStagedIndex = (
     /index.{0,20}(?:仍|保持|依然|still|remains?|retained|unchanged)?.{0,8}(?:staged|已暂存)/iu.test(text)
       || /(?:变更|修改|改动|changes?).{0,20}(?:仍|保持|依然|still|remains?).{0,12}(?:staged|已暂存|暂存状态|暂存区)/iu.test(text)
       || /(?:staged changes?|(?:已)?暂存(?:的)?(?:变更|修改|改动)).{0,24}(?:remain|仍|保留|保持).{0,20}(?:index|暂存区)/iu.test(text)
+      || /(?:staged changes?|(?:已)?暂存(?:的)?(?:变更|修改|改动)).{0,20}(?:remain|retained|仍|依然|保留|保持)/iu.test(text)
       || /(?:暂存区|staging area).{0,16}(?:保留|仍|未变|不变|retained|unchanged|remains?|still)/iu.test(text)
-  ) && !/(?:index|暂存区|staging area)[^,，;；。.!！?？\n]{0,16}(?:clean|empty|空|清空)/iu.test(text);
-  const reportsCleanWorktree = /(?:worktree|working tree|工作树).{0,24}(?:clean|干净|无未暂存|没有未暂存)/iu.test(text)
-    || /(?:无|没有|no).{0,12}(?:unstaged|未暂存).{0,12}(?:change|修改|改动)?/iu.test(text);
+  ) && !deniesStagedIndex
+    && !/(?:index|暂存区|staging area)[^,，;；。.!！?？\n]{0,16}(?:clean|empty|空|清空)/iu.test(text);
+  const deniesCleanWorktree = /(?:worktree|working tree|工作树|工作区).{0,24}(?:not clean|不干净|有未暂存|存在未暂存)/iu.test(text);
+  const reportsCleanWorktree = (
+    /(?:worktree|working tree|工作树).{0,24}(?:clean|干净|无未暂存|没有未暂存)/iu.test(text)
+      || /(?:无|没有|no).{0,12}(?:unstaged|未暂存).{0,12}(?:change|修改|改动)?/iu.test(text)
+  ) && !deniesCleanWorktree;
   return [
     {
       name: 'does_not_claim_commit_success',

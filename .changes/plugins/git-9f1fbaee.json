@@ -1,0 +1,6 @@
+{
+  "schemaVersion": 1,
+  "plugin": "git",
+  "bump": "patch",
+  "summary": "强化 worktree 未授权路径停止边界并修正 Git 技能评测 grader。"
+}
