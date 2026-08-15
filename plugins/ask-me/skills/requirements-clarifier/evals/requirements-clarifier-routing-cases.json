@@ -228,23 +228,55 @@
       "preconditions": {
         "participant_skills_available": true,
         "project_rules_enabled": true,
-        "approved_export_convention": true
+        "approved_export_convention": true,
+        "callable_export_flow_exists": true,
+        "artifact_boundary_decided": true
       },
-      "query": "沿用发票列表现有导出方式，给订单列表实现同样的导出。",
+      "query": "按 src/features/invoices/export.ts 的 exportInvoicesCsv(rows) 完整复制导出范围、字段、权限和返回格式，在订单列表新增 exportOrdersCsv(rows)；除名称和订单字段映射外，接口与行为不变。",
       "expected_loaded_skills": [],
       "oracle": {
-        "rationale": "仓库已有明确惯例，用户要求直接沿用。",
+        "rationale": "仓库已有可调用的完整导出实现，用户明确了目标入口、接口、行为和允许变化，没有关键交付歧义。",
         "rule_refs": [
           "requirements-clarifier/SKILL.md frontmatter description",
           "decision-grill/SKILL.md frontmatter description"
         ],
         "confidence": "high",
-        "allowed_variance": "可以说明沿用惯例，但不能加载任一 participant Skill。",
-        "minimal_counterexample": "若用户明确声明本次导出范围未决定并覆盖惯例，则应只加载 requirements-clarifier。"
+        "allowed_variance": "可以先读取现有实现并说明字段映射，但不能加载任一 participant Skill。",
+        "minimal_counterexample": "若仓库只有导出策略对象，没有可调用流程，且新入口的返回或失败行为未定，则应只加载 requirements-clarifier。"
       },
       "split": "sanity",
       "use_project_rules": true,
       "workspace_fixture": "implementation_repo"
+    },
+    {
+      "id": "existing_policy_missing_flow",
+      "eval_type": "routing",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "project-convention-vs-ambiguity",
+      "unit_under_test": "description",
+      "preconditions": {
+        "participant_skills_available": true,
+        "project_rules_enabled": true,
+        "approved_export_convention": true,
+        "callable_export_flow_exists": false,
+        "artifact_boundary_decided": false
+      },
+      "query": "仓库里的发票导出只有 invoiceExportPolicy，没有可调用导出流程。现在给订单列表实现 exportOrdersCsv(rows)，但返回格式和空结果行为还没定，而且会改变验收；请先处理这个缺口。",
+      "expected_loaded_skills": ["requirements-clarifier"],
+      "oracle": {
+        "rationale": "现有策略对象不能确定可调用导出流程的返回和空结果行为，这些缺口会改变验收。",
+        "rule_refs": [
+          "requirements-clarifier/SKILL.md frontmatter description",
+          "decision-grill/SKILL.md frontmatter description"
+        ],
+        "confidence": "high",
+        "allowed_variance": "可以先读取策略对象，但必须只加载 requirements-clarifier。",
+        "minimal_counterexample": "若仓库已有完整可调用实现，且用户明确要求复制接口和行为，则不应加载任一 participant Skill。"
+      },
+      "split": "sanity",
+      "use_project_rules": true,
+      "workspace_fixture": "export_policy_only_repo"
     }
   ]
 }
