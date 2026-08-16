@@ -4,13 +4,23 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { Command, CommanderError } from 'commander';
+import { Command, CommanderError, Option } from 'commander';
 
 import { initCommand } from './commands/init.js';
+import {
+  addCatalogSourceCommand,
+  explicitRefPolicy,
+  listCatalogSources,
+  removeCatalogSourceCommand,
+  setPrimaryCatalogSourceCommand,
+  updateCatalogSourceCommand,
+  type CatalogSourceMutationReceipt,
+} from './commands/catalog-source.js';
 import {
   cleanupWriteCommand as cleanupCommand,
   installWriteCommand as installCommand,
   reinstallWriteCommand as reinstallCommand,
+  runtimeTransitionResult,
   uninstallWriteCommand as uninstallCommand,
   upgradeWriteCommand as upgradeCommand,
 } from './commands/write-commands.js';
@@ -36,7 +46,8 @@ import {
   type CliIo,
   type CommandDiagnosticsInput,
 } from './commands/runtime.js';
-import { loadConsoleItemsResult, statusCommand } from './commands/status.js';
+import { loadConsoleItemsResult } from './commands/status.js';
+import { statusCommandV4 } from './commands/status-v4.js';
 import {
   normalizeUninstallCommandOptions,
   normalizeCatalogSelectorOptions,
@@ -47,7 +58,6 @@ import {
   applyCatalogSelectorEnv,
   normalizeInstallCommandOptions,
   normalizeReinstallCommandOptions,
-  normalizeStatusCommandOptions,
   normalizeUpgradeCommandOptions,
 } from './commands/options.js';
 import {
@@ -60,19 +70,17 @@ import {
 } from './output/equivalent-command.js';
 import {
   buildRebuildReceiptJson,
-  buildInitFailureReceiptJson,
   buildInitReceiptJson,
   renderRebuildReceipt,
   renderInitReceipt,
   type CliCommandResult,
 } from './output/command-receipt.js';
 import { resolveCliPackageRoot } from './utils/paths.js';
-import { isCatalogResolutionError, resolveCatalogPlugins } from './utils/plugin-catalog.js';
+import { resolveCatalogPlugins } from './utils/plugin-catalog.js';
 import {
   assertSafePluginConfigSegment,
   coercePluginConfigUpdates,
   findConfigFieldEntry,
-  hasConfigReadContent,
   listPluginConfigStorePluginNames,
   readPluginConfigStore,
   renderPluginConfigValueForDisplay,
@@ -84,6 +92,12 @@ import {
   resetPluginConfigWithHelper,
 } from './utils/plugin-config-write.js';
 import { assertStrictSemVer } from './utils/manifest.js';
+import {
+  assertCatalogSourceReferencesSupported,
+  inventoryLegacyConfigReferences,
+} from './utils/catalog-source-references.js';
+import { withResolvedCatalogPlugin } from './utils/multi-source-catalog.js';
+import { sanitizeCatalogSourceError } from './utils/catalog-public-error.js';
 import {
   formatConfigCommandValue,
   parseConfigValue,
@@ -191,10 +205,8 @@ function catalogSelectorTokens(rawOptions: {
   catalogChannel?: string;
   catalogVersion?: string;
 }): string[] {
-  return [
-    ...optionTokens('--catalog-channel', rawOptions.catalogChannel),
-    ...optionTokens('--catalog-version', rawOptions.catalogVersion),
-  ];
+  void rawOptions;
+  return [];
 }
 
 function writeCommandUsage(command: WriteWizardCommand): string {
@@ -461,6 +473,58 @@ function overallResultState(value: { overallState: 'succeeded' | 'failed' }): 's
   return value.overallState;
 }
 
+async function resolveMultiSourceConfigRead(options: {
+  selector: string;
+  key?: string;
+  rawOptions: RawConfigOptions;
+  context: CliExecutionContext;
+}): Promise<{
+  pluginName: string;
+  pluginId: string;
+  sourceId: string;
+  sourceIdentity: string;
+  result: Awaited<ReturnType<typeof resolveConfigRead>>;
+}> {
+  const inventory = await inventoryLegacyConfigReferences({
+    cwd: options.context.cwd,
+    env: options.context.env,
+  });
+  assertCatalogSourceReferencesSupported(inventory);
+  const projectLayer = resolveConfigProjectLayer(options.rawOptions);
+  return withResolvedCatalogPlugin({
+    selector: options.selector,
+    cliVersion: resolveCliVersion(),
+    freshnessPolicy: 'cacheFirst',
+    env: options.context.env,
+    consume: async ({ pluginId, source, plugin }) => {
+      const result = await resolveConfigRead({
+        pluginName: plugin.manifest.name,
+        plugin,
+        scope: options.rawOptions.local
+          ? 'project'
+          : resolveConfigReadResolution(options.rawOptions.scope),
+        projectLayer,
+        cwd: options.context.cwd,
+        env: options.context.env,
+      });
+      if (options.key !== undefined) {
+        const field = findConfigFieldEntry(result.fields, options.key);
+        if (!field && plugin.manifest.config?.schema?.[options.key] === undefined) {
+          throw new Error(`Unknown config key "${options.key}".`);
+        }
+        if (field) result.fields = [field];
+      }
+      return {
+        pluginName: plugin.manifest.name,
+        pluginId,
+        sourceId: source.sourceId,
+        sourceIdentity: source.sourceIdentity,
+        result,
+      };
+    },
+  });
+}
+
 interface RawWriteWizardOptions extends RawDiagnosticsOptions {
   all?: boolean;
   scope?: string;
@@ -523,12 +587,21 @@ async function runWriteCommandAction(
     platform: rawOptions.platform ?? 'both',
     ...(command === 'cleanup' ? { scope: rawOptions.scope ?? 'user' } : {}),
   };
-  if (command === 'install') normalizeInstallCommandOptions(validationOptions);
-  else if (command === 'upgrade') normalizeUpgradeCommandOptions(validationOptions);
-  else if (command === 'uninstall') normalizeUninstallCommandOptions(validationOptions);
-  else if (command === 'cleanup') normalizeCleanupCommandOptions(validationOptions);
-  else normalizeReinstallCommandOptions(validationOptions);
+  const transitionOptions = command === 'install'
+    ? normalizeInstallCommandOptions(validationOptions)
+    : command === 'upgrade'
+      ? normalizeUpgradeCommandOptions(validationOptions)
+      : command === 'uninstall'
+        ? normalizeUninstallCommandOptions(validationOptions)
+        : command === 'cleanup'
+          ? normalizeCleanupCommandOptions(validationOptions)
+          : normalizeReinstallCommandOptions(validationOptions);
+  return {
+    cancelled: false,
+    result: runtimeTransitionResult(pluginNames, transitionOptions),
+  };
 
+  /* c8 ignore start -- removed by the phase 3B namespaced runtime switch. */
   if (!missing) {
     return {
       cancelled: false,
@@ -548,6 +621,11 @@ async function runWriteCommandAction(
   if (loaded.catalogUnavailable) {
     throw new Error(
       '插件目录不可用。请运行 `aw init` 或 `aw init --force`，或使用完整参数重试。',
+    );
+  }
+  if (loaded.items.some((item) => item.pluginName.includes('/'))) {
+    throw new Error(
+      'runtimeTransitionIncomplete: interactive writes require the phase 3B namespaced runtime.',
     );
   }
   const candidates = missingPlugin ? toWizardCandidates(loaded.items) : [];
@@ -593,18 +671,12 @@ async function runWriteCommandAction(
   });
   if (result.cancelled) return { cancelled: true };
   return { cancelled: false, result: result.value! };
+  /* c8 ignore stop */
 }
 
 function addCatalogSelectorOptions<T extends Command>(
   command: T,
-  options: { includeChannelAlias?: boolean } = {},
 ): T {
-  command
-    .option('--catalog-channel <dist-tag>', 'use a specific current catalog dist-tag for this command')
-    .option('--catalog-version <semver>', 'use a specific current catalog version for this command');
-  if (options.includeChannelAlias) {
-    command.option('--channel <dist-tag>', 'alias of --catalog-channel');
-  }
   return command;
 }
 
@@ -641,36 +713,6 @@ function parseBareConsoleOptions(
       parsed.logFile = readBareConsoleOptionValue(
         token.slice('--log-file='.length),
         '--log-file <path>',
-      );
-      continue;
-    }
-    if (token === '--catalog-channel') {
-      parsed.catalogChannel = readBareConsoleOptionValue(
-        argv[index + 1],
-        '--catalog-channel <dist-tag>',
-      );
-      index += 1;
-      continue;
-    }
-    if (token.startsWith('--catalog-channel=')) {
-      parsed.catalogChannel = readBareConsoleOptionValue(
-        token.slice('--catalog-channel='.length),
-        '--catalog-channel <dist-tag>',
-      );
-      continue;
-    }
-    if (token === '--catalog-version') {
-      parsed.catalogVersion = readBareConsoleOptionValue(
-        argv[index + 1],
-        '--catalog-version <semver>',
-      );
-      index += 1;
-      continue;
-    }
-    if (token.startsWith('--catalog-version=')) {
-      parsed.catalogVersion = readBareConsoleOptionValue(
-        token.slice('--catalog-version='.length),
-        '--catalog-version <semver>',
       );
       continue;
     }
@@ -909,11 +951,238 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       outputError: (text, write) => write(text),
     });
 
-  addCatalogSelectorOptions(
-    program
-      .command('init'),
-    { includeChannelAlias: true },
-  )
+  const catalogSource = program
+    .command('catalog')
+    .description('Manage catalog sources')
+    .command('source')
+    .description('Manage catalog sources');
+
+  const writeCatalogSourceFailure = async (
+    command: CatalogSourceMutationReceipt['command'],
+    sourceId: string,
+    json: boolean,
+    error: unknown,
+    sensitiveRoots: readonly string[] = [],
+  ): Promise<void> => {
+    const failure = sanitizeCatalogSourceError(error, env, sensitiveRoots) as Error & {
+      code?: string;
+      inventory?: { references?: CatalogSourceMutationReceipt['references'] };
+    };
+    const message = failure instanceof Error ? failure.message : String(error);
+    if (json) {
+      writeJsonReceipt(io.stdout, {
+        receiptSchemaVersion: 4,
+        command,
+        ok: false,
+        changed: false,
+        sourceId,
+        references: failure.inventory?.references ?? [],
+        errors: [{ code: failure.code ?? failure.name ?? 'catalogSourceMutationFailed', message }],
+      });
+    }
+    writeLine(io.stderr, message);
+    commandExitState.exitCode = 1;
+  };
+
+  const rejectTransitionalConfigMutation = async (
+    command: 'config:set' | 'config:unset' | 'config:reset',
+    pluginName: string | undefined,
+    json: boolean,
+    context: CliExecutionContext,
+  ): Promise<boolean> => {
+    void context;
+    const message = 'runtimeTransitionIncomplete: config mutations require the phase 3B namespaced runtime.';
+    if (json) {
+      writeJsonReceipt(io.stdout, {
+        receiptSchemaVersion: 4,
+        command,
+        ok: false,
+        overallState: 'failed',
+        ...(pluginName ? { plugin: pluginName } : {}),
+        errors: [{ code: 'runtimeTransitionIncomplete', message }],
+      });
+    }
+    writeLine(io.stderr, message);
+    commandExitState.exitCode = 1;
+    return true;
+  };
+
+  catalogSource
+    .command('list')
+    .option('-j, --json', 'print catalog sources as JSON', false)
+    .action(async (rawOptions: { json?: boolean }) => {
+      const payload = await listCatalogSources({ env });
+      if (rawOptions.json) {
+        writeJsonReceipt(io.stdout, payload);
+        return;
+      }
+      writeLine(io.stdout, `Primary source: ${payload.primarySourceId}`);
+      for (const source of payload.sources) {
+        writeLine(io.stdout, `${source.primary ? '*' : '-'} ${source.id} ${source.type} ${source.sourceIdentity}`);
+      }
+    });
+
+  catalogSource
+    .command('add')
+    .argument('<id>')
+    .addOption(new Option('--git <url>', 'add a Git catalog source'))
+    .addOption(new Option('--path <path>', 'add a local path catalog source'))
+    .addOption(new Option('--ref <ref>', 'use an explicit Git ref'))
+    .addOption(new Option('--default-ref', 'select the Git ref from the CLI release channel'))
+    .option('--subdir <path>', 'use a catalog snapshot below the Git repository root')
+    .option('--primary', 'make this source primary', false)
+    .option('-j, --json', 'print mutation receipt as JSON', false)
+    .action(async (id: string, rawOptions: {
+      git?: string;
+      path?: string;
+      ref?: string;
+      defaultRef?: boolean;
+      subdir?: string;
+      primary?: boolean;
+      json?: boolean;
+    }) => {
+      try {
+        if ((rawOptions.git === undefined) === (rawOptions.path === undefined)) {
+          throw new Error('catalog source add requires exactly one of `--git` or `--path`.');
+        }
+        if (rawOptions.git !== undefined && ((rawOptions.ref === undefined) === (rawOptions.defaultRef !== true))) {
+          throw new Error('Git catalog source add requires exactly one of `--ref` or `--default-ref`.');
+        }
+        if (rawOptions.path !== undefined && (
+          rawOptions.ref !== undefined || rawOptions.defaultRef === true || rawOptions.subdir !== undefined
+        )) {
+          throw new Error('Path catalog source add only accepts `--path` and `--primary`.');
+        }
+        const source = rawOptions.git !== undefined
+          ? {
+              id,
+              type: 'git' as const,
+              primary: rawOptions.primary === true,
+              url: rawOptions.git,
+              refPolicy: explicitRefPolicy(rawOptions.ref, rawOptions.defaultRef === true),
+              ...(rawOptions.subdir ? { subdir: rawOptions.subdir } : {}),
+            }
+          : {
+              id,
+              type: 'path' as const,
+              primary: rawOptions.primary === true,
+              path: rawOptions.path!,
+            };
+        const receipt = await addCatalogSourceCommand({
+          source,
+          cliVersion: resolveCliVersion(),
+          cwd,
+          env,
+        });
+        if (rawOptions.json) writeJsonReceipt(io.stdout, receipt);
+        else writeLine(io.stdout, `Catalog source ${id} added.`);
+      } catch (error) {
+        await writeCatalogSourceFailure(
+          'catalog:source:add',
+          id,
+          rawOptions.json === true,
+          error,
+          rawOptions.path === undefined ? [] : [rawOptions.path, path.resolve(cwd, rawOptions.path)],
+        );
+      }
+    });
+
+  catalogSource
+    .command('update')
+    .argument('<id>')
+    .addOption(new Option('--git <url>', 'update a Git catalog URL'))
+    .addOption(new Option('--path <path>', 'update a local catalog path'))
+    .addOption(new Option('--ref <ref>', 'use an explicit Git ref'))
+    .addOption(new Option('--default-ref', 'select the Git ref from the CLI release channel'))
+    .addOption(new Option('--subdir <path>', 'update the Git catalog subdirectory'))
+    .addOption(new Option('--no-subdir', 'remove the Git catalog subdirectory'))
+    .option('-j, --json', 'print mutation receipt as JSON', false)
+    .action(async (id: string, rawOptions: {
+      git?: string;
+      path?: string;
+      ref?: string;
+      defaultRef?: boolean;
+      subdir?: string | false;
+      json?: boolean;
+    }) => {
+      try {
+        if (rawOptions.git !== undefined && rawOptions.path !== undefined) {
+          throw new Error('catalog source update cannot combine `--git` and `--path`.');
+        }
+        if (rawOptions.ref !== undefined && rawOptions.defaultRef === true) {
+          throw new Error('catalog source update cannot combine `--ref` and `--default-ref`.');
+        }
+        const hasUpdate = rawOptions.git !== undefined
+          || rawOptions.path !== undefined
+          || rawOptions.ref !== undefined
+          || rawOptions.defaultRef === true
+          || rawOptions.subdir !== undefined;
+        if (!hasUpdate) throw new Error('catalog source update requires at least one update option.');
+        if (rawOptions.path !== undefined && (
+          rawOptions.ref !== undefined || rawOptions.defaultRef === true || rawOptions.subdir !== undefined
+        )) throw new Error('Path catalog source update only accepts `--path`.');
+        const update = rawOptions.path !== undefined
+          ? { type: 'path' as const, path: rawOptions.path }
+          : {
+              type: 'git' as const,
+              ...(rawOptions.git !== undefined ? { url: rawOptions.git } : {}),
+              ...(rawOptions.ref !== undefined || rawOptions.defaultRef === true
+                ? { refPolicy: explicitRefPolicy(rawOptions.ref, rawOptions.defaultRef === true) }
+                : {}),
+              ...(rawOptions.subdir !== undefined
+                ? { subdir: rawOptions.subdir === false ? null : rawOptions.subdir }
+                : {}),
+            };
+        const receipt = await updateCatalogSourceCommand({
+          sourceId: id,
+          update,
+          cliVersion: resolveCliVersion(),
+          cwd,
+          env,
+        });
+        if (rawOptions.json) writeJsonReceipt(io.stdout, receipt);
+        else writeLine(io.stdout, `Catalog source ${id} updated.`);
+      } catch (error) {
+        await writeCatalogSourceFailure(
+          'catalog:source:update',
+          id,
+          rawOptions.json === true,
+          error,
+          rawOptions.path === undefined ? [] : [rawOptions.path, path.resolve(cwd, rawOptions.path)],
+        );
+      }
+    });
+
+  catalogSource
+    .command('set-primary')
+    .argument('<id>')
+    .option('-j, --json', 'print mutation receipt as JSON', false)
+    .action(async (id: string, rawOptions: { json?: boolean }) => {
+      try {
+        const receipt = await setPrimaryCatalogSourceCommand({ sourceId: id, cwd, env });
+        if (rawOptions.json) writeJsonReceipt(io.stdout, receipt);
+        else writeLine(io.stdout, `Primary catalog source set to ${id}.`);
+      } catch (error) {
+        await writeCatalogSourceFailure('catalog:source:set-primary', id, rawOptions.json === true, error);
+      }
+    });
+
+  catalogSource
+    .command('remove')
+    .argument('<id>')
+    .option('-j, --json', 'print mutation receipt as JSON', false)
+    .action(async (id: string, rawOptions: { json?: boolean }) => {
+      try {
+        const receipt = await removeCatalogSourceCommand({ sourceId: id, cwd, env });
+        if (rawOptions.json) writeJsonReceipt(io.stdout, receipt);
+        else writeLine(io.stdout, `Catalog source ${id} removed.`);
+      } catch (error) {
+        await writeCatalogSourceFailure('catalog:source:remove', id, rawOptions.json === true, error);
+      }
+    });
+
+  program
+    .command('init')
     .option('-f, --force', 're-fetch and rebuild the current catalog cache entry', false)
     .option('-j, --json', 'print receipt as JSON', false)
     .option('-v, --verbose', 'show command diagnostics', false)
@@ -922,43 +1191,27 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .action(async (rawOptions: {
       force?: boolean;
       json?: boolean;
-      channel?: string;
-      catalogChannel?: string;
-      catalogVersion?: string;
     } & RawDiagnosticsOptions) => {
-      const context = createActionContext('init', rawOptions, { allowChannelAlias: true });
-      try {
-        const result = await runActionWithContext(context, () =>
-          initCommand({
-            force: rawOptions.force,
-            env: context.env,
-            selectorOverrideSource: rawOptions.catalogVersion !== undefined
-              ? 'option:catalog-version'
-              : rawOptions.catalogChannel !== undefined
-                ? 'option:catalog-channel'
-                : rawOptions.channel !== undefined
-                  ? 'option:channel-alias'
-                  : undefined,
-            ...normalizeCatalogSelectorOptions(rawOptions, { allowChannelAlias: true }),
-          }),
-        );
-        if (rawOptions.json) {
-          writeJsonReceipt(io.stdout, buildInitReceiptJson(result));
-        } else {
-          for (const line of renderInitReceipt(result)) {
-            writeLine(io.stdout, line);
-          }
+      const context = createActionContext('init', rawOptions);
+      const result = await runActionWithContext(context, () =>
+        initCommand({
+          force: rawOptions.force,
+          cliVersion: resolveCliVersion(),
+          env: context.env,
+        }),
+      );
+      if (rawOptions.json) {
+        writeJsonReceipt(io.stdout, buildInitReceiptJson(result));
+      } else {
+        for (const line of renderInitReceipt(result)) {
+          writeLine(io.stdout, line);
         }
-        writeWarnings(io.stderr, result.warnings, { actionableOnly: true });
-      } catch (error) {
-        if (rawOptions.json && isCatalogResolutionError(error)) {
-          writeJsonReceipt(io.stdout, buildInitFailureReceiptJson(error.resolution));
-          writeLine(io.stderr, error.message);
-          commandExitState.exitCode = 1;
-          return;
-        }
-        throw error;
       }
+      writeWarnings(io.stderr, result.warnings, { actionableOnly: true });
+      for (const source of result.sources) {
+        if (!source.ok && source.error) writeLine(io.stderr, `${source.id}: ${source.error}`);
+      }
+      commandExitState.exitCode = result.ok ? 0 : 1;
     });
 
   addCatalogSelectorOptions(
@@ -1160,8 +1413,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
   config
     .command('list')
     .argument('[plugin]')
-    .option('--catalog-channel <dist-tag>', 'use a specific current catalog dist-tag for this command')
-    .option('--catalog-version <semver>', 'use a specific current catalog version for this command')
     .option('-s, --scope <scope>', 'read only project or user config')
     .option('--local', 'read only the current project local override layer', false)
     .option('-j, --json', 'print config as JSON', false)
@@ -1173,26 +1424,11 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       const outcome = await runActionWithContext(context, async () => {
         resolveConfigProjectLayer(rawOptions);
         if (!rawOptions.local) resolveConfigReadResolution(rawOptions.scope);
-        const execute = async (selectedPlugin: string) => {
-        const projectLayer = resolveConfigProjectLayer(rawOptions);
-        const { plugin, error } = await loadConfigPluginLookup(selectedPlugin, context);
-        const result = await resolveConfigRead({
-          pluginName: selectedPlugin,
-          plugin,
-          ...(error ? { pluginError: error } : {}),
-          scope: rawOptions.local ? 'project' : resolveConfigReadResolution(rawOptions.scope),
-          projectLayer,
-          cwd: context.cwd,
-          env: context.env,
+        const execute = async (selectedPlugin: string) => resolveMultiSourceConfigRead({
+          selector: selectedPlugin,
+          rawOptions,
+          context,
         });
-        if (!plugin && !hasConfigReadContent(result)) {
-          throw new Error(
-            `Unknown plugin "${selectedPlugin}". Use \`aw config reset ${selectedPlugin} -s user --yes\` or ` +
-              `\`aw config reset ${selectedPlugin} -s project --yes\` to clean leftover config stores.`,
-          );
-        }
-        return result;
-        };
         if (pluginName) return { cancelled: false as const, pluginName, value: await execute(pluginName) };
         if (!isWizardAvailable(context, rawOptions)) throw new Error(configCommandUsage('list'));
         const currentCandidates = await loadWizardCandidates(context, {});
@@ -1200,6 +1436,9 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           context,
           configReadStoreLocations(rawOptions),
         );
+        if (storedCandidates.length > 0) {
+          throw new Error('legacyStateUnsupported: legacy bare-name config stores are not supported.');
+        }
         const candidates = mergeWizardCandidates(currentCandidates, storedCandidates);
         if (candidates.length === 0) {
           throw new Error('No plugin config candidates exist in the selected location.');
@@ -1225,20 +1464,24 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       });
       if (outcome.cancelled) return;
       const resolved = outcome.value;
-      const selectedPluginName = outcome.pluginName;
+      const selectedPluginName = resolved.pluginName;
       if (rawOptions.json) {
         writeJsonReceipt(io.stdout, {
           ok: true,
-          configSchemaVersion: 3,
+          configSchemaVersion: 4,
           command: 'config:list',
           plugin: selectedPluginName,
+          pluginName: selectedPluginName,
+          pluginId: resolved.pluginId,
+          sourceId: resolved.sourceId,
+          sourceIdentity: resolved.sourceIdentity,
           scope: rawOptions.local ? 'project' : rawOptions.scope ?? 'effective',
           projectLayer: rawOptions.local ? 'local' : 'shared',
-          ...(resolved.schema ? { schema: resolved.schema } : {}),
-          fields: resolved.fields,
+          ...(resolved.result.schema ? { schema: resolved.result.schema } : {}),
+          fields: resolved.result.fields,
         });
       } else {
-        writeConfigReadHuman(io.stdout, resolved, selectedPluginName);
+        writeConfigReadHuman(io.stdout, resolved.result, resolved.pluginId);
       }
     });
 
@@ -1246,8 +1489,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .command('get')
     .argument('[plugin]')
     .argument('[key]')
-    .option('--catalog-channel <dist-tag>', 'use a specific current catalog dist-tag for this command')
-    .option('--catalog-version <semver>', 'use a specific current catalog version for this command')
     .option('-s, --scope <scope>', 'read only project or user config')
     .option('--local', 'read only the current project local override layer', false)
     .option('-j, --json', 'print config as JSON', false)
@@ -1259,40 +1500,12 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       const outcome = await runActionWithContext(context, async () => {
         resolveConfigProjectLayer(rawOptions);
         if (!rawOptions.local) resolveConfigReadResolution(rawOptions.scope);
-        const execute = async (selectedPlugin: string) => {
-        const projectLayer = resolveConfigProjectLayer(rawOptions);
-        const { plugin, error } = await loadConfigPluginLookup(selectedPlugin, context);
-        const result = await resolveConfigRead({
-          pluginName: selectedPlugin,
-          plugin,
-          ...(error ? { pluginError: error } : {}),
-          scope: rawOptions.local ? 'project' : resolveConfigReadResolution(rawOptions.scope),
-          projectLayer,
-          cwd: context.cwd,
-          env: context.env,
+        const execute = async (selectedPlugin: string) => resolveMultiSourceConfigRead({
+          selector: selectedPlugin,
+          ...(key === undefined ? {} : { key }),
+          rawOptions,
+          context,
         });
-        if (!plugin && !hasConfigReadContent(result)) {
-          throw new Error(
-            `Unknown plugin "${selectedPlugin}". Use \`aw config reset ${selectedPlugin} -s user --yes\` or ` +
-              `\`aw config reset ${selectedPlugin} -s project --yes\` to clean leftover config stores.`,
-          );
-        }
-        if (!key) {
-          return result;
-        }
-        const field = findConfigFieldEntry(result.fields, key);
-        if (field) {
-          return {
-            ...result,
-            fields: [field],
-          };
-        }
-
-        if (plugin?.manifest.config?.schema?.[key] === undefined) {
-          throw new Error(`Unknown config key "${key}".`);
-        }
-        return result;
-        };
         if (pluginName) return { cancelled: false as const, pluginName, value: await execute(pluginName) };
         if (!isWizardAvailable(context, rawOptions)) throw new Error(configCommandUsage('get'));
         const currentCandidates = await loadWizardCandidates(context, {});
@@ -1300,6 +1513,9 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           context,
           configReadStoreLocations(rawOptions),
         );
+        if (storedCandidates.length > 0) {
+          throw new Error('legacyStateUnsupported: legacy bare-name config stores are not supported.');
+        }
         const candidates = mergeWizardCandidates(currentCandidates, storedCandidates);
         if (candidates.length === 0) {
           throw new Error('No plugin config candidates exist in the selected location.');
@@ -1326,21 +1542,25 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       });
       if (outcome.cancelled) return;
       const resolved = outcome.value;
-      const selectedPluginName = outcome.pluginName;
+      const selectedPluginName = resolved.pluginName;
       if (rawOptions.json) {
         writeJsonReceipt(io.stdout, {
           ok: true,
-          configSchemaVersion: 3,
+          configSchemaVersion: 4,
           command: 'config:get',
           plugin: selectedPluginName,
+          pluginName: selectedPluginName,
+          pluginId: resolved.pluginId,
+          sourceId: resolved.sourceId,
+          sourceIdentity: resolved.sourceIdentity,
           key,
           scope: rawOptions.local ? 'project' : rawOptions.scope ?? 'effective',
           projectLayer: rawOptions.local ? 'local' : 'shared',
-          ...(resolved.schema ? { schema: resolved.schema } : {}),
-          fields: resolved.fields,
+          ...(resolved.result.schema ? { schema: resolved.result.schema } : {}),
+          fields: resolved.result.fields,
         });
       } else {
-        writeConfigReadHuman(io.stdout, resolved, selectedPluginName);
+        writeConfigReadHuman(io.stdout, resolved.result, resolved.pluginId);
       }
     });
 
@@ -1349,8 +1569,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .argument('[plugin]')
     .argument('[key]')
     .argument('[value]')
-    .option('--catalog-channel <dist-tag>', 'use a specific current catalog dist-tag for this command')
-    .option('--catalog-version <semver>', 'use a specific current catalog version for this command')
     .option('-s, --scope <scope>', 'project or user')
     .option('--local', 'write only the current project local override layer', false)
     .option('--value-json', 'parse value as a JSON literal', false)
@@ -1365,6 +1583,12 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       rawOptions: RawConfigOptions,
     ) => {
       const context = createActionContext('config:set', rawOptions);
+      if (await rejectTransitionalConfigMutation(
+        'config:set',
+        pluginName,
+        rawOptions.json === true,
+        context,
+      )) return;
       const outcome = await runActionWithContext(context, async () => {
         const scope = resolveConfigWriteScope(rawOptions.scope);
         const projectLayer = resolveConfigProjectLayer(rawOptions);
@@ -1395,7 +1619,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         });
         return {
           ok: writeReceipt.overallState === 'succeeded',
-          receiptSchemaVersion: 3,
+          receiptSchemaVersion: 4,
           command: 'config:set',
           ...writeReceipt,
           affectedFields: [{
@@ -1420,6 +1644,11 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         }
         if (!isWizardAvailable(context, rawOptions)) throw new Error(configCommandUsage('set'));
         const candidates = await loadWizardCandidates(context, {});
+        if (candidates.some((candidate) => candidate.pluginName.includes('/'))) {
+          throw new Error(
+            'runtimeTransitionIncomplete: interactive config writes require the phase 3B namespaced runtime.',
+          );
+        }
         if (pluginName) {
           const candidate = candidates.find((entry) => entry.pluginName === pluginName);
           if (!candidate) throw new Error(`Unknown plugin "${pluginName}".`);
@@ -1492,8 +1721,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .command('unset')
     .argument('[plugin]')
     .argument('[key]')
-    .option('--catalog-channel <dist-tag>', 'use a specific current catalog dist-tag for this command')
-    .option('--catalog-version <semver>', 'use a specific current catalog version for this command')
     .option('-s, --scope <scope>', 'project or user')
     .option('--local', 'write only the current project local override layer', false)
     .option('-j, --json', 'print receipt as JSON', false)
@@ -1502,6 +1729,12 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('--log-file <path>', 'write debug diagnostics to the specified file')
     .action(async (pluginName: string | undefined, key: string | undefined, rawOptions: RawConfigOptions) => {
       const context = createActionContext('config:unset', rawOptions);
+      if (await rejectTransitionalConfigMutation(
+        'config:unset',
+        pluginName,
+        rawOptions.json === true,
+        context,
+      )) return;
       const outcome = await runActionWithContext(context, async () => {
         const scope = resolveConfigWriteScope(rawOptions.scope);
         const projectLayer = resolveConfigProjectLayer(rawOptions);
@@ -1537,7 +1770,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         });
         return {
           ok: writeReceipt.overallState === 'succeeded',
-          receiptSchemaVersion: 3,
+          receiptSchemaVersion: 4,
           command: 'config:unset',
           ...writeReceipt,
           removedKey: selectedKey,
@@ -1557,8 +1790,13 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           return { cancelled: false as const, value: await execute(pluginName, key) };
         }
         if (!isWizardAvailable(context, rawOptions)) throw new Error(configCommandUsage('unset'));
-        const currentCandidates = (await loadWizardCandidates(context, {}))
-          .filter(hasConfigSchemaKeys);
+        const loadedCurrentCandidates = await loadWizardCandidates(context, {});
+        if (loadedCurrentCandidates.some((candidate) => candidate.pluginName.includes('/'))) {
+          throw new Error(
+            'runtimeTransitionIncomplete: interactive config writes require the phase 3B namespaced runtime.',
+          );
+        }
+        const currentCandidates = loadedCurrentCandidates.filter(hasConfigSchemaKeys);
         const storedCandidates = await loadStoredConfigWizardCandidates(context, [{ scope, projectLayer }]);
         const candidates = mergeWizardCandidates(currentCandidates, storedCandidates);
         if (pluginName && !candidates.some((entry) => entry.pluginName === pluginName)) {
@@ -1618,6 +1856,12 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('--log-file <path>', 'write debug diagnostics to the specified file')
     .action(async (pluginName: string | undefined, rawOptions: RawConfigOptions) => {
       const context = createActionContext('config:reset', rawOptions);
+      if (await rejectTransitionalConfigMutation(
+        'config:reset',
+        pluginName,
+        rawOptions.json === true,
+        context,
+      )) return;
       const outcome = await runActionWithContext(context, async () => {
         const execute = async (
           selectedPlugin: string,
@@ -1664,7 +1908,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         });
         return {
           ok: resetReceipt.overallState === 'succeeded',
-          receiptSchemaVersion: 3,
+          receiptSchemaVersion: 4,
           command: 'config:reset',
           ...resetReceipt,
           affectedFields,
@@ -1688,6 +1932,11 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           };
         }
         const currentCandidates = pluginName ? [] : await loadWizardCandidates(context, {});
+        if (currentCandidates.some((candidate) => candidate.pluginName.includes('/'))) {
+          throw new Error(
+            'runtimeTransitionIncomplete: interactive config writes require the phase 3B namespaced runtime.',
+          );
+        }
         const candidatesByScope = new Map<Scope, CommandWizardPluginCandidate[]>();
         if (!pluginName && (rawOptions.scope === undefined || scope === 'user')) {
           candidatesByScope.set('user', mergeWizardCandidates(
@@ -1761,10 +2010,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       commandExitState.exitCode = receipt.overallState === 'failed' ? 1 : 0;
     });
 
-  addCatalogSelectorOptions(
-    program
-      .command('status'),
-  )
+  program
+    .command('status')
     .argument('[plugins...]')
     .option('-s, --scope <scope>', 'filter by scope')
     .option('-p, --platform <platform>', 'filter by platform')
@@ -1777,25 +2024,28 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       rawOptions: {
         scope?: string;
         platform?: string;
-        catalogChannel?: string;
-        catalogVersion?: string;
         json?: boolean;
       } & RawDiagnosticsOptions,
     ) => {
       const context = createActionContext('status', rawOptions);
       const result = await runActionWithContext(
         context,
-        () => statusCommand(
-          plugins ?? [],
-          normalizeStatusCommandOptions({
-            cwd,
-            ...rawOptions,
-          }),
-          context,
-        ),
+        () => statusCommandV4({
+          plugins: plugins ?? [],
+          cwd,
+          env: context.env,
+          cliVersion: resolveCliVersion(),
+          platform: rawOptions.platform,
+          scope: rawOptions.scope,
+          json: rawOptions.json,
+        }),
       );
       commandExitState.exitCode = result.hasErrors ? 1 : 0;
       writeLine(io.stdout, result.output);
+      for (const source of result.payload.catalog.sources) {
+        if (source.error) writeLine(io.stderr, `${source.id}: ${source.error}`);
+      }
+      for (const error of result.payload.errors) writeLine(io.stderr, error.message);
     });
 
   Object.assign(program, { __awCommandExitState: commandExitState });
@@ -1830,6 +2080,23 @@ export async function runCli(
   };
 
   try {
+    if (argv.some((token) => token === '--subdir' || token.startsWith('--subdir='))
+      && argv.includes('--no-subdir')) {
+      const message = 'option --subdir cannot be used with option --no-subdir';
+      if (argv.includes('--json') && argv[0] === 'catalog' && argv[1] === 'source' && argv[2] === 'update') {
+        writeJsonReceipt(io.stdout, {
+          receiptSchemaVersion: 4,
+          command: 'catalog:source:update',
+          ok: false,
+          changed: false,
+          sourceId: argv[3] ?? '',
+          references: [],
+          errors: [{ code: 'catalogSourceOptionConflict', message }],
+        });
+      }
+      writeLine(io.stderr, `error: ${message}`);
+      return 1;
+    }
     const bareConsoleOptions = parseBareConsoleOptions(argv);
     if (bareConsoleOptions) {
       const context = createCliExecutionContext({

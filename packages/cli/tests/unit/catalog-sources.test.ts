@@ -327,7 +327,7 @@ describe('catalog source identity v1', () => {
     expect(sshAbsolute).not.toBe(scpRelative);
   });
 
-  it('uses path realpath and rejects path subdir', async () => {
+  it('hashes the persisted absolute path without IO and rejects path subdir', async () => {
     const root = await makePathSourceRoot();
     const alias = `${root}-alias`;
     tempDirs.push(alias);
@@ -344,7 +344,14 @@ describe('catalog source identity v1', () => {
       primary: false,
       path: alias,
     });
-    expect(direct).toBe(linked);
+    expect(direct).not.toBe(linked);
+    await fs.remove(root);
+    await expect(calculateCatalogSourceIdentity({
+      id: 'missing',
+      type: 'path',
+      primary: true,
+      path: root,
+    })).resolves.toBe(direct);
     expect(() => validateCatalogSourcesConfig({
       schemaVersion: 1,
       sources: [{

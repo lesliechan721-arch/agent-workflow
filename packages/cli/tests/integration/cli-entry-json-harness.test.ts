@@ -50,43 +50,10 @@ async function setEmbeddedRootOverride(rootDir: string | null): Promise<void> {
   paths.setEmbeddedPluginsRootOverrideForTests(rootDir);
 }
 
-function rebuildResult(status: 'succeeded' | 'failed') {
-  return {
-    platforms: ['codex'],
-    plugins: ['git-commit'],
-    warnings: [],
-    overallState: status,
-    rebuildResults: [{
-      status,
-      command: 'install',
-      target: {
-        pluginName: 'git-commit',
-        pluginVersion: '1.0.0',
-        platform: 'codex',
-        scope: 'user',
-        cwd: '/workspace',
-      },
-      actions: status === 'succeeded'
-        ? [{ name: 'postcheck.inspect', status: 'succeeded' }]
-        : [{ name: 'postcheck.inspect', status: 'failed' }],
-      cleanupAttempted: status === 'failed',
-      removed: [],
-      absent: [],
-      residual: [],
-      quarantined: [],
-      failures: status === 'failed'
-        ? [{ phase: 'postcheck.inspect', message: 'live ownership check failed' }]
-        : [],
-      ...(status === 'failed'
-        ? { error: { phase: 'postcheck.inspect', message: 'live ownership check failed' } }
-        : {}),
-    }],
-  };
-}
-
 afterEach(async () => {
   vi.resetModules();
   vi.doUnmock('../../src/commands/status.js');
+  vi.doUnmock('../../src/commands/status-v4.js');
   vi.doUnmock('../../src/commands/write-commands.js');
   vi.clearAllMocks();
   vi.restoreAllMocks();
@@ -94,22 +61,21 @@ afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
 
-describe('CLI JSON v3 harness', () => {
-  it('keeps status v3 JSON on stdout and verbose notices on stderr', async () => {
+describe('CLI JSON v4 harness', () => {
+  it('keeps status v4 JSON on stdout', async () => {
     vi.resetModules();
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-status-json-v3-'));
     tempDirs.push(tempDir);
-    vi.doMock('../../src/commands/status.js', () => ({
-      statusCommand: vi.fn(async (_plugins, _options, context) => {
-        await context.reporter.notice({
-          level: 'info',
-          message: 'live ownership detail',
-          identity: 'status-live-detail',
-          target: 'stderr',
-        });
+    vi.doMock('../../src/commands/status-v4.js', () => ({
+      statusCommandV4: vi.fn(async () => {
         const payload = {
-          schemaVersion: 3,
-          catalog: { source: 'cache', catalogVersion: '1.0.0' },
+          schemaVersion: 4,
+          catalog: {
+            primarySourceId: 'official',
+            configDigest: 'sha256:config',
+            compositeDigest: 'sha256:composite',
+            sources: [],
+          },
           filters: {
             plugins: ['git-commit'],
             platform: 'codex',
@@ -117,20 +83,17 @@ describe('CLI JSON v3 harness', () => {
             cwd: tempDir,
           },
           targets: [{
-            target: {
-              plugin: 'git-commit',
-              version: '1.0.0',
-              platform: 'codex',
-              scope: 'project',
-              cwd: tempDir,
-            },
+            pluginName: 'git-commit',
+            pluginId: 'official/git-commit',
+            sourceId: 'official',
+            sourceIdentity: 'sha256:source',
+            version: '1.0.0',
+            platform: 'codex',
+            scope: 'project',
+            cwd: tempDir,
             state: 'partial',
             components: [],
             errors: [],
-            recommendation: {
-              command: 'aw reinstall git-commit -p codex -s project',
-              reason: 'partial',
-            },
           }],
           errors: [],
         };
@@ -150,18 +113,18 @@ describe('CLI JSON v3 harness', () => {
 
     expect(result.exitCode, result.stderr).toBe(0);
     expect(result.parseJsonStdout()).toMatchObject({
-      schemaVersion: 3,
+      schemaVersion: 4,
       targets: [{ state: 'partial' }],
     });
-    expect(result.stdout).not.toContain('live ownership detail');
-    expect(result.stderr).toContain('live ownership detail');
+    expect(result.stdout).not.toContain('调试：');
+    expect(result.stderr).toContain('调试：command:start');
   });
 
   it('returns empty stdout, stderr error text, and exit 1 for a status execution error', async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-status-json-error-'));
     tempDirs.push(tempDir);
-    vi.doMock('../../src/commands/status.js', () => ({
-      statusCommand: vi.fn(async () => {
+    vi.doMock('../../src/commands/status-v4.js', () => ({
+      statusCommandV4: vi.fn(async () => {
         throw new Error('status inspection failed');
       }),
     }));
@@ -176,7 +139,13 @@ describe('CLI JSON v3 harness', () => {
     expect(result.stderr).toContain('status inspection failed');
   });
 
-  it('emits write receipt v3 and maps target success or failure to the exit code', async () => {
+  it.each([
+    ['install', []],
+    ['upgrade', []],
+    ['reinstall', []],
+    ['uninstall', []],
+    ['cleanup', []],
+  ])('emits a fail-closed %s receipt with the explicit qualified target', async (command) => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-write-json-v3-'));
     tempDirs.push(tempDir);
     const commands = {
@@ -186,37 +155,35 @@ describe('CLI JSON v3 harness', () => {
       uninstallWriteCommand: vi.fn(),
       cleanupWriteCommand: vi.fn(),
     };
-    vi.doMock('../../src/commands/write-commands.js', () => commands);
+    vi.doMock('../../src/commands/write-commands.js', async (importOriginal) => ({
+      ...await importOriginal<typeof import('../../src/commands/write-commands.js')>(),
+      ...commands,
+    }));
 
     const success = await runCliEntry(
-      ['install', 'git-commit', '-p', 'codex', '--json'],
+      [command, 'official/git-commit', '-p', 'codex', '-s', 'project', '--json'],
       { cwd: tempDir, env: { AW_HOME: path.join(tempDir, 'aw-home') } as NodeJS.ProcessEnv },
     );
-    expect(success.exitCode).toBe(0);
-    expect(success.stderr).toBe('');
+    expect(success.exitCode).toBe(1);
     expect(success.parseJsonStdout()).toMatchObject({
-      ok: true,
-      command: 'install',
-      receiptSchemaVersion: 3,
-      overallState: 'succeeded',
-      targets: [{ plugin: 'git-commit', status: 'succeeded' }],
-    });
-
-    commands.installWriteCommand.mockResolvedValueOnce(rebuildResult('failed') as never);
-    const failure = await runCliEntry(
-      ['install', 'git-commit', '-p', 'codex', '--json'],
-      { cwd: tempDir, env: { AW_HOME: path.join(tempDir, 'aw-home') } as NodeJS.ProcessEnv },
-    );
-    expect(failure.exitCode).toBe(1);
-    expect(failure.parseJsonStdout()).toMatchObject({
       ok: false,
-      receiptSchemaVersion: 3,
+      command,
+      receiptSchemaVersion: 4,
       overallState: 'failed',
-      targets: [{ status: 'failed', failures: [{ message: 'live ownership check failed' }] }],
+      targets: [{
+        pluginName: 'git-commit',
+        pluginId: 'official/git-commit',
+        sourceId: 'official',
+        platform: 'codex',
+        scope: 'project',
+        status: 'failed',
+      }],
+      errors: [{ code: 'runtimeTransitionIncomplete' }],
     });
+    for (const helper of Object.values(commands)) expect(helper).not.toHaveBeenCalled();
   });
 
-  it('emits config receipt v3 and keeps confirmation errors off stdout', async () => {
+  it('emits a fail-closed config mutation receipt v4', async () => {
     const workspace = await makeWorkspace();
     await setEmbeddedRootOverride(workspace.embeddedRoot);
 
@@ -224,26 +191,14 @@ describe('CLI JSON v3 harness', () => {
       ['config', 'reset', 'git-commit', '-s', 'user', '--yes', '--json'],
       { cwd: workspace.repoRoot, env: workspace.env },
     );
-    expect(noOp.exitCode, noOp.stderr).toBe(0);
+    expect(noOp.exitCode).toBe(1);
     expect(noOp.parseJsonStdout()).toMatchObject({
-      ok: true,
+      ok: false,
       command: 'config:reset',
-      receiptSchemaVersion: 3,
+      receiptSchemaVersion: 4,
       plugin: 'git-commit',
-      scope: 'user',
-      deleted: false,
+      overallState: 'failed',
+      errors: [{ code: 'runtimeTransitionIncomplete' }],
     });
-
-    await fs.outputJson(
-      path.join(workspace.awHome, 'plugin-config', 'git-commit', 'config.json'),
-      { version: 1, values: { mode: 'strict' } },
-    );
-    const blocked = await runCliEntry(
-      ['config', 'reset', 'git-commit', '-s', 'user', '--json'],
-      { cwd: workspace.repoRoot, env: workspace.env },
-    );
-    expect(blocked.exitCode).toBe(1);
-    expect(blocked.stdout).toBe('');
-    expect(blocked.stderr).toContain('Reset requires confirmation');
   });
 });

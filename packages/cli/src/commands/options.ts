@@ -206,17 +206,12 @@ export function applyCatalogSelectorEnv<
     ...env,
   };
 
-  if (options.catalogChannel === undefined) {
-    delete nextEnv.AW_CATALOG_CHANNEL;
-  } else {
-    nextEnv.AW_CATALOG_CHANNEL = options.catalogChannel;
-  }
+  delete nextEnv.AW_CATALOG_CHANNEL;
+  delete nextEnv.AW_CATALOG_VERSION;
+  delete nextEnv.AW_NPM_REGISTRY_URL;
+  delete nextEnv.AW_CLI_VERSION;
 
-  if (options.catalogVersion === undefined) {
-    delete nextEnv.AW_CATALOG_VERSION;
-  } else {
-    nextEnv.AW_CATALOG_VERSION = options.catalogVersion;
-  }
+  void options;
 
   return nextEnv;
 }

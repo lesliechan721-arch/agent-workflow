@@ -3,7 +3,7 @@ import path from 'node:path';
 import fs from 'fs-extra';
 import { describe, expect, it, vi } from 'vitest';
 
-import { upgradeWriteCommand } from '../../src/commands/write-commands.js';
+import { runRebuildCommand } from '../../src/commands/rebuild-command.js';
 import type { CatalogResolution } from '../../src/types.js';
 import type { NativeCliRunner } from '../../src/utils/native-cli.js';
 import { writeOwnedTextFile } from '../../src/utils/ownership.js';
@@ -66,15 +66,22 @@ describe('upgrade --all live discovery', () => {
       },
     });
     const calls: string[] = [];
-    const result = await upgradeWriteCommand([], {
+    const commandOptions = {
       all: true,
       cwd: isolation.layout.fixtureCwd,
       platform: 'both',
       scope: 'user',
-    }, {
+    } as const;
+    const result = await runRebuildCommand({
+      command: 'upgrade',
+      pluginNames: [],
+      commandOptions,
+      all: true,
+      runtime: {
       env: isolation.env,
       catalogResolution: await emptyCatalog(isolation.layout.rootDir),
       nativeCliRunner: discoveryRunner(calls),
+      },
     });
 
     expect(result.overallState).toBe('failed');
@@ -124,15 +131,22 @@ describe('upgrade --all live discovery', () => {
       },
     });
     const calls: string[] = [];
-    const result = await upgradeWriteCommand([], {
+    const commandOptions = {
       all: true,
       cwd,
       platform: 'both',
       scope: 'project',
-    }, {
+    } as const;
+    const result = await runRebuildCommand({
+      command: 'upgrade',
+      pluginNames: [],
+      commandOptions,
+      all: true,
+      runtime: {
       env: isolation.env,
       catalogResolution: await emptyCatalog(isolation.layout.rootDir),
       nativeCliRunner: discoveryRunner(calls),
+      },
     });
 
     expect(result.targetResults).toEqual(expect.arrayContaining([

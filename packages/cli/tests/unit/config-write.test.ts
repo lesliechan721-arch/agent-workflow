@@ -77,7 +77,7 @@ function rebuildResult(target: ReceiptTargetIdentity, state: 'succeeded' | 'fail
     nativePlugins: {},
     repoManagedArtifacts: [],
     receiptTargets: [{
-      plugin: target.pluginName,
+      pluginName: target.pluginName,
       platform: target.platform,
       scope: target.scope,
     }],

@@ -87,7 +87,7 @@ function rebuildResult(target: ReceiptTargetIdentity): RebuildCommandResult {
     nativePlugins: {},
     repoManagedArtifacts: [],
     receiptTargets: [{
-      plugin: target.pluginName,
+      pluginName: target.pluginName,
       platform: target.platform,
       scope: target.scope,
     }],

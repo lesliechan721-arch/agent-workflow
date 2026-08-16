@@ -4,18 +4,38 @@ import fs from 'fs-extra';
 import { describe, expect, it } from 'vitest';
 
 import {
-  cleanupWriteCommand,
-  installWriteCommand,
-  reinstallWriteCommand,
-  uninstallWriteCommand,
-  upgradeWriteCommand,
-} from '../../src/commands/write-commands.js';
+  runRebuildCommand,
+  type RebuildCommandRuntime,
+} from '../../src/commands/rebuild-command.js';
+import type { RebuildCommand } from '../../src/commands/rebuild-operations.js';
 import { setRebuildCommandTestHooksForTests } from '../../src/commands/rebuild-command.js';
 import type { CatalogResolution } from '../../src/types.js';
 import { setLifecycleActiveLockFileSystemForTests } from '../../src/utils/lifecycle-active-store.js';
 import type { NativeCliRunner } from '../../src/utils/native-cli.js';
 import type { ProcessLockFileSystem } from '../../src/utils/process-lock.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
+
+type LegacyCommandOptions = Parameters<typeof runRebuildCommand>[0]['commandOptions'];
+
+function runLegacyPipeline(
+  command: RebuildCommand,
+  pluginNames: string[],
+  commandOptions: LegacyCommandOptions,
+  runtime: RebuildCommandRuntime,
+) {
+  return runRebuildCommand({ command, pluginNames, commandOptions, runtime });
+}
+
+const installWriteCommand = (plugins: string[], options: LegacyCommandOptions, runtime: RebuildCommandRuntime) =>
+  runLegacyPipeline('install', plugins, options, runtime);
+const upgradeWriteCommand = (plugins: string[], options: LegacyCommandOptions, runtime: RebuildCommandRuntime) =>
+  runLegacyPipeline('upgrade', plugins, options, runtime);
+const reinstallWriteCommand = (plugins: string[], options: LegacyCommandOptions, runtime: RebuildCommandRuntime) =>
+  runLegacyPipeline('reinstall', plugins, options, runtime);
+const uninstallWriteCommand = (plugins: string[], options: LegacyCommandOptions, runtime: RebuildCommandRuntime) =>
+  runLegacyPipeline('uninstall', plugins, options, runtime);
+const cleanupWriteCommand = (plugins: string[], options: LegacyCommandOptions, runtime: RebuildCommandRuntime) =>
+  runLegacyPipeline('cleanup', plugins, options, runtime);
 
 interface LifecycleLogEntry {
   event: 'install' | 'upgrade' | 'uninstall';

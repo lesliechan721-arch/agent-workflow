@@ -33,6 +33,7 @@ import {
   normalizeStatusCommandOptions,
   type RawStatusCommandOptions,
 } from './options.js';
+import { statusCommandV4, type StatusV4PluginSummary } from './status-v4.js';
 
 export type LiveStatusState = 'present' | 'absent' | 'partial' | 'error';
 
@@ -102,6 +103,7 @@ export interface LiveConsoleItem {
   pluginName: string;
   version?: string;
   plugin?: PluginMeta;
+  pluginSummary?: Omit<StatusV4PluginSummary, 'pluginName' | 'pluginId'>;
   targets: LiveStatusTarget[];
 }
 
@@ -531,6 +533,77 @@ export async function loadConsoleItemsResult(
   rawOptions: RawStatusCommandOptions & { includeCatalogOnly?: boolean } = {},
   runtime: StatusCommandRuntime = {},
 ): Promise<ConsoleItemsLoadResult> {
+  if (
+    runtime.catalogResolution === undefined
+    && runtime.catalogPlugins === undefined
+    && runtime.inspectTarget === undefined
+    && runtime.discoverTargets === undefined
+  ) {
+    const result = await statusCommandV4({
+      cwd: rawOptions.cwd ?? process.cwd(),
+      env: runtime.env,
+      platform: rawOptions.platform,
+      scope: rawOptions.scope,
+    });
+    const targets: LiveStatusTarget[] = result.payload.targets.map((entry) => ({
+      target: {
+        plugin: entry.pluginId,
+        ...(entry.version ? { version: entry.version } : {}),
+        platform: entry.platform,
+        scope: entry.scope,
+        cwd: entry.cwd,
+      },
+      state: entry.state,
+      components: [],
+      errors: [],
+    }));
+    const groups = new Map<string, LiveConsoleItem>();
+    const summaries = new Map(result.pluginSummaries.map((summary) => [summary.pluginId, summary]));
+    for (const target of targets) {
+      const summary = summaries.get(target.target.plugin);
+      const current = groups.get(target.target.plugin) ?? {
+        pluginName: target.target.plugin,
+        ...(target.target.version ? { version: target.target.version } : {}),
+        ...(summary ? {
+          pluginSummary: {
+            description: summary.description,
+            ...(summary.configSchema ? { configSchema: summary.configSchema } : {}),
+          },
+        } : {}),
+        targets: [],
+      };
+      current.targets.push(target);
+      groups.set(target.target.plugin, current);
+    }
+    const allSourcesFailed = result.payload.catalog.sources.length > 0
+      && result.payload.catalog.sources.every((source) => source.error !== undefined);
+    const status: StatusJsonPayload = {
+      schemaVersion: 3,
+      catalog: allSourcesFailed ? {
+        error: {
+          code: 'catalogUnavailable',
+          message: result.payload.catalog.sources.map((source) => source.error).join('; '),
+        },
+      } : {},
+      filters: result.payload.filters,
+      targets,
+      errors: [
+        ...result.payload.catalog.sources.flatMap((source) => source.error
+          ? [{ code: 'discoveryFailed' as const, message: `${source.id}: ${source.error}` }]
+          : []),
+        ...result.payload.errors.map((error) => ({
+          code: 'discoveryFailed' as const,
+          message: error.message,
+        })),
+      ],
+    };
+    return {
+      items: [...groups.values()].sort((left, right) =>
+        left.pluginName.localeCompare(right.pluginName)),
+      catalogUnavailable: allSourcesFailed,
+      status,
+    };
+  }
   const result = await statusCommand([], rawOptions, runtime);
   const groups = new Map<string, LiveConsoleItem>();
   const pluginsByName = new Map(result.plugins.map((plugin) => [plugin.manifest.name, plugin]));

@@ -118,7 +118,7 @@ export async function calculateCatalogSourceIdentity(
     if (!path.isAbsolute(source.path)) {
       throw new Error('Invalid catalog path source: expected a canonical absolute path.');
     }
-    location = await realpathCatalogDirectory(source.path);
+    location = path.normalize(source.path);
   } else {
     throw new Error('Invalid catalog source type: expected "git" or "path".');
   }

@@ -5,7 +5,7 @@ import {
   buildRebuildReceiptJson,
 } from '../../src/output/command-receipt.js';
 
-describe('command receipt v3', () => {
+describe('command receipt v4', () => {
   it('serializes the five write commands with one receipt schema', () => {
     for (const command of ['install', 'upgrade', 'reinstall', 'uninstall', 'cleanup'] as const) {
       const receipt = buildRebuildReceiptJson(command, {
@@ -35,18 +35,29 @@ describe('command receipt v3', () => {
       expect(receipt).toMatchObject({
         ok: true,
         command,
-        receiptSchemaVersion: 3,
-        targets: [{ plugin: 'git-commit', status: 'succeeded' }],
+        receiptSchemaVersion: 4,
+        targets: [{ pluginName: 'git-commit', status: 'succeeded' }],
       });
     }
   });
 
-  it('keeps init on its catalog cache receipt', () => {
+  it('projects init multi-source evidence without cache paths', () => {
     expect(buildInitReceiptJson({
-      rootDir: '/tmp/aw',
+      ok: true,
       changed: true,
       warnings: [],
-      catalog: { rootDir: '/tmp/aw', source: 'cache' },
-    })).toMatchObject({ command: 'init', receiptSchemaVersion: 2 });
+      primarySourceId: 'official',
+      configDigest: 'sha256:config',
+      compositeDigest: 'sha256:composite',
+      sources: [{
+        id: 'official',
+        ok: true,
+        requestedRef: 'refs/heads/catalog/latest',
+        resolvedCommit: 'abc',
+        catalogVersion: '1.0.0',
+        channel: 'latest',
+        freshness: 'cache',
+      }],
+    })).toMatchObject({ command: 'init', receiptSchemaVersion: 4, ok: true });
   });
 });

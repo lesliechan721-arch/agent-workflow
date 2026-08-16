@@ -49,8 +49,10 @@ export interface RebuildCommandResult {
   nativePlugins: Partial<Record<PlatformName, string[]>>;
   repoManagedArtifacts: GeneratedArtifact[];
   receiptTargets: Array<{
-    plugin: string;
-    platform: string;
+    pluginName: string;
+    pluginId?: string;
+    sourceId?: string;
+    platform: PlatformName;
     scope: Scope;
   }>;
 }
@@ -476,7 +478,7 @@ export async function runRebuildCommand(options: {
     nativePlugins,
     repoManagedArtifacts: artifacts,
     receiptTargets: results.map((result) => ({
-      plugin: result.target.pluginName,
+      pluginName: result.target.pluginName,
       platform: result.target.platform,
       scope: result.target.scope,
     })),

@@ -76,8 +76,22 @@ describe('console and removed diagnose entry', () => {
     expect(debugLog).toHaveBeenCalledWith(expect.objectContaining({ type: 'command:success' }));
   });
 
-  it.each(['--log-file', '--catalog-channel', '--catalog-version'])(
-    'rejects a bare console %s option without its required value',
+  it(
+    'rejects a bare console log file option without its required value',
+    async () => {
+      const captured = createCapturedCliIo();
+      const exitCode = await runCli(['--log-file'], {
+        interactive: true,
+        io: captured.io,
+      });
+
+      expect(exitCode).toBe(1);
+      expect(captured.readStderr()).toContain('argument missing');
+    },
+  );
+
+  it.each(['--catalog-channel', '--catalog-version'])(
+    'rejects removed bare console option %s',
     async (option) => {
       const captured = createCapturedCliIo();
       const launch = vi.fn(async () => ({ exitCode: 0 }));
@@ -89,7 +103,7 @@ describe('console and removed diagnose entry', () => {
 
       expect(exitCode).toBe(1);
       expect(launch).not.toHaveBeenCalled();
-      expect(captured.readStderr()).toContain('argument missing');
+      expect(captured.readStderr()).toContain('unknown option');
     },
   );
 

@@ -14,7 +14,7 @@
 - `utils/local-marketplace.ts` 管理本机 active marketplace 和严格 catalog cache。
 - `utils/plugin-catalog.ts` 解析 current sidecar/full catalog、selector 和严格 cache fallback。
 - `utils/plugin-config.ts` 与 `utils/plugin-config-write.ts` 管理 AW config store 和 config v3 输出。
-- `output/command-receipt.ts` 生成五个写命令的 receipt v3。
+- `output/command-receipt.ts` 生成五个写命令的 receipt v4。
 - `generators/` 生成 instructions、permissions、hooks、agents、skills 和 MCP 等平台能力。
 - `types.ts` 保存跨模块公开类型。插件 manifest 不支持顶层 `dependencies`。
 
@@ -88,11 +88,12 @@ Local runtime
 - catalog manifest 使用 schema 2，只描述 current 单版本快照。它记录 catalog 最低 CLI 版本、sidecar/full package identity，以及每个 current plugin 的版本、最低 CLI 版本、`artifactDigest` 和 `manifestDigest`。
 - Git/path 多 source 的待切换基础合同使用 `<AW_HOME>/catalog-sources.json` schema 1。文件缺失时读取内置 official primary；首次配置 mutation 才物化文件。当前 npm resolver 尚不读取此配置。
 - catalog manifest schema 3 的待切换类型和 validator/generator 已与 schema 2 并存。schema 3 移除 npm package identity，并为 entry 增加 `contentDigest`；当前 runtime 和 staging 仍使用 schema 2。
+- `aw catalog source add/update/list/set-primary/remove` 管理 schema 1 source config。add/update 先用 `forceRemote` 只验证 candidate 中的目标 source，并只保留 lease-safe 普通证据；随后在 runtime lease 内执行引用预检、expected config digest 复查和原子替换。identity 变化、primary 变化和 remove 在发现 schema 1 owner、旧裸名 config/lifecycle 或旧 marketplace 时返回 `legacyStateUnsupported`，不自动迁移或清理。
 - Git/path provider、schema 3 snapshot validator、source strict cache 和四 worker multi-source resolver 已作为独立内核存在。snapshot 根只接受 `catalog-manifest.json`、`.agents/`、`.claude-plugin/`、`plugins/` 和可选的发布端 ledger；validator 从真实 plugin manifest 重建完整 entry 投影。provider 从不可变 Git commit 或每次 path 复制物化已验证 snapshot。
 - Git provider 只允许 HTTPS、SSH、file URL 和规范绝对本地路径。它清除 Git 命令/配置注入环境，固定 protocol 与 SSH 命令边界，并在网络访问前拒绝改变 source identity 的 Git URL rewrite；managed bare cache 拒绝非受控 local config、内部 symlink 和 object alternates。Abort 和 remote deadline 必须完成整个子进程树清理后才释放 object lock。
 - 新 source strict cache 按 `sourceId`、`sourceIdentity`、requested ref、resolved commit、manifest/snapshot digest 和 CLI compatibility 隔离。selector 只发布完成 entry；Git `requireRemote` 只回退同 source identity 和 ref 的兼容 entry，`forceRemote` 与 path source 不回退。
 - source observation order 在磁盘 publication lock 内分配，并通过不可变 observation record 持久绑定 entry。selector 必须与 record、source identity、requested ref 和完整有效 entry 一致；悬空、损坏、超前或 identity 不匹配的 selector 先隔离，再参与 publication。
-- 阶段 2 multi-source resolver 提供 qualified plugin ID、全局裸名唯一性和 desired artifact key 碰撞预检纯 API。resolution 和 PluginMeta 只通过 current-cache lease 范围内的 callback 消费；callback 结果经过 lease-safe 深拷贝投影，protected path evidence 不能逃逸。阶段 3 不得保存其 `rootDir` 或 manifest path。现有五个写命令、status、init 和 npm schema 2 resolver 尚未切换；统一接入属于阶段 3。
+- 阶段 2 multi-source resolver 提供 qualified plugin ID、全局裸名唯一性和 desired artifact key 碰撞预检纯 API。resolution 和 PluginMeta 只通过 current-cache lease 范围内的 callback 消费；callback 结果经过 lease-safe 深拷贝投影，protected path evidence 不能逃逸。`catalog source`、`init`、公开 `status` 和 config read 已使用该 callback；五个写命令和 namespaced owner/config/lifecycle store 在阶段 3B 接入。
 - 源码 plugin manifest 直接保存下一次稳定版本；`contentDigest` 排除生成 manifest 的 version 字段，用于识别插件内容。
 - Beta 发布根据源码稳定版本、`contentDigest` 和已发布账本，在临时 staging 中物化 prerelease plugin version。Stable 发布直接使用源码 manifest version。
 - Sidecar 包包含发布端专用的 `plugin-release-ledger.json`。发布门禁合并 beta/latest 账本，保证同一 `plugin@version` 不会对应不同 digest。运行时 catalog manifest 仍使用 schema 2。
@@ -103,7 +104,7 @@ Local runtime
 
 ## Write Pipeline
 
-五个写命令只走 rebuild pipeline：
+阶段 3A 的五个公开写命令无条件返回 `runtimeTransitionIncomplete`，不进入旧 npm resolver 或 rebuild pipeline。阶段 3B 接入 namespaced runtime 后，五个写命令只走下列 rebuild pipeline：
 
 ```text
 normalize target
@@ -140,7 +141,7 @@ normalize target
 
 ## Live Status
 
-`aw status` 与主控制台读取同一份 live status。输入只有 current catalog、AW owner marker 和平台原生组件检查。
+`aw status` 使用 multi-source `cacheFirst` 读取，并对每个 source 独立报告错误。阶段 3A 对 current catalog 插件报告 `absent`；schema 2 live owner 接入在阶段 3B 完成。发现 schema 1 owner 时报告 `legacyStateUnsupported`，不迁移或删除。
 
 每个 target 的 `state` 只允许：
 
@@ -155,12 +156,17 @@ normalize target
 
 catalog 不可用和 bundle 不可用必须分别报告，不能合并成不可定位的通用状态错误。
 
-status v3 JSON 结构：
+status v4 JSON 结构：
 
 ```json
 {
-  "schemaVersion": 3,
-  "catalog": {},
+  "schemaVersion": 4,
+  "catalog": {
+    "primarySourceId": "official",
+    "configDigest": "sha256:...",
+    "compositeDigest": "sha256:...",
+    "sources": []
+  },
   "filters": {},
   "targets": [],
   "errors": []
@@ -173,8 +179,8 @@ status 是只读操作。它不运行 lifecycle 或 renderer，不刷新 marketp
 
 配置合并顺序是 manifest default、user store、project shared store、project local store。project repo-visible artifact 只使用允许共享的 project shared 配置。
 
-- `aw config list/get --json` 输出 `configSchemaVersion: 3`。
-- `aw config set/unset/reset --json` 输出 `receiptSchemaVersion: 3`。
+- `aw config list/get --json` 输出 `configSchemaVersion: 4`，并为已解析 target 输出 `pluginName`、`pluginId`、`sourceId` 和 `sourceIdentity`。
+- `aw config set/unset/reset --json` 输出 `receiptSchemaVersion: 4`。阶段 3A 无条件返回 `runtimeTransitionIncomplete`；namespaced store 写入属于阶段 3B。read 入口遇到旧裸名 store 返回 `legacyStateUnsupported`。
 - config 写入只对当前可定位 target 运行完整 reinstall。
 - `uninstall`、`cleanup` 和 `reinstall` 不删除 config。
 - `config reset` 是删除 config store 的唯一入口。
@@ -214,9 +220,9 @@ cache publication 必须满足：
 
 ## Output Contract
 
-- 五个写命令的 JSON receipt 使用 `receiptSchemaVersion: 3`。
-- status JSON 使用 `schemaVersion: 3`。
-- config read 使用 `configSchemaVersion: 3`；config write 使用 `receiptSchemaVersion: 3`。
+- 五个写命令、`init` 和 config mutation 的 JSON receipt 使用 `receiptSchemaVersion: 4`。
+- status JSON 使用 `schemaVersion: 4`。
+- config read 使用 `configSchemaVersion: 4`。
 - `--json` 成功时 stdout 只包含一个 JSON 对象。
 - 错误说明和 verbose/debug 文本写 stderr，不污染 JSON stdout。
 - 写命令失败时 receipt 保留失败 target，并返回非零退出码。
@@ -224,7 +230,8 @@ cache publication 必须满足：
 ### Human/TUI progress
 
 - 裸 `aw` 使用响应式 Ink 仪表盘。宽视口同时显示插件、操作和目标/状态，窄视口使用单栏页面，过小视口只显示尺寸提示。状态信息位于目标详情，写操作位于操作区，配置位于插件配置页。
-- 五个写命令和缺少必要参数的 config 命令只在真实 TTY、human 模式且非 CI 时进入轻量向导。完整参数、CI、非 TTY 和 `--json` 不进入向导。
+- 阶段 3A 的仪表盘和向导用 multi-source `cacheFirst` 读取；重复插件名显示 qualified `pluginId`。namespaced write runtime 未接入时，交互写操作返回 `runtimeTransitionIncomplete`，不回退到旧 npm catalog 写路径。
+- 阶段 3A 的五个写命令和 config mutation 不进入轻量向导，统一 fail closed。阶段 3B 接入后，缺少必要参数的命令只在真实 TTY、human 模式且非 CI 时进入向导。
 - 向导在挂载前拒绝不可用 catalog 和当前操作的空候选集。file/directory 配置在仪表盘和向导中按私有值投影，命令摘要只显示占位符模板。
 - 向导的可重放命令明确标注 shell：POSIX 使用 shell-safe 单引号；Windows 提供 PowerShell 命令和参数列表。
 - 向导执行失败后只向 human stderr 输出固定安全错误；原始执行错误只进入遵守脱敏规则的 debug 事件。完整参数的非 TUI 命令保留原有错误合同。

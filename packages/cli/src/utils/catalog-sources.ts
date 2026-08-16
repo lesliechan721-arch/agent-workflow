@@ -367,6 +367,7 @@ export async function replaceCatalogSourcesConfig(options: {
   config: CatalogSourcesConfig;
   expectedDigest: string;
   env?: NodeJS.ProcessEnv;
+  beforeReplace?: (current: CatalogSourcesConfigSnapshot) => Promise<void> | void;
 }): Promise<CatalogSourcesConfigSnapshot> {
   const env = options.env ?? process.env;
   const awHome = resolveAwHome(env);
@@ -381,6 +382,7 @@ export async function replaceCatalogSourcesConfig(options: {
       if (current.digest !== options.expectedDigest) {
         throw new CatalogSourcesConfigConflictError(options.expectedDigest, current.digest);
       }
+      await options.beforeReplace?.(current);
       await atomicReplaceConfigFile({
         filePath,
         allowedRoot: awHome,

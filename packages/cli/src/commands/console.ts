@@ -31,11 +31,15 @@ import {
   type ResolvedConfigRead,
 } from '../utils/plugin-config.js';
 import {
-  applyPluginConfigWrite,
-  resetPluginConfigWithHelper,
   type PluginConfigWriteReceipt,
   type ResetPluginConfigWriteReceipt,
 } from '../utils/plugin-config-write.js';
+import {
+  assertCatalogSourceReferencesSupported,
+  inventoryLegacyConfigReferences,
+} from '../utils/catalog-source-references.js';
+import { readCliPackageInfo } from '../utils/local-marketplace.js';
+import { withResolvedCatalogPlugin } from '../utils/multi-source-catalog.js';
 import { Dashboard, type DashboardResult } from '../tui/dashboard.js';
 import {
   createRebuildProgressFeed,
@@ -106,7 +110,7 @@ export function targetIdentity(target: LiveStatusTarget): string {
 }
 
 function hasConfigSchemaKeys(item: LiveConsoleItem): boolean {
-  const schema = item.plugin?.manifest.config?.schema;
+  const schema = item.plugin?.manifest.config?.schema ?? item.pluginSummary?.configSchema;
   return schema !== undefined && Object.keys(schema).length > 0;
 }
 
@@ -144,6 +148,9 @@ export function createDashboardController(
       includeCatalogOnly: true,
     }, context),
     async execute(action, target) {
+      if (target.target.plugin.includes('/')) {
+        throw new Error('runtimeTransitionIncomplete: interactive writes require the phase 3B namespaced runtime.');
+      }
       const options = {
         cwd: context.cwd,
         platform: target.target.platform,
@@ -177,53 +184,51 @@ export function createDashboardController(
       ]);
     },
     async readConfig(item, location) {
-      const plugin = item.plugin;
-      if (!plugin || !hasConfigSchemaKeys(item)) {
+      if (!hasConfigSchemaKeys(item)) {
         throw new Error(`Plugin "${item.pluginName}" 没有配置 schema。`);
       }
-      const effective = await resolveEffectivePluginConfig({
-        pluginName: item.pluginName,
-        manifest: plugin.manifest,
-        cwd: context.cwd,
+      const project = async (pluginName: string, plugin: NonNullable<LiveConsoleItem['plugin']>) => {
+        const effective = await resolveEffectivePluginConfig({
+          pluginName,
+          manifest: plugin.manifest,
+          cwd: context.cwd,
+          env: context.env,
+        });
+        const model = createPluginConfigFormModel({
+          pluginName,
+          manifest: plugin.manifest,
+          effective,
+          initialScope: location.scope,
+        });
+        const read = await resolveConfigRead({
+          pluginName,
+          plugin,
+          scope: location.scope,
+          projectLayer: location.projectLayer,
+          cwd: context.cwd,
+          env: context.env,
+        });
+        return { model, read, location };
+      };
+      if (item.plugin) return project(item.plugin.manifest.name, item.plugin);
+
+      const inventory = await inventoryLegacyConfigReferences({ cwd: context.cwd, env: context.env });
+      assertCatalogSourceReferencesSupported(inventory);
+      const packageInfo = await readCliPackageInfo();
+      return withResolvedCatalogPlugin({
+        selector: item.pluginName,
+        cliVersion: packageInfo.version,
+        freshnessPolicy: 'cacheFirst',
         env: context.env,
+        consume: ({ plugin }) => project(plugin.manifest.name, plugin),
       });
-      const model = createPluginConfigFormModel({
-        pluginName: item.pluginName,
-        manifest: plugin.manifest,
-        effective,
-        initialScope: location.scope,
-      });
-      const read = await resolveConfigRead({
-        pluginName: item.pluginName,
-        plugin,
-        scope: location.scope,
-        projectLayer: location.projectLayer,
-        cwd: context.cwd,
-        env: context.env,
-      });
-      return { model, read, location };
     },
-    saveConfig: (item, location, request) => applyPluginConfigWrite({
-      pluginName: item.pluginName,
-      plugin: item.plugin,
-      scope: location.scope,
-      projectLayer: location.projectLayer,
-      cwd: context.cwd,
-      env: context.env,
-      nativeCliRunner: context.nativeCliRunner,
-      rebuildRuntime: context,
-      request,
-    }),
-    resetConfig: (item, location) => resetPluginConfigWithHelper({
-      pluginName: item.pluginName,
-      plugin: item.plugin,
-      scope: location.scope,
-      projectLayer: location.projectLayer,
-      cwd: context.cwd,
-      env: context.env,
-      nativeCliRunner: context.nativeCliRunner,
-      rebuildRuntime: context,
-    }),
+    async saveConfig() {
+      throw new Error('runtimeTransitionIncomplete: interactive config writes require the phase 3B namespaced runtime.');
+    },
+    async resetConfig() {
+      throw new Error('runtimeTransitionIncomplete: interactive config writes require the phase 3B namespaced runtime.');
+    },
   };
 }
 

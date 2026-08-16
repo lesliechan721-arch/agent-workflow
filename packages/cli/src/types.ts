@@ -143,6 +143,9 @@ export interface NextStepsPayloadBoundary {
 
 export interface ReceiptTargetIdentity {
   pluginName: string;
+  pluginId?: PluginId;
+  sourceId?: CatalogSourceId;
+  sourceIdentity?: SourceIdentity;
   platform: PlatformName;
   scope: Scope;
   projectKey?: string;

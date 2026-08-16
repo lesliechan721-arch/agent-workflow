@@ -18,6 +18,7 @@ export async function createCatalogSnapshotFixture(
   pluginName = 'demo',
   minAwVersion = '0.0.0',
   readme = `${pluginName}\n`,
+  configureManifest?: (manifest: PluginMeta['manifest']) => void,
 ): Promise<void> {
   await Promise.all([
     fs.ensureDir(path.join(rootDir, '.agents')),
@@ -44,6 +45,7 @@ export async function createCatalogSnapshotFixture(
       },
     },
   };
+  configureManifest?.(manifest);
   await fs.outputJson(manifestPath, manifest, { spaces: 2 });
   await fs.outputFile(path.join(pluginRoot, 'README.md'), readme);
   const plugin: PluginMeta = await readPluginManifest(pluginRoot, { mode: 'bundle' });

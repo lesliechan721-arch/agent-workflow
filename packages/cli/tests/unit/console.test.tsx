@@ -344,18 +344,20 @@ describe('dashboard controller and reducer', () => {
     [{ scope: 'user', projectLayer: 'shared' }],
     [{ scope: 'project', projectLayer: 'shared' }],
     [{ scope: 'project', projectLayer: 'local' }],
-  ] as const)('passes %j to config read, save, and reset helpers', async (location) => {
+  ] as const)('reads %j config and keeps save/reset fail-closed', async (location) => {
     const value = loaded([item('demo', 'present')]);
     const context = createCliExecutionContext({ cwd: '/workspace', interactive: true });
     const controller = createDashboardController(context);
 
     await controller.readConfig(value.items[0]!, location);
-    await controller.saveConfig(value.items[0]!, location, { updates: { token: 'value' } });
-    await controller.resetConfig(value.items[0]!, location);
+    await expect(controller.saveConfig(value.items[0]!, location, { updates: { token: 'value' } }))
+      .rejects.toThrow('runtimeTransitionIncomplete');
+    await expect(controller.resetConfig(value.items[0]!, location))
+      .rejects.toThrow('runtimeTransitionIncomplete');
 
     expect(mocks.resolveConfigRead).toHaveBeenCalledWith(expect.objectContaining(location));
-    expect(mocks.applyPluginConfigWrite).toHaveBeenCalledWith(expect.objectContaining(location));
-    expect(mocks.resetPluginConfigWithHelper).toHaveBeenCalledWith(expect.objectContaining(location));
+    expect(mocks.applyPluginConfigWrite).not.toHaveBeenCalled();
+    expect(mocks.resetPluginConfigWithHelper).not.toHaveBeenCalled();
   });
 
   it('preserves plugin and target identity after refresh and falls back when they disappear', () => {

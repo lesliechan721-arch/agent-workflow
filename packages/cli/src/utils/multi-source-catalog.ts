@@ -21,6 +21,7 @@ import { catalogSourceCacheInternal } from './catalog-source-cache.js';
 import { catalogGitProviderInternal } from './git-catalog-provider.js';
 import { ensurePluginName, readPluginManifest } from './manifest.js';
 import { catalogPathProviderInternal } from './path-catalog-provider.js';
+import { sanitizeCatalogSourceError } from './catalog-public-error.js';
 
 const { withCatalogSourceCacheLease } = catalogSourceCacheInternal;
 
@@ -289,6 +290,13 @@ export function formatPluginId(value: ParsedPluginId): PluginId {
   return `${value.sourceId}/${pluginName}`;
 }
 
+export function planPluginSelectorSourceIds(
+  selectors: readonly ParsedPluginId[],
+): CatalogSourceId[] | undefined {
+  if (selectors.some((selector) => selector.sourceId === undefined)) return undefined;
+  return [...new Set(selectors.map((selector) => selector.sourceId!))];
+}
+
 async function mapWithFourWorkers<T, R>(
   inputs: T[],
   mapper: (input: T) => Promise<R>,
@@ -339,9 +347,16 @@ async function resolveOneSource(options: {
   } catch (error) {
     if (options.signal?.aborted) throwIfAborted(options.signal);
     if (isAbortFailure(error, options.signal)) throw error;
+    const sensitiveRoots = options.source.type === 'path'
+      ? [
+          options.source.path,
+          path.resolve(options.source.path),
+          ...await fs.realpath(options.source.path).then((value) => [value]).catch(() => []),
+        ]
+      : [];
     return {
       sourceId: options.source.id,
-      error: error instanceof Error ? error : new Error(String(error)),
+      error: sanitizeCatalogSourceError(error, options.env, sensitiveRoots),
     };
   }
 }
@@ -432,6 +447,7 @@ export async function withResolvedCatalogPlugin<T>(
   options: WithResolvedCatalogPluginOptions<T>,
 ): Promise<LeaseSafeResult<T>> {
   const selector = parsePluginId(options.selector);
+  const sourceIds = planPluginSelectorSourceIds([selector]);
   const resolutionOptions: ResolveMultiSourceCatalogOptions = {
     cliVersion: options.cliVersion,
     freshnessPolicy: options.freshnessPolicy,
@@ -447,7 +463,7 @@ export async function withResolvedCatalogPlugin<T>(
     action: async () => {
       const catalog = await resolveMultiSourceCatalogWithLease({
         ...resolutionOptions,
-        ...(selector.sourceId ? { sourceIds: [selector.sourceId] } : {}),
+        ...(sourceIds ? { sourceIds } : {}),
       });
       throwSourceErrors(catalog);
       const matches = catalog.sources.flatMap((item) => {
