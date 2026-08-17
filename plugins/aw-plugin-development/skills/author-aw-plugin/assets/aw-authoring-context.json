@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "repository": "agent-workflows",
+  "plugin": "target-plugin",
+  "pluginRoot": "plugins/<name>",
+  "changeMode": "create",
+  "products": [
+    "CODEX",
+    "CLAUDE"
+  ],
+  "componentType": "skill",
+  "skillInvocation": "model",
+  "allowedFiles": [],
+  "sourceProfile": "aw-default",
+  "manifestVersionBump": null,
+  "buildRequired": true,
+  "validators": []
+}

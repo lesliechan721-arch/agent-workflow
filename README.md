@@ -134,6 +134,8 @@ make release CLI_VERSION=1.0.0 CATALOG_VERSION=1.2.0
 - `scripts/release/`：版本同步、CLI / catalog tarball 打包、本地安装和发布编排脚本
 - `.agents/skills/create-aw-plugin/`：创建、增量维护并检查插件版本的作者工具
 - `.agents/skills/skill-review/`：只读评审标准静态 Skill 或 AW 插件 Skill，并核对最终 Codex 制品和 eval 证据
+- `plugins/agent-content-toolkit/`：通用 Agent 内容、Skill 和 Eval 的六个轻量 Skill
+- `plugins/aw-plugin-development/`：显式调用的 AW 插件作者与评审适配器
 - `docs/`：公开维护文档
 - `docs/dev/`：开发过程记录，不作为公开使用文档
 
@@ -152,7 +154,11 @@ make release CLI_VERSION=1.0.0 CATALOG_VERSION=1.2.0
 | [插件维护指南](docs/plugin-maintenance.md) | 维护者 | 插件源码边界、维护入口和仓库级验证 |
 | [create-aw-plugin README](.agents/skills/create-aw-plugin/README.md) | 维护者 | 插件作者 Agent 工作流的人类入口 |
 | [skill-review README](.agents/skills/skill-review/README.md) | 维护者 | Skill 评审 Agent 工作流的人类入口 |
+| [agent-content-toolkit README](plugins/agent-content-toolkit/README.md) | 维护者 | 通用 Agent 内容、Skill 与 Eval 能力 |
+| [aw-plugin-development README](plugins/aw-plugin-development/README.md) | 维护者 | 组合式 AW 插件作者与评审适配器 |
 | [AGENTS.md](AGENTS.md) | Agent | 按任务路由到上述权威入口和专用 Skill |
+
+当前采用并行迁移。仓库默认路由仍使用 `.agents/skills/create-aw-plugin` 和 `.agents/skills/skill-review`。六个通用 Skill 可由模型按意图调用；两个 AW 适配器只允许用户显式调用。暂不删除旧 Skill，也不切换默认路由。
 
 ## 生成物原则
 

@@ -8,9 +8,12 @@ import fs from 'fs-extra';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { runPluginEvals } from '../../scripts/eval-plugin-skills.js';
+import { computeAuthorSourceDigest } from '../../scripts/skill-reporting.js';
 import {
   assertPublishSkillTarget,
   assertScorecardSkillName,
+  assertStructuredReviewTarget,
+  buildStructuredReviewPublication,
   resolveReviewDraftPath,
   resolveReviewSourceRoots,
 } from '../../scripts/publish-skill-review.js';
@@ -91,6 +94,32 @@ afterEach(async () => {
 });
 
 describe('skill-review author tools', () => {
+  it('uses the publication source digest contract for AW review bundles', async () => {
+    const root = repoRoot();
+    const roots = await resolveReviewSourceRoots(root, {
+      kind: 'plugin-skill',
+      plugin: 'aw-plugin-development',
+      skill: 'review-aw-plugin',
+    });
+    const expectedDigest = await computeAuthorSourceDigest(roots);
+    const script = path.join(
+      root,
+      'plugins',
+      'aw-plugin-development',
+      'skills',
+      'review-aw-plugin',
+      'scripts',
+      'prepare-aw-review-bundle.mjs',
+    );
+    const { stdout } = await execFileAsync(process.execPath, [
+      script,
+      path.join(root, 'plugins', 'aw-plugin-development'),
+      '--source',
+      `agent-content-toolkit=${path.join(root, 'plugins', 'agent-content-toolkit')}`,
+    ], { cwd: root, encoding: 'utf8' });
+    expect(JSON.parse(stdout).target.sourceDigest).toBe(expectedDigest);
+  });
+
   it('requires review publication targets to be real documented Skills', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-review-publish-target-'));
     tempDirs.push(root);
@@ -112,6 +141,116 @@ describe('skill-review author tools', () => {
     expect(() => assertScorecardSkillName('other-skill', 'real-skill')).toThrow(
       'does not match --skill',
     );
+    const reviewResult = {
+      schemaVersion: 1 as const,
+      mode: 'quick' as const,
+      target: {
+        kind: 'aw-plugin-skill',
+        name: 'real-skill',
+        digest: `sha256:${'1'.repeat(64)}`,
+      },
+      design: 'not-assessed',
+      releaseReadiness: 'not-assessed',
+      complexity: 'not-assessed',
+      composition: 'not-assessed',
+      weightedScore: null,
+      coverage: 0,
+      confidence: 'unknown',
+      findings: [],
+      unknowns: [],
+      gates: {},
+      actions: [],
+    };
+    const awSummary = {
+      schemaVersion: 1 as const,
+      target: {
+        plugin: 'demo',
+        skill: 'real-skill',
+        sourceDigest: `sha256:${'2'.repeat(64)}`,
+      },
+      genericReviews: [{
+        targetName: 'real-skill',
+        kind: 'aw-plugin-skill',
+        profile: null,
+        digest: `sha256:${'1'.repeat(64)}`,
+        design: 'not-assessed',
+        releaseReadiness: 'not-assessed',
+      }],
+      projectGates: {},
+      evalAudit: null,
+      design: 'not-assessed',
+      releaseReadiness: 'not-assessed',
+      actions: [],
+    };
+    expect(() => assertStructuredReviewTarget(
+      reviewResult,
+      awSummary,
+      'demo',
+      'real-skill',
+    )).not.toThrow();
+    expect(() => assertStructuredReviewTarget(
+      reviewResult,
+      {
+        ...awSummary,
+        target: { ...awSummary.target, plugin: 'other' },
+      },
+      'demo',
+      'real-skill',
+    )).toThrow('does not match --plugin');
+    const structuredPublication = buildStructuredReviewPublication(
+      {
+        ...reviewResult,
+        mode: 'release-quality',
+        design: 'pass',
+        releaseReadiness: 'provisional',
+        weightedScore: 88,
+        coverage: 100,
+        confidence: 'high',
+      },
+      {
+        ...awSummary,
+        design: 'pass',
+        releaseReadiness: 'provisional',
+        genericReviews: [{
+          ...awSummary.genericReviews[0],
+          design: 'pass',
+          releaseReadiness: 'provisional',
+        }],
+      },
+      'demo',
+      'real-skill',
+    );
+    expect(structuredPublication).toMatchObject({
+      calculated: {
+        mode: 'release',
+        weightedScore: 88,
+        coverage: 100,
+        confidence: 'high',
+        release: 'provisional',
+      },
+      scorecard: {
+        review: { skill_name: 'real-skill', mode: 'release' },
+        decision: { design: 'pass', release_readiness: 'provisional' },
+      },
+    });
+    const staticPublication = buildStructuredReviewPublication(
+      {
+        ...reviewResult,
+        target: {
+          kind: 'repo-skill',
+          name: 'real-skill',
+          digest: `sha256:${'3'.repeat(64)}`,
+        },
+      },
+      undefined,
+      undefined,
+      'real-skill',
+      `sha256:${'3'.repeat(64)}`,
+    );
+    expect(staticPublication.calculated.release).toBe('not-assessed');
+    expect(staticPublication.scorecard).toMatchObject({
+      schemaVersion: 'review-result-projection-v1',
+    });
     expect(resolveReviewDraftPath(root, '.tmp/review.md')).toBe(
       path.join(root, '.tmp', 'review.md'),
     );

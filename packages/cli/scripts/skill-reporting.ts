@@ -1470,6 +1470,8 @@ export async function publishSkillReviewToBatch(options: {
   source: SkillReportSourceIdentity;
   report: string;
   scorecard: unknown;
+  reviewResult?: unknown;
+  awReviewSummary?: unknown;
   calculated: SkillReviewCalculation;
   reviewId?: string;
 }): Promise<PublishedSkillReportSummary> {
@@ -1550,11 +1552,29 @@ export async function publishSkillReviewToBatch(options: {
       await fs.mkdir(stagingRoot);
       await writeTextAtomic(path.join(stagingRoot, 'report.md'), options.report);
       await writeJsonAtomic(path.join(stagingRoot, 'summary.json'), publishedSummary);
+      if (options.reviewResult !== undefined) {
+        await writeJsonAtomic(path.join(stagingRoot, 'review-result.json'), options.reviewResult);
+      }
+      if (options.awReviewSummary !== undefined) {
+        await writeJsonAtomic(
+          path.join(stagingRoot, 'aw-review-summary.json'),
+          options.awReviewSummary,
+        );
+      }
       await fs.ensureDir(path.dirname(reviewRoot));
       await fs.mkdir(reviewRoot, { recursive: false });
       reviewCreated = true;
       await writeTextAtomic(path.join(reviewRoot, 'report.md'), options.report);
       await writeJsonAtomic(path.join(reviewRoot, 'scorecard.json'), options.scorecard);
+      if (options.reviewResult !== undefined) {
+        await writeJsonAtomic(path.join(reviewRoot, 'review-result.json'), options.reviewResult);
+      }
+      if (options.awReviewSummary !== undefined) {
+        await writeJsonAtomic(
+          path.join(reviewRoot, 'aw-review-summary.json'),
+          options.awReviewSummary,
+        );
+      }
       await writeJsonAtomic(path.join(reviewRoot, 'review-summary.json'), {
         schemaVersion: 1,
         completedAt: now,

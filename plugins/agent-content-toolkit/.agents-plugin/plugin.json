@@ -1,0 +1,30 @@
+{
+  "name": "agent-content-toolkit",
+  "version": "0.1.0",
+  "description": "Create and review agent-facing documents, Agent Skills, and Skill evals with shared quality standards.",
+  "compatibility": {
+    "aw": {
+      "minVersion": "0.0.0"
+    }
+  },
+  "skills": "./skills",
+  "scripts": {
+    "tests": {
+      "node": [
+        "./scripts/contract.test.mjs"
+      ]
+    }
+  },
+  "marketplace": {
+    "category": "workflow",
+    "strict": true,
+    "policy": {
+      "installation": "AVAILABLE",
+      "authentication": "ON_INSTALL",
+      "products": [
+        "CODEX",
+        "CLAUDE"
+      ]
+    }
+  }
+}

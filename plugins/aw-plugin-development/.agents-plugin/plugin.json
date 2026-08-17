@@ -1,0 +1,30 @@
+{
+  "name": "aw-plugin-development",
+  "version": "0.1.0",
+  "description": "Author and review agent-workflows plugins by composing the generic agent-content-toolkit with AW project adapters.",
+  "compatibility": {
+    "aw": {
+      "minVersion": "0.0.0"
+    }
+  },
+  "skills": "./skills",
+  "scripts": {
+    "tests": {
+      "node": [
+        "./scripts/contract.test.mjs"
+      ]
+    }
+  },
+  "marketplace": {
+    "category": "workflow",
+    "strict": true,
+    "policy": {
+      "installation": "AVAILABLE",
+      "authentication": "ON_INSTALL",
+      "products": [
+        "CODEX",
+        "CLAUDE"
+      ]
+    }
+  }
+}

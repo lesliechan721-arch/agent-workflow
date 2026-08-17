@@ -1,0 +1,147 @@
+{
+  "schemaVersion": 1,
+  "skill": "author-aw-plugin",
+  "policy": {
+    "optimization": "balanced",
+    "false_negative_cost": "high",
+    "false_positive_cost": "high",
+    "rationale": "漏触发和误触发都会把任务导向错误权限或错误交付。"
+  },
+  "cases": [
+    {
+      "id": "positive_1",
+      "split": "validation",
+      "query": "$author-aw-plugin 在 agent-workflows 仓库创建一个新插件和两个 Skill。",
+      "should_load_skill": true,
+      "eval_type": "trigger",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "core-positive",
+      "unit_under_test": "description",
+      "preconditions": {
+        "target_available": true
+      },
+      "oracle": {
+        "rationale": "请求的主要交付与该 Skill 的职责一致。",
+        "rule_refs": [
+          "SKILL.md description"
+        ],
+        "confidence": "high",
+        "allowed_variance": "报告结构可不同，但应加载目标 Skill。"
+      }
+    },
+    {
+      "id": "positive_2",
+      "split": "validation",
+      "query": "$author-aw-plugin 给现有 AW 插件新增 dynamic artifact 并运行作者验证。",
+      "should_load_skill": true,
+      "eval_type": "trigger",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "core-positive",
+      "unit_under_test": "description",
+      "preconditions": {
+        "target_available": true
+      },
+      "oracle": {
+        "rationale": "请求的主要交付与该 Skill 的职责一致。",
+        "rule_refs": [
+          "SKILL.md description"
+        ],
+        "confidence": "high",
+        "allowed_variance": "报告结构可不同，但应加载目标 Skill。"
+      }
+    },
+    {
+      "id": "positive_3",
+      "split": "validation",
+      "query": "$author-aw-plugin 修改 AW 插件 Skill、源码 manifest 版本和 materialization。",
+      "should_load_skill": true,
+      "eval_type": "trigger",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "core-positive",
+      "unit_under_test": "description",
+      "preconditions": {
+        "target_available": true
+      },
+      "oracle": {
+        "rationale": "请求的主要交付与该 Skill 的职责一致。",
+        "rule_refs": [
+          "SKILL.md description"
+        ],
+        "confidence": "high",
+        "allowed_variance": "报告结构可不同，但应加载目标 Skill。"
+      }
+    },
+    {
+      "id": "negative_1",
+      "split": "validation",
+      "query": "只读评审这个 AW 插件并给出发布结论。",
+      "should_load_skill": false,
+      "eval_type": "trigger",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "near-miss-negative",
+      "unit_under_test": "description",
+      "preconditions": {
+        "target_available": true
+      },
+      "oracle": {
+        "rationale": "请求属于相邻但不同的用户意图。",
+        "rule_refs": [
+          "SKILL.md description"
+        ],
+        "confidence": "high",
+        "allowed_variance": "可以调用相邻 Skill，但不应加载本 Skill。",
+        "minimal_counterexample": "将交付改为本 Skill 的主要职责后标签翻转。"
+      }
+    },
+    {
+      "id": "negative_2",
+      "split": "validation",
+      "query": "安装并使用一个 AW 插件。",
+      "should_load_skill": false,
+      "eval_type": "trigger",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "near-miss-negative",
+      "unit_under_test": "description",
+      "preconditions": {
+        "target_available": true
+      },
+      "oracle": {
+        "rationale": "请求属于相邻但不同的用户意图。",
+        "rule_refs": [
+          "SKILL.md description"
+        ],
+        "confidence": "high",
+        "allowed_variance": "可以调用相邻 Skill，但不应加载本 Skill。",
+        "minimal_counterexample": "将交付改为本 Skill 的主要职责后标签翻转。"
+      }
+    },
+    {
+      "id": "negative_3",
+      "split": "validation",
+      "query": "在仓库外创建普通 portable Skill。",
+      "should_load_skill": false,
+      "eval_type": "trigger",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "near-miss-negative",
+      "unit_under_test": "description",
+      "preconditions": {
+        "target_available": true
+      },
+      "oracle": {
+        "rationale": "请求属于相邻但不同的用户意图。",
+        "rule_refs": [
+          "SKILL.md description"
+        ],
+        "confidence": "high",
+        "allowed_variance": "可以调用相邻 Skill，但不应加载本 Skill。",
+        "minimal_counterexample": "将交付改为本 Skill 的主要职责后标签翻转。"
+      }
+    }
+  ]
+}

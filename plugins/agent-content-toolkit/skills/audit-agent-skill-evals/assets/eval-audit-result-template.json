@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "producer": "audit-agent-skill-evals",
+  "independentContext": false,
+  "auditId": "replace-with-audit-id",
+  "mode": "preflight",
+  "corpusDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "validity": "unknown",
+  "optimizationPolicy": "balanced",
+  "cases": [],
+  "blockedCases": [],
+  "releaseEligible": false,
+  "failureTriage": [],
+  "recommendedAction": "collect-more-data"
+}

@@ -1,0 +1,147 @@
+{
+  "schemaVersion": 1,
+  "skill": "review-agent-content",
+  "policy": {
+    "optimization": "balanced",
+    "false_negative_cost": "high",
+    "false_positive_cost": "high",
+    "rationale": "漏触发和误触发都会把任务导向错误权限或错误交付。"
+  },
+  "cases": [
+    {
+      "id": "positive_1",
+      "split": "validation",
+      "query": "只读审核这个 AGENTS.md 是否存在弱 pointer、sprawl 和重复规则。",
+      "should_load_skill": true,
+      "eval_type": "trigger",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "core-positive",
+      "unit_under_test": "description",
+      "preconditions": {
+        "target_available": true
+      },
+      "oracle": {
+        "rationale": "请求的主要交付与该 Skill 的职责一致。",
+        "rule_refs": [
+          "SKILL.md description"
+        ],
+        "confidence": "high",
+        "allowed_variance": "报告结构可不同，但应加载目标 Skill。"
+      }
+    },
+    {
+      "id": "positive_2",
+      "split": "validation",
+      "query": "评估这份 prompt 是否过度规定并限制模型发挥。",
+      "should_load_skill": true,
+      "eval_type": "trigger",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "core-positive",
+      "unit_under_test": "description",
+      "preconditions": {
+        "target_available": true
+      },
+      "oracle": {
+        "rationale": "请求的主要交付与该 Skill 的职责一致。",
+        "rule_refs": [
+          "SKILL.md description"
+        ],
+        "confidence": "high",
+        "allowed_variance": "报告结构可不同，但应加载目标 Skill。"
+      }
+    },
+    {
+      "id": "positive_3",
+      "split": "validation",
+      "query": "比较两版 role instructions，找出沉积和完成边界回归。",
+      "should_load_skill": true,
+      "eval_type": "trigger",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "core-positive",
+      "unit_under_test": "description",
+      "preconditions": {
+        "target_available": true
+      },
+      "oracle": {
+        "rationale": "请求的主要交付与该 Skill 的职责一致。",
+        "rule_refs": [
+          "SKILL.md description"
+        ],
+        "confidence": "high",
+        "allowed_variance": "报告结构可不同，但应加载目标 Skill。"
+      }
+    },
+    {
+      "id": "negative_1",
+      "split": "validation",
+      "query": "直接重写这个 AGENTS.md。",
+      "should_load_skill": false,
+      "eval_type": "trigger",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "near-miss-negative",
+      "unit_under_test": "description",
+      "preconditions": {
+        "target_available": true
+      },
+      "oracle": {
+        "rationale": "请求属于相邻但不同的用户意图。",
+        "rule_refs": [
+          "SKILL.md description"
+        ],
+        "confidence": "high",
+        "allowed_variance": "可以调用相邻 Skill，但不应加载本 Skill。",
+        "minimal_counterexample": "将交付改为本 Skill 的主要职责后标签翻转。"
+      }
+    },
+    {
+      "id": "negative_2",
+      "split": "validation",
+      "query": "完整评审这个 Agent Skill 包。",
+      "should_load_skill": false,
+      "eval_type": "trigger",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "near-miss-negative",
+      "unit_under_test": "description",
+      "preconditions": {
+        "target_available": true
+      },
+      "oracle": {
+        "rationale": "请求属于相邻但不同的用户意图。",
+        "rule_refs": [
+          "SKILL.md description"
+        ],
+        "confidence": "high",
+        "allowed_variance": "可以调用相邻 Skill，但不应加载本 Skill。",
+        "minimal_counterexample": "将交付改为本 Skill 的主要职责后标签翻转。"
+      }
+    },
+    {
+      "id": "negative_3",
+      "split": "validation",
+      "query": "检查这段普通用户文档的语法。",
+      "should_load_skill": false,
+      "eval_type": "trigger",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "near-miss-negative",
+      "unit_under_test": "description",
+      "preconditions": {
+        "target_available": true
+      },
+      "oracle": {
+        "rationale": "请求属于相邻但不同的用户意图。",
+        "rule_refs": [
+          "SKILL.md description"
+        ],
+        "confidence": "high",
+        "allowed_variance": "可以调用相邻 Skill，但不应加载本 Skill。",
+        "minimal_counterexample": "将交付改为本 Skill 的主要职责后标签翻转。"
+      }
+    }
+  ]
+}

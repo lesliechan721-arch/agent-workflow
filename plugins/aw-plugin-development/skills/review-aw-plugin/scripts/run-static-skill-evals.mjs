@@ -1,0 +1,1428 @@
+#!/usr/bin/env node
+
+import { createHash } from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { realpathSync } from 'node:fs';
+import {
+  access,
+  cp,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  realpath,
+  stat,
+  writeFile,
+} from 'node:fs/promises';
+import { createRequire } from 'node:module';
+import path from 'node:path';
+import { promisify } from 'node:util';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+
+const execFileAsync = promisify(execFile);
+let requireFromScript = createRequire(import.meta.url);
+let yamlModule;
+
+function yaml() {
+  yamlModule ??= requireFromScript('yaml');
+  return yamlModule;
+}
+const SCRIPT_ROOT = path.dirname(fileURLToPath(import.meta.url));
+const REVIEW_SKILL_ROOT = path.dirname(SCRIPT_ROOT);
+let REPO_ROOT = process.cwd();
+let STATIC_SKILLS_ROOT = path.join(REPO_ROOT, '.agents', 'skills');
+const SCHEMA_VERSION = 1;
+const PROFILE = 'project-default';
+
+function fail(message) {
+  throw new Error(message);
+}
+
+function usage() {
+  return `Usage:
+  node plugins/aw-plugin-development/skills/review-aw-plugin/scripts/run-static-skill-evals.mjs <skill-name-or-dir> --validate-only
+  node plugins/aw-plugin-development/skills/review-aw-plugin/scripts/run-static-skill-evals.mjs <skill-name-or-dir> [options]
+
+Options:
+  --suite <id>                    Run one suite; default runs release-required suites
+  --split <train|validation|sanity|all>
+  --case <id>                     Run one case; requires --suite
+  --runs <count>                  Override repetitions per case
+  --model <model>                 Parent Codex model (default: gpt-5.6-luna)
+  --model-provider <id>           Override the inherited Codex model provider
+  --codex-config <path>           Read model/provider config from this config.toml
+  --no-inherit-codex-config       Use a clean official Codex provider config
+  --codex-bin <path>              Codex executable; default: codex
+  --batch-name <name>             Create a named report batch
+  --batch-id <id>                 Append to an existing report batch
+  --run-id <id>                  Use an explicit unique report run id
+  --allow-unmanaged-processes    Confirm a run without descendant process tracking
+  --repo-root <path>             Agent-workflows repository root. Default: current directory
+  --validate-only                 Validate target, manifest, corpus, and workspace paths
+  -h, --help                      Show this help
+
+Model evals require a built CLI: pnpm build
+`;
+}
+
+function optionValue(args, index, flag) {
+  const value = args[index + 1];
+  if (!value || value.startsWith('--')) fail(`${flag} requires a value.`);
+  return value;
+}
+
+function positiveInteger(value, flag) {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) fail(`${flag} requires a positive integer.`);
+  return parsed;
+}
+
+function parseArgs(argv) {
+  const args = argv.slice(2);
+  const options = {
+    codexBin: 'codex',
+    inheritCodexConfig: true,
+    validateOnly: false,
+  };
+  const positional = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === '-h' || arg === '--help') {
+      options.help = true;
+      continue;
+    }
+    if (arg === '--validate-only') {
+      options.validateOnly = true;
+      continue;
+    }
+    if (arg === '--no-inherit-codex-config') {
+      options.inheritCodexConfig = false;
+      continue;
+    }
+    if (arg === '--allow-unmanaged-processes') {
+      options.allowUnmanagedProcesses = true;
+      continue;
+    }
+    if (!arg.startsWith('--')) {
+      positional.push(arg);
+      continue;
+    }
+    const value = optionValue(args, index, arg);
+    index += 1;
+    if (arg === '--suite') options.suite = value;
+    else if (arg === '--split') options.split = value;
+    else if (arg === '--case') options.caseId = value;
+    else if (arg === '--runs') options.runs = positiveInteger(value, arg);
+    else if (arg === '--model') options.model = value;
+    else if (arg === '--model-provider') options.modelProvider = value;
+    else if (arg === '--codex-config') options.codexConfig = path.resolve(value);
+    else if (arg === '--codex-bin') options.codexBin = value;
+    else if (arg === '--batch-name') options.batchName = value;
+    else if (arg === '--batch-id') options.batchId = value;
+    else if (arg === '--run-id') options.runId = value;
+    else if (arg === '--repo-root') options.repoRoot = path.resolve(value);
+    else fail(`Unknown option: ${arg}`);
+  }
+  if (options.help) return options;
+  if (positional.length !== 1) fail(usage());
+  options.target = positional[0];
+  if (options.split && !['train', 'validation', 'sanity', 'all'].includes(options.split)) {
+    fail('--split must be train, validation, sanity, or all.');
+  }
+  if (options.caseId && !options.suite) fail('--case requires --suite.');
+  if (
+    options.caseId &&
+    (
+      options.caseId === '.' ||
+      options.caseId === '..' ||
+      options.caseId.includes('/') ||
+      options.caseId.includes('\\') ||
+      options.caseId.includes('\0') ||
+      path.isAbsolute(options.caseId) ||
+      path.win32.isAbsolute(options.caseId)
+    )
+  ) {
+    fail('--case must be one safe report path segment.');
+  }
+  if (!options.validateOnly && (options.batchName ? 1 : 0) + (options.batchId ? 1 : 0) !== 1) {
+    fail('Provide exactly one of --batch-name or --batch-id.');
+  }
+  if (!options.inheritCodexConfig && (options.codexConfig || options.modelProvider)) {
+    fail('--no-inherit-codex-config cannot be combined with --codex-config or --model-provider.');
+  }
+  if (options.validateOnly) {
+    if (
+      options.batchName || options.batchId || options.runId || options.allowUnmanagedProcesses || options.model ||
+      options.modelProvider || options.codexConfig || !options.inheritCodexConfig || options.runs
+    ) {
+      fail('--validate-only does not accept output or model-run options.');
+    }
+  }
+  return options;
+}
+
+async function pathExists(candidate) {
+  try {
+    await access(candidate);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isPathInside(root, candidate) {
+  const relative = path.relative(root, candidate);
+  return relative === '' || (
+    relative !== '..' &&
+    !relative.startsWith(`..${path.sep}`) &&
+    !path.isAbsolute(relative)
+  );
+}
+
+async function assertRealPathInside(root, candidate, label) {
+  const [realRoot, realCandidate] = await Promise.all([realpath(root), realpath(candidate)]);
+  if (!isPathInside(realRoot, realCandidate)) fail(`${label} must stay inside ${root}.`);
+}
+
+async function resolveSkillRoot(target) {
+  let candidate = target;
+  if (!(await pathExists(candidate))) candidate = path.join(STATIC_SKILLS_ROOT, target);
+  candidate = path.resolve(candidate);
+  if ((await lstat(candidate)).isSymbolicLink()) fail('Static eval target cannot be a symlink.');
+  if ((await stat(candidate)).isFile()) {
+    if (path.basename(candidate) !== 'SKILL.md') fail('Static eval target file must be SKILL.md.');
+    candidate = path.dirname(candidate);
+  }
+  if (!(await stat(candidate)).isDirectory()) fail(`Static eval target is not a directory: ${candidate}`);
+  const [skillsRoot, realCandidate] = await Promise.all([
+    realpath(STATIC_SKILLS_ROOT),
+    realpath(candidate),
+  ]);
+  if (path.dirname(realCandidate) !== skillsRoot) {
+    fail('Static eval target must be a direct .agents/skills/<name> directory.');
+  }
+  candidate = realCandidate;
+  await assertNoSymlinks(candidate, 'Static eval target');
+  if (!(await pathExists(path.join(candidate, 'SKILL.md')))) {
+    fail(`Static eval target has no SKILL.md: ${candidate}`);
+  }
+  const readmePath = path.join(candidate, 'README.md');
+  if (!(await pathExists(readmePath))) {
+    fail(`Static eval target has no README.md: ${candidate}`);
+  }
+  if ((await readFile(readmePath, 'utf8')).trim() === '') {
+    fail(`Static eval target README.md must not be empty: ${candidate}`);
+  }
+  return candidate;
+}
+
+async function assertNoSymlinks(candidate, label) {
+  const metadata = await lstat(candidate);
+  if (metadata.isSymbolicLink()) fail(`${label} cannot contain symlinks: ${candidate}`);
+  if (!metadata.isDirectory()) return;
+  for (const entry of await readdir(candidate, { withFileTypes: true })) {
+    const child = path.join(candidate, entry.name);
+    if (entry.isSymbolicLink()) fail(`${label} cannot contain symlinks: ${child}`);
+    if (entry.isDirectory()) await assertNoSymlinks(child, label);
+  }
+}
+
+async function readJson(candidate, label) {
+  try {
+    return JSON.parse(await readFile(candidate, 'utf8'));
+  } catch (error) {
+    fail(`${label} is invalid JSON: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+function record(value, label) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) fail(`${label} must be an object.`);
+  return value;
+}
+
+function nonEmptyString(value, label) {
+  if (typeof value !== 'string' || value.trim() === '') fail(`${label} must be a non-empty string.`);
+  return value.trim();
+}
+
+function boolean(value, label) {
+  if (typeof value !== 'boolean') fail(`${label} must be boolean.`);
+  return value;
+}
+
+function rate(value, label) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0 || value > 1) {
+    fail(`${label} must be greater than 0 and at most 1.`);
+  }
+  return value;
+}
+
+function stringArray(value, label, { allowEmpty = false } = {}) {
+  if (!Array.isArray(value) || (!allowEmpty && value.length === 0)) {
+    fail(`${label} must be ${allowEmpty ? 'an' : 'a non-empty'} array.`);
+  }
+  return value.map((entry, index) => nonEmptyString(entry, `${label}[${index}]`));
+}
+
+function evalWorkspacePath(value, label, { allowTreePattern = false } = {}) {
+  const raw = nonEmptyString(value, label);
+  const treePattern = allowTreePattern && raw.endsWith('/**');
+  const candidate = treePattern ? raw.slice(0, -3) : raw;
+  if (
+    candidate === '' ||
+    candidate.includes('\0') ||
+    candidate.includes('\\') ||
+    candidate.includes('*') ||
+    candidate.includes('?') ||
+    candidate.includes('[') ||
+    candidate.includes(']') ||
+    path.isAbsolute(candidate) ||
+    path.posix.normalize(candidate) !== candidate ||
+    candidate.split('/').includes('..')
+  ) {
+    fail(`${label} must be a normalized POSIX path inside the eval workspace.`);
+  }
+  const firstSegment = candidate.split('/')[0];
+  if (firstSegment === '.git' || firstSegment === '.agents' || firstSegment === '.codex') {
+    fail(`${label} must not target an eval control directory.`);
+  }
+  return raw;
+}
+
+function workspacePathMatchesPattern(relativePath, pattern) {
+  if (pattern.endsWith('/**')) {
+    const prefix = pattern.slice(0, -3);
+    return relativePath === prefix || relativePath.startsWith(`${prefix}/`);
+  }
+  return relativePath === pattern;
+}
+
+function relativeEvalPath(skillRoot, value, label) {
+  const relative = nonEmptyString(value, label).replace(/^\.\//u, '');
+  if (
+    path.isAbsolute(relative) ||
+    path.win32.isAbsolute(relative) ||
+    relative.split(/[\\/]/u).includes('..')
+  ) {
+    fail(`${label} must stay inside evals/.`);
+  }
+  const absolute = path.resolve(skillRoot, relative);
+  if (!isPathInside(path.join(skillRoot, 'evals'), absolute) || !relative.startsWith('evals/')) {
+    fail(`${label} must stay inside evals/.`);
+  }
+  return `./${relative.split(path.sep).join('/')}`;
+}
+
+async function validateEvalFile(skillRoot, value, label) {
+  const relative = relativeEvalPath(skillRoot, value, label);
+  const absolute = path.resolve(skillRoot, relative.replace(/^\.\//u, ''));
+  if (!(await pathExists(absolute)) || !(await stat(absolute)).isFile()) {
+    fail(`${label} does not reference a file: ${relative}`);
+  }
+  await assertRealPathInside(path.join(skillRoot, 'evals'), absolute, label);
+  return relative;
+}
+
+async function validateSuite(skillRoot, value, index) {
+  const row = record(value, `suites[${index}]`);
+  const id = nonEmptyString(row.id, `suites[${index}].id`);
+  if (!/^[a-z0-9][a-z0-9-]*$/u.test(id)) fail(`suites[${index}].id must use kebab-case.`);
+  if (row.kind !== 'trigger' && row.kind !== 'conversation') {
+    fail(`suites[${index}].kind must be trigger or conversation.`);
+  }
+  const releaseSplits = row.releaseSplits === undefined
+    ? []
+    : stringArray(row.releaseSplits, `suites[${index}].releaseSplits`, { allowEmpty: true });
+  for (const split of releaseSplits) {
+    if (!['train', 'validation', 'sanity', 'all'].includes(split)) {
+      fail(`suites[${index}] has unsupported release split ${JSON.stringify(split)}.`);
+    }
+  }
+  const isolation = row.isolation === undefined ? 'standard' : row.isolation;
+  if (isolation !== 'standard' && isolation !== 'strict') {
+    fail(`suites[${index}].isolation must be standard or strict.`);
+  }
+  const common = {
+    id,
+    kind: row.kind,
+    skill: nonEmptyString(row.skill, `suites[${index}].skill`),
+    skills: stringArray(row.skills, `suites[${index}].skills`),
+    cases: await validateEvalFile(skillRoot, row.cases, `suites[${index}].cases`),
+    profiles: [PROFILE],
+    defaultRuns: positiveInteger(row.defaultRuns, `suites[${index}].defaultRuns`),
+    releaseSplits,
+    requiredForRelease: boolean(row.requiredForRelease, `suites[${index}].requiredForRelease`),
+    perRunTimeoutMs: positiveInteger(row.perRunTimeoutMs, `suites[${index}].perRunTimeoutMs`),
+    isolation,
+  };
+  if (row.kind === 'conversation') return common;
+  const strictNegativeSplits = row.strictNegativeSplits === undefined
+    ? []
+    : stringArray(row.strictNegativeSplits, `suites[${index}].strictNegativeSplits`, { allowEmpty: true });
+  if (strictNegativeSplits.some((split) => !['train', 'validation', 'sanity'].includes(split))) {
+    fail(`suites[${index}].strictNegativeSplits contains an unsupported split.`);
+  }
+  if (row.fixtureModule !== undefined) {
+    fail(
+      `suites[${index}].fixtureModule is not supported for static Skill evals; ` +
+      'use declarative workspace.copy fixtures.',
+    );
+  }
+  return {
+    ...common,
+    observeSpawnAgent: boolean(row.observeSpawnAgent, `suites[${index}].observeSpawnAgent`),
+    isolation,
+    strictNegativeSplits,
+    ...(row.minimumPassRate === undefined ? {} : {
+      minimumPassRate: rate(row.minimumPassRate, `suites[${index}].minimumPassRate`),
+    }),
+    forbidMultipleSkillLoads: row.forbidMultipleSkillLoads === undefined
+      ? false
+      : boolean(
+        row.forbidMultipleSkillLoads,
+        `suites[${index}].forbidMultipleSkillLoads`,
+      ),
+  };
+}
+
+async function validateWorkspace(repoRoot, skillNames, workspace) {
+  if (workspace === undefined) return [];
+  const row = record(workspace, 'workspace');
+  if (!Array.isArray(row.copy)) fail('workspace.copy must be an array.');
+  const copies = [];
+  for (const [index, value] of row.copy.entries()) {
+    const entry = record(value, `workspace.copy[${index}]`);
+    const from = nonEmptyString(entry.from, `workspace.copy[${index}].from`);
+    const to = nonEmptyString(entry.to, `workspace.copy[${index}].to`);
+    if (path.isAbsolute(from) || path.win32.isAbsolute(from) || from.split(/[\\/]/u).includes('..')) {
+      fail(`workspace.copy[${index}].from must be repo-root relative.`);
+    }
+    if (path.isAbsolute(to) || path.win32.isAbsolute(to) || to.split(/[\\/]/u).includes('..')) {
+      fail(`workspace.copy[${index}].to must stay inside the subject.`);
+    }
+    const source = path.resolve(repoRoot, from);
+    if (!(await pathExists(source))) fail(`workspace.copy[${index}].from does not exist: ${from}`);
+    await assertRealPathInside(repoRoot, source, `workspace.copy[${index}].from`);
+    await assertNoSymlinks(source, `workspace.copy[${index}].from`);
+    const normalizedTarget = path.posix.normalize(to.replaceAll('\\', '/'))
+      .replace(/^\.\//u, '');
+    const protectedTargets = [
+      '.codex',
+      ...skillNames.map((skillName) => `.agents/skills/${skillName}`),
+    ];
+    const overlapsProtectedTarget = protectedTargets.some((protectedTarget) =>
+      normalizedTarget === '.' ||
+      normalizedTarget === protectedTarget ||
+      normalizedTarget.startsWith(`${protectedTarget}/`) ||
+      protectedTarget.startsWith(`${normalizedTarget}/`));
+    if (overlapsProtectedTarget) {
+      fail(`workspace.copy[${index}].to cannot replace Codex config or the target Skill.`);
+    }
+    copies.push({ from, to: normalizedTarget });
+  }
+  return copies;
+}
+
+function validateConversationReply(value, label) {
+  if (typeof value === 'string') return;
+  const reply = record(value, label);
+  if (!Array.isArray(reply.answers_by_index) || reply.answers_by_index.some(
+    (entry) => typeof entry !== 'string',
+  )) {
+    fail(`${label}.answers_by_index must be an array of strings.`);
+  }
+  if (
+    reply.expected_question_count !== undefined &&
+    (!Number.isInteger(reply.expected_question_count) || reply.expected_question_count < 0)
+  ) {
+    fail(`${label}.expected_question_count must be a non-negative integer.`);
+  }
+  nonEmptyString(reply.unexpected_question_answer, `${label}.unexpected_question_answer`);
+}
+
+async function validateLocalCases(skillRoot, suite) {
+  const casesPath = path.resolve(skillRoot, suite.cases.replace(/^\.\//u, ''));
+  const document = record(await readJson(casesPath, `${suite.id} cases`), `${suite.id} cases`);
+  if (suite.kind === 'trigger') {
+    if (document.schemaVersion !== SCHEMA_VERSION) fail(`${suite.id} cases must use schemaVersion 1.`);
+    if (document.skill !== suite.skill) fail(`${suite.id} cases skill must match ${JSON.stringify(suite.skill)}.`);
+    if (!Array.isArray(document.cases) || document.cases.length === 0) {
+      fail(`${suite.id} cases must contain a non-empty cases array.`);
+    }
+    const ids = new Set();
+    const splits = new Set();
+    for (const [index, value] of document.cases.entries()) {
+      const row = record(value, `${suite.id}.cases[${index}]`);
+      const id = nonEmptyString(row.id, `${suite.id}.cases[${index}].id`);
+      if (!/^[a-z0-9][a-z0-9_]*$/u.test(id)) fail(`${suite.id}.cases[${index}].id must use snake_case.`);
+      if (ids.has(id)) fail(`${suite.id} cases has duplicate id ${JSON.stringify(id)}.`);
+      ids.add(id);
+      const split = nonEmptyString(row.split, `${suite.id}.cases[${index}].split`);
+      if (!['train', 'validation', 'sanity'].includes(split)) {
+        fail(`${suite.id}.cases[${index}].split is invalid.`);
+      }
+      splits.add(split);
+      nonEmptyString(row.query, `${suite.id}.cases[${index}].query`);
+      const usesLegacyExpectation = row.should_load_skill !== undefined;
+      const usesRouteExpectation = row.expected_loaded_skills !== undefined;
+      if (usesLegacyExpectation === usesRouteExpectation) {
+        fail(`${suite.id}.cases[${index}] must declare exactly one trigger expectation.`);
+      }
+      if (usesLegacyExpectation) {
+        boolean(row.should_load_skill, `${suite.id}.cases[${index}].should_load_skill`);
+      } else {
+        const expectedSkills = stringArray(
+          row.expected_loaded_skills,
+          `${suite.id}.cases[${index}].expected_loaded_skills`,
+          { allowEmpty: true },
+        );
+        if (new Set(expectedSkills).size !== expectedSkills.length) {
+          fail(`${suite.id}.cases[${index}].expected_loaded_skills contains duplicates.`);
+        }
+        if (expectedSkills.some((skillName) => !suite.skills.includes(skillName))) {
+          fail(`${suite.id}.cases[${index}].expected_loaded_skills contains a non-participant Skill.`);
+        }
+        if (suite.forbidMultipleSkillLoads && expectedSkills.length > 1) {
+          fail(`${suite.id}.cases[${index}] expects multiple Skills but the suite forbids it.`);
+        }
+      }
+      if (suite.observeSpawnAgent && row.should_spawn_agent === undefined) {
+        fail(`${suite.id}.cases[${index}].should_spawn_agent is required.`);
+      }
+      if (!suite.observeSpawnAgent && row.should_spawn_agent !== undefined) {
+        fail(`${suite.id}.cases[${index}].should_spawn_agent requires observeSpawnAgent=true.`);
+      }
+      if (row.should_spawn_agent !== undefined) {
+        boolean(row.should_spawn_agent, `${suite.id}.cases[${index}].should_spawn_agent`);
+      }
+      if (row.workspace_fixture !== undefined) {
+        fail(
+          `${suite.id}.cases[${index}].workspace_fixture is not supported for static ` +
+          'Skill evals; use manifest.workspace.copy.',
+        );
+      }
+      if (row.use_project_rules !== undefined) {
+        boolean(row.use_project_rules, `${suite.id}.cases[${index}].use_project_rules`);
+      }
+      if (row.tags !== undefined) stringArray(row.tags, `${suite.id}.cases[${index}].tags`);
+    }
+    for (const split of suite.releaseSplits) {
+      if (split !== 'all' && !splits.has(split)) fail(`${suite.id} has no cases for release split ${split}.`);
+    }
+    return;
+  }
+
+  if (document.skill_name !== suite.skill) {
+    fail(`${suite.id} cases skill_name must match ${JSON.stringify(suite.skill)}.`);
+  }
+  if (!Array.isArray(document.evals) || document.evals.length === 0) {
+    fail(`${suite.id} cases must contain a non-empty evals array.`);
+  }
+  const ids = new Set();
+  for (const [index, value] of document.evals.entries()) {
+    const row = record(value, `${suite.id}.evals[${index}]`);
+    const id = nonEmptyString(row.id, `${suite.id}.evals[${index}].id`);
+    if (ids.has(id)) fail(`${suite.id} cases has duplicate id ${JSON.stringify(id)}.`);
+    ids.add(id);
+    nonEmptyString(row.prompt, `${suite.id}.evals[${index}].prompt`);
+    const sandbox = row.sandbox === undefined
+      ? 'read-only'
+      : nonEmptyString(row.sandbox, `${suite.id}.evals[${index}].sandbox`);
+    if (sandbox !== 'read-only' && sandbox !== 'workspace-write') {
+      fail(`${suite.id}.evals[${index}].sandbox must be "read-only" or "workspace-write".`);
+    }
+    if (!Array.isArray(row.scripted_replies)) {
+      fail(`${suite.id}.evals[${index}].scripted_replies must be an array.`);
+    }
+    row.scripted_replies.forEach((reply, replyIndex) =>
+      validateConversationReply(reply, `${suite.id}.evals[${index}].scripted_replies[${replyIndex}]`));
+    nonEmptyString(row.expected_output, `${suite.id}.evals[${index}].expected_output`);
+    const review = record(row.review, `${suite.id}.evals[${index}].review`);
+    stringArray(review.checks, `${suite.id}.evals[${index}].review.checks`);
+    if (review.workspace_unchanged !== undefined) {
+      boolean(review.workspace_unchanged, `${suite.id}.evals[${index}].review.workspace_unchanged`);
+    }
+    const allowedWorkspaceChanges = review.allowed_workspace_changes === undefined
+      ? []
+      : stringArray(
+          review.allowed_workspace_changes,
+          `${suite.id}.evals[${index}].review.allowed_workspace_changes`,
+        ).map((entry, pathIndex) => evalWorkspacePath(
+          entry,
+          `${suite.id}.evals[${index}].review.allowed_workspace_changes[${pathIndex}]`,
+          { allowTreePattern: true },
+        ));
+    const artifacts = review.artifacts === undefined ? [] : review.artifacts;
+    if (!Array.isArray(artifacts)) {
+      fail(`${suite.id}.evals[${index}].review.artifacts must be an array.`);
+    }
+    const artifactPaths = artifacts.map((artifact, artifactIndex) => {
+      const artifactLabel = `${suite.id}.evals[${index}].review.artifacts[${artifactIndex}]`;
+      const artifactRow = record(artifact, artifactLabel);
+      const artifactPath = evalWorkspacePath(artifactRow.path, `${artifactLabel}.path`);
+      if (artifactRow.exists !== undefined) boolean(artifactRow.exists, `${artifactLabel}.exists`);
+      if (artifactRow.contains !== undefined) stringArray(artifactRow.contains, `${artifactLabel}.contains`);
+      if (artifactRow.not_contains !== undefined) {
+        stringArray(artifactRow.not_contains, `${artifactLabel}.not_contains`);
+      }
+      if (artifactRow.json !== undefined) record(artifactRow.json, `${artifactLabel}.json`);
+      return artifactPath;
+    });
+    if (new Set(artifactPaths).size !== artifactPaths.length) {
+      fail(`${suite.id}.evals[${index}].review.artifacts contains duplicate paths.`);
+    }
+    if (sandbox === 'workspace-write') {
+      if (review.workspace_unchanged !== false) {
+        fail(`${suite.id}.evals[${index}] workspace-write requires review.workspace_unchanged=false.`);
+      }
+      if (allowedWorkspaceChanges.length === 0 || artifactPaths.length === 0) {
+        fail(`${suite.id}.evals[${index}] workspace-write requires allowed changes and artifacts.`);
+      }
+      const unmatchedArtifact = artifactPaths.find((artifactPath) =>
+        !allowedWorkspaceChanges.some((pattern) =>
+          workspacePathMatchesPattern(artifactPath, pattern)));
+      if (unmatchedArtifact) {
+        fail(`${suite.id}.evals[${index}] artifact ${JSON.stringify(unmatchedArtifact)} is outside allowed changes.`);
+      }
+    }
+  }
+}
+
+async function readManifest(skillRoot, skillName) {
+  const manifestPath = path.join(skillRoot, 'evals', 'manifest.json');
+  const document = record(await readJson(manifestPath, 'static eval manifest'), 'static eval manifest');
+  if (document.schemaVersion !== SCHEMA_VERSION) fail(`manifest.schemaVersion must be ${SCHEMA_VERSION}.`);
+  if (document.skill !== skillName) fail(`manifest.skill must match ${JSON.stringify(skillName)}.`);
+  if (!Array.isArray(document.suites) || document.suites.length === 0) {
+    fail('manifest.suites must be a non-empty array.');
+  }
+  const suites = await Promise.all(document.suites.map((suite, index) =>
+    validateSuite(skillRoot, suite, index)));
+  if (new Set(suites.map((suite) => suite.id)).size !== suites.length) fail('manifest has duplicate suite ids.');
+  if (suites.some((suite) => suite.skill !== skillName)) fail('Every suite.skill must match manifest.skill.');
+  for (const suite of suites) {
+    if (new Set(suite.skills).size !== suite.skills.length) {
+      fail(`Suite ${JSON.stringify(suite.id)} has duplicate participant Skills.`);
+    }
+    if (!suite.skills.includes(skillName)) {
+      fail(`Suite ${JSON.stringify(suite.id)} must include owner Skill ${JSON.stringify(skillName)}.`);
+    }
+    for (const participant of suite.skills) {
+      if (!/^[a-z0-9][a-z0-9-]*$/u.test(participant)) {
+        fail(`Suite ${JSON.stringify(suite.id)} participant Skill must use kebab-case.`);
+      }
+    }
+  }
+  const participantSkills = [...new Set(suites.flatMap((suite) => suite.skills))];
+  await Promise.all(suites.map((suite) => validateLocalCases(skillRoot, suite)));
+  return {
+    path: manifestPath,
+    skill: skillName,
+    participantSkills,
+    workspace: await validateWorkspace(REPO_ROOT, participantSkills, document.workspace),
+    suites,
+  };
+}
+
+export function parseSkillName(content, skillRoot) {
+  const match = content.match(/^---\s*\n([\s\S]*?)\n---\s*\n/u);
+  if (!match) fail(`SKILL.md has no valid frontmatter: ${skillRoot}`);
+  let frontmatter;
+  try {
+    frontmatter = record(yaml().parse(match[1]), 'SKILL.md frontmatter');
+  } catch (error) {
+    fail(`SKILL.md has invalid YAML frontmatter: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const name = nonEmptyString(frontmatter.name, 'SKILL.md frontmatter.name');
+  if (name !== path.basename(skillRoot)) fail(`Skill name ${JSON.stringify(name)} must match its directory.`);
+  return name;
+}
+
+function isSkillAuthorOnlyPath(relativePath) {
+  const [topLevel] = relativePath.split(/[\\/]/u).filter(Boolean);
+  return topLevel === 'evals' || topLevel === 'reports';
+}
+
+async function listFiles(root) {
+  const files = [];
+  async function visit(current, prefix = '') {
+    const entries = await readdir(current, { withFileTypes: true });
+    entries.sort((left, right) => left.name.localeCompare(right.name));
+    for (const entry of entries) {
+      const absolute = path.join(current, entry.name);
+      const relative = path.join(prefix, entry.name);
+      if (isSkillAuthorOnlyPath(relative)) continue;
+      if (entry.isDirectory()) await visit(absolute, relative);
+      else if (entry.isFile()) files.push(relative);
+      else if (entry.isSymbolicLink()) fail(`Static eval target cannot contain symlink: ${relative}`);
+    }
+  }
+  await visit(root);
+  return files;
+}
+
+async function digestTree(root) {
+  const hash = createHash('sha256');
+  for (const relative of await listFiles(root)) {
+    hash.update(relative.split(path.sep).join('/'));
+    hash.update('\0');
+    hash.update(await readFile(path.join(root, relative)));
+    hash.update('\0');
+  }
+  return `sha256:${hash.digest('hex')}`;
+}
+
+async function prepareSubject(manifest, outputDir) {
+  const subjectRoot = path.join(outputDir, 'subject');
+  const skillsRoot = path.join(subjectRoot, '.agents', 'skills');
+  await mkdir(skillsRoot, { recursive: true });
+  for (const participant of manifest.participantSkills) {
+    const source = path.join(STATIC_SKILLS_ROOT, participant);
+    const target = path.join(skillsRoot, participant);
+    await cp(source, target, {
+      recursive: true,
+      force: false,
+      errorOnExist: true,
+      filter: (candidate) => !isSkillAuthorOnlyPath(path.relative(source, candidate)),
+    });
+  }
+  await mkdir(path.join(subjectRoot, '.git'), { recursive: true });
+  for (const entry of manifest.workspace) {
+    const source = path.join(REPO_ROOT, entry.from);
+    const destination = path.join(subjectRoot, entry.to);
+    await mkdir(path.dirname(destination), { recursive: true });
+    await cp(source, destination, { recursive: true, force: false, errorOnExist: true });
+  }
+  return subjectRoot;
+}
+
+async function loadCentralDrivers() {
+  const root = path.join(REPO_ROOT, 'packages', 'cli', 'dist', 'scripts');
+  const files = {
+    contract: path.join(root, 'plugin-eval-contract.js'),
+    runtime: path.join(root, 'codex-eval-runtime-config.js'),
+    trigger: path.join(root, 'codex-trigger-eval.js'),
+    conversation: path.join(root, 'codex-eval-app-server.js'),
+    processManagement: path.join(root, 'codex-eval-process-management.js'),
+    isolation: path.join(root, 'codex-eval-isolation.js'),
+    reporting: path.join(root, 'skill-reporting.js'),
+  };
+  for (const file of Object.values(files)) {
+    if (!(await pathExists(file))) fail(`Built eval driver not found: ${file}. Run pnpm build first.`);
+  }
+  const [contract, runtime, trigger, conversation, processManagement, isolation, reporting] = await Promise.all(
+    Object.values(files).map((file) => import(pathToFileURL(file).href)),
+  );
+  return { contract, runtime, trigger, conversation, processManagement, isolation, reporting };
+}
+
+async function validateCentralContracts(drivers, skillRoot, manifest) {
+  for (const suite of manifest.suites) {
+    if (suite.kind === 'trigger') {
+      await drivers.contract.readPluginEvalTriggerCases(skillRoot, suite);
+    } else {
+      const cases = await readJson(
+        path.resolve(skillRoot, suite.cases.replace(/^\.\//u, '')),
+        `${suite.id} cases`,
+      );
+      drivers.contract.validatePluginEvalConversationCaseDocument(cases, manifest.skill);
+    }
+  }
+}
+
+function selectedSuites(manifest, options) {
+  const suites = options.suite
+    ? manifest.suites.filter((suite) => suite.id === options.suite)
+    : manifest.suites.filter((suite) => suite.requiredForRelease);
+  if (suites.length === 0) fail(`Unknown or non-release suite: ${options.suite ?? '(none)'}`);
+  return suites;
+}
+
+function selectedSplits(suite, options) {
+  if (suite.kind !== 'trigger') return [null];
+  if (options.split) return [options.split];
+  if (options.caseId) return ['all'];
+  return suite.releaseSplits.length > 0 ? suite.releaseSplits : ['all'];
+}
+
+async function codexVersion(codexBin, env) {
+  try {
+    const result = await execFileAsync(codexBin, ['--version'], {
+      env,
+      timeout: 10_000,
+      encoding: 'utf8',
+    });
+    return result.stdout.trim() || result.stderr.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+export function staticEvalHarnessRoots(repoRoot = REPO_ROOT) {
+  return [
+    {
+      name: 'packages/cli/dist/scripts',
+      root: path.join(repoRoot, 'packages', 'cli', 'dist', 'scripts'),
+    },
+    {
+      name: 'packages/cli/dist/src',
+      root: path.join(repoRoot, 'packages', 'cli', 'dist', 'src'),
+    },
+    {
+      name: 'plugins/aw-plugin-development/skills/review-aw-plugin/scripts',
+      root: path.join(repoRoot, 'plugins', 'aw-plugin-development', 'skills', 'review-aw-plugin', 'scripts'),
+    },
+  ];
+}
+
+export function applyRunCountCoverage(report, suite, requestedRuns) {
+  if (requestedRuns === undefined || requestedRuns >= suite.defaultRuns) return report;
+  return {
+    ...report,
+    outcome: 'incomplete',
+    complete: false,
+    ...(report.caseResults ? {
+      caseResults: report.caseResults.map((entry) => ({
+        ...entry,
+        outcome: 'incomplete',
+        complete: false,
+      })),
+    } : {}),
+    diagnostics: [
+      ...report.diagnostics,
+      `Requested runs ${requestedRuns} are below the declared default ${suite.defaultRuns}.`,
+    ],
+  };
+}
+
+async function staticSuiteCaseIds(skillRoot, suite, split) {
+  const document = await readJson(
+    path.resolve(skillRoot, suite.cases.replace(/^\.\//u, '')),
+    `${suite.id} cases`,
+  );
+  if (suite.kind === 'trigger') {
+    return document.cases
+      .filter((entry) => !split || split === 'all' || entry.split === split)
+      .map((entry) => entry.id);
+  }
+  return document.evals.map((entry) => entry.id);
+}
+
+async function staticReleaseTargetCompositions(skillRoot, manifest) {
+  const compositions = {};
+  for (const suite of manifest.suites.filter((entry) => entry.requiredForRelease)) {
+    for (const split of suite.releaseSplits.length > 0 ? suite.releaseSplits : ['all']) {
+      const prefix = `${suite.kind}/${suite.id}/${PROFILE}/${split}`;
+      const caseIds = await staticSuiteCaseIds(skillRoot, suite, split);
+      compositions[`${prefix}/all`] = caseIds.map((caseId) => `${prefix}/${caseId}`);
+    }
+  }
+  return compositions;
+}
+
+function staticBatchReportPath(runId, reportPath) {
+  return reportPath
+    ? path.posix.join('evals', 'runs', runId, 'raw', reportPath)
+    : undefined;
+}
+
+function staticCaseResultFromTarget(target) {
+  return {
+    id: target.case,
+    outcome: target.outcome,
+    complete: target.complete,
+    mechanicalPassed: target.mechanicalPassed,
+    qualitativeReview: target.qualitativeReview,
+    ...(staticBatchReportPath(target.runId, target.reportPath)
+      ? { reportPath: staticBatchReportPath(target.runId, target.reportPath) }
+      : {}),
+    sourceRunId: target.runId,
+    reused: true,
+    summary: target.summary,
+    diagnostics: target.diagnostics,
+  };
+}
+
+async function writeStaticCaseIndex(outputDir, suite, split, cases) {
+  const name = [suite.id, split, 'case-index'].filter(Boolean).join('-');
+  const reportPath = path.join(outputDir, 'reports', `${name}.json`);
+  await mkdir(path.dirname(reportPath), { recursive: true });
+  await writeFile(reportPath, `${JSON.stringify({
+    schema_version: 1,
+    type: 'eval-case-index',
+    generated_at: new Date().toISOString(),
+    suite: suite.id,
+    kind: suite.kind,
+    profile: PROFILE,
+    split: split ?? 'all',
+    cases: cases.map((entry) => ({
+      id: entry.id,
+      outcome: entry.outcome,
+      complete: entry.complete,
+      mechanical_passed: entry.mechanicalPassed,
+      qualitative_review: entry.qualitativeReview ?? 'not_required',
+      source_run_id: entry.sourceRunId ?? null,
+      reused: entry.reused === true,
+      report_path: entry.reportPath ?? null,
+    })),
+  }, null, 2)}\n`, 'utf8');
+  return path.relative(outputDir, reportPath).split(path.sep).join('/');
+}
+
+function aggregateStaticCaseReport(suite, split, expectedIds, cases, reportPath) {
+  const byId = new Map(cases.map((entry) => [entry.id, entry]));
+  const ordered = expectedIds.flatMap((id) => byId.has(id) ? [byId.get(id)] : []);
+  const missing = expectedIds.filter((id) => !byId.has(id));
+  const complete = missing.length === 0 && ordered.every((entry) => entry.complete);
+  const outcome = !complete || ordered.some((entry) => entry.outcome === 'incomplete')
+    ? 'incomplete'
+    : ordered.some((entry) => entry.outcome === 'failed')
+      ? 'failed'
+      : ordered.some((entry) => entry.outcome === 'needs_review')
+        ? 'needs_review'
+        : 'passed';
+  return {
+    id: suite.id,
+    kind: suite.kind,
+    skills: suite.skills,
+    profile: PROFILE,
+    split,
+    outcome,
+    complete,
+    mechanicalPassed: ordered.every((entry) => entry.mechanicalPassed),
+    qualitativeReview: suite.kind === 'conversation' ? 'required' : 'not_required',
+    reportPath,
+    caseResults: ordered,
+    summary: {
+      cases: expectedIds.length,
+      completed: ordered.filter((entry) => entry.complete).length,
+      passed: ordered.filter((entry) => entry.outcome === 'passed').length,
+      failed: ordered.filter((entry) => entry.outcome === 'failed').length,
+      needsReview: ordered.filter((entry) => entry.outcome === 'needs_review').length,
+      incomplete: missing.length + ordered.filter((entry) => !entry.complete).length,
+    },
+    diagnostics: [
+      ...(missing.length > 0 ? [`Missing case evidence: ${missing.join(', ')}.`] : []),
+      ...ordered.flatMap((entry) => entry.diagnostics ?? []),
+    ],
+  };
+}
+
+async function readStaticSourceRevision(participantSkills) {
+  try {
+    const [head, status] = await Promise.all([
+      execFileAsync('git', ['rev-parse', 'HEAD'], {
+        cwd: REPO_ROOT,
+        encoding: 'utf8',
+      }),
+      execFileAsync('git', [
+        'status',
+        '--porcelain=v1',
+        '--',
+        ...participantSkills.map((skill) => `.agents/skills/${skill}`),
+        'packages/cli/scripts',
+        'packages/cli/src',
+        'plugins/aw-plugin-development/skills/review-aw-plugin',
+        ':(exclude).agents/reports/**',
+      ], {
+        cwd: REPO_ROOT,
+        encoding: 'utf8',
+      }),
+    ]);
+    return {
+      gitHead: head.stdout.trim() || null,
+      inScopeDirty: status.stdout.trim() !== '',
+    };
+  } catch {
+    return { gitHead: null, inScopeDirty: true };
+  }
+}
+
+async function run(options, skillRoot, skillName, manifest) {
+  const drivers = await loadCentralDrivers();
+  await validateCentralContracts(drivers, skillRoot, manifest);
+  const processManagement = await drivers.processManagement.resolveCodexEvalProcessManagement({
+    allowUnmanaged: options.allowUnmanagedProcesses === true,
+    sourceEnv: process.env,
+    preflight: () => drivers.isolation.assertCodexEvalKeychainWrapperAbsent({}),
+  });
+  if (processManagement.mode === 'unmanaged-confirmed') {
+    process.stderr.write(
+      '[skill:eval] WARNING: unmanaged process cleanup was explicitly confirmed. ' +
+      'No process-tree inspection was used, and this run cannot track or verify descendants.\n',
+    );
+  }
+  const sourceDigests = Object.fromEntries(await Promise.all(
+    manifest.participantSkills.map(async (participant) => [
+      participant,
+      await digestTree(path.join(STATIC_SKILLS_ROOT, participant)),
+    ]),
+  ));
+  const sourceDigest = sourceDigests[skillName];
+  const sourceRevision = await readStaticSourceRevision(manifest.participantSkills);
+  const authorSourceDigest = await drivers.reporting.computeAuthorSourceDigest(
+    manifest.participantSkills.map((participant) => ({
+      name: participant,
+      root: path.join(STATIC_SKILLS_ROOT, participant),
+    })),
+  );
+  const codexRuntime = await drivers.runtime.resolveCodexEvalRuntimeConfig({
+    sourceEnv: process.env,
+    inheritUserConfig: options.inheritCodexConfig,
+    configPath: options.codexConfig,
+    modelOverride: options.model,
+    modelProviderOverride: options.modelProvider,
+  });
+  const environmentDigest = drivers.reporting.createEnvironmentDigest({
+    nodeVersion: process.version,
+    platform: process.platform,
+    architecture: process.arch,
+  });
+  const modelEnvironmentDigest = drivers.reporting.createEnvironmentDigest({
+    model: options.model ?? codexRuntime.model ?? null,
+    modelProvider: codexRuntime.modelProvider,
+    codexConfigDigest: codexRuntime.evidenceDigest,
+    codexVersion: await codexVersion(options.codexBin, process.env),
+    processManagement,
+  });
+  const harnessDigest = await drivers.reporting.computeAuthorSourceDigest(
+    staticEvalHarnessRoots(),
+  );
+  const requiredTargets = drivers.reporting.staticReleaseTargets(manifest);
+  const targetCompositions = await staticReleaseTargetCompositions(skillRoot, manifest);
+  const layout = await drivers.reporting.createSkillEvalRunLayout({
+    repoRoot: REPO_ROOT,
+    owner: { kind: 'static-skill', skill: skillName },
+    batchName: options.batchName,
+    batchId: options.batchId,
+    runId: options.runId,
+    source: {
+      digest: authorSourceDigest,
+      gitHead: sourceRevision.gitHead,
+      inScopeDirty: sourceRevision.inScopeDirty,
+    },
+    environmentDigest,
+    modelEnvironmentDigest,
+    harnessDigest,
+    requiredTargets,
+    targetCompositions,
+  });
+  options.outputDir = layout.rawRoot;
+  const startedAt = layout.startedAt;
+  await writeFile(path.join(layout.reportRoot, 'run.json'), `${JSON.stringify({
+    schemaVersion: 1,
+    type: 'static-skill-eval',
+    runId: layout.runId,
+    skill: skillName,
+    participantSkills: manifest.participantSkills,
+    status: 'running',
+    startedAt,
+    pid: layout.pid,
+    host: layout.host,
+    processManagement,
+    rawDirectory: 'raw',
+  }, null, 2)}\n`, 'utf8');
+  process.stderr.write(
+    '[skill:eval] Model evals can run for tens of minutes or hours. Keep this process ' +
+      'session open and use the longest responsive wait that the tool allows. A wait timeout ' +
+      'is not an eval failure. Do not start separate status-poll commands.\n',
+  );
+  try {
+  const subjectRoot = await prepareSubject(manifest, layout.workRoot);
+  const subjectPackageDigests = Object.fromEntries(await Promise.all(
+    manifest.participantSkills.map(async (participant) => [
+      participant,
+      await digestTree(path.join(subjectRoot, '.agents', 'skills', participant)),
+    ]),
+  ));
+  for (const participant of manifest.participantSkills) {
+    if (subjectPackageDigests[participant] !== sourceDigests[participant]) {
+      fail(`Materialized static Skill ${participant} does not match its source package.`);
+    }
+  }
+  const staticSubjects = [{
+    profile: PROFILE,
+    scope: 'project',
+    modelExecution: true,
+    evidenceLevel: 'runtime-project',
+    root: 'subject',
+    contentDigest: `sha256:${createHash('sha256').update(JSON.stringify(subjectPackageDigests)).digest('hex')}`,
+    artifacts: await Promise.all(manifest.participantSkills.map(async (participant) => {
+      const subjectSkill = path.join(
+        subjectRoot,
+        '.agents',
+        'skills',
+        participant,
+        'SKILL.md',
+      );
+      return {
+        kind: 'skill',
+        key: participant,
+        path: `.agents/skills/${participant}/SKILL.md`,
+        contentDigest: `sha256:${createHash('sha256').update(await readFile(subjectSkill)).digest('hex')}`,
+        packagePath: `.agents/skills/${participant}`,
+        packageContentDigest: subjectPackageDigests[participant],
+      };
+    })),
+  }];
+  const runtimeCapsule = await drivers.runtime.createCodexEvalRuntimeCapsule(
+    codexRuntime,
+    process.env,
+    { allocate: () => mkdtemp(path.join(layout.workRoot, 'runtime-')) },
+  );
+  const reports = [];
+  try {
+    await mkdir(path.join(options.outputDir, 'reports'), { recursive: true });
+    suiteLoop: for (const suite of selectedSuites(manifest, options)) {
+      for (const split of selectedSplits(suite, options)) {
+        const reportName = [suite.id, split].filter(Boolean).join('-');
+        const reportPath = path.join(options.outputDir, 'reports', `${reportName}.json`);
+        process.stderr.write(`[skill:eval] ${skillName}/${reportName}\n`);
+        const declaredCaseIds = await staticSuiteCaseIds(skillRoot, suite, split);
+        const expectedCaseIds = options.caseId
+          ? declaredCaseIds.filter((id) => id === options.caseId)
+          : declaredCaseIds;
+        if (expectedCaseIds.length === 0) fail(`Unknown ${suite.kind} case: ${options.caseId}`);
+        const targets = expectedCaseIds.map((caseId) =>
+          drivers.reporting.createSkillEvalTargetKey([
+            suite.kind,
+            suite.id,
+            PROFILE,
+            split ?? 'all',
+            caseId,
+          ]));
+        const plan = await drivers.reporting.resolveSkillEvalTargetPlan({ layout, targets });
+        const targetByCase = new Map(targets.map((target, index) => [
+          expectedCaseIds[index],
+          target,
+        ]));
+        const caseResults = plan.reusable.map(staticCaseResultFromTarget);
+        const pendingCaseIds = expectedCaseIds.filter((caseId) =>
+          plan.pending.includes(targetByCase.get(caseId)));
+        if (plan.reusable.length > 0) {
+          process.stderr.write(
+            `[skill:eval] reuse=${plan.reusable.length} pending=${pendingCaseIds.length} ` +
+            `suite=${suite.id} split=${split ?? 'all'}\n`,
+          );
+        }
+        const recordCase = async (checkpoint) => {
+          let report = applyRunCountCoverage({
+            ...checkpoint.report,
+            reportPath: checkpoint.report.reportPath
+              ? path.relative(options.outputDir, checkpoint.report.reportPath).split(path.sep).join('/')
+              : undefined,
+          }, suite, options.runs);
+          await drivers.reporting.publishEvalRunCheckpoint({
+            layout,
+            evaluation: {
+              generatedAt: new Date().toISOString(),
+              outcome: report.outcome,
+              complete: report.complete,
+              mechanicalPassed: report.mechanicalPassed,
+              subjects: staticSubjects,
+              suites: [report],
+              diagnostics: report.diagnostics,
+            },
+            caseId: checkpoint.caseId,
+          });
+          const source = report.caseResults?.find((entry) => entry.id === checkpoint.caseId);
+          caseResults.push({
+            id: checkpoint.caseId,
+            outcome: source?.outcome ?? report.outcome,
+            complete: source?.complete ?? report.complete,
+            mechanicalPassed: source?.mechanicalPassed ?? report.mechanicalPassed,
+            qualitativeReview: source?.qualitativeReview ?? report.qualitativeReview,
+            ...(report.reportPath ? {
+              reportPath: staticBatchReportPath(layout.runId, report.reportPath),
+            } : {}),
+            sourceRunId: layout.runId,
+            reused: false,
+            summary: source?.summary ?? report.summary,
+            diagnostics: source?.diagnostics ?? report.diagnostics,
+          });
+          return report;
+        };
+
+        let executionReport = null;
+        if (suite.kind === 'trigger') {
+          executionReport = pendingCaseIds.length === 0
+            ? null
+            : await drivers.trigger.runCodexTriggerSuite({
+            suite,
+            split,
+            subjectRoot,
+            pluginRoot: skillRoot,
+            profile: PROFILE,
+            runs: options.runs ?? suite.defaultRuns,
+            caseIds: pendingCaseIds,
+            codexBin: options.codexBin,
+            model: options.model,
+            codexRuntime,
+            sourceEnv: runtimeCapsule.env,
+            reportPath,
+            stderr: (message) => process.stderr.write(message),
+            processManagement,
+            workRoot: path.join(layout.workRoot, 'trigger'),
+            stopOnIncomplete: true,
+            onCaseCompleted: recordCase,
+          });
+        } else {
+          if (options.split) fail('--split only applies to trigger suites.');
+          executionReport = pendingCaseIds.length === 0
+            ? null
+            : await drivers.conversation.runCodexConversationSuite({
+            suiteId: suite.id,
+            skillName,
+            skillNames: suite.skills,
+            casesPath: path.resolve(skillRoot, suite.cases.replace(/^\.\//u, '')),
+            subjectRoot,
+            profile: PROFILE,
+            runs: options.runs ?? suite.defaultRuns,
+            caseIds: pendingCaseIds,
+            codexBin: options.codexBin,
+            model: options.model,
+            codexRuntime,
+            timeoutMs: suite.perRunTimeoutMs,
+            isolation: suite.isolation,
+            sourceEnv: runtimeCapsule.env,
+            reportPath,
+            processManagement,
+            forbiddenHostRoots: manifest.participantSkills.map((participant) =>
+              path.join(STATIC_SKILLS_ROOT, participant)),
+            workRoot: path.join(layout.workRoot, 'conversation'),
+            stopOnIncomplete: true,
+            onCaseCompleted: recordCase,
+          });
+        }
+        if (
+          executionReport?.outcome === 'incomplete' &&
+          (executionReport.caseResults?.length ?? 0) === 0
+        ) {
+          const report = applyRunCountCoverage({
+            ...executionReport,
+            reportPath: executionReport.reportPath
+              ? path.relative(options.outputDir, executionReport.reportPath).split(path.sep).join('/')
+              : undefined,
+          }, suite, options.runs);
+          await drivers.reporting.publishEvalRunCheckpoint({
+            layout,
+            evaluation: {
+              generatedAt: new Date().toISOString(),
+              outcome: report.outcome,
+              complete: report.complete,
+              mechanicalPassed: report.mechanicalPassed,
+              subjects: staticSubjects,
+              suites: [report],
+              diagnostics: report.diagnostics,
+            },
+          });
+          reports.push(report);
+          break suiteLoop;
+        }
+        const indexPath = await writeStaticCaseIndex(
+          options.outputDir,
+          suite,
+          split,
+          caseResults,
+        );
+        const report = aggregateStaticCaseReport(
+          suite,
+          split,
+          expectedCaseIds,
+          caseResults,
+          indexPath,
+        );
+        reports.push(report);
+        if (report.outcome === 'incomplete') break suiteLoop;
+      }
+    }
+    const sourceUnchanged = (await Promise.all(manifest.participantSkills.map(async (participant) =>
+      await digestTree(path.join(STATIC_SKILLS_ROOT, participant)) === sourceDigests[participant])))
+      .every(Boolean);
+    const outcome = sourceUnchanged
+      ? drivers.contract.combinePluginEvalOutcome(reports)
+      : 'incomplete';
+    const diagnostics = [
+      ...reports.flatMap((report) => report.diagnostics),
+      ...(sourceUnchanged ? [] : ['Static Skill source changed during evaluation.']),
+    ];
+    await cp(subjectRoot, path.join(options.outputDir, 'subject'), {
+      recursive: true,
+      force: false,
+      errorOnExist: true,
+    });
+    const unredactedEvaluation = {
+      schemaVersion: SCHEMA_VERSION,
+      generatedAt: new Date().toISOString(),
+      target: {
+        kind: 'static-skill',
+        name: skillName,
+        sourceDigest,
+        participantSkills: manifest.participantSkills.map((participant) => ({
+          name: participant,
+          sourceDigest: sourceDigests[participant],
+        })),
+      },
+      platform: 'codex',
+      codexVersion: await codexVersion(options.codexBin, runtimeCapsule.env),
+      model: options.model ?? codexRuntime.model ?? null,
+      modelProvider: codexRuntime.modelProvider,
+      credentialSource: codexRuntime.credentialSource,
+      codexConfigDigest: codexRuntime.evidenceDigest,
+      processManagement,
+      outcome,
+      complete: sourceUnchanged && reports.every((report) => report.complete),
+      mechanicalPassed: sourceUnchanged && reports.every((report) => report.mechanicalPassed),
+      subjects: staticSubjects,
+      suites: reports,
+      diagnostics,
+    };
+    const evaluation = drivers.runtime.redactCodexEvalValue(
+      unredactedEvaluation,
+      codexRuntime,
+    );
+    const evaluationPath = path.join(options.outputDir, 'evaluation.json');
+    await writeFile(evaluationPath, `${JSON.stringify(evaluation, null, 2)}\n`, 'utf8');
+    const summary = {
+      schemaVersion: 1,
+      runId: layout.runId,
+      skill: skillName,
+      participantSkills: manifest.participantSkills,
+      generatedAt: evaluation.generatedAt,
+      outcome,
+      complete: evaluation.complete,
+      mechanicalPassed: evaluation.mechanicalPassed,
+      codexVersion: evaluation.codexVersion,
+      model: evaluation.model,
+      modelProvider: evaluation.modelProvider,
+      codexConfigDigest: evaluation.codexConfigDigest,
+      processManagement,
+      target: evaluation.target,
+      subjects: evaluation.subjects,
+      suites: reports.map((report) => ({
+        id: report.id,
+        kind: report.kind,
+        skills: report.skills,
+        outcome: report.outcome,
+        complete: report.complete,
+        mechanicalPassed: report.mechanicalPassed,
+        qualitativeReview: report.qualitativeReview,
+        caseResults: report.caseResults,
+        summary: report.summary,
+      })),
+      diagnostics,
+    };
+    await writeFile(
+      path.join(layout.reportRoot, 'summary.json'),
+      `${JSON.stringify(summary, null, 2)}\n`,
+      'utf8',
+    );
+    await writeFile(
+      path.join(layout.reportRoot, 'report.md'),
+      [
+        '# Static Skill Eval Report',
+        '',
+        `- Skill: \`${skillName}\``,
+        `- Participant Skills: \`${manifest.participantSkills.join(', ')}\``,
+        `- Run: \`${layout.runId}\``,
+        `- Outcome: \`${outcome}\``,
+        `- Complete: \`${evaluation.complete}\``,
+        `- Process management: \`${processManagement.mode}\``,
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    const batchSummary = await drivers.reporting.completeSkillEvalRun({
+      layout,
+      evaluation,
+    });
+    process.stdout.write(`${JSON.stringify({
+      ok: evaluation.complete && outcome !== 'failed' && outcome !== 'incomplete',
+      outcome,
+      batchId: layout.batchId,
+      batchDir: path.relative(REPO_ROOT, layout.batchRoot).split(path.sep).join('/'),
+      batchSummary,
+      runId: layout.runId,
+      reportDir: path.relative(REPO_ROOT, layout.reportRoot).split(path.sep).join('/'),
+      evaluation: path.join(layout.reportRoot, 'summary.json'),
+    }, null, 2)}\n`);
+    if (outcome === 'failed' || outcome === 'incomplete') process.exitCode = 1;
+  } finally {
+    await runtimeCapsule.cleanup();
+  }
+  } catch (error) {
+    try {
+      await drivers.reporting.failSkillEvalRun({
+        layout,
+      });
+    } catch (refreshError) {
+      process.stderr.write(`Failed to mark the report run as failed: ${
+        refreshError instanceof Error ? refreshError.message : String(refreshError)
+      }\n`);
+    }
+    throw error;
+  } finally {
+    await layout.cleanupWork();
+  }
+}
+
+async function main() {
+  const options = parseArgs(process.argv);
+  if (options.help) {
+    process.stdout.write(usage());
+    return;
+  }
+  REPO_ROOT = options.repoRoot ?? process.cwd();
+  STATIC_SKILLS_ROOT = path.join(REPO_ROOT, '.agents', 'skills');
+  if (!(await pathExists(path.join(REPO_ROOT, 'packages', 'cli', 'package.json')))) {
+    fail(`agent-workflows repository root is invalid: ${REPO_ROOT}`);
+  }
+  requireFromScript = createRequire(path.join(REPO_ROOT, 'packages', 'cli', 'package.json'));
+  const skillRoot = await resolveSkillRoot(options.target);
+  const skillName = parseSkillName(await readFile(path.join(skillRoot, 'SKILL.md'), 'utf8'), skillRoot);
+  const manifest = await readManifest(skillRoot, skillName);
+  for (const participant of manifest.participantSkills) {
+    const participantRoot = await resolveSkillRoot(participant);
+    parseSkillName(
+      await readFile(path.join(participantRoot, 'SKILL.md'), 'utf8'),
+      participantRoot,
+    );
+  }
+  let centralContract = false;
+  try {
+    const drivers = await loadCentralDrivers();
+    await validateCentralContracts(drivers, skillRoot, manifest);
+    centralContract = true;
+  } catch (error) {
+    if (!String(error?.message).includes('Built eval driver not found')) throw error;
+  }
+  if (options.validateOnly) {
+    process.stdout.write(`${JSON.stringify({
+      ok: true,
+      skill: skillName,
+      participantSkills: manifest.participantSkills,
+      suites: manifest.suites.map((suite) => suite.id),
+      centralContract,
+    }, null, 2)}\n`);
+    return;
+  }
+  await run(options, skillRoot, skillName, manifest);
+}
+
+const isMain = process.argv[1] &&
+  realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+if (isMain) {
+  await main().catch((error) => {
+    process.stderr.write(`${error instanceof Error ? error.stack ?? error.message : String(error)}\n`);
+    process.exitCode = 1;
+  });
+}
+
+export {
+  isSkillAuthorOnlyPath,
+  parseArgs,
+  prepareSubject,
+  readManifest,
+  resolveSkillRoot,
+};

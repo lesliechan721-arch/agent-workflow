@@ -1,0 +1,26 @@
+{
+  "id": "case-id",
+  "eval_type": "trigger",
+  "split": "validation",
+  "case_role": "representative",
+  "provenance": "representative-synthetic",
+  "scenario_family": "",
+  "unit_under_test": "description",
+  "query": "",
+  "preconditions": {},
+  "expected": {},
+  "oracle": {
+    "rationale": "",
+    "rule_refs": [],
+    "confidence": "high",
+    "allowed_variance": "",
+    "minimal_counterexample": ""
+  },
+  "decision_context": {
+    "frequency": "unknown",
+    "impact": "medium",
+    "false_negative_cost": "medium",
+    "false_positive_cost": "medium",
+    "rationale": ""
+  }
+}

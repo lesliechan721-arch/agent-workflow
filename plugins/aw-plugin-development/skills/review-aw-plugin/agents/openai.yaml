@@ -1,0 +1,7 @@
+interface:
+  display_name: "Review AW Plugin"
+  short_description: "只读评审 AW 插件源码、最终制品、Eval 证据与发布条件"
+  default_prompt: "使用 $review-aw-plugin 处理当前请求。"
+
+policy:
+  allow_implicit_invocation: false

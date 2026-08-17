@@ -16,11 +16,15 @@
 
 - 人类维护者通过 [create-aw-plugin README](../.agents/skills/create-aw-plugin/README.md) 了解插件创建和维护工作流；Agent 执行时读取对应 `SKILL.md` 和按任务选择的 reference。
 - 人类维护者通过 [skill-review README](../.agents/skills/skill-review/README.md) 了解静态 Skill 和插件 Skill 评审；Agent 执行时读取对应 `SKILL.md`。
+- 新的组合式工作流位于 [agent-content-toolkit](../plugins/agent-content-toolkit/README.md) 和 [aw-plugin-development](../plugins/aw-plugin-development/README.md)。六个通用 Skill 支持模型调用；两个 AW 适配器只支持显式调用。
+- 迁移期间旧工作流仍是仓库默认路由。新工作流不得删除、重定向或静默替代旧入口。
+- `aw-plugin-development` 对 `agent-content-toolkit >= 0.1.0` 使用人工依赖保证。当前 manifest 不声明插件依赖字段。
 - 模型 Eval、报告发布和 README 登记属于上述专用工作流，不在通用测试指南中重复定义。
 
 ## 验证与版本
 
 - 使用 `pnpm plugin:test <plugin>` 运行单个插件的确定性脚本测试，失败时返回非零。使用 `pnpm plugin:test --all` 检查全部插件；任一插件失败时整轮返回非零。
 - 插件版本和作者门禁命令以 [create-aw-plugin 工作流](../.agents/skills/create-aw-plugin/README.md)路由的 `SKILL.md` 和 reference 为准。
+- 新工作流的共享规则和 schema 生成文件必须通过各插件的 check-only contract test。CI 不自动改写生成文件。
 - 通用确定性测试的分层、价值门禁和验证选择见[测试指南](testing.md)。
 - 稳定发布时检查源码 manifest version 的流程见 README 的[正式版发布](../README.md#3-正式版发布)。
