@@ -1,10 +1,23 @@
-# codex-subagent-guide
+# Codex Subagent Guide
 
-在委派权限已明确后，为通用 Codex 子代理任务选择 role、模型参数、上下文 fork、等待和清理规则。
+在委派已经获得授权后，为通用 Codex 子代理选择任务角色、模型参数、上下文、等待和清理策略。
 
-主要指令见 `SKILL.md`。动态配置由插件 renderer 写入最终 Skill。模型 eval 合同见 `evals/`。
+## 适合使用
+
+- 已经决定使用子代理，但需要选择合适的任务类型和生命周期。
+- 任务需要在简单、通用、复杂、计划或审核角色之间做选择。
+- 需要兼容当前可用的 Codex multi-agent 工具和 schema。
+
+## 边界
+
+- 不决定是否应该委派。
+- 不授予子代理权限。
+- 不预设当前工具版本；以会话实际暴露的能力为准。
+- 不用短周期轮询替代响应式等待。
+
+主要指令见 [`SKILL.md`](SKILL.md)，动态配置由插件 renderer 注入，评测材料见 [`evals/`](evals/)。
 
 ## 最近验证
 
 - 最近正式报告：`release`，结论 `pass`，加权分 `90.4`，coverage `100%`，confidence `high`；eval release `incomplete`，覆盖 `8/8`。
-- 报告：`plugins/codex-enhance/reports/codex-subagent-guide/20260811T172058Z-release-review-c91aa8de/report.md`；评估来源为 `c695509e7a69fbb4686a7aaa94a784447731d02a`、`ea65adf117e822826a27b97e303a4150b96fea34` 和 `71c443dca70d4702bb98da39c86a1fc6288b80d7`，批次在插件合并前生成。
+- 报告：`plugins/codex-enhance/reports/codex-subagent-guide/20260811T172058Z-release-review-c91aa8de/report.md`。
