@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { readFile, readdir } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { syncBuiltinESMExports } from 'node:module';
 import path from 'node:path';
 import test from 'node:test';
@@ -38,7 +38,7 @@ test('manifest and source include decision-prototype', async () => {
   const manifest = await readJson(path.join(target.source, '.agents-plugin', 'plugin.json'));
   assert.equal(manifest.version, '0.2.0');
   assert.match(manifest.description, /原型/);
-  assert.equal((await readdir(path.join(target.source, 'skills'))).includes(skillName), true);
+  assert.equal((await originalReaddir(path.join(target.source, 'skills'))).includes(skillName), true);
 
   const skillRoot = path.join(target.source, 'skills', skillName);
   const skill = await read(path.join(skillRoot, 'SKILL.md'));
