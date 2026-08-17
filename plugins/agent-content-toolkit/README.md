@@ -1,33 +1,46 @@
-# agent-content-toolkit
+# Agent Content Toolkit
 
-通用 Agent 内容与 Agent Skill 工具包。
+用于创建和评审 Agent-facing 内容、Agent Skills 与 Skill Eval 的组合式工具包。
 
-当前与仓库旧 Skill 并行存在。安装后，六个 Skill 可由模型按用户意图调用；它们不改变 AW 插件开发的仓库默认路由。
+六个 Skill 分别拥有内容编写、内容评审、Skill 作者、Skill 评审、Eval 设计和 Eval 审核职责。安装后，模型可以根据用户意图选择其中一个能力，不需要加载整套方法。
 
-## Skills
-
-| Skill | 作用 | 默认权限 |
-| --- | --- | --- |
-| `write-agent-content` | 创建或编辑 AGENTS.md、CLAUDE.md、prompt、role instruction、reference 等 Agent-facing 内容 | 写 |
-| `review-agent-content` | 只读评审上述内容的指针、层级、控制、完成边界和可维护性 | 只读 |
-| `author-agent-skill` | 创建或变更 Agent Skill 包 | 写 |
-| `review-agent-skill` | 只读多维评审 Agent Skill 包 | 只读 |
-| `design-agent-skill-evals` | 设计或修改 Skill Eval case / suite | 写 |
-| `audit-agent-skill-evals` | 运行前审核 Oracle，或运行后做 failure triage | 只读 |
-
-## 共享标准
-
-`standards/rules.json` 是人工维护的唯一质量规则源。各 Skill 的 `*.generated.md` 是面向不同动作的精简投影；运行时不要求同时加载其它 Skill。
+## 安装
 
 ```bash
-node scripts/generate-standard-views.mjs
-node scripts/validate-standard-views.mjs
-node scripts/generate-contract-assets.mjs
-node scripts/validate-contract-assets.mjs
+aw install agent-content-toolkit -p both
 ```
 
-生成文件提交到仓库。CI 和 `pnpm plugin:test agent-content-toolkit` 只检查漂移，不自动改写。
+## 包含的 Skill
+
+| Skill | 作用 | 写入 |
+| --- | --- | --- |
+| [`write-agent-content`](skills/write-agent-content/) | 创建或编辑 `AGENTS.md`、`CLAUDE.md`、prompt、role instruction 和 reference | 是 |
+| [`review-agent-content`](skills/review-agent-content/) | 只读检查内容的指针、层级、控制、完成边界和可维护性 | 否 |
+| [`author-agent-skill`](skills/author-agent-skill/) | 设计、创建或修改可复用 Agent Skill | 是 |
+| [`review-agent-skill`](skills/review-agent-skill/) | 独立评审 Skill 的边界、触发、信息层级、脚本和发布准备度 | 否 |
+| [`design-agent-skill-evals`](skills/design-agent-skill-evals/) | 设计或修改 trigger、behavior 和组合评测 | 是 |
+| [`audit-agent-skill-evals`](skills/audit-agent-skill-evals/) | 运行前审核 Oracle，或运行后做失败归因 | 否 |
+
+## 适合谁
+
+- 维护仓库级 Agent 指令的团队。
+- 创建可分发 Agent Skill 的作者。
+- 需要证明 Skill 相比 baseline 确有增益的维护者。
+- 希望将 Author 与 Reviewer 分开的项目。
+
+## 设计边界
+
+- 每次只加载当前任务需要的 Skill 和规则投影。
+- Author 能修改目标，Reviewer 保持只读。
+- 机械结构检查交给脚本，语义判断保留给模型和 Reviewer。
+- Eval 先定义可观察 Oracle，再运行真实模型；失败先做归因，不直接堆叠新规则。
+
+## 维护者
+
+`standards/rules.json` 是共享质量规则源；各 Skill 使用面向自己职责的生成投影。检查生成内容和插件合同：
 
 ```bash
+node scripts/validate-standard-views.mjs
+node scripts/validate-contract-assets.mjs
 pnpm plugin:test agent-content-toolkit
 ```
