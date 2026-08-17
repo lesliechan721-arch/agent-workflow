@@ -4,6 +4,6 @@
 
 普通明确的小改动不需要使用该入口。显式 `/dev` 或要求“按开发工作流继续”时使用。
 
-该 Skill 可以软组合 `ask-me` 的 `requirements-clarifier` 和 `decision-grill`；未安装时不会复制另一套访谈规则。
+该 Skill 可以软组合 `ask-me` 的 `requirements-clarifier`、`decision-grill` 和 `decision-prototype`；未安装时不会复制另一套需求或原型流程。
 
 主要指令见 [`SKILL.md`](SKILL.md)，触发用例见 [`evals/`](evals/)。

@@ -6,7 +6,7 @@ codex:
   description: 显式启动或继续 Dev Workflow，并为当前开发请求选择最小可行能力。
   interface:
     display_name: "Dev Workflow"
-    short_description: "显式启动原型、规格、实现与双轴审查组成的结构化开发流程"
+    short_description: "显式启动需求对齐、规格、实现与双轴审查组成的结构化开发流程"
     default_prompt: "使用 $dev 为当前开发请求选择最小可行路径并继续。"
 ---
 

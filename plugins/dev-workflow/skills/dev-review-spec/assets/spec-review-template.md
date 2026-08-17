@@ -11,7 +11,7 @@
 - 问题
 - 证据或位置
 - 对用户批准或实现的影响
-- 正确处理层：`requirements-clarifier` / `decision-grill` / `dev-prototype` / `dev-spec` / script / implementation
+- 正确处理层：`requirements-clarifier` / `decision-grill` / `decision-prototype` / `dev-spec` / script / implementation
 
 没有阻塞问题时写“无”。
 

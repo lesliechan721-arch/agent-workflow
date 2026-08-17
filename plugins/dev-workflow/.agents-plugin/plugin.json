@@ -1,7 +1,7 @@
 {
   "name": "dev-workflow",
   "version": "0.1.0",
-  "description": "用轻量、可组合的 Skill 组织中大型开发任务：原型、规格、规格审查、实现和代码审查；需求对齐可组合 ask-me。",
+  "description": "用轻量、可组合的 Skill 组织中大型开发任务：规格、规格审查、实现和代码审查；需求对齐与原型决策可组合 ask-me。",
   "compatibility": {
     "aw": {
       "minVersion": "0.0.0"
@@ -11,7 +11,7 @@
   "slashCommands": "./slash-commands",
   "marketplace": {
     "category": "workflow",
-    "tags": ["development", "spec", "prototype", "implementation", "review"],
+    "tags": ["development", "spec", "implementation", "review"],
     "strict": true,
     "policy": {
       "installation": "AVAILABLE",
@@ -20,7 +20,7 @@
   },
   "interface": {
     "displayName": "Dev Workflow",
-    "shortDescription": "以原型、规格、实现切片和双轴审查组织中大型开发任务",
+    "shortDescription": "以规格、实现切片和双轴审查组织中大型开发任务",
     "capabilities": ["Skills"]
   },
   "buildConfig": {
