@@ -505,7 +505,11 @@ function main() {
   writeJson(manifestPath, pluginManifest);
   writeText(
     pluginReadmePath,
-    renderPluginReadme(pluginName, args.description, initialSkillName),
+    renderPluginReadme(pluginName, args.description, initialSkillName, {
+      withMcp: args.withMcp,
+      withApps: args.withApps,
+      withConfigApi: args.withConfigApi,
+    }),
   );
 
   if (!args.noSkills) {
@@ -525,7 +529,9 @@ function main() {
       skillMdPath,
       renderSkillMd(skillName, skillDescription, skillShortDescription, args.skillInvocation),
     );
-    writeText(skillReadmePath, renderSkillReadme(skillName, skillDescription));
+    writeText(skillReadmePath, renderSkillReadme(skillName, skillDescription, {
+      invocation: args.skillInvocation,
+    }));
     writeText(
       openaiYamlPath,
       renderOpenAiYaml(

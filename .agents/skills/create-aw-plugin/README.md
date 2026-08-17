@@ -8,6 +8,7 @@
 
 - Agent 执行完整工作流时读取 [`SKILL.md`](SKILL.md)，并按其中的阅读路由选择 reference。
 - 插件字段和能力规范位于 `references/`。
+- Production README 使用[插件与 Skill README 规范](../../../docs/readme-standard.md)。
 - 插件 Skill 的 Eval 作者合同位于 [`references/skill-evaluation.md`](references/skill-evaluation.md)。
 - `evals/` 是 `create-aw-plugin` 自身的静态模型评估语料，不是插件 Skill Eval 的通用说明。
 

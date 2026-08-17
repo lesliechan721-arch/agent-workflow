@@ -3,7 +3,7 @@
 默认只返回报告或保存临时草稿。
 
 - 正式报告发布与批次封存是一个原子动作，需要用户明确授权。
-- README 登记是独立 production source 修改，需要第二次授权；登记后由作者直接提高被审插件的源码 manifest version。
+- 正式报告以 `reports/**/summary.json` 为事实源，不登记到 production README。
 - 适配器负责项目目录和命令；通用 Reviewer 不知道报告保存位置。
 - 设计 pass 与 release evidence provisional 分开表达。
 

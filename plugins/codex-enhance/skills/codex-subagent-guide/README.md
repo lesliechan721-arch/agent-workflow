@@ -1,10 +1,31 @@
 # codex-subagent-guide
 
-在委派权限已明确后，为通用 Codex 子代理任务选择 role、模型参数、上下文 fork、等待和清理规则。
+在子代理委派已经获准后，为通用任务选择角色、模型参数、上下文、等待和清理方式。
 
-主要指令见 `SKILL.md`。动态配置由插件 renderer 写入最终 Skill。模型 eval 合同见 `evals/`。
+## 什么时候使用
 
-## 最近验证
+- 用户、项目规则或其它 Skill 已明确允许子代理委派。
+- 当前任务没有专用 Skill 管理委派，需要统一处理参数和生命周期。
 
-- 最近正式报告：`release`，结论 `pass`，加权分 `90.4`，coverage `100%`，confidence `high`；eval release `incomplete`，覆盖 `8/8`。
-- 报告：`plugins/codex-enhance/reports/codex-subagent-guide/20260811T172058Z-release-review-c91aa8de/report.md`；评估来源为 `c695509e7a69fbb4686a7aaa94a784447731d02a`、`ea65adf117e822826a27b97e303a4150b96fea34` 和 `71c443dca70d4702bb98da39c86a1fc6288b80d7`，批次在插件合并前生成。
+不要用它判断是否应该委派，也不要在没有授权时使用。
+
+## 怎样调用
+
+模型可以在委派已获授权时自动调用，也可以显式使用 `$codex-subagent-guide`。
+
+示例请求：
+
+- “委派已经批准。为实现、审核和简单验证选择合适的子代理角色。”
+- “按当前工具 schema 启动这个复杂实现子任务，并使用干净上下文。”
+
+## 会发生什么
+
+1. Agent 按交付物把任务分为简单、通用、复杂或计划与审核。
+2. Agent 根据当前公开 schema 选择角色、model/effort 和最小上下文继承。
+3. Agent 使用响应式等待，并只在结果不再需要时做条件清理。
+
+## 权限和边界
+
+- 本 Skill 不授予、推断或扩大子代理权限。
+- 专用 Skill 已管理委派时不重复接管。
+- 只使用当前工具公开的参数；不猜测工具版本或隐藏能力。

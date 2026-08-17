@@ -63,8 +63,10 @@ Skill 的触发行为只由平台原生元数据决定。Codex 使用 `agents/op
 | 插件 | 说明 | 支持平台 |
 |------|------|----------|
 | `ask-me` | 实施前澄清会影响结果或造成返工的关键歧义，并协作制定、比较或评审计划与重要决策 | Codex / Claude Code |
-| `git` | 在用户请求提交时，按用户或仓库适用规范完成 Git 提交 | Codex / Claude Code |
+| `git` | 创建本地提交、隔离 Git worktree，或协调 Git merge 双方意图 | Codex / Claude Code |
 | `codex-enhance` | 通过通用只读探索和已授权子代理编排两个 Skill 增强 Codex | Codex |
+| `agent-content-toolkit` | 创建和评审 Agent-facing 文档、Agent Skill 与 Skill Eval | Codex / Claude Code |
+| `aw-plugin-development` | 创建或只读评审本仓库的 AW 插件 | Codex / Claude Code |
 
 `codex-enhance` 提供 `codex-explore` 和 `codex-subagent-guide` 两个 Skill。`codex-explore` 是 Codex 通用只读探索 workflow，可用于代码库、文档、网络资料、日志和用户材料的证据搜索与总结；具体能访问哪些来源取决于当前会话工具、权限、联网策略和用户提供的上下文。
 
@@ -152,6 +154,7 @@ make release CLI_VERSION=1.0.0 CATALOG_VERSION=1.2.0
 | [编码约定](docs/coding-conventions.md) | 维护者 | TypeScript 实现约定 |
 | [测试指南](docs/testing.md) | 维护者 | 测试书写、层级选择和验证命令 |
 | [插件维护指南](docs/plugin-maintenance.md) | 维护者 | 插件源码边界、维护入口和仓库级验证 |
+| [插件与 Skill README 规范](docs/readme-standard.md) | 插件作者 | 面向用户的 production README 职责、结构和维护规则 |
 | [create-aw-plugin README](.agents/skills/create-aw-plugin/README.md) | 维护者 | 插件作者 Agent 工作流的人类入口 |
 | [skill-review README](.agents/skills/skill-review/README.md) | 维护者 | Skill 评审 Agent 工作流的人类入口 |
 | [agent-content-toolkit README](plugins/agent-content-toolkit/README.md) | 维护者 | 通用 Agent 内容、Skill 与 Eval 能力 |

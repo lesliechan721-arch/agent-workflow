@@ -1,6 +1,6 @@
 {
   "name": "ask-me",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "在具体实施前澄清会影响结果或造成返工的关键歧义，并通过逐轮访谈把计划、决策或想法想透，形成共享理解。",
   "compatibility": {
     "aw": {

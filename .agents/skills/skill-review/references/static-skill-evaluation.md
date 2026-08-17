@@ -30,7 +30,7 @@ runner 在每个 case 的全部 repetitions 结束后发布检查点。case 为 
 
 ## 正式报告发现与当前性
 
-静态 Skill 的正式报告以 `.agents/reports/<skill>/*/summary.json` 为事实源，README 只是登记索引。README 没有登记不能证明正式报告不存在。判断当前 `release-evidence` 时，先枚举正式 summary，再比较其 source commit 和 `inScopeDirty` 与当前目标。报告来源或当前目标任一 `inScopeDirty=true` 时，相同 commit 仍不足以证明内容相同，必须有匹配的封存 package digest；digest 缺失或不匹配时，当前证据为 `unknown`。来源不匹配的报告只记为 historical evidence：保留旧 pass/fail 和 finding，但不能替代当前版本的 release evidence。
+静态 Skill 的正式报告以 `.agents/reports/<skill>/*/summary.json` 为事实源。判断当前 `release-evidence` 时，先枚举正式 summary，再比较其 source commit 和 `inScopeDirty` 与当前目标。报告来源或当前目标任一 `inScopeDirty=true` 时，相同 commit 仍不足以证明内容相同，必须有匹配的封存 package digest；digest 缺失或不匹配时，当前证据为 `unknown`。来源不匹配的报告只记为 historical evidence：保留旧 pass/fail 和 finding，但不能替代当前版本的 release evidence。
 
 ## Codex 配置与证据
 
@@ -53,4 +53,4 @@ node .agents/skills/skill-review/scripts/inspect_skill_target.mjs \
 
 该命令读取单次运行的原始 `EvaluationBundle`。批次根的 `evals/evaluation.json` 只用于跨运行汇总。
 
-`needs_review` 必须逐项读取 trace；`incomplete`、`failed` 或未完成的定性复核都不能形成 release pass。评审默认只返回结果。用户明确要求发布时，用 `pnpm review:publish -- --skill <skill> --batch-id <batch-id> --report <report.md> --scorecard <scorecard.json>` 发布正式人读报告和 schema v2 摘要，并封存临时批次；review-only 使用 `--batch-name`。`review:publish` 不修改 Skill README。用户另行明确要求登记时，再用 `pnpm review:release -- --skill <skill> --batch-id <batch-id>` 更新 README。中间草稿放项目 `.tmp/agent-workflows/reviews/`。真实模型证据只覆盖 Codex。
+`needs_review` 必须逐项读取 trace；`incomplete`、`failed` 或未完成的定性复核都不能形成 release pass。评审默认只返回结果。用户明确要求发布时，用 `pnpm review:publish -- --skill <skill> --batch-id <batch-id> --report <report.md> --scorecard <scorecard.json>` 发布正式人读报告和 schema v2 摘要，并封存临时批次；review-only 使用 `--batch-name`。`review:publish` 不修改 Skill README。中间草稿放项目 `.tmp/agent-workflows/reviews/`。真实模型证据只覆盖 Codex。

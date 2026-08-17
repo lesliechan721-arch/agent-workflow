@@ -55,6 +55,6 @@ release-required suite 必须 complete；不得用 `--allow-environment-skips` �
 
 完整 eval/review 批次固定保存在 `.tmp/agent-workflows/evals/plugin/<name>/<owner-skill>/<batch-id>/`。评审默认只返回结果。用户明确要求发布时，用 `pnpm review:publish -- --plugin <name> --skill <owner-skill> --batch-id <batch-id> --report <report.md> --scorecard <scorecard.json>` 发布正式 `report.md` 和 schema v2 `summary.json`，并封存临时批次。eval 通过、失败或 `incomplete` 只影响正式结论，不改变发布授权。没有完整 eval 但用户要求发布时，用 `--batch-name` 创建 review-only 批次。正式目录位于 `plugins/<name>/reports/<owner-skill>/<batch-id>/`，其它证据和草稿只保留在 `.tmp/agent-workflows/`。
 
-`review:publish` 不更新 Skill README。用户另行明确要求登记时，用 `pnpm review:release -- --plugin <name> --skill <owner-skill> --batch-id <batch-id>` 更新 README。登记失败不影响已经发布的正式报告，可以重试同一命令。README 登记属于 production source 变化；登记后直接提高插件源码 manifest 的稳定版本。插件 README 不记录 Skill 验证信息。
+`review:publish` 不更新 Skill README。正式报告以 `plugins/<name>/reports/<owner-skill>/*/summary.json` 为事实源；production README 不记录 Skill 验证信息。
 
 所有模型行为结论仅覆盖 Codex。`plugin:test` 只能证明确定性行为；`plugin:eval` 的真实 suite 才能证明模型行为。插件级 release verdict 取 required profiles/suites 中最差门禁，不用平均分掩盖失败。

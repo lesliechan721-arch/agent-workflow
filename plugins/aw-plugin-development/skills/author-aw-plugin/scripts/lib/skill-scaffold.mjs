@@ -76,24 +76,80 @@ ${renderClaudeInvocationFrontmatter(invocation, supportsClaude)}metadata:
 `;
 }
 
-export function renderPluginReadme(pluginName, description, skillName) {
+export function renderPluginReadme(pluginName, description, skillName, options = {}) {
+  const capabilities = [
+    ...(skillName ? [`| Skill \`${skillName}\` | ${description.replace(/[。.]$/u, '')} | 自动或 \`$${skillName}\` |`] : []),
+    ...(options.withMcp ? ['| MCP server | 提供插件声明的工具连接 | 安装后由平台使用 |'] : []),
+    ...(options.withApps ? ['| App | 提供插件声明的应用能力 | 安装后由平台使用 |'] : []),
+    ...(options.withConfigApi ? ['| 配置 | 保存插件运行所需的用户配置 | 使用 AW 配置页或 `aw config` |'] : []),
+  ];
   return `# ${titleCaseSlug(pluginName)}
 
 ${description}
 
-${skillName ? `## Skill\n\n- \`${skillName}\`\n` : ''}
+## 什么时候使用
+
+- 当你需要${description.replace(/[。.]$/u, '')}时使用。
+
+## 包含的能力
+
+| 能力 | 用途 | 使用方式 |
+| --- | --- | --- |
+${capabilities.join('\n')}
+
+## 快速开始
+
+\`\`\`bash
+aw install ${pluginName} -p both -s user
+\`\`\`
+
+示例请求：
+
+- “${description.replace(/[。.]$/u, '')}”
+- “${skillName ? `使用 $${skillName} 处理当前任务` : `安装后列出 ${pluginName} 提供的能力`}”
+
+## 平台与安装范围
+
+支持 Codex 和 Claude Code 的 user scope 与 project scope。
+
+## 权限和边界
+
+- 插件只在请求匹配能力或用户显式调用后工作。
+- 插件不会自行扩大当前会话的文件、网络或工具权限。
 `;
 }
 
 export function renderSkillReadme(skillName, description, options = {}) {
-  const evalText = options.includeEval === false
-    ? '当前模型 eval 只支持 Codex；本 Skill 只运行确定性作者校验。'
-    : '模型 eval 合同位于 `evals/`。';
+  const invocation = options.invocation === 'manual'
+    ? `本 Skill 只支持显式调用：\`$${skillName}\`。`
+    : options.invocation === 'claude-model-only'
+      ? `本 Skill 支持模型自动调用；Claude Code 不显示显式入口。`
+      : `模型可以按任务自动调用，也可以显式使用 \`$${skillName}\`。`;
   return `# ${skillName}
 
 ${description}
 
-主要指令见 \`SKILL.md\`。${evalText}
+## 什么时候使用
+
+- ${description}
+
+## 怎样调用
+
+${invocation}
+
+示例请求：
+
+- “${description.replace(/[。.]$/u, '')}”
+
+## 会发生什么
+
+1. Agent 检查当前任务和可用上下文。
+2. Agent 按 Skill 工作流完成任务，并返回结果或阻塞原因。
+
+## 权限和边界
+
+- 具体写入、网络、外部命令和确认边界以本 Skill 的任务说明为准。
+- Skill 不会自行扩大当前会话权限；需要额外授权时会停止并说明。
 `;
 }
 

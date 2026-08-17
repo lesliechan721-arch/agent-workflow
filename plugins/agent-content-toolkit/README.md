@@ -1,33 +1,44 @@
 # agent-content-toolkit
 
-通用 Agent 内容与 Agent Skill 工具包。
+创建和评审 Agent-facing 文档、Agent Skill 与 Skill Eval 的通用工具包。
 
-当前与仓库旧 Skill 并行存在。安装后，六个 Skill 可由模型按用户意图调用；它们不改变 AW 插件开发的仓库默认路由。
+## 什么时候使用
 
-## Skills
+- 你要创建或修改 AGENTS.md、prompt、role instruction 或其它 Agent-facing 内容。
+- 你要创建、修改或只读评审一个通用 Agent Skill 包。
+- 你要设计 Skill Eval，或审核 Eval 的 Oracle、现实性和结果归因。
 
-| Skill | 作用 | 默认权限 |
+不适用于 `agent-workflows` 仓库专有的插件打包、版本、materialization 或发布工作流；这些任务使用 `aw-plugin-development`。
+
+## 包含的 Skills
+
+| Skill | 用途 | 调用方式 |
 | --- | --- | --- |
-| `write-agent-content` | 创建或编辑 AGENTS.md、CLAUDE.md、prompt、role instruction、reference 等 Agent-facing 内容 | 写 |
-| `review-agent-content` | 只读评审上述内容的指针、层级、控制、完成边界和可维护性 | 只读 |
-| `author-agent-skill` | 创建或变更 Agent Skill 包 | 写 |
-| `review-agent-skill` | 只读多维评审 Agent Skill 包 | 只读 |
-| `design-agent-skill-evals` | 设计或修改 Skill Eval case / suite | 写 |
-| `audit-agent-skill-evals` | 运行前审核 Oracle，或运行后做 failure triage | 只读 |
+| `write-agent-content` | 创建或编辑 Agent-facing 内容 | 自动或 `$write-agent-content` |
+| `review-agent-content` | 只读评审 Agent-facing 内容 | 自动或 `$review-agent-content` |
+| `author-agent-skill` | 创建或变更通用 Agent Skill | 自动或 `$author-agent-skill` |
+| `review-agent-skill` | 只读评审通用 Agent Skill | 自动或 `$review-agent-skill` |
+| `design-agent-skill-evals` | 设计或修改 Skill Eval | 自动或 `$design-agent-skill-evals` |
+| `audit-agent-skill-evals` | 审核 Eval 或分析运行结果 | 自动或 `$audit-agent-skill-evals` |
 
-## 共享标准
-
-`standards/rules.json` 是人工维护的唯一质量规则源。各 Skill 的 `*.generated.md` 是面向不同动作的精简投影；运行时不要求同时加载其它 Skill。
+## 快速开始
 
 ```bash
-node scripts/generate-standard-views.mjs
-node scripts/validate-standard-views.mjs
-node scripts/generate-contract-assets.mjs
-node scripts/validate-contract-assets.mjs
+aw install agent-content-toolkit -p both -s user
 ```
 
-生成文件提交到仓库。CI 和 `pnpm plugin:test agent-content-toolkit` 只检查漂移，不自动改写。
+示例请求：
 
-```bash
-pnpm plugin:test agent-content-toolkit
-```
+- “为这个项目写一份简短、可执行的 AGENTS.md。”
+- “创建一个只读审查数据库迁移计划的 Agent Skill，并设计最小 Eval。”
+- “审核这些 trigger case 的 Oracle，先不要修改 Skill。”
+
+## 平台与安装范围
+
+支持 Codex 和 Claude Code 的 user scope 与 project scope。
+
+## 权限和边界
+
+- Author 和 Write Skills 可以修改用户指定的目标文件；Reviewer 和 Audit Skills 保持只读。
+- Eval 设计 Skill 只创建或修改 Eval 资产，不运行高成本模型 Eval，也不据此修改生产 Skill。
+- 工具包不执行 AW 项目专有的构建、materialization、版本递增或正式报告发布。

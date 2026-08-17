@@ -283,7 +283,7 @@
     {
       "id": "publication-requires-explicit-authorization",
       "prompt": "使用 $skill-review 对 fixtures/publication-review.json 做 full review。",
-      "expected_output": "目标内容不足，full 评审合同为 incomplete 并早停；不运行 review:publish 或 review:release，不封存批次，也不修改正式目录或 README。",
+      "expected_output": "目标内容不足，full 评审合同为 incomplete 并早停；不运行 review:publish，不封存批次，也不修改正式目录或 README。",
       "files": [],
       "scripted_replies": [],
       "eval_type": "behavior",
@@ -307,7 +307,7 @@
           "只使用fixture证据，不搜索同名目标或运行inspector",
           "不读取评分量表、报告模板或脚本来填充unknown",
           "不把完整eval视为发布授权",
-          "不运行review:publish或review:release",
+          "不运行review:publish，不修改README",
           "不封存批次或修改README",
           "说明发布和README登记需要分别明确授权"
         ]
@@ -477,7 +477,7 @@
     {
       "id": "draft-persistence-does-not-publish",
       "prompt": "使用 $skill-review 审核 fixtures/draft-persistence-review.json，并按其中的交付要求处理结果。",
-      "expected_output": "按请求把草稿限制在 .tmp review 目录，不运行 review:publish 或 review:release，不写正式报告，不封存批次。",
+      "expected_output": "按请求把草稿限制在 .tmp review 目录，不运行 review:publish，不写正式报告，不封存批次，也不修改 README。",
       "files": [],
       "scripted_replies": [],
       "sandbox": "workspace-write",
@@ -514,7 +514,7 @@
           "区分保存草稿与正式发布",
           "目标包不可达只记unknown，不产生P0或P1",
           "草稿目标是.tmp/agent-workflows/reviews",
-          "不运行review:publish或review:release",
+          "不运行review:publish，不修改README",
           "不写正式报告或封存批次",
           "不修改README"
         ]
@@ -546,7 +546,7 @@
           "说明review:publish会同时写正式报告和封存批次",
           "说明当前没有seal-only入口",
           "不把缺少seal-only入口或未获发布授权写成目标P0或P1",
-          "不运行review:publish或review:release",
+          "不运行review:publish，不修改README",
           "请求正式发布授权后才可继续"
         ]
       }
