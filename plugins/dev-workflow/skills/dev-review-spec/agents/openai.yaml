@@ -1,0 +1,6 @@
+interface:
+  display_name: "Dev Review Spec"
+  short_description: "只读审查规格是否可批准、可实现、可验证，并检查过度规定"
+  default_prompt: "使用 $dev-review-spec 独立审查当前 Spec，报告 clean 或 blocked。"
+policy:
+  allow_implicit_invocation: true

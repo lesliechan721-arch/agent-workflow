@@ -2,7 +2,7 @@
 
 面向 **Codex** 和 **Claude Code** 的轻量、可组合 Agent 插件集合。
 
-Agent Workflows 不试图把一种完整开发方法强加给所有任务。它把需求澄清、Git 操作、证据探索、Skill 编写和插件维护拆成独立能力：用户可以显式启动宏流程，模型也可以在任务中按需调用小型 Skill。
+Agent Workflows 不试图把一种完整开发方法强加给所有任务。它把需求澄清、结构化开发、Git 操作、证据探索、Skill 编写和插件维护拆成独立能力：用户可以显式启动宏流程，模型也可以在任务中按需调用小型 Skill。
 
 项目同时提供 `@lesliechan721/aw` CLI，用于发现、安装、升级、配置和移除插件。
 
@@ -30,6 +30,7 @@ aw
 
 ```bash
 aw install ask-me -p both
+aw install dev-workflow -p both
 aw install git -p both
 aw status
 ```
@@ -46,6 +47,7 @@ aw status
 | 插件 | 适合什么场景 | 平台 |
 | --- | --- | --- |
 | [`ask-me`](plugins/ask-me/) | 实施前澄清关键歧义，或通过逐轮访谈把重要决定想清楚 | Codex / Claude Code |
+| [`dev-workflow`](plugins/dev-workflow/) | 用 Prototype、Spec、实现切片和双轴 Review 组织中大型开发任务 | Codex / Claude Code |
 | [`git`](plugins/git/) | 创建精确本地提交、隔离 worktree，或协调 merge 双方意图 | Codex / Claude Code |
 | [`codex-enhance`](plugins/codex-enhance/) | 在 Codex 中执行大范围只读探索，并更稳妥地编排通用子代理 | Codex |
 
@@ -65,6 +67,14 @@ aw status
 ```
 
 `ask-me` 会先调查现有代码和约定，只询问会明显改变结果、范围或验收的问题。
+
+### 启动结构化开发流程
+
+```text
+/dev 为团队邀请增加 7 天有效期。这个任务需要跨会话继续。
+```
+
+`dev-workflow` 会选择当前最小能力：必要时先补充决策或制作 Prototype，再形成轻量 Spec、实施并执行双轴 Review。明确的小任务仍然走快速实现路径。
 
 ### 创建一个只包含本次改动的提交
 

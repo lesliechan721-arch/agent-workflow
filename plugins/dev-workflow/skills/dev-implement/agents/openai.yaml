@@ -1,0 +1,6 @@
+interface:
+  display_name: "Dev Implement"
+  short_description: "实现明确请求或已确认 Spec，并按需使用纵向切片和实际验证"
+  default_prompt: "使用 $dev-implement 实现当前明确请求或已确认 Spec，并运行实际验证。"
+policy:
+  allow_implicit_invocation: true

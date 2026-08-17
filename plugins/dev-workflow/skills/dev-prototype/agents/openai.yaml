@@ -1,0 +1,6 @@
+interface:
+  display_name: "Dev Prototype"
+  short_description: "用可见、可运行或可操作的轻量原型回答一个重要设计问题"
+  default_prompt: "使用 $dev-prototype 为当前未决问题制作一个最低成本、可体验的原型。"
+policy:
+  allow_implicit_invocation: true
