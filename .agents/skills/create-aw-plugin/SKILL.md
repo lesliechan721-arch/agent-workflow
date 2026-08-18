@@ -152,4 +152,4 @@ pnpm plugin:eval <plugin> --skill <skill> --batch-name trigger-validation --suit
 - Eval-driven 修改只来自已归因为 `skill-defect` 的有效 case，并已通过同族、minimal pair、相反标签和固定回归集检查
 - Codex/Claude 动态 Skill 的 project/user final artifacts 已 materialize，并保留作者声明的原生调用元数据；真实模型未运行时明确列为未验证
 - 最终回复列出改动、验证结果和未完成项
-- 插件和 Skill README 已按 `docs/readme-standard.md` 面向用户补齐，且不包含 Eval、正式报告或仓库维护入口
+- 插件和 Skill README 已按 `docs/readme-standard.md` 面向用户补齐，且不包含 Eval 或正式报告登记；可以保留规范允许的简短维护者入口

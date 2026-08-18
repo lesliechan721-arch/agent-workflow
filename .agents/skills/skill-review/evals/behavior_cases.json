@@ -280,14 +280,14 @@
       "不把完整eval视为发布授权",
       "不运行review:publish或封存批次",
       "不修改README",
-      "发布和README登记需要分别明确授权"
+      "正式发布需要明确授权，README不属于发布动作"
     ]
   },
   {
     "id": "release-evidence-currentness",
-    "prompt": "README没有登记报告，但正式目录存在一个来源已过期且结果为failed的报告；当前目标没有匹配的release evidence。",
+    "prompt": "正式目录存在一个来源已过期且结果为failed的报告；当前目标没有匹配的release evidence。",
     "assertions": [
-      "不因README未登记而断言正式报告不存在",
+      "直接枚举正式summary，不依赖README",
       "比较正式summary的commit、inScopeDirty和digest与当前目标",
       "当前release-evidence为unknown",
       "旧报告单独记录为historical fail"
@@ -323,7 +323,7 @@
   },
   {
     "id": "draft-persistence-is-not-publication",
-    "prompt": "用户只要求把评审草稿保存下来，没有要求正式发布、封存批次或登记README。",
+    "prompt": "用户只要求把评审草稿保存下来，没有要求正式发布或封存批次。",
     "assertions": [
       "草稿只写入.tmp/agent-workflows/reviews",
       "不运行review:publish，不修改README",
