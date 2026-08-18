@@ -18,6 +18,24 @@ aw install ask-me -p both
 | [`decision-grill`](skills/decision-grill/) | 需要通过多轮访谈把计划、方案或重要决定想透并形成共享理解 |
 | [`decision-prototype`](skills/decision-prototype/) | 一个决定必须看到、运行或操作候选方案后才能可靠作出 |
 
+## 可配置的实施前检查
+
+插件默认启用实施前质量门禁，以保持既有安装行为。它会在非平凡实现前检查是否仍有会明显影响成品、范围或验收的关键歧义；只有确实需要用户决定时才进入 `requirements-clarifier`。
+
+按当前使用范围关闭或重新开启：
+
+```bash
+# user scope
+aw config set ask-me qualityGateEnabled false --value-json
+aw config set ask-me qualityGateEnabled true --value-json
+
+# project shared scope
+aw config set ask-me qualityGateEnabled false --value-json --scope project
+aw config set ask-me qualityGateEnabled true --value-json --scope project
+```
+
+配置变化会触发 AW 重新渲染当前范围的受管产物。Codex 使用受管 developer instructions block；Claude 使用一个只负责实施前检查的内部 Skill。关闭后只移除该门禁，三个用户可用 Skill 仍保留。
+
 ## 典型用法
 
 ```text

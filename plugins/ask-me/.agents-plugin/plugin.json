@@ -1,6 +1,6 @@
 {
   "name": "ask-me",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "在实施前澄清关键歧义，并通过局部澄清、逐轮决策访谈或可体验原型形成共享理解。",
   "compatibility": {
     "aw": {
@@ -21,15 +21,6 @@
     "shortDescription": "澄清关键歧义、逐轮推演重要决定，或用可体验原型帮助用户作出决定",
     "capabilities": ["Skills", "Instructions"]
   },
-  "extensions": {
-    "instructions": [
-      {
-        "name": "quality-gate",
-        "title": "实施前需求检查",
-        "content": "开始非平凡实现前，先依据当前对话和仓库检查需求。检查本身不要求加载 Skill；只有检查后仍存在多种合理理解，且选错会明显影响交付结果、功能范围或验收，或多项小歧义合起来会决定成品形态时，才使用 `requirements-clarifier`。\n\n能从现有上下文查明、有明确项目惯例、容易调整、只涉及内部实现或用户已授权采用默认值的事项不必追问；会影响用户预期的关键默认值应明确说明，不要静默假设。"
-      }
-    ]
-  },
   "buildConfig": {
     "templates": {
       "include": ["skills/**/*.md"],
@@ -42,8 +33,50 @@
     }
   },
   "scripts": {
+    "artifacts": {
+      "render": {
+        "runner": "node",
+        "path": "./scripts/render-artifacts.mjs"
+      }
+    },
     "tests": {
-      "node": ["./scripts/contract.test.mjs"]
+      "node": [
+        "./scripts/contract.test.mjs",
+        "./scripts/render-artifacts.test.mjs"
+      ]
     }
+  },
+  "config": {
+    "schema": {
+      "qualityGateEnabled": {
+        "type": "boolean",
+        "title": "实施前需求检查",
+        "description": "启用后，在非平凡实现前检查是否仍有会影响结果、范围或验收的关键歧义。",
+        "default": true
+      }
+    }
+  },
+  "artifacts": {
+    "targets": [
+      {
+        "id": "ask-me-quality-gate-codex",
+        "platform": "codex",
+        "scopes": ["user", "project"],
+        "target": "codex.developerInstructionsBlock",
+        "projectManagedKind": "instruction",
+        "states": ["present", "disabled"],
+        "refreshKeys": ["qualityGateEnabled"],
+        "requiresCodexProjectConfig": true
+      },
+      {
+        "id": "ask-me-quality-gate-claude",
+        "platform": "claude",
+        "scopes": ["user", "project"],
+        "target": "claude.skill",
+        "states": ["present", "disabled"],
+        "refreshKeys": ["qualityGateEnabled"],
+        "skillKey": "ask-me-quality-gate"
+      }
+    ]
   }
 }
