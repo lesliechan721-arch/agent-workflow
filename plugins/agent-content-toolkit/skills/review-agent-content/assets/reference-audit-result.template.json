@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "target": "path/to/content-package",
+  "target": "replace-me",
   "activePaths": [],
   "references": [],
   "findings": [],

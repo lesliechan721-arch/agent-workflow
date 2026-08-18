@@ -18,14 +18,10 @@
       "provenance": "representative-synthetic",
       "scenario_family": "core-positive",
       "unit_under_test": "description",
-      "preconditions": {
-        "target_available": true
-      },
+      "preconditions": { "target_available": true },
       "oracle": {
         "rationale": "请求的主要交付与该 Skill 的职责一致。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
+        "rule_refs": ["SKILL.md description"],
         "confidence": "high",
         "allowed_variance": "报告结构可不同，但应加载目标 Skill。"
       }
@@ -40,14 +36,10 @@
       "provenance": "representative-synthetic",
       "scenario_family": "core-positive",
       "unit_under_test": "description",
-      "preconditions": {
-        "target_available": true
-      },
+      "preconditions": { "target_available": true },
       "oracle": {
         "rationale": "请求的主要交付与该 Skill 的职责一致。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
+        "rule_refs": ["SKILL.md description"],
         "confidence": "high",
         "allowed_variance": "报告结构可不同，但应加载目标 Skill。"
       }
@@ -62,85 +54,88 @@
       "provenance": "representative-synthetic",
       "scenario_family": "core-positive",
       "unit_under_test": "description",
-      "preconditions": {
-        "target_available": true
-      },
+      "preconditions": { "target_available": true },
       "oracle": {
         "rationale": "请求的主要交付与该 Skill 的职责一致。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
+        "rule_refs": ["SKILL.md description"],
         "confidence": "high",
         "allowed_variance": "报告结构可不同，但应加载目标 Skill。"
       }
     },
     {
-      "id": "negative_1",
+      "id": "negative_authoring",
       "split": "validation",
       "query": "直接修改 AW 插件并修复 validator 错误。",
       "should_load_skill": false,
       "eval_type": "trigger",
       "case_role": "boundary",
       "provenance": "boundary",
-      "scenario_family": "near-miss-negative",
+      "scenario_family": "author-review-boundary",
       "unit_under_test": "description",
-      "preconditions": {
-        "target_available": true
-      },
+      "preconditions": { "target_available": true },
       "oracle": {
-        "rationale": "请求属于相邻但不同的用户意图。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
+        "rationale": "请求属于写入型 Author 意图。",
+        "rule_refs": ["SKILL.md description"],
         "confidence": "high",
-        "allowed_variance": "可以调用相邻 Skill，但不应加载本 Skill。",
-        "minimal_counterexample": "将交付改为本 Skill 的主要职责后标签翻转。"
+        "allowed_variance": "可以加载 author-aw-plugin，但不应加载本 Skill。",
+        "minimal_counterexample": "把交付改为只读质量评审后标签翻转。"
       }
     },
     {
-      "id": "negative_2",
+      "id": "negative_portable_skill",
       "split": "validation",
       "query": "只评审一个仓库外 portable Skill。",
       "should_load_skill": false,
       "eval_type": "trigger",
       "case_role": "boundary",
       "provenance": "boundary",
-      "scenario_family": "near-miss-negative",
+      "scenario_family": "generic-skill-boundary",
       "unit_under_test": "description",
-      "preconditions": {
-        "target_available": true
-      },
+      "preconditions": { "target_available": true },
       "oracle": {
-        "rationale": "请求属于相邻但不同的用户意图。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
+        "rationale": "通用 Skill 使用 review-agent-skill。",
+        "rule_refs": ["SKILL.md description"],
         "confidence": "high",
-        "allowed_variance": "可以调用相邻 Skill，但不应加载本 Skill。",
-        "minimal_counterexample": "将交付改为本 Skill 的主要职责后标签翻转。"
+        "allowed_variance": "可以加载 review-agent-skill，但不应加载本 Skill。",
+        "minimal_counterexample": "把目标改为 plugins/<name> AW 插件后标签翻转。"
       }
     },
     {
-      "id": "negative_3",
+      "id": "negative_repo_local_skill",
+      "split": "validation",
+      "query": "只读评审 .agents/skills/example 这个 repo-local Skill。",
+      "should_load_skill": false,
+      "eval_type": "trigger",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "generic-skill-boundary",
+      "unit_under_test": "description",
+      "preconditions": { "target_available": true },
+      "oracle": {
+        "rationale": "repo-local Skill 已从 AW adapter 范围移出，直接使用通用 review-agent-skill。",
+        "rule_refs": ["SKILL.md description"],
+        "confidence": "high",
+        "allowed_variance": "可以加载 review-agent-skill，但不应加载本 Skill。",
+        "minimal_counterexample": "把目标改为 plugins/<name> AW 插件及其物化结果后标签翻转。"
+      }
+    },
+    {
+      "id": "negative_runtime",
       "split": "validation",
       "query": "运行插件，不做质量评审。",
       "should_load_skill": false,
       "eval_type": "trigger",
       "case_role": "boundary",
       "provenance": "boundary",
-      "scenario_family": "near-miss-negative",
+      "scenario_family": "runtime-boundary",
       "unit_under_test": "description",
-      "preconditions": {
-        "target_available": true
-      },
+      "preconditions": { "target_available": true },
       "oracle": {
-        "rationale": "请求属于相邻但不同的用户意图。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
+        "rationale": "执行插件不是质量评审。",
+        "rule_refs": ["SKILL.md description"],
         "confidence": "high",
-        "allowed_variance": "可以调用相邻 Skill，但不应加载本 Skill。",
-        "minimal_counterexample": "将交付改为本 Skill 的主要职责后标签翻转。"
+        "allowed_variance": "可以调用运行时能力，但不应加载本 Skill。",
+        "minimal_counterexample": "改为只读评审执行证据后标签翻转。"
       }
     }
   ]

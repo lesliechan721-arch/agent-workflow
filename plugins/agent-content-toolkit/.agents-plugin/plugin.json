@@ -1,7 +1,7 @@
 {
   "name": "agent-content-toolkit",
-  "version": "0.1.1",
-  "description": "Create and review agent-facing documents, Agent Skills, and Skill evals with shared quality standards.",
+  "version": "0.2.0",
+  "description": "Create and review agent-facing documents with minimal context load, clear pointers, and proportionate control.",
   "compatibility": {
     "aw": {
       "minVersion": "0.0.0"

@@ -1,48 +1,30 @@
-# AW Plugin Development
+# aw-plugin-development
 
-面向本仓库维护者的 AW 插件作者和评审适配层。
+`agent-workflows` 项目插件开发适配层，只处理 `plugins/<name>/` AW 插件。普通 portable Agent Skill 或 repo-local Skill 直接使用 `agent-skill-toolkit`。
 
-该插件把 `agent-content-toolkit` 的通用内容、Skill 和 Eval 能力映射到 `agent-workflow` 仓库的 manifest、构建、materialization、版本和发布约定。两个 Skill 都是显式入口。
+当前是并行迁移入口，不替换 `.agents/skills/create-aw-plugin` 或 `.agents/skills/skill-review`。两个适配器都只允许用户显式调用。
 
-## 安装
+## Manual dependencies
 
-先安装通用工具包，再安装本插件：
+当前要求人工同时安装：
 
-```bash
-aw install agent-content-toolkit -p both
-aw install aw-plugin-development -p both
-```
+- `agent-content-toolkit >= 0.2.0`
+- `agent-skill-toolkit >= 0.1.0`
 
-当前依赖由安装者人工保证。缺少必需通用 Skill 时，适配器会停止并报告缺失，不复制另一份标准。
+运行时若找不到必需通用 Skill，适配器停止并报告缺失，不复制或内置通用标准。
 
-## 包含的 Skill
+## Skills
 
-| Skill | 作用 | 写入 |
-| --- | --- | --- |
-| [`author-aw-plugin`](skills/author-aw-plugin/) | 创建或维护 AW 插件，修改源码、构建并运行确定性验证 | 是 |
-| [`review-aw-plugin`](skills/review-aw-plugin/) | 只读评审源码、最终物化产物和 Eval 证据 | 否 |
+- `author-aw-plugin`：创建或维护 AW 插件；拥有源码写入、构建、版本和确定性验证。
+- `review-aw-plugin`：只读评审 AW 插件源码、materialized final artifacts 和 Eval evidence；不修改插件生产源码。
 
-## 典型用法
+Author 不给自己的结果出独立发布结论；Reviewer 不修改生产源码。正式报告发布需要授权，但 README 登记和 manifest 版本变化交回 Author 或项目 release 工具。
 
-```text
-使用 author-aw-plugin 在 agent-workflow 仓库新增一个双平台插件。
-```
-
-```text
-使用 review-aw-plugin 独立审查这个插件的源码、Codex 最终制品和 Eval 证据。
-```
-
-## 边界
-
-- Author 不为自己的修改生成独立发布结论。
-- Reviewer 不修改生产源码。
-- 报告发布和 README 登记需要单独授权。
-- 当前真实模型证据范围以 Codex 为主；Claude 侧执行确定性校验与 materialization。
-- 迁移期间不会静默替换仓库已有作者和评审入口。
-
-## 维护者
+## Validation
 
 ```bash
 node scripts/validate-contract-assets.mjs
 pnpm plugin:test aw-plugin-development
 ```
+
+真实模型证据的首版范围只包括 Codex。Claude 只做确定性验证和 materialization。

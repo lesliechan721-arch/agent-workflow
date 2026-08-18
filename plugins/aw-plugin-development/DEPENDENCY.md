@@ -1,13 +1,13 @@
 # Manual dependency contract
 
-Required plugin: `agent-content-toolkit >= 0.1.0`
+Required plugins:
+
+- `agent-content-toolkit >= 0.2.0`
+- `agent-skill-toolkit >= 0.1.0`
 
 Required skills:
 
-- `author-agent-skill`
-- `review-agent-skill`
-- `design-agent-skill-evals`
-- `audit-agent-skill-evals`
-- `write-agent-content`（文档分支）
+- from `agent-content-toolkit`: `write-agent-content`, `review-agent-content`
+- from `agent-skill-toolkit`: `author-agent-skill`, `review-agent-skill`, `design-agent-skill-evals`, `audit-agent-skill-evals`
 
-Until plugin dependencies are supported, installation and version compatibility are guaranteed by repository policy or the human operator. The AW adapters must fail closed when a required skill is unavailable.
+Until plugin dependencies are supported, installation and version compatibility are guaranteed by repository policy or the human operator. The AW adapters fail closed when a required skill is unavailable and never carry fallback copies of the generic standards.

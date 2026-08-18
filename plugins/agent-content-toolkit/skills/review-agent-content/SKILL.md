@@ -2,6 +2,7 @@
 name: review-agent-content
 description: >-
   当用户明确要求只读评价已有 AGENTS.md、CLAUDE.md、prompt、role instructions、reference 或其它 Agent-facing 文档的质量、负担、可达性或可靠性时使用。不用于完整 Agent Skill 包评审，也不直接改写目标。
+compatibility: Requires Node.js 20+ only when validating the optional structured reference-audit artifact.
 metadata:
   short-description: 只读评审 Agent-facing 文档的最小控制、层级与完成边界
 ---
@@ -27,8 +28,9 @@ metadata:
    - 指针是否同时说明目标与 branch；是否堆砌同义词。
 
 3. **信息层级与 active path**
-   - 是否把所有 branch 都需要的内容与少数 branch 内容分开。
-   - 大文件是否单一聚焦；典型路径是否只加载所需内容。
+   - 区分所有 branch 都需要的内容与少数 branch 内容。
+   - 对每条典型路径记录实际加载文件、总 bytes、估算 token、pointer 证据和不需要内容比例。
+   - 大文件只触发语义审计；只有 branch locality、职责或 active-path 证据支持时才建议拆分。
 
 4. **控制和完成边界**
    - 控制强度是否匹配脆弱性。
@@ -46,10 +48,15 @@ metadata:
 
 ## 输出
 
-审计 reference 包时，复制 `assets/reference-audit-result.template.json` 到任务 handoff 目录，填写后运行 `node scripts/validate-json-contract.mjs assets/reference-audit-result.schema.json <handoff>/reference-audit-result.json`。不要只返回自由文本清单。
+总是返回人类可读结论。审计 reference 包时还要产生符合 `assets/reference-audit-result.schema.json` 的结构化结果：
 
-- 结论：`proportionate | over-specified | over-engineered | not-assessed`
-- 必须修复：仅有强证据的问题
-- 高价值改进：最多 3 项
-- 可删除/放宽候选
-- 关键未知和验证方式
+- caller 提供 handoff 路径时，复制模板、填写并运行 `node scripts/validate-json-contract.mjs assets/reference-audit-result.schema.json <handoff>/reference-audit-result.json`；
+- 未提供可写 handoff 路径时，在回复中返回完整 JSON code block，不假定本地文件系统或 Node 可用。
+
+主结论包含：
+
+- `proportionate | over-specified | over-engineered | not-assessed`；
+- 必须修复：仅有强证据的问题；
+- 高价值改进：最多 3 项；
+- 可删除或放宽候选；
+- 关键未知和验证方式。

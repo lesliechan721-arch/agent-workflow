@@ -17,23 +17,23 @@ function fail(message) {
 }
 
 function usage() {
-  process.stdout.write([
+  return [
     'Usage:',
     '  node prepare-aw-review-bundle.mjs <plugin-root> [options]',
     '',
     'Options:',
-    '  --final <profile=path>  Add one materialized file or directory. Repeatable.',
-    '  --source <name=path>    Add one companion source root used by the review batch. Repeatable.',
-    '  --evidence <path>       Add one evidence file or directory. Repeatable.',
+    '  --final <profile=path>  Add a materialized file or directory. Repeatable.',
+    '  --source <name=path>    Add a companion plugin source root. Repeatable.',
+    '  --evidence <path>       Add an evidence file or directory. Repeatable.',
     '  --eval-audit <path>     Load one EvalAuditResult JSON document.',
-    '  --eval-case <path>      Bind one Eval case or corpus file to the audit. Repeatable.',
+    '  --eval-case <path>      Bind an Eval case/corpus file to the audit. Repeatable.',
     '  --eval-result <path>    Load one Eval result JSON document. Repeatable.',
     '  --client <name>         codex or claude. Default: codex.',
     '  -h, --help              Show this help.',
     '',
+    'The target must be an AW plugin root with .agents-plugin/plugin.json.',
     'The command only reads artifacts and writes ReviewInputBundle JSON to stdout.',
-    '',
-  ].join('\n'));
+  ].join('\n');
 }
 
 function optionValue(args, index, flag) {
@@ -42,14 +42,25 @@ function optionValue(args, index, flag) {
   return value;
 }
 
+function parseNamedPath(value, flag, defaultName = null) {
+  const separator = value.indexOf('=');
+  if (separator < 0) {
+    if (defaultName === null || value === '') fail(flag + ' requires name=path.');
+    return { name: defaultName, filePath: path.resolve(value) };
+  }
+  const name = value.slice(0, separator);
+  const filePath = value.slice(separator + 1);
+  if (!name || !filePath) fail(flag + ' requires a non-empty name and path.');
+  return { name, filePath: path.resolve(filePath) };
+}
+
 function parseArgs(argv) {
   const args = argv.slice(2);
   if (args.includes('-h') || args.includes('--help')) {
-    usage();
+    process.stdout.write(usage() + '\n');
     process.exit(0);
   }
   if (!args[0] || args[0].startsWith('--')) fail('Provide <plugin-root>.');
-
   const options = {
     pluginRoot: path.resolve(args[0]),
     client: 'codex',
@@ -63,27 +74,13 @@ function parseArgs(argv) {
   for (let index = 1; index < args.length; index += 1) {
     const flag = args[index];
     if (flag === '--source') {
-      const value = optionValue(args, index, flag);
+      const parsed = parseNamedPath(optionValue(args, index, flag), flag);
+      options.sources.push({ name: parsed.name, root: parsed.filePath });
       index += 1;
-      const separator = value.indexOf('=');
-      if (separator <= 0 || value.slice(separator + 1) === '') {
-        fail('--source requires a non-empty name and path.');
-      }
-      options.sources.push({
-        name: value.slice(0, separator),
-        root: path.resolve(value.slice(separator + 1)),
-      });
     } else if (flag === '--final') {
-      const value = optionValue(args, index, flag);
+      const parsed = parseNamedPath(optionValue(args, index, flag), flag, 'default');
+      options.finals.push({ profile: parsed.name, artifactPath: parsed.filePath });
       index += 1;
-      const separator = value.indexOf('=');
-      if (separator === 0 || (separator > 0 && value.slice(separator + 1) === '')) {
-        fail('--final requires a non-empty profile and path.');
-      }
-      options.finals.push({
-        profile: separator > 0 ? value.slice(0, separator) : 'default',
-        artifactPath: path.resolve(separator > 0 ? value.slice(separator + 1) : value),
-      });
     } else if (flag === '--evidence') {
       options.evidence.push(path.resolve(optionValue(args, index, flag)));
       index += 1;
@@ -103,15 +100,11 @@ function parseArgs(argv) {
       fail('Unknown option: ' + flag);
     }
   }
-  if (!['codex', 'claude'].includes(options.client)) {
-    fail('--client must be codex or claude.');
-  }
+  if (!['codex', 'claude'].includes(options.client)) fail('--client must be codex or claude.');
   if (options.evalAudit && options.evalCases.length === 0) {
     fail('--eval-audit requires at least one --eval-case for corpus digest binding.');
   }
-  if (!options.evalAudit && options.evalCases.length > 0) {
-    fail('--eval-case requires --eval-audit.');
-  }
+  if (!options.evalAudit && options.evalCases.length > 0) fail('--eval-case requires --eval-audit.');
   return options;
 }
 
@@ -133,10 +126,7 @@ function isProjectProfile(relativePath) {
 }
 
 function sourceArtifactRole(relativePath) {
-  if (
-    relativePath.startsWith('reports/')
-    || /^skills\/[^/]+\/reports\//u.test(relativePath)
-  ) {
+  if (relativePath.startsWith('reports/') || /^skills\/[^/]+\/reports\//u.test(relativePath)) {
     return 'evidence';
   }
   return isProjectProfile(relativePath) ? 'project-profile' : 'source';
@@ -146,7 +136,6 @@ async function collectFiles(root) {
   const rootStat = await stat(root);
   if (rootStat.isFile()) return [{ absolutePath: root, relativePath: path.basename(root) }];
   if (!rootStat.isDirectory()) fail('Artifact is not a file or directory: ' + root);
-
   const files = [];
   async function walk(directory, relativeDirectory = '') {
     const entries = await readdir(directory, { withFileTypes: true });
@@ -157,10 +146,7 @@ async function collectFiles(root) {
       const relativePath = path.join(relativeDirectory, entry.name);
       if (entry.isDirectory()) await walk(absolutePath, relativePath);
       else if (entry.isFile()) {
-        files.push({
-          absolutePath,
-          relativePath: relativePath.split(path.sep).join('/'),
-        });
+        files.push({ absolutePath, relativePath: relativePath.split(path.sep).join('/') });
       }
     }
   }
@@ -183,13 +169,9 @@ async function gitCurrentness(pluginRoot) {
     const dirtyPaths = new Set();
     for (const entry of statusOutput.split('\0')) {
       if (entry.length < 4) continue;
-      const candidate = entry.slice(3);
-      dirtyPaths.add(path.resolve(repositoryRoot, candidate));
+      dirtyPaths.add(path.resolve(repositoryRoot, entry.slice(3)));
     }
-    return {
-      repositoryRoot,
-      dirtyPaths,
-    };
+    return { repositoryRoot, dirtyPaths };
   } catch {
     return { repositoryRoot: null, dirtyPaths: null };
   }
@@ -212,7 +194,6 @@ async function artifactEntries(root, role, owner, profile, currentness) {
     digest: sha256(await readFile(file.absolutePath)),
     owner,
     currentness,
-    relativePath: file.relativePath,
   })));
 }
 
@@ -221,8 +202,7 @@ async function authorSourceDigest(roots) {
   for (const entry of [...roots].sort((left, right) => left.name.localeCompare(right.name))) {
     hash.update(entry.name);
     hash.update('\0');
-    const files = await collectFiles(entry.root);
-    for (const file of files) {
+    for (const file of await collectFiles(entry.root)) {
       if (file.relativePath === 'reports' || file.relativePath.startsWith('reports/')) continue;
       hash.update(file.relativePath);
       hash.update('\0');
@@ -241,28 +221,24 @@ async function main() {
 
   const sourceRoots = [{ name: manifest.name, root: options.pluginRoot }];
   for (const source of options.sources) {
-    if (sourceRoots.some((entry) => entry.name === source.name)) {
-      fail('Duplicate source owner: ' + source.name);
-    }
+    if (sourceRoots.some((entry) => entry.name === source.name)) fail('Duplicate source owner: ' + source.name);
     const sourceManifest = await jsonDocument(
       path.join(source.root, '.agents-plugin', 'plugin.json'),
       'Companion plugin manifest',
     );
-    if (sourceManifest.name !== source.name) {
-      fail('--source name does not match its plugin manifest: ' + source.name);
-    }
+    if (sourceManifest.name !== source.name) fail('--source name does not match its plugin manifest: ' + source.name);
     sourceRoots.push(source);
   }
+
   const sourceArtifacts = [];
-  let targetGit = null;
+  let targetGit = { repositoryRoot: null, dirtyPaths: null };
   for (const source of sourceRoots) {
     const git = await gitCurrentness(source.root);
     if (source.name === manifest.name) targetGit = git;
-    const sourceFiles = await collectFiles(source.root);
-    sourceArtifacts.push(...await Promise.all(sourceFiles.map(async (file) => {
+    for (const file of await collectFiles(source.root)) {
       const role = sourceArtifactRole(file.relativePath);
       const canonicalPath = await realpath(file.absolutePath);
-      return {
+      sourceArtifacts.push({
         role,
         path: portablePath(file.absolutePath),
         profile: role === 'project-profile' ? 'aw' : null,
@@ -273,9 +249,8 @@ async function main() {
           : git.dirtyPaths === null
             ? 'unknown'
             : git.dirtyPaths.has(canonicalPath) ? 'dirty' : 'current',
-        relativePath: file.relativePath,
-      };
-    })));
+      });
+    }
   }
   const sourceDigest = await authorSourceDigest(sourceRoots);
 
@@ -297,22 +272,11 @@ async function main() {
   ]);
   const evidenceArtifacts = [];
   for (const evidencePath of evidencePaths) {
-    evidenceArtifacts.push(...await artifactEntries(
-      evidencePath,
-      'evidence',
-      manifest.name,
-      null,
-      'unknown',
-    ));
+    evidenceArtifacts.push(...await artifactEntries(evidencePath, 'evidence', manifest.name, null, 'unknown'));
   }
 
-  const artifacts = [...sourceArtifacts, ...finalArtifacts, ...evidenceArtifacts]
-    .map(({ relativePath: _relativePath, ...artifact }) => artifact)
-    .sort((left, right) => left.path.localeCompare(right.path) || left.role.localeCompare(right.role));
-
-  const evalAudit = options.evalAudit
-    ? await jsonDocument(options.evalAudit, 'Eval audit')
-    : null;
+  const evalAudit = options.evalAudit ? await jsonDocument(options.evalAudit, 'Eval audit') : null;
+  const providedStages = [];
   if (options.evalAudit) {
     const validator = path.join(scriptRoot, 'validate-eval-audit-result.mjs');
     try {
@@ -326,14 +290,26 @@ async function main() {
     } catch (error) {
       fail('Eval audit validation failed: ' + String(error.stdout || error.message || error));
     }
-  }
-  const evalResults = [];
-  for (const resultPath of options.evalResults) {
-    evalResults.push(await jsonDocument(resultPath, 'Eval result'));
+    const auditContent = await readFile(options.evalAudit);
+    providedStages.push({
+      id: 'eval-audit',
+      producer: evalAudit.producer,
+      independentContext: evalAudit.independentContext,
+      targetDigest: evalAudit.corpusDigest,
+      resultPath: portablePath(options.evalAudit),
+      resultDigest: sha256(auditContent),
+      schema: 'EvalAuditResult',
+    });
   }
 
+  const evalResults = [];
+  for (const resultPath of options.evalResults) evalResults.push(await jsonDocument(resultPath, 'Eval result'));
+
+  const artifacts = [...sourceArtifacts, ...finalArtifacts, ...evidenceArtifacts]
+    .sort((left, right) => left.path.localeCompare(right.path) || left.role.localeCompare(right.role));
+
   process.stdout.write(JSON.stringify({
-    schemaVersion: 1,
+    schemaVersion: 2,
     target: {
       kind: 'aw-plugin',
       name: manifest.name,
@@ -353,11 +329,7 @@ async function main() {
     },
     orchestration: {
       stageOwner: 'caller',
-      providedStages: [
-        'source-bundle',
-        ...(options.finals.length > 0 ? ['materialized-profile-review'] : []),
-        ...(options.evalAudit ? ['eval-audit'] : []),
-      ],
+      providedStages,
     },
     evalAudit,
     evalResults,
