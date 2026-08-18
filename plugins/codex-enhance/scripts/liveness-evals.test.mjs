@@ -100,10 +100,28 @@ function testArguments() {
 async function testSpecShape() {
   const spec = await loadLivenessEvalSpec();
   assert.equal(spec.skill_name, 'codex-explore');
+  assert.equal(spec.authority, 'diagnostic-only');
+  assert.deepEqual(
+    Object.keys(spec.policy).sort(),
+    ['false_negative_cost', 'false_positive_cost', 'optimization', 'rationale'],
+  );
+  assert.equal(spec.policy.optimization, 'balanced');
   assert.equal(spec.evals.length > 0, true);
   assert.equal(spec.evals.every((entry) => (
     typeof entry.id === 'string' &&
     entry.id.length > 0 &&
+    entry.eval_type === 'behavior' &&
+    entry.case_role === 'diagnostic' &&
+    entry.provenance === 'mechanism-probe' &&
+    entry.scenario_family === 'long-responsive-wait-without-probe' &&
+    entry.unit_under_test === 'waiting-and-liveness-policy' &&
+    typeof entry.preconditions === 'object' &&
+    entry.preconditions.release_relevance === 'diagnostic-only' &&
+    typeof entry.oracle?.rationale === 'string' &&
+    nonEmptyStrings(entry.oracle?.rule_refs) &&
+    entry.oracle.confidence === 'high' &&
+    typeof entry.oracle.allowed_variance === 'string' &&
+    entry.oracle.allowed_variance.length > 0 &&
     typeof entry.prompt === 'string' &&
     entry.prompt.length > 0 &&
     (entry.parent_model === undefined || typeof entry.parent_model === 'string') &&
