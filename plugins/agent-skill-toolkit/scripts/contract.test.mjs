@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -22,8 +22,45 @@ async function run(relative, args = []) {
   });
 }
 
+async function collectFiles(directory) {
+  const files = [];
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const target = path.join(directory, entry.name);
+    if (entry.isDirectory()) files.push(...await collectFiles(target));
+    else if (entry.isFile()) files.push(target);
+  }
+  return files;
+}
+
 after(async () => {
   await Promise.all(temporaryRoots.map((root) => rm(root, { recursive: true, force: true })));
+});
+
+test('generic Skill surfaces do not depend on optional project adapters', async () => {
+  const skillsRoot = path.join(pluginRoot, 'skills');
+  const publicSurface = (filePath) => {
+    const relative = path.relative(skillsRoot, filePath).split(path.sep).join('/');
+    return relative.endsWith('/SKILL.md')
+      || relative.endsWith('/README.md')
+      || relative.endsWith('/agents/openai.yaml')
+      || relative.endsWith('/evals/trigger-cases.json');
+  };
+  const forbidden = [
+    ['agent-workflows', /\bagent-workflows\b/u],
+    ['aw-plugin-development', /\baw-plugin-development\b/u],
+    ['author-aw-plugin', /\bauthor-aw-plugin\b/u],
+    ['review-aw-plugin', /\breview-aw-plugin\b/u],
+  ];
+  const violations = [];
+  for (const filePath of (await collectFiles(skillsRoot)).filter(publicSurface)) {
+    const content = await readFile(filePath, 'utf8');
+    for (const [name, pattern] of forbidden) {
+      if (pattern.test(content)) {
+        violations.push(`${path.relative(pluginRoot, filePath)} names optional upstream adapter ${name}`);
+      }
+    }
+  }
+  assert.deepEqual(violations, []);
 });
 
 test('generated Skill standards and contract assets are current', async () => {

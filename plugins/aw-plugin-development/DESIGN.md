@@ -8,9 +8,13 @@
 
 - `agent-content-toolkit` owns Agent-facing prose authoring and read-only content/reference review.
 - `agent-skill-toolkit` owns generic Agent Skill authoring, review and Eval design/audit.
-- this plugin owns only AW manifest, source/final mapping, build, materialization, project Eval runtime and report publication adaptation.
+- this plugin owns AW manifest, source/final mapping, build, materialization, workspace Eval runtime and report-publication adaptation.
 
-Both adapters check the required generic Skills and stop if any are missing. They do not carry fallback rubrics.
+The dependency direction is strictly upward: generic toolkits do not name or require this adapter plugin. Both adapters check their required lower-layer Skills and stop if any are missing; they do not carry fallback rubrics.
+
+## Portable workspace boundary
+
+An AW plugin root is identified by its own `.agents-plugin/plugin.json`, not by a fixed monorepo path. A target workspace may place plugins under `plugins/`, `packages/`, `tools/` or another explicit root. Workspace-specific build and release commands are discovered from that workspace; reusable authoring policy stays inside this plugin bundle.
 
 ## Isolated stages
 

@@ -144,22 +144,26 @@
       }
     },
     {
-      "id": "negative_aw_project_adapter",
+      "id": "negative_project_adapter",
       "split": "validation",
-      "query": "只读评审 agent-workflows 的 plugins/demo、物化结果和发布就绪性。",
+      "query": "只读评审一个产品插件的源码、物化结果和项目发布就绪性。",
       "should_load_skill": false,
       "eval_type": "trigger",
       "case_role": "boundary",
       "provenance": "boundary",
-      "scenario_family": "aw-adapter-boundary",
+      "scenario_family": "project-adapter-boundary",
       "unit_under_test": "description",
-      "preconditions": { "target_available": true },
+      "preconditions": {
+        "target_available": true
+      },
       "oracle": {
-        "rationale": "AW 项目评审应由 review-aw-plugin 入口拥有；通用 Reviewer 只作为叶子能力。",
-        "rule_refs": ["SKILL.md description"],
+        "rationale": "项目专有插件评审应由该工作区的适配流程拥有；通用 Reviewer 只作为叶子能力。",
+        "rule_refs": [
+          "SKILL.md description"
+        ],
         "confidence": "high",
-        "allowed_variance": "AW adapter 可以后续显式调用本 Skill，但不应直接路由到本 Skill。",
-        "minimal_counterexample": "去掉 AW 项目与物化发布范围后标签翻转。"
+        "allowed_variance": "项目适配器可以后续显式调用本 Skill，但不应把整个插件发布评审直接路由到本 Skill。",
+        "minimal_counterexample": "去掉插件物化与项目发布范围，只要求评审一个通用 Agent Skill 包后标签翻转。"
       }
     }
   ]

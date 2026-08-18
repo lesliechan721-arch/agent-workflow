@@ -6,7 +6,7 @@
   "required": ["schemaVersion", "repository", "plugin", "pluginRoot", "changeMode", "products", "componentType", "skillInvocation", "allowedFiles", "sourceProfile", "manifestVersionBump", "buildRequired", "validators"],
   "properties": {
     "schemaVersion": { "const": 1 },
-    "repository": { "const": "agent-workflows" },
+    "repository": { "type": "string", "minLength": 1 },
     "plugin": { "type": "string", "minLength": 1 },
     "pluginRoot": { "type": "string", "minLength": 1 },
     "changeMode": { "enum": ["create", "change"] },

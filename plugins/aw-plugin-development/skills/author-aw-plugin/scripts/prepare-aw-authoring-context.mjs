@@ -3,7 +3,6 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
-
 const COMPONENT_TYPES = new Set([
   'skill',
   'extension',
@@ -30,13 +29,13 @@ function usage() {
     '  --change-mode <mode>       create or change. Inferred from the manifest by default.',
     '  --component-type <type>    Skill, extension, slash-command, MCP, app, dynamic-artifact, or unknown.',
     '  --skill-invocation <mode>  model, manual, or claude-model-only. Skill default: model.',
-    '  --repo-root <path>         Agent-workflows repository root. Default: current directory.',
+    '  --repo-root <path>         Target AW workspace root. Default: current directory.',
     '  --allowed-file <path>      Add an authorized file or directory. Repeatable.',
     '  --product <name>           CODEX or CLAUDE. Repeatable.',
     '  --source-profile <id>      Default: aw-default.',
     '  --manifest-version-bump <major|minor|patch>',
     '  --no-build                 Mark the build as not required.',
-    '  --validator <command>      Add one deterministic validator. Repeatable.',
+    '  --validator <command>      Add one workspace validator. Repeatable.',
     '  -h, --help                 Show this help.',
     '',
   ].join('\n'));
@@ -149,17 +148,11 @@ async function main() {
     }
     products = ['CLAUDE'];
   }
-  const validators = options.validators.length > 0
-    ? options.validators
-    : [
-      'node ' + JSON.stringify(path.join(options.repoRoot, 'plugins', 'aw-plugin-development', 'skills', 'author-aw-plugin', 'scripts', 'validate_plugin.mjs')) +
-        ' ' + JSON.stringify(options.pluginRoot) + ' --repo-root ' + JSON.stringify(options.repoRoot),
-      'pnpm plugin:test ' + plugin,
-    ];
+  const validators = options.validators;
 
   process.stdout.write(JSON.stringify({
     schemaVersion: 1,
-    repository: 'agent-workflows',
+    repository: path.basename(options.repoRoot) || 'aw-workspace',
     plugin,
     pluginRoot: options.pluginRoot,
     changeMode,

@@ -11,7 +11,7 @@
     {
       "id": "positive_1",
       "split": "validation",
-      "query": "$author-aw-plugin 在 agent-workflows 仓库创建一个新插件和两个 Skill。",
+      "query": "$author-aw-plugin 在 `tools/demo-plugin` 创建一个新 AW 插件和两个 Skill。",
       "should_load_skill": true,
       "eval_type": "trigger",
       "case_role": "representative",
@@ -75,6 +75,28 @@
       }
     },
     {
+      "id": "positive_external_workspace",
+      "split": "validation",
+      "query": "$author-aw-plugin 维护另一个项目中 `packages/acme-aw` 的 `.agents-plugin/plugin.json`、README 和构建验证。",
+      "should_load_skill": true,
+      "eval_type": "trigger",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "portable-workspace",
+      "unit_under_test": "description",
+      "preconditions": {
+        "target_available": true
+      },
+      "oracle": {
+        "rationale": "目标是明确的 AW 插件根；其所在工作区和目录名不改变本 Skill 的职责。",
+        "rule_refs": [
+          "SKILL.md description"
+        ],
+        "confidence": "high",
+        "allowed_variance": "只要目标仍是 AW 插件维护，就应加载本 Skill。"
+      }
+    },
+    {
       "id": "negative_1",
       "split": "validation",
       "query": "只读评审这个 AW 插件并给出发布结论。",
@@ -123,7 +145,7 @@
     {
       "id": "negative_3",
       "split": "validation",
-      "query": "在仓库外创建普通 portable Skill。",
+      "query": "创建一个普通 portable Agent Skill 包，不涉及 AW manifest、构建或 materialization。",
       "should_load_skill": false,
       "eval_type": "trigger",
       "case_role": "boundary",
@@ -134,13 +156,13 @@
         "target_available": true
       },
       "oracle": {
-        "rationale": "请求属于相邻但不同的用户意图。",
+        "rationale": "普通 Agent Skill 包由通用 Skill 作者能力处理，不需要 AW 插件适配。",
         "rule_refs": [
           "SKILL.md description"
         ],
         "confidence": "high",
-        "allowed_variance": "可以调用相邻 Skill，但不应加载本 Skill。",
-        "minimal_counterexample": "将交付改为本 Skill 的主要职责后标签翻转。"
+        "allowed_variance": "可以调用通用 Skill 作者能力，但不应加载本 Skill。",
+        "minimal_counterexample": "加入 `.agents-plugin/plugin.json`、插件版本或 materialization 范围后标签翻转。"
       }
     }
   ]

@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "repository": "agent-workflows",
+  "repository": "example-aw-workspace",
   "plugin": "target-plugin",
-  "pluginRoot": "plugins/<name>",
+  "pluginRoot": "packages/target-plugin",
   "changeMode": "create",
   "products": [
     "CODEX",

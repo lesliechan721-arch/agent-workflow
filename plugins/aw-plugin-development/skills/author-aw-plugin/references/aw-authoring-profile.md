@@ -2,9 +2,10 @@
 
 ## Source truth
 
-- `.agents-plugin/plugin.json` 和 `plugins/<name>/` 下源码是人工维护入口。
-- 平台 manifest、staging/runtime bundle、catalog 和本地 runtime view 由 CLI 生成。
-- 插件名和 Skill 名使用小写短横线，并与目录一致。
+- 显式提供的 `<plugin-root>/.agents-plugin/plugin.json` 和该插件根下源码是人工维护入口；`plugins/<name>/` 只是可能的工作区布局之一。
+- 平台 manifest、staging/runtime bundle、catalog 和本地 runtime view 由目标工作区的 CLI 或 renderer 生成。
+- 插件名和 Skill 名使用小写短横线，并与各自目录一致。
+- 插件与 Skill README 按同目录的 `aw-readme-authoring.md` 维护，不读取宿主仓库的 README 规范作为运行时合同。
 
 ## Component selection
 
