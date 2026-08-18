@@ -211,7 +211,7 @@ function createSkillFiles(stageSkillRoot, options) {
   addText('README.md', renderSkillReadme(
     skillName,
     skillDescription,
-    { includeEval: supportsCodex },
+    { invocation: skillInvocation },
   ));
 
   if (supportsCodex) {

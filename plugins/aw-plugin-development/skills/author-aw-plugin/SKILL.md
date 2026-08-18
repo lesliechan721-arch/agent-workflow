@@ -30,6 +30,7 @@ metadata:
 
 1. **确认目标和变更面**
    - 读取 `.agents-plugin/plugin.json`、现有源码、项目规则和允许修改文件。
+   - 修改 production README 时读取 `docs/readme-standard.md`，保持插件用户文档与 Agent 执行合同分离。
    - 区分新插件、已有插件变更和单一组件变更。
    - 运行 `node scripts/prepare-aw-authoring-context.mjs <plugin-root> --repo-root <repo-root> [options]` 准备上下文。
    - 用 `scripts/validate-json-contract.mjs` 和 `assets/aw-authoring-context.schema.json` 校验结果。
@@ -62,6 +63,7 @@ metadata:
 
 4. **集成 AW 源码**
    - 写入插件 source truth；不手改 generated runtime、catalog 或本地 cache。
+   - 插件和 Skill README 面向安装前和安装后的最终用户，不写 Eval、内部报告或维护命令。
    - Codex/Claude 平台元数据、静态/动态边界和 materialization 见 `references/aw-skill-integration.md`。
 
 5. **版本、构建和确定性验证**

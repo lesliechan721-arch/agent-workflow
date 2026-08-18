@@ -86,7 +86,6 @@ function usage(): string {
     '  --aw-summary <path>     Required with --review-result for an AW plugin Skill',
     '',
     'Publishes the report and seals the batch. It does not update the Skill README.',
-    'Use review:release as a separate, explicit README registration action.',
   ].join('\n');
 }
 
@@ -531,7 +530,6 @@ async function main(): Promise<void> {
     ok: true,
     batchId: summary.batchId,
     reportDir,
-    released: null,
     summary,
   }, null, 2)}\n`);
 }

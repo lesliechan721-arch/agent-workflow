@@ -16,6 +16,22 @@ Agent Workflows 不试图把一种完整开发方法强加给所有任务。它�
 - **按风险增加保障**：小任务快速完成；复杂或高风险任务再增加澄清、规格、隔离、验证和独立审查。
 - **通过 Eval 精简**：Skill 是否保留以及描述如何优化，应由真实任务的 with/without-skill 结果决定。
 
+## 相对原生插件的优势
+
+Codex 和 Claude Code 都有自己的原生 Skill、命令和插件能力。Agent Workflows 不替代这些机制，而是在其上提供统一的分发、组合和生命周期管理。
+
+| 能力 | Agent Workflows 提供的增量 |
+| --- | --- |
+| 跨平台目录 | 同一插件源码面向 Codex 和 Claude Code，安装时保留各平台原生 invocation metadata |
+| 统一管理 | 使用一个 `aw` CLI 完成发现、安装、升级、配置、状态检查、清理和重建 |
+| 两种安装范围 | User scope 适合个人跨项目复用；Project scope 适合把受管能力随仓库共享 |
+| 安全 ownership | 只更新或清理能够证明属于 AW 的组件，避免把平台目录中的其它内容误当作插件状态 |
+| 动态原生产物 | 插件可以按平台和配置物化 Skill、Agent role、instructions、hooks 等平台能力 |
+| 组合式工作流 | 需求澄清、结构化开发、Git、探索和作者工具保持独立，可按任务组合 |
+| 作者与评测工具链 | 仓库同时提供脚手架、确定性测试、materialization 校验和 Skill Eval / Review 工作流 |
+
+如果只需要单个平台的一个原生 Skill，可以直接使用平台原生机制。当需要跨平台分发、项目级共享、可重复升级与清理，或一组可以组合的能力时，AW 才提供额外价值。
+
 ## 快速开始
 
 需要 **Node.js 22 或更高版本**。
@@ -183,6 +199,7 @@ make test
 - [编码约定](docs/coding-conventions.md)
 - [测试指南](docs/testing.md)
 - [插件维护指南](docs/plugin-maintenance.md)
+- [插件与 Skill README 规范](docs/readme-standard.md)
 - [Agent 项目指令](AGENTS.md)
 
 插件源码位于 `plugins/`。`packages/cli/plugins-dist/`、`packages/cli/dist/`、`.release/` 和本机 `~/.aw/` 都是生成或运行目录，不手工维护。
