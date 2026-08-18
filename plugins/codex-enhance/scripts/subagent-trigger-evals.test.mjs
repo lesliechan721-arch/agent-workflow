@@ -17,7 +17,7 @@ const GUIDE_ROLE_NAMES = [
   'codex-subagent-simple',
   'codex-subagent-general',
   'codex-subagent-complex',
-  'codex-subagent-plan-review',
+  'codex-subagent-advanced',
 ];
 const EXPLORE_ROLE_NAMES = [
   'codex-explore-quick',

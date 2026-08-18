@@ -47,9 +47,9 @@ const ROLE_EXPECTATIONS = [
     reasoningEffort: 'high',
   },
   {
-    artifactId: 'codex-subagent-plan-review-role',
-    roleKey: 'codex-subagent-plan-review',
-    refreshKeys: ['planningReviewTaskModel', 'planningReviewTaskReasoningEffort'],
+    artifactId: 'codex-subagent-advanced-role',
+    roleKey: 'codex-subagent-advanced',
+    refreshKeys: ['advancedTaskModel', 'advancedTaskReasoningEffort'],
     model: 'gpt-5.6-sol',
     reasoningEffort: 'xhigh',
   },
@@ -62,7 +62,7 @@ function createContext(values = {}) {
     scope: 'user',
     plugin: {
       name: 'codex-enhance',
-      version: '0.1.0',
+      version: '0.2.0',
     },
     artifactSources: [
       {
@@ -185,15 +185,15 @@ test('renders a configured role without changing the others', async () => {
   const { roles } = artifactsFrom(
     await renderArtifactPlan(
       createContext({
-        planningReviewTaskModel: 'review-specialist',
-        planningReviewTaskReasoningEffort: 'max',
+        advancedTaskModel: 'advanced-specialist',
+        advancedTaskReasoningEffort: 'max',
       }),
     ),
   );
 
-  const planningReview = roles.get('codex-subagent-plan-review');
-  assert.equal(planningReview.content.roleFile.model, 'review-specialist');
-  assert.equal(planningReview.content.roleFile.model_reasoning_effort, 'max');
+  const advanced = roles.get('codex-subagent-advanced');
+  assert.equal(advanced.content.roleFile.model, 'advanced-specialist');
+  assert.equal(advanced.content.roleFile.model_reasoning_effort, 'max');
 
   const complex = roles.get('codex-subagent-complex');
   assert.equal(complex.content.roleFile.model, 'gpt-5.6-sol');
