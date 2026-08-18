@@ -1,0 +1,6 @@
+interface:
+  display_name: "Decision Prototype"
+  short_description: "用可见、可运行或可操作的轻量原型帮助用户作出一个重要决定"
+  default_prompt: "使用 $decision-prototype 为当前未决问题制作最低成本的可体验原型，并记录确认结果。"
+policy:
+  allow_implicit_invocation: true
