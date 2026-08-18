@@ -1,19 +1,20 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "target": {
     "kind": "aw-plugin",
-    "name": "target-plugin",
+    "name": "replace-me",
     "sourceDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
   },
   "artifacts": [],
   "environment": {
     "repository": "agent-workflows",
     "client": "codex",
+    "dependencyMode": "manual",
     "capabilities": []
   },
   "orchestration": {
     "stageOwner": "caller",
-    "providedStages": ["source-bundle"]
+    "providedStages": []
   },
   "evalAudit": null,
   "evalResults": []

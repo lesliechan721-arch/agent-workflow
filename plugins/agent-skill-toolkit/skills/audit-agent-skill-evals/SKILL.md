@@ -1,0 +1,43 @@
+---
+name: audit-agent-skill-evals
+description: >-
+  当用户要只读审核 Agent Skill Eval case/suite 的 Oracle、现实性、错误代价、统计结果或修改安全时使用。支持运行前 preflight 和运行后 result-triage；不创建 case、不运行项目专有 Eval、不直接修改生产 Skill。
+compatibility: Requires Node.js 20+ only when running the bundled structural validators.
+metadata:
+  short-description: 只读审核 Skill Eval Oracle、现实性、结果归因与修改安全
+---
+
+# Audit Agent Skill Evals
+
+目标是先判断 Eval 是否有资格评价 Skill，再判断运行结果能否驱动修改。审核必须与 case 设计处于独立上下文。
+
+## 模式
+
+- `preflight`：运行前审核 suite、case 和 Oracle。
+- `result-triage`：运行后解释失败、方差、baseline 和修改安全。
+
+## Preflight
+
+1. 读取目标 Skill 当前目标、scope 和相关规则。
+2. 对关键 case 检查 test layer、unit、preconditions、rationale、rule refs、observable assertion、allowed variance、minimal counterexample、provenance、case role 和 scenario family。
+3. 检查 optimization policy 与 FN/FP 代价；正负数量相等不等于代价相等。
+4. 检查 challenge/diagnostic 是否错误进入发布指标。
+5. 运行安全结构 validator：`node scripts/validate-eval-cases.mjs <cases.json> --format json`。
+6. 用相同 case 文件计算 corpus digest：`node scripts/validate-eval-audit-result.mjs --digest-only --case <cases.json>`。
+7. 输出 `validity=pass | unknown | fail`，填写 `assets/eval-audit-result-template.json` 并校验。`pass` 只允许独立上下文、无 blocked case 且所有 release-relevant case admission 通过。
+
+## Result triage
+
+每个失败先归因：
+
+`skill-defect | oracle-defect | fixture-defect | grader-defect | runtime-or-tool-defect | model-variance | stale-case | insufficient-runs | expected-tradeoff | unknown`
+
+只有通过 preflight、现实可达、可复现并归因为 `skill-defect` 的场景族失败可以进入 Skill 修改候选。混合低样本结果默认是证据不足。修改后回归原 case、同族变体、minimal pair、相反标签 near-miss、固定 validation/sanity 和关键 regression，并记录 Skill 复杂度 delta。
+
+详细标准见 `references/eval-audit-standard.generated.md`。
+
+## 输出边界
+
+- `preflight` 不运行高成本 Eval。
+- `result-triage` 不直接修改 Skill；只输出 `fix-eval-first | collect-more-data | candidate-skill-fix | accepted-risk | runtime-issue`。
+- caller 未提供可写 handoff 路径时，在回复中返回 schema-conformant JSON，不假定本地文件系统。

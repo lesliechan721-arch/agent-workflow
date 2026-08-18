@@ -1,11 +1,11 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://agent-content-toolkit.invalid/review-result.schema.json",
+  "$id": "https://agent-skill-toolkit.invalid/review-result.schema.json",
   "title": "ReviewResult",
   "type": "object",
-  "required": ["schemaVersion", "mode", "target", "design", "releaseReadiness", "complexity", "composition", "reducibility", "dimensions", "weightedScore", "coverage", "confidence", "findings", "unknowns", "gates", "actions"],
+  "required": ["schemaVersion", "mode", "target", "design", "releaseReadiness", "complexity", "composition", "reducibility", "compositionFindingIds", "complexityFindingIds", "dimensions", "weightedScore", "coverage", "confidence", "findings", "unknowns", "gates", "actions"],
   "properties": {
-    "schemaVersion": { "const": 1 },
+    "schemaVersion": { "const": 2 },
     "mode": { "enum": ["quick", "full", "release-quality", "delta"] },
     "target": {
       "type": "object",
@@ -13,7 +13,7 @@
       "properties": {
         "kind": { "enum": ["agent-skill", "repo-skill", "aw-plugin-skill", "materialized-skill"] },
         "name": { "type": "string", "minLength": 1 },
-        "profile": { "type": ["string", "null"], "minLength": 1 },
+        "profile": { "type": ["string", "null"] },
         "digest": { "type": ["string", "null"], "pattern": "^sha256:[0-9a-f]{64}$" }
       },
       "additionalProperties": false
@@ -23,6 +23,8 @@
     "complexity": { "enum": ["minimal", "proportionate", "over-specified", "over-engineered", "not-assessed"] },
     "composition": { "enum": ["coherent", "composite-proportionate", "overloaded", "orchestrator-needed", "not-assessed"] },
     "reducibility": { "enum": ["almost-none", "minor", "significant", "core-plus-reference", "redesign", "not-assessed"] },
+    "compositionFindingIds": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
+    "complexityFindingIds": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
     "dimensions": {
       "type": "array",
       "items": {
@@ -50,7 +52,7 @@
         "properties": {
           "id": { "type": "string", "minLength": 1 },
           "severity": { "enum": ["P0", "P1", "P2", "Advisory"] },
-          "evidenceTypes": { "type": "array", "items": { "enum": ["observed", "normative", "structural", "heuristic", "inferred"] }, "minItems": 1, "uniqueItems": true },
+          "evidenceTypes": { "type": "array", "items": { "enum": ["observed", "normative", "structural", "official-guidance", "heuristic", "inferred"] }, "minItems": 1, "uniqueItems": true },
           "evidence": { "type": "array", "items": { "type": "string", "minLength": 1 } },
           "location": { "type": "string", "minLength": 1 },
           "claim": { "type": "string", "minLength": 1 },

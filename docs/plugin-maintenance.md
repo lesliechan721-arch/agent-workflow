@@ -7,25 +7,26 @@
 - 插件源码位于 `plugins/`，`plugins/<name>/.agents-plugin/plugin.json` 是源码 manifest 真值。
 - catalog staging 和 runtime bundle 是构建产物，不要直接修改。
 - 创建或修改插件能力时只维护源码层；平台产物由 CLI、adapter 和发布流程生成。
-- 插件和 Skill 的 production README 使用[插件与 Skill README 规范](readme-standard.md)，面向安装前和安装后的插件用户。
+- 插件和 Skill 的 production README 使用[插件与 Skill README 规范](readme-standard.md)。
 
 ## 同步规则
 
-改动插件基础架构、manifest/schema、adapter 行为、scope 语义、分发或安装流程，或任何影响插件作者使用方式的能力时，必须同时检查 [create-aw-plugin 工作流](../.agents/skills/create-aw-plugin/README.md)。如果该 Skill 的 `SKILL.md`、模板、示例、参考资料或测试夹具不再准确，必须在同一轮改动中更新。
+改动插件基础架构、manifest/schema、adapter 行为、scope 语义、分发或安装流程，或任何影响插件作者使用方式的能力时，必须同时检查旧的 `create-aw-plugin` 工作流和新的 `aw-plugin-development` 适配器。迁移期间两个入口都必须保持准确。
 
 ## 维护入口
 
-- 人类维护者通过 [create-aw-plugin README](../.agents/skills/create-aw-plugin/README.md) 了解插件创建和维护工作流；Agent 执行时读取对应 `SKILL.md` 和按任务选择的 reference。
-- 人类维护者通过 [skill-review README](../.agents/skills/skill-review/README.md) 了解静态 Skill 和插件 Skill 评审；Agent 执行时读取对应 `SKILL.md`。
-- 新的组合式工作流位于 [agent-content-toolkit](../plugins/agent-content-toolkit/README.md) 和 [aw-plugin-development](../plugins/aw-plugin-development/README.md)。六个通用 Skill 支持模型调用；两个 AW 适配器只支持显式调用。
-- 迁移期间旧工作流仍是仓库默认路由。新工作流不得删除、重定向或静默替代旧入口。
-- `aw-plugin-development` 对 `agent-content-toolkit >= 0.1.0` 使用人工依赖保证。当前 manifest 不声明插件依赖字段。
-- 模型 Eval 和报告发布属于上述专用工作流，不在通用测试指南中重复定义。正式报告不登记到 production README。
+- 旧默认路由仍使用 [create-aw-plugin](../.agents/skills/create-aw-plugin/README.md) 和 [skill-review](../.agents/skills/skill-review/README.md)。
+- `agent-content-toolkit` 提供 `write-agent-content` 与 `review-agent-content`。
+- `agent-skill-toolkit` 提供 Skill author/review 与 Eval design/audit，人工依赖 `agent-content-toolkit >= 0.2.0`。
+- `aw-plugin-development` 提供显式调用的 AW Author/Reviewer，人工依赖 `agent-skill-toolkit >= 0.1.0` 和 `agent-content-toolkit >= 0.2.0`。
+- 新 AW Reviewer 只处理 `plugins/<name>/`，repo-local 或 portable Skill 使用通用 `review-agent-skill`。
+- 迁移期间新工作流不得静默替代旧入口；完成固定行为对照后再切换默认路由。
+- 模型 Eval 和报告发布属于专用工作流，不在通用测试指南中重复定义。Reviewer 发布报告不修改 production README；登记由 Author 或 release 工具执行。
 
 ## 验证与版本
 
-- 使用 `pnpm plugin:test <plugin>` 运行单个插件的确定性脚本测试，失败时返回非零。使用 `pnpm plugin:test --all` 检查全部插件；任一插件失败时整轮返回非零。
-- 插件版本和作者门禁命令以 [create-aw-plugin 工作流](../.agents/skills/create-aw-plugin/README.md)路由的 `SKILL.md` 和 reference 为准。
-- 新工作流的共享规则和 schema 生成文件必须通过各插件的 check-only contract test。CI 不自动改写生成文件。
+- 使用 `pnpm plugin:test <plugin>` 运行单插件确定性测试；使用 `pnpm plugin:test --all` 检查全部插件。
+- 新工作流的 generated standards、schemas 和 handoff contracts 必须通过 check-only contract test；CI 不自动改写生成文件。
+- 三层插件应分别验证，并增加同时安装三个插件的组合测试。
 - 通用确定性测试的分层、价值门禁和验证选择见[测试指南](testing.md)。
-- 稳定发布时检查源码 manifest version 的流程见 README 的[正式版发布](../README.md#3-正式版发布)。
+- 稳定发布时检查源码 manifest version 的流程见 README 的正式版发布说明。

@@ -1,16 +1,16 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://agent-content-toolkit.invalid/review-input-bundle.schema.json",
+  "$id": "https://agent-skill-toolkit.invalid/review-input-bundle.schema.json",
   "title": "ReviewInputBundle",
   "type": "object",
   "required": ["schemaVersion", "target", "artifacts", "environment", "orchestration", "evalAudit", "evalResults"],
   "properties": {
-    "schemaVersion": { "const": 1 },
+    "schemaVersion": { "const": 2 },
     "target": {
       "type": "object",
       "required": ["kind", "name", "sourceDigest"],
       "properties": {
-        "kind": { "type": "string", "minLength": 1 },
+        "kind": { "enum": ["agent-skill", "aw-plugin"] },
         "name": { "type": "string", "minLength": 1 },
         "sourceDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
       },
@@ -40,8 +40,20 @@
         "stageOwner": { "enum": ["review-agent-skill", "caller"] },
         "providedStages": {
           "type": "array",
-          "items": { "enum": ["source-bundle", "eval-audit", "reference-audit", "source-skill-review", "materialized-profile-review", "eval-result-triage"] },
-          "uniqueItems": true
+          "items": {
+            "type": "object",
+            "required": ["id", "producer", "independentContext", "targetDigest", "resultPath", "resultDigest", "schema"],
+            "properties": {
+              "id": { "enum": ["eval-audit", "reference-audit", "source-skill-review", "materialized-profile-review", "eval-result-triage"] },
+              "producer": { "type": "string", "minLength": 1 },
+              "independentContext": { "type": "boolean" },
+              "targetDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+              "resultPath": { "type": "string", "minLength": 1 },
+              "resultDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+              "schema": { "enum": ["EvalAuditResult", "ReferenceAuditResult", "ReviewResult"] }
+            },
+            "additionalProperties": false
+          }
         }
       },
       "additionalProperties": false

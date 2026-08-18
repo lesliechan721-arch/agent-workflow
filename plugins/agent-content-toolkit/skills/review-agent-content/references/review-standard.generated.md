@@ -8,7 +8,7 @@
 
 - **check：** 检查弱指针、重复 branch 和必须内容是否被错误隐藏。
 
-Evidence: heuristic; sources: agent-skills.best-practices
+Evidence: official-guidance; sources: agent-skills.best-practices, writing-for-agents
 
 ## `agent.information-hierarchy`
 
@@ -16,7 +16,7 @@ Evidence: heuristic; sources: agent-skills.best-practices
 
 - **check：** 检查 sprawl、错误内联、过度披露和伪渐进式披露。
 
-Evidence: heuristic; sources: agent-skills.best-practices
+Evidence: official-guidance; sources: agent-skills.best-practices, writing-for-agents
 
 ## `agent.completion-boundary`
 
@@ -24,7 +24,7 @@ Evidence: heuristic; sources: agent-skills.best-practices
 
 - **check：** 先判断步骤是否必要，再评价完成边界。
 
-Evidence: heuristic; sources: agent-skills.best-practices
+Evidence: official-guidance; sources: agent-skills.best-practices, writing-for-agents
 
 ## `agent.minimum-control`
 
@@ -32,7 +32,7 @@ Evidence: heuristic; sources: agent-skills.best-practices
 
 - **check：** 对正确但过重的规则使用 relax、move、delete 或 needs-ablation。
 
-Evidence: heuristic; sources: agent-skills.best-practices
+Evidence: official-guidance; sources: agent-skills.best-practices, writing-for-agents
 
 ## `agent.source-of-truth`
 
@@ -40,7 +40,7 @@ Evidence: heuristic; sources: agent-skills.best-practices
 
 - **check：** 检查缓存、过期事实和无效 source map。
 
-Evidence: heuristic; sources: agent-skills.best-practices
+Evidence: official-guidance; sources: agent-skills.best-practices, writing-for-agents
 
 ## `agent.co-location`
 
@@ -48,12 +48,12 @@ Evidence: heuristic; sources: agent-skills.best-practices
 
 - **check：** 识别重复、散落和互相矛盾的权威来源。
 
-Evidence: heuristic; sources: agent-skills.best-practices
+Evidence: official-guidance; sources: agent-skills.best-practices, writing-for-agents
 
 ## `review.evidence-admission`
 
-Finding 的 claim 不强于证据；P0/P1 需要完整前提、可达性、影响、反证和 owner。
+设计建议、已证实缺陷和未知项必须分开；claim 不得强于直接证据。
 
-- **check：** 设计建议与已证实缺陷分开。
+- **check：** 缺少行为证据时，不把可读性偏好或推演升级成阻断项。
 
-Evidence: normative; sources: agent-workflows.review-contract
+Evidence: project-policy; sources: agent-workflows.review-contract

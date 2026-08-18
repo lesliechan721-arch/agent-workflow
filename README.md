@@ -2,7 +2,7 @@
 
 面向 **Codex** 和 **Claude Code** 的轻量、可组合 Agent 插件集合。
 
-Agent Workflows 不试图把一种完整开发方法强加给所有任务。它把需求澄清、决策原型、结构化开发、Git 操作、证据探索、Skill 编写和插件维护拆成独立能力：用户可以显式启动宏流程，模型也可以在任务中按需调用小型 Skill。
+Agent Workflows 不试图把一种完整开发方法强加给所有任务。它把需求澄清、决策原型、结构化开发、Git 操作、证据探索、Agent 内容、Skill 工具和插件维护拆成独立能力：用户可以显式启动宏流程，模型也可以在任务中按需调用小型 Skill。
 
 项目同时提供 `@lesliechan721/aw` CLI，用于发现、安装、升级、配置和移除插件。
 
@@ -67,12 +67,13 @@ aw status
 | [`git`](plugins/git/) | 创建精确本地提交、隔离 worktree，或协调 merge 双方意图 | Codex / Claude Code |
 | [`codex-enhance`](plugins/codex-enhance/) | 在 Codex 中执行大范围只读探索，并更稳妥地编排通用子代理 | Codex |
 
-### Agent 内容与插件作者工具
+### Agent 内容、Skill 与插件作者工具
 
 | 插件 | 适合什么场景 | 平台 |
 | --- | --- | --- |
-| [`agent-content-toolkit`](plugins/agent-content-toolkit/) | 编写、评审 Agent-facing 文档、Agent Skills 和 Skill Eval | Codex / Claude Code |
-| [`aw-plugin-development`](plugins/aw-plugin-development/) | 在本仓库创建或评审 AW 插件；面向插件维护者 | Codex / Claude Code |
+| [`agent-content-toolkit`](plugins/agent-content-toolkit/) | 编写或评审 AGENTS.md、prompt、role instructions 和 references 等 Agent-facing 内容 | Codex / Claude Code |
+| [`agent-skill-toolkit`](plugins/agent-skill-toolkit/) | 创建、评审 Agent Skill，设计或审核 Skill Eval；人工依赖 `agent-content-toolkit` | Codex / Claude Code |
+| [`aw-plugin-development`](plugins/aw-plugin-development/) | 在本仓库创建或评审 AW 插件；人工依赖前两个通用工具插件 | Codex / Claude Code |
 
 ## 使用示例
 
@@ -116,13 +117,13 @@ aw status
 
 `codex-explore` 可以把大范围只读调查交给专用探索角色，最终判断仍由主代理完成。
 
-### 编写或评审一个 Skill
+### 编写或评审 Agent 内容与 Skill
 
 ```text
 为这项重复工作设计一个 Agent Skill，并准备可验证的触发用例。
 ```
 
-`agent-content-toolkit` 会把内容编写、Skill 作者、Skill 评审和 Eval 设计保持为独立能力。
+`agent-skill-toolkit` 组合 `agent-content-toolkit`，把 Agent-facing 内容、Skill 作者、Skill 评审、Eval 设计和 Eval 审核保持为独立能力。
 
 ## Skill 如何触发
 

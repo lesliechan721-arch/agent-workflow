@@ -11,10 +11,14 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["branch", "loadedReferences"],
+        "required": ["branch", "loadedReferences", "totalBytes", "estimatedTokens", "pointerEvidence", "unneededContentRatio"],
         "properties": {
           "branch": { "type": "string", "minLength": 1 },
-          "loadedReferences": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true }
+          "loadedReferences": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
+          "totalBytes": { "type": "integer", "minimum": 0 },
+          "estimatedTokens": { "type": ["integer", "null"], "minimum": 0 },
+          "pointerEvidence": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+          "unneededContentRatio": { "type": ["number", "null"], "minimum": 0, "maximum": 1 }
         },
         "additionalProperties": false
       }
@@ -27,6 +31,10 @@
         "properties": {
           "path": { "type": "string", "minLength": 1 },
           "responsibilities": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+          "bytes": { "type": ["integer", "null"], "minimum": 0 },
+          "lines": { "type": ["integer", "null"], "minimum": 0 },
+          "estimatedTokens": { "type": ["integer", "null"], "minimum": 0 },
+          "incomingPointers": { "type": "array", "items": { "type": "string", "minLength": 1 } },
           "neededContentRatio": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
           "verdict": { "enum": ["keep", "add-index", "split-by-branch", "inline-core", "move-to-script-or-data", "delete-or-environment-lookup", "needs-ablation"] },
           "evidence": { "type": "array", "items": { "type": "string", "minLength": 1 } }
