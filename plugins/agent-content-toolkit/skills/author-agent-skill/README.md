@@ -1,3 +1,15 @@
-# author-agent-skill
+# Author Agent Skill
 
-创建或修改通用 Agent Skill 包。完整执行合同见 [`SKILL.md`](SKILL.md)。
+设计、创建或修改一个可复用 Agent Skill，并准备可验证的触发和行为边界。
+
+## 适合使用
+
+- 已有真实任务和 without-skill 缺口，需要把经验提炼成 Skill。
+- 需要调整 Skill 职责、description、渐进式披露或 bundled script。
+- 需要为 Skill 准备评测入口。
+
+## 工作原则
+
+Skill 应是一个连贯能力单元，只保留模型容易缺失的内容。确定性、重复且容易写错的操作优先交给脚本。独立评审使用 `review-agent-skill`。
+
+主要指令见 [`SKILL.md`](SKILL.md)。

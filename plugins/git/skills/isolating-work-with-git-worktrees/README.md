@@ -1,8 +1,24 @@
-# isolating-work-with-git-worktrees
+# Isolating Work with Git Worktrees
 
-当任务需要独立 Git 工作目录以保护当前工作区或并行检出另一分支时使用，例如用户明确要求 worktree、需要在不触碰当前未完成工作的情况下处理另一个独立任务，或需要同时处理多个分支。若现有环境已提供所需隔离则复用。不要仅因工作区有未提交修改或任务涉及代码修改而触发；用户要继续当前 checkout 中的同一任务且没有隔离需求时，使用当前工作区。也不要用于不需要独立 checkout 的只读检查、例行 worktree 管理或需要独立 refs/对象库的完整仓库隔离。
+当任务需要独立 checkout 时，安全创建或精确复用 Git worktree，保护当前工作区和未完成修改。
 
-主要指令见 `SKILL.md`。源评测语料的 AW 适配和本地运行说明见 `evals/`。
+## 适合使用
+
+- 用户明确要求 worktree。
+- 需要在不触碰当前任务的情况下处理另一分支。
+- 需要同时维护多个 checkout。
+
+## 不适合使用
+
+- 继续当前 checkout 中的同一任务。
+- 只读检查或例行 worktree 管理。
+- 需要独立 refs 或对象库的完整仓库隔离；此时应使用独立 clone。
+
+## 安全边界
+
+Skill 会在变更前检查路径、分支和现有 worktree，在创建或复用后验证实际结果。它不会仅因工作区存在未提交修改就自动创建新 worktree。
+
+主要指令见 [`SKILL.md`](SKILL.md)，评测材料见 [`evals/`](evals/)。
 
 ## 最近验证
 
