@@ -6,57 +6,82 @@
     {
       "id": "project-default",
       "scope": "project",
-      "plugins": [{ "name": "codex-enhance", "config": {} }],
+      "plugins": [
+        {
+          "name": "codex-enhance",
+          "config": {}
+        }
+      ],
       "runModel": true,
       "requiredForRelease": true
     },
     {
       "id": "project-timeout",
       "scope": "project",
-      "plugins": [{ "name": "codex-enhance", "config": {
-        "minimumInitialWaitMinutes": 1
-      } }],
+      "plugins": [
+        {
+          "name": "codex-enhance",
+          "config": {
+            "minimumInitialWaitMinutes": 1
+          }
+        }
+      ],
       "runModel": true,
       "requiredForRelease": true
     },
     {
       "id": "user-default",
       "scope": "user",
-      "plugins": [{ "name": "codex-enhance", "config": {} }],
+      "plugins": [
+        {
+          "name": "codex-enhance",
+          "config": {}
+        }
+      ],
       "runModel": false,
       "requiredForRelease": true
     },
     {
       "id": "project-nondefault",
       "scope": "project",
-      "plugins": [{ "name": "codex-enhance", "config": {
-        "simpleTaskModel": "eval-simple-model",
-        "simpleTaskReasoningEffort": "high",
-        "generalTaskModel": "eval-general-model",
-        "generalTaskReasoningEffort": "xhigh",
-        "complexTaskModel": "eval-complex-model",
-        "complexTaskReasoningEffort": "max",
-        "planningReviewTaskModel": "eval-plan-review-model",
-        "planningReviewTaskReasoningEffort": "high",
-        "minimumInitialWaitMinutes": 2
-      } }],
+      "plugins": [
+        {
+          "name": "codex-enhance",
+          "config": {
+            "simpleTaskModel": "eval-simple-model",
+            "simpleTaskReasoningEffort": "high",
+            "generalTaskModel": "eval-general-model",
+            "generalTaskReasoningEffort": "xhigh",
+            "complexTaskModel": "eval-complex-model",
+            "complexTaskReasoningEffort": "max",
+            "advancedTaskModel": "eval-advanced-model",
+            "advancedTaskReasoningEffort": "high",
+            "minimumInitialWaitMinutes": 2
+          }
+        }
+      ],
       "runModel": false,
       "requiredForRelease": true
     },
     {
       "id": "user-nondefault",
       "scope": "user",
-      "plugins": [{ "name": "codex-enhance", "config": {
-        "simpleTaskModel": "eval-simple-model",
-        "simpleTaskReasoningEffort": "high",
-        "generalTaskModel": "eval-general-model",
-        "generalTaskReasoningEffort": "xhigh",
-        "complexTaskModel": "eval-complex-model",
-        "complexTaskReasoningEffort": "max",
-        "planningReviewTaskModel": "eval-plan-review-model",
-        "planningReviewTaskReasoningEffort": "high",
-        "minimumInitialWaitMinutes": 2
-      } }],
+      "plugins": [
+        {
+          "name": "codex-enhance",
+          "config": {
+            "simpleTaskModel": "eval-simple-model",
+            "simpleTaskReasoningEffort": "high",
+            "generalTaskModel": "eval-general-model",
+            "generalTaskReasoningEffort": "xhigh",
+            "complexTaskModel": "eval-complex-model",
+            "complexTaskReasoningEffort": "max",
+            "advancedTaskModel": "eval-advanced-model",
+            "advancedTaskReasoningEffort": "high",
+            "minimumInitialWaitMinutes": 2
+          }
+        }
+      ],
       "runModel": false,
       "requiredForRelease": true
     }
@@ -65,30 +90,48 @@
     {
       "id": "trigger",
       "kind": "trigger",
-      "skills": ["codex-subagent-guide"],
+      "skills": [
+        "codex-subagent-guide"
+      ],
       "cases": "./trigger-cases.json",
       "fixtureModule": "./trigger-fixture.mjs",
       "observeSpawnAgent": true,
       "isolation": "strict",
-      "strictNegativeSplits": ["validation", "sanity"],
-      "profiles": ["project-default"],
+      "strictNegativeSplits": [
+        "validation",
+        "sanity"
+      ],
+      "profiles": [
+        "project-default"
+      ],
       "defaultRuns": 3,
-      "releaseSplits": ["validation", "sanity"],
+      "releaseSplits": [
+        "validation",
+        "sanity"
+      ],
       "requiredForRelease": true,
       "perRunTimeoutMs": 180000
     },
     {
       "id": "trigger-composition",
       "kind": "trigger",
-      "skills": ["codex-subagent-guide", "codex-explore"],
+      "skills": [
+        "codex-subagent-guide",
+        "codex-explore"
+      ],
       "cases": "./trigger-composition-cases.json",
       "fixtureModule": "./trigger-fixture.mjs",
       "observeSpawnAgent": true,
       "isolation": "standard",
-      "strictNegativeSplits": ["validation", "sanity"],
+      "strictNegativeSplits": [
+        "validation",
+        "sanity"
+      ],
       "minimumPassRate": 1,
       "forbidMultipleSkillLoads": true,
-      "profiles": ["project-default"],
+      "profiles": [
+        "project-default"
+      ],
       "defaultRuns": 3,
       "releaseSplits": [],
       "requiredForRelease": false,
@@ -97,44 +140,74 @@
     {
       "id": "routing",
       "kind": "command",
-      "skills": ["codex-subagent-guide"],
+      "skills": [
+        "codex-subagent-guide"
+      ],
       "entry": "./run-routing-evals.mjs",
       "cases": "./evals.json",
-      "profiles": ["project-default"],
+      "profiles": [
+        "project-default"
+      ],
       "defaultRuns": 3,
       "releaseSplits": [],
       "requiredForRelease": true,
       "perRunTimeoutMs": 180000,
       "suiteTimeoutMs": 43200000,
-      "supports": ["runs", "case", "model", "codexBin", "timeout"]
+      "supports": [
+        "runs",
+        "case",
+        "model",
+        "codexBin",
+        "timeout"
+      ]
     },
     {
       "id": "lifecycle",
       "kind": "command",
-      "skills": ["codex-subagent-guide"],
+      "skills": [
+        "codex-subagent-guide"
+      ],
       "entry": "./run-lifecycle-evals.mjs",
       "cases": "./lifecycle-evals.json",
-      "profiles": ["project-default"],
+      "profiles": [
+        "project-default"
+      ],
       "defaultRuns": 1,
       "releaseSplits": [],
       "requiredForRelease": true,
       "perRunTimeoutMs": 900000,
       "suiteTimeoutMs": 3600000,
-      "supports": ["runs", "case", "model", "codexBin", "timeout"]
+      "supports": [
+        "runs",
+        "case",
+        "model",
+        "codexBin",
+        "timeout"
+      ]
     },
     {
       "id": "lifecycle-timeout",
       "kind": "command",
-      "skills": ["codex-subagent-guide"],
+      "skills": [
+        "codex-subagent-guide"
+      ],
       "entry": "./run-lifecycle-evals.mjs",
       "cases": "./lifecycle-timeout-evals.json",
-      "profiles": ["project-timeout"],
+      "profiles": [
+        "project-timeout"
+      ],
       "defaultRuns": 1,
       "releaseSplits": [],
       "requiredForRelease": true,
       "perRunTimeoutMs": 900000,
       "suiteTimeoutMs": 3600000,
-      "supports": ["runs", "case", "model", "codexBin", "timeout"]
+      "supports": [
+        "runs",
+        "case",
+        "model",
+        "codexBin",
+        "timeout"
+      ]
     }
   ]
 }
