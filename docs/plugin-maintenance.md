@@ -7,6 +7,7 @@
 - 插件源码位于 `plugins/`，`plugins/<name>/.agents-plugin/plugin.json` 是源码 manifest 真值。
 - catalog staging 和 runtime bundle 是构建产物，不要直接修改。
 - 创建或修改插件能力时只维护源码层；平台产物由 CLI、adapter 和发布流程生成。
+- 插件和 Skill 的 production README 使用[插件与 Skill README 规范](readme-standard.md)，面向安装前和安装后的插件用户。
 
 ## 同步规则
 
@@ -19,7 +20,7 @@
 - 新的组合式工作流位于 [agent-content-toolkit](../plugins/agent-content-toolkit/README.md) 和 [aw-plugin-development](../plugins/aw-plugin-development/README.md)。六个通用 Skill 支持模型调用；两个 AW 适配器只支持显式调用。
 - 迁移期间旧工作流仍是仓库默认路由。新工作流不得删除、重定向或静默替代旧入口。
 - `aw-plugin-development` 对 `agent-content-toolkit >= 0.1.0` 使用人工依赖保证。当前 manifest 不声明插件依赖字段。
-- 模型 Eval、报告发布和 README 登记属于上述专用工作流，不在通用测试指南中重复定义。
+- 模型 Eval 和报告发布属于上述专用工作流，不在通用测试指南中重复定义。正式报告不登记到 production README。
 
 ## 验证与版本
 

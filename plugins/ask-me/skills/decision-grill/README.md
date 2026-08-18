@@ -24,8 +24,3 @@ Skill 会先调查事实，再建立重要决定之间的依赖关系。每轮�
 确认前不会修改文件或自行开始实施。
 
 主要指令见 [`SKILL.md`](SKILL.md)，评测材料见 [`evals/`](evals/)。
-
-## 最近验证
-
-- 最近正式报告：`delta`，结论 `pass`，加权分 `91.2`，coverage `56%`，confidence `low`；eval release `incomplete`，覆盖 `2/5`。
-- 报告：`plugins/ask-me/reports/decision-grill/20260811T151406Z-eval-delta-a1f00100/report.md` @ `98fddb770b208a1111c727be1b9bee8512d55a8b`。

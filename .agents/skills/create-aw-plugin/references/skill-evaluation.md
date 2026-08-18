@@ -207,7 +207,7 @@ run 在批次锁内预留。每个 case target 在独立的批次锁事务中原
 
 正式 `reports/` 不属于被评估源码，中央 source revision 检查会忽略该目录；插件源码、README、eval 夹具、脚本和作者/评审工具的未提交修改仍会令 `source.inScopeDirty=true`。
 
-插件和每个 Skill 都必须有非空 README。插件 README 只介绍插件目标、Skill 和使用边界；Skill README 约定记录最近已 release 的正式报告摘要、仓库相对路径和被评估 Git commit。只有用户另行明确要求登记时，才运行 `pnpm review:release -- --plugin <plugin> --skill <skill> --batch-id <batch-id>` 更新 README。登记失败不回滚正式报告，可以重试同一命令。README 登记会改变 production source，必须在同一改动中直接提高插件 manifest version；普通 eval 和报告发布不改变 README。
+插件和每个 Skill 都必须有非空 README，并按 `docs/readme-standard.md` 面向最终用户说明用途、调用、结果、权限和边界。正式报告以 `reports/**/summary.json` 为事实源，不登记到 production README。普通 Eval 和报告发布不改变 README。
 
 ## Eval Case Audit 作者合同
 
@@ -366,7 +366,7 @@ Eval-driven 修改必须面向场景族。修改后重跑原 case、同族变体
 - [ ] `plugin:test`、materialization 和模型 eval 没有互相冒充。
 - [ ] release required suite 没有 skip、incomplete 或未复核的 `needs_review`。
 - [ ] 完整 eval/review 证据位于 `.tmp`，正式报告目录只包含人读 `report.md` 和 schema v2 `summary.json`。
-- [ ] 用户要求发布时已执行 `review:publish`；用户另行要求登记时，Skill README 指向对应正式报告；插件 README 不包含 Skill 验证报告。
+- [ ] 用户要求发布时已执行 `review:publish`；插件和 Skill README 不包含 Eval 或正式报告登记。
 
 ## 上游参考
 

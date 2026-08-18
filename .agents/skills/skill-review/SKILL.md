@@ -77,7 +77,7 @@ Quick 模式中，依赖 runtime 事实、动作顺序、跨 Skill 组合、客�
 
 ## 执行流程
 
-1. 先确定模式和材料分支。当请求直接指向组件、fixture、诊断、trace、eval 或摘要，而不是明确的真实 `SKILL.md`、Skill 目录或插件入口时，在任何 inventory、`rg`、`find` 或诊断前立即进入 evidence-only 分支。该分支先只读取用户点名的文件和作为 controller 的本 `SKILL.md`，不搜索同名目标，不读取相邻 fixture，也不运行 inspector。若点名材料足以完成请求，再只读取当前模式或已确认风险所必需的 controller reference、template 或 scorecard；quick/delta 仍遵守步骤 3 的禁读范围，full/release 仍遵守步骤 3、6、7 的资源条件。若材料没有目标正文或可定位的直接失败，输出短报告并停止：即使请求 full/release，也只说明合同因材料不足而 `incomplete`，不加载其它资源来填充 unknown。请求材料包含发布或 README 字段时，早停报告必须分别写明 `正式发布授权：[已授权/未授权]` 和 `README 登记授权：[已授权/未授权]`，并说明两项需要分别明确授权。已提供诊断明确聚焦一个风险时，最多读取一个与该风险直接对应的 reference；严重性统一按步骤 6 的 admission gate 判断。其它情况下，只评估用户已提供或当前 workspace 可达的材料；未提供且无法从可达目标检查的材料标为 `unknown` 并降低 coverage，不得把这种证据缺失写成被审 Skill 的 P0/P1。local-package 内已声明但实际缺失的必需资源仍按 structural 证据处理。只有 workspace 中可定位到真实 `SKILL.md` 或插件入口时才进入 local-package 分支。用户已提供诊断或明确要求不重复执行时，直接使用现有证据。
+1. 先确定模式和材料分支。当请求直接指向组件、fixture、诊断、trace、eval 或摘要，而不是明确的真实 `SKILL.md`、Skill 目录或插件入口时，在任何 inventory、`rg`、`find` 或诊断前立即进入 evidence-only 分支。该分支先只读取用户点名的文件和作为 controller 的本 `SKILL.md`，不搜索同名目标，不读取相邻 fixture，也不运行 inspector。若点名材料足以完成请求，再只读取当前模式或已确认风险所必需的 controller reference、template 或 scorecard；quick/delta 仍遵守步骤 3 的禁读范围，full/release 仍遵守步骤 3、6、7 的资源条件。若材料没有目标正文或可定位的直接失败，输出短报告并停止：即使请求 full/release，也只说明合同因材料不足而 `incomplete`，不加载其它资源来填充 unknown。请求材料包含发布时，早停报告必须写明 `正式发布授权：[已授权/未授权]`。已提供诊断明确聚焦一个风险时，最多读取一个与该风险直接对应的 reference；严重性统一按步骤 6 的 admission gate 判断。其它情况下，只评估用户已提供或当前 workspace 可达的材料；未提供且无法从可达目标检查的材料标为 `unknown` 并降低 coverage，不得把这种证据缺失写成被审 Skill 的 P0/P1。local-package 内已声明但实际缺失的必需资源仍按 structural 证据处理。只有 workspace 中可定位到真实 `SKILL.md` 或插件入口时才进入 local-package 分支。用户已提供诊断或明确要求不重复执行时，直接使用现有证据。
 2. 仅在 local-package 分支枚举 `SKILL.md`、一层可达资源、eval、相关角色和配置，并运行静态诊断：
    ```bash
    node scripts/inspect_skill_target.mjs <skill-dir-or-SKILL.md-or-plugin> --format json
@@ -104,8 +104,8 @@ Quick 模式中，依赖 runtime 事实、动作顺序、跨 Skill 组合、客�
    node scripts/validate_scorecard.mjs <scorecard.json> --format json
    ```
    使用脚本给出的 `decision.design`、`decision.release_readiness`、复杂度、coverage、confidence、权重和 raw/effective quality band。总分和 quality band 只进入附录与 JSON。
-7. quick 只输出结论、最多 3 个 finding、决策关键 unknown 和下一步；delta 只输出旧问题关闭情况、新回归、净复杂度变化、受影响维度和停止决定。两者不计算总分。full/release 才读取并使用 `assets/report-template.md` 和 `assets/review-appendix-template.md`；主报告遵守模板内的压缩规则，完整审计进入附录或 scorecard。evidence-only 早停也不能省略交付授权：请求涉及保存、正式发布、封存或 README 时，必须说明实际未执行的动作；正式发布和 README 登记需要分别明确授权，并说明当前 `review:publish` 会同时写正式报告和封存批次，没有 seal-only 入口。
-8. 默认只在当前会话返回报告。用户只要求保存时，把草稿写入 `.tmp/agent-workflows/reviews/`。正式发布、封存和 README 登记按目标类型 reference 执行；正式发布与 README 登记需要分别明确授权，seal-only 没有独立入口。未获得对应授权时，不写正式目录、不封存批次、不修改 README。
+7. quick 只输出结论、最多 3 个 finding、决策关键 unknown 和下一步；delta 只输出旧问题关闭情况、新回归、净复杂度变化、受影响维度和停止决定。两者不计算总分。full/release 才读取并使用 `assets/report-template.md` 和 `assets/review-appendix-template.md`；主报告遵守模板内的压缩规则，完整审计进入附录或 scorecard。evidence-only 早停也不能省略交付授权：请求涉及保存、正式发布或封存时，必须说明实际未执行的动作；`review:publish` 会同时写正式报告和封存批次，没有 seal-only 入口。
+8. 默认只在当前会话返回报告。用户只要求保存时，把草稿写入 `.tmp/agent-workflows/reviews/`。正式发布和封存按目标类型 reference 执行，并需要明确授权。未获得授权时，不写正式目录或封存批次。评审工作流不修改 production README。
 
 ## 评审完成边界
 
@@ -115,7 +115,7 @@ Quick 模式中，依赖 runtime 事实、动作顺序、跨 Skill 组合、客�
 - 每个 P0/P1 都通过 Finding Admission Gate；每个失败 gate 都关联相同严重性的已接纳 finding。
 - 报告包含 stop decision，且没有未归属或重复计罚的 finding。
 - quick 只完成所选 3–5 个维度并使用短报告；full/release 完成全部 12 个维度、最小行为合同、复杂度结论和适用审计；delta 完成旧 finding、受影响维度和直接回归。quick/delta 只有在步骤 5 的适用条件成立时提交精简最小行为合同；两者不创建 scorecard，也不计算总分。
-- 未获得正式发布授权时，评审没有写入正式目录或封存批次；未获得 README 登记授权时，没有修改 README。用户只要求保存结果时，草稿位于 `.tmp/agent-workflows/reviews/`。用户明确要求发布时，`review:publish` 已完成；用户另行要求登记时，`review:release` 已完成或报告了可重试命令。
+- 未获得正式发布授权时，评审没有写入正式目录或封存批次。用户只要求保存结果时，草稿位于 `.tmp/agent-workflows/reviews/`。用户明确要求发布时，`review:publish` 已完成。评审没有修改 production README。
 
 ## 评分纪律
 

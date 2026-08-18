@@ -59,6 +59,7 @@ compatibility: Requires the agent-workflows repository, Node.js 22+, and install
    - Public slashCommands → 创建 `slash-commands/*.md`
    - AW Config / Lifecycle → 声明 `config` 和插件根 `scripts`
    - Dynamic Artifacts → 静态声明 target，renderer 只输出 `ArtifactPlan`
+   - 插件和 Skill README → 按 `docs/readme-standard.md` 编写面向用户的用途、调用、示例、权限和边界
    - 完成条件：每个声明能力都有对应源码文件、字段和直接测试；没有修改生成目录或加入未请求能力
 5. **管理插件版本**
    - 新插件保留脚手架写入的初始稳定 version（默认 `0.1.0`）
@@ -91,7 +92,7 @@ compatibility: Requires the agent-workflows repository, Node.js 22+, and install
    - 完成条件：每个修改面有直接确定性测试；重大 Skill 修改有 with-skill/baseline behavior、适用 trigger evidence、有效 oracle 和 eval-change-safety 回归；失败已归因、修复并重跑
 9. **交付**
    - 报告修改的源码文件、运行的验证、未验证项和仍需用户决定的风险
-   - 正式报告发布和 Skill README 登记必须分别获得用户明确授权；命令、封存和版本合同见 `references/skill-evaluation.md`
+   - 正式报告发布必须获得用户明确授权；命令、封存和版本合同见 `references/skill-evaluation.md`。正式报告不登记到 README
    - 完成条件：明确区分完整通过、轻量预检、模型证据和未运行项
 
 ## 脚手架
@@ -151,4 +152,4 @@ pnpm plugin:eval <plugin> --skill <skill> --batch-name trigger-validation --suit
 - Eval-driven 修改只来自已归因为 `skill-defect` 的有效 case，并已通过同族、minimal pair、相反标签和固定回归集检查
 - Codex/Claude 动态 Skill 的 project/user final artifacts 已 materialize，并保留作者声明的原生调用元数据；真实模型未运行时明确列为未验证
 - 最终回复列出改动、验证结果和未完成项
-- 插件和 Skill README 已补齐；有 release 登记的 Skill README 指向对应正式报告，只有 full 报告时不要求更新；插件 README 不包含 Skill 验证报告
+- 插件和 Skill README 已按 `docs/readme-standard.md` 面向用户补齐，且不包含 Eval、正式报告或仓库维护入口

@@ -73,11 +73,11 @@ metadata:
 7. **综合与发布**
    - 先运行 `node scripts/validate-review-result.mjs <review-result.json> --format json`。
    - 合并已校验的通用 `ReviewResult` 与项目 gate，输出 AW summary，并运行 `node scripts/validate-aw-review-summary.mjs <summary.json> --format json`。
-   - 正式报告发布与批次封存是一个原子动作，需要明确授权；README 登记需要第二次授权。见 `references/aw-report-publication.md`。
+   - 正式报告发布与批次封存是一个原子动作，需要明确授权。见 `references/aw-report-publication.md`。
    - 未获授权时只在会话返回或保存临时草稿。
 
 ## 设计边界
 
-- `review-aw-plugin` 不修改生产 Skill、Eval case 或 plugin source；用户第二次明确授权的 Skill README 登记是唯一例外。
+- `review-aw-plugin` 不修改生产 Skill、Eval case、README 或其它 plugin source。
 - `author-aw-plugin` 的自检不能替代本 Skill。
 - 通用质量结论由 `review-agent-skill` 产生；当前 Skill 只增加 AW 项目 gate 和 evidence currentness。

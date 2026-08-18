@@ -16,8 +16,3 @@
 - 不用短周期轮询替代响应式等待。
 
 主要指令见 [`SKILL.md`](SKILL.md)，动态配置由插件 renderer 注入，评测材料见 [`evals/`](evals/)。
-
-## 最近验证
-
-- 最近正式报告：`release`，结论 `pass`，加权分 `90.4`，coverage `100%`，confidence `high`；eval release `incomplete`，覆盖 `8/8`。
-- 报告：`plugins/codex-enhance/reports/codex-subagent-guide/20260811T172058Z-release-review-c91aa8de/report.md`。
