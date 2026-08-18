@@ -20,9 +20,10 @@ README 说明用户能获得什么、何时使用以及会产生什么影响。�
 - 先说明用户问题和产品价值，不以仓库文件结构、manifest 字段或内部组件开头。
 - 使用简体中文说明；名称、命令、Skill 标识、配置键和代码保持原始英文。
 - 内容应同时适合 Git 仓库浏览和安装后的 runtime 文件树。
-- 相对链接只指向同一 production bundle 中可达的文件。仓库维护材料使用稳定的仓库链接，或只放在维护者文档中。
+- 用户完成安装和使用所需的信息必须直接写在 README 中，不能依赖安装制品中可能不存在的作者材料。
+- 可以在末尾链接同一源码目录的 `SKILL.md`、`evals/` 或维护者入口，方便 Git 仓库读者继续查看；这些链接不能替代用户说明。仓库外材料只使用稳定公开链接。
 - 不要求所有 README 使用完全相同的标题。按实际能力选择章节，避免为了模板生成空段落。
-- 不以“完整合同见 `SKILL.md`”代替用户说明。可以在末尾提供 `SKILL.md`、`evals/` 或维护者入口，但 README 本身必须足以帮助用户决定是否使用。
+- 不以“完整合同见 `SKILL.md`”代替用户说明。README 本身必须足以帮助用户决定是否使用。
 - 平台、scope、版本和配置 schema 以 manifest 为真值；调用策略以平台原生元数据和 `SKILL.md` frontmatter 为真值。README 只做一致的人读摘要。
 - 不写迁移过程、CI 结果、contract test、runner、batch、trace、coverage、被评估 commit 或正式报告摘要。
 - 正式报告以 `reports/**/summary.json` 为事实源。`review:publish` 发布报告并封存批次，但不修改 production README。
@@ -43,7 +44,7 @@ README 说明用户能获得什么、何时使用以及会产生什么影响。�
 
 推荐结构示例，不是固定 heading 合同：
 
-```md
+````md
 # <显示名称>
 
 <一句话说明安装后的价值。>
@@ -70,7 +71,7 @@ aw install <plugin> -p <platform>
 
 - <用户可观察副作用>
 - <明确不会执行的操作>
-```
+````
 
 ## Skill README
 
