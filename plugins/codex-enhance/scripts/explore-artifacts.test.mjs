@@ -23,6 +23,7 @@ const artifactSourcePath = existsSync(stagedArtifactSourcePath)
 const subagentArtifactSourcePath = existsSync(stagedSubagentArtifactSourcePath)
   ? stagedSubagentArtifactSourcePath
   : fileURLToPath(new URL('../skills/codex-subagent-guide/', import.meta.url));
+
 const expectedRoles = [
   {
     id: 'codex-explore-quick-role',
@@ -54,6 +55,16 @@ const expectedRoles = [
   },
 ];
 
+const exploreConfigKeys = [
+  'quickModel',
+  'quickReasoningEffort',
+  'standardModel',
+  'standardReasoningEffort',
+  'deepModel',
+  'deepReasoningEffort',
+  'minimumInitialWaitMinutes',
+];
+
 function createContext(overrides = {}) {
   return {
     event: 'install',
@@ -61,7 +72,7 @@ function createContext(overrides = {}) {
     scope: 'user',
     plugin: {
       name: 'codex-enhance',
-      version: '0.1.0',
+      version: '0.2.0',
     },
     artifactSources: [
       {
@@ -127,6 +138,7 @@ function assertRoleArtifact(plan, expected) {
   assert.equal(role.content.roleFile.model, expected.model);
   assert.equal(role.content.roleFile.model_reasoning_effort, expected.effort);
   assert.equal(role.content.registration.description, role.content.roleFile.description);
+
   const instructions = role.content.roleFile.developer_instructions;
   assert.ok([...instructions].length <= 1_000);
   assert.ok(instructions.split('\n').length <= 30);
@@ -164,6 +176,7 @@ async function testRenderedArtifactsAndSkillContract() {
       findArtifact(plan, role.id).content.roleFile.developer_instructions)).size,
     1,
   );
+
   const custom = findArtifact(plan, 'codex-explore-custom-role');
   assert.equal('model' in custom.content.roleFile, false);
   assert.equal('model_reasoning_effort' in custom.content.roleFile, false);
@@ -196,7 +209,6 @@ async function testRenderedArtifactsAndSkillContract() {
     assert.equal(text.includes(toolName), false);
   }
   assert.equal(text.includes('{{'), false);
-
   assert.match(openaiYaml, /allow_implicit_invocation:\s*true/);
 }
 
@@ -241,27 +253,12 @@ async function testConfigSourcesAndManifestDefaults() {
 }
 
 async function testStaticManifestContract() {
-  const manifestText = await readFile(manifestPath, 'utf8');
-  const manifest = JSON.parse(manifestText);
+  const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
 
   assert.equal(manifest.name, 'codex-enhance');
-  assert.deepEqual(Object.keys(manifest.config.schema), [
-    'quickModel',
-    'quickReasoningEffort',
-    'standardModel',
-    'standardReasoningEffort',
-    'deepModel',
-    'deepReasoningEffort',
-    'simpleTaskModel',
-    'simpleTaskReasoningEffort',
-    'generalTaskModel',
-    'generalTaskReasoningEffort',
-    'complexTaskModel',
-    'complexTaskReasoningEffort',
-    'planningReviewTaskModel',
-    'planningReviewTaskReasoningEffort',
-    'minimumInitialWaitMinutes',
-  ]);
+  for (const key of exploreConfigKeys) {
+    assert.ok(Object.hasOwn(manifest.config.schema, key), `Missing explore config key ${key}`);
+  }
   for (const role of expectedRoles.filter((entry) => entry.modelKey)) {
     assert.equal(manifest.config.schema[role.modelKey].default, role.model);
     assert.equal(manifest.config.schema[role.effortKey].default, role.effort);

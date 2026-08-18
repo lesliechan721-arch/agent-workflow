@@ -205,16 +205,17 @@
         "workspace_fixture": "trigger-fixture.mjs 提供 query 中命名的最小材料"
       },
       "oracle": {
-        "rationale": "请求包含可与最终判断或写操作分离的大范围事实探索，满足 Gate；应加载 codex-explore 并启动专用只读子代理。",
+        "rationale": "该 diff 只是入口；请求明确要求跨陌生仓库追踪定义、调用点和数据流，事实探索可与最终缺陷判断和建议分离，满足 Gate。",
         "rule_refs": [
           "../SKILL.md#Gate",
           "../../../.agents-plugin/plugin.json#extensions"
         ],
         "confidence": "high",
-        "allowed_variance": "允许具体 role 选择和说明文案变化；必须加载 owner Skill，并且必须观察到一次子代理启动。"
+        "allowed_variance": "允许具体 role 选择和说明文案变化；必须加载 owner Skill，并且必须观察到一次子代理启动。",
+        "minimal_counterexample": "若只要求评价一个已知短 diff，且不要求跨仓库或多来源追踪事实，则不应自动加载或委派。"
       },
       "split": "train",
-      "query": "请 review changes/large-pr.diff，判断有哪些真实 bug，按严重性排序并给修改建议。",
+      "query": "请 review changes/large-pr.diff。先把它只作为入口，在这个陌生 repo 的存储、订单和清理模块中追踪 deleteSafely 与 deleteImmediately 的定义、全部调用点和数据流，列出可核验文件证据；探索结果返回后再由主流程判断真实 bug、严重性和修改建议。",
       "should_load_skill": true,
       "should_spawn_agent": true
     },

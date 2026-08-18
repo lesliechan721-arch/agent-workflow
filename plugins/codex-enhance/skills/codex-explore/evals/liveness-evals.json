@@ -1,8 +1,32 @@
 {
   "skill_name": "codex-explore",
+  "authority": "diagnostic-only",
+  "policy": {
+    "optimization": "balanced",
+    "false_negative_cost": "medium",
+    "false_positive_cost": "medium",
+    "rationale": "该 suite 只比较长等待期间是否需要主动状态探测，不参与发布门禁，也不得单独驱动生产 Skill 修改。"
+  },
   "evals": [
     {
       "id": "v2_long_progress",
+      "eval_type": "behavior",
+      "case_role": "diagnostic",
+      "provenance": "mechanism-probe",
+      "scenario_family": "long-responsive-wait-without-probe",
+      "unit_under_test": "waiting-and-liveness-policy",
+      "preconditions": {
+        "runtime": "Codex V2 multi-agent",
+        "materialized_profile": "project-short-wait",
+        "leaf_trace_required": true,
+        "release_relevance": "diagnostic-only"
+      },
+      "oracle": {
+        "rationale": "长时间只读核验在没有主动探测时仍应完成；父代理应继续响应式等待，叶子必须执行校验命令并返回可核验证据。",
+        "rule_refs": ["../SKILL.md#等待与整合"],
+        "confidence": "high",
+        "allowed_variance": "允许具体等待次数、自然语言和耗时变化；不得发送主动 probe，必须取得终态、校验命令证据和预期事实。"
+      },
       "prompt": "$codex-explore 当前没有其它可并行的本地工作。请委派 standard role，先运行只读命令 `node docs/liveness/verify-records.mjs`，等待它完成，再核验 docs/liveness/records/ 下全部记录中的 timeout 分布并给出可复核文件证据；不得绕过该校验，也不要修改文件。最终答复末尾逐行输出：`FACT records=<记录总数>`、`FACT timeout_values=<升序逗号分隔值>`。",
       "codex_config": {
         "features.multi_agent_v2.enabled": true,
@@ -27,6 +51,24 @@
     },
     {
       "id": "v2_late_blocked",
+      "eval_type": "behavior",
+      "case_role": "diagnostic",
+      "provenance": "mechanism-probe",
+      "scenario_family": "long-responsive-wait-without-probe",
+      "unit_under_test": "waiting-and-liveness-policy",
+      "preconditions": {
+        "runtime": "Codex V2 multi-agent",
+        "materialized_profile": "project-short-wait",
+        "leaf_trace_required": true,
+        "release_relevance": "diagnostic-only",
+        "decisive_source": "docs/liveness/authoritative-index.md is intentionally absent"
+      },
+      "oracle": {
+        "rationale": "缺少决定性来源时，长等待不应触发主动探测或猜测；代理应完成可行核验并明确报告证据不足。",
+        "rule_refs": ["../SKILL.md#等待与整合"],
+        "confidence": "high",
+        "allowed_variance": "允许 blocked 或 insufficient 的自然语言差异；不得发送主动 probe，必须报告权威来源缺失并保留已核验事实。"
+      },
       "prompt": "$codex-explore 当前没有其它可并行的本地工作。请委派 standard role，先运行只读命令 `node docs/liveness/verify-records.mjs`，等待它完成并核验 docs/liveness/records/ 下全部记录，再用应存在的 docs/liveness/authoritative-index.md 判断哪个 timeout 是权威值。不得绕过该校验；缺少决定性来源时不要猜，说明阻塞或证据不足并等待探索结束；不要修改文件。最终答复末尾逐行输出：`FACT records=<记录总数>`、`FACT authority_available=<true|false>`。",
       "codex_config": {
         "features.multi_agent_v2.enabled": true,
@@ -51,6 +93,23 @@
     },
     {
       "id": "v1_long_progress",
+      "eval_type": "behavior",
+      "case_role": "diagnostic",
+      "provenance": "mechanism-probe",
+      "scenario_family": "long-responsive-wait-without-probe",
+      "unit_under_test": "waiting-and-liveness-policy",
+      "preconditions": {
+        "runtime": "Codex V1 multi-agent",
+        "materialized_profile": "project-short-wait",
+        "leaf_trace_required": true,
+        "release_relevance": "diagnostic-only"
+      },
+      "oracle": {
+        "rationale": "V1 环境也应在没有主动探测时完成长时间只读核验，证明删除探测不依赖 V2 mailbox 行为。",
+        "rule_refs": ["../SKILL.md#等待与整合"],
+        "confidence": "high",
+        "allowed_variance": "允许 V1 wait 返回结构和自然语言变化；不得发送主动 probe，必须取得终态、校验命令证据和预期事实。"
+      },
       "parent_model": "gpt-5.5",
       "prompt": "$codex-explore 当前没有其它可并行的本地工作。请使用 V1 委派 standard role，先运行只读命令 `node docs/liveness/verify-records.mjs`，等待它完成，再核验 docs/liveness/records/ 下全部记录中的 timeout 分布并给出可复核文件证据；不得绕过该校验，也不要修改文件。最终答复末尾逐行输出：`FACT records=<记录总数>`、`FACT timeout_values=<升序逗号分隔值>`。",
       "codex_config": {
