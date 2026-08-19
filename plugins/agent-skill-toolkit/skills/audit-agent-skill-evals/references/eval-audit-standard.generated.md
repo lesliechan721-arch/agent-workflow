@@ -1,6 +1,14 @@
 # Skill Eval 审核标准
 
-> GENERATED from `standards/rules.json`; do not edit manually.
+> GENERATED from canonical content rules plus `standards/skill-rules.json`; do not edit manually.
+
+## `review.evidence-admission`
+
+设计建议、已证实缺陷和未知项必须分开；claim 不得强于直接证据。
+
+- **check：** expected output 只证明 Oracle，不证明实际失败。
+
+Evidence: normative; sources: agent-workflows.review-contract
 
 ## `eval.oracle-validity`
 
@@ -25,11 +33,3 @@ Eval 失败先归因；只有有效、可复现且归因为 skill-defect 的场�
 - **check：** 检查 failure triage、运行方差、baseline、净收益和复杂度回归。
 
 Evidence: normative; sources: agent-skills.evaluating-skills, agent-workflows.eval-contract
-
-## `review.evidence-admission`
-
-Finding 的 claim 不强于证据；P0/P1 需要完整前提、可达性、影响、反证和 owner。
-
-- **check：** expected output 只证明 Oracle，不证明实际失败。
-
-Evidence: normative; sources: agent-workflows.review-contract

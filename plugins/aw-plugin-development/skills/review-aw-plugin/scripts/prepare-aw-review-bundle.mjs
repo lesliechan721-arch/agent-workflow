@@ -29,6 +29,7 @@ function usage() {
     '  --eval-case <path>      Bind an Eval case/corpus file to the audit. Repeatable.',
     '  --eval-result <path>    Load one Eval result JSON document. Repeatable.',
     '  --client <name>         codex or claude. Default: codex.',
+    '  --repo-root <path>       Target AW workspace root. Default: current directory.',
     '  -h, --help              Show this help.',
     '',
     'The target must be an AW plugin root with .agents-plugin/plugin.json.',
@@ -62,7 +63,8 @@ function parseArgs(argv) {
   }
   if (!args[0] || args[0].startsWith('--')) fail('Provide <plugin-root>.');
   const options = {
-    pluginRoot: path.resolve(args[0]),
+    pluginRoot: args[0],
+    repoRoot: process.cwd(),
     client: 'codex',
     finals: [],
     sources: [],
@@ -96,6 +98,9 @@ function parseArgs(argv) {
     } else if (flag === '--client') {
       options.client = optionValue(args, index, flag);
       index += 1;
+    } else if (flag === '--repo-root') {
+      options.repoRoot = path.resolve(optionValue(args, index, flag));
+      index += 1;
     } else {
       fail('Unknown option: ' + flag);
     }
@@ -105,6 +110,14 @@ function parseArgs(argv) {
     fail('--eval-audit requires at least one --eval-case for corpus digest binding.');
   }
   if (!options.evalAudit && options.evalCases.length > 0) fail('--eval-case requires --eval-audit.');
+  options.repoRoot = path.resolve(options.repoRoot);
+  options.pluginRoot = path.isAbsolute(options.pluginRoot)
+    ? path.resolve(options.pluginRoot)
+    : path.resolve(options.repoRoot, options.pluginRoot);
+  const relativePluginRoot = path.relative(options.repoRoot, options.pluginRoot);
+  if (relativePluginRoot.startsWith('..' + path.sep) || path.isAbsolute(relativePluginRoot)) {
+    fail('<plugin-root> must be inside --repo-root.');
+  }
   return options;
 }
 
@@ -203,7 +216,7 @@ async function authorSourceDigest(roots) {
     hash.update(entry.name);
     hash.update('\0');
     for (const file of await collectFiles(entry.root)) {
-      if (file.relativePath === 'reports' || file.relativePath.startsWith('reports/')) continue;
+      if (sourceArtifactRole(file.relativePath) === 'evidence') continue;
       hash.update(file.relativePath);
       hash.update('\0');
       hash.update(await readFile(file.absolutePath));
@@ -302,14 +315,13 @@ async function main() {
     });
   }
 
-  const evalResults = [];
-  for (const resultPath of options.evalResults) evalResults.push(await jsonDocument(resultPath, 'Eval result'));
+  for (const resultPath of options.evalResults) await jsonDocument(resultPath, 'Eval result');
 
   const artifacts = [...sourceArtifacts, ...finalArtifacts, ...evidenceArtifacts]
     .sort((left, right) => left.path.localeCompare(right.path) || left.role.localeCompare(right.role));
 
   process.stdout.write(JSON.stringify({
-    schemaVersion: 2,
+    schemaVersion: 3,
     target: {
       kind: 'aw-plugin',
       name: manifest.name,
@@ -317,8 +329,8 @@ async function main() {
     },
     artifacts,
     environment: {
-      repository: 'agent-workflows',
-      repositoryRoot: targetGit.repositoryRoot,
+      repository: path.basename(options.repoRoot) || 'aw-workspace',
+      repositoryRoot: options.repoRoot,
       client: options.client,
       dependencyMode: 'manual',
       capabilities: [
@@ -331,8 +343,6 @@ async function main() {
       stageOwner: 'caller',
       providedStages,
     },
-    evalAudit,
-    evalResults,
   }, null, 2) + '\n');
 }
 

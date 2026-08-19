@@ -3,7 +3,7 @@ name: review-aw-plugin
 description: >-
   当用户要只读审核一个 AW 插件根、materialized final artifacts、Eval evidence 或工作区发布就绪性时使用。目标根由 `.agents-plugin/plugin.json` 标识，可以位于任意兼容工作区；负责证据准备、通用 Reviewer 组合和报告发布适配，不评审普通 repo-local Skill，也不修改插件生产源码。
 compatibility: >-
-  Requires Node.js 22+, the target workspace dependencies, agent-content-toolkit >= 0.2.0, and agent-skill-toolkit >= 0.2.0.
+  Requires Node.js 22+, the target workspace dependencies, agent-content-toolkit >= 0.2.0, and agent-skill-toolkit >= 0.3.0.
 user-invocable: true
 metadata:
   short-description: 只读评审 AW 插件源码、最终制品与 Eval 证据
@@ -35,7 +35,7 @@ metadata:
 1. **准备 ReviewInputBundle**
    - 目标必须是带 `.agents-plugin/plugin.json` 的 `<plugin-root>`，但不要求固定目录布局。
    - 区分 source、materialized final artifacts、profiles、Eval manifest/results、historical reports 和工作区约束。
-   - 运行 `node scripts/prepare-aw-review-bundle.mjs <plugin-root> [options]`。用 `--source name=path` 加入 batch 的全部 participant 插件；有 Eval audit 时同时传实际 `--eval-case` 绑定 corpus digest。
+   - 运行 `node scripts/prepare-aw-review-bundle.mjs <plugin-root> --repo-root <workspace-root> [options]`。用 `--source name=path` 加入 batch 的全部 participant 插件；有 Eval audit 时同时传实际 `--eval-case` 绑定 corpus digest。Bundle v3 只保存 artifact path/digest 与已完成阶段引用，不内联 audit、trace 或 Eval result body。
    - 按 `assets/review-input-bundle.schema.json` 校验结果。final artifact 只表示材料可用，不表示 `materialized-profile-review` 已完成。
 
 2. **阶段隔离与完成记录**

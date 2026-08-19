@@ -1,10 +1,10 @@
 # Scoring Model
 
-> GENERATED from `standards/rules.json`; do not edit manually.
+> GENERATED maintainer reference. Runtime reviewers use the mode-specific rubric/dimensions and the validator; do not load this file into a normal review context.
 
 full/release-quality 使用 12 维评分。quick/delta 不计算总分。总分和 quality band 只进入技术附录与 JSON，不决定发布结论。
 
-## 维度与权重
+## Canonical dimensions
 
 | ID | 维度 | 权重 |
 | --- | --- | ---: |
@@ -20,6 +20,13 @@ full/release-quality 使用 12 维评分。quick/delta 不计算总分。总分�
 | `evals` | Eval 设计、Oracle 有效性与修改安全 | 9 |
 | `reliability` | 可靠性、安全与兼容性 | 4 |
 | `maintainability` | 剪枝、事实源与变更纪律 | 4 |
+
+## Deterministic ownership
+
+- `scripts/validate-review-result.mjs` validates canonical weights and computes coverage, weighted score, confidence, design and release readiness.
+- `quick` / `delta` do not produce a weighted score. `full` / `release-quality` must cover every canonical dimension exactly once.
+- Findings and unknowns are established before scores. A score below 5 must link a finding or unknown.
+- Quality bands are diagnostic only; they do not override release gates.
 
 ## 0–5 分锚点
 

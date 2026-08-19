@@ -17,6 +17,10 @@
 
 Author 不给自己的结果出独立发布结论；Eval Designer 不审核自己的 Oracle。
 
+## Standards and review handoff
+
+`standards/skill-rules.json` 只维护 Skill/Eval 专属规则；`standards/rules.json` 是与 `agent-content-toolkit` 内容规则组合生成的运行视图。ReviewInputBundle v3 仅传 artifact metadata 和带 digest 的阶段引用，不再内联 Eval audit 或 result body。
+
 ## Validation
 
 ```bash

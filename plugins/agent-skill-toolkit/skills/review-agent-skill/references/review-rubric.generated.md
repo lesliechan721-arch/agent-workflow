@@ -1,6 +1,6 @@
 # Agent Skill 评审标准
 
-> GENERATED from `standards/rules.json`; do not edit manually.
+> GENERATED from canonical content rules plus `standards/skill-rules.json`; do not edit manually.
 
 ## `agent.pointer`
 
@@ -8,7 +8,7 @@
 
 - **check：** 检查 description、resource pointer 与实际 branch 是否一致。
 
-Evidence: heuristic; sources: agent-skills.best-practices
+Evidence: official-guidance; sources: agent-skills.best-practices, writing-for-agents
 
 ## `agent.information-hierarchy`
 
@@ -16,7 +16,7 @@ Evidence: heuristic; sources: agent-skills.best-practices
 
 - **check：** 审计 active path，而非只看包总大小。
 
-Evidence: heuristic; sources: agent-skills.best-practices
+Evidence: official-guidance; sources: agent-skills.best-practices, writing-for-agents
 
 ## `agent.completion-boundary`
 
@@ -24,7 +24,7 @@ Evidence: heuristic; sources: agent-skills.best-practices
 
 - **check：** 不得用更完整的完成条件挽救本应删除的步骤。
 
-Evidence: heuristic; sources: agent-skills.best-practices
+Evidence: official-guidance; sources: agent-skills.best-practices, writing-for-agents
 
 ## `agent.minimum-control`
 
@@ -32,7 +32,7 @@ Evidence: heuristic; sources: agent-skills.best-practices
 
 - **check：** 独立报告 minimal、proportionate、over-specified 或 over-engineered。
 
-Evidence: heuristic; sources: agent-skills.best-practices
+Evidence: official-guidance; sources: agent-skills.best-practices, writing-for-agents
 
 ## `agent.source-of-truth`
 
@@ -40,7 +40,7 @@ Evidence: heuristic; sources: agent-skills.best-practices
 
 - **check：** 区分领域策略与 schema/runtime 事实。
 
-Evidence: heuristic; sources: agent-skills.best-practices
+Evidence: official-guidance; sources: agent-skills.best-practices, writing-for-agents
 
 ## `agent.co-location`
 
@@ -48,7 +48,15 @@ Evidence: heuristic; sources: agent-skills.best-practices
 
 - **check：** 不因物理拆文件就默认认为渐进式披露成立。
 
-Evidence: heuristic; sources: agent-skills.best-practices
+Evidence: official-guidance; sources: agent-skills.best-practices, writing-for-agents
+
+## `review.evidence-admission`
+
+设计建议、已证实缺陷和未知项必须分开；claim 不得强于直接证据。
+
+- **check：** 区分 observed、normative、structural、heuristic 和 inferred；推演不伪装成直接矛盾。
+
+Evidence: normative; sources: agent-workflows.review-contract
 
 ## `skill.problem-value`
 
@@ -56,7 +64,7 @@ Skill 必须解决可观察的真实问题，并相较无 Skill 或最小 Skill 
 
 - **check：** 区分真实项目知识与模型已知的泛化常识。
 
-Evidence: official-guidance; sources: agent-skills.best-practices
+Evidence: normative; sources: agent-skills.best-practices
 
 ## `skill.invocation-trigger`
 
@@ -64,7 +72,7 @@ Evidence: official-guidance; sources: agent-skills.best-practices
 
 - **check：** 分别评价触发召回、误触发代价和相邻 Skill 竞争。
 
-Evidence: official-guidance; sources: agent-skills.best-practices
+Evidence: normative; sources: agent-skills.best-practices
 
 ## `skill.composition-fitness`
 
@@ -80,12 +88,4 @@ scripts、references、assets 和 evals 按真实用途存在；缺省不是缺�
 
 - **check：** 逐 reference 审计必要性、职责、branch locality、active-path load 和替代位置。
 
-Evidence: official-guidance; sources: agent-skills.best-practices
-
-## `review.evidence-admission`
-
-Finding 的 claim 不强于证据；P0/P1 需要完整前提、可达性、影响、反证和 owner。
-
-- **check：** 区分 observed、normative、structural、heuristic 和 inferred；推演不伪装成直接矛盾。
-
-Evidence: normative; sources: agent-workflows.review-contract
+Evidence: normative; sources: agent-skills.best-practices

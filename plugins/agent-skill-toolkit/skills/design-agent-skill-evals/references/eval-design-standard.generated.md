@@ -1,6 +1,6 @@
 # Skill Eval 设计标准
 
-> GENERATED from `standards/rules.json`; do not edit manually.
+> GENERATED from canonical content rules plus `standards/skill-rules.json`; do not edit manually.
 
 ## `eval.oracle-validity`
 

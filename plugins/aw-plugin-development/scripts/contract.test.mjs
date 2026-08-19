@@ -108,7 +108,7 @@ test('review bundle treats final artifacts as available material, not completed 
     'codex=' + finalDir,
   ]);
   const bundle = JSON.parse(result.stdout);
-  assert.equal(bundle.schemaVersion, 2);
+  assert.equal(bundle.schemaVersion, 3);
   assert.ok(bundle.artifacts.some((artifact) => artifact.role === 'final'));
   assert.deepEqual(bundle.orchestration.providedStages, []);
 });
@@ -144,7 +144,10 @@ test('review bundle records a validated Eval audit as a bound completed stage', 
     '--eval-case',
     casePath,
   ]);
-  const stage = JSON.parse(result.stdout).orchestration.providedStages[0];
+  const bundle = JSON.parse(result.stdout);
+  assert.equal('evalAudit' in bundle, false);
+  assert.equal('evalResults' in bundle, false);
+  const stage = bundle.orchestration.providedStages[0];
   assert.equal(stage.id, 'eval-audit');
   assert.equal(stage.targetDigest, corpusDigest);
   assert.equal(stage.schema, 'EvalAuditResult');
@@ -177,4 +180,48 @@ test('AW summary decision must follow generic reviews and project gates', async 
   const valuePath = path.join(temporaryRoot, 'summary.json');
   await writeFile(valuePath, JSON.stringify(value), 'utf8');
   await assert.rejects(run(awSummaryValidator, [valuePath]), /Command failed/u);
+});
+
+test('review bundle is workspace-portable and report artifacts do not change the source digest', async () => {
+  const temporaryRoot = await mkdtemp(path.join(tmpdir(), 'aw-review-portable-'));
+  temporaryRoots.push(temporaryRoot);
+  const workspaceRoot = path.join(temporaryRoot, 'portable-workspace');
+  const target = path.join(workspaceRoot, 'packages', 'portable-review-plugin');
+  await mkdir(path.join(target, '.agents-plugin'), { recursive: true });
+  await mkdir(path.join(target, 'skills', 'example', 'reports'), { recursive: true });
+  await writeFile(path.join(target, '.agents-plugin', 'plugin.json'), JSON.stringify({ name: 'portable-review-plugin', version: '0.1.0' }), 'utf8');
+  const sourcePath = path.join(target, 'skills', 'example', 'SKILL.md');
+  const reportPath = path.join(target, 'skills', 'example', 'reports', 'historical.json');
+  await writeFile(sourcePath, '---\nname: example\n---\n', 'utf8');
+  await writeFile(reportPath, JSON.stringify({ revision: 1 }), 'utf8');
+  const script = path.join(reviewScripts, 'prepare-aw-review-bundle.mjs');
+  const first = JSON.parse((await run(script, [target, '--repo-root', workspaceRoot])).stdout);
+  assert.equal(first.schemaVersion, 3);
+  assert.equal(first.environment.repository, 'portable-workspace');
+  assert.equal(first.environment.repositoryRoot, workspaceRoot);
+  await writeFile(reportPath, JSON.stringify({ revision: 2 }), 'utf8');
+  const reportChanged = JSON.parse((await run(script, [target, '--repo-root', workspaceRoot])).stdout);
+  assert.equal(reportChanged.target.sourceDigest, first.target.sourceDigest);
+  await writeFile(sourcePath, '---\nname: example\n---\n# changed\n', 'utf8');
+  const sourceChanged = JSON.parse((await run(script, [target, '--repo-root', workspaceRoot])).stdout);
+  assert.notEqual(sourceChanged.target.sourceDigest, first.target.sourceDigest);
+});
+
+test('review bundle references Eval result artifacts without inlining their bodies', async () => {
+  const temporaryRoot = await mkdtemp(path.join(tmpdir(), 'aw-review-eval-reference-'));
+  temporaryRoots.push(temporaryRoot);
+  const resultPath = path.join(temporaryRoot, 'eval-result.json');
+  await writeFile(resultPath, JSON.stringify({ sentinel: 'DO_NOT_INLINE_EVAL_BODY', trace: 'x'.repeat(10000) }), 'utf8');
+  const result = await run(path.join(reviewScripts, 'prepare-aw-review-bundle.mjs'), [
+    path.join(repositoryRoot, 'plugins', 'agent-content-toolkit'),
+    '--repo-root',
+    repositoryRoot,
+    '--eval-result',
+    resultPath,
+  ]);
+  const bundle = JSON.parse(result.stdout);
+  assert.equal(bundle.schemaVersion, 3);
+  assert.equal('evalResults' in bundle, false);
+  assert.doesNotMatch(result.stdout, /DO_NOT_INLINE_EVAL_BODY/u);
+  assert.ok(bundle.artifacts.some((artifact) => artifact.role === 'evidence' && artifact.path.endsWith('eval-result.json')));
 });

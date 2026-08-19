@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "target": {
     "kind": "aw-plugin",
     "name": "replace-me",
@@ -15,7 +15,5 @@
   "orchestration": {
     "stageOwner": "caller",
     "providedStages": []
-  },
-  "evalAudit": null,
-  "evalResults": []
+  }
 }

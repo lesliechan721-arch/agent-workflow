@@ -83,7 +83,7 @@ test('ReviewInputBundle stage records bind actual stage result artifacts', async
   const temporaryRoot = await mkdtemp(path.join(tmpdir(), 'skill-toolkit-stage-'));
   temporaryRoots.push(temporaryRoot);
   const value = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     target: { kind: 'agent-skill', name: 'fixture', sourceDigest: 'sha256:' + '1'.repeat(64) },
     artifacts: [],
     environment: {},
@@ -95,8 +95,6 @@ test('ReviewInputBundle stage records bind actual stage result artifacts', async
         resultDigest: 'sha256:' + '3'.repeat(64), schema: 'ReferenceAuditResult',
       }],
     },
-    evalAudit: null,
-    evalResults: [],
   };
   const valuePath = path.join(temporaryRoot, 'bundle.json');
   await writeFile(valuePath, JSON.stringify(value), 'utf8');
@@ -148,4 +146,52 @@ test('inspector detects invalid frontmatter, broken resources, and large referen
   assert.ok(result.issues.some((issue) => issue.code === 'name-directory-mismatch'));
   assert.ok(result.issues.some((issue) => issue.code === 'missing-resource'));
   assert.equal(result.references[0].requiresSemanticAudit, true);
+});
+
+test('Skill standards compose canonical content rules without redefining them', async () => {
+  const contentRulesPath = path.resolve(pluginRoot, '..', 'agent-content-toolkit', 'standards', 'rules.json');
+  let contentRules;
+  try {
+    contentRules = JSON.parse(await readFile(contentRulesPath, 'utf8'));
+  } catch {
+    return; // Standalone installed bundle: composition freshness is a repository-level check.
+  }
+  const [skillRules, mergedRules] = await Promise.all([
+    readFile(path.join(pluginRoot, 'standards', 'skill-rules.json'), 'utf8').then(JSON.parse),
+    readFile(path.join(pluginRoot, 'standards', 'rules.json'), 'utf8').then(JSON.parse),
+  ]);
+  const canonicalById = new Map(contentRules.rules.map((rule) => [rule.id, rule]));
+  const skillIds = new Set(skillRules.rules.map((rule) => rule.id));
+  for (const id of canonicalById.keys()) assert.equal(skillIds.has(id), false, `skill-rules.json duplicates ${id}`);
+  for (const extension of skillRules.contentRuleExtensions) {
+    assert.ok(canonicalById.has(extension.id));
+    assert.deepEqual(Object.keys(extension).filter((key) => key !== 'id').sort(), Object.keys(extension).filter((key) => ['skill_author', 'skill_review', 'eval_design', 'eval_audit'].includes(key)).sort());
+  }
+  const mergedById = new Map(mergedRules.rules.map((rule) => [rule.id, rule]));
+  for (const canonical of contentRules.rules) {
+    const merged = mergedById.get(canonical.id);
+    assert.ok(merged);
+    for (const [key, value] of Object.entries(canonical)) {
+      if (key === 'appliesTo') continue;
+      assert.deepEqual(merged[key], value, `${canonical.id}.${key} drifted from agent-content-toolkit`);
+    }
+  }
+});
+
+test('review modes keep compact and full runtime references disjoint', async () => {
+  const reviewRoot = path.join(pluginRoot, 'skills', 'review-agent-skill');
+  const [skill, rubric, dimensions, evidence, sourceMap] = await Promise.all([
+    readFile(path.join(reviewRoot, 'SKILL.md'), 'utf8'),
+    readFile(path.join(reviewRoot, 'references', 'review-rubric.generated.md'), 'utf8'),
+    readFile(path.join(reviewRoot, 'references', 'review-dimensions.generated.md'), 'utf8'),
+    readFile(path.join(reviewRoot, 'references', 'evidence-and-severity.md'), 'utf8'),
+    readFile(path.join(reviewRoot, 'references', 'source-map.generated.md'), 'utf8'),
+  ]);
+  assert.match(skill, /`quick` \/ `delta`[^\n]+review-rubric\.generated\.md/u);
+  assert.match(skill, /`full` \/ `release-quality`[^\n]+review-dimensions\.generated\.md/u);
+  assert.doesNotMatch(skill, /references\/scoring-model\.generated\.md/u);
+  await assert.rejects(readFile(path.join(reviewRoot, 'references', 'scoring-model.generated.md'), 'utf8'));
+  const releaseCoreBytes = Buffer.byteLength(skill) + Buffer.byteLength(dimensions) + Buffer.byteLength(evidence) + Buffer.byteLength(sourceMap);
+  assert.ok(releaseCoreBytes < 24 * 1024, `release-quality core references exceed budget: ${releaseCoreBytes}`);
+  assert.ok(Buffer.byteLength(rubric) < Buffer.byteLength(dimensions));
 });

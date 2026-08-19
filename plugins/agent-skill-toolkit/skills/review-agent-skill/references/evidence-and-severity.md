@@ -2,7 +2,7 @@
 
 > GENERATED from `standards/rules.json`; do not edit manually.
 
-## Evidence
+## ReviewResult evidence admission
 
 - `observed`：trace、复现、测试或用户确认失败。
 - `normative`：适用官方规范、schema、项目硬规则或用户要求。
@@ -10,6 +10,8 @@
 - `heuristic`：第三方设计原则或经验建议。
 - `inferred`：尚未验证的推演。
 - `official-guidance`：官方设计建议；影响质量评分，但不能单独支持 P0/P1。
+
+规则来源标签与 ReviewResult admission 类型不同；生成器负责映射，Reviewer 不把 `project-policy` 等来源标签直接写入 ReviewResult。
 
 ## P0/P1 admission
 

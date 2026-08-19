@@ -1,6 +1,6 @@
 # Source map
 
-Last reviewed: 2026-08-18.
+Last reviewed: 2026-08-19.
 
 ## Portable specification
 
@@ -21,4 +21,4 @@ Last reviewed: 2026-08-18.
 
 - https://github.com/mattpocock/skills/tree/main/skills/productivity/writing-for-agents
 
-Portable specification, explicit client contracts, project policy, observed evidence and direct structural contradictions may support blocking findings. Official guidance and third-party heuristics inform quality recommendations but do not by themselves create P0/P1 findings.
+`rules.json` 中规则的 `evidenceType` 表示规则来源；`ReviewResult.evidenceTypes` 表示 finding admission 类型，两者不是同一个枚举。生成器将 `specification`、`client-contract`、`project-policy` 与旧的 `normative` 映射为 `normative`，将 `third-party-heuristic` 与旧的 `heuristic` 映射为 `heuristic`。Portable specification、显式 client contract、project policy、observed evidence 和 structural contradiction 可以支持阻断 finding；official guidance 与第三方 heuristic 不能单独支持 P0/P1。
