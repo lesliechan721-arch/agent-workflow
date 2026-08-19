@@ -10,11 +10,12 @@ const read = (file) => readFile(file, 'utf8');
 const readJson = async (file) => JSON.parse(await read(file));
 
 async function context() {
-  if (!process.env.AW_PLUGIN_CONTEXT) return { source: root, bundle: root };
+  if (!process.env.AW_PLUGIN_CONTEXT) return { source: root, bundle: root, platform: null };
   const value = await readJson(process.env.AW_PLUGIN_CONTEXT);
   assert.equal(value.event, 'test');
   assert.equal(value.plugin.name, 'dev-workflow');
-  return { source: value.sourceRoot, bundle: value.plugin.rootDir };
+  assert.ok(['claude', 'codex'].includes(value.platform));
+  return { source: value.sourceRoot, bundle: value.plugin.rootDir, platform: value.platform };
 }
 
 function assertSkill(text, name) {
@@ -59,7 +60,10 @@ test('source and evals contain exactly five Skills', async () => {
 
 test('runtime keeps all Skill roots', async () => {
   for (const name of skills) {
-    assertSkill(await read(path.join(target.bundle, 'skills', name, 'SKILL.md')), name);
+    const skillsRoot = target.platform
+      ? path.join(target.bundle, target.platform, 'skills')
+      : path.join(target.bundle, 'skills');
+    assertSkill(await read(path.join(skillsRoot, name, 'SKILL.md')), name);
   }
 });
 

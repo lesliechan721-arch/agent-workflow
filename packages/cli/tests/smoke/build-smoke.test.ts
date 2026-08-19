@@ -26,6 +26,16 @@ const execFileAsync = promisify(execFile);
 const tempDirs: string[] = [];
 let buildSnapshot: SmokeBuildSnapshot | null = null;
 
+const EXPECTED_PLUGIN_PLATFORMS = {
+  'agent-content-toolkit': ['claude', 'codex'],
+  'agent-skill-toolkit': ['claude', 'codex'],
+  'ask-me': ['claude', 'codex'],
+  'aw-plugin-development': ['claude', 'codex'],
+  'codex-enhance': ['codex'],
+  'dev-workflow': ['claude', 'codex'],
+  'git': ['claude', 'codex'],
+} as const;
+
 function repoRoot(): string {
   return path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
 }
@@ -278,11 +288,7 @@ describe('build smoke', () => {
         },
       },
     });
-    for (const pluginName of [
-      'ask-me',
-      'git',
-      'codex-enhance',
-    ]) {
+    for (const pluginName of Object.keys(EXPECTED_PLUGIN_PLATFORMS)) {
       await expect(
         fs.pathExists(path.join(outputRoot, 'plugins', pluginName, 'evals')),
       ).resolves.toBe(false);
@@ -361,14 +367,42 @@ describe('build smoke', () => {
       fs.readFile(path.join(outputRoot, '.catalog', 'full', 'catalog-manifest.json'), 'utf8'),
     ]);
     expect(claudeMarketplace.plugins.map((plugin: { name: string }) => plugin.name).sort()).toEqual([
+      'agent-content-toolkit',
+      'agent-skill-toolkit',
       'ask-me',
+      'aw-plugin-development',
+      'dev-workflow',
       'git',
     ]);
     expect(codexMarketplace.plugins.map((plugin: { name: string }) => plugin.name).sort()).toEqual([
+      'agent-content-toolkit',
+      'agent-skill-toolkit',
       'ask-me',
+      'aw-plugin-development',
       'codex-enhance',
+      'dev-workflow',
       'git',
     ]);
+    for (const [pluginName, platforms] of Object.entries(EXPECTED_PLUGIN_PLATFORMS)) {
+      for (const platform of ['claude', 'codex'] as const) {
+        const supported = (platforms as readonly string[]).includes(platform);
+        if (!supported) {
+          await expect(fs.pathExists(path.join(
+            outputRoot,
+            'plugins',
+            pluginName,
+            platform,
+          ))).resolves.toBe(false);
+        }
+        await expect(fs.pathExists(path.join(
+          outputRoot,
+          'plugins',
+          pluginName,
+          platform === 'claude' ? '.claude-plugin' : '.codex-plugin',
+          'plugin.json',
+        ))).resolves.toBe(supported);
+      }
+    }
     expect(codexMarketplace).toMatchObject({
       owner: claudeMarketplace.owner,
       interface: claudeMarketplace.interface,
@@ -534,20 +568,13 @@ describe('build smoke', () => {
           manifestPath: './catalog-manifest.json',
         },
       },
-      entries: expect.arrayContaining([
+      entries: expect.arrayContaining(Object.keys(EXPECTED_PLUGIN_PLATFORMS).map((pluginName) =>
         expect.objectContaining({
-          name: 'ask-me',
-          source: './plugins/ask-me',
+          name: pluginName,
+          source: `./plugins/${pluginName}`,
           artifactDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
           manifestDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
-        }),
-        expect.objectContaining({
-          name: 'git',
-          source: './plugins/git',
-          artifactDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
-          manifestDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
-        }),
-      ]),
+        }))),
     });
     await expect(
       fs.readJson(path.join(outputRoot, '.catalog', 'sidecar', 'package.json')),
@@ -592,6 +619,60 @@ describe('build smoke', () => {
 
     const after = await Promise.all(keyOutputs.map((outputPath) => fs.stat(outputPath)));
     expect(after.map((stats) => stats.mtimeMs)).toEqual(before.map((stats) => stats.mtimeMs));
+  });
+
+  it('materializes and validates schema 3 compatibility from real build bundles', async () => {
+    const snapshot = await requireBuildSnapshot();
+    const outputRoot = snapshot.catalogOutputRoot;
+    const localSnapshotRoot = await createSmokeTempRoot(
+      'aw-local-source-snapshot-',
+      'schema 3 local source snapshot root',
+    );
+    await Promise.all([
+      fs.copy(path.join(outputRoot, '.agents'), path.join(localSnapshotRoot, '.agents')),
+      fs.copy(path.join(outputRoot, '.claude-plugin'), path.join(localSnapshotRoot, '.claude-plugin')),
+      fs.copy(path.join(outputRoot, 'plugins'), path.join(localSnapshotRoot, 'plugins')),
+    ]);
+
+    const { resolvePluginsFromCatalog } = await importSmokeSnapshotModule<{
+      resolvePluginsFromCatalog: (rootDir: string) => Promise<Array<{
+        manifest: { name: string };
+      }>>;
+    }>(path.join(snapshot.cliDistRoot, 'src', 'utils', 'manifest.js'));
+    const { createCatalogManifestV3, createCatalogManifestV3Entry } =
+      await importSmokeSnapshotModule<{
+        createCatalogManifestV3: (manifest: Record<string, unknown>) => Record<string, unknown>;
+        createCatalogManifestV3Entry: (
+          plugin: { manifest: { name: string } },
+          pluginRoot: string,
+        ) => Promise<Record<string, unknown>>;
+      }>(path.join(snapshot.cliDistRoot, 'src', 'utils', 'catalog-manifest-v3.js'));
+    const plugins = await resolvePluginsFromCatalog(localSnapshotRoot);
+    const entries = await Promise.all(plugins.map((plugin) => createCatalogManifestV3Entry(
+      plugin,
+      path.join(localSnapshotRoot, 'plugins', plugin.manifest.name),
+    )));
+    const buildManifest = await fs.readJson(path.join(outputRoot, '.catalog', 'catalog-manifest.json'));
+    expect(buildManifest.schemaVersion).toBe(2);
+    await expect(fs.pathExists(path.join(localSnapshotRoot, 'catalog-manifest.json'))).resolves.toBe(false);
+    await fs.writeJson(path.join(localSnapshotRoot, 'catalog-manifest.json'), createCatalogManifestV3({
+      catalogVersion: buildManifest.catalogVersion,
+      channel: buildManifest.channel,
+      compatibility: buildManifest.compatibility,
+      entries,
+    }), { spaces: 2 });
+
+    const { validateCatalogSnapshot } = await importSmokeSnapshotModule<{
+      validateCatalogSnapshot: (rootDir: string) => Promise<{
+        manifest: { schemaVersion: number; entries: Array<{ name: string; contentDigest: string }> };
+      }>;
+    }>(path.join(snapshot.cliDistRoot, 'src', 'utils', 'catalog-snapshot.js'));
+    const validated = await validateCatalogSnapshot(localSnapshotRoot);
+    expect(validated.manifest.schemaVersion).toBe(3);
+    expect(validated.manifest.entries.map((entry) => entry.name).sort())
+      .toEqual(Object.keys(EXPECTED_PLUGIN_PLATFORMS).sort());
+    expect(validated.manifest.entries.every((entry) =>
+      /^sha256:[0-9a-f]{64}$/u.test(entry.contentDigest))).toBe(true);
   });
 
   it('starts the real dist entry', async () => {
@@ -886,5 +967,16 @@ describe('build smoke', () => {
       }),
     ]);
 
+    await fs.writeFile(
+      path.join(tempRepo, 'plugins', 'git-commit', 'scripts', 'runtime.mjs'),
+      'require.resolve("left-pad");\n',
+      'utf8',
+    );
+    await expect(bundlePlugins({
+      repoRoot: tempRepo,
+      outputRoot,
+      buildMode: 'staging',
+      stagingRunner: createSmokeStagingRunner(),
+    })).rejects.toThrow('Runtime import "left-pad"');
   }, 120_000);
 });

@@ -3444,11 +3444,9 @@ describe('rebuild adapter integration', () => {
       const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', name), {
         mode: 'bundle',
       });
-      if (name === 'codex-enhance') {
-        plugin.sourceId = 'official';
-        plugin.sourceIdentity = `sha256:${'2'.repeat(64)}`;
-        plugin.pluginId = 'official/codex-enhance';
-      }
+      plugin.sourceId = 'official';
+      plugin.sourceIdentity = `sha256:${'2'.repeat(64)}`;
+      plugin.pluginId = `official/${name}`;
       const target = await integration.buildTarget({
         ...(plugin.sourceId ? {
           sourceId: plugin.sourceId,
@@ -3492,6 +3490,29 @@ describe('rebuild adapter integration', () => {
         expect(repeated.status, JSON.stringify(repeated.failures)).toBe('succeeded');
       }
     }
+
+    const cwd = isolation.layout.fixtureCwd;
+    const skillsRoot = path.join(cwd, '.agents', 'skills');
+    await expect(fs.pathExists(path.join(skillsRoot, 'git-commit', 'SKILL.md')))
+      .resolves.toBe(true);
+    await expect(readSkillOwnerMarker({
+      skillRoot: path.join(skillsRoot, 'git-commit'),
+      allowedRoot: skillsRoot,
+    })).resolves.toMatchObject({
+      schemaVersion: 2,
+      sourceId: 'official',
+      plugin: 'git',
+    });
+    const codexPaths = resolveCodexPaths(cwd, 'project', isolation.env);
+    await expect(fs.pathExists(path.join(skillsRoot, 'codex-subagent-guide', 'SKILL.md')))
+      .resolves.toBe(true);
+    await expect(fs.pathExists(path.join(
+      codexPaths.agentsDir,
+      'aw-codex-enhance-codex-subagent-simple.toml',
+    ))).resolves.toBe(true);
+    const codexConfig = await fs.readFile(codexPaths.configTomlPath, 'utf8');
+    expect(codexConfig).toContain('实施前需求检查');
+    expect(codexConfig).toContain('[agents.codex-subagent-simple]');
   });
 
   it('passes historical artifacts and the CLI timeout to the renderer', async () => {

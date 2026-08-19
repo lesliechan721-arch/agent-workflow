@@ -30,10 +30,10 @@
 AW 版本管理里有三套身份，不能混用：
 
 - CLI version：`@lesliechan721/aw` 自身的版本，代表命令和运行时能力。
-- Catalog version：`@lesliechan721/aw-plugins-manifest` 与 `@lesliechan721/aw-plugins` 的共同 package version，代表一次官方 catalog 快照。
+- Source snapshot version：schema 3 `catalog-manifest.json` 的版本，代表一次 source 快照。
 - Plugin version：单个插件 manifest 的 `version`，代表该插件 artifact 的不可变身份。
 
-插件更新通过 catalog 包独立发布，不要求同步发布 CLI。只要用户当前 CLI 满足 catalog 和插件的 `compatibility.aw.minVersion`，用户就可以看到并安装新的插件版本。
+插件更新将通过 schema 3 source snapshot 分发，不要求同步发布 CLI。当前 `pnpm build` 只生成本地 bundle 和 schema 2 兼容 staging；schema 3 snapshot 由后续 release staging 流程从真实 build bundle 物化。Phase 4 publisher 尚未进入作者合同；不要在插件脚本或文档中假设已存在的 snapshot staging 命令或 npm catalog 包。
 
 最小示例：
 
@@ -53,12 +53,8 @@ AW 版本管理里有三套身份，不能混用：
 
 - 源码 `version` 必须是没有 prerelease 或 build metadata 的稳定 SemVer；`compatibility.aw.minVersion` 必须是严格 SemVer。不能写 `v1.2.3`、`1.2`、`latest`、`^1.2.3` 或其它宽松写法。
 - 插件 manifest 不声明 per-plugin 宿主 agent 版本。Codex `>= 0.145.0`、Claude Code `>= 2.1.88` 是 AW CLI 内置写命令门槛，作者不需要添加 `compatibility.codex`、`compatibility.claude`、`minimumCodexVersion` 或类似字段。
-- 发布到 `latest` catalog 的插件 `version` 必须是 stable SemVer；prerelease 插件只能通过 `beta` catalog 分发。
-- `beta` catalog 的 catalog version 必须是 prerelease；同一快照内可以混合 stable 和 prerelease 插件 version。
-- 同一个 catalog version 只能属于一个发布轨道，不能把已发布到 `beta` 的 catalog version 后续改挂到 `latest`。
 - 插件最低 CLI 版本不能高于 catalog 级 `compatibility.aw.minVersion`。catalog 级门槛是整包门槛，必须覆盖包内所有插件的真实运行时要求。
-- current candidate 中每个插件都必须提供与 artifact 和 manifest 对应的 digest，并声明不高于 catalog 级门槛的最低 CLI 版本。作者改变 manifest、runtime 文件、脚本、静态资源、最低 CLI 版本或平台能力时，应发布新的插件 `version`。
-- 同一 catalog version 的 sidecar/full exact-version package 内容不可改变。要发布不同快照，必须提高 catalog version。
+- schema 3 snapshot 中每个插件都必须提供 `artifactDigest`、`manifestDigest` 和 `contentDigest`，并声明不高于 snapshot 级门槛的最低 CLI 版本。作者改变 manifest、runtime 文件、脚本、静态资源、最低 CLI 版本或平台能力时，应发布新的插件 `version`。
 
 作者版本门禁：
 
@@ -71,9 +67,7 @@ node .agents/skills/create-aw-plugin/scripts/check_plugin_versions.mjs \
 
 `check_plugin_versions.mjs` 用当前已构建 CLI 的 staging bundler 分别物化 Git 基线插件和工作树插件，再忽略 plugin version 字段本身比较 production bundle。production 变化但 version 未提高、版本下降或 SemVer precedence 未提高时失败；只有 version 提高时成功并警告。Skill `evals/**`、插件 `reports/**` 和 test-only 文件由 bundler 排除；随 bundle 发布的 README、Skill、manifest 和 runtime 脚本变化要求提高 version。JSON 输出使用 schema 2。该门禁只判断插件源码变化，不判断 CLI bundler 自身变化造成的产物差异。
 
-`contentDigest` 排除生成 manifest 的 version 字段。Beta 发布根据源码稳定 version、`contentDigest` 和合并后的 latest/beta 账本，在临时 staging 中物化 `x.y.z-beta.N`；相同内容复用 beta version，变化内容才提高 `N`。账本中已有且内容一致的 stable plugin identity 保持稳定 version，以兼容此前 beta catalog 中的稳定条目。Stable 发布直接使用源码 manifest version，并把该 identity 的账本 channel 提升为 latest。
-
-`@lesliechan721/aw-plugins-manifest` sidecar 包和 `@lesliechan721/aw-plugins` full catalog 包使用相同 schema 2 manifest、catalog version、channel 和 catalog 级最低 CLI 版本。sidecar 包含 current `catalog-manifest.json`、发布端专用 `plugin-release-ledger.json` 和必要 package metadata；full 包包含同一份 manifest 以及 current 单版本快照的全部插件 artifact。账本合并 beta/latest 已发布身份，并阻断相同 `plugin@version` 对应不同 digest；它不改变运行时 catalog schema。
+`contentDigest` 排除生成 manifest 的 version 字段，用于核对插件内容身份。schema 3 snapshot 和源码 manifest 是当前已锁定的作者边界；不要提前实现 Phase 4 publisher、registry 账本或包发布流程。
 
 ## scripts / config block
 
@@ -110,7 +104,7 @@ node .agents/skills/create-aw-plugin/scripts/check_plugin_versions.mjs \
 规则：
 
 - `scripts.helpers.config` 必须显式声明，且指向插件内 Node 可运行文件（`.js` / `.mjs` / `.cjs`）；CLI 不会按固定文件名隐式扫描 `./scripts/aw-config.mjs`。
-- 标准 helper 有 `AW_PLUGIN_CONTEXT` 时读取 context 中的 `config.values`、`config.sources`、`config.schema` 和 `paths.configStores`；没有 context 时只读取当前 bundle 邻近的 `.agents-plugin/plugin.json`，再按该 schema/default/redaction 读取 AW config store。这个 bundle 视图可能和 `aw config get/list` 的 current catalog 视图短暂不同；helper 找不到 bundle manifest 时必须失败，不能回退到 schema-less raw store。
+- 标准 helper 有 `AW_PLUGIN_CONTEXT` 时读取 context 中的 source identity、`config.values`、`config.sources`、`config.schema` 和 `paths.configStores`；没有 context 时必须从 `<AW_HOME>/marketplaces/<sourceId>/config.json` 验证 schema 2 source identity，再读取 namespaced schema 2 config envelope。helper 找不到或不能验证 bundle、marketplace identity 或 config envelope 时必须失败，不能回退到裸 plugin name、current catalog 或 schema-less raw store。
 - lifecycle 事件只支持 `install`、`upgrade`、`uninstall`；脚本路径必须在插件根内。字符串简写等价于 `{ "default": { "runner": "auto", "path": "./..." } }`，结构化声明支持 `default`、`unix`、`windows`、`linux`、`darwin`、`win32`。解析顺序为 Linux: `linux -> unix -> default`，macOS: `darwin -> unix -> default`，Windows: `win32 -> windows -> default`。
 - lifecycle runner 支持 `node`、`sh`、`bash`、`pwsh`、`powershell`、`cmd`、`auto`。`auto` 按扩展名解析：`.js` / `.mjs` / `.cjs` 为 Node，`.sh` 为 `sh`，`.ps1` 为 PowerShell，`.cmd` / `.bat` 为 Windows cmd。首版不支持内联 shell 命令；Windows lifecycle 请提供 Node 入口或 `.ps1` / `.cmd`。
 - `scripts.timeoutMs` 是脚本默认超时，单位毫秒，合法范围 `1000..300000`，默认 `30000`。`aw install` / `aw upgrade` / `aw uninstall --script-timeout <ms>` 可覆盖 manifest 值。
@@ -121,7 +115,7 @@ node .agents/skills/create-aw-plugin/scripts/check_plugin_versions.mjs \
 - `scripts.tests.node` 是开发期 Node 测试 glob，只由 `pnpm plugin:test` 使用。无匹配测试时是 skipped/no-op；test-only helper 可通过静态相对 import/require 递归复制到临时 bundle，但不会进入发布 runtime bundle。
 - `config.schema` 是 AW config 的唯一真值。`string`、`number`、`boolean`、`enum`、`file`、`directory` 为首版支持类型；字段可声明 `title`、`description`、`default`、`required`、`sensitive`，`enum` 用 `values`，`number` 可用 `min` / `max`。未知 key 不进入 helper、lifecycle context 或 effective config，只能作为脱敏诊断出现。
 - `file` / `directory` 配置值写入时按 AW project root 解析相对路径，并以 canonical absolute realpath 落盘；每次读取本机 effective config 都会重校验路径存在且类型正确。这类 key 不能写入 project shared config，也不能成为 project-scope repo-visible artifact 的 render config、digest、stale 判断或 refresh 输入；需要本机路径时用 user store 或 `--scope project --local`。
-- AW config 分 user store、project shared store 和 project local store。`aw config set --scope project` 写 `.agent-workflows/plugin-config/<plugin>/config.json`；`--local` 写默认忽略的本机覆盖。配置只由 `aw config set/unset/reset` 管理，写命令不删除配置。
+- AW config 分 user store、project shared store 和 project local store。路径固定为 `plugin-config/<sourceId>/<pluginName>/config.json` 或 `plugin-config.local/<sourceId>/<pluginName>/config.json`，内容是绑定 `sourceId`、`sourceIdentity` 和 `pluginName` 的 schema 2 envelope。配置只由 `aw config set/unset/reset` 管理，写命令不删除配置。
 
 完整 lifecycle + config 示例：
 
@@ -232,7 +226,7 @@ node .agents/skills/create-aw-plugin/scripts/check_plugin_versions.mjs \
 - `target` 支持 `codex.skill`、`claude.skill`、`codex.developerInstructionsBlock` 和 `codex.agentRole`。`claude.skill` 只能配 `platform: "claude"`；其它 target 只能配 `platform: "codex"`。
 - `states` 支持 `present`、`disabled`。renderer 当前 platform/scope 已声明的 artifact 必须返回其中一种状态，不能漏返回。
 - `refreshKeys` 必须全部存在于 `config.schema`。config 写命令只有命中这些 key 时才刷新对应 artifact。
-- 配置写入后，AW 对当前可见 target 运行完整 reinstall。`config set/unset/reset --json` 返回 config receipt v3 和各 target 的 reinstall 结果。
+- 配置写入后，AW 对当前可见 target 运行完整 reinstall。`config set/unset/reset --json` 返回 receipt schema 4、canonical `sourceId/pluginName` 和各 target 的 reinstall 结果。
 - 对包含 `project` scope 的 repo-visible dynamic artifact，`refreshKeys` 不能引用 `file` / `directory` 类型配置。project artifact render config 只来自 manifest default 和 project shared config 中可共享的非路径 key；user store、project local store 和路径型 key 只影响本机 effective config、lifecycle 或 helper。
 - `requiresCodexProjectConfig: true` 表示 project scope 写路径需要进入 Codex project config safety preflight。`codex.skill` 不需要该字段，因为它写 `.agents/skills/<skillKey>`，不依赖 `.codex/config.toml`。
 - `codex.skill` 和 `claude.skill` 必须静态声明合法 `skillKey`，并可声明 `sourceDirs`。每个 source directory 必须是插件内存在的 `./` 相对目录，不能重复。声明 source 时必须包含规范根 `./skills/<skillKey>`；其它 source 只能位于该根内，且不能进入 Skill 根的直接子目录 `evals/` 或 `reports/`。更深层的同名领域目录不是作者专用目录。AW 按数组顺序合并完整目录；后面的源覆盖前面的同名文件。静态文件按字节复制，符号链接和非普通文件失败。最终动态 Skill 必须保留非空 `README.md`。
@@ -350,7 +344,7 @@ codex:
 
 Codex scope 对作者的影响：
 
-- `--scope user` 走 Codex native plugin 平面。AW 用 `codex plugin marketplace add/list/remove` 和 `codex plugin add/remove` 管理原生状态；`aw status` 直接检查 live 原生状态。
+- `--scope user` 走 Codex native plugin 平面。primary source 的本地 marketplace 名为 `aw`，secondary source 固定为 `aw-<sourceId>`。AW 用 native marketplace/plugin 命令管理原生状态；`aw status` 直接检查 live 原生状态。
 - `--scope project` 只写 repo-managed artifacts，不调用 Codex native CLI / app-server RPC，不写用户级 `[marketplaces]` 或 `[plugins]`；写入前仍要求本机 Codex `>= 0.145.0`。
 - `apps` 是 Codex 能力，`products=["CLAUDE"] + apps` 是矛盾配置，会在 manifest/build 校验时报错。
 - 纯 native-only 插件不能以 Codex project scope 安装；声明 `apps` 的插件在 Codex project scope 会 fail fast。若希望插件可提交到仓库，请提供 skills、MCP、slashCommands、extensions 这类 repo-managed surface，或把 app/native-only 能力拆到 user-scope 插件。
@@ -359,7 +353,7 @@ CLI 入口和输出对作者的影响：
 
 - `aw` 主命令是唯一交互入口；配置向导只存在于主控制台。脚本化配置请使用 `aw config set/unset/reset`，读配置使用 `aw config list/get`；不要把 `aw config configure` 写进 README、测试或脚本。
 - 子命令面向脚本调用；写命令加 `--json` 时 stdout 是单一 JSON receipt，默认输出只展示友好完成状态和下一步。需要诊断时使用 `--verbose`、`--debug` 或 `status --json`。
-- 旧恢复命令和旧 cleanup flags 已移除。检查 live 输出使用 `aw status`；清理 AW-owned 输出使用 `aw cleanup`；按 current catalog 删除后重建使用 `aw reinstall`。
+- 旧恢复命令和旧 cleanup flags 已移除。检查 live 输出使用 `aw status`；清理 AW-owned 输出使用 `aw cleanup`；按当前 multi-source resolution 删除后重建使用 `aw reinstall`。
 - 插件 README、示例和测试断言不要依赖默认输出里的内部词，也不要把默认输出当机器协议解析。
 
 ## interface block
@@ -376,9 +370,9 @@ CLI 入口和输出对作者的影响：
 
 ## marketplace-source.json
 
-`plugins/marketplace-source.json` 是 marketplace 根级构建输入，只接受 `owner` 和 `interface.displayName`。它不是运行时 marketplace manifest。创建单个插件时通常不要改它。
+`plugins/marketplace-source.json` 是 marketplace 根级构建输入，只接受 `owner` 和 `interface.displayName`。它不是运行时 source identity。创建单个插件时通常不要改它。
 
-`pnpm build` 会把根级元数据和各插件的 marketplace 条目合成两份 runtime marketplace manifest：`.claude-plugin/marketplace.json` 和 `.agents/plugins/marketplace.json`。两份 marketplace 共享根级元数据，但 entries 按插件最终支持平台过滤；Claude marketplace 不包含 Codex-only 插件，Codex marketplace 不包含 Claude-only 插件。AW current catalog 以 catalog manifest 和每个插件的 `.agents-plugin/plugin.json` 为准，不会把某个平台 marketplace 当作全部插件清单。
+`pnpm build` 会把根级元数据和各插件的 marketplace 条目合成两份本地 runtime marketplace manifest：`.claude-plugin/marketplace.json` 和 `.agents/plugins/marketplace.json`。两份 marketplace 共享根级元数据，但 entries 按插件最终支持平台过滤；Claude marketplace 不包含 Codex-only 插件，Codex marketplace 不包含 Claude-only 插件。当前 build 还生成 schema 2 兼容 catalog staging；后续 release staging 物化 schema 3 snapshot 时必须从完整 build bundle 重建插件清单，不能把某个平台 marketplace 当作全部插件清单。
 
 ## 分发模型
 
@@ -386,31 +380,34 @@ CLI 入口和输出对作者的影响：
 源码层（作者维护）
   plugins/<name>/.agents-plugin/plugin.json + 关联文件
            │
-           │  pnpm build / catalog staging
+           │  pnpm build
            ▼
-Catalog staging（生成产物，不手改）
-  staging/plugins/<name>/
+本地 bundle staging（当前生成产物，不手改）
+  catalog-manifest.json              schema 2 兼容 manifest
+  plugins/<name>/
   ├── .agents-plugin/plugin.json     源 manifest 副本
   ├── .claude-plugin/plugin.json     支持 Claude 时存在
   ├── .codex-plugin/plugin.json      支持 Codex 时存在
   ├── claude/                        支持 Claude 时存在
   └── codex/                         支持 Codex 时存在
            │
-           │  catalog 发布
+           │  后续 release staging（当前尚未实现）
            ▼
-远程 catalog（独立于 CLI 发布）
-  @lesliechan721/aw-plugins-manifest       sidecar：current catalog-manifest.json 和 digest 真值
-  @lesliechan721/aw-plugins                full：同一份 manifest + 当前快照的全部插件 artifact
+Schema 3 source snapshot
+  catalog-manifest.json              schema 3
+  plugins/<name>/                    来自真实 build bundle
            │
-           │  aw init / install / upgrade 解析 current catalog
+           │  path/Git source resolution
            ▼
 本地 AW runtime
-  ~/.aw/                             catalog cache、active view、config 和 lifecycle active store
+  <AW_HOME>/catalog-cache/<sourceId>/...
+  <AW_HOME>/marketplaces/<sourceId>/...
+  <AW_HOME>/plugin-config/<sourceId>/<pluginName>/config.json
 ```
 
-这些层各有职责，排查问题时先确认问题在哪一层。`@lesliechan721/aw` CLI tarball 不再把 embedded catalog、`plugins-dist/` 或完整插件 artifact 作为正式分发真值；插件更新通过 catalog 包独立发布。
+这些层各有职责。当前可验证真值止于本地 build bundle；schema 3 snapshot 只能作为后续 release staging 的目标合同。Phase 4 publisher 尚未实现，作者工具不得声称 build 已直接生成 schema 3，也不得把 npm catalog、registry sidecar 或 full catalog tarball 当作未来分发真值。
 
-project shared config 位于 `.agent-workflows/plugin-config/`，可提交；`.agent-workflows/plugin-config.local/` 是本机私有覆盖层，默认应被 ignore。平台输出本身通过各文件或目录中的 AW owner marker 标识归属。
+project shared config 位于 `.agent-workflows/plugin-config/<sourceId>/<pluginName>/config.json`，可提交；project local 使用 `.agent-workflows/plugin-config.local/<sourceId>/<pluginName>/config.json`，默认应被 ignore。两者都使用 schema 2 source envelope。平台输出通过 owner schema 2 marker 保存 `sourceId` 和 qualified plugin identity。
 
 ## 禁止手改的文件
 

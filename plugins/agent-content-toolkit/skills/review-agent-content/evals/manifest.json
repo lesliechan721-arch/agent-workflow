@@ -10,6 +10,10 @@
         {
           "name": "agent-content-toolkit",
           "config": {}
+        },
+        {
+          "name": "agent-skill-toolkit",
+          "config": {}
         }
       ],
       "runModel": true,

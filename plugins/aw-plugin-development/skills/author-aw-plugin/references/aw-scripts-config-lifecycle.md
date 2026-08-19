@@ -66,9 +66,11 @@ plugins/<name>/
 
 | scope | 路径 |
 |------|------|
-| `user` | `<AW_HOME>/plugin-config/<plugin>/config.json` |
-| `project shared` | `<repo-or-workspace-root>/.agent-workflows/plugin-config/<plugin>/config.json` |
-| `project local` | `<repo-or-workspace-root>/.agent-workflows/plugin-config.local/<plugin>/config.json` |
+| `user` | `<AW_HOME>/plugin-config/<sourceId>/<pluginName>/config.json` |
+| `project shared` | `<repo-or-workspace-root>/.agent-workflows/plugin-config/<sourceId>/<pluginName>/config.json` |
+| `project local` | `<repo-or-workspace-root>/.agent-workflows/plugin-config.local/<sourceId>/<pluginName>/config.json` |
+
+每个 store 是 schema 2 envelope，固定绑定 `sourceId`、`sourceIdentity`、`pluginName` 和 `values`。裸 plugin name store 属于 legacy state，helper 和 CLI 都 fail closed。JSON、owner、receipt 和诊断使用 canonical `sourceId/pluginName`。
 
 project shared config 是平台中立的 AW 项目配置，同一个仓库里的 Claude 和 Codex 安装默认读到同一份项目配置，并且它是 repo-visible project artifacts 的唯一共享配置输入。project local config 是本机私有覆盖层，默认应被 ignore，只影响本机读命令、lifecycle 和 helper，不触发 repo-visible artifact refresh。
 
@@ -114,9 +116,9 @@ aw config list <plugin> --scope project --local
 
 默认人类输出只承诺展示完成状态、友好原因和必要下一步，不适合脚本解析。需要详细诊断时使用 `--verbose` 或 `--debug`。
 
-所有脚本化写命令的 `--json` stdout 都是单一 JSON receipt。五个写命令使用 receipt v3；配置写命令使用 config receipt v3，并返回 `updatedKeys` / `removedKeys` 和 target reinstall 结果。
+所有脚本化写命令的 `--json` stdout 都是单一 JSON receipt。五个写命令和配置写命令使用 receipt schema 4，并返回 canonical plugin identity；配置写命令还返回 `updatedKeys` / `removedKeys` 和 target reinstall 结果。
 
-`aw status` 是 live ownership 只读投影：默认输出友好摘要，`aw status --verbose` 展示组件检查，`aw status --json` 输出 `schemaVersion: 3`、catalog、filters、targets 和 errors。每个 target 的状态只允许 `present`、`absent`、`partial`、`error`。status 失败路径也必须守住 stdout 机器合同：stdout 为空或仍是单一可解析 JSON，错误说明写 stderr。
+`aw status` 是 live ownership 只读投影：默认输出友好摘要，`aw status --verbose` 展示组件检查，`aw status --json` 输出 `schemaVersion: 4`、multi-source catalog、filters、targets 和 errors。每个 target 的状态只允许 `present`、`absent`、`partial`、`error`。
 
 ## 标准配置 Helper
 
@@ -133,9 +135,9 @@ node scripts/aw-config.mjs json --scope project-local
 helper 的读取路径分两种：
 
 - 有 `AW_PLUGIN_CONTEXT` 时，优先读取 context 里的 `config.values`、`config.sources`、`config.schema` 和 `paths.configStores`。lifecycle、`pnpm plugin:test` 和受 AW 管理的脚本都走这条路径。
-- 没有 `AW_PLUGIN_CONTEXT` 时，从当前 helper 文件向上定位同一个 bundle 内的 `.agents-plugin/plugin.json`，用该 manifest 的 schema/default/redaction 解释 AW config store。
+- 没有 `AW_PLUGIN_CONTEXT` 时，从当前 helper 文件定位 bundle manifest，并要求它位于 `<AW_HOME>/marketplaces/<sourceId>/plugins/<pluginName>`。helper 验证 marketplace `config.json` 的 schema 2 source identity，再读取同 source 的 namespaced schema 2 config envelope。
 
-无 context fallback 使用的是“当前 bundle 视图”，而 `aw config get/list` 使用的是“当前 catalog 视图”。升级或刷新过程中两者可能短暂不同，这是预期行为。helper 找不到 bundle manifest、manifest 损坏或 schema 校验失败时必须 fail closed，不能回退到 current catalog，也不能 schema-less 读取 raw store。
+无 context fallback 使用的是“当前 namespaced marketplace bundle 视图”，而 `aw config get/list` 使用的是当前 multi-source resolution。helper 找不到 bundle manifest、不能验证 source identity、发现旧裸名 store、envelope identity 不匹配或 schema 校验失败时必须 fail closed，不能回退到其它 source 或 schema-less raw store。
 
 `get` 输出原始值，供脚本使用；`json` 同时包含 `values` 和 `redactedValues`。调试、日志和错误消息应优先使用 `redactedValues`。
 
@@ -270,7 +272,7 @@ lifecycle 可能在这些情况下被再次调用：用户重复安装、升级�
 - uninstall lifecycle 使用 lifecycle active store 保存的最后一次成功脚本输入，不读取旧安装状态文件。
 - 把 `context.plugin.rootDir` 或 `AW_PLUGIN_ROOT` 当作 runtime 真值，不从 `process.cwd()` 推断插件根。
 
-`aw status` 只读取 current catalog、现场 owner marker 和平台原生状态。它不会运行 lifecycle、renderer，不会刷新 marketplace，也不会创建 config store。target 状态只允许 `present`、`absent`、`partial`、`error`：全部期望组件存在时是 `present`，全部缺失时是 `absent`，部分存在或不完整时是 `partial`，检查失败时是 `error`。没有声明 `config.schema`、`scripts.lifecycle` 或 `artifacts.targets` 不是问题，只表示插件没有对应能力。
+`aw status` 只读取当前 multi-source resolution、现场 owner marker 和平台原生状态。它不会运行 lifecycle、renderer，不会刷新 marketplace，也不会创建 config store。target 状态只允许 `present`、`absent`、`partial`、`error`：全部期望组件存在时是 `present`，全部缺失时是 `absent`，部分存在或不完整时是 `partial`，检查失败时是 `error`。没有声明 `config.schema`、`scripts.lifecycle` 或 `artifacts.targets` 不是问题，只表示插件没有对应能力。
 
 ## 运行时 Context
 
@@ -295,7 +297,9 @@ const context = await readAwContext();
 | 字段 | 说明 |
 |------|------|
 | `event` | `install` / `upgrade` / `uninstall` / `test` |
-| `plugin.name`、`plugin.version` | 插件身份 |
+| `plugin.name`、`plugin.version` | 插件名称和版本 |
+| `plugin.sourceId`、`plugin.sourceIdentity` | namespaced source identity；真实 multi-source lifecycle 提供 |
+| `plugin.pluginId` | canonical `sourceId/pluginName`；由已验证的 source identity 和插件名构造 |
 | `plugin.rootDir` | 当前运行的 bundle root，等同 `AW_PLUGIN_ROOT` |
 | `sourceRoot` | 仅 `pnpm plugin:test` 提供，指向原始源码插件根 |
 | `platform` | `codex` 或 `claude` |

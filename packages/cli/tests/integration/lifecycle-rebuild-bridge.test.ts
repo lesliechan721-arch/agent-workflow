@@ -40,6 +40,9 @@ const cleanupWriteCommand = (plugins: string[], options: LegacyCommandOptions, r
 interface LifecycleLogEntry {
   event: 'install' | 'upgrade' | 'uninstall';
   plugin: string;
+  sourceId: string;
+  sourceIdentity: string;
+  pluginId: string;
   version: string;
   rootDir: string;
   artifacts: Array<{
@@ -80,6 +83,9 @@ const lifecycleScript = [
   'await appendFile(path.join(context.cwd, \'lifecycle-events.jsonl\'), `${JSON.stringify({',
   '  event: context.event,',
   '  plugin: context.plugin.name,',
+  '  sourceId: context.plugin.sourceId,',
+  '  sourceIdentity: context.plugin.sourceIdentity,',
+  '  pluginId: context.plugin.pluginId,',
   '  version: context.plugin.version,',
   '  rootDir: context.plugin.rootDir,',
   '  artifacts: context.artifacts,',
@@ -170,6 +176,13 @@ describe('rebuild lifecycle bridge', () => {
       env: isolation.env,
       nativeCliRunner: runner,
       catalogResolution: { rootDir: catalogRoot, source: 'local' } as CatalogResolution,
+      namespacedTarget: {
+        sourceId: 'official',
+        sourceIdentity: `sha256:${'1'.repeat(64)}`,
+        pluginId: 'official/lifecycle-bridge',
+        marketplaceName: 'aw',
+        marketplaceRoot: path.join(isolation.env.AW_HOME!, 'marketplaces', 'official'),
+      },
     };
     const options = { cwd, platform: 'codex', scope: 'project' } as const;
 
@@ -180,6 +193,9 @@ describe('rebuild lifecycle bridge', () => {
     expect(events[0]).toMatchObject({
       event: 'install',
       plugin: 'lifecycle-bridge',
+      sourceId: 'official',
+      pluginId: 'official/lifecycle-bridge',
+      sourceIdentity: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
       version: '1.0.0',
       rootDir: canonicalPluginRoot,
       artifacts: [expect.objectContaining({ kind: 'instruction', platform: 'codex' })],
@@ -195,6 +211,8 @@ describe('rebuild lifecycle bridge', () => {
     events = await readLifecycleLog(logPath);
     expect(events.at(-1)).toMatchObject({
       event: 'upgrade',
+      sourceId: 'official',
+      pluginId: 'official/lifecycle-bridge',
       version: '2.0.0',
       rootDir: canonicalPluginRoot,
     });
@@ -217,6 +235,8 @@ describe('rebuild lifecycle bridge', () => {
     events = await readLifecycleLog(logPath);
     const uninstall = events.at(-1)!;
     expect(uninstall.event).toBe('uninstall');
+    expect(uninstall.pluginId).toBe(`${uninstall.sourceId}/${uninstall.plugin}`);
+    expect(uninstall.pluginId).toBe('official/lifecycle-bridge');
     expect(uninstall.version).toBe('2.0.0');
     expect(uninstall.rootDir).not.toBe(canonicalPluginRoot);
     expect(uninstall.rootDir).toMatch(/lifecycle-active.*active[/\\]bundle/u);
@@ -227,7 +247,13 @@ describe('rebuild lifecycle bridge', () => {
     const timeout = await installWriteCommand(
       ['timeout-plugin'],
       { ...options, scriptTimeoutMs: 1_000 },
-      runtime,
+      {
+        ...runtime,
+        namespacedTarget: {
+          ...runtime.namespacedTarget,
+          pluginId: 'official/timeout-plugin',
+        },
+      },
     );
     expect(timeout).toMatchObject({
       overallState: 'failed',

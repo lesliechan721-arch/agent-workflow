@@ -2110,7 +2110,18 @@ function validateCanonicalSkillLayout(pluginDir, manifest) {
     if (content.trim() === '') error('Plugin root README.md must not be empty');
   }
   const declared = collectDeclaredSkillNames(pluginDir, manifest);
-  for (const skill of declared.all) {
+  const sourceBackedDynamicSkills = (Array.isArray(manifest.artifacts?.targets)
+    ? manifest.artifacts.targets
+    : [])
+    .filter((target) =>
+      target &&
+      typeof target === 'object' &&
+      (target.target === 'codex.skill' || target.target === 'claude.skill') &&
+      typeof target.skillKey === 'string' &&
+      Array.isArray(target.sourceDirs) &&
+      target.sourceDirs.length > 0)
+    .map((target) => target.skillKey.trim());
+  for (const skill of new Set([...declared.static, ...sourceBackedDynamicSkills])) {
     const skillRoot = path.join(pluginDir, 'skills', skill);
     if (!fs.statSync(skillRoot, { throwIfNoEntry: false })?.isDirectory()) {
       error(`Skill ${JSON.stringify(skill)} must use source root "./skills/${skill}"`);

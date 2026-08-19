@@ -246,7 +246,11 @@ describe('plugin script test runner', () => {
       [
         'import test from "node:test";',
         'import assert from "node:assert/strict";',
+        'import { createRequire } from "node:module";',
         'import { readFile } from "node:fs/promises";',
+        'const require = createRequire(import.meta.url);',
+        'const helperPath = require.resolve("./context-helper.mjs");',
+        'const { helperValue } = await import(helperPath);',
         'test("context", async () => {',
         '  const context = JSON.parse(await readFile(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
         '  assert.equal(context.event, "test");',
@@ -254,8 +258,14 @@ describe('plugin script test runner', () => {
         '  assert.equal(context.scope, "user");',
         '  assert.equal(process.cwd(), context.cwd);',
         '  assert.notEqual(context.plugin.rootDir, context.sourceRoot);',
+        '  assert.equal(helperValue, "copied");',
         '});',
       ].join('\n'),
+      'utf8',
+    );
+    await fs.outputFile(
+      path.join(repoRoot, 'plugins', 'git-commit', 'scripts', 'context-helper.mjs'),
+      'export const helperValue = "copied";\n',
       'utf8',
     );
     const output = captureOutput();
@@ -269,6 +279,81 @@ describe('plugin script test runner', () => {
     expect(exitCode, `${output.readStdout()}\n${output.readStderr()}`).toBe(0);
     expect(output.readStdout()).toContain('git-commit / codex: passed');
     expect(output.readStderr()).not.toContain('bad-neighbor');
+  });
+
+  it('runs the standard author helper against three namespaced schema 2 test stores', async () => {
+    const repoRoot = await makeTempRepo();
+    const manifest = await readManifest(repoRoot);
+    manifest.config = {
+      schema: {
+        mode: {
+          type: 'string',
+          default: 'default-mode',
+        },
+      },
+    };
+    manifest.scripts = {
+      helpers: {
+        config: './scripts/aw-config.mjs',
+      },
+      tests: {
+        node: ['./scripts/config-scopes.test.mjs'],
+      },
+    };
+    await writeManifest(repoRoot, manifest);
+    await fs.ensureDir(path.dirname(pluginScriptPath(repoRoot, 'aw-config.mjs')));
+    await fs.copyFile(
+      path.resolve(
+        path.dirname(fileURLToPath(import.meta.url)),
+        '..',
+        '..',
+        '..',
+        '..',
+        '.agents',
+        'skills',
+        'create-aw-plugin',
+        'assets',
+        'aw-config.mjs',
+      ),
+      pluginScriptPath(repoRoot, 'aw-config.mjs'),
+    );
+    await writeNodeTestFile(repoRoot, 'config-scopes.test.mjs', [
+      'import assert from "node:assert/strict";',
+      'import { execFile } from "node:child_process";',
+      'import { readFile, writeFile } from "node:fs/promises";',
+      'import path from "node:path";',
+      'import test from "node:test";',
+      'import { promisify } from "node:util";',
+      'const execFileAsync = promisify(execFile);',
+      'test("namespaced config scopes", async () => {',
+      '  const context = JSON.parse(await readFile(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
+      '  const { sourceId, sourceIdentity, name, pluginId } = context.plugin;',
+      '  assert.equal(pluginId, `${sourceId}/${name}`);',
+      '  for (const [scope, key] of [["user", "user"], ["project", "project"], ["project-local", "projectLocal"]]) {',
+      '    const storePath = context.paths.configStores[key];',
+      '    assert.equal(storePath.includes(path.join(sourceId, name, "config.json")), true);',
+      '    const envelope = JSON.parse(await readFile(storePath, "utf8"));',
+      '    assert.deepEqual(envelope, { schemaVersion: 2, sourceId, sourceIdentity, pluginName: name, values: {} });',
+      '    envelope.values.mode = `${scope}-mode`;',
+      '    await writeFile(storePath, `${JSON.stringify(envelope)}\\n`, "utf8");',
+      '    const result = await execFileAsync(process.execPath, [',
+      '      path.join(context.plugin.rootDir, "scripts", "aw-config.mjs"),',
+      '      "get", "mode", "--scope", scope,',
+      '    ], { cwd: context.cwd, env: process.env });',
+      '    assert.equal(result.stdout.trim(), `${scope}-mode`);',
+      '  }',
+      '});',
+    ].join('\n'));
+    const output = captureOutput();
+
+    const exitCode = await runPluginScriptTests(['git-commit', '--platform', 'codex'], {
+      repoRoot,
+      stdout: output.stdout,
+      stderr: output.stderr,
+      env: { ...process.env, PATH: process.env.PATH ?? '' } as NodeJS.ProcessEnv,
+    });
+
+    expect(exitCode, `${output.readStdout()}\n${output.readStderr()}`).toBe(0);
   });
 
   it('passes scope and test-name through both platform runs with isolated homes and bundles', async () => {
@@ -596,7 +681,7 @@ describe('plugin script test runner', () => {
     await writeManifest(repoRoot, manifest);
     await fs.outputFile(
       path.join(repoRoot, 'plugins', 'git-commit', 'scripts', 'bare.test.mjs'),
-      'import YAML from "yaml";\n',
+      'require.resolve("yaml");\n',
       'utf8',
     );
     const output = captureOutput();

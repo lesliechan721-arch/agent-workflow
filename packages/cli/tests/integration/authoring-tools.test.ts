@@ -1608,18 +1608,29 @@ describe('authoring tools', () => {
       'aw-config.mjs',
     );
     const contextPath = path.join(tempRoot, 'context.json');
+    const sourceIdentity = `sha256:${'1'.repeat(64)}`;
     const userStorePath = path.join(tempRoot, 'user-config.json');
     const projectStorePath = path.join(tempRoot, 'project-config.json');
     await fs.writeJson(userStorePath, {
-      apiKey: 'user-store-secret',
-      mode: 'standard',
-      ignored: true,
+      schemaVersion: 2,
+      sourceId: 'team',
+      sourceIdentity,
+      pluginName: 'context-helper',
+      values: {
+        apiKey: 'user-store-secret',
+        mode: 'standard',
+        ignored: true,
+      },
     });
     await fs.writeJson(projectStorePath, {
-      mode: 'strict',
+      schemaVersion: 2,
+      sourceId: 'team',
+      sourceIdentity,
+      pluginName: 'context-helper',
+      values: { mode: 'strict' },
     });
     await fs.writeJson(contextPath, {
-      plugin: { name: 'context-helper' },
+      plugin: { name: 'context-helper', sourceId: 'team', sourceIdentity },
       config: {
         values: {
           apiKey: 'context-secret',
@@ -1659,6 +1670,9 @@ describe('authoring tools', () => {
     const payload = JSON.parse(stdout);
     expect(payload).toMatchObject({
       pluginName: 'context-helper',
+      sourceId: 'team',
+      sourceIdentity,
+      pluginId: 'team/context-helper',
       scope: 'effective',
       values: {
         apiKey: 'context-secret',
@@ -1701,7 +1715,11 @@ describe('authoring tools', () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-helper-fallback-'));
     tempDirs.push(tempRoot);
 
-    const bundleRoot = path.join(tempRoot, 'bundle');
+    const awHome = path.join(tempRoot, 'aw-home');
+    const sourceId = 'team';
+    const sourceIdentity = `sha256:${'2'.repeat(64)}`;
+    const marketplaceRoot = path.join(awHome, 'marketplaces', sourceId);
+    const bundleRoot = path.join(marketplaceRoot, 'plugins', 'config-demo');
     await fs.ensureDir(path.join(bundleRoot, '.agents-plugin'));
     await fs.ensureDir(path.join(bundleRoot, 'scripts'));
     await fs.copyFile(
@@ -1738,28 +1756,45 @@ describe('authoring tools', () => {
 
     const projectRoot = path.join(tempRoot, 'project');
     const projectSubdir = path.join(projectRoot, 'nested');
-    const awHome = path.join(tempRoot, 'aw-home');
+    await fs.writeJson(path.join(marketplaceRoot, 'config.json'), {
+      schemaVersion: 2,
+      sourceId,
+      sourceIdentity,
+      marketplaceName: `aw-${sourceId}`,
+    });
     await fs.ensureDir(projectSubdir);
     await fs.writeFile(path.join(projectRoot, 'pnpm-workspace.yaml'), 'packages: []\n', 'utf8');
     await fs.writeFile(path.join(projectRoot, 'config.txt'), 'ok\n', 'utf8');
-    await fs.ensureDir(path.join(awHome, 'plugin-config', 'config-demo'));
+    await fs.ensureDir(path.join(awHome, 'plugin-config', sourceId, 'config-demo'));
     await fs.writeJson(
-      path.join(awHome, 'plugin-config', 'config-demo', 'config.json'),
+      path.join(awHome, 'plugin-config', sourceId, 'config-demo', 'config.json'),
       {
-        token: 'user-secret',
-        staleUserSecret: 'do-not-print-user',
+        schemaVersion: 2,
+        sourceId,
+        sourceIdentity,
+        pluginName: 'config-demo',
+        values: {
+          token: 'user-secret',
+          staleUserSecret: 'do-not-print-user',
+        },
       },
       { spaces: 2 },
     );
     await fs.ensureDir(
-      path.join(projectRoot, '.agent-workflows', 'plugin-config', 'config-demo'),
+      path.join(projectRoot, '.agent-workflows', 'plugin-config', sourceId, 'config-demo'),
     );
     await fs.writeJson(
-      path.join(projectRoot, '.agent-workflows', 'plugin-config', 'config-demo', 'config.json'),
+      path.join(projectRoot, '.agent-workflows', 'plugin-config', sourceId, 'config-demo', 'config.json'),
       {
-        token: 'project-secret',
-        mode: 'strict',
-        staleProjectSecret: 'do-not-print-project',
+        schemaVersion: 2,
+        sourceId,
+        sourceIdentity,
+        pluginName: 'config-demo',
+        values: {
+          token: 'project-secret',
+          mode: 'strict',
+          staleProjectSecret: 'do-not-print-project',
+        },
       },
       { spaces: 2 },
     );
@@ -1781,6 +1816,12 @@ describe('authoring tools', () => {
     expect(stdout).not.toContain('do-not-print-user');
     expect(stdout).not.toContain('do-not-print-project');
     const payload = JSON.parse(stdout);
+    expect(payload).toMatchObject({
+      pluginName: 'config-demo',
+      sourceId,
+      sourceIdentity,
+      pluginId: `${sourceId}/config-demo`,
+    });
     const expectedConfigFile = await fs.realpath(path.join(projectRoot, 'config.txt'));
     expect(payload.values).toMatchObject({
       token: 'project-secret',
@@ -1815,6 +1856,28 @@ describe('authoring tools', () => {
       ),
     ).resolves.toMatchObject({
       stdout: 'project-secret\n',
+    });
+
+    await fs.writeJson(
+      path.join(projectRoot, '.agent-workflows', 'plugin-config', sourceId, 'config-demo', 'config.json'),
+      {
+        schemaVersion: 2,
+        sourceId,
+        sourceIdentity: `sha256:${'3'.repeat(64)}`,
+        pluginName: 'config-demo',
+        values: { token: 'wrong-source-secret' },
+      },
+      { spaces: 2 },
+    );
+    await expect(execFileAsync(
+      'node',
+      [path.join(bundleRoot, 'scripts', 'aw-config.mjs'), 'json'],
+      {
+        cwd: projectSubdir,
+        env: { ...process.env, AW_HOME: awHome, AW_PLUGIN_CONTEXT: '' },
+      },
+    )).rejects.toMatchObject({
+      stderr: expect.stringContaining('schema 2 source identity'),
     });
   });
 
@@ -2829,6 +2892,70 @@ describe('authoring tools', () => {
       { products: [] },
     );
     await expect(runValidatePlugin(emptyProducts.pluginDir)).resolves.toMatchObject({
+      stdout: expect.stringContaining('[PASS] All checks passed.'),
+    });
+
+    const rendererOnlyClaude = await writeSourcePlugin(
+      path.join(tempRoot, 'renderer-only-claude'),
+      'renderer-only-claude',
+      createBaseManifest('renderer-only-claude', {
+        skills: './skills',
+        scripts: {
+          artifacts: {
+            render: {
+              runner: 'node',
+              path: './scripts/render-artifacts.mjs',
+            },
+          },
+        },
+        artifacts: {
+          targets: [{
+            id: 'claude-quality-gate',
+            platform: 'claude',
+            scopes: ['user', 'project'],
+            target: 'claude.skill',
+            states: ['present'],
+            refreshKeys: [],
+            skillKey: 'claude-quality-gate',
+          }],
+        },
+      }),
+      {
+        'skills/common-skill/SKILL.md': '---\nname: common-skill\ndescription: Common static Skill.\n---\n\n# Common\n',
+        'skills/common-skill/agents/openai.yaml': 'policy:\n  allow_implicit_invocation: true\n',
+        'scripts/render-artifacts.mjs': [
+          'process.stdout.write(JSON.stringify({ version: 2, artifacts: [{',
+          '  id: "claude-quality-gate", platform: "claude", target: "claude.skill", kind: "skill",',
+          '  state: "present", refreshKeys: [], skillKey: "claude-quality-gate",',
+          '  content: { files: {',
+          '    "SKILL.md": "---\\nname: claude-quality-gate\\ndescription: Claude-only quality gate.\\n---\\n\\n# Quality Gate\\n",',
+          '    "README.md": "# Claude Quality Gate\\n"',
+          '  } }',
+          '}] }));',
+        ].join('\n'),
+      },
+    );
+    expect(await fs.readdir(path.join(rendererOnlyClaude.pluginDir, 'skills'))).toEqual([
+      'common-skill',
+    ]);
+    await expect(runValidatePlugin(rendererOnlyClaude.pluginDir)).resolves.toMatchObject({
+      stdout: expect.stringContaining('[PASS] All checks passed.'),
+    });
+    const adapterValidator = path.join(
+      repoRoot(),
+      'plugins',
+      'aw-plugin-development',
+      'skills',
+      'author-aw-plugin',
+      'scripts',
+      'validate_plugin.mjs',
+    );
+    await expect(execFileAsync(process.execPath, [
+      adapterValidator,
+      rendererOnlyClaude.pluginDir,
+      '--repo-root',
+      repoRoot(),
+    ], { cwd: repoRoot(), env: process.env })).resolves.toMatchObject({
       stdout: expect.stringContaining('[PASS] All checks passed.'),
     });
 

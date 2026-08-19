@@ -63,7 +63,7 @@ code-review/
 
 ## 构建产物预览
 
-运行 `pnpm build` 后，两个平台的 staging/runtime bundle 内容不同。Codex 的 extensions 产物由写命令的 rebuild integration 生成。正式发布时，这些 bundle 进入 `@lesliechan721/aw-plugins` full catalog 包；`@lesliechan721/aw` CLI tarball 不再把它们作为 embedded catalog fallback 发布。
+运行 `pnpm build` 后，两个平台的本地 staging/runtime bundle 内容不同。Codex 的 extensions 产物由写命令的 rebuild integration 生成。当前 build 不直接生成 schema 3 source snapshot；后续 release staging 流程才负责从这些真实 bundle 物化 snapshot。Phase 4 publisher 尚未进入作者合同。
 
 **Claude bundle（build 时写入）**：skills、.mcp.json、generated `commands/`、output-styles、hooks.json（公共 hook 渲染结果）、agents markdown、rules markdown、AW scripts/config bundle metadata
 
@@ -77,7 +77,7 @@ code-review/
 
 **插件 manifest 和平台原生 manifest 都不支持**：`dependencies`。
 
-**schema 2 catalog manifest 负责记录**：current catalog version、catalog channel、catalog 级 `compatibility.aw.minVersion`、sidecar/full package identity，以及 current 快照里每个插件的单一版本、最低 CLI 版本和 `artifactDigest` / `manifestDigest`。这些文件由发布流程生成，不手改。同一 catalog version 的 exact-version sidecar/full package 内容不可改变。
+**后续 schema 3 source manifest 负责记录**：snapshot version、channel、snapshot 级 `compatibility.aw.minVersion`，以及每个插件的版本、最低 CLI 版本、`artifactDigest`、`manifestDigest` 和 `contentDigest`。它由后续 release staging 流程从 build bundle 物化，不是当前 `pnpm build` 的直接产物，也不手改。
 
 **Codex bundle 不包含**：output-styles/、Claude-only manifest overrides、extensions 衍生产物（均在安装时生成）
 
@@ -85,7 +85,7 @@ code-review/
 
 **卸载时执行**：`scripts.lifecycle.uninstall` 使用 lifecycle active store 保存的最后一次成功脚本输入。`aw uninstall` 和 `aw cleanup` 不删除 AW config；配置只由 `aw config reset code-review -s user|project` 清理。
 
-**Codex user scope native 行为**：安装 `aw install code-review -p codex -s user` 时，AW 会用 `codex plugin marketplace add/list` 注册并校验本地 marketplace，再调用 `codex plugin add` 写入 native plugin。`aw status` 直接检查平台原生状态和 AW ownership marker。
+**Codex user scope native 行为**：安装 `aw install code-review -p codex -s user` 时，AW 会注册并校验 source-namespaced 本地 marketplace，再写入 native plugin。primary marketplace 名为 `aw`，secondary 名为 `aw-<sourceId>`。`aw status` 直接检查平台原生状态和 owner schema 2 marker。
 
 **Codex 安装时生成的 repo-managed artifacts**（project scope）：源码 skill `.agents/skills/review-workflow`、公共 `slashCommands` 生成的 `.agents/skills/review` manual-only 入口 skill、`.codex/config.toml` 中的 instructions managed blocks 和 `mcp_servers`、rules、hooks 和 agents。AW ownership marker 是写入、状态检查和清理的归属真值。
 
@@ -93,6 +93,6 @@ code-review/
 
 **交互与脚本化入口**：用户直接运行 `aw` 进入主控制台；配置向导只在主控制台中提供。脚本和文档示例使用 `aw config set/unset/reset` 写配置，用 `aw config list/get` 读取配置，不再使用旧的子命令交互入口。写命令的 `--json` stdout 是单一 JSON receipt；默认输出只展示友好完成状态和下一步，诊断信息进入 `--verbose`、`--debug` 或 JSON。
 
-**Project shared/local config 与 ignore**：`aw config set code-review --scope project` 写 `.agent-workflows/plugin-config/code-review/config.json`，这是可提交的 shared config；`--scope project --local` 写 `.agent-workflows/plugin-config.local/code-review/config.json`，默认忽略，只影响本机 helper/lifecycle。模板和示例应默认忽略 local config，但不能默认忽略 `.agent-workflows/plugin-config/`。
+**Project shared/local config 与 ignore**：`aw config set <sourceId>/code-review --scope project` 写 `.agent-workflows/plugin-config/<sourceId>/code-review/config.json`，这是可提交的 schema 2 shared envelope；`--scope project --local` 写 `.agent-workflows/plugin-config.local/<sourceId>/code-review/config.json`，默认忽略，只影响本机 helper/lifecycle。模板和示例应默认忽略 local config，但不能默认忽略 `.agent-workflows/plugin-config/`。
 
 **Dynamic artifact 和位置安全**：配置保存后，AW 对当前可见 target 运行完整 `reinstall`。renderer V2 只返回 plan，由 AW 合并、校验并写入平台输出。其它项目不会被扫描，receipt 会明确提示这些项目需要手动 reinstall。

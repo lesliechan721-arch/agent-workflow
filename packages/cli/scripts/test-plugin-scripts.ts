@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import os from 'node:os';
 import path from 'node:path';
@@ -481,8 +482,47 @@ async function writeTestContext(options: {
   env: NodeJS.ProcessEnv;
   tempDir: string;
 }): Promise<{ contextPath: string; sensitiveValues: string[] }> {
+  const sourceId = 'plugin-test';
+  const sourceIdentity = `sha256:${crypto.createHash('sha256')
+    .update(`${sourceId}/${options.manifest.name}`, 'utf8')
+    .digest('hex')}`;
+  const configStores = {
+    user: resolvePluginConfigStorePath({
+      sourceId,
+      pluginName: options.manifest.name,
+      scope: 'user',
+      cwd: options.projectRoot,
+      env: options.env,
+    }),
+    project: resolvePluginConfigStorePath({
+      sourceId,
+      pluginName: options.manifest.name,
+      scope: 'project',
+      cwd: options.projectRoot,
+      env: options.env,
+    }),
+    projectLocal: resolvePluginConfigStorePath({
+      sourceId,
+      pluginName: options.manifest.name,
+      scope: 'project',
+      cwd: options.projectRoot,
+      env: options.env,
+      projectLayer: 'local',
+    }),
+  };
+  if (options.manifest.config?.schema) {
+    await Promise.all(Object.values(configStores).map((storePath) => fs.outputJson(storePath, {
+      schemaVersion: 2,
+      sourceId,
+      sourceIdentity,
+      pluginName: options.manifest.name,
+      values: {},
+    }, { spaces: 2 })));
+  }
   const effective = options.manifest.config?.schema
     ? await resolveEffectivePluginConfig({
+        sourceId,
+        sourceIdentity,
         manifest: options.manifest,
         cwd: options.projectRoot,
         env: options.env,
@@ -504,6 +544,9 @@ async function writeTestContext(options: {
       name: options.manifest.name,
       version: options.manifest.version,
       rootDir: options.bundleRoot,
+      sourceId,
+      sourceIdentity,
+      pluginId: `${sourceId}/${options.manifest.name}`,
     },
     sourceRoot: options.sourceRoot,
     platform: options.platform,
@@ -511,20 +554,7 @@ async function writeTestContext(options: {
     cwd: options.projectRoot,
     paths: {
       awHome: resolveAwHome(options.env),
-      configStores: {
-        user: resolvePluginConfigStorePath({
-          pluginName: options.manifest.name,
-          scope: 'user',
-          cwd: options.projectRoot,
-          env: options.env,
-        }),
-        project: resolvePluginConfigStorePath({
-          pluginName: options.manifest.name,
-          scope: 'project',
-          cwd: options.projectRoot,
-          env: options.env,
-        }),
-      },
+      configStores,
     },
     config: {
       values: effective.values,

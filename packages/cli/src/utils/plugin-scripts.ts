@@ -64,6 +64,9 @@ export interface LifecycleScriptContext {
     name: string;
     version: string;
     rootDir: string;
+    sourceId?: string;
+    sourceIdentity?: string;
+    pluginId?: string;
   };
   platform: PlatformName;
   scope: Scope;
@@ -73,7 +76,11 @@ export interface LifecycleScriptContext {
     codexHome: string;
     claudeHome: string;
     manifestPath: string;
-    configStores?: Record<Scope, string>;
+    configStores?: {
+      user: string;
+      project: string;
+      projectLocal: string;
+    };
   };
   config: {
     schema?: NonNullable<PluginManifestSource['config']>['schema'];
@@ -485,6 +492,9 @@ export async function writeLifecycleScriptContext(options: {
   commandEnv: NodeJS.ProcessEnv;
   artifacts?: GeneratedArtifact[];
 }): Promise<WrittenLifecycleScriptContext> {
+  if ((options.sourceId === undefined) !== (options.sourceIdentity === undefined)) {
+    throw new Error('Lifecycle script context requires a complete source identity.');
+  }
   if (options.target.noOp || !options.target.entry || !options.target.entryPath || !options.target.bundleRoot || !options.target.sourceManifest || !options.target.manifestPath || !options.target.manifestDigest) {
     throw new Error('Cannot write lifecycle script context for a no-op target.');
   }
@@ -495,7 +505,7 @@ export async function writeLifecycleScriptContext(options: {
     sources: {},
     issues: [],
   };
-  let configStores: Record<Scope, string> | undefined;
+  let configStores: NonNullable<LifecycleScriptContext['paths']['configStores']> | undefined;
   if (options.target.sourceManifest.config?.schema) {
     const effective = await resolveEffectivePluginConfig({
       sourceId: options.sourceId,
@@ -513,6 +523,7 @@ export async function writeLifecycleScriptContext(options: {
     configStores = {
       user: effective.stores.user.path,
       project: effective.stores.project.path,
+      projectLocal: effective.stores.projectLocal.path,
     };
     config = {
       schema: options.target.sourceManifest.config.schema,
@@ -528,6 +539,11 @@ export async function writeLifecycleScriptContext(options: {
       name: options.target.sourceManifest.name,
       version: options.target.sourceManifest.version,
       rootDir: options.target.bundleRoot,
+      ...(options.sourceId ? {
+        sourceId: options.sourceId,
+        sourceIdentity: options.sourceIdentity,
+        pluginId: `${options.sourceId}/${options.target.sourceManifest.name}`,
+      } : {}),
     },
     platform: options.platform,
     scope: options.scope,

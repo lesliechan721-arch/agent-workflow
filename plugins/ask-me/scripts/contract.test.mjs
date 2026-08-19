@@ -124,6 +124,7 @@ test('manifest declares a config-driven quality gate', async () => {
 
 test('source package contains the three public Skills and native metadata', async () => {
   const sourceSkillNames = new Set(await readdir(path.join(context.sourceRoot, 'skills')));
+  assert.deepEqual([...sourceSkillNames].sort(), [...requiredSkills].sort());
   for (const skillName of requiredSkills) {
     assert.equal(sourceSkillNames.has(skillName), true);
     const skillRoot = path.join(context.sourceRoot, 'skills', skillName);
@@ -218,6 +219,15 @@ test('prepared bundle renders static Skills and ships the artifact renderer', as
   assert.equal(platformManifest.name, 'ask-me');
   assert.equal(platformManifest.skills, `./${context.platform}/skills`);
   await access(path.join(context.bundleRoot, 'scripts', 'render-artifacts.mjs'));
+  if (context.platform === 'codex') {
+    await assert.rejects(access(path.join(
+      context.bundleRoot,
+      'codex',
+      'skills',
+      'ask-me-quality-gate',
+      'SKILL.md',
+    )));
+  }
 
   const expectedTool = context.platform === 'codex'
     ? '`request_user_input`'

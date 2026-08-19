@@ -20,6 +20,7 @@ import {
 } from '../../src/utils/manifest.js';
 import {
   resolveLifecycleScriptForOs,
+  scanJavaScriptImportSpecifiers,
   scanNodeImportContract,
 } from '../../src/utils/plugin-script-contract.js';
 import {
@@ -1231,11 +1232,13 @@ describe('manifest utils', () => {
             'import "./shared.mjs";',
             'export { value } from "./value.js";',
             'const util = require("./util.cjs");',
+            'const resolved = require.resolve("./resolved.cjs");',
             'await import("./lazy.mjs");',
           ].join('\n'),
           'scripts/shared.mjs': 'export const shared = true;',
           'scripts/value.js': 'export const value = 1;',
           'scripts/util.cjs': 'module.exports = require("node:fs");',
+          'scripts/resolved.cjs': 'module.exports = true;',
           'scripts/lazy.mjs': 'export default true;',
         },
       }),
@@ -1243,6 +1246,7 @@ describe('manifest utils', () => {
       files: [
         'scripts/lazy.mjs',
         'scripts/lifecycle.mjs',
+        'scripts/resolved.cjs',
         'scripts/shared.mjs',
         'scripts/util.cjs',
         'scripts/value.js',
@@ -1285,6 +1289,68 @@ describe('manifest utils', () => {
     ).toEqual([
       'Runtime import "left-pad" from "scripts/lifecycle.mjs" is not declared in dependencies.',
     ]);
+
+    expect(
+      scanNodeImportContract({
+        entryFiles: ['./scripts/lifecycle.mjs'],
+        files: {
+          'scripts/lifecycle.mjs': 'require.resolve("left-pad");',
+        },
+      }).errors,
+    ).toEqual([
+      'Runtime import "left-pad" from "scripts/lifecycle.mjs" is not declared in dependencies.',
+    ]);
+  });
+
+  it('scans JavaScript imports through comments and template expressions without regex false positives', () => {
+    const source = [
+      'const fixture = \'import "../storage/store";\';',
+      'const template = `require("../storage/template")`;',
+      'const expression = `${import(/* webpackIgnore: true */ "./template-lazy.mjs", { with: { type: "json" } })}`;',
+      '// export { value } from "../storage/comment";',
+      '/* await import("../storage/block-comment"); */',
+      'const pattern = /require("..\\/storage\\/regex")|import("..\\/storage\\/regex-lazy")/gu;',
+      'const resolveFixture = \'require.resolve("../storage/resolve-string")\';',
+      '// require.resolve("../storage/resolve-comment");',
+      'const resolvePattern = /require\\.resolve\("\.\.\\/storage\\/resolve-regex"\)/gu;',
+      'import /* side effect */ "./real.mjs";',
+      'import value /* binding */ from /* source */ "./value.mjs";',
+      'export { named } /* binding */ from /* source */ "./named.mjs";',
+      'const lazy = import /* call */ ("./lazy.mjs", { with: { type: "json" } });',
+      'const helper = require(/* dependency */ "./helper.cjs");',
+      'const resolved = require.resolve(/* dependency */ "./resolved.cjs");',
+    ].join('\n');
+
+    expect(scanJavaScriptImportSpecifiers(source)).toEqual(expect.arrayContaining([
+      { kind: 'dynamic-import', specifier: './template-lazy.mjs' },
+      { kind: 'import', specifier: './real.mjs' },
+      { kind: 'import', specifier: './value.mjs' },
+      { kind: 'export', specifier: './named.mjs' },
+      { kind: 'dynamic-import', specifier: './lazy.mjs' },
+      { kind: 'require', specifier: './helper.cjs' },
+      { kind: 'require-resolve', specifier: './resolved.cjs' },
+    ]));
+    expect(scanJavaScriptImportSpecifiers(source)).toHaveLength(7);
+
+    expect(scanNodeImportContract({
+      entryFiles: ['scripts/entry.mjs'],
+      files: {
+        'scripts/entry.mjs': [
+          'const inside = `${import("./inside.mjs")}`;',
+          'const escaped = require(/* boundary */ "../../outside.cjs");',
+          'const resolvedEscape = require.resolve("../../resolved-outside.cjs");',
+          'const ignored = /import(".\\/missing.mjs")/u;',
+        ].join('\n'),
+        'scripts/inside.mjs': 'export default true;',
+      },
+    })).toEqual({
+      files: ['scripts/entry.mjs', 'scripts/inside.mjs'],
+      bareSpecifiers: [],
+      errors: [
+        'Relative import "../../outside.cjs" from "scripts/entry.mjs" escapes the plugin root.',
+        'Relative import "../../resolved-outside.cjs" from "scripts/entry.mjs" escapes the plugin root.',
+      ],
+    });
   });
 
   it('rejects undeclared default MCP manifest', async () => {
