@@ -36,7 +36,7 @@ export function assertValidVersion(version) {
 
 export function isPrereleaseVersion(version) {
   assertValidVersion(version);
-  return version.includes('-');
+  return version.split('+', 1)[0].includes('-');
 }
 
 export function assertVersionKind(version, kind) {
@@ -115,7 +115,7 @@ export async function runCommand(command, args, options = {}) {
   });
 }
 
-async function captureCommand(command, args, options = {}) {
+export async function captureCommand(command, args, options = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd: options.cwd ?? repoRoot,
@@ -157,6 +157,44 @@ async function captureCommand(command, args, options = {}) {
       );
     });
   });
+}
+
+export async function resolvePublishedCliVersion(mode, options = {}) {
+  if (mode !== 'beta' && mode !== 'latest') {
+    throw new Error('Published CLI lookup mode must be "beta" or "latest".');
+  }
+  const packageJsonPath = options.packageJsonPath ?? cliPackageJsonPath;
+  const registryUrl = await resolveRegistryUrl(packageJsonPath, options.env ?? process.env);
+  const capture = options.captureCommand ?? captureCommand;
+  const { stdout } = await capture('pnpm', [
+    'view',
+    '@lesliechan721/aw',
+    `dist-tags.${mode}`,
+    '--json',
+    '--registry',
+    registryUrl,
+  ], {
+    env: {
+      ...(options.env ?? process.env),
+      AW_NPM_REGISTRY_URL: registryUrl,
+      npm_config_registry: registryUrl,
+      NPM_CONFIG_REGISTRY: registryUrl,
+    },
+  });
+  let version;
+  try {
+    version = JSON.parse(stdout);
+  } catch (error) {
+    throw new Error(`Registry returned invalid JSON for the published ${mode} CLI version.`, {
+      cause: error,
+    });
+  }
+  if (typeof version !== 'string') {
+    throw new Error(`Registry did not return a published ${mode} CLI version.`);
+  }
+  assertValidVersion(version);
+  assertVersionKind(version, mode === 'beta' ? 'prerelease' : 'stable');
+  return version;
 }
 
 function normalizeGitStatusPath(statusLine) {

@@ -195,7 +195,18 @@ make test
 make stage-catalog CATALOG_VERSION=1.2.0-beta.1
 ```
 
-`pnpm build` 生成 `packages/cli/plugins-dist/` schema 3 本地 snapshot。`stage-catalog` 在 `.release/catalog-staging/catalog/` 生成带 `plugin-release-ledger.json` 的完整发布交接目录。Phase 4B Git publisher 尚未实现；catalog publish 和组合 release 入口不会执行远端发布。
+`pnpm build` 生成 `packages/cli/plugins-dist/` schema 3 本地 snapshot。`stage-catalog` 在 `.release/catalog-staging/catalog/` 生成带 `plugin-release-ledger.json` 的完整发布交接目录。
+
+发布入口：
+
+```bash
+make publish-catalog-beta CATALOG_VERSION=1.2.0-beta.1
+make publish-catalog-release CATALOG_VERSION=1.2.0
+make beta-release CLI_VERSION=0.2.0-beta.3 CATALOG_VERSION=1.2.0-beta.1
+make release CLI_VERSION=0.2.0 CATALOG_VERSION=1.2.0
+```
+
+Git publisher 使用 `catalog/latest`、`catalog/beta` orphan channel 和 immutable annotated `catalog-v<version>` tag。组合发布的 promotion 失败时，错误会输出可复制的 `release:promote:catalog:<channel>` 命令。CLI-only 发布入口仍保留。official refs 的迁移和 CLI 默认 source 切换尚未执行。
 
 维护者入口：
 

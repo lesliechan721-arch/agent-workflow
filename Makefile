@@ -4,7 +4,7 @@ PNPM ?= pnpm
 CLI_VERSION ?=
 CATALOG_VERSION ?=
 
-.PHONY: help install build test verify-local verify-cli verify-catalog verify-release pack-cli stage-catalog local-install version-beta version-release publish-cli-beta publish-cli-release publish-catalog-beta publish-catalog-release beta-release release
+.PHONY: help install build test verify-local verify-cli verify-catalog verify-release pack-cli stage-catalog local-install version-beta version-release publish-cli-beta publish-cli-release publish-catalog-beta publish-catalog-release promote-catalog-beta promote-catalog-release beta-release release
 
 help:
 	@printf '%s\n' \
@@ -22,10 +22,12 @@ help:
 		'make version-release CLI_VERSION=x.y.z            同步正式版 CLI 版本到两个 package.json' \
 		'make publish-cli-beta CLI_VERSION=x.y.z-beta.0    发布 CLI 测试版（dist-tag: beta）' \
 		'make publish-cli-release CLI_VERSION=x.y.z        发布 CLI 正式版（dist-tag: latest）' \
-		'make publish-catalog-beta CATALOG_VERSION=x.y.z-beta.0   本地验证/stage 后等待 Phase 4B' \
-		'make publish-catalog-release CATALOG_VERSION=x.y.z       本地验证/stage 后等待 Phase 4B' \
-		'make beta-release CLI_VERSION=x.y.z-beta.0 CATALOG_VERSION=a.b.c-beta.n   本地验证/stage 后等待 Phase 4B' \
-		'make release CLI_VERSION=x.y.z CATALOG_VERSION=a.b.c                        本地验证/stage 后等待 Phase 4B'
+		'make publish-catalog-beta CATALOG_VERSION=x.y.z-beta.0   发布 beta Git catalog' \
+		'make publish-catalog-release CATALOG_VERSION=x.y.z       发布 latest Git catalog' \
+		'make promote-catalog-beta CATALOG_VERSION=x.y.z-beta.0   从 immutable tag 恢复 beta promotion' \
+		'make promote-catalog-release CATALOG_VERSION=x.y.z       从 immutable tag 恢复 latest promotion' \
+		'make beta-release CLI_VERSION=x.y.z-beta.0 CATALOG_VERSION=a.b.c-beta.n   组合发布 beta CLI 与 catalog' \
+		'make release CLI_VERSION=x.y.z CATALOG_VERSION=a.b.c                        组合发布 latest CLI 与 catalog'
 
 install:
 	$(PNPM) install
@@ -85,6 +87,14 @@ publish-catalog-release:
 	@test -n "$(CATALOG_VERSION)" || (echo 'CATALOG_VERSION is required. Example: make publish-catalog-release CATALOG_VERSION=1.2.0' && exit 1)
 	$(PNPM) run version:catalog:check:release -- $(CATALOG_VERSION)
 	$(PNPM) run release:publish:catalog:latest -- --catalog-version $(CATALOG_VERSION)
+
+promote-catalog-beta:
+	@test -n "$(CATALOG_VERSION)" || (echo 'CATALOG_VERSION is required.' && exit 1)
+	$(PNPM) run release:promote:catalog:beta -- --catalog-version $(CATALOG_VERSION)
+
+promote-catalog-release:
+	@test -n "$(CATALOG_VERSION)" || (echo 'CATALOG_VERSION is required.' && exit 1)
+	$(PNPM) run release:promote:catalog:latest -- --catalog-version $(CATALOG_VERSION)
 
 beta-release:
 	@test -n "$(CLI_VERSION)" || (echo 'CLI_VERSION is required. Example: make beta-release CLI_VERSION=0.2.0-beta.0 CATALOG_VERSION=1.2.0-beta.1' && exit 1)

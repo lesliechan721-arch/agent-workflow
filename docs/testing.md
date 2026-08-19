@@ -25,6 +25,7 @@
 | `pnpm test:smoke:build` | 校验 `pnpm build` 产物 |
 | `pnpm test:smoke:pack:cli` | 校验 CLI tarball 内容 |
 | `pnpm test:smoke:stage:catalog` | 校验显式版本 catalog staging 和本地 path source 消费 |
+| `pnpm test:smoke:publish:catalog` | 使用本地 bare remote 校验 stage、Git publish、fetch 和 Git provider 消费 |
 | `pnpm test:smoke:fetch` | `test:smoke:stage:catalog` 的兼容入口，校验本地 path source 消费 |
 | `pnpm test:smoke:plugin-scripts` | 校验真实插件脚本 staging、依赖闭包和 bundle 布局 |
 
@@ -77,7 +78,7 @@ Skill 和 prompt 的确定性测试只保留结构、模板、平台元数据、
 | Strict catalog cache 或 selector | Unit + Performance + Smoke | `packages/cli/tests/unit/local-marketplace.test.ts`、`pnpm test:perf:gate`、`pnpm test:smoke:fetch` |
 | 平台输出或 adapter | Unit + Integration | 对应平台 unit/integration；插件产物按[插件维护指南](plugin-maintenance.md)验证 |
 | 插件作者合同 | Integration + Plugin test | `pnpm test:integration`、`pnpm plugin:test <plugin>` 和专用作者工作流要求的验证 |
-| Build、bundle、staging 或 tarball | Smoke | 对应 build、plugin-scripts、catalog stage 或 CLI pack smoke |
+| Build、bundle、staging、Git publisher 或 tarball | Smoke | 对应 build、plugin-scripts、catalog stage/publish 或 CLI pack smoke |
 | 公开 JSON 或 schema | Unit + Integration | 对应 schema 测试、CLI JSON harness，并同步架构和消费者文档 |
 
 所有文档或代码改动最后运行 `git diff --check`。
