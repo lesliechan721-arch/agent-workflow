@@ -1,6 +1,6 @@
 {
   "name": "agent-skill-toolkit",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Author and review Agent Skills and design or audit Skill evals with shared evidence and composition standards.",
   "compatibility": {
     "aw": {

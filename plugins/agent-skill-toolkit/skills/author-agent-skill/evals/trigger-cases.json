@@ -144,22 +144,26 @@
       }
     },
     {
-      "id": "negative_aw_project_adapter",
+      "id": "negative_project_adapter",
       "split": "validation",
-      "query": "在 agent-workflows 的 plugins/demo 中新增一个 Skill 并更新插件版本。",
+      "query": "在一个产品插件工作区中新增 Skill，并同步插件 manifest 版本、构建和物化产物。",
       "should_load_skill": false,
       "eval_type": "trigger",
       "case_role": "boundary",
       "provenance": "boundary",
-      "scenario_family": "aw-adapter-boundary",
+      "scenario_family": "project-adapter-boundary",
       "unit_under_test": "description",
-      "preconditions": { "target_available": true },
+      "preconditions": {
+        "target_available": true
+      },
       "oracle": {
-        "rationale": "AW 项目写入应由 author-aw-plugin 入口拥有；通用作者只能由适配器显式组合。",
-        "rule_refs": ["SKILL.md description"],
+        "rationale": "项目专有插件写入应由该工作区的适配流程拥有；通用作者只能由调用方显式组合。",
+        "rule_refs": [
+          "SKILL.md description"
+        ],
         "confidence": "high",
-        "allowed_variance": "可以由 AW adapter 后续显式调用本 Skill，但不应直接路由到本 Skill。",
-        "minimal_counterexample": "去掉 agent-workflows 插件项目范围后标签翻转。"
+        "allowed_variance": "项目适配器可以后续显式调用本 Skill，但不应把整个项目维护请求直接路由到本 Skill。",
+        "minimal_counterexample": "去掉插件 manifest、构建和物化范围，只要求创建通用 Agent Skill 包后标签翻转。"
       }
     }
   ]

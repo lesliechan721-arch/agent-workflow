@@ -41,19 +41,56 @@ test('generated adapter assets are current', async () => {
   ]);
 });
 
-test('authoring context binds manifest identity and Skill invocation intent', async () => {
+test('author adapter keeps README policy inside the plugin bundle', async () => {
+  const [skill, readmePolicy] = await Promise.all([
+    readFile(path.join(pluginRoot, 'skills', 'author-aw-plugin', 'SKILL.md'), 'utf8'),
+    readFile(path.join(pluginRoot, 'skills', 'author-aw-plugin', 'references', 'aw-readme-authoring.md'), 'utf8'),
+  ]);
+  assert.match(skill, /references\/aw-readme-authoring\.md/u);
+  assert.doesNotMatch(skill, /docs\/readme-standard\.md/u);
+  assert.match(readmePolicy, /\.agents-plugin\/plugin\.json/u);
+  assert.match(readmePolicy, /不依赖宿主工作区的 `docs\/`/u);
+});
+
+test('authoring context supports a plugin root outside a conventional plugins directory', async () => {
+  const temporaryRoot = await mkdtemp(path.join(tmpdir(), 'aw-portable-workspace-'));
+  temporaryRoots.push(temporaryRoot);
+  const workspaceRoot = path.join(temporaryRoot, 'workspace');
+  const target = path.join(workspaceRoot, 'packages', 'portable-plugin');
+  await mkdir(path.join(target, '.agents-plugin'), { recursive: true });
+  await writeFile(path.join(target, '.agents-plugin', 'plugin.json'), JSON.stringify({
+    name: 'portable-plugin',
+    version: '0.1.0',
+    marketplace: { policy: { products: ['CODEX', 'CLAUDE'] } },
+  }), 'utf8');
+
   const script = path.join(authorScripts, 'prepare-aw-authoring-context.mjs');
-  const target = path.join(repositoryRoot, 'plugins', 'agent-content-toolkit');
   const result = await run(script, [
     target,
+    '--repo-root',
+    workspaceRoot,
     '--component-type',
     'skill',
     '--skill-invocation',
     'claude-model-only',
   ]);
-  assert.equal(JSON.parse(result.stdout).skillInvocation, 'claude-model-only');
-  assert.deepEqual(JSON.parse(result.stdout).products, ['CLAUDE']);
-  await assert.rejects(run(script, [target, '--plugin', 'wrong-name']), /does not match/u);
+  const context = JSON.parse(result.stdout);
+  assert.equal(context.repository, 'workspace');
+  assert.equal(context.plugin, 'portable-plugin');
+  assert.equal(context.pluginRoot, target);
+  assert.equal(context.skillInvocation, 'claude-model-only');
+  assert.deepEqual(context.products, ['CLAUDE']);
+  assert.deepEqual(context.validators, []);
+
+  const explicit = JSON.parse((await run(script, [
+    target,
+    '--repo-root',
+    workspaceRoot,
+    '--validator',
+    'node workspace-validator.mjs',
+  ])).stdout);
+  assert.deepEqual(explicit.validators, ['node workspace-validator.mjs']);
+  await assert.rejects(run(script, [target, '--repo-root', workspaceRoot, '--plugin', 'wrong-name']), /does not match/u);
 });
 
 test('review bundle treats final artifacts as available material, not completed review stages', async () => {

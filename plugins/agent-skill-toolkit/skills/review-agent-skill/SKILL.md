@@ -1,7 +1,7 @@
 ---
 name: review-agent-skill
 description: >-
-  当用户明确要求只读审核已有通用 Agent Skill 包、草稿或修订版的设计质量、复杂度、触发、资源、Eval 或发布证据时使用。输出证据化 finding、composition/complexity 结论和最小改进集；不处理 agent-workflows 项目的 materialization 或发布流程，不修改目标。项目适配器可以显式把本 Skill 作为叶子能力调用。
+  当用户明确要求只读审核已有通用 Agent Skill 包、草稿或修订版的设计质量、复杂度、触发、资源、Eval 或发布证据时使用。输出证据化 finding、composition/complexity 结论和最小改进集；不处理项目专有插件的物化或发布流程，不修改目标。项目适配器可以显式把本 Skill 作为叶子能力调用。
 compatibility: Requires Node.js 20+ for bundled validators and an installed agent-content-toolkit >= 0.2.0 for independent Agent-facing content/reference audit.
 metadata:
   short-description: 只读评审 Agent Skill 的价值、组合适配、最小控制与证据
