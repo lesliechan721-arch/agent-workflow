@@ -75,7 +75,7 @@ interface CatalogSourceObjectFault {
   reason: string;
 }
 
-export class CatalogSourceObjectFaultError extends Error {
+class CatalogSourceObjectFaultError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'CatalogSourceObjectFaultError';

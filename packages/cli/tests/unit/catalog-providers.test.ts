@@ -20,7 +20,6 @@ import { validateCatalogSnapshot } from '../../src/utils/catalog-snapshot.js';
 import { calculateCatalogSourcesConfigDigest } from '../../src/utils/catalog-sources.js';
 import {
   catalogGitProviderInternal,
-  CatalogGitFatalCleanupError,
   setCatalogGitProviderTestHooksForTests,
 } from '../../src/utils/git-catalog-provider.js';
 import {
@@ -566,7 +565,7 @@ describe('Git and path catalog providers', () => {
         cliVersion: '1.0.0',
         freshnessPolicy: 'forceRemote',
         env,
-      })).rejects.toBeInstanceOf(CatalogGitFatalCleanupError);
+      })).rejects.toThrow('Catalog Git process cleanup could not be confirmed');
       const sourceIdentity = await calculateCatalogSourceIdentity(source);
       const location = resolveCatalogSourceCacheLocation({ sourceId: source.id, sourceIdentity, env });
       const leftovers = await fs.readdir(location.rootDir);
@@ -845,7 +844,8 @@ describe('Git and path catalog providers', () => {
         freshnessPolicy: 'requireRemote',
         env,
       }).catch((caught: unknown) => caught);
-      expect(error).toBeInstanceOf(CatalogGitFatalCleanupError);
+      expect(error).toBeInstanceOf(Error);
+      expect(String(error)).toContain('Catalog Git process cleanup could not be confirmed');
       expect(invokedAfterCleanupFailure).toBe(false);
 
       const sourceIdentity = await calculateCatalogSourceIdentity(source);

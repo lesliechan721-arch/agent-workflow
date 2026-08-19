@@ -128,10 +128,6 @@ export interface CatalogSourceInventoryError {
   message: string;
 }
 
-export interface CatalogSourceReferenceCleanupHook {
-  cleanup(reference: CatalogSourceReference): Promise<void>;
-}
-
 function isAbsentState(error: unknown): boolean {
   const code = (error as NodeJS.ErrnoException).code;
   return code === 'ENOENT';

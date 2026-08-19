@@ -4,7 +4,6 @@ import { describe, expect, it } from 'vitest';
 
 import {
   catalogGitProviderInternal,
-  CatalogGitFatalCleanupError,
 } from '../../../src/utils/git-catalog-provider.js';
 import {
   execFileNativeCliRunner,
@@ -55,6 +54,7 @@ describe.skipIf(!remote || !awHome || !userHome)('catalog object fault child', (
       },
     }).catch((caught: unknown) => caught);
 
-    expect(error).toBeInstanceOf(CatalogGitFatalCleanupError);
+    expect(error).toBeInstanceOf(Error);
+    expect(String(error)).toContain('Catalog Git process cleanup could not be confirmed');
   });
 });

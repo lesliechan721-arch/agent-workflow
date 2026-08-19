@@ -60,7 +60,7 @@ class CatalogGitPolicyError extends Error {
   }
 }
 
-export class CatalogGitFatalCleanupError extends Error {
+class CatalogGitFatalCleanupError extends Error {
   constructor(message: string, cause?: unknown) {
     super(message, { cause });
     this.name = 'CatalogGitFatalCleanupError';

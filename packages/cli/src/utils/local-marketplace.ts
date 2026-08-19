@@ -1252,8 +1252,10 @@ async function hasCurrentCatalogCacheSelectorDisplacementMarker(
   env: NodeJS.ProcessEnv,
 ): Promise<boolean> {
   const entries = await fs.readdir(resolveCurrentCatalogCacheSelectorsDir(env)).catch(() => [] as string[]);
-  return entries.some((entryName) =>
-    parseCurrentCatalogCacheSelectorDisplacementMarker(entryName)?.selectorHash === selectorHash);
+  return entries.some((entryName) => {
+    const match = /^\.([a-f0-9]{64})-([a-f0-9-]{36})\.tmp\.old$/.exec(entryName);
+    return match?.[1] === selectorHash && isPublicationId(match[2]!);
+  });
 }
 
 export async function readCurrentCatalogCacheEntryBySelector(
@@ -2406,33 +2408,6 @@ async function moveLocalReplacementStateEntries(
   }
 }
 
-function parseCurrentCatalogCacheSelectorDisplacementMarker(
-  entryName: string,
-): { selectorHash: string } | null {
-  const match = /^\.([a-f0-9]{64})-([a-f0-9-]{36})\.tmp\.old$/.exec(entryName);
-  return match && isPublicationId(match[2]!)
-    ? { selectorHash: match[1]! }
-    : null;
-}
-
-async function restoreStagedCurrentCatalogCacheSelectorIndexes(stagingRoot: string): Promise<void> {
-  const selectorsDir = path.join(stagingRoot, 'catalog-cache', 'selectors');
-  const entries = await fs.readdir(selectorsDir).catch(() => [] as string[]);
-  for (const entryName of entries) {
-    const marker = parseCurrentCatalogCacheSelectorDisplacementMarker(entryName);
-    if (!marker) {
-      continue;
-    }
-
-    const markerPath = path.join(selectorsDir, entryName);
-    const indexPath = path.join(selectorsDir, `${marker.selectorHash}.json`);
-    if (!(await fs.pathExists(indexPath))) {
-      await fs.copyFile(markerPath, indexPath, fs.constants.COPYFILE_EXCL);
-    }
-    await fs.remove(markerPath);
-  }
-}
-
 async function preserveLocalCatalogCache(sourceRoot: string, stagingRoot: string): Promise<void> {
   const sourceDir = path.join(sourceRoot, 'catalog-cache');
   if (!(await fs.pathExists(sourceDir))) {
@@ -2442,7 +2417,6 @@ async function preserveLocalCatalogCache(sourceRoot: string, stagingRoot: string
     overwrite: true,
     errorOnExist: false,
   });
-  await restoreStagedCurrentCatalogCacheSelectorIndexes(stagingRoot);
 }
 
 function resolveLocalMarketplaceStagingRoot(awHome: string): string {
