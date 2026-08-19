@@ -6,8 +6,8 @@
 
 当前要求人工同时安装：
 
-- `agent-content-toolkit >= 0.2.0`
-- `agent-skill-toolkit >= 0.2.0`
+- `agent-content-toolkit >= 0.3.0`
+- `agent-skill-toolkit >= 0.3.0`
 
 运行时若找不到必需的通用 Skill，适配器停止并报告缺失，不复制或内置下层标准。
 
@@ -19,6 +19,10 @@
 | `review-aw-plugin` | 只读评审 AW 插件源码、materialized final artifacts 和 Eval evidence。 |
 
 Author 不给自己的结果出独立发布结论；Reviewer 不修改生产源码。正式报告发布需要授权，README 或 manifest 的后续写入交回 Author 或目标工作区的 release 工具。
+
+## Skill invocation
+
+通过 CLI 安装后，`author-aw-plugin` 与 `review-aw-plugin` 可按用户意图自动触发；仍可使用 `$author-aw-plugin` 或 `$review-aw-plugin` 显式调用。仓库内旧 Skill 在迁移期间保持不变。
 
 ## Workspace boundary
 

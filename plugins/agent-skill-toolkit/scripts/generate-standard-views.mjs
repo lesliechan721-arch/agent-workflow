@@ -1,59 +1,138 @@
 #!/usr/bin/env node
+import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const source = JSON.parse(await readFile(path.join(root, 'standards', 'rules.json'), 'utf8'));
 const check = process.argv.slice(2).includes('--check');
-const views = [
-  ['skill_author', 'skills/author-agent-skill/references/author-standard.generated.md', 'Agent Skill 作者标准'],
-  ['skill_review', 'skills/review-agent-skill/references/review-rubric.generated.md', 'Agent Skill 评审标准'],
-  ['eval_design', 'skills/design-agent-skill-evals/references/eval-design-standard.generated.md', 'Skill Eval 设计标准'],
-  ['eval_audit', 'skills/audit-agent-skill-evals/references/eval-audit-standard.generated.md', 'Skill Eval 审核标准'],
-];
-function normalizedEvidence(rule) {
-  if (rule.evidenceType !== 'normative') return rule.evidenceType;
-  const hardSource = rule.sourceRefs.some((ref) => ref.includes('specification') || ref.includes('client-contract') || ref.includes('agent-workflows.'));
-  return hardSource ? 'normative' : 'official-guidance';
+const contentRulesPath = process.env.AGENT_CONTENT_RULES_PATH
+  ? path.resolve(process.env.AGENT_CONTENT_RULES_PATH)
+  : path.resolve(root, '..', 'agent-content-toolkit', 'standards', 'rules.json');
+const [contentRaw, skillRaw, dimensionsRaw, reviewDimensionsPolicy, sourceMap, scoringPolicy] = await Promise.all([
+  readFile(contentRulesPath, 'utf8'),
+  readFile(path.join(root, 'standards', 'skill-rules.json'), 'utf8'),
+  readFile(path.join(root, 'standards', 'review-dimensions.json'), 'utf8'),
+  readFile(path.join(root, 'standards', 'review-dimensions.md'), 'utf8'),
+  readFile(path.join(root, 'standards', 'source-map.md'), 'utf8'),
+  readFile(path.join(root, 'standards', 'scoring-policy.md'), 'utf8'),
+]);
+const contentSource = JSON.parse(contentRaw);
+const skillSource = JSON.parse(skillRaw);
+const dimensionSource = JSON.parse(dimensionsRaw);
+const digest = `sha256:${createHash('sha256').update(contentRaw).digest('hex')}`;
+
+if (digest !== skillSource.contentRuleSource.digest) {
+  throw new Error(`agent-content-toolkit rule digest changed: expected ${skillSource.contentRuleSource.digest}, got ${digest}`);
+}
+
+const extensionById = new Map();
+for (const extension of skillSource.contentRuleExtensions) {
+  if (extensionById.has(extension.id)) throw new Error(`duplicate content rule extension: ${extension.id}`);
+  const invalid = Object.keys(extension).filter((key) => key !== 'id' && !['skill_author', 'skill_review', 'eval_design', 'eval_audit'].includes(key));
+  if (invalid.length > 0) throw new Error(`${extension.id} redefines canonical fields: ${invalid.join(', ')}`);
+  extensionById.set(extension.id, extension);
+}
+const contentIds = new Set(contentSource.rules.map((rule) => rule.id));
+for (const id of extensionById.keys()) if (!contentIds.has(id)) throw new Error(`unknown content rule extension: ${id}`);
+for (const rule of skillSource.rules) if (contentIds.has(rule.id)) throw new Error(`Skill rule duplicates canonical content rule: ${rule.id}`);
+
+const contentRules = contentSource.rules.map((rule) => ({ ...rule, ...(extensionById.get(rule.id) ?? {}), id: rule.id }));
+const allRules = [...contentRules, ...skillSource.rules];
+
+function evidenceLabel(rule) {
+  if (['toolkit-policy', 'client-contract', 'specification'].includes(rule.evidenceType)) return 'normative';
+  return rule.evidenceType;
 }
 function renderView(audience, title) {
-  const lines = [`# ${title}`, '', '> GENERATED from `standards/rules.json`; do not edit manually.', ''];
-  for (const rule of source.rules) {
-    const view = rule[audience]; if (!view) continue;
+  const lines = [`# ${title}`, '', '> GENERATED from canonical content rules plus `standards/skill-rules.json`; do not edit manually.', ''];
+  for (const rule of allRules) {
+    const view = rule[audience];
+    if (!view) continue;
     lines.push(`## \`${rule.id}\``, '', rule.principle, '');
     for (const [key, value] of Object.entries(view)) lines.push(`- **${key}：** ${value}`);
-    lines.push('', `Evidence: ${normalizedEvidence(rule)}; sources: ${rule.sourceRefs.join(', ')}`, '');
+    lines.push('', `Evidence: ${evidenceLabel(rule)}; sources: ${rule.sourceRefs.join(', ')}`, '');
   }
   return `${lines.join('\n').replace(/\n+$/u, '')}\n`;
 }
-function renderDimensions() {
-  const lines = ['# Review Dimensions', '', '> GENERATED from `standards/rules.json`; do not edit manually.', ''];
-  source.dimensions.forEach((dimension, index) => lines.push(`## ${index + 1}. ${dimension.title}（${dimension.weight}）`, '', dimension.details, ''));
-  return `${lines.join('\n').replace(/\n+$/u, '')}\n`;
-}
-function renderScoring() {
-  const lines = ['# Scoring Model','','> GENERATED from `standards/rules.json`; do not edit manually.','',source.scoringModel.introduction,'','## 维度与权重','','| ID | 维度 | 权重 |','| --- | --- | ---: |',...source.dimensions.map((d)=>`| \`${d.id}\` | ${d.title} | ${d.weight} |`),'',source.scoringModel.policy,''];
-  return `${lines.join('\n').replace(/\n+$/u, '')}\n`;
-}
 function renderComposition(title, reviewer) {
-  const model=source.compositionModel; const lines=[`# ${title}`,'','> GENERATED from `standards/rules.json`; do not edit manually.','','## 六项清单','','| 轴 | 问题 |','| --- | --- |',...model.axes.map(([a,q])=>`| ${a} | ${q} |`),'','## Verdict','',...model.verdicts.map(([v,m])=>`- \`${v}\`：${m}`),'','## 强拆分信号','',...model.splitSignals.map((s)=>`- ${s}`),'',reviewer?'Reviewer 必须给出最小分解候选并比较 active-path load。文件长或分支多只触发审计，不单独形成 finding。':'Author 在写正文前完成判定。需要 orchestrator 时，入口只拥有顺序、授权和稳定 handoff。',''];
+  const model = skillSource.compositionModel;
+  const lines = [
+    `# ${title}`, '',
+    '> GENERATED from `standards/skill-rules.json`; do not edit manually.', '',
+    '## 六项清单', '',
+    '| 轴 | 问题 |', '| --- | --- |',
+    ...model.axes.map(([axis, question]) => `| ${axis} | ${question} |`), '',
+    '## Verdict', '',
+    ...model.verdicts.map(([verdict, meaning]) => `- \`${verdict}\`：${meaning}`), '',
+    '## 强拆分信号', '',
+    ...model.splitSignals.map((signal) => `- ${signal}`), '',
+    reviewer
+      ? 'Reviewer 必须给出最小分解候选并比较 active-path load。文件长或分支多只触发审计，不单独形成 finding。'
+      : 'Author 在写正文前完成判定。需要 orchestrator 时，入口只拥有顺序、授权和稳定 handoff。',
+    '',
+  ];
   return `${lines.join('\n').replace(/\n+$/u, '')}\n`;
 }
-function renderEvidenceAdmission() {
-  const a=source.findingAdmission; const lines=['# Evidence and severity','','> GENERATED from `standards/rules.json`; do not edit manually.','','## Evidence','',...a.evidenceTypes.map(([t,m])=>`- \`${t}\`：${m}`),'- `official-guidance`：官方设计建议；影响质量评分，但不能单独支持 P0/P1。','','## P0/P1 admission','',...a.highSeverityRequirements.map((r)=>`- ${r}`),'','Owner 未证明为 Skill 时，不得要求修改生产 SKILL.md。Official-guidance、heuristic 和 inferred 默认最多 P2 或 unknown。',''];
+function renderEvidence() {
+  const admission = skillSource.findingAdmission;
+  const lines = [
+    '# Evidence and severity', '',
+    '> GENERATED from `standards/skill-rules.json`; do not edit manually.', '',
+    '## Evidence', '',
+    ...admission.evidenceTypes.map(([type, meaning]) => `- \`${type}\`：${meaning}`), '',
+    '## P0/P1 admission', '',
+    ...admission.highSeverityRequirements.map((requirement) => `- ${requirement}`), '',
+    'Owner 未证明为 Skill 时，不得要求修改生产 SKILL.md。Official-guidance、heuristic 和 inferred 默认最多 P2 或 unknown。',
+    '',
+  ];
   return `${lines.join('\n').replace(/\n+$/u, '')}\n`;
 }
-const outputs=new Map(views.map(([a,r,t])=>[r,renderView(a,t)]));
-outputs.set('skills/review-agent-skill/references/review-dimensions.generated.md',renderDimensions());
-outputs.set('skills/review-agent-skill/references/scoring-model.generated.md',renderScoring());
-outputs.set('skills/author-agent-skill/references/composition-audit.md',renderComposition('Composition Fitness Audit',false));
-outputs.set('skills/review-agent-skill/references/composition-fitness.md',renderComposition('Composition Fitness Review',true));
-outputs.set('skills/review-agent-skill/references/evidence-and-severity.md',renderEvidenceAdmission());
-outputs.set('skills/review-agent-skill/references/source-map.generated.md',await readFile(path.join(root,'standards','source-map.md'),'utf8'));
-outputs.set('standards/review-result-rules.generated.json',`${JSON.stringify({schemaVersion:source.schemaVersion,dimensions:source.dimensions.map(({id,title,weight})=>({id,title,weight}))},null,2)}\n`);
-const stale=[];
-for(const [relative,content] of outputs){const target=path.join(root,relative);if(check){const actual=await readFile(target,'utf8').catch(()=>null);if(actual!==content)stale.push(relative);continue;}await mkdir(path.dirname(target),{recursive:true});await writeFile(target,content,'utf8');}
-if(stale.length>0){process.stderr.write(`Generated Skill standard views are stale:\n${stale.map((value)=>`- ${value}`).join('\n')}\n`);process.exit(1);}
-process.stdout.write(`${JSON.stringify({valid:true,check,targets:[...outputs.keys()]},null,2)}\n`);
+
+const resultRules = {
+  schemaVersion: 2,
+  dimensions: dimensionSource.dimensions,
+  reviewResultPolicy: skillSource.reviewResultPolicy,
+};
+const manifest = {
+  schemaVersion: 3,
+  kind: 'composed-standard-manifest',
+  contentRules: skillSource.contentRuleSource,
+  skillRules: 'standards/skill-rules.json',
+  reviewDimensions: 'standards/review-dimensions.json',
+  reviewDimensionsPolicy: 'standards/review-dimensions.md',
+  scoringPolicy: 'standards/scoring-policy.md',
+  reviewResultRules: 'standards/review-result-rules.generated.json',
+};
+const outputs = new Map([
+  ['skills/author-agent-skill/references/author-standard.generated.md', renderView('skill_author', 'Agent Skill 作者标准')],
+  ['skills/review-agent-skill/references/review-rubric.generated.md', renderView('skill_review', 'Agent Skill 评审标准')],
+  ['skills/design-agent-skill-evals/references/eval-design-standard.generated.md', renderView('eval_design', 'Skill Eval 设计标准')],
+  ['skills/audit-agent-skill-evals/references/eval-audit-standard.generated.md', renderView('eval_audit', 'Skill Eval 审核标准')],
+  ['skills/author-agent-skill/references/composition-audit.md', renderComposition('Composition Fitness Audit', false)],
+  ['skills/review-agent-skill/references/composition-fitness.md', renderComposition('Composition Fitness Review', true)],
+  ['skills/review-agent-skill/references/evidence-and-severity.md', renderEvidence()],
+  ['skills/review-agent-skill/references/review-dimensions.generated.md', reviewDimensionsPolicy],
+  ['skills/review-agent-skill/references/scoring-model.generated.md', scoringPolicy],
+  ['skills/review-agent-skill/references/source-map.generated.md', sourceMap],
+  ['standards/review-result-rules.generated.json', `${JSON.stringify(resultRules, null, 2)}\n`],
+  ['standards/rules.json', `${JSON.stringify(manifest, null, 2)}\n`],
+]);
+
+const stale = [];
+for (const [relative, content] of outputs) {
+  const target = path.join(root, relative);
+  if (check) {
+    const actual = await readFile(target, 'utf8').catch(() => null);
+    if (actual !== content) stale.push(relative);
+    continue;
+  }
+  await mkdir(path.dirname(target), { recursive: true });
+  await writeFile(target, content, 'utf8');
+}
+if (stale.length > 0) {
+  process.stderr.write(`Generated Skill standard views are stale:\n${stale.map((value) => `- ${value}`).join('\n')}\n`);
+  process.exit(1);
+}
+process.stdout.write(`${JSON.stringify({ valid: true, check, targets: [...outputs.keys()] }, null, 2)}\n`);

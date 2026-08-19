@@ -61,5 +61,40 @@
       "title": "剪枝、事实源与变更纪律",
       "weight": 4
     }
-  ]
+  ],
+  "reviewResultPolicy": {
+    "highSeverityEvidence": [
+      "observed",
+      "normative",
+      "structural"
+    ],
+    "nonBlockingEvidence": [
+      "official-guidance",
+      "heuristic",
+      "inferred"
+    ],
+    "redesign": {
+      "composition": [
+        "overloaded",
+        "orchestrator-needed"
+      ],
+      "complexity": [
+        "over-engineered"
+      ],
+      "requiredLinkedSeverity": [
+        "P0",
+        "P1"
+      ]
+    },
+    "qualityFix": {
+      "composition": [
+        "overloaded",
+        "orchestrator-needed"
+      ],
+      "complexity": [
+        "over-specified",
+        "over-engineered"
+      ]
+    }
+  }
 }

@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://example.invalid/agent-content-toolkit/skill-design-brief.schema.json",
+  "$id": "https://agent-skill-toolkit.invalid/schemas/skill-design-brief.schema.json",
   "title": "SkillDesignBrief",
   "type": "object",
   "required": [

@@ -1,6 +1,6 @@
 # Review Dimensions
 
-> GENERATED from `standards/rules.json`; do not edit manually.
+> Canonical human rubric. `generate-standard-views.mjs` copies this file into `review-agent-skill`; do not edit the copied Skill reference manually.
 
 ## 1. 规范与包完整性（6）
 

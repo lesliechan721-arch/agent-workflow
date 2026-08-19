@@ -1,15 +1,15 @@
 # Evidence and severity
 
-> GENERATED from `standards/rules.json`; do not edit manually.
+> GENERATED from `standards/skill-rules.json`; do not edit manually.
 
 ## Evidence
 
 - `observed`：trace、复现、测试或用户确认失败。
 - `normative`：适用官方规范、schema、项目硬规则或用户要求。
 - `structural`：直接材料在同一可达路径上支持 exact claim，不依赖未证实前提。
+- `official-guidance`：官方设计建议；影响质量评分，但不能单独支持 P0/P1。
 - `heuristic`：第三方设计原则或经验建议。
 - `inferred`：尚未验证的推演。
-- `official-guidance`：官方设计建议；影响质量评分，但不能单独支持 P0/P1。
 
 ## P0/P1 admission
 

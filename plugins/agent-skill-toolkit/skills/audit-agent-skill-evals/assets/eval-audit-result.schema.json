@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://agent-content-toolkit.invalid/eval-audit-result.schema.json",
+  "$id": "https://agent-skill-toolkit.invalid/schemas/eval-audit-result.schema.json",
   "title": "EvalAuditResult",
   "type": "object",
   "required": ["schemaVersion", "producer", "independentContext", "auditId", "mode", "corpusDigest", "validity", "optimizationPolicy", "cases", "blockedCases", "releaseEligible", "failureTriage", "recommendedAction"],

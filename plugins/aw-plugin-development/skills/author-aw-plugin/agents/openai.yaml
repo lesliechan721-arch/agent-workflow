@@ -4,4 +4,4 @@ interface:
   default_prompt: "使用 $author-aw-plugin 处理当前请求。"
 
 policy:
-  allow_implicit_invocation: false
+  allow_implicit_invocation: true

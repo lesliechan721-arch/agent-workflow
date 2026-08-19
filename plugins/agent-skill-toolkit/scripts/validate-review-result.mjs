@@ -13,7 +13,6 @@ const scriptRoot = path.dirname(fileURLToPath(import.meta.url));
 function usage() {
   return 'Usage: validate-review-result.mjs <review-result.json> [--format text|json]';
 }
-
 function parseArgs(argv) {
   if (argv.includes('-h') || argv.includes('--help')) return { help: true };
   const positional = [];
@@ -28,7 +27,6 @@ function parseArgs(argv) {
   if (!['text', 'json'].includes(format)) throw new Error('--format must be text or json.');
   return { valuePath: path.resolve(positional[0]), format };
 }
-
 async function firstReadable(candidates) {
   for (const candidate of candidates) {
     try {
@@ -40,11 +38,9 @@ async function firstReadable(candidates) {
   }
   throw new Error('Cannot locate ReviewResult schema or generated rules.');
 }
-
 function approximatelyEqual(left, right) {
   return Math.abs(left - right) <= 0.01;
 }
-
 async function schemaErrors(schemaPath, valuePath) {
   const validator = path.join(scriptRoot, 'validate-json-contract.mjs');
   try {
@@ -56,7 +52,6 @@ async function schemaErrors(schemaPath, valuePath) {
     throw error;
   }
 }
-
 function addUniqueIds(errors, values, label) {
   const ids = new Set();
   for (const value of values) {
@@ -65,7 +60,6 @@ function addUniqueIds(errors, values, label) {
   }
   return ids;
 }
-
 function linkedFindings(errors, ids, findingById, label) {
   const values = [];
   for (const id of ids) {
@@ -88,7 +82,7 @@ async function main() {
     path.join(scriptRoot, '..', 'assets', 'review-result.schema.json'),
   ]);
   const rulesPath = await firstReadable([
-    path.join(scriptRoot, '..', 'standards', 'rules.json'),
+    path.join(scriptRoot, '..', 'standards', 'review-result-rules.generated.json'),
     path.join(scriptRoot, '..', 'assets', 'review-result-rules.generated.json'),
   ]);
   const errors = await schemaErrors(schemaPath, options.valuePath);
@@ -99,6 +93,8 @@ async function main() {
       readFile(options.valuePath, 'utf8').then(JSON.parse),
       readFile(rulesPath, 'utf8').then(JSON.parse),
     ]);
+    const policy = rules.reviewResultPolicy;
+    if (!policy) errors.push('generated ReviewResult rules are missing reviewResultPolicy');
     const expectedDimensions = new Map(rules.dimensions.map((dimension) => [dimension.id, dimension.weight]));
     const dimensions = new Map();
     for (const dimension of result.dimensions) {
@@ -119,10 +115,10 @@ async function main() {
 
     const findingIds = addUniqueIds(errors, result.findings, 'findings');
     const findingById = new Map(result.findings.map((finding) => [finding.id, finding]));
-    const strongEvidence = new Set(['observed', 'normative', 'structural']);
+    const strongEvidence = new Set(policy?.highSeverityEvidence ?? []);
     for (const finding of result.findings) {
       if (['P0', 'P1'].includes(finding.severity)) {
-        if (!finding.evidenceTypes.some((type) => strongEvidence.has(type))) errors.push(finding.id + ' requires observed, normative, or structural evidence');
+        if (!finding.evidenceTypes.some((type) => strongEvidence.has(type))) errors.push(finding.id + ' requires evidence admitted for high severity');
         if (finding.evidence.length === 0) errors.push(finding.id + ' requires direct evidence');
         if (finding.premises.length === 0 || finding.premises.some((premise) => premise.status !== 'supported')) errors.push(finding.id + ' requires supported premises');
         if (finding.reachability.status !== 'supported') errors.push(finding.id + ' requires supported reachability');
@@ -132,8 +128,8 @@ async function main() {
 
     const compositionFindings = linkedFindings(errors, result.compositionFindingIds, findingById, 'compositionFindingIds');
     const complexityFindings = linkedFindings(errors, result.complexityFindingIds, findingById, 'complexityFindingIds');
-    if (['overloaded', 'orchestrator-needed'].includes(result.composition) && compositionFindings.length === 0) errors.push('overloaded composition requires an admitted linked finding');
-    if (['over-specified', 'over-engineered'].includes(result.complexity) && complexityFindings.length === 0) errors.push('non-proportionate complexity requires an admitted linked finding');
+    if (policy.redesign.composition.includes(result.composition) && compositionFindings.length === 0) errors.push('non-coherent composition requires an admitted linked finding');
+    if (policy.qualityFix.complexity.includes(result.complexity) && complexityFindings.length === 0) errors.push('non-proportionate complexity requires an admitted linked finding');
 
     const unknownIds = addUniqueIds(errors, result.unknowns, 'unknowns');
     let assessedWeight = 0;
@@ -175,10 +171,11 @@ async function main() {
 
     const hasP0 = result.findings.some((finding) => finding.severity === 'P0') || Object.values(result.gates).some((gate) => gate.status === 'fail' && gate.severity === 'P0');
     const hasP1 = result.findings.some((finding) => finding.severity === 'P1') || Object.values(result.gates).some((gate) => gate.status === 'fail' && gate.severity === 'P1');
-    const strongComposition = compositionFindings.some((finding) => ['P0', 'P1'].includes(finding.severity));
-    const strongComplexity = complexityFindings.some((finding) => ['P0', 'P1'].includes(finding.severity));
-    const strongRedesign = (['overloaded', 'orchestrator-needed'].includes(result.composition) && strongComposition) || (result.complexity === 'over-engineered' && strongComplexity);
-    const qualityFix = ['overloaded', 'orchestrator-needed'].includes(result.composition) || ['over-specified', 'over-engineered'].includes(result.complexity);
+    const redesignSeverity = new Set(policy.redesign.requiredLinkedSeverity);
+    const strongComposition = compositionFindings.some((finding) => redesignSeverity.has(finding.severity));
+    const strongComplexity = complexityFindings.some((finding) => redesignSeverity.has(finding.severity));
+    const strongRedesign = (policy.redesign.composition.includes(result.composition) && strongComposition) || (policy.redesign.complexity.includes(result.complexity) && strongComplexity);
+    const qualityFix = policy.qualityFix.composition.includes(result.composition) || policy.qualityFix.complexity.includes(result.complexity);
     const scoredIncomplete = scoredMode && (!approximatelyEqual(calculated.coverage, 100) || expectedConfidence === 'low');
     const expectedDesign = hasP0 ? 'fail' : strongRedesign ? 'redesign' : hasP1 || qualityFix ? 'needs-fixes' : ['quick', 'delta'].includes(result.mode) || scoredIncomplete ? 'not-assessed' : 'pass';
     if (result.design !== expectedDesign) errors.push('design must be ' + expectedDesign + ' for the supplied findings and evidence');
