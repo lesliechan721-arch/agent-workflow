@@ -6,12 +6,8 @@ import fs from 'fs-extra';
 
 import type { CatalogSourceId, CliVersion, SourceIdentity } from '../types.js';
 import { compareStrictSemVer } from './manifest.js';
-import { acquireProcessLock } from './process-lock.js';
+import { acquireProcessLock, type ProcessLockLease } from './process-lock.js';
 import { resolveAwHome } from './state-paths.js';
-import {
-  acquireCurrentCatalogCacheLease,
-  type CurrentCatalogCacheLease,
-} from './local-marketplace.js';
 import {
   validateCatalogSnapshot,
   type CatalogSnapshotValidation,
@@ -24,13 +20,26 @@ const MAX_OBSERVATION_FUTURE_SKEW = 60_000_000;
 
 interface SharedCatalogCacheLease {
   controller: AbortController;
-  lease: Promise<CurrentCatalogCacheLease>;
+  lease: Promise<ProcessLockLease>;
   waiters: number;
   users: number;
   cleanupPromise?: Promise<void>;
 }
 
 const sharedCatalogCacheLeases = new Map<string, SharedCatalogCacheLease>();
+
+async function acquireCatalogSourceRootLease(
+  env: NodeJS.ProcessEnv,
+  signal: AbortSignal,
+): Promise<ProcessLockLease> {
+  const awHome = resolveAwHome(env);
+  const coordinationRoot = path.join(path.dirname(awHome), '.aw-catalog-source-coordination');
+  await fs.ensureDir(coordinationRoot);
+  return acquireProcessLock({
+    lockPath: path.join(coordinationRoot, `${digestJson({ awHome: path.resolve(awHome) })}.lock`),
+    signal,
+  });
+}
 
 export interface CatalogSourceCacheMetadata {
   schemaVersion: 1;
@@ -113,7 +122,7 @@ async function withCatalogSourceCacheLease<T>(options: {
     const controller = new AbortController();
     shared = {
       controller,
-      lease: acquireCurrentCatalogCacheLease(env, { signal: controller.signal }),
+      lease: acquireCatalogSourceRootLease(env, controller.signal),
       waiters: 0,
       users: 0,
     };
@@ -143,7 +152,7 @@ async function withCatalogSourceCacheLease<T>(options: {
 }
 
 async function waitForSharedCatalogCacheLease(
-  lease: Promise<CurrentCatalogCacheLease>,
+  lease: Promise<ProcessLockLease>,
   signal?: AbortSignal,
 ): Promise<void> {
   throwIfAborted(signal);
@@ -187,7 +196,7 @@ async function cleanupSharedCatalogCacheLease(options: {
     shared.controller.abort(error);
   }
   shared.cleanupPromise ??= (async () => {
-    let lease: CurrentCatalogCacheLease;
+    let lease: ProcessLockLease;
     try {
       lease = await shared.lease;
     } catch {

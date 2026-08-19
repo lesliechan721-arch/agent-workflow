@@ -2,8 +2,6 @@ import path from 'node:path';
 
 import type {
   CatalogResolution,
-  CatalogResolutionFailure,
-  CatalogSelector,
   PlatformName,
   PluginMeta,
   Scope,
@@ -11,10 +9,6 @@ import type {
 import { createNoopDebugLogger } from '../output/debug-log.js';
 import { createNoopReporter } from '../output/reporter.js';
 import { resolvePluginsFromCatalog } from '../utils/manifest.js';
-import {
-  isCatalogResolutionError,
-  resolveCurrentCatalog,
-} from '../utils/plugin-catalog.js';
 import { getDefaultNativeCliRunner } from '../utils/native-cli.js';
 import { supportsPlatform } from '../utils/platform-support.js';
 import { hasCodexProjectManagedArtifacts } from '../utils/codex-project-surface.js';
@@ -28,11 +22,7 @@ import {
   inspectRebuildTarget,
   type RebuildExecutionContext,
 } from './rebuild-integration.js';
-import {
-  applyCatalogSelectorEnv,
-  normalizeStatusCommandOptions,
-  type RawStatusCommandOptions,
-} from './options.js';
+import { normalizeStatusCommandOptions, type RawStatusCommandOptions } from './options.js';
 import { statusCommandV4, type StatusV4PluginSummary } from './status-v4.js';
 
 export type LiveStatusState = 'present' | 'absent' | 'partial' | 'error';
@@ -73,15 +63,11 @@ export interface LiveStatusTarget {
 }
 
 export interface LiveStatusCatalogInfo {
-  selector?: Pick<
-    CatalogSelector,
-    'kind' | 'requestedChannel' | 'requestedCatalogVersion' | 'overrideSource'
-  >;
   source?: CatalogResolution['source'];
   channel?: CatalogResolution['channel'];
   catalogVersion?: CatalogResolution['catalogVersion'];
   error?: {
-    code: CatalogResolutionFailure['reasonCode'] | 'catalogUnavailable';
+    code: 'catalogUnavailable';
     message: string;
   };
 }
@@ -128,8 +114,8 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function catalogFailureMessage(failure: CatalogResolutionFailure | Error): string {
-  return failure instanceof Error ? failure.message : failure.reason;
+function catalogFailureMessage(failure: Error): string {
+  return failure.message;
 }
 
 function selectedPlatforms(platform: PlatformName | 'both' | undefined): PlatformName[] {
@@ -247,28 +233,15 @@ function supportsTarget(plugin: PluginMeta, platform: PlatformName, scope: Scope
 
 function catalogInfo(
   catalog: CatalogResolution | undefined,
-  failure?: CatalogResolutionFailure | Error,
+  failure?: Error,
 ): LiveStatusCatalogInfo {
-  const selector = catalog?.selector ?? (
-    failure && 'selector' in failure ? failure.selector : undefined
-  );
   return {
-    ...(selector ? {
-      selector: {
-        kind: selector.kind,
-        ...(selector.requestedChannel ? { requestedChannel: selector.requestedChannel } : {}),
-        ...(selector.requestedCatalogVersion
-          ? { requestedCatalogVersion: selector.requestedCatalogVersion }
-          : {}),
-        ...(selector.overrideSource ? { overrideSource: selector.overrideSource } : {}),
-      },
-    } : {}),
     ...(catalog?.source ? { source: catalog.source } : {}),
     ...(catalog?.channel ? { channel: catalog.channel } : {}),
     ...(catalog?.catalogVersion ? { catalogVersion: catalog.catalogVersion } : {}),
     ...(failure ? {
       error: {
-        code: 'reasonCode' in failure ? failure.reasonCode : 'catalogUnavailable',
+        code: 'catalogUnavailable',
         message: catalogFailureMessage(failure),
       },
     } : {}),
@@ -318,22 +291,15 @@ async function resolveCatalogState(options: {
 }): Promise<{
   catalog?: CatalogResolution;
   plugins: PluginMeta[];
-  failure?: CatalogResolutionFailure | Error;
+  failure?: Error;
   failureKind?: 'catalog' | 'bundle';
 }> {
-  let catalog: CatalogResolution;
-  try {
-    catalog = options.runtime.catalogResolution ?? await resolveCurrentCatalog(options.env, {
-      channel: options.raw.catalogChannel,
-      catalogVersion: options.raw.catalogVersion,
-    });
-  } catch (error) {
+  const catalog = options.runtime.catalogResolution;
+  if (!catalog) {
     return {
       plugins: [],
       failureKind: 'catalog',
-      failure: isCatalogResolutionError(error) ? error.resolution : (
-        error instanceof Error ? error : new Error(String(error))
-      ),
+      failure: new Error('A resolved multi-source catalog is required.'),
     };
   }
   try {
@@ -366,7 +332,7 @@ export async function statusCommand(
   hasErrors: boolean;
 }> {
   const options = normalizeStatusCommandOptions(rawOptions);
-  const env = applyCatalogSelectorEnv(runtime.env ?? process.env, options);
+  const env = runtime.env ?? process.env;
   const context: RebuildExecutionContext = {
     env,
     nativeCliRunner: runtime.nativeCliRunner ?? getDefaultNativeCliRunner(),

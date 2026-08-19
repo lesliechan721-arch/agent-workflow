@@ -24,7 +24,6 @@ import {
 import {
   resolveAwHome,
 } from './paths.js';
-import { resolveCatalogPlugins } from './plugin-catalog.js';
 import { resolveEffectivePluginConfig } from './plugin-config.js';
 import { redactString } from '../output/redact.js';
 import { assertTestWritablePath } from './test-path-fence.js';
@@ -227,20 +226,11 @@ async function createTargetFromPlugin(options: {
 }
 
 async function resolveCurrentPlugin(
-  pluginName: string,
+  _pluginName: string,
   currentPlugin: PluginMeta | undefined,
-  env: NodeJS.ProcessEnv,
+  _env: NodeJS.ProcessEnv,
 ): Promise<PluginMeta | undefined> {
-  if (currentPlugin) {
-    return currentPlugin;
-  }
-
-  try {
-    const catalog = await resolveCatalogPlugins([pluginName], env);
-    return catalog.plugins[0];
-  } catch {
-    return undefined;
-  }
+  return currentPlugin;
 }
 
 function createMissingLifecycleWarning(pluginName: string, event: PluginLifecycleEvent): string {

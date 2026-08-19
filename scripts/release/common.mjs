@@ -176,7 +176,7 @@ export async function resolvePublishedCliVersion(mode, options = {}) {
   ], {
     env: {
       ...(options.env ?? process.env),
-      AW_NPM_REGISTRY_URL: registryUrl,
+      AW_RELEASE_NPM_REGISTRY_URL: registryUrl,
       npm_config_registry: registryUrl,
       NPM_CONFIG_REGISTRY: registryUrl,
     },
@@ -530,7 +530,7 @@ export async function resolveRegistryUrl(
   env = process.env,
 ) {
   const fromEnv = [
-    env.AW_NPM_REGISTRY_URL,
+    env.AW_RELEASE_NPM_REGISTRY_URL,
     env.npm_config_registry,
     env.NPM_CONFIG_REGISTRY,
   ].find((value) => typeof value === 'string' && value.trim() !== '');

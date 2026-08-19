@@ -99,10 +99,7 @@ import {
   withActiveMarketplaceRuntimeLease,
 } from '../utils/active-marketplace-runtime-lock.js';
 import { readCatalogSourcesConfigSnapshot } from '../utils/catalog-sources.js';
-import {
-  ensureLocalMarketplace,
-  replayNamespacedCodexSkillOverlays,
-} from '../utils/local-marketplace.js';
+import { replayNamespacedCodexSkillOverlays } from '../utils/local-marketplace.js';
 import { readClaudeSettings, writeClaudeSettings, type ClaudeSettings } from '../adapters/helpers.js';
 import { requiresCodexNativePlugin } from '../utils/codex-project-surface.js';
 import { assertCanonicalProjectManagedRoots } from '../utils/project-boundary.js';
@@ -2843,7 +2840,9 @@ async function mirrorCatalog(
   rollback(): Promise<void>;
 }> {
   if (!target?.sourceId || !target.marketplaceRoot) {
-    const rootDir = (await ensureLocalMarketplace(env, undefined, catalog)).rootDir;
+    const rootDir = resolveAwHome(env);
+    await fs.ensureDir(rootDir);
+    await fs.copy(catalog.rootDir, rootDir, { overwrite: true });
     return { rootDir, commit: async () => undefined, rollback: async () => undefined };
   }
   const destination = target.marketplaceRoot;

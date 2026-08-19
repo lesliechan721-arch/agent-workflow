@@ -18,7 +18,6 @@ import { createNoopDebugLogger } from '../output/debug-log.js';
 import { createNoopReporter } from '../output/reporter.js';
 import { getDefaultNativeCliRunner, type NativeCliRunner } from '../utils/native-cli.js';
 import { readPluginManifest, resolvePluginsFromCatalog } from '../utils/manifest.js';
-import { resolveCurrentCatalog } from '../utils/plugin-catalog.js';
 import { resolveAwHome } from '../utils/paths.js';
 import { resolveCliPackageRoot } from '../utils/paths.js';
 import { supportsPlatform } from '../utils/platform-support.js';
@@ -37,7 +36,6 @@ import {
   discoverRebuildTargetNames,
   type RebuildExecutionContext,
 } from './rebuild-integration.js';
-import { applyCatalogSelectorEnv } from './options.js';
 import {
   formatPluginId,
   parsePluginId,
@@ -310,12 +308,10 @@ async function runSingleSourceRebuildCommand(options: {
     lifecycleLeaseHeld: options.runtime?.lifecycleLeaseHeld,
     expectedCatalogConfigDigest: options.runtime?.expectedCatalogConfigDigest,
   };
-  const env = applyCatalogSelectorEnv(runtime.env, options.commandOptions);
+  const env = runtime.env;
   const selected = selectedPlatforms(options.commandOptions.platform);
-  const catalog = options.runtime?.catalogResolution ?? await resolveCurrentCatalog(env, {
-    channel: options.commandOptions.catalogChannel,
-    catalogVersion: options.commandOptions.catalogVersion,
-  });
+  const catalog = options.runtime?.catalogResolution;
+  if (!catalog) throw new Error('Internal error: a resolved catalog source is required.');
   const catalogPlugins = await resolvePluginsFromCatalog(catalog.rootDir, undefined).catch((error) => {
     if (options.runtime?.lostSourceRecovery) return [];
     throw error;

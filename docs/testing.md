@@ -26,6 +26,7 @@
 | `pnpm test:smoke:pack:cli` | 校验 CLI tarball 内容 |
 | `pnpm test:smoke:stage:catalog` | 校验显式版本 catalog staging 和本地 path source 消费 |
 | `pnpm test:smoke:publish:catalog` | 使用本地 bare remote 校验 stage、Git publish、fetch 和 Git provider 消费 |
+| `pnpm test:smoke:bootstrap:catalog` | 使用本地 bare remote 校验两个 orphan channel、annotated tag、幂等和 atomic failure |
 | `pnpm test:smoke:fetch` | `test:smoke:stage:catalog` 的兼容入口，校验本地 path source 消费 |
 | `pnpm test:smoke:plugin-scripts` | 校验真实插件脚本 staging、依赖闭包和 bundle 布局 |
 
@@ -75,7 +76,7 @@ Skill 和 prompt 的确定性测试只保留结构、模板、平台元数据、
 |--------|----------|----------|
 | 纯函数、helper、validator、renderer | Unit | 相关定向 unit；交付前 `pnpm test:unit` |
 | CLI 入口、write、status、config、TUI | Unit + Integration | 相关定向测试；交付前 `pnpm test:unit`、`pnpm test:integration` 和 `pnpm build` |
-| Strict catalog cache 或 selector | Unit + Performance + Smoke | `packages/cli/tests/unit/local-marketplace.test.ts`、`pnpm test:perf:gate`、`pnpm test:smoke:fetch` |
+| Source strict cache 或 selector | Unit + Performance + Smoke | `packages/cli/tests/unit/catalog-providers.test.ts`、`pnpm test:perf:gate`、`pnpm test:smoke:fetch` |
 | 平台输出或 adapter | Unit + Integration | 对应平台 unit/integration；插件产物按[插件维护指南](plugin-maintenance.md)验证 |
 | 插件作者合同 | Integration + Plugin test | `pnpm test:integration`、`pnpm plugin:test <plugin>` 和专用作者工作流要求的验证 |
 | Build、bundle、staging、Git publisher 或 tarball | Smoke | 对应 build、plugin-scripts、catalog stage/publish 或 CLI pack smoke |

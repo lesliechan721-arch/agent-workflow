@@ -28,6 +28,7 @@
     "test:smoke:pack:cli": "vitest run --config vitest.smoke.config.ts tests/smoke/pack-smoke.test.ts",
     "test:smoke:stage:catalog": "vitest run --config vitest.smoke.config.ts tests/smoke/catalog-stage-smoke.test.ts",
     "test:smoke:publish:catalog": "vitest run --config vitest.smoke.config.ts tests/smoke/catalog-publish-smoke.test.ts",
+    "test:smoke:bootstrap:catalog": "vitest run --config vitest.smoke.config.ts tests/smoke/catalog-bootstrap-smoke.test.ts",
     "test:smoke:fetch": "pnpm run test:smoke:stage:catalog",
     "plugin:test": "tsc -p tsconfig.json && node dist/scripts/test-plugin-scripts.js",
     "plugin:eval": "tsc -p tsconfig.json && node dist/scripts/eval-plugin-skills.js",

@@ -1,6 +1,5 @@
 import type {
   CatalogChannel,
-  CatalogManifest,
   CatalogManifestV3,
   PluginMeta,
 } from '../types.js';
@@ -212,23 +211,6 @@ export function mergePluginReleaseLedgers(
   });
 }
 
-export function createLegacyPluginReleaseLedger(
-  manifest: CatalogManifest,
-): PluginReleaseLedger {
-  return validatePluginReleaseLedger({
-    schemaVersion: 1,
-    records: manifest.entries.map((entry) => ({
-      plugin: entry.name,
-      version: entry.version,
-      contentDigest: null,
-      artifactDigest: entry.artifactDigest,
-      manifestDigest: entry.manifestDigest,
-      channel: manifest.channel,
-      catalogVersion: manifest.catalogVersion,
-    })),
-  });
-}
-
 export function resolveBetaPluginVersionOverrides(
   options: {
     plugins: readonly PluginMeta[];
@@ -279,7 +261,7 @@ export function resolveBetaPluginVersionOverrides(
 
 export function appendCatalogToPluginReleaseLedger(options: {
   previous: PluginReleaseLedger;
-  manifest: CatalogManifest | CatalogManifestV3;
+  manifest: CatalogManifestV3;
   contentDigests: ReadonlyMap<string, string>;
 }): PluginReleaseLedger {
   const previous = validatePluginReleaseLedger(options.previous);

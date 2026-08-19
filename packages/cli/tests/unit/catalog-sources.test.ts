@@ -8,6 +8,7 @@ import {
   CATALOG_BETA_REF,
   CATALOG_LATEST_REF,
   CATALOG_SOURCE_IDENTITY_VERSION,
+  OFFICIAL_CATALOG_SOURCE_URL,
 } from '../../src/constants.js';
 import {
   calculateCatalogSourceIdentity,
@@ -122,8 +123,11 @@ describe('catalog sources config v1', () => {
       id: 'official',
       type: 'git',
       primary: true,
+      url: OFFICIAL_CATALOG_SOURCE_URL,
       refPolicy: { type: 'cliChannel' },
     });
+    expect(OFFICIAL_CATALOG_SOURCE_URL)
+      .toBe('https://github.com/lesliechan721-arch/agent-workflow.git');
     expect(new URL(config.sources[0]!.type === 'git'
       ? config.sources[0].url
       : '').protocol).toBe('https:');

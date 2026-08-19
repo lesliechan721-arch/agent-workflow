@@ -33,7 +33,7 @@ AW 版本管理里有三套身份，不能混用：
 - Source snapshot version：schema 3 `catalog-manifest.json` 的版本，代表一次 source 快照。
 - Plugin version：单个插件 manifest 的 `version`，代表该插件 artifact 的不可变身份。
 
-插件更新通过 schema 3 source snapshot 分发，不要求同步发布 CLI。`pnpm build` 在 `packages/cli/plugins-dist/` 生成可验证的本地 schema 3 snapshot；开发态 snapshot version 使用 CLI package version。`make stage-catalog CATALOG_VERSION=<version>` 在 `.release/catalog-staging/catalog/` 生成带 release ledger 的发布交接目录。Phase 4B Git publisher 尚未实现；不要假设 remote refs、tags 或 push 已可用。
+插件更新通过 schema 3 source snapshot 分发，不要求同步发布 CLI。`pnpm build` 在 `packages/cli/plugins-dist/` 生成可验证的本地 schema 3 snapshot；开发态 snapshot version 使用 CLI package version。`make stage-catalog CATALOG_VERSION=<version>` 在 `.release/catalog-staging/catalog/` 生成带 release ledger 的发布交接目录。Git publish 和首次 bootstrap 是维护者发布步骤，不是插件作者入口。
 
 最小示例：
 
@@ -67,7 +67,7 @@ node scripts/check_plugin_versions.mjs --repo-root <repo-root> \
 
 `check_plugin_versions.mjs` 用当前已构建 CLI 的 staging bundler 分别物化 Git 基线插件和工作树插件，再忽略 plugin version 字段本身比较 production bundle。production 变化但 version 未提高、版本下降或 SemVer precedence 未提高时失败；只有 version 提高时成功并警告。Skill `evals/**`、插件 `reports/**` 和 test-only 文件由 bundler 排除；随 bundle 发布的 README、Skill、manifest 和 runtime 脚本变化要求提高 version。JSON 输出使用 schema 2。该门禁只判断插件源码变化，不判断 CLI bundler 自身变化造成的产物差异。
 
-`contentDigest` 排除生成 manifest 的 version 字段，用于核对插件内容身份。schema 3 snapshot、release staging 和源码 manifest 是当前已锁定的作者边界；不要提前实现 Phase 4B publisher、remote refs、tags 或 push。
+`contentDigest` 排除生成 manifest 的 version 字段，用于核对插件内容身份。schema 3 snapshot、release staging 和源码 manifest 是作者边界；作者不要修改 publisher、remote refs、tags 或 ledger。
 
 ## scripts / config block
 
@@ -400,7 +400,7 @@ CLI 入口和输出对作者的影响：
   plugin-release-ledger.json
   .agents/ + .claude-plugin/ + plugins/<name>/
            │
-           │  Phase 4B Git publisher（尚未实现）
+           │  Git publisher（catalog-only / combined / first bootstrap）
            ▼
 Git catalog source
            │
@@ -412,7 +412,7 @@ Git catalog source
   <AW_HOME>/plugin-config/<sourceId>/<pluginName>/config.json
 ```
 
-这些层各有职责。当前可验证真值止于本地 schema 3 snapshot 和 release staging。Phase 4B publisher 尚未实现，作者工具不得声称 remote refs、tags 或 push 已可用，也不得把旧 npm catalog、registry sidecar 或 full catalog tarball 当作分发真值。
+这些层各有职责。Git publisher 把 schema 3 snapshot 发布到独立的 `catalog/beta` 或 `catalog/latest` channel，并用 immutable annotated catalog tag 保存版本身份。first bootstrap 只由维护者建立首次 official refs；后续使用普通 catalog-only 或 combined release。插件作者仍只维护插件源码和稳定 plugin version，不手改 remote refs、release ledger、source config 或 cache。旧 npm catalog packages 是冻结的发布历史，不是当前分发真值。
 
 project shared config 位于 `.agent-workflows/plugin-config/<sourceId>/<pluginName>/config.json`，project local 使用 `.agent-workflows/plugin-config.local/<sourceId>/<pluginName>/config.json`。两者都是 schema 2 envelope；平台输出使用 owner schema 2 marker。
 

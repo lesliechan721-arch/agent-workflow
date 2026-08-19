@@ -48,7 +48,6 @@ import { requiresCodexNativePlugin } from '../../src/utils/codex-project-surface
 import {
   resolveConfigFileLockPath,
 } from '../../src/utils/plugin-config.js';
-import { initializeLocalMarketplace } from '../../src/utils/local-marketplace.js';
 import {
   applyCodexConfigTransactionFile,
   readCodexConfigFile,
@@ -56,6 +55,29 @@ import {
 import { renderTrackedHookGroupIdentity } from '../../src/utils/hooks-contract.js';
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
+
+async function prewarmActiveMarketplace(catalogRoot: string, awHome: string): Promise<void> {
+  await fs.ensureDir(path.dirname(awHome));
+  await fs.copy(catalogRoot, awHome, { overwrite: true });
+}
+
+async function snapshotRegularTree(root: string): Promise<Record<string, string>> {
+  const snapshot: Record<string, string> = {};
+  const visit = async (current: string): Promise<void> => {
+    for (const entry of await fs.readdir(current, { withFileTypes: true })) {
+      const absolute = path.join(current, entry.name);
+      const relative = path.relative(root, absolute);
+      if (entry.isDirectory()) {
+        snapshot[`${relative}/`] = 'directory';
+        await visit(absolute);
+      } else {
+        snapshot[relative] = (await fs.readFile(absolute)).toString('base64');
+      }
+    }
+  };
+  await visit(root);
+  return snapshot;
+}
 
 async function createSyntheticCatalog(options: {
   root: string;
@@ -330,7 +352,7 @@ describe('rebuild adapter integration', () => {
       pluginRoots: [path.join(repositoryRoot, 'plugins', 'ask-me')],
     });
     const catalog = { rootDir: catalogRoot, source: 'local' } as CatalogResolution;
-    await initializeLocalMarketplace({ force: true, env: isolation.env, catalogResolution: catalog });
+    await prewarmActiveMarketplace(catalog.rootDir, isolation.layout.awHomeDir);
     const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', 'ask-me'), {
       mode: 'bundle',
     });
@@ -474,11 +496,7 @@ describe('rebuild adapter integration', () => {
       root: isolation.layout.rootDir,
       pluginRoots: [path.join(repositoryRoot, 'plugins', 'ask-me')],
     });
-    await initializeLocalMarketplace({
-      force: true,
-      env: isolation.env,
-      catalogResolution: { rootDir: catalogRoot, source: 'local' },
-    });
+    await prewarmActiveMarketplace(catalogRoot, isolation.layout.awHomeDir);
     const plugin = await readPluginManifest(path.join(
       isolation.layout.awHomeDir,
       'plugins',
@@ -1256,6 +1274,124 @@ describe('rebuild adapter integration', () => {
       }
       expect(nativeCliRunner).not.toHaveBeenCalled();
       await expect(fs.readFile(sentinelPath, 'utf8')).resolves.toBe('retained\n');
+    },
+  );
+
+  it.each([
+    ['EACCES', 'plugins'],
+    ['EIO', 'skills'],
+  ] as const)(
+    'fails closed when the namespaced marketplace %s %s directory cannot be read',
+    async (errorCode, directoryKind) => {
+      const isolation = getCurrentSourceTestIsolation();
+      const catalogRoot = await createSyntheticCatalog({
+        root: isolation.layout.rootDir,
+        pluginRoots: [path.join(repositoryRoot, 'plugins', 'ask-me')],
+      });
+      const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', 'ask-me'), { mode: 'bundle' });
+      const marketplaceRoot = path.join(isolation.layout.awHomeDir, 'marketplaces', 'team');
+      const marketplaceParent = path.dirname(marketplaceRoot);
+      const sourceIdentity = `sha256:${'1'.repeat(64)}`;
+      await Promise.all([
+        ...['.agents', '.claude-plugin', 'plugins'].map((entry) =>
+          fs.copy(path.join(catalogRoot, entry), path.join(marketplaceRoot, entry))),
+        fs.outputJson(path.join(marketplaceRoot, 'config.json'), {
+          schemaVersion: 2,
+          sourceId: 'team',
+          sourceIdentity,
+          marketplaceName: 'aw-team',
+        }),
+      ]);
+      for (const manifestPath of [
+        path.join(marketplaceRoot, '.agents', 'plugins', 'marketplace.json'),
+        path.join(marketplaceRoot, '.claude-plugin', 'marketplace.json'),
+      ]) {
+        const manifest = await fs.readJson(manifestPath) as Record<string, unknown>;
+        await fs.writeJson(manifestPath, { ...manifest, name: 'aw-team' }, { spaces: 2 });
+      }
+      const sentinelPath = path.join(marketplaceRoot, 'generation.txt');
+      await fs.outputFile(sentinelPath, 'old-generation\n');
+      const platformManifest = await fs.readJson(
+        path.join(marketplaceRoot, 'plugins', 'ask-me', '.codex-plugin', 'plugin.json'),
+      ) as { skills: string };
+      const skillsRoot = path.resolve(
+        path.join(marketplaceRoot, 'plugins', 'ask-me'),
+        platformManifest.skills,
+      );
+      const skillKey = (await fs.readdir(skillsRoot))[0]!;
+      const overlayRoot = path.join(skillsRoot, skillKey);
+      await fs.outputFile(path.join(overlayRoot, 'SKILL.md'), 'owned-overlay\n');
+      await writeSkillOwnerMarker({
+        skillRoot: overlayRoot,
+        allowedRoot: skillsRoot,
+        identity: {
+          owner: 'agent-workflows',
+          sourceId: 'team',
+          sourceIdentity,
+          pluginId: 'team/ask-me',
+          plugin: 'ask-me',
+          artifactKey: skillKey,
+          platform: 'codex',
+          scope: 'user',
+        },
+      });
+      const oldRootSnapshot = await snapshotRegularTree(marketplaceRoot);
+
+      const nativeCliRunner = vi.fn(async () => {
+        throw new Error('native runner must not run');
+      });
+      const integration = createRebuildIntegration({
+        context: createCommandExecutionContext({ env: isolation.env, nativeCliRunner }),
+      });
+      const target = await integration.buildTarget({
+        sourceId: 'team',
+        sourceIdentity,
+        pluginId: 'team/ask-me',
+        marketplaceName: 'aw-team',
+        marketplaceRoot,
+        plugin,
+        platform: 'codex',
+        scope: 'user',
+        cwd: isolation.layout.fixtureCwd,
+        command: 'install',
+        catalog: { rootDir: catalogRoot, source: 'local' },
+        includeHistoricalLifecycleArtifacts: false,
+      });
+      const unreadableRoot = directoryKind === 'plugins'
+        ? path.join(marketplaceRoot, 'plugins')
+        : path.join(marketplaceRoot, 'plugins', 'ask-me', 'codex', 'skills');
+      const realReaddir = fs.readdir.bind(fs);
+      const readdir = vi.spyOn(fs, 'readdir').mockImplementation((async (location, options) => {
+        if (path.resolve(String(location)) === path.resolve(unreadableRoot)) {
+          throw Object.assign(
+            new Error(`${errorCode}: cannot read ${marketplaceRoot}`),
+            { code: errorCode },
+          );
+        }
+        return realReaddir(location, options as never);
+      }) as typeof fs.readdir);
+      let failure: Error | undefined;
+      try {
+        await integration.driver.writeNative(target);
+      } catch (error) {
+        failure = error as Error;
+      } finally {
+        readdir.mockRestore();
+      }
+
+      expect(failure?.message).toContain('marketplaceOverlayReadFailed');
+      expect(failure?.message).toContain(errorCode);
+      expect(failure?.message).not.toContain(isolation.layout.awHomeDir);
+      expect(failure?.message).not.toContain(marketplaceRoot);
+      expect(nativeCliRunner).not.toHaveBeenCalled();
+      await expect(fs.readFile(sentinelPath, 'utf8')).resolves.toBe('old-generation\n');
+      expect(await snapshotRegularTree(marketplaceRoot)).toEqual(oldRootSnapshot);
+      await expect(readSkillOwnerMarker({
+        skillRoot: overlayRoot,
+        allowedRoot: skillsRoot,
+      })).resolves.toMatchObject({ sourceId: 'team', sourceIdentity, pluginId: 'team/ask-me' });
+      expect((await fs.readdir(marketplaceParent)).filter((entry) => entry.startsWith('.team-'))).toEqual([]);
+      expect((await fs.readdir(marketplaceParent)).filter((entry) => entry.startsWith('team.backup-'))).toEqual([]);
     },
   );
 

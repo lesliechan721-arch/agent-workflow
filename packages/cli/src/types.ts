@@ -580,13 +580,6 @@ export interface MarketplaceManifest {
   plugins: MarketplaceManifestEntry[];
 }
 
-export interface CatalogManifestPackageIdentity {
-  name: string;
-  version: CatalogVersion;
-  channel: CatalogChannel;
-  manifestPath?: string;
-}
-
 export interface CatalogManifestEntry {
   name: string;
   version: PluginVersion;
@@ -600,18 +593,6 @@ export interface CatalogManifestEntry {
   source: string;
   artifactDigest: string;
   manifestDigest: string;
-}
-
-export interface CatalogManifest {
-  schemaVersion: 2;
-  catalogVersion: CatalogVersion;
-  channel: CatalogChannel;
-  compatibility: PluginCompatibility;
-  packages: {
-    sidecar: CatalogManifestPackageIdentity;
-    full: CatalogManifestPackageIdentity;
-  };
-  entries: CatalogManifestEntry[];
 }
 
 export interface CatalogManifestV3Entry extends CatalogManifestEntry {
@@ -732,12 +713,7 @@ export interface AgentVersionGateErrorPayload {
   failures: AgentVersionGateFailure[];
 }
 
-export interface CatalogSelectionOptions {
-  catalogChannel?: CatalogChannel;
-  catalogVersion?: CatalogVersion;
-}
-
-export interface CommandOptions extends CatalogSelectionOptions {
+export interface CommandOptions {
   scope: Scope;
   platform: PlatformSelection;
   cwd: string;
@@ -750,7 +726,7 @@ export interface UpgradeCommandOptions extends CommandOptions {
   all?: boolean;
 }
 
-export interface StatusCommandOptions extends CatalogSelectionOptions {
+export interface StatusCommandOptions {
   cwd: string;
   scope?: Scope;
   platform?: PlatformName | 'both';
@@ -809,20 +785,6 @@ export function isAgentVersionGateError(error: unknown): error is AgentVersionGa
   );
 }
 
-export interface LocalMarketplaceConfig {
-  version: 2;
-  initializedAt: string;
-  sourcePackage: string;
-  sourceVersion: CliVersion;
-  catalogSelector: CatalogSelector;
-  resolvedCatalog?: {
-    channel: CatalogChannel;
-    catalogVersion: CatalogVersion;
-    minAwVersion: CliVersion;
-  };
-  bundleFingerprint: string;
-}
-
 export type CodexProjectManagedKind =
   | 'skill'
   | 'mcpServer'
@@ -831,107 +793,12 @@ export type CodexProjectManagedKind =
   | 'hook'
   | 'agent';
 
-export interface CatalogSelector {
-  kind: 'default' | 'distTag' | 'exactVersion';
-  cliVersion: CliVersion;
-  defaultChannel: CatalogChannel;
-  requestedChannel?: CatalogChannel;
-  requestedCatalogVersion?: CatalogVersion;
-  overrideSource?:
-    | 'option:catalog-channel'
-    | 'option:channel-alias'
-    | 'option:catalog-version'
-    | 'env:AW_CATALOG_CHANNEL'
-    | 'env:AW_CATALOG_VERSION';
-}
-
-export interface CatalogSidecarManifestEvidence {
-  source: string;
-  version: CatalogVersion;
-  channel: CatalogChannel;
-  npmIntegrity?: string;
-  manifestDigest: string;
-}
-
-export interface CatalogIdentityEvidence {
-  source: 'local' | 'embedded' | 'remote' | 'cache';
-  version: CatalogVersion;
-  channel: CatalogChannel;
-  minAwVersion: CliVersion;
-  revision: string;
-  freshness: 'fresh' | 'cached' | 'localFixture' | 'embedded';
-}
-
-export interface CatalogCacheFallbackEvidence {
-  used: boolean;
-  source?: 'currentCatalogCache';
-  cacheKey?: string;
-  selectorKey?: string;
-  blockingCode?: CatalogResolutionFailure['reasonCode'];
-  matchedSelector?: CatalogSelector;
-  matchedCatalog?: CatalogIdentityEvidence;
-}
-
-export interface CatalogRemoteFailureEvidence {
-  stage:
-    | 'sidecarMetadata'
-    | 'sidecarTarball'
-    | 'sidecarManifest'
-    | 'fullMetadata'
-    | 'fullTarball'
-    | 'fullManifest'
-    | 'artifactDigest'
-    | 'deadline';
-  packageName?: string;
-  packageVersion?: CatalogVersion;
-  integrity?: string;
-  message: string;
-}
-
-export interface CatalogResolutionFailure {
-  selector: CatalogSelector;
-  channel?: CatalogChannel;
-  catalogVersion?: CatalogVersion;
-  minAwVersion?: CliVersion;
-  cacheFallback?: CatalogCacheFallbackEvidence;
-  remoteFailure?: CatalogRemoteFailureEvidence;
-  reason: string;
-  reasonCode:
-    | 'catalogUnavailable'
-    | 'awVersionTooLow'
-    | 'explicitCatalogIncompatible';
-}
-
-export interface CatalogCacheStateEvidence {
-  state: 'fresh' | 'stale' | 'refreshFailed';
-  validatedAt: string;
-  ageMs: number;
-  ttlMs: number;
-}
-
 export type CatalogFreshnessPolicy = 'cacheFirst' | 'requireRemote' | 'forceRemote';
 
 export interface CatalogResolution {
   rootDir: string;
   source: 'local' | 'embedded' | 'remote' | 'cache';
-  selector?: CatalogSelector;
-  sidecarManifestPackage?: CatalogSidecarManifestEvidence;
-  fullCatalog?: CatalogIdentityEvidence;
   channel?: CatalogChannel;
   catalogVersion?: CatalogVersion;
   minAwVersion?: CliVersion;
-  cacheFallback?: CatalogCacheFallbackEvidence;
-  remoteFailure?: CatalogRemoteFailureEvidence;
-  cacheState?: CatalogCacheStateEvidence;
-  reason?: string;
-  reasonCode?:
-    | 'localCatalogMissing'
-    | 'localCatalogConfigInvalid'
-    | 'localCatalogSourceVersionMissing'
-    | 'localCatalogSourceVersionInvalid'
-    | 'localCatalogSourceVersionAhead'
-    | 'localCatalogSourceVersionBehind'
-    | 'localCatalogFingerprintMismatch'
-    | 'localCatalogLayoutInvalid'
-    | CatalogResolutionFailure['reasonCode'];
 }

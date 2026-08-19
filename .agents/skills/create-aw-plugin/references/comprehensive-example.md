@@ -63,7 +63,7 @@ code-review/
 
 ## 构建产物预览
 
-运行 `pnpm build` 后，两个平台的本地 staging/runtime bundle 内容不同。Codex 的 extensions 产物由写命令的 rebuild integration 生成。当前 build 不直接生成 schema 3 source snapshot；后续 release staging 流程才负责从这些真实 bundle 物化 snapshot。Phase 4 publisher 尚未进入作者合同。
+运行 `pnpm build` 后，两个平台的 runtime bundle 内容不同，schema 3 snapshot 记录最终内容身份。Codex 的 extensions 产物由写命令的 rebuild integration 生成。release staging、Git publish 和 first bootstrap 都是维护者流程，不是作者手改入口。
 
 **Claude bundle（build 时写入）**：skills、.mcp.json、generated `commands/`、output-styles、hooks.json（公共 hook 渲染结果）、agents markdown、rules markdown、AW scripts/config bundle metadata
 

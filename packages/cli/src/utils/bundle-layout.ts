@@ -26,24 +26,7 @@ import { getArtifactSourceBundleRelativePath } from './artifact-sources.js';
 import { validateSkillDirectory } from './dynamic-skill-tree.js';
 
 const NODE_RUNTIME_EXTENSIONS = new Set(['.js', '.mjs', '.cjs']);
-export const CATALOG_STAGING_DIRNAME = '.catalog';
 export const CATALOG_MANIFEST_FILENAME = 'catalog-manifest.json';
-export const CATALOG_SIDECAR_DIRNAME = 'sidecar';
-export const CATALOG_FULL_DIRNAME = 'full';
-export const CATALOG_SIDECAR_PACKAGE_NAME = '@lesliechan721/aw-plugins-manifest';
-export const CATALOG_FULL_PACKAGE_NAME = '@lesliechan721/aw-plugins';
-
-export function getCatalogStagingRoot(rootDir: string): string {
-  return path.join(rootDir, CATALOG_STAGING_DIRNAME);
-}
-
-export function getCatalogSidecarPackageRoot(rootDir: string): string {
-  return path.join(getCatalogStagingRoot(rootDir), CATALOG_SIDECAR_DIRNAME);
-}
-
-export function getCatalogFullPackageRoot(rootDir: string): string {
-  return path.join(getCatalogStagingRoot(rootDir), CATALOG_FULL_DIRNAME);
-}
 
 function isPathInsideOrEqual(parent: string, child: string): boolean {
   const relative = path.relative(parent, child);

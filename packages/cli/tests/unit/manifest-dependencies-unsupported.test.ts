@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { validateCatalogManifest, validatePluginManifest } from '../../src/utils/manifest.js';
+import { validatePluginManifest } from '../../src/utils/manifest.js';
+import { validateCatalogManifestV3 } from '../../src/utils/catalog-manifest-v3.js';
 
 const marketplace = {
   category: 'workflow',
@@ -20,20 +21,11 @@ describe('removed plugin dependencies capability', () => {
   });
 
   it('rejects dependencies in current catalog entries explicitly', () => {
-    expect(() => validateCatalogManifest({
-      schemaVersion: 2,
+    expect(() => validateCatalogManifestV3({
+      schemaVersion: 3,
       catalogVersion: '1.0.0',
       channel: 'latest',
       compatibility: { aw: { minVersion: '1.0.0' } },
-      packages: {
-        sidecar: { name: '@lesliechan721/aw-plugins-manifest', version: '1.0.0', channel: 'latest' },
-        full: {
-          name: '@lesliechan721/aw-plugins',
-          version: '1.0.0',
-          channel: 'latest',
-          manifestPath: './catalog-manifest.json',
-        },
-      },
       entries: [{
         name: 'parent',
         version: '1.0.0',
@@ -46,6 +38,7 @@ describe('removed plugin dependencies capability', () => {
         source: 'plugins/parent',
         artifactDigest: `sha256:${'0'.repeat(64)}`,
         manifestDigest: `sha256:${'1'.repeat(64)}`,
+        contentDigest: `sha256:${'2'.repeat(64)}`,
       }],
     })).toThrow('"dependencies" is unsupported');
   });

@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -38,6 +38,49 @@ test('generated adapter assets are current', async () => {
     '--check',
     '--repo-root',
     repositoryRoot,
+  ]);
+});
+
+test('review inspection expands related globs with the CLI production dependency closure', async () => {
+  const temporaryRoot = await mkdtemp(path.join(tmpdir(), 'aw-review-related-glob-'));
+  temporaryRoots.push(temporaryRoot);
+  const cleanRepositoryRoot = path.join(temporaryRoot, 'repository');
+  const cleanCliRoot = path.join(cleanRepositoryRoot, 'packages', 'cli');
+  const cleanNodeModules = path.join(cleanCliRoot, 'node_modules');
+  const cliPackage = JSON.parse(await readFile(
+    path.join(repositoryRoot, 'packages', 'cli', 'package.json'),
+    'utf8',
+  ));
+  await mkdir(cleanNodeModules, { recursive: true });
+  await writeFile(
+    path.join(cleanCliRoot, 'package.json'),
+    JSON.stringify({ type: 'module', dependencies: cliPackage.dependencies }),
+    'utf8',
+  );
+  for (const dependency of Object.keys(cliPackage.dependencies)) {
+    const source = path.join(repositoryRoot, 'packages', 'cli', 'node_modules', dependency);
+    const destination = path.join(cleanNodeModules, dependency);
+    await mkdir(path.dirname(destination), { recursive: true });
+    await symlink(source, destination, 'junction');
+  }
+  const targetRoot = path.join(cleanRepositoryRoot, 'target');
+  const rolesRoot = path.join(targetRoot, 'roles');
+  await mkdir(rolesRoot, { recursive: true });
+  await writeFile(path.join(targetRoot, 'SKILL.md'), '---\nname: target\ndescription: target\n---\n', 'utf8');
+  await writeFile(path.join(rolesRoot, 'reader.toml'), 'name = "reader"\ninstructions = "Read evidence."\n', 'utf8');
+
+  const result = await run(path.join(reviewScripts, 'inspect-aw-target.mjs'), [
+    targetRoot,
+    '--repo-root',
+    cleanRepositoryRoot,
+    '--related',
+    path.join(rolesRoot, '*.toml'),
+    '--format',
+    'json',
+  ], { cwd: cleanRepositoryRoot });
+  const report = JSON.parse(result.stdout);
+  assert.deepEqual(report.related_toml.files.map((entry) => entry.path), [
+    path.join(rolesRoot, 'reader.toml'),
   ]);
 });
 

@@ -185,6 +185,33 @@ describe('multi-source read commands', () => {
     expect(captured.readStderr()).toContain('unknown option');
   });
 
+  it('ignores removed catalog environment selectors and resolves the configured source', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const good = fixturePath('legacy-env-good');
+    await createCatalogSnapshotFixture(good);
+    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
+    const env = {
+      ...isolation.env,
+      AW_CATALOG_CHANNEL: 'beta',
+      AW_CATALOG_VERSION: '99.0.0',
+      AW_NPM_REGISTRY_URL: 'https://invalid.example.test/',
+    };
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 1,
+        sources: [{ id: 'good', type: 'path', primary: true, path: good }],
+      },
+      expectedDigest: initial.digest,
+      env,
+    });
+
+    await expect(initCommand({ cliVersion: '1.0.0', env })).resolves.toMatchObject({
+      ok: true,
+      primarySourceId: 'good',
+      sources: [expect.objectContaining({ id: 'good', freshness: 'path' })],
+    });
+  });
+
   it('uses qualified plugin IDs in the multi-source console writes', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const first = fixturePath('first');

@@ -13,9 +13,11 @@ import {
   readCatalogPublicationHistory,
   runCatalogGit,
 } from '../../../../scripts/release/git-catalog-publisher.mjs';
+import { bootstrapCatalog } from '../../../../scripts/release/bootstrap-catalog.mjs';
 import { stageCatalogRelease } from '../../../../scripts/release/stage-catalog.mjs';
 import * as pluginStaging from '../../scripts/plugin-staging.js';
 import * as catalogSnapshot from '../../src/utils/catalog-snapshot.js';
+import { catalogGitProviderInternal } from '../../src/utils/git-catalog-provider.js';
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
 
 const execFileAsync = promisify(execFile);
@@ -86,6 +88,89 @@ afterEach(async () => {
 });
 
 describe('Git catalog publisher', () => {
+  it('bootstraps independent orphan beta and latest channels through the dedicated entry point', async () => {
+    const root = await fixtureRoot('aw-catalog-bootstrap-');
+    const remoteUrl = await createBareRemote(root);
+    const runBootstrap = async (mode: 'beta' | 'latest', catalogVersion: string) =>
+      bootstrapCatalog([mode, '--catalog-version', catalogVersion], {
+        testRemoteUrl: remoteUrl,
+        catalogModules,
+        runCommand: async () => undefined,
+        stageCatalogRelease: async (_argv: string[], options: {
+          previousReleaseLedger: pluginStaging.PluginReleaseLedger;
+        }) => stage(root, catalogVersion, options.previousReleaseLedger),
+      });
+
+    const beta = await runBootstrap('beta', '1.0.0-beta.1');
+    const retry = await runBootstrap('beta', '1.0.0-beta.1');
+    const latest = await runBootstrap('latest', '1.0.0');
+
+    const source = {
+      id: 'official',
+      type: 'git' as const,
+      primary: true,
+      url: remoteUrl,
+      refPolicy: { type: 'cliChannel' as const },
+    };
+    const stableResolution = await catalogGitProviderInternal.resolve(source, {
+      cliVersion: '1.0.0',
+      freshnessPolicy: 'forceRemote',
+      env: { ...process.env, AW_HOME: path.join(root, 'aw-home-stable') },
+    });
+    const prereleaseResolution = await catalogGitProviderInternal.resolve(source, {
+      cliVersion: '1.0.1-beta.1',
+      freshnessPolicy: 'forceRemote',
+      env: { ...process.env, AW_HOME: path.join(root, 'aw-home-prerelease') },
+    });
+
+    const nextBetaHistory = await readCatalogPublicationHistory({
+      mode: 'beta', catalogVersion: '1.0.0-beta.2', remoteUrl, catalogModules,
+    });
+    const nextBetaStage = await stage(
+      root,
+      '1.0.0-beta.2',
+      nextBetaHistory.mergedLedger,
+      '1.0.1',
+      'next beta\n',
+    );
+    const nextBeta = await publishStagedCatalog(nextBetaHistory, nextBetaStage.outputRoot);
+
+    expect(retry).toMatchObject({ commit: beta.commit, idempotent: true, promoted: true });
+    expect((await git(['--git-dir', remoteUrl, 'rev-list', '--parents', '-n', '1', beta.commit])).split(' '))
+      .toHaveLength(1);
+    expect((await git(['--git-dir', remoteUrl, 'rev-list', '--parents', '-n', '1', latest.commit])).split(' '))
+      .toHaveLength(1);
+    expect(stableResolution).toMatchObject({
+      requestedRef: CATALOG_CHANNEL_REFS.latest,
+      resolvedCommit: latest.commit,
+    });
+    expect(prereleaseResolution).toMatchObject({
+      requestedRef: CATALOG_CHANNEL_REFS.beta,
+      resolvedCommit: beta.commit,
+    });
+    expect((await git(['--git-dir', remoteUrl, 'rev-list', '--parents', '-n', '1', nextBeta.commit])).split(' '))
+      .toEqual([nextBeta.commit, beta.commit]);
+    expect(await git(['--git-dir', remoteUrl, 'cat-file', '-t', 'refs/tags/catalog-v1.0.0-beta.1']))
+      .toBe('tag');
+    expect(await git(['--git-dir', remoteUrl, 'cat-file', '-t', 'refs/tags/catalog-v1.0.0']))
+      .toBe('tag');
+  });
+
+  it('does not create a bootstrap tag or channel when atomic push is unsupported', async () => {
+    const root = await fixtureRoot('aw-catalog-bootstrap-no-atomic-');
+    const remoteUrl = await createBareRemote(root);
+    await git(['--git-dir', remoteUrl, 'config', 'receive.advertiseAtomic', 'false']);
+    await expect(bootstrapCatalog(['latest', '--catalog-version', '1.0.0'], {
+      testRemoteUrl: remoteUrl,
+      catalogModules,
+      runCommand: async () => undefined,
+      stageCatalogRelease: async (_argv: string[], options: {
+        previousReleaseLedger: pluginStaging.PluginReleaseLedger;
+      }) => stage(root, '1.0.0', options.previousReleaseLedger),
+    })).rejects.toThrow('did not fall back to sequential pushes');
+    await expect(git(['--git-dir', remoteUrl, 'show-ref'])).rejects.toThrow();
+  });
+
   it('creates orphan channel roots, one-parent fast-forward commits, independent channels, and annotated tags', async () => {
     const root = await fixtureRoot('aw-catalog-publisher-');
     const remoteUrl = await createBareRemote(root);

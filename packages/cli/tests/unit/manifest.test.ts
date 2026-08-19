@@ -15,7 +15,6 @@ import {
   readMarketplaceSourceMeta,
   readPluginManifest,
   STRICT_SEMVER_VALIDATION_CODE,
-  validateCatalogManifest,
   validatePluginManifest,
 } from '../../src/utils/manifest.js';
 import {
@@ -100,84 +99,6 @@ function createMarketplaceWithProducts(products: string[]) {
       authentication: 'ON_INSTALL',
       products,
     },
-  };
-}
-
-function sha256(char: string): string {
-  return `sha256:${char.repeat(64)}`;
-}
-
-function createCatalogManifestFixture() {
-  return {
-    schemaVersion: 2,
-    catalogVersion: '1.2.3',
-    channel: 'latest',
-    compatibility: {
-      aw: {
-        minVersion: '0.0.0',
-      },
-    },
-    packages: {
-      sidecar: {
-        name: '@lesliechan721/aw-plugins-manifest',
-        version: '1.2.3',
-        channel: 'latest',
-      },
-      full: {
-        name: '@lesliechan721/aw-plugins',
-        version: '1.2.3',
-        channel: 'latest',
-        manifestPath: './catalog-manifest.json',
-      },
-    },
-    entries: [
-      {
-        name: 'code-review',
-        version: '1.4.0',
-        description: 'review plugin',
-        category: 'workflow',
-        strict: true,
-        policy: {
-          installation: 'AVAILABLE',
-          authentication: 'ON_INSTALL',
-        },
-        compatibility: {
-          aw: {
-            minVersion: '0.0.0',
-          },
-        },
-        dependencies: {
-          plugins: [
-            {
-              name: 'shared-helper',
-              minVersion: '1.2.0',
-            },
-          ],
-        },
-        source: './plugins/code-review',
-        artifactDigest: sha256('a'),
-        manifestDigest: sha256('b'),
-      },
-      {
-        name: 'shared-helper',
-        version: '1.2.0',
-        description: 'helper plugin',
-        category: 'workflow',
-        strict: true,
-        policy: {
-          installation: 'AVAILABLE',
-          authentication: 'ON_INSTALL',
-        },
-        compatibility: {
-          aw: {
-            minVersion: '0.0.0',
-          },
-        },
-        source: './plugins/shared-helper',
-        artifactDigest: sha256('c'),
-        manifestDigest: sha256('d'),
-      },
-    ],
   };
 }
 

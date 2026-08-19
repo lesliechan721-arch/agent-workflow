@@ -19,17 +19,6 @@ vi.mock('../../src/commands/rebuild-integration.js', async (importOriginal) => (
   inspectRebuildTarget: mocks.inspect,
 }));
 
-vi.mock('../../src/utils/plugin-catalog.js', async (importOriginal) => ({
-  ...await importOriginal<typeof import('../../src/utils/plugin-catalog.js')>(),
-  resolveCurrentCatalog: vi.fn(async () => ({
-    rootDir: '/catalog',
-    manifestPath: '/catalog/catalog.json',
-    catalogVersion: '1.0.0',
-    channel: 'latest',
-    source: 'embedded',
-  })),
-}));
-
 vi.mock('../../src/utils/project-boundary.js', async (importOriginal) => ({
   ...await importOriginal<typeof import('../../src/utils/project-boundary.js')>(),
   assertProjectSharedConfigPathVisible: vi.fn(async () => undefined),
@@ -271,8 +260,6 @@ describe('config write full reinstall apply', () => {
       env: fixture.env,
       request: { updates: { mode: 'fast' } },
       reinstallCommandImpl: reinstall,
-      catalogChannel: 'beta',
-      catalogVersion: '2.0.0-beta.1',
     });
 
     expect(receipt.configWrite).toBe('succeeded');
@@ -281,7 +268,7 @@ describe('config write full reinstall apply', () => {
     expect(reinstall).toHaveBeenCalledTimes(4);
     expect(reinstall.mock.calls.every((call) => call[1].cwd === fixture.cwd)).toBe(true);
     expect(reinstall.mock.calls.every((call) =>
-      call[1].catalogChannel === 'beta' && call[1].catalogVersion === '2.0.0-beta.1')).toBe(true);
+      !Object.hasOwn(call[1], 'catalogChannel') && !Object.hasOwn(call[1], 'catalogVersion'))).toBe(true);
     expect(receipt.otherProjectsRequireReinstall).toBe(true);
     expect(receipt.warnings.join('\n')).toContain('其它项目');
   });

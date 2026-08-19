@@ -3,318 +3,186 @@ import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 
 import fs from 'fs-extra';
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import {
-  loadConsoleItemsResult,
-  statusCommand,
-  type StatusCommandRuntime,
-} from '../../src/commands/status.js';
-import { initializeLocalMarketplace } from '../../src/utils/local-marketplace.js';
-import type { CatalogPackageSource } from '../../src/utils/marketplace.js';
-import { setCatalogPackageSourceForTests } from '../../src/utils/marketplace.js';
-import {
-  inspectOwnedComponents,
-  writeOwnedTextFile,
-  type OwnedComponent,
-} from '../../src/utils/ownership.js';
-import {
-  clearCurrentCatalogResolutionMemoForTests,
-  resolveCurrentCatalog,
-} from '../../src/utils/plugin-catalog.js';
-import {
-  createFixtureCatalogPackageSource,
-  createPerfCatalogFixture,
-  createUnexpectedRemoteCatalogSource,
-  type PerfCatalogFixture,
-} from './catalog-fixture.js';
+import { createRebuildIntegration } from '../../src/commands/rebuild-integration.js';
+import { createCommandExecutionContext } from '../../src/commands/runtime.js';
+import { loadConsoleItemsResult } from '../../src/commands/status.js';
+import { statusCommandV4 } from '../../src/commands/status-v4.js';
+import { readCatalogSourcesConfigSnapshot } from '../../src/utils/catalog-sources.js';
+import { readPluginManifest } from '../../src/utils/manifest.js';
+import { withResolvedMultiSourceCatalog } from '../../src/utils/multi-source-catalog.js';
+import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
 import { createPerfSummary, printPerfSummary } from './perf-metrics.js';
 
-const CACHE_WARMUPS = 5;
-const CACHE_SAMPLES = 25;
-const CACHE_P95_BUDGET_MS = 150;
-const POST_REBUILD_BUDGET_MS = 500;
-const LIVE_WARMUPS = 3;
-const LIVE_SAMPLES = 15;
-const LIVE_P95_BUDGET_MS = 500;
-const REMOTE_DEADLINE_BUDGET_MS = 500;
+const SAMPLES = 20;
+const BUDGET_MS = 500;
 
-function isolatedEnv(root: string): NodeJS.ProcessEnv {
-  const env = { ...process.env };
-  delete env.AW_CATALOG_CHANNEL;
-  delete env.AW_CATALOG_VERSION;
-  delete env.AW_NPM_REGISTRY_URL;
-  delete env.npm_config_registry;
-  delete env.NPM_CONFIG_REGISTRY;
-  delete env.npm_config_userconfig;
-  delete env.NPM_CONFIG_USERCONFIG;
-  return {
-    ...env,
-    HOME: path.join(root, 'home'),
-    AW_HOME: path.join(root, 'aw-home'),
-    AW_CODEX_HOME: path.join(root, 'codex-home'),
-    AW_CLAUDE_HOME: path.join(root, 'claude-home'),
-  };
-}
-
-async function runSamples(options: {
-  warmups: number;
-  samples: number;
-  beforeEach: () => void;
-  operation: () => Promise<void>;
-}): Promise<number[]> {
-  for (let index = 0; index < options.warmups; index += 1) {
-    options.beforeEach();
-    await options.operation();
-  }
+async function sample(operation: () => Promise<void>): Promise<number[]> {
+  await operation();
   const durations: number[] = [];
-  for (let index = 0; index < options.samples; index += 1) {
-    options.beforeEach();
+  for (let index = 0; index < SAMPLES; index += 1) {
     const startedAt = performance.now();
-    await options.operation();
+    await operation();
     durations.push(performance.now() - startedAt);
   }
   return durations;
 }
 
-async function createLiveOwnerRuntime(options: {
-  workspace: string;
-  pluginNames: readonly string[];
-}): Promise<StatusCommandRuntime> {
-  const components = new Map<string, OwnedComponent>();
-  const ownerRoot = path.join(options.workspace, 'live-owners');
-  for (const pluginName of options.pluginNames) {
-    const filePath = path.join(ownerRoot, `${pluginName}.txt`);
-    const identity = {
-      owner: 'agent-workflows' as const,
-      plugin: pluginName,
-      artifactKey: 'perf-live-owner',
-      platform: 'codex' as const,
-      scope: 'user' as const,
-    };
-    await writeOwnedTextFile({
-      path: filePath,
-      allowedRoot: ownerRoot,
-      identity,
-      content: `${pluginName}\n`,
-    });
-    components.set(pluginName, {
-      kind: 'owned-text-file',
-      path: filePath,
-      allowedRoot: ownerRoot,
-      identity,
-    });
-  }
-  return {
-    discoverTargets: async () => [],
-    inspectTarget: async ({ plugin, platform, scope, cwd }) => {
-      const component = components.get(plugin.manifest.name)!;
-      const inspection = await inspectOwnedComponents({ components: [component] });
-      return {
-        target: {
-          plugin,
-          identity: {
-            pluginName: plugin.manifest.name,
-            pluginVersion: plugin.manifest.version,
-            platform,
-            scope,
-            cwd,
-          },
-          ownedComponents: [component],
-          desiredOwnedComponents: [component],
-          requiresNative: false,
-          artifacts: [],
-          lifecycleSource: plugin,
-        },
-        inspection,
-      };
-    },
-    nativeCliRunner: async (invocation) => {
-      throw new Error(
-        `Unexpected native call in live performance fixture: ${invocation.command} ${invocation.args.join(' ')}`,
-      );
-    },
-  };
-}
-
-describe('performance budgets', () => {
-  let suiteRoot: string;
-  let caseRoot: string;
-  let fixture: PerfCatalogFixture;
+describe('multi-source performance budgets', () => {
+  let root: string;
+  let sourceRoot: string;
   let env: NodeJS.ProcessEnv;
-  let workspace: string;
-  let liveRuntime: StatusCommandRuntime;
-  let unexpectedRemoteCalls = 0;
-  let caseIndex = 0;
 
   beforeAll(async () => {
-    suiteRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-perf-budget-'));
-    fixture = await createPerfCatalogFixture(suiteRoot);
-  }, 120_000);
-
-  beforeEach(async () => {
-    clearCurrentCatalogResolutionMemoForTests();
-    setCatalogPackageSourceForTests(null);
-    unexpectedRemoteCalls = 0;
-    caseRoot = path.join(suiteRoot, `case-${caseIndex}`);
-    caseIndex += 1;
-    workspace = path.join(caseRoot, 'workspace');
-    await fs.ensureDir(workspace);
+    root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-multi-source-perf-'));
+    sourceRoot = path.join(root, 'catalog');
+    await createCatalogSnapshotFixture(sourceRoot);
     env = {
-      ...isolatedEnv(path.join(caseRoot, 'runtime')),
-      AW_CLI_VERSION: fixture.cliVersion,
+      ...process.env,
+      AW_HOME: path.join(root, 'aw-home'),
+      AW_CODEX_HOME: path.join(root, 'codex-home'),
+      AW_CLAUDE_HOME: path.join(root, 'claude-home'),
     };
-    liveRuntime = {
-      ...(await createLiveOwnerRuntime({ workspace, pluginNames: fixture.pluginNames })),
-      env,
-    };
-
-    setCatalogPackageSourceForTests(createFixtureCatalogPackageSource(fixture));
-    await expect(resolveCurrentCatalog(env)).resolves.toMatchObject({
-      source: 'remote',
-      catalogVersion: fixture.catalogVersion,
+    await fs.outputJson(path.join(env.AW_HOME!, 'catalog-sources.json'), {
+      schemaVersion: 1,
+      sources: [{ id: 'local', type: 'path', primary: true, path: sourceRoot }],
     });
-    clearCurrentCatalogResolutionMemoForTests();
-    setCatalogPackageSourceForTests(createUnexpectedRemoteCatalogSource(() => {
-      unexpectedRemoteCalls += 1;
-    }));
-  });
-
-  afterEach(async () => {
-    clearCurrentCatalogResolutionMemoForTests();
-    setCatalogPackageSourceForTests(null);
-    await fs.remove(caseRoot);
   });
 
   afterAll(async () => {
-    await fs.remove(suiteRoot);
+    await fs.remove(root);
   });
 
-  it('keeps validated disk catalog cache-first resolution within its P95 budget', async () => {
-    const durations = await runSamples({
-      warmups: CACHE_WARMUPS,
-      samples: CACHE_SAMPLES,
-      beforeEach: clearCurrentCatalogResolutionMemoForTests,
-      operation: async () => {
-        await expect(resolveCurrentCatalog(env, { freshnessPolicy: 'cacheFirst' }))
-          .resolves.toMatchObject({
-            source: 'cache',
-            catalogVersion: fixture.catalogVersion,
-            cacheState: { state: 'fresh' },
-          });
-      },
+  it('keeps warm path source resolution within budget', async () => {
+    const configSnapshot = await readCatalogSourcesConfigSnapshot(env);
+    const durations = await sample(async () => {
+      await withResolvedMultiSourceCatalog({
+        cliVersion: '1.0.0', freshnessPolicy: 'cacheFirst', configSnapshot, env,
+        consume: (catalog) => { expect(catalog.sources[0]?.resolution?.source).toBe('path'); },
+      });
     });
-    const summary = createPerfSummary(
-      'catalog-cache-first-warm',
-      durations,
-      CACHE_P95_BUDGET_MS,
-    );
+    const summary = createPerfSummary('path-source-resolution-warm', durations, BUDGET_MS);
     printPerfSummary(summary);
-
-    expect(unexpectedRemoteCalls).toBe(0);
-    expect(summary.p95Ms).toBeLessThanOrEqual(summary.budgetMs);
+    expect(summary.p95Ms).toBeLessThanOrEqual(BUDGET_MS);
   });
 
-  it('keeps the first cache read after an active marketplace rebuild within budget', async () => {
-    const cached = await resolveCurrentCatalog(env, { freshnessPolicy: 'cacheFirst' });
-    await initializeLocalMarketplace({ force: true, env, catalogResolution: cached });
-    clearCurrentCatalogResolutionMemoForTests();
+  it('keeps force path validation within budget', async () => {
+    const configSnapshot = await readCatalogSourcesConfigSnapshot(env);
+    const durations = await sample(async () => {
+      await withResolvedMultiSourceCatalog({
+        cliVersion: '1.0.0', freshnessPolicy: 'forceRemote', configSnapshot, env,
+        consume: () => undefined,
+      });
+    });
+    const summary = createPerfSummary('path-source-force-validation', durations, BUDGET_MS);
+    printPerfSummary(summary);
+    expect(summary.p95Ms).toBeLessThanOrEqual(BUDGET_MS);
+  });
 
+  it('keeps the first source read after a namespaced marketplace rebuild within budget', async () => {
+    const plugin = await readPluginManifest(path.join(sourceRoot, 'plugins', 'demo'), {
+      mode: 'bundle',
+    });
+    const marketplaceRoot = path.join(env.AW_HOME!, 'marketplaces', 'local');
+    const marketplaceName = 'aw-local';
+    const configPath = path.join(env.AW_CODEX_HOME!, 'config.toml');
+    const cacheRoot = path.join(
+      env.AW_CODEX_HOME!,
+      'plugins',
+      'cache',
+      marketplaceName,
+      plugin.manifest.name,
+      plugin.manifest.version,
+    );
+    let marketplaceAdded = false;
+    let pluginAdded = false;
+    const writeCodexConfig = async () => fs.outputFile(configPath, [
+      ...(marketplaceAdded ? [
+        `[marketplaces.${JSON.stringify(marketplaceName)}]`,
+        `source = ${JSON.stringify(marketplaceRoot)}`,
+        'source_type = "local"',
+        '',
+      ] : []),
+      ...(pluginAdded ? [
+        `[plugins.${JSON.stringify(`${plugin.manifest.name}@${marketplaceName}`)}]`,
+        'enabled = true',
+        '',
+      ] : []),
+    ].join('\n'));
+    const integration = createRebuildIntegration({
+      context: createCommandExecutionContext({
+        env,
+        nativeCliRunner: async (invocation) => {
+          if (invocation.args[1] === 'marketplace' && invocation.args[2] === 'add') {
+            marketplaceAdded = true;
+            await writeCodexConfig();
+          } else if (invocation.args[1] === 'add') {
+            pluginAdded = true;
+            await fs.copy(path.join(marketplaceRoot, 'plugins', plugin.manifest.name), cacheRoot);
+            await fs.outputJson(path.join(cacheRoot, 'plugin.json'), {
+              id: plugin.manifest.name,
+              version: plugin.manifest.version,
+            });
+            await writeCodexConfig();
+          }
+          return { exitCode: 0, stdout: '', stderr: '' };
+        },
+      }),
+    });
+    const target = await integration.buildTarget({
+      sourceId: 'local',
+      sourceIdentity: `sha256:${'1'.repeat(64)}`,
+      pluginId: 'local/demo',
+      marketplaceName,
+      marketplaceRoot,
+      plugin,
+      platform: 'codex',
+      scope: 'user',
+      cwd: root,
+      command: 'install',
+      catalog: { rootDir: sourceRoot, source: 'local' },
+      includeHistoricalLifecycleArtifacts: false,
+    });
+    await integration.driver.writeNative(target);
+    await expect(fs.pathExists(path.join(marketplaceRoot, 'config.json'))).resolves.toBe(true);
+
+    const configSnapshot = await readCatalogSourcesConfigSnapshot(env);
     const startedAt = performance.now();
-    const resolved = await resolveCurrentCatalog(env, { freshnessPolicy: 'cacheFirst' });
+    await withResolvedMultiSourceCatalog({
+      cliVersion: '1.0.0', freshnessPolicy: 'cacheFirst', configSnapshot, env,
+      consume: () => undefined,
+    });
     const summary = createPerfSummary(
-      'catalog-cache-first-after-marketplace-rebuild',
+      'path-source-after-marketplace-rebuild',
       [performance.now() - startedAt],
-      POST_REBUILD_BUDGET_MS,
+      BUDGET_MS,
     );
     printPerfSummary(summary);
-
-    expect(resolved).toMatchObject({
-      source: 'cache',
-      catalogVersion: fixture.catalogVersion,
-      cacheState: { state: 'fresh' },
-    });
-    expect(unexpectedRemoteCalls).toBe(0);
-    expect(summary.maxMs).toBeLessThanOrEqual(summary.budgetMs);
+    expect(summary.maxMs).toBeLessThanOrEqual(BUDGET_MS);
   });
 
-  it('keeps the live status and console warm chain within its P95 budget', async () => {
-    const durations = await runSamples({
-      warmups: LIVE_WARMUPS,
-      samples: LIVE_SAMPLES,
-      beforeEach: clearCurrentCatalogResolutionMemoForTests,
-      operation: async () => {
-        const catalogResolution = await resolveCurrentCatalog(env, {
-          freshnessPolicy: 'cacheFirst',
-        });
-        const runtime = { ...liveRuntime, catalogResolution };
-        const status = await statusCommand([], {
-          cwd: workspace,
-          platform: 'codex',
-          scope: 'user',
-          json: true,
-        }, runtime);
-        const consoleResult = await loadConsoleItemsResult({
-          cwd: workspace,
-          platform: 'codex',
-          scope: 'user',
-          includeCatalogOnly: true,
-        }, runtime);
-        expect(status.payload.schemaVersion).toBe(3);
-        expect(status.payload.targets.length).toBeGreaterThan(0);
-        expect(
-          [...new Set(status.payload.targets.map((target) => target.state))],
-          JSON.stringify(status.payload.targets),
-        ).toEqual(['present']);
-        expect(consoleResult.status.schemaVersion).toBe(3);
-        expect(consoleResult.items.length).toBe(status.payload.targets.length);
-      },
+  it('keeps warm multi-source status and console loading within budget', async () => {
+    const durations = await sample(async () => {
+      const result = await statusCommandV4({
+        cwd: root, env, cliVersion: '1.0.0', json: true,
+      });
+      const consoleResult = await loadConsoleItemsResult({ cwd: root }, { env });
+      expect(result.payload.catalog.sources[0]?.id).toBe('local');
+      expect(consoleResult.items[0]?.pluginName).toBe('local/demo');
     });
-    const summary = createPerfSummary(
-      'live-status-console-warm',
-      durations,
-      LIVE_P95_BUDGET_MS,
-    );
+    const summary = createPerfSummary('multi-source-status-console-warm', durations, BUDGET_MS);
     printPerfSummary(summary);
-
-    expect(unexpectedRemoteCalls).toBe(0);
-    expect(summary.p95Ms).toBeLessThanOrEqual(summary.budgetMs);
+    expect(summary.p95Ms).toBeLessThanOrEqual(BUDGET_MS);
   });
 
-  it('applies one bounded deadline to a pending remote source', async () => {
-    const deadlineEnv = { ...env, AW_CATALOG_REMOTE_TIMEOUT_MS: '100' };
-    let identityCalls = 0;
-    const pendingSource: CatalogPackageSource = {
-      resolveIdentityByDistTag: async () => {
-        identityCalls += 1;
-        return new Promise(() => {});
-      },
-      resolveIdentityByVersion: async () => {
-        throw new Error('Unexpected exact version call.');
-      },
-      downloadArchive: async () => {
-        throw new Error('Unexpected archive call.');
-      },
-    };
-    clearCurrentCatalogResolutionMemoForTests();
-    setCatalogPackageSourceForTests(pendingSource);
-
-    const startedAt = performance.now();
-    const resolved = await resolveCurrentCatalog(deadlineEnv);
-    const summary = createPerfSummary(
-      'catalog-remote-deadline',
-      [performance.now() - startedAt],
-      REMOTE_DEADLINE_BUDGET_MS,
-    );
-    printPerfSummary(summary);
-
-    expect(resolved).toMatchObject({
-      source: 'cache',
-      cacheFallback: { used: true },
-      cacheState: { state: 'refreshFailed' },
-      remoteFailure: { stage: 'deadline' },
+  it('keeps source config reads within budget', async () => {
+    const durations = await sample(async () => {
+      const snapshot = await readCatalogSourcesConfigSnapshot(env);
+      expect(snapshot.config.sources[0]?.id).toBe('local');
     });
-    expect(identityCalls).toBe(1);
-    expect(summary.maxMs).toBeLessThanOrEqual(summary.budgetMs);
+    const summary = createPerfSummary('catalog-source-config-warm', durations, BUDGET_MS);
+    printPerfSummary(summary);
+    expect(summary.p95Ms).toBeLessThanOrEqual(BUDGET_MS);
   });
 });

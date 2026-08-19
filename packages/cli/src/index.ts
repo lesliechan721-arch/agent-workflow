@@ -49,12 +49,10 @@ import { loadConsoleItemsResult } from './commands/status.js';
 import { statusCommandV4 } from './commands/status-v4.js';
 import {
   normalizeUninstallCommandOptions,
-  normalizeCatalogSelectorOptions,
   normalizeCleanupCommandOptions,
   resolveConfigReadResolution,
   resolveConfigProjectLayer,
   resolveConfigWriteScope,
-  applyCatalogSelectorEnv,
   normalizeInstallCommandOptions,
   normalizeReinstallCommandOptions,
   normalizeUpgradeCommandOptions,
@@ -163,8 +161,6 @@ interface RawDiagnosticsOptions {
 
 interface RawConfigOptions extends RawDiagnosticsOptions {
   scope?: string;
-  catalogChannel?: string;
-  catalogVersion?: string;
   json?: boolean;
   valueJson?: boolean;
   yes?: boolean;
@@ -203,14 +199,6 @@ function shellCommand(tokens: string[]): string {
 
 function optionTokens(flag: string, value: string | undefined): string[] {
   return value === undefined ? [] : [flag, value];
-}
-
-function catalogSelectorTokens(rawOptions: {
-  catalogChannel?: string;
-  catalogVersion?: string;
-}): string[] {
-  void rawOptions;
-  return [];
 }
 
 function writeCommandUsage(command: WriteWizardCommand): string {
@@ -267,9 +255,6 @@ export function buildEquivalentWriteCommandTokens(
     selection.platform ?? 'both',
     '--scope',
     selection.scope ?? 'user',
-    ...(command === 'install' || command === 'upgrade' || command === 'reinstall'
-      ? catalogSelectorTokens(rawOptions)
-      : []),
     ...(command === 'cleanup' ? [] : optionTokens('--script-timeout', rawOptions.scriptTimeout)),
     ...(!all && selection.plugins.length > 0 ? ['--', ...selection.plugins] : []),
   ];
@@ -284,8 +269,6 @@ interface EquivalentConfigCommandOptions {
   projectLayer?: 'shared' | 'local';
   valueJson?: boolean;
   confirmed?: boolean;
-  catalogChannel?: string;
-  catalogVersion?: string;
 }
 
 function equivalentConfigCommand(options: EquivalentConfigCommandOptions): string {
@@ -322,8 +305,6 @@ function configSetEquivalentOptions(
     scope: selection.scope ?? 'user',
     projectLayer: selection.projectLayer,
     valueJson: rawOptions.valueJson,
-    catalogChannel: rawOptions.catalogChannel,
-    catalogVersion: rawOptions.catalogVersion,
   };
 }
 
@@ -344,7 +325,6 @@ export function buildEquivalentConfigCommandTokens(
     ...optionTokens('--scope', options.scope),
     ...(options.projectLayer === 'local' ? ['--local'] : []),
     ...(options.valueJson ? ['--value-json'] : []),
-    ...(options.command === 'reset' ? [] : catalogSelectorTokens(options)),
     ...(options.confirmed ? ['--yes'] : []),
     '--',
     options.plugin,
@@ -609,8 +589,6 @@ interface RawWriteWizardOptions extends RawDiagnosticsOptions {
   all?: boolean;
   scope?: string;
   platform?: string;
-  catalogChannel?: string;
-  catalogVersion?: string;
   scriptTimeout?: string;
   json?: boolean;
 }
@@ -734,20 +712,14 @@ async function runWriteCommandAction(
   return { cancelled: false, result: result.value! };
 }
 
-function addCatalogSelectorOptions<T extends Command>(
-  command: T,
-): T {
-  return command;
-}
-
 function parseBareConsoleOptions(
   argv: string[],
-): (RawDiagnosticsOptions & { catalogChannel?: string; catalogVersion?: string }) | null {
+): RawDiagnosticsOptions | null {
   if (argv.length === 0) {
     return {};
   }
 
-  const parsed: RawDiagnosticsOptions & { catalogChannel?: string; catalogVersion?: string } = {};
+  const parsed: RawDiagnosticsOptions = {};
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index];
     if (!token) {
@@ -956,20 +928,12 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
 
   const createActionContext = (
     commandName: string,
-    rawOptions: RawDiagnosticsOptions & {
-      catalogChannel?: string;
-      catalogVersion?: string;
-      channel?: string;
-    },
-    selectorOptions: { allowChannelAlias?: boolean } = {},
+    rawOptions: RawDiagnosticsOptions,
   ): CliExecutionContext =>
     createCliExecutionContext({
       ...options,
       cwd,
-      env: applyCatalogSelectorEnv(
-        env,
-        normalizeCatalogSelectorOptions(rawOptions, selectorOptions),
-      ),
+      env,
       io,
       interactive: options.interactive,
       diagnostics: toCliDiagnosticsOptions(commandName, rawOptions, options.diagnostics),
@@ -1257,10 +1221,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       commandExitState.exitCode = result.ok ? 0 : 1;
     });
 
-  addCatalogSelectorOptions(
-    program
-      .command('install'),
-  )
+  program
+    .command('install')
     .argument('[plugins...]')
     .option('-s, --scope <scope>', 'project or user')
     .option('-p, --platform <platform>', 'codex | claude | both')
@@ -1275,8 +1237,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         rawOptions: {
           scope?: string;
           platform?: string;
-          catalogChannel?: string;
-          catalogVersion?: string;
           scriptTimeout?: string;
           json?: boolean;
         } & RawDiagnosticsOptions,
@@ -1333,10 +1293,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       commandExitState.exitCode = resolveCommandReceiptExitCode(receipt);
     });
 
-  addCatalogSelectorOptions(
-    program
-      .command('upgrade'),
-  )
+  program
+    .command('upgrade')
     .argument('[plugins...]')
     .option('-a, --all', 'upgrade all plugins', false)
     .option('-s, --scope <scope>', 'project or user')
@@ -1353,8 +1311,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           all?: boolean;
           scope?: string;
           platform?: string;
-          catalogChannel?: string;
-          catalogVersion?: string;
           scriptTimeout?: string;
           json?: boolean;
         } & RawDiagnosticsOptions,
@@ -1409,10 +1365,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       commandExitState.exitCode = result.overallState === 'failed' ? 1 : 0;
     });
 
-  addCatalogSelectorOptions(
-    program
-      .command('reinstall'),
-  )
+  program
+    .command('reinstall')
     .argument('[plugins...]')
     .option('-s, --scope <scope>', 'project or user')
     .option('-p, --platform <platform>', 'codex | claude | both')
@@ -1426,8 +1380,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       rawOptions: {
         scope?: string;
         platform?: string;
-        catalogChannel?: string;
-        catalogVersion?: string;
         scriptTimeout?: string;
         json?: boolean;
       } & RawDiagnosticsOptions,
@@ -1493,8 +1445,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             plugin: selection.plugins[0]!,
             scope: rawOptions.scope,
             projectLayer: rawOptions.local ? 'local' : 'shared',
-            catalogChannel: rawOptions.catalogChannel,
-            catalogVersion: rawOptions.catalogVersion,
           })),
           execute: (selection) => execute(selection.plugins[0]!),
         });
@@ -1568,8 +1518,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             key,
             scope: rawOptions.scope,
             projectLayer: rawOptions.local ? 'local' : 'shared',
-            catalogChannel: rawOptions.catalogChannel,
-            catalogVersion: rawOptions.catalogVersion,
           })),
           execute: (selection) => execute(selection.plugins[0]!),
         });
@@ -1647,8 +1595,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           env: context.env,
           nativeCliRunner: context.nativeCliRunner,
           rebuildRuntime: context,
-          catalogChannel: rawOptions.catalogChannel,
-          catalogVersion: rawOptions.catalogVersion,
           request: {
             updates: { [selectedKey]: inputValue },
           },
@@ -1805,8 +1751,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           env: context.env,
           nativeCliRunner: context.nativeCliRunner,
           rebuildRuntime: context,
-          catalogChannel: rawOptions.catalogChannel,
-          catalogVersion: rawOptions.catalogVersion,
           request: {
             removeKeys: [selectedKey],
           },
@@ -1861,8 +1805,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             key: selection.key!,
             scope: selection.scope ?? 'user',
             projectLayer: selection.projectLayer,
-            catalogChannel: rawOptions.catalogChannel,
-            catalogVersion: rawOptions.catalogVersion,
           })),
           resultState: overallResultState,
           execute: (selection) => execute(selection.plugins[0]!, selection.key!),
@@ -1947,8 +1889,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           env: context.env,
           nativeCliRunner: context.nativeCliRunner,
           rebuildRuntime: context,
-          catalogChannel: rawOptions.catalogChannel,
-          catalogVersion: rawOptions.catalogVersion,
           plugin,
         });
         return {
@@ -2225,10 +2165,7 @@ export async function runCli(
       const context = createCliExecutionContext({
         ...options,
         io,
-        env: applyCatalogSelectorEnv(
-          options.env ?? process.env,
-          normalizeCatalogSelectorOptions(bareConsoleOptions),
-        ),
+        env: options.env ?? process.env,
         diagnostics: {
           ...toCliDiagnosticsOptions('console', bareConsoleOptions, options.diagnostics),
           metadata: {

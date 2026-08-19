@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { bundlePlugins } from '../../scripts/bundle-plugins.js';
 import * as pluginStaging from '../../scripts/plugin-staging.js';
-import type { CatalogManifest, PluginMeta } from '../../src/types.js';
+import type { CatalogManifestV3, PluginMeta } from '../../src/types.js';
 import { calculateCatalogEntryContentDigest } from '../../src/utils/catalog-digests.js';
 import {
   appendCatalogToPluginReleaseLedger,
@@ -50,27 +50,14 @@ function createManifest(options: {
   manifestDigest?: string;
   catalogVersion?: string;
   channel?: 'latest' | 'beta';
-}): CatalogManifest {
+}): CatalogManifestV3 {
   const catalogVersion = options.catalogVersion ?? '2.0.0-beta.1';
   const channel = options.channel ?? 'beta';
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     catalogVersion,
     channel,
     compatibility: { aw: { minVersion: '0.0.0' } },
-    packages: {
-      sidecar: {
-        name: '@lesliechan721/aw-plugins-manifest',
-        version: catalogVersion,
-        channel,
-      },
-      full: {
-        name: '@lesliechan721/aw-plugins',
-        version: catalogVersion,
-        channel,
-        manifestPath: './catalog-manifest.json',
-      },
-    },
     entries: [{
       name: 'ask-me',
       version: options.version,
@@ -79,15 +66,14 @@ function createManifest(options: {
       category: 'workflow',
       strict: true,
       compatibility: { aw: { minVersion: '0.0.0' } },
-      marketplace: {
-        policy: {
-          installation: 'AVAILABLE',
-          authentication: 'NOT_REQUIRED',
-          products: ['CODEX'],
-        },
+      policy: {
+        installation: 'AVAILABLE',
+        authentication: 'NOT_REQUIRED',
+        products: ['CODEX'],
       },
       artifactDigest: options.artifactDigest ?? DIGEST_B,
       manifestDigest: options.manifestDigest ?? DIGEST_C,
+      contentDigest: DIGEST_A,
     }],
   };
 }

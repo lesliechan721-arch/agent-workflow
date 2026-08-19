@@ -71,7 +71,7 @@ async function publishCliFromSnapshot(
   await runCommand('pnpm', publishArgs, {
     env: {
       ...process.env,
-      AW_NPM_REGISTRY_URL: registryUrl,
+      AW_RELEASE_NPM_REGISTRY_URL: registryUrl,
       npm_config_registry: registryUrl,
       NPM_CONFIG_REGISTRY: registryUrl,
     },

@@ -65,7 +65,7 @@ function restoreWorkerBaseFetch(): void {
 
 function installNoNetworkFetchGuard(): void {
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
-    throw new Error(`Network access is disabled in tests. Stub fetch or setCatalogPackageSourceForTests for ${String(input)}.`);
+    throw new Error(`Network access is disabled in tests. Use a path source or local bare Git remote for ${String(input)}.`);
   }) as Mock);
 }
 

@@ -25,7 +25,7 @@ describe('CLI release registry URL', () => {
     }));
 
     await expect(resolveRegistryUrl(packageJsonPath, {
-      AW_NPM_REGISTRY_URL: ' https://env.example.test/team ',
+      AW_RELEASE_NPM_REGISTRY_URL: ' https://env.example.test/team ',
     })).resolves.toBe('https://env.example.test/team/');
   });
 

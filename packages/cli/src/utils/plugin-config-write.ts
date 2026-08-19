@@ -291,8 +291,6 @@ async function reinstallVisibleTargets(options: {
   nativeCliRunner?: NativeCliRunner;
   reinstallCommandImpl?: ReinstallCommand;
   rebuildRuntime?: RebuildCommandRuntime;
-  catalogChannel?: string;
-  catalogVersion?: string;
 }): Promise<{
   overallState: ReceiptOverallState;
   targetResults: ReceiptTargetResult[];
@@ -324,8 +322,6 @@ async function reinstallVisibleTargets(options: {
           cwd: options.cwd,
           platform: target.platform,
           scope: target.scope,
-          ...(options.catalogChannel ? { catalogChannel: options.catalogChannel } : {}),
-          ...(options.catalogVersion ? { catalogVersion: options.catalogVersion } : {}),
         },
         {
           ...options.rebuildRuntime,
@@ -411,8 +407,6 @@ async function compensateConfigRuntimeRollback(options: {
   nativeCliRunner?: NativeCliRunner;
   reinstallCommandImpl?: ReinstallCommand;
   rebuildRuntime?: RebuildCommandRuntime;
-  catalogChannel?: string;
-  catalogVersion?: string;
 }): Promise<{
   configWrite: 'rolledBack' | 'rollbackFailed';
   targetResults: ReceiptTargetResult[];
@@ -443,8 +437,6 @@ async function compensateConfigRuntimeRollback(options: {
       nativeCliRunner: options.nativeCliRunner,
       reinstallCommandImpl: options.reinstallCommandImpl,
       rebuildRuntime: options.rebuildRuntime,
-      catalogChannel: options.catalogChannel,
-      catalogVersion: options.catalogVersion,
     });
   } catch (error) {
     const message = `rollbackFailed: runtime compensation failed: ${error instanceof Error ? error.message : String(error)}`;
@@ -511,8 +503,6 @@ export async function replayConfigRuntimeWrites(options: {
   nativeCliRunner?: NativeCliRunner;
   reinstallCommandImpl?: ReinstallCommand;
   rebuildRuntime?: RebuildCommandRuntime;
-  catalogChannel?: string;
-  catalogVersion?: string;
 }): Promise<ConfigRuntimeReplayReceipt> {
   const applied = await reinstallVisibleTargets({
     plugin: options.plugin,
@@ -523,8 +513,6 @@ export async function replayConfigRuntimeWrites(options: {
     nativeCliRunner: options.nativeCliRunner,
     reinstallCommandImpl: options.reinstallCommandImpl,
     rebuildRuntime: options.rebuildRuntime,
-    catalogChannel: options.catalogChannel,
-    catalogVersion: options.catalogVersion,
   });
   return {
     configWrite: 'succeeded',
@@ -547,8 +535,6 @@ type ApplyPluginConfigWriteOptions = {
   nativeCliRunner?: NativeCliRunner;
   reinstallCommandImpl?: ReinstallCommand;
   rebuildRuntime?: RebuildCommandRuntime;
-  catalogChannel?: string;
-  catalogVersion?: string;
   request: PluginConfigWriteRequest;
 };
 
@@ -728,8 +714,6 @@ async function applyPluginConfigWriteUnlocked(
           nativeCliRunner: options.nativeCliRunner,
           reinstallCommandImpl: options.reinstallCommandImpl,
           rebuildRuntime: options.rebuildRuntime,
-          catalogChannel: options.catalogChannel,
-          catalogVersion: options.catalogVersion,
         });
   } catch (error) {
     if (changedKeys.length > 0) {
@@ -766,8 +750,6 @@ async function applyPluginConfigWriteUnlocked(
         nativeCliRunner: options.nativeCliRunner,
         reinstallCommandImpl: options.reinstallCommandImpl,
         rebuildRuntime: options.rebuildRuntime,
-        catalogChannel: options.catalogChannel,
-        catalogVersion: options.catalogVersion,
       })
     : undefined;
   if (rollback) warnings.push(rollback.warning);
@@ -833,8 +815,6 @@ type ResetPluginConfigWriteOptions = {
   nativeCliRunner?: NativeCliRunner;
   reinstallCommandImpl?: ReinstallCommand;
   rebuildRuntime?: RebuildCommandRuntime;
-  catalogChannel?: string;
-  catalogVersion?: string;
 };
 
 async function resetPluginConfigWithHelperUnlocked(
@@ -914,8 +894,6 @@ async function resetPluginConfigWithHelperUnlocked(
           nativeCliRunner: options.nativeCliRunner,
           reinstallCommandImpl: options.reinstallCommandImpl,
           rebuildRuntime: options.rebuildRuntime,
-          catalogChannel: options.catalogChannel,
-          catalogVersion: options.catalogVersion,
         });
       } catch (error) {
         await restorePluginConfigStore({
@@ -952,8 +930,6 @@ async function resetPluginConfigWithHelperUnlocked(
         nativeCliRunner: options.nativeCliRunner,
         reinstallCommandImpl: options.reinstallCommandImpl,
         rebuildRuntime: options.rebuildRuntime,
-        catalogChannel: options.catalogChannel,
-        catalogVersion: options.catalogVersion,
       })
     : undefined;
   if (rollback) {

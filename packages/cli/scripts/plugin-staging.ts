@@ -28,12 +28,10 @@ export {
   normalizeManifestDigestInput,
   readPluginManifest,
   resolvePluginsFromCatalog,
-  validateCatalogManifest,
 } from '../src/utils/manifest.js';
 export {
   appendCatalogToPluginReleaseLedger,
   assertStablePluginVersion,
-  createLegacyPluginReleaseLedger,
   mergePluginReleaseLedgers,
   PLUGIN_RELEASE_LEDGER_FILENAME,
   resolveBetaPluginVersionOverrides,

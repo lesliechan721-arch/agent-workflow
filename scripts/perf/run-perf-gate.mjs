@@ -9,10 +9,11 @@ const FAST_UNIT_HARD_TIMEOUT_MS = 45_000;
 const PERF_HARD_TIMEOUT_MS = 120_000;
 const SUMMARY_PREFIX = 'AW_PERF_SUMMARY ';
 export const EXPECTED_PERF_SUMMARY_NAMES = [
-  'catalog-cache-first-warm',
-  'catalog-cache-first-after-marketplace-rebuild',
-  'live-status-console-warm',
-  'catalog-remote-deadline',
+  'path-source-resolution-warm',
+  'path-source-force-validation',
+  'path-source-after-marketplace-rebuild',
+  'multi-source-status-console-warm',
+  'catalog-source-config-warm',
 ];
 
 const scriptPath = fileURLToPath(import.meta.url);

@@ -11,8 +11,8 @@
 - `commands/status-v4.ts` 读取多源 catalog、live ownership 和平台组件，输出 status v4，并为控制台提供同一份数据。
 - `utils/ownership.ts` 定义 owner marker、组件检查和安全删除边界。
 - `utils/lifecycle-active-store.ts` 保存最后一次成功写入所需的 lifecycle 输入。
-- `utils/local-marketplace.ts` 管理本机 active marketplace 和严格 catalog cache。
-- `utils/plugin-catalog.ts` 保留旧 npm sidecar/full catalog、selector 和严格 cache fallback 的迁移兼容实现。
+- `utils/local-marketplace.ts` 校验 namespaced active marketplace，并在安全替换时重放 Codex Skill owner overlay。
+- `utils/multi-source-catalog.ts` 是 schema 1 Git/path source 的唯一 runtime catalog resolver。
 - `utils/plugin-config.ts` 与 `utils/plugin-config-write.ts` 管理 namespaced AW config store 和 config v4 输出。
 - `output/command-receipt.ts` 生成五个写命令的 receipt v4。
 - `generators/` 生成 instructions、permissions、hooks、agents、skills 和 MCP 等平台能力。
@@ -97,9 +97,9 @@ Local runtime
 - Git publisher 在隔离临时 repository 中发布。channel 固定为 `refs/heads/catalog/latest` 和 `refs/heads/catalog/beta`；版本 tag 固定为 annotated、immutable 的 `refs/tags/catalog-v<catalogVersion>`。首次 channel commit 是 orphan，后续 commit 只以当前 channel head 为 parent。catalog-only 使用一次 atomic push 同时发布 tag 和 channel；不支持 atomic 的 remote 会安全失败。
 - publisher 在 staging 前读取并验证两个 channel 的 schema 3 snapshot 和 ledger，合并完整历史后重新 stage。每个 channel 的 catalog version 严格单调；相同版本只接受相同 runtime 内容。已有 tag 只有在其 peeled snapshot runtime 内容相同时才可作为幂等重试复用，轻量 tag、损坏 snapshot、ledger 缺失和 digest 漂移均 fail closed。
 - catalog-only 必须从 npm registry 明确解析当前已发布的同 channel CLI，并通过 catalog compatibility 后才发布。组合发布在写入任何 catalog ref 或发布 CLI 前比较 registry dist-tag 与本地 CLI candidate；相同字符串跳过 CLI 发布，只有 precedence 严格更高的 candidate 才可发布，回退或同 precedence 不同字符串均 fail closed。当前 CLI 已兼容时执行 atomic catalog 后发布 CLI；需要本次 CLI 时执行 immutable tag、CLI npm publish、channel promotion。promotion 只允许 verified tag 的 fast-forward，并提供固定 `release:promote:catalog:<channel>` 恢复入口。
-- official Git refs 的实际迁移和 CLI 默认 source cutover 不属于本阶段；旧 npm catalog 的冻结或迁移也尚未执行。
-- Git/path 多 source 的待切换基础合同使用 `<AW_HOME>/catalog-sources.json` schema 1。文件缺失时读取内置 official primary；首次配置 mutation 才物化文件。当前 npm resolver 尚不读取此配置。
-- schema 2 npm catalog resolver 和 fixture 只为旧 CLI 迁移兼容保留，不再是 build 或 release 真值；CLI cutover 属于 Phase 4C。
+- 首次 official cutover 只使用 `release:bootstrap:catalog:beta|latest`。它复用 staging 和 Git publisher，不读取已发布 CLI compatibility；目标 channel 必须缺失，或 tag、channel 和候选 runtime 内容完全相同。tag 漂移、轻量 tag、已有不同 channel 内容和不支持 atomic push 都 fail closed。beta 与 latest 的首次 commit 分别是独立 orphan。该入口不发布 CLI，首次迁移完成后普通更新必须使用 catalog-only 或 combined publisher。
+- `<AW_HOME>/catalog-sources.json` schema 1 是唯一 runtime source 合同。文件缺失时读取内置 `official` primary，URL 固定为 `https://github.com/lesliechan721-arch/agent-workflow.git`；首次配置 mutation 才物化文件。stable CLI 的 `cliChannel` ref 是 `refs/heads/catalog/latest`，prerelease 是 `refs/heads/catalog/beta`。显式 ref 不映射 channel，`--default-ref` 才恢复 `cliChannel`。
+- 新 CLI 不包含 npm catalog selector、registry resolver、package archive identity 或旧 strict cache。旧两个 npm catalog package 只作为已发布历史冻结；不删除、不 unpublish，也不继续更新。
 - `aw catalog source add/update/list/set-primary/remove` 管理 schema 1 source config。add/update 先用 `forceRemote` 只验证 candidate 中的目标 source，并只保留 lease-safe 普通证据；随后在 runtime lease 内执行引用预检、expected config digest 复查和原子替换。identity 变化、primary 变化和 remove 在发现 schema 1 owner、旧裸名 config/lifecycle 或旧 marketplace 时返回 `legacyStateUnsupported`，不自动迁移或清理。
 - Git/path provider、schema 3 snapshot validator、source strict cache 和四 worker multi-source resolver 已作为独立内核存在。snapshot 根只接受 `catalog-manifest.json`、`.agents/`、`.claude-plugin/`、`plugins/` 和可选的发布端 ledger；validator 从真实 plugin manifest 重建完整 entry 投影。provider 从不可变 Git commit 或每次 path 复制物化已验证 snapshot。
 - Git provider 只允许 HTTPS、SSH、file URL 和规范绝对本地路径。它清除 Git 命令/配置注入环境，固定 protocol 与 SSH 命令边界，并在网络访问前拒绝改变 source identity 的 Git URL rewrite；managed bare cache 拒绝非受控 local config、内部 symlink 和 object alternates。Abort 和 remote deadline 必须完成整个子进程树清理后才释放 object lock。
@@ -109,7 +109,7 @@ Local runtime
 - 源码 plugin manifest 直接保存下一次稳定版本；`contentDigest` 排除生成 manifest 的 version 字段，用于识别插件内容。
 - Beta 发布根据源码稳定版本、`contentDigest` 和已发布账本，在临时 staging 中物化 prerelease plugin version。Stable 发布直接使用源码 manifest version。
 - release staging 包含发布端专用的 `plugin-release-ledger.json`。记录以 catalog channel/version 和 plugin name/version 的完整发布身份保留历史；同一 `plugin@version` 跨历史必须保持 `artifactDigest`、`manifestDigest` 和 `contentDigest` 不变。当前 snapshot 的每个 entry 必须有且只有一个当前 catalog 记录。publisher 从两个已发布 channel 合并 ledger，再生成候选 snapshot。
-- 旧 npm strict catalog cache 只服务迁移兼容。新 source strict cache 使用 immutable entry、原子 selector publication 和有界 lock。
+- source strict cache 使用 immutable entry、原子 selector publication 和有界 lock。
 - active marketplace 只供平台原生能力读取。`AW_HOME` 同盘 sibling coordination root 提供 lifecycle lease 和 runtime lease；同时需要两者时，固定按 lifecycle、runtime 的顺序获取。runtime lease 串行根替换、catalog source config、user config 及 Codex user Skill overlay 的写入，lifecycle lease 保护 active snapshot。只读检查不获取排他租约，也不创建 coordination 状态。operation lock 也位于 sibling root，不进入被替换目录。重建必须保留 catalog source config、strict catalog cache、AW config store、Codex user Skill overlay 和 lifecycle active snapshot。
 - markerless Codex user Skill 只有在文件树与 current catalog 或当前 renderer 的期望树完全一致时，才按 pristine catalog 内容和 absent 状态处理。install/reinstall 可以为它原子写入 owner marker；内容变化、多余文件、符号链接或 foreign marker 仍按 collision 处理。
 
@@ -221,7 +221,7 @@ cache publication 必须满足：
 - entry 写入完成前，reader 不能看到部分内容。
 - selector index 只能指向已完成的 immutable entry。
 - 较旧的远程观察不能覆盖较新的观察。
-- registry source identity 不同的 selector index 互不复用。
+- source identity 不同的 selector index 互不复用。
 - lock 等待有 deadline，释放时必须验证 owner token。
 - 冲突 observation 不得污染已经提交的 entry。
 - corrupt entry 必须隔离，后续 writer 仍能正常发布。

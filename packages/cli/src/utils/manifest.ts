@@ -10,7 +10,6 @@ import type {
   BuildConfigFileRuleSet,
   BuildConfigTemplates,
   CatalogChannel,
-  CatalogManifest,
   CatalogManifestEntry,
   ClaudeManifestOverrides,
   CodexProjectManagedKind,
@@ -2644,32 +2643,6 @@ function assertCatalogChannelVersionContract(options: {
   }
 }
 
-function normalizeCatalogManifestPackageIdentity(
-  value: unknown,
-  fieldName: string,
-  options: {
-    requireManifestPath: boolean;
-  },
-): CatalogManifest['packages']['sidecar'] {
-  const input = assertObject(value, fieldName);
-  assertAllowedKeys(input, fieldName, ['name', 'version', 'channel', 'manifestPath']);
-
-  const identity = {
-    name: ensureString(input.name, `${fieldName}.name`),
-    version: assertStrictSemVer(input.version, `${fieldName}.version`),
-    channel: assertCatalogChannel(input.channel, `${fieldName}.channel`),
-    manifestPath: input.manifestPath === undefined
-      ? undefined
-      : normalizeCatalogRelativePath(input.manifestPath, `${fieldName}.manifestPath`),
-  };
-
-  if (options.requireManifestPath && !identity.manifestPath) {
-    throw new Error(`Invalid ${fieldName}.manifestPath: expected a non-empty string.`);
-  }
-
-  return identity;
-}
-
 function normalizeCatalogManifestEntry(
   value: unknown,
   fieldName: string,
@@ -2718,7 +2691,7 @@ function normalizeCatalogManifestEntry(
 }
 
 export interface NormalizedCatalogManifestBase {
-  catalogVersion: CatalogManifest['catalogVersion'];
+  catalogVersion: string;
   channel: CatalogChannel;
   compatibility: PluginCompatibility;
 }
@@ -2774,55 +2747,6 @@ export function normalizeCatalogManifestEntries(
     });
   }
   return entries;
-}
-
-export function validateCatalogManifest(
-  rawManifest: unknown,
-): CatalogManifest {
-  const input = assertObject(rawManifest, 'catalog manifest');
-  assertAllowedKeys(input, 'catalog manifest', [
-    'schemaVersion',
-    'catalogVersion',
-    'channel',
-    'compatibility',
-    'packages',
-    'entries',
-  ]);
-
-  if (input.schemaVersion !== 2) {
-    throw new Error('Invalid catalog manifest.schemaVersion: expected 2.');
-  }
-
-  const base = normalizeCatalogManifestBase(input, 'catalog manifest');
-  const packages = assertObject(input.packages, 'catalog manifest.packages');
-  assertAllowedKeys(packages, 'catalog manifest.packages', ['sidecar', 'full']);
-  const sidecar = normalizeCatalogManifestPackageIdentity(packages.sidecar, 'catalog manifest.packages.sidecar', {
-    requireManifestPath: false,
-  });
-  const full = normalizeCatalogManifestPackageIdentity(packages.full, 'catalog manifest.packages.full', {
-    requireManifestPath: true,
-  });
-  for (const [label, identity] of [['sidecar', sidecar], ['full', full]] as const) {
-    if (identity.version !== base.catalogVersion) {
-      throw new Error(`Invalid catalog manifest.packages.${label}.version: must match catalogVersion ${base.catalogVersion}.`);
-    }
-    if (identity.channel !== base.channel) {
-      throw new Error(`Invalid catalog manifest.packages.${label}.channel: must match channel ${base.channel}.`);
-    }
-  }
-  const entries = normalizeCatalogManifestEntries(input.entries, base, 'catalog manifest');
-
-  return {
-    schemaVersion: 2,
-    catalogVersion: base.catalogVersion,
-    channel: base.channel,
-    compatibility: base.compatibility,
-    packages: {
-      sidecar,
-      full,
-    },
-    entries,
-  };
 }
 
 export function createBundleSourceManifest(plugin: PluginMeta): PluginManifestSource {

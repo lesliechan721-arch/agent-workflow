@@ -206,7 +206,22 @@ make beta-release CLI_VERSION=0.2.0-beta.3 CATALOG_VERSION=1.2.0-beta.1
 make release CLI_VERSION=0.2.0 CATALOG_VERSION=1.2.0
 ```
 
-Git publisher 使用 `catalog/latest`、`catalog/beta` orphan channel 和 immutable annotated `catalog-v<version>` tag。组合发布的 promotion 失败时，错误会输出可复制的 `release:promote:catalog:<channel>` 命令。CLI-only 发布入口仍保留。official refs 的迁移和 CLI 默认 source 切换尚未执行。
+首次迁移顺序固定如下：
+
+```bash
+make stage-catalog CATALOG_VERSION=1.2.0-beta.1
+make verify-catalog
+make bootstrap-catalog-beta CATALOG_VERSION=1.2.0-beta.1
+make stage-catalog CATALOG_VERSION=1.2.0
+make verify-catalog
+make bootstrap-catalog-release CATALOG_VERSION=1.2.0
+pnpm test:smoke:bootstrap:catalog
+# 验证 Git provider 可以 fetch 两个 official ref 后，再发布使用 Git source 的新 CLI。
+```
+
+bootstrap 只建立首次 official refs，不发布 CLI。它是旧 CLI compatibility 的一次性迁移例外；普通 catalog-only 入口没有绕过参数。目标 channel 已有其它内容时它会拒绝；首次迁移完成后必须使用上面的普通 catalog-only 或 combined 入口。Git publisher 使用 `catalog/latest`、`catalog/beta` 独立 orphan channel 和 immutable annotated `catalog-v<version>` tag；不支持 atomic push 时不降级。组合发布的 promotion 失败时，错误会输出可复制的 `release:promote:catalog:<channel>` 命令。
+
+新 CLI 只读取 schema 1 Git/path sources。默认 `official` URL 是 `https://github.com/lesliechan721-arch/agent-workflow.git`；stable 使用 `refs/heads/catalog/latest`，prerelease 使用 `refs/heads/catalog/beta`。旧 npm catalog packages 在 cutover 后冻结，不删除或 unpublish，也不再更新。
 
 维护者入口：
 
