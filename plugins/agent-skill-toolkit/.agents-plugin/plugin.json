@@ -11,7 +11,9 @@
   "scripts": {
     "tests": {
       "node": [
-        "./scripts/contract.test.mjs"
+        "./scripts/contract.test.mjs",
+        "./scripts/stage-handoff-contract.test.mjs",
+        "./scripts/review-behavior-contract.test.mjs"
       ]
     }
   },

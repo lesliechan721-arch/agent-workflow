@@ -11,6 +11,7 @@ const mappings = [
   ['agent-skill-toolkit/scripts/validate-json-contract.mjs', 'skills/author-aw-plugin/scripts/validate-json-contract.mjs'],
   ['agent-skill-toolkit/scripts/validate-json-contract.mjs', 'skills/review-aw-plugin/scripts/validate-json-contract.mjs'],
   ['agent-skill-toolkit/scripts/validate-review-result.mjs', 'skills/review-aw-plugin/scripts/validate-review-result.mjs'],
+  ['agent-skill-toolkit/scripts/validate-review-stage-result.mjs', 'skills/review-aw-plugin/scripts/validate-review-stage-result.mjs'],
   ['agent-skill-toolkit/scripts/validate-eval-audit-result.mjs', 'skills/author-aw-plugin/scripts/validate-eval-audit-result.mjs'],
   ['agent-skill-toolkit/scripts/validate-eval-audit-result.mjs', 'skills/review-aw-plugin/scripts/validate-eval-audit-result.mjs'],
   ['agent-skill-toolkit/standards/review-result-rules.generated.json', 'skills/review-aw-plugin/assets/review-result-rules.generated.json'],

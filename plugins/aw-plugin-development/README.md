@@ -22,12 +22,13 @@
 
 Author 不给自己的结果出独立发布结论；Reviewer 不修改生产源码。正式报告发布需要授权，README 或 manifest 的后续写入交回 Author 或目标工作区的 release 工具。
 
+Review adapter 的 `providedStages` 只接受 `validate-review-stage-result.mjs` 生成并由完整 Bundle 复核的阶段索引；调用方自报完成、final artifact 存在或字段齐全都不能替代 target/result digest 绑定。
+
 ## Workspace boundary
 
 - 插件根可以位于 `plugins/`、`packages/`、`tools/` 或用户明确提供的其它目录。
 - 插件与 Skill README 的作者规范随本插件分发，不依赖宿主仓库的 `docs/`。
 - 构建、测试、物化和发布命令从目标工作区发现；没有对应命令时明确标记未验证。
-- ReviewInputBundle v3 只传路径、digest 与阶段引用；大体积 Eval audit、trace 和 result 保留在对应 artifact 中按需读取。
 
 ## Maintainer validation
 

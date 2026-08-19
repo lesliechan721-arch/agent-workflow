@@ -108,6 +108,8 @@
         },
         "providedStages": {
           "type": "array",
+          "uniqueItems": true,
+          "description": "Compact indexes of independently produced results. Each record must be revalidated against resultPath before reuse.",
           "items": {
             "type": "object",
             "required": [
@@ -134,7 +136,8 @@
                 "minLength": 1
               },
               "independentContext": {
-                "type": "boolean"
+                "const": true,
+                "description": "Reusable stages must be produced in an independent context; false is not a completed handoff."
               },
               "targetDigest": {
                 "type": "string",
@@ -142,7 +145,8 @@
               },
               "resultPath": {
                 "type": "string",
-                "minLength": 1
+                "minLength": 1,
+                "description": "Workspace-relative path to a validated stage envelope or EvalAuditResult."
               },
               "resultDigest": {
                 "type": "string",

@@ -1,0 +1,93 @@
+{
+  "skill_name": "review-agent-skill",
+  "evals": [
+    {
+      "id": "compact_bundle_selective_consumption",
+      "prompt": "请对工作区中的 `target-skill` 做 quick Skill review。`review-input-bundle.json` 同时列出了一个与当前 quick review 无关的历史 Eval result。先按 ReviewInputBundle 合同判断当前 branch 需要哪些材料；不要为了“完整”读取无关 evidence body。返回人读摘要和最小结构化结论，不修改工作区。",
+      "sandbox": "read-only",
+      "scripted_replies": [],
+      "expected_output": "Reviewer 只使用 target source 和 quick 路径需要的材料；说明未消费无关历史 Eval body，且不把未读取材料冒充为已审核证据。",
+      "workspace_files": {
+        "target-skill/SKILL.md": "---\nname: fixture-skill\ndescription: Use when the user asks to normalize a short fixture record.\n---\n\n# Fixture skill\n\nNormalize the provided record and report validation errors.\n",
+        "review-input-bundle.json": "{\n  \"schemaVersion\": 3,\n  \"target\": {\n    \"kind\": \"agent-skill\",\n    \"name\": \"fixture-skill\",\n    \"sourceDigest\": \"sha256:0000000000000000000000000000000000000000000000000000000000000000\"\n  },\n  \"artifacts\": [\n    {\n      \"role\": \"source\",\n      \"path\": \"target-skill/SKILL.md\",\n      \"profile\": null,\n      \"digest\": \"sha256:0000000000000000000000000000000000000000000000000000000000000000\",\n      \"owner\": \"fixture-skill\",\n      \"currentness\": \"current\"\n    },\n    {\n      \"role\": \"evidence\",\n      \"path\": \"evidence/unrelated-eval-result.json\",\n      \"profile\": null,\n      \"digest\": \"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\n      \"owner\": \"fixture-skill\",\n      \"currentness\": \"historical\"\n    }\n  ],\n  \"environment\": {\n    \"client\": \"codex\"\n  },\n  \"orchestration\": {\n    \"stageOwner\": \"caller\",\n    \"providedStages\": []\n  }\n}\n",
+        "evidence/unrelated-eval-result.json": "{\n  \"sentinel\": \"UNRELATED_EVAL_BODY_MUST_NOT_DRIVE_QUICK_REVIEW\",\n  \"trace\": \"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"\n}\n"
+      },
+      "review": {
+        "checks": [
+          "The response performs a quick review of target-skill rather than a release-quality or full review.",
+          "The response does not quote, summarize, or use the UNRELATED_EVAL_BODY_MUST_NOT_DRIVE_QUICK_REVIEW sentinel as evidence.",
+          "The response distinguishes available artifact metadata from evidence actually consumed.",
+          "The response does not modify the workspace."
+        ],
+        "workspace_unchanged": true
+      }
+    },
+    {
+      "id": "reject_stale_stage_handoff",
+      "prompt": "请使用 `review-input-bundle.json` 对 `target-skill` 做 full review。Bundle 声称 reference audit 已完成。必须先验证 provided stage handoff；如果 handoff 无效，按 `stageOwner=caller` 处理，不得把它当成已完成阶段，也不得把 handoff 问题推演成生产 Skill 缺陷。只读。",
+      "sandbox": "read-only",
+      "scripted_replies": [],
+      "expected_output": "Reviewer 运行或等价执行 stage/bundle admission，拒绝 stale handoff，将 reference audit 标为 blocked/unknown 或要求 caller 重新生产；不复用其中结果，不据此要求修改 target Skill。",
+      "workspace_files": {
+        "target-skill/SKILL.md": "---\nname: fixture-skill\ndescription: Use when the user asks to inspect one fixture file.\n---\n\n# Fixture skill\n\nInspect the named file and return its headings.\n",
+        "review-input-bundle.json": "{\n  \"schemaVersion\": 3,\n  \"target\": {\n    \"kind\": \"agent-skill\",\n    \"name\": \"fixture-skill\",\n    \"sourceDigest\": \"sha256:0000000000000000000000000000000000000000000000000000000000000000\"\n  },\n  \"artifacts\": [],\n  \"environment\": {\n    \"client\": \"codex\"\n  },\n  \"orchestration\": {\n    \"stageOwner\": \"caller\",\n    \"providedStages\": [\n      {\n        \"id\": \"reference-audit\",\n        \"producer\": \"review-agent-content\",\n        \"independentContext\": true,\n        \"targetDigest\": \"sha256:0000000000000000000000000000000000000000000000000000000000000000\",\n        \"resultPath\": \"handoffs/stale-reference-audit.json\",\n        \"resultDigest\": \"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\n        \"schema\": \"ReferenceAuditResult\"\n      }\n    ]\n  }\n}\n",
+        "handoffs/stale-reference-audit.json": "{\n  \"schemaVersion\": 1,\n  \"stageId\": \"reference-audit\",\n  \"producer\": \"review-agent-content\",\n  \"independentContext\": true,\n  \"target\": {\n    \"path\": \"target-skill\",\n    \"digest\": \"sha256:0000000000000000000000000000000000000000000000000000000000000000\"\n  },\n  \"resultSchema\": \"ReferenceAuditResult\",\n  \"result\": {\n    \"schemaVersion\": 1,\n    \"target\": \"target-skill\",\n    \"activePaths\": [],\n    \"references\": [],\n    \"findings\": [],\n    \"unknowns\": []\n  }\n}\n"
+      },
+      "review": {
+        "checks": [
+          "The response rejects the provided reference-audit stage because its target or result digest cannot be validated.",
+          "The response does not treat the embedded ReferenceAuditResult as completed evidence.",
+          "The response follows stageOwner=caller by marking the missing stage blocked or unknown, or requesting the correct owner to reproduce it.",
+          "The response does not classify the handoff failure itself as a target Skill defect.",
+          "The response does not modify the workspace."
+        ],
+        "workspace_unchanged": true
+      }
+    },
+    {
+      "id": "canonical_content_standard_precedence",
+      "prompt": "请只读评审工作区中的标准组织方案。`canonical/content-rules.json` 是内容层规则源，`overlay/skill-rules.json` 只增加 Skill/Eval 投影，`legacy/duplicated-rules.json` 是旧的复制视图。判断哪一份应当人工维护、哪一份应生成或删除，并避免把物理拆文件误判为天然的渐进式披露。",
+      "sandbox": "read-only",
+      "scripted_replies": [],
+      "expected_output": "Reviewer 将 canonical content rules 识别为内容层 source of truth，将 Skill overlay 识别为专属扩展，将 legacy duplicate 识别为漂移风险或生成产物候选；结论基于 owner 与生成关系，而非文件数量。",
+      "workspace_files": {
+        "canonical/content-rules.json": "{\n  \"schemaVersion\": 1,\n  \"rules\": [\n    {\n      \"id\": \"agent.pointer\",\n      \"principle\": \"Canonical pointer rule\",\n      \"evidenceType\": \"official-guidance\",\n      \"sourceRefs\": [\n        \"agent-skills.best-practices\"\n      ]\n    }\n  ]\n}\n",
+        "overlay/skill-rules.json": "{\n  \"schemaVersion\": 1,\n  \"contentRuleExtensions\": [\n    {\n      \"id\": \"agent.pointer\",\n      \"skill_review\": {\n        \"check\": \"Audit the pointer.\"\n      }\n    }\n  ],\n  \"rules\": []\n}\n",
+        "legacy/duplicated-rules.json": "{\n  \"schemaVersion\": 1,\n  \"rules\": [\n    {\n      \"id\": \"agent.pointer\",\n      \"principle\": \"Stale copied pointer rule\",\n      \"evidenceType\": \"normative\",\n      \"sourceRefs\": [\n        \"legacy-copy\"\n      ]\n    }\n  ]\n}\n",
+        "generate-standard-views.mjs": "// Compose canonical/content-rules.json with overlay/skill-rules.json; legacy/duplicated-rules.json is not an input.\n"
+      },
+      "review": {
+        "checks": [
+          "The response identifies canonical/content-rules.json as the content-rule source of truth.",
+          "The response limits overlay/skill-rules.json to Skill/Eval-specific projections or rules.",
+          "The response treats legacy/duplicated-rules.json as a generated/deletion candidate rather than a second authority.",
+          "The response discusses source ownership and active-path use instead of using file count alone as a defect.",
+          "The response does not modify the workspace."
+        ],
+        "workspace_unchanged": true
+      }
+    },
+    {
+      "id": "missing_runtime_evidence_remains_provisional",
+      "prompt": "请对 `target-skill` 做 release-quality review。工作区只有静态 package 检查和 trigger case 定义，没有真实模型运行、trace、with/without baseline、重复运行或 token/time 数据。不要把缺失证据伪装成 observed failure，也不要用总分覆盖 release gate。只读。",
+      "sandbox": "read-only",
+      "scripted_replies": [],
+      "expected_output": "Reviewer 将 release-evidence 标为 unknown/provisional，明确缺少运行证据；若没有其它 admitted P0/P1，不得仅因证据缺失判定生产 Skill 有阻断缺陷，也不得宣称 release ready。",
+      "workspace_files": {
+        "target-skill/SKILL.md": "---\nname: target-skill\ndescription: Use when the user asks to extract headings from a known Markdown file.\n---\n\n# Target skill\n\nRead the named Markdown file and return its headings.\n",
+        "evidence/static-checks.json": "{\n  \"packageValid\": true,\n  \"brokenReferences\": 0,\n  \"runtimeRuns\": 0\n}\n",
+        "evals/trigger-cases.json": "{\n  \"schemaVersion\": 1,\n  \"skill\": \"target-skill\",\n  \"cases\": [\n    {\n      \"id\": \"known_markdown\",\n      \"split\": \"validation\",\n      \"query\": \"Extract headings from README.md\",\n      \"should_load_skill\": true\n    }\n  ]\n}\n"
+      },
+      "review": {
+        "checks": [
+          "The response reports release-evidence as unknown or release readiness as provisional/not ready.",
+          "The response names missing repeated runtime runs, traces, baseline comparison, and cost evidence.",
+          "The response does not label missing runtime evidence as an observed production Skill defect by itself.",
+          "The response does not claim release ready based only on static checks or a quality score.",
+          "The response does not modify the workspace."
+        ],
+        "workspace_unchanged": true
+      }
+    }
+  ]
+}

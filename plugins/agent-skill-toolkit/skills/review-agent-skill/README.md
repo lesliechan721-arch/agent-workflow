@@ -13,4 +13,10 @@
 
 该 Skill 不修改生产 Skill。修复由 `author-agent-skill` 完成。
 
+## Eval 与阶段证据
+
+- Trigger suite 只评估路由。
+- Behavior suite 检查 selective bundle consumption、stale-stage rejection、canonical standard ownership 和 provisional release evidence；在取得真实重复运行前，它保持 diagnostic-only，不参与发布计权。
+- `providedStages` 必须通过 `validate-review-stage-result.mjs` 重新绑定 target、result 和 digest，字段齐全本身不构成完成证据。
+
 主要指令见 [`SKILL.md`](SKILL.md)。

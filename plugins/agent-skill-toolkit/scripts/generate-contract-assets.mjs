@@ -9,6 +9,7 @@ const check = process.argv.slice(2).includes('--check');
 const mappings = {
   'scripts/validate-json-contract.mjs': ['skills/author-agent-skill/scripts/validate-json-contract.mjs','skills/review-agent-skill/scripts/validate-json-contract.mjs','skills/audit-agent-skill-evals/scripts/validate-json-contract.mjs'],
   'scripts/validate-review-result.mjs': ['skills/review-agent-skill/scripts/validate-review-result.mjs'],
+  'scripts/validate-review-stage-result.mjs': ['skills/review-agent-skill/scripts/validate-review-stage-result.mjs'],
   'scripts/validate-eval-audit-result.mjs': ['skills/audit-agent-skill-evals/scripts/validate-eval-audit-result.mjs','skills/author-agent-skill/scripts/validate-eval-audit-result.mjs','skills/review-agent-skill/scripts/validate-eval-audit-result.mjs'],
   'standards/review-result-rules.generated.json': ['skills/review-agent-skill/assets/review-result-rules.generated.json'],
   'schemas/skill-design-brief.schema.json': ['skills/author-agent-skill/assets/skill-design-brief.schema.json'],

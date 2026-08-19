@@ -20,12 +20,21 @@ metadata:
 
 ## 模块化评审
 
-读取 `ReviewInputBundle.orchestration`。Bundle 只携带 artifact metadata 与结构化阶段引用，不内联 Eval audit、trace 或 result body。`providedStages` 只能包含已完成、独立上下文、结果路径与 digest 均绑定的结构化阶段记录；仅在对应阶段适用时读取 `resultPath`，final artifact 的存在不等于 profile review 已完成。
+读取 `ReviewInputBundle.orchestration`。Bundle 只携带 artifact metadata 与结构化阶段引用，不内联 Eval audit、trace 或 result body。`providedStages` 只是索引，字段齐全不证明阶段完成；复用前必须运行：
 
-- `stageOwner=caller`：只复用有效 `providedStages`；缺失的必需阶段必须由 caller 调度或标为 blocked/unknown，不得默认为已完成。
-- `stageOwner=review-agent-skill`：本 Skill 组织缺失阶段，但具体 fresh-context 机制由 caller、harness 或客户端决定。
+```bash
+node scripts/validate-review-stage-result.mjs \
+  --verify-bundle <review-input-bundle.json> \
+  --repo-root <workspace-root> \
+  --format json
+```
 
-Full / release-quality 表示所有适用领域最终被覆盖，不要求一个上下文同时读取全部材料。材料较大或彼此独立时，将 package facts、Eval audit、content/reference audit、core review 和 synthesis 分到 fresh context；父级只消费 schema-valid 结果。没有子代理能力时使用独立 session 或显式 handoff，不在同一上下文伪造独立审核。
+只有校验返回的 stage 才能复用。通用 review stage 使用绑定当前 target 与 result 的 envelope；Eval stage 使用绑定 corpus 的 `EvalAuditResult`。格式与失败处理见 `references/stage-handoffs.md`。final artifact 的存在不等于 profile review 已完成。
+
+- `stageOwner=caller`：只复用有效 `providedStages`；缺失或校验失败的必需阶段必须由 caller 调度或标为 blocked/unknown，不得默认为已完成。
+- `stageOwner=review-agent-skill`：本 Skill 组织缺失阶段，但具体 fresh-context 机制由 caller、harness 或客户端决定；producer 完成后先生成并校验 handoff，再进入 synthesis。
+
+Full / release-quality 表示所有适用领域最终被覆盖，不要求一个上下文同时读取全部材料。材料较大或彼此独立时，将 package facts、Eval audit、content/reference audit、core review 和 synthesis 分到 fresh context；父级只消费 schema-valid、digest-bound 结果。没有子代理能力时使用独立 session 或显式 handoff，不在同一上下文伪造独立审核。
 
 ## 执行顺序
 
@@ -48,5 +57,6 @@ Full / release-quality 表示所有适用领域最终被覆盖，不要求一个
 - `composition=overloaded | orchestrator-needed` 或 `complexity=over-engineered` 只有在关联 P0/P1 finding 时才强制 `design=redesign`；仅 P2/Advisory 证据时最高为 `needs-fixes`。
 - `complexity=over-specified` 必须关联 finding，并产生 `needs-fixes`。
 - Eval Oracle 无效时，Eval 证据不得驱动 Skill 修改或发布判断。
+- 阶段 handoff 校验失败只使对应证据不可复用；除非另有独立证据证明 owner 是生产 Skill，否则不得把 handoff 失败转成 Skill finding。
 
 总分仅用于同一 Skill 版本趋势，不决定 release verdict。

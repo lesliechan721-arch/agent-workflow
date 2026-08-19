@@ -36,14 +36,15 @@ metadata:
    - 目标必须是带 `.agents-plugin/plugin.json` 的 `<plugin-root>`，但不要求固定目录布局。
    - 区分 source、materialized final artifacts、profiles、Eval manifest/results、historical reports 和工作区约束。
    - 运行 `node scripts/prepare-aw-review-bundle.mjs <plugin-root> --repo-root <workspace-root> [options]`。用 `--source name=path` 加入 batch 的全部 participant 插件；有 Eval audit 时同时传实际 `--eval-case` 绑定 corpus digest。Bundle v3 只保存 artifact path/digest 与已完成阶段引用，不内联 audit、trace 或 Eval result body。
-   - 按 `assets/review-input-bundle.schema.json` 校验结果。final artifact 只表示材料可用，不表示 `materialized-profile-review` 已完成。
+   - 按 `assets/review-input-bundle.schema.json` 校验结果，再运行 `node scripts/validate-review-stage-result.mjs --verify-bundle <bundle.json> --repo-root <workspace-root> --format json`。此时已有 Eval stage 必须通过 digest、mode 和 producer 校验。final artifact 只表示材料可用，不表示 `materialized-profile-review` 已完成。
 
 2. **阶段隔离与完成记录**
    - AW adapter 是插件组合流程 owner，输出 `stageOwner=caller`。
    - Eval case audit、reference/content audit、source Skill review、不同 final profile review 和 result triage 在材料非平凡时分别使用 fresh-context 子代理或独立 session。
-   - 只有阶段结果通过对应 schema、记录 producer、target digest、result path/digest 和 independent-context 证据后，才能加入 `providedStages`。
-   - 父级 synthesis 不重新读取所有原始 case、reference 和 trace。
-   - 具体子代理参数和生命周期由 runtime/harness 决定；无效结果允许原 producer 修正一次，再次失败则标为 blocked。
+   - `reference-audit`、`source-skill-review` 和 `materialized-profile-review` 必须使用通用 Reviewer 的 stage envelope；先运行 `validate-review-stage-result.mjs <envelope> --repo-root <workspace-root> --format json`，只把返回的规范化 stage 写入 `providedStages`。
+   - 每次增加或替换阶段后重新验证完整 Bundle。字段齐全、final artifact 存在或调用方自报完成均不能替代校验。
+   - 父级 synthesis 不重新读取所有原始 case、reference 和 trace，只读取当前 branch 所需且已绑定的 stage result。
+   - 具体子代理参数和生命周期由 runtime/harness 决定；无效结果允许原 producer 修正一次，再次失败则标为 blocked。handoff 校验失败属于 orchestration/evidence owner，不能自动归因为生产 Skill 缺陷。
 
 3. **Eval preflight**
    - 有 Eval 时先运行 `audit-agent-skill-evals(preflight)`。

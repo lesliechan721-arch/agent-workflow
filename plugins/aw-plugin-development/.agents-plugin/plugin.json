@@ -12,7 +12,8 @@
     "tests": {
       "node": [
         "./scripts/contract.test.mjs",
-        "./scripts/invocation-contract.test.mjs"
+        "./scripts/invocation-contract.test.mjs",
+        "./scripts/stage-handoff-contract.test.mjs"
       ]
     }
   },

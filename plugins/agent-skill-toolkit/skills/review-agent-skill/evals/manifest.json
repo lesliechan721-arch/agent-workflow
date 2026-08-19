@@ -28,6 +28,18 @@
       "releaseSplits": ["validation"],
       "requiredForRelease": false,
       "perRunTimeoutMs": 180000
+    },
+    {
+      "id": "behavior",
+      "kind": "conversation",
+      "skills": ["review-agent-skill", "review-agent-content", "audit-agent-skill-evals"],
+      "cases": "./behavior-cases.json",
+      "isolation": "strict",
+      "profiles": ["project-default"],
+      "defaultRuns": 3,
+      "releaseSplits": [],
+      "requiredForRelease": false,
+      "perRunTimeoutMs": 300000
     }
   ]
 }
