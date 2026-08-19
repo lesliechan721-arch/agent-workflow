@@ -1,9 +1,9 @@
 name: one-shot align exact review findings
 
 on:
-  push:
+  pull_request:
     branches:
-      - fix/aw-adapter-auto-invocation
+      - main
 
 permissions:
   contents: write
