@@ -1,0 +1,220 @@
+{
+  "schemaVersion": 2,
+  "contentRuleSource": {
+    "plugin": "agent-content-toolkit",
+    "minimumVersion": "0.3.0",
+    "path": "standards/rules.json",
+    "digest": "sha256:6094b6543a477ae64bc4e9029ddc14aee078459114736f9ffd2404a676e9014e"
+  },
+  "contentRuleExtensions": [
+    {
+      "id": "agent.pointer",
+      "skill_author": {
+        "action": "description 先表达用户意图；外部资源指针写明读取条件。"
+      },
+      "skill_review": {
+        "check": "检查 description、resource pointer 与实际 branch 是否一致。"
+      }
+    },
+    {
+      "id": "agent.information-hierarchy",
+      "skill_author": {
+        "action": "主 SKILL.md 只保留所有命中 branch 都需要的工作流和 gotcha。"
+      },
+      "skill_review": {
+        "check": "审计 active path，而非只看包总大小。"
+      }
+    },
+    {
+      "id": "agent.completion-boundary",
+      "skill_author": {
+        "action": "只为脆弱或必须持续跟踪的关键步骤设置完成门。"
+      },
+      "skill_review": {
+        "check": "不得用更完整的完成条件挽救本应删除的步骤。"
+      }
+    },
+    {
+      "id": "agent.minimum-control",
+      "skill_author": {
+        "action": "默认改进顺序为 delete → relax → move → rewrite → add。"
+      },
+      "skill_review": {
+        "check": "独立报告 minimal、proportionate、over-specified 或 over-engineered。"
+      }
+    },
+    {
+      "id": "agent.source-of-truth",
+      "skill_author": {
+        "action": "工具 schema 已给出的字段细节不在 Skill 中维护第二份文档。"
+      },
+      "skill_review": {
+        "check": "区分领域策略与 schema/runtime 事实。"
+      }
+    },
+    {
+      "id": "agent.co-location",
+      "skill_author": {
+        "action": "共享规则只维护一个 source，并生成动作视图。"
+      },
+      "skill_review": {
+        "check": "不因物理拆文件就默认认为渐进式披露成立。"
+      }
+    },
+    {
+      "id": "review.evidence-admission",
+      "skill_review": {
+        "check": "区分 observed、normative、structural、official-guidance、heuristic 和 inferred；推演不伪装成直接矛盾。"
+      },
+      "eval_audit": {
+        "check": "expected output 只证明 Oracle，不证明实际失败。"
+      }
+    }
+  ],
+  "compositionModel": {
+    "axes": [
+      ["Independent intents", "用户能否只请求其中一个结果而不需要其它结果？"],
+      ["Permission modes", "是否混合只读、写入、高成本执行和正式发布？"],
+      ["Evidence lifecycles", "作者、Oracle、运行证据和独立裁决是否由同一主体生成并判定？"],
+      ["Environment profiles", "通用规范与单一项目、客户端或 runtime 细节是否混合？"],
+      ["Clean-context phases", "哪些阶段需要独立上下文以避免自证、锚定或注意力竞争？"],
+      ["Stable handoffs", "阶段之间能否用短而稳定的 artifact 合同通信？"]
+    ],
+    "verdicts": [
+      ["coherent", "一个独立意图，权限和证据生命周期一致。"],
+      ["composite-proportionate", "多个不能独立触发的紧密分支，且共享大部分上下文。"],
+      ["overloaded", "多个独立意图或权限、证据、profile 不对称，典型 branch 承担大量无关内容。"],
+      ["orchestrator-needed", "阶段应分成多个 Skill，由轻量入口只管理顺序、授权和 handoff。"]
+    ],
+    "splitSignals": [
+      "创建或修改与独立 Review 混合。",
+      "Eval case 设计与 Oracle 审核混合。",
+      "通用质量标准与项目 build、materialization 或 publish 混合。",
+      "长时间执行或状态管理与结果裁决混合。",
+      "阶段需要 clean context，且已有稳定 artifact handoff。"
+    ]
+  },
+  "findingAdmission": {
+    "evidenceTypes": [
+      ["observed", "trace、复现、测试或用户确认失败。"],
+      ["normative", "适用官方规范、schema、项目硬规则或用户要求。"],
+      ["structural", "直接材料在同一可达路径上支持 exact claim，不依赖未证实前提。"],
+      ["official-guidance", "官方设计建议；影响质量评分，但不能单独支持 P0/P1。"],
+      ["heuristic", "第三方设计原则或经验建议。"],
+      ["inferred", "尚未验证的推演。"]
+    ],
+    "highSeverityRequirements": [
+      "至少包含 observed、normative 或 structural 之一。",
+      "记录直接 evidence、location 和 exact claim。",
+      "所有 material premise 均有来源、证据并为 supported。",
+      "reachability 为 supported，并记录路径和证据。",
+      "记录 impact、counterevidence、owner、minimal action 和 validation。"
+    ]
+  },
+  "rules": [
+    {
+      "id": "skill.problem-value",
+      "principle": "Skill 必须解决可观察的真实问题，并相较无 Skill 或最小 Skill 产生增量价值。",
+      "skill_author": {
+        "action": "先写 SkillDesignBrief：真实任务、失败、baseline gap、成功指标和范围外事项。",
+        "completion": "无法证明增量时使用更简单能力或不创建 Skill。"
+      },
+      "skill_review": {
+        "check": "区分真实项目知识与模型已知的泛化常识。"
+      },
+      "evidenceType": "official-guidance",
+      "sourceRefs": ["agent-skills.best-practices"]
+    },
+    {
+      "id": "skill.invocation-trigger",
+      "principle": "调用方式和 description 是设计输入；触发覆盖真实用户意图并排除高价值 near-miss。",
+      "skill_author": {
+        "action": "先决定 model/manual 等调用意图，再写 discovery description。",
+        "completion": "description 与 invocation metadata 一致。"
+      },
+      "skill_review": {
+        "check": "分别评价触发召回、误触发代价和相邻 Skill 竞争。"
+      },
+      "evidenceType": "official-guidance",
+      "sourceRefs": ["agent-skills.optimizing-descriptions"]
+    },
+    {
+      "id": "skill.composition-fitness",
+      "principle": "一个 Skill 应拥有一个可独立解释和触发的工作单元；独立意图、权限、证据生命周期和环境 profile 不应被局部正确性掩盖。",
+      "skill_author": {
+        "action": "枚举 independent intents、permission modes、evidence lifecycles、environment profiles、clean-context phases 和 stable handoffs。",
+        "completion": "拆分或保留决定有明确理由和 artifact contract。"
+      },
+      "skill_review": {
+        "check": "若两个以上独立意图伴随权限/证据/环境/上下文差异且可稳定交接，判定 overloaded 或 orchestrator-needed。"
+      },
+      "evidenceType": "heuristic",
+      "sourceRefs": ["agent-skills.best-practices", "writing-for-agents"]
+    },
+    {
+      "id": "skill.package-resources",
+      "principle": "scripts、references、assets 和 evals 按真实用途存在；缺省不是缺陷。",
+      "skill_author": {
+        "action": "重复、确定、可测试逻辑进入 script；特定 branch 资料进入 focused reference。",
+        "completion": "所有资源一层可达并有明确读取或执行条件。"
+      },
+      "skill_review": {
+        "check": "逐 reference 审计必要性、职责、branch locality、active-path load 和替代位置。"
+      },
+      "evidenceType": "official-guidance",
+      "sourceRefs": ["agent-skills.best-practices", "agent-skills.using-scripts"]
+    },
+    {
+      "id": "eval.oracle-validity",
+      "principle": "Eval 必须先证明 Oracle、前提、层级和 assertion 有资格评价 Skill。",
+      "eval_design": {
+        "action": "为关键 case 写 test layer、preconditions、rationale、rule refs、allowed variance 和 minimal counterexample。",
+        "completion": "case 能归入现实场景族且标签可解释。"
+      },
+      "eval_audit": {
+        "check": "先审 suite validity；错误 Oracle 不进入发布和 Skill 修改。"
+      },
+      "evidenceType": "toolkit-policy",
+      "sourceRefs": ["agent-skills.evaluating-skills", "agent-skill-toolkit.eval-contract"]
+    },
+    {
+      "id": "eval.error-cost",
+      "principle": "正负错误代价不默认对称；分别报告 recall、false negative、specificity 和 false positive。",
+      "eval_design": {
+        "action": "声明 recall-first、precision-first、balanced 或 critical 及现实代价。",
+        "completion": "样本数量不会冒充实际决策权重。"
+      },
+      "eval_audit": {
+        "check": "检查 representative/regression 是否主导发布，challenge 不得绑架通用规则。"
+      },
+      "evidenceType": "toolkit-policy",
+      "sourceRefs": ["agent-skills.evaluating-skills", "agent-skill-toolkit.eval-contract"]
+    },
+    {
+      "id": "eval.change-safety",
+      "principle": "Eval 失败先归因；只有有效、可复现且归因为 skill-defect 的场景族失败才能驱动修改。",
+      "eval_design": {
+        "action": "为修复预留同族、minimal pair、相反标签和固定回归集。",
+        "completion": "修改目标不是单个 query。"
+      },
+      "eval_audit": {
+        "check": "检查 failure triage、运行方差、baseline、净收益和复杂度回归。"
+      },
+      "evidenceType": "toolkit-policy",
+      "sourceRefs": ["agent-skills.evaluating-skills", "agent-skill-toolkit.eval-contract"]
+    }
+  ],
+  "reviewResultPolicy": {
+    "highSeverityEvidence": ["observed", "normative", "structural"],
+    "nonBlockingEvidence": ["official-guidance", "heuristic", "inferred"],
+    "redesign": {
+      "composition": ["overloaded", "orchestrator-needed"],
+      "complexity": ["over-engineered"],
+      "requiredLinkedSeverity": ["P0", "P1"]
+    },
+    "qualityFix": {
+      "composition": ["overloaded", "orchestrator-needed"],
+      "complexity": ["over-specified", "over-engineered"]
+    }
+  }
+}

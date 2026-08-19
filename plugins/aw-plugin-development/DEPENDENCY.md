@@ -2,8 +2,8 @@
 
 Required plugins:
 
-- `agent-content-toolkit >= 0.2.0`
-- `agent-skill-toolkit >= 0.2.0`
+- `agent-content-toolkit >= 0.3.0`
+- `agent-skill-toolkit >= 0.3.0`
 
 Required skills:
 

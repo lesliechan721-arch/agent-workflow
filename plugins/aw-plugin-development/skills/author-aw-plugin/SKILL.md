@@ -1,10 +1,9 @@
 ---
 name: author-aw-plugin
 description: >-
-  仅当用户显式要求创建或维护一个 AW 插件根、Skill、extension、MCP/App、slash command、dynamic artifact、稳定版本或构建验证时使用。目标根由 `.agents-plugin/plugin.json` 标识，可以位于任意兼容工作区；拥有插件源码写入和作者验证，不做独立质量评分或发布裁决。
+  当用户要创建或维护一个 AW 插件根、Skill、extension、MCP/App、slash command、dynamic artifact、稳定版本或构建验证时使用。目标根由 `.agents-plugin/plugin.json` 标识，可以位于任意兼容工作区；拥有插件源码写入和作者验证，不做独立质量评分或发布裁决。
 compatibility: >-
-  Requires Node.js 22+, the target workspace dependencies, agent-content-toolkit >= 0.2.0, and agent-skill-toolkit >= 0.2.0.
-disable-model-invocation: true
+  Requires Node.js 22+, the target workspace dependencies, agent-content-toolkit >= 0.3.0, and agent-skill-toolkit >= 0.3.0.
 user-invocable: true
 metadata:
   short-description: 创建或维护 AW 插件，并组合通用 Skill 作者与 Eval 设计能力
@@ -38,7 +37,11 @@ metadata:
    - Slash command：显式快捷入口。
    - MCP/App：工具或应用连接。
    - Dynamic artifact：由 AW config/renderer 生成的平台产物。
-   - 详细 profile 见 `references/aw-authoring-profile.md`；按组件只读取对应 reference。
+   - 通用能力选择见 `references/aw-authoring-profile.md`；按当前组件只读取一个或多个对应 branch：
+     - config schema、store、CLI 或 helper：`references/aw-config-and-helper.md`
+     - dynamic artifact renderer：`references/aw-artifact-renderer.md`
+     - install/upgrade/uninstall lifecycle 或运行时 context：`references/aw-lifecycle.md`
+     - Node dependency、build 或插件脚本测试：`references/aw-script-testing.md`
    - 新增、删除、重命名能力或改变用户可观察行为时，读取 `references/aw-readme-authoring.md`。
 
 3. **组合通用作者能力**

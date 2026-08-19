@@ -4,7 +4,7 @@
 
 ## Manual dependency
 
-当前要求人工同时安装 `agent-content-toolkit >= 0.2.0`。本插件不复制 Agent-facing 文档写作与 reference 审计流程；需要时调用依赖插件的 `write-agent-content` 或 `review-agent-content`。
+当前要求人工同时安装 `agent-content-toolkit >= 0.3.0`。该插件拥有 `agent.*` 和通用内容评审规则；本插件只维护 Skill/Eval 专属规则与动作投影，不复制下层 principle、证据分类或 source refs。
 
 ## Skills
 
@@ -16,6 +16,13 @@
 | `audit-agent-skill-evals` | 运行前审核 Oracle，或运行后做 failure triage | 只读 |
 
 Author 不给自己的结果出独立发布结论；Eval Designer 不审核自己的 Oracle。
+
+## Standards
+
+- `agent-content-toolkit/standards/rules.json`：内容层唯一来源。
+- `standards/skill-rules.json`：Skill/Eval overlay、Composition Fitness、Finding Admission 和 ReviewResult policy。
+- `standards/review-dimensions.json`：机器可读维度注册。
+- `standards/review-result-rules.generated.json`：validator 的生成输入。
 
 ## Validation
 

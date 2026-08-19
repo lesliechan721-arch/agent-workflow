@@ -16,3 +16,28 @@
 - Dynamic artifacts：配置驱动的 Codex/Claude 产物。
 
 一个用户请求只创建必要能力，不预生成其它表面。
+
+## Script component overview
+
+插件脚本通常位于：
+
+```text
+<plugin-root>/
+├── .agents-plugin/
+│   └── plugin.json
+└── scripts/
+    ├── aw-config.mjs
+    ├── render-artifacts.mjs
+    ├── lifecycle.mjs
+    └── *.test.mjs
+```
+
+文件名不会触发自动发现。使用的能力必须在 manifest 中显式声明：
+
+- config/helper：`config.schema` 与 `scripts.helpers.config`
+- dynamic artifacts：`scripts.artifacts.render` 与 `artifacts.targets`
+- lifecycle：`scripts.lifecycle`
+- Node package/build：`scripts.node.packageRoot` / `scripts.node.build`
+- tests：`scripts.tests.node`
+
+只读取当前组件对应的 branch reference；同一插件组合多个组件时可以读取多个 reference，但不要为单一 config 或 lifecycle 修改加载全部脚本协议。

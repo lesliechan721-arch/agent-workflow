@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -24,13 +25,19 @@ test('generated content standards and contract assets are current', async () => 
   await run('scripts/validate-contract-assets.mjs');
 });
 
-test('the plugin exposes only the two content skills', async () => {
-  const manifest = JSON.parse(await readFile(path.join(pluginRoot, '.agents-plugin/plugin.json'), 'utf8'));
+test('the plugin exposes only the two content skills and a versioned rule bundle', async () => {
+  const [manifest, readme, rulesRaw] = await Promise.all([
+    readFile(path.join(pluginRoot, '.agents-plugin/plugin.json'), 'utf8').then(JSON.parse),
+    readFile(path.join(pluginRoot, 'README.md'), 'utf8'),
+    readFile(path.join(pluginRoot, 'standards/rules.json'), 'utf8'),
+  ]);
   assert.equal(manifest.name, 'agent-content-toolkit');
-  const readme = await readFile(path.join(pluginRoot, 'README.md'), 'utf8');
+  assert.equal(manifest.version, '0.3.0');
   assert.match(readme, /write-agent-content/u);
   assert.match(readme, /review-agent-content/u);
   assert.doesNotMatch(readme, /author-agent-skill/u);
+  assert.match('sha256:' + createHash('sha256').update(rulesRaw).digest('hex'), /^sha256:[0-9a-f]{64}$/u);
+  assert.doesNotMatch(rulesRaw, /agent-workflows/u);
 });
 
 test('reference audit starter satisfies the canonical schema', async () => {

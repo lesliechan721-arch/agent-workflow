@@ -56,4 +56,4 @@ Evidence: official-guidance; sources: agent-skills.best-practices, writing-for-a
 
 - **check：** 缺少行为证据时，不把可读性偏好或推演升级成阻断项。
 
-Evidence: project-policy; sources: agent-workflows.review-contract
+Evidence: toolkit-policy; sources: agent-content-toolkit.review-contract
