@@ -342,9 +342,12 @@ function TargetList(props: {
       <ViewportHint direction="up" count={window.hiddenAbove} />
       {window.indexes.map((index) => {
         const target = targets[index]!;
+        const errors = target.errors.length > 0
+          ? ` · ${target.errors.map((error) => `${error.code}: ${error.message}`).join('; ')}`
+          : '';
         return <Text key={targetIdentity(target)} bold={props.focused && index === props.selected} wrap="truncate-end">
           {index === props.selected ? '› ' : '  '}
-          {target.target.platform}/{target.target.scope} · {stateLabel(target.state)}
+          {target.target.platform}/{target.target.scope} · {stateLabel(target.state)}{errors}
         </Text>;
       })}
       <ViewportHint direction="down" count={window.hiddenBelow} />
@@ -389,7 +392,7 @@ function targetDetailLines(
       })),
       ...target.errors.map((error, index) => ({
         key: `error:${error.code}:${index}`,
-        text: '错误：目标状态检查失败。详情请查看退出后的命令结果或调试日志。',
+        text: `错误：${error.code}: ${error.message}`,
         error: true,
       })),
       ...(target.recommendation ? [{

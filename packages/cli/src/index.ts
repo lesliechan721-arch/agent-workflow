@@ -20,7 +20,6 @@ import {
   cleanupWriteCommand as cleanupCommand,
   installWriteCommand as installCommand,
   reinstallWriteCommand as reinstallCommand,
-  runtimeTransitionResult,
   uninstallWriteCommand as uninstallCommand,
   upgradeWriteCommand as upgradeCommand,
 } from './commands/write-commands.js';
@@ -76,13 +75,13 @@ import {
   type CliCommandResult,
 } from './output/command-receipt.js';
 import { resolveCliPackageRoot } from './utils/paths.js';
-import { resolveCatalogPlugins } from './utils/plugin-catalog.js';
 import {
-  assertSafePluginConfigSegment,
   coercePluginConfigUpdates,
   findConfigFieldEntry,
+  listNamespacedPluginConfigStores,
   listPluginConfigStorePluginNames,
   readPluginConfigStore,
+  readNamespacedPluginConfigStoreIdentity,
   renderPluginConfigValueForDisplay,
   resolveConfigRead,
 } from './utils/plugin-config.js';
@@ -93,10 +92,16 @@ import {
 } from './utils/plugin-config-write.js';
 import { assertStrictSemVer } from './utils/manifest.js';
 import {
+  assertCatalogSourceInventoryComplete,
   assertCatalogSourceReferencesSupported,
+  inventoryCatalogSourceReferences,
   inventoryLegacyConfigReferences,
 } from './utils/catalog-source-references.js';
-import { withResolvedCatalogPlugin } from './utils/multi-source-catalog.js';
+import {
+  parsePluginId,
+  withResolvedCatalogPlugin,
+  withResolvedMultiSourceCatalog,
+} from './utils/multi-source-catalog.js';
 import { sanitizeCatalogSourceError } from './utils/catalog-public-error.js';
 import {
   formatConfigCommandValue,
@@ -106,7 +111,6 @@ import type {
   ConfigFieldEntry,
   PlatformSelection,
   PluginConfigSchemaField,
-  PluginMeta,
   Scope,
 } from './types.js';
 
@@ -426,35 +430,46 @@ async function loadStoredConfigWizardCandidates(
   locations: ConfigWizardStoreLocation[],
   options: { includeEmptyStores?: boolean } = {},
 ): Promise<CommandWizardPluginCandidate[]> {
-  const keysByPlugin = new Map<string, Set<string>>();
+  const legacy = await listPluginConfigStorePluginNames({ cwd: context.cwd, env: context.env });
+  if (legacy.length > 0) {
+    throw new Error('legacyStateUnsupported: legacy bare-name config stores are not supported.');
+  }
+  const storesByPlugin = new Map<string, {
+    sourceId: string;
+    sourceIdentity: string;
+    keys: Set<string>;
+  }>();
   for (const location of locations) {
-    const pluginNames = await listPluginConfigStorePluginNames({
+    const stores = await listNamespacedPluginConfigStores({
       cwd: context.cwd,
       env: context.env,
       scope: location.scope,
       ...(location.scope === 'project' ? { projectLayer: location.projectLayer } : {}),
     });
-    for (const pluginName of pluginNames) {
-      const store = await readPluginConfigStore({
-        pluginName,
-        scope: location.scope,
-        ...(location.scope === 'project' ? { projectLayer: location.projectLayer } : {}),
-        cwd: context.cwd,
-        env: context.env,
-      });
+    for (const store of stores) {
       const keys = Object.keys(store.values);
-      if (!store.exists || (keys.length === 0 && options.includeEmptyStores !== true)) continue;
-      const existing = keysByPlugin.get(pluginName) ?? new Set<string>();
-      for (const key of keys) existing.add(key);
-      keysByPlugin.set(pluginName, existing);
+      if (keys.length === 0 && options.includeEmptyStores !== true) continue;
+      const existing = storesByPlugin.get(store.pluginId) ?? {
+        sourceId: store.sourceId,
+        sourceIdentity: store.sourceIdentity,
+        keys: new Set<string>(),
+      };
+      if (existing.sourceIdentity !== store.sourceIdentity) {
+        throw new Error(`sourceChanged: ${store.pluginId} config stores have different source identities.`);
+      }
+      for (const key of keys) existing.keys.add(key);
+      storesByPlugin.set(store.pluginId, existing);
     }
   }
-  return [...keysByPlugin]
+  return [...storesByPlugin]
     .sort(([left], [right]) => left.localeCompare(right))
-    .map(([pluginName, keys]) => ({
-      pluginName,
+    .map(([pluginId, store]) => ({
+      pluginName: pluginId,
+      pluginId,
+      sourceId: store.sourceId,
+      sourceIdentity: store.sourceIdentity,
       targets: [],
-      configKeys: [...keys].sort((left, right) => left.localeCompare(right)),
+      configKeys: [...store.keys].sort((left, right) => left.localeCompare(right)),
     }));
 }
 
@@ -471,6 +486,45 @@ function configReadStoreLocations(rawOptions: RawConfigOptions): ConfigWizardSto
 
 function overallResultState(value: { overallState: 'succeeded' | 'failed' }): 'succeeded' | 'failed' {
   return value.overallState;
+}
+
+async function resolveStoredOnlyConfigIdentity(options: {
+  selector: string;
+  context: CliExecutionContext;
+  locations: ConfigWizardStoreLocation[];
+}): Promise<{ pluginName: string; pluginId: string; sourceId: string; sourceIdentity: string }> {
+  const parsed = parsePluginId(options.selector);
+  if (!parsed.sourceId) throw new Error(`Plugin "${options.selector}" is not a qualified stored config target.`);
+  const stores = (await Promise.all(options.locations.map((location) =>
+    listNamespacedPluginConfigStores({
+      cwd: options.context.cwd,
+      env: options.context.env,
+      scope: location.scope,
+      ...(location.scope === 'project' ? { projectLayer: location.projectLayer } : {}),
+    })))).flat().filter((store) => store.pluginId === options.selector);
+  if (stores.length === 0) throw new Error(`Plugin "${options.selector}" does not have a namespaced config store.`);
+  const identities = new Set(stores.map((store) => store.sourceIdentity));
+  if (identities.size !== 1) throw new Error(`sourceChanged: ${options.selector} config stores have different source identities.`);
+  const sourceIdentity = [...identities][0]!;
+  await withResolvedMultiSourceCatalog({
+    cliVersion: resolveCliVersion(),
+    freshnessPolicy: 'cacheFirst',
+    sourceIds: [parsed.sourceId],
+    env: options.context.env,
+    consume: async (catalog) => {
+      const source = catalog.sources.find((entry) => entry.sourceId === parsed.sourceId);
+      if (!source?.resolution) throw source?.error ?? new Error(`Catalog source "${parsed.sourceId}" is unavailable.`);
+      if (source.resolution.sourceIdentity !== sourceIdentity) {
+        throw new Error(`sourceChanged: ${options.selector} config source identity does not match the current source.`);
+      }
+    },
+  });
+  return {
+    pluginName: parsed.pluginName,
+    pluginId: options.selector,
+    sourceId: parsed.sourceId,
+    sourceIdentity,
+  };
 }
 
 async function resolveMultiSourceConfigRead(options: {
@@ -522,6 +576,32 @@ async function resolveMultiSourceConfigRead(options: {
         result,
       };
     },
+  }).catch(async (error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!message.includes('does not exist in the required catalog source set')) throw error;
+    const stored = await resolveStoredOnlyConfigIdentity({
+      selector: options.selector,
+      context: options.context,
+      locations: configReadStoreLocations(options.rawOptions),
+    });
+    const result = await resolveConfigRead({
+      sourceId: stored.sourceId,
+      sourceIdentity: stored.sourceIdentity,
+      pluginName: stored.pluginName,
+      plugin: null,
+      scope: options.rawOptions.local
+        ? 'project'
+        : resolveConfigReadResolution(options.rawOptions.scope),
+      projectLayer,
+      cwd: options.context.cwd,
+      env: options.context.env,
+    });
+    if (options.key !== undefined) {
+      const field = findConfigFieldEntry(result.fields, options.key);
+      if (!field) throw new Error(`Unknown config key "${options.key}".`);
+      result.fields = [field];
+    }
+    return { ...stored, result };
   });
 }
 
@@ -587,21 +667,7 @@ async function runWriteCommandAction(
     platform: rawOptions.platform ?? 'both',
     ...(command === 'cleanup' ? { scope: rawOptions.scope ?? 'user' } : {}),
   };
-  const transitionOptions = command === 'install'
-    ? normalizeInstallCommandOptions(validationOptions)
-    : command === 'upgrade'
-      ? normalizeUpgradeCommandOptions(validationOptions)
-      : command === 'uninstall'
-        ? normalizeUninstallCommandOptions(validationOptions)
-        : command === 'cleanup'
-          ? normalizeCleanupCommandOptions(validationOptions)
-          : normalizeReinstallCommandOptions(validationOptions);
-  return {
-    cancelled: false,
-    result: runtimeTransitionResult(pluginNames, transitionOptions),
-  };
-
-  /* c8 ignore start -- removed by the phase 3B namespaced runtime switch. */
+  void validationOptions;
   if (!missing) {
     return {
       cancelled: false,
@@ -621,11 +687,6 @@ async function runWriteCommandAction(
   if (loaded.catalogUnavailable) {
     throw new Error(
       '插件目录不可用。请运行 `aw init` 或 `aw init --force`，或使用完整参数重试。',
-    );
-  }
-  if (loaded.items.some((item) => item.pluginName.includes('/'))) {
-    throw new Error(
-      'runtimeTransitionIncomplete: interactive writes require the phase 3B namespaced runtime.',
     );
   }
   const candidates = missingPlugin ? toWizardCandidates(loaded.items) : [];
@@ -671,7 +732,6 @@ async function runWriteCommandAction(
   });
   if (result.cancelled) return { cancelled: true };
   return { cancelled: false, result: result.value! };
-  /* c8 ignore stop */
 }
 
 function addCatalogSelectorOptions<T extends Command>(
@@ -794,30 +854,6 @@ async function runActionWithContext<T>(
     }
     throw error;
   }
-}
-
-async function loadConfigPluginLookup(
-  pluginName: string,
-  context: CliExecutionContext,
-): Promise<{ plugin: PluginMeta | null; error: Error | null }> {
-  assertSafePluginConfigSegment(pluginName);
-  let plugins: Awaited<ReturnType<typeof resolveCatalogPlugins>>['plugins'];
-  try {
-    ({ plugins } = await resolveCatalogPlugins([pluginName], context.env));
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (message === `Unknown plugin "${pluginName}".`) {
-      return { plugin: null, error: null };
-    }
-    return {
-      plugin: null,
-      error: error instanceof Error ? error : new Error(String(error)),
-    };
-  }
-  return {
-    plugin: plugins[0] ?? null,
-    error: null,
-  };
 }
 
 function writeJsonReceipt(write: (text: string) => void, payload: unknown): void {
@@ -984,27 +1020,34 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     commandExitState.exitCode = 1;
   };
 
-  const rejectTransitionalConfigMutation = async (
+  const writeConfigMutationFailure = (
     command: 'config:set' | 'config:unset' | 'config:reset',
-    pluginName: string | undefined,
+    plugin: string | undefined,
     json: boolean,
-    context: CliExecutionContext,
-  ): Promise<boolean> => {
-    void context;
-    const message = 'runtimeTransitionIncomplete: config mutations require the phase 3B namespaced runtime.';
-    if (json) {
+    error: unknown,
+  ): void => {
+    const message = error instanceof Error ? error.message : String(error);
+    const code = message.includes('legacyStateUnsupported')
+      ? 'legacyStateUnsupported'
+      : message.includes('sourceChanged')
+        ? 'sourceChanged'
+        : message.includes('sourceMissing')
+          ? 'sourceMissing'
+          : message.startsWith('Cannot resolve required catalog sources:')
+            ? 'catalogSourceUnavailable'
+            : message.split(':', 1)[0] || 'configMutationFailed';
+    if (json && !message.includes('Usage:')) {
       writeJsonReceipt(io.stdout, {
         receiptSchemaVersion: 4,
         command,
         ok: false,
         overallState: 'failed',
-        ...(pluginName ? { plugin: pluginName } : {}),
-        errors: [{ code: 'runtimeTransitionIncomplete', message }],
+        ...(plugin ? { plugin } : {}),
+        errors: [{ code, message }],
       });
     }
     writeLine(io.stderr, message);
     commandExitState.exitCode = 1;
-    return true;
   };
 
   catalogSource
@@ -1436,9 +1479,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           context,
           configReadStoreLocations(rawOptions),
         );
-        if (storedCandidates.length > 0) {
-          throw new Error('legacyStateUnsupported: legacy bare-name config stores are not supported.');
-        }
         const candidates = mergeWizardCandidates(currentCandidates, storedCandidates);
         if (candidates.length === 0) {
           throw new Error('No plugin config candidates exist in the selected location.');
@@ -1513,9 +1553,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           context,
           configReadStoreLocations(rawOptions),
         );
-        if (storedCandidates.length > 0) {
-          throw new Error('legacyStateUnsupported: legacy bare-name config stores are not supported.');
-        }
         const candidates = mergeWizardCandidates(currentCandidates, storedCandidates);
         if (candidates.length === 0) {
           throw new Error('No plugin config candidates exist in the selected location.');
@@ -1583,18 +1620,18 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       rawOptions: RawConfigOptions,
     ) => {
       const context = createActionContext('config:set', rawOptions);
-      if (await rejectTransitionalConfigMutation(
-        'config:set',
-        pluginName,
-        rawOptions.json === true,
-        context,
-      )) return;
-      const outcome = await runActionWithContext(context, async () => {
+      let outcome;
+      try {
+        outcome = await runActionWithContext(context, async () => {
         const scope = resolveConfigWriteScope(rawOptions.scope);
         const projectLayer = resolveConfigProjectLayer(rawOptions);
-        const execute = async (selectedPlugin: string, selectedKey: string, inputValue: unknown) => {
-        const { plugin, error } = await loadConfigPluginLookup(selectedPlugin, context);
-        if (!plugin) throw new Error(`Unknown plugin "${selectedPlugin}".`);
+        const execute = async (selectedPlugin: string, selectedKey: string, inputValue: unknown) =>
+          withResolvedCatalogPlugin({
+            selector: selectedPlugin,
+            cliVersion: resolveCliVersion(),
+            freshnessPolicy: 'requireRemote',
+            env: context.env,
+            consume: async ({ pluginId, source, plugin }) => {
         if (!plugin.manifest.config?.schema) {
           throw new Error(`configSchemaUnavailable: Plugin "${selectedPlugin}" does not declare an AW config schema.`);
         }
@@ -1603,8 +1640,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         }
         const writeReceipt = await applyPluginConfigWrite({
           plugin,
-          ...(error ? { pluginError: error } : {}),
-          pluginName: selectedPlugin,
+          pluginName: plugin.manifest.name,
           scope,
           projectLayer,
           cwd: context.cwd,
@@ -1622,6 +1658,11 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           receiptSchemaVersion: 4,
           command: 'config:set',
           ...writeReceipt,
+          plugin: plugin.manifest.name,
+          pluginName: plugin.manifest.name,
+          pluginId,
+          sourceId: source.sourceId,
+          sourceIdentity: source.sourceIdentity,
           affectedFields: [{
             key: selectedKey,
             title: plugin?.manifest.config?.schema?.[selectedKey]?.title ?? selectedKey,
@@ -1632,7 +1673,8 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             ...(scope === 'project' ? { projectLayer } : {}),
           }],
         };
-        };
+            },
+          });
 
         if (pluginName && key && rawValue !== undefined) {
           const inputValue = parseConfigValue(rawValue, rawOptions.valueJson === true);
@@ -1644,11 +1686,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         }
         if (!isWizardAvailable(context, rawOptions)) throw new Error(configCommandUsage('set'));
         const candidates = await loadWizardCandidates(context, {});
-        if (candidates.some((candidate) => candidate.pluginName.includes('/'))) {
-          throw new Error(
-            'runtimeTransitionIncomplete: interactive config writes require the phase 3B namespaced runtime.',
-          );
-        }
         if (pluginName) {
           const candidate = candidates.find((entry) => entry.pluginName === pluginName);
           if (!candidate) throw new Error(`Unknown plugin "${pluginName}".`);
@@ -1701,7 +1738,11 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         return result.cancelled
           ? { cancelled: true as const }
           : { cancelled: false as const, key: result.selection!.key!, value: result.value! };
-      });
+        });
+      } catch (error) {
+        writeConfigMutationFailure('config:set', pluginName, rawOptions.json === true, error);
+        return;
+      }
       if (outcome.cancelled) return;
       const receipt = outcome.value;
       const selectedKey = outcome.key;
@@ -1729,33 +1770,35 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('--log-file <path>', 'write debug diagnostics to the specified file')
     .action(async (pluginName: string | undefined, key: string | undefined, rawOptions: RawConfigOptions) => {
       const context = createActionContext('config:unset', rawOptions);
-      if (await rejectTransitionalConfigMutation(
-        'config:unset',
-        pluginName,
-        rawOptions.json === true,
-        context,
-      )) return;
-      const outcome = await runActionWithContext(context, async () => {
+      let outcome;
+      try {
+        outcome = await runActionWithContext(context, async () => {
         const scope = resolveConfigWriteScope(rawOptions.scope);
         const projectLayer = resolveConfigProjectLayer(rawOptions);
-        const execute = async (selectedPlugin: string, selectedKey: string) => {
-        const { plugin, error } = await loadConfigPluginLookup(selectedPlugin, context);
-        if (plugin?.manifest.config?.schema && !plugin.manifest.config.schema[selectedKey]) {
+        const execute = async (selectedPlugin: string, selectedKey: string) =>
+          withResolvedCatalogPlugin({
+            selector: selectedPlugin,
+            cliVersion: resolveCliVersion(),
+            freshnessPolicy: 'requireRemote',
+            env: context.env,
+            consume: async ({ pluginId, source, plugin }) => {
+        if (plugin.manifest.config?.schema && !plugin.manifest.config.schema[selectedKey]) {
           throw new Error(`Unknown config key "${selectedKey}".`);
         }
         const store = await readPluginConfigStore({
-          pluginName: selectedPlugin,
+          sourceId: source.sourceId,
+          sourceIdentity: source.sourceIdentity,
+          pluginName: plugin.manifest.name,
           scope,
           ...(scope === 'project' ? { projectLayer } : {}),
           cwd: context.cwd,
           env: context.env,
         });
         const existed = Object.hasOwn(store.values, selectedKey);
-        if (!plugin && !existed) throw new Error(`Unknown config key "${selectedKey}".`);
+        if (!existed) throw new Error(`Unknown config key "${selectedKey}".`);
         const writeReceipt = await applyPluginConfigWrite({
           plugin,
-          ...(error ? { pluginError: error } : {}),
-          pluginName: selectedPlugin,
+          pluginName: plugin.manifest.name,
           scope,
           projectLayer,
           cwd: context.cwd,
@@ -1773,6 +1816,11 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           receiptSchemaVersion: 4,
           command: 'config:unset',
           ...writeReceipt,
+          plugin: plugin.manifest.name,
+          pluginName: plugin.manifest.name,
+          pluginId,
+          sourceId: source.sourceId,
+          sourceIdentity: source.sourceIdentity,
           removedKey: selectedKey,
           existed,
           affectedFields: [{
@@ -1785,20 +1833,15 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             ...(scope === 'project' ? { projectLayer } : {}),
           }],
         };
-        };
+            },
+          });
         if (pluginName && key) {
           return { cancelled: false as const, value: await execute(pluginName, key) };
         }
         if (!isWizardAvailable(context, rawOptions)) throw new Error(configCommandUsage('unset'));
         const loadedCurrentCandidates = await loadWizardCandidates(context, {});
-        if (loadedCurrentCandidates.some((candidate) => candidate.pluginName.includes('/'))) {
-          throw new Error(
-            'runtimeTransitionIncomplete: interactive config writes require the phase 3B namespaced runtime.',
-          );
-        }
         const currentCandidates = loadedCurrentCandidates.filter(hasConfigSchemaKeys);
-        const storedCandidates = await loadStoredConfigWizardCandidates(context, [{ scope, projectLayer }]);
-        const candidates = mergeWizardCandidates(currentCandidates, storedCandidates);
+        const candidates = currentCandidates;
         if (pluginName && !candidates.some((entry) => entry.pluginName === pluginName)) {
           throw new Error(`Unknown plugin "${pluginName}".`);
         }
@@ -1827,7 +1870,11 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         return result.cancelled
           ? { cancelled: true as const }
           : { cancelled: false as const, value: result.value! };
-      });
+        });
+      } catch (error) {
+        writeConfigMutationFailure('config:unset', pluginName, rawOptions.json === true, error);
+        return;
+      }
       if (outcome.cancelled) return;
       const receipt = outcome.value;
       if (rawOptions.json) {
@@ -1856,22 +1903,24 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('--log-file <path>', 'write debug diagnostics to the specified file')
     .action(async (pluginName: string | undefined, rawOptions: RawConfigOptions) => {
       const context = createActionContext('config:reset', rawOptions);
-      if (await rejectTransitionalConfigMutation(
-        'config:reset',
-        pluginName,
-        rawOptions.json === true,
-        context,
-      )) return;
-      const outcome = await runActionWithContext(context, async () => {
+      let outcome;
+      try {
+        outcome = await runActionWithContext(context, async () => {
         const execute = async (
           selectedPlugin: string,
           selectedScope: Scope,
           projectLayer: 'shared' | 'local',
           confirmed: boolean,
-        ) => {
-        assertSafePluginConfigSegment(selectedPlugin);
+        ) => withResolvedCatalogPlugin({
+          selector: selectedPlugin,
+          cliVersion: resolveCliVersion(),
+          freshnessPolicy: 'cacheFirst',
+          env: context.env,
+          consume: async ({ pluginId, source, plugin }) => {
         const store = await readPluginConfigStore({
-          pluginName: selectedPlugin,
+          sourceId: source.sourceId,
+          sourceIdentity: source.sourceIdentity,
+          pluginName: plugin.manifest.name,
           scope: selectedScope,
           ...(selectedScope === 'project' ? { projectLayer } : {}),
           cwd: context.cwd,
@@ -1882,19 +1931,16 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
             `Reset requires confirmation. Re-run \`aw config reset ${selectedPlugin} -s ${selectedScope}${projectLayer === 'local' ? ' --local' : ''} --yes\` to delete this store.`,
           );
         }
-        const { plugin, error } = await loadConfigPluginLookup(selectedPlugin, context);
-        if (!plugin && !store.exists) throw new Error(`Unknown plugin "${selectedPlugin}".`);
         const affectedFields = await describeResetAffectedFields({
-          pluginName: selectedPlugin,
-          ...(plugin ? { plugin } : {}),
-          ...(error ? { pluginError: error } : {}),
+          pluginName: plugin.manifest.name,
+          plugin,
           scope: selectedScope,
           projectLayer,
           cwd: context.cwd,
           env: context.env,
         });
         const resetReceipt = await resetPluginConfigWithHelper({
-          pluginName: selectedPlugin,
+          pluginName: plugin.manifest.name,
           scope: selectedScope,
           projectLayer,
           cwd: context.cwd,
@@ -1903,17 +1949,91 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           rebuildRuntime: context,
           catalogChannel: rawOptions.catalogChannel,
           catalogVersion: rawOptions.catalogVersion,
-          ...(error ? { pluginError: error } : {}),
-          ...(plugin ? { plugin } : {}),
+          plugin,
         });
         return {
           ok: resetReceipt.overallState === 'succeeded',
           receiptSchemaVersion: 4,
           command: 'config:reset',
           ...resetReceipt,
+          plugin: plugin.manifest.name,
+          pluginName: plugin.manifest.name,
+          pluginId,
+          sourceId: source.sourceId,
+          sourceIdentity: source.sourceIdentity,
           affectedFields,
         };
-        };
+          },
+        }).catch(async (error) => {
+          const message = error instanceof Error ? error.message : String(error);
+          const pluginMissing = message.includes('does not exist in the required catalog source set');
+          if (!(
+            message.includes('Catalog source')
+            || message.startsWith('Cannot resolve required catalog sources:')
+            || pluginMissing
+          )) throw error;
+          const parsed = parsePluginId(selectedPlugin);
+          if (!parsed.sourceId) throw error;
+          const stored = await readNamespacedPluginConfigStoreIdentity({
+            sourceId: parsed.sourceId,
+            pluginName: parsed.pluginName,
+            scope: selectedScope,
+            ...(selectedScope === 'project' ? { projectLayer } : {}),
+            cwd: context.cwd,
+            env: context.env,
+          });
+          if (!stored) throw error;
+          if (pluginMissing) {
+            await resolveStoredOnlyConfigIdentity({
+              selector: selectedPlugin,
+              context,
+              locations: [{ scope: selectedScope, projectLayer }],
+            });
+          }
+          const legacyConfig = await inventoryLegacyConfigReferences({ cwd: context.cwd, env: context.env });
+          assertCatalogSourceInventoryComplete(legacyConfig);
+          if (legacyConfig.references.some((reference) => reference.pluginName === parsed.pluginName)) {
+            throw new Error('legacyStateUnsupported: legacy and namespaced plugin config stores cannot coexist.');
+          }
+          const inventory = await inventoryCatalogSourceReferences({ cwd: context.cwd, env: context.env });
+          assertCatalogSourceInventoryComplete(inventory);
+          const live = inventory.references.filter((reference) =>
+            (reference.kind === 'namespacedOwner' || reference.kind === 'namespacedMarketplace')
+            && reference.sourceId === parsed.sourceId
+            && reference.pluginName === parsed.pluginName);
+          if (live.some((reference) => reference.sourceIdentity !== stored.sourceIdentity)) {
+            throw new Error(`sourceChanged: ${selectedPlugin} live state has a different source identity.`);
+          }
+          if (live.length > 0) {
+            throw new Error(`sourceMissing: ${selectedPlugin} still has live targets. Run cleanup before config reset.`);
+          }
+          if (!confirmed) {
+            throw new Error(
+              `Reset requires confirmation. Re-run \`aw config reset ${selectedPlugin} -s ${selectedScope}${projectLayer === 'local' ? ' --local' : ''} --yes\` to delete this store.`,
+            );
+          }
+          const resetReceipt = await resetPluginConfigWithHelper({
+            sourceId: parsed.sourceId,
+            sourceIdentity: stored.sourceIdentity,
+            pluginName: parsed.pluginName,
+            scope: selectedScope,
+            projectLayer,
+            cwd: context.cwd,
+            env: context.env,
+          });
+          return {
+            ok: resetReceipt.overallState === 'succeeded',
+            receiptSchemaVersion: 4 as const,
+            command: 'config:reset' as const,
+            ...resetReceipt,
+            plugin: parsed.pluginName,
+            pluginName: parsed.pluginName,
+            pluginId: selectedPlugin,
+            sourceId: parsed.sourceId,
+            sourceIdentity: stored.sourceIdentity,
+            affectedFields: [],
+          };
+        });
 
         const scope = resolveConfigWriteScope(rawOptions.scope);
         const projectLayer = resolveConfigProjectLayer(rawOptions);
@@ -1932,11 +2052,6 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           };
         }
         const currentCandidates = pluginName ? [] : await loadWizardCandidates(context, {});
-        if (currentCandidates.some((candidate) => candidate.pluginName.includes('/'))) {
-          throw new Error(
-            'runtimeTransitionIncomplete: interactive config writes require the phase 3B namespaced runtime.',
-          );
-        }
         const candidatesByScope = new Map<Scope, CommandWizardPluginCandidate[]>();
         if (!pluginName && (rawOptions.scope === undefined || scope === 'user')) {
           candidatesByScope.set('user', mergeWizardCandidates(
@@ -1993,7 +2108,11 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
         return result.cancelled
           ? { cancelled: true as const }
           : { cancelled: false as const, value: result.value! };
-      });
+        });
+      } catch (error) {
+        writeConfigMutationFailure('config:reset', pluginName, rawOptions.json === true, error);
+        return;
+      }
       if (outcome.cancelled) return;
       const receipt = outcome.value;
       if (rawOptions.json) {
@@ -2045,7 +2164,11 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       for (const source of result.payload.catalog.sources) {
         if (source.error) writeLine(io.stderr, `${source.id}: ${source.error}`);
       }
-      for (const error of result.payload.errors) writeLine(io.stderr, error.message);
+      for (const error of result.payload.errors) {
+        if (error.code !== 'nativeStateUnreadable' && error.code !== 'stateInventoryFailed') {
+          writeLine(io.stderr, error.message);
+        }
+      }
     });
 
   Object.assign(program, { __awCommandExitState: commandExitState });

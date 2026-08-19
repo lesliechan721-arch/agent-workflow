@@ -45,6 +45,7 @@ import {
   withActiveMarketplaceLifecycleLease,
   withActiveMarketplaceRuntimeLease,
 } from './active-marketplace-runtime-lock.js';
+import { sanitizeCatalogSourceErrorMessage } from './catalog-public-error.js';
 
 function resolveCliPackageJsonPath(): string {
   return path.join(resolveCliPackageRoot(), 'package.json');
@@ -1862,6 +1863,253 @@ async function replayOwnedDynamicSkillOverlays(
         },
         { spaces: 2 },
       );
+    }
+  }
+}
+
+const NAMESPACED_SOURCE_IDENTITY_PATTERN = /^sha256:[0-9a-f]{64}$/;
+
+export interface NamespacedMarketplaceRootConfig {
+  schemaVersion: 2;
+  sourceId: string;
+  sourceIdentity: string;
+  marketplaceName: string;
+}
+
+export interface StrictNamespacedMarketplaceRoot {
+  rootDir: string;
+  config: NamespacedMarketplaceRootConfig;
+  agentsManifest: Record<string, unknown>;
+  claudeManifest: Record<string, unknown> | null;
+}
+
+export async function readStrictNamespacedMarketplaceRoot(options: {
+  rootDir: string;
+  sourceId?: string;
+  sourceIdentity?: string;
+  marketplaceName?: string;
+}): Promise<StrictNamespacedMarketplaceRoot | null> {
+  let rootStat: fs.Stats;
+  try {
+    rootStat = await fs.lstat(options.rootDir);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') return null;
+    throw error;
+  }
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
+    throw new Error('marketplaceRootInvalid: marketplace root must be a regular directory.');
+  }
+  const config = await fs.readJson(path.join(options.rootDir, 'config.json')) as unknown;
+  if (
+    !isRecord(config)
+    || config.schemaVersion !== 2
+    || typeof config.sourceId !== 'string'
+    || config.sourceId.length === 0
+    || typeof config.sourceIdentity !== 'string'
+    || !NAMESPACED_SOURCE_IDENTITY_PATTERN.test(config.sourceIdentity)
+    || typeof config.marketplaceName !== 'string'
+    || config.marketplaceName.length === 0
+    || config.sourceId !== path.basename(options.rootDir)
+  ) {
+    throw new Error('marketplaceRootInvalid: marketplace config must contain a canonical schema 2 identity.');
+  }
+  if (
+    (options.sourceId !== undefined && config.sourceId !== options.sourceId)
+    || (options.sourceIdentity !== undefined && config.sourceIdentity !== options.sourceIdentity)
+    || (options.marketplaceName !== undefined && config.marketplaceName !== options.marketplaceName)
+  ) {
+    throw new Error(
+      `sourceChanged: marketplace root for ${options.sourceId ?? config.sourceId} does not match its schema 2 source identity.`,
+    );
+  }
+  const agentsManifest = await fs.readJson(
+    path.join(options.rootDir, '.agents', 'plugins', 'marketplace.json'),
+  ) as unknown;
+  if (!isRecord(agentsManifest) || agentsManifest.name !== config.marketplaceName) {
+    throw new Error('marketplaceRootInvalid: Codex marketplace manifest name does not match config.');
+  }
+  const claudeManifestPath = path.join(options.rootDir, '.claude-plugin', 'marketplace.json');
+  let claudeManifest: Record<string, unknown> | null = null;
+  try {
+    const value = await fs.readJson(claudeManifestPath) as unknown;
+    if (!isRecord(value) || value.name !== config.marketplaceName) {
+      throw new Error('marketplaceRootInvalid: Claude marketplace manifest name does not match config.');
+    }
+    claudeManifest = value;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== 'ENOENT' && code !== 'ENOTDIR') throw error;
+  }
+  return {
+    rootDir: options.rootDir,
+    config: config as unknown as NamespacedMarketplaceRootConfig,
+    agentsManifest,
+    claudeManifest,
+  };
+}
+
+export async function replayNamespacedCodexSkillOverlays(options: {
+  sourceRoot: string;
+  stagingRoot: string;
+  sourceId: string;
+  sourceIdentity: string;
+  marketplaceName: string;
+}): Promise<void> {
+  const readExisting = async <T>(
+    operation: () => Promise<T>,
+    location: string,
+    absent: T,
+  ): Promise<T> => {
+    try {
+      return await operation();
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT' || code === 'ENOTDIR') return absent;
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`marketplaceOverlayReadFailed: ${sanitizeCatalogSourceErrorMessage(
+        `${location}: ${message}`,
+        process.env,
+        [options.sourceRoot, options.stagingRoot],
+      )}`);
+    }
+  };
+  const strictPathExists = async (location: string): Promise<boolean> => (
+    await readExisting(() => fs.lstat(location), location, null)
+  ) !== null;
+  let root: StrictNamespacedMarketplaceRoot | null;
+  try {
+    root = await readStrictNamespacedMarketplaceRoot({
+      rootDir: options.sourceRoot,
+      sourceId: options.sourceId,
+      sourceIdentity: options.sourceIdentity,
+      marketplaceName: options.marketplaceName,
+    });
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith('sourceChanged:')) throw error;
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`marketplaceOverlayReadFailed: ${sanitizeCatalogSourceErrorMessage(
+      message,
+      process.env,
+      [options.sourceRoot, options.stagingRoot],
+    )}`);
+  }
+  if (!root) return;
+  const sourcePluginsRoot = path.join(options.sourceRoot, 'plugins');
+  const stagingPluginsRoot = path.join(options.stagingRoot, 'plugins');
+  for (const pluginEntry of await readExisting(
+    () => fs.readdir(sourcePluginsRoot, { withFileTypes: true }),
+    sourcePluginsRoot,
+    [],
+  )) {
+    if (pluginEntry.isSymbolicLink()) {
+      throw new Error(`Codex Skill overlay plugin root cannot be a symlink: ${pluginEntry.name}`);
+    }
+    if (!pluginEntry.isDirectory()) continue;
+    const pluginName = pluginEntry.name;
+    const sourcePluginRoot = path.join(sourcePluginsRoot, pluginName);
+    const stagingPluginRoot = path.join(stagingPluginsRoot, pluginName);
+    const sourcePlatformManifestPath = path.join(sourcePluginRoot, '.codex-plugin', 'plugin.json');
+    const sourcePlatformManifest = await readExisting(
+      () => fs.readJson(sourcePlatformManifestPath) as Promise<Record<string, unknown>>,
+      sourcePlatformManifestPath,
+      null as Record<string, unknown> | null,
+    );
+    const sourceSkillsRelativeRoot = normalizePluginRelativeDirectory(
+      sourcePlatformManifest?.skills,
+      'codex/skills',
+    );
+    if (!sourceSkillsRelativeRoot) continue;
+    const sourceSkillsRoot = path.join(
+      sourcePluginRoot,
+      ...sourceSkillsRelativeRoot.split('/'),
+    );
+    const overlays: Array<{ skillKey: string; sourceSkillRoot: string }> = [];
+    for (const entry of await readExisting(
+      () => fs.readdir(sourceSkillsRoot, { withFileTypes: true }),
+      sourceSkillsRoot,
+      [],
+    )) {
+      if (entry.isSymbolicLink()) {
+        throw new Error(`Codex Skill overlay cannot be a symlink: ${path.join(sourceSkillsRoot, entry.name)}`);
+      }
+      if (!entry.isDirectory()) continue;
+      const sourceSkillRoot = path.join(sourceSkillsRoot, entry.name);
+      if (!await strictPathExists(path.join(sourceSkillRoot, SKILL_OWNER_MARKER))) continue;
+      await readSkillOwnerMarker({
+        skillRoot: sourceSkillRoot,
+        allowedRoot: sourceSkillsRoot,
+        expectedIdentity: {
+          owner: 'agent-workflows',
+          sourceId: options.sourceId,
+          sourceIdentity: options.sourceIdentity,
+          pluginId: `${options.sourceId}/${pluginName}`,
+          plugin: pluginName,
+          artifactKey: entry.name,
+          platform: 'codex',
+          scope: 'user',
+        },
+      });
+      overlays.push({ skillKey: entry.name, sourceSkillRoot });
+    }
+    if (overlays.length === 0) continue;
+    if (!await strictPathExists(stagingPluginRoot)) {
+      await assertOverlayTreeHasNoSymlinks(sourcePluginRoot);
+      await fs.copy(sourcePluginRoot, stagingPluginRoot, {
+        overwrite: false,
+        errorOnExist: true,
+        dereference: false,
+      });
+      continue;
+    }
+    const stagingManifestPath = path.join(stagingPluginRoot, '.agents-plugin', 'plugin.json');
+    const stagingManifest = await readExisting(
+      () => fs.readJson(stagingManifestPath) as Promise<Record<string, unknown>>,
+      stagingManifestPath,
+      null as Record<string, unknown> | null,
+    );
+    const targets = (stagingManifest?.artifacts as { targets?: unknown[] } | undefined)?.targets ?? [];
+    const dynamicKeys = new Set(targets.flatMap((target) => {
+      if (!target || typeof target !== 'object' || Array.isArray(target)) return [];
+      const record = target as Record<string, unknown>;
+      return record.platform === 'codex'
+        && record.target === 'codex.skill'
+        && Array.isArray(record.scopes)
+        && record.scopes.includes('user')
+        && typeof record.skillKey === 'string'
+        ? [record.skillKey]
+        : [];
+    }));
+    const stagingPlatformManifestPath = path.join(stagingPluginRoot, '.codex-plugin', 'plugin.json');
+    const stagingPlatformManifest = await readExisting(
+      () => fs.readJson(stagingPlatformManifestPath) as Promise<Record<string, unknown>>,
+      stagingPlatformManifestPath,
+      null as Record<string, unknown> | null,
+    );
+    const stagingSkillsRelativeRoot = normalizePluginRelativeDirectory(
+      stagingPlatformManifest?.skills,
+      'codex/skills',
+    );
+    if (!stagingSkillsRelativeRoot) continue;
+    const stagingSkillsRoot = path.join(
+      stagingPluginRoot,
+      ...stagingSkillsRelativeRoot.split('/'),
+    );
+    for (const overlay of overlays) {
+      const destination = path.join(stagingSkillsRoot, overlay.skillKey);
+      if (dynamicKeys.has(overlay.skillKey) || !await strictPathExists(destination)) {
+        await assertOverlayTreeHasNoSymlinks(overlay.sourceSkillRoot);
+        await fs.copy(overlay.sourceSkillRoot, destination, {
+          overwrite: true,
+          errorOnExist: false,
+          dereference: false,
+        });
+      } else {
+        await fs.copyFile(
+          path.join(overlay.sourceSkillRoot, SKILL_OWNER_MARKER),
+          path.join(destination, SKILL_OWNER_MARKER),
+        );
+      }
     }
   }
 }

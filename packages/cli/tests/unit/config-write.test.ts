@@ -481,12 +481,14 @@ describe('config write full reinstall apply', () => {
     expect(reinstall).not.toHaveBeenCalled();
   });
 
-  it('keeps the saved config and successful targets when another target fails', async () => {
+  it('rolls back the saved config when any reinstall target fails', async () => {
     const fixture = await createFixture();
     mocks.visible.add('codex:user');
     mocks.visible.add('claude:user');
+    let claudeAttempts = 0;
+    const observedModes: unknown[] = [];
     const reinstall = createReinstallMock({
-      fail: (platform) => platform === 'claude',
+      fail: (platform) => platform === 'claude' && claudeAttempts++ === 0,
       beforeReturn: async () => {
         const stored = await readPluginConfigStore({
           pluginName: fixture.plugin.manifest.name,
@@ -494,7 +496,7 @@ describe('config write full reinstall apply', () => {
           cwd: fixture.cwd,
           env: fixture.env,
         });
-        expect(stored.values.mode).toBe('fast');
+        observedModes.push(stored.values.mode);
       },
     });
 
@@ -513,10 +515,167 @@ describe('config write full reinstall apply', () => {
       env: fixture.env,
     });
 
-    expect(receipt.configWrite).toBe('succeeded');
+    expect(receipt.configWrite).toBe('rolledBack');
     expect(receipt.overallState).toBe('failed');
     expect(receipt.targetResults.map((entry) => entry.state).sort()).toEqual(['completed', 'failed']);
-    expect(stored.values.mode).toBe('fast');
+    expect(stored.values).toEqual({});
+    expect(observedModes).toEqual(['fast', 'fast', undefined, undefined]);
+    expect(reinstall).toHaveBeenCalledTimes(4);
+  });
+
+  it('serializes a failed rollback and a later successful write for one namespaced store', async () => {
+    const fixture = await createFixture();
+    fixture.plugin.sourceId = 'team';
+    fixture.plugin.sourceIdentity = `sha256:${'1'.repeat(64)}`;
+    fixture.plugin.pluginId = 'team/configurable-plugin';
+    fixture.plugin.marketplaceName = 'aw-team';
+    const target: ReceiptTargetIdentity = {
+      pluginName: fixture.plugin.manifest.name,
+      platform: 'codex',
+      scope: 'user',
+    };
+    let releaseFirst!: () => void;
+    const firstCanFinish = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    let firstStarted!: () => void;
+    const firstAttemptStarted = new Promise<void>((resolve) => { firstStarted = resolve; });
+    const observed: string[] = [];
+    let firstCalls = 0;
+    const firstReinstall = vi.fn(async () => {
+      const store = await readPluginConfigStore({
+        sourceId: fixture.plugin.sourceId,
+        sourceIdentity: fixture.plugin.sourceIdentity,
+        pluginName: fixture.plugin.manifest.name,
+        scope: 'user',
+        cwd: fixture.cwd,
+        env: fixture.env,
+      });
+      observed.push(`A:${String(store.values.mode)}`);
+      firstCalls += 1;
+      if (firstCalls === 1) {
+        firstStarted();
+        await firstCanFinish;
+        return rebuildResult(target, 'failed');
+      }
+      return rebuildResult(target, 'succeeded');
+    });
+    let secondEntered = false;
+    const secondReinstall = vi.fn(async () => {
+      secondEntered = true;
+      const store = await readPluginConfigStore({
+        sourceId: fixture.plugin.sourceId,
+        sourceIdentity: fixture.plugin.sourceIdentity,
+        pluginName: fixture.plugin.manifest.name,
+        scope: 'user',
+        cwd: fixture.cwd,
+        env: fixture.env,
+      });
+      observed.push(`B:${String(store.values.mode)}`);
+      return rebuildResult(target, 'succeeded');
+    });
+    const first = applyPluginConfigWrite({
+      plugin: fixture.plugin,
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      applyTargets: [target],
+      request: { updates: { mode: 'fast' } },
+      reinstallCommandImpl: firstReinstall,
+    });
+    await firstAttemptStarted;
+    const second = applyPluginConfigWrite({
+      plugin: fixture.plugin,
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      applyTargets: [target],
+      request: { updates: { mode: 'safe' } },
+      reinstallCommandImpl: secondReinstall,
+    });
+    await new Promise<void>((resolve) => setTimeout(resolve, 30));
+    expect(secondEntered).toBe(false);
+    releaseFirst();
+
+    const [firstReceipt, secondReceipt] = await Promise.all([first, second]);
+    expect(firstReceipt.configWrite).toBe('rolledBack');
+    expect(secondReceipt.configWrite).toBe('succeeded');
+    expect(observed).toEqual(['A:fast', 'A:undefined', 'B:safe']);
+    expect((await readPluginConfigStore({
+      sourceId: fixture.plugin.sourceId,
+      sourceIdentity: fixture.plugin.sourceIdentity,
+      pluginName: fixture.plugin.manifest.name,
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+    })).values).toEqual({ mode: 'safe' });
+  });
+
+  it('reports rollbackFailed when runtime compensation cannot restore an affected target', async () => {
+    const fixture = await createFixture();
+    mocks.visible.add('codex:user');
+    const reinstall = createReinstallMock({ fail: () => true });
+
+    const receipt = await applyPluginConfigWrite({
+      plugin: fixture.plugin,
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      request: { updates: { mode: 'fast' } },
+      reinstallCommandImpl: reinstall,
+    });
+
+    expect(receipt).toMatchObject({
+      configWrite: 'rollbackFailed',
+      overallState: 'failed',
+      targetResults: [expect.objectContaining({
+        state: 'failed',
+        message: expect.stringContaining('rollbackFailed:'),
+      })],
+    });
+    expect((await readPluginConfigStore({
+      pluginName: fixture.plugin.manifest.name,
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+    })).values).toEqual({});
+    expect(reinstall).toHaveBeenCalledTimes(2);
+  });
+
+  it('rolls back a reset when reinstall fails', async () => {
+    const fixture = await createFixture();
+    mocks.visible.add('codex:user');
+    await writePluginConfigStore({
+      pluginName: fixture.plugin.manifest.name,
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      values: { mode: 'fast' },
+    });
+    let attempts = 0;
+    const reinstall = createReinstallMock({ fail: () => attempts++ === 0 });
+
+    const receipt = await resetPluginConfigWithHelper({
+      pluginName: fixture.plugin.manifest.name,
+      plugin: fixture.plugin,
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      reinstallCommandImpl: reinstall,
+    });
+    const stored = await readPluginConfigStore({
+      pluginName: fixture.plugin.manifest.name,
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+    });
+
+    expect(receipt).toMatchObject({
+      configWrite: 'rolledBack',
+      overallState: 'failed',
+      deleted: false,
+      removedKeys: [],
+    });
+    expect(stored.values).toEqual({ mode: 'fast' });
+    expect(reinstall).toHaveBeenCalledTimes(2);
   });
 
   it('resets an unknown catalog plugin store without trying to apply it', async () => {

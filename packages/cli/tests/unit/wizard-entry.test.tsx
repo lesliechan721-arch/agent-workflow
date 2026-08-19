@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { buildEquivalentWriteCommandTokens, runCli } from '../../src/index.js';
+import { toWizardCandidates } from '../../src/commands/wizard.js';
 import { createCapturedCliIo } from '../helpers/cli-entry.js';
 
 const mocks = vi.hoisted(() => ({
@@ -18,41 +19,63 @@ vi.mock('../../src/commands/write-commands.js', async () => ({
   ...mocks,
 }));
 
-describe('write command transition gate', () => {
+describe('write command runtime entry', () => {
+  it('uses the status v4 plugin summary for namespaced config candidates', () => {
+    expect(toWizardCandidates([{
+      pluginName: 'team/demo',
+      pluginSummary: {
+        description: 'Namespaced summary',
+        configSchema: { mode: { type: 'string', title: 'Mode' } },
+      },
+      targets: [],
+    }])).toEqual([expect.objectContaining({
+      pluginName: 'team/demo',
+      pluginId: 'team/demo',
+      description: 'Namespaced summary',
+      configSchema: { mode: { type: 'string', title: 'Mode' } },
+    })]);
+  });
+
   it.each([
     ['install', ['demo', '--platform', 'codex']],
     ['upgrade', ['demo', '--platform', 'codex']],
     ['reinstall', ['demo', '--platform', 'codex']],
     ['uninstall', ['demo', '--platform', 'codex']],
     ['cleanup', ['demo', '--platform', 'codex', '--scope', 'user']],
-  ] as const)('fails %s closed with one v4 receipt and no helper call', async (command, args) => {
+  ] as const)('routes complete %s arguments without mounting a wizard', async (command, args) => {
     const captured = createCapturedCliIo();
     const launch = vi.fn();
+    const helper = mocks[`${command}WriteCommand` as keyof typeof mocks];
+    helper.mockResolvedValueOnce({
+      platforms: ['codex'],
+      plugins: ['demo'],
+      warnings: [],
+      rebuildResults: [],
+      targetResults: [],
+      overallState: 'succeeded',
+      nativePlugins: {},
+      repoManagedArtifacts: [],
+      receiptTargets: [],
+    });
     const exitCode = await runCli([command, ...args, '--json'], {
       interactive: true,
       io: captured.io,
       tuiRunner: { launch } as never,
     });
 
-    expect(exitCode).toBe(1);
+    expect(exitCode).toBe(0);
     expect(JSON.parse(captured.readStdout())).toMatchObject({
       receiptSchemaVersion: 4,
       command,
-      ok: false,
-      overallState: 'failed',
-      targets: [expect.objectContaining({
-        pluginName: 'demo',
-        platform: 'codex',
-        scope: 'user',
-        status: 'failed',
-      })],
-      errors: [{ code: 'runtimeTransitionIncomplete' }],
+      ok: true,
+      overallState: 'succeeded',
+      errors: [],
     });
     expect(launch).not.toHaveBeenCalled();
-    expect(Object.values(mocks).every((helper) => helper.mock.calls.length === 0)).toBe(true);
+    expect(helper).toHaveBeenCalledOnce();
   });
 
-  it('fails a parameter-missing interactive write before mounting a wizard', async () => {
+  it('prints usage for a parameter-missing non-TTY write', async () => {
     const captured = createCapturedCliIo();
     const launch = vi.fn();
     const exitCode = await runCli(['install'], {
@@ -62,9 +85,9 @@ describe('write command transition gate', () => {
     });
 
     expect(exitCode).toBe(1);
-    expect(captured.readStdout()).toContain('runtimeTransitionIncomplete');
+    expect(captured.readStdout()).toBe('');
+    expect(captured.readStderr()).toContain('Usage: aw install');
     expect(launch).not.toHaveBeenCalled();
-    expect(mocks.installWriteCommand).not.toHaveBeenCalled();
   });
 
   it.each([

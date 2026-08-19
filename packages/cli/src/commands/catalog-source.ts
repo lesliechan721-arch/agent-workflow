@@ -16,6 +16,7 @@ import {
   type CatalogSourceUpdate,
 } from '../utils/catalog-sources.js';
 import {
+  assertCatalogSourceInventoryComplete,
   assertCatalogSourceReferencesSupported,
   inventoryCatalogSourceReferences,
   type CatalogSourceReferenceInventory,
@@ -112,6 +113,8 @@ async function commitCandidate(options: {
   expectedDigest: string;
   evidence?: CatalogSourceEvidence;
   referencePreflight: boolean;
+  allSourceReferences?: boolean;
+  matchingSourceIdentity?: string;
   cwd: string;
   env: NodeJS.ProcessEnv;
   runtime?: CatalogSourceCommandRuntime;
@@ -124,9 +127,32 @@ async function commitCandidate(options: {
     beforeReplace: options.referencePreflight
       ? async () => {
           const inventory = await (options.runtime?.inventoryReferences
-            ?? inventoryCatalogSourceReferences)({ cwd: options.cwd, env: options.env });
-          references = inventory.references;
-          assertCatalogSourceReferencesSupported(inventory);
+            ?? inventoryCatalogSourceReferences)({
+              cwd: options.cwd,
+              env: options.env,
+              includeHistoricalProjects: true,
+            });
+          assertCatalogSourceInventoryComplete(inventory);
+          if (options.matchingSourceIdentity) {
+            const matchingSourceReferences = inventory.references.filter((reference) =>
+              reference.sourceId === options.sourceId);
+            references = matchingSourceReferences;
+            if (matchingSourceReferences.some((reference) =>
+              reference.sourceIdentity !== options.matchingSourceIdentity)) {
+              throw Object.assign(
+                new Error(`sourceChanged: ${options.sourceId} live state has a different source identity.`),
+                { code: 'sourceChanged' },
+              );
+            }
+            return;
+          }
+          const relevant = inventory.references.filter((reference) =>
+            reference.sourceId === undefined
+            || reference.sourceId === options.sourceId
+            || options.command === 'catalog:source:set-primary'
+            || options.allSourceReferences === true);
+          references = relevant;
+          assertCatalogSourceReferencesSupported({ ...inventory, references: relevant });
         }
       : undefined,
   });
@@ -182,7 +208,9 @@ export async function addCatalogSourceCommand(options: {
     candidate,
     expectedDigest: snapshot.digest,
     evidence,
-    referencePreflight: options.source.primary,
+    referencePreflight: true,
+    allSourceReferences: options.source.primary,
+    ...(options.source.primary ? {} : { matchingSourceIdentity: evidence.sourceIdentity }),
     cwd: options.cwd,
     env,
     runtime: options.runtime,

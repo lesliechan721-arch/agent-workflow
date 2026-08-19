@@ -39,6 +39,11 @@ import {
 export type { RebuildActionName, RebuildCommand } from '../types.js';
 
 export interface RebuildTargetIdentity {
+  sourceId?: string;
+  sourceIdentity?: string;
+  pluginId?: string;
+  marketplaceName?: string;
+  marketplaceRoot?: string;
   pluginName: string;
   pluginVersion: string;
   platform: PlatformName;
@@ -102,6 +107,10 @@ export interface RebuildLifecycleInvocation {
 }
 
 export interface RebuildTargetDriver {
+  preflightMaterialize?(target: DesiredTarget): Promise<void>;
+  withMaterializeLease?<T>(target: DesiredTarget, action: () => Promise<T>): Promise<T>;
+  commitMaterialize?(target: DesiredTarget): Promise<void>;
+  rollbackMaterialize?(target: DesiredTarget): Promise<void>;
   writeNative(target: DesiredTarget): Promise<void>;
   writeArtifacts(target: DesiredTarget): Promise<void | readonly GeneratedArtifact[]>;
   withOwnershipLease?<T>(target: DesiredTarget, action: () => Promise<T>): Promise<T>;
@@ -160,9 +169,14 @@ export interface RebuildActiveStore {
 export function createRebuildActiveStore(options: {
   env?: NodeJS.ProcessEnv;
   loadPlugin: LifecycleActivePluginLoader;
+  isLifecycleLeaseHeld?: () => boolean;
 }): RebuildActiveStore {
   return {
     prepare: (target) => prepareLifecycleActiveSnapshot({
+      ...(target.identity.sourceId ? {
+        sourceId: target.identity.sourceId,
+        sourceIdentity: target.identity.sourceIdentity,
+      } : {}),
       plugin: target.lifecycleSource,
       platform: target.identity.platform,
       scope: target.identity.scope,
@@ -170,10 +184,15 @@ export function createRebuildActiveStore(options: {
       artifacts: target.artifacts,
       loadPlugin: options.loadPlugin,
       env: options.env,
+      lifecycleLeaseHeld: options.isLifecycleLeaseHeld?.() === true,
     }),
     discard: discardLifecycleActiveSnapshot,
     promote: promoteLifecycleActiveSnapshot,
     read: (target) => readLifecycleActiveSnapshot({
+      ...(target.identity.sourceId ? {
+        sourceId: target.identity.sourceId,
+        sourceIdentity: target.identity.sourceIdentity,
+      } : {}),
       pluginName: target.identity.pluginName,
       platform: target.identity.platform,
       scope: target.identity.scope,
@@ -182,6 +201,10 @@ export function createRebuildActiveStore(options: {
       env: options.env,
     }),
     readStable: (target) => leaseLifecycleActiveSnapshot({
+      ...(target.identity.sourceId ? {
+        sourceId: target.identity.sourceId,
+        sourceIdentity: target.identity.sourceIdentity,
+      } : {}),
       pluginName: target.identity.pluginName,
       platform: target.identity.platform,
       scope: target.identity.scope,
@@ -190,13 +213,22 @@ export function createRebuildActiveStore(options: {
       env: options.env,
     }),
     remove: (target) => removeLifecycleActiveSnapshot({
+      ...(target.identity.sourceId ? {
+        sourceId: target.identity.sourceId,
+        sourceIdentity: target.identity.sourceIdentity,
+      } : {}),
       pluginName: target.identity.pluginName,
       platform: target.identity.platform,
       scope: target.identity.scope,
       cwd: target.identity.cwd,
       env: options.env,
+      lifecycleLeaseHeld: options.isLifecycleLeaseHeld?.() === true,
     }),
     acquireOperation: (identity) => acquireLifecycleOperationLock({
+      ...(identity.sourceId ? {
+        sourceId: identity.sourceId,
+        sourceIdentity: identity.sourceIdentity,
+      } : {}),
       pluginName: identity.pluginName,
       platform: identity.platform,
       scope: identity.scope,
@@ -253,6 +285,8 @@ const REBUILD_ACTION_FAILURE_MESSAGES: Record<RebuildActionName, string> = {
   'lifecycle.uninstall': '运行卸载生命周期失败。',
   'active.promote': '启用生命周期快照失败。',
   'postcheck.inspect': '检查写入结果失败。',
+  'marketplace.commit': '提交 marketplace generation 失败。',
+  'marketplace.rollback': '回滚 marketplace generation 失败。',
   'recovery.cleanup': '清理失败写入失败。',
   'cleanup.owned': '清理 AW 组件失败。',
   'active.read': '读取生命周期快照失败。',
@@ -411,7 +445,13 @@ async function action<T>(
 }
 
 function validateDesiredTarget(target: DesiredTarget): void {
-  const { pluginName, pluginVersion, platform, scope } = target.identity;
+  const { sourceId, sourceIdentity, pluginId, pluginName, pluginVersion, platform, scope } = target.identity;
+  if (sourceId !== undefined && (
+    !sourceIdentity
+    || pluginId !== `${sourceId}/${pluginName}`
+  )) {
+    throw new Error('Desired target has an invalid namespaced source identity.');
+  }
   if (
     target.plugin.manifest.name !== pluginName
     || target.lifecycleSource.manifest.name !== pluginName
@@ -434,6 +474,9 @@ function validateDesiredTarget(target: DesiredTarget): void {
     validateOwnerIdentity(component.identity);
     if (
       component.identity.plugin !== pluginName
+      || component.identity.sourceId !== sourceId
+      || component.identity.sourceIdentity !== sourceIdentity
+      || component.identity.pluginId !== pluginId
       || component.identity.platform !== platform
       || component.identity.scope !== scope
     ) {
@@ -459,8 +502,9 @@ function validateDesiredTarget(target: DesiredTarget): void {
       componentPaths.add(componentPath);
     }
     if (component.kind === 'native-plugin') {
-      if (component.pluginId !== `${pluginName}@aw`) {
-        throw new Error(`Native plugin identity must be ${pluginName}@aw.`);
+      const expectedNativePluginId = `${pluginName}@${target.identity.marketplaceName ?? 'aw'}`;
+      if (component.pluginId !== expectedNativePluginId) {
+        throw new Error(`Native plugin identity must be ${expectedNativePluginId}.`);
       }
     }
   }
@@ -508,6 +552,11 @@ function ownedComponentLabel(component: OwnedComponent): string {
   if ('path' in component) return component.path;
   if (component.kind === 'native-plugin') return component.pluginId;
   return component.label;
+}
+
+function isUninstallLiveOwnershipComponent(component: OwnedComponent): boolean {
+  return component.kind !== 'shared-config'
+    || !component.identity.artifactKey.startsWith('marketplace-');
 }
 
 function recordInspectionResiduals(
@@ -627,10 +676,13 @@ async function materializeTarget(options: {
     inspection = await action(
       accumulator,
       'preflight.inspect',
-      () => withOwnershipLease(target, driver, () => inspectOwnedComponents({
-        components: target.ownedComponents,
-        nativeProbe: driver.probeNative,
-      })),
+      () => withOwnershipLease(target, driver, async () => {
+        await driver.preflightMaterialize?.(target);
+        return inspectOwnedComponents({
+          components: target.ownedComponents,
+          nativeProbe: driver.probeNative,
+        });
+      }),
       events,
       collisionMessage,
     );
@@ -713,6 +765,10 @@ async function materializeTarget(options: {
       const postcheckFailure = postcheckMessage(accumulator, postcheck);
       if (postcheckFailure) throw new Error(postcheckFailure);
     }, events);
+    if (driver.commitMaterialize) {
+      failurePhase = 'marketplace.commit';
+      await action(accumulator, failurePhase, () => driver.commitMaterialize!(target), events);
+    }
     return succeeded(command, target, accumulator);
   } catch (error) {
     const primary = errorMessage(error);
@@ -727,6 +783,21 @@ async function materializeTarget(options: {
       }
     }
     await cleanupTarget(target, driver, store, accumulator, 'recovery.cleanup', events);
+    if (driver.rollbackMaterialize) {
+      try {
+        await action(
+          accumulator,
+          'marketplace.rollback',
+          () => driver.rollbackMaterialize!(target),
+          events,
+        );
+      } catch (rollbackError) {
+        accumulator.failures.push({
+          phase: 'marketplace.rollback',
+          message: errorMessage(rollbackError),
+        });
+      }
+    }
     return failed(command, target, accumulator, failurePhase, primary);
   }
 }
@@ -801,7 +872,9 @@ async function executeUninstall(options: {
     return failed('uninstall', target, accumulator, 'active.read', message);
   }
   if (!snapshot) {
-    const live = inspection.components.filter((component) => component.state !== 'absent');
+    const live = inspection.components.filter((component) =>
+      component.state !== 'absent'
+      && isUninstallLiveOwnershipComponent(component.component));
     if (live.length === 0) return succeeded('uninstall', target, accumulator);
     if (!target.plugin.manifest.scripts?.lifecycle?.uninstall) {
       const cleanupError = await cleanupTarget(target, driver, store, accumulator, 'cleanup.owned', events);
@@ -820,6 +893,26 @@ async function executeUninstall(options: {
       accumulator,
       'active.read',
       'Active lifecycle snapshot is missing while live owned components exist. Run cleanup to remove them without lifecycle.',
+    );
+  }
+
+  const live = inspection.components.filter((component) =>
+    component.state === 'present'
+    && isUninstallLiveOwnershipComponent(component.component));
+  if (live.length === 0) {
+    if (stableRead && store.releaseRead) {
+      try {
+        await action(accumulator, 'active.release', () => store.releaseRead!(snapshot!), events);
+      } catch (error) {
+        return failed('uninstall', target, accumulator, 'active.release', errorMessage(error));
+      }
+    }
+    return failed(
+      'uninstall',
+      target,
+      accumulator,
+      'preflight.inspect',
+      'liveOwnershipRequired: uninstall requires at least one live owned or native component. Run cleanup to remove orphan lifecycle metadata.',
     );
   }
 
@@ -913,7 +1006,12 @@ export async function executeRebuildOperation(options: {
 
   let result: RebuildResult;
   try {
-    result = await executeRebuildOperationLocked(options, accumulator, store, events);
+    const execute = () => executeRebuildOperationLocked(options, accumulator, store, events);
+    result = options.command === 'install'
+      || options.command === 'upgrade'
+      || options.command === 'reinstall'
+      ? await (options.driver.withMaterializeLease?.(options.target, execute) ?? execute())
+      : await execute();
   } catch (error) {
     result = failed(options.command, options.target, accumulator, 'preflight', errorMessage(error));
   }
@@ -986,10 +1084,13 @@ async function executeRebuildOperationLocked(
     inspection = await action(
       accumulator,
       'preflight.inspect',
-      () => withOwnershipLease(options.target, options.driver, () => inspectOwnedComponents({
-        components: options.target.ownedComponents,
-        nativeProbe: options.driver.probeNative,
-      })),
+      () => withOwnershipLease(options.target, options.driver, async () => {
+        await options.driver.preflightMaterialize?.(options.target);
+        return inspectOwnedComponents({
+          components: options.target.ownedComponents,
+          nativeProbe: options.driver.probeNative,
+        });
+      }),
       events,
       collisionMessage,
     );

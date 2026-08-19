@@ -40,7 +40,7 @@ import {
 import { assertTestWritablePath } from './test-path-fence.js';
 
 export const LIFECYCLE_ACTIVE_DIR = 'lifecycle-active';
-export const LIFECYCLE_ACTIVE_SCHEMA_VERSION = 1;
+export const LIFECYCLE_ACTIVE_SCHEMA_VERSION = 2;
 export const LIFECYCLE_ACTIVE_METADATA_FILE = 'metadata.json';
 const SOURCE_MANIFEST_PATH = path.join('.agents-plugin', 'plugin.json');
 
@@ -65,6 +65,9 @@ const ARTIFACT_TARGETS = new Set<ArtifactTarget>([
 const ARTIFACT_STATES = new Set<ArtifactState>(['present', 'disabled']);
 
 export interface LifecycleActiveTargetIdentity {
+  sourceId?: string;
+  sourceIdentity?: string;
+  pluginId?: string;
   pluginName: string;
   platform: PlatformName;
   scope: Scope;
@@ -73,6 +76,9 @@ export interface LifecycleActiveTargetIdentity {
 }
 
 export interface LifecycleArtifactOwnerIdentity {
+  sourceId?: string;
+  sourceIdentity?: string;
+  pluginId?: string;
   pluginName: string;
   platform: PlatformName;
   scope: Scope;
@@ -95,7 +101,10 @@ export interface LifecycleActiveArtifactDescriptor {
 }
 
 interface LifecycleActiveMetadataPayload {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
+  sourceId?: string;
+  sourceIdentity?: string;
+  pluginId?: string;
   pluginName: string;
   pluginVersion: string;
   platform: PlatformName;
@@ -259,7 +268,7 @@ function assertPluginName(pluginName: string): void {
   }
 }
 
-function createProjectLocationKey(projectKey: string): string {
+export function createLifecycleProjectLocationKey(projectKey: string): string {
   const readable = path.basename(projectKey)
     .replace(/[^A-Za-z0-9._-]+/g, '-')
     .replace(/^-+|-+$/g, '')
@@ -300,6 +309,8 @@ function assertWritableStorePath(targetPath: string): string {
 }
 
 export async function resolveLifecycleActiveTarget(options: {
+  sourceId?: string;
+  sourceIdentity?: string;
   pluginName: string;
   platform: PlatformName;
   scope: Scope;
@@ -307,6 +318,10 @@ export async function resolveLifecycleActiveTarget(options: {
   env?: NodeJS.ProcessEnv;
 }): Promise<LifecycleActiveTarget> {
   assertPluginName(options.pluginName);
+  if (options.sourceId !== undefined) {
+    assertPluginName(options.sourceId);
+    if (!options.sourceIdentity) fail('sourceIdentity is required for a namespaced lifecycle target.');
+  }
   const platform = expectPlatform(options.platform, 'platform');
   const scope = expectScope(options.scope, 'scope');
   const env = options.env ?? process.env;
@@ -320,11 +335,12 @@ export async function resolveLifecycleActiveTarget(options: {
   const projectKey = rawProjectRoot ? await resolveCanonicalProjectRoot(options.cwd) : null;
   const rawPlatformHome = path.resolve(platform === 'codex' ? getCodexHome(env) : getClaudeHome(env));
   const platformHome = await canonicalizePathThroughExistingAncestor(rawPlatformHome);
-  const locationKey = projectKey ? createProjectLocationKey(projectKey) : 'user';
+  const locationKey = projectKey ? createLifecycleProjectLocationKey(projectKey) : 'user';
   const coordinationRoot = resolveActiveMarketplaceRuntimeCoordinationRoot(env);
   const storeRoot = assertWritableStorePath(path.join(awHome, LIFECYCLE_ACTIVE_DIR));
   const targetRoot = assertWritableStorePath(path.join(
     storeRoot,
+    ...(options.sourceId ? [options.sourceId] : []),
     platform,
     scope,
     locationKey,
@@ -339,13 +355,18 @@ export async function resolveLifecycleActiveTarget(options: {
   ));
   const lockPath = assertWritableStorePath(path.join(
     lockParent,
-    `.${options.pluginName}.lock`,
+    `.${options.sourceId ? `${options.sourceId}.` : ''}${options.pluginName}.lock`,
   ));
   const operationLockPath = assertWritableStorePath(path.join(
     lockParent,
-    `.${options.pluginName}.operation.lock`,
+    `.${options.sourceId ? `${options.sourceId}.` : ''}${options.pluginName}.operation.lock`,
   ));
   return {
+    ...(options.sourceId ? {
+      sourceId: options.sourceId,
+      sourceIdentity: options.sourceIdentity,
+      pluginId: `${options.sourceId}/${options.pluginName}`,
+    } : {}),
     pluginName: options.pluginName,
     platform,
     scope,
@@ -435,8 +456,13 @@ async function assertExistingDirectoryBoundary(
   }
 }
 
-async function acquireTargetLock(target: LifecycleActiveTarget): Promise<ProcessLockLease> {
-  const lifecycleLease = await acquireActiveMarketplaceLifecycleLeaseAtRoot(target.coordinationRoot);
+async function acquireTargetLock(
+  target: LifecycleActiveTarget,
+  lifecycleLeaseHeld = false,
+): Promise<ProcessLockLease> {
+  const lifecycleLease = lifecycleLeaseHeld
+    ? undefined
+    : await acquireActiveMarketplaceLifecycleLeaseAtRoot(target.coordinationRoot);
   const lockParent = path.dirname(target.lockPath);
   let targetLease: ProcessLockLease;
   try {
@@ -449,7 +475,7 @@ async function acquireTargetLock(target: LifecycleActiveTarget): Promise<Process
     });
   } catch (error) {
     try {
-      await releaseActiveMarketplaceCoordinationLease(lifecycleLease);
+      if (lifecycleLease) await releaseActiveMarketplaceCoordinationLease(lifecycleLease);
     } catch (releaseError) {
       throw new AggregateError(
         [error, releaseError],
@@ -470,7 +496,7 @@ async function acquireTargetLock(target: LifecycleActiveTarget): Promise<Process
         await targetLease.release();
         targetReleased = true;
       }
-      if (!lifecycleReleased) {
+      if (lifecycleLease && !lifecycleReleased) {
         await lifecycleLease.release();
         lifecycleReleased = true;
       }
@@ -479,6 +505,8 @@ async function acquireTargetLock(target: LifecycleActiveTarget): Promise<Process
 }
 
 export async function acquireLifecycleOperationLock(options: {
+  sourceId?: string;
+  sourceIdentity?: string;
   pluginName: string;
   platform: PlatformName;
   scope: Scope;
@@ -600,6 +628,11 @@ function createArtifactDescriptors(
 ): LifecycleActiveArtifactDescriptor[] {
   const outputRoots = target.artifactOutputRoots;
   const owner: LifecycleArtifactOwnerIdentity = {
+    ...(target.sourceId ? {
+      sourceId: target.sourceId,
+      sourceIdentity: target.sourceIdentity,
+      pluginId: target.pluginId,
+    } : {}),
     pluginName: target.pluginName,
     platform: target.platform,
     scope: target.scope,
@@ -751,8 +784,15 @@ function parseArtifactDescriptors(
       fail(`${fieldName}.state is invalid.`);
     }
     const owner = expectRecord(artifact.owner, `${fieldName}.owner`);
-    assertAllowedKeys(owner, ['pluginName', 'platform', 'scope', 'projectKey'], `${fieldName}.owner`);
+    assertAllowedKeys(owner, [
+      'sourceId', 'sourceIdentity', 'pluginId', 'pluginName', 'platform', 'scope', 'projectKey',
+    ], `${fieldName}.owner`);
     const parsedOwner: LifecycleArtifactOwnerIdentity = {
+      ...(target.sourceId ? {
+        sourceId: expectString(owner.sourceId, `${fieldName}.owner.sourceId`),
+        sourceIdentity: expectString(owner.sourceIdentity, `${fieldName}.owner.sourceIdentity`),
+        pluginId: expectString(owner.pluginId, `${fieldName}.owner.pluginId`),
+      } : {}),
       pluginName: expectString(owner.pluginName, `${fieldName}.owner.pluginName`),
       platform: expectPlatform(owner.platform, `${fieldName}.owner.platform`),
       scope: expectScope(owner.scope, `${fieldName}.owner.scope`),
@@ -762,6 +802,9 @@ function parseArtifactDescriptors(
     };
     if (
       parsedOwner.pluginName !== target.pluginName
+      || parsedOwner.sourceId !== target.sourceId
+      || parsedOwner.sourceIdentity !== target.sourceIdentity
+      || parsedOwner.pluginId !== target.pluginId
       || parsedOwner.platform !== target.platform
       || parsedOwner.scope !== target.scope
       || parsedOwner.projectKey !== target.projectKey
@@ -806,13 +849,26 @@ function parseMetadata(
 ): LifecycleActiveMetadata {
   const value = expectRecord(raw, 'metadata');
   assertAllowedKeys(value, [
-    'schemaVersion', 'pluginName', 'pluginVersion', 'platform', 'scope', 'projectKey',
+    'schemaVersion', 'sourceId', 'sourceIdentity', 'pluginId',
+    'pluginName', 'pluginVersion', 'platform', 'scope', 'projectKey',
     'sourceManifestDigest', 'fingerprintVersion', 'bundleFingerprint', 'events', 'artifacts',
     'metadataIntegrityDigest',
   ], 'metadata');
-  if (value.schemaVersion !== LIFECYCLE_ACTIVE_SCHEMA_VERSION) {
+  if (value.schemaVersion !== 1 && value.schemaVersion !== LIFECYCLE_ACTIVE_SCHEMA_VERSION) {
     fail('metadata.schemaVersion is unsupported.');
   }
+  if (target.sourceId !== undefined && value.schemaVersion === 1) {
+    fail('legacyStateUnsupported: schema 1 lifecycle state is not supported.');
+  }
+  const sourceId = value.schemaVersion === 2
+    ? expectString(value.sourceId, 'metadata.sourceId')
+    : undefined;
+  const sourceIdentity = value.schemaVersion === 2
+    ? expectString(value.sourceIdentity, 'metadata.sourceIdentity')
+    : undefined;
+  const pluginId = value.schemaVersion === 2
+    ? expectString(value.pluginId, 'metadata.pluginId')
+    : undefined;
   const pluginName = expectString(value.pluginName, 'metadata.pluginName');
   assertPluginName(pluginName);
   const pluginVersion = expectString(value.pluginVersion, 'metadata.pluginVersion');
@@ -822,11 +878,18 @@ function parseMetadata(
     ? null
     : expectString(value.projectKey, 'metadata.projectKey');
   if (
+    sourceId !== target.sourceId
+    || (sourceId !== undefined && sourceIdentity !== target.sourceIdentity)
+    || (sourceId !== undefined && pluginId !== target.pluginId)
+    ||
     pluginName !== target.pluginName
     || platform !== target.platform
     || scope !== target.scope
     || projectKey !== target.projectKey
   ) {
+    if (sourceId === target.sourceId && sourceIdentity !== target.sourceIdentity) {
+      fail('sourceChanged: lifecycle source identity does not match the configured source.');
+    }
     fail('Lifecycle active metadata target identity does not match the requested target.');
   }
   if (scope === 'user' ? projectKey !== null : projectKey === null) {
@@ -867,7 +930,8 @@ function parseMetadata(
   }
   const artifacts = parseArtifactDescriptors(value.artifacts, target);
   const payload: LifecycleActiveMetadataPayload = {
-    schemaVersion: LIFECYCLE_ACTIVE_SCHEMA_VERSION,
+    schemaVersion: value.schemaVersion,
+    ...(sourceId ? { sourceId, sourceIdentity, pluginId } : {}),
     pluginName,
     pluginVersion,
     platform,
@@ -958,6 +1022,11 @@ async function validateSnapshotRoot(
     || declaredEvents.some((event, index) => metadata.events[index] !== event)
   ) {
     fail('Lifecycle active plugin events do not match metadata.');
+  }
+  if (metadata.sourceId) {
+    plugin.sourceId = metadata.sourceId;
+    plugin.sourceIdentity = metadata.sourceIdentity;
+    plugin.pluginId = metadata.pluginId;
   }
   return { metadata, bundleRoot: resolvedBundleRoot, manifestPath: resolvedManifestPath, plugin };
 }
@@ -1127,6 +1196,8 @@ async function releaseLeaseWithRetry(lock: ProcessLockLease): Promise<void> {
 }
 
 export async function prepareLifecycleActiveSnapshot(options: {
+  sourceId?: string;
+  sourceIdentity?: string;
   plugin: PluginMeta;
   platform: PlatformName;
   scope: Scope;
@@ -1134,16 +1205,21 @@ export async function prepareLifecycleActiveSnapshot(options: {
   artifacts?: readonly GeneratedArtifact[];
   loadPlugin: LifecycleActivePluginLoader;
   env?: NodeJS.ProcessEnv;
+  lifecycleLeaseHeld?: boolean;
 }): Promise<PreparedLifecycleActiveSnapshot> {
   const env = options.env ?? process.env;
   const target = await resolveLifecycleActiveTarget({
+    ...(options.sourceId ? {
+      sourceId: options.sourceId,
+      sourceIdentity: options.sourceIdentity,
+    } : {}),
     pluginName: options.plugin.manifest.name,
     platform: options.platform,
     scope: options.scope,
     cwd: options.cwd,
     env,
   });
-  const lock = await acquireTargetLock(target);
+  const lock = await acquireTargetLock(target, options.lifecycleLeaseHeld);
   let stageRoot: string | null = null;
   try {
     await cleanupTransientState(target, options.loadPlugin);
@@ -1186,7 +1262,12 @@ export async function prepareLifecycleActiveSnapshot(options: {
       calculatePluginBundleFingerprintV2(bundleRoot),
     ]);
     const payload: LifecycleActiveMetadataPayload = {
-      schemaVersion: LIFECYCLE_ACTIVE_SCHEMA_VERSION,
+      schemaVersion: target.sourceId ? LIFECYCLE_ACTIVE_SCHEMA_VERSION : 1,
+      ...(target.sourceId ? {
+        sourceId: target.sourceId,
+        sourceIdentity: target.sourceIdentity,
+        pluginId: target.pluginId,
+      } : {}),
       pluginName: stagedPlugin.manifest.name,
       pluginVersion: stagedPlugin.manifest.version,
       platform: target.platform,
@@ -1388,38 +1469,61 @@ export async function discardLifecycleActiveSnapshot(
   }
 }
 
-export async function readLifecycleActiveSnapshot(options: {
+type ReadLifecycleActiveSnapshotOptions = {
+  sourceId?: string;
+  sourceIdentity?: string;
   pluginName: string;
   platform: PlatformName;
   scope: Scope;
   cwd: string;
   loadPlugin: LifecycleActivePluginLoader;
   env?: NodeJS.ProcessEnv;
-}): Promise<ReadLifecycleActiveSnapshot | null> {
-  return withActiveMarketplaceLifecycleLease(options.env, async () => {
-    const target = await resolveLifecycleActiveTarget(options);
-    await assertExistingPathChainHasNoSymlinks(target.awHome, target.activeRoot);
-    if (!await fs.pathExists(target.activeRoot)) {
-      return null;
+};
+
+async function readLifecycleActiveSnapshotUnlocked(
+  options: ReadLifecycleActiveSnapshotOptions,
+): Promise<ReadLifecycleActiveSnapshot | null> {
+  const target = await resolveLifecycleActiveTarget(options);
+  await assertExistingPathChainHasNoSymlinks(target.awHome, target.activeRoot);
+  if (!await fs.pathExists(target.activeRoot)) {
+    return null;
+  }
+  try {
+    return createReadSnapshot(
+      target,
+      await validateSnapshotRoot(target.activeRoot, target, options.loadPlugin),
+    );
+  } catch (error) {
+    if (error instanceof LifecycleActiveSnapshotError) {
+      throw error;
     }
-    try {
-      return createReadSnapshot(
-        target,
-        await validateSnapshotRoot(target.activeRoot, target, options.loadPlugin),
-      );
-    } catch (error) {
-      if (error instanceof LifecycleActiveSnapshotError) {
-        throw error;
-      }
-      throw new LifecycleActiveSnapshotError(
-        'Lifecycle active snapshot is corrupt.',
-        { cause: error },
-      );
-    }
-  });
+    throw new LifecycleActiveSnapshotError(
+      'Lifecycle active snapshot is corrupt.',
+      { cause: error },
+    );
+  }
+}
+
+export async function readLifecycleActiveSnapshot(
+  options: ReadLifecycleActiveSnapshotOptions,
+): Promise<ReadLifecycleActiveSnapshot | null> {
+  return withActiveMarketplaceLifecycleLease(
+    options.env,
+    () => readLifecycleActiveSnapshotUnlocked(options),
+  );
+}
+
+// Catalog reference inventory can run while the runtime coordination lease is held.
+// Active publication also needs that lease, so inventory must not acquire lifecycle after runtime.
+export async function inspectLifecycleActiveSnapshotForInventory(
+  options: ReadLifecycleActiveSnapshotOptions,
+): Promise<ReadLifecycleActiveSnapshot | null> {
+  return readLifecycleActiveSnapshotUnlocked(options);
 }
 
 export async function leaseLifecycleActiveSnapshot(options: {
+  sourceId?: string;
+  sourceIdentity?: string;
   pluginName: string;
   platform: PlatformName;
   scope: Scope;
@@ -1516,16 +1620,33 @@ async function removeTransientBackupsLocked(target: LifecycleActiveTarget): Prom
 }
 
 export async function removeLifecycleActiveSnapshot(options: {
+  sourceId?: string;
+  sourceIdentity?: string;
   pluginName: string;
   platform: PlatformName;
   scope: Scope;
   cwd: string;
   env?: NodeJS.ProcessEnv;
+  lifecycleLeaseHeld?: boolean;
+  expectedMetadataIntegrityDigest?: string;
 }): Promise<void> {
   const target = await resolveLifecycleActiveTarget(options);
-  const lock = await acquireTargetLock(target);
+  const lock = await acquireTargetLock(target, options.lifecycleLeaseHeld);
   let primaryError: unknown;
   try {
+    if (options.expectedMetadataIntegrityDigest !== undefined) {
+      await assertExistingDirectoryBoundary(target, target.activeRoot, 'activeRoot');
+      const metadata = await fs.readJson(
+        path.join(target.activeRoot, LIFECYCLE_ACTIVE_METADATA_FILE),
+      ) as unknown;
+      if (metadata === null
+        || typeof metadata !== 'object'
+        || Array.isArray(metadata)
+        || (metadata as Record<string, unknown>).metadataIntegrityDigest
+          !== options.expectedMetadataIntegrityDigest) {
+        fail('stateInventoryFailed: lifecycle active generation changed before removal.');
+      }
+    }
     await cleanupOrphanStages(target);
     await removeTransientBackupsLocked(target);
     await removeLifecycleSnapshotDataLocked(target);

@@ -145,15 +145,32 @@ describe('CLI JSON v4 harness', () => {
     ['reinstall', []],
     ['uninstall', []],
     ['cleanup', []],
-  ])('emits a fail-closed %s receipt with the explicit qualified target', async (command) => {
+  ])('emits a namespaced %s receipt with the explicit qualified target', async (command) => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-write-json-v3-'));
     tempDirs.push(tempDir);
+    const result = {
+      platforms: ['codex'],
+      plugins: ['git-commit'],
+      warnings: [],
+      rebuildResults: [],
+      targetResults: [],
+      overallState: 'succeeded',
+      nativePlugins: {},
+      repoManagedArtifacts: [],
+      receiptTargets: [{
+        pluginName: 'git-commit',
+        pluginId: 'official/git-commit',
+        sourceId: 'official',
+        platform: 'codex',
+        scope: 'project',
+      }],
+    };
     const commands = {
-      installWriteCommand: vi.fn(async () => rebuildResult('succeeded')),
-      upgradeWriteCommand: vi.fn(),
-      reinstallWriteCommand: vi.fn(),
-      uninstallWriteCommand: vi.fn(),
-      cleanupWriteCommand: vi.fn(),
+      installWriteCommand: vi.fn(async () => result),
+      upgradeWriteCommand: vi.fn(async () => result),
+      reinstallWriteCommand: vi.fn(async () => result),
+      uninstallWriteCommand: vi.fn(async () => result),
+      cleanupWriteCommand: vi.fn(async () => result),
     };
     vi.doMock('../../src/commands/write-commands.js', async (importOriginal) => ({
       ...await importOriginal<typeof import('../../src/commands/write-commands.js')>(),
@@ -164,23 +181,23 @@ describe('CLI JSON v4 harness', () => {
       [command, 'official/git-commit', '-p', 'codex', '-s', 'project', '--json'],
       { cwd: tempDir, env: { AW_HOME: path.join(tempDir, 'aw-home') } as NodeJS.ProcessEnv },
     );
-    expect(success.exitCode).toBe(1);
+    expect(success.exitCode).toBe(0);
     expect(success.parseJsonStdout()).toMatchObject({
-      ok: false,
+      ok: true,
       command,
       receiptSchemaVersion: 4,
-      overallState: 'failed',
+      overallState: 'succeeded',
       targets: [{
         pluginName: 'git-commit',
         pluginId: 'official/git-commit',
         sourceId: 'official',
         platform: 'codex',
         scope: 'project',
-        status: 'failed',
+        status: 'succeeded',
       }],
-      errors: [{ code: 'runtimeTransitionIncomplete' }],
+      errors: [],
     });
-    for (const helper of Object.values(commands)) expect(helper).not.toHaveBeenCalled();
+    expect(commands[`${command}WriteCommand` as keyof typeof commands]).toHaveBeenCalledOnce();
   });
 
   it('emits a fail-closed config mutation receipt v4', async () => {
@@ -198,7 +215,7 @@ describe('CLI JSON v4 harness', () => {
       receiptSchemaVersion: 4,
       plugin: 'git-commit',
       overallState: 'failed',
-      errors: [{ code: 'runtimeTransitionIncomplete' }],
+      errors: [expect.objectContaining({ code: 'catalogSourceUnavailable' })],
     });
   });
 });

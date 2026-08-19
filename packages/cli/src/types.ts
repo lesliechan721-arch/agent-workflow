@@ -22,6 +22,8 @@ export type RebuildActionName =
   | `lifecycle.${PluginLifecycleEvent}`
   | 'active.promote'
   | 'postcheck.inspect'
+  | 'marketplace.commit'
+  | 'marketplace.rollback'
   | 'recovery.cleanup'
   | 'cleanup.owned'
   | 'active.read'
@@ -144,6 +146,7 @@ export interface NextStepsPayloadBoundary {
 export interface ReceiptTargetIdentity {
   pluginName: string;
   pluginId?: PluginId;
+  marketplaceName?: string;
   sourceId?: CatalogSourceId;
   sourceIdentity?: SourceIdentity;
   platform: PlatformName;
@@ -550,6 +553,10 @@ export interface PluginManifestSource {
 }
 
 export interface PluginMeta {
+  sourceId?: CatalogSourceId;
+  sourceIdentity?: SourceIdentity;
+  pluginId?: PluginId;
+  marketplaceName?: string;
   rootDir: string;
   manifestPath: string;
   manifest: PluginManifestSource;

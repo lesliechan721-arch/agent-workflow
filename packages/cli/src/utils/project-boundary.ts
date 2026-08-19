@@ -109,10 +109,10 @@ export async function ensureProjectPrivateStateIgnore(options: {
 
 export async function assertProjectSharedConfigPathVisible(options: {
   cwd: string;
-  pluginName: string;
+  targetPath: string;
 }): Promise<void> {
   const repoRoot = resolveAwProjectRoot(options.cwd);
-  const targetRelativePath = `.agent-workflows/plugin-config/${options.pluginName}/config.json`;
+  const targetRelativePath = relativePath(repoRoot, options.targetPath);
   const match = await inspectGitIgnore(repoRoot, targetRelativePath);
   if (match?.pattern) {
     throw new Error(

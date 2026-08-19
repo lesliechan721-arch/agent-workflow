@@ -485,8 +485,14 @@ export async function withResolvedCatalogPlugin<T>(
         path.join(source.rootDir, 'plugins', selector.pluginName),
         { mode: 'bundle' },
       );
+      plugin.sourceId = source.sourceId;
+      plugin.sourceIdentity = source.sourceIdentity;
+      plugin.pluginId = formatPluginId({ sourceId: source.sourceId, pluginName: selector.pluginName });
+      plugin.marketplaceName = source.sourceId === catalog.primarySourceId
+        ? 'aw'
+        : `aw-${source.sourceId}`;
       const resolvedPlugin = {
-        pluginId: formatPluginId({ sourceId: source.sourceId, pluginName: selector.pluginName }),
+        pluginId: plugin.pluginId,
         source,
         plugin,
       };

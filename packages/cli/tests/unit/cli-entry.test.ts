@@ -46,12 +46,11 @@ describe('CLI entry v4', () => {
     ['uninstall'],
     ['reinstall'],
     ['cleanup'],
-  ])('fails closed before starting the non-interactive %s write path', async (command) => {
+  ])('prints usage before starting the non-interactive %s write path', async (command) => {
     const output = capture();
     expect(await runCli([command], { interactive: false, io: output.io })).toBe(1);
-    expect(output.stdout()).toContain(`${command} 失败`);
-    expect(output.stdout()).toContain('runtimeTransitionIncomplete');
-    expect(output.stderr()).toBe('');
+    expect(output.stdout()).toBe('');
+    expect(output.stderr()).toContain(`Usage: aw ${command}`);
     expect(output.stdout()).not.toContain('\u001B[');
   });
 
@@ -70,11 +69,11 @@ describe('CLI entry v4', () => {
     ['set'],
     ['unset'],
     ['reset'],
-  ])('fails closed before starting the non-interactive config %s mutation path', async (command) => {
+  ])('prints usage before starting the non-interactive config %s mutation path', async (command) => {
     const output = capture();
     expect(await runCli(['config', command], { interactive: false, io: output.io })).toBe(1);
     expect(output.stdout()).toBe('');
-    expect(output.stderr()).toContain('runtimeTransitionIncomplete');
+    expect(output.stderr()).toContain(`Usage: aw config ${command}`);
     expect(output.stderr()).not.toContain('\u001B[');
   });
 
@@ -88,22 +87,13 @@ describe('CLI entry v4', () => {
   });
 
   it.each([
-    { command: 'install', argv: ['install', '--json'] },
-    { command: 'config:set', argv: ['config', 'set', '--json'] },
-  ])('emits one v4 JSON failure receipt for $command without starting a TUI', async ({ command, argv }) => {
+    { command: 'install', argv: ['install', '--json'], usage: 'Usage: aw install' },
+    { command: 'config:set', argv: ['config', 'set', '--json'], usage: 'Usage: aw config set' },
+  ])('does not start a TUI for incomplete $command', async ({ argv, usage }) => {
     const output = capture();
     expect(await runCli(argv, { interactive: true, io: output.io })).toBe(1);
-    expect(JSON.parse(output.stdout())).toMatchObject({
-      receiptSchemaVersion: 4,
-      command,
-      ok: false,
-      errors: [{ code: 'runtimeTransitionIncomplete' }],
-    });
-    if (command === 'config:set') {
-      expect(output.stderr()).toContain('runtimeTransitionIncomplete');
-    } else {
-      expect(output.stderr()).toBe('');
-    }
+    expect(output.stdout()).toBe('');
+    expect(output.stderr()).toContain(usage);
   });
 
   it.each([
@@ -116,7 +106,7 @@ describe('CLI entry v4', () => {
       env: { ...process.env, CI: '1' },
       io: output.io,
     })).toBe(1);
-    expect(`${output.stdout()}${output.stderr()}`).toContain('runtimeTransitionIncomplete');
+    expect(`${output.stdout()}${output.stderr()}`).toContain('Usage:');
     expect(`${output.stdout()}${output.stderr()}`).not.toContain('\u001B[');
   });
 });

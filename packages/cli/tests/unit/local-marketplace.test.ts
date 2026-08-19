@@ -14,6 +14,7 @@ import {
   readCliPackageInfo,
   readCurrentCatalogCacheEntry,
   readCurrentCatalogCacheEntryBySelector,
+  replayNamespacedCodexSkillOverlays,
   setLocalMarketplaceAfterCatalogCachePreservedForTests,
   setLocalMarketplaceAfterTargetMovedToBackupForTests,
   setLocalMarketplaceAfterStagingPreparedForTests,
@@ -1134,6 +1135,275 @@ describe('strict current catalog cache', () => {
       '.codex-plugin',
       'plugin.json',
     ))).resolves.toMatchObject({ skills: './codex/custom-skills' });
+  });
+
+  it('replays every same-source schema 2 Codex Skill overlay across repeated platform mirrors', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-namespaced-overlay-'));
+    tempDirs.push(root);
+    const sourceRoot = path.join(root, 'team');
+    const firstStaging = path.join(root, 'first-staging', 'team');
+    const secondStaging = path.join(root, 'second-staging');
+    const sourceIdentity = `sha256:${'1'.repeat(64)}`;
+    await fs.outputJson(path.join(sourceRoot, 'config.json'), {
+      schemaVersion: 2,
+      sourceId: 'team',
+      sourceIdentity,
+      marketplaceName: 'aw-team',
+    });
+    await fs.outputJson(path.join(sourceRoot, '.agents', 'plugins', 'marketplace.json'), {
+      name: 'aw-team',
+    });
+    for (const [pluginName, skillKey, dynamic] of [
+      ['first-plugin', 'dynamic-first', true],
+      ['second-plugin', 'static-second', false],
+    ] as const) {
+      const sourcePlugin = path.join(sourceRoot, 'plugins', pluginName);
+      for (const stagingRoot of [firstStaging, secondStaging]) {
+        const stagingPlugin = path.join(stagingRoot, 'plugins', pluginName);
+        await fs.outputJson(path.join(stagingPlugin, '.codex-plugin', 'plugin.json'), {
+          name: pluginName,
+          version: '1.0.0',
+          skills: './codex/skills',
+        });
+        await fs.outputJson(path.join(stagingPlugin, '.agents-plugin', 'plugin.json'), {
+          name: pluginName,
+          artifacts: dynamic ? { targets: [{
+            id: skillKey,
+            platform: 'codex',
+            scopes: ['user'],
+            target: 'codex.skill',
+            skillKey,
+          }] } : { targets: [] },
+        });
+        if (!dynamic) {
+          await fs.outputFile(
+            path.join(stagingPlugin, 'codex', 'skills', skillKey, 'SKILL.md'),
+            '# catalog static content\n',
+          );
+        }
+      }
+      await fs.outputJson(path.join(sourcePlugin, '.codex-plugin', 'plugin.json'), {
+        name: pluginName,
+        version: '1.0.0',
+        skills: './codex/skills',
+      });
+      const sourceSkill = path.join(sourcePlugin, 'codex', 'skills', skillKey);
+      await fs.outputFile(path.join(sourceSkill, 'SKILL.md'), `# retained ${skillKey}\n`);
+      await fs.outputJson(path.join(sourceSkill, SKILL_OWNER_MARKER), {
+        schemaVersion: 2,
+        owner: 'agent-workflows',
+        sourceId: 'team',
+        sourceIdentity,
+        pluginId: `team/${pluginName}`,
+        plugin: pluginName,
+        artifactKey: skillKey,
+        platform: 'codex',
+        scope: 'user',
+      });
+    }
+
+    await replayNamespacedCodexSkillOverlays({
+      sourceRoot,
+      stagingRoot: firstStaging,
+      sourceId: 'team',
+      sourceIdentity,
+      marketplaceName: 'aw-team',
+    });
+    await fs.copyFile(path.join(sourceRoot, 'config.json'), path.join(firstStaging, 'config.json'));
+    await fs.outputJson(path.join(firstStaging, '.agents', 'plugins', 'marketplace.json'), {
+      name: 'aw-team',
+    });
+    await replayNamespacedCodexSkillOverlays({
+      sourceRoot: firstStaging,
+      stagingRoot: secondStaging,
+      sourceId: 'team',
+      sourceIdentity,
+      marketplaceName: 'aw-team',
+    });
+
+    await expect(fs.readFile(path.join(
+      secondStaging,
+      'plugins',
+      'first-plugin',
+      'codex',
+      'skills',
+      'dynamic-first',
+      'SKILL.md',
+    ), 'utf8')).resolves.toBe('# retained dynamic-first\n');
+    await expect(fs.readFile(path.join(
+      secondStaging,
+      'plugins',
+      'second-plugin',
+      'codex',
+      'skills',
+      'static-second',
+      'SKILL.md',
+    ), 'utf8')).resolves.toBe('# catalog static content\n');
+    await expect(fs.readJson(path.join(
+      secondStaging,
+      'plugins',
+      'second-plugin',
+      'codex',
+      'skills',
+      'static-second',
+      SKILL_OWNER_MARKER,
+    ))).resolves.toMatchObject({ schemaVersion: 2, pluginId: 'team/second-plugin' });
+  });
+
+  it('rejects an invalid existing namespaced marketplace config without changing the old root', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-overlay-invalid-config-'));
+    tempDirs.push(root);
+    const sourceRoot = path.join(root, 'source');
+    const stagingRoot = path.join(root, 'staging');
+    await fs.outputFile(path.join(sourceRoot, 'config.json'), '{invalid');
+    await fs.outputFile(path.join(sourceRoot, 'plugins', 'kept', 'sentinel.txt'), 'kept\n');
+    await fs.outputFile(path.join(stagingRoot, 'sentinel.txt'), 'staging\n');
+
+    await expect(replayNamespacedCodexSkillOverlays({
+      sourceRoot,
+      stagingRoot,
+      sourceId: 'team',
+      sourceIdentity: `sha256:${'2'.repeat(64)}`,
+      marketplaceName: 'aw-team',
+    })).rejects.toThrow('marketplaceOverlayReadFailed');
+    await expect(fs.readFile(path.join(sourceRoot, 'plugins', 'kept', 'sentinel.txt'), 'utf8'))
+      .resolves.toBe('kept\n');
+    await expect(fs.readFile(path.join(stagingRoot, 'sentinel.txt'), 'utf8'))
+      .resolves.toBe('staging\n');
+  });
+
+  it('rejects an existing marketplace read failure without dropping retained overlays', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-overlay-read-failure-'));
+    tempDirs.push(root);
+    const sourceRoot = path.join(root, 'team');
+    const stagingRoot = path.join(root, 'staging');
+    const sourceIdentity = `sha256:${'3'.repeat(64)}`;
+    await fs.outputJson(path.join(sourceRoot, 'config.json'), {
+      schemaVersion: 2,
+      sourceId: 'team',
+      sourceIdentity,
+      marketplaceName: 'aw-team',
+    });
+    await fs.outputJson(path.join(sourceRoot, '.agents', 'plugins', 'marketplace.json'), {
+      name: 'aw-team',
+    });
+    const overlayPath = path.join(sourceRoot, 'plugins', 'kept', 'codex', 'skills', 'kept', 'SKILL.md');
+    await fs.outputFile(overlayPath, '# kept\n');
+    const realReaddir = fs.readdir.bind(fs);
+    const readdir = vi.spyOn(fs, 'readdir').mockImplementation((async (location, options) => {
+      if (path.resolve(String(location)) === path.resolve(path.join(sourceRoot, 'plugins'))) {
+        throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
+      }
+      return realReaddir(location, options as never);
+    }) as typeof fs.readdir);
+    try {
+      await expect(replayNamespacedCodexSkillOverlays({
+        sourceRoot,
+        stagingRoot,
+        sourceId: 'team',
+        sourceIdentity,
+        marketplaceName: 'aw-team',
+      })).rejects.toThrow('marketplaceOverlayReadFailed');
+    } finally {
+      readdir.mockRestore();
+    }
+    await expect(fs.readFile(overlayPath, 'utf8')).resolves.toBe('# kept\n');
+  });
+
+  it('treats an overlay marker lstat I/O failure as fatal before root replacement', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-overlay-marker-lstat-'));
+    tempDirs.push(root);
+    const sourceRoot = path.join(root, 'team');
+    const stagingRoot = path.join(root, 'staging');
+    const sourceIdentity = `sha256:${'4'.repeat(64)}`;
+    const sourceSkillRoot = path.join(sourceRoot, 'plugins', 'demo', 'codex', 'skills', 'kept');
+    const markerPath = path.join(sourceSkillRoot, SKILL_OWNER_MARKER);
+    await fs.outputJson(path.join(sourceRoot, 'config.json'), {
+      schemaVersion: 2, sourceId: 'team', sourceIdentity, marketplaceName: 'aw-team',
+    });
+    await fs.outputJson(path.join(sourceRoot, '.agents', 'plugins', 'marketplace.json'), {
+      name: 'aw-team',
+    });
+    await fs.outputJson(path.join(sourceRoot, 'plugins', 'demo', '.codex-plugin', 'plugin.json'), {
+      name: 'demo', version: '1.0.0', skills: './codex/skills',
+    });
+    await fs.outputFile(path.join(sourceSkillRoot, 'SKILL.md'), '# kept\n');
+    await fs.outputJson(markerPath, {
+      schemaVersion: 2,
+      owner: 'agent-workflows',
+      sourceId: 'team',
+      sourceIdentity,
+      pluginId: 'team/demo',
+      plugin: 'demo',
+      artifactKey: 'kept',
+      platform: 'codex',
+      scope: 'user',
+    });
+    const realLstat = fs.lstat.bind(fs);
+    const lstat = vi.spyOn(fs, 'lstat').mockImplementation((async (location) => {
+      if (path.resolve(String(location)) === path.resolve(markerPath)) {
+        throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
+      }
+      return realLstat(location);
+    }) as typeof fs.lstat);
+    try {
+      await expect(replayNamespacedCodexSkillOverlays({
+        sourceRoot,
+        stagingRoot,
+        sourceId: 'team',
+        sourceIdentity,
+        marketplaceName: 'aw-team',
+      })).rejects.toThrow('marketplaceOverlayReadFailed');
+    } finally {
+      lstat.mockRestore();
+    }
+    await expect(fs.readFile(path.join(sourceSkillRoot, 'SKILL.md'), 'utf8')).resolves.toBe('# kept\n');
+    expect(await fs.pathExists(stagingRoot)).toBe(false);
+  });
+
+  it.each([
+    ['missing config', async (sourceRoot: string) => {
+      await fs.outputJson(path.join(sourceRoot, '.agents', 'plugins', 'marketplace.json'), {
+        name: 'aw-team',
+      });
+    }],
+    ['invalid source identity', async (sourceRoot: string) => {
+      await fs.outputJson(path.join(sourceRoot, 'config.json'), {
+        schemaVersion: 2,
+        sourceId: 'team',
+        sourceIdentity: 'sha256:invalid',
+        marketplaceName: 'aw-team',
+      });
+      await fs.outputJson(path.join(sourceRoot, '.agents', 'plugins', 'marketplace.json'), {
+        name: 'aw-team',
+      });
+    }],
+    ['missing platform manifest', async (sourceRoot: string) => {
+      await fs.outputJson(path.join(sourceRoot, 'config.json'), {
+        schemaVersion: 2,
+        sourceId: 'team',
+        sourceIdentity: `sha256:${'5'.repeat(64)}`,
+        marketplaceName: 'aw-team',
+      });
+    }],
+  ] as const)('fails closed for an existing marketplace root with %s', async (_name, arrange) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-overlay-strict-root-'));
+    tempDirs.push(root);
+    const sourceRoot = path.join(root, 'team');
+    const stagingRoot = path.join(root, 'staging');
+    const retained = path.join(sourceRoot, 'plugins', 'kept', 'sentinel.txt');
+    await fs.outputFile(retained, 'kept\n');
+    await arrange(sourceRoot);
+
+    await expect(replayNamespacedCodexSkillOverlays({
+      sourceRoot,
+      stagingRoot,
+      sourceId: 'team',
+      sourceIdentity: `sha256:${'5'.repeat(64)}`,
+      marketplaceName: 'aw-team',
+    })).rejects.toThrow('marketplaceOverlayReadFailed');
+    await expect(fs.readFile(retained, 'utf8')).resolves.toBe('kept\n');
+    expect(await fs.pathExists(stagingRoot)).toBe(false);
   });
 
   it('replays a Codex user Skill written after marketplace staging is prepared', async () => {

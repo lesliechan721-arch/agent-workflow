@@ -27,6 +27,7 @@ import {
   withConfigFileLock,
 } from './plugin-config.js';
 import { withActiveMarketplaceRuntimeLease } from './active-marketplace-runtime-lock.js';
+import { catalogSourceCacheInternal } from './catalog-source-cache.js';
 import { resolveAwHome } from './state-paths.js';
 
 export const CATALOG_SOURCE_ID_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
@@ -374,21 +375,23 @@ export async function replaceCatalogSourcesConfig(options: {
   const filePath = resolveCatalogSourcesConfigPath(env);
   const config = validateCatalogSourcesConfig(options.config);
   const digest = calculateCatalogSourcesConfigDigest(config);
-  await withActiveMarketplaceRuntimeLease(env, () => withConfigFileLock({
-    filePath,
-    allowedRoot: awHome,
-    action: async () => {
-      const current = await readConfigAt(filePath);
-      if (current.digest !== options.expectedDigest) {
-        throw new CatalogSourcesConfigConflictError(options.expectedDigest, current.digest);
-      }
-      await options.beforeReplace?.(current);
-      await atomicReplaceConfigFile({
-        filePath,
-        allowedRoot: awHome,
-        content: `${JSON.stringify(config, null, 2)}\n`,
-      });
-    },
-  }));
+  await catalogSourceCacheInternal.withCatalogSourceCacheLease({ env, action: () =>
+    withActiveMarketplaceRuntimeLease(env, () => withConfigFileLock({
+      filePath,
+      allowedRoot: awHome,
+      action: async () => {
+        const current = await readConfigAt(filePath);
+        if (current.digest !== options.expectedDigest) {
+          throw new CatalogSourcesConfigConflictError(options.expectedDigest, current.digest);
+        }
+        await options.beforeReplace?.(current);
+        await atomicReplaceConfigFile({
+          filePath,
+          allowedRoot: awHome,
+          content: `${JSON.stringify(config, null, 2)}\n`,
+        });
+      },
+    })),
+  });
   return { config, digest, materialized: true };
 }

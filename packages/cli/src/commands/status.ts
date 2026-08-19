@@ -54,7 +54,7 @@ export interface LiveStatusComponentCheck {
 }
 
 export interface LiveStatusError {
-  code: 'catalogUnavailable' | 'bundleUnavailable' | 'inspectionFailed' | 'discoveryFailed';
+  code: string;
   message: string;
   component?: string;
 }
@@ -555,7 +555,7 @@ export async function loadConsoleItemsResult(
       },
       state: entry.state,
       components: [],
-      errors: [],
+      errors: entry.errors,
     }));
     const groups = new Map<string, LiveConsoleItem>();
     const summaries = new Map(result.pluginSummaries.map((summary) => [summary.pluginId, summary]));

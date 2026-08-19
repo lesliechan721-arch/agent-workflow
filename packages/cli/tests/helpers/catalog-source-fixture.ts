@@ -46,7 +46,27 @@ export async function createCatalogSnapshotFixture(
     },
   };
   configureManifest?.(manifest);
-  await fs.outputJson(manifestPath, manifest, { spaces: 2 });
+  const marketplaceEntry = {
+    name: manifest.name,
+    source: `./plugins/${manifest.name}`,
+    description: manifest.description,
+    ...(manifest.interface ? { interface: manifest.interface } : {}),
+    category: manifest.marketplace.category,
+    strict: manifest.marketplace.strict,
+    policy: manifest.marketplace.policy,
+  };
+  const products = manifest.marketplace.policy.products;
+  const marketplace = (platform: 'CODEX' | 'CLAUDE') => ({
+    name: 'aw',
+    owner: { name: 'Fixture Owner' },
+    interface: { displayName: 'Fixture Marketplace' },
+    plugins: products === undefined || products.includes(platform) ? [marketplaceEntry] : [],
+  });
+  await Promise.all([
+    fs.outputJson(manifestPath, manifest, { spaces: 2 }),
+    fs.outputJson(path.join(rootDir, '.agents', 'plugins', 'marketplace.json'), marketplace('CODEX'), { spaces: 2 }),
+    fs.outputJson(path.join(rootDir, '.claude-plugin', 'marketplace.json'), marketplace('CLAUDE'), { spaces: 2 }),
+  ]);
   await fs.outputFile(path.join(pluginRoot, 'README.md'), readme);
   const plugin: PluginMeta = await readPluginManifest(pluginRoot, { mode: 'bundle' });
   const entry = await createCatalogManifestV3Entry(plugin, pluginRoot);

@@ -344,20 +344,28 @@ describe('dashboard controller and reducer', () => {
     [{ scope: 'user', projectLayer: 'shared' }],
     [{ scope: 'project', projectLayer: 'shared' }],
     [{ scope: 'project', projectLayer: 'local' }],
-  ] as const)('reads %j config and keeps save/reset fail-closed', async (location) => {
+  ] as const)('reads and mutates %j config through the runtime', async (location) => {
     const value = loaded([item('demo', 'present')]);
     const context = createCliExecutionContext({ cwd: '/workspace', interactive: true });
     const controller = createDashboardController(context);
 
     await controller.readConfig(value.items[0]!, location);
     await expect(controller.saveConfig(value.items[0]!, location, { updates: { token: 'value' } }))
-      .rejects.toThrow('runtimeTransitionIncomplete');
+      .resolves.toMatchObject({ overallState: 'succeeded' });
     await expect(controller.resetConfig(value.items[0]!, location))
-      .rejects.toThrow('runtimeTransitionIncomplete');
+      .resolves.toMatchObject({ overallState: 'succeeded', deleted: true });
 
     expect(mocks.resolveConfigRead).toHaveBeenCalledWith(expect.objectContaining(location));
-    expect(mocks.applyPluginConfigWrite).not.toHaveBeenCalled();
-    expect(mocks.resetPluginConfigWithHelper).not.toHaveBeenCalled();
+    expect(mocks.applyPluginConfigWrite).toHaveBeenCalledWith(expect.objectContaining({
+      pluginName: 'demo',
+      scope: location.scope,
+      projectLayer: location.projectLayer,
+    }));
+    expect(mocks.resetPluginConfigWithHelper).toHaveBeenCalledWith(expect.objectContaining({
+      pluginName: 'demo',
+      scope: location.scope,
+      projectLayer: location.projectLayer,
+    }));
   });
 
   it('preserves plugin and target identity after refresh and falls back when they disappear', () => {
@@ -559,6 +567,24 @@ describe('dashboard rendering and input', () => {
     expect(instance.lastFrame()).toContain('owned-text-file · ×');
     expect(instance.lastFrame()).not.toContain('Late component error');
     expect(instance.lastFrame()).toContain('[/] 详情');
+  });
+
+  it('shows stable status target error codes and messages in the TUI target view', async () => {
+    const targetItem = item('changed', 'error');
+    targetItem.targets[0]!.errors = [{
+      code: 'sourceChanged',
+      message: 'The configured source identity changed.',
+    }];
+    const instance = render(<Dashboard
+      controller={fakeController(loaded([targetItem]))}
+      onComplete={() => undefined}
+      size={{ columns: 100, rows: 18 }}
+    />);
+    await nextTurn();
+    await writeInput(instance, '\r');
+
+    expect(instance.lastFrame()).toContain('sourceChanged: The configured source identity changed.');
+    expect(instance.lastFrame()).toContain('错误：sourceChanged: The configured source identity changed.');
   });
 
   it('resets detail scroll when refresh replaces the target at the same index', async () => {

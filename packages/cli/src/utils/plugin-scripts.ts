@@ -475,6 +475,8 @@ export function summarizePluginScriptOutput(
 }
 
 export async function writeLifecycleScriptContext(options: {
+  sourceId?: string;
+  sourceIdentity?: string;
   target: LifecycleScriptTarget;
   event: PluginLifecycleEvent | 'test';
   platform: PlatformName;
@@ -496,6 +498,8 @@ export async function writeLifecycleScriptContext(options: {
   let configStores: Record<Scope, string> | undefined;
   if (options.target.sourceManifest.config?.schema) {
     const effective = await resolveEffectivePluginConfig({
+      sourceId: options.sourceId,
+      sourceIdentity: options.sourceIdentity,
       pluginName: options.target.sourceManifest.name,
       manifest: options.target.sourceManifest,
       cwd: options.cwd,
@@ -694,6 +698,8 @@ export async function runLifecycleScript(options: {
   }
 
   const writtenContext = await writeLifecycleScriptContext({
+    sourceId: options.currentPlugin?.sourceId,
+    sourceIdentity: options.currentPlugin?.sourceIdentity,
     target,
     event: options.event,
     platform: options.platform,

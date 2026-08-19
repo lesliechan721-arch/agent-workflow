@@ -31,6 +31,8 @@ import {
   type ResolvedConfigRead,
 } from '../utils/plugin-config.js';
 import {
+  applyPluginConfigWrite,
+  resetPluginConfigWithHelper,
   type PluginConfigWriteReceipt,
   type ResetPluginConfigWriteReceipt,
 } from '../utils/plugin-config-write.js';
@@ -148,9 +150,6 @@ export function createDashboardController(
       includeCatalogOnly: true,
     }, context),
     async execute(action, target) {
-      if (target.target.plugin.includes('/')) {
-        throw new Error('runtimeTransitionIncomplete: interactive writes require the phase 3B namespaced runtime.');
-      }
       const options = {
         cwd: context.cwd,
         platform: target.target.platform,
@@ -189,6 +188,8 @@ export function createDashboardController(
       }
       const project = async (pluginName: string, plugin: NonNullable<LiveConsoleItem['plugin']>) => {
         const effective = await resolveEffectivePluginConfig({
+          sourceId: plugin.sourceId,
+          sourceIdentity: plugin.sourceIdentity,
           pluginName,
           manifest: plugin.manifest,
           cwd: context.cwd,
@@ -223,11 +224,48 @@ export function createDashboardController(
         consume: ({ plugin }) => project(plugin.manifest.name, plugin),
       });
     },
-    async saveConfig() {
-      throw new Error('runtimeTransitionIncomplete: interactive config writes require the phase 3B namespaced runtime.');
+    async saveConfig(item, location, request) {
+      const apply = (plugin: NonNullable<LiveConsoleItem['plugin']>) => applyPluginConfigWrite({
+        plugin,
+        pluginName: plugin.manifest.name,
+        scope: location.scope,
+        projectLayer: location.projectLayer,
+        cwd: context.cwd,
+        env: context.env,
+        nativeCliRunner: context.nativeCliRunner,
+        rebuildRuntime: context,
+        request,
+      });
+      if (item.plugin) return apply(item.plugin);
+      const packageInfo = await readCliPackageInfo();
+      return withResolvedCatalogPlugin({
+        selector: item.pluginName,
+        cliVersion: packageInfo.version,
+        freshnessPolicy: 'requireRemote',
+        env: context.env,
+        consume: ({ plugin }) => apply(plugin),
+      });
     },
-    async resetConfig() {
-      throw new Error('runtimeTransitionIncomplete: interactive config writes require the phase 3B namespaced runtime.');
+    async resetConfig(item, location) {
+      const reset = (plugin: NonNullable<LiveConsoleItem['plugin']>) => resetPluginConfigWithHelper({
+        plugin,
+        pluginName: plugin.manifest.name,
+        scope: location.scope,
+        projectLayer: location.projectLayer,
+        cwd: context.cwd,
+        env: context.env,
+        nativeCliRunner: context.nativeCliRunner,
+        rebuildRuntime: context,
+      });
+      if (item.plugin) return reset(item.plugin);
+      const packageInfo = await readCliPackageInfo();
+      return withResolvedCatalogPlugin({
+        selector: item.pluginName,
+        cliVersion: packageInfo.version,
+        freshnessPolicy: 'cacheFirst',
+        env: context.env,
+        consume: ({ plugin }) => reset(plugin),
+      });
     },
   };
 }

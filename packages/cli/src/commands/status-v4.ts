@@ -13,7 +13,10 @@ import {
   sanitizeCatalogSourceError,
 } from '../utils/catalog-public-error.js';
 import { calculateCatalogSourceIdentity } from '../utils/catalog-source-identity.js';
-import { inventoryLegacyOwnerReferences } from '../utils/catalog-source-references.js';
+import {
+  inventoryCatalogSourceReferences,
+  inventoryLegacyOwnerReferences,
+} from '../utils/catalog-source-references.js';
 import { readCatalogSourcesConfigSnapshot, resolveCatalogSourceRef } from '../utils/catalog-sources.js';
 import {
   formatPluginId,
@@ -25,6 +28,13 @@ import { assertStrictSemVer, readPluginManifest } from '../utils/manifest.js';
 import { resolveCliPackageRoot } from '../utils/paths.js';
 import { supportsPlatform } from '../utils/platform-support.js';
 import { parsePlatformValue, parseScopeValue } from './options.js';
+import { inspectRebuildTarget } from './rebuild-integration.js';
+import { createNoopReporter } from '../output/reporter.js';
+import { createNoopDebugLogger } from '../output/debug-log.js';
+import { getDefaultNativeCliRunner } from '../utils/native-cli.js';
+import { resolveAwHome } from '../utils/paths.js';
+import type { OwnedComponent, OwnershipInspection } from '../utils/ownership.js';
+import { getClaudeHome, getCodexHome } from '../utils/state-paths.js';
 
 export interface StatusV4CatalogSource {
   id: string;
@@ -78,6 +88,10 @@ interface StatusPluginCapability {
   description: string;
   configSchema?: Record<string, PluginConfigSchemaField>;
   targets: Record<PlatformName, Record<Scope, boolean>>;
+  states: Partial<Record<PlatformName, Partial<Record<Scope, {
+    state: StatusV4Target['state'];
+    errors: StatusV4Target['errors'];
+  }>>>>;
 }
 
 export interface StatusV4PluginSummary {
@@ -90,6 +104,34 @@ export interface StatusV4PluginSummary {
 interface PlannedStatusSelector {
   raw: string;
   parsed: ReturnType<typeof parsePluginId>;
+}
+
+function projectStateInventoryError(
+  error: unknown,
+  env: NodeJS.ProcessEnv,
+  cwd: string,
+): { code: 'nativeStateUnreadable' | 'stateInventoryFailed'; message: string } {
+  const sanitized = sanitizeCatalogSourceError(error, env, [
+    getCodexHome(env),
+    getClaudeHome(env),
+    path.resolve(cwd),
+  ]);
+  const native = /(?:Codex|Claude|config\.toml|settings|installed_plugins)/iu.test(sanitized.message);
+  const code = native ? 'nativeStateUnreadable' : 'stateInventoryFailed';
+  return { code, message: `${code}: ${sanitized.message}` };
+}
+
+function projectTargetError(
+  error: { code: string; message: string },
+  env: NodeJS.ProcessEnv,
+  cwd: string,
+): { code: string; message: string } {
+  const sanitized = sanitizeCatalogSourceError(new Error(error.message), env, [
+    getCodexHome(env),
+    getClaudeHome(env),
+    path.resolve(cwd),
+  ]);
+  return { code: error.code, message: sanitized.message };
 }
 
 function sourceRequestedRef(source: CatalogSource, cliVersion: string): string {
@@ -105,13 +147,39 @@ function selectedScopes(value: string | undefined): Scope[] {
   return value === undefined ? ['user', 'project'] : [parseScopeValue(value)];
 }
 
+function projectedLiveState(options: {
+  inspection: OwnershipInspection;
+  required: readonly OwnedComponent[];
+  optional: readonly OwnedComponent[];
+}): StatusV4Target['state'] {
+  if (options.inspection.state === 'error'
+    || options.inspection.components.some((entry) => entry.state === 'error')) return 'error';
+  if (options.inspection.components.length === 0
+    || options.inspection.components.every((entry) => entry.state === 'absent')) return 'absent';
+  if (options.inspection.components.some((entry) => entry.state === 'partial')) return 'partial';
+  const required = new Set(options.required);
+  const optional = new Set(options.optional);
+  if (options.inspection.components.some((entry) =>
+    entry.state === 'present' && !required.has(entry.component) && !optional.has(entry.component))) {
+    return 'partial';
+  }
+  if (!options.required.every((component) => options.inspection.components.some((entry) =>
+    entry.component === component && entry.state === 'present'))) return 'partial';
+  if (options.required.length > 0) return 'present';
+  return options.optional.some((component) => options.inspection.components.some((entry) =>
+    entry.component === component && entry.state === 'present')) ? 'present' : 'absent';
+}
+
 function renderStatusV4(payload: StatusV4Payload): string {
   const lines = [`Catalog sources: ${payload.catalog.sources.length}`];
   for (const source of payload.catalog.sources) {
     lines.push(`${source.primary ? '*' : '-'} ${source.id}: ${source.error ?? source.freshness ?? 'unavailable'}`);
   }
   for (const target of payload.targets) {
-    lines.push(`${target.pluginId} ${target.platform}/${target.scope}: ${target.state}`);
+    const errors = target.errors.length > 0
+      ? ` [${target.errors.map((error) => `${error.code}: ${error.message}`).join('; ')}]`
+      : '';
+    lines.push(`${target.pluginId} ${target.platform}/${target.scope}: ${target.state}${errors}`);
   }
   for (const error of payload.errors) lines.push(`Error: ${error.message}`);
   return lines.join('\n');
@@ -139,10 +207,28 @@ export async function statusCommandV4(options: {
     'packages/cli/package.json version',
   );
   const snapshot = await readCatalogSourcesConfigSnapshot(env);
+  const inventoryErrors: Array<{ code: 'nativeStateUnreadable' | 'stateInventoryFailed'; message: string }> = [];
+  const ownerInventory = await inventoryCatalogSourceReferences({ cwd: options.cwd, env }).catch(async (error) => {
+    inventoryErrors.push(projectStateInventoryError(error, env, options.cwd));
+    return inventoryLegacyOwnerReferences({ cwd: options.cwd, env }).catch((fallbackError) => {
+      inventoryErrors.push(projectStateInventoryError(fallbackError, env, options.cwd));
+      return { inventorySchemaVersion: 1 as const, references: [], errors: [] };
+    });
+  });
+  for (const error of ownerInventory.errors ?? []) {
+    const code = error.kind === 'nativeStateRead' ? 'nativeStateUnreadable' : 'stateInventoryFailed';
+    inventoryErrors.push({
+      code,
+      message: `${code}: ${error.kind}@${error.location}: ${error.message}`,
+    });
+  }
   const configured = new Map(snapshot.config.sources.map((source) => [source.id, source]));
   const requested = options.plugins ?? [];
+  const platforms = selectedPlatforms(options.platform);
+  const scopes = selectedScopes(options.scope);
   const selectorErrors: Array<{ code: string; message: string }> = [];
   const plannedSelectors: PlannedStatusSelector[] = [];
+  const liveOnlySelectors: PlannedStatusSelector[] = [];
   for (const selector of requested) {
     let parsed: ReturnType<typeof parsePluginId>;
     try {
@@ -155,10 +241,20 @@ export async function statusCommandV4(options: {
       continue;
     }
     if (parsed.sourceId !== undefined && !configured.has(parsed.sourceId)) {
-      selectorErrors.push({
-        code: 'pluginNotFound',
-        message: `Plugin "${selector}" was not found because catalog source "${parsed.sourceId}" is not configured.`,
-      });
+      const hasLiveReference = ownerInventory.references.some((reference) =>
+        (reference.kind === 'namespacedOwner' || reference.kind === 'namespacedMarketplace')
+        && reference.sourceId === parsed.sourceId
+        && reference.pluginName === parsed.pluginName
+        && platforms.includes(reference.platform as PlatformName)
+        && scopes.includes(reference.scope as Scope));
+      if (hasLiveReference) {
+        liveOnlySelectors.push({ raw: selector, parsed });
+      } else if (inventoryErrors.length === 0) {
+        selectorErrors.push({
+          code: 'pluginNotFound',
+          message: `Plugin "${selector}" was not found because catalog source "${parsed.sourceId}" is not configured.`,
+        });
+      }
       continue;
     }
     plannedSelectors.push({ raw: selector, parsed });
@@ -220,6 +316,79 @@ export async function statusCommandV4(options: {
               );
               const claude = supportsPlatform(plugin.manifest, 'claude');
               const codex = supportsPlatform(plugin.manifest, 'codex');
+              plugin.sourceId = item.resolution!.sourceId;
+              plugin.sourceIdentity = item.resolution!.sourceIdentity;
+              plugin.pluginId = formatPluginId({ sourceId: item.resolution!.sourceId, pluginName: entry.name });
+              const states: StatusPluginCapability['states'] = {};
+              const marketplaceName = item.resolution!.sourceId === resolution.primarySourceId
+                ? 'aw'
+                : `aw-${item.resolution!.sourceId}`;
+              const marketplaceRoot = path.join(resolveAwHome(env), 'marketplaces', item.resolution!.sourceId);
+              for (const platform of ['codex', 'claude'] as const) {
+                states[platform] = {};
+                for (const scope of ['user', 'project'] as const) {
+                  const supported = platform === 'claude'
+                    ? claude
+                    : codex && (scope === 'user' || hasCodexProjectManagedArtifacts(plugin));
+                  if (!supported) continue;
+                  const changedOwner = ownerInventory.references.find((reference) =>
+                    (reference.kind === 'namespacedOwner' || reference.kind === 'namespacedMarketplace')
+                    && reference.sourceId === item.resolution!.sourceId
+                    && reference.pluginName === entry.name
+                    && reference.platform === platform
+                    && reference.scope === scope
+                    && reference.sourceIdentity
+                    && reference.sourceIdentity !== item.resolution!.sourceIdentity);
+                  if (changedOwner) {
+                    states[platform]![scope] = {
+                      state: 'error',
+                      errors: [{
+                        code: 'sourceChanged',
+                        message: `sourceChanged: owner at ${changedOwner.location} has a different source identity.`,
+                      }],
+                    };
+                    continue;
+                  }
+                  try {
+                    const inspected = await inspectRebuildTarget({
+                      sourceId: item.resolution!.sourceId,
+                      sourceIdentity: item.resolution!.sourceIdentity,
+                      pluginId: plugin.pluginId,
+                      marketplaceName,
+                      marketplaceRoot,
+                      plugin,
+                      platform,
+                      scope,
+                      cwd: options.cwd,
+                      catalog: {
+                        rootDir: item.resolution!.rootDir,
+                        source: 'local',
+                      },
+                      context: {
+                        env,
+                        nativeCliRunner: getDefaultNativeCliRunner(),
+                        reporter: createNoopReporter(),
+                        debugLogger: createNoopDebugLogger(),
+                      },
+                    });
+                    states[platform]![scope] = {
+                      state: projectedLiveState({
+                        inspection: inspected.inspection,
+                        required: inspected.target.desiredOwnedComponents ?? inspected.target.ownedComponents,
+                        optional: inspected.target.optionalOwnedComponents ?? [],
+                      }),
+                      errors: inspected.inspection.errors.map((error) => ({
+                        code: 'componentInspectionFailed',
+                        message: `${error.label}: ${error.message}`,
+                      })),
+                    };
+                  } catch (error) {
+                    const message = error instanceof Error ? error.message : String(error);
+                    const code = message.split(':', 1)[0] || 'targetInspectionFailed';
+                    states[platform]![scope] = { state: 'error', errors: [{ code, message }] };
+                  }
+                }
+              }
               return {
                 name: entry.name,
                 version: entry.version,
@@ -234,6 +403,7 @@ export async function statusCommandV4(options: {
                     project: codex && hasCodexProjectManagedArtifacts(plugin),
                   },
                 },
+                states,
               };
             }),
           );
@@ -287,10 +457,12 @@ export async function statusCommandV4(options: {
         entry.name === selector.parsed.pluginName
         && (selector.parsed.sourceId === undefined || entry.source.id === selector.parsed.sourceId));
       if (matches.length === 0) {
-        selectorErrors.push({
-          code: 'pluginNotFound',
-          message: `Plugin "${selector.raw}" was not found in the selected catalog source set.`,
-        });
+        if (inventoryErrors.length === 0) {
+          selectorErrors.push({
+            code: 'pluginNotFound',
+            message: `Plugin "${selector.raw}" was not found in the selected catalog source set.`,
+          });
+        }
         continue;
       }
       if (selector.parsed.sourceId === undefined && matches.length > 1) {
@@ -306,8 +478,6 @@ export async function statusCommandV4(options: {
     }
   }
   const selected = [...selectedById.values()];
-  const platforms = selectedPlatforms(options.platform);
-  const scopes = selectedScopes(options.scope);
   const explicitTargetFilter = requested.length > 0
     && (options.platform !== undefined || options.scope !== undefined);
   const targets: StatusV4Target[] = selected.flatMap((entry) => platforms.flatMap((platform) =>
@@ -324,7 +494,37 @@ export async function statusCommandV4(options: {
         components: [] as [],
       };
       if (entry.targets[platform][scope]) {
-        return [{ ...target, state: 'absent', errors: [] }];
+        const live = entry.states[platform]?.[scope];
+        return [{
+          ...target,
+          state: live?.state ?? 'error',
+          errors: live?.errors ?? [{
+            code: 'targetInspectionFailed',
+            message: `No live inspection result exists for ${entry.source.id}/${entry.name}.`,
+          }],
+        }];
+      }
+      const unsupportedLiveReference = ownerInventory.references.find((reference) =>
+        (reference.kind === 'namespacedOwner' || reference.kind === 'namespacedMarketplace')
+        && reference.sourceId === entry.source.id
+        && reference.pluginName === entry.name
+        && reference.platform === platform
+        && reference.scope === scope);
+      if (unsupportedLiveReference) {
+        const sourceChanged = Boolean(
+          unsupportedLiveReference.sourceIdentity
+          && unsupportedLiveReference.sourceIdentity !== entry.source.identity,
+        );
+        return [{
+          ...target,
+          state: 'error',
+          errors: [{
+            code: sourceChanged ? 'sourceChanged' : 'noLongerSupported',
+            message: sourceChanged
+              ? `sourceChanged: live state for ${target.pluginId} has a different source identity.`
+              : `noLongerSupported: ${target.pluginId} has live state for ${platform}/${scope}, but the current bundle no longer supports that target.`,
+          }],
+        }];
       }
       if (!explicitTargetFilter) return [];
       return [{
@@ -336,15 +536,140 @@ export async function statusCommandV4(options: {
         }],
       }];
     })));
-  const inventory = await inventoryLegacyOwnerReferences({ cwd: options.cwd, env });
-  const legacyOwners = inventory.references.filter((reference) => reference.kind === 'legacyOwner');
+  const referenceSelectors = [...plannedSelectors, ...liveOnlySelectors];
+  const referenceSelected = (reference: { sourceId?: string; pluginName?: string; platform?: string; scope?: string }): boolean => (
+    reference.pluginName !== undefined
+    && reference.platform !== undefined
+    && reference.scope !== undefined
+    && platforms.includes(reference.platform as PlatformName)
+    && scopes.includes(reference.scope as Scope)
+    && (requested.length === 0 || referenceSelectors.some((selector) =>
+      selector.parsed.pluginName === reference.pluginName
+      && (selector.parsed.sourceId === undefined || selector.parsed.sourceId === reference.sourceId)))
+  );
+  const legacyOwners = ownerInventory.references.filter((reference) =>
+    (reference.kind === 'legacyOwner' || reference.kind === 'legacyMarketplace')
+    && reference.pluginName !== undefined
+    && reference.platform !== undefined
+    && reference.scope !== undefined
+    && platforms.includes(reference.platform as PlatformName)
+    && scopes.includes(reference.scope as Scope)
+    && (requested.length === 0 || plannedSelectors.some((selector) =>
+      selector.parsed.pluginName === reference.pluginName)));
+  const missingSourceOwners = ownerInventory.references.filter((reference) =>
+    (reference.kind === 'namespacedOwner' || reference.kind === 'namespacedMarketplace')
+    && reference.sourceId
+    && !configured.has(reference.sourceId)
+    && referenceSelected(reference));
+  const missingTargets = [...new Map(missingSourceOwners.flatMap((reference) => {
+    if (!reference.sourceId || !reference.pluginName
+      || (reference.platform !== 'codex' && reference.platform !== 'claude')
+      || (reference.scope !== 'user' && reference.scope !== 'project')) return [];
+    const pluginId = formatPluginId({ sourceId: reference.sourceId, pluginName: reference.pluginName });
+    const target: StatusV4Target = {
+      pluginName: reference.pluginName,
+      sourceId: reference.sourceId,
+      sourceIdentity: reference.sourceIdentity ?? 'unavailable',
+      pluginId,
+      platform: reference.platform,
+      scope: reference.scope,
+      cwd: path.resolve(options.cwd),
+      state: 'error',
+      components: [],
+      errors: [{
+        code: 'sourceMissing',
+        message: `sourceMissing: catalog source "${reference.sourceId}" is not configured for ${pluginId}.`,
+      }],
+    };
+    return [[`${pluginId}\0${reference.platform}\0${reference.scope}`, target] as const];
+  })).values()];
+  targets.push(...missingTargets);
+  const unavailableSourceReferences = ownerInventory.references.filter((reference) =>
+    (reference.kind === 'namespacedOwner' || reference.kind === 'namespacedMarketplace')
+    && reference.sourceId
+    && configured.has(reference.sourceId)
+    && failedSourceIds.has(reference.sourceId)
+    && referenceSelected(reference));
+  const unavailableSourceTargets = [...new Map(unavailableSourceReferences.flatMap((reference) => {
+    if (!reference.sourceId || !reference.pluginName
+      || (reference.platform !== 'codex' && reference.platform !== 'claude')
+      || (reference.scope !== 'user' && reference.scope !== 'project')) return [];
+    const pluginId = formatPluginId({ sourceId: reference.sourceId, pluginName: reference.pluginName });
+    const target: StatusV4Target = {
+      pluginName: reference.pluginName,
+      sourceId: reference.sourceId,
+      sourceIdentity: reference.sourceIdentity ?? 'unavailable',
+      pluginId,
+      platform: reference.platform,
+      scope: reference.scope,
+      cwd: path.resolve(options.cwd),
+      state: 'error',
+      components: [],
+      errors: [{
+        code: 'catalogSourceUnavailable',
+        message: `catalogSourceUnavailable: catalog source "${reference.sourceId}" is unavailable for ${pluginId}.`,
+      }],
+    };
+    return [[`${pluginId}\0${reference.platform}\0${reference.scope}`, target] as const];
+  })).values()];
+  targets.push(...unavailableSourceTargets);
+  const availablePluginIds = new Set(available.map((entry) =>
+    formatPluginId({ sourceId: entry.source.id, pluginName: entry.name })));
+  const resolvedSourceIds = new Set(catalog.sources.flatMap((source) =>
+    'plugins' in source ? [source.id] : []));
+  const unavailableBundleReferences = ownerInventory.references.filter((reference) =>
+    (reference.kind === 'namespacedOwner' || reference.kind === 'namespacedMarketplace')
+    && reference.sourceId
+    && configured.has(reference.sourceId)
+    && resolvedSourceIds.has(reference.sourceId)
+    && reference.pluginName
+    && referenceSelected(reference)
+    && !availablePluginIds.has(formatPluginId({
+      sourceId: reference.sourceId,
+      pluginName: reference.pluginName,
+    })));
+  const unavailableBundleTargets = [...new Map(unavailableBundleReferences.flatMap((reference) => {
+    if (!reference.sourceId || !reference.pluginName
+      || (reference.platform !== 'codex' && reference.platform !== 'claude')
+      || (reference.scope !== 'user' && reference.scope !== 'project')) return [];
+    const pluginId = formatPluginId({ sourceId: reference.sourceId, pluginName: reference.pluginName });
+    if (requested.length > 0 && !plannedSelectors.some((selector) =>
+      selector.parsed.pluginName === reference.pluginName
+      && (selector.parsed.sourceId === undefined || selector.parsed.sourceId === reference.sourceId))) return [];
+    const target: StatusV4Target = {
+      pluginName: reference.pluginName,
+      sourceId: reference.sourceId,
+      sourceIdentity: reference.sourceIdentity ?? 'unavailable',
+      pluginId,
+      platform: reference.platform,
+      scope: reference.scope,
+      cwd: path.resolve(options.cwd),
+      state: 'error',
+      components: [],
+      errors: [{
+        code: 'bundleUnavailable',
+        message: `bundleUnavailable: ${pluginId} has live state but is not present in the current source snapshot.`,
+      }],
+    };
+    return [[`${pluginId}\0${reference.platform}\0${reference.scope}`, target] as const];
+  })).values()];
+  targets.push(...unavailableBundleTargets);
+  const projectedInventoryErrors = [...new Map(inventoryErrors.map((error) => [
+    `${error.code}\0${error.message}`,
+    error,
+  ])).values()];
   const errors = [
+    ...projectedInventoryErrors,
     ...selectorErrors,
-    ...legacyOwners.map((reference) => ({
+    ...legacyOwners.map((reference) => projectTargetError({
       code: 'legacyStateUnsupported',
-      message: `legacyStateUnsupported: schema 1 owner at ${reference.location}`,
-    })),
+      message: `legacyStateUnsupported: legacy live ${reference.kind} at ${reference.location}`,
+    }, env, options.cwd)),
   ];
+  const projectedTargets = targets.map((target) => ({
+    ...target,
+    errors: target.errors.map((error) => projectTargetError(error, env, options.cwd)),
+  }));
   const payload: StatusV4Payload = {
     schemaVersion: 4,
     catalog: {
@@ -363,7 +688,7 @@ export async function statusCommandV4(options: {
       ...(options.scope === undefined ? {} : { scope: parseScopeValue(options.scope) }),
       cwd: path.resolve(options.cwd),
     },
-    targets,
+    targets: projectedTargets,
     errors,
   };
   const hasErrors = payload.catalog.sources.some((source) => source.error !== undefined)

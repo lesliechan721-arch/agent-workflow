@@ -185,7 +185,7 @@ describe('multi-source read commands', () => {
     expect(captured.readStderr()).toContain('unknown option');
   });
 
-  it('uses qualified plugin IDs in the multi-source console and blocks transitional writes', async () => {
+  it('uses qualified plugin IDs in the multi-source console writes', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const first = fixturePath('first');
     const second = fixturePath('second');
@@ -214,7 +214,12 @@ describe('multi-source read commands', () => {
       interactive: true,
     }));
     await expect(controller.execute('install', loaded.items[0]!.targets[0]!))
-      .rejects.toThrow('runtimeTransitionIncomplete');
+      .resolves.toMatchObject({
+        overallState: 'succeeded',
+        rebuildResults: [expect.objectContaining({
+          target: expect.objectContaining({ pluginId: 'first/demo', sourceId: 'first' }),
+        })],
+      });
   });
 
   it('applies qualified, ambiguous bare, unknown, and mixed selector semantics', async () => {
@@ -513,7 +518,7 @@ describe('multi-source read commands', () => {
     })).resolves.toMatchObject({ ok: true, sourceId: 'local' });
   });
 
-  it('returns a v4 transition failure instead of running a legacy write command', async () => {
+  it('runs namespaced writes and returns v4 config failures', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const good = fixturePath('good');
     await createCatalogSnapshotFixture(good);
@@ -533,18 +538,18 @@ describe('multi-source read commands', () => {
       env: isolation.env,
       io: captured.io,
       interactive: false,
-    })).toBe(1);
+    })).toBe(0);
     expect(JSON.parse(captured.readStdout())).toMatchObject({
       receiptSchemaVersion: 4,
-      ok: false,
-      overallState: 'failed',
+      ok: true,
+      overallState: 'succeeded',
       targets: [expect.objectContaining({
         pluginName: 'demo',
         platform: 'codex',
         scope: 'user',
-        status: 'failed',
+        status: 'succeeded',
       })],
-      errors: [{ code: 'runtimeTransitionIncomplete' }],
+      errors: [],
     });
 
     const config = createCapturedCliIo();
@@ -559,12 +564,12 @@ describe('multi-source read commands', () => {
       command: 'config:set',
       ok: false,
       overallState: 'failed',
-      errors: [{ code: 'runtimeTransitionIncomplete' }],
+      errors: [expect.objectContaining({ code: 'configSchemaUnavailable' })],
     });
   });
 
   it.each(['codex', 'claude'] as const)(
-    'keeps status JSON available when an unrelated %s config file is invalid',
+    'keeps an error target when a %s status probe config file is invalid',
     async (platform) => {
       const isolation = getCurrentSourceTestIsolation();
       const good = fixturePath('good');
@@ -589,11 +594,17 @@ describe('multi-source read commands', () => {
         env: isolation.env,
         io: captured.io,
         interactive: false,
-      })).toBe(0);
+      })).toBe(1);
       expect(JSON.parse(captured.readStdout())).toMatchObject({
         schemaVersion: 4,
         targets: expect.arrayContaining([
-          expect.objectContaining({ pluginId: 'good/demo' }),
+          expect.objectContaining({
+            pluginId: 'good/demo',
+            state: 'error',
+            errors: expect.arrayContaining([
+              expect.objectContaining({ code: expect.any(String) }),
+            ]),
+          }),
         ]),
       });
       expect(captured.readStdout().trim().split('\n').filter(Boolean).length).toBeGreaterThan(0);
@@ -734,7 +745,7 @@ describe('multi-source read commands', () => {
     }
   });
 
-  it('exposes qualified multi-source config read in the dashboard but keeps mutations gated', async () => {
+  it('exposes qualified multi-source config mutations in the dashboard', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const good = fixturePath('configurable');
     await createCatalogSnapshotFixture(
@@ -783,8 +794,8 @@ describe('multi-source read commands', () => {
       });
     await expect(controller.saveConfig(item, { scope: 'user', projectLayer: 'shared' }, {
       updates: { mode: 'slow' },
-    })).rejects.toThrow('runtimeTransitionIncomplete');
+    })).resolves.toMatchObject({ configWrite: 'succeeded', updatedKeys: ['mode'] });
     await expect(controller.resetConfig(item, { scope: 'user', projectLayer: 'shared' }))
-      .rejects.toThrow('runtimeTransitionIncomplete');
+      .resolves.toMatchObject({ configWrite: 'succeeded', deleted: true });
   });
 });

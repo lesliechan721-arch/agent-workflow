@@ -33,6 +33,9 @@ export interface CommandWizardSelection {
 
 export interface CommandWizardPluginCandidate {
   pluginName: string;
+  pluginId?: string;
+  sourceId?: string;
+  sourceIdentity?: string;
   description?: string;
   targets: LiveStatusTarget[];
   configSchema?: Record<string, PluginConfigSchemaField>;
@@ -87,9 +90,10 @@ export class WizardExecutionError extends Error {
 export function toWizardCandidates(items: LiveConsoleItem[]): CommandWizardPluginCandidate[] {
   return items.map((item) => ({
     pluginName: item.pluginName,
-    description: item.plugin?.manifest.description,
+    pluginId: item.pluginName,
+    description: item.plugin?.manifest.description ?? item.pluginSummary?.description,
     targets: item.targets,
-    configSchema: item.plugin?.manifest.config?.schema,
+    configSchema: item.plugin?.manifest.config?.schema ?? item.pluginSummary?.configSchema,
   }));
 }
 

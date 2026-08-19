@@ -40,7 +40,24 @@ export interface RebuildReceiptJson {
     residual: string[];
     quarantined: string[];
     failures: RebuildResult['failures'];
+    errorCode?: string;
   }>;
+}
+
+function rebuildErrorCode(message: string): string {
+  for (const code of [
+    'legacyStateUnsupported',
+    'sourceChanged',
+    'sourceMissing',
+    'artifactCollision',
+  ]) {
+    if (message.includes(code)) return code;
+  }
+  if (message.startsWith('Cannot resolve required catalog sources:')) {
+    return 'catalogSourceUnavailable';
+  }
+  const prefix = message.split(':', 1)[0];
+  return /^[A-Za-z][A-Za-z0-9]*$/u.test(prefix) ? prefix : 'writeFailed';
 }
 
 export function buildRebuildReceiptJson(
@@ -58,7 +75,7 @@ export function buildRebuildReceiptJson(
     warnings: result.warnings,
     errors: overallState === 'failed' && rebuildResults.length === 0
       ? [{
-          code: result.warnings[0]?.split(':', 1)[0] || 'runtimeTransitionIncomplete',
+          code: result.warnings[0]?.split(':', 1)[0] || 'writeCommandFailed',
           message: result.warnings[0] ?? 'The write command did not run.',
         }]
       : [],
@@ -84,6 +101,9 @@ export function buildRebuildReceiptJson(
         residual: entry.residual,
         quarantined: entry.quarantined,
         failures: entry.failures,
+        ...(entry.status === 'failed'
+          ? { errorCode: rebuildErrorCode(entry.error.message) }
+          : {}),
       };
     }) : (result.receiptTargets ?? []).map((target) => ({
       pluginName: target.pluginName,
@@ -91,7 +111,7 @@ export function buildRebuildReceiptJson(
       ...(target.sourceId ? { sourceId: target.sourceId } : {}),
       platform: target.platform,
       scope: target.scope,
-      status: 'failed',
+      status: overallState === 'succeeded' ? 'succeeded' : 'failed',
       cleanupAttempted: false,
       actions: [],
       removed: [],

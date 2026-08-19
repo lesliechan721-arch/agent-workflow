@@ -15,12 +15,12 @@ vi.mock('../../src/utils/plugin-config-write.js', async () => {
   return { ...actual, ...mocks };
 });
 
-describe('config mutation transition gate', () => {
+describe('config mutation runtime entry', () => {
   it.each([
     ['set', ['demo', 'key', 'value']],
     ['unset', ['demo', 'key']],
     ['reset', ['demo', '--scope', 'user', '--yes']],
-  ] as const)('fails config %s closed with a v4 receipt', async (command, args) => {
+  ] as const)('returns a v4 resolver failure for config %s', async (command, args) => {
     const captured = createCapturedCliIo();
     const launch = vi.fn();
     const exitCode = await runCli(['config', command, ...args, '--json'], {
@@ -35,9 +35,9 @@ describe('config mutation transition gate', () => {
       command: `config:${command}`,
       ok: false,
       overallState: 'failed',
-      errors: [{ code: 'runtimeTransitionIncomplete' }],
+      errors: [expect.objectContaining({ code: expect.not.stringContaining('runtimeTransitionIncomplete') })],
     });
-    expect(captured.readStderr()).toContain('runtimeTransitionIncomplete');
+    expect(captured.readStderr()).not.toContain('runtimeTransitionIncomplete');
     expect(launch).not.toHaveBeenCalled();
     expect(mocks.applyPluginConfigWrite).not.toHaveBeenCalled();
     expect(mocks.resetPluginConfigWithHelper).not.toHaveBeenCalled();
