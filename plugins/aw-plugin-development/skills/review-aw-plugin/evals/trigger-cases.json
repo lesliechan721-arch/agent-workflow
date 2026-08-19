@@ -11,7 +11,7 @@
     {
       "id": "positive_1",
       "split": "validation",
-      "query": "$review-aw-plugin 只读审核这个 AW 插件的源码、materialized Skill 和 Eval evidence。",
+      "query": "只读审核这个 AW 插件的源码、materialized Skill 和 Eval evidence。",
       "should_load_skill": true,
       "eval_type": "trigger",
       "case_role": "representative",
@@ -33,7 +33,7 @@
     {
       "id": "positive_2",
       "split": "validation",
-      "query": "$review-aw-plugin 对比 AW 插件修订版并复核旧 finding。",
+      "query": "对比 AW 插件修订版并复核旧 finding。",
       "should_load_skill": true,
       "eval_type": "trigger",
       "case_role": "representative",
@@ -55,7 +55,7 @@
     {
       "id": "positive_3",
       "split": "validation",
-      "query": "$review-aw-plugin 做 AW 插件 release review，但不要修改生产源码。",
+      "query": "做 AW 插件 release review，但不要修改生产源码。",
       "should_load_skill": true,
       "eval_type": "trigger",
       "case_role": "representative",
@@ -77,7 +77,7 @@
     {
       "id": "positive_external_workspace",
       "split": "validation",
-      "query": "$review-aw-plugin 审核另一个项目中 `packages/acme-aw` 的 manifest、物化产物和发布证据。",
+      "query": "审核另一个项目中 `packages/acme-aw` 的 manifest、物化产物和发布证据。",
       "should_load_skill": true,
       "eval_type": "trigger",
       "case_role": "boundary",

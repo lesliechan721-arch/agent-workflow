@@ -11,7 +11,7 @@
     {
       "id": "positive_1",
       "split": "validation",
-      "query": "$author-aw-plugin 在 `tools/demo-plugin` 创建一个新 AW 插件和两个 Skill。",
+      "query": "在 `tools/demo-plugin` 创建一个新 AW 插件和两个 Skill。",
       "should_load_skill": true,
       "eval_type": "trigger",
       "case_role": "representative",
@@ -33,7 +33,7 @@
     {
       "id": "positive_2",
       "split": "validation",
-      "query": "$author-aw-plugin 给现有 AW 插件新增 dynamic artifact 并运行作者验证。",
+      "query": "给现有 AW 插件新增 dynamic artifact 并运行作者验证。",
       "should_load_skill": true,
       "eval_type": "trigger",
       "case_role": "representative",
@@ -55,7 +55,7 @@
     {
       "id": "positive_3",
       "split": "validation",
-      "query": "$author-aw-plugin 修改 AW 插件 Skill、源码 manifest 版本和 materialization。",
+      "query": "修改 AW 插件 Skill、源码 manifest 版本和 materialization。",
       "should_load_skill": true,
       "eval_type": "trigger",
       "case_role": "representative",
@@ -77,7 +77,7 @@
     {
       "id": "positive_external_workspace",
       "split": "validation",
-      "query": "$author-aw-plugin 维护另一个项目中 `packages/acme-aw` 的 `.agents-plugin/plugin.json`、README 和构建验证。",
+      "query": "维护另一个项目中 `packages/acme-aw` 的 `.agents-plugin/plugin.json`、README 和构建验证。",
       "should_load_skill": true,
       "eval_type": "trigger",
       "case_role": "boundary",

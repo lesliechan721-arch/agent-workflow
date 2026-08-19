@@ -18,6 +18,8 @@
 | `author-aw-plugin` | 创建或维护 AW 插件源码、README、manifest、构建和确定性验证。 |
 | `review-aw-plugin` | 只读评审 AW 插件源码、materialized final artifacts 和 Eval evidence。 |
 
+通过 CLI 安装后，两个 Skill 都允许模型按用户意图自动触发，同时保留 `$author-aw-plugin` 和 `$review-aw-plugin` 显式调用。
+
 Author 不给自己的结果出独立发布结论；Reviewer 不修改生产源码。正式报告发布需要授权，README 或 manifest 的后续写入交回 Author 或目标工作区的 release 工具。
 
 ## Workspace boundary
