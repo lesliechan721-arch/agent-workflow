@@ -9,6 +9,7 @@ import { withBuildSnapshot } from '../build/build-cache.mjs';
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const semverPattern =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|(?:[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))(?:\.(?:0|[1-9]\d*|(?:[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)))*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
+export const RELEASE_NETWORK_TIMEOUT_MS = 2 * 60 * 1000;
 
 export const repoRoot = path.resolve(scriptDir, '..', '..');
 export const releaseRoot = path.join(repoRoot, '.release');
@@ -37,6 +38,73 @@ export function assertValidVersion(version) {
 export function isPrereleaseVersion(version) {
   assertValidVersion(version);
   return version.split('+', 1)[0].includes('-');
+}
+
+function parseReleaseSemVer(version) {
+  assertValidVersion(version);
+  const match = semverPattern.exec(version);
+  return {
+    core: [Number(match[1]), Number(match[2]), Number(match[3])],
+    prerelease: match[4] ? match[4].split('.') : [],
+  };
+}
+
+export function compareReleaseSemVer(left, right) {
+  const parsedLeft = parseReleaseSemVer(left);
+  const parsedRight = parseReleaseSemVer(right);
+  for (let index = 0; index < 3; index += 1) {
+    if (parsedLeft.core[index] !== parsedRight.core[index]) {
+      return parsedLeft.core[index] < parsedRight.core[index] ? -1 : 1;
+    }
+  }
+  if (parsedLeft.prerelease.length === 0 || parsedRight.prerelease.length === 0) {
+    if (parsedLeft.prerelease.length === parsedRight.prerelease.length) return 0;
+    return parsedLeft.prerelease.length === 0 ? 1 : -1;
+  }
+  const length = Math.max(parsedLeft.prerelease.length, parsedRight.prerelease.length);
+  for (let index = 0; index < length; index += 1) {
+    const leftIdentifier = parsedLeft.prerelease[index];
+    const rightIdentifier = parsedRight.prerelease[index];
+    if (leftIdentifier === rightIdentifier) continue;
+    if (leftIdentifier === undefined) return -1;
+    if (rightIdentifier === undefined) return 1;
+    const leftNumeric = /^\d+$/.test(leftIdentifier);
+    const rightNumeric = /^\d+$/.test(rightIdentifier);
+    if (leftNumeric && rightNumeric) {
+      if (leftIdentifier.length !== rightIdentifier.length) {
+        return leftIdentifier.length < rightIdentifier.length ? -1 : 1;
+      }
+      return leftIdentifier < rightIdentifier ? -1 : 1;
+    }
+    if (leftNumeric !== rightNumeric) return leftNumeric ? -1 : 1;
+    return leftIdentifier < rightIdentifier ? -1 : 1;
+  }
+  return 0;
+}
+
+export function resolveCliPublicationGate({
+  mode,
+  candidateVersion,
+  publishedVersion,
+  compare = compareReleaseSemVer,
+}) {
+  assertVersionKind(candidateVersion, mode === 'beta' ? 'prerelease' : 'stable');
+  assertVersionKind(publishedVersion, mode === 'beta' ? 'prerelease' : 'stable');
+  const relation = compare(candidateVersion, publishedVersion);
+  if (relation < 0) {
+    throw new Error(
+      `CLI candidate ${candidateVersion} must be higher than the published ${mode} CLI ${publishedVersion}.`,
+    );
+  }
+  if (relation === 0 && candidateVersion !== publishedVersion) {
+    throw new Error(
+      `CLI candidate ${candidateVersion} has the same SemVer precedence but a different version string ` +
+      `from the published ${mode} CLI ${publishedVersion}.`,
+    );
+  }
+  return relation === 0
+    ? { status: 'already-published', version: candidateVersion }
+    : { status: 'publish', version: candidateVersion };
 }
 
 export function assertVersionKind(version, kind) {
@@ -97,6 +165,9 @@ export async function runCommand(command, args, options = {}) {
         ...(options.env ?? {}),
       },
       stdio: options.stdio ?? 'inherit',
+      ...(options.timeoutMs
+        ? { signal: AbortSignal.timeout(options.timeoutMs) }
+        : {}),
     });
 
     child.on('error', reject);
@@ -124,6 +195,9 @@ export async function captureCommand(command, args, options = {}) {
         ...(options.env ?? {}),
       },
       stdio: ['ignore', 'pipe', 'pipe'],
+      ...(options.timeoutMs
+        ? { signal: AbortSignal.timeout(options.timeoutMs) }
+        : {}),
     });
 
     let stdout = '';
@@ -174,6 +248,7 @@ export async function resolvePublishedCliVersion(mode, options = {}) {
     '--registry',
     registryUrl,
   ], {
+    timeoutMs: options.timeoutMs ?? RELEASE_NETWORK_TIMEOUT_MS,
     env: {
       ...(options.env ?? process.env),
       AW_RELEASE_NPM_REGISTRY_URL: registryUrl,
@@ -490,6 +565,52 @@ export async function packCli({ destination = tarballDir, snapshot } = {}) {
 
 export function withReleaseBuildSnapshot(callback, options = {}) {
   return withBuildSnapshot(repoRoot, callback, options);
+}
+
+export async function resolveReleaseHead(options = {}) {
+  const capture = options.captureCommand ?? captureCommand;
+  const { stdout } = await capture('git', ['rev-parse', '--verify', 'HEAD']);
+  const headCommit = stdout.trim();
+  if (!/^[0-9a-f]{40,64}$/.test(headCommit)) {
+    throw new Error('Release HEAD did not resolve to a commit object ID.');
+  }
+  return headCommit;
+}
+
+export function createReleaseSnapshotIdentity(snapshot, headCommit) {
+  const required = ['generationId', 'outputDigest', 'inputDigest', 'cliPackageDigest'];
+  for (const field of required) {
+    if (typeof snapshot[field] !== 'string' || snapshot[field] === '') {
+      throw new Error(`Release build snapshot is missing ${field}.`);
+    }
+  }
+  if (typeof headCommit !== 'string' || !/^[0-9a-f]{40,64}$/.test(headCommit)) {
+    throw new Error('Release snapshot identity requires a Git HEAD commit object ID.');
+  }
+  return Object.freeze({
+    generationId: snapshot.generationId,
+    outputDigest: snapshot.outputDigest,
+    inputDigest: snapshot.inputDigest,
+    cliPackageDigest: snapshot.cliPackageDigest,
+    headCommit,
+  });
+}
+
+export function assertReleaseSnapshotIdentity(snapshot, identity) {
+  for (const field of ['generationId', 'outputDigest', 'inputDigest', 'cliPackageDigest']) {
+    if (snapshot[field] !== identity[field]) {
+      throw new Error(`Release snapshot ${field} changed within one combined generation.`);
+    }
+  }
+}
+
+export async function assertCurrentReleaseHead(identity, options = {}) {
+  const current = await resolveReleaseHead(options);
+  if (current !== identity.headCommit) {
+    throw new Error(
+      `Release HEAD changed from ${identity.headCommit} to ${current} during publication.`,
+    );
+  }
 }
 
 export async function loadCatalogModules(compiledCliDistRoot = cliDistRoot) {

@@ -195,7 +195,7 @@ make test
 make stage-catalog CATALOG_VERSION=1.2.0-beta.1
 ```
 
-`pnpm build` 生成 `packages/cli/plugins-dist/` schema 3 本地 snapshot。`stage-catalog` 在 `.release/catalog-staging/catalog/` 生成带 `plugin-release-ledger.json` 的完整发布交接目录。
+`pnpm build` 生成 `packages/cli/plugins-dist/` schema 3 本地 snapshot。catalog 最低 CLI 版本取插件声明与 schema 3 Git 分发 floor `0.1.0-beta.2` 的最大值。`stage-catalog` 在 `.release/catalog-staging/catalog/` 生成带 `plugin-release-ledger.json` 的完整发布交接目录。
 
 发布入口：
 
@@ -219,7 +219,7 @@ pnpm test:smoke:bootstrap:catalog
 # 验证 Git provider 可以 fetch 两个 official ref 后，再发布使用 Git source 的新 CLI。
 ```
 
-bootstrap 只建立首次 official refs，不发布 CLI。它是旧 CLI compatibility 的一次性迁移例外；普通 catalog-only 入口没有绕过参数。目标 channel 已有其它内容时它会拒绝；首次迁移完成后必须使用上面的普通 catalog-only 或 combined 入口。Git publisher 使用 `catalog/latest`、`catalog/beta` 独立 orphan channel 和 immutable annotated `catalog-v<version>` tag；不支持 atomic push 时不降级。组合发布的 promotion 失败时，错误会输出可复制的 `release:promote:catalog:<channel>` 命令。
+bootstrap 只建立首次 official refs，不发布 CLI。它是旧 CLI compatibility 的一次性迁移例外；普通 catalog-only 入口没有绕过参数。目标 channel 已有其它内容或同版本 tag 单独存在时它会拒绝；首次迁移完成后必须使用上面的普通 catalog-only 或 combined 入口。Git publisher 使用 `catalog/latest`、`catalog/beta` 独立 orphan channel 和 immutable annotated `catalog-v<version>` tag；内部 `aw-release/publication-lock` branch 串行单次发布事务，`aw-release/tag-first-pending` guard 保护 tag-first 到 promotion 的失败恢复窗口，二者都不是发布历史。不支持 atomic push 时不降级。combined 使用同一个 build generation 生成 catalog 与 CLI，并在各发布边界核对 HEAD。组合发布的 promotion 失败时，错误会输出可复制的 `release:promote:catalog:<channel>` 命令。
 
 新 CLI 只读取 schema 1 Git/path sources。默认 `official` URL 是 `https://github.com/lesliechan721-arch/agent-workflow.git`；stable 使用 `refs/heads/catalog/latest`，prerelease 使用 `refs/heads/catalog/beta`。旧 npm catalog packages 在 cutover 后冻结，不删除或 unpublish，也不再更新。
 

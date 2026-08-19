@@ -27,6 +27,8 @@ describe('publish-catalog script', () => {
       ['beta', '--catalog-version', '9.0.0-beta.6'],
       {
         runCommand,
+        withCatalogPublicationLease: async (_remote: string, callback: (lease: object) => Promise<unknown>) =>
+          callback({ ownerCommit: 'lease-owner' }),
         readCatalogPublicationHistory: async () => releaseHistory,
         stageCatalogRelease,
         resolvePublishedCliVersion: async () => '1.0.0-beta.1',
@@ -42,7 +44,7 @@ describe('publish-catalog script', () => {
     expect(publishStagedCatalog).toHaveBeenCalledWith(
       releaseHistory,
       '/tmp/catalog-stage',
-      undefined,
+      { publicationLease: { ownerCommit: 'lease-owner' } },
     );
   });
 
@@ -54,6 +56,8 @@ describe('publish-catalog script', () => {
       ['latest', '--catalog-version', '9.0.0'],
       {
         runCommand: async () => undefined,
+        withCatalogPublicationLease: async (_remote: string, callback: (lease: object) => Promise<unknown>) =>
+          callback({ ownerCommit: 'lease-owner' }),
         readCatalogPublicationHistory: async () => releaseHistory,
         stageCatalogRelease: async () => ({
           outputRoot: '/tmp/catalog',

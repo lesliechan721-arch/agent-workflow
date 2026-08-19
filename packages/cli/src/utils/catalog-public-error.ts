@@ -5,13 +5,40 @@ import { resolveAwHome } from './state-paths.js';
 
 const DEFAULT_ERROR_CODE = 'catalogSourceResolutionFailed';
 
+export type CatalogProviderCompatibilityErrorCode =
+  | 'awVersionTooLow'
+  | 'explicitCatalogIncompatible';
+
+export class CatalogProviderCompatibilityError extends Error {
+  readonly sourceId: string;
+  readonly code: CatalogProviderCompatibilityErrorCode;
+
+  constructor(options: {
+    sourceId: string;
+    minAwVersion: string;
+    selection: 'cliChannel' | 'explicit';
+  }) {
+    super(`Catalog source "${options.sourceId}" requires aw >= ${options.minAwVersion}.`);
+    this.name = 'CatalogProviderCompatibilityError';
+    this.sourceId = options.sourceId;
+    this.code = options.selection === 'cliChannel'
+      ? 'awVersionTooLow'
+      : 'explicitCatalogIncompatible';
+  }
+}
+
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function replaceRoot(message: string, root: string, replacement: string): string {
   const normalized = path.resolve(root);
-  const variants = new Set([normalized, normalized.replaceAll('\\', '/')]);
+  const variants = new Set([
+    normalized,
+    normalized.replaceAll('\\', '/'),
+    ...(normalized.startsWith('/var/') ? [`/private${normalized}`] : []),
+    ...(normalized.startsWith('/private/var/') ? [normalized.slice('/private'.length)] : []),
+  ]);
   let output = message;
   for (const variant of variants) {
     output = output.replace(new RegExp(escapeRegExp(variant), 'g'), replacement);
@@ -69,6 +96,10 @@ export function sanitizeCatalogSourceError(
   }) as Error & { code: string };
   sanitized.name = original.name;
   sanitized.code = catalogSourceErrorCode(original);
+  const sourceId = (original as { sourceId?: unknown }).sourceId;
+  if (typeof sourceId === 'string') {
+    (sanitized as Error & { sourceId?: string }).sourceId = sourceId;
+  }
   if ('inventory' in original) {
     (sanitized as Error & { inventory?: unknown }).inventory = original.inventory;
   }

@@ -782,11 +782,39 @@ describe('Git and path catalog providers', () => {
     await git(work, ['commit', '-m', 'require newer aw']);
     await git(work, ['push', remote, 'HEAD:refs/heads/main']);
 
-    await expect(resolveGitCatalogSource(source, {
+    const error = await resolveGitCatalogSource(source, {
       cliVersion: '1.0.0',
       freshnessPolicy: 'requireRemote',
       env,
-    })).rejects.toThrow('requires aw >= 2.0.0');
+    }).catch((failure: unknown) => failure as Error & { code?: string; sourceId?: string });
+    expect(error).toMatchObject({
+      code: 'explicitCatalogIncompatible',
+      sourceId: 'official',
+    });
+    expect(error.message).toContain('requires aw >= 2.0.0');
+  });
+
+  it('maps an incompatible CLI channel to awVersionTooLow', async () => {
+    const { remote, commit } = await createGitRemote();
+    const env = getCurrentSourceTestIsolation().env;
+    await git(remote, ['update-ref', 'refs/heads/catalog/latest', commit]);
+    const source = {
+      ...gitSource(remote, 'unused'),
+      refPolicy: { type: 'cliChannel' as const },
+    };
+    const work = fixturePath('git-work');
+    await createCatalogSnapshotFixture(path.join(work, 'catalog'), 'demo', '2.0.0');
+    await git(work, ['add', '.']);
+    await git(work, ['commit', '-m', 'require newer channel aw']);
+    await git(work, ['push', remote, 'HEAD:refs/heads/catalog/latest']);
+
+    const error = await resolveGitCatalogSource(source, {
+      cliVersion: '1.0.0',
+      freshnessPolicy: 'requireRemote',
+      env,
+    }).catch((failure: unknown) => failure as Error & { code?: string; sourceId?: string });
+    expect(error).toMatchObject({ code: 'awVersionTooLow', sourceId: 'official' });
+    expect(error.message).toContain('requires aw >= 2.0.0');
   });
 
   it('does not return a warm fallback after the caller has already aborted', async () => {

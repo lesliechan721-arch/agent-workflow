@@ -5,6 +5,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  resolveCliPublicationGate,
   resolvePublishedCliVersion,
   resolveRegistryUrl,
 } from '../../../../scripts/release/common.mjs';
@@ -16,6 +17,19 @@ afterEach(async () => {
 });
 
 describe('CLI release registry URL', () => {
+  it('uses one strict monotonic gate for exact, lower, and same-precedence candidates', () => {
+    expect(resolveCliPublicationGate({
+      mode: 'latest', candidateVersion: '1.0.0', publishedVersion: '1.0.0',
+    })).toEqual({ status: 'already-published', version: '1.0.0' });
+    expect(() => resolveCliPublicationGate({
+      mode: 'latest', candidateVersion: '0.9.0', publishedVersion: '1.0.0',
+    })).toThrow('must be higher than the published latest CLI');
+    expect(() => resolveCliPublicationGate({
+      mode: 'latest',
+      candidateVersion: '1.0.0+candidate',
+      publishedVersion: '1.0.0+published',
+    })).toThrow('same SemVer precedence but a different version string');
+  });
   it('uses the explicit environment registry before package publishConfig', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-release-registry-'));
     tempRoots.push(root);
@@ -73,6 +87,9 @@ describe('CLI release registry URL', () => {
       '--registry',
       'https://registry.example.test/team/',
     ], expect.any(Object));
+    expect(captureCommand.mock.calls[0]![2]).toMatchObject({
+      timeoutMs: expect.any(Number),
+    });
   });
 
   it.each([

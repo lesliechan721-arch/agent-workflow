@@ -14,6 +14,7 @@ import {
 } from './catalog-source-cache.js';
 import { validateCatalogSnapshot } from './catalog-snapshot.js';
 import { compareStrictSemVer } from './manifest.js';
+import { CatalogProviderCompatibilityError } from './catalog-public-error.js';
 
 const {
   ensureCatalogSourceCacheLocation,
@@ -92,9 +93,11 @@ async function resolvePathCatalogSourceWithLease(
           throw new Error(`Catalog path source "${source.id}" changed during snapshot copy.`);
         }
         if (compareStrictSemVer(options.cliVersion, copied.manifest.compatibility.aw.minVersion) < 0) {
-          throw new Error(
-            `Catalog source "${source.id}" requires aw >= ${copied.manifest.compatibility.aw.minVersion}.`,
-          );
+          throw new CatalogProviderCompatibilityError({
+            sourceId: source.id,
+            minAwVersion: copied.manifest.compatibility.aw.minVersion,
+            selection: 'explicit',
+          });
         }
         await catalogPathProviderTestHooks?.afterStableObservationBeforeReservation?.({
           sourceId: source.id,

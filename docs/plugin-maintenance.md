@@ -7,6 +7,7 @@
 - 插件源码位于 `plugins/`，`plugins/<name>/.agents-plugin/plugin.json` 是源码 manifest 真值。
 - catalog staging 和 runtime bundle 是构建产物，不要直接修改。
 - 作者只维护 plugin source 和稳定 plugin version。不要手改 Git catalog refs、release ledger 或 source cache。
+- 作者声明真实的 `compatibility.aw.minVersion`；发布器会把所有插件声明与 schema 3 Git 分发 floor `0.1.0-beta.2` 取最大值。作者不要为绕过 catalog floor 改低插件声明，也不要编辑内部 publication lock 或 tag-first pending refs。
 - 创建或修改插件能力时只维护源码层；平台产物由 CLI、adapter 和发布流程生成。
 - 插件和 Skill 的 production README 使用[插件与 Skill README 规范](readme-standard.md)。
 
@@ -28,6 +29,7 @@
 
 - 使用 `pnpm plugin:test <plugin>` 运行单插件确定性测试；使用 `pnpm plugin:test --all` 检查全部插件。
 - 新工作流的 generated standards、schemas 和 handoff contracts 必须通过 check-only contract test；CI 不自动改写生成文件。
+- repo-local 与 `aw-plugin-development` 作者 validator 的 JavaScript import scanner 必须保持同步；门禁覆盖 static import、export-from、dynamic import、`require()`、`require.resolve()`、非代码文本过滤和 `${...}` 代码扫描。
 - 三层插件应分别验证，并增加同时安装三个插件的组合测试。
 - 通用确定性测试的分层、价值门禁和验证选择见[测试指南](testing.md)。
 - 稳定发布时检查源码 manifest version 的流程见 README 的正式版发布说明。

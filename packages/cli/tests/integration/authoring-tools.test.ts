@@ -2745,6 +2745,152 @@ describe('authoring tools', () => {
     });
   });
 
+  it('validate_plugin.mjs scans real Node imports without comment, string, regex, or template-text ghosts', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-validator-import-scan-'));
+    tempDirs.push(tempRoot);
+    const { pluginDir } = await writeSourcePlugin(
+      path.join(tempRoot, 'plugins'),
+      'import-scan-test',
+      createBaseManifest('import-scan-test', {
+        scripts: {
+          lifecycle: {
+            install: './scripts/entry.mjs',
+          },
+        },
+      }),
+      {
+        'scripts/entry.mjs': [
+          'import /* side effect */ "./shared.mjs";',
+          'export { value } /* binding */ from /* source */ "./value.mjs";',
+          'const lazy = import(/* boundary */ "./lazy.mjs");',
+          'const helper = require(/* boundary */ "./helper.cjs");',
+          'const resolved = require.resolve(/* boundary */ "./resolved.cjs");',
+          'const stringGhost = \'require("ghost-string")\';',
+          '// import "ghost-comment";',
+          '/* export { ghost } from "ghost-block-comment"; */',
+          'const regexGhost = /require("ghost-regex")|import("ghost-dynamic-regex")/u;',
+          'const templateGhost = `require("ghost-template")`;',
+          'const expression = `${import("./template-expression.mjs")}`;',
+        ].join('\n'),
+        'scripts/shared.mjs': 'export const shared = true;\n',
+        'scripts/value.mjs': 'export const value = true;\n',
+        'scripts/lazy.mjs': 'export default true;\n',
+        'scripts/helper.cjs': 'module.exports = true;\n',
+        'scripts/resolved.cjs': 'module.exports = true;\n',
+        'scripts/template-expression.mjs': 'export default true;\n',
+      },
+    );
+    const validators = [
+      validatePluginScriptPath(),
+      path.join(
+        repoRoot(),
+        'plugins',
+        'aw-plugin-development',
+        'skills',
+        'author-aw-plugin',
+        'scripts',
+        'validate_plugin.mjs',
+      ),
+    ];
+
+    for (const validator of validators) {
+      const args = validator === validators[1]
+        ? [validator, pluginDir, '--repo-root', repoRoot()]
+        : [validator, pluginDir];
+      await expect(execFileAsync(process.execPath, args, {
+        cwd: repoRoot(),
+        env: process.env,
+        maxBuffer: 10 * 1024 * 1024,
+      })).resolves.toMatchObject({
+        stdout: expect.stringContaining('[PASS] All checks passed.'),
+      });
+    }
+
+    const noDistRoot = path.join(tempRoot, 'no-dist-repository');
+    const noDistValidator = path.join(
+      noDistRoot,
+      '.agents',
+      'skills',
+      'create-aw-plugin',
+      'scripts',
+      'validate_plugin.mjs',
+    );
+    await fs.copy(
+      path.dirname(validatePluginScriptPath()),
+      path.dirname(noDistValidator),
+    );
+    await fs.ensureDir(path.join(noDistRoot, 'packages', 'cli', 'src', 'utils'));
+    await fs.copyFile(
+      path.join(
+        repoRoot(),
+        'packages',
+        'cli',
+        'src',
+        'utils',
+        'skill-frontmatter-capabilities.json',
+      ),
+      path.join(
+        noDistRoot,
+        'packages',
+        'cli',
+        'src',
+        'utils',
+        'skill-frontmatter-capabilities.json',
+      ),
+    );
+    const fallbackResult = await execFileAsync(process.execPath, [noDistValidator, pluginDir], {
+      cwd: noDistRoot,
+      env: process.env,
+      maxBuffer: 10 * 1024 * 1024,
+    });
+    expect(fallbackResult.stdout).toContain('仅执行轻量预检');
+    expect(fallbackResult.stdout).toContain('[PASS] All checks passed.');
+
+    await fs.appendFile(path.join(pluginDir, 'scripts', 'entry.mjs'), '\nimport "undeclared-package";\n');
+    await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining(
+        'bare import "undeclared-package" from "scripts/entry.mjs" requires scripts.node.packageRoot',
+      ),
+    });
+
+    await fs.writeFile(
+      path.join(pluginDir, 'scripts', 'entry.mjs'),
+      'require.resolve("../../outside.cjs");\n',
+      'utf8',
+    );
+    await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining(
+        'relative import "../../outside.cjs" from "scripts/entry.mjs" escapes the plugin root',
+      ),
+    });
+  });
+
+  it('keeps the repo-local and adapter JavaScript import scanners synchronized', async () => {
+    const rootScanner = path.join(
+      repoRoot(),
+      '.agents',
+      'skills',
+      'create-aw-plugin',
+      'scripts',
+      'lib',
+      'javascript-import-scanner.mjs',
+    );
+    const adapterScanner = path.join(
+      repoRoot(),
+      'plugins',
+      'aw-plugin-development',
+      'skills',
+      'author-aw-plugin',
+      'scripts',
+      'lib',
+      'javascript-import-scanner.mjs',
+    );
+    // Static contract exception: the two distributed validators can silently enforce different author contracts; behavior test is not suitable because divergence can occur in any scanner branch.
+    await expect(fs.readFile(adapterScanner, 'utf8')).resolves.toBe(
+      await fs.readFile(rootScanner, 'utf8'),
+    );
+  });
+
   it('validate_plugin.mjs validates dynamic Codex artifact renderer contracts', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-dynamic-artifacts-'));
     tempDirs.push(tempRoot);

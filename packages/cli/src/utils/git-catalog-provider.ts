@@ -17,6 +17,7 @@ import {
   catalogSourceCacheInternal,
   type CatalogSourceCacheLocation,
 } from './catalog-source-cache.js';
+import { CatalogProviderCompatibilityError } from './catalog-public-error.js';
 import { validateCatalogSnapshot } from './catalog-snapshot.js';
 import { resolveCatalogSourceRef } from './catalog-sources.js';
 import { compareStrictSemVer } from './manifest.js';
@@ -824,9 +825,11 @@ async function resolveGitCatalogSourceWithLease(
             options.cliVersion,
             validation.manifest.compatibility.aw.minVersion,
           ) < 0) {
-            throw new CatalogGitPolicyError(
-              `Catalog source "${source.id}" requires aw >= ${validation.manifest.compatibility.aw.minVersion}.`,
-            );
+            throw new CatalogProviderCompatibilityError({
+              sourceId: source.id,
+              minAwVersion: validation.manifest.compatibility.aw.minVersion,
+              selection: source.refPolicy.type,
+            });
           }
           return await withCatalogGitLockDeadline({
             deadline,
@@ -873,6 +876,7 @@ async function resolveGitCatalogSourceWithLease(
         );
       }
     }
+    if (failure instanceof CatalogProviderCompatibilityError) throw failure;
     const sensitiveTransports = [
       source.url,
       ...(failure instanceof CatalogGitPolicyError ? failure.sensitiveTransports : []),

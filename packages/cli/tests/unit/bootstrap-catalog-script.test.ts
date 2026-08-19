@@ -17,6 +17,19 @@ function emptyHistory() {
   };
 }
 
+const testPublicationLease = {
+  ref: 'refs/heads/aw-release/publication-lock',
+  ownerCommit: 'test-owner',
+  remoteUrl: OFFICIAL_CATALOG_PUBLISH_REMOTE,
+};
+
+async function withTestPublicationLease(
+  _remoteUrl: string,
+  callback: (lease: typeof testPublicationLease) => Promise<unknown>,
+) {
+  return callback(testPublicationLease);
+}
+
 describe('bootstrap-catalog script', () => {
   it('accepts only a channel-appropriate catalog version', () => {
     expect(parseArgs(['beta', '--catalog-version', '9.0.0-beta.1']))
@@ -47,6 +60,7 @@ describe('bootstrap-catalog script', () => {
         stageCatalogRelease,
         publishStagedCatalog,
         resolvePublishedCliVersion,
+        withCatalogPublicationLease: withTestPublicationLease,
       },
     )).resolves.toMatchObject({ commit: 'abc', idempotent: false });
 
@@ -57,7 +71,7 @@ describe('bootstrap-catalog script', () => {
     expect(publishStagedCatalog).toHaveBeenCalledWith(
       history,
       '/tmp/catalog-stage',
-      { publicationMode: 'atomic' },
+      { publicationMode: 'atomic', publicationLease: testPublicationLease },
     );
     expect(resolvePublishedCliVersion).not.toHaveBeenCalled();
   });
@@ -83,6 +97,7 @@ describe('bootstrap-catalog script', () => {
         readCatalogPublicationHistory: async () => history,
         stageCatalogRelease,
         publishStagedCatalog,
+        withCatalogPublicationLease: withTestPublicationLease,
       },
     )).rejects.toThrow('already exists');
     expect(stageCatalogRelease).not.toHaveBeenCalled();
@@ -120,6 +135,7 @@ describe('bootstrap-catalog script', () => {
         readCatalogPublicationHistory: async () => history,
         stageCatalogRelease,
         publishStagedCatalog,
+        withCatalogPublicationLease: withTestPublicationLease,
       },
     )).resolves.toMatchObject({ commit: 'same', promoted: true, idempotent: true });
     expect(stageCatalogRelease).toHaveBeenCalledOnce();

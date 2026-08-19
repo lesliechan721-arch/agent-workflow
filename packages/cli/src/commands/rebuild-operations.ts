@@ -111,6 +111,7 @@ export interface RebuildTargetDriver {
   withMaterializeLease?<T>(target: DesiredTarget, action: () => Promise<T>): Promise<T>;
   commitMaterialize?(target: DesiredTarget): Promise<void>;
   rollbackMaterialize?(target: DesiredTarget): Promise<void>;
+  finalizeCleanup?(target: DesiredTarget): Promise<void>;
   writeNative(target: DesiredTarget): Promise<void>;
   writeArtifacts(target: DesiredTarget): Promise<void | readonly GeneratedArtifact[]>;
   withOwnershipLease?<T>(target: DesiredTarget, action: () => Promise<T>): Promise<T>;
@@ -211,6 +212,7 @@ export function createRebuildActiveStore(options: {
       cwd: target.identity.cwd,
       loadPlugin: options.loadPlugin,
       env: options.env,
+      lifecycleLeaseHeld: options.isLifecycleLeaseHeld?.() === true,
     }),
     remove: (target) => removeLifecycleActiveSnapshot({
       ...(target.identity.sourceId ? {
@@ -827,6 +829,19 @@ async function executeCleanup(options: {
       cleanupError.message,
     );
   }
+  if (options.command === 'cleanup' && options.driver.finalizeCleanup) {
+    try {
+      await options.driver.finalizeCleanup(options.target);
+    } catch (error) {
+      return failed(
+        options.command,
+        options.target,
+        options.accumulator,
+        'cleanup.owned',
+        errorMessage(error),
+      );
+    }
+  }
   return succeeded(options.command, options.target, options.accumulator);
 }
 
@@ -880,6 +895,13 @@ async function executeUninstall(options: {
       const cleanupError = await cleanupTarget(target, driver, store, accumulator, 'cleanup.owned', events);
       if (cleanupError) {
         return failed('uninstall', target, accumulator, cleanupError.phase, cleanupError.message);
+      }
+      if (driver.finalizeCleanup) {
+        try {
+          await driver.finalizeCleanup(target);
+        } catch (error) {
+          return failed('uninstall', target, accumulator, 'cleanup.owned', errorMessage(error));
+        }
       }
       return succeeded('uninstall', target, accumulator);
     }
@@ -953,6 +975,13 @@ async function executeUninstall(options: {
   if (cleanupError) {
     return failed('uninstall', target, accumulator, cleanupError.phase, cleanupError.message);
   }
+  if (driver.finalizeCleanup) {
+    try {
+      await driver.finalizeCleanup(target);
+    } catch (error) {
+      return failed('uninstall', target, accumulator, 'cleanup.owned', errorMessage(error));
+    }
+  }
   return succeeded('uninstall', target, accumulator);
 }
 
@@ -1007,9 +1036,7 @@ export async function executeRebuildOperation(options: {
   let result: RebuildResult;
   try {
     const execute = () => executeRebuildOperationLocked(options, accumulator, store, events);
-    result = options.command === 'install'
-      || options.command === 'upgrade'
-      || options.command === 'reinstall'
+    result = options.target.identity.sourceId !== undefined
       ? await (options.driver.withMaterializeLease?.(options.target, execute) ?? execute())
       : await execute();
   } catch (error) {

@@ -134,6 +134,7 @@ describe('catalog stage smoke', () => {
       schemaVersion: 3,
       catalogVersion,
       channel: 'beta',
+      compatibility: { aw: { minVersion: '0.1.0-beta.2' } },
     });
     expect(manifest).not.toHaveProperty('packages');
     expect(manifest.entries.map((entry: { name: string }) => entry.name).sort())

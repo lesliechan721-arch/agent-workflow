@@ -119,6 +119,7 @@ describe('plugin release workflow', () => {
       schemaVersion: 3,
       catalogVersion: cliPackage.version,
       channel: String(cliPackage.version).includes('-') ? 'beta' : 'latest',
+      compatibility: { aw: { minVersion: '0.1.0-beta.2' } },
     });
     expect(developmentManifest).not.toHaveProperty('packages');
     await expect(fs.pathExists(path.join(outputRoot, 'plugin-release-ledger.json'))).resolves.toBe(false);
@@ -135,6 +136,7 @@ describe('plugin release workflow', () => {
       schemaVersion: 3,
       catalogVersion: '9.0.0-beta.1',
       channel: 'beta',
+      compatibility: { aw: { minVersion: '0.1.0-beta.2' } },
     });
     expect(staged.manifest).not.toHaveProperty('packages');
     expect(staged.manifest.entries).toEqual([

@@ -13,12 +13,14 @@ import { createCliExecutionContext } from '../../src/commands/runtime.js';
 import { loadConsoleItemsResult } from '../../src/commands/status.js';
 import { statusCommandV4 } from '../../src/commands/status-v4.js';
 import { runCli } from '../../src/index.js';
+import { calculateCatalogSourceIdentity } from '../../src/utils/catalog-source-identity.js';
 import {
   readCatalogSourcesConfigSnapshot,
   replaceCatalogSourcesConfig,
 } from '../../src/utils/catalog-sources.js';
 import { createCapturedCliIo } from '../helpers/cli-entry.js';
 import { createCatalogSnapshotFixture, git } from '../helpers/catalog-source-fixture.js';
+import { writeSkillOwnerMarker } from '../../src/utils/ownership.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
 function fixturePath(name: string): string {
@@ -56,11 +58,61 @@ describe('multi-source read commands', () => {
       primarySourceId: 'good',
       sources: expect.arrayContaining([
         expect.objectContaining({ id: 'good', ok: true, freshness: 'path' }),
-        expect.objectContaining({ id: 'bad', ok: false, error: expect.any(String) }),
+        expect.objectContaining({
+          id: 'bad',
+          ok: false,
+          error: expect.any(String),
+          errorCode: 'catalogSourceResolutionFailed',
+        }),
       ]),
     });
     expect(result.configDigest).toMatch(/^sha256:/);
     expect(result.compositeDigest).toMatch(/^sha256:/);
+  });
+
+  it('keeps path compatibility codes in init and status JSON', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const incompatible = fixturePath('incompatible');
+    await createCatalogSnapshotFixture(incompatible, 'demo', '99.0.0');
+    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 1,
+        sources: [{ id: 'local', type: 'path', primary: true, path: incompatible }],
+      },
+      expectedDigest: initial.digest,
+      env: isolation.env,
+    });
+
+    const initOutput = createCapturedCliIo();
+    expect(await runCli(['init', '--json'], {
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      io: initOutput.io,
+      interactive: false,
+    })).toBe(1);
+    expect(JSON.parse(initOutput.readStdout())).toMatchObject({
+      sources: [expect.objectContaining({
+        id: 'local',
+        errorCode: 'explicitCatalogIncompatible',
+      })],
+    });
+
+    const statusOutput = createCapturedCliIo();
+    expect(await runCli(['status', '--json'], {
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      io: statusOutput.io,
+      interactive: false,
+    })).toBe(1);
+    expect(JSON.parse(statusOutput.readStdout())).toMatchObject({
+      catalog: {
+        sources: [expect.objectContaining({
+          id: 'local',
+          errorCode: 'explicitCatalogIncompatible',
+        })],
+      },
+    });
   });
 
   it('reports status schema 4 and continues after one source failure', async () => {
@@ -86,7 +138,11 @@ describe('multi-source read commands', () => {
         compositeDigest: expect.stringMatching(/^sha256:/),
         sources: expect.arrayContaining([
           expect.objectContaining({ id: 'good', freshness: 'path' }),
-          expect.objectContaining({ id: 'bad', error: expect.any(String) }),
+          expect.objectContaining({
+            id: 'bad',
+            error: expect.any(String),
+            errorCode: 'catalogSourceResolutionFailed',
+          }),
         ]),
       },
     });
@@ -98,6 +154,136 @@ describe('multi-source read commands', () => {
         state: 'absent',
       }),
     ]));
+  });
+
+  it('shows safe component inspection only for verbose status', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = fixturePath('verbose-components');
+    await fs.outputFile(
+      path.join(sourceRoot, 'plugins', 'demo', 'skills', 'review', 'SKILL.md'),
+      '---\nname: review\ndescription: Review fixture.\n---\n',
+    );
+    await fs.outputFile(
+      path.join(sourceRoot, 'plugins', 'demo', 'skills', 'review', 'agents', 'openai.yaml'),
+      'policy:\n  allow_implicit_invocation: true\n',
+    );
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', 'demo\n', (manifest) => {
+      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.skills = './skills';
+    });
+    const source = { id: 'team', type: 'path', primary: true, path: sourceRoot } as const;
+    const sourceIdentity = await calculateCatalogSourceIdentity(source);
+    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 1, sources: [source] },
+      expectedDigest: initial.digest,
+      env: isolation.env,
+    });
+    const skillsRoot = path.join(isolation.layout.fixtureCwd, '.agents', 'skills');
+    const skillRoot = path.join(skillsRoot, 'review');
+    await fs.copy(path.join(sourceRoot, 'plugins', 'demo', 'skills', 'review'), skillRoot);
+    await fs.remove(path.join(skillRoot, 'agents', 'openai.yaml'));
+    await writeSkillOwnerMarker({
+      skillRoot,
+      allowedRoot: skillsRoot,
+      identity: {
+        owner: 'agent-workflows',
+        sourceId: 'team',
+        sourceIdentity,
+        pluginId: 'team/demo',
+        plugin: 'demo',
+        artifactKey: 'review',
+        platform: 'codex',
+        scope: 'project',
+      },
+    });
+
+    const ordinary = createCapturedCliIo();
+    const ordinaryExit = await runCli([
+      'status', 'team/demo', '--platform', 'codex', '--scope', 'project', '--json',
+    ], {
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      io: ordinary.io,
+      interactive: false,
+    });
+    expect(JSON.parse(ordinary.readStdout())).toMatchObject({
+      targets: [expect.objectContaining({ state: 'partial', components: [] })],
+    });
+    expect(ordinaryExit).toBe(0);
+
+    const verbose = createCapturedCliIo();
+    expect(await runCli([
+      'status', 'team/demo', '--platform', 'codex', '--scope', 'project', '--verbose', '--json',
+    ], {
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      io: verbose.io,
+      interactive: false,
+    })).toBe(0);
+    const verbosePayload = JSON.parse(verbose.readStdout()) as {
+      targets: Array<{ components: Array<{ error?: { message: string } }> }>;
+    };
+    expect(verbosePayload).toMatchObject({
+      targets: [expect.objectContaining({
+        state: 'partial',
+        components: expect.arrayContaining([
+          expect.objectContaining({ key: 'review', state: 'partial' }),
+        ]),
+      })],
+    });
+    expect(JSON.stringify(verbosePayload.targets[0]!.components)).not.toContain(isolation.layout.rootDir);
+
+    const ordinaryHuman = createCapturedCliIo();
+    await runCli([
+      'status', 'team/demo', '--platform', 'codex', '--scope', 'project',
+    ], {
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      io: ordinaryHuman.io,
+      interactive: false,
+    });
+    expect(ordinaryHuman.readStdout()).not.toContain('component review');
+
+    const human = createCapturedCliIo();
+    await runCli([
+      'status', 'team/demo', '--platform', 'codex', '--scope', 'project', '--verbose',
+    ], {
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      io: human.io,
+      interactive: false,
+    });
+    expect(human.readStdout()).toContain('component review: partial');
+    expect(human.readStdout()).not.toContain(isolation.layout.rootDir);
+
+    await fs.outputFile(path.join(skillRoot, '.agent-workflows-owner.json'), '{ invalid');
+    const broken = createCapturedCliIo();
+    expect(await runCli([
+      'status', 'team/demo', '--platform', 'codex', '--scope', 'project', '--verbose', '--json',
+    ], {
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      io: broken.io,
+      interactive: false,
+    })).toBe(1);
+    const brokenPayload = JSON.parse(broken.readStdout()) as {
+      targets: Array<{ components: Array<{ error?: { message: string } }> }>;
+    };
+    expect(brokenPayload).toMatchObject({
+      targets: [expect.objectContaining({
+        state: 'partial',
+        components: expect.arrayContaining([expect.objectContaining({
+          key: 'review',
+          state: 'partial',
+          error: expect.objectContaining({
+            code: 'componentInspectionFailed',
+            message: expect.any(String),
+          }),
+        })]),
+      })],
+    });
+    expect(JSON.stringify(brokenPayload.targets[0]!.components)).not.toContain(isolation.layout.rootDir);
   });
 
   it('emits one init JSON object and a non-zero partial-failure exit code', async () => {

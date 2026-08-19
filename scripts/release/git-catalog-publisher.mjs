@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -8,10 +9,29 @@ import { loadCatalogModules } from './common.mjs';
 
 const execFileAsync = promisify(execFile);
 
+const SAFE_GIT_CONFIG_ARGS = [
+  '-c', `core.hooksPath=${os.devNull}`,
+  '-c', 'core.autocrlf=false',
+  '-c', 'core.eol=lf',
+  '-c', `core.attributesFile=${os.devNull}`,
+  '-c', `core.excludesFile=${os.devNull}`,
+];
+
 export const CATALOG_CHANNEL_REFS = {
   latest: 'refs/heads/catalog/latest',
   beta: 'refs/heads/catalog/beta',
 };
+// This internal branch is a remote mutex, not release history. A publisher creates it
+// only when absent, verifies its unique owner commit, and deletes it without force.
+// The lease spans history read through the final tag/channel transition, so beta,
+// latest, bootstrap, tag-first recovery, and promotion cannot stage from split history.
+// Tag-first also atomically creates the persistent pending ref below with its immutable
+// tag. It blocks every other catalog version across failed CLI-publish retries, and
+// promotion atomically advances the channel and deletes that guard without fallback.
+export const CATALOG_PUBLICATION_LOCK_REF =
+  'refs/heads/aw-release/publication-lock';
+export const CATALOG_TAG_FIRST_PENDING_REF =
+  'refs/heads/aw-release/tag-first-pending';
 export const OFFICIAL_CATALOG_PUBLISH_REMOTE =
   'https://github.com/lesliechan721-arch/agent-workflow.git';
 
@@ -61,16 +81,19 @@ function gitEnvironment(env = process.env) {
     ...next,
     GIT_TERMINAL_PROMPT: '0',
     GCM_INTERACTIVE: 'Never',
+    GIT_ATTR_NOSYSTEM: '1',
   };
 }
 
 export async function runCatalogGit(args, options = {}) {
   const execute = options.execFile ?? execFileAsync;
   try {
-    const result = await execute('git', args, {
+    const result = await execute('git', [...SAFE_GIT_CONFIG_ARGS, ...args], {
       cwd: options.cwd,
       env: gitEnvironment(options.env),
       maxBuffer: 16 * 1024 * 1024,
+      timeout: options.timeoutMs ?? 2 * 60 * 1000,
+      killSignal: 'SIGTERM',
     });
     return {
       stdout: String(result?.stdout ?? ''),
@@ -94,6 +117,7 @@ async function withTemporaryRepository(callback, options = {}) {
     await fs.mkdir(repositoryRoot);
     const git = (args, gitOptions = {}) => (options.runGit ?? runCatalogGit)(args, {
       cwd: repositoryRoot,
+      ...(options.env ? { env: options.env } : {}),
       ...gitOptions,
     });
     await git(['init', '--quiet']);
@@ -116,13 +140,101 @@ function parseLsRemote(stdout) {
   return refs;
 }
 
+function delay(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function isPublicationLeaseContention(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes('aw-release/publication-lock')
+    && (message.includes('fetch first') || message.includes('non-fast-forward'));
+}
+
+async function readRemoteRef(git, remoteUrl, ref) {
+  const { stdout } = await git(['ls-remote', remoteUrl, ref]);
+  return parseLsRemote(stdout).get(ref) ?? null;
+}
+
+export async function withCatalogPublicationLease(remoteUrlInput, callback, options = {}) {
+  const remoteUrl = assertSafeRemoteUrl(remoteUrlInput ?? OFFICIAL_CATALOG_PUBLISH_REMOTE);
+  const timeoutMs = options.publicationLockTimeoutMs ?? 30_000;
+  const pollIntervalMs = options.publicationLockPollIntervalMs ?? 100;
+  const deadline = Date.now() + timeoutMs;
+  return withTemporaryRepository(async ({ git }) => {
+    await listRemoteRefs(git, remoteUrl, '__publication-lock-probe__');
+    await git(['checkout', '--quiet', '--orphan', 'catalog-publication-lock']);
+    const ownerToken = crypto.randomUUID();
+    await git([
+      '-c', 'user.name=Agent Workflows Catalog Publisher',
+      '-c', 'user.email=catalog-publisher@agent-workflows.invalid',
+      'commit', '--quiet', '--allow-empty', '-m', `Catalog publication lease ${ownerToken}`,
+    ]);
+    const { stdout: ownerOutput } = await git(['rev-parse', 'HEAD']);
+    const ownerCommit = ownerOutput.trim();
+    while (true) {
+      try {
+        await git(['push', remoteUrl, `${ownerCommit}:${CATALOG_PUBLICATION_LOCK_REF}`]);
+        break;
+      } catch (error) {
+        const existing = await readRemoteRef(git, remoteUrl, CATALOG_PUBLICATION_LOCK_REF);
+        if (!existing && !isPublicationLeaseContention(error)) throw error;
+        if (Date.now() >= deadline) {
+          throw new Error(
+            `Timed out after ${timeoutMs}ms waiting for catalog publication lease ${CATALOG_PUBLICATION_LOCK_REF}. ` +
+            'A stale lease requires offline operator inspection.',
+            { cause: error },
+          );
+        }
+        await delay(pollIntervalMs);
+      }
+    }
+    const acquired = await readRemoteRef(git, remoteUrl, CATALOG_PUBLICATION_LOCK_REF);
+    if (acquired !== ownerCommit) {
+      throw new Error('Catalog publication lease owner changed immediately after acquisition.');
+    }
+    let callbackError = null;
+    try {
+      return await callback({ ref: CATALOG_PUBLICATION_LOCK_REF, ownerCommit, remoteUrl });
+    } catch (error) {
+      callbackError = error;
+      throw error;
+    } finally {
+      try {
+        const current = await readRemoteRef(git, remoteUrl, CATALOG_PUBLICATION_LOCK_REF);
+        if (current !== ownerCommit) {
+          throw new Error('Catalog publication lease owner changed before release.');
+        }
+        await git(['push', remoteUrl, `:${CATALOG_PUBLICATION_LOCK_REF}`]);
+      } catch (releaseError) {
+        if (callbackError) {
+          throw new AggregateError(
+            [callbackError, releaseError],
+            `${callbackError.message} (catalog publication lease release also failed: ${releaseError.message})`,
+            { cause: callbackError },
+          );
+        }
+        throw releaseError;
+      }
+    }
+  }, options);
+}
+
 async function listRemoteRefs(git, remoteUrl, catalogVersion) {
+  const { stdout: expandedRemoteOutput } = await git([
+    'ls-remote', '--get-url', remoteUrl,
+  ]);
+  if (expandedRemoteOutput.trim() !== remoteUrl) {
+    throw new Error(
+      'Catalog publish remote URL was rewritten by Git configuration; refusing to contact a different remote.',
+    );
+  }
   const tagRef = `refs/tags/catalog-v${catalogVersion}`;
   const { stdout } = await git([
     'ls-remote',
     remoteUrl,
     CATALOG_CHANNEL_REFS.latest,
     CATALOG_CHANNEL_REFS.beta,
+    CATALOG_TAG_FIRST_PENDING_REF,
     tagRef,
     `${tagRef}^{}`,
   ]);
@@ -140,6 +252,7 @@ async function listRemoteRefs(git, remoteUrl, catalogVersion) {
       latest: refs.get(CATALOG_CHANNEL_REFS.latest) ?? null,
       beta: refs.get(CATALOG_CHANNEL_REFS.beta) ?? null,
     },
+    pending: refs.get(CATALOG_TAG_FIRST_PENDING_REF) ?? null,
     tag: tagObject ? { ref: tagRef, objectId: tagObject, commit: peeledTagCommit } : null,
   };
 }
@@ -230,12 +343,19 @@ export async function readCatalogPublicationHistory(options) {
       }
       tag = { ...remote.tag, ...validation };
     }
+    if (remote.pending && (!tag || remote.pending !== tag.commit)) {
+      throw new Error(
+        `Catalog tag-first publication is pending at ${CATALOG_TAG_FIRST_PENDING_REF}. ` +
+        'Only recovery of that exact catalog version may continue.',
+      );
+    }
     return {
       remoteUrl,
       catalogVersion: options.catalogVersion,
       mode: options.mode,
       channels,
       tag,
+      pending: remote.pending,
       mergedLedger: catalogModules.pluginStaging.mergePluginReleaseLedgers(
         channels.latest?.ledger,
         channels.beta?.ledger,
@@ -256,6 +376,9 @@ function assertUnchangedRemote(expected, actual) {
   if (expectedTag !== actualTag) {
     throw new Error('Catalog version tag changed after release history was read.');
   }
+  if ((expected.pending ?? null) !== actual.pending) {
+    throw new Error('Catalog tag-first pending state changed after release history was read.');
+  }
 }
 
 async function clearRepositoryWorktree(repositoryRoot) {
@@ -266,7 +389,65 @@ async function clearRepositoryWorktree(repositoryRoot) {
   }
 }
 
-function assertCandidate(history, validation) {
+function normalizedLedgerJson(ledger) {
+  return JSON.stringify(ledger);
+}
+
+async function listPublicationTree(root, relativeRoot = '') {
+  const result = [];
+  const absoluteRoot = path.join(root, relativeRoot);
+  for (const entry of (await fs.readdir(absoluteRoot, { withFileTypes: true }))
+    .sort((left, right) => left.name.localeCompare(right.name))) {
+    if (relativeRoot === '' && entry.name === '.git') continue;
+    const relativePath = relativeRoot ? `${relativeRoot}/${entry.name}` : entry.name;
+    const absolutePath = path.join(root, relativePath);
+    const stats = await fs.lstat(absolutePath);
+    if (stats.isSymbolicLink() || (!stats.isDirectory() && !stats.isFile())) {
+      throw new Error(`Catalog publication tree contains unsupported path ${relativePath}.`);
+    }
+    if (stats.isDirectory()) {
+      result.push({ path: relativePath, kind: 'directory' });
+      result.push(...await listPublicationTree(root, relativePath));
+      continue;
+    }
+    result.push({
+      path: relativePath,
+      kind: 'file',
+      executable: Boolean(stats.mode & 0o111),
+      contents: await fs.readFile(absolutePath),
+    });
+  }
+  return result;
+}
+
+async function assertPublicationTreesEqual(expectedRoot, actualRoot) {
+  const [expected, actual] = await Promise.all([
+    listPublicationTree(expectedRoot),
+    listPublicationTree(actualRoot),
+  ]);
+  if (expected.length !== actual.length) {
+    throw new Error('Catalog commit tree does not match the complete staged publication tree.');
+  }
+  for (let index = 0; index < expected.length; index += 1) {
+    const expectedEntry = expected[index];
+    const actualEntry = actual[index];
+    if (
+      expectedEntry.path !== actualEntry.path
+      || expectedEntry.kind !== actualEntry.kind
+      || expectedEntry.executable !== actualEntry.executable
+      || (
+        expectedEntry.kind === 'file'
+        && !expectedEntry.contents.equals(actualEntry.contents)
+      )
+    ) {
+      throw new Error(
+        `Catalog commit tree differs from staged bytes at ${expectedEntry.path}.`,
+      );
+    }
+  }
+}
+
+function assertCandidate(history, validation, ledger) {
   const manifest = validation.manifest;
   if (manifest.catalogVersion !== history.catalogVersion || manifest.channel !== history.mode) {
     throw new Error(
@@ -291,6 +472,14 @@ function assertCandidate(history, validation) {
   if (history.tag && validation.snapshotDigest !== history.tag.snapshotDigest) {
     throw new Error(`Catalog tag refs/tags/catalog-v${manifest.catalogVersion} maps to different runtime content.`);
   }
+  if (
+    history.tag
+    && normalizedLedgerJson(ledger) !== normalizedLedgerJson(history.tag.ledger)
+  ) {
+    throw new Error(
+      `Catalog tag refs/tags/catalog-v${manifest.catalogVersion} release ledger differs; use a new catalogVersion.`,
+    );
+  }
 }
 
 async function prepareLocalPublication(history, stagedRoot, options = {}) {
@@ -299,9 +488,9 @@ async function prepareLocalPublication(history, stagedRoot, options = {}) {
     JSON.parse(await fs.readFile(path.join(stagedRoot, 'plugin-release-ledger.json'), 'utf8')),
     validation.manifest,
   );
-  assertCandidate(history, validation);
+  assertCandidate(history, validation, ledger);
 
-  return withTemporaryRepository(async ({ repositoryRoot, git }) => {
+  return withTemporaryRepository(async ({ root, repositoryRoot, git }) => {
     const actual = await listRemoteRefs(git, history.remoteUrl, history.catalogVersion);
     assertUnchangedRemote(history, actual);
     for (const mode of ['latest', 'beta']) {
@@ -343,6 +532,21 @@ async function prepareLocalPublication(history, stagedRoot, options = {}) {
     ]);
     const { stdout } = await git(['rev-parse', 'HEAD']);
     const commit = stdout.trim();
+    const verificationRoot = await fs.mkdtemp(path.join(root, 'commit-verification-'));
+    await git(['read-tree', commit]);
+    await git(['checkout-index', '--all', '--force', '--prefix', `${verificationRoot}${path.sep}`]);
+    const committed = await validateSnapshotAndLedger(
+      verificationRoot,
+      history.mode,
+      history.catalogModules,
+    );
+    if (
+      committed.snapshotDigest !== validation.snapshotDigest
+      || normalizedLedgerJson(committed.ledger) !== normalizedLedgerJson(ledger)
+    ) {
+      throw new Error('Materialized catalog commit failed schema 3 or release ledger verification.');
+    }
+    await assertPublicationTreesEqual(stagedRoot, verificationRoot);
     await git([
       '-c', 'user.name=Agent Workflows Catalog Publisher',
       '-c', 'user.email=catalog-publisher@agent-workflows.invalid',
@@ -365,7 +569,7 @@ async function prepareLocalPublication(history, stagedRoot, options = {}) {
   }
 }
 
-export async function publishStagedCatalog(history, stagedRoot, options = {}) {
+async function publishStagedCatalogUnderLease(history, stagedRoot, options) {
   const publicationMode = options.publicationMode ?? 'atomic';
   return prepareLocalPublication(history, stagedRoot, {
     ...options,
@@ -377,12 +581,33 @@ export async function publishStagedCatalog(history, stagedRoot, options = {}) {
       }
       if (publicationMode === 'tag') {
         if (!context.existingTag) {
-          await context.git(['push', history.remoteUrl, `${context.tagRef}:${context.tagRef}`]);
+          try {
+            await context.git([
+              'push', '--atomic', history.remoteUrl,
+              `${context.tagRef}:${context.tagRef}`,
+              `${context.commit}:${CATALOG_TAG_FIRST_PENDING_REF}`,
+            ]);
+          } catch (error) {
+            throw new Error(
+              'Atomic tag-first catalog publication failed. The publisher did not fall back to sequential pushes.',
+              { cause: error },
+            );
+          }
+        } else if (!history.pending) {
+          await context.git([
+            'push', history.remoteUrl,
+            `${context.commit}:${CATALOG_TAG_FIRST_PENDING_REF}`,
+          ]);
         }
         return { ...context, mode: history.mode, idempotent: context.existingTag, promoted: false };
       }
       if (publicationMode !== 'atomic') {
         throw new Error(`Unknown catalog publication mode ${JSON.stringify(publicationMode)}.`);
+      }
+      if (history.pending) {
+        throw new Error(
+          'Catalog tag-first publication is pending; use the combined release or fixed promotion recovery entry point.',
+        );
       }
       const refspecs = [`${context.commit}:${channelRef}`];
       if (!context.existingTag) refspecs.push(`${context.tagRef}:${context.tagRef}`);
@@ -399,7 +624,21 @@ export async function publishStagedCatalog(history, stagedRoot, options = {}) {
   });
 }
 
-export async function promoteCatalogTag(options) {
+export async function publishStagedCatalog(history, stagedRoot, options = {}) {
+  if (options.publicationLease) {
+    return publishStagedCatalogUnderLease(history, stagedRoot, options);
+  }
+  return withCatalogPublicationLease(
+    history.remoteUrl,
+    (publicationLease) => publishStagedCatalogUnderLease(history, stagedRoot, {
+      ...options,
+      publicationLease,
+    }),
+    options,
+  );
+}
+
+async function promoteCatalogTagUnderLease(options) {
   const history = await readCatalogPublicationHistory(options);
   if (!history.tag) {
     throw new Error(`Catalog tag refs/tags/catalog-v${options.catalogVersion} does not exist.`);
@@ -428,6 +667,13 @@ export async function promoteCatalogTag(options) {
     );
   }
   if (current?.commit === history.tag.commit) {
+    if (history.pending) {
+      await withTemporaryRepository(async ({ git }) => {
+        const actual = await listRemoteRefs(git, history.remoteUrl, history.catalogVersion);
+        assertUnchangedRemote(history, actual);
+        await git(['push', history.remoteUrl, `:${CATALOG_TAG_FIRST_PENDING_REF}`]);
+      }, options);
+    }
     return { mode: options.mode, commit: history.tag.commit, promoted: true, idempotent: true };
   }
   return withTemporaryRepository(async ({ git }) => {
@@ -447,9 +693,38 @@ export async function promoteCatalogTag(options) {
         throw new Error('Catalog promotion is not a fast-forward.', { cause: error });
       }
     }
-    await git(['push', history.remoteUrl, `${history.tag.commit}:${CATALOG_CHANNEL_REFS[options.mode]}`]);
+    const promotionRefspecs = [
+      `${history.tag.commit}:${CATALOG_CHANNEL_REFS[options.mode]}`,
+    ];
+    if (history.pending) promotionRefspecs.push(`:${CATALOG_TAG_FIRST_PENDING_REF}`);
+    try {
+      await git([
+        'push',
+        ...(history.pending ? ['--atomic'] : []),
+        history.remoteUrl,
+        ...promotionRefspecs,
+      ]);
+    } catch (error) {
+      if (history.pending) {
+        throw new Error(
+          'Atomic catalog promotion and tag-first pending-state cleanup failed. The publisher did not fall back.',
+          { cause: error },
+        );
+      }
+      throw error;
+    }
     return { mode: options.mode, commit: history.tag.commit, promoted: true, idempotent: false };
   }, options);
+}
+
+export async function promoteCatalogTag(options) {
+  if (options.publicationLease) return promoteCatalogTagUnderLease(options);
+  const remoteUrl = options.remoteUrl ?? OFFICIAL_CATALOG_PUBLISH_REMOTE;
+  return withCatalogPublicationLease(
+    remoteUrl,
+    (publicationLease) => promoteCatalogTagUnderLease({ ...options, publicationLease }),
+    options,
+  );
 }
 
 export function catalogPromotionRecoveryCommand(mode, catalogVersion) {

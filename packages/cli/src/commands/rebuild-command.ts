@@ -54,6 +54,11 @@ import {
   readLifecycleActiveSnapshot,
   removeLifecycleActiveSnapshot,
 } from '../utils/lifecycle-active-store.js';
+import {
+  withActiveMarketplaceLifecycleLease,
+  withActiveMarketplaceRuntimeLease,
+} from '../utils/active-marketplace-runtime-lock.js';
+import { cleanupOrphanNamespacedMarketplaceRoot } from '../utils/orphan-marketplace-cleanup.js';
 
 export type RebuildCommandRuntime = Partial<RebuildExecutionContext> & {
   catalogResolution?: CatalogResolution;
@@ -848,6 +853,14 @@ async function cleanupOrphanLifecycleOnly(options: {
         failures: [],
       });
     }
+    await withActiveMarketplaceLifecycleLease(options.env, () =>
+      withActiveMarketplaceRuntimeLease(options.env, () =>
+        cleanupOrphanNamespacedMarketplaceRoot({
+          sourceId: options.selector.sourceId!,
+          sourceIdentity,
+          cwd: options.commandOptions.cwd,
+          env: options.env,
+        })));
     return leaseSafeRebuildResult({
       platforms: [...new Set(results.map((result) => result.target.platform))],
       plugins: [options.selector.pluginName],

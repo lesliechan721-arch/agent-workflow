@@ -2,16 +2,23 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
+  assertCurrentReleaseHead,
   assertVersionKind,
+  createReleaseSnapshotIdentity,
   readCliPackageJson,
+  resolveCliPublicationGate,
   resolvePublishedCliVersion,
+  resolveReleaseHead,
   runCommand,
+  withReleaseBuildSnapshot,
 } from './common.mjs';
 import {
   catalogPromotionRecoveryCommand,
+  OFFICIAL_CATALOG_PUBLISH_REMOTE,
   promoteCatalogTag,
   publishStagedCatalog,
   readCatalogPublicationHistory,
+  withCatalogPublicationLease,
 } from './git-catalog-publisher.mjs';
 import { publishCli } from './publish-cli.mjs';
 import { stageCatalogRelease } from './stage-catalog.mjs';
@@ -48,24 +55,6 @@ export function parseArgs(argv) {
   return { mode, cliVersion, catalogVersion };
 }
 
-function resolveCliPublicationState(mode, candidateVersion, publishedVersion, compare) {
-  const relation = compare(candidateVersion, publishedVersion);
-  if (relation < 0) {
-    throw new Error(
-      `CLI candidate ${candidateVersion} must be higher than the published ${mode} CLI ${publishedVersion}.`,
-    );
-  }
-  if (relation === 0 && candidateVersion !== publishedVersion) {
-    throw new Error(
-      `CLI candidate ${candidateVersion} has the same SemVer precedence but a different version string ` +
-      `from the published ${mode} CLI ${publishedVersion}.`,
-    );
-  }
-  return relation === 0
-    ? { status: 'already-published', version: candidateVersion }
-    : null;
-}
-
 export async function publishRelease(argv = process.argv.slice(2), options = {}) {
   const { mode, cliVersion, catalogVersion } = parseArgs(argv);
   const cliPackageJson = await (options.readCliPackageJson ?? readCliPackageJson)();
@@ -76,101 +65,140 @@ export async function publishRelease(argv = process.argv.slice(2), options = {})
     );
   }
   assertVersionKind(currentCliVersion, mode === 'beta' ? 'prerelease' : 'stable');
-  await (options.runCommand ?? runCommand)('pnpm', ['run', 'release:verify']);
-  const history = await (options.readCatalogPublicationHistory
-    ?? readCatalogPublicationHistory)({
-    mode,
-    catalogVersion,
-    ...(options.remoteUrl ? { remoteUrl: options.remoteUrl } : {}),
-    ...(options.catalogModules ? { catalogModules: options.catalogModules } : {}),
-  });
-  const staged = await (options.stageCatalogRelease ?? stageCatalogRelease)([
-    '--catalog-version',
-    catalogVersion,
-  ], {
-    previousReleaseLedger: history.mergedLedger,
-  });
-  const publishedCliVersion = await (options.resolvePublishedCliVersion
-    ?? resolvePublishedCliVersion)(mode);
-  const compare = history.catalogModules.pluginStaging.compareStrictSemVer;
-  const skippedCli = resolveCliPublicationState(
-    mode,
-    currentCliVersion,
-    publishedCliVersion,
-    compare,
-  );
-  const minCliVersion = staged.manifest.compatibility.aw.minVersion;
-  const requiresCandidateCli = compare(publishedCliVersion, minCliVersion) < 0;
-  const resumeTagFirst = Boolean(
-    history.tag
-    && history.channels[mode]?.commit !== history.tag.commit,
-  );
-
-  if (!requiresCandidateCli && !resumeTagFirst) {
-    const catalog = await (options.publishStagedCatalog ?? publishStagedCatalog)(
-      history,
-      staged.outputRoot,
-      { ...options.publisherOptions, publicationMode: 'atomic' },
+  const snapshotRunner = options.withReleaseBuildSnapshot ?? withReleaseBuildSnapshot;
+  return snapshotRunner(async (snapshot) => {
+    const headCommit = await (options.resolveReleaseHead ?? resolveReleaseHead)();
+    const releaseIdentity = createReleaseSnapshotIdentity(snapshot, headCommit);
+    const assertHead = () => (options.assertCurrentReleaseHead ?? assertCurrentReleaseHead)(
+      releaseIdentity,
     );
-    try {
-      const cli = skippedCli
-        ? skippedCli
-        : await (options.publishCli ?? publishCli)([mode], {
-          expectedVersion: currentCliVersion,
-          skipVerify: true,
+    await (options.runCommand ?? runCommand)('pnpm', ['run', 'release:verify']);
+    const remoteUrl = options.remoteUrl ?? OFFICIAL_CATALOG_PUBLISH_REMOTE;
+    return (options.withCatalogPublicationLease ?? withCatalogPublicationLease)(
+      remoteUrl,
+      async (publicationLease) => {
+        const history = await (options.readCatalogPublicationHistory
+          ?? readCatalogPublicationHistory)({
+          mode,
+          catalogVersion,
+          remoteUrl,
+          ...(options.catalogModules ? { catalogModules: options.catalogModules } : {}),
         });
-      return { path: 'catalog-first', catalog, cli };
-    } catch (error) {
-      throw new Error(
-        `Catalog ${catalogVersion} (${mode}) is published, but CLI ${currentCliVersion} publication failed. ` +
-        'Immutable catalog refs were not rolled back.',
-        { cause: error },
-      );
-    }
-  }
+        const staged = await (options.stageCatalogRelease ?? stageCatalogRelease)([
+          '--catalog-version',
+          catalogVersion,
+        ], {
+          previousReleaseLedger: history.mergedLedger,
+          snapshot,
+          releaseIdentity,
+        });
+        const publishedCliVersion = await (options.resolvePublishedCliVersion
+          ?? resolvePublishedCliVersion)(mode);
+        const compare = history.catalogModules.pluginStaging.compareStrictSemVer;
+        const cliGate = resolveCliPublicationGate({
+          mode,
+          candidateVersion: currentCliVersion,
+          publishedVersion: publishedCliVersion,
+          compare,
+        });
+        const skippedCli = cliGate.status === 'already-published' ? cliGate : null;
+        const minCliVersion = staged.manifest.compatibility.aw.minVersion;
+        const requiresCandidateCli = compare(publishedCliVersion, minCliVersion) < 0;
+        const resumeTagFirst = Boolean(
+          history.tag
+          && history.channels[mode]?.commit !== history.tag.commit,
+        );
 
-  if (compare(currentCliVersion, minCliVersion) < 0) {
-    throw new Error(
-      `Catalog ${catalogVersion} requires aw >= ${minCliVersion}, but the CLI candidate is ${currentCliVersion}.`,
+        await assertHead();
+        if (!requiresCandidateCli && !resumeTagFirst) {
+          const catalog = await (options.publishStagedCatalog ?? publishStagedCatalog)(
+            history,
+            staged.outputRoot,
+            {
+              ...options.publisherOptions,
+              publicationLease,
+              publicationMode: 'atomic',
+            },
+          );
+          try {
+            await assertHead();
+            const cli = skippedCli
+              ? skippedCli
+              : await (options.publishCli ?? publishCli)([mode], {
+                expectedVersion: currentCliVersion,
+                publishedVersion: publishedCliVersion,
+                compareSemVer: compare,
+                skipVerify: true,
+                snapshot,
+                releaseIdentity,
+              });
+            return { path: 'catalog-first', catalog, cli, releaseIdentity };
+          } catch (error) {
+            throw new Error(
+              `Catalog ${catalogVersion} (${mode}) is published, but CLI ${currentCliVersion} publication failed. ` +
+              'Immutable catalog refs were not rolled back.',
+              { cause: error },
+            );
+          }
+        }
+
+        if (compare(currentCliVersion, minCliVersion) < 0) {
+          throw new Error(
+            `Catalog ${catalogVersion} requires aw >= ${minCliVersion}, but the CLI candidate is ${currentCliVersion}.`,
+          );
+        }
+        const catalog = await (options.publishStagedCatalog ?? publishStagedCatalog)(
+          history,
+          staged.outputRoot,
+          {
+            ...options.publisherOptions,
+            publicationLease,
+            publicationMode: 'tag',
+          },
+        );
+        let cli = skippedCli;
+        if (!skippedCli) {
+          try {
+            await assertHead();
+            cli = await (options.publishCli ?? publishCli)([mode], {
+              expectedVersion: currentCliVersion,
+              publishedVersion: publishedCliVersion,
+              compareSemVer: compare,
+              skipVerify: true,
+              snapshot,
+              releaseIdentity,
+            });
+          } catch (error) {
+            throw new Error(
+              `Catalog tag refs/tags/catalog-v${catalogVersion} is published, but CLI ${currentCliVersion} publication failed. ` +
+              'The channel was not promoted; rerun the same combined release command after fixing the CLI failure.',
+              { cause: error },
+            );
+          }
+        }
+        try {
+          await assertHead();
+          const promotion = await (options.promoteCatalogTag ?? promoteCatalogTag)({
+            mode,
+            catalogVersion,
+            currentCliVersion,
+            remoteUrl,
+            publicationLease,
+            ...(options.catalogModules ? { catalogModules: options.catalogModules } : {}),
+          });
+          return { path: 'tag-first', catalog, cli, promotion, releaseIdentity };
+        } catch (error) {
+          const recoveryCommand = catalogPromotionRecoveryCommand(mode, catalogVersion);
+          throw new Error(
+            `CLI ${currentCliVersion} and catalog tag refs/tags/catalog-v${catalogVersion} are published, ` +
+            `but channel promotion failed. Recover with: ${recoveryCommand}`,
+            { cause: error },
+          );
+        }
+      },
+      options.publisherOptions,
     );
-  }
-  const catalog = await (options.publishStagedCatalog ?? publishStagedCatalog)(
-    history,
-    staged.outputRoot,
-    { ...options.publisherOptions, publicationMode: 'tag' },
-  );
-  let cli = skippedCli;
-  if (!skippedCli) {
-    try {
-      cli = await (options.publishCli ?? publishCli)([mode], {
-        expectedVersion: currentCliVersion,
-        skipVerify: true,
-      });
-    } catch (error) {
-      throw new Error(
-        `Catalog tag refs/tags/catalog-v${catalogVersion} is published, but CLI ${currentCliVersion} publication failed. ` +
-        'The channel was not promoted; rerun the same combined release command after fixing the CLI failure.',
-        { cause: error },
-      );
-    }
-  }
-  try {
-    const promotion = await (options.promoteCatalogTag ?? promoteCatalogTag)({
-      mode,
-      catalogVersion,
-      currentCliVersion,
-      ...(options.remoteUrl ? { remoteUrl: options.remoteUrl } : {}),
-      ...(options.catalogModules ? { catalogModules: options.catalogModules } : {}),
-    });
-    return { path: 'tag-first', catalog, cli, promotion };
-  } catch (error) {
-    const recoveryCommand = catalogPromotionRecoveryCommand(mode, catalogVersion);
-    throw new Error(
-      `CLI ${currentCliVersion} and catalog tag refs/tags/catalog-v${catalogVersion} are published, ` +
-      `but channel promotion failed. Recover with: ${recoveryCommand}`,
-      { cause: error },
-    );
-  }
+  }, options.snapshotOptions);
 }
 
 export async function main(argv = process.argv.slice(2)) {

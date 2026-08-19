@@ -31,6 +31,7 @@ import {
   type ProcessLockLease,
 } from './process-lock.js';
 import {
+  canonicalizePathThroughExistingAncestor,
   getClaudeHome,
   getCodexHome,
   resolveAwHome,
@@ -284,20 +285,6 @@ async function resolveCanonicalProjectRoot(cwd: string): Promise<string> {
   } catch {
     return path.resolve(repoRoot);
   }
-}
-
-async function canonicalizePathThroughExistingAncestor(inputPath: string): Promise<string> {
-  let current = path.resolve(inputPath);
-  const missingSegments: string[] = [];
-  while (!await fs.pathExists(current)) {
-    const parent = path.dirname(current);
-    if (parent === current) {
-      return path.resolve(inputPath);
-    }
-    missingSegments.unshift(path.basename(current));
-    current = parent;
-  }
-  return path.join(await fs.realpath(current), ...missingSegments);
 }
 
 function assertWritableStorePath(targetPath: string): string {
@@ -1530,9 +1517,10 @@ export async function leaseLifecycleActiveSnapshot(options: {
   cwd: string;
   loadPlugin: LifecycleActivePluginLoader;
   env?: NodeJS.ProcessEnv;
+  lifecycleLeaseHeld?: boolean;
 }): Promise<ReadLifecycleActiveSnapshot | null> {
   const target = await resolveLifecycleActiveTarget(options);
-  const lock = await acquireTargetLock(target);
+  const lock = await acquireTargetLock(target, options.lifecycleLeaseHeld);
   let snapshot: ReadLifecycleActiveSnapshot | null;
   try {
     await assertExistingPathChainHasNoSymlinks(target.awHome, target.activeRoot);

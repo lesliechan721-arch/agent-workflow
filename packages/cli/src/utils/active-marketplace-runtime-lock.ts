@@ -1,10 +1,12 @@
 import crypto from 'node:crypto';
 import path from 'node:path';
 
-import fs from 'fs-extra';
-
 import { acquireProcessLock, type ProcessLockLease } from './process-lock.js';
-import { resolveAwHome } from './state-paths.js';
+import {
+  canonicalizePathThroughExistingAncestorSync,
+  ensureRegularDirectoryPath,
+  resolveAwHome,
+} from './state-paths.js';
 import { assertTestWritablePath } from './test-path-fence.js';
 
 const ACTIVE_MARKETPLACE_RUNTIME_LOCK_TIMEOUT_MS = 600_000;
@@ -30,9 +32,9 @@ export function setActiveMarketplaceLifecycleBeforeAcquireHookForTests(
 export function resolveActiveMarketplaceRuntimeCoordinationRoot(
   env: NodeJS.ProcessEnv = process.env,
 ): string {
-  const awHome = resolveAwHome(env);
+  const awHome = canonicalizePathThroughExistingAncestorSync(resolveAwHome(env));
   const identity = crypto.createHash('sha256')
-    .update(path.resolve(awHome))
+    .update(awHome)
     .digest('hex')
     .slice(0, 16);
   return assertTestWritablePath(
@@ -56,7 +58,7 @@ export async function acquireActiveMarketplaceRuntimeLease(
 export async function acquireActiveMarketplaceRuntimeLeaseAtRoot(
   coordinationRoot: string,
 ): Promise<ProcessLockLease> {
-  await fs.ensureDir(coordinationRoot);
+  await ensureRegularDirectoryPath(coordinationRoot, 'Active marketplace coordination root');
   return acquireProcessLock({
     lockPath: path.join(coordinationRoot, ACTIVE_MARKETPLACE_RUNTIME_LOCK_FILE),
     timeoutMs: ACTIVE_MARKETPLACE_RUNTIME_LOCK_TIMEOUT_MS,
@@ -73,7 +75,7 @@ export async function acquireActiveMarketplaceLifecycleLease(
 export async function acquireActiveMarketplaceLifecycleLeaseAtRoot(
   coordinationRoot: string,
 ): Promise<ProcessLockLease> {
-  await fs.ensureDir(coordinationRoot);
+  await ensureRegularDirectoryPath(coordinationRoot, 'Active marketplace coordination root');
   await activeMarketplaceLifecycleBeforeAcquireHookForTests?.(coordinationRoot);
   return acquireProcessLock({
     lockPath: path.join(coordinationRoot, 'lifecycle-state.lock'),

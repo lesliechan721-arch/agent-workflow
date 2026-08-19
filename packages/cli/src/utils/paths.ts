@@ -13,12 +13,16 @@ import type { PlatformName, Scope } from '../types.js';
 import { validateBundleLayout } from './bundle-layout.js';
 import { assertTestWritablePath } from './test-path-fence.js';
 import {
+  canonicalizePathThroughExistingAncestorSync,
   getClaudeHome,
   getCodexHome,
   resolveAwHome,
   resolveRepoRootSync,
 } from './state-paths.js';
 export {
+  canonicalizePathThroughExistingAncestor,
+  canonicalizePathThroughExistingAncestorSync,
+  ensureRegularDirectoryPath,
   getClaudeHome,
   getCodexHome,
   resolveAwHome,
@@ -170,8 +174,8 @@ export function resolveCurrentCatalogCacheSelectorIndexPath(
 export function resolveCurrentCatalogCacheStagingDir(
   env: NodeJS.ProcessEnv = process.env,
 ): string {
-  const awHome = resolveAwHome(env);
-  const identity = crypto.createHash('sha256').update(path.resolve(awHome)).digest('hex').slice(0, 16);
+  const awHome = canonicalizePathThroughExistingAncestorSync(resolveAwHome(env));
+  const identity = crypto.createHash('sha256').update(awHome).digest('hex').slice(0, 16);
   return assertTestWritablePath(
     path.join(
       path.dirname(awHome),

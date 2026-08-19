@@ -2097,6 +2097,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
           platform: rawOptions.platform,
           scope: rawOptions.scope,
           json: rawOptions.json,
+          verbose: rawOptions.verbose,
         }),
       );
       commandExitState.exitCode = result.hasErrors ? 1 : 0;
@@ -2170,7 +2171,7 @@ export async function runCli(
           ...toCliDiagnosticsOptions('console', bareConsoleOptions, options.diagnostics),
           metadata: {
             ...options.diagnostics?.metadata,
-            rawArgv: argv,
+            argCount: argv.length,
           },
         },
       });
@@ -2187,7 +2188,7 @@ export async function runCli(
         ...options.diagnostics,
         metadata: {
           ...options.diagnostics?.metadata,
-          rawArgv: argv,
+          argCount: argv.length,
         },
       },
     });

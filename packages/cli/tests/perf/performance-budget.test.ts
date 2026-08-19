@@ -1,6 +1,8 @@
+import { execFile, spawn } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
+import { promisify } from 'node:util';
 
 import fs from 'fs-extra';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -10,13 +12,23 @@ import { createCommandExecutionContext } from '../../src/commands/runtime.js';
 import { loadConsoleItemsResult } from '../../src/commands/status.js';
 import { statusCommandV4 } from '../../src/commands/status-v4.js';
 import { readCatalogSourcesConfigSnapshot } from '../../src/utils/catalog-sources.js';
+import { catalogGitProviderInternal } from '../../src/utils/git-catalog-provider.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
-import { withResolvedMultiSourceCatalog } from '../../src/utils/multi-source-catalog.js';
+import {
+  withResolvedCatalogPlugin,
+  withResolvedMultiSourceCatalog,
+} from '../../src/utils/multi-source-catalog.js';
+import { catalogPathProviderInternal } from '../../src/utils/path-catalog-provider.js';
+import {
+  NativeCliError,
+  setNativeCliRunnerOverrideForTests,
+} from '../../src/utils/native-cli.js';
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
 import { createPerfSummary, printPerfSummary } from './perf-metrics.js';
 
 const SAMPLES = 20;
 const BUDGET_MS = 500;
+const execFileAsync = promisify(execFile);
 
 async function sample(operation: () => Promise<void>): Promise<number[]> {
   await operation();
@@ -33,6 +45,7 @@ describe('multi-source performance budgets', () => {
   let root: string;
   let sourceRoot: string;
   let env: NodeJS.ProcessEnv;
+  let fanoutEnv: NodeJS.ProcessEnv;
 
   beforeAll(async () => {
     root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-multi-source-perf-'));
@@ -48,9 +61,61 @@ describe('multi-source performance budgets', () => {
       schemaVersion: 1,
       sources: [{ id: 'local', type: 'path', primary: true, path: sourceRoot }],
     });
+
+    const gitWork = path.join(root, 'git-work');
+    const gitRemote = path.join(root, 'catalog.git');
+    const firstPath = path.join(root, 'catalog-path-a');
+    const secondPath = path.join(root, 'catalog-path-b');
+    await Promise.all([
+      createCatalogSnapshotFixture(gitWork),
+      createCatalogSnapshotFixture(firstPath),
+      createCatalogSnapshotFixture(secondPath),
+    ]);
+    await execFileAsync('git', ['init', '--initial-branch=main', '--quiet'], { cwd: gitWork });
+    await execFileAsync('git', ['config', 'user.email', 'perf@example.test'], { cwd: gitWork });
+    await execFileAsync('git', ['config', 'user.name', 'AW Perf'], { cwd: gitWork });
+    await execFileAsync('git', ['add', '.'], { cwd: gitWork });
+    await execFileAsync('git', ['commit', '--quiet', '-m', 'catalog'], { cwd: gitWork });
+    await execFileAsync('git', ['clone', '--bare', '--quiet', gitWork, gitRemote]);
+    fanoutEnv = {
+      ...process.env,
+      AW_HOME: path.join(root, 'fanout-aw-home'),
+      AW_CODEX_HOME: path.join(root, 'fanout-codex-home'),
+      AW_CLAUDE_HOME: path.join(root, 'fanout-claude-home'),
+    };
+    await fs.outputJson(path.join(fanoutEnv.AW_HOME!, 'catalog-sources.json'), {
+      schemaVersion: 1,
+      sources: [
+        {
+          id: 'git-a',
+          type: 'git',
+          primary: true,
+          url: gitRemote,
+          refPolicy: { type: 'explicit', ref: 'refs/heads/main' },
+        },
+        {
+          id: 'git-b',
+          type: 'git',
+          primary: false,
+          url: gitRemote,
+          refPolicy: { type: 'explicit', ref: 'refs/heads/main' },
+        },
+        { id: 'path-a', type: 'path', primary: false, path: firstPath },
+        { id: 'path-b', type: 'path', primary: false, path: secondPath },
+      ],
+    });
+    const fanoutConfig = await readCatalogSourcesConfigSnapshot(fanoutEnv);
+    await withResolvedMultiSourceCatalog({
+      cliVersion: '1.0.0',
+      freshnessPolicy: 'forceRemote',
+      configSnapshot: fanoutConfig,
+      env: fanoutEnv,
+      consume: () => undefined,
+    });
   });
 
   afterAll(async () => {
+    setNativeCliRunnerOverrideForTests(null);
     await fs.remove(root);
   });
 
@@ -184,5 +249,131 @@ describe('multi-source performance budgets', () => {
     const summary = createPerfSummary('catalog-source-config-warm', durations, BUDGET_MS);
     printPerfSummary(summary);
     expect(summary.p95Ms).toBeLessThanOrEqual(BUDGET_MS);
+  });
+
+  it('keeps a qualified selector on a warm strict Git cache within budget', async () => {
+    const configSnapshot = await readCatalogSourcesConfigSnapshot(fanoutEnv);
+    const durations = await sample(async () => {
+      const selected = await withResolvedCatalogPlugin({
+        cliVersion: '1.0.0',
+        freshnessPolicy: 'cacheFirst',
+        configSnapshot,
+        env: fanoutEnv,
+        selector: 'git-a/demo',
+        consume: ({ pluginId, source }) => ({ pluginId, resolutionSource: source.source }),
+      });
+      expect(selected).toEqual({ pluginId: 'git-a/demo', resolutionSource: 'cache' });
+    });
+    const summary = createPerfSummary('git-source-selector-strict-cache-warm', durations, BUDGET_MS);
+    printPerfSummary(summary);
+    expect(summary.p95Ms).toBeLessThanOrEqual(BUDGET_MS);
+  });
+
+  it('keeps four local Git and path source resolutions in the parallel fanout budget', async () => {
+    const configSnapshot = await readCatalogSourcesConfigSnapshot(fanoutEnv);
+    let maximumActive = 0;
+    const durations = await sample(async () => {
+      let active = 0;
+      const observe = async <T>(operation: () => Promise<T>): Promise<T> => {
+        active += 1;
+        maximumActive = Math.max(maximumActive, active);
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        try {
+          return await operation();
+        } finally {
+          active -= 1;
+        }
+      };
+      const providers = {
+        git: (source: Parameters<typeof catalogGitProviderInternal.resolve>[0], options: Parameters<typeof catalogGitProviderInternal.resolve>[1]) =>
+          observe(() => catalogGitProviderInternal.resolve(source, options)),
+        path: (source: Parameters<typeof catalogPathProviderInternal.resolve>[0], options: Parameters<typeof catalogPathProviderInternal.resolve>[1]) =>
+          observe(() => catalogPathProviderInternal.resolve(source, options)),
+      };
+      await withResolvedMultiSourceCatalog({
+        cliVersion: '1.0.0',
+        freshnessPolicy: 'cacheFirst',
+        configSnapshot,
+        env: fanoutEnv,
+        providers,
+        consume: (catalog) => {
+          expect(catalog.sources).toHaveLength(4);
+        },
+      });
+    });
+    expect(maximumActive).toBe(4);
+    const summary = createPerfSummary('local-four-source-git-path-fanout', durations, BUDGET_MS);
+    printPerfSummary(summary);
+    expect(summary.p95Ms).toBeLessThanOrEqual(BUDGET_MS);
+  });
+
+  it('fails a local remote deadline within budget and confirms process cleanup', async () => {
+    let pid = 0;
+    setNativeCliRunnerOverrideForTests((invocation) => new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+        env: invocation.env,
+        stdio: 'ignore',
+      });
+      pid = child.pid ?? 0;
+      const abort = () => child.kill('SIGKILL');
+      invocation.signal?.addEventListener('abort', abort, { once: true });
+      child.once('exit', (code) => {
+        invocation.signal?.removeEventListener('abort', abort);
+        if (invocation.signal?.aborted) {
+          reject(new NativeCliError({
+            invocation,
+            exitCode: 1,
+            stdout: '',
+            stderr: '',
+            cause: invocation.signal.reason,
+            reason: 'aborted',
+          }));
+          return;
+        }
+        resolve({ exitCode: code ?? 1, stdout: '', stderr: '' });
+      });
+    }));
+    const deadlineEnv = {
+      ...fanoutEnv,
+      AW_HOME: path.join(root, 'deadline-aw-home'),
+      AW_CATALOG_REMOTE_TIMEOUT_MS: '100',
+    };
+    const startedAt = performance.now();
+    let failure: Error;
+    try {
+      failure = await catalogGitProviderInternal.resolve({
+        id: 'deadline',
+        type: 'git',
+        primary: true,
+        url: path.join(root, 'deadline-remote.git'),
+        refPolicy: { type: 'explicit', ref: 'refs/heads/main' },
+      }, {
+        cliVersion: '1.0.0',
+        freshnessPolicy: 'forceRemote',
+        env: deadlineEnv,
+      }).then(
+        () => new Error('Expected the remote deadline to fail.'),
+        (error: unknown) => error as Error,
+      );
+    } finally {
+      setNativeCliRunnerOverrideForTests(null);
+    }
+    const elapsedMs = performance.now() - startedAt;
+    expect(failure.message).toContain('AW_CATALOG_REMOTE_TIMEOUT_MS=100');
+    expect(pid).toBeGreaterThan(0);
+    const deadline = performance.now() + BUDGET_MS;
+    let alive = true;
+    while (alive && performance.now() < deadline) {
+      try {
+        process.kill(pid, 0);
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      } catch {
+        alive = false;
+      }
+    }
+    expect(alive).toBe(false);
+    const summary = createPerfSummary('git-source-remote-deadline-cleanup', [elapsedMs], BUDGET_MS);
+    printPerfSummary(summary);
+    expect(summary.maxMs).toBeLessThanOrEqual(BUDGET_MS);
   });
 });

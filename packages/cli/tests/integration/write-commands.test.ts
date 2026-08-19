@@ -25,6 +25,8 @@ import {
   prepareLifecycleActiveSnapshot,
   promoteLifecycleActiveSnapshot,
 } from '../../src/utils/lifecycle-active-store.js';
+import { updateCatalogSourceCommand } from '../../src/commands/catalog-source.js';
+import { writeSkillOwnerMarker } from '../../src/utils/ownership.js';
 
 async function configureCatalog(): Promise<ReturnType<typeof getCurrentSourceTestIsolation>> {
   const isolation = getCurrentSourceTestIsolation();
@@ -43,6 +45,92 @@ async function configureCatalog(): Promise<ReturnType<typeof getCurrentSourceTes
 }
 
 describe('five namespaced write commands', () => {
+  it('removes the generated marketplace root only after the last platform consumer', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'orphan-root-source');
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', 'demo\n', (manifest) => {
+      manifest.extensions = {
+        instructions: [{ name: 'policy', title: 'Policy', content: 'Managed policy.' }],
+      };
+    });
+    const source = { id: 'team', type: 'path', primary: true, path: sourceRoot } as const;
+    const sourceIdentity = await calculateCatalogSourceIdentity(source);
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 1, sources: [source] },
+      expectedDigest: snapshot.digest,
+      env: isolation.env,
+    });
+    const nativeCliRunner = async (invocation: NativeCliInvocation) => ({
+      exitCode: 0,
+      stdout: invocation.command === 'claude' ? 'claude 99.0.0' : 'codex-cli 99.0.0',
+      stderr: '',
+    });
+    const installed = await installWriteCommand(['team/demo'], {
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'codex',
+      scope: 'project',
+    }, { env: isolation.env, nativeCliRunner });
+    expect(installed.overallState, JSON.stringify(installed.rebuildResults)).toBe('succeeded');
+    const marketplaceRoot = path.join(isolation.env.AW_HOME!, 'marketplaces', 'team');
+    await Promise.all([
+      fs.outputJson(path.join(marketplaceRoot, 'config.json'), {
+        schemaVersion: 2,
+        sourceId: 'team',
+        sourceIdentity,
+        marketplaceName: 'aw',
+      }),
+      fs.outputJson(path.join(marketplaceRoot, '.agents', 'plugins', 'marketplace.json'), {
+        name: 'aw',
+      }),
+      fs.outputJson(path.join(marketplaceRoot, '.claude-plugin', 'marketplace.json'), {
+        name: 'aw',
+      }),
+    ]);
+    const skillsRoot = path.join(isolation.layout.fixtureCwd, '.agents', 'skills');
+    const otherConsumer = path.join(skillsRoot, 'other-consumer');
+    await fs.ensureDir(otherConsumer);
+    await writeSkillOwnerMarker({
+      skillRoot: otherConsumer,
+      allowedRoot: skillsRoot,
+      identity: {
+        owner: 'agent-workflows',
+        sourceId: 'team',
+        sourceIdentity,
+        pluginId: 'team/other',
+        plugin: 'other',
+        artifactKey: 'other-consumer',
+        platform: 'codex',
+        scope: 'project',
+      },
+    });
+
+    expect((await cleanupWriteCommand(['team/demo'], {
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'codex',
+      scope: 'project',
+    }, { env: isolation.env, nativeCliRunner })).overallState).toBe('succeeded');
+    await expect(fs.pathExists(marketplaceRoot)).resolves.toBe(true);
+
+    await fs.remove(otherConsumer);
+    expect((await cleanupWriteCommand(['team/demo'], {
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'codex',
+      scope: 'project',
+    }, { env: isolation.env, nativeCliRunner })).overallState).toBe('succeeded');
+    await expect(fs.pathExists(marketplaceRoot)).resolves.toBe(false);
+
+    const replacementRoot = path.join(isolation.layout.fixtureCwd, 'orphan-root-replacement');
+    await createCatalogSnapshotFixture(replacementRoot, 'demo');
+    await expect(updateCatalogSourceCommand({
+      sourceId: 'team',
+      update: { path: replacementRoot },
+      cliVersion: '1.0.0',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+    })).resolves.toMatchObject({ ok: true, changed: true, sourceId: 'team' });
+  });
+
   it('runs every command through the same namespaced runtime', async () => {
     const isolation = await configureCatalog();
     const nativeCliRunner = vi.fn(async () => ({ exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }));

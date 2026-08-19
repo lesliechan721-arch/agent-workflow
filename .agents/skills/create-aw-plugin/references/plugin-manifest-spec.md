@@ -53,7 +53,7 @@ AW 版本管理里有三套身份，不能混用：
 
 - 源码 `version` 必须是没有 prerelease 或 build metadata 的稳定 SemVer；`compatibility.aw.minVersion` 必须是严格 SemVer。不能写 `v1.2.3`、`1.2`、`latest`、`^1.2.3` 或其它宽松写法。
 - 插件 manifest 不声明 per-plugin 宿主 agent 版本。Codex `>= 0.145.0`、Claude Code `>= 2.1.88` 是 AW CLI 内置写命令门槛，作者不需要添加 `compatibility.codex`、`compatibility.claude`、`minimumCodexVersion` 或类似字段。
-- 插件最低 CLI 版本不能高于 catalog 级 `compatibility.aw.minVersion`。catalog 级门槛是整包门槛，必须覆盖包内所有插件的真实运行时要求。
+- 插件最低 CLI 版本不能高于 catalog 级 `compatibility.aw.minVersion`。catalog 级门槛取所有插件声明与 schema 3 Git 分发 floor `0.1.0-beta.2` 的最大值；作者只声明插件本身的真实最低版本，不手工维护或降低 catalog floor。
 - schema 3 snapshot 中每个插件都必须提供 `artifactDigest`、`manifestDigest` 和 `contentDigest`，并声明不高于 snapshot 级门槛的最低 CLI 版本。作者改变 manifest、runtime 文件、脚本、静态资源、最低 CLI 版本或平台能力时，应发布新的插件 `version`。
 
 作者版本门禁：

@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   assertValidVersion,
+  assertReleaseSnapshotIdentity,
   catalogReleaseStagingRoot,
   combineReleaseErrors,
   ensureCatalogStagePublicationBoundary,
@@ -67,6 +68,9 @@ export function parseArgs(argv) {
 }
 
 async function stageCatalogFromSnapshot(argv, snapshot, options = {}) {
+  if (options.releaseIdentity) {
+    assertReleaseSnapshotIdentity(snapshot, options.releaseIdentity);
+  }
   const { catalogVersion } = parseArgs(argv);
   const publicationRepoRoot = resolvePublicationRepoRoot(options);
   const initialBoundary = await ensureCatalogStagePublicationBoundary(
@@ -133,6 +137,9 @@ async function stageCatalogFromSnapshot(argv, snapshot, options = {}) {
       snapshotDigest: validation.snapshotDigest,
       generationId: snapshot.generationId,
       outputDigest: snapshot.outputDigest,
+      inputDigest: snapshot.inputDigest,
+      cliPackageDigest: snapshot.cliPackageDigest,
+      ...(options.releaseIdentity ? { releaseIdentity: options.releaseIdentity } : {}),
     };
   } finally {
     if (!published) {

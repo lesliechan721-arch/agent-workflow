@@ -17,7 +17,24 @@ function commonOptions(
   currentCliVersion = '1.0.0',
   publishedCliVersion = '0.9.0',
 ) {
+  const snapshot = {
+    root: '/tmp/release-snapshot',
+    generationId: 'generation-a',
+    outputDigest: 'output-a',
+    inputDigest: 'input-a',
+    cliPackageDigest: 'package-a',
+    cliPackageRoot: '/tmp/release-snapshot/packages/cli',
+    cliDistRoot: '/tmp/release-snapshot/packages/cli/dist',
+    catalogOutputRoot: '/tmp/release-snapshot/packages/cli/plugins-dist',
+  };
   return {
+    snapshot,
+    withReleaseBuildSnapshot: vi.fn(async (callback: (value: typeof snapshot) => Promise<unknown>) =>
+      callback(snapshot)),
+    resolveReleaseHead: vi.fn(async () => 'a'.repeat(40)),
+    assertCurrentReleaseHead: vi.fn(async () => undefined),
+    withCatalogPublicationLease: vi.fn(async (_remote: string, callback: (lease: object) => Promise<unknown>) =>
+      callback({ ownerCommit: 'lease-owner' })),
     runCommand: vi.fn(async () => undefined),
     readCliPackageJson: vi.fn(async () => ({ version: currentCliVersion })),
     readCatalogPublicationHistory: vi.fn(async () => releaseHistory),
@@ -42,6 +59,10 @@ describe('combined release script', () => {
       calls.push('registry');
       return '0.9.0';
     });
+    const publishCli = vi.fn(async () => {
+      calls.push('cli');
+      return { version: '1.0.0' };
+    });
     const result = await publishRelease(
       ['latest', '--cli-version', '1.0.0', '--catalog-version', '2.0.0'],
       {
@@ -50,18 +71,29 @@ describe('combined release script', () => {
           calls.push(`catalog:${publisherOptions.publicationMode}`);
           return { validation: { manifest: { catalogVersion: '2.0.0' } } };
         }),
-        publishCli: vi.fn(async () => {
-          calls.push('cli');
-          return { version: '1.0.0' };
-        }),
+        publishCli,
       },
     );
     expect(result.path).toBe('catalog-first');
     expect(calls).toEqual(['registry', 'catalog:atomic', 'cli']);
     expect(options.stageCatalogRelease).toHaveBeenCalledWith(
       ['--catalog-version', '2.0.0'],
-      { previousReleaseLedger: releaseHistory.mergedLedger },
+      expect.objectContaining({
+        previousReleaseLedger: releaseHistory.mergedLedger,
+        snapshot: options.snapshot,
+        releaseIdentity: expect.objectContaining({
+          generationId: 'generation-a',
+          outputDigest: 'output-a',
+          headCommit: 'a'.repeat(40),
+        }),
+      }),
     );
+    const stageOptions = options.stageCatalogRelease.mock.calls[0]![1];
+    expect(publishCli).toHaveBeenCalledWith(['latest'], expect.objectContaining({
+      snapshot: options.snapshot,
+      releaseIdentity: stageOptions.releaseIdentity,
+    }));
+    expect(options.withReleaseBuildSnapshot).toHaveBeenCalledTimes(1);
   });
 
   it('publishes tag, then CLI, then promotion when the catalog needs the candidate CLI', async () => {
@@ -72,6 +104,10 @@ describe('combined release script', () => {
       calls.push('registry');
       return '0.9.0';
     });
+    const publishCli = vi.fn(async () => {
+      calls.push('cli');
+      return { version: '1.0.0' };
+    });
     const result = await publishRelease(
       ['latest', '--catalog-version', '2.0.0'],
       {
@@ -80,10 +116,7 @@ describe('combined release script', () => {
           calls.push(`catalog:${publisherOptions.publicationMode}`);
           return { validation: { manifest: { catalogVersion: '2.0.0' } } };
         },
-        publishCli: async () => {
-          calls.push('cli');
-          return { version: '1.0.0' };
-        },
+        publishCli,
         promoteCatalogTag: async () => {
           calls.push('promotion');
           return { promoted: true };
@@ -92,6 +125,11 @@ describe('combined release script', () => {
     );
     expect(result.path).toBe('tag-first');
     expect(calls).toEqual(['registry', 'catalog:tag', 'cli', 'promotion']);
+    const stageOptions = options.stageCatalogRelease.mock.calls[0]![1];
+    expect(publishCli).toHaveBeenCalledWith(['latest'], expect.objectContaining({
+      snapshot: options.snapshot,
+      releaseIdentity: stageOptions.releaseIdentity,
+    }));
   });
 
   it('skips CLI publication when the exact candidate is already published', async () => {
@@ -243,6 +281,32 @@ describe('combined release script', () => {
         publishCli: async () => { throw new Error('npm failed'); },
       },
     )).rejects.toThrow('Catalog 2.0.0 (latest) is published, but CLI 1.0.0 publication failed');
+  });
+
+  it('detects a HEAD switch between catalog publication and CLI packing', async () => {
+    const releaseHistory = history(compareStrictSemVer);
+    const options = commonOptions(releaseHistory);
+    options.stageCatalogRelease.mockResolvedValue({
+      outputRoot: '/tmp/catalog-stage',
+      manifest: { compatibility: { aw: { minVersion: '0.9.0' } } },
+    });
+    options.assertCurrentReleaseHead
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error('Release HEAD changed during publication'));
+    const publishCli = vi.fn();
+
+    const error = await publishRelease(
+      ['latest', '--catalog-version', '2.0.0'],
+      {
+        ...options,
+        publishStagedCatalog: async () => ({ validation: { manifest: { catalogVersion: '2.0.0' } } }),
+        publishCli,
+      },
+    ).catch((caught) => caught);
+    expect(error.cause).toEqual(expect.objectContaining({
+      message: 'Release HEAD changed during publication',
+    }));
+    expect(publishCli).not.toHaveBeenCalled();
   });
 
   it('stops before verification and staging when the CLI version is wrong', async () => {

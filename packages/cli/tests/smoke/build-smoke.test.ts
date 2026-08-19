@@ -537,6 +537,7 @@ describe('build smoke', () => {
       schemaVersion: 3,
       catalogVersion: cliPackageJson.version,
       channel: String(cliPackageJson.version).includes('-') ? 'beta' : 'latest',
+      compatibility: { aw: { minVersion: '0.1.0-beta.2' } },
       entries: expect.arrayContaining(Object.keys(EXPECTED_PLUGIN_PLATFORMS).map((pluginName) =>
         expect.objectContaining({
           name: pluginName,

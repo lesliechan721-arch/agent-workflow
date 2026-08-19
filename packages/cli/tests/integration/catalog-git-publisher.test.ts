@@ -8,6 +8,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   CATALOG_CHANNEL_REFS,
+  CATALOG_PUBLICATION_LOCK_REF,
+  CATALOG_TAG_FIRST_PENDING_REF,
   promoteCatalogTag,
   publishStagedCatalog,
   readCatalogPublicationHistory,
@@ -156,6 +158,39 @@ describe('Git catalog publisher', () => {
       .toBe('tag');
   });
 
+  it('serializes concurrent beta and latest bootstrap publications with one complete merged history', async () => {
+    const root = await fixtureRoot('aw-catalog-bootstrap-concurrent-');
+    const remoteUrl = await createBareRemote(root);
+    const runBootstrap = (mode: 'beta' | 'latest', catalogVersion: string) =>
+      bootstrapCatalog([mode, '--catalog-version', catalogVersion], {
+        testRemoteUrl: remoteUrl,
+        catalogModules,
+        runCommand: async () => undefined,
+        publisherOptions: {
+          publicationLockTimeoutMs: 10_000,
+          publicationLockPollIntervalMs: 10,
+        },
+        stageCatalogRelease: async (_argv: string[], options: {
+          previousReleaseLedger: pluginStaging.PluginReleaseLedger;
+        }) => stage(root, catalogVersion, options.previousReleaseLedger),
+      });
+
+    await Promise.all([
+      runBootstrap('beta', '1.0.0-beta.1'),
+      runBootstrap('latest', '1.0.0'),
+    ]);
+    const history = await readCatalogPublicationHistory({
+      mode: 'latest', catalogVersion: '2.0.0', remoteUrl, catalogModules,
+    });
+    expect(history.mergedLedger.records).toHaveLength(2);
+    expect([
+      history.channels.beta!.ledger.records.length,
+      history.channels.latest!.ledger.records.length,
+    ].sort()).toEqual([1, 2]);
+    await expect(git(['--git-dir', remoteUrl, 'rev-parse', CATALOG_PUBLICATION_LOCK_REF]))
+      .rejects.toThrow();
+  });
+
   it('does not create a bootstrap tag or channel when atomic push is unsupported', async () => {
     const root = await fixtureRoot('aw-catalog-bootstrap-no-atomic-');
     const remoteUrl = await createBareRemote(root);
@@ -169,6 +204,25 @@ describe('Git catalog publisher', () => {
       }) => stage(root, '1.0.0', options.previousReleaseLedger),
     })).rejects.toThrow('did not fall back to sequential pushes');
     await expect(git(['--git-dir', remoteUrl, 'show-ref'])).rejects.toThrow();
+  });
+
+  it('rejects bootstrap while a tag-first publication is pending', async () => {
+    const root = await fixtureRoot('aw-catalog-bootstrap-partial-');
+    const remoteUrl = await createBareRemote(root);
+    const history = await readCatalogPublicationHistory({
+      mode: 'latest', catalogVersion: '1.0.0', remoteUrl, catalogModules,
+    });
+    const staged = await stage(root, '1.0.0', history.mergedLedger);
+    await publishStagedCatalog(history, staged.outputRoot, { publicationMode: 'tag' });
+
+    await expect(bootstrapCatalog(['latest', '--catalog-version', '1.0.0'], {
+      testRemoteUrl: remoteUrl,
+      catalogModules,
+      runCommand: async () => undefined,
+      stageCatalogRelease: async () => staged,
+    })).rejects.toThrow('cannot confirm a tag-first pending publication');
+    await expect(git(['--git-dir', remoteUrl, 'rev-parse', CATALOG_CHANNEL_REFS.latest]))
+      .rejects.toThrow();
   });
 
   it('creates orphan channel roots, one-parent fast-forward commits, independent channels, and annotated tags', async () => {
@@ -217,6 +271,11 @@ describe('Git catalog publisher', () => {
     const tagged = await publishStagedCatalog(history, staged.outputRoot, { publicationMode: 'tag' });
     await expect(git(['--git-dir', remoteUrl, 'rev-parse', CATALOG_CHANNEL_REFS.latest]))
       .rejects.toThrow();
+    expect(await git(['--git-dir', remoteUrl, 'rev-parse', CATALOG_TAG_FIRST_PENDING_REF]))
+      .toBe(tagged.commit);
+    await expect(readCatalogPublicationHistory({
+      mode: 'beta', catalogVersion: '2.0.0-beta.1', remoteUrl, catalogModules,
+    })).rejects.toThrow('Only recovery of that exact catalog version may continue');
 
     const retryHistory = await readCatalogPublicationHistory({
       mode: 'latest', catalogVersion: '1.0.0', remoteUrl, catalogModules,
@@ -235,6 +294,8 @@ describe('Git catalog publisher', () => {
     expect(promotion.promoted).toBe(true);
     expect(await git(['--git-dir', remoteUrl, 'rev-parse', CATALOG_CHANNEL_REFS.latest]))
       .toBe(tagged.commit);
+    await expect(git(['--git-dir', remoteUrl, 'rev-parse', CATALOG_TAG_FIRST_PENDING_REF]))
+      .rejects.toThrow();
   });
 
   it('rejects same-version channel drift and existing tag runtime drift', async () => {
@@ -280,6 +341,92 @@ describe('Git catalog publisher', () => {
       .rejects.toThrow('maps to different runtime content');
   });
 
+  it('rejects reuse of an existing tag when its normalized release ledger differs', async () => {
+    const root = await fixtureRoot('aw-catalog-tag-ledger-drift-');
+    const remoteUrl = await createBareRemote(root);
+    const history = await readCatalogPublicationHistory({
+      mode: 'latest', catalogVersion: '1.0.0', remoteUrl, catalogModules,
+    });
+    const staged = await stage(root, '1.0.0', history.mergedLedger);
+    await publishStagedCatalog(history, staged.outputRoot, { publicationMode: 'tag' });
+    const retryHistory = await readCatalogPublicationHistory({
+      mode: 'latest', catalogVersion: '1.0.0', remoteUrl, catalogModules,
+    });
+    const ledger = await fs.readJson(path.join(staged.outputRoot, 'plugin-release-ledger.json'));
+    ledger.records.push({
+      ...ledger.records[0],
+      catalogVersion: '0.9.0',
+    });
+    await fs.writeJson(path.join(staged.outputRoot, 'plugin-release-ledger.json'), ledger, { spaces: 2 });
+
+    await expect(publishStagedCatalog(retryHistory, staged.outputRoot, { publicationMode: 'tag' }))
+      .rejects.toThrow('release ledger differs');
+  });
+
+  it('rejects global insteadOf rewriting before contacting a different remote', async () => {
+    const root = await fixtureRoot('aw-catalog-instead-of-');
+    const remoteUrl = await createBareRemote(root);
+    const rewrittenRemote = await createBareRemote(await fixtureRoot('aw-catalog-rewrite-target-'));
+    const globalConfig = path.join(root, 'global.gitconfig');
+    await fs.writeFile(globalConfig, [
+      '[url "' + rewrittenRemote.replaceAll('\\\\', '/') + '"]',
+      '\tinsteadOf = ' + remoteUrl.replaceAll('\\\\', '/'),
+      '',
+    ].join('\n'));
+
+    await expect(readCatalogPublicationHistory({
+      mode: 'latest',
+      catalogVersion: '1.0.0',
+      remoteUrl,
+      catalogModules,
+      env: {
+        ...process.env,
+        GIT_CONFIG_GLOBAL: globalConfig,
+        GIT_CONFIG_SYSTEM: globalConfig,
+      },
+    })).rejects.toThrow('rewritten by Git configuration');
+    await expect(git(['--git-dir', rewrittenRemote, 'show-ref'])).rejects.toThrow();
+  });
+
+  it('ignores global and system hooks, clean filters, attributes, and line-ending conversion', async () => {
+    const root = await fixtureRoot('aw-catalog-global-config-');
+    const remoteUrl = await createBareRemote(root);
+    const hooksRoot = path.join(root, 'hooks');
+    const hookMarker = path.join(root, 'hook-ran');
+    const attributesPath = path.join(root, 'global-attributes');
+    const globalConfig = path.join(root, 'global.gitconfig');
+    await fs.ensureDir(hooksRoot);
+    await fs.writeFile(path.join(hooksRoot, 'pre-commit'), `#!/bin/sh\ntouch ${hookMarker}\nexit 1\n`);
+    await fs.chmod(path.join(hooksRoot, 'pre-commit'), 0o755);
+    await fs.writeFile(attributesPath, '* filter=poison text eol=crlf\n');
+    await fs.writeFile(globalConfig, [
+      '[core]',
+      `\thooksPath = ${hooksRoot}`,
+      '\tautocrlf = true',
+      `\tattributesFile = ${attributesPath}`,
+      '[filter "poison"]',
+      '\tclean = sed s/demo/poisoned/g',
+      '\trequired = true',
+      '',
+    ].join('\n'));
+    const env = {
+      ...process.env,
+      GIT_CONFIG_GLOBAL: globalConfig,
+      GIT_CONFIG_SYSTEM: globalConfig,
+    };
+    const history = await readCatalogPublicationHistory({
+      mode: 'latest', catalogVersion: '1.0.0', remoteUrl, catalogModules, env,
+    });
+    const staged = await stage(root, '1.0.0', history.mergedLedger);
+    await expect(publishStagedCatalog(history, staged.outputRoot, { env }))
+      .resolves.toMatchObject({ promoted: true });
+    await expect(fs.pathExists(hookMarker)).resolves.toBe(false);
+    const committedReadme = await git([
+      '--git-dir', remoteUrl, 'show', `${CATALOG_CHANNEL_REFS.latest}:plugins/demo/README.md`,
+    ]);
+    expect(committedReadme).toBe('demo');
+  });
+
   it('does not publish either ref when the remote does not support atomic push', async () => {
     const root = await fixtureRoot('aw-catalog-no-atomic-');
     const remoteUrl = await createBareRemote(root);
@@ -291,6 +438,22 @@ describe('Git catalog publisher', () => {
     await expect(publishStagedCatalog(history, staged.outputRoot))
       .rejects.toThrow('did not fall back to sequential pushes');
     await expect(git(['--git-dir', remoteUrl, 'show-ref']))
+      .rejects.toThrow();
+  });
+
+  it('does not create a tag-first tag or pending guard when atomic push is unsupported', async () => {
+    const root = await fixtureRoot('aw-catalog-tag-first-no-atomic-');
+    const remoteUrl = await createBareRemote(root);
+    await git(['--git-dir', remoteUrl, 'config', 'receive.advertiseAtomic', 'false']);
+    const history = await readCatalogPublicationHistory({
+      mode: 'latest', catalogVersion: '1.0.0', remoteUrl, catalogModules,
+    });
+    const staged = await stage(root, '1.0.0', history.mergedLedger);
+    await expect(publishStagedCatalog(history, staged.outputRoot, { publicationMode: 'tag' }))
+      .rejects.toThrow('Atomic tag-first catalog publication failed');
+    await expect(git(['--git-dir', remoteUrl, 'rev-parse', 'refs/tags/catalog-v1.0.0']))
+      .rejects.toThrow();
+    await expect(git(['--git-dir', remoteUrl, 'rev-parse', CATALOG_TAG_FIRST_PENDING_REF]))
       .rejects.toThrow();
   });
 
@@ -373,7 +536,7 @@ describe('Git catalog publisher', () => {
     const temporaryGitPaths: string[][] = [];
     const executeRealGit = async (command: string, args: string[], options: Parameters<typeof execFileAsync>[2]) => {
       const result = await execFileAsync(command, args, options);
-      if (args[0] === 'init') {
+      if (args.includes('init')) {
         const paths = await Promise.all([
           ['rev-parse', '--path-format=absolute', '--git-common-dir'],
           ['rev-parse', '--path-format=absolute', '--git-path', 'objects'],
@@ -395,7 +558,7 @@ describe('Git catalog publisher', () => {
     const staged = await stage(root, '1.0.0', releaseHistory.mergedLedger);
     await publishStagedCatalog(releaseHistory, staged.outputRoot, { runGit });
 
-    expect(temporaryGitPaths).toHaveLength(2);
+    expect(temporaryGitPaths).toHaveLength(3);
     for (const paths of temporaryGitPaths) {
       for (const gitPath of paths) {
         expect(gitPath).toContain(`${path.sep}aw-catalog-publish-`);
@@ -441,6 +604,9 @@ describe('Git catalog publisher', () => {
         SSH_AUTH_SOCK: '/credential-agent.sock',
       },
     });
-    expect(execute).toHaveBeenCalledWith('git', ['status'], expect.any(Object));
+    const invokedArgs = execute.mock.calls[0]![1];
+    expect(invokedArgs.at(-1)).toBe('status');
+    expect(invokedArgs).toContain('core.autocrlf=false');
+    expect(invokedArgs).toContain(`core.hooksPath=${os.devNull}`);
   });
 });

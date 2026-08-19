@@ -100,6 +100,7 @@ import {
 } from '../utils/active-marketplace-runtime-lock.js';
 import { readCatalogSourcesConfigSnapshot } from '../utils/catalog-sources.js';
 import { replayNamespacedCodexSkillOverlays } from '../utils/local-marketplace.js';
+import { cleanupOrphanNamespacedMarketplaceRoot } from '../utils/orphan-marketplace-cleanup.js';
 import { readClaudeSettings, writeClaudeSettings, type ClaudeSettings } from '../adapters/helpers.js';
 import { requiresCodexNativePlugin } from '../utils/codex-project-surface.js';
 import { assertCanonicalProjectManagedRoots } from '../utils/project-boundary.js';
@@ -2922,6 +2923,17 @@ function createNativeDriver(options: {
   const runner = options.context.nativeCliRunner;
   const materializeLeaseHeld = new WeakSet<DesiredTarget>();
   const mirrorTransactions = new WeakMap<DesiredTarget, Awaited<ReturnType<typeof mirrorCatalog>>>();
+  const finalizeNamespacedCleanup = async (target: DesiredTarget): Promise<void> => {
+    const { sourceId, sourceIdentity, marketplaceRoot, marketplaceName } = target.identity;
+    if (!sourceId || !sourceIdentity || !marketplaceRoot) return;
+    await cleanupOrphanNamespacedMarketplaceRoot({
+      sourceId,
+      sourceIdentity,
+      ...(marketplaceName ? { marketplaceName } : {}),
+      cwd: target.identity.cwd,
+      env: options.context.env,
+    });
+  };
   return {
     withOwnershipLease: (target, operation) => (
       !options.context.runtimeLeaseHeld
@@ -2998,6 +3010,7 @@ function createNativeDriver(options: {
       await transaction.rollback();
       mirrorTransactions.delete(target);
     },
+    finalizeCleanup: finalizeNamespacedCleanup,
     probeNative: async (component) => {
       const target = [...plansTargetEntries(options.plans)].find((entry) =>
         entry.target.identity.pluginName === component.identity.plugin

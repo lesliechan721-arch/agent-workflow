@@ -60,8 +60,14 @@ export interface StatusV4Target {
   scope: Scope;
   cwd: string;
   state: 'present' | 'absent' | 'partial' | 'error';
-  components: [];
+  components: StatusV4Component[];
   errors: Array<{ code: string; message: string }>;
+}
+
+export interface StatusV4Component {
+  key: string;
+  state: OwnershipInspection['components'][number]['state'];
+  error?: { code: string; message: string };
 }
 
 export interface StatusV4Payload {
@@ -91,6 +97,7 @@ interface StatusPluginCapability {
   states: Partial<Record<PlatformName, Partial<Record<Scope, {
     state: StatusV4Target['state'];
     errors: StatusV4Target['errors'];
+    components: StatusV4Component[];
   }>>>>;
 }
 
@@ -170,7 +177,7 @@ function projectedLiveState(options: {
     entry.component === component && entry.state === 'present')) ? 'present' : 'absent';
 }
 
-function renderStatusV4(payload: StatusV4Payload): string {
+function renderStatusV4(payload: StatusV4Payload, verbose: boolean): string {
   const lines = [`Catalog sources: ${payload.catalog.sources.length}`];
   for (const source of payload.catalog.sources) {
     lines.push(`${source.primary ? '*' : '-'} ${source.id}: ${source.error ?? source.freshness ?? 'unavailable'}`);
@@ -180,6 +187,14 @@ function renderStatusV4(payload: StatusV4Payload): string {
       ? ` [${target.errors.map((error) => `${error.code}: ${error.message}`).join('; ')}]`
       : '';
     lines.push(`${target.pluginId} ${target.platform}/${target.scope}: ${target.state}${errors}`);
+    if (verbose) {
+      for (const component of target.components) {
+        const error = component.error
+          ? ` [${component.error.code}: ${component.error.message}]`
+          : '';
+        lines.push(`  component ${component.key}: ${component.state}${error}`);
+      }
+    }
   }
   for (const error of payload.errors) lines.push(`Error: ${error.message}`);
   return lines.join('\n');
@@ -193,6 +208,7 @@ export async function statusCommandV4(options: {
   platform?: string;
   scope?: string;
   json?: boolean;
+  verbose?: boolean;
 }): Promise<{
   payload: StatusV4Payload;
   output: string;
@@ -342,6 +358,7 @@ export async function statusCommandV4(options: {
                   if (changedOwner) {
                     states[platform]![scope] = {
                       state: 'error',
+                      components: [],
                       errors: [{
                         code: 'sourceChanged',
                         message: `sourceChanged: owner at ${changedOwner.location} has a different source identity.`,
@@ -381,11 +398,30 @@ export async function statusCommandV4(options: {
                         code: 'componentInspectionFailed',
                         message: `${error.label}: ${error.message}`,
                       })),
+                      components: options.verbose === true
+                        ? inspected.inspection.components.map((component) => {
+                            const projectedError = component.diagnostic
+                              ? projectTargetError({
+                                  code: 'componentInspectionFailed',
+                                  message: component.diagnostic,
+                                }, env, options.cwd)
+                              : undefined;
+                            return {
+                              key: component.component.identity.artifactKey,
+                              state: component.state,
+                              ...(projectedError ? { error: projectedError } : {}),
+                            };
+                          })
+                        : [],
                     };
                   } catch (error) {
                     const message = error instanceof Error ? error.message : String(error);
                     const code = message.split(':', 1)[0] || 'targetInspectionFailed';
-                    states[platform]![scope] = { state: 'error', errors: [{ code, message }] };
+                    states[platform]![scope] = {
+                      state: 'error',
+                      components: [],
+                      errors: [{ code, message }],
+                    };
                   }
                 }
               }
@@ -491,13 +527,14 @@ export async function statusCommandV4(options: {
         platform,
         scope,
         cwd: path.resolve(options.cwd),
-        components: [] as [],
+        components: [] as StatusV4Component[],
       };
       if (entry.targets[platform][scope]) {
         const live = entry.states[platform]?.[scope];
         return [{
           ...target,
           state: live?.state ?? 'error',
+          components: live?.components ?? [],
           errors: live?.errors ?? [{
             code: 'targetInspectionFailed',
             message: `No live inspection result exists for ${entry.source.id}/${entry.name}.`,
@@ -696,7 +733,7 @@ export async function statusCommandV4(options: {
     || payload.targets.some((target) => target.state === 'error');
   return {
     payload,
-    output: options.json ? JSON.stringify(payload) : renderStatusV4(payload),
+    output: options.json ? JSON.stringify(payload) : renderStatusV4(payload, options.verbose === true),
     hasErrors,
     pluginSummaries: available.map((entry) => ({
       pluginName: entry.name,

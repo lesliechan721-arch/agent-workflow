@@ -1,5 +1,6 @@
 import path from 'node:path';
 
+import fs from 'fs-extra';
 import { describe, expect, it, vi } from 'vitest';
 
 import { runCli } from '../../src/index.js';
@@ -74,6 +75,28 @@ describe('console and removed diagnose entry', () => {
     expect(exitCode).toBe(0);
     expect(reportEvent).toHaveBeenCalledWith(expect.objectContaining({ type: 'command:success' }));
     expect(debugLog).toHaveBeenCalledWith(expect.objectContaining({ type: 'command:success' }));
+  });
+
+  it('does not persist config values from argv in a real debug log', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const captured = createCapturedCliIo();
+    const logFile = path.join(isolation.layout.debugLogsDir, 'config-value.log');
+    const secret = 'unknown-config-secret-value';
+
+    const exitCode = await runCli([
+      'config', 'set', 'missing/demo', 'unknown-sensitive-key', secret,
+      '--debug', '--log-file', logFile,
+    ], {
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      interactive: false,
+      io: captured.io,
+    });
+
+    expect(exitCode).toBe(1);
+    const debugLog = await fs.readFile(logFile, 'utf8');
+    expect(debugLog).not.toContain(secret);
+    expect(debugLog).not.toContain('unknown-sensitive-key');
   });
 
   it(

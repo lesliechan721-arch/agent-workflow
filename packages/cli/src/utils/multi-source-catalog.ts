@@ -22,6 +22,7 @@ import { catalogGitProviderInternal } from './git-catalog-provider.js';
 import { ensurePluginName, readPluginManifest } from './manifest.js';
 import { catalogPathProviderInternal } from './path-catalog-provider.js';
 import { sanitizeCatalogSourceError } from './catalog-public-error.js';
+import { canonicalizePathThroughExistingAncestor } from './state-paths.js';
 
 const { withCatalogSourceCacheLease } = catalogSourceCacheInternal;
 
@@ -144,24 +145,6 @@ function isPathInside(rootDir: string, candidate: string): boolean {
   );
 }
 
-async function canonicalizeExistingPathAncestor(absolutePath: string): Promise<string> {
-  let current = absolutePath;
-  const missingSegments: string[] = [];
-  while (true) {
-    try {
-      return path.join(await fs.realpath(current), ...missingSegments);
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      const parent = path.dirname(current);
-      if ((code !== 'ENOENT' && code !== 'ENOTDIR') || parent === current) {
-        return absolutePath;
-      }
-      missingSegments.unshift(path.basename(current));
-      current = parent;
-    }
-  }
-}
-
 async function assertLeaseSafeString(
   value: string,
   protectedPaths: ProtectedCatalogPath[],
@@ -176,7 +159,7 @@ async function assertLeaseSafeString(
   }
   if (!path.isAbsolute(candidate)) return;
   const logical = path.resolve(candidate);
-  const canonical = await canonicalizeExistingPathAncestor(logical);
+  const canonical = await canonicalizePathThroughExistingAncestor(logical);
   if ([logical, canonical].some((pathEvidence) => protectedPaths.some((entry) => entry.directory
     ? isPathInside(entry.absolutePath, pathEvidence)
     : isPathInside(entry.absolutePath, pathEvidence)))) {
@@ -241,7 +224,7 @@ async function projectLeaseSafeResult(
 
 async function createProtectedCatalogDirectory(directory: string): Promise<ProtectedCatalogPath[]> {
   const logical = path.resolve(directory);
-  const canonical = await canonicalizeExistingPathAncestor(logical);
+  const canonical = await canonicalizePathThroughExistingAncestor(logical);
   return [...new Set([logical, canonical])].map((absolutePath) => ({
     absolutePath,
     directory: true,

@@ -112,19 +112,21 @@ export interface CatalogStageResult {
   canonicalManifestPath: string;
 }
 
+export const CATALOG_SCHEMA_3_CLI_FLOOR = '0.1.0-beta.2';
+
 function detectCatalogChannel(version: string): CatalogChannel {
   return version.includes('-') ? 'beta' : 'latest';
 }
 
 function resolveCatalogMinAwVersion(plugins: readonly PluginMeta[]): string {
-  let current: string | null = null;
+  let current = CATALOG_SCHEMA_3_CLI_FLOOR;
   for (const plugin of plugins) {
     const pluginMinVersion = plugin.manifest.compatibility!.aw.minVersion;
-    if (!current || compareStrictSemVer(pluginMinVersion, current) > 0) {
+    if (compareStrictSemVer(pluginMinVersion, current) > 0) {
       current = pluginMinVersion;
     }
   }
-  return current ?? '0.0.0';
+  return current;
 }
 
 async function readCliPackageMetadata(

@@ -20,15 +20,19 @@ async function loadPublishCliHarness(
     gitCheckError?: Error;
     packCliResult?: string;
     registryUrl?: string;
+    publishedVersion?: string;
     runCommandImpl?: (
       command: string,
       args: string[],
-      commandOptions?: { env?: NodeJS.ProcessEnv },
+      commandOptions?: { env?: NodeJS.ProcessEnv; timeoutMs?: number },
     ) => Promise<void> | void;
   } = {},
 ) {
   const calls: Call[] = [];
-  const commandOptions: Array<{ env?: NodeJS.ProcessEnv } | undefined> = [];
+  const commandOptions: Array<{
+    env?: NodeJS.ProcessEnv;
+    timeoutMs?: number;
+  } | undefined> = [];
   const packSnapshots: unknown[] = [];
   const registryResolveCalls: Array<{ packageJsonPath: string; env: NodeJS.ProcessEnv }> = [];
   const snapshot = {
@@ -43,6 +47,7 @@ async function loadPublishCliHarness(
   let snapshotCleanups = 0;
 
   vi.doMock('../../../../scripts/release/common.mjs', () => ({
+    assertReleaseSnapshotIdentity: vi.fn(),
     assertVersionKind: vi.fn(),
     packCli: vi.fn(async ({ snapshot: packSnapshot }: { snapshot: unknown }) => {
       calls.push({ type: 'pack' });
@@ -55,7 +60,25 @@ async function loadPublishCliHarness(
     readCliPackageJson: vi.fn(async () => ({
       version: options.cliVersion ?? '1.0.0-beta.16',
     })),
+    RELEASE_NETWORK_TIMEOUT_MS: 120_000,
     relativeToRepo: vi.fn((target: string) => target),
+    resolveCliPublicationGate: vi.fn(({ mode, candidateVersion, publishedVersion }: {
+      mode: string;
+      candidateVersion: string;
+      publishedVersion: string;
+    }) => {
+      if (candidateVersion === publishedVersion) {
+        return { status: 'already-published', version: candidateVersion };
+      }
+      if (candidateVersion < publishedVersion) {
+        throw new Error(
+          `CLI candidate ${candidateVersion} must be higher than the published ${mode} CLI ${publishedVersion}.`,
+        );
+      }
+      return { status: 'publish', version: candidateVersion };
+    }),
+    resolvePublishedCliVersion: vi.fn(async (mode: string) => options.publishedVersion
+      ?? (mode === 'beta' ? '1.0.0-beta.15' : '0.9.0')),
     resolveRegistryUrl: vi.fn(async (packageJsonPath: string, env: NodeJS.ProcessEnv) => {
       registryResolveCalls.push({ packageJsonPath, env });
       return options.registryUrl ?? 'https://registry.example.test/';
@@ -69,7 +92,7 @@ async function loadPublishCliHarness(
     runCommand: vi.fn(async (
       command: string,
       args: string[],
-      runOptions?: { env?: NodeJS.ProcessEnv },
+      runOptions?: { env?: NodeJS.ProcessEnv; timeoutMs?: number },
     ) => {
       calls.push({ type: 'command', command, args });
       commandOptions.push(runOptions);
@@ -158,6 +181,7 @@ describe('publish-cli script', () => {
       },
     ]);
     expect(harness.packSnapshots).toEqual([harness.snapshot]);
+    expect(harness.commandOptions[1]?.timeoutMs).toBe(120_000);
     expect(harness.snapshotRequests).toBe(1);
     expect(harness.snapshotCleanups).toBe(1);
   });
@@ -329,5 +353,32 @@ describe('publish-cli script', () => {
     expect(harness.snapshotRequests).toBe(1);
     expect(harness.snapshotCleanups).toBe(1);
     expect(harness.packSnapshots).toEqual([harness.snapshot]);
+  });
+
+  it('returns already-published for an exact dist-tag without verifying, packing, or publishing', async () => {
+    const harness = await loadPublishCliHarness({
+      cliVersion: '1.0.0-beta.16',
+      publishedVersion: '1.0.0-beta.16',
+    });
+
+    await expect(harness.publishCli(['beta'])).resolves.toEqual({
+      mode: 'beta',
+      status: 'already-published',
+      version: '1.0.0-beta.16',
+    });
+    expect(harness.calls).toEqual([]);
+    expect(harness.snapshotRequests).toBe(0);
+  });
+
+  it('rejects a lower standalone candidate before verifying, packing, or publishing', async () => {
+    const harness = await loadPublishCliHarness({
+      cliVersion: '1.0.0-beta.16',
+      publishedVersion: '1.0.0-beta.17',
+    });
+
+    await expect(harness.publishCli(['beta']))
+      .rejects.toThrow('must be higher than the published beta CLI');
+    expect(harness.calls).toEqual([]);
+    expect(harness.snapshotRequests).toBe(0);
   });
 });

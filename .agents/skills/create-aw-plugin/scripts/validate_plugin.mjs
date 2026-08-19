@@ -8,6 +8,7 @@ import * as path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { checkPluginVersions } from './lib/plugin-version-check.mjs';
+import { scanJavaScriptImportSpecifiers } from './lib/javascript-import-scanner.mjs';
 
 const require = createRequire(import.meta.url);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -2480,22 +2481,6 @@ function validatePackageRoot(pluginDir, packageRootValue, fieldName) {
   };
 }
 
-function scanImportSpecifiers(source) {
-  const references = [];
-  const patterns = [
-    /\bimport\s+(?:[^'"]*?\s+from\s*)?['"]([^'"]+)['"]/gs,
-    /\bexport\s+(?:[^'"]*?\s+from\s*)['"]([^'"]+)['"]/gs,
-    /\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)/gs,
-    /\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/gs,
-  ];
-  for (const pattern of patterns) {
-    for (const match of source.matchAll(pattern)) {
-      references.push(match[1]);
-    }
-  }
-  return references;
-}
-
 function isRelativeSpecifier(specifier) {
   return specifier === '.' || specifier === '..' || specifier.startsWith('./') || specifier.startsWith('../');
 }
@@ -2551,7 +2536,7 @@ function scanNodeImportContract(pluginDir, entryPaths, options) {
     }
 
     const source = fs.readFileSync(absolutePath, 'utf8');
-    for (const specifier of scanImportSpecifiers(source)) {
+    for (const { specifier } of scanJavaScriptImportSpecifiers(source)) {
       if (specifier.startsWith('node:')) continue;
 
       if (isRelativeSpecifier(specifier)) {

@@ -6,6 +6,7 @@ import {
   OFFICIAL_CATALOG_PUBLISH_REMOTE,
   publishStagedCatalog,
   readCatalogPublicationHistory,
+  withCatalogPublicationLease,
 } from './git-catalog-publisher.mjs';
 import { stageCatalogRelease } from './stage-catalog.mjs';
 
@@ -37,8 +38,21 @@ export function parseArgs(argv) {
 }
 
 function assertBootstrapState(history) {
+  if (history.pending) {
+    throw new Error(
+      'Catalog bootstrap cannot confirm a tag-first pending publication; use the fixed promotion recovery entry point.',
+    );
+  }
   const current = history.channels[history.mode];
-  if (!current) return;
+  if (!current) {
+    if (history.tag) {
+      throw new Error(
+        `Catalog tag refs/tags/catalog-v${history.catalogVersion} already exists while the target channel is missing. ` +
+        'Bootstrap requires one atomic tag and channel publication.',
+      );
+    }
+    return;
+  }
   if (
     current.manifest.catalogVersion !== history.catalogVersion
     || !history.tag
@@ -68,26 +82,32 @@ export async function bootstrapCatalog(argv = process.argv.slice(2), options = {
   }
   const remoteUrl = options.testRemoteUrl ?? options.remoteUrl ?? OFFICIAL_CATALOG_PUBLISH_REMOTE;
   await (options.runCommand ?? runCommand)('pnpm', ['run', 'release:verify:catalog']);
-  const history = await (options.readCatalogPublicationHistory
-    ?? readCatalogPublicationHistory)({
-    mode,
-    catalogVersion,
+  return (options.withCatalogPublicationLease ?? withCatalogPublicationLease)(
     remoteUrl,
-    ...(options.catalogModules ? { catalogModules: options.catalogModules } : {}),
-  });
-  assertBootstrapState(history);
-  const staged = await (options.stageCatalogRelease ?? stageCatalogRelease)([
-    '--catalog-version',
-    catalogVersion,
-  ], {
-    previousReleaseLedger: history.mergedLedger,
-  });
-  const result = await (options.publishStagedCatalog ?? publishStagedCatalog)(
-    history,
-    staged.outputRoot,
-    { publicationMode: 'atomic' },
+    async (publicationLease) => {
+      const history = await (options.readCatalogPublicationHistory
+        ?? readCatalogPublicationHistory)({
+        mode,
+        catalogVersion,
+        remoteUrl,
+        ...(options.catalogModules ? { catalogModules: options.catalogModules } : {}),
+      });
+      assertBootstrapState(history);
+      const staged = await (options.stageCatalogRelease ?? stageCatalogRelease)([
+        '--catalog-version',
+        catalogVersion,
+      ], {
+        previousReleaseLedger: history.mergedLedger,
+      });
+      const result = await (options.publishStagedCatalog ?? publishStagedCatalog)(
+        history,
+        staged.outputRoot,
+        { publicationMode: 'atomic', publicationLease },
+      );
+      return { ...result, nextSteps: bootstrapNextSteps() };
+    },
+    options.publisherOptions,
   );
-  return { ...result, nextSteps: bootstrapNextSteps() };
 }
 
 export async function main(argv = process.argv.slice(2)) {

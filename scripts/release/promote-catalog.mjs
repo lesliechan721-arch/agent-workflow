@@ -5,7 +5,11 @@ import {
   assertVersionKind,
   resolvePublishedCliVersion,
 } from './common.mjs';
-import { promoteCatalogTag } from './git-catalog-publisher.mjs';
+import {
+  OFFICIAL_CATALOG_PUBLISH_REMOTE,
+  promoteCatalogTag,
+  withCatalogPublicationLease,
+} from './git-catalog-publisher.mjs';
 
 export function parseArgs(argv) {
   const args = [...argv];
@@ -34,13 +38,19 @@ export async function promoteCatalog(argv = process.argv.slice(2), options = {})
   const { mode, catalogVersion } = parseArgs(argv);
   const currentCliVersion = await (options.resolvePublishedCliVersion
     ?? resolvePublishedCliVersion)(mode);
-  return (options.promoteCatalogTag ?? promoteCatalogTag)({
-    mode,
-    catalogVersion,
-    currentCliVersion,
-    ...(options.remoteUrl ? { remoteUrl: options.remoteUrl } : {}),
-    ...(options.catalogModules ? { catalogModules: options.catalogModules } : {}),
-  });
+  const remoteUrl = options.remoteUrl ?? OFFICIAL_CATALOG_PUBLISH_REMOTE;
+  return (options.withCatalogPublicationLease ?? withCatalogPublicationLease)(
+    remoteUrl,
+    (publicationLease) => (options.promoteCatalogTag ?? promoteCatalogTag)({
+      mode,
+      catalogVersion,
+      currentCliVersion,
+      remoteUrl,
+      publicationLease,
+      ...(options.catalogModules ? { catalogModules: options.catalogModules } : {}),
+    }),
+    options.publisherOptions,
+  );
 }
 
 export async function main(argv = process.argv.slice(2)) {

@@ -27,7 +27,7 @@
 | `pnpm test:smoke:stage:catalog` | 校验显式版本 catalog staging 和本地 path source 消费 |
 | `pnpm test:smoke:publish:catalog` | 使用本地 bare remote 校验 stage、Git publish、fetch 和 Git provider 消费 |
 | `pnpm test:smoke:bootstrap:catalog` | 使用本地 bare remote 校验两个 orphan channel、annotated tag、幂等和 atomic failure |
-| `pnpm test:smoke:fetch` | `test:smoke:stage:catalog` 的兼容入口，校验本地 path source 消费 |
+| `pnpm test:smoke:fetch` | 通过本地 bare Git remote 校验 publish、fetch 和 Git provider 消费；复用 publish catalog smoke |
 | `pnpm test:smoke:plugin-scripts` | 校验真实插件脚本 staging、依赖闭包和 bundle 布局 |
 
 普通测试使用 synthetic catalog、隔离 home 和 fake native runner。不得调用用户真实 Codex/Claude 配置，也不得修改仓库外状态。
@@ -88,6 +88,8 @@ Skill 和 prompt 的确定性测试只保留结构、模板、平台元数据、
 
 `scripts/build/ensure-cli-build.mjs` 只在输入、输出和 package identity 都匹配 generation stamp 时复用 build。并发 build 使用 lock；测试必须覆盖输入变化、输出变化、symlink、并发 owner 和 snapshot 隔离。
 
+Release unit/integration 使用本地 bare Git 覆盖 schema 3 CLI floor、跨 channel publication lock、tag-first pending guard、完整 ledger 串行化和 combined 同一 build generation 绑定。fixture 不访问真实 official remote 或 npm registry。
+
 常规 unit/integration 不应隐式执行 package manager。真实依赖安装、build 后 production closure 和 tarball 内容进入 smoke。
 
 ## Performance Tests
@@ -100,7 +102,7 @@ AW_PERF_SUMMARY {"name":"..."}
 
 Performance gate 必须校验摘要名称集合。缺少、重复或未知名称都必须让门禁失败。
 
-性能预算使用宽松、跨平台的上限。它们用于发现数量级回退，不用于比较微小波动。失败时先确认机器负载，再检查远程调用次数、重复 catalog 校验、cache publication 和 live component probe 数量。
+性能预算使用宽松、跨平台的上限。它们用于发现数量级回退，不用于比较微小波动。source 预算使用确定性的本地 path 和 bare Git fixture，覆盖 warm strict-cache selector、四个 Git/path source 并行 fanout、remote deadline 失败和进程清理确认；不依赖公网。失败时先确认机器负载，再检查远程调用次数、重复 catalog 校验、cache publication 和 live component probe 数量。
 
 ## Test Isolation
 

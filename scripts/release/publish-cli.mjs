@@ -3,10 +3,14 @@ import { fileURLToPath } from 'node:url';
 
 import {
   assertVersionKind,
+  assertReleaseSnapshotIdentity,
   packCli,
   readPackageJson,
   readCliPackageJson,
+  RELEASE_NETWORK_TIMEOUT_MS,
   relativeToRepo,
+  resolveCliPublicationGate,
+  resolvePublishedCliVersion,
   resolveRegistryUrl,
   resolveCliPublishGitCheckArgs,
   runCommand,
@@ -43,7 +47,9 @@ async function publishCliFromSnapshot(
   snapshot,
   expectedVersion,
   gitCheckArgs,
+  releaseIdentity,
 ) {
+  if (releaseIdentity) assertReleaseSnapshotIdentity(snapshot, releaseIdentity);
   const snapshotPackageJsonPath = path.join(snapshot.cliPackageRoot, 'package.json');
   const [snapshotPackageJson, registryUrl] = await Promise.all([
     readPackageJson(snapshotPackageJsonPath),
@@ -69,6 +75,7 @@ async function publishCliFromSnapshot(
     ...gitCheckArgs,
   ];
   await runCommand('pnpm', publishArgs, {
+    timeoutMs: RELEASE_NETWORK_TIMEOUT_MS,
     env: {
       ...process.env,
       AW_RELEASE_NPM_REGISTRY_URL: registryUrl,
@@ -84,6 +91,9 @@ async function publishCliFromSnapshot(
     registryUrl,
     generationId: snapshot.generationId,
     outputDigest: snapshot.outputDigest,
+    inputDigest: snapshot.inputDigest,
+    cliPackageDigest: snapshot.cliPackageDigest,
+    ...(releaseIdentity ? { releaseIdentity } : {}),
   };
 }
 
@@ -92,6 +102,16 @@ export async function publishCli(argv = process.argv.slice(2), options = {}) {
   const expectedVersion = options.expectedVersion
     ?? String((await readCliPackageJson()).version);
   assertVersionKind(expectedVersion, publishMode.versionKind);
+
+  const publishedVersion = options.publishedVersion
+    ?? await (options.resolvePublishedCliVersion ?? resolvePublishedCliVersion)(mode);
+  const gate = resolveCliPublicationGate({
+    mode,
+    candidateVersion: expectedVersion,
+    publishedVersion,
+    ...(options.compareSemVer ? { compare: options.compareSemVer } : {}),
+  });
+  if (gate.status === 'already-published') return { mode, ...gate };
 
   if (!options.skipVerify) {
     await runCommand('pnpm', ['run', 'release:verify:cli']);
@@ -104,6 +124,7 @@ export async function publishCli(argv = process.argv.slice(2), options = {}) {
       options.snapshot,
       expectedVersion,
       gitCheckArgs,
+      options.releaseIdentity,
     );
   }
   return withReleaseBuildSnapshot((snapshot) =>
@@ -113,13 +134,21 @@ export async function publishCli(argv = process.argv.slice(2), options = {}) {
       snapshot,
       expectedVersion,
       gitCheckArgs,
+      options.releaseIdentity,
     )
   );
 }
 
 export async function main(argv = process.argv.slice(2)) {
   try {
-    const { mode, version, tarballPath, generationId } = await publishCli(argv);
+    const result = await publishCli(argv);
+    if (result.status === 'already-published') {
+      console.log(
+        `CLI @lesliechan721/aw@${result.version} is already published with tag ${result.mode}; publication was skipped.`,
+      );
+      return;
+    }
+    const { mode, version, tarballPath, generationId } = result;
     console.log(
       `Published CLI @lesliechan721/aw@${version} with tag ${mode} from build generation ${generationId}. Tarball: ${relativeToRepo(tarballPath)}`,
     );

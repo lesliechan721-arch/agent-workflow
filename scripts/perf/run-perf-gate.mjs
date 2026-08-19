@@ -14,6 +14,9 @@ export const EXPECTED_PERF_SUMMARY_NAMES = [
   'path-source-after-marketplace-rebuild',
   'multi-source-status-console-warm',
   'catalog-source-config-warm',
+  'git-source-selector-strict-cache-warm',
+  'local-four-source-git-path-fanout',
+  'git-source-remote-deadline-cleanup',
 ];
 
 const scriptPath = fileURLToPath(import.meta.url);

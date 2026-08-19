@@ -336,7 +336,7 @@ POSIX 运行时会使用隔离 `HOME` / `TMPDIR`；Windows 运行时会使用隔
 
 ## Node 依赖与打包
 
-没有声明 `scripts.node.packageRoot` 时，Node lifecycle/helper/test 只能使用 `node:` 内置模块和插件内相对 import。相对 import 不能逃出插件根。
+没有声明 `scripts.node.packageRoot` 时，Node lifecycle/helper/test 只能使用 `node:` 内置模块和插件内相对 import。作者 validator 识别 static import、export-from、dynamic import、`require()` 和 `require.resolve()` 的字符串 specifier；字符串、注释、正则和 template literal 文本不算依赖，但 `${...}` 内的代码仍会检查。相对 import 不能逃出插件根。
 
 需要第三方依赖时：
 

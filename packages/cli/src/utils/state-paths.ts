@@ -40,19 +40,71 @@ export function resolveAwHome(env: NodeJS.ProcessEnv = process.env): string {
   );
 }
 
-async function realpathOrResolved(inputPath: string): Promise<string> {
+export function canonicalizePathThroughExistingAncestorSync(inputPath: string): string {
   const resolved = path.resolve(inputPath);
-  try {
-    return await fs.realpath(resolved);
-  } catch {
-    return resolved;
+  let current = resolved;
+  const missingSegments: string[] = [];
+  while (true) {
+    try {
+      return path.join(fs.realpathSync(current), ...missingSegments);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      const parent = path.dirname(current);
+      if ((code !== 'ENOENT' && code !== 'ENOTDIR') || parent === current) throw error;
+      missingSegments.unshift(path.basename(current));
+      current = parent;
+    }
+  }
+}
+
+export async function canonicalizePathThroughExistingAncestor(inputPath: string): Promise<string> {
+  const resolved = path.resolve(inputPath);
+  let current = resolved;
+  const missingSegments: string[] = [];
+  while (true) {
+    try {
+      return path.join(await fs.realpath(current), ...missingSegments);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      const parent = path.dirname(current);
+      if ((code !== 'ENOENT' && code !== 'ENOTDIR') || parent === current) throw error;
+      missingSegments.unshift(path.basename(current));
+      current = parent;
+    }
+  }
+}
+
+export async function ensureRegularDirectoryPath(
+  inputPath: string,
+  label: string,
+): Promise<void> {
+  const resolved = path.resolve(inputPath);
+  const root = path.parse(resolved).root;
+  let current = root;
+  for (const segment of path.relative(root, resolved).split(path.sep).filter(Boolean)) {
+    current = path.join(current, segment);
+    let stat = await fs.lstat(current).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return null;
+      throw error;
+    });
+    if (!stat) {
+      try {
+        await fs.mkdir(current);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      }
+      stat = await fs.lstat(current);
+    }
+    if (!stat.isDirectory() || stat.isSymbolicLink()) {
+      throw new Error(`${label} must be a regular directory path: ${current}`);
+    }
   }
 }
 
 export async function resolveAwHomeCanonical(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<string> {
-  return realpathOrResolved(resolveAwHome(env));
+  return canonicalizePathThroughExistingAncestor(resolveAwHome(env));
 }
 
 export function resolveRepoRootSync(cwd: string): string {
@@ -77,9 +129,9 @@ export async function resolveRepoRoot(cwd: string): Promise<string> {
 }
 
 export async function resolveClaudeProjectKey(cwd: string): Promise<string> {
-  return realpathOrResolved(cwd);
+  return canonicalizePathThroughExistingAncestor(cwd);
 }
 
 export async function resolveCodexProjectKey(cwd: string): Promise<string> {
-  return realpathOrResolved(await resolveRepoRoot(cwd));
+  return canonicalizePathThroughExistingAncestor(await resolveRepoRoot(cwd));
 }

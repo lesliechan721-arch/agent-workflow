@@ -7,7 +7,11 @@ import fs from 'fs-extra';
 import type { CatalogSourceId, CliVersion, SourceIdentity } from '../types.js';
 import { compareStrictSemVer } from './manifest.js';
 import { acquireProcessLock, type ProcessLockLease } from './process-lock.js';
-import { resolveAwHome } from './state-paths.js';
+import {
+  canonicalizePathThroughExistingAncestorSync,
+  ensureRegularDirectoryPath,
+  resolveAwHome,
+} from './state-paths.js';
 import {
   validateCatalogSnapshot,
   type CatalogSnapshotValidation,
@@ -32,11 +36,11 @@ async function acquireCatalogSourceRootLease(
   env: NodeJS.ProcessEnv,
   signal: AbortSignal,
 ): Promise<ProcessLockLease> {
-  const awHome = resolveAwHome(env);
+  const awHome = canonicalizePathThroughExistingAncestorSync(resolveAwHome(env));
   const coordinationRoot = path.join(path.dirname(awHome), '.aw-catalog-source-coordination');
-  await fs.ensureDir(coordinationRoot);
+  await ensureRegularDirectoryPath(coordinationRoot, 'Catalog source coordination root');
   return acquireProcessLock({
-    lockPath: path.join(coordinationRoot, `${digestJson({ awHome: path.resolve(awHome) })}.lock`),
+    lockPath: path.join(coordinationRoot, `${digestJson({ awHome })}.lock`),
     signal,
   });
 }
@@ -116,7 +120,7 @@ async function withCatalogSourceCacheLease<T>(options: {
   action: () => Promise<T>;
 }): Promise<T> {
   const env = options.env ?? process.env;
-  const key = path.resolve(resolveAwHome(env));
+  const key = canonicalizePathThroughExistingAncestorSync(resolveAwHome(env));
   let shared = sharedCatalogCacheLeases.get(key);
   if (!shared) {
     const controller = new AbortController();
@@ -238,7 +242,9 @@ function resolveCatalogSourceCacheLocation(options: {
   env?: NodeJS.ProcessEnv;
 }): CatalogSourceCacheLocation {
   assertCacheIdentity(options.sourceId, options.sourceIdentity);
-  const awHomeDir = resolveAwHome(options.env ?? process.env);
+  const awHomeDir = canonicalizePathThroughExistingAncestorSync(
+    resolveAwHome(options.env ?? process.env),
+  );
   const rootDir = path.join(
     awHomeDir,
     'catalog-cache',
