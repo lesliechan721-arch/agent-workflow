@@ -43,6 +43,13 @@ jobs:
               '    + sections["插件脚本测试"]\n    + "\\n"\n    + sections["示例插件"],',
               1,
           )
+          source = source.replace(
+              '    "   - 新增或重大改写 Skill 时由 `author-agent-skill` 产生通用 Skill package。\n"\n'
+              '    "   - 插件与 Skill README 读取 `references/aw-readme-authoring.md`。\n"',
+              '    "   - 详细 profile 见 `references/aw-authoring-profile.md`；按组件只读取对应 reference。\n"\n'
+              '    "   - 新增、删除、重命名能力或改变用户可观察行为时，读取 `references/aw-readme-authoring.md`。\n"',
+              1,
+          )
           path.write_text(source)
           PY
           python3 -m py_compile /tmp/apply-exact-review-findings.py
