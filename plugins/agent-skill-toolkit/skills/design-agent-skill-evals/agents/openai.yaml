@@ -1,0 +1,7 @@
+interface:
+  display_name: "Design Agent Skill Evals"
+  short_description: "设计现实、分层、可审计的 Agent Skill Eval case"
+  default_prompt: "使用 $design-agent-skill-evals 处理当前请求。"
+
+policy:
+  allow_implicit_invocation: true

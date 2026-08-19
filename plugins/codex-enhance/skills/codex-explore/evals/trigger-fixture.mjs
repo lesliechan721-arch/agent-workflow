@@ -10,6 +10,23 @@ const FIXTURE_FILES = {
   'repo/shared/events.ts': 'export type AuditEvent = { request_id: string; regional_checkout: boolean };\n',
   'repo/frontend/api.ts': 'export const checkoutField = "regional_checkout";\n',
   'repo/storage/audit.ts': 'export const auditColumn = "regional_checkout";\n',
+  'repo/storage/store.ts': [
+    'export function deleteSafely(record) { return archive(record); }',
+    'export function deleteImmediately(record) { return purge(record); }',
+    'function archive(record) { return { record, archived: true }; }',
+    'function purge(record) { return { record, deleted: true }; }',
+    '',
+  ].join('\n'),
+  'repo/orders/cancel.ts': [
+    'import { deleteSafely } from "../storage/store";',
+    'export function cancelOrder(record) { return deleteSafely(record); }',
+    '',
+  ].join('\n'),
+  'repo/cleanup/expired.ts': [
+    'import { deleteSafely } from "../storage/store";',
+    'export function removeExpired(record) { return deleteSafely(record); }',
+    '',
+  ].join('\n'),
   'repo/shared/parser.ts': 'export function parse(input) { return input; }\n',
   'docs/vendor/api-v1.md': '# API v1\nTimeout: 30s. Legacy auth header.\n',
   'docs/vendor/api-v2.md': '# API v2\nTimeout: 45s. Rotating auth token.\n',
@@ -37,7 +54,15 @@ const FIXTURE_FILES = {
   'known/parser-spec.md': '# Parser\nReturn the input fields without mutation.\n',
   'plugins/codex-enhance/README.md': '# Explore\nA read-only evidence workflow.\n',
   'plugins/codex-enhance/workflow.md': '# Gate\nDelegate only valuable, separable read-only exploration.\n',
-  'changes/large-pr.diff': 'diff --git a/store.ts b/store.ts\n-deleteSafely(record)\n+deleteImmediately(record)\n',
+  'changes/large-pr.diff': [
+    'diff --git a/repo/storage/store.ts b/repo/storage/store.ts',
+    '--- a/repo/storage/store.ts',
+    '+++ b/repo/storage/store.ts',
+    '@@',
+    '-deleteSafely(record)',
+    '+deleteImmediately(record)',
+    '',
+  ].join('\n'),
 };
 
 function generatedFixtureFiles() {

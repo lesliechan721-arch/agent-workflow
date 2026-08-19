@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 2,
+  "target": {
+    "kind": "agent-skill",
+    "name": "replace-me",
+    "sourceDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "artifacts": [],
+  "environment": {},
+  "orchestration": {
+    "stageOwner": "review-agent-skill",
+    "providedStages": []
+  },
+  "evalAudit": null,
+  "evalResults": []
+}

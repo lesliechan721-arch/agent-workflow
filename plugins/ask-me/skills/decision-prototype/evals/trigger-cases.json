@@ -1,0 +1,123 @@
+{
+  "schemaVersion": 1,
+  "skill": "decision-prototype",
+  "policy": {
+    "optimization": "balanced",
+    "false_negative_cost": "high",
+    "false_positive_cost": "high",
+    "rationale": "漏触发会让讨论无法获得必要的可体验证据，误触发会制造无价值原型并增加写入成本。"
+  },
+  "cases": [
+    {
+      "id": "prototype_clickable_ui",
+      "split": "validation",
+      "query": "这个审批页面怎么排版我说不清，做一个可点击原型让我试。",
+      "should_load_skill": true,
+      "eval_type": "trigger",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "experience-required",
+      "unit_under_test": "description",
+      "preconditions": {"target_available": true},
+      "oracle": {
+        "rationale": "用户明确需要操作候选界面后再决定。",
+        "rule_refs": ["SKILL.md description"],
+        "confidence": "high",
+        "allowed_variance": "原型形式可调整，但应加载 decision-prototype。"
+      }
+    },
+    {
+      "id": "prototype_visual_options",
+      "split": "validation",
+      "query": "先给我两张候选界面图，我看过后再决定交互。",
+      "should_load_skill": true,
+      "eval_type": "trigger",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "experience-required",
+      "unit_under_test": "description",
+      "preconditions": {"target_available": true},
+      "oracle": {
+        "rationale": "用户需要看到候选结果后作出决定。",
+        "rule_refs": ["SKILL.md description"],
+        "confidence": "high",
+        "allowed_variance": "可以使用图片或等价可视形式，但应加载 decision-prototype。"
+      }
+    },
+    {
+      "id": "prototype_technical_spike",
+      "split": "validation",
+      "query": "用最小技术 spike 验证浏览器端加密方案是否值得选，不要直接做生产实现。",
+      "should_load_skill": true,
+      "eval_type": "trigger",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "evidence-required",
+      "unit_under_test": "description",
+      "preconditions": {"target_available": true},
+      "oracle": {
+        "rationale": "用户需要最小可运行证据来支持方案选择。",
+        "rule_refs": ["SKILL.md description"],
+        "confidence": "high",
+        "allowed_variance": "验证手段可不同，但应保持原型性质并加载本 Skill。"
+      }
+    },
+    {
+      "id": "prototype_not_spec",
+      "split": "validation",
+      "query": "已经决定采用方案 B，把它写成开发 Spec。",
+      "should_load_skill": false,
+      "eval_type": "trigger",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "near-miss-spec",
+      "unit_under_test": "description",
+      "preconditions": {"target_available": true},
+      "oracle": {
+        "rationale": "决定已经形成，当前交付是记录规格，不需要原型。",
+        "rule_refs": ["SKILL.md description"],
+        "confidence": "high",
+        "allowed_variance": "可以加载规格能力，但不应加载 decision-prototype。",
+        "minimal_counterexample": "改为需要先看到方案 B 的可操作样例再决定。"
+      }
+    },
+    {
+      "id": "prototype_not_implementation",
+      "split": "validation",
+      "query": "按现有 Spec 实现审批页面。",
+      "should_load_skill": false,
+      "eval_type": "trigger",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "near-miss-implementation",
+      "unit_under_test": "description",
+      "preconditions": {"target_available": true},
+      "oracle": {
+        "rationale": "当前任务是正式实现，不是用原型作决定。",
+        "rule_refs": ["SKILL.md description"],
+        "confidence": "high",
+        "allowed_variance": "可以使用实现能力，但不应加载 decision-prototype。",
+        "minimal_counterexample": "改为正式实现前需要可点击候选页面确认布局。"
+      }
+    },
+    {
+      "id": "prototype_not_explanation",
+      "split": "validation",
+      "query": "解释这三个 UI 方案的优缺点，不需要制作原型。",
+      "should_load_skill": false,
+      "eval_type": "trigger",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "near-miss-direct-answer",
+      "unit_under_test": "description",
+      "preconditions": {"target_available": true},
+      "oracle": {
+        "rationale": "用户明确只要一次性分析，并排除原型。",
+        "rule_refs": ["SKILL.md description"],
+        "confidence": "high",
+        "allowed_variance": "可以直接回答，但不应加载 decision-prototype。",
+        "minimal_counterexample": "改为需要实际看到或操作三个方案后再选择。"
+      }
+    }
+  ]
+}

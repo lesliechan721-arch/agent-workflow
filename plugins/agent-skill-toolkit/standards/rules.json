@@ -1,0 +1,443 @@
+{
+  "schemaVersion": 2,
+  "compositionModel": {
+    "axes": [
+      ["Independent intents", "用户能否只请求其中一个结果而不需要其它结果？"],
+      ["Permission modes", "是否混合只读、写入、高成本执行和正式发布？"],
+      ["Evidence lifecycles", "作者、Oracle、运行证据和独立裁决是否由同一主体生成并判定？"],
+      ["Environment profiles", "通用规范与单一项目、客户端或 runtime 细节是否混合？"],
+      ["Clean-context phases", "哪些阶段需要独立上下文以避免自证、锚定或注意力竞争？"],
+      ["Stable handoffs", "阶段之间能否用短而稳定的 artifact 合同通信？"]
+    ],
+    "verdicts": [
+      ["coherent", "一个独立意图，权限和证据生命周期一致。"],
+      ["composite-proportionate", "多个不能独立触发的紧密分支，且共享大部分上下文。"],
+      ["overloaded", "多个独立意图或权限、证据、profile 不对称，典型 branch 承担大量无关内容。"],
+      ["orchestrator-needed", "阶段应分成多个 Skill，由轻量入口只管理顺序、授权和 handoff。"]
+    ],
+    "splitSignals": [
+      "创建或修改与独立 Review 混合。",
+      "Eval case 设计与 Oracle 审核混合。",
+      "通用质量标准与项目 build、materialization 或 publish 混合。",
+      "长时间执行或状态管理与结果裁决混合。",
+      "阶段需要 clean context，且已有稳定 artifact handoff。"
+    ]
+  },
+  "findingAdmission": {
+    "evidenceTypes": [
+      ["observed", "trace、复现、测试或用户确认失败。"],
+      ["normative", "适用官方规范、schema、项目硬规则或用户要求。"],
+      ["structural", "直接材料在同一可达路径上支持 exact claim，不依赖未证实前提。"],
+      ["heuristic", "第三方设计原则或经验建议。"],
+      ["inferred", "尚未验证的推演。"]
+    ],
+    "highSeverityRequirements": [
+      "至少包含 observed、normative 或 structural 之一。",
+      "记录直接 evidence、location 和 exact claim。",
+      "所有 material premise 均有来源、证据并为 supported。",
+      "reachability 为 supported，并记录路径和证据。",
+      "记录 impact、counterevidence、owner、minimal action 和 validation。"
+    ]
+  },
+  "rules": [
+    {
+      "id": "agent.pointer",
+      "principle": "每个上下文指针同时说明目标材料与到达条件；同义词不冒充独立 branch。",
+      "writing": {
+        "action": "先写真正不同的触发 branch，再压缩为短指针。",
+        "completion": "每个外部材料都有可判定的到达条件。"
+      },
+      "content_review": {
+        "check": "检查弱指针、重复 branch 和必须内容是否被错误隐藏。"
+      },
+      "skill_author": {
+        "action": "description 先表达用户意图；外部资源指针写明读取条件。"
+      },
+      "skill_review": {
+        "check": "检查 description、resource pointer 与实际 branch 是否一致。"
+      },
+      "evidenceType": "heuristic",
+      "sourceRefs": [
+        "agent-skills.best-practices"
+      ],
+      "appliesTo": [
+        "writing",
+        "content_review",
+        "skill_author",
+        "skill_review"
+      ]
+    },
+    {
+      "id": "agent.information-hierarchy",
+      "principle": "将内容放在 in-file step、in-file reference、disclosed reference、script、asset 或 environment lookup 的正确层级。",
+      "writing": {
+        "action": "先按 branch 做信息层级图，再写正文。",
+        "completion": "典型路径只携带该路径需要的内容。"
+      },
+      "content_review": {
+        "check": "检查 sprawl、错误内联、过度披露和伪渐进式披露。"
+      },
+      "skill_author": {
+        "action": "主 SKILL.md 只保留所有命中 branch 都需要的工作流和 gotcha。"
+      },
+      "skill_review": {
+        "check": "审计 active path，而非只看包总大小。"
+      },
+      "evidenceType": "heuristic",
+      "sourceRefs": [
+        "agent-skills.best-practices"
+      ],
+      "appliesTo": [
+        "writing",
+        "content_review",
+        "skill_author",
+        "skill_review"
+      ]
+    },
+    {
+      "id": "agent.completion-boundary",
+      "principle": "关键步骤以清晰、可检查且要求充分的完成条件结束。",
+      "writing": {
+        "action": "为真正必要的步骤写 done/not-done 条件。",
+        "completion": "后续步骤不能用模糊完成标准诱导提前结束。"
+      },
+      "content_review": {
+        "check": "先判断步骤是否必要，再评价完成边界。"
+      },
+      "skill_author": {
+        "action": "只为脆弱或必须持续跟踪的关键步骤设置完成门。"
+      },
+      "skill_review": {
+        "check": "不得用更完整的完成条件挽救本应删除的步骤。"
+      },
+      "evidenceType": "heuristic",
+      "sourceRefs": [
+        "agent-skills.best-practices"
+      ],
+      "appliesTo": [
+        "writing",
+        "content_review",
+        "skill_author",
+        "skill_review"
+      ]
+    },
+    {
+      "id": "agent.minimum-control",
+      "principle": "控制强度匹配任务脆弱性；多种方案合理时保留模型判断空间。",
+      "writing": {
+        "action": "先写不超过 8 条的最小行为合同，再增加有证据的约束。",
+        "completion": "每个强制行为块都能说明删除后增加的目标失败。"
+      },
+      "content_review": {
+        "check": "对正确但过重的规则使用 relax、move、delete 或 needs-ablation。"
+      },
+      "skill_author": {
+        "action": "默认改进顺序为 delete → relax → move → rewrite → add。"
+      },
+      "skill_review": {
+        "check": "独立报告 minimal、proportionate、over-specified 或 over-engineered。"
+      },
+      "evidenceType": "heuristic",
+      "sourceRefs": [
+        "agent-skills.best-practices"
+      ],
+      "appliesTo": [
+        "writing",
+        "content_review",
+        "skill_author",
+        "skill_review"
+      ]
+    },
+    {
+      "id": "agent.source-of-truth",
+      "principle": "环境、schema、配置、目录和 --help 是事实源；文档只缓存理由、约定和非显然 gotcha。",
+      "writing": {
+        "action": "删除一条命令即可查到的低价值复述。",
+        "completion": "易变事实有权威来源或改为环境 lookup。"
+      },
+      "content_review": {
+        "check": "检查缓存、过期事实和无效 source map。"
+      },
+      "skill_author": {
+        "action": "工具 schema 已给出的字段细节不在 Skill 中维护第二份文档。"
+      },
+      "skill_review": {
+        "check": "区分领域策略与 schema/runtime 事实。"
+      },
+      "evidenceType": "heuristic",
+      "sourceRefs": [
+        "agent-skills.best-practices"
+      ],
+      "appliesTo": [
+        "writing",
+        "content_review",
+        "skill_author",
+        "skill_review"
+      ]
+    },
+    {
+      "id": "agent.co-location",
+      "principle": "同一概念的定义、规则和 caveat 位于一个权威位置；区分 duplication 与 scattering。",
+      "writing": {
+        "action": "按概念聚合内容，不按历史追加位置堆叠。",
+        "completion": "读一个权威位置即可得到完整规则。"
+      },
+      "content_review": {
+        "check": "识别重复、散落和互相矛盾的权威来源。"
+      },
+      "skill_author": {
+        "action": "共享规则只维护一个 source，并生成动作视图。"
+      },
+      "skill_review": {
+        "check": "不因物理拆文件就默认认为渐进式披露成立。"
+      },
+      "evidenceType": "heuristic",
+      "sourceRefs": [
+        "agent-skills.best-practices"
+      ],
+      "appliesTo": [
+        "writing",
+        "content_review",
+        "skill_author",
+        "skill_review"
+      ]
+    },
+    {
+      "id": "skill.problem-value",
+      "principle": "Skill 必须解决可观察的真实问题，并相较无 Skill 或最小 Skill 产生增量价值。",
+      "skill_author": {
+        "action": "先写 SkillDesignBrief：真实任务、失败、baseline gap、成功指标和范围外事项。",
+        "completion": "无法证明增量时使用更简单能力或不创建 Skill。"
+      },
+      "skill_review": {
+        "check": "区分真实项目知识与模型已知的泛化常识。"
+      },
+      "evidenceType": "normative",
+      "sourceRefs": [
+        "agent-skills.best-practices"
+      ],
+      "appliesTo": [
+        "skill_author",
+        "skill_review"
+      ]
+    },
+    {
+      "id": "skill.invocation-trigger",
+      "principle": "调用方式和 description 是设计输入；触发覆盖真实用户意图并排除高价值 near-miss。",
+      "skill_author": {
+        "action": "先决定 model/manual 等调用意图，再写 discovery description。",
+        "completion": "description 与 invocation metadata 一致。"
+      },
+      "skill_review": {
+        "check": "分别评价触发召回、误触发代价和相邻 Skill 竞争。"
+      },
+      "evidenceType": "normative",
+      "sourceRefs": [
+        "agent-skills.best-practices"
+      ],
+      "appliesTo": [
+        "skill_author",
+        "skill_review"
+      ]
+    },
+    {
+      "id": "skill.composition-fitness",
+      "principle": "一个 Skill 应拥有一个可独立解释和触发的工作单元；独立意图、权限、证据生命周期和环境 profile 不应被局部正确性掩盖。",
+      "skill_author": {
+        "action": "枚举 independent intents、permission modes、evidence lifecycles、environment profiles、clean-context phases 和 stable handoffs。",
+        "completion": "拆分或保留决定有明确理由和 artifact contract。"
+      },
+      "skill_review": {
+        "check": "若两个以上独立意图伴随权限/证据/环境/上下文差异且可稳定交接，判定 overloaded 或 orchestrator-needed。"
+      },
+      "evidenceType": "heuristic",
+      "sourceRefs": [
+        "agent-skills.best-practices",
+        "writing-for-agents"
+      ],
+      "appliesTo": [
+        "skill_author",
+        "skill_review"
+      ]
+    },
+    {
+      "id": "skill.package-resources",
+      "principle": "scripts、references、assets 和 evals 按真实用途存在；缺省不是缺陷。",
+      "skill_author": {
+        "action": "重复、确定、可测试逻辑进入 script；特定 branch 资料进入 focused reference。",
+        "completion": "所有资源一层可达并有明确读取或执行条件。"
+      },
+      "skill_review": {
+        "check": "逐 reference 审计必要性、职责、branch locality、active-path load 和替代位置。"
+      },
+      "evidenceType": "normative",
+      "sourceRefs": [
+        "agent-skills.best-practices"
+      ],
+      "appliesTo": [
+        "skill_author",
+        "skill_review"
+      ]
+    },
+    {
+      "id": "eval.oracle-validity",
+      "principle": "Eval 必须先证明 Oracle、前提、层级和 assertion 有资格评价 Skill。",
+      "eval_design": {
+        "action": "为关键 case 写 test layer、preconditions、rationale、rule refs、allowed variance 和 minimal counterexample。",
+        "completion": "case 能归入现实场景族且标签可解释。"
+      },
+      "eval_audit": {
+        "check": "先审 suite validity；错误 Oracle 不进入发布和 Skill 修改。"
+      },
+      "evidenceType": "normative",
+      "sourceRefs": [
+        "agent-skills.evaluating-skills",
+        "agent-workflows.eval-contract"
+      ],
+      "appliesTo": [
+        "eval_design",
+        "eval_audit"
+      ]
+    },
+    {
+      "id": "eval.error-cost",
+      "principle": "正负错误代价不默认对称；分别报告 recall、false negative、specificity 和 false positive。",
+      "eval_design": {
+        "action": "声明 recall-first、precision-first、balanced 或 critical 及现实代价。",
+        "completion": "样本数量不会冒充实际决策权重。"
+      },
+      "eval_audit": {
+        "check": "检查 representative/regression 是否主导发布，challenge 不得绑架通用规则。"
+      },
+      "evidenceType": "normative",
+      "sourceRefs": [
+        "agent-skills.evaluating-skills",
+        "agent-workflows.eval-contract"
+      ],
+      "appliesTo": [
+        "eval_design",
+        "eval_audit"
+      ]
+    },
+    {
+      "id": "eval.change-safety",
+      "principle": "Eval 失败先归因；只有有效、可复现且归因为 skill-defect 的场景族失败才能驱动修改。",
+      "eval_design": {
+        "action": "为修复预留同族、minimal pair、相反标签和固定回归集。",
+        "completion": "修改目标不是单个 query。"
+      },
+      "eval_audit": {
+        "check": "检查 failure triage、运行方差、baseline、净收益和复杂度回归。"
+      },
+      "evidenceType": "normative",
+      "sourceRefs": [
+        "agent-skills.evaluating-skills",
+        "agent-workflows.eval-contract"
+      ],
+      "appliesTo": [
+        "eval_design",
+        "eval_audit"
+      ]
+    },
+    {
+      "id": "review.evidence-admission",
+      "principle": "Finding 的 claim 不强于证据；P0/P1 需要完整前提、可达性、影响、反证和 owner。",
+      "skill_review": {
+        "check": "区分 observed、normative、structural、heuristic 和 inferred；推演不伪装成直接矛盾。"
+      },
+      "content_review": {
+        "check": "设计建议与已证实缺陷分开。"
+      },
+      "eval_audit": {
+        "check": "expected output 只证明 Oracle，不证明实际失败。"
+      },
+      "evidenceType": "normative",
+      "sourceRefs": [
+        "agent-workflows.review-contract"
+      ],
+      "appliesTo": [
+        "content_review",
+        "skill_review",
+        "eval_audit"
+      ]
+    }
+  ],
+  "dimensions": [
+    {
+      "id": "specification",
+      "title": "规范与包完整性",
+      "weight": 6,
+      "details": "检查：\n\n- `SKILL.md`、YAML frontmatter、`name`、目录名和 `description` 是否符合当前规范。\n- `compatibility`、`metadata`、`allowed-tools` 等可选字段是否有真实用途，并与目标客户端支持情况一致。\n- 核心相对引用是否存在，一层可达资源是否可解析，必要脚本是否可运行。\n- 包结构是否清楚，必需材料没有藏在不可发现或深链位置。\n- 官方 validator 或等价静态验证是否通过。\n\n高分：结构有效、引用完整、可选字段克制。低分：无效 frontmatter、关键引用断裂、目录/name 不一致、兼容性声明与实际依赖矛盾。"
+    },
+    {
+      "id": "problem_value",
+      "title": "问题基础与实际价值",
+      "weight": 8,
+      "details": "检查：\n\n- Skill 是否源自真实任务、项目材料、失败 trace、运行手册或反复纠正。\n- 目标问题是否可观察、可复现、可衡量；成功标准和范围外事项是否明确。\n- 不加载 Skill 时模型是否会稳定出错、浪费显著成本或缺少关键领域知识。\n- Skill 是否提供模型本来不知道的约定、程序、API 模式或非显然 gotcha。\n- 是否有无 Skill、最小 Skill 或上一版基线用于证明增量价值。\n\n高分：问题和收益有行为证据。低分：只写泛化常识，或无法说明为什么需要该 Skill。"
+    },
+    {
+      "id": "triggering",
+      "title": "调用策略、触发条件与 Context Pointer",
+      "weight": 10,
+      "details": "### Invocation\n\n仅在目标客户端支持相关机制时评估 model-invoked、user-invoked、router 或等价调用策略；客户端不支持时标为不适用，不把第三方字段当作通用规范。\n\n检查 Skill 是否需要被模型自主发现、被其它 Skill 到达，或只应由用户手动调用；该选择是否值得其长期 context load 或人类 cognitive load。\n\n### Description 与 Pointer\n\n把 description 视为顶层 context pointer。对 description 及正文中的每个外部指针检查：\n\n- 是否同时说明目标材料是什么，以及哪些真正不同的 branch 应触发读取。\n- 是否先表达用户意图和最有判别力的触发信息，而不是内部实现清单。\n- 同义词是否只是重复同一 branch；真正不同的 near-miss 是否被区分。\n- 是否重复正文已经承担的身份信息。\n- weak pointer 是否只写“详见 references”而没有到达条件。\n- 必须读取的内容是否错误地藏在一个模型可能识别不到的 pointer 后。\n\n### Trigger Eval\n\n- 使用现实正例和 near-miss 负例，通常约 20 条，覆盖不同措辞、显式程度、复杂度和上下文。\n- 每条多次运行，计算 trigger rate；固定 train/validation 划分，避免针对测试关键词过拟合。\n- 检查相邻 Skill 同时触发、漏触发和误触发。\n\n高分：调用策略合理，pointer branch 清楚，trigger 结果稳定。低分：description 只描述功能、堆砌同义词、边界过宽或没有行为测试。"
+    },
+    {
+      "id": "scope_composition",
+      "title": "范围、边界与组合性",
+      "weight": 8,
+      "details": "检查：\n\n- Skill 是否是一个连贯工作单元，而非多个不相关职责的集合。\n- 授权、业务判断、领域程序、工具调用和结果生产是否分层清楚。\n- 与相邻 Skill 是否重复、冲突、循环调用或同时管理同一流程。\n- 是否因新 schema 字段、理论边界或一次异常扩大原始范围。\n- 是否有清楚的停止、交接、失败和范围外边界。\n- 拆分或合并是否真的改善触发、信息层级或执行，而不是只增加文档数量。\n\n高分：边界清楚、可组合、不会劫持相邻任务。低分：同时承担触发、授权、runtime 状态、领域判断和所有恢复逻辑。"
+    },
+    {
+      "id": "instruction_design",
+      "title": "程序与完成边界",
+      "weight": 10,
+      "details": "检查：\n\n- 是否提供可复用方法、步骤、默认值或决策原则，而不是某个实例答案。\n- 是否提供一个清楚默认值，而不是平铺等价菜单。\n- 模板、例子、gotcha、checklist、validation loop 是否比抽象长文更有效。\n- 指令顺序、优先级、输出合同和错误处理是否一致。\n\n先读取最小有效控制审计的保留结论。只有 `keep-invariant` 和 `keep-default` 中需要持续跟踪的关键步骤，才执行 Completion Boundary Audit：\n\n- **Clarity**：模型能否区分 done 与 not done。\n- **Checkability**：是否可由文件、脚本、清单或明确断言验证。\n- **Demand**：完成标准是否要求足够 legwork，而不是形式完成。\n- **Exhaustiveness**：是否覆盖该步骤必须处理的对象。\n- **Premature-completion risk**：后续步骤是否诱使模型过早结束当前工作。\n\n不得通过增加完成条件来挽救一个不必要的步骤。先删除或放宽该步骤；只有真实 trace 显示模型仍被后续步骤牵引时，才考虑按 sequence 形成真正的上下文边界。\n\n软性行为优先写目标行为；安全、权限和破坏性操作可以保留明确 prohibition。否定句本身不是规范缺陷，只能在 trace 支持时作为质量 finding。\n\n高分：被证明必要的程序具有清楚且可检查的完成标准。低分：不必要步骤因完成条件完整而被保留，或大量 `must` 没有可执行程序。"
+    },
+    {
+      "id": "minimum_control",
+      "title": "最小充分控制与模型自由度",
+      "weight": 14,
+      "details": "在评价现有章节组织前完成 Minimum Effective Control Audit：\n\n1. 只根据目标问题、真实失败、硬性规范、模型无法知道的领域事实，以及脆弱或不可逆操作，写出不超过 8 条的最小行为合同。简单 Skill 可以少于 5 条。\n2. 按行为块检查现有强制规则，不按段落数量机械建表。说明它改变的行为、依据和控制类型。\n3. 每个行为块分类为 `keep-invariant`、`keep-default`、`relax`、`move`、`delete` 或 `needs-ablation`。\n4. 不能说明删除或放宽后会增加哪种目标失败时，不得仅因规则正确、清楚或完整而保留为 mandatory。\n\n检查控制强度是否匹配：\n\n- 唯一合法流程、破坏性操作和硬性规范可以使用精确步骤及 prohibition。\n- 有可靠默认但允许例外时，使用 default 和 escape hatch。\n- 多种方案合理时，使用目标、原则和不变量。\n- heuristic 应标为例子或提示，不成为完成门禁。\n- 模型默认能可靠处理且没有独特领域价值的内容应删除。\n\n记录控制面信号，包括 mandatory stages、hard gates、固定中间 artifact、prohibition、conditional branch 和固定输出字段。静态计数只提供线索，不自动形成 finding，也不按 token 数量直接判定复杂度。\n\n评分锚点：\n\n- **5 — 最小且充分**：每个强制规则有明确依据；可变任务保留判断空间；无法在保留核心行为时实质缩短。\n- **4 — 基本适当**：主体控制合理，只有少量可删除、放宽或迁移的内容，没有明显限制正常策略。\n- **3 — 正确但偏重**：多个 mandatory gate 缺少强依据，heuristic 被写成硬条件，或正文可显著缩短而不损失独特价值。\n- **2 — 明显过度规定**：大量规则属于模型常识或防御性边界，开放任务被强制使用统一阶段、状态或 artifact。\n- **1 — 以控制替代能力**：Skill 接近完整 runbook 或人工 SOP，模型主要执行文档而不是运用领域判断。\n- **0 — 有害**：控制结构在多数目标场景中造成失败、严重漏检或无效工作。\n\n缺少 ablation 不代表规则必然无效；使用 `needs-ablation`。但当多个强制规则的必要性未知时，本维度不能得到 4–5 分。"
+    },
+    {
+      "id": "context_disclosure",
+      "title": "信息层级、资源与渐进式披露",
+      "weight": 10,
+      "details": "先把内容分类：\n\n1. **In-file step**：当前 branch 必须按序执行的动作。\n2. **In-file reference**：同一文件中按需咨询的定义、规则或平坦 peer set。\n3. **Disclosed reference**：只有特定 branch 才加载的外部材料。\n4. **Environment lookup**：schema、配置、目录、`--help`、源码或其它现成事实源。\n\n先检查内容是否应存在，再检查放置位置。把不必要内容移动到 reference 不能关闭最小控制 finding。\n\n检查：\n\n- `SKILL.md` 是否只保留每次激活都需要的步骤、核心 reference 和提前必须知道的 gotcha。\n- disclosure 是否按 branch 决定，而不是只按文件大小决定。\n- pointer 是否足以让模型在正确 branch 到达外部材料。\n- reference 是否一层可达，避免深链和多重索引。\n- 是否在平坦 reference 本来合理时机械拆分。\n- 是否存在 sprawl：即便每行独特且有效，整体仍超过模型稳定关注能力。\n- 拆分是否真正降低目标路径的 context load；把状态机移动到 reference 但每次都读取不算渐进式披露。\n- context load 与人类 cognitive load 的取舍是否符合使用方式。\n- references、assets、模板和数据是否有明确用途及到达 pointer。\n- 同一概念的定义、规则和 caveat 是否 co-located，是否存在 duplication 或 scattering。\n- assets 是否隐藏必须执行的指令；资源是否断裂、过期、不可达、孤立或从未使用。\n- 版本化外部事实是否记录权威来源、核验日期和更新策略。\n\n没有资源且确实无需资源可以得到高分。高分：内容先证明必要，随后放在正确 branch，每条路径只携带必要信息。低分：正文百科全书化、pointer 弱、reference 每次必读，或仅把不必要复杂度移出主文件。"
+    },
+    {
+      "id": "architecture",
+      "title": "职责归属与自然语言状态机风险",
+      "weight": 10,
+      "details": "检查：\n\n- Skill 是否只维护领域策略、项目约定、稳定默认值和少量不变量。\n- 参数类型、枚举、必填字段和返回结构是否由 tool schema 提供。\n- 真实状态、事件顺序、并发、幂等、取消和生命周期是否由 runtime 管理。\n- 确定性解析、生成、转换和静态校验是否交给 script。\n- role 是否只保留叶子职责、固定配置和最小输出要求。\n- 尚未证实、低概率或组合爆炸边界是否留在 eval/issue。\n- 是否以自然语言维护计时器、额度、pending、跨 actor 握手、乱序事件或取消/关闭竞态。\n\n出现上述信号时读取 `references/architecture-boundaries.md`。高分：职责分层正确，复杂机制有一等能力。低分：核心正确性依赖模型记住多维状态或通过自然语言字符串维护分布式协议。"
+    },
+    {
+      "id": "scripts",
+      "title": "脚本与确定性自动化",
+      "weight": 7,
+      "details": "评分对象是脚本决策是否正确，而不是脚本数量。\n\n检查：\n\n- 重复、复杂、确定、可测试的逻辑是否被脚本化。\n- 不需要脚本时是否保持简单。\n- 脚本是否使用 skill 根目录相对路径，并由 `SKILL.md` 清楚说明用途和调用时机。\n- 是否自包含或固定依赖；非交互；支持 `--help`；错误可操作；退出码有意义。\n- stdout 是否适合 agent 解析，diagnostics 是否写 stderr。\n- 是否考虑幂等、输入限制、输出上限、safe defaults 和必要 dry-run。\n- 是否有测试、fixture 或安全样例运行。\n- 是否错误地用 shell、文件或 Git 侧信道模拟 runtime 状态。\n\n详细检查见 `references/scripts-and-resources.md`。"
+    },
+    {
+      "id": "evals",
+      "title": "Eval 设计、Oracle 有效性与修改安全",
+      "weight": 9,
+      "details": "存在 eval，或 eval 结果被用于评分、发布或修改 Skill 时，先消费 `audit-agent-skill-evals` 产生的 `EvalAuditResult`。先审核 suite，再使用其结果评价 Skill。\n\n本维度只评四组内容：\n\n1. **目标与代价**：是否声明 recall-first、precision-first、balanced 或 critical；是否分别评估 false negative 和 false positive 的现实代价。\n2. **Case 与 oracle 有效性**：测试层级、unit under test、前提、oracle rationale、rule refs、observable assertion、allowed variance 和 minimal counterexample 是否成立。\n3. **现实性与覆盖**：provenance、case role、scenario family、near-miss、minimal pair 和真实用户措辞是否可靠；challenge 和 diagnostic case 是否没有主导发布结论。\n4. **结果与修改安全**：是否有实际运行、适用 baseline、trace、方差与成本；失败是否先归因；eval-driven 修改是否经过相邻边界和固定 validation/sanity/regression 回归。\n\n对 trigger 或其它二元决策分别报告 positive recall、false-negative rate、negative specificity 和 false-positive rate。没有明确错误代价政策时，不把它们压缩为一个总准确率。\n\n高分：关键 oracle 与现实性可靠，有重复运行和适用 baseline，eval-driven 修改经过净收益与回归验证。低分：错误或不现实用例、混合测试层级、少量随机结果或 challenge case 直接驱动 Skill 增加规则。"
+    },
+    {
+      "id": "reliability",
+      "title": "可靠性、安全与兼容性",
+      "weight": 4,
+      "details": "检查：\n\n- 环境、系统包、网络、权限和产品要求是否准确声明。\n- 能力不可用时是否明确失败，而非静默降级或伪造成功。\n- 外部搜索、敏感数据、凭据和副作用边界是否安全。\n- 客户端特有字段是否先确认支持，不冒充通用 Agent Skills 规范。\n- 声称支持的产品、版本和模型是否有验证或合理兼容策略。\n- 失败时是否保留用户控制和可恢复信息。"
+    },
+    {
+      "id": "maintainability",
+      "title": "剪枝、事实源与变更纪律",
+      "weight": 4,
+      "details": "检查：\n\n- schema、配置、目录、`--help` 或源码已经能直接回答的事实，是否仍被 Skill 低价值复制。\n- 缓存外部事实时，是否只保留选择理由、稳定约定、非显然 gotcha 和更新策略。\n- 每条指令是否相较默认行为产生可观察增量；不能确定时是否通过 ablation，而非凭语言直觉判 no-op。\n- 共享规则是否有单一来源，避免复制到多个 role、prompt 或 reference。\n- 修改是否替换或删除旧逻辑，而不是形成 sediment：历史规则只因“不敢删”永久沉积。\n- delta review 是否跟踪正文、branch、资源、eval 和行为指标的净变化。\n- 连续迭代中，质量提升是否超过 context、cognitive 和维护成本。\n\n高分：当前版本已经完成删除审计，每个大行为块有边际价值证据，变更后净复杂度受控。低分：只承诺以后不增长，当前沉积未被审计；或每轮增加分支却没有行为改善。"
+    }
+  ],
+  "scoringModel": {
+    "introduction": "full/release-quality 使用 12 维评分。quick/delta 不计算总分。总分和 quality band 只进入技术附录与 JSON，不决定发布结论。",
+    "policy": "## 0–5 分锚点\n\n- **5 — 优秀**：设计正确、材料完整、无实质缺陷；关键判断有行为或权威证据，或正确证明组件无需存在。\n- **4 — 良好**：主体可靠，只有局部清晰度、覆盖或验证缺口。\n- **3 — 合格**：能工作，但存在明显改进空间、证据不足或反复降低质量的问题。\n- **2 — 较弱**：目标场景中容易失败，需要实质修改。\n- **1 — 很差**：该维度大部分缺失、错误或与目标不一致。\n- **0 — 无效**：直接矛盾、关键机制不可执行，或完全破坏 Skill 目标。\n\n允许 0.5 步进。组件应当不存在且被正确省略时可得 4–5；用户未提供、无法判断时设为 `null`，降低 coverage。\n\n## 证据权威\n\n| 类型 | 含义 | 可单独支持 P0/P1 |\n| --- | --- | ---: |\n| `observed` | trace、复现、测试、用户确认失败 | 是 |\n| `normative` | 当前官方规范、目标 runtime/schema、项目硬规则、用户明确要求 | 是 |\n| `structural` | 符合 `SKILL.md` exact-claim 与完整前提定义的直接断裂、无效配置、矛盾或不可执行关系 | 是 |\n| `heuristic` | 第三方设计原则、经验模式、可读性判断 | 否 |\n| `inferred` | 未验证的未来风险或静态推演 | 否 |\n\nFinding 可以包含多个证据类型。P0/P1 至少包含一个 `observed`、`normative` 或 `structural`；若所谓“直接矛盾”存在，应标为 `structural`，而不是提升纯推演。\n\n## 置信度\n\n- **high**：行为结果，或权威来源与被审内容共同直接支持。\n- **medium**：静态材料完整，但缺少运行验证。\n- **low**：主要是 heuristic/inference，或材料不完整。\n- **unknown**：缺少必要材料。\n\n质量分、coverage 和 confidence 相互独立。\n\n## 计算\n\n`weighted_score = Σ(weight × score / 5) ÷ assessed_weight × 100`\n\n只有 full/release-quality 且 12 个维度全部完成时计算 `weighted_score` 和 raw/effective quality band。quick/delta 的这些字段为 `null`。\n\n同时报告：\n\n- coverage：已评估权重占 100 的比例。\n- confidence index：high=1.0、medium=0.7、low=0.4、unknown=0，按已评估权重加权。\n- raw quality band：90–100 excellent；80–89.5 strong；70–79.5 adequate；60–69.5 weak；<60 poor。\n- effective quality band：先使用 raw quality band，再应用复杂度上限；`over-specified` 不高于 `adequate`，`over-engineered` 不高于 `weak`。\n\n总分和 raw/effective quality band 只用于定位薄弱维度、比较同一 Skill 的版本和观察趋势。它们不定义设计结论或发布就绪度，也不用于直接比较用途或结构不同的 Skill。\n\n## 复杂度结论\n\nfull/release-quality 必须在评分前完成最小有效控制审计，并给出独立结论：\n\n- `minimal`：强制规则均有明确依据，无法在保留核心行为时实质缩短。\n- `proportionate`：控制强度与任务脆弱度匹配，只有局部可选简化。\n- `over-specified`：主体正确，但多个 always-loaded 强制规则、阶段或 artifact 缺少足够依据，合理策略空间受到限制。\n- `over-engineered`：Skill 接近完整 runbook 或人工 SOP，控制结构替代了模型应承担的领域判断。\n\nJSON 同时保存 reducibility：`almost-none`、`minor`、`significant`、`core-plus-reference` 或 `redesign`。`minimal` 和 `proportionate` 要求 `minimum_control` 高于 3；`over-specified` 必须关联该维度 finding，内部方向不能为 `aligned`；`over-engineered` 必须关联该维度 finding，内部方向为 `drifted`。方向和 reducibility 是技术诊断，不进入主报告顶层。缺少 ablation 时可以使用 `needs-ablation`；当多个强制规则的必要性仍未知时，不能把最小控制维度评为 4–5。\n\n## 证据上限提示\n\n脚本不自动改分，但下列高分必须解释：\n\n- 没有 trigger eval 结果，`triggering` 通常不高于 3。\n- 没有 pointer audit，`triggering` 通常不高于 4。\n- 没有 completion-boundary audit，`instruction_design` 通常不高于 4。\n- full/release-quality 没有 minimum-effective-control audit 时 scorecard 无效；quick/delta 没有该审计时，`minimum_control` 通常不高于 3。\n- 没有 information-hierarchy map，`context_disclosure` 通常不高于 4。\n- 有脚本但未做安全静态检查、`--help` 或样例运行，`scripts` 通常不高于 3。\n- 只有 eval 文件，没有 Case Admission Audit，`evals` 通常不高于 2。\n- Case 设计、oracle 和现实性已审计，但没有实际运行，`evals` 通常不高于 3。\n- 有运行但没有适用 baseline、方差解释、错误代价政策或 failure triage，`evals` 通常不高于 4。\n- 已知错误 oracle 仍驱动当前修改，`evals` 通常不高于 1。\n- 有具体兼容性声明但未验证，`reliability` 通常不高于 3。\n- delta 模式没有上一版，`maintainability` 通常不高于 3。\n\n## 发布门禁\n\n1. `package-validity`：frontmatter、name/目录和必需结构有效。\n2. `critical-artifacts`：核心流程引用的文件存在且可用。\n3. `goal-alignment`：Skill 没有与目标、授权或范围直接矛盾。\n4. `capability-validity`：核心流程不依赖不存在、未公开或被禁止的能力。\n5. `safety-permissions`：不会静默越权、泄露敏感数据或执行不受控副作用。\n6. `architecture-ownership`：核心正确性不依赖无法可靠维护的自然语言 runtime 状态机。\n7. `release-evidence`：release-quality 模式具备真实运行、适用 baseline、trace、重复运行、质量和成本证据。\n8. `eval-validity`：仅在被审 Skill 含 eval，或当前判断使用 eval 结果时适用；关键 case 的层级、前提、oracle、assertion、现实性和版本关系可靠。已知错误、陈旧或 diagnostic-only case 不进入发布指标。\n9. `eval-change-safety`：仅在 eval 已驱动或准备驱动当前修改时适用；失败已正确归因，修复经过同族变体、minimal pair、固定 validation/sanity、关键 regression 和复杂度回归。\n\n门禁状态：`pass`、`fail`、`unknown`、`not_applicable`。高分不能覆盖门禁失败。\n\n- `eval-validity=fail`：当前 suite 不得继续驱动 Skill 修改；先修复、重新裁决或移除错误用例。\n- `eval-validity=unknown`：eval 只能作为诊断信号，不能单独形成 P0/P1 或发布结论。\n- `eval-change-safety=fail`：拒绝当前 eval-driven 修改，即使目标 case 已转为通过。\n- 目标没有 eval，且当前判断未使用任何 eval 结果时，`eval-validity=not_applicable`；没有 eval-driven 修改时，`eval-change-safety=not_applicable`。\n\n## Finding 与 gate 关联\n\n所有模式统一使用 `SKILL.md` 的严重性和 Finding Admission Gate；本文件不重复定义。full/release-quality 的结构化 finding 还必须通过 `scripts/validate-review-result.mjs`。\n\n同一根因只设一个主维度。分数只能在 finding 和 unknown ledger 完成后填写；低于 5 的分数必须关联至少一个 finding 或 unknown。同一 finding 只能直接关联一个主维度。失败 gate 必须通过 `finding_ids` 关联至少一个严重性相同且已通过 Admission Gate 的 finding；gate 的 `reason` 不能替代 finding 证据。\n\n## 设计结论与发布就绪度\n\nvalidator 分开计算 `decision.design` 和 `decision.release_readiness`。不得再使用 `pass-after-fixes`。\n\n设计结论按顺序：\n\n1. 任一 P0 gate/finding → `fail`。\n2. composition 为 `overloaded` 或 `orchestrator-needed`，或复杂度为 `over-engineered`，或内部方向为 `drifted` → `redesign`。\n3. 任一 P1 gate/finding → `needs-fixes`。\n4. 复杂度为 `over-specified` → `needs-fixes`。\n5. quick，或缺少可用 previous version 的 delta → `not-assessed`。\n6. full/release-quality coverage 低于 100%，或总体 confidence 为 low → `not-assessed`。\n7. 其余情况 → `pass`。\n\n发布就绪度按顺序：\n\n1. 任一 P0/P1 gate/finding，或设计结论为 `redesign` → `blocked`。\n2. quick/delta → `not-assessed`。\n3. 任一必需 gate 为 `unknown` → `provisional`。\n4. 复杂度为 `over-specified` → `provisional`。\n5. full/release-quality coverage 低于 100%，或总体 confidence 为 low → `provisional`。\n6. release-quality 模式未核对 current-check 来源 → `provisional`。\n7. 其余情况 → `ready`。\n\n因此，“没有 P0/P1，但缺少 runtime/eval 证据”应输出设计 `pass` 和发布 `provisional`。低总分本身不改变这两个结论。内部方向仍保存为 `aligned`、`at-risk` 或 `drifted`；`over-specified` 至少为 `at-risk`，`over-engineered` 为 `drifted`。"
+  }
+}

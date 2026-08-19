@@ -12,7 +12,6 @@ import {
   publishEvalRunToBatch,
   publishSkillReviewToBatch,
   refreshSkillReportBatch,
-  releasePublishedSkillReview,
   resolveSkillEvalTargetPlan,
   type EvaluationLike,
   type SkillEvalRunLayout,
@@ -54,16 +53,7 @@ async function makeRepo(): Promise<string> {
   );
   await fs.writeFile(
     path.join(skillRoot, 'README.md'),
-    [
-      '# Demo Skill',
-      '',
-      'Skill documentation.',
-      '',
-      '## 最近验证',
-      '',
-      '- 最近正式报告：暂无。',
-      '',
-    ].join('\n'),
+    '# Demo Skill\n\nSkill documentation.\n',
     'utf8',
   );
   await fs.writeFile(path.join(skillRoot, 'SKILL.md'), '# Demo Skill\n', 'utf8');
@@ -227,6 +217,8 @@ describe('Skill report batches', () => {
           { severity: 'Advisory' },
         ],
       },
+      reviewResult: { schemaVersion: 1, target: { name: 'demo-skill' } },
+      awReviewSummary: { schemaVersion: 1, target: { plugin: 'demo-plugin' } },
       calculated: {
         mode: 'release',
         weightedScore: 92,
@@ -268,11 +260,20 @@ describe('Skill report batches', () => {
       'demo-skill',
       first.batchId,
     );
-    await expect(fs.readdir(publishedRoot)).resolves.toEqual(['report.md', 'summary.json']);
+    await expect(fs.readdir(publishedRoot).then((entries) => entries.sort())).resolves.toEqual([
+      'aw-review-summary.json',
+      'report.md',
+      'review-result.json',
+      'summary.json',
+    ]);
     await expect(fs.readFile(path.join(publishedRoot, 'report.md'), 'utf8'))
       .resolves.toBe('# Review\n');
     await expect(fs.readJson(path.join(publishedRoot, 'summary.json')))
       .resolves.toEqual(published);
+    await expect(fs.readJson(path.join(publishedRoot, 'review-result.json')))
+      .resolves.toEqual({ schemaVersion: 1, target: { name: 'demo-skill' } });
+    await expect(fs.readJson(path.join(publishedRoot, 'aw-review-summary.json')))
+      .resolves.toEqual({ schemaVersion: 1, target: { plugin: 'demo-plugin' } });
     await expect(fs.pathExists(path.join(
       first.batchRoot,
       'reviews',
@@ -296,96 +297,6 @@ describe('Skill report batches', () => {
 
     await expect(fs.readFile(pluginReadmePath, 'utf8')).resolves.toBe(pluginReadme);
     await expect(fs.readFile(skillReadmePath, 'utf8')).resolves.toBe(skillReadme);
-  });
-
-  it('releases an existing full review to Skill README without changing the formal report', async () => {
-    const repoRoot = await makeRepo();
-    const readmePath = path.join(
-      repoRoot,
-      'plugins',
-      'demo-plugin',
-      'skills',
-      'demo-skill',
-      'README.md',
-    );
-    const originalReadme = await fs.readFile(readmePath, 'utf8');
-    const published = await publishSkillReviewToBatch({
-      repoRoot,
-      owner,
-      batchName: 'full-review',
-      reviewId: '20260812T010500Z-00000004',
-      source,
-      report: '# Full Review\n',
-      scorecard: { review: { mode: 'full' }, findings: [] },
-      calculated: {
-        mode: 'full',
-        weightedScore: 84.5,
-        coverage: 100,
-        confidence: 'high',
-        release: 'pass-after-fixes',
-      },
-    });
-    await expect(fs.readFile(readmePath, 'utf8')).resolves.toBe(originalReadme);
-    const formalReportPath = path.join(
-      repoRoot,
-      'plugins',
-      'demo-plugin',
-      'reports',
-      'demo-skill',
-      published.batchId,
-      'report.md',
-    );
-    const formalReport = await fs.readFile(formalReportPath, 'utf8');
-
-    const released = await releasePublishedSkillReview({
-      repoRoot,
-      owner,
-      batchId: published.batchId,
-    });
-    expect(released).toMatchObject({
-      changed: true,
-      sourceChanged: true,
-      pluginReleaseIntentMayBeRequired: true,
-      readmePath: 'plugins/demo-plugin/skills/demo-skill/README.md',
-      reportPath: `plugins/demo-plugin/reports/demo-skill/${published.batchId}/report.md`,
-    });
-    await expect(fs.readFile(readmePath, 'utf8')).resolves.toContain(
-      '- 最近正式报告：`full`，结论 `pass-after-fixes`，加权分 `84.5`',
-    );
-    await expect(fs.readFile(readmePath, 'utf8')).resolves.toContain(
-      `plugins/demo-plugin/reports/demo-skill/${published.batchId}/report.md`,
-    );
-    await expect(fs.readFile(formalReportPath, 'utf8')).resolves.toBe(formalReport);
-
-    await expect(releasePublishedSkillReview({
-      repoRoot,
-      owner,
-      batchId: published.batchId,
-    })).resolves.toMatchObject({ changed: false, sourceChanged: false });
-  });
-
-  it('does not release a quick or delta report to Skill README', async () => {
-    const repoRoot = await makeRepo();
-    const published = await publishSkillReviewToBatch({
-      repoRoot,
-      owner,
-      batchName: 'delta-review',
-      source,
-      report: '# Delta Review\n',
-      scorecard: { review: { mode: 'delta' }, findings: [] },
-      calculated: {
-        mode: 'delta',
-        weightedScore: null,
-        coverage: 50,
-        confidence: 'medium',
-        release: 'provisional',
-      },
-    });
-    await expect(releasePublishedSkillReview({
-      repoRoot,
-      owner,
-      batchId: published.batchId,
-    })).rejects.toThrow('Only a published full or release review');
   });
 
   it('retries incomplete targets while preserving every attempt', async () => {
@@ -819,6 +730,15 @@ describe('Skill report batches', () => {
 
   it('records a failed invocation as the latest completed eval', async () => {
     const repoRoot = await makeRepo();
+    const skillReadmePath = path.join(
+      repoRoot,
+      'plugins',
+      'demo-plugin',
+      'skills',
+      'demo-skill',
+      'README.md',
+    );
+    const skillReadme = await fs.readFile(skillReadmePath, 'utf8');
     const layout = await createSkillEvalRunLayout({
       repoRoot,
       owner,
@@ -851,10 +771,7 @@ describe('Skill report batches', () => {
     expect(summary.diagnostics).toContain(
       `Eval run ${layout.runId} failed before publication.`,
     );
-    await expect(fs.readFile(
-      path.join(repoRoot, 'plugins', 'demo-plugin', 'skills', 'demo-skill', 'README.md'),
-      'utf8',
-    )).resolves.toContain('- 最近正式报告：暂无。');
+    await expect(fs.readFile(skillReadmePath, 'utf8')).resolves.toBe(skillReadme);
   });
 
   it('rejects incompatible appends and duplicate suite targets before publishing target files', async () => {
@@ -1576,10 +1493,7 @@ describe('Skill report batches', () => {
     const readme = await fs.readFile(readmePath, 'utf8');
     await fs.writeFile(
       readmePath,
-      readme.replace(
-        '- 最近正式报告：暂无。',
-        '- 最近正式报告：`some-batch`，结论 `fail`。',
-      ),
+      `${readme.trimEnd()}\n\nUser-facing change.\n`,
       'utf8',
     );
     await expect(computeAuthorSourceDigest([

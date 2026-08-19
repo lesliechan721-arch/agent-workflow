@@ -1,0 +1,30 @@
+{
+  "name": "agent-skill-toolkit",
+  "version": "0.2.0",
+  "description": "Author and review Agent Skills and design or audit Skill evals with shared evidence and composition standards.",
+  "compatibility": {
+    "aw": {
+      "minVersion": "0.0.0"
+    }
+  },
+  "skills": "./skills",
+  "scripts": {
+    "tests": {
+      "node": [
+        "./scripts/contract.test.mjs"
+      ]
+    }
+  },
+  "marketplace": {
+    "category": "workflow",
+    "strict": true,
+    "policy": {
+      "installation": "AVAILABLE",
+      "authentication": "ON_INSTALL",
+      "products": [
+        "CODEX",
+        "CLAUDE"
+      ]
+    }
+  }
+}

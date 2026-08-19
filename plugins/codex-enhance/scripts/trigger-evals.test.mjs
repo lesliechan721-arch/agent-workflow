@@ -38,6 +38,13 @@ async function testEvalCorpus() {
     typeof entry.should_load_skill === 'boolean' &&
     typeof entry.should_spawn_agent === 'boolean'
   )), true);
+
+  const largePrReview = cases.find((entry) => entry.id === 'large_pr_review');
+  assert.ok(largePrReview, 'missing large_pr_review case');
+  assert.match(largePrReview.query, /只作为入口/);
+  assert.match(largePrReview.query, /定义、全部调用点和数据流/);
+  assert.match(largePrReview.oracle?.rationale ?? '', /diff 只是入口/);
+  assert.match(largePrReview.oracle?.minimal_counterexample ?? '', /已知短 diff/);
 }
 
 function testPositiveEarlyStopRequiresRawSpawnArguments() {
@@ -61,6 +68,9 @@ async function testFixture() {
     await setupTriggerWorkspace({ workspaceRoot: root });
     const fixturePaths = [
       ['repo', 'shared', 'config.ts'],
+      ['repo', 'storage', 'store.ts'],
+      ['repo', 'orders', 'cancel.ts'],
+      ['repo', 'cleanup', 'expired.ts'],
       ['docs', 'vendor', 'api-v2.md'],
       ['reports', 'audit', 'day-03.log'],
       ['repo', 'modules', 'module-16', 'handler-160.ts'],
@@ -70,6 +80,10 @@ async function testFixture() {
     for (const segments of fixturePaths) {
       assert.equal((await readFile(path.join(root, ...segments), 'utf8')).length > 0, true);
     }
+    assert.match(
+      await readFile(path.join(root, 'changes', 'large-pr.diff'), 'utf8'),
+      /repo\/storage\/store\.ts/,
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }

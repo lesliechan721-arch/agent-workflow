@@ -1,0 +1,7 @@
+interface:
+  display_name: "Review Agent Skill"
+  short_description: "只读评审 Agent Skill 的组合适配、最小控制与证据"
+  default_prompt: "使用 $review-agent-skill 处理当前请求。"
+
+policy:
+  allow_implicit_invocation: true

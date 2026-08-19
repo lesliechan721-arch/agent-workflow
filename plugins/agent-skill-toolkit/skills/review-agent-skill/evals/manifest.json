@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 2,
+  "plugin": "agent-skill-toolkit",
+  "skill": "review-agent-skill",
+  "profiles": [
+    {
+      "id": "project-default",
+      "scope": "project",
+      "plugins": [
+        { "name": "agent-content-toolkit", "config": {} },
+        { "name": "agent-skill-toolkit", "config": {} }
+      ],
+      "runModel": true,
+      "requiredForRelease": false
+    }
+  ],
+  "suites": [
+    {
+      "id": "trigger",
+      "kind": "trigger",
+      "skills": ["write-agent-content", "review-agent-content", "author-agent-skill", "review-agent-skill", "design-agent-skill-evals", "audit-agent-skill-evals"],
+      "cases": "./trigger-cases.json",
+      "observeSpawnAgent": false,
+      "isolation": "strict",
+      "strictNegativeSplits": ["validation"],
+      "profiles": ["project-default"],
+      "defaultRuns": 3,
+      "releaseSplits": ["validation"],
+      "requiredForRelease": false,
+      "perRunTimeoutMs": 180000
+    }
+  ]
+}

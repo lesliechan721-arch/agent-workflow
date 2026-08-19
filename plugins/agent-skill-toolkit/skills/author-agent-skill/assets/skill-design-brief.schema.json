@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/agent-content-toolkit/skill-design-brief.schema.json",
+  "title": "SkillDesignBrief",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "mode",
+    "goal",
+    "observedFailures",
+    "baselineGap",
+    "successCriteria",
+    "scope",
+    "outOfScope",
+    "invocationIntent",
+    "targetProfiles",
+    "allowedFiles",
+    "evalStrategy"
+    ,"evalStageOwner"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "mode": {
+      "enum": [
+        "create",
+        "change"
+      ]
+    },
+    "goal": {
+      "type": "string",
+      "minLength": 1
+    },
+    "observedFailures": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "baselineGap": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "successCriteria": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string"
+      }
+    },
+    "scope": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "outOfScope": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "invocationIntent": {
+      "enum": [
+        "model",
+        "manual",
+        "client-specific"
+      ]
+    },
+    "targetProfiles": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "allowedFiles": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "evalStrategy": {
+      "enum": [
+        "none",
+        "trigger",
+        "behavior",
+        "both"
+      ]
+    },
+    "evalStageOwner": {
+      "enum": ["author-agent-skill", "caller"]
+    }
+  },
+  "additionalProperties": false
+}

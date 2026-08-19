@@ -1,0 +1,30 @@
+{
+  "name": "agent-content-toolkit",
+  "version": "0.2.0",
+  "description": "Create and review agent-facing documents with minimal context load, clear pointers, and proportionate control.",
+  "compatibility": {
+    "aw": {
+      "minVersion": "0.0.0"
+    }
+  },
+  "skills": "./skills",
+  "scripts": {
+    "tests": {
+      "node": [
+        "./scripts/contract.test.mjs"
+      ]
+    }
+  },
+  "marketplace": {
+    "category": "workflow",
+    "strict": true,
+    "policy": {
+      "installation": "AVAILABLE",
+      "authentication": "ON_INSTALL",
+      "products": [
+        "CODEX",
+        "CLAUDE"
+      ]
+    }
+  }
+}

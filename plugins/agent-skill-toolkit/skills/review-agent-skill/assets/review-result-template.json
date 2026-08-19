@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 2,
+  "mode": "quick",
+  "target": {
+    "kind": "agent-skill",
+    "name": "replace-me",
+    "profile": null,
+    "digest": null
+  },
+  "design": "not-assessed",
+  "releaseReadiness": "not-assessed",
+  "complexity": "not-assessed",
+  "composition": "not-assessed",
+  "reducibility": "not-assessed",
+  "compositionFindingIds": [],
+  "complexityFindingIds": [],
+  "dimensions": [],
+  "weightedScore": null,
+  "coverage": 0,
+  "confidence": "unknown",
+  "findings": [],
+  "unknowns": [],
+  "gates": {
+    "package-validity": { "status": "unknown", "severity": "P0", "reason": "", "findingIds": [] },
+    "critical-artifacts": { "status": "unknown", "severity": "P0", "reason": "", "findingIds": [] },
+    "goal-alignment": { "status": "unknown", "severity": "P0", "reason": "", "findingIds": [] },
+    "capability-validity": { "status": "unknown", "severity": "P0", "reason": "", "findingIds": [] },
+    "safety-permissions": { "status": "unknown", "severity": "P0", "reason": "", "findingIds": [] },
+    "architecture-ownership": { "status": "unknown", "severity": "P1", "reason": "", "findingIds": [] },
+    "release-evidence": { "status": "unknown", "severity": "P1", "reason": "", "findingIds": [] },
+    "eval-validity": { "status": "not_applicable", "severity": "P1", "reason": "", "findingIds": [] },
+    "eval-change-safety": { "status": "not_applicable", "severity": "P1", "reason": "", "findingIds": [] }
+  },
+  "actions": []
+}

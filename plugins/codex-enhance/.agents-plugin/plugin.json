@@ -1,6 +1,6 @@
 {
   "name": "codex-enhance",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "通过只读证据探索和通用子代理编排两个技能增强 Codex 的多代理工作流。",
   "compatibility": {
     "aw": {
@@ -9,18 +9,31 @@
   },
   "marketplace": {
     "category": "workflow",
-    "tags": ["codex", "subagent", "explorer", "research", "reasoning", "wait"],
+    "tags": [
+      "codex",
+      "subagent",
+      "explorer",
+      "research",
+      "reasoning",
+      "wait"
+    ],
     "strict": true,
     "policy": {
       "installation": "AVAILABLE",
       "authentication": "ON_INSTALL",
-      "products": ["CODEX"]
+      "products": [
+        "CODEX"
+      ]
     }
   },
   "interface": {
     "displayName": "Codex Enhance",
     "shortDescription": "Codex 只读探索与通用子代理编排增强",
-    "capabilities": ["Skills", "Instructions", "Agents"]
+    "capabilities": [
+      "Skills",
+      "Instructions",
+      "Agents"
+    ]
   },
   "extensions": {
     "instructions": [
@@ -63,7 +76,14 @@
       "quickReasoningEffort": {
         "type": "enum",
         "title": "Quick 探索推理强度",
-        "values": ["low", "medium", "high", "xhigh", "max", "ultra"],
+        "values": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max",
+          "ultra"
+        ],
         "default": "medium",
         "description": "quick 探索 role 使用的 model_reasoning_effort。"
       },
@@ -76,7 +96,14 @@
       "standardReasoningEffort": {
         "type": "enum",
         "title": "Standard 探索推理强度",
-        "values": ["low", "medium", "high", "xhigh", "max", "ultra"],
+        "values": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max",
+          "ultra"
+        ],
         "default": "high",
         "description": "standard 探索 role 使用的 model_reasoning_effort。"
       },
@@ -89,7 +116,14 @@
       "deepReasoningEffort": {
         "type": "enum",
         "title": "Deep 探索推理强度",
-        "values": ["low", "medium", "high", "xhigh", "max", "ultra"],
+        "values": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max",
+          "ultra"
+        ],
         "default": "xhigh",
         "description": "deep 探索 role 使用的 model_reasoning_effort。"
       },
@@ -97,12 +131,18 @@
         "type": "string",
         "title": "简单任务模型",
         "default": "gpt-5.6-luna",
-        "description": "简单任务 agent type 使用的模型，适用于低歧义、边界清晰、成功标准明确的探索、检索、结果验证、简单代码及其他简单任务。"
+        "description": "简单任务 agent type 使用的模型，适用于低歧义、边界清晰、成功标准明确且可机械验证的任务。"
       },
       "simpleTaskReasoningEffort": {
         "type": "enum",
         "title": "简单任务推理强度",
-        "values": ["low", "medium", "high", "xhigh", "max"],
+        "values": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
         "default": "max",
         "description": "简单任务 agent type 使用的 model_reasoning_effort。"
       },
@@ -110,12 +150,18 @@
         "type": "string",
         "title": "通用任务模型",
         "default": "gpt-5.6-sol",
-        "description": "通用任务 agent type 使用的模型，适用于超出简单任务范围的常规实现和其它通用交付。"
+        "description": "通用任务 agent type 使用的模型，适用于超出简单范围的常规实现、调查、文档及范围有限的计划或审核。"
       },
       "generalTaskReasoningEffort": {
         "type": "enum",
         "title": "通用任务推理强度",
-        "values": ["low", "medium", "high", "xhigh", "max"],
+        "values": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
         "default": "medium",
         "description": "通用任务 agent type 使用的 model_reasoning_effort。"
       },
@@ -123,27 +169,39 @@
         "type": "string",
         "title": "复杂任务模型",
         "default": "gpt-5.6-sol",
-        "description": "复杂任务 agent type 使用的模型，适用于复杂实现、未知根因和调试。"
+        "description": "复杂任务 agent type 使用的模型，适用于跨模块实现、未知根因、并发、生命周期、性能和复杂因果任务。"
       },
       "complexTaskReasoningEffort": {
         "type": "enum",
         "title": "复杂任务推理强度",
-        "values": ["low", "medium", "high", "xhigh", "max"],
+        "values": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
         "default": "high",
         "description": "复杂任务 agent type 使用的 model_reasoning_effort。"
       },
-      "planningReviewTaskModel": {
+      "advancedTaskModel": {
         "type": "string",
-        "title": "计划与审核任务模型",
+        "title": "高难任务模型",
         "default": "gpt-5.6-sol",
-        "description": "计划与审核 agent type 使用的模型，适用于审核、架构设计和实施计划。"
+        "description": "高难任务 agent type 使用的模型，适用于系统级、高歧义、高风险或要求极高完整性的任务。"
       },
-      "planningReviewTaskReasoningEffort": {
+      "advancedTaskReasoningEffort": {
         "type": "enum",
-        "title": "计划与审核任务推理强度",
-        "values": ["low", "medium", "high", "xhigh", "max"],
+        "title": "高难任务推理强度",
+        "values": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
         "default": "xhigh",
-        "description": "计划与审核 agent type 使用的 model_reasoning_effort。"
+        "description": "高难任务 agent type 使用的 model_reasoning_effort。"
       },
       "minimumInitialWaitMinutes": {
         "type": "number",
@@ -160,54 +218,92 @@
       {
         "id": "codex-explore-skill",
         "platform": "codex",
-        "scopes": ["user", "project"],
+        "scopes": [
+          "user",
+          "project"
+        ],
         "target": "codex.skill",
         "projectManagedKind": "skill",
-        "states": ["present"],
-        "refreshKeys": ["minimumInitialWaitMinutes"],
+        "states": [
+          "present"
+        ],
+        "refreshKeys": [
+          "minimumInitialWaitMinutes"
+        ],
         "skillKey": "codex-explore",
-        "sourceDirs": ["./skills/codex-explore"]
+        "sourceDirs": [
+          "./skills/codex-explore"
+        ]
       },
       {
         "id": "codex-explore-quick-role",
         "platform": "codex",
-        "scopes": ["user", "project"],
+        "scopes": [
+          "user",
+          "project"
+        ],
         "target": "codex.agentRole",
         "projectManagedKind": "agent",
-        "states": ["present"],
-        "refreshKeys": ["quickModel", "quickReasoningEffort"],
+        "states": [
+          "present"
+        ],
+        "refreshKeys": [
+          "quickModel",
+          "quickReasoningEffort"
+        ],
         "requiresCodexProjectConfig": true,
         "roleKey": "codex-explore-quick"
       },
       {
         "id": "codex-explore-standard-role",
         "platform": "codex",
-        "scopes": ["user", "project"],
+        "scopes": [
+          "user",
+          "project"
+        ],
         "target": "codex.agentRole",
         "projectManagedKind": "agent",
-        "states": ["present"],
-        "refreshKeys": ["standardModel", "standardReasoningEffort"],
+        "states": [
+          "present"
+        ],
+        "refreshKeys": [
+          "standardModel",
+          "standardReasoningEffort"
+        ],
         "requiresCodexProjectConfig": true,
         "roleKey": "codex-explore-standard"
       },
       {
         "id": "codex-explore-deep-role",
         "platform": "codex",
-        "scopes": ["user", "project"],
+        "scopes": [
+          "user",
+          "project"
+        ],
         "target": "codex.agentRole",
         "projectManagedKind": "agent",
-        "states": ["present"],
-        "refreshKeys": ["deepModel", "deepReasoningEffort"],
+        "states": [
+          "present"
+        ],
+        "refreshKeys": [
+          "deepModel",
+          "deepReasoningEffort"
+        ],
         "requiresCodexProjectConfig": true,
         "roleKey": "codex-explore-deep"
       },
       {
         "id": "codex-explore-custom-role",
         "platform": "codex",
-        "scopes": ["user", "project"],
+        "scopes": [
+          "user",
+          "project"
+        ],
         "target": "codex.agentRole",
         "projectManagedKind": "agent",
-        "states": ["present"],
+        "states": [
+          "present"
+        ],
         "refreshKeys": [],
         "requiresCodexProjectConfig": true,
         "roleKey": "codex-explore-custom"
@@ -215,57 +311,98 @@
       {
         "id": "codex-subagent-guide-skill",
         "platform": "codex",
-        "scopes": ["user", "project"],
+        "scopes": [
+          "user",
+          "project"
+        ],
         "target": "codex.skill",
         "projectManagedKind": "skill",
-        "states": ["present"],
-        "refreshKeys": ["minimumInitialWaitMinutes"],
+        "states": [
+          "present"
+        ],
+        "refreshKeys": [
+          "minimumInitialWaitMinutes"
+        ],
         "skillKey": "codex-subagent-guide",
-        "sourceDirs": ["./skills/codex-subagent-guide"]
+        "sourceDirs": [
+          "./skills/codex-subagent-guide"
+        ]
       },
       {
         "id": "codex-subagent-simple-role",
         "platform": "codex",
-        "scopes": ["user", "project"],
+        "scopes": [
+          "user",
+          "project"
+        ],
         "target": "codex.agentRole",
         "projectManagedKind": "agent",
-        "states": ["present"],
-        "refreshKeys": ["simpleTaskModel", "simpleTaskReasoningEffort"],
+        "states": [
+          "present"
+        ],
+        "refreshKeys": [
+          "simpleTaskModel",
+          "simpleTaskReasoningEffort"
+        ],
         "requiresCodexProjectConfig": true,
         "roleKey": "codex-subagent-simple"
       },
       {
         "id": "codex-subagent-general-role",
         "platform": "codex",
-        "scopes": ["user", "project"],
+        "scopes": [
+          "user",
+          "project"
+        ],
         "target": "codex.agentRole",
         "projectManagedKind": "agent",
-        "states": ["present"],
-        "refreshKeys": ["generalTaskModel", "generalTaskReasoningEffort"],
+        "states": [
+          "present"
+        ],
+        "refreshKeys": [
+          "generalTaskModel",
+          "generalTaskReasoningEffort"
+        ],
         "requiresCodexProjectConfig": true,
         "roleKey": "codex-subagent-general"
       },
       {
         "id": "codex-subagent-complex-role",
         "platform": "codex",
-        "scopes": ["user", "project"],
+        "scopes": [
+          "user",
+          "project"
+        ],
         "target": "codex.agentRole",
         "projectManagedKind": "agent",
-        "states": ["present"],
-        "refreshKeys": ["complexTaskModel", "complexTaskReasoningEffort"],
+        "states": [
+          "present"
+        ],
+        "refreshKeys": [
+          "complexTaskModel",
+          "complexTaskReasoningEffort"
+        ],
         "requiresCodexProjectConfig": true,
         "roleKey": "codex-subagent-complex"
       },
       {
-        "id": "codex-subagent-plan-review-role",
+        "id": "codex-subagent-advanced-role",
         "platform": "codex",
-        "scopes": ["user", "project"],
+        "scopes": [
+          "user",
+          "project"
+        ],
         "target": "codex.agentRole",
         "projectManagedKind": "agent",
-        "states": ["present"],
-        "refreshKeys": ["planningReviewTaskModel", "planningReviewTaskReasoningEffort"],
+        "states": [
+          "present"
+        ],
+        "refreshKeys": [
+          "advancedTaskModel",
+          "advancedTaskReasoningEffort"
+        ],
         "requiresCodexProjectConfig": true,
-        "roleKey": "codex-subagent-plan-review"
+        "roleKey": "codex-subagent-advanced"
       }
     ]
   }

@@ -20,7 +20,7 @@ metadata:
 
 只有明确要求继承，或任务无法通过完整 `message` 自包含时才继承；不要仅为缩短委派说明而继承。上下文选择独立于 preset/custom。
 
-全历史继承会沿用父代理类型，因此省略 `agent_type`。若当前 schema 不能精确表达最近 N 轮，则停止并说明，不得改用全历史近似。
+`agent_type`、`model`、`reasoning_effort` 与继承模式的兼容性服从当前 schema；不得为了继承静默省略本应选择或显式指定的 routing 字段，无法同时满足时停止并说明。若 schema 不能精确表达最近 N 轮，不得使用全历史近似。
 
 ## 等待与清理
 

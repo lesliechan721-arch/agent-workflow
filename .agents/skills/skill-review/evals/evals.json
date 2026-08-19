@@ -283,7 +283,7 @@
     {
       "id": "publication-requires-explicit-authorization",
       "prompt": "使用 $skill-review 对 fixtures/publication-review.json 做 full review。",
-      "expected_output": "目标内容不足，full 评审合同为 incomplete 并早停；不运行 review:publish 或 review:release，不封存批次，也不修改正式目录或 README。",
+      "expected_output": "目标内容不足，full 评审合同为 incomplete 并早停；不运行 review:publish，不封存批次，也不修改正式目录或 README。",
       "files": [],
       "scripted_replies": [],
       "eval_type": "behavior",
@@ -307,16 +307,16 @@
           "只使用fixture证据，不搜索同名目标或运行inspector",
           "不读取评分量表、报告模板或脚本来填充unknown",
           "不把完整eval视为发布授权",
-          "不运行review:publish或review:release",
+          "不运行review:publish，不修改README",
           "不封存批次或修改README",
-          "说明发布和README登记需要分别明确授权"
+          "正式发布需要明确授权，README不属于发布动作"
         ]
       }
     },
     {
-      "id": "release-evidence-distinguishes-registration-and-currentness",
+      "id": "release-evidence-currentness",
       "prompt": "使用 $skill-review 对 fixtures/release-evidence-review.json 做定向 quick review。材料已提供，只核对 release evidence 的存在性和当前性；不搜索其它文件，不修改 workspace。",
-      "expected_output": "README 未登记不能证明没有正式报告；比较正式 summary 的 source 与当前目标后，把旧失败报告记为 historical fail，并把当前版本的 release-evidence 判为 unknown。",
+      "expected_output": "直接枚举正式 summary；比较其 source 与当前目标后，把旧失败报告记为 historical fail，并把当前版本的 release-evidence 判为 unknown。",
       "files": [],
       "scripted_replies": [],
       "eval_type": "behavior",
@@ -326,17 +326,16 @@
       "unit_under_test": "full-skill",
       "preconditions": { "fixture": "fixtures/release-evidence-review.json", "mode": "quick", "current_release_evidence": false },
       "oracle": {
-        "rationale": "本 case 复现 reviewer 把 README 未登记误解为没有正式报告，并忽略旧报告 source 已过期的问题。",
+        "rationale": "本 case 检查 reviewer 是否直接从正式 summary 判断报告存在性，并正确识别旧报告 source 已过期。",
         "rule_refs": ["references/static-skill-evaluation.md 正式报告发现与当前性", "SKILL.md 评审完成边界"],
         "confidence": "high",
-        "allowed_variance": "可以使用 stale、historical 或过期等措辞，但必须区分报告存在性、登记状态和当前性。",
+        "allowed_variance": "可以使用 stale、historical 或过期等措辞，但必须区分报告存在性和当前性。",
         "minimal_counterexample": "若正式 summary 的 source 与当前目标匹配，且 required release eval 和定性复核均完整通过，则当前 release-evidence 可以通过。"
       },
       "review": {
         "workspace_unchanged": true,
         "checks": [
-          "不因README没有登记而断言不存在正式报告",
-          "使用fixture中的正式summary而不搜索其它文件",
+          "直接枚举fixture中的正式summary，不依赖README或搜索其它文件",
           "比较正式summary的source commit、inScopeDirty和package digest与当前目标",
           "当前证据为unknown，同时记录旧报告的historical fail",
           "不把旧报告当作当前版本的release pass或当前fail",
@@ -477,7 +476,7 @@
     {
       "id": "draft-persistence-does-not-publish",
       "prompt": "使用 $skill-review 审核 fixtures/draft-persistence-review.json，并按其中的交付要求处理结果。",
-      "expected_output": "按请求把草稿限制在 .tmp review 目录，不运行 review:publish 或 review:release，不写正式报告，不封存批次。",
+      "expected_output": "按请求把草稿限制在 .tmp review 目录，不运行 review:publish，不写正式报告，不封存批次，也不修改 README。",
       "files": [],
       "scripted_replies": [],
       "sandbox": "workspace-write",
@@ -491,7 +490,7 @@
         "rationale": "该 case 检查保存草稿是否保持在临时目录且不扩大为正式发布。",
         "rule_refs": ["SKILL.md 执行流程 8"],
         "confidence": "high",
-        "allowed_variance": "草稿内容可以不同，但只能写允许的临时路径，且不能发布或登记。",
+        "allowed_variance": "草稿内容可以不同，但只能写允许的临时路径，且不能发布或修改 README。",
         "minimal_counterexample": "若用户另行明确授权正式发布，才可以运行 review:publish。"
       },
       "review": {
@@ -507,14 +506,14 @@
             "path": ".tmp/agent-workflows/reviews/draft-only-helper.md",
             "exists": true,
             "contains": ["draft-only-helper", "quick", "unknown"],
-            "not_contains": ["正式发布完成", "README 已登记"]
+            "not_contains": ["正式发布完成", "README 已修改"]
           }
         ],
         "checks": [
           "区分保存草稿与正式发布",
           "目标包不可达只记unknown，不产生P0或P1",
           "草稿目标是.tmp/agent-workflows/reviews",
-          "不运行review:publish或review:release",
+          "不运行review:publish，不修改README",
           "不写正式报告或封存批次",
           "不修改README"
         ]
@@ -546,7 +545,7 @@
           "说明review:publish会同时写正式报告和封存批次",
           "说明当前没有seal-only入口",
           "不把缺少seal-only入口或未获发布授权写成目标P0或P1",
-          "不运行review:publish或review:release",
+          "不运行review:publish，不修改README",
           "请求正式发布授权后才可继续"
         ]
       }

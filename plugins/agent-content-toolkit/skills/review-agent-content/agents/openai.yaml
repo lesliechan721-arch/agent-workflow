@@ -1,0 +1,7 @@
+interface:
+  display_name: "Review Agent Content"
+  short_description: "只读评审 Agent-facing 文档的负担、结构与可靠性"
+  default_prompt: "使用 $review-agent-content 处理当前请求。"
+
+policy:
+  allow_implicit_invocation: true
