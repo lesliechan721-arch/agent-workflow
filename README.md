@@ -192,7 +192,10 @@ Codex project scope 会写入 `.agents/skills`、`.codex/config.toml`、`.codex/
 make install
 make build
 make test
+make stage-catalog CATALOG_VERSION=1.2.0-beta.1
 ```
+
+`pnpm build` 生成 `packages/cli/plugins-dist/` schema 3 本地 snapshot。`stage-catalog` 在 `.release/catalog-staging/catalog/` 生成带 `plugin-release-ledger.json` 的完整发布交接目录。Phase 4B Git publisher 尚未实现；catalog publish 和组合 release 入口不会执行远端发布。
 
 维护者入口：
 

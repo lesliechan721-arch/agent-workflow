@@ -37,6 +37,7 @@ export {
   mergePluginReleaseLedgers,
   PLUGIN_RELEASE_LEDGER_FILENAME,
   resolveBetaPluginVersionOverrides,
+  validatePluginReleaseLedgerAgainstManifest,
   validatePluginReleaseLedger,
 } from '../src/utils/plugin-release.js';
 export {
@@ -53,49 +54,31 @@ export {
   resolveCliPackageRoot,
 } from '../src/utils/paths.js';
 export {
-  CATALOG_FULL_DIRNAME,
-  CATALOG_FULL_PACKAGE_NAME,
   CATALOG_MANIFEST_FILENAME,
-  CATALOG_PACKAGE_METADATA_FIELD,
-  CATALOG_SIDECAR_DIRNAME,
-  CATALOG_SIDECAR_PACKAGE_NAME,
-  CATALOG_STAGING_DIRNAME,
-  getCanonicalCatalogManifestPath,
-  getCatalogFullManifestPath,
-  getCatalogFullPackageRoot,
-  getCatalogSidecarManifestPath,
-  getCatalogSidecarPackageRoot,
-  getCatalogStagingRoot,
 } from '../src/utils/bundle-layout.js';
 
 import {
-  CATALOG_FULL_PACKAGE_NAME,
   CATALOG_MANIFEST_FILENAME,
-  CATALOG_PACKAGE_METADATA_FIELD,
-  CATALOG_SIDECAR_PACKAGE_NAME,
-  getCanonicalCatalogManifestPath,
-  getCatalogFullPackageRoot,
-  getCatalogSidecarPackageRoot,
-  getCatalogStagingRoot,
 } from '../src/utils/bundle-layout.js';
 import type {
   CatalogChannel,
-  CatalogManifest,
-  CatalogManifestEntry,
+  CatalogManifestV3,
   PluginMeta,
 } from '../src/types.js';
 import {
   assertStrictSemVer,
   compareStrictSemVer,
-  createMarketplaceManifestEntry,
   resolvePluginsFromCatalog,
-  validateCatalogManifest,
 } from '../src/utils/manifest.js';
 import {
-  calculateCatalogEntryArtifactDigest,
   calculateCatalogEntryContentDigest,
-  calculateCatalogEntryManifestDigest,
 } from '../src/utils/catalog-digests.js';
+import {
+  createCatalogManifestV3,
+  createCatalogManifestV3Entry,
+  validateCatalogManifestV3,
+} from '../src/utils/catalog-manifest-v3.js';
+import { validateCatalogSnapshot } from '../src/utils/catalog-snapshot.js';
 import { readJsonFile } from '../src/utils/json.js';
 import { resolveCliPackageRoot } from '../src/utils/paths.js';
 import {
@@ -104,6 +87,7 @@ import {
   type PluginReleaseLedger,
   PLUGIN_RELEASE_LEDGER_FILENAME,
   resolveBetaPluginVersionOverrides,
+  validatePluginReleaseLedgerAgainstManifest,
 } from '../src/utils/plugin-release.js';
 
 export type {
@@ -124,30 +108,10 @@ export interface CatalogStageOptions {
   previousReleaseLedger?: PluginReleaseLedger;
 }
 
-export interface CatalogPackageMetadata {
-  name: string;
-  version: string;
-  type: 'module';
-  description: string;
-  files: string[];
-  publishConfig?: Record<string, unknown>;
-  [CATALOG_PACKAGE_METADATA_FIELD]: {
-    kind: 'sidecar' | 'full';
-    channel: CatalogChannel;
-    compatibility: {
-      aw: {
-        minVersion: string;
-      };
-    };
-  };
-}
-
 export interface CatalogStageResult {
-  manifest: CatalogManifest;
+  manifest: CatalogManifestV3;
   releaseLedger: PluginReleaseLedger;
   canonicalManifestPath: string;
-  sidecarPackageRoot: string;
-  fullPackageRoot: string;
 }
 
 function detectCatalogChannel(version: string): CatalogChannel {
@@ -167,7 +131,7 @@ function resolveCatalogMinAwVersion(plugins: readonly PluginMeta[]): string {
 
 async function readCliPackageMetadata(
   repoRoot: string,
-): Promise<{ version: string; publishConfig?: Record<string, unknown> }> {
+): Promise<{ version: string }> {
   const candidatePaths = [
     path.join(repoRoot, 'packages', 'cli', 'package.json'),
     path.join(repoRoot, 'package.json'),
@@ -183,47 +147,6 @@ async function readCliPackageMetadata(
   const packageJson = await readJsonFile<Record<string, unknown>>(cliPackageJsonPath);
   return {
     version: assertStrictSemVer(packageJson.version, 'packages/cli/package.json version'),
-    publishConfig:
-      packageJson.publishConfig && typeof packageJson.publishConfig === 'object' && !Array.isArray(packageJson.publishConfig)
-        ? packageJson.publishConfig as Record<string, unknown>
-        : undefined,
-  };
-}
-
-function createCatalogPackageMetadata(options: {
-  kind: 'sidecar' | 'full';
-  version: string;
-  channel: CatalogChannel;
-  minAwVersion: string;
-  publishConfig?: Record<string, unknown>;
-}): CatalogPackageMetadata {
-  return {
-    name: options.kind === 'sidecar'
-      ? CATALOG_SIDECAR_PACKAGE_NAME
-      : CATALOG_FULL_PACKAGE_NAME,
-    version: options.version,
-    type: 'module',
-    description: options.kind === 'sidecar'
-      ? 'Agent Workflows catalog manifest sidecar package'
-      : 'Agent Workflows full plugin catalog package',
-    files: options.kind === 'sidecar'
-      ? [CATALOG_MANIFEST_FILENAME, PLUGIN_RELEASE_LEDGER_FILENAME]
-      : [
-        CATALOG_MANIFEST_FILENAME,
-        '.agents/',
-        '.claude-plugin/',
-        'plugins/',
-      ],
-    publishConfig: options.publishConfig,
-    [CATALOG_PACKAGE_METADATA_FIELD]: {
-      kind: options.kind,
-      channel: options.channel,
-      compatibility: {
-        aw: {
-          minVersion: options.minAwVersion,
-        },
-      },
-    },
   };
 }
 
@@ -234,77 +157,6 @@ async function writeCanonicalJsonFile(filePath: string, value: unknown): Promise
   return content;
 }
 
-async function createCatalogManifestEntryFromPlugin(
-  plugin: PluginMeta,
-  pluginRoot: string,
-): Promise<CatalogManifestEntry> {
-  const marketplaceEntry = createMarketplaceManifestEntry(plugin);
-  return {
-    ...marketplaceEntry,
-    version: plugin.manifest.version,
-    compatibility: plugin.manifest.compatibility!,
-    artifactDigest: await calculateCatalogEntryArtifactDigest(pluginRoot),
-    manifestDigest: calculateCatalogEntryManifestDigest(plugin.manifest),
-  };
-}
-
-async function writeCatalogPackageContents(options: {
-  outputRoot: string;
-  sidecarPackageRoot: string;
-  fullPackageRoot: string;
-  canonicalManifestContent: string;
-  releaseLedgerContent: string;
-  metadata: {
-    sidecar: CatalogPackageMetadata;
-    full: CatalogPackageMetadata;
-  };
-}): Promise<void> {
-  await fs.remove(options.sidecarPackageRoot);
-  await fs.remove(options.fullPackageRoot);
-  await fs.ensureDir(options.sidecarPackageRoot);
-  await fs.ensureDir(options.fullPackageRoot);
-
-  await Promise.all([
-    fs.writeFile(
-      path.join(options.sidecarPackageRoot, CATALOG_MANIFEST_FILENAME),
-      options.canonicalManifestContent,
-      'utf8',
-    ),
-    fs.writeFile(
-      path.join(options.sidecarPackageRoot, PLUGIN_RELEASE_LEDGER_FILENAME),
-      options.releaseLedgerContent,
-      'utf8',
-    ),
-    fs.writeFile(
-      path.join(options.fullPackageRoot, CATALOG_MANIFEST_FILENAME),
-      options.canonicalManifestContent,
-      'utf8',
-    ),
-    writeCanonicalJsonFile(
-      path.join(options.sidecarPackageRoot, 'package.json'),
-      options.metadata.sidecar,
-    ),
-    writeCanonicalJsonFile(
-      path.join(options.fullPackageRoot, 'package.json'),
-      options.metadata.full,
-    ),
-  ]);
-
-  await Promise.all([
-    fs.copy(
-      path.join(options.outputRoot, '.claude-plugin'),
-      path.join(options.fullPackageRoot, '.claude-plugin'),
-    ),
-    fs.copy(
-      path.join(options.outputRoot, '.agents'),
-      path.join(options.fullPackageRoot, '.agents'),
-    ),
-    fs.copy(
-      path.join(options.outputRoot, 'plugins'),
-      path.join(options.fullPackageRoot, 'plugins'),
-    ),
-  ]);
-}
 
 async function rewriteBundledPluginVersions(
   outputRoot: string,
@@ -334,7 +186,7 @@ export async function stageCatalogArtifacts(
 ): Promise<CatalogStageResult> {
   const repoRoot = options.repoRoot ?? path.resolve(resolveCliPackageRoot(), '..', '..');
   const phase = options.phase ?? 'development';
-  const [{ version, publishConfig }, sourcePlugins] = await Promise.all([
+  const [{ version }, sourcePlugins] = await Promise.all([
     readCliPackageMetadata(repoRoot),
     resolvePluginsFromCatalog(options.outputRoot),
   ]);
@@ -342,7 +194,13 @@ export async function stageCatalogArtifacts(
     options.catalogVersion ?? version,
     'catalog version',
   );
-  const channel = options.channel ?? detectCatalogChannel(catalogVersion);
+  const derivedChannel = detectCatalogChannel(catalogVersion);
+  const channel = options.channel ?? derivedChannel;
+  if (channel !== derivedChannel) {
+    throw new Error(
+      `Catalog channel ${JSON.stringify(channel)} does not match catalog version ${catalogVersion}.`,
+    );
+  }
   for (const plugin of sourcePlugins) {
     assertStablePluginVersion(plugin.manifest.version, `${plugin.manifest.name} source version`);
   }
@@ -367,16 +225,12 @@ export async function stageCatalogArtifacts(
     ? await resolvePluginsFromCatalog(options.outputRoot)
     : sourcePlugins;
   const minAwVersion = resolveCatalogMinAwVersion(plugins);
-  const entries = await Promise.all(
-    plugins.map((plugin) =>
-      createCatalogManifestEntryFromPlugin(
-        plugin,
-        path.join(options.outputRoot, 'plugins', plugin.manifest.name),
-      )),
-  );
-
-  const manifestBase = {
-    schemaVersion: 2 as const,
+  const entries = await Promise.all(plugins.map((plugin) =>
+    createCatalogManifestV3Entry(
+      plugin,
+      path.join(options.outputRoot, 'plugins', plugin.manifest.name),
+    )));
+  const manifest = createCatalogManifestV3({
     catalogVersion,
     channel,
     compatibility: {
@@ -384,76 +238,40 @@ export async function stageCatalogArtifacts(
         minVersion: minAwVersion,
       },
     },
-    packages: {
-      sidecar: {
-        name: CATALOG_SIDECAR_PACKAGE_NAME,
-        version: catalogVersion,
-        channel,
-      },
-      full: {
-        name: CATALOG_FULL_PACKAGE_NAME,
-        version: catalogVersion,
-        channel,
-        manifestPath: `./${CATALOG_MANIFEST_FILENAME}`,
-      },
-    },
     entries,
-  };
-
-  const manifest = validateCatalogManifest(manifestBase);
+  });
   const releaseLedger = appendCatalogToPluginReleaseLedger({
     previous: previousReleaseLedger,
     manifest,
     contentDigests,
   });
-  const stagingRoot = getCatalogStagingRoot(options.outputRoot);
-  const canonicalManifestPath = getCanonicalCatalogManifestPath(options.outputRoot);
-  const sidecarPackageRoot = getCatalogSidecarPackageRoot(options.outputRoot);
-  const fullPackageRoot = getCatalogFullPackageRoot(options.outputRoot);
-
-  await fs.remove(stagingRoot);
-  const canonicalManifestContent = await writeCanonicalJsonFile(
+  const canonicalManifestPath = path.join(options.outputRoot, CATALOG_MANIFEST_FILENAME);
+  const releaseLedgerPath = path.join(options.outputRoot, PLUGIN_RELEASE_LEDGER_FILENAME);
+  await Promise.all([
+    fs.remove(path.join(options.outputRoot, '.catalog')),
+    fs.remove(releaseLedgerPath),
+  ]);
+  await writeCanonicalJsonFile(
     canonicalManifestPath,
     manifest,
   );
-  const releaseLedgerContent = `${JSON.stringify(releaseLedger, null, 2)}\n`;
-  await writeCatalogPackageContents({
-    outputRoot: options.outputRoot,
-    sidecarPackageRoot,
-    fullPackageRoot,
-    canonicalManifestContent,
-    releaseLedgerContent,
-    metadata: {
-      sidecar: createCatalogPackageMetadata({
-        kind: 'sidecar',
-        version: manifest.catalogVersion,
-        channel: manifest.channel,
-        minAwVersion: manifest.compatibility.aw.minVersion,
-        publishConfig,
-      }),
-      full: createCatalogPackageMetadata({
-        kind: 'full',
-        version: manifest.catalogVersion,
-        channel: manifest.channel,
-        minAwVersion: manifest.compatibility.aw.minVersion,
-        publishConfig,
-      }),
-    },
-  });
+  if (phase === 'release') {
+    await writeCanonicalJsonFile(releaseLedgerPath, releaseLedger);
+    validatePluginReleaseLedgerAgainstManifest(releaseLedger, manifest);
+  }
+  await validateCatalogSnapshot(options.outputRoot);
 
   return {
     manifest,
     releaseLedger,
     canonicalManifestPath,
-    sidecarPackageRoot,
-    fullPackageRoot,
   };
 }
 
 export async function readStagedCatalogManifest(
   outputRoot: string,
-): Promise<CatalogManifest> {
-  return validateCatalogManifest(
-    await readJsonFile<unknown>(getCanonicalCatalogManifestPath(outputRoot)),
+): Promise<CatalogManifestV3> {
+  return validateCatalogManifestV3(
+    await readJsonFile<unknown>(path.join(outputRoot, CATALOG_MANIFEST_FILENAME)),
   );
 }

@@ -33,7 +33,7 @@ AW 版本管理里有三套身份，不能混用：
 - Source snapshot version：schema 3 `catalog-manifest.json` 的版本，代表一次 source 快照。
 - Plugin version：单个插件 manifest 的 `version`，代表该插件 artifact 的不可变身份。
 
-插件更新将通过 schema 3 source snapshot 分发，不要求同步发布 CLI。当前 `pnpm build` 只生成本地 bundle 和 schema 2 兼容 staging；schema 3 snapshot 由后续 release staging 流程从真实 build bundle 物化。Phase 4 publisher 尚未进入作者合同；不要在插件脚本或文档中假设已存在的 snapshot staging 命令或 npm catalog 包。
+插件更新通过 schema 3 source snapshot 分发，不要求同步发布 CLI。`pnpm build` 在 `packages/cli/plugins-dist/` 生成可验证的本地 schema 3 snapshot；开发态 snapshot version 使用 CLI package version。`make stage-catalog CATALOG_VERSION=<version>` 在 `.release/catalog-staging/catalog/` 生成带 release ledger 的发布交接目录。Phase 4B Git publisher 尚未实现；不要在插件脚本或文档中假设 remote refs、tags 或 push 已可用。
 
 最小示例：
 
@@ -67,7 +67,7 @@ node .agents/skills/create-aw-plugin/scripts/check_plugin_versions.mjs \
 
 `check_plugin_versions.mjs` 用当前已构建 CLI 的 staging bundler 分别物化 Git 基线插件和工作树插件，再忽略 plugin version 字段本身比较 production bundle。production 变化但 version 未提高、版本下降或 SemVer precedence 未提高时失败；只有 version 提高时成功并警告。Skill `evals/**`、插件 `reports/**` 和 test-only 文件由 bundler 排除；随 bundle 发布的 README、Skill、manifest 和 runtime 脚本变化要求提高 version。JSON 输出使用 schema 2。该门禁只判断插件源码变化，不判断 CLI bundler 自身变化造成的产物差异。
 
-`contentDigest` 排除生成 manifest 的 version 字段，用于核对插件内容身份。schema 3 snapshot 和源码 manifest 是当前已锁定的作者边界；不要提前实现 Phase 4 publisher、registry 账本或包发布流程。
+`contentDigest` 排除生成 manifest 的 version 字段，用于核对插件内容身份。schema 3 snapshot、release staging 和源码 manifest 是当前已锁定的作者边界；不要提前实现 Phase 4B publisher、remote refs、tags 或 push。
 
 ## scripts / config block
 
@@ -372,7 +372,7 @@ CLI 入口和输出对作者的影响：
 
 `plugins/marketplace-source.json` 是 marketplace 根级构建输入，只接受 `owner` 和 `interface.displayName`。它不是运行时 source identity。创建单个插件时通常不要改它。
 
-`pnpm build` 会把根级元数据和各插件的 marketplace 条目合成两份本地 runtime marketplace manifest：`.claude-plugin/marketplace.json` 和 `.agents/plugins/marketplace.json`。两份 marketplace 共享根级元数据，但 entries 按插件最终支持平台过滤；Claude marketplace 不包含 Codex-only 插件，Codex marketplace 不包含 Claude-only 插件。当前 build 还生成 schema 2 兼容 catalog staging；后续 release staging 物化 schema 3 snapshot 时必须从完整 build bundle 重建插件清单，不能把某个平台 marketplace 当作全部插件清单。
+`pnpm build` 会把根级元数据和各插件的 marketplace 条目合成两份本地 runtime marketplace manifest：`.claude-plugin/marketplace.json` 和 `.agents/plugins/marketplace.json`。两份 marketplace 共享根级元数据，但 entries 按插件最终支持平台过滤；Claude marketplace 不包含 Codex-only 插件，Codex marketplace 不包含 Claude-only 插件。schema 3 manifest 必须从完整 build bundle 重建插件清单，不能把某个平台 marketplace 当作全部插件清单。
 
 ## 分发模型
 
@@ -382,8 +382,10 @@ CLI 入口和输出对作者的影响：
            │
            │  pnpm build
            ▼
-本地 bundle staging（当前生成产物，不手改）
-  catalog-manifest.json              schema 2 兼容 manifest
+本地 schema 3 snapshot（当前生成产物，不手改）
+  catalog-manifest.json              schema 3；开发版本使用 CLI package version
+  .agents/
+  .claude-plugin/
   plugins/<name>/
   ├── .agents-plugin/plugin.json     源 manifest 副本
   ├── .claude-plugin/plugin.json     支持 Claude 时存在
@@ -391,11 +393,16 @@ CLI 入口和输出对作者的影响：
   ├── claude/                        支持 Claude 时存在
   └── codex/                         支持 Codex 时存在
            │
-           │  后续 release staging（当前尚未实现）
+           │  make stage-catalog CATALOG_VERSION=<version>
            ▼
-Schema 3 source snapshot
-  catalog-manifest.json              schema 3
-  plugins/<name>/                    来自真实 build bundle
+发布 staging（`.release/catalog-staging/catalog/`）
+  catalog-manifest.json              schema 3；使用显式发布版本
+  plugin-release-ledger.json
+  .agents/ + .claude-plugin/ + plugins/<name>/
+           │
+           │  Phase 4B Git publisher（尚未实现）
+           ▼
+Git catalog source
            │
            │  path/Git source resolution
            ▼
@@ -405,7 +412,7 @@ Schema 3 source snapshot
   <AW_HOME>/plugin-config/<sourceId>/<pluginName>/config.json
 ```
 
-这些层各有职责。当前可验证真值止于本地 build bundle；schema 3 snapshot 只能作为后续 release staging 的目标合同。Phase 4 publisher 尚未实现，作者工具不得声称 build 已直接生成 schema 3，也不得把 npm catalog、registry sidecar 或 full catalog tarball 当作未来分发真值。
+这些层各有职责。当前可验证真值止于本地 schema 3 snapshot 和 release staging。Phase 4B publisher 尚未实现，作者工具不得声称 remote refs、tags 或 push 已可用，也不得把旧 npm catalog、registry sidecar 或 full catalog tarball 当作分发真值。
 
 project shared config 位于 `.agent-workflows/plugin-config/<sourceId>/<pluginName>/config.json`，可提交；project local 使用 `.agent-workflows/plugin-config.local/<sourceId>/<pluginName>/config.json`，默认应被 ignore。两者都使用 schema 2 source envelope。平台输出通过 owner schema 2 marker 保存 `sourceId` 和 qualified plugin identity。
 

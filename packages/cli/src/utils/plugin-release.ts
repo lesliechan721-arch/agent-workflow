@@ -1,6 +1,7 @@
 import type {
   CatalogChannel,
   CatalogManifest,
+  CatalogManifestV3,
   PluginMeta,
 } from '../types.js';
 import {
@@ -71,8 +72,33 @@ export function assertStablePluginVersion(version: string, fieldName = 'plugin v
   return version;
 }
 
-function ledgerRecordKey(record: Pick<PluginReleaseLedgerRecord, 'plugin' | 'version'>): string {
+function pluginReleaseIdentityKey(
+  record: Pick<PluginReleaseLedgerRecord, 'plugin' | 'version'>,
+): string {
   return `${record.plugin}@${record.version}`;
+}
+
+function ledgerRecordKey(
+  record: Pick<
+    PluginReleaseLedgerRecord,
+    'channel' | 'catalogVersion' | 'plugin' | 'version'
+  >,
+): string {
+  return JSON.stringify([
+    record.channel,
+    record.catalogVersion,
+    record.plugin,
+    record.version,
+  ]);
+}
+
+function hasIdenticalDigests(
+  left: PluginReleaseLedgerRecord,
+  right: PluginReleaseLedgerRecord,
+): boolean {
+  return left.artifactDigest === right.artifactDigest
+    && left.manifestDigest === right.manifestDigest
+    && left.contentDigest === right.contentDigest;
 }
 
 function validateLedgerRecord(rawValue: unknown, index: number): PluginReleaseLedgerRecord {
@@ -113,39 +139,68 @@ export function validatePluginReleaseLedger(rawValue: unknown): PluginReleaseLed
     throw new Error('Invalid plugin release ledger: expected schemaVersion 1 and records array.');
   }
   const records = raw.records.map(validateLedgerRecord);
-  const byKey = new Map<string, PluginReleaseLedgerRecord>();
+  const byRecordKey = new Map<string, PluginReleaseLedgerRecord>();
+  const byPluginIdentity = new Map<string, PluginReleaseLedgerRecord>();
   for (const record of records) {
-    const key = ledgerRecordKey(record);
-    const existing = byKey.get(key);
-    if (
-      existing
-      && (
-        existing.artifactDigest !== record.artifactDigest
-        || existing.manifestDigest !== record.manifestDigest
-        || (existing.contentDigest && record.contentDigest && existing.contentDigest !== record.contentDigest)
-      )
-    ) {
-      throw new Error(`Plugin release identity ${key} maps to different digests.`);
-    }
-    if (!existing) {
-      byKey.set(key, record);
+    const recordKey = ledgerRecordKey(record);
+    const existingRecord = byRecordKey.get(recordKey);
+    if (existingRecord) {
+      if (!hasIdenticalDigests(existingRecord, record)) {
+        throw new Error(
+          `Plugin publication record for ${pluginReleaseIdentityKey(record)} contains conflicting digests.`,
+        );
+      }
       continue;
     }
-    const preferred = existing.channel === 'latest'
-      ? existing
-      : record.channel === 'latest'
-        ? record
-        : existing;
-    byKey.set(key, {
-      ...preferred,
-      contentDigest: existing.contentDigest ?? record.contentDigest,
-    });
+    const identityKey = pluginReleaseIdentityKey(record);
+    const existingIdentity = byPluginIdentity.get(identityKey);
+    if (existingIdentity && !hasIdenticalDigests(existingIdentity, record)) {
+      throw new Error(`Plugin release identity ${identityKey} maps to different digests.`);
+    }
+    byRecordKey.set(recordKey, record);
+    byPluginIdentity.set(identityKey, record);
   }
   return {
     schemaVersion: 1,
-    records: [...byKey.values()].sort((left, right) =>
-      left.plugin.localeCompare(right.plugin) || compareStrictSemVer(left.version, right.version)),
+    records: [...byRecordKey.values()].sort((left, right) =>
+      left.plugin.localeCompare(right.plugin)
+      || compareStrictSemVer(left.version, right.version)
+      || left.channel.localeCompare(right.channel)
+      || compareStrictSemVer(left.catalogVersion, right.catalogVersion)),
   };
+}
+
+export function validatePluginReleaseLedgerAgainstManifest(
+  rawLedger: unknown,
+  manifest: CatalogManifestV3,
+): PluginReleaseLedger {
+  const ledger = validatePluginReleaseLedger(rawLedger);
+  for (const entry of manifest.entries) {
+    const records = ledger.records.filter((candidate) =>
+      candidate.plugin === entry.name
+      && candidate.version === entry.version
+      && candidate.channel === manifest.channel
+      && candidate.catalogVersion === manifest.catalogVersion
+    );
+    if (
+      records.length !== 1
+      || records[0]!.artifactDigest !== entry.artifactDigest
+      || records[0]!.manifestDigest !== entry.manifestDigest
+      || records[0]!.contentDigest !== entry.contentDigest
+    ) {
+      throw new Error(
+        `Plugin release ledger does not match catalog entry ${entry.name}@${entry.version}.`,
+      );
+    }
+  }
+  const currentRecords = ledger.records.filter((record) =>
+    record.channel === manifest.channel
+    && record.catalogVersion === manifest.catalogVersion
+  );
+  if (currentRecords.length !== manifest.entries.length) {
+    throw new Error('Plugin release ledger contains unexpected records for the current catalog.');
+  }
+  return ledger;
 }
 
 export function mergePluginReleaseLedgers(
@@ -196,10 +251,7 @@ export function resolveBetaPluginVersionOverrides(
       && record.version === targetVersion
     );
     if (publishedStableIdentity) {
-      if (
-        publishedStableIdentity.contentDigest
-        && publishedStableIdentity.contentDigest !== contentDigest
-      ) {
+      if (publishedStableIdentity.contentDigest !== contentDigest) {
         throw new Error(
           `Plugin release identity ${name}@${targetVersion} maps to different content. Increase the source plugin version.`,
         );
@@ -227,7 +279,7 @@ export function resolveBetaPluginVersionOverrides(
 
 export function appendCatalogToPluginReleaseLedger(options: {
   previous: PluginReleaseLedger;
-  manifest: CatalogManifest;
+  manifest: CatalogManifest | CatalogManifestV3;
   contentDigests: ReadonlyMap<string, string>;
 }): PluginReleaseLedger {
   const previous = validatePluginReleaseLedger(options.previous);
@@ -249,6 +301,10 @@ export function appendCatalogToPluginReleaseLedger(options: {
     };
     const key = ledgerRecordKey(candidate);
     const existing = existingByKey.get(key);
+    const existingIdentity = records.find((record) =>
+      record.plugin === candidate.plugin
+      && record.version === candidate.version
+    );
     const highest = records
       .filter((record) => record.plugin === candidate.plugin)
       .reduce<PluginReleaseLedgerRecord | null>((current, record) =>
@@ -260,28 +316,29 @@ export function appendCatalogToPluginReleaseLedger(options: {
           `Plugin ${candidate.plugin} version ${candidate.version} must not be lower than published ${highest.version}.`,
         );
       }
-      if (
-        existing.artifactDigest !== candidate.artifactDigest
-        || existing.manifestDigest !== candidate.manifestDigest
-        || (existing.contentDigest && existing.contentDigest !== candidate.contentDigest)
-      ) {
-        throw new Error(`Plugin release identity ${key} maps to different digests.`);
-      }
-      if (candidate.channel === 'latest' && existing.channel === 'beta') {
-        const existingIndex = records.findIndex((record) => ledgerRecordKey(record) === key);
-        records[existingIndex] = candidate;
-        existingByKey.set(key, candidate);
-      } else if (!existing.contentDigest) {
-        const existingIndex = records.findIndex((record) => ledgerRecordKey(record) === key);
-        const enriched = { ...existing, contentDigest: candidate.contentDigest };
-        records[existingIndex] = enriched;
-        existingByKey.set(key, enriched);
+      if (!hasIdenticalDigests(existing, candidate)) {
+        throw new Error(
+          `Plugin publication record for ${pluginReleaseIdentityKey(candidate)} contains conflicting digests.`,
+        );
       }
       continue;
     }
-    if (highest && compareStrictSemVer(candidate.version, highest.version) <= 0) {
+    if (existingIdentity && !hasIdenticalDigests(existingIdentity, candidate)) {
       throw new Error(
-        `Plugin ${candidate.plugin} version ${candidate.version} must be higher than published ${highest.version}.`,
+        `Plugin release identity ${pluginReleaseIdentityKey(candidate)} maps to different digests.`,
+      );
+    }
+    const versionComparison = highest
+      ? compareStrictSemVer(candidate.version, highest.version)
+      : null;
+    if (
+      versionComparison !== null
+      && (existingIdentity ? versionComparison < 0 : versionComparison <= 0)
+    ) {
+      throw new Error(
+        existingIdentity
+          ? `Plugin ${candidate.plugin} version ${candidate.version} must not be lower than published ${highest!.version}.`
+          : `Plugin ${candidate.plugin} version ${candidate.version} must be higher than published ${highest!.version}.`,
       );
     }
     records.push(candidate);

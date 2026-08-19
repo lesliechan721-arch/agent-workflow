@@ -4,29 +4,28 @@ PNPM ?= pnpm
 CLI_VERSION ?=
 CATALOG_VERSION ?=
 
-.PHONY: help install build test verify-local verify-cli verify-catalog verify-release pack-cli pack-catalog pack local-install version-beta version-release publish-cli-beta publish-cli-release publish-catalog-beta publish-catalog-release beta-release release
+.PHONY: help install build test verify-local verify-cli verify-catalog verify-release pack-cli stage-catalog local-install version-beta version-release publish-cli-beta publish-cli-release publish-catalog-beta publish-catalog-release beta-release release
 
 help:
 	@printf '%s\n' \
 		'make install                         安装工作区依赖' \
-		'make build                           编译 CLI 与 catalog staging bundle' \
+		'make build                           编译 CLI 与 schema 3 本地 catalog snapshot' \
 		'make test                            运行单元/集成测试' \
-		'make verify-local                    校验 CLI 本地发布链路（runtime/pack/fetch smoke）' \
+		'make verify-local                    校验 CLI 本地发布链路（runtime/pack smoke）' \
 		'make verify-cli                      校验 CLI-only 发布链路' \
 		'make verify-catalog                  校验 catalog-only 发布链路' \
 		'make verify-release                  校验 CLI + catalog 组合发布链路' \
 		'make pack-cli                        生成 CLI tarball' \
-		'make pack-catalog CATALOG_VERSION=x.y.z[-beta.n]   生成 sidecar/full catalog tarball' \
-		'make pack CATALOG_VERSION=x.y.z[-beta.n]          同时生成 CLI 与 catalog tarball' \
+		'make stage-catalog CATALOG_VERSION=x.y.z[-beta.n] 生成本地 Git catalog 发布 staging' \
 		'make local-install                   打包并执行 npm 全局安装，验证 CLI 本地安装链路' \
 		'make version-beta CLI_VERSION=x.y.z-beta.0        同步测试版 CLI 版本到两个 package.json' \
 		'make version-release CLI_VERSION=x.y.z            同步正式版 CLI 版本到两个 package.json' \
 		'make publish-cli-beta CLI_VERSION=x.y.z-beta.0    发布 CLI 测试版（dist-tag: beta）' \
 		'make publish-cli-release CLI_VERSION=x.y.z        发布 CLI 正式版（dist-tag: latest）' \
-		'make publish-catalog-beta CATALOG_VERSION=x.y.z-beta.0   发布 catalog 测试版' \
-		'make publish-catalog-release CATALOG_VERSION=x.y.z       发布 catalog 正式版' \
-		'make beta-release CLI_VERSION=x.y.z-beta.0 CATALOG_VERSION=a.b.c-beta.n   组合发布测试版' \
-		'make release CLI_VERSION=x.y.z CATALOG_VERSION=a.b.c                        组合发布正式版'
+		'make publish-catalog-beta CATALOG_VERSION=x.y.z-beta.0   本地验证/stage 后等待 Phase 4B' \
+		'make publish-catalog-release CATALOG_VERSION=x.y.z       本地验证/stage 后等待 Phase 4B' \
+		'make beta-release CLI_VERSION=x.y.z-beta.0 CATALOG_VERSION=a.b.c-beta.n   本地验证/stage 后等待 Phase 4B' \
+		'make release CLI_VERSION=x.y.z CATALOG_VERSION=a.b.c                        本地验证/stage 后等待 Phase 4B'
 
 install:
 	$(PNPM) install
@@ -52,13 +51,9 @@ verify-release:
 pack-cli:
 	$(PNPM) run release:pack:cli
 
-pack-catalog:
-	@test -n "$(CATALOG_VERSION)" || (echo 'CATALOG_VERSION is required. Example: make pack-catalog CATALOG_VERSION=1.2.0-beta.1' && exit 1)
-	$(PNPM) run release:pack:catalog -- --catalog-version $(CATALOG_VERSION)
-
-pack:
-	@test -n "$(CATALOG_VERSION)" || (echo 'CATALOG_VERSION is required. Example: make pack CATALOG_VERSION=1.2.0-beta.1' && exit 1)
-	$(PNPM) run release:pack -- --catalog-version $(CATALOG_VERSION)
+stage-catalog:
+	@test -n "$(CATALOG_VERSION)" || (echo 'CATALOG_VERSION is required. Example: make stage-catalog CATALOG_VERSION=1.2.0-beta.1' && exit 1)
+	$(PNPM) run release:stage:catalog -- --catalog-version $(CATALOG_VERSION)
 
 local-install:
 	$(PNPM) run release:local

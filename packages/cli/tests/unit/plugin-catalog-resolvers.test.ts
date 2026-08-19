@@ -1289,7 +1289,7 @@ describe('plugin catalog resolvers', () => {
     }
   });
 
-  it('keeps staging digests aligned with runtime validation for the same plugin', async () => {
+  it('keeps schema 3 snapshot digests aligned with runtime validation for the same plugin', async () => {
     const { repoRoot } = await makeRepoWorkspace();
     const outputRoot = await createSyntheticEmbeddedRoot(repoRoot);
     tempDirs.push(outputRoot);
@@ -1312,7 +1312,7 @@ describe('plugin catalog resolvers', () => {
 
     expect(gitCommitEntry).toBeDefined();
     const runtimeDigests = await calculateCatalogEntryDigestsFromRoot(
-      path.join(staged.fullPackageRoot, gitCommitEntry!.source),
+      path.join(outputRoot, gitCommitEntry!.source),
     );
     expect(runtimeDigests).toEqual({
       artifactDigest: gitCommitEntry!.artifactDigest,

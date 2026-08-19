@@ -1,54 +1,33 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-const originalArgv = process.argv;
+import { publishCatalog } from '../../../../scripts/release/publish-catalog.mjs';
 
-afterEach(() => {
-  process.argv = originalArgv;
-  vi.resetModules();
-  vi.clearAllMocks();
-  vi.restoreAllMocks();
-});
-
-describe('publish-catalog script', () => {
-  it('logs stable package metadata without cleaned staging paths', async () => {
-    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
-    vi.spyOn(console, 'error').mockImplementation(() => undefined);
-    vi.doMock('../../../../scripts/release/common.mjs', () => ({
-      createCatalogRegistryAdapter: vi.fn(async () => ({ kind: 'registry' })),
-      publishCatalogRelease: vi.fn(async () => ({
-        channel: 'beta',
-        catalogVersion: '9.0.0-beta.6',
-        manifest: { catalogVersion: '9.0.0-beta.6', channel: 'beta' },
-        packages: {
-          sidecar: {
-            name: '@lesliechan721/aw-plugins-manifest',
-            version: '9.0.0-beta.6',
-          },
-          full: {
-            name: '@lesliechan721/aw-plugins',
-            version: '9.0.0-beta.6',
-          },
-        },
-      })),
-      runCommand: vi.fn(async () => undefined),
+describe('publish-catalog Phase 4A boundary', () => {
+  it('verifies and stages locally, then stops before remote publication', async () => {
+    const runCommand = vi.fn(async () => undefined);
+    const stageCatalogRelease = vi.fn(async () => ({
+      outputRoot: '/tmp/catalog-stage',
     }));
-    process.argv = [
-      process.execPath,
-      'scripts/release/publish-catalog.mjs',
-      'beta',
+
+    await expect(publishCatalog(
+      ['beta', '--catalog-version', '9.0.0-beta.6'],
+      { runCommand, stageCatalogRelease },
+    )).rejects.toThrow('Remote Git catalog publishing is not available until Phase 4B');
+
+    expect(runCommand).toHaveBeenCalledOnce();
+    expect(runCommand).toHaveBeenCalledWith('pnpm', ['run', 'release:verify:catalog']);
+    expect(stageCatalogRelease).toHaveBeenCalledWith([
       '--catalog-version',
       '9.0.0-beta.6',
-    ];
+    ]);
+  });
 
-    await import(
-      new URL(`../../../../scripts/release/publish-catalog.mjs?test=${Math.random()}`, import.meta.url).href
-    );
-
-    expect(log).toHaveBeenCalledOnce();
-    expect(log).toHaveBeenCalledWith(
-      'Published catalog 9.0.0-beta.6 to beta (@lesliechan721/aw-plugins-manifest, @lesliechan721/aw-plugins).',
-    );
-    expect(log.mock.calls.flat().join('\n')).not.toContain('.release');
-    expect(process.exitCode).not.toBe(1);
+  it('rejects a channel and version mismatch before staging', async () => {
+    const stageCatalogRelease = vi.fn();
+    await expect(publishCatalog(
+      ['latest', '--catalog-version', '9.0.0-beta.6'],
+      { stageCatalogRelease },
+    )).rejects.toThrow('Expected a stable version');
+    expect(stageCatalogRelease).not.toHaveBeenCalled();
   });
 });

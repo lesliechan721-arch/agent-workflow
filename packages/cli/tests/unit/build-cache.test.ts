@@ -53,13 +53,7 @@ async function writeRequiredOutputs(repoRoot: string, generation = 1): Promise<v
     if (relativePath.endsWith('marketplace.json')) {
       contents = `{"plugins":[],"generation":${generation}}\n`;
     } else if (relativePath.endsWith('catalog-manifest.json')) {
-      contents = `{"schemaVersion":1,"entries":[],"packages":{},"generation":${generation}}\n`;
-    } else if (relativePath.endsWith('plugin-release-ledger.json')) {
-      contents = `{"schemaVersion":1,"records":[],"generation":${generation}}\n`;
-    } else if (relativePath.endsWith('sidecar/package.json')) {
-      contents = `{"name":"@lesliechan721/aw-plugins-manifest","files":[],"generation":${generation}}\n`;
-    } else if (relativePath.endsWith('full/package.json')) {
-      contents = `{"name":"@lesliechan721/aw-plugins","files":[],"generation":${generation}}\n`;
+      contents = `{"schemaVersion":3,"entries":[],"generation":${generation}}\n`;
     }
     await fs.writeFile(outputPath, contents);
   }));
@@ -232,7 +226,7 @@ describe('build cache input and environment identity', () => {
     ));
 
     expect(stamp).toMatchObject({
-      schemaVersion: 6,
+      schemaVersion: 7,
       nodeVersion: process.version,
       nodeExecPath: path.resolve(process.execPath),
       nodeExecRealPath: await fs.realpath(process.execPath),

@@ -12,7 +12,7 @@
 - `utils/ownership.ts` 定义 owner marker、组件检查和安全删除边界。
 - `utils/lifecycle-active-store.ts` 保存最后一次成功写入所需的 lifecycle 输入。
 - `utils/local-marketplace.ts` 管理本机 active marketplace 和严格 catalog cache。
-- `utils/plugin-catalog.ts` 解析 current sidecar/full catalog、selector 和严格 cache fallback。
+- `utils/plugin-catalog.ts` 保留旧 npm sidecar/full catalog、selector 和严格 cache fallback 的迁移兼容实现。
 - `utils/plugin-config.ts` 与 `utils/plugin-config-write.ts` 管理 namespaced AW config store 和 config v4 输出。
 - `output/command-receipt.ts` 生成五个写命令的 receipt v4。
 - `generators/` 生成 instructions、permissions、hooks、agents、skills 和 MCP 等平台能力。
@@ -54,21 +54,28 @@ Source layer
 Temporary evaluation layer
   .tmp/agent-workflows/evals/**                   [complete local evidence]
 
-          ↓ pnpm build / catalog staging
+          ↓ pnpm build
 
-Catalog staging
+Local schema 3 catalog snapshot (`packages/cli/plugins-dist/`)
+  ├── catalog-manifest.json
   ├── .claude-plugin/marketplace.json
   ├── .agents/plugins/marketplace.json
   └── plugins/<name>/**
 
-          ↓ catalog pack / publish
+          ↓ make stage-catalog CATALOG_VERSION=<version>
 
-npm registry
-  @lesliechan721/aw
-  @lesliechan721/aw-plugins-manifest
-  @lesliechan721/aw-plugins
+Release staging (`.release/catalog-staging/catalog/`)
+  ├── catalog-manifest.json
+  ├── plugin-release-ledger.json
+  ├── .claude-plugin/marketplace.json
+  ├── .agents/plugins/marketplace.json
+  └── plugins/<name>/**
 
-          ↓ aw init / write command
+          ↓ Phase 4B Git publisher（尚未实现）
+
+Git catalog source
+
+          ↓ path/Git source resolution
 
 Local runtime
   <AW_HOME>/
@@ -82,12 +89,14 @@ Local runtime
 - 仓库源码层是插件作者维护的输入。
 - Skill 根的 `evals/**` 和插件根的正式 `reports/**` 不进入 catalog runtime bundle、安装制品或 runtime digest。Skill `README.md` 是 production source，会随 Skill 发布。
 - `.tmp/agent-workflows/evals/**` 只保存本地临时证据，不进入 Git 或 runtime bundle。插件正式报告位于 `plugins/<plugin>/reports/`，repo-local 静态 Skill 正式报告位于 `.agents/reports/`。Eval、评审、发布和登记步骤由 [create-aw-plugin](../.agents/skills/create-aw-plugin/README.md) 与 [skill-review](../.agents/skills/skill-review/README.md) 工作流定义。
-- catalog staging 是生成物，不手工修改。
-- `@lesliechan721/aw-plugins-manifest` 是 sidecar；`@lesliechan721/aw-plugins` 是同版本 full catalog。
+- 本地 catalog snapshot 和 release staging 都是生成物，不手工修改。
 - CLI version、catalog version 和 plugin version 是三套独立身份。
-- catalog manifest 使用 schema 2，只描述 current 单版本快照。它记录 catalog 最低 CLI 版本、sidecar/full package identity，以及每个 current plugin 的版本、最低 CLI 版本、`artifactDigest` 和 `manifestDigest`。
+- `pnpm build` 在 `packages/cli/plugins-dist/` 生成 schema 3 snapshot。开发态 `catalogVersion` 使用 CLI package version，channel 由该版本是否为 prerelease 确定，因此 build 不需要发布版本输入。
+- schema 3 manifest 保留 `catalogVersion`、`channel`、catalog compatibility 和 current entries，不包含 npm package identity。每个 entry 包含 `artifactDigest`、`manifestDigest` 和基于真实 runtime 内容生成的 `contentDigest`。
+- `make stage-catalog CATALOG_VERSION=<version>` 从隔离 build snapshot 生成 `.release/catalog-staging/catalog/`。它使用显式 catalog version，加入 `plugin-release-ledger.json`，完成 snapshot、digest、plugin version 和 ledger 校验后才替换成功产物。
+- Phase 4A 不包含 Git publisher、remote refs、tags 或 push。catalog publish、beta release 和 stable release 高层入口只完成本地验证与 staging，然后明确失败；它们不会执行远端 catalog 或 CLI 发布。
 - Git/path 多 source 的待切换基础合同使用 `<AW_HOME>/catalog-sources.json` schema 1。文件缺失时读取内置 official primary；首次配置 mutation 才物化文件。当前 npm resolver 尚不读取此配置。
-- catalog manifest schema 3 的待切换类型和 validator/generator 已与 schema 2 并存。schema 3 移除 npm package identity，并为 entry 增加 `contentDigest`；当前 runtime 和 staging 仍使用 schema 2。
+- schema 2 npm catalog resolver 和 fixture 只为旧 CLI 迁移兼容保留，不再是 build 或 release 真值；CLI cutover 属于 Phase 4C。
 - `aw catalog source add/update/list/set-primary/remove` 管理 schema 1 source config。add/update 先用 `forceRemote` 只验证 candidate 中的目标 source，并只保留 lease-safe 普通证据；随后在 runtime lease 内执行引用预检、expected config digest 复查和原子替换。identity 变化、primary 变化和 remove 在发现 schema 1 owner、旧裸名 config/lifecycle 或旧 marketplace 时返回 `legacyStateUnsupported`，不自动迁移或清理。
 - Git/path provider、schema 3 snapshot validator、source strict cache 和四 worker multi-source resolver 已作为独立内核存在。snapshot 根只接受 `catalog-manifest.json`、`.agents/`、`.claude-plugin/`、`plugins/` 和可选的发布端 ledger；validator 从真实 plugin manifest 重建完整 entry 投影。provider 从不可变 Git commit 或每次 path 复制物化已验证 snapshot。
 - Git provider 只允许 HTTPS、SSH、file URL 和规范绝对本地路径。它清除 Git 命令/配置注入环境，固定 protocol 与 SSH 命令边界，并在网络访问前拒绝改变 source identity 的 Git URL rewrite；managed bare cache 拒绝非受控 local config、内部 symlink 和 object alternates。Abort 和 remote deadline 必须完成整个子进程树清理后才释放 object lock。
@@ -96,9 +105,8 @@ Local runtime
 - multi-source resolver 提供 qualified plugin ID、全局裸名唯一性和 desired artifact key 碰撞预检。resolution 和 PluginMeta 只通过 current-cache lease 范围内的 callback 消费；callback 结果经过 lease-safe 深拷贝投影，protected path evidence 不能逃逸。`catalog source`、`init`、公开 `status`、config 和五个写命令均使用该 callback；owner/config/lifecycle store 使用 source namespace。
 - 源码 plugin manifest 直接保存下一次稳定版本；`contentDigest` 排除生成 manifest 的 version 字段，用于识别插件内容。
 - Beta 发布根据源码稳定版本、`contentDigest` 和已发布账本，在临时 staging 中物化 prerelease plugin version。Stable 发布直接使用源码 manifest version。
-- Sidecar 包包含发布端专用的 `plugin-release-ledger.json`。发布门禁合并 beta/latest 账本，保证同一 `plugin@version` 不会对应不同 digest。运行时 catalog manifest 仍使用 schema 2。
-- 发布门禁要求目标 channel 的 catalog version 单调不降低。同一 catalog version 的 sidecar/full 包已存在时，待发布 package 必须与 registry 中的 exact-version package 字节相同。
-- strict catalog cache 按 selector、registry source identity、integrity、manifest digest 和 CLI compatibility 隔离。并发写入使用 immutable entry、原子 selector publication 和有界 lock。
+- release staging 包含发布端专用的 `plugin-release-ledger.json`。记录以 catalog channel/version 和 plugin name/version 的完整发布身份保留历史；同一 `plugin@version` 跨历史必须保持 `artifactDigest`、`manifestDigest` 和 `contentDigest` 不变。当前 snapshot 的每个 entry 必须有且只有一个当前 catalog 记录。远端读取、跨已发布 Git history 取回 ledger 和 channel 单调门禁属于 Phase 4B。
+- 旧 npm strict catalog cache 只服务迁移兼容。新 source strict cache 使用 immutable entry、原子 selector publication 和有界 lock。
 - active marketplace 只供平台原生能力读取。`AW_HOME` 同盘 sibling coordination root 提供 lifecycle lease 和 runtime lease；同时需要两者时，固定按 lifecycle、runtime 的顺序获取。runtime lease 串行根替换、catalog source config、user config 及 Codex user Skill overlay 的写入，lifecycle lease 保护 active snapshot。只读检查不获取排他租约，也不创建 coordination 状态。operation lock 也位于 sibling root，不进入被替换目录。重建必须保留 catalog source config、strict catalog cache、AW config store、Codex user Skill overlay 和 lifecycle active snapshot。
 - markerless Codex user Skill 只有在文件树与 current catalog 或当前 renderer 的期望树完全一致时，才按 pristine catalog 内容和 absent 状态处理。install/reinstall 可以为它原子写入 owner marker；内容变化、多余文件、符号链接或 foreign marker 仍按 collision 处理。
 
@@ -246,5 +254,6 @@ cache publication 必须满足：
 ## Key Paths
 
 - `packages/cli/scripts/bundle-plugins.ts`：生成 catalog staging。
-- `packages/cli/scripts/plugin-staging.ts`：生成 sidecar/full catalog 输入。
+- `packages/cli/scripts/plugin-staging.ts`：生成 schema 3 manifest 和 release ledger。
+- `scripts/release/stage-catalog.mjs`：生成 `.release/catalog-staging/catalog/` 发布交接目录。
 - `.agents/skills/create-aw-plugin/`：插件作者工作流与参考合同。

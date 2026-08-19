@@ -10,7 +10,7 @@ import {
   CATALOG_SIDECAR_PACKAGE_NAME,
   getCatalogFullPackageRoot,
   getCatalogSidecarPackageRoot,
-} from '../../scripts/plugin-staging.js';
+} from '../../src/utils/bundle-layout.js';
 import type {
   CatalogPackageArchiveIdentity,
   CatalogPackageSource,
@@ -46,9 +46,37 @@ export async function createPerfCatalogFixture(
 
   const sidecarRoot = getCatalogSidecarPackageRoot(outputRoot);
   const fullRoot = getCatalogFullPackageRoot(outputRoot);
-  const manifest = await fs.readJson(
-    path.join(sidecarRoot, CATALOG_MANIFEST_FILENAME),
-  ) as CatalogManifest;
+  const snapshotManifest = await fs.readJson(path.join(outputRoot, CATALOG_MANIFEST_FILENAME));
+  const manifest: CatalogManifest = {
+    schemaVersion: 2,
+    catalogVersion: snapshotManifest.catalogVersion,
+    channel: snapshotManifest.channel,
+    compatibility: snapshotManifest.compatibility,
+    packages: {
+      sidecar: {
+        name: CATALOG_SIDECAR_PACKAGE_NAME,
+        version: snapshotManifest.catalogVersion,
+        channel: snapshotManifest.channel,
+      },
+      full: {
+        name: CATALOG_FULL_PACKAGE_NAME,
+        version: snapshotManifest.catalogVersion,
+        channel: snapshotManifest.channel,
+        manifestPath: `./${CATALOG_MANIFEST_FILENAME}`,
+      },
+    },
+    entries: snapshotManifest.entries.map(({ contentDigest: _contentDigest, ...entry }: {
+      contentDigest: string;
+      [key: string]: unknown;
+    }) => entry),
+  } as CatalogManifest;
+  await Promise.all([
+    fs.outputJson(path.join(sidecarRoot, CATALOG_MANIFEST_FILENAME), manifest),
+    fs.outputJson(path.join(fullRoot, CATALOG_MANIFEST_FILENAME), manifest),
+    fs.copy(path.join(outputRoot, '.agents'), path.join(fullRoot, '.agents')),
+    fs.copy(path.join(outputRoot, '.claude-plugin'), path.join(fullRoot, '.claude-plugin')),
+    fs.copy(path.join(outputRoot, 'plugins'), path.join(fullRoot, 'plugins')),
+  ]);
   if (manifest.entries.length < 3) {
     throw new Error(
       `Performance catalog fixture requires at least 3 plugins, found ${manifest.entries.length}.`,

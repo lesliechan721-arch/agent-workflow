@@ -12,7 +12,7 @@
 | Integration | `pnpm test:integration` | CLI 入口、作者工具、写命令和平台 adapter 组合 |
 | Performance | `pnpm test:perf` | 独立性能预算；不进入普通 unit |
 | Performance gate | `pnpm test:perf:gate` | 预算结果和 fast unit wall-time 门禁 |
-| Smoke | 见下方命令表 | 真实 build、pack、fetch 和插件脚本产物 |
+| Smoke | 见下方命令表 | 真实 build、stage、pack、fetch 和插件脚本产物 |
 | Plugin test | `pnpm plugin:test <plugin>` | 插件自己的确定性 Node 测试 |
 | Model eval | 见[插件维护指南](plugin-maintenance.md) | 需要模型理解、判断、路由或完成任务的语义合同；不进入普通 CI |
 
@@ -24,9 +24,8 @@
 | `pnpm test:smoke` | 运行完整 smoke suite |
 | `pnpm test:smoke:build` | 校验 `pnpm build` 产物 |
 | `pnpm test:smoke:pack:cli` | 校验 CLI tarball 内容 |
-| `pnpm test:smoke:pack:catalog` | 校验 sidecar/full catalog tarball 内容 |
-| `pnpm test:smoke:pack` | 串行校验 CLI 与 catalog tarball |
-| `pnpm test:smoke:fetch` | 校验 catalog fetch、选择、cache 复用和兼容性失败边界 |
+| `pnpm test:smoke:stage:catalog` | 校验显式版本 catalog staging 和本地 path source 消费 |
+| `pnpm test:smoke:fetch` | `test:smoke:stage:catalog` 的兼容入口，校验本地 path source 消费 |
 | `pnpm test:smoke:plugin-scripts` | 校验真实插件脚本 staging、依赖闭包和 bundle 布局 |
 
 普通测试使用 synthetic catalog、隔离 home 和 fake native runner。不得调用用户真实 Codex/Claude 配置，也不得修改仓库外状态。
@@ -78,7 +77,7 @@ Skill 和 prompt 的确定性测试只保留结构、模板、平台元数据、
 | Strict catalog cache 或 selector | Unit + Performance + Smoke | `packages/cli/tests/unit/local-marketplace.test.ts`、`pnpm test:perf:gate`、`pnpm test:smoke:fetch` |
 | 平台输出或 adapter | Unit + Integration | 对应平台 unit/integration；插件产物按[插件维护指南](plugin-maintenance.md)验证 |
 | 插件作者合同 | Integration + Plugin test | `pnpm test:integration`、`pnpm plugin:test <plugin>` 和专用作者工作流要求的验证 |
-| Build、bundle 或 tarball | Smoke | 对应 build、plugin-scripts、CLI pack 或 catalog pack smoke |
+| Build、bundle、staging 或 tarball | Smoke | 对应 build、plugin-scripts、catalog stage 或 CLI pack smoke |
 | 公开 JSON 或 schema | Unit + Integration | 对应 schema 测试、CLI JSON harness，并同步架构和消费者文档 |
 
 所有文档或代码改动最后运行 `git diff --check`。
