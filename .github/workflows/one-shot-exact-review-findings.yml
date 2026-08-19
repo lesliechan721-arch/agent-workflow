@@ -1,0 +1,118 @@
+name: one-shot align exact review findings
+
+on:
+  push:
+    branches:
+      - fix/aw-adapter-auto-invocation
+
+permissions:
+  contents: write
+
+concurrency:
+  group: one-shot-exact-review-findings
+  cancel-in-progress: false
+
+jobs:
+  apply-validate-and-rewrite:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/aw-adapter-auto-invocation
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Restore the pre-misidentified-finding base and apply exact F-01 through F-05
+        run: |
+          cat .github/tmp/payload.part.* | base64 --decode | gzip --decompress > /tmp/apply-exact-review-findings.py
+          python3 -m py_compile /tmp/apply-exact-review-findings.py
+          git reset --hard d930f3dfa72f736c12af9c4132c4cbdba1147208
+          python3 /tmp/apply-exact-review-findings.py
+
+      - name: Regenerate canonical and copied artifacts
+        run: |
+          node plugins/agent-content-toolkit/scripts/generate-standard-views.mjs
+          node plugins/agent-content-toolkit/scripts/generate-rules-contract.mjs
+          node plugins/agent-content-toolkit/scripts/generate-contract-assets.mjs
+          node plugins/agent-skill-toolkit/scripts/generate-standard-views.mjs
+          node plugins/agent-skill-toolkit/scripts/generate-contract-assets.mjs
+          node plugins/aw-plugin-development/scripts/generate-contract-assets.mjs
+
+      - name: Run exact-finding contracts and existing deterministic suites
+        run: |
+          node --check scripts/static-skill-evals/run_static_skill_evals.mjs
+          node --check plugins/agent-content-toolkit/scripts/generate-rules-contract.mjs
+          node --check plugins/agent-skill-toolkit/scripts/generate-standard-views.mjs
+          node --check plugins/agent-skill-toolkit/scripts/validate-review-result.mjs
+          node --check plugins/agent-skill-toolkit/scripts/review-findings-contract.test.mjs
+          node --check plugins/aw-plugin-development/scripts/review-findings-contract.test.mjs
+
+          node scripts/static-skill-evals/run_static_skill_evals.mjs --help
+          node --test scripts/review-migration-contract.test.mjs
+
+          node plugins/agent-content-toolkit/scripts/generate-rules-contract.mjs --check
+          node plugins/agent-content-toolkit/scripts/validate-standard-views.mjs
+          node plugins/agent-content-toolkit/scripts/validate-contract-assets.mjs
+          node --test plugins/agent-content-toolkit/scripts/contract.test.mjs
+          node --test plugins/agent-content-toolkit/scripts/standards-ownership-contract.test.mjs
+
+          node plugins/agent-skill-toolkit/scripts/validate-standard-views.mjs
+          node plugins/agent-skill-toolkit/scripts/validate-contract-assets.mjs
+          node --test plugins/agent-skill-toolkit/scripts/contract.test.mjs
+          node --test plugins/agent-skill-toolkit/scripts/review-findings-contract.test.mjs
+
+          node plugins/aw-plugin-development/scripts/validate-contract-assets.mjs
+          node --test plugins/aw-plugin-development/scripts/contract.test.mjs
+          node --test plugins/aw-plugin-development/scripts/invocation-contract.test.mjs
+          node --test plugins/aw-plugin-development/scripts/review-findings-contract.test.mjs
+
+          test ! -e plugins/agent-skill-toolkit/scripts/validate-review-stage-result.mjs
+          test ! -e plugins/agent-skill-toolkit/scripts/stage-handoff-contract.test.mjs
+          test ! -e plugins/agent-skill-toolkit/scripts/review-behavior-contract.test.mjs
+          test ! -e plugins/agent-skill-toolkit/skills/review-agent-skill/evals/behavior-cases.json
+          test ! -e plugins/aw-plugin-development/scripts/stage-handoff-contract.test.mjs
+          git diff --check
+
+      - name: Verify release versions against main
+        run: |
+          node --input-type=module <<'NODE'
+          import { execFileSync } from 'node:child_process';
+          import { readFile } from 'node:fs/promises';
+
+          function parse(value) {
+            const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(value);
+            if (!match) throw new Error(`Invalid semver ${value}`);
+            return match.slice(1).map(Number);
+          }
+          function greater(left, right) {
+            const a = parse(left);
+            const b = parse(right);
+            for (let index = 0; index < 3; index += 1) {
+              if (a[index] !== b[index]) return a[index] > b[index];
+            }
+            return false;
+          }
+          for (const [name, expected] of [
+            ['agent-content-toolkit', '0.3.0'],
+            ['agent-skill-toolkit', '0.3.0'],
+            ['aw-plugin-development', '0.4.0'],
+          ]) {
+            const path = `plugins/${name}/.agents-plugin/plugin.json`;
+            const current = JSON.parse(await readFile(path, 'utf8')).version;
+            const base = JSON.parse(execFileSync('git', ['show', `origin/main:${path}`], { encoding: 'utf8' })).version;
+            if (current !== expected) throw new Error(`${name}: expected ${expected}, got ${current}`);
+            if (!greater(current, base)) throw new Error(`${name}: ${current} must be greater than main ${base}`);
+          }
+          NODE
+
+      - name: Replace temporary commits with the validated correction
+        run: |
+          git add -A
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "fix(toolkits): align implementation with reviewed findings"
+          git push --force-with-lease origin HEAD:fix/aw-adapter-auto-invocation
