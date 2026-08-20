@@ -15,6 +15,7 @@ import {
   runExecutionPlan,
   runProviderProcess,
   validateExecutionPlan,
+  validateRuntimeCapabilities,
   validateRunBundle,
 } from '../../dist/index.js'
 
@@ -39,6 +40,22 @@ describe('public Eval execution contracts', () => {
     const schema = JSON.parse(printed.stdout)
     expect(schema).toEqual(await getSchema('eval-execution-plan'))
     expect(await getSchemaDigest('eval-execution-plan')).toBe(digest(JSON.stringify(schema)))
+    await expect(validateRuntimeCapabilities(getRuntimeCapabilities())).resolves.toMatchObject({
+      valid: true,
+      errors: [],
+      calculated: {
+        schemaVersion: 1,
+        provider: 'aw-skill-eval-process',
+      },
+    })
+    await expect(validateRuntimeCapabilities({
+      ...getRuntimeCapabilities(),
+      schemaVersion: 2,
+    })).resolves.toMatchObject({
+      valid: false,
+      calculated: null,
+      errors: expect.arrayContaining(['$/schemaVersion: must equal 1']),
+    })
   })
 
   it('copies only runtime Skill content without changing the source', async () => {

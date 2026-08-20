@@ -13,7 +13,7 @@ export {
   observeProcessTree,
   terminateProcessTree,
 } from './process-tree.js'
-export { getSchema, getSchemaDigest } from './schemas.js'
+export { getSchema, getSchemaDigest, validateRuntimeCapabilities } from './schemas.js'
 export type {
   EvalCase,
   EvalConfiguration,

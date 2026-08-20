@@ -1,5 +1,11 @@
 import { readFile } from 'node:fs/promises'
-import type { Digest, SchemaName } from './types.js'
+import { validateJsonSchema } from './json-schema.js'
+import type {
+  Digest,
+  RuntimeCapabilities,
+  SchemaName,
+  ValidationResult,
+} from './types.js'
 
 const schemaNames = new Set<SchemaName>([
   'eval-execution-plan',
@@ -22,4 +28,15 @@ export async function getSchemaDigest(name: SchemaName): Promise<Digest> {
     await readFile(new URL('./schemas/digests.json', import.meta.url), 'utf8'),
   ) as Record<SchemaName, Digest>
   return digests[name]
+}
+
+export async function validateRuntimeCapabilities(
+  value: unknown,
+): Promise<ValidationResult<RuntimeCapabilities>> {
+  const errors = validateJsonSchema(await getSchema('eval-runtime-capabilities'), value)
+  return {
+    valid: errors.length === 0,
+    errors,
+    calculated: errors.length === 0 ? value as RuntimeCapabilities : null,
+  }
 }

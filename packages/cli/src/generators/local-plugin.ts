@@ -35,6 +35,10 @@ import {
 import { assertTestWritablePath } from '../utils/test-path-fence.js';
 import { resolveCliPackageRoot } from '../utils/paths.js';
 import {
+  validateRuntimeSkillClosuresRoot,
+  validateSkillRuntimeProjectionFreshness,
+} from '../utils/runtime-skill-closure.js';
+import {
   renderClaudeSlashCommand,
   renderCodexSlashCommandOpenAiYaml,
   renderCodexSlashCommandSkillMarkdown,
@@ -1570,6 +1574,13 @@ export async function bundleLocalPlugin(
         path.join(outputRoot, PLATFORM_MANIFEST_DIRS[platform], 'plugin.json'),
         manifest,
       );
+    }
+
+    await validateSkillRuntimeProjectionFreshness(outputRoot, skillRuntimeFiles);
+    for (const platform of PLATFORM_ORDER) {
+      const skillsPath = platformManifests[platform]?.skills;
+      if (!skillsPath) continue;
+      await validateRuntimeSkillClosuresRoot(path.join(outputRoot, stripDotSlash(skillsPath)));
     }
 
     return {
