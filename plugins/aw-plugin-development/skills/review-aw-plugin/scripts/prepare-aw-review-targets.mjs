@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
+import { isSkillAuthorArtifact } from './review-artifact-policy.mjs';
 function fail(m) {
   throw new Error(m);
 }
@@ -51,12 +52,13 @@ function parse(a) {
   }
   return o;
 }
-async function walk(root, { excludeAuthor = false } = {}) {
+async function walk(root) {
   const out = [];
   async function visit(d, p = '') {
-    for (const e of await readdir(d, { withFileTypes: true })) {
+    const entries = await readdir(d, { withFileTypes: true });
+    entries.sort((left, right) => left.name.localeCompare(right.name));
+    for (const e of entries) {
       if (['.git', 'node_modules'].includes(e.name)) continue;
-      if (excludeAuthor && p === '' && ['evals', 'reports'].includes(e.name)) continue;
       const abs = path.join(d, e.name),
         rel = path.join(p, e.name);
       if (e.isDirectory()) await visit(abs, rel);
@@ -68,7 +70,8 @@ async function walk(root, { excludeAuthor = false } = {}) {
 }
 async function digest(root, opts) {
   const h = createHash('sha256');
-  for (const f of await walk(root, opts)) {
+  for (const f of await walk(root)) {
+    if (opts?.excludeAuthor && isSkillAuthorArtifact(f.rel, ['.'])) continue;
     h.update(f.rel);
     h.update('\0');
     h.update(await readFile(f.abs));
@@ -103,16 +106,30 @@ async function skillRoots(root) {
   await visit(root);
   return roots.sort();
 }
-async function artifactRows(root, role, profile, owner) {
+function normalizedArtifactPath(filePath) {
+  return path.normalize(path.resolve(filePath));
+}
+function inheritedCurrentness(file, digest, pluginBundle) {
+  const match = pluginBundle?.artifacts?.find(
+    (artifact) =>
+      normalizedArtifactPath(artifact.path) === normalizedArtifactPath(file) &&
+      artifact.digest === digest,
+  );
+  return match?.currentness ?? 'unknown';
+}
+async function artifactRows(root, role, profile, owner, pluginBundle) {
   return Promise.all(
-    (await walk(root, { excludeAuthor: role === 'source' })).map(async (f) => ({
-      role,
-      path: f.abs,
-      profile,
-      digest: sha(await readFile(f.abs)),
-      owner,
-      currentness: 'unknown',
-    })),
+    (await walk(root)).map(async (f) => {
+      const fileDigest = sha(await readFile(f.abs));
+      return {
+        role: role === 'source' && isSkillAuthorArtifact(f.rel, ['.']) ? 'evidence' : role,
+        path: f.abs,
+        profile,
+        digest: fileDigest,
+        owner,
+        currentness: inheritedCurrentness(f.abs, fileDigest, pluginBundle),
+      };
+    }),
   );
 }
 async function target(kind, root, profile, owner, repo, pluginBundle) {
@@ -128,13 +145,14 @@ async function target(kind, root, profile, owner, repo, pluginBundle) {
       (stage) => stage.subjectDigest === sourceDigest,
     );
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     target: { kind, name, profile, sourceDigest },
     artifacts: await artifactRows(
       root,
       kind === 'aw-plugin-skill' ? 'source' : 'final',
       profile,
       owner,
+      pluginBundle,
     ),
     environment: pluginBundle?.environment ?? {
       repository: path.basename(repo) || 'aw-workspace',

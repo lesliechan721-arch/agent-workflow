@@ -6,7 +6,7 @@
 
 Required: `agent-content-toolkit >= 0.4.0`.
 
-Optional execution: `agent-skill-eval-runner >= 0.1.0` or another provider that consumes
+Optional execution: `agent-skill-eval-runner >= 0.2.0` or another provider that consumes
 `EvalExecutionPlan` and emits `EvalRunBundle`. The toolkit itself does not execute high-cost model
 evals.
 

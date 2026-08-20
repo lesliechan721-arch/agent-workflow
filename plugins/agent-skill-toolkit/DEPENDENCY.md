@@ -7,7 +7,7 @@ Required skills:
 - `write-agent-content` for Agent-facing prose authoring;
 - `review-agent-content` as the canonical owner of content/reference audit.
 
-Optional execution plugin: `agent-skill-eval-runner >= 0.1.0` or another compatible provider. Its
+Optional execution plugin: `agent-skill-eval-runner >= 0.2.0` or another compatible provider. Its
 absence does not block authoring or design review; it limits Eval evidence to structural/preflight
 evidence and keeps applicable release readiness provisional.
 

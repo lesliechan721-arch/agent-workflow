@@ -24,6 +24,10 @@ const mappings = [
     'skills/review-aw-plugin/scripts/validate-review-input-bundle.mjs',
   ],
   [
+    'agent-skill-toolkit/scripts/validate-eval-run-bundle.mjs',
+    'skills/review-aw-plugin/scripts/validate-eval-run-bundle.mjs',
+  ],
+  [
     'agent-skill-toolkit/scripts/validate-eval-audit-result.mjs',
     'skills/author-aw-plugin/scripts/validate-eval-audit-result.mjs',
   ],

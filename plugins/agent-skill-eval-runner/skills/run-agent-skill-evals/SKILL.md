@@ -4,7 +4,7 @@ description: >-
   仅当用户或上层工作流明确要求执行已经通过独立 Oracle preflight 的 Agent Skill Eval plan，并允许相应模型成本、进程和临时输出时使用。负责运行、隔离和采集证据；不设计或审核 case，不解释失败归因，不修改 Skill，也不发布最终 Review。
 disable-model-invocation: true
 user-invocable: true
-compatibility: Requires Node.js 20+, agent-skill-toolkit >= 0.4.0, and an explicitly configured provider command.
+compatibility: Requires Node.js 20+, agent-skill-toolkit >= 0.5.0, and an explicitly configured provider command.
 metadata:
   short-description: 执行已审核的 Skill Eval plan 并产生可移植证据包
 ---

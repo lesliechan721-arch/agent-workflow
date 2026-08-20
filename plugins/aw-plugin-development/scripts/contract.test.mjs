@@ -101,6 +101,20 @@ test('authoring context supports external workspace', async () => {
     path.join(target, '.agents-plugin', 'plugin.json'),
     JSON.stringify({ name: 'p', marketplace: { policy: { products: ['CODEX', 'CLAUDE'] } } }),
   );
+  const components = path.join(t, 'components.json');
+  await writeFile(
+    components,
+    JSON.stringify([
+      {
+        id: 'skill',
+        type: 'skill',
+        operation: 'change',
+        paths: ['skills/skill'],
+        profiles: ['CLAUDE'],
+        skillInvocation: 'claude-model-only',
+      },
+    ]),
+  );
   const result = JSON.parse(
     (
       await run(
@@ -109,16 +123,15 @@ test('authoring context supports external workspace', async () => {
           target,
           '--repo-root',
           ws,
-          '--component-type',
-          'skill',
-          '--skill-invocation',
-          'claude-model-only',
+          '--components',
+          components,
         ],
       )
     ).stdout,
   );
   assert.equal(result.repository, 'workspace');
-  assert.deepEqual(result.products, ['CLAUDE']);
+  assert.deepEqual(result.products, ['CODEX', 'CLAUDE']);
+  assert.deepEqual(result.components[0].profiles, ['CLAUDE']);
 });
 test('starter adapter documents satisfy schemas', async () => {
   const validator = path.join(root, 'skills/author-aw-plugin/scripts/validate-json-contract.mjs');
@@ -180,8 +193,8 @@ test('adapter release version and dependency contract are current', async () => 
     readFile(path.join(root, '.agents-plugin/plugin.json'), 'utf8').then(JSON.parse),
     readFile(path.join(root, 'DEPENDENCY.md'), 'utf8'),
   ]);
-  assert.equal(manifest.version, '0.5.0');
+  assert.equal(manifest.version, '0.6.0');
   assert.match(dependency, /agent-content-toolkit >= 0\.4\.0/u);
-  assert.match(dependency, /agent-skill-toolkit >= 0\.4\.0/u);
-  assert.match(dependency, /agent-skill-eval-runner >= 0\.1\.0/u);
+  assert.match(dependency, /agent-skill-toolkit >= 0\.5\.0/u);
+  assert.match(dependency, /agent-skill-eval-runner >= 0\.2\.0/u);
 });

@@ -21,8 +21,31 @@ async function run(rel, args = []) {
     encoding: 'utf8',
   });
 }
+async function git(cwd, args) {
+  return execFileAsync('git', args, { cwd, encoding: 'utf8' });
+}
 function sha(d) {
   return 'sha256:' + createHash('sha256').update(d).digest('hex');
+}
+async function prepareBundle(plugin, repoRoot, args = []) {
+  return JSON.parse(
+    (
+      await run('skills/review-aw-plugin/scripts/prepare-aw-review-bundle.mjs', [
+        plugin,
+        '--repo-root',
+        repoRoot,
+        ...args,
+      ])
+    ).stdout,
+  );
+}
+async function sourceSkillDigest(plugin) {
+  const value = JSON.parse(
+    (
+      await run('skills/review-aw-plugin/scripts/prepare-aw-review-targets.mjs', [plugin])
+    ).stdout,
+  );
+  return value.reviewTargets.find((target) => target.kind === 'aw-plugin-skill').digest;
 }
 test('review metadata and target projection support an external workspace', async () => {
   const t = await mkdtemp(path.join(tmpdir(), 'aw-review-portable-'));
@@ -70,6 +93,155 @@ test('review metadata and target projection support an external workspace', asyn
     ],
   );
 });
+test('review digests exclude only direct Skill author evidence', async () => {
+  const t = await mkdtemp(path.join(tmpdir(), 'aw-review-digest-'));
+  temps.push(t);
+  const plugin = path.join(t, 'demo'),
+    skill = path.join(plugin, 'skills', 'one'),
+    evalFile = path.join(skill, 'evals', 'cases.json'),
+    reportFile = path.join(skill, 'reports', 'review.md'),
+    runtimeEvalFile = path.join(skill, 'references', 'evals', 'runtime.txt'),
+    runtimeReportFile = path.join(skill, 'assets', 'reports', 'runtime.txt'),
+    referenceFile = path.join(skill, 'references', 'runtime.md');
+  await mkdir(path.join(plugin, '.agents-plugin'), { recursive: true });
+  await mkdir(path.dirname(evalFile), { recursive: true });
+  await mkdir(path.dirname(reportFile), { recursive: true });
+  await mkdir(path.dirname(runtimeEvalFile), { recursive: true });
+  await mkdir(path.dirname(runtimeReportFile), { recursive: true });
+  await writeFile(
+    path.join(plugin, '.agents-plugin', 'plugin.json'),
+    JSON.stringify({ name: 'demo', skills: './skills' }),
+  );
+  await writeFile(path.join(skill, 'SKILL.md'), '---\nname: one\ndescription: source\n---\n');
+  await writeFile(evalFile, '{"case":1}\n');
+  await writeFile(reportFile, 'report 1\n');
+  await writeFile(runtimeEvalFile, 'runtime eval 1\n');
+  await writeFile(runtimeReportFile, 'runtime report 1\n');
+  await writeFile(referenceFile, 'reference 1\n');
+
+  const initial = await prepareBundle(plugin, t);
+  const initialSkillDigest = await sourceSkillDigest(plugin);
+  const roleBySuffix = (bundle, suffix) =>
+    bundle.artifacts.find((artifact) => artifact.path.endsWith(suffix));
+  assert.equal(roleBySuffix(initial, '/skills/one/evals/cases.json').role, 'evidence');
+  assert.equal(roleBySuffix(initial, '/skills/one/reports/review.md').role, 'evidence');
+  assert.equal(roleBySuffix(initial, '/references/evals/runtime.txt').role, 'source');
+  assert.equal(roleBySuffix(initial, '/assets/reports/runtime.txt').role, 'source');
+
+  await writeFile(evalFile, '{"case":2}\n');
+  const evalChanged = await prepareBundle(plugin, t);
+  assert.equal(evalChanged.target.sourceDigest, initial.target.sourceDigest);
+  assert.equal(await sourceSkillDigest(plugin), initialSkillDigest);
+  assert.notEqual(
+    roleBySuffix(evalChanged, '/skills/one/evals/cases.json').digest,
+    roleBySuffix(initial, '/skills/one/evals/cases.json').digest,
+  );
+
+  await writeFile(reportFile, 'report 2\n');
+  const reportChanged = await prepareBundle(plugin, t);
+  assert.equal(reportChanged.target.sourceDigest, initial.target.sourceDigest);
+  assert.equal(await sourceSkillDigest(plugin), initialSkillDigest);
+  assert.notEqual(
+    roleBySuffix(reportChanged, '/skills/one/reports/review.md').digest,
+    roleBySuffix(initial, '/skills/one/reports/review.md').digest,
+  );
+
+  await writeFile(runtimeEvalFile, 'runtime eval 2\n');
+  const nestedEvalChanged = await prepareBundle(plugin, t);
+  assert.notEqual(nestedEvalChanged.target.sourceDigest, initial.target.sourceDigest);
+  const nestedEvalSkillDigest = await sourceSkillDigest(plugin);
+  assert.notEqual(nestedEvalSkillDigest, initialSkillDigest);
+
+  await writeFile(runtimeReportFile, 'runtime report 2\n');
+  const nestedReportChanged = await prepareBundle(plugin, t);
+  assert.notEqual(nestedReportChanged.target.sourceDigest, nestedEvalChanged.target.sourceDigest);
+  const nestedReportSkillDigest = await sourceSkillDigest(plugin);
+  assert.notEqual(nestedReportSkillDigest, nestedEvalSkillDigest);
+
+  await writeFile(referenceFile, 'reference 2\n');
+  const referenceChanged = await prepareBundle(plugin, t);
+  assert.notEqual(referenceChanged.target.sourceDigest, nestedReportChanged.target.sourceDigest);
+
+  await writeFile(path.join(skill, 'SKILL.md'), '---\nname: one\ndescription: changed\n---\n');
+  const skillChanged = await prepareBundle(plugin, t);
+  assert.notEqual(skillChanged.target.sourceDigest, referenceChanged.target.sourceDigest);
+
+  const targets = JSON.parse(
+    (
+      await run('skills/review-aw-plugin/scripts/prepare-aw-review-targets.mjs', [plugin])
+    ).stdout,
+  ).reviewTargets;
+  const skillBundle = targets[0].bundle;
+  assert.equal(roleBySuffix(skillBundle, '/one/evals/cases.json').role, 'evidence');
+  assert.equal(roleBySuffix(skillBundle, '/one/reports/review.md').role, 'evidence');
+  assert.equal(roleBySuffix(skillBundle, '/references/evals/runtime.txt').role, 'source');
+  assert.equal(roleBySuffix(skillBundle, '/assets/reports/runtime.txt').role, 'source');
+});
+test('Skill targets inherit matching artifact currentness and default unmatched artifacts to unknown', async () => {
+  const t = await mkdtemp(path.join(tmpdir(), 'aw-review-currentness-'));
+  temps.push(t);
+  const plugin = path.join(t, 'demo'),
+    skill = path.join(plugin, 'skills', 'one'),
+    finalRoot = path.join(t, 'final'),
+    finalSkill = path.join(finalRoot, 'one'),
+    skillFile = path.join(skill, 'SKILL.md'),
+    currentFile = path.join(skill, 'README.md'),
+    unmatchedFile = path.join(skill, 'references', 'runtime.md'),
+    evidenceFile = path.join(skill, 'evals', 'cases.json'),
+    finalFile = path.join(finalSkill, 'SKILL.md');
+  await mkdir(path.join(plugin, '.agents-plugin'), { recursive: true });
+  await mkdir(path.dirname(unmatchedFile), { recursive: true });
+  await mkdir(path.dirname(evidenceFile), { recursive: true });
+  await mkdir(finalSkill, { recursive: true });
+  await writeFile(
+    path.join(plugin, '.agents-plugin', 'plugin.json'),
+    JSON.stringify({ name: 'demo', skills: './skills' }),
+  );
+  await writeFile(skillFile, '---\nname: one\ndescription: source\n---\n');
+  await writeFile(currentFile, 'current\n');
+  await writeFile(unmatchedFile, 'unmatched\n');
+  await writeFile(evidenceFile, '{"case":1}\n');
+  await writeFile(finalFile, '---\nname: one\ndescription: final\n---\n');
+  await git(t, ['init', '-q']);
+  await git(t, ['config', 'user.name', 'AW Test']);
+  await git(t, ['config', 'user.email', 'aw-test@example.invalid']);
+  await git(t, ['add', '.']);
+  await git(t, ['commit', '-qm', 'fixture']);
+  await writeFile(skillFile, '---\nname: one\ndescription: dirty\n---\n');
+
+  const bundle = await prepareBundle(plugin, t, ['--final', `codex=${finalRoot}`]);
+  const findByPath = (suffix) =>
+    bundle.artifacts.find((artifact) => artifact.path.endsWith(suffix));
+  assert.equal(findByPath('/skills/one/README.md').currentness, 'current');
+  assert.equal(findByPath('/skills/one/SKILL.md').currentness, 'dirty');
+  assert.equal(findByPath('/skills/one/evals/cases.json').currentness, 'historical');
+  assert.equal(findByPath('/final/one/SKILL.md').currentness, 'unknown');
+
+  findByPath('/skills/one/references/runtime.md').digest = `sha256:${'0'.repeat(64)}`;
+  findByPath('/final/one/SKILL.md').currentness = 'current';
+  const bundlePath = path.join(t, 'plugin-bundle.json');
+  await writeFile(bundlePath, JSON.stringify(bundle));
+  const targets = JSON.parse(
+    (
+      await run('skills/review-aw-plugin/scripts/prepare-aw-review-targets.mjs', [
+        plugin,
+        '--final',
+        `codex=${finalRoot}`,
+        '--bundle',
+        bundlePath,
+      ])
+    ).stdout,
+  ).reviewTargets;
+  const source = targets.find((target) => target.kind === 'aw-plugin-skill').bundle,
+    final = targets.find((target) => target.kind === 'materialized-skill').bundle,
+    currentnessBySuffix = (target, suffix) =>
+      target.artifacts.find((artifact) => artifact.path.endsWith(suffix)).currentness;
+  assert.equal(currentnessBySuffix(source, '/one/README.md'), 'current');
+  assert.equal(currentnessBySuffix(source, '/one/SKILL.md'), 'dirty');
+  assert.equal(currentnessBySuffix(source, '/one/evals/cases.json'), 'historical');
+  assert.equal(currentnessBySuffix(source, '/one/references/runtime.md'), 'unknown');
+  assert.equal(currentnessBySuffix(final, '/one/SKILL.md'), 'current');
+});
 test('handoff validator rejects missing or forged stage artifacts', async () => {
   const t = await mkdtemp(path.join(tmpdir(), 'aw-stage-'));
   temps.push(t);
@@ -93,7 +265,7 @@ test('handoff validator rejects missing or forged stage artifacts', async () => 
     raw = JSON.stringify(result);
   await writeFile(rp, raw);
   const bundle = {
-    schemaVersion: 3,
+    schemaVersion: 4,
     target: {
       kind: 'agent-skill',
       name: 'x',

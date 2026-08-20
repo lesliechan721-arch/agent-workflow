@@ -7,8 +7,11 @@
 ```bash
 node scripts/prepare-aw-authoring-context.mjs <plugin-root> \
   --repo-root <workspace-root> \
+  --components <json-file> \
   --validator "<command>"
 ```
+
+`<json-file>` 的根值是非空组件数组。现有 manifest 提供插件名、默认 change mode 和产品范围；每个组件的 `profiles` 必须在该产品范围内。新插件没有 manifest 时，同时传 `--plugin`，需要收窄产品时重复传 `--product`。
 
 `prepare-aw-authoring-context.mjs` 不为未知工作区臆造默认命令。不要假设：
 

@@ -21,6 +21,19 @@
 
 一个用户请求只创建必要能力，不预生成其它表面。
 
+## Composite authoring context
+
+`AWAuthoringContext` v2 用非空 `components[]` 表示一次请求中的全部变更面。组件包含：
+
+- `id`：请求内唯一标识；
+- `type`：manifest、Skill、extension、slash command、MCP/App、dynamic artifact、config/helper、lifecycle、Node/build、README 或 Eval assets；
+- `operation`：`create`、`change` 或 `remove`；
+- `paths`：组件拥有的一个或多个源码路径；
+- `profiles`：该组件适用的 `CODEX`、`CLAUDE` profile；
+- `skillInvocation`：只用于 Skill，值为 `model`、`manual` 或 `claude-model-only`。
+
+`claude-model-only` Skill 的 `profiles` 必须只包含 `CLAUDE`。非 Skill 组件省略 `skillInvocation` 或设为 `null`。旧的单组件 `--component-type` 和 `--skill-invocation` 不再接受；先创建组件数组文件，再通过 `--components` 传入。
+
 ## Script component overview
 
 插件脚本通常位于：

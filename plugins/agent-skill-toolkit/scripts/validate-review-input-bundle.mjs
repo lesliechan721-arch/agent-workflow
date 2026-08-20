@@ -7,6 +7,7 @@ import path from 'node:path';
 import process from 'node:process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
+import { validateEvalRunBundle } from './validate-eval-run-bundle.mjs';
 
 const execFileAsync = promisify(execFile);
 const scriptRoot = path.dirname(fileURLToPath(import.meta.url));
@@ -85,9 +86,17 @@ function resultSubject(result) {
   return result.targetSkillDigest ?? result.target?.digest ?? result.targetDigest ?? null;
 }
 
-async function validateObject(schemaName, value, label, temporaryRoot) {
+function stageSlotKey(id, profile, subjectDigest) {
+  return JSON.stringify([id, profile ?? null, subjectDigest]);
+}
+
+async function validateObject(schemaName, value, label, temporaryRoot, evidenceRoot = null) {
   const valuePath = path.join(temporaryRoot, `${label.replace(/[^A-Za-z0-9._-]/gu, '-')}.json`);
   await writeFile(valuePath, JSON.stringify(value), 'utf8');
+  if (schemaName === 'eval-run-bundle.schema.json')
+    return (
+      await validateEvalRunBundle(valuePath, { evidenceRoot: evidenceRoot ?? temporaryRoot })
+    ).errors.map((entry) => `${label}: ${entry}`);
   const schemaPath = await firstReadable([
     path.join(scriptRoot, '..', 'schemas', schemaName),
     path.join(scriptRoot, '..', 'assets', schemaName),
@@ -113,15 +122,23 @@ async function main() {
     if (errors.length === 0) {
       const bundle = JSON.parse(await readFile(options.bundlePath, 'utf8'));
       const handoffRoot = await realpath(options.handoffRoot ?? path.dirname(options.bundlePath));
-      const seen = new Set();
+      const inlineEvidenceRoot = await realpath(path.dirname(options.bundlePath));
+      const seen = new Map();
       const stageResults = new Map();
 
       for (const stage of bundle.orchestration.providedStages) {
-        const key = [stage.id, stage.profile ?? '', stage.subjectDigest, stage.resultDigest].join(
-          ':',
-        );
-        if (seen.has(key)) errors.push(`duplicate provided stage ${key}`);
-        seen.add(key);
+        const key = stageSlotKey(stage.id, stage.profile, stage.subjectDigest);
+        const previous = seen.get(key);
+        if (previous) {
+          if (
+            previous.resultDigest !== stage.resultDigest ||
+            previous.resultPath !== stage.resultPath
+          )
+            errors.push(`conflicting results for provided stage slot ${key}`);
+          else errors.push(`duplicate provided stage slot ${key}`);
+          continue;
+        }
+        seen.set(key, stage);
 
         const candidate = path.resolve(path.dirname(options.bundlePath), stage.resultPath);
         let actual;
@@ -142,13 +159,21 @@ async function main() {
         }
 
         const schemaName = schemaByName[stage.schema];
-        const schemaPath = await firstReadable([
-          path.join(scriptRoot, '..', 'schemas', schemaName),
-          path.join(scriptRoot, '..', 'assets', schemaName),
-        ]);
-        errors.push(
-          ...(await schemaErrors(schemaPath, actual)).map((entry) => `${stage.id}: ${entry}`),
-        );
+        if (schemaName === 'eval-run-bundle.schema.json')
+          errors.push(
+            ...(await validateEvalRunBundle(actual)).errors.map(
+              (entry) => `${stage.id}: ${entry}`,
+            ),
+          );
+        else {
+          const schemaPath = await firstReadable([
+            path.join(scriptRoot, '..', 'schemas', schemaName),
+            path.join(scriptRoot, '..', 'assets', schemaName),
+          ]);
+          errors.push(
+            ...(await schemaErrors(schemaPath, actual)).map((entry) => `${stage.id}: ${entry}`),
+          );
+        }
 
         let result;
         try {
@@ -156,7 +181,7 @@ async function main() {
         } catch {
           continue;
         }
-        stageResults.set(stage.id, { stage, result });
+        stageResults.set(key, { stage, result });
 
         if (stage.id !== 'eval-execution' && stage.independentContext !== true) {
           errors.push(
@@ -208,15 +233,18 @@ async function main() {
         }
       }
 
-      const auditStage = stageResults.get('eval-audit');
       for (let index = 0; index < bundle.evalResults.length; index += 1) {
         const result = bundle.evalResults[index];
+        const auditStage = stageResults.get(
+          stageSlotKey('eval-audit', bundle.target.profile, result.targetSkillDigest),
+        );
         errors.push(
           ...(await validateObject(
             'eval-run-bundle.schema.json',
             result,
             `evalResults-${index}`,
             temporaryRoot,
+            inlineEvidenceRoot,
           )),
         );
         if (

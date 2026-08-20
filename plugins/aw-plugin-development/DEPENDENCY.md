@@ -3,11 +3,11 @@
 Required plugins:
 
 - `agent-content-toolkit >= 0.4.0`
-- `agent-skill-toolkit >= 0.4.0`
+- `agent-skill-toolkit >= 0.5.0`
 
 Optional execution plugin:
 
-- `agent-skill-eval-runner >= 0.1.0` when the user requests real model Eval or release-grade
+- `agent-skill-eval-runner >= 0.2.0` when the user requests real model Eval or release-grade
   behavior evidence.
 
 Missing runner capability degrades real model evidence to `structural`/`provisional`; it does not

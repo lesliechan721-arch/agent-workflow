@@ -116,6 +116,19 @@ export async function validatePlan(planPath) {
       errors.push('configuration ids must be unique');
     if (plan.configurations.some((entry) => !safeSegment(entry.id)))
       errors.push('configuration ids must be safe path segments');
+    const comparisonGroups = new Map();
+    for (const configuration of plan.configurations) {
+      if (configuration.comparisonId === null) continue;
+      if (!comparisonGroups.has(configuration.comparisonId))
+        comparisonGroups.set(configuration.comparisonId, []);
+      comparisonGroups.get(configuration.comparisonId).push(configuration);
+    }
+    for (const [comparisonId, configurations] of comparisonGroups) {
+      if (!configurations.some((entry) => entry.skillMode === 'with-skill'))
+        errors.push(`${comparisonId} comparison requires a with-skill configuration`);
+      if (!configurations.some((entry) => entry.skillMode !== 'with-skill'))
+        errors.push(`${comparisonId} comparison requires a baseline configuration`);
+    }
 
     try {
       const actual = await realpath(capabilitiesPath);
@@ -220,6 +233,7 @@ export async function validatePlan(planPath) {
           evalTypes.add(evalCase.eval_type ?? evalCase.type ?? 'unknown');
         }
       }
+      if (caseIds.size === 0) throw new Error('case corpus must contain at least one case');
       calculated.caseCorpusDigest = await caseDigest(casePaths);
       if (evalTypes.has('trigger') && capabilities && !capabilities.capabilities.triggerDiscovery)
         errors.push('provider does not support trigger discovery');
@@ -238,6 +252,37 @@ export async function validatePlan(planPath) {
       errors.push(...auditErrors.map((value) => `audit: ${value}`));
       const audit = JSON.parse(await readFile(actual, 'utf8'));
       if (audit.validity !== 'pass') errors.push('audit validity must be pass');
+      if (audit.mode !== 'preflight') errors.push('plan requires a preflight audit');
+      if (!audit.independentContext)
+        errors.push('audit validity=pass requires independentContext=true');
+      if (audit.failureTriage.length > 0)
+        errors.push('preflight audit must not contain failureTriage entries');
+      if (audit.cases.length === 0) errors.push('audit validity=pass requires audited cases');
+      const auditCases = new Map();
+      for (const entry of audit.cases) {
+        if (auditCases.has(entry.caseId)) errors.push(`audit case ${entry.caseId} is duplicated`);
+        auditCases.set(entry.caseId, entry);
+      }
+      for (const caseId of caseIds) {
+        if (auditCases.get(caseId)?.admission !== 'pass')
+          errors.push(`plan case ${caseId} requires passing audit admission`);
+      }
+      if (
+        audit.cases.some((entry) => entry.releaseRelevant && entry.admission !== 'pass')
+      )
+        errors.push('audit validity=pass requires every release-relevant case to pass admission');
+      if (audit.blockedCases.length > 0)
+        errors.push('audit validity=pass requires no blocked cases');
+      if (
+        audit.releaseEligible &&
+        !audit.cases.some((entry) => entry.releaseRelevant)
+      )
+        errors.push('releaseEligible=true requires release-relevant cases');
+      if (
+        audit.recommendedAction === 'candidate-skill-fix' &&
+        !audit.failureTriage.some((entry) => entry.attribution === 'skill-defect')
+      )
+        errors.push('candidate-skill-fix requires skill-defect triage evidence');
       if (
         audit.targetSkillDigest !== plan.audit.targetSkillDigest ||
         audit.targetSkillDigest !== plan.target.digest

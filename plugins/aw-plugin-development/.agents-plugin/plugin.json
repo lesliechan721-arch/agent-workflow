@@ -1,6 +1,6 @@
 {
   "name": "aw-plugin-development",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Author and review AW plugins in compatible workspaces by composing generic Agent Skill and Agent content toolkits with AW adapters.",
   "compatibility": { "aw": { "minVersion": "0.0.0" } },
   "skills": "./skills",
@@ -11,7 +11,8 @@
         "./scripts/invocation-contract.test.mjs",
         "./scripts/reference-contract.test.mjs",
         "./scripts/review-target-contract.test.mjs",
-        "./scripts/eval-evidence-contract.test.mjs"
+        "./scripts/eval-evidence-contract.test.mjs",
+        "./scripts/authoring-context-contract.test.mjs"
       ]
     }
   },

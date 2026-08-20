@@ -568,9 +568,14 @@ async function listSourceFiles(root: string): Promise<string[]> {
   async function visit(current: string, prefix = ''): Promise<void> {
     const entries = await fs.readdir(current, { withFileTypes: true });
     entries.sort((left, right) => left.name.localeCompare(right.name));
+    const isSkillRoot = entries.some((entry) => entry.isFile() && entry.name === 'SKILL.md');
     for (const entry of entries) {
       const relative = prefix ? path.posix.join(prefix, entry.name) : entry.name;
-      if (relative === 'reports' || relative.startsWith('reports/')) continue;
+      if (
+        (prefix === '' && entry.name === 'reports') ||
+        (isSkillRoot && entry.isDirectory() && ['evals', 'reports'].includes(entry.name))
+      )
+        continue;
       const absolute = path.join(current, entry.name);
       if (entry.isSymbolicLink()) {
         throw new Error(`Author source cannot contain a symlink: ${absolute}`);

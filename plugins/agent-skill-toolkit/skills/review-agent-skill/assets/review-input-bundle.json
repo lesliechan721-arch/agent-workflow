@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 3,
+  "schemaVersion": 4,
   "target": {"kind":"agent-skill","name":"replace-me","profile":null,"sourceDigest":"sha256:0000000000000000000000000000000000000000000000000000000000000000"},
   "artifacts": [],
   "environment": {},
