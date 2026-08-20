@@ -97,7 +97,7 @@
         ],
         "checks": [
           "trace 按路由读取 skill-design、skills-and-triggers、plugin-manifest-spec 和 skill-evaluation",
-          "trace 实际运行 init_plugin.mjs、替换 TODO，并运行两份 Eval Case Audit 校验和 validate_plugin.mjs 到通过",
+          "trace 先运行 aw --version，再实际运行 aw plugin init、替换 TODO，并运行两份 Eval Case Audit 校验和 aw plugin validate 到通过",
           "Skill description 是 release-notes 专属发现描述，不回退为插件级摘要",
           "trigger 和 behavior case 已从 starter 调整为 release-notes 的真实场景，并保留 policy、场景族、oracle 和可观察断言",
           "没有创建额外版本文件、MCP、hooks、lifecycle、平台 manifest、marketplace 修改或生成目录"
@@ -197,7 +197,7 @@
         "confidence": "high",
         "allowed_variance": "Skill wording and case content may differ; the source boundary, invocation policy, README entry, manifest version, and validation result must hold."
       },
-      "prompt": "实际维护 plugins/code-review：新增一个 audit-report 静态 Skill，用于把已有审查结果整理为可复核的审计报告。该 Skill 风险低，允许模型发现。先检查现有插件与调用元数据，再运行 add_skill.mjs；完成全部 TODO，把 eval starter 换成真实小型用例，并按现有格式更新插件 README。保持其它能力不变，把稳定 plugin version 从 0.2.0 直接提高到 0.3.0，最后运行作者 validator。不要修改 marketplace-source、平台 manifest、plugins-dist 或 runtime cache。",
+      "prompt": "实际维护 plugins/code-review：新增一个 audit-report 静态 Skill，用于把已有审查结果整理为可复核的审计报告。该 Skill 风险低，允许模型发现。先检查现有插件与调用元数据，运行 aw --version，再运行 aw plugin add-skill；完成全部 TODO，把 eval starter 换成真实小型用例，并按现有格式更新插件 README。保持其它能力不变，把稳定 plugin version 从 0.2.0 直接提高到 0.3.0，最后运行 aw plugin validate。不要修改 marketplace-source、平台 manifest、plugins-dist 或 runtime cache。",
       "expected_output": "向现有插件新增完整 audit-report 静态 Skill；双平台调用元数据和 owner eval 一致；插件根 README 已补充条目；稳定 plugin version 直接提高到 0.3.0；作者 validator 通过。",
       "scripted_replies": [],
       "sandbox": "workspace-write",
@@ -248,7 +248,7 @@
         ],
         "checks": [
           "trace 先读现有 manifest、README 和 Skill，再按路由读取设计、触发、manifest 与 eval reference",
-          "trace 实际运行 add_skill.mjs，随后完成领域内容、真实 eval starter 和插件 README",
+          "trace 实际运行 aw plugin add-skill，随后完成领域内容、真实 eval starter 和插件 README",
           "diff 只包含新 Skill、插件 README、manifest 的 skills 必要变化和稳定 version 提高",
           "trace 最后运行作者 validator；失败时修复并重跑"
         ]
@@ -378,7 +378,7 @@
           "diff 只包含 renderer 和 manifest version，没有改变静态 target、Skill、marketplace、生成目录或平台/runtime cache",
           "renderer 从 AW_PLUGIN_CONTEXT 的 config.values 读取 message，并返回与静态声明一致的 V2 id、platform、target、state 和 refreshKeys",
           "trace 直接把稳定 plugin version 从 0.1.0 提高到 0.1.1，没有创建额外版本文件",
-          "trace 因隔离 workspace 缺少完整 build 输入而不运行 pnpm build，把 production bundle 列为未验证，并运行 validate_plugin.mjs 到通过；失败时修复并重跑"
+          "trace 因隔离 workspace 缺少完整 build 输入而不运行 pnpm build，把 production bundle 列为未验证，并运行 aw plugin validate 到通过；失败时修复并重跑"
         ]
       }
     }

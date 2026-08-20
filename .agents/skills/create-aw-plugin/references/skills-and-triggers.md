@@ -236,10 +236,11 @@ plugins/<name>/skills/
 向现有插件新增一个静态 Skill 时，可以运行：
 
 ```bash
-node .agents/skills/create-aw-plugin/scripts/add_skill.mjs <plugin-name> \
+aw plugin add-skill <plugin-name> \
   --skill-name <skill-name> \
   --skill-description "用户目标与发现边界" \
-  --skill-invocation model|manual|claude-model-only
+  --skill-invocation model|manual|claude-model-only \
+  [--repo-root <workspace-root> --plugin-root <plugin-root>]
 ```
 
 该命令只处理确定性的静态 Skill 骨架、平台调用元数据、Codex eval starter 和 manifest `skills` 能力字段；稳定 plugin version 保持不变。作者必须在完成 Skill 后直接提高 manifest version。命令不修改插件 README，也不新增 dynamic artifact、slash command 或其它能力。支持 Codex 的插件生成 `agents/openai.yaml` 与 v2 eval starter；Claude-only 插件只生成 Claude 可用源码，不生成无法运行的 Codex eval profile。

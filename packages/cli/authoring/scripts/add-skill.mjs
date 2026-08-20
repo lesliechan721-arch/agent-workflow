@@ -2,6 +2,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import crypto from 'node:crypto';
 
 import { parseStrictSemVer } from './lib/semver.mjs';
 import {
@@ -16,6 +17,7 @@ import {
   renderTriggerCases,
   titleCaseSlug,
 } from './lib/skill-scaffold.mjs';
+import { resolveAuthoringPluginRoot } from './lib/plugin-root.mjs';
 
 const HYPHEN_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
@@ -60,7 +62,7 @@ function readOptionValue(args, index, flag) {
 
 function printUsage() {
   console.log(`Usage:
-  node plugins/aw-plugin-development/skills/author-aw-plugin/scripts/add_skill.mjs <plugin-name> \\
+  aw plugin add-skill <plugin-name> \\
     --skill-name <name> --skill-description <text> [options]
 
 Options:
@@ -70,6 +72,7 @@ Options:
                                 Skill UI summary (25-64 characters). Default: description.
   --skill-invocation <mode>     model | manual | claude-model-only. Default: model.
   --repo-root <path>            Repository root. Default: current directory.
+  --plugin-root <path>          Plugin root, relative to --repo-root by default.
   -h, --help                    Show this help message.
 
 The command only adds one static Skill. It does not edit the plugin README.
@@ -119,6 +122,9 @@ function parseArgs(argv) {
       case '--repo-root':
         options.repoRoot = value;
         break;
+      case '--plugin-root':
+        options.pluginRoot = value;
+        break;
       default:
         fail(`Unknown option: ${flag}`);
     }
@@ -147,9 +153,70 @@ function resolveSupportedPlatforms(manifest) {
   return { codex: normalized.has('CODEX'), claude: normalized.has('CLAUDE') };
 }
 
+function lstatOrNull(filePath) {
+  try {
+    return fs.lstatSync(filePath);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+function requireDirectory(filePath, label) {
+  const stat = lstatOrNull(filePath);
+  if (!stat) fail(`${label} not found: ${filePath}`);
+  if (stat.isSymbolicLink() || !stat.isDirectory()) {
+    fail(`${label} must be a non-symbolic-link directory: ${filePath}`);
+  }
+  return { dev: stat.dev, ino: stat.ino, mode: stat.mode };
+}
+
+function requireRegularFile(filePath, label) {
+  const stat = lstatOrNull(filePath);
+  if (!stat || stat.isSymbolicLink() || !stat.isFile()) {
+    fail(`${label} must be a regular non-symbolic-link file: ${filePath}`);
+  }
+  return { dev: stat.dev, ino: stat.ino, mode: stat.mode };
+}
+
+function requireSameIdentity(filePath, expected, label, type) {
+  const actual = type === 'file'
+    ? requireRegularFile(filePath, label)
+    : requireDirectory(filePath, label);
+  if (actual.dev !== expected.dev || actual.ino !== expected.ino) {
+    fail(`${label} changed during add-skill: ${filePath}`);
+  }
+}
+
+function requireAbsent(filePath, label) {
+  if (lstatOrNull(filePath)) fail(`${label} already exists: ${filePath}`);
+}
+
+function atomicReplaceRegularFile(filePath, content, expectedIdentity) {
+  const directory = path.dirname(filePath);
+  const tempPath = path.join(
+    directory,
+    `.plugin.json.aw-tmp-${process.pid}-${crypto.randomBytes(12).toString('hex')}`,
+  );
+  let descriptor;
+  try {
+    descriptor = fs.openSync(tempPath, 'wx', expectedIdentity.mode & 0o777);
+    fs.writeFileSync(descriptor, content, 'utf8');
+    fs.fchmodSync(descriptor, expectedIdentity.mode & 0o777);
+    fs.fsyncSync(descriptor);
+    fs.closeSync(descriptor);
+    descriptor = undefined;
+    requireSameIdentity(filePath, expectedIdentity, 'Plugin manifest', 'file');
+    fs.renameSync(tempPath, filePath);
+  } finally {
+    if (descriptor !== undefined) fs.closeSync(descriptor);
+    if (lstatOrNull(tempPath)) fs.unlinkSync(tempPath);
+  }
+}
+
 function assertSkillNameAvailable(pluginRoot, manifest, skillName) {
   const skillRoot = path.join(pluginRoot, 'skills', skillName);
-  if (fs.existsSync(skillRoot)) fail(`Skill already exists: ${skillRoot}`);
+  requireAbsent(skillRoot, 'Skill');
 
   const dynamicConflict = manifest.artifacts?.targets?.find(
     (target) => target && typeof target === 'object' && target.skillKey === skillName,
@@ -164,7 +231,7 @@ function assertSkillNameAvailable(pluginRoot, manifest, skillName) {
       manifest.slashCommands.replace(/^\.\//, ''),
       `${skillName}.md`,
     );
-    if (fs.existsSync(commandPath)) {
+    if (lstatOrNull(commandPath)) {
       fail(`Skill name ${JSON.stringify(skillName)} conflicts with slash command ${commandPath}.`);
     }
   }
@@ -244,10 +311,16 @@ function main() {
     MIN_CODEX_SHORT_DESCRIPTION_LEN,
     MAX_CODEX_SHORT_DESCRIPTION_LEN,
   );
-  const repoRoot = path.resolve(args.repoRoot);
-  const pluginRoot = path.join(repoRoot, 'plugins', pluginName);
+  const { pluginRoot } = resolveAuthoringPluginRoot({
+    repoRoot: args.repoRoot,
+    pluginRoot: args.pluginRoot,
+    pluginName,
+  });
   const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
-  if (!fs.existsSync(manifestPath)) fail(`Plugin manifest not found: ${manifestPath}`);
+  const pluginRootIdentity = requireDirectory(pluginRoot, 'Plugin root');
+  const manifestDirectory = path.dirname(manifestPath);
+  const manifestDirectoryIdentity = requireDirectory(manifestDirectory, 'Plugin manifest directory');
+  const manifestIdentity = requireRegularFile(manifestPath, 'Plugin manifest');
 
   const originalManifestText = fs.readFileSync(manifestPath, 'utf8');
   let manifest;
@@ -280,12 +353,15 @@ function main() {
 
   const skillsRoot = path.join(pluginRoot, 'skills');
   const finalSkillRoot = path.join(skillsRoot, skillName);
+  const existingSkillsStat = lstatOrNull(skillsRoot);
+  const existingSkillsIdentity = existingSkillsStat
+    ? requireDirectory(skillsRoot, 'Skills root')
+    : null;
+  requireAbsent(finalSkillRoot, 'Skill');
   const stageRoot = fs.mkdtempSync(path.join(pluginRoot, '.aw-add-skill-'));
   const stageSkillRoot = path.join(stageRoot, skillName);
-  const stagedManifestPath = path.join(stageRoot, 'plugin.json');
-  const skillsRootExisted = fs.existsSync(skillsRoot);
+  const skillsRootExisted = existingSkillsIdentity !== null;
   let installedSkill = false;
-  let installedManifest = false;
   try {
     const created = createSkillFiles(stageSkillRoot, {
       pluginName,
@@ -296,12 +372,27 @@ function main() {
       supportsCodex: platforms.codex,
       supportsClaude: platforms.claude,
     });
-    writeJson(stagedManifestPath, nextManifest);
-    fs.mkdirSync(skillsRoot, { recursive: true });
+    if (!skillsRootExisted) fs.mkdirSync(skillsRoot);
+    const skillsRootIdentity = skillsRootExisted
+      ? existingSkillsIdentity
+      : requireDirectory(skillsRoot, 'Skills root');
+    requireSameIdentity(pluginRoot, pluginRootIdentity, 'Plugin root', 'directory');
+    requireSameIdentity(
+      manifestDirectory,
+      manifestDirectoryIdentity,
+      'Plugin manifest directory',
+      'directory',
+    );
+    requireSameIdentity(manifestPath, manifestIdentity, 'Plugin manifest', 'file');
+    requireSameIdentity(skillsRoot, skillsRootIdentity, 'Skills root', 'directory');
+    requireAbsent(finalSkillRoot, 'Skill');
     fs.renameSync(stageSkillRoot, finalSkillRoot);
     installedSkill = true;
-    installedManifest = true;
-    fs.writeFileSync(manifestPath, fs.readFileSync(stagedManifestPath));
+    atomicReplaceRegularFile(
+      manifestPath,
+      `${JSON.stringify(nextManifest, null, 2)}\n`,
+      manifestIdentity,
+    );
 
     console.log(`[OK] Added static Skill ${JSON.stringify(skillName)} to plugin ${JSON.stringify(pluginName)}.`);
     for (const relativePath of created) {
@@ -316,11 +407,10 @@ function main() {
     console.log(`[WARN] Increase the stable version directly in ${manifestPath} before validation.`);
     console.log(`[WARN] Plugin README was not changed: ${path.join(pluginRoot, 'README.md')}`);
   } catch (error) {
-    if (installedSkill && fs.existsSync(finalSkillRoot)) {
+    if (installedSkill && lstatOrNull(finalSkillRoot)) {
       fs.rmSync(finalSkillRoot, { recursive: true, force: true });
     }
-    if (installedManifest) fs.writeFileSync(manifestPath, originalManifestText, 'utf8');
-    if (!skillsRootExisted && fs.existsSync(skillsRoot) && fs.readdirSync(skillsRoot).length === 0) {
+    if (!skillsRootExisted && lstatOrNull(skillsRoot) && fs.readdirSync(skillsRoot).length === 0) {
       fs.rmdirSync(skillsRoot);
     }
     throw error;

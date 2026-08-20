@@ -1,0 +1,113 @@
+{
+  "skill_name": "audit-agent-skill-evals",
+  "policy": {
+    "optimization": "critical",
+    "false_negative_cost": "critical",
+    "false_positive_cost": "high",
+    "rationale": "错误 Oracle、陈旧绑定或错误归因可驱动有害的生产 Skill 修改；审核必须 fail closed，但也不能把 provider 或 harness 故障误报为 Skill 缺陷。"
+  },
+  "evals": [
+    {
+      "id": "preflight-fails-closed-on-malformed-and-wrong-oracles",
+      "eval_type": "gate",
+      "case_role": "regression",
+      "provenance": "derived",
+      "scenario_family": "preflight-admission",
+      "unit_under_test": "full-skill",
+      "preconditions": {"mode": "preflight", "release_relevant_cases": true, "case_document_is_structurally_parseable": true},
+      "oracle": {
+        "rationale": "一个 case 缺 observable assertion，另一个 Oracle 与目标 Skill 的拒绝合同相反；release-relevant corpus 必须整体 fail closed。",
+        "rule_refs": ["SKILL.md#Preflight", "SKILL.md#输出边界", "references/eval-audit-standard.generated.md"],
+        "confidence": "high",
+        "allowed_variance": "finding 顺序和文字可不同；两个 case 都必须 blocked，validity=fail、releaseEligible=false、recommendedAction=fix-eval-first。",
+        "minimal_counterexample": "补齐可观察 assertion，并让 Oracle 与当前目标合同一致后，case 才能重新进入 admission。"
+      },
+      "prompt": "以 preflight 模式只读审核 evals/cases.json。先读取目标 Skill，再判断这些 validation cases 能否用于运行和修改。",
+      "scripted_replies": [],
+      "expected_output": "对 malformed assertion 和错误 Oracle 分别给出 admission fail，整体 fail closed，不建议修改生产 Skill。",
+      "workspace_files": {
+        "target/SKILL.md": "---\nname: record-checker\ndescription: Validate supplied records.\n---\n# Record Checker\n\n输入必须包含 id 和 owner。缺少任一字段时返回 invalid，不得补造字段。\n",
+        "evals/cases.json": "{\n  \"policy\": {\"optimization\":\"critical\",\"false_negative_cost\":\"critical\",\"false_positive_cost\":\"high\",\"rationale\":\"Invalid records must not be accepted.\"},\n  \"evals\": [\n    {\"id\":\"missing-observable\",\"split\":\"validation\",\"case_role\":\"representative\",\"provenance\":\"representative-synthetic\",\"scenario_family\":\"record-validity\",\"unit_under_test\":\"full-skill\",\"prompt\":\"Check a complete record.\",\"expected_output\":\"Do the right thing.\",\"oracle\":{\"rationale\":\"It should work.\",\"rule_refs\":[],\"confidence\":\"high\",\"allowed_variance\":\"Any output.\"}},\n    {\"id\":\"wrong-oracle\",\"split\":\"validation\",\"case_role\":\"regression\",\"provenance\":\"derived\",\"scenario_family\":\"record-validity\",\"unit_under_test\":\"full-skill\",\"prompt\":\"Check {id:A1}.\",\"expected_output\":\"valid\",\"assertions\":[{\"text\":\"Output says valid\",\"grader\":\"exact\",\"criticality\":\"critical\",\"allowed_variance\":\"Case only.\"}],\"oracle\":{\"rationale\":\"An id alone is sufficient.\",\"rule_refs\":[\"target/SKILL.md\"],\"confidence\":\"high\",\"allowed_variance\":\"Wording can differ.\",\"minimal_counterexample\":\"Add owner.\"}}\n  ]\n}\n"
+      },
+      "review": {
+        "platforms": ["codex"],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "运行前先读取目标合同；分别指出 missing-observable 缺 rule refs/可判定 assertion，wrong-oracle 与 required owner 合同冲突",
+          "两个 release-relevant case 的 admission 都不是 pass，blockedCases 同时包含两个 id，整体 validity=fail 且 releaseEligible=false",
+          "recommendedAction=fix-eval-first；不建议运行高成本 Eval，也不提出生产 Skill 修改"
+        ]
+      }
+    },
+    {
+      "id": "stale-target-or-corpus-digest-is-rejected",
+      "eval_type": "gate",
+      "case_role": "regression",
+      "provenance": "derived",
+      "scenario_family": "digest-binding",
+      "unit_under_test": "full-skill",
+      "preconditions": {"mode": "result-triage", "target_digest_matches": false, "corpus_digest_matches": false},
+      "oracle": {
+        "rationale": "preflight audit、run bundle、当前 Skill 和当前 corpus 的 digest 均必须匹配；任一陈旧绑定都使结果失去修改与发布资格。",
+        "rule_refs": ["SKILL.md#Result triage", "references/eval-audit-standard.generated.md"],
+        "confidence": "high",
+        "allowed_variance": "可把目标和 corpus 分成两个 stale finding；不得接受旧 audit/run，也不得归因为当前 Skill defect。",
+        "minimal_counterexample": "重新审核当前 Skill/corpus 并用相同 digest 运行后，才可继续失败归因。"
+      },
+      "prompt": "以 result-triage 模式审核 handoff/audit.json 和 handoff/run.json。当前 target 与 corpus 文件也在 workspace。只读。",
+      "scripted_replies": [],
+      "expected_output": "拒绝两个陈旧 digest 绑定，归为 stale-case 或无效 handoff，并要求对当前目标重新 preflight/run。",
+      "workspace_files": {
+        "target/SKILL.md": "---\nname: current-target\ndescription: Validate current records.\n---\n# Current Target\n\nCurrent revision requires id and owner.\n",
+        "evals/cases.json": "{\"skill_name\":\"current-target\",\"evals\":[{\"id\":\"current-case\",\"expected_output\":\"invalid without owner\"}]}\n",
+        "handoff/audit.json": "{\"schemaVersion\":2,\"producer\":\"audit-agent-skill-evals\",\"independentContext\":true,\"auditId\":\"old-audit\",\"mode\":\"preflight\",\"targetSkillDigest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"caseCorpusDigest\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\",\"validity\":\"pass\",\"optimizationPolicy\":\"balanced\",\"cases\":[],\"blockedCases\":[],\"releaseEligible\":true,\"failureTriage\":[],\"recommendedAction\":\"accepted-risk\"}\n",
+        "handoff/run.json": "{\"targetSkillDigest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"caseCorpusDigest\":\"sha256:3333333333333333333333333333333333333333333333333333333333333333\",\"auditDigest\":\"sha256:4444444444444444444444444444444444444444444444444444444444444444\",\"caseId\":\"old-case\",\"status\":\"failed\"}\n"
+      },
+      "review": {
+        "platforms": ["codex"],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "计算或核对当前 target/corpus digest，并明确它们与旧 audit/run 的绑定不一致",
+          "不接受旧 validity=pass 或 failed 状态，failure attribution 为 stale-case/invalid binding 而非 skill-defect",
+          "releaseEligible=false，行动是重新 preflight 当前 corpus 后重跑；不修改 target/SKILL.md"
+        ]
+      }
+    },
+    {
+      "id": "triage-separates-provider-harness-and-skill-evidence",
+      "eval_type": "behavior",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "result-failure-triage",
+      "unit_under_test": "full-skill",
+      "preconditions": {"mode": "result-triage", "preflight_digest_matches": true, "three_failure_classes_present": true, "workspace_is_read_only": true},
+      "oracle": {
+        "rationale": "认证失败是 provider 环境问题，未产生 grader output 是 harness 问题，只有完整、可复现、与有效 Oracle 绑定的语义失败才可能是 Skill defect；缺少执行证据不能提升 evidence level。",
+        "rule_refs": ["SKILL.md#Result triage", "SKILL.md#输出边界", "references/eval-audit-standard.generated.md"],
+        "confidence": "high",
+        "allowed_variance": "provider 与 harness 可统一映射为 runtime-or-tool-defect/runtime-issue，但必须保留子类证据；case-c 只能是 candidate，不得直接修改 Skill。"
+      },
+      "prompt": "以 result-triage 模式审核 handoff/results.json。区分三类失败，说明哪些证据能支持修改或提升 Eval evidence level。只读。",
+      "scripted_replies": [],
+      "expected_output": "把 provider、harness 和 Skill failure 分开归因；仅将有效可复现的 Skill failure 作为修改候选，并保持 workspace 不变。",
+      "workspace_files": {
+        "target/SKILL.md": "---\nname: record-checker\ndescription: Validate supplied records.\n---\n# Record Checker\n\nReject records without owner. Accept records with id and owner.\n",
+        "evals/cases.json": "{\"targetSkillDigest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"caseCorpusDigest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"cases\":[{\"id\":\"case-a\"},{\"id\":\"case-b\"},{\"id\":\"case-c\",\"oracle\":\"A complete record is valid.\"}]}\n",
+        "handoff/results.json": "{\n  \"targetSkillDigest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\n  \"caseCorpusDigest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\n  \"auditDigest\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\n  \"runs\":[\n    {\"caseId\":\"case-a\",\"status\":\"incomplete\",\"provider\":{\"error\":\"401 invalid credential\"},\"modelOutput\":null,\"graderOutput\":null},\n    {\"caseId\":\"case-b\",\"status\":\"incomplete\",\"provider\":{\"status\":\"ok\"},\"modelOutput\":\"valid\",\"graderOutput\":null,\"harnessError\":\"grader process exited before result publication\"},\n    {\"caseId\":\"case-c\",\"status\":\"failed\",\"provider\":{\"status\":\"ok\"},\"modelOutput\":\"invalid\",\"graderOutput\":{\"passed\":false},\"repetitions\":3,\"sameFailure\":true,\"preflightAdmission\":\"pass\"}\n  ]\n}\n"
+      },
+      "review": {
+        "platforms": ["codex"],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "case-a 明确为 provider/auth 子类的 runtime-or-tool-defect，action=runtime-issue；不把无 model output 当 Skill 失败",
+          "case-b 明确为 harness/grader publication 子类的 runtime-or-tool-defect，action=runtime-issue；不把 model 文本单独当完整结果",
+          "case-c 只有在 digest、preflight、现实性和复现证据均有效时才归 skill-defect，action 最多为 candidate-skill-fix；审核本身不修改生产 Skill",
+          "两个 incomplete case 不能把 evidence 从 structural 提升为 executed/comparative/release-grade；三类结果也不得合并成一个笼统失败结论"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,279 @@
+{
+  "skill_name": "author-aw-plugin",
+  "policy": {
+    "optimization": "precision-first",
+    "false_negative_cost": "high",
+    "false_positive_cost": "high",
+    "rationale": "复合请求漏掉组件会产生不完整插件；错误接管独立评审或使用不稳定入口会破坏职责和可复现性。"
+  },
+  "evals": [
+    {
+      "id": "new-plugin-with-two-skills",
+      "eval_type": "outcome",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "composite-plugin-and-skills",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "target_plugin_absent": true,
+        "workspace_declares_aw_cli": true,
+        "general_skill_author_available": true,
+        "review_not_requested": true
+      },
+      "oracle": {
+        "rationale": "新插件请求包含 manifest、README 和两个独立 Skill；AW adapter 必须保留全部组件，并把两个 Skill 分别交给通用作者能力。",
+        "rule_refs": ["SKILL.md#工作流", "../assets/aw-authoring-context.json"],
+        "confidence": "high",
+        "allowed_variance": "Skill 正文和 README 措辞可不同；AWAuthoringContext 必须包含两个独立 skill 组件，且两个 Skill 都完成通用作者交接。"
+      },
+      "prompt": "在当前工作区新建 plugins/team-status AW 插件，同时创建 model 调用的 publish-status 和手动调用的 reset-status 两个 Skill。支持 Codex 和 Claude，补插件 README，完成作者验证。不要做独立质量评分或发布裁决。",
+      "scripted_replies": [],
+      "expected_output": "创建插件及两个完整 Skill，验证插件，并报告两个 Skill 的独立作者交接、验证结果和未运行的模型证据。",
+      "sandbox": "workspace-write",
+      "workspace_files": {
+        "package.json": "{\"name\":\"aw-author-eval\",\"private\":true,\"scripts\":{\"build\":\"node -e \\\"console.log('build ok')\\\"\"}}\n",
+        "AGENTS.md": "# Workspace rules\nOnly change plugins/team-status. Use the installed aw CLI for plugin author commands.\n"
+      },
+      "review": {
+        "platforms": ["codex"],
+        "clean_session": true,
+        "workspace_unchanged": false,
+        "allowed_workspace_changes": ["plugins/team-status/**"],
+        "artifacts": [
+          {"path": "plugins/team-status/.agents-plugin/plugin.json", "exists": true},
+          {"path": "plugins/team-status/README.md", "exists": true},
+          {"path": "plugins/team-status/skills/publish-status/SKILL.md", "exists": true},
+          {"path": "plugins/team-status/skills/publish-status/agents/openai.yaml", "exists": true},
+          {"path": "plugins/team-status/skills/reset-status/SKILL.md", "exists": true},
+          {"path": "plugins/team-status/skills/reset-status/agents/openai.yaml", "exists": true}
+        ],
+        "checks": [
+          "trace 先确认 aw 版本并读取 aw plugin init 与 add-skill 的帮助；用 init 创建插件及第一个 Skill，再用 add-skill 创建第二个 Skill，不使用 npx、已移除的仓库脚本路径或自造 fallback",
+          "AWAuthoringContext components 直接包含 manifest、README、publish-status Skill 和 reset-status Skill，两个 Skill 的 invocation 分别为 model 和 manual",
+          "publish-status 与 reset-status 分别进入 fresh context 的 author-agent-skill，交接后没有丢失任一 Skill 或调用方式",
+          "运行工作区发现的 build 和稳定 aw plugin validate，并准确区分确定性验证与未运行的模型 Eval",
+          "不调用 review-aw-plugin 或 review-agent-skill，不输出独立评分、P0/P1 或 release pass"
+        ]
+      }
+    },
+    {
+      "id": "mcp-and-app-composition",
+      "eval_type": "outcome",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "composite-mcp-app",
+      "unit_under_test": "full-skill",
+      "preconditions": {"plugin_exists": true, "mcp_and_app_requested_together": true, "review_not_requested": true},
+      "oracle": {
+        "rationale": "MCP server 与 App 是两个独立组件，必须同时进入 authoring context、源码和 manifest，不能把 App 当作 MCP 的说明文字。",
+        "rule_refs": ["SKILL.md#工作流", "references/mcp-and-apps.md"],
+        "confidence": "high",
+        "allowed_variance": "JSON 排版和描述可不同；两个组件、声明路径及 CODEX profile 必须完整。"
+      },
+      "prompt": "维护 plugins/support-console：新增 stdio MCP server support-data 和 Codex App support-panel，源码分别写到 .mcp.json 与 .app.json，并更新 manifest。只改这些能力并完成作者验证。",
+      "scripted_replies": [],
+      "expected_output": "同时交付 MCP、App 和 manifest 声明，验证三个组件一致且没有扩展到独立评审。",
+      "sandbox": "workspace-write",
+      "workspace_files": {
+        "plugins/support-console/.agents-plugin/plugin.json": "{\"name\":\"support-console\",\"version\":\"0.2.0\",\"description\":\"Support tools\",\"marketplace\":{\"policy\":{\"products\":[\"CODEX\"]}}}\n",
+        "plugins/support-console/README.md": "# Support Console\n",
+        "AGENTS.md": "# Workspace rules\nOnly change plugins/support-console/.agents-plugin/plugin.json, plugins/support-console/.mcp.json, and plugins/support-console/.app.json.\n"
+      },
+      "review": {
+        "platforms": ["codex"],
+        "clean_session": true,
+        "workspace_unchanged": false,
+        "allowed_workspace_changes": ["plugins/support-console/.agents-plugin/plugin.json", "plugins/support-console/.mcp.json", "plugins/support-console/.app.json"],
+        "artifacts": [
+          {"path": "plugins/support-console/.agents-plugin/plugin.json", "exists": true},
+          {"path": "plugins/support-console/.mcp.json", "exists": true},
+          {"path": "plugins/support-console/.app.json", "exists": true}
+        ],
+        "checks": [
+          "AWAuthoringContext components 直接包含 manifest、mcp 和 app 三项，并保持 support-data 与 support-panel 的独立路径和 CODEX profile",
+          "同时实现 MCP server 与 App 的源码真值及 manifest 引用，没有把其中一项降为 README 说明或遗漏",
+          "trace 读取稳定 aw plugin validate 的帮助并调用该命令，不使用 npx 或旧作者脚本路径",
+          "只修改允许的三个文件，不自行增加 Skill、extension 或 README 变更",
+          "不进入独立 Reviewer 工作流，也不输出质量分数或发布裁决"
+        ]
+      }
+    },
+    {
+      "id": "slash-command-and-readme",
+      "eval_type": "outcome",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "composite-slash-readme",
+      "unit_under_test": "full-skill",
+      "preconditions": {"plugin_exists": true, "slash_command_requested": true, "user_documentation_requested": true},
+      "oracle": {
+        "rationale": "公共 slash command 和用户 README 是两个显式交付面；manifest、命令文件与可观察用法必须一致。",
+        "rule_refs": ["SKILL.md#工作流", "references/slash-commands.md", "references/aw-readme-authoring.md"],
+        "confidence": "high",
+        "allowed_variance": "示例措辞可不同；命令名、参数边界和 README 调用示例必须一致。"
+      },
+      "prompt": "给 plugins/release-helper 增加公共 /prepare-release slash command，并在插件 README 说明用途、显式调用示例和只生成候选清单、不发布的边界。更新 manifest 并验证。",
+      "scripted_replies": [],
+      "expected_output": "新增 slash command，README 与 manifest 对齐，并明确命令不会发布。",
+      "sandbox": "workspace-write",
+      "workspace_files": {
+        "plugins/release-helper/.agents-plugin/plugin.json": "{\"name\":\"release-helper\",\"version\":\"1.1.0\",\"description\":\"Release helper\"}\n",
+        "plugins/release-helper/README.md": "# Release Helper\n\nGenerates release notes.\n",
+        "AGENTS.md": "# Workspace rules\nOnly change the release-helper manifest, README, and slash-commands directory.\n"
+      },
+      "review": {
+        "platforms": ["codex"],
+        "clean_session": true,
+        "workspace_unchanged": false,
+        "allowed_workspace_changes": ["plugins/release-helper/.agents-plugin/plugin.json", "plugins/release-helper/README.md", "plugins/release-helper/slash-commands/**"],
+        "artifacts": [
+          {"path": "plugins/release-helper/.agents-plugin/plugin.json", "exists": true},
+          {"path": "plugins/release-helper/README.md", "exists": true},
+          {"path": "plugins/release-helper/slash-commands/prepare-release.md", "exists": true}
+        ],
+        "checks": [
+          "AWAuthoringContext components 直接包含 manifest、slash-command 和 readme，三项在后续实现与验证中都保留",
+          "命令文件、manifest 声明和 README 示例使用同一公共命令，并保持只生成候选清单、不发布的用户边界",
+          "trace 读取稳定 aw plugin validate 的帮助并调用该命令，不猜测私有脚本入口",
+          "没有新增未请求的 Skill、MCP、App 或 lifecycle",
+          "不自行做独立质量评审或发布裁决"
+        ]
+      }
+    },
+    {
+      "id": "extension-and-config-helper",
+      "eval_type": "outcome",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "composite-extension-config",
+      "unit_under_test": "full-skill",
+      "preconditions": {"plugin_exists": true, "extension_requested": true, "config_helper_requested": true},
+      "oracle": {
+        "rationale": "extension 与 config helper 分属不同作者分支，helper 必须被声明的配置消费，不能只创建孤立脚本。",
+        "rule_refs": ["SKILL.md#工作流", "references/extensions-spec.md", "references/aw-config-and-helper.md"],
+        "confidence": "high",
+        "allowed_variance": "实现细节可不同；extension、config-helper、manifest 及消费关系必须完整。"
+      },
+      "prompt": "在 plugins/incident-policy 增加 Codex extension，源码写到 extensions/incident-instructions.json，注入项目级事故响应 instructions；再把 config helper 写到 scripts/aw-config.mjs，使 severityPrefix 配置能进入该 extension 的生成输入。更新 manifest，只实现这两个能力并验证。",
+      "scripted_replies": [],
+      "expected_output": "交付 extension、config helper 和 manifest 连接，验证非默认 severityPrefix 会影响生成输入。",
+      "sandbox": "workspace-write",
+      "workspace_files": {
+        "plugins/incident-policy/.agents-plugin/plugin.json": "{\"name\":\"incident-policy\",\"version\":\"0.4.0\",\"description\":\"Incident policy\",\"marketplace\":{\"policy\":{\"products\":[\"CODEX\"]}}}\n",
+        "plugins/incident-policy/README.md": "# Incident Policy\n",
+        "AGENTS.md": "# Workspace rules\nOnly change the incident-policy manifest, extensions, and scripts directories.\n"
+      },
+      "review": {
+        "platforms": ["codex"],
+        "clean_session": true,
+        "workspace_unchanged": false,
+        "allowed_workspace_changes": ["plugins/incident-policy/.agents-plugin/plugin.json", "plugins/incident-policy/extensions/**", "plugins/incident-policy/scripts/**"],
+        "artifacts": [
+          {"path": "plugins/incident-policy/.agents-plugin/plugin.json", "exists": true},
+          {"path": "plugins/incident-policy/extensions/incident-instructions.json", "exists": true},
+          {"path": "plugins/incident-policy/scripts/aw-config.mjs", "exists": true}
+        ],
+        "checks": [
+          "AWAuthoringContext components 直接包含 manifest、extension 和 config-helper，并在跨分支交接后保留三项",
+          "config helper 被 manifest 声明的配置路径消费，非默认 severityPrefix 能进入 extension 生成输入；不存在孤立 helper",
+          "trace 读取并调用稳定 aw plugin validate，且使用工作区声明的直接测试验证配置变化",
+          "只改请求的 extension/config 源码面，不增加 Skill、App 或发布动作",
+          "不调用独立 Reviewer 或输出评分"
+        ]
+      }
+    },
+    {
+      "id": "manifest-version-and-build-repair",
+      "eval_type": "outcome",
+      "case_role": "representative",
+      "provenance": "derived",
+      "scenario_family": "composite-version-build",
+      "unit_under_test": "full-skill",
+      "preconditions": {"plugin_exists": true, "production_bundle_changes": true, "build_initially_fails": true},
+      "oracle": {
+        "rationale": "构建修复改变 production bundle，必须同时修复直接根因、提高稳定版本并重新运行发现的构建与版本门禁。",
+        "rule_refs": ["SKILL.md#工作流", "references/aw-validation-and-version.md", "references/aw-script-testing.md"],
+        "confidence": "high",
+        "allowed_variance": "修复可放在现有 build 脚本或缺失 helper；不得绕过失败、降低测试或只改版本。"
+      },
+      "prompt": "修复 plugins/runtime-card 的构建。当前 pnpm build 因 scripts/build-runtime-assets.mjs 引用缺失的 scripts/lib/render.mjs 失败；这是 production bundle 变化，请把插件稳定版本从 1.3.0 提高一个 patch，并运行作者验证和版本检查。不要改测试来绕过失败。",
+      "scripted_replies": [],
+      "expected_output": "修复构建根因，提高 patch 版本，运行 build、validator 和版本检查并准确报告结果。",
+      "sandbox": "workspace-write",
+      "workspace_files": {
+        "package.json": "{\"name\":\"runtime-card-workspace\",\"private\":true,\"scripts\":{\"build\":\"node plugins/runtime-card/scripts/build-runtime-assets.mjs\"}}\n",
+        "plugins/runtime-card/.agents-plugin/plugin.json": "{\"name\":\"runtime-card\",\"version\":\"1.3.0\",\"description\":\"Runtime card\",\"scripts\":{\"build\":\"./scripts/build-runtime-assets.mjs\"}}\n",
+        "plugins/runtime-card/scripts/build-runtime-assets.mjs": "import { render } from './lib/render.mjs';\nconsole.log(render('runtime-card'));\n",
+        "AGENTS.md": "# Workspace rules\nUse pnpm build. Only change plugins/runtime-card/.agents-plugin/plugin.json and plugins/runtime-card/scripts.\n"
+      },
+      "review": {
+        "platforms": ["codex"],
+        "clean_session": true,
+        "workspace_unchanged": false,
+        "allowed_workspace_changes": ["plugins/runtime-card/.agents-plugin/plugin.json", "plugins/runtime-card/scripts/**"],
+        "artifacts": [
+          {"path": "plugins/runtime-card/.agents-plugin/plugin.json", "exists": true},
+          {"path": "plugins/runtime-card/scripts/build-runtime-assets.mjs", "exists": true}
+        ],
+        "checks": [
+          "AWAuthoringContext components 直接包含 manifest 和 node-build，并把 patch bump 与 buildRequired=true 保留到验证阶段",
+          "修复缺失 runtime helper 或等价直接根因，使原 pnpm build 真正通过；不修改测试、不移除 import、不把失败命令替换为空操作",
+          "manifest 稳定版本从 1.3.0 提高到 1.3.1，没有无依据提高 minor/major",
+          "trace 先读取 stable validate 与 check-versions 的帮助，再运行 pnpm build、aw plugin validate 和 aw plugin check-versions；不使用 npx 或旧脚本路径",
+          "不进入独立 Reviewer，不把作者验证表述为 release pass"
+        ]
+      }
+    },
+    {
+      "id": "skill-and-eval-assets-handoff",
+      "eval_type": "outcome",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "composite-skill-evals",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "plugin_exists": true,
+        "new_skill_requested": true,
+        "eval_assets_requested": true,
+        "general_skill_author_and_eval_designer_available": true,
+        "real_model_not_authorized": true
+      },
+      "oracle": {
+        "rationale": "新 Skill 与 Eval 资产需要三个明确阶段：AW scaffold、通用 Skill 作者、Eval 设计及独立 preflight；AW adapter 必须保持 caller stage ownership。",
+        "rule_refs": ["SKILL.md#工作流", "references/aw-skill-integration.md"],
+        "confidence": "high",
+        "allowed_variance": "case 内容和 Skill 措辞可不同；Skill、trigger/behavior eval、preflight 与 structural evidence 边界必须存在。"
+      },
+      "prompt": "给 plugins/query-tools 新增 model 调用的 explain-query Skill，并补 trigger 与 behavior Eval 资产。使用通用 Skill 作者、Eval Designer 和独立 preflight；本次不授权真实模型运行。更新 manifest 并完成确定性验证。",
+      "scripted_replies": [],
+      "expected_output": "创建完整 Skill 与 Eval 资产，完成通用作者和 preflight 交接，保持证据为 structural 且不宣称模型已执行。",
+      "sandbox": "workspace-write",
+      "workspace_files": {
+        "plugins/query-tools/.agents-plugin/plugin.json": "{\"name\":\"query-tools\",\"version\":\"0.6.0\",\"description\":\"Query tools\",\"skills\":\"./skills\"}\n",
+        "plugins/query-tools/README.md": "# Query Tools\n",
+        "AGENTS.md": "# Workspace rules\nOnly change the query-tools manifest and skills/explain-query. Do not run a real model.\n"
+      },
+      "review": {
+        "platforms": ["codex"],
+        "clean_session": true,
+        "workspace_unchanged": false,
+        "allowed_workspace_changes": ["plugins/query-tools/.agents-plugin/plugin.json", "plugins/query-tools/skills/explain-query/**"],
+        "artifacts": [
+          {"path": "plugins/query-tools/.agents-plugin/plugin.json", "exists": true},
+          {"path": "plugins/query-tools/skills/explain-query/SKILL.md", "exists": true},
+          {"path": "plugins/query-tools/skills/explain-query/agents/openai.yaml", "exists": true},
+          {"path": "plugins/query-tools/skills/explain-query/evals/manifest.json", "exists": true},
+          {"path": "plugins/query-tools/skills/explain-query/evals/trigger-cases.json", "exists": true},
+          {"path": "plugins/query-tools/skills/explain-query/evals/evals.json", "exists": true}
+        ],
+        "checks": [
+          "AWAuthoringContext components 直接包含 manifest、explain-query skill 和 eval-assets，Skill invocation 为 model，三项在所有 handoff 后完整保留",
+          "trace 先检查 aw plugin add-skill 帮助并调用稳定 add-skill，再以 fresh context 调用 author-agent-skill、design-agent-skill-evals 和 audit-agent-skill-evals(preflight)",
+          "AW adapter 保持 evalStageOwner=caller，不让通用 Skill 作者或 Designer 接管插件级 stage，也不省略独立 preflight",
+          "运行稳定 aw plugin validate 和 eval case schema 校验；没有启动真实模型，证据等级明确为 structural",
+          "不调用 review-aw-plugin 或 review-agent-skill，不宣称模型 Eval executed、release pass 或独立质量评分"
+        ]
+      }
+    }
+  ]
+}

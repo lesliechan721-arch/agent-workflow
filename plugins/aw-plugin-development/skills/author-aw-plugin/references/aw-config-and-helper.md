@@ -97,8 +97,8 @@ catalog、filters、targets 和 errors。每个 target 的状态只允许
 
 ## 标准配置 Helper
 
-新插件推荐复用当前 Skill 的 `assets/aw-config.mjs`；`scripts/init_plugin.mjs --with-config-api`
-会自动复制它。helper 支持两个命令：
+新插件推荐复用当前 Skill 的 `assets/aw-config.mjs`；先检查 `aw plugin init --help`，再使用
+`aw plugin init ... --with-config-api` 让确定性脚手架复制它。helper 支持两个命令：
 
 ```bash
 node scripts/aw-config.mjs get apiKey

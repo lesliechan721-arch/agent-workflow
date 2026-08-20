@@ -47,6 +47,116 @@ test('canonical contracts are materialized without committed Skill copies', asyn
     assert.ok((await readFile(path.join(runtimeRoot, relative), 'utf8')).length > 200, relative);
   }
 });
+test('final Author Skill uses only stable CLI authoring commands', async () => {
+  const skillRoot = path.join(runtimeRoot, 'skills/author-aw-plugin');
+  const removedCopies = [
+    'scripts/init_plugin.mjs',
+    'scripts/add_skill.mjs',
+    'scripts/validate_plugin.mjs',
+    'scripts/check_plugin_versions.mjs',
+    'scripts/lib/javascript-import-scanner.mjs',
+    'scripts/lib/plugin-version-check.mjs',
+    'scripts/lib/semver.mjs',
+    'scripts/lib/skill-scaffold.mjs',
+  ];
+  for (const relative of removedCopies) {
+    await assert.rejects(readFile(path.join(skillRoot, relative), 'utf8'), relative);
+  }
+  const skill = await readFile(path.join(skillRoot, 'SKILL.md'), 'utf8');
+  // Static contract exception: installed agents must discover every public authoring command and must not execute an undeclared fallback; behavior test is not suitable because the consumer contract is the final Skill instruction itself.
+  for (const command of ['init', 'add-skill', 'validate', 'check-versions']) {
+    assert.match(skill, new RegExp(`aw plugin ${command} --help`, 'u'));
+    assert.match(skill, new RegExp(`aw plugin ${command}(?: <| --)`, 'u'));
+  }
+  assert.match(skill, /aw --version/u);
+  assert.match(skill, /不得使用 `npx`/u);
+  assert.match(skill, /不得猜测仓库路径/u);
+  assert.match(skill, /不得回退到本 Skill 的本地工具副本/u);
+});
+test('built CLI performs representative Author Skill operations', async () => {
+  const cli = path.join(repo, 'packages', 'cli', 'dist', 'index.js');
+  const fixture = path.join(
+    repo,
+    'packages',
+    'cli',
+    'tests',
+    'fixtures',
+    'repo-template',
+  );
+  const tRoot = await mkdtemp(path.join(tmpdir(), 'aw-plugin-cli-authoring-'));
+  temps.push(tRoot);
+  const workspace = path.join(tRoot, 'workspace');
+  await cp(fixture, workspace, { recursive: true });
+  const runAw = (args, cwd = repo) => run(cli, args, cwd);
+
+  const version = await runAw(['--version']);
+  assert.match(version.stdout, /\d+\.\d+\.\d+/u);
+  for (const command of ['init', 'add-skill', 'validate', 'check-versions']) {
+    const help = await runAw(['plugin', command, '--help']);
+    assert.match(help.stdout, new RegExp(`aw plugin ${command}`, 'u'));
+  }
+
+  await runAw([
+    'plugin',
+    'init',
+    'cli-authoring-fixture',
+    '--description',
+    'Fixture plugin for the stable authoring command contract.',
+    '--skill-description',
+    'Create and maintain the fixture plugin through the stable AW authoring command.',
+    '--skill-short-description',
+    'Maintain a fixture plugin with stable AW commands.',
+    '--skill-invocation',
+    'manual',
+    '--repo-root',
+    workspace,
+    '--plugin-root',
+    'tools/cli-authoring-fixture',
+  ]);
+  await runAw([
+    'plugin',
+    'add-skill',
+    'cli-authoring-fixture',
+    '--skill-name',
+    'second-workflow',
+    '--skill-description',
+    'Run a second deterministic fixture workflow after explicit user invocation.',
+    '--skill-short-description',
+    'Run the second deterministic fixture workflow.',
+    '--skill-invocation',
+    'manual',
+    '--repo-root',
+    workspace,
+    '--plugin-root',
+    'tools/cli-authoring-fixture',
+  ]);
+  const pluginRoot = path.join(workspace, 'tools', 'cli-authoring-fixture');
+  for (const skillName of ['cli-authoring-fixture', 'second-workflow']) {
+    const skillPath = path.join(pluginRoot, 'skills', skillName, 'SKILL.md');
+    const scaffold = await readFile(skillPath, 'utf8');
+    await writeFile(
+      skillPath,
+      scaffold.replace(/\[TODO:[^\]]+\]/gu, 'Complete and verify the deterministic fixture task'),
+      'utf8',
+    );
+  }
+  const validation = await runAw(['plugin', 'validate', pluginRoot, '--json']);
+  assert.equal(JSON.parse(validation.stdout).ok, true);
+
+  const versionCheck = JSON.parse((await runAw([
+    'plugin',
+    'check-versions',
+    'aw-plugin-development',
+    '--base',
+    'HEAD',
+    '--repo-root',
+    repo,
+    '--json',
+  ])).stdout);
+  assert.equal(versionCheck.schemaVersion, 2);
+  assert.equal(versionCheck.ok, true);
+  assert.ok(versionCheck.checks.some((entry) => entry.plugin === 'aw-plugin-development'));
+});
 test('cacheable build is reproducible outside the repository cwd', async () => {
   const manifest = JSON.parse(
     await readFile(path.join(sourceRoot, '.agents-plugin/plugin.json'), 'utf8'),
@@ -273,7 +383,7 @@ test('adapter release version and dependency contract are current', async () => 
     readFile(path.join(sourceRoot, '.agents-plugin/plugin.json'), 'utf8').then(JSON.parse),
     readFile(path.join(sourceRoot, 'DEPENDENCY.md'), 'utf8'),
   ]);
-  assert.equal(manifest.version, '0.7.0');
+  assert.equal(manifest.version, '0.8.2');
   assert.match(dependency, /agent-content-toolkit >= 0\.5\.0/u);
   assert.match(dependency, /agent-skill-toolkit >= 0\.7\.0/u);
   assert.match(dependency, /agent-skill-eval-runner >= 0\.3\.0/u);

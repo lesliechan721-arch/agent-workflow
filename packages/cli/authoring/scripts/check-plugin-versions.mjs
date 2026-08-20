@@ -20,7 +20,7 @@ function readOptionValue(args, index, flag) {
 
 function printUsage() {
   console.log(`Usage:
-  node plugins/aw-plugin-development/skills/author-aw-plugin/scripts/check_plugin_versions.mjs \\
+  aw plugin check-versions \\
     (<plugin-name> | --all) [--base <git-ref>] [--json] [--repo-root .]
 
 Options:
@@ -28,6 +28,8 @@ Options:
   --base <git-ref>    Git comparison base. Default: HEAD.
   --json              Emit one schema v2 JSON document.
   --repo-root <path>  Repository root. Default: current directory.
+  --plugin-root <path>
+                      Single plugin root, relative to --repo-root by default.
   -h, --help          Show this help message.
 `);
 }
@@ -65,10 +67,17 @@ function parseArgs(argv) {
     index = nextIndex;
     if (flag === '--base') options.base = value;
     else if (flag === '--repo-root') options.repoRoot = value;
+    else if (flag === '--plugin-root') options.pluginRoot = value;
     else fail(`Unknown option: ${flag}`);
   }
   if (options.all && options.pluginNames.length > 0) {
     fail('--all cannot be combined with explicit plugin names.');
+  }
+  if (options.all && options.pluginRoot !== undefined) {
+    fail('--plugin-root cannot be combined with --all.');
+  }
+  if (options.pluginRoot !== undefined && options.pluginNames.length !== 1) {
+    fail('--plugin-root requires exactly one plugin name.');
   }
   if (!options.all && options.pluginNames.length === 0) {
     fail('Provide a plugin name or use --all.');

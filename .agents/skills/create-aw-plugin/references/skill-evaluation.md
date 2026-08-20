@@ -2,7 +2,7 @@
 
 新建 Skill、改变 description、调整核心工作流、renderer/config，或修复真实执行问题后读取本文。评估分为三层，不能互相替代：
 
-- `validate_plugin.mjs`：源码结构、manifest 和 eval manifest 作者合同。
+- `aw plugin validate`：源码结构、manifest 和 eval manifest 作者合同。
 - `pnpm plugin:test`：确定性脚本、转换和 bundle 合同，不调用模型。
 - `pnpm plugin:eval`：Codex 最终制品 materialization 与真实模型行为。
 
@@ -123,7 +123,7 @@ Suite 规则：
 - suite 只能引用 `runModel: true` profile。materialize-only profile 不进入 suite。
 - `requiredForRelease` 和 `releaseSplits` 决定无过滤参数运行时的发布证据集合。
 
-`validate_plugin.mjs` 会发现每个 Skill 的 `evals/manifest.json`，检查 schema、owner、路径、repo-local companion、Skill 归属、profile/suite 引用和 user/project 模型边界。eval manifest 不写入 `.agents-plugin/plugin.json`。
+`aw plugin validate` 会发现每个 Skill 的 `evals/manifest.json`，检查 schema、owner、路径、repo-local companion、Skill 归属、profile/suite 引用和 user/project 模型边界。eval manifest 不写入 `.agents-plugin/plugin.json`。
 
 ## 中央运行入口
 
@@ -247,7 +247,7 @@ run 在批次锁内预留。每个 case target 在独立的批次锁事务中原
 
 审计字段模板以 `.agents/skills/skill-review/assets/eval-case-template.json` 为准。它们并入当前可执行 case，不另建一份平行语料。历史 case 可以渐进迁移；缺少 metadata 时只能作为低置信诊断信号，不能单独驱动 Skill 修改或发布。
 
-`init_plugin.mjs` 和 `add_skill.mjs` 生成的 trigger starter 带有中等置信 synthetic/boundary metadata，behavior starter 标为低置信 diagnostic。它们用于提示完整结构，不是领域发布证据。发布前必须替换 prompt、near-miss、场景族、oracle 和断言，并按真实错误代价调整 policy 与 role。
+`aw plugin init` 和 `aw plugin add-skill` 生成的 trigger starter 带有中等置信 synthetic/boundary metadata，behavior starter 标为低置信 diagnostic。它们用于提示完整结构，不是领域发布证据。发布前必须替换 prompt、near-miss、场景族、oracle 和断言，并按真实错误代价调整 policy 与 role。
 
 先用兼容模式检查历史文档；它把缺失的 admission metadata 报为 warning：
 
@@ -258,7 +258,7 @@ node .agents/skills/skill-review/scripts/validate_eval_cases.mjs \
   plugins/<plugin>/skills/<skill>/evals/evals.json --format json
 ```
 
-会用于发布或当前修改的 case 补全后，对对应文档增加 `--strict`。`validate_plugin.mjs` 仍负责可执行作者合同；`validate_eval_cases.mjs` 只做确定性结构检查。它不能判断 oracle 语义、现实性或 trace 是否正确，也不能替代 `eval-validity`、`release-evidence` 和 `eval-change-safety` 三个评审门禁。
+会用于发布或当前修改的 case 补全后，对对应文档增加 `--strict`。`aw plugin validate` 仍负责可执行作者合同；`validate_eval_cases.mjs` 只做确定性结构检查。它不能判断 oracle 语义、现实性或 trace 是否正确，也不能替代 `eval-validity`、`release-evidence` 和 `eval-change-safety` 三个评审门禁。
 
 ## 触发评估
 
@@ -325,7 +325,7 @@ node .agents/skills/skill-review/scripts/validate_eval_cases.mjs \
 
 `workspace-write` 只作用于每次运行的隔离临时副本，关闭网络写入能力，并要求非空的允许改动路径和最终 artifact 断言。机械门对当前版本检查改动路径、文件存在、文本和 JSON 子集；baseline 使用相同 sandbox 和输入，并保留自己的 diff、artifact digest、token 和时间。只读 case 省略 `sandbox`，默认保持 `read-only`。
 
-`init_plugin.mjs` 和 `add_skill.mjs` 会为支持 Codex 的新 Skill 生成 trigger train/validation/sanity 和一个可写 behavior starter。starter 只提供合法结构；发布前必须替换为领域真实任务、near-miss、允许改动路径和可区分的断言。当前 v2 模型 eval 固定运行 Codex；Claude-only 插件的 `add_skill.mjs` 不生成不可运行的 eval manifest，作者只运行确定性校验并明确记录模型行为未验证。
+`aw plugin init` 和 `aw plugin add-skill` 会为支持 Codex 的新 Skill 生成 trigger train/validation/sanity 和一个可写 behavior starter。starter 只提供合法结构；发布前必须替换为领域真实任务、near-miss、允许改动路径和可区分的断言。当前 v2 模型 eval 固定运行 Codex；Claude-only 插件的 `aw plugin add-skill` 不生成不可运行的 eval manifest，作者只运行确定性校验并明确记录模型行为未验证。
 
 需要 `request_user_input` 时，回复按步骤和问题索引保存，例如：
 

@@ -2,6 +2,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import { Command, CommanderError, Option } from 'commander';
@@ -165,6 +166,39 @@ interface RawConfigOptions extends RawDiagnosticsOptions {
   valueJson?: boolean;
   yes?: boolean;
   local?: boolean;
+}
+
+async function runAuthoringScript(options: {
+  scriptName: string;
+  args: string[];
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  io: CliIo;
+}): Promise<number> {
+  const scriptPath = path.join(
+    resolveCliPackageRoot(),
+    'dist',
+    'authoring',
+    'scripts',
+    options.scriptName,
+  );
+  return new Promise<number>((resolve, reject) => {
+    const child = spawn(process.execPath, [scriptPath, ...options.args], {
+      cwd: options.cwd,
+      env: options.env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    child.stdout.on('data', (chunk: Buffer | string) => options.io.stdout(String(chunk)));
+    child.stderr.on('data', (chunk: Buffer | string) => options.io.stderr(String(chunk)));
+    child.once('error', reject);
+    child.once('close', (code, signal) => {
+      if (signal) {
+        reject(new Error(`Plugin authoring command terminated by signal ${signal}.`));
+        return;
+      }
+      resolve(code ?? 1);
+    });
+  });
 }
 
 function toCliDiagnosticsOptions(
@@ -950,6 +984,64 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
       writeErr: (text) => io.stderr(text),
       outputError: (text, write) => write(text),
     });
+
+  const plugin = program
+    .command('plugin')
+    .description('Create and validate AW plugin source');
+
+  plugin
+    .command('init')
+    .description('Create a new deterministic plugin scaffold')
+    .addHelpText('after', '\nNew plugin scaffolds keep the initial stable version. Later production changes update the source manifest version directly.\n')
+    .argument('<plugin-name>', 'lowercase hyphen-case plugin name')
+    .option('--description <text>', 'plugin description (required)')
+    .option('--display-name <text>', 'human-facing plugin display name')
+    .option('--short-description <text>', 'short plugin UI description')
+    .option('--skill-name <name>', 'initial static Skill name')
+    .option('--skill-description <text>', 'initial Skill goal and discovery description')
+    .option('--skill-short-description <text>', 'initial Skill UI summary (25-64 characters)')
+    .option('--skill-invocation <mode>', 'model | manual | claude-model-only (default: model)')
+    .option('--version <semver>', 'initial stable plugin version (default: 0.1.0)')
+    .option('--min-version <semver>', 'compatibility.aw.minVersion')
+    .option('--catalog-min-version <semver>', 'target catalog compatibility minimum')
+    .option('--repo-root <path>', 'repository root (default: current directory)')
+    .option('--plugin-root <path>', 'plugin root, relative to --repo-root by default')
+    .option('--no-skills', 'create the plugin without a skills directory')
+    .option('--with-mcp', 'add a minimal .mcp.json', false)
+    .option('--with-apps', 'add a minimal .app.json', false)
+    .option('--with-config-api', 'add AW config schema and helper', false)
+    .option('--with-lifecycle', 'add a lifecycle script sample', false);
+
+  plugin
+    .command('add-skill')
+    .description('Add one static Skill scaffold to an existing plugin')
+    .argument('<plugin-name>', 'existing lowercase hyphen-case plugin name')
+    .option('--skill-name <name>', 'new static Skill name (required)')
+    .option('--skill-description <text>', 'Skill goal and discovery description (required)')
+    .option('--skill-short-description <text>', 'Skill UI summary (25-64 characters)')
+    .option('--skill-invocation <mode>', 'model | manual | claude-model-only (default: model)')
+    .option('--repo-root <path>', 'repository root (default: current directory)')
+    .option('--plugin-root <path>', 'plugin root, relative to --repo-root by default');
+
+  plugin
+    .command('validate')
+    .description('Validate one source plugin directory')
+    .argument('<plugin-directory>', 'source plugin directory')
+    .option('--catalog-min-version <semver>', 'validate compatibility against a target catalog')
+    .option('--strict-agent-skills', 'allow only Agent Skills portable core frontmatter', false)
+    .option('--claude-skill-profile <profile>', 'minimum | current (default: minimum)')
+    .option('--version-base <git-ref>', 'production bundle comparison base (default: HEAD)')
+    .option('--json', 'emit one machine-readable JSON result', false);
+
+  plugin
+    .command('check-versions')
+    .description('Check stable plugin versions against a Git base')
+    .argument('[plugin-name]', 'one explicit plugin name')
+    .option('--all', 'check every plugin changed relative to the Git base', false)
+    .option('--base <git-ref>', 'Git comparison base (default: HEAD)')
+    .option('--json', 'emit one schema v2 JSON document', false)
+    .option('--repo-root <path>', 'repository root (default: current directory)')
+    .option('--plugin-root <path>', 'single plugin root, relative to --repo-root by default');
 
   const catalogSource = program
     .command('catalog')
@@ -2144,6 +2236,22 @@ export async function runCli(
   };
 
   try {
+    const authoringScriptByCommand: Record<string, string> = {
+      init: 'init-plugin.mjs',
+      'add-skill': 'add-skill.mjs',
+      validate: 'validate-plugin.mjs',
+      'check-versions': 'check-plugin-versions.mjs',
+    };
+    const authoringScript = argv[0] === 'plugin' ? authoringScriptByCommand[argv[1] ?? ''] : undefined;
+    if (authoringScript && !argv.includes('--help') && !argv.includes('-h')) {
+      return runAuthoringScript({
+        scriptName: authoringScript,
+        args: argv.slice(2),
+        cwd: options.cwd ?? process.cwd(),
+        env: options.env ?? process.env,
+        io,
+      });
+    }
     if (argv.some((token) => token === '--subdir' || token.startsWith('--subdir='))
       && argv.includes('--no-subdir')) {
       const message = 'option --subdir cannot be used with option --no-subdir';

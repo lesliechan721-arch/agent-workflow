@@ -59,13 +59,19 @@ AW 版本管理里有三套身份，不能混用：
 作者版本门禁：
 
 ```bash
-node .agents/skills/create-aw-plugin/scripts/check_plugin_versions.mjs \
+aw plugin check-versions \
   --all --base <git-ref>
 ```
 
+单插件位于非默认布局时使用 `aw plugin check-versions <plugin-name> --repo-root
+<workspace-root> --plugin-root <plugin-root> --base <git-ref>`。显式根相对 workspace root
+解析并必须位于同一 Git repository 内；`--all` 仍只扫描 `plugins/`。
+`validate` 和 `check-versions` 在读取 manifest 前检查 repo/plugin root、`.agents-plugin`
+和 manifest 的完整路径链；这些节点必须是仓库内预期类型，不能用符号链接重定向。
+
 新插件保留 manifest 中的初始稳定 version，脚手架默认使用 `0.1.0`。已有插件的 production bundle 变化时，作者在同一改动中直接提高 manifest version，并按兼容性影响选择 major、minor 或 patch。源码 manifest 是目标稳定版本的唯一真值；不使用独立 change 文件、聚合步骤或版本写入脚本。build metadata 不提高 SemVer precedence，因此源码 version 禁止 prerelease 和 build metadata。
 
-`check_plugin_versions.mjs` 用当前已构建 CLI 的 staging bundler 分别物化 Git 基线插件和工作树插件，再忽略 plugin version 字段本身比较 production bundle。production 变化但 version 未提高、版本下降或 SemVer precedence 未提高时失败；只有 version 提高时成功并警告。Skill `evals/**`、插件 `reports/**` 和 test-only 文件由 bundler 排除；随 bundle 发布的 README、Skill、manifest 和 runtime 脚本变化要求提高 version。JSON 输出使用 schema 2。该门禁只判断插件源码变化，不判断 CLI bundler 自身变化造成的产物差异。
+`aw plugin check-versions` 用当前 CLI 的 staging bundler 分别物化 Git 基线插件和工作树插件，再忽略 plugin version 字段本身比较 production bundle。若 Git base 和 current workspace 都有完整 `packages/cli` source，它分别绑定两侧 registry 和 provider version；单侧 ownership 或 partial source 失败。两侧都没有时，工具从同一个经验证的 installed CLI provider 独立物化两个相同身份的 root，不让 base 复制或回退到 current root。production 变化但 version 未提高、版本下降或 SemVer precedence 未提高时失败；只有 version 提高时成功并警告。Skill `evals/**`、插件 `reports/**` 和 test-only 文件由 bundler 排除；随 bundle 发布的 README、Skill、manifest 和 runtime 脚本变化要求提高 version。JSON 输出使用 schema 2。该门禁只判断插件源码变化，不判断 CLI bundler 自身变化造成的产物差异。
 
 `contentDigest` 排除生成 manifest 的 version 字段，用于核对插件内容身份。schema 3 snapshot、release staging 和源码 manifest 是作者边界；作者不要修改 publisher、remote refs、tags 或 ledger。
 

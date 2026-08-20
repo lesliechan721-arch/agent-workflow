@@ -1,0 +1,241 @@
+{
+  "skill_name": "review-agent-skill",
+  "policy": {
+    "optimization": "precision-first",
+    "false_negative_cost": "high",
+    "false_positive_cost": "high",
+    "rationale": "漏掉可达的结构缺陷会放大维护成本；无证据的高严重性 finding 会误导修改和发布决策。"
+  },
+  "evals": [
+    {
+      "id": "guidance-is-not-structural-p1",
+      "eval_type": "behavior",
+      "case_role": "regression",
+      "provenance": "derived",
+      "scenario_family": "evidence-severity-calibration",
+      "unit_under_test": "full-skill",
+      "preconditions": {"mode": "quick", "official_source_is_guidance": true, "structural_reachability_evidence": false},
+      "oracle": {
+        "rationale": "官方 guidance 和 reviewer inference 可形成建议或待验证问题，但在没有结构事实、可达路径和影响证据时不能单独支持 P1 exact claim。",
+        "rule_refs": ["SKILL.md#执行顺序", "references/evidence-and-severity.md"],
+        "confidence": "high",
+        "allowed_variance": "可报告 P2、Advisory 或 unknown；不得仅凭 guidance/inferred evidence 生成 structural P1。",
+        "minimal_counterexample": "若 workspace 另提供实际加载路径和失败 trace，则同一 guidance 可以参与支持更高严重性 finding。"
+      },
+      "prompt": "对 skills/sample 做 quick 只读评审。官方建议说长说明应拆分，但当前没有运行 trace。请校准 finding 的证据和严重性。",
+      "scripted_replies": [],
+      "expected_output": "区分官方建议、推断和结构事实；不把缺少可达性证据的推断升级为 structural P1。",
+      "workspace_files": {
+        "skills/sample/SKILL.md": "---\nname: sample\ndescription: Summarize one supplied incident.\n---\n# Sample\n\nRead the supplied incident and return cause, impact, and next action. See references/format.md for the output fields.\n",
+        "skills/sample/references/format.md": "# Format\n\nReturn cause, impact, and next action. This file is intentionally short.\n",
+        "docs/official-guidance.md": "# Official guidance excerpt\n\nPrefer progressive disclosure when supporting material is large. This guidance does not define a mandatory line limit.\n"
+      },
+      "review": {
+        "platforms": ["codex"],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "逐项说明 evidence type，明确 official-guidance 与 inferred 不是 structural observation",
+          "任何 P1 都必须有 workspace 中可引用的结构事实、可达路径和材料影响；本 case 缺少这些证据时不产生 P1",
+          "把未验证的拆分收益保留为 Advisory、P2 或 unknown，并给出获取 trace 或 active-path 证据的方法"
+        ]
+      }
+    },
+    {
+      "id": "composition-detects-locally-correct-overload",
+      "eval_type": "behavior",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "composition-overload",
+      "unit_under_test": "full-skill",
+      "preconditions": {"mode": "full", "sections_are_locally_correct": true, "independent_change_axes": 4},
+      "oracle": {
+        "rationale": "每段步骤局部正确不能抵消一个 Skill 同时拥有支持分诊、定价批准、安全例外和部署执行四种独立责任；Composition Audit 应识别整体 overload。",
+        "rule_refs": ["SKILL.md#模块化评审", "SKILL.md#设计门禁", "references/composition-fitness.md"],
+        "confidence": "high",
+        "allowed_variance": "可判 overloaded 或 orchestrator-needed；拆分名称可不同，但必须是最小职责边界而非重写全部内容。"
+      },
+      "prompt": "完整只读评审 skills/release-desk，特别判断各段都能单独执行时，整个 Skill 的 composition 是否仍合理。",
+      "scripted_replies": [],
+      "expected_output": "识别整体责任过载，关联 composition finding，并给出最小的 orchestrator 与 specialist 拆分。",
+      "workspace_files": {
+        "skills/release-desk/SKILL.md": "---\nname: release-desk\ndescription: Handle a release request from intake through deployment.\n---\n# Release Desk\n\n## Support intake\nClassify the customer ticket, reproduce the report, and own customer updates.\n\n## Pricing approval\nCalculate discount bands, approve exceptions, and notify finance.\n\n## Security exception\nReview threat evidence, accept residual risk, and sign the exception.\n\n## Deployment\nSelect the rollout window, execute production commands, monitor health, and roll back when needed.\n\nEach section has its own owner, credentials, evidence source, and change cadence.\n"
+      },
+      "review": {
+        "platforms": ["codex"],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "不因四段分别写得正确就给 composition=coherent",
+          "用独立 owner、权限、证据和变化轴说明整体 overload，并把结论关联到 admitted P1 finding",
+          "给出最小拆分：薄 intake/router 只分流，支持、定价、安全和部署责任由现有专属 owner 或 specialist 承担；不提出无关重构"
+        ]
+      }
+    },
+    {
+      "id": "complete-steps-do-not-rescue-over-specification",
+      "eval_type": "behavior",
+      "case_role": "regression",
+      "provenance": "derived",
+      "scenario_family": "minimum-control",
+      "unit_under_test": "full-skill",
+      "preconditions": {"mode": "full", "procedure_is_complete": true, "observable_goal_is_underspecified": true},
+      "oracle": {
+        "rationale": "完整列出内部步骤、临时文件名和逐轮状态并不等于高质量；当控制与目标风险不成比例时应判 over-specified。",
+        "rule_refs": ["SKILL.md#设计门禁", "references/review-rubric.generated.md"],
+        "confidence": "high",
+        "allowed_variance": "具体分数可不同；complexity 必须为 over-specified，且不能因步骤完整而给高分或 ready。",
+        "minimal_counterexample": "删除模型维护的逐轮状态和固定临时文件，同时补充可观察成功标准后，可以重新评为 proportionate。"
+      },
+      "prompt": "完整只读评审 skills/status-writer。步骤看起来很完整，请判断这种完整性是否足以获得高分。",
+      "scripted_replies": [],
+      "expected_output": "将过量控制与可观察目标分开评价，判定 over-specified，并给出删除性最小改进。",
+      "workspace_files": {
+        "skills/status-writer/SKILL.md": "---\nname: status-writer\ndescription: Write a short status update from supplied facts.\n---\n# Status Writer\n\n1. 创建 scratch-a.md。\n2. 把每个事实复制到 scratch-a.md。\n3. 创建 scratch-b.md。\n4. 每处理一行，在回复中输出状态 pending、reading、classifying、copying、checking。\n5. 必须严格处理三轮，即使第一轮已完成。\n6. 把 scratch-b.md 改名为 final.md。\n7. 输出最终状态 done。\n\n成功标准：结果应当很好。\n"
+      },
+      "review": {
+        "platforms": ["codex"],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "明确 complexity=over-specified，并关联具体 finding",
+          "不因七步齐全而给高 instruction/minimum-control 分数、design=pass 或 releaseReadiness=ready",
+          "最小行动是删除无风险依据的临时文件、逐轮状态和固定三轮要求，并补充可观察输出标准"
+        ]
+      }
+    },
+    {
+      "id": "large-single-purpose-reference-is-proportionate",
+      "eval_type": "behavior",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "large-reference-minimal-pair",
+      "unit_under_test": "full-skill",
+      "preconditions": {"reference_size": "large", "reference_responsibilities": 1, "branching": false},
+      "oracle": {
+        "rationale": "大型 reference 只保存一个领域的查表数据，按需加载且没有新增决策分支；大小本身不是 overload。",
+        "rule_refs": ["SKILL.md#模块化评审", "references/composition-fitness.md"],
+        "confidence": "high",
+        "allowed_variance": "可以提出索引或检索建议；不得只因文件大而判 overloaded/orchestrator-needed。",
+        "minimal_counterexample": "保持相近大小，但加入多个角色、权限和互斥流程分支时，composition 标签应翻转。"
+      },
+      "prompt": "只读评审 skills/code-lookup，重点判断大型 reference 是否构成 composition 问题。",
+      "scripted_replies": [],
+      "expected_output": "把体积与责任/分支分开，认为单一用途按需查表 reference 可以是 proportionate。",
+      "workspace_files": {
+        "skills/code-lookup/SKILL.md": "---\nname: code-lookup\ndescription: Look up the supplied service code.\n---\n# Code Lookup\n\n仅在用户提供代码后读取 references/codes.md，返回代码、标准名称和一句解释。不要执行其它流程。\n",
+        "skills/code-lookup/references/codes.md": "# Service code glossary\n\n这是单一用途的只读查表资料。\n\n| Code | Standard name | Meaning |\n|---|---|---|\n| S001 | Account created | New account accepted |\n| S002 | Account pending | Identity check pending |\n| S003 | Account held | Manual review required |\n| S004 | Account closed | Account is no longer active |\n| S005 | Payment accepted | Payment completed |\n| S006 | Payment pending | Processor response pending |\n| S007 | Payment declined | Processor declined payment |\n| S008 | Refund opened | Refund request recorded |\n| S009 | Refund complete | Refund completed |\n| S010 | Delivery queued | Delivery is queued |\n| S011 | Delivery sent | Delivery started |\n| S012 | Delivery delayed | Delivery is delayed |\n| S013 | Delivery complete | Delivery completed |\n| S014 | Ticket opened | Support ticket recorded |\n| S015 | Ticket assigned | Support owner assigned |\n| S016 | Ticket waiting | Waiting for customer data |\n| S017 | Ticket solved | Ticket resolved |\n| S018 | Export queued | Export is queued |\n| S019 | Export ready | Export is ready |\n| S020 | Export expired | Export link expired |\n"
+      },
+      "review": {
+        "platforms": ["codex"],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "明确文件大小不是 composition finding 的充分条件",
+          "根据单一查表职责、按需加载、无角色或流程分支判定 composition 至少可为 proportionate",
+          "若建议索引优化，将其与 overloaded/orchestrator-needed 的结构结论分开"
+        ]
+      }
+    },
+    {
+      "id": "large-multi-branch-reference-is-overloaded",
+      "eval_type": "behavior",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "large-reference-minimal-pair",
+      "unit_under_test": "full-skill",
+      "preconditions": {"reference_size": "large", "reference_responsibilities": 4, "branching": true},
+      "oracle": {
+        "rationale": "与对照 case 大小相近，但 reference 同时定义财务批准、安全例外、客户沟通和生产回滚的角色与互斥分支；问题来自组合责任，不来自字节数。",
+        "rule_refs": ["SKILL.md#模块化评审", "references/composition-fitness.md"],
+        "confidence": "high",
+        "allowed_variance": "可判 overloaded 或 orchestrator-needed；必须以多责任和分支为证据，并提出最小拆分。",
+        "minimal_counterexample": "把 reference 收窄为单一代码查表且移除角色/权限分支后，不应继续判 overload。"
+      },
+      "prompt": "只读评审 skills/code-lookup，重点判断大型 reference 是否构成 composition 问题。",
+      "scripted_replies": [],
+      "expected_output": "识别多 owner、多权限和流程分支造成 overload，并以最小职责边界拆分。",
+      "workspace_files": {
+        "skills/code-lookup/SKILL.md": "---\nname: code-lookup\ndescription: Look up a code and take the required operational action.\n---\n# Code Lookup\n\n读取 references/codes.md，并按其中匹配分支完成全部操作。\n",
+        "skills/code-lookup/references/codes.md": "# Code operations\n\n## Finance branch\nF001: Calculate discount, approve the exception, update the ledger, and notify finance.\nF002: Reject the discount and write the customer price.\n\n## Security branch\nS001: Inspect threat evidence, accept residual risk, and sign the exception.\nS002: Revoke credentials and open an incident.\n\n## Customer branch\nC001: Classify sentiment, promise a response date, and own all follow-up.\nC002: Offer a credit after finance approval.\n\n## Production branch\nP001: Select a rollout window, execute deployment, and monitor health.\nP002: Run rollback, page operations, and close the incident.\n\nEach branch has different owners, credentials, approval evidence, and escalation policy. Branches can call each other and contain their own retry and exception paths.\n"
+      },
+      "review": {
+        "platforms": ["codex"],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "把标签翻转归因于多 owner、多权限和互相调用的流程分支，而不是 reference 大小",
+          "输出 overloaded 或 orchestrator-needed，并关联 admitted composition finding",
+          "最小拆分保留代码路由层，把 finance、security、customer 和 production 操作交给各自 owner；不复制所有分支到更多文件"
+        ]
+      }
+    },
+    {
+      "id": "invalid-eval-oracle-blocks-skill-change",
+      "eval_type": "gate",
+      "case_role": "regression",
+      "provenance": "derived",
+      "scenario_family": "eval-validity-before-change",
+      "unit_under_test": "full-skill",
+      "preconditions": {"eval_failure_supplied": true, "oracle_conflicts_with_skill_contract": true},
+      "oracle": {
+        "rationale": "Eval Oracle 要求接受缺少必填字段的输入，但目标 Skill 明确要求拒绝；该失败是 oracle defect，必须先阻止 Eval-driven Skill 修改。",
+        "rule_refs": ["SKILL.md#执行顺序", "SKILL.md#Eval 证据", "SKILL.md#设计门禁"],
+        "confidence": "high",
+        "allowed_variance": "可把整体评审继续到非 Eval 领域；eval-validity 必须 fail/unknown，且行动必须先修 Oracle。",
+        "minimal_counterexample": "Oracle 与当前 Skill 合同一致且 digest 绑定有效时，真实 skill-defect 结果才可进入修改候选。"
+      },
+      "prompt": "评审 skills/record-checker。evals/results.md 说 validation case 失败，请据此判断是否修改 Skill。只读。",
+      "scripted_replies": [],
+      "expected_output": "先发现 Oracle 与目标合同冲突，拒绝用该失败驱动 Skill 修改，并要求修正 Eval。",
+      "workspace_files": {
+        "skills/record-checker/SKILL.md": "---\nname: record-checker\ndescription: Validate supplied records.\n---\n# Record Checker\n\n记录必须同时包含 id 和 owner。缺少任一字段时返回 invalid，不得补造字段。\n",
+        "skills/record-checker/evals/cases.json": "{\"case\":\"missing-owner\",\"input\":{\"id\":\"A1\"},\"expected\":\"valid\",\"oracle\":\"Any record with an id is valid.\"}\n",
+        "skills/record-checker/evals/results.md": "# Result\n\nThe Skill returned invalid, so the case failed. Suggested action: change the Skill to accept the record.\n"
+      },
+      "review": {
+        "platforms": ["codex"],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "先比较 Oracle 与当前 Skill 合同，明确 missing-owner case 的 Oracle 错误",
+          "将 eval-validity 置为 fail 或 unknown，并拒绝把结果提升为 skill-defect、executed release evidence 或 Skill 修改依据",
+          "最小下一步是修正 Oracle、重新绑定 digest 并重跑同族与相反标签 case，而不是修改生产 Skill"
+        ]
+      }
+    },
+    {
+      "id": "quick-review-and-human-report-stay-evidence-dense",
+      "eval_type": "behavior",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "quick-report-synthesis",
+      "unit_under_test": "full-skill",
+      "preconditions": {"mode": "quick", "requested_report": "human", "cross_file_evidence": "partial"},
+      "oracle": {
+        "rationale": "quick 模式只应覆盖最相关领域；未读取或无证据的跨文件猜测不能变成 P1。人读报告应保留关键 admitted findings 和行动，不复制完整底稿。",
+        "rule_refs": ["SKILL.md#模式", "SKILL.md#执行顺序", "assets/human-report-template.md"],
+        "confidence": "high",
+        "allowed_variance": "可选择 3–5 个领域和不同摘要格式；报告必须简短、证据化，并把未检查领域标为 unknown。"
+      },
+      "prompt": "对 skills/export-note 做 quick 只读评审，并给我人读报告。不要展开完整审查底稿。",
+      "scripted_replies": [],
+      "expected_output": "仅报告关键 finding；不对未检查的 scripts/references 生成无证据跨文件 P1，也不倾倒每个维度的全部笔记。",
+      "workspace_files": {
+        "skills/export-note/SKILL.md": "---\nname: export-note\ndescription: Summarize a supplied export log.\n---\n# Export Note\n\n读取用户提供的日志，输出结果、失败项和下一步。references/terms.md 仅在遇到未知状态码时读取。\n",
+        "skills/export-note/references/terms.md": "# Terms\n\nQUEUED means waiting. DONE means complete.\n",
+        "review-context/known-facts.md": "# Known facts\n\nNo execution trace, user incident, release evidence, or script is supplied. The requested mode is quick.\n"
+      },
+      "review": {
+        "platforms": ["codex"],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "选择 3–5 个最相关领域，不伪装成 full coverage 或给总分",
+          "不对不存在或未形成可达证据的其它 scripts/references 生成跨文件 P1；证据不足处明确 unknown",
+          "人读报告只保留结论、关键 admitted finding、证据定位和最小行动，不复制逐维度底稿、所有 premises 或完整检查清单"
+        ]
+      }
+    }
+  ]
+}
