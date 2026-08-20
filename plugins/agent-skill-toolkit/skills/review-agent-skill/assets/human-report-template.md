@@ -6,7 +6,8 @@
 - Release readiness:
 - Complexity:
 - Composition:
-- Evidence:
+- Eval evidence: none | structural | executed | comparative | release-grade
+- Evidence coverage / confidence:
 
 **Judgment:**
 

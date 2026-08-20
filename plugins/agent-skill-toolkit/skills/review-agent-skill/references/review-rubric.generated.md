@@ -8,7 +8,7 @@
 
 - **check：** 检查 description、resource pointer 与实际 branch 是否一致。
 
-Evidence: official-guidance; sources: agent-skills.best-practices, writing-for-agents
+Evidence: official-guidance; sources: agent-skills.best-practices; heuristic lenses: writing-for-agents
 
 ## `agent.information-hierarchy`
 
@@ -16,7 +16,7 @@ Evidence: official-guidance; sources: agent-skills.best-practices, writing-for-a
 
 - **check：** 审计 active path，而非只看包总大小。
 
-Evidence: official-guidance; sources: agent-skills.best-practices, writing-for-agents
+Evidence: official-guidance; sources: agent-skills.best-practices; heuristic lenses: writing-for-agents
 
 ## `agent.completion-boundary`
 
@@ -24,7 +24,7 @@ Evidence: official-guidance; sources: agent-skills.best-practices, writing-for-a
 
 - **check：** 不得用更完整的完成条件挽救本应删除的步骤。
 
-Evidence: official-guidance; sources: agent-skills.best-practices, writing-for-agents
+Evidence: official-guidance; sources: agent-skills.best-practices; heuristic lenses: writing-for-agents
 
 ## `agent.minimum-control`
 
@@ -32,7 +32,7 @@ Evidence: official-guidance; sources: agent-skills.best-practices, writing-for-a
 
 - **check：** 独立报告 minimal、proportionate、over-specified 或 over-engineered。
 
-Evidence: official-guidance; sources: agent-skills.best-practices, writing-for-agents
+Evidence: official-guidance; sources: agent-skills.best-practices; heuristic lenses: writing-for-agents
 
 ## `agent.source-of-truth`
 
@@ -40,7 +40,7 @@ Evidence: official-guidance; sources: agent-skills.best-practices, writing-for-a
 
 - **check：** 区分领域策略与 schema/runtime 事实。
 
-Evidence: official-guidance; sources: agent-skills.best-practices, writing-for-agents
+Evidence: official-guidance; sources: agent-skills.best-practices; heuristic lenses: writing-for-agents
 
 ## `agent.co-location`
 
@@ -48,7 +48,7 @@ Evidence: official-guidance; sources: agent-skills.best-practices, writing-for-a
 
 - **check：** 不因物理拆文件就默认认为渐进式披露成立。
 
-Evidence: official-guidance; sources: agent-skills.best-practices, writing-for-agents
+Evidence: official-guidance; sources: agent-skills.best-practices; heuristic lenses: writing-for-agents
 
 ## `review.evidence-admission`
 
@@ -80,7 +80,7 @@ Evidence: official-guidance; sources: agent-skills.optimizing-descriptions
 
 - **check：** 若两个以上独立意图伴随权限/证据/环境/上下文差异且可稳定交接，判定 overloaded 或 orchestrator-needed。
 
-Evidence: heuristic; sources: agent-skills.best-practices, writing-for-agents
+Evidence: heuristic; sources: agent-skills.best-practices; heuristic lenses: writing-for-agents
 
 ## `skill.package-resources`
 

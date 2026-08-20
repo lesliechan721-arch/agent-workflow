@@ -19,36 +19,18 @@ metadata:
 
 ## 审计顺序
 
-1. **最小有效文档挑战**
-   - 只根据目标、真实失败和硬约束写不超过 7 条的最小合同。
-   - 现有内容按 `keep`、`relax`、`move`、`delete`、`needs-ablation` 分类。
+1. **最小有效文档挑战**：只根据目标、真实失败和硬约束写不超过 7 条的最小合同；现有内容按 `keep`、`relax`、`move`、`delete`、`needs-ablation` 分类。
+2. **读者与指针**：加载方式和目标读者是否明确；指针是否同时说明目标与 branch；是否堆砌同义词。
+3. **信息层级与 active path**：区分所有 branch 都需要的内容与少数 branch 内容。大 reference、reference 包或多文件 active path 读取 `references/reference-audit.md`；尺寸只触发语义审计，拆分必须有 branch locality、职责或 active-path 证据。
+4. **控制和完成边界**：控制强度是否匹配脆弱性；只有必要步骤才评价 completion criterion。
+5. **事实源与维护**：环境可查事实是否被低价值缓存；是否存在 duplication、scattering、过期和 sediment。
+6. **证据与现实性**：缺陷、启发式建议和未知项分开；没有行为证据时，不把可读性偏好升级成阻断项。
 
-2. **读者与指针**
-   - 加载方式和目标读者是否明确。
-   - 指针是否同时说明目标与 branch；是否堆砌同义词。
-
-3. **信息层级与 active path**
-   - 区分所有 branch 都需要的内容与少数 branch 内容。
-   - 对每条典型路径记录实际加载文件、总 bytes、估算 token、pointer 证据和不需要内容比例。
-   - 大文件只触发语义审计；只有 branch locality、职责或 active-path 证据支持时才建议拆分。
-
-4. **控制和完成边界**
-   - 控制强度是否匹配脆弱性。
-   - 只有必要步骤才评价 completion criterion。
-
-5. **事实源与维护**
-   - 环境可查事实是否被低价值缓存。
-   - 是否存在 duplication、scattering、过期和 sediment。
-
-6. **证据与现实性**
-   - 缺陷、启发式建议和未知项分开。
-   - 没有行为证据时，不把可读性偏好升级成阻断项。
-
-需要完整检查表时读取 `references/review-standard.generated.md`。
+基础规则见 `references/review-standard.generated.md`。
 
 ## 输出
 
-总是返回人类可读结论。审计 reference 包时还要产生符合 `assets/reference-audit-result.schema.json` 的结构化结果：
+总是返回人类可读结论。审计 reference 包时还要产生符合 `assets/reference-audit-result.schema.json` 的结构化结果；`target.digest` 必须绑定本次被审内容，`producer` 与 `independentContext` 必须反映真实执行：
 
 - caller 提供 handoff 路径时，复制模板、填写并运行 `node scripts/validate-json-contract.mjs assets/reference-audit-result.schema.json <handoff>/reference-audit-result.json`；
 - 未提供可写 handoff 路径时，在回复中返回完整 JSON code block，不假定本地文件系统或 Node 可用。

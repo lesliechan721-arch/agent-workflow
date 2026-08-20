@@ -1,0 +1,129 @@
+import { createHash } from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
+import assert from 'node:assert/strict';
+import { after, test } from 'node:test';
+
+const execFileAsync = promisify(execFile);
+const localPluginRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const pluginRoot = process.env.AW_PLUGIN_CONTEXT
+  ? JSON.parse(await readFile(process.env.AW_PLUGIN_CONTEXT, 'utf8')).sourceRoot
+  : localPluginRoot;
+const reviewScripts = path.join(pluginRoot, 'skills', 'review-aw-plugin', 'scripts');
+const temporaryRoots = [];
+
+after(async () => Promise.all(temporaryRoots.map((entry) => rm(entry, { recursive: true, force: true }))));
+
+function sha256(data) {
+  return `sha256:${createHash('sha256').update(data).digest('hex')}`;
+}
+
+async function run(script, args = [], cwd = pluginRoot) {
+  return execFileAsync(process.execPath, [script, ...args], {
+    cwd,
+    encoding: 'utf8',
+    maxBuffer: 20 * 1024 * 1024,
+  });
+}
+
+async function fixture() {
+  const root = await mkdtemp(path.join(tmpdir(), 'aw-eval-evidence-'));
+  temporaryRoots.push(root);
+  const workspace = path.join(root, 'external-workspace');
+  const target = path.join(workspace, 'packages', 'demo-plugin');
+  await mkdir(path.join(target, '.agents-plugin'), { recursive: true });
+  await writeFile(path.join(target, '.agents-plugin', 'plugin.json'), JSON.stringify({
+    name: 'demo-plugin',
+    version: '0.1.0',
+    marketplace: { policy: { products: ['CODEX'] } },
+  }), 'utf8');
+
+  const casePath = path.join(root, 'cases.json');
+  await writeFile(casePath, JSON.stringify({ cases: [{ id: 'case-1', query: 'review' }] }), 'utf8');
+  const corpusDigest = (await run(
+    path.join(reviewScripts, 'validate-eval-audit-result.mjs'),
+    ['--digest-only', '--case', casePath],
+  )).stdout.trim();
+  const targetSkillDigest = `sha256:${'1'.repeat(64)}`;
+  const audit = {
+    schemaVersion: 2,
+    producer: 'audit-agent-skill-evals',
+    independentContext: true,
+    auditId: 'audit-1',
+    mode: 'preflight',
+    targetSkillDigest,
+    caseCorpusDigest: corpusDigest,
+    validity: 'pass',
+    optimizationPolicy: 'balanced',
+    cases: [{ caseId: 'case-1', releaseRelevant: true, admission: 'pass', oracleConfidence: 'high', findings: [] }],
+    blockedCases: [],
+    releaseEligible: true,
+    failureTriage: [],
+    recommendedAction: 'accepted-risk',
+  };
+  const auditPath = path.join(root, 'audit.json');
+  const auditRaw = JSON.stringify(audit);
+  await writeFile(auditPath, auditRaw, 'utf8');
+  const result = {
+    schemaVersion: 1,
+    producer: 'run-agent-skill-evals',
+    independentContext: false,
+    provider: { id: 'command', version: 'test' },
+    planDigest: `sha256:${'2'.repeat(64)}`,
+    targetSkillDigest,
+    caseCorpusDigest: corpusDigest,
+    preflightAuditDigest: sha256(auditRaw),
+    evidenceLevel: 'executed',
+    runs: [],
+    aggregate: { cases: 1, configurations: 1, runs: 0, completed: 0, processFailed: 0, timedOut: 0 },
+    limitations: ['fixture'],
+  };
+  const resultPath = path.join(root, 'eval-run-bundle.json');
+  await writeFile(resultPath, JSON.stringify(result), 'utf8');
+  return { root, workspace, target, casePath, auditPath, resultPath, result };
+}
+
+test('AW bundle binds Eval execution to its audit and keeps external workspace identity', async () => {
+  const value = await fixture();
+  const prepare = path.join(reviewScripts, 'prepare-aw-review-bundle.mjs');
+  const prepared = await run(prepare, [
+    value.target,
+    '--repo-root', value.workspace,
+    '--eval-audit', value.auditPath,
+    '--eval-case', value.casePath,
+    '--eval-result', value.resultPath,
+  ]);
+  const bundle = JSON.parse(prepared.stdout);
+  assert.equal(bundle.environment.repository, 'external-workspace');
+  const execution = bundle.orchestration.providedStages.find((entry) => entry.id === 'eval-execution');
+  assert.equal(execution.independentContext, false);
+  assert.equal(execution.subjectDigest, value.result.targetSkillDigest);
+
+  const bundlePath = path.join(value.root, 'bundle.json');
+  await writeFile(bundlePath, prepared.stdout, 'utf8');
+  const validation = JSON.parse((await run(
+    path.join(reviewScripts, 'validate-review-input-bundle.mjs'),
+    [bundlePath, '--handoff-root', value.root, '--format', 'json'],
+  )).stdout);
+  assert.equal(validation.valid, true);
+});
+
+test('AW bundle rejects Eval result without an audit or with a different audit digest', async () => {
+  const value = await fixture();
+  const prepare = path.join(reviewScripts, 'prepare-aw-review-bundle.mjs');
+  await assert.rejects(run(prepare, [value.target, '--repo-root', value.workspace, '--eval-result', value.resultPath]), /Command failed/u);
+
+  value.result.preflightAuditDigest = `sha256:${'3'.repeat(64)}`;
+  await writeFile(value.resultPath, JSON.stringify(value.result), 'utf8');
+  await assert.rejects(run(prepare, [
+    value.target,
+    '--repo-root', value.workspace,
+    '--eval-audit', value.auditPath,
+    '--eval-case', value.casePath,
+    '--eval-result', value.resultPath,
+  ]), /Command failed/u);
+});

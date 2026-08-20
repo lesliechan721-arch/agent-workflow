@@ -3,137 +3,59 @@
   "$id": "https://agent-skill-toolkit.invalid/review-result.schema.json",
   "title": "ReviewResult",
   "type": "object",
-  "required": ["schemaVersion", "mode", "target", "design", "releaseReadiness", "complexity", "composition", "reducibility", "compositionFindingIds", "complexityFindingIds", "dimensions", "weightedScore", "coverage", "confidence", "findings", "unknowns", "gates", "actions"],
+  "required": [
+    "schemaVersion",
+    "independentContext",
+    "producer",
+    "mode",
+    "target",
+    "design",
+    "releaseReadiness",
+    "complexity",
+    "composition",
+    "reducibility",
+    "evalEvidenceLevel",
+    "compositionFindingIds",
+    "complexityFindingIds",
+    "dimensions",
+    "weightedScore",
+    "coverage",
+    "confidence",
+    "findings",
+    "unknowns",
+    "gates",
+    "actions"
+  ],
   "properties": {
-    "schemaVersion": { "const": 2 },
-    "mode": { "enum": ["quick", "full", "release-quality", "delta"] },
-    "target": {
-      "type": "object",
-      "required": ["kind", "name"],
-      "properties": {
-        "kind": { "enum": ["agent-skill", "repo-skill", "aw-plugin-skill", "materialized-skill"] },
-        "name": { "type": "string", "minLength": 1 },
-        "profile": { "type": ["string", "null"] },
-        "digest": { "type": ["string", "null"], "pattern": "^sha256:[0-9a-f]{64}$" }
-      },
-      "additionalProperties": false
-    },
-    "design": { "enum": ["pass", "needs-fixes", "redesign", "fail", "not-assessed"] },
-    "releaseReadiness": { "enum": ["ready", "provisional", "blocked", "not-assessed"] },
-    "complexity": { "enum": ["minimal", "proportionate", "over-specified", "over-engineered", "not-assessed"] },
-    "composition": { "enum": ["coherent", "composite-proportionate", "overloaded", "orchestrator-needed", "not-assessed"] },
-    "reducibility": { "enum": ["almost-none", "minor", "significant", "core-plus-reference", "redesign", "not-assessed"] },
-    "compositionFindingIds": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
-    "complexityFindingIds": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true },
-    "dimensions": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "required": ["id", "weight", "score", "confidence", "findingIds", "unknownIds"],
-        "properties": {
-          "id": { "enum": ["specification", "problem_value", "triggering", "scope_composition", "instruction_design", "minimum_control", "context_disclosure", "architecture", "scripts", "evals", "reliability", "maintainability"] },
-          "weight": { "type": "number", "minimum": 0 },
-          "score": { "type": ["number", "null"], "minimum": 0, "maximum": 5, "multipleOf": 0.5 },
-          "confidence": { "enum": ["high", "medium", "low", "unknown"] },
-          "findingIds": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
-          "unknownIds": { "type": "array", "items": { "type": "string" }, "uniqueItems": true }
-        },
-        "additionalProperties": false
-      }
-    },
-    "weightedScore": { "type": ["number", "null"], "minimum": 0, "maximum": 100 },
-    "coverage": { "type": "number", "minimum": 0, "maximum": 100 },
-    "confidence": { "enum": ["high", "medium", "low", "unknown"] },
-    "findings": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "required": ["id", "severity", "evidenceTypes", "evidence", "location", "claim", "premises", "reachability", "impact", "counterevidence", "owner", "action", "validation"],
-        "properties": {
-          "id": { "type": "string", "minLength": 1 },
-          "severity": { "enum": ["P0", "P1", "P2", "Advisory"] },
-          "evidenceTypes": { "type": "array", "items": { "enum": ["observed", "normative", "structural", "official-guidance", "heuristic", "inferred"] }, "minItems": 1, "uniqueItems": true },
-          "evidence": { "type": "array", "items": { "type": "string", "minLength": 1 } },
-          "location": { "type": "string", "minLength": 1 },
-          "claim": { "type": "string", "minLength": 1 },
-          "premises": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "required": ["claim", "source", "evidence", "status"],
-              "properties": {
-                "claim": { "type": "string", "minLength": 1 },
-                "source": { "type": "string", "minLength": 1 },
-                "evidence": { "type": "string", "minLength": 1 },
-                "status": { "enum": ["supported", "unsupported", "unknown"] }
-              },
-              "additionalProperties": false
-            }
-          },
-          "reachability": {
-            "type": "object",
-            "required": ["kind", "status", "path", "evidence"],
-            "properties": {
-              "kind": { "enum": ["entry-gate", "execution-path"] },
-              "status": { "enum": ["supported", "unsupported", "unknown"] },
-              "path": { "type": "string", "minLength": 1 },
-              "evidence": { "type": "string", "minLength": 1 }
-            },
-            "additionalProperties": false
-          },
-          "impact": { "type": "string", "minLength": 1 },
-          "counterevidence": { "type": "array", "items": { "type": "string", "minLength": 1 } },
-          "owner": { "type": "string", "minLength": 1 },
-          "action": { "type": "string", "minLength": 1 },
-          "validation": { "type": "string", "minLength": 1 },
-          "dimension": { "enum": ["specification", "problem_value", "triggering", "scope_composition", "instruction_design", "minimum_control", "context_disclosure", "architecture", "scripts", "evals", "reliability", "maintainability", null] }
-        },
-        "additionalProperties": false
-      }
-    },
-    "unknowns": {
-      "type": "array",
-      "items": {
-        "type": "object",
-        "required": ["id", "question", "validation"],
-        "properties": {
-          "id": { "type": "string", "minLength": 1 },
-          "question": { "type": "string", "minLength": 1 },
-          "validation": { "type": "string", "minLength": 1 }
-        },
-        "additionalProperties": false
-      }
-    },
-    "gates": {
-      "type": "object",
-      "required": ["package-validity", "critical-artifacts", "goal-alignment", "capability-validity", "safety-permissions", "architecture-ownership", "release-evidence", "eval-validity", "eval-change-safety"],
-      "properties": {
-        "package-validity": { "allOf": [{ "$ref": "#/$defs/gate" }, { "properties": { "severity": { "const": "P0" } } }] },
-        "critical-artifacts": { "allOf": [{ "$ref": "#/$defs/gate" }, { "properties": { "severity": { "const": "P0" } } }] },
-        "goal-alignment": { "allOf": [{ "$ref": "#/$defs/gate" }, { "properties": { "severity": { "const": "P0" } } }] },
-        "capability-validity": { "allOf": [{ "$ref": "#/$defs/gate" }, { "properties": { "severity": { "const": "P0" } } }] },
-        "safety-permissions": { "allOf": [{ "$ref": "#/$defs/gate" }, { "properties": { "severity": { "const": "P0" } } }] },
-        "architecture-ownership": { "allOf": [{ "$ref": "#/$defs/gate" }, { "properties": { "severity": { "const": "P1" } } }] },
-        "release-evidence": { "allOf": [{ "$ref": "#/$defs/gate" }, { "properties": { "severity": { "const": "P1" } } }] },
-        "eval-validity": { "allOf": [{ "$ref": "#/$defs/gate" }, { "properties": { "severity": { "const": "P1" } } }] },
-        "eval-change-safety": { "allOf": [{ "$ref": "#/$defs/gate" }, { "properties": { "severity": { "const": "P1" } } }] }
-      },
-      "additionalProperties": false
-    },
-    "actions": { "type": "array", "items": { "type": "string" } }
-  },
-  "$defs": {
-    "gate": {
-      "type": "object",
-      "required": ["status", "severity", "reason", "findingIds"],
-      "properties": {
-        "status": { "enum": ["pass", "fail", "unknown", "not_applicable"] },
-        "severity": { "enum": ["P0", "P1"] },
-        "reason": { "type": "string" },
-        "findingIds": { "type": "array", "items": { "type": "string" }, "uniqueItems": true }
-      },
-      "additionalProperties": false
-    }
+    "schemaVersion": {"const": 3},
+    "mode": {"enum": ["quick","full","release-quality","delta"]},
+    "target": {"type":"object","required":["kind","name"],"properties":{"kind":{"enum":["agent-skill","repo-skill","aw-plugin-skill","materialized-skill"]},"name":{"type":"string","minLength":1},"profile":{"type":["string","null"]},"digest":{"type":["string","null"],"pattern":"^sha256:[0-9a-f]{64}$"}},"additionalProperties":false},
+    "design":{"enum":["pass","needs-fixes","redesign","fail","not-assessed"]},
+    "releaseReadiness":{"enum":["ready","provisional","blocked","not-assessed"]},
+    "complexity":{"enum":["minimal","proportionate","over-specified","over-engineered","not-assessed"]},
+    "composition":{"enum":["coherent","composite-proportionate","overloaded","orchestrator-needed","not-assessed"]},
+    "reducibility":{"enum":["almost-none","minor","significant","core-plus-reference","redesign","not-assessed"]},
+    "evalEvidenceLevel":{"enum":["none","structural","executed","comparative","release-grade"]},
+    "compositionFindingIds":{"type":"array","items":{"type":"string","minLength":1},"uniqueItems":true},
+    "complexityFindingIds":{"type":"array","items":{"type":"string","minLength":1},"uniqueItems":true},
+    "dimensions":{"type":"array","items":{"type":"object","required":["id","weight","score","confidence","findingIds","unknownIds"],"properties":{"id":{"enum":["specification","problem_value","triggering","scope_composition","instruction_design","minimum_control","context_disclosure","architecture","scripts","evals","reliability","maintainability"]},"weight":{"type":"number","minimum":0},"score":{"type":["number","null"],"minimum":0,"maximum":5,"multipleOf":0.5},"confidence":{"enum":["high","medium","low","unknown"]},"findingIds":{"type":"array","items":{"type":"string"},"uniqueItems":true},"unknownIds":{"type":"array","items":{"type":"string"},"uniqueItems":true}},"additionalProperties":false}},
+    "weightedScore":{"type":["number","null"],"minimum":0,"maximum":100},"coverage":{"type":"number","minimum":0,"maximum":100},"confidence":{"enum":["high","medium","low","unknown"]},
+    "findings":{"type":"array","items":{"type":"object","required":["id","severity","evidenceTypes","evidence","location","claim","premises","reachability","impact","counterevidence","owner","action","validation"],"properties":{"id":{"type":"string","minLength":1},"severity":{"enum":["P0","P1","P2","Advisory"]},"evidenceTypes":{"type":"array","items":{"enum":["observed","normative","structural","official-guidance","heuristic","inferred"]},"minItems":1,"uniqueItems":true},"evidence":{"type":"array","items":{"type":"string","minLength":1}},"location":{"type":"string","minLength":1},"claim":{"type":"string","minLength":1},"premises":{"type":"array","items":{"type":"object","required":["claim","source","evidence","status"],"properties":{"claim":{"type":"string","minLength":1},"source":{"type":"string","minLength":1},"evidence":{"type":"string","minLength":1},"status":{"enum":["supported","unsupported","unknown"]}},"additionalProperties":false}},"reachability":{"type":"object","required":["kind","status","path","evidence"],"properties":{"kind":{"enum":["entry-gate","execution-path"]},"status":{"enum":["supported","unsupported","unknown"]},"path":{"type":"string","minLength":1},"evidence":{"type":"string","minLength":1}},"additionalProperties":false},"impact":{"type":"string","minLength":1},"counterevidence":{"type":"array","items":{"type":"string","minLength":1}},"owner":{"type":"string","minLength":1},"action":{"type":"string","minLength":1},"validation":{"type":"string","minLength":1},"dimension":{"enum":["specification","problem_value","triggering","scope_composition","instruction_design","minimum_control","context_disclosure","architecture","scripts","evals","reliability","maintainability",null]}},"additionalProperties":false}},
+    "unknowns":{"type":"array","items":{"type":"object","required":["id","question","validation"],"properties":{"id":{"type":"string","minLength":1},"question":{"type":"string","minLength":1},"validation":{"type":"string","minLength":1}},"additionalProperties":false}},
+    "gates":{"type":"object","required":["package-validity","critical-artifacts","goal-alignment","capability-validity","safety-permissions","architecture-ownership","release-evidence","eval-validity","eval-change-safety"],"properties":{
+      "package-validity":{"type":"object","required":["status","severity","reason","findingIds"],"properties":{"status":{"enum":["pass","fail","unknown","not_applicable"]},"severity":{"const":"P0"},"reason":{"type":"string"},"findingIds":{"type":"array","items":{"type":"string"},"uniqueItems":true}},"additionalProperties":false},
+      "critical-artifacts":{"type":"object","required":["status","severity","reason","findingIds"],"properties":{"status":{"enum":["pass","fail","unknown","not_applicable"]},"severity":{"const":"P0"},"reason":{"type":"string"},"findingIds":{"type":"array","items":{"type":"string"},"uniqueItems":true}},"additionalProperties":false},
+      "goal-alignment":{"type":"object","required":["status","severity","reason","findingIds"],"properties":{"status":{"enum":["pass","fail","unknown","not_applicable"]},"severity":{"const":"P0"},"reason":{"type":"string"},"findingIds":{"type":"array","items":{"type":"string"},"uniqueItems":true}},"additionalProperties":false},
+      "capability-validity":{"type":"object","required":["status","severity","reason","findingIds"],"properties":{"status":{"enum":["pass","fail","unknown","not_applicable"]},"severity":{"const":"P0"},"reason":{"type":"string"},"findingIds":{"type":"array","items":{"type":"string"},"uniqueItems":true}},"additionalProperties":false},
+      "safety-permissions":{"type":"object","required":["status","severity","reason","findingIds"],"properties":{"status":{"enum":["pass","fail","unknown","not_applicable"]},"severity":{"const":"P0"},"reason":{"type":"string"},"findingIds":{"type":"array","items":{"type":"string"},"uniqueItems":true}},"additionalProperties":false},
+      "architecture-ownership":{"type":"object","required":["status","severity","reason","findingIds"],"properties":{"status":{"enum":["pass","fail","unknown","not_applicable"]},"severity":{"const":"P1"},"reason":{"type":"string"},"findingIds":{"type":"array","items":{"type":"string"},"uniqueItems":true}},"additionalProperties":false},
+      "release-evidence":{"type":"object","required":["status","severity","reason","findingIds"],"properties":{"status":{"enum":["pass","fail","unknown","not_applicable"]},"severity":{"const":"P1"},"reason":{"type":"string"},"findingIds":{"type":"array","items":{"type":"string"},"uniqueItems":true}},"additionalProperties":false},
+      "eval-validity":{"type":"object","required":["status","severity","reason","findingIds"],"properties":{"status":{"enum":["pass","fail","unknown","not_applicable"]},"severity":{"const":"P1"},"reason":{"type":"string"},"findingIds":{"type":"array","items":{"type":"string"},"uniqueItems":true}},"additionalProperties":false},
+      "eval-change-safety":{"type":"object","required":["status","severity","reason","findingIds"],"properties":{"status":{"enum":["pass","fail","unknown","not_applicable"]},"severity":{"const":"P1"},"reason":{"type":"string"},"findingIds":{"type":"array","items":{"type":"string"},"uniqueItems":true}},"additionalProperties":false}
+    },"additionalProperties":false},
+    "actions":{"type":"array","items":{"type":"string"}},
+    "producer":{"const":"review-agent-skill"},
+    "independentContext":{"type":"boolean"}
   },
   "additionalProperties": false
 }

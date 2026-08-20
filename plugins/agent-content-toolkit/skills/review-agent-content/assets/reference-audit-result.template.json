@@ -1,6 +1,11 @@
 {
-  "schemaVersion": 1,
-  "target": "replace-me",
+  "schemaVersion": 2,
+  "producer": "review-agent-content",
+  "independentContext": true,
+  "target": {
+    "path": "replace-me",
+    "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+  },
   "activePaths": [],
   "references": [],
   "findings": [],
