@@ -7,6 +7,8 @@ import {
   stageCatalogArtifacts,
   bundleLocalPlugin,
   type PluginBundleBuildMode,
+  type RuntimeImportProvenance,
+  type SkillRuntimeFileProvenance,
   type PluginStagingRunner,
 } from './plugin-staging.js';
 import { writeJsonFile } from '../src/utils/json.js';
@@ -18,6 +20,7 @@ import {
   readMarketplaceSourceMeta,
 } from '../src/utils/manifest.js';
 import type { PlatformName, PluginMeta } from '../src/types.js';
+import { createCatalogRuntimeImportResolver } from '../src/utils/catalog-runtime-projection.js';
 
 export interface BundlePluginsOptions {
   repoRoot?: string;
@@ -72,7 +75,14 @@ async function removeGeneratedEmptyDirectories(currentDir: string): Promise<void
 
 export async function bundlePlugins(
   options: BundlePluginsOptions = {},
-): Promise<{ outputRoot: string; pluginNames: string[] }> {
+): Promise<{
+  outputRoot: string;
+  pluginNames: string[];
+  runtimeProjection: Record<string, {
+    buildImports: RuntimeImportProvenance[];
+    skillRuntimeFiles: SkillRuntimeFileProvenance[];
+  }>;
+}> {
   const defaults = resolveDefaultPaths();
   const repoRoot = options.repoRoot ?? defaults.repoRoot;
   const outputRoot = options.outputRoot ?? defaults.outputRoot;
@@ -88,6 +98,11 @@ export async function bundlePlugins(
   await fs.ensureDir(path.join(outputRoot, 'plugins'));
 
   const bundledPlugins = [];
+  const runtimeProjection: Record<string, {
+    buildImports: RuntimeImportProvenance[];
+    skillRuntimeFiles: SkillRuntimeFileProvenance[];
+  }> = {};
+  const runtimeResolver = createCatalogRuntimeImportResolver(plugins);
   const bundledPluginsByPlatform: Record<PlatformName, PluginMeta[]> = {
     claude: [],
     codex: [],
@@ -100,10 +115,12 @@ export async function bundlePlugins(
       {
         buildMode,
         stagingRunner: options.stagingRunner,
+        runtimeResolver,
       },
     );
     await removeGeneratedEmptyDirectories(bundledPluginRoot);
     bundledPlugins.push(result.plugin);
+    runtimeProjection[result.plugin.manifest.name] = result.runtimeProjection;
 
     for (const platform of ['claude', 'codex'] as const) {
       if (result.platformManifests[platform]) {
@@ -128,6 +145,7 @@ export async function bundlePlugins(
   return {
     outputRoot,
     pluginNames: bundledPlugins.map((plugin) => plugin.manifest.name),
+    runtimeProjection,
   };
 }
 

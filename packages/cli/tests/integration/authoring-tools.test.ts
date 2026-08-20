@@ -1287,6 +1287,298 @@ describe('authoring tools', () => {
     });
   });
 
+  productionVersionCheckTest('resolves version-check runtime imports from isolated base and current source sets', async () => {
+    const distRoot = path.join(repoRoot(), 'packages', 'cli', 'dist');
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-authoring-version-imports-'));
+    tempDirs.push(tempRoot);
+    const tempRepo = path.join(tempRoot, 'repo');
+    const checkerTempRoot = path.join(tempRoot, 'checker-tmp');
+    await fs.ensureDir(tempRepo);
+    await fs.ensureDir(checkerTempRoot);
+    await fs.ensureSymlink(distRoot, path.join(tempRepo, 'packages', 'cli', 'dist'), 'dir');
+
+    const providerBytes = `${'base-provider-bytes-'.repeat(512 * 1024)}\n`;
+    const { pluginDir: providerRoot } = await writeSourcePlugin(
+      path.join(tempRepo, 'plugins'),
+      'runtime-provider',
+      createBaseManifest('runtime-provider', {
+        buildConfig: {
+          runtimeExports: [{ name: 'standard', source: './standard.txt' }],
+        },
+      }),
+      { 'standard.txt': providerBytes },
+    );
+    const { manifestPath: consumerManifestPath } = await writeSourcePlugin(
+      path.join(tempRepo, 'plugins'),
+      'runtime-consumer',
+      createBaseManifest('runtime-consumer', {
+        skills: './skills',
+        buildConfig: {
+          skillRuntimeFiles: [{
+            skill: 'consumer-skill',
+            target: 'references/standard.txt',
+            import: { plugin: 'runtime-provider', export: 'standard' },
+          }],
+        },
+      }),
+      {
+        'skills/consumer-skill/SKILL.md': [
+          '---',
+          'name: consumer-skill',
+          'description: Validate isolated catalog runtime imports.',
+          '---',
+          '',
+          '# Consumer Skill',
+        ].join('\n'),
+        'skills/consumer-skill/agents/openai.yaml': [
+          'interface:',
+          '  display_name: "Consumer Skill"',
+          '  short_description: "Validate isolated runtime imports"',
+          'policy:',
+          '  allow_implicit_invocation: true',
+        ].join('\n'),
+      },
+    );
+    await runGit(tempRepo, ['init']);
+    await runGit(tempRepo, ['add', 'plugins']);
+    await runGit(tempRepo, [
+      '-c',
+      'user.name=AW Test',
+      '-c',
+      'user.email=aw-test@example.invalid',
+      'commit',
+      '-m',
+      'runtime import baseline',
+    ]);
+
+    await fs.writeFile(
+      path.join(providerRoot, 'standard.txt'),
+      `${'current-provider-bytes-'.repeat(512 * 1024)}\n`,
+      'utf8',
+    );
+    const consumerManifest = await fs.readJson(consumerManifestPath);
+    consumerManifest.version = '0.2.0';
+    await fs.writeJson(consumerManifestPath, consumerManifest, { spaces: 2 });
+
+    const checkerPath = createAwPluginScriptPath('check_plugin_versions.mjs');
+    const isolated = await execFileAsync('node', [
+      checkerPath,
+      'runtime-consumer',
+      '--json',
+      '--repo-root',
+      tempRepo,
+    ], {
+      cwd: repoRoot(),
+      env: { ...process.env, TMPDIR: checkerTempRoot },
+      maxBuffer: 20 * 1024 * 1024,
+    });
+    expect(JSON.parse(isolated.stdout).checks[0]).toMatchObject({
+      status: 'versionBumped',
+      productionChanged: true,
+      changedPaths: expect.arrayContaining([
+        'codex/skills/consumer-skill/references/standard.txt',
+        'claude/skills/consumer-skill/references/standard.txt',
+      ]),
+    });
+
+    await fs.remove(providerRoot);
+    let missingProviderError: { stdout?: string; stderr?: string } | undefined;
+    try {
+      await execFileAsync('node', [
+        checkerPath,
+        'runtime-consumer',
+        '--json',
+        '--repo-root',
+        tempRepo,
+      ], {
+        cwd: repoRoot(),
+        env: { ...process.env, TMPDIR: checkerTempRoot },
+        maxBuffer: 20 * 1024 * 1024,
+      });
+    } catch (error) {
+      missingProviderError = error as { stdout?: string; stderr?: string };
+    }
+    const missingProviderReport = JSON.parse(missingProviderError!.stdout!);
+    expect(missingProviderReport.checks[0]).toMatchObject({
+      status: 'error',
+      errors: [expect.stringContaining('provider plugin "runtime-provider" is unavailable')],
+    });
+    expect(`${missingProviderError?.stdout ?? ''}${missingProviderError?.stderr ?? ''}`)
+      .not.toContain('ENOTEMPTY');
+    await expect(fs.readdir(checkerTempRoot)).resolves.toEqual([]);
+
+    consumerManifest.buildConfig.skillRuntimeFiles[0].import.plugin = 'base-missing-provider';
+    await fs.writeJson(consumerManifestPath, consumerManifest, { spaces: 2 });
+    await runGit(tempRepo, ['add', 'plugins']);
+    await runGit(tempRepo, [
+      '-c',
+      'user.name=AW Test',
+      '-c',
+      'user.email=aw-test@example.invalid',
+      'commit',
+      '-m',
+      'missing base provider',
+    ]);
+    consumerManifest.buildConfig.skillRuntimeFiles[0].import.plugin = 'current-missing-provider';
+    await fs.writeJson(consumerManifestPath, consumerManifest, { spaces: 2 });
+
+    let twoSidedError: { stdout?: string } | undefined;
+    try {
+      await execFileAsync('node', [
+        checkerPath,
+        'runtime-consumer',
+        '--json',
+        '--repo-root',
+        tempRepo,
+      ], {
+        cwd: repoRoot(),
+        env: { ...process.env, TMPDIR: checkerTempRoot },
+        maxBuffer: 20 * 1024 * 1024,
+      });
+    } catch (error) {
+      twoSidedError = error as { stdout?: string };
+    }
+    expect(JSON.parse(twoSidedError!.stdout!).checks[0].errors).toEqual([
+      expect.stringContaining('base: Invalid catalog runtime import: provider plugin "base-missing-provider" is unavailable'),
+      expect.stringContaining('Secondary bundle failure: current: Invalid catalog runtime import: provider plugin "current-missing-provider" is unavailable'),
+    ]);
+    await expect(fs.readdir(checkerTempRoot)).resolves.toEqual([]);
+  });
+
+  productionVersionCheckTest('isolates the base CLI virtual registry during version checks', async () => {
+    const distRoot = path.join(repoRoot(), 'packages', 'cli', 'dist');
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-authoring-version-cli-import-'));
+    tempDirs.push(tempRoot);
+    const tempRepo = path.join(tempRoot, 'repo');
+    const checkerTempRoot = path.join(tempRoot, 'checker-tmp');
+    const registryPath = path.join(
+      tempRepo,
+      'packages',
+      'cli',
+      'src',
+      'utils',
+      'skill-frontmatter-capabilities.json',
+    );
+    await fs.ensureDir(path.dirname(registryPath));
+    await fs.ensureDir(checkerTempRoot);
+    await fs.ensureSymlink(distRoot, path.join(tempRepo, 'packages', 'cli', 'dist'), 'dir');
+    await fs.writeJson(path.join(tempRepo, 'packages', 'cli', 'package.json'), {
+      name: '@fixture/aw',
+      version: '1.0.0',
+      type: 'module',
+    }, { spaces: 2 });
+    await fs.writeJson(registryPath, { generation: 'base' }, { spaces: 2 });
+
+    const { manifestPath } = await writeSourcePlugin(
+      path.join(tempRepo, 'plugins'),
+      'virtual-import-consumer',
+      createBaseManifest('virtual-import-consumer', {
+        skills: './skills',
+        buildConfig: {
+          buildImports: [{
+            plugin: '@aw/cli',
+            export: 'skill-frontmatter-capabilities',
+            env: 'AW_PLUGIN_IMPORT_CAPABILITIES',
+          }],
+          skillRuntimeFiles: [{
+            skill: 'virtual-import-skill',
+            target: 'references/capabilities.json',
+            source: './generated-capabilities.json',
+          }],
+        },
+        scripts: {
+          node: {
+            build: { runner: 'node', path: './build.mjs' },
+          },
+        },
+      }),
+      {
+        'build.mjs': [
+          "import fs from 'node:fs';",
+          "import path from 'node:path';",
+          "import { fileURLToPath } from 'node:url';",
+          '',
+          "const pluginRoot = path.dirname(fileURLToPath(import.meta.url));",
+          "fs.copyFileSync(process.env.AW_PLUGIN_IMPORT_CAPABILITIES, path.join(pluginRoot, 'generated-capabilities.json'));",
+        ].join('\n'),
+        'skills/virtual-import-skill/SKILL.md': [
+          '---',
+          'name: virtual-import-skill',
+          'description: Validate an isolated CLI virtual registry import.',
+          '---',
+          '',
+          '# Virtual Import Skill',
+        ].join('\n'),
+        'skills/virtual-import-skill/agents/openai.yaml': [
+          'interface:',
+          '  display_name: "Virtual Import Skill"',
+          '  short_description: "Validate a CLI virtual import"',
+          'policy:',
+          '  allow_implicit_invocation: true',
+        ].join('\n'),
+      },
+    );
+    await runGit(tempRepo, ['init']);
+    await runGit(tempRepo, ['add', 'plugins', 'packages/cli/package.json', registryPath]);
+    await runGit(tempRepo, [
+      '-c',
+      'user.name=AW Test',
+      '-c',
+      'user.email=aw-test@example.invalid',
+      'commit',
+      '-m',
+      'CLI virtual registry baseline',
+    ]);
+
+    await fs.writeJson(registryPath, { generation: 'current' }, { spaces: 2 });
+    const checkerPath = createAwPluginScriptPath('check_plugin_versions.mjs');
+    let missingBumpError: { stdout?: string } | undefined;
+    try {
+      await execFileAsync('node', [
+        checkerPath,
+        'virtual-import-consumer',
+        '--json',
+        '--repo-root',
+        tempRepo,
+      ], {
+        cwd: repoRoot(),
+        env: { ...process.env, TMPDIR: checkerTempRoot },
+        maxBuffer: 20 * 1024 * 1024,
+      });
+    } catch (error) {
+      missingBumpError = error as { stdout?: string };
+    }
+    expect(JSON.parse(missingBumpError!.stdout!).checks[0]).toMatchObject({
+      status: 'missingVersionBump',
+      productionChanged: true,
+      changedPaths: expect.arrayContaining([
+        'codex/skills/virtual-import-skill/references/capabilities.json',
+      ]),
+    });
+
+    const manifest = await fs.readJson(manifestPath);
+    manifest.version = '0.2.0';
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+    const bumped = await execFileAsync('node', [
+      checkerPath,
+      'virtual-import-consumer',
+      '--json',
+      '--repo-root',
+      tempRepo,
+    ], {
+      cwd: repoRoot(),
+      env: { ...process.env, TMPDIR: checkerTempRoot },
+      maxBuffer: 20 * 1024 * 1024,
+    });
+    expect(JSON.parse(bumped.stdout).checks[0]).toMatchObject({
+      status: 'versionBumped',
+      productionChanged: true,
+      baseVersion: '0.1.0',
+      currentVersion: '0.2.0',
+    });
+    await expect(fs.readdir(checkerTempRoot)).resolves.toEqual([]);
+  });
+
   it('scaffolds compatibility.aw.minVersion and blocks values above the target catalog minimum', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-authoring-version-'));
     tempDirs.push(tempRoot);

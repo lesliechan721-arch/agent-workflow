@@ -5,8 +5,21 @@ import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const source = JSON.parse(await readFile(path.join(root, 'standards', 'rules.json'), 'utf8'));
-const check = process.argv.slice(2).includes('--check');
+function parseArgs(argv) {
+  let check = false;
+  let sourceRoot = root;
+  let outputRoot = root;
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === '--check') check = true;
+    else if (arg === '--source-root') sourceRoot = path.resolve(argv[++index] ?? '');
+    else if (arg === '--output-root') outputRoot = path.resolve(argv[++index] ?? '');
+    else throw new Error(`Unknown option: ${arg}`);
+  }
+  return { check, sourceRoot, outputRoot };
+}
+const { check, sourceRoot, outputRoot } = parseArgs(process.argv.slice(2));
+const source = JSON.parse(await readFile(path.join(sourceRoot, 'standards', 'rules.json'), 'utf8'));
 const views = [
   [
     'writing',
@@ -54,7 +67,7 @@ const outputs = new Map(
 );
 const stale = [];
 for (const [relative, content] of outputs) {
-  const target = path.join(root, relative);
+  const target = path.join(outputRoot, relative);
   if (check) {
     const actual = await readFile(target, 'utf8').catch(() => null);
     if (actual !== content) stale.push(relative);

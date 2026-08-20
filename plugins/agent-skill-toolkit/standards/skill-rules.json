@@ -1,6 +1,6 @@
 {
   "schemaVersion": 3,
-  "contentRuleSource": {"plugin":"agent-content-toolkit","minimumVersion":"0.4.0","path":"standards/rules.json","digest":"sha256:2e7a68bbbc675cae683b46252113365f9efeb4ac4e034770a9d563294c02cc65"},
+  "contentRuleSource": {"plugin":"agent-content-toolkit","minimumVersion":"0.5.0","path":"standards/rules.json","digest":"sha256:2e7a68bbbc675cae683b46252113365f9efeb4ac4e034770a9d563294c02cc65"},
   "contentRuleExtensions": [
     {"id":"agent.pointer","skill_author":{"action":"description 先表达用户意图；外部资源指针写明读取条件。"},"skill_review":{"check":"检查 description、resource pointer 与实际 branch 是否一致。"}},
     {"id":"agent.information-hierarchy","skill_author":{"action":"主 SKILL.md 只保留所有命中 branch 都需要的工作流和 gotcha。"},"skill_review":{"check":"审计 active path，而非只看包总大小。"}},

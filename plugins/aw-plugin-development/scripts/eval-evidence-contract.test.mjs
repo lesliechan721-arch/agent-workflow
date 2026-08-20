@@ -10,10 +10,13 @@ import { after, test } from 'node:test';
 
 const execFileAsync = promisify(execFile);
 const localPluginRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const pluginRoot = process.env.AW_PLUGIN_CONTEXT
-  ? JSON.parse(await readFile(process.env.AW_PLUGIN_CONTEXT, 'utf8')).sourceRoot
+const pluginContext = process.env.AW_PLUGIN_CONTEXT
+  ? JSON.parse(await readFile(process.env.AW_PLUGIN_CONTEXT, 'utf8'))
+  : null;
+const runtimeRoot = pluginContext?.platform
+  ? path.join(localPluginRoot, pluginContext.platform)
   : localPluginRoot;
-const reviewScripts = path.join(pluginRoot, 'skills', 'review-aw-plugin', 'scripts');
+const reviewScripts = path.join(runtimeRoot, 'skills', 'review-aw-plugin', 'scripts');
 const temporaryRoots = [];
 
 after(async () =>
@@ -24,7 +27,7 @@ function sha256(data) {
   return `sha256:${createHash('sha256').update(data).digest('hex')}`;
 }
 
-async function run(script, args = [], cwd = pluginRoot) {
+async function run(script, args = [], cwd = runtimeRoot) {
   return execFileAsync(process.execPath, [script, ...args], {
     cwd,
     encoding: 'utf8',

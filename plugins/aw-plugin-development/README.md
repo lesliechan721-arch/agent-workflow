@@ -3,8 +3,8 @@
 在兼容工作区中创建、维护和只读评审 AW 插件。目标插件由 `.agents-plugin/plugin.json`
 标识，不要求固定目录。
 
-Required: `agent-content-toolkit >= 0.4.0`, `agent-skill-toolkit >= 0.5.0`. Optional for real model
-Eval: `agent-skill-eval-runner >= 0.2.0` or another compatible provider.
+Required: `agent-content-toolkit >= 0.5.0`, `agent-skill-toolkit >= 0.7.0`. Optional for real model
+Eval: `agent-skill-eval-runner >= 0.3.0` or another compatible provider.
 
 | Skill              | 用途                                                                  |
 | ------------------ | --------------------------------------------------------------------- |

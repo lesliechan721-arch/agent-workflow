@@ -8,8 +8,17 @@ export {
 } from '../src/generators/local-plugin.js';
 export type {
   PluginBundleBuildMode,
+  PreparedPluginRuntimeContext,
   PluginStagingRunner,
+  RuntimeImportProvenance,
+  SkillRuntimeFileProvenance,
 } from '../src/generators/local-plugin.js';
+export {
+  createCatalogRuntimeImportResolver,
+} from '../src/utils/catalog-runtime-projection.js';
+export type {
+  CatalogRuntimeImportResolver,
+} from '../src/utils/catalog-runtime-projection.js';
 export {
   buildLifecycleSpawnEnv,
   calculateFileDigest,

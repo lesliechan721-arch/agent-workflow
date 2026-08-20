@@ -1,13 +1,15 @@
 #!/usr/bin/env node
+
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const run = spawnSync(process.execPath, [path.join(root, 'scripts/generate-standard-views.mjs'), '--check'], {
+const result = spawnSync(process.execPath, [path.join(root, 'scripts/generate-standard-views.mjs')], {
+  cwd: root,
   encoding: 'utf8',
 });
-if (run.stdout) process.stdout.write(run.stdout);
-if (run.stderr) process.stderr.write(run.stderr);
-process.exit(run.status ?? 2);
+if (result.stdout) process.stdout.write(result.stdout);
+if (result.stderr) process.stderr.write(result.stderr);
+process.exit(result.status ?? 2);
