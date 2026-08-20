@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "planId": "replace-me",
+  "target": {"name":"example-skill","path":"./example-skill","digest":"sha256:0000000000000000000000000000000000000000000000000000000000000000"},
+  "cases": {"paths":["./example-skill/evals/trigger-cases.json"],"corpusDigest":"sha256:0000000000000000000000000000000000000000000000000000000000000000"},
+  "audit": {"path":"./eval-audit-result.json","digest":"sha256:0000000000000000000000000000000000000000000000000000000000000000","targetSkillDigest":"sha256:0000000000000000000000000000000000000000000000000000000000000000","caseCorpusDigest":"sha256:0000000000000000000000000000000000000000000000000000000000000000","validity":"pass"},
+  "provider": {"id":"command","command":["node","provider.mjs","{prompt}"],"cwd":null,"env":{},"capabilitiesPath":"./eval-runtime-capabilities.json","capabilitiesDigest":"sha256:a7c8469db44a5648676068f15cb6a4a06a87704fd8d51cd3ba4663734e144b71","inheritEnvironment":false},
+  "configurations": [{"id":"with-skill","skillMode":"with-skill","env":{}}],
+  "runsPerCase": 3,
+  "timeoutMs": 180000,
+  "outputRoot": "./eval-output",
+  "capture": {"outputs":true,"trace":false,"timing":true,"usage":false}
+}
