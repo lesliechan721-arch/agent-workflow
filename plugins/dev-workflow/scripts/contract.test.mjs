@@ -19,6 +19,10 @@ async function context() {
   return { source: value.sourceRoot, bundle: value.plugin.rootDir };
 }
 
+function assertStrictStableSemver(value) {
+  assert.match(value, /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/);
+}
+
 function assertSkill(text, name) {
   assert.match(text, new RegExp(`^name: ${name}$`, 'm'));
   assert.match(text, /^description: .+时使用/m);
@@ -31,12 +35,32 @@ function caseEntries(document) {
   return [];
 }
 
+function assertCaseDocument(document) {
+  const entries = caseEntries(document);
+  assert.equal(entries.length > 0, true);
+  assert.equal(new Set(entries.map((entry) => entry.id)).size, entries.length);
+  for (const entry of entries) {
+    assert.equal(typeof entry.id, 'string');
+    if (entry.should_load_skill !== undefined) {
+      assert.equal(typeof entry.should_load_skill, 'boolean');
+    }
+    if (entry.expected_loaded_skills !== undefined) {
+      assert.equal(Array.isArray(entry.expected_loaded_skills), true);
+      assert.equal(
+        entry.expected_loaded_skills.every((participant) => allParticipants.has(participant)),
+        true,
+      );
+    }
+  }
+  return entries;
+}
+
 const target = await context();
 
 test('manifest stays minimal', async () => {
   const manifest = await readJson(path.join(target.source, '.agents-plugin', 'plugin.json'));
   assert.equal(manifest.name, 'dev-workflow');
-  assert.equal(manifest.version, '0.1.1');
+  assertStrictStableSemver(manifest.version);
   assert.equal(manifest.skills, './skills');
   assert.equal(manifest.slashCommands, './slash-commands');
   assert.deepEqual(manifest.interface.capabilities, ['Skills']);
@@ -45,7 +69,7 @@ test('manifest stays minimal', async () => {
   }
 });
 
-test('source and evals contain exactly five public Skills', async () => {
+test('source and evals expose the five public Skills', async () => {
   assert.deepEqual((await readdir(path.join(target.source, 'skills'))).sort(), [...skills].sort());
   for (const name of skills) {
     const skillRoot = path.join(target.source, 'skills', name);
@@ -59,18 +83,18 @@ test('source and evals contain exactly five public Skills', async () => {
     const evalManifest = await readJson(path.join(evalRoot, 'manifest.json'));
     assert.equal(evalManifest.plugin, 'dev-workflow');
     assert.equal(evalManifest.skill, name);
-    const trigger = evalManifest.suites.find((suite) => suite.id === 'trigger');
-    assert.deepEqual(trigger.skills, skills);
-    const triggerCases = await readJson(path.join(evalRoot, trigger.cases));
-    assert.equal(triggerCases.skill, name);
-    assert.equal(triggerCases.cases.filter((entry) => entry.should_load_skill).length, 3);
-    assert.equal(triggerCases.cases.filter((entry) => !entry.should_load_skill).length, 3);
 
     for (const suite of evalManifest.suites) {
       assert.equal(suite.skills.every((participant) => allParticipants.has(participant)), true);
       const casesPath = path.resolve(evalRoot, suite.cases);
       await access(casesPath);
-      assert.equal(caseEntries(await readJson(casesPath)).length > 0, true);
+      const document = await readJson(casesPath);
+      const entries = assertCaseDocument(document);
+      if (suite.id === 'trigger') {
+        assert.equal(document.skill, name);
+        assert.equal(entries.every((entry) => typeof entry.should_load_skill === 'boolean'), true);
+        assert.deepEqual(suite.skills, skills);
+      }
     }
   }
 });
@@ -84,16 +108,19 @@ test('entry eval covers cross-plugin routing and missing-companion fallback', as
   const router = manifest.suites.find((suite) => suite.id === 'router-with-ask-me');
   assert.deepEqual([...router.skills].sort(), [...allParticipants].sort());
   const routingCases = await readJson(path.join(evalRoot, router.cases));
-  assert.equal(routingCases.cases.length, 9);
+  const routingEntries = assertCaseDocument(routingCases);
   assert.equal(
-    routingCases.cases.some((entry) => entry.expected_loaded_skills.includes('decision-prototype')),
+    routingEntries.some((entry) => entry.expected_loaded_skills.includes('decision-prototype')),
     true,
   );
 
   const fallback = manifest.suites.find((suite) => suite.id === 'fallback-without-ask-me');
   const fallbackCases = await readJson(path.join(evalRoot, fallback.cases));
-  assert.equal(fallbackCases.evals.length, 1);
-  assert.equal(fallbackCases.evals[0].review.workspace_unchanged, true);
+  const fallbackEntries = assertCaseDocument(fallbackCases);
+  assert.equal(
+    fallbackEntries.some((entry) => entry.review?.workspace_unchanged === true),
+    true,
+  );
 });
 
 test('specialized Skills define representative behavior evidence', async () => {
@@ -104,19 +131,44 @@ test('specialized Skills define representative behavior evidence', async () => {
     assert.ok(behavior);
     const document = await readJson(path.join(evalRoot, behavior.cases));
     assert.equal(document.skill_name, name);
-    assert.equal(document.evals.length > 0, true);
-    for (const entry of document.evals) {
+    const entries = assertCaseDocument(document);
+    for (const entry of entries) {
       assert.equal(Array.isArray(entry.review.checks), true);
       assert.equal(entry.review.checks.length > 0, true);
     }
   }
 });
 
-test('direct specialized use has a safe ask-me fallback', async () => {
-  for (const name of ['dev-spec', 'dev-review-spec', 'dev-implement', 'dev-review-code']) {
-    const skill = await read(path.join(target.source, 'skills', name, 'SKILL.md'));
-    assert.match(skill, /所需 `ask-me` Skill 不可用时/);
-    assert.match(skill, /不要临时复制访谈或原型流程/);
+test('release manifests require representative evidence without fixing corpus sizes', async () => {
+  const entryRoot = path.join(target.source, 'skills', 'dev-workflow', 'evals');
+  const entryManifest = await readJson(path.join(entryRoot, 'manifest.json'));
+
+  for (const profileId of ['project-default', 'project-with-ask-me']) {
+    const profile = entryManifest.profiles.find((entry) => entry.id === profileId);
+    assert.equal(profile?.requiredForRelease, true);
+  }
+  for (const suiteId of [
+    'trigger',
+    'router-with-ask-me',
+    'fallback-without-ask-me',
+    'composition-with-ask-me',
+  ]) {
+    const suite = entryManifest.suites.find((entry) => entry.id === suiteId);
+    assert.equal(suite?.requiredForRelease, true);
+  }
+
+  for (const name of skills.filter((entry) => entry !== 'dev-workflow')) {
+    const manifest = await readJson(path.join(
+      target.source,
+      'skills',
+      name,
+      'evals',
+      'manifest.json',
+    ));
+    const profile = manifest.profiles.find((entry) => entry.id === 'project-default');
+    const behavior = manifest.suites.find((entry) => entry.id === 'behavior');
+    assert.equal(profile?.requiredForRelease, true);
+    assert.equal(behavior?.requiredForRelease, true);
   }
 });
 

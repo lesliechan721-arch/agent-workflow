@@ -13,7 +13,7 @@
         }
       ],
       "runModel": true,
-      "requiredForRelease": false
+      "requiredForRelease": true
     }
   ],
   "suites": [
@@ -60,7 +60,7 @@
       ],
       "defaultRuns": 1,
       "releaseSplits": [],
-      "requiredForRelease": false,
+      "requiredForRelease": true,
       "perRunTimeoutMs": 300000
     }
   ]

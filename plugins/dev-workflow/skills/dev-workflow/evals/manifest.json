@@ -13,7 +13,7 @@
         }
       ],
       "runModel": true,
-      "requiredForRelease": false
+      "requiredForRelease": true
     },
     {
       "id": "project-with-ask-me",
@@ -29,7 +29,7 @@
         }
       ],
       "runModel": true,
-      "requiredForRelease": false
+      "requiredForRelease": true
     }
   ],
   "suites": [
@@ -56,7 +56,7 @@
       "releaseSplits": [
         "validation"
       ],
-      "requiredForRelease": false,
+      "requiredForRelease": true,
       "perRunTimeoutMs": 180000
     },
     {
@@ -84,7 +84,7 @@
         "validation",
         "sanity"
       ],
-      "requiredForRelease": false,
+      "requiredForRelease": true,
       "minimumPassRate": 0.9,
       "perRunTimeoutMs": 180000
     },
@@ -105,7 +105,30 @@
       ],
       "defaultRuns": 1,
       "releaseSplits": [],
-      "requiredForRelease": false,
+      "requiredForRelease": true,
+      "perRunTimeoutMs": 300000
+    },
+    {
+      "id": "composition-with-ask-me",
+      "kind": "conversation",
+      "skills": [
+        "dev-workflow",
+        "dev-spec",
+        "dev-review-spec",
+        "dev-implement",
+        "dev-review-code",
+        "requirements-clarifier",
+        "decision-grill",
+        "decision-prototype"
+      ],
+      "cases": "./composition-behavior-cases.json",
+      "isolation": "strict",
+      "profiles": [
+        "project-with-ask-me"
+      ],
+      "defaultRuns": 1,
+      "releaseSplits": [],
+      "requiredForRelease": true,
       "perRunTimeoutMs": 300000
     }
   ]
