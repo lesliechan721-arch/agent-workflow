@@ -1,6 +1,6 @@
 {
   "name": "agent-content-toolkit",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Create and review agent-facing documents with minimal context load, clear pointers, and proportionate control.",
   "compatibility": {
     "aw": {
@@ -11,7 +11,8 @@
   "scripts": {
     "tests": {
       "node": [
-        "./scripts/contract.test.mjs"
+        "./scripts/contract.test.mjs",
+        "./scripts/reference-audit-contract.test.mjs"
       ]
     }
   },

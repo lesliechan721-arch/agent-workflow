@@ -1,6 +1,6 @@
 # Source map
 
-Last reviewed: 2026-08-19.
+Last reviewed: 2026-08-20.
 
 ## Portable specification and official guidance
 
@@ -16,8 +16,8 @@ Last reviewed: 2026-08-19.
 - `agent-skill-toolkit.review-contract`
 - `agent-skill-toolkit.eval-contract`
 
-## Third-party heuristic
+## Third-party heuristic lens
 
 - https://github.com/mattpocock/skills/tree/main/skills/productivity/writing-for-agents
 
-规则来源标签与 ReviewResult finding evidence 类型不同。Official guidance 与第三方 heuristic 可以影响设计评分，但不能单独支持 P0/P1。
+Rule evidence classes and ReviewResult finding evidence are distinct. Official guidance can support quality assessment but does not automatically establish a portable hard requirement. The third-party source only informs pointer, information hierarchy, co-location, completion criteria, composition and pruning; it cannot by itself create a P0/P1 finding.

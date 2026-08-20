@@ -9,7 +9,7 @@
 - **action：** 先写真正不同的触发 branch，再压缩为短指针。
 - **completion：** 每个外部材料都有可判定的到达条件。
 
-Evidence: official-guidance; sources: agent-skills.best-practices, writing-for-agents
+Evidence: official-guidance; sources: agent-skills.best-practices; heuristic lenses: writing-for-agents
 
 ## `agent.information-hierarchy`
 
@@ -18,7 +18,7 @@ Evidence: official-guidance; sources: agent-skills.best-practices, writing-for-a
 - **action：** 先按 branch 做信息层级图，再写正文。
 - **completion：** 典型路径只携带该路径需要的内容。
 
-Evidence: official-guidance; sources: agent-skills.best-practices, writing-for-agents
+Evidence: official-guidance; sources: agent-skills.best-practices; heuristic lenses: writing-for-agents
 
 ## `agent.completion-boundary`
 
@@ -27,7 +27,7 @@ Evidence: official-guidance; sources: agent-skills.best-practices, writing-for-a
 - **action：** 只为真正必要、需要持续跟踪的步骤写 done/not-done 条件。
 - **completion：** 后续步骤不能用模糊标准诱导提前结束。
 
-Evidence: official-guidance; sources: agent-skills.best-practices, writing-for-agents
+Evidence: official-guidance; sources: agent-skills.best-practices; heuristic lenses: writing-for-agents
 
 ## `agent.minimum-control`
 
@@ -36,7 +36,7 @@ Evidence: official-guidance; sources: agent-skills.best-practices, writing-for-a
 - **action：** 先写最小行为合同，再增加能说明边际价值的约束。
 - **completion：** 每个强制行为块都能说明删除后增加的目标失败。
 
-Evidence: official-guidance; sources: agent-skills.best-practices, writing-for-agents
+Evidence: official-guidance; sources: agent-skills.best-practices; heuristic lenses: writing-for-agents
 
 ## `agent.source-of-truth`
 
@@ -45,7 +45,7 @@ Evidence: official-guidance; sources: agent-skills.best-practices, writing-for-a
 - **action：** 删除一条命令即可查到的低价值复述。
 - **completion：** 易变事实有权威来源或改为 environment lookup。
 
-Evidence: official-guidance; sources: agent-skills.best-practices, writing-for-agents
+Evidence: official-guidance; sources: agent-skills.best-practices; heuristic lenses: writing-for-agents
 
 ## `agent.co-location`
 
@@ -54,4 +54,4 @@ Evidence: official-guidance; sources: agent-skills.best-practices, writing-for-a
 - **action：** 按概念聚合内容，不按历史追加位置堆叠。
 - **completion：** 读一个权威位置即可得到完整规则。
 
-Evidence: official-guidance; sources: agent-skills.best-practices, writing-for-agents
+Evidence: official-guidance; sources: agent-skills.best-practices; heuristic lenses: writing-for-agents
