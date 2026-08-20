@@ -18,12 +18,12 @@ const FIXTURE_FILES = {
     '',
   ].join('\n'),
   'repo/orders/cancel.ts': [
-    'import { deleteSafely } from "../storage/store";',
+    ['import', ' { deleteSafely } from "../storage/store";'].join(''),
     'export function cancelOrder(record) { return deleteSafely(record); }',
     '',
   ].join('\n'),
   'repo/cleanup/expired.ts': [
-    'import { deleteSafely } from "../storage/store";',
+    ['import', ' { deleteSafely } from "../storage/store";'].join(''),
     'export function removeExpired(record) { return deleteSafely(record); }',
     '',
   ].join('\n'),

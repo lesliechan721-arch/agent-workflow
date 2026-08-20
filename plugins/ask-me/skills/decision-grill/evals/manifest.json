@@ -58,7 +58,6 @@
       "id": "router",
       "kind": "trigger",
       "skills": [
-        "requirements-clarifier",
         "decision-grill",
         "decision-prototype"
       ],
@@ -84,7 +83,6 @@
       "id": "behavior",
       "kind": "conversation",
       "skills": [
-        "requirements-clarifier",
         "decision-grill",
         "decision-prototype"
       ],
@@ -102,7 +100,6 @@
       "id": "behavior-diagnostic",
       "kind": "conversation",
       "skills": [
-        "requirements-clarifier",
         "decision-grill",
         "decision-prototype"
       ],

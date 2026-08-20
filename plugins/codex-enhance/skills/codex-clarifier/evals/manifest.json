@@ -1,12 +1,28 @@
 {
   "schemaVersion": 2,
-  "plugin": "ask-me",
-  "skill": "requirements-clarifier",
+  "plugin": "codex-enhance",
+  "skill": "codex-clarifier",
   "profiles": [
     {
       "id": "project-default",
       "scope": "project",
       "plugins": [
+        {
+          "name": "codex-enhance",
+          "config": {}
+        }
+      ],
+      "runModel": true,
+      "requiredForRelease": true
+    },
+    {
+      "id": "project-composition",
+      "scope": "project",
+      "plugins": [
+        {
+          "name": "codex-enhance",
+          "config": {}
+        },
         {
           "name": "ask-me",
           "config": {}
@@ -20,7 +36,7 @@
       "scope": "user",
       "plugins": [
         {
-          "name": "ask-me",
+          "name": "codex-enhance",
           "config": {}
         }
       ],
@@ -33,9 +49,9 @@
       "id": "trigger",
       "kind": "trigger",
       "skills": [
-        "requirements-clarifier"
+        "codex-clarifier"
       ],
-      "cases": "./requirements-clarifier-trigger-cases.json",
+      "cases": "./codex-clarifier-trigger-cases.json",
       "fixtureModule": "./trigger-fixture.mjs",
       "observeSpawnAgent": false,
       "isolation": "strict",
@@ -58,11 +74,11 @@
       "id": "router",
       "kind": "trigger",
       "skills": [
-        "requirements-clarifier",
+        "codex-clarifier",
         "decision-grill",
         "decision-prototype"
       ],
-      "cases": "./requirements-clarifier-routing-cases.json",
+      "cases": "./codex-clarifier-routing-cases.json",
       "fixtureModule": "./trigger-fixture.mjs",
       "observeSpawnAgent": false,
       "isolation": "strict",
@@ -70,7 +86,7 @@
       "minimumPassRate": 0.9,
       "forbidMultipleSkillLoads": true,
       "profiles": [
-        "project-default"
+        "project-composition"
       ],
       "defaultRuns": 10,
       "releaseSplits": [
@@ -84,16 +100,16 @@
       "id": "behavior",
       "kind": "conversation",
       "skills": [
-        "requirements-clarifier",
+        "codex-clarifier",
         "decision-grill",
         "decision-prototype"
       ],
-      "cases": "./requirements-clarifier-release-evals.json",
+      "cases": "./codex-clarifier-release-evals.json",
       "isolation": "strict",
       "profiles": [
-        "project-default"
+        "project-composition"
       ],
-      "defaultRuns": 1,
+      "defaultRuns": 3,
       "releaseSplits": [],
       "requiredForRelease": true,
       "perRunTimeoutMs": 300000
@@ -102,14 +118,14 @@
       "id": "behavior-diagnostic",
       "kind": "conversation",
       "skills": [
-        "requirements-clarifier",
+        "codex-clarifier",
         "decision-grill",
         "decision-prototype"
       ],
-      "cases": "./requirements-clarifier-evals.json",
+      "cases": "./codex-clarifier-evals.json",
       "isolation": "strict",
       "profiles": [
-        "project-default"
+        "project-composition"
       ],
       "defaultRuns": 1,
       "releaseSplits": [],
