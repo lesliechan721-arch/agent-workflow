@@ -36,26 +36,14 @@
     {
       "id": "trigger",
       "kind": "trigger",
-      "skills": [
-        "dev-workflow",
-        "dev-spec",
-        "dev-review-spec",
-        "dev-implement",
-        "dev-review-code"
-      ],
+      "skills": ["dev-workflow", "dev-spec", "dev-review-spec", "dev-implement", "dev-review-code"],
       "cases": "./trigger-cases.json",
       "observeSpawnAgent": false,
       "isolation": "strict",
-      "strictNegativeSplits": [
-        "validation"
-      ],
-      "profiles": [
-        "project-default"
-      ],
+      "strictNegativeSplits": ["validation"],
+      "profiles": ["project-default"],
       "defaultRuns": 3,
-      "releaseSplits": [
-        "validation"
-      ],
+      "releaseSplits": ["validation"],
       "requiredForRelease": true,
       "perRunTimeoutMs": 180000
     },
@@ -68,7 +56,6 @@
         "dev-review-spec",
         "dev-implement",
         "dev-review-code",
-        "requirements-clarifier",
         "decision-grill",
         "decision-prototype"
       ],
@@ -76,14 +63,9 @@
       "observeSpawnAgent": false,
       "isolation": "strict",
       "strictNegativeSplits": [],
-      "profiles": [
-        "project-with-ask-me"
-      ],
+      "profiles": ["project-with-ask-me"],
       "defaultRuns": 3,
-      "releaseSplits": [
-        "validation",
-        "sanity"
-      ],
+      "releaseSplits": ["validation", "sanity"],
       "requiredForRelease": true,
       "minimumPassRate": 0.9,
       "perRunTimeoutMs": 180000
@@ -91,18 +73,10 @@
     {
       "id": "fallback-without-ask-me",
       "kind": "conversation",
-      "skills": [
-        "dev-workflow",
-        "dev-spec",
-        "dev-review-spec",
-        "dev-implement",
-        "dev-review-code"
-      ],
+      "skills": ["dev-workflow", "dev-spec", "dev-review-spec", "dev-implement", "dev-review-code"],
       "cases": "./fallback-behavior-cases.json",
       "isolation": "strict",
-      "profiles": [
-        "project-default"
-      ],
+      "profiles": ["project-default"],
       "defaultRuns": 1,
       "releaseSplits": [],
       "requiredForRelease": true,
@@ -117,15 +91,12 @@
         "dev-review-spec",
         "dev-implement",
         "dev-review-code",
-        "requirements-clarifier",
         "decision-grill",
         "decision-prototype"
       ],
       "cases": "./composition-behavior-cases.json",
       "isolation": "strict",
-      "profiles": [
-        "project-with-ask-me"
-      ],
+      "profiles": ["project-with-ask-me"],
       "defaultRuns": 1,
       "releaseSplits": [],
       "requiredForRelease": true,

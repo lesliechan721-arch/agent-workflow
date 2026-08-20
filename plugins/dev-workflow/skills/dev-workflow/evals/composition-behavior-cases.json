@@ -47,9 +47,7 @@
         "src/approval-page.ts": "export const approvalLayout = 'existing-production-layout';\n"
       },
       "review": {
-        "platforms": [
-          "codex"
-        ],
+        "platforms": ["codex"],
         "clean_session": true,
         "workspace_unchanged": false,
         "allowed_workspace_changes": [
@@ -60,36 +58,17 @@
           {
             "path": "prototypes/approval-layout/index.html",
             "exists": true,
-            "contains": [
-              "单栏",
-              "双栏"
-            ]
+            "contains": ["单栏", "双栏"]
           },
           {
             "path": "prototypes/approval-layout/decision.md",
             "exists": true,
-            "contains": [
-              "双栏",
-              "审批历史",
-              "移动端"
-            ]
+            "contains": ["双栏", "审批历史", "移动端"]
           },
           {
             "path": "docs/specs/approval-layout.md",
             "exists": true,
-            "contains": [
-              "双栏",
-              "审批历史",
-              "移动端",
-              "Agent discretion"
-            ]
-          },
-          {
-            "path": "src/approval-page.ts",
-            "exists": true,
-            "contains": [
-              "existing-production-layout"
-            ]
+            "contains": ["双栏", "审批历史", "移动端", "Agent discretion"]
           }
         ],
         "checks": [
@@ -97,68 +76,6 @@
           "Spec 只综合用户已确认的双栏、审批历史和移动端决定，不发明新的材料要求",
           "不加载 dev-implement，不修改 src/approval-page.ts，也不把原型升级为生产实现",
           "最终结果停在轻量 Spec，并保留局部实现自由"
-        ]
-      }
-    },
-    {
-      "id": "spec-review-to-local-clarification",
-      "eval_type": "behavior",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "spec-review-to-clarification-handoff",
-      "unit_under_test": "full-skill",
-      "preconditions": {
-        "workflow_explicitly_requested": true,
-        "ask_me_installed": true,
-        "spec_exists": true,
-        "material_decision_unresolved": true,
-        "review_is_read_only": true
-      },
-      "oracle": {
-        "rationale": "导出范围会改变用户可见结果和验收；规格审查应先判定 blocked，再把单一局部缺口交给 requirements-clarifier，并保持 Spec 只读。",
-        "rule_refs": [
-          "dev-workflow/SKILL.md#路由",
-          "dev-review-spec/SKILL.md#工作流",
-          "requirements-clarifier/SKILL.md#处理不确定项"
-        ],
-        "confidence": "high",
-        "allowed_variance": "审查措辞和问题形式可以不同；必须保持只读，只询问导出范围，不升级为系统决策访谈或实现。",
-        "minimal_counterexample": "若 Spec 已明确只导出当前筛选结果，则审查无需进入 requirements-clarifier。"
-      },
-      "prompt": "使用 /dev 只读审查 docs/specs/order-export.md 是否可以批准。Spec 没说明导出全部订单还是当前筛选结果，这会改变用户看到的结果和验收；ask-me 已安装。先报告审查结论，再只处理这个材料缺口。不要修改任何文件。",
-      "scripted_replies": [
-        {
-          "expected_question_count": 1,
-          "answers_by_index": [
-            "只导出当前筛选结果，并在空结果时生成只有表头的 CSV。请记录为已确认决定，但不要修改 Spec。"
-          ],
-          "unexpected_question_answer": "只确认导出范围；其它问题请保持未解决。"
-        }
-      ],
-      "expected_output": "输出 blocked，说明导出范围是材料缺口，使用 requirements-clarifier 只问该问题；收到回答后记录已确认决定并要求更新、重新审查 Spec，工作区保持不变。",
-      "workspace_files": {
-        "docs/specs/order-export.md": "# Order export Spec\n\n## 结果\n提供 CSV 导出。\n\n## Open decisions\n- 导出全部订单还是当前筛选结果：未决定。\n"
-      },
-      "review": {
-        "platforms": [
-          "codex"
-        ],
-        "clean_session": true,
-        "workspace_unchanged": true,
-        "artifacts": [
-          {
-            "path": "docs/specs/order-export.md",
-            "exists": true,
-            "contains": [
-              "导出全部订单还是当前筛选结果：未决定"
-            ]
-          }
-        ],
-        "checks": [
-          "先由 dev-review-spec 报告 blocked，再把局部材料缺口交给 requirements-clarifier",
-          "只询问导出范围，不加载 decision-grill、decision-prototype 或 dev-implement",
-          "收到回答后准确保留当前筛选结果和空结果只有表头的决定",
-          "不修改 Spec 或其它文件，并说明需要更新后重新审查"
         ]
       }
     }

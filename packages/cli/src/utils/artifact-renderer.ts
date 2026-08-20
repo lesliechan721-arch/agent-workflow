@@ -190,6 +190,8 @@ async function applyArtifactConfigLayer(options: {
 }
 
 export async function resolveArtifactRenderConfig(options: {
+  sourceId?: string;
+  sourceIdentity?: string;
   pluginName?: string;
   manifest: PluginManifestSource;
   scope: Scope;
@@ -199,6 +201,8 @@ export async function resolveArtifactRenderConfig(options: {
   const pluginName = options.pluginName ?? options.manifest.name;
   if (options.scope === 'project') {
     const projectConfig = await resolveProjectArtifactRenderConfig({
+      sourceId: options.sourceId,
+      sourceIdentity: options.sourceIdentity,
       pluginName,
       manifest: options.manifest,
       cwd: options.cwd,
@@ -221,12 +225,16 @@ export async function resolveArtifactRenderConfig(options: {
   const projectRoot = resolveAwProjectRoot(options.cwd);
   const [userStore, projectStore] = await Promise.all([
     readPluginConfigStore({
+      sourceId: options.sourceId,
+      sourceIdentity: options.sourceIdentity,
       pluginName,
       scope: 'user',
       cwd: options.cwd,
       env: options.env,
     }),
     readPluginConfigStore({
+      sourceId: options.sourceId,
+      sourceIdentity: options.sourceIdentity,
       pluginName,
       scope: 'project',
       cwd: options.cwd,
@@ -345,6 +353,8 @@ export async function resolveArtifactRendererTarget(
 }
 
 export async function writeArtifactRendererContext(options: {
+  sourceId?: string;
+  sourceIdentity?: string;
   target: ArtifactRendererTarget;
   event: ArtifactRenderEvent;
   platform: PlatformName;
@@ -369,6 +379,8 @@ export async function writeArtifactRendererContext(options: {
   }
 
   const config = await resolveArtifactRenderConfig({
+    sourceId: options.sourceId,
+    sourceIdentity: options.sourceIdentity,
     pluginName: options.target.sourceManifest.name,
     manifest: options.target.sourceManifest,
     scope: options.scope,
@@ -548,6 +560,8 @@ export async function runArtifactRenderer(options: {
   }
 
   const writtenContext = await writeArtifactRendererContext({
+    sourceId: options.plugin.sourceId,
+    sourceIdentity: options.plugin.sourceIdentity,
     target,
     event,
     platform: options.platform,

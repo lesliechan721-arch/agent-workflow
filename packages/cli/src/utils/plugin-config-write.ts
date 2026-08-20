@@ -17,6 +17,7 @@ import type {
   Scope,
 } from '../types.js';
 import { getDefaultNativeCliRunner, type NativeCliRunner } from './native-cli.js';
+import { resolveAwHome } from './paths.js';
 import { hasCodexProjectManagedArtifacts } from './codex-project-surface.js';
 import {
   assertSafePluginConfigSegment,
@@ -29,6 +30,8 @@ import {
   resolveEffectivePluginConfig,
   resolvePluginConfigSchemaAccess,
   summarizeEffectivePluginConfig,
+  withPluginConfigTransactionLease,
+  writePluginConfigStore,
 } from './plugin-config.js';
 import {
   assertProjectSharedConfigPathVisible,
@@ -56,7 +59,7 @@ export interface PluginConfigWriteReceipt {
   updatedKeys: string[];
   removedKeys: string[];
   effective: ReturnType<typeof summarizeEffectivePluginConfig>;
-  configWrite: 'succeeded';
+  configWrite: 'succeeded' | 'rolledBack' | 'rollbackFailed';
   overallState: ReceiptOverallState;
   targetResults: ReceiptTargetResult[];
   applySkippedReason?: ConfigApplySkippedReason;
@@ -75,7 +78,7 @@ export interface ResetPluginConfigWriteReceipt {
   deleted: boolean;
   removedKeys: string[];
   effective?: ReturnType<typeof summarizeEffectivePluginConfig>;
-  configWrite: 'succeeded';
+  configWrite: 'succeeded' | 'rolledBack' | 'rollbackFailed';
   overallState: ReceiptOverallState;
   targetResults: ReceiptTargetResult[];
   applySkippedReason?: ConfigApplySkippedReason;
@@ -101,6 +104,34 @@ function uniqueInOrder(values: string[]): string[] {
 
 function collectRemovedConfigKeys(values: Record<string, unknown>): string[] {
   return uniqueInOrder(Object.keys(values));
+}
+
+async function restorePluginConfigStore(options: {
+  sourceId?: string;
+  sourceIdentity?: string;
+  pluginName: string;
+  scope: Scope;
+  projectLayer: 'shared' | 'local';
+  cwd: string;
+  env?: NodeJS.ProcessEnv;
+  snapshot: { exists: boolean; values: Record<string, unknown> };
+}): Promise<void> {
+  const target = {
+    ...(options.sourceId ? {
+      sourceId: options.sourceId,
+      sourceIdentity: options.sourceIdentity,
+    } : {}),
+    pluginName: options.pluginName,
+    scope: options.scope,
+    projectLayer: options.projectLayer,
+    cwd: options.cwd,
+    env: options.env,
+  };
+  if (options.snapshot.exists) {
+    await writePluginConfigStore({ ...target, values: options.snapshot.values });
+  } else {
+    await resetPluginConfigStore(target);
+  }
 }
 
 function targetKey(target: ReceiptTargetIdentity): string {
@@ -174,6 +205,10 @@ async function discoverVisibleTargets(options: {
           scope,
           nativeCliRunner: options.nativeCliRunner,
           nativeFailureMode: 'ignore',
+          marketplaceName: options.plugin.marketplaceName,
+          marketplaceRoot: options.plugin.sourceId
+            ? path.join(resolveAwHome(options.env), 'marketplaces', options.plugin.sourceId)
+            : undefined,
         });
         if (!names.includes(options.pluginName)) continue;
         namedTargets.push(target);
@@ -190,13 +225,22 @@ async function discoverVisibleTargets(options: {
 
   if (namedTargets.length === 0) return { targets, failures };
   const catalog = options.rebuildRuntime?.catalogResolution ?? {
-    rootDir: options.plugin.rootDir,
+    rootDir: options.plugin.sourceId
+      ? path.resolve(options.plugin.rootDir, '..', '..')
+      : options.plugin.rootDir,
     source: 'local' as const,
   };
 
   for (const target of namedTargets) {
     try {
       const inspected = await inspectRebuildTarget({
+        sourceId: options.plugin.sourceId,
+        sourceIdentity: options.plugin.sourceIdentity,
+        pluginId: options.plugin.pluginId,
+        marketplaceName: options.plugin.marketplaceName,
+        marketplaceRoot: options.plugin.sourceId
+          ? path.join(resolveAwHome(options.env), 'marketplaces', options.plugin.sourceId)
+          : undefined,
         plugin: options.plugin,
         platform: target.platform,
         scope: target.scope,
@@ -247,11 +291,10 @@ async function reinstallVisibleTargets(options: {
   nativeCliRunner?: NativeCliRunner;
   reinstallCommandImpl?: ReinstallCommand;
   rebuildRuntime?: RebuildCommandRuntime;
-  catalogChannel?: string;
-  catalogVersion?: string;
 }): Promise<{
   overallState: ReceiptOverallState;
   targetResults: ReceiptTargetResult[];
+  attemptedTargets: ReceiptTargetIdentity[];
   applySkippedReason?: ConfigApplySkippedReason;
 }> {
   const nativeCliRunner = options.nativeCliRunner ?? getDefaultNativeCliRunner();
@@ -267,9 +310,11 @@ async function reinstallVisibleTargets(options: {
       })
     : { targets: dedupeTargets(options.applyTargets), failures: [] };
   const targetResults = [...discovered.failures];
+  const attemptedTargets: ReceiptTargetIdentity[] = [];
   const reinstall = options.reinstallCommandImpl ?? reinstallWriteCommand;
 
   for (const target of discovered.targets) {
+    attemptedTargets.push(target);
     try {
       const result = await reinstall(
         [options.plugin.manifest.name],
@@ -277,13 +322,28 @@ async function reinstallVisibleTargets(options: {
           cwd: options.cwd,
           platform: target.platform,
           scope: target.scope,
-          ...(options.catalogChannel ? { catalogChannel: options.catalogChannel } : {}),
-          ...(options.catalogVersion ? { catalogVersion: options.catalogVersion } : {}),
         },
         {
           ...options.rebuildRuntime,
           env: options.env,
           nativeCliRunner,
+          ...(options.plugin.sourceId ? {
+            catalogResolution: {
+              rootDir: path.resolve(options.plugin.rootDir, '..', '..'),
+              source: 'local' as const,
+            },
+            namespacedTarget: {
+              sourceId: options.plugin.sourceId,
+              sourceIdentity: options.plugin.sourceIdentity!,
+              pluginId: options.plugin.pluginId!,
+              marketplaceName: options.plugin.marketplaceName!,
+              marketplaceRoot: path.join(
+                resolveAwHome(options.env),
+                'marketplaces',
+                options.plugin.sourceId,
+              ),
+            },
+          } : {}),
         },
       );
       targetResults.push(toConfigApplyTargetResult(target, result));
@@ -303,9 +363,105 @@ async function reinstallVisibleTargets(options: {
   return {
     overallState,
     targetResults,
+    attemptedTargets,
     ...(discovered.targets.length === 0 && discovered.failures.length === 0
       ? { applySkippedReason: 'noVisibleTarget' as const }
       : {}),
+  };
+}
+
+function mergeRollbackTargetResults(
+  applied: ReceiptTargetResult[],
+  compensation: ReceiptTargetResult[],
+): ReceiptTargetResult[] {
+  const compensationByTarget = new Map(compensation.map((entry) => [targetKey(entry.target), entry]));
+  const projected = applied.map((entry) => {
+    const recovery = compensationByTarget.get(targetKey(entry.target));
+    if (recovery?.state !== 'failed') return entry;
+    compensationByTarget.delete(targetKey(entry.target));
+    return {
+      ...entry,
+      state: 'failed' as const,
+      message: `rollbackFailed: ${recovery.message ?? 'runtime compensation failed.'}`,
+    };
+  });
+  for (const recovery of compensationByTarget.values()) {
+    if (recovery.state === 'failed') {
+      projected.push({
+        ...recovery,
+        message: `rollbackFailed: ${recovery.message ?? 'runtime compensation failed.'}`,
+      });
+    }
+  }
+  return projected;
+}
+
+async function compensateConfigRuntimeRollback(options: {
+  plugin: PluginMeta;
+  scope: Scope;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  attemptedTargets: ReceiptTargetIdentity[];
+  appliedTargetResults: ReceiptTargetResult[];
+  restoreStore: () => Promise<void>;
+  nativeCliRunner?: NativeCliRunner;
+  reinstallCommandImpl?: ReinstallCommand;
+  rebuildRuntime?: RebuildCommandRuntime;
+}): Promise<{
+  configWrite: 'rolledBack' | 'rollbackFailed';
+  targetResults: ReceiptTargetResult[];
+  warning: string;
+}> {
+  try {
+    await options.restoreStore();
+  } catch (error) {
+    const message = `rollbackFailed: config store restore failed: ${error instanceof Error ? error.message : String(error)}`;
+    return {
+      configWrite: 'rollbackFailed',
+      targetResults: options.appliedTargetResults.map((entry) => ({
+        ...entry,
+        state: 'failed',
+        message,
+      })),
+      warning: message,
+    };
+  }
+  let compensation: Awaited<ReturnType<typeof reinstallVisibleTargets>>;
+  try {
+    compensation = await reinstallVisibleTargets({
+      plugin: options.plugin,
+      scope: options.scope,
+      cwd: options.cwd,
+      env: options.env,
+      applyTargets: options.attemptedTargets,
+      nativeCliRunner: options.nativeCliRunner,
+      reinstallCommandImpl: options.reinstallCommandImpl,
+      rebuildRuntime: options.rebuildRuntime,
+    });
+  } catch (error) {
+    const message = `rollbackFailed: runtime compensation failed: ${error instanceof Error ? error.message : String(error)}`;
+    const affected = options.appliedTargetResults.length > 0
+      ? options.appliedTargetResults
+      : options.attemptedTargets.map((target): ReceiptTargetResult => ({
+          target,
+          action: 'reinstall',
+          state: 'failed',
+        }));
+    return {
+      configWrite: 'rollbackFailed',
+      targetResults: affected.map((entry) => ({ ...entry, state: 'failed', message })),
+      warning: message,
+    };
+  }
+  const failed = compensation.overallState === 'failed';
+  return {
+    configWrite: failed ? 'rollbackFailed' : 'rolledBack',
+    targetResults: failed
+      ? mergeRollbackTargetResults(options.appliedTargetResults, compensation.targetResults)
+      : options.appliedTargetResults,
+    warning: failed
+      ? 'rollbackFailed: Config store was restored, but runtime compensation failed.'
+      : 'Config store and runtime targets were restored because reinstall failed.',
   };
 }
 
@@ -347,8 +503,6 @@ export async function replayConfigRuntimeWrites(options: {
   nativeCliRunner?: NativeCliRunner;
   reinstallCommandImpl?: ReinstallCommand;
   rebuildRuntime?: RebuildCommandRuntime;
-  catalogChannel?: string;
-  catalogVersion?: string;
 }): Promise<ConfigRuntimeReplayReceipt> {
   const applied = await reinstallVisibleTargets({
     plugin: options.plugin,
@@ -359,17 +513,17 @@ export async function replayConfigRuntimeWrites(options: {
     nativeCliRunner: options.nativeCliRunner,
     reinstallCommandImpl: options.reinstallCommandImpl,
     rebuildRuntime: options.rebuildRuntime,
-    catalogChannel: options.catalogChannel,
-    catalogVersion: options.catalogVersion,
   });
   return {
     configWrite: 'succeeded',
-    ...applied,
+    overallState: applied.overallState,
+    targetResults: applied.targetResults,
+    ...(applied.applySkippedReason ? { applySkippedReason: applied.applySkippedReason } : {}),
     otherProjectsRequireReinstall: options.scope === 'user',
   };
 }
 
-export async function applyPluginConfigWrite(options: {
+type ApplyPluginConfigWriteOptions = {
   plugin?: PluginMeta | null;
   pluginError?: Error | null;
   pluginName?: string;
@@ -381,13 +535,19 @@ export async function applyPluginConfigWrite(options: {
   nativeCliRunner?: NativeCliRunner;
   reinstallCommandImpl?: ReinstallCommand;
   rebuildRuntime?: RebuildCommandRuntime;
-  catalogChannel?: string;
-  catalogVersion?: string;
   request: PluginConfigWriteRequest;
-}): Promise<PluginConfigWriteReceipt> {
+};
+
+async function applyPluginConfigWriteUnlocked(
+  options: ApplyPluginConfigWriteOptions,
+): Promise<PluginConfigWriteReceipt> {
   const requestedPluginName = options.pluginName ?? options.plugin?.manifest.name;
   if (!requestedPluginName) throw new Error('Plugin name is required for config write.');
   const pluginName = assertSafePluginConfigSegment(requestedPluginName);
+  const configIdentity = options.plugin?.sourceId ? {
+    sourceId: options.plugin.sourceId,
+    sourceIdentity: options.plugin.sourceIdentity,
+  } : {};
   const projectLayer = options.scope === 'project' ? (options.projectLayer ?? 'shared') : 'shared';
   const requestedUpdates = options.request.updates ?? {};
   const requestedRemoveKeys = uniqueInOrder(options.request.removeKeys ?? []);
@@ -415,6 +575,7 @@ export async function applyPluginConfigWrite(options: {
   if (!schema || !schemaPlugin) {
     if (Object.keys(requestedUpdates).length === 0 && requestedRemoveKeys.length > 0) {
       const store = await readPluginConfigStore({
+        ...configIdentity,
         pluginName,
         scope: options.scope,
         projectLayer,
@@ -427,13 +588,14 @@ export async function applyPluginConfigWrite(options: {
       }
       const warnings: Array<ProjectBoundaryWarning | string> = [];
       if (options.scope === 'project' && projectLayer === 'shared') {
-        await assertProjectSharedConfigPathVisible({ cwd: options.cwd, pluginName });
+        await assertProjectSharedConfigPathVisible({ cwd: options.cwd, targetPath: store.path });
       }
       if (options.scope === 'project' && projectLayer === 'local') {
         const ignore = await ensureProjectPrivateStateIgnore({ cwd: options.cwd, targetPath: store.path });
         if (ignore.warning) warnings.push(ignore.warning);
       }
       await patchPluginConfigStore({
+        ...configIdentity,
         pluginName,
         scope: options.scope,
         projectLayer,
@@ -483,29 +645,22 @@ export async function applyPluginConfigWrite(options: {
     }
   }
 
-  const warnings: Array<ProjectBoundaryWarning | string> = [];
-  if (options.scope === 'project' && projectLayer === 'shared') {
-    await assertProjectSharedConfigPathVisible({ cwd: options.cwd, pluginName });
-  }
-  if (options.scope === 'project' && projectLayer === 'local') {
-    const localStore = await readPluginConfigStore({
-      pluginName,
-      scope: 'project',
-      projectLayer: 'local',
-      cwd: options.cwd,
-      env: options.env,
-    });
-    const ignore = await ensureProjectPrivateStateIgnore({ cwd: options.cwd, targetPath: localStore.path });
-    if (ignore.warning) warnings.push(ignore.warning);
-  }
-
   const store = await readPluginConfigStore({
+    ...configIdentity,
     pluginName,
     scope: options.scope,
     projectLayer,
     cwd: options.cwd,
     env: options.env,
   });
+  const warnings: Array<ProjectBoundaryWarning | string> = [];
+  if (options.scope === 'project' && projectLayer === 'shared') {
+    await assertProjectSharedConfigPathVisible({ cwd: options.cwd, targetPath: store.path });
+  }
+  if (options.scope === 'project' && projectLayer === 'local') {
+    const ignore = await ensureProjectPrivateStateIgnore({ cwd: options.cwd, targetPath: store.path });
+    if (ignore.warning) warnings.push(ignore.warning);
+  }
   const removedKeys = requestedRemoveKeys.filter((key) => Object.hasOwn(store.values, key));
   const updatedKeys = Object.keys(updates);
   const changedKeys = [...updatedKeys, ...removedKeys];
@@ -523,6 +678,7 @@ export async function applyPluginConfigWrite(options: {
 
   if (changedKeys.length > 0) {
     await patchPluginConfigStore({
+      ...configIdentity,
       pluginName,
       scope: options.scope,
       projectLayer,
@@ -534,30 +690,81 @@ export async function applyPluginConfigWrite(options: {
   }
 
   const effective = summarizeEffectivePluginConfig(await resolveEffectivePluginConfig({
+    ...configIdentity,
     pluginName,
     manifest: schemaPlugin.manifest,
     cwd: options.cwd,
     env: options.env,
   }));
-  const applied = changedKeys.length === 0
-    ? {
-        overallState: 'succeeded' as const,
-        targetResults: [],
-        applySkippedReason: 'noConfigChange' as const,
-      }
-    : await reinstallVisibleTargets({
+  let applied: Awaited<ReturnType<typeof reinstallVisibleTargets>>;
+  try {
+    applied = changedKeys.length === 0
+      ? {
+          overallState: 'succeeded' as const,
+          targetResults: [],
+          attemptedTargets: [],
+          applySkippedReason: 'noConfigChange' as const,
+        }
+      : await reinstallVisibleTargets({
+          plugin: schemaPlugin,
+          scope: options.scope,
+          cwd: options.cwd,
+          env: options.env ?? process.env,
+          applyTargets: options.applyTargets,
+          nativeCliRunner: options.nativeCliRunner,
+          reinstallCommandImpl: options.reinstallCommandImpl,
+          rebuildRuntime: options.rebuildRuntime,
+        });
+  } catch (error) {
+    if (changedKeys.length > 0) {
+      await restorePluginConfigStore({
+        ...configIdentity,
+        pluginName,
+        scope: options.scope,
+        projectLayer,
+        cwd: options.cwd,
+        env: options.env,
+        snapshot: store,
+      });
+    }
+    throw error;
+  }
+  const rollbackRequired = changedKeys.length > 0 && applied.overallState === 'failed';
+  const rollback = rollbackRequired
+    ? await compensateConfigRuntimeRollback({
         plugin: schemaPlugin,
         scope: options.scope,
         cwd: options.cwd,
         env: options.env ?? process.env,
-        applyTargets: options.applyTargets,
+        attemptedTargets: applied.attemptedTargets,
+        appliedTargetResults: applied.targetResults,
+        restoreStore: () => restorePluginConfigStore({
+          ...configIdentity,
+          pluginName,
+          scope: options.scope,
+          projectLayer,
+          cwd: options.cwd,
+          env: options.env,
+          snapshot: store,
+        }),
         nativeCliRunner: options.nativeCliRunner,
         reinstallCommandImpl: options.reinstallCommandImpl,
         rebuildRuntime: options.rebuildRuntime,
-        catalogChannel: options.catalogChannel,
-        catalogVersion: options.catalogVersion,
-      });
-  const otherProjectsRequireReinstall = options.scope === 'user' && changedKeys.length > 0;
+      })
+    : undefined;
+  if (rollback) warnings.push(rollback.warning);
+  const finalEffective = rollbackRequired
+    ? summarizeEffectivePluginConfig(await resolveEffectivePluginConfig({
+        ...configIdentity,
+        pluginName,
+        manifest: schemaPlugin.manifest,
+        cwd: options.cwd,
+        env: options.env,
+      }))
+    : effective;
+  const otherProjectsRequireReinstall = options.scope === 'user'
+    && changedKeys.length > 0
+    && !rollbackRequired;
   if (otherProjectsRequireReinstall) warnings.push(...otherProjectsWarning(options.scope));
 
   return {
@@ -565,17 +772,38 @@ export async function applyPluginConfigWrite(options: {
     scope: options.scope,
     projectLayer,
     ...(schemaAccess.schema ? { schema: schemaAccess.schema } : {}),
-    updatedKeys,
-    removedKeys,
-    effective,
-    configWrite: 'succeeded',
-    ...applied,
+    updatedKeys: rollbackRequired ? [] : updatedKeys,
+    removedKeys: rollbackRequired ? [] : removedKeys,
+    effective: finalEffective,
+    configWrite: rollback?.configWrite ?? 'succeeded',
+    overallState: applied.overallState,
+    targetResults: rollback?.targetResults ?? applied.targetResults,
+    ...(applied.applySkippedReason ? { applySkippedReason: applied.applySkippedReason } : {}),
     otherProjectsRequireReinstall,
     warnings,
   };
 }
 
-export async function resetPluginConfigWithHelper(options: {
+export async function applyPluginConfigWrite(
+  options: ApplyPluginConfigWriteOptions,
+): Promise<PluginConfigWriteReceipt> {
+  const requestedPluginName = options.pluginName ?? options.plugin?.manifest.name;
+  if (!requestedPluginName) throw new Error('Plugin name is required for config write.');
+  const pluginName = assertSafePluginConfigSegment(requestedPluginName);
+  return withPluginConfigTransactionLease({
+    ...(options.plugin?.sourceId ? { sourceId: options.plugin.sourceId } : {}),
+    pluginName,
+    scope: options.scope,
+    projectLayer: options.scope === 'project' ? (options.projectLayer ?? 'shared') : 'shared',
+    cwd: options.cwd,
+    env: options.env,
+    action: () => applyPluginConfigWriteUnlocked(options),
+  });
+}
+
+type ResetPluginConfigWriteOptions = {
+  sourceId?: string;
+  sourceIdentity?: string;
   pluginName: string;
   scope: Scope;
   projectLayer?: 'shared' | 'local';
@@ -587,12 +815,22 @@ export async function resetPluginConfigWithHelper(options: {
   nativeCliRunner?: NativeCliRunner;
   reinstallCommandImpl?: ReinstallCommand;
   rebuildRuntime?: RebuildCommandRuntime;
-  catalogChannel?: string;
-  catalogVersion?: string;
-}): Promise<ResetPluginConfigWriteReceipt> {
+};
+
+async function resetPluginConfigWithHelperUnlocked(
+  options: ResetPluginConfigWriteOptions,
+): Promise<ResetPluginConfigWriteReceipt> {
   const pluginName = assertSafePluginConfigSegment(options.pluginName);
   const projectLayer = options.scope === 'project' ? (options.projectLayer ?? 'shared') : 'shared';
+  const configIdentity = options.plugin?.sourceId ? {
+    sourceId: options.plugin.sourceId,
+    sourceIdentity: options.plugin.sourceIdentity,
+  } : options.sourceId ? {
+    sourceId: options.sourceId,
+    sourceIdentity: options.sourceIdentity,
+  } : {};
   const store = await readPluginConfigStore({
+    ...configIdentity,
     pluginName,
     scope: options.scope,
     projectLayer,
@@ -602,7 +840,7 @@ export async function resetPluginConfigWithHelper(options: {
   const removedKeys = collectRemovedConfigKeys(store.values);
   const warnings: Array<ProjectBoundaryWarning | string> = [];
   if (options.scope === 'project' && projectLayer === 'shared' && store.exists) {
-    await assertProjectSharedConfigPathVisible({ cwd: options.cwd, pluginName });
+    await assertProjectSharedConfigPathVisible({ cwd: options.cwd, targetPath: store.path });
   }
   if (options.scope === 'project' && projectLayer === 'local') {
     const ignore = await ensureProjectPrivateStateIgnore({ cwd: options.cwd, targetPath: store.path });
@@ -620,6 +858,7 @@ export async function resetPluginConfigWithHelper(options: {
       })
     : { pluginName, plugin: null };
   const reset = await resetPluginConfigStore({
+    ...configIdentity,
     pluginName,
     scope: options.scope,
     projectLayer,
@@ -630,12 +869,14 @@ export async function resetPluginConfigWithHelper(options: {
   let applied: Awaited<ReturnType<typeof reinstallVisibleTargets>> = {
     overallState: 'succeeded',
     targetResults: [],
+    attemptedTargets: [],
     applySkippedReason: reset.deleted ? 'currentCatalogUnavailable' : 'noConfigChange',
   };
   let effective: ReturnType<typeof summarizeEffectivePluginConfig> | undefined;
   if (schemaAccess.plugin) {
     if (schemaAccess.plugin.manifest.config?.schema) {
       effective = summarizeEffectivePluginConfig(await resolveEffectivePluginConfig({
+        ...configIdentity,
         pluginName,
         manifest: schemaAccess.plugin.manifest,
         cwd: options.cwd,
@@ -643,23 +884,70 @@ export async function resetPluginConfigWithHelper(options: {
       }));
     }
     if (reset.deleted) {
-      applied = await reinstallVisibleTargets({
+      try {
+        applied = await reinstallVisibleTargets({
+          plugin: schemaAccess.plugin,
+          scope: options.scope,
+          cwd: options.cwd,
+          env: options.env ?? process.env,
+          applyTargets: options.applyTargets,
+          nativeCliRunner: options.nativeCliRunner,
+          reinstallCommandImpl: options.reinstallCommandImpl,
+          rebuildRuntime: options.rebuildRuntime,
+        });
+      } catch (error) {
+        await restorePluginConfigStore({
+          ...configIdentity,
+          pluginName,
+          scope: options.scope,
+          projectLayer,
+          cwd: options.cwd,
+          env: options.env,
+          snapshot: store,
+        });
+        throw error;
+      }
+    }
+  }
+  const rollbackRequired = reset.deleted && applied.overallState === 'failed';
+  const rollback = rollbackRequired && schemaAccess.plugin
+    ? await compensateConfigRuntimeRollback({
         plugin: schemaAccess.plugin,
         scope: options.scope,
         cwd: options.cwd,
         env: options.env ?? process.env,
-        applyTargets: options.applyTargets,
+        attemptedTargets: applied.attemptedTargets,
+        appliedTargetResults: applied.targetResults,
+        restoreStore: () => restorePluginConfigStore({
+          ...configIdentity,
+          pluginName,
+          scope: options.scope,
+          projectLayer,
+          cwd: options.cwd,
+          env: options.env,
+          snapshot: store,
+        }),
         nativeCliRunner: options.nativeCliRunner,
         reinstallCommandImpl: options.reinstallCommandImpl,
         rebuildRuntime: options.rebuildRuntime,
-        catalogChannel: options.catalogChannel,
-        catalogVersion: options.catalogVersion,
-      });
+      })
+    : undefined;
+  if (rollback) {
+    warnings.push(rollback.warning);
+    if (schemaAccess.plugin?.manifest.config?.schema) {
+      effective = summarizeEffectivePluginConfig(await resolveEffectivePluginConfig({
+        ...configIdentity,
+        pluginName,
+        manifest: schemaAccess.plugin.manifest,
+        cwd: options.cwd,
+        env: options.env,
+      }));
     }
   }
   const otherProjectsRequireReinstall = Boolean(schemaAccess.plugin)
     && options.scope === 'user'
-    && reset.deleted;
+    && reset.deleted
+    && !rollbackRequired;
   if (otherProjectsRequireReinstall) warnings.push(...otherProjectsWarning(options.scope));
 
   return {
@@ -668,17 +956,37 @@ export async function resetPluginConfigWithHelper(options: {
     projectLayer,
     ...(schemaAccess.schema ? { schema: schemaAccess.schema } : {}),
     existed: reset.existed,
-    deleted: reset.deleted,
-    removedKeys,
+    deleted: rollbackRequired ? false : reset.deleted,
+    removedKeys: rollbackRequired ? [] : removedKeys,
     ...(effective ? { effective } : {}),
-    configWrite: 'succeeded',
-    ...applied,
+    configWrite: rollback?.configWrite ?? 'succeeded',
+    overallState: applied.overallState,
+    targetResults: rollback?.targetResults ?? applied.targetResults,
+    ...(applied.applySkippedReason ? { applySkippedReason: applied.applySkippedReason } : {}),
     otherProjectsRequireReinstall,
     warnings,
   };
 }
 
+export async function resetPluginConfigWithHelper(
+  options: ResetPluginConfigWriteOptions,
+): Promise<ResetPluginConfigWriteReceipt> {
+  const pluginName = assertSafePluginConfigSegment(options.pluginName);
+  const sourceId = options.plugin?.sourceId ?? options.sourceId;
+  return withPluginConfigTransactionLease({
+    ...(sourceId ? { sourceId } : {}),
+    pluginName,
+    scope: options.scope,
+    projectLayer: options.scope === 'project' ? (options.projectLayer ?? 'shared') : 'shared',
+    cwd: options.cwd,
+    env: options.env,
+    action: () => resetPluginConfigWithHelperUnlocked(options),
+  });
+}
+
 export async function describeResetAffectedFields(options: {
+  sourceId?: string;
+  sourceIdentity?: string;
   pluginName: string;
   plugin?: PluginMeta | null;
   pluginError?: Error | null;
@@ -710,6 +1018,13 @@ export async function describeResetAffectedFields(options: {
     }));
   } catch {
     const store = await readPluginConfigStore({
+      ...(options.plugin?.sourceId ? {
+        sourceId: options.plugin.sourceId,
+        sourceIdentity: options.plugin.sourceIdentity,
+      } : options.sourceId ? {
+        sourceId: options.sourceId,
+        sourceIdentity: options.sourceIdentity,
+      } : {}),
       pluginName: options.pluginName,
       scope: options.scope,
       projectLayer,
@@ -727,3 +1042,4 @@ export async function describeResetAffectedFields(options: {
     }));
   }
 }
+import path from 'node:path';

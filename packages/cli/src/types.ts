@@ -22,6 +22,8 @@ export type RebuildActionName =
   | `lifecycle.${PluginLifecycleEvent}`
   | 'active.promote'
   | 'postcheck.inspect'
+  | 'marketplace.commit'
+  | 'marketplace.rollback'
   | 'recovery.cleanup'
   | 'cleanup.owned'
   | 'active.read'
@@ -59,6 +61,9 @@ export type StrictSemVerString = string;
 export type CliVersion = StrictSemVerString;
 export type CatalogVersion = StrictSemVerString;
 export type PluginVersion = StrictSemVerString;
+export type CatalogSourceId = string;
+export type PluginId = string;
+export type SourceIdentity = string;
 export type AgentVersionStatus = 'supported' | 'missing' | 'probeFailed' | 'unparseable' | 'tooOld';
 export type AgentVersionReasonCode =
   | 'agentVersionMissing'
@@ -72,6 +77,56 @@ export type NextStepKind = 'uiAction' | 'cliCommand' | 'manual';
 export type ManualNextStepKind = 'guidance' | 'blocker' | 'documentation';
 export type TargetWriteState = 'completed' | 'failed';
 export type ReceiptOverallState = 'succeeded' | 'failed';
+
+export type CatalogGitRefPolicy =
+  | { type: 'explicit'; ref: string }
+  | { type: 'cliChannel' };
+
+interface CatalogSourceBase {
+  id: CatalogSourceId;
+  primary: boolean;
+}
+
+export interface GitCatalogSource extends CatalogSourceBase {
+  type: 'git';
+  url: string;
+  refPolicy: CatalogGitRefPolicy;
+  subdir?: string;
+}
+
+export interface PathCatalogSource extends CatalogSourceBase {
+  type: 'path';
+  path: string;
+}
+
+export type CatalogSource = GitCatalogSource | PathCatalogSource;
+
+export interface CatalogSourcesConfig {
+  schemaVersion: 1;
+  sources: CatalogSource[];
+}
+
+export interface CatalogSourceResolution {
+  sourceId: CatalogSourceId;
+  sourceIdentity: SourceIdentity;
+  requestedRef: string;
+  resolvedCommit: string;
+  rootDir: string;
+  manifest: CatalogManifestV3;
+  manifestDigest: string;
+  snapshotDigest: string;
+  cacheEntryKey: string;
+  source: 'remote' | 'cache' | 'path';
+  cacheFallback: boolean;
+  remoteFailure?: string;
+}
+
+export interface CatalogProviderRuntimeOptions {
+  cliVersion: CliVersion;
+  freshnessPolicy: CatalogFreshnessPolicy;
+  env?: NodeJS.ProcessEnv;
+  signal?: AbortSignal;
+}
 
 export interface NextStepInstruction {
   kind: NextStepKind;
@@ -90,6 +145,10 @@ export interface NextStepsPayloadBoundary {
 
 export interface ReceiptTargetIdentity {
   pluginName: string;
+  pluginId?: PluginId;
+  marketplaceName?: string;
+  sourceId?: CatalogSourceId;
+  sourceIdentity?: SourceIdentity;
   platform: PlatformName;
   scope: Scope;
   projectKey?: string;
@@ -494,6 +553,10 @@ export interface PluginManifestSource {
 }
 
 export interface PluginMeta {
+  sourceId?: CatalogSourceId;
+  sourceIdentity?: SourceIdentity;
+  pluginId?: PluginId;
+  marketplaceName?: string;
   rootDir: string;
   manifestPath: string;
   manifest: PluginManifestSource;
@@ -517,13 +580,6 @@ export interface MarketplaceManifest {
   plugins: MarketplaceManifestEntry[];
 }
 
-export interface CatalogManifestPackageIdentity {
-  name: string;
-  version: CatalogVersion;
-  channel: CatalogChannel;
-  manifestPath?: string;
-}
-
 export interface CatalogManifestEntry {
   name: string;
   version: PluginVersion;
@@ -539,16 +595,17 @@ export interface CatalogManifestEntry {
   manifestDigest: string;
 }
 
-export interface CatalogManifest {
-  schemaVersion: 2;
+export interface CatalogManifestV3Entry extends CatalogManifestEntry {
+  name: PluginId;
+  contentDigest: string;
+}
+
+export interface CatalogManifestV3 {
+  schemaVersion: 3;
   catalogVersion: CatalogVersion;
   channel: CatalogChannel;
   compatibility: PluginCompatibility;
-  packages: {
-    sidecar: CatalogManifestPackageIdentity;
-    full: CatalogManifestPackageIdentity;
-  };
-  entries: CatalogManifestEntry[];
+  entries: CatalogManifestV3Entry[];
 }
 
 export interface PlatformPluginManifest {
@@ -656,12 +713,7 @@ export interface AgentVersionGateErrorPayload {
   failures: AgentVersionGateFailure[];
 }
 
-export interface CatalogSelectionOptions {
-  catalogChannel?: CatalogChannel;
-  catalogVersion?: CatalogVersion;
-}
-
-export interface CommandOptions extends CatalogSelectionOptions {
+export interface CommandOptions {
   scope: Scope;
   platform: PlatformSelection;
   cwd: string;
@@ -674,7 +726,7 @@ export interface UpgradeCommandOptions extends CommandOptions {
   all?: boolean;
 }
 
-export interface StatusCommandOptions extends CatalogSelectionOptions {
+export interface StatusCommandOptions {
   cwd: string;
   scope?: Scope;
   platform?: PlatformName | 'both';
@@ -733,20 +785,6 @@ export function isAgentVersionGateError(error: unknown): error is AgentVersionGa
   );
 }
 
-export interface LocalMarketplaceConfig {
-  version: 2;
-  initializedAt: string;
-  sourcePackage: string;
-  sourceVersion: CliVersion;
-  catalogSelector: CatalogSelector;
-  resolvedCatalog?: {
-    channel: CatalogChannel;
-    catalogVersion: CatalogVersion;
-    minAwVersion: CliVersion;
-  };
-  bundleFingerprint: string;
-}
-
 export type CodexProjectManagedKind =
   | 'skill'
   | 'mcpServer'
@@ -755,107 +793,12 @@ export type CodexProjectManagedKind =
   | 'hook'
   | 'agent';
 
-export interface CatalogSelector {
-  kind: 'default' | 'distTag' | 'exactVersion';
-  cliVersion: CliVersion;
-  defaultChannel: CatalogChannel;
-  requestedChannel?: CatalogChannel;
-  requestedCatalogVersion?: CatalogVersion;
-  overrideSource?:
-    | 'option:catalog-channel'
-    | 'option:channel-alias'
-    | 'option:catalog-version'
-    | 'env:AW_CATALOG_CHANNEL'
-    | 'env:AW_CATALOG_VERSION';
-}
-
-export interface CatalogSidecarManifestEvidence {
-  source: string;
-  version: CatalogVersion;
-  channel: CatalogChannel;
-  npmIntegrity?: string;
-  manifestDigest: string;
-}
-
-export interface CatalogIdentityEvidence {
-  source: 'local' | 'embedded' | 'remote' | 'cache';
-  version: CatalogVersion;
-  channel: CatalogChannel;
-  minAwVersion: CliVersion;
-  revision: string;
-  freshness: 'fresh' | 'cached' | 'localFixture' | 'embedded';
-}
-
-export interface CatalogCacheFallbackEvidence {
-  used: boolean;
-  source?: 'currentCatalogCache';
-  cacheKey?: string;
-  selectorKey?: string;
-  blockingCode?: CatalogResolutionFailure['reasonCode'];
-  matchedSelector?: CatalogSelector;
-  matchedCatalog?: CatalogIdentityEvidence;
-}
-
-export interface CatalogRemoteFailureEvidence {
-  stage:
-    | 'sidecarMetadata'
-    | 'sidecarTarball'
-    | 'sidecarManifest'
-    | 'fullMetadata'
-    | 'fullTarball'
-    | 'fullManifest'
-    | 'artifactDigest'
-    | 'deadline';
-  packageName?: string;
-  packageVersion?: CatalogVersion;
-  integrity?: string;
-  message: string;
-}
-
-export interface CatalogResolutionFailure {
-  selector: CatalogSelector;
-  channel?: CatalogChannel;
-  catalogVersion?: CatalogVersion;
-  minAwVersion?: CliVersion;
-  cacheFallback?: CatalogCacheFallbackEvidence;
-  remoteFailure?: CatalogRemoteFailureEvidence;
-  reason: string;
-  reasonCode:
-    | 'catalogUnavailable'
-    | 'awVersionTooLow'
-    | 'explicitCatalogIncompatible';
-}
-
-export interface CatalogCacheStateEvidence {
-  state: 'fresh' | 'stale' | 'refreshFailed';
-  validatedAt: string;
-  ageMs: number;
-  ttlMs: number;
-}
-
 export type CatalogFreshnessPolicy = 'cacheFirst' | 'requireRemote' | 'forceRemote';
 
 export interface CatalogResolution {
   rootDir: string;
   source: 'local' | 'embedded' | 'remote' | 'cache';
-  selector?: CatalogSelector;
-  sidecarManifestPackage?: CatalogSidecarManifestEvidence;
-  fullCatalog?: CatalogIdentityEvidence;
   channel?: CatalogChannel;
   catalogVersion?: CatalogVersion;
   minAwVersion?: CliVersion;
-  cacheFallback?: CatalogCacheFallbackEvidence;
-  remoteFailure?: CatalogRemoteFailureEvidence;
-  cacheState?: CatalogCacheStateEvidence;
-  reason?: string;
-  reasonCode?:
-    | 'localCatalogMissing'
-    | 'localCatalogConfigInvalid'
-    | 'localCatalogSourceVersionMissing'
-    | 'localCatalogSourceVersionInvalid'
-    | 'localCatalogSourceVersionAhead'
-    | 'localCatalogSourceVersionBehind'
-    | 'localCatalogFingerprintMismatch'
-    | 'localCatalogLayoutInvalid'
-    | CatalogResolutionFailure['reasonCode'];
 }

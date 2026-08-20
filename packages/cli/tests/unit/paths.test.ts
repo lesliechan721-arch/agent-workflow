@@ -54,7 +54,7 @@ describe('project key paths', () => {
     await expect(resolveClaudeProjectKey(subdir)).resolves.toBe(canonicalRoot);
   });
 
-  it('derives isolated home and current catalog cache paths from the shared test env', () => {
+  it('derives isolated home and current catalog cache paths from the shared test env', async () => {
     const isolation = getCurrentSourceTestIsolation();
 
     expect(resolveAwHome(process.env)).toBe(isolation.layout.awHomeDir);
@@ -65,12 +65,14 @@ describe('project key paths', () => {
     expect(resolveCurrentCatalogCacheEntryDir('cache-key', process.env)).toBe(path.join(isolation.layout.awHomeDir, 'catalog-cache', 'entries', 'cache-key'));
     expect(resolveCurrentCatalogCacheSelectorsDir(process.env)).toBe(path.join(isolation.layout.awHomeDir, 'catalog-cache', 'selectors'));
     expect(resolveCurrentCatalogCacheSelectorIndexPath('selector-hash', process.env)).toBe(path.join(isolation.layout.awHomeDir, 'catalog-cache', 'selectors', 'selector-hash.json'));
+    await fs.ensureDir(isolation.layout.awHomeDir);
+    const canonicalAwHome = await fs.realpath(isolation.layout.awHomeDir);
     const stagingIdentity = crypto.createHash('sha256')
-      .update(path.resolve(isolation.layout.awHomeDir))
+      .update(canonicalAwHome)
       .digest('hex')
       .slice(0, 16);
     expect(resolveCurrentCatalogCacheStagingDir(process.env)).toBe(path.join(
-      path.dirname(isolation.layout.awHomeDir),
+      path.dirname(canonicalAwHome),
       '.aw-local-marketplace-staging',
       `catalog-cache-${stagingIdentity}`,
     ));

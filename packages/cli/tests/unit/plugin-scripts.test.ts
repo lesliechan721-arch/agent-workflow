@@ -144,8 +144,14 @@ describe('plugin lifecycle scripts', () => {
     const cwd = path.join(root, 'repo');
     await fs.ensureDir(cwd);
     const plugin = await writePlugin(root);
+    const sourceId = 'team';
+    const sourceIdentity = `sha256:${'1'.repeat(64)}`;
+    plugin.sourceId = sourceId;
+    plugin.sourceIdentity = sourceIdentity;
     const env = { AW_HOME: awHome } as NodeJS.ProcessEnv;
     await writePluginConfigStore({
+      sourceId,
+      sourceIdentity,
       pluginName: plugin.manifest.name,
       scope: 'user',
       cwd,
@@ -163,6 +169,8 @@ describe('plugin lifecycle scripts', () => {
     });
 
     const written = await writeLifecycleScriptContext({
+      sourceId,
+      sourceIdentity,
       target,
       event: 'install',
       platform: 'codex',
@@ -178,6 +186,9 @@ describe('plugin lifecycle scripts', () => {
       plugin: {
         name: 'script-plugin',
         rootDir: pluginRoot,
+        sourceId,
+        sourceIdentity,
+        pluginId: `${sourceId}/${plugin.manifest.name}`,
       },
       config: {
         values: {
@@ -190,16 +201,26 @@ describe('plugin lifecycle scripts', () => {
       paths: {
         configStores: {
           user: resolvePluginConfigStorePath({
+            sourceId,
             pluginName: plugin.manifest.name,
             scope: 'user',
             cwd,
             env,
           }),
           project: resolvePluginConfigStorePath({
+            sourceId,
             pluginName: plugin.manifest.name,
             scope: 'project',
             cwd,
             env,
+          }),
+          projectLocal: resolvePluginConfigStorePath({
+            sourceId,
+            pluginName: plugin.manifest.name,
+            scope: 'project',
+            cwd,
+            env,
+            projectLayer: 'local',
           }),
         },
       },

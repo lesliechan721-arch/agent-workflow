@@ -20,4 +20,7 @@ Last reviewed: 2026-08-20.
 
 - https://github.com/mattpocock/skills/tree/main/skills/productivity/writing-for-agents
 
-Rule evidence classes and ReviewResult finding evidence are distinct. Official guidance can support quality assessment but does not automatically establish a portable hard requirement. The third-party source only informs pointer, information hierarchy, co-location, completion criteria, composition and pruning; it cannot by itself create a P0/P1 finding.
+Rule evidence classes and ReviewResult finding evidence are distinct. Official guidance can support
+quality assessment but does not automatically establish a portable hard requirement. The third-party
+source only informs pointer, information hierarchy, co-location, completion criteria, composition
+and pruning; it cannot by itself create a P0/P1 finding.

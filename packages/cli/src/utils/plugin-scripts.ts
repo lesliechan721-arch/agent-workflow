@@ -24,7 +24,6 @@ import {
 import {
   resolveAwHome,
 } from './paths.js';
-import { resolveCatalogPlugins } from './plugin-catalog.js';
 import { resolveEffectivePluginConfig } from './plugin-config.js';
 import { redactString } from '../output/redact.js';
 import { assertTestWritablePath } from './test-path-fence.js';
@@ -64,6 +63,9 @@ export interface LifecycleScriptContext {
     name: string;
     version: string;
     rootDir: string;
+    sourceId?: string;
+    sourceIdentity?: string;
+    pluginId?: string;
   };
   platform: PlatformName;
   scope: Scope;
@@ -73,7 +75,11 @@ export interface LifecycleScriptContext {
     codexHome: string;
     claudeHome: string;
     manifestPath: string;
-    configStores?: Record<Scope, string>;
+    configStores?: {
+      user: string;
+      project: string;
+      projectLocal: string;
+    };
   };
   config: {
     schema?: NonNullable<PluginManifestSource['config']>['schema'];
@@ -220,20 +226,11 @@ async function createTargetFromPlugin(options: {
 }
 
 async function resolveCurrentPlugin(
-  pluginName: string,
+  _pluginName: string,
   currentPlugin: PluginMeta | undefined,
-  env: NodeJS.ProcessEnv,
+  _env: NodeJS.ProcessEnv,
 ): Promise<PluginMeta | undefined> {
-  if (currentPlugin) {
-    return currentPlugin;
-  }
-
-  try {
-    const catalog = await resolveCatalogPlugins([pluginName], env);
-    return catalog.plugins[0];
-  } catch {
-    return undefined;
-  }
+  return currentPlugin;
 }
 
 function createMissingLifecycleWarning(pluginName: string, event: PluginLifecycleEvent): string {
@@ -475,6 +472,8 @@ export function summarizePluginScriptOutput(
 }
 
 export async function writeLifecycleScriptContext(options: {
+  sourceId?: string;
+  sourceIdentity?: string;
   target: LifecycleScriptTarget;
   event: PluginLifecycleEvent | 'test';
   platform: PlatformName;
@@ -483,6 +482,9 @@ export async function writeLifecycleScriptContext(options: {
   commandEnv: NodeJS.ProcessEnv;
   artifacts?: GeneratedArtifact[];
 }): Promise<WrittenLifecycleScriptContext> {
+  if ((options.sourceId === undefined) !== (options.sourceIdentity === undefined)) {
+    throw new Error('Lifecycle script context requires a complete source identity.');
+  }
   if (options.target.noOp || !options.target.entry || !options.target.entryPath || !options.target.bundleRoot || !options.target.sourceManifest || !options.target.manifestPath || !options.target.manifestDigest) {
     throw new Error('Cannot write lifecycle script context for a no-op target.');
   }
@@ -493,9 +495,11 @@ export async function writeLifecycleScriptContext(options: {
     sources: {},
     issues: [],
   };
-  let configStores: Record<Scope, string> | undefined;
+  let configStores: NonNullable<LifecycleScriptContext['paths']['configStores']> | undefined;
   if (options.target.sourceManifest.config?.schema) {
     const effective = await resolveEffectivePluginConfig({
+      sourceId: options.sourceId,
+      sourceIdentity: options.sourceIdentity,
       pluginName: options.target.sourceManifest.name,
       manifest: options.target.sourceManifest,
       cwd: options.cwd,
@@ -509,6 +513,7 @@ export async function writeLifecycleScriptContext(options: {
     configStores = {
       user: effective.stores.user.path,
       project: effective.stores.project.path,
+      projectLocal: effective.stores.projectLocal.path,
     };
     config = {
       schema: options.target.sourceManifest.config.schema,
@@ -524,6 +529,11 @@ export async function writeLifecycleScriptContext(options: {
       name: options.target.sourceManifest.name,
       version: options.target.sourceManifest.version,
       rootDir: options.target.bundleRoot,
+      ...(options.sourceId ? {
+        sourceId: options.sourceId,
+        sourceIdentity: options.sourceIdentity,
+        pluginId: `${options.sourceId}/${options.target.sourceManifest.name}`,
+      } : {}),
     },
     platform: options.platform,
     scope: options.scope,
@@ -694,6 +704,8 @@ export async function runLifecycleScript(options: {
   }
 
   const writtenContext = await writeLifecycleScriptContext({
+    sourceId: options.currentPlugin?.sourceId,
+    sourceIdentity: options.currentPlugin?.sourceIdentity,
     target,
     event: options.event,
     platform: options.platform,

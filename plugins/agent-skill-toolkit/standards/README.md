@@ -8,6 +8,9 @@
 - Skill/Eval 专属规则；
 - Composition Fitness、Finding Admission 与 ReviewResult 决策策略。
 
-`review-dimensions.json` 维护机器可读维度注册；`review-dimensions.md` 维护详细人类 rubric；`scoring-policy.md` 维护完整评分与发布门禁。Skill 内的 `.generated.md` 文件均由生成器复制或生成。`rules.json` 只是组合清单，不复制下层规则正文。
+`review-dimensions.json` 维护机器可读维度注册；`review-dimensions.md`
+维护详细人类 rubric；`scoring-policy.md` 维护完整评分与发布门禁。Skill 内的 `.generated.md`
+文件均由生成器复制或生成。`rules.json` 只是组合清单，不复制下层规则正文。
 
-`generate-standard-views.mjs` 会验证下层规则 digest，拒绝上层重定义 canonical principle、evidence type 或 source refs，并生成动作视图、详细 rubric、评分文档和 `review-result-rules.generated.json`。
+`generate-standard-views.mjs` 会验证下层规则 digest，拒绝上层重定义 canonical principle、evidence
+type 或 source refs，并生成动作视图、详细 rubric、评分文档和 `review-result-rules.generated.json`。

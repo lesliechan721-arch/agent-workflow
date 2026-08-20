@@ -494,6 +494,42 @@ describe('rebuild operation happy paths', () => {
     expect(fixture.log.indexOf('active.promote')).toBeLessThan(fixture.log.lastIndexOf('inspect.artifact'));
   });
 
+  it('commits a materialize transaction only after postcheck', async () => {
+    const fixture = createFixture();
+    fixture.driver.commitMaterialize = async () => { fixture.log.push('marketplace.commit'); };
+    fixture.driver.rollbackMaterialize = async () => { fixture.log.push('marketplace.rollback'); };
+    const result = await executeRebuildOperation({
+      command: 'install', target: fixture.target, driver: fixture.driver, activeStore: fixture.store,
+    });
+
+    expect(result.status).toBe('succeeded');
+    expect(fixture.log.indexOf('marketplace.commit'))
+      .toBeGreaterThan(fixture.log.lastIndexOf('inspect.artifact'));
+    expect(fixture.log).not.toContain('marketplace.rollback');
+  });
+
+  it('does not recover or roll back after a durable materialize commit cleanup failure', async () => {
+    const fixture = createFixture();
+    fixture.driver.commitMaterialize = async () => {
+      fixture.log.push('marketplace.commit');
+      throw Object.assign(new Error('marketplaceGenerationCleanupPending: EBUSY'), {
+        durableMaterializeCommit: true,
+      });
+    };
+    fixture.driver.rollbackMaterialize = async () => { fixture.log.push('marketplace.rollback'); };
+
+    const result = await executeRebuildOperation({
+      command: 'install', target: fixture.target, driver: fixture.driver, activeStore: fixture.store,
+    });
+
+    expect(result.status).toBe('failed');
+    if (result.status === 'failed') expect(result.error.phase).toBe('marketplace.commit');
+    expect(fixture.log).not.toContain('marketplace.rollback');
+    expect(fixture.log).not.toContain('active.remove');
+    expect(fixture.cleanupCalls).toEqual({ native: 0, artifact: 0, active: 0 });
+    expect(fixture.states).toEqual({ native: 'present', artifact: 'present' });
+  });
+
   it('upgrades with the current bundle without reading installed state', async () => {
     const fixture = createFixture();
     const result = await executeRebuildOperation({
@@ -849,6 +885,30 @@ describe('rebuild operation failures', () => {
     expect(fixture.cleanupCalls.active).toBe(1);
   });
 
+  it.each([
+    'native.write',
+    'artifacts.write',
+    'active.prepare',
+    'lifecycle.install',
+    'active.promote',
+    'postcheck.inspect',
+  ])('rolls the materialize transaction back after recovery for %s failure', async (failure) => {
+    const fixture = createFixture();
+    if (failure === 'postcheck.inspect') fixture.postcheckAbsent = true;
+    else fixture.fail.add(failure);
+    fixture.driver.commitMaterialize = async () => { fixture.log.push('marketplace.commit'); };
+    fixture.driver.rollbackMaterialize = async () => { fixture.log.push('marketplace.rollback'); };
+
+    const result = await executeRebuildOperation({
+      command: 'install', target: fixture.target, driver: fixture.driver, activeStore: fixture.store,
+    });
+
+    expect(result.status).toBe('failed');
+    expect(fixture.log).not.toContain('marketplace.commit');
+    expect(fixture.log.filter((entry) => entry === 'marketplace.rollback')).toHaveLength(1);
+    expect(fixture.log.indexOf('marketplace.rollback')).toBeGreaterThan(fixture.log.indexOf('active.remove'));
+  });
+
   it('promotes before postcheck, then removes active and outputs when postcheck fails', async () => {
     const fixture = createFixture();
     fixture.postcheckAbsent = true;
@@ -1052,6 +1112,49 @@ describe('uninstall safety and dependency boundary', () => {
     expect(result.status).toBe('failed');
     if (result.status === 'failed') expect(result.error.message).toContain('Run cleanup');
     expect(fixture.cleanupCalls).toEqual({ native: 0, artifact: 0, active: 0 });
+  });
+
+  it('does not consume a valid snapshot when no owned or native component is live', async () => {
+    const fixture = createFixture();
+    fixture.setActive('valid');
+    const result = await executeRebuildOperation({
+      command: 'uninstall', target: fixture.target, driver: fixture.driver, activeStore: fixture.store,
+    });
+
+    expect(result.status).toBe('failed');
+    if (result.status === 'failed') expect(result.error.message).toContain('liveOwnershipRequired');
+    expect(fixture.log.some((entry) => entry.startsWith('lifecycle.uninstall'))).toBe(false);
+    expect(fixture.cleanupCalls).toEqual({ native: 0, artifact: 0, active: 0 });
+  });
+
+  it('does not treat an empty shared marketplace cleanup component as live ownership', async () => {
+    const fixture = createFixture({ requiresNative: false });
+    fixture.target.ownedComponents = [{
+      kind: 'shared-config',
+      identity: {
+        owner: 'agent-workflows',
+        plugin: fixture.target.identity.pluginName,
+        artifactKey: 'marketplace-aw',
+        platform: 'codex',
+        scope: 'user',
+      },
+      label: 'config.toml#marketplaces.aw',
+      inspect: async () => 'present',
+      remove: async () => { fixture.log.push('marketplace.remove'); },
+    }];
+    fixture.setActive('valid');
+
+    const result = await executeRebuildOperation({
+      command: 'uninstall', target: fixture.target, driver: fixture.driver, activeStore: fixture.store,
+    });
+
+    expect(result).toMatchObject({
+      status: 'failed',
+      error: { message: expect.stringContaining('liveOwnershipRequired') },
+    });
+    expect(fixture.log.some((entry) => entry.startsWith('lifecycle.uninstall'))).toBe(false);
+    expect(fixture.log).not.toContain('marketplace.remove');
+    expect(fixture.log).not.toContain('active.remove');
   });
 
   it('directly cleans a live target without a snapshot when uninstall lifecycle is not declared', async () => {

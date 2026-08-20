@@ -34,11 +34,16 @@ function parseArgs(argv) {
 
 function isPathInside(root, candidate) {
   const relative = path.relative(root, candidate);
-  return relative === '' || (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`));
+  return (
+    relative === '' ||
+    (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`))
+  );
 }
 
 async function digest(filePath) {
-  return `sha256:${createHash('sha256').update(await readFile(filePath)).digest('hex')}`;
+  return `sha256:${createHash('sha256')
+    .update(await readFile(filePath))
+    .digest('hex')}`;
 }
 
 async function firstReadable(candidates) {
@@ -63,7 +68,8 @@ async function schemaErrors(schemaPath, valuePath) {
     );
     return JSON.parse(stdout).errors;
   } catch (error) {
-    if (typeof error?.stdout === 'string' && error.stdout.trim()) return JSON.parse(error.stdout).errors;
+    if (typeof error?.stdout === 'string' && error.stdout.trim())
+      return JSON.parse(error.stdout).errors;
     throw error;
   }
 }
@@ -111,7 +117,9 @@ async function main() {
       const stageResults = new Map();
 
       for (const stage of bundle.orchestration.providedStages) {
-        const key = [stage.id, stage.profile ?? '', stage.subjectDigest, stage.resultDigest].join(':');
+        const key = [stage.id, stage.profile ?? '', stage.subjectDigest, stage.resultDigest].join(
+          ':',
+        );
         if (seen.has(key)) errors.push(`duplicate provided stage ${key}`);
         seen.add(key);
 
@@ -129,7 +137,7 @@ async function main() {
           errors.push(`${stage.id} resultPath leaves the handoff root`);
           continue;
         }
-        if (await digest(actual) !== stage.resultDigest) {
+        if ((await digest(actual)) !== stage.resultDigest) {
           errors.push(`${stage.id} resultDigest does not match file content`);
         }
 
@@ -138,7 +146,9 @@ async function main() {
           path.join(scriptRoot, '..', 'schemas', schemaName),
           path.join(scriptRoot, '..', 'assets', schemaName),
         ]);
-        errors.push(...(await schemaErrors(schemaPath, actual)).map((entry) => `${stage.id}: ${entry}`));
+        errors.push(
+          ...(await schemaErrors(schemaPath, actual)).map((entry) => `${stage.id}: ${entry}`),
+        );
 
         let result;
         try {
@@ -149,36 +159,51 @@ async function main() {
         stageResults.set(stage.id, { stage, result });
 
         if (stage.id !== 'eval-execution' && stage.independentContext !== true) {
-          errors.push(`${stage.id} provided review/audit stage must come from an independent context`);
+          errors.push(
+            `${stage.id} provided review/audit stage must come from an independent context`,
+          );
         }
-        if (result.producer !== stage.producer) errors.push(`${stage.id} producer does not match result`);
+        if (result.producer !== stage.producer)
+          errors.push(`${stage.id} producer does not match result`);
         if (result.independentContext !== stage.independentContext) {
           errors.push(`${stage.id} independentContext does not match result`);
         }
         const subject = resultSubject(result);
         if (!subject) errors.push(`${stage.id} result does not expose a subject digest`);
-        else if (subject !== stage.subjectDigest) errors.push(`${stage.id} subjectDigest does not match result target`);
+        else if (subject !== stage.subjectDigest)
+          errors.push(`${stage.id} subjectDigest does not match result target`);
 
-        if (bundle.target.kind !== 'aw-plugin' && stage.subjectDigest !== bundle.target.sourceDigest) {
+        if (
+          bundle.target.kind !== 'aw-plugin' &&
+          stage.subjectDigest !== bundle.target.sourceDigest
+        ) {
           errors.push(`${stage.id} subjectDigest does not match bundle target`);
         }
         const resultProfile = result.target?.profile ?? null;
         if (stage.profile !== null && resultProfile !== stage.profile) {
           errors.push(`${stage.id} profile does not match result target`);
         }
-        if (bundle.target.kind !== 'aw-plugin' && (stage.profile ?? null) !== (bundle.target.profile ?? null)) {
+        if (
+          bundle.target.kind !== 'aw-plugin' &&
+          (stage.profile ?? null) !== (bundle.target.profile ?? null)
+        ) {
           errors.push(`${stage.id} profile does not match bundle target`);
         }
       }
 
       if (bundle.evalAudit !== null) {
-        errors.push(...await validateObject(
-          'eval-audit-result.schema.json',
-          bundle.evalAudit,
-          'evalAudit',
-          temporaryRoot,
-        ));
-        if (bundle.target.kind !== 'aw-plugin' && bundle.evalAudit.targetSkillDigest !== bundle.target.sourceDigest) {
+        errors.push(
+          ...(await validateObject(
+            'eval-audit-result.schema.json',
+            bundle.evalAudit,
+            'evalAudit',
+            temporaryRoot,
+          )),
+        );
+        if (
+          bundle.target.kind !== 'aw-plugin' &&
+          bundle.evalAudit.targetSkillDigest !== bundle.target.sourceDigest
+        ) {
           errors.push('evalAudit targetSkillDigest does not match bundle target');
         }
       }
@@ -186,13 +211,18 @@ async function main() {
       const auditStage = stageResults.get('eval-audit');
       for (let index = 0; index < bundle.evalResults.length; index += 1) {
         const result = bundle.evalResults[index];
-        errors.push(...await validateObject(
-          'eval-run-bundle.schema.json',
-          result,
-          `evalResults-${index}`,
-          temporaryRoot,
-        ));
-        if (bundle.target.kind !== 'aw-plugin' && result.targetSkillDigest !== bundle.target.sourceDigest) {
+        errors.push(
+          ...(await validateObject(
+            'eval-run-bundle.schema.json',
+            result,
+            `evalResults-${index}`,
+            temporaryRoot,
+          )),
+        );
+        if (
+          bundle.target.kind !== 'aw-plugin' &&
+          result.targetSkillDigest !== bundle.target.sourceDigest
+        ) {
           errors.push(`evalResults[${index}] targetSkillDigest does not match bundle target`);
         }
         if (bundle.evalAudit && result.caseCorpusDigest !== bundle.evalAudit.caseCorpusDigest) {
@@ -208,9 +238,13 @@ async function main() {
     }
 
     const output = { valid: errors.length === 0, errors };
-    process.stdout.write(options.format === 'json'
-      ? `${JSON.stringify(output, null, 2)}\n`
-      : output.valid ? 'ReviewInputBundle is valid.\n' : `${errors.join('\n')}\n`);
+    process.stdout.write(
+      options.format === 'json'
+        ? `${JSON.stringify(output, null, 2)}\n`
+        : output.valid
+          ? 'ReviewInputBundle is valid.\n'
+          : `${errors.join('\n')}\n`,
+    );
     if (!output.valid) process.exitCode = 1;
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true });

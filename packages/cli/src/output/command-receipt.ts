@@ -1,8 +1,5 @@
-import type {
-  CatalogResolution,
-  CatalogResolutionFailure,
-  ReceiptOverallState,
-} from '../types.js';
+import type { PlatformName, ReceiptOverallState, Scope } from '../types.js';
+import type { InitCommandResult } from '../commands/init.js';
 import type { RebuildResult } from '../commands/rebuild-operations.js';
 
 export interface CliCommandResult {
@@ -10,18 +7,29 @@ export interface CliCommandResult {
   plugins: string[];
   warnings: string[];
   rebuildResults?: RebuildResult[];
+  receiptTargets?: Array<{
+    pluginName: string;
+    pluginId?: string;
+    sourceId?: string;
+    platform: PlatformName;
+    scope: Scope;
+  }>;
   overallState?: ReceiptOverallState;
 }
 
 export interface RebuildReceiptJson {
   ok: boolean;
   command: 'install' | 'upgrade' | 'reinstall' | 'uninstall' | 'cleanup';
-  receiptSchemaVersion: 3;
+  receiptSchemaVersion: 4;
   overallState: ReceiptOverallState;
   warnings: string[];
+  errors: Array<{ code: string; message: string }>;
   targets: Array<{
-    plugin: string;
-    version: string;
+    pluginName: string;
+    pluginId?: string;
+    sourceId?: string;
+    sourceIdentity?: string;
+    version?: string;
     platform: RebuildResult['target']['platform'];
     scope: RebuildResult['target']['scope'];
     status: RebuildResult['status'];
@@ -32,7 +40,24 @@ export interface RebuildReceiptJson {
     residual: string[];
     quarantined: string[];
     failures: RebuildResult['failures'];
+    errorCode?: string;
   }>;
+}
+
+function rebuildErrorCode(message: string): string {
+  for (const code of [
+    'legacyStateUnsupported',
+    'sourceChanged',
+    'sourceMissing',
+    'artifactCollision',
+  ]) {
+    if (message.includes(code)) return code;
+  }
+  if (message.startsWith('Cannot resolve required catalog sources:')) {
+    return 'catalogSourceUnavailable';
+  }
+  const prefix = message.split(':', 1)[0];
+  return /^[A-Za-z][A-Za-z0-9]*$/u.test(prefix) ? prefix : 'writeFailed';
 }
 
 export function buildRebuildReceiptJson(
@@ -45,22 +70,55 @@ export function buildRebuildReceiptJson(
   return {
     ok: overallState === 'succeeded',
     command,
-    receiptSchemaVersion: 3,
+    receiptSchemaVersion: 4,
     overallState,
     warnings: result.warnings,
-    targets: rebuildResults.map((entry) => ({
-      plugin: entry.target.pluginName,
-      version: entry.target.pluginVersion,
-      platform: entry.target.platform,
-      scope: entry.target.scope,
-      status: entry.status,
-      cleanupAttempted: entry.cleanupAttempted,
-      actions: entry.actions,
-      removed: entry.removed,
-      absent: entry.absent,
-      residual: entry.residual,
-      quarantined: entry.quarantined,
-      failures: entry.failures,
+    errors: overallState === 'failed' && rebuildResults.length === 0
+      ? [{
+          code: result.warnings[0]?.split(':', 1)[0] || 'writeCommandFailed',
+          message: result.warnings[0] ?? 'The write command did not run.',
+        }]
+      : [],
+    targets: rebuildResults.length > 0 ? rebuildResults.map((entry) => {
+      const identity = entry.target as typeof entry.target & {
+        pluginId?: string;
+        sourceId?: string;
+        sourceIdentity?: string;
+      };
+      return {
+        pluginName: identity.pluginName,
+        ...(identity.pluginId ? { pluginId: identity.pluginId } : {}),
+        ...(identity.sourceId ? { sourceId: identity.sourceId } : {}),
+        ...(identity.sourceIdentity ? { sourceIdentity: identity.sourceIdentity } : {}),
+        version: entry.target.pluginVersion,
+        platform: entry.target.platform,
+        scope: entry.target.scope,
+        status: entry.status,
+        cleanupAttempted: entry.cleanupAttempted,
+        actions: entry.actions,
+        removed: entry.removed,
+        absent: entry.absent,
+        residual: entry.residual,
+        quarantined: entry.quarantined,
+        failures: entry.failures,
+        ...(entry.status === 'failed'
+          ? { errorCode: rebuildErrorCode(entry.error.message) }
+          : {}),
+      };
+    }) : (result.receiptTargets ?? []).map((target) => ({
+      pluginName: target.pluginName,
+      ...(target.pluginId ? { pluginId: target.pluginId } : {}),
+      ...(target.sourceId ? { sourceId: target.sourceId } : {}),
+      platform: target.platform,
+      scope: target.scope,
+      status: overallState === 'succeeded' ? 'succeeded' : 'failed',
+      cleanupAttempted: false,
+      actions: [],
+      removed: [],
+      absent: [],
+      residual: [],
+      quarantined: [],
+      failures: [],
     })),
   };
 }
@@ -72,44 +130,37 @@ export function renderRebuildReceipt(
   const receipt = buildRebuildReceiptJson(command, result);
   return [
     `${command} ${receipt.overallState === 'succeeded' ? '完成' : '失败'}：${receipt.targets.length} 个目标。`,
+    ...receipt.errors.map((error) => error.message),
     ...receipt.targets.flatMap((target) => [
-      `- ${target.plugin} / ${target.platform} / ${target.scope}: ${target.status}`,
+      `- ${target.pluginName} / ${target.platform} / ${target.scope}: ${target.status}`,
       ...target.failures.map((failure) => `  ${failure.phase}: ${failure.message}`),
     ]),
   ];
 }
 
 export interface CliInitReceipt {
-  rootDir: string;
+  ok: boolean;
   changed: boolean;
   warnings: string[];
-  catalog: CatalogResolution;
+  primarySourceId: string;
+  configDigest: string;
+  compositeDigest: string;
+  sources: InitCommandResult['sources'];
 }
 
 export function buildInitReceiptJson(result: CliInitReceipt) {
   return {
-    ok: true,
     command: 'init' as const,
-    receiptSchemaVersion: 2 as const,
+    receiptSchemaVersion: 4 as const,
     receiptKind: 'catalogCacheWarmup' as const,
     ...result,
   };
 }
 
-export function buildInitFailureReceiptJson(catalog: CatalogResolutionFailure) {
-  return {
-    ok: false,
-    command: 'init' as const,
-    receiptSchemaVersion: 2 as const,
-    receiptKind: 'catalogCacheWarmup' as const,
-    warnings: [] as string[],
-    catalog,
-  };
-}
-
 export function renderInitReceipt(result: CliInitReceipt): string[] {
   return [
-    `Catalog cache ${result.changed ? '已更新' : '已就绪'}：${result.rootDir}。`,
+    `Catalog sources ${result.ok ? result.changed ? 'updated' : 'ready' : 'partially failed'}.`,
+    ...result.sources.map((source) => `- ${source.id}: ${source.ok ? source.freshness : source.error}`),
     ...result.warnings,
   ];
 }

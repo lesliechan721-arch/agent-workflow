@@ -5,7 +5,7 @@
     "plugin": "agent-content-toolkit",
     "minimumVersion": "0.4.0",
     "path": "standards/rules.json",
-    "digest": "sha256:0ab0d872c3b94af3f226085861d9bfe616df6abc16f0f6f76dd8825070adb6fb"
+    "digest": "sha256:2e7a68bbbc675cae683b46252113365f9efeb4ac4e034770a9d563294c02cc65"
   },
   "skillRules": "standards/skill-rules.json",
   "reviewDimensions": "standards/review-dimensions.json",

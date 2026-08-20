@@ -22,14 +22,6 @@ interface DistPathsModule {
   setEmbeddedPluginsRootOverrideForTests: (rootDir: string | null) => void;
 }
 
-interface DistMarketplaceModule {
-  setCatalogPackageSourceForTests: (source: unknown) => void;
-}
-
-interface DistPluginCatalogModule {
-  clearCurrentCatalogResolutionMemoForTests: () => void;
-}
-
 interface DistNativeCliModule {
   setNativeCliRunnerOverrideForTests: (runner: NativeCliRunner | null) => void;
 }
@@ -40,8 +32,6 @@ interface DistTestPathFenceModule {
 
 interface DistStateModules {
   paths: DistPathsModule | null;
-  marketplace: DistMarketplaceModule | null;
-  pluginCatalog: DistPluginCatalogModule | null;
   nativeCli: DistNativeCliModule | null;
   testPathFence: DistTestPathFenceModule | null;
 }
@@ -53,8 +43,6 @@ interface CachedDistStateModules {
 
 const distStateModulePaths = {
   paths: 'src/utils/paths.js',
-  marketplace: 'src/utils/marketplace.js',
-  pluginCatalog: 'src/utils/plugin-catalog.js',
   nativeCli: 'src/utils/native-cli.js',
   testPathFence: 'src/utils/test-path-fence.js',
 } as const;
@@ -120,15 +108,11 @@ async function loadDistStateModules(cliPackageRoot: string): Promise<DistStateMo
   }
 
   const rawPaths = await importDistModule<DistPathsModule>(cliPackageRoot, distStateModulePaths.paths);
-  const rawMarketplace = await importDistModule<DistMarketplaceModule>(cliPackageRoot, distStateModulePaths.marketplace);
-  const rawPluginCatalog = await importDistModule<DistPluginCatalogModule>(cliPackageRoot, distStateModulePaths.pluginCatalog);
   const rawNativeCli = await importDistModule<DistNativeCliModule>(cliPackageRoot, distStateModulePaths.nativeCli);
   const rawTestPathFence = await importDistModule<DistTestPathFenceModule>(cliPackageRoot, distStateModulePaths.testPathFence);
 
   const modules = {
     paths: hasFunctionExport(rawPaths, 'setEmbeddedPluginsRootOverrideForTests') ? rawPaths : null,
-    marketplace: hasFunctionExport(rawMarketplace, 'setCatalogPackageSourceForTests') ? rawMarketplace : null,
-    pluginCatalog: hasFunctionExport(rawPluginCatalog, 'clearCurrentCatalogResolutionMemoForTests') ? rawPluginCatalog : null,
     nativeCli: hasFunctionExport(rawNativeCli, 'setNativeCliRunnerOverrideForTests') ? rawNativeCli : null,
     testPathFence: hasFunctionExport(rawTestPathFence, 'setTestPathFenceHookForTests') ? rawTestPathFence : null,
   };
@@ -173,8 +157,6 @@ export async function installDistStateForTests(
   const modules = await loadDistStateModules(cliPackageRoot);
 
   modules.paths?.setEmbeddedPluginsRootOverrideForTests(null);
-  modules.marketplace?.setCatalogPackageSourceForTests(null);
-  modules.pluginCatalog?.clearCurrentCatalogResolutionMemoForTests();
   modules.nativeCli?.setNativeCliRunnerOverrideForTests(createTestNativeCliGuard({
     cwdSource: 'dist runNativeCli()/createCommandExecutionContext() invocation.cwd',
     envSource: 'dist runNativeCli()/createCommandExecutionContext() invocation.env',
@@ -185,8 +167,6 @@ export async function installDistStateForTests(
 export async function resetDistStateForTests(): Promise<void> {
   for (const { modules } of cachedDistStateModules.values()) {
     modules.paths?.setEmbeddedPluginsRootOverrideForTests(null);
-    modules.marketplace?.setCatalogPackageSourceForTests(null);
-    modules.pluginCatalog?.clearCurrentCatalogResolutionMemoForTests();
     modules.nativeCli?.setNativeCliRunnerOverrideForTests(null);
     modules.testPathFence?.setTestPathFenceHookForTests(null);
   }

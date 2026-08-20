@@ -1,10 +1,13 @@
 import crypto from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import path from 'node:path';
 
-import fs from 'fs-extra';
-
 import { acquireProcessLock, type ProcessLockLease } from './process-lock.js';
-import { resolveAwHome } from './state-paths.js';
+import {
+  canonicalizePathThroughExistingAncestorSync,
+  ensureRegularDirectoryPath,
+  resolveAwHome,
+} from './state-paths.js';
 import { assertTestWritablePath } from './test-path-fence.js';
 
 const ACTIVE_MARKETPLACE_RUNTIME_LOCK_TIMEOUT_MS = 600_000;
@@ -20,6 +23,22 @@ const RETRYABLE_RELEASE_ERROR_CODES = new Set([
 let activeMarketplaceLifecycleBeforeAcquireHookForTests:
   | ((coordinationRoot: string) => Promise<void>)
   | undefined;
+let activeMarketplaceCoordinationBeforeReleaseHookForTests:
+  | ((lockPath: string, attempt: number) => Promise<void>)
+  | undefined;
+interface CoordinationCommitContext {
+  parent?: CoordinationCommitContext;
+  durableCommit: boolean;
+}
+const coordinationCommitStorage = new AsyncLocalStorage<CoordinationCommitContext>();
+
+export function markActiveMarketplaceDurableCommit(): void {
+  let context = coordinationCommitStorage.getStore();
+  while (context) {
+    context.durableCommit = true;
+    context = context.parent;
+  }
+}
 
 export function setActiveMarketplaceLifecycleBeforeAcquireHookForTests(
   hook: ((coordinationRoot: string) => Promise<void>) | undefined,
@@ -27,12 +46,18 @@ export function setActiveMarketplaceLifecycleBeforeAcquireHookForTests(
   activeMarketplaceLifecycleBeforeAcquireHookForTests = hook;
 }
 
+export function setActiveMarketplaceCoordinationBeforeReleaseHookForTests(
+  hook: ((lockPath: string, attempt: number) => Promise<void>) | undefined,
+): void {
+  activeMarketplaceCoordinationBeforeReleaseHookForTests = hook;
+}
+
 export function resolveActiveMarketplaceRuntimeCoordinationRoot(
   env: NodeJS.ProcessEnv = process.env,
 ): string {
-  const awHome = resolveAwHome(env);
+  const awHome = canonicalizePathThroughExistingAncestorSync(resolveAwHome(env));
   const identity = crypto.createHash('sha256')
-    .update(path.resolve(awHome))
+    .update(awHome)
     .digest('hex')
     .slice(0, 16);
   return assertTestWritablePath(
@@ -56,7 +81,7 @@ export async function acquireActiveMarketplaceRuntimeLease(
 export async function acquireActiveMarketplaceRuntimeLeaseAtRoot(
   coordinationRoot: string,
 ): Promise<ProcessLockLease> {
-  await fs.ensureDir(coordinationRoot);
+  await ensureRegularDirectoryPath(coordinationRoot, 'Active marketplace coordination root');
   return acquireProcessLock({
     lockPath: path.join(coordinationRoot, ACTIVE_MARKETPLACE_RUNTIME_LOCK_FILE),
     timeoutMs: ACTIVE_MARKETPLACE_RUNTIME_LOCK_TIMEOUT_MS,
@@ -73,7 +98,7 @@ export async function acquireActiveMarketplaceLifecycleLease(
 export async function acquireActiveMarketplaceLifecycleLeaseAtRoot(
   coordinationRoot: string,
 ): Promise<ProcessLockLease> {
-  await fs.ensureDir(coordinationRoot);
+  await ensureRegularDirectoryPath(coordinationRoot, 'Active marketplace coordination root');
   await activeMarketplaceLifecycleBeforeAcquireHookForTests?.(coordinationRoot);
   return acquireProcessLock({
     lockPath: path.join(coordinationRoot, 'lifecycle-state.lock'),
@@ -87,6 +112,7 @@ export async function releaseActiveMarketplaceCoordinationLease(
   let lastError: unknown;
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
+      await activeMarketplaceCoordinationBeforeReleaseHookForTests?.(lease.lockPath, attempt + 1);
       await lease.release();
       return;
     } catch (error) {
@@ -95,6 +121,7 @@ export async function releaseActiveMarketplaceCoordinationLease(
       if (!RETRYABLE_RELEASE_ERROR_CODES.has(code)) throw error;
     }
   }
+  await lease.release().catch(() => undefined);
   throw lastError;
 }
 
@@ -105,24 +132,45 @@ async function withCoordinationLease<T>(
 ): Promise<T> {
   let result: T | undefined;
   let actionError: unknown;
+  let actionSucceeded = false;
+  const commitContext: CoordinationCommitContext = {
+    parent: coordinationCommitStorage.getStore(),
+    durableCommit: false,
+  };
   try {
-    result = await action();
+    result = await coordinationCommitStorage.run(commitContext, action);
+    actionSucceeded = true;
   } catch (error) {
     actionError = error;
   }
   try {
     await releaseActiveMarketplaceCoordinationLease(lease);
   } catch (releaseError) {
-    if (actionError !== undefined) {
-      throw new AggregateError(
-        [actionError, releaseError],
-        `${label} action and lease release both failed.`,
-        { cause: actionError },
-      );
+    if (!actionSucceeded) {
+      try {
+        process.emitWarning(
+          `${label} action failed, and its lease release also failed: ${releaseError instanceof Error ? releaseError.message : String(releaseError)}.`,
+          { code: 'AW_COORDINATION_LOCK_RELEASE_FAILED' },
+        );
+      } catch {
+        // Diagnostics cannot replace the primary action error.
+      }
+      throw actionError;
+    }
+    if (commitContext.durableCommit) {
+      try {
+        process.emitWarning(
+          `${label} committed its durable result, but its lease release failed: ${releaseError instanceof Error ? releaseError.message : String(releaseError)}.`,
+          { code: 'AW_COORDINATION_LOCK_RELEASE_FAILED' },
+        );
+      } catch {
+        // Diagnostics cannot replace a durable result.
+      }
+      return result as T;
     }
     throw releaseError;
   }
-  if (actionError !== undefined) throw actionError;
+  if (!actionSucceeded) throw actionError;
   return result as T;
 }
 

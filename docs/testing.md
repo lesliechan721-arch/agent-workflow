@@ -12,7 +12,7 @@
 | Integration | `pnpm test:integration` | CLI 入口、作者工具、写命令和平台 adapter 组合 |
 | Performance | `pnpm test:perf` | 独立性能预算；不进入普通 unit |
 | Performance gate | `pnpm test:perf:gate` | 预算结果和 fast unit wall-time 门禁 |
-| Smoke | 见下方命令表 | 真实 build、pack、fetch 和插件脚本产物 |
+| Smoke | 见下方命令表 | 真实 build、stage、pack、fetch 和插件脚本产物 |
 | Plugin test | `pnpm plugin:test <plugin>` | 插件自己的确定性 Node 测试 |
 | Model eval | 见[插件维护指南](plugin-maintenance.md) | 需要模型理解、判断、路由或完成任务的语义合同；不进入普通 CI |
 
@@ -23,11 +23,14 @@
 | `pnpm test:coverage` | 运行默认 unit/integration 测试并生成覆盖率报告 |
 | `pnpm test:smoke` | 运行完整 smoke suite |
 | `pnpm test:smoke:build` | 校验 `pnpm build` 产物 |
-| `pnpm test:smoke:pack:cli` | 校验 CLI tarball 内容 |
-| `pnpm test:smoke:pack:catalog` | 校验 sidecar/full catalog tarball 内容 |
-| `pnpm test:smoke:pack` | 串行校验 CLI 与 catalog tarball |
-| `pnpm test:smoke:fetch` | 校验 catalog fetch、选择、cache 复用和兼容性失败边界 |
+| `pnpm test:smoke:pack:cli` | 校验 CLI tarball 内容，并在只暴露 tarball 已声明依赖的隔离视图中运行 bin 和关键 ESM import |
+| `pnpm test:smoke:stage:catalog` | 校验显式版本 catalog staging 和本地 path source 消费 |
+| `pnpm test:smoke:publish:catalog` | 使用本地 bare remote 校验 stage、Git publish、fetch 和 Git provider 消费 |
+| `pnpm test:smoke:bootstrap:catalog` | 使用本地 bare remote 校验两个 orphan channel、annotated tag、幂等和 atomic failure |
+| `pnpm test:smoke:fetch` | 通过本地 bare Git remote 校验 publish、fetch 和 Git provider 消费；复用 publish catalog smoke |
 | `pnpm test:smoke:plugin-scripts` | 校验真实插件脚本 staging、依赖闭包和 bundle 布局 |
+
+`release:verify:cli` 包含真实 plugin-scripts staging smoke，以及使用临时本地 bare Git remote 的 `test:smoke:fetch` publish/fetch/provider smoke。该 plugin smoke 固定 packageRoot 的 pnpm 版本，通过隔离 store 视图复用 workspace install 记录的 pnpm 内容，并在移除 `npm_execpath`、PATH 中的 Corepack/pnpm 和 pnpm 在线解析后运行；fetch smoke 不访问真实网络。
 
 普通测试使用 synthetic catalog、隔离 home 和 fake native runner。不得调用用户真实 Codex/Claude 配置，也不得修改仓库外状态。
 
@@ -75,10 +78,10 @@ Skill 和 prompt 的确定性测试只保留结构、模板、平台元数据、
 |--------|----------|----------|
 | 纯函数、helper、validator、renderer | Unit | 相关定向 unit；交付前 `pnpm test:unit` |
 | CLI 入口、write、status、config、TUI | Unit + Integration | 相关定向测试；交付前 `pnpm test:unit`、`pnpm test:integration` 和 `pnpm build` |
-| Strict catalog cache 或 selector | Unit + Performance + Smoke | `packages/cli/tests/unit/local-marketplace.test.ts`、`pnpm test:perf:gate`、`pnpm test:smoke:fetch` |
+| Source strict cache 或 selector | Unit + Performance + Smoke | `packages/cli/tests/unit/catalog-providers.test.ts`、`pnpm test:perf:gate`、`pnpm test:smoke:fetch` |
 | 平台输出或 adapter | Unit + Integration | 对应平台 unit/integration；插件产物按[插件维护指南](plugin-maintenance.md)验证 |
 | 插件作者合同 | Integration + Plugin test | `pnpm test:integration`、`pnpm plugin:test <plugin>` 和专用作者工作流要求的验证 |
-| Build、bundle 或 tarball | Smoke | 对应 build、plugin-scripts、CLI pack 或 catalog pack smoke |
+| Build、bundle、staging、Git publisher 或 tarball | Smoke | 对应 build、plugin-scripts、catalog stage/publish 或 CLI pack smoke |
 | 公开 JSON 或 schema | Unit + Integration | 对应 schema 测试、CLI JSON harness，并同步架构和消费者文档 |
 
 所有文档或代码改动最后运行 `git diff --check`。
@@ -86,6 +89,8 @@ Skill 和 prompt 的确定性测试只保留结构、模板、平台元数据、
 ## Build Reuse
 
 `scripts/build/ensure-cli-build.mjs` 只在输入、输出和 package identity 都匹配 generation stamp 时复用 build。并发 build 使用 lock；测试必须覆盖输入变化、输出变化、symlink、并发 owner 和 snapshot 隔离。
+
+Release unit/integration 使用本地 bare Git 覆盖 schema 3 CLI floor、跨 channel publication lock、tag-first pending guard、完整 ledger 串行化和 combined 同一 build generation 绑定。fixture 不访问真实 official remote 或 npm registry。
 
 常规 unit/integration 不应隐式执行 package manager。真实依赖安装、build 后 production closure 和 tarball 内容进入 smoke。
 
@@ -99,7 +104,7 @@ AW_PERF_SUMMARY {"name":"..."}
 
 Performance gate 必须校验摘要名称集合。缺少、重复或未知名称都必须让门禁失败。
 
-性能预算使用宽松、跨平台的上限。它们用于发现数量级回退，不用于比较微小波动。失败时先确认机器负载，再检查远程调用次数、重复 catalog 校验、cache publication 和 live component probe 数量。
+性能预算使用宽松、跨平台的上限。它们用于发现数量级回退，不用于比较微小波动。source 预算使用确定性的本地 path 和 bare Git fixture，覆盖 warm strict-cache selector、四个 Git/path source 并行 fanout、remote deadline 失败和进程清理确认；不依赖公网。失败时先确认机器负载，再检查远程调用次数、重复 catalog 校验、cache publication 和 live component probe 数量。
 
 ## Test Isolation
 

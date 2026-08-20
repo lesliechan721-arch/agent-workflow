@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
 
 import fs from 'fs-extra';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   applyCodexHookGroupsTransactionFile,
@@ -22,12 +22,15 @@ import type { NativeCliRunner } from '../../src/utils/native-cli.js';
 import {
   OWNED_TEXT_HEADER_PREFIX,
   inspectOwnedComponents,
+  parseSharedOwnerToken,
   parseOwnedTextHeader,
   readSkillOwnerMarker,
   SKILL_OWNER_MARKER,
   writeOwnedTextFile,
   writeSkillOwnerMarker,
 } from '../../src/utils/ownership.js';
+import { inventoryCatalogSourceReferences } from '../../src/utils/catalog-source-references.js';
+import { preflightDesiredArtifactCollisions } from '../../src/utils/multi-source-catalog.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
 import { bundleLocalPlugin } from '../../src/generators/local-plugin.js';
 import {
@@ -45,7 +48,6 @@ import { requiresCodexNativePlugin } from '../../src/utils/codex-project-surface
 import {
   resolveConfigFileLockPath,
 } from '../../src/utils/plugin-config.js';
-import { initializeLocalMarketplace } from '../../src/utils/local-marketplace.js';
 import {
   applyCodexConfigTransactionFile,
   readCodexConfigFile,
@@ -53,6 +55,29 @@ import {
 import { renderTrackedHookGroupIdentity } from '../../src/utils/hooks-contract.js';
 
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
+
+async function prewarmActiveMarketplace(catalogRoot: string, awHome: string): Promise<void> {
+  await fs.ensureDir(path.dirname(awHome));
+  await fs.copy(catalogRoot, awHome, { overwrite: true });
+}
+
+async function snapshotRegularTree(root: string): Promise<Record<string, string>> {
+  const snapshot: Record<string, string> = {};
+  const visit = async (current: string): Promise<void> => {
+    for (const entry of await fs.readdir(current, { withFileTypes: true })) {
+      const absolute = path.join(current, entry.name);
+      const relative = path.relative(root, absolute);
+      if (entry.isDirectory()) {
+        snapshot[`${relative}/`] = 'directory';
+        await visit(absolute);
+      } else {
+        snapshot[relative] = (await fs.readFile(absolute)).toString('base64');
+      }
+    }
+  };
+  await visit(root);
+  return snapshot;
+}
 
 async function createSyntheticCatalog(options: {
   root: string;
@@ -277,6 +302,49 @@ describe('rebuild adapter integration', () => {
     },
   );
 
+  it('treats the same Claude plugin name in another marketplace as an independent consumer', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const plugin = createClaudeCleanupPlugin(isolation.layout.rootDir, 'same-name');
+    const paths = resolveClaudePaths(isolation.layout.fixtureCwd, 'user', isolation.env);
+    const descriptor = { source: 'directory', path: isolation.layout.awHomeDir };
+    await Promise.all([
+      fs.outputJson(paths.settingsPath, {
+        extraKnownMarketplaces: { aw: { source: descriptor } },
+      }),
+      fs.outputJson(paths.knownMarketplacesPath, {
+        aw: { source: descriptor, installLocation: isolation.layout.awHomeDir },
+      }),
+      fs.outputJson(paths.installedPluginsPath, {
+        plugins: {
+          'same-name@other': [{
+            name: 'same-name', marketplace: 'other', scope: 'user', version: '9.0.0',
+          }],
+        },
+      }),
+    ]);
+    const integration = createRebuildIntegration({
+      context: createCommandExecutionContext({
+        env: isolation.env,
+        nativeCliRunner: async () => ({ exitCode: 0, stdout: '', stderr: '' }),
+      }),
+    });
+    const target = await integration.buildTarget({
+      plugin,
+      platform: 'claude',
+      scope: 'user',
+      cwd: isolation.layout.fixtureCwd,
+      command: 'cleanup',
+      catalog: { rootDir: isolation.layout.rootDir, source: 'local' },
+      includeHistoricalLifecycleArtifacts: false,
+    });
+    const inspected = await inspectOwnedComponents({
+      components: target.ownedComponents,
+      nativeProbe: integration.driver.probeNative,
+    });
+    expect(inspected.components.find((entry) => entry.component.kind === 'native-plugin'))
+      .toMatchObject({ state: 'absent' });
+  });
+
   it('installs prewarmed Codex static Skills and reinstalls after legacy marker loss', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const catalogRoot = await createSyntheticCatalog({
@@ -284,7 +352,7 @@ describe('rebuild adapter integration', () => {
       pluginRoots: [path.join(repositoryRoot, 'plugins', 'ask-me')],
     });
     const catalog = { rootDir: catalogRoot, source: 'local' } as CatalogResolution;
-    await initializeLocalMarketplace({ force: true, env: isolation.env, catalogResolution: catalog });
+    await prewarmActiveMarketplace(catalog.rootDir, isolation.layout.awHomeDir);
     const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', 'ask-me'), {
       mode: 'bundle',
     });
@@ -428,11 +496,7 @@ describe('rebuild adapter integration', () => {
       root: isolation.layout.rootDir,
       pluginRoots: [path.join(repositoryRoot, 'plugins', 'ask-me')],
     });
-    await initializeLocalMarketplace({
-      force: true,
-      env: isolation.env,
-      catalogResolution: { rootDir: catalogRoot, source: 'local' },
-    });
+    await prewarmActiveMarketplace(catalogRoot, isolation.layout.awHomeDir);
     const plugin = await readPluginManifest(path.join(
       isolation.layout.awHomeDir,
       'plugins',
@@ -1118,6 +1182,363 @@ describe('rebuild adapter integration', () => {
     expect(await fs.pathExists(markerPath)).toBe(false);
     expect(await fs.readdir(cwd)).toEqual(before);
   });
+
+  it('builds Codex user inspection writes below the selected namespaced marketplace root', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const catalogRoot = await createSyntheticCatalog({
+      root: isolation.layout.rootDir,
+      pluginRoots: [path.join(repositoryRoot, 'plugins', 'ask-me')],
+    });
+    const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', 'ask-me'), { mode: 'bundle' });
+    const marketplaceRoot = path.join(isolation.layout.awHomeDir, 'marketplaces', 'team');
+    const integration = createRebuildIntegration({
+      context: createCommandExecutionContext({
+        env: isolation.env,
+        nativeCliRunner: async () => { throw new Error('inspection must not call native CLI'); },
+      }),
+    });
+    const target = await integration.buildTarget({
+      sourceId: 'team',
+      sourceIdentity: `sha256:${'1'.repeat(64)}`,
+      pluginId: 'team/ask-me',
+      marketplaceName: 'aw-team',
+      marketplaceRoot,
+      plugin,
+      platform: 'codex',
+      scope: 'user',
+      cwd: isolation.layout.fixtureCwd,
+      command: 'install',
+      catalog: { rootDir: catalogRoot, source: 'local' },
+      includeHistoricalLifecycleArtifacts: false,
+      readOnlyInspectionPlan: true,
+    });
+    const skillPaths = target.ownedComponents.flatMap((component) =>
+      component.kind === 'skill-directory' && 'path' in component ? [component.path] : []);
+    expect(skillPaths.length).toBeGreaterThan(0);
+    expect(skillPaths.every((entry) => entry.startsWith(`${marketplaceRoot}${path.sep}`))).toBe(true);
+  });
+
+  it.each(['EACCES', 'EIO'] as const)(
+    'fails a namespaced marketplace mirror on destination %s before replacing the old root',
+    async (errorCode) => {
+      const isolation = getCurrentSourceTestIsolation();
+      const catalogRoot = await createSyntheticCatalog({
+        root: isolation.layout.rootDir,
+        pluginRoots: [path.join(repositoryRoot, 'plugins', 'ask-me')],
+      });
+      const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', 'ask-me'), { mode: 'bundle' });
+      const marketplaceRoot = path.join(isolation.layout.awHomeDir, 'marketplaces', 'team');
+      const sourceIdentity = `sha256:${'1'.repeat(64)}`;
+      const sentinelPath = path.join(marketplaceRoot, 'plugins', 'retained', 'sentinel.txt');
+      await Promise.all([
+        fs.outputJson(path.join(marketplaceRoot, 'config.json'), {
+          schemaVersion: 2,
+          sourceId: 'team',
+          sourceIdentity,
+          marketplaceName: 'aw-team',
+        }),
+        fs.outputFile(sentinelPath, 'retained\n'),
+      ]);
+      const nativeCliRunner = vi.fn(async () => {
+        throw new Error('native runner must not run');
+      });
+      const integration = createRebuildIntegration({
+        context: createCommandExecutionContext({ env: isolation.env, nativeCliRunner }),
+      });
+      const target = await integration.buildTarget({
+        sourceId: 'team',
+        sourceIdentity,
+        pluginId: 'team/ask-me',
+        marketplaceName: 'aw-team',
+        marketplaceRoot,
+        plugin,
+        platform: 'codex',
+        scope: 'user',
+        cwd: isolation.layout.fixtureCwd,
+        command: 'install',
+        catalog: { rootDir: catalogRoot, source: 'local' },
+        includeHistoricalLifecycleArtifacts: false,
+      });
+      const realLstat = fs.lstat.bind(fs);
+      const lstat = vi.spyOn(fs, 'lstat').mockImplementation((async (location) => {
+        if (path.resolve(String(location)) === path.resolve(marketplaceRoot)) {
+          throw Object.assign(new Error(`${errorCode} destination read failed`), { code: errorCode });
+        }
+        return realLstat(location);
+      }) as typeof fs.lstat);
+      try {
+        await expect(integration.driver.writeNative(target))
+          .rejects.toThrow(`${errorCode} destination read failed`);
+      } finally {
+        lstat.mockRestore();
+      }
+      expect(nativeCliRunner).not.toHaveBeenCalled();
+      await expect(fs.readFile(sentinelPath, 'utf8')).resolves.toBe('retained\n');
+    },
+  );
+
+  it.each(['EPERM', 'EBUSY'] as const)(
+    'preserves the canonical marketplace when rollback backup inspection gets %s',
+    async (errorCode) => {
+      const isolation = getCurrentSourceTestIsolation();
+      const catalogRoot = await createSyntheticCatalog({
+        root: isolation.layout.rootDir,
+        pluginRoots: [path.join(repositoryRoot, 'plugins', 'ask-me')],
+      });
+      const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', 'ask-me'), { mode: 'bundle' });
+      const marketplaceRoot = path.join(isolation.layout.awHomeDir, 'marketplaces', 'team');
+      const sourceIdentity = `sha256:${'1'.repeat(64)}`;
+      await fs.copy(catalogRoot, marketplaceRoot);
+      await Promise.all([
+        fs.writeJson(path.join(marketplaceRoot, 'config.json'), {
+          schemaVersion: 2,
+          sourceId: 'team',
+          sourceIdentity,
+          marketplaceName: 'aw-team',
+        }),
+        ...[
+          path.join(marketplaceRoot, '.agents', 'plugins', 'marketplace.json'),
+          path.join(marketplaceRoot, '.claude-plugin', 'marketplace.json'),
+        ].map(async (manifestPath) => {
+          const manifest = await fs.readJson(manifestPath) as Record<string, unknown>;
+          await fs.writeJson(manifestPath, { ...manifest, name: 'aw-team' });
+        }),
+        fs.outputFile(path.join(marketplaceRoot, 'old-generation.txt'), 'old\n'),
+      ]);
+      const integration = createRebuildIntegration({
+        context: createCommandExecutionContext({
+          env: isolation.env,
+          nativeCliRunner: async () => { throw new Error('native install failed'); },
+        }),
+      });
+      const target = await integration.buildTarget({
+        sourceId: 'team',
+        sourceIdentity,
+        pluginId: 'team/ask-me',
+        marketplaceName: 'aw-team',
+        marketplaceRoot,
+        plugin,
+        platform: 'codex',
+        scope: 'user',
+        cwd: isolation.layout.fixtureCwd,
+        command: 'install',
+        catalog: { rootDir: catalogRoot, source: 'local' },
+        includeHistoricalLifecycleArtifacts: false,
+      });
+      await expect(integration.driver.writeNative(target)).rejects.toThrow('native install failed');
+      const backupName = (await fs.readdir(path.dirname(marketplaceRoot)))
+        .find((entry) => entry.startsWith('team.backup-'))!;
+      const backupRoot = path.join(path.dirname(marketplaceRoot), backupName);
+      const realLstat = fs.lstat.bind(fs);
+      const lstat = vi.spyOn(fs, 'lstat').mockImplementation((async (location) => {
+        if (path.resolve(String(location)) === path.resolve(backupRoot)) {
+          throw Object.assign(new Error(`${errorCode} backup read failed`), { code: errorCode });
+        }
+        return realLstat(location);
+      }) as typeof fs.lstat);
+      await expect(integration.driver.rollbackMaterialize?.(target))
+        .rejects.toMatchObject({ code: errorCode });
+      lstat.mockRestore();
+
+      await expect(fs.lstat(marketplaceRoot)).resolves.toMatchObject({});
+      await expect(integration.driver.rollbackMaterialize?.(target)).resolves.toBeUndefined();
+      await expect(fs.readFile(path.join(marketplaceRoot, 'old-generation.txt'), 'utf8'))
+        .resolves.toBe('old\n');
+    },
+  );
+
+  it.each(['EPERM', 'EBUSY'] as const)(
+    'restores the old marketplace after staging move failure without a pathExists %s probe',
+    async (errorCode) => {
+      const isolation = getCurrentSourceTestIsolation();
+      const catalogRoot = await createSyntheticCatalog({
+        root: isolation.layout.rootDir,
+        pluginRoots: [path.join(repositoryRoot, 'plugins', 'ask-me')],
+      });
+      const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', 'ask-me'), { mode: 'bundle' });
+      const marketplaceRoot = path.join(isolation.layout.awHomeDir, 'marketplaces', 'team');
+      const sourceIdentity = `sha256:${'2'.repeat(64)}`;
+      await fs.copy(catalogRoot, marketplaceRoot);
+      await Promise.all([
+        fs.writeJson(path.join(marketplaceRoot, 'config.json'), {
+          schemaVersion: 2,
+          sourceId: 'team',
+          sourceIdentity,
+          marketplaceName: 'aw-team',
+        }),
+        ...[
+          path.join(marketplaceRoot, '.agents', 'plugins', 'marketplace.json'),
+          path.join(marketplaceRoot, '.claude-plugin', 'marketplace.json'),
+        ].map(async (manifestPath) => {
+          const manifest = await fs.readJson(manifestPath) as Record<string, unknown>;
+          await fs.writeJson(manifestPath, { ...manifest, name: 'aw-team' });
+        }),
+        fs.outputFile(path.join(marketplaceRoot, 'old-generation.txt'), 'old\n'),
+      ]);
+      const integration = createRebuildIntegration({
+        context: createCommandExecutionContext({
+          env: isolation.env,
+          nativeCliRunner: async () => { throw new Error('native runner must not run'); },
+        }),
+      });
+      const target = await integration.buildTarget({
+        sourceId: 'team',
+        sourceIdentity,
+        pluginId: 'team/ask-me',
+        marketplaceName: 'aw-team',
+        marketplaceRoot,
+        plugin,
+        platform: 'codex',
+        scope: 'user',
+        cwd: isolation.layout.fixtureCwd,
+        command: 'install',
+        catalog: { rootDir: catalogRoot, source: 'local' },
+        includeHistoricalLifecycleArtifacts: false,
+      });
+      const realMove = fs.move.bind(fs);
+      const move = vi.spyOn(fs, 'move').mockImplementation(async (source, destination, options) => {
+        if (path.basename(String(source)).startsWith('.team-staging-')
+          && path.resolve(String(destination)) === path.resolve(marketplaceRoot)) {
+          throw Object.assign(new Error('staging move failed'), { code: 'EIO' });
+        }
+        return realMove(source, destination, options);
+      });
+      const realPathExists = fs.pathExists.bind(fs);
+      const pathExists = vi.spyOn(fs, 'pathExists').mockImplementation(async (candidate) => {
+        if (path.resolve(String(candidate)) === path.resolve(marketplaceRoot)
+          || path.basename(String(candidate)).startsWith('team.backup-')) {
+          throw Object.assign(new Error(`${errorCode} pathExists probe`), { code: errorCode });
+        }
+        return realPathExists(candidate);
+      });
+      await expect(integration.driver.writeNative(target)).rejects.toMatchObject({ code: 'EIO' });
+      move.mockRestore();
+      pathExists.mockRestore();
+
+      await expect(fs.readFile(path.join(marketplaceRoot, 'old-generation.txt'), 'utf8'))
+        .resolves.toBe('old\n');
+      expect((await fs.readdir(path.dirname(marketplaceRoot))).filter((entry) =>
+        entry.startsWith('team.backup-'))).toEqual([]);
+    },
+  );
+
+  it.each([
+    ['EACCES', 'plugins'],
+    ['EIO', 'skills'],
+  ] as const)(
+    'fails closed when the namespaced marketplace %s %s directory cannot be read',
+    async (errorCode, directoryKind) => {
+      const isolation = getCurrentSourceTestIsolation();
+      const catalogRoot = await createSyntheticCatalog({
+        root: isolation.layout.rootDir,
+        pluginRoots: [path.join(repositoryRoot, 'plugins', 'ask-me')],
+      });
+      const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', 'ask-me'), { mode: 'bundle' });
+      const marketplaceRoot = path.join(isolation.layout.awHomeDir, 'marketplaces', 'team');
+      const marketplaceParent = path.dirname(marketplaceRoot);
+      const sourceIdentity = `sha256:${'1'.repeat(64)}`;
+      await Promise.all([
+        ...['.agents', '.claude-plugin', 'plugins'].map((entry) =>
+          fs.copy(path.join(catalogRoot, entry), path.join(marketplaceRoot, entry))),
+        fs.outputJson(path.join(marketplaceRoot, 'config.json'), {
+          schemaVersion: 2,
+          sourceId: 'team',
+          sourceIdentity,
+          marketplaceName: 'aw-team',
+        }),
+      ]);
+      for (const manifestPath of [
+        path.join(marketplaceRoot, '.agents', 'plugins', 'marketplace.json'),
+        path.join(marketplaceRoot, '.claude-plugin', 'marketplace.json'),
+      ]) {
+        const manifest = await fs.readJson(manifestPath) as Record<string, unknown>;
+        await fs.writeJson(manifestPath, { ...manifest, name: 'aw-team' }, { spaces: 2 });
+      }
+      const sentinelPath = path.join(marketplaceRoot, 'generation.txt');
+      await fs.outputFile(sentinelPath, 'old-generation\n');
+      const platformManifest = await fs.readJson(
+        path.join(marketplaceRoot, 'plugins', 'ask-me', '.codex-plugin', 'plugin.json'),
+      ) as { skills: string };
+      const skillsRoot = path.resolve(
+        path.join(marketplaceRoot, 'plugins', 'ask-me'),
+        platformManifest.skills,
+      );
+      const skillKey = (await fs.readdir(skillsRoot))[0]!;
+      const overlayRoot = path.join(skillsRoot, skillKey);
+      await fs.outputFile(path.join(overlayRoot, 'SKILL.md'), 'owned-overlay\n');
+      await writeSkillOwnerMarker({
+        skillRoot: overlayRoot,
+        allowedRoot: skillsRoot,
+        identity: {
+          owner: 'agent-workflows',
+          sourceId: 'team',
+          sourceIdentity,
+          pluginId: 'team/ask-me',
+          plugin: 'ask-me',
+          artifactKey: skillKey,
+          platform: 'codex',
+          scope: 'user',
+        },
+      });
+      const oldRootSnapshot = await snapshotRegularTree(marketplaceRoot);
+
+      const nativeCliRunner = vi.fn(async () => {
+        throw new Error('native runner must not run');
+      });
+      const integration = createRebuildIntegration({
+        context: createCommandExecutionContext({ env: isolation.env, nativeCliRunner }),
+      });
+      const target = await integration.buildTarget({
+        sourceId: 'team',
+        sourceIdentity,
+        pluginId: 'team/ask-me',
+        marketplaceName: 'aw-team',
+        marketplaceRoot,
+        plugin,
+        platform: 'codex',
+        scope: 'user',
+        cwd: isolation.layout.fixtureCwd,
+        command: 'install',
+        catalog: { rootDir: catalogRoot, source: 'local' },
+        includeHistoricalLifecycleArtifacts: false,
+      });
+      const unreadableRoot = directoryKind === 'plugins'
+        ? path.join(marketplaceRoot, 'plugins')
+        : path.join(marketplaceRoot, 'plugins', 'ask-me', 'codex', 'skills');
+      const realReaddir = fs.readdir.bind(fs);
+      const readdir = vi.spyOn(fs, 'readdir').mockImplementation((async (location, options) => {
+        if (path.resolve(String(location)) === path.resolve(unreadableRoot)) {
+          throw Object.assign(
+            new Error(`${errorCode}: cannot read ${marketplaceRoot}`),
+            { code: errorCode },
+          );
+        }
+        return realReaddir(location, options as never);
+      }) as typeof fs.readdir);
+      let failure: Error | undefined;
+      try {
+        await integration.driver.writeNative(target);
+      } catch (error) {
+        failure = error as Error;
+      } finally {
+        readdir.mockRestore();
+      }
+
+      expect(failure?.message).toContain('marketplaceOverlayReadFailed');
+      expect(failure?.message).toContain(errorCode);
+      expect(failure?.message).not.toContain(isolation.layout.awHomeDir);
+      expect(failure?.message).not.toContain(marketplaceRoot);
+      expect(nativeCliRunner).not.toHaveBeenCalled();
+      await expect(fs.readFile(sentinelPath, 'utf8')).resolves.toBe('old-generation\n');
+      expect(await snapshotRegularTree(marketplaceRoot)).toEqual(oldRootSnapshot);
+      await expect(readSkillOwnerMarker({
+        skillRoot: overlayRoot,
+        allowedRoot: skillsRoot,
+      })).resolves.toMatchObject({ sourceId: 'team', sourceIdentity, pluginId: 'team/ask-me' });
+      expect((await fs.readdir(marketplaceParent)).filter((entry) => entry.startsWith('.team-'))).toEqual([]);
+      expect((await fs.readdir(marketplaceParent)).filter((entry) => entry.startsWith('team.backup-'))).toEqual([]);
+    },
+  );
 
   it('classifies present-or-disabled artifacts as optional without invoking the renderer', async () => {
     const isolation = getCurrentSourceTestIsolation();
@@ -1826,6 +2247,50 @@ describe('rebuild adapter integration', () => {
     ].join('\n'));
     await expect(build()).rejects.toThrow('externalOwnershipPresent');
 
+    plugin.marketplaceName = 'aw-team';
+    plugin.sourceId = 'team';
+    plugin.sourceIdentity = `sha256:${'1'.repeat(64)}`;
+    plugin.pluginId = 'team/safety-plugin';
+    const canonicalMarketplaceRoot = path.join(isolation.env.AW_HOME!, 'marketplaces', 'team');
+    await fs.outputFile(path.join(isolation.layout.codexHomeDir, 'config.toml'), [
+      '[marketplaces.aw-team]',
+      `source = ${JSON.stringify(path.join(isolation.env.AW_HOME!, 'foreign-team'))}`,
+      'source_type = "local"',
+      '[plugins."safety-plugin@aw-team"]',
+      'enabled = true',
+      '',
+    ].join('\n'));
+    const foreignConfigPath = path.join(isolation.layout.codexHomeDir, 'config.toml');
+    const foreignConfigBefore = await fs.readFile(foreignConfigPath, 'utf8');
+    const foreignTarget = await integration.buildTarget({
+      plugin,
+      sourceId: 'team',
+      sourceIdentity: plugin.sourceIdentity,
+      pluginId: plugin.pluginId,
+      marketplaceName: 'aw-team',
+      marketplaceRoot: canonicalMarketplaceRoot,
+      platform: 'codex',
+      scope: 'project',
+      cwd,
+      command: 'install',
+      catalog: { rootDir: isolation.layout.rootDir, source: 'local' } as CatalogResolution,
+      includeHistoricalLifecycleArtifacts: false,
+    });
+    await expect(executeRebuildOperation({
+      command: 'install',
+      target: foreignTarget,
+      driver: integration.driver,
+      activeStore,
+    })).resolves.toMatchObject({
+      status: 'failed',
+      error: { phase: 'preflight.inspect', message: expect.stringContaining('externalOwnershipPresent') },
+    });
+    expect(await fs.readFile(foreignConfigPath, 'utf8')).toBe(foreignConfigBefore);
+    delete plugin.marketplaceName;
+    delete plugin.sourceId;
+    delete plugin.sourceIdentity;
+    delete plugin.pluginId;
+
     await fs.outputFile(path.join(isolation.layout.codexHomeDir, 'config.toml'), '');
     await fs.outputFile(path.join(cwd, '.codex', 'config.toml'), '[broken');
     plugin.manifest.extensions = {
@@ -1888,6 +2353,89 @@ describe('rebuild adapter integration', () => {
       catalog: { rootDir: isolation.layout.rootDir, source: 'local' } as CatalogResolution,
       includeHistoricalLifecycleArtifacts: false,
     })).rejects.toThrow('roleNameConflict');
+  });
+
+  it('checks a derived Codex marketplace before removing a stale schema 2 project rule', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const cwd = isolation.layout.fixtureCwd;
+    const marketplaceRoot = path.join(isolation.env.AW_HOME!, 'marketplaces', 'team');
+    const plugin: PluginMeta = {
+      ...createClaudeCleanupPlugin(isolation.layout.rootDir, 'stale-rule'),
+      sourceId: 'team',
+      sourceIdentity: `sha256:${'3'.repeat(64)}`,
+      pluginId: 'team/stale-rule',
+      marketplaceName: 'aw-team',
+    };
+    plugin.manifest.marketplace.policy.products = ['CODEX'];
+    plugin.manifest.version = '1.0.0';
+    plugin.manifest.extensions = {
+      permissions: [{ name: 'stale-rule', allow: ['git status'] }],
+    };
+    const integration = createRebuildIntegration({
+      context: createCommandExecutionContext({
+        env: isolation.env,
+        nativeCliRunner: async () => { throw new Error('project must not call native CLI'); },
+      }),
+    });
+    const common = {
+      sourceId: plugin.sourceId,
+      sourceIdentity: plugin.sourceIdentity,
+      pluginId: plugin.pluginId,
+      marketplaceName: plugin.marketplaceName,
+      marketplaceRoot,
+      platform: 'codex' as const,
+      scope: 'project' as const,
+      cwd,
+      catalog: { rootDir: isolation.layout.rootDir, source: 'local' } as CatalogResolution,
+      includeHistoricalLifecycleArtifacts: false,
+    };
+    const v1 = await integration.buildTarget({ ...common, plugin, command: 'install' });
+    await integration.driver.writeArtifacts(v1);
+    const staleArtifact = v1.artifacts.find((artifact) => artifact.kind === 'permission')!;
+    const staleComponents = v1.ownedComponents.filter((component) =>
+      'path' in component && path.resolve(component.path) === path.resolve(staleArtifact.path));
+    expect(staleComponents.length).toBeGreaterThan(0);
+    expect(parseOwnedTextHeader(await fs.readFile(staleArtifact.path, 'utf8'))?.identity)
+      .toMatchObject({ sourceId: 'team', pluginId: 'team/stale-rule' });
+
+    const v2Plugin: PluginMeta = {
+      ...plugin,
+      manifest: { ...plugin.manifest, version: '2.0.0', extensions: undefined },
+    };
+    const v2 = await integration.buildTarget({ ...common, plugin: v2Plugin, command: 'upgrade' });
+    const staleIdentity = staleComponents[0]!.identity;
+    const sameIdentity = (component: (typeof v2.ownedComponents)[number]) =>
+      component.identity.plugin === staleIdentity.plugin
+      && component.identity.artifactKey === staleIdentity.artifactKey
+      && component.identity.platform === staleIdentity.platform
+      && component.identity.scope === staleIdentity.scope;
+    const ownedComponents = v2.ownedComponents.some(sameIdentity)
+      ? [...v2.ownedComponents]
+      : [...v2.ownedComponents, staleComponents[0]!];
+    const target = {
+      ...v2,
+      ownedComponents,
+      desiredOwnedComponents: (v2.desiredOwnedComponents ?? v2.ownedComponents)
+        .filter((component) => !sameIdentity(component)),
+    };
+    await fs.outputFile(path.join(isolation.layout.codexHomeDir, 'config.toml'), [
+      '[marketplaces.aw-team]',
+      `source = ${JSON.stringify(path.join(isolation.layout.rootDir, 'foreign-team'))}`,
+      'source_type = "local"',
+      '',
+    ].join('\n'));
+    const before = await fs.readFile(staleArtifact.path, 'utf8');
+    const result = await executeRebuildOperation({
+      command: 'upgrade',
+      target,
+      driver: integration.driver,
+      activeStore,
+    });
+    expect(result).toMatchObject({
+      status: 'failed',
+      error: { phase: 'preflight.inspect', message: expect.stringContaining('externalOwnershipPresent') },
+    });
+    expect(await fs.readFile(staleArtifact.path, 'utf8')).toBe(before);
   });
 
   it('keeps current Claude permission overlaps without restoring later removals', async () => {
@@ -2718,6 +3266,169 @@ describe('rebuild adapter integration', () => {
       .toEqual([]);
   });
 
+  it('keeps same-name shared config owners namespaced and rejects their indivisible MCP collision', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const cwd = isolation.layout.fixtureCwd;
+    const integration = createRebuildIntegration({
+      context: createCommandExecutionContext({
+        env: isolation.env,
+        nativeCliRunner: async () => ({ exitCode: 0, stdout: '', stderr: '' }),
+      }),
+    });
+    const sourceIdentity = [`sha256:${'1'.repeat(64)}`, `sha256:${'2'.repeat(64)}`];
+    const plugins = await Promise.all(['first', 'second'].map(async (sourceId, index) => {
+      const plugin = await createCodexSharedConfigPlugin({
+        root: path.join(isolation.layout.rootDir, sourceId),
+        name: 'same-shared',
+        mcpServerKey: 'shared-server',
+      });
+      plugin.sourceId = sourceId;
+      plugin.sourceIdentity = sourceIdentity[index];
+      plugin.pluginId = `${sourceId}/same-shared`;
+      plugin.manifest.marketplace.policy.products = ['CODEX'];
+      plugin.manifest.extensions = {
+        instructions: [{ name: 'policy', title: 'Policy', content: sourceId }],
+      };
+      return plugin;
+    }));
+    const targets = await Promise.all(plugins.map((plugin) => integration.buildTarget({
+      sourceId: plugin.sourceId,
+      sourceIdentity: plugin.sourceIdentity,
+      pluginId: plugin.pluginId,
+      marketplaceName: `aw-${plugin.sourceId}`,
+      marketplaceRoot: path.join(isolation.layout.awHomeDir, 'marketplaces', plugin.sourceId!),
+      plugin,
+      platform: 'codex',
+      scope: 'project',
+      cwd,
+      command: 'install',
+      catalog: { rootDir: plugin.rootDir, source: 'local' },
+      includeHistoricalLifecycleArtifacts: false,
+    })));
+    const mcpLabels = targets.map((target) => target.ownedComponents.find((component) =>
+      component.kind === 'shared-config' && component.label.includes('mcp_servers.shared-server'))?.label);
+    expect(mcpLabels[0]).toBe(mcpLabels[1]);
+    const collisions = preflightDesiredArtifactCollisions(targets.map((target) => ({
+      pluginId: target.identity.pluginId!,
+      targetKey: 'codex/project',
+      artifactKeys: target.ownedComponents.map((component) =>
+        'path' in component ? path.resolve(component.path) : `shared:${component.label}`),
+    })));
+    expect(collisions).toEqual([expect.objectContaining({
+      pluginIds: ['first/same-shared', 'second/same-shared'],
+      artifactKey: expect.stringContaining('mcp_servers.shared-server'),
+    })]);
+    for (const plugin of plugins) delete plugin.manifest.mcpServers;
+    const instructionTargets = await Promise.all(plugins.map((plugin) => integration.buildTarget({
+      sourceId: plugin.sourceId,
+      sourceIdentity: plugin.sourceIdentity,
+      pluginId: plugin.pluginId,
+      marketplaceName: `aw-${plugin.sourceId}`,
+      marketplaceRoot: path.join(isolation.layout.awHomeDir, 'marketplaces', plugin.sourceId!),
+      plugin,
+      platform: 'codex',
+      scope: 'project',
+      cwd,
+      command: 'install',
+      catalog: { rootDir: plugin.rootDir, source: 'local' },
+      includeHistoricalLifecycleArtifacts: false,
+    })));
+    await Promise.all(instructionTargets.map((target) => integration.driver.writeArtifacts(target)));
+
+    const configPath = resolveCodexPaths(cwd, 'project', isolation.env).configTomlPath;
+    const config = await readCodexConfigFile(configPath);
+    const instructionOwners = Object.keys(config.snapshot.developerInstructions.managedBlocks)
+      .map((key) => parseSharedOwnerToken(key)?.pluginId)
+      .filter(Boolean);
+    expect(instructionOwners.sort()).toEqual(['first/same-shared', 'second/same-shared']);
+    const inventory = await inventoryCatalogSourceReferences({ cwd, env: isolation.env });
+    expect(inventory.references).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'namespacedOwner',
+        pluginName: 'same-shared',
+        sourceId: expect.stringMatching(/^(first|second)$/u),
+      }),
+    ]));
+    const cleanupFirst = await integration.buildTarget({
+      sourceId: plugins[0]!.sourceId,
+      sourceIdentity: plugins[0]!.sourceIdentity,
+      pluginId: plugins[0]!.pluginId,
+      marketplaceName: 'aw-first',
+      marketplaceRoot: path.join(isolation.layout.awHomeDir, 'marketplaces', 'first'),
+      plugin: plugins[0]!,
+      platform: 'codex',
+      scope: 'project',
+      cwd,
+      command: 'cleanup',
+      catalog: { rootDir: plugins[0]!.rootDir, source: 'local' },
+      includeHistoricalLifecycleArtifacts: false,
+    });
+    await expect(executeRebuildOperation({
+      command: 'cleanup',
+      target: cleanupFirst,
+      driver: integration.driver,
+      activeStore,
+    })).resolves.toMatchObject({ status: 'succeeded' });
+    expect(Object.keys((await readCodexConfigFile(configPath)).snapshot.developerInstructions.managedBlocks)
+      .map((key) => parseSharedOwnerToken(key)?.pluginId)).toEqual(['second/same-shared']);
+
+    const claudePlugins = plugins.map((plugin) => ({
+      ...plugin,
+      manifest: {
+        ...plugin.manifest,
+        extensions: {
+          permissions: [{ name: 'source-command', allow: [`${plugin.sourceId} status`] }],
+        },
+      },
+    }));
+    const claudeTargets = await Promise.all(claudePlugins.map((plugin) => integration.buildTarget({
+      sourceId: plugin.sourceId,
+      sourceIdentity: plugin.sourceIdentity,
+      pluginId: plugin.pluginId,
+      marketplaceName: `aw-${plugin.sourceId}`,
+      marketplaceRoot: path.join(isolation.layout.awHomeDir, 'marketplaces', plugin.sourceId!),
+      plugin,
+      platform: 'claude',
+      scope: 'project',
+      cwd,
+      command: 'install',
+      catalog: { rootDir: plugin.rootDir, source: 'local' },
+      includeHistoricalLifecycleArtifacts: false,
+    })));
+    await Promise.all(claudeTargets.map((target) => integration.driver.writeArtifacts(target)));
+    const claudePaths = resolveClaudePaths(cwd, 'project', isolation.env);
+    const settings = await fs.readJson(claudePaths.settingsPath) as {
+      awGenerated: { permissions: Record<string, unknown> };
+    };
+    expect(Object.keys(settings.awGenerated.permissions).map((key) => parseSharedOwnerToken(key)?.pluginId).sort())
+      .toEqual(['first/same-shared', 'second/same-shared']);
+    const claudeCleanup = await integration.buildTarget({
+      sourceId: claudePlugins[0]!.sourceId,
+      sourceIdentity: claudePlugins[0]!.sourceIdentity,
+      pluginId: claudePlugins[0]!.pluginId,
+      marketplaceName: 'aw-first',
+      marketplaceRoot: path.join(isolation.layout.awHomeDir, 'marketplaces', 'first'),
+      plugin: claudePlugins[0]!,
+      platform: 'claude',
+      scope: 'project',
+      cwd,
+      command: 'cleanup',
+      catalog: { rootDir: claudePlugins[0]!.rootDir, source: 'local' },
+      includeHistoricalLifecycleArtifacts: false,
+    });
+    await expect(executeRebuildOperation({
+      command: 'cleanup',
+      target: claudeCleanup,
+      driver: integration.driver,
+      activeStore,
+    })).resolves.toMatchObject({ status: 'succeeded' });
+    const afterClaudeCleanup = await fs.readJson(claudePaths.settingsPath) as {
+      awGenerated: { permissions: Record<string, unknown> };
+    };
+    expect(Object.keys(afterClaudeCleanup.awGenerated.permissions)
+      .map((key) => parseSharedOwnerToken(key)?.pluginId)).toEqual(['second/same-shared']);
+  });
+
   it('allows only one concurrent plugin to claim the same agent role key', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const cwd = isolation.layout.fixtureCwd;
@@ -3014,7 +3725,15 @@ describe('rebuild adapter integration', () => {
       const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', name), {
         mode: 'bundle',
       });
+      plugin.sourceId = 'official';
+      plugin.sourceIdentity = `sha256:${'2'.repeat(64)}`;
+      plugin.pluginId = `official/${name}`;
       const target = await integration.buildTarget({
+        ...(plugin.sourceId ? {
+          sourceId: plugin.sourceId,
+          sourceIdentity: plugin.sourceIdentity,
+          pluginId: plugin.pluginId,
+        } : {}),
         plugin,
         platform: 'codex',
         scope: 'project',
@@ -3030,7 +3749,65 @@ describe('rebuild adapter integration', () => {
         activeStore,
       });
       expect(result.status, `${name}: ${JSON.stringify(result.failures)}`).toBe('succeeded');
+      if (name === 'codex-enhance') {
+        const repeatTarget = await integration.buildTarget({
+          sourceId: plugin.sourceId,
+          sourceIdentity: plugin.sourceIdentity,
+          pluginId: plugin.pluginId,
+          plugin,
+          platform: 'codex',
+          scope: 'project',
+          cwd: isolation.layout.fixtureCwd,
+          command: 'upgrade',
+          catalog: { rootDir: catalogRoot, source: 'local' } as CatalogResolution,
+          includeHistoricalLifecycleArtifacts: true,
+        });
+        const repeated = await executeRebuildOperation({
+          command: 'upgrade',
+          target: repeatTarget,
+          driver: integration.driver,
+          activeStore,
+        });
+        expect(repeated.status, JSON.stringify(repeated.failures)).toBe('succeeded');
+      }
     }
+
+    const cwd = isolation.layout.fixtureCwd;
+    const skillsRoot = path.join(cwd, '.agents', 'skills');
+    await expect(fs.pathExists(path.join(skillsRoot, 'git-commit', 'SKILL.md')))
+      .resolves.toBe(true);
+    await expect(readSkillOwnerMarker({
+      skillRoot: path.join(skillsRoot, 'git-commit'),
+      allowedRoot: skillsRoot,
+    })).resolves.toMatchObject({
+      schemaVersion: 2,
+      sourceId: 'official',
+      plugin: 'git',
+    });
+    const codexPaths = resolveCodexPaths(cwd, 'project', isolation.env);
+    await expect(fs.pathExists(path.join(skillsRoot, 'codex-subagent-guide', 'SKILL.md')))
+      .resolves.toBe(true);
+    await expect(fs.pathExists(path.join(skillsRoot, 'codex-clarifier', 'SKILL.md')))
+      .resolves.toBe(true);
+    await expect(readSkillOwnerMarker({
+      skillRoot: path.join(skillsRoot, 'codex-clarifier'),
+      allowedRoot: skillsRoot,
+    })).resolves.toMatchObject({
+      schemaVersion: 2,
+      sourceId: 'official',
+      plugin: 'codex-enhance',
+    });
+    await expect(fs.pathExists(path.join(skillsRoot, 'requirements-clarifier')))
+      .resolves.toBe(false);
+    await expect(fs.pathExists(path.join(skillsRoot, 'decision-grill', 'SKILL.md')))
+      .resolves.toBe(true);
+    await expect(fs.pathExists(path.join(
+      codexPaths.agentsDir,
+      'aw-codex-enhance-codex-subagent-simple.toml',
+    ))).resolves.toBe(true);
+    const codexConfig = await fs.readFile(codexPaths.configTomlPath, 'utf8');
+    expect(codexConfig).not.toContain('实施前需求检查');
+    expect(codexConfig).toContain('[agents.codex-subagent-simple]');
   });
 
   it('passes historical artifacts and the CLI timeout to the renderer', async () => {
@@ -3159,6 +3936,72 @@ describe('rebuild adapter integration', () => {
     })).resolves.toContain('manifest-only');
   });
 
+  it.each(['EACCES', 'EBUSY', 'EIO'])(
+    'fails Codex residue discovery closed on cache readdir %s',
+    async (code) => {
+      const isolation = getCurrentSourceTestIsolation();
+      await fs.outputFile(path.join(isolation.layout.codexHomeDir, 'config.toml'), [
+        '[marketplaces.aw]',
+        `source = ${JSON.stringify(isolation.layout.awHomeDir)}`,
+        'source_type = "local"',
+        '',
+      ].join('\n'));
+      const cacheRoot = path.join(isolation.layout.codexHomeDir, 'plugins', 'cache', 'aw');
+      await fs.ensureDir(cacheRoot);
+      const originalReaddir = fs.readdir.bind(fs);
+      vi.spyOn(fs, 'readdir').mockImplementation(async (...args: Parameters<typeof fs.readdir>) => {
+        if (path.resolve(String(args[0])) === path.resolve(cacheRoot)) {
+          throw Object.assign(new Error(`injected ${code}`), { code });
+        }
+        return originalReaddir(...args);
+      });
+
+      await expect(discoverRebuildTargetNames({
+        cwd: isolation.layout.fixtureCwd,
+        env: isolation.env,
+        platform: 'codex',
+        scope: 'user',
+        nativeCliRunner: async () => ({ exitCode: 0, stdout: '', stderr: '' }),
+        nativeFailureMode: 'error',
+      })).rejects.toMatchObject({
+        code: 'codexNativeResidueProbeFailed',
+        location: cacheRoot,
+        cause: { code },
+      });
+    },
+  );
+
+  it('fails Codex residue discovery closed on an invalid installed manifest', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    await fs.outputFile(path.join(isolation.layout.codexHomeDir, 'config.toml'), [
+      '[marketplaces.aw]',
+      `source = ${JSON.stringify(isolation.layout.awHomeDir)}`,
+      'source_type = "local"',
+      '',
+    ].join('\n'));
+    await fs.outputFile(path.join(
+      isolation.layout.codexHomeDir,
+      'plugins',
+      'broken@aw',
+      'manifest.json',
+    ), '{');
+
+    await expect(discoverRebuildTargetNames({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      platform: 'codex',
+      scope: 'user',
+      nativeCliRunner: async () => ({ exitCode: 0, stdout: '', stderr: '' }),
+      nativeFailureMode: 'error',
+    })).rejects.toThrow();
+    await expect(fs.pathExists(path.join(
+      isolation.layout.codexHomeDir,
+      'plugins',
+      'broken@aw',
+      'manifest.json',
+    ))).resolves.toBe(true);
+  });
+
   it.each(['apps-only', 'mcp-only'] as const)(
     'installs a Codex user %s bundle without declaring a missing skills root',
     async (fixtureName) => {
@@ -3244,6 +4087,78 @@ describe('rebuild adapter integration', () => {
       ))).toBe(true);
     },
   );
+
+  it.each([
+    ['EPERM', Object.assign(new Error('permission denied'), { code: 'EPERM' })],
+    ['EBUSY', Object.assign(new Error('resource busy'), { code: 'EBUSY' })],
+    ['EIO', Object.assign(new Error('I/O error'), { code: 'EIO' })],
+    ['invalid JSON', null],
+  ] as const)('preserves a Codex active manifest when reading it fails with %s', async (_label, readError) => {
+    const isolation = getCurrentSourceTestIsolation();
+    const pluginName = 'apps-only';
+    const catalogRoot = await createSyntheticCatalog({
+      root: isolation.layout.rootDir,
+      pluginRoots: [path.join(
+        repositoryRoot,
+        'packages/cli/tests/fixtures/codex-project-repo-managed/plugins',
+        pluginName,
+      )],
+    });
+    const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', pluginName), {
+      mode: 'bundle',
+    });
+    const sourceManifestPath = path.join(
+      catalogRoot,
+      'plugins',
+      pluginName,
+      '.codex-plugin',
+      'plugin.json',
+    );
+    const originalBytes = readError === null
+      ? Buffer.from('{ invalid JSON\n')
+      : await fs.readFile(sourceManifestPath);
+    if (readError === null) await fs.writeFile(sourceManifestPath, originalBytes);
+    const destinationManifestPath = path.join(
+      isolation.layout.awHomeDir,
+      'plugins',
+      pluginName,
+      '.codex-plugin',
+      'plugin.json',
+    );
+    const originalReadJson = fs.readJson.bind(fs);
+    const readJson = readError === null ? null : vi.spyOn(fs, 'readJson').mockImplementation(
+      async (...args: Parameters<typeof fs.readJson>) => {
+        if (path.normalize(String(args[0])).endsWith(path.join(
+          'plugins', pluginName, '.codex-plugin', 'plugin.json',
+        ))) throw readError;
+        return originalReadJson(...args);
+      },
+    );
+    const integration = createRebuildIntegration({
+      context: createCommandExecutionContext({
+        env: isolation.env,
+        nativeCliRunner: async () => {
+          throw new Error('native runner must not run after manifest read failure');
+        },
+      }),
+    });
+    const target = await integration.buildTarget({
+      plugin,
+      platform: 'codex',
+      scope: 'user',
+      cwd: isolation.layout.fixtureCwd,
+      command: 'install',
+      catalog: { rootDir: catalogRoot, source: 'local' } as CatalogResolution,
+      includeHistoricalLifecycleArtifacts: false,
+    });
+
+    const write = integration.driver.writeNative(target);
+    if (readError === null) await expect(write).rejects.toThrow();
+    else await expect(write).rejects.toMatchObject({ code: readError.code });
+    readJson?.mockRestore();
+    await expect(fs.readFile(destinationManifestPath)).resolves.toEqual(originalBytes);
+    await integration.driver.rollbackMaterialize?.(target);
+  });
 
   it.each([
     ['static', path.join(repositoryRoot, 'plugins', 'git')],

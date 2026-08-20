@@ -4,10 +4,11 @@ import path from 'node:path';
 
 import fs from 'fs-extra';
 
-import type { PlatformName, Scope } from '../types.js';
+import type { PlatformName, Scope, SourceIdentity } from '../types.js';
 
 export const SKILL_OWNER_MARKER = '.agent-workflows-owner.json';
 export const OWNED_TEXT_HEADER_PREFIX = '# agent-workflows-owner: ';
+export const SHARED_OWNER_TOKEN_PREFIX = 'aw-owner-v2:';
 
 export type OwnershipState = 'present' | 'absent' | 'partial';
 export type OwnershipInspectionState = OwnershipState | 'error';
@@ -19,13 +20,35 @@ export interface TargetIdentity {
 
 export interface OwnerIdentity extends TargetIdentity {
   owner: 'agent-workflows';
+  sourceId?: string;
+  sourceIdentity?: SourceIdentity;
+  pluginId?: string;
   plugin: string;
   artifactKey: string;
 }
 
-export interface SkillOwnerMarker extends OwnerIdentity {
-  schemaVersion: 1;
+export function createSharedOwnerToken(identity: OwnerIdentity): string {
+  validateOwnerIdentity(identity);
+  if (!identity.sourceId) return identity.plugin;
+  return `${SHARED_OWNER_TOKEN_PREFIX}${Buffer.from(createSkillOwnerMarkerContent(identity)).toString('base64url')}`;
 }
+
+export function parseSharedOwnerToken(value: string): OwnerIdentity | null {
+  if (!value.startsWith(SHARED_OWNER_TOKEN_PREFIX)) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(Buffer.from(value.slice(SHARED_OWNER_TOKEN_PREFIX.length), 'base64url').toString('utf8'));
+  } catch {
+    throw new Error('Shared owner token is invalid.');
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)
+    || (parsed as { schemaVersion?: unknown }).schemaVersion !== 2) {
+    throw new Error('Shared owner token must contain schema 2 identity.');
+  }
+  return parseOwnerIdentity(parsed, 'Shared owner token');
+}
+
+export type SkillOwnerMarker = OwnerIdentity & { schemaVersion: 1 | 2 };
 
 export type OwnedProbeResult = 'present' | 'absent' | 'partial' | 'foreign';
 
@@ -105,7 +128,8 @@ export function setAtomicReplaceBeforeRenameHookForTests(
 }
 
 function isMissing(error: unknown): boolean {
-  return (error as NodeJS.ErrnoException).code === 'ENOENT';
+  const code = (error as NodeJS.ErrnoException).code;
+  return code === 'ENOENT' || code === 'ENOTDIR';
 }
 
 function errorMessage(error: unknown): string {
@@ -130,6 +154,19 @@ export function validateOwnerIdentity(identity: OwnerIdentity): void {
   }
   assertSafeOwnershipSegment(identity.plugin, 'Owner identity.plugin');
   assertSafeOwnershipSegment(identity.artifactKey, 'Owner identity.artifactKey');
+  const sourceFields = [identity.sourceId, identity.sourceIdentity, identity.pluginId];
+  if (sourceFields.some((value) => value !== undefined)) {
+    if (sourceFields.some((value) => typeof value !== 'string' || value.length === 0)) {
+      throw new Error('Owner identity source fields must be present together.');
+    }
+    assertSafeOwnershipSegment(identity.sourceId!, 'Owner identity.sourceId');
+    if (!/^sha256:[0-9a-f]{64}$/u.test(identity.sourceIdentity!)) {
+      throw new Error('Owner identity.sourceIdentity must be a SHA-256 digest.');
+    }
+    if (identity.pluginId !== `${identity.sourceId}/${identity.plugin}`) {
+      throw new Error('Owner identity.pluginId must be the canonical sourceId/plugin name.');
+    }
+  }
   if (identity.platform !== 'codex' && identity.platform !== 'claude') {
     throw new Error(`Owner identity.platform 无效：${String(identity.platform)}`);
   }
@@ -140,6 +177,9 @@ export function validateOwnerIdentity(identity: OwnerIdentity): void {
 
 function identitiesEqual(left: OwnerIdentity, right: OwnerIdentity): boolean {
   return left.owner === right.owner &&
+    left.sourceId === right.sourceId &&
+    left.sourceIdentity === right.sourceIdentity &&
+    left.pluginId === right.pluginId &&
     left.plugin === right.plugin &&
     left.artifactKey === right.artifactKey &&
     left.platform === right.platform &&
@@ -148,9 +188,15 @@ function identitiesEqual(left: OwnerIdentity, right: OwnerIdentity): boolean {
 
 function markerFromIdentity(identity: OwnerIdentity): SkillOwnerMarker {
   validateOwnerIdentity(identity);
+  const namespaced = identity.sourceId !== undefined;
   return {
-    schemaVersion: 1,
+    schemaVersion: namespaced ? 2 : 1,
     owner: identity.owner,
+    ...(namespaced ? {
+      sourceId: identity.sourceId,
+      sourceIdentity: identity.sourceIdentity,
+      pluginId: identity.pluginId,
+    } : {}),
     plugin: identity.plugin,
     artifactKey: identity.artifactKey,
     platform: identity.platform,
@@ -166,6 +212,9 @@ function parseOwnerIdentity(value: unknown, label: string): OwnerIdentity {
   const allowedKeys = new Set([
     'schemaVersion',
     'owner',
+    'sourceId',
+    'sourceIdentity',
+    'pluginId',
     'plugin',
     'artifactKey',
     'platform',
@@ -174,11 +223,23 @@ function parseOwnerIdentity(value: unknown, label: string): OwnerIdentity {
   if (Object.keys(record).some((key) => !allowedKeys.has(key))) {
     throw new Error(`${label} 包含未知字段。`);
   }
-  if (record.schemaVersion !== 1) {
-    throw new Error(`${label}.schemaVersion 必须是 1。`);
+  if (record.schemaVersion !== 1 && record.schemaVersion !== 2) {
+    throw new Error(`${label}.schemaVersion 不受支持。`);
+  }
+  if (record.schemaVersion === 2 && (
+    typeof record.sourceId !== 'string'
+    || typeof record.sourceIdentity !== 'string'
+    || typeof record.pluginId !== 'string'
+  )) {
+    throw new Error(`${label}.schemaVersion 必须是 1，或提供完整 schema 2 source identity。`);
   }
   const identity = {
     owner: record.owner,
+    ...(record.schemaVersion === 2 ? {
+      sourceId: record.sourceId,
+      sourceIdentity: record.sourceIdentity,
+      pluginId: record.pluginId,
+    } : {}),
     plugin: record.plugin,
     artifactKey: record.artifactKey,
     platform: record.platform,
@@ -374,6 +435,16 @@ export async function readSkillOwnerMarker(options: {
   if (marker.artifactKey !== path.basename(options.skillRoot)) {
     throw new Error('Skill owner marker artifactKey 与目录名不一致。');
   }
+  if (options.expectedIdentity?.sourceId !== undefined && marker.schemaVersion === 1) {
+    throw new Error('legacyStateUnsupported: schema 1 owner marker is not supported.');
+  }
+  if (
+    options.expectedIdentity?.sourceId !== undefined
+    && marker.sourceId === options.expectedIdentity.sourceId
+    && marker.sourceIdentity !== options.expectedIdentity.sourceIdentity
+  ) {
+    throw new Error('sourceChanged: owner source identity does not match the configured source.');
+  }
   if (options.expectedIdentity && !identitiesEqual(marker, options.expectedIdentity)) {
     throw new Error('Skill owner marker identity 与目标 identity 不匹配。');
   }
@@ -421,6 +492,16 @@ export function parseOwnedTextHeader(
     throw new Error('Owner header 不是有效 JSON。');
   }
   const identity = parseOwnerIdentity(parsed, 'Owner header');
+  if (expectedIdentity?.sourceId !== undefined && identity.sourceId === undefined) {
+    throw new Error('legacyStateUnsupported: schema 1 owner header is not supported.');
+  }
+  if (
+    expectedIdentity?.sourceId !== undefined
+    && identity.sourceId === expectedIdentity.sourceId
+    && identity.sourceIdentity !== expectedIdentity.sourceIdentity
+  ) {
+    throw new Error('sourceChanged: owner source identity does not match the configured source.');
+  }
   if (expectedIdentity && !identitiesEqual(identity, expectedIdentity)) {
     throw new Error('Owner header identity 与目标 identity 不匹配。');
   }
@@ -507,8 +588,13 @@ function componentLabel(component: OwnedComponent): string {
 
 function validateNativePlugin(component: Extract<OwnedComponent, { kind: 'native-plugin' }>): void {
   validateOwnerIdentity(component.identity);
-  if (component.pluginId !== `${component.identity.plugin}@aw`) {
-    throw new Error(`Native plugin identity 必须是 ${component.identity.plugin}@aw。`);
+  const prefix = `${component.identity.plugin}@aw`;
+  if (
+    component.pluginId !== prefix
+    && (!component.pluginId.startsWith(`${prefix}-`)
+      || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(component.pluginId.slice(`${prefix}-`.length)))
+  ) {
+    throw new Error(`Native plugin identity 必须使用 ${prefix} marketplace namespace。`);
   }
 }
 

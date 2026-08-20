@@ -26,6 +26,17 @@ const execFileAsync = promisify(execFile);
 const tempDirs: string[] = [];
 let buildSnapshot: SmokeBuildSnapshot | null = null;
 
+const EXPECTED_PLUGIN_PLATFORMS = {
+  'agent-content-toolkit': ['claude', 'codex'],
+  'agent-skill-eval-runner': ['claude', 'codex'],
+  'agent-skill-toolkit': ['claude', 'codex'],
+  'ask-me': ['claude', 'codex'],
+  'aw-plugin-development': ['claude', 'codex'],
+  'codex-enhance': ['codex'],
+  'dev-workflow': ['claude', 'codex'],
+  'git': ['claude', 'codex'],
+} as const;
+
 function repoRoot(): string {
   return path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
 }
@@ -246,6 +257,7 @@ describe('build smoke', () => {
   it('ensures the build and produces plugins-dist through the compiled bundle script', async () => {
     const snapshot = await requireBuildSnapshot();
     const outputRoot = snapshot.catalogOutputRoot;
+    const cliPackageJson = await fs.readJson(path.join(snapshot.cliPackageRoot, 'package.json'));
 
     expect(outputRoot).toBe(path.join(snapshot.root, 'packages', 'cli', 'plugins-dist'));
     await expect(fs.readJson(path.join(root, '.release', 'cache', 'build-stamp.json')))
@@ -278,16 +290,9 @@ describe('build smoke', () => {
         },
       },
     });
-    for (const pluginName of [
-      'ask-me',
-      'git',
-      'codex-enhance',
-    ]) {
+    for (const pluginName of Object.keys(EXPECTED_PLUGIN_PLATFORMS)) {
       await expect(
         fs.pathExists(path.join(outputRoot, 'plugins', pluginName, 'evals')),
-      ).resolves.toBe(false);
-      await expect(
-        fs.pathExists(path.join(outputRoot, '.catalog', 'full', 'plugins', pluginName, 'evals')),
       ).resolves.toBe(false);
     }
     for (const [pluginName, skillName] of [
@@ -336,33 +341,52 @@ describe('build smoke', () => {
           '0',
           authorDirectory,
         ))).resolves.toBe(false);
-        await expect(fs.pathExists(path.join(
-          outputRoot,
-          '.catalog',
-          'full',
-          'plugins',
-          pluginName,
-          '.agents-plugin',
-          'artifact-sources',
-          'codex',
-          artifactId,
-          '0',
-          authorDirectory,
-        ))).resolves.toBe(false);
       }
     }
     const [claudeMarketplace, codexMarketplace] = await Promise.all([
       fs.readJson(path.join(outputRoot, '.claude-plugin', 'marketplace.json')),
       fs.readJson(path.join(outputRoot, '.agents', 'plugins', 'marketplace.json')),
     ]);
-    const [canonicalCatalogManifestText, sidecarCatalogManifestText, fullCatalogManifestText] = await Promise.all([
-      fs.readFile(path.join(outputRoot, '.catalog', 'catalog-manifest.json'), 'utf8'),
-      fs.readFile(path.join(outputRoot, '.catalog', 'sidecar', 'catalog-manifest.json'), 'utf8'),
-      fs.readFile(path.join(outputRoot, '.catalog', 'full', 'catalog-manifest.json'), 'utf8'),
+    const catalogManifest = await fs.readJson(path.join(outputRoot, 'catalog-manifest.json'));
+    expect(claudeMarketplace.plugins.map((plugin: { name: string }) => plugin.name).sort()).toEqual([
+      'agent-content-toolkit',
+      'agent-skill-eval-runner',
+      'agent-skill-toolkit',
+      'ask-me',
+      'aw-plugin-development',
+      'dev-workflow',
+      'git',
     ]);
-    expect(claudeMarketplace.plugins).not.toEqual(expect.arrayContaining([
-      expect.objectContaining({ name: 'codex-enhance' }),
-    ]));
+    expect(codexMarketplace.plugins.map((plugin: { name: string }) => plugin.name).sort()).toEqual([
+      'agent-content-toolkit',
+      'agent-skill-eval-runner',
+      'agent-skill-toolkit',
+      'ask-me',
+      'aw-plugin-development',
+      'codex-enhance',
+      'dev-workflow',
+      'git',
+    ]);
+    for (const [pluginName, platforms] of Object.entries(EXPECTED_PLUGIN_PLATFORMS)) {
+      for (const platform of ['claude', 'codex'] as const) {
+        const supported = (platforms as readonly string[]).includes(platform);
+        if (!supported) {
+          await expect(fs.pathExists(path.join(
+            outputRoot,
+            'plugins',
+            pluginName,
+            platform,
+          ))).resolves.toBe(false);
+        }
+        await expect(fs.pathExists(path.join(
+          outputRoot,
+          'plugins',
+          pluginName,
+          platform === 'claude' ? '.claude-plugin' : '.codex-plugin',
+          'plugin.json',
+        ))).resolves.toBe(supported);
+      }
+    }
     expect(codexMarketplace).toMatchObject({
       owner: claudeMarketplace.owner,
       interface: claudeMarketplace.interface,
@@ -512,61 +536,30 @@ describe('build smoke', () => {
     await expect(
       fs.pathExists(path.join(outputRoot, 'plugins', 'codex-enhance', 'claude')),
     ).resolves.toBe(false);
-    expect(canonicalCatalogManifestText).toBe(sidecarCatalogManifestText);
-    expect(canonicalCatalogManifestText).toBe(fullCatalogManifestText);
-    expect(JSON.parse(canonicalCatalogManifestText)).not.toHaveProperty('history');
-    await expect(
-      fs.readJson(path.join(outputRoot, '.catalog', 'catalog-manifest.json')),
-    ).resolves.toMatchObject({
-      schemaVersion: 2,
-      packages: {
-        sidecar: {
-          name: '@lesliechan721/aw-plugins-manifest',
-        },
-        full: {
-          name: '@lesliechan721/aw-plugins',
-          manifestPath: './catalog-manifest.json',
-        },
-      },
-      entries: expect.arrayContaining([
+    expect(catalogManifest).toMatchObject({
+      schemaVersion: 3,
+      catalogVersion: cliPackageJson.version,
+      channel: String(cliPackageJson.version).includes('-') ? 'beta' : 'latest',
+      compatibility: { aw: { minVersion: '0.1.0-beta.2' } },
+      entries: expect.arrayContaining(Object.keys(EXPECTED_PLUGIN_PLATFORMS).map((pluginName) =>
         expect.objectContaining({
-          name: 'ask-me',
-          source: './plugins/ask-me',
+          name: pluginName,
+          source: `./plugins/${pluginName}`,
           artifactDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
           manifestDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
-        }),
-        expect.objectContaining({
-          name: 'git',
-          source: './plugins/git',
-          artifactDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
-          manifestDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
-        }),
-      ]),
+          contentDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+        }))),
     });
-    await expect(
-      fs.readJson(path.join(outputRoot, '.catalog', 'sidecar', 'package.json')),
-    ).resolves.toMatchObject({
-      name: '@lesliechan721/aw-plugins-manifest',
-      files: ['catalog-manifest.json', 'plugin-release-ledger.json'],
-      awCatalog: {
-        kind: 'sidecar',
-      },
-    });
-    await expect(
-      fs.pathExists(path.join(outputRoot, '.catalog', 'development-receipt.json')),
-    ).resolves.toBe(false);
-    await expect(
-      fs.readJson(path.join(outputRoot, '.catalog', 'full', 'package.json')),
-    ).resolves.toMatchObject({
-      name: '@lesliechan721/aw-plugins',
-      files: expect.arrayContaining(['catalog-manifest.json', '.agents/', '.claude-plugin/', 'plugins/']),
-      awCatalog: {
-        kind: 'full',
-      },
-    });
-    await expect(
-      fs.pathExists(path.join(outputRoot, '.catalog', 'full', 'plugins', 'git', '.agents-plugin', 'plugin.json')),
-    ).resolves.toBe(true);
+    expect(catalogManifest).not.toHaveProperty('history');
+    expect(catalogManifest).not.toHaveProperty('packages');
+    expect((await fs.readdir(outputRoot)).sort()).toEqual([
+      '.agents',
+      '.claude-plugin',
+      'catalog-manifest.json',
+      'plugins',
+    ]);
+    await expect(fs.pathExists(path.join(outputRoot, 'plugin-release-ledger.json')))
+      .resolves.toBe(false);
   });
 
   it('reuses a warm build without changing key output mtimes', async () => {
@@ -574,7 +567,7 @@ describe('build smoke', () => {
     const keyOutputs = [
       path.join(root, 'packages', 'cli', 'dist', 'index.js'),
       path.join(root, 'packages', 'cli', 'dist', 'scripts', 'bundle-plugins.js'),
-      path.join(root, 'packages', 'cli', 'plugins-dist', '.catalog', 'catalog-manifest.json'),
+      path.join(root, 'packages', 'cli', 'plugins-dist', 'catalog-manifest.json'),
     ];
     const before = await Promise.all(keyOutputs.map((outputPath) => fs.stat(outputPath)));
 
@@ -586,6 +579,22 @@ describe('build smoke', () => {
 
     const after = await Promise.all(keyOutputs.map((outputPath) => fs.stat(outputPath)));
     expect(after.map((stats) => stats.mtimeMs)).toEqual(before.map((stats) => stats.mtimeMs));
+  });
+
+  it('materializes and validates schema 3 compatibility from real build bundles', async () => {
+    const snapshot = await requireBuildSnapshot();
+    const outputRoot = snapshot.catalogOutputRoot;
+    const { validateCatalogSnapshot } = await importSmokeSnapshotModule<{
+      validateCatalogSnapshot: (rootDir: string) => Promise<{
+        manifest: { schemaVersion: number; entries: Array<{ name: string; contentDigest: string }> };
+      }>;
+    }>(path.join(snapshot.cliDistRoot, 'src', 'utils', 'catalog-snapshot.js'));
+    const validated = await validateCatalogSnapshot(outputRoot);
+    expect(validated.manifest.schemaVersion).toBe(3);
+    expect(validated.manifest.entries.map((entry) => entry.name).sort())
+      .toEqual(Object.keys(EXPECTED_PLUGIN_PLATFORMS).sort());
+    expect(validated.manifest.entries.every((entry) =>
+      /^sha256:[0-9a-f]{64}$/u.test(entry.contentDigest))).toBe(true);
   });
 
   it('starts the real dist entry', async () => {
@@ -844,7 +853,9 @@ describe('build smoke', () => {
     const runtime = (await import(
       pathToFileURL(path.join(pluginRoot, 'scripts', 'runtime.mjs')).href
     )) as { parseSmokeConfig: (source: string) => string };
-    expect(runtime.parseSmokeConfig('name: bundle\n')).toBe('bundle:runtime-helper');
+    expect(runtime.parseSmokeConfig('name: bundle\n')).toBe(
+      'bundle:runtime-helper:directory-helper',
+    );
 
     await expect(
       fs.pathExists(path.join(tempRepo, 'plugins', 'git-commit', 'scripts', 'generated.test.mjs')),
@@ -880,5 +891,16 @@ describe('build smoke', () => {
       }),
     ]);
 
+    await fs.writeFile(
+      path.join(tempRepo, 'plugins', 'git-commit', 'scripts', 'runtime.mjs'),
+      'require.resolve("left-pad");\n',
+      'utf8',
+    );
+    await expect(bundlePlugins({
+      repoRoot: tempRepo,
+      outputRoot,
+      buildMode: 'staging',
+      stagingRunner: createSmokeStagingRunner(),
+    })).rejects.toThrow('Runtime import "left-pad"');
   }, 120_000);
 });

@@ -14,7 +14,11 @@
       "provenance": "representative-synthetic",
       "scenario_family": "fast-path-implementation",
       "unit_under_test": "full-skill",
-      "preconditions": {"request_clear": true, "single_context": true, "reliable_test_seam": true},
+      "preconditions": {
+        "request_clear": true,
+        "single_context": true,
+        "reliable_test_seam": true
+      },
       "oracle": {
         "rationale": "这是明确、低风险的小任务，应直接实现并运行现有测试，不创建流程文档。",
         "rule_refs": ["SKILL.md#开始", "SKILL.md#实施循环"],
@@ -35,11 +39,7 @@
         "clean_session": true,
         "workspace_unchanged": false,
         "allowed_workspace_changes": ["src/normalize-name.js"],
-        "artifacts": [
-          {"path": "src/normalize-name.js", "exists": true},
-          {"path": "test/normalize-name.test.js", "exists": true, "contains": ["Ada Lovelace"]},
-          {"path": "work.md", "exists": false}
-        ],
+        "artifacts": [{ "path": "src/normalize-name.js", "exists": true }],
         "checks": [
           "trace 实际运行 node --test，并在最终回复中准确报告结果",
           "只修改实现文件，不修改测试来迎合结果",
@@ -54,7 +54,11 @@
       "provenance": "boundary",
       "scenario_family": "material-gap-stop",
       "unit_under_test": "full-skill",
-      "preconditions": {"spec_exists": true, "material_decision_unresolved": true, "ask_me_installed": false},
+      "preconditions": {
+        "spec_exists": true,
+        "material_decision_unresolved": true,
+        "ask_me_installed": false
+      },
       "oracle": {
         "rationale": "兼容窗口会改变用户行为和验收；ask-me 不可用时应报告缺失决定并停止，而不是临时复制访谈或静默采用默认。",
         "rule_refs": ["SKILL.md#实施循环"],
@@ -74,12 +78,16 @@
         "clean_session": true,
         "workspace_unchanged": true,
         "artifacts": [
-          {"path": "src/token.js", "exists": true, "contains": ["tokenVersion = 1"]}
+          {
+            "path": "src/token.js",
+            "exists": true,
+            "contains": ["tokenVersion = 1"]
+          }
         ],
         "checks": [
           "把兼容窗口识别为材料决定，不静默选择默认值",
           "说明 ask-me 缺失并提供安装或用户直接补充决定的下一步",
-          "不复制 requirements-clarifier 或 decision-grill 的提问流程",
+          "不复制 decision-grill 的提问流程",
           "不修改产品文件"
         ]
       }

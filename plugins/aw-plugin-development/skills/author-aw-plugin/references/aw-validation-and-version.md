@@ -19,6 +19,18 @@ node scripts/prepare-aw-authoring-context.mjs <plugin-root> \
 
 随本 Skill 分发的 `validate_plugin.mjs` 是当前仓库 CLI 合同的确定性实现；只有目标工作区提供兼容的 CLI capability registry 时才运行。其它工作区应使用其 CLI 暴露的 validator，或由未来的自定义插件接入层提供命令。
 
+## Full Access consent policy
+
+真实模型 Eval 需要目标工作区 runtime 的进程管理门禁。作者 agent 必须遵守以下结构化不变量：
+
+<!-- aw-full-access-consent-policy:v1 -->
+| policy invariant | Agent requirement |
+|---|---|
+| `single_escalation_is_not_full_access` | 单次提权不等于整个会话的 Full Access，agent 不得用单次提权重试该门禁。 |
+| `agent_must_not_add_allow_unmanaged_processes` | agent 不得自行添加 `--allow-unmanaged-processes`。 |
+| `agent_must_stop_without_user_choice` | 用户未明确选择整个会话使用 Full Access 或明确接受 unmanaged 降级时，agent 必须停止并请求用户选择。 |
+<!-- /aw-full-access-consent-policy -->
+
 ## Manifest version
 
 - 新插件保留目标工作区规定的初始稳定版本。

@@ -6,17 +6,18 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const skills = ['dev-workflow', 'dev-spec', 'dev-review-spec', 'dev-implement', 'dev-review-code'];
-const askMeSkills = ['requirements-clarifier', 'decision-grill', 'decision-prototype'];
+const askMeSkills = ['decision-grill', 'decision-prototype'];
 const allParticipants = new Set([...skills, ...askMeSkills]);
 const read = (file) => readFile(file, 'utf8');
 const readJson = async (file) => JSON.parse(await read(file));
 
 async function context() {
-  if (!process.env.AW_PLUGIN_CONTEXT) return { source: root, bundle: root };
+  if (!process.env.AW_PLUGIN_CONTEXT) return { source: root, bundle: root, platform: null };
   const value = await readJson(process.env.AW_PLUGIN_CONTEXT);
   assert.equal(value.event, 'test');
   assert.equal(value.plugin.name, 'dev-workflow');
-  return { source: value.sourceRoot, bundle: value.plugin.rootDir };
+  assert.ok(['claude', 'codex'].includes(value.platform));
+  return { source: value.sourceRoot, bundle: value.plugin.rootDir, platform: value.platform };
 }
 
 function assertStrictStableSemver(value) {
@@ -85,14 +86,20 @@ test('source and evals expose the five public Skills', async () => {
     assert.equal(evalManifest.skill, name);
 
     for (const suite of evalManifest.suites) {
-      assert.equal(suite.skills.every((participant) => allParticipants.has(participant)), true);
+      assert.equal(
+        suite.skills.every((participant) => allParticipants.has(participant)),
+        true,
+      );
       const casesPath = path.resolve(evalRoot, suite.cases);
       await access(casesPath);
       const document = await readJson(casesPath);
       const entries = assertCaseDocument(document);
       if (suite.id === 'trigger') {
         assert.equal(document.skill, name);
-        assert.equal(entries.every((entry) => typeof entry.should_load_skill === 'boolean'), true);
+        assert.equal(
+          entries.every((entry) => typeof entry.should_load_skill === 'boolean'),
+          true,
+        );
         assert.deepEqual(suite.skills, skills);
       }
     }
@@ -103,7 +110,10 @@ test('entry eval covers cross-plugin routing and missing-companion fallback', as
   const evalRoot = path.join(target.source, 'skills', 'dev-workflow', 'evals');
   const manifest = await readJson(path.join(evalRoot, 'manifest.json'));
   const withAskMe = manifest.profiles.find((profile) => profile.id === 'project-with-ask-me');
-  assert.deepEqual(withAskMe.plugins.map((plugin) => plugin.name), ['dev-workflow', 'ask-me']);
+  assert.deepEqual(
+    withAskMe.plugins.map((plugin) => plugin.name),
+    ['dev-workflow', 'ask-me'],
+  );
 
   const router = manifest.suites.find((suite) => suite.id === 'router-with-ask-me');
   assert.deepEqual([...router.skills].sort(), [...allParticipants].sort());
@@ -158,13 +168,9 @@ test('release manifests require representative evidence without fixing corpus si
   }
 
   for (const name of skills.filter((entry) => entry !== 'dev-workflow')) {
-    const manifest = await readJson(path.join(
-      target.source,
-      'skills',
-      name,
-      'evals',
-      'manifest.json',
-    ));
+    const manifest = await readJson(
+      path.join(target.source, 'skills', name, 'evals', 'manifest.json'),
+    );
     const profile = manifest.profiles.find((entry) => entry.id === 'project-default');
     const behavior = manifest.suites.find((entry) => entry.id === 'behavior');
     assert.equal(profile?.requiredForRelease, true);
@@ -174,7 +180,10 @@ test('release manifests require representative evidence without fixing corpus si
 
 test('runtime keeps all Skill roots', async () => {
   for (const name of skills) {
-    assertSkill(await read(path.join(target.bundle, 'skills', name, 'SKILL.md')), name);
+    const skillsRoot = target.platform
+      ? path.join(target.bundle, target.platform, 'skills')
+      : path.join(target.bundle, 'skills');
+    assertSkill(await read(path.join(skillsRoot, name, 'SKILL.md')), name);
   }
 });
 

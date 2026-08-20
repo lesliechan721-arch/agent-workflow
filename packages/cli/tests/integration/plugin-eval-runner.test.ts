@@ -681,7 +681,17 @@ describe('plugin eval runner', () => {
         (entry: { plugin: string; skill: string }) =>
           entry.plugin === 'codex-enhance' && entry.skill === skillName,
       );
-      expect(bundle.subjects).toHaveLength(5);
+      const evalManifest = await fs.readJson(path.join(
+        root,
+        'plugins',
+        'codex-enhance',
+        'skills',
+        skillName,
+        'evals',
+        'manifest.json',
+      )) as { profiles: Array<{ id: string }> };
+      expect(bundle.subjects.map((subject: { profile: string }) => subject.profile).sort())
+        .toEqual(evalManifest.profiles.map((profile) => profile.id).sort());
       const defaultProfile = bundle.subjects.find(
         (entry: { profile: string }) => entry.profile === 'project-default',
       );

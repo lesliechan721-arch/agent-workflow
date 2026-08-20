@@ -1,6 +1,8 @@
 import os from 'node:os';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 
 import fs from 'fs-extra';
 import { parseTOML } from 'toml-eslint-parser';
@@ -11,15 +13,30 @@ import { renderHooksArtifact, renderResolvedHooksArtifact } from '../../src/gene
 import {
   bundleLocalPlugin,
   type PluginStagingRunner,
+  validateStagingPackageManager,
 } from '../../src/generators/local-plugin.js';
 import {
   generateCodexPermissionArtifacts,
   mergeClaudePermissions,
 } from '../../src/generators/permissions.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
+import { resolveCliPackageRoot } from '../../src/utils/paths.js';
 import { bundlePlugins } from '../../scripts/bundle-plugins.js';
 
 const tempDirs: string[] = [];
+const execFileAsync = promisify(execFile);
+
+interface FakeDependencyPackage {
+  dependencies?: Record<string, string>;
+  installedDependencies?: Record<string, string>;
+  optionalDependencies?: Record<string, string>;
+  peerDependencies?: Record<string, string>;
+  peerDependenciesMeta?: Record<string, { optional?: boolean }>;
+  physicalPackageName?: string;
+  os?: string[];
+  source?: string;
+  version?: string;
+}
 
 function fixturePath(...segments: string[]): string {
   return path.resolve(
@@ -76,29 +93,38 @@ async function writeNodePackageFixture(
   await fs.writeFile(path.join(pluginRoot, 'scripts', 'pnpm-lock.yaml'), 'lockfileVersion: 9.0\n', 'utf8');
 }
 
-function createFakeStagingRunner(): PluginStagingRunner {
+function createFakeStagingRunner(
+  dependencyPackages: Record<string, FakeDependencyPackage> = {},
+  options: { absoluteLinks?: boolean } = {},
+): PluginStagingRunner {
   async function writeInstalledPackage(
     packageRoot: string,
     dependencyName: string,
-    options: { dependencies?: Record<string, string> } = {},
-  ): Promise<void> {
-    const storeName = `${dependencyName.replace('/', '+')}@1.0.0`;
+    options: FakeDependencyPackage = {},
+  ): Promise<string> {
+    const physicalPackageName = options.physicalPackageName ?? dependencyName;
+    const version = options.version ?? '1.0.0';
+    const storeName = `${physicalPackageName.replace('/', '+')}@${version}`;
     const dependencyRoot = path.join(
       packageRoot,
       'node_modules',
       '.pnpm',
       storeName,
       'node_modules',
-      ...dependencyName.split('/'),
+      ...physicalPackageName.split('/'),
     );
     await fs.ensureDir(dependencyRoot);
     await fs.writeJson(
       path.join(dependencyRoot, 'package.json'),
       {
-        name: dependencyName,
-        version: '1.0.0',
+        name: physicalPackageName,
+        version,
         main: 'index.js',
         dependencies: options.dependencies,
+        optionalDependencies: options.optionalDependencies,
+        peerDependencies: options.peerDependencies,
+        peerDependenciesMeta: options.peerDependenciesMeta,
+        os: options.os,
         scripts: dependencyName === 'bad-install-script'
           ? {
               postinstall: 'node postinstall.js',
@@ -107,15 +133,20 @@ function createFakeStagingRunner(): PluginStagingRunner {
       },
       { spaces: 2 },
     );
-    await fs.writeFile(path.join(dependencyRoot, 'index.js'), 'module.exports = {};\n', 'utf8');
+    await fs.writeFile(
+      path.join(dependencyRoot, 'index.js'),
+      options.source ?? 'module.exports = {};\n',
+      'utf8',
+    );
 
     const topLevelPackage = path.join(packageRoot, 'node_modules', ...dependencyName.split('/'));
     await fs.ensureDir(path.dirname(topLevelPackage));
     await fs.remove(topLevelPackage);
-    const symlinkTarget = process.platform === 'win32'
+    const symlinkTarget = options.absoluteLinks || process.platform === 'win32'
       ? dependencyRoot
       : path.relative(path.dirname(topLevelPackage), dependencyRoot);
     await fs.symlink(symlinkTarget, topLevelPackage, process.platform === 'win32' ? 'junction' : 'dir');
+    return dependencyRoot;
   }
 
   return {
@@ -124,8 +155,40 @@ function createFakeStagingRunner(): PluginStagingRunner {
       const dependencies = packageJson.dependencies ?? {};
       const devDependencies = packageJson.devDependencies ?? {};
       await fs.ensureDir(path.join(packageRoot, 'node_modules'));
-      for (const dependencyName of Object.keys({ ...dependencies, ...devDependencies })) {
-        await writeInstalledPackage(packageRoot, dependencyName);
+      const installedPackageDirs = new Map<string, string>();
+      for (const dependencyName of Object.keys({
+        ...dependencies,
+        ...devDependencies,
+        ...dependencyPackages,
+      })) {
+        installedPackageDirs.set(dependencyName, await writeInstalledPackage(
+          packageRoot,
+          dependencyName,
+          dependencyPackages[dependencyName],
+        ));
+      }
+      for (const [dependencyName, dependencyPackage] of Object.entries(dependencyPackages)) {
+        const importerDir = installedPackageDirs.get(dependencyName);
+        if (!importerDir) {
+          continue;
+        }
+        for (const [installedName, installedPackageKey] of Object.entries(
+          dependencyPackage.installedDependencies ?? {},
+        )) {
+          const installedPackageDir = installedPackageDirs.get(installedPackageKey);
+          if (!installedPackageDir) {
+            throw new Error(`Missing fake installed package "${installedPackageKey}".`);
+          }
+          const entryPath = path.join(importerDir, 'node_modules', ...installedName.split('/'));
+          await fs.ensureDir(path.dirname(entryPath));
+          await fs.symlink(
+            options.absoluteLinks || process.platform === 'win32'
+              ? installedPackageDir
+              : path.relative(path.dirname(entryPath), installedPackageDir),
+            entryPath,
+            process.platform === 'win32' ? 'junction' : 'dir',
+          );
+        }
       }
     },
     async runNodeBuild({ pluginRoot }) {
@@ -149,6 +212,41 @@ afterEach(async () => {
 });
 
 describe('local-plugin generator', () => {
+  it('rejects missing or mismatched packageRoot pnpm versions before staging', async () => {
+    const repoRoot = await makeTempRepo();
+    const packageRoot = path.join(repoRoot, 'package-root');
+    const cliPackageJson = await fs.readJson(
+      path.join(resolveCliPackageRoot(), 'package.json'),
+    ) as { packageManager: string };
+    await fs.ensureDir(packageRoot);
+    await fs.writeJson(path.join(packageRoot, 'package.json'), {
+      name: 'staging-package',
+      version: '1.0.0',
+    });
+
+    await expect(validateStagingPackageManager(packageRoot)).rejects.toThrow(
+      `expected "${cliPackageJson.packageManager}"`,
+    );
+
+    await fs.writeJson(path.join(packageRoot, 'package.json'), {
+      name: 'staging-package',
+      version: '1.0.0',
+      packageManager: 'pnpm@9.0.0',
+    });
+    await expect(validateStagingPackageManager(packageRoot)).rejects.toThrow(
+      `expected "${cliPackageJson.packageManager}"`,
+    );
+
+    await fs.writeJson(path.join(packageRoot, 'package.json'), {
+      name: 'staging-package',
+      version: '1.0.0',
+      packageManager: cliPackageJson.packageManager,
+    });
+    await expect(validateStagingPackageManager(packageRoot)).resolves.toBe(
+      cliPackageJson.packageManager,
+    );
+  });
+
   it('generates Claude and Codex runtime manifests with explicit bundle-local paths', async () => {
     const repoRoot = await makeTempRepo();
     const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', 'git-commit'));
@@ -1041,7 +1139,7 @@ describe('local-plugin generator', () => {
     await expect(fs.pathExists(path.join(outputRoot, 'scripts', 'node_modules', 'vitest'))).resolves.toBe(false);
     await expect(
       fs.pathExists(path.join(outputRoot, 'scripts', 'node_modules', '.pnpm', 'chalk@1.0.0', 'node_modules', 'chalk', 'package.json')),
-    ).resolves.toBe(true);
+    ).resolves.toBe(false);
     await expect(
       fs.pathExists(path.join(outputRoot, 'scripts', 'node_modules', '.pnpm', 'vitest@1.0.0')),
     ).resolves.toBe(false);
@@ -1068,6 +1166,345 @@ describe('local-plugin generator', () => {
     const bundleManifest = await fs.readJson(path.join(outputRoot, '.agents-plugin', 'plugin.json'));
     expect(bundleManifest.scripts.tests).toBeUndefined();
     expect(bundleManifest.scripts.node.build).toBeUndefined();
+  });
+
+  it('copies installed darwin and linux transitive optional dependencies into an isolated runnable bundle', async () => {
+    const repoRoot = await makeTempRepo();
+    const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
+    const manifest = await readFixturePluginManifest(repoRoot);
+    await writeNodePackageFixture(pluginRoot, {
+      dependencies: {
+        'runtime-host': '^1.0.0',
+      },
+    });
+    await fs.writeFile(
+      path.join(pluginRoot, 'scripts', 'lifecycle.mjs'),
+      [
+        'import value from "runtime-host";',
+        'if (value !== "required-peer:optional-peer:optional-darwin:optional-linux") {',
+        '  throw new Error(`Unexpected dependency closure: ${value}`);',
+        '}',
+      ].join('\n'),
+      'utf8',
+    );
+    manifest.scripts = {
+      lifecycle: {
+        install: './scripts/lifecycle.mjs',
+      },
+      node: {
+        packageRoot: './scripts',
+      },
+    };
+    await writeFixturePluginManifest(repoRoot, manifest);
+
+    const outputRoot = path.join(repoRoot, 'out', 'git-commit');
+    await bundleLocalPlugin(await readPluginManifest(pluginRoot), outputRoot, {
+      buildMode: 'staging',
+      stagingRunner: createFakeStagingRunner({
+        'runtime-host': {
+          optionalDependencies: {
+            'optional-darwin': '^1.0.0',
+            'optional-linux': '^1.0.0',
+          },
+          peerDependencies: {
+            'optional-peer': '^1.0.0',
+            'required-peer': '^1.0.0',
+            'uninstalled-optional-peer': '^1.0.0',
+          },
+          peerDependenciesMeta: {
+            'optional-peer': { optional: true },
+            'uninstalled-optional-peer': { optional: true },
+          },
+          source: [
+            'module.exports = [',
+            '  require("required-peer"),',
+            '  require("optional-peer"),',
+            '  require("optional-darwin"),',
+            '  require("optional-linux"),',
+            '].join(":");',
+            '',
+          ].join('\n'),
+        },
+        'required-peer': { source: 'module.exports = "required-peer";\n' },
+        'optional-peer': { source: 'module.exports = "optional-peer";\n' },
+        'optional-darwin': {
+          os: ['darwin'],
+          source: 'module.exports = "optional-darwin";\n',
+        },
+        'optional-linux': {
+          os: ['linux'],
+          source: 'module.exports = "optional-linux";\n',
+        },
+      }),
+    });
+
+    const nodeModules = path.join(outputRoot, 'scripts', 'node_modules');
+    const runtimeHost = path.join(nodeModules, 'runtime-host');
+    expect((await fs.lstat(runtimeHost)).isSymbolicLink()).toBe(false);
+    for (const dependencyName of [
+      'required-peer',
+      'optional-peer',
+      'optional-darwin',
+      'optional-linux',
+    ]) {
+      const dependencyPath = path.join(runtimeHost, 'node_modules', dependencyName);
+      expect((await fs.lstat(dependencyPath)).isSymbolicLink()).toBe(false);
+    }
+    for (const dependencyName of ['uninstalled-optional-peer']) {
+      await expect(
+        fs.pathExists(path.join(runtimeHost, 'node_modules', dependencyName)),
+      ).resolves.toBe(false);
+    }
+    await expect(execFileAsync(
+      process.execPath,
+      [path.join(outputRoot, 'scripts', 'lifecycle.mjs')],
+      { cwd: outputRoot },
+    )).resolves.toMatchObject({ stderr: '' });
+  });
+
+  it('materializes absolute directory-link installs into a runnable portable bundle', async () => {
+    const repoRoot = await makeTempRepo();
+    const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
+    const manifest = await readFixturePluginManifest(repoRoot);
+    await writeNodePackageFixture(pluginRoot, {
+      dependencies: {
+        'runtime-host': '^1.0.0',
+      },
+    });
+    await fs.writeFile(
+      path.join(pluginRoot, 'scripts', 'lifecycle.mjs'),
+      'import value from "runtime-host";\nif (value !== "portable") throw new Error("not portable");\n',
+      'utf8',
+    );
+    manifest.scripts = {
+      lifecycle: {
+        install: './scripts/lifecycle.mjs',
+      },
+      node: {
+        packageRoot: './scripts',
+      },
+    };
+    await writeFixturePluginManifest(repoRoot, manifest);
+
+    const outputRoot = path.join(repoRoot, 'out', 'git-commit');
+    await bundleLocalPlugin(await readPluginManifest(pluginRoot), outputRoot, {
+      buildMode: 'staging',
+      stagingRunner: createFakeStagingRunner({
+        'runtime-host': { source: 'module.exports = "portable";\n' },
+      }, { absoluteLinks: true }),
+    });
+
+    const bundledDependency = path.join(outputRoot, 'scripts', 'node_modules', 'runtime-host');
+    expect((await fs.lstat(bundledDependency)).isSymbolicLink()).toBe(false);
+    await expect(execFileAsync(
+      process.execPath,
+      [path.join(outputRoot, 'scripts', 'lifecycle.mjs')],
+      { cwd: outputRoot },
+    )).resolves.toMatchObject({ stderr: '' });
+  });
+
+  it('rejects a transitive optional dependency missing from the cross-platform install', async () => {
+    const repoRoot = await makeTempRepo();
+    const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
+    const manifest = await readFixturePluginManifest(repoRoot);
+    await writeNodePackageFixture(pluginRoot, {
+      dependencies: {
+        'runtime-host': '^1.0.0',
+      },
+    });
+    await fs.writeFile(path.join(pluginRoot, 'scripts', 'lifecycle.mjs'), 'import "runtime-host";\n', 'utf8');
+    manifest.scripts = {
+      lifecycle: {
+        install: './scripts/lifecycle.mjs',
+      },
+      node: {
+        packageRoot: './scripts',
+      },
+    };
+    await writeFixturePluginManifest(repoRoot, manifest);
+
+    await expect(bundleLocalPlugin(
+      await readPluginManifest(pluginRoot),
+      path.join(repoRoot, 'out', 'git-commit'),
+      {
+        buildMode: 'staging',
+        stagingRunner: createFakeStagingRunner({
+          'runtime-host': {
+            optionalDependencies: {
+              'optional-linux': '^1.0.0',
+            },
+          },
+        }),
+      },
+    )).rejects.toThrow('missing transitive optional dependency "optional-linux"');
+  });
+
+  it('preserves two npm aliases to one physical package in an isolated runnable bundle', async () => {
+    const repoRoot = await makeTempRepo();
+    const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
+    const manifest = await readFixturePluginManifest(repoRoot);
+    await writeNodePackageFixture(pluginRoot, {
+      dependencies: {
+        'yaml-a': 'npm:yaml@1.0.0',
+        'yaml-b': 'npm:yaml@1.0.0',
+      },
+    });
+    await fs.writeFile(
+      path.join(pluginRoot, 'scripts', 'lifecycle.mjs'),
+      [
+        'import value from "yaml-b";',
+        'if (value !== "shared-child") {',
+        '  throw new Error(`Unexpected alias runtime value: ${value}`);',
+        '}',
+      ].join('\n'),
+      'utf8',
+    );
+    manifest.scripts = {
+      lifecycle: {
+        install: './scripts/lifecycle.mjs',
+      },
+      node: {
+        packageRoot: './scripts',
+      },
+    };
+    await writeFixturePluginManifest(repoRoot, manifest);
+
+    const outputRoot = path.join(repoRoot, 'out', 'git-commit');
+    const yamlAliasPackage: FakeDependencyPackage = {
+      physicalPackageName: 'yaml',
+      dependencies: {
+        'shared-child': '^1.0.0',
+      },
+      source: 'module.exports = require("shared-child");\n',
+    };
+    await bundleLocalPlugin(await readPluginManifest(pluginRoot), outputRoot, {
+      buildMode: 'staging',
+      stagingRunner: createFakeStagingRunner({
+        'yaml-a': yamlAliasPackage,
+        'yaml-b': yamlAliasPackage,
+        'shared-child': { source: 'module.exports = "shared-child";\n' },
+      }),
+    });
+
+    const nodeModules = path.join(outputRoot, 'scripts', 'node_modules');
+    const yamlA = path.join(nodeModules, 'yaml-a');
+    const yamlB = path.join(nodeModules, 'yaml-b');
+    expect((await fs.lstat(yamlA)).isSymbolicLink()).toBe(false);
+    expect((await fs.lstat(yamlB)).isSymbolicLink()).toBe(false);
+    await expect(fs.readJson(path.join(yamlA, 'package.json'))).resolves.toMatchObject({ name: 'yaml' });
+    await expect(fs.readJson(path.join(yamlB, 'package.json'))).resolves.toMatchObject({ name: 'yaml' });
+    await expect(execFileAsync(
+      process.execPath,
+      [path.join(outputRoot, 'scripts', 'lifecycle.mjs')],
+      { cwd: outputRoot },
+    )).resolves.toMatchObject({ stderr: '' });
+  });
+
+  it('preserves nested resolutions of two versions of the same package', async () => {
+    const repoRoot = await makeTempRepo();
+    const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
+    const manifest = await readFixturePluginManifest(repoRoot);
+    await writeNodePackageFixture(pluginRoot, {
+      dependencies: {
+        'host-a': '^1.0.0',
+        'host-b': '^1.0.0',
+      },
+    });
+    await fs.writeFile(
+      path.join(pluginRoot, 'scripts', 'lifecycle.mjs'),
+      [
+        'import hostA from "host-a";',
+        'import hostB from "host-b";',
+        'if (`${hostA}:${hostB}` !== "v1:v2") {',
+        '  throw new Error(`Unexpected versions: ${hostA}:${hostB}`);',
+        '}',
+      ].join('\n'),
+      'utf8',
+    );
+    manifest.scripts = {
+      lifecycle: {
+        install: './scripts/lifecycle.mjs',
+      },
+      node: {
+        packageRoot: './scripts',
+      },
+    };
+    await writeFixturePluginManifest(repoRoot, manifest);
+
+    const outputRoot = path.join(repoRoot, 'out', 'git-commit');
+    await bundleLocalPlugin(await readPluginManifest(pluginRoot), outputRoot, {
+      buildMode: 'staging',
+      stagingRunner: createFakeStagingRunner({
+        'host-a': {
+          dependencies: { shared: '^1.0.0' },
+          installedDependencies: { shared: 'shared-v1' },
+          source: 'module.exports = require("shared");\n',
+        },
+        'host-b': {
+          dependencies: { shared: '^2.0.0' },
+          installedDependencies: { shared: 'shared-v2' },
+          source: 'module.exports = require("shared");\n',
+        },
+        'shared-v1': {
+          physicalPackageName: 'shared',
+          version: '1.0.0',
+          source: 'module.exports = "v1";\n',
+        },
+        'shared-v2': {
+          physicalPackageName: 'shared',
+          version: '2.0.0',
+          source: 'module.exports = "v2";\n',
+        },
+      }),
+    });
+
+    await expect(execFileAsync(
+      process.execPath,
+      [path.join(outputRoot, 'scripts', 'lifecycle.mjs')],
+      { cwd: outputRoot },
+    )).resolves.toMatchObject({ stderr: '' });
+    await expect(
+      fs.readJson(path.join(outputRoot, 'scripts', 'node_modules', 'host-a', 'node_modules', 'shared', 'package.json')),
+    ).resolves.toMatchObject({ version: '1.0.0' });
+    await expect(
+      fs.readJson(path.join(outputRoot, 'scripts', 'node_modules', 'host-b', 'node_modules', 'shared', 'package.json')),
+    ).resolves.toMatchObject({ version: '2.0.0' });
+  });
+
+  it('rejects a missing transitive required peer dependency', async () => {
+    const repoRoot = await makeTempRepo();
+    const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
+    const manifest = await readFixturePluginManifest(repoRoot);
+    await writeNodePackageFixture(pluginRoot, {
+      dependencies: {
+        'runtime-host': '^1.0.0',
+      },
+    });
+    await fs.writeFile(path.join(pluginRoot, 'scripts', 'lifecycle.mjs'), 'import "runtime-host";\n', 'utf8');
+    manifest.scripts = {
+      lifecycle: {
+        install: './scripts/lifecycle.mjs',
+      },
+      node: {
+        packageRoot: './scripts',
+      },
+    };
+    await writeFixturePluginManifest(repoRoot, manifest);
+
+    await expect(bundleLocalPlugin(
+      await readPluginManifest(pluginRoot),
+      path.join(repoRoot, 'out', 'git-commit'),
+      {
+        buildMode: 'staging',
+        stagingRunner: createFakeStagingRunner({
+          'runtime-host': {
+            peerDependencies: {
+              'required-peer': '^1.0.0',
+            },
+          },
+        }),
+      },
+    )).rejects.toThrow('missing production dependency "required-peer"');
   });
 
   it('rejects production dependency closure install scripts after final staging install', async () => {

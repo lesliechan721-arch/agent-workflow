@@ -9,25 +9,6 @@
   },
   "cases": [
     {
-      "id": "route_local_clarification",
-      "split": "validation",
-      "query": "使用结构化开发工作流实现订单导出，但导出全部还是当前筛选结果还没定。",
-      "expected_loaded_skills": ["dev-workflow", "requirements-clarifier"],
-      "eval_type": "routing",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "workflow-cross-plugin-routing",
-      "unit_under_test": "full-skill",
-      "preconditions": {"participant_skills_available": true, "ask_me_installed": true},
-      "oracle": {
-        "rationale": "用户显式进入开发工作流，具体实现只存在一个局部材料歧义。",
-        "rule_refs": ["dev-workflow/SKILL.md#路由", "requirements-clarifier/SKILL.md description"],
-        "confidence": "high",
-        "allowed_variance": "可以先读取仓库事实，但应只加载入口和 requirements-clarifier。",
-        "minimal_counterexample": "若用户要求逐轮推演整个导出方案，则目标改为 decision-grill。"
-      }
-    },
-    {
       "id": "route_decision_grill",
       "split": "validation",
       "query": "按结构化开发工作流逐轮和我推演新的权限模型，直到目标、取舍和失败路径都清楚。",
@@ -37,13 +18,13 @@
       "provenance": "boundary",
       "scenario_family": "workflow-cross-plugin-routing",
       "unit_under_test": "full-skill",
-      "preconditions": {"participant_skills_available": true, "ask_me_installed": true},
+      "preconditions": { "participant_skills_available": true, "ask_me_installed": true },
       "oracle": {
         "rationale": "用户显式进入开发工作流，并要求多轮材料决策访谈。",
         "rule_refs": ["dev-workflow/SKILL.md#路由", "decision-grill/SKILL.md description"],
         "confidence": "high",
         "allowed_variance": "问题顺序可以不同，但应只加载入口和 decision-grill。",
-        "minimal_counterexample": "若只剩一个具体实施歧义，则目标改为 requirements-clarifier。"
+        "minimal_counterexample": "若用户没有要求逐轮推演材料决定，则不应加载 decision-grill。"
       }
     },
     {
@@ -56,7 +37,7 @@
       "provenance": "representative-synthetic",
       "scenario_family": "workflow-cross-plugin-routing",
       "unit_under_test": "full-skill",
-      "preconditions": {"participant_skills_available": true, "ask_me_installed": true},
+      "preconditions": { "participant_skills_available": true, "ask_me_installed": true },
       "oracle": {
         "rationale": "用户显式进入开发工作流，当前决定必须通过可操作原型形成。",
         "rule_refs": ["dev-workflow/SKILL.md#路由", "decision-prototype/SKILL.md description"],
@@ -74,7 +55,7 @@
       "provenance": "representative-synthetic",
       "scenario_family": "workflow-local-routing",
       "unit_under_test": "full-skill",
-      "preconditions": {"participant_skills_available": true},
+      "preconditions": { "participant_skills_available": true },
       "oracle": {
         "rationale": "材料决定已经形成，当前交付是稳定规格。",
         "rule_refs": ["dev-workflow/SKILL.md#路由", "dev-spec/SKILL.md description"],
@@ -92,7 +73,7 @@
       "provenance": "representative-synthetic",
       "scenario_family": "workflow-local-routing",
       "unit_under_test": "full-skill",
-      "preconditions": {"participant_skills_available": true},
+      "preconditions": { "participant_skills_available": true },
       "oracle": {
         "rationale": "已有 Spec，当前交付是批准前规格审查。",
         "rule_refs": ["dev-workflow/SKILL.md#路由", "dev-review-spec/SKILL.md description"],
@@ -110,7 +91,7 @@
       "provenance": "representative-synthetic",
       "scenario_family": "workflow-local-routing",
       "unit_under_test": "full-skill",
-      "preconditions": {"participant_skills_available": true, "spec_confirmed": true},
+      "preconditions": { "participant_skills_available": true, "spec_confirmed": true },
       "oracle": {
         "rationale": "请求和 Spec 已明确，当前交付是实施。",
         "rule_refs": ["dev-workflow/SKILL.md#路由", "dev-implement/SKILL.md description"],
@@ -128,7 +109,7 @@
       "provenance": "representative-synthetic",
       "scenario_family": "workflow-local-routing",
       "unit_under_test": "full-skill",
-      "preconditions": {"participant_skills_available": true, "implementation_available": true},
+      "preconditions": { "participant_skills_available": true, "implementation_available": true },
       "oracle": {
         "rationale": "已有 PR，当前交付是双轴实现审查。",
         "rule_refs": ["dev-workflow/SKILL.md#路由", "dev-review-code/SKILL.md description"],
@@ -146,7 +127,10 @@
       "provenance": "boundary",
       "scenario_family": "workflow-entry-boundary",
       "unit_under_test": "description",
-      "preconditions": {"participant_skills_available": true, "workflow_not_explicitly_requested": true},
+      "preconditions": {
+        "participant_skills_available": true,
+        "workflow_not_explicitly_requested": true
+      },
       "oracle": {
         "rationale": "普通明确小改动不应先加载宏入口，但实现 Skill 可以直接触发。",
         "rule_refs": ["dev-workflow/SKILL.md description", "dev-implement/SKILL.md description"],
@@ -165,7 +149,10 @@
       "provenance": "boundary",
       "scenario_family": "workflow-entry-boundary",
       "unit_under_test": "description",
-      "preconditions": {"participant_skills_available": true, "workflow_not_explicitly_requested": true},
+      "preconditions": {
+        "participant_skills_available": true,
+        "workflow_not_explicitly_requested": true
+      },
       "oracle": {
         "rationale": "用户直接请求决策访谈，没有要求启动开发宏流程。",
         "rule_refs": ["dev-workflow/SKILL.md description", "decision-grill/SKILL.md description"],

@@ -2,9 +2,6 @@ import type {
   AgentVersionProbeResult,
   AgentVersionReasonCode,
   AgentVersionStatus,
-  CatalogCacheFallbackEvidence,
-  CatalogRemoteFailureEvidence,
-  CatalogSelector,
   CodexProjectManagedKind,
   CommandAction,
   ManualNextStepKind,
@@ -74,17 +71,6 @@ export interface NativeSkippedEventData {
   repoManagedArtifactKinds: CodexProjectManagedKind[];
 }
 
-export interface CatalogResolutionEventData {
-  source?: 'local' | 'embedded' | 'remote' | 'cache';
-  selector?: CatalogSelector;
-  channel?: string;
-  catalogVersion?: string;
-  minAwVersion?: string;
-  cacheFallback?: CatalogCacheFallbackEvidence;
-  remoteFailure?: CatalogRemoteFailureEvidence;
-  reasonCode?: string;
-}
-
 export type RebuildActionEventData = SharedRebuildActionEventData;
 export type RebuildActionEvent = SharedRebuildActionEvent;
 
@@ -101,8 +87,7 @@ export type CommandEventData =
   | NativeMarketplaceEventData
   | NativeRpcEventData
   | NativePostCheckEventData
-  | NativeSkippedEventData
-  | CatalogResolutionEventData;
+  | NativeSkippedEventData;
 
 export interface CommandOutputSource {
   platform?: PlatformName;

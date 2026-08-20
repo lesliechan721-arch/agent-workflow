@@ -37,11 +37,17 @@ test('the plugin exposes only content skills and a versioned portable rule bundl
   assert.match(readme, /write-agent-content/u);
   assert.match(readme, /review-agent-content/u);
   assert.doesNotMatch(readme, /author-agent-skill/u);
-  assert.match('sha256:' + createHash('sha256').update(rulesRaw).digest('hex'), /^sha256:[0-9a-f]{64}$/u);
+  assert.match(
+    'sha256:' + createHash('sha256').update(rulesRaw).digest('hex'),
+    /^sha256:[0-9a-f]{64}$/u,
+  );
   assert.doesNotMatch(rulesRaw, /agent-workflows/u);
   const rules = JSON.parse(rulesRaw);
   for (const rule of rules.rules) {
-    assert.ok(!rule.sourceRefs.includes('writing-for-agents'), `${rule.id} must not classify a heuristic lens as an authoritative source`);
+    assert.ok(
+      !rule.sourceRefs.includes('writing-for-agents'),
+      `${rule.id} must not classify a heuristic lens as an authoritative source`,
+    );
     if (rule.heuristicRefs?.includes('writing-for-agents')) {
       assert.match(sourceMap, /Third-party heuristic lens/u);
     }
@@ -52,9 +58,20 @@ test('the plugin exposes only content skills and a versioned portable rule bundl
 test('reference audit starter satisfies the canonical identity-bound schema', async () => {
   await run('scripts/validate-json-contract.mjs', [
     path.join(pluginRoot, 'schemas/reference-audit-result.schema.json'),
-    path.join(pluginRoot, 'skills/review-agent-content/assets/reference-audit-result.template.json'),
+    path.join(
+      pluginRoot,
+      'skills/review-agent-content/assets/reference-audit-result.template.json',
+    ),
   ]);
-  const value = JSON.parse(await readFile(path.join(pluginRoot, 'skills/review-agent-content/assets/reference-audit-result.template.json'), 'utf8'));
+  const value = JSON.parse(
+    await readFile(
+      path.join(
+        pluginRoot,
+        'skills/review-agent-content/assets/reference-audit-result.template.json',
+      ),
+      'utf8',
+    ),
+  );
   assert.equal(value.producer, 'review-agent-content');
   assert.equal(value.independentContext, true);
   assert.match(value.target.digest, /^sha256:[0-9a-f]{64}$/u);

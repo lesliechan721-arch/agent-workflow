@@ -2,10 +2,14 @@
 
 ## Source truth
 
-- 显式提供的 `<plugin-root>/.agents-plugin/plugin.json` 和该插件根下源码是人工维护入口；`plugins/<name>/` 只是可能的工作区布局之一。
-- 平台 manifest、staging/runtime bundle、catalog 和本地 runtime view 由目标工作区的 CLI 或 renderer 生成。
+- 显式提供的 `<plugin-root>/.agents-plugin/plugin.json`
+  和该插件根下源码是人工维护入口；`plugins/<name>/` 只是可能的工作区布局之一。
+- 当前 `pnpm build` 生成平台 manifest 和本地 schema 3 snapshot；release staging 使用显式 catalog
+  version 和 ledger。Git publish 与首次 official
+  bootstrap 属于维护者发布合同，不是插件作者手改入口。
 - 插件名和 Skill 名使用小写短横线，并与各自目录一致。
-- 插件与 Skill README 按同目录的 `aw-readme-authoring.md` 维护，不读取宿主仓库的 README 规范作为运行时合同。
+- 插件与 Skill README 按同目录的 `aw-readme-authoring.md`
+  维护，不读取宿主仓库的 README 规范作为运行时合同。
 
 ## Component selection
 
@@ -40,4 +44,5 @@
 - Node package/build：`scripts.node.packageRoot` / `scripts.node.build`
 - tests：`scripts.tests.node`
 
-只读取当前组件对应的 branch reference；同一插件组合多个组件时可以读取多个 reference，但不要为单一 config 或 lifecycle 修改加载全部脚本协议。
+只读取当前组件对应的 branch
+reference；同一插件组合多个组件时可以读取多个 reference，但不要为单一 config 或 lifecycle 修改加载全部脚本协议。

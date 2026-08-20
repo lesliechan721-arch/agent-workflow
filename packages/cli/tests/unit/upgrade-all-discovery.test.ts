@@ -3,7 +3,7 @@ import path from 'node:path';
 import fs from 'fs-extra';
 import { describe, expect, it, vi } from 'vitest';
 
-import { upgradeWriteCommand } from '../../src/commands/write-commands.js';
+import { runRebuildCommand } from '../../src/commands/rebuild-command.js';
 import type { CatalogResolution } from '../../src/types.js';
 import type { NativeCliRunner } from '../../src/utils/native-cli.js';
 import { writeOwnedTextFile } from '../../src/utils/ownership.js';
@@ -43,6 +43,58 @@ function discoveryRunner(calls: string[]): NativeCliRunner {
 }
 
 describe('upgrade --all live discovery', () => {
+  it('does not delete any Codex residue when cleanup inventory has invalid JSON', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const marketplaceRoot = path.join(isolation.layout.awHomeDir, 'marketplaces', 'team');
+    await Promise.all([
+      fs.outputJson(path.join(marketplaceRoot, 'config.json'), {
+        schemaVersion: 2,
+        sourceId: 'team',
+        sourceIdentity: `sha256:${'1'.repeat(64)}`,
+        marketplaceName: 'aw-team',
+      }),
+      fs.outputJson(path.join(marketplaceRoot, '.agents', 'plugins', 'marketplace.json'), {
+        name: 'aw-team',
+      }),
+    ]);
+    await fs.outputFile(path.join(isolation.layout.codexHomeDir, 'config.toml'), [
+      '[marketplaces.aw-team]',
+      `source = ${JSON.stringify(marketplaceRoot)}`,
+      'source_type = "local"',
+      '',
+    ].join('\n'));
+    const manifestPath = path.join(
+      isolation.layout.codexHomeDir,
+      'plugins',
+      'broken@aw-team',
+      'manifest.json',
+    );
+    await fs.outputFile(manifestPath, '{');
+    const calls: string[] = [];
+
+    await expect(runRebuildCommand({
+      command: 'cleanup',
+      pluginNames: [],
+      commandOptions: {
+        all: true,
+        cwd: isolation.layout.fixtureCwd,
+        platform: 'codex',
+        scope: 'user',
+      },
+      all: true,
+      runtime: {
+        env: isolation.env,
+        nativeCliRunner: async (invocation) => {
+          calls.push([invocation.command, ...invocation.args].join(' '));
+          return { exitCode: 0, stdout: '', stderr: '' };
+        },
+      },
+    })).rejects.toThrow();
+
+    expect(calls).toEqual([]);
+    await expect(fs.readFile(manifestPath, 'utf8')).resolves.toBe('{');
+  });
+
   it('discovers Codex and Claude user residue with --platform both and fails catalog-missing targets independently', async () => {
     const isolation = getCurrentSourceTestIsolation();
     await fs.outputFile(path.join(isolation.layout.codexHomeDir, 'config.toml'), [
@@ -66,15 +118,22 @@ describe('upgrade --all live discovery', () => {
       },
     });
     const calls: string[] = [];
-    const result = await upgradeWriteCommand([], {
+    const commandOptions = {
       all: true,
       cwd: isolation.layout.fixtureCwd,
       platform: 'both',
       scope: 'user',
-    }, {
+    } as const;
+    const result = await runRebuildCommand({
+      command: 'upgrade',
+      pluginNames: [],
+      commandOptions,
+      all: true,
+      runtime: {
       env: isolation.env,
       catalogResolution: await emptyCatalog(isolation.layout.rootDir),
       nativeCliRunner: discoveryRunner(calls),
+      },
     });
 
     expect(result.overallState).toBe('failed');
@@ -124,15 +183,22 @@ describe('upgrade --all live discovery', () => {
       },
     });
     const calls: string[] = [];
-    const result = await upgradeWriteCommand([], {
+    const commandOptions = {
       all: true,
       cwd,
       platform: 'both',
       scope: 'project',
-    }, {
+    } as const;
+    const result = await runRebuildCommand({
+      command: 'upgrade',
+      pluginNames: [],
+      commandOptions,
+      all: true,
+      runtime: {
       env: isolation.env,
       catalogResolution: await emptyCatalog(isolation.layout.rootDir),
       nativeCliRunner: discoveryRunner(calls),
+      },
     });
 
     expect(result.targetResults).toEqual(expect.arrayContaining([

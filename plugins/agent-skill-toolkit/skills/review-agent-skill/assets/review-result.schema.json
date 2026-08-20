@@ -3,33 +3,13 @@
   "$id": "https://agent-skill-toolkit.invalid/review-result.schema.json",
   "title": "ReviewResult",
   "type": "object",
-  "required": [
-    "schemaVersion",
-    "independentContext",
-    "producer",
-    "mode",
-    "target",
-    "design",
-    "releaseReadiness",
-    "complexity",
-    "composition",
-    "reducibility",
-    "evalEvidenceLevel",
-    "compositionFindingIds",
-    "complexityFindingIds",
-    "dimensions",
-    "weightedScore",
-    "coverage",
-    "confidence",
-    "findings",
-    "unknowns",
-    "gates",
-    "actions"
-  ],
+  "required": ["schemaVersion","independentContext","producer","mode","target","design","releaseReadiness","complexity","composition","reducibility","evalEvidenceLevel","compositionFindingIds","complexityFindingIds","dimensions","weightedScore","coverage","confidence","findings","unknowns","gates","actions"],
   "properties": {
-    "schemaVersion": {"const": 3},
-    "mode": {"enum": ["quick","full","release-quality","delta"]},
-    "target": {"type":"object","required":["kind","name"],"properties":{"kind":{"enum":["agent-skill","repo-skill","aw-plugin-skill","materialized-skill"]},"name":{"type":"string","minLength":1},"profile":{"type":["string","null"]},"digest":{"type":["string","null"],"pattern":"^sha256:[0-9a-f]{64}$"}},"additionalProperties":false},
+    "schemaVersion":{"const":3},
+    "producer":{"const":"review-agent-skill"},
+    "independentContext":{"type":"boolean"},
+    "mode":{"enum":["quick","full","release-quality","delta"]},
+    "target":{"type":"object","required":["kind","name"],"properties":{"kind":{"enum":["agent-skill","repo-skill","aw-plugin-skill","materialized-skill"]},"name":{"type":"string","minLength":1},"profile":{"type":["string","null"]},"digest":{"type":["string","null"],"pattern":"^sha256:[0-9a-f]{64}$"}},"additionalProperties":false},
     "design":{"enum":["pass","needs-fixes","redesign","fail","not-assessed"]},
     "releaseReadiness":{"enum":["ready","provisional","blocked","not-assessed"]},
     "complexity":{"enum":["minimal","proportionate","over-specified","over-engineered","not-assessed"]},
@@ -53,9 +33,6 @@
       "eval-validity":{"type":"object","required":["status","severity","reason","findingIds"],"properties":{"status":{"enum":["pass","fail","unknown","not_applicable"]},"severity":{"const":"P1"},"reason":{"type":"string"},"findingIds":{"type":"array","items":{"type":"string"},"uniqueItems":true}},"additionalProperties":false},
       "eval-change-safety":{"type":"object","required":["status","severity","reason","findingIds"],"properties":{"status":{"enum":["pass","fail","unknown","not_applicable"]},"severity":{"const":"P1"},"reason":{"type":"string"},"findingIds":{"type":"array","items":{"type":"string"},"uniqueItems":true}},"additionalProperties":false}
     },"additionalProperties":false},
-    "actions":{"type":"array","items":{"type":"string"}},
-    "producer":{"const":"review-agent-skill"},
-    "independentContext":{"type":"boolean"}
-  },
-  "additionalProperties": false
+    "actions":{"type":"array","items":{"type":"string"}}
+  },"additionalProperties":false
 }

@@ -15,11 +15,11 @@ import {
   readMarketplaceSourceMeta,
   readPluginManifest,
   STRICT_SEMVER_VALIDATION_CODE,
-  validateCatalogManifest,
   validatePluginManifest,
 } from '../../src/utils/manifest.js';
 import {
   resolveLifecycleScriptForOs,
+  scanJavaScriptImportSpecifiers,
   scanNodeImportContract,
 } from '../../src/utils/plugin-script-contract.js';
 import {
@@ -99,84 +99,6 @@ function createMarketplaceWithProducts(products: string[]) {
       authentication: 'ON_INSTALL',
       products,
     },
-  };
-}
-
-function sha256(char: string): string {
-  return `sha256:${char.repeat(64)}`;
-}
-
-function createCatalogManifestFixture() {
-  return {
-    schemaVersion: 2,
-    catalogVersion: '1.2.3',
-    channel: 'latest',
-    compatibility: {
-      aw: {
-        minVersion: '0.0.0',
-      },
-    },
-    packages: {
-      sidecar: {
-        name: '@lesliechan721/aw-plugins-manifest',
-        version: '1.2.3',
-        channel: 'latest',
-      },
-      full: {
-        name: '@lesliechan721/aw-plugins',
-        version: '1.2.3',
-        channel: 'latest',
-        manifestPath: './catalog-manifest.json',
-      },
-    },
-    entries: [
-      {
-        name: 'code-review',
-        version: '1.4.0',
-        description: 'review plugin',
-        category: 'workflow',
-        strict: true,
-        policy: {
-          installation: 'AVAILABLE',
-          authentication: 'ON_INSTALL',
-        },
-        compatibility: {
-          aw: {
-            minVersion: '0.0.0',
-          },
-        },
-        dependencies: {
-          plugins: [
-            {
-              name: 'shared-helper',
-              minVersion: '1.2.0',
-            },
-          ],
-        },
-        source: './plugins/code-review',
-        artifactDigest: sha256('a'),
-        manifestDigest: sha256('b'),
-      },
-      {
-        name: 'shared-helper',
-        version: '1.2.0',
-        description: 'helper plugin',
-        category: 'workflow',
-        strict: true,
-        policy: {
-          installation: 'AVAILABLE',
-          authentication: 'ON_INSTALL',
-        },
-        compatibility: {
-          aw: {
-            minVersion: '0.0.0',
-          },
-        },
-        source: './plugins/shared-helper',
-        artifactDigest: sha256('c'),
-        manifestDigest: sha256('d'),
-      },
-    ],
   };
 }
 
@@ -1231,11 +1153,13 @@ describe('manifest utils', () => {
             'import "./shared.mjs";',
             'export { value } from "./value.js";',
             'const util = require("./util.cjs");',
+            'const resolved = require.resolve("./resolved.cjs");',
             'await import("./lazy.mjs");',
           ].join('\n'),
           'scripts/shared.mjs': 'export const shared = true;',
           'scripts/value.js': 'export const value = 1;',
           'scripts/util.cjs': 'module.exports = require("node:fs");',
+          'scripts/resolved.cjs': 'module.exports = true;',
           'scripts/lazy.mjs': 'export default true;',
         },
       }),
@@ -1243,6 +1167,7 @@ describe('manifest utils', () => {
       files: [
         'scripts/lazy.mjs',
         'scripts/lifecycle.mjs',
+        'scripts/resolved.cjs',
         'scripts/shared.mjs',
         'scripts/util.cjs',
         'scripts/value.js',
@@ -1285,6 +1210,409 @@ describe('manifest utils', () => {
     ).toEqual([
       'Runtime import "left-pad" from "scripts/lifecycle.mjs" is not declared in dependencies.',
     ]);
+
+    expect(
+      scanNodeImportContract({
+        entryFiles: ['./scripts/lifecycle.mjs'],
+        files: {
+          'scripts/lifecycle.mjs': 'require.resolve("left-pad");',
+        },
+      }).errors,
+    ).toEqual([
+      'Runtime import "left-pad" from "scripts/lifecycle.mjs" is not declared in dependencies.',
+    ]);
+  });
+
+  it('includes static JSON imports as runtime leaves and preserves relative import failures', () => {
+    expect(scanNodeImportContract({
+      entryFiles: ['scripts/entry.cjs'],
+      files: {
+        'scripts/entry.cjs': [
+          'const explicit = require("./config.json");',
+          'module.exports = require("./config") ?? explicit;',
+        ].join('\n'),
+        'scripts/config.json': '{',
+      },
+    })).toEqual({
+      files: ['scripts/config.json', 'scripts/entry.cjs'],
+      bareSpecifiers: [],
+      errors: [],
+    });
+
+    expect(scanNodeImportContract({
+      entryFiles: ['scripts/entry.cjs'],
+      files: {
+        'scripts/entry.cjs': [
+          'require("./missing.json");',
+          'require("../../outside.json");',
+        ].join('\n'),
+      },
+      filePaths: ['scripts/entry.cjs'],
+    }).errors).toEqual([
+      'Unable to resolve relative import "./missing.json" from "scripts/entry.cjs".',
+      'Relative import "../../outside.json" from "scripts/entry.cjs" escapes the plugin root.',
+    ]);
+  });
+
+  it('uses CommonJS completion but requires explicit ESM relative paths', () => {
+    expect(scanNodeImportContract({
+      entryFiles: ['scripts/entry.cjs', 'scripts/entry.mjs'],
+      files: {
+        'scripts/entry.cjs': [
+          'require("./required");',
+          'require.resolve("./resolved");',
+          'module.require("./module-required");',
+          'require("./explicit.mjs");',
+          'require("./explicit.cjs");',
+        ].join('\n'),
+        'scripts/entry.mjs': [
+          'import "./imported";',
+          'export * from "./exported";',
+          'await import("./dynamic");',
+          'import "./explicit-esm.mjs";',
+          'export * from "./explicit-esm.js";',
+          'await import("./explicit-esm.json", { with: { type: "json" } });',
+        ].join('\n'),
+        'scripts/required.mjs': 'export default "wrong";',
+        'scripts/resolved.mjs': 'export default "wrong";',
+        'scripts/module-required.mjs': 'export default "wrong";',
+        'scripts/explicit.mjs': 'export default true;',
+        'scripts/explicit.cjs': 'module.exports = true;',
+        'scripts/explicit-esm.mjs': 'export default true;',
+        'scripts/explicit-esm.js': 'export default true;',
+        'scripts/imported.mjs': 'export default true;',
+        'scripts/exported.mjs': 'export default true;',
+        'scripts/dynamic.mjs': 'export default true;',
+      },
+      filePaths: [
+        'scripts/required.json',
+        'scripts/resolved.json',
+        'scripts/module-required.json',
+        'scripts/explicit-esm.json',
+        'scripts/imported.json',
+        'scripts/exported.json',
+        'scripts/dynamic.json',
+      ],
+    })).toEqual({
+      files: [
+        'scripts/entry.cjs',
+        'scripts/entry.mjs',
+        'scripts/explicit-esm.js',
+        'scripts/explicit-esm.json',
+        'scripts/explicit-esm.mjs',
+        'scripts/explicit.cjs',
+        'scripts/explicit.mjs',
+        'scripts/module-required.json',
+        'scripts/required.json',
+        'scripts/resolved.json',
+      ],
+      bareSpecifiers: [],
+      errors: [
+        'Unable to resolve relative import "./imported" from "scripts/entry.mjs".',
+        'Unable to resolve relative import "./exported" from "scripts/entry.mjs".',
+        'Unable to resolve relative import "./dynamic" from "scripts/entry.mjs".',
+      ],
+    });
+
+    expect(scanNodeImportContract({
+      entryFiles: ['scripts/native.cjs'],
+      files: {
+        'scripts/native.cjs': 'require("./binding");',
+      },
+      filePaths: ['scripts/binding.node'],
+    })).toEqual({
+      files: ['scripts/native.cjs'],
+      bareSpecifiers: [],
+      errors: [
+        'Unsupported runtime import file "scripts/binding.node" resolved from "./binding" in "scripts/native.cjs".',
+      ],
+    });
+  });
+
+  it('resolves CommonJS directories through package main and index fallback', () => {
+    expect(scanNodeImportContract({
+      entryFiles: ['scripts/entry.cjs'],
+      files: {
+        'scripts/entry.cjs': [
+          'require("./required");',
+          'require.resolve("./resolved");',
+          'module.require("./fallback");',
+          'require("./dot");',
+          'require("./feature");',
+        ].join('\n'),
+        'scripts/required/package.json': JSON.stringify({ main: 'lib/main.cjs' }),
+        'scripts/required/lib/main.cjs': 'module.exports = true;',
+        'scripts/resolved/package.json': JSON.stringify({ main: './index.json' }),
+        'scripts/resolved/index.json': '{}',
+        'scripts/fallback/package.json': JSON.stringify({ name: 'fallback' }),
+        'scripts/fallback/index.js': 'module.exports = true;',
+        'scripts/dot/package.json': JSON.stringify({ main: '.' }),
+        'scripts/dot/index.js': 'module.exports = true;',
+        'scripts/feature/package.json': JSON.stringify({ main: '../shared.cjs' }),
+        'scripts/shared.cjs': 'module.exports = true;',
+      },
+    })).toEqual({
+      files: [
+        'scripts/dot/index.js',
+        'scripts/dot/package.json',
+        'scripts/entry.cjs',
+        'scripts/fallback/index.js',
+        'scripts/fallback/package.json',
+        'scripts/feature/package.json',
+        'scripts/required/lib/main.cjs',
+        'scripts/required/package.json',
+        'scripts/resolved/index.json',
+        'scripts/resolved/package.json',
+        'scripts/shared.cjs',
+      ],
+      bareSpecifiers: [],
+      errors: [],
+    });
+
+    expect(scanNodeImportContract({
+      entryFiles: ['scripts/entry.mjs'],
+      files: {
+        'scripts/entry.mjs': 'import "./helper";',
+        'scripts/helper/package.json': JSON.stringify({ main: 'index.js' }),
+        'scripts/helper/index.js': 'export default true;',
+      },
+    }).errors).toEqual([
+      'Unable to resolve relative import "./helper" from "scripts/entry.mjs".',
+    ]);
+  });
+
+  it('does not read a nested package manifest when a CommonJS main targets a directory', () => {
+    expect(scanNodeImportContract({
+      entryFiles: ['scripts/entry.cjs'],
+      files: {
+        'scripts/entry.cjs': 'require("./helper");',
+        'scripts/helper/package.json': JSON.stringify({ main: 'nested' }),
+        'scripts/helper/nested/package.json': JSON.stringify({ main: 'actual.cjs' }),
+        'scripts/helper/nested/actual.cjs': 'module.exports = true;',
+      },
+    }).errors).toEqual([
+      'Unable to resolve relative import "./helper" from "scripts/entry.cjs".',
+    ]);
+  });
+
+  it('fails closed for invalid, escaping, and native CommonJS directory entries', () => {
+    const scan = (packageJson: string, extraFiles: Record<string, string> = {}) => (
+      scanNodeImportContract({
+        entryFiles: ['scripts/entry.cjs'],
+        files: {
+          'scripts/entry.cjs': 'require("./helper");',
+          'scripts/helper/package.json': packageJson,
+          ...extraFiles,
+        },
+      }).errors
+    );
+
+    expect(scan('{')).toEqual([
+      'Invalid CommonJS package manifest "scripts/helper/package.json" resolved from "./helper" in "scripts/entry.cjs".',
+    ]);
+    expect(scan(JSON.stringify({ main: 42 }))).toEqual([
+      'Invalid CommonJS package main in "scripts/helper/package.json" resolved from "./helper" in "scripts/entry.cjs".',
+    ]);
+    expect(scan(JSON.stringify({ main: '../../../outside.cjs' }))).toEqual([
+      'CommonJS package main "../../../outside.cjs" in "scripts/helper/package.json" escapes the plugin root.',
+    ]);
+    expect(scan(JSON.stringify({ main: 'https://example.test/helper.cjs' }))).toEqual([
+      'Invalid CommonJS package main in "scripts/helper/package.json" resolved from "./helper" in "scripts/entry.cjs".',
+    ]);
+    expect(scan(JSON.stringify({ main: 'binding' }), {
+      'scripts/helper/binding.node': '',
+    })).toEqual([
+      'Unsupported runtime import file "scripts/helper/binding.node" resolved from "./helper" in "scripts/entry.cjs".',
+    ]);
+  });
+
+  it('accepts only authoritative Node builtin specifiers without dependency declarations', () => {
+    expect(scanNodeImportContract({
+      entryFiles: ['scripts/entry.mjs'],
+      files: {
+        'scripts/entry.mjs': [
+          'require("fs");',
+          'require("fs/promises");',
+          'require("node:fs");',
+          'require("fs/not-a-builtin");',
+          'require("node:fs/not-a-builtin");',
+        ].join('\n'),
+      },
+    })).toEqual({
+      files: ['scripts/entry.mjs'],
+      bareSpecifiers: ['fs'],
+      errors: [
+        'Runtime import "fs/not-a-builtin" from "scripts/entry.mjs" is not declared in dependencies.',
+        'Unsupported import specifier "node:fs/not-a-builtin" from "scripts/entry.mjs".',
+      ],
+    });
+  });
+
+  it('scans JavaScript imports through comments and template expressions without regex false positives', () => {
+    const source = [
+      'const fixture = \'import "../storage/store";\';',
+      'const template = `require("../storage/template")`;',
+      'const expression = `${import(/* webpackIgnore: true */ "./template-lazy.mjs", { with: { type: "json" } })}`;',
+      '// export { value } from "../storage/comment";',
+      '/* await import("../storage/block-comment"); */',
+      'const pattern = /require("..\\/storage\\/regex")|import("..\\/storage\\/regex-lazy")/gu;',
+      'const resolveFixture = \'require.resolve("../storage/resolve-string")\';',
+      '// require.resolve("../storage/resolve-comment");',
+      'const resolvePattern = /require\\.resolve\("\.\.\\/storage\\/resolve-regex"\)/gu;',
+      'if (fixture) /require("ghost-control")/u.test(fixture);',
+      '{ void fixture; } /import("ghost-block")/u.test(fixture);',
+      'import /* side effect */ "./real.mjs";',
+      'import value /* binding */ from /* source */ "./value.mjs";',
+      'export { named } /* binding */ from /* source */ "./named.mjs";',
+      'const lazy = import /* call */ ("./lazy.mjs", { with: { type: "json" } });',
+      'const helper = require(/* dependency */ "./helper.cjs");',
+      'const resolved = require.resolve(/* dependency */ "./resolved.cjs");',
+      'const quotient = fixture / require("./division.cjs");',
+      'count++ / require("./factor.cjs");',
+      'count-- / require("./decrement.cjs");',
+    ].join('\n');
+
+    expect(scanJavaScriptImportSpecifiers(source)).toEqual(expect.arrayContaining([
+      { kind: 'dynamic-import', specifier: './template-lazy.mjs' },
+      { kind: 'import', specifier: './real.mjs' },
+      { kind: 'import', specifier: './value.mjs' },
+      { kind: 'export', specifier: './named.mjs' },
+      { kind: 'dynamic-import', specifier: './lazy.mjs' },
+      { kind: 'require', specifier: './helper.cjs' },
+      { kind: 'require-resolve', specifier: './resolved.cjs' },
+      { kind: 'require', specifier: './division.cjs' },
+      { kind: 'require', specifier: './factor.cjs' },
+      { kind: 'require', specifier: './decrement.cjs' },
+    ]));
+    expect(scanJavaScriptImportSpecifiers(source)).toHaveLength(10);
+
+    expect(scanNodeImportContract({
+      entryFiles: ['scripts/entry.mjs'],
+      files: {
+        'scripts/entry.mjs': [
+          'const inside = `${import("./inside.mjs")}`;',
+          'const escaped = require(/* boundary */ "../../outside.cjs");',
+          'const resolvedEscape = require.resolve("../../resolved-outside.cjs");',
+          'const ignored = /import(".\\/missing.mjs")/u;',
+        ].join('\n'),
+        'scripts/inside.mjs': 'export default true;',
+      },
+    })).toEqual({
+      files: ['scripts/entry.mjs', 'scripts/inside.mjs'],
+      bareSpecifiers: [],
+      errors: [
+        'Relative import "../../outside.cjs" from "scripts/entry.mjs" escapes the plugin root.',
+        'Relative import "../../resolved-outside.cjs" from "scripts/entry.mjs" escapes the plugin root.',
+      ],
+    });
+  });
+
+  it('scans static template import specifiers and rejects interpolated template specifiers', () => {
+    const source = [
+      'const lazy = import(`./helper\\x2emjs`);',
+      'const dependency = require(`ya\\u006dl`);',
+      'const resolved = require.resolve(`./resolved\\u002ecjs`);',
+      'const escaped = require.resolve(`../../outside.cjs`);',
+    ].join('\n');
+
+    expect(scanJavaScriptImportSpecifiers(source)).toEqual([
+      { kind: 'dynamic-import', specifier: './helper.mjs' },
+      { kind: 'require', specifier: 'yaml' },
+      { kind: 'require-resolve', specifier: './resolved.cjs' },
+      { kind: 'require-resolve', specifier: '../../outside.cjs' },
+    ]);
+    expect(scanNodeImportContract({
+      entryFiles: ['scripts/entry.mjs'],
+      dependencies: ['yaml'],
+      files: {
+        'scripts/entry.mjs': [
+          source,
+          'const dynamicDependency = require(`yaml-${variant}`);',
+          'const dynamicResolved = require.resolve(`../../outside-${target}.cjs`);',
+          'await import(`./locale-${locale}.mjs`);',
+        ].join('\n'),
+        'scripts/helper.mjs': 'export default true;',
+        'scripts/resolved.cjs': 'module.exports = true;',
+      },
+    })).toEqual({
+      files: ['scripts/entry.mjs', 'scripts/helper.mjs', 'scripts/resolved.cjs'],
+      bareSpecifiers: ['yaml'],
+      errors: [
+        'Relative import "../../outside.cjs" from "scripts/entry.mjs" escapes the plugin root.',
+        'Dynamic require specifier in "scripts/entry.mjs" is not supported.',
+        'Dynamic require.resolve specifier in "scripts/entry.mjs" is not supported.',
+        'Dynamic import specifier in "scripts/entry.mjs" is not supported.',
+      ],
+    });
+  });
+
+  it('rejects every non-literal require and dynamic import specifier', () => {
+    const source = [
+      'const required = require(packageName);',
+      'const partiallyRequired = require("yaml/" + locale);',
+      'const resolved = require.resolve(resolveTarget());',
+      'const partiallyResolved = require.resolve("./locale-" + locale + ".cjs");',
+      'const imported = import(importTarget);',
+      'const partiallyImported = import("./locale-" + locale + ".mjs");',
+    ].join('\n');
+    expect(scanJavaScriptImportSpecifiers(source)).toEqual([
+      { kind: 'require', specifier: '', dynamic: true },
+      { kind: 'require', specifier: '', dynamic: true },
+      { kind: 'require-resolve', specifier: '', dynamic: true },
+      { kind: 'require-resolve', specifier: '', dynamic: true },
+      { kind: 'dynamic-import', specifier: '', dynamic: true },
+      { kind: 'dynamic-import', specifier: '', dynamic: true },
+    ]);
+    expect(scanNodeImportContract({
+      entryFiles: ['scripts/entry.mjs'],
+      files: {
+        'scripts/entry.mjs': source,
+      },
+    })).toEqual({
+      files: ['scripts/entry.mjs'],
+      bareSpecifiers: [],
+      errors: [
+        'Dynamic require specifier in "scripts/entry.mjs" is not supported.',
+        'Dynamic require specifier in "scripts/entry.mjs" is not supported.',
+        'Dynamic require.resolve specifier in "scripts/entry.mjs" is not supported.',
+        'Dynamic require.resolve specifier in "scripts/entry.mjs" is not supported.',
+        'Dynamic import specifier in "scripts/entry.mjs" is not supported.',
+        'Dynamic import specifier in "scripts/entry.mjs" is not supported.',
+      ],
+    });
+  });
+
+  it('scans direct CommonJS module.require calls without accepting object methods', () => {
+    const source = [
+      'const helper = module.require("./helper.cjs");',
+      'const dependency = module.require(`yaml`);',
+      'module.require("../../outside.cjs");',
+      'module.require(packageName);',
+      'loader.require("ignored-package");',
+    ].join('\n');
+
+    expect(scanJavaScriptImportSpecifiers(source)).toEqual([
+      { kind: 'require', specifier: './helper.cjs' },
+      { kind: 'require', specifier: 'yaml' },
+      { kind: 'require', specifier: '../../outside.cjs' },
+      { kind: 'require', specifier: '', dynamic: true },
+    ]);
+    expect(scanNodeImportContract({
+      entryFiles: ['scripts/entry.cjs'],
+      dependencies: ['yaml'],
+      files: {
+        'scripts/entry.cjs': source,
+        'scripts/helper.cjs': 'module.exports = module.require(`./nested.cjs`);',
+        'scripts/nested.cjs': 'module.exports = true;',
+      },
+    })).toEqual({
+      files: ['scripts/entry.cjs', 'scripts/helper.cjs', 'scripts/nested.cjs'],
+      bareSpecifiers: ['yaml'],
+      errors: [
+        'Relative import "../../outside.cjs" from "scripts/entry.cjs" escapes the plugin root.',
+        'Dynamic require specifier in "scripts/entry.cjs" is not supported.',
+      ],
+    });
   });
 
   it('rejects undeclared default MCP manifest', async () => {

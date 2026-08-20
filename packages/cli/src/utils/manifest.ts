@@ -10,7 +10,6 @@ import type {
   BuildConfigFileRuleSet,
   BuildConfigTemplates,
   CatalogChannel,
-  CatalogManifest,
   CatalogManifestEntry,
   ClaudeManifestOverrides,
   CodexProjectManagedKind,
@@ -611,7 +610,7 @@ export function assertManifestPlatformSupport(
   });
 }
 
-function ensurePluginName(value: unknown, fieldName: string): string {
+export function ensurePluginName(value: unknown, fieldName: string): string {
   const name = ensureString(value, fieldName);
   if (!PLUGIN_NAME_PATTERN.test(name)) {
     throw new Error(`Invalid ${fieldName}: expected lowercase hyphen-case.`);
@@ -2644,32 +2643,6 @@ function assertCatalogChannelVersionContract(options: {
   }
 }
 
-function normalizeCatalogManifestPackageIdentity(
-  value: unknown,
-  fieldName: string,
-  options: {
-    requireManifestPath: boolean;
-  },
-): CatalogManifest['packages']['sidecar'] {
-  const input = assertObject(value, fieldName);
-  assertAllowedKeys(input, fieldName, ['name', 'version', 'channel', 'manifestPath']);
-
-  const identity = {
-    name: ensureString(input.name, `${fieldName}.name`),
-    version: assertStrictSemVer(input.version, `${fieldName}.version`),
-    channel: assertCatalogChannel(input.channel, `${fieldName}.channel`),
-    manifestPath: input.manifestPath === undefined
-      ? undefined
-      : normalizeCatalogRelativePath(input.manifestPath, `${fieldName}.manifestPath`),
-  };
-
-  if (options.requireManifestPath && !identity.manifestPath) {
-    throw new Error(`Invalid ${fieldName}.manifestPath: expected a non-empty string.`);
-  }
-
-  return identity;
-}
-
 function normalizeCatalogManifestEntry(
   value: unknown,
   fieldName: string,
@@ -2717,88 +2690,63 @@ function normalizeCatalogManifestEntry(
   return entry;
 }
 
-export function validateCatalogManifest(
-  rawManifest: unknown,
-): CatalogManifest {
-  const input = assertObject(rawManifest, 'catalog manifest');
-  assertAllowedKeys(input, 'catalog manifest', [
-    'schemaVersion',
-    'catalogVersion',
-    'channel',
-    'compatibility',
-    'packages',
-    'entries',
-  ]);
+export interface NormalizedCatalogManifestBase {
+  catalogVersion: string;
+  channel: CatalogChannel;
+  compatibility: PluginCompatibility;
+}
 
-  if (input.schemaVersion !== 2) {
-    throw new Error('Invalid catalog manifest.schemaVersion: expected 2.');
-  }
-
-  const catalogVersion = assertStrictSemVer(input.catalogVersion, 'catalog manifest.catalogVersion');
-  const channel = assertCatalogChannel(input.channel, 'catalog manifest.channel');
+export function normalizeCatalogManifestBase(
+  input: Record<string, unknown>,
+  fieldName: string,
+): NormalizedCatalogManifestBase {
+  const catalogVersion = assertStrictSemVer(input.catalogVersion, `${fieldName}.catalogVersion`);
+  const channel = assertCatalogChannel(input.channel, `${fieldName}.channel`);
   assertCatalogChannelVersionContract({
     channel,
     version: catalogVersion,
-    fieldName: 'catalog manifest.catalogVersion',
+    fieldName: `${fieldName}.catalogVersion`,
     kind: 'catalog',
   });
-  const compatibility = normalizePluginCompatibility(input.compatibility, 'catalog manifest.compatibility', {
-    allowMissing: false,
-  });
-  const packages = assertObject(input.packages, 'catalog manifest.packages');
-  assertAllowedKeys(packages, 'catalog manifest.packages', ['sidecar', 'full']);
-  const sidecar = normalizeCatalogManifestPackageIdentity(packages.sidecar, 'catalog manifest.packages.sidecar', {
-    requireManifestPath: false,
-  });
-  const full = normalizeCatalogManifestPackageIdentity(packages.full, 'catalog manifest.packages.full', {
-    requireManifestPath: true,
-  });
-  for (const [label, identity] of [['sidecar', sidecar], ['full', full]] as const) {
-    if (identity.version !== catalogVersion) {
-      throw new Error(`Invalid catalog manifest.packages.${label}.version: must match catalogVersion ${catalogVersion}.`);
-    }
-    if (identity.channel !== channel) {
-      throw new Error(`Invalid catalog manifest.packages.${label}.channel: must match channel ${channel}.`);
-    }
-  }
+  const compatibility = normalizePluginCompatibility(
+    input.compatibility,
+    `${fieldName}.compatibility`,
+    { allowMissing: false },
+  );
+  return { catalogVersion, channel, compatibility };
+}
 
-  if (!Array.isArray(input.entries)) {
-    throw new Error('Invalid catalog manifest.entries: expected an array.');
+export function normalizeCatalogManifestEntries(
+  rawEntries: unknown,
+  base: NormalizedCatalogManifestBase,
+  fieldName: string,
+): CatalogManifestEntry[] {
+  if (!Array.isArray(rawEntries)) {
+    throw new Error(`Invalid ${fieldName}.entries: expected an array.`);
   }
-  const entries = input.entries.map((entry, index) =>
-    normalizeCatalogManifestEntry(entry, `catalog manifest.entries[${index}]`),
+  const entries = rawEntries.map((entry, index) =>
+    normalizeCatalogManifestEntry(entry, `${fieldName}.entries[${index}]`),
   );
   const entriesByName = new Map<string, CatalogManifestEntry>();
   for (const entry of entries) {
     if (entriesByName.has(entry.name)) {
-      throw new Error(`Invalid catalog manifest.entries: duplicate plugin "${entry.name}".`);
+      throw new Error(`Invalid ${fieldName}.entries: duplicate plugin "${entry.name}".`);
     }
     entriesByName.set(entry.name, entry);
     assertCatalogChannelVersionContract({
-      channel,
+      channel: base.channel,
       version: entry.version,
-      fieldName: `catalog manifest.entries.${entry.name}.version`,
+      fieldName: `${fieldName}.entries.${entry.name}.version`,
       kind: 'plugin',
     });
     assertPluginMinVersionWithinCatalogBounds({
       pluginName: entry.name,
       pluginMinVersion: entry.compatibility.aw.minVersion,
-      catalogMinVersion: compatibility.aw.minVersion,
-      fieldName: `catalog manifest.entries.${entry.name}.compatibility.aw.minVersion`,
+      catalogMinVersion: base.compatibility.aw.minVersion,
+      fieldName: `${fieldName}.entries.${entry.name}.compatibility.aw.minVersion`,
     });
   }
-
-  return {
-    schemaVersion: 2,
-    catalogVersion,
-    channel,
-    compatibility,
-    packages: {
-      sidecar,
-      full,
-    },
-    entries,
-  };
+  return entries;
 }
 
 export function createBundleSourceManifest(plugin: PluginMeta): PluginManifestSource {

@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import os from 'node:os';
 import path from 'node:path';
@@ -21,7 +22,6 @@ import {
   resolveEffectivePluginConfig,
   resolvePluginConfigStorePath,
   resolveSupportedPlatforms,
-  scanJavaScriptImportSpecifiers,
   scanNodeImportContract,
 } from './plugin-staging.js';
 import type {
@@ -287,103 +287,62 @@ function isExplicitSinglePlatformSelection(
   return selection === 'codex' || selection === 'claude';
 }
 
-function resolveRelativeImport(importer: string, specifier: string): string | null {
-  const base = path.posix.normalize(path.posix.join(path.posix.dirname(importer), specifier));
-  if (base.startsWith('../') || path.posix.isAbsolute(base)) {
-    throw new Error(`Test import "${specifier}" from "${importer}" escapes the plugin root.`);
-  }
-  const candidates = [
-    base,
-    `${base}.js`,
-    `${base}.mjs`,
-    `${base}.cjs`,
-    path.posix.join(base, 'index.js'),
-    path.posix.join(base, 'index.mjs'),
-    path.posix.join(base, 'index.cjs'),
-  ];
-  return candidates[0] ?? null;
-}
-
-async function copyTestFileWithDependencies(options: {
-  baselineRoot: string;
-  bundleRoot: string;
-  relativePath: string;
-  isEntry: boolean;
-  copied: Set<string>;
-}): Promise<void> {
-  const relativePath = normalizeRelativePath(options.relativePath);
-  const sourcePath = path.join(options.baselineRoot, relativePath);
-  const targetPath = path.join(options.bundleRoot, relativePath);
-  if (options.isEntry && await fs.pathExists(targetPath)) {
-    throw new Error(`Test entry "${relativePath}" conflicts with a runtime bundle file.`);
-  }
-  if (!options.isEntry && await fs.pathExists(targetPath)) {
-    return;
-  }
-  if (options.copied.has(relativePath)) {
-    return;
-  }
-  if (!(await fs.pathExists(sourcePath))) {
-    throw new Error(`Missing test file "${relativePath}".`);
-  }
-
-  options.copied.add(relativePath);
-  await fs.ensureDir(path.dirname(targetPath));
-  await fs.copyFile(sourcePath, targetPath);
-
-  if (!NODE_RUNTIME_EXTENSIONS.has(path.posix.extname(relativePath).toLowerCase())) {
-    return;
-  }
-  const source = await fs.readFile(sourcePath, 'utf8');
-  for (const reference of scanJavaScriptImportSpecifiers(source)) {
-    const specifier = reference.specifier;
-    if (!specifier.startsWith('./') && !specifier.startsWith('../')) {
-      continue;
-    }
-    const resolved = resolveRelativeImport(relativePath, specifier);
-    if (!resolved) {
-      continue;
-    }
-    const candidates = [
-      resolved,
-      `${resolved}.js`,
-      `${resolved}.mjs`,
-      `${resolved}.cjs`,
-      path.posix.join(resolved, 'index.js'),
-      path.posix.join(resolved, 'index.mjs'),
-      path.posix.join(resolved, 'index.cjs'),
-    ];
-    const existing = candidates.find((candidate) => fs.pathExistsSync(path.join(options.baselineRoot, candidate)));
-    if (!existing) {
-      if (candidates.some((candidate) => fs.pathExistsSync(path.join(options.bundleRoot, candidate)))) {
-        continue;
-      }
-      throw new Error(`Unable to resolve test import "${specifier}" from "${relativePath}".`);
-    }
-    await copyTestFileWithDependencies({
-      ...options,
-      relativePath: existing,
-      isEntry: false,
-    });
-  }
-}
-
 async function copyTestsIntoBundle(options: {
   baselineRoot: string;
   bundleRoot: string;
   entries: string[];
+  manifest: PluginManifestSource;
 }): Promise<string[]> {
-  const copied = new Set<string>();
-  for (const entry of options.entries) {
-    await copyTestFileWithDependencies({
-      baselineRoot: options.baselineRoot,
-      bundleRoot: options.bundleRoot,
-      relativePath: entry,
-      isEntry: true,
-      copied,
-    });
+  const entries = options.entries.map((entry) => normalizeRelativePath(entry));
+  const baselineFiles = await listFiles(options.baselineRoot);
+  const bundleFiles = await listFiles(options.bundleRoot);
+  const baselineFileSet = new Set(baselineFiles);
+  const bundleFileSet = new Set(bundleFiles);
+  for (const entry of entries) {
+    if (await fs.pathExists(path.join(options.bundleRoot, entry))) {
+      throw new Error(`Test entry "${entry}" conflicts with a runtime bundle file.`);
+    }
   }
-  return options.entries.map((entry) => normalizeRelativePath(entry));
+
+  const filePaths = [...new Set([...baselineFiles, ...bundleFiles])];
+  const scanFiles: Record<string, string> = {};
+  await Promise.all(filePaths
+    .filter((file) => (
+      NODE_RUNTIME_EXTENSIONS.has(path.posix.extname(file).toLowerCase())
+      || path.posix.basename(file) === 'package.json'
+    ))
+    .map(async (file) => {
+      const root = bundleFileSet.has(file) ? options.bundleRoot : options.baselineRoot;
+      scanFiles[file] = await fs.readFile(path.join(root, file), 'utf8');
+    }));
+  const { dependencies, devDependencies } = await readPackageDependencyNames(
+    options.bundleRoot,
+    options.manifest,
+  );
+  const scan = scanNodeImportContract({
+    files: scanFiles,
+    filePaths,
+    entryFiles: entries,
+    dependencies,
+    devDependencies,
+    allowDevDependencies: Boolean(options.manifest.scripts?.node?.packageRoot),
+  });
+  if (scan.errors.length > 0) {
+    throw new Error(`Invalid plugin test imports:\n${scan.errors.join('\n')}`);
+  }
+
+  for (const file of scan.files) {
+    if (bundleFileSet.has(file)) {
+      continue;
+    }
+    if (!baselineFileSet.has(file)) {
+      throw new Error(`Missing test file "${file}".`);
+    }
+    const targetPath = path.join(options.bundleRoot, file);
+    await fs.ensureDir(path.dirname(targetPath));
+    await fs.copyFile(path.join(options.baselineRoot, file), targetPath);
+  }
+  return entries;
 }
 
 async function readPackageDependencyNames(
@@ -425,31 +384,6 @@ async function copyTestPackageNodeModules(options: {
   await fs.copy(sourceNodeModules, targetNodeModules, { dereference: false });
 }
 
-async function assertTestImportContract(
-  bundleRoot: string,
-  manifest: PluginManifestSource,
-  testEntries: string[],
-): Promise<void> {
-  const files = await listFiles(bundleRoot);
-  const jsFiles: Record<string, string> = {};
-  await Promise.all(files
-    .filter((file) => NODE_RUNTIME_EXTENSIONS.has(path.posix.extname(file).toLowerCase()))
-    .map(async (file) => {
-      jsFiles[file] = await fs.readFile(path.join(bundleRoot, file), 'utf8');
-    }));
-  const { dependencies, devDependencies } = await readPackageDependencyNames(bundleRoot, manifest);
-  const scan = scanNodeImportContract({
-    files: jsFiles,
-    entryFiles: testEntries,
-    dependencies,
-    devDependencies,
-    allowDevDependencies: Boolean(manifest.scripts?.node?.packageRoot),
-  });
-  if (scan.errors.length > 0) {
-    throw new Error(`Invalid plugin test imports:\n${scan.errors.join('\n')}`);
-  }
-}
-
 async function resolveConfigDefaults(options: {
   manifest: PluginManifestSource;
   cwd: string;
@@ -481,8 +415,47 @@ async function writeTestContext(options: {
   env: NodeJS.ProcessEnv;
   tempDir: string;
 }): Promise<{ contextPath: string; sensitiveValues: string[] }> {
+  const sourceId = 'plugin-test';
+  const sourceIdentity = `sha256:${crypto.createHash('sha256')
+    .update(`${sourceId}/${options.manifest.name}`, 'utf8')
+    .digest('hex')}`;
+  const configStores = {
+    user: resolvePluginConfigStorePath({
+      sourceId,
+      pluginName: options.manifest.name,
+      scope: 'user',
+      cwd: options.projectRoot,
+      env: options.env,
+    }),
+    project: resolvePluginConfigStorePath({
+      sourceId,
+      pluginName: options.manifest.name,
+      scope: 'project',
+      cwd: options.projectRoot,
+      env: options.env,
+    }),
+    projectLocal: resolvePluginConfigStorePath({
+      sourceId,
+      pluginName: options.manifest.name,
+      scope: 'project',
+      cwd: options.projectRoot,
+      env: options.env,
+      projectLayer: 'local',
+    }),
+  };
+  if (options.manifest.config?.schema) {
+    await Promise.all(Object.values(configStores).map((storePath) => fs.outputJson(storePath, {
+      schemaVersion: 2,
+      sourceId,
+      sourceIdentity,
+      pluginName: options.manifest.name,
+      values: {},
+    }, { spaces: 2 })));
+  }
   const effective = options.manifest.config?.schema
     ? await resolveEffectivePluginConfig({
+        sourceId,
+        sourceIdentity,
         manifest: options.manifest,
         cwd: options.projectRoot,
         env: options.env,
@@ -504,6 +477,9 @@ async function writeTestContext(options: {
       name: options.manifest.name,
       version: options.manifest.version,
       rootDir: options.bundleRoot,
+      sourceId,
+      sourceIdentity,
+      pluginId: `${sourceId}/${options.manifest.name}`,
     },
     sourceRoot: options.sourceRoot,
     platform: options.platform,
@@ -511,20 +487,7 @@ async function writeTestContext(options: {
     cwd: options.projectRoot,
     paths: {
       awHome: resolveAwHome(options.env),
-      configStores: {
-        user: resolvePluginConfigStorePath({
-          pluginName: options.manifest.name,
-          scope: 'user',
-          cwd: options.projectRoot,
-          env: options.env,
-        }),
-        project: resolvePluginConfigStorePath({
-          pluginName: options.manifest.name,
-          scope: 'project',
-          cwd: options.projectRoot,
-          env: options.env,
-        }),
-      },
+      configStores,
     },
     config: {
       values: effective.values,
@@ -624,8 +587,8 @@ async function runPreparedPluginTests(options: {
       baselineRoot: options.prepared.baselineRoot,
       bundleRoot,
       entries,
+      manifest: options.prepared.manifest,
     });
-    await assertTestImportContract(bundleRoot, options.prepared.manifest, copiedEntries);
 
     const env = {
       ...options.env,

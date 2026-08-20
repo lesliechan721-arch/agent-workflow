@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -27,6 +28,7 @@ import {
   isSkillCollectionAuthorOnlyPath,
 } from '../utils/skill-authoring.js';
 import { assertTestWritablePath } from '../utils/test-path-fence.js';
+import { resolveCliPackageRoot } from '../utils/paths.js';
 import {
   renderClaudeSlashCommand,
   renderCodexSlashCommandOpenAiYaml,
@@ -42,6 +44,7 @@ import type {
 } from '../types.js';
 
 const execFileAsync = promisify(execFile);
+const requireFromCli = createRequire(import.meta.url);
 const NODE_RUNTIME_EXTENSIONS = new Set(['.js', '.mjs', '.cjs']);
 const INSTALL_SCRIPT_NAMES = ['preinstall', 'install', 'postinstall', 'prepare'] as const;
 const PLATFORM_ORDER: readonly PlatformName[] = ['claude', 'codex'];
@@ -49,6 +52,8 @@ const PLATFORM_MANIFEST_DIRS: Readonly<Record<PlatformName, string>> = {
   claude: '.claude-plugin',
   codex: '.codex-plugin',
 };
+
+const EXACT_PNPM_PACKAGE_MANAGER_PATTERN = /^pnpm@\d+\.\d+\.\d+$/u;
 
 function assertLocalPluginStagingPathForTests(
   targetPath: string,
@@ -77,9 +82,114 @@ export interface BundleLocalPluginOptions {
   stagingRunner?: PluginStagingRunner;
 }
 
+export async function validateStagingPackageManager(packageRoot: string): Promise<string> {
+  const [cliPackageJson, packageJson] = await Promise.all([
+    readJsonObject(
+      path.join(resolveCliPackageRoot(), 'package.json'),
+      '@lesliechan721/aw package.json',
+    ),
+    readJsonObject(
+      path.join(packageRoot, 'package.json'),
+      'scripts.node.packageRoot.package.json',
+    ),
+  ]);
+  const supportedPackageManager = cliPackageJson.packageManager;
+  if (
+    typeof supportedPackageManager !== 'string'
+    || !EXACT_PNPM_PACKAGE_MANAGER_PATTERN.test(supportedPackageManager)
+  ) {
+    throw new Error(
+      'Invalid @lesliechan721/aw packageManager: expected an exact "pnpm@<version>" declaration.',
+    );
+  }
+  if (packageJson.packageManager !== supportedPackageManager) {
+    throw new Error(
+      'Invalid scripts.node.packageRoot.package.json.packageManager: '
+      + `expected "${supportedPackageManager}".`,
+    );
+  }
+
+  return supportedPackageManager;
+}
+
+async function resolveFixedPnpmEntry(
+  supportedPackageManager: string,
+  env: NodeJS.ProcessEnv,
+): Promise<string | undefined> {
+  const configuredEntry = env.npm_execpath?.trim();
+  if (!configuredEntry || !path.isAbsolute(configuredEntry)) {
+    return undefined;
+  }
+
+  const entryPath = await fs.realpath(configuredEntry).catch(() => undefined);
+  if (!entryPath) {
+    return undefined;
+  }
+
+  let current = path.dirname(entryPath);
+  while (true) {
+    const packageJson = await fs.readJson(path.join(current, 'package.json')).catch(() => undefined) as
+      | { name?: unknown; version?: unknown }
+      | undefined;
+    if (packageJson?.name === 'pnpm') {
+      return `pnpm@${packageJson.version}` === supportedPackageManager
+        ? entryPath
+        : undefined;
+    }
+    const parent = path.dirname(current);
+    if (parent === current) {
+      return undefined;
+    }
+    current = parent;
+  }
+}
+
+async function resolveRuntimePnpmEntry(
+  supportedPackageManager: string,
+): Promise<string | undefined> {
+  const packageJsonPath = (() => {
+    try {
+      return requireFromCli.resolve('pnpm');
+    } catch {
+      return undefined;
+    }
+  })();
+  if (!packageJsonPath) {
+    return undefined;
+  }
+
+  const packageJson = await fs.readJson(packageJsonPath).catch(() => undefined) as
+    | { name?: unknown; version?: unknown }
+    | undefined;
+  if (
+    packageJson?.name !== 'pnpm'
+    || `pnpm@${packageJson.version}` !== supportedPackageManager
+  ) {
+    return undefined;
+  }
+
+  const entryPath = path.join(path.dirname(packageJsonPath), 'bin', 'pnpm.cjs');
+  const stats = await fs.stat(entryPath).catch(() => undefined);
+  return stats?.isFile() ? entryPath : undefined;
+}
+
 const defaultStagingRunner: PluginStagingRunner = {
   async installPackageRoot(packageRoot) {
-    await execFileAsync('pnpm', ['install', '--frozen-lockfile', '--ignore-scripts'], {
+    const supportedPackageManager = await validateStagingPackageManager(packageRoot);
+    const fixedPnpmEntry = await resolveFixedPnpmEntry(supportedPackageManager, process.env)
+      ?? await resolveRuntimePnpmEntry(supportedPackageManager);
+    if (!fixedPnpmEntry) {
+      throw new Error(
+        `Cannot stage scripts.node.packageRoot: missing bundled ${supportedPackageManager} runtime dependency.`,
+      );
+    }
+    const args = [
+      fixedPnpmEntry,
+      'install',
+      '--frozen-lockfile',
+      '--ignore-scripts',
+    ];
+    await execFileAsync(process.execPath, args, {
       cwd: packageRoot,
       env: process.env,
       maxBuffer: 10 * 1024 * 1024,
@@ -556,18 +666,22 @@ async function collectRuntimeClosureFiles(
   }
 
   const allFiles = await listFilesRecursivelyIncludingManaged(plugin.rootDir);
-  const jsFiles: Record<string, string> = {};
+  const scanFiles: Record<string, string> = {};
   await Promise.all(
     allFiles
-      .filter((filePath) => NODE_RUNTIME_EXTENSIONS.has(path.posix.extname(filePath).toLowerCase()))
+      .filter((filePath) => (
+        NODE_RUNTIME_EXTENSIONS.has(path.posix.extname(filePath).toLowerCase())
+        || path.posix.basename(filePath) === 'package.json'
+      ))
       .map(async (filePath) => {
-        jsFiles[filePath] = await fs.readFile(path.join(plugin.rootDir, filePath), 'utf8');
+        scanFiles[filePath] = await fs.readFile(path.join(plugin.rootDir, filePath), 'utf8');
       }),
   );
 
   const { dependencies, devDependencies } = await readPackageRootDependencySets(plugin);
   const scan = scanNodeImportContract({
-    files: jsFiles,
+    files: scanFiles,
+    filePaths: allFiles,
     entryFiles,
     dependencies,
     devDependencies,
@@ -623,20 +737,27 @@ async function findInstalledPackageDir(
 }
 
 interface InstalledDependencyPackage {
+  importerDir: string;
   packageName: string;
   packageDir: string;
   packageJson: Record<string, unknown>;
 }
 
+type DependencyRequirement = 'required' | 'optional-dependency' | 'optional-peer';
+
 async function collectInstalledDependencyClosure(
   packageRoot: string,
   rootDependencies: string[],
 ): Promise<InstalledDependencyPackage[]> {
+  const packageRootReal = await fs.realpath(packageRoot);
   const queue = rootDependencies.map((dependencyName) => ({
     packageName: dependencyName,
-    importerDir: packageRoot,
+    importerDir: packageRootReal,
+    requirement: 'required' as DependencyRequirement,
   }));
-  const visited = new Set<string>();
+  const visitedEntries = new Set<string>();
+  const visitedPackageDirs = new Set<string>();
+  const packageJsonByDir = new Map<string, Record<string, unknown>>();
   const packages: InstalledDependencyPackage[] = [];
 
   while (queue.length > 0) {
@@ -645,29 +766,79 @@ async function collectInstalledDependencyClosure(
       continue;
     }
 
-    const dependencyDir = await findInstalledPackageDir(packageRoot, next.importerDir, next.packageName);
+    const dependencyDir = await findInstalledPackageDir(packageRootReal, next.importerDir, next.packageName);
     if (!dependencyDir) {
+      if (next.requirement === 'optional-peer') {
+        continue;
+      }
+      if (next.requirement === 'optional-dependency') {
+        throw new Error(
+          `Invalid scripts.node.packageRoot: missing transitive optional dependency "${next.packageName}" in node_modules; cross-platform staging cannot prove that all supported runtime operating systems exclude it.`,
+        );
+      }
       throw new Error(`Invalid scripts.node.packageRoot: missing production dependency "${next.packageName}" in node_modules.`);
     }
-    if (visited.has(dependencyDir)) {
+
+    const entryKey = JSON.stringify([next.importerDir, next.packageName, dependencyDir]);
+    if (visitedEntries.has(entryKey)) {
       continue;
     }
-    visited.add(dependencyDir);
+    visitedEntries.add(entryKey);
 
-    const packageJson = await readJsonObject(
-      path.join(dependencyDir, 'package.json'),
-      `${next.packageName} package.json`,
-    );
+    let packageJson = packageJsonByDir.get(dependencyDir);
+    if (!packageJson) {
+      packageJson = await readJsonObject(
+        path.join(dependencyDir, 'package.json'),
+        `${next.packageName} package.json`,
+      );
+      packageJsonByDir.set(dependencyDir, packageJson);
+    }
     packages.push({
+      importerDir: next.importerDir,
       packageName: next.packageName,
       packageDir: dependencyDir,
       packageJson,
     });
 
+    if (visitedPackageDirs.has(dependencyDir)) {
+      continue;
+    }
+    visitedPackageDirs.add(dependencyDir);
+
+    const optionalDependencies = new Set(readDependencyNames(packageJson, 'optionalDependencies'));
     for (const childDependency of readDependencyNames(packageJson, 'dependencies')) {
+      if (optionalDependencies.has(childDependency)) {
+        continue;
+      }
       queue.push({
         packageName: childDependency,
         importerDir: dependencyDir,
+        requirement: 'required',
+      });
+    }
+    for (const childDependency of optionalDependencies) {
+      queue.push({
+        packageName: childDependency,
+        importerDir: dependencyDir,
+        requirement: 'optional-dependency',
+      });
+    }
+
+    const peerDependenciesMeta = packageJson.peerDependenciesMeta;
+    const peerMeta = peerDependenciesMeta && typeof peerDependenciesMeta === 'object'
+      && !Array.isArray(peerDependenciesMeta)
+      ? peerDependenciesMeta as Record<string, unknown>
+      : {};
+    for (const peerDependency of readDependencyNames(packageJson, 'peerDependencies')) {
+      const metadata = peerMeta[peerDependency];
+      const optional = metadata !== null
+        && typeof metadata === 'object'
+        && !Array.isArray(metadata)
+        && (metadata as Record<string, unknown>).optional === true;
+      queue.push({
+        packageName: peerDependency,
+        importerDir: dependencyDir,
+        requirement: optional ? 'optional-peer' : 'required',
       });
     }
   }
@@ -699,62 +870,64 @@ async function assertNoProductionInstallScripts(packageRoot: string): Promise<vo
   }
 }
 
-function resolvePnpmPackageInstanceRoot(
-  sourceNodeModules: string,
-  packageDir: string,
-): { source: string; targetRelativePath: string } | undefined {
-  const relativePath = path.relative(sourceNodeModules, packageDir);
-  if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
-    return undefined;
-  }
-
-  const segments = relativePath.split(path.sep);
-  if (segments[0] !== '.pnpm' || !segments[1] || segments[2] !== 'node_modules') {
-    return undefined;
-  }
-
-  return {
-    source: path.join(sourceNodeModules, '.pnpm', segments[1]),
-    targetRelativePath: path.join('.pnpm', segments[1]),
-  };
-}
-
 async function copyProductionDependencyClosure(
   sourcePackageRoot: string,
   targetPackageRoot: string,
 ): Promise<void> {
-  const sourceNodeModules = path.join(sourcePackageRoot, 'node_modules');
   const targetNodeModules = path.join(targetPackageRoot, 'node_modules');
-  const sourceNodeModulesReal = await fs.realpath(sourceNodeModules);
+  const sourcePackageRootReal = await fs.realpath(sourcePackageRoot);
   const productionDependencies = await readProductionDependencyClosure(sourcePackageRoot);
-  const copiedPnpmInstances = new Set<string>();
+  const dependenciesByImporter = new Map<string, InstalledDependencyPackage[]>();
+
+  for (const dependency of productionDependencies) {
+    const importerDependencies = dependenciesByImporter.get(dependency.importerDir) ?? [];
+    importerDependencies.push(dependency);
+    dependenciesByImporter.set(dependency.importerDir, importerDependencies);
+  }
 
   await fs.remove(targetNodeModules);
   await fs.ensureDir(targetNodeModules);
 
-  for (const dependency of productionDependencies) {
-    const pnpmInstanceRoot = resolvePnpmPackageInstanceRoot(
-      sourceNodeModulesReal,
-      dependency.packageDir,
+  async function materializeDependency(
+    dependency: InstalledDependencyPackage,
+    targetPackageDir: string,
+    ancestorResolutions: readonly ReadonlyMap<string, string>[],
+  ): Promise<void> {
+    await fs.copy(dependency.packageDir, targetPackageDir, {
+      filter(source) {
+        return path.basename(source) !== 'node_modules';
+      },
+    });
+
+    const childDependencies = dependenciesByImporter.get(dependency.packageDir) ?? [];
+    const childResolutions = new Map(
+      childDependencies.map((child) => [child.packageName, child.packageDir]),
     );
-    if (pnpmInstanceRoot && !copiedPnpmInstances.has(pnpmInstanceRoot.source)) {
-      copiedPnpmInstances.add(pnpmInstanceRoot.source);
-      await fs.copy(
-        pnpmInstanceRoot.source,
-        path.join(targetNodeModules, pnpmInstanceRoot.targetRelativePath),
-        { dereference: false },
+    for (const child of childDependencies) {
+      const ancestorPackageDir = ancestorResolutions
+        .map((resolutions) => resolutions.get(child.packageName))
+        .find((packageDir) => packageDir !== undefined);
+      if (ancestorPackageDir === child.packageDir) {
+        continue;
+      }
+      await materializeDependency(
+        child,
+        path.join(targetPackageDir, 'node_modules', ...child.packageName.split('/')),
+        [childResolutions, ...ancestorResolutions],
       );
     }
+  }
 
-    const sourceTopLevelPackage = path.join(sourceNodeModules, ...dependency.packageName.split('/'));
-    const sourceTopLevelReal = await fs.realpath(sourceTopLevelPackage).catch(() => undefined);
-    if (sourceTopLevelReal !== dependency.packageDir) {
-      continue;
-    }
-
-    const targetTopLevelPackage = path.join(targetNodeModules, ...dependency.packageName.split('/'));
-    await fs.ensureDir(path.dirname(targetTopLevelPackage));
-    await fs.copy(sourceTopLevelPackage, targetTopLevelPackage, { dereference: false });
+  const rootDependencies = dependenciesByImporter.get(sourcePackageRootReal) ?? [];
+  const rootResolutions = new Map(
+    rootDependencies.map((dependency) => [dependency.packageName, dependency.packageDir]),
+  );
+  for (const dependency of rootDependencies) {
+    await materializeDependency(
+      dependency,
+      path.join(targetNodeModules, ...dependency.packageName.split('/')),
+      [rootResolutions],
+    );
   }
 }
 

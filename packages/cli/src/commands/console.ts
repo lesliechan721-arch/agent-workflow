@@ -36,6 +36,12 @@ import {
   type PluginConfigWriteReceipt,
   type ResetPluginConfigWriteReceipt,
 } from '../utils/plugin-config-write.js';
+import {
+  assertCatalogSourceReferencesSupported,
+  inventoryLegacyConfigReferences,
+} from '../utils/catalog-source-references.js';
+import { readCliPackageInfo } from '../utils/local-marketplace.js';
+import { withResolvedCatalogPlugin } from '../utils/multi-source-catalog.js';
 import { Dashboard, type DashboardResult } from '../tui/dashboard.js';
 import {
   createRebuildProgressFeed,
@@ -106,7 +112,7 @@ export function targetIdentity(target: LiveStatusTarget): string {
 }
 
 function hasConfigSchemaKeys(item: LiveConsoleItem): boolean {
-  const schema = item.plugin?.manifest.config?.schema;
+  const schema = item.plugin?.manifest.config?.schema ?? item.pluginSummary?.configSchema;
   return schema !== undefined && Object.keys(schema).length > 0;
 }
 
@@ -142,6 +148,7 @@ export function createDashboardController(
     load: () => loadConsoleItemsResult({
       cwd: context.cwd,
       includeCatalogOnly: true,
+      verbose: context.diagnostics.verbose,
     }, context),
     async execute(action, target) {
       const options = {
@@ -177,53 +184,90 @@ export function createDashboardController(
       ]);
     },
     async readConfig(item, location) {
-      const plugin = item.plugin;
-      if (!plugin || !hasConfigSchemaKeys(item)) {
+      if (!hasConfigSchemaKeys(item)) {
         throw new Error(`Plugin "${item.pluginName}" 没有配置 schema。`);
       }
-      const effective = await resolveEffectivePluginConfig({
-        pluginName: item.pluginName,
-        manifest: plugin.manifest,
-        cwd: context.cwd,
+      const project = async (pluginName: string, plugin: NonNullable<LiveConsoleItem['plugin']>) => {
+        const effective = await resolveEffectivePluginConfig({
+          sourceId: plugin.sourceId,
+          sourceIdentity: plugin.sourceIdentity,
+          pluginName,
+          manifest: plugin.manifest,
+          cwd: context.cwd,
+          env: context.env,
+        });
+        const model = createPluginConfigFormModel({
+          pluginName,
+          manifest: plugin.manifest,
+          effective,
+          initialScope: location.scope,
+        });
+        const read = await resolveConfigRead({
+          pluginName,
+          plugin,
+          scope: location.scope,
+          projectLayer: location.projectLayer,
+          cwd: context.cwd,
+          env: context.env,
+        });
+        return { model, read, location };
+      };
+      if (item.plugin) return project(item.plugin.manifest.name, item.plugin);
+
+      const inventory = await inventoryLegacyConfigReferences({ cwd: context.cwd, env: context.env });
+      assertCatalogSourceReferencesSupported(inventory);
+      const packageInfo = await readCliPackageInfo();
+      return withResolvedCatalogPlugin({
+        selector: item.pluginName,
+        cliVersion: packageInfo.version,
+        freshnessPolicy: 'cacheFirst',
         env: context.env,
+        consume: ({ plugin }) => project(plugin.manifest.name, plugin),
       });
-      const model = createPluginConfigFormModel({
-        pluginName: item.pluginName,
-        manifest: plugin.manifest,
-        effective,
-        initialScope: location.scope,
-      });
-      const read = await resolveConfigRead({
-        pluginName: item.pluginName,
+    },
+    async saveConfig(item, location, request) {
+      const apply = (plugin: NonNullable<LiveConsoleItem['plugin']>) => applyPluginConfigWrite({
         plugin,
+        pluginName: plugin.manifest.name,
         scope: location.scope,
         projectLayer: location.projectLayer,
         cwd: context.cwd,
         env: context.env,
+        nativeCliRunner: context.nativeCliRunner,
+        rebuildRuntime: context,
+        request,
       });
-      return { model, read, location };
+      if (item.plugin) return apply(item.plugin);
+      const packageInfo = await readCliPackageInfo();
+      return withResolvedCatalogPlugin({
+        selector: item.pluginName,
+        cliVersion: packageInfo.version,
+        freshnessPolicy: 'requireRemote',
+        env: context.env,
+        consume: ({ plugin }) => apply(plugin),
+      });
     },
-    saveConfig: (item, location, request) => applyPluginConfigWrite({
-      pluginName: item.pluginName,
-      plugin: item.plugin,
-      scope: location.scope,
-      projectLayer: location.projectLayer,
-      cwd: context.cwd,
-      env: context.env,
-      nativeCliRunner: context.nativeCliRunner,
-      rebuildRuntime: context,
-      request,
-    }),
-    resetConfig: (item, location) => resetPluginConfigWithHelper({
-      pluginName: item.pluginName,
-      plugin: item.plugin,
-      scope: location.scope,
-      projectLayer: location.projectLayer,
-      cwd: context.cwd,
-      env: context.env,
-      nativeCliRunner: context.nativeCliRunner,
-      rebuildRuntime: context,
-    }),
+    async resetConfig(item, location) {
+      const reset = (plugin: NonNullable<LiveConsoleItem['plugin']>) => resetPluginConfigWithHelper({
+        plugin,
+        pluginName: plugin.manifest.name,
+        scope: location.scope,
+        projectLayer: location.projectLayer,
+        cwd: context.cwd,
+        env: context.env,
+        nativeCliRunner: context.nativeCliRunner,
+        rebuildRuntime: context,
+      });
+      if (item.plugin) return reset(item.plugin);
+      const packageInfo = await readCliPackageInfo();
+      return withResolvedCatalogPlugin({
+        selector: item.pluginName,
+        cliVersion: packageInfo.version,
+        freshnessPolicy: 'cacheFirst',
+        env: context.env,
+        consume: ({ plugin }) => reset(plugin),
+      });
+    },
   };
 }
 

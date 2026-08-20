@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 
-const STAMP_SCHEMA_VERSION = 6;
+const STAMP_SCHEMA_VERSION = 7;
 const DEFAULT_LOCK_TIMEOUT_MS = 20 * 60 * 1000;
 const DEFAULT_POLL_INTERVAL_MS = 100;
 
@@ -39,20 +39,7 @@ const REQUIRED_OUTPUTS = [
   { path: 'packages/cli/dist/scripts/bundle-plugins.js', type: 'text' },
   { path: 'packages/cli/plugins-dist/.claude-plugin/marketplace.json', type: 'marketplace' },
   { path: 'packages/cli/plugins-dist/.agents/plugins/marketplace.json', type: 'marketplace' },
-  { path: 'packages/cli/plugins-dist/.catalog/catalog-manifest.json', type: 'catalog' },
-  { path: 'packages/cli/plugins-dist/.catalog/sidecar/catalog-manifest.json', type: 'catalog' },
-  { path: 'packages/cli/plugins-dist/.catalog/sidecar/plugin-release-ledger.json', type: 'ledger' },
-  {
-    path: 'packages/cli/plugins-dist/.catalog/sidecar/package.json',
-    type: 'package',
-    packageName: '@lesliechan721/aw-plugins-manifest',
-  },
-  { path: 'packages/cli/plugins-dist/.catalog/full/catalog-manifest.json', type: 'catalog' },
-  {
-    path: 'packages/cli/plugins-dist/.catalog/full/package.json',
-    type: 'package',
-    packageName: '@lesliechan721/aw-plugins',
-  },
+  { path: 'packages/cli/plugins-dist/catalog-manifest.json', type: 'catalog' },
 ];
 
 const STAMP_IDENTITY_KEYS = [
@@ -359,6 +346,27 @@ async function readExpectedStampIdentity(repoRoot, launcherIdentity) {
 }
 
 async function findRegisteredSymlink(repoRoot, roots, exclude = () => false) {
+  async function findPathChainSymlink(relativePath) {
+    const segments = normalizeRelativePath(relativePath).split('/').filter(Boolean);
+    let currentPath = path.resolve(repoRoot);
+    let currentRelativePath = '';
+    for (const segment of segments) {
+      currentPath = path.join(currentPath, segment);
+      currentRelativePath = currentRelativePath
+        ? `${currentRelativePath}/${segment}`
+        : segment;
+      let stats;
+      try {
+        stats = await fs.lstat(currentPath);
+      } catch (error) {
+        if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') return null;
+        throw error;
+      }
+      if (stats.isSymbolicLink()) return currentRelativePath;
+    }
+    return null;
+  }
+
   async function visit(relativePath) {
     if (exclude(relativePath)) {
       return null;
@@ -388,12 +396,32 @@ async function findRegisteredSymlink(repoRoot, roots, exclude = () => false) {
   }
 
   for (const root of roots) {
+    const pathChainSymlink = await findPathChainSymlink(root);
+    if (pathChainSymlink) return pathChainSymlink;
     const found = await visit(root);
     if (found) {
       return found;
     }
   }
   return null;
+}
+
+export async function assertBuildInputPathSafety(repoRoot) {
+  const requestedRoot = path.resolve(repoRoot);
+  const rootStats = await fs.lstat(requestedRoot);
+  if (rootStats.isSymbolicLink()) {
+    throw new Error('Refusing release snapshot: registered release input contains a symlink: .');
+  }
+  const inputSymlink = await findRegisteredSymlink(
+    requestedRoot,
+    INPUT_PATHS,
+    isExcludedInputPath,
+  );
+  if (inputSymlink) {
+    throw new Error(
+      `Refusing release snapshot: registered release input contains a symlink: ${inputSymlink}.`,
+    );
+  }
 }
 
 async function findReuseDisabledReason(repoRoot) {
@@ -463,10 +491,12 @@ async function validateRequiredOutputs(repoRoot) {
         }
         if (
           output.type === 'catalog' &&
-          (!Number.isInteger(parsed.schemaVersion) ||
+          (parsed.schemaVersion !== 3 ||
             !Array.isArray(parsed.entries) ||
-            !parsed.packages ||
-            typeof parsed.packages !== 'object')
+            Object.hasOwn(parsed, 'packages') ||
+            parsed.entries.some((entry) =>
+              typeof entry?.contentDigest !== 'string'
+              || !/^sha256:[0-9a-f]{64}$/.test(entry.contentDigest)))
         ) {
           return { valid: false, reason: `incomplete output ${output.path}` };
         }
@@ -503,7 +533,10 @@ async function validateRequiredOutputs(repoRoot) {
 
 export async function inspectBuildCache(repoRoot, options = {}) {
   const expected = await readExpectedStampIdentity(repoRoot);
-  const outputSymlink = await findRegisteredSymlink(repoRoot, OUTPUT_ROOTS);
+  const outputSymlink = await findRegisteredSymlink(
+    repoRoot,
+    ['packages/cli/dist'],
+  );
   if (outputSymlink) {
     return {
       reusable: false,
@@ -569,7 +602,10 @@ export async function inspectBuildCache(repoRoot, options = {}) {
   // Internal test seam for changing an output at the final reuse boundary.
   // Production callers must not set it.
   await options.__testBeforeFinalOutputCheck?.();
-  const finalOutputSymlink = await findRegisteredSymlink(repoRoot, OUTPUT_ROOTS);
+  const finalOutputSymlink = await findRegisteredSymlink(
+    repoRoot,
+    ['packages/cli/dist'],
+  );
   if (finalOutputSymlink) {
     return {
       reusable: false,
@@ -905,7 +941,10 @@ async function buildUnderLock(repoRoot, settings, inspection) {
   if (!outputs.valid) {
     throw new Error(`Build completed without required outputs: ${outputs.reason}.`);
   }
-  const outputSymlink = await findRegisteredSymlink(repoRoot, OUTPUT_ROOTS);
+  const outputSymlink = await findRegisteredSymlink(
+    repoRoot,
+    ['packages/cli/dist'],
+  );
   if (outputSymlink) {
     throw new Error(
       `Build output contains unsupported symlink ${outputSymlink}; ` +
@@ -1081,12 +1120,12 @@ async function createSnapshotUnderLock(repoRoot, settings) {
     await copyPath(
       path.join(repoRoot, 'packages', 'cli', 'dist'),
       path.join(cliPackageRoot, 'dist'),
-      { recursive: true },
+      { recursive: true, verbatimSymlinks: true },
     );
     await copyPath(
       path.join(repoRoot, 'packages', 'cli', 'plugins-dist'),
       path.join(cliPackageRoot, 'plugins-dist'),
-      { recursive: true },
+      { recursive: true, verbatimSymlinks: true },
     );
     await createDependencyLink(
       canonicalNodeModules,
@@ -1106,7 +1145,9 @@ async function createSnapshotUnderLock(repoRoot, settings) {
       (relativePath) => {
         const normalizedPath = normalizeRelativePath(relativePath);
         return normalizedPath === 'packages/cli/node_modules' ||
-          normalizedPath.startsWith('packages/cli/node_modules/');
+          normalizedPath.startsWith('packages/cli/node_modules/') ||
+          normalizedPath === 'packages/cli/plugins-dist' ||
+          normalizedPath.startsWith('packages/cli/plugins-dist/');
       },
     );
     if (snapshotSymlink) {

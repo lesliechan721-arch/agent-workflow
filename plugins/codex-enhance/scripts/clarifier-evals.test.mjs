@@ -18,12 +18,7 @@ async function readJson(filePath) {
 }
 
 test('release behavior corpus defines a three-run gate by Skill matrix', async () => {
-  const evalRoot = path.join(
-    await sourceRoot(),
-    'skills',
-    'codex-clarifier',
-    'evals',
-  );
+  const evalRoot = path.join(await sourceRoot(), 'skills', 'codex-clarifier', 'evals');
   const [manifest, corpus] = await Promise.all([
     readJson(path.join(evalRoot, 'manifest.json')),
     readJson(path.join(evalRoot, 'codex-clarifier-release-evals.json')),
@@ -39,10 +34,10 @@ test('release behavior corpus defines a three-run gate by Skill matrix', async (
   const byFamily = Map.groupBy(corpus.evals, (entry) => entry.scenario_family);
   assert.equal(byFamily.size, 3);
   for (const entries of byFamily.values()) {
-    assert.deepEqual(
-      entries.map((entry) => entry.preconditions.eval_gate_enabled).sort(),
-      [false, true],
-    );
+    assert.deepEqual(entries.map((entry) => entry.preconditions.eval_gate_enabled).sort(), [
+      false,
+      true,
+    ]);
     const gate = entries.find((entry) => entry.preconditions.eval_gate_enabled);
     const noGate = entries.find((entry) => !entry.preconditions.eval_gate_enabled);
     assert.equal(typeof gate.workspace_files?.['AGENTS.md'], 'string');

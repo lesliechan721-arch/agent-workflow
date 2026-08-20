@@ -116,6 +116,10 @@ describe('skill-review author tools', () => {
       path.join(root, 'plugins', 'aw-plugin-development'),
       '--source',
       `agent-content-toolkit=${path.join(root, 'plugins', 'agent-content-toolkit')}`,
+      '--source',
+      `agent-skill-toolkit=${path.join(root, 'plugins', 'agent-skill-toolkit')}`,
+      '--source',
+      `agent-skill-eval-runner=${path.join(root, 'plugins', 'agent-skill-eval-runner')}`,
     ], { cwd: root, encoding: 'utf8' });
     expect(JSON.parse(stdout).target.sourceDigest).toBe(expectedDigest);
   });

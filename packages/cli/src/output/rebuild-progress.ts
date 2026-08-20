@@ -14,6 +14,8 @@ const ACTION_LABELS: Record<RebuildActionName, string> = {
   'lifecycle.uninstall': '运行卸载生命周期',
   'active.promote': '启用生命周期快照',
   'postcheck.inspect': '检查写入结果',
+  'marketplace.commit': '提交 marketplace generation',
+  'marketplace.rollback': '回滚 marketplace generation',
   'recovery.cleanup': '清理失败写入',
   'cleanup.owned': '清理 AW 组件',
   'active.read': '读取生命周期快照',

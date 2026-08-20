@@ -13,10 +13,16 @@ node scripts/prepare-aw-review-bundle.mjs <plugin-root> \
   --eval-result <eval-run-bundle.json>
 ```
 
-Artifact roles are `source`, `final`, `evidence`, and `project-profile`. Every artifact records path, profile, digest, currentness and owner.
+Artifact roles are `source`, `final`, `evidence`, and `project-profile`. Every artifact records
+path, profile, digest, currentness and owner.
 
-`providedStages` records only completed stages. Each result file must exist inside the handoff root and pass `validate-review-input-bundle.mjs`; a non-empty path or final artifact does not prove review completion.
+`providedStages` records only completed stages. Each result file must exist inside the handoff root
+and pass `validate-review-input-bundle.mjs`; a non-empty path or final artifact does not prove
+review completion.
 
-After plugin-level evidence is prepared, use `prepare-aw-review-targets.mjs` to create one deterministic generic review target per source Skill and materialized profile.
+After plugin-level evidence is prepared, use `prepare-aw-review-targets.mjs` to create one
+deterministic generic review target per source Skill and materialized profile.
 
-`prepare-aw-review-targets.mjs --bundle <plugin-bundle.json>` 按 `targetSkillDigest` 将 audit/run evidence 投影到对应 source/final Skill；不匹配证据不会复制。Stage `resultPath` 使用可验证的本地路径，handoff validator 仍要求它位于显式 handoff root 内。
+`prepare-aw-review-targets.mjs --bundle <plugin-bundle.json>` 按 `targetSkillDigest` 将 audit/run
+evidence 投影到对应 source/final Skill；不匹配证据不会复制。Stage `resultPath`
+使用可验证的本地路径，handoff validator 仍要求它位于显式 handoff root 内。

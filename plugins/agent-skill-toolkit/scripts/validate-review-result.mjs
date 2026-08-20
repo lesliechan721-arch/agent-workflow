@@ -44,7 +44,11 @@ function approximatelyEqual(left, right) {
 async function schemaErrors(schemaPath, valuePath) {
   const validator = path.join(scriptRoot, 'validate-json-contract.mjs');
   try {
-    const { stdout } = await execFileAsync(process.execPath, [validator, schemaPath, valuePath, '--format', 'json'], { encoding: 'utf8' });
+    const { stdout } = await execFileAsync(
+      process.execPath,
+      [validator, schemaPath, valuePath, '--format', 'json'],
+      { encoding: 'utf8' },
+    );
     return JSON.parse(stdout).errors;
   } catch (error) {
     const stdout = error && typeof error === 'object' ? error.stdout : null;
@@ -95,20 +99,26 @@ async function main() {
     ]);
     const policy = rules.reviewResultPolicy;
     if (!policy) errors.push('generated ReviewResult rules are missing reviewResultPolicy');
-    const expectedDimensions = new Map(rules.dimensions.map((dimension) => [dimension.id, dimension.weight]));
+    const expectedDimensions = new Map(
+      rules.dimensions.map((dimension) => [dimension.id, dimension.weight]),
+    );
     const dimensions = new Map();
     for (const dimension of result.dimensions) {
-      if (dimensions.has(dimension.id)) errors.push('dimensions contains duplicate id ' + dimension.id);
+      if (dimensions.has(dimension.id))
+        errors.push('dimensions contains duplicate id ' + dimension.id);
       dimensions.set(dimension.id, dimension);
       const expectedWeight = expectedDimensions.get(dimension.id);
       if (expectedWeight === undefined) errors.push('unknown dimension ' + dimension.id);
-      else if (dimension.weight !== expectedWeight) errors.push('dimension ' + dimension.id + ' must use canonical weight ' + expectedWeight);
+      else if (dimension.weight !== expectedWeight)
+        errors.push('dimension ' + dimension.id + ' must use canonical weight ' + expectedWeight);
     }
 
     const scoredMode = ['full', 'release-quality'].includes(result.mode);
     if (scoredMode) {
-      for (const id of expectedDimensions.keys()) if (!dimensions.has(id)) errors.push('scored review is missing dimension ' + id);
-      if (dimensions.size !== expectedDimensions.size) errors.push('scored review must contain each canonical dimension exactly once');
+      for (const id of expectedDimensions.keys())
+        if (!dimensions.has(id)) errors.push('scored review is missing dimension ' + id);
+      if (dimensions.size !== expectedDimensions.size)
+        errors.push('scored review must contain each canonical dimension exactly once');
     } else if (result.weightedScore !== null) {
       errors.push('quick and delta reviews must set weightedScore to null');
     }
@@ -118,38 +128,81 @@ async function main() {
     const strongEvidence = new Set(policy?.highSeverityEvidence ?? []);
     for (const finding of result.findings) {
       if (['P0', 'P1'].includes(finding.severity)) {
-        if (!finding.evidenceTypes.some((type) => strongEvidence.has(type))) errors.push(finding.id + ' requires evidence admitted for high severity');
+        if (!finding.evidenceTypes.some((type) => strongEvidence.has(type)))
+          errors.push(finding.id + ' requires evidence admitted for high severity');
         if (finding.evidence.length === 0) errors.push(finding.id + ' requires direct evidence');
-        if (finding.premises.length === 0 || finding.premises.some((premise) => premise.status !== 'supported')) errors.push(finding.id + ' requires supported premises');
-        if (finding.reachability.status !== 'supported') errors.push(finding.id + ' requires supported reachability');
-        if (finding.counterevidence.length === 0) errors.push(finding.id + ' must record counterevidence considered');
+        if (
+          finding.premises.length === 0 ||
+          finding.premises.some((premise) => premise.status !== 'supported')
+        )
+          errors.push(finding.id + ' requires supported premises');
+        if (finding.reachability.status !== 'supported')
+          errors.push(finding.id + ' requires supported reachability');
+        if (finding.counterevidence.length === 0)
+          errors.push(finding.id + ' must record counterevidence considered');
       }
     }
 
-    const compositionFindings = linkedFindings(errors, result.compositionFindingIds, findingById, 'compositionFindingIds');
-    const complexityFindings = linkedFindings(errors, result.complexityFindingIds, findingById, 'complexityFindingIds');
-    if (policy.redesign.composition.includes(result.composition) && compositionFindings.length === 0) errors.push('non-coherent composition requires an admitted linked finding');
-    if (policy.qualityFix.complexity.includes(result.complexity) && complexityFindings.length === 0) errors.push('non-proportionate complexity requires an admitted linked finding');
+    const compositionFindings = linkedFindings(
+      errors,
+      result.compositionFindingIds,
+      findingById,
+      'compositionFindingIds',
+    );
+    const complexityFindings = linkedFindings(
+      errors,
+      result.complexityFindingIds,
+      findingById,
+      'complexityFindingIds',
+    );
+    if (
+      policy.redesign.composition.includes(result.composition) &&
+      compositionFindings.length === 0
+    )
+      errors.push('non-coherent composition requires an admitted linked finding');
+    if (policy.qualityFix.complexity.includes(result.complexity) && complexityFindings.length === 0)
+      errors.push('non-proportionate complexity requires an admitted linked finding');
 
     const unknownIds = addUniqueIds(errors, result.unknowns, 'unknowns');
     let assessedWeight = 0;
     let weightedPoints = 0;
     for (const dimension of result.dimensions) {
-      for (const findingId of dimension.findingIds) if (!findingIds.has(findingId)) errors.push('dimension ' + dimension.id + ' references unknown finding ' + findingId);
-      for (const unknownId of dimension.unknownIds) if (!unknownIds.has(unknownId)) errors.push('dimension ' + dimension.id + ' references unknown unknown ' + unknownId);
-      if (dimension.score !== null && dimension.score < 5 && dimension.findingIds.length === 0 && dimension.unknownIds.length === 0) errors.push('dimension ' + dimension.id + ' score below 5 requires a finding or unknown');
+      for (const findingId of dimension.findingIds)
+        if (!findingIds.has(findingId))
+          errors.push('dimension ' + dimension.id + ' references unknown finding ' + findingId);
+      for (const unknownId of dimension.unknownIds)
+        if (!unknownIds.has(unknownId))
+          errors.push('dimension ' + dimension.id + ' references unknown unknown ' + unknownId);
+      if (
+        dimension.score !== null &&
+        dimension.score < 5 &&
+        dimension.findingIds.length === 0 &&
+        dimension.unknownIds.length === 0
+      )
+        errors.push('dimension ' + dimension.id + ' score below 5 requires a finding or unknown');
       if (dimension.score !== null) {
         assessedWeight += dimension.weight;
-        weightedPoints += dimension.weight * dimension.score / 5;
+        weightedPoints += (dimension.weight * dimension.score) / 5;
       }
     }
-    const totalWeight = [...expectedDimensions.values()].reduce((total, weight) => total + weight, 0);
+    const totalWeight = [...expectedDimensions.values()].reduce(
+      (total, weight) => total + weight,
+      0,
+    );
     calculated = {
-      weightedScore: assessedWeight === totalWeight ? weightedPoints / assessedWeight * 100 : null,
-      coverage: totalWeight === 0 ? 0 : assessedWeight / totalWeight * 100,
+      weightedScore:
+        assessedWeight === totalWeight ? (weightedPoints / assessedWeight) * 100 : null,
+      coverage: totalWeight === 0 ? 0 : (assessedWeight / totalWeight) * 100,
     };
-    if (!approximatelyEqual(result.coverage, calculated.coverage)) errors.push('coverage does not match assessed canonical dimension weight');
-    if ((calculated.weightedScore === null && result.weightedScore !== null) || (calculated.weightedScore !== null && (result.weightedScore === null || !approximatelyEqual(result.weightedScore, calculated.weightedScore)))) errors.push('weightedScore does not match canonical dimension calculation');
+    if (!approximatelyEqual(result.coverage, calculated.coverage))
+      errors.push('coverage does not match assessed canonical dimension weight');
+    if (
+      (calculated.weightedScore === null && result.weightedScore !== null) ||
+      (calculated.weightedScore !== null &&
+        (result.weightedScore === null ||
+          !approximatelyEqual(result.weightedScore, calculated.weightedScore)))
+    )
+      errors.push('weightedScore does not match canonical dimension calculation');
 
     const confidencePoints = { high: 1, medium: 0.7, low: 0.4, unknown: 0 };
     let confidenceWeight = 0;
@@ -160,36 +213,84 @@ async function main() {
       weightedConfidence += dimension.weight * confidencePoints[dimension.confidence];
     }
     const confidenceIndex = confidenceWeight === 0 ? null : weightedConfidence / confidenceWeight;
-    const expectedConfidence = confidenceIndex === null ? 'unknown' : approximatelyEqual(calculated.coverage, 100) && confidenceIndex >= 0.8 ? 'high' : calculated.coverage >= 80 && confidenceIndex >= 0.6 ? 'medium' : 'low';
-    if (result.confidence !== expectedConfidence) errors.push('confidence does not match assessed dimension confidence and coverage');
+    const expectedConfidence =
+      confidenceIndex === null
+        ? 'unknown'
+        : approximatelyEqual(calculated.coverage, 100) && confidenceIndex >= 0.8
+          ? 'high'
+          : calculated.coverage >= 80 && confidenceIndex >= 0.6
+            ? 'medium'
+            : 'low';
+    if (result.confidence !== expectedConfidence)
+      errors.push('confidence does not match assessed dimension confidence and coverage');
 
     for (const [gateId, gate] of Object.entries(result.gates)) {
-      if (gate.status === 'fail' && gate.findingIds.length === 0) errors.push('failed gate ' + gateId + ' must reference a finding');
-      for (const findingId of gate.findingIds) if (!findingIds.has(findingId)) errors.push('gate ' + gateId + ' references unknown finding ' + findingId);
-      if (gate.status === 'fail' && !gate.findingIds.some((findingId) => findingById.get(findingId)?.severity === gate.severity)) errors.push('failed gate ' + gateId + ' must reference a ' + gate.severity + ' finding');
+      if (gate.status === 'fail' && gate.findingIds.length === 0)
+        errors.push('failed gate ' + gateId + ' must reference a finding');
+      for (const findingId of gate.findingIds)
+        if (!findingIds.has(findingId))
+          errors.push('gate ' + gateId + ' references unknown finding ' + findingId);
+      if (
+        gate.status === 'fail' &&
+        !gate.findingIds.some((findingId) => findingById.get(findingId)?.severity === gate.severity)
+      )
+        errors.push('failed gate ' + gateId + ' must reference a ' + gate.severity + ' finding');
     }
 
-    const hasP0 = result.findings.some((finding) => finding.severity === 'P0') || Object.values(result.gates).some((gate) => gate.status === 'fail' && gate.severity === 'P0');
-    const hasP1 = result.findings.some((finding) => finding.severity === 'P1') || Object.values(result.gates).some((gate) => gate.status === 'fail' && gate.severity === 'P1');
+    const hasP0 =
+      result.findings.some((finding) => finding.severity === 'P0') ||
+      Object.values(result.gates).some((gate) => gate.status === 'fail' && gate.severity === 'P0');
+    const hasP1 =
+      result.findings.some((finding) => finding.severity === 'P1') ||
+      Object.values(result.gates).some((gate) => gate.status === 'fail' && gate.severity === 'P1');
     const redesignSeverity = new Set(policy.redesign.requiredLinkedSeverity);
-    const strongComposition = compositionFindings.some((finding) => redesignSeverity.has(finding.severity));
-    const strongComplexity = complexityFindings.some((finding) => redesignSeverity.has(finding.severity));
-    const strongRedesign = (policy.redesign.composition.includes(result.composition) && strongComposition) || (policy.redesign.complexity.includes(result.complexity) && strongComplexity);
-    const qualityFix = policy.qualityFix.composition.includes(result.composition) || policy.qualityFix.complexity.includes(result.complexity);
-    const scoredIncomplete = scoredMode && (!approximatelyEqual(calculated.coverage, 100) || expectedConfidence === 'low');
-    const expectedDesign = hasP0 ? 'fail' : strongRedesign ? 'redesign' : hasP1 || qualityFix ? 'needs-fixes' : ['quick', 'delta'].includes(result.mode) || scoredIncomplete ? 'not-assessed' : 'pass';
-    if (result.design !== expectedDesign) errors.push('design must be ' + expectedDesign + ' for the supplied findings and evidence');
+    const strongComposition = compositionFindings.some((finding) =>
+      redesignSeverity.has(finding.severity),
+    );
+    const strongComplexity = complexityFindings.some((finding) =>
+      redesignSeverity.has(finding.severity),
+    );
+    const strongRedesign =
+      (policy.redesign.composition.includes(result.composition) && strongComposition) ||
+      (policy.redesign.complexity.includes(result.complexity) && strongComplexity);
+    const qualityFix =
+      policy.qualityFix.composition.includes(result.composition) ||
+      policy.qualityFix.complexity.includes(result.complexity);
+    const scoredIncomplete =
+      scoredMode && (!approximatelyEqual(calculated.coverage, 100) || expectedConfidence === 'low');
+    const expectedDesign = hasP0
+      ? 'fail'
+      : strongRedesign
+        ? 'redesign'
+        : hasP1 || qualityFix
+          ? 'needs-fixes'
+          : ['quick', 'delta'].includes(result.mode) || scoredIncomplete
+            ? 'not-assessed'
+            : 'pass';
+    if (result.design !== expectedDesign)
+      errors.push('design must be ' + expectedDesign + ' for the supplied findings and evidence');
 
     const hasUnknownGate = Object.values(result.gates).some((gate) => gate.status === 'unknown');
-    const expectedRelease = hasP0 || hasP1 || ['fail', 'redesign'].includes(expectedDesign) ? 'blocked' : ['quick', 'delta'].includes(result.mode) ? 'not-assessed' : hasUnknownGate || expectedDesign === 'needs-fixes' || scoredIncomplete ? 'provisional' : 'ready';
-    if (result.releaseReadiness !== expectedRelease) errors.push('releaseReadiness must be ' + expectedRelease + ' for the supplied gates and decision');
+    const expectedRelease =
+      hasP0 || hasP1 || ['fail', 'redesign'].includes(expectedDesign)
+        ? 'blocked'
+        : ['quick', 'delta'].includes(result.mode)
+          ? 'not-assessed'
+          : hasUnknownGate || expectedDesign === 'needs-fixes' || scoredIncomplete
+            ? 'provisional'
+            : 'ready';
+    if (result.releaseReadiness !== expectedRelease)
+      errors.push(
+        'releaseReadiness must be ' + expectedRelease + ' for the supplied gates and decision',
+      );
   }
 
   const output = {
     valid: errors.length === 0,
     errors,
     calculated: {
-      weightedScore: calculated.weightedScore === null ? null : Number(calculated.weightedScore.toFixed(2)),
+      weightedScore:
+        calculated.weightedScore === null ? null : Number(calculated.weightedScore.toFixed(2)),
       coverage: calculated.coverage === null ? null : Number(calculated.coverage.toFixed(2)),
     },
   };

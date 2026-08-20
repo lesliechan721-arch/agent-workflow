@@ -30,7 +30,7 @@ function createSha256Digest(value: string): string {
 }
 
 async function listFilesRecursively(rootDir: string): Promise<string[]> {
-  const entries = await fs.readdir(rootDir, { withFileTypes: true }).catch(() => []);
+  const entries = await fs.readdir(rootDir, { withFileTypes: true });
   const files: string[] = [];
 
   for (const entry of entries) {
@@ -48,12 +48,37 @@ async function listFilesRecursively(rootDir: string): Promise<string[]> {
   return files.sort();
 }
 
-async function calculateArtifactPathDigest(filePath: string): Promise<string> {
+interface CatalogDigestPathRecord {
+  path: string;
+  kind: 'file' | 'symlink';
+  mode: '100644' | '100755' | '120000';
+  digest: string;
+}
+
+async function resolveCatalogDigestNode(filePath: string): Promise<{
+  kind: CatalogDigestPathRecord['kind'];
+  mode: CatalogDigestPathRecord['mode'];
+}> {
   const stat = await fs.lstat(filePath);
   if (stat.isSymbolicLink()) {
-    return createSha256Digest(`symlink:${await fs.readlink(filePath)}`);
+    return { kind: 'symlink', mode: '120000' };
   }
+  if (!stat.isFile()) {
+    throw new Error(`Catalog digest path must be a regular file or symlink: ${filePath}.`);
+  }
+  return {
+    kind: 'file',
+    mode: (stat.mode & 0o100) === 0 ? '100644' : '100755',
+  };
+}
 
+async function calculateArtifactPathDigest(
+  filePath: string,
+  node: Awaited<ReturnType<typeof resolveCatalogDigestNode>>,
+): Promise<string> {
+  if (node.kind === 'symlink') {
+    return createSha256Digest(await fs.readlink(filePath));
+  }
   return calculateFileDigest(filePath);
 }
 
@@ -66,14 +91,14 @@ const VERSIONED_PLUGIN_MANIFEST_PATHS = new Set([
 async function calculateContentPathDigest(
   pluginRoot: string,
   relativePath: string,
+  node: Awaited<ReturnType<typeof resolveCatalogDigestNode>>,
 ): Promise<string> {
   if (!VERSIONED_PLUGIN_MANIFEST_PATHS.has(relativePath)) {
-    return calculateArtifactPathDigest(path.join(pluginRoot, relativePath));
+    return calculateArtifactPathDigest(path.join(pluginRoot, relativePath), node);
   }
   const filePath = path.join(pluginRoot, relativePath);
-  const stat = await fs.lstat(filePath);
-  if (stat.isSymbolicLink()) {
-    return createSha256Digest(`symlink:${await fs.readlink(filePath)}`);
+  if (node.kind === 'symlink') {
+    return createSha256Digest(await fs.readlink(filePath));
   }
   const manifest = await fs.readJson(filePath) as Record<string, unknown>;
   return createSha256Digest(stableStringify({ ...manifest, version: '<plugin-version>' }));
@@ -90,10 +115,16 @@ export async function calculateCatalogEntryArtifactDigest(
 ): Promise<string> {
   const files = await listFilesRecursively(pluginRoot);
   const fileEntries = await Promise.all(
-    files.map(async (relativePath) => ({
-      path: relativePath,
-      digest: await calculateArtifactPathDigest(path.join(pluginRoot, relativePath)),
-    })),
+    files.map(async (relativePath): Promise<CatalogDigestPathRecord> => {
+      const filePath = path.join(pluginRoot, relativePath);
+      const node = await resolveCatalogDigestNode(filePath);
+      return {
+        path: relativePath,
+        kind: node.kind,
+        mode: node.mode,
+        digest: await calculateArtifactPathDigest(filePath, node),
+      };
+    }),
   );
 
   return createSha256Digest(stableStringify(fileEntries));
@@ -104,10 +135,15 @@ export async function calculateCatalogEntryContentDigest(
 ): Promise<string> {
   const files = await listFilesRecursively(pluginRoot);
   const fileEntries = await Promise.all(
-    files.map(async (relativePath) => ({
-      path: relativePath,
-      digest: await calculateContentPathDigest(pluginRoot, relativePath),
-    })),
+    files.map(async (relativePath): Promise<CatalogDigestPathRecord> => {
+      const node = await resolveCatalogDigestNode(path.join(pluginRoot, relativePath));
+      return {
+        path: relativePath,
+        kind: node.kind,
+        mode: node.mode,
+        digest: await calculateContentPathDigest(pluginRoot, relativePath, node),
+      };
+    }),
   );
 
   return createSha256Digest(stableStringify(fileEntries));

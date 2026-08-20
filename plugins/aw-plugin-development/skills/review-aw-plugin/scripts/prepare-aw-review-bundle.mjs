@@ -101,9 +101,12 @@ function parseArgs(argv) {
     }
   }
   if (!['codex', 'claude'].includes(options.client)) fail('--client must be codex or claude.');
-  if (options.evalAudit && options.evalCases.length === 0) fail('--eval-audit requires at least one --eval-case.');
-  if (!options.evalAudit && options.evalCases.length > 0) fail('--eval-case requires --eval-audit.');
-  if (options.evalResults.length > 0 && !options.evalAudit) fail('--eval-result requires --eval-audit and its case corpus.');
+  if (options.evalAudit && options.evalCases.length === 0)
+    fail('--eval-audit requires at least one --eval-case.');
+  if (!options.evalAudit && options.evalCases.length > 0)
+    fail('--eval-case requires --eval-audit.');
+  if (options.evalResults.length > 0 && !options.evalAudit)
+    fail('--eval-result requires --eval-audit and its case corpus.');
   return options;
 }
 
@@ -130,7 +133,8 @@ async function collectFiles(root) {
       const relativePath = path.join(relativeDirectory, entry.name);
       if (entry.isSymbolicLink()) fail(`Artifact tree cannot contain symlinks: ${relativePath}`);
       if (entry.isDirectory()) await walk(absolutePath, relativePath);
-      else if (entry.isFile()) files.push({ absolutePath, relativePath: relativePath.split(path.sep).join('/') });
+      else if (entry.isFile())
+        files.push({ absolutePath, relativePath: relativePath.split(path.sep).join('/') });
     }
   }
   await walk(root);
@@ -146,14 +150,16 @@ async function jsonDocument(filePath, label) {
 }
 
 function artifactRole(relativePath) {
-  if (relativePath.startsWith('reports/') || /^skills\/[^/]+\/reports\//u.test(relativePath)) return 'evidence';
+  if (relativePath.startsWith('reports/') || /^skills\/[^/]+\/reports\//u.test(relativePath))
+    return 'evidence';
   if (
-    relativePath === '.agents-plugin/plugin.json'
-    || relativePath === '.mcp.json'
-    || relativePath.endsWith('.app.json')
-    || relativePath.startsWith('config/')
-    || relativePath.startsWith('renderers/')
-  ) return 'project-profile';
+    relativePath === '.agents-plugin/plugin.json' ||
+    relativePath === '.mcp.json' ||
+    relativePath.endsWith('.app.json') ||
+    relativePath.startsWith('config/') ||
+    relativePath.startsWith('renderers/')
+  )
+    return 'project-profile';
   return 'source';
 }
 
@@ -197,14 +203,16 @@ async function sourceDigest(roots) {
 }
 
 async function artifactEntries(root, role, owner, profile, currentness) {
-  return Promise.all((await collectFiles(root)).map(async (file) => ({
-    role,
-    path: portablePath(file.absolutePath),
-    profile,
-    digest: sha256(await readFile(file.absolutePath)),
-    owner,
-    currentness,
-  })));
+  return Promise.all(
+    (await collectFiles(root)).map(async (file) => ({
+      role,
+      path: portablePath(file.absolutePath),
+      profile,
+      digest: sha256(await readFile(file.absolutePath)),
+      owner,
+      currentness,
+    })),
+  );
 }
 
 async function runValidator(script, args, label) {
@@ -223,8 +231,12 @@ async function main() {
 
   const roots = [{ name: manifest.name, root: options.pluginRoot }];
   for (const source of options.sources) {
-    if (roots.some((entry) => entry.name === source.name)) fail(`Duplicate source owner: ${source.name}`);
-    const sourceManifest = await jsonDocument(path.join(source.root, '.agents-plugin', 'plugin.json'), 'Companion manifest');
+    if (roots.some((entry) => entry.name === source.name))
+      fail(`Duplicate source owner: ${source.name}`);
+    const sourceManifest = await jsonDocument(
+      path.join(source.root, '.agents-plugin', 'plugin.json'),
+      'Companion manifest',
+    );
     if (sourceManifest.name !== source.name) fail(`--source name mismatch: ${source.name}`);
     roots.push(source);
   }
@@ -243,17 +255,28 @@ async function main() {
         profile: role === 'project-profile' ? 'aw' : null,
         digest: sha256(await readFile(file.absolutePath)),
         owner: root.name,
-        currentness: role === 'evidence'
-          ? 'historical'
-          : git.dirtyPaths === null
-            ? 'unknown'
-            : git.dirtyPaths.has(canonicalPath) ? 'dirty' : 'current',
+        currentness:
+          role === 'evidence'
+            ? 'historical'
+            : git.dirtyPaths === null
+              ? 'unknown'
+              : git.dirtyPaths.has(canonicalPath)
+                ? 'dirty'
+                : 'current',
       });
     }
   }
 
   for (const final of options.finals) {
-    artifacts.push(...await artifactEntries(final.artifactPath, 'final', manifest.name, final.profile, 'unknown'));
+    artifacts.push(
+      ...(await artifactEntries(
+        final.artifactPath,
+        'final',
+        manifest.name,
+        final.profile,
+        'unknown',
+      )),
+    );
   }
 
   const evidencePaths = new Set([
@@ -262,7 +285,9 @@ async function main() {
     ...(options.evalAudit ? [options.evalAudit] : []),
   ]);
   for (const evidencePath of evidencePaths) {
-    artifacts.push(...await artifactEntries(evidencePath, 'evidence', manifest.name, null, 'unknown'));
+    artifacts.push(
+      ...(await artifactEntries(evidencePath, 'evidence', manifest.name, null, 'unknown')),
+    );
   }
 
   const pluginDigest = await sourceDigest(roots);
@@ -273,7 +298,12 @@ async function main() {
     const validator = path.join(scriptRoot, 'validate-eval-audit-result.mjs');
     await runValidator(
       validator,
-      [options.evalAudit, ...options.evalCases.flatMap((casePath) => ['--case', casePath]), '--format', 'json'],
+      [
+        options.evalAudit,
+        ...options.evalCases.flatMap((casePath) => ['--case', casePath]),
+        '--format',
+        'json',
+      ],
       'Eval audit',
     );
     evalAuditDigest = sha256(await readFile(options.evalAudit));
@@ -295,9 +325,12 @@ async function main() {
     const validator = path.join(scriptRoot, 'validate-json-contract.mjs');
     const schema = path.join(scriptRoot, '..', 'assets', 'eval-run-bundle.schema.json');
     await runValidator(validator, [schema, resultPath, '--format', 'json'], 'Eval result');
-    if (result.targetSkillDigest !== evalAudit.targetSkillDigest) fail('Eval result targetSkillDigest does not match Eval audit.');
-    if (result.caseCorpusDigest !== evalAudit.caseCorpusDigest) fail('Eval result caseCorpusDigest does not match Eval audit.');
-    if (result.preflightAuditDigest !== evalAuditDigest) fail('Eval result preflightAuditDigest does not match the supplied Eval audit file.');
+    if (result.targetSkillDigest !== evalAudit.targetSkillDigest)
+      fail('Eval result targetSkillDigest does not match Eval audit.');
+    if (result.caseCorpusDigest !== evalAudit.caseCorpusDigest)
+      fail('Eval result caseCorpusDigest does not match Eval audit.');
+    if (result.preflightAuditDigest !== evalAuditDigest)
+      fail('Eval result preflightAuditDigest does not match the supplied Eval audit file.');
     evalResults.push(result);
     stages.push({
       id: 'eval-execution',
@@ -311,26 +344,40 @@ async function main() {
     });
   }
 
-  process.stdout.write(`${JSON.stringify({
-    schemaVersion: 3,
-    target: { kind: 'aw-plugin', name: manifest.name, profile: null, sourceDigest: pluginDigest },
-    artifacts: artifacts.sort((left, right) => left.path.localeCompare(right.path) || left.role.localeCompare(right.role)),
-    environment: {
-      repository: path.basename(options.repoRoot) || 'aw-workspace',
-      repositoryRoot: options.repoRoot,
-      gitRepositoryRoot: targetGit.repositoryRoot,
-      client: options.client,
-      dependencyMode: 'manual',
-      capabilities: [
-        ...(options.finals.length > 0 ? ['materialized-final'] : []),
-        ...(options.evalAudit ? ['eval-audit'] : []),
-        ...(options.evalResults.length > 0 ? ['eval-results'] : []),
-      ],
-    },
-    orchestration: { stageOwner: 'caller', providedStages: stages },
-    evalAudit,
-    evalResults,
-  }, null, 2)}\n`);
+  process.stdout.write(
+    `${JSON.stringify(
+      {
+        schemaVersion: 3,
+        target: {
+          kind: 'aw-plugin',
+          name: manifest.name,
+          profile: null,
+          sourceDigest: pluginDigest,
+        },
+        artifacts: artifacts.sort(
+          (left, right) =>
+            left.path.localeCompare(right.path) || left.role.localeCompare(right.role),
+        ),
+        environment: {
+          repository: path.basename(options.repoRoot) || 'aw-workspace',
+          repositoryRoot: options.repoRoot,
+          gitRepositoryRoot: targetGit.repositoryRoot,
+          client: options.client,
+          dependencyMode: 'manual',
+          capabilities: [
+            ...(options.finals.length > 0 ? ['materialized-final'] : []),
+            ...(options.evalAudit ? ['eval-audit'] : []),
+            ...(options.evalResults.length > 0 ? ['eval-results'] : []),
+          ],
+        },
+        orchestration: { stageOwner: 'caller', providedStages: stages },
+        evalAudit,
+        evalResults,
+      },
+      null,
+      2,
+    )}\n`,
+  );
 }
 
 main().catch((error) => {

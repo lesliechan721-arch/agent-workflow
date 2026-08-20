@@ -169,6 +169,14 @@ strict 模式在启动模型前检查 `/etc/codex`（Windows 对应系统目录�
 
 用户明确选择 `--allow-unmanaged-processes` 时，受限来源直接进入 `unmanaged-confirmed`，不执行进程树探测。该模式只跟踪直接子进程，timeout、信号或 runner 退出后可能遗留后代进程，报告会记录 `descendantCleanupGuaranteed: false`。Windows 当前没有 Job Object containment，也必须使用该显式降级选择。agent 不得自行添加参数；如果用户尚未选择，必须停下并让用户选择“切换整个会话到 Full Access”或“明确使用 `--allow-unmanaged-processes`”。CLI 只能把参数视为调用方确认，不能证明参数由人还是模型添加。真正的人工确认必须由 Codex 审批或 UI 层保证。release reviewer 必须明确接受降级运行的环境风险。
 
+<!-- aw-full-access-consent-policy:v1 -->
+| policy invariant | Agent requirement |
+|---|---|
+| `single_escalation_is_not_full_access` | 单次提权不等于整个会话的 Full Access，agent 不得用单次提权重试该门禁。 |
+| `agent_must_not_add_allow_unmanaged_processes` | agent 不得自行添加 `--allow-unmanaged-processes`。 |
+| `agent_must_stop_without_user_choice` | 用户未明确选择整个会话使用 Full Access 或明确接受 unmanaged 降级时，agent 必须停止并请求用户选择。 |
+<!-- /aw-full-access-consent-policy -->
+
 `pnpm plugin:eval` 是唯一支持的模型 eval 入口。不要直接运行插件 `evals/` 下的 command runner；直接调用既缺少 final-artifact profile/digest，也会因缺少 `AW_PLUGIN_EVAL_PROJECT_ROOT` 失败。
 
 `--allow-environment-skips` 只用于诊断已知环境限制；任何 skip 都必须保持 `incomplete`，不能形成发布通过证据。

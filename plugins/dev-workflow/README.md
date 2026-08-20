@@ -2,7 +2,7 @@
 
 用一组轻量、可组合的 Skill 组织中大型软件开发任务。
 
-Dev Workflow 不要求每个任务都先写完备计划。它用 Spec 保存材料性共识，让实现阶段通过可变的纵向切片吸收新发现，并用独立 Review 检查规格与最终代码。需求澄清、决策访谈和可体验原型由 `ask-me` 提供。
+Dev Workflow 不要求每个任务都先写完备计划。它用 Spec 保存材料性共识，让实现阶段通过可变的纵向切片吸收新发现，并用独立 Review 检查规格与最终代码。决策访谈和可体验原型由 `ask-me` 提供。
 
 ## 安装
 
@@ -19,17 +19,16 @@ aw install dev-workflow -p both
 
 ## 本插件包含的 Skill
 
-| Skill | 作用 |
-| --- | --- |
-| [`dev-workflow`](skills/dev-workflow/) | 用户入口；根据当前缺口选择一个最小能力 |
-| [`dev-spec`](skills/dev-spec/) | 把已经形成的材料决定写成稳定 Spec |
+| Skill                                        | 作用                                             |
+| -------------------------------------------- | ------------------------------------------------ |
+| [`dev-workflow`](skills/dev-workflow/)       | 用户入口；根据当前缺口选择一个最小能力           |
+| [`dev-spec`](skills/dev-spec/)               | 把已经形成的材料决定写成稳定 Spec                |
 | [`dev-review-spec`](skills/dev-review-spec/) | 审查 Spec 是否可批准、可实现、可验证且不过度规定 |
-| [`dev-implement`](skills/dev-implement/) | 快速实现清楚的小任务，或按纵向切片实现 Spec |
-| [`dev-review-code`](skills/dev-review-code/) | 分开审查 Spec 符合度和工程质量 |
+| [`dev-implement`](skills/dev-implement/)     | 快速实现清楚的小任务，或按纵向切片实现 Spec      |
+| [`dev-review-code`](skills/dev-review-code/) | 分开审查 Spec 符合度和工程质量                   |
 
 ## 与 `ask-me` 的组合
 
-- 少量关键歧义 → `requirements-clarifier`
 - 多项相互依赖决定 → `decision-grill`
 - 必须看到、运行或操作候选结果才能决定 → `decision-prototype`
 

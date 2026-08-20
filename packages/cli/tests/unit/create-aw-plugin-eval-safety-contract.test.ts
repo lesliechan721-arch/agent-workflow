@@ -13,27 +13,37 @@ const repoRoot = path.resolve(
 );
 
 describe('create-aw-plugin real-model eval safety contract', () => {
-  // Static contract exception: an author agent could start an unmanaged real-model eval without informed consent or safe process monitoring; behavior test is not suitable because these requirements govern agent instructions and have no deterministic runtime entry point.
-  it('keeps the minimum consent and monitoring safeguards in the source Skill', async () => {
-    const skill = await fs.readFile(
-      path.join(repoRoot, '.agents', 'skills', 'create-aw-plugin', 'SKILL.md'),
-      'utf8',
-    );
+  // Static contract exception: an author agent could start an unmanaged model process without informed consent; runtime tests cover the CLI gate, but these structured invariants are consumed by author agents before invoking it.
+  it('keeps the root and adapter Full Access consent policy synchronized', async () => {
+    const policyPaths = [
+      path.join(repoRoot, '.agents', 'skills', 'create-aw-plugin', 'references', 'skill-evaluation.md'),
+      path.join(
+        repoRoot,
+        'plugins',
+        'aw-plugin-development',
+        'skills',
+        'author-aw-plugin',
+        'references',
+        'aw-validation-and-version.md',
+      ),
+    ];
+    const parsePolicy = (content: string): Record<string, string> => {
+      const block = content.match(
+        /<!-- aw-full-access-consent-policy:v1 -->([\s\S]*?)<!-- \/aw-full-access-consent-policy -->/u,
+      )?.[1];
+      expect(block).toBeTruthy();
+      return Object.fromEntries(
+        [...block!.matchAll(/^\| `([^`]+)` \| ([^|\n]+) \|$/gmu)]
+          .map((match) => [match[1], match[2].trim()]),
+      );
+    };
+    const policies = await Promise.all(policyPaths.map(async (policyPath) =>
+      parsePolicy(await fs.readFile(policyPath, 'utf8'))));
 
-    expect(skill).toContain(
-      '用户是否已明确选择整个会话使用 Full Access，或明确选择 `--allow-unmanaged-processes`',
-    );
-    expect(skill).toContain('用户未选择时必须停下询问');
-    expect(skill).toContain('不得自行添加该参数');
-    expect(skill).toContain('也不得请求单次提权');
-    expect(skill).toContain('真实模型 eval 启动后保留同一进程会话');
-    expect(skill).toContain('首轮和后续等待都使用工具允许的最长响应式等待时间');
-    expect(skill).toContain('等待超时不表示 eval 失败');
-    expect(skill).toContain('Git 或其它状态轮询命令');
-    expect(skill).toContain('不得另开 shell `sleep`');
-    expect(skill).toContain('`sleep`、`ps`');
-    expect(skill).toContain('`ps`、报告文件');
-    expect(skill).toContain('报告文件、Git');
-    expect(skill).toContain('不得使用短 `wait` 循环');
+    expect(policies[0]).toEqual(policies[1]);
+    expect(policies[0]).toMatchObject({
+      agent_must_not_add_allow_unmanaged_processes: expect.stringMatching(/\S/u),
+      agent_must_stop_without_user_choice: expect.stringMatching(/\S/u),
+    });
   });
 });

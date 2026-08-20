@@ -16,10 +16,10 @@ describe('performance gate summaries', () => {
     expect(() => assertExpectedPerfSummaries('')).toThrow(/missing=/u);
     expect(() => assertExpectedPerfSummaries(
       EXPECTED_PERF_SUMMARY_NAMES.slice(1).map(summary).join('\n'),
-    )).toThrow(/catalog-cache-first-warm/u);
+    )).toThrow(/path-source-resolution-warm/u);
     expect(() => assertExpectedPerfSummaries(`${output}\n${summary('unknown-budget')}`))
       .toThrow(/unexpected=unknown-budget/u);
     expect(() => assertExpectedPerfSummaries(`${output}\n${summary(EXPECTED_PERF_SUMMARY_NAMES[0]!)}`))
-      .toThrow(/duplicates=catalog-cache-first-warm/u);
+      .toThrow(/duplicates=path-source-resolution-warm/u);
   });
 });

@@ -1608,18 +1608,29 @@ describe('authoring tools', () => {
       'aw-config.mjs',
     );
     const contextPath = path.join(tempRoot, 'context.json');
+    const sourceIdentity = `sha256:${'1'.repeat(64)}`;
     const userStorePath = path.join(tempRoot, 'user-config.json');
     const projectStorePath = path.join(tempRoot, 'project-config.json');
     await fs.writeJson(userStorePath, {
-      apiKey: 'user-store-secret',
-      mode: 'standard',
-      ignored: true,
+      schemaVersion: 2,
+      sourceId: 'team',
+      sourceIdentity,
+      pluginName: 'context-helper',
+      values: {
+        apiKey: 'user-store-secret',
+        mode: 'standard',
+        ignored: true,
+      },
     });
     await fs.writeJson(projectStorePath, {
-      mode: 'strict',
+      schemaVersion: 2,
+      sourceId: 'team',
+      sourceIdentity,
+      pluginName: 'context-helper',
+      values: { mode: 'strict' },
     });
     await fs.writeJson(contextPath, {
-      plugin: { name: 'context-helper' },
+      plugin: { name: 'context-helper', sourceId: 'team', sourceIdentity },
       config: {
         values: {
           apiKey: 'context-secret',
@@ -1659,6 +1670,9 @@ describe('authoring tools', () => {
     const payload = JSON.parse(stdout);
     expect(payload).toMatchObject({
       pluginName: 'context-helper',
+      sourceId: 'team',
+      sourceIdentity,
+      pluginId: 'team/context-helper',
       scope: 'effective',
       values: {
         apiKey: 'context-secret',
@@ -1701,7 +1715,11 @@ describe('authoring tools', () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-helper-fallback-'));
     tempDirs.push(tempRoot);
 
-    const bundleRoot = path.join(tempRoot, 'bundle');
+    const awHome = path.join(tempRoot, 'aw-home');
+    const sourceId = 'team';
+    const sourceIdentity = `sha256:${'2'.repeat(64)}`;
+    const marketplaceRoot = path.join(awHome, 'marketplaces', sourceId);
+    const bundleRoot = path.join(marketplaceRoot, 'plugins', 'config-demo');
     await fs.ensureDir(path.join(bundleRoot, '.agents-plugin'));
     await fs.ensureDir(path.join(bundleRoot, 'scripts'));
     await fs.copyFile(
@@ -1738,28 +1756,45 @@ describe('authoring tools', () => {
 
     const projectRoot = path.join(tempRoot, 'project');
     const projectSubdir = path.join(projectRoot, 'nested');
-    const awHome = path.join(tempRoot, 'aw-home');
+    await fs.writeJson(path.join(marketplaceRoot, 'config.json'), {
+      schemaVersion: 2,
+      sourceId,
+      sourceIdentity,
+      marketplaceName: `aw-${sourceId}`,
+    });
     await fs.ensureDir(projectSubdir);
     await fs.writeFile(path.join(projectRoot, 'pnpm-workspace.yaml'), 'packages: []\n', 'utf8');
     await fs.writeFile(path.join(projectRoot, 'config.txt'), 'ok\n', 'utf8');
-    await fs.ensureDir(path.join(awHome, 'plugin-config', 'config-demo'));
+    await fs.ensureDir(path.join(awHome, 'plugin-config', sourceId, 'config-demo'));
     await fs.writeJson(
-      path.join(awHome, 'plugin-config', 'config-demo', 'config.json'),
+      path.join(awHome, 'plugin-config', sourceId, 'config-demo', 'config.json'),
       {
-        token: 'user-secret',
-        staleUserSecret: 'do-not-print-user',
+        schemaVersion: 2,
+        sourceId,
+        sourceIdentity,
+        pluginName: 'config-demo',
+        values: {
+          token: 'user-secret',
+          staleUserSecret: 'do-not-print-user',
+        },
       },
       { spaces: 2 },
     );
     await fs.ensureDir(
-      path.join(projectRoot, '.agent-workflows', 'plugin-config', 'config-demo'),
+      path.join(projectRoot, '.agent-workflows', 'plugin-config', sourceId, 'config-demo'),
     );
     await fs.writeJson(
-      path.join(projectRoot, '.agent-workflows', 'plugin-config', 'config-demo', 'config.json'),
+      path.join(projectRoot, '.agent-workflows', 'plugin-config', sourceId, 'config-demo', 'config.json'),
       {
-        token: 'project-secret',
-        mode: 'strict',
-        staleProjectSecret: 'do-not-print-project',
+        schemaVersion: 2,
+        sourceId,
+        sourceIdentity,
+        pluginName: 'config-demo',
+        values: {
+          token: 'project-secret',
+          mode: 'strict',
+          staleProjectSecret: 'do-not-print-project',
+        },
       },
       { spaces: 2 },
     );
@@ -1781,6 +1816,12 @@ describe('authoring tools', () => {
     expect(stdout).not.toContain('do-not-print-user');
     expect(stdout).not.toContain('do-not-print-project');
     const payload = JSON.parse(stdout);
+    expect(payload).toMatchObject({
+      pluginName: 'config-demo',
+      sourceId,
+      sourceIdentity,
+      pluginId: `${sourceId}/config-demo`,
+    });
     const expectedConfigFile = await fs.realpath(path.join(projectRoot, 'config.txt'));
     expect(payload.values).toMatchObject({
       token: 'project-secret',
@@ -1815,6 +1856,28 @@ describe('authoring tools', () => {
       ),
     ).resolves.toMatchObject({
       stdout: 'project-secret\n',
+    });
+
+    await fs.writeJson(
+      path.join(projectRoot, '.agent-workflows', 'plugin-config', sourceId, 'config-demo', 'config.json'),
+      {
+        schemaVersion: 2,
+        sourceId,
+        sourceIdentity: `sha256:${'3'.repeat(64)}`,
+        pluginName: 'config-demo',
+        values: { token: 'wrong-source-secret' },
+      },
+      { spaces: 2 },
+    );
+    await expect(execFileAsync(
+      'node',
+      [path.join(bundleRoot, 'scripts', 'aw-config.mjs'), 'json'],
+      {
+        cwd: projectSubdir,
+        env: { ...process.env, AW_HOME: awHome, AW_PLUGIN_CONTEXT: '' },
+      },
+    )).rejects.toMatchObject({
+      stderr: expect.stringContaining('schema 2 source identity'),
     });
   });
 
@@ -2682,6 +2745,152 @@ describe('authoring tools', () => {
     });
   });
 
+  it('validate_plugin.mjs scans real Node imports without comment, string, regex, or template-text ghosts', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-validator-import-scan-'));
+    tempDirs.push(tempRoot);
+    const { pluginDir } = await writeSourcePlugin(
+      path.join(tempRoot, 'plugins'),
+      'import-scan-test',
+      createBaseManifest('import-scan-test', {
+        scripts: {
+          lifecycle: {
+            install: './scripts/entry.mjs',
+          },
+        },
+      }),
+      {
+        'scripts/entry.mjs': [
+          'import /* side effect */ "./shared.mjs";',
+          'export { value } /* binding */ from /* source */ "./value.mjs";',
+          'const lazy = import(/* boundary */ "./lazy.mjs");',
+          'const helper = require(/* boundary */ "./helper.cjs");',
+          'const resolved = require.resolve(/* boundary */ "./resolved.cjs");',
+          'const stringGhost = \'require("ghost-string")\';',
+          '// import "ghost-comment";',
+          '/* export { ghost } from "ghost-block-comment"; */',
+          'const regexGhost = /require("ghost-regex")|import("ghost-dynamic-regex")/u;',
+          'const templateGhost = `require("ghost-template")`;',
+          'const expression = `${import("./template-expression.mjs")}`;',
+        ].join('\n'),
+        'scripts/shared.mjs': 'export const shared = true;\n',
+        'scripts/value.mjs': 'export const value = true;\n',
+        'scripts/lazy.mjs': 'export default true;\n',
+        'scripts/helper.cjs': 'module.exports = true;\n',
+        'scripts/resolved.cjs': 'module.exports = true;\n',
+        'scripts/template-expression.mjs': 'export default true;\n',
+      },
+    );
+    const validators = [
+      validatePluginScriptPath(),
+      path.join(
+        repoRoot(),
+        'plugins',
+        'aw-plugin-development',
+        'skills',
+        'author-aw-plugin',
+        'scripts',
+        'validate_plugin.mjs',
+      ),
+    ];
+
+    for (const validator of validators) {
+      const args = validator === validators[1]
+        ? [validator, pluginDir, '--repo-root', repoRoot()]
+        : [validator, pluginDir];
+      await expect(execFileAsync(process.execPath, args, {
+        cwd: repoRoot(),
+        env: process.env,
+        maxBuffer: 10 * 1024 * 1024,
+      })).resolves.toMatchObject({
+        stdout: expect.stringContaining('[PASS] All checks passed.'),
+      });
+    }
+
+    const noDistRoot = path.join(tempRoot, 'no-dist-repository');
+    const noDistValidator = path.join(
+      noDistRoot,
+      '.agents',
+      'skills',
+      'create-aw-plugin',
+      'scripts',
+      'validate_plugin.mjs',
+    );
+    await fs.copy(
+      path.dirname(validatePluginScriptPath()),
+      path.dirname(noDistValidator),
+    );
+    await fs.ensureDir(path.join(noDistRoot, 'packages', 'cli', 'src', 'utils'));
+    await fs.copyFile(
+      path.join(
+        repoRoot(),
+        'packages',
+        'cli',
+        'src',
+        'utils',
+        'skill-frontmatter-capabilities.json',
+      ),
+      path.join(
+        noDistRoot,
+        'packages',
+        'cli',
+        'src',
+        'utils',
+        'skill-frontmatter-capabilities.json',
+      ),
+    );
+    const fallbackResult = await execFileAsync(process.execPath, [noDistValidator, pluginDir], {
+      cwd: noDistRoot,
+      env: process.env,
+      maxBuffer: 10 * 1024 * 1024,
+    });
+    expect(fallbackResult.stdout).toContain('仅执行轻量预检');
+    expect(fallbackResult.stdout).toContain('[PASS] All checks passed.');
+
+    await fs.appendFile(path.join(pluginDir, 'scripts', 'entry.mjs'), '\nimport "undeclared-package";\n');
+    await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining(
+        'bare import "undeclared-package" from "scripts/entry.mjs" requires scripts.node.packageRoot',
+      ),
+    });
+
+    await fs.writeFile(
+      path.join(pluginDir, 'scripts', 'entry.mjs'),
+      'require.resolve("../../outside.cjs");\n',
+      'utf8',
+    );
+    await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
+      stdout: expect.stringContaining(
+        'relative import "../../outside.cjs" from "scripts/entry.mjs" escapes the plugin root',
+      ),
+    });
+  });
+
+  it('keeps the repo-local and adapter JavaScript import scanners synchronized', async () => {
+    const rootScanner = path.join(
+      repoRoot(),
+      '.agents',
+      'skills',
+      'create-aw-plugin',
+      'scripts',
+      'lib',
+      'javascript-import-scanner.mjs',
+    );
+    const adapterScanner = path.join(
+      repoRoot(),
+      'plugins',
+      'aw-plugin-development',
+      'skills',
+      'author-aw-plugin',
+      'scripts',
+      'lib',
+      'javascript-import-scanner.mjs',
+    );
+    // Static contract exception: the two distributed validators can silently enforce different author contracts; behavior test is not suitable because divergence can occur in any scanner branch.
+    await expect(fs.readFile(adapterScanner, 'utf8')).resolves.toBe(
+      await fs.readFile(rootScanner, 'utf8'),
+    );
+  });
+
   it('validate_plugin.mjs validates dynamic Codex artifact renderer contracts', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-dynamic-artifacts-'));
     tempDirs.push(tempRoot);
@@ -2829,6 +3038,70 @@ describe('authoring tools', () => {
       { products: [] },
     );
     await expect(runValidatePlugin(emptyProducts.pluginDir)).resolves.toMatchObject({
+      stdout: expect.stringContaining('[PASS] All checks passed.'),
+    });
+
+    const rendererOnlyClaude = await writeSourcePlugin(
+      path.join(tempRoot, 'renderer-only-claude'),
+      'renderer-only-claude',
+      createBaseManifest('renderer-only-claude', {
+        skills: './skills',
+        scripts: {
+          artifacts: {
+            render: {
+              runner: 'node',
+              path: './scripts/render-artifacts.mjs',
+            },
+          },
+        },
+        artifacts: {
+          targets: [{
+            id: 'claude-quality-gate',
+            platform: 'claude',
+            scopes: ['user', 'project'],
+            target: 'claude.skill',
+            states: ['present'],
+            refreshKeys: [],
+            skillKey: 'claude-quality-gate',
+          }],
+        },
+      }),
+      {
+        'skills/common-skill/SKILL.md': '---\nname: common-skill\ndescription: Common static Skill.\n---\n\n# Common\n',
+        'skills/common-skill/agents/openai.yaml': 'policy:\n  allow_implicit_invocation: true\n',
+        'scripts/render-artifacts.mjs': [
+          'process.stdout.write(JSON.stringify({ version: 2, artifacts: [{',
+          '  id: "claude-quality-gate", platform: "claude", target: "claude.skill", kind: "skill",',
+          '  state: "present", refreshKeys: [], skillKey: "claude-quality-gate",',
+          '  content: { files: {',
+          '    "SKILL.md": "---\\nname: claude-quality-gate\\ndescription: Claude-only quality gate.\\n---\\n\\n# Quality Gate\\n",',
+          '    "README.md": "# Claude Quality Gate\\n"',
+          '  } }',
+          '}] }));',
+        ].join('\n'),
+      },
+    );
+    expect(await fs.readdir(path.join(rendererOnlyClaude.pluginDir, 'skills'))).toEqual([
+      'common-skill',
+    ]);
+    await expect(runValidatePlugin(rendererOnlyClaude.pluginDir)).resolves.toMatchObject({
+      stdout: expect.stringContaining('[PASS] All checks passed.'),
+    });
+    const adapterValidator = path.join(
+      repoRoot(),
+      'plugins',
+      'aw-plugin-development',
+      'skills',
+      'author-aw-plugin',
+      'scripts',
+      'validate_plugin.mjs',
+    );
+    await expect(execFileAsync(process.execPath, [
+      adapterValidator,
+      rendererOnlyClaude.pluginDir,
+      '--repo-root',
+      repoRoot(),
+    ], { cwd: repoRoot(), env: process.env })).resolves.toMatchObject({
       stdout: expect.stringContaining('[PASS] All checks passed.'),
     });
 

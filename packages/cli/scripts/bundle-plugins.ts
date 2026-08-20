@@ -59,6 +59,17 @@ async function assertPackageVersions(repoRoot: string): Promise<void> {
   }
 }
 
+async function removeGeneratedEmptyDirectories(currentDir: string): Promise<void> {
+  for (const entry of await fs.readdir(currentDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const entryPath = path.join(currentDir, entry.name);
+    await removeGeneratedEmptyDirectories(entryPath);
+    if ((await fs.readdir(entryPath)).length === 0) {
+      await fs.remove(entryPath);
+    }
+  }
+}
+
 export async function bundlePlugins(
   options: BundlePluginsOptions = {},
 ): Promise<{ outputRoot: string; pluginNames: string[] }> {
@@ -82,14 +93,16 @@ export async function bundlePlugins(
     codex: [],
   };
   for (const plugin of plugins) {
+    const bundledPluginRoot = path.join(outputRoot, 'plugins', plugin.manifest.name);
     const result = await bundleLocalPlugin(
       plugin,
-      path.join(outputRoot, 'plugins', plugin.manifest.name),
+      bundledPluginRoot,
       {
         buildMode,
         stagingRunner: options.stagingRunner,
       },
     );
+    await removeGeneratedEmptyDirectories(bundledPluginRoot);
     bundledPlugins.push(result.plugin);
 
     for (const platform of ['claude', 'codex'] as const) {

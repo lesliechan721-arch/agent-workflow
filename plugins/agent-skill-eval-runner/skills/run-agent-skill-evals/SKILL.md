@@ -15,9 +15,9 @@ metadata:
 
 ## 工作流
 
-1. **验证计划**：运行 `node scripts/validate-eval-execution-plan.mjs <plan.json> --format json`。验证 audit 文件、digest、目标 Skill、case corpus、输出目录和 provider argv。`previous-version` baseline 必须绑定独立 `skillPath` 与 `skillDigest`；`without-skill` 不得伪装成未绑定的 Skill 路径。
+1. **验证计划**：从本 Skill 根运行 `node scripts/validate-eval-execution-plan.mjs <plan.json> --format json`。验证 audit 文件、digest、目标 Skill、case corpus、输出目录和 provider argv。`previous-version` baseline 必须绑定独立 `skillPath` 与 `skillDigest`；`without-skill` 不得伪装成未绑定的 Skill 路径。
 2. **核对权限与能力**：计划必须绑定 provider capability 文件。`command` 只保证显式 argv 进程与基础采集；`codex-trigger` 使用 AW CLI 的 canonical Codex app-server driver，且只支持通过严格隔离探测的 with-skill trigger discovery。不得请求 provider 未声明的 baseline、trace、sandbox 或 materialization。`inheritEnvironment=true` 会把当前进程环境交给 provider，只能在用户明确授权且 provider 需要认证时使用；默认使用最小环境。
-3. **执行**：运行 `node scripts/run-agent-skill-evals.mjs <plan.json>`。Runner 为每次 with-skill 或 previous-version run 建立只含 runtime Skill 内容的独立快照，provider 只收到快照路径；without-skill run 不设置 Skill 路径。执行前后重新核对所有源 Skill digest，任何变化都使证据包无效。Codex trigger provider 的 argv 使用 `node providers/codex-trigger-provider.mjs`，并通过 `AW_CODEX_EVAL_DRIVER_ROOT` 指向已构建的 AW CLI driver。不得改写 case、Oracle 或生产 Skill；不得用 shell 包装 provider command。
+3. **执行**：从本 Skill 根运行 `node scripts/run-agent-skill-evals.mjs <plan.json>`。Runner 为每次 with-skill 或 previous-version run 建立只含 runtime Skill 内容的独立快照，provider 只收到快照路径；without-skill run 不设置 Skill 路径。执行前后重新核对所有源 Skill digest，任何变化都使证据包无效。Codex trigger provider 的 argv 使用 `node scripts/providers/codex-trigger-provider.mjs`，并通过 `AW_CODEX_EVAL_DRIVER_ROOT` 指向已构建的 AW CLI driver。不得改写 case、Oracle 或生产 Skill；不得用 shell 包装 provider command。
 4. **采集**：保存每次 stdout、stderr、provider artifacts、exit code、duration、configuration、`skillMode` 和 `skillDigest`；只在 provider 明确返回时记录 usage/grading。`independentContext` 只反映 provider 声明的 clean-context 能力，不因新进程或文件快照自动设为 true。
 5. **交付**：返回 `EvalRunBundle` 路径、digest、evidence level、limitations 和未完成 run。失败归因交给 fresh-context `audit-agent-skill-evals(result-triage)`。
 

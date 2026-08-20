@@ -15,7 +15,7 @@ function capture() {
   };
 }
 
-describe('CLI entry v3', () => {
+describe('CLI entry v4', () => {
   it('publishes the five write commands plus status and config', async () => {
     const output = capture();
     expect(await runCli(['--help'], { io: output.io })).toBe(0);
@@ -46,21 +46,30 @@ describe('CLI entry v3', () => {
     ['uninstall'],
     ['reinstall'],
     ['cleanup'],
-  ])('prints copyable plain usage when non-interactive %s arguments are missing', async (command) => {
+  ])('prints usage before starting the non-interactive %s write path', async (command) => {
     const output = capture();
     expect(await runCli([command], { interactive: false, io: output.io })).toBe(1);
     expect(output.stdout()).toBe('');
     expect(output.stderr()).toContain(`Usage: aw ${command}`);
-    expect(output.stderr()).not.toContain('\u001B[');
+    expect(output.stdout()).not.toContain('\u001B[');
   });
 
   it.each([
     ['list'],
     ['get'],
+  ])('prints copyable plain usage when non-interactive config %s arguments are missing', async (command) => {
+    const output = capture();
+    expect(await runCli(['config', command], { interactive: false, io: output.io })).toBe(1);
+    expect(output.stdout()).toBe('');
+    expect(output.stderr()).toContain(`Usage: aw config ${command}`);
+    expect(output.stderr()).not.toContain('\u001B[');
+  });
+
+  it.each([
     ['set'],
     ['unset'],
     ['reset'],
-  ])('prints copyable plain usage when non-interactive config %s arguments are missing', async (command) => {
+  ])('prints usage before starting the non-interactive config %s mutation path', async (command) => {
     const output = capture();
     expect(await runCli(['config', command], { interactive: false, io: output.io })).toBe(1);
     expect(output.stdout()).toBe('');
@@ -78,15 +87,26 @@ describe('CLI entry v3', () => {
   });
 
   it.each([
-    { name: 'write JSON', argv: ['install', '--json'], env: process.env },
-    { name: 'config JSON', argv: ['config', 'set', '--json'], env: process.env },
-    { name: 'write CI', argv: ['install'], env: { ...process.env, CI: '1' } },
-    { name: 'config CI', argv: ['config', 'set'], env: { ...process.env, CI: '1' } },
-  ])('never starts a TUI for missing $name arguments', async ({ argv, env }) => {
+    { command: 'install', argv: ['install', '--json'], usage: 'Usage: aw install' },
+    { command: 'config:set', argv: ['config', 'set', '--json'], usage: 'Usage: aw config set' },
+  ])('does not start a TUI for incomplete $command', async ({ argv, usage }) => {
     const output = capture();
-    expect(await runCli(argv, { interactive: true, env, io: output.io })).toBe(1);
+    expect(await runCli(argv, { interactive: true, io: output.io })).toBe(1);
     expect(output.stdout()).toBe('');
-    expect(output.stderr()).toContain('Usage: aw');
-    expect(output.stderr()).not.toContain('\u001B[');
+    expect(output.stderr()).toContain(usage);
+  });
+
+  it.each([
+    { name: 'write CI', argv: ['install'] },
+    { name: 'config CI', argv: ['config', 'set'] },
+  ])('fails closed without starting a TUI for $name', async ({ argv }) => {
+    const output = capture();
+    expect(await runCli(argv, {
+      interactive: true,
+      env: { ...process.env, CI: '1' },
+      io: output.io,
+    })).toBe(1);
+    expect(`${output.stdout()}${output.stderr()}`).toContain('Usage:');
+    expect(`${output.stdout()}${output.stderr()}`).not.toContain('\u001B[');
   });
 });

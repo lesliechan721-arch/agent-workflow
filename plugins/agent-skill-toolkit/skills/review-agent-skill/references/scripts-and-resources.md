@@ -4,9 +4,11 @@ Read this only when the target contains scripts or repeatedly reimplements deter
 
 ## Script ownership
 
-Good script candidates: parsing, transformation, generation, computation, format validation, static consistency, repetitive batch operations and mechanically checkable assertions.
+Good script candidates: parsing, transformation, generation, computation, format validation, static
+consistency, repetitive batch operations and mechanically checkable assertions.
 
-Do not use ordinary scripts to infer live agent state, mailbox delivery, cancellation, concurrency, permissions or runtime lifecycle through files, Git or shell polling.
+Do not use ordinary scripts to infer live agent state, mailbox delivery, cancellation, concurrency,
+permissions or runtime lifecycle through files, Git or shell polling.
 
 ## Agent-facing script checks
 
@@ -18,8 +20,12 @@ Do not use ordinary scripts to infer live agent state, mailbox delivery, cancell
 - prefer idempotence and dry-run for destructive work;
 - provide a fixture, test or safe sample.
 
-Before claiming an interface defect, read imports, argument parsing, side-effect calls and main dispatch. Run `--help` only after static inspection proves the help branch exits before side effects. Environment failure is `unknown`, not proof that an interface is absent.
+Before claiming an interface defect, read imports, argument parsing, side-effect calls and main
+dispatch. Run `--help` only after static inspection proves the help branch exits before side
+effects. Environment failure is `unknown`, not proof that an interface is absent.
 
 ## References and Agent-facing prose
 
-The canonical reference, pointer, active-path, co-location and progressive-disclosure audit belongs to `review-agent-content`. This Skill only checks package-specific reachability and consumes its `ReferenceAuditResult`; it does not maintain a second reference checklist.
+The canonical reference, pointer, active-path, co-location and progressive-disclosure audit belongs
+to `review-agent-content`. This Skill only checks package-specific reachability and consumes its
+`ReferenceAuditResult`; it does not maintain a second reference checklist.

@@ -1,7 +1,7 @@
 import path from 'node:path';
 
 import fs from 'fs-extra';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { GeneratedArtifact, PluginManifestSource, PluginMeta } from '../../src/types.js';
 import {
@@ -20,7 +20,11 @@ import {
   setLifecycleActiveLockFileSystemForTests,
 } from '../../src/utils/lifecycle-active-store.js';
 import type { ProcessLockFileSystem } from '../../src/utils/process-lock.js';
-import { setActiveMarketplaceLifecycleBeforeAcquireHookForTests } from '../../src/utils/active-marketplace-runtime-lock.js';
+import {
+  setActiveMarketplaceCoordinationBeforeReleaseHookForTests,
+  setActiveMarketplaceLifecycleBeforeAcquireHookForTests,
+  withActiveMarketplaceLifecycleLease,
+} from '../../src/utils/active-marketplace-runtime-lock.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
 import { readPluginConfigStore, writePluginConfigStore } from '../../src/utils/plugin-config.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
@@ -196,6 +200,18 @@ describe('lifecycle active store', () => {
     );
   });
 
+  it.each(['EPERM', 'EBUSY', 'EMFILE'])('propagates project realpath %s instead of changing its location key', async (code) => {
+    const repo = await createRepo(`project-realpath-${code}`);
+    const failure = Object.assign(new Error(`injected project realpath ${code}`), { code });
+    const originalRealpath = fs.realpath.bind(fs);
+    vi.spyOn(fs, 'realpath').mockImplementation(async (candidate) => {
+      if (path.resolve(String(candidate)) === path.resolve(repo)) throw failure;
+      return originalRealpath(candidate);
+    });
+
+    await expect(resolveLifecycleActiveTarget(targetOptions(repo, 'project'))).rejects.toBe(failure);
+  });
+
   it('does not stage install-only or upgrade-only bundles and removes an older active on promote', async () => {
     const repo = await createRepo('repo');
     const root = getCurrentSourceTestIsolation().layout.fixtureCwd;
@@ -286,6 +302,50 @@ describe('lifecycle active store', () => {
     await expect(readLifecycleActiveSnapshot(targetOptions(repo))).rejects.toBeInstanceOf(
       LifecycleActiveSnapshotError,
     );
+  });
+
+  it('does not skip an active snapshot when an existence probe hides an operational error', async () => {
+    const repo = await createRepo('authoritative-read-repo');
+    const plugin = await writePlugin({
+      root: getCurrentSourceTestIsolation().layout.fixtureCwd,
+      events: ['uninstall'],
+    });
+    const active = await stageAndPromote({ plugin, cwd: repo });
+    const originalPathExists = fs.pathExists.bind(fs);
+    const pathExists = vi.spyOn(fs, 'pathExists').mockImplementation(async (candidate) => {
+      if (path.resolve(String(candidate)) === path.resolve(active.activeRoot)) return false;
+      return originalPathExists(candidate);
+    });
+
+    try {
+      await expect(readLifecycleActiveSnapshot(targetOptions(repo))).resolves.not.toBeNull();
+      const leased = await leaseLifecycleActiveSnapshot(targetOptions(repo));
+      expect(leased).not.toBeNull();
+      await releaseLifecycleActiveSnapshot(leased!);
+    } finally {
+      pathExists.mockRestore();
+    }
+  });
+
+  it.each(['EPERM', 'EBUSY'])('propagates lifecycle active root %s instead of skipping uninstall state', async (code) => {
+    const repo = await createRepo(`operational-read-${code}`);
+    const plugin = await writePlugin({
+      root: getCurrentSourceTestIsolation().layout.fixtureCwd,
+      events: ['uninstall'],
+    });
+    const active = await stageAndPromote({ plugin, cwd: repo });
+    const failure = Object.assign(new Error(`injected ${code}`), { code });
+    const originalLstat = fs.lstat.bind(fs);
+    const lstat = vi.spyOn(fs, 'lstat').mockImplementation(async (candidate) => {
+      if (path.resolve(String(candidate)) === path.resolve(active.activeRoot)) throw failure;
+      return originalLstat(candidate);
+    });
+
+    try {
+      await expect(readLifecycleActiveSnapshot(targetOptions(repo))).rejects.toBe(failure);
+    } finally {
+      lstat.mockRestore();
+    }
   });
 
   it('detects bundle fingerprint drift', async () => {
@@ -790,16 +850,70 @@ describe('lifecycle active store', () => {
     expect((await readLifecycleActiveSnapshot(targetOptions(repo)))?.metadata.pluginVersion).toBe('2.0.0');
   });
 
-  it('keeps promote release failure retryable through discard without deleting active', async () => {
+  it.each(['EBUSY', 'EPERM'])('keeps the newly validated active when old backup cleanup partially gets %s', async (code) => {
+    const repo = await createRepo(`backup-cleanup-${code}`);
+    const root = getCurrentSourceTestIsolation().layout.fixtureCwd;
+    await stageAndPromote({
+      plugin: await writePlugin({ root, version: '1.0.0', marker: 'old' }),
+      cwd: repo,
+    });
+    const prepared = await prepareLifecycleActiveSnapshot({
+      plugin: await writePlugin({ root, version: '2.0.0', marker: 'new' }),
+      platform: 'codex',
+      scope: 'user',
+      cwd: repo,
+      env: process.env,
+    });
+    const actualRemove = fs.remove.bind(fs);
+    const remove = vi.spyOn(fs, 'remove').mockImplementation(async (candidate) => {
+      if (path.basename(String(candidate)).startsWith('backup-')) {
+        await actualRemove(path.join(String(candidate), LIFECYCLE_ACTIVE_METADATA_FILE));
+        throw Object.assign(new Error(`simulated backup cleanup ${code}`), { code });
+      }
+      return actualRemove(candidate);
+    });
+    const warning = vi.spyOn(process, 'emitWarning').mockImplementation(() => undefined);
+
+    await expect(promoteLifecycleActiveSnapshot(prepared)).resolves.toMatchObject({
+      metadata: { pluginVersion: '2.0.0' },
+    });
+    const backupPath = (await fs.readdir(prepared.target.targetRoot))
+      .map((entry) => path.join(prepared.target.targetRoot, entry))
+      .find((entry) => path.basename(entry).startsWith('backup-'));
+    expect(backupPath).toBeDefined();
+    await expect(fs.pathExists(path.join(prepared.target.activeRoot, LIFECYCLE_ACTIVE_METADATA_FILE)))
+      .resolves.toBe(true);
+    expect(warning).toHaveBeenCalledWith(
+      expect.stringContaining('backup cleanup'),
+      expect.objectContaining({ code: 'AW_LIFECYCLE_HOUSEKEEPING_FAILED' }),
+    );
+
+    remove.mockRestore();
+    warning.mockRestore();
+    const nextPrepared = await prepareLifecycleActiveSnapshot({
+      plugin: await writePlugin({ root, version: '3.0.0', marker: 'next' }),
+      platform: 'codex',
+      scope: 'user',
+      cwd: repo,
+      env: process.env,
+    });
+    await discardLifecycleActiveSnapshot(nextPrepared);
+    await expect(fs.pathExists(backupPath!)).resolves.toBe(false);
+    await expect(readLifecycleActiveSnapshot(targetOptions(repo))).resolves.toMatchObject({
+      metadata: { pluginVersion: '2.0.0' },
+    });
+  });
+
+  it.each(['EBUSY', 'EPERM'])('keeps committed promote successful when target lock release stays %s', async (code) => {
     const repo = await createRepo('repo');
     const plugin = await writePlugin({ root: getCurrentSourceTestIsolation().layout.fixtureCwd });
-    let failReleaseRemove = true;
+    let remainingReleaseFailures = 3;
     const fileSystem = processLockFileSystem({
       async unlink(targetPath) {
-        if (failReleaseRemove && targetPath.includes('release-')) {
-          failReleaseRemove = false;
+        if (remainingReleaseFailures > 0 && targetPath.includes('release-')) {
+          remainingReleaseFailures -= 1;
           const error = new Error('simulated lifecycle lock release failure') as NodeJS.ErrnoException;
-          error.code = 'EBUSY';
+          error.code = code;
           throw error;
         }
         await fs.unlink(targetPath);
@@ -823,7 +937,55 @@ describe('lifecycle active store', () => {
     }
   });
 
-  it('reports both prepare and lock release failures', async () => {
+  it.each(['EBUSY', 'EPERM'])('keeps committed promote successful when lifecycle lease release stays %s', async (code) => {
+    const repo = await createRepo(`outer-promote-release-${code}`);
+    const plugin = await writePlugin({ root: getCurrentSourceTestIsolation().layout.fixtureCwd });
+    setActiveMarketplaceCoordinationBeforeReleaseHookForTests(async () => {
+      throw Object.assign(new Error('simulated lifecycle lease release failure'), { code });
+    });
+    vi.spyOn(process, 'emitWarning').mockImplementation(() => undefined);
+    try {
+      await expect(withActiveMarketplaceLifecycleLease(process.env, async () => {
+        const prepared = await prepareLifecycleActiveSnapshot({
+          plugin,
+          platform: 'codex',
+          scope: 'user',
+          cwd: repo,
+          env: process.env,
+          lifecycleLeaseHeld: true,
+        });
+        return promoteLifecycleActiveSnapshot(prepared);
+      })).resolves.not.toBeNull();
+      setActiveMarketplaceCoordinationBeforeReleaseHookForTests(undefined);
+      await expect(readLifecycleActiveSnapshot(targetOptions(repo))).resolves.not.toBeNull();
+    } finally {
+      setActiveMarketplaceCoordinationBeforeReleaseHookForTests(undefined);
+    }
+  });
+
+  it.each(['EBUSY', 'EPERM'])('keeps committed remove successful when target lock release stays %s', async (code) => {
+    const repo = await createRepo(`remove-release-${code}`);
+    const plugin = await writePlugin({ root: getCurrentSourceTestIsolation().layout.fixtureCwd });
+    const active = await stageAndPromote({ plugin, cwd: repo });
+    let remainingReleaseFailures = 3;
+    setLifecycleActiveLockFileSystemForTests(processLockFileSystem({
+      async unlink(targetPath) {
+        if (remainingReleaseFailures > 0 && targetPath.includes('release-')) {
+          remainingReleaseFailures -= 1;
+          throw Object.assign(new Error('simulated remove release failure'), { code });
+        }
+        await fs.unlink(targetPath);
+      },
+    }));
+    try {
+      await expect(removeLifecycleActiveSnapshot(targetOptions(repo))).resolves.toBeUndefined();
+      await expect(fs.pathExists(active.activeRoot)).resolves.toBe(false);
+    } finally {
+      setLifecycleActiveLockFileSystemForTests(undefined);
+    }
+  });
+
+  it('keeps the prepare error primary when lock release also fails', async () => {
     const repo = await createRepo('repo');
     const plugin = await writePlugin({ root: getCurrentSourceTestIsolation().layout.fixtureCwd });
     const outside = path.join(repo, 'outside-source.js');
@@ -850,11 +1012,8 @@ describe('lifecycle active store', () => {
         cwd: repo,
         env: process.env,
       }).catch((caught: unknown) => caught);
-      expect(error).toBeInstanceOf(AggregateError);
-      expect((error as AggregateError).errors.map(String).join('\n')).toContain('allowed closure roots');
-      expect((error as AggregateError).errors.map(String).join('\n')).toContain(
-        'simulated prepare release failure',
-      );
+      expect(error).toBeInstanceOf(LifecycleActiveSnapshotError);
+      expect(String(error)).toContain('allowed closure roots');
     } finally {
       setLifecycleActiveLockFileSystemForTests(undefined);
     }
@@ -900,7 +1059,7 @@ describe('lifecycle active store', () => {
     })).rejects.toThrow('dangling symbolic link');
   });
 
-  it('keeps remove and release failures together without deleting through a target symlink', async () => {
+  it('keeps the remove error primary when release also fails without deleting through a target symlink', async () => {
     const repo = await createRepo('repo');
     const target = await resolveLifecycleActiveTarget(targetOptions(repo));
     const outside = path.join(repo, 'remove-outside');
@@ -922,10 +1081,8 @@ describe('lifecycle active store', () => {
     try {
       const error = await removeLifecycleActiveSnapshot(targetOptions(repo))
         .catch((caught: unknown) => caught);
-      expect(error).toBeInstanceOf(AggregateError);
-      const messages = (error as AggregateError).errors.map(String).join('\n');
-      expect(messages).toContain('symbolic link');
-      expect(messages).toContain('simulated remove release failure');
+      expect(error).toBeInstanceOf(LifecycleActiveSnapshotError);
+      expect(String(error)).toContain('symbolic link');
       expect(await fs.pathExists(outside)).toBe(true);
     } finally {
       setLifecycleActiveLockFileSystemForTests(undefined);

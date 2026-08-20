@@ -2,6 +2,7 @@
   "name": "@lesliechan721/aw",
   "version": "0.1.0-beta.2",
   "type": "module",
+  "packageManager": "pnpm@10.33.0",
   "engines": {
     "node": ">=22"
   },
@@ -26,9 +27,10 @@
     "test:smoke": "vitest run --config vitest.smoke.config.ts",
     "test:smoke:build": "vitest run --config vitest.smoke.config.ts tests/smoke/build-smoke.test.ts",
     "test:smoke:pack:cli": "vitest run --config vitest.smoke.config.ts tests/smoke/pack-smoke.test.ts",
-    "test:smoke:pack:catalog": "vitest run --config vitest.smoke.config.ts tests/smoke/catalog-pack-smoke.test.ts",
-    "test:smoke:pack": "pnpm run test:smoke:pack:cli && pnpm run test:smoke:pack:catalog",
-    "test:smoke:fetch": "vitest run --config vitest.smoke.config.ts tests/smoke/catalog-fetch-smoke.test.ts",
+    "test:smoke:stage:catalog": "vitest run --config vitest.smoke.config.ts tests/smoke/catalog-stage-smoke.test.ts",
+    "test:smoke:publish:catalog": "vitest run --config vitest.smoke.config.ts tests/smoke/catalog-publish-smoke.test.ts",
+    "test:smoke:bootstrap:catalog": "vitest run --config vitest.smoke.config.ts tests/smoke/catalog-bootstrap-smoke.test.ts",
+    "test:smoke:fetch": "pnpm run test:smoke:publish:catalog",
     "plugin:test": "tsc -p tsconfig.json && node dist/scripts/test-plugin-scripts.js",
     "plugin:eval": "tsc -p tsconfig.json && node dist/scripts/eval-plugin-skills.js",
     "review:publish": "tsc -p tsconfig.json && node dist/scripts/publish-skill-review.js",
@@ -41,6 +43,7 @@
     "fs-extra": "^11.3.0",
     "ink": "^7.1.1",
     "minimatch": "^10.2.5",
+    "pnpm": "10.33.0",
     "react": "^19.2.8",
     "toml-eslint-parser": "^1.0.3",
     "yaml": "^2.8.3"

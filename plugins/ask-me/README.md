@@ -12,10 +12,10 @@ aw install ask-me -p both
 
 ## 包含的 Skill
 
-| Skill | 什么时候使用 |
-| --- | --- |
-| [`decision-grill`](skills/decision-grill/) | 需要通过多轮访谈把计划、方案或重要决定想透并形成共享理解 |
-| [`decision-prototype`](skills/decision-prototype/) | 一个决定必须看到、运行或操作候选方案后才能可靠作出 |
+| Skill                                              | 什么时候使用                                             |
+| -------------------------------------------------- | -------------------------------------------------------- |
+| [`decision-grill`](skills/decision-grill/)         | 需要通过多轮访谈把计划、方案或重要决定想透并形成共享理解 |
+| [`decision-prototype`](skills/decision-prototype/) | 一个决定必须看到、运行或操作候选方案后才能可靠作出       |
 
 ## 典型用法
 
