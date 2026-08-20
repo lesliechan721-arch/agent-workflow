@@ -271,7 +271,13 @@ async function main() {
   if (!result.valid) process.exitCode = 1;
 }
 
-if (import.meta.url === new URL(process.argv[1], 'file:').href) {
+const invokedPath = process.argv[1]
+  ? await realpath(process.argv[1]).catch(() => path.resolve(process.argv[1]))
+  : null;
+const modulePath = await realpath(fileURLToPath(import.meta.url)).catch(() =>
+  path.resolve(fileURLToPath(import.meta.url)),
+);
+if (invokedPath === modulePath) {
   main().catch((error) => {
     process.stderr.write(`[ERROR] ${error.message}\n`);
     process.exit(1);

@@ -5,18 +5,37 @@ import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const check = process.argv.slice(2).includes('--check');
-const contentRulesPath = process.env.AGENT_CONTENT_RULES_PATH
-  ? path.resolve(process.env.AGENT_CONTENT_RULES_PATH)
-  : path.resolve(root, '..', 'agent-content-toolkit', 'standards', 'rules.json');
+function parseArgs(argv) {
+  let check = false;
+  let sourceRoot = root;
+  let outputRoot = root;
+  let contentRulesPath = process.env.AW_PLUGIN_IMPORT_CONTENT_RULES
+    ? path.resolve(process.env.AW_PLUGIN_IMPORT_CONTENT_RULES)
+    : null;
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === '--check') check = true;
+    else if (arg === '--source-root') sourceRoot = path.resolve(argv[++index] ?? '');
+    else if (arg === '--output-root') outputRoot = path.resolve(argv[++index] ?? '');
+    else if (arg === '--content-rules') contentRulesPath = path.resolve(argv[++index] ?? '');
+    else throw new Error(`Unknown option: ${arg}`);
+  }
+  if (!contentRulesPath) {
+    throw new Error(
+      'Missing agent-content-toolkit rules import. AW_PLUGIN_IMPORT_CONTENT_RULES is required.',
+    );
+  }
+  return { check, sourceRoot, outputRoot, contentRulesPath };
+}
+const { check, sourceRoot, outputRoot, contentRulesPath } = parseArgs(process.argv.slice(2));
 const [contentRaw, skillRaw, dimensionsRaw, reviewDimensionsPolicy, sourceMap, scoringPolicy] =
   await Promise.all([
     readFile(contentRulesPath, 'utf8'),
-    readFile(path.join(root, 'standards', 'skill-rules.json'), 'utf8'),
-    readFile(path.join(root, 'standards', 'review-dimensions.json'), 'utf8'),
-    readFile(path.join(root, 'standards', 'review-dimensions.md'), 'utf8'),
-    readFile(path.join(root, 'standards', 'source-map.md'), 'utf8'),
-    readFile(path.join(root, 'standards', 'scoring-policy.md'), 'utf8'),
+    readFile(path.join(sourceRoot, 'standards', 'skill-rules.json'), 'utf8'),
+    readFile(path.join(sourceRoot, 'standards', 'review-dimensions.json'), 'utf8'),
+    readFile(path.join(sourceRoot, 'standards', 'review-dimensions.md'), 'utf8'),
+    readFile(path.join(sourceRoot, 'standards', 'source-map.md'), 'utf8'),
+    readFile(path.join(sourceRoot, 'standards', 'scoring-policy.md'), 'utf8'),
   ]);
 const contentSource = JSON.parse(contentRaw),
   skillSource = JSON.parse(skillRaw),
@@ -137,16 +156,6 @@ const resultRules = {
     dimensions: dimensionSource.dimensions,
     reviewResultPolicy: skillSource.reviewResultPolicy,
   },
-  manifest = {
-    schemaVersion: 3,
-    kind: 'composed-standard-manifest',
-    contentRules: skillSource.contentRuleSource,
-    skillRules: 'standards/skill-rules.json',
-    reviewDimensions: 'standards/review-dimensions.json',
-    reviewDimensionsPolicy: 'standards/review-dimensions.md',
-    scoringPolicy: 'standards/scoring-policy.md',
-    reviewResultRules: 'standards/review-result-rules.generated.json',
-  },
   outputs = new Map([
     [
       'skills/author-agent-skill/references/author-standard.generated.md',
@@ -176,12 +185,14 @@ const resultRules = {
     ['skills/review-agent-skill/references/review-dimensions.generated.md', reviewDimensionsPolicy],
     ['skills/review-agent-skill/references/scoring-model.generated.md', scoringPolicy],
     ['skills/review-agent-skill/references/source-map.generated.md', sourceMap],
-    ['standards/review-result-rules.generated.json', JSON.stringify(resultRules, null, 2) + '\n'],
-    ['standards/rules.json', JSON.stringify(manifest, null, 2) + '\n'],
+    [
+      'skills/review-agent-skill/assets/review-result-rules.generated.json',
+      JSON.stringify(resultRules, null, 2) + '\n',
+    ],
   ]);
 const stale = [];
 for (const [relative, content] of outputs) {
-  const target = path.join(root, relative);
+  const target = path.join(outputRoot, relative);
   if (check) {
     const actual = await readFile(target, 'utf8').catch(() => null);
     if (actual !== content) stale.push(relative);

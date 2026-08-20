@@ -9,6 +9,11 @@ import fs from 'fs-extra';
 import { renderResolvedHooksArtifact } from './hooks.js';
 import { buildGeneratedName } from './shared.js';
 import { applyFileRules } from '../utils/file-rules.js';
+import { calculateFileDigest } from '../utils/bundle-integrity.js';
+import type {
+  CatalogRuntimeExportResolution,
+  CatalogRuntimeImportResolver,
+} from '../utils/catalog-runtime-projection.js';
 import { getArtifactSourceBundleRelativePath } from '../utils/artifact-sources.js';
 import { resolvePlatformHookDefinitions } from '../utils/hooks-contract.js';
 import {
@@ -74,12 +79,35 @@ export interface PluginStagingRunner {
     pluginRoot: string;
     scriptPath: string;
     args: readonly string[];
+    env: NodeJS.ProcessEnv;
   }): Promise<void>;
+}
+
+export interface RuntimeImportProvenance {
+  provider: string;
+  providerVersion: string;
+  name: string;
+  source: string;
+  sourceDigest: string;
+}
+
+export interface SkillRuntimeFileProvenance extends RuntimeImportProvenance {
+  platform: PlatformName;
+  skill: string;
+  target: string;
+  targetDigest: string;
+}
+
+export interface PreparedPluginRuntimeContext {
+  resolver?: CatalogRuntimeImportResolver;
+  buildImports: RuntimeImportProvenance[];
 }
 
 export interface BundleLocalPluginOptions {
   buildMode?: PluginBundleBuildMode;
   stagingRunner?: PluginStagingRunner;
+  runtimeResolver?: CatalogRuntimeImportResolver;
+  preparedRuntimeContext?: PreparedPluginRuntimeContext;
 }
 
 export async function validateStagingPackageManager(packageRoot: string): Promise<string> {
@@ -195,10 +223,10 @@ const defaultStagingRunner: PluginStagingRunner = {
       maxBuffer: 10 * 1024 * 1024,
     });
   },
-  async runNodeBuild({ pluginRoot, scriptPath, args }) {
+  async runNodeBuild({ pluginRoot, scriptPath, args, env }) {
     await execFileAsync(process.execPath, [path.join(pluginRoot, stripDotSlash(scriptPath)), ...args], {
       cwd: pluginRoot,
-      env: process.env,
+      env,
       maxBuffer: 10 * 1024 * 1024,
     });
   },
@@ -957,10 +985,175 @@ async function copyProductionPackageRoot(plugin: PluginMeta, outputRoot: string)
   await copyProductionDependencyClosure(sourcePackageRoot, targetPackageRoot);
 }
 
+function toRuntimeImportProvenance(
+  resolution: CatalogRuntimeExportResolution,
+): RuntimeImportProvenance {
+  return {
+    provider: resolution.provider,
+    providerVersion: resolution.providerVersion,
+    name: resolution.name,
+    source: resolution.source,
+    sourceDigest: resolution.sourceDigest,
+  };
+}
+
+async function resolveOwnSkillRuntimeSource(
+  plugin: PluginMeta,
+  source: string,
+): Promise<{ sourcePath: string; sourceDigest: string }> {
+  const segments = stripDotSlash(source).split('/');
+  let current = await fs.realpath(plugin.rootDir);
+  for (const [index, segment] of segments.entries()) {
+    current = path.join(current, segment);
+    const stats = await fs.lstat(current).catch(() => undefined);
+    if (!stats) {
+      throw new Error(`Invalid buildConfig.skillRuntimeFiles source: missing file "${source}".`);
+    }
+    if (stats.isSymbolicLink()) {
+      throw new Error(`Invalid buildConfig.skillRuntimeFiles source: symbolic links are not supported (${source}).`);
+    }
+    if (index < segments.length - 1 && !stats.isDirectory()) {
+      throw new Error(`Invalid buildConfig.skillRuntimeFiles source: path parent is not a directory (${source}).`);
+    }
+    if (index === segments.length - 1 && !stats.isFile()) {
+      throw new Error(`Invalid buildConfig.skillRuntimeFiles source: expected a regular file (${source}).`);
+    }
+  }
+  return { sourcePath: current, sourceDigest: await calculateFileDigest(current) };
+}
+
+async function assertSkillRuntimeTargetAbsent(
+  skillRoot: string,
+  target: string,
+  fieldName: string,
+): Promise<void> {
+  let current = skillRoot;
+  const segments = target.split('/');
+  for (const [index, segment] of segments.entries()) {
+    current = path.join(current, segment);
+    const stats = await fs.lstat(current).catch(() => undefined);
+    if (!stats) return;
+    if (stats.isSymbolicLink()) {
+      throw new Error(`Invalid ${fieldName}: target path contains a symbolic link (${target}).`);
+    }
+    if (index < segments.length - 1 && !stats.isDirectory()) {
+      throw new Error(`Invalid ${fieldName}: target parent is not a directory (${target}).`);
+    }
+    if (index === segments.length - 1) {
+      throw new Error(`Invalid ${fieldName}: staged Skill already contains "${target}".`);
+    }
+  }
+}
+
+async function assertSkillRuntimeProjectionTargets(plugin: PluginMeta): Promise<void> {
+  for (const [index, entry] of (plugin.manifest.buildConfig?.skillRuntimeFiles ?? []).entries()) {
+    const skillRoot = path.join(plugin.rootDir, 'skills', entry.skill);
+    const skillRootStats = await fs.lstat(skillRoot).catch(() => undefined);
+    if (!skillRootStats?.isDirectory() || skillRootStats.isSymbolicLink()) {
+      throw new Error(
+        `Invalid buildConfig.skillRuntimeFiles[${index}].skill: "${entry.skill}" is not a declared static Skill key.`,
+      );
+    }
+    await assertSkillRuntimeTargetAbsent(
+      skillRoot,
+      entry.target,
+      `buildConfig.skillRuntimeFiles[${index}].target`,
+    );
+  }
+}
+
+async function projectSkillRuntimeFiles(options: {
+  plugin: PluginMeta;
+  outputRoot: string;
+  supportedPlatforms: ReadonlySet<PlatformName>;
+  resolver?: CatalogRuntimeImportResolver;
+}): Promise<SkillRuntimeFileProvenance[]> {
+  const provenance: SkillRuntimeFileProvenance[] = [];
+  const claims = new Set<string>();
+  for (const [index, entry] of (options.plugin.manifest.buildConfig?.skillRuntimeFiles ?? []).entries()) {
+    const platforms = entry.platforms ?? [...options.supportedPlatforms];
+    for (const platform of platforms) {
+      if (!options.supportedPlatforms.has(platform)) {
+        throw new Error(
+          `Invalid buildConfig.skillRuntimeFiles[${index}].platforms: plugin does not support "${platform}".`,
+        );
+      }
+      const claim = `${platform}:${entry.skill}/${entry.target}`;
+      if (claims.has(claim)) {
+        throw new Error(`Invalid buildConfig.skillRuntimeFiles: target collision at "${claim}".`);
+      }
+      claims.add(claim);
+
+      let sourcePath: string;
+      let sourceDigest: string;
+      let runtimeProvenance: RuntimeImportProvenance;
+      if (entry.source) {
+        const ownSource = await resolveOwnSkillRuntimeSource(options.plugin, entry.source);
+        sourcePath = ownSource.sourcePath;
+        sourceDigest = ownSource.sourceDigest;
+        runtimeProvenance = {
+          provider: options.plugin.manifest.name,
+          providerVersion: options.plugin.manifest.version,
+          name: entry.source,
+          source: entry.source,
+          sourceDigest,
+        };
+      } else {
+        if (!entry.import || !options.resolver) {
+          throw new Error(
+            `Cannot resolve buildConfig.skillRuntimeFiles[${index}].import for plugin "${options.plugin.manifest.name}": catalog runtime import resolver is required.`,
+          );
+        }
+        const resolution = await options.resolver.resolve({
+          consumer: options.plugin,
+          reference: entry.import,
+          purpose: 'skill-runtime-file',
+          platform,
+        });
+        sourcePath = resolution.sourcePath;
+        sourceDigest = resolution.sourceDigest;
+        runtimeProvenance = toRuntimeImportProvenance(resolution);
+      }
+
+      const targetPath = path.join(
+        options.outputRoot,
+        platform,
+        'skills',
+        entry.skill,
+        ...entry.target.split('/'),
+      );
+      if (await fs.pathExists(targetPath)) {
+        throw new Error(
+          `Invalid buildConfig.skillRuntimeFiles: bundle target already exists at "${claim}".`,
+        );
+      }
+      await fs.ensureDir(path.dirname(targetPath));
+      await fs.copyFile(sourcePath, targetPath);
+      const targetDigest = await calculateFileDigest(targetPath);
+      if (sourceDigest !== targetDigest) {
+        throw new Error(`Invalid buildConfig.skillRuntimeFiles: digest mismatch at "${claim}".`);
+      }
+      provenance.push({
+        ...runtimeProvenance,
+        platform,
+        skill: entry.skill,
+        target: entry.target,
+        targetDigest,
+      });
+    }
+  }
+  return provenance;
+}
+
 async function createStagedPlugin(
   plugin: PluginMeta,
   runner: PluginStagingRunner,
-): Promise<{ plugin: PluginMeta; cleanup(): Promise<void> }> {
+  resolver?: CatalogRuntimeImportResolver,
+): Promise<{
+  plugin: PluginMeta;
+  runtimeContext: PreparedPluginRuntimeContext;
+  cleanup(): Promise<void>;
+}> {
   const stagingRoot = await fs.mkdtemp(
     assertLocalPluginStagingPathForTests(
       path.join(os.tmpdir(), 'aw-plugin-staging-'),
@@ -980,6 +1173,42 @@ async function createStagedPlugin(
     });
 
     const sourceBuild = plugin.manifest.scripts?.node?.build;
+    const declaredBuildImports = plugin.manifest.buildConfig?.buildImports ?? [];
+    if (declaredBuildImports.length > 0 && !sourceBuild) {
+      throw new Error(
+        `Invalid plugin "${plugin.manifest.name}": buildConfig.buildImports requires scripts.node.build.`,
+      );
+    }
+    const buildEnv: NodeJS.ProcessEnv = { ...process.env };
+    const buildImportProvenance: RuntimeImportProvenance[] = [];
+    for (const buildImport of declaredBuildImports) {
+      if (!resolver) {
+        throw new Error(
+          `Cannot resolve buildConfig.buildImports for plugin "${plugin.manifest.name}": catalog runtime import resolver is required.`,
+        );
+      }
+      if (Object.hasOwn(process.env, buildImport.env)) {
+        throw new Error(
+          `Invalid buildConfig.buildImports env "${buildImport.env}": refusing to overwrite an existing environment variable.`,
+        );
+      }
+      const resolution = await resolver.resolve({
+        consumer: plugin,
+        reference: buildImport,
+        purpose: 'build',
+      });
+      const importPath = path.join(stagingRoot, 'build-imports', buildImport.env);
+      await fs.ensureDir(path.dirname(importPath));
+      await fs.copyFile(resolution.sourcePath, importPath);
+      await fs.chmod(importPath, 0o444);
+      if (await calculateFileDigest(importPath) !== resolution.sourceDigest) {
+        throw new Error(
+          `Catalog runtime import "${buildImport.plugin}/${buildImport.export}" changed while it was materialized.`,
+        );
+      }
+      buildEnv[buildImport.env] = importPath;
+      buildImportProvenance.push(toRuntimeImportProvenance(resolution));
+    }
     if (sourceBuild) {
       const sourcePackageRoot = packageRootPath({
         ...plugin,
@@ -992,6 +1221,7 @@ async function createStagedPlugin(
         pluginRoot: stagingPluginRoot,
         scriptPath: sourceBuild.path,
         args: sourceBuild.args ?? [],
+        env: buildEnv,
       });
     }
 
@@ -1010,6 +1240,10 @@ async function createStagedPlugin(
 
     return {
       plugin: stagedPlugin,
+      runtimeContext: {
+        resolver,
+        buildImports: buildImportProvenance,
+      },
       cleanup: () => fs.remove(stagingRoot),
     };
   } catch (error) {
@@ -1020,31 +1254,64 @@ async function createStagedPlugin(
 
 async function resolveBuildPlugin(
   plugin: PluginMeta,
-  options: Required<Pick<BundleLocalPluginOptions, 'buildMode' | 'stagingRunner'>>,
-): Promise<{ plugin: PluginMeta; cleanup(): Promise<void> }> {
+  options: Required<Pick<BundleLocalPluginOptions, 'buildMode' | 'stagingRunner'>>
+    & Pick<BundleLocalPluginOptions, 'runtimeResolver' | 'preparedRuntimeContext'>,
+): Promise<{
+  plugin: PluginMeta;
+  runtimeContext: PreparedPluginRuntimeContext;
+  cleanup(): Promise<void>;
+}> {
   if (options.buildMode === 'prepared') {
-    return { plugin, cleanup: async () => {} };
+    if (
+      (
+        (plugin.manifest.buildConfig?.buildImports?.length ?? 0) > 0
+        || (plugin.manifest.buildConfig?.skillRuntimeFiles ?? []).some((entry) => entry.import)
+      )
+      && !options.preparedRuntimeContext
+    ) {
+      throw new Error(
+        `Cannot bundle prepared plugin "${plugin.manifest.name}": prepared runtime import context is required.`,
+      );
+    }
+    return {
+      plugin,
+      runtimeContext: options.preparedRuntimeContext ?? {
+        resolver: options.runtimeResolver,
+        buildImports: [],
+      },
+      cleanup: async () => {},
+    };
   }
 
   if (options.buildMode === 'build-free') {
-    if (plugin.manifest.scripts?.node) {
+    if (plugin.manifest.scripts?.node || (plugin.manifest.buildConfig?.buildImports?.length ?? 0) > 0) {
       throw new Error(
         `Cannot bundle plugin "${plugin.manifest.name}" in build-free mode because scripts.node requires staging build mode.`,
       );
     }
-    return { plugin, cleanup: async () => {} };
+    return {
+      plugin,
+      runtimeContext: { resolver: options.runtimeResolver, buildImports: [] },
+      cleanup: async () => {},
+    };
   }
 
-  return createStagedPlugin(plugin, options.stagingRunner);
+  return createStagedPlugin(plugin, options.stagingRunner, options.runtimeResolver);
 }
 
 export async function prepareLocalPluginBundleSource(
   plugin: PluginMeta,
-  options: Pick<BundleLocalPluginOptions, 'buildMode' | 'stagingRunner'> = {},
-): Promise<{ plugin: PluginMeta; cleanup(): Promise<void> }> {
+  options: Pick<BundleLocalPluginOptions, 'buildMode' | 'stagingRunner' | 'runtimeResolver'> = {},
+): Promise<{
+  plugin: PluginMeta;
+  runtimeContext: PreparedPluginRuntimeContext;
+  cleanup(): Promise<void>;
+}> {
   const buildOptions = {
     buildMode: options.buildMode ?? 'staging',
     stagingRunner: options.stagingRunner ?? defaultStagingRunner,
+    runtimeResolver: options.runtimeResolver,
+    preparedRuntimeContext: undefined,
   };
   return resolveBuildPlugin(plugin, buildOptions);
 }
@@ -1053,6 +1320,10 @@ export interface LocalPluginBundleResult {
   outputRoot: string;
   plugin: PluginMeta;
   platformManifests: Partial<Record<PlatformName, PlatformPluginManifest>>;
+  runtimeProjection: {
+    buildImports: RuntimeImportProvenance[];
+    skillRuntimeFiles: SkillRuntimeFileProvenance[];
+  };
 }
 
 export async function bundleLocalPlugin(
@@ -1063,6 +1334,8 @@ export async function bundleLocalPlugin(
   const buildOptions = {
     buildMode: options.buildMode ?? 'build-free',
     stagingRunner: options.stagingRunner ?? defaultStagingRunner,
+    runtimeResolver: options.runtimeResolver,
+    preparedRuntimeContext: options.preparedRuntimeContext,
   };
   const buildPlugin = await resolveBuildPlugin(plugin, buildOptions);
   plugin = buildPlugin.plugin;
@@ -1073,6 +1346,7 @@ export async function bundleLocalPlugin(
 
   try {
     const supportedPlatforms = resolveSupportedPlatforms(plugin.manifest);
+    await assertSkillRuntimeProjectionTargets(plugin);
     const platformFiles: Partial<Record<PlatformName, Set<string>>> = {};
     const platformManifests: Partial<Record<PlatformName, PlatformPluginManifest>> = {};
     const buildConfig = plugin.manifest.buildConfig;
@@ -1267,6 +1541,13 @@ export async function bundleLocalPlugin(
       }
     }
 
+    const skillRuntimeFiles = await projectSkillRuntimeFiles({
+      plugin,
+      outputRoot,
+      supportedPlatforms,
+      resolver: buildPlugin.runtimeContext.resolver,
+    });
+
     if (await fs.pathExists(path.join(plugin.rootDir, 'README.md'))) {
       await copyBundleRootFile(plugin.rootDir, outputRoot, 'README.md');
     }
@@ -1295,6 +1576,10 @@ export async function bundleLocalPlugin(
       outputRoot,
       plugin,
       platformManifests,
+      runtimeProjection: {
+        buildImports: buildPlugin.runtimeContext.buildImports,
+        skillRuntimeFiles,
+      },
     };
   } finally {
     await buildPlugin.cleanup();

@@ -473,7 +473,8 @@ async function findReuseDisabledReason(repoRoot) {
     }
     if (
       manifest?.scripts?.node &&
-      Object.prototype.hasOwnProperty.call(manifest.scripts.node, 'build')
+      Object.prototype.hasOwnProperty.call(manifest.scripts.node, 'build') &&
+      manifest?.buildConfig?.cacheable !== true
     ) {
       return `reuse disabled: plugin ${entry.name} declares scripts.node.build`;
     }

@@ -24,6 +24,10 @@ import {
   resolveSupportedPlatforms,
   scanNodeImportContract,
 } from './plugin-staging.js';
+import {
+  createCatalogRuntimeImportResolver,
+  type CatalogRuntimeImportResolver,
+} from '../src/utils/catalog-runtime-projection.js';
 import type {
   PlatformName,
   PluginConfigSchemaField,
@@ -56,6 +60,7 @@ interface PreparedPluginTestBundle {
   baselineRoot: string;
   bundleRoot: string;
   manifest: PluginManifestSource;
+  runtimeContext: Awaited<ReturnType<typeof prepareLocalPluginBundleSource>>['runtimeContext'];
   cleanup(): Promise<void>;
 }
 
@@ -66,6 +71,7 @@ interface StagedPluginTestBundleSource {
   bundleRoot: string;
   stagedPlugin: PluginMeta;
   manifest: PluginManifestSource;
+  runtimeContext: Awaited<ReturnType<typeof prepareLocalPluginBundleSource>>['runtimeContext'];
   cleanup(): Promise<void>;
 }
 
@@ -206,16 +212,40 @@ async function matchTestEntries(rootDir: string, globs: string[] | undefined): P
   return files.filter((file) => patterns.some((pattern) => pattern.test(file))).sort();
 }
 
-async function findSourcePlugin(repoRoot: string, pluginName: string): Promise<PluginMeta> {
-  const pluginRoot = path.join(repoRoot, 'plugins', pluginName);
-  return readPluginManifest(pluginRoot);
+async function resolvePluginRuntimeSourceSet(
+  repoRoot: string,
+  initialPlugins: readonly PluginMeta[],
+): Promise<PluginMeta[]> {
+  const plugins = new Map(initialPlugins.map((plugin) => [plugin.manifest.name, plugin]));
+  const queue = [...initialPlugins];
+  while (queue.length > 0) {
+    const plugin = queue.shift();
+    if (!plugin) continue;
+    const references = [
+      ...(plugin.manifest.buildConfig?.buildImports ?? []),
+      ...(plugin.manifest.buildConfig?.skillRuntimeFiles ?? [])
+        .map((entry) => entry.import)
+        .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry)),
+    ];
+    for (const reference of references) {
+      if (reference.plugin.startsWith('@aw/') || plugins.has(reference.plugin)) continue;
+      const provider = await readPluginManifest(path.join(repoRoot, 'plugins', reference.plugin));
+      plugins.set(provider.manifest.name, provider);
+      queue.push(provider);
+    }
+  }
+  return [...plugins.values()];
 }
 
 async function stagePluginTestBundleSource(
   plugin: PluginMeta,
+  runtimeResolver: CatalogRuntimeImportResolver,
 ): Promise<StagedPluginTestBundleSource> {
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-test-bundle-'));
-  const prepared = await prepareLocalPluginBundleSource(plugin, { buildMode: 'staging' });
+  const prepared = await prepareLocalPluginBundleSource(plugin, {
+    buildMode: 'staging',
+    runtimeResolver,
+  });
   try {
     return {
       pluginName: prepared.plugin.manifest.name,
@@ -224,6 +254,7 @@ async function stagePluginTestBundleSource(
       bundleRoot: path.join(tempRoot, 'bundle'),
       stagedPlugin: prepared.plugin,
       manifest: prepared.plugin.manifest,
+      runtimeContext: prepared.runtimeContext,
       cleanup: async () => {
         await prepared.cleanup();
         await fs.remove(tempRoot);
@@ -239,13 +270,17 @@ async function stagePluginTestBundleSource(
 async function buildPreparedPluginTestBundle(
   staged: StagedPluginTestBundleSource,
 ): Promise<PreparedPluginTestBundle> {
-  const result = await bundleLocalPlugin(staged.stagedPlugin, staged.bundleRoot, { buildMode: 'prepared' });
+  const result = await bundleLocalPlugin(staged.stagedPlugin, staged.bundleRoot, {
+    buildMode: 'prepared',
+    preparedRuntimeContext: staged.runtimeContext,
+  });
   return {
     pluginName: result.plugin.manifest.name,
     sourceRoot: staged.sourceRoot,
     baselineRoot: staged.baselineRoot,
     bundleRoot: staged.bundleRoot,
     manifest: result.plugin.manifest,
+    runtimeContext: staged.runtimeContext,
     cleanup: staged.cleanup,
   };
 }
@@ -651,8 +686,9 @@ async function runPreparedPluginTests(options: {
 async function preparePluginSelection(options: {
   plugin: PluginMeta;
   parsed: ParsedArgs;
+  runtimeResolver: CatalogRuntimeImportResolver;
 }): Promise<PreparedPluginTestSelection> {
-  const staged = await stagePluginTestBundleSource(options.plugin);
+  const staged = await stagePluginTestBundleSource(options.plugin, options.runtimeResolver);
   try {
     const platforms = resolveSelectedPlatforms(
       staged.manifest,
@@ -732,12 +768,13 @@ export async function runPluginScriptTests(
 
   if (parsed.all) {
     const plugins = await discoverPlugins(repoRoot);
+    const runtimeResolver = createCatalogRuntimeImportResolver(plugins);
     if (isExplicitSinglePlatformSelection(parsed.platform)) {
       const preparedSelections: PreparedPluginTestSelection[] = [];
       const failures: string[] = [];
       for (const plugin of plugins) {
         try {
-          preparedSelections.push(await preparePluginSelection({ plugin, parsed }));
+          preparedSelections.push(await preparePluginSelection({ plugin, parsed, runtimeResolver }));
         } catch (error) {
           failures.push(
             `${plugin.manifest.name}: ${error instanceof Error ? error.message : String(error)}`,
@@ -778,7 +815,7 @@ export async function runPluginScriptTests(
     let exitCode = 0;
     for (const plugin of plugins) {
       try {
-        const selection = await preparePluginSelection({ plugin, parsed });
+        const selection = await preparePluginSelection({ plugin, parsed, runtimeResolver });
         const pluginExitCode = await runPreparedPluginSelection({
           selection,
           parsed,
@@ -798,8 +835,10 @@ export async function runPluginScriptTests(
   }
 
   try {
-    const plugin = await findSourcePlugin(repoRoot, parsed.pluginName!);
-    const selection = await preparePluginSelection({ plugin, parsed });
+    const plugin = await readPluginManifest(path.join(repoRoot, 'plugins', parsed.pluginName!));
+    const sourceSet = await resolvePluginRuntimeSourceSet(repoRoot, [plugin]);
+    const runtimeResolver = createCatalogRuntimeImportResolver(sourceSet);
+    const selection = await preparePluginSelection({ plugin, parsed, runtimeResolver });
     return await runPreparedPluginSelection({ selection, parsed, env, stdout, stderr });
   } catch (error) {
     print(stderr, error instanceof Error ? error.message : String(error));

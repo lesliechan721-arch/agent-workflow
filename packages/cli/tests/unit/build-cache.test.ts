@@ -372,8 +372,120 @@ describe('build cache input and environment identity', () => {
     expect(buildCount).toBe(3);
     await expect(computeBuildOutputDigest(snapshot.root)).resolves.toBe(snapshot.outputDigest);
     await snapshot.cleanup();
+
+    await fs.writeFile(manifestPath, JSON.stringify({
+      name: 'demo',
+      buildConfig: { cacheable: false },
+      scripts: { node: { build: ['node', 'build.mjs'] } },
+    }));
+    await expect(buildWithCache(repoRoot, { build })).resolves.toMatchObject({
+      reused: false,
+      reason: 'reuse disabled: plugin demo declares scripts.node.build',
+    });
+    expect(buildCount).toBe(4);
     await expect(fs.stat(path.join(repoRoot, '.release', 'cache', 'build-stamp.json')))
       .rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('reuses only an explicitly cacheable plugin build and rebuilds for projection inputs', async () => {
+    const repoRoot = await createRepo();
+    const pluginRoot = path.join(repoRoot, 'plugins', 'demo');
+    const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
+    const buildScriptPath = path.join(pluginRoot, 'scripts', 'build.mjs');
+    const providerPath = path.join(repoRoot, 'plugins', 'provider', 'standards', 'rules.json');
+    const providerManifestPath = path.join(
+      repoRoot,
+      'plugins',
+      'provider',
+      '.agents-plugin',
+      'plugin.json',
+    );
+    const virtualRegistryPath = path.join(
+      repoRoot,
+      'packages',
+      'cli',
+      'src',
+      'utils',
+      'skill-frontmatter-capabilities.ts',
+    );
+    const sharedPackageInputPath = path.join(
+      repoRoot,
+      'packages',
+      'agent-skill-eval',
+      'src',
+      'shared-contract.ts',
+    );
+    await Promise.all([
+      fs.mkdir(path.dirname(manifestPath), { recursive: true }),
+      fs.mkdir(path.dirname(buildScriptPath), { recursive: true }),
+      fs.mkdir(path.dirname(providerPath), { recursive: true }),
+      fs.mkdir(path.dirname(providerManifestPath), { recursive: true }),
+      fs.mkdir(path.dirname(virtualRegistryPath), { recursive: true }),
+      fs.mkdir(path.dirname(sharedPackageInputPath), { recursive: true }),
+    ]);
+    await fs.writeFile(manifestPath, JSON.stringify({
+      name: 'demo',
+      buildConfig: {
+        cacheable: true,
+        buildImports: [
+          { plugin: 'provider', export: 'rules', env: 'AW_PLUGIN_IMPORT_RULES' },
+          {
+            plugin: '@aw/cli',
+            export: 'skill-frontmatter-capabilities',
+            env: 'AW_PLUGIN_IMPORT_SKILL_FRONTMATTER_CAPABILITIES',
+          },
+        ],
+      },
+      scripts: { node: { build: { runner: 'node', path: './scripts/build.mjs' } } },
+    }));
+    await fs.writeFile(providerManifestPath, JSON.stringify({
+      name: 'provider',
+      buildConfig: {
+        runtimeExports: [{ name: 'rules', source: './standards/rules.json' }],
+      },
+    }));
+    await fs.writeFile(buildScriptPath, 'export const build = 1;\n');
+    await fs.writeFile(providerPath, '{"rule":1}\n');
+    await fs.writeFile(virtualRegistryPath, 'export const registry = 1;\n');
+    await fs.writeFile(sharedPackageInputPath, 'export const sharedContract = 1;\n');
+
+    let buildCount = 0;
+    const build = async () => {
+      buildCount += 1;
+      await writeBuildOutputs(repoRoot, buildCount);
+    };
+    await expect(buildWithCache(repoRoot, { build })).resolves.toMatchObject({
+      reused: false,
+    });
+    await fs.utimes(buildScriptPath, new Date(), new Date());
+    const originalNoise = process.env.AW_BUILD_CACHE_TEST_NOISE;
+    process.env.AW_BUILD_CACHE_TEST_NOISE = 'ignored';
+    try {
+      await expect(buildWithCache(repoRoot, { build })).resolves.toMatchObject({
+        reused: true,
+        reason: 'stamp and output tree match',
+      });
+    } finally {
+      if (originalNoise === undefined) {
+        delete process.env.AW_BUILD_CACHE_TEST_NOISE;
+      } else {
+        process.env.AW_BUILD_CACHE_TEST_NOISE = originalNoise;
+      }
+    }
+
+    for (const [changedPath, contents] of [
+      [buildScriptPath, 'export const build = 2;\n'],
+      [providerPath, '{"rule":2}\n'],
+      [virtualRegistryPath, 'export const registry = 2;\n'],
+      [sharedPackageInputPath, 'export const sharedContract = 2;\n'],
+    ] as const) {
+      await fs.writeFile(changedPath, contents);
+      await expect(buildWithCache(repoRoot, { build })).resolves.toMatchObject({
+        reused: false,
+        reason: 'inputDigest changed',
+      });
+    }
+    expect(buildCount).toBe(5);
   });
 
   it('disables reuse for a symlinked plugin directory when its referent changes', async () => {

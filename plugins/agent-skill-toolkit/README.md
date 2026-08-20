@@ -2,11 +2,11 @@
 
 通用 Agent Skill 作者、评审和 Eval 设计/审核插件。
 
-Current plugin contract version: `0.6.0`.
+Current plugin contract version: `0.7.0`.
 
 ## Dependency
 
-Required: `agent-content-toolkit >= 0.4.0`.
+Required: `agent-content-toolkit >= 0.5.0`.
 
 Optional execution: `agent-skill-eval-runner >= 0.2.0` or another provider that consumes
 `EvalExecutionPlan` and emits `EvalRunBundle`. The toolkit itself does not execute high-cost model
@@ -36,8 +36,6 @@ Author 不给自己的结果出独立发布结论；Eval Designer 不审核自�
 ## Validation
 
 ```bash
-node scripts/generate-standard-views.mjs --check
-node scripts/generate-contract-assets.mjs --check
 node scripts/validate-review-input-bundle.mjs <bundle.json> --handoff-root <root>
 pnpm plugin:test agent-skill-toolkit
 ```

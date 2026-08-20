@@ -94,7 +94,21 @@ async function loadProductionBundler(repoRoot) {
     'utils',
     'catalog-digests.js',
   );
-  const requiredPaths = [manifestModulePath, generatorModulePath, digestModulePath];
+  const runtimeProjectionModulePath = path.join(
+    repoRoot,
+    'packages',
+    'cli',
+    'dist',
+    'src',
+    'utils',
+    'catalog-runtime-projection.js',
+  );
+  const requiredPaths = [
+    manifestModulePath,
+    generatorModulePath,
+    digestModulePath,
+    runtimeProjectionModulePath,
+  ];
   const exists = await Promise.all(requiredPaths.map((filePath) => fs.stat(filePath).then(
     (stat) => stat.isFile(),
     () => false,
@@ -109,11 +123,13 @@ async function loadProductionBundler(repoRoot) {
   let manifestModule;
   let generatorModule;
   let digestModule;
+  let runtimeProjectionModule;
   try {
-    [manifestModule, generatorModule, digestModule] = await Promise.all([
+    [manifestModule, generatorModule, digestModule, runtimeProjectionModule] = await Promise.all([
       import(pathToFileURL(manifestModulePath).href),
       import(pathToFileURL(generatorModulePath).href),
       import(pathToFileURL(digestModulePath).href),
+      import(pathToFileURL(runtimeProjectionModulePath).href),
     ]);
   } catch (error) {
     throw codedError('bundlerUnavailable', `Failed to load built CLI bundler: ${error.message}`);
@@ -122,8 +138,10 @@ async function loadProductionBundler(repoRoot) {
     manifestModule.SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION
       !== EXPECTED_MANIFEST_CONTRACT_VERSION
     || typeof manifestModule.readPluginManifest !== 'function'
+    || typeof manifestModule.discoverPlugins !== 'function'
     || typeof generatorModule.bundleLocalPlugin !== 'function'
     || typeof digestModule.calculateCatalogEntryArtifactDigest !== 'function'
+    || typeof runtimeProjectionModule.createCatalogRuntimeImportResolver !== 'function'
   ) {
     throw codedError(
       'bundlerUnavailable',
@@ -132,8 +150,10 @@ async function loadProductionBundler(repoRoot) {
   }
   return {
     readPluginManifest: manifestModule.readPluginManifest,
+    discoverPlugins: manifestModule.discoverPlugins,
     bundleLocalPlugin: generatorModule.bundleLocalPlugin,
     calculateArtifactDigest: digestModule.calculateCatalogEntryArtifactDigest,
+    createRuntimeResolver: runtimeProjectionModule.createCatalogRuntimeImportResolver,
   };
 }
 
@@ -148,29 +168,31 @@ function parseTreeRecord(record) {
   };
 }
 
-async function materializeBasePlugin(repoRoot, baseCommit, pluginName, outputRoot) {
-  const pluginRelativeRoot = `plugins/${pluginName}`;
+async function materializeBaseAuthoringSourceSet(repoRoot, baseCommit, outputRoot) {
+  const sourcePaths = [
+    'plugins',
+    'packages/cli/package.json',
+    'packages/cli/src/utils/skill-frontmatter-capabilities.json',
+  ];
   const output = await runGit(
     repoRoot,
-    ['ls-tree', '-r', '-z', baseCommit, '--', pluginRelativeRoot],
-    { buffer: true, label: `Git tree for ${pluginName}` },
+    ['ls-tree', '-r', '-z', baseCommit, '--', ...sourcePaths],
+    { buffer: true, label: 'Git authoring source tree' },
   );
   const records = output.toString('utf8').split('\0').filter(Boolean).map(parseTreeRecord);
-  if (records.length === 0) return null;
 
-  const pluginRoot = path.join(outputRoot, 'plugins', pluginName);
   for (const record of records) {
     if (record.type !== 'blob') continue;
-    const relativePath = path.posix.relative(pluginRelativeRoot, record.filePath);
+    const normalizedPath = path.posix.normalize(record.filePath);
     if (
-      relativePath === ''
-      || relativePath === '..'
-      || relativePath.startsWith('../')
-      || path.posix.isAbsolute(relativePath)
+      normalizedPath !== record.filePath
+      || normalizedPath === '..'
+      || normalizedPath.startsWith('../')
+      || path.posix.isAbsolute(normalizedPath)
     ) {
-      throw codedError('gitFailed', `Unsafe Git plugin path: ${JSON.stringify(record.filePath)}.`);
+      throw codedError('gitFailed', `Unsafe Git authoring path: ${JSON.stringify(record.filePath)}.`);
     }
-    const targetPath = path.join(pluginRoot, ...relativePath.split('/'));
+    const targetPath = path.join(outputRoot, ...normalizedPath.split('/'));
     await fs.mkdir(path.dirname(targetPath), { recursive: true });
     const content = await runGit(repoRoot, ['cat-file', 'blob', record.objectId], {
       buffer: true,
@@ -183,7 +205,7 @@ async function materializeBasePlugin(repoRoot, baseCommit, pluginName, outputRoo
       if (record.mode === '100755') await fs.chmod(targetPath, 0o755);
     }
   }
-  return pluginRoot;
+  return outputRoot;
 }
 
 async function readManifestDocument(pluginRoot) {
@@ -229,9 +251,16 @@ function compareBundleEntries(baseEntries, currentEntries) {
     .sort();
 }
 
-async function bundlePlugin(bundler, pluginRoot, outputRoot) {
+async function bundlePlugin(bundler, sourceSetRoot, cliVirtualExportRoot, pluginRoot, outputRoot) {
+  const sourceSetPlugins = await bundler.discoverPlugins(sourceSetRoot);
   const plugin = await bundler.readPluginManifest(pluginRoot);
-  await bundler.bundleLocalPlugin(plugin, outputRoot, { buildMode: 'staging' });
+  const runtimeResolver = bundler.createRuntimeResolver(sourceSetPlugins, {
+    cliVirtualExportRoot,
+  });
+  await bundler.bundleLocalPlugin(plugin, outputRoot, {
+    buildMode: 'staging',
+    runtimeResolver,
+  });
   return {
     digest: await bundler.calculateArtifactDigest(outputRoot),
     entries: await hashBundleEntries(outputRoot),
@@ -257,10 +286,10 @@ function createCheckResult(pluginName, values = {}) {
 async function checkOnePlugin(options) {
   const {
     repoRoot,
-    baseCommit,
     pluginName,
     bundler,
     tempRoot,
+    baseSourceRoot,
   } = options;
   if (!PLUGIN_NAME_PATTERN.test(pluginName)) {
     return createCheckResult(pluginName, {
@@ -271,12 +300,9 @@ async function checkOnePlugin(options) {
   }
   const currentRoot = path.join(repoRoot, 'plugins', pluginName);
   const currentExists = await fs.stat(currentRoot).then((stat) => stat.isDirectory(), () => false);
-  const baseRoot = await materializeBasePlugin(
-    repoRoot,
-    baseCommit,
-    pluginName,
-    path.join(tempRoot, 'base-source'),
-  );
+  const candidateBaseRoot = path.join(baseSourceRoot, 'plugins', pluginName);
+  const baseRoot = await fs.stat(candidateBaseRoot)
+    .then((stat) => stat.isDirectory() ? candidateBaseRoot : null, () => null);
   if (!currentExists && !baseRoot) {
     return createCheckResult(pluginName, {
       ok: false,
@@ -344,20 +370,40 @@ async function checkOnePlugin(options) {
 
   let baseBundle;
   let currentBundle;
-  try {
-    [baseBundle, currentBundle] = await Promise.all([
-      bundlePlugin(bundler, baseRoot, path.join(tempRoot, 'bundles', pluginName, 'base')),
-      bundlePlugin(bundler, currentRoot, path.join(tempRoot, 'bundles', pluginName, 'current')),
-    ]);
-  } catch (error) {
+  const bundleResults = await Promise.allSettled([
+    bundlePlugin(
+      bundler,
+      baseSourceRoot,
+      path.join(baseSourceRoot, 'packages', 'cli'),
+      baseRoot,
+      path.join(tempRoot, 'bundles', pluginName, 'base'),
+    ),
+    bundlePlugin(
+      bundler,
+      repoRoot,
+      path.join(repoRoot, 'packages', 'cli'),
+      currentRoot,
+      path.join(tempRoot, 'bundles', pluginName, 'current'),
+    ),
+  ]);
+  const bundleFailures = bundleResults
+    .map((result, index) => result.status === 'rejected'
+      ? `${index === 0 ? 'base' : 'current'}: ${result.reason?.message ?? String(result.reason)}`
+      : null)
+    .filter(Boolean);
+  if (bundleFailures.length > 0) {
     return createCheckResult(pluginName, {
       ok: false,
       status: 'error',
       baseVersion,
       currentVersion,
-      errors: [`Production bundle failed: ${error.message}`],
+      errors: [
+        `Production bundle failed: ${bundleFailures[0]}`,
+        ...bundleFailures.slice(1).map((failure) => `Secondary bundle failure: ${failure}`),
+      ],
     });
   }
+  [baseBundle, currentBundle] = bundleResults.map((result) => result.value);
   const changedPaths = compareBundleEntries(baseBundle.entries, currentBundle.entries);
   const productionChanged = baseBundle.digest !== currentBundle.digest;
   const common = {
@@ -451,14 +497,16 @@ export async function checkPluginVersions(options = {}) {
 
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-version-check-'));
   try {
+    const baseSourceRoot = path.join(tempRoot, 'base-source');
+    await materializeBaseAuthoringSourceSet(repoRoot, baseCommit, baseSourceRoot);
     const checks = [];
     for (const pluginName of pluginNames) {
       checks.push(await checkOnePlugin({
         repoRoot,
-        baseCommit,
         pluginName,
         bundler,
         tempRoot,
+        baseSourceRoot,
       }));
     }
     return {

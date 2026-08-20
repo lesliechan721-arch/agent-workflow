@@ -9,6 +9,7 @@ import { bundleLocalPlugin, prepareLocalPluginBundleSource } from '../src/genera
 import { createNoopDebugLogger } from '../src/output/debug-log.js';
 import { createNoopReporter } from '../src/output/reporter.js';
 import type { PluginMeta } from '../src/types.js';
+import { createCatalogRuntimeImportResolver } from '../src/utils/catalog-runtime-projection.js';
 import { writePluginConfigStore } from '../src/utils/plugin-config.js';
 import { validateSkillDirectoriesRoot } from '../src/utils/dynamic-skill-tree.js';
 import {
@@ -86,14 +87,21 @@ async function digestTree(root: string): Promise<string> {
 
 async function prepareEvalBundle(
   plugin: PluginMeta,
+  plugins: PluginMeta[],
   workRoot: string,
 ): Promise<PreparedEvalBundle> {
   await fs.ensureDir(workRoot);
   const tempRoot = await fs.mkdtemp(path.join(workRoot, 'bundle-'));
-  const prepared = await prepareLocalPluginBundleSource(plugin, { buildMode: 'staging' });
+  const prepared = await prepareLocalPluginBundleSource(plugin, {
+    buildMode: 'staging',
+    runtimeResolver: createCatalogRuntimeImportResolver(plugins),
+  });
   const bundleRoot = path.join(tempRoot, 'bundle');
   try {
-    await bundleLocalPlugin(prepared.plugin, bundleRoot, { buildMode: 'prepared' });
+    await bundleLocalPlugin(prepared.plugin, bundleRoot, {
+      buildMode: 'prepared',
+      preparedRuntimeContext: prepared.runtimeContext,
+    });
     return {
       sourceRoot: plugin.rootDir,
       stagingRoot: prepared.plugin.rootDir,
@@ -387,7 +395,7 @@ export async function materializePluginEvalSubjects(
       }
       preparedByName.set(
         pluginName,
-        await prepareEvalBundle(plugin, path.join(options.workRoot, pluginName)),
+        await prepareEvalBundle(plugin, options.plugins, path.join(options.workRoot, pluginName)),
       );
     }
 

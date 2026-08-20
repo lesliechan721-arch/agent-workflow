@@ -36,7 +36,6 @@ async function schemaErrors(summaryPath) {
   if (!schemaPath) throw new Error('Cannot locate AWReviewSummary schema.');
   const validatorCandidates = [
     path.join(scriptRoot, 'validate-json-contract.mjs'),
-    path.join(scriptRoot, '..', '..', 'agent-content-toolkit', 'scripts', 'validate-json-contract.mjs'),
     path.join(scriptRoot, '..', 'skills', 'review-aw-plugin', 'scripts', 'validate-json-contract.mjs'),
   ];
   let validator;

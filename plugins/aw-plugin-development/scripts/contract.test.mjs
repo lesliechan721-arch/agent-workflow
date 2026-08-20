@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -11,8 +11,9 @@ const execFileAsync = promisify(execFile),
   ctx = process.env.AW_PLUGIN_CONTEXT
     ? JSON.parse(await readFile(process.env.AW_PLUGIN_CONTEXT, 'utf8'))
     : null,
-  root = ctx?.sourceRoot ?? local,
-  repo = path.resolve(root, '..', '..'),
+  sourceRoot = ctx?.sourceRoot ?? local,
+  runtimeRoot = ctx?.platform ? path.join(local, ctx.platform) : local,
+  repo = path.resolve(sourceRoot, '..', '..'),
   temps = [];
 after(async () => Promise.all(temps.map((p) => rm(p, { recursive: true, force: true }))));
 async function run(script, args = [], cwd = repo) {
@@ -22,12 +23,79 @@ async function run(script, args = [], cwd = repo) {
     maxBuffer: 20 * 1024 * 1024,
   });
 }
-test('generated adapter assets are current', async () => {
-  await run(path.join(root, 'scripts/validate-contract-assets.mjs'));
-  await run(
-    path.join(root, 'skills/author-aw-plugin/scripts/generate_skill_frontmatter_reference.mjs'),
-    ['--check', '--repo-root', repo],
+test('canonical contracts are materialized without committed Skill copies', async () => {
+  const manifest = JSON.parse(
+    await readFile(path.join(sourceRoot, '.agents-plugin/plugin.json'), 'utf8'),
   );
+  assert.ok(manifest.buildConfig.skillRuntimeFiles.length > 0);
+  for (const projection of manifest.buildConfig.skillRuntimeFiles) {
+    const relative = path.join('skills', projection.skill, projection.target);
+    await assert.rejects(readFile(path.join(sourceRoot, relative), 'utf8'));
+    assert.ok((await readFile(path.join(runtimeRoot, relative), 'utf8')).length > 0, relative);
+    if (projection.source) {
+      assert.ok(
+        (await readFile(path.join(sourceRoot, projection.source), 'utf8')).length > 0,
+        projection.source,
+      );
+    }
+  }
+  for (const relative of [
+    'skills/author-aw-plugin/references/skill-frontmatter-capabilities.generated.md',
+    'skills/review-aw-plugin/assets/review-result-rules.generated.json',
+  ]) {
+    await assert.rejects(readFile(path.join(sourceRoot, relative), 'utf8'));
+    assert.ok((await readFile(path.join(runtimeRoot, relative), 'utf8')).length > 200, relative);
+  }
+});
+test('cacheable build is reproducible outside the repository cwd', async () => {
+  const manifest = JSON.parse(
+    await readFile(path.join(sourceRoot, '.agents-plugin/plugin.json'), 'utf8'),
+  );
+  assert.equal(manifest.buildConfig.cacheable, true);
+  const buildRoot = await mkdtemp(path.join(tmpdir(), 'aw-cacheable-build-'));
+  temps.push(buildRoot);
+  const declaredImports = {
+    AW_PLUGIN_IMPORT_SKILL_FRONTMATTER_CAPABILITIES: path.join(
+      repo,
+      'packages/cli/src/utils/skill-frontmatter-capabilities.json',
+    ),
+    AW_PLUGIN_IMPORT_SKILL_RULES: path.join(
+      repo,
+      'plugins/agent-skill-toolkit/standards/skill-rules.json',
+    ),
+    AW_PLUGIN_IMPORT_REVIEW_DIMENSIONS: path.join(
+      repo,
+      'plugins/agent-skill-toolkit/standards/review-dimensions.json',
+    ),
+  };
+  async function materialize(id) {
+    const target = path.join(buildRoot, id, 'plugin');
+    const cwd = path.join(buildRoot, id, 'unrelated-cwd');
+    await cp(sourceRoot, target, { recursive: true });
+    await mkdir(cwd, { recursive: true });
+    await execFileAsync(process.execPath, [path.join(target, 'scripts/build-runtime-assets.mjs')], {
+      cwd,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        ...declaredImports,
+        AW_PLUGIN_UNDECLARED_BUILD_NOISE: id,
+      },
+    });
+    return Promise.all([
+      readFile(
+        path.join(
+          target,
+          'skills/author-aw-plugin/references/skill-frontmatter-capabilities.generated.md',
+        ),
+      ),
+      readFile(
+        path.join(target, 'skills/review-aw-plugin/assets/review-result-rules.generated.json'),
+      ),
+    ]);
+  }
+  const [first, second] = await Promise.all([materialize('first'), materialize('second')]);
+  assert.deepEqual(second, first);
 });
 test('review inspection expands related globs with the CLI production dependency closure', async () => {
   const t = await mkdtemp(path.join(tmpdir(), 'aw-review-related-glob-'));
@@ -63,7 +131,7 @@ test('review inspection expands related globs with the CLI production dependency
   const result = JSON.parse(
     (
       await run(
-        path.join(root, 'skills/review-aw-plugin/scripts/inspect-aw-target.mjs'),
+        path.join(runtimeRoot, 'skills/review-aw-plugin/scripts/inspect-aw-target.mjs'),
         [
           target,
           '--repo-root',
@@ -84,8 +152,11 @@ test('review inspection expands related globs with the CLI production dependency
 });
 test('author keeps README policy in plugin bundle', async () => {
   const [skill, ref] = await Promise.all([
-    readFile(path.join(root, 'skills/author-aw-plugin/SKILL.md'), 'utf8'),
-    readFile(path.join(root, 'skills/author-aw-plugin/references/aw-readme-authoring.md'), 'utf8'),
+    readFile(path.join(runtimeRoot, 'skills/author-aw-plugin/SKILL.md'), 'utf8'),
+    readFile(
+      path.join(runtimeRoot, 'skills/author-aw-plugin/references/aw-readme-authoring.md'),
+      'utf8',
+    ),
   ]);
   assert.match(skill, /references\/aw-readme-authoring\.md/u);
   assert.doesNotMatch(skill, /docs\/readme-standard\.md/u);
@@ -118,7 +189,7 @@ test('authoring context supports external workspace', async () => {
   const result = JSON.parse(
     (
       await run(
-        path.join(root, 'skills/author-aw-plugin/scripts/prepare-aw-authoring-context.mjs'),
+        path.join(runtimeRoot, 'skills/author-aw-plugin/scripts/prepare-aw-authoring-context.mjs'),
         [
           target,
           '--repo-root',
@@ -134,29 +205,32 @@ test('authoring context supports external workspace', async () => {
   assert.deepEqual(result.components[0].profiles, ['CLAUDE']);
 });
 test('starter adapter documents satisfy schemas', async () => {
-  const validator = path.join(root, 'skills/author-aw-plugin/scripts/validate-json-contract.mjs');
+  const validator = path.join(
+    runtimeRoot,
+    'skills/author-aw-plugin/scripts/validate-json-contract.mjs',
+  );
   for (const [s, v] of [
     [
-      'schemas/aw-authoring-context.schema.json',
+      'skills/author-aw-plugin/assets/aw-authoring-context.schema.json',
       'skills/author-aw-plugin/assets/aw-authoring-context.json',
     ],
     [
-      'schemas/aw-review-summary.schema.json',
+      'skills/review-aw-plugin/assets/aw-review-summary.schema.json',
       'skills/review-aw-plugin/assets/aw-review-summary.json',
     ],
     [
-      '../agent-skill-toolkit/schemas/review-input-bundle.schema.json',
+      'skills/review-aw-plugin/assets/review-input-bundle.schema.json',
       'skills/review-aw-plugin/assets/review-input-bundle.json',
     ],
   ])
-    await run(validator, [path.join(root, s), path.join(root, v)]);
+    await run(validator, [path.join(runtimeRoot, s), path.join(runtimeRoot, v)]);
 });
 test('AW summary decision follows generic reviews and project gates', async () => {
   const t = await mkdtemp(path.join(tmpdir(), 'aw-summary-'));
   temps.push(t);
   const v = JSON.parse(
     await readFile(
-      path.join(root, 'skills/review-aw-plugin/assets/aw-review-summary.json'),
+      path.join(runtimeRoot, 'skills/review-aw-plugin/assets/aw-review-summary.json'),
       'utf8',
     ),
   );
@@ -164,7 +238,10 @@ test('AW summary decision follows generic reviews and project gates', async () =
   const p = path.join(t, 'summary.json');
   await writeFile(p, JSON.stringify(v));
   await assert.rejects(
-    run(path.join(root, 'scripts/validate-aw-review-summary.mjs'), [p]),
+    run(
+      path.join(runtimeRoot, 'skills/review-aw-plugin/scripts/validate-aw-review-summary.mjs'),
+      [p],
+    ),
     /Command failed/u,
   );
 });
@@ -176,13 +253,16 @@ test('final artifacts remain materials rather than completed review stages', asy
   await writeFile(path.join(final, 'SKILL.md'), '---\nname: fixture\ndescription: fixture\n---\n');
   const result = JSON.parse(
     (
-      await run(path.join(root, 'skills/review-aw-plugin/scripts/prepare-aw-review-bundle.mjs'), [
-        path.join(repo, 'plugins', 'agent-content-toolkit'),
-        '--repo-root',
-        repo,
-        '--final',
-        'codex=' + final,
-      ])
+      await run(
+        path.join(runtimeRoot, 'skills/review-aw-plugin/scripts/prepare-aw-review-bundle.mjs'),
+        [
+          path.join(repo, 'plugins', 'agent-content-toolkit'),
+          '--repo-root',
+          repo,
+          '--final',
+          'codex=' + final,
+        ],
+      )
     ).stdout,
   );
   assert.ok(result.artifacts.some((a) => a.role === 'final'));
@@ -190,11 +270,11 @@ test('final artifacts remain materials rather than completed review stages', asy
 });
 test('adapter release version and dependency contract are current', async () => {
   const [manifest, dependency] = await Promise.all([
-    readFile(path.join(root, '.agents-plugin/plugin.json'), 'utf8').then(JSON.parse),
-    readFile(path.join(root, 'DEPENDENCY.md'), 'utf8'),
+    readFile(path.join(sourceRoot, '.agents-plugin/plugin.json'), 'utf8').then(JSON.parse),
+    readFile(path.join(sourceRoot, 'DEPENDENCY.md'), 'utf8'),
   ]);
-  assert.equal(manifest.version, '0.6.0');
-  assert.match(dependency, /agent-content-toolkit >= 0\.4\.0/u);
-  assert.match(dependency, /agent-skill-toolkit >= 0\.5\.0/u);
-  assert.match(dependency, /agent-skill-eval-runner >= 0\.2\.0/u);
+  assert.equal(manifest.version, '0.7.0');
+  assert.match(dependency, /agent-content-toolkit >= 0\.5\.0/u);
+  assert.match(dependency, /agent-skill-toolkit >= 0\.7\.0/u);
+  assert.match(dependency, /agent-skill-eval-runner >= 0\.3\.0/u);
 });

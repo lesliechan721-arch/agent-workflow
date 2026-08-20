@@ -1,12 +1,27 @@
 # BuildConfig 规范
 
-`buildConfig` 是 `.agents-plugin/plugin.json` 中的构建阶段配置，控制 `pnpm build` 时如何生成平台 bundle。包含三个子系统：`templates`（模板渲染）、`fileRules`（平台文件规则）和 `manifestOverrides`（平台 manifest 覆盖）。
+`buildConfig` 是 `.agents-plugin/plugin.json` 中的构建阶段配置，控制 `pnpm build` 时如何生成平台 bundle。它包含模板、平台文件规则、平台 manifest 覆盖、runtime export、build import 和 Skill runtime 文件投影。
 
 `buildConfig` 只描述构建阶段行为，不是给平台私有字段开的通用出口。`marketplace.policy.products` 会先解析出插件最终支持平台；`fileRules.<platform>` 和 `manifestOverrides.<platform>` 只能用于支持的平台。比如 `products=["CODEX"]` 的插件不能声明 `buildConfig.fileRules.claude` 或 `buildConfig.manifestOverrides.claude`，即使对应内容看起来只是额外文件或空覆盖也会 fail fast。
 
 动态 Skill 的 `artifacts.targets[].sourceDirs` 不属于 `buildConfig.templates` 或 `fileRules`。构建会把每个 source directory 暂存到 artifact 专用隐藏目录，并按字节保留文件。不要对同一动态源目录再配置模板渲染；动态 UTF-8 内容由 ArtifactPlan V2 `content.files` 提供。
 
 `buildConfig` 会影响 artifact 的内容身份：模板输出、额外文件选择、平台 manifest override 或支持平台变化都会进入 schema 3 snapshot digest。只要这些配置让构建后 runtime、平台能力、最低 CLI 要求或依赖最低版本发生变化，插件就必须提高稳定 `version`，不能复用旧的 `plugin@version`。Git publisher 和 bootstrap 不属于插件作者合同。
+
+## Runtime export 和 Skill 文件投影
+
+共享 schema、validator 和规则必须由 provider 的 canonical source 投影。consumer 不读取 sibling plugin 路径，也不把共享文件副本提交到 Skill source。
+
+- `runtimeExports[]` 用 `{ "name", "source" }` 发布稳定 export。`source` 是 provider 插件内的 `./` 相对 regular-file 路径。
+- `skillRuntimeFiles[]` 用 `{ "skill", "target", "source" }` 投影本插件 canonical source，或用 `{ "skill", "target", "import": { "plugin", "export" } }` 投影 catalog 中另一个插件的 runtime export。`source` 和 `import` 必须二选一。
+- `target` 位于目标 Skill 内。可选 `platforms` 只允许 `codex`、`claude`。省略时投影到插件支持的全部平台。
+- source Skill 中不能已有同名 target。构建不会覆盖作者文件。
+
+转换型文件使用 `scripts.node.build`。`buildImports[]` 用 `{ "plugin", "export", "env" }` 把 canonical regular file 的只读绝对路径注入 build 子进程。`env` 必须是 `AW_PLUGIN_IMPORT_[A-Z0-9_]+`，build script 必须直接读取该输入，不能从仓库 cwd 或 sibling plugin 路径推断 source。
+
+确定性 build 可以声明 `cacheable: true`。该 build 只能依赖插件 canonical files、声明的 catalog `buildImports` 和固定 CLI virtual import；不能读取时间、随机值、网络、未声明环境变量或仓库 cwd。省略该字段时，构建器不复用 build output cache。
+
+CLI 自有的 Skill frontmatter registry 只允许通过 reserved build import `{ "plugin": "@aw/cli", "export": "skill-frontmatter-capabilities" }` 使用。它不能作为 runtime export 或 `skillRuntimeFiles` import。
 
 ## templates
 

@@ -12,13 +12,19 @@ const execFileAsync = promisify(execFile),
   ctx = process.env.AW_PLUGIN_CONTEXT
     ? JSON.parse(await readFile(process.env.AW_PLUGIN_CONTEXT, 'utf8'))
     : null,
-  root = ctx?.sourceRoot ?? local,
+  runtimeRoot = ctx?.platform ? path.join(local, ctx.platform) : local,
   prepare = path.join(
-    root,
+    runtimeRoot,
     'skills/author-aw-plugin/scripts/prepare-aw-authoring-context.mjs',
   ),
-  validator = path.join(root, 'skills/author-aw-plugin/scripts/validate-json-contract.mjs'),
-  schemaPath = path.join(root, 'schemas/aw-authoring-context.schema.json'),
+  validator = path.join(
+    runtimeRoot,
+    'skills/author-aw-plugin/scripts/validate-json-contract.mjs',
+  ),
+  schemaPath = path.join(
+    runtimeRoot,
+    'skills/author-aw-plugin/assets/aw-authoring-context.schema.json',
+  ),
   temps = [];
 
 after(async () => Promise.all(temps.map((entry) => rm(entry, { recursive: true, force: true }))));
