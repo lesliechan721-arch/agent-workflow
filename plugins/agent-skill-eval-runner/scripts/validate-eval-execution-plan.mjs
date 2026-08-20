@@ -85,6 +85,7 @@ export async function validatePlan(planPath) {
     caseCorpusDigest: null,
     auditDigest: null,
     capabilitiesDigest: null,
+    configurationSkillDigests: {},
   };
 
   if (errors.length === 0) {
@@ -98,16 +99,11 @@ export async function validatePlan(planPath) {
     const evalTypes = new Set();
     let capabilities = null;
     let canonicalTarget = null;
+    const configurationRoots = new Map();
 
-    if (!isPathInside(base, outputRoot) || outputRoot === base) {
-      errors.push('outputRoot must be a non-root child path inside the plan directory');
-    }
-    if (new Set(plan.configurations.map((entry) => entry.id)).size !== plan.configurations.length) {
-      errors.push('configuration ids must be unique');
-    }
-    if (plan.configurations.some((entry) => !safeSegment(entry.id))) {
-      errors.push('configuration ids must be safe path segments');
-    }
+    if (!isPathInside(base, outputRoot) || outputRoot === base) errors.push('outputRoot must be a non-root child path inside the plan directory');
+    if (new Set(plan.configurations.map((entry) => entry.id)).size !== plan.configurations.length) errors.push('configuration ids must be unique');
+    if (plan.configurations.some((entry) => !safeSegment(entry.id))) errors.push('configuration ids must be safe path segments');
 
     try {
       const actual = await realpath(capabilitiesPath);
@@ -118,15 +114,9 @@ export async function validatePlan(planPath) {
       capabilities = JSON.parse(await readFile(actual, 'utf8'));
       if (capabilities.provider !== plan.provider.id) errors.push('provider id does not match capability document');
       for (const configuration of plan.configurations) {
-        if (configuration.skillMode === 'with-skill' && !capabilities.capabilities.skillPathExecution) {
-          errors.push('provider does not support with-skill execution');
-        }
-        if (configuration.skillMode === 'without-skill' && !capabilities.capabilities.withoutSkillBaseline) {
-          errors.push('provider does not support without-skill baseline');
-        }
-        if (configuration.skillMode === 'previous-version' && !capabilities.capabilities.previousVersionBaseline) {
-          errors.push('provider does not support previous-version baseline');
-        }
+        if (configuration.skillMode === 'with-skill' && !capabilities.capabilities.skillPathExecution) errors.push('provider does not support with-skill execution');
+        if (configuration.skillMode === 'without-skill' && !capabilities.capabilities.withoutSkillBaseline) errors.push('provider does not support without-skill baseline');
+        if (configuration.skillMode === 'previous-version' && !capabilities.capabilities.previousVersionBaseline) errors.push('provider does not support previous-version baseline');
       }
       if (plan.capture.outputs !== true) errors.push('capture.outputs must be true for portable evidence');
       if (plan.capture.timing !== true) errors.push('capture.timing must be true for portable evidence');
@@ -140,11 +130,36 @@ export async function validatePlan(planPath) {
       if ((await lstat(target)).isSymbolicLink()) throw new Error('symlink');
       canonicalTarget = await realpath(target);
       calculated.targetSkillDigest = await runtimeSkillDigest(canonicalTarget);
-      if (pathsOverlap(canonicalTarget, outputRoot)) {
-        errors.push('outputRoot must not overlap the target Skill tree');
-      }
+      if (pathsOverlap(canonicalTarget, outputRoot)) errors.push('outputRoot must not overlap the target Skill tree');
+      configurationRoots.set('with-skill', canonicalTarget);
     } catch (error) {
       errors.push(`target path is unavailable or unsafe: ${error.message}`);
+    }
+
+    for (const configuration of plan.configurations) {
+      if (configuration.skillMode === 'with-skill' || configuration.skillMode === 'without-skill') {
+        if (configuration.skillPath !== undefined && configuration.skillPath !== null) errors.push(`${configuration.id} must not set skillPath for ${configuration.skillMode}`);
+        if (configuration.skillDigest !== undefined && configuration.skillDigest !== null) errors.push(`${configuration.id} must not set skillDigest for ${configuration.skillMode}`);
+        calculated.configurationSkillDigests[configuration.id] = configuration.skillMode === 'with-skill' ? calculated.targetSkillDigest : null;
+        continue;
+      }
+      if (!configuration.skillPath || !configuration.skillDigest) {
+        errors.push(`${configuration.id} previous-version requires skillPath and skillDigest`);
+        continue;
+      }
+      try {
+        const previousPath = path.resolve(base, configuration.skillPath);
+        if ((await lstat(previousPath)).isSymbolicLink()) throw new Error('symlink');
+        const canonicalPrevious = await realpath(previousPath);
+        if (!isPathInside(base, canonicalPrevious)) throw new Error('previous-version path leaves the plan directory');
+        if (pathsOverlap(canonicalPrevious, outputRoot)) throw new Error('previous-version path overlaps outputRoot');
+        const previousDigest = await runtimeSkillDigest(canonicalPrevious);
+        calculated.configurationSkillDigests[configuration.id] = previousDigest;
+        configurationRoots.set(configuration.id, canonicalPrevious);
+        if (previousDigest !== configuration.skillDigest) errors.push(`${configuration.id} skillDigest does not match previous-version content`);
+      } catch (error) {
+        errors.push(`${configuration.id} previous-version path is unavailable or unsafe: ${error.message}`);
+      }
     }
 
     const caseIds = new Set();
@@ -161,9 +176,7 @@ export async function validatePlan(planPath) {
         }
       }
       calculated.caseCorpusDigest = await caseDigest(casePaths);
-      if (evalTypes.has('trigger') && capabilities && !capabilities.capabilities.triggerDiscovery) {
-        errors.push('provider does not support trigger discovery');
-      }
+      if (evalTypes.has('trigger') && capabilities && !capabilities.capabilities.triggerDiscovery) errors.push('provider does not support trigger discovery');
     } catch (error) {
       errors.push(`case corpus is unavailable or invalid: ${error.message}`);
     }
@@ -176,36 +189,22 @@ export async function validatePlan(planPath) {
       errors.push(...auditErrors.map((value) => `audit: ${value}`));
       const audit = JSON.parse(await readFile(actual, 'utf8'));
       if (audit.validity !== 'pass') errors.push('audit validity must be pass');
-      if (audit.targetSkillDigest !== plan.audit.targetSkillDigest || audit.targetSkillDigest !== plan.target.digest) {
-        errors.push('audit targetSkillDigest does not bind the plan target');
-      }
-      if (audit.caseCorpusDigest !== plan.audit.caseCorpusDigest || audit.caseCorpusDigest !== plan.cases.corpusDigest) {
-        errors.push('audit caseCorpusDigest does not bind the plan corpus');
-      }
+      if (audit.targetSkillDigest !== plan.audit.targetSkillDigest || audit.targetSkillDigest !== plan.target.digest) errors.push('audit targetSkillDigest does not bind the plan target');
+      if (audit.caseCorpusDigest !== plan.audit.caseCorpusDigest || audit.caseCorpusDigest !== plan.cases.corpusDigest) errors.push('audit caseCorpusDigest does not bind the plan corpus');
     } catch (error) {
       errors.push(`audit is unavailable or invalid: ${error.message}`);
     }
 
-    if (calculated.targetSkillDigest && calculated.targetSkillDigest !== plan.target.digest) {
-      errors.push('target digest does not match target content');
-    }
-    if (calculated.caseCorpusDigest && calculated.caseCorpusDigest !== plan.cases.corpusDigest) {
-      errors.push('case corpus digest does not match case documents');
-    }
-    if (calculated.auditDigest && calculated.auditDigest !== plan.audit.digest) {
-      errors.push('audit digest does not match audit document');
-    }
-    if (calculated.capabilitiesDigest && calculated.capabilitiesDigest !== plan.provider.capabilitiesDigest) {
-      errors.push('capabilitiesDigest does not match capability document');
-    }
-    if (plan.provider.command.length === 0 || plan.provider.command.some((value) => typeof value !== 'string' || value.length === 0 || value.includes('\0'))) {
-      errors.push('provider command contains invalid argv');
-    }
+    if (calculated.targetSkillDigest && calculated.targetSkillDigest !== plan.target.digest) errors.push('target digest does not match target content');
+    if (calculated.caseCorpusDigest && calculated.caseCorpusDigest !== plan.cases.corpusDigest) errors.push('case corpus digest does not match case documents');
+    if (calculated.auditDigest && calculated.auditDigest !== plan.audit.digest) errors.push('audit digest does not match audit document');
+    if (calculated.capabilitiesDigest && calculated.capabilitiesDigest !== plan.provider.capabilitiesDigest) errors.push('capabilitiesDigest does not match capability document');
+    if (plan.provider.command.length === 0 || plan.provider.command.some((value) => typeof value !== 'string' || value.length === 0 || value.includes('\0'))) errors.push('provider command contains invalid argv');
     if (plan.provider.cwd !== null) {
       const providerCwd = path.resolve(base, plan.provider.cwd);
       if (!isPathInside(base, providerCwd)) errors.push('provider cwd must stay inside the plan directory');
-      if (canonicalTarget && isPathInside(canonicalTarget, providerCwd)) {
-        errors.push('provider cwd must not be inside the target Skill tree');
+      for (const [configurationId, skillRoot] of configurationRoots) {
+        if (pathsOverlap(skillRoot, providerCwd)) errors.push(`provider cwd must not overlap ${configurationId} Skill content`);
       }
     }
   }
@@ -220,9 +219,7 @@ async function main() {
     return;
   }
   const result = await validatePlan(options.planPath);
-  process.stdout.write(options.format === 'json'
-    ? `${JSON.stringify(result, null, 2)}\n`
-    : result.valid ? 'EvalExecutionPlan is valid.\n' : `${result.errors.join('\n')}\n`);
+  process.stdout.write(options.format === 'json' ? `${JSON.stringify(result, null, 2)}\n` : result.valid ? 'EvalExecutionPlan is valid.\n' : `${result.errors.join('\n')}\n`);
   if (!result.valid) process.exitCode = 1;
 }
 
