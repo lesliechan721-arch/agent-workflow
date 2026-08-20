@@ -16,6 +16,8 @@ const sharedTempBase = os.tmpdir();
 const tempDirs: string[] = [];
 let packedCliPromise: Promise<{
   packageRoot: string;
+  cliTarballPath: string;
+  evalTarballPath: string;
   tempRoot: string;
 }> | null = null;
 
@@ -57,12 +59,10 @@ async function listFilesRecursively(rootDir: string): Promise<string[]> {
   return files.sort();
 }
 
-async function unpackSingleTarball(packDir: string, unpackDir: string): Promise<string> {
-  const tarballs = (await fs.readdir(packDir)).filter((entry) => entry.endsWith('.tgz'));
-  expect(tarballs).toHaveLength(1);
+async function unpackTarball(tarballPath: string, unpackDir: string): Promise<string> {
   await execFileAsync(
     'tar',
-    ['-xzf', path.join(packDir, tarballs[0]), '-C', unpackDir],
+    ['-xzf', tarballPath, '-C', unpackDir],
     {
       env: process.env,
       maxBuffer: 20 * 1024 * 1024,
@@ -107,6 +107,8 @@ async function installDeclaredDependencyOnlyView(
 
 async function preparePackedCli(): Promise<{
   packageRoot: string;
+  cliTarballPath: string;
+  evalTarballPath: string;
   tempRoot: string;
 }> {
   if (packedCliPromise) {
@@ -141,8 +143,21 @@ async function preparePackedCli(): Promise<{
     const snapshotEntriesAfter = await listBuildSnapshotEntries(root);
     expect(snapshotEntriesAfter).toEqual(snapshotEntriesBefore);
 
+    const tarballs = (await fs.readdir(packDir))
+      .filter((entry) => entry.endsWith('.tgz'))
+      .sort();
+    expect(tarballs).toHaveLength(2);
+    const cliTarballName = tarballs.find((entry) => entry.includes('-aw-'));
+    const evalTarballName = tarballs.find((entry) => entry.includes('-agent-skill-eval-'));
+    expect(cliTarballName).toBeDefined();
+    expect(evalTarballName).toBeDefined();
+    const cliTarballPath = path.join(packDir, cliTarballName!);
+    const evalTarballPath = path.join(packDir, evalTarballName!);
+
     return {
-      packageRoot: await unpackSingleTarball(packDir, unpackDir),
+      packageRoot: await unpackTarball(cliTarballPath, unpackDir),
+      cliTarballPath,
+      evalTarballPath,
       tempRoot,
     };
   })();
@@ -154,6 +169,63 @@ afterAll(async () => {
 });
 
 describe('pack smoke', () => {
+  it('installs both local tarballs into a clean prefix and runs both package bins', async () => {
+    const { packageRoot, cliTarballPath, evalTarballPath, tempRoot } = await preparePackedCli();
+    const installPrefix = path.join(tempRoot, 'install-prefix');
+    registerSmokeWritableRoot(installPrefix, 'pack smoke clean npm install prefix');
+    await fs.ensureDir(installPrefix);
+
+    await execFileAsync(
+      'npm',
+      [
+        'install',
+        '--global',
+        '--prefix',
+        installPrefix,
+        evalTarballPath,
+        cliTarballPath,
+      ],
+      {
+        cwd: tempRoot,
+        env: process.env,
+        maxBuffer: 20 * 1024 * 1024,
+      },
+    );
+
+    const cliPackageJson = await fs.readJson(path.join(packageRoot, 'package.json')) as {
+      version: string;
+    };
+    const binRoot = process.platform === 'win32' ? installPrefix : path.join(installPrefix, 'bin');
+    const awBin = path.join(binRoot, process.platform === 'win32' ? 'aw.cmd' : 'aw');
+    const evalBin = path.join(
+      binRoot,
+      process.platform === 'win32' ? 'aw-skill-eval.cmd' : 'aw-skill-eval',
+    );
+    await expect(execFileAsync(awBin, ['--version'], {
+      cwd: tempRoot,
+      env: process.env,
+    })).resolves.toMatchObject({ stdout: `${cliPackageJson.version}\n`, stderr: '' });
+    const capabilities = await execFileAsync(evalBin, ['capabilities', '--json'], {
+      cwd: tempRoot,
+      env: process.env,
+    });
+    expect(JSON.parse(capabilities.stdout)).toMatchObject({
+      provider: 'aw-skill-eval-process',
+    });
+    expect(capabilities.stderr).toBe('');
+
+    if (process.platform !== 'win32') {
+      const installedEvalRoot = path.join(
+        installPrefix,
+        'lib',
+        'node_modules',
+        '@lesliechan721',
+        'agent-skill-eval',
+      );
+      expect((await fs.lstat(installedEvalRoot)).isSymbolicLink()).toBe(false);
+    }
+  });
+
   it('packs the CLI tarball without the staged plugins-dist snapshot', async () => {
     const packageRoot = path.join(repoRoot(), 'packages', 'cli');
     const { packageRoot: unpackedPackageRoot } = await preparePackedCli();
@@ -168,7 +240,11 @@ describe('pack smoke', () => {
     expect(unpackedFiles.some((file) => file.startsWith('.release/'))).toBe(false);
     const unpackedPackageJson = await fs.readJson(
       path.join(unpackedPackageRoot, 'package.json'),
-    ) as { version: string };
+    ) as {
+      version: string;
+      dependencies: Record<string, string>;
+      bin: Record<string, string>;
+    };
     expect(unpackedPackageJson).toMatchObject({
       name: '@lesliechan721/aw',
       engines: {
@@ -176,6 +252,9 @@ describe('pack smoke', () => {
       },
       files: ['dist/'],
     });
+    expect(unpackedPackageJson.dependencies['@lesliechan721/agent-skill-eval'])
+      .toBe(unpackedPackageJson.version);
+    expect(unpackedPackageJson.bin).toEqual({ aw: './dist/index.js' });
 
     await installDeclaredDependencyOnlyView(unpackedPackageRoot, packageRoot);
     await expect(execFileAsync(

@@ -9,6 +9,7 @@ import {
   createReleaseSnapshotIdentity,
   readCliPackageJson,
   resolveCliPublicationGate,
+  resolveCliPublishGitCheckArgs,
   resolvePublishedCliVersion,
   resolveReleaseHead,
   runCommand,
@@ -24,7 +25,7 @@ import {
   resolveCatalogStageLedger,
   withCatalogPublicationLease,
 } from './git-catalog-publisher.mjs';
-import { publishCli } from './publish-cli.mjs';
+import { prepareEvalPublication, publishCli } from './publish-cli.mjs';
 import { stageCatalogRelease } from './stage-catalog.mjs';
 
 export function parseArgs(argv) {
@@ -109,20 +110,39 @@ export async function publishRelease(argv = process.argv.slice(2), options = {})
           const publishedCliVersion = await (options.resolvePublishedCliVersion
             ?? resolvePublishedCliVersion)(mode);
           const compare = history.catalogModules.pluginStaging.compareStrictSemVer;
-          const cliGate = resolveCliPublicationGate({
+          resolveCliPublicationGate({
             mode,
             candidateVersion: currentCliVersion,
             publishedVersion: publishedCliVersion,
             compare,
           });
-          const skippedCli = cliGate.status === 'already-published' ? cliGate : null;
           const minCliVersion = staged.manifest.compatibility.aw.minVersion;
           const requiresCandidateCli = compare(publishedCliVersion, minCliVersion) < 0;
           const resumeTagFirst = Boolean(
             history.tag
             && history.channels[mode]?.commit !== history.tag.commit,
           );
-
+          if (compare(currentCliVersion, minCliVersion) < 0) {
+            throw new Error(
+              `Catalog ${catalogVersion} requires aw >= ${minCliVersion}, but the CLI candidate is ${currentCliVersion}.`,
+            );
+          }
+          const evalPublication = await (options.prepareEvalPublication
+            ?? prepareEvalPublication)(
+            mode,
+            {
+              tag: mode,
+              versionKind: mode === 'beta' ? 'prerelease' : 'stable',
+            },
+            snapshot,
+            currentCliVersion,
+            assertFresh,
+            {
+              beforePublish: options.resolveCliPublishGitCheckArgs
+                ?? resolveCliPublishGitCheckArgs,
+              ...(options.evalPublicationOptions ?? {}),
+            },
+          );
           await assertFresh();
           if (!requiresCandidateCli && !resumeTagFirst) {
             const catalog = await (options.publishStagedCatalog ?? publishStagedCatalog)(
@@ -137,9 +157,7 @@ export async function publishRelease(argv = process.argv.slice(2), options = {})
             );
             try {
               await assertFresh();
-              const cli = skippedCli
-                ? skippedCli
-                : await (options.publishCli ?? publishCli)([
+              const cli = await (options.publishCli ?? publishCli)([
                   mode,
                   '--cli-version',
                   currentCliVersion,
@@ -151,6 +169,7 @@ export async function publishRelease(argv = process.argv.slice(2), options = {})
                   snapshot,
                   releaseIdentity,
                   publicationLease,
+                  evalPublication,
                 });
               return { path: 'catalog-first', catalog, cli, releaseIdentity };
             } catch (error) {
@@ -162,11 +181,6 @@ export async function publishRelease(argv = process.argv.slice(2), options = {})
             }
           }
 
-          if (compare(currentCliVersion, minCliVersion) < 0) {
-            throw new Error(
-              `Catalog ${catalogVersion} requires aw >= ${minCliVersion}, but the CLI candidate is ${currentCliVersion}.`,
-            );
-          }
           const catalog = await (options.publishStagedCatalog ?? publishStagedCatalog)(
             history,
             staged.outputRoot,
@@ -177,11 +191,10 @@ export async function publishRelease(argv = process.argv.slice(2), options = {})
               beforeRemoteWrite: assertFresh,
             },
           );
-          let cli = skippedCli;
-          if (!skippedCli) {
-            try {
-              await assertFresh();
-              cli = await (options.publishCli ?? publishCli)([
+          let cli;
+          try {
+            await assertFresh();
+            cli = await (options.publishCli ?? publishCli)([
                 mode,
                 '--cli-version',
                 currentCliVersion,
@@ -193,14 +206,14 @@ export async function publishRelease(argv = process.argv.slice(2), options = {})
                 snapshot,
                 releaseIdentity,
                 publicationLease,
+                evalPublication,
               });
-            } catch (error) {
-              throw new Error(
-                `Catalog tag refs/tags/catalog-v${catalogVersion} is published, but CLI ${currentCliVersion} publication failed. ` +
-                'The channel was not promoted; rerun the same combined release command after fixing the CLI failure.',
-                { cause: error },
-              );
-            }
+          } catch (error) {
+            throw new Error(
+              `Catalog tag refs/tags/catalog-v${catalogVersion} is published, but CLI ${currentCliVersion} publication failed. ` +
+              'The channel was not promoted; rerun the same combined release command after fixing the CLI failure.',
+              { cause: error },
+            );
           }
           try {
             await assertFresh();

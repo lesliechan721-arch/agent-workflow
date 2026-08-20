@@ -4,6 +4,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { pathToFileURL } from 'node:url';
 
+import { computeSkillDigest } from '@lesliechan721/agent-skill-eval';
 import fs from 'fs-extra';
 
 import {
@@ -585,7 +586,10 @@ async function runTriggerOnce(options: {
       }
     }
     const skillDigests = new Map(await Promise.all([...skillPaths].map(
-      async ([skillName, skillPath]) => [skillName, sha256(await fs.readFile(skillPath))] as const,
+      async ([skillName, skillPath]) => [
+        skillName,
+        await computeSkillDigest(path.dirname(skillPath)),
+      ] as const,
     )));
     const ownerSkillPath = skillPaths.get(options.suite.skill)!;
     let env = buildIsolatedEnv(
@@ -626,7 +630,7 @@ async function runTriggerOnce(options: {
       env,
     };
     for (const [skillName, skillPath] of skillPaths) {
-      if (sha256(await fs.readFile(skillPath)) !== skillDigests.get(skillName)) {
+      if (await computeSkillDigest(path.dirname(skillPath)) !== skillDigests.get(skillName)) {
         throw new Error(`Trigger fixture modified materialized participant Skill "${skillName}".`);
       }
     }
@@ -808,7 +812,7 @@ async function runTriggerOnce(options: {
     let skillsUnchanged = true;
     for (const [skillName, skillPath] of skillPaths) {
       const unchanged = await fs.pathExists(skillPath) &&
-        sha256(await fs.readFile(skillPath)) === skillDigests.get(skillName);
+        await computeSkillDigest(path.dirname(skillPath)) === skillDigests.get(skillName);
       if (!unchanged) {
         skillsUnchanged = false;
         diagnostics.push(`Materialized participant Skill "${skillName}" changed during trigger evaluation.`);
@@ -1098,13 +1102,12 @@ export async function runCodexTriggerSuite(options: {
   const participantSkillDigests = Object.fromEntries(await Promise.all(
     options.suite.skills.map(async (skillName) => [
       skillName,
-      sha256(await fs.readFile(path.join(
+      await computeSkillDigest(path.join(
         options.subjectRoot,
         '.agents',
         'skills',
         skillName,
-        'SKILL.md',
-      ))),
+      )),
     ]),
   ));
   const codexVersion = await readCodexVersion(options.codexBin, sourceEnv);

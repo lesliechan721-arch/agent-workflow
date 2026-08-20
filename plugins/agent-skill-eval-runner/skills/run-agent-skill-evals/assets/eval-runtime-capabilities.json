@@ -1,5 +1,0 @@
-{
-  "schemaVersion":1,"provider":"command","providerVersion":"1.0.0",
-  "capabilities":{"triggerDiscovery":false,"skillPathExecution":true,"previousVersionBaseline":false,"withoutSkillBaseline":false,"cleanContext":false,"parallelRuns":false,"toolTrace":false,"tokenUsage":false,"duration":true,"sandbox":false,"materialization":false},
-  "limitations":["Provider semantics depend on the explicit command in EvalExecutionPlan.","A fresh process is not proof of a clean model session or a permission sandbox.","Baseline modes require a provider capability file that explicitly supports them.","Tool trace, token usage and grading are recorded only when the provider emits a compatible JSON summary."]
-}

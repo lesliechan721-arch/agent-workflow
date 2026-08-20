@@ -1,6 +1,7 @@
 import os from 'node:os';
 import path from 'node:path';
 
+import { computeSkillDigest } from '@lesliechan721/agent-skill-eval';
 import fs from 'fs-extra';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -172,6 +173,13 @@ describe('plugin eval contract and materialization', () => {
         ),
       ).resolves.toContain('allow_implicit_invocation: false');
       expect(subject.artifacts.some((artifact) => artifact.path.includes('/evals/'))).toBe(false);
+      await expect(computeSkillDigest(path.join(
+        outputRoot,
+        subject.root,
+        '.agents',
+        'skills',
+        'eval-fixture',
+      ))).resolves.toMatch(/^sha256:[0-9a-f]{64}$/u);
     }
   });
 

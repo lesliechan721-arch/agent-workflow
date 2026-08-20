@@ -2,6 +2,8 @@
 
 通用 Agent Skill 作者、评审和 Eval 设计/审核插件。
 
+Current plugin contract version: `0.6.0`.
+
 ## Dependency
 
 Required: `agent-content-toolkit >= 0.4.0`.

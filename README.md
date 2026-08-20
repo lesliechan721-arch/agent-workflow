@@ -186,13 +186,23 @@ Codex project scope 会写入 `.agents/skills`、`.codex/config.toml`、`.codex/
 - `codex-explore` 是行为只读的证据探索能力，不把最终判断或产品写入交给探索子代理。
 - 作者和评审能力分离：Reviewer 不修改被审生产源码，Author 不给自己的结果生成独立发布结论。
 
-## 开发与贡献
+## 本地开发与发版流程
 
 ```bash
 make install
 make build
 make test
 make stage-catalog CATALOG_VERSION=1.2.0-beta.1
+```
+
+本地 CLI 包含一个精确版本的共享 Eval 依赖。打包命令从同一 build snapshot 生成两个
+tarball；本地安装必须同时提供它们，不能从 registry 补齐依赖：
+
+```bash
+pnpm release:pack:cli
+pnpm release:install:local
+# 或安装已经生成的两个文件：
+pnpm release:install:local -- <cli.tgz> <eval.tgz>
 ```
 
 `pnpm build` 生成 `packages/cli/plugins-dist/` schema 3 本地 snapshot。catalog 最低 CLI 版本取插件声明与 schema 3 Git 分发 floor `0.1.0-beta.2` 的最大值。`stage-catalog` 在 `.release/catalog-staging/catalog/` 生成带 `plugin-release-ledger.json` 的完整发布交接目录。

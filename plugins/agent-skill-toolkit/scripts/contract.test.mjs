@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -20,6 +20,17 @@ async function run(rel, args = []) {
     encoding: 'utf8',
     maxBuffer: 10 * 1024 * 1024,
   });
+}
+async function runGenerator(pluginRoot, args = []) {
+  return execFileAsync(
+    process.execPath,
+    [path.join(pluginRoot, 'scripts/generate-contract-assets.mjs'), ...args],
+    {
+      cwd: pluginRoot,
+      encoding: 'utf8',
+      maxBuffer: 10 * 1024 * 1024,
+    },
+  );
 }
 function sha(d) {
   return 'sha256:' + createHash('sha256').update(d).digest('hex');
@@ -57,6 +68,33 @@ test('generated standards and contracts are current', async () => {
   await run('scripts/validate-standard-views.mjs');
   await run('scripts/validate-contract-assets.mjs');
 });
+test('contract generator ignores removed Runner roots in check and write modes', async () => {
+  const fixtureBase = await mkdtemp(path.join(tmpdir(), 'toolkit-contract-generator-'));
+  temps.push(fixtureBase);
+  const fixtureRoot = path.join(fixtureBase, 'agent-skill-toolkit');
+  await cp(root, fixtureRoot, { recursive: true });
+  const removedTargets = [
+    'schemas/eval-audit-result.schema.json',
+    'skills/run-agent-skill-evals/assets/eval-audit-result.schema.json',
+  ];
+  const runnerRoot = path.join(fixtureBase, 'agent-skill-eval-runner');
+  for (const relative of removedTargets) {
+    const target = path.join(runnerRoot, relative);
+    await mkdir(target, { recursive: true });
+    await writeFile(path.join(target, 'sentinel'), 'must remain untouched');
+  }
+
+  const checked = JSON.parse((await runGenerator(fixtureRoot, ['--check'])).stdout);
+  assert.equal(checked.valid, true);
+  assert.equal(checked.check, true);
+  assert.ok(checked.targets.every((target) => !target.includes('agent-skill-eval-runner')));
+
+  const generated = JSON.parse((await runGenerator(fixtureRoot)).stdout);
+  assert.equal(generated.valid, true);
+  assert.equal(generated.check, false);
+  for (const relative of removedTargets)
+    assert.deepEqual(await readdir(path.join(runnerRoot, relative)), ['sentinel']);
+});
 test('upper rules extend lower canonical content rules without redefining them', async () => {
   const contentPath = path.resolve(root, '..', 'agent-content-toolkit', 'standards', 'rules.json');
   const [raw, skill, manifest] = await Promise.all([
@@ -87,7 +125,13 @@ test('owned contracts and manifest use release version', async () => {
   const manifest = JSON.parse(
     await readFile(path.join(root, '.agents-plugin/plugin.json'), 'utf8'),
   );
-  assert.equal(manifest.version, '0.5.0');
+  assert.equal(manifest.version, '0.6.0');
+  const [readme, dependency] = await Promise.all([
+    readFile(path.join(root, 'README.md'), 'utf8'),
+    readFile(path.join(root, 'DEPENDENCY.md'), 'utf8'),
+  ]);
+  assert.match(readme, /Current plugin contract version: `0\.6\.0`/u);
+  assert.match(dependency, /Plugin contract version: `0\.6\.0`/u);
   for (const [name, id] of [
     [
       'skill-design-brief.schema.json',
