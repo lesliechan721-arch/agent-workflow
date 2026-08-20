@@ -160,11 +160,11 @@
         "allowed_variance": "message、task_name 和说明文案可以变化；expectations 中声明的 spawn 次数、字段值、缺失字段和 block reason 必须精确匹配。"
       },
       "prompt": "$codex-subagent-guide 已授权使用子代理。启动一个 agent 审核 changes/review.diff 并给出缺陷结论；使用干净上下文。",
-      "expected_output": "最终交付物是审核，使用计划与审核 role。",
+      "expected_output": "这是范围有限的常规审核，使用通用 role。",
       "files": [],
       "expectations": {
-        "v1": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": "codex-subagent-plan-review", "model": null, "reasoning_effort": null, "fork_context": false, "fork_turns": null }, "present_arguments": ["message"] },
-        "v2": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": "codex-subagent-plan-review", "model": null, "reasoning_effort": null, "fork_context": null, "fork_turns": "none" }, "present_arguments": ["message"] }
+        "v1": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": "codex-subagent-general", "model": null, "reasoning_effort": null, "fork_context": false, "fork_turns": null }, "present_arguments": ["message"] },
+        "v2": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": "codex-subagent-general", "model": null, "reasoning_effort": null, "fork_context": null, "fork_turns": "none" }, "present_arguments": ["message"] }
       }
     },
     {

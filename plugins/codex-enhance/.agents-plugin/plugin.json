@@ -1,7 +1,7 @@
 {
   "name": "codex-enhance",
-  "version": "0.2.0",
-  "description": "通过只读证据探索和通用子代理编排两个技能增强 Codex 的多代理工作流。",
+  "version": "0.3.0",
+  "description": "通过实施前关键歧义澄清、只读证据探索和通用子代理编排增强 Codex harness。",
   "compatibility": {
     "aw": {
       "minVersion": "0.0.0"
@@ -13,6 +13,8 @@
       "codex",
       "subagent",
       "explorer",
+      "clarification",
+      "requirements",
       "research",
       "reasoning",
       "wait"
@@ -28,7 +30,7 @@
   },
   "interface": {
     "displayName": "Codex Enhance",
-    "shortDescription": "Codex 只读探索与通用子代理编排增强",
+    "shortDescription": "Codex 实施澄清、只读探索与通用子代理编排增强",
     "capabilities": [
       "Skills",
       "Instructions",
@@ -53,6 +55,8 @@
     },
     "tests": {
       "node": [
+        "./scripts/clarifier-artifacts.test.mjs",
+        "./scripts/clarifier-evals.test.mjs",
         "./scripts/explore-artifacts.test.mjs",
         "./scripts/subagent-artifacts.test.mjs",
         "./scripts/trigger-evals.test.mjs",
@@ -209,7 +213,7 @@
         "default": 10,
         "min": 1,
         "max": 60,
-        "description": "两个技能在用户或任务专用规则未指定时使用的最小首次响应式等待窗口。"
+        "description": "探索和子代理编排技能在没有更具体规则时使用的最小首次响应式等待窗口。"
       }
     }
   },
@@ -233,6 +237,24 @@
         "skillKey": "codex-explore",
         "sourceDirs": [
           "./skills/codex-explore"
+        ]
+      },
+      {
+        "id": "codex-clarifier-skill",
+        "platform": "codex",
+        "scopes": [
+          "user",
+          "project"
+        ],
+        "target": "codex.skill",
+        "projectManagedKind": "skill",
+        "states": [
+          "present"
+        ],
+        "refreshKeys": [],
+        "skillKey": "codex-clarifier",
+        "sourceDirs": [
+          "./skills/codex-clarifier"
         ]
       },
       {

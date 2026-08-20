@@ -1,5 +1,5 @@
 {
-  "skill_name": "requirements-clarifier",
+  "skill_name": "codex-clarifier",
   "policy": {
     "optimization": "recall-first",
     "false_negative_cost": "high",
@@ -32,7 +32,7 @@
       "expected_output": "采用已知的每页数量，不重复询问；只确认会影响用户结果的默认排序，收到回答后结束。",
       "files": [],
       "review": {
-        "platforms": ["codex", "claude"],
+        "platforms": ["codex"],
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [
@@ -67,7 +67,7 @@
       "expected_output": "采用已确认的验证码有效期，对内部缓存选择采用合理默认，只询问会改变现有用户流程的宽限期。",
       "files": [],
       "review": {
-        "platforms": ["codex", "claude"],
+        "platforms": ["codex"],
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [
@@ -96,7 +96,7 @@
       "expected_output": "不为已有明确惯例提问，沿用现有空状态样式；只有该默认会影响用户预期时才在交接中简要说明。",
       "files": [],
       "review": {
-        "platforms": ["codex", "claude"],
+        "platforms": ["codex"],
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [
@@ -135,7 +135,7 @@
       "expected_output": "识别多个小歧义的合并影响，在一轮内分别确认三个互相独立的问题，不因单项影响小而全部静默假设。",
       "files": [],
       "review": {
-        "platforms": ["codex", "claude"],
+        "platforms": ["codex"],
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [
@@ -170,7 +170,7 @@
       "expected_output": "先询问是否允许外部访客，不提前询问依赖该答案的权限和审计细节，收到回答后重新检查剩余问题。",
       "files": [],
       "review": {
-        "platforms": ["codex", "claude"],
+        "platforms": ["codex"],
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [
@@ -199,7 +199,7 @@
       "expected_output": "不要求用户主观确认技术可行性，把性能目标列为待验证事项，澄清期间不运行压测或制作原型。",
       "files": [],
       "review": {
-        "platforms": ["codex", "claude"],
+        "platforms": ["codex"],
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [
@@ -234,7 +234,7 @@
       "expected_output": "指出具体约束冲突，给出最小可行方向供用户选择，不静默放宽任何要求。",
       "files": [],
       "review": {
-        "platforms": ["codex", "claude"],
+        "platforms": ["codex"],
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [
@@ -263,7 +263,7 @@
       "expected_output": "不强行制造不准确的单选菜单；工具不适合时直接简洁提问，没有事实依据时不伪造推荐。",
       "files": [],
       "review": {
-        "platforms": ["codex", "claude"],
+        "platforms": ["codex"],
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [
@@ -292,7 +292,7 @@
       "expected_output": "检查现有材料后不制造问题，明确没有值得继续追问的关键歧义，把控制权交还原任务且不开始实施。",
       "files": [],
       "review": {
-        "platforms": ["codex", "claude"],
+        "platforms": ["codex"],
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [
@@ -321,7 +321,7 @@
       "expected_output": "记录已确认的当前筛选范围、沿用的 UTF-8 约定和待压测的大数据导出方式；说明错误选择同步或异步路径可能造成超时或实施返工，不声称需求已经完全稳定。",
       "files": [],
       "review": {
-        "platforms": ["codex", "claude"],
+        "platforms": ["codex"],
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "skill": "requirements-clarifier",
+  "skill": "codex-clarifier",
   "policy": {
     "optimization": "recall-first",
     "false_negative_cost": "high",
@@ -15,17 +15,21 @@
       "provenance": "representative-synthetic",
       "scenario_family": "open-feature-scope",
       "unit_under_test": "description",
-      "preconditions": { "implicit_invocation": true },
+      "preconditions": {
+        "implicit_invocation": true
+      },
       "query": "给订单列表加个导出功能，做好后直接提交。",
       "should_load_skill": true,
       "oracle": {
         "rationale": "导出范围、字段和格式存在多种合理理解，组合起来会决定成品形态。",
-        "rule_refs": ["SKILL.md frontmatter description", "plugin.json#extensions.instructions/quality-gate"],
+        "rule_refs": [
+          "SKILL.md frontmatter description"
+        ],
         "confidence": "high",
-        "allowed_variance": "可以先查仓库惯例，但在空工作区中必须加载 requirements-clarifier。"
+        "allowed_variance": "可以先查仓库惯例，但在空工作区中必须加载 codex-clarifier。"
       },
       "split": "train",
-      "use_project_rules": true
+      "use_project_rules": false
     },
     {
       "id": "p02_team_sharing",
@@ -34,17 +38,21 @@
       "provenance": "representative-synthetic",
       "scenario_family": "team-sharing-scope",
       "unit_under_test": "description",
-      "preconditions": { "implicit_invocation": true },
+      "preconditions": {
+        "implicit_invocation": true
+      },
       "query": "给这个 SaaS 加团队共享，先做起来。",
       "should_load_skill": true,
       "oracle": {
         "rationale": "成员边界、权限和共享对象不清楚，猜测会明显改变交付结果。",
-        "rule_refs": ["SKILL.md frontmatter description", "plugin.json#extensions.instructions/quality-gate"],
+        "rule_refs": [
+          "SKILL.md frontmatter description"
+        ],
         "confidence": "high",
-        "allowed_variance": "可以先检查现有权限模型，但在没有规范时必须加载 requirements-clarifier。"
+        "allowed_variance": "可以先检查现有权限模型，但在没有规范时必须加载 codex-clarifier。"
       },
       "split": "train",
-      "use_project_rules": true
+      "use_project_rules": false
     },
     {
       "id": "p03_phone_signup",
@@ -53,17 +61,21 @@
       "provenance": "representative-synthetic",
       "scenario_family": "signup-identity-behavior",
       "unit_under_test": "description",
-      "preconditions": { "implicit_invocation": true },
+      "preconditions": {
+        "implicit_invocation": true
+      },
       "query": "注册流程里加手机号。",
       "should_load_skill": true,
       "oracle": {
         "rationale": "手机号是必填、选填还是验证凭据，会明显改变用户流程和验收。",
-        "rule_refs": ["SKILL.md frontmatter description"],
+        "rule_refs": [
+          "SKILL.md frontmatter description"
+        ],
         "confidence": "high",
-        "allowed_variance": "问题顺序可以不同，但必须加载 requirements-clarifier。"
+        "allowed_variance": "问题顺序可以不同，但必须加载 codex-clarifier。"
       },
       "split": "train",
-      "use_project_rules": true
+      "use_project_rules": false
     },
     {
       "id": "p04_bulk_edit",
@@ -72,17 +84,21 @@
       "provenance": "representative-synthetic",
       "scenario_family": "bulk-operation-semantics",
       "unit_under_test": "description",
-      "preconditions": { "implicit_invocation": true },
+      "preconditions": {
+        "implicit_invocation": true
+      },
       "query": "给后台做一个批量编辑，交互你看着办。",
       "should_load_skill": true,
       "oracle": {
         "rationale": "可编辑字段、选择范围和失败语义共同决定功能，不宜全部静默假设。",
-        "rule_refs": ["SKILL.md frontmatter description"],
+        "rule_refs": [
+          "SKILL.md frontmatter description"
+        ],
         "confidence": "high",
-        "allowed_variance": "内部实现可以自行决定，但必须加载 requirements-clarifier 处理用户可见语义。"
+        "allowed_variance": "内部实现可以自行决定，但必须加载 codex-clarifier 处理用户可见语义。"
       },
       "split": "train",
-      "use_project_rules": true
+      "use_project_rules": false
     },
     {
       "id": "p05_account_pause",
@@ -91,17 +107,23 @@
       "provenance": "representative-synthetic",
       "scenario_family": "account-lifecycle-behavior",
       "unit_under_test": "description",
-      "preconditions": { "implicit_invocation": true, "account_lifecycle_code_available": true, "approved_pause_spec_absent": true },
+      "preconditions": {
+        "implicit_invocation": true,
+        "account_lifecycle_code_available": true,
+        "approved_pause_spec_absent": true
+      },
       "query": "增加暂停账号功能，尽量复用现有代码。",
       "should_load_skill": true,
       "oracle": {
         "rationale": "暂停后登录、计费和数据访问的行为未明确。",
-        "rule_refs": ["SKILL.md frontmatter description"],
+        "rule_refs": [
+          "SKILL.md frontmatter description"
+        ],
         "confidence": "high",
-        "allowed_variance": "可以先查现有生命周期规则，但没有规范时必须加载 requirements-clarifier。"
+        "allowed_variance": "可以先查现有生命周期规则，但没有规范时必须加载 codex-clarifier。"
       },
       "split": "train",
-      "use_project_rules": true,
+      "use_project_rules": false,
       "workspace_fixture": "account_pause_gap_repo"
     },
     {
@@ -111,17 +133,22 @@
       "provenance": "derived",
       "scenario_family": "explicit-invocation",
       "unit_under_test": "description",
-      "preconditions": { "explicit_invocation": true },
-      "query": "$requirements-clarifier 帮我检查这个通知中心需求还有哪些地方值得先问清楚。",
+      "preconditions": {
+        "explicit_invocation": true
+      },
+      "query": "$codex-clarifier 帮我检查这个通知中心需求还有哪些地方值得先问清楚。",
       "should_load_skill": true,
       "oracle": {
         "rationale": "用户显式要求按该技能检查关键歧义。",
-        "rule_refs": ["SKILL.md frontmatter description", "agents/openai.yaml default_prompt"],
+        "rule_refs": [
+          "SKILL.md frontmatter description",
+          "agents/openai.yaml default_prompt"
+        ],
         "confidence": "high",
-        "allowed_variance": "检查范围可以不同，但必须加载 requirements-clarifier。"
+        "allowed_variance": "检查范围可以不同，但必须加载 codex-clarifier。"
       },
       "split": "sanity",
-      "use_project_rules": true
+      "use_project_rules": false
     },
     {
       "id": "p11_notification_scope",
@@ -130,17 +157,21 @@
       "provenance": "representative-synthetic",
       "scenario_family": "notification-behavior",
       "unit_under_test": "description",
-      "preconditions": { "implicit_invocation": true },
+      "preconditions": {
+        "implicit_invocation": true
+      },
       "query": "通知中心你先帮我做起来，但哪些人能收到、已读状态要不要跨设备同步，我还没想好。",
       "should_load_skill": true,
       "oracle": {
         "rationale": "接收范围和已读同步会改变用户可见行为与验收。",
-        "rule_refs": ["SKILL.md frontmatter description"],
+        "rule_refs": [
+          "SKILL.md frontmatter description"
+        ],
         "confidence": "high",
-        "allowed_variance": "可以先检查现有通知约定，但没有约定时必须加载 requirements-clarifier。"
+        "allowed_variance": "可以先检查现有通知约定，但没有约定时必须加载 codex-clarifier。"
       },
       "split": "validation",
-      "use_project_rules": true
+      "use_project_rules": false
     },
     {
       "id": "p07_import_errors",
@@ -149,17 +180,21 @@
       "provenance": "representative-synthetic",
       "scenario_family": "batch-failure-semantics",
       "unit_under_test": "description",
-      "preconditions": { "implicit_invocation": true },
+      "preconditions": {
+        "implicit_invocation": true
+      },
       "query": "实现 CSV 批量导入，失败记录怎么处理还没定。",
       "should_load_skill": true,
       "oracle": {
         "rationale": "部分成功、整批回滚或跳过错误会明显影响结果和验收。",
-        "rule_refs": ["SKILL.md frontmatter description"],
+        "rule_refs": [
+          "SKILL.md frontmatter description"
+        ],
         "confidence": "high",
-        "allowed_variance": "可以列出不同失败策略，但必须加载 requirements-clarifier。"
+        "allowed_variance": "可以列出不同失败策略，但必须加载 codex-clarifier。"
       },
       "split": "validation",
-      "use_project_rules": true
+      "use_project_rules": false
     },
     {
       "id": "p08_search_scope",
@@ -168,18 +203,23 @@
       "provenance": "observed",
       "scenario_family": "open-feature-scope",
       "unit_under_test": "description",
-      "preconditions": { "implicit_invocation": true, "approved_search_spec_available": false },
+      "preconditions": {
+        "implicit_invocation": true,
+        "approved_search_spec_available": false
+      },
       "query": "把站内搜索补上，用户能搜到自己需要的内容就行。",
       "should_load_skill": true,
       "oracle": {
         "rationale": "搜索对象、权限和匹配范围存在多个合理解释。",
-        "rule_refs": ["SKILL.md frontmatter description"],
+        "rule_refs": [
+          "SKILL.md frontmatter description"
+        ],
         "confidence": "high",
-        "allowed_variance": "可以先检查现有搜索惯例，但没有规范时必须加载 requirements-clarifier。",
+        "allowed_variance": "可以先检查现有搜索惯例，但没有规范时必须加载 codex-clarifier。",
         "minimal_counterexample": "若权威规范已完整定义搜索对象、权限、匹配和验收，则不应加载。"
       },
       "split": "validation",
-      "use_project_rules": true
+      "use_project_rules": false
     },
     {
       "id": "p09_webhook_delivery",
@@ -188,17 +228,21 @@
       "provenance": "representative-synthetic",
       "scenario_family": "external-delivery-semantics",
       "unit_under_test": "description",
-      "preconditions": { "implicit_invocation": true },
+      "preconditions": {
+        "implicit_invocation": true
+      },
       "query": "给客户开放 webhook，接口路径已经定了，其他按常规做。",
       "should_load_skill": true,
       "oracle": {
         "rationale": "重试、签名和投递成功语义会影响外部行为，不能仅凭“常规”稳定推断。",
-        "rule_refs": ["SKILL.md frontmatter description"],
+        "rule_refs": [
+          "SKILL.md frontmatter description"
+        ],
         "confidence": "high",
-        "allowed_variance": "可以先查项目约定，但没有明确合同就必须加载 requirements-clarifier。"
+        "allowed_variance": "可以先查项目约定，但没有明确合同就必须加载 codex-clarifier。"
       },
       "split": "validation",
-      "use_project_rules": true
+      "use_project_rules": false
     },
     {
       "id": "p10_small_ambiguities_combine",
@@ -207,17 +251,22 @@
       "provenance": "representative-synthetic",
       "scenario_family": "combined-small-ambiguities",
       "unit_under_test": "description",
-      "preconditions": { "implicit_invocation": true },
+      "preconditions": {
+        "implicit_invocation": true
+      },
       "query": "给商品页加收藏：按钮放哪、收藏是否公开、取消后怎么提示都还没说，你直接做。",
       "should_load_skill": true,
       "oracle": {
         "rationale": "多个单项不大的歧义合起来会决定用户体验和功能形态。",
-        "rule_refs": ["SKILL.md frontmatter description", "SKILL.md#处理不确定项"],
+        "rule_refs": [
+          "SKILL.md frontmatter description",
+          "SKILL.md#处理不确定项"
+        ],
         "confidence": "high",
-        "allowed_variance": "可以先查产品惯例，但没有约定时必须加载 requirements-clarifier。"
+        "allowed_variance": "可以先查产品惯例，但没有约定时必须加载 codex-clarifier。"
       },
       "split": "validation",
-      "use_project_rules": true
+      "use_project_rules": false
     },
     {
       "id": "n01_repo_fact",
@@ -226,18 +275,22 @@
       "provenance": "boundary",
       "scenario_family": "repository-fact-vs-user-intent",
       "unit_under_test": "description",
-      "preconditions": { "repository_contains_answer": true },
+      "preconditions": {
+        "repository_contains_answer": true
+      },
       "query": "这个仓库现在用哪套分页组件？",
       "should_load_skill": false,
       "oracle": {
         "rationale": "这是可从仓库查明的事实。",
-        "rule_refs": ["SKILL.md frontmatter description"],
+        "rule_refs": [
+          "SKILL.md frontmatter description"
+        ],
         "confidence": "high",
-        "allowed_variance": "可以使用不同只读工具查找，但不能加载 requirements-clarifier。",
+        "allowed_variance": "可以使用不同只读工具查找，但不能加载 codex-clarifier。",
         "minimal_counterexample": "若用户要求实现分页且用户可见分页行为仍有多种合理解释，则应加载。"
       },
       "split": "train",
-      "use_project_rules": true,
+      "use_project_rules": false,
       "workspace_fixture": "implementation_repo"
     },
     {
@@ -247,18 +300,22 @@
       "provenance": "boundary",
       "scenario_family": "project-convention-vs-ambiguity",
       "unit_under_test": "description",
-      "preconditions": { "repository_has_clear_export_convention": true },
+      "preconditions": {
+        "repository_has_clear_export_convention": true
+      },
       "query": "按发票列表现有的导出方式，给订单列表加同样的导出。",
       "should_load_skill": false,
       "oracle": {
         "rationale": "已有明确项目惯例，可以直接沿用。",
-        "rule_refs": ["SKILL.md frontmatter description"],
+        "rule_refs": [
+          "SKILL.md frontmatter description"
+        ],
         "confidence": "high",
-        "allowed_variance": "可以说明采用惯例，但不能加载 requirements-clarifier。",
+        "allowed_variance": "可以说明采用惯例，但不能加载 codex-clarifier。",
         "minimal_counterexample": "若用户明确声明本次导出范围尚未决定并覆盖现有惯例，则应加载。"
       },
       "split": "train",
-      "use_project_rules": true,
+      "use_project_rules": false,
       "workspace_fixture": "implementation_repo"
     },
     {
@@ -268,18 +325,23 @@
       "provenance": "boundary",
       "scenario_family": "delegated-defaults",
       "unit_under_test": "description",
-      "preconditions": { "user_authorized_defaults": true, "implementation_target_is_explicit": true },
+      "preconditions": {
+        "user_authorized_defaults": true,
+        "implementation_target_is_explicit": true
+      },
       "query": "在 src/logging/format-entry.ts 增加 formatDebugContext(value)，这是内部调试辅助函数；输出格式和实现细节都用合理默认，不用问我。不要删除数据；如果确实需要删除，再停下来确认。",
       "should_load_skill": false,
       "oracle": {
         "rationale": "用户给出了具体的内部实现任务，已经授权普通默认，并明确了需要升级的边界。",
-        "rule_refs": ["SKILL.md frontmatter description"],
+        "rule_refs": [
+          "SKILL.md frontmatter description"
+        ],
         "confidence": "high",
-        "allowed_variance": "可以说明所用默认，但不能加载 requirements-clarifier。",
+        "allowed_variance": "可以说明所用默认，但不能加载 codex-clarifier。",
         "minimal_counterexample": "若任务包含未授权的数据删除语义或其它高影响用户行为，则应加载。"
       },
       "split": "train",
-      "use_project_rules": true,
+      "use_project_rules": false,
       "workspace_fixture": "implementation_repo"
     },
     {
@@ -289,18 +351,22 @@
       "provenance": "boundary",
       "scenario_family": "bounded-style-change",
       "unit_under_test": "description",
-      "preconditions": { "target_and_new_value_are_explicit": true },
+      "preconditions": {
+        "target_and_new_value_are_explicit": true
+      },
       "query": "把设置页主按钮从灰色改成蓝色。",
       "should_load_skill": false,
       "oracle": {
         "rationale": "边界清楚、容易调整，没有值得先确认的关键歧义。",
-        "rule_refs": ["SKILL.md frontmatter description"],
+        "rule_refs": [
+          "SKILL.md frontmatter description"
+        ],
         "confidence": "high",
-        "allowed_variance": "可以查找现有蓝色 token，但不能加载 requirements-clarifier。",
+        "allowed_variance": "可以查找现有蓝色 token，但不能加载 codex-clarifier。",
         "minimal_counterexample": "若用户只说改成新的品牌风格但未定义颜色、范围和验收，则应加载。"
       },
       "split": "train",
-      "use_project_rules": true,
+      "use_project_rules": false,
       "workspace_fixture": "implementation_repo"
     },
     {
@@ -310,15 +376,20 @@
       "provenance": "boundary",
       "scenario_family": "decision-interview-vs-clarification",
       "unit_under_test": "description",
-      "preconditions": { "companion_skill_available": true, "implementation_context": false },
+      "preconditions": {
+        "companion_skill_available": true,
+        "implementation_context": false
+      },
       "query": "围绕团队协作功能逐轮访谈我，压力测试几种权限模型，直到我们形成共享理解。",
       "should_load_skill": false,
       "oracle": {
         "rationale": "当前任务本身是决策访谈，应使用 decision-grill。",
-        "rule_refs": ["SKILL.md frontmatter description"],
+        "rule_refs": [
+          "SKILL.md frontmatter description"
+        ],
         "confidence": "high",
-        "allowed_variance": "可以加载相邻 Skill，但不能加载 requirements-clarifier。",
-        "minimal_counterexample": "若用户要求立即实现，且只需补齐局部权限歧义，则应加载 requirements-clarifier。"
+        "allowed_variance": "可以加载相邻 Skill，但不能加载 codex-clarifier。",
+        "minimal_counterexample": "若用户要求立即实现，且只需补齐局部权限歧义，则应加载 codex-clarifier。"
       },
       "split": "train",
       "use_project_rules": false
@@ -330,18 +401,22 @@
       "provenance": "boundary",
       "scenario_family": "complete-spec-vs-ambiguity",
       "unit_under_test": "description",
-      "preconditions": { "authoritative_spec_is_complete": true },
+      "preconditions": {
+        "authoritative_spec_is_complete": true
+      },
       "query": "严格按 spec/account-pause.md 实现；暂停后的登录、计费、通知、恢复和验收都以文档为准。",
       "should_load_skill": false,
       "oracle": {
         "rationale": "权威规范已覆盖相关行为和验收。",
-        "rule_refs": ["SKILL.md frontmatter description"],
+        "rule_refs": [
+          "SKILL.md frontmatter description"
+        ],
         "confidence": "high",
-        "allowed_variance": "可以先读规范并制定内部计划，但不能加载 requirements-clarifier。",
+        "allowed_variance": "可以先读规范并制定内部计划，但不能加载 codex-clarifier。",
         "minimal_counterexample": "若规范没有定义暂停后的登录、计费或恢复行为，则应加载。"
       },
       "split": "validation",
-      "use_project_rules": true,
+      "use_project_rules": false,
       "workspace_fixture": "account_pause_repo"
     },
     {
@@ -351,18 +426,22 @@
       "provenance": "boundary",
       "scenario_family": "internal-plan-vs-clarification",
       "unit_under_test": "description",
-      "preconditions": { "approved_plan_is_complete": true },
+      "preconditions": {
+        "approved_plan_is_complete": true
+      },
       "query": "严格按 docs/approved-migration.md 实现会话过期迁移。文档中的需求、步骤、回滚和验收都已批准；你自己列执行步骤后直接做，不需要和我讨论。",
       "should_load_skill": false,
       "oracle": {
         "rationale": "权威文档给出了完整需求与验收，用户只要求 agent 内部规划。",
-        "rule_refs": ["SKILL.md frontmatter description"],
+        "rule_refs": [
+          "SKILL.md frontmatter description"
+        ],
         "confidence": "high",
-        "allowed_variance": "内部执行计划可以不同，但不能加载 requirements-clarifier。",
+        "allowed_variance": "内部执行计划可以不同，但不能加载 codex-clarifier。",
         "minimal_counterexample": "若批准计划仍缺少会改变验收的兼容期决定，则应加载。"
       },
       "split": "validation",
-      "use_project_rules": true,
+      "use_project_rules": false,
       "workspace_fixture": "session_migration_repo"
     },
     {
@@ -372,18 +451,22 @@
       "provenance": "boundary",
       "scenario_family": "bounded-bugfix",
       "unit_under_test": "description",
-      "preconditions": { "reproduction_and_expected_behavior_are_known": true },
+      "preconditions": {
+        "reproduction_and_expected_behavior_are_known": true
+      },
       "query": "修复 tests/parser_test.py 里这个稳定复现的失败，保持其他行为不变。",
       "should_load_skill": false,
       "oracle": {
         "rationale": "具体边界和预期行为已经明确。",
-        "rule_refs": ["SKILL.md frontmatter description"],
+        "rule_refs": [
+          "SKILL.md frontmatter description"
+        ],
         "confidence": "high",
-        "allowed_variance": "修复方法可以不同，但不能加载 requirements-clarifier。",
+        "allowed_variance": "修复方法可以不同，但不能加载 codex-clarifier。",
         "minimal_counterexample": "若失败有多个会改变用户行为的合理修复语义且没有验收标准，则应加载。"
       },
       "split": "validation",
-      "use_project_rules": true,
+      "use_project_rules": false,
       "workspace_fixture": "implementation_repo"
     },
     {
@@ -393,18 +476,22 @@
       "provenance": "boundary",
       "scenario_family": "analysis-vs-implementation",
       "unit_under_test": "description",
-      "preconditions": { "write_requested": false },
+      "preconditions": {
+        "write_requested": false
+      },
       "query": "解释当前删除流程，指出代码里已有的恢复机制，不要修改。",
       "should_load_skill": false,
       "oracle": {
         "rationale": "这是事实分析，不是实施前澄清。",
-        "rule_refs": ["SKILL.md frontmatter description"],
+        "rule_refs": [
+          "SKILL.md frontmatter description"
+        ],
         "confidence": "high",
-        "allowed_variance": "分析深度可以不同，但不能加载 requirements-clarifier。",
+        "allowed_variance": "分析深度可以不同，但不能加载 codex-clarifier。",
         "minimal_counterexample": "若用户要求修改删除流程且恢复期限或权限仍未决定，则应加载。"
       },
       "split": "validation",
-      "use_project_rules": true,
+      "use_project_rules": false,
       "workspace_fixture": "implementation_repo"
     },
     {
@@ -414,18 +501,22 @@
       "provenance": "boundary",
       "scenario_family": "fully-specified-internal-change",
       "unit_under_test": "description",
-      "preconditions": { "name_location_and_behavior_are_explicit": true },
+      "preconditions": {
+        "name_location_and_behavior_are_explicit": true
+      },
       "query": "在 src/logging/format-entry.ts 新增内部函数 formatDebugContext(value)，与现有 formatEntry 一样返回 String(value)。",
       "should_load_skill": false,
       "oracle": {
         "rationale": "名称、位置和行为均已明确，剩余实现选择内部且可逆。",
-        "rule_refs": ["SKILL.md frontmatter description"],
+        "rule_refs": [
+          "SKILL.md frontmatter description"
+        ],
         "confidence": "high",
-        "allowed_variance": "代码风格可以按项目惯例选择，但不能加载 requirements-clarifier。",
+        "allowed_variance": "代码风格可以按项目惯例选择，但不能加载 codex-clarifier。",
         "minimal_counterexample": "若新增函数的输出语义或用户可见范围未定义，则应加载。"
       },
       "split": "validation",
-      "use_project_rules": true,
+      "use_project_rules": false,
       "workspace_fixture": "implementation_repo"
     },
     {
@@ -435,17 +526,21 @@
       "provenance": "representative-synthetic",
       "scenario_family": "filter-defaults",
       "unit_under_test": "description",
-      "preconditions": { "implicit_invocation": true },
+      "preconditions": {
+        "implicit_invocation": true
+      },
       "query": "给账单页加筛选。默认时间范围和要不要记住上次条件都没定，先弄清楚再做。",
       "should_load_skill": true,
       "oracle": {
         "rationale": "默认范围和状态保留会改变用户看到的结果与交互。",
-        "rule_refs": ["SKILL.md frontmatter description"],
+        "rule_refs": [
+          "SKILL.md frontmatter description"
+        ],
         "confidence": "high",
-        "allowed_variance": "可以先检查现有筛选约定，但没有约定时必须加载 requirements-clarifier。"
+        "allowed_variance": "可以先检查现有筛选约定，但没有约定时必须加载 codex-clarifier。"
       },
       "split": "sanity",
-      "use_project_rules": true
+      "use_project_rules": false
     },
     {
       "id": "s02_decision_interview",
@@ -454,15 +549,20 @@
       "provenance": "boundary",
       "scenario_family": "decision-interview-vs-clarification",
       "unit_under_test": "description",
-      "preconditions": { "companion_skill_available": true, "implementation_context": false },
+      "preconditions": {
+        "companion_skill_available": true,
+        "implementation_context": false
+      },
       "query": "一个问题一个问题地和我推演团队权限模型，压力测试到我们形成共同决定。",
       "should_load_skill": false,
       "oracle": {
         "rationale": "当前任务是协作决策访谈，不是具体实施前的局部澄清。",
-        "rule_refs": ["SKILL.md frontmatter description"],
+        "rule_refs": [
+          "SKILL.md frontmatter description"
+        ],
         "confidence": "high",
-        "allowed_variance": "可以加载 decision-grill，但不能加载 requirements-clarifier。",
-        "minimal_counterexample": "若用户要求立即实现，且只需补齐一个会改变验收的权限缺口，则应加载 requirements-clarifier。"
+        "allowed_variance": "可以加载 decision-grill，但不能加载 codex-clarifier。",
+        "minimal_counterexample": "若用户要求立即实现，且只需补齐一个会改变验收的权限缺口，则应加载 codex-clarifier。"
       },
       "split": "sanity",
       "use_project_rules": false
@@ -474,18 +574,22 @@
       "provenance": "boundary",
       "scenario_family": "fully-specified-internal-change",
       "unit_under_test": "description",
-      "preconditions": { "name_location_and_behavior_are_explicit": true },
+      "preconditions": {
+        "name_location_and_behavior_are_explicit": true
+      },
       "query": "在 src/logging/format-entry.ts 加 formatTraceContext(value)，行为与 formatEntry 完全相同。直接实现。",
       "should_load_skill": false,
       "oracle": {
         "rationale": "位置、名称和行为都明确，剩余选择是内部实现。",
-        "rule_refs": ["SKILL.md frontmatter description"],
+        "rule_refs": [
+          "SKILL.md frontmatter description"
+        ],
         "confidence": "high",
-        "allowed_variance": "实现细节可以不同，但不能加载 requirements-clarifier。",
+        "allowed_variance": "实现细节可以不同，但不能加载 codex-clarifier。",
         "minimal_counterexample": "若输出语义或用户可见范围没有定义，则应加载。"
       },
       "split": "sanity",
-      "use_project_rules": true,
+      "use_project_rules": false,
       "workspace_fixture": "implementation_repo"
     },
     {
@@ -495,18 +599,22 @@
       "provenance": "boundary",
       "scenario_family": "complete-spec-vs-ambiguity",
       "unit_under_test": "description",
-      "preconditions": { "authoritative_spec_is_complete": true },
+      "preconditions": {
+        "authoritative_spec_is_complete": true
+      },
       "query": "严格按 spec/account-pause.md 实现账号暂停。登录、计费、通知、恢复和验收全部以该批准文档为准。",
       "should_load_skill": false,
       "oracle": {
         "rationale": "权威规范已覆盖用户行为和验收，没有关键需求缺口。",
-        "rule_refs": ["SKILL.md frontmatter description"],
+        "rule_refs": [
+          "SKILL.md frontmatter description"
+        ],
         "confidence": "high",
-        "allowed_variance": "可以先读取规范并制定内部计划，但不能加载 requirements-clarifier。",
+        "allowed_variance": "可以先读取规范并制定内部计划，但不能加载 codex-clarifier。",
         "minimal_counterexample": "若规范缺少暂停后的登录、计费或恢复行为，则应加载。"
       },
       "split": "sanity",
-      "use_project_rules": true,
+      "use_project_rules": false,
       "workspace_fixture": "account_pause_repo"
     }
   ]

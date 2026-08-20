@@ -15,18 +15,18 @@
       "provenance": "observed",
       "scenario_family": "runner-request-mode",
       "unit_under_test": "description",
-      "preconditions": { "participant_skills_available": true, "project_rules_enabled": true },
+      "preconditions": { "participant_skills_available": true, "project_rules_enabled": false },
       "query": "MCP/CI runner 怎么实现？难度多大？",
       "expected_loaded_skills": [],
       "oracle": {
         "rationale": "这是技术说明和难度评估，应直接回答。",
-        "rule_refs": ["decision-grill/SKILL.md frontmatter description", "requirements-clarifier/SKILL.md frontmatter description"],
+        "rule_refs": ["decision-grill/SKILL.md frontmatter description"],
         "confidence": "high",
         "allowed_variance": "说明内容可以不同，但不能加载任一 participant Skill。",
         "minimal_counterexample": "若用户要求逐轮权衡 runner 取舍并共同决定，则应只加载 decision-grill。"
       },
       "split": "validation",
-      "use_project_rules": true,
+      "use_project_rules": false,
       "tags": ["runner", "direct-answer"]
     },
     {
@@ -36,7 +36,7 @@
       "provenance": "boundary",
       "scenario_family": "runner-request-mode",
       "unit_under_test": "description",
-      "preconditions": { "participant_skills_available": true, "project_rules_enabled": true },
+      "preconditions": { "participant_skills_available": true, "project_rules_enabled": false },
       "query": "比较本地 MCP runner 和 CI runner，分析后直接推荐一个。",
       "expected_loaded_skills": [],
       "oracle": {
@@ -47,7 +47,7 @@
         "minimal_counterexample": "若用户要求逐轮参与凭据、运维和工作树取舍，则应只加载 decision-grill。"
       },
       "split": "sanity",
-      "use_project_rules": true,
+      "use_project_rules": false,
       "tags": ["runner", "direct-answer"]
     },
     {
@@ -57,7 +57,7 @@
       "provenance": "boundary",
       "scenario_family": "runner-request-mode",
       "unit_under_test": "description",
-      "preconditions": { "participant_skills_available": true, "project_rules_enabled": true },
+      "preconditions": { "participant_skills_available": true, "project_rules_enabled": false },
       "query": "逐轮问我凭据、运维和工作树取舍，压力测试本地 MCP runner 和 CI runner，直到我们形成共同决定。",
       "expected_loaded_skills": ["decision-grill"],
       "oracle": {
@@ -68,7 +68,7 @@
         "minimal_counterexample": "若用户只要说明、比较或直接推荐，则不应加载任一 participant Skill。"
       },
       "split": "validation",
-      "use_project_rules": true,
+      "use_project_rules": false,
       "tags": ["runner", "decision-interview"]
     },
     {
@@ -78,18 +78,18 @@
       "provenance": "boundary",
       "scenario_family": "implementation-request-mode",
       "unit_under_test": "description",
-      "preconditions": { "participant_skills_available": true, "project_rules_enabled": true, "approved_export_convention": false },
+      "preconditions": { "participant_skills_available": true, "project_rules_enabled": false, "approved_export_convention": false },
       "query": "实现订单导出，但导出全部还是当前筛选结果还没定。",
-      "expected_loaded_skills": ["requirements-clarifier"],
+      "expected_loaded_skills": [],
       "oracle": {
         "rationale": "具体实施结果存在关键需求歧义。",
-        "rule_refs": ["requirements-clarifier/SKILL.md frontmatter description", "plugin.json#extensions.instructions/quality-gate"],
+        "rule_refs": ["decision-grill/SKILL.md frontmatter description", "decision-prototype/SKILL.md frontmatter description"],
         "confidence": "high",
-        "allowed_variance": "可以先查仓库，但必须只加载 requirements-clarifier。",
+        "allowed_variance": "可以先查仓库，但不应加载任何 Ask Me Skill。",
         "minimal_counterexample": "若用户要求围绕范围、权限和格式逐轮压力测试并形成共享方案，则应只加载 decision-grill。"
       },
       "split": "validation",
-      "use_project_rules": true,
+      "use_project_rules": false,
       "workspace_fixture": "neutral_export_repo",
       "tags": ["export", "implementation-ambiguity"]
     },
@@ -100,18 +100,18 @@
       "provenance": "boundary",
       "scenario_family": "implementation-request-mode",
       "unit_under_test": "description",
-      "preconditions": { "participant_skills_available": true, "project_rules_enabled": true, "approved_export_convention": false },
+      "preconditions": { "participant_skills_available": true, "project_rules_enabled": false, "approved_export_convention": false },
       "query": "实现前围绕订单导出的范围、权限和格式逐轮追问我，压力测试这些决定，直到我们形成共享方案。",
       "expected_loaded_skills": ["decision-grill"],
       "oracle": {
         "rationale": "显式访谈意图覆盖实施语境。",
-        "rule_refs": ["decision-grill/SKILL.md frontmatter description", "requirements-clarifier/SKILL.md frontmatter description"],
+        "rule_refs": ["decision-grill/SKILL.md frontmatter description"],
         "confidence": "high",
         "allowed_variance": "可以先查仓库，但必须只加载 decision-grill。",
-        "minimal_counterexample": "若用户只说明一个局部实施歧义，没有逐轮访谈意图，则应只加载 requirements-clarifier。"
+        "minimal_counterexample": "若用户只说明一个局部实施歧义，没有逐轮访谈意图，则不应加载任何 Ask Me Skill。"
       },
       "split": "validation",
-      "use_project_rules": true,
+      "use_project_rules": false,
       "workspace_fixture": "neutral_export_repo",
       "tags": ["export", "decision-interview"]
     },
@@ -122,18 +122,18 @@
       "provenance": "boundary",
       "scenario_family": "project-convention-override",
       "unit_under_test": "description",
-      "preconditions": { "participant_skills_available": true, "project_rules_enabled": true, "approved_export_convention": true },
+      "preconditions": { "participant_skills_available": true, "project_rules_enabled": false, "approved_export_convention": true },
       "query": "沿用发票列表现有的导出范围惯例，给订单列表实现同样的导出。",
       "expected_loaded_skills": [],
       "oracle": {
         "rationale": "仓库已有明确惯例，不需要澄清或访谈。",
-        "rule_refs": ["requirements-clarifier/SKILL.md frontmatter description", "plugin.json#extensions.instructions/quality-gate"],
+        "rule_refs": ["decision-grill/SKILL.md frontmatter description", "decision-prototype/SKILL.md frontmatter description"],
         "confidence": "high",
         "allowed_variance": "可以说明沿用惯例，但不能加载任一 participant Skill。",
-        "minimal_counterexample": "若用户明确声明本次导出范围未决定并覆盖惯例，则应只加载 requirements-clarifier。"
+        "minimal_counterexample": "若用户明确声明本次导出范围未决定并覆盖惯例，则不应加载任何 Ask Me Skill。"
       },
       "split": "sanity",
-      "use_project_rules": true,
+      "use_project_rules": false,
       "workspace_fixture": "implementation_repo",
       "tags": ["export", "repo-fact"]
     },
@@ -144,18 +144,18 @@
       "provenance": "boundary",
       "scenario_family": "project-convention-override",
       "unit_under_test": "description",
-      "preconditions": { "participant_skills_available": true, "project_rules_enabled": true, "approved_export_convention": true, "user_overrides_convention": true },
+      "preconditions": { "participant_skills_available": true, "project_rules_enabled": false, "approved_export_convention": true, "user_overrides_convention": true },
       "query": "虽然发票导出使用当前筛选结果，但这次订单导出的范围尚未决定。现在开始实现订单导出。",
-      "expected_loaded_skills": ["requirements-clarifier"],
+      "expected_loaded_skills": [],
       "oracle": {
         "rationale": "用户显式声明本次需求未决，应覆盖仓库惯例。",
-        "rule_refs": ["requirements-clarifier/SKILL.md frontmatter description", "plugin.json#extensions.instructions/quality-gate"],
+        "rule_refs": ["decision-grill/SKILL.md frontmatter description", "decision-prototype/SKILL.md frontmatter description"],
         "confidence": "high",
-        "allowed_variance": "可以引用现有惯例作为选项，但必须只加载 requirements-clarifier。",
+        "allowed_variance": "可以引用现有惯例作为选项，但不应加载任何 Ask Me Skill。",
         "minimal_counterexample": "若用户要求直接沿用现有导出惯例，则不应加载任一 participant Skill。"
       },
       "split": "sanity",
-      "use_project_rules": true,
+      "use_project_rules": false,
       "workspace_fixture": "implementation_repo",
       "tags": ["export", "implementation-ambiguity", "repo-fact"]
     },
@@ -166,7 +166,7 @@
       "provenance": "boundary",
       "scenario_family": "plan-review-vs-revision",
       "unit_under_test": "description",
-      "preconditions": { "participant_skills_available": true, "project_rules_enabled": true },
+      "preconditions": { "participant_skills_available": true, "project_rules_enabled": false },
       "query": "评审这份迁移计划，直接列出风险和改进建议。",
       "expected_loaded_skills": [],
       "oracle": {
@@ -177,7 +177,7 @@
         "minimal_counterexample": "若用户要求逐轮修改计划并确认共享理解，则应只加载 decision-grill。"
       },
       "split": "validation",
-      "use_project_rules": true,
+      "use_project_rules": false,
       "tags": ["plan", "direct-answer"]
     },
     {
@@ -187,7 +187,7 @@
       "provenance": "boundary",
       "scenario_family": "plan-review-vs-revision",
       "unit_under_test": "description",
-      "preconditions": { "participant_skills_available": true, "project_rules_enabled": true },
+      "preconditions": { "participant_skills_available": true, "project_rules_enabled": false },
       "query": "逐轮和我修改迁移计划，关键取舍问我，直到我们确认共享理解。",
       "expected_loaded_skills": ["decision-grill"],
       "oracle": {
@@ -198,7 +198,7 @@
         "minimal_counterexample": "若用户只要一次性评审和建议，则不应加载任一 participant Skill。"
       },
       "split": "validation",
-      "use_project_rules": true,
+      "use_project_rules": false,
       "tags": ["plan", "decision-interview"]
     },
     {
@@ -208,18 +208,18 @@
       "provenance": "observed",
       "scenario_family": "approved-plan-local-gap",
       "unit_under_test": "description",
-      "preconditions": { "participant_skills_available": true, "project_rules_enabled": true, "plan_is_approved": true },
+      "preconditions": { "participant_skills_available": true, "project_rules_enabled": false, "plan_is_approved": true },
       "query": "按已批准的迁移计划实施，但兼容期还没定，而且这个选择会改变验收。",
-      "expected_loaded_skills": ["requirements-clarifier"],
+      "expected_loaded_skills": [],
       "oracle": {
         "rationale": "计划主体已批准，但实施需求仍有关键歧义。",
-        "rule_refs": ["decision-grill/SKILL.md frontmatter description", "requirements-clarifier/SKILL.md frontmatter description"],
+        "rule_refs": ["decision-grill/SKILL.md frontmatter description"],
         "confidence": "high",
-        "allowed_variance": "可以采用已批准的其它决定，但必须只加载 requirements-clarifier。",
+        "allowed_variance": "可以采用已批准的其它决定，但不应加载任何 Ask Me Skill。",
         "minimal_counterexample": "若兼容期也已批准且验收完整，则不应加载任一 participant Skill。"
       },
       "split": "validation",
-      "use_project_rules": true,
+      "use_project_rules": false,
       "tags": ["plan", "implementation-ambiguity"]
     },
     {
@@ -229,18 +229,18 @@
       "provenance": "boundary",
       "scenario_family": "read-only-spec-review",
       "unit_under_test": "description",
-      "preconditions": { "participant_skills_available": true, "project_rules_enabled": true, "current_task_is_read_only_review": true },
+      "preconditions": { "participant_skills_available": true, "project_rules_enabled": false, "current_task_is_read_only_review": true },
       "query": "只读审阅 spec/account-pause.md：概括它已覆盖的行为、恢复和验收，并报告文档本身仍有的缺口。当前任务只需要审阅结论，不进入需求确认或实施；不要运行测试或修改文件。",
       "expected_loaded_skills": [],
       "oracle": {
         "rationale": "当前交付是一次性只读规范评审，不是实现任务或逐轮访谈；发现缺口时也应直接报告。",
-        "rule_refs": ["requirements-clarifier/SKILL.md frontmatter description", "decision-grill/SKILL.md frontmatter description"],
+        "rule_refs": ["decision-grill/SKILL.md frontmatter description"],
         "confidence": "high",
         "allowed_variance": "可以读取规范并报告已覆盖内容和可见缺口，但不能加载任一 participant Skill，也不能开始需求确认或实施。",
-        "minimal_counterexample": "若当前任务改为实施该功能，且规范缺口会改变用户行为或验收，则应只加载 requirements-clarifier。"
+        "minimal_counterexample": "若当前任务改为实施该功能，且规范缺口会改变用户行为或验收，则不应加载任何 Ask Me Skill。"
       },
       "split": "sanity",
-      "use_project_rules": true,
+      "use_project_rules": false,
       "workspace_fixture": "account_pause_repo",
       "tags": ["read-only-review", "spec-gap-reporting"]
     },
@@ -251,18 +251,18 @@
       "provenance": "boundary",
       "scenario_family": "delegated-internal-choice",
       "unit_under_test": "description",
-      "preconditions": { "participant_skills_available": true, "project_rules_enabled": true, "user_delegated_choice": true },
+      "preconditions": { "participant_skills_available": true, "project_rules_enabled": false, "user_delegated_choice": true },
       "query": "为内部日志库做技术选型并直接采用你的推荐。内部选择你自行决定，不要问我。",
       "expected_loaded_skills": [],
       "oracle": {
         "rationale": "用户已明确委托内部选择。",
-        "rule_refs": ["decision-grill/SKILL.md frontmatter description", "requirements-clarifier/SKILL.md frontmatter description"],
+        "rule_refs": ["decision-grill/SKILL.md frontmatter description"],
         "confidence": "high",
         "allowed_variance": "选型结果可以不同，但不能加载任一 participant Skill。",
         "minimal_counterexample": "若用户保留关键取舍并要求逐轮共同选择，则应只加载 decision-grill。"
       },
       "split": "sanity",
-      "use_project_rules": true,
+      "use_project_rules": false,
       "workspace_fixture": "implementation_repo",
       "tags": ["implementation", "delegated"]
     },
@@ -273,7 +273,7 @@
       "provenance": "derived",
       "scenario_family": "explicit-invocation",
       "unit_under_test": "description",
-      "preconditions": { "participant_skills_available": true, "project_rules_enabled": true, "explicit_invocation": true },
+      "preconditions": { "participant_skills_available": true, "project_rules_enabled": false, "explicit_invocation": true },
       "query": "$decision-grill 帮我把 API 下线想法想透，逐轮压力测试兼容期限、迁移责任和回退条件。",
       "expected_loaded_skills": ["decision-grill"],
       "oracle": {
@@ -283,7 +283,7 @@
         "allowed_variance": "访谈起点可以不同，但必须只加载 decision-grill。"
       },
       "split": "sanity",
-      "use_project_rules": true,
+      "use_project_rules": false,
       "tags": ["idea", "explicit"]
     },
     {
@@ -293,7 +293,7 @@
       "provenance": "derived",
       "scenario_family": "workflow-delegated-interview",
       "unit_under_test": "description",
-      "preconditions": { "participant_skills_available": true, "project_rules_enabled": true, "outer_workflow_authorized_interview": true },
+      "preconditions": { "participant_skills_available": true, "project_rules_enabled": false, "outer_workflow_authorized_interview": true },
       "query": "当前外层工作流已进入协作决策访谈阶段。请围绕发布策略逐轮询问我的取舍，形成共享理解。",
       "expected_loaded_skills": ["decision-grill"],
       "oracle": {
@@ -303,7 +303,7 @@
         "allowed_variance": "问题内容可以不同，但必须只加载 decision-grill。"
       },
       "split": "validation",
-      "use_project_rules": true,
+      "use_project_rules": false,
       "tags": ["workflow", "decision-interview"]
     }
   ]
