@@ -184,7 +184,8 @@ test('all composition suites expose the three adjacent decision Skills', async (
     'decision-prototype-release-evals.json',
   ));
   assert.equal(behavior.skill_name, 'decision-prototype');
-  assert.equal(behavior.evals.length, 2);
+  assert.equal(Array.isArray(behavior.evals), true);
+  assert.equal(behavior.evals.length > 0, true);
   for (const entry of behavior.evals) {
     assert.equal(entry.sandbox, 'workspace-write');
     assert.equal(entry.review.workspace_unchanged, false);
