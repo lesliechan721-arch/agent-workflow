@@ -2,6 +2,66 @@
   "schemaVersion": 2,
   "plugin": "dev-workflow",
   "skill": "dev-implement",
-  "profiles": [{"id":"project-default","scope":"project","plugins":[{"name":"dev-workflow","config":{}}],"runModel":true,"requiredForRelease":false}],
-  "suites": [{"id":"trigger","kind":"trigger","skills":["dev-workflow","dev-spec","dev-review-spec","dev-implement","dev-review-code"],"cases":"./trigger-cases.json","observeSpawnAgent":false,"isolation":"strict","strictNegativeSplits":["validation"],"profiles":["project-default"],"defaultRuns":3,"releaseSplits":["validation"],"requiredForRelease":false,"perRunTimeoutMs":180000}]
+  "profiles": [
+    {
+      "id": "project-default",
+      "scope": "project",
+      "plugins": [
+        {
+          "name": "dev-workflow",
+          "config": {}
+        }
+      ],
+      "runModel": true,
+      "requiredForRelease": true
+    }
+  ],
+  "suites": [
+    {
+      "id": "trigger",
+      "kind": "trigger",
+      "skills": [
+        "dev-workflow",
+        "dev-spec",
+        "dev-review-spec",
+        "dev-implement",
+        "dev-review-code"
+      ],
+      "cases": "./trigger-cases.json",
+      "observeSpawnAgent": false,
+      "isolation": "strict",
+      "strictNegativeSplits": [
+        "validation"
+      ],
+      "profiles": [
+        "project-default"
+      ],
+      "defaultRuns": 3,
+      "releaseSplits": [
+        "validation"
+      ],
+      "requiredForRelease": false,
+      "perRunTimeoutMs": 180000
+    },
+    {
+      "id": "behavior",
+      "kind": "conversation",
+      "skills": [
+        "dev-workflow",
+        "dev-spec",
+        "dev-review-spec",
+        "dev-implement",
+        "dev-review-code"
+      ],
+      "cases": "./behavior-cases.json",
+      "isolation": "strict",
+      "profiles": [
+        "project-default"
+      ],
+      "defaultRuns": 1,
+      "releaseSplits": [],
+      "requiredForRelease": true,
+      "perRunTimeoutMs": 300000
+    }
+  ]
 }

@@ -5,17 +5,24 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
+
+import { renderArtifactPlan, trimBlock } from './render-artifacts.mjs';
 
 const execFileAsync = promisify(execFile);
 const scriptPath = fileURLToPath(new URL('./render-artifacts.mjs', import.meta.url));
-const scriptModuleUrl = pathToFileURL(scriptPath).href;
 const manifestPath = fileURLToPath(new URL('../.agents-plugin/plugin.json', import.meta.url));
 const stagedArtifactSourcePath = fileURLToPath(
   new URL('../.agents-plugin/artifact-sources/codex/codex-explore-skill/0/', import.meta.url),
 );
 const stagedSubagentArtifactSourcePath = fileURLToPath(
-  new URL('../.agents-plugin/artifact-sources/codex/codex-subagent-guide-skill/0/', import.meta.url),
+  new URL(
+    '../.agents-plugin/artifact-sources/codex/codex-subagent-guide-skill/0/',
+    import.meta.url,
+  ),
+);
+const stagedClarifierArtifactSourcePath = fileURLToPath(
+  new URL('../.agents-plugin/artifact-sources/codex/codex-clarifier-skill/0/', import.meta.url),
 );
 const artifactSourcePath = existsSync(stagedArtifactSourcePath)
   ? stagedArtifactSourcePath
@@ -23,6 +30,9 @@ const artifactSourcePath = existsSync(stagedArtifactSourcePath)
 const subagentArtifactSourcePath = existsSync(stagedSubagentArtifactSourcePath)
   ? stagedSubagentArtifactSourcePath
   : fileURLToPath(new URL('../skills/codex-subagent-guide/', import.meta.url));
+const clarifierArtifactSourcePath = existsSync(stagedClarifierArtifactSourcePath)
+  ? stagedClarifierArtifactSourcePath
+  : fileURLToPath(new URL('../skills/codex-clarifier/', import.meta.url));
 
 const expectedRoles = [
   {
@@ -75,6 +85,11 @@ function createContext(overrides = {}) {
       version: '0.2.0',
     },
     artifactSources: [
+      {
+        id: 'codex-clarifier-skill',
+        target: 'codex.skill',
+        sourceDirs: [clarifierArtifactSourcePath],
+      },
       {
         id: 'codex-explore-skill',
         target: 'codex.skill',
@@ -161,7 +176,7 @@ async function testRenderedArtifactsAndSkillContract() {
   const skill = findArtifact(plan, 'codex-explore-skill');
 
   assert.equal(plan.version, 2);
-  assert.equal(plan.artifacts.length, 10);
+  assert.equal(plan.artifacts.length, 11);
   assert.equal(skill.kind, 'skill');
   assert.equal(skill.target, 'codex.skill');
   assert.equal(skill.state, 'present');
@@ -172,8 +187,11 @@ async function testRenderedArtifactsAndSkillContract() {
     assertRoleArtifact(plan, role);
   }
   assert.equal(
-    new Set(expectedRoles.map((role) =>
-      findArtifact(plan, role.id).content.roleFile.developer_instructions)).size,
+    new Set(
+      expectedRoles.map(
+        (role) => findArtifact(plan, role.id).content.roleFile.developer_instructions,
+      ),
+    ).size,
     1,
   );
 
@@ -182,10 +200,7 @@ async function testRenderedArtifactsAndSkillContract() {
   assert.equal('model_reasoning_effort' in custom.content.roleFile, false);
 
   const text = skill.content.files['SKILL.md'];
-  const openaiYaml = await readFile(
-    path.join(artifactSourcePath, 'agents', 'openai.yaml'),
-    'utf8',
-  );
+  const openaiYaml = await readFile(path.join(artifactSourcePath, 'agents', 'openai.yaml'), 'utf8');
   assert.equal('agents/openai.yaml' in skill.content.files, false);
   assert.ok([...text].length <= 4_000);
   assert.ok(text.split('\n').length <= 80);
@@ -262,10 +277,14 @@ async function testStaticManifestContract() {
   for (const role of expectedRoles.filter((entry) => entry.modelKey)) {
     assert.equal(manifest.config.schema[role.modelKey].default, role.model);
     assert.equal(manifest.config.schema[role.effortKey].default, role.effort);
-    assert.deepEqual(
-      manifest.config.schema[role.effortKey].values,
-      ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
-    );
+    assert.deepEqual(manifest.config.schema[role.effortKey].values, [
+      'low',
+      'medium',
+      'high',
+      'xhigh',
+      'max',
+      'ultra',
+    ]);
   }
   assert.equal(manifest.config.schema.minimumInitialWaitMinutes.default, 10);
   assert.deepEqual(manifest.marketplace.policy.products, ['CODEX']);
@@ -298,7 +317,6 @@ async function testStaticManifestContract() {
 }
 
 async function testTrimBlockAndUnsupportedPlatform() {
-  const { trimBlock, renderArtifactPlan } = await import(scriptModuleUrl);
   assert.equal(
     trimBlock(`
         第一行
@@ -323,6 +341,6 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error(error instanceof Error ? error.stack ?? error.message : String(error));
+  console.error(error instanceof Error ? (error.stack ?? error.message) : String(error));
   process.exitCode = 1;
 });

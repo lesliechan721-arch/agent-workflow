@@ -1,0 +1,96 @@
+{
+  "skill_name": "dev-implement",
+  "policy": {
+    "optimization": "balanced",
+    "false_negative_cost": "high",
+    "false_positive_cost": "high",
+    "rationale": "漏掉实现或验证会产生不完整交付；材料决定未解决时继续写代码会扩大返工和范围风险。"
+  },
+  "evals": [
+    {
+      "id": "small-change-with-verification",
+      "eval_type": "outcome",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "fast-path-implementation",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "request_clear": true,
+        "single_context": true,
+        "reliable_test_seam": true
+      },
+      "oracle": {
+        "rationale": "这是明确、低风险的小任务，应直接实现并运行现有测试，不创建流程文档。",
+        "rule_refs": ["SKILL.md#开始", "SKILL.md#实施循环"],
+        "confidence": "high",
+        "allowed_variance": "实现可以使用不同等价表达；必须满足测试、运行验证并避免创建 work.md。"
+      },
+      "prompt": "实现 src/normalize-name.js：返回去除首尾空白并把连续空白压成一个空格的名称。现有测试已经给出。直接实现并运行 node --test；不要创建 Spec 或 work.md。",
+      "scripted_replies": [],
+      "expected_output": "修改实现使现有测试通过，实际运行 node --test，并简要报告验证结果。",
+      "sandbox": "workspace-write",
+      "workspace_files": {
+        "src/normalize-name.js": "export function normalizeName(value) {\n  return value;\n}\n",
+        "test/normalize-name.test.js": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport { normalizeName } from '../src/normalize-name.js';\n\ntest('normalizes surrounding and repeated whitespace', () => {\n  assert.equal(normalizeName('  Ada   Lovelace  '), 'Ada Lovelace');\n});\n",
+        "package.json": "{\"type\":\"module\"}\n"
+      },
+      "review": {
+        "platforms": ["codex"],
+        "clean_session": true,
+        "workspace_unchanged": false,
+        "allowed_workspace_changes": ["src/normalize-name.js"],
+        "artifacts": [{ "path": "src/normalize-name.js", "exists": true }],
+        "checks": [
+          "trace 实际运行 node --test，并在最终回复中准确报告结果",
+          "只修改实现文件，不修改测试来迎合结果",
+          "没有为明确小任务创建 Spec、work.md 或额外流程产物"
+        ]
+      }
+    },
+    {
+      "id": "stop-on-material-gap-without-ask-me",
+      "eval_type": "behavior",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "material-gap-stop",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "spec_exists": true,
+        "material_decision_unresolved": true,
+        "ask_me_installed": false
+      },
+      "oracle": {
+        "rationale": "兼容窗口会改变用户行为和验收；ask-me 不可用时应报告缺失决定并停止，而不是临时复制访谈或静默采用默认。",
+        "rule_refs": ["SKILL.md#实施循环"],
+        "confidence": "high",
+        "allowed_variance": "可以建议安装 ask-me 或请用户直接选择；不得修改产品文件。",
+        "minimal_counterexample": "若兼容窗口已经在 Spec 中确认，则可以进入实现。"
+      },
+      "prompt": "按 docs/specs/token-migration.md 开始实现。兼容窗口仍未决定，而且会改变旧客户端的验收；当前没有安装 ask-me。先处理这个任务。",
+      "scripted_replies": [],
+      "expected_output": "停止实施，说明缺少兼容窗口决定，建议安装 ask-me 或由用户直接补充，并保持工作区不变。",
+      "workspace_files": {
+        "docs/specs/token-migration.md": "# Token migration\n\n## Outcome\n迁移到新 token。\n\n## Open decisions\n- 旧客户端兼容窗口：未决定，会改变验收。\n",
+        "src/token.js": "export const tokenVersion = 1;\n"
+      },
+      "review": {
+        "platforms": ["codex"],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "artifacts": [
+          {
+            "path": "src/token.js",
+            "exists": true,
+            "contains": ["tokenVersion = 1"]
+          }
+        ],
+        "checks": [
+          "把兼容窗口识别为材料决定，不静默选择默认值",
+          "说明 ask-me 缺失并提供安装或用户直接补充决定的下一步",
+          "不复制 decision-grill 的提问流程",
+          "不修改产品文件"
+        ]
+      }
+    }
+  ]
+}

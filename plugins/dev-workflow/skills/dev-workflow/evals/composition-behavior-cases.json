@@ -1,0 +1,83 @@
+{
+  "skill_name": "dev-workflow",
+  "policy": {
+    "optimization": "precision-first",
+    "false_negative_cost": "high",
+    "false_positive_cost": "high",
+    "rationale": "跨插件交接若遗漏已确认决定、越过用户反馈点或复制相邻 Skill 职责，会造成错误写入、规格漂移或流程失控。"
+  },
+  "evals": [
+    {
+      "id": "prototype-feedback-to-light-spec",
+      "eval_type": "outcome",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "prototype-to-spec-handoff",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "workflow_explicitly_requested": true,
+        "ask_me_installed": true,
+        "prototype_feedback_required": true,
+        "subsequent_spec_authorized": true,
+        "production_implementation_forbidden": true
+      },
+      "oracle": {
+        "rationale": "用户需要先操作候选布局再决定，并已授权反馈后整理轻量 Spec；工作流应先停在 Prototype 反馈点，再把确认决定交给 dev-spec，不能直接修改生产页面。",
+        "rule_refs": [
+          "dev-workflow/SKILL.md#路由",
+          "decision-prototype/SKILL.md#工作流",
+          "dev-spec/SKILL.md#工作流"
+        ],
+        "confidence": "high",
+        "allowed_variance": "原型结构和 Spec 措辞可以不同；必须先等待反馈，只保存已确认决定，保持生产文件不变，并在 Spec 后停止。"
+      },
+      "prompt": "使用 /dev 处理审批页布局。先只在 prototypes/approval-layout/ 下做一个可点击原型让我比较单栏和双栏，不要修改 src/approval-page.ts。我反馈后，把确认决定保存到 prototypes/approval-layout/decision.md，并继续整理为 docs/specs/approval-layout.md 的轻量 Spec；不要进入生产实现。",
+      "scripted_replies": [
+        {
+          "expected_question_count": 1,
+          "answers_by_index": [
+            "选择双栏，右侧保留审批历史；移动端折叠。请记录决定并继续生成轻量 Spec，然后停止，不要实现生产页面。"
+          ],
+          "unexpected_question_answer": "只需要我选择单栏或双栏；其它事项保留为未解决。"
+        }
+      ],
+      "expected_output": "创建可操作的单栏/双栏原型，等待用户反馈，记录双栏决定，再生成只包含已确认材料决定和实现自由的轻量 Spec；生产页面保持不变。",
+      "sandbox": "workspace-write",
+      "workspace_files": {
+        "src/approval-page.ts": "export const approvalLayout = 'existing-production-layout';\n"
+      },
+      "review": {
+        "platforms": ["codex"],
+        "clean_session": true,
+        "workspace_unchanged": false,
+        "allowed_workspace_changes": [
+          "prototypes/approval-layout/**",
+          "docs/specs/approval-layout.md"
+        ],
+        "artifacts": [
+          {
+            "path": "prototypes/approval-layout/index.html",
+            "exists": true,
+            "contains": ["单栏", "双栏"]
+          },
+          {
+            "path": "prototypes/approval-layout/decision.md",
+            "exists": true,
+            "contains": ["双栏", "审批历史", "移动端"]
+          },
+          {
+            "path": "docs/specs/approval-layout.md",
+            "exists": true,
+            "contains": ["双栏", "审批历史", "移动端", "Agent discretion"]
+          }
+        ],
+        "checks": [
+          "trace 在用户反馈前使用 decision-prototype，并在反馈后才进入 dev-spec",
+          "Spec 只综合用户已确认的双栏、审批历史和移动端决定，不发明新的材料要求",
+          "不加载 dev-implement，不修改 src/approval-page.ts，也不把原型升级为生产实现",
+          "最终结果停在轻量 Spec，并保留局部实现自由"
+        ]
+      }
+    }
+  ]
+}

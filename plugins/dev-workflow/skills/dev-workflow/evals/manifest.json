@@ -2,6 +2,105 @@
   "schemaVersion": 2,
   "plugin": "dev-workflow",
   "skill": "dev-workflow",
-  "profiles": [{"id":"project-default","scope":"project","plugins":[{"name":"dev-workflow","config":{}}],"runModel":true,"requiredForRelease":false}],
-  "suites": [{"id":"trigger","kind":"trigger","skills":["dev-workflow","dev-spec","dev-review-spec","dev-implement","dev-review-code"],"cases":"./trigger-cases.json","observeSpawnAgent":false,"isolation":"strict","strictNegativeSplits":["validation"],"profiles":["project-default"],"defaultRuns":3,"releaseSplits":["validation"],"requiredForRelease":false,"perRunTimeoutMs":180000}]
+  "profiles": [
+    {
+      "id": "project-default",
+      "scope": "project",
+      "plugins": [
+        {
+          "name": "dev-workflow",
+          "config": {}
+        }
+      ],
+      "runModel": true,
+      "requiredForRelease": true
+    },
+    {
+      "id": "project-with-ask-me",
+      "scope": "project",
+      "plugins": [
+        {
+          "name": "dev-workflow",
+          "config": {}
+        },
+        {
+          "name": "ask-me",
+          "config": {}
+        }
+      ],
+      "runModel": true,
+      "requiredForRelease": true
+    }
+  ],
+  "suites": [
+    {
+      "id": "trigger",
+      "kind": "trigger",
+      "skills": ["dev-workflow", "dev-spec", "dev-review-spec", "dev-implement", "dev-review-code"],
+      "cases": "./trigger-cases.json",
+      "observeSpawnAgent": false,
+      "isolation": "strict",
+      "strictNegativeSplits": ["validation"],
+      "profiles": ["project-default"],
+      "defaultRuns": 3,
+      "releaseSplits": ["validation"],
+      "requiredForRelease": true,
+      "perRunTimeoutMs": 180000
+    },
+    {
+      "id": "router-with-ask-me",
+      "kind": "trigger",
+      "skills": [
+        "dev-workflow",
+        "dev-spec",
+        "dev-review-spec",
+        "dev-implement",
+        "dev-review-code",
+        "decision-grill",
+        "decision-prototype"
+      ],
+      "cases": "./cross-plugin-routing-cases.json",
+      "observeSpawnAgent": false,
+      "isolation": "strict",
+      "strictNegativeSplits": [],
+      "profiles": ["project-with-ask-me"],
+      "defaultRuns": 3,
+      "releaseSplits": ["validation", "sanity"],
+      "requiredForRelease": true,
+      "minimumPassRate": 0.9,
+      "perRunTimeoutMs": 180000
+    },
+    {
+      "id": "fallback-without-ask-me",
+      "kind": "conversation",
+      "skills": ["dev-workflow", "dev-spec", "dev-review-spec", "dev-implement", "dev-review-code"],
+      "cases": "./fallback-behavior-cases.json",
+      "isolation": "strict",
+      "profiles": ["project-default"],
+      "defaultRuns": 1,
+      "releaseSplits": [],
+      "requiredForRelease": true,
+      "perRunTimeoutMs": 300000
+    },
+    {
+      "id": "composition-with-ask-me",
+      "kind": "conversation",
+      "skills": [
+        "dev-workflow",
+        "dev-spec",
+        "dev-review-spec",
+        "dev-implement",
+        "dev-review-code",
+        "decision-grill",
+        "decision-prototype"
+      ],
+      "cases": "./composition-behavior-cases.json",
+      "isolation": "strict",
+      "profiles": ["project-with-ask-me"],
+      "defaultRuns": 1,
+      "releaseSplits": [],
+      "requiredForRelease": true,
+      "perRunTimeoutMs": 300000
+    }
+  ]
 }

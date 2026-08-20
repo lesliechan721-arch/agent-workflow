@@ -118,6 +118,8 @@ describe('skill-review author tools', () => {
       `agent-content-toolkit=${path.join(root, 'plugins', 'agent-content-toolkit')}`,
       '--source',
       `agent-skill-toolkit=${path.join(root, 'plugins', 'agent-skill-toolkit')}`,
+      '--source',
+      `agent-skill-eval-runner=${path.join(root, 'plugins', 'agent-skill-eval-runner')}`,
     ], { cwd: root, encoding: 'utf8' });
     expect(JSON.parse(stdout).target.sourceDigest).toBe(expectedDigest);
   });
@@ -725,9 +727,10 @@ describe('skill-review author tools', () => {
     const report = JSON.parse(result.stdout);
 
     expect(report.target).toMatchObject({ kind: 'aw-plugin', name: 'codex-enhance' });
-    expect(report.plugin.dynamic_targets).toHaveLength(10);
-    expect(report.source_skills).toHaveLength(2);
+    expect(report.plugin.dynamic_targets).toHaveLength(11);
+    expect(report.source_skills).toHaveLength(3);
     expect(report.source_skills).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: 'skills/codex-clarifier/SKILL.md' }),
       expect.objectContaining({ path: 'skills/codex-explore/SKILL.md' }),
       expect.objectContaining({ path: 'skills/codex-subagent-guide/SKILL.md' }),
     ]));
@@ -737,6 +740,10 @@ describe('skill-review author tools', () => {
       skill: 'codex-explore',
     });
     expect(report.eval_manifests).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        skill: 'codex-clarifier',
+        path: 'skills/codex-clarifier/evals/manifest.json',
+      }),
       expect.objectContaining({
         skill: 'codex-explore',
         path: 'skills/codex-explore/evals/manifest.json',
@@ -760,7 +767,7 @@ describe('skill-review author tools', () => {
     await expect(
       fs.pathExists(report.evaluation.profiles[0].root),
     ).resolves.toBe(true);
-    expect(report.final_skills).toHaveLength(10);
+    expect(report.final_skills).toHaveLength(15);
     expect(report.issues.filter((issue: { level: string }) => issue.level === 'error')).toEqual([]);
   });
 

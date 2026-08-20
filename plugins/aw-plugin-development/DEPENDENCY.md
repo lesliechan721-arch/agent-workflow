@@ -2,12 +2,13 @@
 
 Required plugins:
 
-- `agent-content-toolkit >= 0.2.0`
-- `agent-skill-toolkit >= 0.2.0`
+- `agent-content-toolkit >= 0.4.0`
+- `agent-skill-toolkit >= 0.4.0`
 
-Required skills:
+Optional execution plugin:
 
-- from `agent-content-toolkit`: `write-agent-content`, `review-agent-content`
-- from `agent-skill-toolkit`: `author-agent-skill`, `review-agent-skill`, `design-agent-skill-evals`, `audit-agent-skill-evals`
+- `agent-skill-eval-runner >= 0.1.0` when the user requests real model Eval or release-grade
+  behavior evidence.
 
-Until plugin dependencies are supported, installation and version compatibility are guaranteed by the target workspace policy or the human operator. The AW adapters fail closed when a required skill is unavailable and never carry fallback copies of the generic standards.
+Missing runner capability degrades real model evidence to `structural`/`provisional`; it does not
+become a production Skill defect and does not trigger a fallback runner embedded in this plugin.

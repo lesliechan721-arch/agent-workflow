@@ -14,6 +14,10 @@
         {
           "name": "agent-skill-toolkit",
           "config": {}
+        },
+        {
+          "name": "agent-skill-eval-runner",
+          "config": {}
         }
       ],
       "runModel": true,
@@ -30,7 +34,8 @@
         "author-agent-skill",
         "review-agent-skill",
         "design-agent-skill-evals",
-        "audit-agent-skill-evals"
+        "audit-agent-skill-evals",
+        "run-agent-skill-evals"
       ],
       "cases": "./trigger-cases.json",
       "observeSpawnAgent": false,

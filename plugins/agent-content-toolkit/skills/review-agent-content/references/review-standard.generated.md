@@ -8,7 +8,7 @@
 
 - **check：** 检查弱指针、重复 branch 和必须内容是否被错误隐藏。
 
-Evidence: official-guidance; sources: agent-skills.best-practices, writing-for-agents
+Evidence: official-guidance; sources: agent-skills.best-practices; heuristic lenses: writing-for-agents
 
 ## `agent.information-hierarchy`
 
@@ -16,7 +16,7 @@ Evidence: official-guidance; sources: agent-skills.best-practices, writing-for-a
 
 - **check：** 检查 sprawl、错误内联、过度披露和伪渐进式披露。
 
-Evidence: official-guidance; sources: agent-skills.best-practices, writing-for-agents
+Evidence: official-guidance; sources: agent-skills.best-practices; heuristic lenses: writing-for-agents
 
 ## `agent.completion-boundary`
 
@@ -24,7 +24,7 @@ Evidence: official-guidance; sources: agent-skills.best-practices, writing-for-a
 
 - **check：** 先判断步骤是否必要，再评价完成边界。
 
-Evidence: official-guidance; sources: agent-skills.best-practices, writing-for-agents
+Evidence: official-guidance; sources: agent-skills.best-practices; heuristic lenses: writing-for-agents
 
 ## `agent.minimum-control`
 
@@ -32,7 +32,7 @@ Evidence: official-guidance; sources: agent-skills.best-practices, writing-for-a
 
 - **check：** 对正确但过重的规则使用 relax、move、delete 或 needs-ablation。
 
-Evidence: official-guidance; sources: agent-skills.best-practices, writing-for-agents
+Evidence: official-guidance; sources: agent-skills.best-practices; heuristic lenses: writing-for-agents
 
 ## `agent.source-of-truth`
 
@@ -40,7 +40,7 @@ Evidence: official-guidance; sources: agent-skills.best-practices, writing-for-a
 
 - **check：** 检查缓存、过期事实和无效 source map。
 
-Evidence: official-guidance; sources: agent-skills.best-practices, writing-for-agents
+Evidence: official-guidance; sources: agent-skills.best-practices; heuristic lenses: writing-for-agents
 
 ## `agent.co-location`
 
@@ -48,7 +48,7 @@ Evidence: official-guidance; sources: agent-skills.best-practices, writing-for-a
 
 - **check：** 识别重复、散落和互相矛盾的权威来源。
 
-Evidence: official-guidance; sources: agent-skills.best-practices, writing-for-agents
+Evidence: official-guidance; sources: agent-skills.best-practices; heuristic lenses: writing-for-agents
 
 ## `review.evidence-admission`
 
@@ -56,4 +56,4 @@ Evidence: official-guidance; sources: agent-skills.best-practices, writing-for-a
 
 - **check：** 缺少行为证据时，不把可读性偏好或推演升级成阻断项。
 
-Evidence: project-policy; sources: agent-workflows.review-contract
+Evidence: normative; sources: agent-content-toolkit.review-contract

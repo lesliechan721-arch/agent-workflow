@@ -3,15 +3,13 @@ import { access, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
+
+import { setupTriggerWorkspace as setupDecisionTriggerWorkspace } from '../skills/decision-grill/evals/trigger-fixture.mjs';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const localPluginRoot = path.resolve(scriptDir, '..');
-const requiredSkills = [
-  'requirements-clarifier',
-  'decision-grill',
-  'decision-prototype',
-];
+const requiredSkills = ['decision-grill', 'decision-prototype'];
 
 async function readJson(filePath) {
   return JSON.parse(await readFile(filePath, 'utf8'));
@@ -72,57 +70,20 @@ function assertCaseDocument(document, participants) {
 
 const context = await resolveContext();
 
-test('manifest declares a config-driven quality gate', async () => {
-  const manifest = await readJson(
-    path.join(context.sourceRoot, '.agents-plugin', 'plugin.json'),
-  );
+test('manifest exposes only the two decision Skills', async () => {
+  const manifest = await readJson(path.join(context.sourceRoot, '.agents-plugin', 'plugin.json'));
 
   assert.equal(manifest.name, 'ask-me');
   assertStrictStableSemver(manifest.version);
   assert.equal(manifest.skills, './skills');
   assert.equal(manifest.extensions?.instructions?.length ?? 0, 0);
-  assert.deepEqual(manifest.config.schema.qualityGateEnabled, {
-    type: 'boolean',
-    title: '实施前需求检查',
-    description: '启用后，在非平凡实现前检查是否仍有会影响结果、范围或验收的关键歧义。',
-    default: true,
-  });
-  assert.deepEqual(manifest.scripts.artifacts.render, {
-    runner: 'node',
-    path: './scripts/render-artifacts.mjs',
-  });
-
-  const targets = new Map(
-    manifest.artifacts.targets.map((target) => [target.id, target]),
-  );
-  assert.deepEqual(
-    targets.get('ask-me-quality-gate-codex'),
-    {
-      id: 'ask-me-quality-gate-codex',
-      platform: 'codex',
-      scopes: ['user', 'project'],
-      target: 'codex.developerInstructionsBlock',
-      projectManagedKind: 'instruction',
-      states: ['present', 'disabled'],
-      refreshKeys: ['qualityGateEnabled'],
-      requiresCodexProjectConfig: true,
-    },
-  );
-  assert.deepEqual(
-    targets.get('ask-me-quality-gate-claude'),
-    {
-      id: 'ask-me-quality-gate-claude',
-      platform: 'claude',
-      scopes: ['user', 'project'],
-      target: 'claude.skill',
-      states: ['present', 'disabled'],
-      refreshKeys: ['qualityGateEnabled'],
-      skillKey: 'ask-me-quality-gate',
-    },
-  );
+  assert.equal(manifest.config, undefined);
+  assert.equal(manifest.artifacts, undefined);
+  assert.equal(manifest.scripts.artifacts, undefined);
+  assert.deepEqual(manifest.interface.capabilities, ['Skills']);
 });
 
-test('source package contains the three public Skills and native metadata', async () => {
+test('source package contains the two public Skills and native metadata', async () => {
   const sourceSkillNames = new Set(await readdir(path.join(context.sourceRoot, 'skills')));
   assert.deepEqual([...sourceSkillNames].sort(), [...requiredSkills].sort());
   for (const skillName of requiredSkills) {
@@ -149,7 +110,10 @@ test('eval manifests point to parseable case documents with valid participant na
 
     for (const suite of manifest.suites) {
       assert.equal(Array.isArray(suite.skills), true);
-      assert.equal(suite.skills.every((name) => participants.has(name)), true);
+      assert.equal(
+        suite.skills.every((name) => participants.has(name)),
+        true,
+      );
       const casePath = path.resolve(evalRoot, suite.cases);
       await access(casePath);
       assertCaseDocument(await readJson(casePath), participants);
@@ -160,30 +124,42 @@ test('eval manifests point to parseable case documents with valid participant na
   }
 });
 
+test('all composition suites expose the two adjacent decision Skills', async () => {
+  for (const skillName of requiredSkills) {
+    const manifest = await readJson(
+      path.join(context.sourceRoot, 'skills', skillName, 'evals', 'manifest.json'),
+    );
+    for (const suite of manifest.suites.filter((entry) => entry.id !== 'trigger')) {
+      assert.deepEqual([...suite.skills].sort(), [...requiredSkills].sort());
+    }
+  }
+
+  const prototypeRoot = path.join(context.sourceRoot, 'skills', 'decision-prototype', 'evals');
+  const behavior = await readJson(
+    path.join(prototypeRoot, 'decision-prototype-release-evals.json'),
+  );
+  assert.equal(behavior.skill_name, 'decision-prototype');
+  assert.equal(Array.isArray(behavior.evals), true);
+  assert.equal(behavior.evals.length > 0, true);
+  for (const entry of behavior.evals) {
+    assert.equal(entry.sandbox, 'workspace-write');
+    assert.equal(entry.review.workspace_unchanged, false);
+    assert.equal(entry.review.allowed_workspace_changes.length > 0, true);
+    assert.equal(
+      Object.keys(entry.workspace_files).some((file) => file.startsWith('src/')),
+      true,
+    );
+    assert.equal(
+      entry.review.artifacts.every((artifact) => artifact.path.startsWith('prototypes/')),
+      true,
+    );
+  }
+});
+
 test('plan-review cases receive an actual migration plan fixture', async () => {
-  const [
-    { setupTriggerWorkspace: setupDecisionTriggerWorkspace },
-    { setupTriggerWorkspace: setupRequirementsTriggerWorkspace },
-  ] = await Promise.all([
-    import(pathToFileURL(path.join(
-      context.sourceRoot,
-      'skills',
-      'decision-grill',
-      'evals',
-      'trigger-fixture.mjs',
-    )).href),
-    import(pathToFileURL(path.join(
-      context.sourceRoot,
-      'skills',
-      'requirements-clarifier',
-      'evals',
-      'trigger-fixture.mjs',
-    )).href),
-  ]);
   const roots = await Promise.all([
     mkdtemp(path.join(os.tmpdir(), 'ask-me-plan-review-trigger-')),
     mkdtemp(path.join(os.tmpdir(), 'ask-me-plan-review-router-')),
-    mkdtemp(path.join(os.tmpdir(), 'ask-me-plan-review-requirements-')),
   ]);
   try {
     await setupDecisionTriggerWorkspace({
@@ -194,11 +170,6 @@ test('plan-review cases receive an actual migration plan fixture', async () => {
       workspaceRoot: roots[1],
       evalCase: { id: 'plan_review' },
     });
-    await setupRequirementsTriggerWorkspace({
-      workspaceRoot: roots[2],
-      evalCase: { id: 'direct_plan_review' },
-    });
-
     for (const root of roots) {
       const plan = await readFile(path.join(root, 'docs', 'migration-plan.md'), 'utf8');
       assert.match(plan, /Session expiry migration plan/);
@@ -210,7 +181,7 @@ test('plan-review cases receive an actual migration plan fixture', async () => {
   }
 });
 
-test('prepared bundle renders static Skills and ships the artifact renderer', async () => {
+test('prepared bundle renders the two static Skills', async () => {
   if (!context.platform) return;
 
   const platformManifest = await readJson(
@@ -218,23 +189,8 @@ test('prepared bundle renders static Skills and ships the artifact renderer', as
   );
   assert.equal(platformManifest.name, 'ask-me');
   assert.equal(platformManifest.skills, `./${context.platform}/skills`);
-  await access(path.join(context.bundleRoot, 'scripts', 'render-artifacts.mjs'));
-  if (context.platform === 'codex') {
-    await assert.rejects(access(path.join(
-      context.bundleRoot,
-      'codex',
-      'skills',
-      'ask-me-quality-gate',
-      'SKILL.md',
-    )));
-  }
-
-  const expectedTool = context.platform === 'codex'
-    ? '`request_user_input`'
-    : '`AskUserQuestion`';
-  const otherTool = context.platform === 'codex'
-    ? '`AskUserQuestion`'
-    : '`request_user_input`';
+  const expectedTool = context.platform === 'codex' ? '`request_user_input`' : '`AskUserQuestion`';
+  const otherTool = context.platform === 'codex' ? '`AskUserQuestion`' : '`request_user_input`';
 
   for (const skillName of requiredSkills) {
     const skill = await readFile(

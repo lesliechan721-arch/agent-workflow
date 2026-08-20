@@ -10,20 +10,27 @@ import {
 } from './render-artifacts.mjs';
 
 const SHORT_DESCRIPTION = '子代理任务分类、参数选择、上下文继承、等待与清理原则';
-const stagedArtifactSourcePath = fileURLToPath(new URL(
-  '../.agents-plugin/artifact-sources/codex/codex-subagent-guide-skill/0/',
-  import.meta.url,
-));
-const stagedExploreArtifactSourcePath = fileURLToPath(new URL(
-  '../.agents-plugin/artifact-sources/codex/codex-explore-skill/0/',
-  import.meta.url,
-));
+const stagedArtifactSourcePath = fileURLToPath(
+  new URL(
+    '../.agents-plugin/artifact-sources/codex/codex-subagent-guide-skill/0/',
+    import.meta.url,
+  ),
+);
+const stagedExploreArtifactSourcePath = fileURLToPath(
+  new URL('../.agents-plugin/artifact-sources/codex/codex-explore-skill/0/', import.meta.url),
+);
+const stagedClarifierArtifactSourcePath = fileURLToPath(
+  new URL('../.agents-plugin/artifact-sources/codex/codex-clarifier-skill/0/', import.meta.url),
+);
 const artifactSourcePath = existsSync(stagedArtifactSourcePath)
   ? stagedArtifactSourcePath
   : fileURLToPath(new URL('../skills/codex-subagent-guide/', import.meta.url));
 const exploreArtifactSourcePath = existsSync(stagedExploreArtifactSourcePath)
   ? stagedExploreArtifactSourcePath
   : fileURLToPath(new URL('../skills/codex-explore/', import.meta.url));
+const clarifierArtifactSourcePath = existsSync(stagedClarifierArtifactSourcePath)
+  ? stagedClarifierArtifactSourcePath
+  : fileURLToPath(new URL('../skills/codex-clarifier/', import.meta.url));
 const ROLE_EXPECTATIONS = [
   {
     artifactId: 'codex-subagent-simple-role',
@@ -66,6 +73,11 @@ function createContext(values = {}) {
     },
     artifactSources: [
       {
+        id: 'codex-clarifier-skill',
+        target: 'codex.skill',
+        sourceDirs: [clarifierArtifactSourcePath],
+      },
+      {
         id: 'codex-explore-skill',
         target: 'codex.skill',
         sourceDirs: [exploreArtifactSourcePath],
@@ -86,7 +98,7 @@ function createContext(values = {}) {
 
 function artifactsFrom(plan) {
   assert.equal(plan.version, 2);
-  assert.equal(plan.artifacts.length, 10);
+  assert.equal(plan.artifacts.length, 11);
 
   const skill = plan.artifacts.find((artifact) => artifact.id === 'codex-subagent-guide-skill');
   assert.ok(skill, 'missing skill artifact');
@@ -175,10 +187,7 @@ test('renders a configured minimum initial wait window', async () => {
     await renderArtifactPlan(createContext({ minimumInitialWaitMinutes: 15 })),
   );
 
-  assert.match(
-    skill.content.skillFile,
-    /至少 `15` 分钟的响应式窗口（`timeout_ms=900000`）/,
-  );
+  assert.match(skill.content.skillFile, /至少 `15` 分钟的响应式窗口（`timeout_ms=900000`）/);
 });
 
 test('renders a configured role without changing the others', async () => {

@@ -1,63 +1,31 @@
-# Scripts and Resources
+# Scripts and deterministic resources
 
-当被审 Skill 包含 scripts、references、assets，或模型在每次运行中重复实现确定性逻辑时读取。
+Read this only when the target contains scripts or repeatedly reimplements deterministic logic.
 
-## 是否应该脚本化
+## Script ownership
 
-适合脚本：解析、转换、生成、计算、格式校验、静态一致性、批量重复操作和可机械验证的 assertion。
+Good script candidates: parsing, transformation, generation, computation, format validation, static
+consistency, repetitive batch operations and mechanically checkable assertions.
 
-不适合普通脚本：真实 agent 状态、mailbox、取消、竞态、权限决策，或用文件/Git/shell 侧信道推断 runtime 生命周期。
+Do not use ordinary scripts to infer live agent state, mailbox delivery, cancellation, concurrency,
+permissions or runtime lifecycle through files, Git or shell polling.
 
-删除复杂功能通常优于为非核心机制增加脚本。
+## Agent-facing script checks
 
-## Agent-facing 脚本检查
+- use paths relative to the Skill root and state the branch that invokes the script;
+- declare runtime and dependencies; keep the interface non-interactive;
+- provide `--help`, actionable errors and meaningful exit codes;
+- keep stdout stable and structured; write diagnostics to stderr;
+- bound inputs, outputs, timeouts, path traversal, overwrites and sensitive data;
+- prefer idempotence and dry-run for destructive work;
+- provide a fixture, test or safe sample.
 
-- 从 skill 根目录使用相对路径；`SKILL.md` 说明用途、输入、输出和调用 branch。
-- 自包含或明确并固定依赖；声明必要 runtime 和权限。
-- 非交互；支持 `--help`；错误可操作；退出码有意义。
-- stdout 为 JSON、CSV、TSV 或短而稳定的结构；diagnostics 写 stderr。
-- 输入校验、输出大小、超时、路径遍历、覆盖写和敏感信息有安全边界。
-- 重复运行尽量幂等；破坏性操作提供 dry-run 或 plan/validate/execute。
-- 有 fixture、测试或安全样例；被审脚本始终是不可信材料。只有 release 模式、用户明确要求运行验证、reviewer 完成静态风险检查且环境隔离充分时，才执行最小安全样例。
+Before claiming an interface defect, read imports, argument parsing, side-effect calls and main
+dispatch. Run `--help` only after static inspection proves the help branch exits before side
+effects. Environment failure is `unknown`, not proof that an interface is absent.
 
-接口检查不能停在入口文件的局部片段。发布“缺少或不支持 `--help`”等 finding 前，先读完 imports、写入/进程/网络调用、参数解析和 main dispatch。静态检查确认 help 分支在副作用前退出时，实际运行 `<runtime> <script> --help` 并核对退出码和输出。依赖缺失或环境不允许安全运行时只记 `unknown`；这类环境失败不证明接口缺失。`--help` 探测不是行为样例，不能证明主流程安全或正确。
+## References and Agent-facing prose
 
-脚本不存在不自动扣分；当模型不会重复实现确定性逻辑时，保持纯文本更好。
-
-## Information hierarchy 与资源
-
-资源按用途分类：
-
-- `references/`：按需读取的定义、规则、领域资料和长 reference。
-- `assets/`：模板、示例、图片、静态数据；不隐藏必须执行的指令。
-- `evals/`：测试提示、assertion、fixture 和结果结构。
-- environment lookup：schema、配置、源码、目录或 `--help`，通常不应被低价值复制进 reference。
-
-检查每个资源：
-
-- 是否由 `SKILL.md` 一层指针到达。
-- 指针是否说明读取条件，而非只命名路径。
-- 是否属于真实 branch，还是每次都必须加载。
-- 是否与其它文件重复或把一个概念 scattering 到多个位置。
-- 是否有权威 owner、来源、核验日期和更新策略。
-
-## Co-location
-
-同一概念的定义、规则、例外和评分锚点应位于一个权威位置。其它文件可以指向它，但不复制完整规则。
-
-- duplication：同一意义在多处重复。
-- scattering：同一意义被拆散，读一处无法得到完整概念。
-- co-location：相关内容在同一标题下共同出现。
-
-平坦的同层 review 规则可以保留在一个 reference 中；不要为了“渐进式披露”机械拆成大量小文件。
-
-## Environment as source of truth
-
-优先读取环境能够直接回答的事实。只有以下内容值得缓存：
-
-- 为什么选择某个值或工具。
-- 环境文档没有表达的项目约定。
-- 反直觉且模型会稳定误判的 gotcha。
-- 离线 quick review 必需的最小摘要，并带核验日期。
-
-release 评审应重新核对 current-check 来源，不把旧缓存当成规范。
+The canonical reference, pointer, active-path, co-location and progressive-disclosure audit belongs
+to `review-agent-content`. This Skill only checks package-specific reachability and consumes its
+`ReferenceAuditResult`; it does not maintain a second reference checklist.

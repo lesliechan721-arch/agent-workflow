@@ -1,0 +1,136 @@
+{
+  "schemaVersion": 2,
+  "plugin": "codex-enhance",
+  "skill": "codex-clarifier",
+  "profiles": [
+    {
+      "id": "project-default",
+      "scope": "project",
+      "plugins": [
+        {
+          "name": "codex-enhance",
+          "config": {}
+        }
+      ],
+      "runModel": true,
+      "requiredForRelease": true
+    },
+    {
+      "id": "project-composition",
+      "scope": "project",
+      "plugins": [
+        {
+          "name": "codex-enhance",
+          "config": {}
+        },
+        {
+          "name": "ask-me",
+          "config": {}
+        }
+      ],
+      "runModel": true,
+      "requiredForRelease": true
+    },
+    {
+      "id": "user-default",
+      "scope": "user",
+      "plugins": [
+        {
+          "name": "codex-enhance",
+          "config": {}
+        }
+      ],
+      "runModel": false,
+      "requiredForRelease": true
+    }
+  ],
+  "suites": [
+    {
+      "id": "trigger",
+      "kind": "trigger",
+      "skills": [
+        "codex-clarifier"
+      ],
+      "cases": "./codex-clarifier-trigger-cases.json",
+      "fixtureModule": "./trigger-fixture.mjs",
+      "observeSpawnAgent": false,
+      "isolation": "strict",
+      "strictNegativeSplits": [
+        "validation",
+        "sanity"
+      ],
+      "profiles": [
+        "project-default"
+      ],
+      "defaultRuns": 3,
+      "releaseSplits": [
+        "validation",
+        "sanity"
+      ],
+      "requiredForRelease": true,
+      "perRunTimeoutMs": 180000
+    },
+    {
+      "id": "router",
+      "kind": "trigger",
+      "skills": [
+        "codex-clarifier",
+        "decision-grill",
+        "decision-prototype"
+      ],
+      "cases": "./codex-clarifier-routing-cases.json",
+      "fixtureModule": "./trigger-fixture.mjs",
+      "observeSpawnAgent": false,
+      "isolation": "strict",
+      "strictNegativeSplits": [],
+      "minimumPassRate": 0.9,
+      "forbidMultipleSkillLoads": true,
+      "profiles": [
+        "project-composition"
+      ],
+      "defaultRuns": 10,
+      "releaseSplits": [
+        "validation",
+        "sanity"
+      ],
+      "requiredForRelease": true,
+      "perRunTimeoutMs": 180000
+    },
+    {
+      "id": "behavior",
+      "kind": "conversation",
+      "skills": [
+        "codex-clarifier",
+        "decision-grill",
+        "decision-prototype"
+      ],
+      "cases": "./codex-clarifier-release-evals.json",
+      "isolation": "strict",
+      "profiles": [
+        "project-composition"
+      ],
+      "defaultRuns": 3,
+      "releaseSplits": [],
+      "requiredForRelease": true,
+      "perRunTimeoutMs": 300000
+    },
+    {
+      "id": "behavior-diagnostic",
+      "kind": "conversation",
+      "skills": [
+        "codex-clarifier",
+        "decision-grill",
+        "decision-prototype"
+      ],
+      "cases": "./codex-clarifier-evals.json",
+      "isolation": "strict",
+      "profiles": [
+        "project-composition"
+      ],
+      "defaultRuns": 1,
+      "releaseSplits": [],
+      "requiredForRelease": false,
+      "perRunTimeoutMs": 300000
+    }
+  ]
+}

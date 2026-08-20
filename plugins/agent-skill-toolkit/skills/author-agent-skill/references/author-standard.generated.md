@@ -1,6 +1,6 @@
 # Agent Skill 作者标准
 
-> GENERATED from `standards/rules.json`; do not edit manually.
+> GENERATED from canonical content rules plus `standards/skill-rules.json`; do not edit manually.
 
 ## `agent.pointer`
 
@@ -8,7 +8,7 @@
 
 - **action：** description 先表达用户意图；外部资源指针写明读取条件。
 
-Evidence: heuristic; sources: agent-skills.best-practices
+Evidence: official-guidance; sources: agent-skills.best-practices; heuristic lenses: writing-for-agents
 
 ## `agent.information-hierarchy`
 
@@ -16,7 +16,7 @@ Evidence: heuristic; sources: agent-skills.best-practices
 
 - **action：** 主 SKILL.md 只保留所有命中 branch 都需要的工作流和 gotcha。
 
-Evidence: heuristic; sources: agent-skills.best-practices
+Evidence: official-guidance; sources: agent-skills.best-practices; heuristic lenses: writing-for-agents
 
 ## `agent.completion-boundary`
 
@@ -24,7 +24,7 @@ Evidence: heuristic; sources: agent-skills.best-practices
 
 - **action：** 只为脆弱或必须持续跟踪的关键步骤设置完成门。
 
-Evidence: heuristic; sources: agent-skills.best-practices
+Evidence: official-guidance; sources: agent-skills.best-practices; heuristic lenses: writing-for-agents
 
 ## `agent.minimum-control`
 
@@ -32,7 +32,7 @@ Evidence: heuristic; sources: agent-skills.best-practices
 
 - **action：** 默认改进顺序为 delete → relax → move → rewrite → add。
 
-Evidence: heuristic; sources: agent-skills.best-practices
+Evidence: official-guidance; sources: agent-skills.best-practices; heuristic lenses: writing-for-agents
 
 ## `agent.source-of-truth`
 
@@ -40,7 +40,7 @@ Evidence: heuristic; sources: agent-skills.best-practices
 
 - **action：** 工具 schema 已给出的字段细节不在 Skill 中维护第二份文档。
 
-Evidence: heuristic; sources: agent-skills.best-practices
+Evidence: official-guidance; sources: agent-skills.best-practices; heuristic lenses: writing-for-agents
 
 ## `agent.co-location`
 
@@ -48,7 +48,7 @@ Evidence: heuristic; sources: agent-skills.best-practices
 
 - **action：** 共享规则只维护一个 source，并生成动作视图。
 
-Evidence: heuristic; sources: agent-skills.best-practices
+Evidence: official-guidance; sources: agent-skills.best-practices; heuristic lenses: writing-for-agents
 
 ## `skill.problem-value`
 
@@ -66,7 +66,7 @@ Evidence: official-guidance; sources: agent-skills.best-practices
 - **action：** 先决定 model/manual 等调用意图，再写 discovery description。
 - **completion：** description 与 invocation metadata 一致。
 
-Evidence: official-guidance; sources: agent-skills.best-practices
+Evidence: official-guidance; sources: agent-skills.optimizing-descriptions
 
 ## `skill.composition-fitness`
 
@@ -75,7 +75,7 @@ Evidence: official-guidance; sources: agent-skills.best-practices
 - **action：** 枚举 independent intents、permission modes、evidence lifecycles、environment profiles、clean-context phases 和 stable handoffs。
 - **completion：** 拆分或保留决定有明确理由和 artifact contract。
 
-Evidence: heuristic; sources: agent-skills.best-practices, writing-for-agents
+Evidence: heuristic; sources: agent-skills.best-practices; heuristic lenses: writing-for-agents
 
 ## `skill.package-resources`
 
@@ -84,4 +84,4 @@ scripts、references、assets 和 evals 按真实用途存在；缺省不是缺�
 - **action：** 重复、确定、可测试逻辑进入 script；特定 branch 资料进入 focused reference。
 - **completion：** 所有资源一层可达并有明确读取或执行条件。
 
-Evidence: official-guidance; sources: agent-skills.best-practices
+Evidence: official-guidance; sources: agent-skills.best-practices, agent-skills.using-scripts

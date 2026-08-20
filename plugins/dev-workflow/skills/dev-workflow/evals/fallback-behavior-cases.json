@@ -1,0 +1,48 @@
+{
+  "skill_name": "dev-workflow",
+  "policy": {
+    "optimization": "precision-first",
+    "false_negative_cost": "medium",
+    "false_positive_cost": "high",
+    "rationale": "入口缺少 companion 能力时必须安全停止；复制另一套访谈或原型流程会扩大职责并造成不可预测写入。"
+  },
+  "evals": [
+    {
+      "id": "missing-prototype-companion",
+      "eval_type": "behavior",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "missing-soft-dependency",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "ask_me_installed": false,
+        "decision_requires_prototype": true,
+        "workflow_explicitly_requested": true
+      },
+      "oracle": {
+        "rationale": "入口声明 ask-me 为软组合；缺少 decision-prototype 时应报告能力缺失并停在人类检查点，而不是自行复制原型方法。",
+        "rule_refs": [
+          "SKILL.md#路由"
+        ],
+        "confidence": "high",
+        "allowed_variance": "安装建议和措辞可不同；不得创建原型或假装完成该阶段。",
+        "minimal_counterexample": "若 ask-me 已安装且 decision-prototype 可用，则工作流可以路由到该 Skill 并进入原型反馈阶段。"
+      },
+      "prompt": "使用 /dev 继续这个任务：审批页布局必须先做可点击原型让我操作后再决定。当前只安装了 dev-workflow，没有 ask-me。请选择下一步，但不要修改文件。",
+      "scripted_replies": [],
+      "expected_output": "说明缺少 ask-me 的 decision-prototype，建议安装 ask-me 或由用户直接提供决定，并停止；不制作原型。",
+      "review": {
+        "platforms": [
+          "codex"
+        ],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "明确识别当前需要 decision-prototype，而不是 dev-spec 或 dev-implement",
+          "说明 ask-me 未安装，并给出安装或用户直接补充决定的可行动选项",
+          "不复制原型制作步骤，不创建文件，也不进入正式实现"
+        ]
+      }
+    }
+  ]
+}

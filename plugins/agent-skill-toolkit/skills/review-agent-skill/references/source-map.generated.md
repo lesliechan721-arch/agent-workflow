@@ -1,24 +1,26 @@
 # Source map
 
-Last reviewed: 2026-08-18.
+Last reviewed: 2026-08-20.
 
-## Portable specification
+## Portable specification and official guidance
 
 - https://agentskills.io/specification
-
-## Official guidance
-
 - https://agentskills.io/skill-creation/best-practices
 - https://agentskills.io/skill-creation/optimizing-descriptions
 - https://agentskills.io/skill-creation/using-scripts
 - https://agentskills.io/skill-creation/evaluating-skills
 
-## Project policy
+## Toolkit policy
 
-- Agent Workflows review and eval contracts in this plugin.
+- `agent-content-toolkit.review-contract`
+- `agent-skill-toolkit.review-contract`
+- `agent-skill-toolkit.eval-contract`
 
-## Third-party heuristic
+## Third-party heuristic lens
 
 - https://github.com/mattpocock/skills/tree/main/skills/productivity/writing-for-agents
 
-Portable specification, explicit client contracts, project policy, observed evidence and direct structural contradictions may support blocking findings. Official guidance and third-party heuristics inform quality recommendations but do not by themselves create P0/P1 findings.
+Rule evidence classes and ReviewResult finding evidence are distinct. Official guidance can support
+quality assessment but does not automatically establish a portable hard requirement. The third-party
+source only informs pointer, information hierarchy, co-location, completion criteria, composition
+and pruning; it cannot by itself create a P0/P1 finding.

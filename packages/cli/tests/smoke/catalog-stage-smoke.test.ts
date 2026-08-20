@@ -16,6 +16,7 @@ import { execPnpmForTest } from '../helpers/pnpm.js';
 const tempDirs: string[] = [];
 const EXPECTED_PLUGINS = [
   'agent-content-toolkit',
+  'agent-skill-eval-runner',
   'agent-skill-toolkit',
   'ask-me',
   'aw-plugin-development',

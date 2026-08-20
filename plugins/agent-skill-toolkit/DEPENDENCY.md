@@ -1,10 +1,16 @@
 # Manual dependency contract
 
-Required plugin: `agent-content-toolkit >= 0.2.0`
+Required plugin: `agent-content-toolkit >= 0.4.0`.
 
 Required skills:
 
-- `write-agent-content` for authoring Agent-facing prose;
-- `review-agent-content` for independent content/reference audit.
+- `write-agent-content` for Agent-facing prose authoring;
+- `review-agent-content` as the canonical owner of content/reference audit.
 
-Until plugin dependencies are supported, installation and compatibility are guaranteed by repository policy or the human operator. Skill author/review flows fail closed when the required content capability is unavailable; they do not carry fallback copies of that workflow.
+Optional execution plugin: `agent-skill-eval-runner >= 0.1.0` or another compatible provider. Its
+absence does not block authoring or design review; it limits Eval evidence to structural/preflight
+evidence and keeps applicable release readiness provisional.
+
+Until plugin dependencies are supported, installation is guaranteed by repository policy or the
+human operator. Flows fail closed when required content capabilities are absent and never carry
+fallback copies of lower-layer standards.

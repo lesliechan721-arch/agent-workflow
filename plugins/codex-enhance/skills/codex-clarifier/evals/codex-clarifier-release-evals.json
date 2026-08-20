@@ -1,0 +1,330 @@
+{
+  "skill_name": "codex-clarifier",
+  "policy": {
+    "optimization": "recall-first",
+    "false_negative_cost": "high",
+    "false_positive_cost": "medium",
+    "rationale": "漏掉结果级歧义可能生成错误成品；误问会中断实施，但通常可以立即恢复。"
+  },
+  "evals": [
+    {
+      "id": "natural-mixed-ambiguity-no-gate",
+      "eval_type": "behavior",
+      "case_role": "representative",
+      "provenance": "derived",
+      "scenario_family": "fact-default-user-intent",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "current_owner_skill_available": true,
+        "baseline_owner_skill_available": false,
+        "companion_skill_available_in_both": true,
+        "baseline_kind": "without-owner-skill",
+        "repository_lookup_required": true,
+        "eval_gate_enabled": false
+      },
+      "oracle": {
+        "rationale": "项目文档规定验证码期限，并把缓存容器留作内部可逆选择；现有用户宽限期仍是会改变用户流程的产品决定。",
+        "rule_refs": [
+          "SKILL.md#处理不确定项",
+          "SKILL.md#提问"
+        ],
+        "confidence": "high",
+        "allowed_variance": "可以使用不同只读工具、问题措辞和交接格式，但不能重问文档中的事实或把产品决定静默设为默认。"
+      },
+      "prompt": "准备给注册流程加邮箱验证。请先只读检查 docs/registration-verification.md；现有未验证用户是立即被拦截，还是有 7 天宽限期，还没有决定。暂时不要改文件。",
+      "scripted_replies": [
+        {
+          "expected_question_count": 1,
+          "answers_by_index": [
+            "现有未验证用户立即被拦截，完成邮箱验证后才能继续。其他产品行为已经明确，请交接。"
+          ],
+          "unexpected_question_answer": "我暂时不知道，请保留未解决项并交接。"
+        }
+      ],
+      "expected_output": "读取并采用项目文档中的验证码期限，对内部缓存选择使用合理默认，只确认会改变现有用户流程的宽限期，并在回答后交接。",
+      "workspace_files": {
+        "docs/registration-verification.md": "# 注册邮箱验证\n\n- 邮箱验证码在发送十分钟后失效。\n- 验证码缓存容器属于内部可逆实现，按邻近代码选择。\n- 现有未验证用户的迁移行为尚未定义。\n"
+      },
+      "files": [],
+      "review": {
+        "platforms": [
+          "codex"
+        ],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "读取项目文档并采用 10 分钟验证码期限，不把缓存容器交给用户决定",
+          "只询问现有未验证用户是立即拦截还是保留宽限期",
+          "收到回答后交还原任务，不继续制造问题"
+        ]
+      }
+    },
+    {
+      "id": "natural-mixed-ambiguity-gate",
+      "eval_type": "behavior",
+      "case_role": "representative",
+      "provenance": "derived",
+      "scenario_family": "fact-default-user-intent",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "current_owner_skill_available": true,
+        "baseline_owner_skill_available": false,
+        "companion_skill_available_in_both": true,
+        "baseline_kind": "without-owner-skill",
+        "repository_lookup_required": true,
+        "eval_gate_enabled": true
+      },
+      "oracle": {
+        "rationale": "项目文档规定验证码期限，并把缓存容器留作内部可逆选择；现有用户宽限期仍是会改变用户流程的产品决定。",
+        "rule_refs": [
+          "SKILL.md#处理不确定项",
+          "SKILL.md#提问"
+        ],
+        "confidence": "high",
+        "allowed_variance": "可以使用不同只读工具、问题措辞和交接格式，但不能重问文档中的事实或把产品决定静默设为默认。"
+      },
+      "prompt": "准备给注册流程加邮箱验证。请先只读检查 docs/registration-verification.md；现有未验证用户是立即被拦截，还是有 7 天宽限期，还没有决定。暂时不要改文件。",
+      "scripted_replies": [
+        {
+          "expected_question_count": 1,
+          "answers_by_index": [
+            "现有未验证用户立即被拦截，完成邮箱验证后才能继续。其他产品行为已经明确，请交接。"
+          ],
+          "unexpected_question_answer": "我暂时不知道，请保留未解决项并交接。"
+        }
+      ],
+      "expected_output": "读取并采用项目文档中的验证码期限，对内部缓存选择使用合理默认，只确认会改变现有用户流程的宽限期，并在回答后交接。",
+      "workspace_files": {
+        "AGENTS.md": "# AGENTS.md\n\n## 实施前需求检查\n\n开始非平凡实现前，先依据当前对话和仓库检查需求。只有检查后仍存在多种合理理解，且选错会明显影响交付结果、功能范围或验收，或多项小歧义合起来会决定成品形态时，才使用 `codex-clarifier`。\n\n能从现有上下文查明、有明确项目惯例、容易调整、只涉及内部实现或用户已授权采用默认值的事项不必追问。会影响用户预期的关键默认值应明确说明，不要静默假设。\n",
+        "docs/registration-verification.md": "# 注册邮箱验证\n\n- 邮箱验证码在发送十分钟后失效。\n- 验证码缓存容器属于内部可逆实现，按邻近代码选择。\n- 现有未验证用户的迁移行为尚未定义。\n"
+      },
+      "files": [],
+      "review": {
+        "platforms": [
+          "codex"
+        ],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "读取项目文档并采用 10 分钟验证码期限，不把缓存容器交给用户决定",
+          "只询问现有未验证用户是立即拦截还是保留宽限期",
+          "收到回答后交还原任务，不继续制造问题"
+        ]
+      }
+    },
+    {
+      "id": "natural-combined-ambiguities-no-gate",
+      "eval_type": "behavior",
+      "case_role": "representative",
+      "provenance": "derived",
+      "scenario_family": "combined-small-ambiguities",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "current_owner_skill_available": true,
+        "baseline_owner_skill_available": false,
+        "companion_skill_available_in_both": true,
+        "baseline_kind": "without-owner-skill",
+        "repository_lookup_required": false,
+        "eval_gate_enabled": false
+      },
+      "oracle": {
+        "rationale": "归属、可见性和取消反馈各自不大，但组合后决定收藏功能的整体用户体验。",
+        "rule_refs": [
+          "SKILL.md#处理不确定项",
+          "SKILL.md#提问"
+        ],
+        "confidence": "high",
+        "allowed_variance": "三个问题的顺序和措辞可以不同；可以使用一个问题工具调用，但必须分别确认三项。"
+      },
+      "prompt": "我要给商品页加收藏。现在只知道要能收藏和取消；收藏归谁、别人能否看到、取消后用户会看到什么都没定。这三项可以分别选择，任何一项都不限制另外两项。暂时不要改文件。",
+      "scripted_replies": [
+        {
+          "expected_question_count": 3,
+          "answers_by_index": [
+            "收藏属于当前用户。",
+            "收藏默认私有。",
+            "取消后显示简短确认。其他需求已经明确，请交接。"
+          ],
+          "unexpected_question_answer": "我暂时不知道，请保留未解决项并交接。"
+        }
+      ],
+      "expected_output": "识别三项歧义的组合影响，在一轮内分别确认，并在回答后交接。",
+      "files": [],
+      "review": {
+        "platforms": [
+          "codex"
+        ],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "分别确认收藏归属、可见性和取消反馈",
+          "不因每一项单独影响有限而静默采用默认",
+          "收到回答后整理确认结果并交还原任务"
+        ]
+      }
+    },
+    {
+      "id": "natural-combined-ambiguities-gate",
+      "eval_type": "behavior",
+      "case_role": "representative",
+      "provenance": "derived",
+      "scenario_family": "combined-small-ambiguities",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "current_owner_skill_available": true,
+        "baseline_owner_skill_available": false,
+        "companion_skill_available_in_both": true,
+        "baseline_kind": "without-owner-skill",
+        "repository_lookup_required": false,
+        "eval_gate_enabled": true
+      },
+      "oracle": {
+        "rationale": "归属、可见性和取消反馈各自不大，但组合后决定收藏功能的整体用户体验。",
+        "rule_refs": [
+          "SKILL.md#处理不确定项",
+          "SKILL.md#提问"
+        ],
+        "confidence": "high",
+        "allowed_variance": "三个问题的顺序和措辞可以不同；可以使用一个问题工具调用，但必须分别确认三项。"
+      },
+      "prompt": "我要给商品页加收藏。现在只知道要能收藏和取消；收藏归谁、别人能否看到、取消后用户会看到什么都没定。这三项可以分别选择，任何一项都不限制另外两项。暂时不要改文件。",
+      "scripted_replies": [
+        {
+          "expected_question_count": 3,
+          "answers_by_index": [
+            "收藏属于当前用户。",
+            "收藏默认私有。",
+            "取消后显示简短确认。其他需求已经明确，请交接。"
+          ],
+          "unexpected_question_answer": "我暂时不知道，请保留未解决项并交接。"
+        }
+      ],
+      "expected_output": "识别三项歧义的组合影响，在一轮内分别确认，并在回答后交接。",
+      "files": [],
+      "review": {
+        "platforms": [
+          "codex"
+        ],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "分别确认收藏归属、可见性和取消反馈",
+          "不因每一项单独影响有限而静默采用默认",
+          "收到回答后整理确认结果并交还原任务"
+        ]
+      },
+      "workspace_files": {
+        "AGENTS.md": "# AGENTS.md\n\n## 实施前需求检查\n\n开始非平凡实现前，先依据当前对话和仓库检查需求。只有检查后仍存在多种合理理解，且选错会明显影响交付结果、功能范围或验收，或多项小歧义合起来会决定成品形态时，才使用 `codex-clarifier`。\n\n能从现有上下文查明、有明确项目惯例、容易调整、只涉及内部实现或用户已授权采用默认值的事项不必追问。会影响用户预期的关键默认值应明确说明，不要静默假设。\n"
+      }
+    },
+    {
+      "id": "natural-engineering-evidence-no-gate",
+      "eval_type": "behavior",
+      "case_role": "representative",
+      "provenance": "derived",
+      "scenario_family": "engineering-validation",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "current_owner_skill_available": true,
+        "baseline_owner_skill_available": false,
+        "companion_skill_available_in_both": true,
+        "baseline_kind": "without-owner-skill",
+        "repository_has_performance_data": false,
+        "implementation_inputs_complete": false,
+        "eval_gate_enabled": false
+      },
+      "oracle": {
+        "rationale": "性能目标是否可达只能通过工程验证确定，不能交给用户主观判断；但服务代码位置、生产集群具体规格和标准负载定义是实施所需的客观输入，缺失时应询问或保留为未解决。",
+        "rule_refs": [
+          "SKILL.md#处理不确定项",
+          "SKILL.md#结束"
+        ],
+        "confidence": "high",
+        "allowed_variance": "可以在一轮内询问一至三个缺失的客观实施输入，或在用户停止时保留它们；不能要求用户主观决定技术可行性，也不能在澄清阶段运行压测。"
+      },
+      "prompt": "我们准备让现有服务支持总吞吐 10 万 QPS。验收是在固定生产规格集群上跑标准负载 30 分钟，P99 不超过 200 ms，错误率低于 0.1%。当前工作区没有服务源码，生产集群的具体规格和标准负载定义也未提供，仓库里没有性能数据。暂时不要改文件。",
+      "scripted_replies": [
+        {
+          "answers_by_index": [
+            "服务代码、生产集群具体规格、标准负载和指标采集边界都暂未提供。请全部保留为未解决，不要让我判断技术可行性，并交还原任务。",
+            "服务代码、生产集群具体规格、标准负载和指标采集边界都暂未提供。请全部保留为未解决，不要让我判断技术可行性，并交还原任务。",
+            "服务代码、生产集群具体规格、标准负载和指标采集边界都暂未提供。请全部保留为未解决，不要让我判断技术可行性，并交还原任务。"
+          ],
+          "unexpected_question_answer": "这个客观实施输入暂未提供。请保留为未解决，不要让我判断技术可行性，并交还原任务。"
+        }
+      ],
+      "expected_output": "只询问缺失的客观实施输入，不向用户询问 10 万 QPS 是否可行；把技术可行性列为待验证，在用户停止后保留输入缺口并交还原任务。",
+      "files": [],
+      "review": {
+        "platforms": [
+          "codex"
+        ],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "只询问服务代码、具体集群规格、标准负载或测量边界等客观实施输入",
+          "单轮最多询问三个互相独立的客观实施输入",
+          "不要求用户主观确认 10 万 QPS 是否可行",
+          "把能否在既定验收口径下达到性能目标列为待验证事项，并保留尚未提供的实施输入",
+          "不运行压测或制作原型，在用户停止后交还原任务"
+        ]
+      }
+    },
+    {
+      "id": "natural-engineering-evidence-gate",
+      "eval_type": "behavior",
+      "case_role": "representative",
+      "provenance": "derived",
+      "scenario_family": "engineering-validation",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "current_owner_skill_available": true,
+        "baseline_owner_skill_available": false,
+        "companion_skill_available_in_both": true,
+        "baseline_kind": "without-owner-skill",
+        "repository_has_performance_data": false,
+        "implementation_inputs_complete": false,
+        "eval_gate_enabled": true
+      },
+      "oracle": {
+        "rationale": "性能目标是否可达只能通过工程验证确定，不能交给用户主观判断；但服务代码位置、生产集群具体规格和标准负载定义是实施所需的客观输入，缺失时应询问或保留为未解决。",
+        "rule_refs": [
+          "SKILL.md#处理不确定项",
+          "SKILL.md#结束"
+        ],
+        "confidence": "high",
+        "allowed_variance": "可以在一轮内询问一至三个缺失的客观实施输入，或在用户停止时保留它们；不能要求用户主观决定技术可行性，也不能在澄清阶段运行压测。"
+      },
+      "prompt": "我们准备让现有服务支持总吞吐 10 万 QPS。验收是在固定生产规格集群上跑标准负载 30 分钟，P99 不超过 200 ms，错误率低于 0.1%。当前工作区没有服务源码，生产集群的具体规格和标准负载定义也未提供，仓库里没有性能数据。暂时不要改文件。",
+      "scripted_replies": [
+        {
+          "answers_by_index": [
+            "服务代码、生产集群具体规格、标准负载和指标采集边界都暂未提供。请全部保留为未解决，不要让我判断技术可行性，并交还原任务。",
+            "服务代码、生产集群具体规格、标准负载和指标采集边界都暂未提供。请全部保留为未解决，不要让我判断技术可行性，并交还原任务。",
+            "服务代码、生产集群具体规格、标准负载和指标采集边界都暂未提供。请全部保留为未解决，不要让我判断技术可行性，并交还原任务。"
+          ],
+          "unexpected_question_answer": "这个客观实施输入暂未提供。请保留为未解决，不要让我判断技术可行性，并交还原任务。"
+        }
+      ],
+      "expected_output": "只询问缺失的客观实施输入，不向用户询问 10 万 QPS 是否可行；把技术可行性列为待验证，在用户停止后保留输入缺口并交还原任务。",
+      "files": [],
+      "review": {
+        "platforms": [
+          "codex"
+        ],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "只询问服务代码、具体集群规格、标准负载或测量边界等客观实施输入",
+          "单轮最多询问三个互相独立的客观实施输入",
+          "不要求用户主观确认 10 万 QPS 是否可行",
+          "把能否在既定验收口径下达到性能目标列为待验证事项，并保留尚未提供的实施输入",
+          "不运行压测或制作原型，在用户停止后交还原任务"
+        ]
+      },
+      "workspace_files": {
+        "AGENTS.md": "# AGENTS.md\n\n## 实施前需求检查\n\n开始非平凡实现前，先依据当前对话和仓库检查需求。只有检查后仍存在多种合理理解，且选错会明显影响交付结果、功能范围或验收，或多项小歧义合起来会决定成品形态时，才使用 `codex-clarifier`。\n\n能从现有上下文查明、有明确项目惯例、容易调整、只涉及内部实现或用户已授权采用默认值的事项不必追问。会影响用户预期的关键默认值应明确说明，不要静默假设。\n"
+      }
+    }
+  ]
+}

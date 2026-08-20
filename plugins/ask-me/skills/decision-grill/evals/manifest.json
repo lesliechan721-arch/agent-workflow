@@ -6,14 +6,24 @@
     {
       "id": "project-default",
       "scope": "project",
-      "plugins": [{ "name": "ask-me", "config": {} }],
+      "plugins": [
+        {
+          "name": "ask-me",
+          "config": {}
+        }
+      ],
       "runModel": true,
       "requiredForRelease": true
     },
     {
       "id": "user-default",
       "scope": "user",
-      "plugins": [{ "name": "ask-me", "config": {} }],
+      "plugins": [
+        {
+          "name": "ask-me",
+          "config": {}
+        }
+      ],
       "runModel": false,
       "requiredForRelease": true
     }
@@ -22,22 +32,35 @@
     {
       "id": "trigger",
       "kind": "trigger",
-      "skills": ["decision-grill"],
+      "skills": [
+        "decision-grill"
+      ],
       "cases": "./decision-grill-trigger-cases.json",
       "fixtureModule": "./trigger-fixture.mjs",
       "observeSpawnAgent": false,
       "isolation": "strict",
-      "strictNegativeSplits": ["validation", "sanity"],
-      "profiles": ["project-default"],
+      "strictNegativeSplits": [
+        "validation",
+        "sanity"
+      ],
+      "profiles": [
+        "project-default"
+      ],
       "defaultRuns": 3,
-      "releaseSplits": ["validation", "sanity"],
+      "releaseSplits": [
+        "validation",
+        "sanity"
+      ],
       "requiredForRelease": true,
       "perRunTimeoutMs": 180000
     },
     {
       "id": "router",
       "kind": "trigger",
-      "skills": ["decision-grill", "requirements-clarifier"],
+      "skills": [
+        "decision-grill",
+        "decision-prototype"
+      ],
       "cases": "./ask-me-routing-cases.json",
       "fixtureModule": "./trigger-fixture.mjs",
       "observeSpawnAgent": false,
@@ -45,19 +68,29 @@
       "strictNegativeSplits": [],
       "minimumPassRate": 0.9,
       "forbidMultipleSkillLoads": true,
-      "profiles": ["project-default"],
+      "profiles": [
+        "project-default"
+      ],
       "defaultRuns": 10,
-      "releaseSplits": ["validation", "sanity"],
+      "releaseSplits": [
+        "validation",
+        "sanity"
+      ],
       "requiredForRelease": true,
       "perRunTimeoutMs": 180000
     },
     {
       "id": "behavior",
       "kind": "conversation",
-      "skills": ["decision-grill", "requirements-clarifier"],
+      "skills": [
+        "decision-grill",
+        "decision-prototype"
+      ],
       "cases": "./decision-grill-release-evals.json",
       "isolation": "strict",
-      "profiles": ["project-default"],
+      "profiles": [
+        "project-default"
+      ],
       "defaultRuns": 1,
       "releaseSplits": [],
       "requiredForRelease": true,
@@ -66,10 +99,15 @@
     {
       "id": "behavior-diagnostic",
       "kind": "conversation",
-      "skills": ["decision-grill", "requirements-clarifier"],
+      "skills": [
+        "decision-grill",
+        "decision-prototype"
+      ],
       "cases": "./decision-grill-evals.json",
       "isolation": "strict",
-      "profiles": ["project-default"],
+      "profiles": [
+        "project-default"
+      ],
       "defaultRuns": 1,
       "releaseSplits": [],
       "requiredForRelease": false,

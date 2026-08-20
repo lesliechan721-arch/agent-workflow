@@ -1,13 +1,15 @@
 # Review Dimensions
 
-> GENERATED from `standards/rules.json`; do not edit manually.
+> Canonical human rubric. `generate-standard-views.mjs` copies this file into `review-agent-skill`;
+> do not edit the copied Skill reference manually.
 
 ## 1. 规范与包完整性（6）
 
 检查：
 
 - `SKILL.md`、YAML frontmatter、`name`、目录名和 `description` 是否符合当前规范。
-- `compatibility`、`metadata`、`allowed-tools` 等可选字段是否有真实用途，并与目标客户端支持情况一致。
+- `compatibility`、`metadata`、`allowed-tools`
+  等可选字段是否有真实用途，并与目标客户端支持情况一致。
 - 核心相对引用是否存在，一层可达资源是否可解析，必要脚本是否可运行。
 - 包结构是否清楚，必需材料没有藏在不可发现或深链位置。
 - 官方 validator 或等价静态验证是否通过。
@@ -32,7 +34,8 @@
 
 仅在目标客户端支持相关机制时评估 model-invoked、user-invoked、router 或等价调用策略；客户端不支持时标为不适用，不把第三方字段当作通用规范。
 
-检查 Skill 是否需要被模型自主发现、被其它 Skill 到达，或只应由用户手动调用；该选择是否值得其长期 context load 或人类 cognitive load。
+检查 Skill 是否需要被模型自主发现、被其它 Skill 到达，或只应由用户手动调用；该选择是否值得其长期 context
+load 或人类 cognitive load。
 
 ### Description 与 Pointer
 
@@ -51,7 +54,8 @@
 - 每条多次运行，计算 trigger rate；固定 train/validation 划分，避免针对测试关键词过拟合。
 - 检查相邻 Skill 同时触发、漏触发和误触发。
 
-高分：调用策略合理，pointer branch 清楚，trigger 结果稳定。低分：description 只描述功能、堆砌同义词、边界过宽或没有行为测试。
+高分：调用策略合理，pointer
+branch 清楚，trigger 结果稳定。低分：description 只描述功能、堆砌同义词、边界过宽或没有行为测试。
 
 ## 4. 范围、边界与组合性（8）
 
@@ -75,7 +79,8 @@
 - 模板、例子、gotcha、checklist、validation loop 是否比抽象长文更有效。
 - 指令顺序、优先级、输出合同和错误处理是否一致。
 
-先读取最小有效控制审计的保留结论。只有 `keep-invariant` 和 `keep-default` 中需要持续跟踪的关键步骤，才执行 Completion Boundary Audit：
+先读取最小有效控制审计的保留结论。只有 `keep-invariant` 和 `keep-default`
+中需要持续跟踪的关键步骤，才执行 Completion Boundary Audit：
 
 - **Clarity**：模型能否区分 done 与 not done。
 - **Checkability**：是否可由文件、脚本、清单或明确断言验证。
@@ -87,7 +92,8 @@
 
 软性行为优先写目标行为；安全、权限和破坏性操作可以保留明确 prohibition。否定句本身不是规范缺陷，只能在 trace 支持时作为质量 finding。
 
-高分：被证明必要的程序具有清楚且可检查的完成标准。低分：不必要步骤因完成条件完整而被保留，或大量 `must` 没有可执行程序。
+高分：被证明必要的程序具有清楚且可检查的完成标准。低分：不必要步骤因完成条件完整而被保留，或大量
+`must` 没有可执行程序。
 
 ## 6. 最小充分控制与模型自由度（14）
 
@@ -95,7 +101,8 @@
 
 1. 只根据目标问题、真实失败、硬性规范、模型无法知道的领域事实，以及脆弱或不可逆操作，写出不超过 8 条的最小行为合同。简单 Skill 可以少于 5 条。
 2. 按行为块检查现有强制规则，不按段落数量机械建表。说明它改变的行为、依据和控制类型。
-3. 每个行为块分类为 `keep-invariant`、`keep-default`、`relax`、`move`、`delete` 或 `needs-ablation`。
+3. 每个行为块分类为 `keep-invariant`、`keep-default`、`relax`、`move`、`delete` 或
+   `needs-ablation`。
 4. 不能说明删除或放宽后会增加哪种目标失败时，不得仅因规则正确、清楚或完整而保留为 mandatory。
 
 检查控制强度是否匹配：
@@ -106,18 +113,22 @@
 - heuristic 应标为例子或提示，不成为完成门禁。
 - 模型默认能可靠处理且没有独特领域价值的内容应删除。
 
-记录控制面信号，包括 mandatory stages、hard gates、固定中间 artifact、prohibition、conditional branch 和固定输出字段。静态计数只提供线索，不自动形成 finding，也不按 token 数量直接判定复杂度。
+记录控制面信号，包括 mandatory stages、hard gates、固定中间 artifact、prohibition、conditional
+branch 和固定输出字段。静态计数只提供线索，不自动形成 finding，也不按 token 数量直接判定复杂度。
 
 评分锚点：
 
 - **5 — 最小且充分**：每个强制规则有明确依据；可变任务保留判断空间；无法在保留核心行为时实质缩短。
 - **4 — 基本适当**：主体控制合理，只有少量可删除、放宽或迁移的内容，没有明显限制正常策略。
-- **3 — 正确但偏重**：多个 mandatory gate 缺少强依据，heuristic 被写成硬条件，或正文可显著缩短而不损失独特价值。
-- **2 — 明显过度规定**：大量规则属于模型常识或防御性边界，开放任务被强制使用统一阶段、状态或 artifact。
+- **3 — 正确但偏重**：多个 mandatory
+  gate 缺少强依据，heuristic 被写成硬条件，或正文可显著缩短而不损失独特价值。
+- **2
+  — 明显过度规定**：大量规则属于模型常识或防御性边界，开放任务被强制使用统一阶段、状态或 artifact。
 - **1 — 以控制替代能力**：Skill 接近完整 runbook 或人工 SOP，模型主要执行文档而不是运用领域判断。
 - **0 — 有害**：控制结构在多数目标场景中造成失败、严重漏检或无效工作。
 
-缺少 ablation 不代表规则必然无效；使用 `needs-ablation`。但当多个强制规则的必要性未知时，本维度不能得到 4–5 分。
+缺少 ablation 不代表规则必然无效；使用
+`needs-ablation`。但当多个强制规则的必要性未知时，本维度不能得到 4–5 分。
 
 ## 7. 信息层级、资源与渐进式披露（10）
 
@@ -159,7 +170,8 @@
 - 尚未证实、低概率或组合爆炸边界是否留在 eval/issue。
 - 是否以自然语言维护计时器、额度、pending、跨 actor 握手、乱序事件或取消/关闭竞态。
 
-出现上述信号时读取 `references/architecture-boundaries.md`。高分：职责分层正确，复杂机制有一等能力。低分：核心正确性依赖模型记住多维状态或通过自然语言字符串维护分布式协议。
+出现上述信号时读取
+`references/architecture-boundaries.md`。高分：职责分层正确，复杂机制有一等能力。低分：核心正确性依赖模型记住多维状态或通过自然语言字符串维护分布式协议。
 
 ## 9. 脚本与确定性自动化（7）
 
@@ -180,18 +192,24 @@
 
 ## 10. Eval 设计、Oracle 有效性与修改安全（9）
 
-存在 eval，或 eval 结果被用于评分、发布或修改 Skill 时，先消费 `audit-agent-skill-evals` 产生的 `EvalAuditResult`。先审核 suite，再使用其结果评价 Skill。
+存在 eval，或 eval 结果被用于评分、发布或修改 Skill 时，先消费 `audit-agent-skill-evals` 产生的
+`EvalAuditResult`。先审核 suite，再使用其结果评价 Skill。
 
 本维度只评四组内容：
 
-1. **目标与代价**：是否声明 recall-first、precision-first、balanced 或 critical；是否分别评估 false negative 和 false positive 的现实代价。
-2. **Case 与 oracle 有效性**：测试层级、unit under test、前提、oracle rationale、rule refs、observable assertion、allowed variance 和 minimal counterexample 是否成立。
-3. **现实性与覆盖**：provenance、case role、scenario family、near-miss、minimal pair 和真实用户措辞是否可靠；challenge 和 diagnostic case 是否没有主导发布结论。
+1. **目标与代价**：是否声明 recall-first、precision-first、balanced 或 critical；是否分别评估 false
+   negative 和 false positive 的现实代价。
+2. **Case 与 oracle 有效性**：测试层级、unit under test、前提、oracle rationale、rule
+   refs、observable assertion、allowed variance 和 minimal counterexample 是否成立。
+3. **现实性与覆盖**：provenance、case role、scenario family、near-miss、minimal
+   pair 和真实用户措辞是否可靠；challenge 和 diagnostic case 是否没有主导发布结论。
 4. **结果与修改安全**：是否有实际运行、适用 baseline、trace、方差与成本；失败是否先归因；eval-driven 修改是否经过相邻边界和固定 validation/sanity/regression 回归。
 
-对 trigger 或其它二元决策分别报告 positive recall、false-negative rate、negative specificity 和 false-positive rate。没有明确错误代价政策时，不把它们压缩为一个总准确率。
+对 trigger 或其它二元决策分别报告 positive recall、false-negative rate、negative
+specificity 和 false-positive rate。没有明确错误代价政策时，不把它们压缩为一个总准确率。
 
-高分：关键 oracle 与现实性可靠，有重复运行和适用 baseline，eval-driven 修改经过净收益与回归验证。低分：错误或不现实用例、混合测试层级、少量随机结果或 challenge case 直接驱动 Skill 增加规则。
+高分：关键 oracle 与现实性可靠，有重复运行和适用 baseline，eval-driven 修改经过净收益与回归验证。低分：错误或不现实用例、混合测试层级、少量随机结果或 challenge
+case 直接驱动 Skill 增加规则。
 
 ## 11. 可靠性、安全与兼容性（4）
 

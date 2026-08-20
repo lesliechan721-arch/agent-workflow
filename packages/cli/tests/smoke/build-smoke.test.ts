@@ -28,6 +28,7 @@ let buildSnapshot: SmokeBuildSnapshot | null = null;
 
 const EXPECTED_PLUGIN_PLATFORMS = {
   'agent-content-toolkit': ['claude', 'codex'],
+  'agent-skill-eval-runner': ['claude', 'codex'],
   'agent-skill-toolkit': ['claude', 'codex'],
   'ask-me': ['claude', 'codex'],
   'aw-plugin-development': ['claude', 'codex'],
@@ -295,7 +296,6 @@ describe('build smoke', () => {
       ).resolves.toBe(false);
     }
     for (const [pluginName, skillName] of [
-      ['ask-me', 'requirements-clarifier'],
       ['ask-me', 'decision-grill'],
       ['git', 'git-commit'],
     ]) {
@@ -314,6 +314,7 @@ describe('build smoke', () => {
       }
     }
     for (const [pluginName, artifactId] of [
+      ['codex-enhance', 'codex-clarifier-skill'],
       ['codex-enhance', 'codex-explore-skill'],
       ['codex-enhance', 'codex-subagent-guide-skill'],
     ]) {
@@ -349,6 +350,7 @@ describe('build smoke', () => {
     const catalogManifest = await fs.readJson(path.join(outputRoot, 'catalog-manifest.json'));
     expect(claudeMarketplace.plugins.map((plugin: { name: string }) => plugin.name).sort()).toEqual([
       'agent-content-toolkit',
+      'agent-skill-eval-runner',
       'agent-skill-toolkit',
       'ask-me',
       'aw-plugin-development',
@@ -357,6 +359,7 @@ describe('build smoke', () => {
     ]);
     expect(codexMarketplace.plugins.map((plugin: { name: string }) => plugin.name).sort()).toEqual([
       'agent-content-toolkit',
+      'agent-skill-eval-runner',
       'agent-skill-toolkit',
       'ask-me',
       'aw-plugin-development',

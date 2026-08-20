@@ -1,6 +1,6 @@
 # Composition Fitness Audit
 
-> GENERATED from `standards/rules.json`; do not edit manually.
+> GENERATED from `standards/skill-rules.json`; do not edit manually.
 
 ## 六项清单
 

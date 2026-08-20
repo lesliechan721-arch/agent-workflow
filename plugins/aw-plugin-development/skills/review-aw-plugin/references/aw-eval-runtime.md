@@ -1,25 +1,13 @@
-# AW Eval runtime adapter
+# AW Eval runtime adaptation
 
-## Preconditions
+AW owns materialization and target/profile selection. It does not own generic model execution
+semantics.
 
-- Eval corpus digest 有匹配的 `EvalAuditResult(validity=pass)`，才能作为 release evidence 或驱动 Skill 修改。
-- 用户明确授权高成本模型运行和必要权限。
-- project runner、materialization 和 process isolation 由 AW CLI 负责。
-
-## Execution
-
-```bash
-pnpm plugin:eval <plugin> --skill <skill> --batch-name <name>
-```
-
-调试可选 suite/split/case；过滤运行形成 incomplete batch，不能直接作为完整 release evidence。
-
-## Waiting
-
-保留原进程 session，使用 harness 的响应式等待；不要用 `sleep`、`ps` 或报告文件轮询。超时不是 Eval 失败。
-
-## Result
-
-- `needs_review` 必须读取对应 trace。
-- `incomplete` 或缺少定性复核不能形成 release pass。
-- 结果交给 `audit-agent-skill-evals(result-triage)`，再决定是否存在 `skill-defect`。
+- Preflight uses `audit-agent-skill-evals` and binds current Skill and case corpus digests.
+- A compatible optional runner consumes `EvalExecutionPlan` and returns `EvalRunBundle`.
+- Missing runner means `evalEvidenceLevel=structural` and provisional release evidence, not a Skill
+  defect.
+- AW does not migrate old project report publish/release, README registration, static batch or
+  currentness into the generic runner.
+- Provider limitations such as missing Claude execution, tool trace, token usage or sandbox remain
+  explicit in the evidence bundle.
