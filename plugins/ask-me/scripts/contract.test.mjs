@@ -159,6 +159,40 @@ test('eval manifests point to parseable case documents with valid participant na
   }
 });
 
+test('all composition suites expose the three adjacent decision Skills', async () => {
+  for (const skillName of requiredSkills) {
+    const manifest = await readJson(path.join(
+      context.sourceRoot,
+      'skills',
+      skillName,
+      'evals',
+      'manifest.json',
+    ));
+    for (const suite of manifest.suites.filter((entry) => entry.id !== 'trigger')) {
+      assert.deepEqual([...suite.skills].sort(), [...requiredSkills].sort());
+    }
+  }
+
+  const prototypeRoot = path.join(
+    context.sourceRoot,
+    'skills',
+    'decision-prototype',
+    'evals',
+  );
+  const behavior = await readJson(path.join(
+    prototypeRoot,
+    'decision-prototype-release-evals.json',
+  ));
+  assert.equal(behavior.skill_name, 'decision-prototype');
+  assert.equal(behavior.evals.length, 2);
+  for (const entry of behavior.evals) {
+    assert.equal(entry.sandbox, 'workspace-write');
+    assert.equal(entry.review.workspace_unchanged, false);
+    assert.equal(entry.review.allowed_workspace_changes.length > 0, true);
+    assert.equal(entry.review.artifacts.some((artifact) => artifact.path.startsWith('src/')), true);
+  }
+});
+
 test('plan-review cases receive an actual migration plan fixture', async () => {
   const [
     { setupTriggerWorkspace: setupDecisionTriggerWorkspace },
