@@ -21,6 +21,7 @@ import {
   renderTriggerCases,
   titleCaseSlug,
 } from './lib/skill-scaffold.mjs';
+import { resolveAuthoringPluginRoot } from './lib/plugin-root.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -278,7 +279,7 @@ ${configTest}${lifecycleTest}`;
 
 function printUsage() {
   console.log(`Usage:
-  node plugins/aw-plugin-development/skills/author-aw-plugin/scripts/init_plugin.mjs <plugin_name> --description "..."
+  aw plugin init <plugin-name> --description "..."
 
 Options:
   --description <text>          Plugin description. Required.
@@ -294,6 +295,7 @@ Options:
   --catalog-min-version <semver>
                                 Target catalog compatibility.aw.minVersion used for authoring-time validation.
   --repo-root <path>            Repository root. Default: current directory.
+  --plugin-root <path>          Plugin root, relative to --repo-root by default.
   --no-skills                   Create plugin without skills directory.
   --with-mcp                    Create .mcp.json stub and add mcpServers to manifest.
   --with-apps                   Create minimal .app.json with an example connector id and add apps to manifest.
@@ -413,6 +415,9 @@ function parseArgs(argv) {
       case '--repo-root':
         options.repoRoot = value;
         break;
+      case '--plugin-root':
+        options.pluginRoot = value;
+        break;
       default:
         fail(`Unknown option: ${normalizedFlag}`);
     }
@@ -465,17 +470,22 @@ function main() {
       MIN_CODEX_SHORT_DESCRIPTION_LEN,
       MAX_CODEX_SHORT_DESCRIPTION_LEN,
     );
-  const repoRoot = path.resolve(args.repoRoot);
-
+  const resolvedRoot = resolveAuthoringPluginRoot({
+    repoRoot: args.repoRoot,
+    pluginRoot: args.pluginRoot,
+    pluginName,
+  });
+  const { repoRoot, pluginRoot } = resolvedRoot;
   const pluginsRoot = path.join(repoRoot, 'plugins');
   const marketplaceSourcePath = path.join(pluginsRoot, 'marketplace-source.json');
-  const pluginRoot = path.join(pluginsRoot, pluginName);
 
-  if (!fs.existsSync(pluginsRoot)) {
-    fail(`plugins directory not found: ${pluginsRoot}`);
-  }
-  if (!fs.existsSync(marketplaceSourcePath)) {
-    fail(`marketplace metadata file not found: ${marketplaceSourcePath}`);
+  if (!resolvedRoot.explicit) {
+    if (!fs.existsSync(pluginsRoot)) {
+      fail(`plugins directory not found: ${pluginsRoot}`);
+    }
+    if (!fs.existsSync(marketplaceSourcePath)) {
+      fail(`marketplace metadata file not found: ${marketplaceSourcePath}`);
+    }
   }
   if (fs.existsSync(pluginRoot)) {
     fail(`plugin already exists: ${pluginRoot}`);
@@ -591,7 +601,9 @@ function main() {
   for (const createdPath of createdPaths) {
     console.log(`  - ${createdPath}`);
   }
-  console.log(`[OK] Left marketplace metadata unchanged: ${marketplaceSourcePath}`);
+  if (!resolvedRoot.explicit) {
+    console.log(`[OK] Left marketplace metadata unchanged: ${marketplaceSourcePath}`);
+  }
   if (args.skillInvocation === 'claude-model-only') {
     console.log('[WARN] Codex has no hidden-user-entry equivalent; Codex remains model-invocable and explicitly invocable.');
   }

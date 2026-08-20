@@ -634,8 +634,6 @@ describe('skill-review author tools', () => {
     const skillRoot = path.join(repoRoot(), '.agents', 'skills', skillName);
     const manifest = await runner.readManifest(skillRoot, skillName);
     const subjectRoot = await runner.prepareSubject(manifest, outputRoot);
-    const subjectSkillRoot = path.join(subjectRoot, '.agents', 'skills', skillName);
-
     await expect(fs.pathExists(path.join(subjectRoot, 'node_modules', 'yaml', 'package.json')))
       .resolves.toBe(true);
     await expect(fs.pathExists(path.join(
@@ -649,8 +647,11 @@ describe('skill-review author tools', () => {
 
     const childEnv = { ...process.env };
     delete childEnv.NODE_PATH;
+    const cliPath = path.join(repoRoot(), 'packages', 'cli', 'dist', 'index.js');
     await execFileAsync('node', [
-      path.join(subjectSkillRoot, 'scripts', 'init_plugin.mjs'),
+      cliPath,
+      'plugin',
+      'init',
       'release-notes',
       '--description',
       'Generate release notes from repository changes.',
@@ -673,7 +674,9 @@ describe('skill-review author tools', () => {
       'utf8',
     );
     const result = await execFileAsync('node', [
-      path.join(subjectSkillRoot, 'scripts', 'validate_plugin.mjs'),
+      cliPath,
+      'plugin',
+      'validate',
       pluginRoot,
     ], {
       cwd: subjectRoot,

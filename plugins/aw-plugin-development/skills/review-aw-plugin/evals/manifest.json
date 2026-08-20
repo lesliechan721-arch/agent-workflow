@@ -3,5 +3,8 @@
   "plugin": "aw-plugin-development",
   "skill": "review-aw-plugin",
   "profiles": [{"id":"project-default","scope":"project","plugins":[{"name":"agent-content-toolkit","config":{}},{"name":"agent-skill-toolkit","config":{}},{"name":"agent-skill-eval-runner","config":{}},{"name":"aw-plugin-development","config":{}}],"runModel":true,"requiredForRelease":false}],
-  "suites": [{"id":"trigger","kind":"trigger","skills":["write-agent-content","review-agent-content","author-agent-skill","review-agent-skill","design-agent-skill-evals","audit-agent-skill-evals","run-agent-skill-evals","author-aw-plugin","review-aw-plugin"],"cases":"./trigger-cases.json","observeSpawnAgent":false,"isolation":"strict","strictNegativeSplits":["validation"],"profiles":["project-default"],"defaultRuns":3,"releaseSplits":["validation"],"requiredForRelease":false,"perRunTimeoutMs":180000}]
+  "suites": [
+    {"id":"trigger","kind":"trigger","skills":["write-agent-content","review-agent-content","author-agent-skill","review-agent-skill","design-agent-skill-evals","audit-agent-skill-evals","run-agent-skill-evals","author-aw-plugin","review-aw-plugin"],"cases":"./trigger-cases.json","observeSpawnAgent":false,"isolation":"strict","strictNegativeSplits":["validation"],"profiles":["project-default"],"defaultRuns":3,"releaseSplits":["validation"],"requiredForRelease":false,"perRunTimeoutMs":180000},
+    {"id":"behavior","kind":"conversation","skills":["write-agent-content","review-agent-content","author-agent-skill","review-agent-skill","design-agent-skill-evals","audit-agent-skill-evals","run-agent-skill-evals","author-aw-plugin","review-aw-plugin"],"cases":"./behavior-cases.json","isolation":"strict","profiles":["project-default"],"defaultRuns":1,"releaseSplits":[],"requiredForRelease":false,"perRunTimeoutMs":300000}
+  ]
 }

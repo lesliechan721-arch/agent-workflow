@@ -4,13 +4,26 @@ import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { promisify } from 'node:util';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { compareStrictSemVer, parseStrictSemVer } from './semver.mjs';
+import {
+  assertAuthoringPluginPathFence,
+  resolveAuthoringPluginRoot,
+} from './plugin-root.mjs';
 
 const execFileAsync = promisify(execFile);
 const EXPECTED_MANIFEST_CONTRACT_VERSION = 3;
+const CLI_PACKAGE_NAME = '@lesliechan721/aw';
 const PLUGIN_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const CLI_REGISTRY_RELATIVE_PATH = 'src/utils/skill-frontmatter-capabilities.json';
+const CLI_PACKAGE_ROOT = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '..',
+  '..',
+  '..',
+  '..',
+);
 
 export class PluginVersionCheckError extends Error {
   constructor(code, message) {
@@ -66,38 +79,30 @@ async function resolveBaseCommit(repoRoot, base) {
   return output.trim();
 }
 
-async function loadProductionBundler(repoRoot) {
+async function loadProductionBundler(cliPackageRoot) {
   const manifestModulePath = path.join(
-    repoRoot,
-    'packages',
-    'cli',
+    cliPackageRoot,
     'dist',
     'src',
     'utils',
     'manifest.js',
   );
   const generatorModulePath = path.join(
-    repoRoot,
-    'packages',
-    'cli',
+    cliPackageRoot,
     'dist',
     'src',
     'generators',
     'local-plugin.js',
   );
   const digestModulePath = path.join(
-    repoRoot,
-    'packages',
-    'cli',
+    cliPackageRoot,
     'dist',
     'src',
     'utils',
     'catalog-digests.js',
   );
   const runtimeProjectionModulePath = path.join(
-    repoRoot,
-    'packages',
-    'cli',
+    cliPackageRoot,
     'dist',
     'src',
     'utils',
@@ -168,12 +173,13 @@ function parseTreeRecord(record) {
   };
 }
 
-async function materializeBaseAuthoringSourceSet(repoRoot, baseCommit, outputRoot) {
+async function materializeBaseAuthoringSourceSet(repoRoot, baseCommit, outputRoot, pluginRootPath) {
   const sourcePaths = [
     'plugins',
     'packages/cli/package.json',
     'packages/cli/src/utils/skill-frontmatter-capabilities.json',
   ];
+  if (pluginRootPath && !sourcePaths.includes(pluginRootPath)) sourcePaths.push(pluginRootPath);
   const output = await runGit(
     repoRoot,
     ['ls-tree', '-r', '-z', baseCommit, '--', ...sourcePaths],
@@ -206,6 +212,256 @@ async function materializeBaseAuthoringSourceSet(repoRoot, baseCommit, outputRoo
     }
   }
   return outputRoot;
+}
+
+async function lstatOrNull(filePath) {
+  return fs.lstat(filePath).catch((error) => {
+    if (error?.code === 'ENOENT') return null;
+    throw error;
+  });
+}
+
+async function assertRegularFilePath(rootDir, relativePath, label) {
+  const rootStat = await lstatOrNull(rootDir);
+  if (!rootStat || rootStat.isSymbolicLink() || !rootStat.isDirectory()) {
+    throw codedError('invalidPlugin', `${label} root must be a non-symbolic-link directory.`);
+  }
+  let currentPath = rootDir;
+  const segments = relativePath.split('/');
+  for (const [index, segment] of segments.entries()) {
+    currentPath = path.join(currentPath, segment);
+    const stat = await lstatOrNull(currentPath);
+    if (!stat) {
+      throw codedError('invalidPlugin', `${label} is missing ${JSON.stringify(relativePath)}.`);
+    }
+    if (stat.isSymbolicLink()) {
+      throw codedError('invalidPlugin', `${label} contains a symbolic-link node: ${currentPath}`);
+    }
+    if (index < segments.length - 1 && !stat.isDirectory()) {
+      throw codedError('invalidPlugin', `${label} contains a non-directory path node: ${currentPath}`);
+    }
+    if (index === segments.length - 1 && !stat.isFile()) {
+      throw codedError('invalidPlugin', `${label} must use a regular file: ${currentPath}`);
+    }
+  }
+  return currentPath;
+}
+
+async function assertDirectoryPathChain(boundaryRoot, targetRoot, label) {
+  const relative = path.relative(boundaryRoot, targetRoot);
+  if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw codedError('invalidPlugin', `${label} source root must stay inside its workspace.`);
+  }
+  let currentPath = boundaryRoot;
+  for (const segment of relative.split(path.sep).filter(Boolean)) {
+    currentPath = path.join(currentPath, segment);
+    const stat = await lstatOrNull(currentPath);
+    if (!stat) return;
+    if (stat.isSymbolicLink()) {
+      throw codedError('invalidPlugin', `${label} contains a symbolic-link path node: ${currentPath}`);
+    }
+    if (!stat.isDirectory()) {
+      throw codedError('invalidPlugin', `${label} contains a non-directory path node: ${currentPath}`);
+    }
+  }
+}
+
+function calculateCliSourceSetDigest(packageBytes, registryBytes) {
+  return `sha256:${crypto.createHash('sha256')
+    .update('package.json\0')
+    .update(packageBytes)
+    .update(`\0${CLI_REGISTRY_RELATIVE_PATH}\0`)
+    .update(registryBytes)
+    .digest('hex')}`;
+}
+
+async function inspectWorkspaceCliSourceSet(cliRoot, label, boundaryRoot) {
+  if (boundaryRoot) await assertDirectoryPathChain(boundaryRoot, cliRoot, label);
+  const packagePath = path.join(cliRoot, 'package.json');
+  const registryPath = path.join(cliRoot, ...CLI_REGISTRY_RELATIVE_PATH.split('/'));
+  const [packageStat, registryStat] = await Promise.all([
+    lstatOrNull(packagePath),
+    lstatOrNull(registryPath),
+  ]);
+  if (!packageStat && !registryStat) {
+    const cliRootStat = await lstatOrNull(cliRoot);
+    if (cliRootStat?.isSymbolicLink() || (cliRootStat && !cliRootStat.isDirectory())) {
+      throw codedError('invalidPlugin', `${label} @aw/cli source root has an invalid node: ${cliRoot}`);
+    }
+    return { state: 'none', root: cliRoot };
+  }
+  if (!packageStat || !registryStat) {
+    return { state: 'partial', root: cliRoot };
+  }
+
+  await Promise.all([
+    assertRegularFilePath(cliRoot, 'package.json', `${label} @aw/cli source set`),
+    assertRegularFilePath(
+      cliRoot,
+      CLI_REGISTRY_RELATIVE_PATH,
+      `${label} @aw/cli source set`,
+    ),
+  ]);
+  const [packageBytes, registryBytes] = await Promise.all([
+    fs.readFile(packagePath),
+    fs.readFile(registryPath),
+  ]);
+  let packageDocument;
+  try {
+    packageDocument = JSON.parse(packageBytes.toString('utf8'));
+    JSON.parse(registryBytes.toString('utf8'));
+  } catch (error) {
+    throw codedError('invalidPlugin', `${label} @aw/cli source set contains invalid JSON: ${error.message}`);
+  }
+  if (typeof packageDocument?.name !== 'string' || packageDocument.name.trim() === '') {
+    throw codedError('invalidPlugin', `${label} @aw/cli package name is missing.`);
+  }
+  parseStrictSemVer(packageDocument.version, `${label} @aw/cli package version`);
+  return {
+    state: 'complete',
+    root: cliRoot,
+    packageName: packageDocument.name,
+    providerVersion: packageDocument.version,
+    digest: calculateCliSourceSetDigest(packageBytes, registryBytes),
+  };
+}
+
+async function materializeCliSourceSet(source, outputRoot, label) {
+  await fs.mkdir(path.join(outputRoot, 'src', 'utils'), { recursive: true });
+  await Promise.all([
+    fs.copyFile(path.join(source.root, 'package.json'), path.join(outputRoot, 'package.json')),
+    fs.copyFile(
+      path.join(source.root, ...CLI_REGISTRY_RELATIVE_PATH.split('/')),
+      path.join(outputRoot, ...CLI_REGISTRY_RELATIVE_PATH.split('/')),
+    ),
+  ]);
+  const materialized = await inspectWorkspaceCliSourceSet(outputRoot, label);
+  if (
+    materialized.state !== 'complete'
+    || materialized.packageName !== source.packageName
+    || materialized.providerVersion !== source.providerVersion
+    || materialized.digest !== source.digest
+  ) {
+    throw codedError('invalidPlugin', `${label} @aw/cli source identity changed during materialization.`);
+  }
+  return materialized;
+}
+
+async function inspectExternalCliProvider(cliPackageRoot) {
+  const canonicalRoot = await fs.realpath(cliPackageRoot).catch(() => null);
+  if (!canonicalRoot) {
+    throw codedError('bundlerUnavailable', 'Plugin version checking cannot resolve the installed CLI package root.');
+  }
+  const packagePath = await assertRegularFilePath(
+    canonicalRoot,
+    'package.json',
+    'Installed CLI provider',
+  );
+  const externalRegistryRelativePath = `dist/${CLI_REGISTRY_RELATIVE_PATH}`;
+  const registryPath = await assertRegularFilePath(
+    canonicalRoot,
+    externalRegistryRelativePath,
+    'Installed CLI provider',
+  );
+  const [packageBytes, registryBytes] = await Promise.all([
+    fs.readFile(packagePath),
+    fs.readFile(registryPath),
+  ]);
+  let packageDocument;
+  try {
+    packageDocument = JSON.parse(packageBytes.toString('utf8'));
+    JSON.parse(registryBytes.toString('utf8'));
+  } catch (error) {
+    throw codedError('bundlerUnavailable', `Installed CLI provider contains invalid JSON: ${error.message}`);
+  }
+  if (packageDocument?.name !== CLI_PACKAGE_NAME) {
+    throw codedError('bundlerUnavailable', `Installed CLI provider package name must be ${JSON.stringify(CLI_PACKAGE_NAME)}.`);
+  }
+  parseStrictSemVer(packageDocument.version, 'installed CLI provider version');
+  return {
+    root: canonicalRoot,
+    packagePath,
+    registryPath,
+    packageName: packageDocument.name,
+    providerVersion: packageDocument.version,
+    digest: calculateCliSourceSetDigest(packageBytes, registryBytes),
+  };
+}
+
+async function materializeExternalCliProvider(provider, outputRoot, label) {
+  await fs.mkdir(path.join(outputRoot, 'src', 'utils'), { recursive: true });
+  await Promise.all([
+    fs.copyFile(provider.packagePath, path.join(outputRoot, 'package.json')),
+    fs.copyFile(
+      provider.registryPath,
+      path.join(outputRoot, ...CLI_REGISTRY_RELATIVE_PATH.split('/')),
+    ),
+  ]);
+  return inspectWorkspaceCliSourceSet(outputRoot, label);
+}
+
+async function resolveCliVirtualSourceSets(options) {
+  const baseSource = await inspectWorkspaceCliSourceSet(
+    path.join(options.baseSourceRoot, 'packages', 'cli'),
+    'Git base',
+    options.baseSourceRoot,
+  );
+  const currentSource = await inspectWorkspaceCliSourceSet(
+    path.join(options.repoRoot, 'packages', 'cli'),
+    'current workspace',
+    options.repoRoot,
+  );
+  if (baseSource.state === 'partial') {
+    throw codedError('invalidPlugin', 'Git base contains an incomplete @aw/cli virtual authoring source set.');
+  }
+  if (currentSource.state === 'partial') {
+    throw codedError('invalidPlugin', 'Found an incomplete current workspace @aw/cli source set.');
+  }
+  if (baseSource.state !== currentSource.state) {
+    throw codedError(
+      'invalidPlugin',
+      'Git base and current workspace CLI source ownership differs; version checking cannot mix workspace and external providers.',
+    );
+  }
+  if (baseSource.state === 'complete') {
+    const currentMaterialized = await materializeCliSourceSet(
+      currentSource,
+      path.join(options.tempRoot, 'current-cli-workspace'),
+      'current workspace materialization',
+    );
+    return {
+      base: baseSource,
+      current: currentMaterialized,
+    };
+  }
+
+  const externalProvider = await inspectExternalCliProvider(options.cliPackageRoot);
+  const [baseExternal, currentExternal] = await Promise.all([
+    materializeExternalCliProvider(
+      externalProvider,
+      path.join(options.tempRoot, 'base-cli-external'),
+      'base external CLI provider',
+    ),
+    materializeExternalCliProvider(
+      externalProvider,
+      path.join(options.tempRoot, 'current-cli-external'),
+      'current external CLI provider',
+    ),
+  ]);
+  for (const materialized of [baseExternal, currentExternal]) {
+    if (
+      materialized.state !== 'complete'
+      || materialized.packageName !== externalProvider.packageName
+      || materialized.providerVersion !== externalProvider.providerVersion
+      || materialized.digest !== externalProvider.digest
+    ) {
+      throw codedError('invalidPlugin', 'External CLI provider identity changed during independent materialization.');
+    }
+  }
+  if (baseExternal.root === currentExternal.root || baseExternal.digest !== currentExternal.digest) {
+    throw codedError('invalidPlugin', 'External CLI provider materializations are not independent and identical.');
+  }
+  return { base: baseExternal, current: currentExternal };
 }
 
 async function readManifestDocument(pluginRoot) {
@@ -251,11 +507,22 @@ function compareBundleEntries(baseEntries, currentEntries) {
     .sort();
 }
 
-async function bundlePlugin(bundler, sourceSetRoot, cliVirtualExportRoot, pluginRoot, outputRoot) {
+async function bundlePlugin(
+  bundler,
+  sourceSetRoot,
+  cliVirtualExportRoot,
+  cliProviderVersion,
+  pluginRoot,
+  outputRoot,
+) {
   const sourceSetPlugins = await bundler.discoverPlugins(sourceSetRoot);
   const plugin = await bundler.readPluginManifest(pluginRoot);
+  if (!sourceSetPlugins.some((candidate) => candidate.manifest.name === plugin.manifest.name)) {
+    sourceSetPlugins.push(plugin);
+  }
   const runtimeResolver = bundler.createRuntimeResolver(sourceSetPlugins, {
     cliVirtualExportRoot,
+    cliProviderVersion,
   });
   await bundler.bundleLocalPlugin(plugin, outputRoot, {
     buildMode: 'staging',
@@ -290,6 +557,9 @@ async function checkOnePlugin(options) {
     bundler,
     tempRoot,
     baseSourceRoot,
+    cliVirtualSources,
+    currentRoot,
+    baseRoot,
   } = options;
   if (!PLUGIN_NAME_PATTERN.test(pluginName)) {
     return createCheckResult(pluginName, {
@@ -298,11 +568,7 @@ async function checkOnePlugin(options) {
       errors: [`Invalid plugin name ${JSON.stringify(pluginName)}.`],
     });
   }
-  const currentRoot = path.join(repoRoot, 'plugins', pluginName);
   const currentExists = await fs.stat(currentRoot).then((stat) => stat.isDirectory(), () => false);
-  const candidateBaseRoot = path.join(baseSourceRoot, 'plugins', pluginName);
-  const baseRoot = await fs.stat(candidateBaseRoot)
-    .then((stat) => stat.isDirectory() ? candidateBaseRoot : null, () => null);
   if (!currentExists && !baseRoot) {
     return createCheckResult(pluginName, {
       ok: false,
@@ -374,14 +640,16 @@ async function checkOnePlugin(options) {
     bundlePlugin(
       bundler,
       baseSourceRoot,
-      path.join(baseSourceRoot, 'packages', 'cli'),
+      cliVirtualSources.base.root,
+      cliVirtualSources.base.providerVersion,
       baseRoot,
       path.join(tempRoot, 'bundles', pluginName, 'base'),
     ),
     bundlePlugin(
       bundler,
       repoRoot,
-      path.join(repoRoot, 'packages', 'cli'),
+      cliVirtualSources.current.root,
+      cliVirtualSources.current.providerVersion,
       currentRoot,
       path.join(tempRoot, 'bundles', pluginName, 'current'),
     ),
@@ -484,29 +752,80 @@ async function listChangedPluginNames(repoRoot, baseCommit) {
 }
 
 export async function checkPluginVersions(options = {}) {
-  const repoRoot = path.resolve(options.repoRoot ?? '.');
+  const requestedRepoRoot = path.resolve(options.repoRoot ?? '.');
+  const cliPackageRoot = path.resolve(options.cliPackageRoot ?? CLI_PACKAGE_ROOT);
   const requestedBase = options.base ?? 'HEAD';
+  assertAuthoringPluginPathFence({
+    repoRoot: requestedRepoRoot,
+    pluginRoot: requestedRepoRoot,
+  });
+  const explicitRoot = options.pluginRoot === undefined
+    ? null
+    : resolveAuthoringPluginRoot({
+        repoRoot: requestedRepoRoot,
+        pluginRoot: options.pluginRoot,
+        pluginName: options.pluginNames?.[0],
+      });
+  const repoRoot = explicitRoot?.repoRoot ?? requestedRepoRoot;
   const baseCommit = await resolveBaseCommit(repoRoot, requestedBase);
-  const bundler = await loadProductionBundler(repoRoot);
+  const bundler = await loadProductionBundler(cliPackageRoot);
   const pluginNames = options.all
     ? await listChangedPluginNames(repoRoot, baseCommit)
     : [...new Set(options.pluginNames ?? [])].sort();
   if (pluginNames.length === 0 && !options.all) {
     throw codedError('usage', 'Provide a plugin name or use --all.');
   }
+  const currentRoots = new Map();
+  for (const pluginName of pluginNames) {
+    const currentRoot = explicitRoot?.pluginRoot ?? path.join(repoRoot, 'plugins', pluginName);
+    assertAuthoringPluginPathFence({
+      repoRoot,
+      pluginRoot: currentRoot,
+      requireManifest: true,
+    });
+    currentRoots.set(pluginName, currentRoot);
+  }
 
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-version-check-'));
   try {
     const baseSourceRoot = path.join(tempRoot, 'base-source');
-    await materializeBaseAuthoringSourceSet(repoRoot, baseCommit, baseSourceRoot);
+    await materializeBaseAuthoringSourceSet(
+      repoRoot,
+      baseCommit,
+      baseSourceRoot,
+      explicitRoot?.relativePluginRoot,
+    );
+    const cliVirtualSources = await resolveCliVirtualSourceSets({
+      baseSourceRoot,
+      repoRoot,
+      cliPackageRoot,
+      tempRoot,
+    });
     const checks = [];
     for (const pluginName of pluginNames) {
+      const currentRoot = currentRoots.get(pluginName);
+      const candidateBaseRoot = explicitRoot
+        ? path.join(baseSourceRoot, ...explicitRoot.relativePluginRoot.split('/'))
+        : path.join(baseSourceRoot, 'plugins', pluginName);
+      const baseNode = await lstatOrNull(candidateBaseRoot);
+      const baseRoot = baseNode ? candidateBaseRoot : null;
+      if (baseRoot) {
+        assertAuthoringPluginPathFence({
+          repoRoot: baseSourceRoot,
+          pluginRoot: baseRoot,
+          requirePluginRoot: true,
+          requireManifest: true,
+        });
+      }
       checks.push(await checkOnePlugin({
         repoRoot,
         pluginName,
         bundler,
         tempRoot,
         baseSourceRoot,
+        cliVirtualSources,
+        currentRoot,
+        baseRoot,
       }));
     }
     return {

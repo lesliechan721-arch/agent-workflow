@@ -23,6 +23,8 @@
 - `aw-plugin-development` 提供显式调用的 AW Author/Reviewer，人工依赖 `agent-skill-toolkit >= 0.1.0` 和 `agent-content-toolkit >= 0.2.0`。
 - 新 AW Reviewer 只处理 `plugins/<name>/`，repo-local 或 portable Skill 使用通用 `review-agent-skill`。
 - 迁移期间新工作流不得静默替代旧入口；完成固定行为对照后再切换默认路由。
+- 确定性作者工具统一使用公开 CLI：`aw plugin init`、`aw plugin add-skill`、`aw plugin validate` 和 `aw plugin check-versions`。先运行 `aw --version`；不要使用 `npx` 或隐式安装。repo-local `create-aw-plugin` 与 `aw-plugin-development` Author 只编排这些命令，不保存第二份核心实现。
+- 默认插件根是 `<repo-root>/plugins/<plugin-name>`。兼容工作区使用其它布局时，`init`、`add-skill` 和单插件 `check-versions` 显式传 `--plugin-root <path>`；该路径必须位于 Git repo root 内并与 plugin name 匹配。`validate` 和 `check-versions` 拒绝 repo/plugin root、`.agents-plugin` 或 manifest path chain 中的符号链接和错误节点类型；不要用链接把作者根或 manifest 重定向到仓库外。`check-versions --all` 保留 `plugins/` 扫描语义。
 - 模型 Eval 和报告发布属于专用工作流，不在通用测试指南中重复定义。Reviewer 发布报告不修改 production README；登记由 Author 或 release 工具执行。
 
 ## Catalog build-time 文件复用
@@ -30,14 +32,14 @@
 - provider 用 `buildConfig.runtimeExports: [{ "name": "<stable-kebab-name>", "source": "./<file>" }]` 显式发布 canonical source file。source 必须是插件根内 regular non-symlink file，且不能位于 Skill、report、eval、dependency 或 build temporary tree。
 - consumer build 用 `buildConfig.buildImports: [{ "plugin": "<provider>", "export": "<name>", "env": "AW_PLUGIN_IMPORT_<NAME>" }]`。`scripts.node.build` 只读取该 env 指向的只读绝对文件，不使用 `../<sibling>`。Skill 文件投影用 `buildConfig.skillRuntimeFiles: [{ "skill": "<static-skill-key>", "target": "references/<file>", "import": { "plugin": "<provider>", "export": "<name>" } }]`；own staged source 把 `import` 换成 `source: "./<file>"`。
 - `skillRuntimeFiles.platforms` 可限制 `claude` 或 `codex`；缺省为 consumer 支持的全部平台。target 只允许 static Skill 内 `references/`、`assets/` 或 `scripts/` 文件，source tree 或 staging build 已有 target 时必须改用不同路径，不能覆盖。
-- CLI frontmatter registry 只用 reserved `{ "plugin": "@aw/cli", "export": "skill-frontmatter-capabilities" }` build import。它不能直接投影到 Skill，也不存在其它通用 CLI source export。版本比较工具必须为 base 和 current resolver 分别绑定对应的 CLI virtual export root；不得让 base 使用 current registry bytes。
+- CLI frontmatter registry 只用 reserved `{ "plugin": "@aw/cli", "export": "skill-frontmatter-capabilities" }` build import。它不能直接投影到 Skill，也不存在其它通用 CLI source export。版本比较工具只有在 base/current 都拥有完整 workspace CLI source 时才分别绑定对应 root/version；单侧 ownership 或 partial source 失败。两侧都不拥有时，从同一个经验证的 installed external provider 独立物化两个相同身份的 root；不得让 base 使用或复制 current registry root/bytes。
 - 只有确定性、输出完全由 registered build input 决定的 `scripts.node.build` 才声明 `buildConfig.cacheable: true`。该字段不接受 `false`，也不能在没有 build script 时使用。
 
 ## 验证与版本
 
 - 使用 `pnpm plugin:test <plugin>` 运行单插件确定性测试；使用 `pnpm plugin:test --all` 检查全部插件。
 - 新工作流的 generated standards、schemas 和 handoff contracts 必须通过 check-only contract test；CI 不自动改写生成文件。
-- repo-local 与 `aw-plugin-development` 作者 validator 的 JavaScript import scanner 必须保持同步；门禁覆盖 static import、export-from、dynamic import、`require()`、`require.resolve()`、非代码文本过滤和 `${...}` 代码扫描。
+- CLI 作者 validator 的 JavaScript import scanner 是唯一实现；门禁覆盖 static import、export-from、dynamic import、`require()`、`require.resolve()`、非代码文本过滤和 `${...}` 代码扫描。
 - 三层插件应分别验证，并增加同时安装三个插件的组合测试。
 - 通用确定性测试的分层、价值门禁和验证选择见[测试指南](testing.md)。
 - 稳定发布时检查源码 manifest version 的流程见 README 的正式版发布说明。

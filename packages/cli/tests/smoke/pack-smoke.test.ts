@@ -205,6 +205,77 @@ describe('pack smoke', () => {
       cwd: tempRoot,
       env: process.env,
     })).resolves.toMatchObject({ stdout: `${cliPackageJson.version}\n`, stderr: '' });
+    await expect(execFileAsync(awBin, ['plugin', '--help'], {
+      cwd: tempRoot,
+      env: process.env,
+    })).resolves.toMatchObject({
+      stdout: expect.stringContaining('check-versions'),
+      stderr: '',
+    });
+
+    const authorRepo = path.join(tempRoot, 'author-repo');
+    registerSmokeWritableRoot(authorRepo, 'pack smoke plugin author repository');
+    await fs.copy(fixturePath('repo-template'), authorRepo);
+    await execFileAsync(awBin, [
+      'plugin',
+      'init',
+      'validate-fixture',
+      '--description',
+      'A deterministic fixture for the packed CLI validator.',
+      '--no-skills',
+      '--repo-root',
+      authorRepo,
+    ], { cwd: authorRepo, env: process.env });
+    const validation = await execFileAsync(awBin, [
+      'plugin',
+      'validate',
+      path.join(authorRepo, 'plugins', 'validate-fixture'),
+      '--json',
+    ], { cwd: authorRepo, env: process.env });
+    expect(JSON.parse(validation.stdout)).toMatchObject({
+      ok: true,
+      profile: 'aw-source',
+    });
+    expect(validation.stderr).toBe('');
+
+    await execFileAsync(awBin, [
+      'plugin',
+      'init',
+      'author-smoke',
+      '--description',
+      'A deterministic fixture for packed CLI scaffolding.',
+      '--skill-description',
+      'Create and validate a deterministic packed CLI authoring fixture.',
+      '--skill-short-description',
+      'Create a packed CLI authoring fixture.',
+      '--repo-root',
+      authorRepo,
+      '--plugin-root',
+      'tools/author-smoke',
+    ], { cwd: authorRepo, env: process.env });
+    await execFileAsync(awBin, [
+      'plugin',
+      'add-skill',
+      'author-smoke',
+      '--skill-name',
+      'second-skill',
+      '--skill-description',
+      'Add a second deterministic Skill from the packed CLI runtime.',
+      '--skill-short-description',
+      'Add a second packed CLI Skill fixture.',
+      '--repo-root',
+      authorRepo,
+      '--plugin-root',
+      'tools/author-smoke',
+    ], { cwd: authorRepo, env: process.env });
+    await expect(fs.pathExists(path.join(
+      authorRepo,
+      'tools',
+      'author-smoke',
+      'skills',
+      'second-skill',
+      'SKILL.md',
+    ))).resolves.toBe(true);
     const capabilities = await execFileAsync(evalBin, ['capabilities', '--json'], {
       cwd: tempRoot,
       env: process.env,
@@ -231,6 +302,20 @@ describe('pack smoke', () => {
     const { packageRoot: unpackedPackageRoot } = await preparePackedCli();
     const unpackedFiles = await listFilesRecursively(unpackedPackageRoot);
     await expect(fs.pathExists(path.join(unpackedPackageRoot, 'dist', 'index.js'))).resolves.toBe(true);
+    await expect(fs.pathExists(path.join(
+      unpackedPackageRoot,
+      'dist',
+      'authoring',
+      'scripts',
+      'validate-plugin.mjs',
+    ))).resolves.toBe(true);
+    await expect(fs.pathExists(path.join(
+      unpackedPackageRoot,
+      'dist',
+      'authoring',
+      'assets',
+      'aw-config.mjs',
+    ))).resolves.toBe(true);
     await expect(fs.pathExists(path.join(unpackedPackageRoot, 'plugins-dist'))).resolves.toBe(false);
     expect(unpackedFiles).not.toContain('dist/stale-build-sentinel.js');
     expect(unpackedFiles.some((file) => file.startsWith('plugins-dist/'))).toBe(false);

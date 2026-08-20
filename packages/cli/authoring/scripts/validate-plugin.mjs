@@ -9,10 +9,11 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { checkPluginVersions } from './lib/plugin-version-check.mjs';
 import { scanJavaScriptImportSpecifiers } from './lib/javascript-import-scanner.mjs';
+import { assertAuthoringPluginPathFence } from './lib/plugin-root.mjs';
 
-let require = createRequire(import.meta.url);
+const require = createRequire(import.meta.url);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-let repositoryRoot = process.cwd();
+const CLI_PACKAGE_ROOT = path.resolve(__dirname, '..', '..', '..');
 
 const errors = [];
 const warnings = [];
@@ -362,9 +363,8 @@ function parseFrontmatter(content, sourceName) {
 function loadSkillFrontmatterCapabilityRegistry() {
   if (skillFrontmatterCapabilityRegistry) return skillFrontmatterCapabilityRegistry;
   const registryPath = path.join(
-    repositoryRoot,
-    'packages',
-    'cli',
+    CLI_PACKAGE_ROOT,
+    'dist',
     'src',
     'utils',
     'skill-frontmatter-capabilities.json',
@@ -389,9 +389,7 @@ function loadSkillFrontmatterCapabilityRegistry() {
 
 async function tryLoadCliManifestTools() {
   const modulePath = path.join(
-    repositoryRoot,
-    'packages',
-    'cli',
+    CLI_PACKAGE_ROOT,
     'dist',
     'src',
     'utils',
@@ -412,6 +410,38 @@ async function tryLoadCliManifestTools() {
   } catch {
     return null;
   }
+}
+
+function findRepoRootCandidate(pluginDir) {
+  let currentPath = path.dirname(pluginDir);
+  while (true) {
+    if (fs.lstatSync(path.join(currentPath, '.git'), { throwIfNoEntry: false })) {
+      return currentPath;
+    }
+    const parentPath = path.dirname(currentPath);
+    if (parentPath === currentPath) return null;
+    currentPath = parentPath;
+  }
+}
+
+function discoverCanonicalRepoRoot(repoRootCandidate) {
+  if (!repoRootCandidate) return null;
+  const result = spawnSync('git', ['rev-parse', '--show-toplevel'], {
+    cwd: repoRootCandidate,
+    encoding: 'utf8',
+  });
+  if (result.status !== 0 || !result.stdout.trim()) return null;
+  const repoRoot = path.resolve(result.stdout.trim());
+  return fs.realpathSync(repoRoot) === fs.realpathSync(repoRootCandidate)
+    ? repoRoot
+    : null;
+}
+
+function resolveCanonicalRepoRoot(pluginDir, pluginName, repoRoot) {
+  if (!repoRoot) return null;
+  return fs.realpathSync(pluginDir) === path.join(fs.realpathSync(repoRoot), 'plugins', pluginName)
+    ? repoRoot
+    : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -4043,6 +4073,7 @@ function validateSlashCommands(pluginDir, manifest) {
       }
     }
   }
+
   const seenCommands = new Set();
   const commandFiles = [];
   for (const entry of fs.readdirSync(slashCommandsRoot, { withFileTypes: true })) {
@@ -4131,7 +4162,7 @@ function validateSlashCommands(pluginDir, manifest) {
 
 function printUsage() {
   console.log(`Usage:
-  node validate_plugin.mjs <plugin-directory> [options]
+  aw plugin validate <plugin-directory> [options]
 
 Options:
   --catalog-min-version <semver>
@@ -4140,7 +4171,6 @@ Options:
   --claude-skill-profile <minimum|current>
                                Validate Claude fields at AW minimum 2.1.88 (default) or current docs.
   --version-base <git-ref>     Compare the production bundle against this Git base. Default: HEAD.
-  --repo-root <path>           Agent-workflows repository root. Default: current directory.
   --json                       Emit one machine-readable JSON result to stdout.
   -h, --help                   Show this help message.
 `);
@@ -4186,7 +4216,7 @@ async function validatePluginDir(pluginDir, options) {
     validatePlatformFieldSupport(manifest);
   } else {
     warn(
-      'CLI 未构建或 packages/cli/dist manifest contract 已过期，仅执行轻量预检；预检通过不代表完整 contract 通过，运行 pnpm build 后可获得权威源码校验',
+      'CLI authoring manifest contract 不完整，仅执行轻量预检；预检通过不代表完整 contract 通过，请安装完整的 aw CLI 后重试',
     );
     validateManifestLightweight(manifest);
     validateDeclaredPathsExist(pluginDir, manifest);
@@ -4208,11 +4238,16 @@ async function validatePluginDir(pluginDir, options) {
   validateSlashCommands(pluginDir, manifest);
 
   if (errors.length === 0) {
-    const canonicalPluginRoot = path.join(repositoryRoot, 'plugins', manifest.name ?? '');
-    if (path.resolve(pluginDir) === canonicalPluginRoot) {
+    const repoRoot = resolveCanonicalRepoRoot(
+      pluginDir,
+      manifest.name ?? '',
+      options.repoRoot,
+    );
+    if (repoRoot) {
       try {
         pluginVersionCheckResult = await checkPluginVersions({
-          repoRoot: repositoryRoot,
+          repoRoot,
+          cliPackageRoot: CLI_PACKAGE_ROOT,
           base: options.versionBase,
           pluginNames: [manifest.name],
         });
@@ -4245,7 +4280,6 @@ function parseArgs(argv) {
     strictAgentSkills: false,
     claudeSkillProfile: 'minimum',
     versionBase: 'HEAD',
-    repoRoot: process.cwd(),
     json: args.includes('--json'),
   };
 
@@ -4286,15 +4320,6 @@ function parseArgs(argv) {
       options.versionBase = value;
       continue;
     }
-    if (arg === '--repo-root') {
-      const value = args[index + 1];
-      if (!value || value.startsWith('--')) {
-        exitCliError('--repo-root requires a value.', options.json);
-      }
-      index += 1;
-      options.repoRoot = path.resolve(value);
-      continue;
-    }
     if (!arg.startsWith('--')) {
       if (!options.pluginDir) {
         options.pluginDir = arg;
@@ -4331,24 +4356,29 @@ async function main() {
     exitCliError('plugin-directory is required; run with --help for usage.', args.json);
   }
 
-  const resolved = path.isAbsolute(args.pluginDir)
-    ? path.resolve(args.pluginDir)
-    : path.resolve(args.repoRoot, args.pluginDir);
+  const resolved = path.resolve(args.pluginDir);
   if (!fs.existsSync(resolved)) {
     exitCliError(`[ERROR] Directory not found: ${resolved}`, args.json);
   }
-  repositoryRoot = args.repoRoot;
-  const repositoryMarker = path.join(repositoryRoot, 'packages', 'cli', 'package.json');
-  if (!fs.existsSync(repositoryMarker)) {
-    exitCliError(`agent-workflows repository root is invalid: ${repositoryRoot}`, args.json);
+  const repoRootCandidate = findRepoRootCandidate(resolved);
+  try {
+    assertAuthoringPluginPathFence({
+      repoRoot: repoRootCandidate ?? undefined,
+      pluginRoot: resolved,
+      requirePluginRoot: true,
+      requireManifest: true,
+    });
+  } catch (pathError) {
+    exitCliError(`[ERROR] ${pathError.message}`, args.json);
   }
-  require = createRequire(repositoryMarker);
+  const repoRoot = discoverCanonicalRepoRoot(repoRootCandidate);
 
   await validatePluginDir(resolved, {
     catalogMinVersion: args.catalogMinVersion,
     strictAgentSkills: args.strictAgentSkills,
     claudeSkillProfile: args.claudeSkillProfile,
     versionBase: args.versionBase,
+    repoRoot,
   });
 
   if (args.json) {

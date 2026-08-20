@@ -2,7 +2,7 @@
 
 ## Workspace validation
 
-从目标工作区的 manifest/schema、CLI `--help`、package scripts、CI 配置或维护规则发现适用的 validator、build、test、materialization 和 Eval 命令。将确定性命令逐个传给：
+从目标工作区的 manifest/schema、package scripts、CI 配置或维护规则发现适用的 build、test、materialization 和 Eval 命令。将这些确定性命令逐个传给：
 
 ```bash
 node scripts/prepare-aw-authoring-context.mjs <plugin-root> \
@@ -18,9 +18,20 @@ node scripts/prepare-aw-authoring-context.mjs <plugin-root> \
 - 插件位于 `plugins/<name>/`；
 - `author-aw-plugin` 位于宿主工作区的固定目录；
 - 工作区使用 `pnpm`；
-- 一定存在 `plugin:test`、`plugin:eval` 或本仓库的 CLI capability registry。
+- 一定存在 `plugin:test` 或 `plugin:eval`。
 
-随本 Skill 分发的 `validate_plugin.mjs` 是当前仓库 CLI 合同的确定性实现；只有目标工作区提供兼容的 CLI capability registry 时才运行。其它工作区应使用其 CLI 暴露的 validator，或由未来的自定义插件接入层提供命令。
+插件作者的稳定 CLI 入口只有以下四个：
+
+| 任务 | capability check | 执行 |
+| --- | --- | --- |
+| 创建插件和初始 Skill 骨架 | `aw --version`；`aw plugin init --help` | `aw plugin init <plugin-name> ... --repo-root <workspace-root> --plugin-root <plugin-root>` |
+| 向现有插件增加静态 Skill 骨架 | `aw --version`；`aw plugin add-skill --help` | `aw plugin add-skill <plugin-name> ... --repo-root <workspace-root> --plugin-root <plugin-root>` |
+| 验证一个插件根 | `aw --version`；`aw plugin validate --help` | `aw plugin validate <plugin-root>` 加 help 明确支持的 flags |
+| 比较 production bundle 和版本 | `aw --version`；`aw plugin check-versions --help` | 单插件运行 `aw plugin check-versions <plugin-name> --repo-root <workspace-root> --plugin-root <plugin-root> --base <git-ref>`；`--all` 只用于标准 `plugins/` 布局 |
+
+`--plugin-root` 相对 `--repo-root` 解析，必须位于该 Git repository 内，且目录名和 manifest name 都必须匹配 `<plugin-name>`。显式根的 `init` 不读取或修改 `plugins/marketplace-source.json`。
+
+每个分支必须先检查对应 help。所需命令或 flag 不存在时停止并报告 capability 缺口。不得通过 `npx` 获取另一版本，不得猜测 CLI 或仓库路径，不得调用本 Skill 内的 validator/scaffolder 副本。
 
 ## Full Access consent policy
 
@@ -42,7 +53,7 @@ node scripts/prepare-aw-authoring-context.mjs <plugin-root> \
 
 ## Completion
 
-- 目标工作区要求的 deterministic validators 与 tests 通过；
+- `aw plugin validate`、适用的 `aw plugin check-versions` 与目标工作区要求的 tests 通过；
 - build-required 分支生成的 artifact 存在且来源可追溯；
 - Eval case 已通过独立 preflight；
 - 不存在的工作区命令不伪装成已运行，未运行的模型证据明确标为未验证。
