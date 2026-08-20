@@ -85,7 +85,10 @@ test('previous-version comparison binds and reports the alternate Skill digest',
   const auditRaw = JSON.stringify(audit);
   await writeFile(path.join(workspace, 'audit.json'), auditRaw);
   const provider = path.join(workspace, 'provider.mjs');
-  await writeFile(provider, "process.stdout.write('{}');\n");
+  await writeFile(
+    provider,
+    "process.stdout.write(JSON.stringify({ grading: { grader: { id: 'fixture', version: '1' }, result: { passed: true } } }));\n",
+  );
   const capabilities = {
     schemaVersion: 1,
     provider: 'command',
@@ -108,7 +111,7 @@ test('previous-version comparison binds and reports the alternate Skill digest',
   const capabilitiesRaw = JSON.stringify(capabilities);
   await writeFile(path.join(workspace, 'capabilities.json'), capabilitiesRaw);
   const plan = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     planId: 'plan',
     target: { name: 'skill', path: './current', digest: skillDigest(current) },
     cases: { paths: ['./cases.json'], corpusDigest },
@@ -129,10 +132,11 @@ test('previous-version comparison binds and reports the alternate Skill digest',
       inheritEnvironment: false,
     },
     configurations: [
-      { id: 'with', skillMode: 'with-skill', env: {} },
+      { id: 'with', skillMode: 'with-skill', comparisonId: 'version', env: {} },
       {
         id: 'previous',
         skillMode: 'previous-version',
+        comparisonId: 'version',
         skillPath: './previous',
         skillDigest: skillDigest(previous),
         env: {},

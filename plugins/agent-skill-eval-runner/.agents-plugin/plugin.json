@@ -1,6 +1,6 @@
 {
   "name": "agent-skill-eval-runner",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Run audited Agent Skill eval plans through explicit providers and return portable evidence bundles without owning Oracle or review decisions.",
   "compatibility": { "aw": { "minVersion": "0.0.0" } },
   "skills": "./skills",

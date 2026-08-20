@@ -2,7 +2,7 @@
 name: author-aw-plugin
 description: >-
   当用户要创建或维护一个 AW 插件根、Skill、extension、MCP/App、slash command、dynamic artifact、稳定版本或构建验证时使用。目标根由 `.agents-plugin/plugin.json` 标识，可以位于任意兼容工作区；拥有插件源码写入和作者验证，不做独立质量评分或发布裁决。
-compatibility: Requires Node.js 22+, target workspace dependencies, agent-content-toolkit >= 0.4.0, agent-skill-toolkit >= 0.4.0. Real model Eval additionally needs an explicit compatible runner.
+compatibility: Requires Node.js 22+, target workspace dependencies, agent-content-toolkit >= 0.4.0, agent-skill-toolkit >= 0.5.0. Real model Eval additionally needs an explicit compatible runner.
 user-invocable: true
 metadata:
   short-description: 创建或维护 AW 插件并组合通用 Skill 作者能力
@@ -18,7 +18,7 @@ metadata:
 
 ## 工作流
 
-1. 明确 `<plugin-root>` 与 `<workspace-root>`，读取 manifest、现有源码、工作区规则和允许修改文件；运行 `node scripts/prepare-aw-authoring-context.mjs <plugin-root> --repo-root <workspace-root> [options]`。
+1. 明确 `<plugin-root>` 与 `<workspace-root>`，读取 manifest、现有源码、工作区规则和允许修改文件；把本次全部组件请求写成 JSON 数组，再运行 `node scripts/prepare-aw-authoring-context.mjs <plugin-root> --repo-root <workspace-root> --components <json-file> [options]`。每个组件声明唯一 `id`、`type`、`operation`、`paths` 和 `profiles`；Skill 还必须声明 `skillInvocation`。
 2. 按变更面读取 reference：
 
 | 变更面 | reference |
@@ -35,7 +35,7 @@ metadata:
 | lifecycle | `references/aw-lifecycle.md` |
 | 用户可观察变化 | `references/aw-readme-authoring.md` |
 
-只读取当前组件需要的 branch。
+按 `components[]` 中的全部类型读取需要的 branch；同一复合请求可以读取多个 branch，但不读取无关 reference。
 
 3. 新建或重大变更 Skill：fresh context 运行 `author-agent-skill`。需要 Eval：fresh context 运行 `design-agent-skill-evals`，再用另一个 fresh context 运行 `audit-agent-skill-evals(preflight)`。AW adapter 拥有组合流程，`evalStageOwner=caller`。
 4. 写入插件 source truth；不手改 generated runtime、catalog 或 cache。README 由本 Skill 按 `aw-readme-authoring.md` 维护。

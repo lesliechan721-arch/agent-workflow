@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "repository": "example-aw-workspace",
   "plugin": "target-plugin",
   "pluginRoot": "packages/target-plugin",
@@ -8,8 +8,23 @@
     "CODEX",
     "CLAUDE"
   ],
-  "componentType": "skill",
-  "skillInvocation": "model",
+  "components": [
+    {
+      "id": "plugin-manifest",
+      "type": "manifest",
+      "operation": "create",
+      "paths": [".agents-plugin/plugin.json"],
+      "profiles": ["CODEX", "CLAUDE"]
+    },
+    {
+      "id": "primary-skill",
+      "type": "skill",
+      "operation": "create",
+      "paths": ["skills/primary-skill"],
+      "profiles": ["CODEX", "CLAUDE"],
+      "skillInvocation": "model"
+    }
+  ],
   "allowedFiles": [],
   "sourceProfile": "aw-default",
   "manifestVersionBump": null,

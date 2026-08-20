@@ -56,6 +56,64 @@ function replacePlaceholder(value, replacements) {
     (_, key) => replacements[key],
   );
 }
+function gradingOf(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  if (
+    !value.grader ||
+    typeof value.grader !== 'object' ||
+    typeof value.grader.id !== 'string' ||
+    value.grader.id.length === 0 ||
+    typeof value.grader.version !== 'string' ||
+    value.grader.version.length === 0 ||
+    !value.result ||
+    typeof value.result !== 'object' ||
+    Array.isArray(value.result)
+  )
+    return null;
+  return value;
+}
+function comparisonAggregate(runs) {
+  const groups = new Map();
+  for (const run of runs) {
+    if (run.comparisonId === null) continue;
+    const key = JSON.stringify([run.comparisonId, run.caseId, run.runIndex]);
+    if (!groups.has(key))
+      groups.set(key, {
+        comparisonId: run.comparisonId,
+        caseId: run.caseId,
+        runIndex: run.runIndex,
+        runs: [],
+      });
+    groups.get(key).runs.push(run);
+  }
+  return [...groups.values()].map((group) => {
+    const current = group.runs.filter(
+      (run) => run.skillMode === 'with-skill' && run.status === 'completed',
+    );
+    const baseline = group.runs.filter(
+      (run) => run.skillMode !== 'with-skill' && run.status === 'completed',
+    );
+    const paired = current.length > 0 && baseline.length > 0;
+    const comparable =
+      paired &&
+      current.some((withSkill) =>
+        baseline.some(
+          (other) =>
+            withSkill.grading !== null &&
+            other.grading !== null &&
+            withSkill.grading.grader.id === other.grading.grader.id &&
+            withSkill.grading.grader.version === other.grading.grader.version,
+        ),
+      );
+    return {
+      comparisonId: group.comparisonId,
+      caseId: group.caseId,
+      runIndex: group.runIndex,
+      paired,
+      comparable,
+    };
+  });
+}
 async function providerArtifacts(parsed, runDirectory, outputRoot) {
   if (!Array.isArray(parsed?.artifacts)) return [];
   const artifacts = [];
@@ -148,7 +206,7 @@ async function runOne({ plan, base, skillSource, evalCase, configuration, runInd
   try {
     const parsed = JSON.parse(stdout.trim());
     usage = parsed.usage ?? null;
-    grading = parsed.grading ?? null;
+    grading = gradingOf(parsed.grading);
     artifacts = await providerArtifacts(parsed, runDirectory, outputRoot);
   } catch (error) {
     if (stdout.trim().startsWith('{') && status === 'completed') {
@@ -160,6 +218,7 @@ async function runOne({ plan, base, skillSource, evalCase, configuration, runInd
   return {
     caseId,
     configuration: configuration.id,
+    comparisonId: configuration.comparisonId,
     skillMode: configuration.skillMode,
     skillDigest: skillSource.digest,
     runIndex,
@@ -239,11 +298,11 @@ async function main() {
       );
   }
   const outputRoot = path.resolve(base, plan.outputRoot);
-  const modes = new Set(plan.configurations.map((entry) => entry.skillMode));
-  const evidenceLevel =
-    modes.has('with-skill') && (modes.has('without-skill') || modes.has('previous-version'))
-      ? 'comparative'
-      : 'executed';
+  const comparisons = comparisonAggregate(runs);
+  const comparisonPlanned = comparisons.length > 0;
+  const evidenceLevel = comparisons.some((entry) => entry.comparable)
+    ? 'comparative'
+    : 'executed';
   const limitations = [...providerCapabilities.limitations];
   if (!providerCapabilities.capabilities.cleanContext)
     limitations.push('Provider does not prove a clean model context.');
@@ -254,8 +313,17 @@ async function main() {
   limitations.push(
     'A completed provider process is not an Eval pass; grading and Skill-defect attribution remain separate.',
   );
+  for (const comparison of comparisons) {
+    if (comparison.comparable) continue;
+    const identity = `${comparison.comparisonId}/${comparison.caseId}/${comparison.runIndex}`;
+    limitations.push(
+      comparison.paired
+        ? `Planned comparison ${identity} has no comparable grading.`
+        : `Planned comparison ${identity} has no completed with-skill and baseline pair.`,
+    );
+  }
   const bundle = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     producer: 'run-agent-skill-evals',
     independentContext: providerCapabilities.capabilities.cleanContext === true,
     provider: { id: plan.provider.id, version: providerCapabilities.providerVersion },
@@ -263,6 +331,7 @@ async function main() {
     targetSkillDigest: plan.target.digest,
     caseCorpusDigest: plan.cases.corpusDigest,
     preflightAuditDigest: plan.audit.digest,
+    comparisonPlanned,
     evidenceLevel,
     runs,
     aggregate: {
@@ -274,6 +343,7 @@ async function main() {
         (entry) => entry.status === 'process-failed' || entry.status === 'error',
       ).length,
       timedOut: runs.filter((entry) => entry.status === 'timeout').length,
+      comparisons,
     },
     limitations: [...new Set(limitations)],
   };

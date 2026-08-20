@@ -9,7 +9,7 @@ batch/currentness state.
 
 ## Dependency
 
-Install `agent-skill-toolkit >= 0.4.0` manually until plugin dependencies are supported.
+Install `agent-skill-toolkit >= 0.5.0` manually until plugin dependencies are supported.
 
 ## Evidence boundary
 

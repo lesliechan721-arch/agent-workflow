@@ -1478,13 +1478,21 @@ describe('Skill report batches', () => {
     ))).resolves.toBe(false);
   });
 
-  it('includes README files but excludes report files from the author source digest', async () => {
+  it('separates Skill author evidence from production source digest', async () => {
     const repoRoot = await makeRepo();
     const pluginRoot = path.join(repoRoot, 'plugins', 'demo-plugin');
     const readmePath = path.join(pluginRoot, 'skills', 'demo-skill', 'README.md');
     const before = await computeAuthorSourceDigest([{ name: 'demo-plugin', root: pluginRoot }]);
     await fs.outputFile(
       path.join(pluginRoot, 'reports', 'demo-skill', 'batch', 'summary.json'),
+      '{}\n',
+    );
+    await fs.outputFile(
+      path.join(pluginRoot, 'skills', 'demo-skill', 'reports', 'review.md'),
+      '# Review\n',
+    );
+    await fs.outputFile(
+      path.join(pluginRoot, 'skills', 'demo-skill', 'evals', 'cases.json'),
       '{}\n',
     );
     await expect(computeAuthorSourceDigest([
@@ -1499,5 +1507,13 @@ describe('Skill report batches', () => {
     await expect(computeAuthorSourceDigest([
       { name: 'demo-plugin', root: pluginRoot },
     ])).resolves.not.toBe(before);
+    const changed = await computeAuthorSourceDigest([{ name: 'demo-plugin', root: pluginRoot }]);
+    await fs.outputFile(
+      path.join(pluginRoot, 'skills', 'demo-skill', 'references', 'reports', 'runtime.md'),
+      '# Runtime reports\n',
+    );
+    await expect(computeAuthorSourceDigest([
+      { name: 'demo-plugin', root: pluginRoot },
+    ])).resolves.not.toBe(changed);
   });
 });

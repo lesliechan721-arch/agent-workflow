@@ -6,6 +6,10 @@ import path from 'node:path';
 import process from 'node:process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
+import {
+  findSkillRoots,
+  isPluginEvidenceArtifact,
+} from './review-artifact-policy.mjs';
 
 const execFileAsync = promisify(execFile);
 const scriptRoot = path.dirname(fileURLToPath(import.meta.url));
@@ -44,7 +48,7 @@ function usage() {
     '  --evidence <path>        Add an evidence file or directory. Repeatable.',
     '  --eval-audit <path>      Add one passing EvalAuditResult.',
     '  --eval-case <path>       Bind an Eval case/corpus file to the audit. Repeatable.',
-    '  --eval-result <path>     Add one EvalRunBundle. Repeatable; requires --eval-audit.',
+    '  --eval-result <path>     Add one EvalRunBundle; requires --eval-audit.',
     '  --client <name>          codex or claude. Default: codex.',
     '  -h, --help               Show this help.',
   ].join('\n');
@@ -85,6 +89,11 @@ function parseArgs(argv) {
       options.evalAudit = path.resolve(optionValue(args, index, flag));
       index += 1;
     } else if (flag === '--eval-result') {
+      if (options.evalResults.length > 0) {
+        fail(
+          'ReviewInputBundle v4 accepts only one Eval execution bundle per target; provide --eval-result only once.',
+        );
+      }
       options.evalResults.push(path.resolve(optionValue(args, index, flag)));
       index += 1;
     } else if (flag === '--eval-case') {
@@ -149,9 +158,8 @@ async function jsonDocument(filePath, label) {
   }
 }
 
-function artifactRole(relativePath) {
-  if (relativePath.startsWith('reports/') || /^skills\/[^/]+\/reports\//u.test(relativePath))
-    return 'evidence';
+function artifactRole(relativePath, skillRoots) {
+  if (isPluginEvidenceArtifact(relativePath, skillRoots)) return 'evidence';
   if (
     relativePath === '.agents-plugin/plugin.json' ||
     relativePath === '.mcp.json' ||
@@ -192,7 +200,7 @@ async function sourceDigest(roots) {
     hash.update(root.name);
     hash.update('\0');
     for (const file of await collectFiles(root.root)) {
-      if (file.relativePath === 'reports' || file.relativePath.startsWith('reports/')) continue;
+      if (isPluginEvidenceArtifact(file.relativePath, root.skillRoots)) continue;
       hash.update(file.relativePath);
       hash.update('\0');
       hash.update(await readFile(file.absolutePath));
@@ -229,7 +237,13 @@ async function main() {
   const manifest = await jsonDocument(manifestPath, 'Plugin manifest');
   if (!manifest.name) fail('Plugin manifest has no name.');
 
-  const roots = [{ name: manifest.name, root: options.pluginRoot }];
+  const roots = [
+    {
+      name: manifest.name,
+      root: options.pluginRoot,
+      skillRoots: await findSkillRoots(options.pluginRoot, manifest.skills),
+    },
+  ];
   for (const source of options.sources) {
     if (roots.some((entry) => entry.name === source.name))
       fail(`Duplicate source owner: ${source.name}`);
@@ -238,7 +252,10 @@ async function main() {
       'Companion manifest',
     );
     if (sourceManifest.name !== source.name) fail(`--source name mismatch: ${source.name}`);
-    roots.push(source);
+    roots.push({
+      ...source,
+      skillRoots: await findSkillRoots(source.root, sourceManifest.skills),
+    });
   }
 
   const artifacts = [];
@@ -247,7 +264,7 @@ async function main() {
     const git = await gitCurrentness(root.root);
     if (root.name === manifest.name) targetGit = git;
     for (const file of await collectFiles(root.root)) {
-      const role = artifactRole(file.relativePath);
+      const role = artifactRole(file.relativePath, root.skillRoots);
       const canonicalPath = await realpath(file.absolutePath);
       artifacts.push({
         role,
@@ -347,7 +364,7 @@ async function main() {
   process.stdout.write(
     `${JSON.stringify(
       {
-        schemaVersion: 3,
+        schemaVersion: 4,
         target: {
           kind: 'aw-plugin',
           name: manifest.name,

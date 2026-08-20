@@ -5,7 +5,7 @@
   "type": "object",
   "required": ["schemaVersion", "planId", "target", "cases", "audit", "provider", "configurations", "runsPerCase", "timeoutMs", "outputRoot", "capture"],
   "properties": {
-    "schemaVersion": { "const": 1 },
+    "schemaVersion": { "const": 2 },
     "planId": { "type": "string", "minLength": 1, "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$" },
     "target": {
       "type": "object",
@@ -57,10 +57,11 @@
       "minItems": 1,
       "items": {
         "type": "object",
-        "required": ["id", "skillMode"],
+        "required": ["id", "skillMode", "comparisonId"],
         "properties": {
           "id": { "type": "string", "minLength": 1, "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$" },
           "skillMode": { "enum": ["with-skill", "without-skill", "previous-version"] },
+          "comparisonId": { "type": ["string", "null"], "minLength": 1, "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$" },
           "skillPath": { "type": ["string", "null"] },
           "skillDigest": { "type": ["string", "null"], "pattern": "^sha256:[0-9a-f]{64}$" },
           "env": { "type": "object", "additionalProperties": { "type": "string" } }

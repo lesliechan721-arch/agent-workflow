@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -87,7 +87,7 @@ test('owned contracts and manifest use release version', async () => {
   const manifest = JSON.parse(
     await readFile(path.join(root, '.agents-plugin/plugin.json'), 'utf8'),
   );
-  assert.equal(manifest.version, '0.4.0');
+  assert.equal(manifest.version, '0.5.0');
   for (const [name, id] of [
     [
       'skill-design-brief.schema.json',
@@ -143,7 +143,7 @@ test('ReviewInputBundle validator binds a real stage file and digest', async () 
     rp = path.join(t, 'audit.json');
   await writeFile(rp, raw);
   const bundle = {
-    schemaVersion: 3,
+    schemaVersion: 4,
     target: {
       kind: 'agent-skill',
       name: 'x',
@@ -186,10 +186,369 @@ test('ReviewInputBundle validator binds a real stage file and digest', async () 
     ).valid,
     true,
   );
+  bundle.schemaVersion = 3;
+  await writeFile(bp, JSON.stringify(bundle));
+  await assert.rejects(
+    run('scripts/validate-review-input-bundle.mjs', [bp, '--handoff-root', t]),
+    /Command failed/u,
+  );
+  bundle.schemaVersion = 4;
   bundle.orchestration.providedStages[0].resultPath = 'missing.json';
   await writeFile(bp, JSON.stringify(bundle));
   await assert.rejects(
     run('scripts/validate-review-input-bundle.mjs', [bp, '--handoff-root', t]),
+    /Command failed/u,
+  );
+});
+
+async function reviewStageFixture(directory, fileName, profile, name) {
+  const value = JSON.parse(
+    await readFile(
+      path.join(root, 'skills/review-agent-skill/assets/review-result-template.json'),
+      'utf8',
+    ),
+  );
+  value.target = {
+    kind: 'materialized-skill',
+    name,
+    profile,
+    digest: 'sha256:' + '4'.repeat(64),
+  };
+  const raw = JSON.stringify(value);
+  await writeFile(path.join(directory, fileName), raw);
+  return {
+    id: 'materialized-profile-review',
+    producer: 'review-agent-skill',
+    independentContext: true,
+    subjectDigest: value.target.digest,
+    resultPath: fileName,
+    resultDigest: sha(raw),
+    schema: 'ReviewResult',
+    profile,
+  };
+}
+
+function reviewBundle(stages) {
+  return {
+    schemaVersion: 4,
+    target: {
+      kind: 'aw-plugin',
+      name: 'fixture',
+      profile: null,
+      sourceDigest: 'sha256:' + '5'.repeat(64),
+    },
+    artifacts: [],
+    environment: {},
+    orchestration: { stageOwner: 'caller', providedStages: stages },
+    evalAudit: null,
+    evalResults: [],
+  };
+}
+
+test('ReviewInputBundle rejects conflicting results for one semantic stage slot', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'review-slot-'));
+  temps.push(directory);
+  const stages = await Promise.all([
+    reviewStageFixture(directory, 'first.json', 'project-default', 'first'),
+    reviewStageFixture(directory, 'second.json', 'project-default', 'second'),
+  ]);
+  const bundlePath = path.join(directory, 'bundle.json');
+  await writeFile(bundlePath, JSON.stringify(reviewBundle(stages)));
+  await assert.rejects(
+    run('scripts/validate-review-input-bundle.mjs', [
+      bundlePath,
+      '--handoff-root',
+      directory,
+    ]),
+    /Command failed/u,
+  );
+});
+
+test('ReviewInputBundle accepts materialized reviews for different profiles', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'review-profiles-'));
+  temps.push(directory);
+  const stages = await Promise.all([
+    reviewStageFixture(directory, 'project.json', 'project-default', 'project'),
+    reviewStageFixture(directory, 'user.json', 'user-default', 'user'),
+  ]);
+  const bundlePath = path.join(directory, 'bundle.json');
+  await writeFile(bundlePath, JSON.stringify(reviewBundle(stages)));
+  const result = JSON.parse(
+    (
+      await run('scripts/validate-review-input-bundle.mjs', [
+        bundlePath,
+        '--handoff-root',
+        directory,
+        '--format',
+        'json',
+      ])
+    ).stdout,
+  );
+  assert.equal(result.valid, true);
+});
+
+function evalRunBundle() {
+  const run = (configuration, skillMode) => ({
+    caseId: 'case-1',
+    configuration,
+    comparisonId: 'quality',
+    skillMode,
+    skillDigest: skillMode === 'with-skill' ? 'sha256:' + '1'.repeat(64) : null,
+    runIndex: 1,
+    status: 'completed',
+    exitCode: 0,
+    durationMs: 1,
+    stdoutPath: `${configuration}/stdout.txt`,
+    stdoutDigest: sha(`stdout:${configuration}`),
+    stderrPath: `${configuration}/stderr.txt`,
+    stderrDigest: sha(`stderr:${configuration}`),
+    usage: null,
+    grading: { grader: { id: 'fixture', version: '1' }, result: { passed: true } },
+    artifacts: [
+      {
+        role: 'trace',
+        path: `${configuration}/trace.json`,
+        digest: sha(`trace:${configuration}`),
+      },
+    ],
+  });
+  return {
+    schemaVersion: 2,
+    producer: 'run-agent-skill-evals',
+    independentContext: true,
+    provider: { id: 'fixture', version: '1' },
+    planDigest: 'sha256:' + '4'.repeat(64),
+    targetSkillDigest: 'sha256:' + '1'.repeat(64),
+    caseCorpusDigest: 'sha256:' + '5'.repeat(64),
+    preflightAuditDigest: 'sha256:' + '6'.repeat(64),
+    comparisonPlanned: true,
+    evidenceLevel: 'comparative',
+    runs: [run('with', 'with-skill'), run('baseline', 'without-skill')],
+    aggregate: {
+      cases: 1,
+      configurations: 2,
+      runs: 2,
+      completed: 2,
+      processFailed: 0,
+      timedOut: 0,
+      comparisons: [
+        {
+          comparisonId: 'quality',
+          caseId: 'case-1',
+          runIndex: 1,
+          paired: true,
+          comparable: true,
+        },
+      ],
+    },
+    limitations: [],
+  };
+}
+
+async function createEvalRunFixture(value = evalRunBundle()) {
+  const directory = await mkdtemp(path.join(tmpdir(), 'eval-run-bundle-'));
+  temps.push(directory);
+  const valuePath = path.join(directory, 'bundle.json');
+  for (const runValue of value.runs) {
+    const evidence = [
+      [runValue.stdoutPath, `stdout:${runValue.configuration}`],
+      [runValue.stderrPath, `stderr:${runValue.configuration}`],
+      ...runValue.artifacts.map((artifact) => [
+        artifact.path,
+        artifact.path === runValue.stdoutPath
+          ? `stdout:${runValue.configuration}`
+          : artifact.path === runValue.stderrPath
+            ? `stderr:${runValue.configuration}`
+            : `trace:${runValue.configuration}`,
+      ]),
+    ];
+    for (const [relative, content] of evidence) {
+      if (
+        relative.includes('\\') ||
+        path.isAbsolute(relative) ||
+        relative.split('/').some((segment) => segment === '.' || segment === '..')
+      )
+        continue;
+      const evidencePath = path.join(directory, relative);
+      await mkdir(path.dirname(evidencePath), { recursive: true });
+      await writeFile(evidencePath, content);
+    }
+  }
+  await writeFile(valuePath, JSON.stringify(value));
+  return { directory, value, valuePath };
+}
+
+async function validateEvalRunBundle(value) {
+  const { valuePath } = await createEvalRunFixture(value);
+  return run('scripts/validate-eval-run-bundle.mjs', [valuePath, '--format', 'json']);
+}
+
+test('EvalRunBundle validator rejects old, empty, inconsistent, and duplicate evidence', async () => {
+  const old = evalRunBundle();
+  old.schemaVersion = 1;
+  await assert.rejects(validateEvalRunBundle(old), /Command failed/u);
+
+  const empty = evalRunBundle();
+  empty.runs = [];
+  empty.aggregate = {
+    cases: 0,
+    configurations: 0,
+    runs: 0,
+    completed: 0,
+    processFailed: 0,
+    timedOut: 0,
+    comparisons: [],
+  };
+  await assert.rejects(validateEvalRunBundle(empty), /Command failed/u);
+
+  const inconsistent = evalRunBundle();
+  inconsistent.aggregate.completed = 1;
+  await assert.rejects(validateEvalRunBundle(inconsistent), /Command failed/u);
+
+  const duplicate = evalRunBundle();
+  duplicate.runs.push({ ...duplicate.runs[0] });
+  duplicate.aggregate.runs = 3;
+  duplicate.aggregate.completed = 3;
+  await assert.rejects(validateEvalRunBundle(duplicate), /Command failed/u);
+});
+
+test('EvalRunBundle validator requires real comparable grading for comparative evidence', async () => {
+  const value = evalRunBundle();
+  value.runs[1].grading.grader.version = '2';
+  value.aggregate.comparisons[0].comparable = false;
+  await assert.rejects(validateEvalRunBundle(value), /Command failed/u);
+
+  value.evidenceLevel = 'executed';
+  value.limitations.push('The planned quality comparison is not comparable.');
+  assert.equal(JSON.parse((await validateEvalRunBundle(value)).stdout).valid, true);
+});
+
+test('EvalRunBundle validator rejects missing and modified evidence files', async () => {
+  const missing = await createEvalRunFixture();
+  await rm(path.join(missing.directory, missing.value.runs[0].stdoutPath));
+  await assert.rejects(
+    run('scripts/validate-eval-run-bundle.mjs', [missing.valuePath]),
+    /Command failed/u,
+  );
+
+  const modified = await createEvalRunFixture();
+  await writeFile(path.join(modified.directory, modified.value.runs[0].stderrPath), 'modified');
+  await assert.rejects(
+    run('scripts/validate-eval-run-bundle.mjs', [modified.valuePath]),
+    /Command failed/u,
+  );
+});
+
+test('EvalRunBundle validator rejects unsafe evidence paths', async () => {
+  for (const unsafePath of [
+    '/absolute/evidence.txt',
+    '../outside.txt',
+    './with/stdout.txt',
+    'with\\stdout.txt',
+  ]) {
+    const fixture = await createEvalRunFixture();
+    fixture.value.runs[0].stdoutPath = unsafePath;
+    await writeFile(fixture.valuePath, JSON.stringify(fixture.value));
+    await assert.rejects(
+      run('scripts/validate-eval-run-bundle.mjs', [fixture.valuePath]),
+      /Command failed/u,
+    );
+  }
+});
+
+test('EvalRunBundle validator rejects symlink evidence', async () => {
+  const fixture = await createEvalRunFixture();
+  const linkedPath = path.join(fixture.directory, fixture.value.runs[0].artifacts[0].path);
+  const targetPath = path.join(fixture.directory, fixture.value.runs[1].artifacts[0].path);
+  await rm(linkedPath);
+  await symlink(targetPath, linkedPath);
+  await assert.rejects(
+    run('scripts/validate-eval-run-bundle.mjs', [fixture.valuePath]),
+    /Command failed/u,
+  );
+
+  const nonRegular = await createEvalRunFixture();
+  const directoryPath = path.join(
+    nonRegular.directory,
+    nonRegular.value.runs[0].artifacts[0].path,
+  );
+  await rm(directoryPath);
+  await mkdir(directoryPath);
+  await assert.rejects(
+    run('scripts/validate-eval-run-bundle.mjs', [nonRegular.valuePath]),
+    /Command failed/u,
+  );
+});
+
+test('EvalRunBundle validator rejects evidence that resolves outside its root', async () => {
+  const fixture = await createEvalRunFixture();
+  const outside = await mkdtemp(path.join(tmpdir(), 'eval-run-outside-'));
+  temps.push(outside);
+  await writeFile(path.join(outside, 'stdout.txt'), 'stdout:with');
+  await symlink(outside, path.join(fixture.directory, 'linked'));
+  fixture.value.runs[0].stdoutPath = 'linked/stdout.txt';
+  await writeFile(fixture.valuePath, JSON.stringify(fixture.value));
+  await assert.rejects(
+    run('scripts/validate-eval-run-bundle.mjs', [fixture.valuePath]),
+    /Command failed/u,
+  );
+});
+
+test('EvalRunBundle allows repeated file references but checks each declared digest', async () => {
+  const repeated = evalRunBundle();
+  repeated.runs[0].artifacts.push({
+    role: 'output',
+    path: repeated.runs[0].stdoutPath,
+    digest: repeated.runs[0].stdoutDigest,
+  });
+  assert.equal(JSON.parse((await validateEvalRunBundle(repeated)).stdout).valid, true);
+
+  repeated.runs[0].artifacts[1].digest = 'sha256:' + '0'.repeat(64);
+  await assert.rejects(validateEvalRunBundle(repeated), /Command failed/u);
+});
+
+test('AW ReviewInputBundle rejects damaged Eval evidence', async () => {
+  const fixture = await createEvalRunFixture();
+  const raw = await readFile(fixture.valuePath, 'utf8');
+  const stage = {
+    id: 'eval-execution',
+    producer: 'run-agent-skill-evals',
+    independentContext: true,
+    subjectDigest: fixture.value.targetSkillDigest,
+    resultPath: path.basename(fixture.valuePath),
+    resultDigest: sha(raw),
+    schema: 'EvalRunBundle',
+    profile: null,
+  };
+  const handoff = reviewBundle([stage]);
+  handoff.evalResults = [fixture.value];
+  const handoffPath = path.join(fixture.directory, 'review-input.json');
+  await writeFile(handoffPath, JSON.stringify(handoff));
+  assert.equal(
+    JSON.parse(
+      (
+        await run('scripts/validate-review-input-bundle.mjs', [
+          handoffPath,
+          '--handoff-root',
+          fixture.directory,
+          '--format',
+          'json',
+        ])
+      ).stdout,
+    ).valid,
+    true,
+  );
+
+  await writeFile(
+    path.join(fixture.directory, fixture.value.runs[0].artifacts[0].path),
+    'damaged',
+  );
+  await assert.rejects(
+    run('scripts/validate-review-input-bundle.mjs', [
+      handoffPath,
+      '--handoff-root',
+      fixture.directory,
+    ]),
     /Command failed/u,
   );
 });

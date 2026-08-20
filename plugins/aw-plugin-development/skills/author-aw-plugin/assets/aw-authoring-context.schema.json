@@ -3,32 +3,50 @@
   "$id": "https://aw-plugin-development.invalid/aw-authoring-context.schema.json",
   "title": "AWAuthoringContext",
   "type": "object",
-  "required": ["schemaVersion", "repository", "plugin", "pluginRoot", "changeMode", "products", "componentType", "skillInvocation", "allowedFiles", "sourceProfile", "manifestVersionBump", "buildRequired", "validators"],
+  "required": ["schemaVersion", "repository", "plugin", "pluginRoot", "changeMode", "products", "components", "allowedFiles", "sourceProfile", "manifestVersionBump", "buildRequired", "validators"],
   "properties": {
-    "schemaVersion": { "const": 1 },
+    "schemaVersion": { "const": 2 },
     "repository": { "type": "string", "minLength": 1 },
     "plugin": { "type": "string", "minLength": 1 },
     "pluginRoot": { "type": "string", "minLength": 1 },
     "changeMode": { "enum": ["create", "change"] },
     "products": { "type": "array", "items": { "enum": ["CODEX", "CLAUDE"] }, "minItems": 1, "uniqueItems": true },
-    "componentType": { "enum": ["skill", "extension", "slash-command", "mcp", "app", "dynamic-artifact", "unknown"] },
-    "skillInvocation": { "enum": [null, "model", "manual", "claude-model-only"] },
+    "components": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "type", "operation", "paths", "profiles"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "type": { "enum": ["manifest", "skill", "extension", "slash-command", "mcp", "app", "dynamic-artifact", "config-helper", "lifecycle", "node-build", "readme", "eval-assets"] },
+          "operation": { "enum": ["create", "change", "remove"] },
+          "paths": { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1, "uniqueItems": true },
+          "profiles": { "type": "array", "items": { "enum": ["CODEX", "CLAUDE"] }, "minItems": 1, "uniqueItems": true },
+          "skillInvocation": { "enum": [null, "model", "manual", "claude-model-only"] }
+        },
+        "allOf": [
+          {
+            "if": { "properties": { "type": { "const": "skill" } }, "required": ["type"] },
+            "then": {
+              "required": ["skillInvocation"],
+              "properties": { "skillInvocation": { "enum": ["model", "manual", "claude-model-only"] } }
+            },
+            "else": { "properties": { "skillInvocation": { "const": null } } }
+          },
+          {
+            "if": { "properties": { "skillInvocation": { "const": "claude-model-only" } }, "required": ["skillInvocation"] },
+            "then": { "properties": { "profiles": { "const": ["CLAUDE"] } } }
+          }
+        ],
+        "additionalProperties": false
+      }
+    },
     "allowedFiles": { "type": "array", "items": { "type": "string" } },
     "sourceProfile": { "type": "string", "minLength": 1 },
     "manifestVersionBump": { "enum": [null, "major", "minor", "patch"] },
     "buildRequired": { "type": "boolean" },
     "validators": { "type": "array", "items": { "type": "string" } }
   },
-  "allOf": [
-    {
-      "if": { "properties": { "componentType": { "const": "skill" } } },
-      "then": { "properties": { "skillInvocation": { "enum": ["model", "manual", "claude-model-only"] } } },
-      "else": { "properties": { "skillInvocation": { "const": null } } }
-    },
-    {
-      "if": { "properties": { "skillInvocation": { "const": "claude-model-only" } } },
-      "then": { "properties": { "products": { "const": ["CLAUDE"] } } }
-    }
-  ],
   "additionalProperties": false
 }

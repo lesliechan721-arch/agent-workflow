@@ -85,8 +85,17 @@ async function fixture() {
   const auditPath = path.join(root, 'audit.json');
   const auditRaw = JSON.stringify(audit);
   await writeFile(auditPath, auditRaw, 'utf8');
+  const stdoutPath = path.join(root, 'runs', 'case-1', 'with', '1', 'stdout.txt');
+  const stderrPath = path.join(root, 'runs', 'case-1', 'with', '1', 'stderr.txt');
+  const stdout = 'fixture stdout';
+  const stderr = 'fixture stderr';
+  await mkdir(path.dirname(stdoutPath), { recursive: true });
+  await Promise.all([
+    writeFile(stdoutPath, stdout, 'utf8'),
+    writeFile(stderrPath, stderr, 'utf8'),
+  ]);
   const result = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     producer: 'run-agent-skill-evals',
     independentContext: false,
     provider: { id: 'command', version: 'test' },
@@ -94,21 +103,42 @@ async function fixture() {
     targetSkillDigest,
     caseCorpusDigest: corpusDigest,
     preflightAuditDigest: sha256(auditRaw),
+    comparisonPlanned: false,
     evidenceLevel: 'executed',
-    runs: [],
+    runs: [
+      {
+        caseId: 'case-1',
+        configuration: 'with',
+        comparisonId: null,
+        skillMode: 'with-skill',
+        skillDigest: targetSkillDigest,
+        runIndex: 1,
+        status: 'completed',
+        exitCode: 0,
+        durationMs: 1,
+        stdoutPath: 'runs/case-1/with/1/stdout.txt',
+        stdoutDigest: sha256(stdout),
+        stderrPath: 'runs/case-1/with/1/stderr.txt',
+        stderrDigest: sha256(stderr),
+        usage: null,
+        grading: null,
+        artifacts: [],
+      },
+    ],
     aggregate: {
       cases: 1,
       configurations: 1,
-      runs: 0,
-      completed: 0,
+      runs: 1,
+      completed: 1,
       processFailed: 0,
       timedOut: 0,
+      comparisons: [],
     },
     limitations: ['fixture'],
   };
   const resultPath = path.join(root, 'eval-run-bundle.json');
   await writeFile(resultPath, JSON.stringify(result), 'utf8');
-  return { root, workspace, target, casePath, auditPath, resultPath, result };
+  return { root, workspace, target, casePath, auditPath, resultPath, result, stdoutPath };
 }
 
 test('AW bundle binds Eval execution to its audit and keeps external workspace identity', async () => {
@@ -147,6 +177,16 @@ test('AW bundle binds Eval execution to its audit and keeps external workspace i
     ).stdout,
   );
   assert.equal(validation.valid, true);
+
+  await writeFile(value.stdoutPath, 'damaged', 'utf8');
+  await assert.rejects(
+    run(path.join(reviewScripts, 'validate-review-input-bundle.mjs'), [
+      bundlePath,
+      '--handoff-root',
+      value.root,
+    ]),
+    /Command failed/u,
+  );
 });
 
 test('AW bundle rejects Eval result without an audit or with a different audit digest', async () => {
@@ -172,5 +212,38 @@ test('AW bundle rejects Eval result without an audit or with a different audit d
       value.resultPath,
     ]),
     /Command failed/u,
+  );
+});
+
+test('AW bundle accepts one Eval result and rejects a second result for the same target', async () => {
+  const value = await fixture();
+  const prepare = path.join(reviewScripts, 'prepare-aw-review-bundle.mjs');
+  const args = [
+    value.target,
+    '--repo-root',
+    value.workspace,
+    '--eval-audit',
+    value.auditPath,
+    '--eval-case',
+    value.casePath,
+    '--eval-result',
+    value.resultPath,
+  ];
+  const prepared = JSON.parse((await run(prepare, args)).stdout);
+  assert.equal(prepared.evalResults.length, 1);
+  assert.equal(
+    prepared.orchestration.providedStages.filter((stage) => stage.id === 'eval-execution').length,
+    1,
+  );
+
+  await assert.rejects(
+    run(prepare, [...args, '--eval-result', value.resultPath]),
+    (error) => {
+      assert.match(
+        error.stderr,
+        /ReviewInputBundle v4 accepts only one Eval execution bundle per target; provide --eval-result only once\./u,
+      );
+      return true;
+    },
   );
 });
