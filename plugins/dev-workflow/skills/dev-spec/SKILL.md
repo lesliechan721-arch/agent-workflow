@@ -16,4 +16,6 @@ Spec 是已经形成决定的记录。它固定材料性共识，不预测全部
 5. 只有独立、稳定且在主文展开会妨碍审核的材料主题，才创建 `decisions/<topic>.md`；主 Spec 保留摘要和链接。
 6. 仍有少量材料缺口时使用 `requirements-clarifier`；需要系统推演时使用 `decision-grill`；需要体验证据时使用 `decision-prototype`。这些能力来自 `ask-me`。
 
+所需 `ask-me` Skill 不可用时，报告缺失的材料决定或证据，并建议安装 `ask-me` 或由用户直接补充；不要临时复制访谈或原型流程。
+
 完成后使用 `dev-review-spec`。中大型、跨会话或多人交接任务在 clean Review 后由用户明确批准当前 Spec，再进入实现。

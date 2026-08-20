@@ -1,0 +1,47 @@
+{
+  "skill_name": "dev-review-code",
+  "policy": {
+    "optimization": "precision-first",
+    "false_negative_cost": "high",
+    "false_positive_cost": "high",
+    "rationale": "漏掉需求偏离或工程缺陷会错误放行交付；不可靠 finding 会制造返工。"
+  },
+  "evals": [
+    {
+      "id": "dual-axis-read-only-review",
+      "eval_type": "behavior",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "spec-and-quality-review",
+      "unit_under_test": "full-skill",
+      "preconditions": {"spec_exists": true, "implementation_exists": true, "review_is_read_only": true},
+      "oracle": {
+        "rationale": "实现既违反服务端过期拒绝要求，又缺少边界测试；两个问题应分别出现在 Spec fidelity 和 Engineering quality，且审查不能修改代码。",
+        "rule_refs": ["SKILL.md#工作流", "assets/code-review-template.md"],
+        "confidence": "high",
+        "allowed_variance": "finding 标题和严重性措辞可不同；必须分轴、给出证据位置并保持只读。"
+      },
+      "prompt": "只读审查当前邀请接受实现是否符合 docs/specs/invitation-expiry.md，并检查工程质量。不要直接修复文件。",
+      "scripted_replies": [],
+      "expected_output": "输出 blocked，分别报告服务端未拒绝过期邀请的 Spec fidelity 问题，以及缺少边界测试或错误处理的 Engineering quality 问题。",
+      "workspace_files": {
+        "docs/specs/invitation-expiry.md": "# Invitation expiry\n\n- 邀请创建 7 天后过期。\n- 服务端接受入口必须拒绝过期邀请。\n- 验收覆盖第 7 天前可接受、第 7 天后拒绝。\n",
+        "src/invitations/accept.js": "export function acceptInvitation(invitation) {\n  return { accepted: true, invitationId: invitation.id };\n}\n",
+        "test/invitations.test.js": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport { acceptInvitation } from '../src/invitations/accept.js';\n\ntest('accepts an invitation', () => {\n  assert.equal(acceptInvitation({ id: 'i-1' }).accepted, true);\n});\n",
+        "package.json": "{\"type\":\"module\"}\n"
+      },
+      "review": {
+        "platforms": ["codex"],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "结论为 blocked，并清楚说明审查范围和证据限制",
+          "Spec fidelity 轴指出接受入口没有任何过期判断，引用具体文件",
+          "Engineering quality 轴指出缺少过期边界测试，并可指出输入或错误处理不足",
+          "两个轴分开呈现，不把同一根因重复计罚",
+          "不修改代码、测试或 Spec"
+        ]
+      }
+    }
+  ]
+}

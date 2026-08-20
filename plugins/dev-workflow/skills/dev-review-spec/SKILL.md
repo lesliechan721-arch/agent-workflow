@@ -18,4 +18,6 @@ description: 当已有 Spec、计划或设计草案，需要判断是否可以�
 3. 把 finding 放回正确层：局部需求缺口交给 `requirements-clarifier`；相互依赖的材料决定交给 `decision-grill`；体验证据交给 `decision-prototype`；规格冲突修改 Spec；过度规定删除或移到实现工作记忆；机械问题交给脚本或测试。
 4. 读取并使用 [规格审查模板](assets/spec-review-template.md)，输出 `clean` 或 `blocked`。先报告，不直接修改目标。
 
+所需 `ask-me` Skill 不可用时，报告缺失的材料决定或证据，并建议安装 `ask-me` 或由用户直接补充；不要临时复制访谈或原型流程。
+
 `clean` 表示用户可以知情批准，一个新的合格实现者无需补做材料决定。它不表示实现者无需完成局部工程设计。
