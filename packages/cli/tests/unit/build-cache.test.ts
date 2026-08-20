@@ -27,8 +27,13 @@ async function createRepo(): Promise<string> {
   tempDirs.push(repoRoot);
   await fs.mkdir(path.join(repoRoot, 'plugins', 'demo'), { recursive: true });
   await fs.mkdir(path.join(repoRoot, 'tools'), { recursive: true });
+  await fs.mkdir(path.join(repoRoot, 'packages', 'agent-skill-eval', 'node_modules'), { recursive: true });
   await fs.mkdir(path.join(repoRoot, 'packages', 'cli'), { recursive: true });
   await fs.mkdir(path.join(repoRoot, 'packages', 'cli', 'node_modules'), { recursive: true });
+  await fs.writeFile(
+    path.join(repoRoot, 'packages', 'agent-skill-eval', 'package.json'),
+    JSON.stringify({ name: '@lesliechan721/agent-skill-eval', type: 'module', files: ['dist/'] }),
+  );
   await fs.writeFile(
     path.join(repoRoot, 'package.json'),
     JSON.stringify({ packageManager: 'pnpm@10.33.0' }),
@@ -212,7 +217,14 @@ describe('build cache input and environment identity', () => {
   it('uses the Node executable with npm_execpath and fails fast without it', () => {
     expect(resolvePnpmInvocation({ npm_execpath: '/tmp/pnpm.cjs' })).toEqual({
       command: process.execPath,
-      args: [path.resolve('/tmp/pnpm.cjs'), '--filter', '@lesliechan721/aw', 'build'],
+      args: [
+        path.resolve('/tmp/pnpm.cjs'),
+        '--filter',
+        '@lesliechan721/agent-skill-eval',
+        '--filter',
+        '@lesliechan721/aw',
+        'build',
+      ],
     });
     expect(() => resolvePnpmInvocation({})).toThrow('npm_execpath is missing');
   });
@@ -226,7 +238,7 @@ describe('build cache input and environment identity', () => {
     ));
 
     expect(stamp).toMatchObject({
-      schemaVersion: 7,
+      schemaVersion: 8,
       nodeVersion: process.version,
       nodeExecPath: path.resolve(process.execPath),
       nodeExecRealPath: await fs.realpath(process.execPath),
@@ -308,6 +320,10 @@ describe('build cache input and environment identity', () => {
     await fs.writeFile(fakePnpmPath, [
       "const fs = require('node:fs');",
       "if (fs.existsSync('packages/cli/dist/orphan.js')) process.exit(9);",
+      "fs.mkdirSync('packages/agent-skill-eval/dist/schemas', { recursive: true });",
+      "fs.writeFileSync('packages/agent-skill-eval/dist/index.js', 'export {};\\n');",
+      "fs.writeFileSync('packages/agent-skill-eval/dist/bin.js', 'export {};\\n');",
+      "fs.writeFileSync('packages/agent-skill-eval/dist/schemas/digests.json', '{}\\n');",
       "fs.mkdirSync('packages/cli/dist/scripts', { recursive: true });",
       "fs.writeFileSync('packages/cli/dist/index.js', 'export {};\\n');",
       "fs.writeFileSync('packages/cli/dist/scripts/bundle-plugins.js', 'export {};\\n');",
@@ -1149,20 +1165,27 @@ describe('build snapshots', () => {
   it('requests a Windows junction for the snapshot dependency link', async () => {
     const repoRoot = await createRepo();
     await buildWithCache(repoRoot, { build: () => writeBuildOutputs(repoRoot) });
-    let linkCall: { source: string; target: string; type: string } | null = null;
+    const linkCalls: Array<{ source: string; target: string; type: string }> = [];
     const snapshot = await createBuildSnapshot(repoRoot, {
       __testSnapshotPlatform: 'win32',
       __testCreateDependencyLink: async (source: string, target: string, type: string) => {
-        linkCall = { source, target, type };
+        linkCalls.push({ source, target, type });
         await fs.symlink(source, target, 'dir');
       },
     });
 
-    expect(linkCall).toEqual({
-      source: path.join(repoRoot, 'packages', 'cli', 'node_modules'),
-      target: path.join(snapshot.cliPackageRoot, 'node_modules'),
-      type: 'junction',
-    });
+    expect(linkCalls).toEqual([
+      {
+        source: path.join(repoRoot, 'packages', 'cli', 'node_modules'),
+        target: path.join(snapshot.cliPackageRoot, 'node_modules'),
+        type: 'junction',
+      },
+      {
+        source: path.join(repoRoot, 'packages', 'agent-skill-eval', 'node_modules'),
+        target: path.join(snapshot.evalPackageRoot, 'node_modules'),
+        type: 'junction',
+      },
+    ]);
     await snapshot.cleanup();
   });
 

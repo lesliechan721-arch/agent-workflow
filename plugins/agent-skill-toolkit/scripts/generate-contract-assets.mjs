@@ -41,8 +41,6 @@ const mappings = {
     'skills/audit-agent-skill-evals/assets/eval-audit-result.schema.json',
     'skills/author-agent-skill/assets/eval-audit-result.schema.json',
     'skills/review-agent-skill/assets/eval-audit-result.schema.json',
-    '../agent-skill-eval-runner/schemas/eval-audit-result.schema.json',
-    '../agent-skill-eval-runner/skills/run-agent-skill-evals/assets/eval-audit-result.schema.json',
   ],
   'schemas/eval-runtime-capabilities.schema.json': [
     'skills/review-agent-skill/assets/eval-runtime-capabilities.schema.json',

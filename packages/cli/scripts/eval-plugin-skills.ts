@@ -1,15 +1,13 @@
-import {
-  execFile,
-  spawn,
-  type ChildProcess,
-  type ChildProcessWithoutNullStreams,
-  type SpawnOptions,
-} from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
+import {
+  runProviderProcess,
+  type ProcessLifecycleHooks,
+} from '@lesliechan721/agent-skill-eval';
 import fs from 'fs-extra';
 
 import type { PluginMeta } from '../src/types.js';
@@ -20,11 +18,10 @@ import { assertCodexEvalKeychainWrapperAbsent } from './codex-eval-isolation.js'
 import { resolveCodexEvalProcessManagement } from './codex-eval-process-management.js';
 import {
   CODEX_EVAL_PROCESS_TREE_ID_ENV,
-  createChildProcessTreeMonitor,
-  createDirectChildProcessMonitor,
   type ChildProcessTreeMonitor,
+  createPosixProcessTreeMonitor,
+  PROCESS_TREE_CLEANUP_UNCONFIRMED_PREFIX,
   processTreeCleanupIsUnconfirmed,
-  releaseChildProcessHandles,
   scrubProcessTreeId,
   terminatePosixProcessTree,
   terminateWindowsProcessTree,
@@ -66,6 +63,7 @@ import {
   materializePluginEvalSubjects,
   resolveMaterializedSubjectRoot,
 } from './plugin-eval-materializer.js';
+import { runPortableEvalExecutionPlan } from './portable-eval-engine.js';
 import {
   completeSkillEvalRun,
   computeAuthorSourceDigest,
@@ -121,6 +119,8 @@ interface ChildResult {
   stdout: string;
   stderr: string;
   timedOut: boolean;
+  cancelled: boolean;
+  descendantCleanupGuaranteed: boolean;
   processTreeId: string;
 }
 
@@ -156,6 +156,7 @@ function optionValue(args: string[], index: number, flag: string): string {
 function usage(): string {
   return [
     'Usage: pnpm plugin:eval <plugin> --skill <skill> [OPTIONS]',
+    '       pnpm plugin:eval --execution-plan <plan.json>',
     '',
     'Options:',
     '  --skill <name>                Select exactly one Skill (required)',
@@ -175,7 +176,17 @@ function usage(): string {
     '  --materialize-only            Do not start real Codex model sessions',
     '  --allow-environment-skips     Diagnostic only; release remains incomplete',
     '  --allow-unmanaged-processes   Confirm eval without descendant process tracking',
+    '  --execution-plan <path>        Run one portable EvalExecutionPlan with the shared engine',
   ].join('\n');
+}
+
+function portableExecutionPlanPath(args: string[]): string | undefined {
+  const index = args.indexOf('--execution-plan');
+  if (index < 0) return undefined;
+  if (args.length !== 2 || index !== 0 || !args[1] || args[1].startsWith('-')) {
+    throw new Error('--execution-plan requires exactly one plan path and no AW suite options.');
+  }
+  return path.resolve(args[1]);
 }
 
 function parseArgs(args: string[]): ParsedArgs {
@@ -341,153 +352,90 @@ export async function runChild(
     redact?: (text: string) => string;
     timeoutMs: number;
     processManagement?: PluginEvalProcessManagementEvidence;
-    spawnChild?: (
-      command: string,
-      args: string[],
-      options: SpawnOptions,
-    ) => ChildProcessWithoutNullStreams;
-    createProcessTreeMonitor?: (
-      child: ChildProcess,
-      treeId: string,
-    ) => ChildProcessTreeMonitor;
+    createProcessTreeMonitor?: (pid: number, treeId: string) => ChildProcessTreeMonitor;
   },
 ): Promise<ChildResult> {
   assertCodexEvalCanStartWork();
-  return new Promise((resolve, reject) => {
-    const processTreeId = randomUUID();
-    const processManagement = options.processManagement ?? DEFAULT_MANAGED_PROCESS_EVIDENCE;
-    const managed = processManagement.mode === 'managed';
-    const child = (options.spawnChild ?? spawn)(command, args, {
+  const processTreeId = randomUUID();
+  const processManagement = options.processManagement ?? DEFAULT_MANAGED_PROCESS_EVIDENCE;
+  const managed = processManagement.mode === 'managed';
+  if (!managed && (
+    processManagement.mode !== 'unmanaged-confirmed' ||
+    !processManagement.userAcknowledged
+  )) {
+    throw new Error('Unmanaged process execution requires explicit user confirmation.');
+  }
+  const abortController = new AbortController();
+  let processTreeMonitor: ChildProcessTreeMonitor | undefined;
+  let terminationPromise: Promise<string[]> | undefined;
+  let cleanupDiagnostics: string[] = [];
+  let cleanupDiagnostic = '';
+  const terminateManagedTree = async (): Promise<void> => {
+    if (!processTreeMonitor) return;
+    terminationPromise ??= processTreeMonitor.terminate().catch((error: unknown) => [
+      `${PROCESS_TREE_CLEANUP_UNCONFIRMED_PREFIX}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    ]);
+    cleanupDiagnostics = await terminationPromise;
+    if (cleanupDiagnostics.length > 0) {
+      cleanupDiagnostic = `${cleanupDiagnostics.join('\n')}\n`;
+    }
+  };
+  const hooks: ProcessLifecycleHooks | undefined = managed
+    ? {
+        onSpawn: ({ pid }) => {
+          processTreeMonitor = options.createProcessTreeMonitor
+            ? options.createProcessTreeMonitor(pid, processTreeId)
+            : createPosixProcessTreeMonitor(pid, { treeId: processTreeId });
+        },
+        terminateProcessTree: terminateManagedTree,
+      }
+    : undefined;
+  const unregisterSignalCleanup = registerCodexEvalSignalCleanup(async () => {
+    abortController.abort();
+    if (managed) await terminateManagedTree();
+  });
+  try {
+    const result = await runProviderProcess({
+      executable: command,
+      args,
       cwd: options.cwd,
       env: managed
         ? { ...options.env, [CODEX_EVAL_PROCESS_TREE_ID_ENV]: processTreeId }
         : { ...options.env },
-      shell: false,
-      detached: managed && process.platform !== 'win32',
-      stdio: ['ignore', 'pipe', 'pipe'],
-    }) as ChildProcessWithoutNullStreams;
-    const processTreeMonitor = managed
-      ? options.createProcessTreeMonitor
-        ? options.createProcessTreeMonitor(child, processTreeId)
-        : createChildProcessTreeMonitor(child, { treeId: processTreeId })
-      : createDirectChildProcessMonitor(child);
-    let stdout = '';
-    let stderr = '';
-    let timedOut = false;
-    let executionClosed = false;
-    let settled = false;
-    let closeResult: Pick<ChildResult, 'exitCode' | 'signal'> | undefined;
-    let terminationPromise: Promise<string[]> | undefined;
-    const terminateTree = (): Promise<string[]> => {
-      terminationPromise ??= processTreeMonitor.terminate();
-      return terminationPromise;
+      timeoutMs: options.timeoutMs,
+      maxBufferBytes: 20 * 1024 * 1024,
+      signal: abortController.signal,
+    }, hooks, {
+      containment: managed ? 'managed' : 'unmanaged-confirmed',
+    });
+    let stderr = result.stderr;
+    if (result.timedOut) {
+      stderr += `${stderr.endsWith('\n') || stderr === '' ? '' : '\n'}` +
+        `Suite exceeded central timeout of ${options.timeoutMs}ms.\n`;
+    }
+    stderr += cleanupDiagnostic;
+    const safeStdout = result.stdout.replaceAll(processTreeId, '[process-tree-id]');
+    const safeStderr = stderr.replaceAll(processTreeId, '[process-tree-id]');
+    if (safeStderr) {
+      const rendered = options.redact ? options.redact(safeStderr) : safeStderr;
+      options.stderr(rendered.endsWith('\n') ? rendered : `${rendered}\n`);
+    }
+    return {
+      ...result,
+      exitCode:
+        processTreeCleanupIsUnconfirmed(cleanupDiagnostics) &&
+          result.exitCode === 0
+          ? 1
+          : result.exitCode,
+      stdout: safeStdout,
+      stderr: safeStderr,
+      processTreeId,
     };
-    const unregisterSignalCleanup = registerCodexEvalSignalCleanup(async () => {
-      try {
-        const terminationDiagnostics = await terminateTree();
-        if (terminationDiagnostics.length > 0) {
-          stderr += `${terminationDiagnostics.join('\n')}\n`;
-        }
-      } catch (error) {
-        stderr += `Failed to terminate command suite process tree during signal cleanup: ${
-          error instanceof Error ? error.message : String(error)
-        }\n`;
-      }
-    });
-    const timeoutTimer = setTimeout(() => {
-      if (executionClosed) return;
-      timedOut = true;
-      const message = `Suite exceeded central timeout of ${options.timeoutMs}ms.`;
-      stderr += `${message}\n`;
-      void terminateTree().then((terminationDiagnostics) => {
-        if (terminationDiagnostics.length > 0) {
-          stderr += `${terminationDiagnostics.join('\n')}\n`;
-        }
-        releaseChildProcessHandles(child);
-        finish(
-          closeResult?.exitCode ?? child.exitCode,
-          closeResult?.signal ?? child.signalCode ?? 'SIGKILL',
-        );
-      }, (error: unknown) => {
-        stderr += `Failed to terminate command suite process tree: ${
-          error instanceof Error ? error.message : String(error)
-        }\n`;
-        releaseChildProcessHandles(child);
-        finish(child.exitCode, child.signalCode ?? 'SIGKILL');
-      });
-    }, options.timeoutMs);
-    const cleanup = (): void => {
-      clearTimeout(timeoutTimer);
-      unregisterSignalCleanup();
-    };
-    const finish = (
-      exitCode: number | null,
-      signal: NodeJS.Signals | null,
-    ): void => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      const safeStdout = stdout.replaceAll(processTreeId, '[process-tree-id]');
-      const safeStderr = stderr.replaceAll(processTreeId, '[process-tree-id]');
-      if (safeStderr) {
-        const rendered = options.redact ? options.redact(safeStderr) : safeStderr;
-        options.stderr(rendered.endsWith('\n') ? rendered : `${rendered}\n`);
-      }
-      resolve({
-        exitCode,
-        signal,
-        stdout: safeStdout,
-        stderr: safeStderr,
-        timedOut,
-        processTreeId,
-      });
-    };
-    child.stdout.setEncoding('utf8');
-    child.stderr.setEncoding('utf8');
-    child.stdout.on('data', (chunk: string) => {
-      stdout += chunk;
-    });
-    child.stderr.on('data', (chunk: string) => {
-      stderr += chunk;
-    });
-    child.once('error', (error) => {
-      if (timedOut) {
-        stderr += `${error.message}\n`;
-        return;
-      }
-      if (settled) return;
-      settled = true;
-      cleanup();
-      void terminateTree().then(
-        () => reject(error),
-        () => reject(error),
-      );
-    });
-    child.once('close', (exitCode, signal) => {
-      closeResult = { exitCode, signal };
-      if (timedOut) return;
-      executionClosed = true;
-      clearTimeout(timeoutTimer);
-      void terminateTree().then((terminationDiagnostics) => {
-        if (timedOut) return;
-        if (terminationDiagnostics.length > 0) {
-          stderr += `${terminationDiagnostics.join('\n')}\n`;
-        }
-        finish(
-          processTreeCleanupIsUnconfirmed(terminationDiagnostics) && exitCode === 0
-            ? 1
-            : exitCode,
-          signal,
-        );
-      }, (error: unknown) => {
-        if (timedOut) return;
-        stderr += `Failed to terminate command suite process tree after close: ${
-          error instanceof Error ? error.message : String(error)
-        }\n`;
-        finish(exitCode === 0 ? 1 : exitCode, signal);
-      });
-    });
-  });
+  } finally {
+    unregisterSignalCleanup();
+  }
 }
 
 function supports(
@@ -1738,6 +1686,17 @@ export async function runPluginEvals(
     stdout(`${usage()}\n`);
     return 0;
   }
+  try {
+    const executionPlanPath = portableExecutionPlanPath(args);
+    if (executionPlanPath) {
+      const result = await runPortableEvalExecutionPlan(executionPlanPath);
+      stdout(`${JSON.stringify(result, null, 2)}\n`);
+      return 0;
+    }
+  } catch (error) {
+    stderr(`${error instanceof Error ? error.message : String(error)}\n`);
+    return 2;
+  }
   let parsed: ParsedArgs;
   try {
     parsed = parseArgs(args);
@@ -1802,7 +1761,7 @@ export async function runPluginEvals(
     if (processManagement.mode === 'unmanaged-confirmed') {
       stderr(
         '[plugin:eval] WARNING: unmanaged process cleanup was explicitly confirmed. ' +
-        'No process-tree inspection was used, and this run does not track or verify descendants. ' +
+        'No process-tree inspection was used, and this run does not track or verify descendant cleanup. ' +
         'Timeout and signal cleanup only target the direct child.\n',
       );
     }

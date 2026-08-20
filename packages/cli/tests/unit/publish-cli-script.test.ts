@@ -34,6 +34,8 @@ async function loadPublishCliHarness(
     packCliResult?: string;
     registryUrl?: string;
     publishedVersion?: string;
+    evalPublished?: boolean;
+    publishedEvalMatches?: boolean;
     resolvePublishedCliVersionImpl?: (mode: string) => Promise<string> | string;
     withCatalogPublicationLeaseImpl?: (
       remoteUrl: string,
@@ -54,12 +56,14 @@ async function loadPublishCliHarness(
   } | undefined> = [];
   const packSnapshots: unknown[] = [];
   const registryResolveCalls: Array<{ packageJsonPath: string; env: NodeJS.ProcessEnv }> = [];
+  const registryComparisonCalls: string[] = [];
   const snapshot = {
     root: '/tmp/build-snapshot',
     generationId: 'generation-a',
     outputDigest: 'digest-a',
     inputDigest: 'input-a',
     cliPackageDigest: 'package-a',
+    evalPackageRoot: '/tmp/build-snapshot/packages/agent-skill-eval',
     cliPackageRoot: '/tmp/build-snapshot/packages/cli',
     cliDistRoot: '/tmp/build-snapshot/packages/cli/dist',
     catalogOutputRoot: '/tmp/build-snapshot/packages/cli/plugins-dist',
@@ -108,7 +112,32 @@ async function loadPublishCliHarness(
       packSnapshots.push(packSnapshot);
       return callback(options.packCliResult ?? '/tmp/aw.tgz');
     }),
-    readPackageJson: vi.fn(async () => ({
+    withPrivateEvalTarball: vi.fn(async (
+      _packSnapshot: unknown,
+      callback: (tarballPath: string) => Promise<unknown>,
+    ) => callback('/tmp/agent-skill-eval.tgz')),
+    assertPublishedPackageTarballMatchesCandidate: vi.fn(async (
+      packageName: string,
+      version: string,
+      _packageJsonPath: string,
+      tarballPath: string,
+    ) => {
+      registryComparisonCalls.push(`${packageName}@${version}:${tarballPath}`);
+      if (options.publishedEvalMatches === false) {
+        throw new Error(`Published ${packageName}@${version} has different package files from the release candidate.`);
+      }
+      return {
+        candidateTreeDigest: `sha256:${'a'.repeat(64)}`,
+        publishedTreeDigest: `sha256:${'a'.repeat(64)}`,
+        registryUrl: options.registryUrl ?? 'https://registry.example.test/',
+      };
+    }),
+    computePackageTarballTreeDigest: vi.fn(async () => `sha256:${'a'.repeat(64)}`),
+    isExactPackageVersionPublished: vi.fn(async () => options.evalPublished ?? true),
+    readPackageJson: vi.fn(async (packageJsonPath: string) => ({
+      ...(packageJsonPath.includes('agent-skill-eval')
+        ? { name: '@lesliechan721/agent-skill-eval' }
+        : {}),
       version: options.snapshotVersion ?? options.cliVersion ?? '1.0.0-beta.16',
     })),
     readCliPackageJson: vi.fn(async () => ({
@@ -174,6 +203,7 @@ async function loadPublishCliHarness(
     commandOptions,
     packSnapshots,
     registryResolveCalls,
+    registryComparisonCalls,
     snapshot,
     get snapshotRequests() {
       return snapshotRequests;
@@ -459,7 +489,7 @@ describe('publish-cli script', () => {
       skipVerify: true,
       snapshot: harness.snapshot,
     })).rejects.toThrow(
-      'CLI snapshot version mismatch: expected 1.0.0-beta.16, found 1.0.0-beta.17',
+      'Shared Eval snapshot version mismatch: expected 1.0.0-beta.16, found 1.0.0-beta.17',
     );
 
     expect(harness.calls).toEqual([]);
@@ -491,10 +521,81 @@ describe('publish-cli script', () => {
       mode: 'beta',
       status: 'already-published',
       version: '1.0.0-beta.16',
+      evalPackage: {
+        status: 'already-published',
+        version: '1.0.0-beta.16',
+        candidateTreeDigest: `sha256:${'a'.repeat(64)}`,
+        generationId: 'generation-a',
+        outputDigest: 'digest-a',
+        inputDigest: 'input-a',
+      },
     });
     expect(harness.calls).toEqual([]);
     expect(harness.snapshotRequests).toBe(1);
     expect(harness.publicationLeaseRequests).toBe(1);
+  });
+
+  it('publishes the lockstep shared Eval package before the dependent CLI', async () => {
+    const harness = await loadPublishCliHarness({
+      cliVersion: '1.0.0-beta.16',
+      publishedVersion: '1.0.0-beta.15',
+      evalPublished: false,
+    });
+
+    await expect(harness.publishCli(['beta', '--cli-version', '1.0.0-beta.16'], {
+      skipVerify: true,
+      snapshot: harness.snapshot,
+    })).resolves.toMatchObject({
+      version: '1.0.0-beta.16',
+      evalPackage: { status: 'published', version: '1.0.0-beta.16' },
+    });
+    const publishCalls = harness.calls.filter(
+      (call): call is CommandCall => call.type === 'command' && call.args[0] === 'publish',
+    );
+    expect(publishCalls.map((call) => call.args[1])).toEqual([
+      '/tmp/agent-skill-eval.tgz',
+      '/tmp/aw.tgz',
+    ]);
+  });
+
+  it('continues a partial retry only when the published Eval package matches the candidate files', async () => {
+    const harness = await loadPublishCliHarness({
+      cliVersion: '1.0.0-beta.16',
+      publishedVersion: '1.0.0-beta.15',
+      evalPublished: true,
+    });
+
+    await expect(harness.publishCli(['beta', '--cli-version', '1.0.0-beta.16'], {
+      skipVerify: true,
+      snapshot: harness.snapshot,
+    })).resolves.toMatchObject({
+      version: '1.0.0-beta.16',
+      evalPackage: {
+        status: 'already-published',
+        candidateTreeDigest: `sha256:${'a'.repeat(64)}`,
+      },
+    });
+    expect(harness.registryComparisonCalls).toEqual([
+      '@lesliechan721/agent-skill-eval@1.0.0-beta.16:/tmp/agent-skill-eval.tgz',
+    ]);
+    const publishCalls = harness.calls.filter(
+      (call): call is CommandCall => call.type === 'command' && call.args[0] === 'publish',
+    );
+    expect(publishCalls.map((call) => call.args[1])).toEqual(['/tmp/aw.tgz']);
+  });
+
+  it('fails a partial retry before verification or CLI publication when published Eval files differ', async () => {
+    const harness = await loadPublishCliHarness({
+      cliVersion: '1.0.0-beta.16',
+      publishedVersion: '1.0.0-beta.15',
+      evalPublished: true,
+      publishedEvalMatches: false,
+    });
+
+    await expect(harness.publishCli(['beta', '--cli-version', '1.0.0-beta.16']))
+      .rejects.toThrow('has different package files from the release candidate');
+    expect(harness.registryComparisonCalls).toHaveLength(1);
+    expect(harness.calls).toEqual([]);
   });
 
   it('rejects a lower standalone candidate before verifying, packing, or publishing', async () => {

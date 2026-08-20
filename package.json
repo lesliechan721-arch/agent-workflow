@@ -9,8 +9,8 @@
   "scripts": {
     "build": "node scripts/build/run-build.mjs",
     "build:ensure": "node scripts/build/ensure-build.mjs",
-    "test": "pnpm --filter @lesliechan721/aw test",
-    "test:unit": "pnpm --filter @lesliechan721/aw test:unit",
+    "test": "pnpm --filter @lesliechan721/agent-skill-eval test && pnpm --filter @lesliechan721/aw test",
+    "test:unit": "pnpm --filter @lesliechan721/agent-skill-eval test:unit && pnpm --filter @lesliechan721/aw test:unit",
     "test:unit:fast": "pnpm --filter @lesliechan721/aw test:unit:fast",
     "test:integration": "pnpm --filter @lesliechan721/aw test:integration",
     "test:coverage": "pnpm --filter @lesliechan721/aw test:coverage",

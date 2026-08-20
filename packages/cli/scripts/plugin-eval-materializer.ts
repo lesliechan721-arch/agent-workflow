@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 
+import { createRuntimeSkillSnapshot } from '@lesliechan721/agent-skill-eval';
 import fs from 'fs-extra';
 
 import { createRebuildIntegration } from '../src/commands/rebuild-integration.js';
@@ -169,6 +170,18 @@ async function collectArtifacts(
   return artifacts;
 }
 
+async function snapshotRuntimeSkills(sourceRoot: string, targetRoot: string): Promise<void> {
+  await validateSkillDirectoriesRoot(sourceRoot, 'codex.skill');
+  await fs.ensureDir(targetRoot);
+  const entries = await fs.readdir(sourceRoot, { withFileTypes: true });
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const source = path.join(sourceRoot, entry.name);
+    const destination = path.join(targetRoot, entry.name);
+    await createRuntimeSkillSnapshot(source, destination);
+  }
+}
+
 async function copyUserMaterializedArtifacts(options: {
   scopeRoot: string;
   env: NodeJS.ProcessEnv;
@@ -185,9 +198,7 @@ async function copyUserMaterializedArtifacts(options: {
       'skills',
     );
     if (await fs.pathExists(runtimeSkillsRoot)) {
-      await validateSkillDirectoriesRoot(runtimeSkillsRoot, 'codex.skill');
-      await fs.ensureDir(skillsRoot);
-      await fs.copy(runtimeSkillsRoot, skillsRoot, { overwrite: true, dereference: false });
+      await snapshotRuntimeSkills(runtimeSkillsRoot, skillsRoot);
     }
   }
 
@@ -212,7 +223,6 @@ async function materializeStaticCodexSkills(options: {
   if (!(await fs.pathExists(sourceRoot))) {
     return;
   }
-  await validateSkillDirectoriesRoot(sourceRoot, 'codex.skill');
   const targetRoot = options.profile.scope === 'project'
     ? path.join(options.projectRoot, '.agents', 'skills')
     : path.join(
@@ -222,8 +232,7 @@ async function materializeStaticCodexSkills(options: {
         'codex',
         'skills',
       );
-  await fs.ensureDir(targetRoot);
-  await fs.copy(sourceRoot, targetRoot, { overwrite: true, dereference: false });
+  await snapshotRuntimeSkills(sourceRoot, targetRoot);
 }
 
 async function materializeProfile(options: {
