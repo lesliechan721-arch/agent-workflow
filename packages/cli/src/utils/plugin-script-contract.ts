@@ -1,3 +1,4 @@
+import { builtinModules } from 'node:module';
 import path from 'node:path';
 
 import type {
@@ -97,12 +98,25 @@ export function inferLifecycleScriptRunnerFromPath(
 export interface ImportSpecifierReference {
   specifier: string;
   kind: 'import' | 'export' | 'require' | 'require-resolve' | 'dynamic-import';
+  dynamic?: true;
 }
 
 interface JavaScriptToken {
-  kind: 'identifier' | 'string' | 'punctuation' | 'literal';
+  kind: 'identifier' | 'string' | 'dynamic-template' | 'punctuation' | 'literal';
   value: string;
+  canStartRegexAfter?: boolean;
 }
+
+const REGEX_AFTER_CONTROL_HEADER = new Set([
+  'catch',
+  'for',
+  'if',
+  'switch',
+  'while',
+  'with',
+]);
+
+const NODE_BUILTIN_SPECIFIERS = new Set(builtinModules);
 
 function isJavaScriptIdentifierStart(value: string | undefined): boolean {
   return value !== undefined && /[A-Za-z_$]/u.test(value);
@@ -186,6 +200,9 @@ function tokenizeJavaScriptImports(source: string): JavaScriptToken[] {
 
   const canStartRegexLiteral = (): boolean => {
     if (!previousToken) return true;
+    if (previousToken.canStartRegexAfter !== undefined) {
+      return previousToken.canStartRegexAfter;
+    }
     if (previousToken.kind === 'identifier') {
       return new Set([
         'await', 'case', 'delete', 'do', 'else', 'in', 'instanceof', 'new',
@@ -220,6 +237,8 @@ function tokenizeJavaScriptImports(source: string): JavaScriptToken[] {
 
   const scanCode = (stopAtTemplateExpressionEnd: boolean): void => {
     let braceDepth = 0;
+    const blockBraceStack: boolean[] = [];
+    const controlParenStack: boolean[] = [];
     while (index < source.length) {
       const current = source[index]!;
       const next = source[index + 1];
@@ -244,23 +263,34 @@ function tokenizeJavaScriptImports(source: string): JavaScriptToken[] {
       }
       if (current === '`') {
         index += 1;
+        let value = '';
+        let dynamic = false;
         while (index < source.length) {
           if (source[index] === '\\') {
-            index = Math.min(index + 2, source.length);
+            const decoded = decodeJavaScriptEscape(source, index + 1);
+            value += decoded.value;
+            index = decoded.next;
           } else if (source[index] === '`') {
             index += 1;
+            if (!dynamic) {
+              push({ kind: 'string', value });
+            }
             break;
           } else if (source[index] === '$' && source[index + 1] === '{') {
+            if (!dynamic) {
+              push({ kind: 'dynamic-template', value: 'template' });
+              dynamic = true;
+            }
             index += 2;
             const outerPrevious = previousToken;
             previousToken = undefined;
             scanCode(true);
             previousToken = outerPrevious;
           } else {
+            value += source[index];
             index += 1;
           }
         }
-        push({ kind: 'literal', value: 'template' });
         continue;
       }
       if (current === '/' && canStartRegexLiteral()) {
@@ -281,6 +311,12 @@ function tokenizeJavaScriptImports(source: string): JavaScriptToken[] {
         continue;
       }
       if (current === '{') {
+        const isBlock = !previousToken
+          || (previousToken.kind === 'identifier'
+            && ['do', 'else', 'finally', 'try'].includes(previousToken.value))
+          || (previousToken.kind === 'punctuation'
+            && [';', '}', ')', '>'].includes(previousToken.value));
+        blockBraceStack.push(isBlock);
         braceDepth += 1;
         index += 1;
         push({ kind: 'punctuation', value: current });
@@ -293,7 +329,38 @@ function tokenizeJavaScriptImports(source: string): JavaScriptToken[] {
         }
         braceDepth = Math.max(0, braceDepth - 1);
         index += 1;
+        push({
+          kind: 'punctuation',
+          value: current,
+          canStartRegexAfter: blockBraceStack.pop() ?? false,
+        });
+        continue;
+      }
+      if (current === '(') {
+        controlParenStack.push(
+          previousToken?.kind === 'identifier'
+          && REGEX_AFTER_CONTROL_HEADER.has(previousToken.value),
+        );
+        index += 1;
         push({ kind: 'punctuation', value: current });
+        continue;
+      }
+      if (current === ')') {
+        index += 1;
+        push({
+          kind: 'punctuation',
+          value: current,
+          canStartRegexAfter: controlParenStack.pop() ?? false,
+        });
+        continue;
+      }
+      if ((current === '+' || current === '-') && next === current) {
+        index += 2;
+        push({
+          kind: 'punctuation',
+          value: `${current}${current}`,
+          canStartRegexAfter: false,
+        });
         continue;
       }
       index += 1;
@@ -308,6 +375,19 @@ function tokenizeJavaScriptImports(source: string): JavaScriptToken[] {
 export function scanJavaScriptImportSpecifiers(source: string): ImportSpecifierReference[] {
   const references: ImportSpecifierReference[] = [];
   const tokens = tokenizeJavaScriptImports(source);
+  const callSpecifier = (
+    argumentIndex: number,
+  ): Pick<ImportSpecifierReference, 'specifier' | 'dynamic'> => {
+    const specifier = tokens[argumentIndex];
+    const following = tokens[argumentIndex + 1];
+    if (
+      specifier?.kind === 'string'
+      && (following?.value === ')' || following?.value === ',')
+    ) {
+      return { specifier: specifier.value };
+    }
+    return { specifier: '', dynamic: true };
+  };
   let pendingStatic: 'import' | 'export' | undefined;
   for (let index = 0; index < tokens.length; index += 1) {
     const token = tokens[index]!;
@@ -321,12 +401,21 @@ export function scanJavaScriptImportSpecifiers(source: string): ImportSpecifierR
       pendingStatic = undefined;
       continue;
     }
+    if (
+      token.kind === 'identifier'
+      && token.value === 'module'
+      && previous?.value !== '.'
+      && tokens[index + 1]?.value === '.'
+      && tokens[index + 2]?.kind === 'identifier'
+      && tokens[index + 2]?.value === 'require'
+      && tokens[index + 3]?.value === '('
+    ) {
+      references.push({ ...callSpecifier(index + 4), kind: 'require' });
+      continue;
+    }
     if (token.kind !== 'identifier' || previous?.value === '.') continue;
     if (token.value === 'require' && tokens[index + 1]?.value === '(') {
-      const specifier = tokens[index + 2];
-      if (specifier?.kind === 'string') {
-        references.push({ specifier: specifier.value, kind: 'require' });
-      }
+      references.push({ ...callSpecifier(index + 2), kind: 'require' });
       continue;
     }
     if (
@@ -336,19 +425,13 @@ export function scanJavaScriptImportSpecifiers(source: string): ImportSpecifierR
       && tokens[index + 2]?.value === 'resolve'
       && tokens[index + 3]?.value === '('
     ) {
-      const specifier = tokens[index + 4];
-      if (specifier?.kind === 'string') {
-        references.push({ specifier: specifier.value, kind: 'require-resolve' });
-      }
+      references.push({ ...callSpecifier(index + 4), kind: 'require-resolve' });
       continue;
     }
     if (token.value !== 'import' && token.value !== 'export') continue;
     pendingStatic = undefined;
     if (token.value === 'import' && tokens[index + 1]?.value === '(') {
-      const specifier = tokens[index + 2];
-      if (specifier?.kind === 'string') {
-        references.push({ specifier: specifier.value, kind: 'dynamic-import' });
-      }
+      references.push({ ...callSpecifier(index + 2), kind: 'dynamic-import' });
       continue;
     }
     if (token.value === 'import' && tokens[index + 1]?.kind === 'string') {
@@ -363,6 +446,7 @@ export function scanJavaScriptImportSpecifiers(source: string): ImportSpecifierR
 
 export interface NodeImportContractScanOptions {
   files: Record<string, string>;
+  filePaths?: readonly string[];
   entryFiles: string[];
   dependencies?: readonly string[];
   devDependencies?: readonly string[];
@@ -388,6 +472,11 @@ function isBareSpecifier(specifier: string): boolean {
   return !isRelativeSpecifier(specifier) && !specifier.startsWith('/') && !specifier.startsWith('node:');
 }
 
+function isNodeBuiltinSpecifier(specifier: string): boolean {
+  return NODE_BUILTIN_SPECIFIERS.has(specifier)
+    || (specifier.startsWith('node:') && NODE_BUILTIN_SPECIFIERS.has(specifier.slice('node:'.length)));
+}
+
 function getPackageName(specifier: string): string {
   if (specifier.startsWith('@')) {
     const [scope, name] = specifier.split('/');
@@ -397,27 +486,118 @@ function getPackageName(specifier: string): string {
   return specifier.split('/')[0] ?? specifier;
 }
 
+const NODE_IMPORT_SOURCE_EXTENSIONS = new Set(['.js', '.mjs', '.cjs']);
+const NODE_IMPORT_LEAF_EXTENSIONS = new Set(['.json']);
+
+function isSupportedNodeImportFile(file: string): boolean {
+  const extension = path.posix.extname(file).toLowerCase();
+  return NODE_IMPORT_SOURCE_EXTENSIONS.has(extension)
+    || NODE_IMPORT_LEAF_EXTENSIONS.has(extension);
+}
+
+function isNodeImportLeafFile(file: string): boolean {
+  return NODE_IMPORT_LEAF_EXTENSIONS.has(path.posix.extname(file).toLowerCase());
+}
+
+interface RelativeFileResolution {
+  file?: string;
+  supportingFiles?: string[];
+  error?: string;
+}
+
 function resolveRelativeFile(
   importer: string,
   specifier: string,
-  files: Record<string, string>,
-): string | undefined {
+  filePaths: ReadonlySet<string>,
+  files: Readonly<Record<string, string>>,
+  importKind: ImportSpecifierReference['kind'],
+): RelativeFileResolution {
   const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(importer), specifier));
   if (resolved === '..' || resolved.startsWith('../') || path.posix.isAbsolute(resolved)) {
-    return resolved;
+    return { file: resolved };
   }
 
-  const candidates = [
-    resolved,
-    `${resolved}.js`,
-    `${resolved}.mjs`,
-    `${resolved}.cjs`,
-    path.posix.join(resolved, 'index.js'),
-    path.posix.join(resolved, 'index.mjs'),
-    path.posix.join(resolved, 'index.cjs'),
-  ];
+  const commonJs = importKind === 'require' || importKind === 'require-resolve';
+  if (!commonJs) {
+    return { file: filePaths.has(resolved) ? resolved : undefined };
+  }
 
-  return candidates.find((candidate) => Object.prototype.hasOwnProperty.call(files, candidate));
+  const resolveAsFile = (target: string): string | undefined => (
+    [target, `${target}.js`, `${target}.json`, `${target}.node`]
+      .find((candidate) => filePaths.has(candidate))
+  );
+  const resolveAsIndex = (directory: string): string | undefined => (
+    ['index.js', 'index.json', 'index.node']
+      .map((fileName) => path.posix.join(directory, fileName))
+      .find((candidate) => filePaths.has(candidate))
+  );
+  const exactFile = resolveAsFile(resolved);
+  if (exactFile) {
+    return { file: exactFile };
+  }
+
+  const resolveAsDirectory = (directory: string): RelativeFileResolution => {
+    const packageJsonPath = path.posix.join(directory, 'package.json');
+    const supportingFiles: string[] = [];
+    if (filePaths.has(packageJsonPath)) {
+      supportingFiles.push(packageJsonPath);
+      const packageJsonSource = files[packageJsonPath];
+      let packageJson: unknown;
+      try {
+        packageJson = packageJsonSource === undefined ? undefined : JSON.parse(packageJsonSource);
+      } catch {
+        return {
+          error: `Invalid CommonJS package manifest "${packageJsonPath}" resolved from "${specifier}" in "${importer}".`,
+        };
+      }
+      if (!packageJson || typeof packageJson !== 'object' || Array.isArray(packageJson)) {
+        return {
+          error: `Invalid CommonJS package manifest "${packageJsonPath}" resolved from "${specifier}" in "${importer}".`,
+        };
+      }
+
+      if (Object.prototype.hasOwnProperty.call(packageJson, 'main')) {
+        const main = (packageJson as Record<string, unknown>).main;
+        if (
+          typeof main !== 'string'
+          || main.length === 0
+          || main.includes('\0')
+          || main.includes('\\')
+          || path.posix.isAbsolute(main)
+          || path.win32.isAbsolute(main)
+          || /^[A-Za-z][A-Za-z0-9+.-]*:/u.test(main)
+        ) {
+          return {
+            error: `Invalid CommonJS package main in "${packageJsonPath}" resolved from "${specifier}" in "${importer}".`,
+          };
+        }
+        const normalizedMain = path.posix.normalize(main);
+        const mainTarget = path.posix.join(directory, normalizedMain);
+        if (mainTarget === '..' || mainTarget.startsWith('../') || path.posix.isAbsolute(mainTarget)) {
+          return {
+            error: `CommonJS package main "${main}" in "${packageJsonPath}" escapes the plugin root.`,
+          };
+        }
+
+        const mainFile = resolveAsFile(mainTarget);
+        if (mainFile) {
+          return { file: mainFile, supportingFiles };
+        }
+        const mainIndex = resolveAsIndex(mainTarget);
+        if (mainIndex) {
+          return {
+            file: mainIndex,
+            supportingFiles,
+          };
+        }
+      }
+    }
+
+    const indexFile = resolveAsIndex(directory);
+    return { file: indexFile, supportingFiles };
+  };
+
+  return resolveAsDirectory(resolved);
 }
 
 export function scanNodeImportContract(
@@ -426,6 +606,10 @@ export function scanNodeImportContract(
   const files = Object.fromEntries(
     Object.entries(options.files).map(([file, source]) => [normalizePluginFilePath(file), source]),
   );
+  const filePaths = new Set([
+    ...Object.keys(files),
+    ...(options.filePaths ?? []).map(normalizePluginFilePath),
+  ]);
   const dependencies = new Set(options.dependencies ?? []);
   const devDependencies = new Set(options.devDependencies ?? []);
   const queue = options.entryFiles.map(normalizePluginFilePath);
@@ -440,6 +624,13 @@ export function scanNodeImportContract(
     }
 
     visited.add(file);
+    if (!filePaths.has(file)) {
+      errors.push(`Missing runtime import file "${file}".`);
+      continue;
+    }
+    if (isNodeImportLeafFile(file)) {
+      continue;
+    }
     const source = files[file];
     if (source === undefined) {
       errors.push(`Missing runtime import file "${file}".`);
@@ -448,12 +639,30 @@ export function scanNodeImportContract(
 
     for (const reference of scanJavaScriptImportSpecifiers(source)) {
       const { specifier } = reference;
-      if (specifier.startsWith('node:')) {
+      if (reference.dynamic) {
+        const kind = reference.kind === 'require-resolve'
+          ? 'require.resolve'
+          : reference.kind === 'dynamic-import' ? 'import' : reference.kind;
+        errors.push(`Dynamic ${kind} specifier in "${file}" is not supported.`);
+        continue;
+      }
+      if (isNodeBuiltinSpecifier(specifier)) {
         continue;
       }
 
       if (isRelativeSpecifier(specifier)) {
-        const resolved = resolveRelativeFile(file, specifier, files);
+        const resolution = resolveRelativeFile(
+          file,
+          specifier,
+          filePaths,
+          files,
+          reference.kind,
+        );
+        if (resolution.error) {
+          errors.push(resolution.error);
+          continue;
+        }
+        const resolved = resolution.file;
         if (!resolved) {
           errors.push(`Unable to resolve relative import "${specifier}" from "${file}".`);
           continue;
@@ -462,6 +671,13 @@ export function scanNodeImportContract(
           errors.push(`Relative import "${specifier}" from "${file}" escapes the plugin root.`);
           continue;
         }
+        if (!isSupportedNodeImportFile(resolved)) {
+          errors.push(
+            `Unsupported runtime import file "${resolved}" resolved from "${specifier}" in "${file}".`,
+          );
+          continue;
+        }
+        queue.push(...(resolution.supportingFiles ?? []));
         queue.push(resolved);
         continue;
       }

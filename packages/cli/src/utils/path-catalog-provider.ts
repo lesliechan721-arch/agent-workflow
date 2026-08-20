@@ -73,6 +73,7 @@ async function resolvePathCatalogSourceWithLease(
   const location = resolveCatalogSourceCacheLocation({ sourceId: source.id, sourceIdentity, env });
   await ensureCatalogSourceCacheLocation(location);
   const stagingRoot = path.join(location.rootDir, `.path-${crypto.randomUUID()}.tmp`);
+  let published = false;
   try {
     await catalogPathProviderTestHooks?.beforeObservationLock?.({ sourceId: source.id });
     const observed = await observeAndReserveCatalogSourceObservation({
@@ -124,6 +125,7 @@ async function resolvePathCatalogSourceWithLease(
       observationOrder,
       signal: options.signal,
     });
+    published = true;
     return {
       sourceId: source.id,
       sourceIdentity,
@@ -138,6 +140,19 @@ async function resolvePathCatalogSourceWithLease(
       cacheFallback: false,
     };
   } finally {
-    await fs.remove(stagingRoot);
+    try {
+      await fs.remove(stagingRoot);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code ?? '';
+      if (!published || (code !== 'EBUSY' && code !== 'EPERM')) throw error;
+      try {
+        process.emitWarning(
+          `Catalog path source was published, but staging cleanup failed with ${code}.`,
+          { code: 'AW_CATALOG_PROVIDER_CLEANUP_FAILED' },
+        );
+      } catch {
+        // Diagnostics cannot replace a published cache result.
+      }
+    }
   }
 }

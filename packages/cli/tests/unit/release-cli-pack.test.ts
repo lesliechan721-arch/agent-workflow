@@ -4,7 +4,7 @@ import path from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { packCli } from '../../../../scripts/release/common.mjs';
+import { packCli, withPrivateCliTarball } from '../../../../scripts/release/common.mjs';
 
 const generatedTarballName = 'lesliechan721-aw-9.9.9.tgz';
 const tempDirs: string[] = [];
@@ -116,5 +116,22 @@ describe('CLI release pack staging', () => {
       'keep-me.tgz',
       generatedTarballName,
     ]);
+  });
+
+  it('keeps a publish tarball in an owned private random directory until its consumer finishes', async () => {
+    const fixture = await createPackFixture('success');
+    let consumedPath = '';
+
+    await expect(withPrivateCliTarball(fixture.snapshot, async (tarballPath) => {
+      consumedPath = tarballPath;
+      const directory = path.dirname(tarballPath);
+      const stats = await fs.stat(directory);
+      expect(stats.mode & 0o777).toBe(0o700);
+      expect(path.basename(directory)).toMatch(/^aw-cli-publish-/);
+      await expect(fs.readFile(tarballPath, 'utf8')).resolves.toBe('new tarball');
+      return 'consumed';
+    })).resolves.toBe('consumed');
+
+    await expect(fs.stat(consumedPath)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 });

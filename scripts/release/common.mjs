@@ -2,9 +2,15 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { withBuildSnapshot } from '../build/build-cache.mjs';
+import {
+  assertBuildInputPathSafety,
+  computeBuildInputDigest,
+  computeCliPackageDigest,
+  withBuildSnapshot,
+} from '../build/build-cache.mjs';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const semverPattern =
@@ -157,6 +163,7 @@ export async function runCommand(command, args, options = {}) {
   const resolvedArgs = useInheritedPnpm
     ? [path.resolve(inheritedPnpmExecPath), ...args]
     : args;
+  const invocation = formatCommandInvocation(command, args);
   await new Promise((resolve, reject) => {
     const child = spawn(resolvedCommand, resolvedArgs, {
       cwd: options.cwd ?? repoRoot,
@@ -164,11 +171,13 @@ export async function runCommand(command, args, options = {}) {
         ...process.env,
         ...(options.env ?? {}),
       },
-      stdio: options.stdio ?? 'inherit',
+      stdio: options.stdio ?? ['inherit', 'inherit', 'pipe'],
       ...(options.timeoutMs
         ? { signal: AbortSignal.timeout(options.timeoutMs) }
         : {}),
     });
+
+    if (options.stdio === undefined) forwardRedactedStderr(child);
 
     child.on('error', reject);
     child.on('close', (code, signal) => {
@@ -181,7 +190,7 @@ export async function runCommand(command, args, options = {}) {
         signal === null
           ? `exit code ${code ?? 'unknown'}`
           : `signal ${signal}`;
-      reject(new Error(`Command failed: ${command} ${args.join(' ')} (${reason})`));
+      reject(new Error(`Command failed: ${invocation} (${reason})`));
     });
   });
 }
@@ -190,10 +199,12 @@ export async function captureCommand(command, args, options = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd: options.cwd ?? repoRoot,
-      env: {
-        ...process.env,
-        ...(options.env ?? {}),
-      },
+      env: options.replaceEnv
+        ? options.env
+        : {
+          ...process.env,
+          ...(options.env ?? {}),
+        },
       stdio: ['ignore', 'pipe', 'pipe'],
       ...(options.timeoutMs
         ? { signal: AbortSignal.timeout(options.timeoutMs) }
@@ -221,16 +232,102 @@ export async function captureCommand(command, args, options = {}) {
         signal === null
           ? `exit code ${code ?? 'unknown'}`
           : `signal ${signal}`;
-      const detail = stderr.trim() || stdout.trim();
+      const detail = redactReleaseDiagnostic(stderr.trim() || stdout.trim());
+      const invocation = formatCommandInvocation(command, args);
       reject(
         new Error(
           detail
-            ? `${detail}\nCommand failed: ${command} ${args.join(' ')} (${reason})`
-            : `Command failed: ${command} ${args.join(' ')} (${reason})`,
+            ? `${detail}\nCommand failed: ${invocation} (${reason})`
+            : `Command failed: ${invocation} (${reason})`,
         ),
       );
     });
   });
+}
+
+const URL_USERINFO_PATTERN = /([a-z][a-z\d+.-]*:\/\/)[^/\s?#]*@/giu;
+
+function redactReleaseDiagnostic(value) {
+  return String(value).replace(
+    URL_USERINFO_PATTERN,
+    '$1<redacted>@',
+  );
+}
+
+function formatCommandInvocation(command, args) {
+  return [command, ...args].map((value) => redactReleaseDiagnostic(value)).join(' ');
+}
+
+function forwardRedactedStderr(child) {
+  if (!child.stderr) return;
+
+  let pending = '';
+  child.stderr.setEncoding('utf8');
+  child.stderr.on('data', (chunk) => {
+    pending += chunk;
+    const boundary = pending.lastIndexOf('\n');
+    if (boundary < 0) return;
+    process.stderr.write(redactReleaseDiagnostic(pending.slice(0, boundary + 1)));
+    pending = pending.slice(boundary + 1);
+  });
+  child.stderr.on('end', () => {
+    if (pending) process.stderr.write(redactReleaseDiagnostic(pending));
+    pending = '';
+  });
+}
+
+function releaseGitEnvironment(env = process.env) {
+  const next = { ...env };
+  for (const key of Object.keys(next)) {
+    if (
+      key === 'GIT_DIR'
+      || key === 'GIT_COMMON_DIR'
+      || key === 'GIT_WORK_TREE'
+      || key === 'GIT_INDEX_FILE'
+      || key === 'GIT_OBJECT_DIRECTORY'
+      || key === 'GIT_ALTERNATE_OBJECT_DIRECTORIES'
+      || key === 'GIT_NAMESPACE'
+      || key === 'GIT_CONFIG'
+      || key === 'GIT_CONFIG_GLOBAL'
+      || key === 'GIT_CONFIG_SYSTEM'
+      || key === 'GIT_CONFIG_NOSYSTEM'
+      || key === 'GIT_CONFIG_COUNT'
+      || key === 'GIT_CONFIG_PARAMETERS'
+      || key === 'GIT_CEILING_DIRECTORIES'
+      || key === 'GIT_DISCOVERY_ACROSS_FILESYSTEM'
+      || key === 'GIT_PREFIX'
+      || key === 'GIT_SHALLOW_FILE'
+      || key === 'GIT_GRAFT_FILE'
+      || key === 'GIT_REPLACE_REF_BASE'
+      || /^GIT_CONFIG_(?:KEY|VALUE)_\d+$/.test(key)
+    ) delete next[key];
+  }
+  return next;
+}
+
+export async function runReleaseGit(args, options = {}) {
+  const requestedRoot = path.resolve(options.cwd ?? repoRoot);
+  const expectedRoot = await fs.realpath(requestedRoot);
+  const capture = options.captureCommand ?? captureCommand;
+  const env = releaseGitEnvironment(options.env ?? process.env);
+  const invoke = (gitArgs) => capture('git', gitArgs, {
+    cwd: expectedRoot,
+    env,
+    replaceEnv: true,
+  });
+  const { stdout: topLevelOutput } = await invoke(['rev-parse', '--show-toplevel']);
+  let actualRoot;
+  try {
+    actualRoot = await fs.realpath(topLevelOutput.trim());
+  } catch (error) {
+    throw new Error('Release Git did not resolve a valid worktree root.', { cause: error });
+  }
+  if (actualRoot !== expectedRoot) {
+    throw new Error(
+      `Release Git worktree mismatch: expected ${expectedRoot}, found ${actualRoot}.`,
+    );
+  }
+  return invoke(args);
 }
 
 export async function resolvePublishedCliVersion(mode, options = {}) {
@@ -272,46 +369,217 @@ export async function resolvePublishedCliVersion(mode, options = {}) {
   return version;
 }
 
-function normalizeGitStatusPath(statusLine) {
-  if (!statusLine || statusLine.length < 4) {
-    return null;
+async function resolveReleaseDirtyEntries(options = {}) {
+  const { stdout } = await runReleaseGit([
+    'status',
+    '--porcelain=v1',
+    '-z',
+    '--untracked-files=all',
+  ], options);
+  const records = stdout.split('\0');
+  const entries = [];
+  for (let index = 0; index < records.length; index += 1) {
+    const record = records[index];
+    if (!record) continue;
+    if (record.length < 4 || record[2] !== ' ') {
+      throw new Error('Git returned malformed worktree status data.');
+    }
+    const status = record.slice(0, 2);
+    const relativePath = record.slice(3).replaceAll('\\', '/');
+    if (!relativePath) {
+      throw new Error('Git returned a dirty worktree entry without a path.');
+    }
+    const indexStatus = status[0];
+    if (indexStatus === 'R' || indexStatus === 'C') {
+      index += 1;
+      if (!records[index]) {
+        throw new Error('Git returned malformed rename or copy status data.');
+      }
+    }
+    entries.push({ status, path: relativePath });
+  }
+  return entries;
+}
+
+const RELEASE_INPUT_PATHS = [
+  'package.json',
+  'pnpm-lock.yaml',
+  'pnpm-workspace.yaml',
+  'tsconfig.base.json',
+  'scripts/build',
+  'scripts/release',
+  'packages/cli/package.json',
+  'packages/cli/tsconfig.json',
+  'packages/cli/index.ts',
+  'packages/cli/vitest.config.ts',
+  'packages/cli/src',
+  'packages/cli/scripts',
+  'plugins',
+  '.changes',
+];
+
+function isAllowedIgnoredReleaseInput(relativePath) {
+  if (relativePath.split('/').includes('node_modules')) return true;
+  return (
+    /^packages\/cli\/(?:dist|plugins-dist)(?:\/|$)/.test(relativePath)
+    || /^plugins\/[^/]+\/(?:evals|reports)(?:\/|$)/.test(relativePath)
+    || /^plugins\/[^/]+\/skills\/[^/]+\/(?:[^/]+\/)*(?:evals|reports)(?:\/|$)/.test(
+      relativePath,
+    )
+  );
+}
+
+async function resolveIgnoredReleaseInputs(options = {}) {
+  const { stdout } = await runReleaseGit([
+    'ls-files',
+    '--others',
+    '--ignored',
+    '--exclude-standard',
+    '-z',
+    '--',
+    ...RELEASE_INPUT_PATHS,
+  ], options);
+  return stdout
+    .split('\0')
+    .filter(Boolean)
+    .map((entry) => entry.replaceAll('\\', '/'))
+    .filter((entry) => !isAllowedIgnoredReleaseInput(entry));
+}
+
+function parseTaggedReleaseInputs(stdout, flagName) {
+  const entries = [];
+  for (const record of stdout.split('\0')) {
+    if (!record) continue;
+    if (record.length < 3 || record[1] !== ' ') {
+      throw new Error(`Git returned malformed ${flagName} index data.`);
+    }
+    entries.push({ tag: record[0], path: record.slice(2).replaceAll('\\', '/') });
+  }
+  return entries;
+}
+
+async function assertReleaseInputIndexFlagsSafe(options = {}) {
+  const [skipWorktreeResult, assumeUnchangedResult] = await Promise.all([
+    runReleaseGit([
+      'ls-files', '-t', '-z', '--', ...RELEASE_INPUT_PATHS,
+    ], options),
+    runReleaseGit([
+      'ls-files', '-v', '-z', '--', ...RELEASE_INPUT_PATHS,
+    ], options),
+  ]);
+  const assumeUnchanged = parseTaggedReleaseInputs(
+    assumeUnchangedResult.stdout,
+    'assume-unchanged',
+  ).find((entry) =>
+    entry.tag !== entry.tag.toUpperCase()
+    && !isAllowedIgnoredReleaseInput(entry.path)
+  );
+  if (assumeUnchanged) {
+    throw new Error(
+      'Refusing release snapshot: registered release input uses Git index flag ' +
+      `assume-unchanged: ${assumeUnchanged.path}.`,
+    );
+  }
+  const skipWorktree = parseTaggedReleaseInputs(
+    skipWorktreeResult.stdout,
+    'skip-worktree',
+  ).find((entry) => entry.tag === 'S' && !isAllowedIgnoredReleaseInput(entry.path));
+  if (skipWorktree) {
+    throw new Error(
+      'Refusing release snapshot: registered release input uses Git index flag ' +
+      `skip-worktree: ${skipWorktree.path}.`,
+    );
+  }
+}
+
+function parseVersionSyncManifest(contents, relativePath, source) {
+  let manifest;
+  try {
+    manifest = JSON.parse(contents);
+  } catch (error) {
+    throw new Error(`Combined release ${relativePath} ${source} is not valid JSON.`, {
+      cause: error,
+    });
+  }
+  if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) {
+    throw new Error(`Combined release ${relativePath} ${source} must be a JSON object.`);
+  }
+  return manifest;
+}
+
+async function assertVersionSyncManifestEntry(entry, options = {}) {
+  if (entry.status !== ' M') {
+    throw new Error(
+      `Combined release ${entry.path} must be an unstaged regular-file modification from HEAD.`,
+    );
+  }
+  const cwd = options.cwd ?? repoRoot;
+  const manifestPath = path.join(cwd, entry.path);
+  const stats = await fs.lstat(manifestPath);
+  if (stats.isSymbolicLink() || !stats.isFile()) {
+    throw new Error(
+      `Combined release ${entry.path} must be an unstaged regular-file modification from HEAD.`,
+    );
+  }
+  const [{ stdout: headContents }, currentContents] = await Promise.all([
+    runReleaseGit(['show', `HEAD:${entry.path}`], { ...options, cwd }),
+    fs.readFile(manifestPath, 'utf8'),
+  ]);
+  const headManifest = parseVersionSyncManifest(headContents, entry.path, 'HEAD manifest');
+  const currentManifest = parseVersionSyncManifest(currentContents, entry.path, 'worktree manifest');
+  const { version: headVersion, ...headRest } = headManifest;
+  const { version: currentVersion, ...currentRest } = currentManifest;
+  if (
+    typeof headVersion !== 'string'
+    || typeof currentVersion !== 'string'
+    || headVersion === currentVersion
+    || !isDeepStrictEqual(headRest, currentRest)
+  ) {
+    throw new Error(
+      `Combined release ${entry.path} may change only the top-level version value relative to HEAD.`,
+    );
+  }
+  assertValidVersion(currentVersion);
+}
+
+export async function assertReleaseWorktreeClean(options = {}) {
+  await assertBuildInputPathSafety(options.cwd ?? repoRoot);
+  await assertReleaseInputIndexFlagsSafe(options);
+  const allowedDirtyPaths = new Set(options.allowVersionSync
+    ? [
+      relativeToRepo(rootPackageJsonPath),
+      relativeToRepo(cliPackageJsonPath),
+    ]
+    : []);
+  const dirtyEntries = await resolveReleaseDirtyEntries(options);
+  const dirtyPaths = dirtyEntries.map((entry) => entry.path);
+  const ignoredInputs = await resolveIgnoredReleaseInputs(options);
+  const unexpectedDirtyPaths = [
+    ...dirtyPaths.filter((entryPath) => !allowedDirtyPaths.has(entryPath)),
+    ...ignoredInputs,
+  ];
+
+  if (unexpectedDirtyPaths.length > 0) {
+    const allowedPathsText = allowedDirtyPaths.size > 0
+      ? ` Only ${Array.from(allowedDirtyPaths).join(', ')} may be modified by the version sync step.`
+      : '';
+    const unexpectedChanges = unexpectedDirtyPaths.map((path) => `- ${path}`).join('\n');
+    throw new Error(
+      `Refusing to publish from a dirty working tree.${allowedPathsText}\nUnexpected changes:\n${unexpectedChanges}`,
+    );
   }
 
-  const rawPath = statusLine.slice(3).trim();
-  if (!rawPath) {
-    return null;
+  if (options.allowVersionSync) {
+    for (const entry of dirtyEntries) {
+      await assertVersionSyncManifestEntry(entry, options);
+    }
   }
 
-  const renamedPath = rawPath.includes(' -> ')
-    ? rawPath.split(' -> ').at(-1)
-    : rawPath;
-
-  return renamedPath ? renamedPath.replaceAll('\\', '/') : null;
+  return dirtyPaths;
 }
 
 export async function resolveCliPublishGitCheckArgs() {
-  const allowedDirtyPaths = new Set([
-    relativeToRepo(rootPackageJsonPath),
-    relativeToRepo(cliPackageJsonPath),
-  ]);
-  const { stdout } = await captureCommand('git', [
-    'status',
-    '--porcelain',
-    '--untracked-files=all',
-  ]);
-  const dirtyPaths = stdout
-    .split('\n')
-    .map((line) => normalizeGitStatusPath(line))
-    .filter((path) => Boolean(path));
-  const unexpectedDirtyPaths = dirtyPaths.filter((path) => !allowedDirtyPaths.has(path));
-
-  if (unexpectedDirtyPaths.length > 0) {
-    const allowedPathsText = Array.from(allowedDirtyPaths).join(', ');
-    const unexpectedChanges = unexpectedDirtyPaths.map((path) => `- ${path}`).join('\n');
-    throw new Error(
-      `Refusing to publish from a dirty working tree. Only ${allowedPathsText} may be modified by the version sync step.\nUnexpected changes:\n${unexpectedChanges}`,
-    );
-  }
+  const dirtyPaths = await assertReleaseWorktreeClean({ allowVersionSync: true });
 
   return dirtyPaths.length > 0 ? ['--no-git-checks'] : [];
 }
@@ -459,6 +727,19 @@ async function withOwnedTemporaryDirectory(prefix, callback, cleanupContext) {
   }
 }
 
+export async function withPrivateCatalogStageRoot(callback) {
+  return withOwnedTemporaryDirectory(
+    path.join(os.tmpdir(), 'aw-catalog-release-'),
+    (temporaryRoot) => callback(path.join(
+      temporaryRoot,
+      '.release',
+      'catalog-staging',
+      'catalog',
+    )),
+    'Private catalog release staging cleanup also failed',
+  );
+}
+
 export async function listTarballs(directoryPath = tarballDir) {
   await ensureDirectory(directoryPath);
   const entries = await fs.readdir(directoryPath, { withFileTypes: true });
@@ -563,13 +844,27 @@ export async function packCli({ destination = tarballDir, snapshot } = {}) {
   );
 }
 
-export function withReleaseBuildSnapshot(callback, options = {}) {
-  return withBuildSnapshot(repoRoot, callback, options);
+export async function withPrivateCliTarball(snapshot, callback) {
+  return withOwnedTemporaryDirectory(
+    path.join(os.tmpdir(), 'aw-cli-publish-'),
+    async (privateRoot) => {
+      await fs.chmod(privateRoot, 0o700);
+      const tarballPath = await packCli({ destination: privateRoot, snapshot });
+      return callback(tarballPath);
+    },
+    'Private CLI tarball cleanup also failed',
+  );
+}
+
+export async function withReleaseBuildSnapshot(callback, options = {}) {
+  const liveRoot = options.repoRoot ?? repoRoot;
+  await assertBuildInputPathSafety(liveRoot);
+  const snapshotRunner = options.withBuildSnapshot ?? withBuildSnapshot;
+  return snapshotRunner(liveRoot, callback, options);
 }
 
 export async function resolveReleaseHead(options = {}) {
-  const capture = options.captureCommand ?? captureCommand;
-  const { stdout } = await capture('git', ['rev-parse', '--verify', 'HEAD']);
+  const { stdout } = await runReleaseGit(['rev-parse', '--verify', 'HEAD'], options);
   const headCommit = stdout.trim();
   if (!/^[0-9a-f]{40,64}$/.test(headCommit)) {
     throw new Error('Release HEAD did not resolve to a commit object ID.');
@@ -604,12 +899,68 @@ export function assertReleaseSnapshotIdentity(snapshot, identity) {
   }
 }
 
+export function assertStagedCatalogReleaseIdentity(staged, expectedOutputRoot, identity) {
+  if (
+    typeof staged?.outputRoot !== 'string'
+    || path.resolve(staged.outputRoot) !== path.resolve(expectedOutputRoot)
+  ) {
+    throw new Error('Catalog release staging did not use its private publication root.');
+  }
+  for (const field of ['generationId', 'outputDigest', 'inputDigest', 'cliPackageDigest']) {
+    if (staged[field] !== identity[field]) {
+      throw new Error(`Staged catalog ${field} does not match the bound release generation.`);
+    }
+  }
+  if (!staged.releaseIdentity) {
+    throw new Error('Staged catalog is missing its bound release identity.');
+  }
+  for (const field of [
+    'generationId',
+    'outputDigest',
+    'inputDigest',
+    'cliPackageDigest',
+    'headCommit',
+  ]) {
+    if (staged.releaseIdentity[field] !== identity[field]) {
+      throw new Error(`Staged catalog release identity ${field} changed before publication.`);
+    }
+  }
+}
+
 export async function assertCurrentReleaseHead(identity, options = {}) {
   const current = await resolveReleaseHead(options);
   if (current !== identity.headCommit) {
     throw new Error(
       `Release HEAD changed from ${identity.headCommit} to ${current} during publication.`,
     );
+  }
+}
+
+export async function assertCurrentReleaseIdentity(snapshot, identity, options = {}) {
+  assertReleaseSnapshotIdentity(snapshot, identity);
+  const liveRoot = options.repoRoot ?? repoRoot;
+  const cleanOptions = {
+    cwd: liveRoot,
+    allowVersionSync: options.allowVersionSync ?? false,
+  };
+  const assertClean = options.assertReleaseWorktreeClean ?? assertReleaseWorktreeClean;
+  await assertClean(cleanOptions);
+  const [headCommit, inputDigest, cliPackageDigest] = await Promise.all([
+    (options.resolveReleaseHead ?? resolveReleaseHead)({ cwd: liveRoot }),
+    (options.computeBuildInputDigest ?? computeBuildInputDigest)(liveRoot),
+    (options.computeCliPackageDigest ?? computeCliPackageDigest)(liveRoot),
+  ]);
+  await assertClean(cleanOptions);
+  if (headCommit !== identity.headCommit) {
+    throw new Error(
+      `Release HEAD changed from ${identity.headCommit} to ${headCommit} during publication.`,
+    );
+  }
+  if (inputDigest !== identity.inputDigest) {
+    throw new Error('Release live inputDigest no longer matches the bound release identity.');
+  }
+  if (cliPackageDigest !== identity.cliPackageDigest) {
+    throw new Error('Release live cliPackageDigest no longer matches the bound release identity.');
   }
 }
 
@@ -643,6 +994,22 @@ export async function loadCatalogModules(compiledCliDistRoot = cliDistRoot) {
 
 function normalizeRegistryUrl(registryUrl) {
   const normalized = registryUrl.trim();
+  let parsed;
+  try {
+    parsed = new URL(normalized);
+  } catch {
+    throw new Error('Registry URL must be a valid HTTP(S) URL.');
+  }
+  if (parsed.username || parsed.password) {
+    throw new Error(
+      'Registry URL must not contain embedded credentials (username or password); configure authentication in npm config.',
+    );
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error(
+      `Registry URL must use HTTP(S); received protocol ${JSON.stringify(parsed.protocol)}.`,
+    );
+  }
   return normalized.endsWith('/') ? normalized : `${normalized}/`;
 }
 

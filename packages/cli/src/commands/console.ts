@@ -148,6 +148,7 @@ export function createDashboardController(
     load: () => loadConsoleItemsResult({
       cwd: context.cwd,
       includeCatalogOnly: true,
+      verbose: context.diagnostics.verbose,
     }, context),
     async execute(action, target) {
       const options = {

@@ -100,7 +100,10 @@ import {
 } from '../utils/active-marketplace-runtime-lock.js';
 import { readCatalogSourcesConfigSnapshot } from '../utils/catalog-sources.js';
 import { replayNamespacedCodexSkillOverlays } from '../utils/local-marketplace.js';
-import { cleanupOrphanNamespacedMarketplaceRoot } from '../utils/orphan-marketplace-cleanup.js';
+import {
+  cleanupOrphanNamespacedMarketplaceRoot,
+  commitMarketplaceGenerationBackup,
+} from '../utils/orphan-marketplace-cleanup.js';
 import { readClaudeSettings, writeClaudeSettings, type ClaudeSettings } from '../adapters/helpers.js';
 import { requiresCodexNativePlugin } from '../utils/codex-project-surface.js';
 import { assertCanonicalProjectManagedRoots } from '../utils/project-boundary.js';
@@ -2030,6 +2033,27 @@ async function buildHistoricalComponents(options: {
   return components;
 }
 
+function isAbsentCodexResiduePath(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException).code;
+  return code === 'ENOENT';
+}
+
+async function lstatCodexResidueIfPresent(filePath: string) {
+  return fs.lstat(filePath).catch((error) => {
+    if (isAbsentCodexResiduePath(error)) return null;
+    throw error;
+  });
+}
+
+async function readdirCodexResidueIfPresent(directory: string) {
+  const stats = await lstatCodexResidueIfPresent(directory);
+  if (!stats) return [];
+  if (!stats.isDirectory() || stats.isSymbolicLink()) {
+    throw new Error(`Codex residue root is not a canonical directory: ${directory}`);
+  }
+  return fs.readdir(directory, { withFileTypes: true });
+}
+
 async function inspectCodexNativeResidue(options: {
   pluginName: string;
   cwd: string;
@@ -2058,10 +2082,13 @@ async function inspectCodexNativeResidue(options: {
     marketplaceName,
     options.pluginName,
   );
-  const installedManifest = path.join(
+  const installedRoot = path.join(
     getCodexHome(options.env),
     'plugins',
     pluginId,
+  );
+  const installedManifest = path.join(
+    installedRoot,
     'manifest.json',
   );
   const labels: string[] = [];
@@ -2072,13 +2099,13 @@ async function inspectCodexNativeResidue(options: {
     (canonicalMarketplace ? labels : foreignLabels).push(`${configPath}#plugins.${pluginId}`);
   }
   const inspectManifest = async (manifestPath: string, directoryVersion?: string): Promise<void> => {
-    const stats = await fs.lstat(manifestPath).catch(() => null);
+    const stats = await lstatCodexResidueIfPresent(manifestPath);
     if (!stats) return;
     if (!stats.isFile() || stats.isSymbolicLink()) {
       foreignLabels.push(manifestPath);
       return;
     }
-    const manifest = await fs.readJson(manifestPath).catch(() => null) as Record<string, unknown> | null;
+    const manifest = await fs.readJson(manifestPath) as Record<string, unknown> | null;
     const identity = manifest?.id ?? manifest?.name;
     const version = typeof manifest?.version === 'string' ? manifest.version : null;
     if (
@@ -2093,7 +2120,7 @@ async function inspectCodexNativeResidue(options: {
     labels.push(manifestPath);
     versions.add(version);
   };
-  for (const entry of await fs.readdir(cacheRoot, { withFileTypes: true }).catch(() => [])) {
+  for (const entry of await readdirCodexResidueIfPresent(cacheRoot)) {
     if (!entry.isDirectory() || entry.isSymbolicLink()) {
       foreignLabels.push(path.join(cacheRoot, entry.name));
       continue;
@@ -2105,12 +2132,17 @@ async function inspectCodexNativeResidue(options: {
     ];
     const existing = [];
     for (const candidate of candidates) {
-      if (await fs.pathExists(candidate)) existing.push(candidate);
+      if (await lstatCodexResidueIfPresent(candidate)) existing.push(candidate);
     }
     if (existing.length === 0) foreignLabels.push(versionRoot);
     for (const candidate of existing) await inspectManifest(candidate, entry.name);
   }
-  await inspectManifest(installedManifest);
+  const installedStats = await lstatCodexResidueIfPresent(installedRoot);
+  if (installedStats && (!installedStats.isDirectory() || installedStats.isSymbolicLink())) {
+    foreignLabels.push(installedRoot);
+  } else if (installedStats) {
+    await inspectManifest(installedManifest);
+  }
   return foreignLabels.length > 0
     ? {
         state: 'foreign', labels: [...labels, ...foreignLabels], versions: [...versions],
@@ -2137,6 +2169,10 @@ export async function discoverCodexNativeResidueNames(options: {
   const canonicalMarketplace = marketplace?.sourceType === 'local'
     && !marketplace.sourcePointsToManifest
     && path.normalize(marketplace.source ?? '') === path.normalize(marketplaceRoot);
+  const probeFailure = (location: string, cause: unknown, pluginName?: string): never => {
+    if (cause instanceof CodexNativeResidueProbeError) throw cause;
+    throw new CodexNativeResidueProbeError(location, cause, pluginName);
+  };
   for (const pluginId of canonicalMarketplace ? Object.keys(config.snapshot.plugins) : []) {
     const suffix = `@${marketplaceName}`;
     const match = pluginId.endsWith(suffix)
@@ -2145,32 +2181,131 @@ export async function discoverCodexNativeResidueNames(options: {
     if (match) names.add(match[1]!);
   }
   const cacheRoot = path.join(getCodexHome(options.env), 'plugins', 'cache', marketplaceName);
-  for (const entry of await fs.readdir(cacheRoot, { withFileTypes: true }).catch(() => [])) {
-    if (!entry.isDirectory() || entry.isSymbolicLink()
-      || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(entry.name)) continue;
-    const residue = await inspectCodexNativeResidue({ ...options, pluginName: entry.name });
-    if (residue.state === 'present') names.add(entry.name);
+  const cacheEntries = await readdirCodexResidueIfPresent(cacheRoot).catch((error) =>
+    probeFailure(cacheRoot, error));
+  for (const entry of cacheEntries) {
+    const entryPath = path.join(cacheRoot, entry.name);
+    const pluginName = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(entry.name)
+      ? entry.name
+      : probeFailure(
+          entryPath,
+          new Error('Codex cache residue has an invalid plugin identity.'),
+        );
+    if (!entry.isDirectory() || entry.isSymbolicLink()) {
+      probeFailure(
+        entryPath,
+        new Error('Codex cache residue is not a canonical plugin directory.'),
+        pluginName,
+      );
+    }
+    let versionEntries;
+    try {
+      versionEntries = await fs.readdir(entryPath, { withFileTypes: true });
+    } catch (error) {
+      throw new CodexNativeResidueProbeError(entryPath, error, pluginName);
+    }
+    if (versionEntries.length === 0) {
+      if (names.has(pluginName)) {
+        probeFailure(
+          entryPath,
+          new Error('Codex cache residue manifest is missing.'),
+          pluginName,
+        );
+      }
+      continue;
+    }
+    let residue: Awaited<ReturnType<typeof inspectCodexNativeResidue>>;
+    try {
+      residue = await inspectCodexNativeResidue({ ...options, pluginName: entry.name });
+    } catch (error) {
+      throw new CodexNativeResidueProbeError(entryPath, error, pluginName);
+    }
+    if (residue.state !== 'present') {
+      probeFailure(
+        entryPath,
+        new Error('Codex cache residue has foreign or incomplete manifest evidence.'),
+        pluginName,
+      );
+    }
+    names.add(pluginName);
   }
   const pluginsRoot = path.join(getCodexHome(options.env), 'plugins');
-  for (const entry of await fs.readdir(pluginsRoot, { withFileTypes: true }).catch(() => [])) {
+  const pluginEntries = await readdirCodexResidueIfPresent(pluginsRoot).catch((error) =>
+    probeFailure(pluginsRoot, error));
+  for (const entry of pluginEntries) {
     const suffix = `@${marketplaceName}`;
     const match = entry.name.endsWith(suffix)
       ? /^([a-z0-9]+(?:-[a-z0-9]+)*)$/u.exec(entry.name.slice(0, -suffix.length))
       : null;
-    if (!match || !entry.isDirectory() || entry.isSymbolicLink()) continue;
+    if (!match) continue;
+    const installedRoot = path.join(pluginsRoot, entry.name);
+    if (!entry.isDirectory() || entry.isSymbolicLink()) {
+      probeFailure(
+        installedRoot,
+        new Error('Codex installed residue is not a canonical plugin directory.'),
+        match[1],
+      );
+    }
+    const installedStats = await lstatCodexResidueIfPresent(installedRoot);
+    if (!installedStats || !installedStats.isDirectory() || installedStats.isSymbolicLink()) {
+      probeFailure(
+        installedRoot,
+        new Error('Codex installed residue is not a canonical plugin directory.'),
+        match[1],
+      );
+    }
     const manifestPath = path.join(pluginsRoot, entry.name, 'manifest.json');
-    const stats = await fs.lstat(manifestPath).catch(() => null);
-    if (!stats?.isFile() || stats.isSymbolicLink()) continue;
-    const manifest = await fs.readJson(manifestPath).catch(() => null) as Record<string, unknown> | null;
-    if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) continue;
+    const stats = await lstatCodexResidueIfPresent(manifestPath);
+    if (!stats?.isFile() || stats.isSymbolicLink()) {
+      probeFailure(
+        manifestPath,
+        new Error('Codex installed residue manifest is missing or nonregular.'),
+        match[1],
+      );
+    }
+    let rawManifest: unknown;
+    try {
+      rawManifest = await fs.readJson(manifestPath);
+    } catch (error) {
+      throw new CodexNativeResidueProbeError(manifestPath, error, match[1]);
+    }
+    if (!rawManifest || typeof rawManifest !== 'object' || Array.isArray(rawManifest)) {
+      probeFailure(
+        manifestPath,
+        new Error('Codex installed residue manifest must be an object.'),
+        match[1],
+      );
+    }
+    const manifest = rawManifest as Record<string, unknown>;
     const identity = manifest.id ?? manifest.name;
-    if (canonicalMarketplace && (
-      (identity === match[1] || identity === entry.name)
-      && typeof manifest.version === 'string'
-      && manifest.version.trim() !== ''
-    )) names.add(match[1]!);
+    if (!canonicalMarketplace
+      || (identity !== match[1] && identity !== entry.name)
+      || typeof manifest.version !== 'string'
+      || manifest.version.trim() === '') {
+      probeFailure(
+        manifestPath,
+        new Error('Codex installed residue manifest has foreign identity or version.'),
+        match[1],
+      );
+    }
+    names.add(match[1]!);
   }
   return [...names];
+}
+
+export class CodexNativeResidueProbeError extends Error {
+  readonly code = 'codexNativeResidueProbeFailed';
+  readonly location: string;
+  readonly pluginName?: string;
+
+  constructor(location: string, cause: unknown, pluginName?: string) {
+    super(`codexNativeResidueProbeFailed: cannot classify Codex native residue at ${location}.`, {
+      cause,
+    });
+    this.name = 'CodexNativeResidueProbeError';
+    this.location = location;
+    this.pluginName = pluginName;
+  }
 }
 
 async function ensureCodexActiveSkillsManifest(options: {
@@ -2195,7 +2330,10 @@ async function ensureCodexActiveSkillsManifest(options: {
     '.codex-plugin',
     'plugin.json',
   );
-  const manifest = await fs.readJson(manifestPath).catch(() => ({})) as Record<string, unknown>;
+  const manifest = await fs.readJson(manifestPath).catch((error) => {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return {};
+    throw error;
+  }) as Record<string, unknown>;
   const updated: Record<string, unknown> = {
     ...manifest,
     name: options.plugin.manifest.name,
@@ -2889,7 +3027,15 @@ async function mirrorCatalog(
     try {
       await fs.move(staging, destination);
     } catch (error) {
-      if (await fs.pathExists(backup) && !await fs.pathExists(destination)) {
+      const backupStats = await fs.lstat(backup).catch((inspectionError: NodeJS.ErrnoException) => {
+        if (inspectionError.code === 'ENOENT') return null;
+        throw inspectionError;
+      });
+      const destinationStats = await fs.lstat(destination).catch((inspectionError: NodeJS.ErrnoException) => {
+        if (inspectionError.code === 'ENOENT') return null;
+        throw inspectionError;
+      });
+      if (backupStats && !destinationStats) {
         await fs.move(backup, destination);
       }
       throw error;
@@ -2899,13 +3045,30 @@ async function mirrorCatalog(
       rootDir: destination,
       commit: async () => {
         if (state !== 'active') return;
-        await fs.remove(backup);
-        state = 'committed';
+        try {
+          await commitMarketplaceGenerationBackup({
+            backupRoot: backup,
+            sourceId: target.sourceId!,
+            sourceIdentity: target.sourceIdentity!,
+            ...(target.marketplaceName ? { marketplaceName: target.marketplaceName } : {}),
+            env,
+          });
+          state = 'committed';
+        } catch (error) {
+          if ((error as { durableMaterializeCommit?: unknown }).durableMaterializeCommit === true) {
+            state = 'committed';
+          }
+          throw error;
+        }
       },
       rollback: async () => {
         if (state !== 'active') return;
+        const backupStats = await fs.lstat(backup).catch((error: NodeJS.ErrnoException) => {
+          if (error.code === 'ENOENT') return null;
+          throw error;
+        });
         await fs.remove(destination);
-        if (await fs.pathExists(backup)) await fs.move(backup, destination);
+        if (backupStats) await fs.move(backup, destination);
         state = 'rolledBack';
       },
     };

@@ -62,6 +62,8 @@ const resolvePathCatalogSource = catalogPathProviderInternal.resolve;
 afterEach(() => {
   setCatalogGitProviderTestHooksForTests(undefined);
   setCatalogPathProviderTestHooksForTests(undefined);
+  catalogSourceCacheInternal.setBeforeReleaseHookForTests(undefined);
+  vi.restoreAllMocks();
 });
 
 function fixturePath(name: string): string {
@@ -161,6 +163,31 @@ function gitSource(remote: string, ref: string) {
 }
 
 describe('catalog snapshot schema 3 runtime validation', () => {
+  it.each(['EPERM', 'EMFILE', 'EIO'])('propagates snapshot root lstat %s', async (code) => {
+    const root = fixturePath(`snapshot-root-${code}`);
+    const failure = Object.assign(new Error(`injected ${code}`), { code });
+    const originalLstat = fs.lstat.bind(fs);
+    vi.spyOn(fs, 'lstat').mockImplementation(async (candidate) => {
+      if (path.resolve(String(candidate)) === path.resolve(root)) throw failure;
+      return originalLstat(candidate);
+    });
+
+    await expect(validateCatalogSnapshot(root)).rejects.toBe(failure);
+  });
+
+  it.each(['EPERM', 'EMFILE', 'EIO'])('propagates snapshot root realpath %s', async (code) => {
+    const root = fixturePath(`snapshot-realpath-${code}`);
+    await fs.ensureDir(root);
+    const failure = Object.assign(new Error(`injected ${code}`), { code });
+    const originalRealpath = fs.realpath.bind(fs);
+    vi.spyOn(fs, 'realpath').mockImplementation(async (candidate) => {
+      if (path.resolve(String(candidate)) === path.resolve(root)) throw failure;
+      return originalRealpath(candidate);
+    });
+
+    await expect(validateCatalogSnapshot(root)).rejects.toBe(failure);
+  });
+
   it('enforces the exact root layout and excludes only the publisher ledger from snapshotDigest', async () => {
     const root = fixturePath('snapshot-layout');
     await createCatalogSnapshotFixture(root);
@@ -176,6 +203,41 @@ describe('catalog snapshot schema 3 runtime validation', () => {
 
     await fs.outputFile(path.join(root, 'unexpected.txt'), 'unexpected');
     await expect(validateCatalogSnapshot(root)).rejects.toThrow('unexpected [unexpected.txt]');
+  });
+
+  it('rejects empty directories that cannot be represented in a Git catalog commit', async () => {
+    const root = fixturePath('snapshot-empty-directory');
+    await createCatalogSnapshotFixture(root);
+    await fs.ensureDir(path.join(root, 'plugins', 'demo', 'empty-runtime'));
+
+    await expect(validateCatalogSnapshot(root)).rejects.toThrow(
+      'Invalid catalog snapshot empty directory "plugins/demo/empty-runtime": Git cannot represent empty directories.',
+    );
+  });
+
+  it('uses canonical Git modes for the snapshot digest', async () => {
+    const root = fixturePath('snapshot-canonical-modes');
+    await createCatalogSnapshotFixture(root);
+    const baseline = await validateCatalogSnapshot(root);
+
+    const applyRestrictiveCheckoutModes = async (current: string): Promise<void> => {
+      for (const entry of await fs.readdir(current, { withFileTypes: true })) {
+        const entryPath = path.join(current, entry.name);
+        if (entry.isDirectory()) {
+          await fs.chmod(entryPath, 0o700);
+          await applyRestrictiveCheckoutModes(entryPath);
+        } else {
+          await fs.chmod(entryPath, 0o600);
+        }
+      }
+    };
+    await applyRestrictiveCheckoutModes(root);
+    const restrictive = await validateCatalogSnapshot(root);
+    expect(restrictive.snapshotDigest).toBe(baseline.snapshotDigest);
+
+    await fs.chmod(path.join(root, '.agents', '.keep'), 0o700);
+    const executable = await validateCatalogSnapshot(root);
+    expect(executable.snapshotDigest).not.toBe(baseline.snapshotDigest);
   });
 
   it('allows contained relative symlinks and rejects absolute, escaping, and cyclic links', async () => {
@@ -541,6 +603,38 @@ describe('Git and path catalog providers', () => {
     } finally {
       setNativeCliRunnerOverrideForTests(null);
     }
+  });
+
+  it.each([
+    ['path', 'EBUSY'],
+    ['git', 'EPERM'],
+  ] as const)('keeps a published %s provider result when staging cleanup gets %s', async (provider, code) => {
+    const env = getCurrentSourceTestIsolation().env;
+    const cleanupPrefix = provider === 'path' ? '.path-' : '.materialize-';
+    const originalRemove = fs.remove.bind(fs);
+    vi.spyOn(fs, 'remove').mockImplementation(async (candidate) => {
+      if (path.basename(String(candidate)).startsWith(cleanupPrefix)) {
+        throw Object.assign(new Error(`injected ${code} staging cleanup failure`), { code });
+      }
+      return originalRemove(candidate);
+    });
+    vi.spyOn(process, 'emitWarning').mockImplementation(() => undefined);
+
+    if (provider === 'path') {
+      const root = fixturePath('path-postcommit-cleanup');
+      await createCatalogSnapshotFixture(root);
+      await expect(resolvePathCatalogSource({
+        id: 'local', type: 'path', primary: true, path: root,
+      }, {
+        cliVersion: '1.0.0', freshnessPolicy: 'forceRemote', env,
+      })).resolves.toMatchObject({ source: 'path', cacheFallback: false });
+      return;
+    }
+
+    const { remote } = await createGitRemote();
+    await expect(resolveGitCatalogSource(gitSource(remote, 'main'), {
+      cliVersion: '1.0.0', freshnessPolicy: 'forceRemote', env,
+    })).resolves.toMatchObject({ source: 'remote', cacheFallback: false });
   });
 
   it('retains archive and staging evidence only after fatal materialization cleanup', async () => {
@@ -1151,6 +1245,544 @@ describe('Git and path catalog providers', () => {
 });
 
 describe('strict catalog source cache', () => {
+  it.each(['EACCES', 'EBUSY', 'EIO', 'EMFILE', 'ENFILE', 'EPERM'])(
+    'propagates selector read %s without quarantining the selector or entry',
+    async (code) => {
+      const root = fixturePath(`cache-selector-read-${code}`);
+      await createCatalogSnapshotFixture(root);
+      const validation = await validateCatalogSnapshot(root);
+      const source = { id: 'local', type: 'path' as const, primary: true, path: root };
+      const sourceIdentity = await calculateCatalogSourceIdentity(source);
+      const location = resolveCatalogSourceCacheLocation({
+        sourceId: source.id,
+        sourceIdentity,
+        env: getCurrentSourceTestIsolation().env,
+      });
+      const requestedRef = 'refs/heads/main';
+      const observationOrder = await reserveCatalogSourceObservationOrder({ location });
+      const entry = await publishCatalogSourceCacheEntry({
+        location,
+        sourceId: source.id,
+        sourceIdentity,
+        requestedRef,
+        resolvedCommit: '1'.repeat(40),
+        snapshotRoot: root,
+        validation,
+        observationOrder,
+      });
+      const indexPath = path.join(location.selectorsDir, selectorFileName(requestedRef));
+      const originalReadJson = fs.readJson.bind(fs);
+      vi.spyOn(fs, 'readJson').mockImplementation(async (...args: Parameters<typeof fs.readJson>) => {
+        if (path.resolve(String(args[0])) === path.resolve(indexPath)) {
+          throw Object.assign(new Error(`injected ${code}`), { code });
+        }
+        return originalReadJson(...args);
+      });
+
+      await expect(readCatalogSourceCache({
+        location,
+        sourceId: source.id,
+        sourceIdentity,
+        requestedRef,
+        cliVersion: '1.0.0',
+      })).rejects.toMatchObject({ code });
+      await expect(fs.pathExists(indexPath)).resolves.toBe(true);
+      await expect(fs.pathExists(entry.entryDir)).resolves.toBe(true);
+      await expect(fs.pathExists(location.quarantineDir)).resolves.toBe(false);
+    },
+  );
+
+  it.each(['EACCES', 'EBUSY', 'EIO', 'EMFILE', 'ENFILE', 'EPERM'])(
+    'propagates entry metadata read %s without quarantining the selector or entry',
+    async (code) => {
+      const root = fixturePath(`cache-entry-read-${code}`);
+      await createCatalogSnapshotFixture(root);
+      const validation = await validateCatalogSnapshot(root);
+      const source = { id: 'local', type: 'path' as const, primary: true, path: root };
+      const sourceIdentity = await calculateCatalogSourceIdentity(source);
+      const location = resolveCatalogSourceCacheLocation({
+        sourceId: source.id,
+        sourceIdentity,
+        env: getCurrentSourceTestIsolation().env,
+      });
+      const requestedRef = 'refs/heads/main';
+      const observationOrder = await reserveCatalogSourceObservationOrder({ location });
+      const entry = await publishCatalogSourceCacheEntry({
+        location,
+        sourceId: source.id,
+        sourceIdentity,
+        requestedRef,
+        resolvedCommit: '1'.repeat(40),
+        snapshotRoot: root,
+        validation,
+        observationOrder,
+      });
+      const indexPath = path.join(location.selectorsDir, selectorFileName(requestedRef));
+      const metadataPath = path.join(entry.entryDir, 'metadata.json');
+      const originalReadJson = fs.readJson.bind(fs);
+      vi.spyOn(fs, 'readJson').mockImplementation(async (...args: Parameters<typeof fs.readJson>) => {
+        if (path.resolve(String(args[0])) === path.resolve(metadataPath)) {
+          throw Object.assign(new Error(`injected ${code}`), { code });
+        }
+        return originalReadJson(...args);
+      });
+
+      await expect(readCatalogSourceCache({
+        location,
+        sourceId: source.id,
+        sourceIdentity,
+        requestedRef,
+        cliVersion: '1.0.0',
+      })).rejects.toMatchObject({ code });
+      await expect(fs.pathExists(indexPath)).resolves.toBe(true);
+      await expect(fs.pathExists(entry.entryDir)).resolves.toBe(true);
+      await expect(fs.pathExists(location.quarantineDir)).resolves.toBe(false);
+    },
+  );
+
+  it.each([1, 2])('retries %s transient publication lock release failures', async (failures) => {
+    const root = fixturePath(`cache-release-retry-${failures}`);
+    await createCatalogSnapshotFixture(root);
+    const validation = await validateCatalogSnapshot(root);
+    const source = { id: 'local', type: 'path' as const, primary: true, path: root };
+    const sourceIdentity = await calculateCatalogSourceIdentity(source);
+    const location = resolveCatalogSourceCacheLocation({
+      sourceId: source.id,
+      sourceIdentity,
+      env: getCurrentSourceTestIsolation().env,
+    });
+    const observationOrder = await reserveCatalogSourceObservationOrder({ location });
+    const attempts: number[] = [];
+    catalogSourceCacheInternal.setBeforeReleaseHookForTests(async (lockPath, attempt) => {
+      if (!lockPath.endsWith(`${path.sep}publication.lock`)) return;
+      attempts.push(attempt);
+      if (attempt <= failures) throw Object.assign(new Error('transient release'), { code: 'EBUSY' });
+    });
+
+    await expect(publishCatalogSourceCacheEntry({
+      location,
+      sourceId: source.id,
+      sourceIdentity,
+      requestedRef: 'refs/heads/main',
+      resolvedCommit: '1'.repeat(40),
+      snapshotRoot: root,
+      validation,
+      observationOrder,
+    })).resolves.toMatchObject({ metadata: { sourceId: source.id } });
+    expect(attempts).toEqual(Array.from({ length: failures + 1 }, (_, index) => index + 1));
+  });
+
+  it.each([
+    ['counter', (location: ReturnType<typeof resolveCatalogSourceCacheLocation>) =>
+      path.join(location.rootDir, 'observation-order.json')],
+    ['snapshot', (_location: ReturnType<typeof resolveCatalogSourceCacheLocation>, entry: Awaited<ReturnType<typeof publishCatalogSourceCacheEntry>>) =>
+      path.join(entry.snapshotRoot, 'catalog-manifest.json')],
+  ] as const)(
+    'propagates Windows EPERM from the %s read without quarantining cache state',
+    async (_label, targetPath) => {
+      const root = fixturePath(`cache-operational-${_label}`);
+      await createCatalogSnapshotFixture(root);
+      const validation = await validateCatalogSnapshot(root);
+      const source = { id: 'local', type: 'path' as const, primary: true, path: root };
+      const sourceIdentity = await calculateCatalogSourceIdentity(source);
+      const location = resolveCatalogSourceCacheLocation({
+        sourceId: source.id,
+        sourceIdentity,
+        env: getCurrentSourceTestIsolation().env,
+      });
+      const requestedRef = 'refs/heads/main';
+      const observationOrder = await reserveCatalogSourceObservationOrder({ location });
+      const entry = await publishCatalogSourceCacheEntry({
+        location,
+        sourceId: source.id,
+        sourceIdentity,
+        requestedRef,
+        resolvedCommit: '1'.repeat(40),
+        snapshotRoot: root,
+        validation,
+        observationOrder,
+      });
+      const protectedPath = targetPath(location, entry);
+      const originalReadJson = fs.readJson.bind(fs);
+      vi.spyOn(fs, 'readJson').mockImplementation(async (...args: Parameters<typeof fs.readJson>) => {
+        if (path.resolve(String(args[0])) === path.resolve(protectedPath)) {
+          throw Object.assign(new Error('injected EPERM'), { code: 'EPERM' });
+        }
+        return originalReadJson(...args);
+      });
+
+      await expect(readCatalogSourceCache({
+        location,
+        sourceId: source.id,
+        sourceIdentity,
+        requestedRef,
+        cliVersion: '1.0.0',
+      })).rejects.toMatchObject({ code: 'EPERM' });
+      await expect(fs.pathExists(path.join(
+        location.selectorsDir,
+        selectorFileName(requestedRef),
+      ))).resolves.toBe(true);
+      await expect(fs.pathExists(entry.entryDir)).resolves.toBe(true);
+      await expect(fs.pathExists(location.quarantineDir)).resolves.toBe(false);
+    },
+  );
+
+  it('propagates snapshot root EPERM without quarantining strict cache state', async () => {
+    const root = fixturePath('cache-snapshot-root-operational');
+    await createCatalogSnapshotFixture(root);
+    const validation = await validateCatalogSnapshot(root);
+    const source = { id: 'local', type: 'path' as const, primary: true, path: root };
+    const sourceIdentity = await calculateCatalogSourceIdentity(source);
+    const location = resolveCatalogSourceCacheLocation({
+      sourceId: source.id,
+      sourceIdentity,
+      env: getCurrentSourceTestIsolation().env,
+    });
+    const requestedRef = 'refs/heads/main';
+    const observationOrder = await reserveCatalogSourceObservationOrder({ location });
+    const entry = await publishCatalogSourceCacheEntry({
+      location,
+      sourceId: source.id,
+      sourceIdentity,
+      requestedRef,
+      resolvedCommit: '1'.repeat(40),
+      snapshotRoot: root,
+      validation,
+      observationOrder,
+    });
+    const failure = Object.assign(new Error('injected snapshot root EPERM'), { code: 'EPERM' });
+    const originalLstat = fs.lstat.bind(fs);
+    vi.spyOn(fs, 'lstat').mockImplementation(async (candidate) => {
+      if (path.resolve(String(candidate)) === path.resolve(entry.snapshotRoot)) throw failure;
+      return originalLstat(candidate);
+    });
+
+    await expect(readCatalogSourceCache({
+      location,
+      sourceId: source.id,
+      sourceIdentity,
+      requestedRef,
+      cliVersion: '1.0.0',
+    })).rejects.toBe(failure);
+    await expect(fs.pathExists(entry.entryDir)).resolves.toBe(true);
+    await expect(fs.pathExists(location.quarantineDir)).resolves.toBe(false);
+  });
+
+  it('propagates snapshot directory EPERM without quarantining strict cache state', async () => {
+    const root = fixturePath('cache-snapshot-directory-operational');
+    await createCatalogSnapshotFixture(root);
+    const validation = await validateCatalogSnapshot(root);
+    const source = { id: 'local', type: 'path' as const, primary: true, path: root };
+    const sourceIdentity = await calculateCatalogSourceIdentity(source);
+    const location = resolveCatalogSourceCacheLocation({
+      sourceId: source.id,
+      sourceIdentity,
+      env: getCurrentSourceTestIsolation().env,
+    });
+    const requestedRef = 'refs/heads/main';
+    const observationOrder = await reserveCatalogSourceObservationOrder({ location });
+    const entry = await publishCatalogSourceCacheEntry({
+      location,
+      sourceId: source.id,
+      sourceIdentity,
+      requestedRef,
+      resolvedCommit: '1'.repeat(40),
+      snapshotRoot: root,
+      validation,
+      observationOrder,
+    });
+    const protectedDirectory = path.join(entry.snapshotRoot, 'plugins', 'demo');
+    const failure = Object.assign(new Error('injected snapshot directory EPERM'), { code: 'EPERM' });
+    const originalReaddir = fs.readdir.bind(fs);
+    let protectedReadCount = 0;
+    vi.spyOn(fs, 'readdir').mockImplementation(async (...args: Parameters<typeof fs.readdir>) => {
+      if (path.resolve(String(args[0])) === path.resolve(protectedDirectory)) {
+        protectedReadCount += 1;
+        if (protectedReadCount === 2) throw failure;
+      }
+      return originalReaddir(...args);
+    });
+
+    await expect(readCatalogSourceCache({
+      location,
+      sourceId: source.id,
+      sourceIdentity,
+      requestedRef,
+      cliVersion: '1.0.0',
+    })).rejects.toBe(failure);
+    await expect(fs.pathExists(entry.entryDir)).resolves.toBe(true);
+    await expect(fs.pathExists(location.quarantineDir)).resolves.toBe(false);
+  });
+
+  it('propagates snapshot symlink realpath EPERM without quarantining strict cache state', async () => {
+    const root = fixturePath('cache-snapshot-symlink-operational');
+    await createCatalogSnapshotFixture(root);
+    await fs.symlink('../.claude-plugin', path.join(root, '.agents', 'safe'));
+    const validation = await validateCatalogSnapshot(root);
+    const source = { id: 'local', type: 'path' as const, primary: true, path: root };
+    const sourceIdentity = await calculateCatalogSourceIdentity(source);
+    const location = resolveCatalogSourceCacheLocation({
+      sourceId: source.id,
+      sourceIdentity,
+      env: getCurrentSourceTestIsolation().env,
+    });
+    const requestedRef = 'refs/heads/main';
+    const observationOrder = await reserveCatalogSourceObservationOrder({ location });
+    const entry = await publishCatalogSourceCacheEntry({
+      location,
+      sourceId: source.id,
+      sourceIdentity,
+      requestedRef,
+      resolvedCommit: '1'.repeat(40),
+      snapshotRoot: root,
+      validation,
+      observationOrder,
+    });
+    const protectedLink = path.join(entry.snapshotRoot, '.agents', 'safe');
+    const failure = Object.assign(new Error('injected snapshot symlink EPERM'), { code: 'EPERM' });
+    const originalRealpath = fs.realpath.bind(fs);
+    vi.spyOn(fs, 'realpath').mockImplementation(async (candidate) => {
+      if (path.resolve(String(candidate)) === path.resolve(protectedLink)) throw failure;
+      return originalRealpath(candidate);
+    });
+
+    await expect(readCatalogSourceCache({
+      location,
+      sourceId: source.id,
+      sourceIdentity,
+      requestedRef,
+      cliVersion: '1.0.0',
+    })).rejects.toBe(failure);
+    await expect(fs.pathExists(entry.entryDir)).resolves.toBe(true);
+    await expect(fs.pathExists(location.quarantineDir)).resolves.toBe(false);
+  });
+
+  it.each([1, 2])('retries %s transient root lock release failures', async (failures) => {
+    const root = fixturePath(`cache-root-release-retry-${failures}`);
+    await createCatalogSnapshotFixture(root);
+    const source = { id: 'local', type: 'path' as const, primary: true, path: root };
+    const sourceIdentity = await calculateCatalogSourceIdentity(source);
+    const location = resolveCatalogSourceCacheLocation({
+      sourceId: source.id,
+      sourceIdentity,
+      env: getCurrentSourceTestIsolation().env,
+    });
+    const attempts: number[] = [];
+    catalogSourceCacheInternal.setBeforeReleaseHookForTests(async (lockPath, attempt) => {
+      if (lockPath.endsWith(`${path.sep}publication.lock`)) return;
+      attempts.push(attempt);
+      if (attempt <= failures) throw Object.assign(new Error('transient release'), { code: 'EPERM' });
+    });
+
+    await expect(catalogSourceCacheInternal.withCatalogSourceCacheLease({
+      env: { ...getCurrentSourceTestIsolation().env, AW_HOME: location.awHomeDir },
+      action: async () => 'committed',
+    })).resolves.toBe('committed');
+    expect(attempts).toEqual(Array.from({ length: failures + 1 }, (_, index) => index + 1));
+  });
+
+  it('fails an ordinary cache read when root lock release stays busy and remains reusable', async () => {
+    const sourceIdentity = `sha256:${'b'.repeat(64)}`;
+    const location = resolveCatalogSourceCacheLocation({
+      sourceId: 'local',
+      sourceIdentity,
+      env: getCurrentSourceTestIsolation().env,
+    });
+    const warnings: Array<{ message: string; code?: string }> = [];
+    let rootLockPath = '';
+    vi.spyOn(process, 'emitWarning').mockImplementation((message, options) => {
+      warnings.push({
+        message: String(message),
+        ...(typeof options === 'object' && options && 'code' in options
+          ? { code: String(options.code) }
+          : {}),
+      });
+    });
+    catalogSourceCacheInternal.setBeforeReleaseHookForTests(async (lockPath) => {
+      if (lockPath.endsWith(`${path.sep}publication.lock`)) return;
+      rootLockPath = lockPath;
+      throw Object.assign(new Error('persistent root busy release'), { code: 'EBUSY' });
+    });
+
+    await expect(catalogSourceCacheInternal.withCatalogSourceCacheLease({
+      env: { ...getCurrentSourceTestIsolation().env, AW_HOME: location.awHomeDir },
+      action: async () => 'read-result',
+    })).rejects.toThrow('persistent root busy release');
+    expect(warnings).toEqual([]);
+    catalogSourceCacheInternal.setBeforeReleaseHookForTests(undefined);
+    await expect(catalogSourceCacheInternal.withCatalogSourceCacheLease({
+      env: { ...getCurrentSourceTestIsolation().env, AW_HOME: location.awHomeDir },
+      action: async () => 'next-read',
+    })).resolves.toBe('next-read');
+    await expect(fs.pathExists(rootLockPath)).resolves.toBe(false);
+  });
+
+  it('keeps the action error primary when root lock release also fails', async () => {
+    const sourceIdentity = `sha256:${'c'.repeat(64)}`;
+    const location = resolveCatalogSourceCacheLocation({
+      sourceId: 'local',
+      sourceIdentity,
+      env: getCurrentSourceTestIsolation().env,
+    });
+    class CacheFallbackError extends Error {
+      readonly code = 'catalogRemoteUnavailable';
+      readonly cacheFallback = true;
+    }
+    const primary = new CacheFallbackError('primary root action failure');
+    let rootLockPath = '';
+    catalogSourceCacheInternal.setBeforeReleaseHookForTests(async (lockPath) => {
+      if (lockPath.endsWith(`${path.sep}publication.lock`)) return;
+      rootLockPath = lockPath;
+      throw Object.assign(new Error('secondary root release failure'), { code: 'EPERM' });
+    });
+
+    const error = await catalogSourceCacheInternal.withCatalogSourceCacheLease({
+      env: { ...getCurrentSourceTestIsolation().env, AW_HOME: location.awHomeDir },
+      action: async () => { throw primary; },
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toBe(primary);
+    expect(error).toMatchObject({ code: 'catalogRemoteUnavailable', cacheFallback: true });
+    catalogSourceCacheInternal.setBeforeReleaseHookForTests(undefined);
+    await fs.remove(rootLockPath);
+  });
+
+  it('keeps a committed selector successful when publication lock release stays busy', async () => {
+    const root = fixturePath('cache-release-committed');
+    await createCatalogSnapshotFixture(root);
+    const validation = await validateCatalogSnapshot(root);
+    const source = { id: 'local', type: 'path' as const, primary: true, path: root };
+    const sourceIdentity = await calculateCatalogSourceIdentity(source);
+    const location = resolveCatalogSourceCacheLocation({
+      sourceId: source.id,
+      sourceIdentity,
+      env: getCurrentSourceTestIsolation().env,
+    });
+    const observationOrder = await reserveCatalogSourceObservationOrder({ location });
+    const warnings: Array<{ message: string; code?: string }> = [];
+    const warning = vi.spyOn(process, 'emitWarning').mockImplementation((message, options) => {
+      warnings.push({
+        message: String(message),
+        ...(typeof options === 'object' && options && 'code' in options
+          ? { code: String(options.code) }
+          : {}),
+      });
+    });
+    catalogSourceCacheInternal.setBeforeReleaseHookForTests(async (lockPath) => {
+      if (lockPath.endsWith(`${path.sep}publication.lock`)) {
+        throw Object.assign(new Error('persistent busy release'), { code: 'EBUSY' });
+      }
+    });
+
+    await expect(publishCatalogSourceCacheEntry({
+      location,
+      sourceId: source.id,
+      sourceIdentity,
+      requestedRef: 'refs/heads/main',
+      resolvedCommit: '1'.repeat(40),
+      snapshotRoot: root,
+      validation,
+      observationOrder,
+    })).resolves.toMatchObject({ metadata: { sourceId: source.id } });
+    expect(warnings).toEqual([expect.objectContaining({
+      code: 'AW_CATALOG_CACHE_LOCK_RELEASE_FAILED',
+      message: expect.stringContaining('committed selector'),
+    })]);
+    await expect(fs.pathExists(path.join(
+      location.selectorsDir,
+      selectorFileName('refs/heads/main'),
+    ))).resolves.toBe(true);
+    warning.mockRestore();
+    catalogSourceCacheInternal.setBeforeReleaseHookForTests(undefined);
+    await fs.remove(path.join(location.locksDir, 'publication.lock'));
+  });
+
+  it('keeps a committed selector successful when the outer root release stays busy', async () => {
+    const root = fixturePath('cache-root-release-committed');
+    await createCatalogSnapshotFixture(root);
+    const validation = await validateCatalogSnapshot(root);
+    const source = { id: 'local', type: 'path' as const, primary: true, path: root };
+    const sourceIdentity = await calculateCatalogSourceIdentity(source);
+    const location = resolveCatalogSourceCacheLocation({
+      sourceId: source.id,
+      sourceIdentity,
+      env: getCurrentSourceTestIsolation().env,
+    });
+    const observationOrder = await reserveCatalogSourceObservationOrder({ location });
+    catalogSourceCacheInternal.setBeforeReleaseHookForTests(async (lockPath) => {
+      if (!lockPath.endsWith(`${path.sep}publication.lock`)) {
+        throw Object.assign(new Error('persistent root release failure'), { code: 'EPERM' });
+      }
+    });
+    vi.spyOn(process, 'emitWarning').mockImplementation(() => undefined);
+
+    await expect(publishCatalogSourceCacheEntry({
+      location,
+      sourceId: source.id,
+      sourceIdentity,
+      requestedRef: 'refs/heads/main',
+      resolvedCommit: '1'.repeat(40),
+      snapshotRoot: root,
+      validation,
+      observationOrder,
+    })).resolves.toMatchObject({ metadata: { sourceId: source.id } });
+    await expect(fs.pathExists(path.join(
+      location.selectorsDir,
+      selectorFileName('refs/heads/main'),
+    ))).resolves.toBe(true);
+  });
+
+  it('fails an ordinary publication read on permanent release failure and remains reusable', async () => {
+    const location = resolveCatalogSourceCacheLocation({
+      sourceId: 'local',
+      sourceIdentity: `sha256:${'d'.repeat(64)}`,
+      env: getCurrentSourceTestIsolation().env,
+    });
+    catalogSourceCacheInternal.setBeforeReleaseHookForTests(async (lockPath) => {
+      if (lockPath.endsWith(`${path.sep}publication.lock`)) {
+        throw Object.assign(new Error('persistent publication release failure'), { code: 'EBUSY' });
+      }
+    });
+
+    await expect(withCatalogSourceCacheLock({
+      location,
+      name: 'publication',
+      action: async () => 'read-result',
+    })).rejects.toThrow('persistent publication release failure');
+    catalogSourceCacheInternal.setBeforeReleaseHookForTests(undefined);
+    await expect(withCatalogSourceCacheLock({
+      location,
+      name: 'publication',
+      action: async () => 'next-read',
+    })).resolves.toBe('next-read');
+  });
+
+  it('keeps the action error primary when publication lock release also fails', async () => {
+    const sourceIdentity = `sha256:${'a'.repeat(64)}`;
+    const location = resolveCatalogSourceCacheLocation({
+      sourceId: 'local',
+      sourceIdentity,
+      env: getCurrentSourceTestIsolation().env,
+    });
+    const primary = Object.assign(new Error('primary cache action failure'), { code: 'EIO' });
+    catalogSourceCacheInternal.setBeforeReleaseHookForTests(async (lockPath) => {
+      if (lockPath.endsWith(`${path.sep}publication.lock`)) {
+        throw Object.assign(new Error('secondary release failure'), { code: 'EBUSY' });
+      }
+    });
+
+    const error = await withCatalogSourceCacheLock({
+      location,
+      name: 'publication',
+      action: async () => { throw primary; },
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toBe(primary);
+    expect(error).toMatchObject({ code: 'EIO' });
+    catalogSourceCacheInternal.setBeforeReleaseHookForTests(undefined);
+    await fs.remove(path.join(location.locksDir, 'publication.lock'));
+  });
+
   it('treats a valid entry that needs a newer CLI as a non-destructive cache miss', async () => {
     const root = fixturePath('cache-cli-compatibility');
     await createCatalogSnapshotFixture(root, 'demo', '2.0.0');

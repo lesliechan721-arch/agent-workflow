@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import type { Stats } from 'node:fs';
 import path from 'node:path';
 
@@ -21,6 +22,7 @@ const SOURCE_ID_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
 const SOURCE_IDENTITY_PATTERN = /^sha256:[0-9a-f]{64}$/;
 const COMMIT_IDENTITY_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64}|path:sha256:[0-9a-f]{64})$/;
 const MAX_OBSERVATION_FUTURE_SKEW = 60_000_000;
+const TRANSIENT_WINDOWS_RELEASE_CODES = new Set(['EBUSY', 'EPERM']);
 
 interface SharedCatalogCacheLease {
   controller: AbortController;
@@ -30,7 +32,78 @@ interface SharedCatalogCacheLease {
   cleanupPromise?: Promise<void>;
 }
 
+interface CatalogCacheCommitContext {
+  parent?: CatalogCacheCommitContext;
+  durableCommit: boolean;
+}
+
 const sharedCatalogCacheLeases = new Map<string, SharedCatalogCacheLease>();
+const catalogCacheCommitStorage = new AsyncLocalStorage<CatalogCacheCommitContext>();
+let catalogCacheBeforeReleaseHookForTests:
+  | ((lockPath: string, attempt: number) => Promise<void>)
+  | undefined;
+
+function isTransientWindowsReleaseError(error: unknown): boolean {
+  return TRANSIENT_WINDOWS_RELEASE_CODES.has((error as NodeJS.ErrnoException).code ?? '');
+}
+
+function releaseErrorMessage(error: unknown): string {
+  try {
+    return error instanceof Error ? error.message : String(error);
+  } catch {
+    return '<unprintable lock release error>';
+  }
+}
+
+function isOperationalCacheReadError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException).code;
+  return code === 'EACCES'
+    || code === 'EBUSY'
+    || code === 'EIO'
+    || code === 'EMFILE'
+    || code === 'ENFILE'
+    || code === 'EPERM';
+}
+
+function markCatalogCacheDurableCommit(): void {
+  let context = catalogCacheCommitStorage.getStore();
+  while (context) {
+    context.durableCommit = true;
+    context = context.parent;
+  }
+}
+
+function emitCatalogCacheReleaseWarning(
+  message: string,
+  code: string,
+): void {
+  try {
+    process.emitWarning(message, { code });
+  } catch {
+    // Diagnostics cannot replace the action result or primary action error.
+  }
+}
+
+async function releaseCatalogCacheLease(lease: ProcessLockLease): Promise<void> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      await catalogCacheBeforeReleaseHookForTests?.(lease.lockPath, attempt);
+      await lease.release();
+      return;
+    } catch (error) {
+      lastError = error;
+      if (attempt === 3 || !isTransientWindowsReleaseError(error)) break;
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    }
+  }
+  try {
+    await lease.release();
+  } catch {
+    // Keep the first diagnostic. A later invocation can retry the same live lease.
+  }
+  throw lastError;
+}
 
 async function acquireCatalogSourceRootLease(
   env: NodeJS.ProcessEnv,
@@ -134,25 +207,54 @@ async function withCatalogSourceCacheLease<T>(options: {
     void shared.lease.catch(() => undefined);
   }
   shared.waiters += 1;
+  const commitContext: CatalogCacheCommitContext = {
+    parent: catalogCacheCommitStorage.getStore(),
+    durableCommit: false,
+  };
   let activeUser = false;
+  let result: T | undefined;
+  let actionError: unknown;
+  let actionSucceeded = false;
   try {
     await waitForSharedCatalogCacheLease(shared.lease, options.signal);
     shared.waiters -= 1;
     shared.users += 1;
     activeUser = true;
-    return await options.action();
-  } finally {
-    if (activeUser) {
-      shared.users -= 1;
-    } else {
-      shared.waiters -= 1;
-    }
+    result = await catalogCacheCommitStorage.run(commitContext, options.action);
+    actionSucceeded = true;
+  } catch (error) {
+    actionError = error;
+  }
+  if (activeUser) {
+    shared.users -= 1;
+  } else {
+    shared.waiters -= 1;
+  }
+  try {
     await cleanupSharedCatalogCacheLease({
       key,
       shared,
       abortPendingAcquire: !activeUser && options.signal?.aborted === true,
     });
+  } catch (releaseError) {
+    if (!actionSucceeded) {
+      emitCatalogCacheReleaseWarning(
+        `Catalog cache action failed, and its root lock release also failed: ${releaseErrorMessage(releaseError)}.`,
+        'AW_CATALOG_CACHE_ROOT_LOCK_RELEASE_FAILED',
+      );
+      throw actionError;
+    }
+    if (commitContext.durableCommit) {
+      emitCatalogCacheReleaseWarning(
+        `Catalog cache action completed successfully, but its root lock could not be released after 3 attempts: ${releaseErrorMessage(releaseError)}. The explicitly committed selector or config remains successful; the lock can require process exit or manual recovery before another update.`,
+        'AW_CATALOG_CACHE_ROOT_LOCK_RELEASE_FAILED',
+      );
+    } else {
+      throw releaseError;
+    }
   }
+  if (!actionSucceeded) throw actionError;
+  return result as T;
 }
 
 async function waitForSharedCatalogCacheLease(
@@ -206,7 +308,7 @@ async function cleanupSharedCatalogCacheLease(options: {
     } catch {
       return;
     }
-    await lease.release();
+    await releaseCatalogCacheLease(lease);
   })();
   await shared.cleanupPromise;
 }
@@ -482,19 +584,48 @@ async function withCatalogSourceCacheLockWithLease<T>(options: {
       : undefined,
   });
   let retainLock = false;
+  let result: T | undefined;
+  let actionError: unknown;
+  let actionSucceeded = false;
+  const commitContext: CatalogCacheCommitContext = {
+    parent: catalogCacheCommitStorage.getStore(),
+    durableCommit: false,
+  };
   try {
     if (options.name === 'objects') {
       await assertCatalogSourceObjectCacheHealthy(options.location);
     }
     throwIfAborted(options.signal);
-    return await options.action();
+    result = await catalogCacheCommitStorage.run(commitContext, options.action);
+    actionSucceeded = true;
   } catch (error) {
     retainLock = error instanceof CatalogSourceObjectFaultError
       || options.retainLockOnError?.(error) === true;
-    throw error;
-  } finally {
-    if (!retainLock) await lease.release();
+    actionError = error;
   }
+  if (!retainLock) {
+    try {
+      await releaseCatalogCacheLease(lease);
+    } catch (releaseError) {
+      if (!actionSucceeded) {
+        emitCatalogCacheReleaseWarning(
+          `Catalog cache action failed, and its ${options.name} lock release also failed: ${releaseErrorMessage(releaseError)}.`,
+          'AW_CATALOG_CACHE_LOCK_RELEASE_FAILED',
+        );
+        throw actionError;
+      }
+      if (commitContext.durableCommit) {
+        emitCatalogCacheReleaseWarning(
+          `Catalog cache action completed successfully, but its lock could not be released after 3 attempts: ${releaseErrorMessage(releaseError)}. The explicitly committed selector or config remains successful; the lock can require process exit or manual recovery before another update.`,
+          'AW_CATALOG_CACHE_LOCK_RELEASE_FAILED',
+        );
+      } else {
+        throw releaseError;
+      }
+    }
+  }
+  if (!actionSucceeded) throw actionError;
+  return result as T;
 }
 
 async function assertCatalogSourceObjectCacheHealthy(
@@ -574,7 +705,15 @@ async function readObservationCounter(
     await quarantineCacheFile(location, filePath, 'observation');
     return null;
   }
-  const counter = parseObservationCounter(await fs.readJson(filePath).catch(() => null));
+  let raw: unknown;
+  try {
+    raw = await fs.readJson(filePath);
+  } catch (error) {
+    if (isOperationalCacheReadError(error)) throw error;
+    await quarantineCacheFile(location, filePath, 'observation');
+    return null;
+  }
+  const counter = parseObservationCounter(raw);
   if (!counter) await quarantineCacheFile(location, filePath, 'observation');
   return counter;
 }
@@ -656,7 +795,15 @@ async function readObservationRecord(
     await quarantineCacheFile(location, filePath, 'observation');
     return null;
   }
-  const record = parseObservationRecord(await fs.readJson(filePath).catch(() => null));
+  let raw: unknown;
+  try {
+    raw = await fs.readJson(filePath);
+  } catch (error) {
+    if (isOperationalCacheReadError(error)) throw error;
+    await quarantineCacheFile(location, filePath, 'observation');
+    return null;
+  }
+  const record = parseObservationRecord(raw);
   if (!record) {
     await quarantineCacheFile(location, filePath, 'observation');
     return null;
@@ -741,7 +888,8 @@ async function readEntryAt(options: {
       || validation.manifest.compatibility.aw.minVersion !== metadata.minAwVersion
     ) throw new Error('Catalog source cache snapshot digest mismatch.');
     return { entryDir, snapshotRoot, metadata, validation };
-  } catch {
+  } catch (error) {
+    if (isOperationalCacheReadError(error)) throw error;
     await quarantineEntry(options.location, entryDir);
     return null;
   }
@@ -789,7 +937,15 @@ async function readCatalogSourceCacheWithLease(options: {
         await quarantineCacheFile(options.location, indexPath, 'selector');
         return null;
       }
-      const index = parseSelector(await fs.readJson(indexPath).catch(() => null));
+      let rawIndex: unknown;
+      try {
+        rawIndex = await fs.readJson(indexPath);
+      } catch (error) {
+        if (isOperationalCacheReadError(error)) throw error;
+        await quarantineCacheFile(options.location, indexPath, 'selector');
+        return null;
+      }
+      const index = parseSelector(rawIndex);
       if (!index) {
         await quarantineCacheFile(options.location, indexPath, 'selector');
         return null;
@@ -925,9 +1081,14 @@ async function publishCatalogSourceCacheEntry(options: {
       await writeObservationRecord(options.location, observationRecord, options.signal);
 
       const indexStat = await lstatIfExists(indexPath);
-      let currentIndex = indexStat?.isFile() && !indexStat.isSymbolicLink()
-        ? parseSelector(await fs.readJson(indexPath).catch(() => null))
-        : null;
+      let currentIndex: CatalogSourceSelectorIndex | null = null;
+      if (indexStat?.isFile() && !indexStat.isSymbolicLink()) {
+        try {
+          currentIndex = parseSelector(await fs.readJson(indexPath));
+        } catch (error) {
+          if (isOperationalCacheReadError(error)) throw error;
+        }
+      }
       if (currentIndex) {
         const currentObservation = currentIndex.sourceId === options.sourceId
           && currentIndex.sourceIdentity === options.sourceIdentity
@@ -960,6 +1121,7 @@ async function publishCatalogSourceCacheEntry(options: {
           entryKey,
           observationOrder: options.observationOrder,
         } satisfies CatalogSourceSelectorIndex, options.signal);
+        markCatalogCacheDurableCommit();
       }
       return entry;
     },
@@ -978,4 +1140,8 @@ export const catalogSourceCacheInternal = {
   resolveCatalogSourceCacheLocation,
   withCatalogSourceCacheLease,
   withCatalogSourceCacheLock,
+  markDurableCommit: markCatalogCacheDurableCommit,
+  setBeforeReleaseHookForTests(hook: typeof catalogCacheBeforeReleaseHookForTests): void {
+    catalogCacheBeforeReleaseHookForTests = hook;
+  },
 };

@@ -43,6 +43,10 @@ describe('stage-catalog script', () => {
     const snapshot = createSnapshot(root);
     const outputRoot = createInternalOutputRoot(root);
     await createCatalogSnapshotFixture(snapshot.catalogOutputRoot);
+    await fs.symlink(
+      '../.claude-plugin',
+      path.join(snapshot.catalogOutputRoot, '.agents', 'shared-marketplace'),
+    );
 
     const staged = await stageCatalogRelease(
       ['--catalog-version', '9.0.0-beta.4'],
@@ -71,6 +75,7 @@ describe('stage-catalog script', () => {
       })],
     });
     expect(staged.manifest).not.toHaveProperty('packages');
+    expect(staged.releaseLedger.schemaVersion).toBe(2);
     expect(staged.releaseLedger.records).toEqual([
       expect.objectContaining({
         plugin: 'demo',
@@ -83,6 +88,8 @@ describe('stage-catalog script', () => {
     await expect(catalogSnapshot.validateCatalogSnapshot(outputRoot)).resolves.toMatchObject({
       manifest: { catalogVersion: '9.0.0-beta.4' },
     });
+    await expect(fs.readlink(path.join(outputRoot, '.agents', 'shared-marketplace')))
+      .resolves.toBe('../.claude-plugin');
     await expect(fs.pathExists(path.join(outputRoot, '.catalog'))).resolves.toBe(false);
   });
 

@@ -26,26 +26,25 @@ it('bootstraps both orphan channels, confirms idempotency, and fetches each thro
   const remoteUrl = path.join(temporaryRoot, 'catalog.git');
   await execFileAsync('git', ['init', '--bare', '--quiet', remoteUrl]);
   const catalogModules = { pluginStaging, catalogSnapshot };
-  let stageIndex = 0;
   const run = (mode: 'beta' | 'latest', version: string) => bootstrapCatalog(
     [mode, '--catalog-version', version],
     {
       testRemoteUrl: remoteUrl,
       catalogModules,
+      assertReleaseWorktreeClean: async () => undefined,
+      assertCurrentReleaseIdentity: async () => undefined,
       runCommand: async () => undefined,
       stageCatalogRelease: async (argv: string[], options: {
+        internalOutputRoot: string;
         previousReleaseLedger: pluginStaging.PluginReleaseLedger;
+        releaseIdentity: object;
+        snapshot: object;
       }) => {
-        const publicationRoot = path.join(temporaryRoot!, `publication-${stageIndex += 1}`);
-        await fs.ensureDir(publicationRoot);
         return stageCatalogRelease(argv, {
+          internalOutputRoot: options.internalOutputRoot,
           previousReleaseLedger: options.previousReleaseLedger,
-          internalOutputRoot: path.join(
-            publicationRoot,
-            '.release',
-            'catalog-staging',
-            'catalog',
-          ),
+          releaseIdentity: options.releaseIdentity,
+          snapshot: options.snapshot,
         });
       },
     },
@@ -54,7 +53,9 @@ it('bootstraps both orphan channels, confirms idempotency, and fetches each thro
   const beta = await run('beta', '92.0.0-beta.1');
   const retry = await run('beta', '92.0.0-beta.1');
   const latest = await run('latest', '92.0.0');
+  const retryAfterLatest = await run('beta', '92.0.0-beta.1');
   expect(retry).toMatchObject({ idempotent: true, commit: beta.commit });
+  expect(retryAfterLatest).toMatchObject({ idempotent: true, commit: beta.commit });
 
   for (const [ref, expected] of [
     ['refs/heads/catalog/beta', beta.commit],

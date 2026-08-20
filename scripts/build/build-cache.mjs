@@ -346,6 +346,27 @@ async function readExpectedStampIdentity(repoRoot, launcherIdentity) {
 }
 
 async function findRegisteredSymlink(repoRoot, roots, exclude = () => false) {
+  async function findPathChainSymlink(relativePath) {
+    const segments = normalizeRelativePath(relativePath).split('/').filter(Boolean);
+    let currentPath = path.resolve(repoRoot);
+    let currentRelativePath = '';
+    for (const segment of segments) {
+      currentPath = path.join(currentPath, segment);
+      currentRelativePath = currentRelativePath
+        ? `${currentRelativePath}/${segment}`
+        : segment;
+      let stats;
+      try {
+        stats = await fs.lstat(currentPath);
+      } catch (error) {
+        if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') return null;
+        throw error;
+      }
+      if (stats.isSymbolicLink()) return currentRelativePath;
+    }
+    return null;
+  }
+
   async function visit(relativePath) {
     if (exclude(relativePath)) {
       return null;
@@ -375,12 +396,32 @@ async function findRegisteredSymlink(repoRoot, roots, exclude = () => false) {
   }
 
   for (const root of roots) {
+    const pathChainSymlink = await findPathChainSymlink(root);
+    if (pathChainSymlink) return pathChainSymlink;
     const found = await visit(root);
     if (found) {
       return found;
     }
   }
   return null;
+}
+
+export async function assertBuildInputPathSafety(repoRoot) {
+  const requestedRoot = path.resolve(repoRoot);
+  const rootStats = await fs.lstat(requestedRoot);
+  if (rootStats.isSymbolicLink()) {
+    throw new Error('Refusing release snapshot: registered release input contains a symlink: .');
+  }
+  const inputSymlink = await findRegisteredSymlink(
+    requestedRoot,
+    INPUT_PATHS,
+    isExcludedInputPath,
+  );
+  if (inputSymlink) {
+    throw new Error(
+      `Refusing release snapshot: registered release input contains a symlink: ${inputSymlink}.`,
+    );
+  }
 }
 
 async function findReuseDisabledReason(repoRoot) {
@@ -492,7 +533,10 @@ async function validateRequiredOutputs(repoRoot) {
 
 export async function inspectBuildCache(repoRoot, options = {}) {
   const expected = await readExpectedStampIdentity(repoRoot);
-  const outputSymlink = await findRegisteredSymlink(repoRoot, OUTPUT_ROOTS);
+  const outputSymlink = await findRegisteredSymlink(
+    repoRoot,
+    ['packages/cli/dist'],
+  );
   if (outputSymlink) {
     return {
       reusable: false,
@@ -558,7 +602,10 @@ export async function inspectBuildCache(repoRoot, options = {}) {
   // Internal test seam for changing an output at the final reuse boundary.
   // Production callers must not set it.
   await options.__testBeforeFinalOutputCheck?.();
-  const finalOutputSymlink = await findRegisteredSymlink(repoRoot, OUTPUT_ROOTS);
+  const finalOutputSymlink = await findRegisteredSymlink(
+    repoRoot,
+    ['packages/cli/dist'],
+  );
   if (finalOutputSymlink) {
     return {
       reusable: false,
@@ -894,7 +941,10 @@ async function buildUnderLock(repoRoot, settings, inspection) {
   if (!outputs.valid) {
     throw new Error(`Build completed without required outputs: ${outputs.reason}.`);
   }
-  const outputSymlink = await findRegisteredSymlink(repoRoot, OUTPUT_ROOTS);
+  const outputSymlink = await findRegisteredSymlink(
+    repoRoot,
+    ['packages/cli/dist'],
+  );
   if (outputSymlink) {
     throw new Error(
       `Build output contains unsupported symlink ${outputSymlink}; ` +
@@ -1070,12 +1120,12 @@ async function createSnapshotUnderLock(repoRoot, settings) {
     await copyPath(
       path.join(repoRoot, 'packages', 'cli', 'dist'),
       path.join(cliPackageRoot, 'dist'),
-      { recursive: true },
+      { recursive: true, verbatimSymlinks: true },
     );
     await copyPath(
       path.join(repoRoot, 'packages', 'cli', 'plugins-dist'),
       path.join(cliPackageRoot, 'plugins-dist'),
-      { recursive: true },
+      { recursive: true, verbatimSymlinks: true },
     );
     await createDependencyLink(
       canonicalNodeModules,
@@ -1095,7 +1145,9 @@ async function createSnapshotUnderLock(repoRoot, settings) {
       (relativePath) => {
         const normalizedPath = normalizeRelativePath(relativePath);
         return normalizedPath === 'packages/cli/node_modules' ||
-          normalizedPath.startsWith('packages/cli/node_modules/');
+          normalizedPath.startsWith('packages/cli/node_modules/') ||
+          normalizedPath === 'packages/cli/plugins-dist' ||
+          normalizedPath.startsWith('packages/cli/plugins-dist/');
       },
     );
     if (snapshotSymlink) {

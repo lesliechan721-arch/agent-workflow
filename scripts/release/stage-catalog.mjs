@@ -82,7 +82,10 @@ async function stageCatalogFromSnapshot(argv, snapshot, options = {}) {
   let backupRoot = null;
   let published = false;
   try {
-    await fs.cp(snapshot.catalogOutputRoot, temporaryRoot, { recursive: true });
+    await fs.cp(snapshot.catalogOutputRoot, temporaryRoot, {
+      recursive: true,
+      verbatimSymlinks: true,
+    });
     const catalogModules = options.catalogModules ?? await loadCatalogModules(snapshot.cliDistRoot);
     const staged = await catalogModules.pluginStaging.stageCatalogArtifacts({
       repoRoot: snapshot.root,

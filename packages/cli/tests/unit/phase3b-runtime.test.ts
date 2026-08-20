@@ -39,6 +39,7 @@ import {
   replaceCatalogSourcesConfig,
 } from '../../src/utils/catalog-sources.js';
 import { calculateCatalogSourceIdentity } from '../../src/utils/catalog-source-identity.js';
+import { createCatalogManifestV3Entry } from '../../src/utils/catalog-manifest-v3.js';
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
 import { createCapturedCliIo } from '../helpers/cli-entry.js';
 import {
@@ -234,6 +235,94 @@ describe('phase 3B namespaced runtime stores', () => {
     expect(() => resolvePluginConfigStorePath({ ...options, sourceId: 'team/demo' }))
       .toThrow('Invalid plugin config segment');
   });
+
+  it.each(['source', 'plugin', 'config'] as const)(
+    'rejects a namespaced config inventory symlink in the %s path segment',
+    async (segment) => {
+      const isolation = getCurrentSourceTestIsolation();
+      const storeRoot = path.join(isolation.env.AW_HOME!, 'plugin-config');
+      const sourceRoot = path.join(storeRoot, 'team');
+      const pluginRoot = path.join(sourceRoot, 'demo');
+      const externalRoot = path.join(isolation.layout.rootDir, `external-config-${segment}`);
+      const externalFile = path.join(externalRoot, 'config.json');
+      await fs.outputJson(externalFile, {
+        schemaVersion: 2,
+        sourceId: 'team',
+        sourceIdentity: SOURCE_IDENTITY,
+        pluginName: 'demo',
+        values: { secret: 'outside-store' },
+      });
+      if (segment === 'source') {
+        await fs.ensureDir(storeRoot);
+        await fs.symlink(externalRoot, sourceRoot);
+      } else if (segment === 'plugin') {
+        await fs.ensureDir(sourceRoot);
+        await fs.symlink(externalRoot, pluginRoot);
+      } else {
+        await fs.ensureDir(pluginRoot);
+        await fs.symlink(externalFile, path.join(pluginRoot, 'config.json'));
+      }
+
+      const inventory = listNamespacedPluginConfigStores({
+        cwd: isolation.layout.fixtureCwd,
+        env: isolation.env,
+        scope: 'user',
+      });
+      await expect(inventory).rejects.toThrow('Config path cannot contain a symbolic link');
+      if (segment !== 'config') {
+        await expect(listNamespacedPluginConfigStores({
+          cwd: isolation.layout.fixtureCwd,
+          env: isolation.env,
+          scope: 'user',
+        })).rejects.toMatchObject({ code: 'invalidPluginConfigStore' });
+      }
+    },
+  );
+
+  it.each(['user store root', 'project parent'] as const)(
+    'rejects a namespaced config inventory symlink at the %s boundary',
+    async (boundary) => {
+      const isolation = getCurrentSourceTestIsolation();
+      const externalRoot = path.join(isolation.layout.rootDir, `external-boundary-${boundary.replace(' ', '-')}`);
+      const externalStore = boundary === 'project parent'
+        ? path.join(externalRoot, 'plugin-config')
+        : externalRoot;
+      await fs.outputJson(path.join(externalStore, 'team', 'demo', 'config.json'), {
+        schemaVersion: 2,
+        sourceId: 'team',
+        sourceIdentity: SOURCE_IDENTITY,
+        pluginName: 'demo',
+        values: { secret: 'outside-boundary' },
+      });
+      if (boundary === 'project parent') {
+        await fs.symlink(externalRoot, path.join(isolation.layout.fixtureCwd, '.agent-workflows'));
+      } else {
+        await fs.ensureDir(isolation.env.AW_HOME!);
+        await fs.symlink(externalRoot, path.join(isolation.env.AW_HOME!, 'plugin-config'));
+      }
+      const scope = boundary === 'project parent' ? 'project' as const : 'user' as const;
+
+      await expect(listNamespacedPluginConfigStores({
+        cwd: isolation.layout.fixtureCwd,
+        env: isolation.env,
+        scope,
+      })).rejects.toMatchObject({ code: 'invalidPluginConfigStore' });
+
+      const inventory = await inventoryCatalogSourceReferences({
+        cwd: isolation.layout.fixtureCwd,
+        env: isolation.env,
+      });
+      expect(inventory.references).not.toContainEqual(expect.objectContaining({
+        kind: 'namespacedConfig',
+        sourceId: 'team',
+        pluginName: 'demo',
+      }));
+      expect(inventory.errors).toContainEqual(expect.objectContaining({
+        kind: expect.stringContaining('config'),
+        relevance: expect.objectContaining({ global: false, scope }),
+      }));
+    },
+  );
 
   it('uses separate source and plugin lifecycle path segments', async () => {
     const isolation = getCurrentSourceTestIsolation();
@@ -670,10 +759,21 @@ describe('phase 3B namespaced runtime stores', () => {
       },
     });
     const catalogManifest = await fs.readJson(path.join(sourceRoot, 'catalog-manifest.json'));
-    await Promise.all([
-      fs.remove(path.join(sourceRoot, 'plugins', 'demo')),
-      fs.writeJson(path.join(sourceRoot, 'catalog-manifest.json'), { ...catalogManifest, entries: [] }),
-    ]);
+    const removedPluginRoot = path.join(sourceRoot, 'plugins', 'demo');
+    const retainedPluginRoot = path.join(sourceRoot, 'plugins', 'other');
+    await fs.move(removedPluginRoot, retainedPluginRoot);
+    const retainedManifestPath = path.join(retainedPluginRoot, '.agents-plugin', 'plugin.json');
+    const retainedManifest = await fs.readJson(retainedManifestPath);
+    retainedManifest.name = 'other';
+    retainedManifest.description = 'other plugin';
+    await fs.writeJson(retainedManifestPath, retainedManifest, { spaces: 2 });
+    const retainedPlugin = await readPluginManifest(retainedPluginRoot, { mode: 'bundle' });
+    const retainedEntry = await createCatalogManifestV3Entry(retainedPlugin, retainedPluginRoot);
+    await fs.writeJson(
+      path.join(sourceRoot, 'catalog-manifest.json'),
+      { ...catalogManifest, entries: [retainedEntry] },
+      { spaces: 2 },
+    );
 
     const statusOutput = createCapturedCliIo();
     expect(await runCli(['status', 'team/demo', '--platform', 'codex', '--scope', 'project', '--json'], {
@@ -1504,7 +1604,7 @@ describe('phase 3B namespaced runtime stores', () => {
       .not.toContainEqual(expect.objectContaining({ platform: 'codex' }));
   });
 
-  it('reports an invalid Codex inventory while retaining canonical file-owner evidence', async () => {
+  it('ignores invalid Codex user inventory while retaining canonical project-owner evidence', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'invalid-codex-inventory-source');
     await fs.outputFile(
@@ -1556,7 +1656,7 @@ describe('phase 3B namespaced runtime stores', () => {
       env: isolation.env,
       io: output.io,
       interactive: false,
-    })).toBe(1);
+    })).toBe(0);
     const stdout = output.readStdout();
     const payload = JSON.parse(stdout) as {
       targets: Array<{ pluginId: string }>;
@@ -1564,7 +1664,7 @@ describe('phase 3B namespaced runtime stores', () => {
     };
     expect(stdout.trim().split('\n')).toHaveLength(1);
     expect(payload.targets).toContainEqual(expect.objectContaining({ pluginId: 'team/demo' }));
-    expect(payload.errors).toContainEqual(expect.objectContaining({ code: 'nativeStateUnreadable' }));
+    expect(payload.errors).not.toContainEqual(expect.objectContaining({ code: 'nativeStateUnreadable' }));
     expect(payload.errors).not.toContainEqual(expect.objectContaining({ code: 'pluginNotFound' }));
     expect(payload.errors.map((error) => error.message).join('\n')).not.toContain(isolation.layout.rootDir);
     expect(output.readStderr()).toBe('');

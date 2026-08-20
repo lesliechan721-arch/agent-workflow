@@ -542,13 +542,20 @@ async function validateAwRuntimeLayout(
   }
 
   const packageRoot = manifest.scripts?.node?.packageRoot;
+  let packageRootDependencySets: { dependencies: string[]; devDependencies: string[] } = {
+    dependencies: [],
+    devDependencies: [],
+  };
   if (packageRoot) {
     await assertBundlePathExists(pluginRoot, `${packageRoot}/package.json`, 'scripts.node.packageRoot.package.json', './');
     await assertBundlePathExists(pluginRoot, `${packageRoot}/pnpm-lock.yaml`, 'scripts.node.packageRoot.pnpm-lock.yaml', './');
-    const nodeModulesPath = path.join(pluginRoot, stripDotSlash(packageRoot), 'node_modules');
-    const nodeModulesStats = await fs.stat(nodeModulesPath).catch(() => null);
-    if (!nodeModulesStats?.isDirectory()) {
-      throw new Error('Invalid scripts.node.packageRoot: missing production node_modules in bundle.');
+    packageRootDependencySets = await readPackageRootDependencySets(pluginRoot, manifest);
+    if (packageRootDependencySets.dependencies.length > 0) {
+      const nodeModulesPath = path.join(pluginRoot, stripDotSlash(packageRoot), 'node_modules');
+      const nodeModulesStats = await fs.stat(nodeModulesPath).catch(() => null);
+      if (!nodeModulesStats?.isDirectory()) {
+        throw new Error('Invalid scripts.node.packageRoot: missing production node_modules in bundle.');
+      }
     }
   }
 
@@ -557,18 +564,22 @@ async function validateAwRuntimeLayout(
   }
 
   const allFiles = await listFilesRecursively(pluginRoot);
-  const jsFiles: Record<string, string> = {};
+  const scanFiles: Record<string, string> = {};
   await Promise.all(
     allFiles
-      .filter((filePath) => NODE_RUNTIME_EXTENSIONS.has(path.posix.extname(filePath).toLowerCase()))
+      .filter((filePath) => (
+        NODE_RUNTIME_EXTENSIONS.has(path.posix.extname(filePath).toLowerCase())
+        || path.posix.basename(filePath) === 'package.json'
+      ))
       .map(async (filePath) => {
-        jsFiles[filePath] = await fs.readFile(path.join(pluginRoot, filePath), 'utf8');
+        scanFiles[filePath] = await fs.readFile(path.join(pluginRoot, filePath), 'utf8');
       }),
   );
 
-  const { dependencies, devDependencies } = await readPackageRootDependencySets(pluginRoot, manifest);
+  const { dependencies, devDependencies } = packageRootDependencySets;
   const scan = scanNodeImportContract({
-    files: jsFiles,
+    files: scanFiles,
+    filePaths: allFiles,
     entryFiles: [...nodeEntries],
     dependencies,
     devDependencies,

@@ -234,6 +234,27 @@ describe('multi-source read commands', () => {
     });
     expect(JSON.stringify(verbosePayload.targets[0]!.components)).not.toContain(isolation.layout.rootDir);
 
+    const ordinaryConsole = await loadConsoleItemsResult({
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'codex',
+      scope: 'project',
+    }, { env: isolation.env });
+    const verboseConsole = await loadConsoleItemsResult({
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'codex',
+      scope: 'project',
+      verbose: true,
+    }, { env: isolation.env });
+    expect(ordinaryConsole.items.find((item) => item.pluginName === 'team/demo')?.targets[0]?.components)
+      .toEqual([]);
+    expect(verboseConsole.items.find((item) => item.pluginName === 'team/demo')?.targets[0]?.components)
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ artifactKey: 'review', state: 'partial' }),
+      ]));
+    expect(JSON.stringify(
+      verboseConsole.items.flatMap((item) => item.targets.flatMap((target) => target.components)),
+    )).not.toContain(isolation.layout.rootDir);
+
     const ordinaryHuman = createCapturedCliIo();
     await runCli([
       'status', 'team/demo', '--platform', 'codex', '--scope', 'project',
@@ -546,6 +567,76 @@ describe('multi-source read commands', () => {
     ]));
   });
 
+  it('does not let another source inventory error hide a qualified missing selector', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const good = fixturePath('inventory-unrelated-good');
+    await createCatalogSnapshotFixture(good, 'foo');
+    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 1,
+        sources: [{ id: 'good', type: 'path', primary: true, path: good }],
+      },
+      expectedDigest: initial.digest,
+      env: isolation.env,
+    });
+    await fs.outputFile(path.join(
+      isolation.env.AW_HOME!,
+      'plugin-config',
+      'other',
+      'demo',
+      'config.json',
+    ), '{');
+
+    const result = await statusCommandV4({
+      plugins: ['missing/demo'],
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      cliVersion: '1.0.0',
+    });
+
+    expect(result.hasErrors).toBe(true);
+    expect(result.payload.targets).toEqual([]);
+    expect(result.payload.errors).toContainEqual(expect.objectContaining({ code: 'pluginNotFound' }));
+    expect(result.payload.errors).not.toContainEqual(expect.objectContaining({ code: 'stateInventoryFailed' }));
+  });
+
+  it('keeps each parsed selector relevant without suppressing another selector failure', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const good = fixturePath('inventory-own-error-good');
+    await createCatalogSnapshotFixture(good, 'foo');
+    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 1,
+        sources: [{ id: 'good', type: 'path', primary: true, path: good }],
+      },
+      expectedDigest: initial.digest,
+      env: isolation.env,
+    });
+    await fs.outputFile(path.join(
+      isolation.env.AW_HOME!,
+      'plugin-config',
+      'missing',
+      'demo',
+      'config.json',
+    ), '{');
+
+    const result = await statusCommandV4({
+      plugins: ['good/foo', 'missing/demo'],
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      cliVersion: '1.0.0',
+    });
+
+    expect(result.hasErrors).toBe(true);
+    expect(result.payload.targets).toEqual(expect.arrayContaining([
+      expect.objectContaining({ pluginId: 'good/foo' }),
+    ]));
+    expect(result.payload.errors).toContainEqual(expect.objectContaining({ code: 'stateInventoryFailed' }));
+    expect(result.payload.errors).not.toContainEqual(expect.objectContaining({ code: 'pluginNotFound' }));
+  });
+
   it('projects supported targets and reports an explicitly unsupported target', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const claudeOnly = fixturePath('claude-only');
@@ -822,6 +913,180 @@ describe('multi-source read commands', () => {
       });
       expect(captured.readStdout().trim().split('\n').filter(Boolean).length).toBeGreaterThan(0);
       expect(captured.readStderr()).toBe('');
+    },
+  );
+
+  it('does not project an unrelated Codex user inventory failure into a Claude project query', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const good = fixturePath('filtered-status-inventory');
+    await createCatalogSnapshotFixture(good);
+    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 1,
+        sources: [{ id: 'good', type: 'path', primary: true, path: good }],
+      },
+      expectedDigest: initial.digest,
+      env: isolation.env,
+    });
+    const unrelatedPath = path.join(isolation.env.AW_CODEX_HOME!, 'config.toml');
+    await fs.outputFile(unrelatedPath, '[invalid');
+
+    const result = await statusCommandV4({
+      plugins: ['good/demo'],
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      cliVersion: '1.0.0',
+      platform: 'claude',
+      scope: 'project',
+      json: true,
+    });
+
+    expect(result.hasErrors).toBe(false);
+    expect(result.payload.errors).toEqual([]);
+    expect(result.payload.targets).toEqual([
+      expect.objectContaining({
+        pluginId: 'good/demo',
+        platform: 'claude',
+        scope: 'project',
+        state: 'absent',
+      }),
+    ]);
+    expect(result.output).not.toContain('config.toml');
+    expect(result.output).not.toContain(unrelatedPath);
+  });
+
+  it('does not project another plugin Codex residue failure into a Claude project query', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = fixturePath('filtered-codex-residue');
+    await createCatalogSnapshotFixture(sourceRoot);
+    const source = { id: 'team', type: 'path', primary: true, path: sourceRoot } as const;
+    const sourceIdentity = await calculateCatalogSourceIdentity(source);
+    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 1, sources: [source] },
+      expectedDigest: initial.digest,
+      env: isolation.env,
+    });
+    const marketplaceRoot = path.join(isolation.env.AW_HOME!, 'marketplaces', 'team');
+    await Promise.all([
+      fs.outputJson(path.join(marketplaceRoot, 'config.json'), {
+        schemaVersion: 2,
+        sourceId: 'team',
+        sourceIdentity,
+        marketplaceName: 'aw-team',
+      }),
+      fs.outputJson(path.join(marketplaceRoot, '.agents', 'plugins', 'marketplace.json'), {
+        name: 'aw-team', owner: {}, interface: {}, plugins: [],
+      }),
+      fs.outputJson(path.join(marketplaceRoot, '.claude-plugin', 'marketplace.json'), {
+        name: 'aw-team', owner: {}, interface: {}, plugins: [],
+      }),
+      fs.outputFile(path.join(isolation.env.AW_CODEX_HOME!, 'config.toml'), [
+        '[marketplaces.aw-team]',
+        `source = ${JSON.stringify(marketplaceRoot)}`,
+        'source_type = "local"',
+        '',
+      ].join('\n')),
+      fs.outputFile(path.join(
+        isolation.env.AW_CODEX_HOME!,
+        'plugins',
+        'other@aw-team',
+        'manifest.json',
+      ), '{'),
+    ]);
+
+    const result = await statusCommandV4({
+      plugins: ['team/demo'],
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      cliVersion: '1.0.0',
+      platform: 'claude',
+      scope: 'project',
+      json: true,
+    });
+
+    expect(result.hasErrors).toBe(false);
+    expect(result.payload.errors).toEqual([]);
+    expect(result.payload.targets).toEqual([
+      expect.objectContaining({
+        pluginId: 'team/demo',
+        platform: 'claude',
+        scope: 'project',
+      }),
+    ]);
+  });
+
+  it('does not project an invalid project config store into an explicit user status query', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const good = fixturePath('user-status-project-config-error');
+    await createCatalogSnapshotFixture(good);
+    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 1,
+        sources: [{ id: 'good', type: 'path', primary: true, path: good }],
+      },
+      expectedDigest: initial.digest,
+      env: isolation.env,
+    });
+    await fs.outputFile(path.join(
+      isolation.layout.fixtureCwd,
+      '.agent-workflows',
+      'plugin-config.local',
+      'good',
+      'demo',
+      'config.json',
+    ), '{');
+
+    const result = await statusCommandV4({
+      plugins: ['good/demo'],
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      cliVersion: '1.0.0',
+      platform: 'codex',
+      scope: 'user',
+    });
+
+    expect(result.payload.errors).not.toContainEqual(expect.objectContaining({
+      code: 'stateInventoryFailed',
+    }));
+  });
+
+  it.each([
+    ['user', 'project', (isolation: ReturnType<typeof getCurrentSourceTestIsolation>) =>
+      path.join(isolation.env.AW_HOME!, 'plugin-config')],
+    ['project', 'user', (isolation: ReturnType<typeof getCurrentSourceTestIsolation>) =>
+      path.join(isolation.layout.fixtureCwd, '.agent-workflows', 'plugin-config')],
+  ] as const)(
+    'does not project an invalid %s config root into an explicit %s status query',
+    async (_invalidScope, selectedScope, configRoot) => {
+      const isolation = getCurrentSourceTestIsolation();
+      const good = fixturePath(`status-${_invalidScope}-config-root-error`);
+      await createCatalogSnapshotFixture(good);
+      const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
+      await replaceCatalogSourcesConfig({
+        config: {
+          schemaVersion: 1,
+          sources: [{ id: 'good', type: 'path', primary: true, path: good }],
+        },
+        expectedDigest: initial.digest,
+        env: isolation.env,
+      });
+      await fs.outputFile(configRoot(isolation), 'not a directory\n');
+
+      const result = await statusCommandV4({
+        plugins: ['good/demo'],
+        cwd: isolation.layout.fixtureCwd,
+        env: isolation.env,
+        cliVersion: '1.0.0',
+        platform: 'codex',
+        scope: selectedScope,
+      });
+
+      expect(result.payload.errors).not.toContainEqual(expect.objectContaining({
+        code: 'stateInventoryFailed',
+      }));
     },
   );
 

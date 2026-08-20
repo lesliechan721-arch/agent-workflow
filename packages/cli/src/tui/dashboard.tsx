@@ -388,7 +388,9 @@ function targetDetailLines(
       { key: 'state', text: `状态：${stateLabel(target.state)}` },
       ...target.components.map((component, index) => ({
         key: `component:${component.artifactKey}:${index}`,
-        text: `${component.kind} · ${component.state === 'present' ? '●' : component.state === 'absent' ? '○' : component.state === 'partial' ? '◐' : '×'}`,
+        text: `${component.kind ?? component.artifactKey} · ${component.state === 'present' ? '●' : component.state === 'absent' ? '○' : component.state === 'partial' ? '◐' : '×'}`
+          + (component.error && component.errorCode ? ` · ${component.errorCode}: ${component.error}` : ''),
+        error: component.state === 'error',
       })),
       ...target.errors.map((error, index) => ({
         key: `error:${error.code}:${index}`,

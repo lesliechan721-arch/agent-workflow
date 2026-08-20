@@ -1277,6 +1277,151 @@ describe('rebuild adapter integration', () => {
     },
   );
 
+  it.each(['EPERM', 'EBUSY'] as const)(
+    'preserves the canonical marketplace when rollback backup inspection gets %s',
+    async (errorCode) => {
+      const isolation = getCurrentSourceTestIsolation();
+      const catalogRoot = await createSyntheticCatalog({
+        root: isolation.layout.rootDir,
+        pluginRoots: [path.join(repositoryRoot, 'plugins', 'ask-me')],
+      });
+      const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', 'ask-me'), { mode: 'bundle' });
+      const marketplaceRoot = path.join(isolation.layout.awHomeDir, 'marketplaces', 'team');
+      const sourceIdentity = `sha256:${'1'.repeat(64)}`;
+      await fs.copy(catalogRoot, marketplaceRoot);
+      await Promise.all([
+        fs.writeJson(path.join(marketplaceRoot, 'config.json'), {
+          schemaVersion: 2,
+          sourceId: 'team',
+          sourceIdentity,
+          marketplaceName: 'aw-team',
+        }),
+        ...[
+          path.join(marketplaceRoot, '.agents', 'plugins', 'marketplace.json'),
+          path.join(marketplaceRoot, '.claude-plugin', 'marketplace.json'),
+        ].map(async (manifestPath) => {
+          const manifest = await fs.readJson(manifestPath) as Record<string, unknown>;
+          await fs.writeJson(manifestPath, { ...manifest, name: 'aw-team' });
+        }),
+        fs.outputFile(path.join(marketplaceRoot, 'old-generation.txt'), 'old\n'),
+      ]);
+      const integration = createRebuildIntegration({
+        context: createCommandExecutionContext({
+          env: isolation.env,
+          nativeCliRunner: async () => { throw new Error('native install failed'); },
+        }),
+      });
+      const target = await integration.buildTarget({
+        sourceId: 'team',
+        sourceIdentity,
+        pluginId: 'team/ask-me',
+        marketplaceName: 'aw-team',
+        marketplaceRoot,
+        plugin,
+        platform: 'codex',
+        scope: 'user',
+        cwd: isolation.layout.fixtureCwd,
+        command: 'install',
+        catalog: { rootDir: catalogRoot, source: 'local' },
+        includeHistoricalLifecycleArtifacts: false,
+      });
+      await expect(integration.driver.writeNative(target)).rejects.toThrow('native install failed');
+      const backupName = (await fs.readdir(path.dirname(marketplaceRoot)))
+        .find((entry) => entry.startsWith('team.backup-'))!;
+      const backupRoot = path.join(path.dirname(marketplaceRoot), backupName);
+      const realLstat = fs.lstat.bind(fs);
+      const lstat = vi.spyOn(fs, 'lstat').mockImplementation((async (location) => {
+        if (path.resolve(String(location)) === path.resolve(backupRoot)) {
+          throw Object.assign(new Error(`${errorCode} backup read failed`), { code: errorCode });
+        }
+        return realLstat(location);
+      }) as typeof fs.lstat);
+      await expect(integration.driver.rollbackMaterialize?.(target))
+        .rejects.toMatchObject({ code: errorCode });
+      lstat.mockRestore();
+
+      await expect(fs.lstat(marketplaceRoot)).resolves.toMatchObject({});
+      await expect(integration.driver.rollbackMaterialize?.(target)).resolves.toBeUndefined();
+      await expect(fs.readFile(path.join(marketplaceRoot, 'old-generation.txt'), 'utf8'))
+        .resolves.toBe('old\n');
+    },
+  );
+
+  it.each(['EPERM', 'EBUSY'] as const)(
+    'restores the old marketplace after staging move failure without a pathExists %s probe',
+    async (errorCode) => {
+      const isolation = getCurrentSourceTestIsolation();
+      const catalogRoot = await createSyntheticCatalog({
+        root: isolation.layout.rootDir,
+        pluginRoots: [path.join(repositoryRoot, 'plugins', 'ask-me')],
+      });
+      const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', 'ask-me'), { mode: 'bundle' });
+      const marketplaceRoot = path.join(isolation.layout.awHomeDir, 'marketplaces', 'team');
+      const sourceIdentity = `sha256:${'2'.repeat(64)}`;
+      await fs.copy(catalogRoot, marketplaceRoot);
+      await Promise.all([
+        fs.writeJson(path.join(marketplaceRoot, 'config.json'), {
+          schemaVersion: 2,
+          sourceId: 'team',
+          sourceIdentity,
+          marketplaceName: 'aw-team',
+        }),
+        ...[
+          path.join(marketplaceRoot, '.agents', 'plugins', 'marketplace.json'),
+          path.join(marketplaceRoot, '.claude-plugin', 'marketplace.json'),
+        ].map(async (manifestPath) => {
+          const manifest = await fs.readJson(manifestPath) as Record<string, unknown>;
+          await fs.writeJson(manifestPath, { ...manifest, name: 'aw-team' });
+        }),
+        fs.outputFile(path.join(marketplaceRoot, 'old-generation.txt'), 'old\n'),
+      ]);
+      const integration = createRebuildIntegration({
+        context: createCommandExecutionContext({
+          env: isolation.env,
+          nativeCliRunner: async () => { throw new Error('native runner must not run'); },
+        }),
+      });
+      const target = await integration.buildTarget({
+        sourceId: 'team',
+        sourceIdentity,
+        pluginId: 'team/ask-me',
+        marketplaceName: 'aw-team',
+        marketplaceRoot,
+        plugin,
+        platform: 'codex',
+        scope: 'user',
+        cwd: isolation.layout.fixtureCwd,
+        command: 'install',
+        catalog: { rootDir: catalogRoot, source: 'local' },
+        includeHistoricalLifecycleArtifacts: false,
+      });
+      const realMove = fs.move.bind(fs);
+      const move = vi.spyOn(fs, 'move').mockImplementation(async (source, destination, options) => {
+        if (path.basename(String(source)).startsWith('.team-staging-')
+          && path.resolve(String(destination)) === path.resolve(marketplaceRoot)) {
+          throw Object.assign(new Error('staging move failed'), { code: 'EIO' });
+        }
+        return realMove(source, destination, options);
+      });
+      const realPathExists = fs.pathExists.bind(fs);
+      const pathExists = vi.spyOn(fs, 'pathExists').mockImplementation(async (candidate) => {
+        if (path.resolve(String(candidate)) === path.resolve(marketplaceRoot)
+          || path.basename(String(candidate)).startsWith('team.backup-')) {
+          throw Object.assign(new Error(`${errorCode} pathExists probe`), { code: errorCode });
+        }
+        return realPathExists(candidate);
+      });
+      await expect(integration.driver.writeNative(target)).rejects.toMatchObject({ code: 'EIO' });
+      move.mockRestore();
+      pathExists.mockRestore();
+
+      await expect(fs.readFile(path.join(marketplaceRoot, 'old-generation.txt'), 'utf8'))
+        .resolves.toBe('old\n');
+      expect((await fs.readdir(path.dirname(marketplaceRoot))).filter((entry) =>
+        entry.startsWith('team.backup-'))).toEqual([]);
+    },
+  );
+
   it.each([
     ['EACCES', 'plugins'],
     ['EIO', 'skills'],
@@ -3777,6 +3922,72 @@ describe('rebuild adapter integration', () => {
     })).resolves.toContain('manifest-only');
   });
 
+  it.each(['EACCES', 'EBUSY', 'EIO'])(
+    'fails Codex residue discovery closed on cache readdir %s',
+    async (code) => {
+      const isolation = getCurrentSourceTestIsolation();
+      await fs.outputFile(path.join(isolation.layout.codexHomeDir, 'config.toml'), [
+        '[marketplaces.aw]',
+        `source = ${JSON.stringify(isolation.layout.awHomeDir)}`,
+        'source_type = "local"',
+        '',
+      ].join('\n'));
+      const cacheRoot = path.join(isolation.layout.codexHomeDir, 'plugins', 'cache', 'aw');
+      await fs.ensureDir(cacheRoot);
+      const originalReaddir = fs.readdir.bind(fs);
+      vi.spyOn(fs, 'readdir').mockImplementation(async (...args: Parameters<typeof fs.readdir>) => {
+        if (path.resolve(String(args[0])) === path.resolve(cacheRoot)) {
+          throw Object.assign(new Error(`injected ${code}`), { code });
+        }
+        return originalReaddir(...args);
+      });
+
+      await expect(discoverRebuildTargetNames({
+        cwd: isolation.layout.fixtureCwd,
+        env: isolation.env,
+        platform: 'codex',
+        scope: 'user',
+        nativeCliRunner: async () => ({ exitCode: 0, stdout: '', stderr: '' }),
+        nativeFailureMode: 'error',
+      })).rejects.toMatchObject({
+        code: 'codexNativeResidueProbeFailed',
+        location: cacheRoot,
+        cause: { code },
+      });
+    },
+  );
+
+  it('fails Codex residue discovery closed on an invalid installed manifest', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    await fs.outputFile(path.join(isolation.layout.codexHomeDir, 'config.toml'), [
+      '[marketplaces.aw]',
+      `source = ${JSON.stringify(isolation.layout.awHomeDir)}`,
+      'source_type = "local"',
+      '',
+    ].join('\n'));
+    await fs.outputFile(path.join(
+      isolation.layout.codexHomeDir,
+      'plugins',
+      'broken@aw',
+      'manifest.json',
+    ), '{');
+
+    await expect(discoverRebuildTargetNames({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      platform: 'codex',
+      scope: 'user',
+      nativeCliRunner: async () => ({ exitCode: 0, stdout: '', stderr: '' }),
+      nativeFailureMode: 'error',
+    })).rejects.toThrow();
+    await expect(fs.pathExists(path.join(
+      isolation.layout.codexHomeDir,
+      'plugins',
+      'broken@aw',
+      'manifest.json',
+    ))).resolves.toBe(true);
+  });
+
   it.each(['apps-only', 'mcp-only'] as const)(
     'installs a Codex user %s bundle without declaring a missing skills root',
     async (fixtureName) => {
@@ -3862,6 +4073,78 @@ describe('rebuild adapter integration', () => {
       ))).toBe(true);
     },
   );
+
+  it.each([
+    ['EPERM', Object.assign(new Error('permission denied'), { code: 'EPERM' })],
+    ['EBUSY', Object.assign(new Error('resource busy'), { code: 'EBUSY' })],
+    ['EIO', Object.assign(new Error('I/O error'), { code: 'EIO' })],
+    ['invalid JSON', null],
+  ] as const)('preserves a Codex active manifest when reading it fails with %s', async (_label, readError) => {
+    const isolation = getCurrentSourceTestIsolation();
+    const pluginName = 'apps-only';
+    const catalogRoot = await createSyntheticCatalog({
+      root: isolation.layout.rootDir,
+      pluginRoots: [path.join(
+        repositoryRoot,
+        'packages/cli/tests/fixtures/codex-project-repo-managed/plugins',
+        pluginName,
+      )],
+    });
+    const plugin = await readPluginManifest(path.join(catalogRoot, 'plugins', pluginName), {
+      mode: 'bundle',
+    });
+    const sourceManifestPath = path.join(
+      catalogRoot,
+      'plugins',
+      pluginName,
+      '.codex-plugin',
+      'plugin.json',
+    );
+    const originalBytes = readError === null
+      ? Buffer.from('{ invalid JSON\n')
+      : await fs.readFile(sourceManifestPath);
+    if (readError === null) await fs.writeFile(sourceManifestPath, originalBytes);
+    const destinationManifestPath = path.join(
+      isolation.layout.awHomeDir,
+      'plugins',
+      pluginName,
+      '.codex-plugin',
+      'plugin.json',
+    );
+    const originalReadJson = fs.readJson.bind(fs);
+    const readJson = readError === null ? null : vi.spyOn(fs, 'readJson').mockImplementation(
+      async (...args: Parameters<typeof fs.readJson>) => {
+        if (path.normalize(String(args[0])).endsWith(path.join(
+          'plugins', pluginName, '.codex-plugin', 'plugin.json',
+        ))) throw readError;
+        return originalReadJson(...args);
+      },
+    );
+    const integration = createRebuildIntegration({
+      context: createCommandExecutionContext({
+        env: isolation.env,
+        nativeCliRunner: async () => {
+          throw new Error('native runner must not run after manifest read failure');
+        },
+      }),
+    });
+    const target = await integration.buildTarget({
+      plugin,
+      platform: 'codex',
+      scope: 'user',
+      cwd: isolation.layout.fixtureCwd,
+      command: 'install',
+      catalog: { rootDir: catalogRoot, source: 'local' } as CatalogResolution,
+      includeHistoricalLifecycleArtifacts: false,
+    });
+
+    const write = integration.driver.writeNative(target);
+    if (readError === null) await expect(write).rejects.toThrow();
+    else await expect(write).rejects.toMatchObject({ code: readError.code });
+    readJson?.mockRestore();
+    await expect(fs.readFile(destinationManifestPath)).resolves.toEqual(originalBytes);
+    await integration.driver.rollbackMaterialize?.(target);
+  });
 
   it.each([
     ['static', path.join(repositoryRoot, 'plugins', 'git')],

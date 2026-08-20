@@ -850,7 +850,9 @@ describe('build smoke', () => {
     const runtime = (await import(
       pathToFileURL(path.join(pluginRoot, 'scripts', 'runtime.mjs')).href
     )) as { parseSmokeConfig: (source: string) => string };
-    expect(runtime.parseSmokeConfig('name: bundle\n')).toBe('bundle:runtime-helper');
+    expect(runtime.parseSmokeConfig('name: bundle\n')).toBe(
+      'bundle:runtime-helper:directory-helper',
+    );
 
     await expect(
       fs.pathExists(path.join(tempRepo, 'plugins', 'git-commit', 'scripts', 'generated.test.mjs')),

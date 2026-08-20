@@ -7,11 +7,13 @@ export async function readJsonFile<T>(filePath: string): Promise<T> {
 }
 
 export async function readJsonFileIfExists<T>(filePath: string): Promise<T | null> {
-  if (!(await fs.pathExists(filePath))) {
-    return null;
+  try {
+    return await readJsonFile<T>(filePath);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') return null;
+    throw error;
   }
-
-  return readJsonFile<T>(filePath);
 }
 
 export async function readJsonFileIfExistsSafe<T>(filePath: string): Promise<T | null> {

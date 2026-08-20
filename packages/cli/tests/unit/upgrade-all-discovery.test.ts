@@ -43,6 +43,58 @@ function discoveryRunner(calls: string[]): NativeCliRunner {
 }
 
 describe('upgrade --all live discovery', () => {
+  it('does not delete any Codex residue when cleanup inventory has invalid JSON', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const marketplaceRoot = path.join(isolation.layout.awHomeDir, 'marketplaces', 'team');
+    await Promise.all([
+      fs.outputJson(path.join(marketplaceRoot, 'config.json'), {
+        schemaVersion: 2,
+        sourceId: 'team',
+        sourceIdentity: `sha256:${'1'.repeat(64)}`,
+        marketplaceName: 'aw-team',
+      }),
+      fs.outputJson(path.join(marketplaceRoot, '.agents', 'plugins', 'marketplace.json'), {
+        name: 'aw-team',
+      }),
+    ]);
+    await fs.outputFile(path.join(isolation.layout.codexHomeDir, 'config.toml'), [
+      '[marketplaces.aw-team]',
+      `source = ${JSON.stringify(marketplaceRoot)}`,
+      'source_type = "local"',
+      '',
+    ].join('\n'));
+    const manifestPath = path.join(
+      isolation.layout.codexHomeDir,
+      'plugins',
+      'broken@aw-team',
+      'manifest.json',
+    );
+    await fs.outputFile(manifestPath, '{');
+    const calls: string[] = [];
+
+    await expect(runRebuildCommand({
+      command: 'cleanup',
+      pluginNames: [],
+      commandOptions: {
+        all: true,
+        cwd: isolation.layout.fixtureCwd,
+        platform: 'codex',
+        scope: 'user',
+      },
+      all: true,
+      runtime: {
+        env: isolation.env,
+        nativeCliRunner: async (invocation) => {
+          calls.push([invocation.command, ...invocation.args].join(' '));
+          return { exitCode: 0, stdout: '', stderr: '' };
+        },
+      },
+    })).rejects.toThrow();
+
+    expect(calls).toEqual([]);
+    await expect(fs.readFile(manifestPath, 'utf8')).resolves.toBe('{');
+  });
+
   it('discovers Codex and Claude user residue with --platform both and fails catalog-missing targets independently', async () => {
     const isolation = getCurrentSourceTestIsolation();
     await fs.outputFile(path.join(isolation.layout.codexHomeDir, 'config.toml'), [

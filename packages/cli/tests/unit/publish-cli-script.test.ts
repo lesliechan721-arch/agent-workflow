@@ -1,4 +1,16 @@
+import { execFile } from 'node:child_process';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { promisify } from 'node:util';
+
 import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import { withCatalogPublicationLease as withRealCatalogPublicationLease } from '../../../../scripts/release/git-catalog-publisher.mjs';
+import { parseArgs as parsePublishCliArgs } from '../../../../scripts/release/publish-cli.mjs';
+
+const execFileAsync = promisify(execFile);
+const tempRoots: string[] = [];
 
 interface CommandCall {
   type: 'command';
@@ -18,9 +30,16 @@ async function loadPublishCliHarness(
     snapshotVersion?: string;
     gitCheckArgs?: string[];
     gitCheckError?: Error;
+    freshnessError?: Error;
     packCliResult?: string;
     registryUrl?: string;
     publishedVersion?: string;
+    resolvePublishedCliVersionImpl?: (mode: string) => Promise<string> | string;
+    withCatalogPublicationLeaseImpl?: (
+      remoteUrl: string,
+      callback: (lease: object) => Promise<unknown>,
+      publisherOptions?: object,
+    ) => Promise<unknown>;
     runCommandImpl?: (
       command: string,
       args: string[],
@@ -39,20 +58,55 @@ async function loadPublishCliHarness(
     root: '/tmp/build-snapshot',
     generationId: 'generation-a',
     outputDigest: 'digest-a',
+    inputDigest: 'input-a',
+    cliPackageDigest: 'package-a',
     cliPackageRoot: '/tmp/build-snapshot/packages/cli',
     cliDistRoot: '/tmp/build-snapshot/packages/cli/dist',
     catalogOutputRoot: '/tmp/build-snapshot/packages/cli/plugins-dist',
   };
   let snapshotRequests = 0;
   let snapshotCleanups = 0;
+  let publicationLeaseRequests = 0;
+
+  vi.doMock('../../../../scripts/release/git-catalog-publisher.mjs', () => ({
+    OFFICIAL_CATALOG_PUBLISH_REMOTE: 'https://catalog.example.test/repository.git',
+    withCatalogPublicationLease: vi.fn(async (
+      remoteUrl: string,
+      callback: (lease: object) => Promise<unknown>,
+      publisherOptions?: object,
+    ) => {
+      publicationLeaseRequests += 1;
+      if (options.withCatalogPublicationLeaseImpl) {
+        return options.withCatalogPublicationLeaseImpl(remoteUrl, callback, publisherOptions);
+      }
+      return callback({
+        ref: 'refs/heads/aw-release/publication-lock',
+        ownerCommit: 'unit-owner',
+        remoteUrl,
+      });
+    }),
+  }));
 
   vi.doMock('../../../../scripts/release/common.mjs', () => ({
+    assertCurrentReleaseIdentity: vi.fn(async () => {
+      if (options.freshnessError) throw options.freshnessError;
+    }),
     assertReleaseSnapshotIdentity: vi.fn(),
     assertVersionKind: vi.fn(),
-    packCli: vi.fn(async ({ snapshot: packSnapshot }: { snapshot: unknown }) => {
+    createReleaseSnapshotIdentity: vi.fn((releaseSnapshot: typeof snapshot, headCommit: string) => ({
+      generationId: releaseSnapshot.generationId,
+      outputDigest: releaseSnapshot.outputDigest,
+      inputDigest: releaseSnapshot.inputDigest,
+      cliPackageDigest: releaseSnapshot.cliPackageDigest,
+      headCommit,
+    })),
+    withPrivateCliTarball: vi.fn(async (
+      packSnapshot: unknown,
+      callback: (tarballPath: string) => Promise<unknown>,
+    ) => {
       calls.push({ type: 'pack' });
       packSnapshots.push(packSnapshot);
-      return options.packCliResult ?? '/tmp/aw.tgz';
+      return callback(options.packCliResult ?? '/tmp/aw.tgz');
     }),
     readPackageJson: vi.fn(async () => ({
       version: options.snapshotVersion ?? options.cliVersion ?? '1.0.0-beta.16',
@@ -77,8 +131,11 @@ async function loadPublishCliHarness(
       }
       return { status: 'publish', version: candidateVersion };
     }),
-    resolvePublishedCliVersion: vi.fn(async (mode: string) => options.publishedVersion
+    resolvePublishedCliVersion: vi.fn(async (mode: string) =>
+      options.resolvePublishedCliVersionImpl?.(mode)
+      ?? options.publishedVersion
       ?? (mode === 'beta' ? '1.0.0-beta.15' : '0.9.0')),
+    resolveReleaseHead: vi.fn(async () => 'a'.repeat(40)),
     resolveRegistryUrl: vi.fn(async (packageJsonPath: string, env: NodeJS.ProcessEnv) => {
       registryResolveCalls.push({ packageJsonPath, env });
       return options.registryUrl ?? 'https://registry.example.test/';
@@ -124,6 +181,9 @@ async function loadPublishCliHarness(
     get snapshotCleanups() {
       return snapshotCleanups;
     },
+    get publicationLeaseRequests() {
+      return publicationLeaseRequests;
+    },
     publishCli: module.publishCli as (argv?: string[], options?: Record<string, unknown>) => Promise<{
       mode: 'beta' | 'latest';
       version: string;
@@ -135,13 +195,79 @@ async function loadPublishCliHarness(
   };
 }
 
-afterEach(() => {
+afterEach(async () => {
+  await Promise.all(tempRoots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
   vi.resetModules();
   vi.clearAllMocks();
   vi.restoreAllMocks();
 });
 
 describe('publish-cli script', () => {
+  it.each([
+    ['latest', ['latest', '--', '--cli-version', '1.0.0']],
+    ['latest with repeated separators', ['latest', '--', '--', '--cli-version', '1.0.0']],
+  ])('accepts the pnpm argument separator after the publish mode (%s)', (_label, argv) => {
+    expect(parsePublishCliArgs(argv)).toMatchObject({
+      mode: 'latest',
+      cliVersion: '1.0.0',
+    });
+  });
+
+  it.each([
+    ['unknown option', ['latest', '--', '--unknown', '1.0.0']],
+    ['extra positional argument', ['latest', '--', '--cli-version', '1.0.0', 'extra']],
+    ['extra separator after the version', ['latest', '--', '--cli-version', '1.0.0', '--']],
+  ])('still rejects %s at the public parser boundary', (_label, argv) => {
+    expect(() => parsePublishCliArgs(argv)).toThrow('Unknown or extra arguments');
+  });
+
+  it.each([
+    { argv: ['beta'] },
+    { argv: ['beta', '--unknown', '1.0.0-beta.16'] },
+    { argv: ['beta', '--cli-version', '1.0.0-beta.16', 'extra'] },
+  ])('rejects missing, unknown, or extra standalone arguments before snapshot or npm work', async ({ argv }) => {
+    const harness = await loadPublishCliHarness();
+
+    await expect(harness.publishCli(argv)).rejects.toThrow('Unknown or extra arguments');
+    expect(harness.snapshotRequests).toBe(0);
+    expect(harness.calls).toEqual([]);
+  });
+
+  it('binds the requested CLI version to the live manifest before taking a snapshot', async () => {
+    const harness = await loadPublishCliHarness({ cliVersion: '1.0.0-beta.16' });
+
+    await expect(harness.publishCli([
+      'beta',
+      '--cli-version',
+      '1.0.0-beta.17',
+    ])).rejects.toThrow('found 1.0.0-beta.16 in packages/cli/package.json');
+    expect(harness.snapshotRequests).toBe(0);
+    expect(harness.calls).toEqual([]);
+  });
+
+  it('does not let concurrent explicit versions publish the live version for the wrong request', async () => {
+    const harness = await loadPublishCliHarness({
+      cliVersion: '1.0.0-beta.17',
+      publishedVersion: '1.0.0-beta.15',
+    });
+
+    const [oldRequest, currentRequest] = await Promise.allSettled([
+      harness.publishCli(['beta', '--cli-version', '1.0.0-beta.16']),
+      harness.publishCli(['beta', '--cli-version', '1.0.0-beta.17']),
+    ]);
+
+    expect(oldRequest).toMatchObject({
+      status: 'rejected',
+      reason: expect.objectContaining({ message: expect.stringContaining('expected 1.0.0-beta.16') }),
+    });
+    expect(currentRequest).toMatchObject({
+      status: 'fulfilled',
+      value: expect.objectContaining({ version: '1.0.0-beta.17' }),
+    });
+    expect(harness.calls.filter((call) =>
+      call.type === 'command' && call.args[0] === 'publish')).toHaveLength(1);
+  });
+
   it('adds no-git-checks when version sync is the only dirty change', async () => {
     const harness = await loadPublishCliHarness({
       cliVersion: '1.0.0-beta.16',
@@ -149,7 +275,7 @@ describe('publish-cli script', () => {
       packCliResult: '/tmp/aw-1.0.0-beta.16.tgz',
     });
 
-    await expect(harness.publishCli(['beta'])).resolves.toMatchObject({
+    await expect(harness.publishCli(['beta', '--cli-version', '1.0.0-beta.16'])).resolves.toMatchObject({
       mode: 'beta',
       version: '1.0.0-beta.16',
       tarballPath: '/tmp/aw-1.0.0-beta.16.tgz',
@@ -193,7 +319,7 @@ describe('publish-cli script', () => {
       packCliResult: '/tmp/aw-1.0.0.tgz',
     });
 
-    await expect(harness.publishCli(['latest'])).resolves.toMatchObject({
+    await expect(harness.publishCli(['latest', '--cli-version', '1.0.0'])).resolves.toMatchObject({
       mode: 'latest',
       version: '1.0.0',
       tarballPath: '/tmp/aw-1.0.0.tgz',
@@ -231,7 +357,7 @@ describe('publish-cli script', () => {
       ),
     });
 
-    await expect(harness.publishCli(['beta'])).rejects.toThrow('Unexpected changes:\n- README.md');
+    await expect(harness.publishCli(['beta', '--cli-version', '1.0.0-beta.16'])).rejects.toThrow('Unexpected changes:\n- README.md');
 
     expect(harness.calls).toEqual([
       {
@@ -240,7 +366,7 @@ describe('publish-cli script', () => {
         args: ['run', 'release:verify:cli'],
       },
     ]);
-    expect(harness.snapshotRequests).toBe(0);
+    expect(harness.snapshotRequests).toBe(1);
   });
 
   it('uses an explicit snapshot without re-running verify or acquiring another snapshot', async () => {
@@ -249,7 +375,7 @@ describe('publish-cli script', () => {
       packCliResult: '/tmp/explicit-snapshot.tgz',
     });
 
-    await expect(harness.publishCli(['beta'], {
+    await expect(harness.publishCli(['beta', '--cli-version', '1.0.0-beta.16'], {
       expectedVersion: '1.0.0-beta.16',
       skipVerify: true,
       snapshot: harness.snapshot,
@@ -287,7 +413,7 @@ describe('publish-cli script', () => {
       packCliResult: '/tmp/registry-specific-aw.tgz',
     });
 
-    await expect(harness.publishCli(['beta'], {
+    await expect(harness.publishCli(['beta', '--cli-version', '1.0.0-beta.16'], {
       expectedVersion: '1.0.0-beta.16',
       skipVerify: true,
       snapshot: harness.snapshot,
@@ -328,7 +454,7 @@ describe('publish-cli script', () => {
       snapshotVersion: '1.0.0-beta.17',
     });
 
-    await expect(harness.publishCli(['beta'], {
+    await expect(harness.publishCli(['beta', '--cli-version', '1.0.0-beta.16'], {
       expectedVersion: '1.0.0-beta.16',
       skipVerify: true,
       snapshot: harness.snapshot,
@@ -349,7 +475,7 @@ describe('publish-cli script', () => {
       },
     });
 
-    await expect(harness.publishCli(['beta'])).rejects.toThrow('publish failed');
+    await expect(harness.publishCli(['beta', '--cli-version', '1.0.0-beta.16'])).rejects.toThrow('publish failed');
     expect(harness.snapshotRequests).toBe(1);
     expect(harness.snapshotCleanups).toBe(1);
     expect(harness.packSnapshots).toEqual([harness.snapshot]);
@@ -361,13 +487,14 @@ describe('publish-cli script', () => {
       publishedVersion: '1.0.0-beta.16',
     });
 
-    await expect(harness.publishCli(['beta'])).resolves.toEqual({
+    await expect(harness.publishCli(['beta', '--cli-version', '1.0.0-beta.16'])).resolves.toEqual({
       mode: 'beta',
       status: 'already-published',
       version: '1.0.0-beta.16',
     });
     expect(harness.calls).toEqual([]);
-    expect(harness.snapshotRequests).toBe(0);
+    expect(harness.snapshotRequests).toBe(1);
+    expect(harness.publicationLeaseRequests).toBe(1);
   });
 
   it('rejects a lower standalone candidate before verifying, packing, or publishing', async () => {
@@ -376,9 +503,78 @@ describe('publish-cli script', () => {
       publishedVersion: '1.0.0-beta.17',
     });
 
-    await expect(harness.publishCli(['beta']))
+    await expect(harness.publishCli(['beta', '--cli-version', '1.0.0-beta.16']))
       .rejects.toThrow('must be higher than the published beta CLI');
     expect(harness.calls).toEqual([]);
-    expect(harness.snapshotRequests).toBe(0);
+    expect(harness.snapshotRequests).toBe(1);
+  });
+
+  it('reuses a combined publication lease without acquiring a nested lease', async () => {
+    const harness = await loadPublishCliHarness();
+    const publicationLease = {
+      ref: 'refs/heads/aw-release/publication-lock',
+      ownerCommit: 'combined-owner',
+      remoteUrl: '/tmp/catalog.git',
+    };
+
+    await expect(harness.publishCli(['beta', '--cli-version', '1.0.0-beta.16'], {
+      expectedVersion: '1.0.0-beta.16',
+      publishedVersion: '1.0.0-beta.15',
+      skipVerify: true,
+      snapshot: harness.snapshot,
+      publicationLease,
+    })).resolves.toMatchObject({ version: '1.0.0-beta.16' });
+    expect(harness.publicationLeaseRequests).toBe(0);
+  });
+
+  it('rejects live input drift after packing and before the npm write', async () => {
+    const harness = await loadPublishCliHarness({
+      freshnessError: new Error(
+        'Release live cliPackageDigest no longer matches the bound release identity.',
+      ),
+    });
+
+    await expect(harness.publishCli(['beta', '--cli-version', '1.0.0-beta.16'], {
+      expectedVersion: '1.0.0-beta.16',
+      publishedVersion: '1.0.0-beta.15',
+      skipVerify: true,
+      snapshot: harness.snapshot,
+      publicationLease: { ownerCommit: 'combined-owner' },
+    })).rejects.toThrow('live cliPackageDigest');
+
+    expect(harness.calls).toEqual([{ type: 'pack' }]);
+  });
+
+  it('serializes standalone publishers and rereads the dist-tag so a retry cannot downgrade it', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-cli-publication-lease-'));
+    tempRoots.push(root);
+    const remoteUrl = path.join(root, 'catalog.git');
+    await execFileAsync('git', ['init', '--bare', '--quiet', remoteUrl]);
+    let publishedVersion = '1.0.0-beta.15';
+    const harness = await loadPublishCliHarness({
+      resolvePublishedCliVersionImpl: async () => publishedVersion,
+      withCatalogPublicationLeaseImpl: (url, callback, publisherOptions) =>
+        withRealCatalogPublicationLease(url, callback, {
+          ...publisherOptions,
+          publicationLockTimeoutMs: 5_000,
+          publicationLockPollIntervalMs: 10,
+        }),
+      runCommandImpl: async (_command, args) => {
+        if (args[0] === 'publish') publishedVersion = '1.0.0-beta.16';
+      },
+    });
+
+    const results = await Promise.all([
+      harness.publishCli(['beta', '--cli-version', '1.0.0-beta.16'], { remoteUrl }),
+      harness.publishCli(['beta', '--cli-version', '1.0.0-beta.16'], { remoteUrl }),
+    ]);
+
+    expect(results).toEqual(expect.arrayContaining([
+      expect.objectContaining({ version: '1.0.0-beta.16' }),
+      expect.objectContaining({ status: 'already-published', version: '1.0.0-beta.16' }),
+    ]));
+    expect(harness.calls.filter((call) =>
+      call.type === 'command' && call.args[0] === 'publish')).toHaveLength(1);
+    expect(harness.publicationLeaseRequests).toBe(2);
   });
 });

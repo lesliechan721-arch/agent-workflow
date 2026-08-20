@@ -1,11 +1,22 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { assertVersionKind, runCommand } from './common.mjs';
+import {
+  assertCurrentReleaseIdentity,
+  assertReleaseWorktreeClean,
+  assertStagedCatalogReleaseIdentity,
+  assertVersionKind,
+  createReleaseSnapshotIdentity,
+  resolveReleaseHead,
+  runCommand,
+  withPrivateCatalogStageRoot,
+  withReleaseBuildSnapshot,
+} from './common.mjs';
 import {
   OFFICIAL_CATALOG_PUBLISH_REMOTE,
   publishStagedCatalog,
   readCatalogPublicationHistory,
+  resolveCatalogStageLedger,
   withCatalogPublicationLease,
 } from './git-catalog-publisher.mjs';
 import { stageCatalogRelease } from './stage-catalog.mjs';
@@ -81,33 +92,53 @@ export async function bootstrapCatalog(argv = process.argv.slice(2), options = {
     throw new Error('Catalog bootstrap only permits the official remote. Tests must inject a local remote with testRemoteUrl.');
   }
   const remoteUrl = options.testRemoteUrl ?? options.remoteUrl ?? OFFICIAL_CATALOG_PUBLISH_REMOTE;
+  await (options.assertReleaseWorktreeClean ?? assertReleaseWorktreeClean)();
   await (options.runCommand ?? runCommand)('pnpm', ['run', 'release:verify:catalog']);
-  return (options.withCatalogPublicationLease ?? withCatalogPublicationLease)(
-    remoteUrl,
-    async (publicationLease) => {
-      const history = await (options.readCatalogPublicationHistory
-        ?? readCatalogPublicationHistory)({
-        mode,
-        catalogVersion,
+  const snapshotRunner = options.withReleaseBuildSnapshot ?? withReleaseBuildSnapshot;
+  return snapshotRunner(async (snapshot) => {
+    const headCommit = await (options.resolveReleaseHead ?? resolveReleaseHead)();
+    const releaseIdentity = createReleaseSnapshotIdentity(snapshot, headCommit);
+    const assertFresh = () => (options.assertCurrentReleaseIdentity
+      ?? assertCurrentReleaseIdentity)(
+      snapshot,
+      releaseIdentity,
+      { allowVersionSync: false },
+    );
+    return withPrivateCatalogStageRoot(async (internalOutputRoot) => {
+      await assertFresh();
+      return (options.withCatalogPublicationLease ?? withCatalogPublicationLease)(
         remoteUrl,
-        ...(options.catalogModules ? { catalogModules: options.catalogModules } : {}),
-      });
-      assertBootstrapState(history);
-      const staged = await (options.stageCatalogRelease ?? stageCatalogRelease)([
-        '--catalog-version',
-        catalogVersion,
-      ], {
-        previousReleaseLedger: history.mergedLedger,
-      });
-      const result = await (options.publishStagedCatalog ?? publishStagedCatalog)(
-        history,
-        staged.outputRoot,
-        { publicationMode: 'atomic', publicationLease },
+        async (publicationLease) => {
+          const history = await (options.readCatalogPublicationHistory
+            ?? readCatalogPublicationHistory)({
+            mode,
+            catalogVersion,
+            remoteUrl,
+            ...(options.catalogModules ? { catalogModules: options.catalogModules } : {}),
+          });
+          assertBootstrapState(history);
+          const staged = await (options.stageCatalogRelease ?? stageCatalogRelease)([
+            '--catalog-version',
+            catalogVersion,
+          ], {
+            internalOutputRoot,
+            previousReleaseLedger: resolveCatalogStageLedger(history),
+            snapshot,
+            releaseIdentity,
+          });
+          assertStagedCatalogReleaseIdentity(staged, internalOutputRoot, releaseIdentity);
+          await assertFresh();
+          const result = await (options.publishStagedCatalog ?? publishStagedCatalog)(
+            history,
+            staged.outputRoot,
+            { publicationMode: 'atomic', publicationLease, beforeRemoteWrite: assertFresh },
+          );
+          return { ...result, nextSteps: bootstrapNextSteps(), releaseIdentity };
+        },
+        { ...options.publisherOptions, beforeAcquire: assertFresh },
       );
-      return { ...result, nextSteps: bootstrapNextSteps() };
-    },
-    options.publisherOptions,
-  );
+    });
+  }, options.snapshotOptions);
 }
 
 export async function main(argv = process.argv.slice(2)) {

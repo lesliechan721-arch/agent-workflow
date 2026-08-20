@@ -5,7 +5,10 @@ import fs from 'fs-extra';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import type { PluginMeta } from '../../src/types.js';
-import { calculateCatalogEntryContentDigest } from '../../src/utils/catalog-digests.js';
+import {
+  calculateCatalogEntryArtifactDigest,
+  calculateCatalogEntryContentDigest,
+} from '../../src/utils/catalog-digests.js';
 import {
   createCatalogManifestV3,
   createCatalogManifestV3Entry,
@@ -124,5 +127,41 @@ describe('catalog manifest schema 3', () => {
     expect(entry.contentDigest).toBe(await calculateCatalogEntryContentDigest(pluginRoot));
     expect(entry.artifactDigest).toMatch(/^sha256:[0-9a-f]{64}$/);
     expect(entry.manifestDigest).toMatch(/^sha256:[0-9a-f]{64}$/);
+  });
+
+  it('binds artifact and content digests to the canonical Git executable mode', async () => {
+    const pluginRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-catalog-digest-mode-'));
+    tempDirs.push(pluginRoot);
+    const runtimePath = path.join(pluginRoot, 'runtime.sh');
+    await fs.outputFile(runtimePath, '#!/bin/sh\n');
+    await fs.chmod(runtimePath, 0o644);
+    const regular = {
+      artifact: await calculateCatalogEntryArtifactDigest(pluginRoot),
+      content: await calculateCatalogEntryContentDigest(pluginRoot),
+    };
+
+    await fs.chmod(runtimePath, 0o655);
+    await expect(calculateCatalogEntryArtifactDigest(pluginRoot)).resolves.toBe(regular.artifact);
+    await expect(calculateCatalogEntryContentDigest(pluginRoot)).resolves.toBe(regular.content);
+
+    await fs.chmod(runtimePath, 0o755);
+
+    await expect(calculateCatalogEntryArtifactDigest(pluginRoot)).resolves.not.toBe(regular.artifact);
+    await expect(calculateCatalogEntryContentDigest(pluginRoot)).resolves.not.toBe(regular.content);
+  });
+
+  it('binds artifact and content digests to file versus symlink node kind', async () => {
+    const fileRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-catalog-digest-file-'));
+    const symlinkRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-catalog-digest-link-'));
+    tempDirs.push(fileRoot, symlinkRoot);
+    await fs.outputFile(path.join(fileRoot, 'runtime'), 'symlink:target');
+    await fs.symlink('target', path.join(symlinkRoot, 'runtime'));
+
+    await expect(calculateCatalogEntryArtifactDigest(symlinkRoot)).resolves.not.toBe(
+      await calculateCatalogEntryArtifactDigest(fileRoot),
+    );
+    await expect(calculateCatalogEntryContentDigest(symlinkRoot)).resolves.not.toBe(
+      await calculateCatalogEntryContentDigest(fileRoot),
+    );
   });
 });

@@ -295,6 +295,73 @@ describe('catalog source command v4', () => {
     expect((await readCatalogSourcesConfigSnapshot(isolation.env)).digest).toBe(before.digest);
   });
 
+  it('classifies config and lifecycle inventory errors at the narrowest canonical target', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const userConfig = path.join(
+      isolation.env.AW_HOME!, 'plugin-config', 'team', 'user-plugin', 'config.json',
+    );
+    const projectConfig = path.join(
+      isolation.layout.fixtureCwd,
+      '.agent-workflows',
+      'plugin-config.local',
+      'team',
+      'project-plugin',
+      'config.json',
+    );
+    const lifecycleMetadata = path.join(
+      isolation.env.AW_HOME!,
+      'lifecycle-active',
+      'team',
+      'codex',
+      'user',
+      'user',
+      'broken-plugin',
+      'active',
+      'metadata.json',
+    );
+    await Promise.all([
+      fs.outputFile(userConfig, '{'),
+      fs.outputFile(projectConfig, '{'),
+      fs.outputFile(lifecycleMetadata, '{'),
+    ]);
+
+    const inventory = await inventoryCatalogSourceReferences({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+    });
+
+    expect(inventory.errors).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'configFileRead',
+        relevance: {
+          global: false,
+          sourceId: 'team',
+          pluginName: 'user-plugin',
+          scope: 'user',
+        },
+      }),
+      expect.objectContaining({
+        kind: 'configFileRead',
+        relevance: {
+          global: false,
+          sourceId: 'team',
+          pluginName: 'project-plugin',
+          scope: 'project',
+        },
+      }),
+      expect.objectContaining({
+        kind: 'lifecycleMetadataRead',
+        relevance: {
+          global: false,
+          sourceId: 'team',
+          pluginName: 'broken-plugin',
+          platform: 'codex',
+          scope: 'user',
+        },
+      }),
+    ]));
+  });
+
   it('fails a source identity mutation closed on a corrupt canonical owner marker', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const current = fixturePath('owner-inventory-current');
@@ -1099,6 +1166,41 @@ describe('catalog source command v4', () => {
     expect((await readCatalogSourcesConfigSnapshot(isolation.env)).digest).toBe(before.digest);
   });
 
+  it('reports a symlinked config file without reading its external target', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const configPath = path.join(
+      isolation.env.AW_HOME!,
+      'plugin-config',
+      'team',
+      'demo',
+      'config.json',
+    );
+    const outsidePath = fixturePath('outside-config-file.json');
+    await fs.outputJson(outsidePath, {
+      schemaVersion: 2,
+      sourceId: 'team',
+      sourceIdentity: `sha256:${'9'.repeat(64)}`,
+      pluginName: 'demo',
+      values: { secret: 'outside' },
+    });
+    await fs.ensureDir(path.dirname(configPath));
+    await fs.symlink(outsidePath, configPath);
+
+    const inventory = await inventoryCatalogSourceReferences({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+    });
+    expect(inventory.references).not.toContainEqual(expect.objectContaining({
+      kind: 'namespacedConfig', sourceId: 'team', pluginName: 'demo',
+    }));
+    expect(inventory.errors).toContainEqual(expect.objectContaining({
+      code: 'stateInventoryFailed',
+      kind: 'configFileValidation',
+      location: '[aw-state]/plugin-config/team/demo/config.json',
+    }));
+    expect(JSON.stringify(inventory.errors)).not.toContain(outsidePath);
+  });
+
   it('reports marketplace namespace lstat errors and continues other namespaces', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const officialRoot = path.join(isolation.env.AW_HOME!, 'marketplaces', 'official');
@@ -1622,5 +1724,32 @@ describe('catalog source command v4', () => {
       sourceId: 'local', cwd: isolation.layout.fixtureCwd, env: isolation.env,
     })).rejects.toMatchObject({ code: 'legacyStateUnsupported' });
     expect((await readCatalogSourcesConfigSnapshot(isolation.env)).digest).toBe(before.digest);
+  });
+
+  it.each([
+    ['user', (isolation: ReturnType<typeof getCurrentSourceTestIsolation>) =>
+      path.join(isolation.env.AW_HOME!, 'plugin-config')],
+    ['project', (isolation: ReturnType<typeof getCurrentSourceTestIsolation>) =>
+      path.join(isolation.layout.fixtureCwd, '.agent-workflows', 'plugin-config')],
+  ] as const)('classifies a %s config store root read error with its scope', async (scope, rootPath) => {
+    const isolation = getCurrentSourceTestIsolation();
+    const configRoot = rootPath(isolation);
+    await fs.ensureDir(path.dirname(configRoot));
+    const originalLstat = fs.lstat.bind(fs);
+    vi.spyOn(fs, 'lstat').mockImplementation(async (candidate) => {
+      if (path.resolve(String(candidate)) === path.resolve(configRoot)) {
+        throw Object.assign(new Error('injected config root EPERM'), { code: 'EPERM' });
+      }
+      return originalLstat(candidate);
+    });
+
+    const inventory = await inventoryCatalogSourceReferences({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+    });
+    expect(inventory.errors).toContainEqual(expect.objectContaining({
+      kind: 'configDirectoryRead',
+      relevance: { global: false, scope },
+    }));
   });
 });

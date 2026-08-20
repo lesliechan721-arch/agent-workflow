@@ -774,6 +774,9 @@ async function materializeTarget(options: {
     return succeeded(command, target, accumulator);
   } catch (error) {
     const primary = errorMessage(error);
+    if ((error as { durableMaterializeCommit?: unknown }).durableMaterializeCommit === true) {
+      return failed(command, target, accumulator, failurePhase, primary);
+    }
     if (prepared) {
       try {
         await action(accumulator, 'active.discard', () => store.discard(prepared!), events);

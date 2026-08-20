@@ -34,6 +34,7 @@ export {
   assertStablePluginVersion,
   mergePluginReleaseLedgers,
   PLUGIN_RELEASE_LEDGER_FILENAME,
+  PLUGIN_RELEASE_LEDGER_SCHEMA_VERSION,
   resolveBetaPluginVersionOverrides,
   validatePluginReleaseLedgerAgainstManifest,
   validatePluginReleaseLedger,
@@ -84,6 +85,7 @@ import {
   assertStablePluginVersion,
   type PluginReleaseLedger,
   PLUGIN_RELEASE_LEDGER_FILENAME,
+  PLUGIN_RELEASE_LEDGER_SCHEMA_VERSION,
   resolveBetaPluginVersionOverrides,
   validatePluginReleaseLedgerAgainstManifest,
 } from '../src/utils/plugin-release.js';
@@ -212,7 +214,7 @@ export async function stageCatalogArtifacts(
   ] as const));
   const contentDigests = new Map(contentDigestEntries);
   const previousReleaseLedger: PluginReleaseLedger = options.previousReleaseLedger
-    ?? { schemaVersion: 1, records: [] };
+    ?? { schemaVersion: PLUGIN_RELEASE_LEDGER_SCHEMA_VERSION, records: [] };
   if (phase === 'release' && channel === 'beta') {
     const overrides = resolveBetaPluginVersionOverrides({
       plugins: sourcePlugins,

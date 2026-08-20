@@ -55,6 +55,100 @@ export interface StrictNamespacedMarketplaceRoot {
   claudeManifest: Record<string, unknown> | null;
 }
 
+export class MarketplaceRootValidationError extends Error {
+  readonly code = 'marketplaceRootInvalid';
+
+  constructor(readonly location: string, message: string, cause?: unknown) {
+    super(`marketplaceRootInvalid: ${message}`, cause === undefined ? undefined : { cause });
+    this.name = 'MarketplaceRootValidationError';
+  }
+}
+
+function assertMarketplacePathBoundary(trustedRoot: string, candidatePath: string): {
+  root: string;
+  candidate: string;
+} {
+  const root = path.resolve(trustedRoot);
+  const candidate = path.resolve(candidatePath);
+  const relative = path.relative(root, candidate);
+  if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new MarketplaceRootValidationError(
+      candidate,
+      'marketplace path escapes its trusted root.',
+    );
+  }
+  return { root, candidate };
+}
+
+async function lstatMarketplacePath(filePath: string): Promise<fs.Stats | null> {
+  try {
+    return await fs.lstat(filePath);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+async function inspectMarketplacePath(
+  trustedRoot: string,
+  candidatePath: string,
+  finalKind: 'directory' | 'file',
+): Promise<fs.Stats | null> {
+  const { root, candidate } = assertMarketplacePathBoundary(trustedRoot, candidatePath);
+  const paths = [root];
+  let current = root;
+  for (const segment of path.relative(root, candidate).split(path.sep).filter(Boolean)) {
+    current = path.join(current, segment);
+    paths.push(current);
+  }
+  let candidateStats: fs.Stats | null = null;
+  for (const currentPath of paths) {
+    let stats: fs.Stats | null;
+    try {
+      stats = await lstatMarketplacePath(currentPath);
+    } catch (error) {
+      throw new MarketplaceRootValidationError(
+        currentPath,
+        'marketplace path cannot be inspected.',
+        error,
+      );
+    }
+    if (!stats) return null;
+    const isFinal = currentPath === candidate;
+    const valid = isFinal && finalKind === 'file'
+      ? stats.isFile() && !stats.isSymbolicLink()
+      : stats.isDirectory() && !stats.isSymbolicLink();
+    if (!valid) {
+      throw new MarketplaceRootValidationError(
+        currentPath,
+        isFinal && finalKind === 'file'
+          ? 'marketplace JSON target must be a regular file.'
+          : 'marketplace path must be a regular directory.',
+      );
+    }
+    if (isFinal) candidateStats = stats;
+  }
+  return candidateStats;
+}
+
+async function readStrictOptionalJsonObject(
+  trustedRoot: string,
+  filePath: string,
+): Promise<Record<string, unknown> | null> {
+  if (!await inspectMarketplacePath(trustedRoot, filePath, 'file')) return null;
+  try {
+    const value = await fs.readJson(filePath) as unknown;
+    if (!isRecord(value)) {
+      throw new MarketplaceRootValidationError(filePath, 'marketplace JSON must contain an object.');
+    }
+    return value;
+  } catch (error) {
+    if (error instanceof MarketplaceRootValidationError) throw error;
+    throw new MarketplaceRootValidationError(filePath, 'marketplace JSON cannot be read.', error);
+  }
+}
+
 async function readOptionalJsonObject(filePath: string): Promise<Record<string, unknown> | null> {
   try {
     const value = await fs.readJson(filePath) as unknown;
@@ -68,23 +162,16 @@ async function readOptionalJsonObject(filePath: string): Promise<Record<string, 
 }
 
 export async function readStrictNamespacedMarketplaceRoot(options: {
+  trustedMarketplaceRoot?: string;
   rootDir: string;
   sourceId?: string;
   sourceIdentity?: string;
   marketplaceName?: string;
 }): Promise<StrictNamespacedMarketplaceRoot | null> {
-  let rootStat: fs.Stats;
-  try {
-    rootStat = await fs.lstat(options.rootDir);
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === 'ENOENT' || code === 'ENOTDIR') return null;
-    throw error;
-  }
-  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
-    throw new Error('marketplaceRootInvalid: marketplace root must be a regular directory.');
-  }
-  const config = await fs.readJson(path.join(options.rootDir, 'config.json')) as unknown;
+  const trustedMarketplaceRoot = options.trustedMarketplaceRoot ?? path.dirname(options.rootDir);
+  if (!await inspectMarketplacePath(trustedMarketplaceRoot, options.rootDir, 'directory')) return null;
+  const configPath = path.join(options.rootDir, 'config.json');
+  const config = await readStrictOptionalJsonObject(trustedMarketplaceRoot, configPath);
   if (
     !isRecord(config)
     || config.schemaVersion !== 2
@@ -96,7 +183,10 @@ export async function readStrictNamespacedMarketplaceRoot(options: {
     || config.marketplaceName.length === 0
     || config.sourceId !== path.basename(options.rootDir)
   ) {
-    throw new Error('marketplaceRootInvalid: marketplace config must contain a canonical schema 2 identity.');
+    throw new MarketplaceRootValidationError(
+      configPath,
+      'marketplace config must contain a canonical schema 2 identity.',
+    );
   }
   if (
     (options.sourceId !== undefined && config.sourceId !== options.sourceId)
@@ -107,17 +197,25 @@ export async function readStrictNamespacedMarketplaceRoot(options: {
       `sourceChanged: marketplace root for ${options.sourceId ?? config.sourceId} does not match its schema 2 source identity.`,
     );
   }
-  const agentsManifest = await readOptionalJsonObject(
+  const agentsManifest = await readStrictOptionalJsonObject(
+    trustedMarketplaceRoot,
     path.join(options.rootDir, '.agents', 'plugins', 'marketplace.json'),
   );
   if (!agentsManifest || agentsManifest.name !== config.marketplaceName) {
-    throw new Error('marketplaceRootInvalid: Codex marketplace manifest name does not match config.');
+    throw new MarketplaceRootValidationError(
+      path.join(options.rootDir, '.agents', 'plugins', 'marketplace.json'),
+      'Codex marketplace manifest name does not match config.',
+    );
   }
-  const claudeManifest = await readOptionalJsonObject(
+  const claudeManifest = await readStrictOptionalJsonObject(
+    trustedMarketplaceRoot,
     path.join(options.rootDir, '.claude-plugin', 'marketplace.json'),
   );
   if (claudeManifest && claudeManifest.name !== config.marketplaceName) {
-    throw new Error('marketplaceRootInvalid: Claude marketplace manifest name does not match config.');
+    throw new MarketplaceRootValidationError(
+      path.join(options.rootDir, '.claude-plugin', 'marketplace.json'),
+      'Claude marketplace manifest name does not match config.',
+    );
   }
   return {
     rootDir: options.rootDir,
@@ -181,6 +279,7 @@ export async function replayNamespacedCodexSkillOverlays(options: {
   let existing: StrictNamespacedMarketplaceRoot | null;
   try {
     existing = await readStrictNamespacedMarketplaceRoot({
+      trustedMarketplaceRoot: path.dirname(options.sourceRoot),
       rootDir: options.sourceRoot,
       sourceId: options.sourceId,
       sourceIdentity: options.sourceIdentity,

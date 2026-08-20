@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import * as nodeFs from 'node:fs/promises';
 import path from 'node:path';
 
@@ -22,8 +23,15 @@ import {
   assertTestReadablePath,
   assertTestWritablePath,
 } from './test-path-fence.js';
-import { withActiveMarketplaceRuntimeLease } from './active-marketplace-runtime-lock.js';
-import { resolveAwHome, resolveRepoRootSync } from './paths.js';
+import {
+  markActiveMarketplaceDurableCommit,
+  withActiveMarketplaceRuntimeLease,
+} from './active-marketplace-runtime-lock.js';
+import {
+  canonicalizePathThroughExistingAncestor,
+  resolveAwHome,
+  resolveRepoRootSync,
+} from './paths.js';
 import { acquireProcessLock, type ProcessLockLease } from './process-lock.js';
 
 export type PluginConfigValue = string | number | boolean;
@@ -31,6 +39,22 @@ export type PluginConfigSource = 'default' | 'user' | 'project' | 'projectLocal'
 export type PluginConfigIssueType = 'missing-required' | 'invalid-config';
 export type ProjectConfigStoreLayer = 'shared' | 'local';
 type PluginConfigStorePathAccess = 'read' | 'write';
+
+interface ConfigCommitContext {
+  parent?: ConfigCommitContext;
+  durableCommit: boolean;
+}
+
+const configCommitStorage = new AsyncLocalStorage<ConfigCommitContext>();
+
+function markConfigDurableCommit(): void {
+  let context = configCommitStorage.getStore();
+  while (context) {
+    context.durableCommit = true;
+    context = context.parent;
+  }
+  markActiveMarketplaceDurableCommit();
+}
 
 export interface PluginConfigIssue {
   type: PluginConfigIssueType;
@@ -218,6 +242,15 @@ export function isPluginConfigSchemaResolutionError(
   return error instanceof PluginConfigSchemaResolutionError;
 }
 
+export class PluginConfigStoreInventoryError extends Error {
+  readonly code = 'invalidPluginConfigStore';
+
+  constructor(message: string) {
+    super(`invalidPluginConfigStore: ${message}`);
+    this.name = 'PluginConfigStoreInventoryError';
+  }
+}
+
 export interface ResolvedPluginConfigSchemaAccess {
   pluginName: string;
   plugin: PluginMeta | null;
@@ -307,6 +340,43 @@ async function assertNoConfigSymlink(
   }
 }
 
+async function inspectConfigReadTarget(
+  allowedRoot: string,
+  filePath: string,
+): Promise<fs.Stats | null> {
+  await assertNoConfigSymlink(allowedRoot, filePath);
+  const stats = await lstatIfExists(filePath);
+  if (!stats) return null;
+  if (!stats.isFile() || stats.isSymbolicLink()) {
+    throw new Error(`Config read target must be a regular file: ${filePath}`);
+  }
+  return stats;
+}
+
+async function inspectConfigInventoryStoreRoot(
+  boundaryRoot: string,
+  storeRoot: string,
+): Promise<boolean> {
+  const { root, candidate } = assertConfigPathBoundary(
+    boundaryRoot,
+    path.join(storeRoot, CONFIG_FILE),
+  );
+  let current = root;
+  for (const segment of path.relative(root, path.dirname(candidate)).split(path.sep).filter(Boolean)) {
+    current = path.join(current, segment);
+    const stats = await lstatIfExists(current);
+    if (!stats) return false;
+    if (stats.isSymbolicLink() || !stats.isDirectory()) {
+      throw new PluginConfigStoreInventoryError(
+        stats.isSymbolicLink()
+          ? `Config path cannot contain a symbolic link: ${current}`
+          : `Config inventory boundary must be a directory: ${current}`,
+      );
+    }
+  }
+  return true;
+}
+
 async function readConfigDirectoryIdentity(
   directoryPath: string,
 ): Promise<ConfigDirectoryIdentity> {
@@ -376,7 +446,20 @@ async function releaseConfigFileLock(
       }
     }
   }
+  try {
+    await lease.release();
+  } catch {
+    // Preserve the first release diagnostic. A final direct retry avoids a hook-created self-lock.
+  }
   return lastError;
+}
+
+function emitConfigReleaseWarning(message: string): void {
+  try {
+    process.emitWarning(message, { code: 'AW_CONFIG_LOCK_RELEASE_FAILED' });
+  } catch {
+    // Diagnostics cannot replace the primary action result or error.
+  }
 }
 
 export async function withConfigFileLock<T>(options: {
@@ -391,9 +474,13 @@ export async function withConfigFileLock<T>(options: {
   let result: T | undefined;
   let actionError: unknown;
   let actionSucceeded = false;
+  const commitContext: ConfigCommitContext = {
+    parent: configCommitStorage.getStore(),
+    durableCommit: false,
+  };
   try {
     await assertNoConfigSymlink(options.allowedRoot, options.filePath);
-    result = await options.action();
+    result = await configCommitStorage.run(commitContext, options.action);
     actionSucceeded = true;
   } catch (error) {
     actionError = error;
@@ -402,21 +489,19 @@ export async function withConfigFileLock<T>(options: {
   const releaseError = await releaseConfigFileLock(lease);
   if (!actionSucceeded) {
     if (releaseError) {
-      throw new AggregateError(
-        [actionError, releaseError],
+      emitConfigReleaseWarning(
         `Config action failed for "${options.filePath}", and its process lock release also failed: ${configLockErrorMessage(releaseError)}`,
       );
     }
     throw actionError;
   }
   if (releaseError) {
-    try {
-      process.emitWarning(
+    if (commitContext.durableCommit) {
+      emitConfigReleaseWarning(
         `Config action completed successfully for "${options.filePath}", but its process lock could not be released after 3 attempts: ${configLockErrorMessage(releaseError)}. Any committed result remains successful; the lock can require process exit or manual recovery before another update.`,
-        { code: 'AW_CONFIG_LOCK_RELEASE_FAILED' },
       );
-    } catch {
-      // Warning delivery cannot change the result of an already committed action.
+    } else {
+      throw releaseError;
     }
   }
   return result as T;
@@ -490,6 +575,7 @@ export async function atomicReplaceConfigFile(options: {
     }
 
     await nodeFs.rename(temporaryPath, options.filePath);
+    markConfigDurableCommit();
     // rename is the commit point. Diagnostics and durability work after it are best effort,
     // because reporting failure here would leave the new generation on disk without giving
     // the caller a safe way to restore the old generation.
@@ -542,6 +628,7 @@ export async function atomicRemoveConfigFile(options: {
   }
 
   await nodeFs.unlink(options.filePath);
+  markConfigDurableCommit();
   await atomicConfigAfterRenameHookForTests?.(options.filePath).catch(() => undefined);
   const directoryHandle = await nodeFs.open(parentPath, 'r').catch(() => null);
   await directoryHandle?.sync().catch(() => undefined);
@@ -566,7 +653,7 @@ async function calculateConfigManifestDigest(filePath: string): Promise<string> 
 async function calculateConfigSchemaManifestDigestForPlugin(
   plugin: PluginMeta,
 ): Promise<string> {
-  if (await fs.pathExists(plugin.manifestPath)) {
+  if (await lstatIfExists(plugin.manifestPath)) {
     return calculateConfigManifestDigest(plugin.manifestPath);
   }
   const hash = crypto.createHash('sha256');
@@ -770,7 +857,7 @@ async function assertNoLegacyConfigCoexistence(options: {
     projectLayer: options.projectLayer,
     ...(options.scope === 'project' ? { access: 'read' as const } : {}),
   });
-  if (await fs.pathExists(legacyPath)) {
+  if (await lstatIfExists(legacyPath)) {
     throw new Error('legacyStateUnsupported: legacy and namespaced plugin config stores cannot coexist.');
   }
 }
@@ -797,6 +884,7 @@ export async function readPluginConfigStore(options: {
     ...options,
     ...(options.scope === 'project' ? { access: 'read' as const } : {}),
   });
+  const allowedRoot = resolvePluginConfigAllowedRoot(options);
   if (options.sourceId) {
     if (!options.sourceIdentity) throw new Error('sourceIdentity is required for namespaced plugin config.');
     const legacyPath = resolvePluginConfigStorePath({
@@ -807,11 +895,11 @@ export async function readPluginConfigStore(options: {
       projectLayer: options.projectLayer,
       ...(options.scope === 'project' ? { access: 'read' as const } : {}),
     });
-    if (await fs.pathExists(legacyPath)) {
+    if (await inspectConfigReadTarget(allowedRoot, legacyPath)) {
       throw new Error('legacyStateUnsupported: legacy and namespaced plugin config stores cannot coexist.');
     }
   }
-  if (!(await fs.pathExists(filePath))) {
+  if (!await inspectConfigReadTarget(allowedRoot, filePath)) {
     return {
       path: filePath,
       exists: false,
@@ -845,7 +933,7 @@ export async function readNamespacedPluginConfigStoreIdentity(options: {
     ...options,
     ...(options.scope === 'project' ? { access: 'read' as const } : {}),
   });
-  if (!await fs.pathExists(filePath)) return null;
+  if (!await inspectConfigReadTarget(resolvePluginConfigAllowedRoot(options), filePath)) return null;
   const raw = await fs.readJson(filePath) as unknown;
   if (!isRecord(raw) || raw.schemaVersion !== 2 || !isRecord(raw.values)
     || raw.sourceId !== options.sourceId || raw.pluginName !== options.pluginName
@@ -859,7 +947,7 @@ export async function readNamespacedPluginConfigStoreIdentity(options: {
 }
 
 async function listConfigStoreDirectoryPluginNames(storeRoot: string): Promise<string[]> {
-  if (!(await fs.pathExists(storeRoot))) {
+  if (!await lstatIfExists(storeRoot)) {
     return [];
   }
 
@@ -867,15 +955,18 @@ async function listConfigStoreDirectoryPluginNames(storeRoot: string): Promise<s
   const pluginNames: string[] = [];
   for (const entry of entries) {
     if (!entry.isDirectory()) {
-      continue;
+      throw new PluginConfigStoreInventoryError(
+        `Config plugin namespace must be a directory: ${path.join(storeRoot, entry.name)}`,
+      );
     }
+    let pluginName: string;
     try {
-      const pluginName = assertSafePluginConfigSegment(entry.name);
-      if (await fs.pathExists(path.join(storeRoot, pluginName, CONFIG_FILE))) {
-        pluginNames.push(pluginName);
-      }
+      pluginName = assertSafePluginConfigSegment(entry.name);
     } catch {
       continue;
+    }
+    if (await lstatIfExists(path.join(storeRoot, pluginName, CONFIG_FILE))) {
+      pluginNames.push(pluginName);
     }
   }
   return pluginNames;
@@ -923,25 +1014,40 @@ export async function listNamespacedPluginConfigStores(options: {
   scope: Scope;
   projectLayer?: ProjectConfigStoreLayer;
 }): Promise<NamespacedPluginConfigStoreInventoryEntry[]> {
-  const storeRoot = options.scope === 'user'
-    ? path.join(resolveAwHome(options.env), CONFIG_DIR)
-    : path.join(
-        resolveAwProjectRoot(options.cwd),
-        '.agent-workflows',
-        options.projectLayer === 'local' ? 'plugin-config.local' : CONFIG_DIR,
-      );
+  const boundaryRoot = options.scope === 'user'
+    ? resolveAwHome(options.env)
+    : resolveAwProjectRoot(options.cwd);
+  if (options.scope === 'user') {
+    await canonicalizePathThroughExistingAncestor(boundaryRoot);
+  } else {
+    await fs.realpath(boundaryRoot);
+  }
+  const storeRoot = path.join(
+    boundaryRoot,
+    ...(options.scope === 'project' ? ['.agent-workflows'] : []),
+    options.scope === 'project' && options.projectLayer === 'local'
+      ? 'plugin-config.local'
+      : CONFIG_DIR,
+  );
   const output: NamespacedPluginConfigStoreInventoryEntry[] = [];
-  for (const sourceEntry of await fs.readdir(storeRoot, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
-    if (error.code === 'ENOENT') return [];
-    throw error;
-  })) {
-    if (!sourceEntry.isDirectory() || sourceEntry.isSymbolicLink()) continue;
+  if (!await inspectConfigInventoryStoreRoot(boundaryRoot, storeRoot)) return output;
+  for (const sourceEntry of await fs.readdir(storeRoot, { withFileTypes: true })) {
+    if (!sourceEntry.isDirectory()) {
+      throw new PluginConfigStoreInventoryError(sourceEntry.isSymbolicLink()
+        ? `Config path cannot contain a symbolic link: ${path.join(storeRoot, sourceEntry.name)}`
+        : `Config source namespace must be a directory: ${path.join(storeRoot, sourceEntry.name)}`);
+    }
     const sourceId = assertSafePluginConfigSegment(sourceEntry.name);
-    for (const pluginEntry of await fs.readdir(path.join(storeRoot, sourceId), { withFileTypes: true })) {
-      if (!pluginEntry.isDirectory() || pluginEntry.isSymbolicLink()) continue;
+    const sourceRoot = path.join(storeRoot, sourceId);
+    for (const pluginEntry of await fs.readdir(sourceRoot, { withFileTypes: true })) {
+      if (!pluginEntry.isDirectory()) {
+        throw new PluginConfigStoreInventoryError(pluginEntry.isSymbolicLink()
+          ? `Config path cannot contain a symbolic link: ${path.join(sourceRoot, pluginEntry.name)}`
+          : `Config plugin namespace must be a directory: ${path.join(sourceRoot, pluginEntry.name)}`);
+      }
       const pluginName = assertSafePluginConfigSegment(pluginEntry.name);
       const filePath = path.join(storeRoot, sourceId, pluginName, CONFIG_FILE);
-      if (!await fs.pathExists(filePath)) continue;
+      if (!await inspectConfigReadTarget(storeRoot, filePath)) continue;
       const raw = await fs.readJson(filePath) as unknown;
       if (!isRecord(raw) || raw.schemaVersion !== 2 || !isRecord(raw.values)
         || raw.sourceId !== sourceId || raw.pluginName !== pluginName
@@ -1020,7 +1126,7 @@ export async function patchPluginConfigStore(options: {
       filePath,
       allowedRoot,
       action: async () => {
-        const current = (await fs.pathExists(filePath))
+        const current = (await lstatIfExists(filePath))
           ? options.sourceId
             ? await readNamespacedStoreFile({
                 filePath,
@@ -1074,10 +1180,33 @@ export async function resetPluginConfigStore(options: {
     ...options,
     ...(options.scope === 'project' ? { access: 'write' as const } : {}),
   });
+  const allowedRoot = resolvePluginConfigAllowedRoot(options);
   const existed = await withUserPluginConfigRuntimeLease(options, async () => {
-    const current = await fs.pathExists(filePath);
-    if (current) await fs.remove(filePath);
-    return current;
+    return withConfigFileLock({
+      filePath,
+      allowedRoot,
+      action: async () => {
+        const target = await lstatIfExists(filePath);
+        if (!target) return false;
+        if (!target.isFile() || target.isSymbolicLink()) {
+          throw new Error(`Config target must be a regular file: ${filePath}`);
+        }
+        if (options.sourceId) {
+          if (!options.sourceIdentity) {
+            throw new Error('sourceIdentity is required for namespaced plugin config.');
+          }
+          await readNamespacedStoreFile({
+            filePath,
+            sourceId: options.sourceId,
+            sourceIdentity: options.sourceIdentity,
+            pluginName: options.pluginName,
+          });
+        } else {
+          await readStoreFile(filePath);
+        }
+        return atomicRemoveConfigFile({ filePath, allowedRoot });
+      },
+    });
   });
 
   return {
@@ -1107,22 +1236,56 @@ export async function resetPluginConfigStores(options: {
     ...options,
     ...(options.scope === 'project' ? { access: 'write' as const } : {}),
   });
+  const allowedRoot = resolvePluginConfigAllowedRoot(options);
   const receipts: ResetPluginConfigStoreReceipt[] = [];
   await withUserPluginConfigRuntimeLease(options, async () => {
-    for (const target of targets) {
-      const existed = await fs.pathExists(target.path);
-      if (existed) {
-        await fs.remove(target.path);
-      }
-      receipts.push({
-        pluginName: options.pluginName,
-        scope: options.scope,
-        storeKind: target.storeKind,
-        path: target.path,
-        existed,
-        deleted: existed,
+    const withTargetLocks = async (index: number, action: () => Promise<void>): Promise<void> => {
+      const target = targets[index];
+      if (!target) return action();
+      return withConfigFileLock({
+        filePath: target.path,
+        allowedRoot,
+        action: () => withTargetLocks(index + 1, action),
       });
-    }
+    };
+    await withTargetLocks(0, async () => {
+      const existing: boolean[] = [];
+      for (const target of targets) {
+        const stats = await lstatIfExists(target.path);
+        existing.push(stats !== null);
+        if (!stats) continue;
+        if (!stats.isFile() || stats.isSymbolicLink()) {
+          throw new Error(`Config target must be a regular file: ${target.path}`);
+        }
+        if (options.sourceId) {
+          if (!options.sourceIdentity) {
+            throw new Error('sourceIdentity is required for namespaced plugin config.');
+          }
+          await readNamespacedStoreFile({
+            filePath: target.path,
+            sourceId: options.sourceId,
+            sourceIdentity: options.sourceIdentity,
+            pluginName: options.pluginName,
+          });
+        } else {
+          await readStoreFile(target.path);
+        }
+      }
+      for (const [index, target] of targets.entries()) {
+        const deleted = await atomicRemoveConfigFile({
+          filePath: target.path,
+          allowedRoot,
+        });
+        receipts.push({
+          pluginName: options.pluginName,
+          scope: options.scope,
+          storeKind: target.storeKind,
+          path: target.path,
+          existed: existing[index]!,
+          deleted,
+        });
+      }
+    });
   });
   return receipts;
 }

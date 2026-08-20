@@ -10,6 +10,7 @@ import {
 } from './manifest.js';
 
 export const PLUGIN_RELEASE_LEDGER_FILENAME = 'plugin-release-ledger.json';
+export const PLUGIN_RELEASE_LEDGER_SCHEMA_VERSION = 2;
 
 const PLUGIN_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const SHA256_DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
@@ -25,7 +26,7 @@ export interface PluginReleaseLedgerRecord {
 }
 
 export interface PluginReleaseLedger {
-  schemaVersion: 1;
+  schemaVersion: 2;
   records: PluginReleaseLedgerRecord[];
 }
 
@@ -134,8 +135,8 @@ function validateLedgerRecord(rawValue: unknown, index: number): PluginReleaseLe
 export function validatePluginReleaseLedger(rawValue: unknown): PluginReleaseLedger {
   const raw = assertPlainObject(rawValue, 'plugin release ledger');
   assertAllowedKeys(raw, 'plugin release ledger', ['schemaVersion', 'records']);
-  if (raw.schemaVersion !== 1 || !Array.isArray(raw.records)) {
-    throw new Error('Invalid plugin release ledger: expected schemaVersion 1 and records array.');
+  if (raw.schemaVersion !== PLUGIN_RELEASE_LEDGER_SCHEMA_VERSION || !Array.isArray(raw.records)) {
+    throw new Error('Invalid plugin release ledger: expected schemaVersion 2 and records array.');
   }
   const records = raw.records.map(validateLedgerRecord);
   const byRecordKey = new Map<string, PluginReleaseLedgerRecord>();
@@ -160,7 +161,7 @@ export function validatePluginReleaseLedger(rawValue: unknown): PluginReleaseLed
     byPluginIdentity.set(identityKey, record);
   }
   return {
-    schemaVersion: 1,
+    schemaVersion: PLUGIN_RELEASE_LEDGER_SCHEMA_VERSION,
     records: [...byRecordKey.values()].sort((left, right) =>
       left.plugin.localeCompare(right.plugin)
       || compareStrictSemVer(left.version, right.version)
@@ -206,7 +207,7 @@ export function mergePluginReleaseLedgers(
   ...ledgers: Array<PluginReleaseLedger | null | undefined>
 ): PluginReleaseLedger {
   return validatePluginReleaseLedger({
-    schemaVersion: 1,
+    schemaVersion: PLUGIN_RELEASE_LEDGER_SCHEMA_VERSION,
     records: ledgers.flatMap((ledger) => ledger?.records ?? []),
   });
 }
@@ -247,13 +248,15 @@ export function resolveBetaPluginVersionOverrides(
       && record.version.startsWith(prefix)
       && /^\d+$/.test(record.version.slice(prefix.length))
     );
-    const sameContent = priorBetas.find((record) => record.contentDigest === contentDigest);
-    if (sameContent) {
-      overrides[name] = sameContent.version;
-      continue;
-    }
     const highest = priorBetas.reduce((current, record) =>
       Math.max(current, Number(record.version.slice(prefix.length))), 0);
+    const highestIdentity = priorBetas.find((record) =>
+      Number(record.version.slice(prefix.length)) === highest
+    );
+    if (highestIdentity?.contentDigest === contentDigest) {
+      overrides[name] = highestIdentity.version;
+      continue;
+    }
     overrides[name] = `${prefix}${highest + 1}`;
   }
   return overrides;
@@ -326,5 +329,8 @@ export function appendCatalogToPluginReleaseLedger(options: {
     records.push(candidate);
     existingByKey.set(key, candidate);
   }
-  return validatePluginReleaseLedger({ schemaVersion: 1, records });
+  return validatePluginReleaseLedger({
+    schemaVersion: PLUGIN_RELEASE_LEDGER_SCHEMA_VERSION,
+    records,
+  });
 }

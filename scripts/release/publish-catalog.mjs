@@ -2,13 +2,21 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
+  assertReleaseWorktreeClean,
+  assertCurrentReleaseIdentity,
+  assertStagedCatalogReleaseIdentity,
   assertVersionKind,
+  createReleaseSnapshotIdentity,
+  resolveReleaseHead,
   resolvePublishedCliVersion,
   runCommand,
+  withPrivateCatalogStageRoot,
+  withReleaseBuildSnapshot,
 } from './common.mjs';
 import {
   publishStagedCatalog,
   readCatalogPublicationHistory,
+  resolveCatalogStageLedger,
   withCatalogPublicationLease,
 } from './git-catalog-publisher.mjs';
 import { stageCatalogRelease } from './stage-catalog.mjs';
@@ -42,45 +50,69 @@ export function parseArgs(argv) {
 
 export async function publishCatalog(argv = process.argv.slice(2), options = {}) {
   const { mode, catalogVersion } = parseArgs(argv);
+  await (options.assertReleaseWorktreeClean ?? assertReleaseWorktreeClean)();
   await (options.runCommand ?? runCommand)('pnpm', ['run', 'release:verify:catalog']);
-  const remoteUrl = options.remoteUrl;
-  return (options.withCatalogPublicationLease ?? withCatalogPublicationLease)(
-    remoteUrl,
-    async (publicationLease) => {
-      const history = await (options.readCatalogPublicationHistory
-        ?? readCatalogPublicationHistory)({
-        mode,
-        catalogVersion,
-        ...(remoteUrl ? { remoteUrl } : {}),
-        ...(options.catalogModules ? { catalogModules: options.catalogModules } : {}),
-      });
-      const staged = await (options.stageCatalogRelease ?? stageCatalogRelease)([
-        '--catalog-version',
-        catalogVersion,
-      ], {
-        previousReleaseLedger: history.mergedLedger,
-      });
-      const publishedCliVersion = await (options.resolvePublishedCliVersion
-        ?? resolvePublishedCliVersion)(mode);
-      if (
-        history.catalogModules.pluginStaging.compareStrictSemVer(
-          publishedCliVersion,
-          staged.manifest.compatibility.aw.minVersion,
-        ) < 0
-      ) {
-        throw new Error(
-          `Catalog ${catalogVersion} requires aw >= ${staged.manifest.compatibility.aw.minVersion}, ` +
-          `but the currently published ${mode} CLI is ${publishedCliVersion}. Use the combined release entry point.`,
-        );
-      }
-      return (options.publishStagedCatalog ?? publishStagedCatalog)(
-        history,
-        staged.outputRoot,
-        { ...options.publisherOptions, publicationLease },
+  const snapshotRunner = options.withReleaseBuildSnapshot ?? withReleaseBuildSnapshot;
+  return snapshotRunner(async (snapshot) => {
+    const headCommit = await (options.resolveReleaseHead ?? resolveReleaseHead)();
+    const releaseIdentity = createReleaseSnapshotIdentity(snapshot, headCommit);
+    const assertFresh = () => (options.assertCurrentReleaseIdentity
+      ?? assertCurrentReleaseIdentity)(
+      snapshot,
+      releaseIdentity,
+      { allowVersionSync: false },
+    );
+    return withPrivateCatalogStageRoot(async (internalOutputRoot) => {
+      const remoteUrl = options.remoteUrl;
+      await assertFresh();
+      return (options.withCatalogPublicationLease ?? withCatalogPublicationLease)(
+        remoteUrl,
+        async (publicationLease) => {
+          const history = await (options.readCatalogPublicationHistory
+            ?? readCatalogPublicationHistory)({
+            mode,
+            catalogVersion,
+            ...(remoteUrl ? { remoteUrl } : {}),
+            ...(options.catalogModules ? { catalogModules: options.catalogModules } : {}),
+          });
+          const staged = await (options.stageCatalogRelease ?? stageCatalogRelease)([
+            '--catalog-version',
+            catalogVersion,
+          ], {
+            internalOutputRoot,
+            previousReleaseLedger: resolveCatalogStageLedger(history),
+            snapshot,
+            releaseIdentity,
+          });
+          assertStagedCatalogReleaseIdentity(staged, internalOutputRoot, releaseIdentity);
+          const publishedCliVersion = await (options.resolvePublishedCliVersion
+            ?? resolvePublishedCliVersion)(mode);
+          if (
+            history.catalogModules.pluginStaging.compareStrictSemVer(
+              publishedCliVersion,
+              staged.manifest.compatibility.aw.minVersion,
+            ) < 0
+          ) {
+            throw new Error(
+              `Catalog ${catalogVersion} requires aw >= ${staged.manifest.compatibility.aw.minVersion}, ` +
+              `but the currently published ${mode} CLI is ${publishedCliVersion}. Use the combined release entry point.`,
+            );
+          }
+          await assertFresh();
+          return (options.publishStagedCatalog ?? publishStagedCatalog)(
+            history,
+            staged.outputRoot,
+            {
+              ...options.publisherOptions,
+              publicationLease,
+              beforeRemoteWrite: assertFresh,
+            },
+          );
+        },
+        { ...options.publisherOptions, beforeAcquire: assertFresh },
       );
-    },
-    options.publisherOptions,
-  );
+    });
+  }, options.snapshotOptions);
 }
 
 export async function main(argv = process.argv.slice(2)) {

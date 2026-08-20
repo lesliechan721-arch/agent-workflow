@@ -104,6 +104,23 @@ describe('five namespaced write commands', () => {
         scope: 'project',
       },
     });
+    const historicalProject = path.join(isolation.layout.rootDir, 'historical-project-b');
+    const installedPluginsPath = path.join(
+      isolation.env.AW_CLAUDE_HOME!,
+      'plugins',
+      'installed_plugins.json',
+    );
+    await fs.outputJson(installedPluginsPath, {
+      plugins: {
+        'other-claude@aw': [{
+          name: 'other-claude',
+          marketplace: 'aw',
+          scope: 'project',
+          projectPath: historicalProject,
+          version: '1.0.0',
+        }],
+      },
+    });
 
     expect((await cleanupWriteCommand(['team/demo'], {
       cwd: isolation.layout.fixtureCwd,
@@ -113,6 +130,15 @@ describe('five namespaced write commands', () => {
     await expect(fs.pathExists(marketplaceRoot)).resolves.toBe(true);
 
     await fs.remove(otherConsumer);
+    expect((await cleanupWriteCommand(['team/demo'], {
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'codex',
+      scope: 'project',
+    }, { env: isolation.env, nativeCliRunner })).overallState).toBe('succeeded');
+    await expect(fs.pathExists(marketplaceRoot)).resolves.toBe(true);
+    await expect(fs.pathExists(historicalProject)).resolves.toBe(false);
+
+    await fs.outputJson(installedPluginsPath, { plugins: {} });
     expect((await cleanupWriteCommand(['team/demo'], {
       cwd: isolation.layout.fixtureCwd,
       platform: 'codex',

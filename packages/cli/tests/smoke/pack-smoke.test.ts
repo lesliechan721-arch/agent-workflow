@@ -77,6 +77,34 @@ async function listBuildSnapshotEntries(root: string): Promise<string[]> {
     .sort();
 }
 
+async function installDeclaredDependencyOnlyView(
+  unpackedPackageRoot: string,
+  workspacePackageRoot: string,
+): Promise<void> {
+  const packageJson = await fs.readJson(
+    path.join(unpackedPackageRoot, 'package.json'),
+  ) as { dependencies?: Record<string, string> };
+  const nodeModulesRoot = path.join(unpackedPackageRoot, 'node_modules');
+  await fs.remove(nodeModulesRoot);
+  await fs.ensureDir(nodeModulesRoot);
+
+  for (const dependencyName of Object.keys(packageJson.dependencies ?? {}).sort()) {
+    const sourceDependency = path.join(
+      workspacePackageRoot,
+      'node_modules',
+      ...dependencyName.split('/'),
+    );
+    const targetDependency = path.join(nodeModulesRoot, ...dependencyName.split('/'));
+    await expect(fs.pathExists(sourceDependency)).resolves.toBe(true);
+    await fs.ensureDir(path.dirname(targetDependency));
+    await fs.symlink(
+      sourceDependency,
+      targetDependency,
+      process.platform === 'win32' ? 'junction' : 'dir',
+    );
+  }
+}
+
 async function preparePackedCli(): Promise<{
   packageRoot: string;
   tempRoot: string;
@@ -149,10 +177,7 @@ describe('pack smoke', () => {
       files: ['dist/'],
     });
 
-    await fs.ensureSymlink(
-      path.join(packageRoot, 'node_modules'),
-      path.join(unpackedPackageRoot, 'node_modules'),
-    );
+    await installDeclaredDependencyOnlyView(unpackedPackageRoot, packageRoot);
     await expect(execFileAsync(
       process.execPath,
       [path.join(unpackedPackageRoot, 'dist', 'index.js'), '--version'],
@@ -164,6 +189,53 @@ describe('pack smoke', () => {
     )).resolves.toMatchObject({
       stdout: `${unpackedPackageJson.version}\n`,
       stderr: '',
+    });
+    await expect(execFileAsync(
+      process.execPath,
+      [path.join(unpackedPackageRoot, 'dist', 'index.js'), '--help'],
+      {
+        cwd: unpackedPackageRoot,
+        env: process.env,
+        maxBuffer: 10 * 1024 * 1024,
+      },
+    )).resolves.toMatchObject({
+      stdout: expect.stringContaining('Usage: aw'),
+      stderr: '',
+    });
+
+    const criticalImports = [
+      path.join(unpackedPackageRoot, 'dist', 'src', 'utils', 'manifest.js'),
+      path.join(unpackedPackageRoot, 'dist', 'src', 'generators', 'local-plugin.js'),
+      path.join(unpackedPackageRoot, 'dist', 'scripts', 'bundle-plugins.js'),
+    ].map((filePath) => pathToFileURL(filePath).href);
+    await expect(execFileAsync(
+      process.execPath,
+      [
+        '--input-type=module',
+        '--eval',
+        'await Promise.all(process.argv.slice(1).map((specifier) => import(specifier)));',
+        ...criticalImports,
+      ],
+      {
+        cwd: unpackedPackageRoot,
+        env: process.env,
+        maxBuffer: 10 * 1024 * 1024,
+      },
+    )).resolves.toMatchObject({ stdout: '', stderr: '' });
+
+    const undeclaredImportProbe = path.join(unpackedPackageRoot, 'undeclared-import-probe.mjs');
+    await fs.writeFile(undeclaredImportProbe, 'import "vitest";\n', 'utf8');
+    await expect(execFileAsync(
+      process.execPath,
+      [undeclaredImportProbe],
+      {
+        cwd: unpackedPackageRoot,
+        env: process.env,
+        maxBuffer: 10 * 1024 * 1024,
+      },
+    )).rejects.toMatchObject({
+      code: 1,
+      stderr: expect.stringContaining('ERR_MODULE_NOT_FOUND'),
     });
   });
 
@@ -181,10 +253,7 @@ describe('pack smoke', () => {
       path.join(tempRepo, 'plugins', 'slash-commands-only'),
     );
 
-    await fs.ensureSymlink(
-      path.join(packageRoot, 'node_modules'),
-      path.join(unpackedPackageRoot, 'node_modules'),
-    );
+    await installDeclaredDependencyOnlyView(unpackedPackageRoot, packageRoot);
     await installCurrentSmokeDistIsolationBridge(unpackedPackageRoot);
 
     const { bundlePlugins } = (await import(

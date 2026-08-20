@@ -336,7 +336,12 @@ export function resolveCatalogSourcesConfigPath(
 }
 
 async function readConfigAt(filePath: string): Promise<CatalogSourcesConfigSnapshot> {
-  if (!(await fs.pathExists(filePath))) {
+  let rawConfig: unknown;
+  try {
+    rawConfig = await fs.readJson(filePath);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== 'ENOENT') throw error;
     const config = createDefaultCatalogSourcesConfig();
     return {
       config,
@@ -344,7 +349,7 @@ async function readConfigAt(filePath: string): Promise<CatalogSourcesConfigSnaps
       materialized: false,
     };
   }
-  const config = validateCatalogSourcesConfig(await fs.readJson(filePath));
+  const config = validateCatalogSourcesConfig(rawConfig);
   return {
     config,
     digest: calculateCatalogSourcesConfigDigest(config),
@@ -390,6 +395,7 @@ export async function replaceCatalogSourcesConfig(options: {
           allowedRoot: awHome,
           content: `${JSON.stringify(config, null, 2)}\n`,
         });
+        catalogSourceCacheInternal.markDurableCommit();
       },
     })),
   });

@@ -2,7 +2,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import fs from 'fs-extra';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   CATALOG_BETA_REF,
@@ -33,8 +33,10 @@ import {
 import {
   resolveConfigFileLockPath,
   setAtomicConfigBeforeRenameHookForTests,
+  setConfigFileLockBeforeReleaseHookForTests,
 } from '../../src/utils/plugin-config.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
+import { catalogSourceCacheInternal } from '../../src/utils/catalog-source-cache.js';
 
 const tempDirs: string[] = [];
 
@@ -55,6 +57,9 @@ async function createTwoSourceConfig(pathSourceRoot: string): Promise<CatalogSou
 
 afterEach(async () => {
   setAtomicConfigBeforeRenameHookForTests(undefined);
+  setConfigFileLockBeforeReleaseHookForTests(undefined);
+  catalogSourceCacheInternal.setBeforeReleaseHookForTests(undefined);
+  vi.restoreAllMocks();
   await Promise.all(tempDirs.splice(0).map((directory) => fs.remove(directory)));
 });
 
@@ -132,6 +137,43 @@ describe('catalog sources config v1', () => {
       ? config.sources[0].url
       : '').protocol).toBe('https:');
     await expect(fs.pathExists(configPath)).resolves.toBe(false);
+  });
+
+  it('does not downgrade a materialized config when an existence probe hides an operational error', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = await makePathSourceRoot();
+    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
+    const configured = await createTwoSourceConfig(sourceRoot);
+    await replaceCatalogSourcesConfig({
+      config: configured,
+      expectedDigest: initial.digest,
+      env: isolation.env,
+    });
+    const configPath = resolveCatalogSourcesConfigPath(isolation.env);
+    const originalPathExists = fs.pathExists.bind(fs);
+    vi.spyOn(fs, 'pathExists').mockImplementation(async (candidate) => {
+      if (path.resolve(String(candidate)) === path.resolve(configPath)) return false;
+      return originalPathExists(candidate);
+    });
+
+    await expect(readCatalogSourcesConfigSnapshot(isolation.env)).resolves.toMatchObject({
+      materialized: true,
+      config: configured,
+    });
+  });
+
+  it.each(['EPERM', 'EBUSY'])('propagates catalog config %s instead of selecting defaults', async (code) => {
+    const isolation = getCurrentSourceTestIsolation();
+    const configPath = resolveCatalogSourcesConfigPath(isolation.env);
+    await fs.outputJson(configPath, createDefaultCatalogSourcesConfig());
+    const failure = Object.assign(new Error(`injected ${code}`), { code });
+    const originalReadJson = fs.readJson.bind(fs);
+    vi.spyOn(fs, 'readJson').mockImplementation(async (...args: Parameters<typeof fs.readJson>) => {
+      if (path.resolve(String(args[0])) === path.resolve(configPath)) throw failure;
+      return originalReadJson(...args);
+    });
+
+    await expect(readCatalogSourcesConfigSnapshot(isolation.env)).rejects.toBe(failure);
   });
 
   it('applies add, update, set-primary, and remove without changing type or update primary', async () => {
@@ -241,6 +283,54 @@ describe('catalog sources config v1', () => {
       resolveCatalogSourcesConfigPath(isolation.env),
     ))).resolves.toBe(false);
   });
+
+  it('keeps an atomically committed source config receipt successful after root release failure', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
+    const next = setPrimaryCatalogSource(initial.config, 'official');
+    catalogSourceCacheInternal.setBeforeReleaseHookForTests(async () => {
+      throw Object.assign(new Error('persistent catalog root release failure'), { code: 'EPERM' });
+    });
+    vi.spyOn(process, 'emitWarning').mockImplementation(() => undefined);
+
+    await expect(replaceCatalogSourcesConfig({
+      config: next,
+      expectedDigest: initial.digest,
+      env: isolation.env,
+    })).resolves.toMatchObject({ config: next, materialized: true });
+    await expect(fs.readJson(resolveCatalogSourcesConfigPath(isolation.env))).resolves.toEqual(next);
+  });
+
+  it.each([1, 2])(
+    'returns the committed source config after %s transient lock release failures',
+    async (failures) => {
+      const isolation = getCurrentSourceTestIsolation();
+      const sourceRoot = path.join(isolation.layout.fixtureCwd, `source-release-${failures}`);
+      await fs.ensureDir(sourceRoot);
+      const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
+      const nextConfig = await createTwoSourceConfig(sourceRoot);
+      const attempts: number[] = [];
+      setConfigFileLockBeforeReleaseHookForTests(async (_lockPath, attempt) => {
+        attempts.push(attempt);
+        if (attempt <= failures) {
+          throw Object.assign(new Error('transient source lock release'), {
+            code: failures === 1 ? 'EBUSY' : 'EPERM',
+          });
+        }
+      });
+
+      await expect(replaceCatalogSourcesConfig({
+        config: nextConfig,
+        expectedDigest: initial.digest,
+        env: isolation.env,
+      })).resolves.toMatchObject({ config: nextConfig, materialized: true });
+      expect(attempts).toEqual(Array.from({ length: failures + 1 }, (_, index) => index + 1));
+      await expect(readCatalogSourcesConfigSnapshot(isolation.env)).resolves.toMatchObject({
+        config: nextConfig,
+        materialized: true,
+      });
+    },
+  );
 });
 
 describe('catalog source identity v1', () => {

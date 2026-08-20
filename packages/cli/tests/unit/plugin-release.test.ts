@@ -14,6 +14,7 @@ import {
   mergePluginReleaseLedgers,
   resolveBetaPluginVersionOverrides,
   type PluginReleaseLedger,
+  validatePluginReleaseLedger,
   validatePluginReleaseLedgerAgainstManifest,
 } from '../../src/utils/plugin-release.js';
 
@@ -85,6 +86,11 @@ afterEach(async () => {
 });
 
 describe('plugin release workflow', () => {
+  it('rejects the unpublished schema 1 ledger instead of mixing digest formats', () => {
+    expect(() => validatePluginReleaseLedger({ schemaVersion: 1, records: [] }))
+      .toThrow('expected schemaVersion 2');
+  });
+
   it('materializes beta versions only in release staging and keeps the source stable', async () => {
     const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-release-stage-'));
     tempDirs.push(repoRoot);
@@ -165,7 +171,7 @@ describe('plugin release workflow', () => {
 
   it('reuses a beta version for identical content and increments it for changed content', () => {
     const ledger: PluginReleaseLedger = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       records: [{
         plugin: 'ask-me',
         version: '1.1.0-beta.1',
@@ -193,9 +199,57 @@ describe('plugin release workflow', () => {
     });
   });
 
+  it('allocates the next beta when content returns to an older beta identity', () => {
+    const ledger: PluginReleaseLedger = {
+      schemaVersion: 2,
+      records: [
+        {
+          plugin: 'ask-me',
+          version: '1.1.0-beta.1',
+          contentDigest: DIGEST_A,
+          artifactDigest: DIGEST_B,
+          manifestDigest: DIGEST_C,
+          channel: 'beta',
+          catalogVersion: '2.0.0-beta.1',
+        },
+        {
+          plugin: 'ask-me',
+          version: '1.1.0-beta.2',
+          contentDigest: DIGEST_B,
+          artifactDigest: DIGEST_C,
+          manifestDigest: DIGEST_A,
+          channel: 'beta',
+          catalogVersion: '2.0.0-beta.2',
+        },
+      ],
+    };
+
+    const overrides = resolveBetaPluginVersionOverrides({
+      plugins: [createPlugin('ask-me', '1.1.0')],
+      contentDigests: new Map([['ask-me', DIGEST_A]]),
+      ledger,
+    });
+    expect(overrides).toEqual({
+      'ask-me': '1.1.0-beta.3',
+    });
+    const appended = appendCatalogToPluginReleaseLedger({
+      previous: ledger,
+      manifest: createManifest({
+        version: overrides['ask-me']!,
+        catalogVersion: '2.0.0-beta.3',
+      }),
+      contentDigests: new Map([['ask-me', DIGEST_A]]),
+    });
+    expect(appended.records.map((record) => record.version)).toEqual([
+      '1.1.0-beta.1',
+      '1.1.0-beta.2',
+      '1.1.0-beta.3',
+    ]);
+  });
+
   it('keeps a stable version after latest publication and rejects changed content', () => {
     const ledger: PluginReleaseLedger = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       records: [{
         plugin: 'ask-me',
         version: '1.1.0',
@@ -222,7 +276,7 @@ describe('plugin release workflow', () => {
 
   it('keeps both beta and latest publication history when stable content is reused', () => {
     const previous: PluginReleaseLedger = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       records: [{
         plugin: 'ask-me',
         version: '1.1.0',
@@ -277,7 +331,7 @@ describe('plugin release workflow', () => {
 
   it('merges identical plugin content across channel and catalog history without folding records', () => {
     const latest: PluginReleaseLedger = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       records: [{
         plugin: 'ask-me',
         version: '1.1.0',
@@ -289,7 +343,7 @@ describe('plugin release workflow', () => {
       }],
     };
     const beta: PluginReleaseLedger = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       records: [{
         plugin: 'ask-me',
         version: '1.1.0',
@@ -309,7 +363,7 @@ describe('plugin release workflow', () => {
 
   it('keeps consecutive beta catalog history when identical content reuses one plugin version', () => {
     const first = appendCatalogToPluginReleaseLedger({
-      previous: { schemaVersion: 1, records: [] },
+      previous: { schemaVersion: 2, records: [] },
       manifest: createManifest({
         version: '1.1.0-beta.1',
         artifactDigest: DIGEST_B,
@@ -337,7 +391,7 @@ describe('plugin release workflow', () => {
 
   it('rejects digest drift for one plugin version across catalogs', () => {
     const previous: PluginReleaseLedger = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       records: [{
         plugin: 'ask-me',
         version: '1.1.0',
@@ -374,9 +428,9 @@ describe('plugin release workflow', () => {
     };
 
     expect(() => mergePluginReleaseLedgers(
-      { schemaVersion: 1, records: [record] },
+      { schemaVersion: 2, records: [record] },
       {
-        schemaVersion: 1,
+        schemaVersion: 2,
         records: [{ ...record, contentDigest: DIGEST_B }],
       },
     )).toThrow('publication record');
@@ -394,13 +448,13 @@ describe('plugin release workflow', () => {
     };
 
     expect(mergePluginReleaseLedgers(
-      { schemaVersion: 1, records: [record] },
-      { schemaVersion: 1, records: [{ ...record }] },
+      { schemaVersion: 2, records: [record] },
+      { schemaVersion: 2, records: [{ ...record }] },
     ).records).toEqual([record]);
   });
 
   it('rejects prerelease or build metadata in the source plugin version', () => {
-    const ledger: PluginReleaseLedger = { schemaVersion: 1, records: [] };
+    const ledger: PluginReleaseLedger = { schemaVersion: 2, records: [] };
     for (const version of ['1.1.0-beta.1', '1.1.0+build.1']) {
       expect(() => resolveBetaPluginVersionOverrides({
         plugins: [createPlugin('ask-me', version)],
@@ -413,7 +467,7 @@ describe('plugin release workflow', () => {
   it('rejects a release ledger that does not match the schema 3 snapshot entry', () => {
     expect(() => validatePluginReleaseLedgerAgainstManifest(
       {
-        schemaVersion: 1,
+        schemaVersion: 2,
         records: [{
           plugin: 'ask-me',
           version: '1.1.0',
@@ -460,7 +514,7 @@ describe('plugin release workflow', () => {
 
     expect(() => validatePluginReleaseLedgerAgainstManifest(
       {
-        schemaVersion: 1,
+        schemaVersion: 2,
         records: [
           matchingRecord,
           {
@@ -476,7 +530,7 @@ describe('plugin release workflow', () => {
 
   it('rejects reuse of an older published plugin identity', () => {
     const previous: PluginReleaseLedger = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       records: [
         {
           plugin: 'ask-me',
@@ -556,5 +610,35 @@ describe('plugin release workflow', () => {
     await expect(calculateCatalogEntryContentDigest(secondRoot)).resolves.toBe(first);
     await fs.outputFile(path.join(secondRoot, 'nested', 'runtime.txt'), 'changed runtime\n');
     await expect(calculateCatalogEntryContentDigest(secondRoot)).resolves.not.toBe(first);
+  });
+
+  it('allocates a new beta plugin version when only canonical Git mode changes', async () => {
+    const pluginRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-mode-beta-'));
+    tempDirs.push(pluginRoot);
+    const runtimePath = path.join(pluginRoot, 'runtime.sh');
+    await fs.outputFile(runtimePath, '#!/bin/sh\n');
+    await fs.chmod(runtimePath, 0o644);
+    const firstContentDigest = await calculateCatalogEntryContentDigest(pluginRoot);
+    const ledger: PluginReleaseLedger = {
+      schemaVersion: 2,
+      records: [{
+        plugin: 'ask-me',
+        version: '1.1.0-beta.1',
+        contentDigest: firstContentDigest,
+        artifactDigest: DIGEST_B,
+        manifestDigest: DIGEST_C,
+        channel: 'beta',
+        catalogVersion: '2.0.0-beta.1',
+      }],
+    };
+
+    await fs.chmod(runtimePath, 0o755);
+    const executableContentDigest = await calculateCatalogEntryContentDigest(pluginRoot);
+    expect(executableContentDigest).not.toBe(firstContentDigest);
+    expect(resolveBetaPluginVersionOverrides({
+      plugins: [createPlugin('ask-me', '1.1.0')],
+      contentDigests: new Map([['ask-me', executableContentDigest]]),
+      ledger,
+    })).toEqual({ 'ask-me': '1.1.0-beta.2' });
   });
 });

@@ -23,12 +23,14 @@
 | `pnpm test:coverage` | 运行默认 unit/integration 测试并生成覆盖率报告 |
 | `pnpm test:smoke` | 运行完整 smoke suite |
 | `pnpm test:smoke:build` | 校验 `pnpm build` 产物 |
-| `pnpm test:smoke:pack:cli` | 校验 CLI tarball 内容 |
+| `pnpm test:smoke:pack:cli` | 校验 CLI tarball 内容，并在只暴露 tarball 已声明依赖的隔离视图中运行 bin 和关键 ESM import |
 | `pnpm test:smoke:stage:catalog` | 校验显式版本 catalog staging 和本地 path source 消费 |
 | `pnpm test:smoke:publish:catalog` | 使用本地 bare remote 校验 stage、Git publish、fetch 和 Git provider 消费 |
 | `pnpm test:smoke:bootstrap:catalog` | 使用本地 bare remote 校验两个 orphan channel、annotated tag、幂等和 atomic failure |
 | `pnpm test:smoke:fetch` | 通过本地 bare Git remote 校验 publish、fetch 和 Git provider 消费；复用 publish catalog smoke |
 | `pnpm test:smoke:plugin-scripts` | 校验真实插件脚本 staging、依赖闭包和 bundle 布局 |
+
+`release:verify:cli` 包含真实 plugin-scripts staging smoke，以及使用临时本地 bare Git remote 的 `test:smoke:fetch` publish/fetch/provider smoke。该 plugin smoke 固定 packageRoot 的 pnpm 版本，通过隔离 store 视图复用 workspace install 记录的 pnpm 内容，并在移除 `npm_execpath`、PATH 中的 Corepack/pnpm 和 pnpm 在线解析后运行；fetch smoke 不访问真实网络。
 
 普通测试使用 synthetic catalog、隔离 home 和 fake native runner。不得调用用户真实 Codex/Claude 配置，也不得修改仓库外状态。
 

@@ -36,11 +36,12 @@ export interface LiveStatusTargetIdentity {
 }
 
 export interface LiveStatusComponentCheck {
-  kind: OwnedComponent['kind'];
-  label: string;
+  kind?: OwnedComponent['kind'];
+  label?: string;
   artifactKey: string;
   state: OwnershipInspectionState;
   error?: string;
+  errorCode?: string;
 }
 
 export interface LiveStatusError {
@@ -270,7 +271,7 @@ function renderHuman(payload: StatusJsonPayload, verbose: boolean): string {
     if (verbose) {
       for (const component of entry.components) {
         lines.push(
-          `  组件：${component.kind} ${component.label} ${component.state}`
+          `  组件：${component.kind ?? 'component'} ${component.label ?? component.artifactKey} ${component.state}`
           + (component.error ? ` · ${component.error}` : ''),
         );
       }
@@ -510,6 +511,7 @@ export async function loadConsoleItemsResult(
       env: runtime.env,
       platform: rawOptions.platform,
       scope: rawOptions.scope,
+      verbose: rawOptions.verbose,
     });
     const targets: LiveStatusTarget[] = result.payload.targets.map((entry) => ({
       target: {
@@ -520,7 +522,14 @@ export async function loadConsoleItemsResult(
         cwd: entry.cwd,
       },
       state: entry.state,
-      components: [],
+      components: entry.components.map((component) => ({
+        artifactKey: component.key,
+        state: component.state,
+        ...(component.error ? {
+          errorCode: component.error.code,
+          error: component.error.message,
+        } : {}),
+      })),
       errors: entry.errors,
     }));
     const groups = new Map<string, LiveConsoleItem>();

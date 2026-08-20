@@ -20,6 +20,7 @@ import {
 } from './bundle-integrity.js';
 import {
   acquireActiveMarketplaceLifecycleLeaseAtRoot,
+  markActiveMarketplaceDurableCommit,
   releaseActiveMarketplaceCoordinationLease,
   resolveActiveMarketplaceRuntimeCoordinationRoot,
   withActiveMarketplaceLifecycleLease,
@@ -282,7 +283,9 @@ async function resolveCanonicalProjectRoot(cwd: string): Promise<string> {
   const repoRoot = await resolveRepoRoot(cwd);
   try {
     return await fs.realpath(repoRoot);
-  } catch {
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== 'ENOENT' && code !== 'ENOTDIR') throw error;
     return path.resolve(repoRoot);
   }
 }
@@ -464,10 +467,9 @@ async function acquireTargetLock(
     try {
       if (lifecycleLease) await releaseActiveMarketplaceCoordinationLease(lifecycleLease);
     } catch (releaseError) {
-      throw new AggregateError(
-        [error, releaseError],
-        'Lifecycle target lock acquisition and lifecycle lease release both failed.',
-        { cause: error },
+      emitLifecycleReleaseWarning(
+        'Lifecycle target lock acquisition failed, and lifecycle lease release also failed',
+        releaseError,
       );
     }
     throw error;
@@ -1106,7 +1108,7 @@ async function recoverTransientBackup(
     return;
   }
   await assertExistingDirectoryBoundary(target, backupPath, 'backupRoot');
-  if (await fs.pathExists(target.activeRoot)) {
+  if (await lstatIfExists(target.activeRoot)) {
     await fs.remove(backupPath);
     return;
   }
@@ -1168,6 +1170,11 @@ function isRetryableReleaseError(error: unknown): boolean {
   );
 }
 
+function isPostCommitReleaseWarning(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException).code ?? '';
+  return code === 'EBUSY' || code === 'EPERM';
+}
+
 async function releaseLeaseWithRetry(lock: ProcessLockLease): Promise<void> {
   let lastError: unknown;
   for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -1179,7 +1186,30 @@ async function releaseLeaseWithRetry(lock: ProcessLockLease): Promise<void> {
       if (!isRetryableReleaseError(error)) throw error;
     }
   }
+  await lock.release().catch(() => undefined);
   throw lastError;
+}
+
+function emitLifecycleReleaseWarning(message: string, releaseError: unknown): void {
+  try {
+    process.emitWarning(
+      `${message}: ${releaseError instanceof Error ? releaseError.message : String(releaseError)}.`,
+      { code: 'AW_LIFECYCLE_LOCK_RELEASE_FAILED' },
+    );
+  } catch {
+    // Diagnostics cannot replace the primary lifecycle error.
+  }
+}
+
+function emitLifecycleHousekeepingWarning(message: string, error: unknown): void {
+  try {
+    process.emitWarning(
+      `${message}: ${error instanceof Error ? error.message : String(error)}.`,
+      { code: 'AW_LIFECYCLE_HOUSEKEEPING_FAILED' },
+    );
+  } catch {
+    // Diagnostics cannot replace a durable lifecycle commit.
+  }
 }
 
 export async function prepareLifecycleActiveSnapshot(options: {
@@ -1288,10 +1318,9 @@ export async function prepareLifecycleActiveSnapshot(options: {
     try {
       await releaseLeaseWithRetry(lock);
     } catch (releaseError) {
-      throw new AggregateError(
-        [error, releaseError],
-        'Lifecycle active prepare failed and its target lock could not be released.',
-        { cause: error },
+      emitLifecycleReleaseWarning(
+        'Lifecycle active prepare failed, and its target lock could not be released',
+        releaseError,
       );
     }
     throw error;
@@ -1322,8 +1351,8 @@ async function restoreBackupAfterFailedPromote(options: {
     await assertExistingDirectoryBoundary(options.target, options.target.activeRoot, 'activeRoot');
     await fs.remove(options.target.activeRoot);
   }
-  if (options.backupPath && await fs.pathExists(options.backupPath)) {
-    if (await fs.pathExists(options.target.activeRoot)) {
+  if (options.backupPath && await lstatIfExists(options.backupPath)) {
+    if (await lstatIfExists(options.target.activeRoot)) {
       fail('Lifecycle active promote cannot restore backup over an unexpected active snapshot.');
     }
     await fs.rename(options.backupPath, options.target.activeRoot);
@@ -1336,11 +1365,14 @@ export async function promoteLifecycleActiveSnapshot(
   const { lock, loadPlugin } = requirePreparedContext(prepared);
   let backupPath: string | null = null;
   let installedNewActive = false;
+  let durableCommit = false;
   let primaryError: unknown;
   try {
     await assertExistingDirectoryBoundary(prepared.target, prepared.target.targetRoot, 'targetRoot');
     if (prepared.status === 'not-required') {
       await removeLifecycleSnapshotDataLocked(prepared.target);
+      durableCommit = true;
+      markActiveMarketplaceDurableCommit();
       return null;
     }
     const expectedStageRoot = path.join(prepared.target.stagingRoot, prepared.stageId);
@@ -1354,7 +1386,7 @@ export async function promoteLifecycleActiveSnapshot(
     if (stableStringify(staged.metadata) !== stableStringify(prepared.metadata)) {
       fail('Lifecycle active stage metadata no longer matches its prepared generation.');
     }
-    if (await fs.pathExists(prepared.target.activeRoot)) {
+    if (await lstatIfExists(prepared.target.activeRoot)) {
       await validateSnapshotRoot(prepared.target.activeRoot, prepared.target, loadPlugin);
       backupPath = path.join(
         prepared.target.targetRoot,
@@ -1368,20 +1400,31 @@ export async function promoteLifecycleActiveSnapshot(
     if (stableStringify(active.metadata) !== stableStringify(prepared.metadata)) {
       fail('Lifecycle active promoted generation changed during promotion.');
     }
+    durableCommit = true;
+    markActiveMarketplaceDurableCommit();
     if (backupPath) {
-      await fs.remove(backupPath);
-      backupPath = null;
+      try {
+        await fs.remove(backupPath);
+        backupPath = null;
+      } catch (cleanupError) {
+        emitLifecycleHousekeepingWarning(
+          'Lifecycle active promote committed, but old backup cleanup failed',
+          cleanupError,
+        );
+      }
     }
     await pruneEmptyStagingRoot(prepared.target.stagingRoot).catch(() => undefined);
     return createReadSnapshot(prepared.target, active);
   } catch (error) {
+    primaryError = error;
+    if (durableCommit) throw error;
     try {
       await restoreBackupAfterFailedPromote({
         target: prepared.target,
         backupPath,
         installedNewActive,
       });
-      if (prepared.status === 'staged' && await fs.pathExists(prepared.stageRoot)) {
+      if (prepared.status === 'staged' && await lstatIfExists(prepared.stageRoot)) {
         await fs.remove(prepared.stageRoot);
       }
       await pruneEmptyStagingRoot(prepared.target.stagingRoot).catch(() => undefined);
@@ -1393,23 +1436,28 @@ export async function promoteLifecycleActiveSnapshot(
       );
       throw primaryError;
     }
-    primaryError = error;
     throw error;
   } finally {
     try {
       await releaseLeaseWithRetry(lock);
     } catch (releaseError) {
       if (primaryError !== undefined) {
-        throw new AggregateError(
-          [primaryError, releaseError],
-          'Lifecycle active promote failed and its target lock could not be released.',
-          { cause: primaryError },
+        emitLifecycleReleaseWarning(
+          'Lifecycle active promote failed, and its target lock could not be released',
+          releaseError,
         );
+      } else if (durableCommit && isPostCommitReleaseWarning(releaseError)) {
+        emitLifecycleReleaseWarning(
+          'Lifecycle active promote committed, but its target lock could not be released',
+          releaseError,
+        );
+      } else {
+        throw releaseError;
       }
-      throw releaseError;
+    } finally {
+      finalizedPrepared.add(prepared);
+      preparedContexts.delete(prepared);
     }
-    finalizedPrepared.add(prepared);
-    preparedContexts.delete(prepared);
   }
 }
 
@@ -1443,11 +1491,11 @@ export async function discardLifecycleActiveSnapshot(
       await releaseLeaseWithRetry(lock);
     } catch (releaseError) {
       if (primaryError !== undefined) {
-        throw new AggregateError(
-          [primaryError, releaseError],
-          'Lifecycle active discard failed and its target lock could not be released.',
-          { cause: primaryError },
+        emitLifecycleReleaseWarning(
+          'Lifecycle active discard failed, and its target lock could not be released',
+          releaseError,
         );
+        throw primaryError;
       }
       throw releaseError;
     }
@@ -1472,7 +1520,7 @@ async function readLifecycleActiveSnapshotUnlocked(
 ): Promise<ReadLifecycleActiveSnapshot | null> {
   const target = await resolveLifecycleActiveTarget(options);
   await assertExistingPathChainHasNoSymlinks(target.awHome, target.activeRoot);
-  if (!await fs.pathExists(target.activeRoot)) {
+  if (!await lstatIfExists(target.activeRoot)) {
     return null;
   }
   try {
@@ -1524,7 +1572,7 @@ export async function leaseLifecycleActiveSnapshot(options: {
   let snapshot: ReadLifecycleActiveSnapshot | null;
   try {
     await assertExistingPathChainHasNoSymlinks(target.awHome, target.activeRoot);
-    if (!await fs.pathExists(target.activeRoot)) {
+    if (!await lstatIfExists(target.activeRoot)) {
       snapshot = null;
     } else {
       snapshot = createReadSnapshot(
@@ -1539,10 +1587,9 @@ export async function leaseLifecycleActiveSnapshot(options: {
     try {
       await releaseLeaseWithRetry(lock);
     } catch (releaseError) {
-      throw new AggregateError(
-        [primaryError, releaseError],
-        'Lifecycle active read failed and its target lock could not be released.',
-        { cause: primaryError },
+      emitLifecycleReleaseWarning(
+        'Lifecycle active read failed, and its target lock could not be released',
+        releaseError,
       );
     }
     throw primaryError;
@@ -1620,6 +1667,7 @@ export async function removeLifecycleActiveSnapshot(options: {
 }): Promise<void> {
   const target = await resolveLifecycleActiveTarget(options);
   const lock = await acquireTargetLock(target, options.lifecycleLeaseHeld);
+  let durableCommit = false;
   let primaryError: unknown;
   try {
     if (options.expectedMetadataIntegrityDigest !== undefined) {
@@ -1638,6 +1686,8 @@ export async function removeLifecycleActiveSnapshot(options: {
     await cleanupOrphanStages(target);
     await removeTransientBackupsLocked(target);
     await removeLifecycleSnapshotDataLocked(target);
+    durableCommit = true;
+    markActiveMarketplaceDurableCommit();
   } catch (error) {
     primaryError = error;
     throw error;
@@ -1646,13 +1696,18 @@ export async function removeLifecycleActiveSnapshot(options: {
       await releaseLeaseWithRetry(lock);
     } catch (releaseError) {
       if (primaryError !== undefined) {
-        throw new AggregateError(
-          [primaryError, releaseError],
-          'Lifecycle active remove failed and its target lock could not be released.',
-          { cause: primaryError },
+        emitLifecycleReleaseWarning(
+          'Lifecycle active remove failed, and its target lock could not be released',
+          releaseError,
         );
+      } else if (durableCommit && isPostCommitReleaseWarning(releaseError)) {
+        emitLifecycleReleaseWarning(
+          'Lifecycle active remove committed, but its target lock could not be released',
+          releaseError,
+        );
+      } else {
+        throw releaseError;
       }
-      throw releaseError;
     }
   }
 }

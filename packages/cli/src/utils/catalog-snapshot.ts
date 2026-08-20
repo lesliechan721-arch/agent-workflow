@@ -37,6 +37,35 @@ function isInside(rootDir: string, candidate: string): boolean {
   return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
 }
 
+function isAbsentSnapshotRoot(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException).code;
+  return code === 'ENOENT' || code === 'ENOTDIR';
+}
+
+function isOperationalSnapshotError(error: unknown): boolean {
+  return new Set(['EACCES', 'EBUSY', 'EIO', 'EMFILE', 'ENFILE', 'EPERM']).has(
+    (error as NodeJS.ErrnoException).code ?? '',
+  );
+}
+
+async function lstatSnapshotRoot(rootDir: string): Promise<fs.Stats | null> {
+  try {
+    return await fs.lstat(rootDir);
+  } catch (error) {
+    if (isAbsentSnapshotRoot(error)) return null;
+    throw error;
+  }
+}
+
+async function realpathSnapshotRoot(rootDir: string): Promise<string | null> {
+  try {
+    return await fs.realpath(rootDir);
+  } catch (error) {
+    if (isAbsentSnapshotRoot(error)) return null;
+    throw error;
+  }
+}
+
 async function assertSafeSymlink(rootDir: string, linkPath: string): Promise<void> {
   const target = await fs.readlink(linkPath);
   if (path.isAbsolute(target)) {
@@ -50,6 +79,7 @@ async function assertSafeSymlink(rootDir: string, linkPath: string): Promise<voi
   try {
     resolvedTarget = await fs.realpath(linkPath);
   } catch (error) {
+    if (isOperationalSnapshotError(error)) throw error;
     throw new Error(
       `Unsafe catalog snapshot symlink "${path.relative(rootDir, linkPath)}": target is missing or cyclic.`,
       { cause: error },
@@ -63,7 +93,7 @@ async function assertSafeSymlink(rootDir: string, linkPath: string): Promise<voi
 interface SnapshotDigestEntry {
   path: string;
   type: 'directory' | 'file' | 'symlink';
-  mode: number;
+  mode: '040000' | '100644' | '100755' | '120000';
   digest?: string;
   target?: string;
 }
@@ -80,20 +110,25 @@ async function collectSnapshotEntries(
     const absolutePath = path.join(currentDir, entry.name);
     const relativePath = path.relative(rootDir, absolutePath).split(path.sep).join('/');
     const stat = await fs.lstat(absolutePath);
-    const mode = stat.mode & 0o777;
     if (stat.isSymbolicLink()) {
       await assertSafeSymlink(rootDir, absolutePath);
       result.push({
         path: relativePath,
         type: 'symlink',
-        mode,
+        mode: '120000',
         target: await fs.readlink(absolutePath),
       });
       continue;
     }
     if (stat.isDirectory()) {
-      result.push({ path: relativePath, type: 'directory', mode });
-      result.push(...await collectSnapshotEntries(rootDir, absolutePath));
+      const children = await collectSnapshotEntries(rootDir, absolutePath);
+      if (children.length === 0) {
+        throw new Error(
+          `Invalid catalog snapshot empty directory "${relativePath}": Git cannot represent empty directories.`,
+        );
+      }
+      result.push({ path: relativePath, type: 'directory', mode: '040000' });
+      result.push(...children);
       continue;
     }
     if (!stat.isFile()) {
@@ -102,7 +137,7 @@ async function collectSnapshotEntries(
     result.push({
       path: relativePath,
       type: 'file',
-      mode,
+      mode: (stat.mode & 0o100) === 0 ? '100644' : '100755',
       digest: await calculateFileDigest(absolutePath),
     });
   }
@@ -110,7 +145,7 @@ async function collectSnapshotEntries(
 }
 
 async function validateRootLayout(rootDir: string): Promise<void> {
-  const rootStat = await fs.lstat(rootDir).catch(() => null);
+  const rootStat = await lstatSnapshotRoot(rootDir);
   if (!rootStat?.isDirectory() || rootStat.isSymbolicLink()) {
     throw new Error('Invalid catalog snapshot root: expected a regular directory.');
   }
@@ -141,11 +176,14 @@ async function validateRootLayout(rootDir: string): Promise<void> {
 
 export async function validateCatalogSnapshot(rootDir: string): Promise<CatalogSnapshotValidation> {
   const requestedRoot = path.resolve(rootDir);
-  const requestedStat = await fs.lstat(requestedRoot).catch(() => null);
+  const requestedStat = await lstatSnapshotRoot(requestedRoot);
   if (!requestedStat?.isDirectory() || requestedStat.isSymbolicLink()) {
     throw new Error('Invalid catalog snapshot root: expected a regular directory.');
   }
-  const resolvedRoot = await fs.realpath(requestedRoot);
+  const resolvedRoot = await realpathSnapshotRoot(requestedRoot);
+  if (resolvedRoot === null) {
+    throw new Error('Invalid catalog snapshot root: expected a regular directory.');
+  }
   await validateRootLayout(resolvedRoot);
   const snapshotEntries = await collectSnapshotEntries(resolvedRoot, resolvedRoot);
   const manifestPath = path.join(resolvedRoot, CURRENT_CATALOG_MANIFEST_FILE);

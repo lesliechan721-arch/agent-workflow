@@ -137,6 +137,7 @@ describe('catalog stage smoke', () => {
       compatibility: { aw: { minVersion: '0.1.0-beta.2' } },
     });
     expect(manifest).not.toHaveProperty('packages');
+    expect(ledger.schemaVersion).toBe(2);
     expect(manifest.entries.map((entry: { name: string }) => entry.name).sort())
       .toEqual(EXPECTED_PLUGINS);
     expect(manifest.entries.every((entry: { contentDigest: string }) =>

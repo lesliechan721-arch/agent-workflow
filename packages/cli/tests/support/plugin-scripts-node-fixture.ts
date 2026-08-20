@@ -104,6 +104,7 @@ export async function writeNodeScriptFixture(repoRootPath: string): Promise<void
       name: 'git-commit-smoke-scripts',
       version: '0.1.0',
       type: 'module',
+      packageManager: 'pnpm@10.33.0',
       dependencies: {
         yaml: '2.8.3',
       },
@@ -119,23 +120,36 @@ export async function writeNodeScriptFixture(repoRootPath: string): Promise<void
     'export const runtimeSuffix = "runtime-helper";\n',
     'utf8',
   );
+  await fs.ensureDir(path.join(scriptsRoot, 'helper'));
+  await fs.writeJson(
+    path.join(scriptsRoot, 'helper', 'package.json'),
+    { main: 'index.cjs' },
+    { spaces: 2 },
+  );
+  await fs.writeFile(
+    path.join(scriptsRoot, 'helper', 'index.cjs'),
+    'module.exports = "directory-helper";\n',
+    'utf8',
+  );
   await fs.writeFile(
     path.join(scriptsRoot, 'runtime.mjs'),
     [
       'import YAML from "yaml";',
       'import { createRequire } from "node:module";',
+      'import { runtimeSuffix } from "./runtime-helper.mjs";',
       'const require = createRequire(import.meta.url);',
       'const runtimeHelperPath = require.resolve("./runtime-helper.mjs");',
-      'const { runtimeSuffix } = await import(runtimeHelperPath);',
+      'const directoryHelper = require("./helper");',
       'const ignoredString = \'require.resolve("./missing-string.mjs")\';',
       '// require.resolve("./missing-comment.mjs");',
       'const ignoredPattern = /require\\.resolve\("\.\\/missing-regex\\.mjs"\)/u;',
       '',
       'export function parseSmokeConfig(source) {',
+      '  void runtimeHelperPath;',
       '  void ignoredString;',
       '  void ignoredPattern;',
       '  const parsed = YAML.parse(source);',
-      '  return `${parsed.name}:${runtimeSuffix}`;',
+      '  return `${parsed.name}:${runtimeSuffix}:${directoryHelper}`;',
       '}',
       '',
     ].join('\n'),
@@ -161,7 +175,7 @@ export async function writeNodeScriptFixture(repoRootPath: string): Promise<void
     '  assert.equal(context.plugin.version, "0.1.0");',
     '  assert.equal(process.cwd(), context.cwd);',
     '  assert.notEqual(context.plugin.rootDir, context.sourceRoot);',
-    '  assert.equal(parseSmokeConfig("name: smoke\\n"), "smoke:runtime-helper");',
+    '  assert.equal(parseSmokeConfig("name: smoke\\n"), "smoke:runtime-helper:directory-helper");',
     '  assert.equal(await fsExtra.pathExists(process.env.AW_PLUGIN_CONTEXT), true);',
     '});',
     '',

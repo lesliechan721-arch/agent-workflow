@@ -433,7 +433,7 @@ describe('build cache input and environment identity', () => {
 });
 
 describe('build cache output binding', () => {
-  it('rejects required and non-required output symlinks for builds and snapshots', async () => {
+  it('rejects required and non-required CLI dist symlinks for builds and snapshots', async () => {
     const repoRoot = await createRepo();
     await buildWithCache(repoRoot, { build: () => writeBuildOutputs(repoRoot) });
     const indexPath = path.join(repoRoot, 'packages', 'cli', 'dist', 'index.js');
@@ -463,6 +463,40 @@ describe('build cache output binding', () => {
       .rejects.toThrow('Build output contains unsupported symlink packages/cli/dist/src/nonrequired.js');
     await expect(fs.stat(path.join(repoRoot, '.release', 'cache', 'build-stamp.json')))
       .rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('reuses and snapshots catalog symlinks with their relative target unchanged', async () => {
+    const repoRoot = await createRepo();
+    const linkTarget = 'targets/runtime.js';
+    const linkPath = path.join(
+      repoRoot,
+      'packages',
+      'cli',
+      'plugins-dist',
+      'plugins',
+      'demo',
+      'runtime.js',
+    );
+    const build = async () => {
+      await writeBuildOutputs(repoRoot);
+      await fs.mkdir(path.join(path.dirname(linkPath), 'targets'), { recursive: true });
+      await fs.writeFile(path.join(path.dirname(linkPath), linkTarget), 'export {}\n');
+      await fs.symlink(linkTarget, linkPath);
+    };
+
+    await expect(buildWithCache(repoRoot, { build })).resolves.toMatchObject({ reused: false });
+    await expect(buildWithCache(repoRoot, { build })).resolves.toMatchObject({ reused: true });
+
+    const snapshot = await createBuildSnapshot(repoRoot, { build });
+    const snapshotLink = path.join(
+      snapshot.catalogOutputRoot,
+      'plugins',
+      'demo',
+      'runtime.js',
+    );
+    expect((await fs.lstat(snapshotLink)).isSymbolicLink()).toBe(true);
+    await expect(fs.readlink(snapshotLink)).resolves.toBe(linkTarget);
+    await snapshot.cleanup();
   });
 
   it('rebuilds after JS/JSON mutation and any output tree deletion or addition', async () => {

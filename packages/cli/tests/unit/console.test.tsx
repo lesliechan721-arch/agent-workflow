@@ -321,7 +321,7 @@ describe('dashboard controller and reducer', () => {
 
     await expect(controller.load()).resolves.toBe(value);
     expect(mocks.loadConsoleItemsResult).toHaveBeenCalledWith(
-      { cwd: '/workspace', includeCatalogOnly: true },
+      { cwd: '/workspace', includeCatalogOnly: true, verbose: false },
       context,
     );
     for (const [action, command] of [
@@ -338,6 +338,23 @@ describe('dashboard controller and reducer', () => {
         context,
       );
     }
+  });
+
+  it('passes verbose diagnostics to the dashboard status loader', async () => {
+    const value = loaded([item('demo', 'absent')]);
+    mocks.loadConsoleItemsResult.mockResolvedValue(value);
+    const context = createCliExecutionContext({
+      cwd: '/workspace',
+      interactive: true,
+      diagnostics: { commandName: 'console', verbose: true },
+    });
+
+    await createDashboardController(context).load();
+
+    expect(mocks.loadConsoleItemsResult).toHaveBeenCalledWith(
+      { cwd: '/workspace', includeCatalogOnly: true, verbose: true },
+      context,
+    );
   });
 
   it.each([

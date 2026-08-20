@@ -2,6 +2,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
+  assertReleaseWorktreeClean,
   assertVersionKind,
   resolvePublishedCliVersion,
 } from './common.mjs';
@@ -36,6 +37,8 @@ export function parseArgs(argv) {
 
 export async function promoteCatalog(argv = process.argv.slice(2), options = {}) {
   const { mode, catalogVersion } = parseArgs(argv);
+  const assertClean = options.assertReleaseWorktreeClean ?? assertReleaseWorktreeClean;
+  await assertClean({ allowVersionSync: true });
   const currentCliVersion = await (options.resolvePublishedCliVersion
     ?? resolvePublishedCliVersion)(mode);
   const remoteUrl = options.remoteUrl ?? OFFICIAL_CATALOG_PUBLISH_REMOTE;
@@ -47,9 +50,13 @@ export async function promoteCatalog(argv = process.argv.slice(2), options = {})
       currentCliVersion,
       remoteUrl,
       publicationLease,
+      beforeRemoteWrite: () => assertClean({ allowVersionSync: true }),
       ...(options.catalogModules ? { catalogModules: options.catalogModules } : {}),
     }),
-    options.publisherOptions,
+    {
+      ...options.publisherOptions,
+      beforeAcquire: () => assertClean({ allowVersionSync: true }),
+    },
   );
 }
 

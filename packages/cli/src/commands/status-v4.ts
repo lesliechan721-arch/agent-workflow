@@ -16,6 +16,7 @@ import { calculateCatalogSourceIdentity } from '../utils/catalog-source-identity
 import {
   inventoryCatalogSourceReferences,
   inventoryLegacyOwnerReferences,
+  type CatalogSourceInventoryError,
 } from '../utils/catalog-source-references.js';
 import { readCatalogSourcesConfigSnapshot, resolveCatalogSourceRef } from '../utils/catalog-sources.js';
 import {
@@ -113,11 +114,17 @@ interface PlannedStatusSelector {
   parsed: ReturnType<typeof parsePluginId>;
 }
 
+interface StatusInventoryError {
+  code: 'nativeStateUnreadable' | 'stateInventoryFailed';
+  message: string;
+  relevance: CatalogSourceInventoryError['relevance'];
+}
+
 function projectStateInventoryError(
   error: unknown,
   env: NodeJS.ProcessEnv,
   cwd: string,
-): { code: 'nativeStateUnreadable' | 'stateInventoryFailed'; message: string } {
+): StatusInventoryError {
   const sanitized = sanitizeCatalogSourceError(error, env, [
     getCodexHome(env),
     getClaudeHome(env),
@@ -125,7 +132,29 @@ function projectStateInventoryError(
   ]);
   const native = /(?:Codex|Claude|config\.toml|settings|installed_plugins)/iu.test(sanitized.message);
   const code = native ? 'nativeStateUnreadable' : 'stateInventoryFailed';
-  return { code, message: `${code}: ${sanitized.message}` };
+  return { code, message: `${code}: ${sanitized.message}`, relevance: { global: true } };
+}
+
+function inventoryErrorMatchesSelection(options: {
+  error: StatusInventoryError;
+  selectors: PlannedStatusSelector[];
+  platformExplicit: boolean;
+  scopeExplicit: boolean;
+  platforms: PlatformName[];
+  scopes: Scope[];
+}): boolean {
+  const relevance = options.error.relevance;
+  if (relevance.global) return true;
+  if (options.platformExplicit && relevance.platform
+    && !options.platforms.includes(relevance.platform)) return false;
+  if (options.scopeExplicit && relevance.scope
+    && !options.scopes.includes(relevance.scope)) return false;
+  if (options.selectors.length === 0 || (!relevance.sourceId && !relevance.pluginName)) return true;
+  return options.selectors.some((selector) =>
+    (!relevance.pluginName || selector.parsed.pluginName === relevance.pluginName)
+    && (!relevance.sourceId
+      || selector.parsed.sourceId === undefined
+      || selector.parsed.sourceId === relevance.sourceId));
 }
 
 function projectTargetError(
@@ -223,7 +252,7 @@ export async function statusCommandV4(options: {
     'packages/cli/package.json version',
   );
   const snapshot = await readCatalogSourcesConfigSnapshot(env);
-  const inventoryErrors: Array<{ code: 'nativeStateUnreadable' | 'stateInventoryFailed'; message: string }> = [];
+  const inventoryErrors: StatusInventoryError[] = [];
   const ownerInventory = await inventoryCatalogSourceReferences({ cwd: options.cwd, env }).catch(async (error) => {
     inventoryErrors.push(projectStateInventoryError(error, env, options.cwd));
     return inventoryLegacyOwnerReferences({ cwd: options.cwd, env }).catch((fallbackError) => {
@@ -236,6 +265,7 @@ export async function statusCommandV4(options: {
     inventoryErrors.push({
       code,
       message: `${code}: ${error.kind}@${error.location}: ${error.message}`,
+      relevance: error.relevance,
     });
   }
   const configured = new Map(snapshot.config.sources.map((source) => [source.id, source]));
@@ -243,6 +273,7 @@ export async function statusCommandV4(options: {
   const platforms = selectedPlatforms(options.platform);
   const scopes = selectedScopes(options.scope);
   const selectorErrors: Array<{ code: string; message: string }> = [];
+  const parsedSelectors: PlannedStatusSelector[] = [];
   const plannedSelectors: PlannedStatusSelector[] = [];
   const liveOnlySelectors: PlannedStatusSelector[] = [];
   for (const selector of requested) {
@@ -256,6 +287,7 @@ export async function statusCommandV4(options: {
       });
       continue;
     }
+    parsedSelectors.push({ raw: selector, parsed });
     if (parsed.sourceId !== undefined && !configured.has(parsed.sourceId)) {
       const hasLiveReference = ownerInventory.references.some((reference) =>
         (reference.kind === 'namespacedOwner' || reference.kind === 'namespacedMarketplace')
@@ -265,7 +297,14 @@ export async function statusCommandV4(options: {
         && scopes.includes(reference.scope as Scope));
       if (hasLiveReference) {
         liveOnlySelectors.push({ raw: selector, parsed });
-      } else if (inventoryErrors.length === 0) {
+      } else if (!inventoryErrors.some((error) => inventoryErrorMatchesSelection({
+        error,
+        selectors: [{ raw: selector, parsed }],
+        platformExplicit: options.platform !== undefined,
+        scopeExplicit: options.scope !== undefined,
+        platforms,
+        scopes,
+      }))) {
         selectorErrors.push({
           code: 'pluginNotFound',
           message: `Plugin "${selector}" was not found because catalog source "${parsed.sourceId}" is not configured.`,
@@ -275,6 +314,14 @@ export async function statusCommandV4(options: {
     }
     plannedSelectors.push({ raw: selector, parsed });
   }
+  const selectedInventoryErrors = inventoryErrors.filter((error) => inventoryErrorMatchesSelection({
+    error,
+    selectors: parsedSelectors,
+    platformExplicit: options.platform !== undefined,
+    scopeExplicit: options.scope !== undefined,
+    platforms,
+    scopes,
+  }));
   const plannedSourceIds = requested.length === 0
     ? undefined
     : planPluginSelectorSourceIds(plannedSelectors.map((selector) => selector.parsed));
@@ -493,7 +540,16 @@ export async function statusCommandV4(options: {
         entry.name === selector.parsed.pluginName
         && (selector.parsed.sourceId === undefined || entry.source.id === selector.parsed.sourceId));
       if (matches.length === 0) {
-        if (inventoryErrors.length === 0) {
+        const selectorHasInventoryError = selectedInventoryErrors.some((error) =>
+          inventoryErrorMatchesSelection({
+            error,
+            selectors: [selector],
+            platformExplicit: options.platform !== undefined,
+            scopeExplicit: options.scope !== undefined,
+            platforms,
+            scopes,
+          }));
+        if (!selectorHasInventoryError) {
           selectorErrors.push({
             code: 'pluginNotFound',
             message: `Plugin "${selector.raw}" was not found in the selected catalog source set.`,
@@ -691,9 +747,9 @@ export async function statusCommandV4(options: {
     return [[`${pluginId}\0${reference.platform}\0${reference.scope}`, target] as const];
   })).values()];
   targets.push(...unavailableBundleTargets);
-  const projectedInventoryErrors = [...new Map(inventoryErrors.map((error) => [
+  const projectedInventoryErrors = [...new Map(selectedInventoryErrors.map((error) => [
     `${error.code}\0${error.message}`,
-    error,
+    { code: error.code, message: error.message },
   ])).values()];
   const errors = [
     ...projectedInventoryErrors,

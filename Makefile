@@ -73,12 +73,12 @@ version-release:
 publish-cli-beta:
 	@test -n "$(CLI_VERSION)" || (echo 'CLI_VERSION is required. Example: make publish-cli-beta CLI_VERSION=0.2.0-beta.0' && exit 1)
 	$(PNPM) run version:set:beta -- $(CLI_VERSION)
-	$(PNPM) run release:publish:cli:beta
+	$(PNPM) run release:publish:cli:beta -- --cli-version $(CLI_VERSION)
 
 publish-cli-release:
 	@test -n "$(CLI_VERSION)" || (echo 'CLI_VERSION is required. Example: make publish-cli-release CLI_VERSION=0.2.0' && exit 1)
 	$(PNPM) run version:set:release -- $(CLI_VERSION)
-	$(PNPM) run release:publish:cli:latest
+	$(PNPM) run release:publish:cli:latest -- --cli-version $(CLI_VERSION)
 
 publish-catalog-beta:
 	@test -n "$(CATALOG_VERSION)" || (echo 'CATALOG_VERSION is required. Example: make publish-catalog-beta CATALOG_VERSION=1.2.0-beta.1' && exit 1)

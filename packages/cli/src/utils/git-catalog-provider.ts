@@ -810,6 +810,7 @@ async function resolveGitCatalogSourceWithLease(
         });
         const stagingRoot = path.join(location.rootDir, `.materialize-${crypto.randomUUID()}.tmp`);
         let retainStaging = false;
+        let published = false;
         try {
           await materializeCommit({
             objectsDir: location.objectsDir,
@@ -831,7 +832,7 @@ async function resolveGitCatalogSourceWithLease(
               selection: source.refPolicy.type,
             });
           }
-          return await withCatalogGitLockDeadline({
+          const publishedEntry = await withCatalogGitLockDeadline({
             deadline,
             maximumMs: DEFAULT_CACHE_LOCK_TIMEOUT_MS,
             action: (lockTimeoutMs) => publishCatalogSourceCacheEntry({
@@ -847,11 +848,28 @@ async function resolveGitCatalogSourceWithLease(
               lockTimeoutMs,
             }),
           });
+          published = true;
+          return publishedEntry;
         } catch (error) {
           retainStaging = error instanceof CatalogGitFatalCleanupError;
           throw error;
         } finally {
-          if (!retainStaging) await fs.remove(stagingRoot);
+          if (!retainStaging) {
+            try {
+              await fs.remove(stagingRoot);
+            } catch (error) {
+              const code = (error as NodeJS.ErrnoException).code ?? '';
+              if (!published || (code !== 'EBUSY' && code !== 'EPERM')) throw error;
+              try {
+                process.emitWarning(
+                  `Catalog Git source was published, but materialization cleanup failed with ${code}.`,
+                  { code: 'AW_CATALOG_PROVIDER_CLEANUP_FAILED' },
+                );
+              } catch {
+                // Diagnostics cannot replace a published cache result.
+              }
+            }
+          }
         }
         },
       }),

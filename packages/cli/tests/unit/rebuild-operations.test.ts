@@ -508,6 +508,28 @@ describe('rebuild operation happy paths', () => {
     expect(fixture.log).not.toContain('marketplace.rollback');
   });
 
+  it('does not recover or roll back after a durable materialize commit cleanup failure', async () => {
+    const fixture = createFixture();
+    fixture.driver.commitMaterialize = async () => {
+      fixture.log.push('marketplace.commit');
+      throw Object.assign(new Error('marketplaceGenerationCleanupPending: EBUSY'), {
+        durableMaterializeCommit: true,
+      });
+    };
+    fixture.driver.rollbackMaterialize = async () => { fixture.log.push('marketplace.rollback'); };
+
+    const result = await executeRebuildOperation({
+      command: 'install', target: fixture.target, driver: fixture.driver, activeStore: fixture.store,
+    });
+
+    expect(result.status).toBe('failed');
+    if (result.status === 'failed') expect(result.error.phase).toBe('marketplace.commit');
+    expect(fixture.log).not.toContain('marketplace.rollback');
+    expect(fixture.log).not.toContain('active.remove');
+    expect(fixture.cleanupCalls).toEqual({ native: 0, artifact: 0, active: 0 });
+    expect(fixture.states).toEqual({ native: 'present', artifact: 'present' });
+  });
+
   it('upgrades with the current bundle without reading installed state', async () => {
     const fixture = createFixture();
     const result = await executeRebuildOperation({

@@ -246,11 +246,8 @@ describe('plugin script test runner', () => {
       [
         'import test from "node:test";',
         'import assert from "node:assert/strict";',
-        'import { createRequire } from "node:module";',
         'import { readFile } from "node:fs/promises";',
-        'const require = createRequire(import.meta.url);',
-        'const helperPath = require.resolve("./context-helper.mjs");',
-        'const { helperValue } = await import(helperPath);',
+        'const { helperValue } = await import("./context-helper.mjs");',
         'test("context", async () => {',
         '  const context = JSON.parse(await readFile(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
         '  assert.equal(context.event, "test");',
@@ -692,6 +689,88 @@ describe('plugin script test runner', () => {
       stderr: output.stderr,
     })).resolves.toBe(1);
     expect(output.readStderr()).toContain('Runtime import "yaml"');
+  });
+
+  it('runs tests with CommonJS directory main and extensionless JSON imports', async () => {
+    const repoRoot = await makeTempRepo();
+    const manifest = await readManifest(repoRoot);
+    manifest.scripts = {
+      tests: {
+        node: ['./scripts/commonjs.test.cjs'],
+      },
+    };
+    await writeManifest(repoRoot, manifest);
+    await writeNodeTestFile(repoRoot, 'commonjs.test.cjs', [
+      'const test = require("node:test");',
+      'const assert = require("node:assert/strict");',
+      'const helper = require("./feature");',
+      'test("CommonJS test closure", () => {',
+      '  assert.deepEqual(helper, { staged: true });',
+      '});',
+    ].join('\n'));
+    await fs.outputJson(pluginScriptPath(repoRoot, 'feature/package.json'), {
+      main: '../shared.cjs',
+    });
+    await writeNodeTestFile(
+      repoRoot,
+      'shared.cjs',
+      'module.exports = require("./fixture");\n',
+    );
+    await fs.outputJson(pluginScriptPath(repoRoot, 'fixture.json'), {
+      staged: true,
+    });
+    const output = captureOutput();
+
+    const exitCode = await runPluginScriptTests(['git-commit', '--platform', 'codex'], {
+      repoRoot,
+      stdout: output.stdout,
+      stderr: output.stderr,
+      env: { ...process.env, PATH: process.env.PATH ?? '' } as NodeJS.ProcessEnv,
+    });
+
+    expect(exitCode, `${output.readStdout()}\n${output.readStderr()}`).toBe(0);
+    expect(output.readStdout()).toContain('git-commit / codex: passed');
+    expect(output.readStderr()).toBe('');
+  });
+
+  it('rejects a test import resolved only by a nested CommonJS package manifest', async () => {
+    const repoRoot = await makeTempRepo();
+    const manifest = await readManifest(repoRoot);
+    manifest.scripts = {
+      tests: {
+        node: ['./scripts/nested-main.test.cjs'],
+      },
+    };
+    await writeManifest(repoRoot, manifest);
+    await writeNodeTestFile(
+      repoRoot,
+      'nested-main.test.cjs',
+      'require("./nested-main-helper");\n',
+    );
+    await fs.outputJson(pluginScriptPath(repoRoot, 'nested-main-helper/package.json'), {
+      main: 'nested',
+    });
+    await fs.outputJson(pluginScriptPath(repoRoot, 'nested-main-helper/nested/package.json'), {
+      main: 'actual.cjs',
+    });
+    await writeNodeTestFile(
+      repoRoot,
+      'nested-main-helper/nested/actual.cjs',
+      'module.exports = true;\n',
+    );
+    const output = captureOutput();
+
+    const exitCode = await runPluginScriptTests(['git-commit', '--platform', 'codex'], {
+      repoRoot,
+      stdout: output.stdout,
+      stderr: output.stderr,
+    });
+
+    expect(exitCode).toBe(1);
+    expect(output.readStdout()).toBe('');
+    expect(output.readStderr()).toContain(
+      'Unable to resolve relative import "./nested-main-helper" from "scripts/nested-main.test.cjs".',
+    );
   });
 
   it('redacts sensitive config values from node test output and failures', async () => {
