@@ -47,11 +47,7 @@
       "id": "behavior",
       "kind": "conversation",
       "skills": [
-        "dev-workflow",
-        "dev-spec",
-        "dev-review-spec",
-        "dev-implement",
-        "dev-review-code"
+        "dev-spec"
       ],
       "cases": "./behavior-cases.json",
       "isolation": "strict",

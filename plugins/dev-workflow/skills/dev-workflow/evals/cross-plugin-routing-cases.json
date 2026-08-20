@@ -9,119 +9,327 @@
   },
   "cases": [
     {
-      "id": "route_decision_grill",
+      "id": "route_fast_explicit_workflow",
       "split": "validation",
-      "query": "按结构化开发工作流逐轮和我推演新的权限模型，直到目标、取舍和失败路径都清楚。",
-      "expected_loaded_skills": ["dev-workflow", "decision-grill"],
-      "eval_type": "routing",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "workflow-cross-plugin-routing",
-      "unit_under_test": "full-skill",
-      "preconditions": { "participant_skills_available": true, "ask_me_installed": true },
-      "oracle": {
-        "rationale": "用户显式进入开发工作流，并要求多轮材料决策访谈。",
-        "rule_refs": ["dev-workflow/SKILL.md#路由", "decision-grill/SKILL.md description"],
-        "confidence": "high",
-        "allowed_variance": "问题顺序可以不同，但应只加载入口和 decision-grill。",
-        "minimal_counterexample": "若用户没有要求逐轮推演材料决定，则不应加载 decision-grill。"
-      }
-    },
-    {
-      "id": "route_decision_prototype",
-      "split": "validation",
-      "query": "使用 /dev 做一个可点击审批流程让我操作，再根据反馈确定最终交互。",
-      "expected_loaded_skills": ["dev-workflow", "decision-prototype"],
+      "query": "使用 dev-workflow 处理这个明确小改动：修正设置页标题并运行现有测试。",
+      "expected_loaded_skills": [
+        "dev-workflow",
+        "dev-implement"
+      ],
       "eval_type": "routing",
       "case_role": "representative",
       "provenance": "representative-synthetic",
-      "scenario_family": "workflow-cross-plugin-routing",
+      "scenario_family": "assurance-routing",
       "unit_under_test": "full-skill",
-      "preconditions": { "participant_skills_available": true, "ask_me_installed": true },
+      "preconditions": {
+        "participant_skills_available": true,
+        "request_clear": true,
+        "risk_low": true
+      },
       "oracle": {
-        "rationale": "用户显式进入开发工作流，当前决定必须通过可操作原型形成。",
-        "rule_refs": ["dev-workflow/SKILL.md#路由", "decision-prototype/SKILL.md description"],
+        "rationale": "用户显式要求工作流，但任务满足 Fast 条件，入口应直接进入实现。",
+        "rule_refs": [
+          "dev-workflow/SKILL.md#4-判断当前阶段"
+        ],
         "confidence": "high",
-        "allowed_variance": "原型形式可不同，但应只加载入口和 decision-prototype。"
+        "allowed_variance": "措辞和内部调查方式可以不同，但应只加载入口和当前阶段需要的专业能力。"
       }
     },
     {
-      "id": "route_spec",
+      "id": "route_standard_decision_grill",
       "split": "validation",
-      "query": "按开发工作流把刚才已经确认的 API、兼容性和验收条件写成轻量 Spec。",
-      "expected_loaded_skills": ["dev-workflow", "dev-spec"],
+      "query": "使用 dev-workflow 组织新的权限模型。目标、租户边界和失败语义相互依赖，需要逐轮和我收敛。",
+      "expected_loaded_skills": [
+        "dev-workflow",
+        "decision-grill"
+      ],
       "eval_type": "routing",
       "case_role": "representative",
       "provenance": "representative-synthetic",
-      "scenario_family": "workflow-local-routing",
+      "scenario_family": "decision-routing",
       "unit_under_test": "full-skill",
-      "preconditions": { "participant_skills_available": true },
+      "preconditions": {
+        "participant_skills_available": true,
+        "decision_requires_discussion": true
+      },
       "oracle": {
-        "rationale": "材料决定已经形成，当前交付是稳定规格。",
-        "rule_refs": ["dev-workflow/SKILL.md#路由", "dev-spec/SKILL.md description"],
+        "rationale": "Standard 任务存在可通过讨论解决的相互依赖材料决定。",
+        "rule_refs": [
+          "dev-workflow/SKILL.md#4-判断当前阶段"
+        ],
         "confidence": "high",
-        "allowed_variance": "规格组织可不同，但应只加载入口和 dev-spec。"
+        "allowed_variance": "措辞和内部调查方式可以不同，但应只加载入口和当前阶段需要的专业能力。"
       }
     },
     {
-      "id": "route_spec_review",
+      "id": "route_standard_decision_prototype",
       "split": "validation",
-      "query": "用 /dev 只读审查现有 Spec 是否可批准、可实现并且没有规定过度。",
-      "expected_loaded_skills": ["dev-workflow", "dev-review-spec"],
+      "query": "使用 dev-workflow 处理审批页布局；我必须实际操作单栏和双栏候选后才能决定。",
+      "expected_loaded_skills": [
+        "dev-workflow",
+        "decision-prototype"
+      ],
       "eval_type": "routing",
       "case_role": "representative",
       "provenance": "representative-synthetic",
-      "scenario_family": "workflow-local-routing",
+      "scenario_family": "decision-routing",
       "unit_under_test": "full-skill",
-      "preconditions": { "participant_skills_available": true },
+      "preconditions": {
+        "participant_skills_available": true,
+        "decision_requires_evidence": true
+      },
       "oracle": {
-        "rationale": "已有 Spec，当前交付是批准前规格审查。",
-        "rule_refs": ["dev-workflow/SKILL.md#路由", "dev-review-spec/SKILL.md description"],
+        "rationale": "当前决定需要体验证据，不能靠访谈或 Spec 直接解决。",
+        "rule_refs": [
+          "dev-workflow/SKILL.md#4-判断当前阶段"
+        ],
         "confidence": "high",
-        "allowed_variance": "审查方式可不同，但应只加载入口和 dev-review-spec。"
+        "allowed_variance": "措辞和内部调查方式可以不同，但应只加载入口和当前阶段需要的专业能力。"
       }
     },
     {
-      "id": "route_implementation",
+      "id": "route_confirmed_decisions_to_spec",
       "split": "validation",
-      "query": "按结构化开发工作流实现已经确认的邀请过期 Spec，并运行相关测试。",
-      "expected_loaded_skills": ["dev-workflow", "dev-implement"],
+      "query": "使用 dev-workflow 继续：API、兼容性和验收都已确认，当前还没有 Spec。",
+      "expected_loaded_skills": [
+        "dev-workflow",
+        "dev-spec"
+      ],
       "eval_type": "routing",
       "case_role": "representative",
       "provenance": "representative-synthetic",
-      "scenario_family": "workflow-local-routing",
+      "scenario_family": "stage-resume",
       "unit_under_test": "full-skill",
-      "preconditions": { "participant_skills_available": true, "spec_confirmed": true },
+      "preconditions": {
+        "participant_skills_available": true,
+        "decisions_confirmed": true,
+        "spec_exists": false
+      },
       "oracle": {
-        "rationale": "请求和 Spec 已明确，当前交付是实施。",
-        "rule_refs": ["dev-workflow/SKILL.md#路由", "dev-implement/SKILL.md description"],
+        "rationale": "材料决定稳定且缺少规范性记录。",
+        "rule_refs": [
+          "dev-workflow/SKILL.md#4-判断当前阶段"
+        ],
         "confidence": "high",
-        "allowed_variance": "实现方法可不同，但应只加载入口和 dev-implement。"
+        "allowed_variance": "措辞和内部调查方式可以不同，但应只加载入口和当前阶段需要的专业能力。"
       }
     },
     {
-      "id": "route_code_review",
+      "id": "route_draft_spec_to_review",
       "split": "validation",
-      "query": "使用 /dev 审查这个 PR，需求符合度和工程质量分开报告，不要直接修复。",
-      "expected_loaded_skills": ["dev-workflow", "dev-review-code"],
+      "query": "使用 dev-workflow 继续这个 Spec 草案；它还没有经过批准前审查。",
+      "expected_loaded_skills": [
+        "dev-workflow",
+        "dev-review-spec"
+      ],
       "eval_type": "routing",
       "case_role": "representative",
       "provenance": "representative-synthetic",
-      "scenario_family": "workflow-local-routing",
+      "scenario_family": "stage-resume",
       "unit_under_test": "full-skill",
-      "preconditions": { "participant_skills_available": true, "implementation_available": true },
+      "preconditions": {
+        "participant_skills_available": true,
+        "spec_exists": true,
+        "spec_review_exists": false
+      },
       "oracle": {
-        "rationale": "已有 PR，当前交付是双轴实现审查。",
-        "rule_refs": ["dev-workflow/SKILL.md#路由", "dev-review-code/SKILL.md description"],
+        "rationale": "已有 Spec 草案，最早未完成阶段是规格审查。",
+        "rule_refs": [
+          "dev-workflow/SKILL.md#4-判断当前阶段"
+        ],
         "confidence": "high",
-        "allowed_variance": "审查过程可不同，但应只加载入口和 dev-review-code。"
+        "allowed_variance": "措辞和内部调查方式可以不同，但应只加载入口和当前阶段需要的专业能力。"
+      }
+    },
+    {
+      "id": "route_approved_spec_to_implementation",
+      "split": "validation",
+      "query": "使用 dev-workflow 继续已经 clean 且明确批准的邀请过期 Spec。",
+      "expected_loaded_skills": [
+        "dev-workflow",
+        "dev-implement"
+      ],
+      "eval_type": "routing",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "stage-resume",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "participant_skills_available": true,
+        "spec_confirmed": true
+      },
+      "oracle": {
+        "rationale": "Spec 已审查和批准，当前进入实现。",
+        "rule_refs": [
+          "dev-workflow/SKILL.md#4-判断当前阶段"
+        ],
+        "confidence": "high",
+        "allowed_variance": "措辞和内部调查方式可以不同，但应只加载入口和当前阶段需要的专业能力。"
+      }
+    },
+    {
+      "id": "route_diff_to_code_review",
+      "split": "validation",
+      "query": "使用 dev-workflow 继续这个任务：实现和验证已经完成，现在有一个待审查 diff。",
+      "expected_loaded_skills": [
+        "dev-workflow",
+        "dev-review-code"
+      ],
+      "eval_type": "routing",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "stage-resume",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "participant_skills_available": true,
+        "implementation_available": true
+      },
+      "oracle": {
+        "rationale": "已有完成实现和 diff，当前最早未完成阶段是代码审查。",
+        "rule_refs": [
+          "dev-workflow/SKILL.md#4-判断当前阶段"
+        ],
+        "confidence": "high",
+        "allowed_variance": "措辞和内部调查方式可以不同，但应只加载入口和当前阶段需要的专业能力。"
+      }
+    },
+    {
+      "id": "resume_grill_evidence_to_prototype",
+      "split": "validation",
+      "query": "使用 dev-workflow 消费刚完成的决策记录：其中“页面信息密度”标为 evidence-needed，必须实际操作候选页面才能决定。",
+      "expected_loaded_skills": [
+        "dev-workflow",
+        "decision-prototype"
+      ],
+      "eval_type": "routing",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "result-routing",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "participant_skills_available": true,
+        "decision_record_available": true
+      },
+      "oracle": {
+        "rationale": "决策记录明确要求体验证据，入口应进入原型阶段。",
+        "rule_refs": [
+          "dev-workflow/SKILL.md#4-判断当前阶段"
+        ],
+        "confidence": "high",
+        "allowed_variance": "措辞和内部调查方式可以不同，但应只加载入口和当前阶段需要的专业能力。"
+      }
+    },
+    {
+      "id": "resume_prototype_verdict_to_spec",
+      "split": "validation",
+      "query": "使用 dev-workflow 消费原型结果：用户已确认双栏布局，没有新的材料问题，当前没有 Spec。",
+      "expected_loaded_skills": [
+        "dev-workflow",
+        "dev-spec"
+      ],
+      "eval_type": "routing",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "result-routing",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "participant_skills_available": true,
+        "prototype_verdict_available": true
+      },
+      "oracle": {
+        "rationale": "Prototype 已形成稳定决定，下一阶段是规范性投影。",
+        "rule_refs": [
+          "dev-workflow/SKILL.md#4-判断当前阶段"
+        ],
+        "confidence": "high",
+        "allowed_variance": "措辞和内部调查方式可以不同，但应只加载入口和当前阶段需要的专业能力。"
+      }
+    },
+    {
+      "id": "resume_spec_review_material_decision",
+      "split": "validation",
+      "query": "使用 dev-workflow 处理 blocked 的 Spec Review；唯一 blocker 类型是 material-decision，关系到旧客户端兼容窗口。",
+      "expected_loaded_skills": [
+        "dev-workflow",
+        "decision-grill"
+      ],
+      "eval_type": "routing",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "review-routing",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "participant_skills_available": true,
+        "spec_review_blocked": true
+      },
+      "oracle": {
+        "rationale": "Review 将阻塞归类为材料决定，需要回到决策阶段。",
+        "rule_refs": [
+          "dev-workflow/SKILL.md#4-判断当前阶段"
+        ],
+        "confidence": "high",
+        "allowed_variance": "措辞和内部调查方式可以不同，但应只加载入口和当前阶段需要的专业能力。"
+      }
+    },
+    {
+      "id": "route_spec_review_spec_defect",
+      "split": "validation",
+      "query": "使用 dev-workflow 处理 blocked 的 Spec Review；需要修改 Spec 中的卲管口不一致，问题�{型是 spec-defect。",
+      "expected_loaded_skills": [
+        "dev-workflow",
+        "dev-spec"
+      ],
+      "eval_type": "routing",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "review-routing",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "participant_skills_available": true,
+        "spec_review_blocked": true
+      },
+      "oracle": {
+        "rationale": "Review 将阻塞当类为 spec-defect，应修改 Spec。",
+        "rule_refs": [
+          "dev-workflow/SKILL.md#4-判断当前阶段"
+        ],
+        "confidence": "high",
+        "allowed_variance": "措辞和内部调查方式可以不同，但应只加载入口和当前阶段需要的专业能力。"
+      }
+    },
+    {
+      "id": "resume_code_review_implementation_defect",
+      "split": "validation",
+      "query": "使用 dev-workflow 处理 blocked 的 Code Review；唯一 blocker 是交界小布局断在点上处理空值的 implementation-defect。",
+      "expected_loaded_skills": [
+        "dev-workflow",
+        "dev-implement"
+      ],
+      "eval_type": "routing",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "review-routing",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "participant_skills_available": true,
+        "code_review_blocked": true
+      },
+      "oracle": {
+        "rationale": "代码审查发现实现缺陷，应回到实现阶段。",
+        "rule_refs": [
+          "dev-workflow/SKILL.md#4-判断当前阶段"
+        ],
+        "confidence": "high",
+        "allowed_variance": "措辞和内部调查方式可以不同，但应只加载入口和当前阶段需要的专业能力。"
       }
     },
     {
       "id": "direct_small_change_bypasses_router",
       "split": "sanity",
       "query": "把设置页标题改成“团队设置”，直接修改并验证。",
-      "expected_loaded_skills": ["dev-implement"],
+      "expected_loaded_skills": [
+        "dev-implement"
+      ],
       "eval_type": "routing",
       "case_role": "boundary",
       "provenance": "boundary",
@@ -132,18 +340,22 @@
         "workflow_not_explicitly_requested": true
       },
       "oracle": {
-        "rationale": "普通明确小改动不应先加载宏入口，但实现 Skill 可以直接触发。",
-        "rule_refs": ["dev-workflow/SKILL.md description", "dev-implement/SKILL.md description"],
+        "rationale": "普通明确小改动不应先加载宏入口，但实现能力可以直接触发。",
+        "rule_refs": [
+          "dev-workflow/SKILL.md#4-判断当前阶段"
+        ],
         "confidence": "high",
-        "allowed_variance": "可以直接实现，但不得加载 dev-workflow。",
-        "minimal_counterexample": "若用户明确使用 /dev，则应先加载 dev-workflow 再路由 dev-implement。"
+        "allowed_variance": "措辞和内部调查方式可以不同，但应只加载入口和当前阶段需要的专业能力。",
+        "minimal_counterexample": "若用户明确要求 dev-workflow 组织任务，则应加载入口再进入 Fast 实现。"
       }
     },
     {
       "id": "direct_grill_bypasses_router",
       "split": "sanity",
       "query": "逐轮提问我，把新的权限模型想透并形成共享理解。",
-      "expected_loaded_skills": ["decision-grill"],
+      "expected_loaded_skills": [
+        "decision-grill"
+      ],
       "eval_type": "routing",
       "case_role": "boundary",
       "provenance": "boundary",
@@ -154,11 +366,13 @@
         "workflow_not_explicitly_requested": true
       },
       "oracle": {
-        "rationale": "用户直接请求决策访谈，没有要求启动开发宏流程。",
-        "rule_refs": ["dev-workflow/SKILL.md description", "decision-grill/SKILL.md description"],
+        "rationale": "用户直接请求决策访谈，没有要求开发宏流程。",
+        "rule_refs": [
+          "dev-workflow/SKILL.md#4-判断当前阶段"
+        ],
         "confidence": "high",
-        "allowed_variance": "可以直接进入 decision-grill，但不得加载 dev-workflow。",
-        "minimal_counterexample": "若用户明确要求按 /dev 组织后续开发，则应加载入口。"
+        "allowed_variance": "措辞和内部调查方式可以不同，但应只加载入口和当前阶段需要的专业能力。",
+        "minimal_counterexample": "若用户要求同时组织 Spec、实现和审查，则应加载入口。"
       }
     }
   ]

@@ -32,8 +32,8 @@
 
 ## Evidence
 
-链接已经接受的 Prototype、研究、ADR 或现有系统证据。
+链接已经接受的 Prototype、研究、ADR 或现有系统证据。Prototype 的稳定结论必须已经投影到上面的规范性章节；用户反馈、被否决方案和实验过程留在证据产物中，不复制为规范。
 
 ## Open decisions
 
-批准前应为空，或只保留明确委托给实现阶段的非材料事项。
+批准前应为空，或只保留明确委托给实现阶段的非材料事项。使用 `material-decision`、`evidence-needed` 或 `fact-gap` 标注仍阻塞的内容。

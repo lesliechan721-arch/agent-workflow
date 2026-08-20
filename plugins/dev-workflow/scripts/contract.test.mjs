@@ -6,8 +6,8 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const skills = ['dev-workflow', 'dev-spec', 'dev-review-spec', 'dev-implement', 'dev-review-code'];
-const askMeSkills = ['decision-grill', 'decision-prototype'];
-const allParticipants = new Set([...skills, ...askMeSkills]);
+const decisionSkills = ['decision-grill', 'decision-prototype'];
+const allParticipants = new Set([...skills, ...decisionSkills]);
 const read = (file) => readFile(file, 'utf8');
 const readJson = async (file) => JSON.parse(await read(file));
 
@@ -56,18 +56,26 @@ function assertCaseDocument(document) {
   return entries;
 }
 
+function containsSlashDevReference(text) {
+  return text.startsWith('/dev') || text.includes('\n/dev') || text.includes(' /dev');
+}
+
 const target = await context();
 
-test('manifest stays minimal', async () => {
+test('manifest exposes only the Skill entry surface', async () => {
   const manifest = await readJson(path.join(target.source, '.agents-plugin', 'plugin.json'));
   assert.equal(manifest.name, 'dev-workflow');
   assertStrictStableSemver(manifest.version);
   assert.equal(manifest.skills, './skills');
-  assert.equal(manifest.slashCommands, './slash-commands');
+  assert.equal(manifest.slashCommands, undefined);
+  assert.equal(manifest.buildConfig, undefined);
   assert.deepEqual(manifest.interface.capabilities, ['Skills']);
   for (const key of ['extensions', 'config', 'artifacts', 'lifecycle']) {
     assert.equal(key in manifest, false);
   }
+  await assert.rejects(access(path.join(target.source, 'slash-commands', 'dev.md')), {
+    code: 'ENOENT',
+  });
 });
 
 test('source and evals expose the five public Skills', async () => {
@@ -106,39 +114,57 @@ test('source and evals expose the five public Skills', async () => {
   }
 });
 
-test('entry eval covers cross-plugin routing and missing-companion fallback', async () => {
+test('entry eval covers assurance, stage recovery and default artifact roots', async () => {
   const evalRoot = path.join(target.source, 'skills', 'dev-workflow', 'evals');
   const manifest = await readJson(path.join(evalRoot, 'manifest.json'));
-  const withAskMe = manifest.profiles.find((profile) => profile.id === 'project-with-ask-me');
+  const composed = manifest.profiles.find((profile) => profile.id === 'project-composed');
   assert.deepEqual(
-    withAskMe.plugins.map((plugin) => plugin.name),
+    composed.plugins.map((plugin) => plugin.name),
     ['dev-workflow', 'ask-me'],
   );
+  assert.equal(manifest.suites.some((suite) => suite.id.includes('fallback')), false);
 
-  const router = manifest.suites.find((suite) => suite.id === 'router-with-ask-me');
+  const router = manifest.suites.find((suite) => suite.id === 'router-composed');
   assert.deepEqual([...router.skills].sort(), [...allParticipants].sort());
   const routingCases = await readJson(path.join(evalRoot, router.cases));
   const routingEntries = assertCaseDocument(routingCases);
+  const ids = new Set(routingEntries.map((entry) => entry.id));
+  for (const id of [
+    'route_fast_explicit_workflow',
+    'route_standard_decision_grill',
+    'route_standard_decision_prototype',
+    'resume_grill_evidence_to_prototype',
+    'resume_prototype_verdict_to_spec',
+    'resume_spec_review_material_decision',
+    'resume_code_review_implementation_defect',
+  ]) {
+    assert.equal(ids.has(id), true);
+  }
+  assert.equal(routingEntries.some((entry) => containsSlashDevReference(entry.query)), false);
+
+  const composition = manifest.suites.find((suite) => suite.id === 'composition-composed');
+  const compositionCases = await readJson(path.join(evalRoot, composition.cases));
+  const compositionEntries = assertCaseDocument(compositionCases);
   assert.equal(
-    routingEntries.some((entry) => entry.expected_loaded_skills.includes('decision-prototype')),
+    compositionEntries.every((entry) =>
+      entry.review.allowed_workspace_changes.every((change) => change.startsWith('docs/dev/')),
+    ),
     true,
   );
-
-  const fallback = manifest.suites.find((suite) => suite.id === 'fallback-without-ask-me');
-  const fallbackCases = await readJson(path.join(evalRoot, fallback.cases));
-  const fallbackEntries = assertCaseDocument(fallbackCases);
   assert.equal(
-    fallbackEntries.some((entry) => entry.review?.workspace_unchanged === true),
+    compositionEntries.flatMap((entry) => entry.review.artifacts).every((artifact) =>
+      artifact.path.startsWith('docs/dev/'),
+    ),
     true,
   );
 });
 
-test('specialized Skills define representative behavior evidence', async () => {
+test('specialized behavior suites run with only their owner Skill', async () => {
   for (const name of skills.filter((entry) => entry !== 'dev-workflow')) {
     const evalRoot = path.join(target.source, 'skills', name, 'evals');
     const manifest = await readJson(path.join(evalRoot, 'manifest.json'));
     const behavior = manifest.suites.find((suite) => suite.id === 'behavior');
-    assert.ok(behavior);
+    assert.deepEqual(behavior.skills, [name]);
     const document = await readJson(path.join(evalRoot, behavior.cases));
     assert.equal(document.skill_name, name);
     const entries = assertCaseDocument(document);
@@ -149,20 +175,34 @@ test('specialized Skills define representative behavior evidence', async () => {
   }
 });
 
+test('published specialized Skills return neutral results instead of orchestrating peers', async () => {
+  const prohibited = ['ask-me', ...skills, ...decisionSkills];
+  for (const name of skills.filter((entry) => entry !== 'dev-workflow')) {
+    const skill = await read(path.join(target.source, 'skills', name, 'SKILL.md'));
+    const otherNames = prohibited.filter((entry) => entry !== name);
+    // Static contract exception: specialized Skills must not encode cross-Skill orchestration; behavior test is not suitable because the forbidden coupling is the published instruction text itself.
+    assert.doesNotMatch(skill, new RegExp(otherNames.join('|')));
+  }
+
+  const entry = await read(path.join(target.source, 'skills', 'dev-workflow', 'SKILL.md'));
+  // Static contract exception: the public workflow contract must declare its default artifact root and assurance profiles; behavior test is not suitable because these literals are consumed as portable path and profile conventions.
+  assert.match(entry, /docs\/dev\/<task-slug>\//);
+  for (const profile of ['Fast', 'Standard', 'Assured']) {
+    assert.match(entry, new RegExp(`### ${profile}`));
+  }
+  assert.equal(containsSlashDevReference(entry), false);
+  assert.doesNotMatch(entry, /对应 Skill 不可用|建议安装/);
+});
+
 test('release manifests require representative evidence without fixing corpus sizes', async () => {
   const entryRoot = path.join(target.source, 'skills', 'dev-workflow', 'evals');
   const entryManifest = await readJson(path.join(entryRoot, 'manifest.json'));
 
-  for (const profileId of ['project-default', 'project-with-ask-me']) {
+  for (const profileId of ['project-default', 'project-composed']) {
     const profile = entryManifest.profiles.find((entry) => entry.id === profileId);
     assert.equal(profile?.requiredForRelease, true);
   }
-  for (const suiteId of [
-    'trigger',
-    'router-with-ask-me',
-    'fallback-without-ask-me',
-    'composition-with-ask-me',
-  ]) {
+  for (const suiteId of ['trigger', 'router-composed', 'composition-composed']) {
     const suite = entryManifest.suites.find((entry) => entry.id === suiteId);
     assert.equal(suite?.requiredForRelease, true);
   }
@@ -185,12 +225,4 @@ test('runtime keeps all Skill roots', async () => {
       : path.join(target.bundle, 'skills');
     assertSkill(await read(path.join(skillsRoot, name, 'SKILL.md')), name);
   }
-});
-
-test('/dev remains a thin manual router', async () => {
-  const command = await read(path.join(target.source, 'slash-commands', 'dev.md'));
-  assert.match(command, /^description: 启动或继续结构化开发工作流$/m);
-  assert.match(command, /加载并执行 `dev-workflow` Skill/);
-  assert.match(command, /\$dev/);
-  assert.match(command, /supportsCommandArguments/);
 });
