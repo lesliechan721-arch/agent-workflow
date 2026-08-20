@@ -24,6 +24,7 @@ import {
 import { scanNodeImportContract } from './plugin-script-contract.js';
 import { getArtifactSourceBundleRelativePath } from './artifact-sources.js';
 import { validateSkillDirectory } from './dynamic-skill-tree.js';
+import { validateRuntimeSkillClosure } from './runtime-skill-closure.js';
 
 const NODE_RUNTIME_EXTENSIONS = new Set(['.js', '.mjs', '.cjs']);
 export const CATALOG_MANIFEST_FILENAME = 'catalog-manifest.json';
@@ -218,7 +219,6 @@ async function validateClaudeManifest(
   assertStrictSemVer(manifest.compatibility.aw.minVersion, 'claude manifest.compatibility.aw.minVersion');
 
   if (manifest.skills) {
-    await assertBundlePathExists(pluginRoot, manifest.skills, 'claude.skills', './claude/');
     await validateClaudeSkillsTree(pluginRoot, manifest.skills, ownerMarkerPolicy);
   }
   if (manifest.commands) {
@@ -299,7 +299,6 @@ async function validateCodexManifest(
   assertStrictSemVer(manifest.compatibility.aw.minVersion, 'codex manifest.compatibility.aw.minVersion');
 
   if (manifest.skills) {
-    await assertBundlePathExists(pluginRoot, manifest.skills, 'codex.skills', './codex/');
     await validateCodexSkillsTree(pluginRoot, manifest.skills, ownerMarkerPolicy);
   }
   if (manifest.mcpServers) {
@@ -317,7 +316,7 @@ async function validateCodexManifest(
 }
 
 async function listSkillDirectories(rootDir: string): Promise<string[]> {
-  const entries = await fs.readdir(rootDir, { withFileTypes: true }).catch(() => []);
+  const entries = await fs.readdir(rootDir, { withFileTypes: true });
   const symbolicLink = entries.find((entry) => entry.isSymbolicLink());
   if (symbolicLink) {
     throw new Error(
@@ -328,6 +327,33 @@ async function listSkillDirectories(rootDir: string): Promise<string[]> {
     .filter((entry) => entry.isDirectory())
     .map((entry) => entry.name)
     .sort();
+}
+
+async function resolveSkillsCollectionRoot(
+  pluginRoot: string,
+  relativePath: string,
+  fieldName: string,
+  expectedPrefix: string,
+): Promise<string> {
+  const lexicalRoot = assertRelativeBundlePath(
+    pluginRoot,
+    relativePath,
+    fieldName,
+    expectedPrefix,
+  );
+  let stats: fs.Stats;
+  try {
+    stats = await fs.lstat(lexicalRoot);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      throw new Error(`Invalid ${fieldName}: "${relativePath}" does not exist in bundle.`);
+    }
+    throw error;
+  }
+  if (stats.isSymbolicLink() || !stats.isDirectory()) {
+    throw new Error(`Invalid ${fieldName}: skills root must be a regular directory.`);
+  }
+  return assertRealBundlePath(pluginRoot, lexicalRoot, fieldName, expectedPrefix);
 }
 
 async function assertSkillEntryExists(
@@ -346,7 +372,7 @@ async function validateClaudeSkillsTree(
   relativePath: string,
   ownerMarkerPolicy: 'reject' | 'ignore',
 ): Promise<void> {
-  const skillsRoot = await resolveExistingBundlePath(
+  const skillsRoot = await resolveSkillsCollectionRoot(
     pluginRoot,
     relativePath,
     'claude.skills',
@@ -355,6 +381,7 @@ async function validateClaudeSkillsTree(
   for (const skillName of await listSkillDirectories(skillsRoot)) {
     const skillRoot = path.join(skillsRoot, skillName);
     await assertSkillEntryExists(skillRoot, skillName, 'SKILL.md', 'claude.skills');
+    await validateRuntimeSkillClosure(skillRoot);
     await validateSkillDirectory(skillRoot, 'claude.skill', { ownerMarkerPolicy });
   }
 }
@@ -364,7 +391,7 @@ async function validateCodexSkillsTree(
   relativePath: string,
   ownerMarkerPolicy: 'reject' | 'ignore',
 ): Promise<void> {
-  const skillsRoot = await resolveExistingBundlePath(
+  const skillsRoot = await resolveSkillsCollectionRoot(
     pluginRoot,
     relativePath,
     'codex.skills',
@@ -379,6 +406,7 @@ async function validateCodexSkillsTree(
       path.join('agents', 'openai.yaml'),
       'codex.skills',
     );
+    await validateRuntimeSkillClosure(skillRoot);
     await validateSkillDirectory(skillRoot, 'codex.skill', { ownerMarkerPolicy });
   }
 }

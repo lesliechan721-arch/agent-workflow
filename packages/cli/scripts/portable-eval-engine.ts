@@ -13,6 +13,14 @@ export interface PortableEvalExecutionResult extends RunExecutionResult {
   bundleValidation: Awaited<ReturnType<typeof validateRunBundle>>;
 }
 
+export function getPortableEvalExecutionOwner(): { provider: string; version: string } {
+  const capabilities = getRuntimeCapabilities();
+  return {
+    provider: capabilities.provider,
+    version: capabilities.providerVersion,
+  };
+}
+
 // AW owns only the high-level dispatch here. The shared package owns portable plan validation,
 // provider execution, evidence capture, bundle construction, and bundle validation. AW-native
 // command, trigger, and conversation suites keep their separate suite/report contracts and must
@@ -30,13 +38,9 @@ export async function runPortableEvalExecutionPlan(
   if (!bundleValidation.valid) {
     throw new Error(`EvalRunBundle is invalid:\n${bundleValidation.errors.join('\n')}`);
   }
-  const capabilities = getRuntimeCapabilities();
   return {
     ...execution,
-    engine: {
-      provider: capabilities.provider,
-      version: capabilities.providerVersion,
-    },
+    engine: getPortableEvalExecutionOwner(),
     bundleValidation,
   };
 }

@@ -9,6 +9,11 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import type { PluginStagingRunner } from '../../src/generators/local-plugin.js';
 import { validateBundleLayout } from '../../src/utils/bundle-layout.js';
+import {
+  validateRuntimeSkillClosure,
+  validateRuntimeSkillClosuresRoot,
+  validateSkillRuntimeProjectionFreshness,
+} from '../../src/utils/runtime-skill-closure.js';
 import { bundlePlugins } from '../../scripts/bundle-plugins.js';
 import { createSyntheticEmbeddedRoot } from '../helpers/embedded-root.js';
 
@@ -406,6 +411,112 @@ describe('bundle layout validation', () => {
       );
     },
   );
+
+  it.each([
+    ['Claude', '.claude-plugin', 'claude'],
+    ['Codex', '.codex-plugin', 'codex'],
+  ])('rejects a regular file used as the %s skills collection root', async (
+    _platformLabel,
+    manifestDir,
+    runtimeDir,
+  ) => {
+    const { embeddedRoot } = await createEmbeddedRootFromFixture();
+    const pluginRoot = path.join(embeddedRoot, 'plugins', 'git-commit');
+    const manifestPath = path.join(pluginRoot, manifestDir, 'plugin.json');
+    const manifest = await fs.readJson(manifestPath);
+    const skillsRoot = path.join(pluginRoot, runtimeDir, 'skills');
+    await fs.remove(skillsRoot);
+    await fs.outputFile(skillsRoot, 'not a directory\n', 'utf8');
+    manifest.skills = `./${runtimeDir}/skills`;
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+
+    await expect(validateBundleLayout(embeddedRoot)).rejects.toThrow(
+      `Invalid ${runtimeDir}.skills: skills root must be a regular directory.`,
+    );
+  });
+
+  it.each([
+    ['Claude', '.claude-plugin', 'claude'],
+    ['Codex', '.codex-plugin', 'codex'],
+  ])('allows a missing %s skills collection only when the manifest does not declare it', async (
+    _platformLabel,
+    manifestDir,
+    runtimeDir,
+  ) => {
+    const { embeddedRoot } = await createEmbeddedRootFromFixture();
+    const pluginRoot = path.join(embeddedRoot, 'plugins', 'git-commit');
+    const manifestPath = path.join(pluginRoot, manifestDir, 'plugin.json');
+    const manifest = await fs.readJson(manifestPath);
+    delete manifest.skills;
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+    await fs.remove(path.join(pluginRoot, runtimeDir, 'skills'));
+
+    await expect(validateBundleLayout(embeddedRoot)).resolves.toBeUndefined();
+  });
+
+  it.runIf(process.platform !== 'win32').each([
+    ['Claude', '.claude-plugin', 'claude'],
+    ['Codex', '.codex-plugin', 'codex'],
+  ])('rejects a symbolic link used as the %s skills collection root', async (
+    _platformLabel,
+    manifestDir,
+    runtimeDir,
+  ) => {
+    const { embeddedRoot } = await createEmbeddedRootFromFixture();
+    const pluginRoot = path.join(embeddedRoot, 'plugins', 'git-commit');
+    const manifestPath = path.join(pluginRoot, manifestDir, 'plugin.json');
+    const manifest = await fs.readJson(manifestPath);
+    const skillsRoot = path.join(pluginRoot, runtimeDir, 'skills');
+    const targetRoot = path.join(pluginRoot, runtimeDir, 'linked-skills');
+    await fs.rename(skillsRoot, targetRoot);
+    await fs.symlink('linked-skills', skillsRoot, 'dir');
+    manifest.skills = `./${runtimeDir}/skills`;
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+
+    await expect(validateBundleLayout(embeddedRoot)).rejects.toThrow(
+      `Invalid ${runtimeDir}.skills: skills root must be a regular directory.`,
+    );
+  });
+
+  it.runIf(process.platform !== 'win32')(
+    'propagates an operational error while reading a declared skills collection root',
+    async () => {
+      const { embeddedRoot } = await createEmbeddedRootFromFixture();
+      const skillsRoot = path.join(
+        embeddedRoot,
+        'plugins',
+        'git-commit',
+        'claude',
+        'skills',
+      );
+      await fs.chmod(skillsRoot, 0o000);
+      try {
+        await expect(validateBundleLayout(embeddedRoot)).rejects.toMatchObject({
+          code: expect.stringMatching(/^(?:EACCES|EPERM)$/u),
+        });
+      } finally {
+        await fs.chmod(skillsRoot, 0o700);
+      }
+    },
+  );
+
+  it('propagates ENOTDIR from a declared skills collection path', async () => {
+    const { embeddedRoot } = await createEmbeddedRootFromFixture();
+    const pluginRoot = path.join(embeddedRoot, 'plugins', 'git-commit');
+    const manifestPath = path.join(pluginRoot, '.claude-plugin', 'plugin.json');
+    const manifest = await fs.readJson(manifestPath);
+    manifest.skills = './claude/not-a-directory/skills';
+    await fs.outputFile(
+      path.join(pluginRoot, 'claude', 'not-a-directory'),
+      'regular file\n',
+      'utf8',
+    );
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+
+    await expect(validateBundleLayout(embeddedRoot)).rejects.toMatchObject({
+      code: 'ENOTDIR',
+    });
+  });
 
   it('rejects unexpected Claude bundle manifests for unsupported plugins', async () => {
     const { embeddedRoot } = await createEmbeddedRootFromFixture((manifest) => {
@@ -908,5 +1019,448 @@ describe('bundle layout validation', () => {
 
     await expect(fs.pathExists(nodeModulesPath)).resolves.toBe(false);
     await expect(validateBundleLayout(embeddedRoot)).resolves.toBeUndefined();
+  });
+});
+
+describe('runtime Skill resource closure', () => {
+  async function createRuntimeSkill(
+    content: string,
+    files: Record<string, string> = {},
+  ): Promise<string> {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-runtime-skill-closure-'));
+    tempDirs.push(root);
+    const skillRoot = path.join(root, 'demo-skill');
+    await fs.outputFile(path.join(skillRoot, 'SKILL.md'), content, 'utf8');
+    for (const [relativePath, fileContent] of Object.entries(files)) {
+      await fs.outputFile(path.join(skillRoot, relativePath), fileContent, 'utf8');
+    }
+    return skillRoot;
+  }
+
+  it('accepts valid links and inline commands while ignoring non-local targets', async () => {
+    const skillRoot = await createRuntimeSkill([
+      '[guide](references/guide.md#L12)',
+      '![icon](assets/icon.svg?raw#preview)',
+      '[provider][provider-doc]',
+      '[provider-doc]: providers/model.json?view=compact',
+      '[root file](./root.txt:8)',
+      '`node scripts/run.mjs --provider providers/model.json`',
+      '`./root.txt`',
+      '`./eval-runtime-capabilities.json`',
+      '[remote](https://example.com/references/missing.md)',
+      '[mail](mailto:team@example.com)',
+      '[section](#local-section)',
+      '`references/{{name}}.md`',
+      '`references/<name>.md`',
+      '`assets/*.svg`',
+      '`references/$FILE.md`',
+      '`$SKILL_ROOT/references/missing.md`',
+      '`%SKILL_ROOT%/references/missing.md`',
+    ].join('\n'), {
+      'references/guide.md': 'guide\n',
+      'assets/icon.svg': '<svg/>\n',
+      'root.txt': 'root\n',
+      'scripts/run.mjs': 'export {};\n',
+      'providers/model.json': '{}\n',
+    });
+
+    await expect(validateRuntimeSkillClosure(skillRoot)).resolves.toBeUndefined();
+  });
+
+  it('scans balanced, angle, escaped, and reference-definition Markdown destinations', async () => {
+    const skillRoot = await createRuntimeSkill([
+      '[balanced](references/guide_(v2).md)',
+      '[escaped](references/guide_\\(v3\\).md)',
+      '[angle](<references/guide%20v4.md>)',
+      '[defined][guide-v5]',
+      '[guide-v5]: references/guide_(v5).md "Guide title"',
+    ].join('\n'), {
+      'references/guide_(v2).md': 'v2\n',
+      'references/guide_(v3).md': 'v3\n',
+      'references/guide v4.md': 'v4\n',
+      'references/guide_(v5).md': 'v5\n',
+    });
+
+    await expect(validateRuntimeSkillClosure(skillRoot)).resolves.toBeUndefined();
+  });
+
+  it('does not treat escaped link text or fenced, indented, and inline code as Markdown links', async () => {
+    const skillRoot = await createRuntimeSkill([
+      '\\[escaped](references/missing-escaped.md)',
+      '```md',
+      '[fenced](references/missing-fenced.md)',
+      '```',
+      '    [four spaces](references/missing-four-spaces.md)',
+      '',
+      '\t[tab](references/missing-tab.md)',
+      '`[inline](references/missing-inline.md)`',
+    ].join('\n'));
+
+    await expect(validateRuntimeSkillClosure(skillRoot)).resolves.toBeUndefined();
+  });
+
+  it.each([
+    ['empty fenced block', '```\nnode scripts/missing-fenced.mjs\n```'],
+    ['shell fenced block', '```sh\nnode providers/missing-fenced.json\n```'],
+    ['escaping shell fenced block', '```bash\nnode scripts/../outside.mjs\n```'],
+    ['pwsh fenced block', '```pwsh\npwsh -File .\\scripts\\missing.ps1\n```'],
+    ['ps1 fenced block', '```ps1\npwsh -File .\\scripts\\missing.ps1\n```'],
+    ['four-space indented block', '    node scripts/missing-indented.mjs'],
+    ['tab-indented block', '\tnode providers/missing-indented.json'],
+    ['escaping indented block', '    node ../outside.mjs'],
+  ])('scans command paths in a %s', async (_name, content) => {
+    const skillRoot = await createRuntimeSkill(`${content}\n`);
+
+    await expect(validateRuntimeSkillClosure(skillRoot)).rejects.toThrow(
+      'inline-command target',
+    );
+  });
+
+  it('does not scan command paths in non-shell fenced examples', async () => {
+    const skillRoot = await createRuntimeSkill([
+      '```json',
+      '{ "script": "scripts/missing-example.mjs" }',
+      '```',
+    ].join('\n'));
+
+    await expect(validateRuntimeSkillClosure(skillRoot)).resolves.toBeUndefined();
+  });
+
+  it('continues to scan path tokens inside inline command code', async () => {
+    const skillRoot = await createRuntimeSkill('`node references/missing-inline.md`\n');
+
+    await expect(validateRuntimeSkillClosure(skillRoot)).rejects.toThrow(
+      'inline-command target "references/missing-inline.md"',
+    );
+  });
+
+  it.each([
+    ['node', '`node ./missing-runtime.mjs`'],
+    ['python', '`python ./missing-runtime.py`'],
+    ['shell', '`sh ./missing-runtime.sh`'],
+    ['direct executable', '`./missing-runtime`'],
+  ])('rejects a missing dot-relative target with explicit %s execution semantics', async (
+    _name,
+    content,
+  ) => {
+    const skillRoot = await createRuntimeSkill(`${content}\n`);
+
+    await expect(validateRuntimeSkillClosure(skillRoot)).rejects.toThrow(
+      'inline-command target',
+    );
+  });
+
+  it.each([
+    ['PowerShell', '`powershell .\\missing-runtime.ps1`', '.\\missing-runtime.ps1'],
+    ['pwsh', '`pwsh -File .\\missing-runtime.ps1`', '.\\missing-runtime.ps1'],
+    ['cmd', '`cmd /c .\\missing-runtime.cmd`', '.\\missing-runtime.cmd'],
+    ['drive-relative executor argument', '`powershell C:missing-runtime.ps1`', 'C:missing-runtime.ps1'],
+  ])('rejects an unsafe explicit Windows %s target', async (
+    _name,
+    content,
+    lexicalTarget,
+  ) => {
+    const skillRoot = await createRuntimeSkill(`${content}\n`);
+
+    await expect(validateRuntimeSkillClosure(skillRoot)).rejects.toThrow(
+      `inline-command target ${JSON.stringify(lexicalTarget)}`,
+    );
+  });
+
+  it.each([
+    ['PowerShell script', '`powershell .\\scripts\\run.ps1`', 'scripts/run.ps1'],
+    ['pwsh fenced script', '```pwsh\npwsh -File .\\scripts\\run.ps1\n```', 'scripts/run.ps1'],
+    ['ps1 fenced script', '```ps1\npwsh -File .\\scripts\\run.ps1\n```', 'scripts/run.ps1'],
+    ['cmd script', '`cmd /c .\\scripts\\run.cmd`', 'scripts/run.cmd'],
+  ])('accepts an existing regular Skill-local %s', async (
+    _name,
+    content,
+    relativeTarget,
+  ) => {
+    const skillRoot = await createRuntimeSkill(`${content}\n`, {
+      [relativeTarget]: 'exit 0\n',
+    });
+
+    await expect(validateRuntimeSkillClosure(skillRoot)).resolves.toBeUndefined();
+  });
+
+  it('ignores dot-relative plan working files without local execution semantics', async () => {
+    const skillRoot = await createRuntimeSkill([
+      'Use `./plan.json` as the working file.',
+      'Run `aw-skill-eval run ./plan.json`.',
+    ].join('\n'));
+
+    await expect(validateRuntimeSkillClosure(skillRoot)).resolves.toBeUndefined();
+  });
+
+  it.each([
+    ['input redirection', '`node <scripts/missing-input.mjs`', '<scripts/missing-input.mjs'],
+    ['file-descriptor redirection', '`node 2>assets/missing-output.log`', '2>assets/missing-output.log'],
+  ])('keeps a core resource after stripping %s syntax', async (
+    _name,
+    content,
+    lexicalTarget,
+  ) => {
+    const skillRoot = await createRuntimeSkill(`${content}\n`);
+
+    await expect(validateRuntimeSkillClosure(skillRoot)).rejects.toThrow(
+      `inline-command target ${JSON.stringify(lexicalTarget)}`,
+    );
+  });
+
+  it('does not turn escaped backticks into inline command delimiters', async () => {
+    const skillRoot = await createRuntimeSkill(
+      '\\`node scripts/missing-escaped.mjs\\`\n',
+    );
+
+    await expect(validateRuntimeSkillClosure(skillRoot)).resolves.toBeUndefined();
+  });
+
+  it('supports reference-definition destinations on the next line', async () => {
+    const skillRoot = await createRuntimeSkill([
+      '[balanced]:',
+      '  references/guide_(v6).md',
+      '[angle]:',
+      '   <references/guide%20v7.md>',
+      '[escaped]:',
+      ' references/guide_\\(v8\\).md',
+    ].join('\n'), {
+      'references/guide_(v6).md': 'v6\n',
+      'references/guide v7.md': 'v7\n',
+      'references/guide_(v8).md': 'v8\n',
+    });
+
+    await expect(validateRuntimeSkillClosure(skillRoot)).resolves.toBeUndefined();
+  });
+
+  it('rejects a missing reference-definition destination on the next line', async () => {
+    const skillRoot = await createRuntimeSkill('[missing]:\n   references/missing.md\n');
+
+    await expect(validateRuntimeSkillClosure(skillRoot)).rejects.toThrow(
+      'markdown-link target "references/missing.md"',
+    );
+  });
+
+  it('does not parse a four-space indented reference definition as Markdown', async () => {
+    const skillRoot = await createRuntimeSkill(
+      '    [example]: <references\\missing-example.md>\n',
+    );
+
+    await expect(validateRuntimeSkillClosure(skillRoot)).resolves.toBeUndefined();
+  });
+
+  it('ignores protocol-relative and URI-scheme Markdown destinations', async () => {
+    const skillRoot = await createRuntimeSkill([
+      '[protocol relative](//example.com/references/missing.md)',
+      '[custom scheme](vscode://file/references/missing.md)',
+      '[data](data:text/plain,references/missing.md)',
+    ].join('\n'));
+
+    await expect(validateRuntimeSkillClosure(skillRoot)).resolves.toBeUndefined();
+  });
+
+  it('decodes only the Markdown path before applying local closure boundaries', async () => {
+    const skillRoot = await createRuntimeSkill([
+      '[query](references/guide.md?target=..%2Foutside.md)',
+      '[source query](references/guide.md?source=..%2Foutside.md)',
+      '[fragment](references/guide.md#target=..%2Foutside.md)',
+    ].join('\n'), {
+      'references/guide.md': 'guide\n',
+    });
+
+    await expect(validateRuntimeSkillClosure(skillRoot)).resolves.toBeUndefined();
+  });
+
+  it.each([
+    ['encoded traversal', '[unsafe](references%2F..%2Foutside.md)', 'references%2F..%2Foutside.md'],
+    ['encoded parent traversal', '[unsafe](%2e%2e%2foutside.md)', '%2e%2e%2foutside.md'],
+    ['malformed percent escape', '[unsafe](references/guide%2.md)', 'references/guide%2.md'],
+    ['POSIX absolute path', '[unsafe](/tmp/outside.md)', '/tmp/outside.md'],
+    ['Windows drive path', '[unsafe](C:/outside.md)', 'C:/outside.md'],
+    ['Windows drive-relative path', '[unsafe](C:outside.md)', 'C:outside.md'],
+    ['Windows drive-relative numeric path', '[unsafe](C:12)', 'C:12'],
+    ['Windows root-relative path', '[unsafe](\\outside\\file.md)', '\\outside\\file.md'],
+    ['Windows UNC path', '[unsafe](\\\\server\\share\\file.md)', '\\\\server\\share\\file.md'],
+    ['Windows parent traversal', '[unsafe](..\\outside.md)', '..\\outside.md'],
+    ['Markdown Windows environment token', '[unsafe](references/%NAME%.md)', 'references/%NAME%.md'],
+  ])('rejects %s after Markdown destination normalization', async (
+    _name,
+    content,
+    lexicalTarget,
+  ) => {
+    const skillRoot = await createRuntimeSkill(`${content}\n`);
+
+    await expect(validateRuntimeSkillClosure(skillRoot)).rejects.toThrow(
+      `markdown-link target ${JSON.stringify(lexicalTarget)}`,
+    );
+  });
+
+  it('ignores arbitrary absolute inline paths and complete Windows environment tokens', async () => {
+    const skillRoot = await createRuntimeSkill([
+      '`cat /tmp/references/missing.md`',
+      '`type C:\\temp\\references\\missing.md`',
+      '`type \\\\server\\share\\missing.md`',
+      '`C:external.txt`',
+      '`%SKILL_ROOT%\\references\\missing.md`',
+    ].join('\n'));
+
+    await expect(validateRuntimeSkillClosure(skillRoot)).resolves.toBeUndefined();
+  });
+
+  it('accepts the current bundled Skill closures', async () => {
+    const pluginsRoot = path.resolve(import.meta.dirname, '../../plugins-dist/plugins');
+    const pluginEntries = await fs.readdir(pluginsRoot, { withFileTypes: true });
+    for (const pluginEntry of pluginEntries) {
+      if (!pluginEntry.isDirectory()) continue;
+      for (const platform of ['claude', 'codex']) {
+        const skillsRoot = path.join(pluginsRoot, pluginEntry.name, platform, 'skills');
+        if (await fs.pathExists(skillsRoot)) {
+          await expect(validateRuntimeSkillClosuresRoot(skillsRoot)).resolves.toBeUndefined();
+        }
+      }
+    }
+  });
+
+  it('does not exempt a Windows environment placeholder embedded in an inline local path', async () => {
+    const skillRoot = await createRuntimeSkill('`type assets/%NAME%.svg`\n');
+
+    await expect(validateRuntimeSkillClosure(skillRoot)).rejects.toThrow(
+      'inline-command target "assets/%NAME%.svg"',
+    );
+  });
+
+  it('keeps known core absolute and relative traversal inline paths in the local gate', async () => {
+    const absoluteSkillRoot = await createRuntimeSkill('`cat /references/missing.md`\n');
+    await expect(validateRuntimeSkillClosure(absoluteSkillRoot)).rejects.toThrow(
+      'inline-command target "/references/missing.md"',
+    );
+
+    const traversalSkillRoot = await createRuntimeSkill('`cat ..\\outside.md`\n');
+    await expect(validateRuntimeSkillClosure(traversalSkillRoot)).rejects.toThrow(
+      'inline-command target "..\\\\outside.md"',
+    );
+
+    const nestedTraversalSkillRoot = await createRuntimeSkill('`cat notes/../outside.md`\n');
+    await expect(validateRuntimeSkillClosure(nestedTraversalSkillRoot)).rejects.toThrow(
+      'inline-command target "notes/../outside.md"',
+    );
+  });
+
+  it('rejects missing Markdown resources with the skill key and lexical target', async () => {
+    const skillRoot = await createRuntimeSkill('[missing](references/missing.md)\n');
+
+    await expect(validateRuntimeSkillClosure(skillRoot)).rejects.toThrow(
+      'skill "demo-skill" markdown-link target "references/missing.md"',
+    );
+  });
+
+  it('rejects missing providers referenced by inline commands', async () => {
+    const skillRoot = await createRuntimeSkill('`node providers/missing.mjs`\n');
+
+    await expect(validateRuntimeSkillClosure(skillRoot)).rejects.toThrow(
+      'skill "demo-skill" inline-command target "providers/missing.mjs"',
+    );
+  });
+
+  it.each([
+    ['parent traversal', '[unsafe](../outside.md)', '../outside.md'],
+    ['absolute path', '[unsafe](/references/outside.md)', '/references/outside.md'],
+    ['backslash path', '[unsafe](references\\outside.md)', 'references\\outside.md'],
+  ])('rejects %s references', async (_name, content, lexicalTarget) => {
+    const skillRoot = await createRuntimeSkill(`${content}\n`);
+
+    await expect(validateRuntimeSkillClosure(skillRoot)).rejects.toThrow(
+      `skill "demo-skill" markdown-link target ${JSON.stringify(lexicalTarget)}`,
+    );
+  });
+
+  it('rejects directory targets because runtime references must resolve to regular files', async () => {
+    const skillRoot = await createRuntimeSkill('[directory](references/)\n', {
+      'references/guide.md': 'guide\n',
+    });
+
+    await expect(validateRuntimeSkillClosure(skillRoot)).rejects.toThrow(
+      'target "references/" is not a regular file',
+    );
+  });
+
+  it.runIf(process.platform !== 'win32')(
+    'rejects final and intermediate symbolic links without exposing their referents',
+    async () => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-runtime-skill-symlink-'));
+      tempDirs.push(root);
+      const outsideRoot = path.join(root, 'private-referent');
+      await fs.outputFile(path.join(outsideRoot, 'secret.md'), 'secret\n', 'utf8');
+
+      const finalLinkSkill = await createRuntimeSkill('[guide](references/guide.md)\n');
+      await fs.ensureDir(path.join(finalLinkSkill, 'references'));
+      await fs.symlink(
+        path.join(outsideRoot, 'secret.md'),
+        path.join(finalLinkSkill, 'references', 'guide.md'),
+      );
+      const finalLinkError = await validateRuntimeSkillClosure(finalLinkSkill).catch(
+        (error: unknown) => error,
+      );
+      expect(finalLinkError).toBeInstanceOf(Error);
+      expect((finalLinkError as Error).message).toContain('symbolic link');
+      expect((finalLinkError as Error).message).not.toContain('private-referent');
+
+      const intermediateLinkSkill = await createRuntimeSkill('[guide](references/guide.md)\n');
+      await fs.symlink(outsideRoot, path.join(intermediateLinkSkill, 'references'));
+      const intermediateLinkError = await validateRuntimeSkillClosure(intermediateLinkSkill).catch(
+        (error: unknown) => error,
+      );
+      expect(intermediateLinkError).toBeInstanceOf(Error);
+      expect((intermediateLinkError as Error).message).toContain('symbolic link');
+      expect((intermediateLinkError as Error).message).not.toContain('private-referent');
+    },
+  );
+
+  it('makes the real bundle path fail before returning a missing Skill resource', async () => {
+    const repoRoot = await makeTempRepo();
+    const skillPath = path.join(
+      repoRoot,
+      'plugins',
+      'git-commit',
+      'skills',
+      'commit',
+      'SKILL.md',
+    );
+    await fs.appendFile(skillPath, '\n[missing projection](references/projected.md)\n', 'utf8');
+
+    await expect(createSyntheticEmbeddedRoot(repoRoot)).rejects.toThrow(
+      'target "references/projected.md"',
+    );
+  });
+
+  it('rechecks final projected target bytes against recorded provenance', async () => {
+    const outputRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-runtime-projection-freshness-'));
+    tempDirs.push(outputRoot);
+    const targetPath = path.join(
+      outputRoot,
+      'codex',
+      'skills',
+      'demo',
+      'references',
+      'projected.json',
+    );
+    await fs.outputFile(targetPath, 'projected\n', 'utf8');
+    const digest = 'sha256:997d78afe9decd97dc223f43ac067dd28b1ed16ff2d5a9c83afc52ff517f7520';
+    const provenance = [{
+      platform: 'codex' as const,
+      skill: 'demo',
+      target: 'references/projected.json',
+      sourceDigest: digest,
+      targetDigest: digest,
+    }];
+
+    await expect(
+      validateSkillRuntimeProjectionFreshness(outputRoot, provenance),
+    ).resolves.toBeUndefined();
+
+    await fs.writeFile(targetPath, 'changed\n', 'utf8');
+    await expect(
+      validateSkillRuntimeProjectionFreshness(outputRoot, provenance),
+    ).rejects.toThrow('skill "demo" projection target "references/projected.json"');
   });
 });
