@@ -56,14 +56,6 @@ export {
   type TuiRouterSnapshot,
 } from './router.js';
 export { CommandWizard } from './wizard.js';
-export {
-  Dashboard,
-  createInitialDashboardState,
-  dashboardReducer,
-  type DashboardResult,
-  type DashboardState,
-  type DashboardStateAction,
-} from './dashboard.js';
 export { getTuiStatusColor, tuiTheme, type TuiStatus } from './theme.js';
 export {
   ConfirmView,

@@ -1,9 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { StatusV4Payload, StatusV4PluginSummary } from '../../src/commands/status-v4.js';
-import type { RebuildProgressFeed } from '../../src/output/rebuild-progress.js';
+import { createRebuildProgressFeed, type RebuildProgressFeed } from '../../src/output/rebuild-progress.js';
 import {
   TuiController,
+  userIssueKey,
   type OperationEvidence,
   type TuiControllerDependencies,
   type TuiStatusLoadResult,
@@ -51,6 +52,7 @@ function target(options: {
   platform?: 'codex' | 'claude';
   scope: 'user' | 'project';
   state: 'present' | 'absent' | 'partial' | 'error';
+  errorCode?: string;
 }): StatusV4Payload['targets'][number] {
   const pluginName = options.pluginName ?? 'demo';
   const sourceId = options.sourceId ?? 'official';
@@ -65,7 +67,7 @@ function target(options: {
     cwd: '/workspace',
     state: options.state,
     components: [],
-    errors: options.state === 'error' ? [{ code: 'targetError', message: 'safe failure' }] : [],
+    errors: options.state === 'error' ? [{ code: options.errorCode ?? 'targetError', message: 'safe failure' }] : [],
   };
 }
 
@@ -264,7 +266,16 @@ describe('TUI v4 router and ViewModel', () => {
       ],
     }]);
     expect(view.issues).toEqual(expect.arrayContaining([
-      expect.objectContaining({ issueId: 'scope:official/demo:codex' }),
+      expect.objectContaining({
+        issueId: 'scope:official/demo:codex',
+        pluginId: 'official/demo',
+        sourceId: 'official',
+        placements: ['project', 'user'],
+        actions: expect.arrayContaining([
+          expect.objectContaining({ id: 'keepUserScope' }),
+          expect.objectContaining({ id: 'keepProjectScope' }),
+        ]),
+      }),
     ]));
   });
 
@@ -289,6 +300,79 @@ describe('TUI v4 router and ViewModel', () => {
     ]);
     expect(JSON.stringify(view.issues)).not.toContain('/Users/private');
     expect(JSON.stringify(view.issues)).not.toContain('private-token');
+  });
+
+  it('classifies issue routes from typed status and config evidence without message matching', () => {
+    const view = buildTuiViewModel({
+      status: status({
+        targets: [
+          target({ pluginName: 'partial', scope: 'user', state: 'partial' }),
+          target({ pluginName: 'missing', scope: 'user', state: 'error', errorCode: 'sourceMissing' }),
+          target({ pluginName: 'changed', scope: 'user', state: 'error', errorCode: 'sourceChanged' }),
+          target({ pluginName: 'offline', scope: 'user', state: 'error', errorCode: 'catalogSourceUnavailable' }),
+          target({ pluginName: 'offline-two', scope: 'project', state: 'error', errorCode: 'catalogSourceUnavailable' }),
+        ],
+        errors: [{ code: 'legacyStateUnsupported', message: 'arbitrary text that does not name legacy state' }],
+      }),
+      pluginSummaries: [{
+        pluginName: 'required',
+        pluginId: 'official/required',
+        description: 'required config fixture',
+        configIssues: [{ type: 'missing-required', key: 'rules', title: '规则文件', source: 'missing' }],
+      }],
+      sourceHealth: new Map([['official', {
+        sourceId: 'official',
+        state: 'degraded',
+        issueId: 'source:official:cache',
+      }]]),
+    });
+
+    expect(Object.fromEntries(view.issues.map((issue) => [issue.issueId, issue.category]))).toMatchObject({
+      'target:official/partial:codex:user:partial': 'incompleteInstallation',
+      'target:official/missing:codex:user:error': 'sourceMissing',
+      'target:official/changed:codex:user:error': 'sourceIdentityChanged',
+      'config:official/required:required': 'requiredConfigMissing',
+      'status:legacyStateUnsupported': 'legacyState',
+      'source:official:cache': 'sourceDegraded',
+    });
+    expect(JSON.stringify(view.issues)).not.toContain('arbitrary text');
+    expect(view.issues.find((issue) => issue.category === 'sourceDegraded')?.actions.map((action) => action.id))
+      .toContain('continueWithCache');
+    expect(view.issues.filter((issue) => issue.sourceId === 'official'
+      && (issue.category === 'sourceUnavailable' || issue.category === 'sourceDegraded'))).toHaveLength(1);
+    expect(view.issues.find((issue) => issue.category === 'sourceDegraded')?.impact).toContain(
+      '2 个安装位置受此来源根问题影响。',
+    );
+    expect(view.issues.find((issue) => issue.category === 'sourceMissing')?.actions.map((action) => action.id))
+      .toEqual(['reAddSource', 'viewTechnical']);
+    expect(view.issues.find((issue) => issue.category === 'sourceIdentityChanged')?.actions.map((action) => action.id))
+      .toEqual(['viewSourceChange', 'viewTechnical']);
+  });
+
+  it('keeps config issue type and layer while isolating a safe per-plugin read diagnostic', () => {
+    const view = buildTuiViewModel({
+      status: status(),
+      pluginSummaries: [
+        {
+          pluginName: 'invalid', pluginId: 'official/invalid', description: 'invalid',
+          configIssues: [{ type: 'invalid-config', key: 'mode', title: '模式', source: 'projectLocal' }],
+        },
+        {
+          pluginName: 'unreadable', pluginId: 'official/unreadable', description: 'unreadable',
+          configDiagnostic: { code: 'configReadFailed', message: '插件设置当前不可读。未读取或显示设置值。' },
+        },
+      ],
+    });
+
+    expect(view.issues.find((issue) => issue.pluginId === 'official/invalid')).toMatchObject({
+      title: 'invalid · 设置值无效',
+      configLayer: { scope: 'project', projectLayer: 'local' },
+      requiredFields: [{ key: 'mode', title: '模式', type: 'invalid-config', source: 'projectLocal' }],
+    });
+    expect(view.issues.find((issue) => issue.pluginId === 'official/unreadable')).toMatchObject({
+      category: 'diagnostic',
+      technicalDetails: [{ code: 'configReadFailed', message: '插件设置当前不可读。未读取或显示设置值。' }],
+    });
   });
 });
 
@@ -537,6 +621,109 @@ describe('TUI v4 background source checks', () => {
 });
 
 describe('TUI v4 Review safety', () => {
+  function issueWriteFixture(afterWrite: TuiStatusLoadResult | Error) {
+    const initial: TuiStatusLoadResult = {
+      payload: status({
+        sources: [source('official', { type: 'path', freshness: 'path' })],
+        targets: [target({ scope: 'user', state: 'partial' })],
+      }),
+      pluginSummaries: summaries(['official', 'demo']),
+    };
+    const loadStatus = vi.fn().mockResolvedValueOnce(initial);
+    if (afterWrite instanceof Error) loadStatus.mockRejectedValueOnce(afterWrite);
+    else loadStatus.mockResolvedValueOnce(afterWrite);
+    const executeIntent = vi.fn().mockResolvedValue({
+      overallState: 'succeeded',
+      targetResults: [{ target: { platform: 'codex', scope: 'user' }, state: 'completed' }],
+    });
+    const value = new TuiController(dependencies({ loadStatus, executeIntent }));
+    return { value, initial, executeIntent };
+  }
+
+  async function buildIssueReview(value: TuiController) {
+    await value.load();
+    const issue = value.listUserIssues().find((entry) => entry.category === 'incompleteInstallation')!;
+    return value.buildOperationReview({
+      kind: 'pluginWrite',
+      action: 'reinstall',
+      pluginId: issue.pluginId!,
+      platform: issue.platform!,
+      scope: issue.scope!,
+      originIssue: {
+        issueId: issue.issueId,
+        issueKey: userIssueKey(issue),
+        category: issue.category,
+        actionId: 'reinstall',
+      },
+    });
+  }
+
+  it('reports issueStillPresent after a successful command when the typed issue remains', async () => {
+    const fixture = issueWriteFixture({
+      payload: status({
+        sources: [source('official', { type: 'path', freshness: 'path' })],
+        targets: [target({ scope: 'user', state: 'partial' })],
+      }),
+      pluginSummaries: summaries(['official', 'demo']),
+    });
+    const review = await buildIssueReview(fixture.value);
+
+    const result = await fixture.value.executeOperation(review.reviewToken);
+
+    expect(result).toMatchObject({
+      state: 'blocked', code: 'issueStillPresent', writeMayHaveCompleted: true,
+      verification: 'issueStillPresent',
+    });
+    expect(fixture.executeIntent).toHaveBeenCalledTimes(1);
+    expect(fixture.value.snapshot.phase).toBe('ready');
+  });
+
+  it('reports issueVerificationFailed without claiming no write when post-write reload fails', async () => {
+    const fixture = issueWriteFixture(new Error('/Users/private/reload failure'));
+    const review = await buildIssueReview(fixture.value);
+
+    const result = await fixture.value.executeOperation(review.reviewToken);
+
+    expect(result).toMatchObject({
+      state: 'blocked', code: 'issueVerificationFailed', writeMayHaveCompleted: true,
+      verification: 'verificationFailed',
+      message: '写入可能已完成，但当前无法确认原问题是否消失。请重新检查状态。',
+    });
+    expect(fixture.executeIntent).toHaveBeenCalledTimes(1);
+    expect(fixture.value.snapshot.phase).toBe('ready');
+    expect(JSON.stringify(fixture.value.snapshot)).not.toContain('/Users/private');
+  });
+
+  it('reports issue success only after the typed issue disappears', async () => {
+    const fixture = issueWriteFixture({
+      payload: status({
+        sources: [source('official', { type: 'path', freshness: 'path' })],
+        targets: [target({ scope: 'user', state: 'present' })],
+      }),
+      pluginSummaries: summaries(['official', 'demo']),
+    });
+    const review = await buildIssueReview(fixture.value);
+
+    expect(await fixture.value.executeOperation(review.reviewToken)).toMatchObject({ state: 'succeeded' });
+    expect(fixture.value.listUserIssues()).toEqual([]);
+  });
+
+  it('blocks a forged issue origin before evidence capture and performs zero writes', async () => {
+    const executeIntent = vi.fn();
+    const captureEvidence = vi.fn().mockResolvedValue(baseEvidence);
+    const value = new TuiController(dependencies({ executeIntent, captureEvidence }));
+    await value.load();
+
+    await expect(value.buildOperationReview({
+      kind: 'pluginWrite', action: 'reinstall', pluginId: 'official/demo', platform: 'codex', scope: 'user',
+      originIssue: {
+        issueId: 'forged', issueKey: 'forged', category: 'incompleteInstallation', actionId: 'reinstall',
+      },
+    })).rejects.toMatchObject({ code: 'issueOriginInvalid' });
+    expect(captureEvidence).not.toHaveBeenCalled();
+    expect(executeIntent).not.toHaveBeenCalled();
+  });
+
   it('does not report a rolled-back config write as partial or succeeded', async () => {
     const controller = new TuiController(dependencies({
       executeIntent: vi.fn().mockResolvedValue({
@@ -805,9 +992,10 @@ describe('TUI v4 Review safety', () => {
       payload: status({ sources: [source('official', { type: 'path', freshness: 'path' })] }),
       pluginSummaries: summaries(['official', 'demo']),
     };
+    const loadSnapshot = structuredClone(loaded);
     let progressListener: ((value: { messages: string[] }) => void) | undefined;
     const controller = new TuiController(dependencies({
-      loadStatus: vi.fn().mockResolvedValue(loaded),
+      loadStatus: vi.fn().mockImplementation(async () => structuredClone(loadSnapshot)),
     }), {
       subscribe: (listener) => {
         progressListener = listener;
@@ -857,6 +1045,42 @@ describe('TUI v4 Review safety', () => {
       current: { target: 'demo', phase: '检查当前组件' },
       messages: ['开始检查'],
     });
+  });
+
+  it('clears the previous current progress before each consecutive formal execution', async () => {
+    const feed = createRebuildProgressFeed();
+    const second = deferred<unknown>();
+    let call = 0;
+    const value = new TuiController(dependencies({
+      executeIntent: vi.fn(async () => {
+        call += 1;
+        if (call === 1) {
+          feed.addEvent({
+            type: 'rebuild:action',
+            source: { plugin: 'demo', platform: 'codex', scope: 'user' },
+            data: { name: 'preflight.inspect', phase: 'start' },
+          } as never);
+          return { ok: true };
+        }
+        return second.promise;
+      }),
+    }), feed);
+    const intent = {
+      kind: 'pluginWrite' as const, action: 'install' as const,
+      pluginId: 'official/demo', platform: 'codex' as const, scope: 'user' as const,
+    };
+    const first = await value.buildOperationReview(intent);
+    await value.executeOperation(first.reviewToken);
+    expect(value.snapshot.progress.current).toBeDefined();
+    const messages = value.snapshot.progress.messages;
+
+    const next = await value.buildOperationReview(intent);
+    const executing = value.executeOperation(next.reviewToken);
+    await nextTurn();
+    expect(value.snapshot.progress.current).toBeUndefined();
+    expect(value.snapshot.progress.messages).toEqual(messages);
+    second.resolve({ ok: true });
+    await executing;
   });
 
   it('binds source writes to candidate and inventory evidence without exposing private input', async () => {

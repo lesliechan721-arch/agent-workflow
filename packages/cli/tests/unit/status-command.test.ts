@@ -4,7 +4,6 @@ import fs from 'fs-extra';
 import { describe, expect, it, vi } from 'vitest';
 
 import { statusCommand } from '../../src/commands/status.js';
-import { createCliExecutionContext } from '../../src/commands/runtime.js';
 import {
   discoverRebuildTargetNames,
   inspectRebuildTarget,
@@ -583,16 +582,6 @@ describe('live status command', () => {
       }),
     ]);
 
-    const context = createCliExecutionContext({
-      cwd, env: isolation.env, interactive: true, nativeCliRunner,
-    });
-    Object.assign(context, {
-      catalogResolution: runtime.catalogResolution,
-      catalogPlugins: runtime.catalogPlugins,
-    });
-    const { createDashboardController, dashboardActions } = await import('../../src/commands/console.js');
-    const loaded = await createDashboardController(context).load();
-    expect(dashboardActions(loaded.items[0]!, loaded.items[0]!.targets[0]!)).toContain('upgrade');
   });
 
   it('accepts Claude local-scope plugins without treating them as project installs', async () => {
@@ -660,20 +649,6 @@ describe('live status command', () => {
     expect(discovered.payload.targets[0]?.target.plugin).toBe('dynamic-renderer-plugin');
     expect(await filesystemSnapshot(isolation.layout.rootDir)).toEqual(before);
 
-    const context = createCliExecutionContext({
-      cwd,
-      env,
-      interactive: true,
-      nativeCliRunner: runtime.nativeCliRunner,
-    });
-    Object.assign(context, {
-      catalogResolution: runtime.catalogResolution,
-      catalogPlugins: runtime.catalogPlugins,
-    });
-    const { createDashboardController } = await import('../../src/commands/console.js');
-    await expect(createDashboardController(context).load()).resolves.toMatchObject({
-      status: { schemaVersion: 3 },
-    });
     expect(await filesystemSnapshot(isolation.layout.rootDir)).toEqual(before);
     expect(await fs.pathExists(env.AW_RENDER_SENTINEL)).toBe(false);
     expect(await fs.pathExists(path.join(isolation.layout.awHomeDir, 'renderer-ran'))).toBe(false);

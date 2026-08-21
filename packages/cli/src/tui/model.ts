@@ -127,14 +127,59 @@ export interface ConfigPageViewModel {
   storedCount: number;
 }
 
+export type UserIssueCategory =
+  | 'incompleteInstallation'
+  | 'sourceDegraded'
+  | 'sourceUnavailable'
+  | 'sourceMissing'
+  | 'sourceIdentityChanged'
+  | 'requiredConfigMissing'
+  | 'scopeConflict'
+  | 'legacyState'
+  | 'diagnostic';
+
+export type UserIssueActionId =
+  | 'reinstall'
+  | 'remove'
+  | 'refreshSource'
+  | 'continueWithCache'
+  | 'editSource'
+  | 'retryLater'
+  | 'reAddSource'
+  | 'viewSourceChange'
+  | 'openConfig'
+  | 'keepUserScope'
+  | 'keepProjectScope'
+  | 'viewTechnical'
+  | 'manualMigration';
+
+export interface UserIssueActionViewModel {
+  id: UserIssueActionId;
+  label: string;
+  description?: string;
+}
+
 export interface UserIssueViewModel {
   issueId: string;
+  category: UserIssueCategory;
   title: string;
   explanation: string;
   impact: string[];
   entity: { kind: 'plugin' | 'source'; id: string };
-  recommendedAction?: string;
-  alternativeActions: string[];
+  pluginId?: string;
+  platform?: PlatformName;
+  scope?: Scope;
+  sourceId?: string;
+  sourceIdentity?: string;
+  placements?: Scope[];
+  requiredFields?: Array<{
+    key: string;
+    title: string;
+    type: 'missing-required' | 'invalid-config';
+    source: 'default' | 'user' | 'project' | 'projectLocal' | 'missing';
+  }>;
+  configLayer?: { scope: Scope; projectLayer: 'shared' | 'local' };
+  actions: UserIssueActionViewModel[];
   technicalDetails: Array<{ code: string; message: string }>;
 }
 
@@ -190,21 +235,37 @@ function sourceState(
 
 function sourceIssue(
   health: SourceHealthViewModel,
+  impactedTargets = 0,
 ): UserIssueViewModel | undefined {
-  if (health.state !== 'degraded' && health.state !== 'unavailable') return undefined;
-  const cached = health.state === 'degraded';
+  if (health.state !== 'cache' && health.state !== 'degraded' && health.state !== 'unavailable') return undefined;
+  const cached = health.state === 'cache' || health.state === 'degraded';
   const issueId = health.issueId ?? `source:${health.sourceId}:${cached ? 'cache' : 'unavailable'}`;
   return {
     issueId,
+    category: cached ? 'sourceDegraded' : 'sourceUnavailable',
     title: `${health.sourceId} · ${cached ? '来源使用缓存' : '来源不可用'}`,
     explanation: cached
       ? '远端检查失败。当前仍使用已验证的缓存数据。'
       : '远端检查失败，并且没有可用缓存数据。',
-    impact: [cached ? '插件仍可浏览，但数据可能不是最新。' : '当前不能浏览或安装这个来源的插件。'],
+    impact: [cached ? '插件仍可浏览，但数据可能不是最新。' : '当前不能浏览或安装这个来源的插件。',
+      ...(impactedTargets > 0 ? [`${impactedTargets} 个安装位置受此来源根问题影响。`] : [])],
     entity: { kind: 'source', id: health.sourceId },
-    recommendedAction: '重新检查来源',
-    alternativeActions: cached ? ['继续使用缓存'] : ['修复来源配置', '稍后重试'],
-    technicalDetails: [{ code: cached ? 'catalogSourceDegraded' : 'catalogSourceUnavailable', message: health.message ?? '来源检查失败。' }],
+    sourceId: health.sourceId,
+    actions: cached
+      ? [
+          { id: 'refreshSource', label: '重新检查来源', description: '不会修改已安装内容' },
+          { id: 'continueWithCache', label: '继续使用缓存', description: '当前缓存仍可安全读取' },
+          { id: 'viewTechnical', label: '技术详情' },
+        ]
+      : [
+          { id: 'editSource', label: '编辑来源', description: '检查 URL、路径或 ref' },
+          { id: 'refreshSource', label: '稍后重试', description: '只重新检查来源' },
+          { id: 'viewTechnical', label: '技术详情' },
+        ],
+    technicalDetails: [{
+      code: cached ? 'catalogSourceDegraded' : 'catalogSourceUnavailable',
+      message: cached ? '远端检查失败；已验证缓存仍可用。' : '来源检查失败；没有可用缓存。',
+    }],
   };
 }
 
@@ -215,33 +276,79 @@ function targetIssues(payload: StatusV4Payload): UserIssueViewModel[] {
     const key = `${target.pluginId}\0${target.platform}`;
     byPlacement.set(key, [...(byPlacement.get(key) ?? []), target]);
     if (target.state !== 'partial' && target.state !== 'error') continue;
+    const codes = new Set(target.errors.map((error) => error.code));
+    const category: UserIssueCategory = target.state === 'partial'
+      ? 'incompleteInstallation'
+      : codes.has('sourceMissing') ? 'sourceMissing'
+        : codes.has('sourceChanged') ? 'sourceIdentityChanged'
+          : codes.has('catalogSourceUnavailable') || codes.has('bundleUnavailable')
+            ? 'sourceUnavailable'
+            : 'diagnostic';
     const issueId = `target:${target.pluginId}:${target.platform}:${target.scope}:${target.state}`;
+    const actions: UserIssueActionViewModel[] = category === 'incompleteInstallation'
+      ? [
+          { id: 'reinstall', label: '重新安装', description: '保留插件设置，重新生成缺失内容' },
+          { id: 'remove', label: '移除安装', description: '保留插件设置' },
+          { id: 'viewTechnical', label: '技术详情' },
+        ]
+      : category === 'sourceMissing'
+        ? [
+            { id: 'reAddSource', label: '重新添加同一来源', description: '保留来源 ID；来源类型和位置由你选择' },
+            { id: 'viewTechnical', label: '技术详情' },
+          ]
+        : category === 'sourceIdentityChanged'
+          ? [
+              { id: 'viewSourceChange', label: '查看来源变更', description: '不会自动覆盖现场状态' },
+              { id: 'viewTechnical', label: '技术详情' },
+            ]
+          : category === 'sourceUnavailable'
+            ? [
+                { id: 'editSource', label: '查看来源', description: '修复来源配置或稍后重试' },
+                { id: 'viewTechnical', label: '技术详情' },
+              ]
+            : [{ id: 'viewTechnical', label: '技术详情' }, { id: 'retryLater', label: '稍后重试' }];
     issues.push({
       issueId,
+      category,
       title: `${target.pluginId} · ${target.platform === 'codex' ? 'Codex' : 'Claude Code'} · ${target.state === 'partial' ? '安装不完整' : '检查失败'}`,
       explanation: target.state === 'partial'
         ? '必要内容缺失，插件可能不能稳定运行。'
         : '当前目标不能安全分类为正常安装。',
       impact: ['写操作前需要重新检查这个目标。'],
       entity: { kind: 'plugin', id: target.pluginId },
-      recommendedAction: target.state === 'partial' ? '重新安装' : undefined,
-      alternativeActions: ['查看技术详情'],
-      technicalDetails: target.errors.length > 0 ? target.errors : [{ code: 'targetStateError', message: '目标状态异常。' }],
+      pluginId: target.pluginId,
+      platform: target.platform,
+      scope: target.scope,
+      sourceId: target.sourceId,
+      sourceIdentity: target.sourceIdentity,
+      actions,
+      technicalDetails: target.errors.length > 0
+        ? target.errors.map((error) => ({ code: error.code, message: '状态检查报告了这个安全错误代码。' }))
+        : [{ code: 'targetStateError', message: '目标状态异常。' }],
     });
   }
-  for (const [key, targets] of byPlacement) {
+  for (const targets of byPlacement.values()) {
     const installed = targets.filter((target) => target.state !== 'absent');
     if (new Set(installed.map((target) => target.scope)).size < 2) continue;
     const sample = installed[0]!;
     issues.push({
       issueId: `scope:${sample.pluginId}:${sample.platform}`,
+      category: 'scopeConflict',
       title: `${sample.pluginId} · ${sample.platform === 'codex' ? 'Codex' : 'Claude Code'} · 安装位置冲突`,
       explanation: '所有项目和当前项目同时发现了这个插件。',
       impact: ['正常状态只能保留一个位置。'],
       entity: { kind: 'plugin', id: sample.pluginId },
-      recommendedAction: '选择保留一个位置',
-      alternativeActions: ['查看两个位置的详情'],
-      technicalDetails: [{ code: 'scopeConflict', message: key.replace('\0', '/') }],
+      pluginId: sample.pluginId,
+      platform: sample.platform,
+      sourceId: sample.sourceId,
+      sourceIdentity: sample.sourceIdentity,
+      placements: installed.map((target) => target.scope).sort(compareText),
+      actions: [
+        { id: 'keepUserScope', label: '保留所有项目', description: '移除当前项目中的安装；设置保留' },
+        { id: 'keepProjectScope', label: '保留当前项目', description: '移除所有项目中的安装；设置保留' },
+        { id: 'viewTechnical', label: '查看两个位置的详情' },
+      ],
+      technicalDetails: [{ code: 'scopeConflict', message: '同一插件和平台存在两个安装位置。' }],
     });
   }
   return issues;
@@ -272,15 +379,79 @@ function statusIssues(payload: StatusV4Payload): UserIssueViewModel[] {
           };
     issues.set(error.code, {
       issueId: `status:${error.code}`,
+      category: error.code === 'legacyStateUnsupported' ? 'legacyState' : 'diagnostic',
       title: projection.title,
       explanation: projection.explanation,
       impact: [projection.impact],
       entity: { kind: 'source', id: payload.catalog.primarySourceId },
-      alternativeActions: ['稍后重试'],
+      sourceId: payload.catalog.primarySourceId,
+      actions: error.code === 'legacyStateUnsupported'
+        ? [
+            { id: 'manualMigration', label: '查看手动处理说明', description: '当前没有安全的自动迁移' },
+            { id: 'retryLater', label: '稍后重新检查' },
+          ]
+        : [{ id: 'retryLater', label: '稍后重试' }, { id: 'viewTechnical', label: '技术详情' }],
       technicalDetails: [{ code: error.code, message: projection.explanation }],
     });
   }
   return [...issues.values()];
+}
+
+function configIssues(pluginSummaries: StatusV4PluginSummary[]): UserIssueViewModel[] {
+  return pluginSummaries.flatMap((summary): UserIssueViewModel[] => {
+    const sourceId = summary.pluginId.slice(0, summary.pluginId.indexOf('/'));
+    if (summary.configDiagnostic) {
+      return [{
+        issueId: `config:${summary.pluginId}:read`,
+        category: 'diagnostic' as const,
+        title: `${summary.displayName ?? summary.pluginName} · 设置状态不可读`,
+        explanation: '当前不能安全读取这个插件的设置状态。',
+        impact: ['其他插件仍可检查；当前插件的设置值不会显示。'],
+        entity: { kind: 'plugin' as const, id: summary.pluginId },
+        pluginId: summary.pluginId,
+        sourceId,
+        actions: [
+          { id: 'retryLater' as const, label: '稍后重新检查' },
+          { id: 'viewTechnical' as const, label: '查看技术详情' },
+        ],
+        technicalDetails: [{ code: summary.configDiagnostic.code, message: summary.configDiagnostic.message }],
+      }];
+    }
+    if (!summary.configIssues?.length) return [];
+    const types = new Set(summary.configIssues.map((issue) => issue.type));
+    const invalid = types.has('invalid-config');
+    const sources = new Set(summary.configIssues.map((issue) => issue.source));
+    const onlySource = sources.size === 1 ? [...sources][0] : undefined;
+    const configLayer = onlySource === 'user'
+      ? { scope: 'user' as const, projectLayer: 'shared' as const }
+      : onlySource === 'project'
+        ? { scope: 'project' as const, projectLayer: 'shared' as const }
+        : onlySource === 'projectLocal'
+          ? { scope: 'project' as const, projectLayer: 'local' as const }
+          : undefined;
+    return [{
+      issueId: `config:${summary.pluginId}:${invalid ? 'invalid' : 'required'}`,
+      category: 'requiredConfigMissing' as const,
+      title: `${summary.displayName ?? summary.pluginName} · ${invalid ? '设置值无效' : '缺少必填设置'}`,
+      explanation: invalid
+        ? '已有设置值不符合当前字段规则。'
+        : '插件缺少必填设置，写操作会在预检时被阻止。',
+      impact: [invalid ? '修正所列字段后才能稳定生成插件内容。' : '完成所列字段后才能稳定生成插件内容。'],
+      entity: { kind: 'plugin' as const, id: summary.pluginId },
+      pluginId: summary.pluginId,
+      sourceId,
+      requiredFields: summary.configIssues.map(({ key, title, type, source }) => ({ key, title, type, source })),
+      ...(configLayer ? { configLayer } : {}),
+      actions: [
+        { id: 'openConfig' as const, label: invalid ? '修正设置' : '完成设置', description: configLayer ? '进入建议的设置层' : '选择个人或项目设置层' },
+        { id: 'viewTechnical' as const, label: '查看字段详情' },
+      ],
+      technicalDetails: summary.configIssues.map((entry) => ({
+        code: entry.type,
+        message: `${entry.title} · ${entry.source}`,
+      })),
+    }];
+  });
 }
 
 export function buildTuiViewModel(options: {
@@ -334,10 +505,22 @@ export function buildTuiViewModel(options: {
     primary: source.primary,
     state: sourceState(source, options.sourceHealth?.get(source.id)),
   }));
+  const sourceRootIds = new Set([...(options.sourceHealth?.values() ?? [])]
+    .filter((health) => health.state === 'cache' || health.state === 'degraded' || health.state === 'unavailable')
+    .map((health) => health.sourceId));
+  const allTargetIssues = targetIssues(options.status);
+  const targetImpactCounts = new Map<string, number>();
+  for (const issue of allTargetIssues) {
+    if (issue.category !== 'sourceUnavailable' || !issue.sourceId || !sourceRootIds.has(issue.sourceId)) continue;
+    targetImpactCounts.set(issue.sourceId, (targetImpactCounts.get(issue.sourceId) ?? 0) + 1);
+  }
   const issues = [
-    ...targetIssues(options.status),
+    ...allTargetIssues.filter((issue) => issue.category !== 'sourceUnavailable'
+      || !issue.sourceId || !sourceRootIds.has(issue.sourceId)),
     ...statusIssues(options.status),
-    ...[...(options.sourceHealth?.values() ?? [])].flatMap((health) => sourceIssue(health) ?? []),
+    ...configIssues(options.pluginSummaries),
+    ...[...(options.sourceHealth?.values() ?? [])].flatMap((health) =>
+      sourceIssue(health, targetImpactCounts.get(health.sourceId) ?? 0) ?? []),
   ];
   return {
     plugins,

@@ -26,7 +26,6 @@ import {
 } from './commands/write-commands.js';
 import type { RebuildCommandResult } from './commands/rebuild-command.js';
 import {
-  dashboardActions,
   formatInteractiveConsoleUnavailableMessage,
   runConsoleController,
 } from './commands/console.js';
@@ -378,10 +377,13 @@ function writeCandidateEligibility(
   if (targets.length === 0) {
     return { selectable: false, reason: 'current bundle 不支持所选平台和范围' };
   }
-  const selectable = targets.every((target) => dashboardActions({
-    pluginName: candidate.pluginName,
-    targets: candidate.targets,
-  }, target).includes(command));
+  const selectable = targets.every((target) => ({
+    install: target.state === 'absent',
+    reinstall: target.state === 'present' || target.state === 'partial',
+    upgrade: target.state === 'present',
+    uninstall: target.state === 'present',
+    cleanup: target.state !== 'absent',
+  })[command]);
   return selectable
     ? { selectable: true }
     : { selectable: false, reason: `live status 不允许 ${command}` };

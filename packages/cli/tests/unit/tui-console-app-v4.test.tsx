@@ -9,6 +9,7 @@ import {
 } from '../../src/tui/console-app-v4.js';
 import {
   TuiController,
+  userIssueKey,
   type OperationEvidence,
   type TuiControllerDependencies,
   type TuiStatusLoadResult,
@@ -16,6 +17,16 @@ import {
 import type { ConfigPageViewModel } from '../../src/tui/model.js';
 
 afterEach(() => cleanup());
+
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (error: unknown) => void } {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
 
 const evidence: OperationEvidence = {
   catalog: { configDigest: 'sha256:config', compositeDigest: 'sha256:composite' },
@@ -34,6 +45,7 @@ function target(options: {
   platform: 'codex' | 'claude';
   scope: 'user' | 'project';
   state: 'present' | 'absent' | 'partial' | 'error';
+  errorCode?: string;
 }): StatusV4Payload['targets'][number] {
   const sourceId = options.sourceId ?? 'official';
   return {
@@ -47,7 +59,9 @@ function target(options: {
     cwd: '/workspace',
     state: options.state,
     components: [],
-    errors: options.state === 'partial' ? [{ code: 'missingContent', message: '安全说明' }] : [],
+    errors: options.state === 'partial'
+      ? [{ code: 'missingContent', message: '安全说明' }]
+      : options.state === 'error' ? [{ code: options.errorCode ?? 'targetError', message: '安全说明' }] : [],
   };
 }
 
@@ -79,6 +93,7 @@ function loadResult(): TuiStatusLoadResult {
       version: '0.4.2',
       supportedTargets: { codex: ['user', 'project'], claude: ['user', 'project'] },
       configFieldCount: 5,
+      configIssues: [{ type: 'missing-required', key: 'rules', title: '规则文件', source: 'missing' }],
     },
   ];
   const allTargets = summaries.flatMap((summary) =>
@@ -227,9 +242,9 @@ async function confirmReview(
 }
 
 describe('ConsoleAppV4', () => {
-  it('keeps the merged G/P/C/S design map free of duplicate route identities', () => {
-    expect(CONSOLE_V4_SCREEN_IDS).toHaveLength(61);
-    expect(new Set(CONSOLE_V4_SCREEN_IDS)).toHaveProperty('size', 61);
+  it('keeps the complete 74-state design map free of duplicate route identities', () => {
+    expect(CONSOLE_V4_SCREEN_IDS).toHaveLength(74);
+    expect(new Set(CONSOLE_V4_SCREEN_IDS)).toHaveProperty('size', 74);
     expect(CONSOLE_V4_SCREEN_IDS).toEqual([
       'G01', 'G02', 'G03', 'G04', 'G05',
       'P01', 'P02', 'P03', 'P04', 'P05', 'P06', 'P07', 'P08', 'P09', 'P10',
@@ -238,7 +253,170 @@ describe('ConsoleAppV4', () => {
       'C11', 'C12', 'C13', 'C14', 'C15', 'C16', 'C17',
       'S01', 'S02', 'S03', 'S04', 'S05', 'S06', 'S07', 'S08', 'S09',
       'S10', 'S11', 'S12', 'S13', 'S14', 'S15', 'S16', 'S17', 'S18',
+      'I01', 'I02', 'I03', 'I04', 'I05', 'I06', 'I07', 'I08', 'I09',
+      'I10', 'I11', 'I12', 'I13',
     ]);
+  });
+
+  it('routes typed I01-I09 issues and the empty state through mounted pages', async () => {
+    const loaded = loadResult();
+    loaded.payload.catalog.sources = loaded.payload.catalog.sources.filter((source) => source.id !== 'research');
+    const conflictTarget = loaded.payload.targets.find((entry) =>
+      entry.pluginId === 'team-tools/review-gate'
+      && entry.platform === 'codex'
+      && entry.scope === 'project');
+    if (conflictTarget) conflictTarget.state = 'present';
+    loaded.payload.targets.push(
+      target({ pluginName: 'missing', sourceId: 'archive', platform: 'codex', scope: 'user', state: 'error', errorCode: 'sourceMissing' }),
+      target({ pluginName: 'changed', sourceId: 'team-tools', platform: 'codex', scope: 'project', state: 'error', errorCode: 'sourceChanged' }),
+    );
+    loaded.payload.errors.push({ code: 'legacyStateUnsupported', message: 'private legacy location' });
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
+    await value.load();
+    const expected = new Map([
+      ['incompleteInstallation', 'I03'],
+      ['sourceDegraded', 'I04'],
+      ['sourceMissing', 'I05'],
+      ['sourceIdentityChanged', 'I06'],
+      ['requiredConfigMissing', 'I07'],
+      ['scopeConflict', 'I08'],
+      ['legacyState', 'I09'],
+    ] as const);
+    const reached = new Set<ConsoleV4ScreenId>();
+    value.push({ name: 'issueList' });
+    const listInstance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} onScreenChange={(screen) => reached.add(screen)} />);
+    await nextTurn(3);
+    expect(reached).toContain('I01');
+    expect((listInstance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(18);
+    listInstance.unmount();
+    for (const [category, screen] of expected) {
+      const selected = value.listUserIssues().find((entry) => entry.category === category);
+      expect(selected, category).toBeDefined();
+      value.push({ name: 'issueDetail', issueId: selected!.issueId });
+      const detailInstance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} onScreenChange={(current) => reached.add(current)} />);
+      await nextTurn(2);
+      expect(reached).toContain(screen);
+      expect(detailInstance.lastFrame()).not.toContain('private legacy location');
+      expect((detailInstance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(18);
+      detailInstance.unmount();
+      value.back();
+    }
+
+    const empty = loadResult();
+    empty.payload.catalog.sources = [empty.payload.catalog.sources[0]!];
+    empty.payload.targets = empty.payload.targets.map((entry) => ({ ...entry, state: 'absent' as const, errors: [] }));
+    empty.payload.errors = [];
+    empty.pluginSummaries = empty.pluginSummaries.map(({ configIssues: _issues, ...summary }) => summary);
+    const emptyController = controller({ loadStatus: vi.fn().mockResolvedValue(empty) });
+    await emptyController.load();
+    emptyController.push({ name: 'issueList' });
+    const emptyScreens: ConsoleV4ScreenId[] = [];
+    const emptyInstance = render(<ConsoleAppV4 controller={emptyController} size={{ columns: 60, rows: 18 }} onScreenChange={(screen) => emptyScreens.push(screen)} />);
+    await nextTurn(2);
+    expect(emptyScreens).toContain('I02');
+    expect(emptyInstance.lastFrame()).toContain('当前没有需要处理的问题');
+  });
+
+  it('uses typed issue origin for I10-I12 and reloads the issue list after success', async () => {
+    const initial = loadResult();
+    initial.payload.catalog.sources = [initial.payload.catalog.sources[0]!];
+    initial.payload.targets = [target({ pluginName: 'review-gate', platform: 'codex', scope: 'user', state: 'partial' })];
+    initial.pluginSummaries = [initial.pluginSummaries[1]!];
+    const resolved = structuredClone(initial);
+    resolved.payload.targets[0] = { ...resolved.payload.targets[0]!, state: 'present', errors: [] };
+    const loadStatus = vi.fn()
+      .mockResolvedValueOnce(initial)
+      .mockResolvedValue(resolved);
+    let completeExecution!: (value: unknown) => void;
+    const execution = new Promise((resolve) => { completeExecution = resolve; });
+    const executeIntent = vi.fn().mockReturnValue(execution);
+    const value = controller({ loadStatus, executeIntent });
+    await value.load();
+    const selected = value.listUserIssues().find((entry) => entry.category === 'incompleteInstallation')!;
+    value.push({ name: 'issueDetail', issueId: selected.issueId });
+    const screens: ConsoleV4ScreenId[] = [];
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} onScreenChange={(screen) => screens.push(screen)} />);
+    await nextTurn(2);
+    await input(instance, '\r');
+    expect(value.snapshot.activeReview?.originIssue).toMatchObject({
+      issueId: selected.issueId,
+      category: 'incompleteInstallation',
+      actionId: 'reinstall',
+    });
+    instance.unmount();
+    const reviewInstance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} onScreenChange={(screen) => screens.push(screen)} />);
+    await nextTurn(2);
+    expect(screens).toContain('I10');
+    await confirmReview(reviewInstance, value);
+    reviewInstance.unmount();
+    const progressInstance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} onScreenChange={(screen) => screens.push(screen)} />);
+    await nextTurn(2);
+    expect(screens).toContain('I11');
+    completeExecution({
+      overallState: 'succeeded',
+      targetResults: [{ target: { platform: 'codex', scope: 'user' }, state: 'completed' }],
+    });
+    await nextTurn(4);
+    progressInstance.unmount();
+    const resultInstance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} onScreenChange={(screen) => screens.push(screen)} />);
+    await nextTurn(2);
+    expect(screens).toContain('I12');
+    expect(executeIntent).toHaveBeenCalledWith(expect.objectContaining({
+      originIssue: expect.objectContaining({ issueId: selected.issueId }),
+    }), evidence);
+    expect(value.listUserIssues().some((entry) => entry.issueId === selected.issueId)).toBe(false);
+    resultInstance.unmount();
+  });
+
+  it('keeps a failed issue and routes I13 back to its detail with a fixed error', async () => {
+    const initial = loadResult();
+    initial.payload.catalog.sources = [initial.payload.catalog.sources[0]!];
+    initial.payload.targets = [target({ pluginName: 'review-gate', platform: 'codex', scope: 'user', state: 'partial' })];
+    initial.pluginSummaries = [initial.pluginSummaries[1]!];
+    const value = controller({
+      loadStatus: vi.fn().mockResolvedValue(initial),
+      executeIntent: vi.fn().mockRejectedValue(new Error('/Users/private/raw failure')),
+    });
+    await value.load();
+    const selected = value.listUserIssues().find((entry) => entry.category === 'incompleteInstallation')!;
+    value.push({ name: 'issueDetail', issueId: selected.issueId });
+    const screens: ConsoleV4ScreenId[] = [];
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} onScreenChange={(screen) => screens.push(screen)} />);
+    await nextTurn(2);
+    await input(instance, '\r');
+    await confirmReview(instance, value);
+    await nextTurn(3);
+    expect(screens).toContain('I13');
+    expect(instance.lastFrame()).not.toContain('/Users/private');
+    expect(value.listUserIssues().some((entry) => entry.issueId === selected.issueId)).toBe(true);
+  });
+
+  it.each([
+    { key: '', actionId: 'keepUserScope', removedScope: 'project' },
+    { key: '\u001B[B', actionId: 'keepProjectScope', removedScope: 'user' },
+  ] as const)('maps the canonical scope choice $actionId to removing $removedScope', async ({ key, actionId, removedScope }) => {
+    const loaded = loadResult();
+    loaded.payload.catalog.sources = [loaded.payload.catalog.sources[0]!];
+    loaded.payload.targets = [
+      target({ pluginName: 'review-gate', platform: 'codex', scope: 'user', state: 'present' }),
+      target({ pluginName: 'review-gate', platform: 'codex', scope: 'project', state: 'present' }),
+    ];
+    loaded.pluginSummaries = [loaded.pluginSummaries[1]!];
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
+    await value.load();
+    const conflict = value.listUserIssues().find((entry) => entry.category === 'scopeConflict')!;
+    value.push({ name: 'issueDetail', issueId: conflict.issueId });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    await nextTurn(2);
+    await input(instance, ...(key ? [key] : []), '\r');
+    expect(value.snapshot.activeReview).toMatchObject({
+      pluginAction: 'uninstall',
+      originIssue: { issueId: conflict.issueId, issueKey: userIssueKey(conflict), category: 'scopeConflict', actionId },
+    });
+    expect((value.dependencies.captureEvidence as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0]).toMatchObject({
+      pluginId: 'official/review-gate',
+      scope: removedScope,
+    });
   });
 
   it('reaches every P state through a real mounted controller snapshot', async () => {
@@ -371,6 +549,7 @@ describe('ConsoleAppV4', () => {
     expect(instance.lastFrame()).toContain('退出控制台？');
     await input(instance, '\u001B[B', '\r');
     expect(exit).toHaveBeenCalledTimes(1);
+    expect(exit).toHaveBeenCalledWith({ code: 0, reason: 'user' });
     expect(screens).toEqual(expect.arrayContaining(['G01', 'G02', 'G03']));
     expect(screens).not.toContain('G04');
   });
@@ -409,11 +588,14 @@ describe('ConsoleAppV4', () => {
     expect(value.snapshot.router.current.route.name).toBe('installPlacement');
   });
 
-  it('does not dispose an externally owned controller and exposes initial load failure', async () => {
+  it('does not dispose an externally owned controller and exits initial load failure nonzero', async () => {
+    const exit = vi.fn();
     const value = controller({ loadStatus: vi.fn().mockRejectedValue(new Error('statusUnavailable: private')) });
-    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} onExit={exit} />);
     await nextTurn(3);
     expect(instance.lastFrame()).toContain('无法读取插件状态');
+    await input(instance, '\u0003');
+    expect(exit).toHaveBeenCalledWith({ code: 1, reason: 'initialError' });
     instance.unmount();
     expect(value.snapshot.phase).toBe('error');
   });
@@ -425,8 +607,29 @@ describe('ConsoleAppV4', () => {
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} onExit={exit} />);
     await nextTurn(3);
     await input(instance, '/', '\u0003');
-    expect(exit).toHaveBeenCalledOnce();
+    expect(exit).toHaveBeenCalledWith({ code: 0, reason: 'user' });
     expect(instance.lastFrame()).toContain('/ 输入搜索内容');
+  });
+
+  it('exits once after a busy stale operation returns to Review', async () => {
+    const pending = deferred<unknown>();
+    const exit = vi.fn();
+    const value = controller({ executeIntent: vi.fn(() => pending.promise) });
+    const review = await value.buildOperationReview({
+      kind: 'pluginWrite', action: 'install', pluginId: 'official/agent-lab', platform: 'codex', scope: 'user',
+    });
+    void value.executeOperation(review.reviewToken);
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} onExit={exit} />);
+    await nextTurn(2);
+    expect(value.snapshot.router.current.route.name).toBe('progress');
+
+    await input(instance, '\u0003');
+    pending.reject(new Error('operationReviewStale: changed'));
+    await nextTurn(4);
+
+    expect(value.snapshot.router.current.route.name).toBe('review');
+    expect(exit).toHaveBeenCalledTimes(1);
+    expect(exit).toHaveBeenCalledWith({ code: 0, reason: 'stale' });
   });
 
   it('keeps source tabs out of the vertical focus and searches same-name plugins by canonical identity', async () => {

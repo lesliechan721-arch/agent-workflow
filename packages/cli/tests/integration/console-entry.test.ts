@@ -4,6 +4,8 @@ import fs from 'fs-extra';
 import { describe, expect, it, vi } from 'vitest';
 
 import { runCli } from '../../src/index.js';
+import { ConsoleAppV4 } from '../../src/tui/console-app-v4.js';
+import type { ConsoleExitRequest } from '../../src/tui/console-app-v4.js';
 import { createCapturedCliIo } from '../helpers/cli-entry.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
@@ -20,9 +22,23 @@ describe('console and removed diagnose entry', () => {
     expect(captured.readStderr()).toContain('aw status --json');
   });
 
-  it('launches one injected dashboard session on stderr without writing stdout', async () => {
+  it('launches one V4 controller session, completes through onExit, and disposes ownership once', async () => {
     const captured = createCapturedCliIo();
-    const launch = vi.fn(async () => ({ exitCode: 0 }));
+    let mountedController: { snapshot: { phase: string } } | undefined;
+    const launch = vi.fn(async (request: {
+      render: (complete: (result: { exitCode: number }) => void) => {
+        type: unknown;
+        props: { controller: { snapshot: { phase: string } }; onExit: (request: ConsoleExitRequest) => void };
+      };
+    }) => {
+      let result: { exitCode: number } | undefined;
+      const element = request.render((value) => { result = value; });
+      expect(element.type).toBe(ConsoleAppV4);
+      expect(element.props.controller.snapshot.phase).toBe('idle');
+      mountedController = element.props.controller;
+      element.props.onExit({ code: 0, reason: 'user' });
+      return result!;
+    });
     const exitCode = await runCli([], {
       interactive: true,
       io: captured.io,
@@ -31,7 +47,28 @@ describe('console and removed diagnose entry', () => {
 
     expect(exitCode).toBe(0);
     expect(launch).toHaveBeenCalledTimes(1);
+    expect(mountedController?.snapshot.phase).toBe('disposed');
     expect(captured.readStdout()).toBe('');
+  });
+
+  it('returns the exit code supplied by the mounted V4 component callback', async () => {
+    const captured = createCapturedCliIo();
+    const launch = vi.fn(async (request: {
+      render: (complete: (result: { exitCode: number }) => void) => {
+        props: { onExit: (request: ConsoleExitRequest) => void };
+      };
+    }) => {
+      let result: { exitCode: number } | undefined;
+      const element = request.render((value) => { result = value; });
+      element.props.onExit({ code: 1, reason: 'initialError' });
+      return result!;
+    });
+
+    expect(await runCli([], {
+      interactive: true,
+      io: captured.io,
+      tuiRunner: { launch } as never,
+    })).toBe(1);
   });
 
   it('applies bare console verbose and debug options to diagnostics', async () => {

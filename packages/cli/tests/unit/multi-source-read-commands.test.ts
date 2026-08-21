@@ -8,8 +8,6 @@ import {
   listCatalogSources,
   updateCatalogSourceCommand,
 } from '../../src/commands/catalog-source.js';
-import { createDashboardController, dashboardActions } from '../../src/commands/console.js';
-import { createCliExecutionContext } from '../../src/commands/runtime.js';
 import { loadConsoleItemsResult } from '../../src/commands/status.js';
 import { statusCommandV4 } from '../../src/commands/status-v4.js';
 import { runCli } from '../../src/index.js';
@@ -154,6 +152,40 @@ describe('multi-source read commands', () => {
         state: 'absent',
       }),
     ]));
+  });
+
+  it('keeps typed config preflight details internal and isolates a safe read diagnostic', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const root = fixturePath('status-config-preflight');
+    await createCatalogSnapshotFixture(root, 'demo', '0.0.0', 'demo\n', (manifest) => {
+      manifest.config = { schema: { rules: { type: 'string', title: '规则', required: true } } };
+    });
+    const initial = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 1, sources: [{ id: 'good', type: 'path', primary: true, path: root }] },
+      expectedDigest: initial.digest,
+      env: isolation.env,
+    });
+
+    const missing = await statusCommandV4({
+      cwd: isolation.layout.fixtureCwd, env: isolation.env, cliVersion: '1.0.0', json: true,
+    });
+    expect(missing.pluginSummaries[0]?.configIssues).toEqual([
+      { type: 'missing-required', key: 'rules', title: '规则', source: 'missing' },
+    ]);
+    expect(JSON.parse(missing.output)).not.toHaveProperty('pluginSummaries');
+
+    await fs.outputFile(path.join(
+      isolation.env.AW_HOME!, 'plugin-config', 'good', 'demo', 'config.json',
+    ), '{ private invalid config');
+    const unreadable = await statusCommandV4({
+      cwd: isolation.layout.fixtureCwd, env: isolation.env, cliVersion: '1.0.0', json: true,
+    });
+    expect(unreadable.pluginSummaries[0]?.configDiagnostic).toEqual({
+      code: 'configReadFailed',
+      message: '插件设置当前不可读。未读取或显示设置值。',
+    });
+    expect(JSON.stringify(unreadable)).not.toContain('private invalid config');
   });
 
   it('shows safe component inspection only for verbose status', async () => {
@@ -442,18 +474,6 @@ describe('multi-source read commands', () => {
 
     expect(loaded.catalogUnavailable).toBe(false);
     expect(loaded.items.map((item) => item.pluginName)).toEqual(['first/demo', 'second/demo']);
-    const controller = createDashboardController(createCliExecutionContext({
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
-      interactive: true,
-    }));
-    await expect(controller.execute('install', loaded.items[0]!.targets[0]!))
-      .resolves.toMatchObject({
-        overallState: 'succeeded',
-        rebuildResults: [expect.objectContaining({
-          target: expect.objectContaining({ pluginId: 'first/demo', sourceId: 'first' }),
-        })],
-      });
   });
 
   it('applies qualified, ambiguous bare, unknown, and mixed selector semantics', async () => {
@@ -1248,7 +1268,6 @@ describe('multi-source read commands', () => {
       env: isolation.env,
     });
     const item = loaded.items[0]!;
-    const target = item.targets[0]!;
     expect(item).toMatchObject({
       pluginName: 'good/demo',
       pluginSummary: {
@@ -1258,22 +1277,5 @@ describe('multi-source read commands', () => {
     });
     expect(item.plugin).toBeUndefined();
     expect(JSON.stringify(item)).not.toContain('rootDir');
-    expect(dashboardActions(item, target)).toContain('config');
-
-    const controller = createDashboardController(createCliExecutionContext({
-      cwd: isolation.layout.fixtureCwd,
-      env: isolation.env,
-      interactive: true,
-    }));
-    await expect(controller.readConfig(item, { scope: 'user', projectLayer: 'shared' }))
-      .resolves.toMatchObject({
-        model: { pluginName: 'demo' },
-        read: { fields: [expect.objectContaining({ key: 'mode', effectiveValue: 'fast' })] },
-      });
-    await expect(controller.saveConfig(item, { scope: 'user', projectLayer: 'shared' }, {
-      updates: { mode: 'slow' },
-    })).resolves.toMatchObject({ configWrite: 'succeeded', updatedKeys: ['mode'] });
-    await expect(controller.resetConfig(item, { scope: 'user', projectLayer: 'shared' }))
-      .resolves.toMatchObject({ configWrite: 'succeeded', deleted: true });
   });
 });

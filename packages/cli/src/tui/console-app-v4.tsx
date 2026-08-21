@@ -1,5 +1,5 @@
 import { Box, Text, useInput, useWindowSize } from 'ink';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import path from 'node:path';
 
 import type { CatalogSource, PlatformName, Scope } from '../types.js';
@@ -13,12 +13,15 @@ import type {
   TuiController,
   TuiControllerSnapshot,
 } from './controller.js';
+import { userIssueKey } from './controller.js';
 import { resolveTuiSizePolicy } from './layout.js';
 import type {
   ConfigFieldViewModel,
   ConfigPageViewModel,
   PlatformPlacementSummary,
   PluginListItemViewModel,
+  UserIssueActionViewModel,
+  UserIssueViewModel,
 } from './model.js';
 import type { TuiRoute } from './router.js';
 import { tuiTheme } from './theme.js';
@@ -31,6 +34,8 @@ export const CONSOLE_V4_SCREEN_IDS = [
   'C11', 'C12', 'C13', 'C14', 'C15', 'C16', 'C17',
   'S01', 'S02', 'S03', 'S04', 'S05', 'S06', 'S07', 'S08', 'S09',
   'S10', 'S11', 'S12', 'S13', 'S14', 'S15', 'S16', 'S17', 'S18',
+  'I01', 'I02', 'I03', 'I04', 'I05', 'I06', 'I07', 'I08', 'I09',
+  'I10', 'I11', 'I12', 'I13',
 ] as const;
 
 export type ConsoleV4ScreenId = typeof CONSOLE_V4_SCREEN_IDS[number];
@@ -249,6 +254,11 @@ export function resolveConsoleV4ScreenId(
     if (placement.state === 'installed' && placement.health === 'ready') return 'P14';
     return 'P16';
   }
+  if (route.name === 'review' && snapshot.activeReview?.originIssue) return 'I10';
+  if (route.name === 'progress' && snapshot.activeReview?.originIssue) return 'I11';
+  if (route.name === 'result' && snapshot.result?.originIssue) {
+    return snapshot.result.state === 'succeeded' ? 'I12' : 'I13';
+  }
   if (route.name === 'review' && snapshot.activeReview?.operationKind === 'sourceMutation') {
     return ({ add: 'S10', update: 'S15', setPrimary: 'S16', remove: 'S18' } as const)[snapshot.activeReview.sourceAction!];
   }
@@ -291,13 +301,33 @@ export function resolveConsoleV4ScreenId(
   } as const)[route.step];
   if (route.name === 'sourceEdit') return 'S14';
   if (route.name === 'sourceRemoveBlocked') return 'S17';
+  if (route.name === 'issueList') return controller.listUserIssues().length === 0 ? 'I02' : 'I01';
+  if (route.name === 'issueDetail') {
+    const category = controller.listUserIssues().find((issue) => issue.issueId === route.issueId)?.category;
+    return {
+      incompleteInstallation: 'I03',
+      sourceDegraded: 'I04',
+      sourceUnavailable: 'I04',
+      sourceMissing: 'I05',
+      sourceIdentityChanged: 'I06',
+      requiredConfigMissing: 'I07',
+      scopeConflict: 'I08',
+      legacyState: 'I09',
+      diagnostic: 'I09',
+    }[category ?? 'diagnostic'] as ConsoleV4ScreenId;
+  }
   return 'G02';
+}
+
+export interface ConsoleExitRequest {
+  code: number;
+  reason: 'user' | 'initialError' | 'completed' | 'partial' | 'blocked' | 'stale';
 }
 
 export function ConsoleAppV4(props: {
   controller: TuiController;
   size?: { columns: number; rows: number };
-  onExit?: () => void;
+  onExit?: (request: ConsoleExitRequest) => void;
   onScreenChange?: (screen: ConsoleV4ScreenId) => void;
   ownsController?: boolean;
 }): React.JSX.Element {
@@ -331,16 +361,27 @@ export function ConsoleAppV4(props: {
   const [sourceReferenceSummary, setSourceReferenceSummary] = useState<Awaited<ReturnType<TuiController['inspectSourceRemoval']>>>();
   const [sourceDependenciesExpanded, setSourceDependenciesExpanded] = useState(false);
   const [draftOwner, setDraftOwner] = useState<string>();
+  const exitSent = useRef(false);
   const route = snapshot.router.current.route;
   const plugin = currentPlugin(props.controller, route);
+  const issue = route.name === 'issueDetail'
+    ? props.controller.listUserIssues().find((entry) => entry.issueId === route.issueId)
+    : undefined;
   const busy = route.name === 'progress';
   const tooSmall = policy.mode === 'too-small';
+  const requestExit = (request: ConsoleExitRequest): void => {
+    if (exitSent.current) return;
+    exitSent.current = true;
+    props.onExit?.(request);
+  };
 
   useEffect(() => {
     const unsubscribe = props.controller.subscribe(setSnapshot);
-    void props.controller.load().catch(() => {
-      setActionError('操作未完成。请重新检查后重试。');
-    });
+    if (props.controller.snapshot.phase === 'idle') {
+      void props.controller.load().catch(() => {
+        setActionError('操作未完成。请重新检查后重试。');
+      });
+    }
     return () => {
       unsubscribe();
       if (props.ownsController) props.controller.dispose();
@@ -348,8 +389,14 @@ export function ConsoleAppV4(props: {
   }, [props.controller, props.ownsController]);
 
   useEffect(() => {
-    if (exitAfterBusy && route.name === 'result') props.onExit?.();
-  }, [exitAfterBusy, props.onExit, route.name]);
+    if (!exitAfterBusy || !snapshot.result) return;
+    const state = snapshot.result.state;
+    requestExit({
+      code: state === 'blocked' || state === 'partial' ? 1 : 0,
+      reason: state === 'blocked' ? 'blocked' : state === 'partial' ? 'partial'
+        : state === 'stale' ? 'stale' : 'completed',
+    });
+  }, [exitAfterBusy, snapshot.result]);
   useEffect(() => {
     if (route.name !== 'result'
       || !snapshot.result
@@ -525,6 +572,40 @@ export function ConsoleAppV4(props: {
     setSourceDraft({ owner, mode: 'add', sourceId: '', type: 'git', location: '', refPolicy: 'cliChannel', ref: '', subdir: '' });
     setDirty(true);
     go({ name: 'sourceAdd', step: 'type', owner });
+  };
+  const beginIssueSourceAdd = (sourceId: string): void => {
+    const owner = `source-readd:${sourceId}:${Date.now()}`;
+    setSourceDraft({ owner, mode: 'add', sourceId, type: 'git', location: '', refPolicy: 'cliChannel', ref: '', subdir: '' });
+    setDirty(true);
+    go({ name: 'sourceAdd', step: 'type', owner });
+  };
+  const issueWriteIntent = (
+    selectedIssue: UserIssueViewModel,
+    action: UserIssueActionViewModel,
+  ): OperationIntent | undefined => {
+    if (!selectedIssue.pluginId || !selectedIssue.platform) return undefined;
+    const selectedScope = action.id === 'keepUserScope'
+      ? 'project'
+      : action.id === 'keepProjectScope' ? 'user' : selectedIssue.scope;
+    const writeAction = action.id === 'reinstall'
+      ? 'reinstall'
+      : action.id === 'remove' || action.id === 'keepUserScope' || action.id === 'keepProjectScope'
+        ? 'uninstall'
+        : undefined;
+    if (!selectedScope || !writeAction) return undefined;
+    return {
+      kind: 'pluginWrite',
+      action: writeAction,
+      pluginId: selectedIssue.pluginId,
+      platform: selectedIssue.platform,
+      scope: selectedScope,
+      originIssue: {
+        issueId: selectedIssue.issueId,
+        issueKey: userIssueKey(selectedIssue),
+        category: selectedIssue.category,
+        actionId: action.id,
+      },
+    };
   };
   const sourceFromDraft = (draft: SourceDraft): CatalogSource => draft.type === 'git'
     ? {
@@ -1081,8 +1162,8 @@ export function ConsoleAppV4(props: {
     if (route.step === 'type') {
       title = '选择来源类型'; description = '来源类型创建后不能修改。';
       actions = [
-        { label: 'Git 仓库', description: '从远端 Git 仓库读取 Catalog', run: () => { setSourceDraft({ ...sourceDraft, type: 'git' }); go({ name: 'sourceAdd', step: 'id', owner: route.owner }); } },
-        { label: '本地目录', description: '用于本地开发与测试', run: () => { setSourceDraft({ ...sourceDraft, type: 'path' }); go({ name: 'sourceAdd', step: 'id', owner: route.owner }); } },
+        { label: 'Git 仓库', description: '从远端 Git 仓库读取 Catalog', run: () => { setSourceDraft({ ...sourceDraft, type: 'git' }); go({ name: 'sourceAdd', step: sourceDraft.sourceId ? 'location' : 'id', owner: route.owner }); } },
+        { label: '本地目录', description: '用于本地开发与测试', run: () => { setSourceDraft({ ...sourceDraft, type: 'path' }); go({ name: 'sourceAdd', step: sourceDraft.sourceId ? 'location' : 'id', owner: route.owner }); } },
       ]; content = <ActionRows actions={actions} focus={focus} />;
     } else if (route.step === 'refPolicy') {
       title = '选择版本引用方式'; description = '跟随 AW 通道适合常规来源；固定 ref 适合测试来源。';
@@ -1122,6 +1203,60 @@ export function ConsoleAppV4(props: {
     actions = [{ label: sourceDependenciesExpanded ? '收起依赖内容' : '查看依赖内容', description: '只显示插件、来源、平台、位置和类别聚合', run: () => setSourceDependenciesExpanded((value) => !value) }, { label: '返回来源详情', run: back }];
     const countLabel = (value: number | undefined, unit: string): string => value === undefined ? '未知' : `${value} ${unit}`;
     content = <Box flexDirection="column"><Bordered><Text color={tuiTheme.statusColors.error}>× {sourceReferenceSummary?.inventoryComplete === false ? '引用清单不完整' : '发现活动引用'}</Text></Bordered><Bordered><Text>安装位置      {countLabel(sourceReferenceSummary?.installationCount, '个')}</Text><Text>插件设置      {countLabel(sourceReferenceSummary?.configCount, '份')}</Text><Text>生命周期状态  {countLabel(sourceReferenceSummary?.lifecycleCount, '个')}</Text><Text>Marketplace   {countLabel(sourceReferenceSummary?.marketplaceCount, '个')}</Text>{sourceDependenciesExpanded ? sourceReferenceSummary?.dependencies.slice(0, policy.mode === 'compact' ? 2 : 5).map((dependency, index) => <Text key={`${dependency.category}:${dependency.pluginId ?? dependency.sourceId ?? index}`} color={tuiTheme.colors.muted}>{dependency.category} · {dependency.pluginId ?? dependency.sourceId ?? '身份未知'}{dependency.platform ? ` · ${platformLabel(dependency.platform)}` : ''}{dependency.scope ? ` · ${scopeLabel(dependency.scope)}` : ''}</Text>) : null}</Bordered><ActionRows actions={actions} focus={focus} /></Box>;
+  } else if (route.name === 'issueList') {
+    const issues = props.controller.listUserIssues();
+    breadcrumb = '需要处理';
+    context = issues.length > 0 ? `${issues.length} 项` : '没有问题';
+    title = issues.length > 0 ? '需要处理' : '当前没有需要处理的问题';
+    description = issues.length > 0
+      ? '选择一个问题，查看影响和真实可用的处理路径。'
+      : '当前状态检查没有发现需要处理的安装、来源或设置问题。';
+    if (issues.length === 0) {
+      actions = [
+        { label: '返回首页', run: () => go({ name: 'home' }) },
+        { label: '浏览插件', run: () => go({ name: 'pluginList', mode: 'browse' }) },
+      ];
+    } else {
+      actions = issues.map((entry) => ({
+        label: entry.title,
+        description: `${entry.explanation} · ${entry.impact[0] ?? ''}`,
+        status: entry.category === 'sourceDegraded' ? 'warning' as const : 'error' as const,
+        run: () => go({ name: 'issueDetail', issueId: entry.issueId }),
+      }));
+    }
+    content = <ActionRows actions={actions} focus={focus} offset={policy.mode === 'compact' ? scrollOffset : undefined} limit={policy.mode === 'compact' ? 4 : 7} />;
+  } else if (route.name === 'issueDetail' && issue) {
+    breadcrumb = `需要处理 / ${issue.pluginId ?? issue.sourceId ?? issue.entity.id}`;
+    context = issue.platform ? `${platformLabel(issue.platform)}${issue.scope ? ` · ${scopeLabel(issue.scope)}` : ''}` : issue.sourceId;
+    title = issue.title;
+    description = issue.explanation;
+    const runIssueAction = async (entry: UserIssueActionViewModel): Promise<void> => {
+      const intent = issueWriteIntent(issue, entry);
+      if (intent) {
+        await beginReview(intent);
+        return;
+      }
+      if (entry.id === 'refreshSource' && issue.sourceId) await props.controller.refreshSource(issue.sourceId);
+      else if (entry.id === 'continueWithCache' || entry.id === 'retryLater') go({ name: 'issueList' });
+      else if (entry.id === 'editSource' && issue.sourceId) go({ name: 'sourceDetail', sourceId: issue.sourceId });
+      else if (entry.id === 'reAddSource' && issue.sourceId) beginIssueSourceAdd(issue.sourceId);
+      else if (entry.id === 'viewSourceChange' && issue.sourceId) go({ name: 'sourceTechnical', sourceId: issue.sourceId });
+      else if (entry.id === 'openConfig' && issue.pluginId) {
+        go(issue.configLayer
+          ? { name: 'configFields', pluginId: issue.pluginId, layer: issue.configLayer }
+          : { name: 'configLayer', pluginId: issue.pluginId });
+      }
+      else setShowTechnical((value) => !value);
+    };
+    actions = issue.actions.map((entry) => ({
+      label: entry.label,
+      description: entry.description,
+      status: entry.id === 'remove'
+        || entry.id === 'keepUserScope' || entry.id === 'keepProjectScope' ? 'error' as const : undefined,
+      run: () => runIssueAction(entry),
+    }));
+    const manualMigration = issue.category === 'legacyState' && showTechnical;
+    content = <Box flexDirection="column"><Bordered title="影响范围">{issue.impact.map((line) => <Text key={line}>{line}</Text>)}{issue.category === 'sourceMissing' ? <Text color={tuiTheme.statusColors.warning}>当前只能重新添加同 identity 的来源后再管理遗留安装；没有安全的自动清理。</Text> : null}{issue.category === 'sourceIdentityChanged' ? <Text color={tuiTheme.statusColors.warning}>请确认来源变更，或恢复原 identity；当前不自动迁移或清理。</Text> : null}{issue.placements ? <Text>位置：{issue.placements.map(scopeLabel).join('、')}</Text> : null}{issue.requiredFields ? <Text>字段：{issue.requiredFields.map((field) => field.title).join('、')}</Text> : null}</Bordered><ActionRows actions={actions} focus={focus} offset={policy.mode === 'compact' ? scrollOffset : undefined} limit={policy.mode === 'compact' ? 4 : 7} />{manualMigration ? <Bordered title="手动处理说明"><Text>1. 不自动迁移旧版状态。</Text><Text>2. 运行 aw status --json，记录公开错误 code。</Text><Text>3. 备份相关 AW 配置。</Text><Text>4. 按技术详情使用受支持命令或人工处理。</Text><Text>5. 再次运行状态检查。</Text></Bordered> : showTechnical ? <Bordered title="技术详情">{issue.technicalDetails.map((detail, index) => <Text key={`${detail.code}:${index}`} color={tuiTheme.colors.muted}>{detail.code} · {detail.message}</Text>)}</Bordered> : <Text color={tuiTheme.colors.muted}>d 或“技术详情”查看安全错误代码</Text>}</Box>;
   } else if (route.name === 'review' && snapshot.activeReview) {
     const review = snapshot.activeReview;
     breadcrumb = `${review.subject.name} / ${review.title}`;
@@ -1147,9 +1282,10 @@ export function ConsoleAppV4(props: {
     const configOperation = snapshot.activeReview?.operationKind === 'configSave'
       || snapshot.activeReview?.operationKind === 'configReset';
     const sourceOperation = snapshot.activeReview?.operationKind === 'sourceMutation';
-    breadcrumb = sourceOperation ? '插件来源 / 保存' : configOperation ? '设置 / 进度' : '插件操作 / 进度';
-    title = sourceOperation ? '正在验证并保存来源' : configOperation ? '正在保存并应用设置' : '正在执行插件操作';
-    description = sourceOperation ? '只有验证来源和引用清单通过后才会修改来源列表。' : configOperation ? '先保存所选层，再重新应用当前可见安装位置。' : '请勿关闭当前终端。';
+    const issueOperation = snapshot.activeReview?.originIssue;
+    breadcrumb = issueOperation ? '需要处理 / 进度' : sourceOperation ? '插件来源 / 保存' : configOperation ? '设置 / 进度' : '插件操作 / 进度';
+    title = issueOperation ? '正在处理问题' : sourceOperation ? '正在验证并保存来源' : configOperation ? '正在保存并应用设置' : '正在执行插件操作';
+    description = issueOperation ? '完成后会使用新的状态 generation 重新检查问题。' : sourceOperation ? '只有验证来源和引用清单通过后才会修改来源列表。' : configOperation ? '先保存所选层，再重新应用当前可见安装位置。' : '请勿关闭当前终端。';
     help = 'd 技术进度 · Ctrl-C 完成后退出';
     const progress = snapshot.progress;
     content = sourceOperation
@@ -1167,6 +1303,7 @@ export function ConsoleAppV4(props: {
     const configOperation = operationKind === 'configSave' || operationKind === 'configReset'
       ? operationKind : undefined;
     const sourceOperation = operationKind === 'sourceMutation';
+    const issueOperation = result.originIssue;
     const completedTitle = {
       install: '✓ 插件添加完成',
       upgrade: '✓ 插件升级完成',
@@ -1174,14 +1311,24 @@ export function ConsoleAppV4(props: {
       uninstall: '✓ 插件移除完成',
       cleanup: '✓ 插件清理完成',
     }[action ?? 'install'];
-    title = sourceOperation
+    title = issueOperation
+      ? blocked || partial ? '× 问题仍未解决' : '✓ 问题已处理'
+      : sourceOperation
       ? blocked ? '× 来源验证失败' : '✓ 来源操作完成'
       : configOperation
       ? blocked
         ? '× 设置未确认保存'
         : partial ? '! 设置已保存，但部分应用失败' : '✓ 设置已保存并应用'
       : partial ? '! 插件操作只完成了一部分' : blocked ? '× 插件操作未完成' : completedTitle;
-    description = sourceOperation
+    description = issueOperation
+      ? blocked
+        ? result.code === 'issueVerificationFailed'
+          ? '写入可能已完成，但当前无法确认。请重新检查状态。'
+          : result.code === 'issueStillPresent'
+            ? '写入已完成，但重新检查后原问题仍然存在。'
+            : '操作被安全阻止。可返回问题详情后重试。'
+        : '状态已重新加载；原问题已确认消失。'
+      : sourceOperation
       ? blocked ? '来源列表没有被修改。草稿已保留，可返回修改。' : '来源命令已完成。'
       : blocked ? result.message : configOperation ? '设置层已经更新。' : '状态已刷新。';
     const completedResult = result.state === 'succeeded' || result.state === 'partial'
@@ -1190,7 +1337,19 @@ export function ConsoleAppV4(props: {
     const pluginId = completedResult?.summary.pluginId
       ?? ('pluginId' in result ? result.pluginId : undefined);
     const failedTarget = completedResult?.summary.targets?.find((target) => target.state === 'failed');
-    actions = sourceOperation
+    actions = issueOperation
+      ? blocked || partial
+        ? [
+            { label: '返回问题详情', run: () => blocked
+              ? props.controller.returnFromResult()
+              : go({ name: 'issueDetail', issueId: issueOperation.issueId }) },
+            { label: '重新检查问题', run: () => go({ name: 'issueList' }) },
+          ]
+        : [
+            { label: '查看问题列表', run: () => go({ name: 'issueList' }) },
+            { label: '返回首页', run: () => go({ name: 'home' }) },
+          ]
+      : sourceOperation
       ? [{ label: blocked ? '返回修改' : '查看来源', run: () => blocked ? props.controller.returnFromResult() : go({ name: 'sourceList' }) }, { label: '返回首页', run: () => go({ name: 'home' }) }]
       : [{ label: partial ? '查看失败项' : configOperation ? '查看插件' : action === 'uninstall' || action === 'cleanup' ? '返回插件详情' : '查看插件', run: () => {
       if (partial && pluginId && failedTarget) {
@@ -1244,7 +1403,9 @@ export function ConsoleAppV4(props: {
 
   useInput((input, key) => {
     if (tooSmall) {
-      if (input.toLowerCase() === 'q' || (key.ctrl && input.toLowerCase() === 'c')) props.onExit?.();
+      if (input.toLowerCase() === 'q' || (key.ctrl && input.toLowerCase() === 'c')) {
+        requestExit({ code: snapshot.phase === 'error' ? 1 : 0, reason: snapshot.phase === 'error' ? 'initialError' : 'user' });
+      }
       return;
     }
     if (overlay) {
@@ -1265,7 +1426,7 @@ export function ConsoleAppV4(props: {
           setDraftRemoves([]);
           setSourceDraft(undefined);
           back();
-        } else props.onExit?.();
+        } else requestExit({ code: snapshot.phase === 'error' ? 1 : 0, reason: snapshot.phase === 'error' ? 'initialError' : 'user' });
       }
       return;
     }
@@ -1275,7 +1436,7 @@ export function ConsoleAppV4(props: {
       return;
     }
     if (key.ctrl && input.toLowerCase() === 'c') {
-      props.onExit?.();
+      requestExit({ code: snapshot.phase === 'error' ? 1 : 0, reason: snapshot.phase === 'error' ? 'initialError' : 'user' });
       return;
     }
     if (route.name === 'sourceAdd'
@@ -1395,7 +1556,7 @@ export function ConsoleAppV4(props: {
     } else if (input.toLowerCase() === 'q') {
       setOverlayFocus(0);
       setOverlay(dirty ? 'discard' : 'exit');
-    } else if (input.toLowerCase() === 'd' && route.name === 'review') {
+    } else if (input.toLowerCase() === 'd' && (route.name === 'review' || route.name === 'issueDetail')) {
       setShowTechnical((value) => !value);
     } else if ((key.escape || input.toLowerCase() === 'b')
       && (route.name === 'configFieldEditor'
@@ -1442,7 +1603,7 @@ export function ConsoleAppV4(props: {
       setFocus((value) => {
         const next = moveFocus(actions, value, -1);
         const visible = policy.mode === 'compact' ? 4
-          : route.name === 'configFields' || route.name === 'review' ? 7 : undefined;
+          : route.name === 'configFields' || route.name === 'review' || route.name === 'issueList' || route.name === 'issueDetail' ? 7 : undefined;
         if (visible !== undefined && next < scrollOffset) setScrollOffset(next);
         else if (visible !== undefined && next >= scrollOffset + visible) setScrollOffset(next - visible + 1);
         return next;
@@ -1451,7 +1612,7 @@ export function ConsoleAppV4(props: {
       setFocus((value) => {
         const next = moveFocus(actions, value, 1);
         const visible = policy.mode === 'compact' ? 4
-          : route.name === 'configFields' || route.name === 'review' ? 7 : undefined;
+          : route.name === 'configFields' || route.name === 'review' || route.name === 'issueList' || route.name === 'issueDetail' ? 7 : undefined;
         if (visible !== undefined && next < scrollOffset) setScrollOffset(next);
         else if (visible !== undefined && next >= scrollOffset + visible) setScrollOffset(next - visible + 1);
         return next;

@@ -1,13 +1,15 @@
 import { PassThrough } from 'node:stream';
 
 import { cleanup, render } from 'ink-testing-library';
+import { Text } from 'ink';
+import { useEffect } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createCliExecutionContext } from '../../src/commands/runtime.js';
 import { createInkPrompt } from '../../src/tui/prompt.js';
 import { resolveTuiKeyAction } from '../../src/tui/keys.js';
 import { resolveTuiSizePolicy } from '../../src/tui/layout.js';
-import type { TuiLaunchRequest, TuiRunner } from '../../src/tui/runner.js';
+import { createInkTuiRunner, type TuiLaunchRequest, type TuiRunner } from '../../src/tui/runner.js';
 import { MultiSelectView, SelectView } from '../../src/tui/views.js';
 
 afterEach(() => {
@@ -423,5 +425,33 @@ describe('TUI foundation', () => {
     expect(input.isRaw).toBe(false);
     expect(output.join('')).toContain('\u001B[?1049h');
     expect(output.join('')).toContain('\u001B[?1049l');
+  });
+
+  it('keeps the first completion when a real mounted session completes twice', async () => {
+    const input = new PassThrough() as PassThrough & {
+      isTTY: boolean;
+      isRaw: boolean;
+      setRawMode: (mode: boolean) => void;
+      ref: () => PassThrough;
+      unref: () => PassThrough;
+    };
+    input.isTTY = true;
+    input.isRaw = false;
+    input.setRawMode = (mode) => { input.isRaw = mode; };
+    input.ref = () => input;
+    input.unref = () => input;
+    const CompleteTwice = (props: { complete: (value: number) => void }) => {
+      useEffect(() => {
+        props.complete(7);
+        props.complete(9);
+      }, [props.complete]);
+      return <Text>完成</Text>;
+    };
+
+    await expect(createInkTuiRunner().launch({
+      input,
+      output: { isTTY: true, write: () => undefined },
+      render: (complete) => <CompleteTwice complete={complete} />,
+    })).resolves.toBe(7);
   });
 });

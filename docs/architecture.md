@@ -278,9 +278,13 @@ cache publication 必须满足：
 - sensitive config、未脱敏 event message 和 native raw invocation/data 不进入 frame、stdout 或 stderr。
 - TUI 结束后必须恢复 session reporter；每个事件只向 debug logger 发送一次。
 - `rebuild:action` 只服务 human、TUI、verbose 和 debug 诊断，不进入 v4 JSON receipt。普通 human reporter 忽略 event；verbose 写 stderr；`--json` stdout 仍只包含一个对象。
-- `tui/controller.ts`、`tui/model.ts` 和 `tui/router.ts` 是下一代单列 TUI 的内部控制层。它们从 status v4、plugin summary、source config 和 config read 投影页面模型；canonical `pluginId`、`sourceId`、`issueId` 和 `operationId` 是路由身份。现有 Dashboard 和裸 `aw` 默认入口暂时保持不变，两者不建立新的安装真值。
+- `tui/controller.ts`、`tui/model.ts` 和 `tui/router.ts` 是单列 TUI 的内部控制层。裸 `aw` 默认入口挂载 `ConsoleAppV4`，从 status v4、plugin summary、source config 和 config read 投影页面模型；canonical `pluginId`、`sourceId`、`issueId` 和 `operationId` 是路由身份。旧三焦点 Dashboard 不再是生产入口。
 - 新 Controller 首屏使用 `cacheFirst`，随后只对 Git source 运行可取消的 `forceRemote` 后台检查。成功检查发布 strict cache 后重新读取 status 投影；失败时只把已有缓存标为 degraded，无缓存标为 unavailable。generation token 防止旧检查覆盖较新结果。
 - 交互写操作先建立短期内存 Review ticket。Review 证据绑定 catalog config/composite digest、选中来源 identity 与 snapshot/content digest、目标状态 fingerprint，以及适用的配置层和 store digest。执行前重新读取并比较证据；变化时不调用写入口，而是返回同 intent 的新 Review。插件写入在真实 target operation lock 内复核完整证据；config 写入按稳定顺序持有全部适用 target operation lock，并在 config transaction 和 store file lock 内、首次 store 或 target 写入前复核完整证据。stale 操作不写入。Controller 只保存安全结果摘要和固定 typed 错误，不保存底层 receipt、私有路径或有效配置值。
+- 问题页从 status target error code、source health 和内部 plugin config preflight 投影结构化类别。问题写操作在 plugin write intent 上绑定 typed issue origin，仍经过同一 Review、evidence、operation lock 和写命令；完成后取消旧检查，并以新 generation 统一重载状态。公开 status v4 JSON 不包含这些 TUI 内部字段。
+- typed issue origin 同时绑定类别、canonical plugin/source、platform、scope 和所选动作。建立 Review、执行前验证和锁内证据都必须保持该映射；伪造或已变化的问题不得写入。问题写入只有在新 generation 中确认原 typed issue key 消失后才成功；问题仍存在或写后重载失败进入失败结果，其中重载失败明确保留“写入可能已完成”的状态，不切换为启动失败页。
+- `sourceMissing` 只允许预填原 source ID 后重新添加同 identity 来源；来源类型和位置仍由用户选择。`sourceChanged` 只提供变更检查和恢复原 identity 的人工路径。两者都不从问题页调用低层 cleanup，也不提供自动 identity 迁移。
+- TUI 内部 config preflight 保留 `missing-required`、`invalid-config`、字段和安全来源层；单插件设置读取失败投影为不含值、路径或原始错误的 typed diagnostic。来源级不可用或降级与同 source 的 target `catalogSourceUnavailable` 合并为一个根问题，只聚合安全的受影响 target 数量。
 
 ## Key Paths
 

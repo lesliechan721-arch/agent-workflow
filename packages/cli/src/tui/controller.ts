@@ -19,6 +19,7 @@ import {
   type SourceHealthViewModel,
   type SourceDetailViewModel,
   type TuiViewModel,
+  type UserIssueCategory,
   type UserIssueViewModel,
 } from './model.js';
 import {
@@ -31,6 +32,13 @@ import {
 export type PluginWriteOperation = 'install' | 'upgrade' | 'reinstall' | 'uninstall' | 'cleanup';
 export type OperationKind = OperationIntent['kind'];
 
+export interface IssueOrigin {
+  issueId: string;
+  issueKey: string;
+  category: UserIssueCategory;
+  actionId: string;
+}
+
 export type OperationIntent =
   | {
       kind: 'pluginWrite';
@@ -38,6 +46,7 @@ export type OperationIntent =
       pluginId: string;
       platform: PlatformName | 'both';
       scope: Scope;
+      originIssue?: IssueOrigin;
     }
   | {
       kind: 'configSave';
@@ -68,11 +77,6 @@ export type OperationIntent =
       source?: CatalogSource;
       update?: CatalogSourceUpdate;
       changes?: Array<{ title: string; before?: string; after?: string; private?: boolean }>;
-    }
-  | {
-      kind: 'issueResolution';
-      issueId: string;
-      actionId: string;
     };
 
 export interface OperationEvidence {
@@ -119,6 +123,7 @@ export interface OperationReviewModel {
   operationKind: OperationKind;
   sourceAction?: Extract<OperationIntent, { kind: 'sourceMutation' }>['action'];
   pluginAction?: PluginWriteOperation;
+  originIssue?: IssueOrigin;
   title: string;
   description: string;
   subject: {
@@ -141,6 +146,7 @@ export type OperationExecuteResult =
       operationKind: OperationKind;
       sourceAction?: Extract<OperationIntent, { kind: 'sourceMutation' }>['action'];
       pluginId?: string;
+      originIssue?: IssueOrigin;
     }
   | {
       state: 'partial';
@@ -149,6 +155,7 @@ export type OperationExecuteResult =
       operationKind: OperationKind;
       sourceAction?: Extract<OperationIntent, { kind: 'sourceMutation' }>['action'];
       pluginId?: string;
+      originIssue?: IssueOrigin;
     }
   | {
       state: 'stale';
@@ -156,6 +163,7 @@ export type OperationExecuteResult =
       operationKind: OperationKind;
       sourceAction?: Extract<OperationIntent, { kind: 'sourceMutation' }>['action'];
       review: OperationReviewModel;
+      originIssue?: IssueOrigin;
     }
   | {
       state: 'blocked';
@@ -166,6 +174,9 @@ export type OperationExecuteResult =
       sourceAction?: Extract<OperationIntent, { kind: 'sourceMutation' }>['action'];
       pluginId?: string;
       returnRoute?: TuiRoute;
+      originIssue?: IssueOrigin;
+      writeMayHaveCompleted?: boolean;
+      verification?: 'issueStillPresent' | 'verificationFailed';
     };
 
 export interface OperationResultSummary {
@@ -294,6 +305,12 @@ function pluginNameFromId(pluginId: string): string {
   return separator < 0 ? pluginId : pluginId.slice(separator + 1);
 }
 
+export function userIssueKey(issue: Pick<UserIssueViewModel,
+  'category' | 'pluginId' | 'sourceId' | 'platform' | 'scope'>): string {
+  return [issue.category, issue.pluginId ?? '', issue.sourceId ?? '', issue.platform ?? '', issue.scope ?? '']
+    .join('\0');
+}
+
 function operationLabels(intent: OperationIntent): {
   title: string;
   description: string;
@@ -301,6 +318,14 @@ function operationLabels(intent: OperationIntent): {
   destructive: boolean;
 } {
   if (intent.kind === 'pluginWrite') {
+    if (intent.originIssue) {
+      return {
+        title: '处理问题',
+        description: '只执行所选问题处理动作；插件设置保持不变。',
+        primaryLabel: '开始处理',
+        destructive: intent.action !== 'reinstall',
+      };
+    }
     const labels: Record<PluginWriteOperation, [string, string, boolean]> = {
       install: ['添加插件', '添加所选平台和使用位置。', false],
       upgrade: ['升级插件', '使用当前来源内容重建所选安装。', false],
@@ -348,13 +373,20 @@ function reviewChanges(intent: OperationIntent): OperationReviewChange[] {
     const platforms: PlatformName[] = intent.platform === 'both'
       ? ['codex', 'claude']
       : [intent.platform];
-    return platforms.map((platform) => ({
+    const changes = platforms.map((platform): OperationReviewChange => ({
       kind: intent.action === 'uninstall' || intent.action === 'cleanup' ? 'remove' : intent.action === 'install' ? 'add' : 'change',
       title: `${platform === 'codex' ? 'Codex' : 'Claude Code'} · ${intent.scope === 'user' ? '所有项目' : '当前项目'}`,
       description: intent.action === 'uninstall' || intent.action === 'cleanup'
         ? '插件设置不会删除。'
         : '执行前会再次检查当前安装状态。',
     }));
+    if (intent.originIssue) {
+      changes.push(
+        { kind: 'keep', title: '插件设置保持不变' },
+        { kind: 'warning', title: '执行前重新检查完整目标和来源证据' },
+      );
+    }
+    return changes;
   }
   if (intent.kind === 'configReset') {
     const layerLabel = intent.scope === 'user'
@@ -457,6 +489,7 @@ export class TuiController {
   readonly #tickets = new Map<string, ReviewTicket>();
   readonly #abort = new AbortController();
   readonly #progressUnsubscribe?: () => void;
+  readonly #progressFeed?: RebuildProgressFeed;
   #phase: TuiControllerSnapshot['phase'] = 'idle';
   #status?: TuiStatusLoadResult;
   #viewModel?: TuiViewModel;
@@ -473,6 +506,7 @@ export class TuiController {
     readonly dependencies: TuiControllerDependencies,
     progressFeed?: RebuildProgressFeed,
   ) {
+    this.#progressFeed = progressFeed;
     if (progressFeed) {
       this.#progressUnsubscribe = progressFeed.subscribe((progress) => {
         this.#progress = structuredClone(progress);
@@ -760,6 +794,7 @@ export class TuiController {
 
   async buildOperationReview(intent: OperationIntent): Promise<OperationReviewModel> {
     try {
+      this.#assertIssueOrigin(intent);
       await this.dependencies.validateIntent?.(structuredClone(intent), this.#abort.signal);
       const evidence = await this.dependencies.captureEvidence(structuredClone(intent), this.#abort.signal);
       return this.#storeOperationReview(intent, evidence);
@@ -802,7 +837,7 @@ export class TuiController {
     this.#pruneReviewTickets(now);
     const expiresAt = now
       + (this.dependencies.reviewTtlMs ?? 2 * 60_000);
-    const pluginId = 'pluginId' in intent ? intent.pluginId : 'sourceId' in intent ? intent.sourceId : intent.issueId;
+    const pluginId = 'pluginId' in intent ? intent.pluginId : intent.sourceId;
     if ('pluginId' in intent) sourceIdFromPluginId(intent.pluginId);
     const review: OperationReviewModel = {
       operationId,
@@ -811,6 +846,9 @@ export class TuiController {
       operationKind: intent.kind,
       ...(intent.kind === 'sourceMutation' ? { sourceAction: intent.action } : {}),
       ...(intent.kind === 'pluginWrite' ? { pluginAction: intent.action } : {}),
+      ...(intent.kind === 'pluginWrite' && intent.originIssue
+        ? { originIssue: intent.originIssue }
+        : {}),
       title: labels.title,
       description: labels.description,
       subject: {
@@ -852,6 +890,18 @@ export class TuiController {
     if ((this.dependencies.now?.() ?? Date.now()) > ticket.review.expiresAt) {
       return this.#setBlocked(operationId, 'reviewTicketExpired', { intent: ticket.intent, returnRoute: ticket.returnRoute });
     }
+    try {
+      this.#assertIssueOrigin(ticket.intent);
+      await this.dependencies.validateIntent?.(structuredClone(ticket.intent), this.#abort.signal);
+    } catch (error) {
+      const code = issueCode(error);
+      await this.#logOperationError(error, code, ticket.intent);
+      return this.#setBlocked(operationId, code, {
+        intent: ticket.intent,
+        navigation: 'back',
+        returnRoute: ticket.returnRoute,
+      });
+    }
     let current: OperationEvidence;
     try {
       current = await this.dependencies.captureEvidence(structuredClone(ticket.intent), this.#abort.signal);
@@ -867,6 +917,8 @@ export class TuiController {
       this.#cancelSourceRefreshes();
       this.#generation += 1;
     }
+    this.#progressFeed?.clearCurrent?.();
+    this.#progress.current = undefined;
     this.#router.replace({ name: 'progress', operationId });
     this.#publish();
     try {
@@ -874,23 +926,37 @@ export class TuiController {
         structuredClone(ticket.intent),
         structuredClone(ticket.evidence),
       );
-      if (ticket.intent.kind === 'sourceMutation') {
-        try {
-          const refreshed = await this.dependencies.loadStatus(this.#abort.signal);
-          this.#applyStatus(refreshed);
-        } catch (error) {
-          await this.#logErrorSafe(error, 'catalogSourceReloadFailed', {
-            privateConfigOperation: true,
-          });
-          this.#status = undefined;
-          this.#viewModel = undefined;
-          this.#health.clear();
-          this.#phase = 'error';
-          this.#loadError = {
-            code: 'catalogSourceReloadFailed',
-            message: '来源已保存，但不能安全重建当前状态。请重新启动控制台。',
-          };
-        }
+      this.#cancelSourceRefreshes();
+      this.#generation += 1;
+      try {
+        const refreshed = await this.dependencies.loadStatus(this.#abort.signal);
+        this.#applyStatus(refreshed);
+      } catch (error) {
+        const verificationCode = ticket.intent.kind === 'pluginWrite' && ticket.intent.originIssue
+          ? 'issueVerificationFailed'
+          : 'tuiStateReloadFailed';
+        await this.#logErrorSafe(error, verificationCode, {
+          privateConfigOperation: true,
+        });
+        return this.#setBlocked(operationId, verificationCode, {
+          intent: ticket.intent,
+          navigation: 'result',
+          returnRoute: ticket.returnRoute,
+          writeMayHaveCompleted: true,
+          verification: ticket.intent.kind === 'pluginWrite' && ticket.intent.originIssue
+            ? 'verificationFailed' : undefined,
+        });
+      }
+      const originIssue = ticket.intent.kind === 'pluginWrite' ? ticket.intent.originIssue : undefined;
+      if (originIssue
+        && this.#viewModel?.issues.some((issue) => userIssueKey(issue) === originIssue.issueKey)) {
+        return this.#setBlocked(operationId, 'issueStillPresent', {
+          intent: ticket.intent,
+          navigation: 'result',
+          returnRoute: ticket.returnRoute,
+          writeMayHaveCompleted: true,
+          verification: 'issueStillPresent',
+        });
       }
       if (ticket.intent.kind === 'configSave' || ticket.intent.kind === 'configReset') {
         const configWrite = typeof execution === 'object' && execution !== null
@@ -923,6 +989,9 @@ export class TuiController {
         operationKind: ticket.intent.kind,
         ...(ticket.intent.kind === 'sourceMutation' ? { sourceAction: ticket.intent.action } : {}),
         ...('pluginId' in ticket.intent ? { pluginId: ticket.intent.pluginId } : {}),
+        ...(ticket.intent.kind === 'pluginWrite' && ticket.intent.originIssue
+          ? { originIssue: ticket.intent.originIssue }
+          : {}),
       };
       this.#result = result;
       this.#activeReview = undefined;
@@ -947,6 +1016,7 @@ export class TuiController {
     currentEvidence?: OperationEvidence,
   ): Promise<OperationExecuteResult> {
     try {
+      this.#assertIssueOrigin(ticket.intent);
       await this.dependencies.validateIntent?.(structuredClone(ticket.intent), this.#abort.signal);
     } catch (error) {
       const code = issueCode(error);
@@ -992,13 +1062,19 @@ export class TuiController {
       intent?: OperationIntent;
       navigation?: 'back' | 'result';
       returnRoute?: TuiRoute;
+      writeMayHaveCompleted?: boolean;
+      verification?: 'issueStillPresent' | 'verificationFailed';
     },
   ): OperationExecuteResult {
     const message = code === 'configWriteRolledBack'
       ? '设置未保存。原设置已安全恢复，请检查草稿后重试。'
       : code === 'configWriteRollbackFailed'
         ? '设置未确认保存，且恢复未完整完成。请停止修改并检查问题。'
-        : '操作未完成。请重新检查后重试。';
+        : code === 'issueVerificationFailed'
+          ? '写入可能已完成，但当前无法确认原问题是否消失。请重新检查状态。'
+          : code === 'issueStillPresent'
+            ? '写入已完成，但重新检查后原问题仍然存在。'
+            : '操作未完成。请重新检查后重试。';
     const result: OperationExecuteResult = {
       state: 'blocked',
       operationId,
@@ -1006,6 +1082,8 @@ export class TuiController {
       message,
       ...(options?.intent ? this.#operationIdentity(options.intent) : {}),
       ...(options?.returnRoute ? { returnRoute: structuredClone(options.returnRoute) } : {}),
+      ...(options?.writeMayHaveCompleted ? { writeMayHaveCompleted: true } : {}),
+      ...(options?.verification ? { verification: options.verification } : {}),
     };
     this.#result = structuredClone(result);
     this.#activeReview = undefined;
@@ -1019,12 +1097,46 @@ export class TuiController {
     operationKind: OperationKind;
     sourceAction?: Extract<OperationIntent, { kind: 'sourceMutation' }>['action'];
     pluginId?: string;
+    originIssue?: IssueOrigin;
   } {
     return {
       operationKind: intent.kind,
       ...(intent.kind === 'sourceMutation' ? { sourceAction: intent.action } : {}),
       ...('pluginId' in intent ? { pluginId: intent.pluginId } : {}),
+      ...(intent.kind === 'pluginWrite' && intent.originIssue
+        ? { originIssue: intent.originIssue }
+        : {}),
     };
+  }
+
+  #assertIssueOrigin(intent: OperationIntent): void {
+    if (intent.kind !== 'pluginWrite' || !intent.originIssue) return;
+    const origin = intent.originIssue;
+    const issue = this.#viewModel?.issues.find((candidate) => candidate.issueId === origin.issueId);
+    const action = issue?.actions.find((candidate) => candidate.id === origin.actionId);
+    if (!issue || !action || issue.category !== origin.category
+      || userIssueKey(issue) !== origin.issueKey
+      || issue.pluginId !== intent.pluginId
+      || issue.platform !== intent.platform
+      || issue.sourceId !== sourceIdFromPluginId(intent.pluginId)) {
+      throw new TuiOperationBlockedError('issueOriginInvalid', '原问题与当前状态不匹配。');
+    }
+    const expected = issue.category === 'incompleteInstallation'
+      ? origin.actionId === 'reinstall'
+        ? { action: 'reinstall' as const, scope: issue.scope }
+        : origin.actionId === 'remove'
+          ? { action: 'uninstall' as const, scope: issue.scope }
+          : undefined
+      : issue.category === 'scopeConflict'
+        ? origin.actionId === 'keepUserScope'
+          ? { action: 'uninstall' as const, scope: 'project' as const }
+          : origin.actionId === 'keepProjectScope'
+            ? { action: 'uninstall' as const, scope: 'user' as const }
+            : undefined
+        : undefined;
+    if (!expected || intent.action !== expected.action || intent.scope !== expected.scope) {
+      throw new TuiOperationBlockedError('issueOriginInvalid', '问题动作与当前目标不匹配。');
+    }
   }
 
   dispose(): void {

@@ -93,6 +93,39 @@ function assertIntentIsLegal(
   }
 }
 
+function assertTypedIssueOrigin(
+  intent: Extract<OperationIntent, { kind: 'pluginWrite' }>,
+  targets: Awaited<ReturnType<typeof statusCommandV4>>['payload']['targets'],
+): void {
+  if (!intent.originIssue) return;
+  const selected = targets.find((target) =>
+    target.pluginId === intent.pluginId
+    && target.platform === intent.platform
+    && target.scope === intent.scope);
+  if (intent.originIssue.category === 'incompleteInstallation') {
+    if (!selected || selected.state !== 'partial'
+      || !((intent.originIssue.actionId === 'reinstall' && intent.action === 'reinstall')
+        || (intent.originIssue.actionId === 'remove' && intent.action === 'uninstall'))) {
+      throw new TuiOperationBlockedError('issueOriginInvalid', '原安装问题已变化。');
+    }
+    return;
+  }
+  if (intent.originIssue.category === 'scopeConflict') {
+    const installedScopes = new Set(targets.filter((target) =>
+      target.pluginId === intent.pluginId
+      && target.platform === intent.platform
+      && target.state !== 'absent').map((target) => target.scope));
+    const correctBranch = intent.action === 'uninstall'
+      && ((intent.originIssue.actionId === 'keepUserScope' && intent.scope === 'project')
+        || (intent.originIssue.actionId === 'keepProjectScope' && intent.scope === 'user'));
+    if (!correctBranch || !installedScopes.has('user') || !installedScopes.has('project')) {
+      throw new TuiOperationBlockedError('issueOriginInvalid', '原位置冲突已变化。');
+    }
+    return;
+  }
+  throw new TuiOperationBlockedError('issueOriginInvalid', '这个问题没有安全的自动写入动作。');
+}
+
 function resultFailure(result: {
   overallState?: string;
   targetResults?: Array<{ state?: string; errorCode?: string; message?: string }>;
@@ -404,6 +437,7 @@ export function createTuiControllerDependencies(
         cliVersion: packageInfo.version,
       });
       signal.throwIfAborted();
+      assertTypedIssueOrigin(intent, status.payload.targets);
       assertIntentIsLegal(intent, status.payload.targets);
     },
     async checkSource(sourceId, signal) {
