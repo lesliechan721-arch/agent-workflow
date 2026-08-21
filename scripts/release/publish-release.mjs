@@ -86,6 +86,10 @@ export async function publishRelease(argv = process.argv.slice(2), options = {})
       releaseIdentity,
       {},
     );
+    const beforeRemoteWrite = async () => {
+      await assertFresh();
+      await options.beforeRemoteWrite?.();
+    };
     if (!options.skipVerify) {
       await (options.runCommand ?? runCommand)('pnpm', ['run', 'release:verify']);
     }
@@ -192,7 +196,7 @@ export async function publishRelease(argv = process.argv.slice(2), options = {})
                     ...options.publisherOptions,
                     publicationLease,
                     publicationMode: 'atomic',
-                    beforeRemoteWrite: assertFresh,
+                    beforeRemoteWrite,
                   },
                 );
                 try {
@@ -235,7 +239,7 @@ export async function publishRelease(argv = process.argv.slice(2), options = {})
                   ...options.publisherOptions,
                   publicationLease,
                   publicationMode: 'tag',
-                  beforeRemoteWrite: assertFresh,
+                  beforeRemoteWrite,
                 },
               );
               let cli;
@@ -277,7 +281,7 @@ export async function publishRelease(argv = process.argv.slice(2), options = {})
                   currentCliVersion,
                   remoteUrl,
                   publicationLease,
-                  beforeRemoteWrite: assertFresh,
+                  beforeRemoteWrite,
                   ...(options.catalogModules ? { catalogModules: options.catalogModules } : {}),
                 });
                 return { path: 'tag-first', catalog, cli, promotion, releaseIdentity };

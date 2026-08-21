@@ -554,6 +554,16 @@ describe('release registry observation', () => {
     })).rejects.toThrow('registry timeout');
   });
 
+  it('rejects an unsupported version instead of omitting it from complete history', async () => {
+    await expect(readRegistryReleaseHistory({
+      registryUrl: 'https://registry.example.test/',
+      captureCommand: async (_command, args: string[]) => {
+        if (args.includes('versions')) return { stdout: '["1.0.0-alpha.1"]', stderr: '' };
+        return { stdout: '{}', stderr: '' };
+      },
+    })).rejects.toThrow('unsupported version');
+  });
+
   it.each([
     ['string', '"metadata"'],
     ['array', '[]'],

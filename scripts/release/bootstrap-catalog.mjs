@@ -104,6 +104,10 @@ export async function bootstrapCatalog(argv = process.argv.slice(2), options = {
       releaseIdentity,
       {},
     );
+    const beforeRemoteWrite = async () => {
+      await assertFresh();
+      await options.beforeRemoteWrite?.();
+    };
     return (options.withPrivateCatalogStageRoot ?? withPrivateCatalogStageRoot)(async (internalOutputRoot) => {
       await assertFresh();
       return (options.withCatalogPublicationLease ?? withCatalogPublicationLease)(
@@ -132,7 +136,7 @@ export async function bootstrapCatalog(argv = process.argv.slice(2), options = {
           const result = await (options.publishStagedCatalog ?? publishStagedCatalog)(
             history,
             staged.outputRoot,
-            { publicationMode: 'atomic', publicationLease, beforeRemoteWrite: assertFresh },
+            { publicationMode: 'atomic', publicationLease, beforeRemoteWrite },
           );
           return { ...result, nextSteps: bootstrapNextSteps(), releaseIdentity };
         },

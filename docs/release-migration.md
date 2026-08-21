@@ -34,6 +34,7 @@ Release maintenance 的 status、prepare、publish 和 recover 使用同一个 c
 | recover 只接受显式 existing immutable tag | `release-recover-script.test.ts` 的 canonical identity 和 guarded promotion 测试。`catalog-git-publisher.test.ts` 覆盖 guarded tag discovery 和 missing-guard 拒绝。 |
 | AW 旧 beta 1/2 且 Eval 为空时选择 beta 3 或更高版本 | `release-phase2.test.ts`：`reserves legacy beta observations and starts the next complete CLI train at beta.3`。 |
 | 新 metadata 和双包部分重试 | `publish-cli-script.test.ts` 覆盖 Eval-first 发布、匹配的 Eval partial retry 和不匹配时拒绝。`release-cli-pack.test.ts` 验证两个带 `awRelease` 的 package artifact。 |
+| Catalog 写入前 registry 完整历史漂移 | `publish-plan-script.test.ts` 覆盖 catalog-only、bootstrap、atomic-combined 的首次写前拒绝、同计划 Eval partial retry，以及 Catalog/npm 写回调的二次漂移拒绝。 |
 | 首次 schema 4 bootstrap | `catalog-bootstrap-smoke.test.ts` 使用真实 local bare remote 覆盖 bootstrap、orphan channels、immutable tag、retry 和 provider fetch。 |
 | tag-first 顺序和失败恢复 | `publish-release-script.test.ts` 覆盖 tag、CLI、promotion 顺序，atomic tag 失败，CLI 失败后 tag 保持未 promotion，以及固定 recover 命令。 |
 | promotion floor 和 freshness | `publish-plan-script.test.ts` 覆盖完整 train floor 和写入前 dist-tag 重查。`release-recover-script.test.ts` 覆盖 remote-write train drift。 |

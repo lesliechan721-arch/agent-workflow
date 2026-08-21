@@ -64,6 +64,10 @@ export async function publishCatalog(argv = process.argv.slice(2), options = {})
       releaseIdentity,
       {},
     );
+    const beforeRemoteWrite = async () => {
+      await assertFresh();
+      await options.beforeRemoteWrite?.();
+    };
     return (options.withPrivateCatalogStageRoot ?? withPrivateCatalogStageRoot)(async (internalOutputRoot) => {
       const remoteUrl = options.remoteUrl;
       await assertFresh();
@@ -108,7 +112,7 @@ export async function publishCatalog(argv = process.argv.slice(2), options = {})
             {
               ...options.publisherOptions,
               publicationLease,
-              beforeRemoteWrite: assertFresh,
+              beforeRemoteWrite,
             },
           );
         },

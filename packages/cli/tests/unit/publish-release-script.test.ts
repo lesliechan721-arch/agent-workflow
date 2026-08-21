@@ -126,11 +126,14 @@ describe('combined release script', () => {
       calls.push('cli');
       return { version: '1.0.0' };
     });
+    const beforeRemoteWrite = vi.fn(async () => undefined);
     const result = await publishRelease(
       ['latest', '--cli-version', '1.0.0', '--catalog-version', '2.0.0'],
       {
         ...options,
+        beforeRemoteWrite,
         publishStagedCatalog: vi.fn(async (_history, _root, publisherOptions) => {
+          await publisherOptions.beforeRemoteWrite();
           calls.push(`catalog:${publisherOptions.publicationMode}`);
           return { validation: { manifest: { catalogVersion: '2.0.0' } } };
         }),
@@ -163,6 +166,7 @@ describe('combined release script', () => {
       releaseIdentity: stageOptions.releaseIdentity,
     }));
     expect(options.withReleaseBuildSnapshot).toHaveBeenCalledTimes(1);
+    expect(beforeRemoteWrite).toHaveBeenCalledOnce();
   });
 
   it('publishes tag, then CLI, then promotion when the catalog needs the candidate CLI', async () => {

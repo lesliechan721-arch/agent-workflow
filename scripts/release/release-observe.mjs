@@ -90,7 +90,10 @@ export async function readRegistryReleaseHistory(options = {}) {
       beta: typeof rawTags.beta === 'string' ? rawTags.beta : null,
     };
     result[packageName] = [];
-    for (const version of versions.filter((entry) => typeof entry === 'string' && CANDIDATE_PATTERN.test(entry))) {
+    for (const version of versions) {
+      if (typeof version !== 'string' || !CANDIDATE_PATTERN.test(version)) {
+        throw new Error(`Registry returned an unsupported version for ${packageName}.`);
+      }
       const metadataResult = await captureRegistry([`${packageName}@${version}`, 'awRelease'], options);
       let awRelease = null;
       if (metadataResult.stdout.trim() !== '') {

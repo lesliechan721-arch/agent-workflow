@@ -26,7 +26,15 @@ import {
 } from './release-plan.mjs';
 import { readCliReleaseContent } from './release-observe.mjs';
 import { readRegistryReleaseHistory } from './release-observe.mjs';
-import { CLI_PACKAGES, normalizeCliRegistryHistory } from './release-state.mjs';
+import {
+  calculateCliTrainContentDigest,
+  canonicalJson,
+} from './release-model.mjs';
+import {
+  CLI_PACKAGES,
+  normalizeCliRegistryHistory,
+  resolveCliPublishedHistory,
+} from './release-state.mjs';
 import { stageCatalogRelease } from './stage-catalog.mjs';
 
 function assertCatalogHistoryAllowed(plan, history) {
@@ -114,29 +122,112 @@ export async function assertPromotionCliTrain(plan, options = {}) {
   return versions[0];
 }
 
-export async function assertPlanCliRegistryFresh(plan, options = {}) {
-  const registry = await (options.readRegistryReleaseHistory ?? readRegistryReleaseHistory)(options);
-  const normalized = normalizeCliRegistryHistory(registry);
-  const tag = plan.channel === 'beta' ? 'beta' : 'latest';
-  for (const expected of plan.cli.packages) {
-    const packageEntries = normalized.packages.get(expected.name);
-    const exact = packageEntries.find((entry) => entry.candidateVersion === plan.cli.candidateVersion);
-    if (exact && (
-      exact.metadata?.planId !== plan.planId
-      || exact.metadata.packageContentDigest !== expected.contentDigest
-    )) {
-      throw new Error(`Published ${expected.name}@${plan.cli.candidateVersion} does not belong to this release plan.`);
+function registryFromPlanHistory(plan) {
+  return {
+    ...Object.fromEntries(plan.history.npm.packages.map((entry) => [entry.name,
+      entry.versions.map((version) => ({
+        version: version.candidateVersion,
+        awRelease: version.metadata,
+      }))])),
+    distTags: Object.fromEntries(plan.history.npm.distTags.map((entry) => [entry.name, {
+      latest: entry.latest,
+      beta: entry.beta,
+    }])),
+  };
+}
+
+function historyWithoutCandidate(normalized, candidateVersion) {
+  return {
+    ...Object.fromEntries(CLI_PACKAGES.map((name) => [name,
+      normalized.packages.get(name)
+        .filter((entry) => entry.candidateVersion !== candidateVersion)
+        .map((entry) => ({ version: entry.candidateVersion, awRelease: entry.metadata }))])),
+    distTags: Object.fromEntries(CLI_PACKAGES.map((name) => [name, {
+      latest: null,
+      beta: null,
+    }])),
+  };
+}
+
+function metadataIdentity(metadata) {
+  return canonicalJson(metadata);
+}
+
+export function assertCliRegistryHistoryMatchesPlan(plan, registry) {
+  const plannedRegistry = registryFromPlanHistory(plan);
+  const planned = normalizeCliRegistryHistory(plannedRegistry);
+  const live = normalizeCliRegistryHistory(registry);
+  resolveCliPublishedHistory(plannedRegistry);
+
+  const candidateVersion = plan.cli.candidateVersion;
+  const allowsCandidateRetry = ['publish', 'recover'].includes(plan.cli.action);
+  const candidateEntries = [];
+  for (const packageName of CLI_PACKAGES) {
+    const expectedPackage = plan.cli.packages.find((entry) => entry.name === packageName);
+    if (!expectedPackage) throw new Error(`Committed release plan is missing CLI package ${packageName}.`);
+    const plannedByVersion = new Map(planned.packages.get(packageName).map((entry) => [
+      entry.candidateVersion, entry,
+    ]));
+    const liveByVersion = new Map(live.packages.get(packageName).map((entry) => [
+      entry.candidateVersion, entry,
+    ]));
+    for (const [version, plannedEntry] of plannedByVersion) {
+      const liveEntry = liveByVersion.get(version);
+      if (!liveEntry || metadataIdentity(liveEntry.metadata) !== metadataIdentity(plannedEntry.metadata)) {
+        throw new Error(`Registry history for ${packageName}@${version} changed after the release plan was committed.`);
+      }
     }
-    const originalTag = plan.history.npm.distTags.find((entry) => entry.name === expected.name)?.[tag] ?? null;
-    const liveTag = normalized.distTags[expected.name][tag];
-    if (liveTag !== originalTag && liveTag !== plan.cli.candidateVersion) {
-      throw new Error(`${expected.name} ${tag} dist-tag changed outside the committed release plan.`);
+    for (const [version, liveEntry] of liveByVersion) {
+      if (plannedByVersion.has(version)) continue;
+      if (!allowsCandidateRetry || version !== candidateVersion) {
+        throw new Error(`Registry history added unplanned ${packageName}@${version}.`);
+      }
+      const expectedMetadata = {
+        schemaVersion: 1,
+        targetVersion: plan.cli.targetVersion,
+        candidateVersion,
+        planId: plan.planId,
+        sourceHead: plan.source.head,
+        packageContentDigest: expectedPackage.contentDigest,
+        trainContentDigest: plan.cli.trainContentDigest,
+      };
+      if (metadataIdentity(liveEntry.metadata) !== metadataIdentity(expectedMetadata)) {
+        throw new Error(`Published ${packageName}@${candidateVersion} does not belong to this release plan.`);
+      }
+      candidateEntries.push({ packageName, entry: liveEntry });
     }
-    if (liveTag && compareReleaseSemVer(liveTag, plan.cli.candidateVersion) > 0) {
-      throw new Error(`${expected.name} ${tag} dist-tag is ahead of the committed candidate.`);
+  }
+
+  resolveCliPublishedHistory(historyWithoutCandidate(live, candidateVersion));
+  if (candidateEntries.length === CLI_PACKAGES.length) {
+    const calculatedTrainDigest = calculateCliTrainContentDigest(candidateEntries.map(({ packageName, entry }) => ({
+      name: packageName,
+      contentDigest: entry.metadata.packageContentDigest,
+    })));
+    if (calculatedTrainDigest !== plan.cli.trainContentDigest) {
+      throw new Error(`Published CLI train ${candidateVersion} does not match the committed train digest.`);
+    }
+    resolveCliPublishedHistory(registry);
+  }
+
+  for (const packageName of CLI_PACKAGES) {
+    const exact = live.packages.get(packageName).find((entry) =>
+      entry.candidateVersion === candidateVersion);
+    for (const tag of ['latest', 'beta']) {
+      const plannedTag = planned.distTags[packageName][tag];
+      const liveTag = live.distTags[packageName][tag];
+      if (liveTag === plannedTag) continue;
+      if (!allowsCandidateRetry || liveTag !== candidateVersion || !exact) {
+        throw new Error(`${packageName} ${tag} dist-tag changed outside the committed release plan.`);
+      }
     }
   }
   return registry;
+}
+
+export async function assertPlanCliRegistryFresh(plan, options = {}) {
+  const registry = await (options.readRegistryReleaseHistory ?? readRegistryReleaseHistory)(options);
+  return assertCliRegistryHistoryMatchesPlan(plan, registry);
 }
 
 async function createStampedSnapshotRunner(plan, assertFresh, options) {
@@ -189,6 +280,7 @@ export async function publishCommittedRelease(argv = process.argv.slice(2), opti
     await (options.runCommand ?? runCommand)('pnpm', ['run', verificationScript(plan)]);
     await assertFresh();
   }
+  await assertPlanCliRegistryFresh(plan, options);
   const snapshotRunner = await createStampedSnapshotRunner(plan, assertFresh, options);
   if (
     !options._boundCatalog
@@ -236,6 +328,17 @@ export async function publishCommittedRelease(argv = process.argv.slice(2), opti
     );
   }
   const boundCatalog = options._boundCatalog;
+  const assertWriteFresh = async () => {
+    await assertFresh();
+    await assertPlanCliRegistryFresh(plan, options);
+  };
+  const assertPublicationFresh = async (...args) => {
+    await options.assertCurrentReleaseIdentity?.(...args);
+    await assertWriteFresh();
+  };
+  const callerBeforeNpmWrite = options.beforeNpmWrite;
+  const callerEvalBeforeNpmWrite = options.evalPublicationOptions?.beforeNpmWrite;
+  const callerBeforeRemoteWrite = options.beforeRemoteWrite;
   const commonOptions = {
     ...options,
     repoRoot,
@@ -250,19 +353,23 @@ export async function publishCommittedRelease(argv = process.argv.slice(2), opti
       await (options.assertReleaseWorktreeClean ?? assertReleaseWorktreeClean)({ cwd: repoRoot });
       await assertFresh();
     },
-    assertCurrentReleaseIdentity: assertFresh,
+    assertCurrentReleaseIdentity: assertPublicationFresh,
     resolveReleaseHead: async () => plan.source.head,
     readCliPackageJson: async () => ({ version: plan.cli.candidateVersion }),
     expectedPublicationMode: plan.catalog.publicationMode,
-    beforeNpmWrite: async () => {
-      await assertFresh();
-      await assertPlanCliRegistryFresh(plan, options);
+    beforeNpmWrite: async (...args) => {
+      await callerBeforeNpmWrite?.(...args);
+      await assertWriteFresh();
+    },
+    beforeRemoteWrite: async () => {
+      await callerBeforeRemoteWrite?.();
+      await assertWriteFresh();
     },
     evalPublicationOptions: {
       ...(options.evalPublicationOptions ?? {}),
-      beforeNpmWrite: async () => {
-        await assertFresh();
-        await assertPlanCliRegistryFresh(plan, options);
+      beforeNpmWrite: async (...args) => {
+        await callerEvalBeforeNpmWrite?.(...args);
+        await assertWriteFresh();
       },
     },
     readCatalogPublicationHistory: async (historyOptions) => {
@@ -328,7 +435,7 @@ export async function publishCommittedRelease(argv = process.argv.slice(2), opti
       catalogVersion: plan.catalog.candidateVersion,
       currentCliVersion,
       beforeRemoteWrite: async () => {
-        await assertFresh();
+        await commonOptions.beforeRemoteWrite();
         await assertPromotionCliTrain(plan, options);
       },
       remoteUrl,

@@ -165,6 +165,12 @@ describe('Git catalog publisher', () => {
       })),
     });
     const planId = `sha256:${'7'.repeat(64)}`;
+    const evalContentDigest = `sha256:${'8'.repeat(64)}`;
+    const awContentDigest = `sha256:${'9'.repeat(64)}`;
+    const trainContentDigest = calculateCliTrainContentDigest([
+      { name: '@lesliechan721/agent-skill-eval', contentDigest: evalContentDigest },
+      { name: '@lesliechan721/aw', contentDigest: awContentDigest },
+    ]);
     const previewRoot = path.join(root, 'preview', '.release', 'catalog-staging', 'catalog');
     await fs.ensureDir(path.dirname(path.dirname(path.dirname(previewRoot))));
     const preview = await stageCatalogRelease(['--catalog-version', '1.0.0-beta.1'], {
@@ -182,8 +188,27 @@ describe('Git catalog publisher', () => {
       planId,
       channel: 'beta',
       source: { head: 'b'.repeat(40) },
-      history: { catalog: { latest: null, beta: null, publicationGuard: null } },
-      cli: { action: 'skip', candidateVersion: '1.0.0-beta.3', packages: [] },
+      history: {
+        catalog: { latest: null, beta: null, publicationGuard: null },
+        npm: {
+          packages: [
+            { name: '@lesliechan721/agent-skill-eval', versions: [] },
+            { name: '@lesliechan721/aw', versions: [] },
+          ],
+          distTags: [
+            { name: '@lesliechan721/agent-skill-eval', latest: null, beta: null },
+            { name: '@lesliechan721/aw', latest: null, beta: null },
+          ],
+        },
+      },
+      cli: {
+        action: 'skip', targetVersion: '1.0.0', candidateVersion: '1.0.0-beta.3',
+        trainContentDigest,
+        packages: [
+          { name: '@lesliechan721/agent-skill-eval', contentDigest: evalContentDigest },
+          { name: '@lesliechan721/aw', contentDigest: awContentDigest },
+        ],
+      },
       catalog: {
         action: 'publish', publicationMode: 'bootstrap', targetVersion: '1.0.0',
         candidateVersion: '1.0.0-beta.1', catalogContentDigest,
@@ -200,6 +225,14 @@ describe('Git catalog publisher', () => {
       readCurrentReleasePlan: async () => ({ plan }),
       assertPlanOnlyCommit: async () => undefined,
       assertReleaseWorktreeClean: async () => undefined,
+      readRegistryReleaseHistory: async () => ({
+        '@lesliechan721/agent-skill-eval': [],
+        '@lesliechan721/aw': [],
+        distTags: {
+          '@lesliechan721/agent-skill-eval': { latest: null, beta: null },
+          '@lesliechan721/aw': { latest: null, beta: null },
+        },
+      }),
       runCommand: async () => undefined,
       withReleaseBuildSnapshot: async (callback: (value: typeof snapshot) => Promise<unknown>) => callback(snapshot),
     };
