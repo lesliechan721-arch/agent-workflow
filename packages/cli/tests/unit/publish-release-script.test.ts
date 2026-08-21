@@ -1,3 +1,5 @@
+import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
@@ -25,6 +27,7 @@ function commonOptions(
     outputDigest: 'output-a',
     inputDigest: 'input-a',
     cliPackageDigest: 'package-a',
+    evalPackageRoot: '/tmp/release-snapshot/packages/agent-skill-eval',
     cliPackageRoot: '/tmp/release-snapshot/packages/cli',
     cliDistRoot: '/tmp/release-snapshot/packages/cli/dist',
     catalogOutputRoot: '/tmp/release-snapshot/packages/cli/plugins-dist',
@@ -51,6 +54,37 @@ function commonOptions(
       releaseIdentity: stageOptions.releaseIdentity,
     })),
     resolvePublishedCliVersion: vi.fn(async () => publishedCliVersion),
+    withPreparedCliPublication: vi.fn(async (
+      _mode,
+      _publishMode,
+      _snapshot,
+      version,
+      gate,
+      _assertFresh,
+      callback,
+    ) => callback({
+      status: gate.status,
+      mode: 'latest',
+      version,
+      tarballPath: '/tmp/private-aw.tgz',
+      registryUrl: 'https://registry.example.test/',
+      candidateTreeDigest: `sha256:${'b'.repeat(64)}`,
+      ...(gate.status === 'already-published'
+        ? { publishedTreeDigest: `sha256:${'b'.repeat(64)}` }
+        : {}),
+      generationId: snapshot.generationId,
+      outputDigest: snapshot.outputDigest,
+      inputDigest: snapshot.inputDigest,
+      cliPackageDigest: snapshot.cliPackageDigest,
+    })),
+    prepareEvalPublication: vi.fn(async () => ({
+      status: 'already-published',
+      version: currentCliVersion,
+      candidateTreeDigest: `sha256:${'a'.repeat(64)}`,
+      generationId: snapshot.generationId,
+      outputDigest: snapshot.outputDigest,
+      inputDigest: snapshot.inputDigest,
+    })),
   };
 }
 
@@ -186,7 +220,11 @@ describe('combined release script', () => {
       calls.push('registry');
       return '1.0.0';
     });
-    const publishCli = vi.fn();
+    const publishCli = vi.fn(async () => ({
+      status: 'already-published',
+      version: '1.0.0',
+      evalPackage: { status: 'already-published', version: '1.0.0' },
+    }));
     const result = await publishRelease(
       ['latest', '--catalog-version', '2.0.0'],
       {
@@ -200,11 +238,216 @@ describe('combined release script', () => {
     );
 
     expect(calls).toEqual(['registry', 'catalog:atomic']);
-    expect(publishCli).not.toHaveBeenCalled();
-    expect(result.cli).toEqual({
+    expect(publishCli).toHaveBeenCalledOnce();
+    expect(result.cli).toMatchObject({
       status: 'already-published',
       version: '1.0.0',
     });
+  });
+
+  it('completes the CLI and Eval package gates before any immutable catalog ref or CLI write', async () => {
+    const releaseHistory = history(compareStrictSemVer);
+    const options = commonOptions(releaseHistory);
+    const calls: string[] = [];
+    options.withPreparedCliPublication.mockImplementation(async (
+      _mode,
+      _publishMode,
+      snapshot,
+      version,
+      gate,
+      _assertFresh,
+      callback,
+    ) => {
+      calls.push('cli-gate');
+      return callback({
+        status: gate.status,
+        mode: 'latest',
+        version,
+        tarballPath: '/tmp/private-aw.tgz',
+        registryUrl: 'https://registry.example.test/',
+        candidateTreeDigest: `sha256:${'b'.repeat(64)}`,
+        ...(gate.status === 'already-published'
+          ? { publishedTreeDigest: `sha256:${'b'.repeat(64)}` }
+          : {}),
+        generationId: snapshot.generationId,
+        outputDigest: snapshot.outputDigest,
+        inputDigest: snapshot.inputDigest,
+        cliPackageDigest: snapshot.cliPackageDigest,
+      });
+    });
+    options.prepareEvalPublication.mockImplementation(async () => {
+      calls.push('eval-gate');
+      return {
+        status: 'already-published',
+        version: '1.0.0',
+        candidateTreeDigest: `sha256:${'a'.repeat(64)}`,
+        generationId: options.snapshot.generationId,
+        outputDigest: options.snapshot.outputDigest,
+        inputDigest: options.snapshot.inputDigest,
+      };
+    });
+
+    await publishRelease(['latest', '--catalog-version', '2.0.0'], {
+      ...options,
+      publishStagedCatalog: async () => {
+        calls.push('catalog');
+        return { validation: { manifest: { catalogVersion: '2.0.0' } } };
+      },
+      publishCli: async () => {
+        calls.push('cli');
+        return { version: '1.0.0' };
+      },
+      promoteCatalogTag: async () => {
+        calls.push('promotion');
+        return { promoted: true };
+      },
+    });
+
+    expect(calls).toEqual(['cli-gate', 'eval-gate', 'catalog', 'cli', 'promotion']);
+  });
+
+  it.each([
+    {
+      name: 'the exact CLI registry tree differs',
+      comparison: async () => {
+        throw new Error(
+          'Published @lesliechan721/aw@1.0.0 has different package files from the release candidate.',
+        );
+      },
+      message: 'different package files',
+    },
+    {
+      name: 'the exact tree matches but the dist-tag is older',
+      comparison: async () => ({
+        registryUrl: 'https://registry.example.test/',
+        candidateTreeDigest: `sha256:${'b'.repeat(64)}`,
+        publishedTreeDigest: `sha256:${'b'.repeat(64)}`,
+      }),
+      message: 'already exists, but the latest dist-tag resolves to 0.9.0',
+    },
+  ])('writes no Eval package, catalog ref, or CLI package when $name', async ({
+    comparison,
+    message,
+  }) => {
+    const releaseHistory = history(compareStrictSemVer);
+    const options = commonOptions(releaseHistory, '1.0.0', '0.9.0');
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-combined-cli-gate-'));
+    options.snapshot.cliPackageRoot = path.join(root, 'cli');
+    await fs.mkdir(options.snapshot.cliPackageRoot, { recursive: true });
+    await fs.writeFile(path.join(options.snapshot.cliPackageRoot, 'package.json'), JSON.stringify({
+      name: '@lesliechan721/aw',
+      version: '1.0.0',
+    }));
+    const order: string[] = [];
+    const publishStagedCatalog = vi.fn();
+    const publishCli = vi.fn();
+
+    try {
+      await expect(publishRelease(['latest', '--catalog-version', '2.0.0'], {
+        ...options,
+        withPreparedCliPublication: undefined,
+        cliPublicationOptions: {
+          withPrivateCliTarball: async (_snapshot, callback) => {
+            order.push('pack');
+            return callback(path.join(root, 'aw.tgz'));
+          },
+          isExactPackageVersionPublished: async () => {
+            order.push('exact-version');
+            return true;
+          },
+          assertPublishedPackageTarballMatchesCandidate: async () => {
+            order.push('compare-tree');
+            return comparison();
+          },
+        },
+        publishStagedCatalog,
+        publishCli,
+      })).rejects.toThrow(message);
+
+      expect(order).toEqual(['pack', 'exact-version', 'compare-tree']);
+      expect(options.prepareEvalPublication).not.toHaveBeenCalled();
+      expect(publishStagedCatalog).not.toHaveBeenCalled();
+      expect(publishCli).not.toHaveBeenCalled();
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects candidate input drift after CLI preparation and before any release write', async () => {
+    const releaseHistory = history(compareStrictSemVer);
+    const options = commonOptions(releaseHistory);
+    const driftError = new Error('Release live cliPackageDigest no longer matches the bound release identity.');
+    options.assertCurrentReleaseIdentity
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(driftError);
+    options.withPreparedCliPublication.mockImplementation(async (
+      _mode,
+      _publishMode,
+      _snapshot,
+      _version,
+      _gate,
+      assertFresh,
+    ) => {
+      await assertFresh();
+      throw new Error('unreachable');
+    });
+    const publishStagedCatalog = vi.fn();
+    const publishCli = vi.fn();
+
+    await expect(publishRelease(['latest', '--catalog-version', '2.0.0'], {
+      ...options,
+      publishStagedCatalog,
+      publishCli,
+    })).rejects.toThrow('live cliPackageDigest');
+
+    expect(options.prepareEvalPublication).not.toHaveBeenCalled();
+    expect(publishStagedCatalog).not.toHaveBeenCalled();
+    expect(publishCli).not.toHaveBeenCalled();
+  });
+
+  it('writes no catalog ref or CLI package when the partial-retry Eval gate finds different files', async () => {
+    const releaseHistory = history(compareStrictSemVer);
+    const options = commonOptions(releaseHistory);
+    options.prepareEvalPublication.mockRejectedValue(
+      new Error('Published shared Eval has different package files from the release candidate.'),
+    );
+    const publishStagedCatalog = vi.fn();
+    const publishCli = vi.fn();
+
+    await expect(publishRelease(['latest', '--catalog-version', '2.0.0'], {
+      ...options,
+      publishStagedCatalog,
+      publishCli,
+    })).rejects.toThrow('different package files');
+
+    expect(publishStagedCatalog).not.toHaveBeenCalled();
+    expect(publishCli).not.toHaveBeenCalled();
+  });
+
+  it('does not publish Eval or write release refs when the staged catalog requires a newer CLI', async () => {
+    const releaseHistory = history(compareStrictSemVer);
+    const options = commonOptions(releaseHistory, '1.0.0', '0.9.0');
+    options.stageCatalogRelease.mockImplementation(async (_argv, stageOptions) => ({
+      outputRoot: stageOptions.internalOutputRoot,
+      manifest: { compatibility: { aw: { minVersion: '1.1.0' } } },
+      generationId: options.snapshot.generationId,
+      outputDigest: options.snapshot.outputDigest,
+      inputDigest: options.snapshot.inputDigest,
+      cliPackageDigest: options.snapshot.cliPackageDigest,
+      releaseIdentity: stageOptions.releaseIdentity,
+    }));
+    const publishStagedCatalog = vi.fn();
+    const publishCli = vi.fn();
+
+    await expect(publishRelease(['latest', '--catalog-version', '2.0.0'], {
+      ...options,
+      publishStagedCatalog,
+      publishCli,
+    })).rejects.toThrow('requires aw >= 1.1.0');
+
+    expect(options.prepareEvalPublication).not.toHaveBeenCalled();
+    expect(publishStagedCatalog).not.toHaveBeenCalled();
+    expect(publishCli).not.toHaveBeenCalled();
   });
 
   it.each([

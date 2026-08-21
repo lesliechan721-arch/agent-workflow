@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
+import { access, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
@@ -8,71 +9,108 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 const execFileAsync = promisify(execFile);
-const localPluginRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const pluginRoot = process.env.AW_PLUGIN_CONTEXT
-  ? JSON.parse(await readFile(process.env.AW_PLUGIN_CONTEXT, 'utf8')).sourceRoot
-  : localPluginRoot;
+const localRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const context = process.env.AW_PLUGIN_CONTEXT
+  ? JSON.parse(await readFile(process.env.AW_PLUGIN_CONTEXT, 'utf8'))
+  : null;
+const sourceRoot = context?.sourceRoot ?? localRoot;
+const bundleRoot = context?.plugin.rootDir ?? localRoot;
+const runtimeRoot = context ? path.join(bundleRoot, context.platform) : localRoot;
 
-async function run(relative, args = []) {
-  return execFileAsync(process.execPath, [path.join(pluginRoot, relative), ...args], {
-    cwd: pluginRoot,
-    encoding: 'utf8',
-  });
+async function exists(relativeRoot, relative) {
+  return access(path.join(relativeRoot, relative)).then(() => true, () => false);
 }
 
-test('generated content standards and contract assets are current', async () => {
-  await run('scripts/validate-standard-views.mjs');
-  await run('scripts/validate-contract-assets.mjs');
+test('staged runtime contains fresh generated views and projected contracts', async () => {
+  if (context) {
+    await execFileAsync(process.execPath, [
+      path.join(sourceRoot, 'scripts/generate-standard-views.mjs'),
+      '--check',
+      '--source-root', sourceRoot,
+      '--output-root', runtimeRoot,
+    ], { cwd: context.cwd, encoding: 'utf8' });
+  }
+
+  const canonicalPairs = [
+    [
+      'schemas/reference-audit-result.schema.json',
+      'skills/review-agent-content/assets/reference-audit-result.schema.json',
+    ],
+    [
+      'scripts/validate-json-contract.mjs',
+      'skills/review-agent-content/scripts/validate-json-contract.mjs',
+    ],
+  ];
+  for (const [source, target] of canonicalPairs) {
+    const [sourceRaw, runtimeRaw] = await Promise.all([
+      readFile(path.join(sourceRoot, source)),
+      readFile(path.join(runtimeRoot, target)),
+    ]);
+    assert.equal(
+      createHash('sha256').update(runtimeRaw).digest('hex'),
+      createHash('sha256').update(sourceRaw).digest('hex'),
+      `${target} must be projected from ${source}`,
+    );
+  }
+
+  await execFileAsync(process.execPath, [
+    path.join(runtimeRoot, 'skills/review-agent-content/scripts/validate-json-contract.mjs'),
+    path.join(runtimeRoot, 'skills/review-agent-content/assets/reference-audit-result.schema.json'),
+    path.join(runtimeRoot, 'skills/review-agent-content/assets/reference-audit-result.template.json'),
+  ], { cwd: context?.cwd ?? runtimeRoot, encoding: 'utf8' });
 });
 
-test('the plugin exposes only content skills and a versioned portable rule bundle', async () => {
-  const [manifest, readme, rulesRaw, sourceMap] = await Promise.all([
-    readFile(path.join(pluginRoot, '.agents-plugin/plugin.json'), 'utf8').then(JSON.parse),
-    readFile(path.join(pluginRoot, 'README.md'), 'utf8'),
-    readFile(path.join(pluginRoot, 'standards/rules.json'), 'utf8'),
-    readFile(path.join(pluginRoot, 'standards/source-map.md'), 'utf8'),
-  ]);
-  assert.equal(manifest.name, 'agent-content-toolkit');
-  assert.equal(manifest.version, '0.4.0');
-  assert.match(readme, /write-agent-content/u);
-  assert.match(readme, /review-agent-content/u);
-  assert.doesNotMatch(readme, /author-agent-skill/u);
-  assert.match(
-    'sha256:' + createHash('sha256').update(rulesRaw).digest('hex'),
-    /^sha256:[0-9a-f]{64}$/u,
-  );
-  assert.doesNotMatch(rulesRaw, /agent-workflows/u);
-  const rules = JSON.parse(rulesRaw);
-  for (const rule of rules.rules) {
-    assert.ok(
-      !rule.sourceRefs.includes('writing-for-agents'),
-      `${rule.id} must not classify a heuristic lens as an authoritative source`,
-    );
-    if (rule.heuristicRefs?.includes('writing-for-agents')) {
-      assert.match(sourceMap, /Third-party heuristic lens/u);
+test('source keeps canonical files and excludes runtime projections', async () => {
+  const forbidden = [
+    'skills/write-agent-content/references/writing-standard.generated.md',
+    'skills/review-agent-content/references/review-standard.generated.md',
+    'skills/review-agent-content/assets/reference-audit-result.schema.json',
+    'skills/review-agent-content/scripts/validate-json-contract.mjs',
+  ];
+  for (const relative of forbidden) {
+    assert.equal(await exists(sourceRoot, relative), false, `${relative} must not exist in source`);
+  }
+});
+
+test('cacheable standard render is deterministic across undeclared environment changes', async () => {
+  async function render(marker) {
+    const outputRoot = await mkdtemp(path.join(tmpdir(), 'content-standard-render-'));
+    try {
+      const { stdout } = await execFileAsync(process.execPath, [
+        path.join(sourceRoot, 'scripts/generate-standard-views.mjs'),
+        '--source-root', sourceRoot,
+        '--output-root', outputRoot,
+      ], {
+        cwd: context?.cwd ?? sourceRoot,
+        env: { ...process.env, AW_PLUGIN_TEST_UNDECLARED: marker },
+        encoding: 'utf8',
+      });
+      const { targets } = JSON.parse(stdout);
+      return Promise.all(
+        targets.map(async (relative) => [
+          relative,
+          createHash('sha256').update(await readFile(path.join(outputRoot, relative))).digest('hex'),
+        ]),
+      );
+    } finally {
+      await rm(outputRoot, { recursive: true, force: true });
     }
   }
-  assert.match(sourceMap, /Third-party heuristic/u);
+  assert.deepEqual(await render('first'), await render('second'));
 });
 
-test('reference audit starter satisfies the canonical identity-bound schema', async () => {
-  await run('scripts/validate-json-contract.mjs', [
-    path.join(pluginRoot, 'schemas/reference-audit-result.schema.json'),
-    path.join(
-      pluginRoot,
-      'skills/review-agent-content/assets/reference-audit-result.template.json',
-    ),
-  ]);
-  const value = JSON.parse(
-    await readFile(
-      path.join(
-        pluginRoot,
-        'skills/review-agent-content/assets/reference-audit-result.template.json',
-      ),
-      'utf8',
-    ),
+test('staged manifest publishes the content toolkit 0.5.0 contract', async () => {
+  const stagedManifest = JSON.parse(
+    await readFile(path.join(bundleRoot, '.agents-plugin/plugin.json'), 'utf8'),
   );
-  assert.equal(value.producer, 'review-agent-content');
-  assert.equal(value.independentContext, true);
-  assert.match(value.target.digest, /^sha256:[0-9a-f]{64}$/u);
+  const sourceManifest = JSON.parse(
+    await readFile(path.join(sourceRoot, '.agents-plugin/plugin.json'), 'utf8'),
+  );
+  assert.equal(stagedManifest.name, 'agent-content-toolkit');
+  assert.equal(stagedManifest.version, '0.5.0');
+  assert.equal(sourceManifest.buildConfig.cacheable, true);
+  assert.deepEqual(
+    sourceManifest.buildConfig.runtimeExports.map(({ name }) => name).sort(),
+    ['content-rules', 'reference-audit-result-schema'],
+  );
 });

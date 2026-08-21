@@ -15,6 +15,7 @@ The dependency direction is strictly upward: generic toolkits do not name or req
 ## Portable workspace boundary
 
 An AW plugin root is identified by its own `.agents-plugin/plugin.json`, not by a fixed monorepo path. A target workspace may place plugins under `plugins/`, `packages/`, `tools/` or another explicit root. Workspace-specific build and release commands are discovered from that workspace; reusable authoring policy stays inside this plugin bundle.
+The installed CLI receives that root through `--plugin-root`, resolved relative to `--repo-root` and fenced inside the same Git workspace. Only the CLI `--all` version gate retains the standard `plugins/` scan.
 
 ## Isolated stages
 

@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 
-const STAMP_SCHEMA_VERSION = 7;
+const STAMP_SCHEMA_VERSION = 8;
 const DEFAULT_LOCK_TIMEOUT_MS = 20 * 60 * 1000;
 const DEFAULT_POLL_INTERVAL_MS = 100;
 
@@ -14,6 +14,11 @@ const INPUT_PATHS = [
   'pnpm-workspace.yaml',
   'tsconfig.base.json',
   'scripts/build',
+  'packages/agent-skill-eval/package.json',
+  'packages/agent-skill-eval/tsconfig.json',
+  'packages/agent-skill-eval/vitest.config.ts',
+  'packages/agent-skill-eval/src',
+  'packages/agent-skill-eval/scripts',
   'packages/cli/package.json',
   'packages/cli/tsconfig.json',
   'packages/cli/index.ts',
@@ -25,6 +30,7 @@ const INPUT_PATHS = [
 ];
 
 const OUTPUT_ROOTS = [
+  'packages/agent-skill-eval/dist',
   'packages/cli/dist',
   'packages/cli/plugins-dist',
 ];
@@ -35,6 +41,9 @@ const GENERATED_INPUT_ROOTS = [
 ];
 
 const REQUIRED_OUTPUTS = [
+  { path: 'packages/agent-skill-eval/dist/index.js', type: 'text' },
+  { path: 'packages/agent-skill-eval/dist/bin.js', type: 'text' },
+  { path: 'packages/agent-skill-eval/dist/schemas/digests.json', type: 'text' },
   { path: 'packages/cli/dist/index.js', type: 'text' },
   { path: 'packages/cli/dist/scripts/bundle-plugins.js', type: 'text' },
   { path: 'packages/cli/plugins-dist/.claude-plugin/marketplace.json', type: 'marketplace' },
@@ -288,7 +297,14 @@ export function resolvePnpmInvocation(env = process.env) {
   }
   return {
     command: process.execPath,
-    args: [path.resolve(npmExecPath), '--filter', '@lesliechan721/aw', 'build'],
+    args: [
+      path.resolve(npmExecPath),
+      '--filter',
+      '@lesliechan721/agent-skill-eval',
+      '--filter',
+      '@lesliechan721/aw',
+      'build',
+    ],
   };
 }
 
@@ -457,7 +473,8 @@ async function findReuseDisabledReason(repoRoot) {
     }
     if (
       manifest?.scripts?.node &&
-      Object.prototype.hasOwnProperty.call(manifest.scripts.node, 'build')
+      Object.prototype.hasOwnProperty.call(manifest.scripts.node, 'build') &&
+      manifest?.buildConfig?.cacheable !== true
     ) {
       return `reuse disabled: plugin ${entry.name} declares scripts.node.build`;
     }
@@ -535,7 +552,7 @@ export async function inspectBuildCache(repoRoot, options = {}) {
   const expected = await readExpectedStampIdentity(repoRoot);
   const outputSymlink = await findRegisteredSymlink(
     repoRoot,
-    ['packages/cli/dist'],
+    ['packages/agent-skill-eval/dist', 'packages/cli/dist'],
   );
   if (outputSymlink) {
     return {
@@ -604,7 +621,7 @@ export async function inspectBuildCache(repoRoot, options = {}) {
   await options.__testBeforeFinalOutputCheck?.();
   const finalOutputSymlink = await findRegisteredSymlink(
     repoRoot,
-    ['packages/cli/dist'],
+    ['packages/agent-skill-eval/dist', 'packages/cli/dist'],
   );
   if (finalOutputSymlink) {
     return {
@@ -840,6 +857,10 @@ export async function runCliBuild(repoRoot, invocation) {
     recursive: true,
     force: true,
   });
+  await fs.rm(path.join(repoRoot, 'packages', 'agent-skill-eval', 'dist'), {
+    recursive: true,
+    force: true,
+  });
   await new Promise((resolve, reject) => {
     const child = spawn(fixedInvocation.command, fixedInvocation.args, {
       cwd: repoRoot,
@@ -943,7 +964,7 @@ async function buildUnderLock(repoRoot, settings, inspection) {
   }
   const outputSymlink = await findRegisteredSymlink(
     repoRoot,
-    ['packages/cli/dist'],
+    ['packages/agent-skill-eval/dist', 'packages/cli/dist'],
   );
   if (outputSymlink) {
     throw new Error(
@@ -1074,7 +1095,9 @@ async function createSnapshotUnderLock(repoRoot, settings) {
     `build-${crypto.randomUUID()}`,
   );
   const cliPackageRoot = path.join(snapshotRoot, 'packages', 'cli');
+  const evalPackageRoot = path.join(snapshotRoot, 'packages', 'agent-skill-eval');
   const canonicalNodeModules = path.join(repoRoot, 'packages', 'cli', 'node_modules');
+  const canonicalEvalNodeModules = path.join(repoRoot, 'packages', 'agent-skill-eval', 'node_modules');
   const copyPath = settings.__testCopyPath ?? ((source, target, copyOptions) =>
     fs.cp(source, target, copyOptions)
   );
@@ -1086,7 +1109,10 @@ async function createSnapshotUnderLock(repoRoot, settings) {
   );
 
   try {
-    await fs.mkdir(cliPackageRoot, { recursive: true });
+    await Promise.all([
+      fs.mkdir(cliPackageRoot, { recursive: true }),
+      fs.mkdir(evalPackageRoot, { recursive: true }),
+    ]);
     let dependencyStats;
     try {
       dependencyStats = await fs.stat(canonicalNodeModules);
@@ -1118,6 +1144,11 @@ async function createSnapshotUnderLock(repoRoot, settings) {
     });
     await fs.chmod(snapshotPackageJsonPath, cliPackageMaterial.mode);
     await copyPath(
+      path.join(repoRoot, 'packages', 'agent-skill-eval', 'dist'),
+      path.join(evalPackageRoot, 'dist'),
+      { recursive: true, verbatimSymlinks: true },
+    );
+    await copyPath(
       path.join(repoRoot, 'packages', 'cli', 'dist'),
       path.join(cliPackageRoot, 'dist'),
       { recursive: true, verbatimSymlinks: true },
@@ -1132,6 +1163,16 @@ async function createSnapshotUnderLock(repoRoot, settings) {
       path.join(cliPackageRoot, 'node_modules'),
       (settings.__testSnapshotPlatform ?? process.platform) === 'win32' ? 'junction' : 'dir',
     );
+    await createDependencyLink(
+      canonicalEvalNodeModules,
+      path.join(evalPackageRoot, 'node_modules'),
+      (settings.__testSnapshotPlatform ?? process.platform) === 'win32' ? 'junction' : 'dir',
+    );
+    await copyPath(
+      path.join(repoRoot, 'packages', 'agent-skill-eval', 'package.json'),
+      path.join(evalPackageRoot, 'package.json'),
+      { verbatimSymlinks: true },
+    );
     const snapshotDigest = await computeBuildOutputDigest(snapshotRoot);
     if (snapshotDigest !== ensured.outputDigest) {
       throw new Error(
@@ -1141,11 +1182,13 @@ async function createSnapshotUnderLock(repoRoot, settings) {
     }
     const snapshotSymlink = await findRegisteredSymlink(
       snapshotRoot,
-      ['packages/cli'],
+      ['packages/agent-skill-eval', 'packages/cli'],
       (relativePath) => {
         const normalizedPath = normalizeRelativePath(relativePath);
         return normalizedPath === 'packages/cli/node_modules' ||
           normalizedPath.startsWith('packages/cli/node_modules/') ||
+          normalizedPath === 'packages/agent-skill-eval/node_modules' ||
+          normalizedPath.startsWith('packages/agent-skill-eval/node_modules/') ||
           normalizedPath === 'packages/cli/plugins-dist' ||
           normalizedPath.startsWith('packages/cli/plugins-dist/');
       },
@@ -1193,6 +1236,7 @@ async function createSnapshotUnderLock(repoRoot, settings) {
     outputDigest: ensured.outputDigest,
     inputDigest: ensured.inputDigest,
     cliPackageDigest: ensured.cliPackageDigest,
+    evalPackageRoot,
     cliPackageRoot,
     cliDistRoot: path.join(cliPackageRoot, 'dist'),
     catalogOutputRoot: path.join(cliPackageRoot, 'plugins-dist'),

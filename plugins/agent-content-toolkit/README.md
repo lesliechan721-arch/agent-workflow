@@ -25,10 +25,10 @@ aw install agent-content-toolkit -p both
 
 ## 维护者
 
-`standards/rules.json` 只维护 Agent-facing 内容层规则。检查生成内容和合同：
+Current plugin contract version: `0.5.0`.
+
+`standards/rules.json` 只维护 Agent-facing 内容层规则。生成视图和 Skill-local 合同只在 staging/runtime 中生成或投影。检查合同：
 
 ```bash
-node scripts/validate-standard-views.mjs
-node scripts/validate-contract-assets.mjs
 pnpm plugin:test agent-content-toolkit
 ```

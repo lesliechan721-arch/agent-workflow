@@ -1,7 +1,12 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { packCli, relativeToRepo } from './common.mjs';
+import {
+  packCli,
+  packEval,
+  relativeToRepo,
+  withReleaseBuildSnapshot,
+} from './common.mjs';
 
 const usage = 'node scripts/release/pack-cli.mjs [--pack-destination <directory>]';
 
@@ -28,11 +33,26 @@ export function parseArgs(argv) {
   return { destination };
 }
 
+export async function packCliBundle(options = {}) {
+  const destination = options.destination;
+  const snapshotRunner = options.withBuildSnapshot ?? withReleaseBuildSnapshot;
+  const packEvalTarball = options.packEval ?? packEval;
+  const packCliTarball = options.packCli ?? packCli;
+
+  return snapshotRunner(async (snapshot) => {
+    const evalTarballPath = await packEvalTarball({ destination, snapshot });
+    const cliTarballPath = await packCliTarball({ destination, snapshot });
+    return { evalTarballPath, cliTarballPath };
+  });
+}
+
 export async function main(argv = process.argv.slice(2)) {
   try {
     const { destination } = parseArgs(argv);
-    const tarballPath = await packCli({ destination });
-    console.log(`Packed tarball: ${relativeToRepo(tarballPath)}`);
+    const bundle = await packCliBundle({ destination });
+    console.log(`Packed shared Eval tarball: ${relativeToRepo(bundle.evalTarballPath)}`);
+    console.log(`Packed CLI tarball: ${relativeToRepo(bundle.cliTarballPath)}`);
+    return bundle;
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;

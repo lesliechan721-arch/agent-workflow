@@ -9,6 +9,8 @@
 - `commands/rebuild-operations.ts` 只编排 ownership 检查、清理、平台写入、artifact 写入、lifecycle 和完成后检查。
 - `commands/rebuild-integration.ts` 把插件能力转换成平台原生写入和 AW-owned 组件。
 - `commands/status-v4.ts` 读取多源 catalog、live ownership 和平台组件，输出 status v4，并为控制台提供同一份数据。
+- `authoring/` 是 `aw plugin init`、`add-skill`、`validate` 和 `check-versions` 的唯一确定性作者实现；该目录随 CLI tarball 发布，运行时不读取仓库 `.agents` 或插件 Skill root。
+- 作者命令默认把插件根解析为 `<repo-root>/plugins/<plugin-name>`。`init`、`add-skill` 和单插件 `check-versions` 可用 `--plugin-root` 指定仓库内其它根；路径相对 `--repo-root` 解析，目录 basename 和 manifest name 必须匹配 plugin name。`validate` 和 `check-versions` 在读取 manifest 前对 repo root、plugin root、`.agents-plugin` 和 manifest 使用同一条逐节点 `lstat`、`realpath` 和边界身份围栏；默认根、显式根和 `--all` 都拒绝这些节点中的符号链接或错误类型，诊断只报告被拒节点，不解析或泄露链接目标。显式根的 `init` 不要求或修改 `plugins/marketplace-source.json`；`check-versions --all` 仍只扫描仓库 `plugins/`。
 - `utils/ownership.ts` 定义 owner marker、组件检查和安全删除边界。
 - `utils/lifecycle-active-store.ts` 保存最后一次成功写入所需的 lifecycle 输入。
 - `utils/local-marketplace.ts` 校验 namespaced active marketplace，并在安全替换时重放 Codex Skill owner overlay。
@@ -87,7 +89,7 @@ Local runtime
 ```
 
 - 仓库源码层是插件作者维护的输入。
-- Skill 根的 `evals/**` 和插件根的正式 `reports/**` 不进入 catalog runtime bundle、安装制品或 runtime digest。Skill `README.md` 是 production source，会随 Skill 发布。
+- 任意路径段 basename 为 `.DS_Store` 的 macOS 临时文件不进入 production identity、catalog runtime bundle、安装制品、runtime digest 或 review 完整文件集合；其它 hidden production 文件仍按普通 runtime 内容处理。Skill 根的 `evals/**` 和插件根的正式 `reports/**` 也不进入 catalog runtime bundle、安装制品或 runtime digest。Skill `README.md` 是 production source，会随 Skill 发布。
 - `.tmp/agent-workflows/evals/**` 只保存本地临时证据，不进入 Git 或 runtime bundle。插件正式报告位于 `plugins/<plugin>/reports/`，repo-local 静态 Skill 正式报告位于 `.agents/reports/`。Eval、评审、发布和登记步骤由 [create-aw-plugin](../.agents/skills/create-aw-plugin/README.md) 与 [skill-review](../.agents/skills/skill-review/README.md) 工作流定义。
 - 本地 catalog snapshot 和 release staging 都是生成物，不手工修改。
 - CLI version、catalog version 和 plugin version 是三套独立身份。
@@ -100,6 +102,10 @@ Local runtime
 - 首次 official cutover 只使用 `release:bootstrap:catalog:beta|latest`。它复用私有 build snapshot、私有 staging 和 Git publisher，并在 ref 写入前核对 generation identity 与 HEAD；不读取已发布 CLI compatibility。首次创建要求目标 channel 和同版本 tag 都缺失，二者都已存在且与候选完全相同时只做幂等确认。tag-only 部分发布、tag 漂移、轻量 tag、已有不同 channel 内容和不支持 atomic push 都 fail closed。beta 与 latest 的首次 commit 分别是独立 orphan。该入口不发布 CLI，首次迁移完成后普通更新必须使用 catalog-only 或 combined publisher。
 - `<AW_HOME>/catalog-sources.json` schema 1 是唯一 runtime source 合同。文件缺失时读取内置 `official` primary，URL 固定为 `https://github.com/lesliechan721-arch/agent-workflow.git`；首次配置 mutation 才物化文件。stable CLI 的 `cliChannel` ref 是 `refs/heads/catalog/latest`，prerelease 是 `refs/heads/catalog/beta`。显式 ref 不映射 channel，`--default-ref` 才恢复 `cliChannel`。
 - `scripts.node.packageRoot` 使用与 CLI `packageManager` 完全一致的 `pnpm@<exact version>`。staging 在包管理器启动前拒绝缺失或不匹配的声明；它优先执行已解析且版本匹配的 pnpm 入口，否则执行 CLI 的同版本 runtime dependency，不依赖 Corepack 或网络解析 package manager。
+- catalog build-time runtime projection 由 `buildConfig.runtimeExports`、`buildImports` 和 `skillRuntimeFiles` 组成。export 是 provider 插件根内显式命名的 canonical regular source file；resolver 只读取调用者绑定的 catalog/source set，不联网，也不从 active install 或 sibling 目录布局推断来源。`@aw/cli` 是严格保留的 virtual build provider，只向 `buildImports` 暴露 `skill-frontmatter-capabilities`，不能用于 Skill 投影。普通 current catalog 使用当前 CLI package root。base/current 比较先按 Git base 和 current workspace 中完整、无符号链接的 `packages/cli/package.json` 加 source registry 判断 source ownership：两侧都拥有时分别绑定各自物化 root、provider version 和 digest；只有一侧拥有或任一侧不完整时失败。两侧都不拥有时，已安装 CLI 是同一个经 package name/version 和普通文件链验证的 external immutable provider，并从 canonical package root 独立物化两个 digest/identity 相同的 resolver root；base 不能复制或回退到 current root/bytes。
+- `buildImports` 在 `scripts.node.build` 前解析为独立的只读绝对文件副本，只通过 `AW_PLUGIN_IMPORT_*` env 注入。它不能覆盖已有 env，且 build 后不会进入 runtime manifest。`skillRuntimeFiles` 在 staging build 后把 staged own source 或 catalog export 投影到已声明 static Skill 的 `references/`、`assets/` 或 `scripts/`；平台、路径、regular file、symlink 和 existing target 全部 fail closed。projection bytes 自然进入 artifact/content digest；bundle helper 返回 provider version、export/source identity 以及 source/target digest provenance，不新增模型可见文件。
+- catalog build、`plugin:test`、plugin eval materialization 和 repo-local bundle 使用同一 catalog runtime import resolver。prepared bundle 必须复用 preparation 返回的 resolver context；build-free 对 `scripts.node` 或 build import fail closed；外部单插件 bundler 对 imports 缺少 resolver 时不得猜测来源。
+- 声明确定性 `scripts.node.build` 的插件可用 `buildConfig.cacheable: true` 允许 build cache 按完整 registered input、environment 和 output identity 复用。该字段只接受 `true`，缺少 build 时无效并拒绝，且不进入 runtime manifest。未声明的 build 仍不复用。
 - production dependency closure 包含传递 `dependencies`、`optionalDependencies`、required peer 和已安装的 optional peer。缺失 required dependency、required peer 或传递 optional dependency 时 staging fail closed，避免生成只适用于构建机 OS 的 catalog；缺失 optional peer 仍可跳过。bundle 把已解析依赖物化为普通目录树，不保留 staging 的符号链接或 Windows junction；alias 入口分别保留，多版本和 peer resolution 按已安装闭包重建。顶层 `optionalDependencies` 仍不受支持。
 - Node runtime import closure 会复制静态相对 `import`、`require()` 和 `require.resolve()` 解析到的 JavaScript 文件。显式或 Node 风格解析到的 `.json` 文件作为 leaf 复制，不扫描其内容。CommonJS directory `main` 可以用 `../` 指向 package 目录外、plugin root 内的目标；解析仍按 Node legacy 顺序只尝试 main file、main target 的 `index.js`/`index.json`/`index.node`，再回退原目录 index，且 main target 内的嵌套 `package.json` 不参与解析。缺失、绝对、URL、不安全或逃逸 plugin root 的目标仍 fail closed；`.node` 不属于可移植 runtime bundle 合同。
 - 新 CLI 不包含 npm catalog selector、registry resolver、package archive identity 或旧 strict cache。旧两个 npm catalog package 只作为已发布历史冻结；不删除、不 unpublish，也不继续更新。
@@ -254,6 +260,8 @@ cache publication 必须满足：
 - `--json` 成功时 stdout 只包含一个 JSON 对象。
 - 错误说明和 verbose/debug 文本写 stderr，不污染 JSON stdout。
 - 写命令失败时 receipt 保留失败 target，并返回非零退出码。
+- `aw plugin validate --json` 保留单一 JSON stdout，包含 `ok`、profile、plugin directory、version check、warnings 和 errors；`aw plugin check-versions --json` 保留 schema 2 单一 JSON stdout。作者命令非交互，失败返回非零退出码。
+- `add-skill` 写入前逐节点拒绝 plugin root、`.agents-plugin`、manifest、`skills` 和目标 Skill 的符号链接或错误节点类型；stage 位于已验证 plugin root。提交前重验目录和 manifest 身份，Skill target 必须不存在，manifest 使用同目录排他临时 regular file、`fsync` 和原子 rename 替换；失败清理 stage/temp 并保留原 manifest。
 
 ### Human/TUI progress
 
@@ -278,3 +286,4 @@ cache publication 必须满足：
 - `scripts/release/stage-catalog.mjs`：生成 `.release/catalog-staging/catalog/` 发布交接目录。
 - `scripts/release/git-catalog-publisher.mjs`：验证 remote 历史并发布 immutable tag 和 channel refs。
 - `.agents/skills/create-aw-plugin/`：插件作者工作流与参考合同。
+- `packages/cli/authoring/`：随 CLI 发布的确定性插件作者实现与脚手架模板。

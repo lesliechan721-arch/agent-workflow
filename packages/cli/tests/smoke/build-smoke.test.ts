@@ -135,16 +135,17 @@ describe('build smoke', () => {
     await fs.writeJson(manifestPath, manifest, { spaces: 2 });
     const checkerPath = path.join(
       root,
-      '.agents',
-      'skills',
-      'create-aw-plugin',
-      'scripts',
-      'check_plugin_versions.mjs',
+      'packages',
+      'cli',
+      'dist',
+      'index.js',
     );
     let missingBumpError: { stdout?: string } | undefined;
     try {
       await execFileAsync('node', [
         checkerPath,
+        'plugin',
+        'check-versions',
         'version-gate-smoke',
         '--json',
         '--repo-root',
@@ -166,6 +167,8 @@ describe('build smoke', () => {
     await fs.writeJson(manifestPath, manifest, { spaces: 2 });
     const bumped = await execFileAsync('node', [
       checkerPath,
+      'plugin',
+      'check-versions',
       'version-gate-smoke',
       '--json',
       '--repo-root',

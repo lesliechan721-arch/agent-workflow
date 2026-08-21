@@ -186,13 +186,46 @@ Codex project scope 会写入 `.agents/skills`、`.codex/config.toml`、`.codex/
 - `codex-explore` 是行为只读的证据探索能力，不把最终判断或产品写入交给探索子代理。
 - 作者和评审能力分离：Reviewer 不修改被审生产源码，Author 不给自己的结果生成独立发布结论。
 
-## 开发与贡献
+## 本地开发与发版流程
+
+插件开发工作流迁移当前保持 `parallel`。发布验证会先运行机器迁移门禁；该状态允许 cutover evidence 未完成，因此不会阻塞正常发布，但会阻止缩减或改址固定路由、入口、能力 owner 和 gate 声明。当前验证器不支持 cutover 验证，`ready-for-cutover` 和 `retired` 会 fail closed：
+
+```bash
+pnpm migration:verify:plugin-development
+```
+
+状态、能力 owner 和完整 cutover 清单见[插件维护指南](docs/plugin-maintenance.md#旧入口迁移门禁)及[机器迁移合同](docs/plugin-development-migration.json)。
+
+插件作者先确认已安装的 CLI，再使用稳定、非交互的公开入口：
+
+```bash
+aw --version
+aw plugin init <plugin-name> --description "..." --skill-description "..."
+aw plugin add-skill <plugin-name> --skill-name <skill-name> --skill-description "..."
+aw plugin validate plugins/<plugin-name>
+aw plugin check-versions --all --base HEAD
+```
+
+四个命令可用 `--help` 查看完整参数。`validate --json` 输出一个机器结果对象；`check-versions --json` 输出 schema 2 结果。不要用 `npx` 隐式安装作者工具。
+目标插件不在默认 `plugins/<plugin-name>` 时，`init`、`add-skill` 和单插件
+`check-versions` 传 `--plugin-root <path>`；相对路径按 `--repo-root` 解析，且目标必须位于该 Git 工作区内。
+`validate` 和 `check-versions` 会拒绝 repo/plugin root、`.agents-plugin` 或 manifest 路径链中的符号链接和错误节点类型；不要用链接重定向作者根或 manifest。
 
 ```bash
 make install
 make build
 make test
 make stage-catalog CATALOG_VERSION=1.2.0-beta.1
+```
+
+本地 CLI 包含一个精确版本的共享 Eval 依赖。打包命令从同一 build snapshot 生成两个
+tarball；本地安装必须同时提供它们，不能从 registry 补齐依赖：
+
+```bash
+pnpm release:pack:cli
+pnpm release:install:local
+# 或安装已经生成的两个文件：
+pnpm release:install:local -- <cli.tgz> <eval.tgz>
 ```
 
 `pnpm build` 生成 `packages/cli/plugins-dist/` schema 3 本地 snapshot。catalog 最低 CLI 版本取插件声明与 schema 3 Git 分发 floor `0.1.0-beta.2` 的最大值。`stage-catalog` 在 `.release/catalog-staging/catalog/` 生成带 `plugin-release-ledger.json` 的完整发布交接目录。

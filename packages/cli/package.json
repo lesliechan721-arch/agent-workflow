@@ -39,6 +39,7 @@
   },
   "dependencies": {
     "@inkjs/ui": "^2.0.0",
+    "@lesliechan721/agent-skill-eval": "workspace:*",
     "commander": "^14.0.1",
     "fs-extra": "^11.3.0",
     "ink": "^7.1.1",

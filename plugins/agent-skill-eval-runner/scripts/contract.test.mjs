@@ -1,223 +1,167 @@
-import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { access, readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
-import { after, test } from 'node:test';
+import { test } from 'node:test';
 
 const execFileAsync = promisify(execFile);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const pluginContext = process.env.AW_PLUGIN_CONTEXT
   ? JSON.parse(await readFile(process.env.AW_PLUGIN_CONTEXT, 'utf8'))
   : null;
+const sourceRoot = pluginContext?.sourceRoot ?? root;
 const runtimeRoot = pluginContext?.platform ? path.join(root, pluginContext.platform) : root;
 const runtimeSkillRoot = path.join(runtimeRoot, 'skills', 'run-agent-skill-evals');
-const temporaryRoots = [];
-after(async () =>
-  Promise.all(temporaryRoots.map((entry) => rm(entry, { recursive: true, force: true }))),
-);
-function sha256(data) {
-  return `sha256:${createHash('sha256').update(data).digest('hex')}`;
-}
-function stable(value) {
-  if (Array.isArray(value)) return `[${value.map(stable).join(',')}]`;
-  if (value && typeof value === 'object')
-    return `{${Object.keys(value)
-      .sort()
-      .map((key) => `${JSON.stringify(key)}:${stable(value[key])}`)
-      .join(',')}}`;
-  return JSON.stringify(value);
-}
-async function run(relative, args = []) {
-  return execFileAsync(process.execPath, [path.join(runtimeSkillRoot, relative), ...args], {
-    cwd: runtimeSkillRoot,
-    encoding: 'utf8',
-    maxBuffer: 20 * 1024 * 1024,
-  });
-}
-async function createFixture({
-  unsafeCaseId = false,
-  outputRoot = './out',
-  providerMutatesSkill = false,
-} = {}) {
-  const temporaryRoot = await mkdtemp(path.join(tmpdir(), 'eval-runner-'));
-  temporaryRoots.push(temporaryRoot);
-  const skillRoot = path.join(temporaryRoot, 'skill');
-  await mkdir(skillRoot);
-  const skillContent = '---\nname: skill\ndescription: fixture\n---\n';
-  await writeFile(path.join(skillRoot, 'SKILL.md'), skillContent, 'utf8');
-  const targetDigest = sha256(
-    Buffer.concat([Buffer.from('SKILL.md\0'), Buffer.from(skillContent), Buffer.from('\0')]),
-  );
-  const casesDocument = { cases: [{ id: unsafeCaseId ? '../escape' : 'c1', query: 'hello' }] };
-  const casePath = path.join(temporaryRoot, 'cases.json');
-  await writeFile(casePath, JSON.stringify(casesDocument), 'utf8');
-  const caseCorpusDigest = sha256(stable(casesDocument));
-  const audit = {
-    schemaVersion: 2,
-    producer: 'audit-agent-skill-evals',
-    independentContext: true,
-    auditId: 'audit-1',
-    mode: 'preflight',
-    targetSkillDigest: targetDigest,
-    caseCorpusDigest,
-    validity: 'pass',
-    optimizationPolicy: 'balanced',
-    cases: [
-      {
-        caseId: unsafeCaseId ? '../escape' : 'c1',
-        releaseRelevant: true,
-        admission: 'pass',
-        oracleConfidence: 'high',
-        findings: [],
-      },
-    ],
-    blockedCases: [],
-    releaseEligible: true,
-    failureTriage: [],
-    recommendedAction: 'accepted-risk',
-  };
-  const auditPath = path.join(temporaryRoot, 'audit.json');
-  const auditRaw = JSON.stringify(audit);
-  await writeFile(auditPath, auditRaw, 'utf8');
-  const providerPath = path.join(temporaryRoot, 'provider.mjs');
-  await writeFile(
-    providerPath,
-    [
-      "import { writeFileSync } from 'node:fs';",
-      "import path from 'node:path';",
-      providerMutatesSkill
-        ? "if (process.env.AGENT_EVAL_SKILL_PATH) writeFileSync(path.join(process.env.AGENT_EVAL_SKILL_PATH, 'provider-mutation.txt'), 'snapshot only');"
-        : '',
-      "const trace = path.join(process.env.AGENT_EVAL_OUTPUT_DIR, 'trace.json');",
-      'writeFileSync(trace, JSON.stringify({ ok: true }));',
-      "process.stdout.write(JSON.stringify({ artifacts: [{ role: 'trace', path: trace }] }));",
-    ].join('\n'),
-    'utf8',
-  );
-  const capabilities = {
-    schemaVersion: 1,
-    provider: 'command',
-    providerVersion: 'test',
-    capabilities: {
-      triggerDiscovery: false,
-      skillPathExecution: true,
-      previousVersionBaseline: true,
-      withoutSkillBaseline: true,
-      cleanContext: false,
-      parallelRuns: false,
-      toolTrace: false,
-      tokenUsage: false,
-      duration: true,
-      sandbox: false,
-      materialization: false,
-    },
-    limitations: [],
-  };
-  const capabilitiesPath = path.join(temporaryRoot, 'capabilities.json');
-  const capabilitiesRaw = JSON.stringify(capabilities);
-  await writeFile(capabilitiesPath, capabilitiesRaw, 'utf8');
-  const plan = {
-    schemaVersion: 1,
-    planId: 'plan-1',
-    target: { name: 'skill', path: './skill', digest: targetDigest },
-    cases: { paths: ['./cases.json'], corpusDigest: caseCorpusDigest },
-    audit: {
-      path: './audit.json',
-      digest: sha256(auditRaw),
-      targetSkillDigest: targetDigest,
-      caseCorpusDigest,
-      validity: 'pass',
-    },
-    provider: {
-      id: 'command',
-      command: [process.execPath, providerPath, '{prompt}'],
-      cwd: null,
-      env: {},
-      capabilitiesPath: './capabilities.json',
-      capabilitiesDigest: sha256(capabilitiesRaw),
-      inheritEnvironment: false,
-    },
-    configurations: [
-      { id: 'with', skillMode: 'with-skill', env: {} },
-      { id: 'baseline', skillMode: 'without-skill', env: {} },
-    ],
-    runsPerCase: 1,
-    timeoutMs: 10000,
-    outputRoot,
-    capture: { outputs: true, trace: false, timing: true, usage: false },
-  };
-  const planPath = path.join(temporaryRoot, 'plan.json');
-  await writeFile(planPath, JSON.stringify(plan), 'utf8');
-  return { temporaryRoot, skillRoot, planPath };
+
+async function readRuntime(relativePath) {
+  return readFile(path.join(runtimeSkillRoot, relativePath), 'utf8');
 }
 
-test('command provider emits comparative evidence and cannot mutate the source Skill', async () => {
-  const fixture = await createFixture({ providerMutatesSkill: true });
-  const result = JSON.parse(
-    (await run('scripts/run-agent-skill-evals.mjs', [fixture.planPath, '--format', 'json'])).stdout,
+async function runInjectedBin(bin, args) {
+  return bin.endsWith('.js')
+    ? execFileAsync(process.execPath, [bin, ...args], { encoding: 'utf8' })
+    : execFileAsync(bin, args, { encoding: 'utf8' });
+}
+
+test('plugin is a manual-only 0.3.1 orchestration Skill', async () => {
+  const manifest = JSON.parse(
+    await readFile(path.join(sourceRoot, '.agents-plugin', 'plugin.json'), 'utf8'),
   );
-  await run('scripts/validate-json-contract.mjs', [
-    'assets/eval-run-bundle.schema.json',
-    result.bundlePath,
-  ]);
-  const bundle = JSON.parse(await readFile(result.bundlePath, 'utf8'));
-  assert.equal(bundle.evidenceLevel, 'comparative');
-  assert.equal(bundle.independentContext, false);
-  assert.equal(bundle.runs.length, 2);
-  assert.equal(bundle.aggregate.completed, 2);
-  assert.equal(bundle.aggregate.processFailed, 0);
-  await assert.rejects(access(path.join(fixture.skillRoot, 'provider-mutation.txt')));
-  const withSkill = bundle.runs.find((entry) => entry.skillMode === 'with-skill');
-  const withoutSkill = bundle.runs.find((entry) => entry.skillMode === 'without-skill');
-  assert.equal(withSkill.skillDigest, bundle.targetSkillDigest);
-  assert.equal(withoutSkill.skillDigest, null);
-  assert.equal(
+  const skill = await readRuntime('SKILL.md');
+  const openai = await readRuntime('agents/openai.yaml');
+
+  assert.equal(manifest.version, '0.3.1');
+  assert.match(skill, /^disable-model-invocation: true$/mu);
+  assert.match(skill, /^user-invocable: true$/mu);
+  assert.match(openai, /^\s*allow_implicit_invocation: false$/mu);
+
+  const triggerCases = JSON.parse(
     await readFile(
       path.join(
-        path.dirname(result.bundlePath),
-        path.dirname(withSkill.stdoutPath),
-        'skill',
-        'provider-mutation.txt',
+        sourceRoot,
+        'skills',
+        'run-agent-skill-evals',
+        'evals',
+        'trigger-cases.json',
       ),
       'utf8',
     ),
-    'snapshot only',
   );
-  await assert.rejects(
-    access(
-      path.join(path.dirname(result.bundlePath), path.dirname(withoutSkill.stdoutPath), 'skill'),
-    ),
-  );
+  for (const triggerCase of triggerCases.cases.filter((entry) => entry.should_load_skill)) {
+    assert.match(triggerCase.query, /\$run-agent-skill-evals\b/u);
+  }
 });
 
-test('plan validation rejects path traversal, unsafe case ids, and target/output overlap', async () => {
-  const unsafeCase = await createFixture({ unsafeCaseId: true, outputRoot: '../outside' });
-  await assert.rejects(
-    run('scripts/validate-eval-execution-plan.mjs', [unsafeCase.planPath]),
-    /Command failed/u,
-  );
-  const overlap = await createFixture({ outputRoot: './skill/out' });
-  await assert.rejects(
-    run('scripts/validate-eval-execution-plan.mjs', [overlap.planPath]),
-    /Command failed/u,
-  );
+test('orchestration preserves authorization, ordered preflight, and result triage', async () => {
+  const skill = await readRuntime('SKILL.md');
+  const orderedMarkers = [
+    '## 1. 人工授权 gate',
+    'aw-skill-eval capabilities --json',
+    '## 3. EvalAuditResult preflight',
+    'aw-skill-eval digest skill <skill-dir>',
+    'aw-skill-eval plan validate <plan.json>',
+    'aw-skill-eval run <plan.json>',
+    'aw-skill-eval bundle validate <bundle.json>',
+    'audit-agent-skill-evals(result-triage)',
+  ];
+
+  let previous = -1;
+  for (const marker of orderedMarkers) {
+    const current = skill.indexOf(marker);
+    assert.ok(current > previous, `${marker} must occur after the prior gate`);
+    previous = current;
+  }
+
+  for (const authorization of ['模型成本', '外部进程', '凭据', '网络访问', '临时输出']) {
+    assert.match(skill, new RegExp(authorization, 'u'));
+  }
+  assert.match(skill, /fresh-context `audit-agent-skill-evals\(result-triage\)`/u);
 });
 
-test('built-in Codex trigger provider has a safe help path and declared capabilities', async () => {
-  const help = await run('scripts/providers/codex-trigger-provider.mjs', ['--help']);
-  assert.match(help.stdout, /AW_CODEX_EVAL_DRIVER_ROOT/u);
-  await run('scripts/validate-json-contract.mjs', [
-    'assets/eval-runtime-capabilities.schema.json',
-    'assets/codex-trigger-capabilities.json',
-  ]);
-  const capabilities = JSON.parse(
-    await readFile(path.join(runtimeSkillRoot, 'assets/codex-trigger-capabilities.json'), 'utf8'),
-  );
-  assert.equal(capabilities.provider, 'codex-trigger');
-  assert.equal(capabilities.capabilities.triggerDiscovery, true);
-  assert.equal(capabilities.capabilities.withoutSkillBaseline, false);
+test('Skill declares the stable shared CLI contract without a local execution fallback', async () => {
+  const skill = await readRuntime('SKILL.md');
+  const commands = [
+    'aw-skill-eval capabilities --json',
+    'aw-skill-eval schema print eval-execution-plan',
+    'aw-skill-eval schema print eval-audit-result',
+    'aw-skill-eval schema print eval-run-bundle',
+    'aw-skill-eval plan validate <plan.json>',
+    'aw-skill-eval run <plan.json>',
+    'aw-skill-eval bundle validate <bundle.json>',
+    'aw-skill-eval digest skill <skill-dir>',
+  ];
+
+  for (const command of commands) {
+    assert.ok(skill.includes(`\`${command}\``), `${command} must use the stable command name`);
+  }
+  assert.doesNotMatch(skill, /\bnpx\s+aw-skill-eval\b/u);
+  assert.doesNotMatch(skill, /(?:node\s+)?scripts\//u);
+  assert.doesNotMatch(skill, /providers\//u);
+  assert.doesNotMatch(skill, /schemas\//u);
+
+  for (const removedPath of ['scripts', 'providers', 'schemas']) {
+    const entries = await readdir(path.join(runtimeSkillRoot, removedPath), {
+      recursive: true,
+      withFileTypes: true,
+    }).catch((error) => {
+      if (error.code === 'ENOENT') return [];
+      throw error;
+    });
+    assert.deepEqual(
+      entries.filter((entry) => !entry.isDirectory()),
+      [],
+    );
+  }
+  await access(path.join(runtimeSkillRoot, 'assets', 'eval-execution-plan.template.json'));
 });
+
+test('dependency documents require the compatible package without implicit installation', async () => {
+  const dependency = await readFile(path.join(sourceRoot, 'DEPENDENCY.md'), 'utf8');
+  const readme = await readFile(path.join(sourceRoot, 'README.md'), 'utf8');
+  const range = '@lesliechan721/agent-skill-eval >= 0.1.0-beta.2';
+
+  assert.match(dependency, new RegExp(range.replaceAll('.', '\\.'), 'u'));
+  assert.match(readme, new RegExp(range.replaceAll('.', '\\.'), 'u'));
+  assert.match(dependency, /Plugin contract version: `0\.3\.1`/u);
+  assert.match(readme, /Current plugin contract version: `0\.3\.1`/u);
+  assert.match(dependency, /Do not use `npx`/u);
+  assert.match(dependency, /do not install or download the package implicitly/u);
+  for (const document of [dependency, readme, await readRuntime('README.md'), await readRuntime('SKILL.md')]) {
+    assert.doesNotMatch(document, /agent-skill-eval[^\n`]*<\s*0\.2\.0/u);
+  }
+  assert.match(dependency, /bin to exist, capabilities schema v1/u);
+  assert.match(dependency, /plan, audit, and bundle schema v2/u);
+});
+
+test('the retained plan asset is a model-readable template, not a machine schema', async () => {
+  const template = JSON.parse(await readRuntime('assets/eval-execution-plan.template.json'));
+  assert.equal(template.schemaVersion, 2);
+  assert.equal(typeof template.planId, 'string');
+  assert.equal(typeof template.provider, 'object');
+  assert.equal('$schema' in template, false);
+});
+
+test(
+  'an explicitly injected shared CLI reports the compatible capabilities and schemas',
+  { skip: !process.env.AW_SKILL_EVAL_TEST_BIN },
+  async () => {
+    const bin = process.env.AW_SKILL_EVAL_TEST_BIN;
+    const capabilities = JSON.parse(
+      (await runInjectedBin(bin, ['capabilities', '--json'])).stdout,
+    );
+    assert.equal(capabilities.schemaVersion, 1);
+
+    for (const schemaName of [
+      'eval-execution-plan',
+      'eval-audit-result',
+      'eval-run-bundle',
+    ]) {
+      const schema = JSON.parse(
+        (await runInjectedBin(bin, ['schema', 'print', schemaName])).stdout,
+      );
+      assert.equal(schema.properties.schemaVersion.const, 2);
+    }
+  },
+);

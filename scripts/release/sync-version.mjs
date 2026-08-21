@@ -57,7 +57,9 @@ try {
   } else {
     await syncCliVersion(version);
     console.log(
-      `Synced CLI version ${version} in ${relativeToRepo('package.json')} and ${relativeToRepo('packages/cli/package.json')}.`,
+      `Synced release version ${version} in ${relativeToRepo('package.json')}, ` +
+      `${relativeToRepo('packages/agent-skill-eval/package.json')}, and ` +
+      `${relativeToRepo('packages/cli/package.json')}.`,
     );
   }
 } catch (error) {

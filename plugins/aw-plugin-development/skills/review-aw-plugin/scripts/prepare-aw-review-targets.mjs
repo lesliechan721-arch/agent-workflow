@@ -1,13 +1,37 @@
 #!/usr/bin/env node
 import { createHash } from 'node:crypto';
-import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readFile, readdir, realpath, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
+import { isSkillAuthorArtifact } from './review-artifact-policy.mjs';
+const PRODUCTION_DIGEST_DOMAIN = 'aw-production-records-v1';
+const IGNORED_NAMES = new Set(['.git', 'node_modules', '.DS_Store']);
 function fail(m) {
   throw new Error(m);
 }
 function sha(d) {
   return 'sha256:' + createHash('sha256').update(d).digest('hex');
+}
+function comparePosixPaths(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+function updateLengthPrefixed(hash, value) {
+  const bytes = typeof value === 'string' ? Buffer.from(value, 'utf8') : value;
+  const length = Buffer.allocUnsafe(8);
+  length.writeBigUInt64BE(BigInt(bytes.length));
+  hash.update(length);
+  hash.update(bytes);
+}
+function productionDigest(records) {
+  const hash = createHash('sha256');
+  updateLengthPrefixed(hash, PRODUCTION_DIGEST_DOMAIN);
+  for (const record of [...records].sort((left, right) =>
+    comparePosixPaths(left.path, right.path))) {
+    updateLengthPrefixed(hash, record.path);
+    updateLengthPrefixed(hash, record.mode);
+    updateLengthPrefixed(hash, createHash('sha256').update(record.content).digest());
+  }
+  return 'sha256:' + hash.digest('hex');
 }
 function val(a, i, f) {
   const v = a[i + 1];
@@ -51,14 +75,16 @@ function parse(a) {
   }
   return o;
 }
-async function walk(root, { excludeAuthor = false } = {}) {
+async function walk(root) {
   const out = [];
   async function visit(d, p = '') {
-    for (const e of await readdir(d, { withFileTypes: true })) {
-      if (['.git', 'node_modules'].includes(e.name)) continue;
-      if (excludeAuthor && p === '' && ['evals', 'reports'].includes(e.name)) continue;
+    const entries = await readdir(d, { withFileTypes: true });
+    entries.sort((left, right) => left.name.localeCompare(right.name));
+    for (const e of entries) {
+      if (IGNORED_NAMES.has(e.name)) continue;
       const abs = path.join(d, e.name),
         rel = path.join(p, e.name);
+      if (e.isSymbolicLink()) fail('Skill target cannot contain symlinks: ' + rel);
       if (e.isDirectory()) await visit(abs, rel);
       else if (e.isFile()) out.push({ abs, rel: rel.split(path.sep).join('/') });
     }
@@ -66,15 +92,22 @@ async function walk(root, { excludeAuthor = false } = {}) {
   await visit(root);
   return out;
 }
-async function digest(root, opts) {
-  const h = createHash('sha256');
-  for (const f of await walk(root, opts)) {
-    h.update(f.rel);
-    h.update('\0');
-    h.update(await readFile(f.abs));
-    h.update('\0');
+function normalizedRegularFileMode(mode) {
+  return process.platform !== 'win32' && (mode & 0o111) !== 0 ? '100755' : '100644';
+}
+async function digest(root) {
+  if ((await lstat(root)).isSymbolicLink()) fail('Skill target cannot be a symlink');
+  const canonicalRoot = await realpath(root);
+  const records = [];
+  for (const f of await walk(canonicalRoot)) {
+    if (isSkillAuthorArtifact(f.rel, ['.'])) continue;
+    records.push({
+      path: f.rel,
+      mode: normalizedRegularFileMode((await stat(f.abs)).mode),
+      content: await readFile(f.abs),
+    });
   }
-  return 'sha256:' + h.digest('hex');
+  return productionDigest(records);
 }
 function skillName(text, dir) {
   const m = text.match(/^---\s*\n[\s\S]*?^name:\s*([^\n]+)$/mu);
@@ -82,43 +115,82 @@ function skillName(text, dir) {
 }
 async function skillRoots(root) {
   const roots = [];
+  async function hasSkillFile(directory) {
+    try {
+      return (await stat(path.join(directory, 'SKILL.md'))).isFile();
+    } catch {
+      return false;
+    }
+  }
   async function visit(d) {
+    if (await hasSkillFile(d)) {
+      roots.push(d);
+      return;
+    }
     for (const e of await readdir(d, { withFileTypes: true })) {
-      if (['.git', 'node_modules', 'evals', 'reports'].includes(e.name)) continue;
+      if (IGNORED_NAMES.has(e.name)) continue;
       const p = path.join(d, e.name);
+      if (e.isSymbolicLink()) fail('Skill discovery cannot contain symlinks: ' + p);
       if (e.isDirectory()) {
-        try {
-          if ((await stat(path.join(p, 'SKILL.md'))).isFile()) {
-            roots.push(p);
-            continue;
-          }
-        } catch {}
         await visit(p);
       }
     }
   }
-  try {
-    if ((await stat(path.join(root, 'SKILL.md'))).isFile()) return [root];
-  } catch {}
   await visit(root);
   return roots.sort();
 }
-async function artifactRows(root, role, profile, owner) {
+function normalizedArtifactPath(filePath, repositoryRoot) {
+  return path.normalize(path.isAbsolute(filePath) ? filePath : path.resolve(repositoryRoot, filePath));
+}
+function reviewArtifactPath(repositoryRoot, filePath) {
+  const relative = path.relative(repositoryRoot, filePath);
+  if (
+    !relative
+    || relative === '..'
+    || relative.startsWith(`..${path.sep}`)
+    || path.isAbsolute(relative)
+  ) fail('Artifact must be inside the repository root: ' + filePath);
+  return relative.split(path.sep).join('/');
+}
+function inheritedCurrentness(file, digest, mode, pluginBundle, repositoryRoot) {
+  const pluginRepositoryRoot = pluginBundle?.environment?.repositoryRoot ?? repositoryRoot;
+  const match = pluginBundle?.artifacts?.find(
+    (artifact) =>
+      normalizedArtifactPath(artifact.path, pluginRepositoryRoot) ===
+        normalizedArtifactPath(file, repositoryRoot) &&
+      artifact.digest === digest &&
+      artifact.mode === mode,
+  );
+  return match
+    ? {
+        currentness: match.currentness,
+        ...(match.currentnessReason
+          ? { currentnessReason: match.currentnessReason }
+          : {}),
+      }
+    : { currentness: 'unknown' };
+}
+async function artifactRows(root, role, profile, owner, pluginBundle, repositoryRoot) {
   return Promise.all(
-    (await walk(root, { excludeAuthor: role === 'source' })).map(async (f) => ({
-      role,
-      path: f.abs,
-      profile,
-      digest: sha(await readFile(f.abs)),
-      owner,
-      currentness: 'unknown',
-    })),
+    (await walk(root)).map(async (f) => {
+      const fileDigest = sha(await readFile(f.abs)),
+        mode = normalizedRegularFileMode((await stat(f.abs)).mode);
+      return {
+        role: role === 'source' && isSkillAuthorArtifact(f.rel, ['.']) ? 'evidence' : role,
+        path: reviewArtifactPath(repositoryRoot, f.abs),
+        profile,
+        digest: fileDigest,
+        mode,
+        owner,
+        ...inheritedCurrentness(f.abs, fileDigest, mode, pluginBundle, repositoryRoot),
+      };
+    }),
   );
 }
 async function target(kind, root, profile, owner, repo, pluginBundle) {
   const text = await readFile(path.join(root, 'SKILL.md'), 'utf8'),
     name = skillName(text, root),
-    sourceDigest = await digest(root, { excludeAuthor: kind === 'aw-plugin-skill' });
+    sourceDigest = await digest(root);
   const evalAudit =
       pluginBundle?.evalAudit?.targetSkillDigest === sourceDigest ? pluginBundle.evalAudit : null,
     evalResults = (pluginBundle?.evalResults ?? []).filter(
@@ -126,16 +198,58 @@ async function target(kind, root, profile, owner, repo, pluginBundle) {
     ),
     providedStages = (pluginBundle?.orchestration?.providedStages ?? []).filter(
       (stage) => stage.subjectDigest === sourceDigest,
-    );
-  return {
-    schemaVersion: 3,
-    target: { kind, name, profile, sourceDigest },
-    artifacts: await artifactRows(
+    ),
+    artifacts = await artifactRows(
       root,
       kind === 'aw-plugin-skill' ? 'source' : 'final',
       profile,
       owner,
+      pluginBundle,
+      repo,
     ),
+    deletionPrefix = 'deleted production source file: ',
+    sourceDeletionReasons = (pluginBundle?.target?.dirtyReasons ?? []).filter((reason) =>
+      reason.startsWith(deletionPrefix),
+    ),
+    relevantDeletionReasons = kind === 'materialized-skill'
+      ? sourceDeletionReasons.map((reason) => `materialized target may contain ${reason}`)
+      : sourceDeletionReasons.filter((reason) => {
+          const deletedPath = reason.slice(deletionPrefix.length);
+          const relative = path.relative(root, deletedPath);
+          return relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+        }),
+    dirtyReasons = [
+      ...relevantDeletionReasons,
+      ...artifacts
+        .filter((artifact) => artifact.currentness === 'dirty')
+        .map((artifact) => `${artifact.currentnessReason ?? 'dirty source file'}: ${artifact.path}`),
+    ],
+    targetCurrentness = dirtyReasons.length > 0
+      ? 'dirty'
+      : artifacts.some((artifact) => artifact.currentness === 'unknown')
+        ? 'unknown'
+        : 'current';
+  const executionResultDigests = new Set(
+    providedStages
+      .filter((stage) => stage.id === 'eval-execution')
+      .map((stage) => stage.resultDigest),
+  );
+  const boundProvidedStages = providedStages.filter(
+    (stage) =>
+      stage.id !== 'eval-result-triage'
+      || executionResultDigests.has(stage.evalExecution?.resultDigest),
+  );
+  return {
+    schemaVersion: 4,
+    target: {
+      kind,
+      name,
+      profile,
+      sourceDigest,
+      currentness: targetCurrentness,
+      ...(dirtyReasons.length > 0 ? { dirtyReasons: [...new Set(dirtyReasons)].sort() } : {}),
+    },
+    artifacts,
     environment: pluginBundle?.environment ?? {
       repository: path.basename(repo) || 'aw-workspace',
       repositoryRoot: repo,
@@ -143,7 +257,7 @@ async function target(kind, root, profile, owner, repo, pluginBundle) {
       dependencyMode: 'manual',
       capabilities: [],
     },
-    orchestration: { stageOwner: 'caller', providedStages },
+    orchestration: { stageOwner: 'caller', providedStages: boundProvidedStages },
     evalAudit,
     evalResults,
   };
@@ -151,6 +265,7 @@ async function target(kind, root, profile, owner, repo, pluginBundle) {
 async function main() {
   const o = parse(process.argv.slice(2)),
     pluginBundle = o.bundlePath ? JSON.parse(await readFile(o.bundlePath, 'utf8')) : null,
+    repositoryRoot = pluginBundle?.environment?.repositoryRoot ?? o.repoRoot,
     manifest = JSON.parse(
       await readFile(path.join(o.pluginRoot, '.agents-plugin', 'plugin.json'), 'utf8'),
     );
@@ -160,11 +275,11 @@ async function main() {
       : path.join(o.pluginRoot, 'skills');
   const rows = [];
   for (const r of await skillRoots(skillsPath))
-    rows.push(await target('aw-plugin-skill', r, null, manifest.name, o.repoRoot, pluginBundle));
+    rows.push(await target('aw-plugin-skill', r, null, manifest.name, repositoryRoot, pluginBundle));
   for (const f of o.finals)
     for (const r of await skillRoots(f.root))
       rows.push(
-        await target('materialized-skill', r, f.profile, manifest.name, o.repoRoot, pluginBundle),
+        await target('materialized-skill', r, f.profile, manifest.name, repositoryRoot, pluginBundle),
       );
   const seen = new Set(),
     targets = [];
@@ -195,7 +310,7 @@ async function main() {
       {
         schemaVersion: 1,
         plugin: manifest.name,
-        repository: path.basename(o.repoRoot) || 'aw-workspace',
+        repository: path.basename(repositoryRoot) || 'aw-workspace',
         reviewTargets: targets,
       },
       null,

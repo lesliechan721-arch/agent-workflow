@@ -1,0 +1,35 @@
+{
+  "name": "@lesliechan721/agent-skill-eval",
+  "version": "0.1.0-beta.2",
+  "type": "module",
+  "packageManager": "pnpm@10.33.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "aw-skill-eval": "./dist/bin.js"
+  },
+  "files": [
+    "dist/"
+  ],
+  "scripts": {
+    "build": "node scripts/clean-dist.mjs && tsc -p tsconfig.json && node scripts/embed-schemas.mjs",
+    "test": "pnpm run build && vitest run",
+    "test:unit": "pnpm run build && vitest run tests/unit"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  }
+}

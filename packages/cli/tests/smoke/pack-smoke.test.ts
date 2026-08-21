@@ -16,6 +16,8 @@ const sharedTempBase = os.tmpdir();
 const tempDirs: string[] = [];
 let packedCliPromise: Promise<{
   packageRoot: string;
+  cliTarballPath: string;
+  evalTarballPath: string;
   tempRoot: string;
 }> | null = null;
 
@@ -57,12 +59,10 @@ async function listFilesRecursively(rootDir: string): Promise<string[]> {
   return files.sort();
 }
 
-async function unpackSingleTarball(packDir: string, unpackDir: string): Promise<string> {
-  const tarballs = (await fs.readdir(packDir)).filter((entry) => entry.endsWith('.tgz'));
-  expect(tarballs).toHaveLength(1);
+async function unpackTarball(tarballPath: string, unpackDir: string): Promise<string> {
   await execFileAsync(
     'tar',
-    ['-xzf', path.join(packDir, tarballs[0]), '-C', unpackDir],
+    ['-xzf', tarballPath, '-C', unpackDir],
     {
       env: process.env,
       maxBuffer: 20 * 1024 * 1024,
@@ -107,6 +107,8 @@ async function installDeclaredDependencyOnlyView(
 
 async function preparePackedCli(): Promise<{
   packageRoot: string;
+  cliTarballPath: string;
+  evalTarballPath: string;
   tempRoot: string;
 }> {
   if (packedCliPromise) {
@@ -141,8 +143,21 @@ async function preparePackedCli(): Promise<{
     const snapshotEntriesAfter = await listBuildSnapshotEntries(root);
     expect(snapshotEntriesAfter).toEqual(snapshotEntriesBefore);
 
+    const tarballs = (await fs.readdir(packDir))
+      .filter((entry) => entry.endsWith('.tgz'))
+      .sort();
+    expect(tarballs).toHaveLength(2);
+    const cliTarballName = tarballs.find((entry) => entry.includes('-aw-'));
+    const evalTarballName = tarballs.find((entry) => entry.includes('-agent-skill-eval-'));
+    expect(cliTarballName).toBeDefined();
+    expect(evalTarballName).toBeDefined();
+    const cliTarballPath = path.join(packDir, cliTarballName!);
+    const evalTarballPath = path.join(packDir, evalTarballName!);
+
     return {
-      packageRoot: await unpackSingleTarball(packDir, unpackDir),
+      packageRoot: await unpackTarball(cliTarballPath, unpackDir),
+      cliTarballPath,
+      evalTarballPath,
       tempRoot,
     };
   })();
@@ -154,11 +169,153 @@ afterAll(async () => {
 });
 
 describe('pack smoke', () => {
+  it('installs both local tarballs into a clean prefix and runs both package bins', async () => {
+    const { packageRoot, cliTarballPath, evalTarballPath, tempRoot } = await preparePackedCli();
+    const installPrefix = path.join(tempRoot, 'install-prefix');
+    registerSmokeWritableRoot(installPrefix, 'pack smoke clean npm install prefix');
+    await fs.ensureDir(installPrefix);
+
+    await execFileAsync(
+      'npm',
+      [
+        'install',
+        '--global',
+        '--prefix',
+        installPrefix,
+        evalTarballPath,
+        cliTarballPath,
+      ],
+      {
+        cwd: tempRoot,
+        env: process.env,
+        maxBuffer: 20 * 1024 * 1024,
+      },
+    );
+
+    const cliPackageJson = await fs.readJson(path.join(packageRoot, 'package.json')) as {
+      version: string;
+    };
+    const binRoot = process.platform === 'win32' ? installPrefix : path.join(installPrefix, 'bin');
+    const awBin = path.join(binRoot, process.platform === 'win32' ? 'aw.cmd' : 'aw');
+    const evalBin = path.join(
+      binRoot,
+      process.platform === 'win32' ? 'aw-skill-eval.cmd' : 'aw-skill-eval',
+    );
+    await expect(execFileAsync(awBin, ['--version'], {
+      cwd: tempRoot,
+      env: process.env,
+    })).resolves.toMatchObject({ stdout: `${cliPackageJson.version}\n`, stderr: '' });
+    await expect(execFileAsync(awBin, ['plugin', '--help'], {
+      cwd: tempRoot,
+      env: process.env,
+    })).resolves.toMatchObject({
+      stdout: expect.stringContaining('check-versions'),
+      stderr: '',
+    });
+
+    const authorRepo = path.join(tempRoot, 'author-repo');
+    registerSmokeWritableRoot(authorRepo, 'pack smoke plugin author repository');
+    await fs.copy(fixturePath('repo-template'), authorRepo);
+    await execFileAsync(awBin, [
+      'plugin',
+      'init',
+      'validate-fixture',
+      '--description',
+      'A deterministic fixture for the packed CLI validator.',
+      '--no-skills',
+      '--repo-root',
+      authorRepo,
+    ], { cwd: authorRepo, env: process.env });
+    const validation = await execFileAsync(awBin, [
+      'plugin',
+      'validate',
+      path.join(authorRepo, 'plugins', 'validate-fixture'),
+      '--json',
+    ], { cwd: authorRepo, env: process.env });
+    expect(JSON.parse(validation.stdout)).toMatchObject({
+      ok: true,
+      profile: 'aw-source',
+    });
+    expect(validation.stderr).toBe('');
+
+    await execFileAsync(awBin, [
+      'plugin',
+      'init',
+      'author-smoke',
+      '--description',
+      'A deterministic fixture for packed CLI scaffolding.',
+      '--skill-description',
+      'Create and validate a deterministic packed CLI authoring fixture.',
+      '--skill-short-description',
+      'Create a packed CLI authoring fixture.',
+      '--repo-root',
+      authorRepo,
+      '--plugin-root',
+      'tools/author-smoke',
+    ], { cwd: authorRepo, env: process.env });
+    await execFileAsync(awBin, [
+      'plugin',
+      'add-skill',
+      'author-smoke',
+      '--skill-name',
+      'second-skill',
+      '--skill-description',
+      'Add a second deterministic Skill from the packed CLI runtime.',
+      '--skill-short-description',
+      'Add a second packed CLI Skill fixture.',
+      '--repo-root',
+      authorRepo,
+      '--plugin-root',
+      'tools/author-smoke',
+    ], { cwd: authorRepo, env: process.env });
+    await expect(fs.pathExists(path.join(
+      authorRepo,
+      'tools',
+      'author-smoke',
+      'skills',
+      'second-skill',
+      'SKILL.md',
+    ))).resolves.toBe(true);
+    const capabilities = await execFileAsync(evalBin, ['capabilities', '--json'], {
+      cwd: tempRoot,
+      env: process.env,
+    });
+    expect(JSON.parse(capabilities.stdout)).toMatchObject({
+      provider: 'aw-skill-eval-process',
+    });
+    expect(capabilities.stderr).toBe('');
+
+    if (process.platform !== 'win32') {
+      const installedEvalRoot = path.join(
+        installPrefix,
+        'lib',
+        'node_modules',
+        '@lesliechan721',
+        'agent-skill-eval',
+      );
+      expect((await fs.lstat(installedEvalRoot)).isSymbolicLink()).toBe(false);
+    }
+  });
+
   it('packs the CLI tarball without the staged plugins-dist snapshot', async () => {
     const packageRoot = path.join(repoRoot(), 'packages', 'cli');
     const { packageRoot: unpackedPackageRoot } = await preparePackedCli();
     const unpackedFiles = await listFilesRecursively(unpackedPackageRoot);
     await expect(fs.pathExists(path.join(unpackedPackageRoot, 'dist', 'index.js'))).resolves.toBe(true);
+    await expect(fs.pathExists(path.join(
+      unpackedPackageRoot,
+      'dist',
+      'authoring',
+      'scripts',
+      'validate-plugin.mjs',
+    ))).resolves.toBe(true);
+    await expect(fs.pathExists(path.join(
+      unpackedPackageRoot,
+      'dist',
+      'authoring',
+      'assets',
+      'aw-config.mjs',
+    ))).resolves.toBe(true);
     await expect(fs.pathExists(path.join(unpackedPackageRoot, 'plugins-dist'))).resolves.toBe(false);
     expect(unpackedFiles).not.toContain('dist/stale-build-sentinel.js');
     expect(unpackedFiles.some((file) => file.startsWith('plugins-dist/'))).toBe(false);
@@ -168,7 +325,11 @@ describe('pack smoke', () => {
     expect(unpackedFiles.some((file) => file.startsWith('.release/'))).toBe(false);
     const unpackedPackageJson = await fs.readJson(
       path.join(unpackedPackageRoot, 'package.json'),
-    ) as { version: string };
+    ) as {
+      version: string;
+      dependencies: Record<string, string>;
+      bin: Record<string, string>;
+    };
     expect(unpackedPackageJson).toMatchObject({
       name: '@lesliechan721/aw',
       engines: {
@@ -176,6 +337,9 @@ describe('pack smoke', () => {
       },
       files: ['dist/'],
     });
+    expect(unpackedPackageJson.dependencies['@lesliechan721/agent-skill-eval'])
+      .toBe(unpackedPackageJson.version);
+    expect(unpackedPackageJson.bin).toEqual({ aw: './dist/index.js' });
 
     await installDeclaredDependencyOnlyView(unpackedPackageRoot, packageRoot);
     await expect(execFileAsync(

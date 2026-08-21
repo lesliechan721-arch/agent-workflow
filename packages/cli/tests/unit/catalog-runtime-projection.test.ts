@@ -1,0 +1,403 @@
+import os from 'node:os';
+import path from 'node:path';
+
+import fs from 'fs-extra';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import {
+  bundleLocalPlugin,
+  type PluginStagingRunner,
+} from '../../src/generators/local-plugin.js';
+import { createCatalogRuntimeImportResolver } from '../../src/utils/catalog-runtime-projection.js';
+import { readPluginManifest } from '../../src/utils/manifest.js';
+import type { PluginMeta } from '../../src/types.js';
+
+const tempRoots: string[] = [];
+
+async function createPlugin(options: {
+  root: string;
+  name: string;
+  products?: string[];
+  buildConfig?: Record<string, unknown>;
+  scripts?: Record<string, unknown>;
+  files?: Record<string, string>;
+}): Promise<PluginMeta> {
+  const pluginRoot = path.join(options.root, options.name);
+  await fs.ensureDir(path.join(pluginRoot, '.agents-plugin'));
+  await fs.writeJson(path.join(pluginRoot, '.agents-plugin', 'plugin.json'), {
+    name: options.name,
+    version: '0.1.0',
+    description: options.name,
+    compatibility: { aw: { minVersion: '0.0.0' } },
+    skills: './skills',
+    marketplace: {
+      category: 'workflow',
+      strict: true,
+      policy: {
+        installation: 'AVAILABLE',
+        authentication: 'ON_INSTALL',
+        ...(options.products ? { products: options.products } : {}),
+      },
+    },
+    ...(options.buildConfig ? { buildConfig: options.buildConfig } : {}),
+    ...(options.scripts ? { scripts: options.scripts } : {}),
+  }, { spaces: 2 });
+  await fs.outputFile(path.join(pluginRoot, 'skills', 'demo', 'SKILL.md'), '---\nname: demo\ndescription: demo\n---\n');
+  await fs.outputFile(path.join(pluginRoot, 'skills', 'demo', 'agents', 'openai.yaml'), 'interface:\n  display_name: Demo\n');
+  for (const [relativePath, content] of Object.entries(options.files ?? {})) {
+    await fs.outputFile(path.join(pluginRoot, relativePath), content);
+  }
+  return readPluginManifest(pluginRoot);
+}
+
+afterEach(async () => {
+  vi.restoreAllMocks();
+  await Promise.all(tempRoots.splice(0).map((root) => fs.remove(root)));
+});
+
+describe('catalog runtime projection', () => {
+  it('binds an explicit CLI virtual root to build provenance and projected bytes', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-cli-virtual-projection-'));
+    tempRoots.push(root);
+    const consumer = await createPlugin({
+      root,
+      name: 'consumer',
+      buildConfig: {
+        cacheable: true,
+        buildImports: [{
+          plugin: '@aw/cli',
+          export: 'skill-frontmatter-capabilities',
+          env: 'AW_PLUGIN_IMPORT_FRONTMATTER',
+        }],
+        skillRuntimeFiles: [{
+          skill: 'demo',
+          target: 'references/frontmatter.json',
+          source: './generated-frontmatter.json',
+        }],
+      },
+      scripts: { node: { build: { runner: 'node', path: './build.mjs' } } },
+      files: { 'build.mjs': 'export {};\n' },
+    });
+    const createVirtualRoot = async (name: string, content: string): Promise<string> => {
+      const virtualRoot = path.join(root, name);
+      await fs.outputJson(path.join(virtualRoot, 'package.json'), {
+        name: '@lesliechan721/aw',
+        version: '0.1.0-beta.2',
+      });
+      await fs.outputFile(
+        path.join(virtualRoot, 'src', 'utils', 'skill-frontmatter-capabilities.json'),
+        content,
+      );
+      return virtualRoot;
+    };
+    const baseVirtualRoot = await createVirtualRoot('base-cli', '{"registry":"base"}\n');
+    const currentVirtualRoot = await createVirtualRoot('current-cli', '{"registry":"current"}\n');
+    const runner: PluginStagingRunner = {
+      async installPackageRoot() {},
+      async runNodeBuild({ pluginRoot, env }) {
+        await fs.copyFile(
+          env.AW_PLUGIN_IMPORT_FRONTMATTER!,
+          path.join(pluginRoot, 'generated-frontmatter.json'),
+        );
+      },
+    };
+    const bundleWithVirtualRoot = async (name: string, virtualRoot: string) =>
+      bundleLocalPlugin(consumer, path.join(root, name), {
+        buildMode: 'staging',
+        stagingRunner: runner,
+        runtimeResolver: createCatalogRuntimeImportResolver([consumer], {
+          cliVirtualExportRoot: virtualRoot,
+        }),
+      });
+
+    const [base, current] = await Promise.all([
+      bundleWithVirtualRoot('base-bundle', baseVirtualRoot),
+      bundleWithVirtualRoot('current-bundle', currentVirtualRoot),
+    ]);
+
+    expect(base.runtimeProjection.buildImports).toMatchObject([{
+      provider: '@aw/cli',
+      providerVersion: '0.1.0-beta.2',
+      name: 'skill-frontmatter-capabilities',
+    }]);
+    expect(base.runtimeProjection.buildImports[0]?.sourceDigest)
+      .not.toBe(current.runtimeProjection.buildImports[0]?.sourceDigest);
+    expect(base.runtimeProjection.skillRuntimeFiles[0]?.targetDigest)
+      .not.toBe(current.runtimeProjection.skillRuntimeFiles[0]?.targetDigest);
+    await expect(fs.readFile(
+      path.join(root, 'base-bundle', 'codex', 'skills', 'demo', 'references', 'frontmatter.json'),
+      'utf8',
+    )).resolves.toBe('{"registry":"base"}\n');
+    await expect(fs.readFile(
+      path.join(root, 'current-bundle', 'codex', 'skills', 'demo', 'references', 'frontmatter.json'),
+      'utf8',
+    )).resolves.toBe('{"registry":"current"}\n');
+
+    const missingVirtualRoot = path.join(root, 'missing-cli');
+    await fs.outputJson(path.join(missingVirtualRoot, 'package.json'), { version: '0.1.0-beta.2' });
+    const missingResolver = createCatalogRuntimeImportResolver([consumer], {
+      cliVirtualExportRoot: missingVirtualRoot,
+    });
+    await expect(missingResolver.resolve({
+      consumer,
+      reference: { plugin: '@aw/cli', export: 'skill-frontmatter-capabilities' },
+      purpose: 'build',
+    })).rejects.toThrow(`canonical skill frontmatter registry is missing from ${missingVirtualRoot}`);
+  });
+
+  it('injects read-only catalog build imports and projects own and provider bytes with provenance', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-runtime-projection-'));
+    tempRoots.push(root);
+    const provider = await createPlugin({
+      root,
+      name: 'provider',
+      buildConfig: {
+        runtimeExports: [{ name: 'registry', source: './registry.json' }],
+      },
+      files: { 'registry.json': '{"provider":1}\n' },
+    });
+    const consumer = await createPlugin({
+      root,
+      name: 'consumer',
+      buildConfig: {
+        cacheable: true,
+        buildImports: [{
+          plugin: 'provider',
+          export: 'registry',
+          env: 'AW_PLUGIN_IMPORT_REGISTRY',
+        }],
+        skillRuntimeFiles: [
+          { skill: 'demo', target: 'references/provider.json', import: { plugin: 'provider', export: 'registry' } },
+          { skill: 'demo', target: 'assets/generated.txt', source: './generated.txt' },
+        ],
+      },
+      scripts: {
+        node: { build: { runner: 'node', path: './build.mjs' } },
+      },
+      files: { 'build.mjs': 'export {};\n' },
+    });
+    let receivedImportPath = '';
+    const runner: PluginStagingRunner = {
+      async installPackageRoot() {},
+      async runNodeBuild({ pluginRoot, env }) {
+        receivedImportPath = env.AW_PLUGIN_IMPORT_REGISTRY ?? '';
+        expect(path.isAbsolute(receivedImportPath)).toBe(true);
+        expect(await fs.readFile(receivedImportPath, 'utf8')).toMatch(/^\{"provider":\d\}\n$/u);
+        expect((await fs.stat(receivedImportPath)).mode & 0o222).toBe(0);
+        await fs.writeFile(path.join(pluginRoot, 'generated.txt'), 'generated\n');
+      },
+    };
+    const outputRoot = path.join(root, 'bundle');
+    const result = await bundleLocalPlugin(consumer, outputRoot, {
+      buildMode: 'staging',
+      stagingRunner: runner,
+      runtimeResolver: createCatalogRuntimeImportResolver([provider, consumer]),
+    });
+
+    expect(receivedImportPath).not.toBe('');
+    await expect(fs.readFile(path.join(outputRoot, 'codex', 'skills', 'demo', 'references', 'provider.json'), 'utf8'))
+      .resolves.toBe('{"provider":1}\n');
+    await expect(fs.readFile(path.join(outputRoot, 'claude', 'skills', 'demo', 'references', 'provider.json'), 'utf8'))
+      .resolves.toBe('{"provider":1}\n');
+    await expect(fs.readFile(path.join(outputRoot, 'codex', 'skills', 'demo', 'assets', 'generated.txt'), 'utf8'))
+      .resolves.toBe('generated\n');
+    await expect(fs.readFile(path.join(outputRoot, 'claude', 'skills', 'demo', 'assets', 'generated.txt'), 'utf8'))
+      .resolves.toBe('generated\n');
+    expect(result.runtimeProjection.buildImports).toMatchObject([{ provider: 'provider', name: 'registry' }]);
+    expect(result.runtimeProjection.skillRuntimeFiles).toHaveLength(4);
+    for (const entry of result.runtimeProjection.skillRuntimeFiles) {
+      expect(entry.targetDigest).toBe(entry.sourceDigest);
+    }
+    expect(JSON.stringify(result.runtimeProjection)).not.toContain(root);
+    const runtimeManifest = await fs.readJson(path.join(outputRoot, '.agents-plugin', 'plugin.json'));
+    expect(runtimeManifest.buildConfig?.buildImports).toBeUndefined();
+    expect(runtimeManifest.buildConfig?.skillRuntimeFiles).toBeUndefined();
+    expect(runtimeManifest.buildConfig?.cacheable).toBeUndefined();
+
+    await fs.writeFile(path.join(provider.rootDir, 'registry.json'), '{"provider":2}\n');
+    const changedResult = await bundleLocalPlugin(consumer, path.join(root, 'changed-bundle'), {
+      buildMode: 'staging',
+      stagingRunner: runner,
+      runtimeResolver: createCatalogRuntimeImportResolver([provider, consumer]),
+    });
+    expect(changedResult.runtimeProjection.skillRuntimeFiles[0]?.sourceDigest)
+      .not.toBe(result.runtimeProjection.skillRuntimeFiles[0]?.sourceDigest);
+    await expect(fs.readFile(
+      path.join(root, 'changed-bundle', 'codex', 'skills', 'demo', 'references', 'provider.json'),
+      'utf8',
+    )).resolves.toBe('{"provider":2}\n');
+  });
+
+  it.each(['provider', '@aw/cli'] as const)(
+    'rejects a %s build import that changes during a successful build and removes partial state',
+    async (providerKind) => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-build-import-toctou-'));
+      tempRoots.push(root);
+      const provider = providerKind === 'provider'
+        ? await createPlugin({
+            root,
+            name: 'provider',
+            buildConfig: {
+              runtimeExports: [{ name: 'registry', source: './registry.json' }],
+            },
+            files: { 'registry.json': '{"version":"a"}\n' },
+          })
+        : undefined;
+      const cliVirtualExportRoot = providerKind === '@aw/cli'
+        ? path.join(root, 'cli-provider')
+        : undefined;
+      const canonicalSource = provider
+        ? path.join(provider.rootDir, 'registry.json')
+        : path.join(cliVirtualExportRoot!, 'src', 'utils', 'skill-frontmatter-capabilities.json');
+      if (cliVirtualExportRoot) {
+        await fs.outputJson(path.join(cliVirtualExportRoot, 'package.json'), {
+          name: '@lesliechan721/aw',
+          version: '0.1.0-beta.2',
+        });
+        await fs.outputFile(canonicalSource, '{"version":"a"}\n');
+      }
+      const consumer = await createPlugin({
+        root,
+        name: 'consumer',
+        buildConfig: {
+          buildImports: [{
+            plugin: providerKind,
+            export: provider ? 'registry' : 'skill-frontmatter-capabilities',
+            env: 'AW_PLUGIN_IMPORT_REGISTRY',
+          }],
+        },
+        scripts: { node: { build: { runner: 'node', path: './build.mjs' } } },
+        files: { 'build.mjs': 'export {};\n' },
+      });
+      let stagingPluginRoot = '';
+      const runner: PluginStagingRunner = {
+        async installPackageRoot() {},
+        async runNodeBuild({ pluginRoot, env }) {
+          stagingPluginRoot = pluginRoot;
+          await expect(fs.readFile(env.AW_PLUGIN_IMPORT_REGISTRY!, 'utf8'))
+            .resolves.toBe('{"version":"a"}\n');
+          await fs.writeFile(canonicalSource, '{"version":"b"}\n');
+        },
+      };
+      const outputRoot = path.join(root, 'bundle');
+      await fs.outputFile(path.join(outputRoot, 'stale.txt'), 'stale\n');
+
+      await expect(bundleLocalPlugin(consumer, outputRoot, {
+        buildMode: 'staging',
+        stagingRunner: runner,
+        runtimeResolver: createCatalogRuntimeImportResolver(
+          provider ? [provider, consumer] : [consumer],
+          cliVirtualExportRoot ? { cliVirtualExportRoot } : {},
+        ),
+      })).rejects.toThrow('changed during build import projection');
+      await expect(fs.pathExists(outputRoot)).resolves.toBe(false);
+      await expect(fs.pathExists(stagingPluginRoot)).resolves.toBe(false);
+    },
+  );
+
+  it.each(['provider import', 'own source'] as const)(
+    'rejects a %s that changes between platform projections and removes the partial bundle',
+    async (sourceKind) => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-runtime-projection-toctou-'));
+      tempRoots.push(root);
+      const provider = sourceKind === 'provider import'
+        ? await createPlugin({
+            root,
+            name: 'provider',
+            buildConfig: {
+              runtimeExports: [{ name: 'registry', source: './registry.json' }],
+            },
+            files: { 'registry.json': '{"version":"a"}\n' },
+          })
+        : undefined;
+      const consumer = await createPlugin({
+        root,
+        name: 'consumer',
+        buildConfig: {
+          skillRuntimeFiles: [{
+            skill: 'demo',
+            target: 'references/registry.json',
+            ...(provider
+              ? { import: { plugin: 'provider', export: 'registry' } }
+              : { source: './registry.json' }),
+          }],
+        },
+        ...(!provider ? { files: { 'registry.json': '{"version":"a"}\n' } } : {}),
+      });
+      const canonicalSource = path.join(provider?.rootDir ?? consumer.rootDir, 'registry.json');
+      const outputRoot = path.join(root, 'bundle');
+      const firstProjectionTarget = path.join(
+        outputRoot,
+        'claude',
+        'skills',
+        'demo',
+        'references',
+        'registry.json',
+      );
+      const copyFile = fs.copyFile.bind(fs);
+      vi.spyOn(fs, 'copyFile').mockImplementation(async (...args) => {
+        await copyFile(...args);
+        if (path.normalize(String(args[1])) === firstProjectionTarget) {
+          await fs.writeFile(canonicalSource, '{"version":"b"}\n', 'utf8');
+        }
+      });
+
+      await expect(bundleLocalPlugin(consumer, outputRoot, {
+        ...(provider
+          ? { runtimeResolver: createCatalogRuntimeImportResolver([provider, consumer]) }
+          : {}),
+      })).rejects.toThrow('changed during runtime Skill projection');
+      await expect(fs.pathExists(outputRoot)).resolves.toBe(false);
+    },
+  );
+
+  it('fails closed for missing resolver, target collisions, provider platform gaps, and symlink exports', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-runtime-projection-fail-'));
+    tempRoots.push(root);
+    const provider = await createPlugin({
+      root,
+      name: 'provider',
+      products: ['CODEX'],
+      buildConfig: { runtimeExports: [{ name: 'registry', source: './registry.json' }] },
+      files: { 'registry.json': '{}\n' },
+    });
+    const consumer = await createPlugin({
+      root,
+      name: 'consumer',
+      buildConfig: {
+        skillRuntimeFiles: [{
+          skill: 'demo',
+          target: 'references/registry.json',
+          import: { plugin: 'provider', export: 'registry' },
+        }],
+      },
+    });
+
+    await expect(bundleLocalPlugin(consumer, path.join(root, 'no-resolver')))
+      .rejects.toThrow('catalog runtime import resolver is required');
+    await expect(bundleLocalPlugin(consumer, path.join(root, 'platform-gap'), {
+      runtimeResolver: createCatalogRuntimeImportResolver([provider, consumer]),
+    })).rejects.toThrow('unavailable for platform "claude"');
+
+    await fs.outputFile(path.join(consumer.rootDir, 'skills', 'demo', 'references', 'registry.json'), 'existing\n');
+    await expect(bundleLocalPlugin(consumer, path.join(root, 'collision'), {
+      runtimeResolver: createCatalogRuntimeImportResolver([provider, consumer]),
+    })).rejects.toThrow('staged Skill already contains');
+
+    await fs.remove(path.join(consumer.rootDir, 'skills', 'demo', 'references'));
+    await fs.ensureDir(path.join(root, 'outside-references'));
+    await fs.symlink(
+      path.join(root, 'outside-references'),
+      path.join(consumer.rootDir, 'skills', 'demo', 'references'),
+    );
+    await expect(bundleLocalPlugin(consumer, path.join(root, 'target-symlink'), {
+      runtimeResolver: createCatalogRuntimeImportResolver([provider, consumer]),
+    })).rejects.toThrow();
+
+    const linkProviderRoot = path.join(root, 'link-provider');
+    await fs.copy(provider.rootDir, linkProviderRoot);
+    await fs.remove(path.join(linkProviderRoot, 'registry.json'));
+    await fs.symlink(path.join(provider.rootDir, 'registry.json'), path.join(linkProviderRoot, 'registry.json'));
+    await expect(readPluginManifest(linkProviderRoot)).rejects.toThrow('symbolic links are not supported');
+  });
+});

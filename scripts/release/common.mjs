@@ -1,9 +1,11 @@
 import { spawn } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { isDeepStrictEqual } from 'node:util';
+import { isDeepStrictEqual, promisify } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { gunzip } from 'node:zlib';
 
 import {
   assertBuildInputPathSafety,
@@ -16,11 +18,15 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const semverPattern =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-((?:0|[1-9]\d*|(?:[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))(?:\.(?:0|[1-9]\d*|(?:[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)))*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
 export const RELEASE_NETWORK_TIMEOUT_MS = 2 * 60 * 1000;
+const gunzipAsync = promisify(gunzip);
+const MAX_PACKAGE_TREE_BYTES = 128 * 1024 * 1024;
 
 export const repoRoot = path.resolve(scriptDir, '..', '..');
 export const releaseRoot = path.join(repoRoot, '.release');
 export const tarballDir = path.join(releaseRoot, 'tarballs');
 export const rootPackageJsonPath = path.join(repoRoot, 'package.json');
+export const evalPackageJsonPath = path.join(repoRoot, 'packages', 'agent-skill-eval', 'package.json');
+export const evalPackageRoot = path.join(repoRoot, 'packages', 'agent-skill-eval');
 export const cliPackageJsonPath = path.join(repoRoot, 'packages', 'cli', 'package.json');
 export const cliPackageRoot = path.join(repoRoot, 'packages', 'cli');
 export const cliDistRoot = path.join(cliPackageRoot, 'dist');
@@ -135,19 +141,26 @@ export async function readCliPackageJson() {
   return readPackageJson(cliPackageJsonPath);
 }
 
+export async function readEvalPackageJson() {
+  return readPackageJson(evalPackageJsonPath);
+}
+
 export async function syncCliVersion(version) {
   assertValidVersion(version);
 
-  const [rootPackageJson, cliPackageJson] = await Promise.all([
+  const [rootPackageJson, evalPackageJson, cliPackageJson] = await Promise.all([
     readPackageJson(rootPackageJsonPath),
+    readPackageJson(evalPackageJsonPath),
     readPackageJson(cliPackageJsonPath),
   ]);
 
   rootPackageJson.version = version;
+  evalPackageJson.version = version;
   cliPackageJson.version = version;
 
   await Promise.all([
     writePackageJson(rootPackageJsonPath, rootPackageJson),
+    writePackageJson(evalPackageJsonPath, evalPackageJson),
     writePackageJson(cliPackageJsonPath, cliPackageJson),
   ]);
 
@@ -369,6 +382,241 @@ export async function resolvePublishedCliVersion(mode, options = {}) {
   return version;
 }
 
+export async function isExactPackageVersionPublished(
+  packageName,
+  version,
+  packageJsonPath,
+  options = {},
+) {
+  assertValidVersion(version);
+  const registryUrl = await resolveRegistryUrl(packageJsonPath, options.env ?? process.env);
+  const capture = options.captureCommand ?? captureCommand;
+  try {
+    const { stdout } = await capture('pnpm', [
+      'view',
+      `${packageName}@${version}`,
+      'version',
+      '--json',
+      '--registry',
+      registryUrl,
+    ], {
+      timeoutMs: options.timeoutMs ?? RELEASE_NETWORK_TIMEOUT_MS,
+      env: {
+        ...(options.env ?? process.env),
+        AW_RELEASE_NPM_REGISTRY_URL: registryUrl,
+        npm_config_registry: registryUrl,
+        NPM_CONFIG_REGISTRY: registryUrl,
+      },
+    });
+    return JSON.parse(stdout) === version;
+  } catch (error) {
+    if (/E404|404 Not Found|is not in this registry/iu.test(String(error?.message))) return false;
+    throw error;
+  }
+}
+
+function readTarString(buffer, offset, length) {
+  const end = buffer.indexOf(0, offset);
+  return buffer.subarray(offset, end >= offset && end < offset + length ? end : offset + length)
+    .toString('utf8');
+}
+
+function readTarOctal(buffer, offset, length, field) {
+  const value = readTarString(buffer, offset, length).trim();
+  if (!/^[0-7]*$/.test(value)) {
+    throw new Error(`Package tarball has an unsupported ${field} value.`);
+  }
+  return value === '' ? 0 : Number.parseInt(value, 8);
+}
+
+function parsePaxFields(contents) {
+  const fields = {};
+  let offset = 0;
+  while (offset < contents.length) {
+    const separator = contents.indexOf(0x20, offset);
+    if (separator < 0) throw new Error('Package tarball has malformed PAX metadata.');
+    const length = Number(contents.subarray(offset, separator).toString('ascii'));
+    if (!Number.isSafeInteger(length) || length <= separator - offset + 1 || offset + length > contents.length) {
+      throw new Error('Package tarball has malformed PAX metadata.');
+    }
+    const record = contents.subarray(separator + 1, offset + length - 1).toString('utf8');
+    const equals = record.indexOf('=');
+    if (equals <= 0) throw new Error('Package tarball has malformed PAX metadata.');
+    fields[record.slice(0, equals)] = record.slice(equals + 1);
+    offset += length;
+  }
+  return fields;
+}
+
+function normalizePackageTarPath(value) {
+  const normalized = value.replace(/^\.\//u, '');
+  if (!normalized.startsWith('package/')) {
+    throw new Error('Package tarball contains an entry outside the package root.');
+  }
+  const relativePath = normalized.slice('package/'.length);
+  if (
+    relativePath === ''
+    || relativePath.includes('\\')
+    || path.posix.isAbsolute(relativePath)
+    || relativePath.split('/').some((part) => part === '' || part === '.' || part === '..')
+  ) {
+    throw new Error('Package tarball contains an unsafe package path.');
+  }
+  return relativePath;
+}
+
+function updateDigestField(hash, value) {
+  const contents = Buffer.isBuffer(value) ? value : Buffer.from(String(value));
+  const length = Buffer.allocUnsafe(8);
+  length.writeBigUInt64BE(BigInt(contents.length));
+  hash.update(length);
+  hash.update(contents);
+}
+
+export async function computePackageTarballTreeDigest(tarballPath) {
+  const compressed = await fs.readFile(tarballPath);
+  const archive = await gunzipAsync(compressed, { maxOutputLength: MAX_PACKAGE_TREE_BYTES });
+  const entries = new Map();
+  let offset = 0;
+  let localPax = {};
+  let globalPax = {};
+  let longPath;
+  let longLink;
+
+  while (offset + 512 <= archive.length) {
+    const header = archive.subarray(offset, offset + 512);
+    offset += 512;
+    if (header.every((byte) => byte === 0)) break;
+    const size = readTarOctal(header, 124, 12, 'size');
+    const paddedSize = Math.ceil(size / 512) * 512;
+    if (!Number.isSafeInteger(size) || offset + paddedSize > archive.length) {
+      throw new Error('Package tarball is truncated or too large.');
+    }
+    const contents = archive.subarray(offset, offset + size);
+    offset += paddedSize;
+    const type = String.fromCharCode(header[156] || 0x30);
+
+    if (type === 'x' || type === 'g') {
+      const fields = parsePaxFields(contents);
+      if (type === 'x') localPax = fields;
+      else globalPax = { ...globalPax, ...fields };
+      continue;
+    }
+    if (type === 'L' || type === 'K') {
+      const value = contents.toString('utf8').replace(/[\0\n]+$/u, '');
+      if (type === 'L') longPath = value;
+      else longLink = value;
+      continue;
+    }
+
+    const prefix = readTarString(header, 345, 155);
+    const headerPath = `${prefix ? `${prefix}/` : ''}${readTarString(header, 0, 100)}`;
+    const fields = { ...globalPax, ...localPax };
+    const entryPath = fields.path ?? longPath ?? headerPath;
+    const linkPath = fields.linkpath ?? longLink ?? readTarString(header, 157, 100);
+    localPax = {};
+    longPath = undefined;
+    longLink = undefined;
+
+    if (type === '5') continue;
+    if (type !== '0' && type !== '2') {
+      throw new Error(`Package tarball contains unsupported entry type ${JSON.stringify(type)}.`);
+    }
+    const relativePath = normalizePackageTarPath(entryPath);
+    if (entries.has(relativePath)) {
+      throw new Error(`Package tarball contains duplicate path ${JSON.stringify(relativePath)}.`);
+    }
+    const mode = readTarOctal(header, 100, 8, 'mode') & 0o777;
+    entries.set(relativePath, {
+      type: type === '2' ? 'symlink' : 'file',
+      mode,
+      contents: type === '2' ? Buffer.from(linkPath) : Buffer.from(contents),
+    });
+  }
+
+  if (entries.size === 0) throw new Error('Package tarball contains no production files.');
+  const hash = crypto.createHash('sha256');
+  for (const [relativePath, entry] of [...entries].sort(([left], [right]) => left.localeCompare(right))) {
+    updateDigestField(hash, relativePath);
+    updateDigestField(hash, entry.type);
+    updateDigestField(hash, entry.mode);
+    updateDigestField(hash, entry.contents);
+  }
+  return `sha256:${hash.digest('hex')}`;
+}
+
+export async function downloadExactPackageTarball(
+  packageName,
+  version,
+  packageJsonPath,
+  destination,
+  options = {},
+) {
+  assertValidVersion(version);
+  const registryUrl = options.registryUrl
+    ? normalizeRegistryUrl(options.registryUrl)
+    : await resolveRegistryUrl(packageJsonPath, options.env ?? process.env);
+  const capture = options.captureCommand ?? captureCommand;
+  await capture('npm', [
+    'pack',
+    `${packageName}@${version}`,
+    '--ignore-scripts',
+    '--json',
+    '--pack-destination',
+    destination,
+    '--registry',
+    registryUrl,
+  ], {
+    timeoutMs: options.timeoutMs ?? RELEASE_NETWORK_TIMEOUT_MS,
+    env: {
+      ...(options.env ?? process.env),
+      AW_RELEASE_NPM_REGISTRY_URL: registryUrl,
+      npm_config_registry: registryUrl,
+      NPM_CONFIG_REGISTRY: registryUrl,
+      npm_config_ignore_scripts: 'true',
+      NPM_CONFIG_IGNORE_SCRIPTS: 'true',
+    },
+  });
+  const tarballs = await listTarballs(destination);
+  if (tarballs.length !== 1) {
+    throw new Error(`Expected registry download to produce exactly one tarball, found ${tarballs.length}.`);
+  }
+  return { tarballPath: tarballs[0], registryUrl };
+}
+
+export async function assertPublishedPackageTarballMatchesCandidate(
+  packageName,
+  version,
+  packageJsonPath,
+  candidateTarballPath,
+  options = {},
+) {
+  const computeDigest = options.computePackageTarballTreeDigest ?? computePackageTarballTreeDigest;
+  const candidateTreeDigest = await computeDigest(candidateTarballPath);
+  return withOwnedTemporaryDirectory(
+    path.join(os.tmpdir(), 'aw-registry-package-'),
+    async (temporaryRoot) => {
+      await fs.chmod(temporaryRoot, 0o700);
+      const download = options.downloadExactPackageTarball ?? downloadExactPackageTarball;
+      const { tarballPath, registryUrl } = await download(
+        packageName,
+        version,
+        packageJsonPath,
+        temporaryRoot,
+        options,
+      );
+      const publishedTreeDigest = await computeDigest(tarballPath);
+      if (candidateTreeDigest !== publishedTreeDigest) {
+        throw new Error(
+          `Published ${packageName}@${version} has different package files from the release candidate.`,
+        );
+      }
+      return { candidateTreeDigest, publishedTreeDigest, registryUrl };
+    },
+    'Registry package comparison cleanup also failed',
+  );
+}
+
 async function resolveReleaseDirtyEntries(options = {}) {
   const { stdout } = await runReleaseGit([
     'status',
@@ -408,6 +656,11 @@ const RELEASE_INPUT_PATHS = [
   'tsconfig.base.json',
   'scripts/build',
   'scripts/release',
+  'packages/agent-skill-eval/package.json',
+  'packages/agent-skill-eval/tsconfig.json',
+  'packages/agent-skill-eval/vitest.config.ts',
+  'packages/agent-skill-eval/src',
+  'packages/agent-skill-eval/scripts',
   'packages/cli/package.json',
   'packages/cli/tsconfig.json',
   'packages/cli/index.ts',
@@ -422,6 +675,7 @@ function isAllowedIgnoredReleaseInput(relativePath) {
   if (relativePath.split('/').includes('node_modules')) return true;
   return (
     /^packages\/cli\/(?:dist|plugins-dist)(?:\/|$)/.test(relativePath)
+    || /^packages\/agent-skill-eval\/dist(?:\/|$)/.test(relativePath)
     || /^plugins\/[^/]+\/(?:evals|reports)(?:\/|$)/.test(relativePath)
     || /^plugins\/[^/]+\/skills\/[^/]+\/(?:[^/]+\/)*(?:evals|reports)(?:\/|$)/.test(
       relativePath,
@@ -548,6 +802,7 @@ export async function assertReleaseWorktreeClean(options = {}) {
   const allowedDirtyPaths = new Set(options.allowVersionSync
     ? [
       relativeToRepo(rootPackageJsonPath),
+      relativeToRepo(evalPackageJsonPath),
       relativeToRepo(cliPackageJsonPath),
     ]
     : []);
@@ -769,19 +1024,24 @@ export async function findLatestTarball(directoryPath = tarballDir) {
 }
 
 export async function assertRepoAndCliPackageVersions() {
-  const [rootPackageJson, cliPackageJson] = await Promise.all([
+  const [rootPackageJson, evalPackageJson, cliPackageJson] = await Promise.all([
     readPackageJson(rootPackageJsonPath),
+    readPackageJson(evalPackageJsonPath),
     readPackageJson(cliPackageJsonPath),
   ]);
   const rootVersion = assertValidVersion(rootPackageJson.version);
+  const evalVersion = assertValidVersion(evalPackageJson.version);
   const cliVersion = assertValidVersion(cliPackageJson.version);
-  if (rootVersion !== cliVersion) {
+  if (rootVersion !== cliVersion || rootVersion !== evalVersion) {
     throw new Error(
-      `Version mismatch: package.json version "${rootVersion}" must match packages/cli/package.json version "${cliVersion}".`,
+      `Version mismatch: package.json version "${rootVersion}" must match ` +
+      `packages/agent-skill-eval/package.json version "${evalVersion}" and ` +
+      `packages/cli/package.json version "${cliVersion}".`,
     );
   }
   return {
     rootVersion,
+    evalVersion,
     cliVersion,
   };
 }
@@ -853,6 +1113,53 @@ export async function withPrivateCliTarball(snapshot, callback) {
       return callback(tarballPath);
     },
     'Private CLI tarball cleanup also failed',
+  );
+}
+
+async function packEvalFromSnapshot(snapshot, destination) {
+  const targetDir = path.resolve(repoRoot, destination);
+  await ensureDirectory(targetDir);
+  return withOwnedTemporaryDirectory(
+    path.join(os.tmpdir(), 'aw-skill-eval-pack-'),
+    async (packDirectory) => {
+      await runCommand('pnpm', [
+        '--config.ignore-scripts=true',
+        'pack',
+        '--pack-destination',
+        packDirectory,
+      ], { cwd: snapshot.evalPackageRoot });
+      const tarballs = await listTarballs(packDirectory);
+      if (tarballs.length !== 1) {
+        throw new Error(`Expected shared Eval pack to produce exactly one tarball, found ${tarballs.length}.`);
+      }
+      const targetPath = path.join(targetDir, path.basename(tarballs[0]));
+      await fs.rename(tarballs[0], targetPath).catch(async (error) => {
+        if (error?.code !== 'EXDEV') throw error;
+        await fs.copyFile(tarballs[0], targetPath);
+      });
+      return targetPath;
+    },
+    'Shared Eval tarball pack staging cleanup also failed',
+  );
+}
+
+export async function packEval({ destination = tarballDir, snapshot } = {}) {
+  await assertRepoAndCliPackageVersions();
+  if (snapshot) return packEvalFromSnapshot(snapshot, destination);
+  return withBuildSnapshot(repoRoot, (ownedSnapshot) =>
+    packEvalFromSnapshot(ownedSnapshot, destination)
+  );
+}
+
+export async function withPrivateEvalTarball(snapshot, callback) {
+  return withOwnedTemporaryDirectory(
+    path.join(os.tmpdir(), 'aw-skill-eval-publish-'),
+    async (privateRoot) => {
+      await fs.chmod(privateRoot, 0o700);
+      const tarballPath = await packEval({ destination: privateRoot, snapshot });
+      return callback(tarballPath);
+    },
+    'Private shared Eval tarball cleanup also failed',
   );
 }
 

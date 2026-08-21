@@ -6,7 +6,10 @@ import { promisify } from 'node:util';
 import fs from 'fs-extra';
 import { afterEach, expect, it } from 'vitest';
 
-import { createBuildSnapshot } from '../../../../scripts/build/build-cache.mjs';
+import {
+  buildCacheContract,
+  createBuildSnapshot,
+} from '../../../../scripts/build/build-cache.mjs';
 import {
   publishStagedCatalog,
   readCatalogPublicationHistory,
@@ -25,6 +28,20 @@ afterEach(async () => {
   if (temporaryRoot) await fs.remove(temporaryRoot);
   temporaryRoot = null;
 });
+
+async function writeSyntheticEvalBuildOutputs(sourceRoot: string): Promise<void> {
+  const evalOutputs = buildCacheContract.requiredOutputs.filter((relativePath: string) =>
+    relativePath.startsWith('packages/agent-skill-eval/dist/')
+  );
+  await Promise.all(evalOutputs.map(async (relativePath: string) => {
+    const outputPath = path.join(sourceRoot, relativePath);
+    if (await fs.pathExists(outputPath)) return;
+    await fs.outputFile(
+      outputPath,
+      relativePath.endsWith('.json') ? '{}\n' : 'export {};\n',
+    );
+  }));
+}
 
 it('stages, publishes, fetches, and validates a release catalog through the Git provider', async () => {
   temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-catalog-publish-smoke-'));
@@ -59,7 +76,18 @@ it('stages, publishes, fetches, and validates a release catalog through the Git 
       type: 'module',
       files: ['dist/'],
     }),
+    fs.outputJson(path.join(sourceRoot, 'packages', 'agent-skill-eval', 'package.json'), {
+      name: '@lesliechan721/agent-skill-eval',
+      version: '1.0.0',
+      type: 'module',
+      files: ['dist/'],
+      exports: './dist/index.js',
+      bin: {
+        'aw-skill-eval': './dist/bin.js',
+      },
+    }),
     fs.ensureDir(path.join(sourceRoot, 'packages', 'cli', 'node_modules')),
+    fs.ensureDir(path.join(sourceRoot, 'packages', 'agent-skill-eval', 'node_modules')),
   ]);
   const build = async () => {
     await fs.remove(path.join(sourceRoot, 'packages', 'cli', 'dist'));
@@ -84,6 +112,7 @@ it('stages, publishes, fetches, and validates a release catalog through the Git 
       phase: 'development',
       catalogVersion: '1.0.0',
     });
+    await writeSyntheticEvalBuildOutputs(sourceRoot);
   };
   const snapshot = await createBuildSnapshot(sourceRoot, { build });
   const history = await readCatalogPublicationHistory({

@@ -124,6 +124,20 @@ describe('skill-review author tools', () => {
     expect(JSON.parse(stdout).target.sourceDigest).toBe(expectedDigest);
   });
 
+  it('changes publication source identity for executable mode changes', async () => {
+    if (process.platform === 'win32') return;
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-review-source-mode-'));
+    tempDirs.push(root);
+    const script = path.join(root, 'scripts', 'run.sh');
+    await fs.ensureDir(path.dirname(script));
+    await fs.writeFile(script, '#!/bin/sh\nexit 0\n', { mode: 0o644 });
+    const regularDigest = await computeAuthorSourceDigest([{ name: 'demo', root }]);
+
+    await fs.chmod(script, 0o755);
+    const executableDigest = await computeAuthorSourceDigest([{ name: 'demo', root }]);
+    expect(executableDigest).not.toBe(regularDigest);
+  });
+
   it('requires review publication targets to be real documented Skills', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-review-publish-target-'));
     tempDirs.push(root);
@@ -634,8 +648,6 @@ describe('skill-review author tools', () => {
     const skillRoot = path.join(repoRoot(), '.agents', 'skills', skillName);
     const manifest = await runner.readManifest(skillRoot, skillName);
     const subjectRoot = await runner.prepareSubject(manifest, outputRoot);
-    const subjectSkillRoot = path.join(subjectRoot, '.agents', 'skills', skillName);
-
     await expect(fs.pathExists(path.join(subjectRoot, 'node_modules', 'yaml', 'package.json')))
       .resolves.toBe(true);
     await expect(fs.pathExists(path.join(
@@ -649,8 +661,11 @@ describe('skill-review author tools', () => {
 
     const childEnv = { ...process.env };
     delete childEnv.NODE_PATH;
+    const cliPath = path.join(repoRoot(), 'packages', 'cli', 'dist', 'index.js');
     await execFileAsync('node', [
-      path.join(subjectSkillRoot, 'scripts', 'init_plugin.mjs'),
+      cliPath,
+      'plugin',
+      'init',
       'release-notes',
       '--description',
       'Generate release notes from repository changes.',
@@ -673,7 +688,9 @@ describe('skill-review author tools', () => {
       'utf8',
     );
     const result = await execFileAsync('node', [
-      path.join(subjectSkillRoot, 'scripts', 'validate_plugin.mjs'),
+      cliPath,
+      'plugin',
+      'validate',
       pluginRoot,
     ], {
       cwd: subjectRoot,

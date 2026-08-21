@@ -2,7 +2,7 @@
 
 新建 Skill、改变 description、调整核心工作流、renderer/config，或修复真实执行问题后读取本文。评估分为三层，不能互相替代：
 
-- `validate_plugin.mjs`：源码结构、manifest 和 eval manifest 作者合同。
+- `aw plugin validate`：源码结构、manifest 和 eval manifest 作者合同。
 - `pnpm plugin:test`：确定性脚本、转换和 bundle 合同，不调用模型。
 - `pnpm plugin:eval`：Codex 最终制品 materialization 与真实模型行为。
 
@@ -40,7 +40,7 @@ plugins/<name>/
 
 静态和动态 Skill 都使用 `skills/<skill>` 作为源码根。动态 Skill 声明 source 时必须包含该规范根；其它 `sourceDirs` 必须留在根内，且不能进入 Skill 根的直接子目录 `evals/` 或 `reports/`。更深层的同名领域目录可以进入 runtime。eval owner 固定为规范根中唯一的 `evals/manifest.json`；同一个 Skill 不能有多个 eval owner。插件根 `evals/` 已禁用。
 
-Skill 根的直接子目录 `evals/`、`reports/` 和插件根 `reports/**` 都是作者期材料，不属于 production runtime bundle，也不参与 runtime package digest。更深层的同名目录按普通 runtime 资源处理。`evals/**` 和正式报告属于 Git 源码；完整工作批次位于 `.tmp/`，不进入 Git。Skill README 是发布内容，随 Skill 原样进入最终制品。动态 Skill 的评测对象不是源码占位文本，而是中央 materializer 通过真实 staging、renderer、ArtifactPlan 校验和 Codex adapter 得到的最终制品。
+任意路径段 basename 为 `.DS_Store` 的 macOS 临时文件不属于 production identity，不进入 runtime bundle、runtime package digest 或 review 完整文件集合；其它 hidden production 文件仍按普通 runtime 内容处理。Skill 根的直接子目录 `evals/`、`reports/` 和插件根 `reports/**` 都是作者期材料，也不属于 production runtime bundle 或 runtime package digest。更深层的同名目录按普通 runtime 资源处理。`evals/**` 和正式报告属于 Git 源码；完整工作批次位于 `.tmp/`，不进入 Git。Skill README 是发布内容，随 Skill 原样进入最终制品。动态 Skill 的评测对象不是源码占位文本，而是中央 materializer 通过真实 staging、renderer、ArtifactPlan 校验和 Codex adapter 得到的最终制品。
 
 每个 owner 的 `evals/README.md` 只说明自己的 corpus、suite、具体运行命令、专用 runner 限制和历史结果。全仓统一的权限、隔离、进程管理、凭据、批次布局、发布路径和平台证据边界只在本文及 CLI `--help` 维护，不复制到各 Skill。
 
@@ -123,7 +123,7 @@ Suite 规则：
 - suite 只能引用 `runModel: true` profile。materialize-only profile 不进入 suite。
 - `requiredForRelease` 和 `releaseSplits` 决定无过滤参数运行时的发布证据集合。
 
-`validate_plugin.mjs` 会发现每个 Skill 的 `evals/manifest.json`，检查 schema、owner、路径、repo-local companion、Skill 归属、profile/suite 引用和 user/project 模型边界。eval manifest 不写入 `.agents-plugin/plugin.json`。
+`aw plugin validate` 会发现每个 Skill 的 `evals/manifest.json`，检查 schema、owner、路径、repo-local companion、Skill 归属、profile/suite 引用和 user/project 模型边界。eval manifest 不写入 `.agents-plugin/plugin.json`。
 
 ## 中央运行入口
 
@@ -165,9 +165,9 @@ strict 模式在启动模型前检查 `/etc/codex`（Windows 对应系统目录�
 
 真实模型 eval 应从普通 Terminal 会话直接运行。不要通过会临时导出或改写用户 keychain search list 的 GUI、沙箱或提权包装器启动；这类外层包装器可能留下失效的 `accountsKeychainExport` 路径，并在 Codex 启动前触发 macOS“找不到钥匙串”弹窗。中央入口在 macOS 检测到该包装器路径时会直接拒绝真实模型 eval，不会修改用户 keychain search list；`--materialize-only` 和确定性测试不执行该检查，也不需要启动 Codex 模型进程。
 
-真实模型 eval 默认还要求 Full Access 可用，以便发现并清理 Codex 的后代进程。入口先检查原始 `CODEX_PERMISSION_PROFILE`，再执行 macOS keychain 检查或进程树探测。来源为 `workspace` 或 `read-only` 且没有 `--allow-unmanaged-processes` 时，入口立即阻断；不会执行 keychain 检查、进程树探测、报告目录分配或模型启动。单次 `sandbox_permissions=require_escalated` 不等于整个会话的 Full Access，并且会保留原始受限 profile；不得用单次提权重试该门禁，也不能把提权后的探测成功记录为 `managed`。
+真实模型 eval 默认还要求 Full Access 可用，以便发现并清理 Codex 的已观察后代进程。入口先检查原始 `CODEX_PERMISSION_PROFILE`，再执行 macOS keychain 检查或进程树探测。来源为 `workspace` 或 `read-only` 且没有 `--allow-unmanaged-processes` 时，入口立即阻断；不会执行 keychain 检查、进程树探测、报告目录分配或模型启动。单次 `sandbox_permissions=require_escalated` 不等于整个会话的 Full Access，并且会保留原始受限 profile；不得用单次提权重试该门禁。探测成功只记录为 `observed`、`descendantCleanupGuaranteed: false` 和固定 limitation，不能记录为 `managed` 或后代清理保证。
 
-用户明确选择 `--allow-unmanaged-processes` 时，受限来源直接进入 `unmanaged-confirmed`，不执行进程树探测。该模式只跟踪直接子进程，timeout、信号或 runner 退出后可能遗留后代进程，报告会记录 `descendantCleanupGuaranteed: false`。Windows 当前没有 Job Object containment，也必须使用该显式降级选择。agent 不得自行添加参数；如果用户尚未选择，必须停下并让用户选择“切换整个会话到 Full Access”或“明确使用 `--allow-unmanaged-processes`”。CLI 只能把参数视为调用方确认，不能证明参数由人还是模型添加。真正的人工确认必须由 Codex 审批或 UI 层保证。release reviewer 必须明确接受降级运行的环境风险。
+用户明确选择 `--allow-unmanaged-processes` 时，受限来源直接进入 `unmanaged-confirmed`，不执行进程树探测。该模式只跟踪直接子进程，timeout、信号或 runner 退出后可能遗留后代进程，报告会记录 `descendantCleanupGuaranteed: false`。Windows 当前没有 Job Object containment，也必须使用该显式降级选择。agent 不得自行添加参数；如果用户尚未选择，必须停下并让用户选择“切换整个会话到 Full Access”或“明确使用 `--allow-unmanaged-processes`”。CLI 只能把参数视为调用方确认，不能证明参数由人还是模型添加。真正的人工确认必须由 Codex 审批或 UI 层保证。release reviewer 必须明确接受 `observed` 或 `unmanaged-confirmed` 运行的环境限制。
 
 <!-- aw-full-access-consent-policy:v1 -->
 | policy invariant | Agent requirement |
@@ -247,7 +247,7 @@ run 在批次锁内预留。每个 case target 在独立的批次锁事务中原
 
 审计字段模板以 `.agents/skills/skill-review/assets/eval-case-template.json` 为准。它们并入当前可执行 case，不另建一份平行语料。历史 case 可以渐进迁移；缺少 metadata 时只能作为低置信诊断信号，不能单独驱动 Skill 修改或发布。
 
-`init_plugin.mjs` 和 `add_skill.mjs` 生成的 trigger starter 带有中等置信 synthetic/boundary metadata，behavior starter 标为低置信 diagnostic。它们用于提示完整结构，不是领域发布证据。发布前必须替换 prompt、near-miss、场景族、oracle 和断言，并按真实错误代价调整 policy 与 role。
+`aw plugin init` 和 `aw plugin add-skill` 生成的 trigger starter 带有中等置信 synthetic/boundary metadata，behavior starter 标为低置信 diagnostic。它们用于提示完整结构，不是领域发布证据。发布前必须替换 prompt、near-miss、场景族、oracle 和断言，并按真实错误代价调整 policy 与 role。
 
 先用兼容模式检查历史文档；它把缺失的 admission metadata 报为 warning：
 
@@ -258,7 +258,7 @@ node .agents/skills/skill-review/scripts/validate_eval_cases.mjs \
   plugins/<plugin>/skills/<skill>/evals/evals.json --format json
 ```
 
-会用于发布或当前修改的 case 补全后，对对应文档增加 `--strict`。`validate_plugin.mjs` 仍负责可执行作者合同；`validate_eval_cases.mjs` 只做确定性结构检查。它不能判断 oracle 语义、现实性或 trace 是否正确，也不能替代 `eval-validity`、`release-evidence` 和 `eval-change-safety` 三个评审门禁。
+会用于发布或当前修改的 case 补全后，对对应文档增加 `--strict`。`aw plugin validate` 仍负责可执行作者合同；`validate_eval_cases.mjs` 只做确定性结构检查。它不能判断 oracle 语义、现实性或 trace 是否正确，也不能替代 `eval-validity`、`release-evidence` 和 `eval-change-safety` 三个评审门禁。
 
 ## 触发评估
 
@@ -325,7 +325,7 @@ node .agents/skills/skill-review/scripts/validate_eval_cases.mjs \
 
 `workspace-write` 只作用于每次运行的隔离临时副本，关闭网络写入能力，并要求非空的允许改动路径和最终 artifact 断言。机械门对当前版本检查改动路径、文件存在、文本和 JSON 子集；baseline 使用相同 sandbox 和输入，并保留自己的 diff、artifact digest、token 和时间。只读 case 省略 `sandbox`，默认保持 `read-only`。
 
-`init_plugin.mjs` 和 `add_skill.mjs` 会为支持 Codex 的新 Skill 生成 trigger train/validation/sanity 和一个可写 behavior starter。starter 只提供合法结构；发布前必须替换为领域真实任务、near-miss、允许改动路径和可区分的断言。当前 v2 模型 eval 固定运行 Codex；Claude-only 插件的 `add_skill.mjs` 不生成不可运行的 eval manifest，作者只运行确定性校验并明确记录模型行为未验证。
+`aw plugin init` 和 `aw plugin add-skill` 会为支持 Codex 的新 Skill 生成 trigger train/validation/sanity 和一个可写 behavior starter。starter 只提供合法结构；发布前必须替换为领域真实任务、near-miss、允许改动路径和可区分的断言。当前 v2 模型 eval 固定运行 Codex；Claude-only 插件的 `aw plugin add-skill` 不生成不可运行的 eval manifest，作者只运行确定性校验并明确记录模型行为未验证。
 
 需要 `request_user_input` 时，回复按步骤和问题索引保存，例如：
 

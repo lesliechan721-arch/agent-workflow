@@ -241,7 +241,7 @@ describe('process-tree', () => {
     expect(killDirectChild).toHaveBeenCalledWith('SIGKILL');
   });
 
-  it('does not signal a same-second reused POSIX PID after its marker disappears', async () => {
+  it('keeps a recorded POSIX identity tracked after its marker disappears', async () => {
     const marker = 'marker-value';
     const processes = new Map<number, FakeProcess>([
       [100, { ppid: 1, state: 'S', startTime: 'root-start' }],
@@ -257,17 +257,61 @@ describe('process-tree', () => {
       }
       callback(null, renderPosixTable(processes));
     });
-    const kill = vi.fn();
+    const kill = vi.fn((pid: number, signal: string) => {
+      const entry = processes.get(pid);
+      if (entry && signal === 'SIGSTOP') processes.set(pid, { ...entry, state: 'T' });
+      if (signal === 'SIGKILL') processes.delete(pid);
+    });
     const observation = observeProcessTree(100, marker, {
       platform: 'linux',
       execFile,
       kill,
     });
     await Promise.resolve();
-    processes.delete(100);
     marked.clear();
-    processes.set(100, { ppid: 1, state: 'S', startTime: 'root-start' });
     processes.set(101, { ppid: 1, state: 'S', startTime: 'old-start' });
+
+    await terminateProcessTree(
+      100,
+      vi.fn(),
+      { platform: 'linux', execFile, kill },
+      { observation },
+    );
+
+    expect(kill).toHaveBeenCalledWith(101, 'SIGSTOP');
+    expect(kill).toHaveBeenCalledWith(101, 'SIGKILL');
+    expect(kill).toHaveBeenCalledWith(100, 'SIGSTOP');
+  });
+
+  it('does not signal a reused POSIX PID after its marker disappears', async () => {
+    const marker = 'marker-value';
+    const processes = new Map<number, FakeProcess>([
+      [100, { ppid: 1, state: 'S', startTime: 'root-start' }],
+      [101, { ppid: 100, state: 'S', startTime: 'old-start' }],
+    ]);
+    const marked = new Set([100, 101]);
+    const execFile = vi.fn((_command, args, _options, callback) => {
+      if (args.includes('pid=,command=')) {
+        callback(null, [...marked].map((pid) =>
+          `${pid} node AW_NATIVE_CLI_PROCESS_MARKER=${marker}`
+        ).join('\n'));
+        return;
+      }
+      callback(null, renderPosixTable(processes));
+    });
+    const kill = vi.fn((pid: number, signal: string) => {
+      const entry = processes.get(pid);
+      if (entry && signal === 'SIGSTOP') processes.set(pid, { ...entry, state: 'T' });
+      if (signal === 'SIGKILL') processes.delete(pid);
+    });
+    const observation = observeProcessTree(100, marker, {
+      platform: 'linux',
+      execFile,
+      kill,
+    });
+    await Promise.resolve();
+    marked.clear();
+    processes.set(101, { ppid: 1, state: 'S', startTime: 'reused-start' });
 
     await terminateProcessTree(
       100,
@@ -278,7 +322,7 @@ describe('process-tree', () => {
 
     expect(kill).not.toHaveBeenCalledWith(101, 'SIGSTOP');
     expect(kill).not.toHaveBeenCalledWith(101, 'SIGKILL');
-    expect(kill).not.toHaveBeenCalledWith(100, 'SIGSTOP');
+    expect(processes.has(101)).toBe(true);
   });
 
   it('falls back to the direct child when POSIX observation cannot see its marker', async () => {

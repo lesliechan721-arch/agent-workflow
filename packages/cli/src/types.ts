@@ -258,10 +258,36 @@ export interface BuildConfigManifestOverrides {
   codex?: Record<string, never>;
 }
 
+export interface BuildConfigRuntimeExport {
+  name: string;
+  source: string;
+}
+
+export interface BuildConfigImportReference {
+  plugin: string;
+  export: string;
+}
+
+export interface BuildConfigBuildImport extends BuildConfigImportReference {
+  env: string;
+}
+
+export interface BuildConfigSkillRuntimeFile {
+  skill: string;
+  target: string;
+  platforms?: PlatformName[];
+  source?: string;
+  import?: BuildConfigImportReference;
+}
+
 export interface BuildConfig {
+  cacheable?: true;
   templates?: BuildConfigTemplates;
   fileRules?: Partial<Record<PlatformName, BuildConfigFileRuleSet>>;
   manifestOverrides?: BuildConfigManifestOverrides;
+  runtimeExports?: BuildConfigRuntimeExport[];
+  buildImports?: BuildConfigBuildImport[];
+  skillRuntimeFiles?: BuildConfigSkillRuntimeFile[];
 }
 
 export type PluginLifecycleEvent = 'install' | 'upgrade' | 'uninstall';

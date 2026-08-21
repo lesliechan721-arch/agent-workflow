@@ -306,9 +306,10 @@ describe('plugin script test runner', () => {
         '..',
         '..',
         '..',
-        '.agents',
-        'skills',
-        'create-aw-plugin',
+        'packages',
+        'cli',
+        'dist',
+        'authoring',
         'assets',
         'aw-config.mjs',
       ),
@@ -834,5 +835,58 @@ describe('plugin script test runner', () => {
     expect(combinedOutput).not.toContain('8675309');
     expect(combinedOutput).not.toContain('enabled=true');
     expect(combinedOutput).toContain('token=[REDACTED] pin=[REDACTED] enabled=[REDACTED]');
+  });
+
+  it('uses the catalog runtime resolver when plugin:test bundles a projected Skill reference', async () => {
+    const repoRoot = await makeTempRepo();
+    const providerRoot = path.join(repoRoot, 'plugins', 'registry-provider');
+    await fs.outputJson(path.join(providerRoot, '.agents-plugin', 'plugin.json'), {
+      name: 'registry-provider',
+      version: '0.1.0',
+      description: 'registry provider',
+      compatibility: { aw: { minVersion: '0.0.0' } },
+      marketplace: {
+        category: 'workflow',
+        strict: true,
+        policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
+      },
+      buildConfig: {
+        runtimeExports: [{ name: 'registry', source: './registry.json' }],
+      },
+    }, { spaces: 2 });
+    await fs.outputFile(path.join(providerRoot, 'registry.json'), '{"catalog":true}\n');
+
+    const manifest = await readManifest(repoRoot);
+    manifest.buildConfig = {
+      skillRuntimeFiles: [{
+        skill: 'commit',
+        target: 'references/registry.json',
+        import: { plugin: 'registry-provider', export: 'registry' },
+      }],
+    };
+    manifest.scripts = { tests: { node: ['./scripts/projection.test.mjs'] } };
+    await writeManifest(repoRoot, manifest);
+    await writeNodeTestFile(repoRoot, 'projection.test.mjs', [
+      'import test from "node:test";',
+      'import assert from "node:assert/strict";',
+      'import { readFile } from "node:fs/promises";',
+      'import path from "node:path";',
+      'test("catalog projection", async () => {',
+      '  const context = JSON.parse(await readFile(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
+      '  const projected = JSON.parse(await readFile(path.join(context.plugin.rootDir, "codex", "skills", "commit", "references", "registry.json"), "utf8"));',
+      '  assert.deepEqual(projected, { catalog: true });',
+      '});',
+    ].join('\n'));
+    const output = captureOutput();
+
+    const exitCode = await runPluginScriptTests(['git-commit', '--platform', 'codex'], {
+      repoRoot,
+      stdout: output.stdout,
+      stderr: output.stderr,
+      env: { ...process.env, PATH: process.env.PATH ?? '' },
+    });
+
+    expect(exitCode, `${output.readStdout()}\n${output.readStderr()}`).toBe(0);
+    expect(output.readStdout()).toContain('git-commit / codex: passed');
   });
 });

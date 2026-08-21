@@ -1,41 +1,42 @@
 # agent-skill-eval-runner
 
-Optional execution plugin for independently audited Agent Skill evals.
+Manual orchestration plugin for independently audited Agent Skill evals.
 
-It consumes `EvalExecutionPlan`, runs each admitted case in a provider process against a per-run
-Skill snapshot, and emits `EvalRunBundle`. It does not design cases, approve Oracle, attribute
-failures to the Skill, modify production Skills, publish reports, or maintain project
-batch/currentness state.
+Current plugin contract version: `0.3.1`.
+
+It checks the human authorization gate and preflight `EvalAuditResult`, then calls the shared
+`aw-skill-eval` command to validate and run an `EvalExecutionPlan`. It hands the resulting
+`EvalRunBundle` to `audit-agent-skill-evals(result-triage)`. It does not implement providers,
+snapshots, process control, timeout handling, evidence grading, machine schemas, or validators.
 
 ## Dependency
 
-Install `agent-skill-toolkit >= 0.4.0` manually until plugin dependencies are supported.
+Before use, manually install:
 
-## Evidence boundary
+- `agent-skill-toolkit >= 0.5.0`
+- `@lesliechan721/agent-skill-eval >= 0.1.0-beta.2`, with `aw-skill-eval` on `PATH`
 
-- `with-skill` uses the plan target digest.
-- `without-skill` has no Skill path or digest.
-- `previous-version` requires a separately bound path and digest.
-- `independentContext` reflects provider clean-context capability; a new process or file snapshot
-  alone is not enough.
-- The runner rechecks source Skill digests after execution. Snapshots reduce accidental mutation,
-  but are not an operating-system sandbox.
+Do not use `npx`. This plugin does not install dependencies or access the network implicitly.
 
-## Providers
+## Use
 
-- `command`: explicit executable and argv template; no shell; makes no clean-context, grading, trace
-  or baseline claim beyond its capability document.
-- `codex-trigger`: reuses the installed AW CLI Codex app-server driver for strict, with-skill
-  trigger discovery. Set `AW_CODEX_EVAL_DRIVER_ROOT` to the built `packages/cli/dist/scripts`
-  directory. Behavior and baseline runs remain provider-specific.
+Use `$run-agent-skill-evals` explicitly and provide the plan path. The Skill stops unless the user
+has authorized model cost, external processes, credentials, network access, and temporary output
+that the plan requires.
 
-Supported command placeholders are `{prompt}`, `{caseId}`, `{configuration}`, `{skillPath}`, and
-`{outputDir}`. Environment inheritance is explicit and disabled by default.
+The package follows the AW lockstep version, so it has no independent SemVer upper bound. The Skill
+fails closed unless the bin exists and runtime capabilities v1 and plan/audit/bundle schema v2 are
+compatible. It does not use a
+Skill-local script, provider, schema copy, or validator as the execution path.
 
-## Validation
+## Boundary
 
-```bash
-node skills/run-agent-skill-evals/scripts/validate-eval-execution-plan.mjs <plan.json>
-node skills/run-agent-skill-evals/scripts/run-agent-skill-evals.mjs <plan.json> --validate-only
-pnpm plugin:test agent-skill-eval-runner
-```
+- The preflight audit must come from `audit-agent-skill-evals` and match the current Skill and case
+  corpus digests.
+- The shared package owns provider execution, runtime snapshots, process cleanup, timeout,
+  capture, bundle validation, and evidence-level calculation.
+- Standalone process observation does not guarantee descendant cleanup or produce comparative or
+  release-grade evidence. Consumers must preserve the bundle evidence level and limitations.
+- Result interpretation and failure attribution belong to a fresh-context
+  `audit-agent-skill-evals(result-triage)` handoff.
+- This plugin does not modify production Skills or publish final reviews.

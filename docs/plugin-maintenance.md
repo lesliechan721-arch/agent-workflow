@@ -19,17 +19,51 @@
 
 - 旧默认路由仍使用 [create-aw-plugin](../.agents/skills/create-aw-plugin/README.md) 和 [skill-review](../.agents/skills/skill-review/README.md)。
 - `agent-content-toolkit` 提供 `write-agent-content` 与 `review-agent-content`。
-- `agent-skill-toolkit` 提供 Skill author/review 与 Eval design/audit，人工依赖 `agent-content-toolkit >= 0.2.0`。
-- `aw-plugin-development` 提供显式调用的 AW Author/Reviewer，人工依赖 `agent-skill-toolkit >= 0.1.0` 和 `agent-content-toolkit >= 0.2.0`。
-- 新 AW Reviewer 只处理 `plugins/<name>/`，repo-local 或 portable Skill 使用通用 `review-agent-skill`。
+- `agent-skill-toolkit` 提供 Skill author/review 与 Eval design/audit，依赖 `agent-content-toolkit >= 0.5.0`。
+- `aw-plugin-development` 提供显式调用的 AW Author/Reviewer，依赖 `agent-content-toolkit >= 0.5.0` 和 `agent-skill-toolkit >= 0.7.1`；真实模型 Eval 还需要 `agent-skill-eval-runner >= 0.3.0` 或兼容 runner。
+- AW Author/Reviewer 适用于任意兼容 workspace root；目标根由 `.agents-plugin/plugin.json` 标识，不限于 `plugins/<name>/`。repo-local 旧 `create-aw-plugin` 仍只处理本仓库 `plugins/<name>/`；不含 AW manifest 的 repo-local 或 portable Skill 使用通用 `review-agent-skill`。
 - 迁移期间新工作流不得静默替代旧入口；完成固定行为对照后再切换默认路由。
+- 确定性作者工具统一使用公开 CLI：`aw plugin init`、`aw plugin add-skill`、`aw plugin validate` 和 `aw plugin check-versions`。先运行 `aw --version`；不要使用 `npx` 或隐式安装。repo-local `create-aw-plugin` 与 `aw-plugin-development` Author 只编排这些命令，不保存第二份核心实现。
+- 默认插件根是 `<repo-root>/plugins/<plugin-name>`。兼容工作区使用其它布局时，`init`、`add-skill` 和单插件 `check-versions` 显式传 `--plugin-root <path>`；该路径必须位于 Git repo root 内并与 plugin name 匹配。`validate` 和 `check-versions` 拒绝 repo/plugin root、`.agents-plugin` 或 manifest path chain 中的符号链接和错误节点类型；不要用链接把作者根或 manifest 重定向到仓库外。`check-versions --all` 保留 `plugins/` 扫描语义。
 - 模型 Eval 和报告发布属于专用工作流，不在通用测试指南中重复定义。Reviewer 发布报告不修改 production README；登记由 Author 或 release 工具执行。
+
+## 旧入口迁移门禁
+
+当前迁移状态是 `parallel`。旧 `create-aw-plugin` 和 `skill-review` 仍是仓库默认路由，不能删除或由新插件静默替换。原因有两点：真实模型行为证据尚未完成；repo-local static Skill 的 batch 执行、证据 currentness 和正式报告发布仍由旧 `skill-review` 拥有。
+
+[迁移合同](plugin-development-migration.json)记录旧到新能力 owner、保留能力和 cutover gate。运行：
+
+```bash
+pnpm migration:verify:plugin-development
+```
+
+迁移合同保留 `parallel`、`ready-for-cutover` 和 `retired` 三个生命周期词汇，但当前验证器只接受 `parallel`。它要求旧路由、全部旧入口、新入口、12 项固定能力 owner、7 项固定 gate 声明和当前结构性证据路径都存在。`replacementRoutes` 只声明未来路由，当前不能据此声称路由已生效。
+
+在实现 canonical 模型证据和 currentness 验证，并提供自动 cutover 工具前，`ready-for-cutover` 和 `retired` 都会 fail closed，且 `cutoverReady` 始终为 `false`。未来切换状态前，必须同时满足：
+
+1. 四个旧 P1 有结构性实现证据。
+2. materialized Skill runtime closure 有生产实现和单测证据。
+3. Reviewer behavior 的 release suite 和正式模型证据完成。
+4. 四层所有新 Skill 的 trigger release suite 和正式模型证据完成。
+5. AW Author/Reviewer behavior 的 release suite 和正式模型证据完成。
+6. Eval audit → run → result triage 端到端 release 证据完成。
+7. repo-local static Skill 的 batch、currentness 和报告发布已明确决定保留、迁移或退役。
+
+当前合同中的 `modelEvidence` 必须明确为 `null`，不能用自报路径或摘要绕过门禁。未来的 cutover 验证必须复用正式 report/eval canonical validators，验证 release suite、模型证据和 currentness；不能只修改迁移 JSON，也不能在迁移脚本中维护第二套临时报表验证逻辑。
+
+## Catalog build-time 文件复用
+
+- provider 用 `buildConfig.runtimeExports: [{ "name": "<stable-kebab-name>", "source": "./<file>" }]` 显式发布 canonical source file。source 必须是插件根内 regular non-symlink file，且不能位于 Skill、report、eval、dependency 或 build temporary tree。
+- consumer build 用 `buildConfig.buildImports: [{ "plugin": "<provider>", "export": "<name>", "env": "AW_PLUGIN_IMPORT_<NAME>" }]`。`scripts.node.build` 只读取该 env 指向的只读绝对文件，不使用 `../<sibling>`。Skill 文件投影用 `buildConfig.skillRuntimeFiles: [{ "skill": "<static-skill-key>", "target": "references/<file>", "import": { "plugin": "<provider>", "export": "<name>" } }]`；own staged source 把 `import` 换成 `source: "./<file>"`。
+- `skillRuntimeFiles.platforms` 可限制 `claude` 或 `codex`；缺省为 consumer 支持的全部平台。target 只允许 static Skill 内 `references/`、`assets/` 或 `scripts/` 文件，source tree 或 staging build 已有 target 时必须改用不同路径，不能覆盖。
+- CLI frontmatter registry 只用 reserved `{ "plugin": "@aw/cli", "export": "skill-frontmatter-capabilities" }` build import。它不能直接投影到 Skill，也不存在其它通用 CLI source export。版本比较工具只有在 base/current 都拥有完整 workspace CLI source 时才分别绑定对应 root/version；单侧 ownership 或 partial source 失败。两侧都不拥有时，从同一个经验证的 installed external provider 独立物化两个相同身份的 root；不得让 base 使用或复制 current registry root/bytes。
+- 只有确定性、输出完全由 registered build input 决定的 `scripts.node.build` 才声明 `buildConfig.cacheable: true`。该字段不接受 `false`，也不能在没有 build script 时使用。
 
 ## 验证与版本
 
 - 使用 `pnpm plugin:test <plugin>` 运行单插件确定性测试；使用 `pnpm plugin:test --all` 检查全部插件。
 - 新工作流的 generated standards、schemas 和 handoff contracts 必须通过 check-only contract test；CI 不自动改写生成文件。
-- repo-local 与 `aw-plugin-development` 作者 validator 的 JavaScript import scanner 必须保持同步；门禁覆盖 static import、export-from、dynamic import、`require()`、`require.resolve()`、非代码文本过滤和 `${...}` 代码扫描。
+- CLI 作者 validator 的 JavaScript import scanner 是唯一实现；门禁覆盖 static import、export-from、dynamic import、`require()`、`require.resolve()`、非代码文本过滤和 `${...}` 代码扫描。
 - 三层插件应分别验证，并增加同时安装三个插件的组合测试。
 - 通用确定性测试的分层、价值门禁和验证选择见[测试指南](testing.md)。
 - 稳定发布时检查源码 manifest version 的流程见 README 的正式版发布说明。

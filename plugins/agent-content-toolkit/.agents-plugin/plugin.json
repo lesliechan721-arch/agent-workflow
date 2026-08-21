@@ -1,6 +1,6 @@
 {
   "name": "agent-content-toolkit",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Create and review agent-facing documents with minimal context load, clear pointers, and proportionate control.",
   "compatibility": {
     "aw": {
@@ -8,11 +8,42 @@
     }
   },
   "skills": "./skills",
+  "buildConfig": {
+    "cacheable": true,
+    "runtimeExports": [
+      {
+        "name": "content-rules",
+        "source": "./standards/rules.json"
+      },
+      {
+        "name": "reference-audit-result-schema",
+        "source": "./schemas/reference-audit-result.schema.json"
+      }
+    ],
+    "skillRuntimeFiles": [
+      {
+        "skill": "review-agent-content",
+        "source": "./schemas/reference-audit-result.schema.json",
+        "target": "assets/reference-audit-result.schema.json"
+      },
+      {
+        "skill": "review-agent-content",
+        "source": "./scripts/validate-json-contract.mjs",
+        "target": "scripts/validate-json-contract.mjs"
+      }
+    ]
+  },
   "scripts": {
+    "node": {
+      "build": {
+        "runner": "node",
+        "path": "./scripts/build.mjs",
+        "args": []
+      }
+    },
     "tests": {
       "node": [
-        "./scripts/contract.test.mjs",
-        "./scripts/reference-audit-contract.test.mjs"
+        "./scripts/contract.test.mjs"
       ]
     }
   },

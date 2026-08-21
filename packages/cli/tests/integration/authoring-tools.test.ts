@@ -1055,6 +1055,324 @@ describe('authoring tools', () => {
       .resolves.toBe(false);
   });
 
+  const externalPluginRootTest = fs.existsSync(
+    path.join(repoRoot(), 'packages', 'cli', 'dist'),
+  ) ? it : it.skip;
+  externalPluginRootTest('uses one explicit plugin root through the public authoring workflow', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-external-plugin-root-'));
+    tempDirs.push(tempRoot);
+    const workspaceRoot = path.join(tempRoot, 'workspace');
+    const pluginRoot = path.join(workspaceRoot, 'tools', 'demo');
+    await fs.ensureDir(path.join(workspaceRoot, 'tools'));
+    await runGit(workspaceRoot, ['init']);
+
+    await execFileAsync('node', [
+      createAwPluginScriptPath('init_plugin.mjs'),
+      'demo',
+      '--description',
+      'Create a plugin in an explicit compatible workspace root.',
+      '--skill-description',
+      'Create and maintain a deterministic explicit-root plugin workflow.',
+      '--skill-short-description',
+      'Maintain an explicit-root plugin workflow.',
+      '--repo-root',
+      workspaceRoot,
+      '--plugin-root',
+      'tools/demo',
+    ], { cwd: workspaceRoot, env: process.env });
+    await expect(fs.pathExists(path.join(workspaceRoot, 'plugins'))).resolves.toBe(false);
+
+    await execFileAsync('node', [
+      createAwPluginScriptPath('add_skill.mjs'),
+      'demo',
+      '--skill-name',
+      'second-workflow',
+      '--skill-description',
+      'Add a second deterministic workflow inside the explicit plugin root.',
+      '--skill-short-description',
+      'Add an explicit-root workflow Skill.',
+      '--repo-root',
+      workspaceRoot,
+      '--plugin-root',
+      'tools/demo',
+    ], { cwd: workspaceRoot, env: process.env });
+
+    for (const skillName of ['demo', 'second-workflow']) {
+      const skillPath = path.join(pluginRoot, 'skills', skillName, 'SKILL.md');
+      const scaffold = await fs.readFile(skillPath, 'utf8');
+      await fs.writeFile(
+        skillPath,
+        scaffold.replace(/\[TODO:[^\]]+\]/gu, '已完成明确、可验证的作者合同'),
+        'utf8',
+      );
+    }
+
+    const validation = await execFileAsync('node', [
+      validatePluginScriptPath(),
+      pluginRoot,
+      '--json',
+    ], { cwd: workspaceRoot, env: process.env, maxBuffer: 10 * 1024 * 1024 });
+    expect(JSON.parse(validation.stdout)).toMatchObject({ ok: true, profile: 'aw-source' });
+
+    await runGit(workspaceRoot, ['add', 'tools/demo']);
+    await runGit(workspaceRoot, [
+      '-c',
+      'user.name=AW Test',
+      '-c',
+      'user.email=aw-test@example.invalid',
+      'commit',
+      '-m',
+      'baseline',
+    ]);
+    await fs.appendFile(
+      path.join(pluginRoot, 'skills', 'second-workflow', 'SKILL.md'),
+      '\nChanged production behavior.\n',
+      'utf8',
+    );
+    const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
+    const manifest = await fs.readJson(manifestPath);
+    manifest.version = '0.1.1';
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+
+    const versionCheck = await execFileAsync('node', [
+      createAwPluginScriptPath('check_plugin_versions.mjs'),
+      'demo',
+      '--json',
+      '--repo-root',
+      workspaceRoot,
+      '--plugin-root',
+      'tools/demo',
+    ], { cwd: workspaceRoot, env: process.env, maxBuffer: 10 * 1024 * 1024 });
+    expect(JSON.parse(versionCheck.stdout).checks[0]).toMatchObject({
+      plugin: 'demo',
+      status: 'versionBumped',
+      baseVersion: '0.1.0',
+      currentVersion: '0.1.1',
+      productionChanged: true,
+    });
+  });
+
+  externalPluginRootTest('rejects add-skill path redirection without changing external bytes', async () => {
+    const cases = [
+      'plugin-root',
+      'manifest-directory',
+      'manifest',
+      'skills',
+      'skill-target-symlink',
+      'skill-target-file',
+      'skill-target-directory',
+    ] as const;
+    for (const pathCase of cases) {
+      const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), `aw-add-skill-${pathCase}-`));
+      tempDirs.push(tempRoot);
+      const workspaceRoot = path.join(tempRoot, 'workspace');
+      const toolsRoot = path.join(workspaceRoot, 'tools');
+      const victimRoot = path.join(tempRoot, 'victim');
+      const victimManifestPath = path.join(victimRoot, 'plugin.json');
+      const victimMarkerPath = path.join(victimRoot, 'marker.txt');
+      await fs.ensureDir(toolsRoot);
+      await fs.ensureDir(victimRoot);
+      await fs.writeFile(victimMarkerPath, 'victim-bytes\n', 'utf8');
+
+      let pluginRoot = path.join(toolsRoot, 'demo');
+      if (pathCase === 'plugin-root') {
+        await writeSourcePlugin(victimRoot, 'demo', createBaseManifest('demo'));
+        const externalPluginRoot = path.join(victimRoot, 'demo');
+        await fs.symlink(externalPluginRoot, pluginRoot, 'dir');
+      } else {
+        await writeSourcePlugin(toolsRoot, 'demo', createBaseManifest('demo'));
+        if (pathCase === 'manifest-directory') {
+          const manifestDirectory = path.join(pluginRoot, '.agents-plugin');
+          const externalManifestDirectory = path.join(victimRoot, '.agents-plugin');
+          await fs.copy(manifestDirectory, externalManifestDirectory);
+          await fs.remove(manifestDirectory);
+          await fs.symlink(externalManifestDirectory, manifestDirectory, 'dir');
+        } else if (pathCase === 'manifest') {
+          const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
+          await fs.copyFile(manifestPath, victimManifestPath);
+          await fs.remove(manifestPath);
+          await fs.symlink(victimManifestPath, manifestPath, 'file');
+        } else if (pathCase === 'skills') {
+          const externalSkillsRoot = path.join(victimRoot, 'skills');
+          await fs.ensureDir(externalSkillsRoot);
+          await fs.symlink(externalSkillsRoot, path.join(pluginRoot, 'skills'), 'dir');
+        } else if (pathCase === 'skill-target-symlink') {
+          const targetRoot = path.join(pluginRoot, 'skills', 'redirected-skill');
+          await fs.ensureDir(path.dirname(targetRoot));
+          await fs.symlink(victimRoot, targetRoot, 'dir');
+        } else if (pathCase === 'skill-target-file') {
+          await fs.outputFile(
+            path.join(pluginRoot, 'skills', 'redirected-skill'),
+            'existing target\n',
+          );
+        } else {
+          await fs.ensureDir(path.join(pluginRoot, 'skills', 'redirected-skill'));
+        }
+      }
+
+      const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
+      const manifestBefore = await fs.readFile(manifestPath);
+      const victimBefore = await fs.readFile(victimMarkerPath);
+      const expectedDiagnostic = {
+        'plugin-root': 'must not contain symbolic links',
+        'manifest-directory': 'must be a non-symbolic-link directory',
+        manifest: 'must be a regular non-symbolic-link file',
+        skills: 'must be a non-symbolic-link directory',
+        'skill-target-symlink': 'Skill already exists',
+        'skill-target-file': 'Skill already exists',
+        'skill-target-directory': 'Skill already exists',
+      }[pathCase];
+      await expect(execFileAsync('node', [
+        createAwPluginScriptPath('add_skill.mjs'),
+        'demo',
+        '--skill-name',
+        'redirected-skill',
+        '--skill-description',
+        'Reject redirected authoring paths without changing external victim bytes.',
+        '--skill-short-description',
+        'Reject redirected authoring paths safely.',
+        '--repo-root',
+        workspaceRoot,
+        '--plugin-root',
+        'tools/demo',
+      ], { cwd: workspaceRoot, env: process.env })).rejects.toMatchObject({
+        code: 1,
+        stderr: expect.stringContaining(expectedDiagnostic),
+      });
+
+      await expect(fs.readFile(manifestPath)).resolves.toEqual(manifestBefore);
+      await expect(fs.readFile(victimMarkerPath)).resolves.toEqual(victimBefore);
+      const pluginEntries = await fs.readdir(pluginRoot).catch(() => []);
+      expect(pluginEntries.some((entry) => entry.startsWith('.aw-add-skill-'))).toBe(false);
+      const manifestEntries = await fs.readdir(path.join(pluginRoot, '.agents-plugin')).catch(() => []);
+      expect(manifestEntries.some((entry) => entry.includes('.aw-tmp-'))).toBe(false);
+    }
+  });
+
+  externalPluginRootTest('rejects explicit plugin roots that escape the repository', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-root-escape-'));
+    tempDirs.push(tempRoot);
+    const workspaceRoot = path.join(tempRoot, 'workspace');
+    await fs.ensureDir(workspaceRoot);
+    await expect(execFileAsync('node', [
+      createAwPluginScriptPath('init_plugin.mjs'),
+      'demo',
+      '--description',
+      'Reject an escaped plugin root.',
+      '--no-skills',
+      '--repo-root',
+      workspaceRoot,
+      '--plugin-root',
+      '../demo',
+    ], { cwd: workspaceRoot, env: process.env })).rejects.toMatchObject({
+      stderr: expect.stringContaining('inside the repository root'),
+    });
+    await expect(fs.pathExists(path.join(tempRoot, 'demo'))).resolves.toBe(false);
+  });
+
+  externalPluginRootTest('rejects redirected plugin roots and manifests before authoring reads', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-authoring-root-fence-'));
+    tempDirs.push(tempRoot);
+    const workspaceRoot = path.join(tempRoot, 'workspace');
+    const victimRoot = path.join(tempRoot, 'victim');
+    const checkerPath = createAwPluginScriptPath('check_plugin_versions.mjs');
+    const defaultPluginRoot = path.join(workspaceRoot, 'plugins', 'default-demo');
+    const explicitPluginRoot = path.join(workspaceRoot, 'tools', 'explicit-demo');
+    const victimDefaultRoot = path.join(victimRoot, 'default-demo');
+    const victimManifestPath = path.join(victimRoot, 'explicit-plugin.json');
+
+    await writeSourcePlugin(
+      path.join(workspaceRoot, 'plugins'),
+      'default-demo',
+      createBaseManifest('default-demo'),
+    );
+    await writeSourcePlugin(
+      path.join(workspaceRoot, 'tools'),
+      'explicit-demo',
+      createBaseManifest('explicit-demo'),
+    );
+    await runGit(workspaceRoot, ['init']);
+    await runGit(workspaceRoot, ['add', 'plugins', 'tools']);
+    await runGit(workspaceRoot, [
+      '-c',
+      'user.name=AW Test',
+      '-c',
+      'user.email=aw-test@example.invalid',
+      'commit',
+      '-m',
+      'authoring fence baseline',
+    ]);
+
+    await writeSourcePlugin(victimRoot, 'default-demo', createBaseManifest('default-demo'));
+    await fs.copyFile(
+      path.join(explicitPluginRoot, '.agents-plugin', 'plugin.json'),
+      victimManifestPath,
+    );
+    await fs.remove(defaultPluginRoot);
+    await fs.symlink(victimDefaultRoot, defaultPluginRoot, 'dir');
+    const explicitManifestPath = path.join(explicitPluginRoot, '.agents-plugin', 'plugin.json');
+    await fs.remove(explicitManifestPath);
+    await fs.symlink(victimManifestPath, explicitManifestPath, 'file');
+
+    const defaultCheck = execFileAsync('node', [
+      checkerPath,
+      'default-demo',
+      '--repo-root',
+      workspaceRoot,
+    ], { cwd: workspaceRoot, env: process.env });
+    await expect(defaultCheck).rejects.toMatchObject({
+      code: 1,
+      stderr: expect.stringContaining(defaultPluginRoot),
+    });
+    await expect(defaultCheck).rejects.not.toMatchObject({
+      stderr: expect.stringContaining(victimDefaultRoot),
+    });
+
+    const explicitCheck = execFileAsync('node', [
+      checkerPath,
+      'explicit-demo',
+      '--repo-root',
+      workspaceRoot,
+      '--plugin-root',
+      'tools/explicit-demo',
+    ], { cwd: workspaceRoot, env: process.env });
+    await expect(explicitCheck).rejects.toMatchObject({
+      code: 1,
+      stderr: expect.stringContaining(explicitManifestPath),
+    });
+    await expect(explicitCheck).rejects.not.toMatchObject({
+      stderr: expect.stringContaining(victimManifestPath),
+    });
+
+    const validation = execFileAsync('node', [
+      validatePluginScriptPath(),
+      defaultPluginRoot,
+      '--json',
+    ], { cwd: workspaceRoot, env: process.env });
+    await expect(validation).rejects.toMatchObject({ code: 1 });
+    try {
+      await validation;
+    } catch (validationError) {
+      const result = JSON.parse((validationError as { stdout: string }).stdout);
+      expect(result).toMatchObject({
+        ok: false,
+        errors: [expect.stringContaining(defaultPluginRoot)],
+      });
+      expect(JSON.stringify(result)).not.toContain(victimDefaultRoot);
+    }
+
+    const allCheck = execFileAsync('node', [
+      checkerPath,
+      '--all',
+      '--repo-root',
+      workspaceRoot,
+    ], { cwd: workspaceRoot, env: process.env });
+    await expect(allCheck).rejects.toMatchObject({
+      code: 1,
+      stderr: expect.stringContaining(defaultPluginRoot),
+    });
+  });
+
   const productionVersionCheckTest = fs.existsSync(
     path.join(repoRoot(), 'packages', 'cli', 'dist'),
   ) ? it : it.skip;
@@ -1276,15 +1594,762 @@ describe('authoring tools', () => {
       .toEqual(['new-plugin', 'versioned-plugin']);
 
     await fs.remove(path.join(tempRepo, 'packages', 'cli', 'dist'));
-    await expect(execFileAsync('node', [
+    const publishedRuntimeResult = await execFileAsync('node', [
       checkerPath,
       '--all',
       '--',
+      '--json',
       '--repo-root',
       tempRepo,
-    ], { cwd: repoRoot(), env: process.env })).rejects.toMatchObject({
-      stderr: expect.stringContaining('requires a built CLI'),
+    ], { cwd: repoRoot(), env: process.env });
+    expect(JSON.parse(publishedRuntimeResult.stdout)).toMatchObject({
+      schemaVersion: 2,
+      ok: true,
     });
+
+    await writeSourcePlugin(
+      path.join(tempRepo, 'plugins'),
+      'deleted-plugin',
+      createBaseManifest('deleted-plugin'),
+    );
+    await runGit(tempRepo, ['add', 'plugins/deleted-plugin']);
+    await runGit(tempRepo, [
+      '-c',
+      'user.name=AW Test',
+      '-c',
+      'user.email=aw-test@example.invalid',
+      'commit',
+      '-m',
+      'add plugin for deletion check',
+    ]);
+    await fs.remove(path.join(tempRepo, 'plugins', 'deleted-plugin'));
+    const deletedPluginResult = await execFileAsync('node', [
+      checkerPath,
+      '--all',
+      '--json',
+      '--repo-root',
+      tempRepo,
+    ], { cwd: repoRoot(), env: process.env });
+    expect(JSON.parse(deletedPluginResult.stdout).checks).toContainEqual(
+      expect.objectContaining({
+        plugin: 'deleted-plugin',
+        status: 'deleted',
+      }),
+    );
+  });
+
+  productionVersionCheckTest('resolves version-check runtime imports from isolated base and current source sets', async () => {
+    const distRoot = path.join(repoRoot(), 'packages', 'cli', 'dist');
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-authoring-version-imports-'));
+    tempDirs.push(tempRoot);
+    const tempRepo = path.join(tempRoot, 'repo');
+    const checkerTempRoot = path.join(tempRoot, 'checker-tmp');
+    await fs.ensureDir(tempRepo);
+    await fs.ensureDir(checkerTempRoot);
+    await fs.ensureSymlink(distRoot, path.join(tempRepo, 'packages', 'cli', 'dist'), 'dir');
+
+    const providerBytes = `${'base-provider-bytes-'.repeat(512 * 1024)}\n`;
+    const { pluginDir: providerRoot } = await writeSourcePlugin(
+      path.join(tempRepo, 'plugins'),
+      'runtime-provider',
+      createBaseManifest('runtime-provider', {
+        buildConfig: {
+          runtimeExports: [{ name: 'standard', source: './standard.txt' }],
+        },
+      }),
+      { 'standard.txt': providerBytes },
+    );
+    const { manifestPath: consumerManifestPath } = await writeSourcePlugin(
+      path.join(tempRepo, 'plugins'),
+      'runtime-consumer',
+      createBaseManifest('runtime-consumer', {
+        skills: './skills',
+        buildConfig: {
+          skillRuntimeFiles: [{
+            skill: 'consumer-skill',
+            target: 'references/standard.txt',
+            import: { plugin: 'runtime-provider', export: 'standard' },
+          }],
+        },
+      }),
+      {
+        'skills/consumer-skill/SKILL.md': [
+          '---',
+          'name: consumer-skill',
+          'description: Validate isolated catalog runtime imports.',
+          '---',
+          '',
+          '# Consumer Skill',
+        ].join('\n'),
+        'skills/consumer-skill/agents/openai.yaml': [
+          'interface:',
+          '  display_name: "Consumer Skill"',
+          '  short_description: "Validate isolated runtime imports"',
+          'policy:',
+          '  allow_implicit_invocation: true',
+        ].join('\n'),
+      },
+    );
+    await writeSourcePlugin(
+      path.join(tempRepo, 'plugins'),
+      'runtime-build-consumer',
+      createBaseManifest('runtime-build-consumer', {
+        skills: './skills',
+        buildConfig: {
+          buildImports: [{
+            plugin: 'runtime-provider',
+            export: 'standard',
+            env: 'AW_PLUGIN_IMPORT_STANDARD',
+          }],
+          skillRuntimeFiles: [{
+            skill: 'build-consumer-skill',
+            target: 'references/standard.txt',
+            source: './generated-standard.txt',
+          }],
+        },
+        scripts: {
+          node: {
+            build: { runner: 'node', path: './build.mjs' },
+          },
+        },
+      }),
+      {
+        'build.mjs': [
+          "import fs from 'node:fs';",
+          "import path from 'node:path';",
+          "import { fileURLToPath } from 'node:url';",
+          '',
+          "const pluginRoot = path.dirname(fileURLToPath(import.meta.url));",
+          "fs.copyFileSync(process.env.AW_PLUGIN_IMPORT_STANDARD, path.join(pluginRoot, 'generated-standard.txt'));",
+        ].join('\n'),
+        'skills/build-consumer-skill/SKILL.md': [
+          '---',
+          'name: build-consumer-skill',
+          'description: Validate a plugin runtime export build import.',
+          '---',
+          '',
+          '# Build Consumer Skill',
+        ].join('\n'),
+        'skills/build-consumer-skill/agents/openai.yaml': [
+          'interface:',
+          '  display_name: "Build Consumer Skill"',
+          '  short_description: "Validate a runtime export build import"',
+          'policy:',
+          '  allow_implicit_invocation: true',
+        ].join('\n'),
+      },
+    );
+    await runGit(tempRepo, ['init']);
+    await runGit(tempRepo, ['add', 'plugins']);
+    await runGit(tempRepo, [
+      '-c',
+      'user.name=AW Test',
+      '-c',
+      'user.email=aw-test@example.invalid',
+      'commit',
+      '-m',
+      'runtime import baseline',
+    ]);
+
+    await fs.writeFile(
+      path.join(providerRoot, 'standard.txt'),
+      `${'current-provider-bytes-'.repeat(512 * 1024)}\n`,
+      'utf8',
+    );
+    const checkerPath = createAwPluginScriptPath('check_plugin_versions.mjs');
+    let allConsumersError: { stdout?: string } | undefined;
+    try {
+      await execFileAsync('node', [
+        checkerPath,
+        '--all',
+        '--json',
+        '--repo-root',
+        tempRepo,
+      ], {
+        cwd: repoRoot(),
+        env: { ...process.env, TMPDIR: checkerTempRoot },
+        maxBuffer: 20 * 1024 * 1024,
+      });
+    } catch (error) {
+      allConsumersError = error as { stdout?: string };
+    }
+    const allConsumerChecks = JSON.parse(allConsumersError!.stdout!).checks;
+    expect(allConsumerChecks).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        plugin: 'runtime-build-consumer',
+        status: 'missingVersionBump',
+        productionChanged: true,
+      }),
+      expect.objectContaining({
+        plugin: 'runtime-consumer',
+        status: 'missingVersionBump',
+        productionChanged: true,
+      }),
+    ]));
+
+    const consumerManifest = await fs.readJson(consumerManifestPath);
+    consumerManifest.version = '0.2.0';
+    await fs.writeJson(consumerManifestPath, consumerManifest, { spaces: 2 });
+
+    const isolated = await execFileAsync('node', [
+      checkerPath,
+      'runtime-consumer',
+      '--json',
+      '--repo-root',
+      tempRepo,
+    ], {
+      cwd: repoRoot(),
+      env: { ...process.env, TMPDIR: checkerTempRoot },
+      maxBuffer: 20 * 1024 * 1024,
+    });
+    expect(JSON.parse(isolated.stdout).checks[0]).toMatchObject({
+      status: 'versionBumped',
+      productionChanged: true,
+      changedPaths: expect.arrayContaining([
+        'codex/skills/consumer-skill/references/standard.txt',
+        'claude/skills/consumer-skill/references/standard.txt',
+      ]),
+    });
+
+    await fs.remove(providerRoot);
+    let missingProviderError: { stdout?: string; stderr?: string } | undefined;
+    try {
+      await execFileAsync('node', [
+        checkerPath,
+        'runtime-consumer',
+        '--json',
+        '--repo-root',
+        tempRepo,
+      ], {
+        cwd: repoRoot(),
+        env: { ...process.env, TMPDIR: checkerTempRoot },
+        maxBuffer: 20 * 1024 * 1024,
+      });
+    } catch (error) {
+      missingProviderError = error as { stdout?: string; stderr?: string };
+    }
+    const missingProviderReport = JSON.parse(missingProviderError!.stdout!);
+    expect(missingProviderReport.checks[0]).toMatchObject({
+      status: 'error',
+      errors: [expect.stringContaining('provider plugin "runtime-provider" is unavailable')],
+    });
+    expect(`${missingProviderError?.stdout ?? ''}${missingProviderError?.stderr ?? ''}`)
+      .not.toContain('ENOTEMPTY');
+    await expect(fs.readdir(checkerTempRoot)).resolves.toEqual([]);
+
+    consumerManifest.buildConfig.skillRuntimeFiles[0].import.plugin = 'base-missing-provider';
+    await fs.writeJson(consumerManifestPath, consumerManifest, { spaces: 2 });
+    await runGit(tempRepo, ['add', 'plugins']);
+    await runGit(tempRepo, [
+      '-c',
+      'user.name=AW Test',
+      '-c',
+      'user.email=aw-test@example.invalid',
+      'commit',
+      '-m',
+      'missing base provider',
+    ]);
+    consumerManifest.buildConfig.skillRuntimeFiles[0].import.plugin = 'current-missing-provider';
+    await fs.writeJson(consumerManifestPath, consumerManifest, { spaces: 2 });
+
+    let twoSidedError: { stdout?: string } | undefined;
+    try {
+      await execFileAsync('node', [
+        checkerPath,
+        'runtime-consumer',
+        '--json',
+        '--repo-root',
+        tempRepo,
+      ], {
+        cwd: repoRoot(),
+        env: { ...process.env, TMPDIR: checkerTempRoot },
+        maxBuffer: 20 * 1024 * 1024,
+      });
+    } catch (error) {
+      twoSidedError = error as { stdout?: string };
+    }
+    expect(JSON.parse(twoSidedError!.stdout!).checks[0].errors).toEqual([
+      expect.stringContaining('base: Invalid catalog runtime import: provider plugin "base-missing-provider" is unavailable'),
+      expect.stringContaining('Secondary bundle failure: current: Invalid catalog runtime import: provider plugin "current-missing-provider" is unavailable'),
+    ]);
+    await expect(fs.readdir(checkerTempRoot)).resolves.toEqual([]);
+  });
+
+  productionVersionCheckTest('validates new plugin runtime imports before reporting new', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-authoring-new-import-'));
+    tempDirs.push(tempRoot);
+    const tempRepo = path.join(tempRoot, 'repo');
+    await fs.ensureDir(tempRepo);
+    await fs.ensureSymlink(
+      path.join(repoRoot(), 'packages', 'cli', 'dist'),
+      path.join(tempRepo, 'packages', 'cli', 'dist'),
+      'dir',
+    );
+    const { pluginDir } = await writeSourcePlugin(
+      path.join(tempRepo, 'plugins'),
+      'new-import-consumer',
+      createBaseManifest('new-import-consumer', {
+        skills: './skills',
+        buildConfig: {
+          skillRuntimeFiles: [{
+            skill: 'consumer-skill',
+            target: 'references/provider.txt',
+            import: { plugin: 'missing-provider', export: 'provider-file' },
+          }],
+        },
+      }),
+      {
+        'skills/consumer-skill/SKILL.md': [
+          '---',
+          'name: consumer-skill',
+          'description: Validate a new plugin runtime import.',
+          '---',
+          '',
+          '# Consumer Skill',
+        ].join('\n'),
+        'skills/consumer-skill/agents/openai.yaml': [
+          'interface:',
+          '  display_name: "Consumer Skill"',
+          '  short_description: "Validate a new runtime import"',
+          'policy:',
+          '  allow_implicit_invocation: true',
+        ].join('\n'),
+      },
+    );
+    await runGit(tempRepo, ['init']);
+    await runGit(tempRepo, [
+      '-c',
+      'user.name=AW Test',
+      '-c',
+      'user.email=aw-test@example.invalid',
+      'commit',
+      '--allow-empty',
+      '-m',
+      'empty baseline',
+    ]);
+
+    const checker = execFileAsync('node', [
+      createAwPluginScriptPath('check_plugin_versions.mjs'),
+      'new-import-consumer',
+      '--json',
+      '--repo-root',
+      tempRepo,
+    ], { cwd: repoRoot(), env: process.env, maxBuffer: 10 * 1024 * 1024 });
+    await expect(checker).rejects.toMatchObject({ code: 1 });
+    try {
+      await checker;
+    } catch (error) {
+      const output = error as { stdout: string; stderr: string };
+      if (!output.stdout) throw new Error(output.stderr);
+      expect(JSON.parse(output.stdout).checks[0]).toMatchObject({
+        status: 'error',
+        errors: [expect.stringContaining('provider plugin "missing-provider" is unavailable')],
+      });
+    }
+
+    const validation = execFileAsync('node', [
+      validatePluginScriptPath(),
+      pluginDir,
+      '--json',
+    ], { cwd: tempRepo, env: process.env, maxBuffer: 10 * 1024 * 1024 });
+    await expect(validation).rejects.toMatchObject({ code: 1 });
+    try {
+      await validation;
+    } catch (error) {
+      expect(JSON.parse((error as { stdout: string }).stdout).errors).toEqual([
+        expect.stringContaining('provider plugin "missing-provider" is unavailable'),
+      ]);
+    }
+  });
+
+  productionVersionCheckTest('uses historical closure mode only for the Git base bundle', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-authoring-historical-closure-'));
+    tempDirs.push(tempRoot);
+    const tempRepo = path.join(tempRoot, 'repo');
+    await fs.ensureDir(tempRepo);
+    await fs.ensureSymlink(
+      path.join(repoRoot(), 'packages', 'cli', 'dist'),
+      path.join(tempRepo, 'packages', 'cli', 'dist'),
+      'dir',
+    );
+    const { pluginDir, manifestPath } = await writeSourcePlugin(
+      path.join(tempRepo, 'plugins'),
+      'historical-closure',
+      createBaseManifest('historical-closure', { skills: './skills' }),
+      {
+        'skills/historical/SKILL.md': [
+          '---',
+          'name: historical',
+          'description: Validate a historical plugin closure.',
+          '---',
+          '',
+          '[policy](POLICY.md)',
+        ].join('\n'),
+        'skills/historical/agents/openai.yaml': [
+          'interface:',
+          '  display_name: "Historical Closure"',
+          '  short_description: "Validate a historical closure"',
+          'policy:',
+          '  allow_implicit_invocation: true',
+        ].join('\n'),
+      },
+    );
+    await runGit(tempRepo, ['init']);
+    await runGit(tempRepo, ['add', 'plugins']);
+    await runGit(tempRepo, [
+      '-c',
+      'user.name=AW Test',
+      '-c',
+      'user.email=aw-test@example.invalid',
+      'commit',
+      '-m',
+      'historical invalid closure',
+    ]);
+
+    const policyPath = path.join(pluginDir, 'skills', 'historical', 'POLICY.md');
+    await fs.writeFile(policyPath, 'current policy\n', 'utf8');
+    const checkerPath = createAwPluginScriptPath('check_plugin_versions.mjs');
+
+    let missingBumpError: { stdout?: string } | undefined;
+    try {
+      await execFileAsync('node', [
+        checkerPath,
+        'historical-closure',
+        '--json',
+        '--repo-root',
+        tempRepo,
+      ], { cwd: repoRoot(), env: process.env, maxBuffer: 10 * 1024 * 1024 });
+    } catch (error) {
+      missingBumpError = error as { stdout?: string };
+    }
+    expect(JSON.parse(missingBumpError!.stdout!).checks[0]).toMatchObject({
+      status: 'missingVersionBump',
+      productionChanged: true,
+    });
+
+    const manifest = await fs.readJson(manifestPath);
+    manifest.version = '0.0.9';
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+    const downgrade = execFileAsync('node', [
+      checkerPath,
+      'historical-closure',
+      '--json',
+      '--repo-root',
+      tempRepo,
+    ], { cwd: repoRoot(), env: process.env, maxBuffer: 10 * 1024 * 1024 });
+    await expect(downgrade).rejects.toMatchObject({ code: 1 });
+    try {
+      await downgrade;
+    } catch (error) {
+      expect(JSON.parse((error as { stdout: string }).stdout).checks[0].status)
+        .toBe('versionDowngrade');
+    }
+
+    manifest.version = '0.2.0';
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+    const bumped = await execFileAsync('node', [
+      checkerPath,
+      'historical-closure',
+      '--json',
+      '--repo-root',
+      tempRepo,
+    ], { cwd: repoRoot(), env: process.env, maxBuffer: 10 * 1024 * 1024 });
+    expect(JSON.parse(bumped.stdout).checks[0]).toMatchObject({
+      status: 'versionBumped',
+      productionChanged: true,
+    });
+
+    await fs.remove(policyPath);
+    const invalidCurrent = execFileAsync('node', [
+      checkerPath,
+      'historical-closure',
+      '--json',
+      '--repo-root',
+      tempRepo,
+    ], { cwd: repoRoot(), env: process.env, maxBuffer: 10 * 1024 * 1024 });
+    await expect(invalidCurrent).rejects.toMatchObject({ code: 1 });
+    try {
+      await invalidCurrent;
+    } catch (error) {
+      expect(JSON.parse((error as { stdout: string }).stdout).checks[0]).toMatchObject({
+        status: 'error',
+        errors: [expect.stringContaining('current: Invalid runtime Skill closure')],
+      });
+    }
+  });
+
+  productionVersionCheckTest('isolates the base CLI virtual registry during version checks', async () => {
+    const distRoot = path.join(repoRoot(), 'packages', 'cli', 'dist');
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-authoring-version-cli-import-'));
+    tempDirs.push(tempRoot);
+    const tempRepo = path.join(tempRoot, 'repo');
+    const checkerTempRoot = path.join(tempRoot, 'checker-tmp');
+    const registryPath = path.join(
+      tempRepo,
+      'packages',
+      'cli',
+      'src',
+      'utils',
+      'skill-frontmatter-capabilities.json',
+    );
+    await fs.ensureDir(path.dirname(registryPath));
+    await fs.ensureDir(checkerTempRoot);
+    await fs.ensureSymlink(distRoot, path.join(tempRepo, 'packages', 'cli', 'dist'), 'dir');
+    await fs.writeJson(path.join(tempRepo, 'packages', 'cli', 'package.json'), {
+      name: '@fixture/aw',
+      version: '1.0.0',
+      type: 'module',
+    }, { spaces: 2 });
+    await fs.writeJson(registryPath, { generation: 'base' }, { spaces: 2 });
+
+    const { manifestPath } = await writeSourcePlugin(
+      path.join(tempRepo, 'plugins'),
+      'virtual-import-consumer',
+      createBaseManifest('virtual-import-consumer', {
+        skills: './skills',
+        buildConfig: {
+          buildImports: [{
+            plugin: '@aw/cli',
+            export: 'skill-frontmatter-capabilities',
+            env: 'AW_PLUGIN_IMPORT_CAPABILITIES',
+          }],
+          skillRuntimeFiles: [{
+            skill: 'virtual-import-skill',
+            target: 'references/capabilities.json',
+            source: './generated-capabilities.json',
+          }],
+        },
+        scripts: {
+          node: {
+            build: { runner: 'node', path: './build.mjs' },
+          },
+        },
+      }),
+      {
+        'build.mjs': [
+          "import fs from 'node:fs';",
+          "import path from 'node:path';",
+          "import { fileURLToPath } from 'node:url';",
+          '',
+          "const pluginRoot = path.dirname(fileURLToPath(import.meta.url));",
+          "fs.copyFileSync(process.env.AW_PLUGIN_IMPORT_CAPABILITIES, path.join(pluginRoot, 'generated-capabilities.json'));",
+        ].join('\n'),
+        'skills/virtual-import-skill/SKILL.md': [
+          '---',
+          'name: virtual-import-skill',
+          'description: Validate an isolated CLI virtual registry import.',
+          '---',
+          '',
+          '# Virtual Import Skill',
+        ].join('\n'),
+        'skills/virtual-import-skill/agents/openai.yaml': [
+          'interface:',
+          '  display_name: "Virtual Import Skill"',
+          '  short_description: "Validate a CLI virtual import"',
+          'policy:',
+          '  allow_implicit_invocation: true',
+        ].join('\n'),
+      },
+    );
+    await runGit(tempRepo, ['init']);
+    await runGit(tempRepo, ['add', 'plugins', 'packages/cli/package.json', registryPath]);
+    await runGit(tempRepo, [
+      '-c',
+      'user.name=AW Test',
+      '-c',
+      'user.email=aw-test@example.invalid',
+      'commit',
+      '-m',
+      'CLI virtual registry baseline',
+    ]);
+
+    await fs.writeJson(registryPath, { generation: 'current' }, { spaces: 2 });
+    await fs.writeJson(path.join(tempRepo, 'packages', 'cli', 'package.json'), {
+      name: '@fixture/aw',
+      version: '2.0.0',
+      type: 'module',
+    }, { spaces: 2 });
+    const checkerPath = createAwPluginScriptPath('check_plugin_versions.mjs');
+    let allMissingBumpError: { stdout?: string } | undefined;
+    try {
+      await execFileAsync('node', [
+        checkerPath,
+        '--all',
+        '--json',
+        '--repo-root',
+        tempRepo,
+      ], {
+        cwd: repoRoot(),
+        env: { ...process.env, TMPDIR: checkerTempRoot },
+        maxBuffer: 20 * 1024 * 1024,
+      });
+    } catch (error) {
+      allMissingBumpError = error as { stdout?: string };
+    }
+    expect(JSON.parse(allMissingBumpError!.stdout!)).toMatchObject({
+      checkedPlugins: 1,
+      checks: [{
+        plugin: 'virtual-import-consumer',
+        status: 'missingVersionBump',
+        productionChanged: true,
+      }],
+    });
+
+    let missingBumpError: { stdout?: string } | undefined;
+    try {
+      await execFileAsync('node', [
+        checkerPath,
+        'virtual-import-consumer',
+        '--json',
+        '--repo-root',
+        tempRepo,
+      ], {
+        cwd: repoRoot(),
+        env: { ...process.env, TMPDIR: checkerTempRoot },
+        maxBuffer: 20 * 1024 * 1024,
+      });
+    } catch (error) {
+      missingBumpError = error as { stdout?: string };
+    }
+    expect(JSON.parse(missingBumpError!.stdout!).checks[0]).toMatchObject({
+      status: 'missingVersionBump',
+      productionChanged: true,
+      changedPaths: expect.arrayContaining([
+        'codex/skills/virtual-import-skill/references/capabilities.json',
+      ]),
+    });
+
+    const manifest = await fs.readJson(manifestPath);
+    manifest.version = '0.2.0';
+    await fs.writeJson(manifestPath, manifest, { spaces: 2 });
+    const bumped = await execFileAsync('node', [
+      checkerPath,
+      'virtual-import-consumer',
+      '--json',
+      '--repo-root',
+      tempRepo,
+    ], {
+      cwd: repoRoot(),
+      env: { ...process.env, TMPDIR: checkerTempRoot },
+      maxBuffer: 20 * 1024 * 1024,
+    });
+    expect(JSON.parse(bumped.stdout).checks[0]).toMatchObject({
+      status: 'versionBumped',
+      productionChanged: true,
+      baseVersion: '0.1.0',
+      currentVersion: '0.2.0',
+    });
+    await expect(fs.readdir(checkerTempRoot)).resolves.toEqual([]);
+  });
+
+  productionVersionCheckTest('fails closed for one-sided or partial workspace CLI ownership', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-authoring-cli-ownership-'));
+    tempDirs.push(tempRoot);
+    const workspaceRoot = path.join(tempRoot, 'workspace');
+    const cliPackagePath = path.join(workspaceRoot, 'packages', 'cli', 'package.json');
+    const cliRegistryPath = path.join(
+      workspaceRoot,
+      'packages',
+      'cli',
+      'src',
+      'utils',
+      'skill-frontmatter-capabilities.json',
+    );
+    const checkerPath = createAwPluginScriptPath('check_plugin_versions.mjs');
+
+    await writeSourcePlugin(
+      path.join(workspaceRoot, 'plugins'),
+      'ownership-demo',
+      createBaseManifest('ownership-demo'),
+    );
+    await fs.outputJson(cliPackagePath, {
+      name: '@fixture/aw',
+      version: '1.0.0',
+      type: 'module',
+    }, { spaces: 2 });
+    await fs.outputJson(cliRegistryPath, { generation: 'base' }, { spaces: 2 });
+    await runGit(workspaceRoot, ['init']);
+    await runGit(workspaceRoot, ['add', 'plugins', 'packages/cli']);
+    await runGit(workspaceRoot, [
+      '-c',
+      'user.name=AW Test',
+      '-c',
+      'user.email=aw-test@example.invalid',
+      'commit',
+      '-m',
+      'workspace CLI ownership baseline',
+    ]);
+
+    await fs.remove(path.join(workspaceRoot, 'packages', 'cli'));
+    await expect(execFileAsync('node', [
+      checkerPath,
+      'ownership-demo',
+      '--repo-root',
+      workspaceRoot,
+    ], { cwd: workspaceRoot, env: process.env })).rejects.toMatchObject({
+      code: 1,
+      stderr: expect.stringContaining('workspace CLI source ownership differs'),
+    });
+
+    await fs.outputJson(cliPackagePath, {
+      name: '@fixture/aw',
+      version: '1.0.0',
+      type: 'module',
+    }, { spaces: 2 });
+    await expect(execFileAsync('node', [
+      checkerPath,
+      'ownership-demo',
+      '--repo-root',
+      workspaceRoot,
+    ], { cwd: workspaceRoot, env: process.env })).rejects.toMatchObject({
+      code: 1,
+      stderr: expect.stringContaining('incomplete current workspace @aw/cli source set'),
+    });
+  });
+
+  productionVersionCheckTest('uses one verified external CLI provider when neither tree owns CLI source', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-authoring-external-cli-'));
+    tempDirs.push(tempRoot);
+    const workspaceRoot = path.join(tempRoot, 'workspace');
+    const checkerTempRoot = path.join(tempRoot, 'checker-tmp');
+    await fs.ensureDir(checkerTempRoot);
+    await writeSourcePlugin(
+      path.join(workspaceRoot, 'plugins'),
+      'external-cli-demo',
+      createBaseManifest('external-cli-demo'),
+    );
+    await runGit(workspaceRoot, ['init']);
+    await runGit(workspaceRoot, ['add', 'plugins']);
+    await runGit(workspaceRoot, [
+      '-c',
+      'user.name=AW Test',
+      '-c',
+      'user.email=aw-test@example.invalid',
+      'commit',
+      '-m',
+      'external CLI provider baseline',
+    ]);
+
+    const result = await execFileAsync('node', [
+      createAwPluginScriptPath('check_plugin_versions.mjs'),
+      'external-cli-demo',
+      '--json',
+      '--repo-root',
+      workspaceRoot,
+    ], {
+      cwd: workspaceRoot,
+      env: { ...process.env, TMPDIR: checkerTempRoot },
+      maxBuffer: 20 * 1024 * 1024,
+    });
+    expect(JSON.parse(result.stdout).checks[0]).toMatchObject({
+      status: 'unchanged',
+      productionChanged: false,
+      baseDigest: expect.stringMatching(/^sha256:/u),
+      currentDigest: expect.stringMatching(/^sha256:/u),
+    });
+    expect(JSON.parse(result.stdout).checks[0].baseDigest)
+      .toBe(JSON.parse(result.stdout).checks[0].currentDigest);
+    await expect(fs.readdir(checkerTempRoot)).resolves.toEqual([]);
   });
 
   it('scaffolds compatibility.aw.minVersion and blocks values above the target catalog minimum', async () => {
@@ -1566,9 +2631,10 @@ describe('authoring tools', () => {
   it('standard aw-config helper exposes help without manifest or store discovery', async () => {
     const helperPath = path.join(
       repoRoot(),
-      '.agents',
-      'skills',
-      'create-aw-plugin',
+      'packages',
+      'cli',
+      'dist',
+      'authoring',
       'assets',
       'aw-config.mjs',
     );
@@ -1601,9 +2667,10 @@ describe('authoring tools', () => {
 
     const helperPath = path.join(
       repoRoot(),
-      '.agents',
-      'skills',
-      'create-aw-plugin',
+      'packages',
+      'cli',
+      'dist',
+      'authoring',
       'assets',
       'aw-config.mjs',
     );
@@ -1725,9 +2792,10 @@ describe('authoring tools', () => {
     await fs.copyFile(
       path.join(
         repoRoot(),
-        '.agents',
-        'skills',
-        'create-aw-plugin',
+        'packages',
+        'cli',
+        'dist',
+        'authoring',
         'assets',
         'aw-config.mjs',
       ),
@@ -1890,9 +2958,10 @@ describe('authoring tools', () => {
     await fs.copyFile(
       path.join(
         repoRoot(),
-        '.agents',
-        'skills',
-        'create-aw-plugin',
+        'packages',
+        'cli',
+        'dist',
+        'authoring',
         'assets',
         'aw-config.mjs',
       ),
@@ -2780,71 +3849,13 @@ describe('authoring tools', () => {
         'scripts/template-expression.mjs': 'export default true;\n',
       },
     );
-    const validators = [
-      validatePluginScriptPath(),
-      path.join(
-        repoRoot(),
-        'plugins',
-        'aw-plugin-development',
-        'skills',
-        'author-aw-plugin',
-        'scripts',
-        'validate_plugin.mjs',
-      ),
-    ];
-
-    for (const validator of validators) {
-      const args = validator === validators[1]
-        ? [validator, pluginDir, '--repo-root', repoRoot()]
-        : [validator, pluginDir];
-      await expect(execFileAsync(process.execPath, args, {
-        cwd: repoRoot(),
-        env: process.env,
-        maxBuffer: 10 * 1024 * 1024,
-      })).resolves.toMatchObject({
-        stdout: expect.stringContaining('[PASS] All checks passed.'),
-      });
-    }
-
-    const noDistRoot = path.join(tempRoot, 'no-dist-repository');
-    const noDistValidator = path.join(
-      noDistRoot,
-      '.agents',
-      'skills',
-      'create-aw-plugin',
-      'scripts',
-      'validate_plugin.mjs',
-    );
-    await fs.copy(
-      path.dirname(validatePluginScriptPath()),
-      path.dirname(noDistValidator),
-    );
-    await fs.ensureDir(path.join(noDistRoot, 'packages', 'cli', 'src', 'utils'));
-    await fs.copyFile(
-      path.join(
-        repoRoot(),
-        'packages',
-        'cli',
-        'src',
-        'utils',
-        'skill-frontmatter-capabilities.json',
-      ),
-      path.join(
-        noDistRoot,
-        'packages',
-        'cli',
-        'src',
-        'utils',
-        'skill-frontmatter-capabilities.json',
-      ),
-    );
-    const fallbackResult = await execFileAsync(process.execPath, [noDistValidator, pluginDir], {
-      cwd: noDistRoot,
+    await expect(execFileAsync(process.execPath, [validatePluginScriptPath(), pluginDir], {
+      cwd: repoRoot(),
       env: process.env,
       maxBuffer: 10 * 1024 * 1024,
+    })).resolves.toMatchObject({
+      stdout: expect.stringContaining('[PASS] All checks passed.'),
     });
-    expect(fallbackResult.stdout).toContain('仅执行轻量预检');
-    expect(fallbackResult.stdout).toContain('[PASS] All checks passed.');
 
     await fs.appendFile(path.join(pluginDir, 'scripts', 'entry.mjs'), '\nimport "undeclared-package";\n');
     await expect(runValidatePlugin(pluginDir)).rejects.toMatchObject({
@@ -2863,32 +3874,6 @@ describe('authoring tools', () => {
         'relative import "../../outside.cjs" from "scripts/entry.mjs" escapes the plugin root',
       ),
     });
-  });
-
-  it('keeps the repo-local and adapter JavaScript import scanners synchronized', async () => {
-    const rootScanner = path.join(
-      repoRoot(),
-      '.agents',
-      'skills',
-      'create-aw-plugin',
-      'scripts',
-      'lib',
-      'javascript-import-scanner.mjs',
-    );
-    const adapterScanner = path.join(
-      repoRoot(),
-      'plugins',
-      'aw-plugin-development',
-      'skills',
-      'author-aw-plugin',
-      'scripts',
-      'lib',
-      'javascript-import-scanner.mjs',
-    );
-    // Static contract exception: the two distributed validators can silently enforce different author contracts; behavior test is not suitable because divergence can occur in any scanner branch.
-    await expect(fs.readFile(adapterScanner, 'utf8')).resolves.toBe(
-      await fs.readFile(rootScanner, 'utf8'),
-    );
   });
 
   it('validate_plugin.mjs validates dynamic Codex artifact renderer contracts', async () => {
@@ -3087,24 +4072,6 @@ describe('authoring tools', () => {
     await expect(runValidatePlugin(rendererOnlyClaude.pluginDir)).resolves.toMatchObject({
       stdout: expect.stringContaining('[PASS] All checks passed.'),
     });
-    const adapterValidator = path.join(
-      repoRoot(),
-      'plugins',
-      'aw-plugin-development',
-      'skills',
-      'author-aw-plugin',
-      'scripts',
-      'validate_plugin.mjs',
-    );
-    await expect(execFileAsync(process.execPath, [
-      adapterValidator,
-      rendererOnlyClaude.pluginDir,
-      '--repo-root',
-      repoRoot(),
-    ], { cwd: repoRoot(), env: process.env })).resolves.toMatchObject({
-      stdout: expect.stringContaining('[PASS] All checks passed.'),
-    });
-
     const claudeOnly = await writeDynamicArtifactPlugin(
       path.join(tempRoot, 'claude-only-products'),
       { products: ['claude'] },
@@ -4850,7 +5817,7 @@ describe('authoring tools', () => {
     ).rejects.toBeDefined();
   });
 
-  it('validate_plugin.mjs rejects a stale CLI manifest contract and uses lightweight fallback', async () => {
+  it.skip('legacy validator fallback is removed with the published CLI authoring runtime', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-validator-stale-dist-'));
     tempDirs.push(tempRoot);
 
@@ -4955,7 +5922,7 @@ describe('authoring tools', () => {
     });
   });
 
-  it('validate_plugin.mjs fallback warns that it is lightweight and skips templated native asset shape checks', async () => {
+  it.skip('legacy lightweight validation is removed with the published CLI authoring runtime', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-validator-fallback-'));
     tempDirs.push(tempRoot);
 

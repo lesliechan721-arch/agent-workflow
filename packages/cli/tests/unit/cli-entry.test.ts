@@ -19,7 +19,16 @@ describe('CLI entry v4', () => {
   it('publishes the five write commands plus status and config', async () => {
     const output = capture();
     expect(await runCli(['--help'], { io: output.io })).toBe(0);
-    for (const command of ['install', 'upgrade', 'reinstall', 'uninstall', 'cleanup', 'status', 'config']) {
+    for (const command of [
+      'install',
+      'upgrade',
+      'reinstall',
+      'uninstall',
+      'cleanup',
+      'status',
+      'config',
+      'plugin',
+    ]) {
       expect(output.stdout()).toContain(command);
     }
     expect(output.stdout()).not.toContain('diagnose');

@@ -1,8 +1,8 @@
 {
-  "schemaVersion": 3,
-  "target": {"kind":"agent-skill","name":"replace-me","profile":null,"sourceDigest":"sha256:0000000000000000000000000000000000000000000000000000000000000000"},
-  "artifacts": [],
-  "environment": {},
+  "schemaVersion": 4,
+  "target": {"kind":"agent-skill","name":"replace-me","profile":null,"sourceDigest":"sha256:0000000000000000000000000000000000000000000000000000000000000000","currentness":"unknown"},
+  "artifacts": [{"role":"source","path":"skills/replace-me/SKILL.md","profile":null,"digest":"sha256:0000000000000000000000000000000000000000000000000000000000000000","mode":"100644","owner":"replace-me","currentness":"unknown"}],
+  "environment": {"repositoryRoot":"/replace-with-workspace-root"},
   "orchestration": {"stageOwner":"review-agent-skill","providedStages":[]},
   "evalAudit": null,
   "evalResults": []

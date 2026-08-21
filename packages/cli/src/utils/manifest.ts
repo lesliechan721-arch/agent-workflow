@@ -68,6 +68,7 @@ import {
   resolveSlashCommands,
 } from './slash-commands.js';
 import { isSkillAuthorOnlyPath } from './skill-authoring.js';
+import { resolveRuntimeExportSource } from './catalog-runtime-projection.js';
 import {
   formatMarketplaceProductsForError,
   normalizeMarketplaceProductToken,
@@ -558,6 +559,16 @@ export function assertManifestPlatformSupport(
       requiredPlatform: 'codex',
     });
   }
+  manifest.buildConfig?.skillRuntimeFiles?.forEach((entry, index) => {
+    for (const platform of entry.platforms ?? []) {
+      assertPlatformFieldSupported({
+        pluginName,
+        manifest,
+        fieldPath: `buildConfig.skillRuntimeFiles[${index}].platforms`,
+        requiredPlatform: platform,
+      });
+    }
+  });
   if (manifest.apps) {
     assertPlatformFieldSupported({
       pluginName,
@@ -847,15 +858,185 @@ function normalizeClaudeManifestOverrides(
   return output;
 }
 
+function normalizeRuntimeExportName(value: unknown, fieldName: string): string {
+  return ensurePluginName(value, fieldName);
+}
+
+function normalizeCanonicalPluginFilePath(
+  pluginRoot: string,
+  value: unknown,
+  fieldName: string,
+): string {
+  const raw = ensureString(value, fieldName);
+  if (raw.includes('\\')) {
+    throw new Error(`Invalid ${fieldName}: expected a canonical POSIX path.`);
+  }
+  const normalized = normalizePluginRelativePath(pluginRoot, raw, fieldName);
+  if (normalized !== raw) {
+    throw new Error(`Invalid ${fieldName}: expected a canonical POSIX path.`);
+  }
+  return normalized;
+}
+
+function normalizeImportReference(
+  value: unknown,
+  fieldName: string,
+): { plugin: string; export: string } {
+  const input = assertObject(value, fieldName);
+  assertAllowedKeys(input, fieldName, ['plugin', 'export']);
+  const plugin = ensureString(input.plugin, `${fieldName}.plugin`);
+  if (plugin !== '@aw/cli') {
+    ensurePluginName(plugin, `${fieldName}.plugin`);
+  }
+  return {
+    plugin,
+    export: normalizeRuntimeExportName(input.export, `${fieldName}.export`),
+  };
+}
+
+function normalizeRuntimeExports(
+  pluginRoot: string,
+  value: unknown,
+  fieldName: string,
+): NonNullable<BuildConfig['runtimeExports']> {
+  if (!Array.isArray(value)) {
+    throw new Error(`Invalid ${fieldName}: expected an array.`);
+  }
+  const names = new Set<string>();
+  return value.map((entry, index) => {
+    const entryField = `${fieldName}[${index}]`;
+    const input = assertObject(entry, entryField);
+    assertAllowedKeys(input, entryField, ['name', 'source']);
+    const name = normalizeRuntimeExportName(input.name, `${entryField}.name`);
+    if (names.has(name)) {
+      throw new Error(`Invalid ${fieldName}: duplicate export name "${name}".`);
+    }
+    names.add(name);
+    return {
+      name,
+      source: normalizeCanonicalPluginFilePath(pluginRoot, input.source, `${entryField}.source`),
+    };
+  });
+}
+
+function normalizeBuildImports(
+  value: unknown,
+  fieldName: string,
+): NonNullable<BuildConfig['buildImports']> {
+  if (!Array.isArray(value)) {
+    throw new Error(`Invalid ${fieldName}: expected an array.`);
+  }
+  const envNames = new Set<string>();
+  return value.map((entry, index) => {
+    const entryField = `${fieldName}[${index}]`;
+    const input = assertObject(entry, entryField);
+    assertAllowedKeys(input, entryField, ['plugin', 'export', 'env']);
+    const reference = normalizeImportReference(
+      { plugin: input.plugin, export: input.export },
+      entryField,
+    );
+    const env = ensureString(input.env, `${entryField}.env`);
+    if (!/^AW_PLUGIN_IMPORT_[A-Z0-9_]+$/u.test(env)) {
+      throw new Error(`Invalid ${entryField}.env: expected an AW_PLUGIN_IMPORT_ prefixed variable name.`);
+    }
+    if (envNames.has(env)) {
+      throw new Error(`Invalid ${fieldName}: duplicate env name "${env}".`);
+    }
+    envNames.add(env);
+    return { ...reference, env };
+  });
+}
+
+function normalizeSkillRuntimeTarget(value: unknown, fieldName: string): string {
+  const target = ensureString(value, fieldName);
+  if (
+    target.includes('\\')
+    || target.startsWith('./')
+    || path.posix.isAbsolute(target)
+    || path.posix.normalize(target) !== target
+    || !/^(?:references|assets|scripts)\/.+/u.test(target)
+    || target.endsWith('/')
+  ) {
+    throw new Error(
+      `Invalid ${fieldName}: expected a canonical file path below references/, assets/, or scripts/.`,
+    );
+  }
+  return target;
+}
+
+function normalizeSkillRuntimeFiles(
+  pluginRoot: string,
+  value: unknown,
+  fieldName: string,
+): NonNullable<BuildConfig['skillRuntimeFiles']> {
+  if (!Array.isArray(value)) {
+    throw new Error(`Invalid ${fieldName}: expected an array.`);
+  }
+  const targets = new Set<string>();
+  return value.map((entry, index) => {
+    const entryField = `${fieldName}[${index}]`;
+    const input = assertObject(entry, entryField);
+    assertAllowedKeys(input, entryField, ['skill', 'target', 'platforms', 'source', 'import']);
+    const skill = ensurePluginName(input.skill, `${entryField}.skill`);
+    const target = normalizeSkillRuntimeTarget(input.target, `${entryField}.target`);
+    const collisionKey = `${skill}/${target}`;
+    if (targets.has(collisionKey)) {
+      throw new Error(`Invalid ${fieldName}: duplicate target "${collisionKey}".`);
+    }
+    targets.add(collisionKey);
+    const hasSource = input.source !== undefined;
+    const hasImport = input.import !== undefined;
+    if (hasSource === hasImport) {
+      throw new Error(`Invalid ${entryField}: exactly one of source or import is required.`);
+    }
+    let platforms: PlatformName[] | undefined;
+    if (input.platforms !== undefined) {
+      const values = ensureStringArray(input.platforms, `${entryField}.platforms`);
+      platforms = values.map((platform, platformIndex) => {
+        if (platform !== 'claude' && platform !== 'codex') {
+          throw new Error(`Invalid ${entryField}.platforms[${platformIndex}]: expected claude or codex.`);
+        }
+        return platform;
+      });
+      if (new Set(platforms).size !== platforms.length) {
+        throw new Error(`Invalid ${entryField}.platforms: duplicate platform.`);
+      }
+    }
+    return {
+      skill,
+      target,
+      ...(platforms ? { platforms } : {}),
+      ...(hasSource
+        ? { source: normalizeCanonicalPluginFilePath(pluginRoot, input.source, `${entryField}.source`) }
+        : { import: normalizeImportReference(input.import, `${entryField}.import`) }),
+    };
+  });
+}
+
 function normalizeBuildConfig(
   pluginRoot: string,
   value: unknown,
   fieldName: string,
 ): BuildConfig {
   const input = assertObject(value, fieldName);
-  assertAllowedKeys(input, fieldName, ['templates', 'fileRules', 'manifestOverrides']);
+  assertAllowedKeys(input, fieldName, [
+    'cacheable',
+    'templates',
+    'fileRules',
+    'manifestOverrides',
+    'runtimeExports',
+    'buildImports',
+    'skillRuntimeFiles',
+  ]);
 
   const buildConfig: BuildConfig = {};
+
+  if (input.cacheable !== undefined) {
+    if (input.cacheable !== true) {
+      throw new Error(`Invalid ${fieldName}.cacheable: expected true.`);
+    }
+    buildConfig.cacheable = true;
+  }
 
   if (input.templates !== undefined) {
     buildConfig.templates = normalizeBuildConfigTemplates(
@@ -921,6 +1102,24 @@ function normalizeBuildConfig(
       assertAllowedKeys(codexOverrides, `${fieldName}.manifestOverrides.codex`, []);
       buildConfig.manifestOverrides.codex = {};
     }
+  }
+
+  if (input.runtimeExports !== undefined) {
+    buildConfig.runtimeExports = normalizeRuntimeExports(
+      pluginRoot,
+      input.runtimeExports,
+      `${fieldName}.runtimeExports`,
+    );
+  }
+  if (input.buildImports !== undefined) {
+    buildConfig.buildImports = normalizeBuildImports(input.buildImports, `${fieldName}.buildImports`);
+  }
+  if (input.skillRuntimeFiles !== undefined) {
+    buildConfig.skillRuntimeFiles = normalizeSkillRuntimeFiles(
+      pluginRoot,
+      input.skillRuntimeFiles,
+      `${fieldName}.skillRuntimeFiles`,
+    );
   }
 
   return buildConfig;
@@ -2289,6 +2488,10 @@ export function validatePluginManifest(
     manifest.scripts = normalizePluginScripts(pluginRoot, input.scripts, 'scripts');
   }
 
+  if (manifest.buildConfig?.cacheable && !manifest.scripts?.node?.build) {
+    throw new Error('Invalid buildConfig.cacheable: true requires scripts.node.build.');
+  }
+
   if (input.config !== undefined) {
     manifest.config = normalizePluginConfigSchema(input.config, 'config');
   }
@@ -2408,6 +2611,19 @@ async function validateSourceSkillInventory(
     .sort();
   const dynamicSkillNameSet = new Set(dynamicSkillNames);
 
+  for (const [index, entry] of (manifest.buildConfig?.skillRuntimeFiles ?? []).entries()) {
+    if (!manifest.skills || !staticSkillNameSet.has(entry.skill)) {
+      throw new Error(
+        `Invalid buildConfig.skillRuntimeFiles[${index}].skill: "${entry.skill}" is not a declared static Skill key.`,
+      );
+    }
+    if (dynamicSkillNameSet.has(entry.skill)) {
+      throw new Error(
+        `Invalid buildConfig.skillRuntimeFiles[${index}].skill: dynamic Skill targets are not supported.`,
+      );
+    }
+  }
+
   if (!manifest.slashCommands) {
     return;
   }
@@ -2490,6 +2706,16 @@ export async function validateSourcePluginManifest(
     validateSourceJsonNativeAsset(pluginRoot, manifest, 'mcpServers'),
     validateSourceJsonNativeAsset(pluginRoot, manifest, 'apps'),
     validateSourceSkillInventory(pluginRoot, manifest),
+    ...(manifest.buildConfig?.runtimeExports ?? []).map((entry) =>
+      resolveRuntimeExportSource({
+        plugin: {
+          rootDir: pluginRoot,
+          manifestPath: path.join(pluginRoot, SOURCE_MANIFEST_PATH),
+          manifest,
+        },
+        name: entry.name,
+        source: entry.source,
+      })),
   ]);
   return manifest;
 }
@@ -2759,9 +2985,22 @@ export function createBundleSourceManifest(plugin: PluginMeta): PluginManifestSo
   if (scripts?.node?.build) {
     delete scripts.node.build;
   }
+  let buildConfig = plugin.manifest.buildConfig
+    ? structuredClone(plugin.manifest.buildConfig)
+    : undefined;
+  if (buildConfig) {
+    delete buildConfig.cacheable;
+    delete buildConfig.runtimeExports;
+    delete buildConfig.buildImports;
+    delete buildConfig.skillRuntimeFiles;
+    if (Object.keys(buildConfig).length === 0) {
+      buildConfig = undefined;
+    }
+  }
 
   return {
     ...plugin.manifest,
+    buildConfig,
     compatibility: plugin.manifest.compatibility
       ? structuredClone(plugin.manifest.compatibility)
       : createPluginCompatibility(DEFAULT_SOURCE_PLUGIN_AW_MIN_VERSION),
