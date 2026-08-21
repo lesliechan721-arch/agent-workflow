@@ -6,6 +6,7 @@ import {
   compareReleaseSemVer,
   createReleaseSnapshotIdentity,
   repoRoot as defaultRepoRoot,
+  runCommand,
   stampReleaseCandidateSnapshot,
   withPrivateCatalogStageRoot,
   withReleaseBuildSnapshot,
@@ -67,6 +68,14 @@ export function parsePublishPlanArgs(argv) {
 
 function publicationMode(plan) {
   return plan.channel === 'beta' ? 'beta' : 'latest';
+}
+
+function verificationScript(plan) {
+  if (plan.catalog.publicationMode === 'none') return 'release:verify:cli';
+  if (['catalog-only', 'bootstrap', 'promotion'].includes(plan.catalog.publicationMode)) {
+    return 'release:verify:catalog';
+  }
+  return 'release:verify';
 }
 
 function pluginVersionOverrides(plan) {
@@ -176,6 +185,10 @@ export async function publishCommittedRelease(argv = process.argv.slice(2), opti
   if (plan.catalog.publicationMode === 'none' && plan.cli.action !== 'publish') {
     return { path: 'none', planId: plan.planId };
   }
+  if (!options._verified) {
+    await (options.runCommand ?? runCommand)('pnpm', ['run', verificationScript(plan)]);
+    await assertFresh();
+  }
   const snapshotRunner = await createStampedSnapshotRunner(plan, assertFresh, options);
   if (
     !options._boundCatalog
@@ -216,6 +229,7 @@ export async function publishCommittedRelease(argv = process.argv.slice(2), opti
         return publishCommittedRelease([], {
           ...options,
           readCurrentReleasePlan: async () => ({ plan }),
+          _verified: true,
           _boundCatalog: { internalOutputRoot, snapshot, releaseIdentity, staged },
         });
       }),
@@ -324,7 +338,7 @@ export async function publishCommittedRelease(argv = process.argv.slice(2), opti
   if (plan.catalog.publicationMode === 'catalog-only') {
     const catalog = await (options.publishCatalog ?? publishCatalog)([
       mode, '--catalog-version', plan.catalog.candidateVersion,
-    ], commonOptions);
+    ], { ...commonOptions, skipVerify: true });
     return { path: 'catalog-only', planId: plan.planId, catalog };
   }
   if (plan.catalog.publicationMode === 'bootstrap') {
@@ -333,6 +347,7 @@ export async function publishCommittedRelease(argv = process.argv.slice(2), opti
       mode, '--catalog-version', plan.catalog.candidateVersion,
     ], {
       ...bootstrapOptions,
+      skipVerify: true,
       ...(remoteUrl === OFFICIAL_CATALOG_PUBLISH_REMOTE
         ? { remoteUrl }
         : { testRemoteUrl: remoteUrl }),
@@ -345,7 +360,7 @@ export async function publishCommittedRelease(argv = process.argv.slice(2), opti
     mode,
     '--catalog-version', catalogVersion,
     '--cli-version', cliVersion,
-  ], commonOptions);
+  ], { ...commonOptions, skipVerify: true });
   const expectedPath = plan.catalog.publicationMode === 'tag-first' ? 'tag-first' : 'catalog-first';
   if (result.path !== expectedPath) {
     throw new Error(`Release execution path ${result.path} does not match committed plan mode ${plan.catalog.publicationMode}.`);

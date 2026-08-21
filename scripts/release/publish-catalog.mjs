@@ -51,7 +51,9 @@ export function parseArgs(argv) {
 export async function publishCatalog(argv = process.argv.slice(2), options = {}) {
   const { mode, catalogVersion } = parseArgs(argv);
   await (options.assertReleaseWorktreeClean ?? assertReleaseWorktreeClean)();
-  await (options.runCommand ?? runCommand)('pnpm', ['run', 'release:verify:catalog']);
+  if (!options.skipVerify) {
+    await (options.runCommand ?? runCommand)('pnpm', ['run', 'release:verify:catalog']);
+  }
   const snapshotRunner = options.withReleaseBuildSnapshot ?? withReleaseBuildSnapshot;
   return snapshotRunner(async (snapshot) => {
     const headCommit = await (options.resolveReleaseHead ?? resolveReleaseHead)();

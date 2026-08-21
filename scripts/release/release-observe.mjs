@@ -26,6 +26,14 @@ import { readVersionTargets } from './release-target.mjs';
 import { CLI_PACKAGES } from './release-state.mjs';
 
 const CANDIDATE_PATTERN = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-beta\.[1-9]\d*)?$/;
+const BUILD_DIGEST_PATTERN = /^[0-9a-f]{64}$/u;
+
+export function projectBuildDigest(value, field) {
+  if (typeof value !== 'string' || !BUILD_DIGEST_PATTERN.test(value)) {
+    throw new Error(`Invalid release build ${field}: expected 64 lowercase hexadecimal characters.`);
+  }
+  return `sha256:${value}`;
+}
 
 async function captureRegistry(args, options) {
   const registryUrl = options.registryUrl ?? await resolveRegistryUrl(
@@ -147,9 +155,9 @@ export async function readCurrentReleaseContent(snapshot, sourceHead, options = 
   return {
     source: {
       head: sourceHead,
-      releaseInputDigest: snapshot.inputDigest,
-      buildOutputDigest: snapshot.outputDigest,
-      cliPackageDigest: snapshot.cliPackageDigest,
+      releaseInputDigest: projectBuildDigest(snapshot.inputDigest, 'inputDigest'),
+      buildOutputDigest: projectBuildDigest(snapshot.outputDigest, 'outputDigest'),
+      cliPackageDigest: projectBuildDigest(snapshot.cliPackageDigest, 'cliPackageDigest'),
     },
     cli,
     catalog: {

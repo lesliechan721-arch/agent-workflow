@@ -397,15 +397,12 @@ async function listRemoteRefs(git, remote, catalogVersion, options = {}) {
     CATALOG_CHANNEL_REFS.latest,
     CATALOG_CHANNEL_REFS.beta,
     CATALOG_TAG_FIRST_PENDING_REF,
-    tagRef,
-    `${tagRef}^{}`,
-    `refs/tags/catalog-v${catalogVersion}-beta.*`,
+    'refs/tags/catalog-v*',
   ]);
   const refs = parseLsRemote(stdout);
   const pending = refs.get(CATALOG_TAG_FIRST_PENDING_REF) ?? null;
   const tagCandidates = [];
-  const escapedVersion = catalogVersion.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
-  const candidatePattern = new RegExp(`^refs/tags/catalog-v(${escapedVersion}(?:-beta\\.[1-9]\\d*)?)$`, 'u');
+  const candidatePattern = /^refs\/tags\/catalog-v((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-beta\.[1-9]\d*)?)$/u;
   for (const [ref, objectId] of refs) {
     const match = candidatePattern.exec(ref);
     if (!match) continue;
@@ -423,6 +420,13 @@ async function listRemoteRefs(git, remote, catalogVersion, options = {}) {
     throw new Error(
       'Catalog tag-first publication is pending. Only recovery of that exact catalog version may continue; ' +
       `the guard does not identify one annotated tag for ${catalogVersion}.`,
+    );
+  }
+  const requestedCore = catalogVersion.replace(/-beta\.[1-9]\d*$/u, '');
+  const pendingCore = pendingTags[0]?.catalogVersion.replace(/-beta\.[1-9]\d*$/u, '');
+  if (options.validatePending !== false && pending !== null && pendingCore !== requestedCore) {
+    throw new Error(
+      'Catalog tag-first publication is pending. Only recovery of that exact catalog version may continue.',
     );
   }
   const tag = pending !== null ? pendingTags[0] : exactTag;
@@ -566,8 +570,9 @@ export async function readCatalogPublicationHistory(options) {
         ...await validateSnapshotAndLedger(snapshotRoot, mode, catalogModules),
       };
     }
-    if (!remoteRefs.pending) {
+    {
       const unguardedTag = remoteRefs.tagCandidates.find((candidate) => {
+        if (remoteRefs.pending === candidate.commit) return false;
         const mode = candidate.catalogVersion.includes('-beta.') ? 'beta' : 'latest';
         const channel = channels[mode];
         if (channel?.commit === candidate.commit) return false;
@@ -579,7 +584,7 @@ export async function readCatalogPublicationHistory(options) {
       });
       if (unguardedTag) {
         throw new Error(
-          `Catalog tag ${unguardedTag.ref} is ahead of its channel without the tag-first pending guard.`,
+          `Catalog tag ${unguardedTag.ref} is ahead of its channel without the tag-first pending guard for that exact tag.`,
         );
       }
     }

@@ -17,7 +17,7 @@ import { prepareRelease } from '../../../../scripts/release/release-prepare.mjs'
 import { publishCommittedRelease } from '../../../../scripts/release/publish-plan.mjs';
 import {
   observeRelease,
-  readCliReleaseContent,
+  readCurrentReleaseContent,
 } from '../../../../scripts/release/release-observe.mjs';
 import { calculateReleaseStatus } from '../../../../scripts/release/release-state.mjs';
 import {
@@ -319,37 +319,39 @@ describe('release phase 2 process boundaries', () => {
       evalPackageRoot,
       cliDistRoot: path.join(repoRoot, 'packages', 'cli', 'dist'),
       catalogOutputRoot: path.join(repoRoot, 'packages', 'cli', 'plugins-dist'),
-      inputDigest: digest('1'),
-      outputDigest: digest('2'),
-      cliPackageDigest: digest('3'),
+      inputDigest: '1'.repeat(64),
+      outputDigest: '2'.repeat(64),
+      cliPackageDigest: '3'.repeat(64),
     };
-    await releaseStatus(['--json'], {
-      observe: async () => observeRelease({
-        readTargets: async () => ({ schemaVersion: 1, cli: '0.1.0', catalog: '0.1.0' }),
-        withReleaseBuildSnapshot: async (callback, buildOptions) => {
-          expect(buildOptions).toMatchObject({ quiet: true });
-          return callback(snapshot);
-        },
-        resolveHead: async () => 'a'.repeat(40),
-        readContent: async (currentSnapshot, head) => ({
-          ...observed(head).content,
-          cli: await readCliReleaseContent(currentSnapshot, {
-            packOptions: { runPackCommand },
-          }),
-        }),
-        readRegistryHistory: async () => ({
-            '@lesliechan721/agent-skill-eval': [],
-            '@lesliechan721/aw': [],
-            distTags: {
-              '@lesliechan721/agent-skill-eval': { latest: null, beta: null },
-              '@lesliechan721/aw': { latest: null, beta: null },
-            },
-        }),
-        readCatalogHistory: async () => ({
-          latest: null, beta: null, pending: null,
-          ledger: { schemaVersion: 2, records: [] },
-        }),
+    const realObservation = await observeRelease({
+      readTargets: async () => ({ schemaVersion: 1, cli: '0.1.0', catalog: '0.1.0' }),
+      withReleaseBuildSnapshot: async (callback) => callback(snapshot),
+      resolveHead: async () => 'a'.repeat(40),
+      readContent: (currentSnapshot, head) => readCurrentReleaseContent(currentSnapshot, head, {
+        packOptions: { runPackCommand },
       }),
+      readRegistryHistory: async () => ({
+        '@lesliechan721/agent-skill-eval': [],
+        '@lesliechan721/aw': [],
+        distTags: {
+          '@lesliechan721/agent-skill-eval': { latest: null, beta: null },
+          '@lesliechan721/aw': { latest: null, beta: null },
+        },
+      }),
+      readCatalogHistory: async () => ({
+        latest: null, beta: null, pending: null,
+        ledger: { schemaVersion: 2, records: [] },
+      }),
+    });
+    expect(realObservation.content.source).toMatchObject({
+      releaseInputDigest: digest('1'),
+      buildOutputDigest: digest('2'),
+      cliPackageDigest: digest('3'),
+    });
+    const realStatus = calculateReleaseStatus({ ...realObservation, channel: 'beta' });
+    expect(createReleasePlan(realStatus).source).toMatchObject(realObservation.content.source);
+    await releaseStatus(['--json'], {
+      observe: async () => realObservation,
     });
     expect(output).toHaveLength(1);
     expect(JSON.parse(output[0]!)).toMatchObject({ schemaVersion: 1 });
@@ -585,6 +587,7 @@ describe('release phase 2 process boundaries', () => {
     };
     const adapterRequests: string[] = [];
     const npmWrites: string[] = [];
+    const publicationEvents: string[] = [];
     const readRegistryReleaseHistory = async () => structuredClone(registry);
     const isExactPackageVersionPublished = async (name: keyof typeof registry, version: string) =>
       Array.isArray(registry[name]) && registry[name].some((entry) => entry.version === version);
@@ -600,6 +603,7 @@ describe('release phase 2 process boundaries', () => {
     };
     const recordRegistryWrite = (name: '@lesliechan721/agent-skill-eval' | '@lesliechan721/aw') => {
       npmWrites.push(name === '@lesliechan721/agent-skill-eval' ? 'eval-package' : 'aw-package');
+      publicationEvents.push(`npm:${name}`);
       const expected = prepared.plan!.cli.packages.find((entry) => entry.name === name)!;
       registry[name] = [{
         version: prepared.plan!.cli.candidateVersion,
@@ -630,6 +634,10 @@ describe('release phase 2 process boundaries', () => {
       },
       resolveCliPublishGitCheckArgs: async () => [],
       runCommand: async (_command, args) => {
+        if (args.join(' ') === 'run release:verify') {
+          publicationEvents.push('verify');
+          return;
+        }
         expect(args[0]).toBe('publish');
         recordRegistryWrite('@lesliechan721/aw');
       },
@@ -643,10 +651,12 @@ describe('release phase 2 process boundaries', () => {
       },
       publishStagedCatalog: async (...args) => {
         adapterRequests.push('catalog-tag');
+        publicationEvents.push('catalog-tag');
         return publishStagedCatalog(...args);
       },
       promoteCatalogTag: async (options) => {
         adapterRequests.push('catalog-promotion');
+        publicationEvents.push('catalog-promotion');
         return promoteCatalogTag(options);
       },
       _boundCatalog: {
@@ -664,6 +674,7 @@ describe('release phase 2 process boundaries', () => {
     });
     expect([adapterRequests[0], ...npmWrites, adapterRequests[1]])
       .toEqual(['catalog-tag', 'eval-package', 'aw-package', 'catalog-promotion']);
+    expect(publicationEvents[0]).toBe('verify');
     const refsAfterFirstPublish = await git(artifactRoot, [
       '--git-dir', remoteUrl, 'show-ref',
     ]);

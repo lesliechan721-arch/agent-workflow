@@ -91,7 +91,9 @@ export async function bootstrapCatalog(argv = process.argv.slice(2), options = {
   }
   const remoteUrl = options.testRemoteUrl ?? options.remoteUrl ?? OFFICIAL_CATALOG_PUBLISH_REMOTE;
   await (options.assertReleaseWorktreeClean ?? assertReleaseWorktreeClean)();
-  await (options.runCommand ?? runCommand)('pnpm', ['run', 'release:verify:catalog']);
+  if (!options.skipVerify) {
+    await (options.runCommand ?? runCommand)('pnpm', ['run', 'release:verify:catalog']);
+  }
   const snapshotRunner = options.withReleaseBuildSnapshot ?? withReleaseBuildSnapshot;
   return snapshotRunner(async (snapshot) => {
     const headCommit = await (options.resolveReleaseHead ?? resolveReleaseHead)();

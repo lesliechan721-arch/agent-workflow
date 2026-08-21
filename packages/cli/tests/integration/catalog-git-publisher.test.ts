@@ -200,6 +200,7 @@ describe('Git catalog publisher', () => {
       readCurrentReleasePlan: async () => ({ plan }),
       assertPlanOnlyCommit: async () => undefined,
       assertReleaseWorktreeClean: async () => undefined,
+      runCommand: async () => undefined,
       withReleaseBuildSnapshot: async (callback: (value: typeof snapshot) => Promise<unknown>) => callback(snapshot),
     };
     await expect(publishCommittedRelease([], options)).resolves.toMatchObject({
@@ -461,8 +462,9 @@ describe('Git catalog publisher', () => {
       remoteUrl,
       catalogModules,
       assertReleaseWorktreeClean: async () => undefined,
+      runCommand: async () => undefined,
       resolvePublishedCliTrain: driftingCliTrain,
-    })).rejects.toThrow('changed from 1.0.0 to 1.0.1');
+    })).rejects.toThrow('identity changed during catalog recovery');
     await expect(git(['--git-dir', remoteUrl, 'rev-parse', CATALOG_CHANNEL_REFS.latest]))
       .rejects.toThrow();
     expect(await git(['--git-dir', remoteUrl, 'rev-parse', CATALOG_TAG_FIRST_PENDING_REF]))
@@ -471,6 +473,7 @@ describe('Git catalog publisher', () => {
       remoteUrl,
       catalogModules,
       assertReleaseWorktreeClean: async () => undefined,
+      runCommand: async () => undefined,
       resolvePublishedCliTrain: async () => '1.0.0',
     });
     expect(promotion.promoted).toBe(true);
@@ -482,6 +485,7 @@ describe('Git catalog publisher', () => {
       remoteUrl,
       catalogModules,
       assertReleaseWorktreeClean: async () => undefined,
+      runCommand: async () => undefined,
       resolvePublishedCliTrain: async () => '1.0.0',
     })).rejects.toThrow('requires the exact immutable tag and tag-first pending guard');
   });
@@ -641,6 +645,28 @@ describe('Git catalog publisher', () => {
     );
     await expect(publishStagedCatalog(taggedHistory, tagDrift.outputRoot, { publicationMode: 'tag' }))
       .rejects.toThrow('maps to different runtime content');
+  });
+
+  it('scans every canonical Catalog tag for an unguarded publication ahead of its own channel', async () => {
+    const root = await fixtureRoot('aw-catalog-all-tag-guard-');
+    const remoteUrl = await createBareRemote(root);
+    const oldHistory = await readCatalogPublicationHistory({
+      mode: 'latest', catalogVersion: '1.0.0', remoteUrl, catalogModules,
+    });
+    const oldStage = await stage(root, '1.0.0', oldHistory.mergedLedger);
+    const oldTag = await publishStagedCatalog(oldHistory, oldStage.outputRoot, { publicationMode: 'tag' });
+    await git(['--git-dir', remoteUrl, 'update-ref', '-d', CATALOG_TAG_FIRST_PENDING_REF]);
+
+    await expect(readCatalogPublicationHistory({
+      mode: 'latest', catalogVersion: '2.0.0', remoteUrl, catalogModules,
+    })).rejects.toThrow('catalog-v1.0.0 is ahead of its channel');
+
+    await git([
+      '--git-dir', remoteUrl, 'update-ref', CATALOG_CHANNEL_REFS.latest, oldTag.commit,
+    ]);
+    await expect(readCatalogPublicationHistory({
+      mode: 'latest', catalogVersion: '2.0.0', remoteUrl, catalogModules,
+    })).resolves.toMatchObject({ pending: null, tag: null });
   });
 
   it('rejects reuse of an existing tag when its normalized release ledger differs', async () => {

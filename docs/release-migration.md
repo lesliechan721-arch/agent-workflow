@@ -37,7 +37,7 @@ Release maintenance 的 status、prepare、publish 和 recover 使用同一个 c
 | 首次 schema 4 bootstrap | `catalog-bootstrap-smoke.test.ts` 使用真实 local bare remote 覆盖 bootstrap、orphan channels、immutable tag、retry 和 provider fetch。 |
 | tag-first 顺序和失败恢复 | `publish-release-script.test.ts` 覆盖 tag、CLI、promotion 顺序，atomic tag 失败，CLI 失败后 tag 保持未 promotion，以及固定 recover 命令。 |
 | promotion floor 和 freshness | `publish-plan-script.test.ts` 覆盖完整 train floor 和写入前 dist-tag 重查。`release-recover-script.test.ts` 覆盖 remote-write train drift。 |
-| tag ahead 但没有 guard | `catalog-git-publisher.test.ts` 通过真实 local Git refs 拒绝无 guard 的 ahead tag。 |
+| tag ahead 但没有 guard | `catalog-git-publisher.test.ts` 通过真实 local Git refs 扫描所有 canonical stable/beta tag，并拒绝任一不低于自身 channel 的无 guard tag；缺少该 channel 也拒绝。 |
 | 端到端 local orchestration 和 exact retry | `release-phase2.test.ts`：`runs target, source commit, prepare, plan-only commit, publication retry, and drift gates as one local workflow`。它使用真实 Git commits、公开 release orchestration 和注入的 local publication provider。provider 在不访问网络时记录 Catalog/tag、Eval、AW 和 promotion actions。 |
 
 `catalog-git-publisher.test.ts` 和使用 local bare repository 的 Catalog smoke 测试继续覆盖 publisher 实现边界。这些边界包括 atomic ref 更新、publication lock、完整 schema 4 ledger merge、annotated tag、tag identity 和 channel history。orchestration fixture 不重复这些证据。

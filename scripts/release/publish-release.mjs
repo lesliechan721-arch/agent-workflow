@@ -86,7 +86,9 @@ export async function publishRelease(argv = process.argv.slice(2), options = {})
       releaseIdentity,
       {},
     );
-    await (options.runCommand ?? runCommand)('pnpm', ['run', 'release:verify']);
+    if (!options.skipVerify) {
+      await (options.runCommand ?? runCommand)('pnpm', ['run', 'release:verify']);
+    }
     const remoteUrl = options.remoteUrl ?? OFFICIAL_CATALOG_PUBLISH_REMOTE;
     return (options.withPrivateCatalogStageRoot ?? withPrivateCatalogStageRoot)(async (internalOutputRoot) => {
       await assertFresh();

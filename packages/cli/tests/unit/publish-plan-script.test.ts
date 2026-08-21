@@ -83,14 +83,30 @@ describe('committed release plan publisher', () => {
     const cliOnly = plan('none');
     cliOnly.cli.action = 'publish';
     const publishCli = vi.fn(async () => ({ status: 'published' }));
+    const runCommand = vi.fn(async () => undefined);
     await expect(publishCommittedRelease([], {
       readCurrentReleasePlan: async () => ({ plan: cliOnly }),
       assertPlanOnlyCommit: async () => undefined,
+      runCommand,
       publishCli,
     })).resolves.toMatchObject({ path: 'cli-only' });
     expect(publishCli).toHaveBeenCalledWith([
       'beta', '--cli-version', '1.0.0-beta.1',
     ], expect.objectContaining({ beforeNpmWrite: expect.any(Function) }));
+    expect(runCommand).toHaveBeenCalledWith('pnpm', ['run', 'release:verify:cli']);
+  });
+
+  it('does not enter a publisher when the required release verification fails', async () => {
+    const cliOnly = plan('none');
+    cliOnly.cli.action = 'publish';
+    const publishCli = vi.fn();
+    await expect(publishCommittedRelease([], {
+      readCurrentReleasePlan: async () => ({ plan: cliOnly }),
+      assertPlanOnlyCommit: async () => undefined,
+      runCommand: async () => { throw new Error('verification failed'); },
+      publishCli,
+    })).rejects.toThrow('verification failed');
+    expect(publishCli).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -98,9 +114,11 @@ describe('committed release plan publisher', () => {
     ['tag-first', 'tag-first'],
   ] as const)('requires the committed %s execution path', async (publicationMode, path) => {
     const publishCombinedRelease = vi.fn(async () => ({ path }));
+    const runCommand = vi.fn(async () => undefined);
     await expect(publishCommittedRelease([], {
       readCurrentReleasePlan: async () => ({ plan: plan(publicationMode) }),
       assertPlanOnlyCommit: async () => undefined,
+      runCommand,
       publishCombinedRelease,
       _boundCatalog: {
         internalOutputRoot: '/tmp/catalog', snapshot: {},
@@ -113,6 +131,7 @@ describe('committed release plan publisher', () => {
       remoteUrl: OFFICIAL_CATALOG_PUBLISH_REMOTE,
       resolveReleaseHead: expect.any(Function),
     }));
+    expect(runCommand).toHaveBeenCalledWith('pnpm', ['run', 'release:verify']);
   });
 
   it('runs bootstrap only from the committed candidate without public version arguments', async () => {
@@ -120,6 +139,7 @@ describe('committed release plan publisher', () => {
     await expect(publishCommittedRelease([], {
       readCurrentReleasePlan: async () => ({ plan: plan('bootstrap') }),
       assertPlanOnlyCommit: async () => undefined,
+      runCommand: async () => undefined,
       bootstrapCatalog,
       _boundCatalog: {
         internalOutputRoot: '/tmp/catalog', snapshot: {},
@@ -138,6 +158,7 @@ describe('committed release plan publisher', () => {
     await expect(publishCommittedRelease([], {
       readCurrentReleasePlan: async () => ({ plan: plan('catalog-only') }),
       assertPlanOnlyCommit: async () => undefined,
+      runCommand: async () => undefined,
       publishCatalog,
       stageCatalogRelease: async () => ({ snapshotDigest: `sha256:${'f'.repeat(64)}` }),
       withPrivateCatalogStageRoot: async (callback) => callback('/tmp/catalog'),
@@ -187,6 +208,7 @@ describe('committed release plan publisher', () => {
 
   it('rechecks both bound CLI dist-tags immediately before promotion writes', async () => {
     let registryReads = 0;
+    const runCommand = vi.fn(async () => undefined);
     const promoteCatalogTag = vi.fn(async (options) => {
       await options.beforeRemoteWrite();
       return { promoted: true };
@@ -194,6 +216,7 @@ describe('committed release plan publisher', () => {
     await expect(publishCommittedRelease([], {
       readCurrentReleasePlan: async () => ({ plan: plan('promotion') }),
       assertPlanOnlyCommit: async () => undefined,
+      runCommand,
       readRegistryReleaseHistory: async () => {
         registryReads += 1;
         return {
@@ -210,6 +233,7 @@ describe('committed release plan publisher', () => {
       }),
       promoteCatalogTag,
     })).resolves.toMatchObject({ path: 'promotion' });
+    expect(runCommand).toHaveBeenCalledWith('pnpm', ['run', 'release:verify:catalog']);
     expect(registryReads).toBe(2);
   });
 });

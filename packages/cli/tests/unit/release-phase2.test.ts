@@ -24,6 +24,7 @@ import { calculateCliTrainContentDigest } from '../../../../scripts/release/rele
 import { calculateCanonicalDigest } from '../../../../scripts/release/release-model.mjs';
 import {
   observeReleaseHistory,
+  projectBuildDigest,
   readRegistryReleaseHistory,
 } from '../../../../scripts/release/release-observe.mjs';
 import {
@@ -163,6 +164,15 @@ function fixture(overrides: Record<string, unknown> = {}) {
 }
 
 describe('release status and plans', () => {
+  it('projects only real bare build digests into canonical release-plan digests', () => {
+    expect(projectBuildDigest('a'.repeat(64), 'inputDigest')).toBe(`sha256:${'a'.repeat(64)}`);
+    for (const value of [
+      `sha256:${'a'.repeat(64)}`,
+      'a'.repeat(63),
+      'A'.repeat(64),
+      `sha512:${'a'.repeat(64)}`,
+    ]) expect(() => projectBuildDigest(value, 'inputDigest')).toThrow('64 lowercase hexadecimal');
+  });
   it('uses one canonical SSH maintenance remote while runtime keeps the public HTTPS source', async () => {
     const readCatalogHistory = vi.fn(async (options) => ({
       remoteUrl: options.remoteUrl,
