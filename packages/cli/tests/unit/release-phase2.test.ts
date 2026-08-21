@@ -683,7 +683,7 @@ describe('release status and plans', () => {
     expect(() => normalizeReleasePlan(skippedCliDrift)).toThrow('bound release observations');
   });
 
-  it('enforces dist-tag channel types and binds the one legacy latest exception', () => {
+  it('enforces dist-tag channel types and binds the one legacy latest exception', async () => {
     const invalid = fixture();
     invalid.history.registry.distTags['@lesliechan721/aw'].beta = '0.1.0';
     expect(() => normalizeCliRegistryHistory(invalid.history.registry))
@@ -696,18 +696,60 @@ describe('release status and plans', () => {
       .toThrow('latest dist-tag must reference a stable');
 
     const legacy = fixture({ channel: 'stable' });
-    legacy.content.catalog.minCliVersion = '0.1.0-beta.1';
     legacy.history.registry['@lesliechan721/aw'] = [
       { version: '0.1.0-beta.1', awRelease: null },
       { version: '0.1.0-beta.2', awRelease: null },
     ];
     legacy.history.registry.distTags['@lesliechan721/aw'].latest = '0.1.0-beta.1';
     const status = calculateReleaseStatus(legacy);
-    expect(status.cli).toMatchObject({ publishedTag: '0.1.0-beta.1' });
-    expect(status.cli.action).not.toBe('blocked');
+    expect(status.cli).toMatchObject({
+      action: 'publish', candidateVersion: '0.1.0', publishedTag: '0.1.0-beta.1',
+      latestBeta: '0.1.0-beta.2',
+    });
+    expect(status.catalog).toMatchObject({
+      action: 'publish', candidateVersion: '0.1.0', minCliVersion: '0.1.0-beta.3',
+      publicationMode: 'tag-first',
+    });
+    expect(status.plugins[0]).toMatchObject({
+      action: 'publish', candidateVersion: '1.0.0',
+    });
     const plan = createReleasePlan(status);
     expect(plan.history.npm.legacyLatestAwOnly).toBe(true);
+    expect(plan.history.npm.packages).toContainEqual(expect.objectContaining({
+      name: '@lesliechan721/aw',
+      versions: [
+        { candidateVersion: '0.1.0-beta.1', metadata: null },
+        { candidateVersion: '0.1.0-beta.2', metadata: null },
+      ],
+    }));
     expect(normalizeReleasePlan(plan)).toEqual(plan);
+
+    const root = await temporaryRepo();
+    const prepared = await prepareRelease(['stable'], {
+      repoRoot: root,
+      assertClean: async () => undefined,
+      assertFresh: async () => undefined,
+      assertTargetsMatchHead: async () => undefined,
+      readTargets: async () => legacy.targets,
+      observe: async () => legacy,
+      observeRemoteHistory: async () => legacy.history,
+      materializeCliPlanArtifacts: async (releaseStatus) => releaseStatus.cli.packages,
+      materializeCatalogPlanArtifact: async () => digest('c'),
+    });
+    expect(prepared).toMatchObject({
+      created: true,
+      plan: {
+        channel: 'stable',
+        cli: { action: 'publish', candidateVersion: '0.1.0' },
+        catalog: {
+          action: 'publish', candidateVersion: '0.1.0',
+          minCliVersion: '0.1.0-beta.3', publicationMode: 'tag-first',
+          snapshotDigest: digest('c'),
+        },
+      },
+    });
+    const writtenPlan = JSON.parse(await fs.readFile(prepared.planPath!, 'utf8'));
+    expect(writtenPlan.history.npm).toMatchObject({ legacyLatestAwOnly: true });
 
     const evalFirst = structuredClone(legacy);
     evalFirst.history.registry['@lesliechan721/agent-skill-eval'] = [{
@@ -731,6 +773,13 @@ describe('release status and plans', () => {
     expect(calculateReleaseStatus(evalFirst).cli).toMatchObject({
       action: 'blocked', reason: { code: 'partial-candidate' },
     });
+    const writePlan = vi.fn();
+    await expect(prepareRelease(['stable'], {
+      assertClean: async () => undefined,
+      observe: async () => evalFirst,
+      writePlan,
+    })).rejects.toThrow('partial-candidate');
+    expect(writePlan).not.toHaveBeenCalled();
 
     const invalidLegacyBeta = fixture();
     invalidLegacyBeta.history.registry['@lesliechan721/agent-skill-eval'] = [{

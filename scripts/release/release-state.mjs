@@ -262,7 +262,7 @@ export function calculateReleaseStatus({ channel, targets, content, history }) {
       intent: channel,
       targetVersion: targets.cli,
       contentDigest: content.cli.trainContentDigest,
-      publishedHistory: cliHistory,
+      publishedHistory: channel === 'stable' && registry.legacyLatestAwOnly ? [] : cliHistory,
     });
   } catch (error) {
     if (!String(error?.message).startsWith('partial-candidate:')) throw error;
