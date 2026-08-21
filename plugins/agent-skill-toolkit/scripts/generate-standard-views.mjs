@@ -97,30 +97,56 @@ function renderView(audience, title) {
 }
 function renderComposition(title, reviewer) {
   const model = skillSource.compositionModel;
-  return [
+  const lines = [
     `# ${title}`,
     '',
     '> GENERATED from `standards/skill-rules.json`; do not edit manually.',
     '',
-    '## 六项清单',
+  ];
+  if (Array.isArray(model.targetLevels)) {
+    lines.push(
+      '## 评审层级',
+      '',
+      '| 层级 | 评审对象 |',
+      '| --- | --- |',
+      ...model.targetLevels.map(([level, meaning]) => `| \`${level}\` | ${meaning} |`),
+      '',
+      '当前用户结果涉及多个 Skill、插件、runner、runtime 或持久合同时，不得只做彼此独立的 Skill review。',
+      '',
+    );
+  }
+  lines.push(
+    '## 组合轴',
     '',
     '| 轴 | 问题 |',
     '| --- | --- |',
     ...model.axes.map(([axis, question]) => `| ${axis} | ${question} |`),
     '',
+  );
+  if (Array.isArray(model.systemAuditTriggers)) {
+    lines.push('## 系统级审计触发信号', '', ...model.systemAuditTriggers.map((signal) => `- ${signal}`), '');
+  }
+  if (Array.isArray(model.endToEndChallenge)) {
+    lines.push('## End-to-End Minimum Architecture Challenge', '', ...model.endToEndChallenge.map((step, index) => `${index + 1}. ${step}`), '');
+  }
+  lines.push(
     '## Verdict',
     '',
     ...model.verdicts.map(([verdict, meaning]) => `- \`${verdict}\`：${meaning}`),
     '',
-    '## 强拆分信号',
+    '## 强拆分或过度工程化信号',
     '',
     ...model.splitSignals.map((signal) => `- ${signal}`),
     '',
+  );
+  if (model.stopRule) lines.push('## 停止规则', '', model.stopRule, '');
+  lines.push(
     reviewer
-      ? 'Reviewer 给出最小分解候选并比较 active-path load。文件长或分支多只触发审计，不单独形成 finding。'
-      : 'Author 在写正文前完成判定。需要 orchestrator 时，入口只拥有顺序、授权和最小 handoff。',
+      ? 'Reviewer 先比较当前 common path 与同样安全的最小候选，再决定是否继续局部评分。文件长或分支多只触发审计，不单独形成 finding。'
+      : 'Author 在写正文前完成判定。需要 orchestrator 时，入口只拥有顺序、授权和最小 handoff；可重算事实不形成持久模型合同。',
     '',
-  ].join('\n').replace(/\n+$/u, '') + '\n';
+  );
+  return lines.join('\n').replace(/\n+$/u, '') + '\n';
 }
 function renderEvidence() {
   const admission = skillSource.findingAdmission;

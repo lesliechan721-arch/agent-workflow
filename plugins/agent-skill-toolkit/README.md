@@ -2,7 +2,7 @@
 
 通用 Agent Skill 作者、轻量质量评审和 Eval 设计/审核插件。
 
-当前插件合同版本：`0.9.0`。
+当前插件合同版本：`0.9.1`。
 
 ## 依赖
 
@@ -15,7 +15,7 @@
 | Skill | 作用 | 权限 |
 | --- | --- | --- |
 | `author-agent-skill` | 创建或变更完整 Agent Skill 包 | 写 |
-| `review-agent-skill` | 只读评审 Agent Skill 的质量与复杂度 | 只读 |
+| `review-agent-skill` | 只读评审单个 Skill 或端到端 Skill 组合的质量与复杂度 | 只读 |
 | `design-agent-skill-evals` | 设计或修改 Skill Eval case/suite | 写 |
 | `audit-agent-skill-evals` | 运行前审核 Oracle，运行后 failure triage | 只读 |
 
@@ -23,7 +23,11 @@ Author 不给自己的结果出独立质量结论；Eval Designer 不审核自�
 
 ## 轻量 Review 合同
 
-默认评审产物是人类可读报告。确定性包事实由 `check-agent-skill.mjs` 直接计算；需要自动化交接时，使用 `ReviewResultLite` v1：
+默认评审产物是人类可读报告。确定性包事实由 `check-agent-skill.mjs` 直接计算；需要自动化交接时，使用 `ReviewResultLite` v1。
+
+系统级评审不增加新的 handoff schema。Reviewer 先识别 `skill | workflow | plugin | system` 层级，再把 common path、可重算状态、state owner、持久合同和 validator 一并纳入 End-to-End Minimum Architecture Challenge。若存在显著更简单且同样可靠的方案，可以直接输出 `design=redesign`、`complexity=over-engineered`，无需伪造高严重性缺陷。
+
+`ReviewResultLite` 只保存：
 
 - 一个 target digest；
 - 一个 `quick | full | delta` 模式；

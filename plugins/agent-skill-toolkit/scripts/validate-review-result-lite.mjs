@@ -49,6 +49,7 @@ function validateReview(review) {
   if (!Array.isArray(review?.unknowns) || review.unknowns.some((entry) => !nonEmpty(entry))) errors.push('unknowns must be an array of non-empty strings');
   if (!['none', 'structural', 'executed', 'comparative'].includes(review?.evalEvidence)) errors.push('evalEvidence is invalid');
   if (review?.complexity === 'over-engineered' && !['redesign', 'fail'].includes(review?.design)) errors.push('over-engineered complexity requires redesign or fail');
+  if (review?.complexity === 'over-engineered' && (!Array.isArray(review?.findings) || review.findings.length === 0)) errors.push('over-engineered complexity requires at least one evidence-based finding');
   if (review?.complexity === 'over-specified' && review?.design === 'pass') errors.push('over-specified complexity cannot use design=pass');
   return errors;
 }

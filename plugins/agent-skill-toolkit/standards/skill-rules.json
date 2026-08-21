@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 3,
+  "schemaVersion": 4,
   "contentRuleSource": {
     "plugin": "agent-content-toolkit",
     "minimumVersion": "0.5.0",
@@ -40,7 +40,7 @@
         "action": "默认改进顺序为 delete → relax → move → rewrite → add。"
       },
       "skill_review": {
-        "check": "独立报告 minimal、proportionate、over-specified 或 over-engineered。"
+        "check": "最小控制同时覆盖 Agent 文本、机器合同、持久 handoff、validator 和发布状态；独立报告 proportionate、over-specified 或 over-engineered。"
       }
     },
     {
@@ -49,7 +49,7 @@
         "action": "工具 schema 已给出的字段细节不在 Skill 中维护第二份文档。"
       },
       "skill_review": {
-        "check": "区分领域策略与 schema/runtime 事实。"
+        "check": "区分领域策略、可重算机器事实与必须持久化的昂贵证据。"
       }
     },
     {
@@ -58,7 +58,7 @@
         "action": "共享规则只维护一个 source，并生成动作视图。"
       },
       "skill_review": {
-        "check": "不因物理拆文件就默认认为渐进式披露成立。"
+        "check": "不因物理拆文件或拆 Skill 就默认认为渐进式披露及组合设计成立。"
       }
     },
     {
@@ -72,6 +72,24 @@
     }
   ],
   "compositionModel": {
+    "targetLevels": [
+      [
+        "skill",
+        "单个 Agent Skill 及其直接资源。"
+      ],
+      [
+        "workflow",
+        "多个 Skill、工具或阶段共同完成一个用户结果。"
+      ],
+      [
+        "plugin",
+        "插件内的 Skills、共享脚本、合同与适配层。"
+      ],
+      [
+        "system",
+        "跨插件、runner、harness 或发布边界的端到端方案。"
+      ]
+    ],
     "axes": [
       [
         "Independent intents",
@@ -96,6 +114,26 @@
       [
         "Stable handoffs",
         "阶段之间能否用短而稳定的 artifact 合同通信？"
+      ],
+      [
+        "Common-path cost",
+        "最常见请求实际经过多少 Skill、stage、持久 artifact、schema 和 validator？"
+      ],
+      [
+        "Recomputability",
+        "哪些 handoff 只缓存可从 source、manifest、Git 或 CLI 便宜重算的事实？"
+      ],
+      [
+        "State ownership",
+        "每个 identity、digest、readiness 或 coverage 是否只有一个权威 owner？"
+      ],
+      [
+        "Contract duplication",
+        "同一状态是否在多个 artifact、gate 或 summary 中重复编码？"
+      ],
+      [
+        "Semantic-schema fit",
+        "schema 是否验证外部机器事实，还是只强制模型填写无法独立证明的语义字段？"
       ]
     ],
     "verdicts": [
@@ -113,7 +151,7 @@
       ],
       [
         "orchestrator-needed",
-        "阶段应分成多个 Skill，由轻量入口只管理顺序、授权和 handoff。"
+        "阶段应分成多个 Skill，由轻量入口只管理顺序、授权和最小 handoff。"
       ]
     ],
     "splitSignals": [
@@ -121,8 +159,24 @@
       "Eval case 设计与 Oracle 审核混合。",
       "通用质量标准与项目 build、materialization 或 publish 混合。",
       "长时间执行或状态管理与结果裁决混合。",
-      "阶段需要 clean context，且已有稳定 artifact handoff。"
-    ]
+      "阶段需要 clean context，且已有稳定 artifact handoff。",
+      "quick/common path 为 release-only 合同支付成本。",
+      "同一 identity、digest、coverage 或 readiness 在三个以上位置重复。",
+      "多个持久 handoff 主要保存可便宜重算的事实。",
+      "严格 schema 主要验证模型语义字段非空，而不是外部事实。"
+    ],
+    "systemAuditTriggers": [
+      "当前请求涉及两个以上 Skill、插件、runner、runtime 或阶段合同。",
+      "一个用户结果需要三个以上持久 handoff 或 validator。",
+      "局部组件均可解释，但维护者难以从 common path 理解最终行为。"
+    ],
+    "endToEndChallenge": [
+      "先写用户最终结果和当前 common path，不按现有目录或 schema 分段。",
+      "写出一个同样安全的最小候选架构；通常先考虑 machine check + model quality review + optional release check。",
+      "对每个持久 artifact、状态字段、stage 和 validator说明：防止的现实失败、是否可便宜重算、是否必须跨上下文持久化、是否重复其它 owner、属于机器事实还是模型判断，以及删除后的最小替代。",
+      "把 Skill prose、scripts、schemas、validators、generated views 和发布合同放入同一 Minimum Control Audit。"
+    ],
+    "stopRule": "若端到端方案存在显著更短且同样可靠的实现，或 common path 主要由重复状态与可重算 handoff 组成，直接判 complexity=over-engineered、design=redesign，并先输出最小重构方案；不要求把该设计结论升级成 major/critical。"
   },
   "findingAdmission": {
     "evidenceTypes": [
@@ -192,13 +246,13 @@
     },
     {
       "id": "skill.composition-fitness",
-      "principle": "一个 Skill 应拥有一个可独立解释和触发的工作单元；独立意图、权限、证据生命周期和环境 profile 不应被局部正确性掩盖。",
+      "principle": "评审对象可以是单个 Skill，也可以是由多个 Skill、runner、合同和发布边界组成的 workflow/plugin/system；局部正确性不得掩盖端到端过度工程化。",
       "skill_author": {
-        "action": "枚举 independent intents、permission modes、evidence lifecycles、environment profiles、clean-context phases 和 stable handoffs。",
-        "completion": "拆分或保留决定有明确理由和 artifact contract。"
+        "action": "先确定 target level，再枚举 common path、权限、证据生命周期、可重算状态、state owner 和持久 handoff。",
+        "completion": "保留或拆分决定有一个可读 common path；可重算事实不形成持久模型合同。"
       },
       "skill_review": {
-        "check": "若两个以上独立意图伴随权限/证据/环境/上下文差异且可稳定交接，判定 overloaded 或 orchestrator-needed。"
+        "check": "当目标跨多个组件时，先做 End-to-End Minimum Architecture Challenge；若存在显著更简单且同样可靠的方案，允许在没有 major/critical 的情况下给出 redesign。"
       },
       "evidenceType": "heuristic",
       "sourceRefs": [
@@ -295,7 +349,8 @@
       "requiredLinkedSeverity": [
         "P0",
         "P1"
-      ]
+      ],
+      "systemDesignException": "当 End-to-End Minimum Architecture Challenge 证明当前 common path 明显过度工程化且存在同样可靠的显著更简单方案时，允许 redesign 而不要求 P0/P1。"
     },
     "qualityFix": {
       "composition": [

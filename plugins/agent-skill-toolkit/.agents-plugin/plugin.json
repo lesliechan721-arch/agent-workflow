@@ -1,31 +1,84 @@
 {
   "name": "agent-skill-toolkit",
-  "version": "0.9.0",
-  "description": "使用共享证据和组合标准编写 Agent Skill，以轻量路径评审 Skill，并设计或审核 Skill Eval。",
+  "version": "0.9.1",
+  "description": "使用共享证据和组合标准编写 Agent Skill，以轻量路径评审 Skill 及其端到端组合，并设计或审核 Skill Eval。",
   "compatibility": {
-    "aw": { "minVersion": "0.0.0" }
+    "aw": {
+      "minVersion": "0.0.0"
+    }
   },
   "skills": "./skills",
   "buildConfig": {
     "cacheable": true,
     "runtimeExports": [
-      { "name": "skill-rules", "source": "./standards/skill-rules.json" },
-      { "name": "review-dimensions", "source": "./standards/review-dimensions.json" },
-      { "name": "validate-json-contract", "source": "./scripts/validate-json-contract.mjs" },
-      { "name": "validate-review-result", "source": "./scripts/validate-review-result.mjs" },
-      { "name": "inspect-agent-skill", "source": "./scripts/inspect-agent-skill.mjs" },
-      { "name": "validate-review-input-bundle", "source": "./scripts/validate-review-input-bundle.mjs" },
-      { "name": "validate-eval-audit-result", "source": "./scripts/validate-eval-audit-result.mjs" },
-      { "name": "validate-eval-run-bundle", "source": "./scripts/validate-eval-run-bundle.mjs" },
-      { "name": "check-agent-skill", "source": "./scripts/check-agent-skill.mjs" },
-      { "name": "validate-review-result-lite", "source": "./scripts/validate-review-result-lite.mjs" },
-      { "name": "review-result-lite-schema", "source": "./schemas/review-result-lite.schema.json" },
-      { "name": "skill-design-brief-schema", "source": "./schemas/skill-design-brief.schema.json" },
-      { "name": "eval-audit-result-schema", "source": "./schemas/eval-audit-result.schema.json" },
-      { "name": "review-input-bundle-schema", "source": "./schemas/review-input-bundle.schema.json" },
-      { "name": "review-result-schema", "source": "./schemas/review-result.schema.json" },
-      { "name": "skill-inspection-result-schema", "source": "./schemas/skill-inspection-result.schema.json" },
-      { "name": "eval-run-bundle-schema", "source": "./schemas/eval-run-bundle.schema.json" }
+      {
+        "name": "skill-rules",
+        "source": "./standards/skill-rules.json"
+      },
+      {
+        "name": "review-dimensions",
+        "source": "./standards/review-dimensions.json"
+      },
+      {
+        "name": "validate-json-contract",
+        "source": "./scripts/validate-json-contract.mjs"
+      },
+      {
+        "name": "validate-review-result",
+        "source": "./scripts/validate-review-result.mjs"
+      },
+      {
+        "name": "inspect-agent-skill",
+        "source": "./scripts/inspect-agent-skill.mjs"
+      },
+      {
+        "name": "validate-review-input-bundle",
+        "source": "./scripts/validate-review-input-bundle.mjs"
+      },
+      {
+        "name": "validate-eval-audit-result",
+        "source": "./scripts/validate-eval-audit-result.mjs"
+      },
+      {
+        "name": "validate-eval-run-bundle",
+        "source": "./scripts/validate-eval-run-bundle.mjs"
+      },
+      {
+        "name": "check-agent-skill",
+        "source": "./scripts/check-agent-skill.mjs"
+      },
+      {
+        "name": "validate-review-result-lite",
+        "source": "./scripts/validate-review-result-lite.mjs"
+      },
+      {
+        "name": "review-result-lite-schema",
+        "source": "./schemas/review-result-lite.schema.json"
+      },
+      {
+        "name": "skill-design-brief-schema",
+        "source": "./schemas/skill-design-brief.schema.json"
+      },
+      {
+        "name": "eval-audit-result-schema",
+        "source": "./schemas/eval-audit-result.schema.json"
+      },
+      {
+        "name": "review-input-bundle-schema",
+        "source": "./schemas/review-input-bundle.schema.json"
+      },
+      {
+        "name": "review-result-schema",
+        "source": "./schemas/review-result.schema.json"
+      },
+      {
+        "name": "skill-inspection-result-schema",
+        "source": "./schemas/skill-inspection-result.schema.json"
+      },
+      {
+        "name": "eval-run-bundle-schema",
+        "source": "./schemas/eval-run-bundle.schema.json"
+      }
     ],
     "buildImports": [
       {
@@ -98,7 +151,8 @@
     "tests": {
       "node": [
         "./scripts/contract.test.mjs",
-        "./scripts/lightweight-review-contract.test.mjs"
+        "./scripts/lightweight-review-contract.test.mjs",
+        "./scripts/system-review-contract.test.mjs"
       ]
     }
   },
@@ -108,7 +162,10 @@
     "policy": {
       "installation": "AVAILABLE",
       "authentication": "ON_INSTALL",
-      "products": ["CODEX", "CLAUDE"]
+      "products": [
+        "CODEX",
+        "CLAUDE"
+      ]
     }
   }
 }
