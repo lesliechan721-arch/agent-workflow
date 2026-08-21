@@ -89,7 +89,7 @@ Local runtime
 ```
 
 - 仓库源码层是插件作者维护的输入。
-- Skill 根的 `evals/**` 和插件根的正式 `reports/**` 不进入 catalog runtime bundle、安装制品或 runtime digest。Skill `README.md` 是 production source，会随 Skill 发布。
+- 任意路径段 basename 为 `.DS_Store` 的 macOS 临时文件不进入 production identity、catalog runtime bundle、安装制品、runtime digest 或 review 完整文件集合；其它 hidden production 文件仍按普通 runtime 内容处理。Skill 根的 `evals/**` 和插件根的正式 `reports/**` 也不进入 catalog runtime bundle、安装制品或 runtime digest。Skill `README.md` 是 production source，会随 Skill 发布。
 - `.tmp/agent-workflows/evals/**` 只保存本地临时证据，不进入 Git 或 runtime bundle。插件正式报告位于 `plugins/<plugin>/reports/`，repo-local 静态 Skill 正式报告位于 `.agents/reports/`。Eval、评审、发布和登记步骤由 [create-aw-plugin](../.agents/skills/create-aw-plugin/README.md) 与 [skill-review](../.agents/skills/skill-review/README.md) 工作流定义。
 - 本地 catalog snapshot 和 release staging 都是生成物，不手工修改。
 - CLI version、catalog version 和 plugin version 是三套独立身份。

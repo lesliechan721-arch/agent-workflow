@@ -1,6 +1,6 @@
 {
   "name": "aw-plugin-development",
-  "version": "0.8.2",
+  "version": "0.8.3",
   "description": "Author and review AW plugins in compatible workspaces by composing generic Agent Skill and Agent content toolkits with AW adapters.",
   "compatibility": { "aw": { "minVersion": "0.0.0" } },
   "skills": "./skills",

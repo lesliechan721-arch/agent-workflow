@@ -5,6 +5,7 @@ type PosixSignal = KillSignal | 'SIGSTOP';
 const DEFAULT_PROCESS_MARKER_ENV = 'AW_NATIVE_CLI_PROCESS_MARKER';
 const PROCESS_TREE_COMMAND_TIMEOUT_MS = 1_000;
 const PROCESS_TREE_LOOKUP_TIMEOUT_MS = 250;
+const PROCESS_TREE_OBSERVATION_INTERVAL_MS = 50;
 const PROCESS_TREE_MAX_BUFFER_BYTES = 16 * 1024 * 1024;
 
 interface ProcessEntry {
@@ -56,6 +57,7 @@ interface ObservationState {
   rootDiscoveryPending: boolean;
   descendants: Map<number, ProcessIdentity>;
   initialLookup: Promise<void>;
+  pollTimer?: NodeJS.Timeout;
   disposed: boolean;
 }
 
@@ -256,10 +258,13 @@ function createProcessTreeObservation(
     pid,
     dispose: () => {
       const state = observationStates.get(observation);
-      if (state) state.disposed = true;
+      if (state) {
+        state.disposed = true;
+        if (state.pollTimer) clearTimeout(state.pollTimer);
+      }
     },
   };
-  const state = {
+  const state: ObservationState = {
     pid,
     platform: dependencies.platform ?? process.platform,
     marker,
@@ -270,11 +275,11 @@ function createProcessTreeObservation(
     descendants: new Map<number, ProcessIdentity>(),
     disposed: false,
     initialLookup: Promise.resolve(),
-  } satisfies ObservationState;
+  };
   observationStates.set(observation, state);
   if (!startLookup) return observation;
   const execFileImpl = dependencies.execFile ?? defaultExecFile;
-  state.initialLookup = state.platform === 'win32'
+  const refresh = (): Promise<void> => state.platform === 'win32'
     ? readWindowsProcessTable(execFileImpl).then((table) => {
       if (!state.disposed && table) refreshObservedProcesses(state, table);
     })
@@ -292,6 +297,16 @@ function createProcessTreeObservation(
         );
       }
     });
+  const scheduleRefresh = (): void => {
+    if (state.disposed) return;
+    state.pollTimer = setTimeout(() => {
+      state.pollTimer = undefined;
+      void refresh().finally(scheduleRefresh);
+    }, PROCESS_TREE_OBSERVATION_INTERVAL_MS);
+    state.pollTimer.unref();
+  };
+  state.initialLookup = refresh();
+  if (state.platform !== 'win32') void state.initialLookup.finally(scheduleRefresh);
   return observation;
 }
 
@@ -337,23 +352,19 @@ function identityMatches(
 }
 
 function posixIdentityMatches(
-  state: ObservationState,
   identity: ProcessIdentity | undefined,
   snapshot: PosixProcessSnapshot,
 ): identity is ProcessIdentity {
-  return identityMatches(identity, snapshot.table) &&
-    (state.marker === undefined ||
-      (snapshot.markerLookupSucceeded && snapshot.markerPids.has(identity.pid)));
+  return identityMatches(identity, snapshot.table);
 }
 
 function signalIdentity(
-  state: ObservationState,
   identity: ProcessIdentity,
   snapshot: PosixProcessSnapshot,
   signal: PosixSignal,
   kill: NonNullable<ProcessTreeDependencies['kill']>,
 ): void {
-  if (!posixIdentityMatches(state, identity, snapshot)) return;
+  if (!posixIdentityMatches(identity, snapshot)) return;
   try {
     kill(identity.pid, signal);
   } catch {
@@ -435,6 +446,9 @@ async function terminatePosixProcessTree(
   if (!snapshot) {
     throw cleanupUnconfirmed('POSIX process identity lookup failed.');
   }
+  if (state.marker !== undefined && !snapshot.markerLookupSucceeded) {
+    throw cleanupUnconfirmed('POSIX process marker lookup failed.');
+  }
   let markerLookupEverFailed = state.marker !== undefined && !snapshot.markerLookupSucceeded;
   refreshObservedProcesses(
     state,
@@ -444,17 +458,17 @@ async function terminatePosixProcessTree(
   const observedAtTermination = new Set(
     [...state.descendants.values()]
       .filter((identity) =>
-        posixIdentityMatches(state, identity, snapshot!)
+        posixIdentityMatches(identity, snapshot!)
       )
       .map((identity) => `${identity.pid}:${identity.startTime}`),
   );
 
   while (Date.now() < deadline) {
-    if (posixIdentityMatches(state, state.root, snapshot)) {
-      signalIdentity(state, state.root, snapshot, 'SIGSTOP', kill);
+    if (posixIdentityMatches(state.root, snapshot)) {
+      signalIdentity(state.root, snapshot, 'SIGSTOP', kill);
     }
     for (const identity of [...state.descendants.values()].reverse()) {
-      signalIdentity(state, identity, snapshot, 'SIGSTOP', kill);
+      signalIdentity(identity, snapshot, 'SIGSTOP', kill);
     }
     const next = await readPosixProcessTable(
       execFileImpl,
@@ -466,20 +480,23 @@ async function terminatePosixProcessTree(
     snapshot = next;
     markerLookupEverFailed ||=
       state.marker !== undefined && !snapshot.markerLookupSucceeded;
+    if (markerLookupEverFailed) {
+      throw cleanupUnconfirmed('POSIX process marker lookup failed.');
+    }
     const previousSize = state.descendants.size;
     refreshObservedProcesses(
       state,
       snapshot.table,
       snapshot.markerPids,
     );
-    if (posixIdentityMatches(state, state.root, snapshot)) {
-      signalIdentity(state, state.root, snapshot, 'SIGSTOP', kill);
+    if (posixIdentityMatches(state.root, snapshot)) {
+      signalIdentity(state.root, snapshot, 'SIGSTOP', kill);
     }
     for (const identity of [...state.descendants.values()].reverse()) {
-      signalIdentity(state, identity, snapshot, 'SIGSTOP', kill);
+      signalIdentity(identity, snapshot, 'SIGSTOP', kill);
     }
     const allFrozen = [state.root, ...state.descendants.values()].every((identity) => {
-      if (!posixIdentityMatches(state, identity, snapshot!)) return true;
+      if (!posixIdentityMatches(identity, snapshot!)) return true;
       const processState = snapshot!.table.get(identity.pid)?.state;
       return processState?.startsWith('T') || processState?.startsWith('Z');
     });
@@ -488,10 +505,10 @@ async function terminatePosixProcessTree(
 
   const killed = [state.root, ...state.descendants.values()].filter((identity) =>
     identity !== undefined &&
-    posixIdentityMatches(state, identity, snapshot!)
+    posixIdentityMatches(identity, snapshot!)
   );
   for (const identity of killed.reverse()) {
-    signalIdentity(state, identity, snapshot, 'SIGKILL', kill);
+    signalIdentity(identity, snapshot, 'SIGKILL', kill);
   }
   if (markerLookupEverFailed) {
     throw cleanupUnconfirmed('POSIX process marker lookup failed.');
@@ -507,7 +524,7 @@ async function terminatePosixProcessTree(
     throw cleanupUnconfirmed('POSIX process marker verification failed.');
   }
   const stillRunning = killed.some((identity) => {
-    if (!posixIdentityMatches(state, identity, verified)) return false;
+    if (!posixIdentityMatches(identity, verified)) return false;
     return !verified.table.get(identity.pid)?.state?.startsWith('Z');
   });
   if (stillRunning) throw cleanupUnconfirmed('a verified POSIX descendant is still running.');

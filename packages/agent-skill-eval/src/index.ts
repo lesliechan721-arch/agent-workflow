@@ -2,6 +2,7 @@ export { validateExecutionPlan } from './plan.js'
 export { runExecutionPlan, getRuntimeCapabilities } from './run.js'
 export { validateRunBundle } from './bundle.js'
 export { computeSkillDigest, createRuntimeSkillSnapshot } from './runtime-skill.js'
+export type { RuntimeSkillDigestOptions } from './runtime-skill.js'
 export {
   assertProviderProcessSupported,
   ProviderProcessCleanupError,
@@ -30,10 +31,10 @@ export type {
 } from './bundle.js'
 export type {
   Digest,
+  ExternalContainmentConfirmation,
   ProcessLifecycleHooks,
   ProcessRequest,
   ProcessResult,
-  ProcessRunner,
   ProcessTreeCleanupConfirmation,
   ProcessTerminationReason,
   ProviderProcessHandle,

@@ -679,15 +679,7 @@ function isLexicallyLocalReference(
   pathTarget: string,
 ): boolean {
   if (reference.source === 'markdown-link') {
-    return (
-      pathTarget.startsWith('./')
-      || pathTarget.startsWith('../')
-      || pathTarget.startsWith('/')
-      || pathTarget.startsWith('\\')
-      || WINDOWS_DRIVE_PATH_PATTERN.test(pathTarget)
-      || hasParentTraversal(pathTarget)
-      || CORE_RESOURCE_ROOT_PATTERN.test(pathTarget)
-    );
+    return true;
   }
   return (
     pathTarget.startsWith('../')

@@ -2,7 +2,7 @@
 
 Manual orchestration plugin for independently audited Agent Skill evals.
 
-Current plugin contract version: `0.3.0`.
+Current plugin contract version: `0.3.1`.
 
 It checks the human authorization gate and preflight `EvalAuditResult`, then calls the shared
 `aw-skill-eval` command to validate and run an `EvalExecutionPlan`. It hands the resulting
@@ -35,6 +35,8 @@ Skill-local script, provider, schema copy, or validator as the execution path.
   corpus digests.
 - The shared package owns provider execution, runtime snapshots, process cleanup, timeout,
   capture, bundle validation, and evidence-level calculation.
+- Standalone process observation does not guarantee descendant cleanup or produce comparative or
+  release-grade evidence. Consumers must preserve the bundle evidence level and limitations.
 - Result interpretation and failure attribution belong to a fresh-context
   `audit-agent-skill-evals(result-triage)` handoff.
 - This plugin does not modify production Skills or publish final reviews.

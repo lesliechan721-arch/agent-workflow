@@ -19,9 +19,9 @@
 
 - 旧默认路由仍使用 [create-aw-plugin](../.agents/skills/create-aw-plugin/README.md) 和 [skill-review](../.agents/skills/skill-review/README.md)。
 - `agent-content-toolkit` 提供 `write-agent-content` 与 `review-agent-content`。
-- `agent-skill-toolkit` 提供 Skill author/review 与 Eval design/audit，人工依赖 `agent-content-toolkit >= 0.2.0`。
-- `aw-plugin-development` 提供显式调用的 AW Author/Reviewer，人工依赖 `agent-skill-toolkit >= 0.1.0` 和 `agent-content-toolkit >= 0.2.0`。
-- 新 AW Reviewer 只处理 `plugins/<name>/`，repo-local 或 portable Skill 使用通用 `review-agent-skill`。
+- `agent-skill-toolkit` 提供 Skill author/review 与 Eval design/audit，依赖 `agent-content-toolkit >= 0.5.0`。
+- `aw-plugin-development` 提供显式调用的 AW Author/Reviewer，依赖 `agent-content-toolkit >= 0.5.0` 和 `agent-skill-toolkit >= 0.7.1`；真实模型 Eval 还需要 `agent-skill-eval-runner >= 0.3.0` 或兼容 runner。
+- AW Author/Reviewer 适用于任意兼容 workspace root；目标根由 `.agents-plugin/plugin.json` 标识，不限于 `plugins/<name>/`。repo-local 旧 `create-aw-plugin` 仍只处理本仓库 `plugins/<name>/`；不含 AW manifest 的 repo-local 或 portable Skill 使用通用 `review-agent-skill`。
 - 迁移期间新工作流不得静默替代旧入口；完成固定行为对照后再切换默认路由。
 - 确定性作者工具统一使用公开 CLI：`aw plugin init`、`aw plugin add-skill`、`aw plugin validate` 和 `aw plugin check-versions`。先运行 `aw --version`；不要使用 `npx` 或隐式安装。repo-local `create-aw-plugin` 与 `aw-plugin-development` Author 只编排这些命令，不保存第二份核心实现。
 - 默认插件根是 `<repo-root>/plugins/<plugin-name>`。兼容工作区使用其它布局时，`init`、`add-skill` 和单插件 `check-versions` 显式传 `--plugin-root <path>`；该路径必须位于 Git repo root 内并与 plugin name 匹配。`validate` 和 `check-versions` 拒绝 repo/plugin root、`.agents-plugin` 或 manifest path chain 中的符号链接和错误节点类型；不要用链接把作者根或 manifest 重定向到仓库外。`check-versions --all` 保留 `plugins/` 扫描语义。

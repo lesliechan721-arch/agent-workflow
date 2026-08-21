@@ -39,7 +39,8 @@ async function fixture() {
   const root = await mkdtemp(path.join(tmpdir(), 'aw-eval-evidence-'));
   temporaryRoots.push(root);
   const workspace = path.join(root, 'external-workspace');
-  const target = path.join(workspace, 'packages', 'demo-plugin');
+  const target = path.join(workspace, 'packages', 'demo-plugin'),
+    evidenceRoot = path.join(workspace, '.tmp', 'evidence');
   await mkdir(path.join(target, '.agents-plugin'), { recursive: true });
   await writeFile(
     path.join(target, '.agents-plugin', 'plugin.json'),
@@ -51,7 +52,8 @@ async function fixture() {
     'utf8',
   );
 
-  const casePath = path.join(root, 'cases.json');
+  const casePath = path.join(evidenceRoot, 'cases.json');
+  await mkdir(evidenceRoot, { recursive: true });
   await writeFile(casePath, JSON.stringify({ cases: [{ id: 'case-1', query: 'review' }] }), 'utf8');
   const corpusDigest = (
     await run(path.join(reviewScripts, 'validate-eval-audit-result.mjs'), [
@@ -85,11 +87,11 @@ async function fixture() {
     failureTriage: [],
     recommendedAction: 'accepted-risk',
   };
-  const auditPath = path.join(root, 'audit.json');
+  const auditPath = path.join(evidenceRoot, 'audit.json');
   const auditRaw = JSON.stringify(audit);
   await writeFile(auditPath, auditRaw, 'utf8');
-  const stdoutPath = path.join(root, 'runs', 'case-1', 'with', '1', 'stdout.txt');
-  const stderrPath = path.join(root, 'runs', 'case-1', 'with', '1', 'stderr.txt');
+  const stdoutPath = path.join(evidenceRoot, 'runs', 'case-1', 'with', '1', 'stdout.txt');
+  const stderrPath = path.join(evidenceRoot, 'runs', 'case-1', 'with', '1', 'stderr.txt');
   const stdout = 'fixture stdout';
   const stderr = 'fixture stderr';
   await mkdir(path.dirname(stdoutPath), { recursive: true });
@@ -139,7 +141,7 @@ async function fixture() {
     },
     limitations: ['fixture'],
   };
-  const resultPath = path.join(root, 'eval-run-bundle.json');
+  const resultPath = path.join(evidenceRoot, 'eval-run-bundle.json');
   await writeFile(resultPath, JSON.stringify(result), 'utf8');
   return { root, workspace, target, casePath, auditPath, resultPath, result, stdoutPath };
 }

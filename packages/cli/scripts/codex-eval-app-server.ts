@@ -43,11 +43,13 @@ import {
   type PluginEvalSuiteReport,
 } from './plugin-eval-contract.js';
 
-const DEFAULT_MANAGED_PROCESS_EVIDENCE: PluginEvalProcessManagementEvidence = {
-  mode: 'managed',
+const DEFAULT_OBSERVED_PROCESS_EVIDENCE: PluginEvalProcessManagementEvidence = {
+  mode: 'observed',
   inspectionAvailable: true,
   userAcknowledged: false,
-  descendantCleanupGuaranteed: true,
+  descendantCleanupGuaranteed: false,
+  limitation:
+    'Process-tree inspection observes and cleans known descendants but does not guarantee descendant cleanup.',
 };
 
 async function createEvalTemporaryRoot(
@@ -467,8 +469,8 @@ export class EvalAppServerSession {
     configOverrides?: readonly string[];
   }) {
     assertCodexEvalCanStartWork();
-    const processManagement = options.processManagement ?? DEFAULT_MANAGED_PROCESS_EVIDENCE;
-    const managed = processManagement.mode === 'managed';
+    const processManagement = options.processManagement ?? DEFAULT_OBSERVED_PROCESS_EVIDENCE;
+    const managed = processManagement.mode === 'managed' || processManagement.mode === 'observed';
     this.closed = new Promise<void>((resolve) => {
       this.resolveClosed = resolve;
     });
@@ -941,7 +943,10 @@ async function runConversationOnce(options: {
       }),
     ]);
     const before = await snapshotWorkspace(workspaceRoot);
-    if (options.processManagement.mode === 'managed') {
+    if (
+      options.processManagement.mode === 'managed' ||
+      options.processManagement.mode === 'observed'
+    ) {
       await assertProcessTreeInspectionAvailable();
     }
     assertCodexEvalCanStartWork();
@@ -1191,7 +1196,7 @@ export async function runCodexEvalIsolationProbe(options: {
 }): Promise<CodexEvalRpcIsolationEvidence> {
   assertCodexEvalCanStartWork();
   const sourceEnv = options.sourceEnv ?? process.env;
-  const processManagement = options.processManagement ?? DEFAULT_MANAGED_PROCESS_EVIDENCE;
+  const processManagement = options.processManagement ?? DEFAULT_OBSERVED_PROCESS_EVIDENCE;
   const temporaryRoot = await createEvalTemporaryRoot(
     'isolation-probe-',
     options.workRoot,
@@ -1218,7 +1223,7 @@ export async function runCodexEvalIsolationProbe(options: {
         trustedProject: workspaceRoot,
       }),
     ]);
-    if (processManagement.mode === 'managed') {
+    if (processManagement.mode === 'managed' || processManagement.mode === 'observed') {
       await assertProcessTreeInspectionAvailable();
     }
     session = new EvalAppServerSession({
@@ -1274,7 +1279,7 @@ export async function runCodexConversationSuite(options: {
   const codexRuntime = options.codexRuntime ?? cleanCodexEvalRuntimeConfig(sourceEnv, options.model);
   const model = options.model ?? codexRuntime.model ?? undefined;
   const isolation = options.isolation ?? 'standard';
-  const processManagement = options.processManagement ?? DEFAULT_MANAGED_PROCESS_EVIDENCE;
+  const processManagement = options.processManagement ?? DEFAULT_OBSERVED_PROCESS_EVIDENCE;
   const forbiddenHostRoots = await canonicalForbiddenHostRoots(
     [options.subjectRoot, ...(options.forbiddenHostRoots ?? [])],
   );

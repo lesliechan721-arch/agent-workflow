@@ -25,14 +25,14 @@ async function runInjectedBin(bin, args) {
     : execFileAsync(bin, args, { encoding: 'utf8' });
 }
 
-test('plugin is a manual-only 0.3.0 orchestration Skill', async () => {
+test('plugin is a manual-only 0.3.1 orchestration Skill', async () => {
   const manifest = JSON.parse(
     await readFile(path.join(sourceRoot, '.agents-plugin', 'plugin.json'), 'utf8'),
   );
   const skill = await readRuntime('SKILL.md');
   const openai = await readRuntime('agents/openai.yaml');
 
-  assert.equal(manifest.version, '0.3.0');
+  assert.equal(manifest.version, '0.3.1');
   assert.match(skill, /^disable-model-invocation: true$/mu);
   assert.match(skill, /^user-invocable: true$/mu);
   assert.match(openai, /^\s*allow_implicit_invocation: false$/mu);
@@ -124,8 +124,8 @@ test('dependency documents require the compatible package without implicit insta
 
   assert.match(dependency, new RegExp(range.replaceAll('.', '\\.'), 'u'));
   assert.match(readme, new RegExp(range.replaceAll('.', '\\.'), 'u'));
-  assert.match(dependency, /Plugin contract version: `0\.3\.0`/u);
-  assert.match(readme, /Current plugin contract version: `0\.3\.0`/u);
+  assert.match(dependency, /Plugin contract version: `0\.3\.1`/u);
+  assert.match(readme, /Current plugin contract version: `0\.3\.1`/u);
   assert.match(dependency, /Do not use `npx`/u);
   assert.match(dependency, /do not install or download the package implicitly/u);
   for (const document of [dependency, readme, await readRuntime('README.md'), await readRuntime('SKILL.md')]) {

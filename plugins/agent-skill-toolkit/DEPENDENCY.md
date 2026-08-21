@@ -1,6 +1,6 @@
 # Manual dependency contract
 
-Plugin contract version: `0.7.0`.
+Plugin contract version: `0.7.1`.
 
 Required plugin: `agent-content-toolkit >= 0.5.0`.
 

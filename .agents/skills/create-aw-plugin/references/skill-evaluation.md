@@ -40,7 +40,7 @@ plugins/<name>/
 
 静态和动态 Skill 都使用 `skills/<skill>` 作为源码根。动态 Skill 声明 source 时必须包含该规范根；其它 `sourceDirs` 必须留在根内，且不能进入 Skill 根的直接子目录 `evals/` 或 `reports/`。更深层的同名领域目录可以进入 runtime。eval owner 固定为规范根中唯一的 `evals/manifest.json`；同一个 Skill 不能有多个 eval owner。插件根 `evals/` 已禁用。
 
-Skill 根的直接子目录 `evals/`、`reports/` 和插件根 `reports/**` 都是作者期材料，不属于 production runtime bundle，也不参与 runtime package digest。更深层的同名目录按普通 runtime 资源处理。`evals/**` 和正式报告属于 Git 源码；完整工作批次位于 `.tmp/`，不进入 Git。Skill README 是发布内容，随 Skill 原样进入最终制品。动态 Skill 的评测对象不是源码占位文本，而是中央 materializer 通过真实 staging、renderer、ArtifactPlan 校验和 Codex adapter 得到的最终制品。
+任意路径段 basename 为 `.DS_Store` 的 macOS 临时文件不属于 production identity，不进入 runtime bundle、runtime package digest 或 review 完整文件集合；其它 hidden production 文件仍按普通 runtime 内容处理。Skill 根的直接子目录 `evals/`、`reports/` 和插件根 `reports/**` 都是作者期材料，也不属于 production runtime bundle 或 runtime package digest。更深层的同名目录按普通 runtime 资源处理。`evals/**` 和正式报告属于 Git 源码；完整工作批次位于 `.tmp/`，不进入 Git。Skill README 是发布内容，随 Skill 原样进入最终制品。动态 Skill 的评测对象不是源码占位文本，而是中央 materializer 通过真实 staging、renderer、ArtifactPlan 校验和 Codex adapter 得到的最终制品。
 
 每个 owner 的 `evals/README.md` 只说明自己的 corpus、suite、具体运行命令、专用 runner 限制和历史结果。全仓统一的权限、隔离、进程管理、凭据、批次布局、发布路径和平台证据边界只在本文及 CLI `--help` 维护，不复制到各 Skill。
 
@@ -165,9 +165,9 @@ strict 模式在启动模型前检查 `/etc/codex`（Windows 对应系统目录�
 
 真实模型 eval 应从普通 Terminal 会话直接运行。不要通过会临时导出或改写用户 keychain search list 的 GUI、沙箱或提权包装器启动；这类外层包装器可能留下失效的 `accountsKeychainExport` 路径，并在 Codex 启动前触发 macOS“找不到钥匙串”弹窗。中央入口在 macOS 检测到该包装器路径时会直接拒绝真实模型 eval，不会修改用户 keychain search list；`--materialize-only` 和确定性测试不执行该检查，也不需要启动 Codex 模型进程。
 
-真实模型 eval 默认还要求 Full Access 可用，以便发现并清理 Codex 的后代进程。入口先检查原始 `CODEX_PERMISSION_PROFILE`，再执行 macOS keychain 检查或进程树探测。来源为 `workspace` 或 `read-only` 且没有 `--allow-unmanaged-processes` 时，入口立即阻断；不会执行 keychain 检查、进程树探测、报告目录分配或模型启动。单次 `sandbox_permissions=require_escalated` 不等于整个会话的 Full Access，并且会保留原始受限 profile；不得用单次提权重试该门禁，也不能把提权后的探测成功记录为 `managed`。
+真实模型 eval 默认还要求 Full Access 可用，以便发现并清理 Codex 的已观察后代进程。入口先检查原始 `CODEX_PERMISSION_PROFILE`，再执行 macOS keychain 检查或进程树探测。来源为 `workspace` 或 `read-only` 且没有 `--allow-unmanaged-processes` 时，入口立即阻断；不会执行 keychain 检查、进程树探测、报告目录分配或模型启动。单次 `sandbox_permissions=require_escalated` 不等于整个会话的 Full Access，并且会保留原始受限 profile；不得用单次提权重试该门禁。探测成功只记录为 `observed`、`descendantCleanupGuaranteed: false` 和固定 limitation，不能记录为 `managed` 或后代清理保证。
 
-用户明确选择 `--allow-unmanaged-processes` 时，受限来源直接进入 `unmanaged-confirmed`，不执行进程树探测。该模式只跟踪直接子进程，timeout、信号或 runner 退出后可能遗留后代进程，报告会记录 `descendantCleanupGuaranteed: false`。Windows 当前没有 Job Object containment，也必须使用该显式降级选择。agent 不得自行添加参数；如果用户尚未选择，必须停下并让用户选择“切换整个会话到 Full Access”或“明确使用 `--allow-unmanaged-processes`”。CLI 只能把参数视为调用方确认，不能证明参数由人还是模型添加。真正的人工确认必须由 Codex 审批或 UI 层保证。release reviewer 必须明确接受降级运行的环境风险。
+用户明确选择 `--allow-unmanaged-processes` 时，受限来源直接进入 `unmanaged-confirmed`，不执行进程树探测。该模式只跟踪直接子进程，timeout、信号或 runner 退出后可能遗留后代进程，报告会记录 `descendantCleanupGuaranteed: false`。Windows 当前没有 Job Object containment，也必须使用该显式降级选择。agent 不得自行添加参数；如果用户尚未选择，必须停下并让用户选择“切换整个会话到 Full Access”或“明确使用 `--allow-unmanaged-processes`”。CLI 只能把参数视为调用方确认，不能证明参数由人还是模型添加。真正的人工确认必须由 Codex 审批或 UI 层保证。release reviewer 必须明确接受 `observed` 或 `unmanaged-confirmed` 运行的环境限制。
 
 <!-- aw-full-access-consent-policy:v1 -->
 | policy invariant | Agent requirement |

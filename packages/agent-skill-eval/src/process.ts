@@ -1,13 +1,7 @@
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import process from 'node:process'
-import {
-  assertProcessTreeInspectionAvailable,
-  observeProcessTree,
-  terminateProcessTree,
-  type ProcessTreeDependencies,
-  type ProcessTreeObservation,
-} from './process-tree.js'
+import type { ProcessTreeDependencies } from './process-tree.js'
 import type {
   ProcessLifecycleHooks,
   ProcessRequest,
@@ -17,9 +11,16 @@ import type {
 
 const PROVIDER_PROCESS_MARKER_ENV = 'AW_AGENT_SKILL_EVAL_PROCESS_MARKER'
 const REDACTED_PROCESS_MARKER = '[redacted provider process marker]'
+const WINDOWS_HOOK_CONFIRMATION_TIMEOUT_MS = 150
+const WINDOWS_CLEANUP_DEADLINE_MS = 750
+const OBSERVED_HOOK_CONFIRMATION_TIMEOUT_MS = 4_000
+const DIRECT_CHILD_CLOSE_TIMEOUT_MS = 750
+const OBSERVED_CONTAINMENT_LIMITATION =
+  'Observed process management is non-portable and does not guarantee descendant cleanup.'
+const CORE_PROCESS_RECEIPT = Symbol('core-process-receipt')
 
 export interface ProviderProcessDependencies {
-  containment?: 'managed' | 'unmanaged-confirmed'
+  containment?: 'managed' | 'observed' | 'unmanaged-confirmed'
   processTree?: ProcessTreeDependencies
 }
 
@@ -28,6 +29,21 @@ export class ProviderProcessCleanupError extends Error {
     super(message, { cause })
     this.name = 'ProviderProcessCleanupError'
   }
+}
+
+function issueCoreProcessReceipt(result: ProcessResult): ProcessResult {
+  Object.defineProperty(result, CORE_PROCESS_RECEIPT, { value: true })
+  return result
+}
+
+export function hasCoreProcessReceipt(result: ProcessResult): boolean {
+  return (result as ProcessResult & { [CORE_PROCESS_RECEIPT]?: true })[
+    CORE_PROCESS_RECEIPT
+  ] === true
+}
+
+export function hasCoreManagedProcessReceipt(result: ProcessResult): boolean {
+  return result.descendantCleanupGuaranteed && hasCoreProcessReceipt(result)
 }
 
 function scrubProcessMarker(value: string, marker: string, truncated: boolean = false): string {
@@ -58,6 +74,20 @@ function safeErrorCause(error: unknown, marker: string): Error {
   return new Error(errorMessage(error, marker))
 }
 
+async function withDeadline<T>(promise: Promise<T>, milliseconds: number): Promise<T> {
+  let timer: NodeJS.Timeout | undefined
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error('terminateProcessTree hook timed out')), milliseconds)
+      }),
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
 export async function runProviderProcess(
   request: ProcessRequest,
   hooks: ProcessLifecycleHooks = {},
@@ -67,8 +97,14 @@ export async function runProviderProcess(
   const containment = dependencies.containment ?? 'managed'
   const descendantCleanupGuaranteed = containment === 'managed'
   if (descendantCleanupGuaranteed) assertProviderProcessSupported(platform, hooks)
+  if (containment === 'observed' && !hooks.terminateProcessTree) {
+    throw new Error('Observed provider execution requires a process cleanup hook.')
+  }
+  const containmentLimitation = containment === 'observed'
+    ? OBSERVED_CONTAINMENT_LIMITATION
+    : undefined
   if (request.signal?.aborted) {
-    return {
+    return issueCoreProcessReceipt({
       stdout: '',
       stderr: '',
       exitCode: null,
@@ -80,20 +116,13 @@ export async function runProviderProcess(
       stdoutTruncated: false,
       stderrTruncated: false,
       descendantCleanupGuaranteed,
-    }
+      ...(containmentLimitation ? { containmentLimitation } : {}),
+    })
   }
 
-  const marker = descendantCleanupGuaranteed ? randomUUID() : ''
-  const processTreeDependencies: ProcessTreeDependencies = {
-    ...dependencies.processTree,
-    platform,
-    markerEnvironmentVariable: PROVIDER_PROCESS_MARKER_ENV,
-  }
-  if (descendantCleanupGuaranteed && platform !== 'win32') {
-    await assertProcessTreeInspectionAvailable(processTreeDependencies)
-  }
+  const marker = containment === 'unmanaged-confirmed' ? '' : randomUUID()
   const childEnvironment = { ...request.env }
-  if (descendantCleanupGuaranteed) childEnvironment[PROVIDER_PROCESS_MARKER_ENV] = marker
+  if (marker) childEnvironment[PROVIDER_PROCESS_MARKER_ENV] = marker
   else delete childEnvironment[PROVIDER_PROCESS_MARKER_ENV]
 
   return await new Promise<ProcessResult>((resolve, reject) => {
@@ -104,10 +133,6 @@ export async function runProviderProcess(
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     const handle = child.pid === undefined ? null : { pid: child.pid }
-    const observation: ProcessTreeObservation | undefined =
-      descendantCleanupGuaranteed && platform !== 'win32' && handle
-        ? observeProcessTree(handle.pid, marker, processTreeDependencies)
-        : undefined
     let stdout = Buffer.alloc(0)
     let stderr = Buffer.alloc(0)
     let terminationReason: ProcessTerminationReason | null = null
@@ -115,76 +140,43 @@ export async function runProviderProcess(
     let cleanupStarted: Promise<void> | null = null
     let cleanupFailure: unknown = null
     let timer: NodeJS.Timeout | null = null
+    let cleanupCloseTimer: NodeJS.Timeout | null = null
     let stdoutTruncated = false
     let stderrTruncated = false
 
+    const killDirectChild = (): void => {
+      if (child.exitCode !== null || child.signalCode !== null) return
+      try {
+        child.kill('SIGKILL')
+      } catch {
+        // The direct child can exit between the status check and signal.
+      }
+    }
+
     const performCleanup = async (reason: ProcessTerminationReason): Promise<void> => {
       if (!handle) return
-      if (!descendantCleanupGuaranteed) {
-        if (child.exitCode !== null || child.signalCode !== null) return
-        try {
-          child.kill('SIGTERM')
-        } catch {
-          return
-        }
-        for (let attempt = 0; attempt < 10; attempt += 1) {
-          if (child.exitCode !== null || child.signalCode !== null) return
-          await new Promise((resolve) => setTimeout(resolve, 25))
-        }
-        try {
-          child.kill('SIGKILL')
-        } catch {
-          // The direct child can exit between the status check and signal.
-        }
+      if (containment === 'unmanaged-confirmed') {
+        if (reason !== 'complete') killDirectChild()
         return
       }
-      let hookFailure: unknown = null
-      let hookConfirmed = false
-      if (hooks.terminateProcessTree) {
-        try {
-          const confirmation = await hooks.terminateProcessTree(handle, reason)
-          hookConfirmed = confirmation?.confirmed === true
-        } catch (error) {
-          hookFailure = error
-        }
-      }
-
-      if (platform === 'win32') {
-        if (hookFailure) {
-          throw new ProviderProcessCleanupError(
-            `Provider process tree cleanup could not be proven for pid ${handle.pid}: ${errorMessage(hookFailure, marker)}`,
-            safeErrorCause(hookFailure, marker),
-          )
-        }
-        if (!hookConfirmed) {
-          throw new ProviderProcessCleanupError(
-            `Provider process tree cleanup could not be proven for pid ${handle.pid}: ` +
-              'the Windows terminateProcessTree hook did not return confirmed evidence.',
-            undefined,
-          )
-        }
-        return
-      }
-
       try {
-        await terminateProcessTree(
-          handle.pid,
-          (signal) => { child.kill(signal) },
-          processTreeDependencies,
-          { observation, requireConfirmedCleanup: true },
-        )
+        const timeoutMs = containment === 'observed'
+          ? OBSERVED_HOOK_CONFIRMATION_TIMEOUT_MS
+          : platform === 'win32'
+            ? WINDOWS_HOOK_CONFIRMATION_TIMEOUT_MS
+            : WINDOWS_CLEANUP_DEADLINE_MS
+        const confirmation = await withDeadline(hooks.terminateProcessTree!(handle, reason), timeoutMs)
+        if (confirmation?.confirmed !== true) {
+          throw new Error('the external containment hook did not return confirmed cleanup evidence')
+        }
       } catch (error) {
+        killDirectChild()
         throw new ProviderProcessCleanupError(
           `Provider process tree cleanup could not be proven for pid ${handle.pid}: ${errorMessage(error, marker)}`,
           safeErrorCause(error, marker),
         )
       }
-      if (hookFailure) {
-        throw new ProviderProcessCleanupError(
-          `Provider process tree cleanup could not be proven for pid ${handle.pid}: ${errorMessage(hookFailure, marker)}`,
-          safeErrorCause(hookFailure, marker),
-        )
-      }
+      if (reason !== 'complete') killDirectChild()
     }
 
     const startCleanup = (reason: ProcessTerminationReason): Promise<void> => {
@@ -193,6 +185,23 @@ export async function runProviderProcess(
         cleanupStarted = performCleanup(reason).then(undefined, (error: unknown) => {
           cleanupFailure = error
         })
+        if (!settled) {
+          const hookTimeoutMs = containment === 'observed'
+            ? OBSERVED_HOOK_CONFIRMATION_TIMEOUT_MS
+            : platform === 'win32'
+              ? WINDOWS_HOOK_CONFIRMATION_TIMEOUT_MS
+              : WINDOWS_CLEANUP_DEADLINE_MS
+          cleanupCloseTimer = setTimeout(() => {
+            if (settled) return
+            killDirectChild()
+            settled = true
+            clearObservation()
+            reject(cleanupFailure ?? new ProviderProcessCleanupError(
+              `Provider direct child termination could not be confirmed for pid ${handle?.pid ?? 'unknown'}.`,
+              new Error('direct child close event timed out'),
+            ))
+          }, hookTimeoutMs + DIRECT_CHILD_CLOSE_TIMEOUT_MS)
+        }
       }
       return cleanupStarted
     }
@@ -214,6 +223,7 @@ export async function runProviderProcess(
     const abort = (): void => { void startCleanup('abort') }
     const clearObservation = (): void => {
       if (timer) clearTimeout(timer)
+      if (cleanupCloseTimer) clearTimeout(cleanupCloseTimer)
       request.signal?.removeEventListener('abort', abort)
     }
     const output = (buffer: Buffer, truncated: boolean): string =>
@@ -223,30 +233,12 @@ export async function runProviderProcess(
     child.stderr.on('data', (chunk: Buffer) => append('stderr', chunk))
 
     let spawnHookError: unknown = null
+    let spawnError: unknown = null
     let spawnReady = Promise.resolve()
     child.once('error', (error) => {
-      if (settled) return
-      settled = true
-      clearObservation()
+      spawnError = error
       stderr = Buffer.concat([stderr, Buffer.from(errorMessage(error, marker))])
-      void (async () => {
-        if (handle) await startCleanup('abort')
-        else observation?.dispose()
-        if (cleanupFailure) throw cleanupFailure
-        resolve({
-          stdout: output(stdout, stdoutTruncated),
-          stderr: output(stderr, stderrTruncated),
-          exitCode: null,
-          signal: null,
-          timedOut: false,
-          cancelled: false,
-          terminationReason: handle ? 'abort' : null,
-          maxBufferExceeded: false,
-          stdoutTruncated: false,
-          stderrTruncated: false,
-          descendantCleanupGuaranteed,
-        })
-      })().catch(reject)
+      if (handle) void startCleanup('abort')
     })
     child.once('exit', () => {
       // Close remains authoritative because it follows stdio capture.
@@ -262,19 +254,20 @@ export async function runProviderProcess(
         if (spawnHookError) {
           throw safeErrorCause(spawnHookError, marker)
         }
-        resolve({
+        resolve(issueCoreProcessReceipt({
           stdout: output(stdout, stdoutTruncated),
           stderr: output(stderr, stderrTruncated),
-          exitCode,
-          signal,
+          exitCode: spawnError ? null : exitCode,
+          signal: spawnError ? null : signal,
           timedOut: terminationReason === 'timeout',
           cancelled: terminationReason === 'abort',
-          terminationReason,
+          terminationReason: spawnError && !handle ? null : terminationReason,
           maxBufferExceeded: terminationReason === 'max-buffer',
           stdoutTruncated,
           stderrTruncated,
           descendantCleanupGuaranteed,
-        })
+          ...(containmentLimitation ? { containmentLimitation } : {}),
+        }))
       })().catch(reject)
     })
 
@@ -293,9 +286,14 @@ export function assertProviderProcessSupported(
   platform: NodeJS.Platform,
   hooks: ProcessLifecycleHooks = {},
 ): void {
-  if (platform === 'win32' && !hooks.terminateProcessTree) {
+  if (
+    hooks.externalContainment?.confirmed !== true ||
+    hooks.externalContainment.descendantCleanupGuaranteed !== true ||
+    hooks.externalContainment.readOnlySkillSnapshotGuaranteed !== true ||
+    !hooks.terminateProcessTree
+  ) {
     throw new Error(
-      'Default provider execution on Windows requires a terminateProcessTree hook that returns confirmed descendant-cleanup evidence; the shared monitor cannot independently verify Windows Job Object membership.',
+      `Managed provider execution on ${platform} requires an explicitly confirmed external containment hook that guarantees read-only Skill snapshots and descendant cleanup.`,
     )
   }
 }

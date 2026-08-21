@@ -121,14 +121,17 @@ interface ChildResult {
   timedOut: boolean;
   cancelled: boolean;
   descendantCleanupGuaranteed: boolean;
+  containmentLimitation?: string;
   processTreeId: string;
 }
 
-const DEFAULT_MANAGED_PROCESS_EVIDENCE: PluginEvalProcessManagementEvidence = {
-  mode: 'managed',
+const DEFAULT_OBSERVED_PROCESS_EVIDENCE: PluginEvalProcessManagementEvidence = {
+  mode: 'observed',
   inspectionAvailable: true,
   userAcknowledged: false,
-  descendantCleanupGuaranteed: true,
+  descendantCleanupGuaranteed: false,
+  limitation:
+    'Process-tree inspection observes and cleans known descendants but does not guarantee descendant cleanup.',
 };
 
 export { terminatePosixProcessTree, terminateWindowsProcessTree };
@@ -357,9 +360,9 @@ export async function runChild(
 ): Promise<ChildResult> {
   assertCodexEvalCanStartWork();
   const processTreeId = randomUUID();
-  const processManagement = options.processManagement ?? DEFAULT_MANAGED_PROCESS_EVIDENCE;
-  const managed = processManagement.mode === 'managed';
-  if (!managed && (
+  const processManagement = options.processManagement ?? DEFAULT_OBSERVED_PROCESS_EVIDENCE;
+  const observed = processManagement.mode === 'managed' || processManagement.mode === 'observed';
+  if (!observed && (
     processManagement.mode !== 'unmanaged-confirmed' ||
     !processManagement.userAcknowledged
   )) {
@@ -370,8 +373,8 @@ export async function runChild(
   let terminationPromise: Promise<string[]> | undefined;
   let cleanupDiagnostics: string[] = [];
   let cleanupDiagnostic = '';
-  const terminateManagedTree = async (): Promise<void> => {
-    if (!processTreeMonitor) return;
+  const terminateManagedTree = async (): Promise<{ confirmed: true }> => {
+    if (!processTreeMonitor) return { confirmed: true };
     terminationPromise ??= processTreeMonitor.terminate().catch((error: unknown) => [
       `${PROCESS_TREE_CLEANUP_UNCONFIRMED_PREFIX}: ${
         error instanceof Error ? error.message : String(error)
@@ -381,8 +384,12 @@ export async function runChild(
     if (cleanupDiagnostics.length > 0) {
       cleanupDiagnostic = `${cleanupDiagnostics.join('\n')}\n`;
     }
+    if (processTreeCleanupIsUnconfirmed(cleanupDiagnostics)) {
+      throw new Error(cleanupDiagnostics.join('\n'));
+    }
+    return { confirmed: true };
   };
-  const hooks: ProcessLifecycleHooks | undefined = managed
+  const hooks: ProcessLifecycleHooks | undefined = observed
     ? {
         onSpawn: ({ pid }) => {
           processTreeMonitor = options.createProcessTreeMonitor
@@ -394,21 +401,21 @@ export async function runChild(
     : undefined;
   const unregisterSignalCleanup = registerCodexEvalSignalCleanup(async () => {
     abortController.abort();
-    if (managed) await terminateManagedTree();
+    if (observed) await terminateManagedTree();
   });
   try {
     const result = await runProviderProcess({
       executable: command,
       args,
       cwd: options.cwd,
-      env: managed
+      env: observed
         ? { ...options.env, [CODEX_EVAL_PROCESS_TREE_ID_ENV]: processTreeId }
         : { ...options.env },
       timeoutMs: options.timeoutMs,
       maxBufferBytes: 20 * 1024 * 1024,
       signal: abortController.signal,
     }, hooks, {
-      containment: managed ? 'managed' : 'unmanaged-confirmed',
+      containment: observed ? 'observed' : 'unmanaged-confirmed',
     });
     let stderr = result.stderr;
     if (result.timedOut) {
@@ -1601,6 +1608,7 @@ function publicProcessManagement(
     inspectionAvailable: value.inspectionAvailable,
     userAcknowledged: value.userAcknowledged,
     descendantCleanupGuaranteed: value.descendantCleanupGuaranteed,
+    ...(value.limitation ? { limitation: value.limitation } : {}),
   };
 }
 

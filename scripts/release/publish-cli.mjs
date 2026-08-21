@@ -71,13 +71,11 @@ async function publishCliFromSnapshot(
   gitCheckArgs,
   releaseIdentity,
   assertFresh,
+  cliPublication,
 ) {
   if (releaseIdentity) assertReleaseSnapshotIdentity(snapshot, releaseIdentity);
   const snapshotPackageJsonPath = path.join(snapshot.cliPackageRoot, 'package.json');
-  const [snapshotPackageJson, registryUrl] = await Promise.all([
-    readPackageJson(snapshotPackageJsonPath),
-    resolveRegistryUrl(snapshotPackageJsonPath, process.env),
-  ]);
+  const snapshotPackageJson = await readPackageJson(snapshotPackageJsonPath);
   const version = String(snapshotPackageJson.version);
   if (version !== expectedVersion) {
     throw new Error(
@@ -86,39 +84,168 @@ async function publishCliFromSnapshot(
   }
   assertVersionKind(version, publishMode.versionKind);
 
-  return withPrivateCliTarball(snapshot, async (tarballPath) => {
-    const publishArgs = [
-      'publish',
-      tarballPath,
-      '--ignore-scripts',
-      '--tag',
-      publishMode.tag,
-      '--registry',
-      registryUrl,
-      ...gitCheckArgs,
-    ];
-    await assertFresh();
-    await runCommand('pnpm', publishArgs, {
-      timeoutMs: RELEASE_NETWORK_TIMEOUT_MS,
-      env: {
-        ...process.env,
-        AW_RELEASE_NPM_REGISTRY_URL: registryUrl,
-        npm_config_registry: registryUrl,
-        NPM_CONFIG_REGISTRY: registryUrl,
-      },
-    });
+  assertBoundCliPublication(cliPublication, snapshot, expectedVersion);
+  const { tarballPath, registryUrl } = cliPublication;
+  const publishArgs = [
+    'publish',
+    tarballPath,
+    '--ignore-scripts',
+    '--tag',
+    publishMode.tag,
+    '--registry',
+    registryUrl,
+    ...gitCheckArgs,
+  ];
+  await assertFresh();
+  await runCommand('pnpm', publishArgs, {
+    timeoutMs: RELEASE_NETWORK_TIMEOUT_MS,
+    env: {
+      ...process.env,
+      AW_RELEASE_NPM_REGISTRY_URL: registryUrl,
+      npm_config_registry: registryUrl,
+      NPM_CONFIG_REGISTRY: registryUrl,
+    },
+  });
 
-    return {
-      mode,
-      version,
+  return {
+    mode,
+    version,
+    tarballPath,
+    registryUrl,
+    candidateTreeDigest: cliPublication.candidateTreeDigest,
+    generationId: snapshot.generationId,
+    outputDigest: snapshot.outputDigest,
+    inputDigest: snapshot.inputDigest,
+    cliPackageDigest: snapshot.cliPackageDigest,
+    ...(releaseIdentity ? { releaseIdentity } : {}),
+  };
+}
+
+function assertBoundCliPublication(publication, snapshot, expectedVersion) {
+  if (
+    !publication
+    || (publication.status !== 'publish' && publication.status !== 'already-published')
+    || publication.version !== expectedVersion
+    || typeof publication.tarballPath !== 'string'
+    || publication.tarballPath === ''
+    || typeof publication.registryUrl !== 'string'
+    || publication.registryUrl === ''
+    || typeof publication.candidateTreeDigest !== 'string'
+    || publication.candidateTreeDigest === ''
+    || (
+      publication.status === 'already-published'
+      && (
+        typeof publication.publishedTreeDigest !== 'string'
+        || publication.publishedTreeDigest !== publication.candidateTreeDigest
+      )
+    )
+    || publication.generationId !== snapshot.generationId
+    || publication.outputDigest !== snapshot.outputDigest
+    || publication.inputDigest !== snapshot.inputDigest
+    || publication.cliPackageDigest !== snapshot.cliPackageDigest
+  ) {
+    throw new Error('Bound CLI publication candidate is invalid.');
+  }
+}
+
+export async function prepareCliPublication(
+  mode,
+  publishMode,
+  snapshot,
+  expectedVersion,
+  gate,
+  tarballPath,
+  options = {},
+) {
+  const packageJsonPath = path.join(snapshot.cliPackageRoot, 'package.json');
+  const packageJson = await readPackageJson(packageJsonPath);
+  if (packageJson.name !== '@lesliechan721/aw') {
+    throw new Error('CLI snapshot package identity is invalid.');
+  }
+  if (String(packageJson.version) !== expectedVersion) {
+    throw new Error(
+      `CLI snapshot version mismatch: expected ${expectedVersion}, found ${packageJson.version}.`,
+    );
+  }
+  assertVersionKind(expectedVersion, publishMode.versionKind);
+
+  const exactVersionPublished = await (options.isExactPackageVersionPublished
+    ?? isExactPackageVersionPublished)(
+    '@lesliechan721/aw',
+    expectedVersion,
+    packageJsonPath,
+  );
+  if (exactVersionPublished) {
+    const comparison = await (options.assertPublishedPackageTarballMatchesCandidate
+      ?? assertPublishedPackageTarballMatchesCandidate)(
+      '@lesliechan721/aw',
+      expectedVersion,
+      packageJsonPath,
       tarballPath,
-      registryUrl,
-      generationId: snapshot.generationId,
-      outputDigest: snapshot.outputDigest,
-      inputDigest: snapshot.inputDigest,
-      cliPackageDigest: snapshot.cliPackageDigest,
-      ...(releaseIdentity ? { releaseIdentity } : {}),
-    };
+      options.registryComparisonOptions,
+    );
+    if (gate.status === 'already-published') {
+      return {
+        status: 'already-published',
+        mode,
+        version: expectedVersion,
+        tarballPath,
+        registryUrl: comparison.registryUrl,
+        candidateTreeDigest: comparison.candidateTreeDigest,
+        publishedTreeDigest: comparison.publishedTreeDigest,
+        generationId: snapshot.generationId,
+        outputDigest: snapshot.outputDigest,
+        inputDigest: snapshot.inputDigest,
+        cliPackageDigest: snapshot.cliPackageDigest,
+      };
+    }
+    throw new Error(
+      `CLI @lesliechan721/aw@${expectedVersion} already exists, but the ${mode} dist-tag resolves to ` +
+      `${gate.publishedVersion}. Refusing to repeat an immutable package publication.`,
+    );
+  }
+
+  const [registryUrl, candidateTreeDigest] = await Promise.all([
+    resolveRegistryUrl(packageJsonPath, process.env),
+    (options.computePackageTarballTreeDigest ?? computePackageTarballTreeDigest)(tarballPath),
+  ]);
+  return {
+    status: 'publish',
+    mode,
+    version: expectedVersion,
+    tarballPath,
+    registryUrl,
+    candidateTreeDigest,
+    generationId: snapshot.generationId,
+    outputDigest: snapshot.outputDigest,
+    inputDigest: snapshot.inputDigest,
+    cliPackageDigest: snapshot.cliPackageDigest,
+  };
+}
+
+export async function withPreparedCliPublication(
+  mode,
+  publishMode,
+  snapshot,
+  expectedVersion,
+  gate,
+  assertFresh,
+  callback,
+  options = {},
+) {
+  return (options.withPrivateCliTarball ?? withPrivateCliTarball)(snapshot, async (tarballPath) => {
+    const publication = await (options.prepareCliPublication ?? prepareCliPublication)(
+      mode,
+      publishMode,
+      snapshot,
+      expectedVersion,
+      gate,
+      tarballPath,
+      options,
+    );
+    assertBoundCliPublication(publication, snapshot, expectedVersion);
+    await assertFresh();
+    return callback(publication);
   });
 }
 
@@ -237,12 +364,15 @@ export async function publishCli(argv = process.argv.slice(2), options = {}) {
       const publishedVersion = publicationLease && options.publishedVersion !== undefined
         ? options.publishedVersion
         : await (options.resolvePublishedCliVersion ?? resolvePublishedCliVersion)(mode);
-      const gate = resolveCliPublicationGate({
-        mode,
-        candidateVersion: expectedVersion,
+      const gate = {
+        ...resolveCliPublicationGate({
+          mode,
+          candidateVersion: expectedVersion,
+          publishedVersion,
+          ...(options.compareSemVer ? { compare: options.compareSemVer } : {}),
+        }),
         publishedVersion,
-        ...(options.compareSemVer ? { compare: options.compareSemVer } : {}),
-      });
+      };
       let gitCheckArgs;
       const prepareToPublish = async () => {
         if (gitCheckArgs) return gitCheckArgs;
@@ -252,14 +382,67 @@ export async function publishCli(argv = process.argv.slice(2), options = {}) {
         gitCheckArgs = await resolveCliPublishGitCheckArgs();
         return gitCheckArgs;
       };
-      const evalPackage = options.evalPublication ?? await prepareEvalPublication(
+      const publishPreparedCandidate = async (cliPublication) => {
+        assertBoundCliPublication(cliPublication, snapshot, expectedVersion);
+        const evalPackage = options.evalPublication ?? await prepareEvalPublication(
+          mode,
+          publishMode,
+          snapshot,
+          expectedVersion,
+          assertFresh,
+          {
+            beforePublish: prepareToPublish,
+            ...(options.isExactPackageVersionPublished
+              ? { isExactPackageVersionPublished: options.isExactPackageVersionPublished }
+              : {}),
+            ...(options.assertPublishedPackageTarballMatchesCandidate
+              ? { assertPublishedPackageTarballMatchesCandidate: options.assertPublishedPackageTarballMatchesCandidate }
+              : {}),
+          },
+        );
+        if (
+          evalPackage.version !== expectedVersion
+          || typeof evalPackage.candidateTreeDigest !== 'string'
+          || evalPackage.candidateTreeDigest === ''
+          || evalPackage.generationId !== snapshot.generationId
+          || evalPackage.outputDigest !== snapshot.outputDigest
+          || evalPackage.inputDigest !== snapshot.inputDigest
+        ) {
+          throw new Error('Bound shared Eval publication result is invalid.');
+        }
+        if (cliPublication.status === 'already-published') {
+          return {
+            mode,
+            status: 'already-published',
+            version: expectedVersion,
+            cliPublication,
+            evalPackage,
+          };
+        }
+        await prepareToPublish();
+        const cli = await publishCliFromSnapshot(
+          mode,
+          publishMode,
+          snapshot,
+          expectedVersion,
+          gitCheckArgs,
+          releaseIdentity,
+          assertFresh,
+          cliPublication,
+        );
+        return { ...cli, cliPublication, evalPackage };
+      };
+
+      if (options.cliPublication) return publishPreparedCandidate(options.cliPublication);
+      return (options.withPreparedCliPublication ?? withPreparedCliPublication)(
         mode,
         publishMode,
         snapshot,
         expectedVersion,
+        gate,
         assertFresh,
+        publishPreparedCandidate,
         {
-          beforePublish: prepareToPublish,
           ...(options.isExactPackageVersionPublished
             ? { isExactPackageVersionPublished: options.isExactPackageVersionPublished }
             : {}),
@@ -268,28 +451,6 @@ export async function publishCli(argv = process.argv.slice(2), options = {}) {
             : {}),
         },
       );
-      if (
-        evalPackage.version !== expectedVersion
-        || typeof evalPackage.candidateTreeDigest !== 'string'
-        || evalPackage.candidateTreeDigest === ''
-        || evalPackage.generationId !== snapshot.generationId
-        || evalPackage.outputDigest !== snapshot.outputDigest
-        || evalPackage.inputDigest !== snapshot.inputDigest
-      ) {
-        throw new Error('Bound shared Eval publication result is invalid.');
-      }
-      if (gate.status === 'already-published') return { mode, ...gate, evalPackage };
-      await prepareToPublish();
-      const cli = await publishCliFromSnapshot(
-        mode,
-        publishMode,
-        snapshot,
-        expectedVersion,
-        gitCheckArgs,
-        releaseIdentity,
-        assertFresh,
-      );
-      return { ...cli, evalPackage };
     };
 
     if (options.publicationLease) return publishUnderLease(options.publicationLease);

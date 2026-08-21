@@ -42,7 +42,7 @@ describe('Codex eval process management', () => {
   it.each([
     ['native Full Access', { CODEX_PERMISSION_PROFILE: ':danger-full-access' }],
     ['ordinary Terminal', {}],
-  ])('keeps successful inspection managed for %s', async (_label, sourceEnv) => {
+  ])('reports successful inspection as observed for %s', async (_label, sourceEnv) => {
     const inspect = vi.fn(async () => undefined);
 
     await expect(resolveCodexEvalProcessManagement({
@@ -50,9 +50,10 @@ describe('Codex eval process management', () => {
       sourceEnv,
       inspect,
     })).resolves.toMatchObject({
-      mode: 'managed',
+      mode: 'observed',
       inspectionAvailable: true,
-      descendantCleanupGuaranteed: true,
+      descendantCleanupGuaranteed: false,
+      limitation: expect.stringContaining('does not guarantee descendant cleanup'),
     });
 
     expect(inspect).toHaveBeenCalledOnce();

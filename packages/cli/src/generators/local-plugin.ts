@@ -11,9 +11,11 @@ import { buildGeneratedName } from './shared.js';
 import { applyFileRules } from '../utils/file-rules.js';
 import { calculateFileDigest } from '../utils/bundle-integrity.js';
 import type {
+  CanonicalRuntimeSourceIdentity,
   CatalogRuntimeExportResolution,
   CatalogRuntimeImportResolver,
 } from '../utils/catalog-runtime-projection.js';
+import { resolveCanonicalRuntimeSourceIdentity } from '../utils/catalog-runtime-projection.js';
 import { getArtifactSourceBundleRelativePath } from '../utils/artifact-sources.js';
 import { resolvePlatformHookDefinitions } from '../utils/hooks-contract.js';
 import {
@@ -102,16 +104,34 @@ export interface SkillRuntimeFileProvenance extends RuntimeImportProvenance {
   targetDigest: string;
 }
 
+interface SkillRuntimeFileProjection {
+  provenance: SkillRuntimeFileProvenance;
+  bindingKey: string;
+  canonicalSource: CanonicalRuntimeSourceIdentity;
+}
+
+interface BuildImportProjection {
+  provenance: RuntimeImportProvenance;
+  bindingKey: string;
+  canonicalSource: CanonicalRuntimeSourceIdentity;
+}
+
 export interface PreparedPluginRuntimeContext {
   resolver?: CatalogRuntimeImportResolver;
   buildImports: RuntimeImportProvenance[];
 }
+
+const preparedBuildImportProjections = new WeakMap<
+PreparedPluginRuntimeContext,
+readonly BuildImportProjection[]
+>();
 
 export interface BundleLocalPluginOptions {
   buildMode?: PluginBundleBuildMode;
   stagingRunner?: PluginStagingRunner;
   runtimeResolver?: CatalogRuntimeImportResolver;
   preparedRuntimeContext?: PreparedPluginRuntimeContext;
+  runtimeSkillClosureValidation?: 'current' | 'historical';
 }
 
 export async function validateStagingPackageManager(packageRoot: string): Promise<string> {
@@ -248,11 +268,16 @@ function isTextFile(filePath: string): boolean {
   return /\.(md|markdown|txt|json|yaml|yml|toml|rules)$/i.test(filePath);
 }
 
+function isMacOsMetadataName(name: string): boolean {
+  return name === '.DS_Store';
+}
+
 async function listFilesRecursively(rootDir: string): Promise<string[]> {
   const entries = await fs.readdir(rootDir, { withFileTypes: true });
   const files: string[] = [];
 
   for (const entry of entries) {
+    if (isMacOsMetadataName(entry.name)) continue;
     if (entry.name === '.agents-plugin' || entry.name === '.claude-plugin' || entry.name === '.codex-plugin') {
       continue;
     }
@@ -277,7 +302,7 @@ async function listFilesRecursivelyIncludingManaged(rootDir: string): Promise<st
   const files: string[] = [];
 
   for (const entry of entries) {
-    if (entry.name === 'node_modules' || entry.name === '.git') {
+    if (entry.name === 'node_modules' || entry.name === '.git' || isMacOsMetadataName(entry.name)) {
       continue;
     }
 
@@ -385,6 +410,7 @@ async function assertArtifactSourceTreePortable(
       ? path.posix.join(relativeRoot, entry.name)
       : entry.name;
     if (isSkillAuthorOnlyPath(relativePath)) continue;
+    if (isMacOsMetadataName(entry.name)) continue;
     const entryPath = path.join(rootDir, entry.name);
     if (entry.isSymbolicLink()) {
       throw new Error(`Invalid ${fieldName}: symbolic links are not supported (${entry.name}).`);
@@ -420,7 +446,9 @@ async function copyArtifactSourceDirectories(
         {
           overwrite: true,
           dereference: false,
-          filter: (source) => !isSkillAuthorOnlyPath(path.relative(sourcePath, source)),
+          filter: (source) =>
+            !isMacOsMetadataName(path.basename(source))
+            && !isSkillAuthorOnlyPath(path.relative(sourcePath, source)),
         },
       );
     }
@@ -927,7 +955,8 @@ async function copyProductionDependencyClosure(
   ): Promise<void> {
     await fs.copy(dependency.packageDir, targetPackageDir, {
       filter(source) {
-        return path.basename(source) !== 'node_modules';
+        return path.basename(source) !== 'node_modules'
+          && !isMacOsMetadataName(path.basename(source));
       },
     });
 
@@ -1004,26 +1033,21 @@ function toRuntimeImportProvenance(
 async function resolveOwnSkillRuntimeSource(
   plugin: PluginMeta,
   source: string,
-): Promise<{ sourcePath: string; sourceDigest: string }> {
-  const segments = stripDotSlash(source).split('/');
-  let current = await fs.realpath(plugin.rootDir);
-  for (const [index, segment] of segments.entries()) {
-    current = path.join(current, segment);
-    const stats = await fs.lstat(current).catch(() => undefined);
-    if (!stats) {
-      throw new Error(`Invalid buildConfig.skillRuntimeFiles source: missing file "${source}".`);
-    }
-    if (stats.isSymbolicLink()) {
-      throw new Error(`Invalid buildConfig.skillRuntimeFiles source: symbolic links are not supported (${source}).`);
-    }
-    if (index < segments.length - 1 && !stats.isDirectory()) {
-      throw new Error(`Invalid buildConfig.skillRuntimeFiles source: path parent is not a directory (${source}).`);
-    }
-    if (index === segments.length - 1 && !stats.isFile()) {
-      throw new Error(`Invalid buildConfig.skillRuntimeFiles source: expected a regular file (${source}).`);
-    }
-  }
-  return { sourcePath: current, sourceDigest: await calculateFileDigest(current) };
+): Promise<{
+  sourcePath: string;
+  sourceDigest: string;
+  canonicalSource: CanonicalRuntimeSourceIdentity;
+}> {
+  const canonicalSource = await resolveCanonicalRuntimeSourceIdentity(
+    plugin.rootDir,
+    source,
+    'buildConfig.skillRuntimeFiles source',
+  );
+  return {
+    sourcePath: canonicalSource.sourceRealPath,
+    sourceDigest: await calculateFileDigest(canonicalSource.sourceRealPath),
+    canonicalSource,
+  };
 }
 
 async function assertSkillRuntimeTargetAbsent(
@@ -1071,8 +1095,8 @@ async function projectSkillRuntimeFiles(options: {
   outputRoot: string;
   supportedPlatforms: ReadonlySet<PlatformName>;
   resolver?: CatalogRuntimeImportResolver;
-}): Promise<SkillRuntimeFileProvenance[]> {
-  const provenance: SkillRuntimeFileProvenance[] = [];
+}): Promise<SkillRuntimeFileProjection[]> {
+  const projections: SkillRuntimeFileProjection[] = [];
   const claims = new Set<string>();
   for (const [index, entry] of (options.plugin.manifest.buildConfig?.skillRuntimeFiles ?? []).entries()) {
     const platforms = entry.platforms ?? [...options.supportedPlatforms];
@@ -1090,11 +1114,15 @@ async function projectSkillRuntimeFiles(options: {
 
       let sourcePath: string;
       let sourceDigest: string;
+      let canonicalSource: CanonicalRuntimeSourceIdentity;
+      let bindingKey: string;
       let runtimeProvenance: RuntimeImportProvenance;
       if (entry.source) {
         const ownSource = await resolveOwnSkillRuntimeSource(options.plugin, entry.source);
         sourcePath = ownSource.sourcePath;
         sourceDigest = ownSource.sourceDigest;
+        canonicalSource = ownSource.canonicalSource;
+        bindingKey = `source:${entry.source}`;
         runtimeProvenance = {
           provider: options.plugin.manifest.name,
           providerVersion: options.plugin.manifest.version,
@@ -1116,6 +1144,8 @@ async function projectSkillRuntimeFiles(options: {
         });
         sourcePath = resolution.sourcePath;
         sourceDigest = resolution.sourceDigest;
+        canonicalSource = resolution.canonicalSource;
+        bindingKey = `import:${entry.import.plugin}/${entry.import.export}`;
         runtimeProvenance = toRuntimeImportProvenance(resolution);
       }
 
@@ -1137,16 +1167,123 @@ async function projectSkillRuntimeFiles(options: {
       if (sourceDigest !== targetDigest) {
         throw new Error(`Invalid buildConfig.skillRuntimeFiles: digest mismatch at "${claim}".`);
       }
-      provenance.push({
-        ...runtimeProvenance,
-        platform,
-        skill: entry.skill,
-        target: entry.target,
-        targetDigest,
+      projections.push({
+        bindingKey,
+        canonicalSource,
+        provenance: {
+          ...runtimeProvenance,
+          platform,
+          skill: entry.skill,
+          target: entry.target,
+          targetDigest,
+        },
       });
     }
   }
-  return provenance;
+  return projections;
+}
+
+function hasSameCanonicalSource(
+  left: CanonicalRuntimeSourceIdentity,
+  right: CanonicalRuntimeSourceIdentity,
+): boolean {
+  return left.rootPath === right.rootPath
+    && left.rootRealPath === right.rootRealPath
+    && left.relativePath === right.relativePath
+    && left.sourceRealPath === right.sourceRealPath;
+}
+
+async function validateSkillRuntimeProjectionSources(
+  projections: readonly SkillRuntimeFileProjection[],
+): Promise<void> {
+  const bindings = new Map<string, SkillRuntimeFileProjection>();
+  for (const projection of projections) {
+    const existing = bindings.get(projection.bindingKey);
+    if (
+      existing
+      && (
+        existing.provenance.provider !== projection.provenance.provider
+        || existing.provenance.providerVersion !== projection.provenance.providerVersion
+        || existing.provenance.name !== projection.provenance.name
+        || existing.provenance.source !== projection.provenance.source
+        || existing.provenance.sourceDigest !== projection.provenance.sourceDigest
+        || !hasSameCanonicalSource(existing.canonicalSource, projection.canonicalSource)
+      )
+    ) {
+      throw new Error(
+        `Canonical source "${projection.provenance.source}" changed during runtime Skill projection.`,
+      );
+    }
+    bindings.set(projection.bindingKey, projection);
+  }
+
+  for (const projection of projections) {
+    let currentSource: CanonicalRuntimeSourceIdentity;
+    try {
+      currentSource = await resolveCanonicalRuntimeSourceIdentity(
+        projection.canonicalSource.rootPath,
+        projection.canonicalSource.relativePath,
+        'runtime Skill projection canonical source',
+      );
+    } catch {
+      throw new Error(
+        `Canonical source "${projection.provenance.source}" changed during runtime Skill projection.`,
+      );
+    }
+    if (
+      !hasSameCanonicalSource(projection.canonicalSource, currentSource)
+      || await calculateFileDigest(currentSource.sourceRealPath) !== projection.provenance.sourceDigest
+    ) {
+      throw new Error(
+        `Canonical source "${projection.provenance.source}" changed during runtime Skill projection.`,
+      );
+    }
+  }
+}
+
+async function validateBuildImportProjectionSources(
+  projections: readonly BuildImportProjection[],
+): Promise<void> {
+  const bindings = new Map<string, BuildImportProjection>();
+  for (const projection of projections) {
+    const existing = bindings.get(projection.bindingKey);
+    if (
+      existing
+      && (
+        existing.provenance.provider !== projection.provenance.provider
+        || existing.provenance.providerVersion !== projection.provenance.providerVersion
+        || existing.provenance.name !== projection.provenance.name
+        || existing.provenance.source !== projection.provenance.source
+        || existing.provenance.sourceDigest !== projection.provenance.sourceDigest
+        || !hasSameCanonicalSource(existing.canonicalSource, projection.canonicalSource)
+      )
+    ) {
+      throw new Error(
+        `Catalog runtime import "${projection.provenance.provider}/${projection.provenance.name}" changed during build import projection.`,
+      );
+    }
+    bindings.set(projection.bindingKey, projection);
+  }
+
+  for (const projection of projections) {
+    try {
+      const currentSource = await resolveCanonicalRuntimeSourceIdentity(
+        projection.canonicalSource.rootPath,
+        projection.canonicalSource.relativePath,
+        'build import projection canonical source',
+      );
+      if (
+        !hasSameCanonicalSource(projection.canonicalSource, currentSource)
+        || await calculateFileDigest(currentSource.sourceRealPath) !== projection.provenance.sourceDigest
+      ) {
+        throw new Error('stale canonical source');
+      }
+    } catch {
+      throw new Error(
+        `Catalog runtime import "${projection.provenance.provider}/${projection.provenance.name}" changed during build import projection.`,
+      );
+    }
+  }
 }
 
 async function createStagedPlugin(
@@ -1172,7 +1309,8 @@ async function createStagedPlugin(
   try {
     await fs.copy(plugin.rootDir, stagingPluginRoot, {
       filter(source) {
-        return path.basename(source) !== 'node_modules';
+        return path.basename(source) !== 'node_modules'
+          && !isMacOsMetadataName(path.basename(source));
       },
     });
 
@@ -1185,6 +1323,7 @@ async function createStagedPlugin(
     }
     const buildEnv: NodeJS.ProcessEnv = { ...process.env };
     const buildImportProvenance: RuntimeImportProvenance[] = [];
+    const buildImportProjections: BuildImportProjection[] = [];
     for (const buildImport of declaredBuildImports) {
       if (!resolver) {
         throw new Error(
@@ -1211,8 +1350,15 @@ async function createStagedPlugin(
         );
       }
       buildEnv[buildImport.env] = importPath;
-      buildImportProvenance.push(toRuntimeImportProvenance(resolution));
+      const provenance = toRuntimeImportProvenance(resolution);
+      buildImportProvenance.push(provenance);
+      buildImportProjections.push({
+        provenance,
+        bindingKey: `${buildImport.plugin}/${buildImport.export}`,
+        canonicalSource: resolution.canonicalSource,
+      });
     }
+    await validateBuildImportProjectionSources(buildImportProjections);
     if (sourceBuild) {
       const sourcePackageRoot = packageRootPath({
         ...plugin,
@@ -1227,6 +1373,7 @@ async function createStagedPlugin(
         args: sourceBuild.args ?? [],
         env: buildEnv,
       });
+      await validateBuildImportProjectionSources(buildImportProjections);
     }
 
     const stagedPlugin = await readPluginManifest(stagingPluginRoot);
@@ -1242,12 +1389,14 @@ async function createStagedPlugin(
       await assertNoProductionInstallScripts(finalPackageRoot);
     }
 
+    const runtimeContext: PreparedPluginRuntimeContext = {
+      resolver,
+      buildImports: buildImportProvenance,
+    };
+    preparedBuildImportProjections.set(runtimeContext, buildImportProjections);
     return {
       plugin: stagedPlugin,
-      runtimeContext: {
-        resolver,
-        buildImports: buildImportProvenance,
-      },
+      runtimeContext,
       cleanup: () => fs.remove(stagingRoot),
     };
   } catch (error) {
@@ -1341,14 +1490,13 @@ export async function bundleLocalPlugin(
     runtimeResolver: options.runtimeResolver,
     preparedRuntimeContext: options.preparedRuntimeContext,
   };
-  const buildPlugin = await resolveBuildPlugin(plugin, buildOptions);
-  plugin = buildPlugin.plugin;
-  assertManifestPlatformSupport(plugin.manifest.name, plugin.manifest);
-
   await fs.remove(outputRoot);
-  await fs.ensureDir(outputRoot);
+  const buildPlugin = await resolveBuildPlugin(plugin, buildOptions);
 
   try {
+    plugin = buildPlugin.plugin;
+    assertManifestPlatformSupport(plugin.manifest.name, plugin.manifest);
+    await fs.ensureDir(outputRoot);
     const supportedPlatforms = resolveSupportedPlatforms(plugin.manifest);
     await assertSkillRuntimeProjectionTargets(plugin);
     const platformFiles: Partial<Record<PlatformName, Set<string>>> = {};
@@ -1545,12 +1693,13 @@ export async function bundleLocalPlugin(
       }
     }
 
-    const skillRuntimeFiles = await projectSkillRuntimeFiles({
+    const skillRuntimeFileProjections = await projectSkillRuntimeFiles({
       plugin,
       outputRoot,
       supportedPlatforms,
       resolver: buildPlugin.runtimeContext.resolver,
     });
+    const skillRuntimeFiles = skillRuntimeFileProjections.map(({ provenance }) => provenance);
 
     if (await fs.pathExists(path.join(plugin.rootDir, 'README.md'))) {
       await copyBundleRootFile(plugin.rootDir, outputRoot, 'README.md');
@@ -1576,12 +1725,18 @@ export async function bundleLocalPlugin(
       );
     }
 
+    await validateSkillRuntimeProjectionSources(skillRuntimeFileProjections);
     await validateSkillRuntimeProjectionFreshness(outputRoot, skillRuntimeFiles);
-    for (const platform of PLATFORM_ORDER) {
-      const skillsPath = platformManifests[platform]?.skills;
-      if (!skillsPath) continue;
-      await validateRuntimeSkillClosuresRoot(path.join(outputRoot, stripDotSlash(skillsPath)));
+    if ((options.runtimeSkillClosureValidation ?? 'current') === 'current') {
+      for (const platform of PLATFORM_ORDER) {
+        const skillsPath = platformManifests[platform]?.skills;
+        if (!skillsPath) continue;
+        await validateRuntimeSkillClosuresRoot(path.join(outputRoot, stripDotSlash(skillsPath)));
+      }
     }
+    await validateBuildImportProjectionSources(
+      preparedBuildImportProjections.get(buildPlugin.runtimeContext) ?? [],
+    );
 
     return {
       outputRoot,
@@ -1592,6 +1747,9 @@ export async function bundleLocalPlugin(
         skillRuntimeFiles,
       },
     };
+  } catch (error) {
+    await fs.remove(outputRoot);
+    throw error;
   } finally {
     await buildPlugin.cleanup();
   }

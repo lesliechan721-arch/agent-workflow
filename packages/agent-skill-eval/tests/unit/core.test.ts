@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { execFile } from 'node:child_process'
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises'
+import { chmod, mkdtemp, mkdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
@@ -12,12 +12,64 @@ import {
   getRuntimeCapabilities,
   getSchema,
   getSchemaDigest,
-  runExecutionPlan,
-  runProviderProcess,
+  runExecutionPlan as runExecutionPlanWithoutContainment,
+  runProviderProcess as runProviderProcessWithoutContainment,
   validateExecutionPlan,
   validateRuntimeCapabilities,
   validateRunBundle,
 } from '../../dist/index.js'
+
+const externalContainment = {
+  confirmed: true,
+  descendantCleanupGuaranteed: true,
+  readOnlySkillSnapshotGuaranteed: true,
+} as const
+
+const containedProcessHooks = {
+  externalContainment,
+  terminateProcessTree: async ({ pid }: { pid: number }) => {
+    try {
+      process.kill(process.platform === 'win32' ? pid : -pid, 'SIGKILL')
+    } catch {
+      // The provider can already be closed.
+    }
+    return { confirmed: true as const }
+  },
+}
+
+function getContainedRuntimeCapabilities() {
+  const capabilities = getRuntimeCapabilities()
+  return {
+    ...capabilities,
+    capabilities: {
+      ...capabilities.capabilities,
+      skillPathExecution: true,
+      previousVersionBaseline: true,
+      withoutSkillBaseline: true,
+    },
+  }
+}
+
+function runExecutionPlan(
+  planPath: string,
+  options: Parameters<typeof runExecutionPlanWithoutContainment>[1] = {},
+) {
+  return runExecutionPlanWithoutContainment(planPath, {
+    ...options,
+    processHooks: { ...containedProcessHooks, ...options.processHooks },
+  })
+}
+
+function runProviderProcess(
+  ...args: Parameters<typeof runProviderProcessWithoutContainment>
+) {
+  const [request, hooks = {}, dependencies] = args
+  return runProviderProcessWithoutContainment(
+    request,
+    { ...containedProcessHooks, ...hooks },
+    dependencies,
+  )
+}
 
 const execFileAsync = promisify(execFile)
 
@@ -66,13 +118,165 @@ describe('public Eval execution contracts', () => {
     await mkdir(path.join(source, 'evals'), { recursive: true })
     await writeFile(path.join(source, 'SKILL.md'), 'runtime\n')
     await writeFile(path.join(source, 'references', 'guide.md'), 'guide\n')
+    await writeFile(path.join(source, '.DS_Store'), 'finder metadata\n')
+    await mkdir(path.join(source, 'references', '.DS_Store'))
+    await writeFile(path.join(source, 'references', '.DS_Store', 'nested'), 'finder metadata\n')
+    await writeFile(path.join(source, '.runtime-hidden'), 'production hidden file\n')
     await writeFile(path.join(source, 'evals', 'case.json'), '{}\n')
     const before = await computeSkillDigest(source)
+    const executablePath = path.join(source, 'references', 'guide.md')
+    const windowsModeBefore = await computeSkillDigest(source, { platform: 'win32' })
+    if (process.platform !== 'win32') {
+      await chmod(executablePath, 0o755)
+      expect(await computeSkillDigest(source)).not.toBe(before)
+      expect(await computeSkillDigest(source, { platform: 'win32' })).toBe(windowsModeBefore)
+    }
+    const sourceDigest = await computeSkillDigest(source)
     const snapshot = await createRuntimeSkillSnapshot(source, destination)
-    expect(snapshot.digest).toBe(before)
+    expect(snapshot.digest).toBe(sourceDigest)
     await expect(readFile(path.join(destination, 'SKILL.md'), 'utf8')).resolves.toBe('runtime\n')
+    await expect(readFile(path.join(destination, '.runtime-hidden'), 'utf8')).resolves.toBe(
+      'production hidden file\n',
+    )
+    await expect(readFile(path.join(destination, '.DS_Store'), 'utf8')).rejects.toThrow()
+    await expect(readFile(path.join(destination, 'references', '.DS_Store', 'nested'), 'utf8'))
+      .rejects.toThrow()
     await expect(readFile(path.join(destination, 'evals', 'case.json'), 'utf8')).rejects.toThrow()
-    expect(await computeSkillDigest(source)).toBe(before)
+    expect(await computeSkillDigest(source)).toBe(sourceDigest)
+    if (process.platform !== 'win32') {
+      expect((await stat(path.join(destination, 'references', 'guide.md'))).mode & 0o777).toBe(0o755)
+    }
+  })
+
+  it('does not collide when binary content encodes a following legacy record', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'agent-skill-eval-digest-record-'))
+    const singleRecord = path.join(root, 'single')
+    const twoRecords = path.join(root, 'two')
+    await Promise.all([mkdir(singleRecord), mkdir(twoRecords)])
+    await writeFile(
+      path.join(singleRecord, 'a'),
+      Buffer.concat([
+        Buffer.from('payload'),
+        Buffer.from([0]),
+        Buffer.from('b'),
+        Buffer.from([0]),
+        Buffer.from('100644'),
+        Buffer.from([0]),
+        Buffer.from('tail'),
+      ]),
+    )
+    await writeFile(path.join(twoRecords, 'a'), 'payload')
+    await writeFile(path.join(twoRecords, 'b'), 'tail')
+
+    try {
+      expect(await computeSkillDigest(singleRecord)).not.toBe(
+        await computeSkillDigest(twoRecords),
+      )
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('executes the captured Skill bytes across a source A-B-A swap', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'agent-skill-eval-snapshot-race-'))
+    const skill = path.join(root, 'skill')
+    const references = path.join(skill, 'references')
+    await mkdir(references, { recursive: true })
+    await writeFile(path.join(skill, 'SKILL.md'), 'runtime\n')
+    await writeFile(path.join(references, '000-marker.txt'), 'marker\n')
+    for (let index = 0; index < 40; index += 1) {
+      await writeFile(
+        path.join(references, `middle-${String(index).padStart(2, '0')}.txt`),
+        Buffer.alloc(64 * 1024, index),
+      )
+    }
+    const sourcePayload = path.join(references, 'zzz-payload.txt')
+    await writeFile(sourcePayload, 'source-a\n')
+    const targetDigest = await computeSkillDigest(skill)
+
+    const cases = [{ id: 'case-1', prompt: 'hello' }]
+    const casePath = path.join(root, 'cases.json')
+    const caseRaw = JSON.stringify(cases)
+    await writeFile(casePath, caseRaw)
+    const capabilities = getContainedRuntimeCapabilities()
+    const capabilitiesPath = path.join(root, 'capabilities.json')
+    const capabilitiesRaw = JSON.stringify(capabilities)
+    await writeFile(capabilitiesPath, capabilitiesRaw)
+    const audit = {
+      schemaVersion: 2,
+      producer: 'audit-agent-skill-evals',
+      independentContext: true,
+      auditId: 'audit-1',
+      mode: 'preflight',
+      targetSkillDigest: targetDigest,
+      caseCorpusDigest: digest(caseRaw),
+      validity: 'pass',
+      optimizationPolicy: 'balanced',
+      cases: [{ caseId: 'case-1', releaseRelevant: true, admission: 'pass', oracleConfidence: 'high', findings: [] }],
+      blockedCases: [],
+      releaseEligible: true,
+      failureTriage: [],
+      recommendedAction: 'collect-more-data',
+    }
+    const auditPath = path.join(root, 'audit.json')
+    const auditRaw = JSON.stringify(audit)
+    await writeFile(auditPath, auditRaw)
+    const planPath = path.join(root, 'plan.json')
+    await writeFile(planPath, JSON.stringify({
+      schemaVersion: 2,
+      planId: 'snapshot-race',
+      target: { name: 'fixture', path: 'skill', digest: targetDigest },
+      cases: { paths: ['cases.json'], corpusDigest: digest(caseRaw) },
+      audit: {
+        path: 'audit.json',
+        digest: digest(auditRaw),
+        targetSkillDigest: targetDigest,
+        caseCorpusDigest: digest(caseRaw),
+        validity: 'pass',
+      },
+      provider: {
+        id: 'aw-skill-eval-process',
+        command: [process.execPath, '-e', 'process.stdout.write("{}")'],
+        cwd: null,
+        env: {},
+        capabilitiesPath: 'capabilities.json',
+        capabilitiesDigest: digest(capabilitiesRaw),
+        inheritEnvironment: false,
+      },
+      configurations: [{ id: 'current', skillMode: 'with-skill', comparisonId: null, env: {} }],
+      runsPerCase: 1,
+      timeoutMs: 1_000,
+      outputRoot: 'output',
+      capture: { outputs: true, trace: false, timing: true, usage: true },
+    }))
+
+    try {
+      const snapshotCheck = [
+        `const fs = require('node:fs')`,
+        `fs.writeFileSync(${JSON.stringify(sourcePayload)}, 'source-b\\n')`,
+        `const snapshot = fs.readFileSync(require('node:path').join(process.env.AGENT_EVAL_SKILL_PATH, 'references', 'zzz-payload.txt'), 'utf8')`,
+        `fs.writeFileSync(${JSON.stringify(sourcePayload)}, 'source-a\\n')`,
+        `if (snapshot !== 'source-a\\n') process.exit(9)`,
+        `process.stdout.write('{}')`,
+      ].join(';')
+      const plan = JSON.parse(await readFile(planPath, 'utf8'))
+      plan.provider.command = [process.execPath, '-e', snapshotCheck]
+      await writeFile(planPath, JSON.stringify(plan))
+      const result = await runExecutionPlan(planPath)
+      expect(result.valid).toBe(true)
+      expect(await computeSkillDigest(skill)).toBe(targetDigest)
+      plan.provider.command = [
+        process.execPath,
+        '-e',
+        `require('node:fs').writeFileSync(require('node:path').join(process.env.AGENT_EVAL_SKILL_PATH, 'SKILL.md'), 'provider mutation\\n'); process.stdout.write('{}')`,
+      ]
+      await writeFile(planPath, JSON.stringify(plan))
+      await expect(runExecutionPlan(planPath)).rejects.toThrow(
+        'Provider modified the captured Runtime Skill snapshot',
+      )
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
   })
 
   it('captures successful, failed, and timed-out provider processes', async () => {
@@ -116,15 +320,18 @@ describe('public Eval execution contracts', () => {
     expect(missing).toMatchObject({ exitCode: null, timedOut: false, cancelled: false })
     expect(missing.stderr).toMatch(/ENOENT|not found/iu)
 
-    assertProviderProcessSupported('linux')
-    expect(() => assertProviderProcessSupported('win32')).toThrow('requires a terminateProcessTree hook')
-    expect(() => assertProviderProcessSupported('win32', {
-      terminateProcessTree: async () => undefined,
-    })).not.toThrow()
+    expect(() => assertProviderProcessSupported('linux')).toThrow('explicitly confirmed external containment')
+    expect(() => assertProviderProcessSupported('win32')).toThrow('explicitly confirmed external containment')
+    expect(() => assertProviderProcessSupported('win32', containedProcessHooks)).not.toThrow()
     expect(getRuntimeCapabilities('win32').limitations).toContain(
-      'Standalone Windows execution is disabled because the shared monitor cannot independently verify Windows Job Object membership. JavaScript callers can supply a terminateProcessTree hook that returns confirmed descendant-cleanup evidence.',
+      'Standalone win32 execution uses process observation and before/after Skill digests; it does not guarantee descendant cleanup.',
     )
     expect(getRuntimeCapabilities('win32').capabilities).toMatchObject({
+      skillPathExecution: true,
+      previousVersionBaseline: true,
+      withoutSkillBaseline: true,
+    })
+    expect(getRuntimeCapabilities('aix').capabilities).toMatchObject({
       skillPathExecution: false,
       previousVersionBaseline: false,
       withoutSkillBaseline: false,
@@ -289,9 +496,15 @@ describe('public Eval execution contracts', () => {
     const casePath = path.join(root, 'cases.json')
     await writeFile(casePath, JSON.stringify(cases))
     const caseCorpusDigest = digest(JSON.stringify(cases))
-    const capabilities = getRuntimeCapabilities()
+    const bin = path.resolve('dist/bin.js')
+    const capabilitiesCommand = await execFileAsync(
+      process.execPath,
+      [bin, 'capabilities', '--json'],
+      { cwd: path.resolve('.') },
+    )
+    const capabilities = JSON.parse(capabilitiesCommand.stdout)
     const capabilitiesPath = path.join(root, 'capabilities.json')
-    const capabilitiesRaw = JSON.stringify(capabilities)
+    const capabilitiesRaw = capabilitiesCommand.stdout
     await writeFile(capabilitiesPath, capabilitiesRaw)
     const audit = {
       schemaVersion: 2,
@@ -341,7 +554,27 @@ describe('public Eval execution contracts', () => {
     }
     const planPath = path.join(root, 'plan.json')
     await writeFile(planPath, JSON.stringify(plan))
-    const result = await runExecutionPlan(planPath)
+    const validatedPlan = await execFileAsync(
+      process.execPath,
+      [bin, 'plan', 'validate', planPath],
+      { cwd: path.resolve('.') },
+    )
+    expect(JSON.parse(validatedPlan.stdout)).toMatchObject({ valid: true, errors: [] })
+    const binaryRun = await execFileAsync(
+      process.execPath,
+      [bin, 'run', planPath],
+      { cwd: path.resolve('.') },
+    )
+    const binaryResult = JSON.parse(binaryRun.stdout)
+    expect(binaryResult).toMatchObject({ valid: true, evidenceLevel: 'executed' })
+    const binaryBundleValidation = await execFileAsync(
+      process.execPath,
+      [bin, 'bundle', 'validate', binaryResult.bundlePath],
+      { cwd: path.resolve('.') },
+    )
+    expect(JSON.parse(binaryBundleValidation.stdout)).toMatchObject({ valid: true, errors: [] })
+
+    const result = await runExecutionPlanWithoutContainment(planPath)
     expect(result.evidenceLevel).toBe('executed')
     const validated = await validateRunBundle(result.bundlePath)
     expect(validated).toMatchObject({
@@ -351,26 +584,126 @@ describe('public Eval execution contracts', () => {
     const bundle = JSON.parse(await readFile(result.bundlePath, 'utf8'))
     expect(bundle.runs[0].usage.marker).toBe('[redacted provider process marker]')
     expect(JSON.stringify(bundle)).not.toContain('caller-controlled-marker')
-    expect(bundle.runs[0].artifacts).toEqual([
-      expect.objectContaining({ role: 'grading', path: 'case-1/current/1/grading.json' }),
-    ])
+    expect(bundle.runs[0].artifacts).toEqual([])
+    expect(bundle.limitations).toEqual(expect.arrayContaining([
+      expect.stringContaining('does not guarantee descendant cleanup'),
+      expect.stringContaining('provider grading was not accepted'),
+    ]))
     expect(await computeSkillDigest(skill)).toBe(targetDigest)
 
-    const windowsCapabilitiesRaw = JSON.stringify(getRuntimeCapabilities('win32'))
+    plan.provider.command = [
+      process.execPath,
+      '-e',
+      'process.stdout.write(JSON.stringify({usage:{engine:"core"}}))',
+    ]
+    await writeFile(planPath, JSON.stringify(plan))
+    let forgedRunnerCalled = false
+    const coreResult = await runExecutionPlan(planPath, {
+      processRunner: async () => {
+        forgedRunnerCalled = true
+        throw new Error('forged runner must not execute')
+      },
+    } as unknown as Parameters<typeof runExecutionPlanWithoutContainment>[1])
+    const coreBundle = JSON.parse(await readFile(coreResult.bundlePath, 'utf8'))
+    expect(forgedRunnerCalled).toBe(false)
+    expect(coreBundle.runs[0].usage).toEqual({ engine: 'core' })
+
+    const outputRoot = path.join(root, 'output')
+    const preservedBundle = 'preserve prior bundle\n'
+    const expectOutputInputRejected = async (
+      candidatePlan: typeof plan,
+      errorFragment: string,
+      candidatePlanPath: string = planPath,
+    ): Promise<void> => {
+      await writeFile(candidatePlanPath, JSON.stringify(candidatePlan))
+      const candidateOutputRoot = path.resolve(path.dirname(candidatePlanPath), candidatePlan.outputRoot)
+      await mkdir(candidateOutputRoot, { recursive: true })
+      const candidateBundlePath = path.join(candidateOutputRoot, 'eval-run-bundle.json')
+      await writeFile(candidateBundlePath, preservedBundle)
+      const validation = await validateExecutionPlan(candidatePlanPath)
+      expect(validation.valid).toBe(false)
+      expect(validation.errors.some((entry) => entry.includes(errorFragment))).toBe(true)
+      await expect(runExecutionPlan(candidatePlanPath)).rejects.toThrow(errorFragment)
+      await expect(readFile(candidateBundlePath, 'utf8')).resolves.toBe(preservedBundle)
+    }
+
+    const outputCasePath = path.join(outputRoot, 'case-1', 'current', '1', 'case.json')
+    const outputCaseBefore = await readFile(outputCasePath, 'utf8')
+    await expectOutputInputRejected({
+      ...plan,
+      cases: {
+        ...plan.cases,
+        paths: ['output/case-1/current/1/case.json'],
+      },
+    }, 'case path must not be inside outputRoot')
+    await expect(readFile(outputCasePath, 'utf8')).resolves.toBe(outputCaseBefore)
+
+    const outputAuditPath = path.join(outputRoot, 'bound-audit.json')
+    await writeFile(outputAuditPath, auditRaw)
+    await expectOutputInputRejected({
+      ...plan,
+      audit: { ...plan.audit, path: 'output/bound-audit.json' },
+    }, 'audit path must not be inside outputRoot')
+    await expect(readFile(outputAuditPath, 'utf8')).resolves.toBe(auditRaw)
+
+    const outputCapabilitiesPath = path.join(outputRoot, 'bound-capabilities.json')
+    await writeFile(outputCapabilitiesPath, capabilitiesRaw)
+    await expectOutputInputRejected({
+      ...plan,
+      provider: { ...plan.provider, capabilitiesPath: 'output/bound-capabilities.json' },
+    }, 'capabilities path must not be inside outputRoot')
+    await expect(readFile(outputCapabilitiesPath, 'utf8')).resolves.toBe(capabilitiesRaw)
+
+    const outputSkill = path.join(outputRoot, 'bound-skill')
+    await mkdir(outputSkill, { recursive: true })
+    await writeFile(path.join(outputSkill, 'SKILL.md'), 'bound\n')
+    const outputSkillDigest = await computeSkillDigest(outputSkill)
+    await expectOutputInputRejected({
+      ...plan,
+      target: { ...plan.target, path: 'output/bound-skill', digest: outputSkillDigest },
+    }, 'outputRoot must not overlap the target Skill tree')
+    await expect(readFile(path.join(outputSkill, 'SKILL.md'), 'utf8')).resolves.toBe('bound\n')
+
+    await expectOutputInputRejected({
+      ...plan,
+      configurations: [{
+        id: 'previous',
+        skillMode: 'previous-version',
+        comparisonId: null,
+        skillPath: 'output/bound-skill',
+        skillDigest: outputSkillDigest,
+        env: {},
+      }],
+    }, 'previous-version path overlaps outputRoot')
+    await expect(readFile(path.join(outputSkill, 'SKILL.md'), 'utf8')).resolves.toBe('bound\n')
+
+    const nestedPlanDirectory = path.join(outputRoot, 'config')
+    const nestedPlanPath = path.join(nestedPlanDirectory, 'plan.json')
+    await mkdir(nestedPlanDirectory, { recursive: true })
+    await expectOutputInputRejected({
+      ...plan,
+      target: { ...plan.target, path: '../../skill' },
+      cases: { ...plan.cases, paths: ['../../cases.json'] },
+      audit: { ...plan.audit, path: '../../audit.json' },
+      provider: {
+        ...plan.provider,
+        capabilitiesPath: '../../capabilities.json',
+      },
+      outputRoot: '.',
+    }, 'execution plan must not be inside outputRoot', nestedPlanPath)
+    await expect(readFile(nestedPlanPath, 'utf8')).resolves.toBeTruthy()
+    await writeFile(planPath, JSON.stringify(plan))
+
+    const windowsCapabilitiesRaw = JSON.stringify(getRuntimeCapabilities('aix'))
     await writeFile(capabilitiesPath, windowsCapabilitiesRaw)
     plan.provider.capabilitiesDigest = digest(windowsCapabilitiesRaw)
     await writeFile(planPath, JSON.stringify(plan))
-    const windowsPlan = await validateExecutionPlan(planPath)
-    expect(windowsPlan.valid).toBe(false)
-    expect(windowsPlan.errors).toContain('provider does not support with-skill execution')
-    let windowsProviderCalled = false
-    await expect(runExecutionPlan(planPath, {
-      processRunner: async () => {
-        windowsProviderCalled = true
-        throw new Error('must not execute')
-      },
-    })).rejects.toThrow('provider does not support with-skill execution')
-    expect(windowsProviderCalled).toBe(false)
+    const unsupportedPlan = await validateExecutionPlan(planPath)
+    expect(unsupportedPlan.valid).toBe(false)
+    expect(unsupportedPlan.errors).toContain('provider does not support with-skill execution')
+    await expect(runExecutionPlan(planPath)).rejects.toThrow(
+      'provider does not support with-skill execution',
+    )
     await writeFile(capabilitiesPath, capabilitiesRaw)
     plan.provider.capabilitiesDigest = digest(capabilitiesRaw)
     await writeFile(planPath, JSON.stringify(plan))
@@ -464,13 +797,18 @@ describe('public Eval execution contracts', () => {
     ]
     for (let index = 0; index < invalidBeforeExecution.length; index += 1) {
       const invalid = invalidBeforeExecution[index]
+      let priorBundle: string | null = null
       if (index > 0) {
         await writeFile(planPath, validPlanRaw)
-        await runExecutionPlan(planPath)
+        const prior = await runExecutionPlan(planPath)
+        priorBundle = await readFile(prior.bundlePath, 'utf8')
       }
       await writeFile(invalid.filePath, invalid.invalid)
       await expect(runExecutionPlan(planPath)).rejects.toThrow()
-      await expect(readFile(path.join(root, 'output', 'eval-run-bundle.json'))).rejects.toThrow()
+      if (priorBundle === null)
+        await expect(readFile(path.join(root, 'output', 'eval-run-bundle.json'))).rejects.toThrow()
+      else
+        await expect(readFile(path.join(root, 'output', 'eval-run-bundle.json'), 'utf8')).resolves.toBe(priorBundle)
       await writeFile(invalid.filePath, invalid.restore)
     }
     await writeFile(planPath, validPlanRaw)
@@ -530,36 +868,6 @@ describe('public Eval execution contracts', () => {
     await expect(readFile(path.join(root, 'output', 'eval-run-bundle.json'))).rejects.toThrow()
     await writeFile(previousSkillPath, 'previous\n')
 
-    plan.configurations = [{ id: 'current', skillMode: 'with-skill', comparisonId: null, env: {} }]
-    plan.provider.command = [process.execPath, '-e', 'process.stdout.write("ignored")']
-    await writeFile(planPath, JSON.stringify(plan))
-    const limited = await runExecutionPlan(planPath, {
-      processRunner: async () => ({
-        stdout: 'abcd',
-        stderr: 'wxyz',
-        exitCode: null,
-        signal: 'SIGTERM',
-        timedOut: false,
-        cancelled: false,
-        terminationReason: 'max-buffer',
-        maxBufferExceeded: true,
-        stdoutTruncated: true,
-        stderrTruncated: true,
-        descendantCleanupGuaranteed: true,
-      }),
-    })
-    const limitedBundle = JSON.parse(await readFile(limited.bundlePath, 'utf8'))
-    expect(limitedBundle.limitations).toContain(
-      'Run case-1/current/1: Provider stdout and stderr exceeded the capture maxBuffer and was truncated.',
-    )
-    expect(limitedBundle.runs[0].stdoutDigest).toBe(digest('abcd'))
-    const capturedStderr = await readFile(path.join(root, 'output', limitedBundle.runs[0].stderrPath), 'utf8')
-    expect(capturedStderr).toContain('Provider stdout and stderr exceeded the capture maxBuffer and was truncated.')
-    expect(limitedBundle.runs[0].stderrDigest).toBe(digest(capturedStderr))
-    await expect(validateRunBundle(limited.bundlePath)).resolves.toMatchObject({
-      valid: true,
-      calculated: { bundleDigest: limited.bundleDigest },
-    })
 
     plan.provider.command = [process.execPath, '-e', 'process.stdout.write(JSON.stringify({usage:{tokens:1}}))']
     await writeFile(planPath, JSON.stringify(plan))
@@ -571,7 +879,7 @@ describe('public Eval execution contracts', () => {
     const unsafe = await validateExecutionPlan(planPath)
     expect(unsafe.valid).toBe(false)
     expect(unsafe.errors.some((entry) => entry.includes('outputRoot is unavailable or unsafe'))).toBe(true)
-    await expect(runExecutionPlan(planPath)).rejects.toThrow('outputRoot is not trustworthy')
+    await expect(runExecutionPlan(planPath)).rejects.toThrow('outputRoot is unavailable or unsafe')
     await expect(readFile(path.join(outside, 'marker.txt'), 'utf8')).resolves.toBe('keep\n')
   })
 })

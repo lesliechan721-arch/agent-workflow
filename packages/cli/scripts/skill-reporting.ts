@@ -570,6 +570,7 @@ async function listSourceFiles(root: string): Promise<string[]> {
     entries.sort((left, right) => left.name.localeCompare(right.name));
     const isSkillRoot = entries.some((entry) => entry.isFile() && entry.name === 'SKILL.md');
     for (const entry of entries) {
+      if (entry.name === '.DS_Store') continue;
       const relative = prefix ? path.posix.join(prefix, entry.name) : entry.name;
       if (
         (prefix === '' && entry.name === 'reports') ||
@@ -591,17 +592,34 @@ async function listSourceFiles(root: string): Promise<string[]> {
 export async function computeAuthorSourceDigest(
   roots: Array<{ name: string; root: string }>,
 ): Promise<string> {
-  const hash = createHash('sha256');
-  for (const entry of [...roots].sort((left, right) => left.name.localeCompare(right.name))) {
-    hash.update(entry.name);
-    hash.update('\0');
+  const records: Array<{ path: string; mode: string; contents: Buffer }> = [];
+  for (const entry of roots) {
     for (const relative of await listSourceFiles(entry.root)) {
-      const contents = await fs.readFile(path.join(entry.root, relative));
-      hash.update(relative);
-      hash.update('\0');
-      hash.update(contents);
-      hash.update('\0');
+      const sourcePath = path.join(entry.root, relative);
+      const [contents, sourceStat] = await Promise.all([fs.readFile(sourcePath), fs.stat(sourcePath)]);
+      records.push({
+        path: `${entry.name}/${relative}`,
+        mode: process.platform !== 'win32' && (sourceStat.mode & 0o111) !== 0
+          ? '100755'
+          : '100644',
+        contents,
+      });
     }
+  }
+  const hash = createHash('sha256');
+  function updateLengthPrefixed(value: string | Buffer): void {
+    const bytes = typeof value === 'string' ? Buffer.from(value, 'utf8') : value;
+    const length = Buffer.allocUnsafe(8);
+    length.writeBigUInt64BE(BigInt(bytes.length));
+    hash.update(length);
+    hash.update(bytes);
+  }
+  updateLengthPrefixed('aw-production-records-v1');
+  for (const record of records.sort((left, right) =>
+    left.path < right.path ? -1 : left.path > right.path ? 1 : 0)) {
+    updateLengthPrefixed(record.path);
+    updateLengthPrefixed(record.mode);
+    updateLengthPrefixed(createHash('sha256').update(record.contents).digest());
   }
   return `sha256:${hash.digest('hex')}`;
 }

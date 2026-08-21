@@ -33,7 +33,9 @@ metadata:
    plan。要求 provider id 为 `aw-skill-eval-process`。plan 使用其它 provider 时，必须取得
    该 provider 自己的 v1 capability document；不得用共享 process provider 文档冒充。
 4. 核对 plan 请求的执行能力均被绑定的 capability document 声明支持。能力不足时停止；
-   不得降低 plan 要求或扩大 capability 声明。
+   不得降低 plan 要求或扩大 capability 声明。能力为 `true` 只表示当前生产入口可执行该
+   mode，不表示有操作系统 sandbox、干净模型上下文或后代清理保证。必须保留 capability
+   document 的全部 `limitations`。
 5. 运行以下命令，从已安装包读取 canonical schema；不要保存或复制 schema：
 
    - `aw-skill-eval schema print eval-execution-plan`
@@ -70,7 +72,9 @@ metadata:
 3. 运行 `aw-skill-eval run <plan.json>`。不得用 shell 包装命令，也不得自行实现 provider、
    snapshot、进程管理、timeout、采集或 evidence-level 逻辑。
 4. 要求 stdout 是 `{valid:true,bundlePath,bundleDigest,evidenceLevel}`。非零退出时保存脱敏的
-   stderr 摘要并停止；不得把不完整运行称为通过。
+   stderr 摘要并停止；不得把不完整运行称为通过。standalone process provider 使用进程观察
+   和 Skill 前后 digest 时，后代清理不受保证，bundle 必须保留该限制，且不得称为
+   comparative 或 release-grade 证据。
 5. 运行 `aw-skill-eval bundle validate <bundle.json>`，其中路径使用上一步返回的
    `bundlePath`。要求 stdout JSON 中 `valid` 为 `true`，并核对 calculated digest 与 run
    返回的 `bundleDigest`。
@@ -97,3 +101,5 @@ currentness。
   validator，使用前必须复制到工作区并填充真实绑定。
 - provider、snapshot、process、timeout、capture、bundle 和 evidence level 均由共享包负责。
 - 新进程或 Skill snapshot 本身不证明独立上下文或操作系统 sandbox。
+- capability 支持不等于证据等级。只有 bundle 中真实的 `evidenceLevel` 和 `limitations` 能说明
+  本次运行可支持的结论。

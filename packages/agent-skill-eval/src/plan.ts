@@ -2,7 +2,7 @@ import { lstat, readFile, realpath } from 'node:fs/promises'
 import path from 'node:path'
 import { isPathInside, pathsOverlap, safeSegment, sha256, stable } from './common.js'
 import { validateJsonSchema } from './json-schema.js'
-import { computeSkillDigest } from './runtime-skill.js'
+import { captureRuntimeSkill, type CapturedRuntimeSkill } from './runtime-skill.js'
 import { getSchema } from './schemas.js'
 import { assertSafeOutputPath } from './output-path.js'
 import type { Digest, RuntimeCapabilities, ValidationResult } from './types.js'
@@ -75,6 +75,32 @@ export interface PlanCalculated {
   configurationSkillDigests: Record<string, Digest | null>
 }
 
+export interface CapturedPlanFile {
+  label: string
+  requestedPath: string
+  canonicalPath: string
+  digest: Digest
+  raw: string
+}
+
+export interface CapturedExecutionPlan {
+  plan: EvalExecutionPlan
+  base: string
+  outputRoot: string
+  planFile: CapturedPlanFile
+  caseFiles: CapturedPlanFile[]
+  auditFile: CapturedPlanFile
+  capabilitiesFile: CapturedPlanFile
+  cases: EvalCase[]
+  capabilities: RuntimeCapabilities
+  skills: Map<string, CapturedRuntimeSkill | null>
+  boundSkills: Map<string, CapturedRuntimeSkill>
+}
+
+export interface CapturedExecutionPlanResult extends ValidationResult<PlanCalculated> {
+  captured: CapturedExecutionPlan | null
+}
+
 export function casesFrom(document: unknown): EvalCase[] {
   if (Array.isArray(document)) return document as EvalCase[]
   if (document && typeof document === 'object') {
@@ -108,18 +134,28 @@ export async function computeCaseCorpusDigest(casePaths: string[]): Promise<Dige
   return sha256(documents.join('\n'))
 }
 
-async function readFencedJson<T>(base: string, value: string, label: string): Promise<{ path: string; value: T; bytes: Buffer }> {
+async function readFencedJson<T>(
+  base: string,
+  value: string,
+  label: string,
+  outputRoot?: string,
+): Promise<{ file: CapturedPlanFile; value: T }> {
   const candidate = path.resolve(base, value)
   const actual = await realpath(candidate)
   if (!isPathInside(base, actual)) throw new Error(`${label} leaves the plan directory`)
   if ((await lstat(candidate)).isSymbolicLink()) throw new Error(`${label} cannot be a symlink`)
-  const bytes = await readFile(actual)
-  return { path: actual, value: JSON.parse(bytes.toString('utf8')) as T, bytes }
+  if (outputRoot && isPathInside(outputRoot, actual))
+    throw new Error(`${label} must not be inside outputRoot`)
+  const raw = await readFile(actual, 'utf8')
+  return {
+    file: { label, requestedPath: candidate, canonicalPath: actual, digest: sha256(raw), raw },
+    value: JSON.parse(raw) as T,
+  }
 }
 
-export async function validateExecutionPlan(
+export async function captureAndValidateExecutionPlan(
   planPath: string,
-): Promise<ValidationResult<PlanCalculated>> {
+): Promise<CapturedExecutionPlanResult> {
   const errors: string[] = []
   const calculated: PlanCalculated = {
     targetSkillDigest: null,
@@ -129,21 +165,44 @@ export async function validateExecutionPlan(
     configurationSkillDigests: {},
   }
   let plan: EvalExecutionPlan
+  let planFile: CapturedPlanFile
   try {
-    const value = JSON.parse(await readFile(planPath, 'utf8')) as unknown
+    const requestedPath = path.resolve(planPath)
+    const info = await lstat(requestedPath)
+    if (info.isSymbolicLink() || !info.isFile()) throw new Error('execution plan must be a regular non-symlink file')
+    const canonicalPath = await realpath(requestedPath)
+    const raw = await readFile(canonicalPath, 'utf8')
+    planFile = {
+      label: 'execution plan',
+      requestedPath,
+      canonicalPath,
+      digest: sha256(raw),
+      raw,
+    }
+    const value = JSON.parse(raw) as unknown
     errors.push(...validateJsonSchema(await getSchema('eval-execution-plan'), value))
-    if (errors.length > 0) return { valid: false, errors, calculated }
+    if (errors.length > 0) return { valid: false, errors, calculated, captured: null }
     plan = value as EvalExecutionPlan
   } catch (error) {
-    return { valid: false, errors: [`plan is unavailable or invalid: ${(error as Error).message}`], calculated }
+    return {
+      valid: false,
+      errors: [`plan is unavailable or invalid: ${(error as Error).message}`],
+      calculated,
+      captured: null,
+    }
   }
 
-  const base = await realpath(path.dirname(path.resolve(planPath)))
+  const base = await realpath(path.dirname(planFile.requestedPath))
   const outputRoot = path.resolve(base, plan.outputRoot)
   try {
     await assertSafeOutputPath(base, outputRoot)
   } catch (error) {
     errors.push(`outputRoot is unavailable or unsafe: ${(error as Error).message}`)
+  }
+  try {
+    if (isPathInside(outputRoot, planFile.canonicalPath)) errors.push('execution plan must not be inside outputRoot')
+  } catch (error) {
+    errors.push(`execution plan path is unavailable or unsafe: ${(error as Error).message}`)
   }
   if (new Set(plan.configurations.map((entry) => entry.id)).size !== plan.configurations.length)
     errors.push('configuration ids must be unique')
@@ -165,9 +224,16 @@ export async function validateExecutionPlan(
   }
 
   let capabilities: RuntimeCapabilities | null = null
+  let capabilitiesFile: CapturedPlanFile | null = null
   try {
-    const loaded = await readFencedJson<RuntimeCapabilities>(base, plan.provider.capabilitiesPath, 'capabilities path')
-    calculated.capabilitiesDigest = sha256(loaded.bytes)
+    const loaded = await readFencedJson<RuntimeCapabilities>(
+      base,
+      plan.provider.capabilitiesPath,
+      'capabilities path',
+      outputRoot,
+    )
+    capabilitiesFile = loaded.file
+    calculated.capabilitiesDigest = loaded.file.digest
     errors.push(...validateJsonSchema(await getSchema('eval-runtime-capabilities'), loaded.value).map((entry) => `capabilities: ${entry}`))
     capabilities = loaded.value
     if (capabilities.provider !== plan.provider.id) errors.push('provider id does not match capability document')
@@ -189,15 +255,18 @@ export async function validateExecutionPlan(
     errors.push(`provider capabilities are unavailable or invalid: ${(error as Error).message}`)
   }
 
-  let canonicalTarget: string | null = null
+  let targetSkill: CapturedRuntimeSkill | null = null
   const configurationRoots = new Map<string, string>()
+  const capturedSkills = new Map<string, CapturedRuntimeSkill | null>()
+  const boundSkills = new Map<string, CapturedRuntimeSkill>()
   try {
     const target = path.resolve(base, plan.target.path)
     if ((await lstat(target)).isSymbolicLink()) throw new Error('symlink')
-    canonicalTarget = await realpath(target)
-    calculated.targetSkillDigest = await computeSkillDigest(canonicalTarget)
-    if (pathsOverlap(canonicalTarget, outputRoot)) errors.push('outputRoot must not overlap the target Skill tree')
-    configurationRoots.set('with-skill', canonicalTarget)
+    targetSkill = await captureRuntimeSkill(target)
+    calculated.targetSkillDigest = targetSkill.digest
+    if (pathsOverlap(targetSkill.sourceRoot, outputRoot)) errors.push('outputRoot must not overlap the target Skill tree')
+    configurationRoots.set('with-skill', targetSkill.sourceRoot)
+    boundSkills.set('target', targetSkill)
   } catch (error) {
     errors.push(`target path is unavailable or unsafe: ${(error as Error).message}`)
   }
@@ -211,6 +280,7 @@ export async function validateExecutionPlan(
       calculated.configurationSkillDigests[configuration.id] = configuration.skillMode === 'with-skill'
         ? calculated.targetSkillDigest
         : null
+      capturedSkills.set(configuration.id, configuration.skillMode === 'with-skill' ? targetSkill : null)
       continue
     }
     if (!configuration.skillPath || !configuration.skillDigest) {
@@ -220,13 +290,14 @@ export async function validateExecutionPlan(
     try {
       const previousPath = path.resolve(base, configuration.skillPath)
       if ((await lstat(previousPath)).isSymbolicLink()) throw new Error('symlink')
-      const actual = await realpath(previousPath)
-      if (!isPathInside(base, actual)) throw new Error('previous-version path leaves the plan directory')
-      if (pathsOverlap(actual, outputRoot)) throw new Error('previous-version path overlaps outputRoot')
-      const digest = await computeSkillDigest(actual)
-      calculated.configurationSkillDigests[configuration.id] = digest
-      configurationRoots.set(configuration.id, actual)
-      if (digest !== configuration.skillDigest)
+      const captured = await captureRuntimeSkill(previousPath)
+      if (!isPathInside(base, captured.sourceRoot)) throw new Error('previous-version path leaves the plan directory')
+      if (pathsOverlap(captured.sourceRoot, outputRoot)) throw new Error('previous-version path overlaps outputRoot')
+      calculated.configurationSkillDigests[configuration.id] = captured.digest
+      configurationRoots.set(configuration.id, captured.sourceRoot)
+      capturedSkills.set(configuration.id, captured)
+      boundSkills.set(configuration.id, captured)
+      if (captured.digest !== configuration.skillDigest)
         errors.push(`${configuration.id} skillDigest does not match previous-version content`)
     } catch (error) {
       errors.push(`${configuration.id} previous-version path is unavailable or unsafe: ${(error as Error).message}`)
@@ -234,30 +305,36 @@ export async function validateExecutionPlan(
   }
 
   const caseIds = new Set<string>()
+  const caseFiles: CapturedPlanFile[] = []
+  const capturedCases: EvalCase[] = []
   try {
-    const casePaths: string[] = []
+    const canonicalDocuments: string[] = []
     const evalTypes = new Set<string>()
     for (const caseEntry of plan.cases.paths) {
-      const loaded = await readFencedJson<unknown>(base, caseEntry, 'case path')
-      casePaths.push(loaded.path)
+      const loaded = await readFencedJson<unknown>(base, caseEntry, 'case path', outputRoot)
+      caseFiles.push({ ...loaded.file, label: `case corpus file ${caseFiles.length + 1}` })
+      canonicalDocuments.push(stable(loaded.value))
       for (const evalCase of casesFrom(loaded.value)) {
         const id = String(evalCase.id ?? '')
         if (!safeSegment(id) || caseIds.has(id)) throw new Error('case ids must be unique safe path segments')
         caseIds.add(id)
         evalTypes.add(String(evalCase.eval_type ?? evalCase.type ?? 'unknown'))
+        capturedCases.push(evalCase)
       }
     }
     if (caseIds.size === 0) throw new Error('case corpus must contain at least one case')
-    calculated.caseCorpusDigest = await computeCaseCorpusDigest(casePaths)
+    calculated.caseCorpusDigest = sha256(canonicalDocuments.sort().join('\n'))
     if (evalTypes.has('trigger') && capabilities && !capabilities.capabilities.triggerDiscovery)
       errors.push('provider does not support trigger discovery')
   } catch (error) {
     errors.push(`case corpus is unavailable or invalid: ${(error as Error).message}`)
   }
 
+  let auditFile: CapturedPlanFile | null = null
   try {
-    const loaded = await readFencedJson<AuditResult>(base, plan.audit.path, 'audit path')
-    calculated.auditDigest = sha256(loaded.bytes)
+    const loaded = await readFencedJson<AuditResult>(base, plan.audit.path, 'audit path', outputRoot)
+    auditFile = { ...loaded.file, label: 'preflight audit' }
+    calculated.auditDigest = loaded.file.digest
     errors.push(...validateJsonSchema(await getSchema('eval-audit-result'), loaded.value).map((entry) => `audit: ${entry}`))
     const audit = loaded.value
     if (audit.validity !== 'pass') errors.push('audit validity must be pass')
@@ -303,5 +380,32 @@ export async function validateExecutionPlan(
     for (const [configurationId, skillRoot] of configurationRoots)
       if (pathsOverlap(skillRoot, providerCwd)) errors.push(`provider cwd must not overlap ${configurationId} Skill content`)
   }
-  return { valid: errors.length === 0, errors, calculated }
+  if (errors.length > 0 || !capabilities || !capabilitiesFile || !auditFile || !targetSkill) {
+    return { valid: false, errors, calculated, captured: null }
+  }
+  return {
+    valid: true,
+    errors,
+    calculated,
+    captured: {
+      plan,
+      base,
+      outputRoot,
+      planFile,
+      caseFiles,
+      auditFile,
+      capabilitiesFile: { ...capabilitiesFile, label: 'provider capabilities' },
+      cases: capturedCases,
+      capabilities,
+      skills: capturedSkills,
+      boundSkills,
+    },
+  }
+}
+
+export async function validateExecutionPlan(
+  planPath: string,
+): Promise<ValidationResult<PlanCalculated>> {
+  const { captured: _captured, ...validation } = await captureAndValidateExecutionPlan(planPath)
+  return validation
 }

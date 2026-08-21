@@ -41,11 +41,13 @@ import {
   type PluginEvalTriggerSuite,
 } from './plugin-eval-contract.js';
 
-const DEFAULT_MANAGED_PROCESS_EVIDENCE: PluginEvalProcessManagementEvidence = {
-  mode: 'managed',
+const DEFAULT_OBSERVED_PROCESS_EVIDENCE: PluginEvalProcessManagementEvidence = {
+  mode: 'observed',
   inspectionAvailable: true,
   userAcknowledged: false,
-  descendantCleanupGuaranteed: true,
+  descendantCleanupGuaranteed: false,
+  limitation:
+    'Process-tree inspection observes and cleans known descendants but does not guarantee descendant cleanup.',
 };
 
 async function createTriggerTemporaryRoot(
@@ -1013,7 +1015,7 @@ export async function runCodexTriggerSuite(options: {
   const sourceEnv = options.sourceEnv ?? process.env;
   const codexRuntime = options.codexRuntime ?? cleanCodexEvalRuntimeConfig(sourceEnv, options.model);
   const model = options.model ?? codexRuntime.model ?? undefined;
-  const processManagement = options.processManagement ?? DEFAULT_MANAGED_PROCESS_EVIDENCE;
+  const processManagement = options.processManagement ?? DEFAULT_OBSERVED_PROCESS_EVIDENCE;
   const corpus = await readPluginEvalTriggerCases(options.pluginRoot, options.suite);
   let cases = options.split === 'all'
     ? corpus.cases
