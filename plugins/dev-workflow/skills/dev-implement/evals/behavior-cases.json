@@ -48,7 +48,7 @@
       }
     },
     {
-      "id": "stop-on-material-gap-without-ask-me",
+      "id": "stop-on-material-gap",
       "eval_type": "behavior",
       "case_role": "boundary",
       "provenance": "boundary",
@@ -56,19 +56,18 @@
       "unit_under_test": "full-skill",
       "preconditions": {
         "spec_exists": true,
-        "material_decision_unresolved": true,
-        "ask_me_installed": false
+        "material_decision_unresolved": true
       },
       "oracle": {
-        "rationale": "兼容窗口会改变用户行为和验收；ask-me 不可用时应报告缺失决定并停止，而不是临时复制访谈或静默采用默认。",
+        "rationale": "兼容窗口会改变用户行为和验收；实现者应返回材料决定阻塞，而不是复制访谈流程或静默采用默认。",
         "rule_refs": ["SKILL.md#实施循环"],
         "confidence": "high",
-        "allowed_variance": "可以建议安装 ask-me 或请用户直接选择；不得修改产品文件。",
+        "allowed_variance": "措辞可以不同；必须标注 material-decision 并保持产品文件不变。",
         "minimal_counterexample": "若兼容窗口已经在 Spec 中确认，则可以进入实现。"
       },
-      "prompt": "按 docs/specs/token-migration.md 开始实现。兼容窗口仍未决定，而且会改变旧客户端的验收；当前没有安装 ask-me。先处理这个任务。",
+      "prompt": "按 docs/specs/token-migration.md 开始实现。兼容窗口仍未决定，而且会改变旧客户端的验收。先处理这个任务。",
       "scripted_replies": [],
-      "expected_output": "停止实施，说明缺少兼容窗口决定，建议安装 ask-me 或由用户直接补充，并保持工作区不变。",
+      "expected_output": "停止实施，说明兼容窗口是 material-decision，并保持工作区不变。",
       "workspace_files": {
         "docs/specs/token-migration.md": "# Token migration\n\n## Outcome\n迁移到新 token。\n\n## Open decisions\n- 旧客户端兼容窗口：未决定，会改变验收。\n",
         "src/token.js": "export const tokenVersion = 1;\n"
@@ -86,8 +85,8 @@
         ],
         "checks": [
           "把兼容窗口识别为材料决定，不静默选择默认值",
-          "说明 ask-me 缺失并提供安装或用户直接补充决定的下一步",
-          "不复制 decision-grill 的提问流程",
+          "返回 material-decision 和需要补充的具体内容",
+          "不开展完整决策访谈",
           "不修改产品文件"
         ]
       }

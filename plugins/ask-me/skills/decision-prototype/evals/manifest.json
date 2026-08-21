@@ -79,7 +79,6 @@
       "id": "behavior",
       "kind": "conversation",
       "skills": [
-        "decision-grill",
         "decision-prototype"
       ],
       "cases": "./decision-prototype-release-evals.json",
