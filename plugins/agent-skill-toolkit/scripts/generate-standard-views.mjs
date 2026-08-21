@@ -30,12 +30,14 @@ function parseArgs(argv) {
 }
 
 const options = parseArgs(process.argv.slice(2));
-const [contentRaw, skillRaw] = await Promise.all([
+const [contentRaw, skillRaw, dimensionsRaw] = await Promise.all([
   readFile(options.contentRulesPath, 'utf8'),
   readFile(path.join(options.sourceRoot, 'standards', 'skill-rules.json'), 'utf8'),
+  readFile(path.join(options.sourceRoot, 'standards', 'review-dimensions.json'), 'utf8'),
 ]);
 const contentSource = JSON.parse(contentRaw);
 const skillSource = JSON.parse(skillRaw);
+const dimensionSource = JSON.parse(dimensionsRaw);
 const contentDigest = 'sha256:' + createHash('sha256').update(contentRaw).digest('hex');
 if (contentDigest !== skillSource.contentRuleSource.digest) {
   throw new Error(
@@ -140,6 +142,12 @@ function renderEvidence() {
   ].join('\n').replace(/\n+$/u, '') + '\n';
 }
 
+const legacyResultRules = JSON.stringify({
+  schemaVersion: 2,
+  dimensions: dimensionSource.dimensions,
+  reviewResultPolicy: skillSource.reviewResultPolicy,
+}, null, 2) + '\n';
+
 const outputs = new Map([
   ['skills/author-agent-skill/references/author-standard.generated.md', renderView('skill_author', 'Agent Skill 作者标准')],
   ['skills/review-agent-skill/references/review-rubric.generated.md', renderView('skill_review', 'Agent Skill 评审标准')],
@@ -148,6 +156,7 @@ const outputs = new Map([
   ['skills/author-agent-skill/references/composition-audit.md', renderComposition('Composition Fitness Audit', false)],
   ['skills/review-agent-skill/references/composition-fitness.md', renderComposition('Composition Fitness Review', true)],
   ['skills/review-agent-skill/references/evidence-and-severity.md', renderEvidence()],
+  ['standards/review-result-rules.generated.json', legacyResultRules],
 ]);
 const stale = [];
 for (const [relative, content] of outputs) {

@@ -1,12 +1,5 @@
-# Review Agent Skill
+# review-agent-skill
 
-独立、只读、轻量评审 Agent Skill 的职责、触发边界、信息层级、最小控制和 Eval 证据。
+通用、只读、质量导向的 Agent Skill Reviewer。
 
-默认流程只有两类产物：
-
-- `SkillCheckResult`：机器检查包和 runtime closure；
-- 人类可读 Review，可选附带 `ReviewResultLite`。
-
-本 Skill 不计算项目发布资格，不维护 profile coverage、多阶段 handoff 或加权评分。发布工具在需要时重新计算机器事实。
-
-该 Skill 不修改生产 Skill；修复由 `author-agent-skill` 完成。主要指令见 [`SKILL.md`](SKILL.md)。
+默认产物是人类可读报告。确定性包事实由 `check-agent-skill.mjs` 提供；需要自动化交接时，可选输出薄 `ReviewResultLite`。本 Skill 不维护多阶段 handoff 状态，不计算项目发布资格，也不要求 quick/full/delta 生成 bundle。
