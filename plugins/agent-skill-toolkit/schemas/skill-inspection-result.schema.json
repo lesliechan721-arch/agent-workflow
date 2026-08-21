@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-skill-toolkit.invalid/schemas/skill-inspection-result.schema.json",
+  "title": "SkillInspectionResult",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "producer",
+    "independentContext",
+    "target",
+    "runtimeClosure",
+    "issues"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "producer": { "const": "inspect-agent-skill" },
+    "independentContext": { "const": false },
+    "target": {
+      "type": "object",
+      "required": ["name", "rootKind", "profile", "digest"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "rootKind": { "enum": ["source", "materialized"] },
+        "profile": { "type": ["string", "null"], "minLength": 1 },
+        "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+      },
+      "additionalProperties": false
+    },
+    "runtimeClosure": {
+      "type": "object",
+      "required": ["root", "complete", "nodes", "edges"],
+      "properties": {
+        "root": { "const": "SKILL.md" },
+        "complete": { "const": true },
+        "nodes": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        "edges": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["origin", "target", "kind", "syntax", "status"],
+            "properties": {
+              "origin": { "type": "string", "minLength": 1 },
+              "target": { "type": "string", "minLength": 1 },
+              "kind": { "enum": ["agent-facing-text", "runtime-resource"] },
+              "syntax": { "enum": ["core-path-token", "markdown-link"] },
+              "status": { "enum": ["present", "missing"] }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "issues": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "code", "severity", "message"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "code": { "type": "string", "minLength": 1 },
+          "severity": { "enum": ["error", "warning"] },
+          "origin": { "type": "string", "minLength": 1 },
+          "path": { "type": "string", "minLength": 1 },
+          "message": { "type": "string", "minLength": 1 }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

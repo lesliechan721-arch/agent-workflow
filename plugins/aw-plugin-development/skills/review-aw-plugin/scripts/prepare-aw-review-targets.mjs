@@ -1,9 +1,14 @@
 #!/usr/bin/env node
 import { createHash } from 'node:crypto';
+import { execFile } from 'node:child_process';
 import { lstat, mkdir, readFile, readdir, realpath, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
+import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
 import { isSkillAuthorArtifact } from './review-artifact-policy.mjs';
+const execFileAsync = promisify(execFile);
+const scriptRoot = path.dirname(fileURLToPath(import.meta.url));
 const PRODUCTION_DIGEST_DOMAIN = 'aw-production-records-v1';
 const IGNORED_NAMES = new Set(['.git', 'node_modules', '.DS_Store']);
 function fail(m) {
@@ -240,7 +245,7 @@ async function target(kind, root, profile, owner, repo, pluginBundle) {
       || executionResultDigests.has(stage.evalExecution?.resultDigest),
   );
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     target: {
       kind,
       name,
@@ -262,6 +267,42 @@ async function target(kind, root, profile, owner, repo, pluginBundle) {
     evalResults,
   };
 }
+async function attachPackageInspection(bundle, root, outputRoot, fileStem) {
+  const inspector = path.join(scriptRoot, 'inspect-agent-skill.mjs');
+  const args = [
+    inspector,
+    root,
+    '--root-kind',
+    bundle.target.kind === 'materialized-skill' ? 'materialized' : 'source',
+    '--format',
+    'json',
+  ];
+  if (bundle.target.profile !== null) args.push('--profile', bundle.target.profile);
+  let stdout;
+  try {
+    ({ stdout } = await execFileAsync(process.execPath, args, { encoding: 'utf8' }));
+  } catch (error) {
+    if (typeof error?.stdout !== 'string' || !error.stdout.trim()) throw error;
+    stdout = error.stdout;
+  }
+  const inspection = JSON.parse(stdout);
+  if (inspection.target.digest !== bundle.target.sourceDigest) {
+    fail('Package inspection digest does not match review target ' + bundle.target.name);
+  }
+  const resultName = fileStem + '--package-inspection.json';
+  const resultContent = JSON.stringify(inspection, null, 2) + '\n';
+  await writeFile(path.join(outputRoot, resultName), resultContent, 'utf8');
+  bundle.orchestration.providedStages.push({
+    id: 'package-inspection',
+    producer: 'inspect-agent-skill',
+    independentContext: false,
+    subjectDigest: bundle.target.sourceDigest,
+    resultPath: resultName,
+    resultDigest: sha(resultContent),
+    schema: 'SkillInspectionResult',
+    profile: bundle.target.profile,
+  });
+}
 async function main() {
   const o = parse(process.argv.slice(2)),
     pluginBundle = o.bundlePath ? JSON.parse(await readFile(o.bundlePath, 'utf8')) : null,
@@ -275,24 +316,47 @@ async function main() {
       : path.join(o.pluginRoot, 'skills');
   const rows = [];
   for (const r of await skillRoots(skillsPath))
-    rows.push(await target('aw-plugin-skill', r, null, manifest.name, repositoryRoot, pluginBundle));
+    rows.push({
+      root: r,
+      bundle: await target(
+        'aw-plugin-skill',
+        r,
+        null,
+        manifest.name,
+        repositoryRoot,
+        pluginBundle,
+      ),
+    });
   for (const f of o.finals)
     for (const r of await skillRoots(f.root))
       rows.push(
-        await target('materialized-skill', r, f.profile, manifest.name, repositoryRoot, pluginBundle),
+        {
+          root: r,
+          bundle: await target(
+            'materialized-skill',
+            r,
+            f.profile,
+            manifest.name,
+            repositoryRoot,
+            pluginBundle,
+          ),
+        },
       );
   const seen = new Set(),
     targets = [];
   if (o.outputRoot) await mkdir(o.outputRoot, { recursive: true });
-  for (const bundle of rows) {
+  for (const row of rows) {
+    const bundle = row.bundle;
     const key = [bundle.target.kind, bundle.target.name, bundle.target.profile ?? ''].join(':');
     if (seen.has(key)) fail('Duplicate review target ' + key);
     seen.add(key);
     let bundlePath = null;
     if (o.outputRoot) {
-      const file =
-        [bundle.target.kind, bundle.target.name, bundle.target.profile].filter(Boolean).join('--') +
-        '.json';
+      const fileStem = [bundle.target.kind, bundle.target.name, bundle.target.profile]
+        .filter(Boolean)
+        .join('--');
+      await attachPackageInspection(bundle, row.root, o.outputRoot, fileStem);
+      const file = fileStem + '.json';
       bundlePath = path.join(o.outputRoot, file);
       await writeFile(bundlePath, JSON.stringify(bundle, null, 2) + '\n', 'utf8');
     }

@@ -1,30 +1,41 @@
 #!/usr/bin/env node
 
-import { readFile, readdir, stat } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { lstat, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 
 function usage() {
-  return 'Usage: inspect-agent-skill.mjs <skill-dir> [--format json|text]';
+  return 'Usage: inspect-agent-skill.mjs <skill-dir> [--root-kind source|materialized] [--profile name] [--format json|text] [--output path]';
 }
 
 function parseArgs(argv) {
   if (argv.includes('-h') || argv.includes('--help')) return { help: true };
   const positional = [];
   let format = 'json';
+  let rootKind = 'source';
+  let profile = null;
+  let outputPath = null;
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index];
     if (value === '--format') format = argv[++index];
+    else if (value === '--root-kind') rootKind = argv[++index];
+    else if (value === '--profile') profile = argv[++index];
+    else if (value === '--output') outputPath = path.resolve(argv[++index] ?? '');
     else if (value.startsWith('-')) throw new Error('Unknown option: ' + value);
     else positional.push(value);
   }
   if (positional.length !== 1) throw new Error(usage());
   if (!['json', 'text'].includes(format)) throw new Error('--format must be json or text.');
-  return { root: path.resolve(positional[0]), format };
+  if (!['source', 'materialized'].includes(rootKind))
+    throw new Error('--root-kind must be source or materialized.');
+  if (profile !== null && profile.length === 0) throw new Error('--profile must be non-empty.');
+  return { root: path.resolve(positional[0]), format, rootKind, profile, outputPath };
 }
 
-const RESOURCE_PATTERN = /(?:references|scripts|assets|agents|evals)\/[A-Za-z0-9._()\-/]+/gu;
+const RESOURCE_PATTERN = /(?<![A-Za-z0-9._/\-])(?:\.\/)?(?:references|scripts|assets|agents|evals|providers)\/[A-Za-z0-9._()\-/]+/gu;
 const SKIP_NAMES = new Set(['.git', 'node_modules', '.DS_Store']);
+const PRODUCTION_DIGEST_DOMAIN = 'aw-production-records-v1';
 
 function portable(value) {
   return value.split(path.sep).join('/');
@@ -70,8 +81,83 @@ function cleanResource(value) {
 }
 
 function resourcePaths(text) {
-  return [...new Set([...text.matchAll(RESOURCE_PATTERN)].map((match) => cleanResource(match[0])))]
+  return [...new Set([...text.matchAll(RESOURCE_PATTERN)]
+    .map((match) => cleanResource(match[0]).replace(/^\.\//u, '')))]
+    .filter((target) => !target.endsWith('/') && !target.endsWith('-'))
     .sort();
+}
+
+const SHELL_FENCE_LANGUAGES = new Set(['', 'sh', 'bash', 'zsh', 'shell', 'powershell', 'pwsh', 'ps1', 'cmd']);
+
+function hasExecutionSignal(snippet) {
+  const tokens = snippet.trim().replace(/^\$\s+/u, '').split(/\s+/u).filter(Boolean);
+  return tokens.length > 1 || /^(?:node|python3?|sh|bash|deno|bun|powershell|pwsh|cmd)\b/u.test(tokens[0] ?? '');
+}
+
+function dependencyPaths(text, includePathOnlyCode) {
+  const snippets = [];
+  let prose = text.replace(/```([^\n]*)\n([\s\S]*?)```/gu, (block, info, body) => {
+    const language = info.trim().split(/\s+/u, 1)[0]?.toLowerCase() ?? '';
+    if (SHELL_FENCE_LANGUAGES.has(language)) snippets.push(body);
+    return block.replace(/[^\n]/gu, ' ');
+  });
+  prose = prose.replace(/(?<!\\)`([^`\n]+)`/gu, (block, body) => {
+    snippets.push(body);
+    return block.replace(/[^\n]/gu, ' ');
+  });
+  return [...new Set([
+    ...resourcePaths(prose),
+    ...snippets
+      .filter((snippet) => includePathOnlyCode || hasExecutionSignal(snippet))
+      .flatMap(resourcePaths),
+  ])].sort();
+}
+
+function markdownDependencyPaths(text) {
+  let prose = text.replace(/```([^\n]*)\n([\s\S]*?)```/gu, (block) =>
+    block.replace(/[^\n]/gu, ' '));
+  prose = prose.replace(/(?<!\\)`([^`\n]+)`/gu, (block) =>
+    block.replace(/[^\n]/gu, ' '));
+  const targets = [];
+  for (const match of prose.matchAll(/!?\[[^\]\n]*\]\(\s*(?:<([^>\n]+)>|((?:\\.|[^\s)\n])+))/gu)) {
+    targets.push(match[1] ?? match[2]);
+  }
+  for (const match of prose.matchAll(/^ {0,3}\[[^\]\n]+\]:\s*(?:<([^>\n]+)>|(\S+))/gmu)) {
+    targets.push(match[1] ?? match[2]);
+  }
+  return [...new Set(targets.filter(Boolean))].sort();
+}
+
+const CORE_RESOURCE_ROOT_PATTERN = /^(?:\.\/)?(?:references|scripts|assets|agents|evals|providers)(?:\/|$)/u;
+const URI_SCHEME_PATTERN = /^[A-Za-z][A-Za-z0-9+.-]*:/u;
+const WINDOWS_PATH_PATTERN = /^(?:[A-Za-z]:|\\|\/)/u;
+
+function resolveMarkdownDependency(origin, lexicalTarget) {
+  let target = lexicalTarget.split('#', 1)[0].split('?', 1)[0];
+  if (target === '' || target.startsWith('//')) return null;
+  if (WINDOWS_PATH_PATTERN.test(target)) return { invalid: true, target: lexicalTarget };
+  if (URI_SCHEME_PATTERN.test(target)) return null;
+  try {
+    target = decodeURIComponent(target.replace(/\\([!"#$%&'()*+,\-./:;<=>?@[\]^_`{|}~])/gu, '$1'));
+  } catch {
+    return { invalid: true, target: lexicalTarget };
+  }
+  if (target.includes('\\')) {
+    return { invalid: true, target: lexicalTarget };
+  }
+  const resolved = CORE_RESOURCE_ROOT_PATTERN.test(target)
+    ? target.replace(/^\.\//u, '')
+    : path.posix.join(path.posix.dirname(origin), target);
+  const normalized = path.posix.normalize(resolved).replace(/^\.\//u, '');
+  if (
+    normalized === ''
+    || normalized === '..'
+    || normalized.startsWith('../')
+    || path.posix.isAbsolute(normalized)
+  ) {
+    return { invalid: true, target: lexicalTarget };
+  }
+  return { invalid: false, target: normalized };
 }
 
 async function collectFiles(root) {
@@ -94,6 +180,143 @@ async function collectFiles(root) {
   return files;
 }
 
+function normalizedRegularFileMode(mode) {
+  return process.platform !== 'win32' && (mode & 0o111) !== 0 ? '100755' : '100644';
+}
+
+function updateLengthPrefixed(hash, value) {
+  const bytes = typeof value === 'string' ? Buffer.from(value, 'utf8') : value;
+  const length = Buffer.allocUnsafe(8);
+  length.writeBigUInt64BE(BigInt(bytes.length));
+  hash.update(length);
+  hash.update(bytes);
+}
+
+function isAuthorOnlyPath(relativePath) {
+  return ['evals', 'reports'].includes(relativePath.split('/')[0]);
+}
+
+async function productionDigest(files) {
+  const hash = createHash('sha256');
+  updateLengthPrefixed(hash, PRODUCTION_DIGEST_DOMAIN);
+  for (const file of files
+    .filter((entry) => !isAuthorOnlyPath(entry.path))
+    .sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0)) {
+    const info = await stat(file.absolute);
+    updateLengthPrefixed(hash, file.path);
+    updateLengthPrefixed(hash, normalizedRegularFileMode(info.mode));
+    updateLengthPrefixed(hash, createHash('sha256').update(await readFile(file.absolute)).digest());
+  }
+  return 'sha256:' + hash.digest('hex');
+}
+
+async function collectSymlinkPaths(root) {
+  const links = [];
+  async function walk(directory, relative = '') {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      if (SKIP_NAMES.has(entry.name)) continue;
+      const absolute = path.join(directory, entry.name);
+      const nextRelative = portable(path.join(relative, entry.name));
+      if ((await lstat(absolute)).isSymbolicLink()) links.push(nextRelative);
+      else if (entry.isDirectory()) await walk(absolute, nextRelative);
+    }
+  }
+  await walk(root);
+  return links.sort();
+}
+
+function isAgentFacingTextResource(relativePath) {
+  return ['.md', '.markdown', '.txt'].includes(path.posix.extname(relativePath).toLowerCase());
+}
+
+async function runtimeClosure(files, skillText) {
+  const byPath = new Map(files
+    .filter((file) => !isAuthorOnlyPath(file.path))
+    .map((file) => [file.path, file]));
+  const nodes = [];
+  const edges = [];
+  const issues = [];
+  const pending = ['SKILL.md'];
+  const visited = new Set();
+  while (pending.length > 0) {
+    const origin = pending.shift();
+    if (visited.has(origin)) continue;
+    visited.add(origin);
+    const file = byPath.get(origin);
+    if (!file) continue;
+    nodes.push(origin);
+    const text = origin === 'SKILL.md' ? skillText : await readFile(file.absolute, 'utf8');
+    const dependencies = [
+      ...markdownDependencyPaths(text).flatMap((lexicalTarget) => {
+        const resolved = resolveMarkdownDependency(origin, lexicalTarget);
+        return resolved === null ? [] : [{
+          target: resolved.target,
+          lexicalTarget,
+          syntax: 'markdown-link',
+          invalid: resolved.invalid,
+        }];
+      }),
+      ...dependencyPaths(text, origin === 'SKILL.md').map((target) => ({
+        target,
+        lexicalTarget: target,
+        syntax: 'core-path-token',
+        invalid: false,
+      })),
+    ];
+    const seenDependencies = new Set();
+    for (const dependency of dependencies) {
+      const key = dependency.target;
+      if (seenDependencies.has(key)) continue;
+      seenDependencies.add(key);
+      const { target } = dependency;
+      if (dependency.invalid) {
+        edges.push({
+          origin,
+          target,
+          kind: 'runtime-resource',
+          syntax: dependency.syntax,
+          status: 'missing',
+        });
+        issues.push({
+          code: 'invalid-local-path',
+          severity: 'error',
+          origin,
+          path: dependency.lexicalTarget,
+          message: 'Runtime resource path is not a normalized Skill-local path.',
+        });
+        continue;
+      }
+      const present = byPath.has(target);
+      edges.push({
+        origin,
+        target,
+        kind: isAgentFacingTextResource(target) ? 'agent-facing-text' : 'runtime-resource',
+        syntax: dependency.syntax,
+        status: present ? 'present' : 'missing',
+      });
+      if (!present) {
+        issues.push({
+          code: 'missing-runtime-resource',
+          severity: 'error',
+          origin,
+          path: target,
+          message: 'Referenced runtime resource does not exist.',
+        });
+      } else if (isAgentFacingTextResource(target) && !visited.has(target)) {
+        pending.push(target);
+      }
+    }
+  }
+  return {
+    root: 'SKILL.md',
+    complete: true,
+    nodes: nodes.sort(),
+    edges: edges.sort((left, right) =>
+      left.origin.localeCompare(right.origin) || left.target.localeCompare(right.target)),
+    issues,
+  };
+}
+
 function nearestHeading(lines, lineIndex) {
   for (let index = lineIndex; index >= 0; index -= 1) {
     const match = lines[index].match(/^#{1,6}\s+(.+)$/u);
@@ -111,6 +334,14 @@ async function main() {
   const files = await collectFiles(options.root);
   const byPath = new Map(files.map((file) => [file.path, file]));
   const issues = [];
+  for (const linkPath of await collectSymlinkPaths(options.root)) {
+    issues.push({
+      code: 'symlink-in-runtime-path',
+      severity: 'error',
+      path: linkPath,
+      message: 'Skill runtime paths must not contain symbolic links.',
+    });
+  }
   const skillFile = byPath.get('SKILL.md');
   if (!skillFile) throw new Error('Missing SKILL.md: ' + options.root);
   const skillText = await readFile(skillFile.absolute, 'utf8');
@@ -133,9 +364,8 @@ async function main() {
 
   const pointers = resourcePaths(skillText);
   const missingPointers = pointers.filter((resource) => !byPath.has(resource));
-  for (const resource of missingPointers) {
-    issues.push({ code: 'missing-resource', severity: 'error', path: resource, message: 'Referenced resource does not exist.' });
-  }
+  const closure = await runtimeClosure(files, skillText);
+  issues.push(...closure.issues);
 
   const incoming = new Map();
   const deepReferences = [];
@@ -165,7 +395,7 @@ async function main() {
     });
   }
 
-  const resourceRoots = ['references/', 'scripts/', 'assets/', 'agents/', 'evals/'];
+  const resourceRoots = ['references/', 'scripts/', 'assets/', 'agents/', 'evals/', 'providers/'];
   const unreachableResources = files
     .filter((file) => resourceRoots.some((root) => file.path.startsWith(root)))
     .filter((file) => !incoming.has(file.path))
@@ -216,7 +446,25 @@ async function main() {
       }
     : { present: false, allowImplicitInvocationDeclared: false };
 
+  const identifiedIssues = issues.map((entry) => ({
+    id: [
+      'inspection',
+      entry.code,
+      entry.origin ?? 'SKILL.md',
+      entry.path ?? '-',
+    ].join(':'),
+    ...entry,
+  }));
   const result = {
+    schemaVersion: 1,
+    producer: 'inspect-agent-skill',
+    independentContext: false,
+    target: {
+      name: frontmatter.valid ? frontmatter.name ?? directoryName : directoryName,
+      rootKind: options.rootKind,
+      profile: options.profile,
+      digest: await productionDigest(files),
+    },
     root: options.root,
     package: {
       name: frontmatter.valid ? frontmatter.name : null,
@@ -240,21 +488,31 @@ async function main() {
     scripts,
     jsonFiles,
     openai,
-    issues,
-    note: 'Static diagnostics and size thresholds are evidence leads, not automatic findings.',
+    runtimeClosure: {
+      root: closure.root,
+      complete: closure.complete,
+      nodes: closure.nodes,
+      edges: closure.edges,
+    },
+    issues: identifiedIssues,
+    note: 'Error diagnostics are mandatory machine evidence; warnings and size thresholds are evidence leads.',
   };
 
   if (options.format === 'text') {
-    process.stdout.write([
+    const output = [
       `Skill: ${result.package.name ?? 'unknown'}`,
       `Files: ${result.totalFiles}`,
       `Issues: ${result.issues.length}`,
       `References requiring semantic audit: ${references.filter((reference) => reference.requiresSemanticAudit).length}`,
-    ].join('\n') + '\n');
+    ].join('\n') + '\n';
+    if (options.outputPath) await writeFile(options.outputPath, output, 'utf8');
+    else process.stdout.write(output);
   } else {
-    process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+    const output = JSON.stringify(result, null, 2) + '\n';
+    if (options.outputPath) await writeFile(options.outputPath, output, 'utf8');
+    else process.stdout.write(output);
   }
-  if (issues.some((issue) => issue.severity === 'error')) process.exitCode = 1;
+  if (identifiedIssues.some((issue) => issue.severity === 'error')) process.exitCode = 1;
 }
 
 main().catch((error) => {

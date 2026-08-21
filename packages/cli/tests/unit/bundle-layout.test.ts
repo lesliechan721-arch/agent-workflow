@@ -1074,6 +1074,36 @@ describe('runtime Skill resource closure', () => {
     return skillRoot;
   }
 
+  it('matches the shared deterministic closure corpus', async () => {
+    const corpus = await fs.readJson(path.resolve(
+      import.meta.dirname,
+      '../../../../plugins/agent-skill-toolkit/standards/runtime-skill-closure-cases.json',
+    )) as {
+      cases: Array<{
+        id: string;
+        skill: string;
+        files: Record<string, string>;
+        expected: { valid: boolean; target: string | null };
+      }>;
+    };
+    for (const fixture of corpus.cases) {
+      const skillRoot = await createRuntimeSkill([
+        '---',
+        'name: demo-skill',
+        'description: fixture',
+        '---',
+        fixture.skill,
+      ].join('\n'), fixture.files);
+      if (fixture.expected.valid) {
+        await expect(validateRuntimeSkillClosure(skillRoot), fixture.id).resolves.toBeUndefined();
+      } else {
+        await expect(validateRuntimeSkillClosure(skillRoot), fixture.id).rejects.toThrow(
+          fixture.expected.target!,
+        );
+      }
+    }
+  });
+
   it('accepts valid links and inline commands while ignoring non-local targets', async () => {
     const skillRoot = await createRuntimeSkill([
       '[guide](references/guide.md#L12)',
@@ -1389,6 +1419,41 @@ describe('runtime Skill resource closure', () => {
     await expect(validateRuntimeSkillClosure(skillRoot)).rejects.toThrow(
       'skill "demo-skill" markdown-link target "references/missing.md"',
     );
+  });
+
+  it('rejects missing core resources named in plain Agent-facing text', async () => {
+    const skillRoot = await createRuntimeSkill(
+      'Read references/missing-policy.md before deciding.\n',
+    );
+
+    await expect(validateRuntimeSkillClosure(skillRoot)).rejects.toThrow(
+      'skill "demo-skill" plain-text target "references/missing-policy.md"',
+    );
+  });
+
+  it('rejects a missing runtime dependency reached through a reference', async () => {
+    const skillRoot = await createRuntimeSkill(
+      '[guide](references/guide.md)\n',
+      {
+        'references/guide.md': 'Run `node scripts/missing.mjs`.\n',
+      },
+    );
+
+    await expect(validateRuntimeSkillClosure(skillRoot)).rejects.toThrow(
+      'skill "demo-skill" inline-command target "scripts/missing.mjs" from "references/guide.md"',
+    );
+  });
+
+  it('terminates safely when reachable Agent-facing references form a cycle', async () => {
+    const skillRoot = await createRuntimeSkill(
+      '[guide](references/guide.md)\n',
+      {
+        'references/guide.md': '[details](details.md)\n',
+        'references/details.md': '[guide](guide.md)\n',
+      },
+    );
+
+    await expect(validateRuntimeSkillClosure(skillRoot)).resolves.toBeUndefined();
   });
 
   it.each([

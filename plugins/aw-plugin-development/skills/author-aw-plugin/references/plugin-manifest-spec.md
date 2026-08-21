@@ -76,9 +76,9 @@ aw plugin check-versions <plugin-name> --repo-root <repo-root> \
 
 `scripts`、`config` 和 `artifacts` 是 AW CLI 自己管理的插件运行时合同，不会写入 `.claude-plugin/plugin.json` 或 `.codex-plugin/plugin.json`。插件脚本测试通过仓库包脚本 `pnpm plugin:test <plugin>` 运行，不通过 `aw` 客户端子命令。
 
-作者期模型评估不增加 plugin manifest 顶层字段。每个 owner Skill 使用 `skills/<skill>/evals/manifest.json`，由 `pnpm plugin:eval <plugin> --skill <skill> --batch-name <name>` 读取；Skill 根 `evals/**` 和插件根 `reports/**` 不进入 production runtime bundle。完整 schema、Codex-only 范围、临时批次、正式报告和 materialization 规则见 `references/skill-evaluation.md`。
+作者期模型评估不增加 plugin manifest 顶层字段。每个 owner Skill 使用 `skills/<skill>/evals/manifest.json`，由 `pnpm plugin:eval <plugin> --skill <skill> --batch-name <name>` 读取；Skill 根 `evals/**` 和插件根 `reports/**` 不进入 production runtime bundle。目标工作区的 Eval 命令和运行边界见 `references/aw-validation-and-version.md`。
 
-本节只定义 manifest 字段合同。`aw config` 命令、标准 `aw-config.mjs` helper、lifecycle context、动态 artifact renderer、运行时环境、幂等要求和 `pnpm plugin:test` 写法见 `references/aw-scripts-config-lifecycle.md`。
+本节只定义 manifest 字段合同。配置和 helper 见 `references/aw-config-and-helper.md`，lifecycle 见 `references/aw-lifecycle.md`，动态 artifact 见 `references/aw-artifact-renderer.md`，脚本测试见 `references/aw-script-testing.md`。
 
 最小配置 helper 示例：
 

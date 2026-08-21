@@ -1484,6 +1484,7 @@ export async function publishSkillReviewToBatch(options: {
   scorecard: unknown;
   reviewResult?: unknown;
   awReviewSummary?: unknown;
+  awReviewTargetPlan?: unknown;
   calculated: SkillReviewCalculation;
   reviewId?: string;
 }): Promise<PublishedSkillReportSummary> {
@@ -1573,6 +1574,12 @@ export async function publishSkillReviewToBatch(options: {
           options.awReviewSummary,
         );
       }
+      if (options.awReviewTargetPlan !== undefined) {
+        await writeJsonAtomic(
+          path.join(stagingRoot, 'aw-review-target-plan.json'),
+          options.awReviewTargetPlan,
+        );
+      }
       await fs.ensureDir(path.dirname(reviewRoot));
       await fs.mkdir(reviewRoot, { recursive: false });
       reviewCreated = true;
@@ -1585,6 +1592,12 @@ export async function publishSkillReviewToBatch(options: {
         await writeJsonAtomic(
           path.join(reviewRoot, 'aw-review-summary.json'),
           options.awReviewSummary,
+        );
+      }
+      if (options.awReviewTargetPlan !== undefined) {
+        await writeJsonAtomic(
+          path.join(reviewRoot, 'aw-review-target-plan.json'),
+          options.awReviewTargetPlan,
         );
       }
       await writeJsonAtomic(path.join(reviewRoot, 'review-summary.json'), {

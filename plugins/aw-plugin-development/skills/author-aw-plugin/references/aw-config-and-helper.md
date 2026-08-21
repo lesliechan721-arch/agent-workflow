@@ -69,11 +69,11 @@ aw config list <plugin> --scope project --local
 新插件推荐复用当前 Skill 的 `assets/aw-config.mjs`；先检查 `aw plugin init --help`，再使用 `aw plugin init ... --with-config-api` 让确定性脚手架复制它。helper 支持两个命令：
 
 ```bash
-node scripts/aw-config.mjs get apiKey
-node scripts/aw-config.mjs json
-node scripts/aw-config.mjs get mode --scope user
-node scripts/aw-config.mjs json --scope project
-node scripts/aw-config.mjs json --scope project-local
+node <plugin-root>/scripts/aw-config.mjs get apiKey
+node <plugin-root>/scripts/aw-config.mjs json
+node <plugin-root>/scripts/aw-config.mjs get mode --scope user
+node <plugin-root>/scripts/aw-config.mjs json --scope project
+node <plugin-root>/scripts/aw-config.mjs json --scope project-local
 ```
 
 helper 的读取路径分两种：

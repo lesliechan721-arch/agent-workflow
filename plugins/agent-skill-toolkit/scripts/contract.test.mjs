@@ -67,7 +67,11 @@ async function createSkillReviewSubject(directory, options = {}) {
   const role = options.role ?? 'source';
   const executableMode = process.platform === 'win32' ? '100644' : '100755';
   const files = [
-    { relative: 'SKILL.md', content: '---\nname: fixture\ndescription: fixture\n---\n', mode: '100644' },
+    {
+      relative: 'SKILL.md',
+      content: options.skillContent ?? '---\nname: fixture\ndescription: fixture\n---\n',
+      mode: '100644',
+    },
     { relative: 'scripts/run.mjs', content: 'export const value = 1;\n', mode: executableMode },
   ];
   for (const file of files) {
@@ -219,7 +223,7 @@ test('owned contracts and manifest use release version', async () => {
   const sourceManifest = JSON.parse(
     await readFile(path.join(sourceRoot, '.agents-plugin/plugin.json'), 'utf8'),
   );
-  assert.equal(manifest.version, '0.7.2');
+  assert.equal(manifest.version, '0.8.0');
   assert.equal(sourceManifest.buildConfig.cacheable, true);
   for (const [name, id] of [
     [
@@ -252,11 +256,12 @@ test('starter contracts validate', async () => {
       'skills/review-agent-skill/assets/review-input-bundle.schema.json',
       'skills/review-agent-skill/assets/review-input-bundle.json',
     ],
+    [
+      'skills/review-agent-skill/assets/review-result.schema.json',
+      'skills/review-agent-skill/assets/review-result-template.json',
+    ],
   ];
   for (const [s, v] of pairs) await run('scripts/validate-json-contract.mjs', [s, v]);
-  await run('scripts/validate-review-result.mjs', [
-    'skills/review-agent-skill/assets/review-result-template.json',
-  ]);
 });
 test('ReviewInputBundle validator binds a real stage file and digest', async () => {
   const t = await mkdtemp(path.join(tmpdir(), 'review-handoff-'));
@@ -282,7 +287,7 @@ test('ReviewInputBundle validator binds a real stage file and digest', async () 
     rp = path.join(t, 'audit.json');
   await writeFile(rp, raw);
   const bundle = {
-    schemaVersion: 4,
+    schemaVersion: 5,
     target: {
       kind: 'agent-skill',
       name: 'x',
@@ -326,13 +331,13 @@ test('ReviewInputBundle validator binds a real stage file and digest', async () 
     ).valid,
     true,
   );
-  bundle.schemaVersion = 3;
+  bundle.schemaVersion = 4;
   await writeFile(bp, JSON.stringify(bundle));
   await assert.rejects(
     run('scripts/validate-review-input-bundle.mjs', [bp, '--handoff-root', t]),
     /Command failed/u,
   );
-  bundle.schemaVersion = 4;
+  bundle.schemaVersion = 5;
   bundle.orchestration.providedStages[0].resultPath = 'missing.json';
   await writeFile(bp, JSON.stringify(bundle));
   await assert.rejects(
@@ -371,7 +376,7 @@ test('ReviewInputBundle binds production artifacts to real files, modes, and sou
   const subject = await createSkillReviewSubject(directory);
   const bundlePath = path.join(directory, 'bundle.json');
   const bundle = {
-    schemaVersion: 4,
+    schemaVersion: 5,
     target: {
       kind: 'agent-skill',
       name: 'fixture',
@@ -514,7 +519,7 @@ test('ReviewInputBundle currentness fails closed against Git and accepts unknown
   });
   const nonGitBundlePath = path.join(nonGitDirectory, 'bundle.json');
   const nonGitBundle = {
-    schemaVersion: 4,
+    schemaVersion: 5,
     target: {
       kind: 'agent-skill',
       name: 'fixture',
@@ -551,7 +556,7 @@ test('ReviewInputBundle currentness fails closed against Git and accepts unknown
   await git(gitDirectory, ['commit', '-qm', 'fixture']);
   const bundlePath = path.join(gitDirectory, 'bundle.json');
   const bundle = {
-    schemaVersion: 4,
+    schemaVersion: 5,
     target: {
       kind: 'aw-plugin',
       name: 'fixture',
@@ -626,7 +631,7 @@ test('ReviewInputBundle applies target-specific production roles and excludes au
 
   const plugin = await createPluginReviewSubject(directory, { owner: 'demo' });
   const pluginBundle = {
-    schemaVersion: 4,
+    schemaVersion: 5,
     target: {
       kind: 'aw-plugin',
       name: 'demo',
@@ -756,7 +761,7 @@ async function reviewStageFixture(directory, fileName, profile, name) {
 async function reviewBundle(stages, directory) {
   const subject = await createPluginReviewSubject(directory);
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     target: {
       kind: 'aw-plugin',
       name: 'fixture',
@@ -1168,7 +1173,7 @@ test('source Skill review identity is exact for Skill bundles and unambiguous fo
     const raw = JSON.stringify(actual);
     await writeFile(resultPath, raw);
     await writeFile(bundlePath, JSON.stringify({
-      schemaVersion: 4,
+      schemaVersion: 5,
       target,
       artifacts: subject.artifacts,
       environment: subject.environment,
@@ -1440,12 +1445,76 @@ async function reviewValue(item, design, release) {
   v.releaseReadiness = release;
   return v;
 }
-async function validate(v) {
+async function validate(v, options = {}) {
   const t = await mkdtemp(path.join(tmpdir(), 'review-result-'));
   temps.push(t);
+  const subject = await createSkillReviewSubject(t, options);
+  const inspectionPath = path.join(t, 'inspection.json');
+  await run('scripts/inspect-agent-skill.mjs', [
+    path.join(t, 'skills/fixture'),
+    '--format',
+    'json',
+    '--output',
+    inspectionPath,
+  ]).catch(async (error) => {
+    try {
+      await readFile(inspectionPath);
+    } catch {
+      throw error;
+    }
+  });
+  let inspectionContent = await readFile(inspectionPath);
+  if (options.mutateInspection) {
+    const inspection = JSON.parse(inspectionContent.toString('utf8'));
+    options.mutateInspection(inspection);
+    inspectionContent = Buffer.from(JSON.stringify(inspection));
+    await writeFile(inspectionPath, inspectionContent);
+  }
+  assert.equal(JSON.parse(inspectionContent).target.digest, subject.sourceDigest);
+  const bundlePath = path.join(t, 'bundle.json');
+  await writeFile(bundlePath, JSON.stringify({
+    schemaVersion: 5,
+    target: {
+      kind: 'agent-skill',
+      name: 'fixture',
+      profile: null,
+      sourceDigest: subject.sourceDigest,
+      currentness: 'unknown',
+    },
+    artifacts: subject.artifacts,
+    environment: subject.environment,
+    orchestration: {
+      stageOwner: 'caller',
+      providedStages: [{
+        id: 'package-inspection',
+        producer: 'inspect-agent-skill',
+        independentContext: false,
+        subjectDigest: subject.sourceDigest,
+        resultPath: 'inspection.json',
+        resultDigest: sha(inspectionContent),
+        schema: 'SkillInspectionResult',
+        profile: null,
+      }],
+    },
+    evalAudit: null,
+    evalResults: [],
+  }));
   const p = path.join(t, 'result.json');
-  await writeFile(p, JSON.stringify(v));
-  return run('scripts/validate-review-result.mjs', [p, '--format', 'json']);
+  const value = structuredClone(v);
+  value.target = {
+    kind: 'agent-skill',
+    name: 'fixture',
+    profile: null,
+    digest: subject.sourceDigest,
+  };
+  await writeFile(p, JSON.stringify(value));
+  return run('scripts/validate-review-result.mjs', [
+    p,
+    '--bundle',
+    bundlePath,
+    '--format',
+    'json',
+  ]);
 }
 test('P2-only overload is needs-fixes while P1 overload is redesign', async () => {
   assert.equal(
@@ -1523,6 +1592,183 @@ test('full result uses every canonical dimension and preserves eval evidence lev
   value.confidence = 'high';
   assert.equal(JSON.parse((await validate(value)).stdout).valid, true);
 });
+test('package inspection errors cannot be omitted from an otherwise passing ReviewResult', async () => {
+  const [value, rules] = await Promise.all([
+    readFile(
+      path.join(root, 'skills/review-agent-skill/assets/review-result-template.json'),
+      'utf8',
+    ).then(JSON.parse),
+    readFile(
+      path.join(root, 'skills/review-agent-skill/assets/review-result-rules.generated.json'),
+      'utf8',
+    ).then(JSON.parse),
+  ]);
+  value.mode = 'full';
+  value.design = 'pass';
+  value.releaseReadiness = 'ready';
+  value.complexity = 'proportionate';
+  value.composition = 'coherent';
+  value.reducibility = 'minor';
+  value.dimensions = rules.dimensions.map((dimension) => ({
+    id: dimension.id,
+    weight: dimension.weight,
+    score: 5,
+    confidence: 'high',
+    findingIds: [],
+    unknownIds: [],
+  }));
+  value.weightedScore = 100;
+  value.coverage = 100;
+  value.confidence = 'high';
+  await assert.rejects(
+    validate(value, {
+      skillContent: [
+        '---',
+        'name: fixture',
+        'description: fixture',
+        '---',
+        'Run `node scripts/missing.mjs`.',
+        '',
+      ].join('\n'),
+    }),
+    /Command failed/u,
+  );
+});
+test('package inspection errors validate only when mandatory findings and gates acknowledge them', async () => {
+  const [value, rules] = await Promise.all([
+    readFile(
+      path.join(root, 'skills/review-agent-skill/assets/review-result-template.json'),
+      'utf8',
+    ).then(JSON.parse),
+    readFile(
+      path.join(root, 'skills/review-agent-skill/assets/review-result-rules.generated.json'),
+      'utf8',
+    ).then(JSON.parse),
+  ]);
+  const evidenceId = 'inspection:missing-runtime-resource:SKILL.md:scripts/missing.mjs';
+  const machineFinding = {
+    ...finding('machine-missing-script', 'P0', ['structural']),
+    machineEvidenceIds: [evidenceId],
+    location: 'SKILL.md',
+    claim: 'The package references a missing runtime script.',
+  };
+  value.mode = 'full';
+  value.design = 'fail';
+  value.releaseReadiness = 'blocked';
+  value.complexity = 'proportionate';
+  value.composition = 'coherent';
+  value.reducibility = 'minor';
+  value.findings = [machineFinding];
+  value.dimensions = rules.dimensions.map((dimension) => ({
+    id: dimension.id,
+    weight: dimension.weight,
+    score: 5,
+    confidence: 'high',
+    findingIds: [],
+    unknownIds: [],
+  }));
+  value.weightedScore = 100;
+  value.coverage = 100;
+  value.confidence = 'high';
+  for (const gate of Object.values(value.gates)) {
+    gate.status = 'pass';
+    gate.reason = 'validated';
+    gate.findingIds = [];
+  }
+  for (const gateId of ['package-validity', 'critical-artifacts']) {
+    value.gates[gateId].status = 'fail';
+    value.gates[gateId].reason = 'machine inspection found a missing runtime script';
+    value.gates[gateId].findingIds = [machineFinding.id];
+  }
+
+  assert.equal(JSON.parse((await validate(value, {
+    skillContent: [
+      '---',
+      'name: fixture',
+      'description: fixture',
+      '---',
+      'Run `node scripts/missing.mjs`.',
+      '',
+    ].join('\n'),
+  })).stdout).valid, true);
+});
+test('inspector matches the shared deterministic closure corpus', async () => {
+  const corpus = JSON.parse(await readFile(
+    path.join(sourceRoot, 'standards/runtime-skill-closure-cases.json'),
+    'utf8',
+  ));
+  for (const fixture of corpus.cases) {
+    const directory = await mkdtemp(path.join(tmpdir(), 'skill-closure-corpus-'));
+    temps.push(directory);
+    const skill = path.join(directory, 'demo-skill');
+    await mkdir(skill, { recursive: true });
+    await writeFile(path.join(skill, 'SKILL.md'), [
+      '---',
+      'name: demo-skill',
+      'description: fixture',
+      '---',
+      fixture.skill,
+    ].join('\n'));
+    for (const [relative, content] of Object.entries(fixture.files)) {
+      const target = path.join(skill, relative);
+      await mkdir(path.dirname(target), { recursive: true });
+      await writeFile(target, content);
+    }
+    const result = JSON.parse((await run(
+      'scripts/inspect-agent-skill.mjs',
+      [skill, '--format', 'json'],
+    ).catch((error) => ({ stdout: error.stdout }))).stdout);
+    const closureErrors = result.issues.filter(
+      (issue) => ['missing-runtime-resource', 'invalid-local-path'].includes(issue.code),
+    );
+    assert.equal(closureErrors.length === 0, fixture.expected.valid, fixture.id);
+    if (fixture.expected.target) {
+      assert.ok(
+        closureErrors.some((issue) => issue.path === fixture.expected.target),
+        fixture.id,
+      );
+    }
+  }
+});
+test('review bundle rejects a forged clean package inspection', async () => {
+  const value = JSON.parse(
+    await readFile(
+      path.join(root, 'skills/review-agent-skill/assets/review-result-template.json'),
+      'utf8',
+    ),
+  );
+  await assert.rejects(validate(value, {
+    skillContent: [
+      '---',
+      'name: fixture',
+      'description: fixture',
+      '---',
+      'Run `node scripts/missing.mjs`.',
+      '',
+    ].join('\n'),
+    mutateInspection: (inspection) => {
+      inspection.runtimeClosure.edges = [];
+      inspection.issues = [];
+    },
+  }), /Command failed/u);
+});
+test('source inspection does not let author-only files satisfy runtime closure', async () => {
+  const t = await mkdtemp(path.join(tmpdir(), 'skill-inspector-author-only-'));
+  temps.push(t);
+  const skill = path.join(t, 'fixture-skill');
+  await mkdir(path.join(skill, 'evals'), { recursive: true });
+  await writeFile(
+    path.join(skill, 'SKILL.md'),
+    '---\nname: fixture-skill\ndescription: fixture\n---\nRead [helper](evals/helper.md).\n',
+  );
+  await writeFile(path.join(skill, 'evals', 'helper.md'), 'Author-only fixture.\n');
+  const result = JSON.parse((await run(
+    'scripts/inspect-agent-skill.mjs',
+    [skill, '--format', 'json'],
+  ).catch((error) => ({ stdout: error.stdout }))).stdout);
+  assert.ok(result.issues.some((issue) =>
+    issue.code === 'missing-runtime-resource' && issue.path === 'evals/helper.md'));
+});
 test('inspector still detects invalid frontmatter, missing resources and large references', async () => {
   const t = await mkdtemp(path.join(tmpdir(), 'skill-inspector-'));
   temps.push(t);
@@ -1541,6 +1787,6 @@ test('inspector still detects invalid frontmatter, missing resources and large r
     ).stdout,
   );
   assert.ok(result.issues.some((i) => i.code === 'name-directory-mismatch'));
-  assert.ok(result.issues.some((i) => i.code === 'missing-resource'));
+  assert.ok(result.issues.some((i) => i.code === 'missing-runtime-resource'));
   assert.equal(result.references[0].requiresSemanticAudit, true);
 });

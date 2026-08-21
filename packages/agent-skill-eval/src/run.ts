@@ -55,7 +55,7 @@ function createObservedProcessHooks(): NonNullable<RunExecutionPlanOptions['proc
           }
         },
         {},
-        { observation },
+        { observation, allowInspectionUnavailable: true },
       )
       return { confirmed: true }
     },

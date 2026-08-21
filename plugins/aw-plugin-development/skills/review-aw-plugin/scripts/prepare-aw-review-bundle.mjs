@@ -92,7 +92,7 @@ function parseArgs(argv) {
     } else if (flag === '--eval-result') {
       if (options.evalResults.length > 0) {
         fail(
-          'ReviewInputBundle v4 accepts only one Eval execution bundle per target; provide --eval-result only once.',
+          'ReviewInputBundle v5 accepts only one Eval execution bundle per target; provide --eval-result only once.',
         );
       }
       options.evalResults.push(path.resolve(optionValue(args, index, flag)));
@@ -542,7 +542,7 @@ async function main() {
   process.stdout.write(
     `${JSON.stringify(
       {
-        schemaVersion: 4,
+        schemaVersion: 5,
         target: {
           kind: 'aw-plugin',
           name: manifest.name,

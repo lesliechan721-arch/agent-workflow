@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -22,6 +23,50 @@ async function run(script, args = [], cwd = repo) {
     encoding: 'utf8',
     maxBuffer: 20 * 1024 * 1024,
   });
+}
+async function createValidatedReviewEvidence(directory) {
+  const plugin = path.join(directory, 'plugins', 'target-plugin');
+  const skill = path.join(plugin, 'skills', 'target-skill');
+  await mkdir(path.join(plugin, '.agents-plugin'), { recursive: true });
+  await mkdir(skill, { recursive: true });
+  await writeFile(path.join(plugin, '.agents-plugin', 'plugin.json'), JSON.stringify({
+    name: 'target-plugin',
+    version: '1.0.0',
+    skills: './skills',
+  }));
+  await writeFile(
+    path.join(skill, 'SKILL.md'),
+    '---\nname: target-skill\ndescription: Review target.\n---\n',
+  );
+  const prepared = JSON.parse((await run(
+    path.join(runtimeRoot, 'skills/review-aw-plugin/scripts/prepare-aw-review-targets.mjs'),
+    [
+      plugin,
+      '--repo-root',
+      directory,
+      '--output-root',
+      path.join(directory, 'handoff'),
+    ],
+  )).stdout);
+  const target = prepared.reviewTargets[0];
+  const result = JSON.parse(await readFile(path.join(
+    sourceRoot,
+    '..',
+    'agent-skill-toolkit',
+    'skills',
+    'review-agent-skill',
+    'assets',
+    'review-result-template.json',
+  ), 'utf8'));
+  result.target = {
+    kind: target.kind,
+    name: target.targetName,
+    profile: target.profile,
+    digest: target.digest,
+  };
+  const resultPath = path.join(directory, 'review-result.json');
+  await writeFile(resultPath, JSON.stringify(result));
+  return { plugin, target, result, resultPath, bundlePath: target.bundlePath };
 }
 test('canonical contracts are materialized without committed Skill copies', async () => {
   const manifest = JSON.parse(
@@ -344,16 +389,281 @@ test('AW summary decision follows generic reviews and project gates', async () =
       'utf8',
     ),
   );
+  const plan = {
+    schemaVersion: 1,
+    producer: 'prepare-aw-review-target-plan',
+    plugin: v.target.plugin,
+    pluginSourceDigest: v.target.sourceDigest,
+    mode: 'quick',
+    releaseScope: { kind: 'all-supported', profiles: [] },
+    expectedTargets: [{
+      id: 'aw-plugin-skill:target-skill',
+      targetName: 'target-skill',
+      kind: 'aw-plugin-skill',
+      profile: null,
+      digest: v.genericReviews[0].digest,
+      status: 'present',
+    }],
+  };
+  const planContent = JSON.stringify(plan) + '\n';
+  const planPath = path.join(t, 'plan.json');
+  await writeFile(planPath, planContent);
+  v.targetPlanDigest = 'sha256:' + createHash('sha256').update(planContent).digest('hex');
   v.design = 'pass';
   const p = path.join(t, 'summary.json');
   await writeFile(p, JSON.stringify(v));
   await assert.rejects(
     run(
       path.join(runtimeRoot, 'skills/review-aw-plugin/scripts/validate-aw-review-summary.mjs'),
-      [p],
+      [p, '--plan', planPath],
     ),
     /Command failed/u,
   );
+});
+test('source-only summary cannot claim complete release profile coverage', async () => {
+  const t = await mkdtemp(path.join(tmpdir(), 'aw-summary-coverage-'));
+  temps.push(t);
+  const summary = JSON.parse(
+    await readFile(
+      path.join(runtimeRoot, 'skills/review-aw-plugin/assets/aw-review-summary.json'),
+      'utf8',
+    ),
+  );
+  summary.genericReviews[0].design = 'pass';
+  summary.genericReviews[0].releaseReadiness = 'ready';
+  for (const gate of Object.values(summary.projectGates)) {
+    gate.status = 'pass';
+    gate.reason = 'claimed pass';
+  }
+  summary.design = 'pass';
+  summary.releaseReadiness = 'ready';
+  const plan = {
+    schemaVersion: 1,
+    producer: 'prepare-aw-review-target-plan',
+    plugin: summary.target.plugin,
+    pluginSourceDigest: summary.target.sourceDigest,
+    mode: 'release-quality',
+    releaseScope: { kind: 'all-supported', profiles: ['codex-project'] },
+    expectedTargets: [
+      {
+        id: 'aw-plugin-skill:target-skill',
+        targetName: 'target-skill',
+        kind: 'aw-plugin-skill',
+        profile: null,
+        digest: summary.genericReviews[0].digest,
+        status: 'present',
+      },
+      {
+        id: 'materialized-skill:target-skill:codex-project',
+        targetName: 'target-skill',
+        kind: 'materialized-skill',
+        profile: 'codex-project',
+        digest: null,
+        status: 'missing',
+      },
+    ],
+  };
+  const planContent = JSON.stringify(plan) + '\n';
+  const planPath = path.join(t, 'plan.json');
+  await writeFile(planPath, planContent);
+  summary.targetPlanDigest = 'sha256:' + createHash('sha256').update(planContent).digest('hex');
+  const summaryPath = path.join(t, 'summary.json');
+  await writeFile(summaryPath, JSON.stringify(summary));
+  await assert.rejects(
+    run(
+      path.join(runtimeRoot, 'skills/review-aw-plugin/scripts/validate-aw-review-summary.mjs'),
+      [summaryPath, '--plan', planPath],
+    ),
+    /Command failed/u,
+  );
+});
+test('AW summary rejects self-reported profile reviews without validated evidence', async () => {
+  const t = await mkdtemp(path.join(tmpdir(), 'aw-summary-evidence-'));
+  temps.push(t);
+  const evidence = await createValidatedReviewEvidence(t);
+  const summary = JSON.parse(
+    await readFile(
+      path.join(runtimeRoot, 'skills/review-aw-plugin/assets/aw-review-summary.json'),
+      'utf8',
+    ),
+  );
+  summary.target.sourceDigest = 'sha256:' + '1'.repeat(64);
+  summary.genericReviews = [{
+    reviewEvidenceId: 'source-review',
+    targetName: evidence.target.targetName,
+    kind: evidence.target.kind,
+    profile: evidence.target.profile,
+    digest: evidence.target.digest,
+    design: evidence.result.design,
+    releaseReadiness: evidence.result.releaseReadiness,
+  }];
+  const plan = {
+    schemaVersion: 1,
+    producer: 'prepare-aw-review-target-plan',
+    plugin: summary.target.plugin,
+    pluginSourceDigest: summary.target.sourceDigest,
+    mode: 'quick',
+    releaseScope: { kind: 'source-only', profiles: [] },
+    expectedTargets: [{
+      id: 'aw-plugin-skill:target-skill',
+      targetName: evidence.target.targetName,
+      kind: evidence.target.kind,
+      profile: evidence.target.profile,
+      digest: evidence.target.digest,
+      status: 'present',
+    }],
+  };
+  const planPath = path.join(t, 'plan.json');
+  let planContent = JSON.stringify(plan) + '\n';
+  await writeFile(planPath, planContent);
+  summary.targetPlanDigest = 'sha256:' + createHash('sha256').update(planContent).digest('hex');
+  const summaryPath = path.join(t, 'summary.json');
+  await writeFile(summaryPath, JSON.stringify(summary));
+  const validator = path.join(
+    runtimeRoot,
+    'skills/review-aw-plugin/scripts/validate-aw-review-summary.mjs',
+  );
+  assert.equal(JSON.parse((await run(validator, [
+    summaryPath,
+    '--plan',
+    planPath,
+    '--plugin-root',
+    evidence.plugin,
+    '--evidence',
+    'source-review',
+    evidence.resultPath,
+    evidence.bundlePath,
+    '--format',
+    'json',
+  ])).stdout).valid, true);
+
+  plan.releaseScope.profiles = ['codex-project'];
+  plan.expectedTargets.push({
+    id: 'materialized-skill:target-skill:codex-project',
+    targetName: evidence.target.targetName,
+    kind: 'materialized-skill',
+    profile: 'codex-project',
+    digest: evidence.target.digest,
+    status: 'present',
+  });
+  summary.genericReviews.push({
+    reviewEvidenceId: 'self-reported-final',
+    targetName: evidence.target.targetName,
+    kind: 'materialized-skill',
+    profile: 'codex-project',
+    digest: evidence.target.digest,
+    design: evidence.result.design,
+    releaseReadiness: evidence.result.releaseReadiness,
+  });
+  planContent = JSON.stringify(plan) + '\n';
+  await writeFile(planPath, planContent);
+  summary.targetPlanDigest = 'sha256:' + createHash('sha256').update(planContent).digest('hex');
+  await writeFile(summaryPath, JSON.stringify(summary));
+  await assert.rejects(run(validator, [
+    summaryPath,
+    '--plan',
+    planPath,
+    '--plugin-root',
+    evidence.plugin,
+    '--evidence',
+    'source-review',
+    evidence.resultPath,
+    evidence.bundlePath,
+  ]), /Command failed/u);
+
+  plan.releaseScope = { kind: 'source-only', profiles: [] };
+  plan.expectedTargets = plan.expectedTargets.slice(0, 1);
+  summary.genericReviews = summary.genericReviews.slice(0, 1);
+  planContent = JSON.stringify(plan) + '\n';
+  await writeFile(planPath, planContent);
+  summary.targetPlanDigest = 'sha256:' + createHash('sha256').update(planContent).digest('hex');
+  await writeFile(summaryPath, JSON.stringify(summary));
+  const omittedSkill = path.join(evidence.plugin, 'skills', 'omitted-skill');
+  await mkdir(omittedSkill, { recursive: true });
+  await writeFile(
+    path.join(omittedSkill, 'SKILL.md'),
+    '---\nname: omitted-skill\ndescription: Omitted target.\n---\n',
+  );
+  await assert.rejects(run(validator, [
+    summaryPath,
+    '--plan',
+    planPath,
+    '--plugin-root',
+    evidence.plugin,
+    '--evidence',
+    'source-review',
+    evidence.resultPath,
+    evidence.bundlePath,
+  ]), /Command failed/u);
+});
+test('release target plan derives all product scopes and records explicit narrowing', async () => {
+  const t = await mkdtemp(path.join(tmpdir(), 'aw-review-plan-'));
+  temps.push(t);
+  const plugin = path.join(t, 'plugins/demo');
+  const sourceSkill = path.join(plugin, 'skills/check');
+  const finalRoot = path.join(t, 'materialized/codex-project');
+  const finalSkill = path.join(finalRoot, 'check');
+  await mkdir(path.join(plugin, '.agents-plugin'), { recursive: true });
+  await mkdir(sourceSkill, { recursive: true });
+  await mkdir(finalSkill, { recursive: true });
+  await writeFile(
+    path.join(plugin, '.agents-plugin/plugin.json'),
+    JSON.stringify({
+      name: 'demo',
+      skills: './skills',
+      marketplace: { policy: { products: ['CODEX', 'CLAUDE'] } },
+    }),
+  );
+  const skill = '---\nname: check\ndescription: Check the target.\n---\n';
+  await writeFile(path.join(sourceSkill, 'SKILL.md'), skill);
+  await writeFile(path.join(finalSkill, 'SKILL.md'), skill);
+  const bundlePath = path.join(t, 'bundle.json');
+  await writeFile(bundlePath, JSON.stringify({
+    target: {
+      kind: 'aw-plugin',
+      name: 'demo',
+      sourceDigest: 'sha256:' + '1'.repeat(64),
+    },
+  }));
+  const script = path.join(
+    runtimeRoot,
+    'skills/review-aw-plugin/scripts/prepare-aw-review-target-plan.mjs',
+  );
+  const fullPath = path.join(t, 'full-plan.json');
+  const full = JSON.parse((await run(script, [
+    plugin,
+    '--bundle',
+    bundlePath,
+    '--output',
+    fullPath,
+    '--final',
+    'codex-project=' + finalRoot,
+  ])).stdout);
+  assert.deepEqual(full.releaseScope.profiles, [
+    'codex-user',
+    'codex-project',
+    'claude-user',
+    'claude-project',
+  ]);
+  assert.equal(full.expectedTargets.length, 5);
+  assert.equal(full.expectedTargets.filter((target) => target.status === 'present').length, 2);
+
+  const narrowPath = path.join(t, 'narrow-plan.json');
+  const narrow = JSON.parse((await run(script, [
+    plugin,
+    '--bundle',
+    bundlePath,
+    '--output',
+    narrowPath,
+    '--profile',
+    'codex-project',
+    '--final',
+    'codex-project=' + finalRoot,
+  ])).stdout);
+  assert.equal(narrow.releaseScope.kind, 'explicit');
+  assert.deepEqual(narrow.releaseScope.profiles, ['codex-project']);
+  assert.equal(narrow.expectedTargets.length, 2);
+  assert.ok(narrow.expectedTargets.every((target) => target.status === 'present'));
 });
 test('final artifacts remain materials rather than completed review stages', async () => {
   const t = await mkdtemp(path.join(tmpdir(), 'aw-final-stage-'));
@@ -386,11 +696,11 @@ test('adapter release version and dependency contract are current', async () => 
     readFile(path.join(sourceRoot, '.agents-plugin/plugin.json'), 'utf8').then(JSON.parse),
     readFile(path.join(sourceRoot, 'DEPENDENCY.md'), 'utf8'),
   ]);
-  assert.equal(manifest.version, '0.8.4');
+  assert.equal(manifest.version, '0.9.0');
   assert.match(dependency, /agent-content-toolkit >= 0\.5\.0/u);
-  // Static contract exception: AW 0.8.4 consumers must reject toolkit 0.7.0 because it lacks the ReviewInputBundle currentness contract; behavior test is not suitable because DEPENDENCY.md is the published manual dependency resolver input.
+  // Static contract exception: AW 0.9.0 consumers must reject toolkit 0.7.0 because it lacks the ReviewInputBundle currentness contract; behavior test is not suitable because DEPENDENCY.md is the published manual dependency resolver input.
   const skillFloor = dependency.match(/agent-skill-toolkit >= (\d+\.\d+\.\d+)/u)?.[1];
-  assert.equal(skillFloor, '0.7.1');
+  assert.equal(skillFloor, '0.8.0');
   const parts = (version) => version.split('.').map(Number);
   const satisfies = (version) => {
     const candidate = parts(version), floor = parts(skillFloor);
@@ -398,6 +708,6 @@ test('adapter release version and dependency contract are current', async () => 
     return difference === -1 || candidate[difference] > floor[difference];
   };
   assert.equal(satisfies('0.7.0'), false);
-  assert.equal(satisfies('0.7.1'), true);
+  assert.equal(satisfies('0.8.0'), true);
   assert.match(dependency, /agent-skill-eval-runner >= 0\.3\.0/u);
 });

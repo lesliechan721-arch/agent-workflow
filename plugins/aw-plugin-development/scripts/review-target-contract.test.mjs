@@ -122,6 +122,42 @@ test('review metadata and target projection support an external workspace', asyn
       ['materialized-skill', 'one', 'codex'],
     ],
   );
+  const handoffRoot = path.join(t, 'handoff');
+  const materialized = JSON.parse(
+    (
+      await run('skills/review-aw-plugin/scripts/prepare-aw-review-targets.mjs', [
+        plugin,
+        '--repo-root',
+        ws,
+        '--final',
+        'codex=' + path.dirname(final),
+        '--output-root',
+        handoffRoot,
+      ])
+    ).stdout,
+  );
+  for (const target of materialized.reviewTargets) {
+    const targetBundle = JSON.parse(await readFile(target.bundlePath, 'utf8'));
+    const inspectionStages = targetBundle.orchestration.providedStages.filter(
+      (stage) => stage.id === 'package-inspection',
+    );
+    assert.equal(inspectionStages.length, 1);
+    assert.equal(inspectionStages[0].subjectDigest, target.digest);
+    assert.equal(
+      JSON.parse(
+        (
+          await run('skills/review-aw-plugin/scripts/validate-review-input-bundle.mjs', [
+            target.bundlePath,
+            '--handoff-root',
+            handoffRoot,
+            '--format',
+            'json',
+          ])
+        ).stdout,
+      ).valid,
+      true,
+    );
+  }
   const outsideFinal = path.join(t, 'outside-final', 'one');
   await mkdir(outsideFinal, { recursive: true });
   await writeFile(
@@ -1119,7 +1155,7 @@ test('handoff validator rejects missing or forged stage artifacts', async () => 
     raw = JSON.stringify(result);
   await writeFile(rp, raw);
   const bundle = {
-    schemaVersion: 4,
+    schemaVersion: 5,
     target: {
       kind: 'agent-skill',
       name: 'x',

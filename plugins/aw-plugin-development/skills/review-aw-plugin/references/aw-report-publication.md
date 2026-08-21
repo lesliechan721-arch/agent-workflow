@@ -10,10 +10,12 @@
 ```bash
 pnpm review:publish -- --plugin <name> --skill <owner-skill> \
   --batch-id <batch-id> --report <report.md> \
-  --review-result <review-result.json> --aw-summary <aw-review-summary.json>
+  --review-result <review-result.json> --review-bundle <target-bundle.json> \
+  --aw-summary <aw-review-summary.json> --target-plan <target-plan.json> \
+  --review-evidence <other-id> <other-result.json> <other-bundle.json>
 ```
 
-结构化模式保存通用 `ReviewResult` 与 AW summary。内部 `scorecard.json` 是兼容投影，不声明与旧 scorecard 合同完全等价。
+结构化模式先验证主 ReviewInputBundle、每个附加 review evidence 和 AWReviewTargetPlan，再保存通用 `ReviewResult`、AW summary 与 target plan。内部 `scorecard.json` 是兼容投影，不声明与旧 scorecard 合同完全等价。
 
 用户要求把报告登记到 Skill README 时，Reviewer 只输出 registration request：
 
