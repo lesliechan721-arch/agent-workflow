@@ -14,7 +14,7 @@
 
 Release maintenance 的 status、prepare、publish 和 recover 使用同一个 canonical SSH remote `git@github.com:lesliechan721-arch/agent-workflow.git`。该 remote 服务维护者认证，不来自 local `origin`。runtime 用户的内置 official source 继续使用固定 HTTPS URL `https://github.com/lesliechan721-arch/agent-workflow.git`。两种 URL 有不同职责，不能互相替代。
 
-先提交 target 和选定的 source 变更。该提交完成后再 prepare。下一个 commit 只包含 immutable plan 和 `release/current-plan.json`。双包部分发布只能重试同一个已提交 plan 和 candidate。如果 tag-first 已发布 immutable tag 和两个 CLI 包，但没有推进 channel，使用显式 `release:recover -- catalog <version>` 路径。
+先提交 target、CLI bump 同步产生的两个 public package version mirror 和选定的 source 变更。该提交完成后再 prepare。下一个 commit 只包含 immutable plan 和 `release/current-plan.json`。双包部分发布只能重试同一个已提交 plan 和 candidate。如果 tag-first 已发布 immutable tag 和两个 CLI 包，但没有推进 channel，使用显式 `release:recover -- catalog <version>` 路径。
 
 ## 回归矩阵
 

@@ -224,6 +224,7 @@ describe('Git catalog publisher', () => {
       catalogModules,
       readCurrentReleasePlan: async () => ({ plan }),
       assertPlanOnlyCommit: async () => undefined,
+      canonicalAssertCurrentReleaseIdentity: async () => undefined,
       assertReleaseWorktreeClean: async () => undefined,
       readRegistryReleaseHistory: async () => ({
         '@lesliechan721/agent-skill-eval': [],

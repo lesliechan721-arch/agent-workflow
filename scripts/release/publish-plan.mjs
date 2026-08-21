@@ -2,6 +2,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
+  assertCurrentReleaseIdentity,
   assertReleaseWorktreeClean,
   compareReleaseSemVer,
   createReleaseSnapshotIdentity,
@@ -128,8 +129,7 @@ function catalogReleaseIdentity(plan) {
   };
 }
 
-export async function assertPromotionCliTrain(plan, options = {}) {
-  const registry = await (options.readRegistryReleaseHistory ?? readRegistryReleaseHistory)(options);
+function assertPromotionCliTrainObservation(plan, registry) {
   const normalized = normalizeCliRegistryHistory(registry);
   const tag = plan.channel === 'beta' ? 'beta' : 'latest';
   const versions = CLI_PACKAGES.map((name) => normalized.distTags[name][tag]);
@@ -143,6 +143,11 @@ export async function assertPromotionCliTrain(plan, options = {}) {
     throw new Error(`Promotion CLI train ${versions[0]} is below Catalog minimum ${plan.catalog.minCliVersion}.`);
   }
   return versions[0];
+}
+
+export async function assertPromotionCliTrain(plan, options = {}) {
+  const registry = await (options.readRegistryReleaseHistory ?? readRegistryReleaseHistory)(options);
+  return assertPromotionCliTrainObservation(plan, registry);
 }
 
 function registryFromPlanHistory(plan) {
@@ -291,8 +296,16 @@ export async function publishCommittedRelease(argv = process.argv.slice(2), opti
   const remoteUrl = resolveCatalogMaintenanceRemote(options);
   const { plan } = await (options.readCurrentReleasePlan ?? readCurrentReleasePlan)({ repoRoot });
   const assertPlan = options.assertPlanOnlyCommit ?? assertPlanOnlyCommit;
+  let planCommitHead = null;
   const assertFresh = async () => {
-    await assertPlan(plan, { repoRoot, ...(options.planCommitOptions ?? {}) });
+    const binding = await assertPlan(plan, { repoRoot, ...(options.planCommitOptions ?? {}) });
+    if (binding?.head) {
+      if (planCommitHead !== null && binding.head !== planCommitHead) {
+        throw new Error('Plan-only release commit changed during publication.');
+      }
+      planCommitHead ??= binding.head;
+    }
+    return binding;
   };
   await assertFresh();
   const mode = publicationMode(plan);
@@ -356,6 +369,13 @@ export async function publishCommittedRelease(argv = process.argv.slice(2), opti
     return assertPlanCliRegistryFresh(plan, options);
   };
   const assertPublicationFresh = async (...args) => {
+    const [snapshot, identity] = args;
+    const liveIdentity = {
+      ...identity,
+      headCommit: planCommitHead ?? identity.headCommit,
+    };
+    await (options.canonicalAssertCurrentReleaseIdentity
+      ?? assertCurrentReleaseIdentity)(snapshot, liveIdentity, { repoRoot });
     await options.assertCurrentReleaseIdentity?.(...args);
     await assertWriteFresh();
   };
@@ -444,7 +464,8 @@ export async function publishCommittedRelease(argv = process.argv.slice(2), opti
       ?? (await import('./git-catalog-publisher.mjs')).readCatalogPublicationHistory;
     let initialCatalogBinding = null;
     const assertPromotionWriteFresh = async () => {
-      await assertWriteFresh();
+      const registry = await assertWriteFresh();
+      assertPromotionCliTrainObservation(plan, registry);
       const promotionHistory = assertCatalogHistoryAllowed(plan, await readHistory({
         mode,
         catalogVersion: plan.catalog.candidateVersion,

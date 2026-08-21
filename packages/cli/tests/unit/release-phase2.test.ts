@@ -27,6 +27,7 @@ import {
   projectBuildDigest,
   readRegistryReleaseHistory,
 } from '../../../../scripts/release/release-observe.mjs';
+import { releaseStatus } from '../../../../scripts/release/release-status.mjs';
 import {
   OFFICIAL_CATALOG_PUBLISH_REMOTE,
   resolveCatalogMaintenanceRemote,
@@ -40,10 +41,18 @@ async function temporaryRepo(): Promise<string> {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-release-phase2-'));
   roots.push(root);
   await fs.mkdir(path.join(root, 'release'), { recursive: true });
+  await fs.mkdir(path.join(root, 'packages', 'cli'), { recursive: true });
+  await fs.mkdir(path.join(root, 'packages', 'agent-skill-eval'), { recursive: true });
   await fs.writeFile(path.join(root, 'release', 'version-targets.json'), `${JSON.stringify({
     schemaVersion: 1,
     cli: '1.2.3',
     catalog: '2.3.4',
+  }, null, 2)}\n`);
+  await fs.writeFile(path.join(root, 'packages', 'cli', 'package.json'), `${JSON.stringify({
+    name: '@lesliechan721/aw', version: '1.2.3', type: 'module',
+  }, null, 2)}\n`);
+  await fs.writeFile(path.join(root, 'packages', 'agent-skill-eval', 'package.json'), `${JSON.stringify({
+    name: '@lesliechan721/agent-skill-eval', version: '1.2.3', type: 'module',
   }, null, 2)}\n`);
   return root;
 }
@@ -80,6 +89,12 @@ describe('release targets', () => {
     await expect(readVersionTargets(root)).resolves.toEqual({
       schemaVersion: 1, cli: '1.3.0', catalog: '2.3.5',
     });
+    for (const packagePath of [
+      path.join(root, 'packages', 'cli', 'package.json'),
+      path.join(root, 'packages', 'agent-skill-eval', 'package.json'),
+    ]) {
+      expect(JSON.parse(await fs.readFile(packagePath, 'utf8')).version).toBe('1.3.0');
+    }
     expect(JSON.parse(await fs.readFile(path.join(manifestRoot, 'plugin.json'), 'utf8')))
       .toMatchObject({ name: 'ask-me', version: '5.0.0', description: 'fixture' });
     expect((await fs.stat(path.join(manifestRoot, 'plugin.json'))).mode & 0o777).toBe(0o640);
@@ -102,6 +117,10 @@ describe('release targets', () => {
     await fs.writeFile(manifestPath, `${JSON.stringify({ name: 'ask-me', version: '1.0.0' }, null, 2)}\n`);
     const originalTargets = await fs.readFile(path.join(root, 'release', 'version-targets.json'), 'utf8');
     const originalManifest = await fs.readFile(manifestPath, 'utf8');
+    const cliPackagePath = path.join(root, 'packages', 'cli', 'package.json');
+    const evalPackagePath = path.join(root, 'packages', 'agent-skill-eval', 'package.json');
+    const originalCliPackage = await fs.readFile(cliPackagePath, 'utf8');
+    const originalEvalPackage = await fs.readFile(evalPackagePath, 'utf8');
     const fileSystem = {
       writeFile: fs.writeFile.bind(fs),
       rm: fs.rm.bind(fs),
@@ -118,6 +137,36 @@ describe('release targets', () => {
     await expect(fs.readFile(path.join(root, 'release', 'version-targets.json'), 'utf8'))
       .resolves.toBe(originalTargets);
     await expect(fs.readFile(manifestPath, 'utf8')).resolves.toBe(originalManifest);
+    await expect(fs.readFile(cliPackagePath, 'utf8')).resolves.toBe(originalCliPackage);
+    await expect(fs.readFile(evalPackagePath, 'utf8')).resolves.toBe(originalEvalPackage);
+  });
+
+  it.each([
+    ['patch', '1.2.4'],
+    ['minor', '1.3.0'],
+    ['major', '2.0.0'],
+  ] as const)('updates both public packages for a CLI %s bump', async (bump, expected) => {
+    const root = await temporaryRepo();
+    await updateReleaseTargets(['--cli', bump], { repoRoot: root });
+    const target = await readVersionTargets(root);
+    const versions = await Promise.all([
+      fs.readFile(path.join(root, 'packages', 'cli', 'package.json'), 'utf8').then(JSON.parse),
+      fs.readFile(path.join(root, 'packages', 'agent-skill-eval', 'package.json'), 'utf8').then(JSON.parse),
+    ]);
+    expect(target.cli).toBe(expected);
+    expect(versions.map((entry) => entry.version)).toEqual([expected, expected]);
+  });
+
+  it('rejects a CLI bump before writing when either public package is out of lockstep', async () => {
+    const root = await temporaryRepo();
+    const cliPackagePath = path.join(root, 'packages', 'cli', 'package.json');
+    const originalTarget = await fs.readFile(path.join(root, 'release', 'version-targets.json'), 'utf8');
+    const cliPackage = JSON.parse(await fs.readFile(cliPackagePath, 'utf8'));
+    await fs.writeFile(cliPackagePath, `${JSON.stringify({ ...cliPackage, version: '1.2.4' }, null, 2)}\n`);
+    await expect(updateReleaseTargets(['--cli', 'patch'], { repoRoot: root }))
+      .rejects.toThrow('must match packages/cli/package.json');
+    await expect(fs.readFile(path.join(root, 'release', 'version-targets.json'), 'utf8'))
+      .resolves.toBe(originalTarget);
   });
 });
 
@@ -353,6 +402,78 @@ describe('release status and plans', () => {
         details: { minCliVersion: '0.1.0-beta.2', publishedTag: '0.1.0-beta.1' },
       },
     });
+  });
+
+  it('defers Catalog and Plugin only in the channel that does not own a pending tag', async () => {
+    const betaPending = fixture();
+    betaPending.content.catalog.minCliVersion = '0.1.0-beta.1';
+    const betaMetadata = (packageContentDigest: string) => ({
+      schemaVersion: 1,
+      targetVersion: '0.1.0',
+      candidateVersion: '0.1.0-beta.1',
+      planId: digest('9'),
+      sourceHead: 'a'.repeat(40),
+      packageContentDigest,
+      trainContentDigest: betaPending.content.cli.trainContentDigest,
+    });
+    for (const [name, packageDigest] of [
+      ['@lesliechan721/agent-skill-eval', digest('3')],
+      ['@lesliechan721/aw', digest('4')],
+    ] as const) {
+      betaPending.history.registry[name] = [{
+        version: '0.1.0-beta.1', awRelease: betaMetadata(packageDigest),
+      }];
+      betaPending.history.registry.distTags[name].beta = '0.1.0-beta.1';
+    }
+    betaPending.history.catalog.pending = 'c'.repeat(40);
+    betaPending.history.catalog.tag = {
+      commit: 'c'.repeat(40),
+      manifest: { catalogVersion: '0.1.0-beta.1', channel: 'beta' },
+      catalogContentDigest: digest('5'),
+      ledger: { schemaVersion: 2, records: [] },
+    };
+    expect(calculateReleaseStatus(betaPending).catalog).toMatchObject({
+      action: 'recover', publicationMode: 'promotion',
+    });
+    const { channel: ignoredChannel, ...betaObserved } = betaPending;
+    const stableView = calculateReleaseStatus({ channel: 'stable', ...betaObserved });
+    expect(stableView.cli.action).not.toBe('deferred');
+    expect(stableView.catalog).toMatchObject({
+      action: 'deferred', candidateVersion: null, publicationMode: 'none',
+      reason: { code: 'catalog-publication-pending', details: { channel: 'beta' } },
+    });
+    expect(stableView.plugins[0]).toMatchObject({
+      action: 'deferred', reason: { code: 'catalog-publication-pending' },
+    });
+
+    const stablePending = structuredClone(betaPending);
+    stablePending.history.registry.distTags['@lesliechan721/agent-skill-eval'] = {
+      latest: '0.1.0', beta: null,
+    };
+    stablePending.history.registry.distTags['@lesliechan721/aw'] = {
+      latest: '0.1.0', beta: null,
+    };
+    for (const name of [
+      '@lesliechan721/agent-skill-eval', '@lesliechan721/aw',
+    ] as const) {
+      stablePending.history.registry[name][0].version = '0.1.0';
+      stablePending.history.registry[name][0].awRelease.candidateVersion = '0.1.0';
+    }
+    stablePending.history.catalog.tag.manifest = {
+      catalogVersion: '0.1.0', channel: 'latest',
+    };
+    const { channel: ignoredStableChannel, ...stableObserved } = stablePending;
+    expect(calculateReleaseStatus({ channel: 'stable', ...stableObserved }).catalog)
+      .toMatchObject({ action: 'recover', publicationMode: 'promotion' });
+    expect(calculateReleaseStatus({ channel: 'beta', ...stableObserved }).catalog)
+      .toMatchObject({
+        action: 'deferred', reason: { code: 'catalog-publication-pending' },
+      });
+
+    await expect(releaseStatus([], { observe: async () => betaObserved, writeOutput: false }))
+      .resolves.toMatchObject({ channels: { stable: { catalog: { action: 'deferred' } } } });
+    await expect(releaseStatus(['--json'], { observe: async () => betaObserved, writeOutput: false }))
+      .resolves.toMatchObject({ channels: { beta: { catalog: { action: 'recover' } } } });
   });
 
   it('keeps CLI publishable when the catalog axis needs a target bump', () => {

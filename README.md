@@ -235,7 +235,7 @@ pnpm release:install:local -- <cli.tgz> <eval.tgz>
 aw plugin status --all --base HEAD
 pnpm release:status
 pnpm release:target -- --cli patch --catalog patch --plugin <plugin-name>=patch
-git add release/version-targets.json <selected-source-paths>
+git add release/version-targets.json packages/cli/package.json packages/agent-skill-eval/package.json <selected-source-paths>
 git commit -m "chore(release): set release targets"
 pnpm release:prepare -- beta
 # 或：pnpm release:prepare -- stable
@@ -244,7 +244,7 @@ git commit -m "chore(release): prepare immutable plan"
 pnpm release:publish
 ```
 
-第一个提交保存 `release:target` 产生的 target 文件，以及本次选择的 Plugin manifest 或 package mirror 源码变更。然后才能运行 `release:prepare`。`<plan-path>` 使用 prepare 输出的 plan 文件路径。第二个提交必须只包含 immutable plan 和 current pointer。两次提交不能合并。`release:publish` 不接受版本参数，只消费已提交 plan。不要回写源码 package 版本来创建候选身份。
+第一个提交保存 `release:target` 产生的 target 文件、CLI bump 时同步产生的两个 public package version mirror，以及本次选择的 Plugin manifest 源码变更。然后才能运行 `release:prepare`。`<plan-path>` 使用 prepare 输出的 plan 文件路径。第二个提交必须只包含 immutable plan 和 current pointer。两次提交不能合并。`release:publish` 不接受版本参数，只消费已提交 plan；publisher 不回写源码 package version。
 
 只有历史 tag-first 事务已发布两个兼容 CLI 包，但 channel 尚未推进时，才运行显式恢复：
 

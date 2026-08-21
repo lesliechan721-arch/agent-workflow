@@ -1,4 +1,10 @@
-import { describe, expect, it, vi } from 'vitest';
+import { execFile } from 'node:child_process';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { promisify } from 'node:util';
+
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   assertCliRegistryHistoryMatchesPlan,
@@ -8,7 +14,66 @@ import {
 } from '../../../../scripts/release/publish-plan.mjs';
 import { OFFICIAL_CATALOG_PUBLISH_REMOTE } from '../../../../scripts/release/git-catalog-publisher.mjs';
 import { materializeCatalogPlanArtifact } from '../../../../scripts/release/release-prepare.mjs';
+import { prepareRelease } from '../../../../scripts/release/release-prepare.mjs';
+import { observeReleaseHistory } from '../../../../scripts/release/release-observe.mjs';
 import { calculateCliTrainContentDigest } from '../../../../scripts/release/release-model.mjs';
+import {
+  computeBuildInputDigest,
+  computeCliPackageDigest,
+} from '../../../../scripts/build/build-cache.mjs';
+
+const temporaryRoots: string[] = [];
+const execFileAsync = promisify(execFile);
+
+async function createIdentityDriftFixture() {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plan-live-identity-'));
+  temporaryRoots.push(root);
+  await Promise.all([
+    fs.mkdir(path.join(root, 'release'), { recursive: true }),
+    fs.mkdir(path.join(root, 'scripts', 'release'), { recursive: true }),
+    fs.mkdir(path.join(root, 'packages', 'agent-skill-eval'), { recursive: true }),
+    fs.mkdir(path.join(root, 'packages', 'cli'), { recursive: true }),
+  ]);
+  const cliPath = path.join(root, 'packages', 'cli', 'package.json');
+  const cleanCli = `${JSON.stringify({ name: '@lesliechan721/aw', version: '1.0.0' }, null, 2)}\n`;
+  await Promise.all([
+    fs.writeFile(path.join(root, 'package.json'), '{"name":"fixture","private":true}\n'),
+    fs.writeFile(path.join(root, 'release', 'version-targets.json'),
+      '{"schemaVersion":1,"cli":"1.0.0","catalog":"2.0.0"}\n'),
+    fs.writeFile(path.join(root, 'scripts', 'release', 'fixture.mjs'), 'export const fixture = true;\n'),
+    fs.writeFile(path.join(root, 'packages', 'agent-skill-eval', 'package.json'),
+      '{"name":"@lesliechan721/agent-skill-eval","version":"1.0.0"}\n'),
+    fs.writeFile(cliPath, cleanCli),
+  ]);
+  await execFileAsync('git', ['init', '--quiet'], { cwd: root });
+  await execFileAsync('git', ['add', '--all'], { cwd: root });
+  await execFileAsync('git', [
+    '-c', 'user.name=Release Test', '-c', 'user.email=release@example.invalid',
+    'commit', '--quiet', '-m', 'fixture',
+  ], { cwd: root });
+  await fs.writeFile(cliPath, `${JSON.stringify({
+    name: '@lesliechan721/aw', version: '1.0.0', scripts: { drift: 'node drift.mjs' },
+  }, null, 2)}\n`);
+  const [inputDigest, cliPackageDigest] = await Promise.all([
+    computeBuildInputDigest(root),
+    computeCliPackageDigest(root),
+  ]);
+  await fs.writeFile(cliPath, cleanCli);
+  const { stdout } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: root });
+  const identity = {
+    generationId: 'generation',
+    outputDigest: 'output',
+    inputDigest,
+    cliPackageDigest,
+    headCommit: stdout.trim(),
+  };
+  return { root, identity, snapshot: { ...identity } };
+}
+
+afterEach(async () => {
+  await Promise.all(temporaryRoots.splice(0).map((root) =>
+    fs.rm(root, { recursive: true, force: true })));
+});
 
 const EVAL_DIGEST = `sha256:${'1'.repeat(64)}`;
 const AW_DIGEST = `sha256:${'2'.repeat(64)}`;
@@ -157,6 +222,107 @@ describe('committed release plan publisher', () => {
     }));
   });
 
+  it('carries the projected cross-channel ledger through observe, status, and prepare', async () => {
+    const stableRecord = {
+      plugin: 'stable-plugin',
+      version: '1.0.0',
+      contentDigest: `sha256:${'7'.repeat(64)}`,
+      artifactDigest: `sha256:${'8'.repeat(64)}`,
+      manifestDigest: `sha256:${'9'.repeat(64)}`,
+      channel: 'latest',
+      catalogVersion: '1.0.0',
+    };
+    const registry = registryWithCandidate([
+      '@lesliechan721/agent-skill-eval', '@lesliechan721/aw',
+    ], {
+      '@lesliechan721/agent-skill-eval': { latest: null, beta: '1.0.0-beta.1' },
+      '@lesliechan721/aw': { latest: null, beta: '1.0.0-beta.1' },
+    });
+    const history = await observeReleaseHistory({
+      targets: { schemaVersion: 1, cli: '1.0.0', catalog: '2.0.0' },
+      channel: 'beta',
+      cliDistRoot: '/fixture/cli-dist',
+      readRegistryHistory: async () => registry,
+      readCatalogHistory: async () => ({
+        channels: {
+          latest: {
+            commit: '1'.repeat(40),
+            manifest: { catalogVersion: '1.0.0', channel: 'latest' },
+            snapshotDigest: `sha256:${'3'.repeat(64)}`,
+            catalogContentDigest: `sha256:${'4'.repeat(64)}`,
+            ledger: { schemaVersion: 2, records: [stableRecord] },
+          },
+          beta: null,
+        },
+        tag: null,
+        pending: null,
+        mergedLedger: { schemaVersion: 2, records: [stableRecord] },
+      }),
+    });
+    const observed = {
+      targets: { schemaVersion: 1, cli: '1.0.0', catalog: '2.0.0' },
+      content: {
+        source: {
+          head: 'b'.repeat(40),
+          releaseInputDigest: `sha256:${'a'.repeat(64)}`,
+          buildOutputDigest: `sha256:${'b'.repeat(64)}`,
+          cliPackageDigest: `sha256:${'c'.repeat(64)}`,
+        },
+        cli: {
+          trainContentDigest: TRAIN_DIGEST,
+          packages: [
+            {
+              name: '@lesliechan721/agent-skill-eval', contentDigest: EVAL_DIGEST,
+              tarballDigest: `sha256:${'5'.repeat(64)}`,
+            },
+            {
+              name: '@lesliechan721/aw', contentDigest: AW_DIGEST,
+              tarballDigest: `sha256:${'6'.repeat(64)}`,
+            },
+          ],
+        },
+        catalog: {
+          minCliVersion: '1.0.0-beta.1',
+          contentDigest: `sha256:${'d'.repeat(64)}`,
+          plugins: [
+            { name: 'stable-plugin', targetVersion: '1.0.0', contentDigest: stableRecord.contentDigest },
+            { name: 'beta-plugin', targetVersion: '2.0.0', contentDigest: `sha256:${'e'.repeat(64)}` },
+          ],
+        },
+      },
+      releaseIdentity: {
+        generationId: 'generation', outputDigest: 'output', inputDigest: 'input',
+        cliPackageDigest: 'package', headCommit: 'b'.repeat(40),
+      },
+      history,
+    };
+    const stageCatalogRelease = vi.fn(async (_args, options) => {
+      expect(options.previousReleaseLedger.records).toContainEqual(stableRecord);
+      expect(options.pluginCandidates).toEqual(expect.arrayContaining([
+        expect.objectContaining({ name: 'stable-plugin', action: 'skip' }),
+        expect.objectContaining({ name: 'beta-plugin', action: 'publish' }),
+      ]));
+      return { snapshotDigest: `sha256:${'f'.repeat(64)}` };
+    });
+    const result = await prepareRelease(['beta'], {
+      assertClean: async () => undefined,
+      assertFresh: async () => undefined,
+      assertTargetsMatchHead: async () => undefined,
+      readTargets: async () => observed.targets,
+      observe: async () => observed,
+      observeRemoteHistory: async () => history,
+      materializeCliPlanArtifacts: async (status) => status.cli.packages,
+      withPrivateCatalogStageRoot: async (callback) => callback('/tmp/projected-ledger'),
+      stageCatalogRelease,
+      writePlan: async (releasePlan) => ({ created: true, plan: releasePlan }),
+    });
+    expect(result.plan?.plugins).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'stable-plugin', action: 'skip' }),
+      expect.objectContaining({ name: 'beta-plugin', action: 'publish' }),
+    ]));
+    expect(stageCatalogRelease).toHaveBeenCalledOnce();
+  });
+
   it('rejects every version argument', () => {
     expect(() => parsePublishPlanArgs(['--catalog-version', '1.0.0'])).toThrow('does not accept');
   });
@@ -244,6 +410,35 @@ describe('committed release plan publisher', () => {
       expect(callerBoundary).toHaveBeenCalledOnce();
     },
   );
+
+  it('always runs the production canonical live identity gate before a publisher write', async () => {
+    const fixture = await createIdentityDriftFixture();
+    const releasePlan = plan('atomic-combined');
+    releasePlan.source.head = fixture.identity.headCommit;
+    const callerIdentityHook = vi.fn(async () => undefined);
+    const remoteWrite = vi.fn();
+    const publishCombinedRelease = vi.fn(async (_args, options) => {
+      await options.assertCurrentReleaseIdentity(fixture.snapshot, fixture.identity, {});
+      remoteWrite();
+      return { path: 'catalog-first' };
+    });
+    await expect(publishCommittedRelease([], {
+      ...freshRegistryOptions,
+      repoRoot: fixture.root,
+      readCurrentReleasePlan: async () => ({ plan: releasePlan }),
+      assertPlanOnlyCommit: async () => undefined,
+      runCommand: async () => undefined,
+      assertCurrentReleaseIdentity: callerIdentityHook,
+      publishCombinedRelease,
+      _boundCatalog: {
+        internalOutputRoot: '/tmp/catalog',
+        snapshot: fixture.snapshot,
+        staged: { snapshotDigest: `sha256:${'e'.repeat(64)}` },
+      },
+    })).rejects.toThrow('live inputDigest');
+    expect(callerIdentityHook).not.toHaveBeenCalled();
+    expect(remoteWrite).not.toHaveBeenCalled();
+  });
 
   it('accepts a verified no-write plan without invoking a publisher', async () => {
     const assertPlanOnlyCommit = vi.fn();

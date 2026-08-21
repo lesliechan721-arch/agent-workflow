@@ -32,6 +32,25 @@ import {
   withPreparedCliPublication,
 } from './publish-cli.mjs';
 import { stageCatalogRelease } from './stage-catalog.mjs';
+import { readRegistryReleaseHistory } from './release-observe.mjs';
+import { CLI_PACKAGES, normalizeCliRegistryHistory } from './release-state.mjs';
+
+export async function assertCompleteCliTrainTag(mode, candidateVersion, options = {}) {
+  const registry = await (options.readRegistryReleaseHistory
+    ?? readRegistryReleaseHistory)(options);
+  const normalized = normalizeCliRegistryHistory(registry);
+  const tag = mode === 'beta' ? 'beta' : 'latest';
+  const versions = CLI_PACKAGES.map((packageName) => normalized.distTags[packageName][tag]);
+  if (versions.some((version) => version === null) || versions[0] !== versions[1]) {
+    throw new Error(`Catalog promotion requires matching published ${tag} dist-tags for both CLI packages.`);
+  }
+  if (versions[0] !== candidateVersion) {
+    throw new Error(
+      `Catalog promotion requires both ${tag} dist-tags to resolve to CLI candidate ${candidateVersion}.`,
+    );
+  }
+  return registry;
+}
 
 export function parseArgs(argv) {
   const args = [...argv];
@@ -275,13 +294,23 @@ export async function publishRelease(argv = process.argv.slice(2), options = {})
               }
               try {
                 await assertFresh();
+                const assertPromotionTrain = () => assertCompleteCliTrainTag(
+                  mode,
+                  currentCliVersion,
+                  options,
+                );
+                await assertPromotionTrain();
                 const promotion = await (options.promoteCatalogTag ?? promoteCatalogTag)({
                   mode,
                   catalogVersion,
                   currentCliVersion,
                   remoteUrl,
                   publicationLease,
-                  beforeRemoteWrite,
+                  beforeAcquire: assertPromotionTrain,
+                  beforeRemoteWrite: async () => {
+                    await assertPromotionTrain();
+                    await beforeRemoteWrite();
+                  },
                   ...(options.catalogModules ? { catalogModules: options.catalogModules } : {}),
                 });
                 return { path: 'tag-first', catalog, cli, promotion, releaseIdentity };

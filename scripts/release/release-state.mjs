@@ -219,6 +219,20 @@ function observedCliHistory(registry) {
     .map((candidateVersion) => ({ candidateVersion, contentDigest: null }));
 }
 
+function pendingCatalogChannel(tag) {
+  const manifestChannel = tag?.manifest?.channel;
+  if (manifestChannel === 'beta') return 'beta';
+  if (manifestChannel === 'latest' || manifestChannel === 'stable') return 'stable';
+  const version = tag?.manifest?.catalogVersion ?? tag?.catalogVersion;
+  if (typeof version !== 'string') return null;
+  try {
+    normalizeCandidateVersion(version, 'pending Catalog version');
+  } catch {
+    return null;
+  }
+  return version.includes('-') ? 'beta' : 'stable';
+}
+
 export function calculateReleaseStatus({ channel, targets, content, history }) {
   if (channel !== 'beta' && channel !== 'stable') {
     throw new Error('Release channel must be beta or stable.');
@@ -292,12 +306,36 @@ export function calculateReleaseStatus({ channel, targets, content, history }) {
   const recoveryTag = history.catalog?.tag ?? null;
   const channelObservation = history.catalog?.[channel === 'stable' ? 'latest' : 'beta'];
   const pendingCommit = history.catalog?.pending ?? null;
-  const resumeTagFirst = pendingCommit !== null
+  const pendingTagFirst = pendingCommit !== null
     && recoveryTag !== null
-    && pendingCommit === recoveryTag.commit
-    && channelObservation?.commit !== recoveryTag.commit;
-  if (pendingCommit !== null && !resumeTagFirst) {
+    && pendingCommit === recoveryTag.commit;
+  if (pendingCommit !== null && !pendingTagFirst) {
     throw new Error('partial-candidate: catalog publication guard does not identify a pending tag-first release.');
+  }
+  const pendingChannel = pendingTagFirst ? pendingCatalogChannel(recoveryTag) : null;
+  if (pendingTagFirst && pendingChannel === null) {
+    throw new Error('partial-candidate: pending catalog tag does not identify a strict release channel.');
+  }
+  const resumeTagFirst = pendingTagFirst
+    && pendingChannel === channel
+    && channelObservation?.commit !== recoveryTag.commit;
+  const otherChannelPending = pendingTagFirst && pendingChannel !== channel;
+  if (pendingTagFirst && pendingChannel === channel && channelObservation?.commit === recoveryTag.commit) {
+    throw new Error('partial-candidate: catalog publication guard remains after channel promotion.');
+  }
+  if (otherChannelPending) {
+    catalog = {
+      ...catalog,
+      candidateVersion: null,
+      action: 'deferred',
+      reason: reason('catalog-publication-pending', { channel: pendingChannel }),
+      publicationMode: 'none',
+    };
+    for (const plugin of plugins) {
+      plugin.action = 'deferred';
+      plugin.candidateVersion = null;
+      plugin.reason = reason('catalog-publication-pending', { channel: pendingChannel });
+    }
   }
   if (resumeTagFirst) {
     const recoveryVersion = recoveryTag.manifest?.catalogVersion ?? recoveryTag.catalogVersion;

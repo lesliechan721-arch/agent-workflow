@@ -202,7 +202,10 @@ export async function observeReleaseHistory({ targets, channel, cliDistRoot, ...
 function projectCatalogHistory(history) {
   const channel = (entry) => entry ? {
     commit: entry.commit,
-    manifest: { catalogVersion: entry.manifest.catalogVersion },
+    manifest: {
+      catalogVersion: entry.manifest.catalogVersion,
+      channel: entry.manifest.channel,
+    },
     snapshotDigest: entry.snapshotDigest,
     catalogContentDigest: entry.catalogContentDigest,
     ledger: entry.ledger,

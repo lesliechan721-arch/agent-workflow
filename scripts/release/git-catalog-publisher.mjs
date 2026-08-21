@@ -640,7 +640,7 @@ export async function readCatalogPublicationHistory(options) {
 }
 
 export function resolveCatalogStageLedger(history) {
-  return history.tag?.ledger ?? history.mergedLedger;
+  return history.tag?.ledger ?? history.ledger ?? history.mergedLedger;
 }
 
 function assertUnchangedRemote(expected, actual) {

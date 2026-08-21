@@ -148,6 +148,27 @@ async function readPluginManifest(repoRoot, name) {
   return { manifestPath, manifest, mode: (await fs.stat(manifestPath)).mode & 0o777 };
 }
 
+async function readCliPackage(repoRoot, relativePath, expectedName) {
+  const packagePath = await assertRegularPathChain(repoRoot, relativePath);
+  const contents = await fs.readFile(packagePath, 'utf8');
+  let manifest;
+  try {
+    manifest = assertObject(JSON.parse(contents), `${expectedName} package manifest`);
+  } catch (error) {
+    throw new Error(`Invalid ${relativePath}.`, { cause: error });
+  }
+  if (manifest.name !== expectedName) {
+    throw new Error(`${relativePath} must declare package name ${expectedName}.`);
+  }
+  const version = normalizeStableTargetVersion(manifest.version, `${relativePath} version`);
+  return {
+    packagePath,
+    manifest,
+    version,
+    mode: (await fs.stat(packagePath)).mode & 0o777,
+  };
+}
+
 async function writeAtomically(changes, fileSystem = fs) {
   const staged = [];
   const replaced = [];
@@ -189,6 +210,20 @@ export async function updateReleaseTargets(argv, options = {}) {
   const repoRoot = options.repoRoot ?? defaultRepoRoot;
   const requested = parseTargetArgs(argv);
   const current = await readVersionTargets(repoRoot);
+  const cliPackages = requested.cli ? await Promise.all([
+    readCliPackage(repoRoot, 'packages/cli/package.json', '@lesliechan721/aw'),
+    readCliPackage(
+      repoRoot,
+      'packages/agent-skill-eval/package.json',
+      '@lesliechan721/agent-skill-eval',
+    ),
+  ]) : [];
+  if (requested.cli && cliPackages.some((entry) => entry.version !== current.cli)) {
+    throw new Error(
+      `CLI release target ${current.cli} must match packages/cli/package.json and ` +
+      'packages/agent-skill-eval/package.json before release:target can update it.',
+    );
+  }
   const next = {
     ...current,
     cli: requested.cli ? bumpStableVersion(current.cli, requested.cli) : current.cli,
@@ -213,6 +248,15 @@ export async function updateReleaseTargets(argv, options = {}) {
       contents: serializeVersionTargets(next),
       mode: (await fs.stat(targetsPath)).mode & 0o777,
     });
+  }
+  if (requested.cli) {
+    for (const entry of cliPackages) {
+      changes.push({
+        path: entry.packagePath,
+        contents: `${JSON.stringify({ ...entry.manifest, version: next.cli }, null, 2)}\n`,
+        mode: entry.mode,
+      });
+    }
   }
   changes.push(...pluginChanges);
   await (options.writeAtomically ?? writeAtomically)(changes, options.fileSystem);

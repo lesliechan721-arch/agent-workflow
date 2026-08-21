@@ -41,6 +41,10 @@ import { bundlePlugins } from '../../scripts/bundle-plugins.js';
 import * as pluginStaging from '../../scripts/plugin-staging.js';
 import * as catalogSnapshot from '../../src/utils/catalog-snapshot.js';
 import { calculateCatalogEntryContentDigest } from '../../src/utils/catalog-digests.js';
+import {
+  computeBuildInputDigest,
+  computeCliPackageDigest,
+} from '../../../../scripts/build/build-cache.mjs';
 
 const execute = promisify(execFile);
 const roots: string[] = [];
@@ -437,13 +441,6 @@ describe('release phase 2 process boundaries', () => {
     });
     const skillPath = path.join(repository.root, 'plugins', 'git-commit', 'skills', 'commit', 'SKILL.md');
     await fs.appendFile(skillPath, '\nRelease fixture production change.\n');
-    for (const packagePath of [
-      path.join(repository.root, 'packages', 'cli', 'package.json'),
-      path.join(repository.root, 'packages', 'agent-skill-eval', 'package.json'),
-    ]) {
-      const packageJson = JSON.parse(await fs.readFile(packagePath, 'utf8'));
-      await fs.writeFile(packagePath, `${JSON.stringify({ ...packageJson, version: '1.0.1' }, null, 2)}\n`);
-    }
     await git(repository.root, [
       'add',
       'release/version-targets.json',
@@ -453,6 +450,10 @@ describe('release phase 2 process boundaries', () => {
     ]);
     await git(repository.root, ['commit', '--quiet', '-m', 'release target and source']);
     const sourceHead = await git(repository.root, ['rev-parse', 'HEAD']);
+    const [liveInputDigest, liveCliPackageDigest] = await Promise.all([
+      computeBuildInputDigest(repository.root),
+      computeCliPackageDigest(repository.root),
+    ]);
     expect(await git(repository.root, ['diff-tree', '--no-commit-id', '--name-only', '-r', sourceHead]))
       .toContain('plugins/git-commit/skills/commit/SKILL.md');
 
@@ -488,11 +489,13 @@ describe('release phase 2 process boundaries', () => {
       contentDigest: catalogContentDigest,
       plugins: [{ name: 'git-commit', targetVersion: '0.1.0', contentDigest: pluginContentDigest }],
     });
+    observation.content.source.releaseInputDigest = `sha256:${liveInputDigest}`;
+    observation.content.source.cliPackageDigest = `sha256:${liveCliPackageDigest}`;
     const snapshot = {
       generationId: 'local-release-generation',
       outputDigest: observation.content.source.buildOutputDigest,
-      inputDigest: observation.content.source.releaseInputDigest,
-      cliPackageDigest: observation.content.source.cliPackageDigest,
+      inputDigest: liveInputDigest,
+      cliPackageDigest: liveCliPackageDigest,
       cliPackageRoot: path.join(artifactRoot, 'packages', 'cli'),
       evalPackageRoot: path.join(artifactRoot, 'packages', 'eval'),
       cliDistRoot: path.resolve(import.meta.dirname, '..', '..', 'dist'),
