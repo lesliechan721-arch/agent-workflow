@@ -14,7 +14,6 @@ import {
   relativeToRepo,
   withReleaseBuildSnapshot,
 } from './common.mjs';
-import { calculateCanonicalDigest, calculateCatalogContentDigest } from './release-model.mjs';
 
 export const catalogStageOutputRoot = path.join(catalogReleaseStagingRoot, 'catalog');
 
@@ -73,6 +72,9 @@ async function stageCatalogFromSnapshot(argv, snapshot, options = {}) {
     assertReleaseSnapshotIdentity(snapshot, options.releaseIdentity);
   }
   const { catalogVersion } = parseArgs(argv);
+  if (!options.catalogRelease) {
+    throw new Error('Catalog release staging requires an explicit catalogRelease identity from a release plan.');
+  }
   const publicationRepoRoot = resolvePublicationRepoRoot(options);
   const initialBoundary = await ensureCatalogStagePublicationBoundary(
     publicationRepoRoot,
@@ -88,41 +90,7 @@ async function stageCatalogFromSnapshot(argv, snapshot, options = {}) {
       verbatimSymlinks: true,
     });
     const catalogModules = options.catalogModules ?? await loadCatalogModules(snapshot.cliDistRoot);
-    let catalogRelease = options.catalogRelease;
-    if (!catalogRelease && options.legacyPublishedIdentity) {
-      const sourceValidation = await catalogModules.catalogSnapshot.validateCatalogSnapshot(temporaryRoot);
-      const marketplace = JSON.parse(await fs.readFile(
-        path.join(temporaryRoot, '.agents', 'plugins', 'marketplace.json'),
-        'utf8',
-      ));
-      const contentDigest = calculateCatalogContentDigest({
-        schemaIdentity: { schemaVersion: 4 },
-        marketplaceMetadata: {
-          name: marketplace.name,
-          owner: marketplace.owner,
-          interface: marketplace.interface,
-        },
-        compatibility: sourceValidation.manifest.compatibility,
-        plugins: sourceValidation.manifest.entries.map((entry) => ({
-          name: entry.name,
-          targetVersion: entry.version.replace(/-beta\.[1-9]\d*$/u, ''),
-          contentDigest: entry.contentDigest,
-        })),
-      });
-      catalogRelease = {
-        state: 'published',
-        targetVersion: catalogVersion.replace(/-beta\.[1-9]\d*$/u, ''),
-        planId: calculateCanonicalDigest({
-          schemaVersion: 1,
-          kind: 'legacy-catalog-publication',
-          sourceHead: options.releaseIdentity?.headCommit ?? '0'.repeat(40),
-          catalogVersion,
-          contentDigest,
-        }),
-        sourceHead: options.releaseIdentity?.headCommit ?? '0'.repeat(40),
-        contentDigest,
-      };
-    }
+    const catalogRelease = options.catalogRelease;
     const staged = await catalogModules.pluginStaging.stageCatalogArtifacts({
       repoRoot: snapshot.root,
       outputRoot: temporaryRoot,
@@ -132,7 +100,7 @@ async function stageCatalogFromSnapshot(argv, snapshot, options = {}) {
         ? { pluginVersionOverrides: options.pluginVersionOverrides }
         : {}),
       ...(options.pluginCandidates ? { pluginCandidates: options.pluginCandidates } : {}),
-      ...(catalogRelease ? { release: catalogRelease } : {}),
+      release: catalogRelease,
       ...(options.previousReleaseLedger
         ? { previousReleaseLedger: options.previousReleaseLedger }
         : {}),

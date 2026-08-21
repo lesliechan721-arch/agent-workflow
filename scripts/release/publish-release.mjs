@@ -137,7 +137,7 @@ export async function publishRelease(argv = process.argv.slice(2), options = {})
             previousReleaseLedger: resolveCatalogStageLedger(history),
             snapshot,
             releaseIdentity,
-            legacyPublishedIdentity: true,
+            ...(options.catalogRelease ? { catalogRelease: options.catalogRelease } : {}),
           });
           assertStagedCatalogReleaseIdentity(staged, internalOutputRoot, releaseIdentity);
           const publishedCliVersion = options.publishedVersion !== undefined
@@ -352,21 +352,11 @@ export async function publishRelease(argv = process.argv.slice(2), options = {})
   }, options.snapshotOptions);
 }
 
-export async function main(argv = process.argv.slice(2)) {
-  try {
-    const result = await publishRelease(argv);
-    console.log(
-      `Published combined ${result.path} release for catalog ${result.catalog.validation.manifest.catalogVersion}.` +
-      (result.cli?.status === 'already-published'
-        ? ` CLI ${result.cli.version} was already published; CLI publication was skipped.`
-        : ''),
-    );
-  } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
-    process.exitCode = 1;
-  }
-}
-
 const currentEntryPath = fileURLToPath(import.meta.url);
 const invokedPath = process.argv[1] ? path.resolve(process.argv[1]) : null;
-if (invokedPath === currentEntryPath) await main();
+if (invokedPath === currentEntryPath) {
+  process.stderr.write(
+    'Direct release helper execution is disabled. Use `pnpm release:publish` or `pnpm release:recover`.\n',
+  );
+  process.exitCode = 1;
+}

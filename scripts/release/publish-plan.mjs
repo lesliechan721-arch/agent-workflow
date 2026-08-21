@@ -40,21 +40,33 @@ import { stageCatalogRelease } from './stage-catalog.mjs';
 
 function assertCatalogHistoryAllowed(plan, history) {
   const plannedMode = publicationMode(plan);
+  const boundOrigin = plan.history.catalog.tag?.origin ?? null;
+  const tagRelease = history.tag?.manifest?.release;
+  const tagMatchesBoundOrigin = boundOrigin !== null
+    && tagRelease?.state === 'published'
+    && canonicalJson({
+      targetVersion: tagRelease.targetVersion,
+      planId: tagRelease.planId,
+      sourceHead: tagRelease.sourceHead,
+      contentDigest: tagRelease.contentDigest,
+    }) === canonicalJson(boundOrigin);
+  const tagBelongsToCurrentPlan = tagRelease?.state === 'published'
+    && tagRelease.planId === plan.planId
+    && tagRelease.sourceHead === plan.source.head;
   for (const mode of ['latest', 'beta']) {
     const expected = plan.history.catalog[mode];
     const actual = history.channels?.[mode] ?? null;
     if ((actual?.commit ?? null) === (expected?.commit ?? null)) continue;
     const isPlannedPublication = mode === plannedMode
-      && actual?.manifest?.release?.state === 'published'
-      && actual.manifest.release.planId === plan.planId;
+      && (tagMatchesBoundOrigin || tagBelongsToCurrentPlan)
+      && actual?.commit === history.tag?.commit;
     if (!isPlannedPublication) {
       throw new Error(`Catalog ${mode} history changed after the release plan was committed.`);
     }
   }
   const plannedGuard = plan.history.catalog.publicationGuard;
   const actualGuard = history.pending ?? null;
-  const plannedTag = history.tag?.manifest?.release?.state === 'published'
-    && history.tag.manifest.release.planId === plan.planId;
+  const plannedTag = tagMatchesBoundOrigin || tagBelongsToCurrentPlan;
   if (actualGuard !== plannedGuard && !(plannedTag && actualGuard === history.tag.commit)) {
     throw new Error('Catalog publication guard changed after the release plan was committed.');
   }
@@ -486,15 +498,20 @@ export async function publishCommittedRelease(argv = process.argv.slice(2), opti
         ...(options.catalogModules ? { catalogModules: options.catalogModules } : {}),
       }));
       const taggedManifest = promotionHistory.tag?.manifest;
+      const boundTag = plan.history.catalog.tag;
+      const boundOrigin = boundTag?.origin;
       if (
         taggedManifest?.schemaVersion !== 4
         || taggedManifest.catalogVersion !== plan.catalog.candidateVersion
         || taggedManifest.release?.state !== 'published'
-        || taggedManifest.release.targetVersion !== plan.catalog.targetVersion
-        || taggedManifest.release.planId !== plan.planId
-        || taggedManifest.release.sourceHead !== plan.source.head
-        || taggedManifest.release.contentDigest !== plan.catalog.catalogContentDigest
-        || promotionHistory.tag.snapshotDigest !== plan.catalog.snapshotDigest
+        || !boundOrigin
+        || taggedManifest.release.targetVersion !== boundOrigin.targetVersion
+        || taggedManifest.release.planId !== boundOrigin.planId
+        || taggedManifest.release.sourceHead !== boundOrigin.sourceHead
+        || taggedManifest.release.contentDigest !== boundOrigin.contentDigest
+        || promotionHistory.tag.catalogContentDigest !== boundTag.contentDigest
+        || promotionHistory.tag.snapshotDigest !== boundTag.snapshotDigest
+        || plan.catalog.snapshotDigest !== boundTag.snapshotDigest
       ) {
         throw new Error('Promotion Catalog tag identity does not match the committed release plan.');
       }

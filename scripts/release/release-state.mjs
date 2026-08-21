@@ -64,9 +64,11 @@ export function normalizeCliRegistryHistory(registry) {
   const isLegacyAwOnlyVersion = (version) =>
     !evalEntries.some((entry) => entry.candidateVersion === version)
     && awEntries.some((entry) => entry.candidateVersion === version && entry.metadata === null);
-  const legacyLatestAwOnly = distTags[CLI_PACKAGES[0]].latest === null
-    && distTags[CLI_PACKAGES[1]].latest === '0.1.0-beta.1'
+  const legacyAwBeta1RemainsLatest = distTags[CLI_PACKAGES[1]].latest === '0.1.0-beta.1'
     && isLegacyAwOnlyVersion('0.1.0-beta.1');
+  const legacyLatestAwOnly = legacyAwBeta1RemainsLatest
+    && distTags[CLI_PACKAGES[0]].latest === null
+    && evalEntries.length === 0;
   const legacyBetaAwOnly = distTags[CLI_PACKAGES[0]].beta === null
     && (distTags[CLI_PACKAGES[1]].beta === '0.1.0-beta.1'
       || distTags[CLI_PACKAGES[1]].beta === '0.1.0-beta.2')
@@ -74,7 +76,7 @@ export function normalizeCliRegistryHistory(registry) {
   for (const packageName of CLI_PACKAGES) {
     const latest = distTags[packageName].latest;
     const beta = distTags[packageName].beta;
-    if (latest !== null && latest.includes('-') && !(legacyLatestAwOnly
+    if (latest !== null && latest.includes('-') && !(legacyAwBeta1RemainsLatest
       && packageName === CLI_PACKAGES[1]
       && latest === '0.1.0-beta.1')) {
       throw new Error(`partial-candidate: ${packageName} latest dist-tag must reference a stable version.`);
@@ -83,7 +85,13 @@ export function normalizeCliRegistryHistory(registry) {
       throw new Error(`partial-candidate: ${packageName} beta dist-tag must reference a canonical beta version.`);
     }
   }
-  return { packages, distTags, legacyLatestAwOnly, legacyBetaAwOnly };
+  return {
+    packages,
+    distTags,
+    legacyLatestAwOnly,
+    legacyAwBeta1RemainsLatest,
+    legacyBetaAwOnly,
+  };
 }
 
 export function resolveCliPublishedHistory(registry) {
@@ -341,11 +349,34 @@ export function calculateReleaseStatus({ channel, targets, content, history }) {
   }
   if (resumeTagFirst) {
     const recoveryVersion = recoveryTag.manifest?.catalogVersion ?? recoveryTag.catalogVersion;
+    const recoveryOrigin = recoveryTag.manifest?.release;
     if (
       recoveryVersion !== catalog.targetVersion && recoveryVersion !== catalog.candidateVersion
       || recoveryTag.catalogContentDigest !== content.catalog.contentDigest
+      || recoveryTag.manifest?.schemaVersion !== 4
+      || recoveryOrigin?.state !== 'published'
+      || recoveryOrigin.targetVersion !== recoveryVersion.replace(/-beta\.[1-9]\d*$/u, '')
+      || recoveryOrigin.contentDigest !== content.catalog.contentDigest
+      || typeof recoveryTag.snapshotDigest !== 'string'
+      || !/^sha256:[0-9a-f]{64}$/u.test(recoveryTag.snapshotDigest)
     ) {
       throw new Error('partial-candidate: pending catalog recovery does not match current release content.');
+    }
+    if (publishedTrainComplete && cli.publishedTag !== null) {
+      const registry = normalizeCliRegistryHistory(history.registry);
+      for (const packageName of CLI_PACKAGES) {
+        const metadata = registry.packages.get(packageName).find((entry) =>
+          entry.candidateVersion === cli.publishedTag)?.metadata;
+        if (
+          !metadata
+          || metadata.candidateVersion !== cli.publishedTag
+          || metadata.targetVersion !== targets.cli
+          || metadata.planId !== recoveryOrigin.planId
+          || metadata.sourceHead !== recoveryOrigin.sourceHead
+        ) {
+          throw new Error('partial-candidate: pending catalog and CLI train origins are inconsistent.');
+        }
+      }
     }
     const publishedCompatible = publishedTrainComplete
       && cli.publishedTag !== null

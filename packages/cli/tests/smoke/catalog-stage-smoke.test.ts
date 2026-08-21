@@ -10,6 +10,7 @@ import {
   inspectBuildCache,
 } from '../../../../scripts/build/build-cache.mjs';
 import { stageCatalogRelease } from '../../../../scripts/release/stage-catalog.mjs';
+import { calculateCatalogContentDigest } from '../../../../scripts/release/release-model.mjs';
 import { registerCurrentTestWritableStateRoot } from '../setup/test-isolation.js';
 import { execPnpmForTest } from '../helpers/pnpm.js';
 
@@ -113,10 +114,39 @@ describe('catalog stage smoke', () => {
       computeBuildOutputDigest(root),
       fs.readFile(path.join(buildCatalogRoot, 'catalog-manifest.json')),
     ]);
+    const buildManifest = JSON.parse(buildManifestBefore.toString('utf8'));
+    const marketplace = await fs.readJson(path.join(
+      buildCatalogRoot, '.agents', 'plugins', 'marketplace.json',
+    ));
+    const catalogContentDigest = calculateCatalogContentDigest({
+      schemaIdentity: { schemaVersion: 4 },
+      marketplaceMetadata: {
+        name: marketplace.name,
+        owner: marketplace.owner,
+        interface: marketplace.interface,
+      },
+      compatibility: buildManifest.compatibility,
+      plugins: buildManifest.entries.map((entry: {
+        name: string; version: string; contentDigest: string;
+      }) => ({
+        name: entry.name,
+        targetVersion: entry.version.replace(/-beta\.[1-9]\d*$/u, ''),
+        contentDigest: entry.contentDigest,
+      })),
+    });
 
     await stageCatalogRelease(
       ['--catalog-version', catalogVersion],
-      { internalOutputRoot: stageRoot },
+      {
+        internalOutputRoot: stageRoot,
+        catalogRelease: {
+          state: 'published',
+          targetVersion: '99.0.0',
+          planId: `sha256:${'1'.repeat(64)}`,
+          sourceHead: '2'.repeat(40),
+          contentDigest: catalogContentDigest,
+        },
+      },
     );
     await expect(snapshotTree(formalStageRoot)).resolves.toEqual(formalStageBefore);
 
@@ -136,7 +166,7 @@ describe('catalog stage smoke', () => {
       catalogVersion,
       channel: 'beta',
       compatibility: { aw: { minVersion: '0.1.0-beta.3' } },
-      release: { state: 'development' },
+      release: { state: 'published', targetVersion: '99.0.0' },
     });
     expect(manifest).not.toHaveProperty('packages');
     expect(ledger.schemaVersion).toBe(2);

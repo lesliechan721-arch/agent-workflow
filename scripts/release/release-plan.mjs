@@ -166,22 +166,56 @@ function normalizeHistory(raw) {
   keys(catalog, 'plan.history.catalog', [
     'latest', 'beta', 'tag', 'publicationGuard', 'pluginPublications',
   ]);
-  const normalizeChannel = (rawChannel, field) => {
+  const normalizeChannel = (rawChannel, field, { tag = false } = {}) => {
     if (rawChannel === null) return null;
     const channel = object(rawChannel, field);
-    keys(channel, field, ['commit', 'candidateVersion', 'contentDigest']);
+    keys(channel, field, [
+      'commit', 'candidateVersion', 'contentDigest',
+      ...(tag ? ['snapshotDigest', 'origin'] : []),
+    ]);
     if (typeof channel.commit !== 'string' || !HEAD_PATTERN.test(channel.commit)) {
       throw new Error(`Invalid ${field}.commit.`);
     }
-    return {
+    const normalized = {
       commit: channel.commit,
       candidateVersion: normalizeCandidateVersion(channel.candidateVersion),
       contentDigest: digest(channel.contentDigest, `${field}.contentDigest`),
+    };
+    if (!tag) return normalized;
+    const origin = channel.origin === null ? null : object(channel.origin, `${field}.origin`);
+    if (origin !== null) {
+      keys(origin, `${field}.origin`, [
+        'targetVersion', 'planId', 'sourceHead', 'contentDigest',
+      ]);
+      if (typeof origin.sourceHead !== 'string' || !HEAD_PATTERN.test(origin.sourceHead)) {
+        throw new Error(`Invalid ${field}.origin.sourceHead.`);
+      }
+    }
+    return {
+      ...normalized,
+      snapshotDigest: channel.snapshotDigest === null
+        ? null
+        : digest(channel.snapshotDigest, `${field}.snapshotDigest`),
+      origin: origin === null ? null : {
+        targetVersion: normalizeStableTargetVersion(origin.targetVersion, `${field}.origin.targetVersion`),
+        planId: digest(origin.planId, `${field}.origin.planId`),
+        sourceHead: origin.sourceHead,
+        contentDigest: digest(origin.contentDigest, `${field}.origin.contentDigest`),
+      },
     };
   };
   if (catalog.publicationGuard !== null && (
     typeof catalog.publicationGuard !== 'string' || !HEAD_PATTERN.test(catalog.publicationGuard)
   )) throw new Error('Invalid plan.history.catalog.publicationGuard.');
+  const normalizedTag = normalizeChannel(catalog.tag, 'plan.history.catalog.tag', { tag: true });
+  if (catalog.publicationGuard !== null && (
+    normalizedTag === null
+    || normalizedTag.commit !== catalog.publicationGuard
+    || normalizedTag.snapshotDigest === null
+    || normalizedTag.origin === null
+  )) {
+    throw new Error('Invalid plan.history.catalog guarded tag origin.');
+  }
   if (!Array.isArray(catalog.pluginPublications)) {
     throw new Error('Invalid plan.history.catalog.pluginPublications.');
   }
@@ -213,7 +247,7 @@ function normalizeHistory(raw) {
     catalog: {
       latest: normalizeChannel(catalog.latest, 'plan.history.catalog.latest'),
       beta: normalizeChannel(catalog.beta, 'plan.history.catalog.beta'),
-      tag: normalizeChannel(catalog.tag, 'plan.history.catalog.tag'),
+      tag: normalizedTag,
       publicationGuard: catalog.publicationGuard,
       pluginPublications,
     },
@@ -232,10 +266,15 @@ function recomputePlanDecision(plan) {
       beta: entry.beta,
     }])),
   };
-  const observation = (entry) => entry === null ? null : {
+  const observation = (entry, { tag = false } = {}) => entry === null ? null : {
     commit: entry.commit,
-    manifest: { catalogVersion: entry.candidateVersion },
+    manifest: {
+      ...(tag ? { schemaVersion: 4 } : {}),
+      catalogVersion: entry.candidateVersion,
+      ...(tag && entry.origin ? { release: { state: 'published', ...entry.origin } } : {}),
+    },
     catalogContentDigest: entry.contentDigest,
+    ...(tag ? { snapshotDigest: entry.snapshotDigest } : {}),
     ledger: { schemaVersion: 2, records: [] },
   };
   const ledger = {
@@ -279,7 +318,7 @@ function recomputePlanDecision(plan) {
       catalog: {
         latest: observation(plan.history.catalog.latest),
         beta: observation(plan.history.catalog.beta),
-        tag: observation(plan.history.catalog.tag),
+        tag: observation(plan.history.catalog.tag, { tag: true }),
         pending: plan.history.catalog.publicationGuard,
         ledger,
       },
@@ -462,6 +501,24 @@ export function normalizeReleasePlan(raw, { verifyDigests = true } = {}) {
       && normalized.catalog.publicationMode === 'none')
   );
   if (!catalogModeValid) throw new Error('Invalid release plan.catalog publication action/mode combination.');
+  if (normalized.catalog.publicationMode === 'promotion') {
+    const origin = normalized.history.catalog.tag?.origin;
+    if (!origin) throw new Error('Invalid promotion plan: missing guarded Catalog tag origin.');
+    const candidateVersion = normalized.catalog.candidateVersion;
+    for (const packageName of CLI_PACKAGE_NAMES) {
+      const entry = normalized.history.npm.packages.find((candidate) => candidate.name === packageName)
+        .versions.find((candidate) => candidate.candidateVersion === candidateVersion);
+      if (
+        !entry?.metadata
+        || entry.metadata.candidateVersion !== candidateVersion
+        || entry.metadata.targetVersion !== normalized.cli.targetVersion
+        || entry.metadata.planId !== origin.planId
+        || entry.metadata.sourceHead !== origin.sourceHead
+      ) {
+        throw new Error(`Invalid promotion plan: ${packageName} metadata does not match the Catalog tag origin.`);
+      }
+    }
+  }
   const catalogWrites = normalized.catalog.action === 'publish' || normalized.catalog.action === 'recover';
   if (catalogWrites !== (normalized.catalog.snapshotDigest !== null)) {
     throw new Error('Invalid release plan.catalog.snapshotDigest for the publication action.');
@@ -536,10 +593,19 @@ function projectHistory(history) {
       beta: entry.beta,
     }])),
   };
-  const channel = (entry) => entry ? {
+  const channel = (entry, { tag = false } = {}) => entry ? {
     commit: entry.commit,
     candidateVersion: entry.manifest?.catalogVersion ?? entry.catalogVersion,
     contentDigest: entry.catalogContentDigest,
+    ...(tag ? {
+      snapshotDigest: entry.snapshotDigest ?? null,
+      origin: entry.manifest?.release?.state === 'published' ? {
+        targetVersion: entry.manifest.release.targetVersion,
+        planId: entry.manifest.release.planId,
+        sourceHead: entry.manifest.release.sourceHead,
+        contentDigest: entry.manifest.release.contentDigest,
+      } : null,
+    } : {}),
   } : null;
   return {
     npm: {
@@ -551,7 +617,7 @@ function projectHistory(history) {
     catalog: {
       latest: channel(history.catalog?.latest),
       beta: channel(history.catalog?.beta),
-      tag: channel(history.catalog?.tag),
+      tag: channel(history.catalog?.tag, { tag: true }),
       publicationGuard: history.catalog?.pending ?? null,
       pluginPublications: (history.catalog?.ledger?.records ?? []).map((entry) => ({
         name: entry.plugin,

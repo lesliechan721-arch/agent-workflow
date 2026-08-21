@@ -215,7 +215,7 @@ describe('combined release script', () => {
     }));
   });
 
-  it('publishes the first stable Eval and AW train before promotion when the injected baseline is none', async () => {
+  it('retries the real first-stable tag-first path after Eval succeeds and AW fails', async () => {
     const releaseHistory = history(compareStrictSemVer);
     const options = commonOptions(releaseHistory);
     const calls: string[] = [];
@@ -224,20 +224,25 @@ describe('combined release script', () => {
       '@lesliechan721/aw': { latest: '0.1.0-beta.1' as string | null, beta: '1.0.0-beta.3' },
     };
     options.resolvePublishedCliVersion.mockRejectedValue(new Error('global latest resolver must not run'));
-    const result = await publishRelease(['latest', '--catalog-version', '2.0.0'], {
+    let awAttempts = 0;
+    const releaseOptions = {
       ...options,
       publishedVersion: null,
       prepareEvalPublication: undefined,
       withPreparedEvalPublication: async (
         _mode, _publishMode, _snapshot, version, _fresh, callback,
       ) => callback({
-        status: 'publish', mode: 'latest', version,
+        status: tags['@lesliechan721/agent-skill-eval'].latest === version
+          ? 'already-published'
+          : 'publish',
+        mode: 'latest', version,
         candidateTreeDigest: `sha256:${'a'.repeat(64)}`,
         generationId: options.snapshot.generationId,
         outputDigest: options.snapshot.outputDigest,
         inputDigest: options.snapshot.inputDigest,
       }),
       publishPreparedEvalPublication: async (candidate) => {
+        if (candidate.status === 'already-published') return candidate;
         calls.push('eval');
         tags['@lesliechan721/agent-skill-eval'].latest = '1.0.0';
         return { ...candidate, status: 'published' };
@@ -247,7 +252,9 @@ describe('combined release script', () => {
         return { validation: { manifest: { catalogVersion: '2.0.0' } } };
       },
       publishCli: async () => {
-        calls.push('aw');
+        awAttempts += 1;
+        calls.push(awAttempts === 1 ? 'aw-fail' : 'aw');
+        if (awAttempts === 1) throw new Error('injected AW publish failure');
         tags['@lesliechan721/aw'].latest = '1.0.0';
         return { version: '1.0.0' };
       },
@@ -262,11 +269,21 @@ describe('combined release script', () => {
         calls.push('promotion');
         return { promoted: true };
       },
-    });
+    };
 
+    await expect(publishRelease(['latest', '--catalog-version', '2.0.0'], releaseOptions))
+      .rejects.toThrow('CLI 1.0.0 publication failed');
+    expect(tags).toMatchObject({
+      '@lesliechan721/agent-skill-eval': { latest: '1.0.0' },
+      '@lesliechan721/aw': { latest: '0.1.0-beta.1' },
+    });
+    const result = await publishRelease(['latest', '--catalog-version', '2.0.0'], releaseOptions);
     expect(result.path).toBe('tag-first');
     expect(options.resolvePublishedCliVersion).not.toHaveBeenCalled();
-    expect(calls).toEqual(['catalog:tag', 'eval', 'aw', 'promotion']);
+    expect(calls).toEqual([
+      'catalog:tag', 'eval', 'aw-fail',
+      'catalog:tag', 'aw', 'promotion',
+    ]);
     expect(tags).toEqual({
       '@lesliechan721/agent-skill-eval': { latest: '1.0.0', beta: '1.0.0-beta.3' },
       '@lesliechan721/aw': { latest: '1.0.0', beta: '1.0.0-beta.3' },

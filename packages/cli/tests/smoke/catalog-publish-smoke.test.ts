@@ -15,6 +15,7 @@ import {
   readCatalogPublicationHistory,
 } from '../../../../scripts/release/git-catalog-publisher.mjs';
 import { stageCatalogRelease } from '../../../../scripts/release/stage-catalog.mjs';
+import { calculateCatalogContentDigest } from '../../../../scripts/release/release-model.mjs';
 import * as pluginStaging from '../../scripts/plugin-staging.js';
 import * as catalogSnapshot from '../../src/utils/catalog-snapshot.js';
 import { catalogGitProviderInternal } from '../../src/utils/git-catalog-provider.js';
@@ -115,6 +116,24 @@ it('stages, publishes, fetches, and validates a release catalog through the Git 
     await writeSyntheticEvalBuildOutputs(sourceRoot);
   };
   const snapshot = await createBuildSnapshot(sourceRoot, { build });
+  const sourceValidation = await catalogSnapshot.validateCatalogSnapshot(snapshot.catalogOutputRoot);
+  const marketplace = await fs.readJson(path.join(
+    snapshot.catalogOutputRoot, '.agents', 'plugins', 'marketplace.json',
+  ));
+  const catalogContentDigest = calculateCatalogContentDigest({
+    schemaIdentity: { schemaVersion: 4 },
+    marketplaceMetadata: {
+      name: marketplace.name,
+      owner: marketplace.owner,
+      interface: marketplace.interface,
+    },
+    compatibility: sourceValidation.manifest.compatibility,
+    plugins: sourceValidation.manifest.entries.map((entry) => ({
+      name: entry.name,
+      targetVersion: entry.version.replace(/-beta\.[1-9]\d*$/u, ''),
+      contentDigest: entry.contentDigest,
+    })),
+  });
   const history = await readCatalogPublicationHistory({
     mode: 'latest',
     catalogVersion: '91.0.0',
@@ -129,7 +148,13 @@ it('stages, publishes, fetches, and validates a release catalog through the Git 
       previousReleaseLedger: history.mergedLedger,
       snapshot,
       catalogModules,
-      legacyPublishedIdentity: true,
+      catalogRelease: {
+        state: 'published',
+        targetVersion: '91.0.0',
+        planId: `sha256:${'1'.repeat(64)}`,
+        sourceHead: '2'.repeat(40),
+        contentDigest: catalogContentDigest,
+      },
     },
   );
   await snapshot.cleanup();

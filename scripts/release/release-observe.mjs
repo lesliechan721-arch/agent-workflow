@@ -203,8 +203,12 @@ function projectCatalogHistory(history) {
   const channel = (entry) => entry ? {
     commit: entry.commit,
     manifest: {
+      ...(entry.manifest.schemaVersion === undefined ? {} : {
+        schemaVersion: entry.manifest.schemaVersion,
+      }),
       catalogVersion: entry.manifest.catalogVersion,
-      channel: entry.manifest.channel,
+      ...(entry.manifest.channel === undefined ? {} : { channel: entry.manifest.channel }),
+      ...(entry.manifest.release === undefined ? {} : { release: entry.manifest.release }),
     },
     snapshotDigest: entry.snapshotDigest,
     catalogContentDigest: entry.catalogContentDigest,

@@ -5,6 +5,7 @@ import fs from 'fs-extra';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { ensureCatalogStagePublicationBoundary } from '../../../../scripts/release/common.mjs';
+import { calculateCatalogContentDigest } from '../../../../scripts/release/release-model.mjs';
 import { stageCatalogRelease } from '../../../../scripts/release/stage-catalog.mjs';
 import * as pluginStaging from '../../scripts/plugin-staging.js';
 import * as catalogSnapshot from '../../src/utils/catalog-snapshot.js';
@@ -33,6 +34,33 @@ function createInternalOutputRoot(root: string): string {
   return path.join(root, '.release', 'catalog-staging', 'catalog');
 }
 
+async function catalogRelease(snapshot: ReturnType<typeof createSnapshot>, targetVersion = '9.0.0') {
+  const validation = await catalogSnapshot.validateCatalogSnapshot(snapshot.catalogOutputRoot);
+  const marketplace = await fs.readJson(path.join(
+    snapshot.catalogOutputRoot, '.agents', 'plugins', 'marketplace.json',
+  ));
+  return {
+    state: 'published' as const,
+    targetVersion,
+    planId: `sha256:${'1'.repeat(64)}`,
+    sourceHead: '2'.repeat(40),
+    contentDigest: calculateCatalogContentDigest({
+      schemaIdentity: { schemaVersion: 4 },
+      marketplaceMetadata: {
+        name: marketplace.name,
+        owner: marketplace.owner,
+        interface: marketplace.interface,
+      },
+      compatibility: validation.manifest.compatibility,
+      plugins: validation.manifest.entries.map((entry) => ({
+        name: entry.name,
+        targetVersion: entry.version.replace(/-beta\.[1-9]\d*$/u, ''),
+        contentDigest: entry.contentDigest,
+      })),
+    }),
+  };
+}
+
 afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((directory) => fs.remove(directory)));
 });
@@ -53,6 +81,7 @@ describe('stage-catalog script', () => {
       {
         snapshot,
         internalOutputRoot: outputRoot,
+        catalogRelease: await catalogRelease(snapshot),
         catalogModules: { pluginStaging, catalogSnapshot },
       },
     );
@@ -68,7 +97,7 @@ describe('stage-catalog script', () => {
       schemaVersion: 4,
       catalogVersion: '9.0.0-beta.4',
       channel: 'beta',
-      release: { state: 'development' },
+      release: { state: 'published', targetVersion: '9.0.0' },
       entries: [expect.objectContaining({
         name: 'demo',
         version: '1.0.0-beta.1',
@@ -106,6 +135,7 @@ describe('stage-catalog script', () => {
       {
         snapshot,
         internalOutputRoot: outputRoot,
+        catalogRelease: await catalogRelease(snapshot),
         catalogModules: {
           pluginStaging: {
             async stageCatalogArtifacts(options: { outputRoot: string }) {
@@ -154,6 +184,7 @@ describe('stage-catalog script', () => {
       {
         snapshot,
         internalOutputRoot: outputRoot,
+        catalogRelease: await catalogRelease(snapshot),
         catalogModules: { pluginStaging, catalogSnapshot },
       },
     )).rejects.toThrow('publication target must be a regular directory');
@@ -174,6 +205,7 @@ describe('stage-catalog script', () => {
       {
         snapshot,
         internalOutputRoot: outputRoot,
+        catalogRelease: await catalogRelease(snapshot),
         catalogModules: { pluginStaging, catalogSnapshot },
       },
     )).rejects.toThrow('publication path must be a regular directory');
@@ -211,6 +243,7 @@ describe('stage-catalog script', () => {
       {
         snapshot,
         internalOutputRoot: outputRoot,
+        catalogRelease: await catalogRelease(snapshot),
         catalogModules: { pluginStaging, catalogSnapshot },
       },
     );
@@ -218,5 +251,19 @@ describe('stage-catalog script', () => {
     await expect(fs.pathExists(path.join(outputRoot, 'previous-marker.txt'))).resolves.toBe(false);
     await expect(fs.readJson(path.join(outputRoot, 'catalog-manifest.json')))
       .resolves.toMatchObject({ catalogVersion: '9.0.0', channel: 'latest' });
+  });
+
+  it('rejects release staging without an explicit plan identity before writing output', async () => {
+    const root = await createFixtureRoot('aw-stage-catalog-identity-');
+    const snapshot = createSnapshot(root);
+    const outputRoot = createInternalOutputRoot(root);
+    await createCatalogSnapshotFixture(snapshot.catalogOutputRoot);
+
+    await expect(stageCatalogRelease(['--catalog-version', '9.0.0'], {
+      snapshot,
+      internalOutputRoot: outputRoot,
+      catalogModules: { pluginStaging, catalogSnapshot },
+    })).rejects.toThrow('explicit catalogRelease identity');
+    await expect(fs.pathExists(outputRoot)).resolves.toBe(false);
   });
 });

@@ -499,28 +499,11 @@ export async function publishCli(argv = process.argv.slice(2), options = {}) {
   }, options.snapshotOptions);
 }
 
-export async function main(argv = process.argv.slice(2)) {
-  try {
-    const result = await publishCli(argv);
-    if (result.status === 'already-published') {
-      console.log(
-        `CLI @lesliechan721/aw@${result.version} is already published with tag ${result.mode}; publication was skipped.`,
-      );
-      return;
-    }
-    const { mode, version, generationId } = result;
-    console.log(
-      `Published CLI @lesliechan721/aw@${version} with tag ${mode} from build generation ${generationId}.`,
-    );
-  } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
-    process.exitCode = 1;
-  }
-}
-
 const currentEntryPath = fileURLToPath(import.meta.url);
 const invokedPath = process.argv[1] ? path.resolve(process.argv[1]) : null;
-
 if (invokedPath === currentEntryPath) {
-  await main();
+  process.stderr.write(
+    'Direct release helper execution is disabled. Use `pnpm release:publish` or `pnpm release:recover`.\n',
+  );
+  process.exitCode = 1;
 }

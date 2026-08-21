@@ -21,6 +21,7 @@ import { stageCatalogRelease } from '../../../../scripts/release/stage-catalog.m
 import { calculateCatalogContentDigest } from '../../../../scripts/release/release-model.mjs';
 import { observeReleaseHistory } from '../../../../scripts/release/release-observe.mjs';
 import { prepareRelease } from '../../../../scripts/release/release-prepare.mjs';
+import { normalizeReleasePlan } from '../../../../scripts/release/release-plan.mjs';
 import { publishCommittedRelease } from '../../../../scripts/release/publish-plan.mjs';
 import { recoverRelease } from '../../../../scripts/release/release-recover.mjs';
 import { calculateCliTrainContentDigest } from '../../../../scripts/release/release-model.mjs';
@@ -526,6 +527,16 @@ describe('Git catalog publisher', () => {
 
   it('discovers and prepares recovery for a guarded beta tag from a stable target only', async () => {
     const root = await fixtureRoot('aw-catalog-pending-beta-plan-');
+    const planRepo = path.join(root, 'plan-repo');
+    await fs.ensureDir(planRepo);
+    await git(['-C', planRepo, 'init', '--quiet']);
+    await git(['-C', planRepo, 'config', 'user.name', 'Release Test']);
+    await git(['-C', planRepo, 'config', 'user.email', 'release@example.test']);
+    await fs.outputFile(path.join(planRepo, 'source.txt'), 'source\n');
+    await git(['-C', planRepo, 'add', 'source.txt']);
+    await git(['-C', planRepo, 'commit', '--quiet', '-m', 'source']);
+    const sourceHead = await git(['-C', planRepo, 'rev-parse', 'HEAD']);
+    await fs.ensureDir(path.join(planRepo, 'release'));
     const remoteUrl = await createBareRemote(root);
     const initial = await readCatalogPublicationHistory({
       mode: 'beta', catalogVersion: '1.0.0-beta.1', remoteUrl, catalogModules,
@@ -537,12 +548,13 @@ describe('Git catalog publisher', () => {
       { name: '@lesliechan721/aw', contentDigest: `sha256:${'4'.repeat(64)}` },
     ];
     const trainContentDigest = calculateCliTrainContentDigest(packageContents);
+    const catalogOrigin = staged.manifest.release;
     const metadata = (packageContentDigest: string) => ({
       schemaVersion: 1,
       targetVersion: '1.0.0',
       candidateVersion: '1.0.0-beta.1',
-      planId: `sha256:${'7'.repeat(64)}`,
-      sourceHead: 'a'.repeat(40),
+      planId: catalogOrigin.planId,
+      sourceHead: catalogOrigin.sourceHead,
       packageContentDigest,
       trainContentDigest,
     });
@@ -595,7 +607,7 @@ describe('Git catalog publisher', () => {
     const taggedEntry = staged.manifest.entries[0]!;
     const content = {
       source: {
-        head: 'a'.repeat(40),
+        head: sourceHead,
         releaseInputDigest: `sha256:${'1'.repeat(64)}`,
         buildOutputDigest: `sha256:${'2'.repeat(64)}`,
         cliPackageDigest: `sha256:${'5'.repeat(64)}`,
@@ -638,7 +650,7 @@ describe('Git catalog publisher', () => {
       catalog: { action: 'deferred', publicationMode: 'none', snapshotDigest: null },
     });
     const prepared = await prepareRelease(['beta'], {
-      repoRoot: root,
+      repoRoot: planRepo,
       assertClean: async () => undefined,
       assertFresh: async () => undefined,
       assertTargetsMatchHead: async () => undefined,
@@ -647,15 +659,25 @@ describe('Git catalog publisher', () => {
       observeRemoteHistory: readHistory,
       materializeCliPlanArtifacts: async (status) => status.cli.packages,
       materializeCatalogPlanArtifact: async () => staged.snapshotDigest,
-      writePlan: async () => ({
-        created: true,
-        planPath: path.join(root, 'plan.json'),
-        pointerPath: path.join(root, 'current-plan.json'),
-      }),
     });
     expect(prepared.status.catalog).toMatchObject({
       action: 'recover', candidateVersion: '1.0.0-beta.1', publicationMode: 'promotion',
     });
+    expect(prepared.plan!.planId).not.toBe(catalogOrigin.planId);
+    expect(prepared.plan!.history.catalog.tag).toMatchObject({
+      snapshotDigest: staged.snapshotDigest,
+      origin: {
+        planId: catalogOrigin.planId,
+        sourceHead: catalogOrigin.sourceHead,
+        contentDigest: catalogOrigin.contentDigest,
+      },
+    });
+    const tamperedPlan = structuredClone(prepared.plan!);
+    tamperedPlan.history.catalog.tag!.origin!.sourceHead = 'f'.repeat(40);
+    expect(() => normalizeReleasePlan(tamperedPlan)).toThrow();
+
+    await git(['-C', planRepo, 'add', 'release']);
+    await git(['-C', planRepo, 'commit', '--quiet', '-m', 'release plan']);
 
     await git(['--git-dir', remoteUrl, 'update-ref', '-d', CATALOG_TAG_FIRST_PENDING_REF]);
     await expect(publishStagedCatalog(
@@ -673,6 +695,23 @@ describe('Git catalog publisher', () => {
       observe: async () => ({ targets, content, history }),
       observeRemoteHistory: readHistory,
     })).rejects.toThrow('ahead of its channel without the tag-first pending guard');
+
+    await git([
+      '--git-dir', remoteUrl, 'update-ref', CATALOG_TAG_FIRST_PENDING_REF, tagged.commit,
+    ]);
+    await expect(publishCommittedRelease([], {
+      repoRoot: planRepo,
+      remoteUrl,
+      catalogModules,
+      runCommand: async () => undefined,
+      readRegistryReleaseHistory: async () => registry,
+      canonicalAssertCurrentReleaseIdentity: async () => undefined,
+    })).resolves.toMatchObject({ path: 'promotion', promotion: { promoted: true } });
+    const promoted = await readCatalogPublicationHistory({
+      mode: 'beta', catalogVersion: '1.0.0-beta.1', remoteUrl, catalogModules,
+    });
+    expect(promoted.channels.beta?.commit).toBe(tagged.commit);
+    expect(promoted.pending).toBeNull();
   });
 
   it('rejects same-version channel drift and existing tag runtime drift', async () => {

@@ -176,6 +176,21 @@ function bindPublishedCandidate(releasePlan: ReturnType<typeof plan>) {
     });
   }
   for (const tags of releasePlan.history.npm.distTags) tags.beta = '1.0.0-beta.1';
+  if (releasePlan.catalog.publicationMode === 'promotion') {
+    releasePlan.history.catalog.publicationGuard = 'c'.repeat(40);
+    releasePlan.history.catalog.tag = {
+      commit: 'c'.repeat(40),
+      candidateVersion: '2.0.0-beta.1',
+      contentDigest: `sha256:${'d'.repeat(64)}`,
+      snapshotDigest: `sha256:${'e'.repeat(64)}`,
+      origin: {
+        targetVersion: '2.0.0',
+        planId: `sha256:${'a'.repeat(64)}`,
+        sourceHead: 'b'.repeat(40),
+        contentDigest: `sha256:${'d'.repeat(64)}`,
+      },
+    };
+  }
   return releasePlan;
 }
 
@@ -188,31 +203,15 @@ function legacyStablePlan() {
     legacyLatestAwOnly: true,
     legacyBetaAwOnly: false,
     packages: [
-      {
-        name: '@lesliechan721/agent-skill-eval',
-        versions: [{
-          candidateVersion: '1.0.0-beta.3',
-          metadata: releaseMetadata('@lesliechan721/agent-skill-eval', {
-            candidateVersion: '1.0.0-beta.3', planId: `sha256:${'9'.repeat(64)}`,
-          }),
-        }],
-      },
+      { name: '@lesliechan721/agent-skill-eval', versions: [] },
       {
         name: '@lesliechan721/aw',
-        versions: [
-          { candidateVersion: '0.1.0-beta.1', metadata: null },
-          {
-            candidateVersion: '1.0.0-beta.3',
-            metadata: releaseMetadata('@lesliechan721/aw', {
-              candidateVersion: '1.0.0-beta.3', planId: `sha256:${'9'.repeat(64)}`,
-            }),
-          },
-        ],
+        versions: [{ candidateVersion: '0.1.0-beta.1', metadata: null }],
       },
     ],
     distTags: [
-      { name: '@lesliechan721/agent-skill-eval', latest: null, beta: '1.0.0-beta.3' },
-      { name: '@lesliechan721/aw', latest: '0.1.0-beta.1', beta: '1.0.0-beta.3' },
+      { name: '@lesliechan721/agent-skill-eval', latest: null, beta: null },
+      { name: '@lesliechan721/aw', latest: '0.1.0-beta.1', beta: null },
     ],
   };
   return releasePlan;
@@ -234,6 +233,8 @@ function promotionCatalogHistory() {
   return {
     channels: { latest: null, beta: null },
     tag: {
+      commit: 'c'.repeat(40),
+      catalogContentDigest: `sha256:${'d'.repeat(64)}`,
       snapshotDigest: `sha256:${'e'.repeat(64)}`,
       manifest: {
         schemaVersion: 4,
@@ -247,7 +248,7 @@ function promotionCatalogHistory() {
         },
       },
     },
-    pending: null,
+    pending: 'c'.repeat(40),
     mergedLedger: { schemaVersion: 2, records: [] },
   };
 }
@@ -695,6 +696,61 @@ describe('committed release plan publisher', () => {
         staged: { snapshotDigest: `sha256:${'e'.repeat(64)}` },
       },
     })).rejects.toThrow(/legacyLatestAwOnly|latest dist-tag/u);
+  });
+
+  it('retries the same first-stable plan after Eval succeeds and AW fails', async () => {
+    const releasePlan = legacyStablePlan();
+    const registry = registryFromTestPlan(releasePlan);
+    const calls: string[] = [];
+    const candidateMetadata = (packageName: string) => releaseMetadata(packageName, {
+      candidateVersion: '1.0.0',
+      planId: releasePlan.planId,
+      sourceHead: releasePlan.source.head,
+    });
+    let attempt = 0;
+    const publishCombinedRelease = vi.fn(async (_args, nestedOptions) => {
+      attempt += 1;
+      if (attempt === 1) {
+        await nestedOptions.evalPublicationOptions.beforeNpmWrite();
+        registry['@lesliechan721/agent-skill-eval'].push({
+          version: '1.0.0',
+          awRelease: candidateMetadata('@lesliechan721/agent-skill-eval'),
+        });
+        registry.distTags['@lesliechan721/agent-skill-eval'].latest = '1.0.0';
+        calls.push('eval');
+        await nestedOptions.beforeNpmWrite();
+        throw new Error('injected AW publish failure');
+      }
+      await nestedOptions.beforeNpmWrite();
+      registry['@lesliechan721/aw'].push({
+        version: '1.0.0',
+        awRelease: candidateMetadata('@lesliechan721/aw'),
+      });
+      registry.distTags['@lesliechan721/aw'].latest = '1.0.0';
+      calls.push('aw');
+      nestedOptions.assertPromotionRegistryFresh(registry);
+      calls.push('promotion');
+      return { path: 'tag-first' };
+    });
+    const options = {
+      readCurrentReleasePlan: async () => ({ plan: releasePlan }),
+      assertPlanOnlyCommit: async () => undefined,
+      runCommand: async () => undefined,
+      readRegistryReleaseHistory: async () => structuredClone(registry),
+      publishCombinedRelease,
+      _boundCatalog: {
+        internalOutputRoot: '/tmp/catalog', snapshot: {},
+        staged: { snapshotDigest: `sha256:${'e'.repeat(64)}` },
+      },
+    };
+
+    await expect(publishCommittedRelease([], options)).rejects.toThrow('AW publish failure');
+    expect(registry.distTags).toMatchObject({
+      '@lesliechan721/agent-skill-eval': { latest: '1.0.0' },
+      '@lesliechan721/aw': { latest: '0.1.0-beta.1' },
+    });
+    await expect(publishCommittedRelease([], options)).resolves.toMatchObject({ path: 'tag-first' });
+    expect(calls).toEqual(['eval', 'aw', 'promotion']);
   });
 
   it('runs bootstrap only from the committed candidate without public version arguments', async () => {

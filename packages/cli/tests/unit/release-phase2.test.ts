@@ -384,7 +384,15 @@ describe('release status and plans', () => {
     promotion.history.catalog.pending = 'c'.repeat(40);
     promotion.history.catalog.tag = {
       commit: 'c'.repeat(40),
-      manifest: { catalogVersion: '0.1.0-beta.1' },
+      snapshotDigest: digest('8'),
+      manifest: {
+        schemaVersion: 4,
+        catalogVersion: '0.1.0-beta.1',
+        release: {
+          state: 'published', targetVersion: '0.1.0', planId: digest('9'),
+          sourceHead: 'a'.repeat(40), contentDigest: digest('5'),
+        },
+      },
       catalogContentDigest: digest('5'),
       ledger: { schemaVersion: 2, records: [] },
     };
@@ -429,7 +437,16 @@ describe('release status and plans', () => {
     betaPending.history.catalog.pending = 'c'.repeat(40);
     betaPending.history.catalog.tag = {
       commit: 'c'.repeat(40),
-      manifest: { catalogVersion: '0.1.0-beta.1', channel: 'beta' },
+      snapshotDigest: digest('8'),
+      manifest: {
+        schemaVersion: 4,
+        catalogVersion: '0.1.0-beta.1',
+        channel: 'beta',
+        release: {
+          state: 'published', targetVersion: '0.1.0', planId: digest('9'),
+          sourceHead: 'a'.repeat(40), contentDigest: digest('5'),
+        },
+      },
       catalogContentDigest: digest('5'),
       ledger: { schemaVersion: 2, records: [] },
     };
@@ -461,7 +478,13 @@ describe('release status and plans', () => {
       stablePending.history.registry[name][0].awRelease.candidateVersion = '0.1.0';
     }
     stablePending.history.catalog.tag.manifest = {
-      catalogVersion: '0.1.0', channel: 'latest',
+      schemaVersion: 4,
+      catalogVersion: '0.1.0',
+      channel: 'latest',
+      release: {
+        state: 'published', targetVersion: '0.1.0', planId: digest('9'),
+        sourceHead: 'a'.repeat(40), contentDigest: digest('5'),
+      },
     };
     const { channel: ignoredStableChannel, ...stableObserved } = stablePending;
     expect(calculateReleaseStatus({ channel: 'stable', ...stableObserved }).catalog)
@@ -550,6 +573,7 @@ describe('release status and plans', () => {
     const status = calculateReleaseStatus(fixture());
     const plan = createReleasePlan(status);
     expect(normalizeReleasePlan(plan)).toEqual(plan);
+
     const { snapshotDigest: omittedSnapshot, ...catalogWithoutSnapshot } = plan.catalog;
     expect(() => normalizeReleasePlan({
       ...plan,
@@ -684,6 +708,29 @@ describe('release status and plans', () => {
     const plan = createReleasePlan(status);
     expect(plan.history.npm.legacyLatestAwOnly).toBe(true);
     expect(normalizeReleasePlan(plan)).toEqual(plan);
+
+    const evalFirst = structuredClone(legacy);
+    evalFirst.history.registry['@lesliechan721/agent-skill-eval'] = [{
+      version: '0.1.0',
+      awRelease: {
+        schemaVersion: 1,
+        targetVersion: '0.1.0',
+        candidateVersion: '0.1.0',
+        planId: digest('9'),
+        sourceHead: 'a'.repeat(40),
+        packageContentDigest: digest('3'),
+        trainContentDigest: evalFirst.content.cli.trainContentDigest,
+      },
+    }];
+    evalFirst.history.registry.distTags['@lesliechan721/agent-skill-eval'].latest = '0.1.0';
+    const normalizedEvalFirst = normalizeCliRegistryHistory(evalFirst.history.registry);
+    expect(normalizedEvalFirst).toMatchObject({
+      legacyLatestAwOnly: false,
+      legacyAwBeta1RemainsLatest: true,
+    });
+    expect(calculateReleaseStatus(evalFirst).cli).toMatchObject({
+      action: 'blocked', reason: { code: 'partial-candidate' },
+    });
 
     const invalidLegacyBeta = fixture();
     invalidLegacyBeta.history.registry['@lesliechan721/agent-skill-eval'] = [{
