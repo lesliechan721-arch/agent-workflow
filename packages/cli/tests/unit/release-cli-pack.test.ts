@@ -1,13 +1,24 @@
+import { execFile } from 'node:child_process';
+import { createRequire } from 'node:module';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { promisify } from 'node:util';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { packCli, withPrivateCliTarball } from '../../../../scripts/release/common.mjs';
+import {
+  computePackageTarballTreeDigest,
+  computeReleasePackageContentDigest,
+  packCli,
+  withPrivateCliTarball,
+} from '../../../../scripts/release/common.mjs';
 
 const generatedTarballName = 'lesliechan721-aw-9.9.9.tgz';
 const tempDirs: string[] = [];
+const execFileAsync = promisify(execFile);
+const require = createRequire(import.meta.url);
+const pnpmExecPath = path.join(path.dirname(require.resolve('pnpm')), 'bin/pnpm.cjs');
 const originalEnvironment = {
   npmExecPath: process.env.npm_execpath,
   npmUserAgent: process.env.npm_config_user_agent,
@@ -63,6 +74,75 @@ afterEach(async () => {
 });
 
 describe('CLI release pack staging', () => {
+  it('normalizes the packed CLI train dependency, candidate version, and awRelease', async () => {
+    const tarballs = [];
+    for (const version of ['1.2.3-beta.1', '1.2.3-beta.2', '1.2.3']) {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-release-content-pack-'));
+      tempDirs.push(root);
+      const cliRoot = path.join(root, 'packages', 'aw');
+      const evalRoot = path.join(root, 'packages', 'eval');
+      await fs.mkdir(cliRoot, { recursive: true });
+      await fs.mkdir(evalRoot, { recursive: true });
+      await fs.writeFile(path.join(root, 'package.json'), `${JSON.stringify({
+        private: true, packageManager: 'pnpm@10.33.0',
+      }, null, 2)}\n`);
+      await fs.writeFile(path.join(root, 'pnpm-workspace.yaml'), 'packages:\n  - packages/*\n');
+      await fs.writeFile(path.join(cliRoot, 'index.js'), 'export const value = 1;\n');
+      await fs.writeFile(path.join(evalRoot, 'package.json'), `${JSON.stringify({
+        name: '@lesliechan721/agent-skill-eval', version,
+      }, null, 2)}\n`);
+      await fs.writeFile(path.join(cliRoot, 'package.json'), `${JSON.stringify({
+        name: '@lesliechan721/aw',
+        version,
+        files: ['index.js'],
+        dependencies: { '@lesliechan721/agent-skill-eval': 'workspace:*' },
+        awRelease: {
+          schemaVersion: 1,
+          candidateVersion: version,
+          planId: `sha256:${'a'.repeat(64)}`,
+        },
+      }, null, 2)}\n`);
+      await execFileAsync(process.execPath, [
+        pnpmExecPath, 'install', '--offline', '--ignore-scripts',
+      ], { cwd: root });
+      await execFileAsync(process.execPath, [
+        pnpmExecPath, '--config.ignore-scripts=true', 'pack', '--pack-destination', root,
+      ], { cwd: cliRoot }).catch((error: { stderr?: string; stdout?: string; code?: number }) => {
+        throw new Error(error.stderr || error.stdout || `pnpm pack failed with code ${error.code}.`);
+      });
+      const tarball = (await fs.readdir(root)).find((entry) => entry.endsWith('.tgz'));
+      tarballs.push(path.join(root, tarball!));
+    }
+    const normalized = await Promise.all(tarballs.map(computeReleasePackageContentDigest));
+    const raw = await Promise.all(tarballs.map((entry) => computePackageTarballTreeDigest(entry)));
+    expect(new Set(normalized).size).toBe(1);
+    expect(new Set(raw).size).toBe(3);
+  }, 45_000);
+
+  it('rejects a packed CLI with a missing or mismatched exact train dependency', async () => {
+    for (const { name, dependency, message } of [
+      { name: '@lesliechan721/aw', dependency: undefined, message: 'must depend on' },
+      { name: '@lesliechan721/aw', dependency: '1.2.3-beta.1', message: 'must depend on' },
+      { name: '@fixture/not-a-release-package', dependency: '1.2.3-beta.2', message: 'Unsupported release package' },
+    ]) {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-release-content-invalid-'));
+      tempDirs.push(root);
+      await fs.writeFile(path.join(root, 'index.js'), 'export const value = 1;\n');
+      await fs.writeFile(path.join(root, 'package.json'), `${JSON.stringify({
+        name,
+        version: '1.2.3-beta.2',
+        files: ['index.js'],
+        ...(dependency === undefined ? {} : {
+          dependencies: { '@lesliechan721/agent-skill-eval': dependency },
+        }),
+      }, null, 2)}\n`);
+      await execFileAsync('npm', ['pack', '--ignore-scripts', '--pack-destination', root], { cwd: root });
+      const tarball = (await fs.readdir(root)).find((entry) => entry.endsWith('.tgz'))!;
+      await expect(computeReleasePackageContentDigest(path.join(root, tarball)))
+        .rejects.toThrow(message);
+    }
+  });
+
   it('preserves existing tarballs and atomically replaces only the current tarball', async () => {
     const fixture = await createPackFixture('success');
     const existingTarballPath = path.join(fixture.destination, 'keep-me.tgz');

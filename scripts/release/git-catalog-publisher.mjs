@@ -6,6 +6,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 
 import { loadCatalogModules } from './common.mjs';
+import { calculateCatalogContentDigest } from './release-model.mjs';
 
 const execFileAsync = promisify(execFile);
 const PRIVATE_CATALOG_REMOTE = 'aw-catalog-publication';
@@ -272,7 +273,7 @@ export async function withCatalogPublicationLease(remoteUrlInput, callback, opti
   const deadline = Date.now() + timeoutMs;
   return withTemporaryRepository(async ({ git }) => {
     const remote = await bindCatalogRemote(git, remoteUrl);
-    await listRemoteRefs(git, remote, '__publication-lock-probe__');
+    await listRemoteRefs(git, remote, '__publication-lock-probe__', { validatePending: false });
     await git(['checkout', '--quiet', '--orphan', 'catalog-publication-lock']);
     const ownerToken = crypto.randomUUID();
     await git([
@@ -373,7 +374,7 @@ async function bindCatalogRemote(git, remoteUrl) {
   return PRIVATE_CATALOG_REMOTE;
 }
 
-async function listRemoteRefs(git, remote, catalogVersion) {
+async function listRemoteRefs(git, remote, catalogVersion, options = {}) {
   const tagRef = `refs/tags/catalog-v${catalogVersion}`;
   const { stdout } = await git([
     'ls-remote',
@@ -383,23 +384,41 @@ async function listRemoteRefs(git, remote, catalogVersion) {
     CATALOG_TAG_FIRST_PENDING_REF,
     tagRef,
     `${tagRef}^{}`,
+    `refs/tags/catalog-v${catalogVersion}-beta.*`,
   ]);
   const refs = parseLsRemote(stdout);
-  const tagObject = refs.get(tagRef) ?? null;
-  const peeledTagCommit = refs.get(`${tagRef}^{}`) ?? null;
-  if (tagObject && !peeledTagCommit) {
-    throw new Error(`Catalog tag ${tagRef} exists but is not an annotated tag to a commit.`);
+  const pending = refs.get(CATALOG_TAG_FIRST_PENDING_REF) ?? null;
+  const tagCandidates = [];
+  const escapedVersion = catalogVersion.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+  const candidatePattern = new RegExp(`^refs/tags/catalog-v(${escapedVersion}(?:-beta\\.[1-9]\\d*)?)$`, 'u');
+  for (const [ref, objectId] of refs) {
+    const match = candidatePattern.exec(ref);
+    if (!match) continue;
+    const peeledTagCommit = refs.get(`${ref}^{}`) ?? null;
+    if (!peeledTagCommit) {
+      throw new Error(`Catalog tag ${ref} exists but is not an annotated tag to a commit.`);
+    }
+    tagCandidates.push({ ref, objectId, commit: peeledTagCommit, catalogVersion: match[1] });
   }
-  if (!tagObject && peeledTagCommit) {
-    throw new Error(`Catalog tag ${tagRef} has invalid remote ref data.`);
+  const exactTag = tagCandidates.find((entry) => entry.ref === tagRef) ?? null;
+  const pendingTags = pending === null
+    ? []
+    : tagCandidates.filter((entry) => entry.commit === pending);
+  if (options.validatePending !== false && pending !== null && pendingTags.length !== 1) {
+    throw new Error(
+      'Catalog tag-first publication is pending. Only recovery of that exact catalog version may continue; ' +
+      `the guard does not identify one annotated tag for ${catalogVersion}.`,
+    );
   }
+  const tag = pending !== null ? pendingTags[0] : exactTag;
   return {
     heads: {
       latest: refs.get(CATALOG_CHANNEL_REFS.latest) ?? null,
       beta: refs.get(CATALOG_CHANNEL_REFS.beta) ?? null,
     },
-    pending: refs.get(CATALOG_TAG_FIRST_PENDING_REF) ?? null,
-    tag: tagObject ? { ref: tagRef, objectId: tagObject, commit: peeledTagCommit } : null,
+    pending,
+    tag,
+    tagCandidates,
   };
 }
 
@@ -469,7 +488,7 @@ async function materializeCommit(git, root, commit, label) {
 
 async function validateSnapshotAndLedger(root, expectedChannel, catalogModules) {
   const validation = await catalogModules.catalogSnapshot.validateCatalogSnapshot(root);
-  if (validation.manifest.channel !== expectedChannel) {
+  if (expectedChannel !== null && validation.manifest.channel !== expectedChannel) {
     throw new Error(
       `Catalog snapshot channel mismatch: expected ${expectedChannel}, found ${validation.manifest.channel}.`,
     );
@@ -479,7 +498,7 @@ async function validateSnapshotAndLedger(root, expectedChannel, catalogModules) 
   try {
     rawLedger = JSON.parse(await fs.readFile(ledgerPath, 'utf8'));
   } catch (error) {
-    throw new Error(`Published ${expectedChannel} catalog is missing or has an invalid release ledger.`, {
+    throw new Error(`Published ${expectedChannel ?? validation.manifest.channel} catalog is missing or has an invalid release ledger.`, {
       cause: error,
     });
   }
@@ -487,7 +506,25 @@ async function validateSnapshotAndLedger(root, expectedChannel, catalogModules) 
     rawLedger,
     validation.manifest,
   );
-  return { ...validation, ledger };
+  const marketplace = JSON.parse(await fs.readFile(
+    path.join(root, '.agents', 'plugins', 'marketplace.json'),
+    'utf8',
+  ));
+  const catalogContentDigest = calculateCatalogContentDigest({
+    schemaIdentity: { schemaVersion: validation.manifest.schemaVersion },
+    marketplaceMetadata: {
+      name: marketplace.name,
+      owner: marketplace.owner,
+      interface: marketplace.interface,
+    },
+    compatibility: validation.manifest.compatibility,
+    plugins: validation.manifest.entries.map((entry) => ({
+      name: entry.name,
+      targetVersion: entry.version.replace(/-beta\.[1-9]\d*$/u, ''),
+      contentDigest: entry.contentDigest,
+    })),
+  });
+  return { ...validation, ledger, catalogContentDigest };
 }
 
 export async function readCatalogPublicationHistory(options) {
@@ -513,10 +550,27 @@ export async function readCatalogPublicationHistory(options) {
         ...await validateSnapshotAndLedger(snapshotRoot, mode, catalogModules),
       };
     }
+    if (!remoteRefs.pending) {
+      const unguardedTag = remoteRefs.tagCandidates.find((candidate) => {
+        const mode = candidate.catalogVersion.includes('-beta.') ? 'beta' : 'latest';
+        const channel = channels[mode];
+        if (channel?.commit === candidate.commit) return false;
+        if (!channel) return true;
+        return catalogModules.pluginStaging.compareStrictSemVer(
+          candidate.catalogVersion,
+          channel.manifest.catalogVersion,
+        ) >= 0;
+      });
+      if (unguardedTag) {
+        throw new Error(
+          `Catalog tag ${unguardedTag.ref} is ahead of its channel without the tag-first pending guard.`,
+        );
+      }
+    }
 
     let tag = null;
     if (remoteRefs.tag) {
-      const localRef = `refs/tags/catalog-v${options.catalogVersion}`;
+      const localRef = remoteRefs.tag.ref;
       await fetchObject(git, remote, remoteRefs.tag.ref, localRef);
       const { stdout: typeOutput } = await git(['cat-file', '-t', localRef]);
       if (typeOutput.trim() !== 'tag') {
@@ -534,10 +588,10 @@ export async function readCatalogPublicationHistory(options) {
       );
       const validation = await validateSnapshotAndLedger(
         snapshotRoot,
-        options.mode,
+        options.mode ?? null,
         catalogModules,
       );
-      if (validation.manifest.catalogVersion !== options.catalogVersion) {
+      if (validation.manifest.catalogVersion !== remoteRefs.tag.catalogVersion) {
         throw new Error(`Catalog tag ${remoteRefs.tag.ref} contains the wrong catalog version.`);
       }
       tag = { ...remoteRefs.tag, ...validation };
@@ -816,6 +870,11 @@ async function publishStagedCatalogUnderLease(history, stagedRoot, options) {
     callback: async (context) => {
       const channelRef = CATALOG_CHANNEL_REFS[history.mode];
       const current = history.channels[history.mode];
+      if (publicationMode === 'tag' && context.existingTag && !history.pending) {
+        throw new Error(
+          'Existing catalog tag has no tag-first pending guard; refusing to recreate recovery state.',
+        );
+      }
       if (current?.commit === context.commit) {
         return { ...context, mode: history.mode, idempotent: true, promoted: true };
       }
@@ -834,12 +893,6 @@ async function publishStagedCatalogUnderLease(history, stagedRoot, options) {
               { cause: error },
             );
           }
-        } else if (!history.pending) {
-          await options.beforeRemoteWrite?.();
-          await context.git([
-            'push', context.remote,
-            `${context.commit}:${CATALOG_TAG_FIRST_PENDING_REF}`,
-          ]);
         }
         return { ...context, mode: history.mode, idempotent: context.existingTag, promoted: false };
       }

@@ -20,6 +20,9 @@ const semverPattern =
 export const RELEASE_NETWORK_TIMEOUT_MS = 2 * 60 * 1000;
 const gunzipAsync = promisify(gunzip);
 const MAX_PACKAGE_TREE_BYTES = 128 * 1024 * 1024;
+const CLI_PACKAGE_NAME = '@lesliechan721/aw';
+const EVAL_PACKAGE_NAME = '@lesliechan721/agent-skill-eval';
+const RELEASE_VERSION_SENTINEL = '0.0.0';
 
 export const repoRoot = path.resolve(scriptDir, '..', '..');
 export const releaseRoot = path.join(repoRoot, '.release');
@@ -473,7 +476,7 @@ function updateDigestField(hash, value) {
   hash.update(contents);
 }
 
-export async function computePackageTarballTreeDigest(tarballPath) {
+export async function computePackageTarballTreeDigest(tarballPath, options = {}) {
   const compressed = await fs.readFile(tarballPath);
   const archive = await gunzipAsync(compressed, { maxOutputLength: MAX_PACKAGE_TREE_BYTES });
   const entries = new Map();
@@ -482,6 +485,7 @@ export async function computePackageTarballTreeDigest(tarballPath) {
   let globalPax = {};
   let longPath;
   let longLink;
+  let normalizedReleasePackage = false;
 
   while (offset + 512 <= archive.length) {
     const header = archive.subarray(offset, offset + 512);
@@ -527,14 +531,45 @@ export async function computePackageTarballTreeDigest(tarballPath) {
       throw new Error(`Package tarball contains duplicate path ${JSON.stringify(relativePath)}.`);
     }
     const mode = readTarOctal(header, 100, 8, 'mode') & 0o777;
+    let normalizedContents = type === '2' ? Buffer.from(linkPath) : Buffer.from(contents);
+    if (relativePath === 'package.json' && options.normalizeReleaseMetadata) {
+      let packageJson;
+      try {
+        packageJson = JSON.parse(normalizedContents.toString('utf8'));
+      } catch (error) {
+        throw new Error('Package tarball package.json is invalid JSON.', { cause: error });
+      }
+      if (packageJson.name !== CLI_PACKAGE_NAME && packageJson.name !== EVAL_PACKAGE_NAME) {
+        throw new Error(`Unsupported release package ${JSON.stringify(packageJson.name)}.`);
+      }
+      assertValidVersion(packageJson.version);
+      const trainDependency = packageJson.dependencies?.[EVAL_PACKAGE_NAME];
+      if (packageJson.name === CLI_PACKAGE_NAME) {
+        if (trainDependency !== packageJson.version) {
+          throw new Error(
+            `Packed ${CLI_PACKAGE_NAME} must depend on ${EVAL_PACKAGE_NAME}@${packageJson.version}.`,
+          );
+        }
+        packageJson.dependencies[EVAL_PACKAGE_NAME] = RELEASE_VERSION_SENTINEL;
+      } else if (trainDependency !== undefined) {
+        throw new Error(`Packed ${EVAL_PACKAGE_NAME} must not depend on itself.`);
+      }
+      packageJson.version = RELEASE_VERSION_SENTINEL;
+      delete packageJson.awRelease;
+      normalizedContents = Buffer.from(`${JSON.stringify(packageJson, null, 2)}\n`);
+      normalizedReleasePackage = true;
+    }
     entries.set(relativePath, {
       type: type === '2' ? 'symlink' : 'file',
       mode,
-      contents: type === '2' ? Buffer.from(linkPath) : Buffer.from(contents),
+      contents: normalizedContents,
     });
   }
 
   if (entries.size === 0) throw new Error('Package tarball contains no production files.');
+  if (options.normalizeReleaseMetadata && !normalizedReleasePackage) {
+    throw new Error('Release package tarball is missing package.json.');
+  }
   const hash = crypto.createHash('sha256');
   for (const [relativePath, entry] of [...entries].sort(([left], [right]) => left.localeCompare(right))) {
     updateDigestField(hash, relativePath);
@@ -543,6 +578,10 @@ export async function computePackageTarballTreeDigest(tarballPath) {
     updateDigestField(hash, entry.contents);
   }
   return `sha256:${hash.digest('hex')}`;
+}
+
+export function computeReleasePackageContentDigest(tarballPath) {
+  return computePackageTarballTreeDigest(tarballPath, { normalizeReleaseMetadata: true });
 }
 
 export async function downloadExactPackageTarball(
@@ -650,6 +689,7 @@ async function resolveReleaseDirtyEntries(options = {}) {
 }
 
 const RELEASE_INPUT_PATHS = [
+  'release/version-targets.json',
   'package.json',
   'pnpm-lock.yaml',
   'pnpm-workspace.yaml',
@@ -1046,20 +1086,21 @@ export async function assertRepoAndCliPackageVersions() {
   };
 }
 
-async function packCliFromSnapshot(snapshot, destination) {
+async function packCliFromSnapshot(snapshot, destination, options = {}) {
   const targetDir = path.resolve(repoRoot, destination);
   await ensureDirectory(targetDir);
 
   return withOwnedTemporaryDirectory(
     path.join(os.tmpdir(), 'aw-cli-pack-'),
     async (packDirectory) => {
-      await runCommand('pnpm', [
+      await (options.runPackCommand ?? runCommand)('pnpm', [
         '--config.ignore-scripts=true',
         'pack',
         '--pack-destination',
         packDirectory,
       ], {
         cwd: snapshot.cliPackageRoot,
+        ...(options.quiet ? { stdio: 'ignore' } : {}),
       });
 
       const tarballs = await listTarballs(packDirectory);
@@ -1094,40 +1135,53 @@ async function packCliFromSnapshot(snapshot, destination) {
   );
 }
 
-export async function packCli({ destination = tarballDir, snapshot } = {}) {
+export async function packCli({
+  destination = tarballDir,
+  snapshot,
+  quiet = false,
+  runPackCommand,
+} = {}) {
   await assertRepoAndCliPackageVersions();
   if (snapshot) {
-    return packCliFromSnapshot(snapshot, destination);
+    return packCliFromSnapshot(snapshot, destination, { quiet, runPackCommand });
   }
   return withBuildSnapshot(repoRoot, (ownedSnapshot) =>
-    packCliFromSnapshot(ownedSnapshot, destination)
+    packCliFromSnapshot(ownedSnapshot, destination, { quiet, runPackCommand })
   );
 }
 
-export async function withPrivateCliTarball(snapshot, callback) {
+export async function withPrivateCliTarball(snapshot, callback, options = {}) {
   return withOwnedTemporaryDirectory(
     path.join(os.tmpdir(), 'aw-cli-publish-'),
     async (privateRoot) => {
       await fs.chmod(privateRoot, 0o700);
-      const tarballPath = await packCli({ destination: privateRoot, snapshot });
+      const tarballPath = await packCli({
+        destination: privateRoot,
+        snapshot,
+        quiet: options.quiet ?? false,
+        runPackCommand: options.runPackCommand,
+      });
       return callback(tarballPath);
     },
     'Private CLI tarball cleanup also failed',
   );
 }
 
-async function packEvalFromSnapshot(snapshot, destination) {
+async function packEvalFromSnapshot(snapshot, destination, options = {}) {
   const targetDir = path.resolve(repoRoot, destination);
   await ensureDirectory(targetDir);
   return withOwnedTemporaryDirectory(
     path.join(os.tmpdir(), 'aw-skill-eval-pack-'),
     async (packDirectory) => {
-      await runCommand('pnpm', [
+      await (options.runPackCommand ?? runCommand)('pnpm', [
         '--config.ignore-scripts=true',
         'pack',
         '--pack-destination',
         packDirectory,
-      ], { cwd: snapshot.evalPackageRoot });
+      ], {
+        cwd: snapshot.evalPackageRoot,
+        ...(options.quiet ? { stdio: 'ignore' } : {}),
+      });
       const tarballs = await listTarballs(packDirectory);
       if (tarballs.length !== 1) {
         throw new Error(`Expected shared Eval pack to produce exactly one tarball, found ${tarballs.length}.`);
@@ -1143,20 +1197,30 @@ async function packEvalFromSnapshot(snapshot, destination) {
   );
 }
 
-export async function packEval({ destination = tarballDir, snapshot } = {}) {
+export async function packEval({
+  destination = tarballDir,
+  snapshot,
+  quiet = false,
+  runPackCommand,
+} = {}) {
   await assertRepoAndCliPackageVersions();
-  if (snapshot) return packEvalFromSnapshot(snapshot, destination);
+  if (snapshot) return packEvalFromSnapshot(snapshot, destination, { quiet, runPackCommand });
   return withBuildSnapshot(repoRoot, (ownedSnapshot) =>
-    packEvalFromSnapshot(ownedSnapshot, destination)
+    packEvalFromSnapshot(ownedSnapshot, destination, { quiet, runPackCommand })
   );
 }
 
-export async function withPrivateEvalTarball(snapshot, callback) {
+export async function withPrivateEvalTarball(snapshot, callback, options = {}) {
   return withOwnedTemporaryDirectory(
     path.join(os.tmpdir(), 'aw-skill-eval-publish-'),
     async (privateRoot) => {
       await fs.chmod(privateRoot, 0o700);
-      const tarballPath = await packEval({ destination: privateRoot, snapshot });
+      const tarballPath = await packEval({
+        destination: privateRoot,
+        snapshot,
+        quiet: options.quiet ?? false,
+        runPackCommand: options.runPackCommand,
+      });
       return callback(tarballPath);
     },
     'Private shared Eval tarball cleanup also failed',

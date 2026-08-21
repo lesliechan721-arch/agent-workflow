@@ -18,6 +18,9 @@ import {
 } from '../../../../scripts/release/git-catalog-publisher.mjs';
 import { bootstrapCatalog } from '../../../../scripts/release/bootstrap-catalog.mjs';
 import { stageCatalogRelease } from '../../../../scripts/release/stage-catalog.mjs';
+import { observeReleaseHistory } from '../../../../scripts/release/release-observe.mjs';
+import { prepareRelease } from '../../../../scripts/release/release-prepare.mjs';
+import { calculateCliTrainContentDigest } from '../../../../scripts/release/release-model.mjs';
 import * as pluginStaging from '../../scripts/plugin-staging.js';
 import * as catalogSnapshot from '../../src/utils/catalog-snapshot.js';
 import { catalogGitProviderInternal } from '../../src/utils/git-catalog-provider.js';
@@ -373,6 +376,118 @@ describe('Git catalog publisher', () => {
       .toBe(tagged.commit);
     await expect(git(['--git-dir', remoteUrl, 'rev-parse', CATALOG_TAG_FIRST_PENDING_REF]))
       .rejects.toThrow();
+  });
+
+  it('discovers and prepares recovery for a guarded beta tag from a stable target only', async () => {
+    const root = await fixtureRoot('aw-catalog-pending-beta-plan-');
+    const remoteUrl = await createBareRemote(root);
+    const initial = await readCatalogPublicationHistory({
+      mode: 'beta', catalogVersion: '1.0.0-beta.1', remoteUrl, catalogModules,
+    });
+    const staged = await stage(root, '1.0.0-beta.1', initial.mergedLedger);
+    const tagged = await publishStagedCatalog(initial, staged.outputRoot, { publicationMode: 'tag' });
+    const packageContents = [
+      { name: '@lesliechan721/agent-skill-eval', contentDigest: `sha256:${'3'.repeat(64)}` },
+      { name: '@lesliechan721/aw', contentDigest: `sha256:${'4'.repeat(64)}` },
+    ];
+    const trainContentDigest = calculateCliTrainContentDigest(packageContents);
+    const metadata = (packageContentDigest: string) => ({
+      schemaVersion: 1,
+      targetVersion: '1.0.0',
+      candidateVersion: '1.0.0-beta.1',
+      planId: `sha256:${'7'.repeat(64)}`,
+      sourceHead: 'a'.repeat(40),
+      packageContentDigest,
+      trainContentDigest,
+    });
+    const registry = {
+      '@lesliechan721/agent-skill-eval': [{
+        version: '1.0.0-beta.1', awRelease: metadata(packageContents[0]!.contentDigest),
+      }],
+      '@lesliechan721/aw': [{
+        version: '1.0.0-beta.1', awRelease: metadata(packageContents[1]!.contentDigest),
+      }],
+      distTags: {
+        '@lesliechan721/agent-skill-eval': { latest: null, beta: '1.0.0-beta.1' },
+        '@lesliechan721/aw': { latest: null, beta: '1.0.0-beta.1' },
+      },
+    };
+    const targets = { schemaVersion: 1, cli: '1.0.0', catalog: '1.0.0' };
+    const readHistory = () => observeReleaseHistory({
+      targets,
+      channel: 'beta',
+      cliDistRoot: path.join(root, 'unused-dist'),
+      readRegistryHistory: async () => registry,
+      readCatalogHistory: (options) => readCatalogPublicationHistory({
+        ...options, remoteUrl, catalogModules,
+      }),
+    });
+    const history = await readHistory();
+    expect(history.catalog).toMatchObject({
+      pending: tagged.commit,
+      tag: { commit: tagged.commit, manifest: { catalogVersion: '1.0.0-beta.1' } },
+    });
+    const guardedBetaHistory = await readCatalogPublicationHistory({
+      mode: 'beta', catalogVersion: '1.0.0-beta.1', remoteUrl, catalogModules,
+    });
+    const taggedEntry = staged.manifest.entries[0]!;
+    const content = {
+      source: {
+        head: 'a'.repeat(40),
+        releaseInputDigest: `sha256:${'1'.repeat(64)}`,
+        buildOutputDigest: `sha256:${'2'.repeat(64)}`,
+        cliPackageDigest: `sha256:${'5'.repeat(64)}`,
+      },
+      cli: {
+        trainContentDigest,
+        packages: packageContents.map((entry, index) => ({
+          ...entry, tarballDigest: `sha256:${String(index + 8).repeat(64)}`,
+        })),
+      },
+      catalog: {
+        minCliVersion: staged.manifest.compatibility.aw.minVersion,
+        contentDigest: history.catalog.tag!.catalogContentDigest,
+        plugins: [{
+          name: taggedEntry.name,
+          targetVersion: taggedEntry.version.replace(/-beta\.[1-9]\d*$/u, ''),
+          contentDigest: taggedEntry.contentDigest,
+        }],
+      },
+    };
+    const prepared = await prepareRelease(['beta'], {
+      repoRoot: root,
+      assertClean: async () => undefined,
+      assertFresh: async () => undefined,
+      assertTargetsMatchHead: async () => undefined,
+      readTargets: async () => targets,
+      observe: async () => ({ targets, content, history }),
+      observeRemoteHistory: readHistory,
+      writePlan: async () => ({
+        created: true,
+        planPath: path.join(root, 'plan.json'),
+        pointerPath: path.join(root, 'current-plan.json'),
+      }),
+    });
+    expect(prepared.status.catalog).toMatchObject({
+      action: 'recover', candidateVersion: '1.0.0-beta.1', publicationMode: 'promotion',
+    });
+
+    await git(['--git-dir', remoteUrl, 'update-ref', '-d', CATALOG_TAG_FIRST_PENDING_REF]);
+    await expect(publishStagedCatalog(
+      { ...guardedBetaHistory, pending: null },
+      staged.outputRoot,
+      { publicationMode: 'tag' },
+    )).rejects.toThrow('no tag-first pending guard');
+    await expect(readHistory()).rejects.toThrow('ahead of its channel without the tag-first pending guard');
+    await expect(prepareRelease(['beta'], {
+      repoRoot: root,
+      assertClean: async () => undefined,
+      assertFresh: async () => undefined,
+      assertTargetsMatchHead: async () => undefined,
+      readTargets: async () => targets,
+      observe: async () => ({ targets, content, history }),
+      observeRemoteHistory: readHistory,
+    })).rejects.toThrow('ahead of its channel without the tag-first pending guard');
   });
 
   it('rejects same-version channel drift and existing tag runtime drift', async () => {

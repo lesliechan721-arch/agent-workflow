@@ -1,0 +1,468 @@
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import {
+  bumpStableVersion,
+  parseTargetArgs,
+  readVersionTargets,
+  updateReleaseTargets,
+} from '../../../../scripts/release/release-target.mjs';
+import {
+  createReleasePlan,
+  normalizeReleasePlan,
+  writeReleasePlan,
+} from '../../../../scripts/release/release-plan.mjs';
+import {
+  calculateReleaseStatus,
+  hasPlanAction,
+  normalizeCliRegistryHistory,
+} from '../../../../scripts/release/release-state.mjs';
+import { calculateCliTrainContentDigest } from '../../../../scripts/release/release-model.mjs';
+import { calculateCanonicalDigest } from '../../../../scripts/release/release-model.mjs';
+import { readRegistryReleaseHistory } from '../../../../scripts/release/release-observe.mjs';
+
+const roots: string[] = [];
+const digest = (character: string): string => `sha256:${character.repeat(64)}`;
+
+async function temporaryRepo(): Promise<string> {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-release-phase2-'));
+  roots.push(root);
+  await fs.mkdir(path.join(root, 'release'), { recursive: true });
+  await fs.writeFile(path.join(root, 'release', 'version-targets.json'), `${JSON.stringify({
+    schemaVersion: 1,
+    cli: '1.2.3',
+    catalog: '2.3.4',
+  }, null, 2)}\n`);
+  return root;
+}
+
+afterEach(async () => {
+  await Promise.all(roots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
+});
+
+describe('release targets', () => {
+  it('parses combined axes, rejects duplicates, and applies strict SemVer bumps', () => {
+    const parsed = parseTargetArgs([
+      '--cli', 'minor', '--catalog', 'patch', '--plugin', 'ask-me=major',
+    ]);
+    expect(parsed).toMatchObject({ cli: 'minor', catalog: 'patch' });
+    expect([...parsed.plugins]).toEqual([['ask-me', 'major']]);
+    expect(bumpStableVersion('999999999999999999999.2.3', 'patch'))
+      .toBe('999999999999999999999.2.4');
+    expect(() => parseTargetArgs(['--cli', 'patch', '--cli', 'minor']))
+      .toThrow('Duplicate release target axis');
+    expect(() => parseTargetArgs([])).toThrow('at least one version bump');
+  });
+
+  it('atomically updates exact target and plugin manifest files', async () => {
+    const root = await temporaryRepo();
+    const manifestRoot = path.join(root, 'plugins', 'ask-me', '.agents-plugin');
+    await fs.mkdir(manifestRoot, { recursive: true });
+    await fs.writeFile(path.join(manifestRoot, 'plugin.json'), `${JSON.stringify({
+      name: 'ask-me', version: '4.5.6', description: 'fixture',
+    }, null, 2)}\n`);
+    await fs.chmod(path.join(manifestRoot, 'plugin.json'), 0o640);
+    await updateReleaseTargets([
+      '--cli', 'minor', '--catalog', 'patch', '--plugin', 'ask-me=major',
+    ], { repoRoot: root });
+    await expect(readVersionTargets(root)).resolves.toEqual({
+      schemaVersion: 1, cli: '1.3.0', catalog: '2.3.5',
+    });
+    expect(JSON.parse(await fs.readFile(path.join(manifestRoot, 'plugin.json'), 'utf8')))
+      .toMatchObject({ name: 'ask-me', version: '5.0.0', description: 'fixture' });
+    expect((await fs.stat(path.join(manifestRoot, 'plugin.json'))).mode & 0o777).toBe(0o640);
+    await expect(updateReleaseTargets(['--plugin', 'missing=patch'], { repoRoot: root }))
+      .rejects.toThrow('Unknown plugin');
+  });
+
+  it('rejects non-canonical target bytes', async () => {
+    const root = await temporaryRepo();
+    await fs.writeFile(path.join(root, 'release', 'version-targets.json'),
+      '{"schemaVersion":1,"cli":"1.2.3","catalog":"2.3.4"}\n');
+    await expect(readVersionTargets(root)).rejects.toThrow('canonical JSON formatting');
+  });
+
+  it('rolls back every target when a later atomic replacement fails', async () => {
+    const root = await temporaryRepo();
+    const manifestRoot = path.join(root, 'plugins', 'ask-me', '.agents-plugin');
+    const manifestPath = path.join(manifestRoot, 'plugin.json');
+    await fs.mkdir(manifestRoot, { recursive: true });
+    await fs.writeFile(manifestPath, `${JSON.stringify({ name: 'ask-me', version: '1.0.0' }, null, 2)}\n`);
+    const originalTargets = await fs.readFile(path.join(root, 'release', 'version-targets.json'), 'utf8');
+    const originalManifest = await fs.readFile(manifestPath, 'utf8');
+    const fileSystem = {
+      writeFile: fs.writeFile.bind(fs),
+      rm: fs.rm.bind(fs),
+      rename: async (source: string, destination: string) => {
+        if (source.endsWith('.tmp') && destination === manifestPath) {
+          throw new Error('injected second replacement failure');
+        }
+        return fs.rename(source, destination);
+      },
+    };
+    await expect(updateReleaseTargets([
+      '--cli', 'patch', '--plugin', 'ask-me=patch',
+    ], { repoRoot: root, fileSystem })).rejects.toThrow('injected second replacement failure');
+    await expect(fs.readFile(path.join(root, 'release', 'version-targets.json'), 'utf8'))
+      .resolves.toBe(originalTargets);
+    await expect(fs.readFile(manifestPath, 'utf8')).resolves.toBe(originalManifest);
+  });
+});
+
+function fixture(overrides: Record<string, unknown> = {}) {
+  const packages = [
+    { name: '@lesliechan721/agent-skill-eval', contentDigest: digest('3'), tarballDigest: digest('7') },
+    { name: '@lesliechan721/aw', contentDigest: digest('4'), tarballDigest: digest('8') },
+  ];
+  return {
+    channel: 'beta' as const,
+    targets: { schemaVersion: 1, cli: '0.1.0', catalog: '0.1.0' },
+    content: {
+      source: {
+        head: 'a'.repeat(40),
+        releaseInputDigest: digest('1'),
+        buildOutputDigest: digest('a'),
+        cliPackageDigest: digest('b'),
+      },
+      cli: {
+        trainContentDigest: calculateCliTrainContentDigest(packages.map(({ name, contentDigest }) => ({
+          name, contentDigest,
+        }))),
+        packages,
+      },
+      catalog: {
+        minCliVersion: '0.1.0-beta.2',
+        contentDigest: digest('5'),
+        plugins: [{ name: 'ask-me', targetVersion: '1.0.0', contentDigest: digest('6') }],
+      },
+    },
+    history: {
+      registry: {
+        '@lesliechan721/agent-skill-eval': [],
+        '@lesliechan721/aw': [],
+        distTags: {
+          '@lesliechan721/agent-skill-eval': { latest: null, beta: null },
+          '@lesliechan721/aw': { latest: null, beta: null },
+        },
+      },
+      catalog: { latest: null, beta: null, pending: null, ledger: { schemaVersion: 2, records: [] } },
+    },
+    ...overrides,
+  };
+}
+
+describe('release status and plans', () => {
+  it('reserves legacy beta observations and starts the next complete CLI train at beta.3', () => {
+    const input = fixture();
+    input.history.registry['@lesliechan721/aw'] = [
+      { version: '0.1.0-beta.1', awRelease: null },
+      { version: '0.1.0-beta.2', awRelease: null },
+    ];
+    const status = calculateReleaseStatus(input);
+    expect(status.cli).toMatchObject({ action: 'publish', candidateVersion: '0.1.0-beta.3' });
+  });
+
+  it('blocks a partial schema-1 CLI train', () => {
+    const input = fixture();
+    input.history.registry['@lesliechan721/aw'] = [{
+      version: '0.1.0-beta.3',
+      awRelease: {
+        schemaVersion: 1,
+        targetVersion: '0.1.0',
+        candidateVersion: '0.1.0-beta.3',
+        planId: digest('7'),
+        sourceHead: 'a'.repeat(40),
+        packageContentDigest: digest('8'),
+        trainContentDigest: input.content.cli.trainContentDigest,
+      },
+    }];
+    expect(calculateReleaseStatus(input).cli).toMatchObject({
+      action: 'blocked',
+      candidateVersion: null,
+      reason: { code: 'partial-candidate' },
+    });
+  });
+
+  it('blocks beta.3+ without metadata and rejects a declared train digest not derived from both packages', () => {
+    const missing = fixture();
+    missing.history.registry['@lesliechan721/aw'] = [{ version: '0.1.0-beta.3', awRelease: null }];
+    expect(calculateReleaseStatus(missing).cli.action).toBe('blocked');
+
+    const inconsistent = fixture();
+    const metadata = (packageContentDigest: string) => ({
+      schemaVersion: 1,
+      targetVersion: '0.1.0',
+      candidateVersion: '0.1.0-beta.3',
+      planId: digest('9'),
+      sourceHead: 'a'.repeat(40),
+      packageContentDigest,
+      trainContentDigest: digest('f'),
+    });
+    inconsistent.history.registry['@lesliechan721/agent-skill-eval'] = [{
+      version: '0.1.0-beta.3', awRelease: metadata(digest('3')),
+    }];
+    inconsistent.history.registry['@lesliechan721/aw'] = [{
+      version: '0.1.0-beta.3', awRelease: metadata(digest('4')),
+    }];
+    expect(calculateReleaseStatus(inconsistent).cli).toMatchObject({
+      action: 'blocked', reason: { code: 'partial-candidate' },
+    });
+  });
+
+  it('chooses atomic-combined or tag-first from observed train tags and compatibility', () => {
+    const atomic = fixture();
+    atomic.history.registry['@lesliechan721/aw'] = [
+      { version: '0.1.0-beta.1', awRelease: null },
+      { version: '0.1.0-beta.2', awRelease: null },
+    ];
+    atomic.history.registry.distTags['@lesliechan721/aw'].beta = '0.1.0-beta.2';
+    expect(calculateReleaseStatus(atomic).catalog.publicationMode).toBe('atomic-combined');
+
+    const tagFirst = fixture();
+    tagFirst.content.catalog.minCliVersion = '0.1.0-beta.1';
+    expect(calculateReleaseStatus(tagFirst).catalog.publicationMode).toBe('tag-first');
+  });
+
+  it('fixes catalog-only and promotion modes in status instead of deferring them to publishing', () => {
+    const catalogOnly = fixture();
+    catalogOnly.content.catalog.minCliVersion = '0.1.0-beta.1';
+    const metadata = (packageContentDigest: string) => ({
+      schemaVersion: 1,
+      targetVersion: '0.1.0',
+      candidateVersion: '0.1.0-beta.1',
+      planId: digest('9'),
+      sourceHead: 'a'.repeat(40),
+      packageContentDigest,
+      trainContentDigest: catalogOnly.content.cli.trainContentDigest,
+    });
+    for (const [name, packageDigest] of [
+      ['@lesliechan721/agent-skill-eval', digest('3')],
+      ['@lesliechan721/aw', digest('4')],
+    ] as const) {
+      catalogOnly.history.registry[name] = [{
+        version: '0.1.0-beta.1', awRelease: metadata(packageDigest),
+      }];
+      catalogOnly.history.registry.distTags[name].beta = '0.1.0-beta.1';
+    }
+    expect(calculateReleaseStatus(catalogOnly).catalog.publicationMode).toBe('catalog-only');
+
+    const promotion = structuredClone(catalogOnly);
+    promotion.history.catalog.pending = 'c'.repeat(40);
+    promotion.history.catalog.tag = {
+      commit: 'c'.repeat(40),
+      manifest: { catalogVersion: '0.1.0-beta.1' },
+      catalogContentDigest: digest('5'),
+      ledger: { schemaVersion: 2, records: [] },
+    };
+    expect(calculateReleaseStatus(promotion).catalog).toMatchObject({
+      action: 'recover', publicationMode: 'promotion',
+    });
+
+    const belowFloor = structuredClone(promotion);
+    belowFloor.content.catalog.minCliVersion = '0.1.0-beta.2';
+    expect(calculateReleaseStatus(belowFloor).catalog).toMatchObject({
+      action: 'deferred',
+      candidateVersion: null,
+      publicationMode: 'none',
+      reason: {
+        code: 'published-cli-incompatible',
+        details: { minCliVersion: '0.1.0-beta.2', publishedTag: '0.1.0-beta.1' },
+      },
+    });
+  });
+
+  it('keeps CLI publishable when the catalog axis needs a target bump', () => {
+    const input = fixture();
+    input.history.catalog.latest = {
+      commit: 'b'.repeat(40),
+      manifest: { catalogVersion: '0.1.0' },
+      catalogContentDigest: digest('9'),
+      ledger: {
+        schemaVersion: 2,
+        records: [{
+          plugin: 'ask-me', version: '1.0.0', contentDigest: digest('9'),
+          artifactDigest: digest('a'), manifestDigest: digest('b'),
+          channel: 'latest', catalogVersion: '0.1.0',
+        }],
+      },
+    };
+    input.history.catalog.ledger = input.history.catalog.latest.ledger;
+    const status = calculateReleaseStatus(input);
+    expect(status.cli.action).toBe('publish');
+    expect(status.catalog.action).toBe('deferred');
+    expect(status.plugins[0]).toMatchObject({ action: 'deferred', candidateVersion: null });
+    expect(hasPlanAction(status)).toBe(true);
+  });
+
+  it('validates plan identity and writes an immutable idempotent plan', async () => {
+    const root = await temporaryRepo();
+    const status = calculateReleaseStatus(fixture());
+    const plan = createReleasePlan(status);
+    expect(normalizeReleasePlan(plan)).toEqual(plan);
+    expect(() => normalizeReleasePlan({ ...plan, channel: 'stable' }))
+      .toThrow('candidate does not match plan channel');
+    const first = await writeReleasePlan(plan, { repoRoot: root });
+    const second = await writeReleasePlan(plan, { repoRoot: root });
+    expect(first.created).toBe(true);
+    expect(path.basename(first.planPath)).toMatch(/^[0-9a-f]{64}\.json$/);
+    expect(second.created).toBe(false);
+    const changed = `${JSON.stringify({ ...plan, planDigest: digest('f') }, null, 2)}\n`;
+    await fs.writeFile(first.planPath, changed);
+    await expect(writeReleasePlan(plan, { repoRoot: root })).rejects.toThrow('different bytes');
+  });
+
+  it('rejects cross-field plan drift even after planId and planDigest are recomputed', () => {
+    const plan = createReleasePlan(calculateReleaseStatus(fixture()));
+    const resign = (raw: Record<string, unknown>) => {
+      const { planId: ignoredId, planDigest: ignoredDigest, ...base } = raw;
+      const planId = calculateCanonicalDigest(base);
+      return { ...base, planId, planDigest: calculateCanonicalDigest({ ...base, planId }) };
+    };
+    const packageActionDrift = resign({
+      ...plan,
+      cli: {
+        ...plan.cli,
+        packages: plan.cli.packages.map((entry, index) => index === 0
+          ? { ...entry, action: 'skip' }
+          : entry),
+      },
+    });
+    expect(() => normalizeReleasePlan(packageActionDrift)).toThrow('package actions must match');
+    const modeDrift = resign({
+      ...plan,
+      catalog: { ...plan.catalog, publicationMode: 'catalog-only' },
+    });
+    expect(() => normalizeReleasePlan(modeDrift)).toThrow('action/mode combination');
+    const trainDrift = resign({
+      ...plan,
+      cli: { ...plan.cli, trainContentDigest: digest('e') },
+    });
+    expect(() => normalizeReleasePlan(trainDrift)).toThrow('package content does not match');
+    const channelDrift = resign({ ...plan, channel: 'stable' });
+    expect(() => normalizeReleasePlan(channelDrift)).toThrow('candidate does not match plan channel');
+    const skipCandidateDrift = resign({
+      ...plan,
+      cli: { ...plan.cli, action: 'skip', candidateVersion: null },
+    });
+    expect(() => normalizeReleasePlan(skipCandidateDrift)).toThrow('skip requires a candidate');
+
+    const tagFirstInput = fixture();
+    tagFirstInput.content.catalog.minCliVersion = '0.1.0-beta.1';
+    const tagFirstPlan = createReleasePlan(calculateReleaseStatus(tagFirstInput));
+    const allowedModeDrift = resign({
+      ...tagFirstPlan,
+      catalog: { ...tagFirstPlan.catalog, publicationMode: 'atomic-combined' },
+    });
+    expect(() => normalizeReleasePlan(allowedModeDrift)).toThrow('bound release observations');
+
+    const skippedCliDrift = resign({
+      ...tagFirstPlan,
+      cli: {
+        ...tagFirstPlan.cli,
+        action: 'skip',
+        packages: tagFirstPlan.cli.packages.map((entry) => ({ ...entry, action: 'skip' })),
+      },
+      catalog: { ...tagFirstPlan.catalog, publicationMode: 'catalog-only' },
+    });
+    expect(() => normalizeReleasePlan(skippedCliDrift)).toThrow('bound release observations');
+  });
+
+  it('enforces dist-tag channel types and binds the one legacy latest exception', () => {
+    const invalid = fixture();
+    invalid.history.registry.distTags['@lesliechan721/aw'].beta = '0.1.0';
+    expect(() => normalizeCliRegistryHistory(invalid.history.registry))
+      .toThrow('beta dist-tag must reference a canonical beta');
+
+    invalid.history.registry.distTags['@lesliechan721/aw'] = {
+      latest: '0.1.0-beta.2', beta: null,
+    };
+    expect(() => normalizeCliRegistryHistory(invalid.history.registry))
+      .toThrow('latest dist-tag must reference a stable');
+
+    const legacy = fixture({ channel: 'stable' });
+    legacy.content.catalog.minCliVersion = '0.1.0-beta.1';
+    legacy.history.registry['@lesliechan721/aw'] = [
+      { version: '0.1.0-beta.1', awRelease: null },
+      { version: '0.1.0-beta.2', awRelease: null },
+    ];
+    legacy.history.registry.distTags['@lesliechan721/aw'].latest = '0.1.0-beta.1';
+    const status = calculateReleaseStatus(legacy);
+    expect(status.cli).toMatchObject({ publishedTag: '0.1.0-beta.1' });
+    expect(status.cli.action).not.toBe('blocked');
+    const plan = createReleasePlan(status);
+    expect(plan.history.npm.legacyLatestAwOnly).toBe(true);
+    expect(normalizeReleasePlan(plan)).toEqual(plan);
+
+    const invalidLegacyBeta = fixture();
+    invalidLegacyBeta.history.registry['@lesliechan721/agent-skill-eval'] = [{
+      version: '0.1.0-beta.1', awRelease: null,
+    }];
+    invalidLegacyBeta.history.registry['@lesliechan721/aw'] = [{
+      version: '0.1.0-beta.1', awRelease: null,
+    }];
+    invalidLegacyBeta.history.registry.distTags['@lesliechan721/aw'].beta = '0.1.0-beta.1';
+    expect(calculateReleaseStatus(invalidLegacyBeta).cli).toMatchObject({
+      action: 'blocked',
+      reason: { code: 'partial-candidate' },
+    });
+  });
+});
+
+describe('release registry observation', () => {
+  it('maps only package E404 versions lookups to empty history', async () => {
+    const captureCommand = vi.fn(async () => {
+      throw new Error('ERR_PNPM_FETCH_404 404 Not Found');
+    });
+    await expect(readRegistryReleaseHistory({
+      registryUrl: 'https://registry.example.test/',
+      captureCommand,
+    })).resolves.toMatchObject({
+      '@lesliechan721/agent-skill-eval': [],
+      '@lesliechan721/aw': [],
+    });
+  });
+
+  it('keeps non-404 registry failures fail closed', async () => {
+    await expect(readRegistryReleaseHistory({
+      registryUrl: 'https://registry.example.test/',
+      captureCommand: async () => { throw new Error('registry timeout'); },
+    })).rejects.toThrow('registry timeout');
+  });
+
+  it.each([
+    ['string', '"metadata"'],
+    ['array', '[]'],
+    ['boolean', 'true'],
+    ['number', '42'],
+  ])('rejects %s awRelease JSON instead of treating it as missing', async (_kind, metadataJson) => {
+    let call = 0;
+    await expect(readRegistryReleaseHistory({
+      registryUrl: 'https://registry.example.test/',
+      captureCommand: async () => {
+        call += 1;
+        if (call === 1) return { stdout: '["0.1.0"]', stderr: '' };
+        if (call === 2) return { stdout: '{}', stderr: '' };
+        return { stdout: metadataJson, stderr: '' };
+      },
+    })).rejects.toThrow('invalid awRelease metadata');
+  });
+
+  it.each([
+    ['empty stdout', ''],
+    ['JSON null', 'null'],
+  ])('treats only %s awRelease as missing metadata', async (_kind, metadataJson) => {
+    const result = await readRegistryReleaseHistory({
+      registryUrl: 'https://registry.example.test/',
+      captureCommand: async (_command, args: string[]) => {
+        if (args.includes('versions')) return { stdout: '["0.1.0-beta.1"]', stderr: '' };
+        if (args.includes('dist-tags')) return { stdout: '{}', stderr: '' };
+        return { stdout: metadataJson, stderr: '' };
+      },
+    });
+    expect(result['@lesliechan721/agent-skill-eval'][0]?.awRelease).toBeNull();
+    expect(result['@lesliechan721/aw'][0]?.awRelease).toBeNull();
+  });
+});
