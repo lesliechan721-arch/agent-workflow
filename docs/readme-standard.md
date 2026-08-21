@@ -112,7 +112,7 @@ Skill README 应帮助用户回答：什么时候使用、它会怎样工作、�
 
 - 新增、删除或重命名 Skill 时，同步插件 README。
 - 改变平台、scope、调用策略、配置、权限或用户可观察结果时，同步对应 README。
-- README 属于 production source。已有插件修改 production README 时，按项目版本规则提高插件稳定版本。
+- README 属于 production source。日常开发保持当前稳定 target，并用 `aw plugin status` 报告变化；release train 开始时由 workspace release workflow 设置新 target。
 - 脚手架负责生成可用起稿，不以固定 heading 或 prose snapshot 代替人工内容审查。
 - 作者验证继续检查 README 存在、非空、链接有效并与 manifest/调用元数据一致。
 - 正式报告发布和 README 维护是两条独立流程；任何评审或发布命令都不得自动改写 README。

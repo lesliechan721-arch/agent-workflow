@@ -53,22 +53,22 @@ AW 版本管理里有三套身份，不能混用：
 - 源码 `version` 必须是没有 prerelease 或 build metadata 的稳定 SemVer；`compatibility.aw.minVersion` 必须是严格 SemVer。不能写 `v1.2.3`、`1.2`、`latest`、`^1.2.3` 或其它宽松写法。
 - 插件 manifest 不声明 per-plugin 宿主 agent 版本。Codex `>= 0.145.0`、Claude Code `>= 2.1.88` 是 AW CLI 内置写命令门槛，作者不需要添加 `compatibility.codex`、`compatibility.claude`、`minimumCodexVersion` 或类似字段。
 - 插件最低 CLI 版本不能高于 catalog 级 `compatibility.aw.minVersion`。catalog 级门槛取所有插件声明与 schema 4 Git 分发 floor `0.1.0` 的最大值；作者只声明插件本身的真实最低版本，不手工维护或降低 catalog floor。
-- schema 4 snapshot 中每个插件都必须提供 `artifactDigest`、`manifestDigest` 和 `contentDigest`，并声明不高于 snapshot 级门槛的最低 CLI 版本。作者改变 manifest、runtime 文件、脚本、静态资源、最低 CLI 版本或平台能力时，应发布新的插件 `version`。
+- schema 4 snapshot 中每个插件都必须提供 `artifactDigest`、`manifestDigest` 和 `contentDigest`，并声明不高于 snapshot 级门槛的最低 CLI 版本。作者改变 production bundle 时，在下一次 release train 设置新的插件 `version`。
 
 作者版本门禁：
 
 ```bash
 aw --version
-aw plugin check-versions --help
-aw plugin check-versions <plugin-name> --repo-root <repo-root> \
+aw plugin status --help
+aw plugin status <plugin-name> --repo-root <repo-root> \
   --plugin-root <plugin-root> --base <git-ref>
 ```
 
-`--plugin-root` 相对 repo root 解析且必须位于同一 Git repository 内。只有标准 `plugins/<name>` 布局的全仓检查使用 `--all`。 `validate` 和 `check-versions` 在读取 manifest 前检查 repo/plugin root、`.agents-plugin` 和 manifest 的完整路径链；这些节点必须是仓库内预期类型，不能用符号链接重定向。
+`--plugin-root` 相对 repo root 解析且必须位于同一 Git repository 内。只有标准 `plugins/<name>` 布局的全仓检查使用 `--all`。 `validate` 和 `status` 在读取 manifest 前检查 repo/plugin root、`.agents-plugin` 和 manifest 的完整路径链；这些节点必须是仓库内预期类型，不能用符号链接重定向。
 
-新插件保留 manifest 中的初始稳定 version，脚手架默认使用 `0.1.0`。已有插件的 production bundle 变化时，作者在同一改动中直接提高 manifest version，并按兼容性影响选择 major、minor 或 patch。源码 manifest 是目标稳定版本的唯一真值；不使用独立 change 文件、聚合步骤或版本写入脚本。build metadata 不提高 SemVer precedence，因此源码 version 禁止 prerelease 和 build metadata。
+新插件保留 manifest 中的初始稳定 version，脚手架默认使用 `0.1.0`。日常开发保持当前稳定目标不变，不为每次 production bundle 变化直接改 version。release 请求由 workspace release workflow 一次设置 target；只有目标工作区提供 `release:target` / `release:prepare` 时才使用这些入口。源码 manifest 是目标稳定版本的唯一真值。build metadata 不提高 SemVer precedence，因此源码 version 禁止 prerelease 和 build metadata。
 
-`aw plugin check-versions` 用当前已构建 CLI 的 staging bundler 分别物化 Git 基线插件和工作树插件，再忽略 plugin version 字段本身比较 production bundle。若 Git base 和 current workspace 都有完整 `packages/cli` source，它分别绑定两侧 registry 和 provider version；单侧 ownership 或 partial source 失败。两侧都没有时，工具从同一个经验证的 installed CLI provider 独立物化两个相同身份的 root，不让 base 复制或回退到 current root。production 变化但 version 未提高、版本下降或 SemVer precedence 未提高时失败；只有 version 提高时成功并警告。Skill `evals/**`、插件 `reports/**` 和 test-only 文件由 bundler 排除；随 bundle 发布的 README、Skill、manifest 和 runtime 脚本变化要求提高 version。JSON 输出使用 schema 2。该门禁只判断插件源码变化，不判断 CLI bundler 自身变化造成的产物差异。
+`aw plugin status` 用当前已构建 CLI 的 staging bundler 分别物化 Git 基线插件和工作树插件，再忽略 plugin version 字段本身比较 production bundle。若 Git base 和 current workspace 都有完整 `packages/cli` source，它分别绑定两侧 registry 和 provider version；单侧 ownership 或 partial source 失败。两侧都没有时，工具从同一个经验证的 installed CLI provider 独立物化两个相同身份的 root，不让 base 复制或回退到 current root。production 变化但 version 相同时返回通过的 `unreleasedChanges`；版本下降、非稳定 SemVer、同 precedence 不同字符串或物化错误失败；只改 version 时返回通过的 `versionOnly` warning。Skill `evals/**`、插件 `reports/**` 和 test-only 文件由 bundler 排除；README、Skill、manifest 和 runtime 脚本会改变 production identity。JSON 输出使用 schema 3，声明 `policy: development`。deprecated `check-versions` 执行同一策略和 JSON 合同。
 
 `contentDigest` 排除生成 manifest 的 version 字段，用于核对插件内容身份。schema 4 snapshot、release staging 和源码 manifest 是作者边界；作者不要修改 publisher、remote refs、tags 或 ledger。
 

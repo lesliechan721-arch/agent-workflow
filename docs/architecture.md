@@ -9,8 +9,8 @@
 - `commands/rebuild-operations.ts` 只编排 ownership 检查、清理、平台写入、artifact 写入、lifecycle 和完成后检查。
 - `commands/rebuild-integration.ts` 把插件能力转换成平台原生写入和 AW-owned 组件。
 - `commands/status-v4.ts` 读取多源 catalog、live ownership 和平台组件，输出 status v4，并为控制台提供同一份数据。
-- `authoring/` 是 `aw plugin init`、`add-skill`、`validate` 和 `check-versions` 的唯一确定性作者实现；该目录随 CLI tarball 发布，运行时不读取仓库 `.agents` 或插件 Skill root。
-- 作者命令默认把插件根解析为 `<repo-root>/plugins/<plugin-name>`。`init`、`add-skill` 和单插件 `check-versions` 可用 `--plugin-root` 指定仓库内其它根；路径相对 `--repo-root` 解析，目录 basename 和 manifest name 必须匹配 plugin name。`validate` 和 `check-versions` 在读取 manifest 前对 repo root、plugin root、`.agents-plugin` 和 manifest 使用同一条逐节点 `lstat`、`realpath` 和边界身份围栏；默认根、显式根和 `--all` 都拒绝这些节点中的符号链接或错误类型，诊断只报告被拒节点，不解析或泄露链接目标。显式根的 `init` 不要求或修改 `plugins/marketplace-source.json`；`check-versions --all` 仍只扫描仓库 `plugins/`。
+- `authoring/` 是 `aw plugin init`、`add-skill`、`validate` 和 `status` 的唯一确定性作者实现；`check-versions` 是 `status` 的 deprecated 兼容别名。该目录随 CLI tarball 发布，运行时不读取仓库 `.agents` 或插件 Skill root。
+- 作者命令默认把插件根解析为 `<repo-root>/plugins/<plugin-name>`。`init`、`add-skill` 和单插件 `status` 可用 `--plugin-root` 指定仓库内其它根；路径相对 `--repo-root` 解析，目录 basename 和 manifest name 必须匹配 plugin name。`validate` 和 `status` 在读取 manifest 前对 repo root、plugin root、`.agents-plugin` 和 manifest 使用同一条逐节点 `lstat`、`realpath` 和边界身份围栏；默认根、显式根和 `--all` 都拒绝这些节点中的符号链接或错误类型，诊断只报告被拒节点，不解析或泄露链接目标。显式根的 `init` 不要求或修改 `plugins/marketplace-source.json`；`status --all` 仍只扫描仓库 `plugins/`。
 - `utils/ownership.ts` 定义 owner marker、组件检查和安全删除边界。
 - `utils/lifecycle-active-store.ts` 保存最后一次成功写入所需的 lifecycle 输入。
 - `utils/local-marketplace.ts` 校验 namespaced active marketplace，并在安全替换时重放 Codex Skill owner overlay。
@@ -264,7 +264,7 @@ cache publication 必须满足：
 - `--json` 成功时 stdout 只包含一个 JSON 对象。
 - 错误说明和 verbose/debug 文本写 stderr，不污染 JSON stdout。
 - 写命令失败时 receipt 保留失败 target，并返回非零退出码。
-- `aw plugin validate --json` 保留单一 JSON stdout，包含 `ok`、profile、plugin directory、version check、warnings 和 errors；`aw plugin check-versions --json` 保留 schema 2 单一 JSON stdout。作者命令非交互，失败返回非零退出码。
+- `aw plugin validate --json` 保留单一 JSON stdout，包含 `ok`、profile、plugin directory、development status、warnings 和 errors。`aw plugin status --json` 输出 schema 3 单一 JSON stdout，包含 `policy: development`、Git base 和 checks；`check-versions` 输出相同对象，并只向 stderr 写一次 deprecation 提示。development policy 允许 `unreleasedChanges`，但拒绝 downgrade、非稳定 SemVer、同 precedence 不同字符串和物化错误。作者命令非交互，失败返回非零退出码。
 - `add-skill` 写入前逐节点拒绝 plugin root、`.agents-plugin`、manifest、`skills` 和目标 Skill 的符号链接或错误节点类型；stage 位于已验证 plugin root。提交前重验目录和 manifest 身份，Skill target 必须不存在，manifest 使用同目录排他临时 regular file、`fsync` 和原子 rename 替换；失败清理 stage/temp 并保留原 manifest。
 
 ### Human/TUI progress

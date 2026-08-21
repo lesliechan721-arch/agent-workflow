@@ -27,7 +27,7 @@ node scripts/prepare-aw-authoring-context.mjs <plugin-root> \
 | 创建插件和初始 Skill 骨架 | `aw --version`；`aw plugin init --help` | `aw plugin init <plugin-name> ... --repo-root <workspace-root> --plugin-root <plugin-root>` |
 | 向现有插件增加静态 Skill 骨架 | `aw --version`；`aw plugin add-skill --help` | `aw plugin add-skill <plugin-name> ... --repo-root <workspace-root> --plugin-root <plugin-root>` |
 | 验证一个插件根 | `aw --version`；`aw plugin validate --help` | `aw plugin validate <plugin-root>` 加 help 明确支持的 flags |
-| 比较 production bundle 和版本 | `aw --version`；`aw plugin check-versions --help` | 单插件运行 `aw plugin check-versions <plugin-name> --repo-root <workspace-root> --plugin-root <plugin-root> --base <git-ref>`；`--all` 只用于标准 `plugins/` 布局 |
+| 查看 production bundle 开发状态 | `aw --version`；`aw plugin status --help` | 单插件运行 `aw plugin status <plugin-name> --repo-root <workspace-root> --plugin-root <plugin-root> --base <git-ref>`；`--all` 只用于标准 `plugins/` 布局 |
 
 `--plugin-root` 相对 `--repo-root` 解析，必须位于该 Git repository 内，且目录名和 manifest name 都必须匹配 `<plugin-name>`。显式根的 `init` 不读取或修改 `plugins/marketplace-source.json`。
 
@@ -48,12 +48,12 @@ node scripts/prepare-aw-authoring-context.mjs <plugin-root> \
 ## Manifest 版本
 
 - 新插件保留目标工作区规定的初始稳定版本。
-- 已有插件 production bundle 变化时，按兼容影响提高源码 manifest 的 major、minor 或 patch。
-- 只修改作者期 eval/report 时不提高插件版本。
+- 日常开发不因 production bundle 变化直接提高插件版本；`unreleasedChanges` 是通过状态。
+- release 请求只声明 target 由 workspace release workflow 设置。目标工作区提供 `release:target` / `release:prepare` 时使用这些入口；未提供时报告能力缺口，不指示作者为每次开发改 manifest version。
 
 ## 完成条件
 
-- `aw plugin validate`、适用的 `aw plugin check-versions` 与目标工作区要求的 tests 通过；
+- `aw plugin validate`、适用的 `aw plugin status` 与目标工作区要求的 tests 通过；
 - build-required 分支生成的 artifact 存在且来源可追溯；
 - Eval case 已通过独立 preflight；
 - 不存在的工作区命令不伪装成已运行，未运行的模型证据明确标为未验证。

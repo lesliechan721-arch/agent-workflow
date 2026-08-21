@@ -209,7 +209,7 @@ describe('pack smoke', () => {
       cwd: tempRoot,
       env: process.env,
     })).resolves.toMatchObject({
-      stdout: expect.stringContaining('check-versions'),
+      stdout: expect.stringContaining('status'),
       stderr: '',
     });
 

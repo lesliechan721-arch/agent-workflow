@@ -19,7 +19,7 @@
 
 ## 复合作者上下文
 
-`AWAuthoringContext` v2 用非空 `components[]` 表示一次请求中的全部变更面。组件包含：
+`AWAuthoringContext` v3 用非空 `components[]` 表示一次请求中的全部变更面。release target 不属于作者上下文字段；release 请求由目标 workspace 的 release workflow 设置 target，避免与 manifest 形成双真值。组件包含：
 
 - `id`：请求内唯一标识；
 - `type`：manifest、Skill、extension、slash command、MCP/App、dynamic artifact、config/helper、lifecycle、Node/build、README 或 Eval assets；

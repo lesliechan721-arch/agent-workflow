@@ -109,7 +109,7 @@ test('final Author Skill uses only stable CLI authoring commands', async () => {
   }
   const skill = await readFile(path.join(skillRoot, 'SKILL.md'), 'utf8');
   // Static contract exception: installed agents must discover every public authoring command and must not execute an undeclared fallback; behavior test is not suitable because the consumer contract is the final Skill instruction itself.
-  for (const command of ['init', 'add-skill', 'validate', 'check-versions']) {
+  for (const command of ['init', 'add-skill', 'validate', 'status']) {
     assert.match(skill, new RegExp(`aw plugin ${command} --help`, 'u'));
     assert.match(skill, new RegExp(`aw plugin ${command}(?: <| --)`, 'u'));
   }
@@ -136,12 +136,18 @@ test('built CLI performs representative Author Skill operations', async () => {
 
   const version = await runAw(['--version']);
   assert.match(version.stdout, /\d+\.\d+\.\d+/u);
-  for (const command of ['init', 'add-skill', 'validate', 'check-versions']) {
+  for (const command of ['init', 'add-skill', 'validate', 'status']) {
     const help = await runAw(['plugin', command, '--help']);
     assert.match(help.stdout, new RegExp(`aw plugin ${command}`, 'u'));
+    if (command === 'init' || command === 'add-skill') {
+      assert.match(help.stdout, /keep the current stable target/u);
+      assert.match(help.stdout, /pnpm release:target -- --plugin <name>=<version>/u);
+      assert.match(help.stdout, /release:prepare.*candidate identity/u);
+      assert.match(help.stdout, /another workspace.*release workflow/u);
+    }
   }
 
-  await runAw([
+  const addSkill = await runAw([
     'plugin',
     'init',
     'cli-authoring-fixture',
@@ -158,6 +164,12 @@ test('built CLI performs representative Author Skill operations', async () => {
     '--plugin-root',
     'tools/cli-authoring-fixture',
   ]);
+  assert.match(addSkill.stdout, /Keep the current stable target during development/u);
+  assert.match(
+    addSkill.stdout,
+    /pnpm release:target -- --plugin cli-authoring-fixture=<version>/u,
+  );
+  assert.match(addSkill.stdout, /release:prepare.*candidate identity/u);
   await runAw([
     'plugin',
     'add-skill',
@@ -190,7 +202,7 @@ test('built CLI performs representative Author Skill operations', async () => {
 
   const versionCheck = JSON.parse((await runAw([
     'plugin',
-    'check-versions',
+    'status',
     'aw-plugin-development',
     '--base',
     'HEAD',
@@ -198,7 +210,8 @@ test('built CLI performs representative Author Skill operations', async () => {
     repo,
     '--json',
   ])).stdout);
-  assert.equal(versionCheck.schemaVersion, 2);
+  assert.equal(versionCheck.schemaVersion, 3);
+  assert.equal(versionCheck.policy, 'development');
   assert.equal(versionCheck.ok, true);
   assert.ok(versionCheck.checks.some((entry) => entry.plugin === 'aw-plugin-development'));
 });

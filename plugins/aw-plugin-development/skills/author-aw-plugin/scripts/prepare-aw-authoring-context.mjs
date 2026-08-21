@@ -10,7 +10,6 @@ const COMPONENT_TYPES = new Set([
 ]);
 const OPERATIONS = new Set(['create', 'change', 'remove']);
 const PRODUCTS = new Set(['CODEX', 'CLAUDE']);
-const VERSION_BUMPS = new Set(['major', 'minor', 'patch']);
 const SKILL_INVOCATIONS = new Set(['model', 'manual', 'claude-model-only']);
 
 function fail(message) {
@@ -30,12 +29,11 @@ function usage() {
     '  --allowed-file <path>      Add an authorized file or directory. Repeatable.',
     '  --product <name>           CODEX or CLAUDE. Repeatable.',
     '  --source-profile <id>      Default: aw-default.',
-    '  --manifest-version-bump <major|minor|patch>',
     '  --no-build                 Mark the build as not required.',
     '  --validator <command>      Add one workspace validator. Repeatable.',
     '  -h, --help                 Show this help.',
     '',
-    'AWAuthoringContext v2 migration:',
+    'AWAuthoringContext v3 migration:',
     '  Replace --component-type and --skill-invocation with --components <json-file>.',
     '',
   ].join('\n'));
@@ -63,7 +61,6 @@ function parseArgs(argv) {
     allowedFiles: [],
     products: [],
     sourceProfile: 'aw-default',
-    manifestVersionBump: null,
     buildRequired: true,
     repoRoot: process.cwd(),
     validators: [],
@@ -73,7 +70,7 @@ function parseArgs(argv) {
     if (flag === '--component-type' || flag === '--skill-invocation') {
       fail(
         flag +
-          ' was removed in AWAuthoringContext v2. Use --components <json-file> with one or more component requests.',
+          ' was removed. Use --components <json-file> with one or more component requests.',
       );
     }
     if (flag === '--no-build') {
@@ -89,18 +86,14 @@ function parseArgs(argv) {
     else if (flag === '--allowed-file') options.allowedFiles.push(value);
     else if (flag === '--product') options.products.push(value.toUpperCase());
     else if (flag === '--source-profile') options.sourceProfile = value;
-    else if (flag === '--manifest-version-bump') options.manifestVersionBump = value;
     else if (flag === '--validator') options.validators.push(value);
     else fail('Unknown option: ' + flag);
   }
   if (!options.componentsFile) {
-    fail('--components <json-file> is required by AWAuthoringContext v2.');
+    fail('--components <json-file> is required by AWAuthoringContext v3.');
   }
   if (options.changeMode && !['create', 'change'].includes(options.changeMode)) {
     fail('--change-mode must be create or change.');
-  }
-  if (options.manifestVersionBump && !VERSION_BUMPS.has(options.manifestVersionBump)) {
-    fail('--manifest-version-bump must be major, minor, or patch.');
   }
   if (options.products.some((product) => !PRODUCTS.has(product))) {
     fail('--product must be CODEX or CLAUDE.');
@@ -207,7 +200,7 @@ async function main() {
   );
 
   process.stdout.write(JSON.stringify({
-    schemaVersion: 2,
+    schemaVersion: 3,
     repository: path.basename(options.repoRoot) || 'aw-workspace',
     plugin,
     pluginRoot: options.pluginRoot,
@@ -216,7 +209,6 @@ async function main() {
     components,
     allowedFiles: options.allowedFiles,
     sourceProfile: options.sourceProfile,
-    manifestVersionBump: options.manifestVersionBump,
     buildRequired: options.buildRequired,
     validators: options.validators,
   }, null, 2) + '\n');

@@ -992,7 +992,13 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
   plugin
     .command('init')
     .description('Create a new deterministic plugin scaffold')
-    .addHelpText('after', '\nNew plugin scaffolds keep the initial stable version. Later production changes update the source manifest version directly.\n')
+    .addHelpText('after', [
+      '',
+      'During development, keep the current stable target when production content changes.',
+      'In this repository, start a release train with `pnpm release:target -- --plugin <name>=<version>`; `release:prepare` creates the candidate identity.',
+      'In another workspace, use its release workflow to set the target.',
+      '',
+    ].join('\n'))
     .argument('<plugin-name>', 'lowercase hyphen-case plugin name')
     .option('--description <text>', 'plugin description (required)')
     .option('--display-name <text>', 'human-facing plugin display name')
@@ -1015,6 +1021,13 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
   plugin
     .command('add-skill')
     .description('Add one static Skill scaffold to an existing plugin')
+    .addHelpText('after', [
+      '',
+      'During development, keep the current stable target when production content changes.',
+      'In this repository, start a release train with `pnpm release:target -- --plugin <name>=<version>`; `release:prepare` creates the candidate identity.',
+      'In another workspace, use its release workflow to set the target.',
+      '',
+    ].join('\n'))
     .argument('<plugin-name>', 'existing lowercase hyphen-case plugin name')
     .option('--skill-name <name>', 'new static Skill name (required)')
     .option('--skill-description <text>', 'Skill goal and discovery description (required)')
@@ -1034,12 +1047,22 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .option('--json', 'emit one machine-readable JSON result', false);
 
   plugin
+    .command('status')
+    .description('Show plugin development status against a Git base')
+    .argument('[plugin-name]', 'one explicit plugin name')
+    .option('--all', 'check every plugin relative to the Git base', false)
+    .option('--base <git-ref>', 'Git comparison base (default: HEAD)')
+    .option('--json', 'emit one schema v3 JSON document', false)
+    .option('--repo-root <path>', 'repository root (default: current directory)')
+    .option('--plugin-root <path>', 'single plugin root, relative to --repo-root by default');
+
+  plugin
     .command('check-versions')
-    .description('Check stable plugin versions against a Git base')
+    .description('Deprecated alias for plugin status')
     .argument('[plugin-name]', 'one explicit plugin name')
     .option('--all', 'check every plugin changed relative to the Git base', false)
     .option('--base <git-ref>', 'Git comparison base (default: HEAD)')
-    .option('--json', 'emit one schema v2 JSON document', false)
+    .option('--json', 'emit one schema v3 JSON document', false)
     .option('--repo-root <path>', 'repository root (default: current directory)')
     .option('--plugin-root <path>', 'single plugin root, relative to --repo-root by default');
 
@@ -2240,6 +2263,7 @@ export async function runCli(
       init: 'init-plugin.mjs',
       'add-skill': 'add-skill.mjs',
       validate: 'validate-plugin.mjs',
+      status: 'plugin-status.mjs',
       'check-versions': 'check-plugin-versions.mjs',
     };
     const authoringScript = argv[0] === 'plugin' ? authoringScriptByCommand[argv[1] ?? ''] : undefined;

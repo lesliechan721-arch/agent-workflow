@@ -23,8 +23,8 @@
 - `aw-plugin-development` 提供显式调用的 AW Author/Reviewer，依赖 `agent-content-toolkit >= 0.1.0` 和 `agent-skill-toolkit >= 0.1.0`；真实模型 Eval 还需要 `agent-skill-eval-runner >= 0.1.0` 或兼容 runner。
 - AW Author/Reviewer 适用于任意兼容 workspace root；目标根由 `.agents-plugin/plugin.json` 标识，不限于 `plugins/<name>/`。repo-local 旧 `create-aw-plugin` 仍只处理本仓库 `plugins/<name>/`；不含 AW manifest 的 repo-local 或 portable Skill 使用通用 `review-agent-skill`。
 - 迁移期间新工作流不得静默替代旧入口；完成固定行为对照后再切换默认路由。
-- 确定性作者工具统一使用公开 CLI：`aw plugin init`、`aw plugin add-skill`、`aw plugin validate` 和 `aw plugin check-versions`。先运行 `aw --version`；不要使用 `npx` 或隐式安装。repo-local `create-aw-plugin` 与 `aw-plugin-development` Author 只编排这些命令，不保存第二份核心实现。
-- 默认插件根是 `<repo-root>/plugins/<plugin-name>`。兼容工作区使用其它布局时，`init`、`add-skill` 和单插件 `check-versions` 显式传 `--plugin-root <path>`；该路径必须位于 Git repo root 内并与 plugin name 匹配。`validate` 和 `check-versions` 拒绝 repo/plugin root、`.agents-plugin` 或 manifest path chain 中的符号链接和错误节点类型；不要用链接把作者根或 manifest 重定向到仓库外。`check-versions --all` 保留 `plugins/` 扫描语义。
+- 确定性作者工具统一使用公开 CLI：`aw plugin init`、`aw plugin add-skill`、`aw plugin validate` 和 `aw plugin status`。`check-versions` 只保留为 deprecated 兼容别名。先运行 `aw --version`；不要使用 `npx` 或隐式安装。repo-local `create-aw-plugin` 与 `aw-plugin-development` Author 只编排这些命令，不保存第二份核心实现。
+- 默认插件根是 `<repo-root>/plugins/<plugin-name>`。兼容工作区使用其它布局时，`init`、`add-skill` 和单插件 `status` 显式传 `--plugin-root <path>`；该路径必须位于 Git repo root 内并与 plugin name 匹配。`validate` 和 `status` 拒绝 repo/plugin root、`.agents-plugin` 或 manifest path chain 中的符号链接和错误节点类型；不要用链接把作者根或 manifest 重定向到仓库外。`status --all` 保留 `plugins/` 扫描语义。
 - 模型 Eval 和报告发布属于专用工作流，不在通用测试指南中重复定义。Reviewer 发布报告不修改 production README；登记由 Author 或 release 工具执行。
 
 ## 旧入口迁移门禁
@@ -70,6 +70,7 @@ pnpm migration:cutover:plugin-development
 ## 验证与版本
 
 - 使用 `pnpm plugin:test <plugin>` 运行单插件确定性测试；使用 `pnpm plugin:test --all` 检查全部插件。
+- 日常开发运行 `aw plugin status`。production bundle 变化且稳定目标未变时返回通过的 `unreleasedChanges`，不要求立即改 version。release train 开始时使用 `pnpm release:target` 一次设置稳定目标；`pnpm release:prepare` 基于 ledger/registry 确认发布身份。
 - 新工作流的 generated standards、schemas 和 handoff contracts 必须通过 check-only contract test；CI 不自动改写生成文件。
 - CLI 作者 validator 的 JavaScript import scanner 是唯一实现；门禁覆盖 static import、export-from、dynamic import、`require()`、`require.resolve()`、非代码文本过滤和 `${...}` 代码扫描。
 - 三层插件应分别验证，并增加同时安装三个插件的组合测试。

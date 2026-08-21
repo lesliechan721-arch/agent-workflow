@@ -6,7 +6,7 @@
 
 动态 Skill 的 `artifacts.targets[].sourceDirs` 不属于 `buildConfig.templates` 或 `fileRules`。构建会把每个 source directory 暂存到 artifact 专用隐藏目录，并按字节保留文件。不要对同一动态源目录再配置模板渲染；动态 UTF-8 内容由 ArtifactPlan V2 `content.files` 提供。
 
-`buildConfig` 会影响 artifact 的内容身份：模板输出、额外文件选择、平台 manifest override 或支持平台变化都会进入 schema 3 snapshot digest。只要这些配置让构建后 runtime、平台能力、最低 CLI 要求或依赖最低版本发生变化，插件就必须提高稳定 `version`，不能复用旧的 `plugin@version`。Git publisher 和 bootstrap 不属于插件作者合同。
+`buildConfig` 会影响 artifact 的内容身份：模板输出、额外文件选择、平台 manifest override 或支持平台变化都会进入 schema 3 snapshot digest。日常开发保持当前稳定 target，并用 `aw plugin status` 报告 production 变化；release train 开始时由 workspace release workflow 一次设置新 target。Git publisher 和 bootstrap 不属于插件作者合同。
 
 ## templates
 

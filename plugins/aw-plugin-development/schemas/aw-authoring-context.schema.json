@@ -13,13 +13,12 @@
     "components",
     "allowedFiles",
     "sourceProfile",
-    "manifestVersionBump",
     "buildRequired",
     "validators"
   ],
   "properties": {
     "schemaVersion": {
-      "const": 2
+      "const": 3
     },
     "repository": {
       "type": "string",
@@ -187,14 +186,6 @@
     "sourceProfile": {
       "type": "string",
       "minLength": 1
-    },
-    "manifestVersionBump": {
-      "enum": [
-        null,
-        "major",
-        "minor",
-        "patch"
-      ]
     },
     "buildRequired": {
       "type": "boolean"

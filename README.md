@@ -203,13 +203,13 @@ aw --version
 aw plugin init <plugin-name> --description "..." --skill-description "..."
 aw plugin add-skill <plugin-name> --skill-name <skill-name> --skill-description "..."
 aw plugin validate plugins/<plugin-name>
-aw plugin check-versions --all --base HEAD
+aw plugin status --all --base HEAD
 ```
 
-四个命令可用 `--help` 查看完整参数。`validate --json` 输出一个机器结果对象；`check-versions --json` 输出 schema 2 结果。不要用 `npx` 隐式安装作者工具。
+四个命令可用 `--help` 查看完整参数。`validate --json` 输出一个机器结果对象；`status --json` 输出 schema 3 development 结果。deprecated `check-versions` 返回相同对象，并向 stderr 输出迁移提示。不要用 `npx` 隐式安装作者工具。
 目标插件不在默认 `plugins/<plugin-name>` 时，`init`、`add-skill` 和单插件
-`check-versions` 传 `--plugin-root <path>`；相对路径按 `--repo-root` 解析，且目标必须位于该 Git 工作区内。
-`validate` 和 `check-versions` 会拒绝 repo/plugin root、`.agents-plugin` 或 manifest 路径链中的符号链接和错误节点类型；不要用链接重定向作者根或 manifest。
+`status` 传 `--plugin-root <path>`；相对路径按 `--repo-root` 解析，且目标必须位于该 Git 工作区内。
+`validate` 和 `status` 会拒绝 repo/plugin root、`.agents-plugin` 或 manifest 路径链中的符号链接和错误节点类型；不要用链接重定向作者根或 manifest。
 
 ```bash
 make install
