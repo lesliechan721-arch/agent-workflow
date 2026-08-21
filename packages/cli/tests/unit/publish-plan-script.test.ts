@@ -753,6 +753,161 @@ describe('committed release plan publisher', () => {
     expect(calls).toEqual(['eval', 'aw', 'promotion']);
   });
 
+  it('uses the real combined and CLI gates when first-stable npm acceptance outlives the client call', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-first-stable-exact-retry-'));
+    temporaryRoots.push(root);
+    const cliPackageRoot = path.join(root, 'cli');
+    const evalPackageRoot = path.join(root, 'eval');
+    await Promise.all([fs.mkdir(cliPackageRoot), fs.mkdir(evalPackageRoot)]);
+    await Promise.all([
+      fs.writeFile(path.join(cliPackageRoot, 'package.json'), JSON.stringify({
+        name: '@lesliechan721/aw', version: '1.0.0',
+        publishConfig: { registry: 'https://registry.example.test/' },
+      })),
+      fs.writeFile(path.join(evalPackageRoot, 'package.json'), JSON.stringify({
+        name: '@lesliechan721/agent-skill-eval', version: '1.0.0',
+        publishConfig: { registry: 'https://registry.example.test/' },
+      })),
+    ]);
+    const releasePlan = legacyStablePlan();
+    const registry = registryFromTestPlan(releasePlan);
+    const snapshot = {
+      generationId: 'generation', outputDigest: 'output', inputDigest: 'input',
+      cliPackageDigest: 'package', cliPackageRoot, evalPackageRoot,
+    };
+    const releaseIdentity = { ...snapshot, headCommit: releasePlan.source.head };
+    const staged = {
+      outputRoot: root,
+      ...snapshot,
+      releaseIdentity,
+      snapshotDigest: `sha256:${'e'.repeat(64)}`,
+      manifest: { compatibility: { aw: { minVersion: '0.1.0-beta.3' } } },
+    };
+    const candidateMetadata = (packageName: string) => releaseMetadata(packageName, {
+      candidateVersion: '1.0.0',
+      planId: releasePlan.planId,
+      sourceHead: releasePlan.source.head,
+    });
+    const packageDigest = (packageName: string) =>
+      packageName === '@lesliechan721/agent-skill-eval' ? EVAL_DIGEST : AW_DIGEST;
+    const npmWrites: string[] = [];
+    let tagPublished = false;
+    let promoted = false;
+    let failAfterAwAcceptance = true;
+    let rejectPublishedTarball = false;
+    const recordAcceptedPublish = (packageName: '@lesliechan721/agent-skill-eval' | '@lesliechan721/aw') => {
+      npmWrites.push(packageName);
+      registry[packageName].push({
+        version: '1.0.0', awRelease: candidateMetadata(packageName),
+      });
+      registry.distTags[packageName].latest = '1.0.0';
+    };
+    const readCatalogPublicationHistory = async () => ({
+      channels: { latest: promoted ? { commit: 'c'.repeat(40) } : null, beta: null },
+      tag: tagPublished ? {
+        commit: 'c'.repeat(40),
+        catalogContentDigest: releasePlan.catalog.catalogContentDigest,
+        snapshotDigest: releasePlan.catalog.snapshotDigest,
+        manifest: {
+          schemaVersion: 4,
+          catalogVersion: releasePlan.catalog.candidateVersion,
+          release: {
+            state: 'published', targetVersion: releasePlan.catalog.targetVersion,
+            planId: releasePlan.planId, sourceHead: releasePlan.source.head,
+            contentDigest: releasePlan.catalog.catalogContentDigest,
+          },
+        },
+        ledger: { schemaVersion: 2, records: [] },
+      } : null,
+      pending: tagPublished && !promoted ? 'c'.repeat(40) : null,
+      mergedLedger: { schemaVersion: 2, records: [] },
+      catalogModules: {
+        pluginStaging: {
+          compareStrictSemVer: (left: string, right: string) =>
+            left === right ? 0 : left === '0.1.0-beta.3' ? -1 : 1,
+        },
+      },
+    });
+    const isExactPackageVersionPublished = async (packageName: keyof typeof registry, version: string) =>
+      Array.isArray(registry[packageName])
+      && registry[packageName].some((entry) => entry.version === version);
+    const assertPublishedPackageTarballMatchesCandidate = async (packageName: string) => {
+      if (rejectPublishedTarball) throw new Error('published tarball differs from candidate');
+      return {
+        registryUrl: 'https://registry.example.test/',
+        candidateTreeDigest: packageDigest(packageName),
+        publishedTreeDigest: packageDigest(packageName),
+      };
+    };
+    const options = {
+      repoRoot: root,
+      readCurrentReleasePlan: async () => ({ plan: releasePlan }),
+      assertPlanOnlyCommit: async () => undefined,
+      canonicalAssertCurrentReleaseIdentity: async () => undefined,
+      assertReleaseWorktreeClean: async () => undefined,
+      runCommand: async (_command: string, args: string[]) => {
+        if (args[0] !== 'publish') return;
+        recordAcceptedPublish('@lesliechan721/aw');
+        if (failAfterAwAcceptance) {
+          failAfterAwAcceptance = false;
+          throw new Error('registry accepted AW before client timeout');
+        }
+      },
+      evalPublicationOptions: {
+        withPrivateEvalTarball: async (_snapshot: unknown, callback: (tarball: string) => unknown) =>
+          callback(path.join(root, 'eval.tgz')),
+        computePackageTarballTreeDigest: async () => EVAL_DIGEST,
+        isExactPackageVersionPublished,
+        assertPublishedPackageTarballMatchesCandidate,
+        runCommand: async () => recordAcceptedPublish('@lesliechan721/agent-skill-eval'),
+      },
+      cliPublicationOptions: {
+        withPrivateCliTarball: async (_snapshot: unknown, callback: (tarball: string) => unknown) =>
+          callback(path.join(root, 'aw.tgz')),
+        computePackageTarballTreeDigest: async () => AW_DIGEST,
+        isExactPackageVersionPublished,
+        assertPublishedPackageTarballMatchesCandidate,
+      },
+      readRegistryReleaseHistory: async () => structuredClone(registry),
+      readCatalogPublicationHistory,
+      withCatalogPublicationLease: async (_remote: string, callback: (lease: object) => unknown) => callback({}),
+      publishStagedCatalog: async () => {
+        const idempotent = tagPublished;
+        tagPublished = true;
+        return { idempotent, promoted: false };
+      },
+      promoteCatalogTag: async (promotionOptions: {
+        beforeAcquire: () => Promise<unknown>;
+        beforeRemoteWrite: () => Promise<unknown>;
+      }) => {
+        await promotionOptions.beforeAcquire();
+        await promotionOptions.beforeRemoteWrite();
+        promoted = true;
+        return { promoted: true };
+      },
+      resolveCliPublishGitCheckArgs: async () => [],
+      _boundCatalog: { internalOutputRoot: root, snapshot, staged },
+    };
+
+    await expect(publishCommittedRelease([], options)).rejects.toThrow('channel was not promoted');
+    expect(npmWrites).toEqual([
+      '@lesliechan721/agent-skill-eval', '@lesliechan721/aw',
+    ]);
+    expect(promoted).toBe(false);
+
+    rejectPublishedTarball = true;
+    await expect(publishCommittedRelease([], options)).rejects.toThrow('published tarball differs');
+    expect(npmWrites).toHaveLength(2);
+    expect(promoted).toBe(false);
+
+    rejectPublishedTarball = false;
+    await expect(publishCommittedRelease([], options)).resolves.toMatchObject({
+      path: 'tag-first', cli: { status: 'already-published' }, promotion: { promoted: true },
+    });
+    expect(npmWrites).toHaveLength(2);
+    expect(promoted).toBe(true);
+  });
+
   it('runs bootstrap only from the committed candidate without public version arguments', async () => {
     const bootstrapCatalog = vi.fn(async () => ({ idempotent: false, commit: 'catalog' }));
     await expect(publishCommittedRelease([], {

@@ -504,7 +504,7 @@ export function normalizeReleasePlan(raw, { verifyDigests = true } = {}) {
   if (normalized.catalog.publicationMode === 'promotion') {
     const origin = normalized.history.catalog.tag?.origin;
     if (!origin) throw new Error('Invalid promotion plan: missing guarded Catalog tag origin.');
-    const candidateVersion = normalized.catalog.candidateVersion;
+    const candidateVersion = normalized.cli.candidateVersion;
     for (const packageName of CLI_PACKAGE_NAMES) {
       const entry = normalized.history.npm.packages.find((candidate) => candidate.name === packageName)
         .versions.find((candidate) => candidate.candidateVersion === candidateVersion);

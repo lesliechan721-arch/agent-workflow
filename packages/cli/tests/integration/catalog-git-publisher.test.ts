@@ -525,7 +525,7 @@ describe('Git catalog publisher', () => {
     })).rejects.toThrow('requires the exact immutable tag and tag-first pending guard');
   });
 
-  it('discovers and prepares recovery for a guarded beta tag from a stable target only', async () => {
+  it('roundtrips guarded promotion when CLI and Catalog use different candidate versions', async () => {
     const root = await fixtureRoot('aw-catalog-pending-beta-plan-');
     const planRepo = path.join(root, 'plan-repo');
     await fs.ensureDir(planRepo);
@@ -539,9 +539,9 @@ describe('Git catalog publisher', () => {
     await fs.ensureDir(path.join(planRepo, 'release'));
     const remoteUrl = await createBareRemote(root);
     const initial = await readCatalogPublicationHistory({
-      mode: 'beta', catalogVersion: '1.0.0-beta.1', remoteUrl, catalogModules,
+      mode: 'beta', catalogVersion: '2.0.0-beta.1', remoteUrl, catalogModules,
     });
-    const staged = await stage(root, '1.0.0-beta.1', initial.mergedLedger);
+    const staged = await stage(root, '2.0.0-beta.1', initial.mergedLedger);
     const tagged = await publishStagedCatalog(initial, staged.outputRoot, { publicationMode: 'tag' });
     const packageContents = [
       { name: '@lesliechan721/agent-skill-eval', contentDigest: `sha256:${'3'.repeat(64)}` },
@@ -570,7 +570,7 @@ describe('Git catalog publisher', () => {
         '@lesliechan721/aw': { latest: null, beta: '1.0.0-beta.1' },
       },
     };
-    const targets = { schemaVersion: 1, cli: '1.0.0', catalog: '1.0.0' };
+    const targets = { schemaVersion: 1, cli: '1.0.0', catalog: '2.0.0' };
     const readHistory = () => observeReleaseHistory({
       targets,
       channel: 'beta',
@@ -583,7 +583,7 @@ describe('Git catalog publisher', () => {
     const history = await readHistory();
     expect(history.catalog).toMatchObject({
       pending: tagged.commit,
-      tag: { commit: tagged.commit, manifest: { catalogVersion: '1.0.0-beta.1' } },
+      tag: { commit: tagged.commit, manifest: { catalogVersion: '2.0.0-beta.1' } },
     });
     const stableHistory = await observeReleaseHistory({
       targets,
@@ -598,11 +598,11 @@ describe('Git catalog publisher', () => {
       pending: tagged.commit,
       tag: {
         commit: tagged.commit,
-        manifest: { catalogVersion: '1.0.0-beta.1', channel: 'beta' },
+        manifest: { catalogVersion: '2.0.0-beta.1', channel: 'beta' },
       },
     });
     const guardedBetaHistory = await readCatalogPublicationHistory({
-      mode: 'beta', catalogVersion: '1.0.0-beta.1', remoteUrl, catalogModules,
+      mode: 'beta', catalogVersion: '2.0.0-beta.1', remoteUrl, catalogModules,
     });
     const taggedEntry = staged.manifest.entries[0]!;
     const content = {
@@ -661,7 +661,7 @@ describe('Git catalog publisher', () => {
       materializeCatalogPlanArtifact: async () => staged.snapshotDigest,
     });
     expect(prepared.status.catalog).toMatchObject({
-      action: 'recover', candidateVersion: '1.0.0-beta.1', publicationMode: 'promotion',
+      action: 'recover', candidateVersion: '2.0.0-beta.1', publicationMode: 'promotion',
     });
     expect(prepared.plan!.planId).not.toBe(catalogOrigin.planId);
     expect(prepared.plan!.history.catalog.tag).toMatchObject({
@@ -708,7 +708,7 @@ describe('Git catalog publisher', () => {
       canonicalAssertCurrentReleaseIdentity: async () => undefined,
     })).resolves.toMatchObject({ path: 'promotion', promotion: { promoted: true } });
     const promoted = await readCatalogPublicationHistory({
-      mode: 'beta', catalogVersion: '1.0.0-beta.1', remoteUrl, catalogModules,
+      mode: 'beta', catalogVersion: '2.0.0-beta.1', remoteUrl, catalogModules,
     });
     expect(promoted.channels.beta?.commit).toBe(tagged.commit);
     expect(promoted.pending).toBeNull();

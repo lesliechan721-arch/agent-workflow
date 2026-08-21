@@ -270,13 +270,17 @@ export async function assertPlanCliRegistryFresh(plan, options = {}) {
   return assertCliRegistryHistoryMatchesPlan(plan, registry);
 }
 
-function legacyStablePublishedVersion(plan) {
+function legacyStablePublishedVersion(plan, registry) {
   if (plan.channel !== 'stable' || plan.history.npm.legacyLatestAwOnly !== true) return undefined;
-  const normalized = normalizeCliRegistryHistory(registryFromPlanHistory(plan));
-  if (!normalized.legacyLatestAwOnly) {
+  const planned = normalizeCliRegistryHistory(registryFromPlanHistory(plan));
+  if (!planned.legacyLatestAwOnly) {
     throw new Error('Invalid committed legacyLatestAwOnly registry history.');
   }
-  return null;
+  const live = normalizeCliRegistryHistory(registry);
+  const publishedVersion = live.distTags['@lesliechan721/aw'].latest;
+  if (publishedVersion === '0.1.0-beta.1') return null;
+  if (publishedVersion === plan.cli.candidateVersion) return plan.cli.candidateVersion;
+  throw new Error('Live registry does not match the committed first stable release baseline.');
 }
 
 async function createStampedSnapshotRunner(plan, assertFresh, options) {
@@ -403,6 +407,7 @@ export async function publishCommittedRelease(argv = process.argv.slice(2), opti
   const callerBeforeNpmWrite = options.beforeNpmWrite;
   const callerEvalBeforeNpmWrite = options.evalPublicationOptions?.beforeNpmWrite;
   const callerBeforeRemoteWrite = options.beforeRemoteWrite;
+  const stablePublishedVersion = legacyStablePublishedVersion(plan, initialRegistry);
   const runPlanCommand = async (command, args, commandOptions) => {
     if (command === 'pnpm' && (
       args.join(' ') === 'run release:verify'
@@ -474,7 +479,9 @@ export async function publishCommittedRelease(argv = process.argv.slice(2), opti
       return staged;
     }),
     runCommand: runPlanCommand,
-    ...(legacyStablePublishedVersion(plan) === null ? { publishedVersion: null } : {}),
+    ...(stablePublishedVersion !== undefined
+      ? { publishedVersion: stablePublishedVersion }
+      : {}),
   };
   if (plan.catalog.publicationMode === 'none' && plan.cli.action === 'publish') {
     const cli = await (options.publishCli ?? (await import('./publish-cli.mjs')).publishCli)([

@@ -413,6 +413,79 @@ describe('release status and plans', () => {
     });
   });
 
+  it('prepares and normalizes promotion when CLI and Catalog candidates use different version axes', async () => {
+    const input = fixture();
+    input.targets.catalog = '2.0.0';
+    input.content.catalog.minCliVersion = '0.1.0-beta.1';
+    const originPlanId = digest('9');
+    const metadata = (packageContentDigest: string) => ({
+      schemaVersion: 1,
+      targetVersion: '0.1.0',
+      candidateVersion: '0.1.0-beta.1',
+      planId: originPlanId,
+      sourceHead: input.content.source.head,
+      packageContentDigest,
+      trainContentDigest: input.content.cli.trainContentDigest,
+    });
+    for (const [name, packageContentDigest] of [
+      ['@lesliechan721/agent-skill-eval', digest('3')],
+      ['@lesliechan721/aw', digest('4')],
+    ] as const) {
+      input.history.registry[name] = [{
+        version: '0.1.0-beta.1', awRelease: metadata(packageContentDigest),
+      }];
+      input.history.registry.distTags[name].beta = '0.1.0-beta.1';
+    }
+    input.history.catalog.pending = 'c'.repeat(40);
+    input.history.catalog.tag = {
+      commit: 'c'.repeat(40),
+      snapshotDigest: digest('8'),
+      manifest: {
+        schemaVersion: 4,
+        catalogVersion: '2.0.0-beta.1',
+        release: {
+          state: 'published', targetVersion: '2.0.0', planId: originPlanId,
+          sourceHead: input.content.source.head, contentDigest: input.content.catalog.contentDigest,
+        },
+      },
+      catalogContentDigest: input.content.catalog.contentDigest,
+      ledger: { schemaVersion: 2, records: [] },
+    };
+
+    const status = calculateReleaseStatus(input);
+    expect(status).toMatchObject({
+      cli: { candidateVersion: '0.1.0-beta.1', action: 'skip' },
+      catalog: { candidateVersion: '2.0.0-beta.1', action: 'recover', publicationMode: 'promotion' },
+    });
+    expect(normalizeReleasePlan(createReleasePlan(status))).toEqual(createReleasePlan(status));
+
+    const prepared = await prepareRelease(['beta'], {
+      assertClean: async () => undefined,
+      assertFresh: async () => undefined,
+      assertTargetsMatchHead: async () => undefined,
+      readTargets: async () => input.targets,
+      observe: async () => ({
+        targets: input.targets,
+        content: input.content,
+        history: input.history,
+        releaseIdentity: {},
+      }),
+      observeRemoteHistory: async () => input.history,
+      materializeCliPlanArtifacts: async (releaseStatus) => releaseStatus.cli.packages,
+      writePlan: async (releasePlan) => ({ created: true, plan: releasePlan }),
+    });
+    expect(prepared.plan).toMatchObject({
+      cli: { candidateVersion: '0.1.0-beta.1' },
+      catalog: { candidateVersion: '2.0.0-beta.1', snapshotDigest: digest('8') },
+    });
+
+    const tampered = structuredClone(prepared.plan!);
+    for (const packageHistory of tampered.history.npm.packages) {
+      packageHistory.versions[0].metadata!.sourceHead = 'f'.repeat(40);
+    }
+    expect(() => normalizeReleasePlan(tampered)).toThrow('metadata does not match');
+  });
+
   it('defers Catalog and Plugin only in the channel that does not own a pending tag', async () => {
     const betaPending = fixture();
     betaPending.content.catalog.minCliVersion = '0.1.0-beta.1';
