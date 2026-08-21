@@ -1,10 +1,13 @@
 # Dev Workflow
 
-用轻量、可组合的 Skill 组织中大型开发任务。每个专业 Skill 都可以独立调用；`dev-workflow` 只是可选的宏入口，用于选择保障等级、恢复阶段和管理人类检查点。
+用轻量、可组合的 Skill 组织中大型开发任务。每个专业 Skill 都可以直接使用；`dev-workflow` 只在需要风险分级、自动选路或跨阶段继续时充当宏入口。
 
 ## 安装
 
+开发工作流依赖决策能力：
+
 ```bash
+aw install ask-me -p both
 aw install dev-workflow -p both
 ```
 
@@ -12,29 +15,56 @@ aw install dev-workflow -p both
 
 | Skill | 作用 |
 | --- | --- |
-| `dev-workflow` | 可选宏入口；按风险和已有产物选择当前阶段 |
-| `dev-spec` | 把稳定材料决定整理为 Spec |
-| `dev-review-spec` | 在 fresh 独立上下文中审查 Spec |
-| `dev-implement` | 实现明确请求或已批准 Spec |
-| `dev-review-code` | 用两个独立 reviewer 分轴审查实现 |
+| `dev-workflow` | 可选宏入口；按风险和现有产物选择当前阶段 |
+| `dev-spec` | 把稳定决定整理为 Spec |
+| `dev-review-spec` | 用独立 reviewer 审查 Spec，并指导修订与复审 |
+| `dev-implement` | 实现明确请求、已批准 Spec 或 Review 修复 |
+| `dev-review-code` | 用两个独立 reviewer 分轴审查实现，并指导修复与复审 |
+
+决策阶段使用：
+
+- `decision-grill`：通过讨论解决相互依赖的材料决定。
+- `decision-prototype`：通过可见、可运行或可操作证据解决决定。
 
 ## 使用方式
 
-知道当前需要什么时，可以直接调用专业 Skill：
+知道当前需要什么时，直接调用专业 Skill：
 
 ```text
-审查这份 Spec 是否可以批准。
-审查这个 PR 的需求符合度和工程质量。
+把这些已确认决定整理成 Spec。
+正式审查这份 Spec 是否可以批准。
 按当前 Spec 开始实现。
+修复 Code Review 中的问题。
+重新审查修复后的实现。
 ```
 
 需要自动选择流程时，再显式使用 `dev-workflow`。
 
-## 保障等级
+## 默认路径
 
-- **Fast**：明确、低风险、可逆、单上下文并且有可靠验证。
-- **Standard**：中等范围、存在材料决定、需要跨会话或正式 Review。
-- **Assured**：安全、权限、支付、数据迁移、生产副作用、不可逆或多 Agent。
+### Fast
+
+```text
+dev-implement → 针对性验证 → 按需 dev-review-code
+```
+
+### Standard
+
+```text
+decision-grill / decision-prototype
+→ dev-spec
+→ dev-review-spec
+→ blocked 时修订并重新 review
+→ 用户批准
+→ dev-implement
+→ dev-review-code
+→ blocked 时修复并重新 review
+→ clean 后交付
+```
+
+### Assured
+
+沿用 Standard 路径，并按项目风险增加持久证据、回滚点、隔离、授权和独立最终审查。
 
 ## 默认任务目录
 
@@ -52,13 +82,9 @@ docs/dev/<task-slug>/
 
 文件按需创建。Fast 路径不为流程本身创建文档。
 
-## Review 与历史
+## Review 报告
 
-- 正式 Review 必须由 fresh 独立子代理上下文完成；当前调用上下文只负责准备输入和保存结果。
-- `dev-review-spec` 使用一个独立 reviewer。
-- `dev-review-code` 并行使用 Spec fidelity 与 Engineering quality 两个独立 reviewer。
-- 默认覆盖 `spec-review.md` 或 `code-review.md`，Git 保存历史。
-- Assured 模式或用户明确要求保留历史时，额外保存到 `reviews/spec/` 或 `reviews/code/`。
-- 每份报告绑定实际审查的 Spec revision、commit range 或 diff revision；目标变化后必须重新审查。
-
-插件不创建 `task-state.json`，也不维护 Review pointer、round lineage 或 finding registry。
+- `spec-review.md` 和 `code-review.md` 保存当前正式结果；新一轮 Review 默认覆盖旧结果。
+- 报告写明本次审查的目标与版本。目标发生变化后，需要重新 Review。
+- Assured 模式或用户明确要求保留历史时，额外归档到 `reviews/spec/` 或 `reviews/code/`。
+- Spec Review 使用一个 fresh 独立 reviewer；Code Review 并行使用两个 fresh 独立 reviewer。

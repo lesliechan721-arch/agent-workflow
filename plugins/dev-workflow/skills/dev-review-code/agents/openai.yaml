@@ -1,6 +1,6 @@
 interface:
   display_name: "Dev Review Code"
-  short_description: "用两个 fresh 独立 reviewer 分轴审查需求符合度和工程质量"
-  default_prompt: "使用 $dev-review-code 并行创建 Spec fidelity 与 Engineering quality 两个 fresh reviewer；任一轴不可用时返回 incomplete。"
+  short_description: "用两个 fresh reviewer 分轴审查实现，并指导修复与复审"
+  default_prompt: "使用 $dev-review-code 并行创建两个 fresh reviewer 审查当前实现；修复后重新完成双轴 Review。"
 policy:
   allow_implicit_invocation: true
