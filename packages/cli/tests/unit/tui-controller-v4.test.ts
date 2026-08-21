@@ -8,7 +8,7 @@ import {
   type TuiControllerDependencies,
   type TuiStatusLoadResult,
 } from '../../src/tui/controller.js';
-import { buildTuiViewModel } from '../../src/tui/model.js';
+import { buildConfigPage, buildTuiViewModel } from '../../src/tui/model.js';
 import { TuiRouter } from '../../src/tui/router.js';
 
 function source(
@@ -126,6 +126,86 @@ async function nextTurn(): Promise<void> {
 }
 
 describe('TUI v4 router and ViewModel', () => {
+  it('projects manifest order, presentation groups, fallback fields, presets, and private values safely', () => {
+    const fields = [
+      { key: 'level', title: '级别', kind: 'manifest' as const, reserved: false, writable: true, valueState: 'configured' as const, effectiveValue: 'strict', sourceLayer: 'user' as const, storedValue: 'strict', storedSourceLayer: 'user' as const },
+      { key: 'rules', title: '规则', kind: 'manifest' as const, reserved: false, writable: true, valueState: 'configured' as const, effectiveValue: '/Users/private/rules.json', sourceLayer: 'local' as const, storedValue: '/Users/private/rules.json', storedSourceLayer: 'local' as const },
+      { key: 'token', title: '令牌', kind: 'manifest' as const, reserved: false, writable: true, valueState: 'configured' as const, effectiveValue: 'sk-private', sourceLayer: 'user' as const, storedValue: 'sk-private', storedSourceLayer: 'user' as const },
+    ];
+    const page = buildConfigPage({
+      pluginId: 'official/demo',
+      schema: {
+        schema: {
+          level: { type: 'enum', title: '级别', values: ['fast', 'strict'] },
+          rules: { type: 'file', title: '规则', default: '/Users/private/default-rules.json' },
+          token: { type: 'string', title: '令牌', sensitive: true, default: 'default-secret' },
+        },
+        presentation: {
+          groups: [{ id: 'basic', title: '基本设置', fields: ['level'] }],
+          fields: { level: { valueLabels: { fast: '快速', strict: '严格' }, recommendedValue: 'strict' } },
+          presets: [{
+            id: 'strict',
+            title: '严格方案',
+            values: { level: 'strict', rules: '/Users/private/preset-rules.json', token: 'preset-secret' },
+          }],
+        },
+      },
+      read: { pluginName: 'demo', scope: 'user', projectLayer: 'shared', fields },
+    });
+
+    expect(page.groups.map((group) => [group.title, group.fields.map((field) => field.key)])).toEqual([
+      ['基本设置', ['level']],
+      ['其他设置', ['rules', 'token']],
+    ]);
+    expect(page.groups[0]!.fields[0]).toEqual(expect.objectContaining({
+      enumValues: ['fast', 'strict'],
+      valueLabels: { fast: '快速', strict: '严格' },
+      recommendedValue: 'strict',
+      value: 'strict',
+    }));
+    expect(page.presets).toEqual([{
+      id: 'strict',
+      title: '严格方案',
+      values: { level: 'strict' },
+      privateFieldTitles: ['规则', '令牌'],
+    }]);
+    const serialized = JSON.stringify(page);
+    expect(serialized).not.toContain('/Users/private');
+    expect(serialized).not.toContain('sk-private');
+
+    const fallback = buildConfigPage({
+      pluginId: 'official/demo',
+      schema: { schema: { level: { type: 'enum' }, rules: { type: 'file' }, token: { type: 'string', sensitive: true } } },
+      read: { pluginName: 'demo', scope: 'user', projectLayer: 'shared', fields },
+    });
+    expect(fallback.groups).toHaveLength(1);
+    expect(fallback.groups[0]!.title).toBe('插件设置');
+    expect(fallback.groups[0]!.fields.map((field) => field.key)).toEqual(['level', 'rules', 'token']);
+
+    const layeredField = {
+      ...fields[0]!,
+      effectiveValue: 'fast',
+      sourceLayer: 'project' as const,
+      storedValue: 'strict',
+      storedSourceLayer: 'user' as const,
+    };
+    const editable = buildConfigPage({
+      pluginId: 'official/demo',
+      schema: { schema: { level: { type: 'enum', values: ['fast', 'strict'] } } },
+      read: { pluginName: 'demo', scope: 'user', projectLayer: 'shared', fields: [layeredField] },
+    });
+    const effective = buildConfigPage({
+      pluginId: 'official/demo',
+      schema: { schema: { level: { type: 'enum', values: ['fast', 'strict'] } } },
+      read: { pluginName: 'demo', scope: 'effective', projectLayer: 'shared', fields: [layeredField] },
+    });
+    expect(editable.groups[0]!.fields[0]).toMatchObject({
+      displayValue: 'strict', value: 'strict', configured: true, sourceLabel: '本层已设置',
+    });
+    expect(effective.groups[0]!.fields[0]).toMatchObject({
+      displayValue: 'fast', value: 'fast', configured: true, sourceLabel: '当前项目',
+    });
+  });
   it('restores list focus, query, and source tab after a detail route goes back', () => {
     const router = new TuiRouter();
     router.push(
@@ -415,6 +495,108 @@ describe('TUI v4 background source checks', () => {
 });
 
 describe('TUI v4 Review safety', () => {
+  it('does not report a rolled-back config write as partial or succeeded', async () => {
+    const controller = new TuiController(dependencies({
+      executeIntent: vi.fn().mockResolvedValue({
+        configWrite: 'rolledBack',
+        overallState: 'failed',
+        targetResults: [
+          { target: { platform: 'codex', scope: 'user' }, state: 'completed' },
+          { target: { platform: 'claude', scope: 'user' }, state: 'failed' },
+        ],
+      }),
+    }));
+    controller.push({
+      name: 'configFields',
+      pluginId: 'official/demo',
+      layer: { scope: 'user', projectLayer: 'shared' },
+    });
+    const review = await controller.buildOperationReview({
+      kind: 'configSave',
+      pluginId: 'official/demo',
+      scope: 'user',
+      projectLayer: 'shared',
+      updates: { mode: 'strict' },
+    });
+
+    const result = await controller.executeOperation(review.reviewToken);
+
+    expect(result).toMatchObject({
+      state: 'blocked',
+      code: 'configWriteRolledBack',
+      message: '设置未保存。原设置已安全恢复，请检查草稿后重试。',
+    });
+    expect(controller.snapshot.router.current.route).toMatchObject({ name: 'configFields' });
+    expect(controller.snapshot.activeReview).toBeUndefined();
+  });
+
+  it('projects rollback failure as a fixed high-risk result without claiming a save', async () => {
+    const controller = new TuiController(dependencies({
+      executeIntent: vi.fn().mockResolvedValue({
+        configWrite: 'rollbackFailed',
+        overallState: 'failed',
+        targetResults: [],
+        warnings: ['/Users/private/config.json token-private'],
+      }),
+    }));
+    const review = await controller.buildOperationReview({
+      kind: 'configReset',
+      pluginId: 'official/demo',
+      scope: 'user',
+      projectLayer: 'shared',
+    });
+
+    const result = await controller.executeOperation(review.reviewToken);
+
+    expect(result).toMatchObject({
+      state: 'blocked',
+      code: 'configWriteRollbackFailed',
+      message: '设置未确认保存，且恢复未完整完成。请停止修改并检查问题。',
+      operationKind: 'configReset',
+    });
+    expect(JSON.stringify(controller.snapshot)).not.toContain('/Users/private');
+    expect(JSON.stringify(controller.snapshot)).not.toContain('token-private');
+  });
+
+  it('invalidates cancelled, expired, and over-limit Review tickets through public behavior', async () => {
+    let token = 0;
+    let now = 1_000;
+    const controller = new TuiController(dependencies({
+      createToken: () => `token-${++token}`,
+      now: () => now,
+      reviewTtlMs: 10,
+      maxReviewTickets: 2,
+    }));
+    const intent = {
+      kind: 'pluginWrite' as const,
+      action: 'install' as const,
+      pluginId: 'official/demo',
+      platform: 'codex' as const,
+      scope: 'user' as const,
+    };
+    const oldest = await controller.buildOperationReview(intent);
+    const retained = await controller.buildOperationReview(intent);
+    const newest = await controller.buildOperationReview(intent);
+    expect(await controller.executeOperation(oldest.reviewToken)).toMatchObject({
+      state: 'blocked', code: 'reviewTicketInvalid',
+    });
+    expect(await controller.executeOperation(retained.reviewToken)).toMatchObject({ state: 'succeeded' });
+
+    const cancelled = await controller.buildOperationReview(intent);
+    controller.back();
+    expect(await controller.executeOperation(cancelled.reviewToken)).toMatchObject({
+      state: 'blocked', code: 'reviewTicketInvalid',
+    });
+
+    const expired = await controller.buildOperationReview(intent);
+    now = 2_000;
+    await controller.buildOperationReview(intent);
+    expect(await controller.executeOperation(expired.reviewToken)).toMatchObject({
+      state: 'blocked', code: 'reviewTicketInvalid',
+    });
+    expect(newest.reviewToken).not.toBe(cancelled.reviewToken);
+  });
+
   it('performs zero writes and returns to the input page when stale evidence makes the intent illegal', async () => {
     const changedEvidence = { ...baseEvidence, targetFingerprint: 'sha256:changed' };
     const executeIntent = vi.fn();
@@ -530,7 +712,7 @@ describe('TUI v4 Review safety', () => {
   it('keeps only a safe result summary and a fixed typed failure message', async () => {
     const secret = '/Users/private/config.json?token=private-token';
     const succeeded = new TuiController(dependencies({
-      executeIntent: vi.fn().mockResolvedValue({ effective: { token: secret }, path: secret }),
+      executeIntent: vi.fn().mockResolvedValue({ configWrite: 'succeeded', effective: { token: secret }, path: secret }),
     }));
     const successReview = await succeeded.buildOperationReview({
       kind: 'configSave',

@@ -10,7 +10,12 @@ import type {
   TuiControllerSnapshot,
 } from './controller.js';
 import { resolveTuiSizePolicy } from './layout.js';
-import type { PlatformPlacementSummary, PluginListItemViewModel } from './model.js';
+import type {
+  ConfigFieldViewModel,
+  ConfigPageViewModel,
+  PlatformPlacementSummary,
+  PluginListItemViewModel,
+} from './model.js';
 import type { TuiRoute } from './router.js';
 import { tuiTheme } from './theme.js';
 
@@ -18,6 +23,8 @@ export const CONSOLE_V4_SCREEN_IDS = [
   'G01', 'G02', 'G03', 'G04', 'G05',
   'P01', 'P02', 'P03', 'P04', 'P05', 'P06', 'P07', 'P08', 'P09', 'P10',
   'P11', 'P12', 'P13', 'P14', 'P15', 'P16', 'P17', 'P18', 'P19', 'P20', 'P21',
+  'C01', 'C02', 'C03', 'C04', 'C05', 'C06', 'C07', 'C08', 'C09', 'C10',
+  'C11', 'C12', 'C13', 'C14', 'C15', 'C16', 'C17',
 ] as const;
 
 export type ConsoleV4ScreenId = typeof CONSOLE_V4_SCREEN_IDS[number];
@@ -30,6 +37,23 @@ interface ActionItem {
   status?: 'success' | 'warning' | 'error' | 'muted';
   disabled?: string;
   run?: () => void | Promise<void>;
+  configKey?: string;
+}
+
+function configOwnerKey(route: Extract<TuiRoute, {
+  name: 'configFields' | 'configFieldEditor' | 'configPresets';
+}>): string {
+  return `${route.pluginId}\0${route.layer.scope}\0${route.layer.projectLayer}`;
+}
+
+function configPageMatches(
+  page: ConfigPageViewModel | undefined,
+  route: Extract<TuiRoute, { name: 'configFields' | 'configFieldEditor' | 'configPresets' }> | undefined,
+): page is ConfigPageViewModel {
+  return Boolean(page && route
+    && page.pluginId === route.pluginId
+    && page.layer.scope === route.layer.scope
+    && page.layer.projectLayer === route.layer.projectLayer);
 }
 
 function platformLabel(platform: PlatformName): string {
@@ -172,13 +196,6 @@ function reviewSymbol(change: OperationReviewChange): string {
   return { add: '+', change: '~', remove: '−', keep: '✓', warning: '!' }[change.kind];
 }
 
-function reviewColor(change: OperationReviewChange): string {
-  return change.kind === 'remove' ? tuiTheme.statusColors.error
-    : change.kind === 'warning' ? tuiTheme.statusColors.warning
-      : change.kind === 'change' ? tuiTheme.statusColors.info
-        : tuiTheme.statusColors.success;
-}
-
 function currentPlugin(controller: TuiController, route: TuiRoute): PluginListItemViewModel | undefined {
   return 'pluginId' in route ? controller.getPluginOverview(route.pluginId) : undefined;
 }
@@ -214,15 +231,31 @@ export function resolveConsoleV4ScreenId(
     if (placement.state === 'installed' && placement.health === 'ready') return 'P14';
     return 'P16';
   }
-  if (route.name === 'review') return snapshot.activeReview?.title === '升级插件'
+  if (route.name === 'review') return snapshot.activeReview?.title === '保存插件设置'
+    ? 'C12'
+    : snapshot.activeReview?.title === '重置插件设置'
+      ? 'C16'
+      : snapshot.activeReview?.title === '升级插件'
     || snapshot.activeReview?.title === '重新安装插件'
     ? 'P18'
     : snapshot.activeReview?.title === '移除插件' || snapshot.activeReview?.title === '清理插件'
       ? 'P19' : 'P07';
-  if (route.name === 'progress') return 'P08';
-  if (route.name === 'result') return snapshot.result?.state === 'partial' ? 'P10' : 'P09';
+  if (route.name === 'progress') return snapshot.activeReview?.title === '保存插件设置'
+    || snapshot.activeReview?.title === '重置插件设置' ? 'C13' : 'P08';
+  if (route.name === 'result') return snapshot.result && 'operationKind' in snapshot.result
+    && snapshot.result.operationKind
+    ? snapshot.result.state === 'succeeded' ? 'C14' : 'C15'
+    : snapshot.result?.state === 'partial' ? 'P10' : 'P09';
   if (route.name === 'pluginAbout') return 'P20';
   if (route.name === 'pluginTechnical') return 'P21';
+  if (route.name === 'configLayer') return 'C01';
+  if (route.name === 'configFields') return route.layer.scope === 'effective'
+    ? 'C02' : route.groupId ? 'C04' : 'C03';
+  if (route.name === 'configFieldEditor') return {
+    enum: 'C05', boolean: 'C06', number: 'C07', string: 'C08', path: 'C09', sensitive: 'C10',
+  }[route.editor] as ConsoleV4ScreenId;
+  if (route.name === 'configPresets') return 'C11';
+  if (route.name === 'configUnavailable') return 'C17';
   return 'G02';
 }
 
@@ -248,6 +281,16 @@ export function ConsoleAppV4(props: {
   const [showTechnical, setShowTechnical] = useState(false);
   const [exitAfterBusy, setExitAfterBusy] = useState(false);
   const [dirty, setDirty] = useState(false);
+  const [configPage, setConfigPage] = useState<ConfigPageViewModel>();
+  const [configLayerCounts, setConfigLayerCounts] = useState<Record<string, number>>({});
+  const [configLoadKey, setConfigLoadKey] = useState(0);
+  const [draftUpdates, setDraftUpdates] = useState<Record<string, string | number | boolean>>({});
+  const [draftRemoves, setDraftRemoves] = useState<string[]>([]);
+  const [inputValue, setInputValue] = useState('');
+  const [inputError, setInputError] = useState<string>();
+  const [configActionError, setConfigActionError] = useState<string>();
+  const [actionError, setActionError] = useState<string>();
+  const [draftOwner, setDraftOwner] = useState<string>();
   const route = snapshot.router.current.route;
   const plugin = currentPlugin(props.controller, route);
   const busy = route.name === 'progress';
@@ -255,7 +298,9 @@ export function ConsoleAppV4(props: {
 
   useEffect(() => {
     const unsubscribe = props.controller.subscribe(setSnapshot);
-    void props.controller.load();
+    void props.controller.load().catch(() => {
+      setActionError('操作未完成。请重新检查后重试。');
+    });
     return () => {
       unsubscribe();
       if (props.ownsController) props.controller.dispose();
@@ -265,6 +310,88 @@ export function ConsoleAppV4(props: {
   useEffect(() => {
     if (exitAfterBusy && route.name === 'result') props.onExit?.();
   }, [exitAfterBusy, props.onExit, route.name]);
+  useEffect(() => {
+    if (route.name !== 'result'
+      || !snapshot.result
+      || (snapshot.result.state !== 'succeeded' && snapshot.result.state !== 'partial')
+      || !snapshot.result.operationKind) return;
+    setDirty(false);
+    setDraftUpdates({});
+    setDraftRemoves([]);
+  }, [route.name, snapshot.result]);
+
+  const configRoute = route.name === 'configFields'
+    || route.name === 'configFieldEditor'
+    || route.name === 'configPresets'
+    ? route
+    : undefined;
+  const currentConfigPage = configPageMatches(configPage, configRoute) ? configPage : undefined;
+  useEffect(() => {
+    if (route.name !== 'configLayer') return;
+    const abort = new AbortController();
+    const layers = [
+      { key: 'effective', layer: { scope: 'effective' as const, projectLayer: 'shared' as const } },
+      { key: 'user', layer: { scope: 'user' as const, projectLayer: 'shared' as const } },
+      { key: 'project', layer: { scope: 'project' as const, projectLayer: 'shared' as const } },
+      { key: 'local', layer: { scope: 'project' as const, projectLayer: 'local' as const } },
+    ];
+    void Promise.allSettled(layers.map(async ({ key, layer }) => ({
+      key,
+      count: (await props.controller.getConfigPage(route.pluginId, layer, abort.signal)).storedCount,
+    }))).then((results) => {
+      if (abort.signal.aborted) return;
+      setConfigLayerCounts(Object.fromEntries(results.flatMap((result) =>
+        result.status === 'fulfilled' ? [[result.value.key, result.value.count]] : [])));
+    });
+    return () => abort.abort();
+  }, [props.controller, route.name, route.name === 'configLayer' ? route.pluginId : '']);
+  useEffect(() => {
+    if (!configRoute) return;
+    const abort = new AbortController();
+    const expectedPluginId = configRoute.pluginId;
+    const expectedLayer = JSON.stringify(configRoute.layer);
+    const owner = configOwnerKey(configRoute);
+    setConfigPage(undefined);
+    if (draftOwner !== owner) {
+      setDraftOwner(owner);
+      setDraftUpdates({});
+      setDraftRemoves([]);
+      setDirty(false);
+      setConfigActionError(undefined);
+    }
+    void props.controller.getConfigPage(expectedPluginId, configRoute.layer, abort.signal)
+      .then((page) => {
+        if (abort.signal.aborted
+          || expectedPluginId !== configRoute.pluginId
+          || expectedLayer !== JSON.stringify(configRoute.layer)) return;
+        setConfigPage(page);
+      })
+      .catch(() => {
+        if (!abort.signal.aborted) {
+          const layer = configRoute.layer.scope === 'effective'
+            ? undefined
+            : { scope: configRoute.layer.scope as Scope, projectLayer: configRoute.layer.projectLayer };
+          props.controller.replace({
+            name: 'configUnavailable',
+            pluginId: expectedPluginId,
+            ...(layer ? { layer } : {}),
+          });
+        }
+      });
+    return () => abort.abort();
+  }, [configLoadKey, configRoute?.pluginId, configRoute?.layer.scope, configRoute?.layer.projectLayer, props.controller]);
+
+  const activeField = route.name === 'configFieldEditor'
+    ? currentConfigPage?.groups.flatMap((group) => group.fields).find((field) => field.key === route.fieldKey)
+    : undefined;
+  useEffect(() => {
+    if (route.name !== 'configFieldEditor' || !activeField) return;
+    const draft = draftUpdates[activeField.key];
+    setInputValue(route.editor === 'sensitive' || route.editor === 'path'
+      ? draft === undefined ? '' : String(draft)
+      : String(draft ?? activeField.value ?? ''));
+    setInputError(undefined);
+  }, [route.name, route.name === 'configFieldEditor' ? route.fieldKey : '', activeField?.key]);
 
   const screenId = resolveConsoleV4ScreenId(
     snapshot,
@@ -314,6 +441,7 @@ export function ConsoleAppV4(props: {
     setScrollOffset(0);
     setSearchMode(false);
     setShowTechnical(false);
+    setActionError(undefined);
   };
   const back = (): void => {
     props.controller.back();
@@ -322,10 +450,99 @@ export function ConsoleAppV4(props: {
     setScrollOffset(restored.scrollOffset ?? 0);
     setQuery(restored.query ?? '');
     setSearchMode(Boolean(restored.query));
+    setActionError(undefined);
   };
   const beginReview = async (intent: OperationIntent): Promise<void> => {
     await props.controller.buildOperationReview(intent);
     setFocus(0);
+    setScrollOffset(0);
+  };
+  const configLayerLabel = (layer: { scope: Scope | 'effective'; projectLayer: 'shared' | 'local' }): string =>
+    layer.scope === 'effective' ? '有效设置'
+      : layer.scope === 'user' ? '个人默认'
+        : layer.projectLayer === 'local' ? '当前项目（仅本机）' : '当前项目';
+  const currentFieldDisplay = (field: ConfigFieldViewModel): string => {
+    if (draftRemoves.includes(field.key)) return '恢复继承';
+    if (Object.hasOwn(draftUpdates, field.key)) {
+      const value = draftUpdates[field.key];
+      if (field.sensitive || field.type === 'file' || field.type === 'directory') return '将更新';
+      if (field.type === 'enum') return field.valueLabels?.[String(value)] ?? String(value);
+      if (field.type === 'boolean') return value ? '开启' : '关闭';
+      return `${String(value)}${field.unit ? ` ${field.unit}` : ''}`;
+    }
+    if (field.type === 'enum' && field.value !== undefined) {
+      return field.valueLabels?.[String(field.value)] ?? field.displayValue;
+    }
+    if (field.type === 'boolean' && field.value !== undefined) return field.value ? '开启' : '关闭';
+    return `${field.displayValue}${field.unit && field.displayValue !== '未设置' ? ` ${field.unit}` : ''}`;
+  };
+  const fieldEditor = (field: ConfigFieldViewModel): Extract<TuiRoute, { name: 'configFieldEditor' }>['editor'] => {
+    if (field.sensitive) return 'sensitive';
+    if (field.type === 'file' || field.type === 'directory') return 'path';
+    return field.type;
+  };
+  const updateDraft = (key: string, value: string | number | boolean): void => {
+    setConfigActionError(undefined);
+    const field = currentConfigPage?.groups.flatMap((group) => group.fields)
+      .find((candidate) => candidate.key === key);
+    const unchanged = field?.configured === true && field.value === value;
+    setDraftUpdates((current) => {
+      const next = { ...current };
+      if (unchanged) delete next[key];
+      else next[key] = value;
+      const nextRemoves = draftRemoves.filter((candidate) => candidate !== key);
+      setDraftRemoves(nextRemoves);
+      setDirty(Object.keys(next).length + nextRemoves.length > 0);
+      return next;
+    });
+  };
+  const removeDraft = (key: string): void => {
+    setConfigActionError(undefined);
+    setDraftUpdates((current) => {
+      const next = { ...current };
+      delete next[key];
+      const field = currentConfigPage?.groups.flatMap((group) => group.fields)
+        .find((candidate) => candidate.key === key);
+      const nextRemoves = field?.configured
+        ? [...new Set([...draftRemoves, key])]
+        : draftRemoves.filter((candidate) => candidate !== key);
+      setDraftRemoves(nextRemoves);
+      setDirty(Object.keys(next).length + nextRemoves.length > 0);
+      return next;
+    });
+  };
+  const configChanges = (): NonNullable<Extract<OperationIntent, { kind: 'configSave' }>['changes']> => {
+    const fields = currentConfigPage?.groups.flatMap((group) => group.fields) ?? [];
+    return [...Object.keys(draftUpdates), ...draftRemoves.filter((key) => !Object.hasOwn(draftUpdates, key))]
+      .map((key) => {
+        const field = fields.find((candidate) => candidate.key === key)!;
+        return {
+          key,
+          title: field?.title ?? key,
+          before: field?.displayValue ?? '未设置',
+          after: draftRemoves.includes(key) ? '未设置' : currentFieldDisplay(field),
+        };
+      });
+  };
+  const beginConfigSave = async (): Promise<void> => {
+    if (!configRoute || configRoute.layer.scope === 'effective' || !currentConfigPage || !dirty) return;
+    const fields = currentConfigPage.groups.flatMap((group) => group.fields);
+    try {
+      await beginReview({
+        kind: 'configSave',
+        pluginId: configRoute.pluginId,
+        scope: configRoute.layer.scope,
+        projectLayer: configRoute.layer.projectLayer,
+        updates: draftUpdates,
+        removeKeys: draftRemoves,
+        sensitiveKeys: fields.filter((field) => field.sensitive).map((field) => field.key),
+        privateKeys: fields.filter((field) => field.type === 'file' || field.type === 'directory').map((field) => field.key),
+        changes: configChanges(),
+      });
+      setConfigActionError(undefined);
+    } catch {
+      setConfigActionError('设置值未通过验证。请重新检查修改。');
+    }
   };
 
   if (snapshot.phase === 'error') {
@@ -510,7 +727,7 @@ export function ConsoleAppV4(props: {
     if (plugin.aggregateStatus === 'unavailable') {
       title = `暂时无法管理 ${platformLabel(route.platform)}`;
       description = '插件来源不可用，当前状态不能安全确认。';
-      actions = [{ label: '查看来源问题', description: `${plugin.sourceId} 无可用缓存`, run: () => go({ name: 'issueDetail', issueId: `source:${plugin.sourceId}:unavailable` }) }, { label: '重新检查状态', description: '不会修改现场内容', run: () => void props.controller.refreshSource(plugin.sourceId) }];
+      actions = [{ label: '查看来源问题', description: `${plugin.sourceId} 无可用缓存`, run: () => go({ name: 'issueDetail', issueId: `source:${plugin.sourceId}:unavailable` }) }, { label: '重新检查状态', description: '不会修改现场内容', run: () => props.controller.refreshSource(plugin.sourceId) }];
       content = <Box flexDirection="column"><Bordered><Text color={tuiTheme.statusColors.error}>× 来源不可用</Text><Text color={tuiTheme.colors.muted}>插件设置保持不变</Text></Bordered><ActionRows actions={actions} focus={focus} /></Box>;
     } else if (!placement || placement.state === 'notInstalled') {
       title = `尚未添加到 ${platformLabel(route.platform)}`;
@@ -549,20 +766,178 @@ export function ConsoleAppV4(props: {
       ];
       content = <Box flexDirection="column"><Bordered><Text color={tuiTheme.statusColors.success}>✓ 状态正常</Text><Text color={tuiTheme.colors.muted}>{scopeLabel(placement.scope)}{plugin.version ? ` · 当前版本 ${plugin.version}` : ''}</Text></Bordered><ActionRows actions={actions} focus={focus} /></Box>;
     }
+  } else if (route.name === 'configLayer' && plugin) {
+    breadcrumb = `${plugin.displayName} / 设置`;
+    title = '选择要查看或修改的设置';
+    description = '安装位置与设置保存层是两个不同概念。';
+    help = '↑↓ 移动 · Enter 打开 · Esc 返回';
+    actions = [
+      { label: '有效设置', description: '合并后的实际结果 · 只读', meta: '查看', run: () => go({ name: 'configFields', pluginId: plugin.pluginId, layer: { scope: 'effective', projectLayer: 'shared' } }) },
+      { label: '个人默认', description: '在所有项目中作为默认值', meta: configLayerCounts.user === undefined ? undefined : `${configLayerCounts.user} 个值`, run: () => go({ name: 'configFields', pluginId: plugin.pluginId, layer: { scope: 'user', projectLayer: 'shared' } }) },
+      { label: '当前项目', description: '随仓库共享，适合团队约定', meta: configLayerCounts.project === undefined ? undefined : `${configLayerCounts.project} 个值`, run: () => go({ name: 'configFields', pluginId: plugin.pluginId, layer: { scope: 'project', projectLayer: 'shared' } }) },
+      { label: '当前项目（仅本机）', description: '只保存在本机，不提交到仓库', meta: configLayerCounts.local === undefined ? undefined : configLayerCounts.local === 0 ? '未设置' : `${configLayerCounts.local} 个值`, run: () => go({ name: 'configFields', pluginId: plugin.pluginId, layer: { scope: 'project', projectLayer: 'local' } }) },
+    ];
+    content = <ActionRows actions={actions} focus={focus} />;
+  } else if (route.name === 'configFields' && plugin) {
+    const readonly = route.layer.scope === 'effective';
+    const selectedGroups = route.groupId
+      ? currentConfigPage?.groups.filter((group) => group.id === route.groupId) ?? []
+      : currentConfigPage?.groups ?? [];
+    breadcrumb = `${plugin.displayName} / 设置 / ${configLayerLabel(route.layer)}`;
+    context = readonly ? '只读' : dirty ? `${Object.keys(draftUpdates).length + draftRemoves.length} 项未保存` : undefined;
+    title = readonly ? '当前实际使用的设置' : route.groupId ? selectedGroups[0]?.title ?? '高级设置' : configLayerLabel(route.layer);
+    description = readonly ? '由默认值、个人默认、当前项目和本机覆盖合并。' : route.groupId ? '这些字段来自 manifest 的高级设置分组。' : '字段来自插件 manifest；修改先保存在本地草稿。';
+    if (!readonly && configActionError) description = configActionError;
+    help = readonly ? '↑↓ 查看 · Esc 返回' : '↑↓ 移动 · Enter 修改 · s 保存 · u 恢复继承 · Esc 返回';
+    if (!currentConfigPage) {
+      content = <Text color={tuiTheme.colors.accent}>● 正在读取可信设置定义</Text>;
+    } else if (readonly) {
+      actions = selectedGroups.flatMap((group) => group.fields.map((field) => ({
+        label: field.title,
+        description: `来自${field.sourceLabel}`,
+        meta: currentFieldDisplay(field),
+      })));
+      const limit = policy.mode === 'compact' ? 4 : 7;
+      content = <Bordered title="有效设置"><ActionRows actions={actions} focus={focus} offset={scrollOffset} limit={limit} /></Bordered>;
+    } else {
+      const mutableLayer = {
+        scope: route.layer.scope as Scope,
+        projectLayer: route.layer.projectLayer,
+      };
+      const rowGroups: Array<{ id: string; title: string; rows: ActionItem[] }> = [];
+      if (!route.groupId && currentConfigPage.presets.length > 0) {
+        rowGroups.push({ id: 'presets', title: '快速方案', rows: [{ label: '当前方案', description: '应用 manifest 声明的预设', meta: `${currentConfigPage.presets.length} 个`, run: () => go({ name: 'configPresets', pluginId: plugin.pluginId, layer: mutableLayer }) }] });
+      }
+      for (const group of selectedGroups) {
+        const rows: ActionItem[] = group.advanced && !route.groupId
+          ? [{ label: group.title, description: group.description ?? '渐进展开高级字段', meta: `${group.fields.length} 项`, run: () => go({ name: 'configFields', pluginId: plugin.pluginId, layer: route.layer, groupId: group.id }) }]
+          : group.fields.map((field) => ({
+              label: field.title,
+              description: field.description,
+              meta: currentFieldDisplay(field),
+              configKey: field.key,
+              run: () => go({ name: 'configFieldEditor', pluginId: plugin.pluginId, layer: mutableLayer, fieldKey: field.key, editor: fieldEditor(field) }),
+            }));
+        rowGroups.push({ id: group.id, title: group.advanced && !route.groupId ? '高级设置' : group.title, rows });
+      }
+      actions = rowGroups.flatMap((group) => group.rows);
+      if (!route.groupId) actions.push(
+        { label: '保存修改', description: dirty ? '查看安全变更汇总' : '当前没有未保存修改', disabled: dirty ? undefined : '当前没有未保存修改', run: beginConfigSave },
+        {
+          label: '重置此设置层…',
+          description: '删除本层全部值并恢复继承',
+          status: 'error',
+          disabled: currentConfigPage.storedCount === 0 ? '本层没有已存值' : undefined,
+          run: () => beginReview({ kind: 'configReset', pluginId: plugin.pluginId, scope: route.layer.scope as Scope, projectLayer: route.layer.projectLayer }),
+        },
+      );
+      let rowOffset = 0;
+      content = policy.mode === 'compact' || scrollOffset > 0
+        ? <Bordered title="设置字段"><ActionRows actions={actions} focus={focus} offset={scrollOffset} limit={policy.mode === 'compact' ? 4 : 7} /></Bordered>
+        : <Box flexDirection="column">{rowGroups.map((group) => {
+        const offset = rowOffset;
+        rowOffset += group.rows.length;
+        return <Bordered key={group.id} title={group.title}><ActionRows actions={actions} focus={focus} offset={offset} limit={group.rows.length} /></Bordered>;
+      })}{!route.groupId ? <ActionRows actions={actions} focus={focus} offset={rowOffset} /> : null}</Box>;
+    }
+  } else if (route.name === 'configFieldEditor' && plugin && activeField) {
+    breadcrumb = `${plugin.displayName} / 设置 / ${activeField.title}`;
+    help = route.editor === 'enum' || route.editor === 'boolean'
+      ? '↑↓ 移动 · Enter 使用 · Esc 取消'
+      : '输入 · Enter 继续 · Ctrl-U 删除本层值 · Esc 取消';
+    if (route.editor === 'enum') {
+      title = `选择${activeField.title}`;
+      description = '保存值仍是 manifest 中的原始 enum token。';
+      actions = (activeField.enumValues ?? []).map((value) => ({
+        label: `${activeField.valueLabels?.[value] ?? value}${activeField.recommendedValue === value ? '（推荐）' : ''}`,
+        meta: draftUpdates[activeField.key] === value || (!Object.hasOwn(draftUpdates, activeField.key) && activeField.value === value) ? '●' : '○',
+        run: () => { updateDraft(activeField.key, value); back(); },
+      }));
+      content = <ActionRows actions={actions} focus={focus} />;
+    } else if (route.editor === 'boolean') {
+      title = `${activeField.title}？`;
+      description = activeField.description ?? '选择开启或关闭。';
+      actions = [{ label: '开启', run: () => { updateDraft(activeField.key, true); back(); } }, { label: '关闭', run: () => { updateDraft(activeField.key, false); back(); } }];
+      content = <ActionRows actions={actions} focus={focus} />;
+    } else {
+      title = route.editor === 'number' ? `输入${activeField.title}` : route.editor === 'path' ? `选择${activeField.title}` : route.editor === 'sensitive' ? '输入敏感值' : `输入${activeField.title}`;
+      description = route.editor === 'number'
+        ? `允许范围：${activeField.min ?? '不限'}–${activeField.max ?? '不限'}${activeField.unit ? ` ${activeField.unit}` : ''}。`
+        : route.editor === 'path' ? `${activeField.type === 'file' ? '文件' : '目录'}路径会在保存前由现有 schema 路径验证。`
+          : route.editor === 'sensitive' ? '当前值不会回显；留空不会自动删除旧值。' : activeField.description ?? '';
+      const visibleInput = route.editor === 'sensitive' ? '•'.repeat(inputValue.length) : inputValue;
+      content = <Bordered><Text>{visibleInput || activeField.placeholder || ' '}</Text><Text color={inputError ? tuiTheme.statusColors.error : tuiTheme.colors.muted}>{inputError ?? (route.editor === 'sensitive' ? '输入已隐藏。' : route.editor === 'path' ? '绝对路径只在此输入页短暂显示。' : activeField.placeholder ?? '按 Enter 使用输入值。')}</Text></Bordered>;
+    }
+  } else if (route.name === 'configPresets' && plugin) {
+    breadcrumb = `${plugin.displayName} / 设置 / 预设`;
+    title = '选择快速方案';
+    description = '预设由插件 manifest 声明；应用后仍可逐项修改。';
+    actions = (currentConfigPage?.presets ?? []).map((preset) => ({
+      label: preset.title,
+      description: (preset.privateFieldTitles?.length ?? 0) > 0
+        ? `${preset.description ? `${preset.description} · ` : ''}${preset.privateFieldTitles!.join('、')}需手动输入`
+        : preset.description,
+      run: () => {
+        const fields = new Map(currentConfigPage?.groups.flatMap((group) => group.fields)
+          .map((field) => [field.key, field]));
+        const nextUpdates = { ...draftUpdates };
+        for (const [key, value] of Object.entries(preset.values)) {
+          const field = fields.get(key);
+          if (field?.configured && field.value === value) delete nextUpdates[key];
+          else nextUpdates[key] = value;
+        }
+        const nextRemoves = draftRemoves.filter((key) => !Object.hasOwn(preset.values, key));
+        setDraftUpdates(nextUpdates);
+        setDraftRemoves(nextRemoves);
+        setDirty(Object.keys(nextUpdates).length + nextRemoves.length > 0);
+        back();
+      },
+    }));
+    content = currentConfigPage ? <ActionRows actions={actions} focus={focus} /> : <Text color={tuiTheme.colors.accent}>● 正在读取预设</Text>;
+  } else if (route.name === 'configUnavailable' && plugin) {
+    breadcrumb = `${plugin.displayName} / 设置`;
+    context = '暂时不可编辑';
+    title = '暂时无法编辑设置';
+    description = '当前无法取得可信的字段定义，因此不能验证新值。';
+    actions = [
+      { label: '重新检查来源', description: '刷新当前来源后重新读取可信定义', run: async () => {
+        await props.controller.refreshSource(plugin.sourceId);
+        setConfigLoadKey((value) => value + 1);
+        props.controller.replace({ name: 'configFields', pluginId: plugin.pluginId, layer: route.layer ?? { scope: 'user', projectLayer: 'shared' } });
+      } },
+      { label: '返回', run: back },
+    ];
+    content = <Box flexDirection="column"><Bordered><Text color={tuiTheme.statusColors.error}>× Manifest 或来源不可用</Text><Text color={tuiTheme.colors.muted}>已保存的设置不会丢失。无法证明设置身份，因此重置已禁用。</Text></Bordered><ActionRows actions={actions} focus={focus} /></Box>;
   } else if (route.name === 'review' && snapshot.activeReview) {
     const review = snapshot.activeReview;
     breadcrumb = `${review.subject.name} / ${review.title}`;
     title = `${snapshot.result?.state === 'stale' ? '状态已变化 · ' : ''}确认${review.title} ${review.subject.name}`;
     description = snapshot.result?.state === 'stale' ? '当前状态已变化。请检查新的变化后再次确认。' : review.description;
-    actions = [{ label: review.primaryLabel, description: '执行前将再次检查当前状态', status: review.destructive ? 'error' : undefined, run: () => void props.controller.executeOperation(review.reviewToken) }, { label: '返回修改', run: back }];
-    content = <Box flexDirection="column"><Bordered><Text bold>{review.subject.name}  {review.subject.sourceLabel} {review.subject.version}</Text>{review.changes.map((change, index) => <Box key={`${change.title}:${index}`}><Text color={reviewColor(change)}>{reviewSymbol(change)} </Text><Text bold>{change.title}</Text>{change.description ? <Text color={tuiTheme.colors.muted}>  {change.description}</Text> : null}</Box>)}<Text color={tuiTheme.colors.muted}>▸ 技术详情（d）</Text>{showTechnical ? review.technicalDetails?.map((detail) => <Text key={detail} color={tuiTheme.colors.muted}>{detail}</Text>) : null}</Bordered><ActionRows actions={actions} focus={focus} /></Box>;
+    actions = [
+      ...review.changes.map((change) => ({
+        label: `${reviewSymbol(change)} ${change.title}`,
+        description: change.description,
+        status: change.kind === 'remove' ? 'error' as const
+          : change.kind === 'warning' ? 'warning' as const
+            : change.kind === 'keep' || change.kind === 'add' ? 'success' as const : undefined,
+      })),
+      { label: review.primaryLabel, description: '执行前将再次检查当前状态', status: review.destructive ? 'error' : undefined, run: () => props.controller.executeOperation(review.reviewToken).then(() => {
+        setFocus(0);
+        setScrollOffset(0);
+      }) },
+      { label: '返回修改', run: back },
+    ];
+    const reviewLimit = policy.mode === 'compact' ? 4 : 7;
+    content = <Box flexDirection="column"><Bordered><Text bold>{review.subject.name}  {review.subject.sourceLabel} {review.subject.version}</Text><ActionRows actions={actions} focus={focus} offset={scrollOffset} limit={reviewLimit} /><Text color={tuiTheme.colors.muted}>▸ 技术详情（d）</Text>{showTechnical ? review.technicalDetails?.map((detail) => <Text key={detail} color={tuiTheme.colors.muted}>{detail}</Text>) : null}</Bordered></Box>;
   } else if (route.name === 'progress') {
-    breadcrumb = '插件操作 / 进度';
-    title = '正在执行插件操作';
-    description = '请勿关闭当前终端。';
+    const configOperation = snapshot.activeReview?.title === '保存插件设置'
+      || snapshot.activeReview?.title === '重置插件设置';
+    breadcrumb = configOperation ? '设置 / 进度' : '插件操作 / 进度';
+    title = configOperation ? '正在保存并应用设置' : '正在执行插件操作';
+    description = configOperation ? '先保存所选层，再重新应用当前可见安装位置。' : '请勿关闭当前终端。';
     help = 'd 技术进度 · Ctrl-C 完成后退出';
     const progress = snapshot.progress;
-    content = <Box flexDirection="column"><Text color={tuiTheme.statusColors.success}>✓ 检查兼容性</Text><Text color={tuiTheme.statusColors.success}>✓ 准备插件内容</Text><Text color={tuiTheme.colors.accent}>● {progress.current?.phase ?? '连接到所选工具'}</Text><Text color={tuiTheme.colors.muted}>○ 验证结果</Text>{progress.current ? <Text color={tuiTheme.colors.muted}>当前：{progress.current.target}</Text> : null}{showTechnical ? progress.messages.slice(-8).map((message) => <Text key={message} color={tuiTheme.colors.muted}>{message}</Text>) : null}{exitAfterBusy ? <Text color={tuiTheme.statusColors.warning}>操作完成后退出。</Text> : null}</Box>;
+    content = <Box flexDirection="column"><Text color={tuiTheme.statusColors.success}>✓ {configOperation ? '验证设置值' : '检查兼容性'}</Text><Text color={tuiTheme.colors.accent}>● {progress.current?.phase ?? (configOperation ? '保存设置层并重新应用' : '连接到所选工具')}</Text><Text color={tuiTheme.colors.muted}>○ 验证结果</Text>{progress.current ? <Text color={tuiTheme.colors.muted}>当前：{progress.current.target}</Text> : null}{showTechnical ? progress.messages.slice(-8).map((message) => <Text key={message} color={tuiTheme.colors.muted}>{message}</Text>) : null}{exitAfterBusy ? <Text color={tuiTheme.statusColors.warning}>操作完成后退出。</Text> : null}</Box>;
   } else if (route.name === 'result' && snapshot.result) {
     const result = snapshot.result;
     const partial = result.state === 'partial';
@@ -571,6 +946,7 @@ export function ConsoleAppV4(props: {
     const action = result.state === 'succeeded' || result.state === 'partial'
       ? result.summary.action
       : undefined;
+    const configOperation = 'operationKind' in result ? result.operationKind : undefined;
     const completedTitle = {
       install: '✓ 插件添加完成',
       upgrade: '✓ 插件升级完成',
@@ -578,25 +954,30 @@ export function ConsoleAppV4(props: {
       uninstall: '✓ 插件移除完成',
       cleanup: '✓ 插件清理完成',
     }[action ?? 'install'];
-    title = partial ? '! 插件操作只完成了一部分' : blocked ? '× 插件操作未完成' : completedTitle;
-    description = blocked ? result.message : '状态已刷新。';
+    title = configOperation
+      ? blocked
+        ? '× 设置未确认保存'
+        : partial ? '! 设置已保存，但部分应用失败' : '✓ 设置已保存并应用'
+      : partial ? '! 插件操作只完成了一部分' : blocked ? '× 插件操作未完成' : completedTitle;
+    description = blocked ? result.message : configOperation ? '设置层已经更新。' : '状态已刷新。';
     const completedResult = result.state === 'succeeded' || result.state === 'partial'
       ? result
       : undefined;
-    const pluginId = completedResult?.summary.pluginId;
+    const pluginId = completedResult?.summary.pluginId
+      ?? ('pluginId' in result ? result.pluginId : undefined);
     const failedTarget = completedResult?.summary.targets?.find((target) => target.state === 'failed');
-    actions = [{ label: partial ? '查看失败项' : action === 'uninstall' || action === 'cleanup' ? '返回插件详情' : '查看插件', run: () => {
+    actions = [{ label: partial ? '查看失败项' : configOperation ? '查看插件' : action === 'uninstall' || action === 'cleanup' ? '返回插件详情' : '查看插件', run: () => {
       if (partial && pluginId && failedTarget) {
         go({ name: 'issueDetail', issueId: `target:${pluginId}:${failedTarget.platform}:${failedTarget.scope}:error` });
       } else if (pluginId && snapshot.viewModel?.plugins.some((entry) => entry.pluginId === pluginId)) {
         go({ name: 'pluginDetail', pluginId });
       }
       else go({ name: 'pluginList', mode: 'installed' });
-    } }, ...(partial && pluginId && failedTarget && action ? [{
+    } }, ...(partial && pluginId && failedTarget && (action || configOperation) ? [{
       label: '重试失败部分…',
       run: () => beginReview({
         kind: 'pluginWrite',
-        action,
+        action: action ?? 'reinstall',
         pluginId,
         platform: failedTarget.platform,
         scope: failedTarget.scope,
@@ -624,6 +1005,17 @@ export function ConsoleAppV4(props: {
     content = <ActionRows actions={actions} focus={focus} />;
   }
 
+  const runAction = (action: ActionItem | undefined): void => {
+    try {
+      const pending = action?.run?.();
+      if (pending) void pending.catch(() => {
+        setActionError('操作未完成。请重新检查后重试。');
+      });
+    } catch {
+      setActionError('操作未完成。请重新检查后重试。');
+    }
+  };
+
   useInput((input, key) => {
     if (tooSmall) {
       if (input.toLowerCase() === 'q' || (key.ctrl && input.toLowerCase() === 'c')) props.onExit?.();
@@ -643,6 +1035,8 @@ export function ConsoleAppV4(props: {
         else if (overlay === 'discard') {
           setOverlay(undefined);
           setDirty(false);
+          setDraftUpdates({});
+          setDraftRemoves([]);
           back();
         } else props.onExit?.();
       }
@@ -657,6 +1051,44 @@ export function ConsoleAppV4(props: {
       props.onExit?.();
       return;
     }
+    if (route.name === 'configFieldEditor'
+      && route.editor !== 'enum'
+      && route.editor !== 'boolean') {
+      if (key.escape) {
+        back();
+        return;
+      }
+      if (input === '\u0015' || (input.toLowerCase() === 'u' && key.ctrl)) {
+        removeDraft(route.fieldKey);
+        back();
+        return;
+      }
+      if (key.return && activeField) {
+        if (route.editor === 'sensitive' && inputValue.length === 0) {
+          back();
+          return;
+        }
+        if (route.editor === 'number') {
+          const number = Number(inputValue);
+          if (!Number.isFinite(number)) {
+            setInputError('必须输入有限数字。');
+            return;
+          }
+          if (activeField.min !== undefined && number < activeField.min
+            || activeField.max !== undefined && number > activeField.max) {
+            setInputError(`必须在 ${activeField.min ?? '不限'}–${activeField.max ?? '不限'} 范围内。`);
+            return;
+          }
+          updateDraft(activeField.key, number);
+        } else updateDraft(activeField.key, inputValue);
+        back();
+        return;
+      }
+      if (key.backspace || key.delete) setInputValue((value) => value.slice(0, -1));
+      else if (input && !key.ctrl && !key.meta && input >= ' ') setInputValue((value) => value + input);
+      setInputError(undefined);
+      return;
+    }
     if (searchMode && route.name === 'pluginList') {
       if (key.escape) {
         setSearchMode(false);
@@ -668,6 +1100,12 @@ export function ConsoleAppV4(props: {
       setScrollOffset(0);
       return;
     }
+    if (key.tab && (route.name === 'configLayer'
+      || route.name === 'configFields'
+      || route.name === 'configFieldEditor'
+      || route.name === 'configPresets')) {
+      return;
+    }
     if (input === '?') {
       setOverlayFocus(0);
       setOverlay('help');
@@ -676,6 +1114,11 @@ export function ConsoleAppV4(props: {
       setOverlay(dirty ? 'discard' : 'exit');
     } else if (input.toLowerCase() === 'd' && route.name === 'review') {
       setShowTechnical((value) => !value);
+    } else if ((key.escape || input.toLowerCase() === 'b')
+      && (route.name === 'configFieldEditor'
+        || route.name === 'configPresets'
+        || (route.name === 'configFields' && Boolean(route.groupId)))) {
+      back();
     } else if (key.escape || input.toLowerCase() === 'b') {
       if (dirty) {
         setOverlayFocus(0);
@@ -683,6 +1126,11 @@ export function ConsoleAppV4(props: {
       } else back();
     } else if (route.name === 'pluginList' && input === '/') {
       setSearchMode(true);
+    } else if (route.name === 'configFields' && route.layer.scope !== 'effective' && input.toLowerCase() === 's') {
+      if (dirty) void beginConfigSave();
+    } else if (route.name === 'configFields' && route.layer.scope !== 'effective' && input.toLowerCase() === 'u') {
+      const key = actions[focus]?.configKey;
+      if (key) removeDraft(key);
     } else if (route.name === 'pluginList' && (key.leftArrow || key.rightArrow || input === '[' || input === ']')) {
       const tabs = ['all', ...props.controller.listSources().map((source) => source.id)];
       const current = route.sourceId ?? 'all';
@@ -705,26 +1153,30 @@ export function ConsoleAppV4(props: {
     } else if (key.upArrow || input.toLowerCase() === 'k') {
       setFocus((value) => {
         const next = moveFocus(actions, value, -1);
-        if (policy.mode === 'compact' && next < scrollOffset) setScrollOffset(next);
-        else if (policy.mode === 'compact' && next >= scrollOffset + 4) setScrollOffset(next - 3);
+        const visible = policy.mode === 'compact' ? 4
+          : route.name === 'configFields' || route.name === 'review' ? 7 : undefined;
+        if (visible !== undefined && next < scrollOffset) setScrollOffset(next);
+        else if (visible !== undefined && next >= scrollOffset + visible) setScrollOffset(next - visible + 1);
         return next;
       });
     } else if (key.downArrow || input.toLowerCase() === 'j') {
       setFocus((value) => {
         const next = moveFocus(actions, value, 1);
-        if (policy.mode === 'compact' && next < scrollOffset) setScrollOffset(next);
-        else if (policy.mode === 'compact' && next >= scrollOffset + 4) setScrollOffset(next - 3);
+        const visible = policy.mode === 'compact' ? 4
+          : route.name === 'configFields' || route.name === 'review' ? 7 : undefined;
+        if (visible !== undefined && next < scrollOffset) setScrollOffset(next);
+        else if (visible !== undefined && next >= scrollOffset + visible) setScrollOffset(next - visible + 1);
         return next;
       });
     } else if (input === ' ' && route.name === 'installTools') {
-      void actions[focus]?.run?.();
+      runAction(actions[focus]);
     } else if (key.return && route.name === 'installTools') {
       if (tools.length > 0) {
         setDirty(false);
         back();
       }
     } else if (key.return) {
-      void actions[focus]?.run?.();
+      runAction(actions[focus]);
     }
   });
 
@@ -736,6 +1188,7 @@ export function ConsoleAppV4(props: {
     );
   }
 
+  if (actionError) description = actionError;
   const base = (
     <ScreenFrame title={title} description={description} breadcrumb={breadcrumb} context={context} help={help} size={size}>
       {content}

@@ -50,6 +50,119 @@ async function configureCatalog(): Promise<ReturnType<typeof getCurrentSourceTes
 }
 
 describe('five namespaced write commands', () => {
+  it('projects dynamic config and saves or resets it only through the real Controller review bridge', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'review-config-source');
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', 'demo\n', (manifest) => {
+      manifest.config = {
+        schema: {
+          level: { type: 'enum', values: ['fast', 'strict'], title: '审查级别' },
+          count: { type: 'number', min: 1, max: 10, title: '重试次数' },
+          token: { type: 'string', sensitive: true, title: '令牌' },
+          rules: { type: 'file', title: '规则文件' },
+        },
+        presentation: {
+          groups: [{ id: 'basic', title: '基本设置', fields: ['level', 'count', 'token', 'rules'] }],
+          fields: { level: { valueLabels: { fast: '快速', strict: '严格' }, recommendedValue: 'strict' } },
+          presets: [{ id: 'strict', title: '严格方案', values: { level: 'strict', count: 7 } }],
+        },
+      };
+    });
+    const source = { id: 'team', type: 'path' as const, primary: true, path: sourceRoot };
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 1, sources: [source] },
+      expectedDigest: snapshot.digest,
+      env: isolation.env,
+    });
+    const debugLog = vi.fn();
+    const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 99.0.0', stderr: '' }),
+      interactive: false,
+      debugLogger: { log: debugLog },
+    }));
+    const page = await dependencies.getConfigPage!(
+      'team/demo',
+      { scope: 'user', projectLayer: 'shared' },
+      new AbortController().signal,
+    );
+    expect(page.groups).toEqual([
+      expect.objectContaining({
+        title: '基本设置',
+        fields: expect.arrayContaining([
+          expect.objectContaining({ key: 'level', valueLabels: { fast: '快速', strict: '严格' }, recommendedValue: 'strict' }),
+          expect.objectContaining({ key: 'count', min: 1, max: 10 }),
+          expect.objectContaining({ key: 'token', sensitive: true }),
+        ]),
+      }),
+    ]);
+    expect(page.presets).toEqual([{ id: 'strict', title: '严格方案', values: { level: 'strict', count: 7 } }]);
+
+    const controller = new TuiController(dependencies);
+    const privatePath = path.join(isolation.layout.fixtureCwd, 'private-secret-rules.json');
+    await expect(controller.buildOperationReview({
+      kind: 'configSave',
+      pluginId: 'team/demo',
+      scope: 'user',
+      projectLayer: 'shared',
+      updates: { rules: privatePath },
+      privateKeys: ['rules'],
+    })).rejects.toThrow('操作未建立。请检查当前设置后重试。');
+    expect(JSON.stringify(debugLog.mock.calls)).not.toContain(privatePath);
+    expect(debugLog).toHaveBeenCalledWith(expect.objectContaining({
+      message: 'TUI config operation failed.',
+      data: expect.objectContaining({ code: expect.any(String) }),
+    }));
+
+    const save = await controller.buildOperationReview({
+      kind: 'configSave',
+      pluginId: 'team/demo',
+      scope: 'user',
+      projectLayer: 'shared',
+      updates: { level: 'strict', count: '7', token: 'sk-private' },
+      sensitiveKeys: ['token'],
+    });
+    expect(JSON.stringify(save)).not.toContain('sk-private');
+    await expect(controller.executeOperation(save.reviewToken)).resolves.toMatchObject({ state: 'succeeded' });
+
+    const sourceIdentity = await calculateCatalogSourceIdentity(source);
+    await expect(readPluginConfigStore({
+      sourceId: 'team',
+      sourceIdentity,
+      pluginName: 'demo',
+      scope: 'user',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+    })).resolves.toMatchObject({ exists: true, values: { level: 'strict', count: 7, token: 'sk-private' } });
+
+    await expect(controller.buildOperationReview({
+      kind: 'configSave',
+      pluginId: 'team/demo',
+      scope: 'user',
+      projectLayer: 'shared',
+      updates: { count: 99 },
+    })).rejects.toThrow('操作未建立。请检查当前设置后重试。');
+
+    const reset = await controller.buildOperationReview({
+      kind: 'configReset',
+      pluginId: 'team/demo',
+      scope: 'user',
+      projectLayer: 'shared',
+    });
+    await expect(controller.executeOperation(reset.reviewToken)).resolves.toMatchObject({ state: 'succeeded' });
+    await expect(readPluginConfigStore({
+      sourceId: 'team',
+      sourceIdentity,
+      pluginName: 'demo',
+      scope: 'user',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+    })).resolves.toMatchObject({ exists: false, values: {} });
+    controller.dispose();
+  });
+
   it('executes a real dual-platform TUI write under one complete locked review', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'review-both-source');

@@ -19,7 +19,11 @@ import {
   withResolvedMultiSourceCatalog,
   parsePluginId,
 } from '../utils/multi-source-catalog.js';
-import { readPluginConfigStore, resolveConfigRead } from '../utils/plugin-config.js';
+import {
+  coercePluginConfigUpdates,
+  readPluginConfigStore,
+  resolveConfigRead,
+} from '../utils/plugin-config.js';
 import {
   applyPluginConfigWrite,
   resetPluginConfigWithHelper,
@@ -38,7 +42,7 @@ import {
   type OperationIntent,
   type TuiControllerDependencies,
 } from './controller.js';
-import { buildConfigGroups } from './model.js';
+import { buildConfigGroups, buildConfigPage } from './model.js';
 
 function digest(value: unknown): string {
   return `sha256:${crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex')}`;
@@ -210,6 +214,32 @@ export function createTuiControllerDependencies(
   const dependencies: TuiControllerDependencies = {
     loadStatus,
     async validateIntent(intent, signal) {
+      if (intent.kind === 'configSave') {
+        const packageInfo = await readCliPackageInfo();
+        await withResolvedCatalogPlugin({
+          selector: intent.pluginId,
+          cliVersion: packageInfo.version,
+          freshnessPolicy: 'cacheFirst',
+          env: context.env,
+          signal,
+          consume: async ({ plugin }) => {
+            if (!plugin.manifest.config) {
+              throw new TuiOperationBlockedError('configSchemaUnavailable', '这个插件没有设置 schema。');
+            }
+            await coercePluginConfigUpdates({
+              schema: plugin.manifest.config.schema,
+              updates: intent.updates ?? {},
+              cwd: context.cwd,
+            });
+            for (const key of intent.removeKeys ?? []) {
+              if (!plugin.manifest.config.schema[key]) {
+                throw new TuiOperationBlockedError('unknownConfigKey', '设置字段已变化，请重新检查。');
+              }
+            }
+          },
+        });
+        return;
+      }
       if (intent.kind !== 'pluginWrite') return;
       signal.throwIfAborted();
       const packageInfo = await readCliPackageInfo();
@@ -241,12 +271,14 @@ export function createTuiControllerDependencies(
       });
     },
     captureEvidence,
-    logError(error, code) {
+    logError(error, code, logContext) {
       return context.debugLogger.log({
         type: 'tui:controller-error',
         level: 'debug',
         target: 'debugLog',
-        message: error instanceof Error ? error.message : String(error),
+        message: logContext?.privateConfigOperation
+          ? 'TUI config operation failed.'
+          : error instanceof Error ? error.message : String(error),
         data: { code },
       });
     },
@@ -271,6 +303,30 @@ export function createTuiControllerDependencies(
             env: context.env,
           });
           return buildConfigGroups({ schema: plugin.manifest.config, read });
+        },
+      });
+    },
+    async getConfigPage(pluginId, layer, signal) {
+      const packageInfo = await readCliPackageInfo();
+      return withResolvedCatalogPlugin({
+        selector: pluginId,
+        cliVersion: packageInfo.version,
+        freshnessPolicy: 'cacheFirst',
+        env: context.env,
+        signal,
+        consume: async ({ plugin }) => {
+          if (!plugin.manifest.config) {
+            throw new TuiOperationBlockedError('configSchemaUnavailable', '这个插件没有设置 schema。');
+          }
+          const read = await resolveConfigRead({
+            pluginName: plugin.manifest.name,
+            plugin,
+            scope: layer.scope,
+            projectLayer: layer.projectLayer,
+            cwd: context.cwd,
+            env: context.env,
+          });
+          return buildConfigPage({ pluginId, schema: plugin.manifest.config, read });
         },
       });
     },
@@ -389,8 +445,6 @@ export function createTuiControllerDependencies(
                   rebuildRuntime: context,
                   reviewPreflight,
                 });
-            const failure = resultFailure(result);
-            if (failure) throw failure;
             return result;
           },
         });

@@ -11,6 +11,7 @@ import type {
   RebuildProgressSnapshot,
 } from '../output/rebuild-progress.js';
 import {
+  type ConfigPageViewModel,
   type ConfigGroupViewModel,
   buildTuiViewModel,
   type PluginListItemViewModel,
@@ -43,6 +44,13 @@ export type OperationIntent =
       updates?: Record<string, unknown>;
       removeKeys?: string[];
       sensitiveKeys?: string[];
+      privateKeys?: string[];
+      changes?: Array<{
+        key: string;
+        title: string;
+        before: string;
+        after: string;
+      }>;
     }
   | {
       kind: 'configReset';
@@ -113,10 +121,25 @@ export type OperationExecuteResult =
       state: 'succeeded';
       operationId: string;
       summary: OperationResultSummary;
+      operationKind?: 'configSave' | 'configReset';
+      pluginId?: string;
     }
-  | { state: 'partial'; operationId: string; summary: OperationResultSummary }
+  | {
+      state: 'partial';
+      operationId: string;
+      summary: OperationResultSummary;
+      operationKind?: 'configSave' | 'configReset';
+      pluginId?: string;
+    }
   | { state: 'stale'; operationId: string; review: OperationReviewModel }
-  | { state: 'blocked'; operationId: string; code: string; message: string };
+  | {
+      state: 'blocked';
+      operationId: string;
+      code: string;
+      message: string;
+      operationKind?: 'configSave' | 'configReset';
+      pluginId?: string;
+    };
 
 export interface OperationResultSummary {
   code: 'operationSucceeded' | 'operationPartial';
@@ -149,10 +172,20 @@ export interface TuiControllerDependencies {
     layer: { scope: Scope; projectLayer: ProjectConfigStoreLayer },
     signal: AbortSignal,
   ) => Promise<ConfigGroupViewModel[]>;
-  logError?: (error: unknown, code: string) => void | Promise<void>;
+  getConfigPage?: (
+    pluginId: string,
+    layer: { scope: Scope | 'effective'; projectLayer: ProjectConfigStoreLayer },
+    signal: AbortSignal,
+  ) => Promise<ConfigPageViewModel>;
+  logError?: (
+    error: unknown,
+    code: string,
+    context?: { privateConfigOperation: boolean },
+  ) => void | Promise<void>;
   now?: () => number;
   createToken?: () => string;
   reviewTtlMs?: number;
+  maxReviewTickets?: number;
 }
 
 export interface TuiControllerSnapshot {
@@ -268,23 +301,44 @@ function reviewChanges(intent: OperationIntent): OperationReviewChange[] {
     }));
   }
   if (intent.kind === 'configReset') {
-    return [{ kind: 'remove', title: '删除此层的已存值', description: '有效值将恢复为继承值或默认值。' }];
+    const layerLabel = intent.scope === 'user'
+      ? '个人默认'
+      : intent.projectLayer === 'local' ? '当前项目（仅本机）' : '当前项目';
+    return [
+      { kind: 'remove', title: `删除${layerLabel}中的已存值`, description: '有效值将恢复为继承值或默认值。' },
+      { kind: 'change', title: '重新计算有效设置' },
+      { kind: 'change', title: '重新应用当前可见安装位置' },
+      { kind: 'keep', title: intent.scope === 'user' ? '当前项目和本机设置层保持不变' : '其他设置层保持不变' },
+    ];
   }
   if (intent.kind !== 'configSave') {
     throw new TuiOperationBlockedError('operationNotImplemented', '这个写操作尚未接入新 Controller。');
   }
-  const sensitive = new Set(intent.sensitiveKeys ?? []);
+  const privateKeys = new Set([...(intent.sensitiveKeys ?? []), ...(intent.privateKeys ?? [])]);
+  if (intent.changes) {
+    return [
+      ...intent.changes.map((change): OperationReviewChange => ({
+        kind: 'change',
+        title: change.title,
+        description: privateKeys.has(change.key)
+          ? change.after === '未设置' ? '已设置 → 未设置' : '已设置 → 将更新'
+          : `${change.before} → ${change.after}`,
+      })),
+      { kind: 'change', title: '重新应用插件内容', description: '只处理当前可见安装位置。' },
+      { kind: 'keep', title: '其他项目不会被自动扫描' },
+    ];
+  }
   const updateKeys = Object.keys(intent.updates ?? {});
   return [
     ...updateKeys.map((key): OperationReviewChange => ({
       kind: 'change',
       title: key,
-      description: sensitive.has(key) ? '已设置 → 将更新' : '将更新',
+      description: privateKeys.has(key) ? '已设置 → 将更新' : '将更新',
     })),
     ...(intent.removeKeys ?? []).map((key): OperationReviewChange => ({
       kind: 'remove',
       title: key,
-      description: sensitive.has(key) ? '已设置 → 未设置' : '恢复继承',
+      description: privateKeys.has(key) ? '已设置 → 未设置' : '恢复继承',
     })),
   ];
 }
@@ -369,6 +423,18 @@ export class TuiController {
     for (const listener of this.#listeners) listener(snapshot);
   }
 
+  async #logErrorSafe(
+    error: unknown,
+    code: string,
+    context?: { privateConfigOperation: boolean },
+  ): Promise<void> {
+    try {
+      await this.dependencies.logError?.(error, code, context);
+    } catch {
+      // Diagnostics must not replace the fixed safe Controller result.
+    }
+  }
+
   #project(): void {
     if (!this.#status) return;
     this.#viewModel = buildTuiViewModel({
@@ -388,7 +454,7 @@ export class TuiController {
     } catch (error) {
       if (this.#disposed || generation !== this.#loadGeneration) return;
       const code = issueCode(error);
-      await this.dependencies.logError?.(error, code);
+      await this.#logErrorSafe(error, code);
       this.#phase = 'error';
       this.#loadError = { code, message: '无法安全读取插件状态。请检查诊断后重试或退出。' };
       this.#publish();
@@ -411,7 +477,7 @@ export class TuiController {
     this.#project();
     this.#publish();
     for (const source of status.payload.catalog.sources) {
-      if (source.type === 'git') void this.refreshSource(source.id);
+      if (source.type === 'git') void this.refreshSource(source.id).catch(() => undefined);
     }
   }
 
@@ -459,7 +525,7 @@ export class TuiController {
       });
     } catch (error) {
       if (this.#disposed || signal.aborted || token !== this.#sourceTokens.get(sourceId)) return;
-      await this.dependencies.logError?.(error, 'catalogSourceRefreshFailed');
+      await this.#logErrorSafe(error, 'catalogSourceRefreshFailed');
       const state = hadCache ? 'degraded' : 'unavailable';
       this.#health.set(sourceId, {
         sourceId,
@@ -492,6 +558,11 @@ export class TuiController {
   }
 
   back(): void {
+    const route = this.#router.snapshot.current.route;
+    if (route.name === 'review' && this.#activeReview?.operationId === route.operationId) {
+      this.#tickets.delete(this.#activeReview.reviewToken);
+      this.#activeReview = undefined;
+    }
     this.#router.back();
     this.#publish();
   }
@@ -546,14 +617,56 @@ export class TuiController {
     ));
   }
 
+  async getConfigPage(
+    pluginId: string,
+    layer: { scope: Scope | 'effective'; projectLayer: ProjectConfigStoreLayer },
+    signal?: AbortSignal,
+  ): Promise<ConfigPageViewModel> {
+    if (!this.dependencies.getConfigPage) {
+      throw new TuiOperationBlockedError('configUnavailable', '设置读取入口不可用。');
+    }
+    const combined = signal
+      ? AbortSignal.any([this.#abort.signal, signal])
+      : this.#abort.signal;
+    return cloneFrozen(await this.dependencies.getConfigPage(
+      pluginId,
+      structuredClone(layer),
+      combined,
+    ));
+  }
+
   listUserIssues(): UserIssueViewModel[] {
     return cloneFrozen(this.#viewModel?.issues ?? []);
   }
 
   async buildOperationReview(intent: OperationIntent): Promise<OperationReviewModel> {
-    await this.dependencies.validateIntent?.(structuredClone(intent), this.#abort.signal);
-    const evidence = await this.dependencies.captureEvidence(structuredClone(intent), this.#abort.signal);
-    return this.#storeOperationReview(intent, evidence);
+    try {
+      await this.dependencies.validateIntent?.(structuredClone(intent), this.#abort.signal);
+      const evidence = await this.dependencies.captureEvidence(structuredClone(intent), this.#abort.signal);
+      return this.#storeOperationReview(intent, evidence);
+    } catch (error) {
+      const code = issueCode(error);
+      await this.#logOperationError(error, code, intent);
+      throw new TuiOperationBlockedError(code, '操作未建立。请检查当前设置后重试。');
+    }
+  }
+
+  async #logOperationError(error: unknown, code: string, intent: OperationIntent): Promise<void> {
+    await this.#logErrorSafe(error, code, {
+      privateConfigOperation: intent.kind === 'configSave' || intent.kind === 'configReset',
+    });
+  }
+
+  #pruneReviewTickets(now: number): void {
+    for (const [token, ticket] of this.#tickets) {
+      if (ticket.review.expiresAt < now) this.#tickets.delete(token);
+    }
+    const maximum = Math.max(1, this.dependencies.maxReviewTickets ?? 32);
+    while (this.#tickets.size >= maximum) {
+      const oldest = this.#tickets.keys().next().value as string | undefined;
+      if (!oldest) break;
+      this.#tickets.delete(oldest);
+    }
   }
 
   #storeOperationReview(
@@ -564,7 +677,9 @@ export class TuiController {
     const labels = operationLabels(intent);
     const operationId = this.dependencies.createToken?.() ?? crypto.randomUUID();
     const reviewToken = this.dependencies.createToken?.() ?? crypto.randomUUID();
-    const expiresAt = (this.dependencies.now?.() ?? Date.now())
+    const now = this.dependencies.now?.() ?? Date.now();
+    this.#pruneReviewTickets(now);
+    const expiresAt = now
       + (this.dependencies.reviewTtlMs ?? 2 * 60_000);
     const pluginId = 'pluginId' in intent ? intent.pluginId : 'sourceId' in intent ? intent.sourceId : intent.issueId;
     if ('pluginId' in intent) sourceIdFromPluginId(intent.pluginId);
@@ -617,7 +732,7 @@ export class TuiController {
       current = await this.dependencies.captureEvidence(structuredClone(ticket.intent), this.#abort.signal);
     } catch (error) {
       const code = issueCode(error);
-      await this.dependencies.logError?.(error, code);
+      await this.#logOperationError(error, code, ticket.intent);
       return this.#setBlocked(operationId, code);
     }
     if (operationEvidenceFingerprint(current) !== operationEvidenceFingerprint(ticket.evidence)) {
@@ -630,11 +745,37 @@ export class TuiController {
         structuredClone(ticket.intent),
         structuredClone(ticket.evidence),
       );
+      if (ticket.intent.kind === 'configSave' || ticket.intent.kind === 'configReset') {
+        const configWrite = typeof execution === 'object' && execution !== null
+          ? (execution as { configWrite?: unknown }).configWrite
+          : undefined;
+        if (configWrite === 'rolledBack') {
+          return this.#setBlocked(operationId, 'configWriteRolledBack', {
+            intent: ticket.intent,
+            navigation: 'back',
+          });
+        }
+        if (configWrite === 'rollbackFailed') {
+          return this.#setBlocked(operationId, 'configWriteRollbackFailed', {
+            intent: ticket.intent,
+            navigation: 'result',
+          });
+        }
+        if (configWrite !== 'succeeded') {
+          return this.#setBlocked(operationId, 'configWriteUnconfirmed', {
+            intent: ticket.intent,
+            navigation: 'back',
+          });
+        }
+      }
       const summary = operationResultSummary(ticket.intent, execution);
       const result: OperationExecuteResult = {
         state: summary.code === 'operationPartial' ? 'partial' : 'succeeded',
         operationId,
         summary,
+        ...(ticket.intent.kind === 'configSave' || ticket.intent.kind === 'configReset'
+          ? { operationKind: ticket.intent.kind, pluginId: ticket.intent.pluginId }
+          : {}),
       };
       this.#result = result;
       this.#activeReview = undefined;
@@ -643,7 +784,7 @@ export class TuiController {
       return cloneFrozen(result);
     } catch (error) {
       const code = issueCode(error);
-      await this.dependencies.logError?.(error, code);
+      await this.#logOperationError(error, code, ticket.intent);
       if (code === 'operationReviewStale') {
         return this.#rebuildStaleReview(ticket, operationId);
       }
@@ -660,7 +801,7 @@ export class TuiController {
       await this.dependencies.validateIntent?.(structuredClone(ticket.intent), this.#abort.signal);
     } catch (error) {
       const code = issueCode(error);
-      await this.dependencies.logError?.(error, code);
+      await this.#logOperationError(error, code, ticket.intent);
       const result: OperationExecuteResult = {
         state: 'blocked',
         operationId,
@@ -682,7 +823,7 @@ export class TuiController {
         );
       } catch (error) {
         const code = issueCode(error);
-        await this.dependencies.logError?.(error, code);
+        await this.#logOperationError(error, code, ticket.intent);
         return this.#setBlocked(operationId, code);
       }
     }
@@ -693,12 +834,33 @@ export class TuiController {
     return cloneFrozen(result);
   }
 
-  #setBlocked(operationId: string, code: string): OperationExecuteResult {
-    const message = '操作未完成。请重新检查后重试。';
-    const result: OperationExecuteResult = { state: 'blocked', operationId, code, message };
+  #setBlocked(
+    operationId: string,
+    code: string,
+    options?: {
+      intent?: Extract<OperationIntent, { kind: 'configSave' | 'configReset' }>;
+      navigation?: 'back' | 'result';
+    },
+  ): OperationExecuteResult {
+    const message = code === 'configWriteRolledBack'
+      ? '设置未保存。原设置已安全恢复，请检查草稿后重试。'
+      : code === 'configWriteRollbackFailed'
+        ? '设置未确认保存，且恢复未完整完成。请停止修改并检查问题。'
+        : '操作未完成。请重新检查后重试。';
+    const result: OperationExecuteResult = {
+      state: 'blocked',
+      operationId,
+      code,
+      message,
+      ...(options?.intent ? {
+        operationKind: options.intent.kind,
+        pluginId: options.intent.pluginId,
+      } : {}),
+    };
     this.#result = structuredClone(result);
     this.#activeReview = undefined;
-    this.#router.push({ name: 'result', operationId });
+    if (options?.navigation === 'back') this.#router.back();
+    else this.#router.push({ name: 'result', operationId });
     this.#publish();
     return cloneFrozen(result);
   }

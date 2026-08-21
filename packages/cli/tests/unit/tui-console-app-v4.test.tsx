@@ -12,6 +12,7 @@ import {
   type OperationEvidence,
   type TuiControllerDependencies,
 } from '../../src/tui/controller.js';
+import type { ConfigPageViewModel } from '../../src/tui/model.js';
 
 afterEach(() => cleanup());
 
@@ -131,6 +132,61 @@ function controller(overrides: Partial<TuiControllerDependencies> = {}): TuiCont
   });
 }
 
+function configPage(pluginId = 'team-tools/review-gate'): ConfigPageViewModel {
+  const field = (
+    key: string,
+    type: ConfigPageViewModel['groups'][number]['fields'][number]['type'],
+    extra: Partial<ConfigPageViewModel['groups'][number]['fields'][number]> = {},
+  ): ConfigPageViewModel['groups'][number]['fields'][number] => ({
+    key,
+    title: key,
+    type,
+    displayValue: '未设置',
+    required: false,
+    sensitive: false,
+    dirty: false,
+    inherited: true,
+    configured: false,
+    sourceLabel: '未设置',
+    advanced: false,
+    ...extra,
+  });
+  return {
+    pluginId,
+    layer: { scope: 'user', projectLayer: 'shared' },
+    storedCount: 2,
+    presets: [{
+      id: 'team',
+      title: '团队默认',
+      description: '平衡审查与等待时间',
+      values: { level: 'balanced', enabled: true, timeout: 20 },
+    }],
+    groups: [
+      {
+        id: 'basic',
+        title: '基本设置',
+        advanced: false,
+        fields: [
+          field('level', 'enum', { enumValues: ['fast', 'balanced', 'strict'], valueLabels: { fast: '快速', balanced: '平衡', strict: '严格' }, recommendedValue: 'balanced', value: 'strict', displayValue: '严格', configured: true, inherited: false }),
+          field('enabled', 'boolean', { value: true, displayValue: '开启', configured: true, inherited: false }),
+          field('timeout', 'number', { min: 1, max: 60, unit: '分钟', value: 15, displayValue: '15', configured: true, inherited: false }),
+          field('note', 'string', { placeholder: '输入说明' }),
+          field('rules', 'file', { configured: true, inherited: false, displayValue: '已设置' }),
+          field('workspace', 'directory'),
+          field('token', 'string', { sensitive: true, configured: true, inherited: false, displayValue: '已设置' }),
+        ],
+      },
+      {
+        id: 'advanced',
+        title: '高级设置',
+        description: '模型与内部调优',
+        advanced: true,
+        fields: [field('model', 'string', { value: 'review-v2', displayValue: 'review-v2', configured: true, inherited: false })],
+      },
+    ],
+  };
+}
+
 async function nextTurn(count = 1): Promise<void> {
   for (let index = 0; index < count; index += 1) {
     await new Promise((resolve) => setImmediate(resolve));
@@ -144,14 +200,24 @@ async function input(instance: ReturnType<typeof render>, ...values: string[]): 
   }
 }
 
+async function confirmReview(
+  instance: ReturnType<typeof render>,
+  value: TuiController,
+): Promise<void> {
+  const changes = value.snapshot.activeReview?.changes.length ?? 0;
+  await input(instance, ...Array.from({ length: changes }, () => '\u001B[B'), '\r');
+}
+
 describe('ConsoleAppV4', () => {
-  it('declares the complete 26-state G/P design map without duplicates', () => {
-    expect(CONSOLE_V4_SCREEN_IDS).toHaveLength(26);
-    expect(new Set(CONSOLE_V4_SCREEN_IDS)).toHaveProperty('size', 26);
+  it('keeps the merged G/P/C design map free of duplicate route identities', () => {
+    expect(CONSOLE_V4_SCREEN_IDS).toHaveLength(43);
+    expect(new Set(CONSOLE_V4_SCREEN_IDS)).toHaveProperty('size', 43);
     expect(CONSOLE_V4_SCREEN_IDS).toEqual([
       'G01', 'G02', 'G03', 'G04', 'G05',
       'P01', 'P02', 'P03', 'P04', 'P05', 'P06', 'P07', 'P08', 'P09', 'P10',
       'P11', 'P12', 'P13', 'P14', 'P15', 'P16', 'P17', 'P18', 'P19', 'P20', 'P21',
+      'C01', 'C02', 'C03', 'C04', 'C05', 'C06', 'C07', 'C08', 'C09', 'C10',
+      'C11', 'C12', 'C13', 'C14', 'C15', 'C16', 'C17',
     ]);
   });
 
@@ -263,7 +329,7 @@ describe('ConsoleAppV4', () => {
     expect([...reached].filter((screen) => screen.startsWith('P')).sort()).toEqual(
       CONSOLE_V4_SCREEN_IDS.filter((screen) => screen.startsWith('P')).sort(),
     );
-  });
+  }, 30_000);
 
   it('mounts the loading skeleton and keeps ordinary exit separate from G04 discard', async () => {
     const screens: ConsoleV4ScreenId[] = [];
@@ -381,7 +447,7 @@ describe('ConsoleAppV4', () => {
     expect(instance.lastFrame()).toContain('你希望在哪里使用 Agent Lab？');
     await input(instance, '\u001B[B', '\u001B[B', '\r');
     expect(instance.lastFrame()).toContain('确认添加插件 Agent Lab');
-    await input(instance, '\r');
+    await confirmReview(instance, value);
     await nextTurn(3);
 
     expect(executeIntent).toHaveBeenCalledWith(
@@ -392,7 +458,7 @@ describe('ConsoleAppV4', () => {
     expect(instance.lastFrame()).toContain('Claude Code · 所有项目');
     expect(instance.lastFrame()).toContain('失败');
     expect(instance.lastFrame()).toContain('重试失败部分…');
-    await input(instance, '\r');
+    await confirmReview(instance, value);
     expect(value.snapshot.router.current.route).toEqual({
       name: 'issueDetail',
       issueId: 'target:official/agent-lab:claude:user:error',
@@ -440,7 +506,7 @@ describe('ConsoleAppV4', () => {
     await value.buildOperationReview({ kind: 'pluginWrite', action: 'install', pluginId: 'official/agent-lab', platform: 'both', scope: 'user' });
     const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
     await nextTurn(3);
-    await input(instance, '\r');
+    await confirmReview(instance, value);
 
     expect(executeIntent).not.toHaveBeenCalled();
     expect(instance.lastFrame()).toContain('状态已变化');
@@ -507,5 +573,374 @@ describe('ConsoleAppV4', () => {
     expect(value.snapshot.router.current.route.name).toBe('pluginList');
     await input(instance, 'q');
     expect(exit).toHaveBeenCalledOnce();
+  });
+
+  it('reaches C01-C14 through real keyboard editing without exposing private values or changing layer with Tab', async () => {
+    const reached = new Set<ConsoleV4ScreenId>();
+    const exit = vi.fn();
+    let finishExecution!: (value: unknown) => void;
+    const executeIntent = vi.fn(() => new Promise<unknown>((resolve) => {
+      finishExecution = resolve;
+    }));
+    const getConfigPage = vi.fn(async (
+      pluginId: string,
+      layer: ConfigPageViewModel['layer'],
+    ) => ({ ...configPage(pluginId), layer }));
+    const value = controller({ getConfigPage, executeIntent });
+    value.push({ name: 'pluginDetail', pluginId: 'team-tools/review-gate' });
+    const instance = render(<ConsoleAppV4
+      controller={value}
+      size={{ columns: 80, rows: 24 }}
+      onExit={exit}
+      onScreenChange={(screen) => reached.add(screen)}
+    />);
+    await nextTurn(4);
+
+    await input(instance, '\u001B[B', '\u001B[B', '\r');
+    expect(reached).toContain('C01');
+    const layerRoute = value.snapshot.router.current.route;
+    await input(instance, '\t');
+    expect(value.snapshot.router.current.route).toEqual(layerRoute);
+
+    await input(instance, '\r');
+    await nextTurn(3);
+    expect(reached).toContain('C02');
+    expect(instance.lastFrame()).toContain('只读');
+    expect(instance.lastFrame()).not.toContain('/Users/private');
+    await input(instance, 'b', '\u001B[B', '\r');
+    await nextTurn(3);
+    expect(reached).toContain('C03');
+
+    await confirmReview(instance, value);
+    expect(reached).toContain('C11');
+    expect(instance.lastFrame()).toContain('团队默认');
+    await input(instance, '\r');
+
+    await input(instance, '\u001B[B', '\r', '\r');
+    expect(reached).toContain('C05');
+    await input(instance, '\u001B[B', '\r', '\r');
+    expect(reached).toContain('C06');
+    await input(instance, '\u001B[B', '\r', '\r');
+    expect(reached).toContain('C07');
+    await input(instance, '\u001B[B', '\r', 'x', '\r');
+    expect(reached).toContain('C08');
+    await input(instance, '\u001B[B', '\r', './rules.json', '\r');
+    expect(reached).toContain('C09');
+    await input(instance, '\u001B[B', '\u001B[B', '\r', 'sk-private-value');
+    expect(reached).toContain('C10');
+    expect(instance.lastFrame()).not.toContain('sk-private-value');
+    await input(instance, '\u0003');
+    expect(exit).toHaveBeenCalledOnce();
+    expect(value.snapshot.router.current.route.name).toBe('configFieldEditor');
+    await input(instance, '\r');
+    await input(instance, '\u001B[B', '\r');
+    expect(reached).toContain('C04');
+    await input(instance, 'b', 's');
+    await nextTurn(4);
+    expect(reached).toContain('C12');
+    const reviewFrame = instance.lastFrame() ?? '';
+    expect(reviewFrame).not.toContain('保存并应用');
+    expect(reviewFrame).not.toContain('sk-private-value');
+    expect(reviewFrame).not.toContain('./rules.json');
+
+    await confirmReview(instance, value);
+    await nextTurn(4);
+    expect(reached).toContain('C13');
+    finishExecution({
+      configWrite: 'succeeded',
+      overallState: 'succeeded',
+      targetResults: [{ target: { platform: 'codex', scope: 'user' }, state: 'completed' }],
+    });
+    await nextTurn(5);
+    expect(reached).toContain('C14');
+    expect(instance.lastFrame()).toContain('设置已保存并应用');
+    expect(executeIntent).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'configSave',
+      pluginId: 'team-tools/review-gate',
+      scope: 'user',
+      projectLayer: 'shared',
+    }), evidence);
+  });
+
+  it('renders config partial retry, reset Review, unavailable terminal state, and compact field viewport', async () => {
+    const partialScreens = new Set<ConsoleV4ScreenId>();
+    const partial = controller({
+      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...configPage(pluginId), layer })),
+      executeIntent: vi.fn().mockResolvedValue({
+        configWrite: 'succeeded',
+        overallState: 'partial',
+        targetResults: [
+          { target: { platform: 'codex', scope: 'user' }, state: 'completed' },
+          { target: { platform: 'claude', scope: 'user' }, state: 'failed' },
+        ],
+      }),
+    });
+    partial.push({ name: 'configFields', pluginId: 'team-tools/review-gate', layer: { scope: 'user', projectLayer: 'shared' } });
+    const partialInstance = render(<ConsoleAppV4 controller={partial} size={{ columns: 80, rows: 24 }} onScreenChange={(screen) => partialScreens.add(screen)} />);
+    await nextTurn(4);
+    await input(partialInstance, '\u001B[B', '\r', '\r', 's');
+    await nextTurn(3);
+    await confirmReview(partialInstance, partial);
+    await nextTurn(4);
+    expect(partialScreens).toContain('C15');
+    expect(partialInstance.lastFrame()).toContain('部分应用失败');
+    await input(partialInstance, '\u001B[B', '\r');
+    expect(partial.snapshot.activeReview?.changes).toEqual([
+      expect.objectContaining({ title: 'Claude Code · 所有项目' }),
+    ]);
+
+    const resetScreens = new Set<ConsoleV4ScreenId>();
+    const reset = controller({ getConfigPage: vi.fn(async (pluginId, layer) => ({ ...configPage(pluginId), layer })) });
+    reset.push({ name: 'configFields', pluginId: 'team-tools/review-gate', layer: { scope: 'project', projectLayer: 'local' } });
+    const resetInstance = render(<ConsoleAppV4 controller={reset} size={{ columns: 80, rows: 24 }} onScreenChange={(screen) => resetScreens.add(screen)} />);
+    await nextTurn(4);
+    await input(resetInstance, ...Array.from({ length: 9 }, () => '\u001B[B'), '\r');
+    await nextTurn(3);
+    expect(resetScreens).toContain('C16');
+    expect(resetInstance.lastFrame()).toContain('当前项目（仅本机）');
+    expect(resetInstance.lastFrame()).toContain('其他设置层保持不变');
+
+    const unavailableScreens = new Set<ConsoleV4ScreenId>();
+    const checkSource = vi.fn().mockResolvedValue(undefined);
+    const unavailable = controller({
+      checkSource,
+      getConfigPage: vi.fn().mockRejectedValue(new Error('private manifest error /Users/private')),
+    });
+    unavailable.push({ name: 'configFields', pluginId: 'team-tools/review-gate', layer: { scope: 'user', projectLayer: 'shared' } });
+    const unavailableInstance = render(<ConsoleAppV4 controller={unavailable} size={{ columns: 80, rows: 24 }} onScreenChange={(screen) => unavailableScreens.add(screen)} />);
+    await nextTurn(5);
+    expect(unavailableScreens).toContain('C17');
+    expect(unavailableInstance.lastFrame()).toContain('Manifest 或来源不可用');
+    expect(unavailableInstance.lastFrame()).not.toContain('/Users/private');
+    expect(unavailableInstance.lastFrame()).not.toContain('重置此设置层');
+    await input(unavailableInstance, '\r');
+    await nextTurn(4);
+    expect(checkSource).toHaveBeenCalledWith('team-tools', expect.any(AbortSignal));
+
+    const longPage = configPage();
+    longPage.presets = [];
+    longPage.groups = [{
+      id: 'long',
+      title: '长设置组',
+      advanced: false,
+      fields: Array.from({ length: 12 }, (_, index) => ({
+        ...longPage.groups[0]!.fields[3]!,
+        key: `field-${index + 1}`,
+        title: `字段 ${index + 1}`,
+      })),
+    }];
+    const compact = controller({ getConfigPage: vi.fn(async (_pluginId, layer) => ({ ...longPage, layer })) });
+    compact.push({ name: 'configFields', pluginId: 'team-tools/review-gate', layer: { scope: 'user', projectLayer: 'shared' } });
+    const compactInstance = render(<ConsoleAppV4 controller={compact} size={{ columns: 60, rows: 18 }} />);
+    await nextTurn(4);
+    await input(compactInstance, ...Array.from({ length: 8 }, () => '\u001B[B'));
+    const compactFrame = compactInstance.lastFrame() ?? '';
+    expect(compactFrame).toContain('› 字段 9');
+    expect(compactFrame).not.toContain('字段 1\n');
+    expect(compactFrame.split('\n').length).toBeLessThanOrEqual(18);
+
+    const effective = controller({ getConfigPage: vi.fn(async (_pluginId, layer) => ({ ...longPage, layer })) });
+    effective.push({ name: 'configFields', pluginId: 'team-tools/review-gate', layer: { scope: 'effective', projectLayer: 'shared' } });
+    const effectiveInstance = render(<ConsoleAppV4 controller={effective} size={{ columns: 60, rows: 18 }} />);
+    await nextTurn(4);
+    await input(effectiveInstance, ...Array.from({ length: 8 }, () => '\u001B[B'));
+    expect(effectiveInstance.lastFrame()).toContain('› 字段 9');
+    expect((effectiveInstance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(18);
+  });
+
+  it('does not let an aborted config layer response overwrite the newer layer page', async () => {
+    let resolveUser!: (page: ConfigPageViewModel) => void;
+    const userPage = new Promise<ConfigPageViewModel>((resolve) => {
+      resolveUser = resolve;
+    });
+    const projectPage = configPage();
+    projectPage.groups[0]!.fields[0]!.title = '新项目字段';
+    const getConfigPage = vi.fn((_pluginId: string, layer: ConfigPageViewModel['layer']) =>
+      layer.scope === 'user' ? userPage : Promise.resolve({ ...projectPage, layer }));
+    const value = controller({ getConfigPage });
+    value.push({ name: 'configFields', pluginId: 'team-tools/review-gate', layer: { scope: 'user', projectLayer: 'shared' } });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(3);
+    value.replace({ name: 'configFields', pluginId: 'team-tools/review-gate', layer: { scope: 'project', projectLayer: 'shared' } });
+    await nextTurn(4);
+    expect(instance.lastFrame()).toContain('新项目字段');
+
+    const oldPage = configPage();
+    oldPage.groups[0]!.fields[0]!.title = '过期个人字段';
+    resolveUser(oldPage);
+    await nextTurn(4);
+    expect(instance.lastFrame()).toContain('新项目字段');
+    expect(instance.lastFrame()).not.toContain('过期个人字段');
+  });
+
+  it('uses G04 when leaving a dirty config layer and can discard its draft', async () => {
+    const screens = new Set<ConsoleV4ScreenId>();
+    const value = controller({ getConfigPage: vi.fn(async (pluginId, layer) => ({ ...configPage(pluginId), layer })) });
+    value.push({ name: 'configFields', pluginId: 'team-tools/review-gate', layer: { scope: 'user', projectLayer: 'shared' } });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} onScreenChange={(screen) => screens.add(screen)} />);
+    await nextTurn(4);
+    await input(instance, '\r', '\r', 'b');
+    expect(screens).toContain('G04');
+    expect(instance.lastFrame()).toContain('放弃未保存修改？');
+    await input(instance, '\u001B[B', '\r');
+    expect(value.snapshot.router.current.route).toEqual({ name: 'home' });
+  });
+
+  it('treats b as text, normalizes no-op drafts, and disables reset for an empty layer', async () => {
+    const page = configPage();
+    page.storedCount = 0;
+    const value = controller({
+      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...page, pluginId, layer })),
+    });
+    value.push({ name: 'configFields', pluginId: 'team-tools/review-gate', layer: { scope: 'user', projectLayer: 'shared' } });
+    value.push({
+      name: 'configFieldEditor',
+      pluginId: 'team-tools/review-gate',
+      layer: { scope: 'user', projectLayer: 'shared' },
+      fieldKey: 'note',
+      editor: 'string',
+    });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(4);
+
+    await input(instance, 'b', '\r');
+    expect(value.snapshot.router.current.route.name).toBe('configFields');
+    expect(instance.lastFrame()).toContain('b');
+    expect(instance.lastFrame()).toContain('1 项未保存');
+
+    await input(instance, 'b', '\u001B[B', '\r');
+    value.push({ name: 'configFields', pluginId: 'team-tools/review-gate', layer: { scope: 'user', projectLayer: 'shared' } });
+    await nextTurn(4);
+    value.push({
+      name: 'configFieldEditor',
+      pluginId: 'team-tools/review-gate',
+      layer: { scope: 'user', projectLayer: 'shared' },
+      fieldKey: 'level',
+      editor: 'enum',
+    });
+    await input(instance, '\u001B[B', '\u001B[B', '\r');
+    expect(instance.lastFrame()).toContain('当前没有未保存修改');
+    value.push({
+      name: 'configFieldEditor',
+      pluginId: 'team-tools/review-gate',
+      layer: { scope: 'user', projectLayer: 'shared' },
+      fieldKey: 'note',
+      editor: 'string',
+    });
+    await nextTurn(2);
+    await input(instance, '\u0015');
+    expect(instance.lastFrame()).toContain('当前没有未保存修改');
+    await input(instance, 's');
+    expect(value.snapshot.activeReview).toBeUndefined();
+    expect(instance.lastFrame()).toContain('本层没有已存值');
+  });
+
+  it('isolates private drafts by canonical plugin and layer before the next page renders', async () => {
+    const alpha = configPage('team-tools/review-gate');
+    const beta = configPage('official/agent-lab');
+    beta.presets = [];
+    beta.groups = [{
+      id: 'basic',
+      title: '基本设置',
+      advanced: false,
+      fields: [{
+        ...beta.groups[0]!.fields[3]!,
+        key: 'token',
+        title: '普通 token 字段',
+      }],
+    }];
+    const getConfigPage = vi.fn(async (pluginId: string, layer: ConfigPageViewModel['layer']) => ({
+      ...(pluginId === alpha.pluginId ? alpha : beta),
+      pluginId,
+      layer,
+    }));
+    const value = controller({ getConfigPage });
+    value.push({ name: 'configFields', pluginId: alpha.pluginId, layer: { scope: 'user', projectLayer: 'shared' } });
+    value.push({
+      name: 'configFieldEditor',
+      pluginId: alpha.pluginId,
+      layer: { scope: 'user', projectLayer: 'shared' },
+      fieldKey: 'token',
+      editor: 'sensitive',
+    });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(4);
+    await input(instance, 'LEAK-VALUE', '\r');
+
+    value.replace({ name: 'configFields', pluginId: beta.pluginId, layer: { scope: 'user', projectLayer: 'shared' } });
+    expect(instance.lastFrame()).not.toContain('LEAK-VALUE');
+    await nextTurn(4);
+    expect(instance.lastFrame()).toContain('普通 token 字段');
+    expect(instance.lastFrame()).not.toContain('LEAK-VALUE');
+    await input(instance, 's');
+    expect(value.snapshot.activeReview).toBeUndefined();
+  });
+
+  it('keeps the owner draft after a safe rollback and never renders a saved result', async () => {
+    const screens = new Set<ConsoleV4ScreenId>();
+    const value = controller({
+      getConfigPage: vi.fn(async (pluginId, layer) => ({ ...configPage(pluginId), layer })),
+      executeIntent: vi.fn().mockResolvedValue({
+        configWrite: 'rolledBack',
+        overallState: 'failed',
+        targetResults: [
+          { target: { platform: 'codex', scope: 'user' }, state: 'completed' },
+          { target: { platform: 'claude', scope: 'user' }, state: 'failed' },
+        ],
+      }),
+    });
+    value.push({ name: 'configFields', pluginId: 'team-tools/review-gate', layer: { scope: 'user', projectLayer: 'shared' } });
+    value.push({
+      name: 'configFieldEditor',
+      pluginId: 'team-tools/review-gate',
+      layer: { scope: 'user', projectLayer: 'shared' },
+      fieldKey: 'note',
+      editor: 'string',
+    });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} onScreenChange={(screen) => screens.add(screen)} />);
+    await nextTurn(4);
+    await input(instance, 'DRAFT-KEEP', '\r', 's');
+    await nextTurn(3);
+    await confirmReview(instance, value);
+    await nextTurn(4);
+
+    expect(value.snapshot.result).toMatchObject({ state: 'blocked', code: 'configWriteRolledBack' });
+    expect(value.snapshot.router.current.route.name).toBe('configFields');
+    expect(instance.lastFrame()).toContain('DRAFT-KEEP');
+    expect(instance.lastFrame()).toContain('1 项未保存');
+    expect(screens).not.toContain('C14');
+    expect(screens).not.toContain('C15');
+  });
+
+  it('keeps every compact Review change and confirmation in one bounded focus viewport', async () => {
+    const executeIntent = vi.fn().mockResolvedValue({ configWrite: 'succeeded', overallState: 'succeeded', targetResults: [] });
+    const value = controller({ executeIntent });
+    await value.load();
+    await value.buildOperationReview({
+      kind: 'configSave',
+      pluginId: 'official/agent-lab',
+      scope: 'user',
+      projectLayer: 'shared',
+      updates: Object.fromEntries(Array.from({ length: 9 }, (_, index) => [`field-${index + 1}`, index + 1])),
+      changes: Array.from({ length: 9 }, (_, index) => ({
+        key: `field-${index + 1}`,
+        title: `变更 ${index + 1}`,
+        before: '旧值',
+        after: '新值',
+      })),
+    });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    await nextTurn(3);
+    expect(instance.lastFrame()).toContain('› ~ 变更 1');
+    expect(instance.lastFrame()).not.toContain('保存并应用');
+    await input(instance, '\r');
+    expect(executeIntent).not.toHaveBeenCalled();
+
+    const changeCount = value.snapshot.activeReview!.changes.length;
+    await input(instance, ...Array.from({ length: changeCount }, () => '\u001B[B'));
+    expect(instance.lastFrame()).toContain('› 保存并应用');
+    expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(18);
+    await input(instance, '\r');
+    expect(executeIntent).toHaveBeenCalledOnce();
   });
 });

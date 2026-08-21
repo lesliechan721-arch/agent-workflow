@@ -15,8 +15,25 @@ export type TuiRoute =
   | {
       name: 'configFields';
       pluginId: string;
-      layer: { scope: Scope; projectLayer: ProjectConfigStoreLayer };
+      layer: { scope: Scope | 'effective'; projectLayer: ProjectConfigStoreLayer };
       groupId?: string;
+    }
+  | {
+      name: 'configFieldEditor';
+      pluginId: string;
+      layer: { scope: Scope; projectLayer: ProjectConfigStoreLayer };
+      fieldKey: string;
+      editor: 'enum' | 'boolean' | 'number' | 'string' | 'path' | 'sensitive';
+    }
+  | {
+      name: 'configPresets';
+      pluginId: string;
+      layer: { scope: Scope; projectLayer: ProjectConfigStoreLayer };
+    }
+  | {
+      name: 'configUnavailable';
+      pluginId: string;
+      layer?: { scope: Scope; projectLayer: ProjectConfigStoreLayer };
     }
   | { name: 'sourceList' }
   | { name: 'sourceDetail'; sourceId: string }

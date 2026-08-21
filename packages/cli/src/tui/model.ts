@@ -1,6 +1,7 @@
 import type {
   PlatformName,
   PluginConfigFieldType,
+  PluginConfigPresentationPreset,
   PluginConfigSchema,
   Scope,
 } from '../types.js';
@@ -73,6 +74,18 @@ export interface ConfigFieldViewModel {
   sensitive: boolean;
   dirty: boolean;
   inherited: boolean;
+  configured: boolean;
+  sourceLabel: string;
+  value?: string | number | boolean;
+  defaultValue?: string | number | boolean;
+  enumValues?: string[];
+  valueLabels?: Record<string, string>;
+  recommendedValue?: string | number | boolean;
+  placeholder?: string;
+  unit?: string;
+  min?: number;
+  max?: number;
+  advanced: boolean;
 }
 
 export interface ConfigGroupViewModel {
@@ -81,6 +94,19 @@ export interface ConfigGroupViewModel {
   description?: string;
   advanced: boolean;
   fields: ConfigFieldViewModel[];
+}
+
+export interface ConfigPresetViewModel extends Omit<PluginConfigPresentationPreset, 'values'> {
+  values: Record<string, string | number | boolean>;
+  privateFieldTitles?: string[];
+}
+
+export interface ConfigPageViewModel {
+  pluginId: string;
+  layer: { scope: Scope | 'effective'; projectLayer: 'shared' | 'local' };
+  groups: ConfigGroupViewModel[];
+  presets: ConfigPresetViewModel[];
+  storedCount: number;
 }
 
 export interface UserIssueViewModel {
@@ -321,32 +347,68 @@ function displayConfigValue(options: {
   return String(options.value);
 }
 
+function configSourceLabel(source: ResolvedConfigRead['fields'][number]['sourceLayer']): string {
+  if (!source) return '未设置';
+  return {
+    default: '默认值',
+    user: '个人默认',
+    project: '当前项目',
+    local: '当前项目（仅本机）',
+  }[source];
+}
+
 export function buildConfigGroups(options: {
   schema: PluginConfigSchema;
   read: ResolvedConfigRead;
   dirtyKeys?: ReadonlySet<string>;
 }): ConfigGroupViewModel[] {
   const entryByKey = new Map(options.read.fields.map((field) => [field.key, field]));
+  const effectivePage = options.read.scope === 'effective';
   const fieldModel = (key: string): ConfigFieldViewModel => {
     const schema = options.schema.schema[key]!;
     const entry = entryByKey.get(key);
-    const inherited = entry?.storedSourceLayer === undefined;
-    const configured = entry?.valueState === 'configured' || entry?.valueState === 'default';
+    const presentation = options.schema.presentation?.fields?.[key];
+    const inherited = effectivePage
+      ? entry?.sourceLayer === undefined || entry?.sourceLayer === null
+      : entry?.storedSourceLayer === undefined;
+    const configured = effectivePage
+      ? entry?.valueState === 'configured' || entry?.valueState === 'default'
+      : entry?.storedSourceLayer !== undefined;
+    const privateValue = schema.sensitive === true || schema.type === 'file' || schema.type === 'directory';
+    const selectedValue = effectivePage ? entry?.effectiveValue : entry?.storedValue;
     return {
       key,
       title: schema.title ?? key,
       ...(schema.description ? { description: schema.description } : {}),
       type: schema.type,
       displayValue: displayConfigValue({
-        privateValue: schema.sensitive === true || schema.type === 'file' || schema.type === 'directory',
+        privateValue,
         inherited,
         configured,
-        value: entry?.effectiveValue,
+        value: selectedValue,
       }),
       required: schema.required === true,
       sensitive: schema.sensitive === true,
       dirty: options.dirtyKeys?.has(key) === true,
       inherited,
+      configured,
+      sourceLabel: effectivePage
+        ? configSourceLabel(entry?.sourceLayer ?? null)
+        : configured ? '本层已设置' : '继承',
+      ...(!privateValue && selectedValue !== undefined
+        ? { value: selectedValue as string | number | boolean }
+        : {}),
+      ...(!privateValue && schema.default !== undefined ? { defaultValue: schema.default } : {}),
+      ...(schema.values ? { enumValues: [...schema.values] } : {}),
+      ...(presentation?.valueLabels ? { valueLabels: { ...presentation.valueLabels } } : {}),
+      ...(presentation?.recommendedValue !== undefined
+        ? { recommendedValue: presentation.recommendedValue }
+        : {}),
+      ...(presentation?.placeholder ? { placeholder: presentation.placeholder } : {}),
+      ...(presentation?.unit ? { unit: presentation.unit } : {}),
+      ...(schema.min !== undefined ? { min: schema.min } : {}),
+      ...(schema.max !== undefined ? { max: schema.max } : {}),
+      advanced: presentation?.advanced === true,
     };
   };
   const assigned = new Set<string>();
@@ -364,10 +426,40 @@ export function buildConfigGroups(options: {
   if (remaining.length > 0 || groups.length === 0) {
     groups.push({
       id: 'general',
-      title: '常规设置',
+      title: groups.length === 0 ? '插件设置' : '其他设置',
       advanced: false,
       fields: (groups.length === 0 ? Object.keys(options.schema.schema) : remaining).map(fieldModel),
     });
   }
   return groups;
+}
+
+export function buildConfigPage(options: {
+  pluginId: string;
+  schema: PluginConfigSchema;
+  read: ResolvedConfigRead;
+}): ConfigPageViewModel {
+  const privateFields = new Set(Object.entries(options.schema.schema)
+    .filter(([, field]) => field.sensitive === true || field.type === 'file' || field.type === 'directory')
+    .map(([key]) => key));
+  const presets = (options.schema.presentation?.presets ?? []).map((preset): ConfigPresetViewModel => {
+    const privateFieldTitles = Object.keys(preset.values)
+      .filter((key) => privateFields.has(key))
+      .map((key) => options.schema.schema[key]?.title ?? key);
+    return {
+      id: preset.id,
+      title: preset.title,
+      ...(preset.description ? { description: preset.description } : {}),
+      values: Object.fromEntries(Object.entries(preset.values)
+        .filter(([key]) => !privateFields.has(key))),
+      ...(privateFieldTitles.length > 0 ? { privateFieldTitles } : {}),
+    };
+  });
+  return {
+    pluginId: options.pluginId,
+    layer: { scope: options.read.scope, projectLayer: options.read.projectLayer },
+    groups: buildConfigGroups(options),
+    presets,
+    storedCount: options.read.fields.filter((field) => field.storedSourceLayer !== undefined).length,
+  };
 }
