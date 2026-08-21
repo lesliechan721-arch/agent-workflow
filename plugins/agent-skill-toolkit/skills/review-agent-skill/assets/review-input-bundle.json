@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 4,
+  "schemaVersion": 5,
   "target": {
     "kind": "agent-skill",
     "name": "replace-me",

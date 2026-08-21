@@ -12,13 +12,14 @@ const URI_SCHEME_PATTERN = /^[A-Za-z][A-Za-z0-9+.-]*:/u;
 const ASCII_PUNCTUATION_PATTERN = /^[!"#$%&'()*+,\-./:;<=>?@[\\\]^_`{|}~]$/u;
 const LINE_MARKER_PATTERN = /:\d+(?::\d+)?$/u;
 
-type RuntimeSkillReferenceSource = 'markdown-link' | 'inline-command';
+type RuntimeSkillReferenceSource = 'markdown-link' | 'inline-command' | 'plain-text';
 
 interface RuntimeSkillReference {
   lexicalTarget: string;
   source: RuntimeSkillReferenceSource;
   commandPathTarget?: string;
   explicitLocalExecution?: boolean;
+  directLocalExecution?: boolean;
 }
 
 export interface SkillRuntimeProjectionEvidence {
@@ -33,9 +34,11 @@ function formatReference(
   skillKey: string,
   source: RuntimeSkillReferenceSource | 'projection',
   lexicalTarget: string,
+  origin = 'SKILL.md',
 ): string {
   const sourceLabel = source === 'projection' ? 'projection' : source;
-  return `skill ${JSON.stringify(skillKey)} ${sourceLabel} target ${JSON.stringify(lexicalTarget)}`;
+  const originLabel = origin === 'SKILL.md' ? '' : ` from ${JSON.stringify(origin)}`;
+  return `skill ${JSON.stringify(skillKey)} ${sourceLabel} target ${JSON.stringify(lexicalTarget)}${originLabel}`;
 }
 
 interface MarkdownDestination {
@@ -491,8 +494,11 @@ function normalizedWindowsLocalExecutionTarget(target: string): string | undefin
   return `./${target.slice(2).replaceAll('\\', '/')}`;
 }
 
-function explicitLocalExecutionTargets(commandSnippet: string): Map<string, string> {
-  const targets = new Map<string, string>();
+function explicitLocalExecutionTargets(commandSnippet: string): Map<
+  string,
+  { pathTarget: string; direct: boolean }
+> {
+  const targets = new Map<string, { pathTarget: string; direct: boolean }>();
   for (const segment of commandSnippet.split(/(?:\r?\n|&&|\|\||[;|])/u)) {
     const normalizedSegment = segment.replace(/^\s*\$\s+/u, '');
     const candidates = extractCommandTokenCandidates(normalizedSegment);
@@ -515,18 +521,18 @@ function explicitLocalExecutionTargets(commandSnippet: string): Map<string, stri
     if (LOCAL_EXECUTION_INTERPRETERS.has(executable)) {
       for (const candidate of candidates) {
         if (candidate.pathTarget.startsWith('./')) {
-          targets.set(candidate.lexicalTarget, candidate.pathTarget);
+          targets.set(candidate.lexicalTarget, { pathTarget: candidate.pathTarget, direct: false });
         }
       }
       for (const argument of executionTokens.slice(executableIndex + 1)) {
         if (WINDOWS_DRIVE_RELATIVE_PATH_PATTERN.test(argument)) {
-          targets.set(argument, argument);
+          targets.set(argument, { pathTarget: argument, direct: false });
         }
       }
       if (executable === 'powershell' || executable === 'pwsh') {
         for (const argument of executionTokens.slice(executableIndex + 1)) {
           const normalized = normalizedWindowsLocalExecutionTarget(argument);
-          if (normalized) targets.set(argument, normalized);
+          if (normalized) targets.set(argument, { pathTarget: normalized, direct: false });
         }
       }
       if (executable === 'cmd') {
@@ -538,46 +544,103 @@ function explicitLocalExecutionTargets(commandSnippet: string): Map<string, stri
           : executionTokens[commandSwitchIndex + 1];
         if (commandTarget) {
           const normalized = normalizedWindowsLocalExecutionTarget(commandTarget);
-          if (normalized) targets.set(commandTarget, normalized);
+          if (normalized) {
+            targets.set(commandTarget, { pathTarget: normalized, direct: false });
+          }
         }
       }
       continue;
     }
     if (
       executable.startsWith('./')
+      && executable !== './'
       && (
         executionTokens.length > executableIndex + 1
         || commandSnippet.includes('\n')
         || !executable.endsWith('.json')
       )
     ) {
-      targets.set(executableToken, executable);
+      targets.set(executableToken, { pathTarget: executable, direct: true });
     }
   }
   return targets;
 }
 
-function extractCommandReferences(commandSnippets: readonly string[]): RuntimeSkillReference[] {
+function commandSnippetHasExecutionSignal(commandSnippet: string): boolean {
+  for (const segment of commandSnippet.split(/(?:\r?\n|&&|\|\||[;|])/u)) {
+    const tokens = segment
+      .replace(/^\s*\$\s+/u, '')
+      .split(/\s+/u)
+      .map(stripCommandTokenPunctuation)
+      .filter(Boolean);
+    let executableIndex = 0;
+    while (
+      executableIndex < tokens.length
+      && /^[A-Za-z_][A-Za-z0-9_]*=/u.test(tokens[executableIndex]!)
+    ) {
+      executableIndex += 1;
+    }
+    const executable = stripShellRedirectionPrefix(tokens[executableIndex] ?? '');
+    if (
+      LOCAL_EXECUTION_INTERPRETERS.has(executable)
+      || executable.startsWith('./')
+      || tokens.length > executableIndex + 1
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function extractCommandReferences(
+  commandSnippets: readonly string[],
+  requireExecutionSignal = false,
+): RuntimeSkillReference[] {
   const references: RuntimeSkillReference[] = [];
   for (const commandSnippet of commandSnippets) {
+    if (requireExecutionSignal && !commandSnippetHasExecutionSignal(commandSnippet)) continue;
     const executionTargets = explicitLocalExecutionTargets(commandSnippet);
     for (const candidate of extractCommandTokenCandidates(commandSnippet)) {
       const explicitExecutionTarget = executionTargets.get(candidate.lexicalTarget);
       references.push({
         lexicalTarget: candidate.lexicalTarget,
         source: 'inline-command',
-        commandPathTarget: explicitExecutionTarget ?? candidate.pathTarget,
+        commandPathTarget: explicitExecutionTarget?.pathTarget ?? candidate.pathTarget,
         explicitLocalExecution: explicitExecutionTarget !== undefined,
+        directLocalExecution: explicitExecutionTarget?.direct,
       });
     }
   }
   return references;
 }
 
+const PLAIN_CORE_RESOURCE_PATTERN =
+  /(?:^|[\s'"`])((?:references|assets|scripts|agents|evals|providers)\/[A-Za-z0-9._()\-/]+)/gmu;
+
+function plainTextScanContent(content: string): string {
+  return content
+    .replace(/\\`[^\n]*\\`/gu, (value) => maskMarkdownCode(value))
+    .replace(/\\?\[[^\]\n]*\]\((?:\\.|[^)\n]|\([^\n)]*\))*\)/gu, (value) =>
+      maskMarkdownCode(value))
+    .replace(/^ {0,3}\[[^\]\n]+\]:[^\n]*(?:\n {1,3}\S[^\n]*)?/gmu, (value) =>
+      maskMarkdownCode(value));
+}
+
+function extractPlainTextReferences(content: string): RuntimeSkillReference[] {
+  return [...plainTextScanContent(content).matchAll(PLAIN_CORE_RESOURCE_PATTERN)]
+    .map((match) => match[1]!.replace(/[),.;:'"\]}]+$/gu, ''))
+    .filter((target) => !target.endsWith('/'))
+    .map((lexicalTarget) => ({ lexicalTarget, source: 'plain-text' }));
+}
+
 function isExcludedReference(reference: RuntimeSkillReference): boolean {
   const target = reference.commandPathTarget ?? reference.lexicalTarget;
   return (
     target === ''
+    || target === '.'
+    || target === '..'
+    || target === './'
+    || target === '../'
     || target.startsWith('#')
     || target.includes('$')
     || (
@@ -678,7 +741,7 @@ function isLexicallyLocalReference(
   reference: RuntimeSkillReference,
   pathTarget: string,
 ): boolean {
-  if (reference.source === 'markdown-link') {
+  if (reference.source === 'markdown-link' || reference.source === 'plain-text') {
     return true;
   }
   return (
@@ -686,7 +749,11 @@ function isLexicallyLocalReference(
     || pathTarget.startsWith('..\\')
     || hasParentTraversal(pathTarget)
     || ABSOLUTE_CORE_RESOURCE_PATTERN.test(pathTarget)
-    || CORE_RESOURCE_ROOT_PATTERN.test(pathTarget)
+    || (
+      CORE_RESOURCE_ROOT_PATTERN.test(pathTarget)
+      && /[\\/]/u.test(pathTarget)
+      && !pathTarget.endsWith('/')
+    )
   );
 }
 
@@ -695,8 +762,9 @@ function normalizeLocalTarget(
   source: RuntimeSkillReferenceSource | 'projection',
   lexicalTarget: string,
   pathTarget: string,
+  origin = 'SKILL.md',
 ): string {
-  const referenceLabel = formatReference(skillKey, source, lexicalTarget);
+  const referenceLabel = formatReference(skillKey, source, lexicalTarget, origin);
   if (pathTarget.includes('\\')) {
     throw new Error(`Invalid runtime Skill closure: ${referenceLabel} must use POSIX separators.`);
   }
@@ -744,6 +812,7 @@ async function shouldValidateReference(
   if (reference.source !== 'inline-command') return false;
   if (pathTarget === './eval-runtime-capabilities.json') return false;
   if (reference.explicitLocalExecution) return true;
+  if (pathTarget === './') return false;
   if (!pathTarget.startsWith('./')) return false;
   if (pathTarget.includes('\\')) return true;
   const relativeTarget = pathTarget.slice(2);
@@ -757,11 +826,13 @@ async function assertRegularSkillLocalFile(options: {
   source: RuntimeSkillReferenceSource | 'projection';
   lexicalTarget: string;
   relativeTarget: string;
+  origin?: string;
 }): Promise<void> {
   const referenceLabel = formatReference(
     options.skillKey,
     options.source,
     options.lexicalTarget,
+    options.origin,
   );
   let current = options.skillRoot;
   const segments = options.relativeTarget.split('/');
@@ -801,6 +872,23 @@ async function assertRegularSkillLocalFile(options: {
   }
 }
 
+function resolveMarkdownTargetFromOrigin(origin: string, pathTarget: string): string {
+  if (
+    origin === 'SKILL.md'
+    || CORE_RESOURCE_ROOT_PATTERN.test(pathTarget)
+    || pathTarget.includes('\\')
+    || path.posix.isAbsolute(pathTarget)
+    || WINDOWS_DRIVE_PATH_PATTERN.test(pathTarget)
+  ) {
+    return pathTarget;
+  }
+  return path.posix.normalize(path.posix.join(path.posix.dirname(origin), pathTarget));
+}
+
+function isAgentFacingTextResource(relativeTarget: string): boolean {
+  return ['.md', '.markdown', '.txt'].includes(path.posix.extname(relativeTarget).toLowerCase());
+}
+
 export async function validateRuntimeSkillClosure(skillRoot: string): Promise<void> {
   const skillRootStats = await fs.lstat(skillRoot).catch(() => undefined);
   if (!skillRootStats?.isDirectory() || skillRootStats.isSymbolicLink()) {
@@ -812,44 +900,59 @@ export async function validateRuntimeSkillClosure(skillRoot: string): Promise<vo
   if (!skillMarkdownStats?.isFile() || skillMarkdownStats.isSymbolicLink()) {
     throw new Error(`Invalid runtime Skill closure: skill ${JSON.stringify(skillKey)} is missing a regular SKILL.md.`);
   }
-  const content = await fs.readFile(skillMarkdownPath, 'utf8');
-  const scan = scanMarkdown(content);
-  const references = [
-    ...extractMarkdownReferences(scan.proseForLinks),
-    ...extractCommandReferences(scan.commandSnippets),
-  ];
-  const seen = new Set<string>();
-  for (const reference of references) {
-    const dedupeKey = `${reference.source}\0${reference.lexicalTarget}\0${reference.explicitLocalExecution === true}`;
-    if (seen.has(dedupeKey)) continue;
-    seen.add(dedupeKey);
-    if (isExcludedReference(reference)) continue;
-    const normalizedTarget = reference.source === 'markdown-link'
-      ? normalizeMarkdownDestination(skillKey, reference)
-      : reference.commandPathTarget ?? reference.lexicalTarget;
-    let { pathTarget, hasQuestionGlob } = stripReferenceSuffix(normalizedTarget);
-    if (hasQuestionGlob) continue;
-    if (reference.source === 'markdown-link') {
-      pathTarget = decodeMarkdownPath(skillKey, reference, pathTarget);
-      if (isExternalMarkdownTarget(pathTarget)) continue;
+  const pending = ['SKILL.md'];
+  const visited = new Set<string>();
+  while (pending.length > 0) {
+    const origin = pending.shift()!;
+    if (visited.has(origin)) continue;
+    visited.add(origin);
+    const content = await fs.readFile(path.join(skillRoot, ...origin.split('/')), 'utf8');
+    const scan = scanMarkdown(content);
+    const references = [
+      ...extractMarkdownReferences(scan.proseForLinks),
+      ...extractCommandReferences(scan.commandSnippets, origin !== 'SKILL.md'),
+      ...extractPlainTextReferences(scan.proseForLinks),
+    ];
+    const seen = new Set<string>();
+    for (const reference of references) {
+      const dedupeKey = `${reference.source}\0${reference.lexicalTarget}\0${reference.explicitLocalExecution === true}`;
+      if (seen.has(dedupeKey)) continue;
+      seen.add(dedupeKey);
+      if (isExcludedReference(reference)) continue;
+      if (origin !== 'SKILL.md' && reference.directLocalExecution === true) continue;
+      const normalizedTarget = reference.source === 'markdown-link'
+        ? normalizeMarkdownDestination(skillKey, reference)
+        : reference.commandPathTarget ?? reference.lexicalTarget;
+      let { pathTarget, hasQuestionGlob } = stripReferenceSuffix(normalizedTarget);
+      if (hasQuestionGlob) continue;
+      if (reference.source === 'markdown-link') {
+        pathTarget = decodeMarkdownPath(skillKey, reference, pathTarget);
+        if (isExternalMarkdownTarget(pathTarget)) continue;
+        pathTarget = resolveMarkdownTargetFromOrigin(origin, pathTarget);
+      }
+      if (!WINDOWS_DRIVE_PATH_PATTERN.test(pathTarget)) {
+        pathTarget = pathTarget.replace(LINE_MARKER_PATTERN, '');
+      }
+      if (!(await shouldValidateReference(skillRoot, reference, pathTarget))) continue;
+      const relativeTarget = normalizeLocalTarget(
+        skillKey,
+        reference.source,
+        reference.lexicalTarget,
+        pathTarget,
+        origin,
+      );
+      await assertRegularSkillLocalFile({
+        skillRoot,
+        skillKey,
+        source: reference.source,
+        lexicalTarget: reference.lexicalTarget,
+        relativeTarget,
+        origin,
+      });
+      if (isAgentFacingTextResource(relativeTarget) && !visited.has(relativeTarget)) {
+        pending.push(relativeTarget);
+      }
     }
-    if (!WINDOWS_DRIVE_PATH_PATTERN.test(pathTarget)) {
-      pathTarget = pathTarget.replace(LINE_MARKER_PATTERN, '');
-    }
-    if (!(await shouldValidateReference(skillRoot, reference, pathTarget))) continue;
-    const relativeTarget = normalizeLocalTarget(
-      skillKey,
-      reference.source,
-      reference.lexicalTarget,
-      pathTarget,
-    );
-    await assertRegularSkillLocalFile({
-      skillRoot,
-      skillKey,
-      source: reference.source,
-      lexicalTarget: reference.lexicalTarget,
-      relativeTarget,
-    });
   }
 }
 

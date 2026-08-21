@@ -30,7 +30,7 @@ Full / release-quality 表示所有适用领域最终被覆盖，不要求一个
 ## 执行顺序
 
 1. 固定评审合同：目标问题、真实失败、成功标准、环境、范围外事项、相邻 Skill 和发布要求。
-2. 运行 `node scripts/inspect-agent-skill.mjs <skill-dir> --format json`；诊断只提供线索。
+2. 运行 `node scripts/inspect-agent-skill.mjs <skill-dir> --root-kind <source|materialized> [--profile <profile>] --format json --output <inspection.json>`。把结果作为唯一 `package-inspection` stage 写入 `ReviewInputBundle`；error 是不可忽略的机器证据，warning 和大小诊断只提供线索。
 3. 读取 `references/composition-fitness.md` 做 Composition Fitness Audit；非比例结论必须关联 admitted finding。
 4. 有 Eval 时先消费 `audit-agent-skill-evals` 的 `EvalAuditResult`。`fail` 时不使用 Eval；`unknown` 只作诊断。Audit 必须同时绑定当前 Skill digest 与 case corpus digest。
 5. 通用领域：Problem/value、invocation/trigger、composition、minimum control、content/reference/scripts、Eval/evidence、reliability、maintainability。详细投影见 `references/review-rubric.generated.md`。
@@ -38,7 +38,7 @@ Full / release-quality 表示所有适用领域最终被覆盖，不要求一个
    - 脚本读取 `references/scripts-and-resources.md`；异步状态、跨 actor 协议或复杂生命周期读取 `references/architecture-boundaries.md`。
    - full/release-quality 读取 `references/review-dimensions.generated.md`、`references/scoring-model.generated.md` 和 `references/source-map.generated.md`；release-quality 核对当前来源。
 6. P0/P1 exact claim 不得强于证据；premises、reachability、impact、counterevidence 和 owner 必须明确。见 `references/evidence-and-severity.md`。
-7. 输出 `ReviewResult` 与人读摘要。先运行 `node scripts/validate-review-input-bundle.mjs <bundle.json> --handoff-root <root>`，再运行 `node scripts/validate-review-result.mjs <review-result.json> --format json`。
+7. 输出 `ReviewResult` 与人读摘要。先运行 `node scripts/validate-review-input-bundle.mjs <bundle.json> --handoff-root <root>`，再运行 `node scripts/validate-review-result.mjs <review-result.json> --bundle <bundle.json> --format json`。inspection error 必须由 finding 的 `machineEvidenceIds` 完整承认，并同时阻断 `package-validity`、`critical-artifacts` 和发布准备度。
 
 ## Eval 证据
 

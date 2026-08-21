@@ -579,6 +579,7 @@ async function schemaErrors(schemaPath, valuePath) {
 }
 
 const schemaByName = {
+  SkillInspectionResult: 'skill-inspection-result.schema.json',
   EvalAuditResult: 'eval-audit-result.schema.json',
   ReferenceAuditResult: 'reference-audit-result.schema.json',
   ReviewResult: 'review-result.schema.json',
@@ -586,6 +587,11 @@ const schemaByName = {
 };
 
 const stageCatalog = {
+  'package-inspection': {
+    producer: 'inspect-agent-skill',
+    schema: 'SkillInspectionResult',
+    profile: 'target',
+  },
   'eval-audit': {
     producer: 'audit-agent-skill-evals',
     schema: 'EvalAuditResult',
@@ -644,6 +650,39 @@ async function validateObject(schemaName, value, label, temporaryRoot, evidenceR
   return (await schemaErrors(schemaPath, valuePath)).map((entry) => `${label}: ${entry}`);
 }
 
+async function canonicalPackageInspection(bundle, temporaryRoot) {
+  if (bundle.target.kind === 'aw-plugin') return null;
+  const production = productionRoles(bundle.target.kind);
+  const skillFiles = bundle.artifacts.filter((artifact) =>
+    production.has(artifact.role) && path.posix.basename(artifact.path) === 'SKILL.md');
+  if (skillFiles.length !== 1) return null;
+  const repositoryRoot = await realpath(bundle.environment.repositoryRoot);
+  const skillRoot = path.join(
+    repositoryRoot,
+    ...path.posix.dirname(skillFiles[0].path).split('/'),
+  );
+  const outputPath = path.join(temporaryRoot, 'canonical-package-inspection.json');
+  const args = [
+    path.join(scriptRoot, 'inspect-agent-skill.mjs'),
+    skillRoot,
+    '--root-kind',
+    bundle.target.kind === 'materialized-skill' ? 'materialized' : 'source',
+    '--format',
+    'json',
+    '--output',
+    outputPath,
+  ];
+  if (bundle.target.profile !== null && bundle.target.profile !== undefined) {
+    args.push('--profile', bundle.target.profile);
+  }
+  try {
+    await execFileAsync(process.execPath, args, { encoding: 'utf8' });
+  } catch {
+    // Inspector errors are expected to use a non-zero exit after writing the result.
+  }
+  return JSON.parse(await readFile(outputPath, 'utf8'));
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   if (options.help) {
@@ -684,6 +723,12 @@ async function main() {
           && (typeof stage.profile !== 'string' || stage.profile.length === 0)
         ) {
           errors.push(`${stage.id} profile must be a non-empty string`);
+        }
+        if (
+          stageContract.profile === 'target'
+          && stage.profile !== (bundle.target.profile ?? null)
+        ) {
+          errors.push(`${stage.id} profile must match the bundle target`);
         }
         const key = stageSlotKey(stage.id, stage.profile, stage.subjectDigest);
         const previous = seen.get(key);
@@ -741,7 +786,10 @@ async function main() {
         }
         stageResults.set(key, { stage, result, actual });
 
-        if (stage.id !== 'eval-execution' && stage.independentContext !== true) {
+        if (
+          !['eval-execution', 'package-inspection'].includes(stage.id)
+          && stage.independentContext !== true
+        ) {
           errors.push(
             `${stage.id} provided review/audit stage must come from an independent context`,
           );
@@ -768,6 +816,39 @@ async function main() {
         }
         if (stageContract.mode && result.mode !== stageContract.mode) {
           errors.push(`${stage.id} result mode must be ${stageContract.mode}`);
+        }
+        if (stage.id === 'package-inspection') {
+          const expectedRootKind = bundle.target.kind === 'materialized-skill'
+            ? 'materialized'
+            : 'source';
+          if (result.target?.rootKind !== expectedRootKind) {
+            errors.push(`package-inspection rootKind must be ${expectedRootKind}`);
+          }
+          if (result.target?.name !== bundle.target.name) {
+            errors.push('package-inspection target name does not match bundle target');
+          }
+          let canonical = null;
+          try {
+            canonical = await canonicalPackageInspection(bundle, temporaryRoot);
+          } catch {
+            errors.push('package-inspection canonical Inspector rerun failed');
+          }
+          if (canonical === null) {
+            errors.push('package-inspection requires one canonical Skill root');
+          } else if (!isDeepStrictEqual(
+            {
+              target: result.target,
+              runtimeClosure: result.runtimeClosure,
+              issues: result.issues,
+            },
+            {
+              target: canonical.target,
+              runtimeClosure: canonical.runtimeClosure,
+              issues: canonical.issues,
+            },
+          )) {
+            errors.push('package-inspection machine evidence does not match the canonical Inspector rerun');
+          }
         }
         if (
           stageContract.targetKind === 'materialized-skill'

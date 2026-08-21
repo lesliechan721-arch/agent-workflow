@@ -6,6 +6,7 @@
   "required": [
     "schemaVersion",
     "target",
+    "targetPlanDigest",
     "genericReviews",
     "projectGates",
     "evalAudit",
@@ -15,7 +16,7 @@
   ],
   "properties": {
     "schemaVersion": {
-      "const": 1
+      "const": 2
     },
     "target": {
       "type": "object",
@@ -42,9 +43,12 @@
       },
       "additionalProperties": false
     },
+    "targetPlanDigest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
     "genericReviews": {
       "type": "array",
-      "minItems": 1,
       "items": {
         "type": "object",
         "required": [
@@ -53,9 +57,14 @@
           "profile",
           "digest",
           "design",
-          "releaseReadiness"
+          "releaseReadiness",
+          "reviewEvidenceId"
         ],
         "properties": {
+          "reviewEvidenceId": {
+            "type": "string",
+            "minLength": 1
+          },
           "targetName": {
             "type": "string",
             "minLength": 1

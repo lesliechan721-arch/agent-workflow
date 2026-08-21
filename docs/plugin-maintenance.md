@@ -20,7 +20,7 @@
 - 旧默认路由仍使用 [create-aw-plugin](../.agents/skills/create-aw-plugin/README.md) 和 [skill-review](../.agents/skills/skill-review/README.md)。
 - `agent-content-toolkit` 提供 `write-agent-content` 与 `review-agent-content`。
 - `agent-skill-toolkit` 提供 Skill author/review 与 Eval design/audit，依赖 `agent-content-toolkit >= 0.5.0`。
-- `aw-plugin-development` 提供显式调用的 AW Author/Reviewer，依赖 `agent-content-toolkit >= 0.5.0` 和 `agent-skill-toolkit >= 0.7.1`；真实模型 Eval 还需要 `agent-skill-eval-runner >= 0.3.0` 或兼容 runner。
+- `aw-plugin-development` 提供显式调用的 AW Author/Reviewer，依赖 `agent-content-toolkit >= 0.5.0` 和 `agent-skill-toolkit >= 0.8.0`；真实模型 Eval 还需要 `agent-skill-eval-runner >= 0.3.0` 或兼容 runner。
 - AW Author/Reviewer 适用于任意兼容 workspace root；目标根由 `.agents-plugin/plugin.json` 标识，不限于 `plugins/<name>/`。repo-local 旧 `create-aw-plugin` 仍只处理本仓库 `plugins/<name>/`；不含 AW manifest 的 repo-local 或 portable Skill 使用通用 `review-agent-skill`。
 - 迁移期间新工作流不得静默替代旧入口；完成固定行为对照后再切换默认路由。
 - 确定性作者工具统一使用公开 CLI：`aw plugin init`、`aw plugin add-skill`、`aw plugin validate` 和 `aw plugin check-versions`。先运行 `aw --version`；不要使用 `npx` 或隐式安装。repo-local `create-aw-plugin` 与 `aw-plugin-development` Author 只编排这些命令，不保存第二份核心实现。
@@ -37,9 +37,9 @@
 pnpm migration:verify:plugin-development
 ```
 
-迁移合同保留 `parallel`、`ready-for-cutover` 和 `retired` 三个生命周期词汇，但当前验证器只接受 `parallel`。它要求旧路由、全部旧入口、新入口、12 项固定能力 owner、7 项固定 gate 声明和当前结构性证据路径都存在。`replacementRoutes` 只声明未来路由，当前不能据此声称路由已生效。
+迁移合同使用 schema v2，并保留 `parallel`、`ready-for-cutover` 和 `retired` 三个状态。它要求旧路由、全部旧入口、新入口、12 项固定能力 owner、7 项固定 gate 声明和当前结构性证据路径都存在。`parallel` 和 `ready-for-cutover` 状态继续启用旧默认路由；`replacementRoutes` 只声明未来路由，不能据此声称路由已生效。
 
-在实现 canonical 模型证据和 currentness 验证，并提供自动 cutover 工具前，`ready-for-cutover` 和 `retired` 都会 fail closed，且 `cutoverReady` 始终为 `false`。未来切换状态前，必须同时满足：
+`ready-for-cutover` 必须同时满足：
 
 1. 四个旧 P1 有结构性实现证据。
 2. materialized Skill runtime closure 有生产实现和单测证据。
@@ -49,7 +49,15 @@ pnpm migration:verify:plugin-development
 6. Eval audit → run → result triage 端到端 release 证据完成。
 7. repo-local static Skill 的 batch、currentness 和报告发布已明确决定保留、迁移或退役。
 
-当前合同中的 `modelEvidence` 必须明确为 `null`，不能用自报路径或摘要绕过门禁。未来的 cutover 验证必须复用正式 report/eval canonical validators，验证 release suite、模型证据和 currentness；不能只修改迁移 JSON，也不能在迁移脚本中维护第二套临时报表验证逻辑。
+当前合同仍为 `parallel`，因此 `modelEvidence` 保持 `null`。进入 `ready-for-cutover` 时，每项证据必须复制到 `docs/plugin-development-evidence/<plugin>/<skill>/<batch>/evaluation.json`，提交后再写入路径和文件 digest。验证器要求 evidence 与当前 HEAD 中的文件一致，核对 owner、证据 source revision 是当前 HEAD 的祖先、当前 production source digest、干净且没有 ignored production file 的 plugin set、release-required model profile，以及每个 required target 的 passed/complete/mechanical 状态。只修改迁移 JSON或手工填写通过状态不能通过门禁。
+
+验证为 ready 后，可先预览 cutover；不带 `--apply` 时不会修改文件：
+
+```bash
+pnpm migration:cutover:plugin-development
+```
+
+显式执行 `pnpm migration:cutover:plugin-development -- --apply` 才会原子更新默认路由并把状态改为 `retired`。工具在修改前后都运行同一迁移验证，并在后置验证失败时恢复原文件。本次实现不执行该命令。
 
 ## Catalog build-time 文件复用
 

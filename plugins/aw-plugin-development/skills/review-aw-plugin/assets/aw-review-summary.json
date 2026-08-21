@@ -1,12 +1,14 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "target": {
     "plugin": "target-plugin",
     "skill": "target-skill",
     "sourceDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
   },
+  "targetPlanDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
   "genericReviews": [
     {
+      "reviewEvidenceId": "replace-with-review-result-id",
       "targetName": "target-skill",
       "kind": "aw-plugin-skill",
       "profile": null,

@@ -25,14 +25,14 @@ async function runInjectedBin(bin, args) {
     : execFileAsync(bin, args, { encoding: 'utf8' });
 }
 
-test('plugin is a manual-only 0.3.2 orchestration Skill', async () => {
+test('plugin is a manual-only 0.4.0 orchestration Skill', async () => {
   const manifest = JSON.parse(
     await readFile(path.join(sourceRoot, '.agents-plugin', 'plugin.json'), 'utf8'),
   );
   const skill = await readRuntime('SKILL.md');
   const openai = await readRuntime('agents/openai.yaml');
 
-  assert.equal(manifest.version, '0.3.2');
+  assert.equal(manifest.version, '0.4.0');
   assert.match(skill, /^disable-model-invocation: true$/mu);
   assert.match(skill, /^user-invocable: true$/mu);
   assert.match(openai, /^\s*allow_implicit_invocation: false$/mu);
@@ -124,8 +124,8 @@ test('dependency documents require the compatible package without implicit insta
 
   assert.match(dependency, new RegExp(range.replaceAll('.', '\\.'), 'u'));
   assert.match(readme, new RegExp(range.replaceAll('.', '\\.'), 'u'));
-  assert.match(dependency, /插件合同版本：`0\.3\.2`/u);
-  assert.match(readme, /当前插件合同版本：`0\.3\.2`/u);
+  assert.match(dependency, /插件合同版本：`0\.4\.0`/u);
+  assert.match(readme, /当前插件合同版本：`0\.4\.0`/u);
   assert.match(dependency, /不要使用 `npx`/u);
   assert.match(dependency, /不要隐式安装或下载该包/u);
   for (const document of [dependency, readme, await readRuntime('README.md'), await readRuntime('SKILL.md')]) {

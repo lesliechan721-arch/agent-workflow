@@ -25,11 +25,14 @@ interface ParsedArgs {
   report?: string;
   scorecard?: string;
   reviewResult?: string;
+  reviewBundle?: string;
   awSummary?: string;
+  targetPlan?: string;
+  reviewEvidence: Array<{ id: string; result: string; bundle: string }>;
 }
 
 export interface ReviewResultDocument {
-  schemaVersion: 1;
+  schemaVersion: 4;
   mode: 'quick' | 'full' | 'release-quality' | 'delta';
   target: {
     kind: string;
@@ -51,13 +54,15 @@ export interface ReviewResultDocument {
 }
 
 export interface AwReviewSummaryDocument {
-  schemaVersion: 1;
+  schemaVersion: 2;
   target: {
     plugin: string;
     skill: string | null;
     sourceDigest: string;
   };
+  targetPlanDigest: string;
   genericReviews: Array<{
+    reviewEvidenceId: string;
     targetName: string;
     kind: string;
     profile: string | null;
@@ -83,7 +88,10 @@ function usage(): string {
     '  --report <path>      Markdown review draft; relative paths use the repository root',
     '  --scorecard <path>   JSON scorecard draft; relative paths use the repository root',
     '  --review-result <path>  Generic ReviewResult JSON; supports static and plugin Skills',
+    '  --review-bundle <path>  Required ReviewInputBundle bound to the ReviewResult',
     '  --aw-summary <path>     Required with --review-result for an AW plugin Skill',
+    '  --target-plan <path>    Required AWReviewTargetPlan for an AW plugin Skill',
+    '  --review-evidence <id> <result> <bundle>  Add validated evidence for another AW target',
     '',
     'Publishes the report and seals the batch. It does not update the Skill README.',
   ].join('\n');
@@ -96,12 +104,23 @@ function optionValue(args: string[], index: number, flag: string): string {
 }
 
 function parseArgs(args: string[]): ParsedArgs {
-  const parsed: ParsedArgs = {};
+  const parsed: ParsedArgs = { reviewEvidence: [] };
   for (let index = 0; index < args.length; index += 1) {
     const flag = args[index]!;
     if (flag === '--') continue;
     if (flag === '-h' || flag === '--help') {
       parsed.help = true;
+      continue;
+    }
+    if (flag === '--review-evidence') {
+      const id = args[index + 1];
+      const result = args[index + 2];
+      const bundle = args[index + 3];
+      if (!id || !result || !bundle || [id, result, bundle].some((value) => value.startsWith('-'))) {
+        throw new Error('--review-evidence requires <id> <result> <bundle>.');
+      }
+      parsed.reviewEvidence.push({ id, result, bundle });
+      index += 3;
       continue;
     }
     const value = optionValue(args, index, flag);
@@ -114,26 +133,38 @@ function parseArgs(args: string[]): ParsedArgs {
     else if (flag === '--report') parsed.report = value;
     else if (flag === '--scorecard') parsed.scorecard = value;
     else if (flag === '--review-result') parsed.reviewResult = value;
+    else if (flag === '--review-bundle') parsed.reviewBundle = value;
     else if (flag === '--aw-summary') parsed.awSummary = value;
+    else if (flag === '--target-plan') parsed.targetPlan = value;
     else throw new Error(`Unknown option: ${flag}`);
   }
   if (parsed.help) return parsed;
   if (!parsed.skill || !parsed.report) throw new Error(usage());
   const legacyInput = parsed.scorecard !== undefined;
-  const structuredInput = parsed.reviewResult !== undefined || parsed.awSummary !== undefined;
+  const structuredInput = parsed.reviewResult !== undefined
+    || parsed.reviewBundle !== undefined
+    || parsed.awSummary !== undefined
+    || parsed.targetPlan !== undefined
+    || parsed.reviewEvidence.length > 0;
   if (legacyInput === structuredInput) {
     throw new Error(
       'Provide either --scorecard or --review-result.',
     );
   }
   if (structuredInput && !parsed.reviewResult) {
-    throw new Error('--aw-summary requires --review-result.');
+    throw new Error('Structured publication requires --review-result.');
   }
-  if (parsed.plugin && parsed.reviewResult && !parsed.awSummary) {
-    throw new Error('Plugin structured publication requires --aw-summary.');
+  if (parsed.reviewResult && !parsed.reviewBundle) {
+    throw new Error('--review-result requires --review-bundle.');
   }
-  if (!parsed.plugin && parsed.awSummary) {
-    throw new Error('--aw-summary requires --plugin.');
+  if (parsed.plugin && parsed.reviewResult && (!parsed.awSummary || !parsed.targetPlan)) {
+    throw new Error('Plugin structured publication requires --aw-summary and --target-plan.');
+  }
+  if (!parsed.plugin && (parsed.awSummary || parsed.targetPlan)) {
+    throw new Error('--aw-summary and --target-plan require --plugin.');
+  }
+  if (!parsed.plugin && parsed.reviewEvidence.length > 0) {
+    throw new Error('--review-evidence requires --plugin.');
   }
   if ((parsed.batchName ? 1 : 0) + (parsed.batchId ? 1 : 0) !== 1) {
     throw new Error('Provide exactly one of --batch-name or --batch-id.');
@@ -373,11 +404,15 @@ export function buildStructuredReviewPublication(
   };
 }
 
-async function validateReviewResult(repoRoot: string, valuePath: string): Promise<void> {
+async function validateReviewResult(
+  repoRoot: string,
+  valuePath: string,
+  bundlePath: string,
+): Promise<void> {
   const validator = path.join(
     repoRoot,
     'plugins',
-    'agent-content-toolkit',
+    'agent-skill-toolkit',
     'scripts',
     'validate-review-result.mjs',
   );
@@ -385,6 +420,8 @@ async function validateReviewResult(repoRoot: string, valuePath: string): Promis
     await execFileAsync(process.execPath, [
       validator,
       valuePath,
+      '--bundle',
+      bundlePath,
       '--format',
       'json',
     ], { cwd: repoRoot, encoding: 'utf8' });
@@ -399,7 +436,13 @@ async function validateReviewResult(repoRoot: string, valuePath: string): Promis
   }
 }
 
-async function validateAwReviewSummary(repoRoot: string, valuePath: string): Promise<void> {
+async function validateAwReviewSummary(
+  repoRoot: string,
+  pluginRoot: string,
+  valuePath: string,
+  planPath: string,
+  evidence: Array<{ id: string; resultPath: string; bundlePath: string }>,
+): Promise<void> {
   const validator = path.join(
     repoRoot,
     'plugins',
@@ -408,7 +451,23 @@ async function validateAwReviewSummary(repoRoot: string, valuePath: string): Pro
     'validate-aw-review-summary.mjs',
   );
   try {
-    await execFileAsync(process.execPath, [validator, valuePath, '--format', 'json'], {
+    const args = [
+      validator,
+      valuePath,
+      '--plan',
+      planPath,
+      '--plugin-root',
+      pluginRoot,
+      ...evidence.flatMap((entry) => [
+        '--evidence',
+        entry.id,
+        entry.resultPath,
+        entry.bundlePath,
+      ]),
+      '--format',
+      'json',
+    ];
+    await execFileAsync(process.execPath, args, {
       cwd: repoRoot,
       encoding: 'utf8',
     });
@@ -442,6 +501,7 @@ async function main(): Promise<void> {
   let scorecard: unknown;
   let reviewResult: ReviewResultDocument | undefined;
   let awReviewSummary: AwReviewSummaryDocument | undefined;
+  let awReviewTargetPlan: unknown;
   let calculated: {
     mode: string;
     weightedScore: number | null;
@@ -488,17 +548,50 @@ async function main(): Promise<void> {
     };
   } else {
     const reviewResultPath = resolveReviewDraftPath(repoRoot, parsed.reviewResult!);
+    const reviewBundlePath = resolveReviewDraftPath(repoRoot, parsed.reviewBundle!);
     const awSummaryPath = parsed.awSummary
       ? resolveReviewDraftPath(repoRoot, parsed.awSummary)
       : undefined;
-    await Promise.all([
-      validateReviewResult(repoRoot, reviewResultPath),
-      ...(awSummaryPath ? [validateAwReviewSummary(repoRoot, awSummaryPath)] : []),
-    ]);
+    const targetPlanPath = parsed.targetPlan
+      ? resolveReviewDraftPath(repoRoot, parsed.targetPlan)
+      : undefined;
     reviewResult = await fs.readJson(reviewResultPath) as ReviewResultDocument;
     awReviewSummary = awSummaryPath
       ? await fs.readJson(awSummaryPath) as AwReviewSummaryDocument
       : undefined;
+    if (awReviewSummary && targetPlanPath) {
+      const matchingEvidence = awReviewSummary.genericReviews.filter((entry) =>
+        entry.targetName === reviewResult!.target.name
+        && entry.kind === reviewResult!.target.kind
+        && entry.profile === (reviewResult!.target.profile ?? null)
+        && entry.digest === reviewResult!.target.digest
+        && entry.design === reviewResult!.design
+        && entry.releaseReadiness === reviewResult!.releaseReadiness);
+      if (matchingEvidence.length !== 1) {
+        throw new Error('AW summary must bind the primary ReviewResult to exactly one reviewEvidenceId.');
+      }
+      await validateAwReviewSummary(
+        repoRoot,
+        path.join(repoRoot, 'plugins', parsed.plugin!),
+        awSummaryPath!,
+        targetPlanPath,
+        [
+          {
+            id: matchingEvidence[0]!.reviewEvidenceId,
+            resultPath: reviewResultPath,
+            bundlePath: reviewBundlePath,
+          },
+          ...parsed.reviewEvidence.map((entry) => ({
+            id: entry.id,
+            resultPath: resolveReviewDraftPath(repoRoot, entry.result),
+            bundlePath: resolveReviewDraftPath(repoRoot, entry.bundle),
+          })),
+        ],
+      );
+      awReviewTargetPlan = await fs.readJson(targetPlanPath);
+    } else {
+      await validateReviewResult(repoRoot, reviewResultPath, reviewBundlePath);
+    }
     const structuredPublication = buildStructuredReviewPublication(
       reviewResult,
       awReviewSummary,
@@ -520,6 +613,7 @@ async function main(): Promise<void> {
     scorecard,
     reviewResult,
     awReviewSummary,
+    awReviewTargetPlan,
     calculated,
   });
   const reportDir = path.relative(

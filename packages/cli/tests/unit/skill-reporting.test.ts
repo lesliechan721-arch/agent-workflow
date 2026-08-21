@@ -219,6 +219,7 @@ describe('Skill report batches', () => {
       },
       reviewResult: { schemaVersion: 1, target: { name: 'demo-skill' } },
       awReviewSummary: { schemaVersion: 1, target: { plugin: 'demo-plugin' } },
+      awReviewTargetPlan: { schemaVersion: 1, plugin: 'demo-plugin' },
       calculated: {
         mode: 'release',
         weightedScore: 92,
@@ -262,6 +263,7 @@ describe('Skill report batches', () => {
     );
     await expect(fs.readdir(publishedRoot).then((entries) => entries.sort())).resolves.toEqual([
       'aw-review-summary.json',
+      'aw-review-target-plan.json',
       'report.md',
       'review-result.json',
       'summary.json',
@@ -274,6 +276,8 @@ describe('Skill report batches', () => {
       .resolves.toEqual({ schemaVersion: 1, target: { name: 'demo-skill' } });
     await expect(fs.readJson(path.join(publishedRoot, 'aw-review-summary.json')))
       .resolves.toEqual({ schemaVersion: 1, target: { plugin: 'demo-plugin' } });
+    await expect(fs.readJson(path.join(publishedRoot, 'aw-review-target-plan.json')))
+      .resolves.toEqual({ schemaVersion: 1, plugin: 'demo-plugin' });
     await expect(fs.pathExists(path.join(
       first.batchRoot,
       'reviews',

@@ -1,10 +1,12 @@
-import { lstat, readFile, realpath } from 'node:fs/promises';
-import { isDeepStrictEqual } from 'node:util';
+import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { lstat, readFile, readdir, realpath, stat } from 'node:fs/promises';
+import { isDeepStrictEqual, promisify } from 'node:util';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const STATUSES = new Set(['parallel', 'ready-for-cutover', 'retired']);
-const CUTOVER_UNAVAILABLE = 'cutover verification unavailable; status must remain parallel';
+const execFileAsync = promisify(execFile);
 const modelEvidence = (plugin, skill) => ({ plugin, skill, evidencePath: null, evidenceDigest: null });
 const suite = (manifest, id) => ({ manifest, suite: id });
 
@@ -193,7 +195,19 @@ function verifyCanonicalContract(contract, errors) {
     errors.push('migration contract top-level fields must exactly match the canonical contract');
   }
   for (const [name, expected] of Object.entries(CANONICAL_SECTIONS)) {
-    if (!isDeepStrictEqual(contract[name], expected)) {
+    const actual = name === 'cutoverGates' && contract.status !== 'parallel'
+      ? contract[name]?.map((gate) => ({
+          ...gate,
+          ...(gate.modelEvidence ? {
+            modelEvidence: gate.modelEvidence.map((evidence) => ({
+              ...evidence,
+              evidencePath: null,
+              evidenceDigest: null,
+            })),
+          } : {}),
+        }))
+      : contract[name];
+    if (!isDeepStrictEqual(actual, expected)) {
       errors.push(`${name} must exactly match the canonical migration contract`);
     }
   }
@@ -283,26 +297,424 @@ async function verifyInactiveReplacementRoute(root, canonicalRoot, route, errors
   }
 }
 
+async function verifyInactiveRoute(root, canonicalRoot, route, errors, label) {
+  const resolved = await resolveStrictFile(root, canonicalRoot, route.path);
+  if (!resolved) {
+    errors.push(`${label} route file is missing or unsafe: ${route.path}`);
+    return;
+  }
+  if (hasActiveMarkdownLink(await readFile(resolved, 'utf8'), route.contains)) {
+    errors.push(`${label} route must not be active: ${route.path}`);
+  }
+}
+
+function sha256(value) {
+  return `sha256:${createHash('sha256').update(value).digest('hex')}`;
+}
+
+async function listProductionFiles(root) {
+  const files = [];
+  async function visit(directory, prefix = '') {
+    const entries = await readdir(directory, { withFileTypes: true });
+    entries.sort((left, right) => left.name.localeCompare(right.name));
+    const isSkillRoot = entries.some((entry) => entry.isFile() && entry.name === 'SKILL.md');
+    for (const entry of entries) {
+      if (entry.name === '.DS_Store') continue;
+      const relative = prefix ? path.posix.join(prefix, entry.name) : entry.name;
+      if (
+        (prefix === '' && entry.name === 'reports')
+        || (isSkillRoot && entry.isDirectory() && ['evals', 'reports'].includes(entry.name))
+      ) continue;
+      const absolute = path.join(directory, entry.name);
+      if (entry.isSymbolicLink()) throw new Error(`source contains a symlink: ${relative}`);
+      if (entry.isDirectory()) await visit(absolute, relative);
+      else if (entry.isFile()) files.push({ absolute, relative });
+    }
+  }
+  await visit(root);
+  return files;
+}
+
+export async function computeMigrationSourceDigest(root, pluginNames) {
+  const records = [];
+  for (const plugin of [...pluginNames].sort()) {
+    const pluginRoot = path.join(root, 'plugins', plugin);
+    for (const file of await listProductionFiles(pluginRoot)) {
+      const info = await stat(file.absolute);
+      records.push({
+        path: `${plugin}/${file.relative}`,
+        mode: process.platform !== 'win32' && (info.mode & 0o111) !== 0 ? '100755' : '100644',
+        content: await readFile(file.absolute),
+      });
+    }
+  }
+  const hash = createHash('sha256');
+  const update = (value) => {
+    const bytes = typeof value === 'string' ? Buffer.from(value, 'utf8') : value;
+    const length = Buffer.allocUnsafe(8);
+    length.writeBigUInt64BE(BigInt(bytes.length));
+    hash.update(length);
+    hash.update(bytes);
+  };
+  update('aw-production-records-v1');
+  for (const record of records.sort((left, right) =>
+    left.path < right.path ? -1 : left.path > right.path ? 1 : 0)) {
+    update(record.path);
+    update(record.mode);
+    update(createHash('sha256').update(record.content).digest());
+  }
+  return `sha256:${hash.digest('hex')}`;
+}
+
+async function gitOutput(root, args) {
+  try {
+    return (await execFileAsync('git', args, { cwd: root, encoding: 'utf8' })).stdout.trim();
+  } catch {
+    return null;
+  }
+}
+
+async function gitBytes(root, args) {
+  try {
+    return (await execFileAsync('git', args, { cwd: root, encoding: null })).stdout;
+  } catch {
+    return null;
+  }
+}
+
+async function gitSucceeds(root, args) {
+  try {
+    await execFileAsync('git', args, { cwd: root, encoding: 'utf8' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function releaseTargets(manifest) {
+  const targets = [];
+  for (const profile of manifest.profiles.filter((entry) => entry.requiredForRelease)) {
+    targets.push(`materialization/${profile.id}`);
+  }
+  for (const suiteEntry of manifest.suites.filter((entry) => entry.requiredForRelease)) {
+    for (const profile of suiteEntry.profiles) {
+      for (const split of suiteEntry.releaseSplits.length > 0
+        ? suiteEntry.releaseSplits
+        : ['all']) {
+        targets.push(`${suiteEntry.kind}/${suiteEntry.id}/${profile}/${split}/all`);
+      }
+    }
+  }
+  return [...new Set(targets)].sort();
+}
+
+async function readArchiveJson(root, canonicalRoot, relative, label, errors) {
+  const filePath = await resolveStrictFile(root, canonicalRoot, relative);
+  if (!filePath) {
+    errors.push(`${label} is missing or unsafe`);
+    return null;
+  }
+  const [raw, committed] = await Promise.all([
+    readFile(filePath),
+    gitBytes(root, ['show', `HEAD:${relative}`]),
+  ]);
+  if (committed === null || !raw.equals(committed)) {
+    errors.push(`${label} must match evidence committed at HEAD`);
+    return null;
+  }
+  try {
+    return JSON.parse(raw.toString('utf8'));
+  } catch {
+    errors.push(`${label} is invalid JSON`);
+    return null;
+  }
+}
+
+function safeTargetPath(target) {
+  return typeof target === 'string' && target.split('/').every((segment) =>
+    segment.length > 0 && segment !== '.' && segment !== '..' && /^[A-Za-z0-9._-]+$/u.test(segment));
+}
+
+async function verifyArchivedEvaluation(
+  root,
+  canonicalRoot,
+  archiveRelative,
+  evaluation,
+  manifest,
+  label,
+  errors,
+) {
+  const [batch, summary] = await Promise.all([
+    readArchiveJson(root, canonicalRoot, `${archiveRelative}/batch.json`, `${label} batch`, errors),
+    readArchiveJson(root, canonicalRoot, `${archiveRelative}/summary.json`, `${label} summary`, errors),
+  ]);
+  if (!batch || !summary) return;
+  if (
+    batch.schemaVersion !== 1
+    || batch.status !== 'sealed'
+    || batch.batchId !== evaluation.batchId
+    || !isDeepStrictEqual(batch.owner, evaluation.owner)
+    || !isDeepStrictEqual(batch.source, evaluation.source)
+  ) {
+    errors.push(`${label} batch identity is not a sealed canonical batch`);
+  }
+  const requiredTargets = releaseTargets(manifest);
+  if (!isDeepStrictEqual(batch.requiredTargets, requiredTargets)) {
+    errors.push(`${label} batch required target contract does not match the manifest`);
+  }
+  if (
+    summary.schemaVersion !== 1
+    || summary.status !== 'sealed'
+    || summary.batchId !== evaluation.batchId
+    || !isDeepStrictEqual(summary.owner, evaluation.owner)
+    || !isDeepStrictEqual(summary.source, evaluation.source)
+    || summary.eval?.releaseOutcome !== 'passed'
+    || summary.eval?.complete !== true
+    || summary.eval?.mechanicalPassed !== true
+    || !isDeepStrictEqual(summary.eval?.targets, evaluation.targets)
+    || !isDeepStrictEqual(summary.eval?.targetAttempts, evaluation.targetAttempts)
+  ) {
+    errors.push(`${label} does not match its canonical sealed batch summary`);
+  }
+  if (!Array.isArray(summary.eval?.runs) || summary.eval.runs.length === 0) {
+    errors.push(`${label} canonical batch has no completed eval run`);
+    return;
+  }
+  const runIds = new Set(summary.eval.runs.map((run) => run.runId));
+  for (const target of evaluation.targets ?? []) {
+    if (!safeTargetPath(target.target) || !runIds.has(target.runId)) {
+      errors.push(`${label} target is not bound to a canonical eval run`);
+      continue;
+    }
+    const targetSummary = await readArchiveJson(
+      root,
+      canonicalRoot,
+      `${archiveRelative}/evals/${target.target}/${target.runId}/summary.json`,
+      `${label} target ${target.target}`,
+      errors,
+    );
+    if (targetSummary && !isDeepStrictEqual(targetSummary, target)) {
+      errors.push(`${label} target ${target.target} differs from its archived target summary`);
+    }
+  }
+  for (const run of summary.eval.runs) {
+    const [runState, runSummary] = await Promise.all([
+      readArchiveJson(
+        root,
+        canonicalRoot,
+        `${archiveRelative}/evals/runs/${run.runId}/run.json`,
+        `${label} run ${run.runId}`,
+        errors,
+      ),
+      readArchiveJson(
+        root,
+        canonicalRoot,
+        `${archiveRelative}/evals/runs/${run.runId}/summary.json`,
+        `${label} run summary ${run.runId}`,
+        errors,
+      ),
+    ]);
+    if (
+      !runState
+      || runState.schemaVersion !== 1
+      || runState.runId !== run.runId
+      || runState.status !== 'completed'
+      || !runSummary
+      || runSummary.outcome !== 'passed'
+      || runSummary.complete !== true
+      || runSummary.mechanicalPassed !== true
+    ) {
+      errors.push(`${label} run ${run.runId} is not complete canonical evidence`);
+    }
+  }
+}
+
+async function verifyModelEvidence(root, canonicalRoot, gate, currentHead, errors) {
+  for (const evidence of gate.modelEvidence ?? []) {
+    const label = `${gate.id} model evidence for ${evidence.plugin}/${evidence.skill}`;
+    if (
+      typeof evidence.evidencePath !== 'string'
+      || typeof evidence.evidenceDigest !== 'string'
+      || !/^sha256:[0-9a-f]{64}$/u.test(evidence.evidenceDigest)
+    ) {
+      errors.push(`${label} is required for cutover`);
+      continue;
+    }
+    const persistentPrefix = `docs/plugin-development-evidence/${evidence.plugin}/${evidence.skill}/`;
+    const archiveSuffix = evidence.evidencePath.startsWith(persistentPrefix)
+      ? evidence.evidencePath.slice(persistentPrefix.length)
+      : '';
+    const archiveMatch = archiveSuffix.match(/^([^/]+)\/evals\/evaluation\.json$/u);
+    if (!archiveMatch) {
+      errors.push(`${label} must use a persistent migration evidence path`);
+      continue;
+    }
+    const archiveRelative = `${persistentPrefix}${archiveMatch[1]}`;
+    const evidencePath = await resolveStrictFile(
+      root,
+      canonicalRoot,
+      evidence.evidencePath,
+    );
+    if (!evidencePath) {
+      errors.push(`${label} is missing or unsafe`);
+      continue;
+    }
+    const raw = await readFile(evidencePath);
+    if (sha256(raw) !== evidence.evidenceDigest) {
+      errors.push(`${label} digest does not match`);
+      continue;
+    }
+    const committedEvidence = await gitBytes(root, ['show', `HEAD:${evidence.evidencePath}`]);
+    if (committedEvidence === null || sha256(committedEvidence) !== evidence.evidenceDigest) {
+      errors.push(`${label} must match evidence committed at HEAD`);
+      continue;
+    }
+    let evaluation;
+    try {
+      evaluation = JSON.parse(raw.toString('utf8'));
+    } catch {
+      errors.push(`${label} is invalid JSON`);
+      continue;
+    }
+    if (
+      evaluation.schemaVersion !== 1
+      || evaluation.batchId !== archiveMatch[1]
+      || evaluation.owner?.kind !== 'plugin-skill'
+      || evaluation.owner?.plugin !== evidence.plugin
+      || evaluation.owner?.skill !== evidence.skill
+    ) {
+      errors.push(`${label} owner or schema does not match`);
+      continue;
+    }
+    if (
+      evaluation.outcome !== 'passed'
+      || evaluation.complete !== true
+      || evaluation.mechanicalPassed !== true
+    ) {
+      errors.push(`${label} is not complete and passed`);
+    }
+    if (
+      evaluation.source?.inScopeDirty !== false
+      || typeof evaluation.source?.gitHead !== 'string'
+    ) {
+      errors.push(`${label} does not identify a clean source revision`);
+    } else if (!(await gitSucceeds(root, [
+      'merge-base',
+      '--is-ancestor',
+      evaluation.source.gitHead,
+      currentHead,
+    ]))) {
+      errors.push(`${label} source revision is not an ancestor of repository HEAD`);
+    }
+    const manifestRelative = manifestFor(evidence.plugin, evidence.skill);
+    const manifestPath = await resolveStrictFile(root, canonicalRoot, manifestRelative);
+    if (!manifestPath) {
+      errors.push(`${label} manifest is missing or unsafe`);
+      continue;
+    }
+    let manifest;
+    try {
+      manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+    } catch {
+      errors.push(`${label} manifest is invalid JSON`);
+      continue;
+    }
+    const declaredSuites = new Map(manifest.suites.map((entry) => [entry.id, entry]));
+    for (const requirement of gate.requiredSuites ?? []) {
+      if (requirement.manifest !== manifestRelative) continue;
+      const requiredSuite = declaredSuites.get(requirement.suite);
+      if (!requiredSuite || requiredSuite.requiredForRelease !== true) {
+        errors.push(`${label} suite ${requirement.suite} is not release-required`);
+      }
+    }
+    for (const profile of manifest.profiles) {
+      if (
+        manifest.suites.some((entry) => entry.requiredForRelease && entry.profiles.includes(profile.id))
+        && (profile.runModel !== true || profile.requiredForRelease !== true)
+      ) {
+        errors.push(`${label} profile ${profile.id} is not a release-required model profile`);
+      }
+    }
+    const targetById = new Map((evaluation.targets ?? []).map((target) => [target.target, target]));
+    for (const targetId of releaseTargets(manifest)) {
+      const target = targetById.get(targetId);
+      if (
+        !target
+        || target.requiredForRelease !== true
+        || target.outcome !== 'passed'
+        || target.complete !== true
+        || target.mechanicalPassed !== true
+      ) {
+        errors.push(`${label} is missing passed release target ${targetId}`);
+      }
+    }
+    await verifyArchivedEvaluation(
+      root,
+      canonicalRoot,
+      archiveRelative,
+      evaluation,
+      manifest,
+      label,
+      errors,
+    );
+    const pluginNames = [...new Set(manifest.profiles.flatMap((profile) =>
+      profile.plugins.map((plugin) => plugin.name)))];
+    let currentSourceDigest = null;
+    try {
+      currentSourceDigest = await computeMigrationSourceDigest(root, pluginNames);
+    } catch {
+      errors.push(`${label} source production digest cannot be computed`);
+    }
+    if (currentSourceDigest !== evaluation.source?.digest) {
+      errors.push(`${label} source digest does not match current production sources`);
+    }
+    const dirty = await gitOutput(root, [
+      'status',
+      '--porcelain=v1',
+      '--untracked-files=all',
+      '--',
+      ...pluginNames.map((plugin) => `plugins/${plugin}`),
+    ]);
+    if (dirty === null || dirty !== '') {
+      errors.push(`${label} source plugin set is dirty or cannot be verified`);
+    }
+    const ignored = await gitOutput(root, [
+      'ls-files',
+      '--others',
+      '--ignored',
+      '--exclude-standard',
+      '--',
+      ...pluginNames.map((plugin) => `plugins/${plugin}`),
+    ]);
+    if (ignored === null || ignored !== '') {
+      errors.push(`${label} source plugin set contains ignored production files`);
+    }
+  }
+}
+
 export async function verifyPluginDevelopmentMigration(options = {}) {
   const root = path.resolve(options.root ?? process.cwd());
   let canonicalRoot;
   try {
     canonicalRoot = await realpath(root);
   } catch {
-    return { schemaVersion: 1, ok: false, status: null, cutoverReady: false, errors: ['migration root is missing or unsafe'] };
+    return { schemaVersion: 2, ok: false, status: null, cutoverReady: false, errors: ['migration root is missing or unsafe'] };
   }
   const contractResult = await readStrictJson(root, canonicalRoot, options.contractPath ?? 'docs/plugin-development-migration.json');
   const errors = contractResult.error ? [contractResult.error] : [];
   const contract = contractResult.value;
-  if (!contract) return { schemaVersion: 1, ok: false, status: null, cutoverReady: false, errors };
+  if (!contract) return { schemaVersion: 2, ok: false, status: null, cutoverReady: false, errors };
 
-  if (contract.schemaVersion !== 1) errors.push('migration contract schemaVersion must be 1');
+  if (contract.schemaVersion !== 2) errors.push('migration contract schemaVersion must be 2');
   if (!STATUSES.has(contract.status)) errors.push(`invalid migration status: ${String(contract.status)}`);
   verifyCanonicalContract(contract, errors);
-  if (contract.status !== 'parallel') errors.push(CUTOVER_UNAVAILABLE);
 
-  for (const route of LEGACY_ROUTES) await verifyRoute(root, canonicalRoot, route, errors);
-  if (contract.status === 'parallel') {
+  if (contract.status === 'retired') {
+    await verifyInactiveRoute(root, canonicalRoot, LEGACY_ROUTES[0], errors, 'legacy');
+    await verifyRoute(root, canonicalRoot, LEGACY_ROUTES[1], errors);
+    for (const route of REPLACEMENT_ROUTES) await verifyRoute(root, canonicalRoot, route, errors);
+  } else {
+    for (const route of LEGACY_ROUTES) await verifyRoute(root, canonicalRoot, route, errors);
     for (const route of REPLACEMENT_ROUTES) {
       await verifyInactiveReplacementRoute(root, canonicalRoot, route, errors);
     }
@@ -320,12 +732,19 @@ export async function verifyPluginDevelopmentMigration(options = {}) {
       await verifyFile(root, canonicalRoot, target.manifest, errors, `${gate.id} suite manifest`);
     }
   }
+  if (contract.status !== 'parallel') {
+    const currentHead = await gitOutput(root, ['rev-parse', 'HEAD']);
+    if (!currentHead) errors.push('repository HEAD is required for cutover evidence currentness');
+    for (const gate of contract.cutoverGates) {
+      await verifyModelEvidence(root, canonicalRoot, gate, currentHead, errors);
+    }
+  }
 
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     ok: errors.length === 0,
     status: contract.status,
-    cutoverReady: false,
+    cutoverReady: contract.status !== 'parallel' && errors.length === 0,
     capabilityCounts: {
       migrated: CAPABILITY_MATRIX.filter((entry) => entry.disposition === 'migrated').length,
       legacyRetained: CAPABILITY_MATRIX.filter((entry) => entry.disposition === 'legacy-retained').length,
@@ -352,7 +771,7 @@ if (isMain) {
     process.stdout.write(`${JSON.stringify(result)}\n`);
     if (!result.ok) process.exitCode = 1;
   } catch (error) {
-    process.stdout.write(`${JSON.stringify({ schemaVersion: 1, ok: false, status: null, cutoverReady: false, errors: [error.message] })}\n`);
+    process.stdout.write(`${JSON.stringify({ schemaVersion: 2, ok: false, status: null, cutoverReady: false, errors: [error.message] })}\n`);
     process.exitCode = 1;
   }
 }
