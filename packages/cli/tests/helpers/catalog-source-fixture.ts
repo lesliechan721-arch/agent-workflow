@@ -6,10 +6,10 @@ import fs from 'fs-extra';
 
 import type { PluginMeta } from '../../src/types.js';
 import {
-  createCatalogManifestV3,
-  createCatalogManifestV3Entry,
-} from '../../src/utils/catalog-manifest-v3.js';
-import { readPluginManifest } from '../../src/utils/manifest.js';
+  createCatalogManifestV4,
+  createCatalogManifestV4Entry,
+} from '../../src/utils/catalog-manifest-v4.js';
+import { compareStrictSemVer, readPluginManifest } from '../../src/utils/manifest.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -69,11 +69,15 @@ export async function createCatalogSnapshotFixture(
   ]);
   await fs.outputFile(path.join(pluginRoot, 'README.md'), readme);
   const plugin: PluginMeta = await readPluginManifest(pluginRoot, { mode: 'bundle' });
-  const entry = await createCatalogManifestV3Entry(plugin, pluginRoot);
-  await fs.writeJson(path.join(rootDir, 'catalog-manifest.json'), createCatalogManifestV3({
+  const entry = await createCatalogManifestV4Entry(plugin, pluginRoot);
+  const catalogMinAwVersion = compareStrictSemVer(minAwVersion, '0.1.0-beta.3') < 0
+    ? '0.1.0-beta.3'
+    : minAwVersion;
+  await fs.writeJson(path.join(rootDir, 'catalog-manifest.json'), createCatalogManifestV4({
     catalogVersion: '1.0.0',
     channel: 'latest',
-    compatibility: { aw: { minVersion: minAwVersion } },
+    compatibility: { aw: { minVersion: catalogMinAwVersion } },
+    release: { state: 'development' },
     entries: [entry],
   }), { spaces: 2 });
 }

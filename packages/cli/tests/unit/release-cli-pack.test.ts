@@ -11,6 +11,7 @@ import {
   computePackageTarballTreeDigest,
   computeReleasePackageContentDigest,
   packCli,
+  stampReleaseCandidateSnapshot,
   withPrivateCliTarball,
 } from '../../../../scripts/release/common.mjs';
 
@@ -74,6 +75,53 @@ afterEach(async () => {
 });
 
 describe('CLI release pack staging', () => {
+  it('stamps both candidates only in an isolated snapshot with an exact train dependency', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-release-stamp-'));
+    tempDirs.push(root);
+    const sourceRoot = path.join(root, 'source');
+    const snapshotRoot = path.join(root, 'snapshot');
+    for (const packageRoot of [sourceRoot, snapshotRoot]) {
+      await fs.mkdir(path.join(packageRoot, 'eval'), { recursive: true });
+      await fs.mkdir(path.join(packageRoot, 'cli'), { recursive: true });
+      await fs.writeFile(path.join(packageRoot, 'eval', 'package.json'), `${JSON.stringify({
+        name: '@lesliechan721/agent-skill-eval', version: '1.2.3',
+      }, null, 2)}\n`);
+      await fs.writeFile(path.join(packageRoot, 'cli', 'package.json'), `${JSON.stringify({
+        name: '@lesliechan721/aw', version: '1.2.3',
+        dependencies: { '@lesliechan721/agent-skill-eval': 'workspace:*' },
+      }, null, 2)}\n`);
+    }
+    const sourceBefore = await Promise.all([
+      fs.readFile(path.join(sourceRoot, 'eval', 'package.json'), 'utf8'),
+      fs.readFile(path.join(sourceRoot, 'cli', 'package.json'), 'utf8'),
+    ]);
+    const digest = `sha256:${'a'.repeat(64)}`;
+    await stampReleaseCandidateSnapshot({
+      evalPackageRoot: path.join(snapshotRoot, 'eval'),
+      cliPackageRoot: path.join(snapshotRoot, 'cli'),
+    }, {
+      targetVersion: '1.2.3',
+      candidateVersion: '1.2.3-beta.1',
+      planId: digest,
+      sourceHead: 'b'.repeat(40),
+      packageContentDigest: digest,
+      trainContentDigest: digest,
+    });
+    const [evalPackage, cliPackage] = await Promise.all([
+      fs.readFile(path.join(snapshotRoot, 'eval', 'package.json'), 'utf8').then(JSON.parse),
+      fs.readFile(path.join(snapshotRoot, 'cli', 'package.json'), 'utf8').then(JSON.parse),
+    ]);
+    expect(evalPackage.version).toBe('1.2.3-beta.1');
+    expect(cliPackage.version).toBe('1.2.3-beta.1');
+    expect(cliPackage.dependencies['@lesliechan721/agent-skill-eval']).toBe('1.2.3-beta.1');
+    expect(evalPackage.awRelease).toMatchObject({ schemaVersion: 1, planId: digest });
+    expect(cliPackage.awRelease).toMatchObject({ schemaVersion: 1, planId: digest });
+    await expect(Promise.all([
+      fs.readFile(path.join(sourceRoot, 'eval', 'package.json'), 'utf8'),
+      fs.readFile(path.join(sourceRoot, 'cli', 'package.json'), 'utf8'),
+    ])).resolves.toEqual(sourceBefore);
+  });
+
   it('normalizes the packed CLI train dependency, candidate version, and awRelease', async () => {
     const tarballs = [];
     for (const version of ['1.2.3-beta.1', '1.2.3-beta.2', '1.2.3']) {

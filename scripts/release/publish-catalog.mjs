@@ -62,7 +62,7 @@ export async function publishCatalog(argv = process.argv.slice(2), options = {})
       releaseIdentity,
       { allowVersionSync: false },
     );
-    return withPrivateCatalogStageRoot(async (internalOutputRoot) => {
+    return (options.withPrivateCatalogStageRoot ?? withPrivateCatalogStageRoot)(async (internalOutputRoot) => {
       const remoteUrl = options.remoteUrl;
       await assertFresh();
       return (options.withCatalogPublicationLease ?? withCatalogPublicationLease)(
@@ -83,6 +83,7 @@ export async function publishCatalog(argv = process.argv.slice(2), options = {})
             previousReleaseLedger: resolveCatalogStageLedger(history),
             snapshot,
             releaseIdentity,
+            legacyPublishedIdentity: true,
           });
           assertStagedCatalogReleaseIdentity(staged, internalOutputRoot, releaseIdentity);
           const publishedCliVersion = await (options.resolvePublishedCliVersion

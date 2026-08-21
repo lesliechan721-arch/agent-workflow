@@ -22,10 +22,11 @@ describe('removed plugin dependencies capability', () => {
 
   it('rejects dependencies in current catalog entries explicitly', () => {
     expect(() => validateCatalogManifestV3({
-      schemaVersion: 3,
+      schemaVersion: 4,
       catalogVersion: '1.0.0',
       channel: 'latest',
       compatibility: { aw: { minVersion: '1.0.0' } },
+      release: { state: 'development' },
       entries: [{
         name: 'parent',
         version: '1.0.0',

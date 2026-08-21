@@ -39,6 +39,7 @@
     "release:status": "node scripts/release/release-status.mjs",
     "release:target": "node scripts/release/release-target.mjs",
     "release:prepare": "node scripts/release/release-prepare.mjs",
+    "release:publish": "node scripts/release/publish-plan.mjs",
     "release:pack:cli": "node scripts/release/pack-cli.mjs",
     "release:stage:catalog": "node scripts/release/stage-catalog.mjs",
     "release:install:local": "node scripts/release/install-local-tarball.mjs",

@@ -540,10 +540,11 @@ describe('build smoke', () => {
       fs.pathExists(path.join(outputRoot, 'plugins', 'codex-enhance', 'claude')),
     ).resolves.toBe(false);
     expect(catalogManifest).toMatchObject({
-      schemaVersion: 3,
+      schemaVersion: 4,
       catalogVersion: cliPackageJson.version,
       channel: String(cliPackageJson.version).includes('-') ? 'beta' : 'latest',
-      compatibility: { aw: { minVersion: '0.1.0-beta.2' } },
+      compatibility: { aw: { minVersion: '0.1.0-beta.3' } },
+      release: { state: 'development' },
       entries: expect.arrayContaining(Object.keys(EXPECTED_PLUGIN_PLATFORMS).map((pluginName) =>
         expect.objectContaining({
           name: pluginName,
@@ -584,7 +585,7 @@ describe('build smoke', () => {
     expect(after.map((stats) => stats.mtimeMs)).toEqual(before.map((stats) => stats.mtimeMs));
   });
 
-  it('materializes and validates schema 3 compatibility from real build bundles', async () => {
+  it('materializes and validates schema 4 compatibility from real build bundles', async () => {
     const snapshot = await requireBuildSnapshot();
     const outputRoot = snapshot.catalogOutputRoot;
     const { validateCatalogSnapshot } = await importSmokeSnapshotModule<{
@@ -593,7 +594,7 @@ describe('build smoke', () => {
       }>;
     }>(path.join(snapshot.cliDistRoot, 'src', 'utils', 'catalog-snapshot.js'));
     const validated = await validateCatalogSnapshot(outputRoot);
-    expect(validated.manifest.schemaVersion).toBe(3);
+    expect(validated.manifest.schemaVersion).toBe(4);
     expect(validated.manifest.entries.map((entry) => entry.name).sort())
       .toEqual(Object.keys(EXPECTED_PLUGIN_PLATFORMS).sort());
     expect(validated.manifest.entries.every((entry) =>

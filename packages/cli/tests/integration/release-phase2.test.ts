@@ -348,4 +348,40 @@ describe('release phase 2 process boundaries', () => {
     })).rejects.toThrow('remote history changed');
     expect(writePlan).not.toHaveBeenCalled();
   });
+
+  it.each(['source', 'targets', 'remote'] as const)(
+    'does not write a plan when %s drifts during final materialization',
+    async (kind) => {
+      const input = observed('a'.repeat(40));
+      const writePlan = vi.fn();
+      let freshChecks = 0;
+      let targetReads = 0;
+      let historyReads = 0;
+      await expect(prepareRelease(['beta'], {
+        assertClean: async () => undefined,
+        assertFresh: async () => {
+          freshChecks += 1;
+          if (kind === 'source' && freshChecks === 2) throw new Error('source changed during materialization');
+        },
+        assertTargetsMatchHead: async () => undefined,
+        readTargets: async () => {
+          targetReads += 1;
+          return kind === 'targets' && targetReads === 2
+            ? { ...input.targets, cli: '1.0.1' }
+            : input.targets;
+        },
+        observe: async () => input,
+        observeRemoteHistory: async () => {
+          historyReads += 1;
+          return kind === 'remote' && historyReads === 2
+            ? { ...input.history, catalog: { ...input.history.catalog, pending: 'b'.repeat(40) } }
+            : input.history;
+        },
+        materializeCliPlanArtifacts: async (status) => status.cli.packages,
+        materializeCatalogPlanArtifact: async () => null,
+        writePlan,
+      })).rejects.toThrow(/changed|targets/u);
+      expect(writePlan).not.toHaveBeenCalled();
+    },
+  );
 });

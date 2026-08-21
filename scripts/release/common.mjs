@@ -1141,10 +1141,10 @@ export async function packCli({
   quiet = false,
   runPackCommand,
 } = {}) {
-  await assertRepoAndCliPackageVersions();
   if (snapshot) {
     return packCliFromSnapshot(snapshot, destination, { quiet, runPackCommand });
   }
+  await assertRepoAndCliPackageVersions();
   return withBuildSnapshot(repoRoot, (ownedSnapshot) =>
     packCliFromSnapshot(ownedSnapshot, destination, { quiet, runPackCommand })
   );
@@ -1203,8 +1203,8 @@ export async function packEval({
   quiet = false,
   runPackCommand,
 } = {}) {
-  await assertRepoAndCliPackageVersions();
   if (snapshot) return packEvalFromSnapshot(snapshot, destination, { quiet, runPackCommand });
+  await assertRepoAndCliPackageVersions();
   return withBuildSnapshot(repoRoot, (ownedSnapshot) =>
     packEvalFromSnapshot(ownedSnapshot, destination, { quiet, runPackCommand })
   );
@@ -1232,6 +1232,67 @@ export async function withReleaseBuildSnapshot(callback, options = {}) {
   await assertBuildInputPathSafety(liveRoot);
   const snapshotRunner = options.withBuildSnapshot ?? withBuildSnapshot;
   return snapshotRunner(liveRoot, callback, options);
+}
+
+export async function stampReleaseCandidateSnapshot(snapshot, options) {
+  const candidateVersion = assertValidVersion(options.candidateVersion);
+  const targetVersion = assertValidVersion(options.targetVersion);
+  assertVersionKind(targetVersion, 'stable');
+  if (candidateVersion !== targetVersion && !candidateVersion.startsWith(`${targetVersion}-`)) {
+    throw new Error('Release candidate version does not belong to the stable target.');
+  }
+  const metadata = {
+    schemaVersion: 1,
+    targetVersion,
+    candidateVersion,
+    planId: options.planId,
+    sourceHead: options.sourceHead,
+    packageContentDigest: options.packageContentDigest,
+    trainContentDigest: options.trainContentDigest,
+  };
+  const { normalizeReleaseMetadata } = await import('./release-model.mjs');
+  const normalizedMetadata = normalizeReleaseMetadata(metadata);
+  const evalPackageJsonPath = path.join(snapshot.evalPackageRoot, 'package.json');
+  const cliPackageJsonPath = path.join(snapshot.cliPackageRoot, 'package.json');
+  const [evalPackageJson, cliPackageJson] = await Promise.all([
+    readPackageJson(evalPackageJsonPath),
+    readPackageJson(cliPackageJsonPath),
+  ]);
+  if (
+    evalPackageJson.name !== EVAL_PACKAGE_NAME
+    || cliPackageJson.name !== CLI_PACKAGE_NAME
+  ) {
+    throw new Error('Release snapshot package identities are invalid.');
+  }
+  if (!cliPackageJson.dependencies || typeof cliPackageJson.dependencies !== 'object') {
+    throw new Error(`Release snapshot ${CLI_PACKAGE_NAME} dependencies are invalid.`);
+  }
+  evalPackageJson.version = candidateVersion;
+  evalPackageJson.awRelease = {
+    ...normalizedMetadata,
+    packageContentDigest: options.evalPackageContentDigest ?? normalizedMetadata.packageContentDigest,
+  };
+  cliPackageJson.version = candidateVersion;
+  cliPackageJson.dependencies[EVAL_PACKAGE_NAME] = candidateVersion;
+  cliPackageJson.awRelease = {
+    ...normalizedMetadata,
+    packageContentDigest: options.cliPackageContentDigest ?? normalizedMetadata.packageContentDigest,
+  };
+  normalizeReleaseMetadata(evalPackageJson.awRelease);
+  normalizeReleaseMetadata(cliPackageJson.awRelease);
+  await Promise.all([
+    writePackageJson(evalPackageJsonPath, evalPackageJson),
+    writePackageJson(cliPackageJsonPath, cliPackageJson),
+  ]);
+  return {
+    candidateVersion,
+    evalPackageJsonPath,
+    cliPackageJsonPath,
+    metadata: {
+      eval: evalPackageJson.awRelease,
+      cli: cliPackageJson.awRelease,
+    },
+  };
 }
 
 export async function resolveReleaseHead(options = {}) {

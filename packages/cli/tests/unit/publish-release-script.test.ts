@@ -424,6 +424,46 @@ describe('combined release script', () => {
     expect(publishCli).not.toHaveBeenCalled();
   });
 
+  it('does not write either npm package when the atomic tag-and-guard push fails', async () => {
+    const releaseHistory = history(compareStrictSemVer);
+    const options = commonOptions(releaseHistory, '1.0.0', '0.9.0');
+    const writes: string[] = [];
+    await expect(publishRelease(['latest', '--catalog-version', '2.0.0'], {
+      ...options,
+      prepareEvalPublication: undefined,
+      withPreparedEvalPublication: async (
+        _mode, _publishMode, _snapshot, _version, _fresh, callback,
+      ) => callback({ status: 'publish', version: '1.0.0' }),
+      publishPreparedEvalPublication: async () => {
+        writes.push('eval');
+        return { status: 'published', version: '1.0.0' };
+      },
+      publishCli: async () => {
+        writes.push('aw');
+      },
+      publishStagedCatalog: async () => {
+        throw new Error('atomic tag push failed');
+      },
+    })).rejects.toThrow('atomic tag push failed');
+    expect(writes).toEqual([]);
+  });
+
+  it('rejects a committed publication mode mismatch before any catalog or npm write', async () => {
+    const releaseHistory = history(compareStrictSemVer);
+    const options = commonOptions(releaseHistory);
+    const publishStagedCatalog = vi.fn();
+    const publishCli = vi.fn();
+    await expect(publishRelease(['latest', '--catalog-version', '2.0.0'], {
+      ...options,
+      expectedPublicationMode: 'atomic-combined',
+      publishStagedCatalog,
+      publishCli,
+    })).rejects.toThrow('does not match committed plan mode');
+    expect(publishStagedCatalog).not.toHaveBeenCalled();
+    expect(publishCli).not.toHaveBeenCalled();
+    expect(options.prepareEvalPublication).not.toHaveBeenCalled();
+  });
+
   it('does not publish Eval or write release refs when the staged catalog requires a newer CLI', async () => {
     const releaseHistory = history(compareStrictSemVer);
     const options = commonOptions(releaseHistory, '1.0.0', '0.9.0');

@@ -104,7 +104,7 @@ export async function bootstrapCatalog(argv = process.argv.slice(2), options = {
       releaseIdentity,
       { allowVersionSync: false },
     );
-    return withPrivateCatalogStageRoot(async (internalOutputRoot) => {
+    return (options.withPrivateCatalogStageRoot ?? withPrivateCatalogStageRoot)(async (internalOutputRoot) => {
       await assertFresh();
       return (options.withCatalogPublicationLease ?? withCatalogPublicationLease)(
         remoteUrl,
@@ -125,6 +125,7 @@ export async function bootstrapCatalog(argv = process.argv.slice(2), options = {
             previousReleaseLedger: resolveCatalogStageLedger(history),
             snapshot,
             releaseIdentity,
+            legacyPublishedIdentity: true,
           });
           assertStagedCatalogReleaseIdentity(staged, internalOutputRoot, releaseIdentity);
           await assertFresh();

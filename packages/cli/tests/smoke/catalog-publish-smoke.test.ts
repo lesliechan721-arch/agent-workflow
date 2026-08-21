@@ -129,6 +129,7 @@ it('stages, publishes, fetches, and validates a release catalog through the Git 
       previousReleaseLedger: history.mergedLedger,
       snapshot,
       catalogModules,
+      legacyPublishedIdentity: true,
     },
   );
   await snapshot.cleanup();

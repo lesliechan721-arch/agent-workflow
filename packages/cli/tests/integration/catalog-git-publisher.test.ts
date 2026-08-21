@@ -18,13 +18,16 @@ import {
 } from '../../../../scripts/release/git-catalog-publisher.mjs';
 import { bootstrapCatalog } from '../../../../scripts/release/bootstrap-catalog.mjs';
 import { stageCatalogRelease } from '../../../../scripts/release/stage-catalog.mjs';
+import { calculateCatalogContentDigest } from '../../../../scripts/release/release-model.mjs';
 import { observeReleaseHistory } from '../../../../scripts/release/release-observe.mjs';
 import { prepareRelease } from '../../../../scripts/release/release-prepare.mjs';
+import { publishCommittedRelease } from '../../../../scripts/release/publish-plan.mjs';
 import { calculateCliTrainContentDigest } from '../../../../scripts/release/release-model.mjs';
 import * as pluginStaging from '../../scripts/plugin-staging.js';
 import * as catalogSnapshot from '../../src/utils/catalog-snapshot.js';
 import { catalogGitProviderInternal } from '../../src/utils/git-catalog-provider.js';
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
+import { calculateCatalogEntryContentDigest } from '../../src/utils/catalog-digests.js';
 
 const execFileAsync = promisify(execFile);
 const tempDirs: string[] = [];
@@ -98,6 +101,24 @@ async function stage(
     readme,
     (manifest) => { manifest.version = pluginVersion; },
   );
+  const sourceManifest = await fs.readJson(path.join(sourceRoot, 'catalog-manifest.json'));
+  const marketplace = await fs.readJson(path.join(sourceRoot, '.agents', 'plugins', 'marketplace.json'));
+  const catalogContentDigest = calculateCatalogContentDigest({
+    schemaIdentity: { schemaVersion: 4 },
+    marketplaceMetadata: {
+      name: marketplace.name,
+      owner: marketplace.owner,
+      interface: marketplace.interface,
+    },
+    compatibility: {
+      aw: { minVersion: pluginStaging.CATALOG_SCHEMA_4_CLI_FLOOR },
+    },
+    plugins: sourceManifest.entries.map((entry: { name: string; version: string; contentDigest: string }) => ({
+      name: entry.name,
+      targetVersion: entry.version,
+      contentDigest: entry.contentDigest,
+    })),
+  });
   const outputRoot = releaseOptions.internalOutputRoot
     ?? path.join(root, `publication-${catalogVersion}`, '.release', 'catalog-staging', 'catalog');
   await fs.ensureDir(path.dirname(path.dirname(path.dirname(outputRoot))));
@@ -107,6 +128,13 @@ async function stage(
       snapshot,
       internalOutputRoot: outputRoot,
       previousReleaseLedger,
+      catalogRelease: {
+        state: 'published',
+        targetVersion: catalogVersion.replace(/-beta\.[1-9]\d*$/u, ''),
+        planId: `sha256:${'1'.repeat(64)}`,
+        sourceHead: '2'.repeat(40),
+        contentDigest: catalogContentDigest,
+      },
       catalogModules,
       ...(releaseOptions.releaseIdentity
         ? { releaseIdentity: releaseOptions.releaseIdentity }
@@ -120,6 +148,67 @@ afterEach(async () => {
 });
 
 describe('Git catalog publisher', () => {
+  it('bootstraps an absent beta channel from one committed plan and retries it exactly', async () => {
+    const root = await fixtureRoot('aw-plan-bootstrap-');
+    const remoteUrl = await createBareRemote(root);
+    const snapshot = releaseSnapshot(root, '1.0.0-beta.1');
+    await createCatalogSnapshotFixture(snapshot.catalogOutputRoot);
+    const sourceManifest = await fs.readJson(path.join(snapshot.catalogOutputRoot, 'catalog-manifest.json'));
+    const marketplace = await fs.readJson(path.join(snapshot.catalogOutputRoot, '.agents', 'plugins', 'marketplace.json'));
+    const catalogContentDigest = calculateCatalogContentDigest({
+      schemaIdentity: { schemaVersion: 4 },
+      marketplaceMetadata: { name: marketplace.name, owner: marketplace.owner, interface: marketplace.interface },
+      compatibility: { aw: { minVersion: pluginStaging.CATALOG_SCHEMA_4_CLI_FLOOR } },
+      plugins: sourceManifest.entries.map((entry: { name: string; version: string; contentDigest: string }) => ({
+        name: entry.name, targetVersion: entry.version, contentDigest: entry.contentDigest,
+      })),
+    });
+    const planId = `sha256:${'7'.repeat(64)}`;
+    const previewRoot = path.join(root, 'preview', '.release', 'catalog-staging', 'catalog');
+    await fs.ensureDir(path.dirname(path.dirname(path.dirname(previewRoot))));
+    const preview = await stageCatalogRelease(['--catalog-version', '1.0.0-beta.1'], {
+      snapshot,
+      internalOutputRoot: previewRoot,
+      previousReleaseLedger: { schemaVersion: 2, records: [] },
+      pluginVersionOverrides: { demo: '1.0.0-beta.1' },
+      catalogRelease: {
+        state: 'published', targetVersion: '1.0.0', planId,
+        sourceHead: 'b'.repeat(40), contentDigest: catalogContentDigest,
+      },
+      catalogModules,
+    });
+    const plan = {
+      planId,
+      channel: 'beta',
+      source: { head: 'b'.repeat(40) },
+      history: { catalog: { latest: null, beta: null, publicationGuard: null } },
+      cli: { action: 'skip', candidateVersion: '1.0.0-beta.3', packages: [] },
+      catalog: {
+        action: 'publish', publicationMode: 'bootstrap', targetVersion: '1.0.0',
+        candidateVersion: '1.0.0-beta.1', catalogContentDigest,
+        snapshotDigest: preview.snapshotDigest, minCliVersion: pluginStaging.CATALOG_SCHEMA_4_CLI_FLOOR,
+      },
+      plugins: [{
+        name: 'demo', targetVersion: '1.0.0', candidateVersion: '1.0.0-beta.1',
+        contentDigest: sourceManifest.entries[0].contentDigest, action: 'publish',
+      }],
+    };
+    const options = {
+      remoteUrl,
+      catalogModules,
+      readCurrentReleasePlan: async () => ({ plan }),
+      assertPlanOnlyCommit: async () => undefined,
+      assertReleaseWorktreeClean: async () => undefined,
+      withReleaseBuildSnapshot: async (callback: (value: typeof snapshot) => Promise<unknown>) => callback(snapshot),
+    };
+    await expect(publishCommittedRelease([], options)).resolves.toMatchObject({
+      path: 'bootstrap', catalog: { idempotent: false },
+    });
+    await expect(publishCommittedRelease([], options)).resolves.toMatchObject({
+      path: 'bootstrap', catalog: { idempotent: true },
+    });
+  });
+
   it('publishes sha1 objects when the environment and global Git config default to sha256', async () => {
     const root = await fixtureRoot('aw-catalog-sha1-format-');
     const remoteUrl = path.join(root, 'catalog.git');
@@ -462,6 +551,8 @@ describe('Git catalog publisher', () => {
       readTargets: async () => targets,
       observe: async () => ({ targets, content, history }),
       observeRemoteHistory: readHistory,
+      materializeCliPlanArtifacts: async (status) => status.cli.packages,
+      materializeCatalogPlanArtifact: async () => staged.snapshotDigest,
       writePlan: async () => ({
         created: true,
         planPath: path.join(root, 'plan.json'),
@@ -841,12 +932,28 @@ describe('Git catalog publisher', () => {
       'README.md',
       path.join(initialStage.outputRoot, 'plugins', 'demo', 'current-readme'),
     );
+    const changedContentDigest = await calculateCatalogEntryContentDigest(
+      path.join(initialStage.outputRoot, 'plugins', 'demo'),
+    );
     await pluginStaging.stageCatalogArtifacts({
       repoRoot: root,
       outputRoot: initialStage.outputRoot,
       phase: 'release',
       catalogVersion: '1.0.0',
       previousReleaseLedger: initialHistory.mergedLedger,
+      release: {
+        ...initialStage.manifest.release,
+        contentDigest: calculateCatalogContentDigest({
+          schemaIdentity: { schemaVersion: 4 },
+          marketplaceMetadata: {
+            name: 'aw',
+            owner: { name: 'Fixture Owner' },
+            interface: { displayName: 'Fixture Marketplace' },
+          },
+          compatibility: { aw: { minVersion: pluginStaging.CATALOG_SCHEMA_4_CLI_FLOOR } },
+          plugins: [{ name: 'demo', targetVersion: '1.0.0', contentDigest: changedContentDigest }],
+        }),
+      },
     });
     await publishStagedCatalog(initialHistory, initialStage.outputRoot);
 

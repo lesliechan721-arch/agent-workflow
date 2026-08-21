@@ -112,7 +112,7 @@ export interface CatalogSourceResolution {
   requestedRef: string;
   resolvedCommit: string;
   rootDir: string;
-  manifest: CatalogManifestV3;
+  manifest: CatalogManifestV4;
   manifestDigest: string;
   snapshotDigest: string;
   cacheEntryKey: string;
@@ -621,17 +621,28 @@ export interface CatalogManifestEntry {
   manifestDigest: string;
 }
 
-export interface CatalogManifestV3Entry extends CatalogManifestEntry {
+export interface CatalogManifestV4Entry extends CatalogManifestEntry {
   name: PluginId;
   contentDigest: string;
 }
 
-export interface CatalogManifestV3 {
-  schemaVersion: 3;
+export type CatalogManifestV4Release =
+  | { state: 'development' }
+  | {
+      state: 'published';
+      targetVersion: CatalogVersion;
+      planId: string;
+      sourceHead: string;
+      contentDigest: string;
+    };
+
+export interface CatalogManifestV4 {
+  schemaVersion: 4;
   catalogVersion: CatalogVersion;
   channel: CatalogChannel;
   compatibility: PluginCompatibility;
-  entries: CatalogManifestV3Entry[];
+  release: CatalogManifestV4Release;
+  entries: CatalogManifestV4Entry[];
 }
 
 export interface PlatformPluginManifest {

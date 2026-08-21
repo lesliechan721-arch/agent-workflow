@@ -5,12 +5,12 @@ import { isDeepStrictEqual } from 'node:util';
 import fs from 'fs-extra';
 
 import { CURRENT_CATALOG_MANIFEST_FILE } from '../constants.js';
-import type { CatalogManifestV3 } from '../types.js';
+import type { CatalogManifestV4 } from '../types.js';
 import { calculateFileDigest } from './bundle-integrity.js';
 import {
-  createCatalogManifestV3Entry,
-  validateCatalogManifestV3,
-} from './catalog-manifest-v3.js';
+  createCatalogManifestV4Entry,
+  validateCatalogManifestV4,
+} from './catalog-manifest-v4.js';
 import { readPluginManifest } from './manifest.js';
 
 const REQUIRED_ROOT_ENTRIES = new Set([
@@ -23,13 +23,45 @@ const OPTIONAL_ROOT_ENTRY = 'plugin-release-ledger.json';
 
 export interface CatalogSnapshotValidation {
   rootDir: string;
-  manifest: CatalogManifestV3;
+  manifest: CatalogManifestV4;
   manifestDigest: string;
   snapshotDigest: string;
 }
 
 function createDigest(value: string): string {
   return `sha256:${crypto.createHash('sha256').update(value).digest('hex')}`;
+}
+
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean' || typeof value === 'number') {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (typeof value !== 'object') throw new Error('Catalog content identity contains a non-JSON value.');
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record).sort().map((key) =>
+    `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(',')}}`;
+}
+
+function calculateCatalogContentDigest(
+  manifest: CatalogManifestV4,
+  marketplace: Record<string, unknown>,
+): string {
+  const plugins = manifest.entries.map((entry) => ({
+    name: entry.name,
+    targetVersion: entry.version.replace(/-beta\.[1-9]\d*$/u, ''),
+    contentDigest: entry.contentDigest,
+  })).sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0);
+  return createDigest(canonicalJson({
+    schemaIdentity: { schemaVersion: manifest.schemaVersion },
+    marketplaceMetadata: {
+      name: marketplace.name,
+      owner: marketplace.owner,
+      interface: marketplace.interface,
+    },
+    compatibility: manifest.compatibility,
+    plugins,
+  }));
 }
 
 function isInside(rootDir: string, candidate: string): boolean {
@@ -187,7 +219,8 @@ export async function validateCatalogSnapshot(rootDir: string): Promise<CatalogS
   await validateRootLayout(resolvedRoot);
   const snapshotEntries = await collectSnapshotEntries(resolvedRoot, resolvedRoot);
   const manifestPath = path.join(resolvedRoot, CURRENT_CATALOG_MANIFEST_FILE);
-  const manifest = validateCatalogManifestV3(await fs.readJson(manifestPath));
+  const manifest = validateCatalogManifestV4(await fs.readJson(manifestPath));
+  const marketplace = await fs.readJson(path.join(resolvedRoot, '.agents', 'plugins', 'marketplace.json')) as Record<string, unknown>;
   const pluginEntries = await fs.readdir(path.join(resolvedRoot, 'plugins'));
   const manifestPluginNames = [...manifest.entries.map((entry) => entry.name)].sort();
   if (pluginEntries.sort().join('\0') !== manifestPluginNames.join('\0')) {
@@ -197,7 +230,7 @@ export async function validateCatalogSnapshot(rootDir: string): Promise<CatalogS
   for (const entry of manifest.entries) {
     const pluginRoot = path.join(resolvedRoot, 'plugins', entry.name);
     const plugin = await readPluginManifest(pluginRoot, { mode: 'bundle' });
-    const expected = await createCatalogManifestV3Entry(plugin, pluginRoot);
+    const expected = await createCatalogManifestV4Entry(plugin, pluginRoot);
     for (const field of [
       'name',
       'version',
@@ -219,6 +252,12 @@ export async function validateCatalogSnapshot(rootDir: string): Promise<CatalogS
         );
       }
     }
+  }
+  if (
+    manifest.release.state === 'published'
+    && manifest.release.contentDigest !== calculateCatalogContentDigest(manifest, marketplace)
+  ) {
+    throw new Error('Published catalog release.contentDigest does not match the runtime snapshot.');
   }
 
   return {

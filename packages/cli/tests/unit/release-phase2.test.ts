@@ -247,7 +247,7 @@ describe('release status and plans', () => {
       }];
       catalogOnly.history.registry.distTags[name].beta = '0.1.0-beta.1';
     }
-    expect(calculateReleaseStatus(catalogOnly).catalog.publicationMode).toBe('catalog-only');
+    expect(calculateReleaseStatus(catalogOnly).catalog.publicationMode).toBe('bootstrap');
 
     const promotion = structuredClone(catalogOnly);
     promotion.history.catalog.pending = 'c'.repeat(40);
@@ -302,6 +302,15 @@ describe('release status and plans', () => {
     const status = calculateReleaseStatus(fixture());
     const plan = createReleasePlan(status);
     expect(normalizeReleasePlan(plan)).toEqual(plan);
+    const { snapshotDigest: omittedSnapshot, ...catalogWithoutSnapshot } = plan.catalog;
+    expect(() => normalizeReleasePlan({
+      ...plan,
+      catalog: catalogWithoutSnapshot,
+    })).toThrow('missing field "snapshotDigest"');
+    expect(() => normalizeReleasePlan({
+      ...plan,
+      catalog: { ...plan.catalog, snapshotDigest: 'sha256:not-hex' },
+    })).toThrow('catalog.snapshotDigest');
     expect(() => normalizeReleasePlan({ ...plan, channel: 'stable' }))
       .toThrow('candidate does not match plan channel');
     const first = await writeReleasePlan(plan, { repoRoot: root });
@@ -312,6 +321,38 @@ describe('release status and plans', () => {
     const changed = `${JSON.stringify({ ...plan, planDigest: digest('f') }, null, 2)}\n`;
     await fs.writeFile(first.planPath, changed);
     await expect(writeReleasePlan(plan, { repoRoot: root })).rejects.toThrow('different bytes');
+  });
+
+  it('keeps planId free of the raw Catalog tree digest while planDigest binds it', () => {
+    const input = fixture();
+    input.content.catalog.minCliVersion = '0.1.0-beta.1';
+    const plan = createReleasePlan(calculateReleaseStatus(input));
+    const changedSnapshotDigest = digest('f');
+    const { planId: ignoredId, planDigest: ignoredDigest, ...base } = plan;
+    const { snapshotDigest: ignoredSnapshot, ...catalogIdentity } = base.catalog;
+    const identity = {
+      ...base,
+      cli: {
+        ...base.cli,
+        packages: base.cli.packages.map(({ tarballDigest: ignoredTarball, ...entry }) => entry),
+      },
+      catalog: catalogIdentity,
+    };
+    const changedBase = {
+      ...base,
+      catalog: { ...base.catalog, snapshotDigest: changedSnapshotDigest },
+    };
+    const resigned = {
+      ...changedBase,
+      planId: calculateCanonicalDigest(identity),
+    };
+    const changed = {
+      ...resigned,
+      planDigest: calculateCanonicalDigest(resigned),
+    };
+    expect(changed.planId).toBe(plan.planId);
+    expect(changed.planDigest).not.toBe(plan.planDigest);
+    expect(normalizeReleasePlan(changed).catalog.snapshotDigest).toBe(changedSnapshotDigest);
   });
 
   it('rejects cross-field plan drift even after planId and planDigest are recomputed', () => {

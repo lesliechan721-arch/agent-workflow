@@ -163,6 +163,15 @@ function gitSource(remote: string, ref: string) {
 }
 
 describe('catalog snapshot schema 3 runtime validation', () => {
+  it('rejects schema 4 snapshots below the distribution floor', async () => {
+    const root = fixturePath('snapshot-below-schema-floor');
+    await createCatalogSnapshotFixture(root);
+    const manifestPath = path.join(root, 'catalog-manifest.json');
+    const manifest = await fs.readJson(manifestPath);
+    manifest.compatibility.aw.minVersion = '0.1.0-beta.2';
+    await fs.writeJson(manifestPath, manifest);
+    await expect(validateCatalogSnapshot(root)).rejects.toThrow('schema 4 requires 0.1.0-beta.3');
+  });
   it.each(['EPERM', 'EMFILE', 'EIO'])('propagates snapshot root lstat %s', async (code) => {
     const root = fixturePath(`snapshot-root-${code}`);
     const failure = Object.assign(new Error(`injected ${code}`), { code });

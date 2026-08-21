@@ -249,7 +249,7 @@ export async function withPreparedCliPublication(
   });
 }
 
-export async function prepareEvalPublication(
+async function prepareEvalPublicationCandidate(
   mode,
   publishMode,
   snapshot,
@@ -301,35 +301,61 @@ export async function prepareEvalPublication(
       resolveRegistryUrl(packageJsonPath, process.env),
       (options.computePackageTarballTreeDigest ?? computePackageTarballTreeDigest)(tarballPath),
     ]);
-    await assertFresh();
-    await (options.runCommand ?? runCommand)('pnpm', [
-      'publish',
-      tarballPath,
-      '--ignore-scripts',
-      '--tag',
-      publishMode.tag,
-      '--registry',
-      registryUrl,
-      ...gitCheckArgs,
-    ], {
-      timeoutMs: RELEASE_NETWORK_TIMEOUT_MS,
-      env: {
-        ...process.env,
-        AW_RELEASE_NPM_REGISTRY_URL: registryUrl,
-        npm_config_registry: registryUrl,
-        NPM_CONFIG_REGISTRY: registryUrl,
-      },
-    });
     return {
-      status: 'published',
+      status: 'publish',
       mode,
       version: expectedVersion,
+      tarballPath,
+      registryUrl,
+      gitCheckArgs,
       candidateTreeDigest,
       generationId: snapshot.generationId,
       outputDigest: snapshot.outputDigest,
       inputDigest: snapshot.inputDigest,
     };
   });
+}
+
+export async function publishPreparedEvalPublication(publication, assertFresh, options = {}) {
+  if (publication.status === 'already-published') return publication;
+  if (publication.status !== 'publish') throw new Error('Bound shared Eval publication candidate is invalid.');
+  await assertFresh();
+  await options.beforeNpmWrite?.('@lesliechan721/agent-skill-eval');
+  await (options.runCommand ?? runCommand)('pnpm', [
+    'publish', publication.tarballPath, '--ignore-scripts', '--tag', publication.mode,
+    '--registry', publication.registryUrl, ...publication.gitCheckArgs,
+  ], {
+    timeoutMs: RELEASE_NETWORK_TIMEOUT_MS,
+    env: {
+      ...process.env,
+      AW_RELEASE_NPM_REGISTRY_URL: publication.registryUrl,
+      npm_config_registry: publication.registryUrl,
+      NPM_CONFIG_REGISTRY: publication.registryUrl,
+    },
+  });
+  return { ...publication, status: 'published' };
+}
+
+export async function withPreparedEvalPublication(
+  mode, publishMode, snapshot, expectedVersion, assertFresh, callback, options = {},
+) {
+  return (options.withPrivateEvalTarball ?? withPrivateEvalTarball)(snapshot, async (tarballPath) => {
+    const publication = await prepareEvalPublicationCandidate(
+      mode, publishMode, snapshot, expectedVersion, assertFresh,
+      { ...options, withPrivateEvalTarball: async (_snapshot, consume) => consume(tarballPath) },
+    );
+    return callback(publication);
+  });
+}
+
+export async function prepareEvalPublication(
+  mode, publishMode, snapshot, expectedVersion, assertFresh, options = {},
+) {
+  return withPreparedEvalPublication(
+    mode, publishMode, snapshot, expectedVersion, assertFresh,
+    (publication) => publishPreparedEvalPublication(publication, assertFresh, options),
+    options,
+  );
 }
 
 export async function publishCli(argv = process.argv.slice(2), options = {}) {
@@ -339,7 +365,7 @@ export async function publishCli(argv = process.argv.slice(2), options = {}) {
       `CLI version mismatch: expected ${options.expectedVersion}, received ${cliVersion} from --cli-version.`,
     );
   }
-  const currentVersion = String((await readCliPackageJson()).version);
+  const currentVersion = String((await (options.readCliPackageJson ?? readCliPackageJson)()).version);
   if (currentVersion !== cliVersion) {
     throw new Error(
       `CLI version mismatch: expected ${cliVersion}, found ${currentVersion} in packages/cli/package.json.`,
@@ -398,6 +424,7 @@ export async function publishCli(argv = process.argv.slice(2), options = {}) {
             ...(options.assertPublishedPackageTarballMatchesCandidate
               ? { assertPublishedPackageTarballMatchesCandidate: options.assertPublishedPackageTarballMatchesCandidate }
               : {}),
+            ...(options.beforeNpmWrite ? { beforeNpmWrite: options.beforeNpmWrite } : {}),
           },
         );
         if (
@@ -420,6 +447,7 @@ export async function publishCli(argv = process.argv.slice(2), options = {}) {
           };
         }
         await prepareToPublish();
+        await options.beforeNpmWrite?.('@lesliechan721/aw');
         const cli = await publishCliFromSnapshot(
           mode,
           publishMode,

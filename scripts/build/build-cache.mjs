@@ -508,7 +508,9 @@ async function validateRequiredOutputs(repoRoot) {
         }
         if (
           output.type === 'catalog' &&
-          (parsed.schemaVersion !== 3 ||
+          (parsed.schemaVersion !== 4 ||
+            !parsed.release ||
+            (parsed.release.state !== 'development' && parsed.release.state !== 'published') ||
             !Array.isArray(parsed.entries) ||
             Object.hasOwn(parsed, 'packages') ||
             parsed.entries.some((entry) =>

@@ -303,6 +303,7 @@ function planDecision(status, minCliVersion) {
       candidateVersion: status.catalog.candidateVersion,
       catalogContentDigest: status.catalog.contentDigest,
       minCliVersion,
+      snapshotDigest: status.catalog.snapshotDigest ?? null,
       publicationMode: status.catalog.publicationMode,
       action: status.catalog.action,
       reason: status.catalog.reason,
@@ -315,6 +316,19 @@ function planDecision(status, minCliVersion) {
       action: plugin.action,
       reason: plugin.reason,
     })),
+  };
+}
+
+function planIdentityInput(plan) {
+  const { planId, planDigest, ...base } = plan;
+  const { snapshotDigest, ...catalogIdentity } = base.catalog;
+  return {
+    ...base,
+    cli: {
+      ...base.cli,
+      packages: base.cli.packages.map(({ tarballDigest, ...entry }) => entry),
+    },
+    catalog: catalogIdentity,
   };
 }
 
@@ -374,19 +388,22 @@ export function normalizeReleasePlan(raw, { verifyDigests = true } = {}) {
   const catalogValue = object(value.catalog, 'release plan.catalog');
   keys(catalogValue, 'release plan.catalog', [
     'targetVersion', 'candidateVersion', 'catalogContentDigest', 'minCliVersion',
-    'publicationMode', 'action', 'reason',
+    'snapshotDigest', 'publicationMode', 'action', 'reason',
   ]);
-  if (!['none', 'catalog-only', 'atomic-combined', 'tag-first', 'promotion'].includes(catalogValue.publicationMode)) {
+  if (!['none', 'catalog-only', 'atomic-combined', 'tag-first', 'bootstrap', 'promotion'].includes(catalogValue.publicationMode)) {
     throw new Error('Invalid release plan.catalog.publicationMode.');
   }
   const catalog = {
     ...normalizeAxis(catalogValue, 'release plan.catalog', 'catalogContentDigest', [
-      'minCliVersion', 'publicationMode',
+      'minCliVersion', 'snapshotDigest', 'publicationMode',
     ]),
     minCliVersion: normalizeCandidateVersion(
       catalogValue.minCliVersion,
       'release plan.catalog.minCliVersion',
     ),
+    snapshotDigest: catalogValue.snapshotDigest === null
+      ? null
+      : digest(catalogValue.snapshotDigest, 'release plan.catalog.snapshotDigest'),
     publicationMode: catalogValue.publicationMode,
   };
   if (!Array.isArray(value.plugins)) throw new Error('Invalid release plan.plugins.');
@@ -440,11 +457,15 @@ export function normalizeReleasePlan(raw, { verifyDigests = true } = {}) {
     || (normalized.catalog.action === 'publish' && normalized.cli.action === 'publish'
       && ['atomic-combined', 'tag-first'].includes(normalized.catalog.publicationMode))
     || (normalized.catalog.action === 'publish' && normalized.cli.action !== 'publish'
-      && normalized.catalog.publicationMode === 'catalog-only')
+      && ['catalog-only', 'bootstrap'].includes(normalized.catalog.publicationMode))
     || (['skip', 'deferred'].includes(normalized.catalog.action)
       && normalized.catalog.publicationMode === 'none')
   );
   if (!catalogModeValid) throw new Error('Invalid release plan.catalog publication action/mode combination.');
+  const catalogWrites = normalized.catalog.action === 'publish' || normalized.catalog.action === 'recover';
+  if (catalogWrites !== (normalized.catalog.snapshotDigest !== null)) {
+    throw new Error('Invalid release plan.catalog.snapshotDigest for the publication action.');
+  }
   for (const tag of ['latest', 'beta']) {
     const [evalTag, awTag] = CLI_PACKAGE_NAMES.map((name) => {
       const version = normalized.history.npm.distTags.find((entry) => entry.name === name)[tag];
@@ -472,19 +493,20 @@ export function normalizeReleasePlan(raw, { verifyDigests = true } = {}) {
   const recordedDecision = {
     source: normalized.source,
     cli: normalized.cli,
-    catalog: normalized.catalog,
+    catalog: { ...normalized.catalog },
     plugins: normalized.plugins,
   };
+  delete recomputedDecision.catalog.snapshotDigest;
+  delete recordedDecision.catalog.snapshotDigest;
   if (canonicalJson(recomputedDecision) !== canonicalJson(recordedDecision)) {
     throw new Error('Release plan decisions do not match the bound release observations.');
   }
   if (verifyDigests) {
-    const { planId, planDigest, ...identityInput } = normalized;
-    if (planId !== calculateCanonicalDigest(identityInput)) {
+    if (normalized.planId !== calculateCanonicalDigest(planIdentityInput(normalized))) {
       throw new Error('Release plan planId does not match its content.');
     }
     const { planDigest: omitted, ...digestInput } = normalized;
-    if (planDigest !== calculateCanonicalDigest(digestInput)) {
+    if (normalized.planDigest !== calculateCanonicalDigest(digestInput)) {
       throw new Error('Release plan planDigest does not match its content.');
     }
   }
@@ -565,6 +587,9 @@ export function createReleasePlan(status) {
       candidateVersion: status.catalog.candidateVersion,
       catalogContentDigest: status.catalog.contentDigest,
       minCliVersion: status.catalog.minCliVersion,
+      snapshotDigest: status.catalog.action === 'publish' || status.catalog.action === 'recover'
+        ? status.catalog.snapshotDigest ?? status.catalog.contentDigest
+        : null,
       publicationMode: status.catalog.publicationMode,
       action: status.catalog.action,
       reason: status.catalog.reason,
@@ -578,10 +603,19 @@ export function createReleasePlan(status) {
       reason: plugin.reason,
     })),
   };
-  const planId = calculateCanonicalDigest(planBase);
-  const withId = { ...planBase, planId };
-  const planDigest = calculateCanonicalDigest(withId);
-  return normalizeReleasePlan({ ...withId, planDigest });
+  let planId = calculateCanonicalDigest(planIdentityInput(planBase));
+  let draft = normalizeReleasePlan({
+    ...planBase,
+    planId,
+    planDigest: `sha256:${'0'.repeat(64)}`,
+  }, { verifyDigests: false });
+  planId = calculateCanonicalDigest(planIdentityInput(draft));
+  draft = { ...draft, planId };
+  const { planDigest: omitted, ...digestInput } = draft;
+  return normalizeReleasePlan({
+    ...draft,
+    planDigest: calculateCanonicalDigest(digestInput),
+  });
 }
 
 export function serializeReleasePlan(plan) {
@@ -663,6 +697,26 @@ export async function writeReleasePlan(plan, options = {}) {
     throw error;
   }
   return { planPath, pointerPath, created };
+}
+
+export async function readCurrentReleasePlan(options = {}) {
+  const repoRoot = options.repoRoot ?? defaultRepoRoot;
+  const pointerPath = path.join(repoRoot, 'release', 'current-plan.json');
+  const pointerStats = await fs.lstat(pointerPath);
+  if (!pointerStats.isFile() || pointerStats.isSymbolicLink()) {
+    throw new Error('Current release plan pointer must be a regular file.');
+  }
+  const pointer = normalizeCurrentPlanPointer(JSON.parse(await fs.readFile(pointerPath, 'utf8')));
+  const planPath = path.join(repoRoot, ...pointer.path.split('/'));
+  const planStats = await fs.lstat(planPath);
+  if (!planStats.isFile() || planStats.isSymbolicLink()) {
+    throw new Error('Current release plan must be a regular file.');
+  }
+  const plan = normalizeReleasePlan(JSON.parse(await fs.readFile(planPath, 'utf8')));
+  if (plan.planId !== pointer.planId || plan.planDigest !== pointer.planDigest) {
+    throw new Error('Current release plan pointer does not match its immutable plan.');
+  }
+  return { plan, pointer, planPath };
 }
 
 export async function assertPlanOnlyCommit(plan, options = {}) {

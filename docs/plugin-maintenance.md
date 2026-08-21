@@ -7,7 +7,7 @@
 - 插件源码位于 `plugins/`，`plugins/<name>/.agents-plugin/plugin.json` 是源码 manifest 真值。
 - catalog staging 和 runtime bundle 是构建产物，不要直接修改。
 - 作者只维护 plugin source 和稳定 plugin version。不要手改 Git catalog refs、release ledger 或 source cache。
-- 作者声明真实的 `compatibility.aw.minVersion`；发布器会把所有插件声明与 schema 3 Git 分发 floor `0.1.0-beta.2` 取最大值。作者不要为绕过 catalog floor 改低插件声明，也不要编辑内部 publication lock 或 tag-first pending refs。
+- 作者声明真实的 `compatibility.aw.minVersion`；发布器会把所有插件声明与 schema 4 Git 分发 floor `0.1.0-beta.3` 取最大值。作者不要为绕过 catalog floor 改低插件声明，也不要编辑内部 publication lock 或 tag-first pending refs。
 - 创建或修改插件能力时只维护源码层；平台产物由 CLI、adapter 和发布流程生成。
 - 插件和 Skill 的 production README 使用[插件与 Skill README 规范](readme-standard.md)。
 

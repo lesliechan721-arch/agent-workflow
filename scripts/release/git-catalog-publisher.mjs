@@ -493,6 +493,9 @@ async function validateSnapshotAndLedger(root, expectedChannel, catalogModules) 
       `Catalog snapshot channel mismatch: expected ${expectedChannel}, found ${validation.manifest.channel}.`,
     );
   }
+  if (validation.manifest.release.state !== 'published') {
+    throw new Error('Published catalog history is missing schema 4 release identity.');
+  }
   const ledgerPath = path.join(root, 'plugin-release-ledger.json');
   let rawLedger;
   try {
@@ -734,6 +737,9 @@ async function assertPublicationTreesEqual(expectedRoot, actualRoot) {
 
 function assertCandidate(history, validation, ledger) {
   const manifest = validation.manifest;
+  if (manifest.release.state !== 'published') {
+    throw new Error('Staged catalog publication is missing schema 4 release identity.');
+  }
   if (manifest.catalogVersion !== history.catalogVersion || manifest.channel !== history.mode) {
     throw new Error(
       `Staged catalog identity mismatch: expected ${history.catalogVersion} (${history.mode}).`,
@@ -837,7 +843,7 @@ async function prepareLocalPublication(history, stagedRoot, options = {}) {
       committed.snapshotDigest !== validation.snapshotDigest
       || normalizedLedgerJson(committed.ledger) !== normalizedLedgerJson(ledger)
     ) {
-      throw new Error('Materialized catalog commit failed schema 3 or release ledger verification.');
+      throw new Error('Materialized catalog commit failed schema 4 or release ledger verification.');
     }
     await assertPublicationTreesEqual(stagedRoot, verificationRoot);
     await git([

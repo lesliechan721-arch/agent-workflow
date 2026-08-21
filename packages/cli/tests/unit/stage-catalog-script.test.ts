@@ -38,7 +38,7 @@ afterEach(async () => {
 });
 
 describe('stage-catalog script', () => {
-  it('publishes one validated schema 3 snapshot with the explicit release version and ledger', async () => {
+  it('publishes one validated schema 4 snapshot with the explicit release version and ledger', async () => {
     const root = await createFixtureRoot('aw-stage-catalog-');
     const snapshot = createSnapshot(root);
     const outputRoot = createInternalOutputRoot(root);
@@ -65,9 +65,10 @@ describe('stage-catalog script', () => {
       'plugins',
     ]);
     expect(staged.manifest).toMatchObject({
-      schemaVersion: 3,
+      schemaVersion: 4,
       catalogVersion: '9.0.0-beta.4',
       channel: 'beta',
+      release: { state: 'development' },
       entries: [expect.objectContaining({
         name: 'demo',
         version: '1.0.0-beta.1',

@@ -396,6 +396,14 @@ export function calculateReleaseStatus({ channel, targets, content, history }) {
       }
     }
   }
+  if (
+    catalog.publicationMode === 'catalog-only'
+    && channelObservation == null
+    && recoveryTag == null
+    && pendingCommit == null
+  ) {
+    catalog.publicationMode = 'bootstrap';
+  }
 
   return {
     schemaVersion: 1,
