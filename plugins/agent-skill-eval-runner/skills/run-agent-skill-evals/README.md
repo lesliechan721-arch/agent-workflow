@@ -33,3 +33,5 @@
 - Provider 命令、模型成本、认证环境、网络和外部进程必须由用户明确授权。
 - 共享包负责 provider、snapshot、进程、timeout、采集、bundle 和 evidence level；本 Skill
   只负责人工 gate、preflight、命令编排和 triage 交接。
+- standalone 进程观察不保证后代清理，也不产生 comparative 或 release-grade 证据；使用方
+  必须保留 bundle 的 `evidenceLevel` 和 `limitations`。

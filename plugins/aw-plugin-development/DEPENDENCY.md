@@ -3,7 +3,7 @@
 Required plugins:
 
 - `agent-content-toolkit >= 0.5.0`
-- `agent-skill-toolkit >= 0.7.0`
+- `agent-skill-toolkit >= 0.7.1`
 
 The Author Skill also requires an installed `aw` CLI that provides the required `aw plugin`
 authoring command. It checks the CLI version and the selected command help before use. The static

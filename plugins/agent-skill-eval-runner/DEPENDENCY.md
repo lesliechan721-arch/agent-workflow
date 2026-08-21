@@ -1,6 +1,6 @@
 # Manual dependency contract
 
-Plugin contract version: `0.3.0`.
+Plugin contract version: `0.3.1`.
 
 Required plugin: `agent-skill-toolkit >= 0.5.0`.
 
@@ -15,3 +15,5 @@ The package version follows the AW lockstep version and has no independent upper
 compatibility requires the bin to exist, capabilities schema v1, and plan, audit, and bundle schema v2. The
 orchestration Skill fails closed when the command, compatible schemas, audit, or contracts are
 unavailable. It does not contain a fallback runner, validator, Oracle, or review rules.
+Standalone process observation does not guarantee descendant cleanup or produce comparative or
+release-grade evidence. Preserve the generated bundle evidence level and limitations.

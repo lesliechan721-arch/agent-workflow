@@ -2,6 +2,7 @@ import { readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 
 const AUTHOR_DIRECTORY_NAMES = new Set(['evals', 'reports']);
+const IGNORED_DIRECTORY_NAMES = new Set(['.git', 'node_modules', '.DS_Store']);
 
 function portable(relativePath) {
   return relativePath.split(path.sep).join('/');
@@ -45,7 +46,7 @@ export async function findSkillRoots(pluginRoot, skillsDeclaration = './skills')
     const entries = await readdir(directory, { withFileTypes: true });
     entries.sort((left, right) => left.name.localeCompare(right.name));
     for (const entry of entries) {
-      if (!entry.isDirectory() || ['.git', 'node_modules'].includes(entry.name)) continue;
+      if (!entry.isDirectory() || IGNORED_DIRECTORY_NAMES.has(entry.name)) continue;
       await visit(path.join(directory, entry.name));
     }
   }

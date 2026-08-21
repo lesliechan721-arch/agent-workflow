@@ -1,14 +1,106 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema", "$id": "https://agent-skill-toolkit.invalid/schemas/review-input-bundle.schema.json", "title": "ReviewInputBundle", "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-skill-toolkit.invalid/schemas/review-input-bundle.schema.json",
+  "title": "ReviewInputBundle",
+  "type": "object",
   "required": ["schemaVersion", "target", "artifacts", "environment", "orchestration", "evalAudit", "evalResults"],
   "properties": {
     "schemaVersion": { "const": 4 },
-    "target": { "type": "object", "required": ["kind", "name", "sourceDigest"], "properties": { "kind": { "enum": ["agent-skill", "aw-plugin", "aw-plugin-skill", "materialized-skill"] }, "name": { "type": "string", "minLength": 1 }, "profile": { "type": ["string", "null"] }, "sourceDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" } }, "additionalProperties": false },
-    "artifacts": { "type": "array", "items": { "type": "object", "required": ["role", "path", "profile", "digest", "owner", "currentness"], "properties": { "role": { "enum": ["source", "final", "evidence", "project-profile"] }, "path": { "type": "string", "minLength": 1 }, "profile": { "type": ["string", "null"] }, "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }, "owner": { "type": "string", "minLength": 1 }, "currentness": { "enum": ["current", "historical", "dirty", "unknown"] } }, "additionalProperties": false } },
-    "environment": { "type": "object" },
-    "orchestration": { "type": "object", "required": ["stageOwner", "providedStages"], "properties": { "stageOwner": { "enum": ["review-agent-skill", "caller"] }, "providedStages": { "type": "array", "items": { "type": "object", "required": ["id", "producer", "independentContext", "subjectDigest", "resultPath", "resultDigest", "schema", "profile"], "properties": { "id": { "enum": ["eval-audit", "reference-audit", "source-skill-review", "materialized-profile-review", "eval-execution", "eval-result-triage"] }, "producer": { "type": "string", "minLength": 1 }, "independentContext": { "type": "boolean" }, "subjectDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }, "resultPath": { "type": "string", "minLength": 1 }, "resultDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }, "schema": { "enum": ["EvalAuditResult", "ReferenceAuditResult", "ReviewResult", "EvalRunBundle"] }, "profile": { "type": ["string", "null"] } }, "additionalProperties": false } } }, "additionalProperties": false },
+    "target": {
+      "type": "object",
+      "required": ["kind", "name", "sourceDigest", "currentness"],
+      "properties": {
+        "kind": { "enum": ["agent-skill", "aw-plugin", "aw-plugin-skill", "materialized-skill"] },
+        "name": { "type": "string", "minLength": 1 },
+        "profile": { "type": ["string", "null"] },
+        "sourceDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "currentness": { "enum": ["current", "dirty", "unknown"] },
+        "dirtyReasons": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true }
+      },
+      "additionalProperties": false
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["role", "path", "profile", "digest", "mode", "owner", "currentness"],
+        "properties": {
+          "role": { "enum": ["source", "final", "evidence", "project-profile"] },
+          "path": { "type": "string", "minLength": 1, "pattern": "^(?!/)(?!.*\\\\)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//).+$" },
+          "profile": { "type": ["string", "null"] },
+          "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+          "mode": { "enum": ["100644", "100755"] },
+          "owner": { "type": "string", "minLength": 1 },
+          "currentness": { "enum": ["current", "historical", "dirty", "unknown"] },
+          "currentnessReason": { "type": "string", "minLength": 1 }
+        },
+        "additionalProperties": false
+      }
+    },
+    "environment": {
+      "type": "object",
+      "required": ["repositoryRoot"],
+      "properties": { "repositoryRoot": { "type": "string", "minLength": 1 } },
+      "additionalProperties": true
+    },
+    "orchestration": {
+      "type": "object",
+      "required": ["stageOwner", "providedStages"],
+      "properties": {
+        "stageOwner": { "enum": ["review-agent-skill", "caller"] },
+        "providedStages": {
+          "type": "array",
+          "items": {
+            "allOf": [
+              { "$ref": "#/$defs/stage" },
+              {
+                "oneOf": [
+                  { "properties": { "id": { "const": "eval-audit" }, "producer": { "const": "audit-agent-skill-evals" }, "schema": { "const": "EvalAuditResult" }, "profile": { "const": null }, "evalExecution": false } },
+                  { "properties": { "id": { "const": "reference-audit" }, "producer": { "const": "review-agent-content" }, "schema": { "const": "ReferenceAuditResult" }, "profile": { "const": null }, "evalExecution": false } },
+                  { "properties": { "id": { "const": "source-skill-review" }, "producer": { "const": "review-agent-skill" }, "schema": { "const": "ReviewResult" }, "profile": { "const": null }, "evalExecution": false } },
+                  { "properties": { "id": { "const": "materialized-profile-review" }, "producer": { "const": "review-agent-skill" }, "schema": { "const": "ReviewResult" }, "profile": { "type": "string", "minLength": 1 }, "evalExecution": false } },
+                  { "properties": { "id": { "const": "eval-execution" }, "producer": { "const": "run-agent-skill-evals" }, "schema": { "const": "EvalRunBundle" }, "profile": { "const": null }, "evalExecution": false } },
+                  { "required": ["evalExecution"], "properties": { "id": { "const": "eval-result-triage" }, "producer": { "const": "audit-agent-skill-evals" }, "schema": { "const": "EvalAuditResult" }, "profile": { "const": null }, "evalExecution": { "$ref": "#/$defs/evalExecution" } } }
+                ]
+              }
+            ]
+          }
+        }
+      },
+      "additionalProperties": false
+    },
     "evalAudit": { "type": ["object", "null"] },
     "evalResults": { "type": "array", "items": { "type": "object", "required": ["schemaVersion", "producer", "targetSkillDigest", "caseCorpusDigest", "comparisonPlanned", "evidenceLevel"], "properties": { "schemaVersion": { "const": 2 }, "producer": { "const": "run-agent-skill-evals" }, "targetSkillDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }, "caseCorpusDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }, "comparisonPlanned": { "type": "boolean" }, "evidenceLevel": { "enum": ["executed", "comparative"] } }, "additionalProperties": true } }
+  },
+  "$defs": {
+    "stage": {
+      "type": "object",
+      "required": ["id", "producer", "independentContext", "subjectDigest", "resultPath", "resultDigest", "schema", "profile"],
+      "properties": {
+        "id": { "enum": ["eval-audit", "reference-audit", "source-skill-review", "materialized-profile-review", "eval-execution", "eval-result-triage"] },
+        "producer": { "type": "string", "minLength": 1 },
+        "independentContext": { "type": "boolean" },
+        "subjectDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "resultPath": { "type": "string", "minLength": 1 },
+        "resultDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "schema": { "enum": ["EvalAuditResult", "ReferenceAuditResult", "ReviewResult", "EvalRunBundle"] },
+        "profile": { "type": ["string", "null"] },
+        "evalExecution": { "$ref": "#/$defs/evalExecution" }
+      },
+      "additionalProperties": false
+    },
+    "evalExecution": {
+      "type": "object",
+      "required": ["targetSkillDigest", "caseCorpusDigest", "preflightAuditDigest", "planDigest", "resultDigest"],
+      "properties": {
+        "targetSkillDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "caseCorpusDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "preflightAuditDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "planDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "resultDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+      },
+      "additionalProperties": false
+    }
   },
   "additionalProperties": false
 }

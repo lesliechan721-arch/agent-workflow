@@ -2,6 +2,8 @@ import { assertProcessTreeInspectionAvailable } from './codex-eval-process-tree.
 import type { PluginEvalProcessManagementEvidence } from './plugin-eval-contract.js';
 
 const RESTRICTED_CODEX_PERMISSION_PROFILES = new Set(['workspace', 'read-only']);
+const OBSERVED_PROCESS_LIMITATION =
+  'Process-tree inspection observes and cleans known descendants but does not guarantee descendant cleanup.';
 
 function normalizedPermissionProfile(sourceEnv: NodeJS.ProcessEnv): string | null {
   const value = sourceEnv.CODEX_PERMISSION_PROFILE?.trim();
@@ -52,10 +54,11 @@ export async function resolveCodexEvalProcessManagement(options: {
       await assertProcessTreeInspectionAvailable({ platform: options.platform });
     }
     return {
-      mode: 'managed',
+      mode: 'observed',
       inspectionAvailable: true,
       userAcknowledged: options.allowUnmanaged,
-      descendantCleanupGuaranteed: true,
+      descendantCleanupGuaranteed: false,
+      limitation: OBSERVED_PROCESS_LIMITATION,
     };
   } catch (error) {
     const diagnostic = error instanceof Error ? error.message : String(error);

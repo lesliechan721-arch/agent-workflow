@@ -514,6 +514,7 @@ async function bundlePlugin(
   cliProviderVersion,
   pluginRoot,
   outputRoot,
+  runtimeSkillClosureValidation = 'current',
 ) {
   const sourceSetPlugins = await bundler.discoverPlugins(sourceSetRoot);
   const plugin = await bundler.readPluginManifest(pluginRoot);
@@ -527,6 +528,7 @@ async function bundlePlugin(
   await bundler.bundleLocalPlugin(plugin, outputRoot, {
     buildMode: 'staging',
     runtimeResolver,
+    runtimeSkillClosureValidation,
   });
   return {
     digest: await bundler.calculateArtifactDigest(outputRoot),
@@ -598,10 +600,30 @@ async function checkOnePlugin(options) {
     });
   }
   if (!baseRoot) {
+    let currentBundle;
+    try {
+      currentBundle = await bundlePlugin(
+        bundler,
+        repoRoot,
+        cliVirtualSources.current.root,
+        cliVirtualSources.current.providerVersion,
+        currentRoot,
+        path.join(tempRoot, 'bundles', pluginName, 'current'),
+      );
+    } catch (error) {
+      return createCheckResult(pluginName, {
+        ok: false,
+        status: 'error',
+        currentVersion: currentDocument.manifest.version,
+        errors: [`Production bundle failed: current: ${error.message}`],
+      });
+    }
     return createCheckResult(pluginName, {
       status: 'new',
       currentVersion: currentDocument.manifest.version,
       productionChanged: true,
+      currentDigest: currentBundle.digest,
+      changedPaths: [...currentBundle.entries.keys()].sort(),
     });
   }
 
@@ -636,24 +658,35 @@ async function checkOnePlugin(options) {
 
   let baseBundle;
   let currentBundle;
-  const bundleResults = await Promise.allSettled([
-    bundlePlugin(
-      bundler,
-      baseSourceRoot,
-      cliVirtualSources.base.root,
-      cliVirtualSources.base.providerVersion,
-      baseRoot,
-      path.join(tempRoot, 'bundles', pluginName, 'base'),
-    ),
-    bundlePlugin(
-      bundler,
-      repoRoot,
-      cliVirtualSources.current.root,
-      cliVirtualSources.current.providerVersion,
-      currentRoot,
-      path.join(tempRoot, 'bundles', pluginName, 'current'),
-    ),
-  ]);
+  let bundleResults;
+  try {
+    bundleResults = await Promise.allSettled([
+      bundlePlugin(
+        bundler,
+        baseSourceRoot,
+        cliVirtualSources.base.root,
+        cliVirtualSources.base.providerVersion,
+        baseRoot,
+        path.join(tempRoot, 'bundles', pluginName, 'base'),
+        'historical',
+      ),
+      bundlePlugin(
+        bundler,
+        repoRoot,
+        cliVirtualSources.current.root,
+        cliVirtualSources.current.providerVersion,
+        currentRoot,
+        path.join(tempRoot, 'bundles', pluginName, 'current'),
+      ),
+    ]);
+  } finally {
+    baseDocument.manifest.version = baseVersion;
+    await fs.writeFile(
+      baseDocument.manifestPath,
+      `${JSON.stringify(baseDocument.manifest, null, 2)}\n`,
+      'utf8',
+    );
+  }
   const bundleFailures = bundleResults
     .map((result, index) => result.status === 'rejected'
       ? `${index === 0 ? 'base' : 'current'}: ${result.reason?.message ?? String(result.reason)}`
@@ -724,31 +757,16 @@ async function checkOnePlugin(options) {
   });
 }
 
-function pluginNamesFromPaths(paths) {
-  const names = new Set();
-  for (const filePath of paths) {
-    const normalized = filePath.split(path.sep).join('/');
-    const match = normalized.match(/^plugins\/([^/]+)\//);
-    if (match) names.add(match[1]);
-  }
-  return [...names].sort();
-}
-
-async function listChangedPluginNames(repoRoot, baseCommit) {
-  const [tracked, untracked] = await Promise.all([
-    runGit(repoRoot, ['diff', '--name-only', '-z', baseCommit, '--', 'plugins'], {
-      buffer: true,
-      label: 'Git plugin diff',
-    }),
-    runGit(repoRoot, ['ls-files', '--others', '--exclude-standard', '-z', '--', 'plugins'], {
-      buffer: true,
-      label: 'Git untracked plugin scan',
-    }),
-  ]);
-  const paths = `${tracked.toString('utf8')}\0${untracked.toString('utf8')}`
-    .split('\0')
-    .filter(Boolean);
-  return pluginNamesFromPaths(paths);
+async function listPluginNames(sourceSetRoot) {
+  const entries = await fs.readdir(path.join(sourceSetRoot, 'plugins'), {
+    withFileTypes: true,
+  }).catch((error) => {
+    if (error?.code === 'ENOENT') return [];
+    throw error;
+  });
+  return entries
+    .filter((entry) => entry.isDirectory() || entry.isSymbolicLink())
+    .map((entry) => entry.name);
 }
 
 export async function checkPluginVersions(options = {}) {
@@ -769,23 +787,6 @@ export async function checkPluginVersions(options = {}) {
   const repoRoot = explicitRoot?.repoRoot ?? requestedRepoRoot;
   const baseCommit = await resolveBaseCommit(repoRoot, requestedBase);
   const bundler = await loadProductionBundler(cliPackageRoot);
-  const pluginNames = options.all
-    ? await listChangedPluginNames(repoRoot, baseCommit)
-    : [...new Set(options.pluginNames ?? [])].sort();
-  if (pluginNames.length === 0 && !options.all) {
-    throw codedError('usage', 'Provide a plugin name or use --all.');
-  }
-  const currentRoots = new Map();
-  for (const pluginName of pluginNames) {
-    const currentRoot = explicitRoot?.pluginRoot ?? path.join(repoRoot, 'plugins', pluginName);
-    assertAuthoringPluginPathFence({
-      repoRoot,
-      pluginRoot: currentRoot,
-      requireManifest: true,
-    });
-    currentRoots.set(pluginName, currentRoot);
-  }
-
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-version-check-'));
   try {
     const baseSourceRoot = path.join(tempRoot, 'base-source');
@@ -795,6 +796,31 @@ export async function checkPluginVersions(options = {}) {
       baseSourceRoot,
       explicitRoot?.relativePluginRoot,
     );
+    let pluginNames;
+    if (options.all) {
+      const [basePluginNames, currentPluginNames] = await Promise.all([
+        listPluginNames(baseSourceRoot),
+        listPluginNames(repoRoot),
+      ]);
+      pluginNames = [...new Set([...basePluginNames, ...currentPluginNames])].sort();
+    } else {
+      pluginNames = [...new Set(options.pluginNames ?? [])].sort();
+    }
+    if (pluginNames.length === 0 && !options.all) {
+      throw codedError('usage', 'Provide a plugin name or use --all.');
+    }
+    const currentRoots = new Map();
+    for (const pluginName of pluginNames) {
+      const currentRoot = explicitRoot?.pluginRoot ?? path.join(repoRoot, 'plugins', pluginName);
+      if (await lstatOrNull(currentRoot)) {
+        assertAuthoringPluginPathFence({
+          repoRoot,
+          pluginRoot: currentRoot,
+          requireManifest: true,
+        });
+      }
+      currentRoots.set(pluginName, currentRoot);
+    }
     const cliVirtualSources = await resolveCliVirtualSourceSets({
       baseSourceRoot,
       repoRoot,

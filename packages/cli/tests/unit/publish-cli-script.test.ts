@@ -35,7 +35,13 @@ async function loadPublishCliHarness(
     registryUrl?: string;
     publishedVersion?: string;
     evalPublished?: boolean;
+    cliPublished?: boolean;
     publishedEvalMatches?: boolean;
+    publishedCliMatches?: boolean;
+    isExactPackageVersionPublishedImpl?: (
+      packageName: string,
+      version: string,
+    ) => Promise<boolean> | boolean;
     resolvePublishedCliVersionImpl?: (mode: string) => Promise<string> | string;
     withCatalogPublicationLeaseImpl?: (
       remoteUrl: string,
@@ -123,7 +129,10 @@ async function loadPublishCliHarness(
       tarballPath: string,
     ) => {
       registryComparisonCalls.push(`${packageName}@${version}:${tarballPath}`);
-      if (options.publishedEvalMatches === false) {
+      if (
+        (packageName === '@lesliechan721/aw' && options.publishedCliMatches === false)
+        || (packageName === '@lesliechan721/agent-skill-eval' && options.publishedEvalMatches === false)
+      ) {
         throw new Error(`Published ${packageName}@${version} has different package files from the release candidate.`);
       }
       return {
@@ -133,11 +142,15 @@ async function loadPublishCliHarness(
       };
     }),
     computePackageTarballTreeDigest: vi.fn(async () => `sha256:${'a'.repeat(64)}`),
-    isExactPackageVersionPublished: vi.fn(async () => options.evalPublished ?? true),
+    isExactPackageVersionPublished: vi.fn(async (packageName: string, version: string) =>
+      options.isExactPackageVersionPublishedImpl?.(packageName, version)
+      ?? (packageName === '@lesliechan721/aw'
+        ? options.cliPublished ?? false
+        : options.evalPublished ?? true)),
     readPackageJson: vi.fn(async (packageJsonPath: string) => ({
       ...(packageJsonPath.includes('agent-skill-eval')
         ? { name: '@lesliechan721/agent-skill-eval' }
-        : {}),
+        : { name: '@lesliechan721/aw' }),
       version: options.snapshotVersion ?? options.cliVersion ?? '1.0.0-beta.16',
     })),
     readCliPackageJson: vi.fn(async () => ({
@@ -314,12 +327,12 @@ describe('publish-cli script', () => {
 
     expect(harness.calls).toEqual([
       {
+        type: 'pack',
+      },
+      {
         type: 'command',
         command: 'pnpm',
         args: ['run', 'release:verify:cli'],
-      },
-      {
-        type: 'pack',
       },
       {
         type: 'command',
@@ -357,12 +370,12 @@ describe('publish-cli script', () => {
 
     expect(harness.calls).toEqual([
       {
+        type: 'pack',
+      },
+      {
         type: 'command',
         command: 'pnpm',
         args: ['run', 'release:verify:cli'],
-      },
-      {
-        type: 'pack',
       },
       {
         type: 'command',
@@ -390,6 +403,7 @@ describe('publish-cli script', () => {
     await expect(harness.publishCli(['beta', '--cli-version', '1.0.0-beta.16'])).rejects.toThrow('Unexpected changes:\n- README.md');
 
     expect(harness.calls).toEqual([
+      { type: 'pack' },
       {
         type: 'command',
         command: 'pnpm',
@@ -489,11 +503,11 @@ describe('publish-cli script', () => {
       skipVerify: true,
       snapshot: harness.snapshot,
     })).rejects.toThrow(
-      'Shared Eval snapshot version mismatch: expected 1.0.0-beta.16, found 1.0.0-beta.17',
+      'CLI snapshot version mismatch: expected 1.0.0-beta.16, found 1.0.0-beta.17',
     );
 
-    expect(harness.calls).toEqual([]);
-    expect(harness.packSnapshots).toEqual([]);
+    expect(harness.calls).toEqual([{ type: 'pack' }]);
+    expect(harness.packSnapshots).toEqual([harness.snapshot]);
   });
 
   it('cleans an owned standalone snapshot when tarball publish fails', async () => {
@@ -511,16 +525,30 @@ describe('publish-cli script', () => {
     expect(harness.packSnapshots).toEqual([harness.snapshot]);
   });
 
-  it('returns already-published for an exact dist-tag without verifying, packing, or publishing', async () => {
+  it('returns already-published for an exact dist-tag only after comparing the production tree', async () => {
     const harness = await loadPublishCliHarness({
       cliVersion: '1.0.0-beta.16',
       publishedVersion: '1.0.0-beta.16',
+      cliPublished: true,
     });
 
     await expect(harness.publishCli(['beta', '--cli-version', '1.0.0-beta.16'])).resolves.toEqual({
       mode: 'beta',
       status: 'already-published',
       version: '1.0.0-beta.16',
+      cliPublication: {
+        status: 'already-published',
+        mode: 'beta',
+        version: '1.0.0-beta.16',
+        tarballPath: '/tmp/aw.tgz',
+        registryUrl: 'https://registry.example.test/',
+        candidateTreeDigest: `sha256:${'a'.repeat(64)}`,
+        publishedTreeDigest: `sha256:${'a'.repeat(64)}`,
+        generationId: 'generation-a',
+        outputDigest: 'digest-a',
+        inputDigest: 'input-a',
+        cliPackageDigest: 'package-a',
+      },
       evalPackage: {
         status: 'already-published',
         version: '1.0.0-beta.16',
@@ -530,9 +558,65 @@ describe('publish-cli script', () => {
         inputDigest: 'input-a',
       },
     });
-    expect(harness.calls).toEqual([]);
+    expect(harness.calls).toEqual([{ type: 'pack' }]);
+    expect(harness.registryComparisonCalls).toContain(
+      '@lesliechan721/aw@1.0.0-beta.16:/tmp/aw.tgz',
+    );
     expect(harness.snapshotRequests).toBe(1);
     expect(harness.publicationLeaseRequests).toBe(1);
+  });
+
+  it('fails an exact CLI partial retry before Eval or npm writes when registry files differ', async () => {
+    const harness = await loadPublishCliHarness({
+      cliVersion: '1.0.0-beta.16',
+      publishedVersion: '1.0.0-beta.15',
+      cliPublished: true,
+      publishedCliMatches: false,
+    });
+
+    await expect(harness.publishCli(['beta', '--cli-version', '1.0.0-beta.16']))
+      .rejects.toThrow('Published @lesliechan721/aw@1.0.0-beta.16 has different package files');
+    expect(harness.registryComparisonCalls).toEqual([
+      '@lesliechan721/aw@1.0.0-beta.16:/tmp/aw.tgz',
+    ]);
+    expect(harness.calls).toEqual([{ type: 'pack' }]);
+  });
+
+  it('fails before Eval or npm writes when the exact tree exists but the dist-tag is older', async () => {
+    const harness = await loadPublishCliHarness({
+      cliVersion: '1.0.0-beta.16',
+      publishedVersion: '1.0.0-beta.15',
+      cliPublished: true,
+    });
+
+    await expect(harness.publishCli(['beta', '--cli-version', '1.0.0-beta.16']))
+      .rejects.toThrow('already exists, but the beta dist-tag resolves to 1.0.0-beta.15');
+    expect(harness.registryComparisonCalls).toEqual([
+      '@lesliechan721/aw@1.0.0-beta.16:/tmp/aw.tgz',
+    ]);
+    expect(harness.calls).toEqual([{ type: 'pack' }]);
+  });
+
+  it('publishes the packed candidate when an exact dist-tag has no exact package version', async () => {
+    const harness = await loadPublishCliHarness({
+      cliVersion: '1.0.0-beta.16',
+      publishedVersion: '1.0.0-beta.16',
+      cliPublished: false,
+    });
+
+    await expect(harness.publishCli(['beta', '--cli-version', '1.0.0-beta.16'], {
+      skipVerify: true,
+    })).resolves.toMatchObject({
+      version: '1.0.0-beta.16',
+      cliPublication: { status: 'publish' },
+    });
+    expect(harness.registryComparisonCalls).not.toContain(
+      '@lesliechan721/aw@1.0.0-beta.16:/tmp/aw.tgz',
+    );
+    expect(harness.calls.filter((call) => call.type === 'pack')).toHaveLength(1);
+    expect(harness.calls.filter((call) =>
+      call.type === 'command' && call.args[0] === 'publish' && call.args[1] === '/tmp/aw.tgz'
+    )).toHaveLength(1);
   });
 
   it('publishes the lockstep shared Eval package before the dependent CLI', async () => {
@@ -595,7 +679,7 @@ describe('publish-cli script', () => {
     await expect(harness.publishCli(['beta', '--cli-version', '1.0.0-beta.16']))
       .rejects.toThrow('has different package files from the release candidate');
     expect(harness.registryComparisonCalls).toHaveLength(1);
-    expect(harness.calls).toEqual([]);
+    expect(harness.calls).toEqual([{ type: 'pack' }]);
   });
 
   it('rejects a lower standalone candidate before verifying, packing, or publishing', async () => {
@@ -654,6 +738,8 @@ describe('publish-cli script', () => {
     let publishedVersion = '1.0.0-beta.15';
     const harness = await loadPublishCliHarness({
       resolvePublishedCliVersionImpl: async () => publishedVersion,
+      isExactPackageVersionPublishedImpl: async (packageName, version) =>
+        packageName === '@lesliechan721/aw' ? version === publishedVersion : true,
       withCatalogPublicationLeaseImpl: (url, callback, publisherOptions) =>
         withRealCatalogPublicationLease(url, callback, {
           ...publisherOptions,

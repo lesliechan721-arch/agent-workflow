@@ -51,12 +51,19 @@ export interface ProcessTreeCleanupConfirmation {
   confirmed: true
 }
 
+export interface ExternalContainmentConfirmation {
+  confirmed: true
+  descendantCleanupGuaranteed: true
+  readOnlySkillSnapshotGuaranteed: true
+}
+
 export interface ProcessLifecycleHooks {
+  externalContainment?: ExternalContainmentConfirmation
   onSpawn?(handle: ProviderProcessHandle): void | Promise<void>
   terminateProcessTree?(
     handle: ProviderProcessHandle,
     reason: ProcessTerminationReason,
-  ): Promise<void | ProcessTreeCleanupConfirmation>
+  ): Promise<ProcessTreeCleanupConfirmation>
 }
 
 export interface ProcessResult {
@@ -71,15 +78,10 @@ export interface ProcessResult {
   stdoutTruncated: boolean
   stderrTruncated: boolean
   descendantCleanupGuaranteed: boolean
+  containmentLimitation?: string
 }
 
-export type ProcessRunner = (
-  request: ProcessRequest,
-  hooks?: ProcessLifecycleHooks,
-) => Promise<ProcessResult>
-
 export interface RunExecutionPlanOptions {
-  processRunner?: ProcessRunner
   processHooks?: ProcessLifecycleHooks
   beforeBundleCommit?: () => void | Promise<void>
 }

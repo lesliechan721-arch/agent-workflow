@@ -25,6 +25,13 @@ const FORBIDDEN_EXPORT_ROOTS = new Set([
 
 export type CatalogRuntimeImportPurpose = 'build' | 'skill-runtime-file';
 
+export interface CanonicalRuntimeSourceIdentity {
+  rootPath: string;
+  rootRealPath: string;
+  relativePath: string;
+  sourceRealPath: string;
+}
+
 export interface CatalogRuntimeExportResolution {
   provider: string;
   providerVersion: string;
@@ -32,6 +39,7 @@ export interface CatalogRuntimeExportResolution {
   source: string;
   sourcePath: string;
   sourceDigest: string;
+  canonicalSource: CanonicalRuntimeSourceIdentity;
   supportedPlatforms: ReadonlySet<PlatformName>;
   virtual: boolean;
 }
@@ -52,18 +60,19 @@ export interface CatalogRuntimeImportResolverOptions {
   cliProviderVersion?: string;
 }
 
-async function assertRegularFileWithoutSymlinks(
+export async function resolveCanonicalRuntimeSourceIdentity(
   rootDir: string,
   relativePath: string,
   fieldName: string,
-): Promise<string> {
-  const rootStats = await fs.lstat(rootDir);
+): Promise<CanonicalRuntimeSourceIdentity> {
+  const rootPath = path.resolve(rootDir);
+  const rootStats = await fs.lstat(rootPath);
   if (rootStats.isSymbolicLink() || !rootStats.isDirectory()) {
     throw new Error(`Invalid ${fieldName}: source root must be a regular directory.`);
   }
-  const rootReal = await fs.realpath(rootDir);
+  const rootRealPath = await fs.realpath(rootPath);
   const segments = relativePath.replace(/^\.\//u, '').split('/');
-  let current = rootReal;
+  let current = rootRealPath;
   for (const [index, segment] of segments.entries()) {
     current = path.join(current, segment);
     const stats = await fs.lstat(current).catch(() => undefined);
@@ -80,7 +89,12 @@ async function assertRegularFileWithoutSymlinks(
       throw new Error(`Invalid ${fieldName}: expected a regular file (${relativePath}).`);
     }
   }
-  return current;
+  return {
+    rootPath,
+    rootRealPath,
+    relativePath,
+    sourceRealPath: await fs.realpath(current),
+  };
 }
 
 export async function resolveRuntimeExportSource(options: {
@@ -96,7 +110,7 @@ export async function resolveRuntimeExportSource(options: {
       `Invalid buildConfig.runtimeExports export "${options.name}": source must not be below ${forbiddenSegment}/.`,
     );
   }
-  const sourcePath = await assertRegularFileWithoutSymlinks(
+  const canonicalSource = await resolveCanonicalRuntimeSourceIdentity(
     options.plugin.rootDir,
     options.source,
     `buildConfig.runtimeExports export "${options.name}"`,
@@ -106,8 +120,9 @@ export async function resolveRuntimeExportSource(options: {
     providerVersion: options.plugin.manifest.version,
     name: options.name,
     source: options.source,
-    sourcePath,
-    sourceDigest: await calculateFileDigest(sourcePath),
+    sourcePath: canonicalSource.sourceRealPath,
+    sourceDigest: await calculateFileDigest(canonicalSource.sourceRealPath),
+    canonicalSource,
     supportedPlatforms: resolveSupportedPlatforms(options.plugin.manifest),
     virtual: false,
   };
@@ -137,7 +152,7 @@ async function resolveCliVirtualExport(
       `Invalid @aw/cli runtime export: canonical skill frontmatter registry is missing from ${packageRoot}.`,
     );
   }
-  const sourcePath = await assertRegularFileWithoutSymlinks(
+  const canonicalSource = await resolveCanonicalRuntimeSourceIdentity(
     packageRoot,
     `./${path.relative(packageRoot, sourceCandidate).split(path.sep).join('/')}`,
     '@aw/cli runtime export "skill-frontmatter-capabilities"',
@@ -154,8 +169,9 @@ async function resolveCliVirtualExport(
     providerVersion,
     name: reference.export,
     source: './src/utils/skill-frontmatter-capabilities.json',
-    sourcePath,
-    sourceDigest: await calculateFileDigest(sourcePath),
+    sourcePath: canonicalSource.sourceRealPath,
+    sourceDigest: await calculateFileDigest(canonicalSource.sourceRealPath),
+    canonicalSource,
     supportedPlatforms: new Set<PlatformName>(['claude', 'codex']),
     virtual: true,
   };

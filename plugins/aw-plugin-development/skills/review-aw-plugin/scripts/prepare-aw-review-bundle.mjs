@@ -13,7 +13,8 @@ import {
 
 const execFileAsync = promisify(execFile);
 const scriptRoot = path.dirname(fileURLToPath(import.meta.url));
-const IGNORED_NAMES = new Set(['.DS_Store', '.git', 'node_modules']);
+const IGNORED_NAMES = new Set(['.git', 'node_modules', '.DS_Store']);
+const PRODUCTION_DIGEST_DOMAIN = 'aw-production-records-v1';
 
 function fail(message) {
   throw new Error(message);
@@ -123,14 +124,61 @@ function sha256(data) {
   return `sha256:${createHash('sha256').update(data).digest('hex')}`;
 }
 
-function portablePath(filePath) {
-  const relative = path.relative(process.cwd(), filePath);
-  return (relative || '.').split(path.sep).join('/');
+function comparePosixPaths(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function updateLengthPrefixed(hash, value) {
+  const bytes = typeof value === 'string' ? Buffer.from(value, 'utf8') : value;
+  const length = Buffer.allocUnsafe(8);
+  length.writeBigUInt64BE(BigInt(bytes.length));
+  hash.update(length);
+  hash.update(bytes);
+}
+
+function productionDigest(records) {
+  const hash = createHash('sha256');
+  updateLengthPrefixed(hash, PRODUCTION_DIGEST_DOMAIN);
+  for (const record of [...records].sort((left, right) =>
+    comparePosixPaths(left.path, right.path))) {
+    updateLengthPrefixed(hash, record.path);
+    updateLengthPrefixed(hash, record.mode);
+    updateLengthPrefixed(hash, createHash('sha256').update(record.content).digest());
+  }
+  return `sha256:${hash.digest('hex')}`;
+}
+
+function normalizedRegularFileMode(mode) {
+  return process.platform !== 'win32' && (mode & 0o111) !== 0 ? '100755' : '100644';
+}
+
+function isIgnoredProductionPath(relativePath) {
+  return relativePath.split(/[\\/]/u).includes('.DS_Store');
+}
+
+function artifactPath(repositoryRoot, filePath) {
+  const relative = path.relative(repositoryRoot, filePath);
+  if (
+    !relative
+    || relative === '..'
+    || relative.startsWith(`..${path.sep}`)
+    || path.isAbsolute(relative)
+  ) {
+    fail(`Artifact must be inside the repository root: ${filePath}`);
+  }
+  return relative.split(path.sep).join('/');
 }
 
 async function collectFiles(root) {
+  const rootLinkStat = await lstat(root);
+  if (rootLinkStat.isSymbolicLink()) fail(`Artifact cannot be a symlink: ${root}`);
   const rootStat = await stat(root);
-  if (rootStat.isFile()) return [{ absolutePath: root, relativePath: path.basename(root) }];
+  if (rootStat.isFile())
+    return [{
+      absolutePath: root,
+      relativePath: path.basename(root),
+      mode: normalizedRegularFileMode(rootStat.mode),
+    }];
   if (!rootStat.isDirectory()) fail(`Artifact is not a file or directory: ${root}`);
   const files = [];
   async function walk(directory, relativeDirectory = '') {
@@ -142,8 +190,14 @@ async function collectFiles(root) {
       const relativePath = path.join(relativeDirectory, entry.name);
       if (entry.isSymbolicLink()) fail(`Artifact tree cannot contain symlinks: ${relativePath}`);
       if (entry.isDirectory()) await walk(absolutePath, relativePath);
-      else if (entry.isFile())
-        files.push({ absolutePath, relativePath: relativePath.split(path.sep).join('/') });
+      else if (entry.isFile()) {
+        const fileStat = await stat(absolutePath);
+        files.push({
+          absolutePath,
+          relativePath: relativePath.split(path.sep).join('/'),
+          mode: normalizedRegularFileMode(fileStat.mode),
+        });
+      }
     }
   }
   await walk(root);
@@ -178,45 +232,104 @@ async function gitCurrentness(root) {
       encoding: 'utf8',
     });
     const repositoryRoot = repository.trim();
+    const canonicalRepositoryRoot = await realpath(repositoryRoot);
+    const sourceRoot = await realpath(root);
+    const rootPathspec = path.relative(canonicalRepositoryRoot, sourceRoot) || '.';
     const { stdout: statusOutput } = await execFileAsync(
       'git',
-      ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--', root],
+      [
+        'status',
+        '--porcelain=v1',
+        '-z',
+        '--no-renames',
+        '--untracked-files=all',
+        '--',
+        rootPathspec,
+      ],
       { cwd: repositoryRoot, encoding: 'utf8' },
     );
-    const dirtyPaths = new Set();
+    const dirtyPaths = new Map();
     for (const entry of statusOutput.split('\0')) {
       if (entry.length < 4 || entry[2] !== ' ') continue;
-      dirtyPaths.add(path.resolve(repositoryRoot, entry.slice(3)));
+      const status = entry.slice(0, 2);
+      dirtyPaths.set(path.resolve(canonicalRepositoryRoot, entry.slice(3)), status);
     }
-    return { repositoryRoot, dirtyPaths };
+    const { stdout: ignoredOutput } = await execFileAsync(
+      'git',
+      ['ls-files', '-z', '--others', '--ignored', '--exclude-standard', '--', rootPathspec],
+      { cwd: repositoryRoot, encoding: 'utf8' },
+    );
+    const ignoredPaths = new Set(
+      ignoredOutput
+        .split('\0')
+        .filter(Boolean)
+        .map((entry) => path.resolve(canonicalRepositoryRoot, entry)),
+    );
+    const { stdout: stagedOutput } = await execFileAsync(
+      'git',
+      ['ls-files', '--stage', '-z', '--', rootPathspec],
+      { cwd: repositoryRoot, encoding: 'utf8' },
+    );
+    const trackedModes = new Map();
+    for (const entry of stagedOutput.split('\0')) {
+      if (!entry) continue;
+      const separator = entry.indexOf('\t');
+      if (separator < 0) continue;
+      const [mode, , stage] = entry.slice(0, separator).split(' ');
+      if (stage !== '0') continue;
+      trackedModes.set(
+        path.resolve(canonicalRepositoryRoot, entry.slice(separator + 1)),
+        mode,
+      );
+    }
+    return {
+      repositoryRoot,
+      sourceRoot,
+      dirtyPaths,
+      ignoredPaths,
+      trackedModes,
+    };
   } catch {
-    return { repositoryRoot: null, dirtyPaths: null };
+    return {
+      repositoryRoot: null,
+      sourceRoot: null,
+      dirtyPaths: null,
+      ignoredPaths: null,
+      trackedModes: null,
+    };
   }
+}
+
+function dirtyStatusReason(status, role) {
+  if (status.includes('?')) return `untracked ${role} file`;
+  if (status.includes('D')) return `deleted ${role} file`;
+  if (status.includes('A')) return `added ${role} file`;
+  return `modified ${role} file`;
 }
 
 async function sourceDigest(roots) {
-  const hash = createHash('sha256');
-  for (const root of [...roots].sort((left, right) => left.name.localeCompare(right.name))) {
-    hash.update(root.name);
-    hash.update('\0');
+  const records = [];
+  for (const root of roots) {
     for (const file of await collectFiles(root.root)) {
       if (isPluginEvidenceArtifact(file.relativePath, root.skillRoots)) continue;
-      hash.update(file.relativePath);
-      hash.update('\0');
-      hash.update(await readFile(file.absolutePath));
-      hash.update('\0');
+      records.push({
+        path: `${root.name}/${file.relativePath}`,
+        mode: file.mode,
+        content: await readFile(file.absolutePath),
+      });
     }
   }
-  return `sha256:${hash.digest('hex')}`;
+  return productionDigest(records);
 }
 
-async function artifactEntries(root, role, owner, profile, currentness) {
+async function artifactEntries(root, role, owner, profile, currentness, repositoryRoot) {
   return Promise.all(
     (await collectFiles(root)).map(async (file) => ({
       role,
-      path: portablePath(file.absolutePath),
+      path: artifactPath(repositoryRoot, file.absolutePath),
       profile,
       digest: sha256(await readFile(file.absolutePath)),
+      mode: file.mode,
       owner,
       currentness,
     })),
@@ -259,27 +372,84 @@ async function main() {
   }
 
   const artifacts = [];
-  let targetGit = { repositoryRoot: null, dirtyPaths: null };
+  let targetGit = { repositoryRoot: null, dirtyPaths: null, ignoredPaths: null };
+  const productionDirtyReasons = [];
+  let sourceCurrentnessUnknown = false;
   for (const root of roots) {
     const git = await gitCurrentness(root.root);
     if (root.name === manifest.name) targetGit = git;
+    if (git.dirtyPaths === null) sourceCurrentnessUnknown = true;
+    if (git.dirtyPaths !== null) {
+      for (const [dirtyPath, status] of git.dirtyPaths) {
+        const relativePath = path.relative(git.sourceRoot, dirtyPath).split(path.sep).join('/');
+        if (
+          relativePath === '..'
+          || relativePath.startsWith('../')
+          || isIgnoredProductionPath(relativePath)
+          || isPluginEvidenceArtifact(relativePath, root.skillRoots)
+        ) continue;
+        productionDirtyReasons.push(
+          `${dirtyStatusReason(status, 'production source')}: ${path.resolve(root.root, relativePath)}`,
+        );
+      }
+    }
+    if (git.ignoredPaths !== null) {
+      for (const ignoredPath of git.ignoredPaths) {
+        const relativePath = path.relative(git.sourceRoot, ignoredPath).split(path.sep).join('/');
+        if (
+          relativePath === '..'
+          || relativePath.startsWith('../')
+          || isIgnoredProductionPath(relativePath)
+          || isPluginEvidenceArtifact(relativePath, root.skillRoots)
+        ) continue;
+        productionDirtyReasons.push(
+          `ignored production source file: ${path.resolve(root.root, relativePath)}`,
+        );
+      }
+    }
     for (const file of await collectFiles(root.root)) {
       const role = artifactRole(file.relativePath, root.skillRoots);
       const canonicalPath = await realpath(file.absolutePath);
+      const dirtyStatus = git.dirtyPaths?.get(canonicalPath);
+      const ignored = git.ignoredPaths?.has(canonicalPath);
+      const trackedMode = git.trackedModes?.get(canonicalPath);
+      if (trackedMode === '120000') {
+        fail(`Artifact tree cannot contain Git symlinks: ${file.relativePath}`);
+      }
+      const modeMismatchReason =
+        role !== 'evidence' &&
+        trackedMode !== undefined &&
+        ['100644', '100755'].includes(trackedMode) &&
+        trackedMode !== file.mode
+          ? `working mode ${file.mode} differs from Git index mode ${trackedMode}`
+          : null;
+      const currentness =
+        role === 'evidence'
+          ? 'historical'
+          : git.dirtyPaths === null
+            ? 'unknown'
+            : dirtyStatus || ignored || modeMismatchReason
+              ? 'dirty'
+              : 'current';
+      if (modeMismatchReason) {
+        productionDirtyReasons.push(
+          `${modeMismatchReason}: ${path.resolve(root.root, file.relativePath)}`,
+        );
+      }
       artifacts.push({
         role,
-        path: portablePath(file.absolutePath),
+        path: artifactPath(options.repoRoot, file.absolutePath),
         profile: role === 'project-profile' ? 'aw' : null,
         digest: sha256(await readFile(file.absolutePath)),
+        mode: file.mode,
         owner: root.name,
-        currentness:
-          role === 'evidence'
-            ? 'historical'
-            : git.dirtyPaths === null
-              ? 'unknown'
-              : git.dirtyPaths.has(canonicalPath)
-                ? 'dirty'
-                : 'current',
+        currentness,
+        ...(currentness === 'dirty'
+          ? {
+              currentnessReason: modeMismatchReason ??
+                (ignored ? `ignored ${role} file` : dirtyStatusReason(dirtyStatus, role)),
+            }
+          : {}),
       });
     }
   }
@@ -292,6 +462,7 @@ async function main() {
         manifest.name,
         final.profile,
         'unknown',
+        options.repoRoot,
       )),
     );
   }
@@ -303,7 +474,14 @@ async function main() {
   ]);
   for (const evidencePath of evidencePaths) {
     artifacts.push(
-      ...(await artifactEntries(evidencePath, 'evidence', manifest.name, null, 'unknown')),
+      ...(await artifactEntries(
+        evidencePath,
+        'evidence',
+        manifest.name,
+        null,
+        'unknown',
+        options.repoRoot,
+      )),
     );
   }
 
@@ -370,6 +548,15 @@ async function main() {
           name: manifest.name,
           profile: null,
           sourceDigest: pluginDigest,
+          currentness:
+            productionDirtyReasons.length > 0
+              ? 'dirty'
+              : sourceCurrentnessUnknown
+                ? 'unknown'
+                : 'current',
+          ...(productionDirtyReasons.length > 0
+            ? { dirtyReasons: [...new Set(productionDirtyReasons)].sort() }
+            : {}),
         },
         artifacts: artifacts.sort(
           (left, right) =>

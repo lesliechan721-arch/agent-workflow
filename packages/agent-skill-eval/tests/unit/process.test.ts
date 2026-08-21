@@ -6,9 +6,62 @@ import { describe, expect, it } from 'vitest'
 import {
   ProviderProcessCleanupError,
   runProviderProcess,
+  type ProcessLifecycleHooks,
 } from '../../dist/index.js'
 
 const PROVIDER_PROCESS_MARKER_ENV = 'AW_AGENT_SKILL_EVAL_PROCESS_MARKER'
+
+function baseRequest(root: string) {
+  return {
+    executable: process.execPath,
+    args: [] as string[],
+    cwd: root,
+    env: { ...process.env },
+    timeoutMs: 2_000,
+    maxBufferBytes: 1024,
+  }
+}
+
+function processIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function killProcess(pid: number | undefined): void {
+  if (!pid) return
+  try {
+    process.kill(pid, 'SIGKILL')
+  } catch {
+    // The process is already closed.
+  }
+}
+
+async function expectProcessDead(pid: number): Promise<void> {
+  const deadline = Date.now() + 2_000
+  while (Date.now() < deadline) {
+    if (!processIsAlive(pid)) return
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+  expect(processIsAlive(pid)).toBe(false)
+}
+
+const externalContainment = {
+  confirmed: true,
+  descendantCleanupGuaranteed: true,
+  readOnlySkillSnapshotGuaranteed: true,
+} as const
+
+function managedHooks(overrides: ProcessLifecycleHooks = {}): ProcessLifecycleHooks {
+  return {
+    externalContainment,
+    terminateProcessTree: async () => ({ confirmed: true }),
+    ...overrides,
+  }
+}
 
 async function waitForPid(pidPath: string): Promise<number> {
   const deadline = Date.now() + 2_000
@@ -24,295 +77,193 @@ async function waitForPid(pidPath: string): Promise<number> {
   throw new Error('provider did not record its detached descendant PID')
 }
 
-function processIsAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch {
-    return false
-  }
-}
-
-async function expectProcessDead(pid: number): Promise<void> {
-  const deadline = Date.now() + 2_000
-  while (Date.now() < deadline && processIsAlive(pid)) {
-    await new Promise((resolve) => setTimeout(resolve, 10))
-  }
-  expect(processIsAlive(pid)).toBe(false)
-}
-
-function cleanupProcess(pid: number | undefined): void {
-  if (!pid) return
-  try {
-    process.kill(pid, 'SIGKILL')
-  } catch {
-    // The production cleanup normally removed the process already.
-  }
-}
-
-function detachedDescendantScript(pidPath: string, behavior: 'complete' | 'wait' | 'max-buffer'): string {
-  return [
-    "const { spawn } = require('node:child_process')",
-    "const fs = require('node:fs')",
-    `const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {`,
-    '  detached: true,',
-    "  stdio: 'ignore',",
-    '  env: process.env,',
-    '})',
-    'child.unref()',
-    `fs.writeFileSync(${JSON.stringify(pidPath)}, String(child.pid))`,
-    ...(behavior === 'max-buffer'
-      ? ["process.stdout.write('x'.repeat(16 * 1024))"]
-      : []),
-    ...(behavior === 'complete'
-      ? []
-      : ['setInterval(() => {}, 1000)']),
-  ].join('\n')
-}
-
-function baseRequest(root: string) {
-  return {
-    executable: process.execPath,
-    args: [] as string[],
-    cwd: root,
-    env: { ...process.env },
-    timeoutMs: 2_000,
-    maxBufferBytes: 1024,
-  }
-}
-
-describe.skipIf(process.platform === 'win32')('provider process-tree cleanup', () => {
-  it('cleans a detached setsid descendant after normal completion', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'agent-skill-eval-process-'))
-    const pidPath = path.join(root, 'pid')
-    let descendantPid: number | undefined
-    try {
-      const result = await runProviderProcess({
-        ...baseRequest(root),
-        args: ['-e', detachedDescendantScript(pidPath, 'complete')],
-      })
-      descendantPid = await waitForPid(pidPath)
-      expect(result).toMatchObject({ exitCode: 0, terminationReason: 'complete' })
-      await expectProcessDead(descendantPid)
-    } finally {
-      cleanupProcess(descendantPid)
-      await rm(root, { recursive: true, force: true })
-    }
-  })
-
-  it('cleans a detached setsid descendant after timeout', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'agent-skill-eval-process-'))
-    const pidPath = path.join(root, 'pid')
-    let descendantPid: number | undefined
-    try {
-      const result = await runProviderProcess({
-        ...baseRequest(root),
-        args: ['-e', detachedDescendantScript(pidPath, 'wait')],
-        timeoutMs: 200,
-      })
-      descendantPid = await waitForPid(pidPath)
-      expect(result).toMatchObject({ timedOut: true, terminationReason: 'timeout' })
-      await expectProcessDead(descendantPid)
-    } finally {
-      cleanupProcess(descendantPid)
-      await rm(root, { recursive: true, force: true })
-    }
-  })
-
-  it('cleans a detached setsid descendant after abort', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'agent-skill-eval-process-'))
-    const pidPath = path.join(root, 'pid')
-    const controller = new AbortController()
-    let descendantPid: number | undefined
-    try {
-      const run = runProviderProcess({
-        ...baseRequest(root),
-        args: ['-e', detachedDescendantScript(pidPath, 'wait')],
-        signal: controller.signal,
-      })
-      descendantPid = await waitForPid(pidPath)
-      controller.abort()
-      const result = await run
-      expect(result).toMatchObject({ cancelled: true, terminationReason: 'abort' })
-      await expectProcessDead(descendantPid)
-    } finally {
-      controller.abort()
-      cleanupProcess(descendantPid)
-      await rm(root, { recursive: true, force: true })
-    }
-  })
-
-  it('cleans a detached setsid descendant after max-buffer termination', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'agent-skill-eval-process-'))
-    const pidPath = path.join(root, 'pid')
-    let descendantPid: number | undefined
-    try {
-      const result = await runProviderProcess({
-        ...baseRequest(root),
-        args: ['-e', detachedDescendantScript(pidPath, 'max-buffer')],
-      })
-      descendantPid = await waitForPid(pidPath)
-      expect(result).toMatchObject({ maxBufferExceeded: true, terminationReason: 'max-buffer' })
-      await expectProcessDead(descendantPid)
-    } finally {
-      cleanupProcess(descendantPid)
-      await rm(root, { recursive: true, force: true })
-    }
-  })
-
-  it('cleans a detached setsid descendant before reporting an external hook failure', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'agent-skill-eval-process-'))
-    const pidPath = path.join(root, 'pid')
-    let descendantPid: number | undefined
-    try {
-      await expect(runProviderProcess({
-        ...baseRequest(root),
-        args: ['-e', detachedDescendantScript(pidPath, 'complete')],
-      }, {
-        terminateProcessTree: async () => { throw new Error('external hook failed') },
-      })).rejects.toBeInstanceOf(ProviderProcessCleanupError)
-      descendantPid = await waitForPid(pidPath)
-      await expectProcessDead(descendantPid)
-    } finally {
-      cleanupProcess(descendantPid)
-      await rm(root, { recursive: true, force: true })
-    }
-  })
-
-  it('overwrites and scrubs the internal process marker', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'agent-skill-eval-process-'))
-    try {
-      const result = await runProviderProcess({
-        ...baseRequest(root),
-        env: {
-          ...process.env,
-          [PROVIDER_PROCESS_MARKER_ENV]: 'caller-controlled-marker',
-        },
-        args: [
-          '-e',
-          `process.stdout.write(process.env.${PROVIDER_PROCESS_MARKER_ENV});` +
-            `process.stderr.write(process.env.${PROVIDER_PROCESS_MARKER_ENV})`,
-        ],
-      })
-      expect(result.stdout).toBe('[redacted provider process marker]')
-      expect(result.stderr).toBe('[redacted provider process marker]')
-      expect(JSON.stringify(result)).not.toContain('caller-controlled-marker')
-
-      const truncated = await runProviderProcess({
-        ...baseRequest(root),
-        maxBufferBytes: 8,
-        args: ['-e', `process.stdout.write(process.env.${PROVIDER_PROCESS_MARKER_ENV})`],
-      })
-      expect(truncated.stdout).toBe('[redacted provider process marker]')
-      expect(truncated).toMatchObject({
-        maxBufferExceeded: true,
-        stdoutTruncated: true,
-      })
-    } finally {
-      await rm(root, { recursive: true, force: true })
-    }
-  })
-
-  it('scrubs the internal process marker from cleanup errors and their causes', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'agent-skill-eval-process-'))
-    const markerPath = path.join(root, 'marker')
-    try {
-      let thrown: unknown
-      try {
-        await runProviderProcess({
-          ...baseRequest(root),
-          args: [
-            '-e',
-            `require('node:fs').writeFileSync(${JSON.stringify(markerPath)}, ` +
-              `process.env.${PROVIDER_PROCESS_MARKER_ENV})`,
-          ],
-        }, {
-          terminateProcessTree: async () => {
-            throw new Error(await readFile(markerPath, 'utf8'))
-          },
-        })
-      } catch (error) {
-        thrown = error
-      }
-      const marker = await readFile(markerPath, 'utf8')
-      expect(thrown).toBeInstanceOf(ProviderProcessCleanupError)
-      expect((thrown as Error).message).not.toContain(marker)
-      expect(((thrown as Error).cause as Error).message).not.toContain(marker)
-      expect((thrown as Error).message).toContain('[redacted provider process marker]')
-    } finally {
-      await rm(root, { recursive: true, force: true })
-    }
-  })
-
-  it('fails closed before starting the provider when POSIX inspection is unavailable', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'agent-skill-eval-process-'))
+describe('managed provider containment gate', () => {
+  it('fails closed before spawn without confirmed external containment', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'agent-skill-eval-contained-'))
     const startedPath = path.join(root, 'started')
     try {
       await expect(runProviderProcess({
         ...baseRequest(root),
         args: ['-e', `require('node:fs').writeFileSync(${JSON.stringify(startedPath)}, 'yes')`],
-      }, {}, {
-        processTree: {
-          platform: 'linux',
-          execFile: (_command, _args, _options, callback) => {
-            callback(new Error('ps unavailable'), '')
-          },
-        },
-      })).rejects.toThrow('POSIX process identity lookup failed')
+      })).rejects.toThrow('requires an explicitly confirmed external containment hook')
       await expect(stat(startedPath)).rejects.toThrow()
     } finally {
       await rm(root, { recursive: true, force: true })
     }
   })
-})
 
-describe('Windows provider cleanup hook contract', () => {
-  it('keeps the JavaScript API available only with confirmed external evidence', async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'agent-skill-eval-windows-hook-'))
+  it('accepts a caller-confirmed external containment contract', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'agent-skill-eval-contained-'))
     try {
-      const request = {
+      const result = await runProviderProcess({
         ...baseRequest(root),
-        args: ['-e', 'process.exit(0)'],
-      }
-      await expect(runProviderProcess(request, {
-        terminateProcessTree: async () => ({ confirmed: true }),
-      }, {
-        processTree: { platform: 'win32' },
-      })).resolves.toMatchObject({ exitCode: 0, terminationReason: 'complete' })
-
-      await expect(runProviderProcess(request, {
-        terminateProcessTree: async () => undefined,
-      }, {
-        processTree: { platform: 'win32' },
-      })).rejects.toThrow('did not return confirmed evidence')
+        args: ['-e', 'process.stdout.write("ok")'],
+      }, managedHooks())
+      expect(result).toMatchObject({
+        stdout: 'ok',
+        exitCode: 0,
+        descendantCleanupGuaranteed: true,
+      })
     } finally {
       await rm(root, { recursive: true, force: true })
     }
   })
 })
 
-describe('explicit unmanaged provider containment', () => {
-  it('runs without process inspection and reports that descendant cleanup is not guaranteed', async () => {
+describe('shared provider process behavior', () => {
+  it('reports spawn errors without claiming a successful process', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'agent-skill-eval-spawn-'))
+    try {
+      const result = await runProviderProcess({
+        ...baseRequest(root),
+        executable: path.join(root, 'missing-provider'),
+      }, managedHooks())
+      expect(result).toMatchObject({ exitCode: null, terminationReason: null })
+      expect(result.stderr).toContain('ENOENT')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it.each([
+    { name: 'success', script: 'process.stdout.write("ok")', exitCode: 0, stdout: 'ok', stderr: '' },
+    { name: 'failure', script: 'process.stderr.write("bad"); process.exit(7)', exitCode: 7, stdout: '', stderr: 'bad' },
+  ])('captures $name', async ({ script, exitCode, stdout, stderr }) => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'agent-skill-eval-capture-'))
+    try {
+      const result = await runProviderProcess({
+        ...baseRequest(root),
+        args: ['-e', script],
+      }, managedHooks())
+      expect(result.exitCode).toBe(exitCode)
+      expect(result.stdout).toBe(stdout)
+      expect(result.stderr).toBe(stderr)
+      expect(result.descendantCleanupGuaranteed).toBe(true)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it.each([
+    { reason: 'timeout', expected: { timedOut: true }, configure: (request: ReturnType<typeof baseRequest>) => ({ ...request, timeoutMs: 25 }) },
+    { reason: 'abort', expected: { cancelled: true }, configure: (request: ReturnType<typeof baseRequest>, signal: AbortSignal) => ({ ...request, signal }) },
+    { reason: 'max-buffer', expected: { maxBufferExceeded: true, stdoutTruncated: true }, configure: (request: ReturnType<typeof baseRequest>) => ({ ...request, maxBufferBytes: 4 }) },
+  ])('kills the direct child after $reason', async ({ reason, expected, configure }) => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'agent-skill-eval-stop-'))
+    const controller = new AbortController()
+    let providerPid = 0
+    try {
+      const request = configure({
+        ...baseRequest(root),
+        args: reason === 'max-buffer'
+          ? ['-e', 'process.stdout.write("overflow"); setInterval(() => {}, 1000)']
+          : ['-e', 'setInterval(() => {}, 1000)'],
+      }, controller.signal)
+      const running = runProviderProcess(request, managedHooks({
+        onSpawn: ({ pid }) => {
+          providerPid = pid
+          if (reason === 'abort') controller.abort()
+        },
+      }))
+      const result = await running
+      expect(result.terminationReason).toBe(reason)
+      expect(result).toMatchObject(expected)
+      await expectProcessDead(providerPid)
+    } finally {
+      killProcess(providerPid)
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it.each([
+    { name: 'rejects', terminate: async () => { throw new Error('cleanup rejected') } },
+    { name: 'does not settle', terminate: async () => await new Promise<never>(() => undefined) },
+  ])('kills the direct child before returning when cleanup $name', async ({ terminate }) => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'agent-skill-eval-cleanup-'))
+    let providerPid = 0
+    try {
+      await expect(runProviderProcess({
+        ...baseRequest(root),
+        args: ['-e', 'setInterval(() => {}, 1000)'],
+        timeoutMs: 25,
+      }, managedHooks({
+        onSpawn: ({ pid }) => { providerPid = pid },
+        terminateProcessTree: terminate,
+      }))).rejects.toBeInstanceOf(ProviderProcessCleanupError)
+      await expectProcessDead(providerPid)
+    } finally {
+      killProcess(providerPid)
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('kills the direct child before returning an onSpawn failure', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'agent-skill-eval-spawn-hook-'))
+    let providerPid = 0
+    try {
+      await expect(runProviderProcess({
+        ...baseRequest(root),
+        args: ['-e', 'setInterval(() => {}, 1000)'],
+      }, managedHooks({
+        onSpawn: ({ pid }) => {
+          providerPid = pid
+          throw new Error('onSpawn failed')
+        },
+      }))).rejects.toThrow('onSpawn failed')
+      await expectProcessDead(providerPid)
+    } finally {
+      killProcess(providerPid)
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('runs an observed AW-native command without portable containment evidence', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'agent-skill-eval-observed-'))
+    let observedPid = 0
+    try {
+      const result = await runProviderProcess({
+        ...baseRequest(root),
+        args: ['-e', 'process.stdout.write("native")'],
+      }, {
+        onSpawn: ({ pid }) => { observedPid = pid },
+        terminateProcessTree: async () => ({ confirmed: true }),
+      }, { containment: 'observed' })
+      expect(observedPid).toBeGreaterThan(0)
+      expect(result).toMatchObject({
+        stdout: 'native',
+        exitCode: 0,
+        descendantCleanupGuaranteed: false,
+        containmentLimitation: expect.stringContaining('non-portable'),
+      })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('explicit unmanaged-confirmed provider mode', () => {
+  it('does not claim descendant cleanup and does not run process inspection', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'agent-skill-eval-unmanaged-'))
     const pidPath = path.join(root, 'pid')
     let descendantPid: number | undefined
     let inspectionAttempted = false
     try {
+      const script = [
+        "const { spawn } = require('node:child_process')",
+        "const fs = require('node:fs')",
+        "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' })",
+        'child.unref()',
+        `fs.writeFileSync(${JSON.stringify(pidPath)}, String(child.pid))`,
+        `process.stdout.write(String(process.env.${PROVIDER_PROCESS_MARKER_ENV}))`,
+      ].join('\n')
       const result = await runProviderProcess({
         ...baseRequest(root),
-        env: {
-          ...process.env,
-          [PROVIDER_PROCESS_MARKER_ENV]: 'caller-controlled-marker',
-        },
-        args: [
-          '-e',
-          `${detachedDescendantScript(pidPath, 'complete')}\n` +
-            `process.stdout.write(String(process.env.${PROVIDER_PROCESS_MARKER_ENV}))`,
-        ],
+        env: { ...process.env, [PROVIDER_PROCESS_MARKER_ENV]: 'caller-marker' },
+        args: ['-e', script],
       }, {}, {
         containment: 'unmanaged-confirmed',
         processTree: {
-          platform: 'linux',
+          platform: process.platform,
           execFile: () => {
             inspectionAttempted = true
             throw new Error('process inspection must not run')
@@ -328,22 +279,19 @@ describe('explicit unmanaged provider containment', () => {
       expect(inspectionAttempted).toBe(false)
       expect(processIsAlive(descendantPid)).toBe(true)
     } finally {
-      cleanupProcess(descendantPid)
+      killProcess(descendantPid)
       await rm(root, { recursive: true, force: true })
     }
   })
 
-  it('terminates only the direct child on timeout without requiring a Windows hook', async () => {
+  it('terminates the direct child on timeout without claiming descendant cleanup', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'agent-skill-eval-unmanaged-'))
     try {
       const result = await runProviderProcess({
         ...baseRequest(root),
         args: ['-e', 'setInterval(() => {}, 1000)'],
         timeoutMs: 50,
-      }, {}, {
-        containment: 'unmanaged-confirmed',
-        processTree: { platform: 'win32' },
-      })
+      }, {}, { containment: 'unmanaged-confirmed' })
       expect(result).toMatchObject({
         timedOut: true,
         descendantCleanupGuaranteed: false,

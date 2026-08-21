@@ -28,6 +28,7 @@ import {
   createPluginEvalRunLayout,
   type EvalRunLayout,
 } from '../../scripts/eval-run-layout.js';
+import { createEnvironmentDigest } from '../../scripts/skill-reporting.js';
 import { resetCodexEvalSignalShutdownForTests } from '../../scripts/codex-eval-runtime-config.js';
 import {
   assertProcessTreeInspectionAvailable,
@@ -413,7 +414,7 @@ describe('plugin eval runner', () => {
     expect(stdout).toContain('--execution-plan');
   });
 
-  it('runs a portable execution plan through the shared engine and validates its bundle', async () => {
+  it('runs a portable execution plan through the production bridge without test-only containment', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-portable-eval-plan-'));
     tempDirs.push(root);
     registerCurrentTestWritableStateRoot(root);
@@ -521,7 +522,91 @@ describe('plugin eval runner', () => {
       schemaVersion: 2,
       producer: 'run-agent-skill-evals',
       aggregate: { runs: 1, completed: 1 },
+      evidenceLevel: 'executed',
+      limitations: expect.arrayContaining([
+        expect.stringContaining('does not guarantee descendant cleanup'),
+      ]),
     });
+  });
+
+  it('persists the observed command execution mode through the complete production run', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-eval-observed-'));
+    const outputRoot = path.join(root, 'output');
+    tempDirs.push(root);
+    await writeCommandPlugin(root, {
+      name: 'observed-demo',
+      script: [
+        "import { mkdir, writeFile } from 'node:fs/promises';",
+        "import path from 'node:path';",
+        "const output = process.argv[process.argv.indexOf('--output') + 1];",
+        "await mkdir(path.dirname(output), { recursive: true });",
+        "await writeFile(output, JSON.stringify({ complete: true, passed: true, summary: {} }));",
+      ].join('\n'),
+      defaultRuns: 1,
+      perRunTimeoutMs: 1_000,
+      suiteTimeoutMs: 2_000,
+      supports: ['codexBin'],
+    });
+    registerCurrentTestReadonlyFixtureRoot(root);
+    registerCurrentTestWritableStateRoot(outputRoot);
+    let stdout = '';
+    let stderr = '';
+
+    const exitCode = await runPluginEvals([
+      'observed-demo',
+      '--skill',
+      'observed-demo',
+      '--no-inherit-codex-config',
+      '--codex-bin',
+      process.execPath,
+    ], {
+      repoRoot: root,
+      env: { ...process.env, CODEX_PERMISSION_PROFILE: undefined },
+      stdout: (text) => { stdout += text; },
+      stderr: (text) => { stderr += text; },
+      createRunLayout: testRunLayoutFactory(outputRoot),
+    });
+
+    expect(exitCode, stderr).toBe(0);
+    const result = JSON.parse(stdout);
+    const expectedProcessManagement = {
+      mode: 'observed',
+      inspectionAvailable: true,
+      userAcknowledged: false,
+      descendantCleanupGuaranteed: false,
+      limitation: expect.stringContaining('does not guarantee descendant cleanup'),
+    };
+    expect(result.bundle.processManagement).toMatchObject(expectedProcessManagement);
+    const reportRoot = path.resolve(root, result.reportDir);
+    await expect(fs.readJson(path.join(reportRoot, 'run.json'))).resolves.toMatchObject({
+      processManagement: expectedProcessManagement,
+    });
+    await expect(fs.readJson(path.join(reportRoot, 'raw', 'evaluation.json')))
+      .resolves.toMatchObject({ processManagement: expectedProcessManagement });
+    await expect(fs.readJson(path.join(reportRoot, 'summary.json'))).resolves.toMatchObject({
+      processManagement: expectedProcessManagement,
+    });
+    const batch = await fs.readJson(path.join(
+      outputRoot,
+      'observed-demo',
+      'observed-demo',
+      result.batchId,
+      'batch.json',
+    ));
+    const codexVersion = (await execFileAsync(process.execPath, ['--version'])).stdout.trim();
+    expect(batch.modelEnvironmentDigest).toBe(createEnvironmentDigest({
+      model: 'gpt-5.6-luna',
+      modelProvider: 'openai',
+      codexConfigDigest: result.bundle.codexConfigDigest,
+      codexVersion,
+      processManagement: {
+        mode: 'observed',
+        inspectionAvailable: true,
+        userAcknowledged: false,
+        descendantCleanupGuaranteed: false,
+        limitation: result.bundle.processManagement.limitation,
+      },
+    }));
   });
 
   it('rejects plugin path traversal before resolving a manifest', async () => {
@@ -1773,6 +1858,11 @@ describe('plugin eval runner', () => {
       expect(result.stdout).toBe('[process-tree-id]');
       expect(result.stderr).toBe('[process-tree-id]');
       expect(renderedStderr.trim()).toBe('[process-tree-id]');
+      expect(result).toMatchObject({
+        exitCode: 0,
+        descendantCleanupGuaranteed: false,
+        containmentLimitation: expect.stringContaining('non-portable'),
+      });
     },
   );
 

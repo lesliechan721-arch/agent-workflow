@@ -10,13 +10,18 @@ export const PLUGIN_EVAL_CASE_SCHEMA_VERSION = 1 as const;
 export type PluginEvalSplit = 'train' | 'validation' | 'sanity' | 'all';
 export type PluginEvalOutcome = 'passed' | 'failed' | 'needs_review' | 'incomplete';
 export type PluginEvalIsolation = 'standard' | 'strict';
-export type PluginEvalProcessMode = 'managed' | 'unmanaged-confirmed' | 'not-applicable';
+export type PluginEvalProcessMode =
+  | 'managed'
+  | 'observed'
+  | 'unmanaged-confirmed'
+  | 'not-applicable';
 
 export interface PluginEvalProcessManagementEvidence {
   mode: PluginEvalProcessMode;
   inspectionAvailable: boolean;
   userAcknowledged: boolean;
   descendantCleanupGuaranteed: boolean;
+  limitation?: string;
   diagnostic?: string;
 }
 

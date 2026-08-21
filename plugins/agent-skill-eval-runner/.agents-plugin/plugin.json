@@ -1,6 +1,6 @@
 {
   "name": "agent-skill-eval-runner",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Manually orchestrate independently audited Agent Skill eval plans through the shared aw-skill-eval CLI and hand evidence to result triage.",
   "compatibility": { "aw": { "minVersion": "0.0.0" } },
   "skills": "./skills",

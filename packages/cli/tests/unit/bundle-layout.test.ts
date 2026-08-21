@@ -194,6 +194,43 @@ afterEach(async () => {
 });
 
 describe('bundle layout validation', () => {
+  it('omits .DS_Store path segments from the plugin bundle but keeps other hidden files', async () => {
+    const repoRoot = await makeTempRepo();
+    const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
+    await fs.outputFile(path.join(pluginRoot, '.DS_Store'), 'finder metadata\n');
+    await fs.outputFile(
+      path.join(pluginRoot, 'skills', 'commit', 'references', '.DS_Store', 'metadata'),
+      'nested finder metadata\n',
+    );
+    await fs.outputFile(
+      path.join(pluginRoot, 'skills', 'commit', '.runtime-hidden'),
+      'hidden production file\n',
+    );
+
+    const embeddedRoot = await createSyntheticEmbeddedRoot(repoRoot);
+    tempDirs.push(embeddedRoot);
+    const bundledPluginRoot = path.join(embeddedRoot, 'plugins', 'git-commit');
+    const bundledFiles = await fs.readdir(bundledPluginRoot);
+    expect(bundledFiles).not.toContain('.DS_Store');
+    for (const platform of ['claude', 'codex']) {
+      await expect(fs.pathExists(path.join(
+        bundledPluginRoot,
+        platform,
+        'skills',
+        'commit',
+        'references',
+        '.DS_Store',
+      ))).resolves.toBe(false);
+      await expect(fs.readFile(path.join(
+        bundledPluginRoot,
+        platform,
+        'skills',
+        'commit',
+        '.runtime-hidden',
+      ), 'utf8')).resolves.toBe('hidden production file\n');
+    }
+  });
+
   it('accepts platform-filtered marketplaces that match supported plugin sets', async () => {
     const { embeddedRoot } = await createEmbeddedRootFromFixture((manifest) => {
       manifest.marketplace.policy.products = ['CODEX'];
@@ -1352,6 +1389,33 @@ describe('runtime Skill resource closure', () => {
     await expect(validateRuntimeSkillClosure(skillRoot)).rejects.toThrow(
       'skill "demo-skill" markdown-link target "references/missing.md"',
     );
+  });
+
+  it.each([
+    ['root file', '[policy](POLICY.md)', 'POLICY.md'],
+    ['nested file', '[guide](sub/guide.md)', 'sub/guide.md'],
+  ])('rejects a missing ordinary relative Markdown %s', async (
+    _name,
+    content,
+    lexicalTarget,
+  ) => {
+    const skillRoot = await createRuntimeSkill(`${content}\n`);
+
+    await expect(validateRuntimeSkillClosure(skillRoot)).rejects.toThrow(
+      `skill "demo-skill" markdown-link target ${JSON.stringify(lexicalTarget)}`,
+    );
+  });
+
+  it('accepts existing ordinary relative Markdown files', async () => {
+    const skillRoot = await createRuntimeSkill(
+      '[policy](POLICY.md)\n[guide](sub/guide.md)\n',
+      {
+        'POLICY.md': 'policy\n',
+        'sub/guide.md': 'guide\n',
+      },
+    );
+
+    await expect(validateRuntimeSkillClosure(skillRoot)).resolves.toBeUndefined();
   });
 
   it('rejects missing providers referenced by inline commands', async () => {

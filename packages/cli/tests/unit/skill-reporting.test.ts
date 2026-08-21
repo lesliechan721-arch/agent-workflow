@@ -1495,9 +1495,19 @@ describe('Skill report batches', () => {
       path.join(pluginRoot, 'skills', 'demo-skill', 'evals', 'cases.json'),
       '{}\n',
     );
+    await fs.outputFile(path.join(pluginRoot, '.DS_Store'), 'finder metadata\n');
+    await fs.outputFile(
+      path.join(pluginRoot, 'skills', 'demo-skill', 'references', '.DS_Store', 'nested'),
+      'finder metadata\n',
+    );
     await expect(computeAuthorSourceDigest([
       { name: 'demo-plugin', root: pluginRoot },
     ])).resolves.toBe(before);
+    await fs.outputFile(path.join(pluginRoot, '.production-hidden'), 'hidden runtime\n');
+    await expect(computeAuthorSourceDigest([
+      { name: 'demo-plugin', root: pluginRoot },
+    ])).resolves.not.toBe(before);
+    await fs.remove(path.join(pluginRoot, '.production-hidden'));
     const readme = await fs.readFile(readmePath, 'utf8');
     await fs.writeFile(
       readmePath,
@@ -1515,5 +1525,30 @@ describe('Skill report batches', () => {
     await expect(computeAuthorSourceDigest([
       { name: 'demo-plugin', root: pluginRoot },
     ])).resolves.not.toBe(changed);
+  });
+
+  it('does not collide when binary content encodes a following legacy record', async () => {
+    const repoRoot = await makeRepo();
+    const singleRecord = path.join(repoRoot, 'single-record');
+    const twoRecords = path.join(repoRoot, 'two-records');
+    await fs.outputFile(
+      path.join(singleRecord, 'a'),
+      Buffer.concat([
+        Buffer.from('payload'),
+        Buffer.from([0]),
+        Buffer.from('b'),
+        Buffer.from([0]),
+        Buffer.from('100644'),
+        Buffer.from([0]),
+        Buffer.from('tail'),
+      ]),
+    );
+    await fs.outputFile(path.join(twoRecords, 'a'), 'payload');
+    await fs.outputFile(path.join(twoRecords, 'b'), 'tail');
+
+    await expect(computeAuthorSourceDigest([{ name: 'fixture', root: singleRecord }]))
+      .resolves.not.toBe(
+        await computeAuthorSourceDigest([{ name: 'fixture', root: twoRecords }]),
+      );
   });
 });

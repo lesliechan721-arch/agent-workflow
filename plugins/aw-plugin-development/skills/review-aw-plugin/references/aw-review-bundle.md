@@ -14,11 +14,21 @@ node scripts/prepare-aw-review-bundle.mjs <plugin-root> \
 ```
 
 Artifact roles are `source`, `final`, `evidence`, and `project-profile`. Every artifact records
-path, profile, digest, currentness and owner.
+its canonical POSIX path relative to `environment.repositoryRoot`, normalized regular-file mode,
+content digest, profile, currentness and owner. Production source identity binds path, mode and
+content SHA-256 in a versioned, length-prefixed record stream. Records use one global POSIX path
+sort before hashing. `target.currentness` is required and aggregates production artifacts. Git
+status, ignored production files, and index/worktree mode differences must match artifact reasons
+and target dirty reasons; when Git cannot prove currentness, the value is `unknown`. Any path
+segment with basename `.DS_Store` is excluded from the artifact set, digest, and currentness;
+other hidden production files use the normal production rules. Ignored direct Skill Eval/report evidence
+remains historical and does not dirty production source.
 
 `providedStages` records only completed stages. Each result file must exist inside the handoff root
 and pass `validate-review-input-bundle.mjs`; a non-empty path or final artifact does not prove
-review completion.
+review completion. An `eval-result-triage` stage must bind exactly one `eval-execution` stage by
+target Skill, corpus, preflight audit, plan and complete result digest. Orphan, stale and reused
+triage evidence is invalid.
 
 After plugin-level evidence is prepared, use `prepare-aw-review-targets.mjs` to create one
 deterministic generic review target per source Skill and materialized profile.

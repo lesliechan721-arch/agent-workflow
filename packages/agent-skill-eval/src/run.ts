@@ -3,13 +3,22 @@ import { randomUUID } from 'node:crypto'
 import { lstat, mkdir, open, readFile, realpath, rename, rm, stat, unlink, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import process from 'node:process'
-import { isPathInside, sha256, stable, toPosixRelative } from './common.js'
+import { isPathInside, sha256, toPosixRelative } from './common.js'
 import { comparisonAggregate, validateRunBundle } from './bundle.js'
-import { casesFrom, promptOf, validateExecutionPlan } from './plan.js'
-import type { EvalCase, EvalConfiguration, EvalExecutionPlan } from './plan.js'
-import { ProviderProcessCleanupError, runProviderProcess } from './process.js'
+import { captureAndValidateExecutionPlan, promptOf } from './plan.js'
+import type { CapturedPlanFile, EvalCase, EvalConfiguration, EvalExecutionPlan } from './plan.js'
+import { hasCoreProcessReceipt, ProviderProcessCleanupError, runProviderProcess } from './process.js'
+import {
+  observeProcessTree,
+  terminateProcessTree,
+  type ProcessTreeObservation,
+} from './process-tree.js'
 import { assertSafeOutputPath } from './output-path.js'
-import { computeSkillDigest, createRuntimeSkillSnapshot } from './runtime-skill.js'
+import {
+  computeSkillDigest,
+  materializeCapturedRuntimeSkill,
+  type CapturedRuntimeSkill,
+} from './runtime-skill.js'
 import type {
   Digest,
   ProcessResult,
@@ -18,8 +27,43 @@ import type {
   RuntimeCapabilities,
 } from './types.js'
 
+const OBSERVED_PROCESS_LIMITATION =
+  'Portable process observation does not guarantee descendant cleanup; comparative evidence is disabled.'
+
+function hasConfirmedExternalContainment(options: RunExecutionPlanOptions): boolean {
+  const containment = options.processHooks?.externalContainment
+  return containment?.confirmed === true &&
+    containment.descendantCleanupGuaranteed === true &&
+    containment.readOnlySkillSnapshotGuaranteed === true &&
+    options.processHooks?.terminateProcessTree !== undefined
+}
+
+function createObservedProcessHooks(): NonNullable<RunExecutionPlanOptions['processHooks']> {
+  let observation: ProcessTreeObservation | undefined
+  return {
+    onSpawn: ({ pid }) => {
+      observation = observeProcessTree(pid, undefined)
+    },
+    terminateProcessTree: async ({ pid }) => {
+      await terminateProcessTree(
+        pid,
+        (signal) => {
+          try {
+            process.kill(pid, signal)
+          } catch {
+            // The direct child can already be closed.
+          }
+        },
+        {},
+        { observation },
+      )
+      return { confirmed: true }
+    },
+  }
+}
+
 interface SkillSource {
-  root: string | null
+  captured: CapturedRuntimeSkill | null
   digest: Digest | null
 }
 
@@ -34,35 +78,12 @@ interface ProviderOutput {
   artifacts?: ProviderArtifactOutput[]
 }
 
-interface BoundFileFingerprint {
-  label: string
-  requestedPath: string
-  canonicalPath: string
-  digest: Digest
-  bytes: Buffer
-}
-
 const artifactRoles = new Set(['trace', 'report', 'output', 'grading', 'other'])
 
 class RunnerOwnedOutputError extends Error {}
 
-async function captureBoundFile(label: string, requestedPath: string): Promise<BoundFileFingerprint> {
-  const info = await lstat(requestedPath)
-  if (info.isSymbolicLink() || !info.isFile())
-    throw new Error(`Bound Eval input must be a regular non-symlink file: ${label}`)
-  const canonicalPath = await realpath(requestedPath)
-  const bytes = await readFile(canonicalPath)
-  return {
-    label,
-    requestedPath,
-    canonicalPath,
-    digest: sha256(bytes),
-    bytes,
-  }
-}
-
 async function assertBoundInputsUnchanged(
-  files: BoundFileFingerprint[],
+  files: CapturedPlanFile[],
   skills: Map<string, SkillSource>,
 ): Promise<void> {
   for (const file of files) {
@@ -80,15 +101,30 @@ async function assertBoundInputsUnchanged(
     }
   }
   for (const [configurationId, source] of skills) {
-    if (!source.root) continue
+    if (!source.captured) continue
     try {
-      if (await computeSkillDigest(source.root) !== source.digest) throw new Error('digest changed')
+      if (await computeSkillDigest(source.captured.sourceRoot) !== source.digest) throw new Error('digest changed')
     } catch (error) {
       throw new Error(
         `Bound Eval input changed during execution: ${configurationId} Skill: ${(error as Error).message}`,
         { cause: error },
       )
     }
+  }
+}
+
+function assertBoundInputsOutsideOutputRoot(
+  outputRoot: string,
+  files: CapturedPlanFile[],
+  skills: Map<string, SkillSource>,
+): void {
+  for (const file of files) {
+    if (isPathInside(outputRoot, file.canonicalPath))
+      throw new Error(`Bound Eval input must not be inside outputRoot: ${file.label}`)
+  }
+  for (const [configurationId, source] of skills) {
+    if (source.captured && isPathInside(outputRoot, source.captured.sourceRoot))
+      throw new Error(`Bound Eval input must not be inside outputRoot: ${configurationId} Skill`)
   }
 }
 
@@ -262,6 +298,7 @@ async function runOne(input: {
   runIndex: number
   options: RunExecutionPlanOptions
   executionLimitations: string[]
+  beforeRunDirectoryReset: () => Promise<void>
 }): Promise<import('./bundle.js').EvalRun> {
   const { plan, base, skillSource, evalCase, configuration, runIndex, options, executionLimitations } = input
   const caseId = String(evalCase.id)
@@ -270,12 +307,21 @@ async function runOne(input: {
   if (!isPathInside(outputRoot, runDirectory)) throw new Error('run directory leaves outputRoot')
   await assertSafeOutputPath(base, outputRoot)
   await assertSafeOutputPath(base, runDirectory)
+  await input.beforeRunDirectoryReset()
   await rm(runDirectory, { recursive: true, force: true })
   await mkdir(runDirectory, { recursive: true })
   await assertSafeOutputPath(base, runDirectory)
-  const skillRoot = skillSource.root
-  const skillSnapshot = skillRoot ? path.join(runDirectory, 'skill') : null
-  if (skillRoot && skillSnapshot) await createRuntimeSkillSnapshot(skillRoot, skillSnapshot)
+  let skillSnapshot: string | null = null
+  if (skillSource.captured) {
+    const snapshot = await materializeCapturedRuntimeSkill(
+      skillSource.captured,
+      path.join(runDirectory, 'skill'),
+    )
+    if (snapshot.digest !== skillSource.digest) {
+      throw new Error('Runtime Skill snapshot digest does not match the bound Skill digest')
+    }
+    skillSnapshot = snapshot.root
+  }
   const casePath = path.join(runDirectory, 'case.json')
   await writeFile(casePath, `${JSON.stringify(evalCase, null, 2)}\n`, 'utf8')
   const replacements = {
@@ -305,15 +351,23 @@ async function runOne(input: {
   }
   const started = Date.now()
   let result: ProcessResult
+  if (options.processHooks && !hasConfirmedExternalContainment(options)) {
+    throw new Error(
+      'Portable Eval execution requires explicitly confirmed external containment with descendant cleanup and read-only Skill snapshots.',
+    )
+  }
+  const externallyContained = hasConfirmedExternalContainment(options)
+  const processHooks = externallyContained ? options.processHooks : createObservedProcessHooks()
+  const snapshotDigestBefore = skillSnapshot === null ? null : await computeSkillDigest(skillSnapshot)
   try {
-    result = await (options.processRunner ?? runProviderProcess)({
+    result = await runProviderProcess({
       executable,
       args: argv,
       cwd: plan.provider.cwd ? path.resolve(base, plan.provider.cwd) : runDirectory,
       env,
       timeoutMs: plan.timeoutMs,
       maxBufferBytes: 20 * 1024 * 1024,
-    }, options.processHooks)
+    }, processHooks, { containment: externallyContained ? 'managed' : 'observed' })
   } catch (error) {
     if (error instanceof ProviderProcessCleanupError) throw error
     result = {
@@ -327,8 +381,17 @@ async function runOne(input: {
       maxBufferExceeded: false,
       stdoutTruncated: false,
       stderrTruncated: false,
-      descendantCleanupGuaranteed: true,
+      descendantCleanupGuaranteed: false,
     }
+  }
+  if (skillSnapshot !== null && await computeSkillDigest(skillSnapshot) !== snapshotDigestBefore) {
+    throw new Error('Provider modified the captured Runtime Skill snapshot')
+  }
+  if (!hasCoreProcessReceipt(result)) {
+    throw new Error('Provider result does not contain a core-issued process receipt')
+  }
+  if (!result.descendantCleanupGuaranteed) {
+    executionLimitations.push(result.containmentLimitation ?? OBSERVED_PROCESS_LIMITATION)
   }
   let status: import('./bundle.js').EvalRun['status'] = result.timedOut
     ? 'timeout'
@@ -354,7 +417,12 @@ async function runOne(input: {
     const parsed = JSON.parse(result.stdout.trim()) as ProviderOutput
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('provider stdout must be a JSON object')
     usage = parsed.usage && typeof parsed.usage === 'object' && !Array.isArray(parsed.usage) ? parsed.usage : null
-    grading = gradingOf(parsed.grading)
+    grading = result.descendantCleanupGuaranteed ? gradingOf(parsed.grading) : null
+    if (!result.descendantCleanupGuaranteed && parsed.grading !== undefined) {
+      executionLimitations.push(
+        `Run ${caseId}/${configuration.id}/${runIndex}: provider grading was not accepted because descendant cleanup is not guaranteed.`,
+      )
+    }
     artifacts = await providerArtifacts(parsed, runDirectory, outputRoot)
     if (artifacts.some((entry) => entry.role === 'grading'))
       throw new Error('provider artifacts must not declare the runner-owned grading role')
@@ -437,15 +505,16 @@ async function runOne(input: {
 export function getRuntimeCapabilities(platform: NodeJS.Platform = process.platform): RuntimeCapabilities {
   const require = createRequire(import.meta.url)
   const packageJson = require('../package.json') as { version: string }
+  const processObservationAvailable = platform === 'darwin' || platform === 'linux' || platform === 'win32'
   return {
     schemaVersion: 1,
     provider: 'aw-skill-eval-process',
     providerVersion: packageJson.version,
     capabilities: {
       triggerDiscovery: false,
-      skillPathExecution: platform !== 'win32',
-      previousVersionBaseline: platform !== 'win32',
-      withoutSkillBaseline: platform !== 'win32',
+      skillPathExecution: processObservationAvailable,
+      previousVersionBaseline: processObservationAvailable,
+      withoutSkillBaseline: processObservationAvailable,
       cleanContext: false,
       parallelRuns: false,
       toolTrace: false,
@@ -457,9 +526,12 @@ export function getRuntimeCapabilities(platform: NodeJS.Platform = process.platf
     limitations: [
       'The process provider does not prove a clean model context.',
       'The process provider does not supply a tool trace or sandbox.',
-      ...(platform === 'win32'
-        ? ['Standalone Windows execution is disabled because the shared monitor cannot independently verify Windows Job Object membership. JavaScript callers can supply a terminateProcessTree hook that returns confirmed descendant-cleanup evidence.']
-        : []),
+      ...(processObservationAvailable
+        ? [
+            `Standalone ${platform} execution uses process observation and before/after Skill digests; it does not guarantee descendant cleanup.`,
+            'Portable comparative evidence is disabled without confirmed external containment.',
+          ]
+        : [`Standalone ${platform} execution is disabled because process observation is unavailable.`]),
     ],
   }
 }
@@ -468,21 +540,32 @@ export async function runExecutionPlan(
   planPath: string,
   options: RunExecutionPlanOptions = {},
 ): Promise<RunExecutionResult> {
-  const planBinding = await captureBoundFile('execution plan', path.resolve(planPath))
-  let plan: EvalExecutionPlan
-  try {
-    const preview = JSON.parse(planBinding.bytes.toString('utf8')) as Record<string, unknown>
-    if (typeof preview.outputRoot !== 'string' || preview.outputRoot.length === 0)
-      throw new Error('outputRoot must be a non-empty string')
-    plan = preview as unknown as EvalExecutionPlan
-  } catch (error) {
-    throw new Error(
-      `Cannot safely clear a prior EvalRunBundle because the plan outputRoot is not trustworthy: ${(error as Error).message}`,
-      { cause: error },
-    )
+  const validation = await captureAndValidateExecutionPlan(planPath)
+  if (!validation.valid) throw new Error(`EvalExecutionPlan is invalid:\n${validation.errors.join('\n')}`)
+  if (!validation.captured) throw new Error('EvalExecutionPlan capture is unavailable')
+  const captured = validation.captured
+  const { plan, base, outputRoot } = captured
+  const planRaw = captured.planFile.raw
+  const sources = new Map<string, SkillSource>()
+  for (const configuration of plan.configurations) {
+    const skill = captured.skills.get(configuration.id)
+    if (skill === undefined) throw new Error(`Missing captured Skill source for ${configuration.id}`)
+    sources.set(configuration.id, { captured: skill, digest: skill?.digest ?? null })
   }
-  const base = await realpath(path.dirname(path.resolve(planPath)))
-  const outputRoot = path.resolve(base, plan.outputRoot)
+  const boundSkills = new Map<string, SkillSource>(
+    [...captured.boundSkills].map(([id, skill]) => [id, { captured: skill, digest: skill.digest }]),
+  )
+  const capabilities = captured.capabilities
+  const boundFiles = [
+    captured.planFile,
+    ...captured.caseFiles,
+    captured.auditFile,
+    captured.capabilitiesFile,
+  ]
+  assertBoundInputsOutsideOutputRoot(outputRoot, boundFiles, boundSkills)
+  await assertBoundInputsUnchanged(boundFiles, boundSkills)
+  const cases = new Map<string, EvalCase>()
+  for (const evalCase of captured.cases) cases.set(String(evalCase.id), evalCase)
   try {
     await prepareOutputRoot(base, outputRoot)
   } catch (error) {
@@ -490,55 +573,6 @@ export async function runExecutionPlan(
       `Cannot safely clear a prior EvalRunBundle because outputRoot is not trustworthy: ${(error as Error).message}`,
       { cause: error },
     )
-  }
-  const validation = await validateExecutionPlan(planPath)
-  if (!validation.valid) throw new Error(`EvalExecutionPlan is invalid:\n${validation.errors.join('\n')}`)
-  await assertBoundInputsUnchanged([planBinding], new Map())
-  const planRaw = planBinding.bytes
-  const sourceTarget = await realpath(path.resolve(base, plan.target.path))
-  const targetDigestBefore = await computeSkillDigest(sourceTarget)
-  if (targetDigestBefore !== plan.target.digest) throw new Error('target Skill changed after plan validation')
-  const sources = new Map<string, SkillSource>()
-  const boundSkills = new Map<string, SkillSource>([
-    ['target', { root: sourceTarget, digest: targetDigestBefore }],
-  ])
-  for (const configuration of plan.configurations) {
-    if (configuration.skillMode === 'with-skill') sources.set(configuration.id, { root: sourceTarget, digest: targetDigestBefore })
-    else if (configuration.skillMode === 'without-skill') sources.set(configuration.id, { root: null, digest: null })
-    else {
-      const previousRoot = await realpath(path.resolve(base, configuration.skillPath!))
-      const digest = await computeSkillDigest(previousRoot)
-      if (digest !== configuration.skillDigest)
-        throw new Error(`${configuration.id} previous-version Skill changed after plan validation`)
-      sources.set(configuration.id, { root: previousRoot, digest })
-      boundSkills.set(configuration.id, { root: previousRoot, digest })
-    }
-  }
-  const additionalBindings = await Promise.all([
-    ...plan.cases.paths.map((entry, index) =>
-      captureBoundFile(`case corpus file ${index + 1}`, path.resolve(base, entry))),
-    captureBoundFile('preflight audit', path.resolve(base, plan.audit.path)),
-    captureBoundFile('provider capabilities', path.resolve(base, plan.provider.capabilitiesPath)),
-  ])
-  const caseBindings = additionalBindings.slice(0, plan.cases.paths.length)
-  const auditBinding = additionalBindings[plan.cases.paths.length]
-  const capabilitiesBinding = additionalBindings[plan.cases.paths.length + 1]
-  if (!auditBinding || !capabilitiesBinding) throw new Error('Eval input fingerprint is incomplete')
-  const canonicalCases = caseBindings
-    .map((entry) => stable(JSON.parse(entry.bytes.toString('utf8'))))
-    .sort()
-  if (sha256(canonicalCases.join('\n')) !== plan.cases.corpusDigest)
-    throw new Error('Bound Eval input changed before execution: case corpus digest does not match plan')
-  if (auditBinding.digest !== plan.audit.digest)
-    throw new Error('Bound Eval input changed before execution: preflight audit digest does not match plan')
-  if (capabilitiesBinding.digest !== plan.provider.capabilitiesDigest)
-    throw new Error('Bound Eval input changed before execution: provider capabilities digest does not match plan')
-  const capabilities = JSON.parse(capabilitiesBinding.bytes.toString('utf8')) as RuntimeCapabilities
-  const boundFiles = [planBinding, ...additionalBindings]
-  const cases = new Map<string, EvalCase>()
-  for (const entry of caseBindings) {
-    const document = JSON.parse(entry.bytes.toString('utf8')) as unknown
-    for (const evalCase of casesFrom(document)) cases.set(String(evalCase.id), evalCase)
   }
   const runs: import('./bundle.js').EvalRun[] = []
   const executionLimitations: string[] = []
@@ -556,6 +590,10 @@ export async function runExecutionPlan(
           runIndex,
           options,
           executionLimitations,
+          beforeRunDirectoryReset: async () => {
+            assertBoundInputsOutsideOutputRoot(outputRoot, boundFiles, boundSkills)
+            await assertBoundInputsUnchanged(boundFiles, boundSkills)
+          },
         }))
         await assertBoundInputsUnchanged(boundFiles, boundSkills)
       }

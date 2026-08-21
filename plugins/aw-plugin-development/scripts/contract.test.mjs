@@ -358,7 +358,10 @@ test('AW summary decision follows generic reviews and project gates', async () =
 test('final artifacts remain materials rather than completed review stages', async () => {
   const t = await mkdtemp(path.join(tmpdir(), 'aw-final-stage-'));
   temps.push(t);
-  const final = path.join(t, 'final');
+  const repository = path.join(t, 'repository'),
+    plugin = path.join(repository, 'plugins', 'agent-content-toolkit'),
+    final = path.join(repository, '.tmp', 'final');
+  await cp(path.join(repo, 'plugins', 'agent-content-toolkit'), plugin, { recursive: true });
   await mkdir(final, { recursive: true });
   await writeFile(path.join(final, 'SKILL.md'), '---\nname: fixture\ndescription: fixture\n---\n');
   const result = JSON.parse(
@@ -366,9 +369,9 @@ test('final artifacts remain materials rather than completed review stages', asy
       await run(
         path.join(runtimeRoot, 'skills/review-aw-plugin/scripts/prepare-aw-review-bundle.mjs'),
         [
-          path.join(repo, 'plugins', 'agent-content-toolkit'),
+          plugin,
           '--repo-root',
-          repo,
+          repository,
           '--final',
           'codex=' + final,
         ],
@@ -383,8 +386,18 @@ test('adapter release version and dependency contract are current', async () => 
     readFile(path.join(sourceRoot, '.agents-plugin/plugin.json'), 'utf8').then(JSON.parse),
     readFile(path.join(sourceRoot, 'DEPENDENCY.md'), 'utf8'),
   ]);
-  assert.equal(manifest.version, '0.8.2');
+  assert.equal(manifest.version, '0.8.3');
   assert.match(dependency, /agent-content-toolkit >= 0\.5\.0/u);
-  assert.match(dependency, /agent-skill-toolkit >= 0\.7\.0/u);
+  // Static contract exception: AW 0.8.3 consumers must reject toolkit 0.7.0 because it lacks the ReviewInputBundle currentness contract; behavior test is not suitable because DEPENDENCY.md is the published manual dependency resolver input.
+  const skillFloor = dependency.match(/agent-skill-toolkit >= (\d+\.\d+\.\d+)/u)?.[1];
+  assert.equal(skillFloor, '0.7.1');
+  const parts = (version) => version.split('.').map(Number);
+  const satisfies = (version) => {
+    const candidate = parts(version), floor = parts(skillFloor);
+    const difference = candidate.findIndex((value, index) => value !== floor[index]);
+    return difference === -1 || candidate[difference] > floor[difference];
+  };
+  assert.equal(satisfies('0.7.0'), false);
+  assert.equal(satisfies('0.7.1'), true);
   assert.match(dependency, /agent-skill-eval-runner >= 0\.3\.0/u);
 });

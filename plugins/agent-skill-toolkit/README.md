@@ -2,7 +2,7 @@
 
 通用 Agent Skill 作者、评审和 Eval 设计/审核插件。
 
-Current plugin contract version: `0.7.0`.
+Current plugin contract version: `0.7.1`.
 
 ## Dependency
 
@@ -26,7 +26,13 @@ Author 不给自己的结果出独立发布结论；Eval Designer 不审核自�
 ## Portable contracts
 
 - `SkillDesignBrief`
-- `ReviewInputBundle` v3 with verified stage handoffs
+- `ReviewInputBundle` v4 with verified stage handoffs, exact inline evidence binding, and
+  production artifact entity binding. Each artifact uses a canonical POSIX path relative to the
+  absolute `environment.repositoryRoot`, a content digest, and normalized regular-file mode
+  (`100644` or `100755`). `target.currentness` is required. The validator derives production
+  artifact and aggregate target currentness from Git status, ignored files, and index/worktree
+  modes; when Git cannot prove currentness, only `unknown` is valid. Callers must replace template
+  roots and artifacts with real workspace values before semantic validation.
 - `ReviewResult` v3 with `evalEvidenceLevel`
 - `EvalAuditResult` v2 bound to both Skill and case corpus digests
 - `EvalRuntimeCapabilities`
