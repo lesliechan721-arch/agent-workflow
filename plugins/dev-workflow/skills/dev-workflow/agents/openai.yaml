@@ -1,6 +1,6 @@
 interface:
   display_name: "Dev Workflow"
-  short_description: "按任务风险和当前阶段选择开发路径，并继续执行当前能力"
-  default_prompt: "使用 $dev-workflow 为当前开发请求选择保障等级，从最早未完成阶段继续。"
+  short_description: "按风险和已有产物选择当前开发阶段，并执行一个专业能力"
+  default_prompt: "使用 $dev-workflow 为当前开发任务选择最低足够保障，并从最早未完成阶段继续。"
 policy:
   allow_implicit_invocation: true

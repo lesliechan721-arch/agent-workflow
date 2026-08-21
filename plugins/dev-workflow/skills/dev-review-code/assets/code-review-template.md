@@ -1,12 +1,21 @@
 # Code Review
 
+- Base: `<commit or merge-base>`
+- Head: `<commit or working tree>`
+- Diff revision: `<commit range or sha256 of exact diff>`
+- Spec: `<path / none>`
+- Spec revision: `<git blob/OID, sha256, or none>`
+- Reviewed at: `<ISO-8601>`
+- Review contexts: `independent-spec-fidelity, independent-engineering-quality`
+- Result: `clean | blocked | incomplete`
+
 ## 结论
 
-`clean` 或 `blocked`，并说明审查范围和证据限制。
+用一句话说明是否可以交付。`incomplete` 必须说明缺失的独立审查轴、目标稳定性或证据。
 
 ## Spec fidelity
 
-按影响排序列出：遗漏、scope creep、未批准材料偏离、验收缺口和 Prototype 结论丢失。
+按影响排序列出遗漏、scope creep、未批准材料偏离、验收缺口和 Prototype 结论丢失。
 
 每项包含位置、预期、实际、影响和处理类型。没有问题时写“无”。
 
