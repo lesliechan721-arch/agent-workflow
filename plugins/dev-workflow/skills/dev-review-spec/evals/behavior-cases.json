@@ -4,32 +4,34 @@
     "optimization": "precision-first",
     "false_negative_cost": "high",
     "false_positive_cost": "high",
-    "rationale": "漏掉隐藏决定会导致错误批准；把合理工程自由误判为缺陷会让 Spec 再次膨胀。"
+    "rationale": "漏掉隐藏决定会导致错误批准；同上下文自审会引入确认偏差；把合理工程自由误判为缺陷会让 Spec 再次膨胀。"
   },
   "evals": [
     {
-      "id": "block-over-specified-spec",
+      "id": "independent-block-over-specified-spec",
       "eval_type": "behavior",
       "case_role": "representative",
       "provenance": "representative-synthetic",
-      "scenario_family": "over-specified-spec-review",
+      "scenario_family": "independent-over-specified-spec-review",
       "unit_under_test": "full-skill",
       "preconditions": {
         "spec_exists": true,
-        "review_is_read_only": true
+        "review_is_read_only": true,
+        "fresh_subagent_available": true
       },
       "oracle": {
-        "rationale": "目标 Spec 已经包含文件级步骤和模型维护的状态转移，同时没有清楚说明用户可观察验收；应 blocked 并把问题路由到正确层。",
+        "rationale": "目标 Spec 包含文件级步骤和模型维护的状态转移，同时没有清楚说明用户可观察验收；正式结论必须由 fresh reviewer 完成并绑定精确目标 revision。",
         "rule_refs": [
-          "SKILL.md#工作流",
+          "SKILL.md#独立审查",
+          "SKILL.md#报告与历史",
           "assets/spec-review-template.md"
         ],
         "confidence": "high",
-        "allowed_variance": "finding 数量和措辞可不同；必须识别过度规定与验收缺口、保持只读并给出最小下一步。"
+        "allowed_variance": "finding 数量和措辞可不同；必须创建独立 reviewer、识别过度规定与验收缺口、保持只读并绑定目标 revision。"
       },
-      "prompt": "只读审查 docs/specs/session-expiry.md，判断是否可以批准。不要修改文件。",
+      "prompt": "正式审查 docs/specs/session-expiry.md，判断是否可以批准。使用独立 reviewer 上下文，不要修改文件。",
       "scripted_replies": [],
-      "expected_output": "输出 blocked；指出文件级任务清单和自然语言状态机应删除或移出 Spec，并指出可观察验收不足。",
+      "expected_output": "创建 fresh reviewer；输出 blocked；报告绑定 Spec 路径和 revision；指出文件级任务清单、自然语言状态机和可观察验收缺口。",
       "workspace_files": {
         "docs/specs/session-expiry.md": "# Session Expiry Spec\n\n## Goal\n让会话过期。\n\n## 实施步骤\n1. 修改 src/auth/session.ts。\n2. 修改 src/api/middleware.ts。\n3. 按 pending -> checking -> retrying -> expired -> renewed 五个模型状态推进；每次回复必须更新当前状态。\n4. 第三次重试后写 recovery.md。\n\n## 验收\n系统正常工作。\n"
       },
@@ -50,9 +52,10 @@
           }
         ],
         "checks": [
+          "trace 创建一个 fresh 独立 reviewer 子代理；当前上下文不直接完成正式审查",
           "结论为 blocked，而不是因为形式完整而给 clean",
+          "报告包含 Target、Target revision、Review context 和 Result",
           "分别指出可验证验收缺失，以及文件步骤和模型状态机属于过度规定",
-          "建议把材料行为补入 Spec，把局部步骤移到 implementation/work 记忆",
           "不修改被审 Spec"
         ]
       }

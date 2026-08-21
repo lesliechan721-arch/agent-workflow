@@ -4,33 +4,35 @@
     "optimization": "precision-first",
     "false_negative_cost": "high",
     "false_positive_cost": "high",
-    "rationale": "漏掉需求偏离或工程缺陷会错误放行交付；不可靠 finding 会制造返工。"
+    "rationale": "漏掉需求偏离或工程缺陷会错误放行交付；同上下文自审会引入确认偏差；不可靠 finding 会制造返工。"
   },
   "evals": [
     {
-      "id": "dual-axis-read-only-review",
+      "id": "parallel-independent-dual-axis-review",
       "eval_type": "behavior",
       "case_role": "representative",
       "provenance": "representative-synthetic",
-      "scenario_family": "spec-and-quality-review",
+      "scenario_family": "independent-spec-and-quality-review",
       "unit_under_test": "full-skill",
       "preconditions": {
         "spec_exists": true,
         "implementation_exists": true,
-        "review_is_read_only": true
+        "review_is_read_only": true,
+        "two_fresh_subagents_available": true
       },
       "oracle": {
-        "rationale": "实现既违反服务端过期拒绝要求，又缺少边界测试；两个问题应分别出现在 Spec fidelity 和 Engineering quality，且审查不能修改代码。",
+        "rationale": "实现既违反服务端过期拒绝要求，又缺少边界测试；两个 fresh reviewer 应分别审查 Spec fidelity 与 Engineering quality，并把报告绑定精确 diff 和 Spec revision。",
         "rule_refs": [
-          "SKILL.md#工作流",
+          "SKILL.md#固定审查目标",
+          "SKILL.md#独立双轴审查",
           "assets/code-review-template.md"
         ],
         "confidence": "high",
-        "allowed_variance": "finding 标题和严重性措辞可不同；必须分轴、给出证据位置并保持只读。"
+        "allowed_variance": "finding 标题和严重性措辞可不同；必须并行创建两个独立 reviewer、分轴给出证据并保持只读。"
       },
-      "prompt": "只读审查当前邀请接受实现是否符合 docs/specs/invitation-expiry.md，并检查工程质量。不要直接修复文件。",
+      "prompt": "正式审查当前邀请接受实现是否符合 docs/specs/invitation-expiry.md，并检查工程质量。使用两个独立 reviewer，不要直接修复文件。",
       "scripted_replies": [],
-      "expected_output": "输出 blocked，分别报告服务端未拒绝过期邀请的 Spec fidelity 问题，以及缺少边界测试或错误处理的 Engineering quality 问题。",
+      "expected_output": "并行创建两个 fresh reviewer；输出 blocked；报告绑定 Base、Head 或 Diff revision 及 Spec revision；分别报告服务端未拒绝过期邀请和缺少边界测试。",
       "workspace_files": {
         "docs/specs/invitation-expiry.md": "# Invitation expiry\n\n- 邀请创建 7 天后过期。\n- 服务端接受入口必须拒绝过期邀请。\n- 验收覆盖第 7 天前可接受、第 7 天后拒绝。\n",
         "src/invitations/accept.js": "export function acceptInvitation(invitation) {\n  return { accepted: true, invitationId: invitation.id };\n}\n",
@@ -44,7 +46,9 @@
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [
+          "trace 并行创建 Spec fidelity 与 Engineering quality 两个 fresh 独立 reviewer；当前上下文不补做任一审查轴",
           "结论为 blocked，并清楚说明审查范围和证据限制",
+          "报告包含 Base、Head、Diff revision、Spec revision、Review contexts 和 Result",
           "Spec fidelity 轴指出接受入口没有任何过期判断，引用具体文件",
           "Engineering quality 轴指出缺少过期边界测试，并可指出输入或错误处理不足",
           "两个轴分开呈现，不把同一根因重复计罚",

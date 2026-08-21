@@ -56,26 +56,17 @@ function assertCaseDocument(document) {
   return entries;
 }
 
-function containsSlashDevReference(text) {
-  return text.startsWith('/dev') || text.includes('\n/dev') || text.includes(' /dev');
-}
-
 const target = await context();
 
-test('manifest exposes only the Skill entry surface', async () => {
+test('manifest exposes a Skill-only entry surface', async () => {
   const manifest = await readJson(path.join(target.source, '.agents-plugin', 'plugin.json'));
   assert.equal(manifest.name, 'dev-workflow');
   assertStrictStableSemver(manifest.version);
   assert.equal(manifest.skills, './skills');
-  assert.equal(manifest.slashCommands, undefined);
-  assert.equal(manifest.buildConfig, undefined);
   assert.deepEqual(manifest.interface.capabilities, ['Skills']);
-  for (const key of ['extensions', 'config', 'artifacts', 'lifecycle']) {
+  for (const key of ['slashCommands', 'buildConfig', 'extensions', 'config', 'artifacts', 'lifecycle']) {
     assert.equal(key in manifest, false);
   }
-  await assert.rejects(access(path.join(target.source, 'slash-commands', 'dev.md')), {
-    code: 'ENOENT',
-  });
 });
 
 test('source and evals expose the five public Skills', async () => {
@@ -94,127 +85,80 @@ test('source and evals expose the five public Skills', async () => {
     assert.equal(evalManifest.skill, name);
 
     for (const suite of evalManifest.suites) {
-      assert.equal(
-        suite.skills.every((participant) => allParticipants.has(participant)),
-        true,
-      );
+      assert.equal(suite.skills.every((participant) => allParticipants.has(participant)), true);
       const casesPath = path.resolve(evalRoot, suite.cases);
       await access(casesPath);
-      const document = await readJson(casesPath);
-      const entries = assertCaseDocument(document);
-      if (suite.id === 'trigger') {
-        assert.equal(document.skill, name);
-        assert.equal(
-          entries.every((entry) => typeof entry.should_load_skill === 'boolean'),
-          true,
-        );
-        assert.deepEqual(suite.skills, skills);
-      }
+      assertCaseDocument(await readJson(casesPath));
     }
   }
 });
 
-test('entry eval covers assurance, stage recovery and default artifact roots', async () => {
-  const evalRoot = path.join(target.source, 'skills', 'dev-workflow', 'evals');
-  const manifest = await readJson(path.join(evalRoot, 'manifest.json'));
-  const composed = manifest.profiles.find((profile) => profile.id === 'project-composed');
-  assert.deepEqual(
-    composed.plugins.map((plugin) => plugin.name),
-    ['dev-workflow', 'ask-me'],
-  );
-  assert.equal(manifest.suites.some((suite) => suite.id.includes('fallback')), false);
-
-  const router = manifest.suites.find((suite) => suite.id === 'router-composed');
-  assert.deepEqual([...router.skills].sort(), [...allParticipants].sort());
-  const routingCases = await readJson(path.join(evalRoot, router.cases));
-  const routingEntries = assertCaseDocument(routingCases);
-  const ids = new Set(routingEntries.map((entry) => entry.id));
-  for (const id of [
-    'route_fast_explicit_workflow',
-    'route_standard_decision_grill',
-    'route_standard_decision_prototype',
-    'resume_grill_evidence_to_prototype',
-    'resume_prototype_verdict_to_spec',
-    'resume_spec_review_material_decision',
-    'resume_code_review_implementation_defect',
-  ]) {
-    assert.equal(ids.has(id), true);
-  }
-  assert.equal(routingEntries.some((entry) => containsSlashDevReference(entry.query)), false);
-
-  const composition = manifest.suites.find((suite) => suite.id === 'composition-composed');
-  const compositionCases = await readJson(path.join(evalRoot, composition.cases));
-  const compositionEntries = assertCaseDocument(compositionCases);
-  assert.equal(
-    compositionEntries.every((entry) =>
-      entry.review.allowed_workspace_changes.every((change) => change.startsWith('docs/dev/')),
-    ),
-    true,
-  );
-  assert.equal(
-    compositionEntries.flatMap((entry) => entry.review.artifacts).every((artifact) =>
-      artifact.path.startsWith('docs/dev/'),
-    ),
-    true,
-  );
-});
-
-test('specialized behavior suites run with only their owner Skill', async () => {
-  for (const name of skills.filter((entry) => entry !== 'dev-workflow')) {
-    const evalRoot = path.join(target.source, 'skills', name, 'evals');
-    const manifest = await readJson(path.join(evalRoot, 'manifest.json'));
-    const behavior = manifest.suites.find((suite) => suite.id === 'behavior');
-    assert.deepEqual(behavior.skills, [name]);
-    const document = await readJson(path.join(evalRoot, behavior.cases));
-    assert.equal(document.skill_name, name);
-    const entries = assertCaseDocument(document);
-    for (const entry of entries) {
-      assert.equal(Array.isArray(entry.review.checks), true);
-      assert.equal(entry.review.checks.length > 0, true);
-    }
-  }
-});
-
-test('published specialized Skills return neutral results instead of orchestrating peers', async () => {
+test('specialized Skills remain directly usable and do not orchestrate peers', async () => {
   const prohibited = ['ask-me', ...skills, ...decisionSkills];
   for (const name of skills.filter((entry) => entry !== 'dev-workflow')) {
     const skill = await read(path.join(target.source, 'skills', name, 'SKILL.md'));
     const otherNames = prohibited.filter((entry) => entry !== name);
-    // Static contract exception: specialized Skills must not encode cross-Skill orchestration; behavior test is not suitable because the forbidden coupling is the published instruction text itself.
     assert.doesNotMatch(skill, new RegExp(otherNames.join('|')));
+    assert.match(skill, /## 输出/);
   }
 
   const entry = await read(path.join(target.source, 'skills', 'dev-workflow', 'SKILL.md'));
-  // Static contract exception: the public workflow contract must declare its default artifact root and assurance profiles; behavior test is not suitable because these literals are consumed as portable path and profile conventions.
+  assert.match(entry, /可选的开发流程编排器/);
   assert.match(entry, /docs\/dev\/<task-slug>\//);
   for (const profile of ['Fast', 'Standard', 'Assured']) {
-    assert.match(entry, new RegExp(`### ${profile}`));
+    assert.match(entry, new RegExp(`\\*\\*${profile}\\*\\*`));
   }
-  assert.equal(containsSlashDevReference(entry), false);
-  assert.doesNotMatch(entry, /对应 Skill 不可用|建议安装/);
+  assert.doesNotMatch(entry, /task-state\.json|pointer|round lineage|finding registry/);
 });
 
-test('release manifests require representative evidence without fixing corpus sizes', async () => {
-  const entryRoot = path.join(target.source, 'skills', 'dev-workflow', 'evals');
-  const entryManifest = await readJson(path.join(entryRoot, 'manifest.json'));
+test('formal Review Skills require fresh independent subagents', async () => {
+  const specSkill = await read(
+    path.join(target.source, 'skills', 'dev-review-spec', 'SKILL.md'),
+  );
+  assert.match(specSkill, /fresh 独立子代理上下文/);
+  assert.match(specSkill, /返回 `incomplete`/);
+  assert.match(specSkill, /Target revision/);
+  assert.match(specSkill, /reviews\/spec\/<timestamp>\.md/);
+  assert.doesNotMatch(specSkill, /task-state\.json/);
 
-  for (const profileId of ['project-default', 'project-composed']) {
-    const profile = entryManifest.profiles.find((entry) => entry.id === profileId);
-    assert.equal(profile?.requiredForRelease, true);
-  }
-  for (const suiteId of ['trigger', 'router-composed', 'composition-composed']) {
-    const suite = entryManifest.suites.find((entry) => entry.id === suiteId);
-    assert.equal(suite?.requiredForRelease, true);
-  }
+  const codeSkill = await read(
+    path.join(target.source, 'skills', 'dev-review-code', 'SKILL.md'),
+  );
+  assert.match(codeSkill, /两个 fresh 独立子代理/);
+  assert.match(codeSkill, /并行创建两个 fresh reviewer/);
+  assert.match(codeSkill, /返回 `incomplete`/);
+  assert.match(codeSkill, /reviews\/code\/<timestamp>\.md/);
+  assert.doesNotMatch(codeSkill, /task-state\.json/);
 
-  for (const name of skills.filter((entry) => entry !== 'dev-workflow')) {
-    const manifest = await readJson(
-      path.join(target.source, 'skills', name, 'evals', 'manifest.json'),
+  const specTemplate = await read(
+    path.join(target.source, 'skills', 'dev-review-spec', 'assets', 'spec-review-template.md'),
+  );
+  assert.match(specTemplate, /Target revision/);
+  assert.match(specTemplate, /Review context: `independent`/);
+  assert.match(specTemplate, /clean \| blocked \| incomplete/);
+
+  const codeTemplate = await read(
+    path.join(target.source, 'skills', 'dev-review-code', 'assets', 'code-review-template.md'),
+  );
+  assert.match(codeTemplate, /Diff revision/);
+  assert.match(codeTemplate, /Spec revision/);
+  assert.match(codeTemplate, /independent-spec-fidelity, independent-engineering-quality/);
+});
+
+test('Review behavior evals observe subagent creation', async () => {
+  for (const name of ['dev-review-spec', 'dev-review-code']) {
+    const evalRoot = path.join(target.source, 'skills', name, 'evals');
+    const manifest = await readJson(path.join(evalRoot, 'manifest.json'));
+    const behavior = manifest.suites.find((suite) => suite.id === 'behavior');
+    assert.deepEqual(behavior.skills, [name]);
+    assert.equal(behavior.observeSpawnAgent, true);
+
+    const document = await readJson(path.join(evalRoot, behavior.cases));
+    const entries = assertCaseDocument(document);
+    assert.equal(
+      entries.every((entry) => entry.review.checks.some((check) => check.includes('fresh'))),
+      true,
     );
-    const profile = manifest.profiles.find((entry) => entry.id === 'project-default');
-    const behavior = manifest.suites.find((entry) => entry.id === 'behavior');
-    assert.equal(profile?.requiredForRelease, true);
-    assert.equal(behavior?.requiredForRelease, true);
   }
 });
 

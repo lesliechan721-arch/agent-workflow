@@ -1,8 +1,14 @@
 # Spec Review
 
+- Target: `<spec path>`
+- Target revision: `<git blob/OID or sha256>`
+- Reviewed at: `<ISO-8601>`
+- Review context: `independent`
+- Result: `clean | blocked | incomplete`
+
 ## 结论
 
-`clean` 或 `blocked`，并用一句话说明原因。
+用一句话说明原因。`incomplete` 必须说明独立 reviewer、目标稳定性或证据中的具体缺口。
 
 ## 阻塞问题
 
