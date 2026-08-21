@@ -14,14 +14,15 @@ import {
   type RebuildProgressSnapshot,
 } from '../output/rebuild-progress.js';
 import { renderEquivalentCommandDisplays } from '../output/equivalent-command.js';
+import { resolveTuiSizePolicy } from './layout.js';
 import {
   ConfirmView,
   MultiSelectView,
   PasswordInputView,
+  PromptFrame,
   SelectView,
   TextInputView,
 } from './views.js';
-import { PromptFrame } from './views.js';
 import { tuiTheme } from './theme.js';
 
 type Page = 'platform' | 'scope' | 'plugins' | 'key' | 'value' | 'confirm' | 'busy' | 'result';
@@ -208,6 +209,7 @@ export function CommandWizard<T>(props: {
 }): React.JSX.Element {
   const windowSize = useWindowSize();
   const size = props.size ?? windowSize;
+  const inputActive = resolveTuiSizePolicy(size.columns, size.rows).mode !== 'too-small';
   const selectionRows = Math.max(1, size.rows - 3);
   const [selection, setSelection] = useState<CommandWizardSelection>(() => ({
     ...props.request.initial,
@@ -233,6 +235,25 @@ export function CommandWizard<T>(props: {
   }), [props.progress]);
 
   useInput((input, key) => {
+    if (!inputActive) {
+      const closeRequested = key.escape
+        || input.toLowerCase() === 'q'
+        || (key.ctrl && input === 'c');
+      if (page === 'result' && closeRequested) {
+        props.onComplete(executionResult!.failed
+          ? { cancelled: false, selection: executionResult!.selection, failed: true }
+          : {
+              cancelled: false,
+              selection: executionResult!.selection,
+              value: executionResult!.value,
+            });
+      } else if (page === 'busy' && closeRequested) {
+        exitAfterBusy.current = true;
+      } else if (key.ctrl && input === 'c') {
+        cancel();
+      }
+      return;
+    }
     if ((page === 'busy' || page === 'result') && (key.pageUp || key.pageDown)) {
       setMessageOffset((current) => Math.min(
         Math.max(current + (key.pageUp ? -8 : 8), 0),

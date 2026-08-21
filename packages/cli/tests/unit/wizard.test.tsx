@@ -401,8 +401,49 @@ describe('command wizard', () => {
     expect(completed?.failed === true).toBe(hasError);
   });
 
+  it('does not complete a hidden result with Enter at 59x18', async () => {
+    let completed: CommandWizardResult<unknown> | undefined;
+    const instance = render(<CommandWizard
+      request={{
+        command: 'install',
+        candidates: [],
+        initial: { plugins: ['alpha'], platform: 'codex', scope: 'user' },
+        pluginMode: 'none',
+        equivalentCommand: () => 'aw install alpha --platform codex --scope user',
+        execute: async () => ({ ok: true }),
+      }}
+      size={{ columns: 60, rows: 18 }}
+      onComplete={(result) => { completed = result; }}
+    />);
+    await nextTurn();
+    instance.stdin.write('\r');
+    await nextTurn();
+    await nextTurn();
+    expect(instance.lastFrame()).toContain('执行结果');
+
+    instance.rerender(<CommandWizard
+      request={{
+        command: 'install',
+        candidates: [],
+        initial: { plugins: ['alpha'], platform: 'codex', scope: 'user' },
+        pluginMode: 'none',
+        equivalentCommand: () => 'aw install alpha --platform codex --scope user',
+        execute: async () => ({ ok: true }),
+      }}
+      size={{ columns: 59, rows: 18 }}
+      onComplete={(result) => { completed = result; }}
+    />);
+    instance.stdin.write('\r');
+    await nextTurn();
+
+    expect(completed).toBeUndefined();
+    instance.stdin.write('q');
+    await nextTurn();
+    expect(completed).toMatchObject({ cancelled: false });
+  });
+
   it.each([
-    { columns: 60, rows: 16 },
+    { columns: 60, rows: 18 },
     { columns: 80, rows: 18 },
     { columns: 110, rows: 18 },
   ])('keeps confirmation in one $columns x $rows frame with reachable controls', async (size) => {
@@ -435,7 +476,7 @@ describe('command wizard', () => {
     expect(completed).toMatchObject({ cancelled: false });
   });
 
-  it('cancels from the single 60x16 confirmation frame', async () => {
+  it('cancels from the single 60x18 confirmation frame', async () => {
     const execute = vi.fn();
     let completed: CommandWizardResult<unknown> | undefined;
     const instance = render(<CommandWizard
@@ -448,12 +489,12 @@ describe('command wizard', () => {
         equivalentCommand: () => 'aw cleanup alpha --platform codex --scope user',
         execute,
       }}
-      size={{ columns: 60, rows: 16 }}
+      size={{ columns: 60, rows: 18 }}
       onComplete={(result) => { completed = result; }}
     />);
     await nextTurn();
 
-    expect(instance.lastFrame()?.split('\n').length).toBeLessThanOrEqual(16);
+    expect(instance.lastFrame()?.split('\n').length).toBeLessThanOrEqual(18);
     instance.stdin.write('n');
     await nextTurn();
 
@@ -461,7 +502,7 @@ describe('command wizard', () => {
     expect(completed).toEqual({ cancelled: true });
   });
 
-  it('keeps long Windows replay forms and confirmation reachable in 60x16', async () => {
+  it('keeps long Windows replay forms and confirmation reachable in 60x18', async () => {
     const platform = vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
     const execute = vi.fn(async () => ({ ok: true }));
     const tokens = ['aw', 'install', '--platform', 'both', '--scope', 'user', '--',
@@ -476,7 +517,7 @@ describe('command wizard', () => {
         equivalentCommandTokens: () => tokens,
         execute,
       }}
-      size={{ columns: 60, rows: 16 }}
+      size={{ columns: 60, rows: 18 }}
       onComplete={() => undefined}
     />);
     await nextTurn();
@@ -484,14 +525,14 @@ describe('command wizard', () => {
     expect(instance.lastFrame()).toContain('PowerShell 命令');
     expect(instance.lastFrame()).toContain('参数列表');
     expect(instance.lastFrame()).toContain('Y/n');
-    expect(instance.lastFrame()?.split('\n').length).toBeLessThanOrEqual(16);
+    expect(instance.lastFrame()?.split('\n').length).toBeLessThanOrEqual(18);
     instance.stdin.write('y');
     await nextTurn();
     expect(execute).toHaveBeenCalledTimes(1);
     platform.mockRestore();
   });
 
-  it('shows exactly the latest eight of twelve messages and receipt state in 60x16', async () => {
+  it('shows exactly the latest eight of twelve messages and receipt state in 60x18', async () => {
     let finish!: (value: unknown) => void;
     const progress = createRebuildProgressFeed();
     const instance = render(<CommandWizard
@@ -505,7 +546,7 @@ describe('command wizard', () => {
         execute: () => new Promise((resolve) => { finish = resolve; }),
       }}
       progress={progress}
-      size={{ columns: 60, rows: 16 }}
+      size={{ columns: 60, rows: 18 }}
       onComplete={() => undefined}
     />);
     await nextTurn();
@@ -526,7 +567,7 @@ describe('command wizard', () => {
     expect(instance.lastFrame()).not.toContain('notice-3');
     expect(instance.lastFrame()?.match(/收到通知/g)).toHaveLength(8);
     expect(instance.lastFrame()).toContain('收据：failed');
-    expect(instance.lastFrame()?.split('\n').length).toBeLessThanOrEqual(16);
+    expect(instance.lastFrame()?.split('\n').length).toBeLessThanOrEqual(18);
     instance.stdin.write('\u001B[5~');
     await nextTurn();
     expect(instance.lastFrame()).toContain('notice-0');

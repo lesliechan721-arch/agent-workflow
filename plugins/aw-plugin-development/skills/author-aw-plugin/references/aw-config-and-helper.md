@@ -6,6 +6,10 @@
 
 `config.schema` 是 AW config 的唯一真值。首版支持 `string`、`number`、`boolean`、`enum`、`file`、`directory`。字段可声明 `title`、`description`、`default`、`required`、`sensitive`；`enum` 用 `values`，`number` 可用 `min` / `max`。
 
+`config.presentation` 是可选展示合同。显式 `groups` 按声明顺序显示；未分组的普通字段进入“其他设置”，未分组且字段 presentation 声明 `advanced: true` 的字段进入合成高级组，显式 group 归属优先。没有 presentation 时，全部 schema 字段仍进入通用组并保持可编辑。
+
+`valueLabels` 只改变 enum token 的显示文本，不改变 store、helper 或 lifecycle 中的原值。preset 只更新 `values` 中列出的 key，不重置其它 key；推荐值和 preset 值必须符合 schema 类型、enum、`min` 和 `max`。插件首次采用 presentation 时，`compatibility.aw.minVersion` 必须声明首个支持该合同的 AW CLI 发布版本，不能使用更低的 compatibility floor。
+
 配置有三层 store：
 
 | scope            | 路径                                                                                                |

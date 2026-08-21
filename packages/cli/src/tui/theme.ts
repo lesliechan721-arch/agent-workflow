@@ -4,6 +4,7 @@ export const tuiTheme = {
     muted: 'gray',
     text: 'white',
     border: 'gray',
+    selectionBackground: '#164e63',
   },
   statusColors: {
     success: 'green',

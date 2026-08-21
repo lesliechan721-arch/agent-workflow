@@ -3814,6 +3814,122 @@ describe('authoring tools', () => {
     });
   });
 
+  it('the shipped author validator enforces config presentation contracts', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-presentation-authoring-'));
+    tempDirs.push(tempRoot);
+    const pluginDir = await writeManifestOnlyPlugin(tempRoot, 'presentation-contract', {});
+    const manifestPath = path.join(pluginDir, '.agents-plugin', 'plugin.json');
+    const manifest = await fs.readJson(manifestPath);
+    const schema = {
+      mode: {
+        type: 'enum',
+        values: ['safe', 'fast'],
+      },
+      limit: {
+        type: 'number',
+        min: 1,
+        max: 20,
+      },
+      trace: {
+        type: 'boolean',
+      },
+    };
+    const scriptPath = path.join(
+      repoRoot(),
+      'packages',
+      'cli',
+      'authoring',
+      'scripts',
+      'validate-plugin.mjs',
+    );
+
+    await fs.writeJson(manifestPath, {
+      ...manifest,
+      config: { schema },
+    }, { spaces: 2 });
+    await expect(execFileAsync(process.execPath, [scriptPath, pluginDir], {
+      cwd: repoRoot(),
+      env: process.env,
+      maxBuffer: 10 * 1024 * 1024,
+    })).resolves.toMatchObject({
+      stdout: expect.stringContaining('[PASS] All checks passed.'),
+    });
+
+    await fs.writeJson(manifestPath, {
+      ...manifest,
+      config: {
+        schema,
+        presentation: {
+          groups: [
+            { id: 'general', title: 'General', fields: ['mode', 'limit'] },
+          ],
+          fields: {
+            mode: {
+              valueLabels: { safe: 'Safe', fast: 'Fast' },
+              recommendedValue: 'safe',
+            },
+            limit: {
+              recommendedValue: 10,
+              unit: 'minutes',
+              advanced: true,
+            },
+          },
+          presets: [
+            { id: 'fast', title: 'Fast', values: { mode: 'fast' } },
+          ],
+        },
+      },
+    }, { spaces: 2 });
+    await expect(execFileAsync(process.execPath, [scriptPath, pluginDir], {
+      cwd: repoRoot(),
+      env: process.env,
+      maxBuffer: 10 * 1024 * 1024,
+    })).resolves.toMatchObject({
+      stdout: expect.stringContaining('[PASS] All checks passed.'),
+    });
+
+    await fs.writeJson(manifestPath, {
+      ...manifest,
+      config: {
+        schema,
+        presentation: {
+          groups: [
+            { id: 'general', title: 'General', fields: ['mode', 'missing'] },
+            { id: 'general', title: 'Duplicate', fields: ['mode'] },
+          ],
+          fields: {
+            missing: { advanced: true },
+            mode: {
+              valueLabels: { balanced: 'Balanced' },
+              recommendedValue: 'balanced',
+            },
+            limit: { recommendedValue: 21 },
+          },
+          presets: [
+            { id: 'bad', title: 'Bad', values: { trace: 'yes', missing: true } },
+            { id: 'bad', title: 'Duplicate', values: {} },
+          ],
+        },
+      },
+    }, { spaces: 2 });
+    let invalidStdout = '';
+    try {
+      await execFileAsync(process.execPath, [scriptPath, pluginDir], {
+        cwd: repoRoot(),
+        env: process.env,
+        maxBuffer: 10 * 1024 * 1024,
+      });
+    } catch (caught) {
+      invalidStdout = (caught as { stdout?: string }).stdout ?? '';
+    }
+    expect(invalidStdout).toContain('references unknown config key "missing"');
+    expect(invalidStdout).toContain('duplicate group id "general"');
+    expect(invalidStdout).toContain('unknown enum token "balanced"');
+    expect(invalidStdout).toContain('recommendedValue must be less than or equal to 20');
+    expect(invalidStdout).toContain('values.trace must be a boolean');
+    expect(invalidStdout).toContain('duplicate preset id "bad"');
+  });
+
   it('validate_plugin.mjs scans real Node imports without comment, string, regex, or template-text ghosts', async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-validator-import-scan-'));
     tempDirs.push(tempRoot);

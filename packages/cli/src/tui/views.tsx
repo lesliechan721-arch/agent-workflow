@@ -7,6 +7,7 @@ import type {
   CliPromptChoice,
   CliPromptResult,
 } from '../commands/runtime.js';
+import { ScreenFrame } from './components.js';
 import { resolveTuiKeyAction, type TuiInputMode } from './keys.js';
 import { resolveTuiSizePolicy } from './layout.js';
 import { tuiTheme } from './theme.js';
@@ -43,31 +44,10 @@ export function PromptFrame(props: {
   children: ReactNode;
   size?: { columns: number; rows: number };
 }): React.JSX.Element {
-  const windowSize = useWindowSize();
-  const { columns, rows } = props.size ?? windowSize;
-  const policy = resolveTuiSizePolicy(columns, rows);
-
-  if (policy.mode === 'three-column') {
-    return (
-      <Box width="100%" height={policy.rows} overflow="hidden" gap={2} paddingX={1}>
-        <Box width="24%" borderStyle="round" borderColor={tuiTheme.colors.border} paddingX={1}>
-          <Text bold color={tuiTheme.colors.accent}>{props.title}</Text>
-        </Box>
-        <Box width="52%" flexDirection="column" paddingX={1}>{props.children}</Box>
-        <Box width="24%" borderStyle="round" borderColor={tuiTheme.colors.border} paddingX={1}>
-          <Text color={tuiTheme.colors.muted}>{props.help}</Text>
-        </Box>
-      </Box>
-    );
-  }
-
   return (
-    <Box flexDirection="column" height={policy.rows} overflow="hidden" paddingX={1}>
-      {policy.message ? <Text color={tuiTheme.statusColors.warning}>{policy.message}</Text> : null}
-      <Text bold color={tuiTheme.colors.accent}>{props.title}</Text>
-      <Box flexDirection="column">{props.children}</Box>
-      <Text color={tuiTheme.colors.muted}>{props.help}</Text>
-    </Box>
+    <ScreenFrame title={props.title} help={props.help} size={props.size}>
+      {props.children}
+    </ScreenFrame>
   );
 }
 
@@ -98,17 +78,78 @@ function visibleChoiceEntries(
   choices: CliPromptChoice[],
   focusedIndex: number,
   pageSize?: number,
+  rowBudget = Number.POSITIVE_INFINITY,
 ): Array<{ choice: CliPromptChoice; index: number }> {
-  const normalizedPageSize = pageSize && pageSize > 0
+  const maxChoices = pageSize && pageSize > 0
     ? Math.min(pageSize, choices.length)
     : choices.length;
-  const start = Math.max(0, Math.min(
-    focusedIndex - Math.floor(normalizedPageSize / 2),
-    choices.length - normalizedPageSize,
-  ));
-  return choices
-    .slice(start, start + normalizedPageSize)
-    .map((choice, offset) => ({ choice, index: start + offset }));
+  if (choices.length === 0 || maxChoices === 0 || rowBudget <= 0) return [];
+  const focused = Math.min(Math.max(focusedIndex, 0), choices.length - 1);
+  const indexes = [focused];
+  let rows = choiceRowCost(choices[focused]!);
+  let before = focused - 1;
+  let after = focused + 1;
+  while (indexes.length < maxChoices) {
+    const next = before >= 0 ? before : after < choices.length ? after : undefined;
+    if (next === undefined) break;
+    const cost = choiceRowCost(choices[next]!);
+    if (rows + cost > rowBudget) {
+      if (before >= 0) before = -1;
+      else break;
+      continue;
+    }
+    indexes.push(next);
+    rows += cost;
+    if (next === before) before -= 1;
+    else after += 1;
+  }
+  return indexes
+    .sort((left, right) => left - right)
+    .map((index) => ({ choice: choices[index]!, index }));
+}
+
+function choiceRowCost(choice: CliPromptChoice): number {
+  return choice.description ? 2 : 1;
+}
+
+function promptChoiceRowBudget(rows: number): number {
+  return Math.max(1, rows - 6);
+}
+
+function ChoiceRow(props: {
+  choice: CliPromptChoice;
+  focused: boolean;
+  marker?: string;
+}): React.JSX.Element {
+  const disabledReason = props.choice.disabled
+    ? typeof props.choice.disabled === 'string' ? props.choice.disabled : '不可选'
+    : undefined;
+  return (
+    <Box
+      flexDirection="column"
+      width="100%"
+      paddingX={1}
+      backgroundColor={props.focused ? tuiTheme.colors.selectionBackground : undefined}
+    >
+      <Text
+        color={props.choice.disabled ? tuiTheme.colors.muted : undefined}
+        bold={props.focused}
+        wrap="truncate-end"
+      >
+        {props.focused ? '› ' : '  '}
+        {props.marker ? `${props.marker} ` : ''}
+        {props.choice.label}
+        {disabledReason ? `（${disabledReason}）` : ''}
+      </Text>
+      {props.choice.description
+        ? (
+            <Text color={tuiTheme.colors.muted} wrap="truncate-end">
+              {'    '}{props.choice.description}
+            </Text>
+          )
+        : null}
+    </Box>
+  );
 }
 
 export function SelectView(props: {
@@ -119,14 +160,17 @@ export function SelectView(props: {
   size?: { columns: number; rows: number };
   onComplete: Complete<string>;
 }): React.JSX.Element {
+  const windowSize = useWindowSize();
+  const size = props.size ?? windowSize;
+  const inputActive = resolveTuiSizePolicy(size.columns, size.rows).mode !== 'too-small';
   const [focusedIndex, setFocusedIndex] = useState(() =>
     initialChoiceIndex(props.choices, props.defaultValue));
   const allowBack = props.choices.some((choice) => choice.role === 'back');
   useGlobalPromptKeys({ mode: 'menu', allowBack, onComplete: props.onComplete });
-  useInput((_input, key) => {
-    if (key.upArrow) {
+  useInput((input, key) => {
+    if (key.upArrow || input.toLowerCase() === 'k') {
       setFocusedIndex((value) => moveChoiceIndex(props.choices, value, -1));
-    } else if (key.downArrow) {
+    } else if (key.downArrow || input.toLowerCase() === 'j') {
       setFocusedIndex((value) => moveChoiceIndex(props.choices, value, 1));
     } else if (key.return) {
       const choice = props.choices[focusedIndex];
@@ -141,8 +185,13 @@ export function SelectView(props: {
         props.onComplete(selected(choice.value));
       }
     }
-  });
-  const visibleChoices = visibleChoiceEntries(props.choices, focusedIndex, props.pageSize);
+  }, { isActive: inputActive });
+  const visibleChoices = visibleChoiceEntries(
+    props.choices,
+    focusedIndex,
+    props.pageSize,
+    promptChoiceRowBudget(size.rows),
+  );
 
   return (
     <PromptFrame
@@ -151,17 +200,11 @@ export function SelectView(props: {
       size={props.size}
     >
       {visibleChoices.map(({ choice, index }) => (
-        <Text
+        <ChoiceRow
           key={choice.value}
-          color={choice.disabled ? tuiTheme.colors.muted : undefined}
-          bold={index === focusedIndex && !choice.disabled}
-        >
-          {index === focusedIndex && !choice.disabled ? '› ' : '  '}
-          {choice.label}
-          {choice.disabled
-            ? `（${typeof choice.disabled === 'string' ? choice.disabled : '不可选'}）`
-            : ''}
-        </Text>
+          choice={choice}
+          focused={index === focusedIndex && !choice.disabled}
+        />
       ))}
     </PromptFrame>
   );
@@ -175,6 +218,9 @@ export function MultiSelectView(props: {
   size?: { columns: number; rows: number };
   onComplete: Complete<string[]>;
 }): React.JSX.Element {
+  const windowSize = useWindowSize();
+  const size = props.size ?? windowSize;
+  const inputActive = resolveTuiSizePolicy(size.columns, size.rows).mode !== 'too-small';
   const [focusedIndex, setFocusedIndex] = useState(() =>
     initialChoiceIndex(props.choices, props.defaultValues?.[0]));
   const [values, setValues] = useState(() => new Set(
@@ -184,9 +230,9 @@ export function MultiSelectView(props: {
   const allowBack = props.choices.some((choice) => choice.role === 'back');
   useGlobalPromptKeys({ mode: 'menu', allowBack, onComplete: props.onComplete });
   useInput((input, key) => {
-    if (key.upArrow) {
+    if (key.upArrow || input.toLowerCase() === 'k') {
       setFocusedIndex((value) => moveChoiceIndex(props.choices, value, -1));
-    } else if (key.downArrow) {
+    } else if (key.downArrow || input.toLowerCase() === 'j') {
       setFocusedIndex((value) => moveChoiceIndex(props.choices, value, 1));
     } else if (input === ' ') {
       const choice = props.choices[focusedIndex];
@@ -205,8 +251,13 @@ export function MultiSelectView(props: {
     } else if (key.return) {
       props.onComplete(selected([...values]));
     }
-  });
-  const visibleChoices = visibleChoiceEntries(props.choices, focusedIndex, props.pageSize);
+  }, { isActive: inputActive });
+  const visibleChoices = visibleChoiceEntries(
+    props.choices,
+    focusedIndex,
+    props.pageSize,
+    promptChoiceRowBudget(size.rows),
+  );
 
   return (
     <PromptFrame
@@ -215,16 +266,12 @@ export function MultiSelectView(props: {
       size={props.size}
     >
       {visibleChoices.map(({ choice, index }) => (
-        <Text
+        <ChoiceRow
           key={choice.value}
-          color={choice.disabled ? tuiTheme.colors.muted : undefined}
-          bold={index === focusedIndex && !choice.disabled}
-        >
-          {values.has(choice.value) ? '◆' : '◇'} {choice.label}
-          {choice.disabled
-            ? `（${typeof choice.disabled === 'string' ? choice.disabled : '不可选'}）`
-            : ''}
-        </Text>
+          choice={choice}
+          focused={index === focusedIndex && !choice.disabled}
+          marker={values.has(choice.value) ? '◆' : '◇'}
+        />
       ))}
     </PromptFrame>
   );

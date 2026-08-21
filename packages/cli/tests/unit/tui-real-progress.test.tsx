@@ -239,7 +239,7 @@ describe('real TUI progress chains', () => {
       event: (event) => progress.addEvent(event),
       notice: (notice) => progress.addNotice(notice),
     }, async () => {
-      const instance = render(<Dashboard controller={controller} onComplete={() => undefined} size={{ columns: 60, rows: 16 }} />);
+      const instance = render(<Dashboard controller={controller} onComplete={() => undefined} size={{ columns: 60, rows: 18 }} />);
       await nextTurn();
       await writeInput(instance, '\r', '\r', '\r');
       await waitForCondition(() => executeDone);
@@ -338,7 +338,7 @@ describe('real TUI progress chains', () => {
       event: (event) => progress.addEvent(event),
       notice: (notice) => progress.addNotice(notice),
     }, async () => {
-      const instance = render(<Dashboard controller={controller} onComplete={() => undefined} size={{ columns: 60, rows: 16 }} />);
+      const instance = render(<Dashboard controller={controller} onComplete={() => undefined} size={{ columns: 60, rows: 18 }} />);
       await nextTurn();
       await writeInput(instance, '\r', '\r', '\u001B[B', '\u001B[B', '\u001B[B', '\u001B[B', '\r');
       await waitForFrame(instance, 'mode · default/default · safe');

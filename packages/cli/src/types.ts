@@ -378,8 +378,40 @@ export interface PluginConfigSchemaField {
   max?: number;
 }
 
+export type PluginConfigPresentationValue = string | number | boolean;
+
+export interface PluginConfigPresentationGroup {
+  id: string;
+  title: string;
+  description?: string;
+  fields: string[];
+  advanced?: boolean;
+}
+
+export interface PluginConfigPresentationField {
+  valueLabels?: Record<string, string>;
+  recommendedValue?: PluginConfigPresentationValue;
+  placeholder?: string;
+  unit?: string;
+  advanced?: boolean;
+}
+
+export interface PluginConfigPresentationPreset {
+  id: string;
+  title: string;
+  description?: string;
+  values: Record<string, PluginConfigPresentationValue>;
+}
+
+export interface PluginConfigPresentation {
+  groups?: PluginConfigPresentationGroup[];
+  fields?: Record<string, PluginConfigPresentationField>;
+  presets?: PluginConfigPresentationPreset[];
+}
+
 export interface PluginConfigSchema {
   schema: Record<string, PluginConfigSchemaField>;
+  presentation?: PluginConfigPresentation;
 }
 
 export interface PlatformAgentOverrides<T> {

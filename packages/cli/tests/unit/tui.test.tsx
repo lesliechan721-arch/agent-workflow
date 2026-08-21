@@ -8,6 +8,7 @@ import { createInkPrompt } from '../../src/tui/prompt.js';
 import { resolveTuiKeyAction } from '../../src/tui/keys.js';
 import { resolveTuiSizePolicy } from '../../src/tui/layout.js';
 import type { TuiLaunchRequest, TuiRunner } from '../../src/tui/runner.js';
+import { MultiSelectView, SelectView } from '../../src/tui/views.js';
 
 afterEach(() => {
   cleanup();
@@ -67,15 +68,171 @@ function createPrompt(sessions: string[][]): {
 }
 
 describe('TUI foundation', () => {
-  it('applies the three-column, single-column, and minimum-size policies', () => {
-    expect(resolveTuiSizePolicy(110, 18).mode).toBe('three-column');
-    expect(resolveTuiSizePolicy(109, 18).mode).toBe('single-column');
-    expect(resolveTuiSizePolicy(60, 16).mode).toBe('single-column');
-    expect(resolveTuiSizePolicy(59, 16)).toMatchObject({
+  it('applies the standard, compact, and minimum-size policies', () => {
+    expect(resolveTuiSizePolicy(120, 30).mode).toBe('single-column');
+    expect(resolveTuiSizePolicy(80, 24).mode).toBe('single-column');
+    expect(resolveTuiSizePolicy(79, 24).mode).toBe('compact');
+    expect(resolveTuiSizePolicy(80, 23).mode).toBe('compact');
+    expect(resolveTuiSizePolicy(60, 18).mode).toBe('compact');
+    expect(resolveTuiSizePolicy(59, 18)).toMatchObject({
       mode: 'too-small',
-      message: expect.stringContaining('至少 60 列 × 16 行'),
+      message: expect.stringContaining('至少 60 列 × 18 行'),
     });
-    expect(resolveTuiSizePolicy(120, 15).mode).toBe('too-small');
+    expect(resolveTuiSizePolicy(120, 17).mode).toBe('too-small');
+  });
+
+  it('renders only the size hint below the minimum terminal size', async () => {
+    const tooNarrow = render(<SelectView
+      message="不应显示的标题"
+      choices={[{ value: 'a', label: '不应显示的选项' }]}
+      size={{ columns: 59, rows: 18 }}
+      onComplete={() => undefined}
+    />);
+    const tooShort = render(<SelectView
+      message="另一个不应显示的标题"
+      choices={[{ value: 'a', label: '另一个不应显示的选项' }]}
+      size={{ columns: 80, rows: 17 }}
+      onComplete={() => undefined}
+    />);
+    await nextTurn();
+
+    expect(tooNarrow.lastFrame()).toContain('请将终端调整到至少 60 列 × 18 行');
+    expect(tooNarrow.lastFrame()).not.toContain('不应显示的标题');
+    expect(tooNarrow.lastFrame()).not.toContain('不应显示的选项');
+    expect(tooShort.lastFrame()).toContain('请将终端调整到至少 60 列 × 18 行');
+    expect(tooShort.lastFrame()).not.toContain('另一个不应显示的标题');
+  });
+
+  it('ignores hidden select and multi-select business input below the minimum size', async () => {
+    const selectComplete = vi.fn();
+    const multiComplete = vi.fn();
+    const select = render(<SelectView
+      message="选择"
+      choices={[
+        { value: 'a', label: 'Alpha' },
+        { value: 'b', label: 'Beta' },
+      ]}
+      size={{ columns: 59, rows: 18 }}
+      onComplete={selectComplete}
+    />);
+    const multi = render(<MultiSelectView
+      message="选择多个"
+      choices={[
+        { value: 'a', label: 'Alpha' },
+        { value: 'b', label: 'Beta' },
+      ]}
+      size={{ columns: 59, rows: 18 }}
+      onComplete={multiComplete}
+    />);
+    await nextTurn();
+
+    for (const input of ['\u001B[B', 'j', ' ', '\r']) {
+      select.stdin.write(input);
+      multi.stdin.write(input);
+      await nextTurn();
+    }
+    expect(selectComplete).not.toHaveBeenCalled();
+    expect(multiComplete).not.toHaveBeenCalled();
+
+    select.stdin.write('q');
+    multi.stdin.write('q');
+    await nextTurn();
+    expect(selectComplete).toHaveBeenCalledWith({ action: 'exit', cancelled: false });
+    expect(multiComplete).toHaveBeenCalledWith({ action: 'exit', cancelled: false });
+  });
+
+  it('renders descriptions and keeps one focus sequence at 60 and 80 columns', async () => {
+    const choices = [
+      { value: 'alpha', label: 'Alpha', description: 'Alpha 的用途说明' },
+      { value: 'disabled', label: 'Disabled', description: '禁用项仍有说明', disabled: '当前不可用' },
+      { value: 'gamma', label: 'Gamma', description: 'Gamma 的用途说明' },
+    ];
+    const instances = [
+      { rows: 24, instance: render(<SelectView
+        message="选择插件"
+        choices={choices}
+        size={{ columns: 80, rows: 24 }}
+        onComplete={() => undefined}
+      />) },
+      { rows: 18, instance: render(<SelectView
+        message="选择插件"
+        choices={choices}
+        size={{ columns: 60, rows: 18 }}
+        onComplete={() => undefined}
+      />) },
+    ];
+    await nextTurn();
+
+    for (const { instance, rows } of instances) {
+      const initial = instance.lastFrame() ?? '';
+      expect(initial).toContain('Alpha 的用途说明');
+      expect(initial).toContain('禁用项仍有说明');
+      expect(initial).toContain('Disabled（当前不可用）');
+      expect(initial.match(/›/g)).toHaveLength(1);
+      expect(initial.split('\n').length).toBeLessThanOrEqual(rows);
+
+      instance.stdin.write('\u001B[B');
+      await nextTurn();
+      const moved = instance.lastFrame() ?? '';
+      expect(moved.match(/›/g)).toHaveLength(1);
+      expect(moved).toMatch(/›\s+Gamma/);
+    }
+  });
+
+  it('renders multi-select descriptions with a single focused choice', async () => {
+    const instance = render(<MultiSelectView
+      message="选择多个"
+      choices={[
+        { value: 'a', label: 'Alpha', description: '第一个能力说明' },
+        { value: 'b', label: 'Beta', description: '第二个能力说明' },
+      ]}
+      defaultValues={['a']}
+      size={{ columns: 60, rows: 18 }}
+      onComplete={() => undefined}
+    />);
+    await nextTurn();
+
+    expect(instance.lastFrame()).toContain('第一个能力说明');
+    expect(instance.lastFrame()).toContain('第二个能力说明');
+    expect(instance.lastFrame()?.match(/›/g)).toHaveLength(1);
+  });
+
+  it('keeps the last described choice and help visible in 60x18 long lists', async () => {
+    const choices = Array.from({ length: 18 }, (_, index) => ({
+      value: `plugin-${index}`,
+      label: `Plugin ${index}`,
+      description: `Plugin ${index} 的单行说明`,
+    }));
+    const instance = render(<SelectView
+      message="选择插件"
+      choices={choices}
+      pageSize={15}
+      size={{ columns: 60, rows: 18 }}
+      onComplete={() => undefined}
+    />);
+    const multi = render(<MultiSelectView
+      message="选择插件"
+      choices={choices}
+      pageSize={15}
+      size={{ columns: 60, rows: 18 }}
+      onComplete={() => undefined}
+    />);
+    await nextTurn();
+
+    for (let index = 1; index < choices.length; index += 1) {
+      instance.stdin.write('\u001B[B');
+      multi.stdin.write('\u001B[B');
+      await nextTurn();
+    }
+
+    expect(instance.lastFrame()).toMatch(/›\s+Plugin 17/);
+    expect(instance.lastFrame()).toContain('Plugin 17 的单行说明');
+    expect(instance.lastFrame()).toContain('Enter 选择');
+    expect(instance.lastFrame()?.split('\n').length).toBeLessThanOrEqual(18);
+    expect(multi.lastFrame()).toMatch(/›\s+◇ Plugin 17/);
+    expect(multi.lastFrame()).toContain('Plugin 17 的单行说明');
+    expect(multi.lastFrame()).toContain('Enter 完成');
+    expect(multi.lastFrame()?.split('\n').length).toBeLessThanOrEqual(18);
   });
 
   it('maps global navigation keys without consuming normal text input', () => {

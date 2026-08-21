@@ -265,7 +265,7 @@ cache publication 必须满足：
 
 ### Human/TUI progress
 
-- 裸 `aw` 使用响应式 Ink 仪表盘。宽视口同时显示插件、操作和目标/状态，窄视口使用单栏页面，过小视口只显示尺寸提示。状态信息位于目标详情，写操作位于操作区，配置位于插件配置页。
+- 裸 `aw` 使用响应式 Ink 仪表盘。所有可用尺寸使用同一套单列页面和焦点顺序；`80 × 24` 是标准尺寸，`60 × 18` 是最低尺寸，低于最低尺寸时只显示尺寸提示。低于标准尺寸的 compact 模式只调整换行和信息堆叠，不改变导航路径。状态信息位于目标详情，写操作位于操作区，配置位于插件配置页。
 - 默认仪表盘不加载组件诊断。`--verbose` 只显示 status v4 投影的安全 component key、state、error code 和脱敏 message，不显示 component path 或 label。
 - 仪表盘和向导用 multi-source `cacheFirst` 读取；重复插件名显示 qualified `pluginId`。交互写操作使用同一 namespaced runtime，不回退到旧 npm catalog 写路径。
 - 缺少必要参数的写命令只在真实 TTY、human 模式且非 CI 时进入向导。

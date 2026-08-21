@@ -408,20 +408,49 @@ describe('dashboard controller and reducer', () => {
 });
 
 describe('dashboard rendering and input', () => {
-  it('renders three-column, single-column, and too-small views with text status symbols', async () => {
+  it('renders standard, compact, and too-small single-column views with text status symbols', async () => {
     const value = loaded([item('demo', 'present')]);
-    const three = render(<Dashboard controller={fakeController(value)} onComplete={() => undefined} size={{ columns: 110, rows: 18 }} />);
-    const single = render(<Dashboard controller={fakeController(value)} onComplete={() => undefined} size={{ columns: 80, rows: 18 }} />);
-    const small = render(<Dashboard controller={fakeController(value)} onComplete={() => undefined} size={{ columns: 59, rows: 16 }} />);
+    const standard = render(<Dashboard controller={fakeController(value)} onComplete={() => undefined} size={{ columns: 110, rows: 24 }} />);
+    const compact = render(<Dashboard controller={fakeController(value)} onComplete={() => undefined} size={{ columns: 60, rows: 18 }} />);
+    const small = render(<Dashboard controller={fakeController(value)} onComplete={() => undefined} size={{ columns: 59, rows: 18 }} />);
+    await nextTurn();
     await nextTurn();
 
-    expect(three.lastFrame()).toContain('插件');
-    expect(three.lastFrame()).toContain('操作');
-    expect(three.lastFrame()).toContain('详情');
-    expect(three.lastFrame()).toContain('● 已就绪');
-    expect(single.lastFrame()).toContain('插件');
-    expect(single.lastFrame()).not.toContain('终端空间不足');
+    for (const instance of [standard, compact]) {
+      expect(instance.lastFrame()).toContain('插件');
+      expect(instance.lastFrame()).toContain('● 已就绪');
+      expect(instance.lastFrame()).not.toContain('操作');
+      expect(instance.lastFrame()).not.toMatch(/\n  详情\n/);
+      expect(instance.lastFrame()).not.toContain('终端空间不足');
+    }
     expect(small.lastFrame()).toContain('终端空间不足');
+  });
+
+  it('does not navigate, refresh, or execute hidden dashboard actions at 59x18', async () => {
+    const value = loaded([item('demo', 'absent')]);
+    const controller = fakeController(value);
+    const onComplete = vi.fn();
+    const instance = render(<Dashboard
+      controller={controller}
+      onComplete={onComplete}
+      size={{ columns: 60, rows: 18 }}
+    />);
+    await nextTurn();
+    await writeInput(instance, '\r', '\r');
+    instance.rerender(<Dashboard
+      controller={controller}
+      onComplete={onComplete}
+      size={{ columns: 59, rows: 18 }}
+    />);
+
+    await writeInput(instance, '\u001B[B', 'j', ' ', '\r', 'r', 'y');
+    expect(instance.lastFrame()).toContain('终端空间不足');
+    expect(controller.execute).not.toHaveBeenCalled();
+    expect(controller.load).toHaveBeenCalledTimes(1);
+    expect(onComplete).not.toHaveBeenCalled();
+
+    await writeInput(instance, 'q');
+    expect(onComplete).toHaveBeenCalledWith({ exitCode: 0 });
   });
 
   it('projects production status component identities without cwd or path labels', async () => {
@@ -451,13 +480,14 @@ describe('dashboard rendering and input', () => {
     ];
     const controller = fakeController(value);
     controller.cwd = 'C:\\Users\\alice\\Private Project';
-    const three = render(<Dashboard controller={controller} onComplete={() => undefined} size={{ columns: 110, rows: 18 }} />);
-    const single = render(<Dashboard controller={controller} onComplete={() => undefined} size={{ columns: 80, rows: 18 }} />);
+    const standard = render(<Dashboard controller={controller} onComplete={() => undefined} size={{ columns: 110, rows: 24 }} />);
+    const compact = render(<Dashboard controller={controller} onComplete={() => undefined} size={{ columns: 60, rows: 18 }} />);
     await nextTurn();
     await nextTurn();
-    await writeInput(single, '\r');
+    await writeInput(standard, '\r');
+    await writeInput(compact, '\r');
 
-    for (const frame of [three.lastFrame() ?? '', single.lastFrame() ?? '']) {
+    for (const frame of [standard.lastFrame() ?? '', compact.lastFrame() ?? '']) {
       expect(frame).toContain('当前项目');
       expect(frame).toContain('managed-block · ●');
       expect(frame).toContain('owned-text-file · ◐');
@@ -493,7 +523,7 @@ describe('dashboard rendering and input', () => {
     const write = deferred<Awaited<ReturnType<DashboardController['execute']>>>();
     const controller = fakeController(value);
     controller.execute = vi.fn(() => write.promise);
-    const instance = render(<Dashboard controller={controller} onComplete={() => undefined} size={{ columns: 60, rows: 16 }} />);
+    const instance = render(<Dashboard controller={controller} onComplete={() => undefined} size={{ columns: 60, rows: 18 }} />);
     await nextTurn();
 
     await writeInput(instance, '\r', '\r', '\u001B[B', '\u001B[B', '\r', 'y');
@@ -519,10 +549,10 @@ describe('dashboard rendering and input', () => {
     expect(instance.lastFrame()).toContain('结果：succeeded');
     expect(instance.lastFrame()).toContain('↓ 还有');
     expectTuiTextProjected(instance.frames.join('\n'));
-    expect(frameRows(instance)).toBeLessThanOrEqual(16);
+    expect(frameRows(instance)).toBeLessThanOrEqual(18);
   });
 
-  it('projects write warnings to one fixed summary in a 60x16 frame', async () => {
+  it('projects write warnings to one fixed summary in a 60x18 frame', async () => {
     const value = loaded([item('demo', 'absent')]);
     const controller = fakeController(value);
     controller.execute = vi.fn().mockResolvedValue({
@@ -530,7 +560,7 @@ describe('dashboard rendering and input', () => {
       targetResults: [],
       warnings: Array.from({ length: 12 }, (_, index) => `warning-${index}`),
     });
-    const instance = render(<Dashboard controller={controller} onComplete={() => undefined} size={{ columns: 60, rows: 16 }} />);
+    const instance = render(<Dashboard controller={controller} onComplete={() => undefined} size={{ columns: 60, rows: 18 }} />);
     await nextTurn();
     await writeInput(instance, '\r', '\r', '\r');
     await nextTurn();
@@ -538,7 +568,7 @@ describe('dashboard rendering and input', () => {
 
     expect(instance.lastFrame()).toContain('警告：收到 12 条警告');
     expect(instance.lastFrame()).toContain('PgUp/PgDn 输出');
-    expect(frameRows(instance)).toBeLessThanOrEqual(16);
+    expect(frameRows(instance)).toBeLessThanOrEqual(18);
   });
 
   it('scrolls dashboard progress from the first to last entry with exactly eight messages', async () => {
@@ -577,7 +607,7 @@ describe('dashboard rendering and input', () => {
       state: index === 13 ? 'error' as const : 'present' as const,
       ...(index === 13 ? { error: 'late failure' } : {}),
     }));
-    const instance = render(<Dashboard controller={fakeController(loaded([targetItem]))} onComplete={() => undefined} size={{ columns: 60, rows: 16 }} />);
+    const instance = render(<Dashboard controller={fakeController(loaded([targetItem]))} onComplete={() => undefined} size={{ columns: 60, rows: 18 }} />);
     await nextTurn();
     await writeInput(instance, '\r', ...Array.from({ length: 10 }, () => ']'));
 
@@ -624,7 +654,7 @@ describe('dashboard rendering and input', () => {
     controller.load = vi.fn()
       .mockResolvedValueOnce(loaded([oldItem]))
       .mockResolvedValueOnce(loaded([refreshedItem]));
-    const instance = render(<Dashboard controller={controller} onComplete={() => undefined} size={{ columns: 60, rows: 16 }} />);
+    const instance = render(<Dashboard controller={controller} onComplete={() => undefined} size={{ columns: 60, rows: 18 }} />);
     await nextTurn();
     await writeInput(instance, '\r', ...Array.from({ length: 5 }, () => ']'));
     expect(instance.lastFrame()).toContain('owned-text-file · ●');
@@ -649,7 +679,7 @@ describe('dashboard rendering and input', () => {
       .mockResolvedValueOnce(loaded([item('demo', 'absent')]))
       .mockImplementationOnce(() => stale.promise)
       .mockImplementationOnce(() => fresh.promise);
-    const instance = render(<Dashboard controller={controller} onComplete={() => undefined} size={{ columns: 60, rows: 16 }} />);
+    const instance = render(<Dashboard controller={controller} onComplete={() => undefined} size={{ columns: 60, rows: 18 }} />);
     await nextTurn();
     await writeInput(instance, '\r', '\r');
 
@@ -675,7 +705,7 @@ describe('dashboard rendering and input', () => {
     const failure = new Error('status token=hunter2');
     const controller = fakeController(loaded([item('demo', 'absent')]));
     controller.load = vi.fn().mockRejectedValue(failure);
-    const instance = render(<Dashboard controller={controller} onComplete={() => undefined} size={{ columns: 60, rows: 16 }} />);
+    const instance = render(<Dashboard controller={controller} onComplete={() => undefined} size={{ columns: 60, rows: 18 }} />);
     await nextTurn();
 
     expect(controller.reportError).toHaveBeenCalledWith(failure);
@@ -688,7 +718,7 @@ describe('dashboard rendering and input', () => {
     const controller = fakeController(value);
     const failure = new Error(unsafeTuiText);
     controller.execute = vi.fn().mockRejectedValue(failure);
-    const instance = render(<Dashboard controller={controller} onComplete={() => undefined} size={{ columns: 60, rows: 16 }} />);
+    const instance = render(<Dashboard controller={controller} onComplete={() => undefined} size={{ columns: 60, rows: 18 }} />);
     await nextTurn();
     await writeInput(instance, '\r', '\r', '\r');
     await nextTurn();
@@ -706,7 +736,7 @@ describe('dashboard rendering and input', () => {
     const controller = fakeController(value);
     controller.execute = vi.fn(() => write.promise);
     const onComplete = vi.fn();
-    const instance = render(<Dashboard controller={controller} onComplete={onComplete} size={{ columns: 60, rows: 16 }} />);
+    const instance = render(<Dashboard controller={controller} onComplete={onComplete} size={{ columns: 60, rows: 18 }} />);
     await nextTurn();
     await writeInput(instance, '\r', '\r', '\r', '\u0003');
     expect(onComplete).not.toHaveBeenCalled();
@@ -750,7 +780,7 @@ describe('dashboard rendering and input', () => {
     vi.mocked(controller.load)
       .mockResolvedValueOnce(loaded([item('demo', 'present')]))
       .mockRejectedValueOnce(statusFailure);
-    const instance = render(<Dashboard controller={controller} onComplete={() => undefined} size={{ columns: 60, rows: 16 }} />);
+    const instance = render(<Dashboard controller={controller} onComplete={() => undefined} size={{ columns: 60, rows: 18 }} />);
     await nextTurn();
     await writeInput(instance, '\r', '\r', '\u001B[B', '\u001B[B', '\u001B[B', '\u001B[B', '\r');
     await nextTurn();
@@ -772,7 +802,7 @@ describe('dashboard rendering and input', () => {
     const controller = withConfigController(loaded([item('demo', 'present')]));
     const failure = new Error(unsafeTuiText);
     vi.mocked(controller.saveConfig).mockRejectedValueOnce(failure);
-    const instance = render(<Dashboard controller={controller} onComplete={() => undefined} size={{ columns: 60, rows: 16 }} />);
+    const instance = render(<Dashboard controller={controller} onComplete={() => undefined} size={{ columns: 60, rows: 18 }} />);
     await nextTurn();
     await writeInput(instance, '\r', '\r', '\u001B[B', '\u001B[B', '\u001B[B', '\u001B[B', '\r');
     await nextTurn();
@@ -791,7 +821,7 @@ describe('dashboard rendering and input', () => {
     const controller = withConfigController(value);
     controller.readConfig = vi.fn(() => read.promise);
     const onComplete = vi.fn();
-    const instance = render(<Dashboard controller={controller} onComplete={onComplete} size={{ columns: 60, rows: 16 }} />);
+    const instance = render(<Dashboard controller={controller} onComplete={onComplete} size={{ columns: 60, rows: 18 }} />);
     await nextTurn();
     await writeInput(instance, '\r', '\r', '\u001B[B', '\u001B[B', '\u001B[B', '\u001B[B', '\r');
     await nextTurn();
@@ -818,7 +848,7 @@ describe('dashboard rendering and input', () => {
     if (operation === 'save') controller.saveConfig = vi.fn(() => pending.promise);
     else controller.resetConfig = vi.fn(() => pending.promise);
     const onComplete = vi.fn();
-    const instance = render(<Dashboard controller={controller} onComplete={onComplete} size={{ columns: 60, rows: 16 }} />);
+    const instance = render(<Dashboard controller={controller} onComplete={onComplete} size={{ columns: 60, rows: 18 }} />);
     await nextTurn();
     await writeInput(instance, '\r', '\r', '\u001B[B', '\u001B[B', '\u001B[B', '\u001B[B', '\r');
     await nextTurn();
@@ -874,7 +904,7 @@ describe('dashboard rendering and input', () => {
       },
     });
     controller.saveConfig = vi.fn().mockResolvedValue({ overallState: 'succeeded', targetResults: [], warnings: [] });
-    const instance = render(<Dashboard controller={controller} onComplete={() => undefined} size={{ columns: 60, rows: 16 }} />);
+    const instance = render(<Dashboard controller={controller} onComplete={() => undefined} size={{ columns: 60, rows: 18 }} />);
     await nextTurn();
     await writeInput(instance, '\r', '\r', '\u001B[B', '\u001B[B', '\u001B[B', '\u001B[B', '\r');
     await nextTurn();
@@ -914,7 +944,7 @@ describe('dashboard rendering and input', () => {
     };
     controller.readConfig = vi.fn().mockResolvedValue(configData);
     controller.saveConfig = vi.fn().mockResolvedValue({ overallState: 'succeeded', targetResults: [], warnings: [] });
-    const instance = render(<Dashboard controller={controller} onComplete={() => undefined} size={{ columns: 60, rows: 16 }} />);
+    const instance = render(<Dashboard controller={controller} onComplete={() => undefined} size={{ columns: 60, rows: 18 }} />);
     await nextTurn();
     await writeInput(instance, '\r', '\r', '\u001B[B', '\u001B[B', '\u001B[B', '\u001B[B', '\r');
     await nextTurn();
@@ -950,7 +980,7 @@ describe('dashboard rendering and input', () => {
       },
     });
     controller.saveConfig = vi.fn().mockResolvedValue({ overallState: 'succeeded', targetResults: [], warnings: [] });
-    const instance = render(<Dashboard controller={controller} onComplete={() => undefined} size={{ columns: 60, rows: 16 }} />);
+    const instance = render(<Dashboard controller={controller} onComplete={() => undefined} size={{ columns: 60, rows: 18 }} />);
     await nextTurn();
     await writeInput(instance, '\r', '\r', '\u001B[B', '\u001B[B', '\u001B[B', '\u001B[B', '\r');
     await nextTurn();
@@ -1037,7 +1067,7 @@ describe('dashboard rendering and input', () => {
     expectTuiTextProjected(instance.frames.join('\n'));
   });
 
-  it('keeps growing dashboard and config selections visible within 60x16 and 110x18 frames', async () => {
+  it('keeps growing dashboard and config selections visible within 60x18 and 110x24 frames', async () => {
     const manyItems = Array.from({ length: 18 }, (_, index) => item(`plugin-${index}`, 'present'));
     const selectedTarget = manyItems[0]!.targets[0]!;
     selectedTarget.components = Array.from({ length: 20 }, (_, index) => ({
@@ -1047,18 +1077,17 @@ describe('dashboard rendering and input', () => {
       state: 'present' as const,
     }));
     const value = loaded(manyItems);
-    const single = render(<Dashboard controller={fakeController(value)} onComplete={() => undefined} size={{ columns: 60, rows: 16 }} />);
-    const three = render(<Dashboard controller={fakeController(value)} onComplete={() => undefined} size={{ columns: 110, rows: 18 }} />);
+    const compact = render(<Dashboard controller={fakeController(value)} onComplete={() => undefined} size={{ columns: 60, rows: 18 }} />);
+    const standard = render(<Dashboard controller={fakeController(value)} onComplete={() => undefined} size={{ columns: 110, rows: 24 }} />);
     await nextTurn();
-    await writeInput(single, ...Array.from({ length: 17 }, () => '\u001B[B'));
-    await writeInput(three, ...Array.from({ length: 17 }, () => '\u001B[B'));
+    await writeInput(compact, ...Array.from({ length: 17 }, () => '\u001B[B'));
+    await writeInput(standard, ...Array.from({ length: 17 }, () => '\u001B[B'));
 
-    expect(single.lastFrame()).toContain('plugin-17');
-    expect(single.lastFrame()).toContain('↑ 还有');
-    expect(frameRows(single)).toBeLessThanOrEqual(16);
-    expect(three.lastFrame()).toContain('plugin-17');
-    expect(three.lastFrame()).toContain('↑ 还有');
-    expect(frameRows(three)).toBeLessThanOrEqual(18);
+    expect(compact.lastFrame()).toContain('plugin-17');
+    expect(compact.lastFrame()).toContain('↑ 还有');
+    expect(frameRows(compact)).toBeLessThanOrEqual(18);
+    expect(standard.lastFrame()).toContain('plugin-17');
+    expect(frameRows(standard)).toBeLessThanOrEqual(24);
 
     const targetItem = item('targets', 'present');
     targetItem.targets = Array.from({ length: 18 }, (_, index) => ({
@@ -1069,12 +1098,12 @@ describe('dashboard rendering and input', () => {
         platform: `platform-${index}` as never,
       },
     }));
-    const targets = render(<Dashboard controller={fakeController(loaded([targetItem]))} onComplete={() => undefined} size={{ columns: 60, rows: 16 }} />);
+    const targets = render(<Dashboard controller={fakeController(loaded([targetItem]))} onComplete={() => undefined} size={{ columns: 60, rows: 18 }} />);
     await nextTurn();
     await writeInput(targets, '\r', ...Array.from({ length: 17 }, () => '\u001B[B'));
     expect(targets.lastFrame()).toContain('platform-17/user');
     expect(targets.lastFrame()).toContain('↑ 还有');
-    expect(frameRows(targets)).toBeLessThanOrEqual(16);
+    expect(frameRows(targets)).toBeLessThanOrEqual(18);
 
     const configController = withConfigController(loaded([item('demo', 'present')]));
     const configData = await configController.readConfig(item('demo', 'present'), { scope: 'user', projectLayer: 'shared' });
@@ -1091,20 +1120,20 @@ describe('dashboard rendering and input', () => {
       valueState: 'missing', effectiveValue: undefined, sourceLayer: 'missing',
     }));
     configController.readConfig = vi.fn().mockResolvedValue(configData);
-    const config = render(<Dashboard controller={configController} onComplete={() => undefined} size={{ columns: 60, rows: 16 }} />);
+    const config = render(<Dashboard controller={configController} onComplete={() => undefined} size={{ columns: 60, rows: 18 }} />);
     await nextTurn();
     await writeInput(config, '\r', '\r', '\u001B[B', '\u001B[B', '\u001B[B', '\u001B[B', '\r');
     await nextTurn();
     await writeInput(config, ...Array.from({ length: 23 }, () => '\u001B[B'));
     expect(config.lastFrame()).toContain('Field 23');
     expect(config.lastFrame()).toContain('↑ 还有');
-    expect(frameRows(config)).toBeLessThanOrEqual(16);
+    expect(frameRows(config)).toBeLessThanOrEqual(18);
 
-    config.rerender(<Dashboard controller={configController} onComplete={() => undefined} size={{ columns: 59, rows: 16 }} />);
+    config.rerender(<Dashboard controller={configController} onComplete={() => undefined} size={{ columns: 59, rows: 18 }} />);
     expect(config.lastFrame()).toContain('终端空间不足');
-    config.rerender(<Dashboard controller={configController} onComplete={() => undefined} size={{ columns: 60, rows: 16 }} />);
+    config.rerender(<Dashboard controller={configController} onComplete={() => undefined} size={{ columns: 60, rows: 18 }} />);
     expect(config.lastFrame()).toContain('Field 23');
-    expect(frameRows(config)).toBeLessThanOrEqual(16);
+    expect(frameRows(config)).toBeLessThanOrEqual(18);
   });
 
   it('routes dashboard notices into the frame, suppresses session IO events, and keeps debug logging', async () => {

@@ -809,6 +809,188 @@ describe('manifest utils', () => {
     await expect(readPluginManifest(pluginRoot)).rejects.toThrow('min/max are only supported for number config');
   });
 
+  it('accepts config presentation and preserves the no-presentation contract', async () => {
+    const repoRoot = await makeTempRepo();
+    const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
+    const manifest = await readFixturePluginManifest(repoRoot);
+    const schema = {
+      mode: {
+        type: 'enum',
+        values: ['safe', 'fast'],
+        default: 'safe',
+      },
+      limit: {
+        type: 'number',
+        min: 1,
+        max: 20,
+      },
+      trace: {
+        type: 'boolean',
+      },
+    };
+
+    manifest.config = { schema };
+    await writeFixturePluginManifest(repoRoot, manifest);
+    await expect(readPluginManifest(pluginRoot)).resolves.toMatchObject({
+      manifest: {
+        config: {
+          schema,
+          presentation: undefined,
+        },
+      },
+    });
+
+    manifest.config = {
+      schema,
+      presentation: {
+        groups: [
+          {
+            id: 'general',
+            title: 'General',
+            description: 'Common settings.',
+            fields: ['mode', 'limit'],
+          },
+        ],
+        fields: {
+          mode: {
+            valueLabels: {
+              safe: 'Safe',
+              fast: 'Fast',
+            },
+            recommendedValue: 'safe',
+          },
+          limit: {
+            recommendedValue: 10,
+            placeholder: '1-20',
+            unit: 'minutes',
+            advanced: true,
+          },
+        },
+        presets: [
+          {
+            id: 'fast',
+            title: 'Fast review',
+            description: 'Only updates listed settings.',
+            values: {
+              mode: 'fast',
+              trace: true,
+            },
+          },
+        ],
+      },
+    };
+    await writeFixturePluginManifest(repoRoot, manifest);
+    await expect(readPluginManifest(pluginRoot)).resolves.toMatchObject({
+      manifest: {
+        config: manifest.config,
+      },
+    });
+  });
+
+  it('rejects invalid config presentation declarations', async () => {
+    const repoRoot = await makeTempRepo();
+    const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');
+    const manifest = await readFixturePluginManifest(repoRoot);
+    const schema = {
+      mode: {
+        type: 'enum',
+        values: ['safe', 'fast'],
+      },
+      limit: {
+        type: 'number',
+        min: 1,
+        max: 20,
+      },
+      trace: {
+        type: 'boolean',
+      },
+    };
+    const invalidCases = [
+      {
+        presentation: { unknown: true },
+        error: 'config.presentation: unknown field "unknown"',
+      },
+      {
+        presentation: {
+          groups: [{ id: 'general', title: 'General', fields: ['missing'] }],
+        },
+        error: 'unknown config key "missing"',
+      },
+      {
+        presentation: {
+          groups: [{ id: ' ', title: 'General', fields: [] }],
+        },
+        error: 'config.presentation.groups[0].id: expected a non-empty string',
+      },
+      {
+        presentation: {
+          groups: [
+            { id: 'general', title: 'General', fields: ['mode'] },
+            { id: 'general', title: 'Other', fields: ['limit'] },
+          ],
+        },
+        error: 'duplicate group id "general"',
+      },
+      {
+        presentation: {
+          groups: [
+            { id: 'general', title: 'General', fields: ['mode'] },
+            { id: 'advanced', title: 'Advanced', fields: ['mode'] },
+          ],
+        },
+        error: 'config key "mode" is assigned to more than one group',
+      },
+      {
+        presentation: {
+          fields: { missing: { advanced: true } },
+        },
+        error: 'config.presentation.fields: unknown config key "missing"',
+      },
+      {
+        presentation: {
+          fields: { mode: { valueLabels: { balanced: 'Balanced' } } },
+        },
+        error: 'unknown enum token "balanced"',
+      },
+      {
+        presentation: {
+          fields: { mode: { recommendedValue: 'balanced' } },
+        },
+        error: 'enum default must be one of values',
+      },
+      {
+        presentation: {
+          presets: [{ id: 'large', title: 'Large', values: { limit: 21 } }],
+        },
+        error: 'default is greater than max',
+      },
+      {
+        presentation: {
+          presets: [
+            { id: 'safe', title: 'Safe', values: { mode: 'safe' } },
+            { id: 'safe', title: 'Also safe', values: { trace: true } },
+          ],
+        },
+        error: 'duplicate preset id "safe"',
+      },
+      {
+        presentation: {
+          presets: [{ id: 'bad', title: 'Bad', values: { missing: true } }],
+        },
+        error: 'unknown config key "missing"',
+      },
+    ];
+
+    for (const invalidCase of invalidCases) {
+      manifest.config = {
+        schema,
+        presentation: invalidCase.presentation,
+      };
+      await writeFixturePluginManifest(repoRoot, manifest);
+      await expect(readPluginManifest(pluginRoot)).rejects.toThrow(invalidCase.error);
+    }
+  });
+
   it('rejects invalid dynamic artifact target declarations', async () => {
     const repoRoot = await makeTempRepo();
     const pluginRoot = path.join(repoRoot, 'plugins', 'git-commit');

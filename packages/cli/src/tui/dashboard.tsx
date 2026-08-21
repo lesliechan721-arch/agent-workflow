@@ -603,6 +603,17 @@ function ConfigPage(props: {
   }
 
   useInput((input, key) => {
+    if (!props.active) {
+      if (input === 'q' || (key.ctrl && input.toLowerCase() === 'c')) {
+        if (busy) {
+          exitAfterBusy.current = true;
+          setMessage('操作完成后退出。');
+        } else {
+          props.onExit();
+        }
+      }
+      return;
+    }
     if (busy) {
       if (key.ctrl && input.toLowerCase() === 'c') {
         exitAfterBusy.current = true;
@@ -673,7 +684,7 @@ function ConfigPage(props: {
     else if (input === 'R') setConfirm({ kind: 'reset' });
     else if (key.escape || input === 'b') requestLeave('back');
     else if (input === 'q' || (key.ctrl && input.toLowerCase() === 'c')) requestLeave('exit');
-  }, { isActive: props.active });
+  });
 
   function submitText(value: string): void {
     if (!field) return;
@@ -733,7 +744,7 @@ function ConfigPage(props: {
         </Text>;
       })}
       <ViewportHint direction="down" count={fieldWindow.hiddenBelow} />
-      {editing && (field?.type === 'enum' || field?.type === 'boolean') ? (
+      {props.active && editing && (field?.type === 'enum' || field?.type === 'boolean') ? (
         <Box flexDirection="column" height={editorRows} overflow="hidden">
           <Text wrap="truncate-end">选择 {field.label}</Text>
           <ViewportHint direction="up" count={editorWindow.hiddenAbove} />
@@ -745,7 +756,7 @@ function ConfigPage(props: {
           <ViewportHint direction="down" count={editorWindow.hiddenBelow} />
         </Box>
       ) : null}
-      {editing && field && field.type !== 'enum' && field.type !== 'boolean'
+      {props.active && editing && field && field.type !== 'enum' && field.type !== 'boolean'
         ? field.sensitive || field.type === 'file' || field.type === 'directory'
           ? <PasswordInput onSubmit={submitText} />
           : <TextInput
@@ -793,6 +804,7 @@ export function Dashboard(props: {
     try {
       const loaded = await props.controller.load();
       if (sequence !== loadSequence.current) return true;
+      setDetailsOffset(0);
       dispatch({ type: 'load-success', loaded });
       return true;
     } catch (error) {
@@ -853,7 +865,7 @@ export function Dashboard(props: {
   const outputWindow = messageViewport(outputLines.length, clampedOutputOffset, outputRows);
   const outputHintRows = Number(outputWindow.hiddenAbove > 0) + Number(outputWindow.hiddenBelow > 0);
   const bodyRows = Math.max(1, policy.rows - 3 - (activityText ? 1 : 0) - outputRows - outputHintRows - 1);
-  const innerPanelRows = Math.max(1, bodyRows - (policy.mode === 'three-column' ? 2 : 0));
+  const innerPanelRows = bodyRows;
   const targetListRows = Math.min(4, Math.max(2, Math.floor(innerPanelRows / 2)));
   const detailsRows = Math.max(0, innerPanelRows - targetListRows);
   const detailLines = targetDetailLines(item, target);
@@ -902,6 +914,17 @@ export function Dashboard(props: {
 
   useInput((input, key) => {
     if (state.page === 'config') return;
+    if (policy.mode === 'too-small') {
+      if (input === 'q' || (key.ctrl && input.toLowerCase() === 'c')) {
+        if (state.busy) {
+          exitAfterBusy.current = true;
+          dispatch({ type: 'busy-exit-after' });
+        } else {
+          props.onComplete({ exitCode: 0 });
+        }
+      }
+      return;
+    }
     if (state.busy) {
       if (key.ctrl && input.toLowerCase() === 'c') {
         exitAfterBusy.current = true;
@@ -928,7 +951,7 @@ export function Dashboard(props: {
       setDetailsOffset((value) => scrollOffset(value, detailLines.length, detailsRows, input === '[' ? -1 : 1));
       return;
     }
-    const currentRegion = policy.mode === 'single-column' ? state.singlePage : state.focus;
+    const currentRegion = state.singlePage;
     if (key.upArrow || input === 'k') dispatch({ type: 'move', region: currentRegion, delta: -1 });
     else if (key.downArrow || input === 'j') dispatch({ type: 'move', region: currentRegion, delta: 1 });
     else if (key.tab || input === 'h' || input === 'l') {
@@ -936,23 +959,18 @@ export function Dashboard(props: {
       const current = regions.indexOf(currentRegion);
       const delta = key.shift || input === 'h' ? -1 : 1;
       const next = regions[clampIndex(current + delta, regions.length)]!;
-      dispatch({ type: policy.mode === 'single-column' ? 'single-page' : 'focus',
-        ...(policy.mode === 'single-column' ? { page: next } : { region: next }) } as DashboardStateAction);
+      dispatch({ type: 'single-page', page: next });
     } else if (key.escape || input === 'b') {
       if (currentRegion === 'actions') {
-        dispatch({ type: policy.mode === 'single-column' ? 'single-page' : 'focus',
-          ...(policy.mode === 'single-column' ? { page: 'targets' } : { region: 'targets' }) } as DashboardStateAction);
+        dispatch({ type: 'single-page', page: 'targets' });
       } else if (currentRegion === 'targets') {
-        dispatch({ type: policy.mode === 'single-column' ? 'single-page' : 'focus',
-          ...(policy.mode === 'single-column' ? { page: 'plugins' } : { region: 'plugins' }) } as DashboardStateAction);
+        dispatch({ type: 'single-page', page: 'plugins' });
       }
     } else if (key.return) {
       if (currentRegion === 'plugins') {
-        dispatch({ type: policy.mode === 'single-column' ? 'single-page' : 'focus',
-          ...(policy.mode === 'single-column' ? { page: 'targets' } : { region: 'targets' }) } as DashboardStateAction);
+        dispatch({ type: 'single-page', page: 'targets' });
       } else if (currentRegion === 'targets') {
-        dispatch({ type: policy.mode === 'single-column' ? 'single-page' : 'focus',
-          ...(policy.mode === 'single-column' ? { page: 'actions' } : { region: 'actions' }) } as DashboardStateAction);
+        dispatch({ type: 'single-page', page: 'actions' });
       } else activateAction(actions[state.actionIndex]);
     }
   });
@@ -998,20 +1016,7 @@ export function Dashboard(props: {
     <Box flexDirection="column" paddingX={1} height={policy.rows} overflow="hidden">
       <DashboardHeader loaded={state.loaded} />
       {activityText ? <Text color={state.confirm ? tuiTheme.statusColors.warning : undefined} wrap="truncate-end">{activityText}</Text> : null}
-      {policy.mode === 'three-column' ? (
-        <Box height={bodyRows} overflow="hidden">
-          <Box width={28} borderStyle="single" borderColor={state.focus === 'plugins' ? tuiTheme.colors.accent : tuiTheme.colors.border} paddingX={1}>
-            <PluginList items={state.loaded?.items ?? []} selected={state.pluginIndex} focused={state.focus === 'plugins'} rows={innerPanelRows} />
-          </Box>
-          <Box width={24} borderStyle="single" borderColor={state.focus === 'actions' ? tuiTheme.colors.accent : tuiTheme.colors.border} paddingX={1}>
-            <ActionList actions={actions} selected={state.actionIndex} focused={state.focus === 'actions'} rows={innerPanelRows} />
-          </Box>
-          <Box flexGrow={1} borderStyle="single" borderColor={state.focus === 'targets' ? tuiTheme.colors.accent : tuiTheme.colors.border} paddingX={1}>
-            <TargetList item={item} selected={state.targetIndex} focused={state.focus === 'targets'} rows={targetListRows} />
-            <TargetDetails item={item} target={target} rows={detailsRows} offset={clampedDetailsOffset} />
-          </Box>
-        </Box>
-      ) : state.singlePage === 'plugins' ? (
+      {state.singlePage === 'plugins' ? (
         <PluginList items={state.loaded?.items ?? []} selected={state.pluginIndex} focused rows={bodyRows} />
       ) : state.singlePage === 'targets' ? (
         <Box flexDirection="column" height={bodyRows} overflow="hidden">
