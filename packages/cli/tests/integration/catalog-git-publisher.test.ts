@@ -22,6 +22,7 @@ import { calculateCatalogContentDigest } from '../../../../scripts/release/relea
 import { observeReleaseHistory } from '../../../../scripts/release/release-observe.mjs';
 import { prepareRelease } from '../../../../scripts/release/release-prepare.mjs';
 import { publishCommittedRelease } from '../../../../scripts/release/publish-plan.mjs';
+import { recoverRelease } from '../../../../scripts/release/release-recover.mjs';
 import { calculateCliTrainContentDigest } from '../../../../scripts/release/release-model.mjs';
 import * as pluginStaging from '../../scripts/plugin-staging.js';
 import * as catalogSnapshot from '../../src/utils/catalog-snapshot.js';
@@ -453,18 +454,36 @@ describe('Git catalog publisher', () => {
     const retry = await publishStagedCatalog(retryHistory, retryStage.outputRoot, { publicationMode: 'tag' });
     expect(retry.idempotent).toBe(true);
     expect(retry.commit).toBe(tagged.commit);
-    const promotion = await promoteCatalogTag({
-      mode: 'latest',
-      catalogVersion: '1.0.0',
-      currentCliVersion: '1.0.0',
+    const driftingCliTrain = vi.fn()
+      .mockResolvedValueOnce('1.0.0')
+      .mockResolvedValueOnce('1.0.1');
+    await expect(recoverRelease(['catalog', '1.0.0'], {
       remoteUrl,
       catalogModules,
+      assertReleaseWorktreeClean: async () => undefined,
+      resolvePublishedCliTrain: driftingCliTrain,
+    })).rejects.toThrow('changed from 1.0.0 to 1.0.1');
+    await expect(git(['--git-dir', remoteUrl, 'rev-parse', CATALOG_CHANNEL_REFS.latest]))
+      .rejects.toThrow();
+    expect(await git(['--git-dir', remoteUrl, 'rev-parse', CATALOG_TAG_FIRST_PENDING_REF]))
+      .toBe(tagged.commit);
+    const promotion = await recoverRelease(['catalog', '1.0.0'], {
+      remoteUrl,
+      catalogModules,
+      assertReleaseWorktreeClean: async () => undefined,
+      resolvePublishedCliTrain: async () => '1.0.0',
     });
     expect(promotion.promoted).toBe(true);
     expect(await git(['--git-dir', remoteUrl, 'rev-parse', CATALOG_CHANNEL_REFS.latest]))
       .toBe(tagged.commit);
     await expect(git(['--git-dir', remoteUrl, 'rev-parse', CATALOG_TAG_FIRST_PENDING_REF]))
       .rejects.toThrow();
+    await expect(recoverRelease(['catalog', '1.0.0'], {
+      remoteUrl,
+      catalogModules,
+      assertReleaseWorktreeClean: async () => undefined,
+      resolvePublishedCliTrain: async () => '1.0.0',
+    })).rejects.toThrow('requires the exact immutable tag and tag-first pending guard');
   });
 
   it('discovers and prepares recovery for a guarded beta tag from a stable target only', async () => {

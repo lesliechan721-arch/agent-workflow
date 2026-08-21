@@ -77,7 +77,8 @@ Options:
 
 The command only adds one static Skill. It does not edit the plugin README.
 During development, keep the current stable target when production content changes.
-In this repository, start a release train with pnpm release:target -- --plugin <name>=<version>.
+In this repository, start a release train with pnpm release:target -- --plugin <name>=patch.
+The bump can also be major or minor.
 release:prepare creates the candidate identity. Other workspaces use their release workflow to set the target.
 `);
 }
@@ -408,7 +409,7 @@ function main() {
       console.log('[WARN] Codex has no hidden-user-entry equivalent; Codex remains model-invocable and explicitly invocable.');
     }
     console.log('[OK] Keep the current stable target during development.');
-    console.log(`[OK] In this repository, start a release train with \`pnpm release:target -- --plugin ${pluginName}=<version>\`; \`release:prepare\` creates the candidate identity.`);
+    console.log(`[OK] In this repository, start a release train with \`pnpm release:target -- --plugin ${pluginName}=patch\`; the bump can also be major or minor. \`release:prepare\` creates the candidate identity.`);
     console.log(`[WARN] Plugin README was not changed: ${path.join(pluginRoot, 'README.md')}`);
   } catch (error) {
     if (installedSkill && lstatOrNull(finalSkillRoot)) {

@@ -75,9 +75,7 @@ export async function publishRelease(argv = process.argv.slice(2), options = {})
     );
   }
   assertVersionKind(currentCliVersion, mode === 'beta' ? 'prerelease' : 'stable');
-  await (options.assertReleaseWorktreeClean ?? assertReleaseWorktreeClean)({
-    allowVersionSync: true,
-  });
+  await (options.assertReleaseWorktreeClean ?? assertReleaseWorktreeClean)();
   const snapshotRunner = options.withReleaseBuildSnapshot ?? withReleaseBuildSnapshot;
   return snapshotRunner(async (snapshot) => {
     const headCommit = await (options.resolveReleaseHead ?? resolveReleaseHead)();
@@ -86,7 +84,7 @@ export async function publishRelease(argv = process.argv.slice(2), options = {})
       ?? assertCurrentReleaseIdentity)(
       snapshot,
       releaseIdentity,
-      { allowVersionSync: true },
+      {},
     );
     await (options.runCommand ?? runCommand)('pnpm', ['run', 'release:verify']);
     const remoteUrl = options.remoteUrl ?? OFFICIAL_CATALOG_PUBLISH_REMOTE;

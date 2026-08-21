@@ -50,6 +50,6 @@ metadata:
 
 4. 新建或重大变更 Skill：fresh context 运行 `author-agent-skill`。需要 Eval：fresh context 运行 `design-agent-skill-evals`，再用另一个 fresh context 运行 `audit-agent-skill-evals(preflight)`。AW adapter 拥有组合流程，`evalStageOwner=caller`。
 5. 写入插件 source truth；不手改 generated runtime、catalog 或 cache。README 由本 Skill 按 `aw-readme-authoring.md` 维护。
-6. 日常开发不直接提高 manifest 稳定版本；从目标工作区发现 build、test 和 materialization 命令，运行 `aw plugin validate`、适用的 `aw plugin status` 和直接测试。release 请求只声明目标由 workspace release workflow 设置；只有目标工作区实际提供 `release:target` / `release:prepare` 时才使用这些入口，不指示作者手改每次开发版本。
+6. 日常开发不直接提高 manifest 稳定版本；从目标工作区发现 build、test 和 materialization 命令，运行 `aw plugin validate`、适用的 `aw plugin status` 和直接测试。release 请求只声明目标由 workspace release workflow 设置；只有目标工作区实际提供 `release:status`、`release:target`、`release:prepare` 和 `release:publish` 时才使用这些正常入口，不指示作者手改每次开发版本，也不把历史 recovery 当作普通发布。
 7. Eval preflight 通过且用户授权、runner 可用时，生成 `EvalExecutionPlan` 交给 `run-agent-skill-evals`；运行后由独立 `audit-agent-skill-evals(result-triage)` 归因。缺少 runner 时 `evalEvidenceLevel=structural`，不实现备用 runner。
 8. 交付源码修改、version、验证、materialized artifacts、Eval audit/evidence 和未完成项；不输出独立 Review score、P0/P1 或 release pass。

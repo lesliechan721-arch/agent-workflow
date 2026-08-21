@@ -66,26 +66,47 @@ describe('public package version target gate', () => {
       .rejects.toThrow('package.json must not declare a version');
   });
 
-  it('retires public beta version-write and direct-publish commands in favor of a release plan', async () => {
-    const [makefile, packageRaw, readme] = await Promise.all([
+  it('exposes only plan release commands and one explicit recovery command', async () => {
+    // Static contract exception: package and Make are the public maintainer command discovery surfaces; behavior tests cannot prove that removed command names are absent from those registries.
+    const [makefile, packageRaw] = await Promise.all([
       fs.readFile(path.join(workspaceRoot, 'Makefile'), 'utf8'),
       fs.readFile(path.join(workspaceRoot, 'package.json'), 'utf8'),
-      fs.readFile(path.join(workspaceRoot, 'README.md'), 'utf8'),
     ]);
     const scripts = JSON.parse(packageRaw).scripts;
-    for (const target of ['version-beta', 'publish-cli-beta', 'publish-catalog-beta', 'beta-release']) {
+    expect(Object.keys(scripts).filter((key) =>
+      /^(?:version:|publish:cli$|release:(?:publish:(?:(?:cli|catalog):|beta$|latest$)|bootstrap:catalog:|promote:catalog:|stage:catalog$))/u
+        .test(key))).toEqual([]);
+    for (const target of [
+      'stage-catalog', 'version-release', 'publish-cli-release', 'publish-catalog-release',
+      'bootstrap-catalog-beta', 'bootstrap-catalog-release', 'promote-catalog-beta',
+      'promote-catalog-release', 'release',
+    ]) {
       expect(makefile).not.toMatch(new RegExp(`^${target}:`, 'mu'));
     }
+    expect(makefile).not.toContain('CLI_VERSION');
+    expect(makefile).not.toContain('CATALOG_VERSION');
     for (const script of [
-      'version:set:beta',
-      'release:publish:cli:beta',
-      'release:publish:catalog:beta',
-      'release:publish:beta',
+      'version:set:release',
+      'version:catalog:check:beta',
+      'version:catalog:check:release',
+      'release:stage:catalog',
+      'release:publish:cli:latest',
+      'release:publish:catalog:latest',
+      'release:bootstrap:catalog:beta',
+      'release:bootstrap:catalog:latest',
+      'release:promote:catalog:beta',
+      'release:promote:catalog:latest',
+      'release:publish:latest',
+      'publish:cli',
     ]) {
       expect(scripts).not.toHaveProperty(script);
     }
-    expect(readme).not.toMatch(/make (?:publish-catalog-beta|beta-release)\b/u);
-    expect(readme).toContain('pnpm release:prepare -- beta');
-    expect(readme).toContain('pnpm release:publish');
+    expect(scripts).toMatchObject({
+      'release:status': 'node scripts/release/release-status.mjs',
+      'release:target': 'node scripts/release/release-target.mjs',
+      'release:prepare': 'node scripts/release/release-prepare.mjs',
+      'release:publish': 'node scripts/release/publish-plan.mjs',
+      'release:recover': 'node scripts/release/release-recover.mjs',
+    });
   });
 });

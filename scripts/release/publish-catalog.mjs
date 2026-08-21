@@ -60,7 +60,7 @@ export async function publishCatalog(argv = process.argv.slice(2), options = {})
       ?? assertCurrentReleaseIdentity)(
       snapshot,
       releaseIdentity,
-      { allowVersionSync: false },
+      {},
     );
     return (options.withPrivateCatalogStageRoot ?? withPrivateCatalogStageRoot)(async (internalOutputRoot) => {
       const remoteUrl = options.remoteUrl;

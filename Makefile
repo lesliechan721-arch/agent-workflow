@@ -1,10 +1,8 @@
 .DEFAULT_GOAL := help
 
 PNPM ?= pnpm
-CLI_VERSION ?=
-CATALOG_VERSION ?=
 
-.PHONY: help install build test verify-local verify-cli verify-catalog verify-release pack-cli stage-catalog local-install version-release publish-cli-release publish-catalog-release bootstrap-catalog-beta bootstrap-catalog-release promote-catalog-beta promote-catalog-release release
+.PHONY: help install build test verify-local verify-cli verify-catalog verify-release pack-cli local-install
 
 help:
 	@printf '%s\n' \
@@ -16,16 +14,7 @@ help:
 		'make verify-catalog                  校验 catalog-only 发布链路' \
 		'make verify-release                  校验 CLI + catalog 组合发布链路' \
 		'make pack-cli                        生成 CLI tarball' \
-		'make stage-catalog CATALOG_VERSION=x.y.z[-beta.n] 生成本地 Git catalog 发布 staging' \
-		'make local-install                   打包并执行 npm 全局安装，验证 CLI 本地安装链路' \
-		'make version-release CLI_VERSION=x.y.z            同步正式版 CLI 版本到两个 package.json' \
-		'make publish-cli-release CLI_VERSION=x.y.z        发布 CLI 正式版（dist-tag: latest）' \
-		'make publish-catalog-release CATALOG_VERSION=x.y.z       发布 latest Git catalog' \
-		'make bootstrap-catalog-beta CATALOG_VERSION=x.y.z-beta.0   首次建立 official beta ref' \
-		'make bootstrap-catalog-release CATALOG_VERSION=x.y.z       首次建立 official latest ref' \
-		'make promote-catalog-beta CATALOG_VERSION=x.y.z-beta.0   从 immutable tag 恢复 beta promotion' \
-		'make promote-catalog-release CATALOG_VERSION=x.y.z       从 immutable tag 恢复 latest promotion' \
-		'make release CLI_VERSION=x.y.z CATALOG_VERSION=a.b.c                        组合发布 latest CLI 与 catalog'
+		'make local-install                   打包并执行 npm 全局安装，验证 CLI 本地安装链路'
 
 install:
 	$(PNPM) install
@@ -51,48 +40,5 @@ verify-release:
 pack-cli:
 	$(PNPM) run release:pack:cli
 
-stage-catalog:
-	@test -n "$(CATALOG_VERSION)" || (echo 'CATALOG_VERSION is required. Example: make stage-catalog CATALOG_VERSION=1.2.0-beta.1' && exit 1)
-	$(PNPM) run release:stage:catalog -- --catalog-version $(CATALOG_VERSION)
-
 local-install:
 	$(PNPM) run release:local
-
-version-release:
-	@test -n "$(CLI_VERSION)" || (echo 'CLI_VERSION is required. Example: make version-release CLI_VERSION=0.2.0' && exit 1)
-	$(PNPM) run version:set:release -- $(CLI_VERSION)
-
-publish-cli-release:
-	@test -n "$(CLI_VERSION)" || (echo 'CLI_VERSION is required. Example: make publish-cli-release CLI_VERSION=0.2.0' && exit 1)
-	$(PNPM) run version:set:release -- $(CLI_VERSION)
-	$(PNPM) run release:publish:cli:latest -- --cli-version $(CLI_VERSION)
-
-publish-catalog-release:
-	@test -n "$(CATALOG_VERSION)" || (echo 'CATALOG_VERSION is required. Example: make publish-catalog-release CATALOG_VERSION=1.2.0' && exit 1)
-	$(PNPM) run version:catalog:check:release -- $(CATALOG_VERSION)
-	$(PNPM) run release:publish:catalog:latest -- --catalog-version $(CATALOG_VERSION)
-
-bootstrap-catalog-beta:
-	@test -n "$(CATALOG_VERSION)" || (echo 'CATALOG_VERSION is required.' && exit 1)
-	$(PNPM) run version:catalog:check:beta -- $(CATALOG_VERSION)
-	$(PNPM) run release:bootstrap:catalog:beta -- --catalog-version $(CATALOG_VERSION)
-
-bootstrap-catalog-release:
-	@test -n "$(CATALOG_VERSION)" || (echo 'CATALOG_VERSION is required.' && exit 1)
-	$(PNPM) run version:catalog:check:release -- $(CATALOG_VERSION)
-	$(PNPM) run release:bootstrap:catalog:latest -- --catalog-version $(CATALOG_VERSION)
-
-promote-catalog-beta:
-	@test -n "$(CATALOG_VERSION)" || (echo 'CATALOG_VERSION is required.' && exit 1)
-	$(PNPM) run release:promote:catalog:beta -- --catalog-version $(CATALOG_VERSION)
-
-promote-catalog-release:
-	@test -n "$(CATALOG_VERSION)" || (echo 'CATALOG_VERSION is required.' && exit 1)
-	$(PNPM) run release:promote:catalog:latest -- --catalog-version $(CATALOG_VERSION)
-
-release:
-	@test -n "$(CLI_VERSION)" || (echo 'CLI_VERSION is required. Example: make release CLI_VERSION=0.2.0 CATALOG_VERSION=1.2.0' && exit 1)
-	@test -n "$(CATALOG_VERSION)" || (echo 'CATALOG_VERSION is required. Example: make release CLI_VERSION=0.2.0 CATALOG_VERSION=1.2.0' && exit 1)
-	$(PNPM) run version:set:release -- $(CLI_VERSION)
-	$(PNPM) run version:catalog:check:release -- $(CATALOG_VERSION)
-	$(PNPM) run release:publish:latest -- --cli-version $(CLI_VERSION) --catalog-version $(CATALOG_VERSION)

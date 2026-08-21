@@ -141,7 +141,7 @@ test('built CLI performs representative Author Skill operations', async () => {
     assert.match(help.stdout, new RegExp(`aw plugin ${command}`, 'u'));
     if (command === 'init' || command === 'add-skill') {
       assert.match(help.stdout, /keep the current stable target/u);
-      assert.match(help.stdout, /pnpm release:target -- --plugin <name>=<version>/u);
+      assert.match(help.stdout, /pnpm release:target -- --plugin <name>=patch/u);
       assert.match(help.stdout, /release:prepare.*candidate identity/u);
       assert.match(help.stdout, /another workspace.*release workflow/u);
     }
@@ -167,7 +167,7 @@ test('built CLI performs representative Author Skill operations', async () => {
   assert.match(addSkill.stdout, /Keep the current stable target during development/u);
   assert.match(
     addSkill.stdout,
-    /pnpm release:target -- --plugin cli-authoring-fixture=<version>/u,
+    /pnpm release:target -- --plugin cli-authoring-fixture=patch/u,
   );
   assert.match(addSkill.stdout, /release:prepare.*candidate identity/u);
   await runAw([

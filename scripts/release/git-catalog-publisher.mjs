@@ -945,6 +945,11 @@ async function promoteCatalogTagUnderLease(options) {
   if (!history.tag) {
     throw new Error(`Catalog tag refs/tags/catalog-v${options.catalogVersion} does not exist.`);
   }
+  if (options.requirePendingGuard && history.pending !== history.tag.commit) {
+    throw new Error(
+      'Catalog recovery requires the exact immutable tag and tag-first pending guard.',
+    );
+  }
   const current = history.channels[options.mode];
   if (current) {
     const relation = history.catalogModules.pluginStaging.compareStrictSemVer(
@@ -1034,5 +1039,5 @@ export async function promoteCatalogTag(options) {
 }
 
 export function catalogPromotionRecoveryCommand(mode, catalogVersion) {
-  return `pnpm run release:promote:catalog:${mode} -- --catalog-version ${catalogVersion}`;
+  return `pnpm release:recover -- catalog ${catalogVersion}`;
 }

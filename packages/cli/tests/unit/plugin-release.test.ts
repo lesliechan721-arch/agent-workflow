@@ -523,7 +523,7 @@ describe('plugin release workflow', () => {
     }
   });
 
-  it('rejects a release ledger that does not match the schema 3 snapshot entry', () => {
+  it('rejects a release ledger that does not match the schema 4 snapshot entry', () => {
     expect(() => validatePluginReleaseLedgerAgainstManifest(
       {
         schemaVersion: 2,

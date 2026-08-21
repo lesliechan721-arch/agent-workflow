@@ -113,7 +113,9 @@ export function parseTargetArgs(argv) {
     if (token === '--plugin') {
       const value = args.shift();
       const match = /^([a-z0-9]+(?:-[a-z0-9]+)*)=(major|minor|patch)$/.exec(value ?? '');
-      if (!match) throw new Error('--plugin requires <name>=major|minor|patch.');
+      if (!match) {
+        throw new Error('--plugin requires <name>=<bump>; bump must be major, minor, or patch.');
+      }
       if (changes.plugins.has(match[1])) {
         throw new Error(`Duplicate release target axis --plugin ${match[1]}.`);
       }

@@ -78,11 +78,9 @@ function assertBootstrapState(history) {
 
 export function bootstrapNextSteps() {
   return [
-    'Complete every required official bootstrap ref first:',
-    '  pnpm run release:bootstrap:catalog:beta -- --catalog-version <beta-version>',
-    '  pnpm run release:bootstrap:catalog:latest -- --catalog-version <stable-version>',
-    'Verify both Git refs through the Git provider, then publish the CLI version that uses Git catalog sources.',
-    'This command does not publish the CLI.',
+    'Bootstrap is an internal immutable release-plan transaction.',
+    'Use release:status, release:target, release:prepare, and release:publish for normal maintenance.',
+    'Bootstrap does not publish the CLI.',
   ];
 }
 
@@ -102,7 +100,7 @@ export async function bootstrapCatalog(argv = process.argv.slice(2), options = {
       ?? assertCurrentReleaseIdentity)(
       snapshot,
       releaseIdentity,
-      { allowVersionSync: false },
+      {},
     );
     return (options.withPrivateCatalogStageRoot ?? withPrivateCatalogStageRoot)(async (internalOutputRoot) => {
       await assertFresh();

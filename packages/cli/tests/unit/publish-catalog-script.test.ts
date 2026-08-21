@@ -159,7 +159,7 @@ describe('publish-catalog script', () => {
     expect(assertCurrentReleaseIdentity).toHaveBeenCalledWith(
       releaseSnapshot,
       expect.objectContaining({ inputDigest: releaseSnapshot.inputDigest }),
-      { allowVersionSync: false },
+      {},
     );
     expect(withCatalogPublicationLease).not.toHaveBeenCalled();
   });

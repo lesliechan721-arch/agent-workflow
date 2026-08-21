@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { isDeepStrictEqual, promisify } from 'node:util';
+import { promisify } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { gunzip } from 'node:zlib';
 
@@ -141,29 +141,6 @@ export async function writePackageJson(packageJsonPath, contents) {
 
 export async function readCliPackageJson() {
   return readPackageJson(cliPackageJsonPath);
-}
-
-export async function readEvalPackageJson() {
-  return readPackageJson(evalPackageJsonPath);
-}
-
-export async function syncCliVersion(version) {
-  assertValidVersion(version);
-
-  const [evalPackageJson, cliPackageJson] = await Promise.all([
-    readPackageJson(evalPackageJsonPath),
-    readPackageJson(cliPackageJsonPath),
-  ]);
-
-  evalPackageJson.version = version;
-  cliPackageJson.version = version;
-
-  await Promise.all([
-    writePackageJson(evalPackageJsonPath, evalPackageJson),
-    writePackageJson(cliPackageJsonPath, cliPackageJson),
-  ]);
-
-  return version;
 }
 
 export async function runCommand(command, args, options = {}) {
@@ -782,96 +759,27 @@ async function assertReleaseInputIndexFlagsSafe(options = {}) {
   }
 }
 
-function parseVersionSyncManifest(contents, relativePath, source) {
-  let manifest;
-  try {
-    manifest = JSON.parse(contents);
-  } catch (error) {
-    throw new Error(`Combined release ${relativePath} ${source} is not valid JSON.`, {
-      cause: error,
-    });
-  }
-  if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) {
-    throw new Error(`Combined release ${relativePath} ${source} must be a JSON object.`);
-  }
-  return manifest;
-}
-
-async function assertVersionSyncManifestEntry(entry, options = {}) {
-  if (entry.status !== ' M') {
-    throw new Error(
-      `Combined release ${entry.path} must be an unstaged regular-file modification from HEAD.`,
-    );
-  }
-  const cwd = options.cwd ?? repoRoot;
-  const manifestPath = path.join(cwd, entry.path);
-  const stats = await fs.lstat(manifestPath);
-  if (stats.isSymbolicLink() || !stats.isFile()) {
-    throw new Error(
-      `Combined release ${entry.path} must be an unstaged regular-file modification from HEAD.`,
-    );
-  }
-  const [{ stdout: headContents }, currentContents] = await Promise.all([
-    runReleaseGit(['show', `HEAD:${entry.path}`], { ...options, cwd }),
-    fs.readFile(manifestPath, 'utf8'),
-  ]);
-  const headManifest = parseVersionSyncManifest(headContents, entry.path, 'HEAD manifest');
-  const currentManifest = parseVersionSyncManifest(currentContents, entry.path, 'worktree manifest');
-  const { version: headVersion, ...headRest } = headManifest;
-  const { version: currentVersion, ...currentRest } = currentManifest;
-  if (
-    typeof headVersion !== 'string'
-    || typeof currentVersion !== 'string'
-    || headVersion === currentVersion
-    || !isDeepStrictEqual(headRest, currentRest)
-  ) {
-    throw new Error(
-      `Combined release ${entry.path} may change only the top-level version value relative to HEAD.`,
-    );
-  }
-  assertValidVersion(currentVersion);
-}
-
 export async function assertReleaseWorktreeClean(options = {}) {
   await assertBuildInputPathSafety(options.cwd ?? repoRoot);
   await assertReleaseInputIndexFlagsSafe(options);
-  const allowedDirtyPaths = new Set(options.allowVersionSync
-    ? [
-      relativeToRepo(evalPackageJsonPath),
-      relativeToRepo(cliPackageJsonPath),
-    ]
-    : []);
   const dirtyEntries = await resolveReleaseDirtyEntries(options);
   const dirtyPaths = dirtyEntries.map((entry) => entry.path);
   const ignoredInputs = await resolveIgnoredReleaseInputs(options);
-  const unexpectedDirtyPaths = [
-    ...dirtyPaths.filter((entryPath) => !allowedDirtyPaths.has(entryPath)),
-    ...ignoredInputs,
-  ];
+  const unexpectedDirtyPaths = [...dirtyPaths, ...ignoredInputs];
 
   if (unexpectedDirtyPaths.length > 0) {
-    const allowedPathsText = allowedDirtyPaths.size > 0
-      ? ` Only ${Array.from(allowedDirtyPaths).join(', ')} may be modified by the version sync step.`
-      : '';
     const unexpectedChanges = unexpectedDirtyPaths.map((path) => `- ${path}`).join('\n');
     throw new Error(
-      `Refusing to publish from a dirty working tree.${allowedPathsText}\nUnexpected changes:\n${unexpectedChanges}`,
+      `Refusing to publish from a dirty working tree.\nUnexpected changes:\n${unexpectedChanges}`,
     );
-  }
-
-  if (options.allowVersionSync) {
-    for (const entry of dirtyEntries) {
-      await assertVersionSyncManifestEntry(entry, options);
-    }
   }
 
   return dirtyPaths;
 }
 
 export async function resolveCliPublishGitCheckArgs() {
-  const dirtyPaths = await assertReleaseWorktreeClean({ allowVersionSync: true });
-
-  return dirtyPaths.length > 0 ? ['--no-git-checks'] : [];
+  await assertReleaseWorktreeClean();
+  return [];
 }
 
 export async function ensureDirectory(directoryPath) {
@@ -1374,10 +1282,7 @@ export async function assertCurrentReleaseHead(identity, options = {}) {
 export async function assertCurrentReleaseIdentity(snapshot, identity, options = {}) {
   assertReleaseSnapshotIdentity(snapshot, identity);
   const liveRoot = options.repoRoot ?? repoRoot;
-  const cleanOptions = {
-    cwd: liveRoot,
-    allowVersionSync: options.allowVersionSync ?? false,
-  };
+  const cleanOptions = { cwd: liveRoot };
   const assertClean = options.assertReleaseWorktreeClean ?? assertReleaseWorktreeClean;
   await assertClean(cleanOptions);
   const [headCommit, inputDigest, cliPackageDigest] = await Promise.all([

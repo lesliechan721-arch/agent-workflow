@@ -70,7 +70,9 @@ pnpm migration:cutover:plugin-development
 ## 验证与版本
 
 - 使用 `pnpm plugin:test <plugin>` 运行单插件确定性测试；使用 `pnpm plugin:test --all` 检查全部插件。
-- 日常开发运行 `aw plugin status`。production bundle 变化且稳定目标未变时返回通过的 `unreleasedChanges`，不要求立即改 version。release train 开始时使用 `pnpm release:target` 一次设置稳定目标；`pnpm release:prepare` 基于 ledger/registry 确认发布身份。
+- 日常开发运行 `aw plugin status`。production bundle 变化且稳定目标未变时返回通过的 `unreleasedChanges`，不要求立即改 version。release train 开始时使用 `pnpm release:target` 的 `major`、`minor`、`patch` 关键字一次设置稳定目标；`pnpm release:prepare` 基于 registry、immutable Catalog history 和 ledger 确认 candidate 身份。
+- 正常维护发布只使用 `release:status`、`release:target`、`release:prepare` 和 `release:publish`。`release:publish` 只消费已提交的 immutable plan，不接受 CLI 或 Catalog 版本参数，也不回写源码 package version。
+- `release:recover -- catalog <x.y.z[-beta.N]>` 只恢复历史 tag-first 事务。它要求 exact immutable tag、pending guard 和两个 CLI 包兼容且一致的已发布 dist-tag；不 stage 内容或创建新身份。
 - 新工作流的 generated standards、schemas 和 handoff contracts 必须通过 check-only contract test；CI 不自动改写生成文件。
 - CLI 作者 validator 的 JavaScript import scanner 是唯一实现；门禁覆盖 static import、export-from、dynamic import、`require()`、`require.resolve()`、非代码文本过滤和 `${...}` 代码扫描。
 - 三层插件应分别验证，并增加同时安装三个插件的组合测试。

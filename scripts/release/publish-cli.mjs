@@ -384,7 +384,7 @@ export async function publishCli(argv = process.argv.slice(2), options = {}) {
       ?? assertCurrentReleaseIdentity)(
       snapshot,
       releaseIdentity,
-      { allowVersionSync: true },
+      {},
     );
     const publishUnderLease = async (publicationLease) => {
       const publishedVersion = publicationLease && options.publishedVersion !== undefined

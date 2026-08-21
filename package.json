@@ -40,21 +40,10 @@
     "release:target": "node scripts/release/release-target.mjs",
     "release:prepare": "node scripts/release/release-prepare.mjs",
     "release:publish": "node scripts/release/publish-plan.mjs",
+    "release:recover": "node scripts/release/release-recover.mjs",
     "release:pack:cli": "node scripts/release/pack-cli.mjs",
-    "release:stage:catalog": "node scripts/release/stage-catalog.mjs",
     "release:install:local": "node scripts/release/install-local-tarball.mjs",
-    "release:local": "pnpm run release:verify:cli && pnpm run release:install:local",
-    "release:publish:cli:latest": "node scripts/release/publish-cli.mjs latest",
-    "release:publish:catalog:latest": "node scripts/release/publish-catalog.mjs latest",
-    "release:bootstrap:catalog:beta": "node scripts/release/bootstrap-catalog.mjs beta",
-    "release:bootstrap:catalog:latest": "node scripts/release/bootstrap-catalog.mjs latest",
-    "release:promote:catalog:beta": "node scripts/release/promote-catalog.mjs beta",
-    "release:promote:catalog:latest": "node scripts/release/promote-catalog.mjs latest",
-    "release:publish:latest": "node scripts/release/publish-release.mjs latest",
-    "publish:cli": "pnpm run release:publish:cli:latest",
-    "version:set:release": "node scripts/release/sync-version.mjs --kind stable",
-    "version:catalog:check:beta": "node scripts/release/sync-version.mjs --target catalog --kind prerelease",
-    "version:catalog:check:release": "node scripts/release/sync-version.mjs --target catalog --kind stable"
+    "release:local": "pnpm run release:verify:cli && pnpm run release:install:local"
   },
   "dependencies": {
     "yaml": "^2.8.3"

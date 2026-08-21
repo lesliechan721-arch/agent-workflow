@@ -899,7 +899,7 @@ describe('authoring tools', () => {
     expect(dualManifest.interface.capabilities).toContain('Skills');
     expect(dualAdded.stdout).toContain('Keep the current stable target during development');
     expect(dualAdded.stdout).toContain(
-      'pnpm release:target -- --plugin git-commit=<version>',
+      'pnpm release:target -- --plugin git-commit=patch',
     );
     expect(dualAdded.stdout).toContain('release:prepare` creates the candidate identity');
     await expect(fs.pathExists(path.join(tempRepo, '.changes'))).resolves.toBe(false);

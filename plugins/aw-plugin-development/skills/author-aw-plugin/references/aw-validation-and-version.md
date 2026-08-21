@@ -49,7 +49,7 @@ node scripts/prepare-aw-authoring-context.mjs <plugin-root> \
 
 - 新插件保留目标工作区规定的初始稳定版本。
 - 日常开发不因 production bundle 变化直接提高插件版本；`unreleasedChanges` 是通过状态。
-- release 请求只声明 target 由 workspace release workflow 设置。目标工作区提供 `release:target` / `release:prepare` 时使用这些入口；未提供时报告能力缺口，不指示作者为每次开发改 manifest version。
+- release 请求只声明 target 由 workspace release workflow 设置。目标工作区提供时，正常维护只使用 `release:status`、`release:target`、`release:prepare` 和 `release:publish`；未提供时报告能力缺口。不指示作者为每次开发改 manifest version，也不把显式历史 recovery 当作普通发布。
 
 ## 完成条件
 

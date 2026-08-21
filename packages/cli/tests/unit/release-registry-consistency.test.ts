@@ -95,7 +95,7 @@ describe('CLI release registry URL', () => {
       .toBeGreaterThan(steps.indexOf('pnpm test:smoke:pack:cli'));
   });
 
-  it('allows only explicit version-sync manifests in the combined release precheck', async () => {
+  it('rejects package version edits as ordinary release dirtiness', async () => {
     const { root, evalManifest, cliManifest } = await createReleaseFixture();
 
     await expect(assertReleaseWorktreeClean({ cwd: root })).resolves.toEqual([]);
@@ -110,53 +110,8 @@ describe('CLI release registry URL', () => {
         `${JSON.stringify({ ...cliManifest, version: '1.0.0' }, null, 2)}\n`,
       ),
     ]);
-    await expect(assertReleaseWorktreeClean({ cwd: root, allowVersionSync: true }))
-      .resolves.toEqual(['packages/agent-skill-eval/package.json', 'packages/cli/package.json']);
     await expect(assertReleaseWorktreeClean({ cwd: root }))
       .rejects.toThrow('Unexpected changes:\n- packages/agent-skill-eval/package.json\n- packages/cli/package.json');
-
-    await fs.writeFile(path.join(root, 'README.md'), 'dirty\n');
-    await expect(assertReleaseWorktreeClean({ cwd: root, allowVersionSync: true }))
-      .rejects.toThrow('Unexpected changes:\n- README.md');
-  });
-
-  it('rejects semantic manifest drift, staged manifests, deletion, rename, and symlinks', async () => {
-    const semantic = await createReleaseFixture();
-    await fs.writeFile(path.join(semantic.root, 'packages', 'agent-skill-eval', 'package.json'), `${JSON.stringify({
-      ...semantic.evalManifest,
-      version: '1.0.0',
-      exports: { '.': './changed.js' },
-    }, null, 2)}\n`);
-    await expect(assertReleaseWorktreeClean({ cwd: semantic.root, allowVersionSync: true }))
-      .rejects.toThrow('top-level version value');
-
-    const staged = await createReleaseFixture();
-    await fs.writeFile(path.join(staged.root, 'packages', 'agent-skill-eval', 'package.json'), `${JSON.stringify({
-      ...staged.evalManifest,
-      version: '1.0.0',
-    }, null, 2)}\n`);
-    await execFileAsync('git', ['add', 'packages/agent-skill-eval/package.json'], { cwd: staged.root });
-    await expect(assertReleaseWorktreeClean({ cwd: staged.root, allowVersionSync: true }))
-      .rejects.toThrow('must be an unstaged regular-file modification');
-
-    const deleted = await createReleaseFixture();
-    await fs.rm(path.join(deleted.root, 'packages', 'agent-skill-eval', 'package.json'));
-    await expect(assertReleaseWorktreeClean({ cwd: deleted.root, allowVersionSync: true }))
-      .rejects.toThrow('must be an unstaged regular-file modification');
-
-    const renamed = await createReleaseFixture();
-    await fs.rename(
-      path.join(renamed.root, 'packages', 'agent-skill-eval', 'package.json'),
-      path.join(renamed.root, 'packages', 'agent-skill-eval', 'package-renamed.json'),
-    );
-    await expect(assertReleaseWorktreeClean({ cwd: renamed.root, allowVersionSync: true }))
-      .rejects.toThrow('Unexpected changes');
-
-    const symlinked = await createReleaseFixture();
-    await fs.rm(path.join(symlinked.root, 'packages', 'agent-skill-eval', 'package.json'));
-    await fs.symlink('../cli/package.json', path.join(symlinked.root, 'packages', 'agent-skill-eval', 'package.json'));
-    await expect(assertReleaseWorktreeClean({ cwd: symlinked.root, allowVersionSync: true }))
-      .rejects.toThrow('registered release input contains a symlink: packages/agent-skill-eval/package.json');
   });
 
   it('ignores repository-redirecting Git environment and verifies the canonical worktree', async () => {
@@ -327,7 +282,6 @@ describe('CLI release registry URL', () => {
 
     await expect(assertCurrentReleaseIdentity(snapshot, identity, {
       repoRoot: root,
-      allowVersionSync: false,
     })).rejects.toThrow('live inputDigest');
     await expect(assertReleaseWorktreeClean({ cwd: root })).resolves.toEqual([]);
   });

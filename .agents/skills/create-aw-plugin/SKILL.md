@@ -65,7 +65,8 @@ compatibility: Requires the agent-workflows repository, Node.js 22+, and install
 5. **管理插件版本**
    - 新插件保留脚手架写入的初始稳定 version（默认 `0.1.0`）
    - 日常开发保持 `.agents-plugin/plugin.json` 中的当前稳定目标不变；不要为每次 production bundle 变化直接改 version
-   - release train 开始时，使用 `pnpm release:target -- --plugin <name>=<version>` 一次设置目标稳定版本；candidate 身份由 `pnpm release:prepare` 生成
+   - release train 开始时，使用 `pnpm release:target -- --plugin <name>=patch` 一次设置目标稳定版本；bump 也可选择 `major` 或 `minor`，candidate 身份由 `pnpm release:prepare` 生成
+   - workspace 正常发布只使用 `release:status`、`release:target`、`release:prepare` 和 `release:publish`；历史 `release:recover` 不是插件作者入口
    - `aw plugin add-skill` 只创建 Skill 骨架和必要 manifest 能力字段，不修改 manifest version
    - Skill 根的直接子目录 `evals/**`、`reports/**`、插件根 `reports/**` 和 test-only 文件不进入 production bundle；更深层的同名目录、Skill README 和其它 runtime 文件进入 production bundle
    - 完成条件：日常开发保持当前稳定 target；`aw plugin status` 准确报告 production 状态；release train 需要新 target 时由 workspace release workflow 一次设置

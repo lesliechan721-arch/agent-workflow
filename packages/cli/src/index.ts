@@ -995,7 +995,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .addHelpText('after', [
       '',
       'During development, keep the current stable target when production content changes.',
-      'In this repository, start a release train with `pnpm release:target -- --plugin <name>=<version>`; `release:prepare` creates the candidate identity.',
+      'In this repository, start a release train with `pnpm release:target -- --plugin <name>=patch`; the bump can also be major or minor. `release:prepare` creates the candidate identity.',
       'In another workspace, use its release workflow to set the target.',
       '',
     ].join('\n'))
@@ -1024,7 +1024,7 @@ export function buildProgram(options: CliRuntimeOptions = {}): Command {
     .addHelpText('after', [
       '',
       'During development, keep the current stable target when production content changes.',
-      'In this repository, start a release train with `pnpm release:target -- --plugin <name>=<version>`; `release:prepare` creates the candidate identity.',
+      'In this repository, start a release train with `pnpm release:target -- --plugin <name>=patch`; the bump can also be major or minor. `release:prepare` creates the candidate identity.',
       'In another workspace, use its release workflow to set the target.',
       '',
     ].join('\n'))

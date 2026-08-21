@@ -227,17 +227,32 @@ pnpm release:install:local
 pnpm release:install:local -- <cli.tgz> <eval.tgz>
 ```
 
-`pnpm build` 生成 `packages/cli/plugins-dist/` schema 4 本地 snapshot。catalog 最低 CLI 版本取插件声明与 schema 4 Git 分发 floor `0.1.0` 的最大值。`stage-catalog` 在 `.release/catalog-staging/catalog/` 生成带 `plugin-release-ledger.json` 的完整发布交接目录。
+`pnpm build` 生成 `packages/cli/plugins-dist/` schema 4 本地 snapshot。Catalog 最低 CLI 版本取插件声明与 schema 4 Git 分发 floor 的最大值。发布 plan 内部 staging 会生成带 release ledger 的完整 Catalog 交接目录；维护者不直接提供版本来运行 staging。
 
-发布必须先生成不可变 plan，再只提交该 plan，最后发布：
+正常维护只使用四个 release 命令。先检查插件和 release 状态。需要新稳定目标时，按轴使用 `major`、`minor` 或 `patch`：
 
 ```bash
+aw plugin status --all --base HEAD
+pnpm release:status
+pnpm release:target -- --cli patch --catalog patch --plugin <plugin-name>=patch
+git add release/version-targets.json <selected-source-paths>
+git commit -m "chore(release): set release targets"
 pnpm release:prepare -- beta
-# 只提交 release plan
+# 或：pnpm release:prepare -- stable
+git add release/current-plan.json <plan-path>
+git commit -m "chore(release): prepare immutable plan"
 pnpm release:publish
 ```
 
-bootstrap 只建立首次 official refs，不发布 CLI。它和 promotion recovery 都是旧 CLI compatibility 的维护者例外，不是普通发布入口。所有 Git catalog 写入口在远端 ref 写入前拒绝 dirty worktree；release clean/live gate 拒绝 registered source/build input 和 `scripts/release/**` 上的 `assume-unchanged`、`skip-worktree`，并和 snapshot 复制前门禁一起拒绝这些 input path chain 中的符号链接，但不拒绝生成的 `plugins-dist` 中通过 schema 4 校验的合法相对符号链接。catalog、bootstrap、组合和 standalone CLI 写入在 publication lease、catalog ref 或 npm 写入前重新核对 semantic clean 状态、live input/package digest 和 HEAD。Git publisher 使用固定 SHA-1 object format、私有 `core.symlinks=true` 配置、`catalog/latest`、`catalog/beta` 独立 orphan channel 和 immutable annotated `catalog-v<version>` tag；内部 `aw-release/publication-lock` branch 串行 catalog 和 CLI 发布事务，`aw-release/tag-first-pending` guard 保护 tag-first 到 promotion 的失败恢复窗口，二者都不是发布历史。不支持 atomic push 时不降级。release ledger 使用 schema 2 digest 语义，path identity 包含 node kind 和规范 Git mode；snapshot digest 把目录归一为 `040000`，并忽略 non-executable checkout 权限差异；validator 拒绝 Git commit 无法表示的空目录。合法相对 symlink 以 `120000` mode 和 target 原样通过 build snapshot、release staging 和 Git 发布；不能物化 symlink 的平台明确失败，不降级为普通文件。旧 schema 1 会被拒绝。publisher 在拒绝 `.gitattributes` 后强制 stage 全部 snapshot 文件，并验证 commit tree 完整匹配。组合发布的 promotion 失败时，错误会输出固定 recovery 命令。
+第一个提交保存 `release:target` 产生的 target 文件，以及本次选择的 Plugin manifest 或 package mirror 源码变更。然后才能运行 `release:prepare`。`<plan-path>` 使用 prepare 输出的 plan 文件路径。第二个提交必须只包含 immutable plan 和 current pointer。两次提交不能合并。`release:publish` 不接受版本参数，只消费已提交 plan。不要回写源码 package 版本来创建候选身份。
+
+只有历史 tag-first 事务已发布两个兼容 CLI 包，但 channel 尚未推进时，才运行显式恢复：
+
+```bash
+pnpm release:recover -- catalog <x.y.z[-beta.N]>
+```
+
+恢复命令只接受 canonical Catalog 版本。它从版本推断 beta/latest，要求 exact immutable tag、pending guard 和两个包一致的已发布 dist-tag。它不 stage 新内容，也不创建发布身份。所有 Git catalog 写入口在远端 ref 写入前拒绝 dirty worktree；release clean/live gate 拒绝 registered source/build input 和 `scripts/release/**` 上的 `assume-unchanged`、`skip-worktree`，并和 snapshot 复制前门禁一起拒绝这些 input path chain 中的符号链接。Git publisher 使用固定 SHA-1 object format、私有 `core.symlinks=true` 配置、独立 channel、immutable annotated tag、publication lock 和 tag-first pending guard。不支持 atomic push 时不降级。
 
 新 CLI 只读取 schema 1 Git/path sources。默认 `official` URL 是 `https://github.com/lesliechan721-arch/agent-workflow.git`；stable 使用 `refs/heads/catalog/latest`，prerelease 使用 `refs/heads/catalog/beta`。旧 npm catalog packages 在 cutover 后冻结，不删除或 unpublish，也不再更新。
 

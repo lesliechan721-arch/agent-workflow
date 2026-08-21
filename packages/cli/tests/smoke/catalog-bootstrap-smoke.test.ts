@@ -39,12 +39,14 @@ it('bootstraps both orphan channels, confirms idempotency, and fetches each thro
         previousReleaseLedger: pluginStaging.PluginReleaseLedger;
         releaseIdentity: object;
         snapshot: object;
+        legacyPublishedIdentity: boolean;
       }) => {
         return stageCatalogRelease(argv, {
           internalOutputRoot: options.internalOutputRoot,
           previousReleaseLedger: options.previousReleaseLedger,
           releaseIdentity: options.releaseIdentity,
           snapshot: options.snapshot,
+          legacyPublishedIdentity: options.legacyPublishedIdentity,
         });
       },
     },

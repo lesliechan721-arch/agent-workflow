@@ -33,7 +33,7 @@ AW 版本管理里有三套身份，不能混用：
 - Source snapshot version：schema 4 `catalog-manifest.json` 的版本，代表一次 source 快照。schema 3 是被拒绝的旧格式。
 - Plugin version：单个插件 manifest 的 `version`，代表该插件 artifact 的不可变身份。
 
-插件更新通过 schema 4 source snapshot 分发，不要求同步发布 CLI。`pnpm build` 在 `packages/cli/plugins-dist/` 生成可验证的本地 schema 4 snapshot；开发态 snapshot version 使用 CLI package version。`make stage-catalog CATALOG_VERSION=<version>` 在 `.release/catalog-staging/catalog/` 生成带 release ledger 的发布交接目录。Git publish 和首次 bootstrap 是维护者发布步骤，不是插件作者入口。
+插件更新通过 schema 4 source snapshot 分发，不要求同步发布 CLI。`pnpm build` 在 `packages/cli/plugins-dist/` 生成可验证的本地 schema 4 snapshot；开发态 snapshot version 使用 CLI package version。release plan 内部 staging 生成带 ledger 的发布交接目录。正常维护只使用 `release:status`、`release:target`、`release:prepare` 和 `release:publish`；不向 stage/publish 内核传任意版本，也不回写源码 package version。
 
 最小示例：
 
@@ -69,7 +69,9 @@ aw plugin status \
 `validate` 和 `status` 在读取 manifest 前检查 repo/plugin root、`.agents-plugin`
 和 manifest 的完整路径链；这些节点必须是仓库内预期类型，不能用符号链接重定向。
 
-新插件保留 manifest 中的初始稳定 version，脚手架默认使用 `0.1.0`。日常开发保持当前稳定目标不变，不为每次 production bundle 变化直接改 version。release train 开始时，使用 `pnpm release:target` 一次设置目标；发布身份由 `pnpm release:prepare` 基于 ledger/registry 确认。源码 manifest 是目标稳定版本的唯一真值。build metadata 不提高 SemVer precedence，因此源码 version 禁止 prerelease 和 build metadata。
+新插件保留 manifest 中的初始稳定 version，脚手架默认使用 `0.1.0`。日常开发保持当前稳定目标不变，不为每次 production bundle 变化直接改 version。release train 开始时，使用 `pnpm release:target -- --plugin <name>=patch` 一次设置目标；bump 也可选择 `major` 或 `minor`。candidate 身份由 `pnpm release:prepare` 基于 registry、immutable Catalog history 和 ledger 确认。源码 manifest 是目标稳定版本的唯一真值。build metadata 不提高 SemVer precedence，因此源码 version 禁止 prerelease 和 build metadata。
+
+`release:publish` 只消费已提交的 immutable plan，拒绝 CLI/Catalog 版本参数。历史 tag-first 事务只有在 exact immutable tag、pending guard 和两个 CLI 包一致且兼容的已发布 dist-tag 都存在时，才可以运行 `pnpm release:recover -- catalog <x.y.z[-beta.N]>`。恢复不 stage 内容或创建新身份。
 
 `aw plugin status` 用当前 CLI 的 staging bundler 分别物化 Git 基线插件和工作树插件，再忽略 plugin version 字段本身比较 production bundle。若 Git base 和 current workspace 都有完整 `packages/cli` source，它分别绑定两侧 registry 和 provider version；单侧 ownership 或 partial source 失败。两侧都没有时，工具从同一个经验证的 installed CLI provider 独立物化两个相同身份的 root，不让 base 复制或回退到 current root。production 变化但 version 相同时返回通过的 `unreleasedChanges`；版本下降、非稳定 SemVer、同 precedence 不同字符串或物化错误失败；只改 version 时返回通过的 `versionOnly` warning。Skill `evals/**`、插件 `reports/**` 和 test-only 文件由 bundler 排除；README、Skill、manifest 和 runtime 脚本会改变 production identity。JSON 输出使用 schema 3，声明 `policy: development`。deprecated `check-versions` 执行同一策略和 JSON 合同。
 
@@ -399,14 +401,14 @@ CLI 入口和输出对作者的影响：
   ├── claude/                        支持 Claude 时存在
   └── codex/                         支持 Codex 时存在
            │
-           │  make stage-catalog CATALOG_VERSION=<version>
+           │  release plan 内部 staging
            ▼
 发布 staging（`.release/catalog-staging/catalog/`）
   catalog-manifest.json              schema 4；使用显式发布版本
   plugin-release-ledger.json
   .agents/ + .claude-plugin/ + plugins/<name>/
            │
-           │  Git publisher（catalog-only / combined / first bootstrap）
+           │  plan publisher 内部事务
            ▼
 Git catalog source
            │
@@ -418,7 +420,7 @@ Git catalog source
   <AW_HOME>/plugin-config/<sourceId>/<pluginName>/config.json
 ```
 
-这些层各有职责。Git publisher 把 schema 4 snapshot 发布到独立的 `catalog/beta` 或 `catalog/latest` channel，并用 immutable annotated catalog tag 保存版本身份。first bootstrap 只由维护者建立首次 official refs；后续使用普通 catalog-only 或 combined release。插件作者仍只维护 `plugins/<name>/` 源码和稳定 plugin version，不手改 remote refs、release ledger、source config 或 cache。旧 npm catalog packages 是冻结的发布历史，不是当前分发真值。
+这些层各有职责。plan publisher 把 schema 4 snapshot 发布到独立的 `catalog/beta` 或 `catalog/latest` channel，并用 immutable annotated catalog tag 保存版本身份。bootstrap、catalog-only、combined 和 promotion 是 plan/recovery 内核，不是公开正常入口。插件作者仍只维护 `plugins/<name>/` 源码和稳定 plugin version，不手改 remote refs、release ledger、source config 或 cache。旧 npm catalog packages 是冻结的发布历史，不是当前分发真值。
 
 project shared config 位于 `.agent-workflows/plugin-config/<sourceId>/<pluginName>/config.json`，可提交；project local 使用 `.agent-workflows/plugin-config.local/<sourceId>/<pluginName>/config.json`，默认应被 ignore。两者都使用 schema 2 source envelope。平台输出通过 owner schema 2 marker 保存 `sourceId` 和 qualified plugin identity。
 

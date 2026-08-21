@@ -595,7 +595,7 @@ describe('combined release script', () => {
         promoteCatalogTag: async () => { throw new Error('promotion failed'); },
       },
     )).rejects.toThrow(
-      'Recover with: pnpm run release:promote:catalog:latest -- --catalog-version 2.0.0',
+      'Recover with: pnpm release:recover -- catalog 2.0.0',
     );
   });
 
