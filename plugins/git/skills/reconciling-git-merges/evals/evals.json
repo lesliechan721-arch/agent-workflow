@@ -25,7 +25,9 @@
       ],
       "oracle": {
         "rationale": "Skill 要求证据不足时保留待决冲突，不发明产品行为，也不完成 merge。",
-        "rule_refs": ["SKILL.md:8-14"],
+        "rule_refs": [
+          "SKILL.md:8-14"
+        ],
         "confidence": "high",
         "allowed_variance": "允许不同调查顺序和决策请求措辞；必须保留未解决状态、双方值和未提交历史。",
         "minimal_counterexample": "仅增加一项明确且有权威依据的 retention 优先级后，应解决冲突、验证并完成 merge。"
@@ -49,7 +51,9 @@
       ],
       "oracle": {
         "rationale": "Skill 要求 clean merge 仍检查相关行为，保留双方意图并验证组合结果。",
-        "rule_refs": ["SKILL.md:8-14"],
+        "rule_refs": [
+          "SKILL.md:8-14"
+        ],
         "confidence": "high",
         "allowed_variance": "允许不同等价实现；必须保留 fast path、动态派发、通过测试并只创建一个双父 merge commit。"
       }
@@ -72,7 +76,9 @@
       ],
       "oracle": {
         "rationale": "Skill 明确要求跨文件追踪契约，并只做该交互需要的集成修改。",
-        "rule_refs": ["SKILL.md:8-14"],
+        "rule_refs": [
+          "SKILL.md:8-14"
+        ],
         "confidence": "high",
         "allowed_variance": "允许在等价边界转换；必须修复分值与元的契约、通过测试并完成 merge。"
       }
@@ -95,7 +101,9 @@
       ],
       "oracle": {
         "rationale": "Skill 要求 analysis-only 场景不改变 refs、index 或 worktree，同时仍识别跨文件契约风险。",
-        "rule_refs": ["SKILL.md:6-12"],
+        "rule_refs": [
+          "SKILL.md:6-12"
+        ],
         "confidence": "high",
         "allowed_variance": "允许不同分析结构；仓库状态必须逐字节保持，且报告必须识别分值与元的契约。",
         "minimal_counterexample": "仅将授权改为执行 merge 后，允许在保护无关本地修改的前提下完成聚焦集成。"

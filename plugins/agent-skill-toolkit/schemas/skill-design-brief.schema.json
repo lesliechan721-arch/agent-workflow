@@ -15,8 +15,8 @@
     "invocationIntent",
     "targetProfiles",
     "allowedFiles",
-    "evalStrategy"
-    ,"evalStageOwner"
+    "evalStrategy",
+    "evalStageOwner"
   ],
   "properties": {
     "schemaVersion": {
@@ -91,7 +91,10 @@
       ]
     },
     "evalStageOwner": {
-      "enum": ["author-agent-skill", "caller"]
+      "enum": [
+        "author-agent-skill",
+        "caller"
+      ]
     }
   },
   "additionalProperties": false

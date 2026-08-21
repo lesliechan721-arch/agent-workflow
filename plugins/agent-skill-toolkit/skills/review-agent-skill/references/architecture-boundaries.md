@@ -1,4 +1,4 @@
-# Architecture Boundaries and State-Machine Risk
+# 架构边界和状态机风险
 
 只在 Skill 涉及异步生命周期、重试、跨 actor 通信、权限或复杂工具编排时读取。
 

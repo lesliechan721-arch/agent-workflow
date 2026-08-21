@@ -18,8 +18,17 @@
       "provenance": "representative-synthetic",
       "scenario_family": "core",
       "unit_under_test": "description",
-      "preconditions": {"target_available": true},
-      "oracle": {"rationale": "请求主要交付与该 Skill 一致。", "rule_refs": ["SKILL.md description"], "confidence": "high", "allowed_variance": "可组合下游能力，但顶层 owner 和权限必须正确。"}
+      "preconditions": {
+        "target_available": true
+      },
+      "oracle": {
+        "rationale": "请求主要交付与该 Skill 一致。",
+        "rule_refs": [
+          "SKILL.md description"
+        ],
+        "confidence": "high",
+        "allowed_variance": "可组合下游能力，但顶层 owner 和权限必须正确。"
+      }
     },
     {
       "id": "prompt_review",
@@ -31,8 +40,17 @@
       "provenance": "representative-synthetic",
       "scenario_family": "core",
       "unit_under_test": "description",
-      "preconditions": {"target_available": true},
-      "oracle": {"rationale": "请求主要交付与该 Skill 一致。", "rule_refs": ["SKILL.md description"], "confidence": "high", "allowed_variance": "可组合下游能力，但顶层 owner 和权限必须正确。"}
+      "preconditions": {
+        "target_available": true
+      },
+      "oracle": {
+        "rationale": "请求主要交付与该 Skill 一致。",
+        "rule_refs": [
+          "SKILL.md description"
+        ],
+        "confidence": "high",
+        "allowed_variance": "可组合下游能力，但顶层 owner 和权限必须正确。"
+      }
     },
     {
       "id": "role_delta",
@@ -44,8 +62,17 @@
       "provenance": "representative-synthetic",
       "scenario_family": "core",
       "unit_under_test": "description",
-      "preconditions": {"target_available": true},
-      "oracle": {"rationale": "请求主要交付与该 Skill 一致。", "rule_refs": ["SKILL.md description"], "confidence": "high", "allowed_variance": "可组合下游能力，但顶层 owner 和权限必须正确。"}
+      "preconditions": {
+        "target_available": true
+      },
+      "oracle": {
+        "rationale": "请求主要交付与该 Skill 一致。",
+        "rule_refs": [
+          "SKILL.md description"
+        ],
+        "confidence": "high",
+        "allowed_variance": "可组合下游能力，但顶层 owner 和权限必须正确。"
+      }
     },
     {
       "id": "reference_audit",
@@ -57,8 +84,17 @@
       "provenance": "representative-synthetic",
       "scenario_family": "core",
       "unit_under_test": "description",
-      "preconditions": {"target_available": true},
-      "oracle": {"rationale": "请求主要交付与该 Skill 一致。", "rule_refs": ["SKILL.md description"], "confidence": "high", "allowed_variance": "可组合下游能力，但顶层 owner 和权限必须正确。"}
+      "preconditions": {
+        "target_available": true
+      },
+      "oracle": {
+        "rationale": "请求主要交付与该 Skill 一致。",
+        "rule_refs": [
+          "SKILL.md description"
+        ],
+        "confidence": "high",
+        "allowed_variance": "可组合下游能力，但顶层 owner 和权限必须正确。"
+      }
     },
     {
       "id": "claude_review",
@@ -70,8 +106,17 @@
       "provenance": "representative-synthetic",
       "scenario_family": "core",
       "unit_under_test": "description",
-      "preconditions": {"target_available": true},
-      "oracle": {"rationale": "请求主要交付与该 Skill 一致。", "rule_refs": ["SKILL.md description"], "confidence": "high", "allowed_variance": "可组合下游能力，但顶层 owner 和权限必须正确。"}
+      "preconditions": {
+        "target_available": true
+      },
+      "oracle": {
+        "rationale": "请求主要交付与该 Skill 一致。",
+        "rule_refs": [
+          "SKILL.md description"
+        ],
+        "confidence": "high",
+        "allowed_variance": "可组合下游能力，但顶层 owner 和权限必须正确。"
+      }
     },
     {
       "id": "rewrite",
@@ -83,8 +128,18 @@
       "provenance": "boundary",
       "scenario_family": "author-review",
       "unit_under_test": "description",
-      "preconditions": {"target_available": true},
-      "oracle": {"rationale": "请求由相邻能力拥有。", "rule_refs": ["SKILL.md description"], "confidence": "high", "allowed_variance": "可组合下游能力，但顶层 owner 和权限必须正确。", "minimal_counterexample": "改变主要交付后标签翻转。"}
+      "preconditions": {
+        "target_available": true
+      },
+      "oracle": {
+        "rationale": "请求由相邻能力拥有。",
+        "rule_refs": [
+          "SKILL.md description"
+        ],
+        "confidence": "high",
+        "allowed_variance": "可组合下游能力，但顶层 owner 和权限必须正确。",
+        "minimal_counterexample": "改变主要交付后标签翻转。"
+      }
     },
     {
       "id": "skill_review",
@@ -96,8 +151,18 @@
       "provenance": "boundary",
       "scenario_family": "skill-review",
       "unit_under_test": "description",
-      "preconditions": {"target_available": true},
-      "oracle": {"rationale": "请求由相邻能力拥有。", "rule_refs": ["SKILL.md description"], "confidence": "high", "allowed_variance": "可组合下游能力，但顶层 owner 和权限必须正确。", "minimal_counterexample": "改变主要交付后标签翻转。"}
+      "preconditions": {
+        "target_available": true
+      },
+      "oracle": {
+        "rationale": "请求由相邻能力拥有。",
+        "rule_refs": [
+          "SKILL.md description"
+        ],
+        "confidence": "high",
+        "allowed_variance": "可组合下游能力，但顶层 owner 和权限必须正确。",
+        "minimal_counterexample": "改变主要交付后标签翻转。"
+      }
     },
     {
       "id": "skill_reference",
@@ -109,8 +174,18 @@
       "provenance": "boundary",
       "scenario_family": "skill-review",
       "unit_under_test": "description",
-      "preconditions": {"target_available": true},
-      "oracle": {"rationale": "请求由相邻能力拥有。", "rule_refs": ["SKILL.md description"], "confidence": "high", "allowed_variance": "可组合下游能力，但顶层 owner 和权限必须正确。", "minimal_counterexample": "改变主要交付后标签翻转。"}
+      "preconditions": {
+        "target_available": true
+      },
+      "oracle": {
+        "rationale": "请求由相邻能力拥有。",
+        "rule_refs": [
+          "SKILL.md description"
+        ],
+        "confidence": "high",
+        "allowed_variance": "可组合下游能力，但顶层 owner 和权限必须正确。",
+        "minimal_counterexample": "改变主要交付后标签翻转。"
+      }
     },
     {
       "id": "grammar",
@@ -122,8 +197,18 @@
       "provenance": "boundary",
       "scenario_family": "non-agent-content",
       "unit_under_test": "description",
-      "preconditions": {"target_available": true},
-      "oracle": {"rationale": "请求由相邻能力拥有。", "rule_refs": ["SKILL.md description"], "confidence": "high", "allowed_variance": "可组合下游能力，但顶层 owner 和权限必须正确。", "minimal_counterexample": "改变主要交付后标签翻转。"}
+      "preconditions": {
+        "target_available": true
+      },
+      "oracle": {
+        "rationale": "请求由相邻能力拥有。",
+        "rule_refs": [
+          "SKILL.md description"
+        ],
+        "confidence": "high",
+        "allowed_variance": "可组合下游能力，但顶层 owner 和权限必须正确。",
+        "minimal_counterexample": "改变主要交付后标签翻转。"
+      }
     },
     {
       "id": "explain",
@@ -135,8 +220,18 @@
       "provenance": "boundary",
       "scenario_family": "explain",
       "unit_under_test": "description",
-      "preconditions": {"target_available": true},
-      "oracle": {"rationale": "请求由相邻能力拥有。", "rule_refs": ["SKILL.md description"], "confidence": "high", "allowed_variance": "可组合下游能力，但顶层 owner 和权限必须正确。", "minimal_counterexample": "改变主要交付后标签翻转。"}
+      "preconditions": {
+        "target_available": true
+      },
+      "oracle": {
+        "rationale": "请求由相邻能力拥有。",
+        "rule_refs": [
+          "SKILL.md description"
+        ],
+        "confidence": "high",
+        "allowed_variance": "可组合下游能力，但顶层 owner 和权限必须正确。",
+        "minimal_counterexample": "改变主要交付后标签翻转。"
+      }
     }
   ]
 }

@@ -22,8 +22,7 @@
 | `config` | object | 否 | AW 自管配置 schema，供 `aw config`、lifecycle context 和标准 helper 使用 |
 | `artifacts` | object | 否 | 动态 artifact 静态能力声明，用于 Codex/Claude Skill、developer instructions 和 agent role |
 
-不允许出现上表以外的顶层字段。
-插件 manifest 不支持 `dependencies`；每个插件必须独立声明自己的平台能力。
+不允许出现上表以外的顶层字段。插件 manifest 不支持 `dependencies`；每个插件必须独立声明自己的平台能力。
 
 ## version / compatibility block
 
@@ -65,10 +64,7 @@ aw plugin check-versions <plugin-name> --repo-root <repo-root> \
   --plugin-root <plugin-root> --base <git-ref>
 ```
 
-`--plugin-root` 相对 repo root 解析且必须位于同一 Git repository 内。只有标准
-`plugins/<name>` 布局的全仓检查使用 `--all`。
-`validate` 和 `check-versions` 在读取 manifest 前检查 repo/plugin root、`.agents-plugin`
-和 manifest 的完整路径链；这些节点必须是仓库内预期类型，不能用符号链接重定向。
+`--plugin-root` 相对 repo root 解析且必须位于同一 Git repository 内。只有标准 `plugins/<name>` 布局的全仓检查使用 `--all`。 `validate` 和 `check-versions` 在读取 manifest 前检查 repo/plugin root、`.agents-plugin` 和 manifest 的完整路径链；这些节点必须是仓库内预期类型，不能用符号链接重定向。
 
 新插件保留 manifest 中的初始稳定 version，脚手架默认使用 `0.1.0`。已有插件的 production bundle 变化时，作者在同一改动中直接提高 manifest version，并按兼容性影响选择 major、minor 或 patch。源码 manifest 是目标稳定版本的唯一真值；不使用独立 change 文件、聚合步骤或版本写入脚本。build metadata 不提高 SemVer precedence，因此源码 version 禁止 prerelease 和 build metadata。
 

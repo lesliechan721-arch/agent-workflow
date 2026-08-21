@@ -18,10 +18,14 @@
       "provenance": "representative-synthetic",
       "scenario_family": "experience-required",
       "unit_under_test": "description",
-      "preconditions": {"target_available": true},
+      "preconditions": {
+        "target_available": true
+      },
       "oracle": {
         "rationale": "用户明确需要操作候选界面后再决定。",
-        "rule_refs": ["SKILL.md description"],
+        "rule_refs": [
+          "SKILL.md description"
+        ],
         "confidence": "high",
         "allowed_variance": "原型形式可调整，但应加载 decision-prototype。"
       }
@@ -36,10 +40,14 @@
       "provenance": "representative-synthetic",
       "scenario_family": "experience-required",
       "unit_under_test": "description",
-      "preconditions": {"target_available": true},
+      "preconditions": {
+        "target_available": true
+      },
       "oracle": {
         "rationale": "用户需要看到候选结果后作出决定。",
-        "rule_refs": ["SKILL.md description"],
+        "rule_refs": [
+          "SKILL.md description"
+        ],
         "confidence": "high",
         "allowed_variance": "可以使用图片或等价可视形式，但应加载 decision-prototype。"
       }
@@ -54,10 +62,14 @@
       "provenance": "representative-synthetic",
       "scenario_family": "evidence-required",
       "unit_under_test": "description",
-      "preconditions": {"target_available": true},
+      "preconditions": {
+        "target_available": true
+      },
       "oracle": {
         "rationale": "用户需要最小可运行证据来支持方案选择。",
-        "rule_refs": ["SKILL.md description"],
+        "rule_refs": [
+          "SKILL.md description"
+        ],
         "confidence": "high",
         "allowed_variance": "验证手段可不同，但应保持原型性质并加载本 Skill。"
       }
@@ -72,10 +84,14 @@
       "provenance": "boundary",
       "scenario_family": "near-miss-spec",
       "unit_under_test": "description",
-      "preconditions": {"target_available": true},
+      "preconditions": {
+        "target_available": true
+      },
       "oracle": {
         "rationale": "决定已经形成，当前交付是记录规格，不需要原型。",
-        "rule_refs": ["SKILL.md description"],
+        "rule_refs": [
+          "SKILL.md description"
+        ],
         "confidence": "high",
         "allowed_variance": "可以加载规格能力，但不应加载 decision-prototype。",
         "minimal_counterexample": "改为需要先看到方案 B 的可操作样例再决定。"
@@ -91,10 +107,14 @@
       "provenance": "boundary",
       "scenario_family": "near-miss-implementation",
       "unit_under_test": "description",
-      "preconditions": {"target_available": true},
+      "preconditions": {
+        "target_available": true
+      },
       "oracle": {
         "rationale": "当前任务是正式实现，不是用原型作决定。",
-        "rule_refs": ["SKILL.md description"],
+        "rule_refs": [
+          "SKILL.md description"
+        ],
         "confidence": "high",
         "allowed_variance": "可以使用实现能力，但不应加载 decision-prototype。",
         "minimal_counterexample": "改为正式实现前需要可点击候选页面确认布局。"
@@ -110,10 +130,14 @@
       "provenance": "boundary",
       "scenario_family": "near-miss-direct-answer",
       "unit_under_test": "description",
-      "preconditions": {"target_available": true},
+      "preconditions": {
+        "target_available": true
+      },
       "oracle": {
         "rationale": "用户明确只要一次性分析，并排除原型。",
-        "rule_refs": ["SKILL.md description"],
+        "rule_refs": [
+          "SKILL.md description"
+        ],
         "confidence": "high",
         "allowed_variance": "可以直接回答，但不应加载 decision-prototype。",
         "minimal_counterexample": "改为需要实际看到或操作三个方案后再选择。"

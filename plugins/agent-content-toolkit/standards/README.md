@@ -1,4 +1,4 @@
-# Content standards
+# 内容标准
 
 `rules.json` 只维护 Agent-facing 内容层的规则：pointer、信息层级、完成边界、最小控制、事实源、co-location 和证据纪律。
 

@@ -2,7 +2,7 @@
 name: audit-agent-skill-evals
 description: >-
   当用户要只读审核 Agent Skill Eval case/suite 的 Oracle、现实性、错误代价、统计结果或修改安全时使用。支持运行前 preflight 和运行后 result-triage；不创建 case、不运行项目专有 Eval、不直接修改生产 Skill。
-compatibility: Requires Node.js 20+ only when running the bundled structural validators.
+compatibility: 仅在运行 bundled 结构 validator 时需要 Node.js 20+。
 metadata:
   short-description: 只读审核 Skill Eval Oracle、现实性、结果归因与修改安全
 ---
@@ -16,7 +16,7 @@ metadata:
 - `preflight`：运行前审核 suite、case 和 Oracle。
 - `result-triage`：运行后解释失败、方差、baseline 和修改安全。
 
-## Preflight
+## 运行前审核
 
 1. 读取目标 Skill 当前目标、scope 和相关规则，并计算 `targetSkillDigest`。
 2. 对关键 case 检查 test layer、unit、preconditions、rationale、rule refs、observable assertion、allowed variance、minimal counterexample、provenance、case role 和 scenario family。
@@ -26,7 +26,7 @@ metadata:
 6. 计算 `caseCorpusDigest`：`node scripts/validate-eval-audit-result.mjs --digest-only --case <cases.json>`。
 7. 输出 schema v2 `EvalAuditResult`。`pass` 只允许独立上下文、无 blocked case、所有 release-relevant case admission 通过，且同时绑定当前 Skill digest 与 case corpus digest。
 
-## Result triage
+## 结果归因
 
 每个失败先归因：
 

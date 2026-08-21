@@ -8,7 +8,7 @@
 aw install agent-content-toolkit -p both
 ```
 
-## Skills
+## 包含的 Skill
 
 | Skill | 作用 | 写入 |
 | --- | --- | --- |
@@ -25,7 +25,7 @@ aw install agent-content-toolkit -p both
 
 ## 维护者
 
-Current plugin contract version: `0.5.0`.
+当前插件合同版本：`0.5.1`。
 
 `standards/rules.json` 只维护 Agent-facing 内容层规则。生成视图和 Skill-local 合同只在 staging/runtime 中生成或投影。检查合同：
 

@@ -2,7 +2,7 @@
 name: author-agent-skill
 description: >-
   当用户要从零创建、重写或变更一个通用 Agent Skill 包时使用，包括 SKILL.md、description、references、scripts、assets、平台元数据和作者期 eval strategy。负责写入和确定性自检；不负责项目专有插件布局、构建、物化或发布流程，也不负责独立质量评分或发布裁决。项目适配器可以显式把本 Skill 作为叶子能力调用。
-compatibility: Requires Node.js 20+ for bundled validators and an installed agent-content-toolkit >= 0.5.0 for Agent-facing prose authoring.
+compatibility: bundled validator 需要 Node.js 20+；编写 Agent-facing 文本需要已安装 agent-content-toolkit >= 0.5.0。
 metadata:
   short-description: 创建或变更最小、可组合、可验证的 Agent Skill 包
 ---
@@ -23,7 +23,7 @@ node scripts/validate-json-contract.mjs assets/skill-design-brief.schema.json <h
 
 没有可写 handoff 路径时，在回复中返回符合 schema 的 JSON。无法说明 Skill 增量时，选择更简单能力或不创建。
 
-## 2. Composition Fitness Audit
+## 2. 组合适配审计
 
 写正文前读取 `references/composition-audit.md`，枚举独立用户意图、权限模式、证据生命周期、通用与项目 profile、需要 clean context 的阶段和可用 artifact handoff。
 
@@ -44,7 +44,7 @@ Authoring 与独立 Review、Eval 设计与 Oracle 审核、通用标准与项�
 - 包含脚本时读取 `references/script-authoring.md`，明确 runtime、依赖、非交互接口、stdout/stderr、退出码、安全默认值和最小验证。
 - 详细 Skill 标准见 `references/author-standard.generated.md`。
 
-## 5. Eval strategy
+## 5. Eval 策略
 
 - `evalStageOwner=author-agent-skill` 时，本 Skill负责组织 Eval 设计与审核，但两个阶段必须使用不同 fresh context。
 - `evalStageOwner=caller` 时，只消费 caller 提供且通过 schema 校验的 Eval artifact，不重复启动或重做这些阶段。

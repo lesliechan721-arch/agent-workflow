@@ -2,7 +2,7 @@
 name: review-agent-content
 description: >-
   当用户明确要求只读评价已有 AGENTS.md、CLAUDE.md、prompt、role instructions、reference 或其它 Agent-facing 文档的质量、负担、可达性或可靠性时使用。不用于完整 Agent Skill 包评审，也不直接改写目标。
-compatibility: Requires Node.js 20+ only when validating the optional structured reference-audit artifact.
+compatibility: 仅在验证可选的结构化 reference audit 产物时需要 Node.js 20+。
 metadata:
   short-description: 只读评审 Agent-facing 文档的最小控制、层级与完成边界
 ---

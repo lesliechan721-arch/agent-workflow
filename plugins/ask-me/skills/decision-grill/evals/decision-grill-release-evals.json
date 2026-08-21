@@ -23,7 +23,10 @@
       },
       "oracle": {
         "rationale": "产品目标已经明确，目标用户是当前最上游的未决事项；目标用户约束访问边界，访问边界再约束权限和计费。",
-        "rule_refs": ["SKILL.md#建立决策树", "SKILL.md#推进当前前沿"],
+        "rule_refs": [
+          "SKILL.md#建立决策树",
+          "SKILL.md#推进当前前沿"
+        ],
         "confidence": "high",
         "allowed_variance": "可以复述已知产品目标，问题措辞和选项顺序可以不同，但第一轮必须处理目标用户，第二轮才处理访问边界。"
       },
@@ -31,19 +34,25 @@
       "scripted_replies": [
         {
           "expected_question_count": 1,
-          "answers_by_index": ["目标用户包括组织内成员和受邀外部伙伴，不支持公开访客。请继续。"],
+          "answers_by_index": [
+            "目标用户包括组织内成员和受邀外部伙伴，不支持公开访客。请继续。"
+          ],
           "unexpected_question_answer": "这项决定暂时未知，请保留为未解决。"
         },
         {
           "expected_question_count": 1,
-          "answers_by_index": ["访问只限被邀请的项目，不支持跨项目访问。请列出下一项需要决定的内容，暂时不要继续问。"],
+          "answers_by_index": [
+            "访问只限被邀请的项目，不支持跨项目访问。请列出下一项需要决定的内容，暂时不要继续问。"
+          ],
           "unexpected_question_answer": "这项决定暂时未知，请保留为未解决。"
         }
       ],
       "expected_output": "采用已知产品目标，先询问目标用户，再询问访问边界；根据两次回答把权限和计费列为下一前沿。",
       "files": [],
       "review": {
-        "platforms": ["codex"],
+        "platforms": [
+          "codex"
+        ],
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [
@@ -70,7 +79,10 @@
       },
       "oracle": {
         "rationale": "项目文档已经给出交付期、团队、运维和回退事实，只剩上线速度与服务自治的优先级需要用户承担后果；形成记录后仍需确认共享理解。",
-        "rule_refs": ["SKILL.md#建立决策树", "SKILL.md#收尾"],
+        "rule_refs": [
+          "SKILL.md#建立决策树",
+          "SKILL.md#收尾"
+        ],
         "confidence": "high",
         "allowed_variance": "可以使用不同只读工具和问题措辞，但必须先采用文档事实，只让用户作出优先级决定，并在结束前请求确认最终记录。"
       },
@@ -78,12 +90,16 @@
       "scripted_replies": [
         {
           "expected_question_count": 1,
-          "answers_by_index": ["优先尽快上线，先保持单体。其他主要分支已经决定，请收尾。"],
+          "answers_by_index": [
+            "优先尽快上线，先保持单体。其他主要分支已经决定，请收尾。"
+          ],
           "unexpected_question_answer": "这项决定暂时未知，请保留为未解决。"
         },
         {
           "expected_question_count": 1,
-          "answers_by_index": ["记录准确，我确认这是共享理解。不要实施，输出最终记录后结束。"],
+          "answers_by_index": [
+            "记录准确，我确认这是共享理解。不要实施，输出最终记录后结束。"
+          ],
           "unexpected_question_answer": "记录还不准确，请不要结束。"
         }
       ],
@@ -93,7 +109,9 @@
       },
       "files": [],
       "review": {
-        "platforms": ["codex"],
+        "platforms": [
+          "codex"
+        ],
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [
@@ -119,7 +137,10 @@
       },
       "oracle": {
         "rationale": "EU-only 与全球部署都可行且证据不足，agent 不能代答；用户可以明确延后并接受风险。",
-        "rule_refs": ["SKILL.md#建立决策树", "SKILL.md#收尾"],
+        "rule_refs": [
+          "SKILL.md#建立决策树",
+          "SKILL.md#收尾"
+        ],
         "confidence": "high",
         "allowed_variance": "可以使用不同的问题措辞，但不能自行选择驻留范围；延后状态和上市风险必须保留。"
       },
@@ -127,14 +148,18 @@
       "scripted_replies": [
         {
           "expected_question_count": 1,
-          "answers_by_index": ["现在不决定。请记录为明确延后，并接受这可能推迟上市的风险；直接输出记录并结束，不用再确认。"],
+          "answers_by_index": [
+            "现在不决定。请记录为明确延后，并接受这可能推迟上市的风险；直接输出记录并结束，不用再确认。"
+          ],
           "unexpected_question_answer": "现在不决定，请记录为明确延后。"
         }
       ],
       "expected_output": "不替用户选择驻留范围，记录明确延后及可能推迟上市的风险，并按用户要求输出记录后结束。",
       "files": [],
       "review": {
-        "platforms": ["codex"],
+        "platforms": [
+          "codex"
+        ],
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [

@@ -1,19 +1,11 @@
-# Manual dependency contract
+# 手动依赖合同
 
-Plugin contract version: `0.3.1`.
+插件合同版本：`0.3.2`。
 
-Required plugin: `agent-skill-toolkit >= 0.5.0`.
+必需插件：`agent-skill-toolkit >= 0.5.0`。
 
-Required package: `@lesliechan721/agent-skill-eval >= 0.1.0-beta.2`.
-The package must expose the stable `aw-skill-eval` command on `PATH` before this Skill starts.
-Do not use `npx`, and do not install or download the package implicitly.
+必需包：`@lesliechan721/agent-skill-eval >= 0.1.0-beta.2`。启动本 Skill 前，该包必须在 `PATH` 中提供稳定的 `aw-skill-eval` 命令。不要使用 `npx`，也不要隐式安装或下载该包。
 
-Required capability: an `audit-agent-skill-evals` preflight result whose target Skill digest and
-case corpus digest match the execution plan.
+必需能力：`audit-agent-skill-evals` preflight 结果，其目标 Skill digest 和 case corpus digest 必须匹配 execution plan。
 
-The package version follows the AW lockstep version and has no independent upper bound. Runtime
-compatibility requires the bin to exist, capabilities schema v1, and plan, audit, and bundle schema v2. The
-orchestration Skill fails closed when the command, compatible schemas, audit, or contracts are
-unavailable. It does not contain a fallback runner, validator, Oracle, or review rules.
-Standalone process observation does not guarantee descendant cleanup or produce comparative or
-release-grade evidence. Preserve the generated bundle evidence level and limitations.
+该包跟随 AW lockstep 版本，没有独立的版本上界。Runtime 兼容性要求 bin 存在、capabilities schema 为 v1，且 plan、audit 和 bundle schema 为 v2。命令、兼容 schema、audit 或合同不可用时，编排 Skill 会 fail closed。它不包含备用 runner、validator、Oracle 或评审规则。standalone 进程观察不保证后代清理，也不产生 comparative 或 release-grade 证据。必须保留生成 bundle 的 evidence level 和限制。

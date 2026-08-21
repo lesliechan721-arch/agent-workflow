@@ -14,10 +14,14 @@
       "provenance": "mechanism-probe",
       "scenario_family": "goal-boundary",
       "unit_under_test": "instructions",
-      "preconditions": { "goal_non_goal_and_pilot_are_known": true },
+      "preconditions": {
+        "goal_non_goal_and_pilot_are_known": true
+      },
       "oracle": {
         "rationale": "目标、非目标和试点范围已经明确，只应保留会改变迁移方向的未决分支。",
-        "rule_refs": ["SKILL.md#建立决策树"],
+        "rule_refs": [
+          "SKILL.md#建立决策树"
+        ],
         "confidence": "high",
         "allowed_variance": "分支名称和顺序可以不同，但不能重问已知目标、非目标或试点人数。"
       },
@@ -26,7 +30,10 @@
       "expected_output": "采用已明确的目标、非目标和试点范围，不重新询问这些事实；指出仍可能改变迁移方向的成功标准或关键边界。",
       "files": [],
       "review": {
-        "platforms": ["codex", "claude"],
+        "platforms": [
+          "codex",
+          "claude"
+        ],
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [
@@ -43,10 +50,14 @@
       "provenance": "mechanism-probe",
       "scenario_family": "read-before-question",
       "unit_under_test": "instructions",
-      "preconditions": { "roadmap_facts_are_provided": true },
+      "preconditions": {
+        "roadmap_facts_are_provided": true
+      },
       "oracle": {
         "rationale": "路线图事实已在 prompt 中给出，模型应采用事实并只列出仍会改变方向的分支。",
-        "rule_refs": ["SKILL.md#建立决策树"],
+        "rule_refs": [
+          "SKILL.md#建立决策树"
+        ],
         "confidence": "high",
         "allowed_variance": "可以列出不同的重要分支，但不能询问或忽略已给出的目标、受众和时间范围。"
       },
@@ -55,7 +66,10 @@
       "expected_output": "使用路线图中减少版本来回传递、3–10 人独立设计团队和 12 周试点等具体事实，不把已明确的目标、受众和时间范围当作未知项，不在本轮提问，只列出仍可能改变方向的重要分支。",
       "files": [],
       "review": {
-        "platforms": ["codex", "claude"],
+        "platforms": [
+          "codex",
+          "claude"
+        ],
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [
@@ -72,10 +86,14 @@
       "provenance": "mechanism-probe",
       "scenario_family": "main-alternatives",
       "unit_under_test": "instructions",
-      "preconditions": { "default_solution_is_not_a_committed_decision": true },
+      "preconditions": {
+        "default_solution_is_not_a_committed_decision": true
+      },
       "oracle": {
         "rationale": "自建只是草案默认，采购、复用、延后或不做都可能改变计划方向。",
-        "rule_refs": ["SKILL.md#建立决策树"],
+        "rule_refs": [
+          "SKILL.md#建立决策树"
+        ],
         "confidence": "high",
         "allowed_variance": "可以合并相近方案，但必须覆盖主要替代方向且不堆砌低影响变体。"
       },
@@ -84,7 +102,10 @@
       "expected_output": "检查采购、复用现有能力、延后或不做等主要替代方向，只保留可能改变决定的备选，不为凑数量列出琐碎变体。",
       "files": [],
       "review": {
-        "platforms": ["codex", "claude"],
+        "platforms": [
+          "codex",
+          "claude"
+        ],
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [
@@ -101,10 +122,14 @@
       "provenance": "mechanism-probe",
       "scenario_family": "challenge-assumption",
       "unit_under_test": "instructions",
-      "preconditions": { "latency_evidence_is_missing": true },
+      "preconditions": {
+        "latency_evidence_is_missing": true
+      },
       "oracle": {
         "rationale": "三个同步外部调用与 P99 小于 50 ms 存在技术冲突，需要验证而不是用户偏好。",
-        "rule_refs": ["SKILL.md#建立决策树"],
+        "rule_refs": [
+          "SKILL.md#建立决策树"
+        ],
         "confidence": "high",
         "allowed_variance": "可以提出不同验证方法，但必须区分业务目标与未经验证的工程命题。"
       },
@@ -113,7 +138,10 @@
       "expected_output": "区分业务目标和未经验证的工程命题，指出关键延迟假设和潜在冲突，把可行性列为待验证而不是让用户凭偏好确认。",
       "files": [],
       "review": {
-        "platforms": ["codex", "claude"],
+        "platforms": [
+          "codex",
+          "claude"
+        ],
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [
@@ -130,10 +158,14 @@
       "provenance": "mechanism-probe",
       "scenario_family": "dependent-decision-frontier",
       "unit_under_test": "instructions",
-      "preconditions": { "decision_dependency_is_explicit": true },
+      "preconditions": {
+        "decision_dependency_is_explicit": true
+      },
       "oracle": {
         "rationale": "目标用户决定访问边界，访问边界再决定权限和计费，因此第一轮只能处理上游。",
-        "rule_refs": ["SKILL.md#推进当前前沿"],
+        "rule_refs": [
+          "SKILL.md#推进当前前沿"
+        ],
         "confidence": "high",
         "allowed_variance": "问题措辞可以不同，但第一轮不能询问权限或计费。"
       },
@@ -141,14 +173,19 @@
       "scripted_replies": [
         {
           "expected_question_count": 1,
-          "answers_by_index": ["目标用户只有受邀的外部合作伙伴；不支持公开访客。请列出下一项待讨论内容并直接交接。"],
+          "answers_by_index": [
+            "目标用户只有受邀的外部合作伙伴；不支持公开访客。请列出下一项待讨论内容并直接交接。"
+          ],
           "unexpected_question_answer": "我暂时不知道，请先记录为未解决项。"
         }
       ],
       "expected_output": "第一轮只讨论目标用户；收到回答后只列出访问边界这一下一项，不提前讨论权限和计费。",
       "files": [],
       "review": {
-        "platforms": ["codex", "claude"],
+        "platforms": [
+          "codex",
+          "claude"
+        ],
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [
@@ -165,10 +202,14 @@
       "provenance": "derived",
       "scenario_family": "preserve-existing-decision",
       "unit_under_test": "full-skill",
-      "preconditions": { "existing_decision_is_well_supported": true },
+      "preconditions": {
+        "existing_decision_is_well_supported": true
+      },
       "oracle": {
         "rationale": "微服务决定已有充分依据和重评条件，只需处理首批迁移范围。",
-        "rule_refs": ["SKILL.md#建立决策树"],
+        "rule_refs": [
+          "SKILL.md#建立决策树"
+        ],
         "confidence": "high",
         "allowed_variance": "可以简短说明沿用已有决定，但不能重新打开微服务选择或开始第二轮。"
       },
@@ -176,14 +217,19 @@
       "scripted_replies": [
         {
           "expected_question_count": 1,
-          "answers_by_index": ["首批只迁移一个低风险服务。其他主要取舍都已明确，请直接交接。"],
+          "answers_by_index": [
+            "首批只迁移一个低风险服务。其他主要取舍都已明确，请直接交接。"
+          ],
           "unexpected_question_answer": "我暂时不知道，请先记录为未解决项。"
         }
       ],
       "expected_output": "只询问首批迁移范围；采用低风险服务这一回答，不为展示完整性而重开已有充分依据的微服务决定，并直接交接。",
       "files": [],
       "review": {
-        "platforms": ["codex", "claude"],
+        "platforms": [
+          "codex",
+          "claude"
+        ],
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [
@@ -200,10 +246,14 @@
       "provenance": "mechanism-probe",
       "scenario_family": "recommendation-calibration",
       "unit_under_test": "instructions",
-      "preconditions": { "evidence_favors_option": false },
+      "preconditions": {
+        "evidence_favors_option": false
+      },
       "oracle": {
         "rationale": "两个方向都合理且证据不足，确定推荐会把 agent 偏好误写为用户决定。",
-        "rule_refs": ["SKILL.md#推进当前前沿"],
+        "rule_refs": [
+          "SKILL.md#推进当前前沿"
+        ],
         "confidence": "high",
         "allowed_variance": "可以使用不同取舍框架，但不能声称已有明确推荐。"
       },
@@ -212,7 +262,10 @@
       "expected_output": "说明主要取舍而不是伪造确定推荐，指出还需要什么信息才能偏向其中一个方案，不把 agent 偏好包装成用户决定。",
       "files": [],
       "review": {
-        "platforms": ["codex", "claude"],
+        "platforms": [
+          "codex",
+          "claude"
+        ],
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [
@@ -235,7 +288,10 @@
       },
       "oracle": {
         "rationale": "试点规模是最后一个重要决定，回答后剩余内容只有低影响命名和未来优化；最终记录仍需用户确认后才能交接。",
-        "rule_refs": ["SKILL.md#建立决策树", "SKILL.md#收尾"],
+        "rule_refs": [
+          "SKILL.md#建立决策树",
+          "SKILL.md#收尾"
+        ],
         "confidence": "high",
         "allowed_variance": "记录格式可以不同；第二轮可以且必须只确认最终记录，不能询问低影响细节。"
       },
@@ -243,19 +299,26 @@
       "scripted_replies": [
         {
           "expected_question_count": 1,
-          "answers_by_index": ["采用 30 人试点。其他主要方向、取舍和验证方式都已明确，只剩低影响命名和未来优化，请收尾。"],
+          "answers_by_index": [
+            "采用 30 人试点。其他主要方向、取舍和验证方式都已明确，只剩低影响命名和未来优化，请收尾。"
+          ],
           "unexpected_question_answer": "我暂时不知道，请先记录为未解决项。"
         },
         {
           "expected_question_count": 1,
-          "answers_by_index": ["最终记录准确，我确认这是共享理解。不要实施，请交还原工作流。"],
+          "answers_by_index": [
+            "最终记录准确，我确认这是共享理解。不要实施，请交还原工作流。"
+          ],
           "unexpected_question_answer": "最终记录还不准确，请不要交接。"
         }
       ],
       "expected_output": "先询问试点规模；采用 30 人试点后不进入低影响细节，只请求确认最终记录，并在确认后交还原工作流。",
       "files": [],
       "review": {
-        "platforms": ["codex", "claude"],
+        "platforms": [
+          "codex",
+          "claude"
+        ],
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [
@@ -273,10 +336,15 @@
       "provenance": "mechanism-probe",
       "scenario_family": "decision-record-completeness",
       "unit_under_test": "instructions",
-      "preconditions": { "interview_is_complete": true, "confirmation_is_skipped": true },
+      "preconditions": {
+        "interview_is_complete": true,
+        "confirmation_is_skipped": true
+      },
       "oracle": {
         "rationale": "用户已要求直接交接，记录仍必须保留决定、委托和待验证事项。",
-        "rule_refs": ["SKILL.md#收尾"],
+        "rule_refs": [
+          "SKILL.md#收尾"
+        ],
         "confidence": "high",
         "allowed_variance": "标题和顺序可以不同，但负责人、期限、事项和验证项不能丢失。"
       },
@@ -285,7 +353,10 @@
       "expected_output": "输出简短决策记录，区分主题与边界、已定决定、明确委托和待验证事项；保留每月查询量不超过 50 万次的关键假设，以及产品负责人在本周五前确认数据驻留条款的委托；不生成空的未解决项，也不自行实施。",
       "files": [],
       "review": {
-        "platforms": ["codex", "claude"],
+        "platforms": [
+          "codex",
+          "claude"
+        ],
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [
@@ -303,10 +374,14 @@
       "provenance": "mechanism-probe",
       "scenario_family": "explicit-deferral",
       "unit_under_test": "instructions",
-      "preconditions": { "user_accepts_deferral_risk": true },
+      "preconditions": {
+        "user_accepts_deferral_risk": true
+      },
       "oracle": {
         "rationale": "用户明确停止讨论并接受回滚策略延后的风险，记录不能把该分支写成已解决。",
-        "rule_refs": ["SKILL.md#收尾"],
+        "rule_refs": [
+          "SKILL.md#收尾"
+        ],
         "confidence": "high",
         "allowed_variance": "风险措辞可以不同，但必须保留延后状态且不能继续追问。"
       },
@@ -315,7 +390,10 @@
       "expected_output": "记录明确延后及其风险，不继续追问，不声称该分支已经解决。",
       "files": [],
       "review": {
-        "platforms": ["codex", "claude"],
+        "platforms": [
+          "codex",
+          "claude"
+        ],
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [
@@ -332,10 +410,14 @@
       "provenance": "mechanism-probe",
       "scenario_family": "dependent-decision-frontier",
       "unit_under_test": "instructions",
-      "preconditions": { "existing_decisions": false },
+      "preconditions": {
+        "existing_decisions": false
+      },
       "oracle": {
         "rationale": "候选项和依赖关系已提供，用例隔离检查两轮前沿更新和下游延迟。",
-        "rule_refs": ["SKILL.md#推进当前前沿"],
+        "rule_refs": [
+          "SKILL.md#推进当前前沿"
+        ],
         "confidence": "high",
         "allowed_variance": "选项措辞可以不同，但第一轮只问目标用户，第二轮只问访问边界。"
       },
@@ -343,19 +425,26 @@
       "scripted_replies": [
         {
           "expected_question_count": 1,
-          "answers_by_index": ["目标用户只有受邀的外部合作伙伴，不支持公开访客。请继续下一轮。"],
+          "answers_by_index": [
+            "目标用户只有受邀的外部合作伙伴，不支持公开访客。请继续下一轮。"
+          ],
           "unexpected_question_answer": "这项决定暂时未知，请保持为未解决。"
         },
         {
           "expected_question_count": 1,
-          "answers_by_index": ["访问只限被邀请的项目，不支持跨项目访问。请列出下一前沿并直接交接，不要继续提问。"],
+          "answers_by_index": [
+            "访问只限被邀请的项目，不支持跨项目访问。请列出下一前沿并直接交接，不要继续提问。"
+          ],
           "unexpected_question_answer": "这项决定暂时未知，请保持为未解决。"
         }
       ],
       "expected_output": "模型自行识别依赖顺序。第一轮只问目标用户，第二轮只问访问边界；收到答案后把权限和计费列为下一前沿，不提前询问或替用户决定。",
       "files": [],
       "review": {
-        "platforms": ["codex", "claude"],
+        "platforms": [
+          "codex",
+          "claude"
+        ],
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [
@@ -372,10 +461,15 @@
       "provenance": "mechanism-probe",
       "scenario_family": "decision-record-completeness",
       "unit_under_test": "instructions",
-      "preconditions": { "interview_is_complete": true, "confirmation_is_skipped": true },
+      "preconditions": {
+        "interview_is_complete": true,
+        "confirmation_is_skipped": true
+      },
       "oracle": {
         "rationale": "记录必须保留决定、委托、待验证、延后风险和未解决项，不能静默补全。",
-        "rule_refs": ["SKILL.md#收尾"],
+        "rule_refs": [
+          "SKILL.md#收尾"
+        ],
         "confidence": "high",
         "allowed_variance": "记录结构可以不同，但五类重要状态都必须准确保留。"
       },
@@ -384,7 +478,10 @@
       "expected_output": "决策记录覆盖决定、委托、待验证、明确延后及风险和未解决分支，不静默删除任何重要事项。",
       "files": [],
       "review": {
-        "platforms": ["codex", "claude"],
+        "platforms": [
+          "codex",
+          "claude"
+        ],
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [
@@ -401,10 +498,15 @@
       "provenance": "mechanism-probe",
       "scenario_family": "user-owned-tradeoff",
       "unit_under_test": "instructions",
-      "preconditions": { "evidence_favors_option": false },
+      "preconditions": {
+        "evidence_favors_option": false
+      },
       "oracle": {
         "rationale": "数据驻留是用户承担后果的决定，证据不足时 agent 不能代答。",
-        "rule_refs": ["SKILL.md#建立决策树", "SKILL.md#收尾"],
+        "rule_refs": [
+          "SKILL.md#建立决策树",
+          "SKILL.md#收尾"
+        ],
         "confidence": "high",
         "allowed_variance": "可以说明不同后果，但必须询问用户，并在延后后保留上市风险。"
       },
@@ -412,14 +514,19 @@
       "scripted_replies": [
         {
           "expected_question_count": 1,
-          "answers_by_index": ["现在不决定。请明确延后，并记录这可能推迟上市时间，然后直接交接。"],
+          "answers_by_index": [
+            "现在不决定。请明确延后，并记录这可能推迟上市时间，然后直接交接。"
+          ],
           "unexpected_question_answer": "现在不决定，请记录为明确延后。"
         }
       ],
       "expected_output": "询问用户的数据驻留决定，不自行选择；用户延后后保留延后状态和上市时间风险。",
       "files": [],
       "review": {
-        "platforms": ["codex", "claude"],
+        "platforms": [
+          "codex",
+          "claude"
+        ],
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [
@@ -436,10 +543,15 @@
       "provenance": "derived",
       "scenario_family": "shared-understanding-confirmation",
       "unit_under_test": "full-skill",
-      "preconditions": { "important_branches_are_complete": true, "record_is_unconfirmed": true },
+      "preconditions": {
+        "important_branches_are_complete": true,
+        "record_is_unconfirmed": true
+      },
       "oracle": {
         "rationale": "重要分支已经处理，但用户尚未确认最终记录，不能直接交接或实施。",
-        "rule_refs": ["SKILL.md#收尾"],
+        "rule_refs": [
+          "SKILL.md#收尾"
+        ],
         "confidence": "high",
         "allowed_variance": "确认问题措辞可以不同，但必须在确认前保持只读，并在确认后交还工作流。"
       },
@@ -447,14 +559,19 @@
       "scripted_replies": [
         {
           "expected_question_count": 1,
-          "answers_by_index": ["记录准确，我确认这是共享理解。不要实施，请交还外层工作流。"],
+          "answers_by_index": [
+            "记录准确，我确认这是共享理解。不要实施，请交还外层工作流。"
+          ],
           "unexpected_question_answer": "记录准确，我确认。"
         }
       ],
       "expected_output": "先输出决策记录并请求确认。用户确认后交还外层工作流，不开始实施。",
       "files": [],
       "review": {
-        "platforms": ["codex", "claude"],
+        "platforms": [
+          "codex",
+          "claude"
+        ],
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [
@@ -471,10 +588,15 @@
       "provenance": "mechanism-probe",
       "scenario_family": "record-correction",
       "unit_under_test": "instructions",
-      "preconditions": { "record_is_unconfirmed": true, "one_recorded_value_is_wrong": true },
+      "preconditions": {
+        "record_is_unconfirmed": true,
+        "one_recorded_value_is_wrong": true
+      },
       "oracle": {
         "rationale": "用户纠正试点人数后，只需重开对应分支、修正记录并重新确认。",
-        "rule_refs": ["SKILL.md#收尾"],
+        "rule_refs": [
+          "SKILL.md#收尾"
+        ],
         "confidence": "high",
         "allowed_variance": "修正说明可以不同，但人数必须改为 100，且必须再次确认后才能交接。"
       },
@@ -482,19 +604,26 @@
       "scripted_replies": [
         {
           "expected_question_count": 1,
-          "answers_by_index": ["有一处错误：首轮试点应为 100 人，不是 30 人。请修正后重新确认。"],
+          "answers_by_index": [
+            "有一处错误：首轮试点应为 100 人，不是 30 人。请修正后重新确认。"
+          ],
           "unexpected_question_answer": "首轮试点应为 100 人，请修正。"
         },
         {
           "expected_question_count": 1,
-          "answers_by_index": ["修正后的记录准确，我确认。不要实施，请交还外层工作流。"],
+          "answers_by_index": [
+            "修正后的记录准确，我确认。不要实施，请交还外层工作流。"
+          ],
           "unexpected_question_answer": "修正后的记录准确，我确认。"
         }
       ],
       "expected_output": "用户纠正试点规模后重新打开对应分支，把记录改为 100 人并再次确认；确认前不实施。",
       "files": [],
       "review": {
-        "platforms": ["codex", "claude"],
+        "platforms": [
+          "codex",
+          "claude"
+        ],
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [

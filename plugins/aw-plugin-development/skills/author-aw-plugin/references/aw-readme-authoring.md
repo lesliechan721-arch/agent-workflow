@@ -1,4 +1,4 @@
-# AW README authoring
+# AW README 编写
 
 本规范随 `author-aw-plugin` 分发，适用于目标 AW 插件根及其中的 Skill README。它不依赖宿主工作区的 `docs/`，因此插件位于其它项目或非 `plugins/` 目录时仍可使用。
 

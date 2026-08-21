@@ -53,7 +53,9 @@
           "docs/vendor/api-v2\\.md[^\\n]{0,120}(?::2|第\\s*2\\s*行|line\\s*2)",
           "docs/vendor/migration\\.md[^\\n]{0,120}(?::2|第\\s*2\\s*行|line\\s*2)"
         ],
-        "delegated_source_prefixes": ["docs/"],
+        "delegated_source_prefixes": [
+          "docs/"
+        ],
         "workspace_unchanged": true,
         "lifecycle": {
           "minimum_initial_wait_timeout_ms": 600000,
@@ -106,7 +108,9 @@
           "docs/vendor/api-v2\\.md[^\\n]{0,120}(?::2|第\\s*2\\s*行|line\\s*2)",
           "docs/vendor/migration\\.md[^\\n]{0,120}(?::2|第\\s*2\\s*行|line\\s*2)"
         ],
-        "delegated_source_prefixes": ["docs/"],
+        "delegated_source_prefixes": [
+          "docs/"
+        ],
         "workspace_unchanged": true,
         "lifecycle": {
           "minimum_initial_wait_timeout_ms": 600000,
@@ -154,7 +158,9 @@
         "final_message_patterns": [
           "docs/vendor/contributor-note\\.md[^\\n]{0,120}(?::2|第\\s*2\\s*行|line\\s*2)"
         ],
-        "delegated_source_prefixes": ["docs/"],
+        "delegated_source_prefixes": [
+          "docs/"
+        ],
         "workspace_unchanged": true,
         "lifecycle": {
           "minimum_initial_wait_timeout_ms": 600000,

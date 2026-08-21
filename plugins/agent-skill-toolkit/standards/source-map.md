@@ -1,8 +1,8 @@
-# Source map
+# 来源映射
 
-Last reviewed: 2026-08-20.
+最近评审日期：2026-08-20。
 
-## Portable specification and official guidance
+## 可移植规范和官方指南
 
 - https://agentskills.io/specification
 - https://agentskills.io/skill-creation/best-practices
@@ -10,17 +10,14 @@ Last reviewed: 2026-08-20.
 - https://agentskills.io/skill-creation/using-scripts
 - https://agentskills.io/skill-creation/evaluating-skills
 
-## Toolkit policy
+## Toolkit 策略
 
 - `agent-content-toolkit.review-contract`
 - `agent-skill-toolkit.review-contract`
 - `agent-skill-toolkit.eval-contract`
 
-## Third-party heuristic lens
+## 第三方启发式视角
 
 - https://github.com/mattpocock/skills/tree/main/skills/productivity/writing-for-agents
 
-Rule evidence classes and ReviewResult finding evidence are distinct. Official guidance can support
-quality assessment but does not automatically establish a portable hard requirement. The third-party
-source only informs pointer, information hierarchy, co-location, completion criteria, composition
-and pruning; it cannot by itself create a P0/P1 finding.
+规则证据类别与 ReviewResult finding 证据不同。官方指南可以支持质量评估，但不会自动形成可移植的硬性要求。第三方来源只为 pointer、信息层级、co-location、完成条件、组合性和剪枝提供参考，不能单独形成 P0/P1 finding。

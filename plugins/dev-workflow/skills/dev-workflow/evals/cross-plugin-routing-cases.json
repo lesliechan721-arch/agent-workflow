@@ -274,7 +274,7 @@
     {
       "id": "route_spec_review_spec_defect",
       "split": "validation",
-      "query": "使用 dev-workflow 处理 blocked 的 Spec Review；需要修改 Spec 中的卲管口不一致，问题�{型是 spec-defect。",
+      "query": "使用 dev-workflow 处理 blocked 的 Spec Review；需要修正 Spec 中的接口不一致问题，问题类型是 spec-defect。",
       "expected_loaded_skills": [
         "dev-workflow",
         "dev-spec"

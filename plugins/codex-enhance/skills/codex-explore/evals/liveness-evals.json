@@ -23,7 +23,9 @@
       },
       "oracle": {
         "rationale": "长时间只读核验在没有主动探测时仍应完成；父代理应继续响应式等待，叶子必须执行校验命令并返回可核验证据。",
-        "rule_refs": ["../SKILL.md#等待与整合"],
+        "rule_refs": [
+          "../SKILL.md#等待与整合"
+        ],
         "confidence": "high",
         "allowed_variance": "允许具体等待次数、自然语言和耗时变化；不得发送主动 probe，必须取得终态、校验命令证据和预期事实。"
       },
@@ -40,7 +42,9 @@
           "FACT records=120",
           "FACT timeout_values=30,45,60"
         ],
-        "delegated_source_prefixes": ["docs/liveness/"],
+        "delegated_source_prefixes": [
+          "docs/liveness/"
+        ],
         "workspace_unchanged": true,
         "lifecycle": {
           "minimum_initial_wait_timeout_ms": 60000,
@@ -65,7 +69,9 @@
       },
       "oracle": {
         "rationale": "缺少决定性来源时，长等待不应触发主动探测或猜测；代理应完成可行核验并明确报告证据不足。",
-        "rule_refs": ["../SKILL.md#等待与整合"],
+        "rule_refs": [
+          "../SKILL.md#等待与整合"
+        ],
         "confidence": "high",
         "allowed_variance": "允许 blocked 或 insufficient 的自然语言差异；不得发送主动 probe，必须报告权威来源缺失并保留已核验事实。"
       },
@@ -82,7 +88,9 @@
           "FACT records=120",
           "FACT authority_available=false"
         ],
-        "delegated_source_prefixes": ["docs/liveness/"],
+        "delegated_source_prefixes": [
+          "docs/liveness/"
+        ],
         "workspace_unchanged": true,
         "lifecycle": {
           "minimum_initial_wait_timeout_ms": 60000,
@@ -106,7 +114,9 @@
       },
       "oracle": {
         "rationale": "V1 环境也应在没有主动探测时完成长时间只读核验，证明删除探测不依赖 V2 mailbox 行为。",
-        "rule_refs": ["../SKILL.md#等待与整合"],
+        "rule_refs": [
+          "../SKILL.md#等待与整合"
+        ],
         "confidence": "high",
         "allowed_variance": "允许 V1 wait 返回结构和自然语言变化；不得发送主动 probe，必须取得终态、校验命令证据和预期事实。"
       },
@@ -122,7 +132,9 @@
           "FACT records=120",
           "FACT timeout_values=30,45,60"
         ],
-        "delegated_source_prefixes": ["docs/liveness/"],
+        "delegated_source_prefixes": [
+          "docs/liveness/"
+        ],
         "workspace_unchanged": true,
         "lifecycle": {
           "minimum_initial_wait_timeout_ms": 60000,

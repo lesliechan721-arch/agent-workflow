@@ -1,16 +1,16 @@
-# Agent Content Plan
+# Agent 内容计划
 
-- Reader / client:
-- Load mode: always | pointer | manual
-- Target behavior:
-- Success evidence:
-- Out of scope:
+- 读者 / 客户端：
+- 加载模式：always | pointer | manual
+- 目标行为：
+- 成功证据：
+- 范围外事项：
 
-## Minimal behavior contract
+## 最小行为合同
 
 1.
 
-## Information hierarchy
+## 信息层级
 
-| Content | Type | Branch | Source / pointer | Completion |
+| 内容 | 类型 | Branch | 来源 / 指针 | 完成条件 |
 | --- | --- | --- | --- | --- |

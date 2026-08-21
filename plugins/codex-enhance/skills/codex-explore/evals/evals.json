@@ -16,11 +16,18 @@
       "unit_under_test": "instructions",
       "preconditions": {
         "spawn_schema": "V2 公开 agent_type、model、reasoning_effort 和 fork_turns",
-        "required_roles": ["codex-explore-quick", "codex-explore-standard", "codex-explore-deep", "codex-explore-custom"]
+        "required_roles": [
+          "codex-explore-quick",
+          "codex-explore-standard",
+          "codex-explore-deep",
+          "codex-explore-custom"
+        ]
       },
       "oracle": {
         "rationale": "问题窄、歧义低，但候选日志很多，符合 quick；预设 role 不应携带动态模型覆盖字段。",
-        "rule_refs": ["SKILL.md#委派"],
+        "rule_refs": [
+          "SKILL.md#委派"
+        ],
         "confidence": "high",
         "allowed_variance": "message 和 task_name 可变化；agent_type、模型字段缺省和干净上下文参数不得变化。"
       },
@@ -34,14 +41,20 @@
         "features.multi_agent_v2.expose_spawn_agent_model_overrides": true
       },
       "expected": {
-        "spawn_calls": { "min": 1, "max": 1 },
+        "spawn_calls": {
+          "min": 1,
+          "max": 1
+        },
         "arguments": {
           "agent_type": "codex-explore-quick",
           "model": null,
           "reasoning_effort": null,
           "fork_turns": "none"
         },
-        "present_arguments": ["message", "task_name"]
+        "present_arguments": [
+          "message",
+          "task_name"
+        ]
       },
       "assertions": [
         {
@@ -67,11 +80,18 @@
       "unit_under_test": "instructions",
       "preconditions": {
         "spawn_schema": "V2 公开 agent_type、model、reasoning_effort 和 fork_turns",
-        "required_roles": ["codex-explore-quick", "codex-explore-standard", "codex-explore-deep", "codex-explore-custom"]
+        "required_roles": [
+          "codex-explore-quick",
+          "codex-explore-standard",
+          "codex-explore-deep",
+          "codex-explore-custom"
+        ]
       },
       "oracle": {
         "rationale": "常规跨模块追踪包含适度归纳，且没有 deep 信号，默认应选择 standard。",
-        "rule_refs": ["SKILL.md#委派"],
+        "rule_refs": [
+          "SKILL.md#委派"
+        ],
         "confidence": "high",
         "allowed_variance": "message 和 task_name 可变化；agent_type、模型字段缺省和干净上下文参数不得变化。"
       },
@@ -85,14 +105,20 @@
         "features.multi_agent_v2.expose_spawn_agent_model_overrides": true
       },
       "expected": {
-        "spawn_calls": { "min": 1, "max": 1 },
+        "spawn_calls": {
+          "min": 1,
+          "max": 1
+        },
         "arguments": {
           "agent_type": "codex-explore-standard",
           "model": null,
           "reasoning_effort": null,
           "fork_turns": "none"
         },
-        "present_arguments": ["message", "task_name"]
+        "present_arguments": [
+          "message",
+          "task_name"
+        ]
       },
       "assertions": [
         {
@@ -122,7 +148,9 @@
       },
       "oracle": {
         "rationale": "相同 standard 任务在 V1 必须用 fork_context=false 精确表达干净上下文，不得发送 V2 字段。",
-        "rule_refs": ["SKILL.md#委派"],
+        "rule_refs": [
+          "SKILL.md#委派"
+        ],
         "confidence": "high",
         "allowed_variance": "message 可变化；agent_type、fork_context 和 fork_turns 缺省状态不得变化。",
         "minimal_counterexample": "切换到 V2 schema 后，干净上下文参数应翻转为 fork_turns=none，并省略 fork_context。"
@@ -136,7 +164,10 @@
         "features.multi_agent_v2.enabled": false
       },
       "expected": {
-        "spawn_calls": { "min": 1, "max": 1 },
+        "spawn_calls": {
+          "min": 1,
+          "max": 1
+        },
         "arguments": {
           "agent_type": "codex-explore-standard",
           "model": null,
@@ -144,7 +175,9 @@
           "fork_context": false,
           "fork_turns": null
         },
-        "present_arguments": ["message"]
+        "present_arguments": [
+          "message"
+        ]
       },
       "assertions": [
         {
@@ -170,11 +203,18 @@
       "unit_under_test": "instructions",
       "preconditions": {
         "spawn_schema": "V2 公开 agent_type、model、reasoning_effort 和 fork_turns",
-        "required_roles": ["codex-explore-quick", "codex-explore-standard", "codex-explore-deep", "codex-explore-custom"]
+        "required_roles": [
+          "codex-explore-quick",
+          "codex-explore-standard",
+          "codex-explore-deep",
+          "codex-explore-custom"
+        ]
       },
       "oracle": {
         "rationale": "材料边界未知、证据冲突、因果复杂且完整性优先，符合 deep 的全部核心信号。",
-        "rule_refs": ["SKILL.md#委派"],
+        "rule_refs": [
+          "SKILL.md#委派"
+        ],
         "confidence": "high",
         "allowed_variance": "message 和 task_name 可变化；agent_type、模型字段缺省和干净上下文参数不得变化。"
       },
@@ -188,14 +228,20 @@
         "features.multi_agent_v2.expose_spawn_agent_model_overrides": true
       },
       "expected": {
-        "spawn_calls": { "min": 1, "max": 1 },
+        "spawn_calls": {
+          "min": 1,
+          "max": 1
+        },
         "arguments": {
           "agent_type": "codex-explore-deep",
           "model": null,
           "reasoning_effort": null,
           "fork_turns": "none"
         },
-        "present_arguments": ["message", "task_name"]
+        "present_arguments": [
+          "message",
+          "task_name"
+        ]
       },
       "assertions": [
         {
@@ -225,7 +271,10 @@
       },
       "oracle": {
         "rationale": "用户同时显式指定 model 和 reasoning_effort 时，custom role 必须完整原样透传两个字段。",
-        "rule_refs": ["SKILL.md#Gate", "SKILL.md#委派"],
+        "rule_refs": [
+          "SKILL.md#Gate",
+          "SKILL.md#委派"
+        ],
         "confidence": "high",
         "allowed_variance": "message 和 task_name 可变化；custom role 与两个显式字段必须精确匹配。"
       },
@@ -239,14 +288,20 @@
         "features.multi_agent_v2.expose_spawn_agent_model_overrides": true
       },
       "expected": {
-        "spawn_calls": { "min": 1, "max": 1 },
+        "spawn_calls": {
+          "min": 1,
+          "max": 1
+        },
         "arguments": {
           "agent_type": "codex-explore-custom",
           "model": "gpt-5.6-sol",
           "reasoning_effort": "xhigh",
           "fork_turns": "none"
         },
-        "present_arguments": ["message", "task_name"]
+        "present_arguments": [
+          "message",
+          "task_name"
+        ]
       },
       "assertions": [
         {
@@ -276,7 +331,10 @@
       },
       "oracle": {
         "rationale": "只显式指定 model 时，应使用 custom role，只透传 model，不能补默认 reasoning_effort。",
-        "rule_refs": ["SKILL.md#Gate", "SKILL.md#委派"],
+        "rule_refs": [
+          "SKILL.md#Gate",
+          "SKILL.md#委派"
+        ],
         "confidence": "high",
         "allowed_variance": "message 和 task_name 可变化；custom role、model 值和 reasoning_effort 缺省状态不得变化。"
       },
@@ -290,14 +348,20 @@
         "features.multi_agent_v2.expose_spawn_agent_model_overrides": true
       },
       "expected": {
-        "spawn_calls": { "min": 1, "max": 1 },
+        "spawn_calls": {
+          "min": 1,
+          "max": 1
+        },
         "arguments": {
           "agent_type": "codex-explore-custom",
           "model": "gpt-5.6-sol",
           "reasoning_effort": null,
           "fork_turns": "none"
         },
-        "present_arguments": ["message", "task_name"]
+        "present_arguments": [
+          "message",
+          "task_name"
+        ]
       },
       "assertions": [
         {
@@ -327,7 +391,10 @@
       },
       "oracle": {
         "rationale": "只显式指定 reasoning_effort 时，应使用 custom role，只透传该字段，不能补默认 model。",
-        "rule_refs": ["SKILL.md#Gate", "SKILL.md#委派"],
+        "rule_refs": [
+          "SKILL.md#Gate",
+          "SKILL.md#委派"
+        ],
         "confidence": "high",
         "allowed_variance": "message 和 task_name 可变化；custom role、reasoning_effort 值和 model 缺省状态不得变化。"
       },
@@ -341,14 +408,20 @@
         "features.multi_agent_v2.expose_spawn_agent_model_overrides": true
       },
       "expected": {
-        "spawn_calls": { "min": 1, "max": 1 },
+        "spawn_calls": {
+          "min": 1,
+          "max": 1
+        },
         "arguments": {
           "agent_type": "codex-explore-custom",
           "model": null,
           "reasoning_effort": "xhigh",
           "fork_turns": "none"
         },
-        "present_arguments": ["message", "task_name"]
+        "present_arguments": [
+          "message",
+          "task_name"
+        ]
       },
       "assertions": [
         {
@@ -378,7 +451,10 @@
       },
       "oracle": {
         "rationale": "预设 role 的模型配置由 role 持有；schema 隐藏动态覆盖字段不应阻止仅用 agent_type 的 preset。",
-        "rule_refs": ["SKILL.md#Gate", "SKILL.md#委派"],
+        "rule_refs": [
+          "SKILL.md#Gate",
+          "SKILL.md#委派"
+        ],
         "confidence": "high",
         "allowed_variance": "允许环境报告已声明的 schema 错误；成功调用时只能包含 preset agent_type 和干净上下文参数。",
         "minimal_counterexample": "在相同 schema 下显式增加 model 或 reasoning_effort 后，行为应翻转为零次 spawn 并说明能力限制。"
@@ -393,15 +469,23 @@
         "features.multi_agent_v2.expose_spawn_agent_model_overrides": false
       },
       "expected": {
-        "spawn_calls": { "min": 1, "max": 1 },
-        "allowed_environment_errors": ["must match the configured schema"],
+        "spawn_calls": {
+          "min": 1,
+          "max": 1
+        },
+        "allowed_environment_errors": [
+          "must match the configured schema"
+        ],
         "arguments": {
           "agent_type": "codex-explore-standard",
           "model": null,
           "reasoning_effort": null,
           "fork_turns": "none"
         },
-        "present_arguments": ["message", "task_name"]
+        "present_arguments": [
+          "message",
+          "task_name"
+        ]
       },
       "assertions": [
         {
@@ -431,7 +515,10 @@
       },
       "oracle": {
         "rationale": "显式 model 无法由当前 schema 原样传递时必须失败关闭；旧版本曾丢弃字段后错误启动。",
-        "rule_refs": ["SKILL.md#Gate", "SKILL.md#委派"],
+        "rule_refs": [
+          "SKILL.md#Gate",
+          "SKILL.md#委派"
+        ],
         "confidence": "high",
         "allowed_variance": "能力限制说明可换词；spawn 次数必须为零，并应指出字段不可表达。",
         "minimal_counterexample": "移除显式 model 后，相同任务应使用 preset role；公开 model 字段后应使用 custom role 并原样透传。"
@@ -447,9 +534,18 @@
       },
       "wait_for_completion": true,
       "expected": {
-        "spawn_calls": { "min": 0, "max": 0 },
-        "allowed_environment_errors": ["must match the configured schema"],
-        "final_message_includes_any": ["未公开", "不支持", "无法"]
+        "spawn_calls": {
+          "min": 0,
+          "max": 0
+        },
+        "allowed_environment_errors": [
+          "must match the configured schema"
+        ],
+        "final_message_includes_any": [
+          "未公开",
+          "不支持",
+          "无法"
+        ]
       },
       "assertions": [
         {
@@ -479,7 +575,10 @@
       },
       "oracle": {
         "rationale": "显式 reasoning_effort 与显式 model 适用同一个预检和失败关闭合同，不能被删除或替换。",
-        "rule_refs": ["SKILL.md#Gate", "SKILL.md#委派"],
+        "rule_refs": [
+          "SKILL.md#Gate",
+          "SKILL.md#委派"
+        ],
         "confidence": "high",
         "allowed_variance": "能力限制说明可换词；spawn 次数必须为零，并应点名 reasoning_effort 或推理强度。",
         "minimal_counterexample": "移除显式 reasoning_effort 后，相同任务应使用 preset role；公开该字段后应使用 custom role 并原样透传。"
@@ -495,9 +594,17 @@
       },
       "wait_for_completion": true,
       "expected": {
-        "spawn_calls": { "min": 0, "max": 0 },
-        "allowed_environment_errors": ["must match the configured schema"],
-        "final_message_includes_any": ["reasoning_effort", "推理强度"]
+        "spawn_calls": {
+          "min": 0,
+          "max": 0
+        },
+        "allowed_environment_errors": [
+          "must match the configured schema"
+        ],
+        "final_message_includes_any": [
+          "reasoning_effort",
+          "推理强度"
+        ]
       },
       "assertions": [
         {
@@ -527,7 +634,10 @@
       },
       "oracle": {
         "rationale": "schema 公开字段不等于运行时接受任意值；拒绝后必须保留原值并停止，不能切换 preset 重试。",
-        "rule_refs": ["SKILL.md#Gate", "SKILL.md#委派"],
+        "rule_refs": [
+          "SKILL.md#Gate",
+          "SKILL.md#委派"
+        ],
         "confidence": "high",
         "allowed_variance": "可以在调用前拒绝，或按原值调用一次后由 runtime 拒绝；零调用时必须原样说明两个字段值，且不得发生第二次或降级调用。",
         "minimal_counterexample": "把两个显式值改为受支持值后，应使用 custom role 成功启动并原样透传。"
@@ -543,14 +653,20 @@
       },
       "wait_for_completion": true,
       "expected": {
-        "spawn_calls": { "min": 0, "max": 1 },
+        "spawn_calls": {
+          "min": 0,
+          "max": 1
+        },
         "arguments_if_called": {
           "agent_type": "codex-explore-custom",
           "model": "definitely-unavailable-model",
           "reasoning_effort": "turbo"
         },
         "spawn_rejected": true,
-        "preflight_rejection_evidence": ["definitely-unavailable-model", "turbo"]
+        "preflight_rejection_evidence": [
+          "definitely-unavailable-model",
+          "turbo"
+        ]
       },
       "assertions": [
         {

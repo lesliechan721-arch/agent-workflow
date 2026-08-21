@@ -1,13 +1,13 @@
-# Agent Content Review
+# Agent 内容评审
 
-- Verdict:
-- Load profile:
-- Evidence confidence:
+- 结论：
+- 加载模式：
+- 证据置信度：
 
-## Required findings
+## 必须修复的 finding
 
-## High-value improvements
+## 高价值改进
 
-## Minimum effective document
+## 最小有效文档
 
-## Unknowns and validation
+## 未知项和验证

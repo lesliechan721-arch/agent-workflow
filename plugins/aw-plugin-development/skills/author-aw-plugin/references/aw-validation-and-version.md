@@ -1,6 +1,6 @@
-# AW validation and version
+# AW 验证和版本
 
-## Workspace validation
+## 工作区验证
 
 从目标工作区的 manifest/schema、package scripts、CI 配置或维护规则发现适用的 build、test、materialization 和 Eval 命令。将这些确定性命令逐个传给：
 
@@ -33,7 +33,7 @@ node scripts/prepare-aw-authoring-context.mjs <plugin-root> \
 
 每个分支必须先检查对应 help。所需命令或 flag 不存在时停止并报告 capability 缺口。不得通过 `npx` 获取另一版本，不得猜测 CLI 或仓库路径，不得调用本 Skill 内的 validator/scaffolder 副本。
 
-## Full Access consent policy
+## Full Access 授权策略
 
 真实模型 Eval 需要目标工作区 runtime 的进程管理门禁。作者 agent 必须遵守以下结构化不变量：
 
@@ -45,13 +45,13 @@ node scripts/prepare-aw-authoring-context.mjs <plugin-root> \
 | `agent_must_stop_without_user_choice` | 用户未明确选择整个会话使用 Full Access 或明确接受 unmanaged 降级时，agent 必须停止并请求用户选择。 |
 <!-- /aw-full-access-consent-policy -->
 
-## Manifest version
+## Manifest 版本
 
 - 新插件保留目标工作区规定的初始稳定版本。
 - 已有插件 production bundle 变化时，按兼容影响提高源码 manifest 的 major、minor 或 patch。
 - 只修改作者期 eval/report 时不提高插件版本。
 
-## Completion
+## 完成条件
 
 - `aw plugin validate`、适用的 `aw plugin check-versions` 与目标工作区要求的 tests 通过；
 - build-required 分支生成的 artifact 存在且来源可追溯；

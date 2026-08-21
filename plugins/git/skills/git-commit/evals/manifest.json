@@ -6,14 +6,24 @@
     {
       "id": "project-default",
       "scope": "project",
-      "plugins": [{ "name": "git", "config": {} }],
+      "plugins": [
+        {
+          "name": "git",
+          "config": {}
+        }
+      ],
       "runModel": true,
       "requiredForRelease": true
     },
     {
       "id": "user-default",
       "scope": "user",
-      "plugins": [{ "name": "git", "config": {} }],
+      "plugins": [
+        {
+          "name": "git",
+          "config": {}
+        }
+      ],
       "runModel": false,
       "requiredForRelease": true
     }
@@ -22,31 +32,49 @@
     {
       "id": "trigger",
       "kind": "trigger",
-      "skills": ["git-commit"],
+      "skills": [
+        "git-commit"
+      ],
       "cases": "./trigger-cases.json",
       "fixtureModule": "./trigger-fixture.mjs",
       "observeSpawnAgent": false,
       "isolation": "strict",
-      "strictNegativeSplits": ["validation"],
-      "profiles": ["project-default"],
+      "strictNegativeSplits": [
+        "validation"
+      ],
+      "profiles": [
+        "project-default"
+      ],
       "defaultRuns": 3,
-      "releaseSplits": ["validation"],
+      "releaseSplits": [
+        "validation"
+      ],
       "requiredForRelease": true,
       "perRunTimeoutMs": 180000
     },
     {
       "id": "behavior",
       "kind": "command",
-      "skills": ["git-commit"],
+      "skills": [
+        "git-commit"
+      ],
       "entry": "./run-commit-evals.mjs",
       "cases": "./behavior-cases.json",
-      "profiles": ["project-default"],
+      "profiles": [
+        "project-default"
+      ],
       "defaultRuns": 3,
       "releaseSplits": [],
       "requiredForRelease": true,
       "perRunTimeoutMs": 300000,
       "suiteTimeoutMs": 16200000,
-      "supports": ["runs", "case", "model", "codexBin", "timeout"]
+      "supports": [
+        "runs",
+        "case",
+        "model",
+        "codexBin",
+        "timeout"
+      ]
     }
   ]
 }

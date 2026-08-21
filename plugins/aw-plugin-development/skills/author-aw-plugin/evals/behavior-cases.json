@@ -22,7 +22,10 @@
       },
       "oracle": {
         "rationale": "新插件请求包含 manifest、README 和两个独立 Skill；AW adapter 必须保留全部组件，并把两个 Skill 分别交给通用作者能力。",
-        "rule_refs": ["SKILL.md#工作流", "../assets/aw-authoring-context.json"],
+        "rule_refs": [
+          "SKILL.md#工作流",
+          "../assets/aw-authoring-context.json"
+        ],
         "confidence": "high",
         "allowed_variance": "Skill 正文和 README 措辞可不同；AWAuthoringContext 必须包含两个独立 skill 组件，且两个 Skill 都完成通用作者交接。"
       },
@@ -35,17 +38,39 @@
         "AGENTS.md": "# Workspace rules\nOnly change plugins/team-status. Use the installed aw CLI for plugin author commands.\n"
       },
       "review": {
-        "platforms": ["codex"],
+        "platforms": [
+          "codex"
+        ],
         "clean_session": true,
         "workspace_unchanged": false,
-        "allowed_workspace_changes": ["plugins/team-status/**"],
+        "allowed_workspace_changes": [
+          "plugins/team-status/**"
+        ],
         "artifacts": [
-          {"path": "plugins/team-status/.agents-plugin/plugin.json", "exists": true},
-          {"path": "plugins/team-status/README.md", "exists": true},
-          {"path": "plugins/team-status/skills/publish-status/SKILL.md", "exists": true},
-          {"path": "plugins/team-status/skills/publish-status/agents/openai.yaml", "exists": true},
-          {"path": "plugins/team-status/skills/reset-status/SKILL.md", "exists": true},
-          {"path": "plugins/team-status/skills/reset-status/agents/openai.yaml", "exists": true}
+          {
+            "path": "plugins/team-status/.agents-plugin/plugin.json",
+            "exists": true
+          },
+          {
+            "path": "plugins/team-status/README.md",
+            "exists": true
+          },
+          {
+            "path": "plugins/team-status/skills/publish-status/SKILL.md",
+            "exists": true
+          },
+          {
+            "path": "plugins/team-status/skills/publish-status/agents/openai.yaml",
+            "exists": true
+          },
+          {
+            "path": "plugins/team-status/skills/reset-status/SKILL.md",
+            "exists": true
+          },
+          {
+            "path": "plugins/team-status/skills/reset-status/agents/openai.yaml",
+            "exists": true
+          }
         ],
         "checks": [
           "trace 先确认 aw 版本并读取 aw plugin init 与 add-skill 的帮助；用 init 创建插件及第一个 Skill，再用 add-skill 创建第二个 Skill，不使用 npx、已移除的仓库脚本路径或自造 fallback",
@@ -63,10 +88,17 @@
       "provenance": "representative-synthetic",
       "scenario_family": "composite-mcp-app",
       "unit_under_test": "full-skill",
-      "preconditions": {"plugin_exists": true, "mcp_and_app_requested_together": true, "review_not_requested": true},
+      "preconditions": {
+        "plugin_exists": true,
+        "mcp_and_app_requested_together": true,
+        "review_not_requested": true
+      },
       "oracle": {
         "rationale": "MCP server 与 App 是两个独立组件，必须同时进入 authoring context、源码和 manifest，不能把 App 当作 MCP 的说明文字。",
-        "rule_refs": ["SKILL.md#工作流", "references/mcp-and-apps.md"],
+        "rule_refs": [
+          "SKILL.md#工作流",
+          "references/mcp-and-apps.md"
+        ],
         "confidence": "high",
         "allowed_variance": "JSON 排版和描述可不同；两个组件、声明路径及 CODEX profile 必须完整。"
       },
@@ -80,14 +112,29 @@
         "AGENTS.md": "# Workspace rules\nOnly change plugins/support-console/.agents-plugin/plugin.json, plugins/support-console/.mcp.json, and plugins/support-console/.app.json.\n"
       },
       "review": {
-        "platforms": ["codex"],
+        "platforms": [
+          "codex"
+        ],
         "clean_session": true,
         "workspace_unchanged": false,
-        "allowed_workspace_changes": ["plugins/support-console/.agents-plugin/plugin.json", "plugins/support-console/.mcp.json", "plugins/support-console/.app.json"],
+        "allowed_workspace_changes": [
+          "plugins/support-console/.agents-plugin/plugin.json",
+          "plugins/support-console/.mcp.json",
+          "plugins/support-console/.app.json"
+        ],
         "artifacts": [
-          {"path": "plugins/support-console/.agents-plugin/plugin.json", "exists": true},
-          {"path": "plugins/support-console/.mcp.json", "exists": true},
-          {"path": "plugins/support-console/.app.json", "exists": true}
+          {
+            "path": "plugins/support-console/.agents-plugin/plugin.json",
+            "exists": true
+          },
+          {
+            "path": "plugins/support-console/.mcp.json",
+            "exists": true
+          },
+          {
+            "path": "plugins/support-console/.app.json",
+            "exists": true
+          }
         ],
         "checks": [
           "AWAuthoringContext components 直接包含 manifest、mcp 和 app 三项，并保持 support-data 与 support-panel 的独立路径和 CODEX profile",
@@ -105,10 +152,18 @@
       "provenance": "representative-synthetic",
       "scenario_family": "composite-slash-readme",
       "unit_under_test": "full-skill",
-      "preconditions": {"plugin_exists": true, "slash_command_requested": true, "user_documentation_requested": true},
+      "preconditions": {
+        "plugin_exists": true,
+        "slash_command_requested": true,
+        "user_documentation_requested": true
+      },
       "oracle": {
         "rationale": "公共 slash command 和用户 README 是两个显式交付面；manifest、命令文件与可观察用法必须一致。",
-        "rule_refs": ["SKILL.md#工作流", "references/slash-commands.md", "references/aw-readme-authoring.md"],
+        "rule_refs": [
+          "SKILL.md#工作流",
+          "references/slash-commands.md",
+          "references/aw-readme-authoring.md"
+        ],
         "confidence": "high",
         "allowed_variance": "示例措辞可不同；命令名、参数边界和 README 调用示例必须一致。"
       },
@@ -122,14 +177,29 @@
         "AGENTS.md": "# Workspace rules\nOnly change the release-helper manifest, README, and slash-commands directory.\n"
       },
       "review": {
-        "platforms": ["codex"],
+        "platforms": [
+          "codex"
+        ],
         "clean_session": true,
         "workspace_unchanged": false,
-        "allowed_workspace_changes": ["plugins/release-helper/.agents-plugin/plugin.json", "plugins/release-helper/README.md", "plugins/release-helper/slash-commands/**"],
+        "allowed_workspace_changes": [
+          "plugins/release-helper/.agents-plugin/plugin.json",
+          "plugins/release-helper/README.md",
+          "plugins/release-helper/slash-commands/**"
+        ],
         "artifacts": [
-          {"path": "plugins/release-helper/.agents-plugin/plugin.json", "exists": true},
-          {"path": "plugins/release-helper/README.md", "exists": true},
-          {"path": "plugins/release-helper/slash-commands/prepare-release.md", "exists": true}
+          {
+            "path": "plugins/release-helper/.agents-plugin/plugin.json",
+            "exists": true
+          },
+          {
+            "path": "plugins/release-helper/README.md",
+            "exists": true
+          },
+          {
+            "path": "plugins/release-helper/slash-commands/prepare-release.md",
+            "exists": true
+          }
         ],
         "checks": [
           "AWAuthoringContext components 直接包含 manifest、slash-command 和 readme，三项在后续实现与验证中都保留",
@@ -147,10 +217,18 @@
       "provenance": "representative-synthetic",
       "scenario_family": "composite-extension-config",
       "unit_under_test": "full-skill",
-      "preconditions": {"plugin_exists": true, "extension_requested": true, "config_helper_requested": true},
+      "preconditions": {
+        "plugin_exists": true,
+        "extension_requested": true,
+        "config_helper_requested": true
+      },
       "oracle": {
         "rationale": "extension 与 config helper 分属不同作者分支，helper 必须被声明的配置消费，不能只创建孤立脚本。",
-        "rule_refs": ["SKILL.md#工作流", "references/extensions-spec.md", "references/aw-config-and-helper.md"],
+        "rule_refs": [
+          "SKILL.md#工作流",
+          "references/extensions-spec.md",
+          "references/aw-config-and-helper.md"
+        ],
         "confidence": "high",
         "allowed_variance": "实现细节可不同；extension、config-helper、manifest 及消费关系必须完整。"
       },
@@ -164,14 +242,29 @@
         "AGENTS.md": "# Workspace rules\nOnly change the incident-policy manifest, extensions, and scripts directories.\n"
       },
       "review": {
-        "platforms": ["codex"],
+        "platforms": [
+          "codex"
+        ],
         "clean_session": true,
         "workspace_unchanged": false,
-        "allowed_workspace_changes": ["plugins/incident-policy/.agents-plugin/plugin.json", "plugins/incident-policy/extensions/**", "plugins/incident-policy/scripts/**"],
+        "allowed_workspace_changes": [
+          "plugins/incident-policy/.agents-plugin/plugin.json",
+          "plugins/incident-policy/extensions/**",
+          "plugins/incident-policy/scripts/**"
+        ],
         "artifacts": [
-          {"path": "plugins/incident-policy/.agents-plugin/plugin.json", "exists": true},
-          {"path": "plugins/incident-policy/extensions/incident-instructions.json", "exists": true},
-          {"path": "plugins/incident-policy/scripts/aw-config.mjs", "exists": true}
+          {
+            "path": "plugins/incident-policy/.agents-plugin/plugin.json",
+            "exists": true
+          },
+          {
+            "path": "plugins/incident-policy/extensions/incident-instructions.json",
+            "exists": true
+          },
+          {
+            "path": "plugins/incident-policy/scripts/aw-config.mjs",
+            "exists": true
+          }
         ],
         "checks": [
           "AWAuthoringContext components 直接包含 manifest、extension 和 config-helper，并在跨分支交接后保留三项",
@@ -189,10 +282,18 @@
       "provenance": "derived",
       "scenario_family": "composite-version-build",
       "unit_under_test": "full-skill",
-      "preconditions": {"plugin_exists": true, "production_bundle_changes": true, "build_initially_fails": true},
+      "preconditions": {
+        "plugin_exists": true,
+        "production_bundle_changes": true,
+        "build_initially_fails": true
+      },
       "oracle": {
         "rationale": "构建修复改变 production bundle，必须同时修复直接根因、提高稳定版本并重新运行发现的构建与版本门禁。",
-        "rule_refs": ["SKILL.md#工作流", "references/aw-validation-and-version.md", "references/aw-script-testing.md"],
+        "rule_refs": [
+          "SKILL.md#工作流",
+          "references/aw-validation-and-version.md",
+          "references/aw-script-testing.md"
+        ],
         "confidence": "high",
         "allowed_variance": "修复可放在现有 build 脚本或缺失 helper；不得绕过失败、降低测试或只改版本。"
       },
@@ -207,13 +308,24 @@
         "AGENTS.md": "# Workspace rules\nUse pnpm build. Only change plugins/runtime-card/.agents-plugin/plugin.json and plugins/runtime-card/scripts.\n"
       },
       "review": {
-        "platforms": ["codex"],
+        "platforms": [
+          "codex"
+        ],
         "clean_session": true,
         "workspace_unchanged": false,
-        "allowed_workspace_changes": ["plugins/runtime-card/.agents-plugin/plugin.json", "plugins/runtime-card/scripts/**"],
+        "allowed_workspace_changes": [
+          "plugins/runtime-card/.agents-plugin/plugin.json",
+          "plugins/runtime-card/scripts/**"
+        ],
         "artifacts": [
-          {"path": "plugins/runtime-card/.agents-plugin/plugin.json", "exists": true},
-          {"path": "plugins/runtime-card/scripts/build-runtime-assets.mjs", "exists": true}
+          {
+            "path": "plugins/runtime-card/.agents-plugin/plugin.json",
+            "exists": true
+          },
+          {
+            "path": "plugins/runtime-card/scripts/build-runtime-assets.mjs",
+            "exists": true
+          }
         ],
         "checks": [
           "AWAuthoringContext components 直接包含 manifest 和 node-build，并把 patch bump 与 buildRequired=true 保留到验证阶段",
@@ -240,7 +352,10 @@
       },
       "oracle": {
         "rationale": "新 Skill 与 Eval 资产需要三个明确阶段：AW scaffold、通用 Skill 作者、Eval 设计及独立 preflight；AW adapter 必须保持 caller stage ownership。",
-        "rule_refs": ["SKILL.md#工作流", "references/aw-skill-integration.md"],
+        "rule_refs": [
+          "SKILL.md#工作流",
+          "references/aw-skill-integration.md"
+        ],
         "confidence": "high",
         "allowed_variance": "case 内容和 Skill 措辞可不同；Skill、trigger/behavior eval、preflight 与 structural evidence 边界必须存在。"
       },
@@ -254,17 +369,40 @@
         "AGENTS.md": "# Workspace rules\nOnly change the query-tools manifest and skills/explain-query. Do not run a real model.\n"
       },
       "review": {
-        "platforms": ["codex"],
+        "platforms": [
+          "codex"
+        ],
         "clean_session": true,
         "workspace_unchanged": false,
-        "allowed_workspace_changes": ["plugins/query-tools/.agents-plugin/plugin.json", "plugins/query-tools/skills/explain-query/**"],
+        "allowed_workspace_changes": [
+          "plugins/query-tools/.agents-plugin/plugin.json",
+          "plugins/query-tools/skills/explain-query/**"
+        ],
         "artifacts": [
-          {"path": "plugins/query-tools/.agents-plugin/plugin.json", "exists": true},
-          {"path": "plugins/query-tools/skills/explain-query/SKILL.md", "exists": true},
-          {"path": "plugins/query-tools/skills/explain-query/agents/openai.yaml", "exists": true},
-          {"path": "plugins/query-tools/skills/explain-query/evals/manifest.json", "exists": true},
-          {"path": "plugins/query-tools/skills/explain-query/evals/trigger-cases.json", "exists": true},
-          {"path": "plugins/query-tools/skills/explain-query/evals/evals.json", "exists": true}
+          {
+            "path": "plugins/query-tools/.agents-plugin/plugin.json",
+            "exists": true
+          },
+          {
+            "path": "plugins/query-tools/skills/explain-query/SKILL.md",
+            "exists": true
+          },
+          {
+            "path": "plugins/query-tools/skills/explain-query/agents/openai.yaml",
+            "exists": true
+          },
+          {
+            "path": "plugins/query-tools/skills/explain-query/evals/manifest.json",
+            "exists": true
+          },
+          {
+            "path": "plugins/query-tools/skills/explain-query/evals/trigger-cases.json",
+            "exists": true
+          },
+          {
+            "path": "plugins/query-tools/skills/explain-query/evals/evals.json",
+            "exists": true
+          }
         ],
         "checks": [
           "AWAuthoringContext components 直接包含 manifest、explain-query skill 和 eval-assets，Skill invocation 为 model，三项在所有 handoff 后完整保留",

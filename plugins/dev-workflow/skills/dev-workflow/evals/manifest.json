@@ -36,14 +36,26 @@
     {
       "id": "trigger",
       "kind": "trigger",
-      "skills": ["dev-workflow", "dev-spec", "dev-review-spec", "dev-implement", "dev-review-code"],
+      "skills": [
+        "dev-workflow",
+        "dev-spec",
+        "dev-review-spec",
+        "dev-implement",
+        "dev-review-code"
+      ],
       "cases": "./trigger-cases.json",
       "observeSpawnAgent": false,
       "isolation": "strict",
-      "strictNegativeSplits": ["validation"],
-      "profiles": ["project-default"],
+      "strictNegativeSplits": [
+        "validation"
+      ],
+      "profiles": [
+        "project-default"
+      ],
       "defaultRuns": 3,
-      "releaseSplits": ["validation"],
+      "releaseSplits": [
+        "validation"
+      ],
       "requiredForRelease": true,
       "perRunTimeoutMs": 180000
     },
@@ -63,9 +75,14 @@
       "observeSpawnAgent": false,
       "isolation": "strict",
       "strictNegativeSplits": [],
-      "profiles": ["project-composed"],
+      "profiles": [
+        "project-composed"
+      ],
       "defaultRuns": 3,
-      "releaseSplits": ["validation", "sanity"],
+      "releaseSplits": [
+        "validation",
+        "sanity"
+      ],
       "requiredForRelease": true,
       "minimumPassRate": 0.9,
       "perRunTimeoutMs": 180000
@@ -84,7 +101,9 @@
       ],
       "cases": "./composition-behavior-cases.json",
       "isolation": "strict",
-      "profiles": ["project-composed"],
+      "profiles": [
+        "project-composed"
+      ],
       "defaultRuns": 1,
       "releaseSplits": [],
       "requiredForRelease": true,

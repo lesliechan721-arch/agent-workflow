@@ -14,10 +14,18 @@
       "provenance": "derived",
       "scenario_family": "preflight-admission",
       "unit_under_test": "full-skill",
-      "preconditions": {"mode": "preflight", "release_relevant_cases": true, "case_document_is_structurally_parseable": true},
+      "preconditions": {
+        "mode": "preflight",
+        "release_relevant_cases": true,
+        "case_document_is_structurally_parseable": true
+      },
       "oracle": {
         "rationale": "一个 case 缺 observable assertion，另一个 Oracle 与目标 Skill 的拒绝合同相反；release-relevant corpus 必须整体 fail closed。",
-        "rule_refs": ["SKILL.md#Preflight", "SKILL.md#输出边界", "references/eval-audit-standard.generated.md"],
+        "rule_refs": [
+          "SKILL.md#Preflight",
+          "SKILL.md#输出边界",
+          "references/eval-audit-standard.generated.md"
+        ],
         "confidence": "high",
         "allowed_variance": "finding 顺序和文字可不同；两个 case 都必须 blocked，validity=fail、releaseEligible=false、recommendedAction=fix-eval-first。",
         "minimal_counterexample": "补齐可观察 assertion，并让 Oracle 与当前目标合同一致后，case 才能重新进入 admission。"
@@ -30,7 +38,9 @@
         "evals/cases.json": "{\n  \"policy\": {\"optimization\":\"critical\",\"false_negative_cost\":\"critical\",\"false_positive_cost\":\"high\",\"rationale\":\"Invalid records must not be accepted.\"},\n  \"evals\": [\n    {\"id\":\"missing-observable\",\"split\":\"validation\",\"case_role\":\"representative\",\"provenance\":\"representative-synthetic\",\"scenario_family\":\"record-validity\",\"unit_under_test\":\"full-skill\",\"prompt\":\"Check a complete record.\",\"expected_output\":\"Do the right thing.\",\"oracle\":{\"rationale\":\"It should work.\",\"rule_refs\":[],\"confidence\":\"high\",\"allowed_variance\":\"Any output.\"}},\n    {\"id\":\"wrong-oracle\",\"split\":\"validation\",\"case_role\":\"regression\",\"provenance\":\"derived\",\"scenario_family\":\"record-validity\",\"unit_under_test\":\"full-skill\",\"prompt\":\"Check {id:A1}.\",\"expected_output\":\"valid\",\"assertions\":[{\"text\":\"Output says valid\",\"grader\":\"exact\",\"criticality\":\"critical\",\"allowed_variance\":\"Case only.\"}],\"oracle\":{\"rationale\":\"An id alone is sufficient.\",\"rule_refs\":[\"target/SKILL.md\"],\"confidence\":\"high\",\"allowed_variance\":\"Wording can differ.\",\"minimal_counterexample\":\"Add owner.\"}}\n  ]\n}\n"
       },
       "review": {
-        "platforms": ["codex"],
+        "platforms": [
+          "codex"
+        ],
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [
@@ -47,10 +57,17 @@
       "provenance": "derived",
       "scenario_family": "digest-binding",
       "unit_under_test": "full-skill",
-      "preconditions": {"mode": "result-triage", "target_digest_matches": false, "corpus_digest_matches": false},
+      "preconditions": {
+        "mode": "result-triage",
+        "target_digest_matches": false,
+        "corpus_digest_matches": false
+      },
       "oracle": {
         "rationale": "preflight audit、run bundle、当前 Skill 和当前 corpus 的 digest 均必须匹配；任一陈旧绑定都使结果失去修改与发布资格。",
-        "rule_refs": ["SKILL.md#Result triage", "references/eval-audit-standard.generated.md"],
+        "rule_refs": [
+          "SKILL.md#Result triage",
+          "references/eval-audit-standard.generated.md"
+        ],
         "confidence": "high",
         "allowed_variance": "可把目标和 corpus 分成两个 stale finding；不得接受旧 audit/run，也不得归因为当前 Skill defect。",
         "minimal_counterexample": "重新审核当前 Skill/corpus 并用相同 digest 运行后，才可继续失败归因。"
@@ -65,7 +82,9 @@
         "handoff/run.json": "{\"targetSkillDigest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"caseCorpusDigest\":\"sha256:3333333333333333333333333333333333333333333333333333333333333333\",\"auditDigest\":\"sha256:4444444444444444444444444444444444444444444444444444444444444444\",\"caseId\":\"old-case\",\"status\":\"failed\"}\n"
       },
       "review": {
-        "platforms": ["codex"],
+        "platforms": [
+          "codex"
+        ],
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [
@@ -82,10 +101,19 @@
       "provenance": "representative-synthetic",
       "scenario_family": "result-failure-triage",
       "unit_under_test": "full-skill",
-      "preconditions": {"mode": "result-triage", "preflight_digest_matches": true, "three_failure_classes_present": true, "workspace_is_read_only": true},
+      "preconditions": {
+        "mode": "result-triage",
+        "preflight_digest_matches": true,
+        "three_failure_classes_present": true,
+        "workspace_is_read_only": true
+      },
       "oracle": {
         "rationale": "认证失败是 provider 环境问题，未产生 grader output 是 harness 问题，只有完整、可复现、与有效 Oracle 绑定的语义失败才可能是 Skill defect；缺少执行证据不能提升 evidence level。",
-        "rule_refs": ["SKILL.md#Result triage", "SKILL.md#输出边界", "references/eval-audit-standard.generated.md"],
+        "rule_refs": [
+          "SKILL.md#Result triage",
+          "SKILL.md#输出边界",
+          "references/eval-audit-standard.generated.md"
+        ],
         "confidence": "high",
         "allowed_variance": "provider 与 harness 可统一映射为 runtime-or-tool-defect/runtime-issue，但必须保留子类证据；case-c 只能是 candidate，不得直接修改 Skill。"
       },
@@ -98,7 +126,9 @@
         "handoff/results.json": "{\n  \"targetSkillDigest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\n  \"caseCorpusDigest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\n  \"auditDigest\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\n  \"runs\":[\n    {\"caseId\":\"case-a\",\"status\":\"incomplete\",\"provider\":{\"error\":\"401 invalid credential\"},\"modelOutput\":null,\"graderOutput\":null},\n    {\"caseId\":\"case-b\",\"status\":\"incomplete\",\"provider\":{\"status\":\"ok\"},\"modelOutput\":\"valid\",\"graderOutput\":null,\"harnessError\":\"grader process exited before result publication\"},\n    {\"caseId\":\"case-c\",\"status\":\"failed\",\"provider\":{\"status\":\"ok\"},\"modelOutput\":\"invalid\",\"graderOutput\":{\"passed\":false},\"repetitions\":3,\"sameFailure\":true,\"preflightAdmission\":\"pass\"}\n  ]\n}\n"
       },
       "review": {
-        "platforms": ["codex"],
+        "platforms": [
+          "codex"
+        ],
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [

@@ -14,7 +14,9 @@
       "provenance": "derived",
       "scenario_family": "timeout-continuation-lifecycle",
       "unit_under_test": "full-skill",
-      "profiles": ["project-timeout"],
+      "profiles": [
+        "project-timeout"
+      ],
       "preconditions": {
         "runtime_profile": "V2，minimumInitialWaitMinutes=1",
         "child_task": "simple 子代理必须运行只读 helper；helper 等待 75 秒后读取 src/simple.ts",
@@ -22,7 +24,9 @@
       },
       "oracle": {
         "rationale": "首次 60 秒 wait 必须真实超时；父代理不得把 timeout 当作失败，必须再次 wait 到真实终态，清理只能位于结果之后。",
-        "rule_refs": ["../SKILL.md#等待与清理"],
+        "rule_refs": [
+          "../SKILL.md#等待与清理"
+        ],
         "confidence": "high",
         "allowed_variance": "允许 timeout 后等待次数和清理工具可用性变化；必须至少观察一个 timeout、其后的 wait 和最终终态结果。",
         "minimal_counterexample": "如果 helper 在 60 秒内完成，则该 case 只能验证正常终态路径，不得要求或声称观察到 timeout。"

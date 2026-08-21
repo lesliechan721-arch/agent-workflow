@@ -1,4 +1,4 @@
-# Package and disclosure
+# 包结构和渐进式披露
 
 - `SKILL.md`：所有命中 branch 都需要的核心步骤、默认和 gotcha。
 - `references/`：单一 branch 才需要的 focused 规则；直接从主文件一层到达。

@@ -1,4 +1,4 @@
-# Skill script authoring
+# Skill 脚本编写
 
 只在逻辑重复、确定、复杂且可测试时增加脚本。
 
