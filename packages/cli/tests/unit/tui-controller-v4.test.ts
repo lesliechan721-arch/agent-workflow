@@ -450,6 +450,48 @@ describe('TUI v4 background source checks', () => {
     ]);
   });
 
+  it('cancels an older refresh and removes stale source health after a source write reload', async () => {
+    const oldRefresh = deferred<void>();
+    const initial = {
+      payload: status({ sources: [
+        source('alpha', { type: 'path', freshness: 'path', primary: true }),
+        source('removed', { type: 'path', freshness: 'path', primary: false, error: 'old failure' }),
+      ] }),
+      pluginSummaries: summaries(['alpha', 'old']),
+    };
+    const afterWrite = {
+      payload: status({ sources: [source('alpha', { type: 'path', freshness: 'path', primary: true })] }),
+      pluginSummaries: summaries(['alpha', 'new']),
+    };
+    const sourceEvidence: OperationEvidence = {
+      catalog: { configDigest: 'sha256:before', compositeDigest: 'sha256:candidate' },
+      sourceWrite: { configDigest: 'sha256:before', candidateDigest: 'sha256:candidate', inventoryDigest: 'sha256:inventory', referenceCount: 0, inventoryComplete: true },
+    };
+    const controller = new TuiController(dependencies({
+      loadStatus: vi.fn()
+        .mockResolvedValueOnce(initial)
+        .mockResolvedValueOnce(afterWrite)
+        .mockResolvedValue(initial),
+      checkSource: vi.fn(() => oldRefresh.promise),
+      captureEvidence: vi.fn().mockResolvedValue(sourceEvidence),
+      executeIntent: vi.fn().mockResolvedValue({ ok: true }),
+    }));
+    await controller.load();
+    const refresh = controller.refreshSource('removed');
+    const review = await controller.buildOperationReview({
+      kind: 'sourceMutation',
+      action: 'remove',
+      sourceId: 'removed',
+    });
+    await controller.executeOperation(review.reviewToken);
+    oldRefresh.resolve();
+    await refresh;
+
+    expect(controller.listSources().map((entry) => entry.id)).toEqual(['alpha']);
+    expect(controller.snapshot.sourceHealth).toEqual([{ sourceId: 'alpha', state: 'path' }]);
+    expect(controller.listPlugins({ mode: 'browse' }).map((plugin) => plugin.pluginId)).toEqual(['alpha/new']);
+  });
+
   it('aborts an older generation when the same source is refreshed again', async () => {
     const signals: AbortSignal[] = [];
     const checks: Array<ReturnType<typeof deferred<void>>> = [];
@@ -814,6 +856,89 @@ describe('TUI v4 Review safety', () => {
     expect(controller.snapshot.progress).toEqual({
       current: { target: 'demo', phase: '检查当前组件' },
       messages: ['开始检查'],
+    });
+  });
+
+  it('binds source writes to candidate and inventory evidence without exposing private input', async () => {
+    const privatePath = '/Users/private/catalog';
+    const sourceEvidence: OperationEvidence = {
+      catalog: { configDigest: 'sha256:before', compositeDigest: 'sha256:candidate' },
+      sourceWrite: {
+        configDigest: 'sha256:before',
+        candidateDigest: 'sha256:candidate',
+        sourceIdentity: 'sha256:identity',
+        inventoryDigest: 'sha256:inventory',
+        referenceCount: 0,
+        inventoryComplete: true,
+      },
+    };
+    const controller = new TuiController(dependencies({
+      captureEvidence: vi.fn().mockResolvedValue(sourceEvidence),
+      executeIntent: vi.fn().mockResolvedValue({ ok: true }),
+    }));
+    await controller.load();
+    const review = await controller.buildOperationReview({
+      kind: 'sourceMutation',
+      action: 'add',
+      sourceId: 'local-dev',
+      source: { id: 'local-dev', type: 'path', primary: false, path: privatePath },
+      changes: [{ title: '本地目录', private: true }],
+    });
+
+    expect(review.technicalDetails).toContain('候选配置：sha256:candidate');
+    expect(review.technicalDetails).toContain('引用清单：sha256:inventory · 0 项');
+    expect(JSON.stringify(controller.snapshot)).not.toContain(privatePath);
+    await controller.executeOperation(review.reviewToken);
+    expect(controller.snapshot.result).toMatchObject({ state: 'succeeded', operationKind: 'sourceMutation' });
+    expect(vi.mocked(controller.dependencies.loadStatus).mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('rebuilds a source Review with zero writes when config evidence becomes stale', async () => {
+    const first: OperationEvidence = {
+      catalog: { configDigest: 'sha256:one', compositeDigest: 'sha256:candidate-one' },
+      sourceWrite: { configDigest: 'sha256:one', candidateDigest: 'sha256:candidate-one', inventoryDigest: 'sha256:inventory', referenceCount: 0, inventoryComplete: true },
+    };
+    const second: OperationEvidence = {
+      catalog: { configDigest: 'sha256:two', compositeDigest: 'sha256:candidate-two' },
+      sourceWrite: { configDigest: 'sha256:two', candidateDigest: 'sha256:candidate-two', inventoryDigest: 'sha256:inventory', referenceCount: 0, inventoryComplete: true },
+    };
+    const executeIntent = vi.fn();
+    const controller = new TuiController(dependencies({
+      captureEvidence: vi.fn().mockResolvedValueOnce(first).mockResolvedValueOnce(second),
+      executeIntent,
+    }));
+    const review = await controller.buildOperationReview({ kind: 'sourceMutation', action: 'setPrimary', sourceId: 'team-tools' });
+    const result = await controller.executeOperation(review.reviewToken);
+
+    expect(result).toMatchObject({ state: 'stale' });
+    expect(executeIntent).not.toHaveBeenCalled();
+    expect(controller.snapshot.activeReview?.technicalDetails).toContain('候选配置：sha256:candidate-two');
+  });
+
+  it('maps a source config CAS conflict to the same typed stale Review', async () => {
+    const sourceEvidence: OperationEvidence = {
+      catalog: { configDigest: 'sha256:one', compositeDigest: 'sha256:candidate' },
+      sourceWrite: { configDigest: 'sha256:one', candidateDigest: 'sha256:candidate', inventoryDigest: 'sha256:inventory', referenceCount: 0, inventoryComplete: true },
+    };
+    const conflict = new Error('Catalog source config changed concurrently.');
+    conflict.name = 'CatalogSourcesConfigConflictError';
+    const controller = new TuiController(dependencies({
+      captureEvidence: vi.fn().mockResolvedValue(sourceEvidence),
+      executeIntent: vi.fn().mockRejectedValue(conflict),
+    }));
+    const review = await controller.buildOperationReview({
+      kind: 'sourceMutation',
+      action: 'setPrimary',
+      sourceId: 'team-tools',
+    });
+
+    const result = await controller.executeOperation(review.reviewToken);
+
+    expect(result).toMatchObject({
+      state: 'stale',
+      operationKind: 'sourceMutation',
+      sourceAction: 'setPrimary',
+      review: { operationKind: 'sourceMutation', sourceAction: 'setPrimary' },
     });
   });
 });

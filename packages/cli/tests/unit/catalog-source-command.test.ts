@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   addCatalogSourceCommand,
   listCatalogSources,
+  preflightCatalogSourceMutation,
   removeCatalogSourceCommand,
   setPrimaryCatalogSourceCommand,
   updateCatalogSourceCommand,
@@ -39,6 +40,102 @@ function fixturePath(name: string): string {
 }
 
 describe('catalog source command v4', () => {
+  it('returns changed false and preserves the config digest for a current-primary no-op', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const before = await readCatalogSourcesConfigSnapshot(isolation.env);
+
+    const receipt = await setPrimaryCatalogSourceCommand({
+      sourceId: 'official',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+    });
+
+    expect(receipt).toMatchObject({
+      ok: true,
+      changed: false,
+      sourceId: 'official',
+      primarySourceId: 'official',
+      configDigest: before.digest,
+      references: [],
+    });
+    expect(await readCatalogSourcesConfigSnapshot(isolation.env)).toMatchObject({
+      digest: before.digest,
+      materialized: false,
+    });
+  });
+
+  it('preflights candidate and reference evidence without writing, then rejects stale execution before validation', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = fixturePath('review-catalog');
+    await createCatalogSnapshotFixture(sourceRoot);
+    const before = await readCatalogSourcesConfigSnapshot(isolation.env);
+    const source = { id: 'review', type: 'path', primary: false, path: sourceRoot } as const;
+
+    const preview = await preflightCatalogSourceMutation({
+      request: { action: 'add', source },
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+    });
+
+    expect(preview).toMatchObject({
+      sourceId: 'review',
+      configDigest: before.digest,
+      candidateDigest: expect.stringMatching(/^sha256:/u),
+      references: { inventorySchemaVersion: 1, references: [], errors: [] },
+    });
+    expect(preview.candidateDigest).not.toBe(before.digest);
+    expect(await readCatalogSourcesConfigSnapshot(isolation.env)).toMatchObject({
+      digest: before.digest,
+      materialized: false,
+    });
+    await expect(addCatalogSourceCommand({
+      source,
+      cliVersion: '1.0.0',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      expectedConfigDigest: `sha256:${'0'.repeat(64)}`,
+    })).rejects.toMatchObject({ name: 'CatalogSourcesConfigConflictError' });
+    expect(await readCatalogSourcesConfigSnapshot(isolation.env)).toMatchObject({
+      digest: before.digest,
+      materialized: false,
+    });
+  });
+
+  it('projects stable inventory identity without retaining reference locations', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = fixturePath('safe-evidence-catalog');
+    await createCatalogSnapshotFixture(sourceRoot);
+    const preview = await preflightCatalogSourceMutation({
+      request: {
+        action: 'add',
+        source: { id: 'local', type: 'path', primary: false, path: sourceRoot },
+      },
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      runtime: {
+        inventoryReferences: vi.fn().mockResolvedValue({
+          inventorySchemaVersion: 1,
+          references: [{
+            kind: 'namespacedConfig',
+            location: '/Users/private/config.json',
+            sourceId: 'local',
+            pluginName: 'demo',
+            scope: 'user',
+          }],
+          errors: [],
+        }),
+      },
+    });
+
+    expect(preview.references.references).toEqual([{
+      kind: 'namespacedConfig',
+      sourceId: 'local',
+      pluginName: 'demo',
+      scope: 'user',
+    }]);
+    expect(JSON.stringify(preview)).not.toContain('/Users/private');
+  });
+
   it('validates a path source before one CAS commit and exposes no protected path', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = fixturePath('catalog');

@@ -1,7 +1,11 @@
 import { Box, Text, useInput, useWindowSize } from 'ink';
 import { useEffect, useState } from 'react';
+import path from 'node:path';
 
-import type { PlatformName, Scope } from '../types.js';
+import type { CatalogSource, PlatformName, Scope } from '../types.js';
+import { CATALOG_SOURCE_ID_PATTERN } from '../utils/catalog-sources.js';
+import { canonicalizeCatalogGitUrl } from '../utils/catalog-source-identity.js';
+import { projectCatalogSourceLocation } from '../utils/catalog-source-presentation.js';
 import { ScreenFrame } from './components.js';
 import type {
   OperationIntent,
@@ -25,6 +29,8 @@ export const CONSOLE_V4_SCREEN_IDS = [
   'P11', 'P12', 'P13', 'P14', 'P15', 'P16', 'P17', 'P18', 'P19', 'P20', 'P21',
   'C01', 'C02', 'C03', 'C04', 'C05', 'C06', 'C07', 'C08', 'C09', 'C10',
   'C11', 'C12', 'C13', 'C14', 'C15', 'C16', 'C17',
+  'S01', 'S02', 'S03', 'S04', 'S05', 'S06', 'S07', 'S08', 'S09',
+  'S10', 'S11', 'S12', 'S13', 'S14', 'S15', 'S16', 'S17', 'S18',
 ] as const;
 
 export type ConsoleV4ScreenId = typeof CONSOLE_V4_SCREEN_IDS[number];
@@ -38,6 +44,18 @@ interface ActionItem {
   disabled?: string;
   run?: () => void | Promise<void>;
   configKey?: string;
+}
+
+interface SourceDraft {
+  owner: string;
+  mode: 'add' | 'update';
+  sourceId: string;
+  type: 'git' | 'path';
+  location: string;
+  refPolicy: 'cliChannel' | 'explicit';
+  ref: string;
+  subdir: string;
+  editField?: 'location' | 'refPolicy' | 'subdir';
 }
 
 function configOwnerKey(route: Extract<TuiRoute, {
@@ -231,19 +249,28 @@ export function resolveConsoleV4ScreenId(
     if (placement.state === 'installed' && placement.health === 'ready') return 'P14';
     return 'P16';
   }
-  if (route.name === 'review') return snapshot.activeReview?.title === '保存插件设置'
+  if (route.name === 'review' && snapshot.activeReview?.operationKind === 'sourceMutation') {
+    return ({ add: 'S10', update: 'S15', setPrimary: 'S16', remove: 'S18' } as const)[snapshot.activeReview.sourceAction!];
+  }
+  if (route.name === 'progress' && snapshot.activeReview?.operationKind === 'sourceMutation') return 'S11';
+  if (route.name === 'result' && snapshot.result && 'operationKind' in snapshot.result
+    && snapshot.result.operationKind === 'sourceMutation') {
+    return snapshot.result.state === 'succeeded' ? 'S12' : 'S13';
+  }
+  if (route.name === 'review') return snapshot.activeReview?.operationKind === 'configSave'
     ? 'C12'
-    : snapshot.activeReview?.title === '重置插件设置'
+    : snapshot.activeReview?.operationKind === 'configReset'
       ? 'C16'
-      : snapshot.activeReview?.title === '升级插件'
-    || snapshot.activeReview?.title === '重新安装插件'
-    ? 'P18'
-    : snapshot.activeReview?.title === '移除插件' || snapshot.activeReview?.title === '清理插件'
-      ? 'P19' : 'P07';
-  if (route.name === 'progress') return snapshot.activeReview?.title === '保存插件设置'
-    || snapshot.activeReview?.title === '重置插件设置' ? 'C13' : 'P08';
-  if (route.name === 'result') return snapshot.result && 'operationKind' in snapshot.result
-    && snapshot.result.operationKind
+      : snapshot.activeReview?.operationKind === 'pluginWrite'
+        && (snapshot.activeReview.pluginAction === 'upgrade' || snapshot.activeReview.pluginAction === 'reinstall')
+        ? 'P18'
+        : snapshot.activeReview?.operationKind === 'pluginWrite'
+          && (snapshot.activeReview.pluginAction === 'uninstall' || snapshot.activeReview.pluginAction === 'cleanup')
+          ? 'P19' : 'P07';
+  if (route.name === 'progress') return snapshot.activeReview?.operationKind === 'configSave'
+    || snapshot.activeReview?.operationKind === 'configReset' ? 'C13' : 'P08';
+  if (route.name === 'result') return snapshot.result?.operationKind === 'configSave'
+    || snapshot.result?.operationKind === 'configReset'
     ? snapshot.result.state === 'succeeded' ? 'C14' : 'C15'
     : snapshot.result?.state === 'partial' ? 'P10' : 'P09';
   if (route.name === 'pluginAbout') return 'P20';
@@ -256,6 +283,14 @@ export function resolveConsoleV4ScreenId(
   }[route.editor] as ConsoleV4ScreenId;
   if (route.name === 'configPresets') return 'C11';
   if (route.name === 'configUnavailable') return 'C17';
+  if (route.name === 'sourceList') return 'S01';
+  if (route.name === 'sourceDetail') return 'S02';
+  if (route.name === 'sourceTechnical') return 'S03';
+  if (route.name === 'sourceAdd') return ({
+    type: 'S04', id: 'S05', location: 'S06', refPolicy: 'S07', ref: 'S08', subdir: 'S09',
+  } as const)[route.step];
+  if (route.name === 'sourceEdit') return 'S14';
+  if (route.name === 'sourceRemoveBlocked') return 'S17';
   return 'G02';
 }
 
@@ -290,6 +325,11 @@ export function ConsoleAppV4(props: {
   const [inputError, setInputError] = useState<string>();
   const [configActionError, setConfigActionError] = useState<string>();
   const [actionError, setActionError] = useState<string>();
+  const [sourceDraft, setSourceDraft] = useState<SourceDraft>();
+  const [sourceInput, setSourceInput] = useState('');
+  const [sourceInputError, setSourceInputError] = useState<string>();
+  const [sourceReferenceSummary, setSourceReferenceSummary] = useState<Awaited<ReturnType<TuiController['inspectSourceRemoval']>>>();
+  const [sourceDependenciesExpanded, setSourceDependenciesExpanded] = useState(false);
   const [draftOwner, setDraftOwner] = useState<string>();
   const route = snapshot.router.current.route;
   const plugin = currentPlugin(props.controller, route);
@@ -318,7 +358,11 @@ export function ConsoleAppV4(props: {
     setDirty(false);
     setDraftUpdates({});
     setDraftRemoves([]);
+    if (snapshot.result.operationKind === 'sourceMutation') setSourceDraft(undefined);
   }, [route.name, snapshot.result]);
+  useEffect(() => {
+    if (route.name !== 'sourceAdd') setSourceInput('');
+  }, [route.name]);
 
   const configRoute = route.name === 'configFields'
     || route.name === 'configFieldEditor'
@@ -392,6 +436,25 @@ export function ConsoleAppV4(props: {
       : String(draft ?? activeField.value ?? ''));
     setInputError(undefined);
   }, [route.name, route.name === 'configFieldEditor' ? route.fieldKey : '', activeField?.key]);
+  useEffect(() => {
+    if (route.name !== 'sourceAdd') return;
+    const draft = sourceDraft?.owner === route.owner ? sourceDraft : undefined;
+    setSourceInput(route.step === 'id' ? draft?.sourceId ?? ''
+      : route.step === 'location' ? draft?.location ?? ''
+        : route.step === 'ref' ? draft?.ref ?? ''
+          : route.step === 'subdir' ? draft?.subdir ?? '' : '');
+    setSourceInputError(undefined);
+  }, [route.name, route.name === 'sourceAdd' ? `${route.owner}:${route.step}` : '', sourceDraft?.owner]);
+  useEffect(() => {
+    if (route.name !== 'sourceRemoveBlocked') return;
+    const abort = new AbortController();
+    setSourceReferenceSummary(undefined);
+    setSourceDependenciesExpanded(false);
+    void props.controller.inspectSourceRemoval(route.sourceId)
+      .then((summary) => { if (!abort.signal.aborted) setSourceReferenceSummary(summary); })
+      .catch(() => { if (!abort.signal.aborted) setSourceReferenceSummary({ blocked: true, inventoryComplete: false, dependencies: [] }); });
+    return () => abort.abort();
+  }, [props.controller, route.name, route.name === 'sourceRemoveBlocked' ? route.sourceId : '']);
 
   const screenId = resolveConsoleV4ScreenId(
     snapshot,
@@ -456,6 +519,51 @@ export function ConsoleAppV4(props: {
     await props.controller.buildOperationReview(intent);
     setFocus(0);
     setScrollOffset(0);
+  };
+  const beginAddSource = (): void => {
+    const owner = `source-add:${Date.now()}`;
+    setSourceDraft({ owner, mode: 'add', sourceId: '', type: 'git', location: '', refPolicy: 'cliChannel', ref: '', subdir: '' });
+    setDirty(true);
+    go({ name: 'sourceAdd', step: 'type', owner });
+  };
+  const sourceFromDraft = (draft: SourceDraft): CatalogSource => draft.type === 'git'
+    ? {
+        id: draft.sourceId,
+        type: 'git',
+        primary: false,
+        url: draft.location,
+        refPolicy: draft.refPolicy === 'cliChannel' ? { type: 'cliChannel' } : { type: 'explicit', ref: draft.ref },
+        ...(draft.subdir ? { subdir: draft.subdir } : {}),
+      }
+    : { id: draft.sourceId, type: 'path', primary: false, path: draft.location };
+  const beginSourceAddReviewWith = async (draft: SourceDraft): Promise<void> => {
+    const source = sourceFromDraft(draft);
+    await beginReview({
+      kind: 'sourceMutation', action: 'add', sourceId: source.id, source,
+      changes: [
+        { title: `添加来源 ${source.id}`, after: source.type === 'git' ? 'Git 仓库' : '本地目录' },
+        { title: source.type === 'git' ? 'Git URL' : '本地目录', ...(source.type === 'git' ? { after: projectCatalogSourceLocation(source.url) } : { private: true }) },
+        ...(source.type === 'git' ? [{ title: '版本引用', after: source.refPolicy.type === 'cliChannel' ? '跟随 AW 版本通道' : source.refPolicy.ref }] : []),
+        ...(source.type === 'git' && source.subdir ? [{ title: 'Catalog 子目录', after: source.subdir }] : []),
+      ],
+    });
+  };
+  const beginSourceUpdateReview = async (draft: SourceDraft): Promise<void> => {
+    const detail = props.controller.getSourceOverview(draft.sourceId).detail;
+    if (!detail || !draft.editField) return;
+    const update = draft.type === 'path'
+      ? { type: 'path' as const, path: draft.location }
+      : draft.editField === 'location'
+        ? { type: 'git' as const, url: draft.location }
+        : draft.editField === 'refPolicy'
+          ? { type: 'git' as const, refPolicy: draft.refPolicy === 'cliChannel' ? { type: 'cliChannel' as const } : { type: 'explicit' as const, ref: draft.ref } }
+          : { type: 'git' as const, subdir: draft.subdir || null };
+    const change = draft.editField === 'location'
+      ? { title: draft.type === 'git' ? 'Git URL' : '本地目录', before: detail.locationSummary, ...(draft.type === 'git' ? { after: projectCatalogSourceLocation(draft.location) } : { private: true }) }
+      : draft.editField === 'refPolicy'
+        ? { title: '版本引用', before: detail.refPolicy === 'explicit' ? detail.explicitRef : '跟随 AW 版本通道', after: draft.refPolicy === 'explicit' ? draft.ref : '跟随 AW 版本通道' }
+        : { title: 'Catalog 子目录', before: detail.subdir ?? '未设置', after: draft.subdir || '未设置' };
+    await beginReview({ kind: 'sourceMutation', action: 'update', sourceId: draft.sourceId, update, changes: [change] });
   };
   const configLayerLabel = (layer: { scope: Scope | 'effective'; projectLayer: 'shared' | 'local' }): string =>
     layer.scope === 'effective' ? '有效设置'
@@ -908,6 +1016,112 @@ export function ConsoleAppV4(props: {
       { label: '返回', run: back },
     ];
     content = <Box flexDirection="column"><Bordered><Text color={tuiTheme.statusColors.error}>× Manifest 或来源不可用</Text><Text color={tuiTheme.colors.muted}>已保存的设置不会丢失。无法证明设置身份，因此重置已禁用。</Text></Bordered><ActionRows actions={actions} focus={focus} /></Box>;
+  } else if (route.name === 'sourceList') {
+    breadcrumb = '插件来源';
+    title = '插件来源';
+    description = '单个来源失败不会阻止其他来源继续工作。';
+    context = `${props.controller.listSources().length} 个来源`;
+    help = '↑↓ 移动 · Enter 打开 · r 重新检查 · Esc 返回';
+    actions = [
+      ...props.controller.listSources().map((source) => {
+        const overview = props.controller.getSourceOverview(source.id);
+        const health = overview.health?.state ?? source.state;
+        const status = health === 'ready' ? '已从远端加载'
+          : health === 'path' ? '本地目录'
+            : health === 'checking' ? '正在检查'
+              : health === 'cache' || health === 'degraded' ? '使用缓存' : '无法读取';
+        return {
+          label: `${source.id}${source.primary ? '  主来源' : ''}`,
+          description: `${overview.detail?.type === 'path' ? '本地目录' : 'Git 仓库'} · ${source.count ?? 0} 个插件`,
+          meta: status,
+          status: health === 'unavailable' ? 'error' as const
+            : health === 'cache' || health === 'degraded' ? 'warning' as const
+              : source.primary ? 'success' as const : undefined,
+          run: () => go({ name: 'sourceDetail', sourceId: source.id }),
+        };
+      }),
+      { label: '＋ 添加来源', description: 'Git 仓库或本地目录', run: beginAddSource },
+    ];
+    content = <ActionRows actions={actions} focus={focus} offset={scrollOffset} limit={policy.mode === 'compact' ? 5 : 8} />;
+  } else if (route.name === 'sourceDetail') {
+    const overview = props.controller.getSourceOverview(route.sourceId);
+    const detail = overview.detail;
+    const state = overview.health?.state ?? overview.source?.state;
+    breadcrumb = `插件来源 / ${route.sourceId}`;
+    context = detail?.type === 'path' ? '本地目录' : 'Git';
+    title = route.sourceId;
+    description = state === 'cache' || state === 'degraded' ? '当前使用已缓存的 Catalog 数据。'
+      : state === 'unavailable' ? '当前无法读取这个来源。' : '来源状态可用。';
+    help = '↑↓ 移动 · Enter 选择 · r 重新检查 · Esc 返回';
+    actions = [
+      { label: '重新检查来源', description: '读取远端并更新缓存', run: () => props.controller.refreshSource(route.sourceId) },
+      { label: '编辑来源…', description: 'ID 与类型创建后不可修改', run: () => go({ name: 'sourceEdit', sourceId: route.sourceId }) },
+      { label: '设为主来源…', description: '只改变默认 marketplace', disabled: detail?.primary ? '当前已经是主来源' : undefined, run: () => beginReview({ kind: 'sourceMutation', action: 'setPrimary', sourceId: route.sourceId, changes: [{ title: '主来源', before: snapshot.viewModel?.sourceTabs.find((source) => source.primary)?.id, after: route.sourceId }] }) },
+      { label: '移除来源…', description: '保存前扫描全部引用', status: 'error', disabled: detail?.primary ? '主来源不能直接移除' : undefined, run: async () => {
+        const summary = await props.controller.inspectSourceRemoval(route.sourceId);
+        setSourceReferenceSummary(summary);
+        if (summary.blocked) go({ name: 'sourceRemoveBlocked', sourceId: route.sourceId });
+        else await beginReview({ kind: 'sourceMutation', action: 'remove', sourceId: route.sourceId, changes: [{ title: `移除来源 ${route.sourceId}` }] });
+      } },
+      { label: '技术详情', description: '只读身份与解析证据', run: () => go({ name: 'sourceTechnical', sourceId: route.sourceId }) },
+    ];
+    content = <Box flexDirection="column"><Bordered title="当前状态"><Text color={state === 'unavailable' ? tuiTheme.statusColors.error : state === 'cache' || state === 'degraded' ? tuiTheme.statusColors.warning : tuiTheme.statusColors.success}>{state === 'checking' ? '● 正在检查' : state === 'unavailable' ? '× 无法读取' : state === 'cache' || state === 'degraded' ? '◐ 使用缓存' : '✓ 可用'}</Text></Bordered><Bordered title="来源配置"><Text>位置          {detail?.locationSummary ?? '不可用'}</Text><Text>版本选择      {detail?.type === 'path' ? '本地目录' : detail?.refPolicy === 'explicit' ? '固定 Git 引用' : '跟随 AW 版本通道'}</Text>{detail?.explicitRef ? <Text>引用          {detail.explicitRef}</Text> : null}<Text>插件          {detail?.pluginCount ?? 0} 个</Text></Bordered><ActionRows actions={actions} focus={focus} /></Box>;
+  } else if (route.name === 'sourceTechnical') {
+    const detail = props.controller.getSourceOverview(route.sourceId).detail;
+    breadcrumb = `插件来源 / ${route.sourceId} / 技术详情`;
+    context = '只读';
+    title = '来源身份与解析详情';
+    description = '用于诊断和安全审查；不显示认证信息或绝对路径。';
+    content = <Bordered><Text>sourceId          {route.sourceId}</Text><Text>sourceIdentity    {detail?.sourceIdentity ?? '不可用'}</Text><Text>requestedRef      {detail?.requestedRef ?? '不可用'}</Text>{detail?.resolvedCommit ? <Text>resolvedCommit    {detail.resolvedCommit}</Text> : null}<Text>freshness         {detail?.freshness ?? '不可用'}</Text><Text>configDigest      {detail?.configDigest ?? '不可用'}</Text></Bordered>;
+  } else if (route.name === 'sourceAdd' && sourceDraft?.owner === route.owner) {
+    breadcrumb = sourceDraft.mode === 'add' ? '插件来源 / 添加' : `插件来源 / ${sourceDraft.sourceId} / 编辑`;
+    const stepLabel = { type: '第 1 步，共 6 步', id: '第 2 步，共 6 步', location: '第 3 步，共 6 步', refPolicy: '第 4 步，共 6 步', ref: '第 5 步，共 6 步', subdir: '可选高级步骤' }[route.step];
+    context = stepLabel;
+    help = route.step === 'type' || route.step === 'refPolicy' ? '↑↓ 移动 · Enter 继续 · Esc 返回' : '输入 · Enter 继续 · Esc 返回';
+    if (route.step === 'type') {
+      title = '选择来源类型'; description = '来源类型创建后不能修改。';
+      actions = [
+        { label: 'Git 仓库', description: '从远端 Git 仓库读取 Catalog', run: () => { setSourceDraft({ ...sourceDraft, type: 'git' }); go({ name: 'sourceAdd', step: 'id', owner: route.owner }); } },
+        { label: '本地目录', description: '用于本地开发与测试', run: () => { setSourceDraft({ ...sourceDraft, type: 'path' }); go({ name: 'sourceAdd', step: 'id', owner: route.owner }); } },
+      ]; content = <ActionRows actions={actions} focus={focus} />;
+    } else if (route.step === 'refPolicy') {
+      title = '选择版本引用方式'; description = '跟随 AW 通道适合常规来源；固定 ref 适合测试来源。';
+      actions = [
+        { label: '跟随 AW 版本通道', description: '自动选择 catalog/latest 或 catalog/beta', run: async () => { const next = { ...sourceDraft, refPolicy: 'cliChannel' as const, ref: '' }; setSourceDraft(next); if (next.mode === 'update') await beginSourceUpdateReview(next); else go({ name: 'sourceAdd', step: 'subdir', owner: route.owner }); } },
+        { label: '固定 Git 引用', description: 'branch、tag 或 commit', run: () => { setSourceDraft({ ...sourceDraft, refPolicy: 'explicit' }); go({ name: 'sourceAdd', step: 'ref', owner: route.owner }); } },
+      ]; content = <ActionRows actions={actions} focus={focus} />;
+    } else {
+      title = route.step === 'id' ? '输入来源 ID' : route.step === 'location' ? `输入 ${sourceDraft.type === 'git' ? 'Git URL' : '绝对路径'}` : route.step === 'ref' ? '输入固定 Git 引用' : '输入 Catalog 子目录';
+      description = route.step === 'subdir' ? '仓库根目录是 Catalog 时保持为空。' : '输入会在继续前按来源规范验证。';
+      const displayedInput = route.step === 'location' && sourceDraft.type === 'git' && sourceInput
+        ? projectCatalogSourceLocation(sourceInput)
+        : sourceInput;
+      content = <Bordered><Text>{displayedInput || ' '}</Text><Text color={sourceInputError ? tuiTheme.statusColors.error : tuiTheme.colors.muted}>{sourceInputError ?? (route.step === 'location' && sourceDraft.type === 'path' ? '绝对路径只在此输入页短暂显示。' : '按 Enter 继续。')}</Text></Bordered>;
+    }
+  } else if (route.name === 'sourceEdit') {
+    const detail = props.controller.getSourceOverview(route.sourceId).detail;
+    breadcrumb = `插件来源 / ${route.sourceId} / 编辑`;
+    title = '选择要修改的内容'; description = '来源 ID 和类型只读。';
+    const startEdit = (field: SourceDraft['editField']): void => {
+      if (!detail) return;
+      const owner = `source-update:${route.sourceId}:${field}:${Date.now()}`;
+      setSourceDraft({ owner, mode: 'update', sourceId: route.sourceId, type: detail.type, location: '', refPolicy: detail.refPolicy ?? 'cliChannel', ref: detail.explicitRef ?? '', subdir: detail.subdir ?? '', editField: field });
+      setDirty(true);
+      go({ name: 'sourceAdd', step: field === 'location' ? 'location' : field === 'subdir' ? 'subdir' : 'refPolicy', owner });
+    };
+    actions = detail?.type === 'git' ? [
+      { label: 'Git URL', description: detail.locationSummary, run: () => startEdit('location') },
+      { label: '版本引用', description: detail.refPolicy === 'explicit' ? `固定：${detail.explicitRef}` : '跟随 AW 版本通道', run: () => startEdit('refPolicy') },
+      { label: 'Catalog 子目录', description: detail.subdir ?? '未设置', run: () => startEdit('subdir') },
+    ] : [{ label: '本地目录', description: '已选择本地目录', run: () => startEdit('location') }];
+    content = <ActionRows actions={actions} focus={focus} />;
+  } else if (route.name === 'sourceRemoveBlocked') {
+    breadcrumb = `插件来源 / ${route.sourceId} / 移除`;
+    context = '已阻止'; title = `无法移除 ${route.sourceId}`;
+    description = sourceReferenceSummary?.inventoryComplete === false ? '引用清单不完整，不能把未知引用当作零。' : '仍有内容依赖这个来源。';
+    actions = [{ label: sourceDependenciesExpanded ? '收起依赖内容' : '查看依赖内容', description: '只显示插件、来源、平台、位置和类别聚合', run: () => setSourceDependenciesExpanded((value) => !value) }, { label: '返回来源详情', run: back }];
+    const countLabel = (value: number | undefined, unit: string): string => value === undefined ? '未知' : `${value} ${unit}`;
+    content = <Box flexDirection="column"><Bordered><Text color={tuiTheme.statusColors.error}>× {sourceReferenceSummary?.inventoryComplete === false ? '引用清单不完整' : '发现活动引用'}</Text></Bordered><Bordered><Text>安装位置      {countLabel(sourceReferenceSummary?.installationCount, '个')}</Text><Text>插件设置      {countLabel(sourceReferenceSummary?.configCount, '份')}</Text><Text>生命周期状态  {countLabel(sourceReferenceSummary?.lifecycleCount, '个')}</Text><Text>Marketplace   {countLabel(sourceReferenceSummary?.marketplaceCount, '个')}</Text>{sourceDependenciesExpanded ? sourceReferenceSummary?.dependencies.slice(0, policy.mode === 'compact' ? 2 : 5).map((dependency, index) => <Text key={`${dependency.category}:${dependency.pluginId ?? dependency.sourceId ?? index}`} color={tuiTheme.colors.muted}>{dependency.category} · {dependency.pluginId ?? dependency.sourceId ?? '身份未知'}{dependency.platform ? ` · ${platformLabel(dependency.platform)}` : ''}{dependency.scope ? ` · ${scopeLabel(dependency.scope)}` : ''}</Text>) : null}</Bordered><ActionRows actions={actions} focus={focus} /></Box>;
   } else if (route.name === 'review' && snapshot.activeReview) {
     const review = snapshot.activeReview;
     breadcrumb = `${review.subject.name} / ${review.title}`;
@@ -930,14 +1144,17 @@ export function ConsoleAppV4(props: {
     const reviewLimit = policy.mode === 'compact' ? 4 : 7;
     content = <Box flexDirection="column"><Bordered><Text bold>{review.subject.name}  {review.subject.sourceLabel} {review.subject.version}</Text><ActionRows actions={actions} focus={focus} offset={scrollOffset} limit={reviewLimit} /><Text color={tuiTheme.colors.muted}>▸ 技术详情（d）</Text>{showTechnical ? review.technicalDetails?.map((detail) => <Text key={detail} color={tuiTheme.colors.muted}>{detail}</Text>) : null}</Bordered></Box>;
   } else if (route.name === 'progress') {
-    const configOperation = snapshot.activeReview?.title === '保存插件设置'
-      || snapshot.activeReview?.title === '重置插件设置';
-    breadcrumb = configOperation ? '设置 / 进度' : '插件操作 / 进度';
-    title = configOperation ? '正在保存并应用设置' : '正在执行插件操作';
-    description = configOperation ? '先保存所选层，再重新应用当前可见安装位置。' : '请勿关闭当前终端。';
+    const configOperation = snapshot.activeReview?.operationKind === 'configSave'
+      || snapshot.activeReview?.operationKind === 'configReset';
+    const sourceOperation = snapshot.activeReview?.operationKind === 'sourceMutation';
+    breadcrumb = sourceOperation ? '插件来源 / 保存' : configOperation ? '设置 / 进度' : '插件操作 / 进度';
+    title = sourceOperation ? '正在验证并保存来源' : configOperation ? '正在保存并应用设置' : '正在执行插件操作';
+    description = sourceOperation ? '只有验证来源和引用清单通过后才会修改来源列表。' : configOperation ? '先保存所选层，再重新应用当前可见安装位置。' : '请勿关闭当前终端。';
     help = 'd 技术进度 · Ctrl-C 完成后退出';
     const progress = snapshot.progress;
-    content = <Box flexDirection="column"><Text color={tuiTheme.statusColors.success}>✓ {configOperation ? '验证设置值' : '检查兼容性'}</Text><Text color={tuiTheme.colors.accent}>● {progress.current?.phase ?? (configOperation ? '保存设置层并重新应用' : '连接到所选工具')}</Text><Text color={tuiTheme.colors.muted}>○ 验证结果</Text>{progress.current ? <Text color={tuiTheme.colors.muted}>当前：{progress.current.target}</Text> : null}{showTechnical ? progress.messages.slice(-8).map((message) => <Text key={message} color={tuiTheme.colors.muted}>{message}</Text>) : null}{exitAfterBusy ? <Text color={tuiTheme.statusColors.warning}>操作完成后退出。</Text> : null}</Box>;
+    content = sourceOperation
+      ? <Box flexDirection="column"><Text color={tuiTheme.colors.accent}>● 检查候选配置并扫描引用</Text><Text color={tuiTheme.colors.muted}>○ 读取 Catalog</Text><Text color={tuiTheme.colors.muted}>○ 保存来源列表</Text><Text color={tuiTheme.colors.muted}>○ 刷新插件索引</Text>{exitAfterBusy ? <Text color={tuiTheme.statusColors.warning}>操作完成后退出。</Text> : null}</Box>
+      : <Box flexDirection="column"><Text color={tuiTheme.statusColors.success}>✓ {configOperation ? '验证设置值' : '检查兼容性'}</Text><Text color={tuiTheme.colors.accent}>● {progress.current?.phase ?? (configOperation ? '保存设置层并重新应用' : '连接到所选工具')}</Text><Text color={tuiTheme.colors.muted}>○ 验证结果</Text>{progress.current ? <Text color={tuiTheme.colors.muted}>当前：{progress.current.target}</Text> : null}{showTechnical ? progress.messages.slice(-8).map((message) => <Text key={message} color={tuiTheme.colors.muted}>{message}</Text>) : null}{exitAfterBusy ? <Text color={tuiTheme.statusColors.warning}>操作完成后退出。</Text> : null}</Box>;
   } else if (route.name === 'result' && snapshot.result) {
     const result = snapshot.result;
     const partial = result.state === 'partial';
@@ -946,7 +1163,10 @@ export function ConsoleAppV4(props: {
     const action = result.state === 'succeeded' || result.state === 'partial'
       ? result.summary.action
       : undefined;
-    const configOperation = 'operationKind' in result ? result.operationKind : undefined;
+    const operationKind = 'operationKind' in result ? result.operationKind : undefined;
+    const configOperation = operationKind === 'configSave' || operationKind === 'configReset'
+      ? operationKind : undefined;
+    const sourceOperation = operationKind === 'sourceMutation';
     const completedTitle = {
       install: '✓ 插件添加完成',
       upgrade: '✓ 插件升级完成',
@@ -954,19 +1174,25 @@ export function ConsoleAppV4(props: {
       uninstall: '✓ 插件移除完成',
       cleanup: '✓ 插件清理完成',
     }[action ?? 'install'];
-    title = configOperation
+    title = sourceOperation
+      ? blocked ? '× 来源验证失败' : '✓ 来源操作完成'
+      : configOperation
       ? blocked
         ? '× 设置未确认保存'
         : partial ? '! 设置已保存，但部分应用失败' : '✓ 设置已保存并应用'
       : partial ? '! 插件操作只完成了一部分' : blocked ? '× 插件操作未完成' : completedTitle;
-    description = blocked ? result.message : configOperation ? '设置层已经更新。' : '状态已刷新。';
+    description = sourceOperation
+      ? blocked ? '来源列表没有被修改。草稿已保留，可返回修改。' : '来源命令已完成。'
+      : blocked ? result.message : configOperation ? '设置层已经更新。' : '状态已刷新。';
     const completedResult = result.state === 'succeeded' || result.state === 'partial'
       ? result
       : undefined;
     const pluginId = completedResult?.summary.pluginId
       ?? ('pluginId' in result ? result.pluginId : undefined);
     const failedTarget = completedResult?.summary.targets?.find((target) => target.state === 'failed');
-    actions = [{ label: partial ? '查看失败项' : configOperation ? '查看插件' : action === 'uninstall' || action === 'cleanup' ? '返回插件详情' : '查看插件', run: () => {
+    actions = sourceOperation
+      ? [{ label: blocked ? '返回修改' : '查看来源', run: () => blocked ? props.controller.returnFromResult() : go({ name: 'sourceList' }) }, { label: '返回首页', run: () => go({ name: 'home' }) }]
+      : [{ label: partial ? '查看失败项' : configOperation ? '查看插件' : action === 'uninstall' || action === 'cleanup' ? '返回插件详情' : '查看插件', run: () => {
       if (partial && pluginId && failedTarget) {
         go({ name: 'issueDetail', issueId: `target:${pluginId}:${failedTarget.platform}:${failedTarget.scope}:error` });
       } else if (pluginId && snapshot.viewModel?.plugins.some((entry) => entry.pluginId === pluginId)) {
@@ -983,7 +1209,7 @@ export function ConsoleAppV4(props: {
         scope: failedTarget.scope,
       }),
     }] : []), { label: '返回首页', run: () => go({ name: 'home' }) }];
-    content = <Box flexDirection="column"><Bordered>{result.state === 'blocked' ? <Text color={tuiTheme.statusColors.error}>操作未完成 · {result.code}</Text> : completedResult ? (completedResult.summary.targets ?? []).map((target) => <Box key={`${target.platform}:${target.scope}`} justifyContent="space-between"><Text>{platformLabel(target.platform)} · {scopeLabel(target.scope)}</Text><Text color={target.state === 'completed' ? tuiTheme.statusColors.success : tuiTheme.statusColors.error}>{target.state === 'completed' ? '已完成' : '失败'}</Text></Box>) : <Text color={tuiTheme.statusColors.warning}>状态已变化，请重新确认。</Text>}</Bordered><ActionRows actions={actions} focus={focus} /></Box>;
+    content = <Box flexDirection="column"><Bordered>{result.state === 'blocked' ? <Text color={tuiTheme.statusColors.error}>操作未完成 · {result.code}</Text> : sourceOperation ? <Text color={tuiTheme.statusColors.success}>来源配置写入已完成。</Text> : completedResult ? (completedResult.summary.targets ?? []).map((target) => <Box key={`${target.platform}:${target.scope}`} justifyContent="space-between"><Text>{platformLabel(target.platform)} · {scopeLabel(target.scope)}</Text><Text color={target.state === 'completed' ? tuiTheme.statusColors.success : tuiTheme.statusColors.error}>{target.state === 'completed' ? '已完成' : '失败'}</Text></Box>) : <Text color={tuiTheme.statusColors.warning}>状态已变化，请重新确认。</Text>}</Bordered><ActionRows actions={actions} focus={focus} /></Box>;
   } else if (route.name === 'pluginAbout' && plugin) {
     breadcrumb = `${plugin.displayName} / 关于`;
     title = plugin.displayName;
@@ -1037,6 +1263,7 @@ export function ConsoleAppV4(props: {
           setDirty(false);
           setDraftUpdates({});
           setDraftRemoves([]);
+          setSourceDraft(undefined);
           back();
         } else props.onExit?.();
       }
@@ -1049,6 +1276,62 @@ export function ConsoleAppV4(props: {
     }
     if (key.ctrl && input.toLowerCase() === 'c') {
       props.onExit?.();
+      return;
+    }
+    if (route.name === 'sourceAdd'
+      && route.step !== 'type'
+      && route.step !== 'refPolicy'
+      && sourceDraft?.owner === route.owner) {
+      if (key.escape) {
+        back();
+        return;
+      }
+      if (key.return) {
+        let error: string | undefined;
+        if (route.step === 'id') {
+          if (!CATALOG_SOURCE_ID_PATTERN.test(sourceInput)) error = '格式必须是小写字母、数字或连字符，最多 32 字符。';
+          else if (props.controller.listSources().some((source) => source.id === sourceInput)) error = '这个来源 ID 已存在。';
+        } else if (route.step === 'location') {
+          if (sourceDraft.type === 'path') {
+            if (!path.isAbsolute(sourceInput)) error = '必须输入绝对路径。';
+          } else {
+            try { canonicalizeCatalogGitUrl(sourceInput); } catch { error = 'Git URL 不符合来源规范，或包含不允许的认证信息。'; }
+          }
+        } else if (route.step === 'ref') {
+          if (sourceInput.trim() === '' || sourceInput !== sourceInput.trim() || /[\s\u0000-\u001f\u007f]/u.test(sourceInput)) error = '必须输入不含空白或控制字符的 Git ref。';
+        } else if (sourceInput !== '') {
+          const normalized = path.posix.normalize(sourceInput);
+          if (sourceInput.includes('\\') || path.posix.isAbsolute(sourceInput)
+            || normalized === '.' || normalized === '..' || normalized.startsWith('../')) {
+            error = '必须输入来源内部的相对 POSIX 路径。';
+          }
+        }
+        if (error) {
+          setSourceInputError(error);
+          return;
+        }
+        const next = { ...sourceDraft };
+        if (route.step === 'id') next.sourceId = sourceInput;
+        else if (route.step === 'location') next.location = sourceInput;
+        else if (route.step === 'ref') next.ref = sourceInput;
+        else next.subdir = sourceInput === '' ? '' : path.posix.normalize(sourceInput).replace(/^\.\//u, '').replace(/\/$/u, '');
+        setSourceDraft(next);
+        setSourceInputError(undefined);
+        if (route.step === 'id') go({ name: 'sourceAdd', step: 'location', owner: route.owner });
+        else if (route.step === 'location') {
+          if (next.mode === 'update') void beginSourceUpdateReview(next).catch(() => setActionError('来源修改未通过验证。'));
+          else if (next.type === 'git') go({ name: 'sourceAdd', step: 'refPolicy', owner: route.owner });
+          else void beginSourceAddReviewWith(next).catch(() => setActionError('来源未通过验证。请检查输入后重试。'));
+        } else if (route.step === 'ref') {
+          if (next.mode === 'update') void beginSourceUpdateReview(next).catch(() => setActionError('来源修改未通过验证。'));
+          else go({ name: 'sourceAdd', step: 'subdir', owner: route.owner });
+        } else if (next.mode === 'update') void beginSourceUpdateReview(next).catch(() => setActionError('来源修改未通过验证。'));
+        else void beginSourceAddReviewWith(next).catch(() => setActionError('来源未通过验证。请检查输入后重试。'));
+        return;
+      }
+      if (key.backspace || key.delete) setSourceInput((value) => value.slice(0, -1));
+      else if (input && !key.ctrl && !key.meta && input >= ' ') setSourceInput((value) => value + input);
+      setSourceInputError(undefined);
       return;
     }
     if (route.name === 'configFieldEditor'
@@ -1131,6 +1414,11 @@ export function ConsoleAppV4(props: {
     } else if (route.name === 'configFields' && route.layer.scope !== 'effective' && input.toLowerCase() === 'u') {
       const key = actions[focus]?.configKey;
       if (key) removeDraft(key);
+    } else if (input.toLowerCase() === 'r' && route.name === 'sourceDetail') {
+      void props.controller.refreshSource(route.sourceId);
+    } else if (input.toLowerCase() === 'r' && route.name === 'sourceList') {
+      const source = props.controller.listSources()[focus];
+      if (source) void props.controller.refreshSource(source.id);
     } else if (route.name === 'pluginList' && (key.leftArrow || key.rightArrow || input === '[' || input === ']')) {
       const tabs = ['all', ...props.controller.listSources().map((source) => source.id)];
       const current = route.sourceId ?? 'all';

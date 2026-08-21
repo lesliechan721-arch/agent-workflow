@@ -37,6 +37,10 @@ export type TuiRoute =
     }
   | { name: 'sourceList' }
   | { name: 'sourceDetail'; sourceId: string }
+  | { name: 'sourceTechnical'; sourceId: string }
+  | { name: 'sourceAdd'; step: 'type' | 'id' | 'location' | 'refPolicy' | 'ref' | 'subdir'; owner: string }
+  | { name: 'sourceEdit'; sourceId: string }
+  | { name: 'sourceRemoveBlocked'; sourceId: string }
   | { name: 'issueList' }
   | { name: 'issueDetail'; issueId: string }
   | { name: 'review'; operationId: string }

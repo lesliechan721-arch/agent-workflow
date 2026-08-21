@@ -4,6 +4,14 @@ import type { CliExecutionContext } from '../commands/runtime.js';
 import type { PlatformName } from '../types.js';
 import { statusCommandV4 } from '../commands/status-v4.js';
 import {
+  addCatalogSourceCommand,
+  listCatalogSources,
+  preflightCatalogSourceMutation,
+  removeCatalogSourceCommand,
+  setPrimaryCatalogSourceCommand,
+  updateCatalogSourceCommand,
+} from '../commands/catalog-source.js';
+import {
   cleanupWriteCommand,
   installWriteCommand,
   reinstallWriteCommand,
@@ -14,6 +22,7 @@ import { readCliPackageInfo } from '../utils/local-marketplace.js';
 import {
   readCatalogSourcesConfigSnapshot,
 } from '../utils/catalog-sources.js';
+import { inventoryCatalogSourceReferences } from '../utils/catalog-source-references.js';
 import {
   withResolvedCatalogPlugin,
   withResolvedMultiSourceCatalog,
@@ -43,6 +52,7 @@ import {
   type TuiControllerDependencies,
 } from './controller.js';
 import { buildConfigGroups, buildConfigPage } from './model.js';
+import { projectCatalogSourceLocation } from '../utils/catalog-source-presentation.js';
 
 function digest(value: unknown): string {
   return `sha256:${crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex')}`;
@@ -122,17 +132,82 @@ export function createTuiControllerDependencies(
   const loadStatus: TuiControllerDependencies['loadStatus'] = async (signal) => {
     signal.throwIfAborted();
     const packageInfo = await readCliPackageInfo();
-    const result = await statusCommandV4({
-      cwd: context.cwd,
-      env: context.env,
-      cliVersion: packageInfo.version,
-      verbose: context.diagnostics.verbose,
-    });
-    signal.throwIfAborted();
-    return { payload: result.payload, pluginSummaries: result.pluginSummaries };
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const result = await statusCommandV4({
+        cwd: context.cwd,
+        env: context.env,
+        cliVersion: packageInfo.version,
+        verbose: context.diagnostics.verbose,
+      });
+      signal.throwIfAborted();
+      const configured = await listCatalogSources({ env: context.env });
+      signal.throwIfAborted();
+      if (result.payload.catalog.configDigest !== configured.configDigest) continue;
+      const statusById = new Map(result.payload.catalog.sources.map((source) => [source.id, source]));
+      return {
+        payload: result.payload,
+        pluginSummaries: result.pluginSummaries,
+        sourceDetails: configured.sources.map((source) => {
+          const status = statusById.get(source.id);
+          return {
+            id: source.id,
+            type: source.type,
+            primary: source.primary,
+            locationSummary: projectCatalogSourceLocation(
+              source.type === 'git' ? source.url : source.path,
+            ),
+            ...(source.type === 'git' ? {
+              refPolicy: source.refPolicy.type,
+              ...(source.refPolicy.type === 'explicit' ? { explicitRef: source.refPolicy.ref } : {}),
+              ...(source.subdir ? { subdir: source.subdir } : {}),
+            } : {}),
+            pluginCount: 0,
+            sourceIdentity: source.sourceIdentity,
+            requestedRef: status?.requestedRef ?? (source.type === 'path' ? 'path' : 'AW channel'),
+            ...(status?.resolvedCommit ? { resolvedCommit: status.resolvedCommit } : {}),
+            ...(status?.catalogVersion ? { catalogVersion: status.catalogVersion } : {}),
+            ...(status?.channel ? { channel: status.channel } : {}),
+            ...(status?.freshness ? { freshness: status.freshness } : {}),
+            configDigest: configured.configDigest,
+          };
+        }),
+      };
+    }
+    throw new TuiOperationBlockedError(
+      'operationReviewStale',
+      '状态读取期间来源配置持续变化。请重试。',
+    );
   };
 
   const captureEvidence: TuiControllerDependencies['captureEvidence'] = async (intent, signal) => {
+    if (intent.kind === 'sourceMutation') {
+      signal?.throwIfAborted();
+      if (intent.action === 'add' && !intent.source
+        || intent.action === 'update' && !intent.update) {
+        throw new TuiOperationBlockedError('invalidSourceMutation', '来源操作缺少候选输入。');
+      }
+      const request = intent.action === 'add'
+        ? { action: 'add' as const, source: intent.source! }
+        : intent.action === 'update'
+          ? { action: 'update' as const, sourceId: intent.sourceId, update: intent.update! }
+          : { action: intent.action, sourceId: intent.sourceId };
+      const preview = await preflightCatalogSourceMutation({
+        request,
+        cwd: context.cwd,
+        env: context.env,
+      });
+      return {
+        catalog: { configDigest: preview.configDigest, compositeDigest: preview.candidateDigest },
+        sourceWrite: {
+          configDigest: preview.configDigest,
+          candidateDigest: preview.candidateDigest,
+          ...(preview.sourceIdentity ? { sourceIdentity: preview.sourceIdentity } : {}),
+          inventoryDigest: digest({ references: preview.references.references, errors: preview.references.errors }),
+          referenceCount: preview.references.references.length,
+          inventoryComplete: preview.references.errors.length === 0,
+        },
+      };
+    }
     if (!pluginIntent(intent)) {
       throw new TuiOperationBlockedError('operationNotImplemented', '这个写操作尚未接入新 Controller。');
     }
@@ -213,7 +288,85 @@ export function createTuiControllerDependencies(
 
   const dependencies: TuiControllerDependencies = {
     loadStatus,
+    async inspectSourceRemoval(sourceId, signal) {
+      signal.throwIfAborted();
+      const inventory = await inventoryCatalogSourceReferences({
+        cwd: context.cwd,
+        env: context.env,
+        includeHistoricalProjects: true,
+      });
+      signal.throwIfAborted();
+      const references = inventory.references.filter((reference) =>
+        reference.sourceId === undefined || reference.sourceId === sourceId);
+      const dependencies = new Map<string, {
+        category: 'installation' | 'config' | 'lifecycle' | 'marketplace';
+        pluginId?: string;
+        sourceId?: string;
+        platform?: PlatformName;
+        scope?: 'user' | 'project';
+      }>();
+      for (const reference of references) {
+        const kind = reference.kind.toLocaleLowerCase('en');
+        const category: 'installation' | 'config' | 'lifecycle' | 'marketplace' = kind.includes('config')
+          ? 'config'
+          : kind.includes('lifecycle')
+            ? 'lifecycle'
+            : kind.includes('marketplace')
+              ? 'marketplace'
+              : 'installation';
+        const stableSourceId = reference.sourceId;
+        const pluginId = reference.pluginName && stableSourceId
+          ? `${stableSourceId}/${reference.pluginName}`
+          : undefined;
+        const dependency: {
+          category: 'installation' | 'config' | 'lifecycle' | 'marketplace';
+          pluginId?: string;
+          sourceId?: string;
+          platform?: PlatformName;
+          scope?: 'user' | 'project';
+        } = {
+          category,
+          ...(pluginId ? { pluginId } : {}),
+          ...(stableSourceId ? { sourceId: stableSourceId } : {}),
+          ...(reference.platform === 'codex' || reference.platform === 'claude'
+            ? { platform: reference.platform } : {}),
+          ...(reference.scope === 'user' || reference.scope === 'project'
+            ? { scope: reference.scope } : {}),
+        };
+        const key = [
+          category,
+          pluginId ?? '',
+          stableSourceId ?? '',
+          dependency.platform ?? '',
+          dependency.scope ?? '',
+          category === 'marketplace' ? reference.marketplaceName ?? '' : '',
+        ].join('\0');
+        dependencies.set(key, dependency);
+      }
+      const projected = [...dependencies.entries()]
+        .sort(([left], [right]) => left.localeCompare(right, 'en'))
+        .map(([, dependency]) => dependency);
+      const complete = inventory.errors.length === 0;
+      const count = (category: typeof projected[number]['category']): number | undefined =>
+        complete ? projected.filter((reference) => reference.category === category).length : undefined;
+      return {
+        blocked: !complete || references.length > 0,
+        inventoryComplete: complete,
+        installationCount: count('installation'),
+        configCount: count('config'),
+        lifecycleCount: count('lifecycle'),
+        marketplaceCount: count('marketplace'),
+        dependencies: projected,
+      };
+    },
     async validateIntent(intent, signal) {
+      if (intent.kind === 'sourceMutation') {
+        const evidence = await captureEvidence(intent, signal);
+        if (evidence.sourceWrite?.configDigest === evidence.sourceWrite?.candidateDigest) {
+          throw new TuiOperationBlockedError('sourceNoChanges', '来源没有变化。');
+        }
+        return;
+      }
       if (intent.kind === 'configSave') {
         const packageInfo = await readCliPackageInfo();
         await withResolvedCatalogPlugin({
@@ -271,14 +424,14 @@ export function createTuiControllerDependencies(
       });
     },
     captureEvidence,
-    logError(error, code, logContext) {
+    logError(_error, code, logContext) {
       return context.debugLogger.log({
         type: 'tui:controller-error',
         level: 'debug',
         target: 'debugLog',
         message: logContext?.privateConfigOperation
           ? 'TUI config operation failed.'
-          : error instanceof Error ? error.message : String(error),
+          : 'TUI controller operation failed.',
         data: { code },
       });
     },
@@ -334,6 +487,27 @@ export function createTuiControllerDependencies(
       const currentEvidence = await captureEvidence(intent);
       if (operationEvidenceFingerprint(currentEvidence) !== operationEvidenceFingerprint(expectedEvidence)) {
         throw new TuiOperationBlockedError('operationReviewStale', '确认后状态发生变化。');
+      }
+      if (intent.kind === 'sourceMutation') {
+        const packageInfo = await readCliPackageInfo();
+        const common = {
+          cwd: context.cwd,
+          env: context.env,
+          expectedConfigDigest: expectedEvidence.sourceWrite?.configDigest,
+        };
+        if (intent.action === 'add' && intent.source) {
+          return addCatalogSourceCommand({ ...common, source: intent.source, cliVersion: packageInfo.version });
+        }
+        if (intent.action === 'update' && intent.update) {
+          return updateCatalogSourceCommand({ ...common, sourceId: intent.sourceId, update: intent.update, cliVersion: packageInfo.version });
+        }
+        if (intent.action === 'setPrimary') {
+          return setPrimaryCatalogSourceCommand({ ...common, sourceId: intent.sourceId });
+        }
+        if (intent.action === 'remove') {
+          return removeCatalogSourceCommand({ ...common, sourceId: intent.sourceId });
+        }
+        throw new TuiOperationBlockedError('invalidSourceMutation', '来源操作缺少候选输入。');
       }
       if (intent.kind === 'pluginWrite') {
         const options = { cwd: context.cwd, platform: intent.platform, scope: intent.scope };

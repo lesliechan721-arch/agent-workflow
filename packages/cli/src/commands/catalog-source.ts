@@ -8,6 +8,7 @@ import { calculateCatalogSourceIdentity } from '../utils/catalog-source-identity
 import {
   addCatalogSource,
   calculateCatalogSourcesConfigDigest,
+  CatalogSourcesConfigConflictError,
   readCatalogSourcesConfigSnapshot,
   removeCatalogSource,
   replaceCatalogSourcesConfig,
@@ -20,6 +21,8 @@ import {
   assertCatalogSourceReferencesSupported,
   inventoryCatalogSourceReferences,
   type CatalogSourceReferenceInventory,
+  type CatalogSourceReference,
+  type CatalogSourceInventoryError,
 } from '../utils/catalog-source-references.js';
 import { withResolvedMultiSourceCatalog } from '../utils/multi-source-catalog.js';
 
@@ -58,8 +61,70 @@ export type CatalogSourceCommandRuntime = {
   afterValidation?: () => Promise<void> | void;
 };
 
+export type CatalogSourceMutationRequest =
+  | { action: 'add'; source: CatalogSource }
+  | { action: 'update'; sourceId: string; update: CatalogSourceUpdate }
+  | { action: 'setPrimary' | 'remove'; sourceId: string };
+
+export interface CatalogSourceMutationPreflight {
+  sourceId: string;
+  configDigest: string;
+  candidateDigest: string;
+  sourceIdentity?: string;
+  identityChanged: boolean;
+  references: CatalogSourcePreflightInventory;
+}
+
+export interface CatalogSourcePreflightInventory {
+  inventorySchemaVersion: 1;
+  references: Array<Omit<CatalogSourceReference, 'location'>>;
+  errors: Array<Pick<CatalogSourceInventoryError, 'code' | 'kind' | 'relevance'>>;
+}
+
+function stableIdentity(value: unknown): string {
+  const normalize = (entry: unknown): unknown => {
+    if (Array.isArray(entry)) return entry.map(normalize);
+    if (typeof entry !== 'object' || entry === null) return entry;
+    return Object.fromEntries(Object.entries(entry as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right, 'en'))
+      .map(([key, nested]) => [key, normalize(nested)]));
+  };
+  return JSON.stringify(normalize(value));
+}
+
+function projectPreflightInventory(
+  inventory: CatalogSourceReferenceInventory,
+  references: CatalogSourceReference[],
+): CatalogSourcePreflightInventory {
+  return {
+    inventorySchemaVersion: 1,
+    references: references.map(({ location: _location, ...reference }) => reference)
+      .sort((left, right) => stableIdentity(left).localeCompare(stableIdentity(right), 'en')),
+    errors: inventory.errors.map(({ code, kind, relevance }) => ({ code, kind, relevance }))
+      .sort((left, right) => stableIdentity(left).localeCompare(stableIdentity(right), 'en')),
+  };
+}
+
 function primarySourceId(config: CatalogSourcesConfig): string {
   return config.sources.find((source) => source.primary)!.id;
+}
+
+function unchangedReceipt(options: {
+  command: CatalogSourceMutationReceipt['command'];
+  sourceId: string;
+  snapshot: Awaited<ReturnType<typeof readCatalogSourcesConfigSnapshot>>;
+}): CatalogSourceMutationReceipt {
+  return {
+    receiptSchemaVersion: 4,
+    command: options.command,
+    ok: true,
+    changed: false,
+    sourceId: options.sourceId,
+    primarySourceId: primarySourceId(options.snapshot.config),
+    configDigest: options.snapshot.digest,
+    references: [],
+    errors: [],
+  };
 }
 
 function projectEvidence(resolution: CatalogSourceResolution): CatalogSourceEvidence {
@@ -104,6 +169,52 @@ async function identityChanged(
   after: CatalogSource,
 ): Promise<boolean> {
   return await calculateCatalogSourceIdentity(before) !== await calculateCatalogSourceIdentity(after);
+}
+
+export async function preflightCatalogSourceMutation(options: {
+  request: CatalogSourceMutationRequest;
+  cwd: string;
+  env?: NodeJS.ProcessEnv;
+  runtime?: CatalogSourceCommandRuntime;
+}): Promise<CatalogSourceMutationPreflight> {
+  const env = options.env ?? process.env;
+  const snapshot = await readCatalogSourcesConfigSnapshot(env);
+  const request = options.request;
+  const sourceId = request.action === 'add' ? request.source.id : request.sourceId;
+  const before = snapshot.config.sources.find((source) => source.id === sourceId);
+  const candidate = request.action === 'add'
+    ? await addCatalogSource(snapshot.config, request.source, options.cwd)
+    : request.action === 'update'
+      ? await updateCatalogSource(snapshot.config, sourceId, request.update, options.cwd)
+      : request.action === 'setPrimary'
+        ? setPrimaryCatalogSource(snapshot.config, sourceId)
+        : removeCatalogSource(snapshot.config, sourceId);
+  const after = candidate.sources.find((source) => source.id === sourceId);
+  const changedIdentity = Boolean(before && after && await identityChanged(before, after));
+  const inventory = await (options.runtime?.inventoryReferences
+    ?? inventoryCatalogSourceReferences)({
+      cwd: options.cwd,
+      env,
+      includeHistoricalProjects: true,
+    });
+  assertCatalogSourceInventoryComplete(inventory);
+  const relevant = inventory.references.filter((reference) =>
+    reference.sourceId === undefined
+    || reference.sourceId === sourceId
+    || request.action === 'setPrimary'
+    || (request.action === 'add' && request.source.primary));
+  if (request.action === 'remove' || changedIdentity || request.action === 'setPrimary') {
+    assertCatalogSourceReferencesSupported({ ...inventory, references: relevant });
+  }
+  const sourceIdentity = after ? await calculateCatalogSourceIdentity(after) : undefined;
+  return {
+    sourceId,
+    configDigest: snapshot.digest,
+    candidateDigest: calculateCatalogSourcesConfigDigest(candidate),
+    ...(sourceIdentity ? { sourceIdentity } : {}),
+    identityChanged: changedIdentity,
+    references: projectPreflightInventory(inventory, relevant),
+  };
 }
 
 async function commitCandidate(options: {
@@ -191,10 +302,17 @@ export async function addCatalogSourceCommand(options: {
   cwd: string;
   env?: NodeJS.ProcessEnv;
   runtime?: CatalogSourceCommandRuntime;
+  expectedConfigDigest?: string;
 }): Promise<CatalogSourceMutationReceipt> {
   const env = options.env ?? process.env;
   const snapshot = await readCatalogSourcesConfigSnapshot(env);
+  if (options.expectedConfigDigest && snapshot.digest !== options.expectedConfigDigest) {
+    throw new CatalogSourcesConfigConflictError(options.expectedConfigDigest, snapshot.digest);
+  }
   const candidate = await addCatalogSource(snapshot.config, options.source, options.cwd);
+  if (calculateCatalogSourcesConfigDigest(candidate) === snapshot.digest) {
+    return unchangedReceipt({ command: 'catalog:source:add', sourceId: options.source.id, snapshot });
+  }
   const evidence = await validateCandidate({
     config: candidate,
     sourceId: options.source.id,
@@ -224,11 +342,18 @@ export async function updateCatalogSourceCommand(options: {
   cwd: string;
   env?: NodeJS.ProcessEnv;
   runtime?: CatalogSourceCommandRuntime;
+  expectedConfigDigest?: string;
 }): Promise<CatalogSourceMutationReceipt> {
   const env = options.env ?? process.env;
   const snapshot = await readCatalogSourcesConfigSnapshot(env);
+  if (options.expectedConfigDigest && snapshot.digest !== options.expectedConfigDigest) {
+    throw new CatalogSourcesConfigConflictError(options.expectedConfigDigest, snapshot.digest);
+  }
   const before = snapshot.config.sources.find((source) => source.id === options.sourceId);
   const candidate = await updateCatalogSource(snapshot.config, options.sourceId, options.update, options.cwd);
+  if (calculateCatalogSourcesConfigDigest(candidate) === snapshot.digest) {
+    return unchangedReceipt({ command: 'catalog:source:update', sourceId: options.sourceId, snapshot });
+  }
   const after = candidate.sources.find((source) => source.id === options.sourceId)!;
   const evidence = await validateCandidate({
     config: candidate,
@@ -255,10 +380,17 @@ export async function setPrimaryCatalogSourceCommand(options: {
   cwd: string;
   env?: NodeJS.ProcessEnv;
   runtime?: CatalogSourceCommandRuntime;
+  expectedConfigDigest?: string;
 }): Promise<CatalogSourceMutationReceipt> {
   const env = options.env ?? process.env;
   const snapshot = await readCatalogSourcesConfigSnapshot(env);
+  if (options.expectedConfigDigest && snapshot.digest !== options.expectedConfigDigest) {
+    throw new CatalogSourcesConfigConflictError(options.expectedConfigDigest, snapshot.digest);
+  }
   const candidate = setPrimaryCatalogSource(snapshot.config, options.sourceId);
+  if (calculateCatalogSourcesConfigDigest(candidate) === snapshot.digest) {
+    return unchangedReceipt({ command: 'catalog:source:set-primary', sourceId: options.sourceId, snapshot });
+  }
   return commitCandidate({
     command: 'catalog:source:set-primary',
     sourceId: options.sourceId,
@@ -276,10 +408,17 @@ export async function removeCatalogSourceCommand(options: {
   cwd: string;
   env?: NodeJS.ProcessEnv;
   runtime?: CatalogSourceCommandRuntime;
+  expectedConfigDigest?: string;
 }): Promise<CatalogSourceMutationReceipt> {
   const env = options.env ?? process.env;
   const snapshot = await readCatalogSourcesConfigSnapshot(env);
+  if (options.expectedConfigDigest && snapshot.digest !== options.expectedConfigDigest) {
+    throw new CatalogSourcesConfigConflictError(options.expectedConfigDigest, snapshot.digest);
+  }
   const candidate = removeCatalogSource(snapshot.config, options.sourceId);
+  if (calculateCatalogSourcesConfigDigest(candidate) === snapshot.digest) {
+    return unchangedReceipt({ command: 'catalog:source:remove', sourceId: options.sourceId, snapshot });
+  }
   return commitCandidate({
     command: 'catalog:source:remove',
     sourceId: options.sourceId,

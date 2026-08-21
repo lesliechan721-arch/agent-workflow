@@ -56,6 +56,24 @@ export interface SourceTabViewModel {
   state: 'ready' | 'cache' | 'path' | 'error';
 }
 
+export interface SourceDetailViewModel {
+  id: string;
+  type: 'git' | 'path';
+  primary: boolean;
+  locationSummary: string;
+  refPolicy?: 'cliChannel' | 'explicit';
+  explicitRef?: string;
+  subdir?: string;
+  pluginCount: number;
+  sourceIdentity: string;
+  requestedRef: string;
+  resolvedCommit?: string;
+  catalogVersion?: string;
+  channel?: string;
+  freshness?: 'remote' | 'cache' | 'path';
+  configDigest: string;
+}
+
 export interface HomeSummaryViewModel {
   availablePlugins: number;
   installedPlugins: number;
@@ -123,6 +141,7 @@ export interface UserIssueViewModel {
 export interface TuiViewModel {
   plugins: PluginListItemViewModel[];
   sourceTabs: SourceTabViewModel[];
+  sourceDetails: SourceDetailViewModel[];
   issues: UserIssueViewModel[];
   home: HomeSummaryViewModel;
 }
@@ -268,6 +287,7 @@ export function buildTuiViewModel(options: {
   status: StatusV4Payload;
   pluginSummaries: StatusV4PluginSummary[];
   sourceHealth?: ReadonlyMap<string, SourceHealthViewModel>;
+  sourceDetails?: SourceDetailViewModel[];
 }): TuiViewModel {
   const summaryById = new Map(options.pluginSummaries.map((summary) => [summary.pluginId, summary]));
   const targetsByPlugin = new Map<string, StatusV4Target[]>();
@@ -322,6 +342,10 @@ export function buildTuiViewModel(options: {
   return {
     plugins,
     sourceTabs,
+    sourceDetails: (options.sourceDetails ?? []).map((detail) => ({
+      ...detail,
+      pluginCount: plugins.filter((plugin) => plugin.sourceId === detail.id).length,
+    })),
     issues,
     home: {
       availablePlugins: plugins.filter((plugin) => plugin.aggregateStatus === 'available').length,

@@ -19,6 +19,7 @@ export {
   type OperationIntent,
   type OperationResultSummary,
   type OperationReviewModel,
+  type SourceReferenceSummaryViewModel,
   type TuiControllerDependencies,
   type TuiControllerSnapshot,
 } from './controller.js';
@@ -42,6 +43,7 @@ export {
   type PlatformPlacementSummary,
   type PluginListItemViewModel,
   type SourceHealthViewModel,
+  type SourceDetailViewModel,
   type SourceTabViewModel,
   type TuiViewModel,
   type UserIssueViewModel,

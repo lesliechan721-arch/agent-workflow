@@ -11,6 +11,7 @@ import {
   TuiController,
   type OperationEvidence,
   type TuiControllerDependencies,
+  type TuiStatusLoadResult,
 } from '../../src/tui/controller.js';
 import type { ConfigPageViewModel } from '../../src/tui/model.js';
 
@@ -50,7 +51,7 @@ function target(options: {
   };
 }
 
-function loadResult(): { payload: StatusV4Payload; pluginSummaries: StatusV4PluginSummary[] } {
+function loadResult(): TuiStatusLoadResult {
   const summaries: StatusV4PluginSummary[] = [
     {
       pluginName: 'agent-lab',
@@ -93,8 +94,7 @@ function loadResult(): { payload: StatusV4Payload; pluginSummaries: StatusV4Plug
           : 'absent',
       }))),
   );
-  return {
-    payload: {
+  const payload: StatusV4Payload = {
       schemaVersion: 4,
       catalog: {
         primarySourceId: 'official',
@@ -102,15 +102,32 @@ function loadResult(): { payload: StatusV4Payload; pluginSummaries: StatusV4Plug
         compositeDigest: 'sha256:composite',
         sources: [
           { id: 'official', identity: 'identity:official', type: 'path', primary: true, requestedRef: 'path', freshness: 'path' },
-          { id: 'team-tools', identity: 'identity:team-tools', type: 'path', primary: false, requestedRef: 'path', freshness: 'path' },
+          { id: 'team-tools', identity: 'identity:team-tools', type: 'git', primary: false, requestedRef: 'catalog/stable', resolvedCommit: 'abc123', catalogVersion: '2.4.0', channel: 'latest', freshness: 'cache' },
           { id: 'research', identity: 'identity:research', type: 'path', primary: false, requestedRef: 'path', error: 'unavailable', errorCode: 'catalogSourceUnavailable' },
         ],
       },
       filters: { plugins: [], platform: 'both', cwd: '/workspace' },
       targets: allTargets,
       errors: [],
-    },
+    };
+  return {
+    payload,
     pluginSummaries: summaries,
+    sourceDetails: payload.catalog.sources.map((source) => ({
+      id: source.id,
+      type: source.type,
+      primary: source.primary,
+      locationSummary: source.type === 'git' ? 'https://example.test/team.git' : `已选择本地目录（${source.id}）`,
+      ...(source.id === 'team-tools' ? { refPolicy: 'explicit' as const, explicitRef: 'catalog/stable', subdir: 'catalog' } : {}),
+      pluginCount: summaries.filter((summary) => summary.pluginId.startsWith(`${source.id}/`)).length,
+      sourceIdentity: source.identity,
+      requestedRef: source.requestedRef,
+      ...(source.resolvedCommit ? { resolvedCommit: source.resolvedCommit } : {}),
+      ...(source.catalogVersion ? { catalogVersion: source.catalogVersion } : {}),
+      ...(source.channel ? { channel: source.channel } : {}),
+      ...(source.freshness ? { freshness: source.freshness } : {}),
+      configDigest: 'sha256:config',
+    })),
   };
 }
 
@@ -118,6 +135,7 @@ function controller(overrides: Partial<TuiControllerDependencies> = {}): TuiCont
   return new TuiController({
     loadStatus: vi.fn().mockResolvedValue(loadResult()),
     checkSource: vi.fn().mockResolvedValue(undefined),
+    inspectSourceRemoval: vi.fn().mockResolvedValue({ blocked: false, inventoryComplete: true, installationCount: 0, configCount: 0, lifecycleCount: 0, marketplaceCount: 0, dependencies: [] }),
     captureEvidence: vi.fn().mockResolvedValue(evidence),
     executeIntent: vi.fn().mockResolvedValue({
       overallState: 'succeeded',
@@ -209,15 +227,17 @@ async function confirmReview(
 }
 
 describe('ConsoleAppV4', () => {
-  it('keeps the merged G/P/C design map free of duplicate route identities', () => {
-    expect(CONSOLE_V4_SCREEN_IDS).toHaveLength(43);
-    expect(new Set(CONSOLE_V4_SCREEN_IDS)).toHaveProperty('size', 43);
+  it('keeps the merged G/P/C/S design map free of duplicate route identities', () => {
+    expect(CONSOLE_V4_SCREEN_IDS).toHaveLength(61);
+    expect(new Set(CONSOLE_V4_SCREEN_IDS)).toHaveProperty('size', 61);
     expect(CONSOLE_V4_SCREEN_IDS).toEqual([
       'G01', 'G02', 'G03', 'G04', 'G05',
       'P01', 'P02', 'P03', 'P04', 'P05', 'P06', 'P07', 'P08', 'P09', 'P10',
       'P11', 'P12', 'P13', 'P14', 'P15', 'P16', 'P17', 'P18', 'P19', 'P20', 'P21',
       'C01', 'C02', 'C03', 'C04', 'C05', 'C06', 'C07', 'C08', 'C09', 'C10',
       'C11', 'C12', 'C13', 'C14', 'C15', 'C16', 'C17',
+      'S01', 'S02', 'S03', 'S04', 'S05', 'S06', 'S07', 'S08', 'S09',
+      'S10', 'S11', 'S12', 'S13', 'S14', 'S15', 'S16', 'S17', 'S18',
     ]);
   });
 
@@ -942,5 +962,163 @@ describe('ConsoleAppV4', () => {
     expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(18);
     await input(instance, '\r');
     expect(executeIntent).toHaveBeenCalledOnce();
+  });
+
+  it('reaches S01-S13 through the real Git wizard and treats b as input text', async () => {
+    const screens = new Set<ConsoleV4ScreenId>();
+    const executeIntent = vi.fn().mockResolvedValue({ ok: true });
+    const value = controller({ executeIntent });
+    const instance = render(<ConsoleAppV4
+      controller={value}
+      size={{ columns: 60, rows: 18 }}
+      onScreenChange={(screen) => screens.add(screen)}
+    />);
+    await nextTurn(5);
+    await input(instance, '\u001B[B', '\u001B[B', '\u001B[B', '\r');
+    expect(instance.lastFrame()).toContain('单个来源失败不会阻止其他来源继续工作');
+    expect(screens).toContain('S01');
+    await input(instance, '\u001B[B', '\u001B[B', '\u001B[B', '\r', '\r');
+    expect(screens).toContain('S05');
+    await input(instance, 'team-b2', '\r');
+    expect(value.snapshot.router.current.route).toMatchObject({ name: 'sourceAdd', step: 'location' });
+    await input(instance, 'https://example.test/catalog.git', '\r', '\u001B[B', '\r');
+    expect(screens).toContain('S08');
+    await input(instance, 'catalog/stable', '\r', 'catalog', '\r');
+    await nextTurn(3);
+    expect(screens).toContain('S10');
+    expect(instance.lastFrame()).toContain('team-b2');
+    expect(instance.lastFrame()).not.toContain('Catalog 版本');
+    expect(instance.lastFrame()).not.toContain('resolvedCommit');
+    await confirmReview(instance, value);
+    await nextTurn(5);
+    expect(executeIntent).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'sourceMutation',
+      action: 'add',
+      sourceId: 'team-b2',
+    }), expect.anything());
+    expect(screens).toContain('S12');
+    expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(18);
+  });
+
+  it('renders safe source detail and technical data without raw path, credentials, or failure text', async () => {
+    const secretPath = '/Users/private/acme/catalog';
+    const secretUrl = 'https://token:secret@example.test/team.git';
+    const loaded = loadResult();
+    loaded.sourceDetails = loaded.sourceDetails!.map((detail) => detail.id === 'team-tools'
+      ? { ...detail, locationSummary: 'https://example.test/team.git' }
+      : detail.id === 'research' ? { ...detail, locationSummary: '已选择本地目录（catalog）' } : detail);
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
+    value.push({ name: 'sourceDetail', sourceId: 'team-tools' });
+    const screens = new Set<ConsoleV4ScreenId>();
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} onScreenChange={(screen) => screens.add(screen)} />);
+    await nextTurn(5);
+    expect(instance.lastFrame()).toContain('https://example.test/team.git');
+    expect(instance.lastFrame()).not.toContain(secretPath);
+    expect(instance.lastFrame()).not.toContain(secretUrl);
+    await input(instance, '\u001B[B', '\u001B[B', '\u001B[B', '\u001B[B', '\r');
+    expect(screens).toContain('S03');
+    expect(instance.lastFrame()).toContain('sourceIdentity');
+    expect(instance.lastFrame()).not.toContain('/Users/private');
+    expect(instance.lastFrame()).not.toContain('token:secret');
+  });
+
+  it('never echoes Git credentials or query tokens while S06 is receiving input', async () => {
+    const value = controller();
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(5);
+    await input(instance, '\u001B[B', '\u001B[B', '\u001B[B', '\r');
+    await input(instance, '\u001B[B', '\u001B[B', '\u001B[B', '\r', '\r');
+    await input(instance, 'safe-input', '\r');
+    await input(instance, 'https://user:secret@example.test/catalog.git?token=private#fragment');
+
+    expect(instance.lastFrame()).toContain('https://example.test/catalog.git');
+    expect(instance.lastFrame()).not.toMatch(/user:secret|token=private|#fragment/u);
+    expect(JSON.stringify(value.snapshot)).not.toMatch(/user:secret|token=private|#fragment/u);
+    await input(instance, '\r');
+    expect(instance.lastFrame()).toContain('Git URL 不符合来源规范');
+    expect(instance.lastFrame()).not.toMatch(/user:secret|token=private|#fragment/u);
+  });
+
+  it('fails closed on an incomplete removal inventory and reaches S17 with safe aggregates', async () => {
+    const value = controller({
+      inspectSourceRemoval: vi.fn().mockResolvedValue({
+        blocked: true,
+        inventoryComplete: false,
+        dependencies: [{
+          category: 'installation',
+          pluginId: 'team-tools/review-gate',
+          sourceId: 'team-tools',
+          platform: 'codex',
+          scope: 'project',
+        }],
+      }),
+    });
+    value.push({ name: 'sourceDetail', sourceId: 'team-tools' });
+    const screens = new Set<ConsoleV4ScreenId>();
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} onScreenChange={(screen) => screens.add(screen)} />);
+    await nextTurn(5);
+    await input(instance, '\u001B[B', '\u001B[B', '\u001B[B', '\r');
+    await nextTurn(3);
+    expect(screens).toContain('S17');
+    expect(instance.lastFrame()).toContain('引用清单不完整');
+    expect(instance.lastFrame()).toContain('安装位置      未知');
+    await input(instance, '\r');
+    expect(instance.lastFrame()).toContain('installation · team-tools/review-gate · Codex · 当前项目');
+    expect(instance.lastFrame()).not.toContain('/Users/');
+    expect(value.snapshot.activeReview).toBeUndefined();
+  });
+
+  it('reaches edit, primary, and safe removal Review pages through mounted keyboard actions', async () => {
+    const edit = controller();
+    edit.push({ name: 'sourceEdit', sourceId: 'team-tools' });
+    const editScreens = new Set<ConsoleV4ScreenId>();
+    const editView = render(<ConsoleAppV4 controller={edit} size={{ columns: 80, rows: 24 }} onScreenChange={(screen) => editScreens.add(screen)} />);
+    await nextTurn(5);
+    await input(editView, '\r', 'https://example.test/team-v2.git', '\r');
+    await nextTurn(3);
+    expect(editScreens).toContain('S14');
+    expect(editScreens).toContain('S15');
+    cleanup();
+
+    const primary = controller();
+    primary.push({ name: 'sourceDetail', sourceId: 'team-tools' });
+    const primaryScreens = new Set<ConsoleV4ScreenId>();
+    const primaryView = render(<ConsoleAppV4 controller={primary} size={{ columns: 80, rows: 24 }} onScreenChange={(screen) => primaryScreens.add(screen)} />);
+    await nextTurn(5);
+    await input(primaryView, '\u001B[B', '\u001B[B', '\r');
+    await nextTurn(3);
+    expect(primaryScreens).toContain('S16');
+    cleanup();
+
+    const removal = controller();
+    removal.push({ name: 'sourceDetail', sourceId: 'team-tools' });
+    const removalScreens = new Set<ConsoleV4ScreenId>();
+    const removalView = render(<ConsoleAppV4 controller={removal} size={{ columns: 80, rows: 24 }} onScreenChange={(screen) => removalScreens.add(screen)} />);
+    await nextTurn(5);
+    await input(removalView, '\u001B[B', '\u001B[B', '\u001B[B', '\r');
+    await nextTurn(3);
+    expect(removalScreens).toContain('S18');
+  });
+
+  it('keeps a source draft after a sanitized validation failure and reaches S13', async () => {
+    const rawFailure = 'remote failed https://token:secret@example.test/private.git /Users/private/catalog';
+    const value = controller({ executeIntent: vi.fn().mockRejectedValue(new Error(`catalogSourceResolutionFailed: ${rawFailure}`)) });
+    await value.load();
+    await value.buildOperationReview({
+      kind: 'sourceMutation',
+      action: 'add',
+      sourceId: 'safe-id',
+      source: { id: 'safe-id', type: 'git', primary: false, url: 'https://example.test/catalog.git', refPolicy: { type: 'cliChannel' } },
+      changes: [{ title: '添加来源 safe-id', after: 'Git 仓库' }],
+    });
+    const screens = new Set<ConsoleV4ScreenId>();
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} onScreenChange={(screen) => screens.add(screen)} />);
+    await nextTurn(4);
+    await confirmReview(instance, value);
+    await nextTurn(4);
+    expect(screens).toContain('S13');
+    expect(instance.lastFrame()).toContain('来源列表没有被修改');
+    expect(instance.lastFrame()).not.toContain('token:secret');
+    expect(instance.lastFrame()).not.toContain('/Users/private');
   });
 });
