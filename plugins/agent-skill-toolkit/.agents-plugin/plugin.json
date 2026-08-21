@@ -1,72 +1,31 @@
 {
   "name": "agent-skill-toolkit",
-  "version": "0.8.0",
-  "description": "使用共享证据和组合标准编写与评审 Agent Skill，并设计或审核 Skill Eval。",
+  "version": "0.9.0",
+  "description": "使用共享证据和组合标准编写 Agent Skill，以轻量路径评审 Skill，并设计或审核 Skill Eval。",
   "compatibility": {
-    "aw": {
-      "minVersion": "0.0.0"
-    }
+    "aw": { "minVersion": "0.0.0" }
   },
   "skills": "./skills",
   "buildConfig": {
     "cacheable": true,
     "runtimeExports": [
-      {
-        "name": "skill-rules",
-        "source": "./standards/skill-rules.json"
-      },
-      {
-        "name": "review-dimensions",
-        "source": "./standards/review-dimensions.json"
-      },
-      {
-        "name": "validate-json-contract",
-        "source": "./scripts/validate-json-contract.mjs"
-      },
-      {
-        "name": "validate-review-result",
-        "source": "./scripts/validate-review-result.mjs"
-      },
-      {
-        "name": "inspect-agent-skill",
-        "source": "./scripts/inspect-agent-skill.mjs"
-      },
-      {
-        "name": "validate-review-input-bundle",
-        "source": "./scripts/validate-review-input-bundle.mjs"
-      },
-      {
-        "name": "validate-eval-audit-result",
-        "source": "./scripts/validate-eval-audit-result.mjs"
-      },
-      {
-        "name": "validate-eval-run-bundle",
-        "source": "./scripts/validate-eval-run-bundle.mjs"
-      },
-      {
-        "name": "skill-design-brief-schema",
-        "source": "./schemas/skill-design-brief.schema.json"
-      },
-      {
-        "name": "eval-audit-result-schema",
-        "source": "./schemas/eval-audit-result.schema.json"
-      },
-      {
-        "name": "review-input-bundle-schema",
-        "source": "./schemas/review-input-bundle.schema.json"
-      },
-      {
-        "name": "review-result-schema",
-        "source": "./schemas/review-result.schema.json"
-      },
-      {
-        "name": "skill-inspection-result-schema",
-        "source": "./schemas/skill-inspection-result.schema.json"
-      },
-      {
-        "name": "eval-run-bundle-schema",
-        "source": "./schemas/eval-run-bundle.schema.json"
-      }
+      { "name": "skill-rules", "source": "./standards/skill-rules.json" },
+      { "name": "review-dimensions", "source": "./standards/review-dimensions.json" },
+      { "name": "validate-json-contract", "source": "./scripts/validate-json-contract.mjs" },
+      { "name": "validate-review-result", "source": "./scripts/validate-review-result.mjs" },
+      { "name": "inspect-agent-skill", "source": "./scripts/inspect-agent-skill.mjs" },
+      { "name": "validate-review-input-bundle", "source": "./scripts/validate-review-input-bundle.mjs" },
+      { "name": "validate-eval-audit-result", "source": "./scripts/validate-eval-audit-result.mjs" },
+      { "name": "validate-eval-run-bundle", "source": "./scripts/validate-eval-run-bundle.mjs" },
+      { "name": "check-agent-skill", "source": "./scripts/check-agent-skill.mjs" },
+      { "name": "validate-review-result-lite", "source": "./scripts/validate-review-result-lite.mjs" },
+      { "name": "review-result-lite-schema", "source": "./schemas/review-result-lite.schema.json" },
+      { "name": "skill-design-brief-schema", "source": "./schemas/skill-design-brief.schema.json" },
+      { "name": "eval-audit-result-schema", "source": "./schemas/eval-audit-result.schema.json" },
+      { "name": "review-input-bundle-schema", "source": "./schemas/review-input-bundle.schema.json" },
+      { "name": "review-result-schema", "source": "./schemas/review-result.schema.json" },
+      { "name": "skill-inspection-result-schema", "source": "./schemas/skill-inspection-result.schema.json" },
+      { "name": "eval-run-bundle-schema", "source": "./schemas/eval-run-bundle.schema.json" }
     ],
     "buildImports": [
       {
@@ -98,76 +57,18 @@
       },
       {
         "skill": "review-agent-skill",
-        "source": "./schemas/review-input-bundle.schema.json",
-        "target": "assets/review-input-bundle.schema.json"
+        "source": "./scripts/check-agent-skill.mjs",
+        "target": "scripts/check-agent-skill.mjs"
       },
       {
         "skill": "review-agent-skill",
-        "source": "./schemas/review-result.schema.json",
-        "target": "assets/review-result.schema.json"
+        "source": "./scripts/validate-review-result-lite.mjs",
+        "target": "scripts/validate-review-result-lite.mjs"
       },
       {
         "skill": "review-agent-skill",
-        "source": "./schemas/skill-inspection-result.schema.json",
-        "target": "assets/skill-inspection-result.schema.json"
-      },
-      {
-        "skill": "review-agent-skill",
-        "source": "./schemas/eval-audit-result.schema.json",
-        "target": "assets/eval-audit-result.schema.json"
-      },
-      {
-        "skill": "review-agent-skill",
-        "source": "./schemas/eval-runtime-capabilities.schema.json",
-        "target": "assets/eval-runtime-capabilities.schema.json"
-      },
-      {
-        "skill": "review-agent-skill",
-        "source": "./schemas/eval-execution-plan.schema.json",
-        "target": "assets/eval-execution-plan.schema.json"
-      },
-      {
-        "skill": "review-agent-skill",
-        "source": "./schemas/eval-run-bundle.schema.json",
-        "target": "assets/eval-run-bundle.schema.json"
-      },
-      {
-        "skill": "review-agent-skill",
-        "import": {
-          "plugin": "agent-content-toolkit",
-          "export": "reference-audit-result-schema"
-        },
-        "target": "assets/reference-audit-result.schema.json"
-      },
-      {
-        "skill": "review-agent-skill",
-        "source": "./scripts/inspect-agent-skill.mjs",
-        "target": "scripts/inspect-agent-skill.mjs"
-      },
-      {
-        "skill": "review-agent-skill",
-        "source": "./scripts/validate-json-contract.mjs",
-        "target": "scripts/validate-json-contract.mjs"
-      },
-      {
-        "skill": "review-agent-skill",
-        "source": "./scripts/validate-review-input-bundle.mjs",
-        "target": "scripts/validate-review-input-bundle.mjs"
-      },
-      {
-        "skill": "review-agent-skill",
-        "source": "./scripts/validate-review-result.mjs",
-        "target": "scripts/validate-review-result.mjs"
-      },
-      {
-        "skill": "review-agent-skill",
-        "source": "./scripts/validate-eval-audit-result.mjs",
-        "target": "scripts/validate-eval-audit-result.mjs"
-      },
-      {
-        "skill": "review-agent-skill",
-        "source": "./scripts/validate-eval-run-bundle.mjs",
-        "target": "scripts/validate-eval-run-bundle.mjs"
+        "source": "./schemas/review-result-lite.schema.json",
+        "target": "assets/review-result-lite.schema.json"
       },
       {
         "skill": "audit-agent-skill-evals",
@@ -196,7 +97,8 @@
     },
     "tests": {
       "node": [
-        "./scripts/contract.test.mjs"
+        "./scripts/contract.test.mjs",
+        "./scripts/lightweight-review-contract.test.mjs"
       ]
     }
   },
@@ -206,10 +108,7 @@
     "policy": {
       "installation": "AVAILABLE",
       "authentication": "ON_INSTALL",
-      "products": [
-        "CODEX",
-        "CLAUDE"
-      ]
+      "products": ["CODEX", "CLAUDE"]
     }
   }
 }

@@ -3,284 +3,188 @@
   "policy": {
     "optimization": "precision-first",
     "false_negative_cost": "high",
-    "false_positive_cost": "critical",
-    "rationale": "错误绑定 digest、currentness、stage 或 materialized closure 会把过期或不完整证据当成当前发布证据；Reviewer 必须只读且 fail closed。"
+    "false_positive_cost": "high",
+    "rationale": "必须发现最终 Skill 的机器缺陷，同时避免把质量评审重新扩张成发布状态机。"
   },
   "evals": [
     {
-      "id": "nested-reports-change-evidence-not-source",
+      "id": "machine-error-blocks-without-handoff-state",
       "eval_type": "behavior",
-      "case_role": "representative",
+      "case_role": "regression",
       "provenance": "derived",
-      "scenario_family": "author-evidence-digest-boundary",
+      "scenario_family": "runtime-closure-integrity",
       "unit_under_test": "full-skill",
       "preconditions": {
-        "two_plugin_snapshots_provided": true,
-        "skill_runtime_source_identical": true,
-        "nested_skill_report_differs": true,
+        "source_skill_missing_runtime_file": true,
         "review_is_read_only": true
       },
       "oracle": {
-        "rationale": "Skill 根直接子目录 reports 是作者证据，不参与 source digest；报告内容变化必须反映在 evidence artifact/digest，而不能伪装成 production source 变化。",
-        "rule_refs": [
-          "SKILL.md#工作流",
-          "references/aw-review-bundle.md"
-        ],
+        "rationale": "确定性 Inspector 错误应直接阻断对应质量结论，不需要生成 stage、machineEvidenceId 或重复 gate。",
+        "rule_refs": ["SKILL.md#工作流"],
         "confidence": "high",
-        "allowed_variance": "digest 具体值和报告格式可不同；两个 source digest 必须相同，报告 evidence digest 必须不同。"
+        "allowed_variance": "报告格式可以不同；必须定位缺失资源、给 blocked，并保持工作区不变。",
+        "minimal_counterexample": "补齐同一文件且 Inspector 无 error 后，不应继续以该错误阻断。"
       },
-      "prompt": "只读比较 fixtures/report-before 与 fixtures/report-after 两个 AW 插件快照。它们只有 skills/notify/reports/review.md 内容不同。使用 Reviewer 证据准备入口说明 source digest 和 evidence 如何变化，并给出 gate 结论；不要修改任何文件。",
+      "prompt": "只读评审 plugins/broken。它的 Skill 引用了不存在的 scripts/run.mjs。给出质量结论，不要修改文件，也不要生成多阶段 handoff。",
       "scripted_replies": [],
-      "expected_output": "证明两个快照的 source digest 相同、report evidence digest 不同，并保持结论只限证据变化。",
+      "expected_output": "报告机器错误并 blocked；不创建 ReviewInputBundle、stage、profile coverage row 或发布 readiness。",
       "workspace_files": {
-        "fixtures/report-before/.agents-plugin/plugin.json": "{\"name\":\"notify-plugin\",\"version\":\"1.0.0\",\"description\":\"Notify\",\"skills\":\"./skills\"}\n",
-        "fixtures/report-before/skills/notify/SKILL.md": "---\nname: notify\ndescription: Send an approved notification.\n---\n\n# Notify\nSend only after explicit approval.\n",
-        "fixtures/report-before/skills/notify/reports/review.md": "# Review\nEvidence set A is provisional.\n",
-        "fixtures/report-after/.agents-plugin/plugin.json": "{\"name\":\"notify-plugin\",\"version\":\"1.0.0\",\"description\":\"Notify\",\"skills\":\"./skills\"}\n",
-        "fixtures/report-after/skills/notify/SKILL.md": "---\nname: notify\ndescription: Send an approved notification.\n---\n\n# Notify\nSend only after explicit approval.\n",
-        "fixtures/report-after/skills/notify/reports/review.md": "# Review\nEvidence set B passed deterministic checks.\n"
+        "plugins/broken/.agents-plugin/plugin.json": "{\"name\":\"broken\",\"version\":\"1.0.0\",\"skills\":\"./skills\"}\n",
+        "plugins/broken/skills/run/SKILL.md": "---\nname: run\ndescription: Run the fixture.\n---\n\nRun `node scripts/run.mjs`.\n"
       },
       "review": {
-        "platforms": [
-          "codex"
-        ],
+        "platforms": ["codex"],
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [
-          "trace 分别运行 AW review bundle/target 准备入口，并使用结构化 digest 结果比较两个快照",
-          "明确判定两个 source digest 相同，因为直接子目录 reports 属于作者证据而非 runtime source",
-          "明确判定 review.md 的 evidence artifact/digest 不同，且不把新报告自动视为已通过或 current",
-          "结论不制造 Skill source finding，也不修改任一快照"
+          "使用 Inspector 的 missing-runtime-resource 作为机器事实",
+          "质量 verdict 为 blocked",
+          "没有生成 ReviewInputBundle、providedStages、AWReviewTargetPlan 或 AWReviewSummary"
         ]
       }
     },
     {
-      "id": "skill-source-change-updates-digest",
-      "eval_type": "behavior",
-      "case_role": "representative",
-      "provenance": "derived",
-      "scenario_family": "runtime-source-digest-boundary",
-      "unit_under_test": "full-skill",
-      "preconditions": {
-        "two_plugin_snapshots_provided": true,
-        "skill_source_differs": true,
-        "author_evidence_identical": true,
-        "review_is_read_only": true
-      },
-      "oracle": {
-        "rationale": "SKILL.md 是 production source；正文改变必须产生新的 source digest，并使只绑定旧 digest 的证据不再 current。",
-        "rule_refs": [
-          "SKILL.md#工作流",
-          "references/aw-review-bundle.md"
-        ],
-        "confidence": "high",
-        "allowed_variance": "digest 值可不同；必须判定 source digest 改变，旧报告不能继承到新 source。"
-      },
-      "prompt": "只读比较 fixtures/source-before 与 fixtures/source-after。两者 reports/review.md 相同，但 after 的 skills/notify/SKILL.md 增加了批量发送行为。计算并解释 source digest/currentness 影响；不要修改文件或把旧报告重新绑定。",
-      "scripted_replies": [],
-      "expected_output": "证明 Skill source digest 已改变，并把旧 digest 的报告标为不适用于新 source，而不是自动继承。",
-      "workspace_files": {
-        "fixtures/source-before/.agents-plugin/plugin.json": "{\"name\":\"notify-plugin\",\"version\":\"1.0.0\",\"description\":\"Notify\",\"skills\":\"./skills\"}\n",
-        "fixtures/source-before/skills/notify/SKILL.md": "---\nname: notify\ndescription: Send one approved notification.\n---\n\n# Notify\nSend one approved notification.\n",
-        "fixtures/source-before/skills/notify/reports/review.md": "# Review\nReviewed source-before only.\n",
-        "fixtures/source-after/.agents-plugin/plugin.json": "{\"name\":\"notify-plugin\",\"version\":\"1.0.0\",\"description\":\"Notify\",\"skills\":\"./skills\"}\n",
-        "fixtures/source-after/skills/notify/SKILL.md": "---\nname: notify\ndescription: Send approved single or batch notifications.\n---\n\n# Notify\nSend approved single or batch notifications.\n",
-        "fixtures/source-after/skills/notify/reports/review.md": "# Review\nReviewed source-before only.\n"
-      },
-      "review": {
-        "platforms": [
-          "codex"
-        ],
-        "clean_session": true,
-        "workspace_unchanged": true,
-        "checks": [
-          "trace 使用 AW review bundle/target 准备入口计算两个 source digest，而不是只比较文件名或版本",
-          "明确判定 SKILL.md 变化使 source digest 不同，即使 reports 内容相同",
-          "拒绝把只评审 before digest 的报告作为 after 的 current evidence，并把对应 gate 保持 provisional 或 blocked",
-          "不修改 Skill、报告或 manifest"
-        ]
-      }
-    },
-    {
-      "id": "per-skill-currentness-inheritance",
-      "eval_type": "behavior",
-      "case_role": "representative",
-      "provenance": "derived",
-      "scenario_family": "multi-skill-currentness-projection",
-      "unit_under_test": "full-skill",
-      "preconditions": {
-        "plugin_has_two_skills": true,
-        "artifact_currentness_mixed": true,
-        "materialized_profile_provided": true,
-        "review_is_read_only": true
-      },
-      "oracle": {
-        "rationale": "review targets 必须按绝对 artifact path 与 digest 将 currentness 投影到各自 Skill；一个 Skill 的 current 状态不能污染另一个 Skill 或未匹配 final。",
-        "rule_refs": [
-          "SKILL.md#工作流",
-          "references/aw-review-bundle.md"
-        ],
-        "confidence": "high",
-        "allowed_variance": "汇报顺序可不同；alpha、beta 和 final 的 currentness 必须逐 target 独立继承，未匹配项为 unknown。"
-      },
-      "prompt": "只读审核 plugins/multi-skill，并使用 evidence/plugin-bundle.json 与 materialized/codex 生成每个 source/final Skill target。重点检查 currentness 是否逐 Skill 继承；不要把 alpha 的 current 状态复制给 beta 或未匹配 final。",
-      "scripted_replies": [],
-      "expected_output": "分别报告 alpha、beta 和 materialized target 的 currentness，未匹配 artifact 保持 unknown，并据此给出 provisional gate。",
-      "workspace_files": {
-        "plugins/multi-skill/.agents-plugin/plugin.json": "{\"name\":\"multi-skill\",\"version\":\"0.8.0\",\"description\":\"Two skills\",\"skills\":\"./skills\"}\n",
-        "plugins/multi-skill/skills/alpha/SKILL.md": "---\nname: alpha\ndescription: Perform alpha task.\n---\n\n# Alpha\n",
-        "plugins/multi-skill/skills/beta/SKILL.md": "---\nname: beta\ndescription: Perform beta task.\n---\n\n# Beta\n",
-        "materialized/codex/alpha/SKILL.md": "---\nname: alpha\ndescription: Perform alpha task.\n---\n\n# Alpha\n",
-        "materialized/codex/beta/SKILL.md": "---\nname: beta\ndescription: Perform beta task.\n---\n\n# Beta\n",
-        "evidence/plugin-bundle.json": "{\"schemaVersion\":4,\"target\":{\"kind\":\"aw-plugin\",\"name\":\"multi-skill\",\"profile\":null,\"sourceDigest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"currentness\":\"dirty\",\"dirtyReasons\":[\"modified production source file: /workspace/plugins/multi-skill/skills/beta/SKILL.md\"]},\"artifacts\":[{\"role\":\"source\",\"path\":\"plugins/multi-skill/skills/alpha/SKILL.md\",\"profile\":null,\"digest\":\"sha256:767bb28281af1debbac8520562accbb385b602a23d1b9a7a316907a1ba29fd34\",\"mode\":\"100644\",\"owner\":\"multi-skill\",\"currentness\":\"current\"},{\"role\":\"source\",\"path\":\"plugins/multi-skill/skills/beta/SKILL.md\",\"profile\":null,\"digest\":\"sha256:5247bd6c87ac194439befbb1ec3d3158e5395f1e36f795af67ae66eee9961def\",\"mode\":\"100644\",\"owner\":\"multi-skill\",\"currentness\":\"dirty\",\"currentnessReason\":\"modified source file\"}],\"environment\":{\"repositoryRoot\":\".\"},\"orchestration\":{\"stageOwner\":\"caller\",\"providedStages\":[]},\"evalAudit\":null,\"evalResults\":[]}\n"
-      },
-      "review": {
-        "platforms": [
-          "codex"
-        ],
-        "clean_session": true,
-        "workspace_unchanged": true,
-        "checks": [
-          "trace 使用 prepare-aw-review-targets 并为 alpha、beta 的 source 与 codex final 生成独立 target",
-          "只在 artifact path 和实际 digest 都匹配时继承 currentness；不因 owner 或相同 profile 而跨 Skill 复制",
-          "alpha 与 beta 分别保留自己的 currentness，bundle 中 digest 不匹配或缺失的 final artifact 保持 unknown",
-          "materialization-currentness gate 因 unknown/dirty 保持 provisional 或 blocked，且没有修改 workspace"
-        ]
-      }
-    },
-    {
-      "id": "conflicting-stage-slot-is-rejected",
-      "eval_type": "behavior",
-      "case_role": "boundary",
-      "provenance": "challenge",
-      "scenario_family": "handoff-stage-slot-conflict",
-      "unit_under_test": "full-skill",
-      "preconditions": {
-        "bundle_has_duplicate_stage_slot": true,
-        "stage_results_claim_different_producers": true,
-        "review_is_read_only": true
-      },
-      "oracle": {
-        "rationale": "同一 subject/profile 的 eval-audit slot 不能由两个结果同时占用；冲突必须在调用通用 Reviewer 前被拒绝，不能挑一个或合并。",
-        "rule_refs": [
-          "SKILL.md#工作流",
-          "references/aw-review-bundle.md"
-        ],
-        "confidence": "high",
-        "allowed_variance": "错误措辞可不同；必须识别同 slot 冲突、停止下游 review 并给 blocked。",
-        "minimal_counterexample": "若两个 stage 的 id 或 subject/profile 不同，可分别验证后保留。"
-      },
-      "prompt": "只读检查 evidence/conflicting-bundle.json。它为同一个 Skill digest 和 profile 提供两个 eval-audit stage。验证 handoff 后给结论；不要自行选择其中一个，也不要修改 bundle。",
-      "scripted_replies": [],
-      "expected_output": "拒绝冲突 stage，停止下游 generic review，把证据 gate 标为 blocked，并指出需要唯一可信 stage。",
-      "workspace_files": {
-        "evidence/audit-a.json": "{\"schemaVersion\":2,\"producer\":\"audit-agent-skill-evals\",\"independentContext\":true,\"auditId\":\"audit-a\",\"mode\":\"preflight\",\"targetSkillDigest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"caseCorpusDigest\":\"sha256:2222222222222222222222222222222222222222222222222222222222222222\",\"validity\":\"pass\",\"optimizationPolicy\":\"balanced\",\"cases\":[],\"blockedCases\":[],\"releaseEligible\":true,\"failureTriage\":[],\"recommendedAction\":\"run\"}\n",
-        "evidence/audit-b.json": "{\"schemaVersion\":2,\"producer\":\"audit-agent-skill-evals\",\"independentContext\":true,\"auditId\":\"audit-b\",\"mode\":\"preflight\",\"targetSkillDigest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"caseCorpusDigest\":\"sha256:3333333333333333333333333333333333333333333333333333333333333333\",\"validity\":\"pass\",\"optimizationPolicy\":\"balanced\",\"cases\":[],\"blockedCases\":[],\"releaseEligible\":true,\"failureTriage\":[],\"recommendedAction\":\"run\"}\n",
-        "evidence/conflicting-bundle.json": "{\"schemaVersion\":4,\"target\":{\"kind\":\"agent-skill\",\"name\":\"notify\",\"profile\":\"codex-project\",\"sourceDigest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"currentness\":\"unknown\"},\"artifacts\":[],\"environment\":{\"repositoryRoot\":\".\"},\"orchestration\":{\"stageOwner\":\"caller\",\"providedStages\":[{\"id\":\"eval-audit\",\"producer\":\"audit-agent-skill-evals\",\"independentContext\":true,\"subjectDigest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"resultPath\":\"audit-a.json\",\"resultDigest\":\"sha256:3f9e399b34d5896ca3dc2b299d82181651a7b7a7bfab4e2bba27faad37466118\",\"schema\":\"EvalAuditResult\",\"profile\":\"codex-project\"},{\"id\":\"eval-audit\",\"producer\":\"audit-agent-skill-evals\",\"independentContext\":true,\"subjectDigest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"resultPath\":\"audit-b.json\",\"resultDigest\":\"sha256:0f2adb6eee13dd5583709fbb4b50172dc8f1b4dabcde770947c39104fde96aa7\",\"schema\":\"EvalAuditResult\",\"profile\":\"codex-project\"}]},\"evalAudit\":null,\"evalResults\":[]}\n"
-      },
-      "review": {
-        "platforms": [
-          "codex"
-        ],
-        "clean_session": true,
-        "workspace_unchanged": true,
-        "checks": [
-          "trace 先调用 handoff bundle validator，并依据结构化失败停止，而不是把 bundle 传给 review-agent-skill",
-          "识别两个 stage 竞争相同 id、subject digest 和 profile slot；不按顺序挑选、不合并不同 corpus",
-          "eval-runtime-evidence gate 为 blocked，并给出重新生成唯一可信 stage 的最小动作",
-          "不修改 conflicting-bundle.json 或两个 audit 文件"
-        ]
-      }
-    },
-    {
-      "id": "materialized-runtime-closure-missing-file",
-      "eval_type": "behavior",
-      "case_role": "boundary",
-      "provenance": "challenge",
-      "scenario_family": "materialized-closure-integrity",
-      "unit_under_test": "full-skill",
-      "preconditions": {
-        "source_skill_complete": true,
-        "materialized_skill_missing_referenced_file": true,
-        "review_is_read_only": true
-      },
-      "oracle": {
-        "rationale": "materialized Skill 引用的关键 policy 文件不在 runtime closure 中，最终制品无法执行声明流程；source 完整不能抵消 final 缺失。",
-        "rule_refs": [
-          "SKILL.md#工作流",
-          "references/aw-review-bundle.md"
-        ],
-        "confidence": "high",
-        "allowed_variance": "finding 标题可不同；必须定位缺失引用、阻断 final/release，并保持 source review 与 final gate 分离。",
-        "minimal_counterexample": "若同一关键文件存在于 materialized final closure，不能仅因 source 使用 reference 就阻断 final。"
-      },
-      "prompt": "只读审核 plugins/access-helper 的 source 与 materialized/codex final。final SKILL.md 要求读取 references/access-policy.md，但 final closure 中没有该文件。给出 source/final 结论和 release gate；不要修复。",
-      "scripted_replies": [],
-      "expected_output": "source 可单独评估，但 materialized final 因关键 runtime 文件缺失而 blocked，release readiness 不能 ready。",
-      "workspace_files": {
-        "plugins/access-helper/.agents-plugin/plugin.json": "{\"name\":\"access-helper\",\"version\":\"1.2.0\",\"description\":\"Access helper\",\"skills\":\"./skills\"}\n",
-        "plugins/access-helper/skills/check-access/SKILL.md": "---\nname: check-access\ndescription: Check access against the project policy.\n---\n\n# Check Access\nRead references/access-policy.md before deciding.\n",
-        "plugins/access-helper/skills/check-access/references/access-policy.md": "# Access policy\nDeny when the project is not in the allow list.\n",
-        "materialized/codex/check-access/SKILL.md": "---\nname: check-access\ndescription: Check access against the project policy.\n---\n\n# Check Access\nRead references/access-policy.md before deciding.\n"
-      },
-      "review": {
-        "platforms": [
-          "codex"
-        ],
-        "clean_session": true,
-        "workspace_unchanged": true,
-        "checks": [
-          "trace 为 source 与 materialized final 分别生成 target，并检查 final 的实际 runtime closure",
-          "定位 final SKILL.md 对 references/access-policy.md 的必要引用和 final 中的缺失，不用 source 文件存在替代 final 完整性",
-          "materialized final review 与 source-final-consistency 或 materialization gate 为 blocked，releaseReadiness 不为 ready",
-          "只报告修复方向，不创建缺失文件或修改 source/final"
-        ]
-      }
-    },
-    {
-      "id": "concise-source-final-project-gates",
+      "id": "identical-profiles-share-one-quality-review",
       "eval_type": "behavior",
       "case_role": "representative",
       "provenance": "representative-synthetic",
-      "scenario_family": "layered-review-aggregation",
+      "scenario_family": "digest-deduplicated-review",
       "unit_under_test": "full-skill",
       "preconditions": {
-        "source_target_present": true,
-        "materialized_target_present": true,
-        "project_manifest_invalid": true,
+        "source_and_two_finals_identical": true,
         "review_is_read_only": true
       },
       "oracle": {
-        "rationale": "最终报告必须组合通用 source/final ReviewResult 与 AW project gates；manifest 缺失声明文件是项目 P0，final 过期是独立 P1，不能重复成多条同根因 finding。",
-        "rule_refs": [
-          "SKILL.md#工作流",
-          "../assets/aw-review-summary.json"
-        ],
+        "rationale": "质量判断针对内容；三个目标 production digest 相同时只需一次模型评审，profile 映射是机器事实。",
+        "rule_refs": ["SKILL.md#工作流"],
         "confidence": "high",
-        "allowed_variance": "标题和表格布局可不同；必须分层、去重、给出 blocked 总结和最小动作。"
+        "allowed_variance": "可以按任一目标作为 review root；必须说明同一结论覆盖三个 target。"
       },
-      "prompt": "只读完成 plugins/deploy-guide 的发布就绪评审。组合 source Skill、materialized/codex final 和 plugin project gates，输出精简报告：每个独立根因只报告一次，关联受影响 gate，不复述完整证据。不要修复或发布。",
+      "prompt": "只读评审 plugins/notify 及 materialized/codex、materialized/claude。三个 Skill 内容完全相同，请避免重复评审。",
       "scripted_replies": [],
-      "expected_output": "分别保留 source/final generic review 与 project gates，以 manifest 缺失 MCP 文件和 final 过期两个根因给 blocked，总结最小修复动作。",
+      "expected_output": "按 digest 去重，只做一次质量评审，并列出覆盖的 source、codex 和 claude target。",
       "workspace_files": {
-        "plugins/deploy-guide/.agents-plugin/plugin.json": "{\"name\":\"deploy-guide\",\"version\":\"2.0.0\",\"description\":\"Deploy guide\",\"skills\":\"./skills\",\"mcpServers\":\"./.mcp.json\"}\n",
-        "plugins/deploy-guide/skills/deploy/SKILL.md": "---\nname: deploy\ndescription: Prepare a deployment after explicit approval.\n---\n\n# Deploy\nRequire explicit approval and use the v2 deployment checklist.\n",
-        "plugins/deploy-guide/skills/deploy/references/checklist.md": "# v2 checklist\nVerify approval, backup, health check, and rollback.\n",
-        "materialized/codex/deploy/SKILL.md": "---\nname: deploy\ndescription: Prepare a deployment.\n---\n\n# Deploy\nUse the v1 deployment checklist.\n",
-        "materialized/codex/deploy/references/checklist.md": "# v1 checklist\nVerify backup and health check.\n"
+        "plugins/notify/.agents-plugin/plugin.json": "{\"name\":\"notify\",\"version\":\"1.0.0\",\"skills\":\"./skills\"}\n",
+        "plugins/notify/skills/send/SKILL.md": "---\nname: send\ndescription: Send one approved notice.\n---\n\nSend one approved notice.\n",
+        "materialized/codex/send/SKILL.md": "---\nname: send\ndescription: Send one approved notice.\n---\n\nSend one approved notice.\n",
+        "materialized/claude/send/SKILL.md": "---\nname: send\ndescription: Send one approved notice.\n---\n\nSend one approved notice.\n"
       },
       "review": {
-        "platforms": [
-          "codex"
-        ],
+        "platforms": ["codex"],
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [
-          "trace 分别准备 source 与 final target，调用通用 review-agent-skill，并运行 AW inspect/project gate；父级只聚合结构化结果",
-          "source generic review、final generic review 和 project gates 分开呈现，不用项目 manifest 问题替代 Skill 质量判断",
-          "缺失 .mcp.json 作为一个 manifest-validity P0 根因；final 使用 v1 且缺少 approval/rollback 作为一个 source-final/currentness P1 根因",
-          "同一 final 过期根因只报告一次并关联所有受影响 gate，不按每个缺失句子重复 finding",
-          "总 verdict 为 blocked，报告只保留证据定位、影响、gate 和最小动作，不复制长篇 Skill 内容，也不修改或发布"
+          "先运行 discover-aw-review-targets 并确认只有一个唯一 digest",
+          "只产生一个通用质量结论",
+          "报告 target 覆盖，但不生成 profile coverage gate"
+        ]
+      }
+    },
+    {
+      "id": "different-final-content-gets-separate-review",
+      "eval_type": "behavior",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "digest-deduplicated-review",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "one_final_differs": true,
+        "review_is_read_only": true
+      },
+      "oracle": {
+        "rationale": "不同 production digest 可能有不同质量和缺陷，不能因 Skill 名称相同而复用结论。",
+        "rule_refs": ["SKILL.md#工作流"],
+        "confidence": "high",
+        "allowed_variance": "结论文字可以不同；必须把过期 final 与 source 分开评审。",
+        "minimal_counterexample": "final 内容与 source 完全相同时可复用一次评审。"
+      },
+      "prompt": "只读比较 plugins/deploy 的 source 与 materialized/claude final。final 仍使用旧安全规则，请分别给质量结论。",
+      "scripted_replies": [],
+      "expected_output": "识别两个唯一 digest，分别评审并说明真实内容差异。",
+      "workspace_files": {
+        "plugins/deploy/.agents-plugin/plugin.json": "{\"name\":\"deploy\",\"version\":\"2.0.0\",\"skills\":\"./skills\"}\n",
+        "plugins/deploy/skills/run/SKILL.md": "---\nname: run\ndescription: Deploy after approval.\n---\n\nRequire approval and rollback validation.\n",
+        "materialized/claude/run/SKILL.md": "---\nname: run\ndescription: Deploy.\n---\n\nRun deployment after backup.\n"
+      },
+      "review": {
+        "platforms": ["codex"],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "discover 结果有两个唯一 digest",
+          "source 与 final 的质量 finding 分开",
+          "不把 profile 状态持久化成模型发布合同"
+        ]
+      }
+    },
+    {
+      "id": "source-only-review-does-not-claim-release",
+      "eval_type": "behavior",
+      "case_role": "regression",
+      "provenance": "derived",
+      "scenario_family": "quality-vs-release-boundary",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "only_source_provided": true,
+        "review_is_read_only": true
+      },
+      "oracle": {
+        "rationale": "source 质量可以独立评价，但缺少 materialized finals 时不能把质量结论包装成发布资格。",
+        "rule_refs": ["SKILL.md#边界"],
+        "confidence": "high",
+        "allowed_variance": "可以建议运行 release checker；不得输出 ready/pass-for-release。"
+      },
+      "prompt": "完整只读评审 plugins/source-only。目前没有 materialized final。",
+      "scripted_replies": [],
+      "expected_output": "给出 source 质量结论，并明确发布资格未评估。",
+      "workspace_files": {
+        "plugins/source-only/.agents-plugin/plugin.json": "{\"name\":\"source-only\",\"version\":\"1.0.0\",\"skills\":\"./skills\"}\n",
+        "plugins/source-only/skills/read/SKILL.md": "---\nname: read\ndescription: Read one supplied file.\n---\n\nRead the supplied file and summarize it.\n"
+      },
+      "review": {
+        "platforms": ["codex"],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "质量评审可以 pass",
+          "不输出 releaseReadiness 或 profile coverage",
+          "把 materialized/release 验证留给确定性项目工具"
+        ]
+      }
+    },
+    {
+      "id": "eval-oracle-problem-routes-to-auditor",
+      "eval_type": "behavior",
+      "case_role": "regression",
+      "provenance": "derived",
+      "scenario_family": "eval-owner-boundary",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "eval_oracle_is_ambiguous": true,
+        "production_skill_has_no_observed_failure": true
+      },
+      "oracle": {
+        "rationale": "Eval case/Oracle 问题属于 Eval audit，不能直接驱动生产 Skill 修改。",
+        "rule_refs": ["SKILL.md#工作流"],
+        "confidence": "high",
+        "allowed_variance": "可将质量结论保留为 unknown；不得凭有争议 case 给生产 Skill major finding。"
+      },
+      "prompt": "只读评审 plugins/search。一个 Eval case 标签有争议，但没有生产失败 trace。判断应该修改 Skill 还是先审核 Eval。",
+      "scripted_replies": [],
+      "expected_output": "先交给 audit-agent-skill-evals，当前生产 Skill 不因该 case 获得 major finding。",
+      "workspace_files": {
+        "plugins/search/.agents-plugin/plugin.json": "{\"name\":\"search\",\"version\":\"1.0.0\",\"skills\":\"./skills\"}\n",
+        "plugins/search/skills/find/SKILL.md": "---\nname: find\ndescription: Search a large unknown corpus for cited facts.\n---\n\nSearch, cite sources, and report uncertainty.\n",
+        "plugins/search/skills/find/evals/cases.json": "[{\"query\":\"Review a large repository\",\"should_load\":false}]\n"
+      },
+      "review": {
+        "platforms": ["codex"],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "区分 Eval Oracle 与生产 Skill owner",
+          "不把争议标签当作 Skill defect",
+          "建议先做独立 Eval audit"
         ]
       }
     }

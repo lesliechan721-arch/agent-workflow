@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-skill-toolkit.invalid/review-result-lite.schema.json",
+  "title": "ReviewResultLite",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "target",
+    "mode",
+    "design",
+    "complexity",
+    "summary",
+    "findings",
+    "unknowns",
+    "evalEvidence"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "target": {
+      "type": "object",
+      "required": ["name", "digest"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+      },
+      "additionalProperties": false
+    },
+    "mode": { "enum": ["quick", "full", "delta"] },
+    "design": { "enum": ["pass", "needs-fixes", "redesign", "fail", "not-assessed"] },
+    "complexity": { "enum": ["proportionate", "over-specified", "over-engineered", "not-assessed"] },
+    "summary": { "type": "string", "minLength": 1 },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["severity", "area", "evidence", "issue", "action"],
+        "properties": {
+          "severity": { "enum": ["critical", "major", "minor", "advisory"] },
+          "area": { "type": "string", "minLength": 1 },
+          "evidence": {
+            "type": "array",
+            "items": { "type": "string", "minLength": 1 },
+            "minItems": 1
+          },
+          "issue": { "type": "string", "minLength": 1 },
+          "action": { "type": "string", "minLength": 1 }
+        },
+        "additionalProperties": false
+      }
+    },
+    "unknowns": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "evalEvidence": { "enum": ["none", "structural", "executed", "comparative"] }
+  },
+  "additionalProperties": false
+}
