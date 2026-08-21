@@ -573,6 +573,22 @@ describe('Git catalog publisher', () => {
       pending: tagged.commit,
       tag: { commit: tagged.commit, manifest: { catalogVersion: '1.0.0-beta.1' } },
     });
+    const stableHistory = await observeReleaseHistory({
+      targets,
+      channel: 'stable',
+      cliDistRoot: path.join(root, 'unused-dist'),
+      readRegistryHistory: async () => registry,
+      readCatalogHistory: (options) => readCatalogPublicationHistory({
+        ...options, remoteUrl, catalogModules,
+      }),
+    });
+    expect(stableHistory.catalog).toMatchObject({
+      pending: tagged.commit,
+      tag: {
+        commit: tagged.commit,
+        manifest: { catalogVersion: '1.0.0-beta.1', channel: 'beta' },
+      },
+    });
     const guardedBetaHistory = await readCatalogPublicationHistory({
       mode: 'beta', catalogVersion: '1.0.0-beta.1', remoteUrl, catalogModules,
     });
@@ -600,6 +616,27 @@ describe('Git catalog publisher', () => {
         }],
       },
     };
+    const stablePrepared = await prepareRelease(['stable'], {
+      repoRoot: root,
+      assertClean: async () => undefined,
+      assertFresh: async () => undefined,
+      assertTargetsMatchHead: async () => undefined,
+      readTargets: async () => targets,
+      observe: async () => ({ targets, content, history: stableHistory }),
+      observeRemoteHistory: async () => stableHistory,
+      materializeCliPlanArtifacts: async (status) => status.cli.packages,
+      materializeCatalogPlanArtifact: async () => null,
+      writePlan: async () => ({
+        created: true,
+        planPath: path.join(root, 'stable-plan.json'),
+        pointerPath: path.join(root, 'stable-current-plan.json'),
+      }),
+    });
+    expect(stablePrepared.plan).toMatchObject({
+      channel: 'stable',
+      cli: { action: 'publish', candidateVersion: '1.0.0' },
+      catalog: { action: 'deferred', publicationMode: 'none', snapshotDigest: null },
+    });
     const prepared = await prepareRelease(['beta'], {
       repoRoot: root,
       assertClean: async () => undefined,

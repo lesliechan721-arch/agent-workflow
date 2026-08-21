@@ -27,6 +27,7 @@ import {
   projectBuildDigest,
   readRegistryReleaseHistory,
 } from '../../../../scripts/release/release-observe.mjs';
+import { prepareRelease } from '../../../../scripts/release/release-prepare.mjs';
 import { releaseStatus } from '../../../../scripts/release/release-status.mjs';
 import {
   OFFICIAL_CATALOG_PUBLISH_REMOTE,
@@ -474,6 +475,51 @@ describe('release status and plans', () => {
       .resolves.toMatchObject({ channels: { stable: { catalog: { action: 'deferred' } } } });
     await expect(releaseStatus(['--json'], { observe: async () => betaObserved, writeOutput: false }))
       .resolves.toMatchObject({ channels: { beta: { catalog: { action: 'recover' } } } });
+
+    const prepareCrossChannel = async (channel: 'stable' | 'beta', observed: typeof betaObserved) => {
+      const releaseIdentity = {
+        generationId: 'generation', outputDigest: 'output', inputDigest: 'input',
+        cliPackageDigest: 'package', headCommit: 'a'.repeat(40),
+      };
+      return prepareRelease([channel], {
+        observe: async () => ({ ...observed, releaseIdentity }),
+        assertClean: async () => undefined,
+        assertFresh: async () => undefined,
+        readTargets: async () => observed.targets,
+        assertTargetsMatchHead: async () => undefined,
+        observeRemoteHistory: async () => observed.history,
+        materializeCliPlanArtifacts: async (status) => status.cli.packages,
+        materializeCatalogPlanArtifact: async () => null,
+        writePlan: async (plan) => ({ created: true, planPath: '/fixture/plan.json', plan }),
+      });
+    };
+    await expect(prepareCrossChannel('stable', betaObserved)).resolves.toMatchObject({
+      plan: {
+        channel: 'stable',
+        cli: { action: 'publish', candidateVersion: '0.1.0' },
+        catalog: { action: 'deferred', publicationMode: 'none', snapshotDigest: null },
+      },
+    });
+    const stablePendingWithChangedCli = structuredClone(stableObserved);
+    stablePendingWithChangedCli.targets.cli = '0.2.0';
+    stablePendingWithChangedCli.content.cli.packages[0].contentDigest = digest('7');
+    stablePendingWithChangedCli.content.cli.trainContentDigest = calculateCliTrainContentDigest(
+      stablePendingWithChangedCli.content.cli.packages.map(({ name, contentDigest }) => ({
+        name, contentDigest,
+      })),
+    );
+    await expect(prepareCrossChannel('beta', stablePendingWithChangedCli)).resolves.toMatchObject({
+      plan: {
+        channel: 'beta',
+        cli: { action: 'publish', candidateVersion: '0.2.0-beta.1' },
+        catalog: { action: 'deferred', publicationMode: 'none', snapshotDigest: null },
+      },
+    });
+
+    const inconsistentPending = structuredClone(betaPending);
+    inconsistentPending.history.catalog.tag.manifest.channel = 'latest';
+    expect(() => calculateReleaseStatus(inconsistentPending))
+      .toThrow('tag version and manifest channel are inconsistent');
   });
 
   it('keeps CLI publishable when the catalog axis needs a target bump', () => {

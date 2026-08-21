@@ -258,6 +258,15 @@ export async function assertPlanCliRegistryFresh(plan, options = {}) {
   return assertCliRegistryHistoryMatchesPlan(plan, registry);
 }
 
+function legacyStablePublishedVersion(plan) {
+  if (plan.channel !== 'stable' || plan.history.npm.legacyLatestAwOnly !== true) return undefined;
+  const normalized = normalizeCliRegistryHistory(registryFromPlanHistory(plan));
+  if (!normalized.legacyLatestAwOnly) {
+    throw new Error('Invalid committed legacyLatestAwOnly registry history.');
+  }
+  return null;
+}
+
 async function createStampedSnapshotRunner(plan, assertFresh, options) {
   return async (callback) => (options.withReleaseBuildSnapshot ?? withReleaseBuildSnapshot)(
     async (snapshot) => {
@@ -316,7 +325,7 @@ export async function publishCommittedRelease(argv = process.argv.slice(2), opti
     await (options.runCommand ?? runCommand)('pnpm', ['run', verificationScript(plan)]);
     await assertFresh();
   }
-  await assertPlanCliRegistryFresh(plan, options);
+  const initialRegistry = await assertPlanCliRegistryFresh(plan, options);
   const snapshotRunner = await createStampedSnapshotRunner(plan, assertFresh, options);
   if (
     !options._boundCatalog
@@ -382,6 +391,14 @@ export async function publishCommittedRelease(argv = process.argv.slice(2), opti
   const callerBeforeNpmWrite = options.beforeNpmWrite;
   const callerEvalBeforeNpmWrite = options.evalPublicationOptions?.beforeNpmWrite;
   const callerBeforeRemoteWrite = options.beforeRemoteWrite;
+  const runPlanCommand = async (command, args, commandOptions) => {
+    if (command === 'pnpm' && (
+      args.join(' ') === 'run release:verify'
+      || args.join(' ') === 'run release:verify:cli'
+      || args.join(' ') === 'run release:verify:catalog'
+    )) return;
+    return (options.runCommand ?? runCommand)(command, args, commandOptions);
+  };
   const commonOptions = {
     ...options,
     repoRoot,
@@ -407,6 +424,10 @@ export async function publishCommittedRelease(argv = process.argv.slice(2), opti
     beforeRemoteWrite: async () => {
       await callerBeforeRemoteWrite?.();
       await assertWriteFresh();
+    },
+    beforePromotionRemoteWrite: async () => {
+      await callerBeforeRemoteWrite?.();
+      await assertFresh();
     },
     evalPublicationOptions: {
       ...(options.evalPublicationOptions ?? {}),
@@ -440,14 +461,8 @@ export async function publishCommittedRelease(argv = process.argv.slice(2), opti
       }
       return staged;
     }),
-    runCommand: async (command, args, commandOptions) => {
-      if (command === 'pnpm' && (
-        args.join(' ') === 'run release:verify'
-        || args.join(' ') === 'run release:verify:catalog'
-      )) return;
-      if (options.runCommand) return options.runCommand(command, args, commandOptions);
-      throw new Error('Unexpected top-level release command.');
-    },
+    runCommand: runPlanCommand,
+    ...(legacyStablePublishedVersion(plan) === null ? { publishedVersion: null } : {}),
   };
   if (plan.catalog.publicationMode === 'none' && plan.cli.action === 'publish') {
     const cli = await (options.publishCli ?? (await import('./publish-cli.mjs')).publishCli)([
@@ -463,9 +478,7 @@ export async function publishCommittedRelease(argv = process.argv.slice(2), opti
     const readHistory = options.readCatalogPublicationHistory
       ?? (await import('./git-catalog-publisher.mjs')).readCatalogPublicationHistory;
     let initialCatalogBinding = null;
-    const assertPromotionWriteFresh = async () => {
-      const registry = await assertWriteFresh();
-      assertPromotionCliTrainObservation(plan, registry);
+    const assertPromotionCatalogFresh = async () => {
       const promotionHistory = assertCatalogHistoryAllowed(plan, await readHistory({
         mode,
         catalogVersion: plan.catalog.candidateVersion,
@@ -492,12 +505,18 @@ export async function publishCommittedRelease(argv = process.argv.slice(2), opti
       initialCatalogBinding ??= liveCatalogBinding;
       return promotionHistory;
     };
-    await assertPromotionWriteFresh();
+    const assertPromotionWriteFresh = async () => {
+      await assertFresh();
+      const registry = await assertPlanCliRegistryFresh(plan, options);
+      assertPromotionCliTrainObservation(plan, registry);
+      return assertPromotionCatalogFresh();
+    };
+    assertPromotionCliTrainObservation(plan, initialRegistry);
+    await assertPromotionCatalogFresh();
     const currentCliVersion = plan.cli.candidateVersion;
     if (compareReleaseSemVer(currentCliVersion, plan.catalog.minCliVersion) < 0) {
       throw new Error(`Promotion CLI train ${currentCliVersion} is below Catalog minimum ${plan.catalog.minCliVersion}.`);
     }
-    await assertPromotionWriteFresh();
     const callerBeforeAcquire = options.publisherOptions?.beforeAcquire;
     const promotion = await (options.promoteCatalogTag ?? promoteCatalogTag)({
       mode,
@@ -544,7 +563,12 @@ export async function publishCommittedRelease(argv = process.argv.slice(2), opti
     mode,
     '--catalog-version', catalogVersion,
     '--cli-version', cliVersion,
-  ], { ...commonOptions, skipVerify: true });
+  ], {
+    ...commonOptions,
+    skipVerify: true,
+    readLiveCliHistory: options.readRegistryReleaseHistory ?? readRegistryReleaseHistory,
+    assertPromotionRegistryFresh: (registry) => assertCliRegistryHistoryMatchesPlan(plan, registry),
+  });
   const expectedPath = plan.catalog.publicationMode === 'tag-first' ? 'tag-first' : 'catalog-first';
   if (result.path !== expectedPath) {
     throw new Error(`Release execution path ${result.path} does not match committed plan mode ${plan.catalog.publicationMode}.`);

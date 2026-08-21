@@ -38,6 +38,11 @@ import { CLI_PACKAGES, normalizeCliRegistryHistory } from './release-state.mjs';
 export async function assertCompleteCliTrainTag(mode, candidateVersion, options = {}) {
   const registry = await (options.readRegistryReleaseHistory
     ?? readRegistryReleaseHistory)(options);
+  assertCompleteCliTrainTagObservation(mode, candidateVersion, registry);
+  return registry;
+}
+
+function assertCompleteCliTrainTagObservation(mode, candidateVersion, registry) {
   const normalized = normalizeCliRegistryHistory(registry);
   const tag = mode === 'beta' ? 'beta' : 'latest';
   const versions = CLI_PACKAGES.map((packageName) => normalized.distTags[packageName][tag]);
@@ -49,7 +54,6 @@ export async function assertCompleteCliTrainTag(mode, candidateVersion, options 
       `Catalog promotion requires both ${tag} dist-tags to resolve to CLI candidate ${candidateVersion}.`,
     );
   }
-  return registry;
 }
 
 export function parseArgs(argv) {
@@ -136,11 +140,16 @@ export async function publishRelease(argv = process.argv.slice(2), options = {})
             legacyPublishedIdentity: true,
           });
           assertStagedCatalogReleaseIdentity(staged, internalOutputRoot, releaseIdentity);
-          const publishedCliVersion = await (options.resolvePublishedCliVersion
-            ?? resolvePublishedCliVersion)(mode);
+          const publishedCliVersion = options.publishedVersion !== undefined
+            ? options.publishedVersion
+            : await (options.resolvePublishedCliVersion ?? resolvePublishedCliVersion)(mode);
+          if (publishedCliVersion === null && mode !== 'latest') {
+            throw new Error('An empty published CLI baseline is valid only for the committed first stable release.');
+          }
           const compare = history.catalogModules.pluginStaging.compareStrictSemVer;
           const minCliVersion = staged.manifest.compatibility.aw.minVersion;
-          const requiresCandidateCli = compare(publishedCliVersion, minCliVersion) < 0;
+          const requiresCandidateCli = publishedCliVersion === null
+            || compare(publishedCliVersion, minCliVersion) < 0;
           const resumeTagFirst = Boolean(
             history.tag
             && history.channels[mode]?.commit !== history.tag.commit,
@@ -170,15 +179,17 @@ export async function publishRelease(argv = process.argv.slice(2), options = {})
             tag: mode,
             versionKind: mode === 'beta' ? 'prerelease' : 'stable',
           };
-          const cliGate = {
-            ...resolveCliPublicationGate({
-              mode,
-              candidateVersion: currentCliVersion,
-              publishedVersion: publishedCliVersion,
-              compare,
-            }),
-            publishedVersion: publishedCliVersion,
-          };
+          const cliGate = publishedCliVersion === null
+            ? { status: 'publish', version: currentCliVersion, publishedVersion: null }
+            : {
+                ...resolveCliPublicationGate({
+                  mode,
+                  candidateVersion: currentCliVersion,
+                  publishedVersion: publishedCliVersion,
+                  compare,
+                }),
+                publishedVersion: publishedCliVersion,
+              };
           return (options.withPreparedCliPublication ?? withPreparedCliPublication)(
             mode,
             publishMode,
@@ -294,11 +305,14 @@ export async function publishRelease(argv = process.argv.slice(2), options = {})
               }
               try {
                 await assertFresh();
-                const assertPromotionTrain = () => assertCompleteCliTrainTag(
-                  mode,
-                  currentCliVersion,
-                  options,
-                );
+                const assertPromotionTrain = async () => {
+                  const registry = await (options.readLiveCliHistory
+                    ?? options.readRegistryReleaseHistory
+                    ?? readRegistryReleaseHistory)(options);
+                  await options.assertPromotionRegistryFresh?.(registry);
+                  assertCompleteCliTrainTagObservation(mode, currentCliVersion, registry);
+                  return registry;
+                };
                 await assertPromotionTrain();
                 const promotion = await (options.promoteCatalogTag ?? promoteCatalogTag)({
                   mode,
@@ -309,7 +323,7 @@ export async function publishRelease(argv = process.argv.slice(2), options = {})
                   beforeAcquire: assertPromotionTrain,
                   beforeRemoteWrite: async () => {
                     await assertPromotionTrain();
-                    await beforeRemoteWrite();
+                    await (options.beforePromotionRemoteWrite ?? beforeRemoteWrite)();
                   },
                   ...(options.catalogModules ? { catalogModules: options.catalogModules } : {}),
                 });

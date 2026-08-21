@@ -12,6 +12,10 @@ import {
   parsePublishPlanArgs,
   publishCommittedRelease,
 } from '../../../../scripts/release/publish-plan.mjs';
+import {
+  publishCli,
+  publishPreparedEvalPublication,
+} from '../../../../scripts/release/publish-cli.mjs';
 import { OFFICIAL_CATALOG_PUBLISH_REMOTE } from '../../../../scripts/release/git-catalog-publisher.mjs';
 import { materializeCatalogPlanArtifact } from '../../../../scripts/release/release-prepare.mjs';
 import { prepareRelease } from '../../../../scripts/release/release-prepare.mjs';
@@ -71,6 +75,7 @@ async function createIdentityDriftFixture() {
 }
 
 afterEach(async () => {
+  vi.unstubAllEnvs();
   await Promise.all(temporaryRoots.splice(0).map((root) =>
     fs.rm(root, { recursive: true, force: true })));
 });
@@ -129,6 +134,8 @@ function plan(publicationMode: 'none' | 'catalog-only' | 'atomic-combined' | 'ta
     history: {
       catalog: { latest: null, beta: null, publicationGuard: null },
       npm: {
+        legacyLatestAwOnly: false,
+        legacyBetaAwOnly: false,
         packages: [
           { name: '@lesliechan721/agent-skill-eval', versions: [] },
           { name: '@lesliechan721/aw', versions: [] },
@@ -170,6 +177,57 @@ function bindPublishedCandidate(releasePlan: ReturnType<typeof plan>) {
   }
   for (const tags of releasePlan.history.npm.distTags) tags.beta = '1.0.0-beta.1';
   return releasePlan;
+}
+
+function legacyStablePlan() {
+  const releasePlan = plan('tag-first');
+  releasePlan.channel = 'stable';
+  releasePlan.cli.candidateVersion = '1.0.0';
+  releasePlan.catalog.candidateVersion = '2.0.0';
+  releasePlan.history.npm = {
+    legacyLatestAwOnly: true,
+    legacyBetaAwOnly: false,
+    packages: [
+      {
+        name: '@lesliechan721/agent-skill-eval',
+        versions: [{
+          candidateVersion: '1.0.0-beta.3',
+          metadata: releaseMetadata('@lesliechan721/agent-skill-eval', {
+            candidateVersion: '1.0.0-beta.3', planId: `sha256:${'9'.repeat(64)}`,
+          }),
+        }],
+      },
+      {
+        name: '@lesliechan721/aw',
+        versions: [
+          { candidateVersion: '0.1.0-beta.1', metadata: null },
+          {
+            candidateVersion: '1.0.0-beta.3',
+            metadata: releaseMetadata('@lesliechan721/aw', {
+              candidateVersion: '1.0.0-beta.3', planId: `sha256:${'9'.repeat(64)}`,
+            }),
+          },
+        ],
+      },
+    ],
+    distTags: [
+      { name: '@lesliechan721/agent-skill-eval', latest: null, beta: '1.0.0-beta.3' },
+      { name: '@lesliechan721/aw', latest: '0.1.0-beta.1', beta: '1.0.0-beta.3' },
+    ],
+  };
+  return releasePlan;
+}
+
+function registryFromTestPlan(releasePlan: ReturnType<typeof plan>) {
+  return {
+    ...Object.fromEntries(releasePlan.history.npm.packages.map((entry) => [entry.name,
+      entry.versions.map((version) => ({
+        version: version.candidateVersion, awRelease: version.metadata,
+      }))])),
+    distTags: Object.fromEntries(releasePlan.history.npm.distTags.map((entry) => [entry.name, {
+      latest: entry.latest, beta: entry.beta,
+    }])),
+  };
 }
 
 function promotionCatalogHistory() {
@@ -511,6 +569,134 @@ describe('committed release plan publisher', () => {
     expect(runCommand).toHaveBeenCalledWith('pnpm', ['run', 'release:verify']);
   });
 
+  it('uses the production command runner for Eval and AW while suppressing nested verification', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plan-command-fallback-'));
+    temporaryRoots.push(root);
+    const binRoot = path.join(root, 'bin');
+    const cliPackageRoot = path.join(root, 'cli');
+    const commandLog = path.join(root, 'commands.log');
+    await Promise.all([
+      fs.mkdir(binRoot),
+      fs.mkdir(cliPackageRoot),
+    ]);
+    const fakePnpm = path.join(binRoot, 'pnpm');
+    await fs.writeFile(fakePnpm, [
+      '#!/usr/bin/env node',
+      "const fs = require('node:fs');",
+      "fs.appendFileSync(process.env.AW_TEST_COMMAND_LOG, `${process.argv.slice(2).join(' ')}\\n`);",
+    ].join('\n'));
+    await fs.chmod(fakePnpm, 0o755);
+    await fs.writeFile(path.join(cliPackageRoot, 'package.json'), JSON.stringify({
+      name: '@lesliechan721/aw', version: '1.0.0-beta.1',
+    }));
+    vi.stubEnv('PATH', `${binRoot}${path.delimiter}${process.env.PATH ?? ''}`);
+    vi.stubEnv('AW_TEST_COMMAND_LOG', commandLog);
+    vi.stubEnv('npm_config_user_agent', 'fixture');
+    vi.stubEnv('npm_execpath', '');
+
+    const snapshot = {
+      cliPackageRoot,
+      generationId: 'generation',
+      outputDigest: 'output',
+      inputDigest: 'input',
+      cliPackageDigest: 'package',
+    };
+    const publishCombinedRelease = async (_args: string[], nestedOptions: {
+      runCommand: (
+        command: string, args: string[], options?: Record<string, unknown>,
+      ) => Promise<unknown>;
+    }) => {
+      await nestedOptions.runCommand('pnpm', ['run', 'release:verify']);
+      await nestedOptions.runCommand('pnpm', ['run', 'release:verify:cli']);
+      const evalPublication = await publishPreparedEvalPublication({
+        status: 'publish',
+        mode: 'beta',
+        version: '1.0.0-beta.1',
+        tarballPath: path.join(root, 'eval.tgz'),
+        registryUrl: 'https://registry.example.test/',
+        gitCheckArgs: [],
+        candidateTreeDigest: EVAL_DIGEST,
+        generationId: snapshot.generationId,
+        outputDigest: snapshot.outputDigest,
+        inputDigest: snapshot.inputDigest,
+      }, async () => undefined);
+      await publishCli(['beta', '--cli-version', '1.0.0-beta.1'], {
+        snapshot,
+        expectedVersion: '1.0.0-beta.1',
+        readCliPackageJson: async () => ({ version: '1.0.0-beta.1' }),
+        resolveReleaseHead: async () => 'b'.repeat(40),
+        assertCurrentReleaseIdentity: async () => undefined,
+        publicationLease: {},
+        publishedVersion: '0.9.0-beta.1',
+        cliPublication: {
+          status: 'publish', mode: 'beta', version: '1.0.0-beta.1',
+          tarballPath: path.join(root, 'aw.tgz'),
+          registryUrl: 'https://registry.example.test/',
+          candidateTreeDigest: AW_DIGEST,
+          generationId: snapshot.generationId,
+          outputDigest: snapshot.outputDigest,
+          inputDigest: snapshot.inputDigest,
+          cliPackageDigest: snapshot.cliPackageDigest,
+        },
+        evalPublication,
+        resolveCliPublishGitCheckArgs: async () => [],
+        runCommand: nestedOptions.runCommand,
+        skipVerify: true,
+      });
+      return { path: 'tag-first' };
+    };
+
+    await expect(publishCommittedRelease([], {
+      ...freshRegistryOptions,
+      readCurrentReleasePlan: async () => ({ plan: plan('tag-first') }),
+      assertPlanOnlyCommit: async () => undefined,
+      publishCombinedRelease,
+      _boundCatalog: {
+        internalOutputRoot: '/tmp/catalog', snapshot,
+        staged: { snapshotDigest: `sha256:${'e'.repeat(64)}` },
+      },
+    })).resolves.toMatchObject({ path: 'tag-first' });
+
+    const commands = (await fs.readFile(commandLog, 'utf8')).trim().split('\n');
+    expect(commands.filter((entry) => entry === 'run release:verify')).toHaveLength(1);
+    expect(commands.some((entry) => /^publish .*eval\.tgz/u.test(entry))).toBe(true);
+    expect(commands.some((entry) => /^publish .*aw\.tgz/u.test(entry))).toBe(true);
+  });
+
+  it('injects no stable baseline only for the strictly bound legacy latest history', async () => {
+    const releasePlan = legacyStablePlan();
+    const publishCombinedRelease = vi.fn(async (_args, nestedOptions) => {
+      expect(nestedOptions.publishedVersion).toBeNull();
+      return { path: 'tag-first' };
+    });
+    await expect(publishCommittedRelease([], {
+      readCurrentReleasePlan: async () => ({ plan: releasePlan }),
+      assertPlanOnlyCommit: async () => undefined,
+      runCommand: async () => undefined,
+      readRegistryReleaseHistory: async () => registryFromTestPlan(releasePlan),
+      publishCombinedRelease,
+      _boundCatalog: {
+        internalOutputRoot: '/tmp/catalog', snapshot: {},
+        staged: { snapshotDigest: `sha256:${'e'.repeat(64)}` },
+      },
+    })).resolves.toMatchObject({ path: 'tag-first' });
+    expect(publishCombinedRelease).toHaveBeenCalledOnce();
+
+    const wrongLegacy = legacyStablePlan();
+    wrongLegacy.history.npm.distTags[1].latest = '0.1.0-beta.2';
+    await expect(publishCommittedRelease([], {
+      readCurrentReleasePlan: async () => ({ plan: wrongLegacy }),
+      assertPlanOnlyCommit: async () => undefined,
+      runCommand: async () => undefined,
+      readRegistryReleaseHistory: async () => registryFromTestPlan(wrongLegacy),
+      publishCombinedRelease,
+      _boundCatalog: {
+        internalOutputRoot: '/tmp/catalog', snapshot: {},
+        staged: { snapshotDigest: `sha256:${'e'.repeat(64)}` },
+      },
+    })).rejects.toThrow(/legacyLatestAwOnly|latest dist-tag/u);
+  });
+
   it('runs bootstrap only from the committed candidate without public version arguments', async () => {
     const bootstrapCatalog = vi.fn(async () => ({ idempotent: false, commit: 'catalog' }));
     await expect(publishCommittedRelease([], {
@@ -612,7 +798,7 @@ describe('committed release plan publisher', () => {
       promoteCatalogTag,
     })).resolves.toMatchObject({ path: 'promotion' });
     expect(runCommand).toHaveBeenCalledWith('pnpm', ['run', 'release:verify:catalog']);
-    expect(registryReads).toBe(5);
+    expect(registryReads).toBe(3);
   });
 
   it('rejects complete registry drift before the promotion lease can write its lock', async () => {

@@ -61,21 +61,16 @@ export function normalizeCliRegistryHistory(registry) {
   }
   const evalEntries = packages.get(CLI_PACKAGES[0]);
   const awEntries = packages.get(CLI_PACKAGES[1]);
-  const legacyAwOnlyHistory = evalEntries.length === 0
-    && awEntries.length > 0
-    && awEntries.every((entry) => entry.metadata === null
-      && (entry.candidateVersion === '0.1.0-beta.1'
-        || entry.candidateVersion === '0.1.0-beta.2'));
+  const isLegacyAwOnlyVersion = (version) =>
+    !evalEntries.some((entry) => entry.candidateVersion === version)
+    && awEntries.some((entry) => entry.candidateVersion === version && entry.metadata === null);
   const legacyLatestAwOnly = distTags[CLI_PACKAGES[0]].latest === null
     && distTags[CLI_PACKAGES[1]].latest === '0.1.0-beta.1'
-    && legacyAwOnlyHistory
-    && awEntries.some((entry) => entry.candidateVersion === '0.1.0-beta.1');
+    && isLegacyAwOnlyVersion('0.1.0-beta.1');
   const legacyBetaAwOnly = distTags[CLI_PACKAGES[0]].beta === null
     && (distTags[CLI_PACKAGES[1]].beta === '0.1.0-beta.1'
       || distTags[CLI_PACKAGES[1]].beta === '0.1.0-beta.2')
-    && legacyAwOnlyHistory
-    && awEntries.some((entry) =>
-      entry.candidateVersion === distTags[CLI_PACKAGES[1]].beta);
+    && isLegacyAwOnlyVersion(distTags[CLI_PACKAGES[1]].beta);
   for (const packageName of CLI_PACKAGES) {
     const latest = distTags[packageName].latest;
     const beta = distTags[packageName].beta;
@@ -221,8 +216,6 @@ function observedCliHistory(registry) {
 
 function pendingCatalogChannel(tag) {
   const manifestChannel = tag?.manifest?.channel;
-  if (manifestChannel === 'beta') return 'beta';
-  if (manifestChannel === 'latest' || manifestChannel === 'stable') return 'stable';
   const version = tag?.manifest?.catalogVersion ?? tag?.catalogVersion;
   if (typeof version !== 'string') return null;
   try {
@@ -230,7 +223,16 @@ function pendingCatalogChannel(tag) {
   } catch {
     return null;
   }
-  return version.includes('-') ? 'beta' : 'stable';
+  const versionChannel = version.includes('-') ? 'beta' : 'stable';
+  if (manifestChannel !== undefined) {
+    const normalizedManifestChannel = manifestChannel === 'latest' || manifestChannel === 'stable'
+      ? 'stable'
+      : manifestChannel;
+    if (normalizedManifestChannel !== versionChannel) {
+      throw new Error('partial-candidate: pending catalog tag version and manifest channel are inconsistent.');
+    }
+  }
+  return versionChannel;
 }
 
 export function calculateReleaseStatus({ channel, targets, content, history }) {

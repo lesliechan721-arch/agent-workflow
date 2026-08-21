@@ -12,6 +12,8 @@
 
 这些事实是迁移输入。它们不是永久例外，也不是当前 remote 状态声明。schema 4 的 fixed distribution floor 是 `0.1.0-beta.3`。第一个完整 CLI train 必须为两个包使用 schema 1 `awRelease` metadata。第一个 schema 4 Catalog 发布必须使用 combined tag-first 路径。不要硬编码下一个 beta 编号。status 会保留全部已观察的旧身份，并选择下一个候选。
 
+完整 beta train 发布后，如果 `@lesliechan721/aw` 的 legacy `latest` 仍严格指向无 metadata 的 `0.1.0-beta.1`，而 Eval `latest` 缺失，则首个 committed stable plan 把 stable baseline 视为空。该例外只来自 plan 绑定的完整 registry history；普通 `latest` lookup 仍拒绝 prerelease。
+
 Release maintenance 的 status、prepare、publish 和 recover 使用同一个 canonical SSH remote `git@github.com:lesliechan721-arch/agent-workflow.git`。该 remote 服务维护者认证，不来自 local `origin`。runtime 用户的内置 official source 继续使用固定 HTTPS URL `https://github.com/lesliechan721-arch/agent-workflow.git`。两种 URL 有不同职责，不能互相替代。
 
 先提交 target、CLI bump 同步产生的两个 public package version mirror 和选定的 source 变更。该提交完成后再 prepare。下一个 commit 只包含 immutable plan 和 `release/current-plan.json`。双包部分发布只能重试同一个已提交 plan 和 candidate。如果 tag-first 已发布 immutable tag 和两个 CLI 包，但没有推进 channel，使用显式 `release:recover -- catalog <version>` 路径。

@@ -391,15 +391,20 @@ export async function publishCli(argv = process.argv.slice(2), options = {}) {
       const publishedVersion = publicationLease && options.publishedVersion !== undefined
         ? options.publishedVersion
         : await (options.resolvePublishedCliVersion ?? resolvePublishedCliVersion)(mode);
-      const gate = {
-        ...resolveCliPublicationGate({
-          mode,
-          candidateVersion: expectedVersion,
-          publishedVersion,
-          ...(options.compareSemVer ? { compare: options.compareSemVer } : {}),
-        }),
-        publishedVersion,
-      };
+      if (publishedVersion === null && mode !== 'latest') {
+        throw new Error('An empty published CLI baseline is valid only for the committed first stable release.');
+      }
+      const gate = publishedVersion === null
+        ? { status: 'publish', version: expectedVersion, publishedVersion }
+        : {
+            ...resolveCliPublicationGate({
+              mode,
+              candidateVersion: expectedVersion,
+              publishedVersion,
+              ...(options.compareSemVer ? { compare: options.compareSemVer } : {}),
+            }),
+            publishedVersion,
+          };
       let gitCheckArgs;
       const prepareToPublish = async () => {
         if (gitCheckArgs) return gitCheckArgs;

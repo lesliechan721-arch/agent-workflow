@@ -609,7 +609,7 @@ export async function readCatalogPublicationHistory(options) {
       );
       const validation = await validateSnapshotAndLedger(
         snapshotRoot,
-        options.mode ?? null,
+        remoteRefs.tag.catalogVersion.includes('-beta.') ? 'beta' : 'latest',
         catalogModules,
       );
       if (validation.manifest.catalogVersion !== remoteRefs.tag.catalogVersion) {
