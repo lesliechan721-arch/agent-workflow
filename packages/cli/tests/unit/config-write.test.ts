@@ -38,9 +38,12 @@ import {
 } from '../../src/utils/plugin-config-write.js';
 import {
   readPluginConfigStore,
+  resolveConfigFileLockPath,
   resolveConfigRead,
   writePluginConfigStore,
 } from '../../src/utils/plugin-config.js';
+import { buildConfigGroups } from '../../src/tui/model.js';
+import { acquireLifecycleOperationLock } from '../../src/utils/lifecycle-active-store.js';
 import { registerCurrentTestWritableStateRoot } from '../setup/test-isolation.js';
 
 const execFileAsync = promisify(execFile);
@@ -112,6 +115,8 @@ async function createFixture(
       schema: {
         token: { type: 'string', sensitive: true },
         mode: { type: 'enum', values: ['fast', 'safe'], default: 'safe' },
+        workspace: { type: 'directory' },
+        certificate: { type: 'file' },
       },
     },
     ...(options.codexProjectManaged === false ? {} : { skills: './skills' }),
@@ -180,6 +185,121 @@ afterEach(async () => {
 });
 
 describe('config write full reinstall apply', () => {
+  it.each(['save', 'reset'] as const)(
+    'rejects a stale Review for config %s under the store and target locks without a write',
+    async (action) => {
+      const fixture = await createFixture();
+      await writePluginConfigStore({
+        pluginName: fixture.plugin.manifest.name,
+        scope: 'user',
+        cwd: fixture.cwd,
+        env: fixture.env,
+        values: { mode: 'safe' },
+      });
+      const store = await readPluginConfigStore({
+        pluginName: fixture.plugin.manifest.name,
+        scope: 'user',
+        cwd: fixture.cwd,
+        env: fixture.env,
+      });
+      let checks = 0;
+      let contender: ReturnType<typeof acquireLifecycleOperationLock> | undefined;
+      let contenderAcquired = false;
+      const reviewPreflight = vi.fn(async () => {
+        checks += 1;
+        if (checks === 2) {
+          contender = acquireLifecycleOperationLock({
+            pluginName: fixture.plugin.manifest.name,
+            platform: 'claude',
+            scope: 'project',
+            cwd: fixture.cwd,
+            env: fixture.env,
+          });
+          void contender.then(() => { contenderAcquired = true; });
+          await new Promise((resolve) => setImmediate(resolve));
+          expect(contenderAcquired).toBe(false);
+        }
+        if (checks === 3) {
+          await expect(fs.pathExists(resolveConfigFileLockPath(store.path))).resolves.toBe(true);
+          throw new Error('operationReviewStale: locked evidence changed');
+        }
+      });
+      const reinstall = createReinstallMock();
+
+      const operation = action === 'save'
+        ? applyPluginConfigWrite({
+            plugin: fixture.plugin,
+            scope: 'user',
+            cwd: fixture.cwd,
+            env: fixture.env,
+            request: { updates: { mode: 'fast' } },
+            reinstallCommandImpl: reinstall,
+            reviewPreflight,
+          })
+        : resetPluginConfigWithHelper({
+            plugin: fixture.plugin,
+            pluginName: fixture.plugin.manifest.name,
+            scope: 'user',
+            cwd: fixture.cwd,
+            env: fixture.env,
+            reinstallCommandImpl: reinstall,
+            reviewPreflight,
+          });
+
+      await expect(operation).rejects.toThrow('operationReviewStale');
+      const contenderLease = await contender;
+      expect(contenderAcquired).toBe(true);
+      await contenderLease?.release();
+      expect((await readPluginConfigStore({
+        pluginName: fixture.plugin.manifest.name,
+        scope: 'user',
+        cwd: fixture.cwd,
+        env: fixture.env,
+      })).values).toEqual({ mode: 'safe' });
+      expect(reinstall).not.toHaveBeenCalled();
+      expect(reviewPreflight).toHaveBeenCalledTimes(3);
+    },
+  );
+
+  it('projects sensitive, file, and directory values without exposing stored bytes or paths', async () => {
+    const fixture = await createFixture();
+    const privateDirectory = path.join(fixture.root, 'private-workspace');
+    const privateFile = path.join(fixture.root, 'private-certificate.pem');
+    await Promise.all([fs.ensureDir(privateDirectory), fs.outputFile(privateFile, 'private-certificate')]);
+    await writePluginConfigStore({
+      pluginName: fixture.plugin.manifest.name,
+      scope: 'user',
+      cwd: fixture.cwd,
+      env: fixture.env,
+      values: {
+        token: 'private-token',
+        workspace: privateDirectory,
+        certificate: privateFile,
+      },
+    });
+    const read = await resolveConfigRead({
+      pluginName: fixture.plugin.manifest.name,
+      plugin: fixture.plugin,
+      scope: 'user',
+      projectLayer: 'shared',
+      cwd: fixture.cwd,
+      env: fixture.env,
+    });
+
+    const groups = buildConfigGroups({ schema: fixture.plugin.manifest.config!, read });
+    const projected = Object.fromEntries(groups.flatMap((group) =>
+      group.fields.map((field) => [field.key, field.displayValue])));
+
+    expect(projected).toMatchObject({
+      token: '已设置',
+      workspace: '已设置',
+      certificate: '已设置',
+    });
+    expect(JSON.stringify(groups)).not.toContain(privateDirectory);
+    expect(JSON.stringify(groups)).not.toContain(privateFile);
+    expect(JSON.stringify(groups)).not.toContain('private-token');
+  });
+
   it('passes the active progress reporter into config-triggered reinstall', async () => {
     const fixture = await createFixture();
     mocks.visible.add('codex:user');

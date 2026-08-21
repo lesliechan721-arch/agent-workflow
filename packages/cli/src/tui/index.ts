@@ -10,6 +10,42 @@ export {
 export { resolveTuiKeyAction, type TuiInputMode, type TuiKeyContext } from './keys.js';
 export { resolveTuiSizePolicy, type TuiLayoutMode, type TuiSizePolicy } from './layout.js';
 export { createInkTuiRunner, type TuiLaunchRequest, type TuiRunner } from './runner.js';
+export {
+  TuiController,
+  TuiOperationBlockedError,
+  operationEvidenceFingerprint,
+  type OperationEvidence,
+  type OperationExecuteResult,
+  type OperationIntent,
+  type OperationReviewModel,
+  type TuiControllerDependencies,
+  type TuiControllerSnapshot,
+} from './controller.js';
+export {
+  createConsoleTuiV4Controller,
+  createTuiControllerDependencies,
+} from './controller-runtime.js';
+export {
+  buildConfigGroups,
+  buildTuiViewModel,
+  projectPlatformPlacement,
+  type ConfigFieldViewModel,
+  type ConfigGroupViewModel,
+  type HomeSummaryViewModel,
+  type PlatformPlacementSummary,
+  type PluginListItemViewModel,
+  type SourceHealthViewModel,
+  type SourceTabViewModel,
+  type TuiViewModel,
+  type UserIssueViewModel,
+} from './model.js';
+export {
+  TuiRouter,
+  type TuiPageContext,
+  type TuiRoute,
+  type TuiRouteFrame,
+  type TuiRouterSnapshot,
+} from './router.js';
 export { CommandWizard } from './wizard.js';
 export {
   Dashboard,

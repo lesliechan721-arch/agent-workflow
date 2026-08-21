@@ -7,6 +7,10 @@ import {
   uninstallWriteCommand,
   upgradeWriteCommand,
 } from '../../src/commands/write-commands.js';
+import { setRebuildCommandTestHooksForTests } from '../../src/commands/rebuild-command.js';
+import { createCliExecutionContext } from '../../src/commands/runtime.js';
+import { createTuiControllerDependencies } from '../../src/tui/controller-runtime.js';
+import { TuiController } from '../../src/tui/controller.js';
 import { runCli } from '../../src/index.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 import path from 'node:path';
@@ -24,6 +28,7 @@ import { readPluginManifest } from '../../src/utils/manifest.js';
 import {
   prepareLifecycleActiveSnapshot,
   promoteLifecycleActiveSnapshot,
+  resolveLifecycleActiveTarget,
 } from '../../src/utils/lifecycle-active-store.js';
 import { updateCatalogSourceCommand } from '../../src/commands/catalog-source.js';
 import { writeSkillOwnerMarker } from '../../src/utils/ownership.js';
@@ -45,6 +50,78 @@ async function configureCatalog(): Promise<ReturnType<typeof getCurrentSourceTes
 }
 
 describe('five namespaced write commands', () => {
+  it('returns a new Review when the real write bridge detects changed source and target evidence under its operation lock', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'review-stale-source');
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', 'demo\n', (manifest) => {
+      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.extensions = {
+        instructions: [{ name: 'review', title: 'Review', content: 'must not be written' }],
+      };
+    });
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 1,
+        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
+      },
+      expectedDigest: snapshot.digest,
+      env: isolation.env,
+    });
+    const controller = new TuiController(createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 99.0.0', stderr: '' }),
+      interactive: false,
+    })));
+    let hookRuns = 0;
+    setRebuildCommandTestHooksForTests({
+      async afterTargetBuilt({ identity }) {
+        hookRuns += 1;
+        const target = await resolveLifecycleActiveTarget({
+          sourceId: identity.sourceId,
+          sourceIdentity: identity.sourceIdentity,
+          pluginName: identity.pluginName,
+          platform: identity.platform,
+          scope: identity.scope,
+          cwd: identity.cwd,
+          env: isolation.env,
+        });
+        await expect(fs.pathExists(target.operationLockPath)).resolves.toBe(true);
+        await createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', 'changed\n', (manifest) => {
+          manifest.marketplace.policy.products = ['CODEX'];
+          manifest.extensions = {
+            instructions: [{ name: 'review', title: 'Review', content: 'changed content' }],
+          };
+        });
+      },
+    });
+    try {
+      const review = await controller.buildOperationReview({
+        kind: 'pluginWrite',
+        action: 'install',
+        pluginId: 'team/demo',
+        platform: 'codex',
+        scope: 'project',
+      });
+      const result = await controller.executeOperation(review.reviewToken);
+
+      expect(result, JSON.stringify(result)).toMatchObject({
+        state: 'stale',
+        review: { title: '添加插件' },
+      });
+      expect(hookRuns).toBe(1);
+      await expect(fs.pathExists(path.join(
+        isolation.layout.fixtureCwd,
+        '.codex',
+        'config.toml',
+      ))).resolves.toBe(false);
+    } finally {
+      setRebuildCommandTestHooksForTests(undefined);
+      controller.dispose();
+    }
+  });
+
   it('removes the generated marketplace root only after the last platform consumer', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'orphan-root-source');

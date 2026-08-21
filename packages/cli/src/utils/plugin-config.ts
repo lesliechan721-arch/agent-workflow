@@ -1113,6 +1113,7 @@ export async function patchPluginConfigStore(options: {
   requireExistingRemoveKeys?: boolean;
   env?: NodeJS.ProcessEnv;
   projectLayer?: ProjectConfigStoreLayer;
+  reviewPreflight?: () => Promise<void> | void;
 }): Promise<PluginConfigStoreReceipt & { updatedKeys: string[]; removedKeys: string[] }> {
   await assertNoLegacyConfigCoexistence(options);
   const filePath = resolvePluginConfigStorePath({
@@ -1126,6 +1127,7 @@ export async function patchPluginConfigStore(options: {
       filePath,
       allowedRoot,
       action: async () => {
+        await options.reviewPreflight?.();
         const current = (await lstatIfExists(filePath))
           ? options.sourceId
             ? await readNamespacedStoreFile({
@@ -1174,6 +1176,7 @@ export async function resetPluginConfigStore(options: {
   cwd: string;
   env?: NodeJS.ProcessEnv;
   projectLayer?: ProjectConfigStoreLayer;
+  reviewPreflight?: () => Promise<void> | void;
 }): Promise<ResetPluginConfigStoreReceipt> {
   await assertNoLegacyConfigCoexistence(options);
   const filePath = resolvePluginConfigStorePath({
@@ -1186,6 +1189,7 @@ export async function resetPluginConfigStore(options: {
       filePath,
       allowedRoot,
       action: async () => {
+        await options.reviewPreflight?.();
         const target = await lstatIfExists(filePath);
         if (!target) return false;
         if (!target.isFile() || target.isSymbolicLink()) {

@@ -278,6 +278,9 @@ cache publication 必须满足：
 - sensitive config、未脱敏 event message 和 native raw invocation/data 不进入 frame、stdout 或 stderr。
 - TUI 结束后必须恢复 session reporter；每个事件只向 debug logger 发送一次。
 - `rebuild:action` 只服务 human、TUI、verbose 和 debug 诊断，不进入 v4 JSON receipt。普通 human reporter 忽略 event；verbose 写 stderr；`--json` stdout 仍只包含一个对象。
+- `tui/controller.ts`、`tui/model.ts` 和 `tui/router.ts` 是下一代单列 TUI 的内部控制层。它们从 status v4、plugin summary、source config 和 config read 投影页面模型；canonical `pluginId`、`sourceId`、`issueId` 和 `operationId` 是路由身份。现有 Dashboard 和裸 `aw` 默认入口暂时保持不变，两者不建立新的安装真值。
+- 新 Controller 首屏使用 `cacheFirst`，随后只对 Git source 运行可取消的 `forceRemote` 后台检查。成功检查发布 strict cache 后重新读取 status 投影；失败时只把已有缓存标为 degraded，无缓存标为 unavailable。generation token 防止旧检查覆盖较新结果。
+- 交互写操作先建立短期内存 Review ticket。Review 证据绑定 catalog config/composite digest、选中来源 identity 与 snapshot/content digest、目标状态 fingerprint，以及适用的配置层和 store digest。执行前重新读取并比较证据；变化时不调用写入口，而是返回同 intent 的新 Review。插件写入在真实 target operation lock 内复核完整证据；config 写入按稳定顺序持有全部适用 target operation lock，并在 config transaction 和 store file lock 内、首次 store 或 target 写入前复核完整证据。stale 操作不写入。Controller 只保存安全结果摘要和固定 typed 错误，不保存底层 receipt、私有路径或有效配置值。
 
 ## Key Paths
 
