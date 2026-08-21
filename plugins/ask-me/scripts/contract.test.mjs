@@ -124,13 +124,17 @@ test('eval manifests point to parseable case documents with valid participant na
   }
 });
 
-test('all composition suites expose the two adjacent decision Skills', async () => {
+test('owner behavior suites are independent and router suites compare adjacent capabilities', async () => {
   for (const skillName of requiredSkills) {
     const manifest = await readJson(
       path.join(context.sourceRoot, 'skills', skillName, 'evals', 'manifest.json'),
     );
-    for (const suite of manifest.suites.filter((entry) => entry.id !== 'trigger')) {
-      assert.deepEqual([...suite.skills].sort(), [...requiredSkills].sort());
+    const router = manifest.suites.find((suite) => suite.id === 'router');
+    assert.deepEqual([...router.skills].sort(), [...requiredSkills].sort());
+    assert.equal(router.forbidMultipleSkillLoads, true);
+
+    for (const suite of manifest.suites.filter((entry) => entry.kind === 'conversation')) {
+      assert.deepEqual(suite.skills, [skillName]);
     }
   }
 
@@ -154,6 +158,21 @@ test('all composition suites expose the two adjacent decision Skills', async () 
       true,
     );
   }
+});
+
+test('published decision Skills do not encode direct cross-Skill handoffs', async () => {
+  const grill = await readFile(
+    path.join(context.sourceRoot, 'skills', 'decision-grill', 'SKILL.md'),
+    'utf8',
+  );
+  const prototype = await readFile(
+    path.join(context.sourceRoot, 'skills', 'decision-prototype', 'SKILL.md'),
+    'utf8',
+  );
+
+  // Static contract exception: each public Skill must remain independently invokable; behavior test is not suitable because the forbidden dependency is the published instruction text itself.
+  assert.doesNotMatch(grill, /decision-prototype|交还原工作流|来自 `ask-me`/);
+  assert.doesNotMatch(prototype, /decision-grill|交还调用者|返回给：/);
 });
 
 test('plan-review cases receive an actual migration plan fixture', async () => {

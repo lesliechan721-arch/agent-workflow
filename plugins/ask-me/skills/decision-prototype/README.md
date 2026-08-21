@@ -15,6 +15,6 @@
 - 一个原型只回答一个问题。
 - 不追求生产级抽象、兼容性或完整异常处理。
 - 不自动把原型升级为生产实现。
-- 完成后把决定记录交回调用者；它不拥有 Spec 或实施流程。
+- 完成后返回独立的决定记录；它不拥有后续访谈、Spec 或实施流程。
 
 主要指令见 [`SKILL.md`](SKILL.md)，模板见 [`assets/prototype-brief.md`](assets/prototype-brief.md)，评测材料见 [`evals/`](evals/)。

@@ -1,7 +1,9 @@
 # Work
 
-## 固定依据
+## 任务上下文
 
+- 保障等级：
+- 任务目录：
 - 当前请求或 Spec：
 - 已确认的材料决定：
 
@@ -23,7 +25,7 @@
 
 ## 新发现与偏离
 
-区分局部工程选择和需要返回用户或 Spec 的材料变化。
+区分局部工程选择，以及 `material-decision`、`evidence-needed`、`spec-change` 或 `high-risk-authorization`。
 
 ## 验证证据
 

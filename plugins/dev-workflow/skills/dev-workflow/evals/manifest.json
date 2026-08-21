@@ -16,7 +16,7 @@
       "requiredForRelease": true
     },
     {
-      "id": "project-with-ask-me",
+      "id": "project-composed",
       "scope": "project",
       "plugins": [
         {
@@ -48,7 +48,7 @@
       "perRunTimeoutMs": 180000
     },
     {
-      "id": "router-with-ask-me",
+      "id": "router-composed",
       "kind": "trigger",
       "skills": [
         "dev-workflow",
@@ -63,7 +63,7 @@
       "observeSpawnAgent": false,
       "isolation": "strict",
       "strictNegativeSplits": [],
-      "profiles": ["project-with-ask-me"],
+      "profiles": ["project-composed"],
       "defaultRuns": 3,
       "releaseSplits": ["validation", "sanity"],
       "requiredForRelease": true,
@@ -71,19 +71,7 @@
       "perRunTimeoutMs": 180000
     },
     {
-      "id": "fallback-without-ask-me",
-      "kind": "conversation",
-      "skills": ["dev-workflow", "dev-spec", "dev-review-spec", "dev-implement", "dev-review-code"],
-      "cases": "./fallback-behavior-cases.json",
-      "isolation": "strict",
-      "profiles": ["project-default"],
-      "defaultRuns": 1,
-      "releaseSplits": [],
-      "requiredForRelease": true,
-      "perRunTimeoutMs": 300000
-    },
-    {
-      "id": "composition-with-ask-me",
+      "id": "composition-composed",
       "kind": "conversation",
       "skills": [
         "dev-workflow",
@@ -96,7 +84,7 @@
       ],
       "cases": "./composition-behavior-cases.json",
       "isolation": "strict",
-      "profiles": ["project-with-ask-me"],
+      "profiles": ["project-composed"],
       "defaultRuns": 1,
       "releaseSplits": [],
       "requiredForRelease": true,
