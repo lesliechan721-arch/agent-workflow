@@ -23,7 +23,10 @@
       },
       "oracle": {
         "rationale": "用户无法仅靠文字确定审批页布局，需要操作候选方案；原型应写入隔离目录、等待反馈并形成决定记录，而不是修改生产页面。",
-        "rule_refs": ["SKILL.md#工作流", "assets/prototype-brief.md"],
+        "rule_refs": [
+          "SKILL.md#工作流",
+          "assets/prototype-brief.md"
+        ],
         "confidence": "high",
         "allowed_variance": "HTML 结构、样式和交互细节可以不同；必须提供至少两个可比较方案、等待用户反馈、保存决定记录，并保持 src/ 不变。"
       },
@@ -31,7 +34,9 @@
       "scripted_replies": [
         {
           "expected_question_count": 1,
-          "answers_by_index": ["选择双栏，右侧保留审批历史；移动端可以折叠。请记录这个决定并停止，不要实现生产页面。"],
+          "answers_by_index": [
+            "选择双栏，右侧保留审批历史；移动端可以折叠。请记录这个决定并停止，不要实现生产页面。"
+          ],
           "unexpected_question_answer": "只需要我对单栏和双栏作出选择；其它问题请保留为未解决。"
         }
       ],
@@ -41,13 +46,32 @@
         "src/approval-page.ts": "export const approvalLayout = 'existing-production-layout';\n"
       },
       "review": {
-        "platforms": ["codex"],
+        "platforms": [
+          "codex"
+        ],
         "clean_session": true,
         "workspace_unchanged": false,
-        "allowed_workspace_changes": ["prototypes/approval-layout/**"],
+        "allowed_workspace_changes": [
+          "prototypes/approval-layout/**"
+        ],
         "artifacts": [
-          {"path": "prototypes/approval-layout/index.html", "exists": true, "contains": ["单栏", "双栏"]},
-          {"path": "prototypes/approval-layout/decision.md", "exists": true, "contains": ["双栏", "审批历史", "移动端"]}
+          {
+            "path": "prototypes/approval-layout/index.html",
+            "exists": true,
+            "contains": [
+              "单栏",
+              "双栏"
+            ]
+          },
+          {
+            "path": "prototypes/approval-layout/decision.md",
+            "exists": true,
+            "contains": [
+              "双栏",
+              "审批历史",
+              "移动端"
+            ]
+          }
         ],
         "checks": [
           "原型清楚标记为临时决策工具，并提供可操作或可切换的两个候选方案",
@@ -73,7 +97,10 @@
       },
       "oracle": {
         "rationale": "浏览器端加密路线需要最小可运行证据支持选择；原型应隔离、运行并记录结果，不能直接替换生产加密模块。",
-        "rule_refs": ["SKILL.md#工作流", "assets/prototype-brief.md"],
+        "rule_refs": [
+          "SKILL.md#工作流",
+          "assets/prototype-brief.md"
+        ],
         "confidence": "high",
         "allowed_variance": "spike 的实现和测量方式可以不同；必须局限在 prototypes/、实际运行、向用户展示证据并在确认后记录决定。"
       },
@@ -81,7 +108,9 @@
       "scripted_replies": [
         {
           "expected_question_count": 1,
-          "answers_by_index": ["接受 Web Crypto 路线。请记录支持证据和未覆盖风险，然后停止。"],
+          "answers_by_index": [
+            "接受 Web Crypto 路线。请记录支持证据和未覆盖风险，然后停止。"
+          ],
           "unexpected_question_answer": "请只基于刚才的 spike 证据让我选择路线，其它事项保留为未解决。"
         }
       ],
@@ -91,13 +120,27 @@
         "src/crypto.ts": "export const cryptoProvider = 'existing-provider';\n"
       },
       "review": {
-        "platforms": ["codex"],
+        "platforms": [
+          "codex"
+        ],
         "clean_session": true,
         "workspace_unchanged": false,
-        "allowed_workspace_changes": ["prototypes/encryption-spike/**"],
+        "allowed_workspace_changes": [
+          "prototypes/encryption-spike/**"
+        ],
         "artifacts": [
-          {"path": "prototypes/encryption-spike/spike.mjs", "exists": true},
-          {"path": "prototypes/encryption-spike/result.md", "exists": true, "contains": ["Web Crypto", "未覆盖"]}
+          {
+            "path": "prototypes/encryption-spike/spike.mjs",
+            "exists": true
+          },
+          {
+            "path": "prototypes/encryption-spike/result.md",
+            "exists": true,
+            "contains": [
+              "Web Crypto",
+              "未覆盖"
+            ]
+          }
         ],
         "checks": [
           "trace 实际运行最小 spike，并使用运行结果而不是纯文字推测作为证据",

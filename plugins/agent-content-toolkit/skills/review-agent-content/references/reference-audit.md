@@ -1,38 +1,34 @@
-# Reference Audit
+# Reference 审计
 
-Use this reference only when reviewing a reference package, a large reference, or an active path
-that loads several references.
+仅在评审 reference 包、大型 reference 或会加载多个 reference 的 active path 时使用本文档。
 
-## Audit trigger
+## 审计触发条件
 
-A size signal only requires semantic review; it is not a defect by itself. Review a file when one of
-these is true:
+尺寸信号只要求进行语义评审，本身不是缺陷。文件满足以下任一条件时进行评审：
 
-- it is roughly above 300 lines or 4000 estimated tokens;
-- one active path loads several large references;
-- one file serves independent branches;
-- a typical branch needs only a small part of the file;
-- the user explicitly asks about progressive disclosure.
+- 文件大约超过 300 行或预估超过 4000 个 token；
+- 一条 active path 会加载多个大型 reference；
+- 一个文件服务多个独立 branch；
+- 典型 branch 只需要文件的一小部分；
+- 用户明确询问渐进式披露。
 
-## Per-reference checks
+## 单个 reference 检查
 
-| Check                 | Question                                                                  |
-| --------------------- | ------------------------------------------------------------------------- |
-| Necessity             | What realistic failure appears if this content is removed?                |
-| Single responsibility | Does the file serve one concept or execution branch?                      |
-| Branch locality       | After the branch matches, is most of this file needed?                    |
-| Pointer               | Can the agent reach it at the right time without loading it every run?    |
-| Focus                 | Does it mix topics that can be loaded independently?                      |
-| Co-location           | Are definition, rule and caveat owned in one place?                       |
-| Freshness             | Do changing facts have a source, date and recheck policy?                 |
-| Alternative           | Is the content better as a script, asset, environment lookup or deletion? |
+| 检查项 | 问题 |
+| --- | --- |
+| 必要性 | 删除此内容会导致什么现实故障？ |
+| 单一职责 | 文件是否只服务一个概念或执行 branch？ |
+| Branch locality | branch 命中后，是否需要文件的大部分内容？ |
+| 指针 | Agent 能否在正确时机到达本文档，而不必每次运行都加载？ |
+| 聚焦性 | 文件是否混合了可独立加载的主题？ |
+| Co-location | 定义、规则和 caveat 是否由同一位置负责？ |
+| 新鲜度 | 会变化的事实是否有来源、日期和复查策略？ |
+| 替代方案 | 此内容是否更适合改为脚本、asset、环境查询或删除？ |
 
-For each representative active path, record the main document, loaded references, total bytes, token
-estimate, pointer evidence and estimated unneeded-content ratio.
+对每条代表性 active path，记录主文档、已加载的 reference、总字节数、token 估算、指针证据和预估的不必要内容比例。
 
-## Verdicts
+## 结论
 
 `keep | add-index | split-by-branch | inline-core | move-to-script-or-data | delete-or-environment-lookup | needs-ablation`
 
-Do not split a large, flat, authoritative reference when most of it is needed after the branch
-matches. Do not preserve an unnecessary reference merely because its pointer is valid.
+如果 branch 命中后需要一个大型扁平权威 reference 的大部分内容，则不要拆分它。不要仅因指针有效而保留不必要的 reference。

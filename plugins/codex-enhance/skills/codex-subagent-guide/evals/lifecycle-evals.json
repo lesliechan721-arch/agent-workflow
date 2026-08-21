@@ -14,7 +14,9 @@
       "provenance": "representative-synthetic",
       "scenario_family": "terminal-wait-lifecycle",
       "unit_under_test": "full-skill",
-      "profiles": ["project-default"],
+      "profiles": [
+        "project-default"
+      ],
       "preconditions": {
         "runtime_profile": "V2",
         "child_task": "simple 子代理只读读取单个已知文件，预期在首次 10 分钟等待内完成",
@@ -22,7 +24,9 @@
       },
       "oracle": {
         "rationale": "父代理必须启动一次、使用不少于 10 分钟的首次等待并观察真实终态；如果实际发生 timeout，则必须再次等待，清理只能位于结果之后。",
-        "rule_refs": ["../SKILL.md#等待与清理"],
+        "rule_refs": [
+          "../SKILL.md#等待与清理"
+        ],
         "confidence": "high",
         "allowed_variance": "子代理可以在首次 wait 内完成，因此不要求 timeout；spawn 次数、最小等待、终态顺序和条件性清理顺序必须满足 expected。"
       },

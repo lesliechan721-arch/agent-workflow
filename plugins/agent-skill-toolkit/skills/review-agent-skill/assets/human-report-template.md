@@ -1,24 +1,24 @@
-# `<Skill name>` Review
+# `<Skill 名称>` 评审
 
-## Decision
+## 决策
 
-- Design:
-- Release readiness:
-- Complexity:
-- Composition:
-- Eval evidence: none | structural | executed | comparative | release-grade
-- Evidence coverage / confidence:
+- 设计：
+- 发布准备度：
+- 复杂度：
+- 组合性：
+- Eval 证据：none | structural | executed | comparative | release-grade
+- 证据覆盖率 / 置信度：
 
-**Judgment:**
+**判断：**
 
-**Next action:**
+**下一步操作：**
 
-## Required findings
+## 必须修复的 finding
 
-## High-value improvements
+## 高价值改进
 
-## Reliable parts
+## 可靠部分
 
-## Decision-critical unknowns
+## 影响决策的关键未知项
 
-## Stop / reopen condition
+## 停止 / 重新打开条件

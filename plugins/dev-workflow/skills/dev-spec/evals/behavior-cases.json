@@ -14,10 +14,17 @@
       "provenance": "representative-synthetic",
       "scenario_family": "material-decisions-to-spec",
       "unit_under_test": "full-skill",
-      "preconditions": {"decisions_confirmed": true, "implementation_not_started": true, "target_spec_absent": true},
+      "preconditions": {
+        "decisions_confirmed": true,
+        "implementation_not_started": true,
+        "target_spec_absent": true
+      },
       "oracle": {
         "rationale": "已确认的邀请过期行为需要跨会话保存，但文件拆分和任务顺序应留给实现者。",
-        "rule_refs": ["SKILL.md#工作流", "assets/spec-template.md"],
+        "rule_refs": [
+          "SKILL.md#工作流",
+          "assets/spec-template.md"
+        ],
         "confidence": "high",
         "allowed_variance": "标题和措辞可不同；必须保存材料决定、验收和 Agent discretion，不能写逐文件实施步骤。"
       },
@@ -29,16 +36,30 @@
         "decisions/invitation-expiry.md": "# 已确认决定\n\n- 团队邀请创建后 7 天过期。\n- 服务端接受邀请时必须拒绝过期邀请。\n- 旧邀请沿用创建时间计算，不做批量迁移。\n- 用户看到明确的过期提示，并可以重新邀请。\n- 验收：第 7 天前可接受，第 7 天后拒绝。\n- 文件组织、缓存方式和测试目录交给实现者。\n"
       },
       "review": {
-        "platforms": ["codex"],
+        "platforms": [
+          "codex"
+        ],
         "clean_session": true,
         "workspace_unchanged": false,
-        "allowed_workspace_changes": ["docs/specs/invitation-expiry.md"],
+        "allowed_workspace_changes": [
+          "docs/specs/invitation-expiry.md"
+        ],
         "artifacts": [
           {
             "path": "docs/specs/invitation-expiry.md",
             "exists": true,
-            "contains": ["7 天", "服务端", "过期提示", "Agent discretion", "验收"],
-            "not_contains": ["## 实施步骤", "第一步", "第二步"]
+            "contains": [
+              "7 天",
+              "服务端",
+              "过期提示",
+              "Agent discretion",
+              "验收"
+            ],
+            "not_contains": [
+              "## 实施步骤",
+              "第一步",
+              "第二步"
+            ]
           }
         ],
         "checks": [

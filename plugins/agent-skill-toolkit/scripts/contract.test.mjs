@@ -219,7 +219,7 @@ test('owned contracts and manifest use release version', async () => {
   const sourceManifest = JSON.parse(
     await readFile(path.join(sourceRoot, '.agents-plugin/plugin.json'), 'utf8'),
   );
-  assert.equal(manifest.version, '0.7.1');
+  assert.equal(manifest.version, '0.7.2');
   assert.equal(sourceManifest.buildConfig.cacheable, true);
   for (const [name, id] of [
     [

@@ -1,42 +1,30 @@
 # agent-skill-eval-runner
 
-Manual orchestration plugin for independently audited Agent Skill evals.
+手动编排已完成独立审核的 Agent Skill Eval。
 
-Current plugin contract version: `0.3.1`.
+当前插件合同版本：`0.3.2`。
 
-It checks the human authorization gate and preflight `EvalAuditResult`, then calls the shared
-`aw-skill-eval` command to validate and run an `EvalExecutionPlan`. It hands the resulting
-`EvalRunBundle` to `audit-agent-skill-evals(result-triage)`. It does not implement providers,
-snapshots, process control, timeout handling, evidence grading, machine schemas, or validators.
+插件先检查人工授权 gate 和 preflight `EvalAuditResult`，再调用共享 `aw-skill-eval` 命令验证并运行 `EvalExecutionPlan`。它将生成的 `EvalRunBundle` 交给 `audit-agent-skill-evals(result-triage)`。插件不实现 provider、snapshot、进程控制、timeout 处理、证据分级、机器 schema 或 validator。
 
-## Dependency
+## 依赖
 
-Before use, manually install:
+使用前请手动安装：
 
 - `agent-skill-toolkit >= 0.5.0`
-- `@lesliechan721/agent-skill-eval >= 0.1.0-beta.2`, with `aw-skill-eval` on `PATH`
+- `@lesliechan721/agent-skill-eval >= 0.1.0-beta.2`，并确保 `aw-skill-eval` 位于 `PATH`
 
-Do not use `npx`. This plugin does not install dependencies or access the network implicitly.
+不要使用 `npx`。本插件不会隐式安装依赖或访问网络。
 
-## Use
+## 使用方式
 
-Use `$run-agent-skill-evals` explicitly and provide the plan path. The Skill stops unless the user
-has authorized model cost, external processes, credentials, network access, and temporary output
-that the plan requires.
+显式使用 `$run-agent-skill-evals` 并提供 plan 路径。只有用户已授权 plan 所需的模型成本、外部进程、凭据、网络访问和临时输出后，Skill 才会继续。
 
-The package follows the AW lockstep version, so it has no independent SemVer upper bound. The Skill
-fails closed unless the bin exists and runtime capabilities v1 and plan/audit/bundle schema v2 are
-compatible. It does not use a
-Skill-local script, provider, schema copy, or validator as the execution path.
+该包跟随 AW lockstep 版本，因此没有独立的 SemVer 上界。除非 bin 存在，且 runtime capabilities v1 与 plan/audit/bundle schema v2 兼容，否则 Skill 会 fail closed。执行路径不使用 Skill-local 脚本、provider、schema 副本或 validator。
 
-## Boundary
+## 边界
 
-- The preflight audit must come from `audit-agent-skill-evals` and match the current Skill and case
-  corpus digests.
-- The shared package owns provider execution, runtime snapshots, process cleanup, timeout,
-  capture, bundle validation, and evidence-level calculation.
-- Standalone process observation does not guarantee descendant cleanup or produce comparative or
-  release-grade evidence. Consumers must preserve the bundle evidence level and limitations.
-- Result interpretation and failure attribution belong to a fresh-context
-  `audit-agent-skill-evals(result-triage)` handoff.
-- This plugin does not modify production Skills or publish final reviews.
+- preflight audit 必须来自 `audit-agent-skill-evals`，并匹配当前 Skill 和 case corpus digest。
+- 共享包负责 provider 执行、runtime snapshot、进程清理、timeout、采集、bundle 验证和 evidence level 计算。
+- standalone 进程观察不保证后代清理，也不产生 comparative 或 release-grade 证据。使用方必须保留 bundle 的 evidence level 和限制。
+- 结果解释和失败归因必须交给 fresh-context `audit-agent-skill-evals(result-triage)`。
+- 本插件不修改 production Skill，也不发布最终评审。

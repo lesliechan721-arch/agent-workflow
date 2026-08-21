@@ -1,7 +1,7 @@
 {
   "name": "agent-content-toolkit",
-  "version": "0.5.0",
-  "description": "Create and review agent-facing documents with minimal context load, clear pointers, and proportionate control.",
+  "version": "0.5.1",
+  "description": "创建和评审 Agent-facing 文档，并保持最小上下文负担、清楚指针和适度控制。",
   "compatibility": {
     "aw": {
       "minVersion": "0.0.0"

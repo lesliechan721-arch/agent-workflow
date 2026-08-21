@@ -3,16 +3,42 @@
   "$id": "https://aw-plugin-development.invalid/aw-review-summary.schema.json",
   "title": "AWReviewSummary",
   "type": "object",
-  "required": ["schemaVersion", "target", "genericReviews", "projectGates", "evalAudit", "design", "releaseReadiness", "actions"],
+  "required": [
+    "schemaVersion",
+    "target",
+    "genericReviews",
+    "projectGates",
+    "evalAudit",
+    "design",
+    "releaseReadiness",
+    "actions"
+  ],
   "properties": {
-    "schemaVersion": { "const": 1 },
+    "schemaVersion": {
+      "const": 1
+    },
     "target": {
       "type": "object",
-      "required": ["plugin", "skill", "sourceDigest"],
+      "required": [
+        "plugin",
+        "skill",
+        "sourceDigest"
+      ],
       "properties": {
-        "plugin": { "type": "string", "minLength": 1 },
-        "skill": { "type": ["string", "null"] },
-        "sourceDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+        "plugin": {
+          "type": "string",
+          "minLength": 1
+        },
+        "skill": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sourceDigest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
       },
       "additionalProperties": false
     },
@@ -21,59 +47,235 @@
       "minItems": 1,
       "items": {
         "type": "object",
-        "required": ["targetName", "kind", "profile", "digest", "design", "releaseReadiness"],
+        "required": [
+          "targetName",
+          "kind",
+          "profile",
+          "digest",
+          "design",
+          "releaseReadiness"
+        ],
         "properties": {
-          "targetName": { "type": "string", "minLength": 1 },
-          "kind": { "enum": ["aw-plugin-skill", "materialized-skill"] },
-          "profile": { "type": ["string", "null"], "minLength": 1 },
-          "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
-          "design": { "enum": ["pass", "needs-fixes", "redesign", "fail", "not-assessed"] },
-          "releaseReadiness": { "enum": ["ready", "provisional", "blocked", "not-assessed"] }
+          "targetName": {
+            "type": "string",
+            "minLength": 1
+          },
+          "kind": {
+            "enum": [
+              "aw-plugin-skill",
+              "materialized-skill"
+            ]
+          },
+          "profile": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1
+          },
+          "digest": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          },
+          "design": {
+            "enum": [
+              "pass",
+              "needs-fixes",
+              "redesign",
+              "fail",
+              "not-assessed"
+            ]
+          },
+          "releaseReadiness": {
+            "enum": [
+              "ready",
+              "provisional",
+              "blocked",
+              "not-assessed"
+            ]
+          }
         },
         "additionalProperties": false
       }
     },
     "projectGates": {
       "type": "object",
-      "required": ["manifest-validity", "source-final-consistency", "profile-coverage", "materialization-currentness", "eval-runtime-evidence"],
+      "required": [
+        "manifest-validity",
+        "source-final-consistency",
+        "profile-coverage",
+        "materialization-currentness",
+        "eval-runtime-evidence"
+      ],
       "properties": {
-        "manifest-validity": { "allOf": [{ "$ref": "#/$defs/gate" }, { "properties": { "severity": { "const": "P0" } } }] },
-        "source-final-consistency": { "allOf": [{ "$ref": "#/$defs/gate" }, { "properties": { "severity": { "const": "P1" } } }] },
-        "profile-coverage": { "allOf": [{ "$ref": "#/$defs/gate" }, { "properties": { "severity": { "const": "P1" } } }] },
-        "materialization-currentness": { "allOf": [{ "$ref": "#/$defs/gate" }, { "properties": { "severity": { "const": "P1" } } }] },
-        "eval-runtime-evidence": { "allOf": [{ "$ref": "#/$defs/gate" }, { "properties": { "severity": { "const": "P1" } } }] }
+        "manifest-validity": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/gate"
+            },
+            {
+              "properties": {
+                "severity": {
+                  "const": "P0"
+                }
+              }
+            }
+          ]
+        },
+        "source-final-consistency": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/gate"
+            },
+            {
+              "properties": {
+                "severity": {
+                  "const": "P1"
+                }
+              }
+            }
+          ]
+        },
+        "profile-coverage": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/gate"
+            },
+            {
+              "properties": {
+                "severity": {
+                  "const": "P1"
+                }
+              }
+            }
+          ]
+        },
+        "materialization-currentness": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/gate"
+            },
+            {
+              "properties": {
+                "severity": {
+                  "const": "P1"
+                }
+              }
+            }
+          ]
+        },
+        "eval-runtime-evidence": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/gate"
+            },
+            {
+              "properties": {
+                "severity": {
+                  "const": "P1"
+                }
+              }
+            }
+          ]
+        }
       },
       "additionalProperties": false
     },
     "evalAudit": {
       "oneOf": [
-        { "type": "null" },
+        {
+          "type": "null"
+        },
         {
           "type": "object",
-          "required": ["auditId", "corpusDigest", "validity", "releaseEligible"],
+          "required": [
+            "auditId",
+            "corpusDigest",
+            "validity",
+            "releaseEligible"
+          ],
           "properties": {
-            "auditId": { "type": "string", "minLength": 1 },
-            "corpusDigest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
-            "validity": { "enum": ["pass", "unknown", "fail"] },
-            "releaseEligible": { "type": "boolean" }
+            "auditId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "corpusDigest": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "validity": {
+              "enum": [
+                "pass",
+                "unknown",
+                "fail"
+              ]
+            },
+            "releaseEligible": {
+              "type": "boolean"
+            }
           },
           "additionalProperties": false
         }
       ]
     },
-    "design": { "enum": ["pass", "needs-fixes", "redesign", "fail", "not-assessed"] },
-    "releaseReadiness": { "enum": ["ready", "provisional", "blocked", "not-assessed"] },
-    "actions": { "type": "array", "items": { "type": "string" } }
+    "design": {
+      "enum": [
+        "pass",
+        "needs-fixes",
+        "redesign",
+        "fail",
+        "not-assessed"
+      ]
+    },
+    "releaseReadiness": {
+      "enum": [
+        "ready",
+        "provisional",
+        "blocked",
+        "not-assessed"
+      ]
+    },
+    "actions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
   },
   "$defs": {
     "gate": {
       "type": "object",
-      "required": ["status", "severity", "reason", "findingIds"],
+      "required": [
+        "status",
+        "severity",
+        "reason",
+        "findingIds"
+      ],
       "properties": {
-        "status": { "enum": ["pass", "fail", "unknown", "not_applicable"] },
-        "severity": { "enum": ["P0", "P1"] },
-        "reason": { "type": "string" },
-        "findingIds": { "type": "array", "items": { "type": "string" }, "uniqueItems": true }
+        "status": {
+          "enum": [
+            "pass",
+            "fail",
+            "unknown",
+            "not_applicable"
+          ]
+        },
+        "severity": {
+          "enum": [
+            "P0",
+            "P1"
+          ]
+        },
+        "reason": {
+          "type": "string"
+        },
+        "findingIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        }
       },
       "additionalProperties": false
     }

@@ -1,4 +1,4 @@
-# AW Skill integration
+# AW Skill 集成
 
 - 通用 Skill package 由 `author-agent-skill` 产生。
 - 面向 Codex 的静态 Skill 提供 `agents/openai.yaml`，并显式声明 implicit invocation policy。

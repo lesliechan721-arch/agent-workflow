@@ -22,7 +22,10 @@
       },
       "oracle": {
         "rationale": "Skill 根直接子目录 reports 是作者证据，不参与 source digest；报告内容变化必须反映在 evidence artifact/digest，而不能伪装成 production source 变化。",
-        "rule_refs": ["SKILL.md#工作流", "references/aw-review-bundle.md"],
+        "rule_refs": [
+          "SKILL.md#工作流",
+          "references/aw-review-bundle.md"
+        ],
         "confidence": "high",
         "allowed_variance": "digest 具体值和报告格式可不同；两个 source digest 必须相同，报告 evidence digest 必须不同。"
       },
@@ -38,7 +41,9 @@
         "fixtures/report-after/skills/notify/reports/review.md": "# Review\nEvidence set B passed deterministic checks.\n"
       },
       "review": {
-        "platforms": ["codex"],
+        "platforms": [
+          "codex"
+        ],
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [
@@ -64,7 +69,10 @@
       },
       "oracle": {
         "rationale": "SKILL.md 是 production source；正文改变必须产生新的 source digest，并使只绑定旧 digest 的证据不再 current。",
-        "rule_refs": ["SKILL.md#工作流", "references/aw-review-bundle.md"],
+        "rule_refs": [
+          "SKILL.md#工作流",
+          "references/aw-review-bundle.md"
+        ],
         "confidence": "high",
         "allowed_variance": "digest 值可不同；必须判定 source digest 改变，旧报告不能继承到新 source。"
       },
@@ -80,7 +88,9 @@
         "fixtures/source-after/skills/notify/reports/review.md": "# Review\nReviewed source-before only.\n"
       },
       "review": {
-        "platforms": ["codex"],
+        "platforms": [
+          "codex"
+        ],
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [
@@ -106,7 +116,10 @@
       },
       "oracle": {
         "rationale": "review targets 必须按绝对 artifact path 与 digest 将 currentness 投影到各自 Skill；一个 Skill 的 current 状态不能污染另一个 Skill 或未匹配 final。",
-        "rule_refs": ["SKILL.md#工作流", "references/aw-review-bundle.md"],
+        "rule_refs": [
+          "SKILL.md#工作流",
+          "references/aw-review-bundle.md"
+        ],
         "confidence": "high",
         "allowed_variance": "汇报顺序可不同；alpha、beta 和 final 的 currentness 必须逐 target 独立继承，未匹配项为 unknown。"
       },
@@ -122,7 +135,9 @@
         "evidence/plugin-bundle.json": "{\"schemaVersion\":4,\"target\":{\"kind\":\"aw-plugin\",\"name\":\"multi-skill\",\"profile\":null,\"sourceDigest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"currentness\":\"dirty\",\"dirtyReasons\":[\"modified production source file: /workspace/plugins/multi-skill/skills/beta/SKILL.md\"]},\"artifacts\":[{\"role\":\"source\",\"path\":\"plugins/multi-skill/skills/alpha/SKILL.md\",\"profile\":null,\"digest\":\"sha256:767bb28281af1debbac8520562accbb385b602a23d1b9a7a316907a1ba29fd34\",\"mode\":\"100644\",\"owner\":\"multi-skill\",\"currentness\":\"current\"},{\"role\":\"source\",\"path\":\"plugins/multi-skill/skills/beta/SKILL.md\",\"profile\":null,\"digest\":\"sha256:5247bd6c87ac194439befbb1ec3d3158e5395f1e36f795af67ae66eee9961def\",\"mode\":\"100644\",\"owner\":\"multi-skill\",\"currentness\":\"dirty\",\"currentnessReason\":\"modified source file\"}],\"environment\":{\"repositoryRoot\":\".\"},\"orchestration\":{\"stageOwner\":\"caller\",\"providedStages\":[]},\"evalAudit\":null,\"evalResults\":[]}\n"
       },
       "review": {
-        "platforms": ["codex"],
+        "platforms": [
+          "codex"
+        ],
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [
@@ -147,7 +162,10 @@
       },
       "oracle": {
         "rationale": "同一 subject/profile 的 eval-audit slot 不能由两个结果同时占用；冲突必须在调用通用 Reviewer 前被拒绝，不能挑一个或合并。",
-        "rule_refs": ["SKILL.md#工作流", "references/aw-review-bundle.md"],
+        "rule_refs": [
+          "SKILL.md#工作流",
+          "references/aw-review-bundle.md"
+        ],
         "confidence": "high",
         "allowed_variance": "错误措辞可不同；必须识别同 slot 冲突、停止下游 review 并给 blocked。",
         "minimal_counterexample": "若两个 stage 的 id 或 subject/profile 不同，可分别验证后保留。"
@@ -161,7 +179,9 @@
         "evidence/conflicting-bundle.json": "{\"schemaVersion\":4,\"target\":{\"kind\":\"agent-skill\",\"name\":\"notify\",\"profile\":\"codex-project\",\"sourceDigest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"currentness\":\"unknown\"},\"artifacts\":[],\"environment\":{\"repositoryRoot\":\".\"},\"orchestration\":{\"stageOwner\":\"caller\",\"providedStages\":[{\"id\":\"eval-audit\",\"producer\":\"audit-agent-skill-evals\",\"independentContext\":true,\"subjectDigest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"resultPath\":\"audit-a.json\",\"resultDigest\":\"sha256:3f9e399b34d5896ca3dc2b299d82181651a7b7a7bfab4e2bba27faad37466118\",\"schema\":\"EvalAuditResult\",\"profile\":\"codex-project\"},{\"id\":\"eval-audit\",\"producer\":\"audit-agent-skill-evals\",\"independentContext\":true,\"subjectDigest\":\"sha256:1111111111111111111111111111111111111111111111111111111111111111\",\"resultPath\":\"audit-b.json\",\"resultDigest\":\"sha256:0f2adb6eee13dd5583709fbb4b50172dc8f1b4dabcde770947c39104fde96aa7\",\"schema\":\"EvalAuditResult\",\"profile\":\"codex-project\"}]},\"evalAudit\":null,\"evalResults\":[]}\n"
       },
       "review": {
-        "platforms": ["codex"],
+        "platforms": [
+          "codex"
+        ],
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [
@@ -186,7 +206,10 @@
       },
       "oracle": {
         "rationale": "materialized Skill 引用的关键 policy 文件不在 runtime closure 中，最终制品无法执行声明流程；source 完整不能抵消 final 缺失。",
-        "rule_refs": ["SKILL.md#工作流", "references/aw-review-bundle.md"],
+        "rule_refs": [
+          "SKILL.md#工作流",
+          "references/aw-review-bundle.md"
+        ],
         "confidence": "high",
         "allowed_variance": "finding 标题可不同；必须定位缺失引用、阻断 final/release，并保持 source review 与 final gate 分离。",
         "minimal_counterexample": "若同一关键文件存在于 materialized final closure，不能仅因 source 使用 reference 就阻断 final。"
@@ -201,7 +224,9 @@
         "materialized/codex/check-access/SKILL.md": "---\nname: check-access\ndescription: Check access against the project policy.\n---\n\n# Check Access\nRead references/access-policy.md before deciding.\n"
       },
       "review": {
-        "platforms": ["codex"],
+        "platforms": [
+          "codex"
+        ],
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [
@@ -227,7 +252,10 @@
       },
       "oracle": {
         "rationale": "最终报告必须组合通用 source/final ReviewResult 与 AW project gates；manifest 缺失声明文件是项目 P0，final 过期是独立 P1，不能重复成多条同根因 finding。",
-        "rule_refs": ["SKILL.md#工作流", "../assets/aw-review-summary.json"],
+        "rule_refs": [
+          "SKILL.md#工作流",
+          "../assets/aw-review-summary.json"
+        ],
         "confidence": "high",
         "allowed_variance": "标题和表格布局可不同；必须分层、去重、给出 blocked 总结和最小动作。"
       },
@@ -242,7 +270,9 @@
         "materialized/codex/deploy/references/checklist.md": "# v1 checklist\nVerify backup and health check.\n"
       },
       "review": {
-        "platforms": ["codex"],
+        "platforms": [
+          "codex"
+        ],
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [

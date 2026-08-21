@@ -1,14 +1,238 @@
 {
-  "schemaVersion":1,"skill":"run-agent-skill-evals","policy":{"optimization":"precision-first","false_negative_cost":"high","false_positive_cost":"high","rationale":"漏触发或误触发会改变权限、上下文或交付 owner。"},"cases":[
-    {"id":"run_plan","split":"train","query":"使用 $run-agent-skill-evals 执行这个已经通过 Oracle preflight 的 EvalExecutionPlan。","should_load_skill":true,"eval_type":"trigger","case_role":"representative","provenance":"representative-synthetic","scenario_family":"core","unit_under_test":"description","preconditions":{"target_available":true},"oracle":{"rationale":"用户显式调用 manual Skill，且请求主要交付与该 Skill 一致。","rule_refs":["SKILL.md description"],"confidence":"high","allowed_variance":"可组合下游能力，但顶层 owner 和权限必须正确。"}},
-    {"id":"comparative","split":"train","query":"使用 $run-agent-skill-evals，用 with-skill 和 baseline 配置运行已审核 Eval 并保存证据。","should_load_skill":true,"eval_type":"trigger","case_role":"representative","provenance":"representative-synthetic","scenario_family":"core","unit_under_test":"description","preconditions":{"target_available":true},"oracle":{"rationale":"用户显式调用 manual Skill，且请求主要交付与该 Skill 一致。","rule_refs":["SKILL.md description"],"confidence":"high","allowed_variance":"可组合下游能力，但顶层 owner 和权限必须正确。"}},
-    {"id":"explicit_codex","split":"validation","query":"使用 $run-agent-skill-evals，通过共享 aw-skill-eval 命令执行已审核计划。","should_load_skill":true,"eval_type":"trigger","case_role":"representative","provenance":"representative-synthetic","scenario_family":"core","unit_under_test":"description","preconditions":{"target_available":true},"oracle":{"rationale":"用户显式调用 manual Skill，且请求主要交付与该 Skill 一致。","rule_refs":["SKILL.md description"],"confidence":"high","allowed_variance":"可组合下游能力，但顶层 owner 和权限必须正确。"}},
-    {"id":"validate_plan","split":"validation","query":"使用 $run-agent-skill-evals，只验证 EvalExecutionPlan、Skill/corpus/audit digest，不实际运行。","should_load_skill":true,"eval_type":"trigger","case_role":"representative","provenance":"representative-synthetic","scenario_family":"core","unit_under_test":"description","preconditions":{"target_available":true},"oracle":{"rationale":"用户显式调用 manual Skill，且请求主要交付与该 Skill 一致。","rule_refs":["SKILL.md description"],"confidence":"high","allowed_variance":"可组合下游能力，但顶层 owner 和权限必须正确。"}},
-    {"id":"design","split":"train","query":"为 Skill 设计一组 Eval cases。","should_load_skill":false,"eval_type":"trigger","case_role":"boundary","provenance":"boundary","scenario_family":"eval-design","unit_under_test":"description","preconditions":{"target_available":true},"oracle":{"rationale":"请求由相邻能力拥有。","rule_refs":["SKILL.md description"],"confidence":"high","allowed_variance":"可组合下游能力，但顶层 owner 和权限必须正确。","minimal_counterexample":"改变主要交付后标签翻转。"}},
-    {"id":"audit","split":"train","query":"审核 Eval Oracle 是否有效。","should_load_skill":false,"eval_type":"trigger","case_role":"boundary","provenance":"boundary","scenario_family":"eval-audit","unit_under_test":"description","preconditions":{"target_available":true},"oracle":{"rationale":"请求由相邻能力拥有。","rule_refs":["SKILL.md description"],"confidence":"high","allowed_variance":"可组合下游能力，但顶层 owner 和权限必须正确。","minimal_counterexample":"改变主要交付后标签翻转。"}},
-    {"id":"review","split":"train","query":"评审 Skill 并给发布结论。","should_load_skill":false,"eval_type":"trigger","case_role":"boundary","provenance":"boundary","scenario_family":"skill-review","unit_under_test":"description","preconditions":{"target_available":true},"oracle":{"rationale":"请求由相邻能力拥有。","rule_refs":["SKILL.md description"],"confidence":"high","allowed_variance":"可组合下游能力，但顶层 owner 和权限必须正确。","minimal_counterexample":"改变主要交付后标签翻转。"}},
-    {"id":"unaudited","split":"validation","query":"直接运行没有 preflight audit 的 case 文件。","should_load_skill":false,"eval_type":"trigger","case_role":"boundary","provenance":"boundary","scenario_family":"permission-safety","unit_under_test":"description","preconditions":{"target_available":true},"oracle":{"rationale":"请求缺少本 Skill 的前置授权和有效计划。","rule_refs":["SKILL.md description"],"confidence":"high","allowed_variance":"可以拒绝并要求先审核，不应进入执行。","minimal_counterexample":"提供有效 EvalExecutionPlan 后标签翻转。"}},
-    {"id":"project_publish","split":"validation","query":"运行并发布 AW 项目评审报告。","should_load_skill":false,"eval_type":"trigger","case_role":"boundary","provenance":"boundary","scenario_family":"project-adapter","unit_under_test":"description","preconditions":{"target_available":true},"oracle":{"rationale":"项目发布不是通用 Eval runner 职责。","rule_refs":["SKILL.md description"],"confidence":"high","allowed_variance":"可由项目 adapter 组合 runner，但不由本 Skill 拥有发布。","minimal_counterexample":"只要求执行已审核 plan 后标签翻转。"}},
-    {"id":"normal_command","split":"validation","query":"运行普通测试命令，不是 Agent Skill Eval。","should_load_skill":false,"eval_type":"trigger","case_role":"boundary","provenance":"boundary","scenario_family":"generic-execution","unit_under_test":"description","preconditions":{"target_available":true},"oracle":{"rationale":"普通命令执行不属于 Skill Eval runner。","rule_refs":["SKILL.md description"],"confidence":"high","allowed_variance":"应使用普通执行能力。","minimal_counterexample":"改为已审核 Skill Eval plan 后标签翻转。"}}
+  "schemaVersion": 1,
+  "skill": "run-agent-skill-evals",
+  "policy": {
+    "optimization": "precision-first",
+    "false_negative_cost": "high",
+    "false_positive_cost": "high",
+    "rationale": "漏触发或误触发会改变权限、上下文或交付 owner。"
+  },
+  "cases": [
+    {
+      "id": "run_plan",
+      "split": "train",
+      "query": "使用 $run-agent-skill-evals 执行这个已经通过 Oracle preflight 的 EvalExecutionPlan。",
+      "should_load_skill": true,
+      "eval_type": "trigger",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "core",
+      "unit_under_test": "description",
+      "preconditions": {
+        "target_available": true
+      },
+      "oracle": {
+        "rationale": "用户显式调用 manual Skill，且请求主要交付与该 Skill 一致。",
+        "rule_refs": [
+          "SKILL.md description"
+        ],
+        "confidence": "high",
+        "allowed_variance": "可组合下游能力，但顶层 owner 和权限必须正确。"
+      }
+    },
+    {
+      "id": "comparative",
+      "split": "train",
+      "query": "使用 $run-agent-skill-evals，用 with-skill 和 baseline 配置运行已审核 Eval 并保存证据。",
+      "should_load_skill": true,
+      "eval_type": "trigger",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "core",
+      "unit_under_test": "description",
+      "preconditions": {
+        "target_available": true
+      },
+      "oracle": {
+        "rationale": "用户显式调用 manual Skill，且请求主要交付与该 Skill 一致。",
+        "rule_refs": [
+          "SKILL.md description"
+        ],
+        "confidence": "high",
+        "allowed_variance": "可组合下游能力，但顶层 owner 和权限必须正确。"
+      }
+    },
+    {
+      "id": "explicit_codex",
+      "split": "validation",
+      "query": "使用 $run-agent-skill-evals，通过共享 aw-skill-eval 命令执行已审核计划。",
+      "should_load_skill": true,
+      "eval_type": "trigger",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "core",
+      "unit_under_test": "description",
+      "preconditions": {
+        "target_available": true
+      },
+      "oracle": {
+        "rationale": "用户显式调用 manual Skill，且请求主要交付与该 Skill 一致。",
+        "rule_refs": [
+          "SKILL.md description"
+        ],
+        "confidence": "high",
+        "allowed_variance": "可组合下游能力，但顶层 owner 和权限必须正确。"
+      }
+    },
+    {
+      "id": "validate_plan",
+      "split": "validation",
+      "query": "使用 $run-agent-skill-evals，只验证 EvalExecutionPlan、Skill/corpus/audit digest，不实际运行。",
+      "should_load_skill": true,
+      "eval_type": "trigger",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "core",
+      "unit_under_test": "description",
+      "preconditions": {
+        "target_available": true
+      },
+      "oracle": {
+        "rationale": "用户显式调用 manual Skill，且请求主要交付与该 Skill 一致。",
+        "rule_refs": [
+          "SKILL.md description"
+        ],
+        "confidence": "high",
+        "allowed_variance": "可组合下游能力，但顶层 owner 和权限必须正确。"
+      }
+    },
+    {
+      "id": "design",
+      "split": "train",
+      "query": "为 Skill 设计一组 Eval cases。",
+      "should_load_skill": false,
+      "eval_type": "trigger",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "eval-design",
+      "unit_under_test": "description",
+      "preconditions": {
+        "target_available": true
+      },
+      "oracle": {
+        "rationale": "请求由相邻能力拥有。",
+        "rule_refs": [
+          "SKILL.md description"
+        ],
+        "confidence": "high",
+        "allowed_variance": "可组合下游能力，但顶层 owner 和权限必须正确。",
+        "minimal_counterexample": "改变主要交付后标签翻转。"
+      }
+    },
+    {
+      "id": "audit",
+      "split": "train",
+      "query": "审核 Eval Oracle 是否有效。",
+      "should_load_skill": false,
+      "eval_type": "trigger",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "eval-audit",
+      "unit_under_test": "description",
+      "preconditions": {
+        "target_available": true
+      },
+      "oracle": {
+        "rationale": "请求由相邻能力拥有。",
+        "rule_refs": [
+          "SKILL.md description"
+        ],
+        "confidence": "high",
+        "allowed_variance": "可组合下游能力，但顶层 owner 和权限必须正确。",
+        "minimal_counterexample": "改变主要交付后标签翻转。"
+      }
+    },
+    {
+      "id": "review",
+      "split": "train",
+      "query": "评审 Skill 并给发布结论。",
+      "should_load_skill": false,
+      "eval_type": "trigger",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "skill-review",
+      "unit_under_test": "description",
+      "preconditions": {
+        "target_available": true
+      },
+      "oracle": {
+        "rationale": "请求由相邻能力拥有。",
+        "rule_refs": [
+          "SKILL.md description"
+        ],
+        "confidence": "high",
+        "allowed_variance": "可组合下游能力，但顶层 owner 和权限必须正确。",
+        "minimal_counterexample": "改变主要交付后标签翻转。"
+      }
+    },
+    {
+      "id": "unaudited",
+      "split": "validation",
+      "query": "直接运行没有 preflight audit 的 case 文件。",
+      "should_load_skill": false,
+      "eval_type": "trigger",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "permission-safety",
+      "unit_under_test": "description",
+      "preconditions": {
+        "target_available": true
+      },
+      "oracle": {
+        "rationale": "请求缺少本 Skill 的前置授权和有效计划。",
+        "rule_refs": [
+          "SKILL.md description"
+        ],
+        "confidence": "high",
+        "allowed_variance": "可以拒绝并要求先审核，不应进入执行。",
+        "minimal_counterexample": "提供有效 EvalExecutionPlan 后标签翻转。"
+      }
+    },
+    {
+      "id": "project_publish",
+      "split": "validation",
+      "query": "运行并发布 AW 项目评审报告。",
+      "should_load_skill": false,
+      "eval_type": "trigger",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "project-adapter",
+      "unit_under_test": "description",
+      "preconditions": {
+        "target_available": true
+      },
+      "oracle": {
+        "rationale": "项目发布不是通用 Eval runner 职责。",
+        "rule_refs": [
+          "SKILL.md description"
+        ],
+        "confidence": "high",
+        "allowed_variance": "可由项目 adapter 组合 runner，但不由本 Skill 拥有发布。",
+        "minimal_counterexample": "只要求执行已审核 plan 后标签翻转。"
+      }
+    },
+    {
+      "id": "normal_command",
+      "split": "validation",
+      "query": "运行普通测试命令，不是 Agent Skill Eval。",
+      "should_load_skill": false,
+      "eval_type": "trigger",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "generic-execution",
+      "unit_under_test": "description",
+      "preconditions": {
+        "target_available": true
+      },
+      "oracle": {
+        "rationale": "普通命令执行不属于 Skill Eval runner。",
+        "rule_refs": [
+          "SKILL.md description"
+        ],
+        "confidence": "high",
+        "allowed_variance": "应使用普通执行能力。",
+        "minimal_counterexample": "改为已审核 Skill Eval plan 后标签翻转。"
+      }
+    }
   ]
 }

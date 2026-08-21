@@ -1,21 +1,14 @@
-# Manual dependency contract
+# 手动依赖合同
 
-Required plugins:
+必需插件：
 
 - `agent-content-toolkit >= 0.5.0`
 - `agent-skill-toolkit >= 0.7.1`
 
-The Author Skill also requires an installed `aw` CLI that provides the required `aw plugin`
-authoring command. It checks the CLI version and the selected command help before use. The static
-plugin runtime compatibility remains `0.0.0` because Review and non-authoring flows do not require
-these commands.
-For non-standard workspace layouts, the selected CLI command must provide `--plugin-root` relative
-to `--repo-root`; the Author stops if that capability is missing.
+Author Skill 还需要已安装的 `aw` CLI，并由该 CLI 提供所需的 `aw plugin` 作者命令。使用前会检查 CLI 版本和所选命令的 help。由于 Review 和非作者流程不需要这些命令，静态插件 runtime 兼容版本仍为 `0.0.0`。对于非标准工作区布局，所选 CLI 命令必须提供相对于 `--repo-root` 的 `--plugin-root`；缺少该能力时 Author 会停止。
 
-Optional execution plugin:
+可选执行插件：
 
-- `agent-skill-eval-runner >= 0.3.0` when the user requests real model Eval or release-grade
-  behavior evidence.
+- 当用户要求真实模型 Eval 或 release-grade 行为证据时，使用 `agent-skill-eval-runner >= 0.3.0`。
 
-Missing runner capability degrades real model evidence to `structural`/`provisional`; it does not
-become a production Skill defect and does not trigger a fallback runner embedded in this plugin.
+缺少 runner 能力时，真实模型证据降级为 `structural`/`provisional`；这不构成 production Skill 缺陷，也不会触发本插件内嵌的备用 runner。

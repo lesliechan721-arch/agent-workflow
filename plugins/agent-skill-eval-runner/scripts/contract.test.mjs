@@ -25,14 +25,14 @@ async function runInjectedBin(bin, args) {
     : execFileAsync(bin, args, { encoding: 'utf8' });
 }
 
-test('plugin is a manual-only 0.3.1 orchestration Skill', async () => {
+test('plugin is a manual-only 0.3.2 orchestration Skill', async () => {
   const manifest = JSON.parse(
     await readFile(path.join(sourceRoot, '.agents-plugin', 'plugin.json'), 'utf8'),
   );
   const skill = await readRuntime('SKILL.md');
   const openai = await readRuntime('agents/openai.yaml');
 
-  assert.equal(manifest.version, '0.3.1');
+  assert.equal(manifest.version, '0.3.2');
   assert.match(skill, /^disable-model-invocation: true$/mu);
   assert.match(skill, /^user-invocable: true$/mu);
   assert.match(openai, /^\s*allow_implicit_invocation: false$/mu);
@@ -59,7 +59,7 @@ test('orchestration preserves authorization, ordered preflight, and result triag
   const orderedMarkers = [
     '## 1. 人工授权 gate',
     'aw-skill-eval capabilities --json',
-    '## 3. EvalAuditResult preflight',
+    '## 3. EvalAuditResult 运行前审核',
     'aw-skill-eval digest skill <skill-dir>',
     'aw-skill-eval plan validate <plan.json>',
     'aw-skill-eval run <plan.json>',
@@ -124,15 +124,15 @@ test('dependency documents require the compatible package without implicit insta
 
   assert.match(dependency, new RegExp(range.replaceAll('.', '\\.'), 'u'));
   assert.match(readme, new RegExp(range.replaceAll('.', '\\.'), 'u'));
-  assert.match(dependency, /Plugin contract version: `0\.3\.1`/u);
-  assert.match(readme, /Current plugin contract version: `0\.3\.1`/u);
-  assert.match(dependency, /Do not use `npx`/u);
-  assert.match(dependency, /do not install or download the package implicitly/u);
+  assert.match(dependency, /插件合同版本：`0\.3\.2`/u);
+  assert.match(readme, /当前插件合同版本：`0\.3\.2`/u);
+  assert.match(dependency, /不要使用 `npx`/u);
+  assert.match(dependency, /不要隐式安装或下载该包/u);
   for (const document of [dependency, readme, await readRuntime('README.md'), await readRuntime('SKILL.md')]) {
     assert.doesNotMatch(document, /agent-skill-eval[^\n`]*<\s*0\.2\.0/u);
   }
-  assert.match(dependency, /bin to exist, capabilities schema v1/u);
-  assert.match(dependency, /plan, audit, and bundle schema v2/u);
+  assert.match(dependency, /bin 存在、capabilities schema 为 v1/u);
+  assert.match(dependency, /plan、audit 和 bundle schema 为 v2/u);
 });
 
 test('the retained plan asset is a model-readable template, not a machine schema', async () => {

@@ -1,4 +1,4 @@
-# Reviewer behavior evals
+# Reviewer 行为评测
 
 `behavior-cases.json` 是作者期的结构与设计证据。它定义可观察场景、Oracle 和人工语义 checks，但当前没有真实模型执行证据，也不得据此声称行为已通过。
 

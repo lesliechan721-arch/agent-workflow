@@ -1,14 +1,238 @@
 {
-  "schemaVersion":1,"skill":"review-aw-plugin","policy":{"optimization":"balanced","false_negative_cost":"high","false_positive_cost":"high","rationale":"漏触发或误触发会导致错误权限和错误项目 owner。"},"cases":[
-    {"id":"review_source_final","split":"train","query":"只读审核 AW 插件源码、materialized Skill 和 Eval evidence。","should_load_skill":true,"eval_type":"trigger","case_role":"representative","provenance":"representative-synthetic","scenario_family":"core-positive","unit_under_test":"description","preconditions":{"target_available":true},"oracle":{"rationale":"请求主要交付属于目标 Skill。","rule_refs":["SKILL.md description"],"confidence":"high","allowed_variance":"可组合相邻 Skill，但顶层 owner 必须保持正确。"}},
-    {"id":"delta","split":"train","query":"对比 AW 插件修订版并复核旧 finding。","should_load_skill":true,"eval_type":"trigger","case_role":"representative","provenance":"representative-synthetic","scenario_family":"core-positive","unit_under_test":"description","preconditions":{"target_available":true},"oracle":{"rationale":"请求主要交付属于目标 Skill。","rule_refs":["SKILL.md description"],"confidence":"high","allowed_variance":"可组合相邻 Skill，但顶层 owner 必须保持正确。"}},
-    {"id":"release","split":"train","query":"做 AW 插件 release review，但不要修改生产源码。","should_load_skill":true,"eval_type":"trigger","case_role":"representative","provenance":"representative-synthetic","scenario_family":"core-positive","unit_under_test":"description","preconditions":{"target_available":true},"oracle":{"rationale":"请求主要交付属于目标 Skill。","rule_refs":["SKILL.md description"],"confidence":"high","allowed_variance":"可组合相邻 Skill，但顶层 owner 必须保持正确。"}},
-    {"id":"external","split":"validation","query":"审核另一个项目 packages/acme-aw 的 manifest、物化产物和发布证据。","should_load_skill":true,"eval_type":"trigger","case_role":"boundary","provenance":"boundary","scenario_family":"portable-workspace","unit_under_test":"description","preconditions":{"target_available":true},"oracle":{"rationale":"请求主要交付属于目标 Skill。","rule_refs":["SKILL.md description"],"confidence":"high","allowed_variance":"可组合相邻 Skill，但顶层 owner 必须保持正确。","minimal_counterexample":"将目标改为不含 .agents-plugin/plugin.json 的普通目录或通用 Skill 后，不应加载本 AW 适配 Skill。"}},
-    {"id":"with_runner","split":"validation","query":"审核 AW 插件并在 Oracle preflight 通过后运行通用 Eval runner。","should_load_skill":true,"eval_type":"trigger","case_role":"representative","provenance":"representative-synthetic","scenario_family":"core-positive","unit_under_test":"description","preconditions":{"target_available":true},"oracle":{"rationale":"请求主要交付属于目标 Skill。","rule_refs":["SKILL.md description"],"confidence":"high","allowed_variance":"可组合相邻 Skill，但顶层 owner 必须保持正确。"}},
-    {"id":"author","split":"train","query":"直接修改 AW 插件并修复 validator 错误。","should_load_skill":false,"eval_type":"trigger","case_role":"boundary","provenance":"boundary","scenario_family":"author-review","unit_under_test":"description","preconditions":{"target_available":true},"oracle":{"rationale":"请求属于相邻但不同的意图。","rule_refs":["SKILL.md description"],"confidence":"high","allowed_variance":"可组合相邻 Skill，但顶层 owner 必须保持正确。","minimal_counterexample":"改变顶层交付或目标类型后标签翻转。"}},
-    {"id":"portable","split":"train","query":"只评审一个 portable Agent Skill，不带 AW manifest。","should_load_skill":false,"eval_type":"trigger","case_role":"boundary","provenance":"boundary","scenario_family":"generic-skill","unit_under_test":"description","preconditions":{"target_available":true},"oracle":{"rationale":"请求属于相邻但不同的意图。","rule_refs":["SKILL.md description"],"confidence":"high","allowed_variance":"可组合相邻 Skill，但顶层 owner 必须保持正确。","minimal_counterexample":"改变顶层交付或目标类型后标签翻转。"}},
-    {"id":"repo_local","split":"validation","query":"只读评审 .agents/skills/example 这个 repo-local Skill。","should_load_skill":false,"eval_type":"trigger","case_role":"boundary","provenance":"boundary","scenario_family":"generic-skill","unit_under_test":"description","preconditions":{"target_available":true},"oracle":{"rationale":"请求属于相邻但不同的意图。","rule_refs":["SKILL.md description"],"confidence":"high","allowed_variance":"可组合相邻 Skill，但顶层 owner 必须保持正确。","minimal_counterexample":"改变顶层交付或目标类型后标签翻转。"}},
-    {"id":"run_only","split":"validation","query":"只运行 Eval plan，不做插件质量评审。","should_load_skill":false,"eval_type":"trigger","case_role":"boundary","provenance":"boundary","scenario_family":"runner","unit_under_test":"description","preconditions":{"target_available":true},"oracle":{"rationale":"请求属于相邻但不同的意图。","rule_refs":["SKILL.md description"],"confidence":"high","allowed_variance":"可组合相邻 Skill，但顶层 owner 必须保持正确。","minimal_counterexample":"改变顶层交付或目标类型后标签翻转。"}},
-    {"id":"runtime","split":"validation","query":"运行插件，不做质量评审。","should_load_skill":false,"eval_type":"trigger","case_role":"boundary","provenance":"boundary","scenario_family":"runtime","unit_under_test":"description","preconditions":{"target_available":true},"oracle":{"rationale":"请求属于相邻但不同的意图。","rule_refs":["SKILL.md description"],"confidence":"high","allowed_variance":"可组合相邻 Skill，但顶层 owner 必须保持正确。","minimal_counterexample":"改变顶层交付或目标类型后标签翻转。"}}
+  "schemaVersion": 1,
+  "skill": "review-aw-plugin",
+  "policy": {
+    "optimization": "balanced",
+    "false_negative_cost": "high",
+    "false_positive_cost": "high",
+    "rationale": "漏触发或误触发会导致错误权限和错误项目 owner。"
+  },
+  "cases": [
+    {
+      "id": "review_source_final",
+      "split": "train",
+      "query": "只读审核 AW 插件源码、materialized Skill 和 Eval evidence。",
+      "should_load_skill": true,
+      "eval_type": "trigger",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "core-positive",
+      "unit_under_test": "description",
+      "preconditions": {
+        "target_available": true
+      },
+      "oracle": {
+        "rationale": "请求主要交付属于目标 Skill。",
+        "rule_refs": [
+          "SKILL.md description"
+        ],
+        "confidence": "high",
+        "allowed_variance": "可组合相邻 Skill，但顶层 owner 必须保持正确。"
+      }
+    },
+    {
+      "id": "delta",
+      "split": "train",
+      "query": "对比 AW 插件修订版并复核旧 finding。",
+      "should_load_skill": true,
+      "eval_type": "trigger",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "core-positive",
+      "unit_under_test": "description",
+      "preconditions": {
+        "target_available": true
+      },
+      "oracle": {
+        "rationale": "请求主要交付属于目标 Skill。",
+        "rule_refs": [
+          "SKILL.md description"
+        ],
+        "confidence": "high",
+        "allowed_variance": "可组合相邻 Skill，但顶层 owner 必须保持正确。"
+      }
+    },
+    {
+      "id": "release",
+      "split": "train",
+      "query": "做 AW 插件 release review，但不要修改生产源码。",
+      "should_load_skill": true,
+      "eval_type": "trigger",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "core-positive",
+      "unit_under_test": "description",
+      "preconditions": {
+        "target_available": true
+      },
+      "oracle": {
+        "rationale": "请求主要交付属于目标 Skill。",
+        "rule_refs": [
+          "SKILL.md description"
+        ],
+        "confidence": "high",
+        "allowed_variance": "可组合相邻 Skill，但顶层 owner 必须保持正确。"
+      }
+    },
+    {
+      "id": "external",
+      "split": "validation",
+      "query": "审核另一个项目 packages/acme-aw 的 manifest、物化产物和发布证据。",
+      "should_load_skill": true,
+      "eval_type": "trigger",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "portable-workspace",
+      "unit_under_test": "description",
+      "preconditions": {
+        "target_available": true
+      },
+      "oracle": {
+        "rationale": "请求主要交付属于目标 Skill。",
+        "rule_refs": [
+          "SKILL.md description"
+        ],
+        "confidence": "high",
+        "allowed_variance": "可组合相邻 Skill，但顶层 owner 必须保持正确。",
+        "minimal_counterexample": "将目标改为不含 .agents-plugin/plugin.json 的普通目录或通用 Skill 后，不应加载本 AW 适配 Skill。"
+      }
+    },
+    {
+      "id": "with_runner",
+      "split": "validation",
+      "query": "审核 AW 插件并在 Oracle preflight 通过后运行通用 Eval runner。",
+      "should_load_skill": true,
+      "eval_type": "trigger",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "core-positive",
+      "unit_under_test": "description",
+      "preconditions": {
+        "target_available": true
+      },
+      "oracle": {
+        "rationale": "请求主要交付属于目标 Skill。",
+        "rule_refs": [
+          "SKILL.md description"
+        ],
+        "confidence": "high",
+        "allowed_variance": "可组合相邻 Skill，但顶层 owner 必须保持正确。"
+      }
+    },
+    {
+      "id": "author",
+      "split": "train",
+      "query": "直接修改 AW 插件并修复 validator 错误。",
+      "should_load_skill": false,
+      "eval_type": "trigger",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "author-review",
+      "unit_under_test": "description",
+      "preconditions": {
+        "target_available": true
+      },
+      "oracle": {
+        "rationale": "请求属于相邻但不同的意图。",
+        "rule_refs": [
+          "SKILL.md description"
+        ],
+        "confidence": "high",
+        "allowed_variance": "可组合相邻 Skill，但顶层 owner 必须保持正确。",
+        "minimal_counterexample": "改变顶层交付或目标类型后标签翻转。"
+      }
+    },
+    {
+      "id": "portable",
+      "split": "train",
+      "query": "只评审一个 portable Agent Skill，不带 AW manifest。",
+      "should_load_skill": false,
+      "eval_type": "trigger",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "generic-skill",
+      "unit_under_test": "description",
+      "preconditions": {
+        "target_available": true
+      },
+      "oracle": {
+        "rationale": "请求属于相邻但不同的意图。",
+        "rule_refs": [
+          "SKILL.md description"
+        ],
+        "confidence": "high",
+        "allowed_variance": "可组合相邻 Skill，但顶层 owner 必须保持正确。",
+        "minimal_counterexample": "改变顶层交付或目标类型后标签翻转。"
+      }
+    },
+    {
+      "id": "repo_local",
+      "split": "validation",
+      "query": "只读评审 .agents/skills/example 这个 repo-local Skill。",
+      "should_load_skill": false,
+      "eval_type": "trigger",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "generic-skill",
+      "unit_under_test": "description",
+      "preconditions": {
+        "target_available": true
+      },
+      "oracle": {
+        "rationale": "请求属于相邻但不同的意图。",
+        "rule_refs": [
+          "SKILL.md description"
+        ],
+        "confidence": "high",
+        "allowed_variance": "可组合相邻 Skill，但顶层 owner 必须保持正确。",
+        "minimal_counterexample": "改变顶层交付或目标类型后标签翻转。"
+      }
+    },
+    {
+      "id": "run_only",
+      "split": "validation",
+      "query": "只运行 Eval plan，不做插件质量评审。",
+      "should_load_skill": false,
+      "eval_type": "trigger",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "runner",
+      "unit_under_test": "description",
+      "preconditions": {
+        "target_available": true
+      },
+      "oracle": {
+        "rationale": "请求属于相邻但不同的意图。",
+        "rule_refs": [
+          "SKILL.md description"
+        ],
+        "confidence": "high",
+        "allowed_variance": "可组合相邻 Skill，但顶层 owner 必须保持正确。",
+        "minimal_counterexample": "改变顶层交付或目标类型后标签翻转。"
+      }
+    },
+    {
+      "id": "runtime",
+      "split": "validation",
+      "query": "运行插件，不做质量评审。",
+      "should_load_skill": false,
+      "eval_type": "trigger",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "runtime",
+      "unit_under_test": "description",
+      "preconditions": {
+        "target_available": true
+      },
+      "oracle": {
+        "rationale": "请求属于相邻但不同的意图。",
+        "rule_refs": [
+          "SKILL.md description"
+        ],
+        "confidence": "high",
+        "allowed_variance": "可组合相邻 Skill，但顶层 owner 必须保持正确。",
+        "minimal_counterexample": "改变顶层交付或目标类型后标签翻转。"
+      }
+    }
   ]
 }

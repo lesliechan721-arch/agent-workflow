@@ -386,9 +386,9 @@ test('adapter release version and dependency contract are current', async () => 
     readFile(path.join(sourceRoot, '.agents-plugin/plugin.json'), 'utf8').then(JSON.parse),
     readFile(path.join(sourceRoot, 'DEPENDENCY.md'), 'utf8'),
   ]);
-  assert.equal(manifest.version, '0.8.3');
+  assert.equal(manifest.version, '0.8.4');
   assert.match(dependency, /agent-content-toolkit >= 0\.5\.0/u);
-  // Static contract exception: AW 0.8.3 consumers must reject toolkit 0.7.0 because it lacks the ReviewInputBundle currentness contract; behavior test is not suitable because DEPENDENCY.md is the published manual dependency resolver input.
+  // Static contract exception: AW 0.8.4 consumers must reject toolkit 0.7.0 because it lacks the ReviewInputBundle currentness contract; behavior test is not suitable because DEPENDENCY.md is the published manual dependency resolver input.
   const skillFloor = dependency.match(/agent-skill-toolkit >= (\d+\.\d+\.\d+)/u)?.[1];
   assert.equal(skillFloor, '0.7.1');
   const parts = (version) => version.split('.').map(Number);

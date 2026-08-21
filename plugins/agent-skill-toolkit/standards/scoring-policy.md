@@ -1,10 +1,8 @@
-# Scoring Model
+# 评分模型
 
-> Canonical human policy. `generate-standard-views.mjs` copies this file into `review-agent-skill`;
-> do not edit the copied Skill reference manually.
+> 权威人类策略。`generate-standard-views.mjs` 会把此文件复制到 `review-agent-skill`；不要手动编辑复制后的 Skill reference。
 
-full/release-quality 使用 12 维评分。quick/delta 不计算总分。总分和 quality
-band 只进入技术附录与 JSON，不决定发布结论。
+full/release-quality 使用 12 维评分。quick/delta 不计算总分。总分和 quality band 只进入技术附录与 JSON，不决定发布结论。
 
 ## 维度与权重
 
@@ -32,8 +30,7 @@ band 只进入技术附录与 JSON，不决定发布结论。
 - **1 — 很差**：该维度大部分缺失、错误或与目标不一致。
 - **0 — 无效**：直接矛盾、关键机制不可执行，或完全破坏 Skill 目标。
 
-允许 0.5 步进。组件应当不存在且被正确省略时可得 4–5；用户未提供、无法判断时设为
-`null`，降低 coverage。
+允许 0.5 步进。组件应当不存在且被正确省略时可得 4–5；用户未提供、无法判断时设为 `null`，降低 coverage。
 
 ## 证据权威
 
@@ -46,8 +43,7 @@ band 只进入技术附录与 JSON，不决定发布结论。
 | `heuristic`         | 第三方设计原则、经验模式、可读性判断                                    |               否 |
 | `inferred`          | 未验证的未来风险或静态推演                                              |               否 |
 
-Finding 可以包含多个证据类型。P0/P1 至少包含一个 `observed`、`normative` 或
-`structural`；若所谓“直接矛盾”存在，应标为 `structural`，而不是提升纯推演。
+Finding 可以包含多个证据类型。P0/P1 至少包含一个 `observed`、`normative` 或 `structural`；若所谓“直接矛盾”存在，应标为 `structural`，而不是提升纯推演。
 
 ## 置信度
 
@@ -62,19 +58,16 @@ Finding 可以包含多个证据类型。P0/P1 至少包含一个 `observed`、`
 
 `weighted_score = Σ(weight × score / 5) ÷ assessed_weight × 100`
 
-只有 full/release-quality 且 12 个维度全部完成时计算 `weighted_score` 和 raw/effective quality
-band。quick/delta 的这些字段为 `null`。
+只有 full/release-quality 且 12 个维度全部完成时计算 `weighted_score` 和 raw/effective quality band。quick/delta 的这些字段为 `null`。
 
 同时报告：
 
 - coverage：已评估权重占 100 的比例。
 - confidence index：high=1.0、medium=0.7、low=0.4、unknown=0，按已评估权重加权。
 - raw quality band：90–100 excellent；80–89.5 strong；70–79.5 adequate；60–69.5 weak；<60 poor。
-- effective quality band：先使用 raw quality band，再应用复杂度上限；`over-specified` 不高于
-  `adequate`，`over-engineered` 不高于 `weak`。
+- effective quality band：先使用 raw quality band，再应用复杂度上限；`over-specified` 不高于 `adequate`，`over-engineered` 不高于 `weak`。
 
-总分和 raw/effective quality
-band 只用于定位薄弱维度、比较同一 Skill 的版本和观察趋势。它们不定义设计结论或发布就绪度，也不用于直接比较用途或结构不同的 Skill。
+总分和 raw/effective quality band 只用于定位薄弱维度、比较同一 Skill 的版本和观察趋势。它们不定义设计结论或发布就绪度，也不用于直接比较用途或结构不同的 Skill。
 
 ## 复杂度结论
 
@@ -85,10 +78,7 @@ full/release-quality 必须在评分前完成最小有效控制审计，并给�
 - `over-specified`：主体正确，但多个 always-loaded 强制规则、阶段或 artifact 缺少足够依据，合理策略空间受到限制。
 - `over-engineered`：Skill 接近完整 runbook 或人工 SOP，控制结构替代了模型应承担的领域判断。
 
-JSON 同时保存 reducibility：`almost-none`、`minor`、`significant`、`core-plus-reference` 或
-`redesign`。`minimal` 和 `proportionate` 要求 `minimum_control` 高于 3；`over-specified` 和
-`over-engineered` 必须关联 admitted finding。缺少 ablation 时可以使用
-`needs-ablation`；当多个强制规则的必要性仍未知时，不能把最小控制维度评为 4–5。
+JSON 同时保存 reducibility：`almost-none`、`minor`、`significant`、`core-plus-reference` 或 `redesign`。`minimal` 和 `proportionate` 要求 `minimum_control` 高于 3；`over-specified` 和 `over-engineered` 必须关联 admitted finding。缺少 ablation 时可以使用 `needs-ablation`；当多个强制规则的必要性仍未知时，不能把最小控制维度评为 4–5。
 
 ## 证据上限提示
 
@@ -97,8 +87,7 @@ JSON 同时保存 reducibility：`almost-none`、`minor`、`significant`、`core
 - 没有 trigger eval 结果，`triggering` 通常不高于 3。
 - 没有 pointer audit，`triggering` 通常不高于 4。
 - 没有 completion-boundary audit，`instruction_design` 通常不高于 4。
-- full/release-quality 没有 minimum-effective-control
-  audit 时 scorecard 无效；quick/delta 没有该审计时，`minimum_control` 通常不高于 3。
+- full/release-quality 没有 minimum-effective-control audit 时 scorecard 无效；quick/delta 没有该审计时，`minimum_control` 通常不高于 3。
 - 没有 information-hierarchy map，`context_disclosure` 通常不高于 4。
 - 有脚本但未做安全静态检查、`--help` 或样例运行，`scripts` 通常不高于 3。
 - 只有 eval 文件，没有 Case Admission Audit，`evals` 通常不高于 2。
@@ -117,10 +106,8 @@ JSON 同时保存 reducibility：`almost-none`、`minor`、`significant`、`core
 5. `safety-permissions`：不会静默越权、泄露敏感数据或执行不受控副作用。
 6. `architecture-ownership`：核心正确性不依赖无法可靠维护的自然语言 runtime 状态机。
 7. `release-evidence`：release-quality 模式具备真实运行、适用 baseline、trace、重复运行、质量和成本证据。
-8. `eval-validity`：仅在被审 Skill 含 eval，或当前判断使用 eval 结果时适用；关键 case 的层级、前提、oracle、assertion、现实性和版本关系可靠。已知错误、陈旧或 diagnostic-only
-   case 不进入发布指标。
-9. `eval-change-safety`：仅在 eval 已驱动或准备驱动当前修改时适用；失败已正确归因，修复经过同族变体、minimal
-   pair、固定 validation/sanity、关键 regression 和复杂度回归。
+8. `eval-validity`：仅在被审 Skill 含 eval，或当前判断使用 eval 结果时适用；关键 case 的层级、前提、oracle、assertion、现实性和版本关系可靠。已知错误、陈旧或 diagnostic-only case 不进入发布指标。
+9. `eval-change-safety`：仅在 eval 已驱动或准备驱动当前修改时适用；失败已正确归因，修复经过同族变体、minimal pair、固定 validation/sanity、关键 regression 和复杂度回归。
 
 门禁状态：`pass`、`fail`、`unknown`、`not_applicable`。高分不能覆盖门禁失败。
 
@@ -131,14 +118,9 @@ JSON 同时保存 reducibility：`almost-none`、`minor`、`significant`、`core
 
 ## Finding 与 gate 关联
 
-所有模式统一使用 `SKILL.md` 的严重性和 Finding Admission
-Gate；本文件不重复定义。full/release-quality 的结构化 finding 还必须通过
-`scripts/validate-review-result.mjs`。
+所有模式统一使用 `SKILL.md` 的严重性和 Finding Admission Gate；本文件不重复定义。full/release-quality 的结构化 finding 还必须通过 `scripts/validate-review-result.mjs`。
 
-同一根因只设一个主维度。分数只能在 finding 和 unknown
-ledger 完成后填写；低于 5 的分数必须关联至少一个 finding 或 unknown。同一 finding 只能直接关联一个主维度。失败 gate 必须通过
-`finding_ids` 关联至少一个严重性相同且已通过 Admission Gate 的 finding；gate 的 `reason`
-不能替代 finding 证据。
+同一根因只设一个主维度。分数只能在 finding 和 unknown ledger 完成后填写；低于 5 的分数必须关联至少一个 finding 或 unknown。同一 finding 只能直接关联一个主维度。失败 gate 必须通过 `finding_ids` 关联至少一个严重性相同且已通过 Admission Gate 的 finding；gate 的 `reason` 不能替代 finding 证据。
 
 ## 设计结论与发布就绪度
 
@@ -147,8 +129,7 @@ validator 分开计算 `design` 和 `releaseReadiness`。不得再使用 `pass-a
 设计结论按顺序：
 
 1. 任一 P0 gate/finding → `fail`。
-2. composition 为 `overloaded` 或 `orchestrator-needed`，或 complexity 为
-   `over-engineered`，且对应 linked finding 中存在 P0/P1 → `redesign`。
+2. composition 为 `overloaded` 或 `orchestrator-needed`，或 complexity 为 `over-engineered`，且对应 linked finding 中存在 P0/P1 → `redesign`。
 3. 任一 P1 gate/finding → `needs-fixes`。
 4. 上述 composition/complexity 只有 P2/Advisory，或 complexity 为 `over-specified` → `needs-fixes`。
 5. quick 或 delta → `not-assessed`。
@@ -159,10 +140,8 @@ validator 分开计算 `design` 和 `releaseReadiness`。不得再使用 `pass-a
 
 1. 任一 P0/P1 gate/finding，或设计结论为 `fail` / `redesign` → `blocked`。
 2. quick/delta → `not-assessed`。
-3. 任一必需 gate 为 `unknown`，设计结论为 `needs-fixes`，full/release-quality
-   coverage 低于 100%，或总体 confidence 为 low → `provisional`。
+3. 任一必需 gate 为 `unknown`，设计结论为 `needs-fixes`，full/release-quality coverage 低于 100%，或总体 confidence 为 low → `provisional`。
 4. release-quality 模式未核对 current-check 来源 → `provisional`。
 5. 其余情况 → `ready`。
 
-因此，“没有 P0/P1，但缺少 runtime/eval 证据”应输出设计 `pass` 和发布
-`provisional`。低总分本身不改变这两个结论。
+因此，“没有 P0/P1，但缺少 runtime/eval 证据”应输出设计 `pass` 和发布 `provisional`。低总分本身不改变这两个结论。

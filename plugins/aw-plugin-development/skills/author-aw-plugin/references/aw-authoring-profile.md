@@ -1,17 +1,13 @@
-# AW authoring profile
+# AW 作者 profile
 
-## Source truth
+## 源码真值
 
-- 显式提供的 `<plugin-root>/.agents-plugin/plugin.json`
-  和该插件根下源码是人工维护入口；`plugins/<name>/` 只是可能的工作区布局之一。
-- 当前 `pnpm build` 生成平台 manifest 和本地 schema 3 snapshot；release staging 使用显式 catalog
-  version 和 ledger。Git publish 与首次 official
-  bootstrap 属于维护者发布合同，不是插件作者手改入口。
+- 显式提供的 `<plugin-root>/.agents-plugin/plugin.json` 和该插件根下源码是人工维护入口；`plugins/<name>/` 只是可能的工作区布局之一。
+- 当前 `pnpm build` 生成平台 manifest 和本地 schema 3 snapshot；release staging 使用显式 catalog version 和 ledger。Git publish 与首次 official bootstrap 属于维护者发布合同，不是插件作者手改入口。
 - 插件名和 Skill 名使用小写短横线，并与各自目录一致。
-- 插件与 Skill README 按同目录的 `aw-readme-authoring.md`
-  维护，不读取宿主仓库的 README 规范作为运行时合同。
+- 插件与 Skill README 按同目录的 `aw-readme-authoring.md` 维护，不读取宿主仓库的 README 规范作为运行时合同。
 
-## Component selection
+## 组件选择
 
 - Skills：模型判断和可独立调用工作流。
 - Extensions：常驻规则、权限、hooks、agents。
@@ -21,7 +17,7 @@
 
 一个用户请求只创建必要能力，不预生成其它表面。
 
-## Composite authoring context
+## 复合作者上下文
 
 `AWAuthoringContext` v2 用非空 `components[]` 表示一次请求中的全部变更面。组件包含：
 
@@ -34,7 +30,7 @@
 
 `claude-model-only` Skill 的 `profiles` 必须只包含 `CLAUDE`。非 Skill 组件省略 `skillInvocation` 或设为 `null`。旧的单组件 `--component-type` 和 `--skill-invocation` 不再接受；先创建组件数组文件，再通过 `--components` 传入。
 
-## Script component overview
+## 脚本组件概览
 
 插件脚本通常位于：
 
@@ -57,5 +53,4 @@
 - Node package/build：`scripts.node.packageRoot` / `scripts.node.build`
 - tests：`scripts.tests.node`
 
-只读取当前组件对应的 branch
-reference；同一插件组合多个组件时可以读取多个 reference，但不要为单一 config 或 lifecycle 修改加载全部脚本协议。
+只读取当前组件对应的 branch reference；同一插件组合多个组件时可以读取多个 reference，但不要为单一 config 或 lifecycle 修改加载全部脚本协议。

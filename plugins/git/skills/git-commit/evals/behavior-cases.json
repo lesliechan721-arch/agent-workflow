@@ -60,7 +60,10 @@
       ],
       "oracle": {
         "rationale": "非琐碎提交需要准确且可检索的证据化摘要，同时只能创建用户授权的一个普通 commit。",
-        "rule_refs": ["SKILL.md:10-12", "SKILL.md:16-26"],
+        "rule_refs": [
+          "SKILL.md:10-12",
+          "SKILL.md:16-26"
+        ],
         "confidence": "high",
         "allowed_variance": "Commit message 的语言、type、scope 和事实顺序可以变化，但仓库状态和五项声明必须满足。"
       }
@@ -97,7 +100,9 @@
       ],
       "oracle": {
         "rationale": "Skill 明确允许标题已充分说明的琐碎单点改动省略 body。",
-        "rule_refs": ["SKILL.md:26"],
+        "rule_refs": [
+          "SKILL.md:26"
+        ],
         "confidence": "high",
         "allowed_variance": "标题格式和语言可以变化，body 可以为空或保留一条直接事实。",
         "minimal_counterexample": "将单点拼写修改改为跨代码、测试、文档和版本号的非琐碎修改后，应要求证据化 body。"
@@ -141,7 +146,10 @@
       ],
       "oracle": {
         "rationale": "用户只授权 index 内容，未暂存 hunks 属于范围外工作。",
-        "rule_refs": ["SKILL.md:8", "SKILL.md:10-12"],
+        "rule_refs": [
+          "SKILL.md:8",
+          "SKILL.md:10-12"
+        ],
         "confidence": "high",
         "allowed_variance": "允许任何不改变未暂存内容且只提交原 index 的 Git 操作序列。",
         "minimal_counterexample": "若文件没有未暂存 hunks，则无需证明未暂存内容保留，但提交仍只能包含授权范围。"
@@ -185,7 +193,10 @@
       ],
       "oracle": {
         "rationale": "范围外 staged 内容属于用户状态，Skill 禁止主动改变或混入提交。",
-        "rule_refs": ["SKILL.md:8", "SKILL.md:10-12"],
+        "rule_refs": [
+          "SKILL.md:8",
+          "SKILL.md:10-12"
+        ],
         "confidence": "high",
         "allowed_variance": "安全提交和保持完全不变后停止都可接受。",
         "minimal_counterexample": "若 index 不含范围外文件，则可以按普通精确路径流程提交指定文件。"
@@ -229,7 +240,9 @@
       ],
       "oracle": {
         "rationale": "Skill 明确规定用户和仓库规范优先于默认 Conventional Commit。",
-        "rule_refs": ["SKILL.md:16"],
+        "rule_refs": [
+          "SKILL.md:16"
+        ],
         "confidence": "high",
         "allowed_variance": "除 [docs] 前缀和准确摘要外，不固定正文或标点。",
         "minimal_counterexample": "移除仓库 message 规范后，应使用 Skill 的默认中文 Conventional Commit。"
@@ -273,7 +286,11 @@
       ],
       "oracle": {
         "rationale": "Discovery description 包含 commit-and-push 的 commit 步骤，但正文明确排除 push。",
-        "rule_refs": ["SKILL.md:3", "SKILL.md:8", "SKILL.md:12"],
+        "rule_refs": [
+          "SKILL.md:3",
+          "SKILL.md:8",
+          "SKILL.md:12"
+        ],
         "confidence": "high",
         "allowed_variance": "允许不同的本地检查与 message，只要本地 commit 成功且远端不变。"
       }
@@ -316,7 +333,9 @@
       ],
       "oracle": {
         "rationale": "Skill 明确要求在未解决冲突或进行中的 Git 操作时停止并报告。",
-        "rule_refs": ["SKILL.md:8"],
+        "rule_refs": [
+          "SKILL.md:8"
+        ],
         "confidence": "high",
         "allowed_variance": "可以执行只读诊断，但不能改变任何 Git 状态。",
         "minimal_counterexample": "清除 MERGE_HEAD 和未解决条目后，普通 commit 可以按授权范围继续。"
@@ -360,7 +379,9 @@
       ],
       "oracle": {
         "rationale": "Skill 要求正常运行 hooks，并在失败时报告实际 HEAD、index 和 worktree 状态。",
-        "rule_refs": ["SKILL.md:11-12"],
+        "rule_refs": [
+          "SKILL.md:11-12"
+        ],
         "confidence": "high",
         "allowed_variance": "只读检查和失败说明可以变化；hook 必须执行、HEAD 不变且仓库状态保留。",
         "minimal_counterexample": "若 hook 返回成功，则应创建并验证一个新 commit。"

@@ -18,7 +18,9 @@
       "provenance": "boundary",
       "scenario_family": "ask-me-capability-routing",
       "unit_under_test": "description",
-      "preconditions": { "participant_skills_available": true },
+      "preconditions": {
+        "participant_skills_available": true
+      },
       "use_project_rules": true,
       "oracle": {
         "rationale": "这是具体实现中的局部材料歧义，不需要原型或完整访谈；局部实施澄清能力已迁出 Ask-Me。",
@@ -35,17 +37,23 @@
       "id": "route_decision_tree",
       "split": "validation",
       "query": "围绕新的权限模型逐轮提问我，直到目标、取舍和失败路径都清楚。",
-      "expected_loaded_skills": ["decision-grill"],
+      "expected_loaded_skills": [
+        "decision-grill"
+      ],
       "eval_type": "routing",
       "case_role": "boundary",
       "provenance": "boundary",
       "scenario_family": "ask-me-capability-routing",
       "unit_under_test": "description",
-      "preconditions": { "participant_skills_available": true },
+      "preconditions": {
+        "participant_skills_available": true
+      },
       "use_project_rules": true,
       "oracle": {
         "rationale": "用户明确要求多轮决策访谈。",
-        "rule_refs": ["decision-grill/SKILL.md description"],
+        "rule_refs": [
+          "decision-grill/SKILL.md description"
+        ],
         "confidence": "high",
         "allowed_variance": "问题顺序可不同，但只应加载 decision-grill。",
         "minimal_counterexample": "若只剩一个必须体验候选方案的问题，则应加载 decision-prototype。"
@@ -55,17 +63,23 @@
       "id": "route_clickable_prototype",
       "split": "validation",
       "query": "做一个可点击审批流程让我操作，再根据反馈确定最终交互。",
-      "expected_loaded_skills": ["decision-prototype"],
+      "expected_loaded_skills": [
+        "decision-prototype"
+      ],
       "eval_type": "routing",
       "case_role": "representative",
       "provenance": "representative-synthetic",
       "scenario_family": "ask-me-capability-routing",
       "unit_under_test": "description",
-      "preconditions": { "participant_skills_available": true },
+      "preconditions": {
+        "participant_skills_available": true
+      },
       "use_project_rules": true,
       "oracle": {
         "rationale": "决定需要可操作候选结果。",
-        "rule_refs": ["decision-prototype/SKILL.md description"],
+        "rule_refs": [
+          "decision-prototype/SKILL.md description"
+        ],
         "confidence": "high",
         "allowed_variance": "原型实现可不同，但只应加载 decision-prototype。"
       }
@@ -74,17 +88,23 @@
       "id": "route_technical_spike",
       "split": "validation",
       "query": "先用最小 spike 测一下这条加密路线是否可行，再决定是否采用。",
-      "expected_loaded_skills": ["decision-prototype"],
+      "expected_loaded_skills": [
+        "decision-prototype"
+      ],
       "eval_type": "routing",
       "case_role": "representative",
       "provenance": "representative-synthetic",
       "scenario_family": "ask-me-capability-routing",
       "unit_under_test": "description",
-      "preconditions": { "participant_skills_available": true },
+      "preconditions": {
+        "participant_skills_available": true
+      },
       "use_project_rules": true,
       "oracle": {
         "rationale": "方案决定依赖最小可运行证据。",
-        "rule_refs": ["decision-prototype/SKILL.md description"],
+        "rule_refs": [
+          "decision-prototype/SKILL.md description"
+        ],
         "confidence": "high",
         "allowed_variance": "可以先查现有证据，但需要 spike 时只应加载 decision-prototype。"
       }
@@ -99,7 +119,9 @@
       "provenance": "boundary",
       "scenario_family": "ask-me-capability-routing",
       "unit_under_test": "description",
-      "preconditions": { "participant_skills_available": true },
+      "preconditions": {
+        "participant_skills_available": true
+      },
       "use_project_rules": true,
       "oracle": {
         "rationale": "这是一次性比较，用户明确排除访谈和原型。",
@@ -116,13 +138,17 @@
       "id": "route_prototype_reopens_tree",
       "split": "sanity",
       "query": "刚才原型暴露了权限、回退和审计三个相互依赖的决定，请逐轮和我重新推演。",
-      "expected_loaded_skills": ["decision-grill"],
+      "expected_loaded_skills": [
+        "decision-grill"
+      ],
       "eval_type": "routing",
       "case_role": "boundary",
       "provenance": "boundary",
       "scenario_family": "prototype-handoff",
       "unit_under_test": "description",
-      "preconditions": { "participant_skills_available": true },
+      "preconditions": {
+        "participant_skills_available": true
+      },
       "use_project_rules": true,
       "oracle": {
         "rationale": "原型反馈已经转化为多项相互依赖决定，应回到决策访谈。",

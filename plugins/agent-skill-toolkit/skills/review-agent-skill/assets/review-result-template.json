@@ -1,7 +1,180 @@
 {
-  "schemaVersion":3,"mode":"quick","target":{"kind":"agent-skill","name":"replace-me","profile":null,"digest":null},"design":"not-assessed","releaseReadiness":"not-assessed","complexity":"not-assessed","composition":"not-assessed","reducibility":"not-assessed","evalEvidenceLevel":"none","compositionFindingIds":[],"complexityFindingIds":[],
-  "dimensions":[{"id":"specification","weight":6,"score":null,"confidence":"unknown","findingIds":[],"unknownIds":[]},{"id":"problem_value","weight":8,"score":null,"confidence":"unknown","findingIds":[],"unknownIds":[]},{"id":"triggering","weight":10,"score":null,"confidence":"unknown","findingIds":[],"unknownIds":[]},{"id":"scope_composition","weight":8,"score":null,"confidence":"unknown","findingIds":[],"unknownIds":[]},{"id":"instruction_design","weight":10,"score":null,"confidence":"unknown","findingIds":[],"unknownIds":[]},{"id":"minimum_control","weight":14,"score":null,"confidence":"unknown","findingIds":[],"unknownIds":[]},{"id":"context_disclosure","weight":10,"score":null,"confidence":"unknown","findingIds":[],"unknownIds":[]},{"id":"architecture","weight":10,"score":null,"confidence":"unknown","findingIds":[],"unknownIds":[]},{"id":"scripts","weight":7,"score":null,"confidence":"unknown","findingIds":[],"unknownIds":[]},{"id":"evals","weight":9,"score":null,"confidence":"unknown","findingIds":[],"unknownIds":[]},{"id":"reliability","weight":4,"score":null,"confidence":"unknown","findingIds":[],"unknownIds":[]},{"id":"maintainability","weight":4,"score":null,"confidence":"unknown","findingIds":[],"unknownIds":[]}],
-  "weightedScore":null,"coverage":0,"confidence":"unknown","findings":[],"unknowns":[],
-  "gates":{"package-validity":{"status":"unknown","severity":"P0","reason":"not assessed","findingIds":[]},"critical-artifacts":{"status":"unknown","severity":"P0","reason":"not assessed","findingIds":[]},"goal-alignment":{"status":"unknown","severity":"P0","reason":"not assessed","findingIds":[]},"capability-validity":{"status":"unknown","severity":"P0","reason":"not assessed","findingIds":[]},"safety-permissions":{"status":"unknown","severity":"P0","reason":"not assessed","findingIds":[]},"architecture-ownership":{"status":"unknown","severity":"P1","reason":"not assessed","findingIds":[]},"release-evidence":{"status":"unknown","severity":"P1","reason":"not assessed","findingIds":[]},"eval-validity":{"status":"unknown","severity":"P1","reason":"not assessed","findingIds":[]},"eval-change-safety":{"status":"unknown","severity":"P1","reason":"not assessed","findingIds":[]}},
-  "actions":[],"producer":"review-agent-skill","independentContext":true
+  "schemaVersion": 3,
+  "mode": "quick",
+  "target": {
+    "kind": "agent-skill",
+    "name": "replace-me",
+    "profile": null,
+    "digest": null
+  },
+  "design": "not-assessed",
+  "releaseReadiness": "not-assessed",
+  "complexity": "not-assessed",
+  "composition": "not-assessed",
+  "reducibility": "not-assessed",
+  "evalEvidenceLevel": "none",
+  "compositionFindingIds": [],
+  "complexityFindingIds": [],
+  "dimensions": [
+    {
+      "id": "specification",
+      "weight": 6,
+      "score": null,
+      "confidence": "unknown",
+      "findingIds": [],
+      "unknownIds": []
+    },
+    {
+      "id": "problem_value",
+      "weight": 8,
+      "score": null,
+      "confidence": "unknown",
+      "findingIds": [],
+      "unknownIds": []
+    },
+    {
+      "id": "triggering",
+      "weight": 10,
+      "score": null,
+      "confidence": "unknown",
+      "findingIds": [],
+      "unknownIds": []
+    },
+    {
+      "id": "scope_composition",
+      "weight": 8,
+      "score": null,
+      "confidence": "unknown",
+      "findingIds": [],
+      "unknownIds": []
+    },
+    {
+      "id": "instruction_design",
+      "weight": 10,
+      "score": null,
+      "confidence": "unknown",
+      "findingIds": [],
+      "unknownIds": []
+    },
+    {
+      "id": "minimum_control",
+      "weight": 14,
+      "score": null,
+      "confidence": "unknown",
+      "findingIds": [],
+      "unknownIds": []
+    },
+    {
+      "id": "context_disclosure",
+      "weight": 10,
+      "score": null,
+      "confidence": "unknown",
+      "findingIds": [],
+      "unknownIds": []
+    },
+    {
+      "id": "architecture",
+      "weight": 10,
+      "score": null,
+      "confidence": "unknown",
+      "findingIds": [],
+      "unknownIds": []
+    },
+    {
+      "id": "scripts",
+      "weight": 7,
+      "score": null,
+      "confidence": "unknown",
+      "findingIds": [],
+      "unknownIds": []
+    },
+    {
+      "id": "evals",
+      "weight": 9,
+      "score": null,
+      "confidence": "unknown",
+      "findingIds": [],
+      "unknownIds": []
+    },
+    {
+      "id": "reliability",
+      "weight": 4,
+      "score": null,
+      "confidence": "unknown",
+      "findingIds": [],
+      "unknownIds": []
+    },
+    {
+      "id": "maintainability",
+      "weight": 4,
+      "score": null,
+      "confidence": "unknown",
+      "findingIds": [],
+      "unknownIds": []
+    }
+  ],
+  "weightedScore": null,
+  "coverage": 0,
+  "confidence": "unknown",
+  "findings": [],
+  "unknowns": [],
+  "gates": {
+    "package-validity": {
+      "status": "unknown",
+      "severity": "P0",
+      "reason": "not assessed",
+      "findingIds": []
+    },
+    "critical-artifacts": {
+      "status": "unknown",
+      "severity": "P0",
+      "reason": "not assessed",
+      "findingIds": []
+    },
+    "goal-alignment": {
+      "status": "unknown",
+      "severity": "P0",
+      "reason": "not assessed",
+      "findingIds": []
+    },
+    "capability-validity": {
+      "status": "unknown",
+      "severity": "P0",
+      "reason": "not assessed",
+      "findingIds": []
+    },
+    "safety-permissions": {
+      "status": "unknown",
+      "severity": "P0",
+      "reason": "not assessed",
+      "findingIds": []
+    },
+    "architecture-ownership": {
+      "status": "unknown",
+      "severity": "P1",
+      "reason": "not assessed",
+      "findingIds": []
+    },
+    "release-evidence": {
+      "status": "unknown",
+      "severity": "P1",
+      "reason": "not assessed",
+      "findingIds": []
+    },
+    "eval-validity": {
+      "status": "unknown",
+      "severity": "P1",
+      "reason": "not assessed",
+      "findingIds": []
+    },
+    "eval-change-safety": {
+      "status": "unknown",
+      "severity": "P1",
+      "reason": "not assessed",
+      "findingIds": []
+    }
+  },
+  "actions": [],
+  "producer": "review-agent-skill",
+  "independentContext": true
 }

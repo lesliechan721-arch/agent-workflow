@@ -18,10 +18,14 @@
       "provenance": "representative-synthetic",
       "scenario_family": "core-positive",
       "unit_under_test": "description",
-      "preconditions": {"target_available": true},
+      "preconditions": {
+        "target_available": true
+      },
       "oracle": {
         "rationale": "用户显式要求跨阶段开发流程。",
-        "rule_refs": ["SKILL.md description"],
+        "rule_refs": [
+          "SKILL.md description"
+        ],
         "confidence": "high",
         "allowed_variance": "表达方式可不同，但应加载目标 Skill。"
       }
@@ -36,10 +40,14 @@
       "provenance": "representative-synthetic",
       "scenario_family": "stage-resume",
       "unit_under_test": "description",
-      "preconditions": {"target_available": true},
+      "preconditions": {
+        "target_available": true
+      },
       "oracle": {
         "rationale": "已有 artifact 需要入口判断当前阶段。",
-        "rule_refs": ["SKILL.md description"],
+        "rule_refs": [
+          "SKILL.md description"
+        ],
         "confidence": "high",
         "allowed_variance": "表达方式可不同，但应加载目标 Skill。"
       }
@@ -54,10 +62,14 @@
       "provenance": "representative-synthetic",
       "scenario_family": "risk-escalation",
       "unit_under_test": "description",
-      "preconditions": {"target_available": true},
+      "preconditions": {
+        "target_available": true
+      },
       "oracle": {
         "rationale": "高风险迁移需要显式风险分级和跨阶段保障。",
-        "rule_refs": ["SKILL.md description"],
+        "rule_refs": [
+          "SKILL.md description"
+        ],
         "confidence": "high",
         "allowed_variance": "表达方式可不同，但应加载目标 Skill。"
       }
@@ -72,10 +84,14 @@
       "provenance": "boundary",
       "scenario_family": "near-miss-negative",
       "unit_under_test": "description",
-      "preconditions": {"target_available": true},
+      "preconditions": {
+        "target_available": true
+      },
       "oracle": {
         "rationale": "普通明确小改动应直接进入实现能力。",
-        "rule_refs": ["SKILL.md description"],
+        "rule_refs": [
+          "SKILL.md description"
+        ],
         "confidence": "high",
         "allowed_variance": "可以加载相邻 Skill，但不应加载本 Skill。",
         "minimal_counterexample": "明确要求按开发工作流组织后标签翻转。"
@@ -91,10 +107,14 @@
       "provenance": "boundary",
       "scenario_family": "near-miss-negative",
       "unit_under_test": "description",
-      "preconditions": {"target_available": true},
+      "preconditions": {
+        "target_available": true
+      },
       "oracle": {
         "rationale": "用户直接请求一个专业决策能力，没有要求宏工作流。",
-        "rule_refs": ["SKILL.md description"],
+        "rule_refs": [
+          "SKILL.md description"
+        ],
         "confidence": "high",
         "allowed_variance": "可以加载相邻 Skill，但不应加载本 Skill。",
         "minimal_counterexample": "要求同时组织后续 Spec、实现和审查后标签翻转。"
@@ -110,10 +130,14 @@
       "provenance": "boundary",
       "scenario_family": "near-miss-negative",
       "unit_under_test": "description",
-      "preconditions": {"target_available": true},
+      "preconditions": {
+        "target_available": true
+      },
       "oracle": {
         "rationale": "用户直接请求代码审查，没有要求跨阶段编排。",
-        "rule_refs": ["SKILL.md description"],
+        "rule_refs": [
+          "SKILL.md description"
+        ],
         "confidence": "high",
         "allowed_variance": "可以加载相邻 Skill，但不应加载本 Skill。",
         "minimal_counterexample": "要求审查后继续修复并重新审查时标签翻转。"

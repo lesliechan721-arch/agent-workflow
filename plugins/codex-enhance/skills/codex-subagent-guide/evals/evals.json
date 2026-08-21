@@ -35,8 +35,38 @@
       "expected_output": "使用简单任务 role；V1 使用干净 fork_context，V2 使用干净 fork_turns；不传 model 或 reasoning_effort。",
       "files": [],
       "expectations": {
-        "v1": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": "codex-subagent-simple", "model": null, "reasoning_effort": null, "fork_context": false, "fork_turns": null }, "present_arguments": ["message"] },
-        "v2": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": "codex-subagent-simple", "model": null, "reasoning_effort": null, "fork_context": null, "fork_turns": "none" }, "present_arguments": ["message"] }
+        "v1": {
+          "spawn_calls": {
+            "min": 1,
+            "max": 1
+          },
+          "arguments": {
+            "agent_type": "codex-subagent-simple",
+            "model": null,
+            "reasoning_effort": null,
+            "fork_context": false,
+            "fork_turns": null
+          },
+          "present_arguments": [
+            "message"
+          ]
+        },
+        "v2": {
+          "spawn_calls": {
+            "min": 1,
+            "max": 1
+          },
+          "arguments": {
+            "agent_type": "codex-subagent-simple",
+            "model": null,
+            "reasoning_effort": null,
+            "fork_context": null,
+            "fork_turns": "none"
+          },
+          "present_arguments": [
+            "message"
+          ]
+        }
       }
     },
     {
@@ -67,8 +97,38 @@
       "expected_output": "只读不自动等于简单；未知根因和跨模块因果调查使用复杂任务 role。",
       "files": [],
       "expectations": {
-        "v1": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": "codex-subagent-complex", "model": null, "reasoning_effort": null, "fork_context": false, "fork_turns": null }, "present_arguments": ["message"] },
-        "v2": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": "codex-subagent-complex", "model": null, "reasoning_effort": null, "fork_context": null, "fork_turns": "none" }, "present_arguments": ["message"] }
+        "v1": {
+          "spawn_calls": {
+            "min": 1,
+            "max": 1
+          },
+          "arguments": {
+            "agent_type": "codex-subagent-complex",
+            "model": null,
+            "reasoning_effort": null,
+            "fork_context": false,
+            "fork_turns": null
+          },
+          "present_arguments": [
+            "message"
+          ]
+        },
+        "v2": {
+          "spawn_calls": {
+            "min": 1,
+            "max": 1
+          },
+          "arguments": {
+            "agent_type": "codex-subagent-complex",
+            "model": null,
+            "reasoning_effort": null,
+            "fork_context": null,
+            "fork_turns": "none"
+          },
+          "present_arguments": [
+            "message"
+          ]
+        }
       }
     },
     {
@@ -99,8 +159,38 @@
       "expected_output": "使用通用任务 role，不直接传预设 model 或 effort。",
       "files": [],
       "expectations": {
-        "v1": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": "codex-subagent-general", "model": null, "reasoning_effort": null, "fork_context": false, "fork_turns": null }, "present_arguments": ["message"] },
-        "v2": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": "codex-subagent-general", "model": null, "reasoning_effort": null, "fork_context": null, "fork_turns": "none" }, "present_arguments": ["message"] }
+        "v1": {
+          "spawn_calls": {
+            "min": 1,
+            "max": 1
+          },
+          "arguments": {
+            "agent_type": "codex-subagent-general",
+            "model": null,
+            "reasoning_effort": null,
+            "fork_context": false,
+            "fork_turns": null
+          },
+          "present_arguments": [
+            "message"
+          ]
+        },
+        "v2": {
+          "spawn_calls": {
+            "min": 1,
+            "max": 1
+          },
+          "arguments": {
+            "agent_type": "codex-subagent-general",
+            "model": null,
+            "reasoning_effort": null,
+            "fork_context": null,
+            "fork_turns": "none"
+          },
+          "present_arguments": [
+            "message"
+          ]
+        }
       }
     },
     {
@@ -131,8 +221,38 @@
       "expected_output": "使用复杂任务 role，不直接传预设 model 或 effort。",
       "files": [],
       "expectations": {
-        "v1": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": "codex-subagent-complex", "model": null, "reasoning_effort": null, "fork_context": false, "fork_turns": null }, "present_arguments": ["message"] },
-        "v2": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": "codex-subagent-complex", "model": null, "reasoning_effort": null, "fork_context": null, "fork_turns": "none" }, "present_arguments": ["message"] }
+        "v1": {
+          "spawn_calls": {
+            "min": 1,
+            "max": 1
+          },
+          "arguments": {
+            "agent_type": "codex-subagent-complex",
+            "model": null,
+            "reasoning_effort": null,
+            "fork_context": false,
+            "fork_turns": null
+          },
+          "present_arguments": [
+            "message"
+          ]
+        },
+        "v2": {
+          "spawn_calls": {
+            "min": 1,
+            "max": 1
+          },
+          "arguments": {
+            "agent_type": "codex-subagent-complex",
+            "model": null,
+            "reasoning_effort": null,
+            "fork_context": null,
+            "fork_turns": "none"
+          },
+          "present_arguments": [
+            "message"
+          ]
+        }
       }
     },
     {
@@ -163,8 +283,38 @@
       "expected_output": "这是范围有限的常规审核，使用通用 role。",
       "files": [],
       "expectations": {
-        "v1": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": "codex-subagent-general", "model": null, "reasoning_effort": null, "fork_context": false, "fork_turns": null }, "present_arguments": ["message"] },
-        "v2": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": "codex-subagent-general", "model": null, "reasoning_effort": null, "fork_context": null, "fork_turns": "none" }, "present_arguments": ["message"] }
+        "v1": {
+          "spawn_calls": {
+            "min": 1,
+            "max": 1
+          },
+          "arguments": {
+            "agent_type": "codex-subagent-general",
+            "model": null,
+            "reasoning_effort": null,
+            "fork_context": false,
+            "fork_turns": null
+          },
+          "present_arguments": [
+            "message"
+          ]
+        },
+        "v2": {
+          "spawn_calls": {
+            "min": 1,
+            "max": 1
+          },
+          "arguments": {
+            "agent_type": "codex-subagent-general",
+            "model": null,
+            "reasoning_effort": null,
+            "fork_context": null,
+            "fork_turns": "none"
+          },
+          "present_arguments": [
+            "message"
+          ]
+        }
       }
     },
     {
@@ -195,8 +345,38 @@
       "expected_output": "只透传 model，不注入预设 agent_type 或 effort。",
       "files": [],
       "expectations": {
-        "v1": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": null, "model": "gpt-5.6-terra", "reasoning_effort": null, "fork_context": false, "fork_turns": null }, "present_arguments": ["message"] },
-        "v2": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": null, "model": "gpt-5.6-terra", "reasoning_effort": null, "fork_context": null, "fork_turns": "none" }, "present_arguments": ["message"] }
+        "v1": {
+          "spawn_calls": {
+            "min": 1,
+            "max": 1
+          },
+          "arguments": {
+            "agent_type": null,
+            "model": "gpt-5.6-terra",
+            "reasoning_effort": null,
+            "fork_context": false,
+            "fork_turns": null
+          },
+          "present_arguments": [
+            "message"
+          ]
+        },
+        "v2": {
+          "spawn_calls": {
+            "min": 1,
+            "max": 1
+          },
+          "arguments": {
+            "agent_type": null,
+            "model": "gpt-5.6-terra",
+            "reasoning_effort": null,
+            "fork_context": null,
+            "fork_turns": "none"
+          },
+          "present_arguments": [
+            "message"
+          ]
+        }
       }
     },
     {
@@ -227,8 +407,38 @@
       "expected_output": "只透传 reasoning_effort。",
       "files": [],
       "expectations": {
-        "v1": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": null, "model": null, "reasoning_effort": "high", "fork_context": false, "fork_turns": null }, "present_arguments": ["message"] },
-        "v2": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": null, "model": null, "reasoning_effort": "high", "fork_context": null, "fork_turns": "none" }, "present_arguments": ["message"] }
+        "v1": {
+          "spawn_calls": {
+            "min": 1,
+            "max": 1
+          },
+          "arguments": {
+            "agent_type": null,
+            "model": null,
+            "reasoning_effort": "high",
+            "fork_context": false,
+            "fork_turns": null
+          },
+          "present_arguments": [
+            "message"
+          ]
+        },
+        "v2": {
+          "spawn_calls": {
+            "min": 1,
+            "max": 1
+          },
+          "arguments": {
+            "agent_type": null,
+            "model": null,
+            "reasoning_effort": "high",
+            "fork_context": null,
+            "fork_turns": "none"
+          },
+          "present_arguments": [
+            "message"
+          ]
+        }
       }
     },
     {
@@ -259,8 +469,38 @@
       "expected_output": "只透传显式 agent_type。",
       "files": [],
       "expectations": {
-        "v1": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": "codex-subagent-complex", "model": null, "reasoning_effort": null, "fork_context": false, "fork_turns": null }, "present_arguments": ["message"] },
-        "v2": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": "codex-subagent-complex", "model": null, "reasoning_effort": null, "fork_context": null, "fork_turns": "none" }, "present_arguments": ["message"] }
+        "v1": {
+          "spawn_calls": {
+            "min": 1,
+            "max": 1
+          },
+          "arguments": {
+            "agent_type": "codex-subagent-complex",
+            "model": null,
+            "reasoning_effort": null,
+            "fork_context": false,
+            "fork_turns": null
+          },
+          "present_arguments": [
+            "message"
+          ]
+        },
+        "v2": {
+          "spawn_calls": {
+            "min": 1,
+            "max": 1
+          },
+          "arguments": {
+            "agent_type": "codex-subagent-complex",
+            "model": null,
+            "reasoning_effort": null,
+            "fork_context": null,
+            "fork_turns": "none"
+          },
+          "present_arguments": [
+            "message"
+          ]
+        }
       }
     },
     {
@@ -291,8 +531,38 @@
       "expected_output": "透传两个显式字段，不注入预设 role。",
       "files": [],
       "expectations": {
-        "v1": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": null, "model": "gpt-5.6-terra", "reasoning_effort": "xhigh", "fork_context": false, "fork_turns": null }, "present_arguments": ["message"] },
-        "v2": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": null, "model": "gpt-5.6-terra", "reasoning_effort": "xhigh", "fork_context": null, "fork_turns": "none" }, "present_arguments": ["message"] }
+        "v1": {
+          "spawn_calls": {
+            "min": 1,
+            "max": 1
+          },
+          "arguments": {
+            "agent_type": null,
+            "model": "gpt-5.6-terra",
+            "reasoning_effort": "xhigh",
+            "fork_context": false,
+            "fork_turns": null
+          },
+          "present_arguments": [
+            "message"
+          ]
+        },
+        "v2": {
+          "spawn_calls": {
+            "min": 1,
+            "max": 1
+          },
+          "arguments": {
+            "agent_type": null,
+            "model": "gpt-5.6-terra",
+            "reasoning_effort": "xhigh",
+            "fork_context": null,
+            "fork_turns": "none"
+          },
+          "present_arguments": [
+            "message"
+          ]
+        }
       }
     },
     {
@@ -324,8 +594,38 @@
       "expected_output": "显式 override 只影响其作用域内的子任务；B 使用复杂任务 role，不携带 A 的 model。",
       "files": [],
       "expectations": {
-        "v1": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": "codex-subagent-complex", "model": null, "reasoning_effort": null, "fork_context": false, "fork_turns": null }, "present_arguments": ["message"] },
-        "v2": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": "codex-subagent-complex", "model": null, "reasoning_effort": null, "fork_context": null, "fork_turns": "none" }, "present_arguments": ["message"] }
+        "v1": {
+          "spawn_calls": {
+            "min": 1,
+            "max": 1
+          },
+          "arguments": {
+            "agent_type": "codex-subagent-complex",
+            "model": null,
+            "reasoning_effort": null,
+            "fork_context": false,
+            "fork_turns": null
+          },
+          "present_arguments": [
+            "message"
+          ]
+        },
+        "v2": {
+          "spawn_calls": {
+            "min": 1,
+            "max": 1
+          },
+          "arguments": {
+            "agent_type": "codex-subagent-complex",
+            "model": null,
+            "reasoning_effort": null,
+            "fork_context": null,
+            "fork_turns": "none"
+          },
+          "present_arguments": [
+            "message"
+          ]
+        }
       }
     },
     {
@@ -357,8 +657,29 @@
       "expected_output": "V2 的正整数 fork 可与简单 role 组合；V1 不伪造部分历史。",
       "files": [],
       "expectations": {
-        "v1": { "spawn_calls": { "min": 0, "max": 0 }, "block_reason": "partial_history_unsupported" },
-        "v2": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": "codex-subagent-simple", "model": null, "reasoning_effort": null, "fork_context": null, "fork_turns": "2" }, "present_arguments": ["message"] }
+        "v1": {
+          "spawn_calls": {
+            "min": 0,
+            "max": 0
+          },
+          "block_reason": "partial_history_unsupported"
+        },
+        "v2": {
+          "spawn_calls": {
+            "min": 1,
+            "max": 1
+          },
+          "arguments": {
+            "agent_type": "codex-subagent-simple",
+            "model": null,
+            "reasoning_effort": null,
+            "fork_context": null,
+            "fork_turns": "2"
+          },
+          "present_arguments": [
+            "message"
+          ]
+        }
       }
     },
     {
@@ -390,8 +711,29 @@
       "expected_output": "V2 部分 fork 可与显式 model 组合；V1 停止。",
       "files": [],
       "expectations": {
-        "v1": { "spawn_calls": { "min": 0, "max": 0 }, "block_reason": "partial_history_unsupported" },
-        "v2": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": null, "model": "gpt-5.6-terra", "reasoning_effort": null, "fork_context": null, "fork_turns": "3" }, "present_arguments": ["message"] }
+        "v1": {
+          "spawn_calls": {
+            "min": 0,
+            "max": 0
+          },
+          "block_reason": "partial_history_unsupported"
+        },
+        "v2": {
+          "spawn_calls": {
+            "min": 1,
+            "max": 1
+          },
+          "arguments": {
+            "agent_type": null,
+            "model": "gpt-5.6-terra",
+            "reasoning_effort": null,
+            "fork_context": null,
+            "fork_turns": "3"
+          },
+          "present_arguments": [
+            "message"
+          ]
+        }
       }
     },
     {
@@ -422,8 +764,38 @@
       "expected_output": "选择全历史 fork，并省略 agent_type、model、reasoning_effort。",
       "files": [],
       "expectations": {
-        "v1": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": null, "model": null, "reasoning_effort": null, "fork_context": true, "fork_turns": null }, "present_arguments": ["message"] },
-        "v2": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": null, "model": null, "reasoning_effort": null, "fork_context": null, "fork_turns": "all" }, "present_arguments": ["message"] }
+        "v1": {
+          "spawn_calls": {
+            "min": 1,
+            "max": 1
+          },
+          "arguments": {
+            "agent_type": null,
+            "model": null,
+            "reasoning_effort": null,
+            "fork_context": true,
+            "fork_turns": null
+          },
+          "present_arguments": [
+            "message"
+          ]
+        },
+        "v2": {
+          "spawn_calls": {
+            "min": 1,
+            "max": 1
+          },
+          "arguments": {
+            "agent_type": null,
+            "model": null,
+            "reasoning_effort": null,
+            "fork_context": null,
+            "fork_turns": "all"
+          },
+          "present_arguments": [
+            "message"
+          ]
+        }
       }
     },
     {
@@ -455,8 +827,29 @@
       "expected_output": "逐字段服从 schema：V1 允许完整历史与 model override，V2 阻断互斥组合。",
       "files": [],
       "expectations": {
-        "v1": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": null, "model": "gpt-5.6-terra", "reasoning_effort": null, "fork_context": true, "fork_turns": null }, "present_arguments": ["message"] },
-        "v2": { "spawn_calls": { "min": 0, "max": 0 }, "block_reason": "routing_override_conflict" }
+        "v1": {
+          "spawn_calls": {
+            "min": 1,
+            "max": 1
+          },
+          "arguments": {
+            "agent_type": null,
+            "model": "gpt-5.6-terra",
+            "reasoning_effort": null,
+            "fork_context": true,
+            "fork_turns": null
+          },
+          "present_arguments": [
+            "message"
+          ]
+        },
+        "v2": {
+          "spawn_calls": {
+            "min": 0,
+            "max": 0
+          },
+          "block_reason": "routing_override_conflict"
+        }
       }
     },
     {
@@ -488,8 +881,29 @@
       "expected_output": "项目规则的部分历史要求同样生效；V2 与简单 role 组合，V1 不伪造支持。",
       "files": [],
       "expectations": {
-        "v1": { "spawn_calls": { "min": 0, "max": 0 }, "block_reason": "partial_history_unsupported" },
-        "v2": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": "codex-subagent-simple", "model": null, "reasoning_effort": null, "fork_context": null, "fork_turns": "2" }, "present_arguments": ["message"] }
+        "v1": {
+          "spawn_calls": {
+            "min": 0,
+            "max": 0
+          },
+          "block_reason": "partial_history_unsupported"
+        },
+        "v2": {
+          "spawn_calls": {
+            "min": 1,
+            "max": 1
+          },
+          "arguments": {
+            "agent_type": "codex-subagent-simple",
+            "model": null,
+            "reasoning_effort": null,
+            "fork_context": null,
+            "fork_turns": "2"
+          },
+          "present_arguments": [
+            "message"
+          ]
+        }
       }
     },
     {
@@ -520,8 +934,38 @@
       "expected_output": "其它已加载 skill 的完整历史要求生效，并省略与全历史 fork 不兼容的 routing override。",
       "files": [],
       "expectations": {
-        "v1": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": null, "model": null, "reasoning_effort": null, "fork_context": true, "fork_turns": null }, "present_arguments": ["message"] },
-        "v2": { "spawn_calls": { "min": 1, "max": 1 }, "arguments": { "agent_type": null, "model": null, "reasoning_effort": null, "fork_context": null, "fork_turns": "all" }, "present_arguments": ["message"] }
+        "v1": {
+          "spawn_calls": {
+            "min": 1,
+            "max": 1
+          },
+          "arguments": {
+            "agent_type": null,
+            "model": null,
+            "reasoning_effort": null,
+            "fork_context": true,
+            "fork_turns": null
+          },
+          "present_arguments": [
+            "message"
+          ]
+        },
+        "v2": {
+          "spawn_calls": {
+            "min": 1,
+            "max": 1
+          },
+          "arguments": {
+            "agent_type": null,
+            "model": null,
+            "reasoning_effort": null,
+            "fork_context": null,
+            "fork_turns": "all"
+          },
+          "present_arguments": [
+            "message"
+          ]
+        }
       }
     },
     {
@@ -552,10 +996,24 @@
       "prompt": "$codex-subagent-guide 一个简单只读任务已获准委派，但当前 agent_type 列表没有 codex-subagent-simple。不要回退到 model override 或其它 role；说明阻断。",
       "expected_output": "缺失预设 role 时 fail closed。",
       "files": [],
-      "omit_roles": ["codex-subagent-simple"],
+      "omit_roles": [
+        "codex-subagent-simple"
+      ],
       "expectations": {
-        "v1": { "spawn_calls": { "min": 0, "max": 0 }, "block_reason": "preset_role_unavailable" },
-        "v2": { "spawn_calls": { "min": 0, "max": 0 }, "block_reason": "preset_role_unavailable" }
+        "v1": {
+          "spawn_calls": {
+            "min": 0,
+            "max": 0
+          },
+          "block_reason": "preset_role_unavailable"
+        },
+        "v2": {
+          "spawn_calls": {
+            "min": 0,
+            "max": 0
+          },
+          "block_reason": "preset_role_unavailable"
+        }
       }
     },
     {
@@ -587,8 +1045,20 @@
       "expected_output": "固定 role 与显式 model 冲突时停止。",
       "files": [],
       "expectations": {
-        "v1": { "spawn_calls": { "min": 0, "max": 0 }, "block_reason": "routing_override_conflict" },
-        "v2": { "spawn_calls": { "min": 0, "max": 0 }, "block_reason": "routing_override_conflict" }
+        "v1": {
+          "spawn_calls": {
+            "min": 0,
+            "max": 0
+          },
+          "block_reason": "routing_override_conflict"
+        },
+        "v2": {
+          "spawn_calls": {
+            "min": 0,
+            "max": 0
+          },
+          "block_reason": "routing_override_conflict"
+        }
       }
     }
   ]

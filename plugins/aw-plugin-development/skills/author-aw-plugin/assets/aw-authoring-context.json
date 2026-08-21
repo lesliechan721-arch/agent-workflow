@@ -13,15 +13,25 @@
       "id": "plugin-manifest",
       "type": "manifest",
       "operation": "create",
-      "paths": [".agents-plugin/plugin.json"],
-      "profiles": ["CODEX", "CLAUDE"]
+      "paths": [
+        ".agents-plugin/plugin.json"
+      ],
+      "profiles": [
+        "CODEX",
+        "CLAUDE"
+      ]
     },
     {
       "id": "primary-skill",
       "type": "skill",
       "operation": "create",
-      "paths": ["skills/primary-skill"],
-      "profiles": ["CODEX", "CLAUDE"],
+      "paths": [
+        "skills/primary-skill"
+      ],
+      "profiles": [
+        "CODEX",
+        "CLAUDE"
+      ],
       "skillInvocation": "model"
     }
   ],

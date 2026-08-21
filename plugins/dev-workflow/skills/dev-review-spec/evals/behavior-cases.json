@@ -14,10 +14,16 @@
       "provenance": "representative-synthetic",
       "scenario_family": "over-specified-spec-review",
       "unit_under_test": "full-skill",
-      "preconditions": {"spec_exists": true, "review_is_read_only": true},
+      "preconditions": {
+        "spec_exists": true,
+        "review_is_read_only": true
+      },
       "oracle": {
         "rationale": "目标 Spec 已经包含文件级步骤和模型维护的状态转移，同时没有清楚说明用户可观察验收；应 blocked 并把问题路由到正确层。",
-        "rule_refs": ["SKILL.md#工作流", "assets/spec-review-template.md"],
+        "rule_refs": [
+          "SKILL.md#工作流",
+          "assets/spec-review-template.md"
+        ],
         "confidence": "high",
         "allowed_variance": "finding 数量和措辞可不同；必须识别过度规定与验收缺口、保持只读并给出最小下一步。"
       },
@@ -28,11 +34,20 @@
         "docs/specs/session-expiry.md": "# Session Expiry Spec\n\n## Goal\n让会话过期。\n\n## 实施步骤\n1. 修改 src/auth/session.ts。\n2. 修改 src/api/middleware.ts。\n3. 按 pending -> checking -> retrying -> expired -> renewed 五个模型状态推进；每次回复必须更新当前状态。\n4. 第三次重试后写 recovery.md。\n\n## 验收\n系统正常工作。\n"
       },
       "review": {
-        "platforms": ["codex"],
+        "platforms": [
+          "codex"
+        ],
         "clean_session": true,
         "workspace_unchanged": true,
         "artifacts": [
-          {"path": "docs/specs/session-expiry.md", "exists": true, "contains": ["pending -> checking", "系统正常工作"]}
+          {
+            "path": "docs/specs/session-expiry.md",
+            "exists": true,
+            "contains": [
+              "pending -> checking",
+              "系统正常工作"
+            ]
+          }
         ],
         "checks": [
           "结论为 blocked，而不是因为形式完整而给 clean",

@@ -21,7 +21,10 @@
       },
       "oracle": {
         "rationale": "这是明确、低风险的小任务，应直接实现并运行现有测试，不创建流程文档。",
-        "rule_refs": ["SKILL.md#开始", "SKILL.md#实施循环"],
+        "rule_refs": [
+          "SKILL.md#开始",
+          "SKILL.md#实施循环"
+        ],
         "confidence": "high",
         "allowed_variance": "实现可以使用不同等价表达；必须满足测试、运行验证并避免创建 work.md。"
       },
@@ -35,11 +38,20 @@
         "package.json": "{\"type\":\"module\"}\n"
       },
       "review": {
-        "platforms": ["codex"],
+        "platforms": [
+          "codex"
+        ],
         "clean_session": true,
         "workspace_unchanged": false,
-        "allowed_workspace_changes": ["src/normalize-name.js"],
-        "artifacts": [{ "path": "src/normalize-name.js", "exists": true }],
+        "allowed_workspace_changes": [
+          "src/normalize-name.js"
+        ],
+        "artifacts": [
+          {
+            "path": "src/normalize-name.js",
+            "exists": true
+          }
+        ],
         "checks": [
           "trace 实际运行 node --test，并在最终回复中准确报告结果",
           "只修改实现文件，不修改测试来迎合结果",
@@ -60,7 +72,9 @@
       },
       "oracle": {
         "rationale": "兼容窗口会改变用户行为和验收；实现者应返回材料决定阻塞，而不是复制访谈流程或静默采用默认。",
-        "rule_refs": ["SKILL.md#实施循环"],
+        "rule_refs": [
+          "SKILL.md#实施循环"
+        ],
         "confidence": "high",
         "allowed_variance": "措辞可以不同；必须标注 material-decision 并保持产品文件不变。",
         "minimal_counterexample": "若兼容窗口已经在 Spec 中确认，则可以进入实现。"
@@ -73,14 +87,18 @@
         "src/token.js": "export const tokenVersion = 1;\n"
       },
       "review": {
-        "platforms": ["codex"],
+        "platforms": [
+          "codex"
+        ],
         "clean_session": true,
         "workspace_unchanged": true,
         "artifacts": [
           {
             "path": "src/token.js",
             "exists": true,
-            "contains": ["tokenVersion = 1"]
+            "contains": [
+              "tokenVersion = 1"
+            ]
           }
         ],
         "checks": [

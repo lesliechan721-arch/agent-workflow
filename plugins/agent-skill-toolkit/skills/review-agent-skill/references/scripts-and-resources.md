@@ -1,31 +1,25 @@
-# Scripts and deterministic resources
+# 脚本和确定性资源
 
-Read this only when the target contains scripts or repeatedly reimplements deterministic logic.
+仅当目标包含脚本或重复实现确定性逻辑时读取本文档。
 
-## Script ownership
+## 脚本职责
 
-Good script candidates: parsing, transformation, generation, computation, format validation, static
-consistency, repetitive batch operations and mechanically checkable assertions.
+适合脚本的任务包括解析、转换、生成、计算、格式验证、静态一致性检查、重复批处理操作和可机械检查的断言。
 
-Do not use ordinary scripts to infer live agent state, mailbox delivery, cancellation, concurrency,
-permissions or runtime lifecycle through files, Git or shell polling.
+不要让普通脚本通过文件、Git 或 shell 轮询来推断实时 Agent 状态、mailbox delivery、取消、并发、权限或 runtime 生命周期。
 
-## Agent-facing script checks
+## Agent-facing 脚本检查
 
-- use paths relative to the Skill root and state the branch that invokes the script;
-- declare runtime and dependencies; keep the interface non-interactive;
-- provide `--help`, actionable errors and meaningful exit codes;
-- keep stdout stable and structured; write diagnostics to stderr;
-- bound inputs, outputs, timeouts, path traversal, overwrites and sensitive data;
-- prefer idempotence and dry-run for destructive work;
-- provide a fixture, test or safe sample.
+- 使用相对于 Skill 根的路径，并说明调用脚本的 branch；
+- 声明 runtime 和依赖，保持接口非交互；
+- 提供 `--help`、可操作的错误和有意义的退出码；
+- 保持 stdout 稳定且结构化，将诊断写入 stderr；
+- 限制输入、输出、timeout、路径遍历、覆盖和敏感数据；
+- 对破坏性操作优先提供幂等性和 dry-run；
+- 提供 fixture、测试或安全样例。
 
-Before claiming an interface defect, read imports, argument parsing, side-effect calls and main
-dispatch. Run `--help` only after static inspection proves the help branch exits before side
-effects. Environment failure is `unknown`, not proof that an interface is absent.
+在判定接口缺陷前，读取 import、参数解析、副作用调用和 main dispatch。只有静态检查证明 help branch 会在副作用前退出后，才能运行 `--help`。环境故障属于 `unknown`，不能证明接口不存在。
 
-## References and Agent-facing prose
+## Reference 和 Agent-facing 文本
 
-The canonical reference, pointer, active-path, co-location and progressive-disclosure audit belongs
-to `review-agent-content`. This Skill only checks package-specific reachability and consumes its
-`ReferenceAuditResult`; it does not maintain a second reference checklist.
+权威的 reference、pointer、active path、co-location 和渐进式披露审计由 `review-agent-content` 负责。本 Skill 只检查包专有的可达性并消费其 `ReferenceAuditResult`，不维护第二份 reference checklist。

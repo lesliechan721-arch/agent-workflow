@@ -14,10 +14,17 @@
       "provenance": "representative-synthetic",
       "scenario_family": "spec-and-quality-review",
       "unit_under_test": "full-skill",
-      "preconditions": {"spec_exists": true, "implementation_exists": true, "review_is_read_only": true},
+      "preconditions": {
+        "spec_exists": true,
+        "implementation_exists": true,
+        "review_is_read_only": true
+      },
       "oracle": {
         "rationale": "实现既违反服务端过期拒绝要求，又缺少边界测试；两个问题应分别出现在 Spec fidelity 和 Engineering quality，且审查不能修改代码。",
-        "rule_refs": ["SKILL.md#工作流", "assets/code-review-template.md"],
+        "rule_refs": [
+          "SKILL.md#工作流",
+          "assets/code-review-template.md"
+        ],
         "confidence": "high",
         "allowed_variance": "finding 标题和严重性措辞可不同；必须分轴、给出证据位置并保持只读。"
       },
@@ -31,7 +38,9 @@
         "package.json": "{\"type\":\"module\"}\n"
       },
       "review": {
-        "platforms": ["codex"],
+        "platforms": [
+          "codex"
+        ],
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [

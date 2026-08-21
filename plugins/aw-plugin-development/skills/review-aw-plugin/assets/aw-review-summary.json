@@ -16,11 +16,36 @@
     }
   ],
   "projectGates": {
-    "manifest-validity": { "status": "unknown", "severity": "P0", "reason": "Replace with evidence.", "findingIds": [] },
-    "source-final-consistency": { "status": "unknown", "severity": "P1", "reason": "Replace with evidence.", "findingIds": [] },
-    "profile-coverage": { "status": "unknown", "severity": "P1", "reason": "Replace with evidence.", "findingIds": [] },
-    "materialization-currentness": { "status": "unknown", "severity": "P1", "reason": "Replace with evidence.", "findingIds": [] },
-    "eval-runtime-evidence": { "status": "unknown", "severity": "P1", "reason": "Replace with evidence.", "findingIds": [] }
+    "manifest-validity": {
+      "status": "unknown",
+      "severity": "P0",
+      "reason": "Replace with evidence.",
+      "findingIds": []
+    },
+    "source-final-consistency": {
+      "status": "unknown",
+      "severity": "P1",
+      "reason": "Replace with evidence.",
+      "findingIds": []
+    },
+    "profile-coverage": {
+      "status": "unknown",
+      "severity": "P1",
+      "reason": "Replace with evidence.",
+      "findingIds": []
+    },
+    "materialization-currentness": {
+      "status": "unknown",
+      "severity": "P1",
+      "reason": "Replace with evidence.",
+      "findingIds": []
+    },
+    "eval-runtime-evidence": {
+      "status": "unknown",
+      "severity": "P1",
+      "reason": "Replace with evidence.",
+      "findingIds": []
+    }
   },
   "evalAudit": null,
   "design": "not-assessed",
