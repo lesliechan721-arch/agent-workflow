@@ -691,23 +691,3 @@ test('final artifacts remain materials rather than completed review stages', asy
   assert.ok(result.artifacts.some((a) => a.role === 'final'));
   assert.deepEqual(result.orchestration.providedStages, []);
 });
-test('adapter release version and dependency contract are current', async () => {
-  const [manifest, dependency] = await Promise.all([
-    readFile(path.join(sourceRoot, '.agents-plugin/plugin.json'), 'utf8').then(JSON.parse),
-    readFile(path.join(sourceRoot, 'DEPENDENCY.md'), 'utf8'),
-  ]);
-  assert.equal(manifest.version, '0.9.0');
-  assert.match(dependency, /agent-content-toolkit >= 0\.5\.0/u);
-  // Static contract exception: AW 0.9.0 consumers must reject toolkit 0.7.0 because it lacks the ReviewInputBundle currentness contract; behavior test is not suitable because DEPENDENCY.md is the published manual dependency resolver input.
-  const skillFloor = dependency.match(/agent-skill-toolkit >= (\d+\.\d+\.\d+)/u)?.[1];
-  assert.equal(skillFloor, '0.8.0');
-  const parts = (version) => version.split('.').map(Number);
-  const satisfies = (version) => {
-    const candidate = parts(version), floor = parts(skillFloor);
-    const difference = candidate.findIndex((value, index) => value !== floor[index]);
-    return difference === -1 || candidate[difference] > floor[difference];
-  };
-  assert.equal(satisfies('0.7.0'), false);
-  assert.equal(satisfies('0.8.0'), true);
-  assert.match(dependency, /agent-skill-eval-runner >= 0\.3\.0/u);
-});

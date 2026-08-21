@@ -182,7 +182,7 @@ describe('plugin release workflow', () => {
       schemaVersion: 4,
       catalogVersion: cliPackage.version,
       channel: String(cliPackage.version).includes('-') ? 'beta' : 'latest',
-      compatibility: { aw: { minVersion: '0.1.0-beta.3' } },
+      compatibility: { aw: { minVersion: '0.1.0' } },
       release: { state: 'development' },
     });
     expect(developmentManifest).not.toHaveProperty('packages');
@@ -200,7 +200,7 @@ describe('plugin release workflow', () => {
       schemaVersion: 4,
       catalogVersion: '9.0.0-beta.1',
       channel: 'beta',
-      compatibility: { aw: { minVersion: '0.1.0-beta.3' } },
+      compatibility: { aw: { minVersion: '0.1.0' } },
       release: { state: 'development' },
     });
     expect(staged.manifest).not.toHaveProperty('packages');

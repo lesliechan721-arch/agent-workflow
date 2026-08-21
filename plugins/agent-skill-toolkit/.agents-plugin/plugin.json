@@ -1,10 +1,10 @@
 {
   "name": "agent-skill-toolkit",
-  "version": "0.8.0",
+  "version": "0.1.0",
   "description": "使用共享证据和组合标准编写与评审 Agent Skill，并设计或审核 Skill Eval。",
   "compatibility": {
     "aw": {
-      "minVersion": "0.0.0"
+      "minVersion": "0.1.0"
     }
   },
   "skills": "./skills",

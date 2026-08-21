@@ -168,9 +168,9 @@ describe('catalog snapshot schema 3 runtime validation', () => {
     await createCatalogSnapshotFixture(root);
     const manifestPath = path.join(root, 'catalog-manifest.json');
     const manifest = await fs.readJson(manifestPath);
-    manifest.compatibility.aw.minVersion = '0.1.0-beta.2';
+    manifest.compatibility.aw.minVersion = '0.1.0-beta.3';
     await fs.writeJson(manifestPath, manifest);
-    await expect(validateCatalogSnapshot(root)).rejects.toThrow('schema 4 requires 0.1.0-beta.3');
+    await expect(validateCatalogSnapshot(root)).rejects.toThrow('schema 4 requires 0.1.0');
   });
   it.each(['EPERM', 'EMFILE', 'EIO'])('propagates snapshot root lstat %s', async (code) => {
     const root = fixturePath(`snapshot-root-${code}`);

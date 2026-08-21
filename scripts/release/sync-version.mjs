@@ -52,13 +52,12 @@ try {
 
   if (target === 'catalog') {
     console.log(
-      `Catalog version ${version} is independent from ${relativeToRepo('package.json')} and ${relativeToRepo('packages/cli/package.json')}. Pass it to catalog release commands with --catalog-version.`,
+      `Catalog version ${version} is independent from ${relativeToRepo('packages/agent-skill-eval/package.json')} and ${relativeToRepo('packages/cli/package.json')}. Pass it to catalog release commands with --catalog-version.`,
     );
   } else {
     await syncCliVersion(version);
     console.log(
-      `Synced release version ${version} in ${relativeToRepo('package.json')}, ` +
-      `${relativeToRepo('packages/agent-skill-eval/package.json')}, and ` +
+      `Synced release version ${version} in ${relativeToRepo('packages/agent-skill-eval/package.json')} and ` +
       `${relativeToRepo('packages/cli/package.json')}.`,
     );
   }

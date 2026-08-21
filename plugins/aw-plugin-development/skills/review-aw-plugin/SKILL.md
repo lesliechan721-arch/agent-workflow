@@ -2,7 +2,7 @@
 name: review-aw-plugin
 description: >-
   当用户要只读审核一个 AW 插件根、materialized final artifacts、Eval evidence 或工作区发布就绪性时使用。目标根由 `.agents-plugin/plugin.json` 标识，可以位于任意兼容工作区；负责证据准备、通用 Reviewer 组合和报告发布适配，不评审普通 repo-local Skill，也不修改插件生产源码。
-compatibility: 需要 Node.js 22+、目标工作区依赖、agent-content-toolkit >= 0.5.0 和 agent-skill-toolkit >= 0.8.0。真实模型 Eval 可选使用 agent-skill-eval-runner >= 0.3.0。
+compatibility: 需要 Node.js 22+、目标工作区依赖、agent-content-toolkit >= 0.1.0 和 agent-skill-toolkit >= 0.1.0。真实模型 Eval 可选使用 agent-skill-eval-runner >= 0.1.0。
 user-invocable: true
 metadata:
   short-description: 只读评审 AW 插件源码、最终制品与 Eval 证据

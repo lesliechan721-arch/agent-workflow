@@ -58,7 +58,7 @@ function createCatalogManifestFixture() {
     channel: 'latest',
     compatibility: {
       aw: {
-        minVersion: '0.1.0-beta.3',
+        minVersion: '0.1.0',
       },
     },
     release: { state: 'development' as const },
@@ -329,8 +329,8 @@ describe('manifest coverage', () => {
 
   it('rejects plugin minVersion and duplicate snapshot names that violate catalog bounds', () => {
     const pluginMinAboveCatalog = createCatalogManifestFixture();
-    pluginMinAboveCatalog.entries[0]!.compatibility.aw.minVersion = '0.1.0-beta.4';
-    pluginMinAboveCatalog.compatibility.aw.minVersion = '0.1.0-beta.3';
+    pluginMinAboveCatalog.entries[0]!.compatibility.aw.minVersion = '0.1.1';
+    pluginMinAboveCatalog.compatibility.aw.minVersion = '0.1.0';
     expect(() => validateCatalogManifestV4(pluginMinAboveCatalog)).toThrow('higher than catalog minimum');
 
     const duplicateEntry = createCatalogManifestFixture();

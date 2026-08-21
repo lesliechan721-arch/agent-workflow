@@ -27,7 +27,6 @@ const RELEASE_VERSION_SENTINEL = '0.0.0';
 export const repoRoot = path.resolve(scriptDir, '..', '..');
 export const releaseRoot = path.join(repoRoot, '.release');
 export const tarballDir = path.join(releaseRoot, 'tarballs');
-export const rootPackageJsonPath = path.join(repoRoot, 'package.json');
 export const evalPackageJsonPath = path.join(repoRoot, 'packages', 'agent-skill-eval', 'package.json');
 export const evalPackageRoot = path.join(repoRoot, 'packages', 'agent-skill-eval');
 export const cliPackageJsonPath = path.join(repoRoot, 'packages', 'cli', 'package.json');
@@ -151,18 +150,15 @@ export async function readEvalPackageJson() {
 export async function syncCliVersion(version) {
   assertValidVersion(version);
 
-  const [rootPackageJson, evalPackageJson, cliPackageJson] = await Promise.all([
-    readPackageJson(rootPackageJsonPath),
+  const [evalPackageJson, cliPackageJson] = await Promise.all([
     readPackageJson(evalPackageJsonPath),
     readPackageJson(cliPackageJsonPath),
   ]);
 
-  rootPackageJson.version = version;
   evalPackageJson.version = version;
   cliPackageJson.version = version;
 
   await Promise.all([
-    writePackageJson(rootPackageJsonPath, rootPackageJson),
     writePackageJson(evalPackageJsonPath, evalPackageJson),
     writePackageJson(cliPackageJsonPath, cliPackageJson),
   ]);
@@ -841,7 +837,6 @@ export async function assertReleaseWorktreeClean(options = {}) {
   await assertReleaseInputIndexFlagsSafe(options);
   const allowedDirtyPaths = new Set(options.allowVersionSync
     ? [
-      relativeToRepo(rootPackageJsonPath),
       relativeToRepo(evalPackageJsonPath),
       relativeToRepo(cliPackageJsonPath),
     ]
@@ -1063,24 +1058,32 @@ export async function findLatestTarball(directoryPath = tarballDir) {
   return tarballs[0];
 }
 
-export async function assertRepoAndCliPackageVersions() {
-  const [rootPackageJson, evalPackageJson, cliPackageJson] = await Promise.all([
-    readPackageJson(rootPackageJsonPath),
-    readPackageJson(evalPackageJsonPath),
-    readPackageJson(cliPackageJsonPath),
+export async function assertPublicPackageVersions(repoRootPath = repoRoot) {
+  const [rootPackageJson, targets, evalPackageJson, cliPackageJson] = await Promise.all([
+    readPackageJson(path.join(repoRootPath, 'package.json')),
+    readPackageJson(path.join(repoRootPath, 'release', 'version-targets.json')),
+    readPackageJson(path.join(repoRootPath, 'packages', 'agent-skill-eval', 'package.json')),
+    readPackageJson(path.join(repoRootPath, 'packages', 'cli', 'package.json')),
   ]);
-  const rootVersion = assertValidVersion(rootPackageJson.version);
+  if (Object.hasOwn(rootPackageJson, 'version')) {
+    throw new Error('package.json must not declare a version; release/version-targets.json is the release target source.');
+  }
+  if (!targets || typeof targets !== 'object' || Array.isArray(targets)) {
+    throw new Error('release/version-targets.json must contain an object.');
+  }
+  const targetVersion = assertValidVersion(targets.cli);
+  assertVersionKind(targetVersion, 'stable');
   const evalVersion = assertValidVersion(evalPackageJson.version);
   const cliVersion = assertValidVersion(cliPackageJson.version);
-  if (rootVersion !== cliVersion || rootVersion !== evalVersion) {
+  if (targetVersion !== cliVersion || targetVersion !== evalVersion) {
     throw new Error(
-      `Version mismatch: package.json version "${rootVersion}" must match ` +
+      `Version mismatch: release/version-targets.json cli "${targetVersion}" must match ` +
       `packages/agent-skill-eval/package.json version "${evalVersion}" and ` +
       `packages/cli/package.json version "${cliVersion}".`,
     );
   }
   return {
-    rootVersion,
+    targetVersion,
     evalVersion,
     cliVersion,
   };
@@ -1144,7 +1147,7 @@ export async function packCli({
   if (snapshot) {
     return packCliFromSnapshot(snapshot, destination, { quiet, runPackCommand });
   }
-  await assertRepoAndCliPackageVersions();
+  await assertPublicPackageVersions();
   return withBuildSnapshot(repoRoot, (ownedSnapshot) =>
     packCliFromSnapshot(ownedSnapshot, destination, { quiet, runPackCommand })
   );
@@ -1204,7 +1207,7 @@ export async function packEval({
   runPackCommand,
 } = {}) {
   if (snapshot) return packEvalFromSnapshot(snapshot, destination, { quiet, runPackCommand });
-  await assertRepoAndCliPackageVersions();
+  await assertPublicPackageVersions();
   return withBuildSnapshot(repoRoot, (ownedSnapshot) =>
     packEvalFromSnapshot(ownedSnapshot, destination, { quiet, runPackCommand })
   );
@@ -1412,13 +1415,9 @@ export async function loadCatalogModules(compiledCliDistRoot = cliDistRoot) {
     throw new Error('Catalog release helpers require compiled CLI artifacts. Run `pnpm build` first.');
   });
 
-  const catalogModules = await Promise.all([
-    import(pathToFileURL(pluginStagingPath).href),
-    import(pathToFileURL(catalogSnapshotPath).href),
-  ]).then(([pluginStaging, catalogSnapshot]) => ({
-    pluginStaging,
-    catalogSnapshot,
-  }));
+  const pluginStaging = await import(pathToFileURL(pluginStagingPath).href);
+  const catalogSnapshot = await import(pathToFileURL(catalogSnapshotPath).href);
+  const catalogModules = { pluginStaging, catalogSnapshot };
 
   cachedCatalogModules.set(resolvedCliDistRoot, catalogModules);
   return catalogModules;

@@ -4,7 +4,7 @@ description: >-
   仅当用户明确要求执行已经通过独立 Oracle preflight 的 Agent Skill Eval plan，并明确授权相应模型成本、进程、凭据、网络和临时输出时使用。负责人工 gate、preflight、共享 CLI 编排和结果交接；不设计或审核 case，不实现 runner，不解释失败归因，不修改 Skill，也不发布最终 Review。
 disable-model-invocation: true
 user-invocable: true
-compatibility: 需要 Node.js 22+、agent-skill-toolkit >= 0.5.0 和 @lesliechan721/agent-skill-eval >= 0.1.0-beta.2，且 aw-skill-eval 必须位于 PATH。
+compatibility: 需要 Node.js 22+、agent-skill-toolkit >= 0.1.0 和 @lesliechan721/agent-skill-eval >= 0.1.0-beta.2，且 aw-skill-eval 必须位于 PATH。
 metadata:
   short-description: 人工授权后执行已审核的 Skill Eval plan 并交接证据
 ---

@@ -2,7 +2,7 @@
 name: author-aw-plugin
 description: >-
   当用户要创建或维护一个 AW 插件根、Skill、extension、MCP/App、slash command、dynamic artifact、稳定版本或构建验证时使用。目标根由 `.agents-plugin/plugin.json` 标识，可以位于任意兼容工作区；拥有插件源码写入和作者验证，不做独立质量评分或发布裁决。
-compatibility: 需要 Node.js 22+、提供所需 aw plugin 作者命令的已安装 aw CLI、目标工作区依赖、agent-content-toolkit >= 0.5.0 和 agent-skill-toolkit >= 0.8.0。真实模型 Eval 还需要 agent-skill-eval-runner >= 0.3.0 或其它兼容 runner。
+compatibility: 需要 Node.js 22+、提供所需 aw plugin 作者命令的已安装 aw CLI、目标工作区依赖、agent-content-toolkit >= 0.1.0 和 agent-skill-toolkit >= 0.1.0。真实模型 Eval 还需要 agent-skill-eval-runner >= 0.1.0 或其它兼容 runner。
 user-invocable: true
 metadata:
   short-description: 创建或维护 AW 插件并组合通用 Skill 作者能力

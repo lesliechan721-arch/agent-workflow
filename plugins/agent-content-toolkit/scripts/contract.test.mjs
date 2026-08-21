@@ -99,7 +99,7 @@ test('cacheable standard render is deterministic across undeclared environment c
   assert.deepEqual(await render('first'), await render('second'));
 });
 
-test('staged manifest publishes the content toolkit 0.6.0 contract', async () => {
+test('staged manifest preserves the source content toolkit identity', async () => {
   const stagedManifest = JSON.parse(
     await readFile(path.join(bundleRoot, '.agents-plugin/plugin.json'), 'utf8'),
   );
@@ -107,7 +107,7 @@ test('staged manifest publishes the content toolkit 0.6.0 contract', async () =>
     await readFile(path.join(sourceRoot, '.agents-plugin/plugin.json'), 'utf8'),
   );
   assert.equal(stagedManifest.name, 'agent-content-toolkit');
-  assert.equal(stagedManifest.version, '0.6.0');
+  assert.equal(stagedManifest.version, sourceManifest.version);
   assert.equal(sourceManifest.buildConfig.cacheable, true);
   assert.deepEqual(
     sourceManifest.buildConfig.runtimeExports.map(({ name }) => name).sort(),
