@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -13,14 +14,33 @@ import {
 } from '../../../../scripts/release/release-plan.mjs';
 import { releaseStatus } from '../../../../scripts/release/release-status.mjs';
 import { prepareRelease } from '../../../../scripts/release/release-prepare.mjs';
+import { publishCommittedRelease } from '../../../../scripts/release/publish-plan.mjs';
 import {
   observeRelease,
   readCliReleaseContent,
 } from '../../../../scripts/release/release-observe.mjs';
 import { calculateReleaseStatus } from '../../../../scripts/release/release-state.mjs';
-import { calculateCliTrainContentDigest } from '../../../../scripts/release/release-model.mjs';
-import { assertReleaseWorktreeClean } from '../../../../scripts/release/common.mjs';
-import { assertVersionTargetsMatchHead } from '../../../../scripts/release/release-target.mjs';
+import {
+  calculateCatalogContentDigest,
+  calculateCliTrainContentDigest,
+} from '../../../../scripts/release/release-model.mjs';
+import {
+  assertReleaseWorktreeClean,
+  computePackageTarballTreeDigest,
+  createReleaseSnapshotIdentity,
+} from '../../../../scripts/release/common.mjs';
+import {
+  promoteCatalogTag,
+  publishStagedCatalog,
+} from '../../../../scripts/release/git-catalog-publisher.mjs';
+import {
+  assertVersionTargetsMatchHead,
+  updateReleaseTargets,
+} from '../../../../scripts/release/release-target.mjs';
+import { bundlePlugins } from '../../scripts/bundle-plugins.js';
+import * as pluginStaging from '../../scripts/plugin-staging.js';
+import * as catalogSnapshot from '../../src/utils/catalog-snapshot.js';
+import { calculateCatalogEntryContentDigest } from '../../src/utils/catalog-digests.js';
 
 const execute = promisify(execFile);
 const roots: string[] = [];
@@ -37,22 +57,42 @@ async function createRepo(): Promise<{ root: string; head: string }> {
   await git(root, ['config', 'user.name', 'Release Fixture']);
   await git(root, ['config', 'user.email', 'release-fixture@example.invalid']);
   await fs.mkdir(path.join(root, 'release'), { recursive: true });
+  await fs.mkdir(path.join(root, 'packages', 'cli'), { recursive: true });
+  await fs.mkdir(path.join(root, 'packages', 'agent-skill-eval'), { recursive: true });
+  await fs.cp(path.resolve(import.meta.dirname, '..', 'fixtures', 'repo-template', 'plugins'), path.join(root, 'plugins'), {
+    recursive: true,
+  });
   await fs.writeFile(path.join(root, 'source.txt'), 'source\n');
+  await fs.writeFile(path.join(root, 'package.json'), `${JSON.stringify({ private: true }, null, 2)}\n`);
+  await fs.writeFile(path.join(root, 'packages', 'cli', 'package.json'), `${JSON.stringify({
+    name: '@lesliechan721/aw', version: '1.0.0',
+  }, null, 2)}\n`);
+  await fs.writeFile(path.join(root, 'packages', 'agent-skill-eval', 'package.json'), `${JSON.stringify({
+    name: '@lesliechan721/agent-skill-eval', version: '1.0.0',
+  }, null, 2)}\n`);
   await fs.writeFile(path.join(root, 'release', 'version-targets.json'), `${JSON.stringify({
     schemaVersion: 1, cli: '1.0.0', catalog: '1.0.0',
   }, null, 2)}\n`);
-  await git(root, ['add', 'source.txt', 'release/version-targets.json']);
+  await git(root, ['add', 'package.json', 'packages', 'source.txt', 'release/version-targets.json', 'plugins']);
   await git(root, ['commit', '--quiet', '-m', 'source']);
   return { root, head: await git(root, ['rev-parse', 'HEAD']) };
 }
 
-function observed(head: string) {
+function observed(
+  head: string,
+  targets = { schemaVersion: 1, cli: '1.0.0', catalog: '1.0.0' },
+  catalog = {
+    minCliVersion: '0.1.0-beta.3',
+    contentDigest: digest('5'),
+    plugins: [{ name: 'git-commit', targetVersion: '0.1.0', contentDigest: digest('6') }],
+  },
+) {
   const packages = [
     { name: '@lesliechan721/agent-skill-eval', contentDigest: digest('3'), tarballDigest: digest('7') },
     { name: '@lesliechan721/aw', contentDigest: digest('4'), tarballDigest: digest('8') },
   ];
   return {
-    targets: { schemaVersion: 1, cli: '1.0.0', catalog: '1.0.0' },
+    targets,
     content: {
       source: {
         head,
@@ -66,11 +106,7 @@ function observed(head: string) {
         }))),
         packages,
       },
-      catalog: {
-        minCliVersion: '0.1.0-beta.2',
-        contentDigest: digest('5'),
-        plugins: [{ name: 'ask-me', targetVersion: '1.0.0', contentDigest: digest('6') }],
-      },
+      catalog,
     },
     history: {
       registry: {
@@ -202,6 +238,49 @@ describe('release phase 2 process boundaries', () => {
     expect(() => JSON.parse(output[0]!)).not.toThrow();
     expect(errors).toEqual([]);
   });
+
+  it('keeps the root pnpm machine-status command stdout as one JSON document', async () => {
+    const repoRoot = path.resolve(import.meta.dirname, '..', '..', '..', '..');
+    const hookRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-release-status-hook-'));
+    roots.push(hookRoot);
+    const observeModuleUrl = pathToFileURL(
+      path.join(repoRoot, 'scripts', 'release', 'release-observe.mjs'),
+    ).href;
+    const fakeModuleSource = `export async function observeRelease() { return ${JSON.stringify(
+      observed('a'.repeat(40)),
+    )}; }`;
+    const hookPath = path.join(hookRoot, 'observe-hook.mjs');
+    await fs.writeFile(hookPath, [
+      "import { registerHooks } from 'node:module';",
+      `const target = ${JSON.stringify(observeModuleUrl)};`,
+      `const replacement = ${JSON.stringify(`data:text/javascript,${encodeURIComponent(fakeModuleSource)}`)};`,
+      'registerHooks({',
+      '  resolve(specifier, context, nextResolve) {',
+      '    const resolved = nextResolve(specifier, context);',
+      '    return resolved.url === target ? { url: replacement, shortCircuit: true } : resolved;',
+      '  },',
+      '});',
+      '',
+    ].join('\n'));
+    const nodeOptions = [
+      process.env.NODE_OPTIONS,
+      `--import=${pathToFileURL(hookPath).href}`,
+    ].filter(Boolean).join(' ');
+
+    const result = await execute('pnpm', ['--silent', 'release:status', '--', '--json'], {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        COREPACK_ENABLE_DOWNLOAD_PROMPT: '0',
+        NODE_OPTIONS: nodeOptions,
+      },
+    });
+    expect(result.stderr).toBe('');
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      schemaVersion: 1,
+      channels: { beta: {}, stable: {} },
+    });
+  }, 60_000);
 
   it('keeps JSON stdout singular while real package helpers pack content and remotes are mocked', async () => {
     const repoRoot = path.resolve(import.meta.dirname, '..', '..', '..', '..');
@@ -348,6 +427,266 @@ describe('release phase 2 process boundaries', () => {
     })).rejects.toThrow('remote history changed');
     expect(writePlan).not.toHaveBeenCalled();
   });
+
+  it('runs target, source commit, prepare, plan-only commit, publication retry, and drift gates as one local workflow', async () => {
+    const repository = await createRepo();
+    await updateReleaseTargets(['--cli', 'patch', '--catalog', 'patch'], {
+      repoRoot: repository.root,
+    });
+    const skillPath = path.join(repository.root, 'plugins', 'git-commit', 'skills', 'commit', 'SKILL.md');
+    await fs.appendFile(skillPath, '\nRelease fixture production change.\n');
+    for (const packagePath of [
+      path.join(repository.root, 'packages', 'cli', 'package.json'),
+      path.join(repository.root, 'packages', 'agent-skill-eval', 'package.json'),
+    ]) {
+      const packageJson = JSON.parse(await fs.readFile(packagePath, 'utf8'));
+      await fs.writeFile(packagePath, `${JSON.stringify({ ...packageJson, version: '1.0.1' }, null, 2)}\n`);
+    }
+    await git(repository.root, [
+      'add',
+      'release/version-targets.json',
+      'packages/cli/package.json',
+      'packages/agent-skill-eval/package.json',
+      'plugins/git-commit/skills/commit/SKILL.md',
+    ]);
+    await git(repository.root, ['commit', '--quiet', '-m', 'release target and source']);
+    const sourceHead = await git(repository.root, ['rev-parse', 'HEAD']);
+    expect(await git(repository.root, ['diff-tree', '--no-commit-id', '--name-only', '-r', sourceHead]))
+      .toContain('plugins/git-commit/skills/commit/SKILL.md');
+
+    const artifactRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-release-local-publication-'));
+    roots.push(artifactRoot);
+    const catalogOutputRoot = path.join(artifactRoot, 'catalog-source');
+    await bundlePlugins({ repoRoot: repository.root, outputRoot: catalogOutputRoot, buildMode: 'staging' });
+    const [developmentManifest, marketplace, pluginContentDigest] = await Promise.all([
+      fs.readFile(path.join(catalogOutputRoot, 'catalog-manifest.json'), 'utf8').then(JSON.parse),
+      fs.readFile(path.join(catalogOutputRoot, '.agents', 'plugins', 'marketplace.json'), 'utf8').then(JSON.parse),
+      calculateCatalogEntryContentDigest(path.join(catalogOutputRoot, 'plugins', 'git-commit')),
+    ]);
+    const catalogContentDigest = calculateCatalogContentDigest({
+      schemaIdentity: { schemaVersion: 4 },
+      marketplaceMetadata: {
+        name: marketplace.name,
+        owner: marketplace.owner,
+        interface: marketplace.interface,
+      },
+      compatibility: { aw: { minVersion: pluginStaging.CATALOG_SCHEMA_4_CLI_FLOOR } },
+      plugins: [{ name: 'git-commit', targetVersion: '0.1.0', contentDigest: pluginContentDigest }],
+    });
+    expect(developmentManifest.entries[0]).toMatchObject({
+      name: 'git-commit',
+      compatibility: { aw: { minVersion: '0.0.0' } },
+    });
+    expect(developmentManifest.compatibility.aw.minVersion)
+      .toBe(pluginStaging.CATALOG_SCHEMA_4_CLI_FLOOR);
+
+    const targets = { schemaVersion: 1, cli: '1.0.1', catalog: '1.0.1' };
+    const observation = observed(sourceHead, targets, {
+      minCliVersion: pluginStaging.CATALOG_SCHEMA_4_CLI_FLOOR,
+      contentDigest: catalogContentDigest,
+      plugins: [{ name: 'git-commit', targetVersion: '0.1.0', contentDigest: pluginContentDigest }],
+    });
+    const snapshot = {
+      generationId: 'local-release-generation',
+      outputDigest: observation.content.source.buildOutputDigest,
+      inputDigest: observation.content.source.releaseInputDigest,
+      cliPackageDigest: observation.content.source.cliPackageDigest,
+      cliPackageRoot: path.join(artifactRoot, 'packages', 'cli'),
+      evalPackageRoot: path.join(artifactRoot, 'packages', 'eval'),
+      cliDistRoot: path.resolve(import.meta.dirname, '..', '..', 'dist'),
+      catalogOutputRoot,
+    };
+    const releaseIdentity = createReleaseSnapshotIdentity(snapshot, sourceHead);
+    let boundStage: Record<string, unknown> | undefined;
+
+    const prepared = await prepareRelease(['beta'], {
+      repoRoot: repository.root,
+      assertFresh: async () => undefined,
+      observe: async () => observation,
+      observeRemoteHistory: async () => observation.history,
+      materializeCliPlanArtifacts: async (status) => status.cli.packages,
+      materializeCatalogPlanArtifact: async (status, planId) => {
+        const staged = await pluginStaging.stageCatalogArtifacts({
+          repoRoot: repository.root,
+          outputRoot: catalogOutputRoot,
+          phase: 'release',
+          catalogVersion: status.catalog.candidateVersion,
+          channel: 'beta',
+          previousReleaseLedger: { schemaVersion: 2, records: [] },
+          pluginVersionOverrides: { 'git-commit': status.plugins[0].candidateVersion },
+          pluginCandidates: status.plugins.map((plugin) => ({
+            name: plugin.name,
+            targetVersion: plugin.targetVersion,
+            candidateVersion: plugin.candidateVersion,
+            contentDigest: plugin.contentDigest,
+            action: plugin.action,
+          })),
+          release: {
+            state: 'published',
+            targetVersion: status.catalog.targetVersion,
+            planId,
+            sourceHead,
+            contentDigest: catalogContentDigest,
+          },
+        });
+        const validation = await catalogSnapshot.validateCatalogSnapshot(catalogOutputRoot);
+        boundStage = {
+          ...staged,
+          ...validation,
+          outputRoot: catalogOutputRoot,
+          generationId: snapshot.generationId,
+          outputDigest: snapshot.outputDigest,
+          inputDigest: snapshot.inputDigest,
+          cliPackageDigest: snapshot.cliPackageDigest,
+          releaseIdentity,
+        };
+        return validation.snapshotDigest;
+      },
+    });
+    expect(prepared.created).toBe(true);
+    expect(prepared.plan?.source.head).toBe(sourceHead);
+    await git(repository.root, ['add', 'release/current-plan.json', `release/plans/${prepared.plan!.planId.slice(7)}.json`]);
+    await git(repository.root, ['commit', '--quiet', '-m', 'immutable release plan']);
+    await expect(assertPlanOnlyCommit(prepared.plan!, { repoRoot: repository.root }))
+      .resolves.toMatchObject({ parent: sourceHead });
+
+    for (const [packageRoot, packageJson] of [
+      [snapshot.evalPackageRoot, {
+        name: '@lesliechan721/agent-skill-eval',
+        version: prepared.plan!.cli.candidateVersion,
+        packageManager: 'pnpm@10.33.0',
+        files: ['index.js'],
+      }],
+      [snapshot.cliPackageRoot, {
+        name: '@lesliechan721/aw',
+        version: prepared.plan!.cli.candidateVersion,
+        packageManager: 'pnpm@10.33.0',
+        files: ['index.js'],
+        dependencies: {
+          '@lesliechan721/agent-skill-eval': prepared.plan!.cli.candidateVersion,
+        },
+      }],
+    ] as const) {
+      await fs.mkdir(packageRoot, { recursive: true });
+      await fs.writeFile(path.join(packageRoot, 'index.js'), 'export const localReleaseFixture = true;\n');
+      await fs.writeFile(path.join(packageRoot, 'package.json'), `${JSON.stringify(packageJson, null, 2)}\n`);
+    }
+
+    const remoteUrl = path.join(artifactRoot, 'catalog.git');
+    await git(artifactRoot, ['init', '--bare', '--quiet', remoteUrl]);
+    const catalogModules = { pluginStaging, catalogSnapshot };
+    const registry = {
+      '@lesliechan721/agent-skill-eval': [] as Array<Record<string, unknown>>,
+      '@lesliechan721/aw': [] as Array<Record<string, unknown>>,
+      distTags: {
+        '@lesliechan721/agent-skill-eval': { latest: null as string | null, beta: null as string | null },
+        '@lesliechan721/aw': { latest: null as string | null, beta: null as string | null },
+      },
+    };
+    const adapterRequests: string[] = [];
+    const npmWrites: string[] = [];
+    const readRegistryReleaseHistory = async () => structuredClone(registry);
+    const isExactPackageVersionPublished = async (name: keyof typeof registry, version: string) =>
+      Array.isArray(registry[name]) && registry[name].some((entry) => entry.version === version);
+    const assertPublishedPackageTarballMatchesCandidate = async (
+      _name: string, _version: string, _packageJsonPath: string, tarballPath: string,
+    ) => {
+      const candidateTreeDigest = await computePackageTarballTreeDigest(tarballPath);
+      return {
+        registryUrl: 'http://registry.test.invalid',
+        candidateTreeDigest,
+        publishedTreeDigest: candidateTreeDigest,
+      };
+    };
+    const recordRegistryWrite = (name: '@lesliechan721/agent-skill-eval' | '@lesliechan721/aw') => {
+      npmWrites.push(name === '@lesliechan721/agent-skill-eval' ? 'eval-package' : 'aw-package');
+      const expected = prepared.plan!.cli.packages.find((entry) => entry.name === name)!;
+      registry[name] = [{
+        version: prepared.plan!.cli.candidateVersion,
+        awRelease: {
+          schemaVersion: 1,
+          targetVersion: prepared.plan!.cli.targetVersion,
+          candidateVersion: prepared.plan!.cli.candidateVersion,
+          planId: prepared.plan!.planId,
+          sourceHead,
+          packageContentDigest: expected.contentDigest,
+          trainContentDigest: prepared.plan!.cli.trainContentDigest,
+        },
+      }];
+      registry.distTags[name].beta = prepared.plan!.cli.candidateVersion;
+    };
+    const publish = () => publishCommittedRelease([], {
+      repoRoot: repository.root,
+      catalogRemoteUrl: remoteUrl,
+      catalogModules,
+      readRegistryReleaseHistory,
+      resolvePublishedCliVersion: async () =>
+        registry.distTags['@lesliechan721/aw'].beta ?? '0.1.0-beta.2',
+      isExactPackageVersionPublished,
+      assertPublishedPackageTarballMatchesCandidate,
+      cliPublicationOptions: {
+        isExactPackageVersionPublished,
+        assertPublishedPackageTarballMatchesCandidate,
+      },
+      resolveCliPublishGitCheckArgs: async () => [],
+      runCommand: async (_command, args) => {
+        expect(args[0]).toBe('publish');
+        recordRegistryWrite('@lesliechan721/aw');
+      },
+      evalPublicationOptions: {
+        isExactPackageVersionPublished,
+        assertPublishedPackageTarballMatchesCandidate,
+        runCommand: async (_command: string, args: string[]) => {
+          expect(args[0]).toBe('publish');
+          recordRegistryWrite('@lesliechan721/agent-skill-eval');
+        },
+      },
+      publishStagedCatalog: async (...args) => {
+        adapterRequests.push('catalog-tag');
+        return publishStagedCatalog(...args);
+      },
+      promoteCatalogTag: async (options) => {
+        adapterRequests.push('catalog-promotion');
+        return promoteCatalogTag(options);
+      },
+      _boundCatalog: {
+        internalOutputRoot: catalogOutputRoot,
+        snapshot,
+        staged: boundStage,
+      },
+    });
+
+    await expect(publish()).resolves.toMatchObject({
+      path: 'tag-first',
+      planId: prepared.plan!.planId,
+      catalog: { idempotent: false, promoted: false },
+      promotion: { idempotent: false, promoted: true },
+    });
+    expect([adapterRequests[0], ...npmWrites, adapterRequests[1]])
+      .toEqual(['catalog-tag', 'eval-package', 'aw-package', 'catalog-promotion']);
+    const refsAfterFirstPublish = await git(artifactRoot, [
+      '--git-dir', remoteUrl, 'show-ref',
+    ]);
+    const writeCount = npmWrites.length;
+    adapterRequests.length = 0;
+    await expect(publish()).resolves.toMatchObject({
+      path: 'tag-first',
+      catalog: { idempotent: true, promoted: true },
+      cli: { status: 'already-published' },
+      promotion: { idempotent: true, promoted: true },
+    });
+    expect(npmWrites).toHaveLength(writeCount);
+    expect(adapterRequests).toEqual(['catalog-tag', 'catalog-promotion']);
+    expect(await git(artifactRoot, ['--git-dir', remoteUrl, 'show-ref']))
+      .toBe(refsAfterFirstPublish);
+
+    await fs.writeFile(path.join(repository.root, 'source.txt'), 'drifted\n');
+    await expect(publish()).rejects.toThrow('dirty working tree');
+    await fs.writeFile(path.join(repository.root, 'source.txt'), 'source\n');
+
+    await git(artifactRoot, ['--git-dir', remoteUrl, 'update-ref', '-d', 'refs/heads/catalog/beta']);
+    await expect(publish()).rejects.toThrow('ahead of its channel without the tag-first pending guard');
+  }, 60_000);
 
   it.each(['source', 'targets', 'remote'] as const)(
     'does not write a plan when %s drifts during final materialization',

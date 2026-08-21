@@ -4,7 +4,7 @@
   "description": "通过实施前关键歧义澄清、只读证据探索和通用子代理编排增强 Codex harness。",
   "compatibility": {
     "aw": {
-      "minVersion": "0.1.0"
+      "minVersion": "0.0.0"
     }
   },
   "marketplace": {

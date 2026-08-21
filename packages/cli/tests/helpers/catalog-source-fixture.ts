@@ -70,8 +70,8 @@ export async function createCatalogSnapshotFixture(
   await fs.outputFile(path.join(pluginRoot, 'README.md'), readme);
   const plugin: PluginMeta = await readPluginManifest(pluginRoot, { mode: 'bundle' });
   const entry = await createCatalogManifestV4Entry(plugin, pluginRoot);
-  const catalogMinAwVersion = compareStrictSemVer(minAwVersion, '0.1.0') < 0
-    ? '0.1.0'
+  const catalogMinAwVersion = compareStrictSemVer(minAwVersion, '0.1.0-beta.3') < 0
+    ? '0.1.0-beta.3'
     : minAwVersion;
   await fs.writeJson(path.join(rootDir, 'catalog-manifest.json'), createCatalogManifestV4({
     catalogVersion: '1.0.0',

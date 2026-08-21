@@ -3,8 +3,8 @@ import { fileURLToPath } from 'node:url';
 
 import { assertReleaseWorktreeClean } from './common.mjs';
 import {
-  OFFICIAL_CATALOG_PUBLISH_REMOTE,
   promoteCatalogTag,
+  resolveCatalogMaintenanceRemote,
   withCatalogPublicationLease,
 } from './git-catalog-publisher.mjs';
 import { readRegistryReleaseHistory } from './release-observe.mjs';
@@ -46,7 +46,7 @@ export async function recoverRelease(argv = process.argv.slice(2), options = {})
   const resolveCliTrain = options.resolvePublishedCliTrain ?? resolvePublishedCliTrain;
   await assertClean();
   const currentCliVersion = await resolveCliTrain(mode, options);
-  const remoteUrl = options.remoteUrl ?? OFFICIAL_CATALOG_PUBLISH_REMOTE;
+  const remoteUrl = resolveCatalogMaintenanceRemote(options);
   return (options.withCatalogPublicationLease ?? withCatalogPublicationLease)(
     remoteUrl,
     (publicationLease) => (options.promoteCatalogTag ?? promoteCatalogTag)({

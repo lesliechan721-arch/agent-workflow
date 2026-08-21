@@ -13,7 +13,12 @@ import {
 import { publishCatalog } from './publish-catalog.mjs';
 import { bootstrapCatalog } from './bootstrap-catalog.mjs';
 import { publishRelease as publishCombinedRelease } from './publish-release.mjs';
-import { promoteCatalogTag } from './git-catalog-publisher.mjs';
+import {
+  OFFICIAL_CATALOG_PUBLISH_REMOTE,
+  promoteCatalogTag,
+  resolveCatalogMaintenanceRemote,
+  resolveCatalogStageLedger,
+} from './git-catalog-publisher.mjs';
 import {
   assertPlanOnlyCommit,
   readCurrentReleasePlan,
@@ -21,7 +26,6 @@ import {
 import { readCliReleaseContent } from './release-observe.mjs';
 import { readRegistryReleaseHistory } from './release-observe.mjs';
 import { CLI_PACKAGES, normalizeCliRegistryHistory } from './release-state.mjs';
-import { resolveCatalogStageLedger } from './git-catalog-publisher.mjs';
 import { stageCatalogRelease } from './stage-catalog.mjs';
 
 function assertCatalogHistoryAllowed(plan, history) {
@@ -161,6 +165,7 @@ async function createStampedSnapshotRunner(plan, assertFresh, options) {
 export async function publishCommittedRelease(argv = process.argv.slice(2), options = {}) {
   parsePublishPlanArgs(argv);
   const repoRoot = options.repoRoot ?? defaultRepoRoot;
+  const remoteUrl = resolveCatalogMaintenanceRemote(options);
   const { plan } = await (options.readCurrentReleasePlan ?? readCurrentReleasePlan)({ repoRoot });
   const assertPlan = options.assertPlanOnlyCommit ?? assertPlanOnlyCommit;
   const assertFresh = async () => {
@@ -183,7 +188,7 @@ export async function publishCommittedRelease(argv = process.argv.slice(2), opti
         const history = assertCatalogHistoryAllowed(plan, await readHistory({
           mode,
           catalogVersion: plan.catalog.candidateVersion,
-          ...(options.remoteUrl ? { remoteUrl: options.remoteUrl } : {}),
+          remoteUrl,
           ...(options.catalogModules ? { catalogModules: options.catalogModules } : {}),
         }));
         const releaseIdentity = createReleaseSnapshotIdentity(snapshot, plan.source.head);
@@ -220,6 +225,7 @@ export async function publishCommittedRelease(argv = process.argv.slice(2), opti
   const commonOptions = {
     ...options,
     repoRoot,
+    remoteUrl,
     withReleaseBuildSnapshot: boundCatalog
       ? async (callback) => callback(boundCatalog.snapshot)
       : snapshotRunner,
@@ -270,11 +276,12 @@ export async function publishCommittedRelease(argv = process.argv.slice(2), opti
       }
       return staged;
     }),
-    runCommand: async (command, args) => {
+    runCommand: async (command, args, commandOptions) => {
       if (command === 'pnpm' && (
         args.join(' ') === 'run release:verify'
         || args.join(' ') === 'run release:verify:catalog'
       )) return;
+      if (options.runCommand) return options.runCommand(command, args, commandOptions);
       throw new Error('Unexpected top-level release command.');
     },
   };
@@ -296,7 +303,7 @@ export async function publishCommittedRelease(argv = process.argv.slice(2), opti
     const promotionHistory = await readHistory({
       mode,
       catalogVersion: plan.catalog.candidateVersion,
-      ...(options.remoteUrl ? { remoteUrl: options.remoteUrl } : {}),
+      remoteUrl,
       ...(options.catalogModules ? { catalogModules: options.catalogModules } : {}),
     });
     if (promotionHistory.tag?.snapshotDigest !== plan.catalog.snapshotDigest) {
@@ -310,7 +317,7 @@ export async function publishCommittedRelease(argv = process.argv.slice(2), opti
         await assertFresh();
         await assertPromotionCliTrain(plan, options);
       },
-      ...(options.remoteUrl ? { remoteUrl: options.remoteUrl } : {}),
+      remoteUrl,
     });
     return { path: 'promotion', planId: plan.planId, promotion };
   }
@@ -326,7 +333,9 @@ export async function publishCommittedRelease(argv = process.argv.slice(2), opti
       mode, '--catalog-version', plan.catalog.candidateVersion,
     ], {
       ...bootstrapOptions,
-      ...(options.remoteUrl ? { testRemoteUrl: options.remoteUrl } : {}),
+      ...(remoteUrl === OFFICIAL_CATALOG_PUBLISH_REMOTE
+        ? { remoteUrl }
+        : { testRemoteUrl: remoteUrl }),
     });
     return { path: 'bootstrap', planId: plan.planId, catalog };
   }

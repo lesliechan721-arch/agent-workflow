@@ -262,6 +262,7 @@ pnpm release:recover -- catalog <x.y.z[-beta.N]>
 - [编码约定](docs/coding-conventions.md)
 - [测试指南](docs/testing.md)
 - [插件维护指南](docs/plugin-maintenance.md)
+- [发布迁移交接与回归矩阵](docs/release-migration.md)
 - [插件与 Skill README 规范](docs/readme-standard.md)
 - [Agent 项目指令](AGENTS.md)
 

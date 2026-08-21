@@ -4,7 +4,7 @@
   "description": "按风险和当前阶段路由开发任务，组合决策、规格、实现与双轴审查。",
   "compatibility": {
     "aw": {
-      "minVersion": "0.1.0"
+      "minVersion": "0.0.0"
     }
   },
   "skills": "./skills",

@@ -120,7 +120,12 @@ export async function publishRelease(argv = process.argv.slice(2), options = {})
             history.tag
             && history.channels[mode]?.commit !== history.tag.commit,
           );
-          const selectedPublicationMode = requiresCandidateCli || resumeTagFirst
+          const completedTagFirst = Boolean(
+            options.expectedPublicationMode === 'tag-first'
+            && history.tag
+            && history.channels[mode]?.commit === history.tag.commit,
+          );
+          const selectedPublicationMode = requiresCandidateCli || resumeTagFirst || completedTagFirst
             ? 'tag-first'
             : 'atomic-combined';
           if (
@@ -177,7 +182,7 @@ export async function publishRelease(argv = process.argv.slice(2), options = {})
                     : (options.publishPreparedEvalPublication
                       ?? publishPreparedEvalPublication)(evalCandidate, assertFresh, options.evalPublicationOptions);
               await assertFresh();
-              if (!requiresCandidateCli && !resumeTagFirst) {
+              if (!requiresCandidateCli && !resumeTagFirst && !completedTagFirst) {
                 const catalog = await (options.publishStagedCatalog ?? publishStagedCatalog)(
                   history,
                   staged.outputRoot,
@@ -197,15 +202,19 @@ export async function publishRelease(argv = process.argv.slice(2), options = {})
                     currentCliVersion,
                   ], {
                     expectedVersion: currentCliVersion,
+                    readCliPackageJson: options.readCliPackageJson,
                     publishedVersion: publishedCliVersion,
                     compareSemVer: compare,
                     skipVerify: true,
                     snapshot,
                     releaseIdentity,
+                    assertCurrentReleaseIdentity: options.assertCurrentReleaseIdentity,
                     publicationLease,
                     evalPublication,
                     cliPublication,
                     beforeNpmWrite: options.beforeNpmWrite,
+                    runCommand: options.runCommand,
+                    resolveCliPublishGitCheckArgs: options.resolveCliPublishGitCheckArgs,
                   });
                   return { path: 'catalog-first', catalog, cli, releaseIdentity };
                 } catch (error) {
@@ -237,15 +246,19 @@ export async function publishRelease(argv = process.argv.slice(2), options = {})
                   currentCliVersion,
                 ], {
                   expectedVersion: currentCliVersion,
+                  readCliPackageJson: options.readCliPackageJson,
                   publishedVersion: publishedCliVersion,
                   compareSemVer: compare,
                   skipVerify: true,
                   snapshot,
                   releaseIdentity,
+                  assertCurrentReleaseIdentity: options.assertCurrentReleaseIdentity,
                   publicationLease,
                   evalPublication,
                   cliPublication,
                   beforeNpmWrite: options.beforeNpmWrite,
+                  runCommand: options.runCommand,
+                  resolveCliPublishGitCheckArgs: options.resolveCliPublishGitCheckArgs,
                 });
               } catch (error) {
                 throw new Error(

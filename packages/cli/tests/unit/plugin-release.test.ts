@@ -182,8 +182,11 @@ describe('plugin release workflow', () => {
       schemaVersion: 4,
       catalogVersion: cliPackage.version,
       channel: String(cliPackage.version).includes('-') ? 'beta' : 'latest',
-      compatibility: { aw: { minVersion: '0.1.0' } },
+      compatibility: { aw: { minVersion: '0.1.0-beta.3' } },
       release: { state: 'development' },
+    });
+    expect(developmentManifest.entries[0]).toMatchObject({
+      compatibility: { aw: { minVersion: '0.0.0' } },
     });
     expect(developmentManifest).not.toHaveProperty('packages');
     await expect(fs.pathExists(path.join(outputRoot, 'plugin-release-ledger.json'))).resolves.toBe(false);
@@ -200,7 +203,7 @@ describe('plugin release workflow', () => {
       schemaVersion: 4,
       catalogVersion: '9.0.0-beta.1',
       channel: 'beta',
-      compatibility: { aw: { minVersion: '0.1.0' } },
+      compatibility: { aw: { minVersion: '0.1.0-beta.3' } },
       release: { state: 'development' },
     });
     expect(staged.manifest).not.toHaveProperty('packages');
@@ -226,6 +229,41 @@ describe('plugin release workflow', () => {
     expect(stable.manifest.entries).toEqual([
       expect.objectContaining({ name: 'git-commit', version: '0.2.0' }),
     ]);
+  });
+
+  it('uses the schema floor for a lower plugin minimum and a higher real plugin minimum when required', async () => {
+    const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-plugin-catalog-minimum-'));
+    tempDirs.push(repoRoot);
+    await fs.copy(path.resolve(
+      path.dirname(fileURLToPath(import.meta.url)), '..', 'fixtures', 'repo-template',
+    ), repoRoot);
+    const outputRoot = path.join(repoRoot, 'output');
+    const manifestPath = path.join(
+      repoRoot, 'plugins', 'git-commit', '.agents-plugin', 'plugin.json',
+    );
+
+    await bundlePlugins({ repoRoot, outputRoot, buildMode: 'staging' });
+    await expect(fs.readJson(path.join(outputRoot, 'catalog-manifest.json')))
+      .resolves.toMatchObject({
+        compatibility: { aw: { minVersion: '0.1.0-beta.3' } },
+        entries: [expect.objectContaining({
+          compatibility: { aw: { minVersion: '0.0.0' } },
+        })],
+      });
+
+    const manifest = await fs.readJson(manifestPath);
+    await fs.writeJson(manifestPath, {
+      ...manifest,
+      compatibility: { aw: { minVersion: '2.0.0' } },
+    }, { spaces: 2 });
+    await bundlePlugins({ repoRoot, outputRoot, buildMode: 'staging' });
+    await expect(fs.readJson(path.join(outputRoot, 'catalog-manifest.json')))
+      .resolves.toMatchObject({
+        compatibility: { aw: { minVersion: '2.0.0' } },
+        entries: [expect.objectContaining({
+          compatibility: { aw: { minVersion: '2.0.0' } },
+        })],
+      });
   });
 
   it('reuses a beta version for identical content and increments it for changed content', () => {

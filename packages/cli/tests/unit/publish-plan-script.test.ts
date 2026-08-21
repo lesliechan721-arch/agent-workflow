@@ -5,6 +5,7 @@ import {
   parsePublishPlanArgs,
   publishCommittedRelease,
 } from '../../../../scripts/release/publish-plan.mjs';
+import { OFFICIAL_CATALOG_PUBLISH_REMOTE } from '../../../../scripts/release/git-catalog-publisher.mjs';
 import { materializeCatalogPlanArtifact } from '../../../../scripts/release/release-prepare.mjs';
 
 function plan(publicationMode: 'none' | 'catalog-only' | 'atomic-combined' | 'tag-first' | 'promotion') {
@@ -108,7 +109,10 @@ describe('committed release plan publisher', () => {
     })).resolves.toMatchObject({ path, planId: `sha256:${'a'.repeat(64)}` });
     expect(publishCombinedRelease).toHaveBeenCalledWith([
       'beta', '--catalog-version', '2.0.0-beta.1', '--cli-version', '1.0.0-beta.1',
-    ], expect.objectContaining({ resolveReleaseHead: expect.any(Function) }));
+    ], expect.objectContaining({
+      remoteUrl: OFFICIAL_CATALOG_PUBLISH_REMOTE,
+      resolveReleaseHead: expect.any(Function),
+    }));
   });
 
   it('runs bootstrap only from the committed candidate without public version arguments', async () => {

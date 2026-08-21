@@ -72,6 +72,7 @@ async function publishCliFromSnapshot(
   releaseIdentity,
   assertFresh,
   cliPublication,
+  options = {},
 ) {
   if (releaseIdentity) assertReleaseSnapshotIdentity(snapshot, releaseIdentity);
   const snapshotPackageJsonPath = path.join(snapshot.cliPackageRoot, 'package.json');
@@ -97,7 +98,7 @@ async function publishCliFromSnapshot(
     ...gitCheckArgs,
   ];
   await assertFresh();
-  await runCommand('pnpm', publishArgs, {
+  await (options.runCommand ?? runCommand)('pnpm', publishArgs, {
     timeoutMs: RELEASE_NETWORK_TIMEOUT_MS,
     env: {
       ...process.env,
@@ -403,9 +404,10 @@ export async function publishCli(argv = process.argv.slice(2), options = {}) {
       const prepareToPublish = async () => {
         if (gitCheckArgs) return gitCheckArgs;
         if (!options.skipVerify) {
-          await runCommand('pnpm', ['run', 'release:verify:cli']);
+          await (options.runCommand ?? runCommand)('pnpm', ['run', 'release:verify:cli']);
         }
-        gitCheckArgs = await resolveCliPublishGitCheckArgs();
+        gitCheckArgs = await (options.resolveCliPublishGitCheckArgs
+          ?? resolveCliPublishGitCheckArgs)();
         return gitCheckArgs;
       };
       const publishPreparedCandidate = async (cliPublication) => {
@@ -457,6 +459,7 @@ export async function publishCli(argv = process.argv.slice(2), options = {}) {
           releaseIdentity,
           assertFresh,
           cliPublication,
+          options,
         );
         return { ...cli, cliPublication, evalPackage };
       };

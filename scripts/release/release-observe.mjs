@@ -14,7 +14,10 @@ import {
   withPrivateEvalTarball,
   withReleaseBuildSnapshot,
 } from './common.mjs';
-import { readCatalogPublicationHistory } from './git-catalog-publisher.mjs';
+import {
+  readCatalogPublicationHistory,
+  resolveCatalogMaintenanceRemote,
+} from './git-catalog-publisher.mjs';
 import {
   calculateCatalogContentDigest,
   calculateCliTrainContentDigest,
@@ -167,13 +170,14 @@ export async function readCurrentReleaseContent(snapshot, sourceHead, options = 
 }
 
 export async function observeReleaseHistory({ targets, channel, cliDistRoot, ...options }) {
+  const remoteUrl = resolveCatalogMaintenanceRemote(options);
   const [registry, rawCatalogHistory] = await Promise.all([
     (options.readRegistryHistory ?? readRegistryReleaseHistory)(options),
     (options.readCatalogHistory ?? readCatalogPublicationHistory)({
       catalogVersion: targets.catalog,
       mode: channel === undefined ? null : channel === 'stable' ? 'latest' : 'beta',
       cliDistRoot,
-      ...(options.catalogRemoteUrl ? { remoteUrl: options.catalogRemoteUrl } : {}),
+      remoteUrl,
     }),
   ]);
   return {

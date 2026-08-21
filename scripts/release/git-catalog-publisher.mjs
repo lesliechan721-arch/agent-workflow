@@ -38,7 +38,7 @@ export const CATALOG_PUBLICATION_LOCK_REF =
 export const CATALOG_TAG_FIRST_PENDING_REF =
   'refs/heads/aw-release/tag-first-pending';
 export const OFFICIAL_CATALOG_PUBLISH_REMOTE =
-  'https://github.com/lesliechan721-arch/agent-workflow.git';
+  'git@github.com:lesliechan721-arch/agent-workflow.git';
 
 function assertSafeRemoteUrl(remoteUrl) {
   if (typeof remoteUrl !== 'string' || remoteUrl.trim() === '') {
@@ -58,6 +58,21 @@ function assertSafeRemoteUrl(remoteUrl) {
     throw new Error(`Unsupported catalog publish remote protocol ${JSON.stringify(parsed.protocol)}.`);
   }
   return remoteUrl;
+}
+
+export function resolveCatalogMaintenanceRemote(options = {}) {
+  const remoteUrl = options.remoteUrl;
+  const legacyCatalogRemoteUrl = options.catalogRemoteUrl;
+  if (
+    remoteUrl !== undefined
+    && legacyCatalogRemoteUrl !== undefined
+    && remoteUrl !== legacyCatalogRemoteUrl
+  ) {
+    throw new Error('Release Catalog remote overrides must identify the same remote.');
+  }
+  return assertSafeRemoteUrl(
+    remoteUrl ?? legacyCatalogRemoteUrl ?? OFFICIAL_CATALOG_PUBLISH_REMOTE,
+  );
 }
 
 function gitEnvironment(env = process.env, privateConfigPath) {
@@ -531,9 +546,7 @@ async function validateSnapshotAndLedger(root, expectedChannel, catalogModules) 
 }
 
 export async function readCatalogPublicationHistory(options) {
-  const remoteUrl = assertSafeRemoteUrl(
-    options.remoteUrl ?? OFFICIAL_CATALOG_PUBLISH_REMOTE,
-  );
+  const remoteUrl = resolveCatalogMaintenanceRemote(options);
   const catalogModules = options.catalogModules ?? await loadCatalogModules(options.cliDistRoot);
   return withTemporaryRepository(async ({ root, git }) => {
     const remote = await bindCatalogRemote(git, remoteUrl);
@@ -876,13 +889,13 @@ async function publishStagedCatalogUnderLease(history, stagedRoot, options) {
     callback: async (context) => {
       const channelRef = CATALOG_CHANNEL_REFS[history.mode];
       const current = history.channels[history.mode];
+      if (current?.commit === context.commit) {
+        return { ...context, mode: history.mode, idempotent: true, promoted: true };
+      }
       if (publicationMode === 'tag' && context.existingTag && !history.pending) {
         throw new Error(
           'Existing catalog tag has no tag-first pending guard; refusing to recreate recovery state.',
         );
-      }
-      if (current?.commit === context.commit) {
-        return { ...context, mode: history.mode, idempotent: true, promoted: true };
       }
       if (publicationMode === 'tag') {
         if (!context.existingTag) {

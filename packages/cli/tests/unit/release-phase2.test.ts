@@ -22,7 +22,15 @@ import {
 } from '../../../../scripts/release/release-state.mjs';
 import { calculateCliTrainContentDigest } from '../../../../scripts/release/release-model.mjs';
 import { calculateCanonicalDigest } from '../../../../scripts/release/release-model.mjs';
-import { readRegistryReleaseHistory } from '../../../../scripts/release/release-observe.mjs';
+import {
+  observeReleaseHistory,
+  readRegistryReleaseHistory,
+} from '../../../../scripts/release/release-observe.mjs';
+import {
+  OFFICIAL_CATALOG_PUBLISH_REMOTE,
+  resolveCatalogMaintenanceRemote,
+} from '../../../../scripts/release/git-catalog-publisher.mjs';
+import { OFFICIAL_CATALOG_SOURCE_URL } from '../../src/constants.js';
 
 const roots: string[] = [];
 const digest = (character: string): string => `sha256:${character.repeat(64)}`;
@@ -134,7 +142,7 @@ function fixture(overrides: Record<string, unknown> = {}) {
         packages,
       },
       catalog: {
-        minCliVersion: '0.1.0-beta.2',
+        minCliVersion: '0.1.0-beta.3',
         contentDigest: digest('5'),
         plugins: [{ name: 'ask-me', targetVersion: '1.0.0', contentDigest: digest('6') }],
       },
@@ -155,7 +163,46 @@ function fixture(overrides: Record<string, unknown> = {}) {
 }
 
 describe('release status and plans', () => {
-  it('reserves legacy beta observations and starts the next complete CLI train at beta.3', () => {
+  it('uses one canonical SSH maintenance remote while runtime keeps the public HTTPS source', async () => {
+    const readCatalogHistory = vi.fn(async (options) => ({
+      remoteUrl: options.remoteUrl,
+      channels: { latest: null, beta: null },
+      tag: null,
+      pending: null,
+      mergedLedger: { schemaVersion: 2, records: [] },
+    }));
+    await observeReleaseHistory({
+      targets: { schemaVersion: 1, cli: '0.1.0', catalog: '0.1.0' },
+      channel: 'beta',
+      cliDistRoot: '/fixture/cli-dist',
+      readRegistryHistory: async () => ({
+        '@lesliechan721/agent-skill-eval': [],
+        '@lesliechan721/aw': [],
+        distTags: {
+          '@lesliechan721/agent-skill-eval': { latest: null, beta: null },
+          '@lesliechan721/aw': { latest: null, beta: null },
+        },
+      }),
+      readCatalogHistory,
+    });
+
+    expect(OFFICIAL_CATALOG_PUBLISH_REMOTE)
+      .toBe('git@github.com:lesliechan721-arch/agent-workflow.git');
+    expect(OFFICIAL_CATALOG_SOURCE_URL)
+      .toBe('https://github.com/lesliechan721-arch/agent-workflow.git');
+    expect(readCatalogHistory).toHaveBeenCalledWith(expect.objectContaining({
+      remoteUrl: OFFICIAL_CATALOG_PUBLISH_REMOTE,
+    }));
+    expect(() => resolveCatalogMaintenanceRemote({
+      remoteUrl: '/fixture/one.git',
+      catalogRemoteUrl: '/fixture/two.git',
+    })).toThrow('must identify the same remote');
+    expect(() => resolveCatalogMaintenanceRemote({
+      remoteUrl: 'https://token@github.com/example/catalog.git',
+    })).toThrow('must not contain');
+  });
+
+  it('uses beta.3 for the first complete CLI train and selects the schema 4 tag-first publication', () => {
     const input = fixture();
     input.history.registry['@lesliechan721/aw'] = [
       { version: '0.1.0-beta.1', awRelease: null },
@@ -163,6 +210,12 @@ describe('release status and plans', () => {
     ];
     const status = calculateReleaseStatus(input);
     expect(status.cli).toMatchObject({ action: 'publish', candidateVersion: '0.1.0-beta.3' });
+    expect(status.catalog).toMatchObject({
+      action: 'publish', candidateVersion: '0.1.0-beta.1', publicationMode: 'tag-first',
+    });
+    expect(status.plugins[0]).toMatchObject({
+      action: 'publish', candidateVersion: '1.0.0-beta.1',
+    });
   });
 
   it('blocks a partial schema-1 CLI train', () => {
@@ -214,15 +267,33 @@ describe('release status and plans', () => {
 
   it('chooses atomic-combined or tag-first from observed train tags and compatibility', () => {
     const atomic = fixture();
-    atomic.history.registry['@lesliechan721/aw'] = [
-      { version: '0.1.0-beta.1', awRelease: null },
-      { version: '0.1.0-beta.2', awRelease: null },
+    const publishedPackages = [
+      { name: '@lesliechan721/agent-skill-eval', contentDigest: digest('d') },
+      { name: '@lesliechan721/aw', contentDigest: digest('e') },
     ];
-    atomic.history.registry.distTags['@lesliechan721/aw'].beta = '0.1.0-beta.2';
+    const publishedTrainDigest = calculateCliTrainContentDigest(publishedPackages);
+    for (const publishedPackage of publishedPackages) {
+      atomic.history.registry[publishedPackage.name] = [{
+        version: '0.1.0-beta.3',
+        awRelease: {
+          schemaVersion: 1,
+          targetVersion: '0.1.0',
+          candidateVersion: '0.1.0-beta.3',
+          planId: digest('9'),
+          sourceHead: 'b'.repeat(40),
+          packageContentDigest: publishedPackage.contentDigest,
+          trainContentDigest: publishedTrainDigest,
+        },
+      }];
+      atomic.history.registry.distTags[publishedPackage.name].beta = '0.1.0-beta.3';
+    }
     expect(calculateReleaseStatus(atomic).catalog.publicationMode).toBe('atomic-combined');
 
     const tagFirst = fixture();
-    tagFirst.content.catalog.minCliVersion = '0.1.0-beta.1';
+    tagFirst.history.registry['@lesliechan721/aw'] = [
+      { version: '0.1.0-beta.1', awRelease: null },
+      { version: '0.1.0-beta.2', awRelease: null },
+    ];
     expect(calculateReleaseStatus(tagFirst).catalog.publicationMode).toBe('tag-first');
   });
 
