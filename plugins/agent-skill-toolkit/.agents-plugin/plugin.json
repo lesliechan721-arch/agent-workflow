@@ -1,7 +1,7 @@
 {
   "name": "agent-skill-toolkit",
   "version": "0.8.0",
-  "description": "使用共享证据和组合标准编写与评审 Agent Skill，并设计或审核 Skill Eval。",
+  "description": "使用共享证据和组合标准编写 Agent Skill，以轻量路径评审 Skill，并设计或审核 Skill Eval。",
   "compatibility": {
     "aw": {
       "minVersion": "0.0.0"
@@ -42,6 +42,18 @@
       {
         "name": "validate-eval-run-bundle",
         "source": "./scripts/validate-eval-run-bundle.mjs"
+      },
+      {
+        "name": "check-agent-skill",
+        "source": "./scripts/check-agent-skill.mjs"
+      },
+      {
+        "name": "validate-review-result-lite",
+        "source": "./scripts/validate-review-result-lite.mjs"
+      },
+      {
+        "name": "review-result-lite-schema",
+        "source": "./schemas/review-result-lite.schema.json"
       },
       {
         "name": "skill-design-brief-schema",
@@ -170,6 +182,21 @@
         "target": "scripts/validate-eval-run-bundle.mjs"
       },
       {
+        "skill": "review-agent-skill",
+        "source": "./scripts/check-agent-skill.mjs",
+        "target": "scripts/check-agent-skill.mjs"
+      },
+      {
+        "skill": "review-agent-skill",
+        "source": "./scripts/validate-review-result-lite.mjs",
+        "target": "scripts/validate-review-result-lite.mjs"
+      },
+      {
+        "skill": "review-agent-skill",
+        "source": "./schemas/review-result-lite.schema.json",
+        "target": "assets/review-result-lite.schema.json"
+      },
+      {
         "skill": "audit-agent-skill-evals",
         "source": "./schemas/eval-audit-result.schema.json",
         "target": "assets/eval-audit-result.schema.json"
@@ -196,7 +223,8 @@
     },
     "tests": {
       "node": [
-        "./scripts/contract.test.mjs"
+        "./scripts/contract.test.mjs",
+        "./scripts/lightweight-review-contract.test.mjs"
       ]
     }
   },

@@ -1,7 +1,7 @@
 {
   "name": "aw-plugin-development",
   "version": "0.9.0",
-  "description": "通过 AW adapter 组合通用 Agent Skill 与 Agent 内容 toolkit，在兼容工作区中编写和评审 AW 插件。",
+  "description": "通过 AW adapter 组合通用 Agent Skill 与 Agent 内容 toolkit，创建、维护并轻量评审 AW 插件。",
   "compatibility": {
     "aw": {
       "minVersion": "0.0.0"
@@ -175,6 +175,35 @@
           "plugin": "agent-content-toolkit",
           "export": "reference-audit-result-schema"
         }
+      },
+      {
+        "skill": "review-aw-plugin",
+        "target": "scripts/check-aw-plugin-release.mjs",
+        "source": "./scripts/check-aw-plugin-release.mjs"
+      },
+      {
+        "skill": "review-aw-plugin",
+        "target": "scripts/check-agent-skill.mjs",
+        "import": {
+          "plugin": "agent-skill-toolkit",
+          "export": "check-agent-skill"
+        }
+      },
+      {
+        "skill": "review-aw-plugin",
+        "target": "scripts/validate-review-result-lite.mjs",
+        "import": {
+          "plugin": "agent-skill-toolkit",
+          "export": "validate-review-result-lite"
+        }
+      },
+      {
+        "skill": "review-aw-plugin",
+        "target": "assets/review-result-lite.schema.json",
+        "import": {
+          "plugin": "agent-skill-toolkit",
+          "export": "review-result-lite-schema"
+        }
       }
     ]
   },
@@ -193,7 +222,8 @@
         "./scripts/reference-contract.test.mjs",
         "./scripts/review-target-contract.test.mjs",
         "./scripts/eval-evidence-contract.test.mjs",
-        "./scripts/authoring-context-contract.test.mjs"
+        "./scripts/authoring-context-contract.test.mjs",
+        "./scripts/lightweight-review-contract.test.mjs"
       ]
     }
   },

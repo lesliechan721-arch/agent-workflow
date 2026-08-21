@@ -1,34 +1,52 @@
 ---
 name: review-aw-plugin
 description: >-
-  当用户要只读审核一个 AW 插件根、materialized final artifacts、Eval evidence 或工作区发布就绪性时使用。目标根由 `.agents-plugin/plugin.json` 标识，可以位于任意兼容工作区；负责证据准备、通用 Reviewer 组合和报告发布适配，不评审普通 repo-local Skill，也不修改插件生产源码。
-compatibility: 需要 Node.js 22+、目标工作区依赖、agent-content-toolkit >= 0.5.0 和 agent-skill-toolkit >= 0.8.0。真实模型 Eval 可选使用 agent-skill-eval-runner >= 0.3.0。
+  当用户要只读审核一个 AW 插件源码、materialized Skill 或发布准备状态时使用。负责 AW manifest/profile 的确定性检查、调用通用 review-agent-skill，并在显式发布检查时实时重算 profile coverage；不维护通用量表，不修改插件源码，不发布报告。
+compatibility: 需要 Node.js 22+、agent-content-toolkit >= 0.5.0 和 agent-skill-toolkit >= 0.8.0。真实模型 Eval 可选使用 agent-skill-eval-runner >= 0.3.0。
 user-invocable: true
 metadata:
-  short-description: 只读评审 AW 插件源码、最终制品与 Eval 证据
+  short-description: 轻量只读评审 AW 插件并按需执行发布检查
 ---
 
 # Review AW Plugin
 
-本 Skill 准备 AW 插件证据并组合通用 Reviewer；不维护通用量表，不处理普通 repo-local Skill，也不修改生产源码。
+本 Skill 是 AW 项目适配层。通用设计质量由 `review-agent-skill` 判断；AW 平台事实和发布资格由确定性工具计算。
 
-## 依赖 Gate
+## 普通 Review
 
-必须能使用 `review-agent-skill`、`audit-agent-skill-evals`、`review-agent-content`。缺失时停止。真实模型 Eval 只有在显式 runner 可用和用户授权时执行；缺少 runner 只降低证据等级。
+1. 定位 `.agents-plugin/plugin.json` 和实际 `skills` 根。运行 `node scripts/inspect-aw-target.mjs <plugin-root> --repo-root <workspace-root>`，只把确定性错误作为机器阻断项。
+2. 为每个 source Skill 运行通用 `review-agent-skill`。materialized final 已存在且内容不同于 source 时，再按唯一内容 digest 评审一次；相同 digest 复用设计结论。
+3. 大型或多分支 reference 可以交给 fresh-context `review-agent-content`。有 Eval 时可以交给 `audit-agent-skill-evals`；不持久化 stageOwner、producer、independentContext 或 target plan。
+4. 输出简洁人类报告：AW 机器错误、每个唯一 Skill digest 的设计结论、最多 3 个高价值改进和关键 unknowns。
 
-## 工作流
+普通 Review 不生成 `AWReviewTargetPlan`、`ReviewInputBundle` 或 `AWReviewSummary`，也不声明 release readiness。
 
-1. 运行 `node scripts/prepare-aw-review-bundle.mjs <plugin-root> --repo-root <workspace-root> [options]`；再用 `validate-review-input-bundle.mjs` 验证真实 stage 文件、digest、schema、producer 和 subject binding。
-2. 运行 `node scripts/prepare-aw-review-target-plan.mjs <plugin-root> --bundle <plugin-bundle.json> --output <target-plan.json> --mode <mode> [--profile <profile>] [--final <profile=path>]`。release-quality 未显式收窄时，计划必须从 manifest 产品范围推导全部平台×scope target；Reviewer 不得删除 expected target。
-3. 运行 `prepare-aw-review-targets.mjs --output-root <handoff-root>`，为每个 source Skill 生成 `aw-plugin-skill` target，为每个 materialized Skill/profile 生成 `materialized-skill` target，并为每个生成 bundle 写入 package-inspection stage。提供 plugin bundle 时，只携带 Skill digest 匹配的 audit、run result 和 stage；不得让模型自行配对。
-4. Eval audit、reference audit、每个 source/final review 与 result triage 在材料非平凡时使用 fresh context；父级只消费结构化结果。
-5. 有 Eval 时先运行 `audit-agent-skill-evals(preflight)`。用户授权且 runner 可用时生成 `EvalExecutionPlan` 并调用 `run-agent-skill-evals`；否则 `evalEvidenceLevel=structural`，release evidence provisional，不视为 Skill finding。
-6. 对每个 target 分别调用 `review-agent-skill`；大型 reference 先由 `review-agent-content` 审计。digest 和 mode 完全相同的 target 可以复用同一 ReviewResult，但 summary 仍逐 expected target 记录 coverage。
-7. 使用 `inspect-aw-target.mjs <plugin-root> --repo-root <workspace-root>` 检查 manifest、source-final、profile、digest、currentness、权限与版本。
-8. 聚合通用 ReviewResult 和项目 gate，再运行 `node scripts/validate-aw-review-summary.mjs <summary.json> --plan <target-plan.json> --plugin-root <plugin-root> --evidence <reviewEvidenceId> <review-result.json> <target-bundle.json> ... --format json`。Validator 会从当前 manifest 和 Skill 根重算 source×profile target universe。每个 summary evidence ID 必须绑定已验证的真实 ReviewResult；不能手工缩小计划或补 coverage row。正式报告发布需要明确授权；README/manifest 写入交给 `author-aw-plugin` 或工作区 release 工具。
+## 发布检查
+
+只有用户明确要求检查当前插件能否发布时，才准备所有目标 profile 的 materialized Skill，并运行：
+
+```bash
+node scripts/check-aw-plugin-release.mjs <plugin-root> \
+  --review <review-result-lite.json> \
+  --final <profile=materialized-root> \
+  [--review <another-review.json>] \
+  [--final <another-profile=materialized-root>] \
+  --format json
+```
+
+发布检查器会实时：
+
+- 从 manifest 推导全部支持 profile，或使用用户显式 `--profile` 范围；
+- 对 source 和 final 重新运行 `check-agent-skill`；
+- 按内容 digest 去重并绑定 `ReviewResultLite`；
+- 拒绝缺失 final、缺失 review、机器检查失败或非 pass 的设计结论；
+- 当 Eval manifest 把 suite 标为 `requiredForRelease` 时，要求 review 记录 executed/comparative 证据。
+
+它直接输出 `ready` 和 reasons，不创建 target plan、coverage row、summary gate 或 evidence ID。可便宜重算的 profile、digest、closure 和 currentness 不持久化成模型 handoff。
 
 ## 边界
 
-- 不修改生产 Skill、Eval case、README 或 plugin source。
-- 普通 `.agents/skills/*` 直接使用通用 `review-agent-skill`；旧项目 publish/release、README 登记和 static batch/currentness 不迁移。
-- 通用质量结论由 `review-agent-skill` 产生；本 Skill 只增加 AW 工作区证据和 gate。
+- 不修改 Skill、Eval case、README、manifest 或 materialized final。
+- 普通 `.agents/skills/*` 直接使用通用 `review-agent-skill`。
+- 旧 bundle/summary/target-plan 工具仅为历史报告兼容，不再属于默认 Skill 工作流；不要为新需求扩展旧合同。
+- 正式发布、报告归档和 README 登记由工作区 release 工具负责。
