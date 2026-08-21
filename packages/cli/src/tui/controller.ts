@@ -32,7 +32,7 @@ export type OperationIntent =
       kind: 'pluginWrite';
       action: PluginWriteOperation;
       pluginId: string;
-      platform: PlatformName;
+      platform: PlatformName | 'both';
       scope: Scope;
     }
   | {
@@ -112,10 +112,23 @@ export type OperationExecuteResult =
   | {
       state: 'succeeded';
       operationId: string;
-      summary: { code: 'operationSucceeded'; message: string };
+      summary: OperationResultSummary;
     }
+  | { state: 'partial'; operationId: string; summary: OperationResultSummary }
   | { state: 'stale'; operationId: string; review: OperationReviewModel }
   | { state: 'blocked'; operationId: string; code: string; message: string };
+
+export interface OperationResultSummary {
+  code: 'operationSucceeded' | 'operationPartial';
+  message: string;
+  pluginId?: string;
+  action?: PluginWriteOperation;
+  targets?: Array<{
+    platform: PlatformName;
+    scope: Scope;
+    state: 'completed' | 'failed';
+  }>;
+}
 
 export interface TuiStatusLoadResult {
   payload: StatusV4Payload;
@@ -143,13 +156,14 @@ export interface TuiControllerDependencies {
 }
 
 export interface TuiControllerSnapshot {
-  phase: 'idle' | 'loading' | 'ready' | 'disposed';
+  phase: 'idle' | 'loading' | 'ready' | 'error' | 'disposed';
   router: TuiRouterSnapshot;
   viewModel?: TuiViewModel;
   sourceHealth: SourceHealthViewModel[];
   progress: RebuildProgressSnapshot;
   activeReview?: OperationReviewModel;
   result?: OperationExecuteResult;
+  loadError?: { code: string; message: string };
 }
 
 interface ReviewTicket {
@@ -242,14 +256,16 @@ function operationLabels(intent: OperationIntent): {
 
 function reviewChanges(intent: OperationIntent): OperationReviewChange[] {
   if (intent.kind === 'pluginWrite') {
-    const location = `${intent.platform === 'codex' ? 'Codex' : 'Claude Code'} · ${intent.scope === 'user' ? '所有项目' : '当前项目'}`;
-    return [{
+    const platforms: PlatformName[] = intent.platform === 'both'
+      ? ['codex', 'claude']
+      : [intent.platform];
+    return platforms.map((platform) => ({
       kind: intent.action === 'uninstall' || intent.action === 'cleanup' ? 'remove' : intent.action === 'install' ? 'add' : 'change',
-      title: location,
+      title: `${platform === 'codex' ? 'Codex' : 'Claude Code'} · ${intent.scope === 'user' ? '所有项目' : '当前项目'}`,
       description: intent.action === 'uninstall' || intent.action === 'cleanup'
         ? '插件设置不会删除。'
         : '执行前会再次检查当前安装状态。',
-    }];
+    }));
   }
   if (intent.kind === 'configReset') {
     return [{ kind: 'remove', title: '删除此层的已存值', description: '有效值将恢复为继承值或默认值。' }];
@@ -312,6 +328,7 @@ export class TuiController {
   #progress: RebuildProgressSnapshot = { messages: [] };
   #activeReview?: OperationReviewModel;
   #result?: OperationExecuteResult;
+  #loadError?: { code: string; message: string };
   #loadGeneration = 0;
   #disposed = false;
 
@@ -336,6 +353,7 @@ export class TuiController {
       progress: this.#progress,
       ...(this.#activeReview ? { activeReview: this.#activeReview } : {}),
       ...(this.#result ? { result: this.#result } : {}),
+      ...(this.#loadError ? { loadError: this.#loadError } : {}),
     });
   }
 
@@ -364,7 +382,18 @@ export class TuiController {
     const generation = ++this.#loadGeneration;
     this.#phase = 'loading';
     this.#publish();
-    const status = await this.dependencies.loadStatus(this.#abort.signal);
+    let status: TuiStatusLoadResult;
+    try {
+      status = await this.dependencies.loadStatus(this.#abort.signal);
+    } catch (error) {
+      if (this.#disposed || generation !== this.#loadGeneration) return;
+      const code = issueCode(error);
+      await this.dependencies.logError?.(error, code);
+      this.#phase = 'error';
+      this.#loadError = { code, message: '无法安全读取插件状态。请检查诊断后重试或退出。' };
+      this.#publish();
+      return;
+    }
     if (this.#disposed || generation !== this.#loadGeneration) return;
     this.#status = structuredClone(status);
     this.#health.clear();
@@ -378,6 +407,7 @@ export class TuiController {
       });
     }
     this.#phase = 'ready';
+    this.#loadError = undefined;
     this.#project();
     this.#publish();
     for (const source of status.payload.catalog.sources) {
@@ -393,6 +423,7 @@ export class TuiController {
     const signal = AbortSignal.any([this.#abort.signal, sourceAbort.signal]);
     const token = (this.#sourceTokens.get(sourceId) ?? 0) + 1;
     this.#sourceTokens.set(sourceId, token);
+    const generation = ++this.#loadGeneration;
     const current = this.#status.payload.catalog.sources.find((source) => source.id === sourceId);
     const hadCache = current !== undefined && current.error === undefined && current.freshness !== undefined;
     this.#health.set(sourceId, { sourceId, state: 'checking' });
@@ -403,7 +434,7 @@ export class TuiController {
       const status = await this.dependencies.loadStatus(signal);
       if (this.#disposed
         || token !== this.#sourceTokens.get(sourceId)) return;
-      this.#status = structuredClone(status);
+      if (generation === this.#loadGeneration) this.#status = structuredClone(status);
       const refreshed = status.payload.catalog.sources.find((source) => source.id === sourceId);
       const state = !refreshed
         ? 'unavailable'
@@ -447,6 +478,11 @@ export class TuiController {
 
   push(route: TuiRoute, context?: TuiPageContext): void {
     this.#router.push(route, context);
+    this.#publish();
+  }
+
+  replace(route: TuiRoute, context?: TuiPageContext): void {
+    this.#router.replace(route, context);
     this.#publish();
   }
 
@@ -520,7 +556,11 @@ export class TuiController {
     return this.#storeOperationReview(intent, evidence);
   }
 
-  #storeOperationReview(intent: OperationIntent, evidence: OperationEvidence): OperationReviewModel {
+  #storeOperationReview(
+    intent: OperationIntent,
+    evidence: OperationEvidence,
+    navigation: 'push' | 'replace' = 'push',
+  ): OperationReviewModel {
     const labels = operationLabels(intent);
     const operationId = this.dependencies.createToken?.() ?? crypto.randomUUID();
     const reviewToken = this.dependencies.createToken?.() ?? crypto.randomUUID();
@@ -535,8 +575,15 @@ export class TuiController {
       title: labels.title,
       description: labels.description,
       subject: {
-        name: 'pluginId' in intent ? pluginNameFromId(intent.pluginId) : pluginId,
+        name: 'pluginId' in intent
+          ? this.#viewModel?.plugins.find((plugin) => plugin.pluginId === intent.pluginId)?.displayName
+            ?? pluginNameFromId(intent.pluginId)
+          : pluginId,
         ...('pluginId' in intent ? { sourceLabel: sourceIdFromPluginId(intent.pluginId) } : {}),
+        ...('pluginId' in intent
+          && this.#viewModel?.plugins.find((plugin) => plugin.pluginId === intent.pluginId)?.version
+          ? { version: this.#viewModel.plugins.find((plugin) => plugin.pluginId === intent.pluginId)!.version }
+          : {}),
       },
       changes: reviewChanges(intent),
       technicalDetails: technicalDetails(evidence),
@@ -550,7 +597,7 @@ export class TuiController {
     });
     this.#activeReview = structuredClone(review);
     this.#result = undefined;
-    this.#router.push({ name: 'review', operationId });
+    this.#router[navigation]({ name: 'review', operationId });
     this.#publish();
     return cloneFrozen(review);
   }
@@ -574,23 +621,20 @@ export class TuiController {
       return this.#setBlocked(operationId, code);
     }
     if (operationEvidenceFingerprint(current) !== operationEvidenceFingerprint(ticket.evidence)) {
-      const review = this.#storeOperationReview(ticket.intent, current);
-      const result: OperationExecuteResult = { state: 'stale', operationId, review };
-      this.#result = result;
-      this.#publish();
-      return cloneFrozen(result);
+      return this.#rebuildStaleReview(ticket, operationId, current);
     }
-    this.#router.push({ name: 'progress', operationId });
+    this.#router.replace({ name: 'progress', operationId });
     this.#publish();
     try {
-      await this.dependencies.executeIntent(
+      const execution = await this.dependencies.executeIntent(
         structuredClone(ticket.intent),
         structuredClone(ticket.evidence),
       );
+      const summary = operationResultSummary(ticket.intent, execution);
       const result: OperationExecuteResult = {
-        state: 'succeeded',
+        state: summary.code === 'operationPartial' ? 'partial' : 'succeeded',
         operationId,
-        summary: { code: 'operationSucceeded', message: '操作已完成。' },
+        summary,
       };
       this.#result = result;
       this.#activeReview = undefined;
@@ -601,25 +645,52 @@ export class TuiController {
       const code = issueCode(error);
       await this.dependencies.logError?.(error, code);
       if (code === 'operationReviewStale') {
-        let evidence: OperationEvidence;
-        try {
-          evidence = await this.dependencies.captureEvidence(
-            structuredClone(ticket.intent),
-            this.#abort.signal,
-          );
-        } catch (captureError) {
-          const captureCode = issueCode(captureError);
-          await this.dependencies.logError?.(captureError, captureCode);
-          return this.#setBlocked(operationId, captureCode);
-        }
-        const review = this.#storeOperationReview(ticket.intent, evidence);
-        const result: OperationExecuteResult = { state: 'stale', operationId, review };
-        this.#result = result;
-        this.#publish();
-        return cloneFrozen(result);
+        return this.#rebuildStaleReview(ticket, operationId);
       }
       return this.#setBlocked(operationId, code);
     }
+  }
+
+  async #rebuildStaleReview(
+    ticket: ReviewTicket,
+    operationId: string,
+    currentEvidence?: OperationEvidence,
+  ): Promise<OperationExecuteResult> {
+    try {
+      await this.dependencies.validateIntent?.(structuredClone(ticket.intent), this.#abort.signal);
+    } catch (error) {
+      const code = issueCode(error);
+      await this.dependencies.logError?.(error, code);
+      const result: OperationExecuteResult = {
+        state: 'blocked',
+        operationId,
+        code,
+        message: '状态已变化，原操作不再安全。请修改选择后重试。',
+      };
+      this.#result = structuredClone(result);
+      this.#activeReview = undefined;
+      this.#router.back();
+      this.#publish();
+      return cloneFrozen(result);
+    }
+    let evidence = currentEvidence;
+    if (!evidence) {
+      try {
+        evidence = await this.dependencies.captureEvidence(
+          structuredClone(ticket.intent),
+          this.#abort.signal,
+        );
+      } catch (error) {
+        const code = issueCode(error);
+        await this.dependencies.logError?.(error, code);
+        return this.#setBlocked(operationId, code);
+      }
+    }
+    const review = this.#storeOperationReview(ticket.intent, evidence, 'replace');
+    const result: OperationExecuteResult = { state: 'stale', operationId, review };
+    this.#result = result;
+    this.#publish();
+    return cloneFrozen(result);
   }
 
   #setBlocked(operationId: string, code: string): OperationExecuteResult {
@@ -643,4 +714,45 @@ export class TuiController {
     this.#phase = 'disposed';
     this.#listeners.clear();
   }
+}
+
+function operationResultSummary(intent: OperationIntent, execution: unknown): OperationResultSummary {
+  const rawTargets = typeof execution === 'object' && execution !== null
+    && Array.isArray((execution as { targetResults?: unknown }).targetResults)
+    ? (execution as { targetResults: Array<Record<string, unknown>> }).targetResults
+    : [];
+  const targets = rawTargets.flatMap((entry) => {
+    const target = typeof entry.target === 'object' && entry.target !== null
+      ? entry.target as Record<string, unknown>
+      : entry;
+    const platform = target.platform;
+    const scope = target.scope;
+    const state = entry.state;
+    if ((platform !== 'codex' && platform !== 'claude')
+      || (scope !== 'user' && scope !== 'project')
+      || (state !== 'completed' && state !== 'failed')) return [];
+    return [{
+      platform: platform as PlatformName,
+      scope: scope as Scope,
+      state: state as 'completed' | 'failed',
+    }];
+  });
+  const inferredTargets = intent.kind === 'pluginWrite' && targets.length === 0
+    ? (intent.platform === 'both' ? ['codex', 'claude'] as const : [intent.platform]).map((platform) => ({
+        platform,
+        scope: intent.scope,
+        state: 'completed' as const,
+      }))
+    : targets;
+  const partial = inferredTargets.some((target) => target.state === 'failed')
+    && inferredTargets.some((target) => target.state === 'completed');
+  return {
+    code: partial ? 'operationPartial' : 'operationSucceeded',
+    message: partial ? '操作只完成了一部分。' : '操作已完成。',
+    ...(intent.kind === 'pluginWrite' ? {
+      pluginId: intent.pluginId,
+      action: intent.action,
+    } : {}),
+    ...(inferredTargets.length > 0 ? { targets: inferredTargets } : {}),
+  };
 }

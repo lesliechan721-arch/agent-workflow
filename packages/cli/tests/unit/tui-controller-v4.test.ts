@@ -6,6 +6,7 @@ import {
   TuiController,
   type OperationEvidence,
   type TuiControllerDependencies,
+  type TuiStatusLoadResult,
 } from '../../src/tui/controller.js';
 import { buildTuiViewModel } from '../../src/tui/model.js';
 import { TuiRouter } from '../../src/tui/router.js';
@@ -212,6 +213,20 @@ describe('TUI v4 router and ViewModel', () => {
 });
 
 describe('TUI v4 background source checks', () => {
+  it('publishes a safe terminal state when the initial status load fails', async () => {
+    const controller = new TuiController(dependencies({
+      loadStatus: vi.fn().mockRejectedValue(new Error('nativeStateUnreadable: /private/path')),
+    }));
+
+    await expect(controller.load()).resolves.toBeUndefined();
+
+    expect(controller.snapshot).toMatchObject({
+      phase: 'error',
+      loadError: { code: 'nativeStateUnreadable' },
+    });
+    expect(JSON.stringify(controller.snapshot)).not.toContain('/private/path');
+  });
+
   it('returns the cache-first page before a successful remote check refreshes its data', async () => {
     const remote = deferred<void>();
     const initial = { payload: status(), pluginSummaries: summaries(['official', 'demo']) };
@@ -325,6 +340,36 @@ describe('TUI v4 background source checks', () => {
     expect(controller.snapshot.sourceHealth).toContainEqual({ sourceId: 'official', state: 'ready' });
   });
 
+  it('does not let an older full reload for another source overwrite newer status', async () => {
+    const older = deferred<TuiStatusLoadResult>();
+    const newer = deferred<TuiStatusLoadResult>();
+    const initial = {
+      payload: status({ sources: [
+        source('alpha', { type: 'path', freshness: 'path', primary: true }),
+        source('beta', { type: 'path', freshness: 'path', primary: false }),
+      ] }),
+      pluginSummaries: summaries(['alpha', 'old']),
+    };
+    const controller = new TuiController(dependencies({
+      loadStatus: vi.fn()
+        .mockResolvedValueOnce(initial)
+        .mockImplementationOnce(() => older.promise)
+        .mockImplementationOnce(() => newer.promise),
+    }));
+    await controller.load();
+
+    const alpha = controller.refreshSource('alpha');
+    const beta = controller.refreshSource('beta');
+    newer.resolve({ ...initial, pluginSummaries: summaries(['beta', 'newer']) });
+    await beta;
+    older.resolve({ ...initial, pluginSummaries: summaries(['alpha', 'stale']) });
+    await alpha;
+
+    expect(controller.listPlugins({ mode: 'browse' }).map((plugin) => plugin.pluginId)).toEqual([
+      'beta/newer',
+    ]);
+  });
+
   it('aborts an older generation when the same source is refreshed again', async () => {
     const signals: AbortSignal[] = [];
     const checks: Array<ReturnType<typeof deferred<void>>> = [];
@@ -370,7 +415,7 @@ describe('TUI v4 background source checks', () => {
 });
 
 describe('TUI v4 Review safety', () => {
-  it('performs zero writes for stale evidence and returns a new Review for the same intent', async () => {
+  it('performs zero writes and returns to the input page when stale evidence makes the intent illegal', async () => {
     const changedEvidence = { ...baseEvidence, targetFingerprint: 'sha256:changed' };
     const executeIntent = vi.fn();
     const validateIntent = vi.fn()
@@ -397,17 +442,12 @@ describe('TUI v4 Review safety', () => {
     const result = await controller.executeOperation(review.reviewToken);
 
     expect(executeIntent).not.toHaveBeenCalled();
-    expect(validateIntent).toHaveBeenCalledTimes(1);
+    expect(validateIntent).toHaveBeenCalledTimes(2);
     expect(result).toMatchObject({
-      state: 'stale',
-      review: { operationId: 'operation-2', reviewToken: 'review-2' },
+      state: 'blocked',
+      code: 'targetAlreadyInstalled',
     });
-    if (result.state === 'stale') {
-      expect(controller.snapshot.router.current.route).toEqual({
-        name: 'review',
-        operationId: result.review.operationId,
-      });
-    }
+    expect(controller.snapshot.router.current.route).toEqual({ name: 'home' });
   });
 
   it('returns a new Review when the locked write reports a typed stale prefix', async () => {
@@ -432,6 +472,7 @@ describe('TUI v4 Review safety', () => {
     const result = await controller.executeOperation(review.reviewToken);
 
     expect(result.state).toBe('stale');
+    expect(controller.snapshot.router.depth).toBe(2);
     expect(JSON.stringify(controller.snapshot)).not.toContain('/Users/private');
     expect(JSON.stringify(controller.snapshot)).not.toContain('token-private');
   });
@@ -481,6 +522,9 @@ describe('TUI v4 Review safety', () => {
       expect.objectContaining({ pluginId: 'team-tools/review-gate' }),
       baseEvidence,
     );
+    expect(controller.snapshot.result).toMatchObject({
+      summary: { pluginId: 'team-tools/review-gate', action: 'cleanup' },
+    });
   });
 
   it('keeps only a safe result summary and a fixed typed failure message', async () => {

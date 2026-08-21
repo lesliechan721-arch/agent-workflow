@@ -17,6 +17,7 @@ export {
   type OperationEvidence,
   type OperationExecuteResult,
   type OperationIntent,
+  type OperationResultSummary,
   type OperationReviewModel,
   type TuiControllerDependencies,
   type TuiControllerSnapshot,
@@ -25,6 +26,12 @@ export {
   createConsoleTuiV4Controller,
   createTuiControllerDependencies,
 } from './controller-runtime.js';
+export {
+  CONSOLE_V4_SCREEN_IDS,
+  ConsoleAppV4,
+  resolveConsoleV4ScreenId,
+  type ConsoleV4ScreenId,
+} from './console-app-v4.js';
 export {
   buildConfigGroups,
   buildTuiViewModel,

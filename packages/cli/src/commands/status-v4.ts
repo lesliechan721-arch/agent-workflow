@@ -92,6 +92,8 @@ export interface StatusV4Payload {
 interface StatusPluginCapability {
   name: string;
   version: string;
+  displayName: string;
+  shortDescription: string;
   description: string;
   configSchema?: Record<string, PluginConfigSchemaField>;
   targets: Record<PlatformName, Record<Scope, boolean>>;
@@ -105,7 +107,11 @@ interface StatusPluginCapability {
 export interface StatusV4PluginSummary {
   pluginName: string;
   pluginId: string;
+  displayName?: string;
   description: string;
+  version?: string;
+  supportedTargets?: Record<PlatformName, Scope[]>;
+  configFieldCount?: number;
   configSchema?: Record<string, PluginConfigSchemaField>;
 }
 
@@ -475,6 +481,9 @@ export async function statusCommandV4(options: {
               return {
                 name: entry.name,
                 version: entry.version,
+                displayName: plugin.manifest.interface?.displayName ?? entry.name,
+                shortDescription: plugin.manifest.interface?.shortDescription
+                  ?? plugin.manifest.description,
                 description: plugin.manifest.description,
                 ...(plugin.manifest.config?.schema
                   ? { configSchema: plugin.manifest.config.schema }
@@ -794,7 +803,14 @@ export async function statusCommandV4(options: {
     pluginSummaries: available.map((entry) => ({
       pluginName: entry.name,
       pluginId: formatPluginId({ sourceId: entry.source.id, pluginName: entry.name }),
-      description: entry.description,
+      displayName: entry.displayName,
+      description: entry.shortDescription,
+      version: entry.version,
+      supportedTargets: {
+        codex: (['user', 'project'] as const).filter((scope) => entry.targets.codex[scope]),
+        claude: (['user', 'project'] as const).filter((scope) => entry.targets.claude[scope]),
+      },
+      configFieldCount: Object.keys(entry.configSchema ?? {}).length,
       ...(entry.configSchema ? { configSchema: entry.configSchema } : {}),
     })),
   };

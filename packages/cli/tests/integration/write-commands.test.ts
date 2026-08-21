@@ -50,6 +50,122 @@ async function configureCatalog(): Promise<ReturnType<typeof getCurrentSourceTes
 }
 
 describe('five namespaced write commands', () => {
+  it('executes a real dual-platform TUI write under one complete locked review', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'review-both-source');
+    const pluginRoot = path.join(sourceRoot, 'plugins', 'demo');
+    await fs.outputFile(path.join(pluginRoot, 'scripts', 'render.mjs'), [
+      'import { readFile } from "node:fs/promises";',
+      'const context = JSON.parse(await readFile(process.env.AW_PLUGIN_CONTEXT, "utf8"));',
+      'const files = { "SKILL.md": "---\\nname: review\\ndescription: Review.\\n---\\n", "README.md": "Review.\\n" };',
+      'if (context.platform === "codex") files["agents/openai.yaml"] = "policy:\\n  allow_implicit_invocation: true\\n";',
+      'console.log(JSON.stringify({ version: 2, artifacts: [{',
+      '  id: `${context.platform}-review`, kind: "skill", platform: context.platform,',
+      '  target: `${context.platform}.skill`, state: "present", refreshKeys: [],',
+      '  skillKey: "review", content: { files }',
+      '}] }));',
+    ].join('\n'));
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', 'demo\n', (manifest) => {
+      manifest.marketplace.policy.products = ['CODEX', 'CLAUDE'];
+      manifest.scripts = {
+        artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } },
+      };
+      manifest.artifacts = {
+        targets: (['codex', 'claude'] as const).map((platform) => ({
+          id: `${platform}-review`,
+          platform,
+          scopes: ['project'],
+          target: `${platform}.skill`,
+          states: ['present'],
+          refreshKeys: [],
+          skillKey: 'review',
+        })),
+      };
+    });
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 1,
+        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
+      },
+      expectedDigest: snapshot.digest,
+      env: isolation.env,
+    });
+    const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      nativeCliRunner: async (invocation) => ({
+        exitCode: 0,
+        stdout: invocation.command === 'claude' ? 'claude 99.0.0' : 'codex-cli 99.0.0',
+        stderr: '',
+      }),
+      interactive: false,
+    }));
+    const intent = {
+      kind: 'pluginWrite',
+      action: 'install',
+      pluginId: 'team/demo',
+      platform: 'both',
+      scope: 'project',
+    } as const;
+    await dependencies.validateIntent!(intent, new AbortController().signal);
+    const evidence = await dependencies.captureEvidence(intent);
+
+    const result = await dependencies.executeIntent(intent, evidence) as Awaited<ReturnType<typeof installWriteCommand>>;
+
+    expect(result.targetResults).toEqual(expect.arrayContaining([
+      expect.objectContaining({ target: expect.objectContaining({ platform: 'codex', scope: 'project' }) }),
+      expect.objectContaining({ target: expect.objectContaining({ platform: 'claude', scope: 'project' }) }),
+    ]));
+    expect(result.targetResults.map((target) => target.errorCode)).not.toContain('operationReviewStale');
+  });
+
+  it('blocks a reviewed install when the other scope is installed concurrently', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'review-scope-source');
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', 'demo\n', (manifest) => {
+      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.extensions = {
+        instructions: [{ name: 'review', title: 'Review', content: 'scope evidence' }],
+      };
+    });
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 1,
+        sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }],
+      },
+      expectedDigest: snapshot.digest,
+      env: isolation.env,
+    });
+    const nativeCliRunner = async () => ({ exitCode: 0, stdout: 'codex-cli 99.0.0', stderr: '' });
+    const controller = new TuiController(createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      nativeCliRunner,
+      interactive: false,
+    })));
+    const review = await controller.buildOperationReview({
+      kind: 'pluginWrite',
+      action: 'install',
+      pluginId: 'team/demo',
+      platform: 'codex',
+      scope: 'user',
+    });
+    const concurrent = await installWriteCommand(['team/demo'], {
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'codex',
+      scope: 'project',
+    }, { env: isolation.env, nativeCliRunner });
+    expect(concurrent.overallState).toBe('succeeded');
+
+    const result = await controller.executeOperation(review.reviewToken);
+
+    expect(result).toMatchObject({ state: 'blocked', code: 'scopeConflict' });
+    expect(controller.snapshot.router.current.route).toEqual({ name: 'home' });
+    controller.dispose();
+  });
+
   it('returns a new Review when the real write bridge detects changed source and target evidence under its operation lock', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = path.join(isolation.layout.fixtureCwd, 'review-stale-source');

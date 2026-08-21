@@ -39,6 +39,8 @@ export interface PluginListItemViewModel {
   sourceId: string;
   displayName: string;
   description: string;
+  version?: string;
+  configFieldCount: number;
   sourceLabel: string;
   supportedPlatforms: PlatformName[];
   installedPlacements: PlatformPlacementSummary[];
@@ -262,10 +264,18 @@ export function buildTuiViewModel(options: {
     return {
       pluginId,
       sourceId,
-      displayName: summary?.pluginName ?? targets[0]?.pluginName ?? pluginId,
+      displayName: summary?.displayName ?? summary?.pluginName ?? targets[0]?.pluginName ?? pluginId,
       description: summary?.description ?? '',
+      ...(summary?.version ?? targets[0]?.version
+        ? { version: summary?.version ?? targets[0]?.version }
+        : {}),
+      configFieldCount: summary?.configFieldCount
+        ?? Object.keys(summary?.configSchema ?? {}).length,
       sourceLabel: sourceId,
-      supportedPlatforms: placements.map((placement) => placement.platform),
+      supportedPlatforms: summary?.supportedTargets
+        ? (['codex', 'claude'] as const).filter((platform) =>
+            summary.supportedTargets![platform].length > 0)
+        : placements.map((placement) => placement.platform),
       installedPlacements: placements,
       aggregateStatus: unavailable ? 'unavailable' : attention ? 'needsAttention' : installed ? 'installed' : 'available',
     };

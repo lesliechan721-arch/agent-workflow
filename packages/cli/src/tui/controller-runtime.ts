@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 
 import type { CliExecutionContext } from '../commands/runtime.js';
+import type { PlatformName } from '../types.js';
 import { statusCommandV4 } from '../commands/status-v4.js';
 import {
   cleanupWriteCommand,
@@ -16,6 +17,7 @@ import {
 import {
   withResolvedCatalogPlugin,
   withResolvedMultiSourceCatalog,
+  parsePluginId,
 } from '../utils/multi-source-catalog.js';
 import { readPluginConfigStore, resolveConfigRead } from '../utils/plugin-config.js';
 import {
@@ -24,6 +26,10 @@ import {
 } from '../utils/plugin-config-write.js';
 import type { RebuildProgressFeed } from '../output/rebuild-progress.js';
 import type { RebuildReviewPreflightEvidence } from '../commands/rebuild-command.js';
+import {
+  acquireLifecycleOperationLock,
+} from '../utils/lifecycle-active-store.js';
+import { releaseRebuildOperationLease } from '../commands/rebuild-operations.js';
 import {
   operationEvidenceFingerprint,
   TuiController,
@@ -46,33 +52,39 @@ function assertIntentIsLegal(
   intent: Extract<OperationIntent, { kind: 'pluginWrite' }>,
   targets: Awaited<ReturnType<typeof statusCommandV4>>['payload']['targets'],
 ): void {
-  const selected = targets.find((target) => target.platform === intent.platform && target.scope === intent.scope);
-  if (!selected || selected.errors.some((error) => error.code === 'unsupportedTarget')) {
-    throw new TuiOperationBlockedError('unsupportedTarget', '所选插件不支持这个平台和使用位置。');
-  }
-  const otherScopeInstalled = targets.some((target) =>
-    target.platform === intent.platform
-    && target.scope !== intent.scope
-    && target.state !== 'absent');
-  if (intent.action === 'install' && otherScopeInstalled) {
-    throw new TuiOperationBlockedError('scopeConflict', '这个平台已安装在另一个使用位置。请先移除原位置。');
-  }
-  if (intent.action === 'install' && selected.state !== 'absent') {
-    throw new TuiOperationBlockedError('targetAlreadyInstalled', '所选位置已经安装。');
-  }
-  if ((intent.action === 'upgrade' || intent.action === 'uninstall') && selected.state !== 'present') {
-    throw new TuiOperationBlockedError('targetStateChanged', '当前安装状态不允许执行这个操作。');
-  }
-  if ((intent.action === 'reinstall' || intent.action === 'cleanup') && selected.state === 'absent') {
-    throw new TuiOperationBlockedError('targetAbsent', '所选位置没有可处理的 AW 安装。');
+  const platforms: PlatformName[] = intent.platform === 'both'
+    ? ['codex', 'claude']
+    : [intent.platform];
+  for (const platform of platforms) {
+    const selected = targets.find((target) => target.platform === platform && target.scope === intent.scope);
+    if (!selected || selected.errors.some((error) => error.code === 'unsupportedTarget')) {
+      throw new TuiOperationBlockedError('unsupportedTarget', '所选插件不支持这个平台和使用位置。');
+    }
+    const otherScopeInstalled = targets.some((target) =>
+      target.platform === platform
+      && target.scope !== intent.scope
+      && target.state !== 'absent');
+    if (intent.action === 'install' && otherScopeInstalled) {
+      throw new TuiOperationBlockedError('scopeConflict', '这个平台已安装在另一个使用位置。请先移除原位置。');
+    }
+    if (intent.action === 'install' && selected.state !== 'absent') {
+      throw new TuiOperationBlockedError('targetAlreadyInstalled', '所选位置已经安装。');
+    }
+    if ((intent.action === 'upgrade' || intent.action === 'uninstall') && selected.state !== 'present') {
+      throw new TuiOperationBlockedError('targetStateChanged', '当前安装状态不允许执行这个操作。');
+    }
+    if ((intent.action === 'reinstall' || intent.action === 'cleanup') && selected.state === 'absent') {
+      throw new TuiOperationBlockedError('targetAbsent', '所选位置没有可处理的 AW 安装。');
+    }
   }
 }
 
 function resultFailure(result: {
   overallState?: string;
-  targetResults?: Array<{ errorCode?: string; message?: string }>;
+  targetResults?: Array<{ state?: string; errorCode?: string; message?: string }>;
 }): TuiOperationBlockedError | undefined {
   if (result.overallState !== 'failed') return undefined;
+  if (result.targetResults?.some((entry) => entry.state === 'completed')) return undefined;
   const failure = result.targetResults?.find((entry) => entry.errorCode || entry.message);
   const prefix = failure?.message?.split(':', 1)[0];
   const code = failure?.errorCode
@@ -125,7 +137,7 @@ export function createTuiControllerDependencies(
     const status = await statusCommandV4({
       plugins: [intent.pluginId],
       ...('platform' in intent ? { platform: intent.platform } : {}),
-      ...(intent.kind === 'pluginWrite' || intent.scope === 'project'
+      ...(intent.kind !== 'pluginWrite' && intent.scope === 'project'
         ? { scope: intent.scope }
         : {}),
       cwd: context.cwd,
@@ -276,23 +288,67 @@ export function createTuiControllerDependencies(
           uninstall: uninstallWriteCommand,
           cleanup: cleanupWriteCommand,
         }[intent.action];
-        const result = await command([intent.pluginId], options, {
-          ...context,
-          reviewPreflight: async (current) => {
-            assertLockedPluginEvidence(current, expectedEvidence);
-            const lockedEvidence = await captureEvidence(intent);
-            if (operationEvidenceFingerprint(lockedEvidence)
-              !== operationEvidenceFingerprint(expectedEvidence)) {
-              throw new TuiOperationBlockedError(
-                'operationReviewStale',
-                'operationReviewStale: 确认后目标状态发生变化。',
-              );
+        const source = expectedEvidence.source;
+        if (!source) {
+          throw new TuiOperationBlockedError('operationReviewStale', '确认信息缺少来源身份。');
+        }
+        const pluginName = parsePluginId(intent.pluginId).pluginName;
+        const platforms: PlatformName[] = intent.platform === 'both'
+          ? ['codex', 'claude']
+          : [intent.platform];
+        const leases: Awaited<ReturnType<typeof acquireLifecycleOperationLock>>[] = [];
+        try {
+          for (const platform of platforms) {
+            for (const scope of ['project', 'user'] as const) {
+              leases.push(await acquireLifecycleOperationLock({
+                sourceId: source.sourceId,
+                sourceIdentity: source.sourceIdentity,
+                pluginName,
+                platform,
+                scope,
+                cwd: context.cwd,
+                env: context.env,
+              }));
             }
-          },
-        });
-        const failure = resultFailure(result);
-        if (failure) throw failure;
-        return result;
+          }
+          let fullEvidenceChecked = false;
+          const result = await command([intent.pluginId], options, {
+            ...context,
+            operationLeaseHeld: true,
+            reviewPreflight: async (current) => {
+              assertLockedPluginEvidence(current, expectedEvidence);
+              const observed = await captureEvidence(intent);
+              const observedFingerprint = operationEvidenceFingerprint(fullEvidenceChecked
+                ? { ...observed, targetFingerprint: expectedEvidence.targetFingerprint }
+                : observed);
+              if (observedFingerprint !== operationEvidenceFingerprint(expectedEvidence)) {
+                throw new TuiOperationBlockedError(
+                  'operationReviewStale',
+                  'operationReviewStale: 确认后状态发生变化。',
+                );
+              }
+              fullEvidenceChecked = true;
+            },
+          });
+          const failure = resultFailure(result);
+          if (failure) throw failure;
+          return result;
+        } finally {
+          for (const lease of leases.reverse()) {
+            try {
+              await releaseRebuildOperationLease(lease);
+            } catch (error) {
+              try {
+                process.emitWarning(
+                  `TUI operation lock release failed: ${error instanceof Error ? error.message : String(error)}`,
+                  { code: 'AW_TUI_OPERATION_LOCK_RELEASE_FAILED' },
+                );
+              } catch {
+                // Release diagnostics cannot replace a durable write result.
+              }
+            }
+          }
+        }
       }
       if (intent.kind === 'configSave' || intent.kind === 'configReset') {
         const packageInfo = await readCliPackageInfo();

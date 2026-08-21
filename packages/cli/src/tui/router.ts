@@ -4,8 +4,13 @@ import type { ProjectConfigStoreLayer } from '../utils/plugin-config.js';
 export type TuiRoute =
   | { name: 'home' }
   | { name: 'pluginList'; mode: 'browse' | 'installed'; sourceId?: string }
+  | { name: 'pluginPreview'; pluginId: string }
+  | { name: 'installPlacement'; pluginId: string }
+  | { name: 'installTools'; pluginId: string }
   | { name: 'pluginDetail'; pluginId: string }
   | { name: 'platform'; pluginId: string; platform: PlatformName }
+  | { name: 'pluginAbout'; pluginId: string }
+  | { name: 'pluginTechnical'; pluginId: string }
   | { name: 'configLayer'; pluginId: string }
   | {
       name: 'configFields';

@@ -35,6 +35,7 @@ function SizeHint(props: { policy: TuiSizePolicy }): React.JSX.Element {
       <Text color={tuiTheme.colors.muted}>
         当前：{props.policy.columns} 列 × {props.policy.rows} 行。
       </Text>
+      <Text color={tuiTheme.colors.muted}>q 退出</Text>
     </Box>
   );
 }
