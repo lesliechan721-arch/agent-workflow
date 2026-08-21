@@ -67,6 +67,29 @@ function assertCatalogHistoryAllowed(plan, history) {
   return history;
 }
 
+function catalogHistoryBinding(history) {
+  const publication = (entry) => entry ? {
+    commit: entry.commit ?? null,
+    snapshotDigest: entry.snapshotDigest ?? null,
+    catalogContentDigest: entry.catalogContentDigest ?? null,
+    manifest: entry.manifest ?? null,
+    ledger: entry.ledger ?? null,
+  } : null;
+  return canonicalJson(JSON.parse(JSON.stringify({
+    channels: {
+      latest: publication(history.channels?.latest),
+      beta: publication(history.channels?.beta),
+    },
+    tag: history.tag ? {
+      objectId: history.tag.objectId ?? null,
+      catalogVersion: history.tag.catalogVersion ?? null,
+      ...publication(history.tag),
+    } : null,
+    pending: history.pending ?? null,
+    mergedLedger: history.mergedLedger ?? null,
+  })));
+}
+
 export function parsePublishPlanArgs(argv) {
   const args = [...argv];
   while (args[0] === '--') args.shift();
@@ -330,7 +353,7 @@ export async function publishCommittedRelease(argv = process.argv.slice(2), opti
   const boundCatalog = options._boundCatalog;
   const assertWriteFresh = async () => {
     await assertFresh();
-    await assertPlanCliRegistryFresh(plan, options);
+    return assertPlanCliRegistryFresh(plan, options);
   };
   const assertPublicationFresh = async (...args) => {
     await options.assertCurrentReleaseIdentity?.(...args);
@@ -417,28 +440,61 @@ export async function publishCommittedRelease(argv = process.argv.slice(2), opti
     return { path: 'cli-only', planId: plan.planId, cli };
   }
   if (plan.catalog.publicationMode === 'promotion') {
-    await assertFresh();
-    const currentCliVersion = await assertPromotionCliTrain(plan, options);
     const readHistory = options.readCatalogPublicationHistory
       ?? (await import('./git-catalog-publisher.mjs')).readCatalogPublicationHistory;
-    const promotionHistory = await readHistory({
-      mode,
-      catalogVersion: plan.catalog.candidateVersion,
-      remoteUrl,
-      ...(options.catalogModules ? { catalogModules: options.catalogModules } : {}),
-    });
-    if (promotionHistory.tag?.snapshotDigest !== plan.catalog.snapshotDigest) {
-      throw new Error('Promotion tag snapshotDigest does not match the committed release plan.');
+    let initialCatalogBinding = null;
+    const assertPromotionWriteFresh = async () => {
+      await assertWriteFresh();
+      const promotionHistory = assertCatalogHistoryAllowed(plan, await readHistory({
+        mode,
+        catalogVersion: plan.catalog.candidateVersion,
+        remoteUrl,
+        ...(options.catalogModules ? { catalogModules: options.catalogModules } : {}),
+      }));
+      const taggedManifest = promotionHistory.tag?.manifest;
+      if (
+        taggedManifest?.schemaVersion !== 4
+        || taggedManifest.catalogVersion !== plan.catalog.candidateVersion
+        || taggedManifest.release?.state !== 'published'
+        || taggedManifest.release.targetVersion !== plan.catalog.targetVersion
+        || taggedManifest.release.planId !== plan.planId
+        || taggedManifest.release.sourceHead !== plan.source.head
+        || taggedManifest.release.contentDigest !== plan.catalog.catalogContentDigest
+        || promotionHistory.tag.snapshotDigest !== plan.catalog.snapshotDigest
+      ) {
+        throw new Error('Promotion Catalog tag identity does not match the committed release plan.');
+      }
+      const liveCatalogBinding = catalogHistoryBinding(promotionHistory);
+      if (initialCatalogBinding !== null && liveCatalogBinding !== initialCatalogBinding) {
+        throw new Error('Catalog publication history changed after the promotion binding was observed.');
+      }
+      initialCatalogBinding ??= liveCatalogBinding;
+      return promotionHistory;
+    };
+    await assertPromotionWriteFresh();
+    const currentCliVersion = plan.cli.candidateVersion;
+    if (compareReleaseSemVer(currentCliVersion, plan.catalog.minCliVersion) < 0) {
+      throw new Error(`Promotion CLI train ${currentCliVersion} is below Catalog minimum ${plan.catalog.minCliVersion}.`);
     }
+    await assertPromotionWriteFresh();
+    const callerBeforeAcquire = options.publisherOptions?.beforeAcquire;
     const promotion = await (options.promoteCatalogTag ?? promoteCatalogTag)({
       mode,
       catalogVersion: plan.catalog.candidateVersion,
       currentCliVersion,
+      beforeAcquire: async () => {
+        await assertPromotionWriteFresh();
+      },
       beforeRemoteWrite: async () => {
-        await commonOptions.beforeRemoteWrite();
-        await assertPromotionCliTrain(plan, options);
+        await callerBeforeRemoteWrite?.();
+        await assertPromotionWriteFresh();
       },
       remoteUrl,
+      withCatalogPublicationLease: options.withCatalogPublicationLease,
+      publisherOptions: {
+        ...(options.publisherOptions ?? {}),
+        beforeAcquire: callerBeforeAcquire,
+      },
     });
     return { path: 'promotion', planId: plan.planId, promotion };
   }

@@ -84,6 +84,29 @@ async function readPublishedCliTrainIdentity(mode, options = {}) {
   };
 }
 
+function catalogRecoveryIdentity(history) {
+  const publication = (entry) => entry ? {
+    commit: entry.commit ?? null,
+    snapshotDigest: entry.snapshotDigest ?? null,
+    catalogContentDigest: entry.catalogContentDigest ?? null,
+    manifest: entry.manifest ?? null,
+    ledger: entry.ledger ?? null,
+  } : null;
+  return {
+    channels: {
+      latest: publication(history.channels?.latest),
+      beta: publication(history.channels?.beta),
+    },
+    tag: history.tag ? {
+      objectId: history.tag.objectId ?? null,
+      catalogVersion: history.tag.catalogVersion ?? null,
+      ...publication(history.tag),
+    } : null,
+    pending: history.pending ?? null,
+    mergedLedger: history.mergedLedger ?? null,
+  };
+}
+
 async function resolveRecoveryBinding(mode, catalogVersion, options) {
   const remoteUrl = resolveCatalogMaintenanceRemote(options);
   const history = await (options.readCatalogPublicationHistory
@@ -109,7 +132,8 @@ async function resolveRecoveryBinding(mode, catalogVersion, options) {
     throw new Error('Catalog recovery tag contains the wrong catalog version.');
   }
   if (
-    manifest.release?.state !== 'published'
+    manifest.schemaVersion !== 4
+    || manifest.release?.state !== 'published'
     || manifest.release.planId !== cli.planId
     || manifest.release.sourceHead !== cli.sourceHead
   ) {
@@ -123,19 +147,26 @@ async function resolveRecoveryBinding(mode, catalogVersion, options) {
   }
   return {
     currentCliVersion: cli.currentCliVersion,
-    identity: canonicalJson({
+    identity: canonicalJson(JSON.parse(JSON.stringify({
       currentCliVersion: cli.currentCliVersion,
       registry: cli.registry,
-      tag: {
-        objectId: history.tag.objectId,
-        commit: history.tag.commit,
-        catalogVersion: history.tag.catalogVersion,
-        release: manifest.release,
-        compatibility: manifest.compatibility,
-      },
-      pending: history.pending,
-    }),
+      catalog: catalogRecoveryIdentity(history),
+    }))),
   };
+}
+
+export async function assertRecoveryBindingFresh(
+  initialBinding,
+  mode,
+  catalogVersion,
+  options = {},
+) {
+  const resolveBinding = options.resolveRecoveryBinding ?? resolveRecoveryBinding;
+  const liveBinding = await resolveBinding(mode, catalogVersion, options);
+  if (liveBinding.identity !== initialBinding.identity) {
+    throw new Error('Published CLI train or Catalog tag identity changed during catalog recovery.');
+  }
+  return liveBinding;
 }
 
 export async function recoverRelease(argv = process.argv.slice(2), options = {}) {
@@ -148,6 +179,15 @@ export async function recoverRelease(argv = process.argv.slice(2), options = {})
   const binding = await resolveBinding(mode, catalogVersion, options);
   const currentCliVersion = binding.currentCliVersion;
   const remoteUrl = resolveCatalogMaintenanceRemote(options);
+  const callerBeforeAcquire = options.publisherOptions?.beforeAcquire;
+  const callerBeforeRemoteWrite = options.beforeRemoteWrite;
+  const assertBindingFresh = async () => {
+    await assertClean();
+    return assertRecoveryBindingFresh(binding, mode, catalogVersion, {
+      ...options,
+      resolveRecoveryBinding: resolveBinding,
+    });
+  };
   return (options.withCatalogPublicationLease ?? withCatalogPublicationLease)(
     remoteUrl,
     (publicationLease) => (options.promoteCatalogTag ?? promoteCatalogTag)({
@@ -158,17 +198,17 @@ export async function recoverRelease(argv = process.argv.slice(2), options = {})
       publicationLease,
       requirePendingGuard: true,
       beforeRemoteWrite: async () => {
-        await assertClean();
-        const liveBinding = await resolveBinding(mode, catalogVersion, options);
-        if (liveBinding.identity !== binding.identity) {
-          throw new Error('Published CLI train or Catalog tag identity changed during catalog recovery.');
-        }
+        await callerBeforeRemoteWrite?.();
+        await assertBindingFresh();
       },
       ...(options.catalogModules ? { catalogModules: options.catalogModules } : {}),
     }),
     {
       ...options.publisherOptions,
-      beforeAcquire: assertClean,
+      beforeAcquire: async () => {
+        await callerBeforeAcquire?.();
+        await assertBindingFresh();
+      },
     },
   );
 }

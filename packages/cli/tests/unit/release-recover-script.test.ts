@@ -44,6 +44,7 @@ function guardedCatalogHistory(overrides: { planId?: string; catalogVersion?: st
       commit,
       catalogVersion,
       manifest: {
+        schemaVersion: 4,
         catalogVersion,
         compatibility: { aw: { minVersion: '0.1.0-beta.3' } },
         release: {
@@ -159,7 +160,7 @@ describe('release recovery command', () => {
       mode: 'latest', catalogVersion: '2.0.0', currentCliVersion: '1.0.0',
       requirePendingGuard: true,
     }));
-    expect(resolveRecoveryBinding).toHaveBeenCalledTimes(2);
+    expect(resolveRecoveryBinding).toHaveBeenCalledTimes(3);
     expect(runCommand).toHaveBeenCalledWith('pnpm', ['run', 'release:verify:catalog']);
     expect(assertReleaseWorktreeClean).toHaveBeenCalledTimes(4);
   });
@@ -168,13 +169,20 @@ describe('release recovery command', () => {
     const beforeRemoteWrites: string[] = [];
     const resolveRecoveryBinding = vi.fn()
       .mockResolvedValueOnce({ currentCliVersion: '1.0.0', identity: 'before' })
+      .mockResolvedValueOnce({ currentCliVersion: '1.0.0', identity: 'before' })
       .mockResolvedValueOnce({ currentCliVersion: '1.0.1', identity: 'after' });
     await expect(recoverRelease(['catalog', '2.0.0'], {
       assertReleaseWorktreeClean: async () => undefined,
       runCommand: async () => undefined,
       resolveRecoveryBinding,
-      withCatalogPublicationLease: async (_remote: string, callback: (lease: object) => Promise<unknown>) =>
-        callback({ ownerCommit: 'lease-owner' }),
+      withCatalogPublicationLease: async (
+        _remote: string,
+        callback: (lease: object) => Promise<unknown>,
+        options: { beforeAcquire: () => Promise<void> },
+      ) => {
+        await options.beforeAcquire();
+        return callback({ ownerCommit: 'lease-owner' });
+      },
       promoteCatalogTag: async (options: { beforeRemoteWrite: () => Promise<void> }) => {
         await options.beforeRemoteWrite();
         beforeRemoteWrites.push('push');
@@ -183,5 +191,47 @@ describe('release recovery command', () => {
       remoteUrl: 'https://catalog.example.test/repository.git',
     })).rejects.toThrow('identity changed during catalog recovery');
     expect(beforeRemoteWrites).toEqual([]);
+  });
+
+  it('rejects complete binding drift before the recovery lease can write its lock', async () => {
+    let registry = completeRegistry();
+    const driftingRegistry = structuredClone(registry);
+    for (const packageName of [
+      '@lesliechan721/agent-skill-eval', '@lesliechan721/aw',
+    ] as const) {
+      const metadata = driftingRegistry[packageName][0].awRelease;
+      driftingRegistry[packageName].push({
+        version: '1.0.1',
+        awRelease: {
+          ...metadata,
+          targetVersion: '1.0.1',
+          candidateVersion: '1.0.1',
+          planId: releaseDigest('8'),
+          sourceHead: '9'.repeat(40),
+        },
+      });
+    }
+    const publicationLockPush = vi.fn();
+    const promoteCatalogTag = vi.fn();
+
+    await expect(recoverRelease(['catalog', '2.0.0'], {
+      assertReleaseWorktreeClean: async () => undefined,
+      runCommand: async () => undefined,
+      readRegistryReleaseHistory: async () => registry,
+      readCatalogPublicationHistory: async () => guardedCatalogHistory(),
+      withCatalogPublicationLease: async (
+        _remote: string,
+        _callback: (lease: object) => Promise<unknown>,
+        options: { beforeAcquire: () => Promise<void> },
+      ) => {
+        registry = driftingRegistry;
+        await options.beforeAcquire();
+        publicationLockPush();
+      },
+      promoteCatalogTag,
+      remoteUrl: 'https://catalog.example.test/repository.git',
+    })).rejects.toThrow('identity changed during catalog recovery');
+    expect(publicationLockPush).not.toHaveBeenCalled();
+    expect(promoteCatalogTag).not.toHaveBeenCalled();
   });
 });

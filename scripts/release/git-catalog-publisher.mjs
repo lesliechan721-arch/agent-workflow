@@ -1049,10 +1049,20 @@ async function promoteCatalogTagUnderLease(options) {
 export async function promoteCatalogTag(options) {
   if (options.publicationLease) return promoteCatalogTagUnderLease(options);
   const remoteUrl = options.remoteUrl ?? OFFICIAL_CATALOG_PUBLISH_REMOTE;
-  return withCatalogPublicationLease(
+  const callerBeforeAcquire = options.publisherOptions?.beforeAcquire;
+  const beforeAcquire = options.beforeAcquire;
+  const acquireLease = options.withCatalogPublicationLease ?? withCatalogPublicationLease;
+  return acquireLease(
     remoteUrl,
     (publicationLease) => promoteCatalogTagUnderLease({ ...options, publicationLease }),
-    options,
+    {
+      ...options,
+      ...(options.publisherOptions ?? {}),
+      beforeAcquire: async (...args) => {
+        await callerBeforeAcquire?.(...args);
+        if (beforeAcquire !== callerBeforeAcquire) await beforeAcquire?.(...args);
+      },
+    },
   );
 }
 

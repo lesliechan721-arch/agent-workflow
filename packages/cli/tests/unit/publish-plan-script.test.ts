@@ -107,6 +107,28 @@ function bindPublishedCandidate(releasePlan: ReturnType<typeof plan>) {
   return releasePlan;
 }
 
+function promotionCatalogHistory() {
+  return {
+    channels: { latest: null, beta: null },
+    tag: {
+      snapshotDigest: `sha256:${'e'.repeat(64)}`,
+      manifest: {
+        schemaVersion: 4,
+        catalogVersion: '2.0.0-beta.1',
+        release: {
+          state: 'published',
+          targetVersion: '2.0.0',
+          planId: `sha256:${'a'.repeat(64)}`,
+          sourceHead: 'b'.repeat(40),
+          contentDigest: `sha256:${'d'.repeat(64)}`,
+        },
+      },
+    },
+    pending: null,
+    mergedLedger: { schemaVersion: 2, records: [] },
+  };
+}
+
 describe('committed release plan publisher', () => {
   it('materializes the final schema 4 Catalog candidate into the plan digest input', async () => {
     const stageCatalogRelease = vi.fn(async () => ({ snapshotDigest: `sha256:${'e'.repeat(64)}` }));
@@ -373,6 +395,7 @@ describe('committed release plan publisher', () => {
     const promotionPlan = bindPublishedCandidate(plan('promotion'));
     const runCommand = vi.fn(async () => undefined);
     const promoteCatalogTag = vi.fn(async (options) => {
+      await options.beforeAcquire();
       await options.beforeRemoteWrite();
       return { promoted: true };
     });
@@ -390,12 +413,85 @@ describe('committed release plan publisher', () => {
           '@lesliechan721/aw': { latest: null, beta: '1.0.0-beta.1' },
         });
       },
-      readCatalogPublicationHistory: async () => ({
-        tag: { snapshotDigest: `sha256:${'e'.repeat(64)}` },
-      }),
+      readCatalogPublicationHistory: async () => promotionCatalogHistory(),
       promoteCatalogTag,
     })).resolves.toMatchObject({ path: 'promotion' });
     expect(runCommand).toHaveBeenCalledWith('pnpm', ['run', 'release:verify:catalog']);
-    expect(registryReads).toBe(4);
+    expect(registryReads).toBe(5);
+  });
+
+  it('rejects complete registry drift before the promotion lease can write its lock', async () => {
+    let registry = registryWithCandidate([
+      '@lesliechan721/agent-skill-eval', '@lesliechan721/aw',
+    ], {
+      '@lesliechan721/agent-skill-eval': { latest: null, beta: '1.0.0-beta.1' },
+      '@lesliechan721/aw': { latest: null, beta: '1.0.0-beta.1' },
+    });
+    const publicationLockPush = vi.fn();
+    const promoteCatalogTag = vi.fn(async (options) => {
+      registry = {
+        ...registry,
+        '@lesliechan721/aw': [
+          ...registry['@lesliechan721/aw'],
+          {
+            version: '1.0.0-beta.2',
+            awRelease: releaseMetadata('@lesliechan721/aw', {
+              candidateVersion: '1.0.0-beta.2',
+            }),
+          },
+        ],
+      };
+      await options.beforeAcquire();
+      publicationLockPush();
+      return { promoted: true };
+    });
+
+    await expect(publishCommittedRelease([], {
+      readCurrentReleasePlan: async () => ({ plan: bindPublishedCandidate(plan('promotion')) }),
+      assertPlanOnlyCommit: async () => undefined,
+      runCommand: async () => undefined,
+      readRegistryReleaseHistory: async () => registry,
+      readCatalogPublicationHistory: async () => promotionCatalogHistory(),
+      promoteCatalogTag,
+    })).rejects.toThrow('unplanned');
+    expect(publicationLockPush).not.toHaveBeenCalled();
+  });
+
+  it('rejects a second registry drift at the promotion remote-write boundary', async () => {
+    let registry = registryWithCandidate([
+      '@lesliechan721/agent-skill-eval', '@lesliechan721/aw',
+    ], {
+      '@lesliechan721/agent-skill-eval': { latest: null, beta: '1.0.0-beta.1' },
+      '@lesliechan721/aw': { latest: null, beta: '1.0.0-beta.1' },
+    });
+    const channelPush = vi.fn();
+    const promoteCatalogTag = vi.fn(async (options) => {
+      await options.beforeAcquire();
+      registry = {
+        ...registry,
+        '@lesliechan721/agent-skill-eval': [
+          ...registry['@lesliechan721/agent-skill-eval'],
+          {
+            version: '1.0.0-beta.2',
+            awRelease: releaseMetadata('@lesliechan721/agent-skill-eval', {
+              candidateVersion: '1.0.0-beta.2',
+            }),
+          },
+        ],
+      };
+      await options.beforeRemoteWrite();
+      channelPush();
+      return { promoted: true };
+    });
+
+    await expect(publishCommittedRelease([], {
+      readCurrentReleasePlan: async () => ({ plan: bindPublishedCandidate(plan('promotion')) }),
+      assertPlanOnlyCommit: async () => undefined,
+      runCommand: async () => undefined,
+      readRegistryReleaseHistory: async () => registry,
+      readCatalogPublicationHistory: async () => promotionCatalogHistory(),
+      promoteCatalogTag,
+    })).rejects.toThrow('unplanned');
+    expect(channelPush).not.toHaveBeenCalled();
   });
 });
