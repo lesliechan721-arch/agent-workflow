@@ -36,6 +36,7 @@ function validateReview(review) {
   if (!/^sha256:[0-9a-f]{64}$/u.test(review?.target?.digest ?? '')) errors.push('target.digest must be sha256');
   if (!['quick', 'full', 'delta'].includes(review?.mode)) errors.push('mode must be quick, full, or delta');
   if (!['pass', 'needs-fixes', 'redesign', 'fail', 'not-assessed'].includes(review?.design)) errors.push('design is invalid');
+  if (!['proportionate', 'over-specified', 'over-engineered', 'not-assessed'].includes(review?.complexity)) errors.push('complexity is invalid');
   if (!nonEmpty(review?.summary)) errors.push('summary is required');
   if (!Array.isArray(review?.findings)) errors.push('findings must be an array');
   else for (const [index, finding] of review.findings.entries()) {
@@ -47,6 +48,8 @@ function validateReview(review) {
   }
   if (!Array.isArray(review?.unknowns) || review.unknowns.some((entry) => !nonEmpty(entry))) errors.push('unknowns must be an array of non-empty strings');
   if (!['none', 'structural', 'executed', 'comparative'].includes(review?.evalEvidence)) errors.push('evalEvidence is invalid');
+  if (review?.complexity === 'over-engineered' && !['redesign', 'fail'].includes(review?.design)) errors.push('over-engineered complexity requires redesign or fail');
+  if (review?.complexity === 'over-specified' && review?.design === 'pass') errors.push('over-specified complexity cannot use design=pass');
   return errors;
 }
 
@@ -80,12 +83,14 @@ async function main() {
     machineCheck: check.ok ? 'pass' : 'fail',
     machineErrors: check.errors ?? [],
     design: review.design ?? null,
+    complexity: review.complexity ?? null,
     effectiveDecision,
   };
   process.stdout.write(options.format === 'json' ? JSON.stringify(output, null, 2) + '\n' : [
     output.valid ? 'ReviewResultLite is valid.' : errors.join('\n'),
     `Machine check: ${output.machineCheck}`,
     `Design: ${output.design}`,
+    `Complexity: ${output.complexity}`,
     `Effective decision: ${output.effectiveDecision}`,
   ].join('\n') + '\n');
   if (!output.valid) process.exitCode = 1;

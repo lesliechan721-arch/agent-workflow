@@ -57,11 +57,12 @@ Exact claim 不得强于证据。跨文件语义推演、运行时状态假设�
 
 1. **机器检查**：pass，或直接列出错误。
 2. **设计结论**：`pass | needs-fixes | redesign | fail | not-assessed`。
-3. **判断**：2–4 句，说明核心价值、主要风险和是否需要修改正文。
-4. **必须处理**：所有 critical/major；没有时明确写无。
-5. **高价值改进**：最多 3 项 minor/advisory。
-6. **关键 unknowns**：只列会改变结论的缺失证据。
-7. **停止条件**：说明为什么现在停止，或什么新证据才重新打开。
+3. **复杂度**：`proportionate | over-specified | over-engineered | not-assessed`。
+4. **判断**：2–4 句，说明核心价值、主要风险和是否需要修改正文。
+5. **必须处理**：所有 critical/major；没有时明确写无。
+6. **高价值改进**：最多 3 项 minor/advisory。
+7. **关键 unknowns**：只列会改变结论的缺失证据。
+8. **停止条件**：说明为什么现在停止，或什么新证据才重新打开。
 
 不要输出加权分数、12 维空表、通用 release readiness、stage 列表或多重 gate 表。
 
@@ -73,4 +74,4 @@ node scripts/validate-review-result-lite.mjs <review.json> \
   --format json
 ```
 
-Validator 会把机器错误与设计结论组合成 effective decision；模型不需要把每个机器错误重复编码进 finding。
+Validator 会把机器错误与设计结论组合成 effective decision，并校验复杂度与设计结论一致；模型不需要把每个机器错误重复编码进 finding。

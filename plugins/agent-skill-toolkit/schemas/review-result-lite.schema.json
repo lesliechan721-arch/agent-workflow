@@ -3,7 +3,17 @@
   "$id": "https://agent-skill-toolkit.invalid/review-result-lite.schema.json",
   "title": "ReviewResultLite",
   "type": "object",
-  "required": ["schemaVersion", "target", "mode", "design", "summary", "findings", "unknowns", "evalEvidence"],
+  "required": [
+    "schemaVersion",
+    "target",
+    "mode",
+    "design",
+    "complexity",
+    "summary",
+    "findings",
+    "unknowns",
+    "evalEvidence"
+  ],
   "properties": {
     "schemaVersion": { "const": 1 },
     "target": {
@@ -17,6 +27,7 @@
     },
     "mode": { "enum": ["quick", "full", "delta"] },
     "design": { "enum": ["pass", "needs-fixes", "redesign", "fail", "not-assessed"] },
+    "complexity": { "enum": ["proportionate", "over-specified", "over-engineered", "not-assessed"] },
     "summary": { "type": "string", "minLength": 1 },
     "findings": {
       "type": "array",

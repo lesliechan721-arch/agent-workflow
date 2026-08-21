@@ -68,6 +68,7 @@ try {
     target: { name: goodCheck.target.name, digest: goodCheck.target.digest },
     mode: 'quick',
     design: 'pass',
+    complexity: 'proportionate',
     summary: 'The Skill is focused and proportionate.',
     findings: [],
     unknowns: [],
@@ -76,6 +77,7 @@ try {
   const valid = JSON.parse((await run(validator, [reviewPath, '--check', goodCheckPath])).stdout);
   assert.equal(valid.valid, true);
   assert.equal(valid.effectiveDecision, 'pass');
+  assert.equal(valid.complexity, 'proportionate');
 
   const badReviewPath = path.join(temp, 'bad-review.json');
   await writeFile(badReviewPath, JSON.stringify({
@@ -83,6 +85,7 @@ try {
     target: { name: badCheck.target.name, digest: badCheck.target.digest },
     mode: 'full',
     design: 'pass',
+    complexity: 'proportionate',
     summary: 'Semantic design is otherwise focused.',
     findings: [],
     unknowns: [],
@@ -99,6 +102,13 @@ try {
   await writeFile(mismatchPath, JSON.stringify(mismatch));
   const mismatchRun = await run(validator, [mismatchPath, '--check', goodCheckPath], true);
   assert.equal(JSON.parse(mismatchRun.stdout).valid, false);
+
+  const overSpecified = JSON.parse(await readFile(reviewPath, 'utf8'));
+  overSpecified.complexity = 'over-specified';
+  const overSpecifiedPath = path.join(temp, 'over-specified.json');
+  await writeFile(overSpecifiedPath, JSON.stringify(overSpecified));
+  const overSpecifiedRun = await run(validator, [overSpecifiedPath, '--check', goodCheckPath], true);
+  assert.equal(JSON.parse(overSpecifiedRun.stdout).valid, false);
 
   process.stdout.write('lightweight review contracts passed\n');
 } finally {

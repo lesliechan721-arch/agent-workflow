@@ -22,7 +22,15 @@ Project release validation remains a separate machine-owned operation.
 
 ### Quality review
 
-`ReviewResultLite` v1 contains only the target digest, review mode, one design decision, a concise summary, findings, unknowns and the available Eval evidence level.
+`ReviewResultLite` v1 contains only:
+
+- target digest;
+- `quick | full | delta`;
+- one design decision and one complexity conclusion;
+- a concise summary;
+- findings with severity, area, evidence, issue and action;
+- decision-relevant unknowns;
+- the available Eval evidence level.
 
 Weighted scores, generic release gates, stage owners, producers, independent-context declarations and machine-evidence copies are not part of the lightweight model contract.
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -11,10 +11,6 @@ function requiredImport(name) {
   const value = process.env[name];
   if (!value) throw new Error(`Missing required build import: ${name}`);
   return value;
-}
-
-async function readJsonImport(name) {
-  return JSON.parse(await readFile(requiredImport(name), 'utf8'));
 }
 
 function markdownCell(value) {
@@ -37,9 +33,7 @@ function renderFrontmatterReference(registry) {
     '| --- | --- | --- | --- |',
   ];
   for (const [name, profile] of Object.entries(registry.profiles)) {
-    lines.push(
-      `| \`${markdownCell(name)}\` | ${markdownCell(profile.platform)} | ${markdownCell(profile.targetVersion ?? 'n/a')} | ${markdownCell(profile.description)} |`,
-    );
+    lines.push(`| \`${markdownCell(name)}\` | ${markdownCell(profile.platform)} | ${markdownCell(profile.targetVersion ?? 'n/a')} | ${markdownCell(profile.description)} |`);
   }
   lines.push(
     '',
@@ -50,88 +44,55 @@ function renderFrontmatterReference(registry) {
   );
   for (const [name, field] of Object.entries(registry.fields)) {
     const types = field.typeByProfile
-      ? `${field.type}; ${Object.entries(field.typeByProfile)
-          .map(([profile, type]) => `${profile}=${type}`)
-          .join(', ')}`
+      ? `${field.type}; ${Object.entries(field.typeByProfile).map(([profile, type]) => `${profile}=${type}`).join(', ')}`
       : field.type;
     const acceptedValues = field.acceptedValuesByProfile
-      ? Object.entries(field.acceptedValuesByProfile)
-          .map(([profile, values]) => `${profile}=${values.join('/')}`)
-          .join('; ')
+      ? Object.entries(field.acceptedValuesByProfile).map(([profile, values]) => `${profile}=${values.join('/')}`).join('; ')
       : field.acceptedValues?.join('/') ?? 'any';
     const valueMatching = field.acceptedValuesByProfile
-      ? Object.keys(field.acceptedValuesByProfile)
-          .map((profile) => {
-            const caseInsensitive =
-              field.acceptedValuesCaseInsensitiveByProfile?.[profile] ??
-              field.acceptedValuesCaseInsensitive ??
-              false;
-            return `${profile}=${caseInsensitive ? 'case-insensitive' : 'exact'}`;
-          })
-          .join(', ')
+      ? Object.keys(field.acceptedValuesByProfile).map((profile) => {
+          const insensitive = field.acceptedValuesCaseInsensitiveByProfile?.[profile]
+            ?? field.acceptedValuesCaseInsensitive
+            ?? false;
+          return `${profile}=${insensitive ? 'case-insensitive' : 'exact'}`;
+        }).join(', ')
       : field.acceptedValues
-        ? field.acceptedValuesCaseInsensitive === true
-          ? 'case-insensitive'
-          : 'exact'
+        ? field.acceptedValuesCaseInsensitive === true ? 'case-insensitive' : 'exact'
         : 'n/a';
     const version = field.introducedVersion
       ? `introduced ${field.introducedVersion}`
-      : field.verifiedAtVersion
-        ? `verified ${field.verifiedAtVersion}`
-        : 'n/a';
+      : field.verifiedAtVersion ? `verified ${field.verifiedAtVersion}` : 'n/a';
     const requires = field.requires
-      ? Object.entries(field.requires)
-          .map(([key, value]) => `${key}=${JSON.stringify(value)}`)
-          .join(', ')
+      ? Object.entries(field.requires).map(([key, value]) => `${key}=${JSON.stringify(value)}`).join(', ')
       : 'none';
-    lines.push(
-      `| \`${markdownCell(name)}\` | ${markdownCell(field.owner)} | ${field.required === true ? 'yes' : 'no'} | ${markdownCell(types)} | ${markdownCell(field.profiles.join(', '))} | ${markdownCell(acceptedValues)} | ${markdownCell(valueMatching)} | ${markdownCell(version)} | ${markdownCell(requires)} |`,
-    );
+    lines.push(`| \`${markdownCell(name)}\` | ${markdownCell(field.owner)} | ${field.required === true ? 'yes' : 'no'} | ${markdownCell(types)} | ${markdownCell(field.profiles.join(', '))} | ${markdownCell(acceptedValues)} | ${markdownCell(valueMatching)} | ${markdownCell(version)} | ${markdownCell(requires)} |`);
   }
-  lines.push(
-    '',
-    '## Sources',
-    '',
-    `- Agent Skills: ${registry.sources.agentSkills}`,
-    `- Claude current: ${registry.sources.claudeCurrent}`,
-    `- Claude minimum: ${registry.sources.claudeMinimum}`,
-  );
-  return `${lines.join('\n')}\n`;
+  lines.push('', '## Sources', '', `- Agent Skills: ${registry.sources.agentSkills}`, `- Claude current: ${registry.sources.claudeCurrent}`, `- Claude minimum: ${registry.sources.claudeMinimum}`);
+  return lines.join('\n') + '\n';
 }
 
-const [frontmatterRegistry, skillRules, reviewDimensions] = await Promise.all([
-  readJsonImport('AW_PLUGIN_IMPORT_SKILL_FRONTMATTER_CAPABILITIES'),
-  readJsonImport('AW_PLUGIN_IMPORT_SKILL_RULES'),
-  readJsonImport('AW_PLUGIN_IMPORT_REVIEW_DIMENSIONS'),
-]);
-
+const frontmatterRegistry = JSON.parse(await readFile(
+  requiredImport('AW_PLUGIN_IMPORT_SKILL_FRONTMATTER_CAPABILITIES'),
+  'utf8',
+));
 if (frontmatterRegistry.schemaVersion !== 1 || !frontmatterRegistry.profiles || !frontmatterRegistry.fields) {
   throw new Error('Invalid Skill frontmatter capability registry build import.');
 }
-if (!Array.isArray(reviewDimensions.dimensions) || !skillRules.reviewResultPolicy) {
-  throw new Error('Invalid Agent Skill review rule build imports.');
-}
+await writeFile(
+  path.join(pluginRoot, 'skills/author-aw-plugin/references/skill-frontmatter-capabilities.generated.md'),
+  renderFrontmatterReference(frontmatterRegistry),
+  'utf8',
+);
 
-await Promise.all([
-  writeFile(
-    path.join(
-      pluginRoot,
-      'skills/author-aw-plugin/references/skill-frontmatter-capabilities.generated.md',
-    ),
-    renderFrontmatterReference(frontmatterRegistry),
-    'utf8',
-  ),
-  writeFile(
-    path.join(pluginRoot, 'skills/review-aw-plugin/assets/review-result-rules.generated.json'),
-    `${JSON.stringify(
-      {
-        schemaVersion: 2,
-        dimensions: reviewDimensions.dimensions,
-        reviewResultPolicy: skillRules.reviewResultPolicy,
-      },
-      null,
-      2,
-    )}\n`,
-    'utf8',
-  ),
-]);
+// Transitional source-only tools are retained for old publication commands, but never enter the Agent-visible Skill bundle.
+for (const relative of [
+  'skills/review-aw-plugin/assets/aw-review-summary.json',
+  'skills/review-aw-plugin/assets/review-input-bundle.json',
+  'skills/review-aw-plugin/scripts/inspect-aw-target.mjs',
+  'skills/review-aw-plugin/scripts/prepare-aw-review-bundle.mjs',
+  'skills/review-aw-plugin/scripts/prepare-aw-review-target-plan.mjs',
+  'skills/review-aw-plugin/scripts/prepare-aw-review-targets.mjs',
+  'skills/review-aw-plugin/scripts/review-artifact-policy.mjs',
+]) {
+  await rm(path.join(pluginRoot, relative), { force: true });
+}

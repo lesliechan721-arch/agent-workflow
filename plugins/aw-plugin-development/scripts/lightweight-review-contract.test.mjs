@@ -42,6 +42,7 @@ try {
     target: { name: 'demo', digest: check.target.digest },
     mode: 'full',
     design: 'pass',
+    complexity: 'proportionate',
     summary: 'The Skill is focused.',
     findings: [],
     unknowns: [],

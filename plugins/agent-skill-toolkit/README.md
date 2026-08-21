@@ -1,8 +1,8 @@
 # agent-skill-toolkit
 
-通用 Agent Skill 作者、轻量评审和 Eval 设计/审核插件。
+通用 Agent Skill 作者、轻量质量评审和 Eval 设计/审核插件。
 
-当前插件合同版本：`0.8.0`。
+当前插件合同版本：`0.9.0`。
 
 ## 依赖
 
@@ -12,31 +12,32 @@
 
 ## 包含的 Skill
 
-| Skill                      | 作用                                     | 权限 |
-| -------------------------- | ---------------------------------------- | ---- |
-| `author-agent-skill`       | 创建或变更完整 Agent Skill 包            | 写   |
-| `review-agent-skill`       | 只读、轻量评审 Agent Skill 包            | 只读 |
-| `design-agent-skill-evals` | 设计或修改 Skill Eval case/suite         | 写   |
-| `audit-agent-skill-evals`  | 运行前审核 Oracle，运行后 failure triage | 只读 |
+| Skill | 作用 | 权限 |
+| --- | --- | --- |
+| `author-agent-skill` | 创建或变更完整 Agent Skill 包 | 写 |
+| `review-agent-skill` | 只读评审 Agent Skill 的质量与复杂度 | 只读 |
+| `design-agent-skill-evals` | 设计或修改 Skill Eval case/suite | 写 |
+| `audit-agent-skill-evals` | 运行前审核 Oracle，运行后 failure triage | 只读 |
 
-Author 不给自己的结果出独立结论；Eval Designer 不审核自己的 Oracle。
+Author 不给自己的结果出独立质量结论；Eval Designer 不审核自己的 Oracle。
 
-## 默认 Review 路径
+## 轻量 Review 合同
 
-普通 `quick/full/delta` Review 只使用两个小型产物：
+默认评审产物是人类可读报告。确定性包事实由 `check-agent-skill.mjs` 直接计算；需要自动化交接时，使用 `ReviewResultLite` v1：
 
-- `SkillCheckResult`：确定性检查 frontmatter、symlink 和传递 runtime closure；
-- `ReviewResultLite`：目标 digest、设计结论、少量 findings 和关键 unknowns。
+- 一个 target digest；
+- 一个 `quick | full | delta` 模式；
+- 一个 design 和一个 complexity 结论；
+- 一段摘要；
+- 最少必要的 findings 与 unknowns；
+- 可用的 Eval evidence level。
+
+它不保存多阶段 handoff、发布 readiness、profile coverage、加权分数或机器错误副本。旧 `ReviewInputBundle` / `ReviewResult` 合同暂时作为迁移兼容 export 保留，但不再投影到 `review-agent-skill` 的运行包，也不是新流程的默认接口。
+
+## 验证
 
 ```bash
-node scripts/check-agent-skill.mjs <skill-root> --output <check.json>
-node scripts/validate-review-result-lite.mjs <review.json> --check <check.json>
+node scripts/check-agent-skill.mjs <skill-root> --format json --output check.json
+node scripts/validate-review-result-lite.mjs review.json --check check.json
+pnpm plugin:test agent-skill-toolkit
 ```
-
-设计质量与发布资格分离。模型 Reviewer 不维护 profile coverage、Git currentness、发布 gate 或多阶段状态；具体项目在发布时重新计算这些机器事实。
-
-## 兼容合同
-
-旧 `ReviewInputBundle`、`ReviewResult`、`SkillInspectionResult` 和相关 validator 暂时保留为迁移兼容接口，但不再由 `review-agent-skill` 默认路径加载或投影。新代码不应继续扩展旧 stage/gate 合同。
-
-Eval 合同继续保留：`EvalAuditResult`、`EvalExecutionPlan`、`EvalRunBundle`。

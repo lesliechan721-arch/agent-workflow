@@ -6,7 +6,8 @@
   },
   "mode": "quick",
   "design": "not-assessed",
-  "summary": "Replace with the concise design conclusion.",
+  "complexity": "not-assessed",
+  "summary": "Replace with a concise evidence-based judgment.",
   "findings": [],
   "unknowns": [],
   "evalEvidence": "none"
