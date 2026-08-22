@@ -1,24 +1,29 @@
-# `<Skill 名称>` 评审
+# `<Skill name>` 评审
 
-## 决策
+## 结论
 
-- 设计：
-- 发布准备度：
-- 复杂度：
-- 组合性：
-- Eval 证据：none | structural | executed | comparative | release-grade
-- 证据覆盖率 / 置信度：
+- **机器检查：** pass | fail
+- **设计：** pass | needs-fixes | redesign | fail | not-assessed
+- **复杂度：** proportionate | over-specified | over-engineered | not-assessed
 
 **判断：**
 
-**下一步操作：**
+**下一步：**
 
-## 必须修复的 finding
+## 必须处理
+
+没有 critical/major 时明确写“无”。
 
 ## 高价值改进
 
-## 可靠部分
+最多 3 项。
 
-## 影响决策的关键未知项
+## 已经可靠的部分
+
+最多 3 项。
+
+## 关键未知
+
+只列会改变结论的证据缺口。
 
 ## 停止 / 重新打开条件

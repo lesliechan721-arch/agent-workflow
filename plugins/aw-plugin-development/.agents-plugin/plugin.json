@@ -1,11 +1,9 @@
 {
   "name": "aw-plugin-development",
   "version": "0.1.0",
-  "description": "通过 AW adapter 组合通用 Agent Skill 与 Agent 内容 toolkit，在兼容工作区中编写和评审 AW 插件。",
+  "description": "通过 AW adapter 组合通用 Agent Skill 与 Agent 内容 toolkit，创建、维护并轻量评审 AW 插件。",
   "compatibility": {
-    "aw": {
-      "minVersion": "0.0.0"
-    }
+    "aw": { "minVersion": "0.0.0" }
   },
   "skills": "./skills",
   "buildConfig": {
@@ -15,16 +13,6 @@
         "plugin": "@aw/cli",
         "export": "skill-frontmatter-capabilities",
         "env": "AW_PLUGIN_IMPORT_SKILL_FRONTMATTER_CAPABILITIES"
-      },
-      {
-        "plugin": "agent-skill-toolkit",
-        "export": "skill-rules",
-        "env": "AW_PLUGIN_IMPORT_SKILL_RULES"
-      },
-      {
-        "plugin": "agent-skill-toolkit",
-        "export": "review-dimensions",
-        "env": "AW_PLUGIN_IMPORT_REVIEW_DIMENSIONS"
       }
     ],
     "skillRuntimeFiles": [
@@ -36,145 +24,42 @@
       {
         "skill": "author-aw-plugin",
         "target": "scripts/validate-json-contract.mjs",
-        "import": {
-          "plugin": "agent-skill-toolkit",
-          "export": "validate-json-contract"
-        }
+        "import": { "plugin": "agent-skill-toolkit", "export": "validate-json-contract" }
       },
       {
         "skill": "author-aw-plugin",
         "target": "scripts/validate-eval-audit-result.mjs",
-        "import": {
-          "plugin": "agent-skill-toolkit",
-          "export": "validate-eval-audit-result"
-        }
+        "import": { "plugin": "agent-skill-toolkit", "export": "validate-eval-audit-result" }
       },
       {
         "skill": "author-aw-plugin",
         "target": "assets/skill-design-brief.schema.json",
-        "import": {
-          "plugin": "agent-skill-toolkit",
-          "export": "skill-design-brief-schema"
-        }
+        "import": { "plugin": "agent-skill-toolkit", "export": "skill-design-brief-schema" }
       },
       {
         "skill": "author-aw-plugin",
         "target": "assets/eval-audit-result.schema.json",
-        "import": {
-          "plugin": "agent-skill-toolkit",
-          "export": "eval-audit-result-schema"
-        }
+        "import": { "plugin": "agent-skill-toolkit", "export": "eval-audit-result-schema" }
       },
       {
         "skill": "review-aw-plugin",
-        "target": "assets/aw-review-summary.schema.json",
-        "source": "./schemas/aw-review-summary.schema.json"
+        "target": "scripts/check-aw-plugin-release.mjs",
+        "source": "./scripts/check-aw-plugin-release.mjs"
       },
       {
         "skill": "review-aw-plugin",
-        "target": "assets/aw-review-target-plan.schema.json",
-        "source": "./schemas/aw-review-target-plan.schema.json"
+        "target": "scripts/check-agent-skill.mjs",
+        "import": { "plugin": "agent-skill-toolkit", "export": "check-agent-skill" }
       },
       {
         "skill": "review-aw-plugin",
-        "target": "scripts/validate-aw-review-summary.mjs",
-        "source": "./scripts/validate-aw-review-summary.mjs"
+        "target": "scripts/validate-review-result-lite.mjs",
+        "import": { "plugin": "agent-skill-toolkit", "export": "validate-review-result-lite" }
       },
       {
         "skill": "review-aw-plugin",
-        "target": "scripts/validate-json-contract.mjs",
-        "import": {
-          "plugin": "agent-skill-toolkit",
-          "export": "validate-json-contract"
-        }
-      },
-      {
-        "skill": "review-aw-plugin",
-        "target": "scripts/validate-review-result.mjs",
-        "import": {
-          "plugin": "agent-skill-toolkit",
-          "export": "validate-review-result"
-        }
-      },
-      {
-        "skill": "review-aw-plugin",
-        "target": "scripts/inspect-agent-skill.mjs",
-        "import": {
-          "plugin": "agent-skill-toolkit",
-          "export": "inspect-agent-skill"
-        }
-      },
-      {
-        "skill": "review-aw-plugin",
-        "target": "scripts/validate-review-input-bundle.mjs",
-        "import": {
-          "plugin": "agent-skill-toolkit",
-          "export": "validate-review-input-bundle"
-        }
-      },
-      {
-        "skill": "review-aw-plugin",
-        "target": "scripts/validate-eval-run-bundle.mjs",
-        "import": {
-          "plugin": "agent-skill-toolkit",
-          "export": "validate-eval-run-bundle"
-        }
-      },
-      {
-        "skill": "review-aw-plugin",
-        "target": "scripts/validate-eval-audit-result.mjs",
-        "import": {
-          "plugin": "agent-skill-toolkit",
-          "export": "validate-eval-audit-result"
-        }
-      },
-      {
-        "skill": "review-aw-plugin",
-        "target": "assets/review-input-bundle.schema.json",
-        "import": {
-          "plugin": "agent-skill-toolkit",
-          "export": "review-input-bundle-schema"
-        }
-      },
-      {
-        "skill": "review-aw-plugin",
-        "target": "assets/review-result.schema.json",
-        "import": {
-          "plugin": "agent-skill-toolkit",
-          "export": "review-result-schema"
-        }
-      },
-      {
-        "skill": "review-aw-plugin",
-        "target": "assets/skill-inspection-result.schema.json",
-        "import": {
-          "plugin": "agent-skill-toolkit",
-          "export": "skill-inspection-result-schema"
-        }
-      },
-      {
-        "skill": "review-aw-plugin",
-        "target": "assets/eval-audit-result.schema.json",
-        "import": {
-          "plugin": "agent-skill-toolkit",
-          "export": "eval-audit-result-schema"
-        }
-      },
-      {
-        "skill": "review-aw-plugin",
-        "target": "assets/eval-run-bundle.schema.json",
-        "import": {
-          "plugin": "agent-skill-toolkit",
-          "export": "eval-run-bundle-schema"
-        }
-      },
-      {
-        "skill": "review-aw-plugin",
-        "target": "assets/reference-audit-result.schema.json",
-        "import": {
-          "plugin": "agent-content-toolkit",
-          "export": "reference-audit-result-schema"
-        }
+        "target": "assets/review-result-lite.schema.json",
+        "import": { "plugin": "agent-skill-toolkit", "export": "review-result-lite-schema" }
       }
     ]
   },
@@ -191,9 +76,8 @@
         "./scripts/contract.test.mjs",
         "./scripts/invocation-contract.test.mjs",
         "./scripts/reference-contract.test.mjs",
-        "./scripts/review-target-contract.test.mjs",
-        "./scripts/eval-evidence-contract.test.mjs",
-        "./scripts/authoring-context-contract.test.mjs"
+        "./scripts/authoring-context-contract.test.mjs",
+        "./scripts/lightweight-review-contract.test.mjs"
       ]
     }
   },
@@ -203,10 +87,7 @@
     "policy": {
       "installation": "AVAILABLE",
       "authentication": "ON_INSTALL",
-      "products": [
-        "CODEX",
-        "CLAUDE"
-      ]
+      "products": ["CODEX", "CLAUDE"]
     }
   }
 }

@@ -1,7 +1,7 @@
 {
   "name": "dev-workflow",
   "version": "0.1.0",
-  "description": "按风险和当前阶段路由开发任务，组合决策、规格、实现与双轴审查。",
+  "description": "按风险和当前阶段组织开发任务，并提供可独立使用的规格、实现与审查闭环。",
   "compatibility": {
     "aw": {
       "minVersion": "0.0.0"
@@ -24,7 +24,7 @@
   },
   "interface": {
     "displayName": "Dev Workflow",
-    "shortDescription": "按任务风险和当前阶段组织决策、规格、实现与审查",
+    "shortDescription": "按风险和阶段组织决策、规格、实现、修复与独立审查",
     "capabilities": [
       "Skills"
     ]

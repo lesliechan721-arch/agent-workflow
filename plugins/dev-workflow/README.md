@@ -1,50 +1,79 @@
 # Dev Workflow
 
-按任务风险和当前阶段组织软件开发工作，而不是对所有需求套用同一套流程。
-
-Dev Workflow 先选择 Fast、Standard 或 Assured 保障等级，再从最早未完成阶段继续。专业 Skill 只完成自己的工作并返回结果；跨 Skill 编排集中在 `dev-workflow`。
+用轻量、可组合的 Skill 组织中大型开发任务。每个专业 Skill 都可以直接使用；`dev-workflow` 只在需要风险分级、自动选路或跨阶段继续时充当宏入口。
 
 ## 安装
 
+开发工作流依赖决策能力：
+
 ```bash
+aw install ask-me -p both
 aw install dev-workflow -p both
 ```
 
-安装集合应同时提供工作流需要组合的决策能力，例如 `decision-grill` 和 `decision-prototype`。
+## Skill
 
-## 入口
+| Skill | 作用 |
+| --- | --- |
+| `dev-workflow` | 可选宏入口；按风险和现有产物选择当前阶段 |
+| `dev-spec` | 把稳定决定整理为 Spec |
+| `dev-review-spec` | 用独立 reviewer 审查 Spec，并说明修订与复审条件 |
+| `dev-implement` | 实现明确请求、已批准 Spec 或 Review 修复 |
+| `dev-review-code` | 用两个独立 reviewer 分轴审查实现，并说明修复与复审条件 |
 
-显式使用 `dev-workflow` 启动或继续结构化开发流程。熟悉各能力后，也可以直接调用专业 Skill。
+决策阶段使用：
 
-## 本插件包含的 Skill
+- `decision-grill`：通过讨论解决相互依赖的材料决定。
+- `decision-prototype`：通过可见、可运行或可操作证据解决决定。
 
-| Skill                                        | 作用                                             |
-| -------------------------------------------- | ------------------------------------------------ |
-| [`dev-workflow`](skills/dev-workflow/)       | 入口；选择保障等级并从当前最早未完成阶段继续     |
-| [`dev-spec`](skills/dev-spec/)               | 把已经形成的材料决定写成稳定 Spec                |
-| [`dev-review-spec`](skills/dev-review-spec/) | 审查 Spec 是否可批准、可实现、可验证且不过度规定 |
-| [`dev-implement`](skills/dev-implement/)     | 实现明确请求或已批准 Spec，并保存必要工作记忆    |
-| [`dev-review-code`](skills/dev-review-code/) | 分开审查 Spec 符合度和工程质量                   |
+## 使用方式
 
-## 保障等级
+知道当前需要什么时，直接调用专业 Skill：
 
-| 等级 | 适用范围 | 典型路径 |
-| ---- | -------- | -------- |
-| Fast | 明确、低风险、可逆、一个上下文可完成且有可靠验证 | 实现 → 针对性验证；按需代码审查 |
-| Standard | 中等范围、改变用户行为、跨模块、存在材料决定或需要跨会话 | 决策 → Spec → Spec Review → 批准 → 实现 → Code Review |
-| Assured | 安全、权限、支付、数据迁移、生产副作用、不可逆、多 Agent 或缺少可靠测试 | Standard 路径，加持久证据、回滚点、明确授权和独立最终审查 |
+```text
+把这些已确认决定整理成 Spec。
+正式审查这份 Spec 是否可以批准。
+按当前 Spec 开始实现。
+修复 Code Review 中的问题。
+重新审查修复后的实现。
+```
 
-## 默认开发文档目录
+需要自动选择流程时，再显式使用 `dev-workflow`。
 
-优先遵循用户路径或仓库现有约定。Standard 和 Assured 任务都没有约定时，使用：
+## 默认路径
+
+### Fast
+
+```text
+dev-implement → 针对性验证 → 按需 dev-review-code
+```
+
+### Standard
+
+```text
+decision-grill / decision-prototype
+→ dev-spec
+→ dev-review-spec
+→ blocked 时修订并重新审查
+→ 用户批准
+→ dev-implement
+→ dev-review-code
+→ blocked 时修复并重新审查
+→ clean 后交付
+```
+
+### Assured
+
+沿用 Standard 路径，并按项目风险增加持久证据、回滚点、隔离、授权和独立最终审查。
+
+## 默认任务目录
+
+优先使用用户路径或仓库约定。Standard 和 Assured 都没有约定时使用：
 
 ```text
 docs/dev/<task-slug>/
 ├── decisions.md
 ├── prototypes/
-│   └── <decision-id>/
-│       ├── brief.md
-│       └── <原型产物>
 ├── spec.md
 ├── spec-review.md
 ├── work.md
@@ -53,27 +82,11 @@ docs/dev/<task-slug>/
 
 文件按需创建。Fast 路径不为流程本身创建文档。
 
-## 阶段路由
+## Review 报告
 
-- 可通过讨论解决的材料决定 → `decision-grill`
-- 必须通过体验、实验、测量或运行结果解决的决定 → `decision-prototype`
-- 材料决定稳定但没有 Spec → `dev-spec`
-- 已有 Spec 草案、尚未审查 → `dev-review-spec`
-- Spec clean 但尚未批准 → 请求用户批准
-- 已批准或走 Fast 路径 → `dev-implement`
-- 已有完成实现、diff、branch 或 PR → `dev-review-code`
+- `spec-review.md` 和 `code-review.md` 保存当前正式结果；新一轮 Review 默认覆盖旧结果。
+- 报告写明本次审查的目标与版本。目标发生变化后，需要重新 Review。
+- Assured 模式或用户明确要求保留历史时，额外归档到 `reviews/spec/` 或 `reviews/code/`。
+- Spec Review 使用一个 fresh 独立 reviewer；Code Review 并行使用两个 fresh 独立 reviewer。
 
-Review 和实施结果使用中性处理类型描述阻塞。只有入口负责把 `material-decision`、`evidence-needed`、`spec-defect`、`implementation-defect` 等类型映射回下一阶段。
-
-## 设计边界
-
-- Spec 保存用户行为、范围、公共契约、数据、安全、风险和验收等材料决定。
-- Prototype 的稳定结论进入 Spec 规范性章节；完整原型、用户反馈和被否决方案只作为 Evidence 链接。
-- 文件拆分、局部算法、测试组织和临时任务顺序留给实现阶段。
-- `work.md` 只在跨会话、多切片、迁移或 handoff 能降低成本时创建；它不是用户批准合同。
-- 专业 Skill 不直接调用其它 Skill，也不处理依赖缺失。
-- Git、worktree、commit、发布、权限和持久状态由项目现有工具与运行时保证。
-
-## 用户检查点
-
-工作流只在确有必要时停下来：材料决定、原型反馈、Spec 批准、高风险或不可逆动作授权。
+专业 Skill 返回中性的建议动作；具体 Skill 选择由用户或 `dev-workflow` 完成。

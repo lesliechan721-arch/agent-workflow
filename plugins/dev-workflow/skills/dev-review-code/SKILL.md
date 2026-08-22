@@ -1,30 +1,60 @@
 ---
 name: dev-review-code
-description: 当已有代码改动、diff、branch 或 PR，需要同时检查需求或 Spec 符合度和工程质量时使用。分开报告行为偏离与正确性、安全性、可维护性和测试问题；规格是否可批准不属于本 Skill。
+description: 当已有代码改动、diff、branch 或 PR，需要正式检查需求或 Spec 符合度和工程质量，或需要复审修复后的实现时使用。该 Skill 可以单独调用；正式结论必须来自两个 fresh 独立 reviewer 上下文。
 ---
 
 # Dev Review Code
 
-使用双轴审查，避免“代码写得好”掩盖“实现错需求”，也避免“满足需求”掩盖工程缺陷。
+你是 Review 协调器。正式 Code Review 由两个 fresh 独立 reviewer 并行完成。
 
-## 产物位置
+## 审查目标
 
-默认在回复中报告。需要持久化且未指定路径时，使用：
+1. 明确本次审查范围：用户指定范围、commit range 或当前工作区 diff。
+2. 有 Spec 时记录 Spec 路径和版本；没有 Spec 时使用用户请求和明确验收作为 fidelity 基准。
+3. 报告必须能说明审查的是哪一版实现和哪一版 Spec。
+
+## 独立双轴审查
+
+4. 只向 reviewer 提供固定目标、必要规范和验证证据。
+5. 并行创建两个 fresh reviewer：
+   - **Spec fidelity**：检查遗漏、scope creep、未经批准的材料偏离、验收缺口和 Prototype 结论丢失。
+   - **Engineering quality**：检查正确性、安全性、故障处理、并发、可维护性、项目约定、测试可信度和不必要复杂度。
+6. 任一 reviewer 无法创建、未完成，或审查目标在过程中变化时，返回 `incomplete`，不覆盖已有正式报告。
+7. 两个 reviewer 完成后再次确认目标没有变化。按两个轴并列呈现结果，不弱化或移动 finding。
+
+## 报告
+
+默认在回复中报告。需要持久化且未指定路径时，覆盖：
 
 ```text
 docs/dev/<task-slug>/code-review.md
 ```
 
-## 工作流
+报告记录 Review target、Implementation version、Spec version、Result 和两个审查轴。Assured 模式或用户明确要求保留历史时，额外保存到：
 
-1. 确定审查目标、基线和预期行为。读取当前请求、Spec、相关决定、Prototype 结论、diff 和验证证据。
-2. 审查 **Spec fidelity**：遗漏、范围膨胀、未经确认的材料偏离、验收未满足、Prototype 结论丢失。
-3. 审查 **Engineering quality**：正确性、安全性、故障处理、并发、可维护性、项目约定、测试可信度和不必要复杂度。
-4. 在安全且成本合理时运行有针对性的测试、静态检查或复现。无法运行时明确证据限制。
-5. 为每个 blocker 标注一个处理类型：
-   - `implementation-defect`：代码、测试或工程质量问题；
-   - `spec-fidelity`：实现偏离仍然正确的请求或 Spec；
-   - `spec-defect`：审查发现规范本身错误或遗漏；
-   - `material-decision`：出现新的材料产品或架构取舍；
-   - `evidence-needed`：必须取得体验、实验或运行证据才能判断。
-6. 读取并使用 [代码审查模板](assets/code-review-template.md)，分开呈现两个轴，按影响排序 finding，输出 `clean` 或 `blocked`。先报告，不直接修改代码。
+```text
+docs/dev/<task-slug>/reviews/code/<timestamp>.md
+```
+
+使用 [代码审查模板](assets/code-review-template.md)。
+
+## 修复与复审
+
+- `implementation-defect` 或 `spec-fidelity`：修复实现并运行相关验证。
+- `spec-defect`：修订 Spec，重新完成规格审查和批准，再更新实现。
+- `material-decision`：补充材料决定。
+- `evidence-needed`：收集体验、实验或运行证据。
+- 任何代码或 Spec 变化后，重新执行完整双轴审查；每次复审都创建两个新的 fresh reviewer。
+
+只有最新 Review 为 `clean` 才可以交付。`incomplete` 时先补足审查条件，再重新执行本 Skill。
+
+## 输出
+
+```text
+结果：clean / blocked / incomplete
+产物：<报告路径 / 无>
+未解决：<阻塞问题或无>
+建议动作：<修复实现 / 修订 Spec / 补充决定 / 收集证据 / 可以交付 / 重试审查>
+```
+
+先报告，不修改代码、测试或 Spec。

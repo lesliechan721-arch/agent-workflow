@@ -4,34 +4,35 @@
     "optimization": "precision-first",
     "false_negative_cost": "high",
     "false_positive_cost": "high",
-    "rationale": "漏掉隐藏决定会导致错误批准；把合理工程自由误判为缺陷会让 Spec 再次膨胀。"
+    "rationale": "漏掉隐藏决定会导致错误批准；同上下文自审会引入确认偏差；修订后不完整复审会错误复用旧结论。"
   },
   "evals": [
     {
-      "id": "block-over-specified-spec",
+      "id": "independent-block-over-specified-spec",
       "eval_type": "behavior",
       "case_role": "representative",
       "provenance": "representative-synthetic",
-      "scenario_family": "over-specified-spec-review",
+      "scenario_family": "independent-spec-review",
       "unit_under_test": "full-skill",
       "preconditions": {
         "spec_exists": true,
-        "review_is_read_only": true
+        "review_is_read_only": true,
+        "fresh_subagent_available": true
       },
       "oracle": {
-        "rationale": "目标 Spec 已经包含文件级步骤和模型维护的状态转移，同时没有清楚说明用户可观察验收；应 blocked 并把问题路由到正确层。",
+        "rationale": "目标 Spec 包含文件级步骤和模型状态流程，同时没有可观察验收；正式结论必须由 fresh reviewer 完成。",
         "rule_refs": [
-          "SKILL.md#工作流",
+          "SKILL.md#审查",
           "assets/spec-review-template.md"
         ],
         "confidence": "high",
-        "allowed_variance": "finding 数量和措辞可不同；必须识别过度规定与验收缺口、保持只读并给出最小下一步。"
+        "allowed_variance": "finding 数量和措辞可不同；必须创建独立 reviewer、识别过度规定与验收缺口、保持只读并记录目标版本。"
       },
-      "prompt": "只读审查 docs/specs/session-expiry.md，判断是否可以批准。不要修改文件。",
+      "prompt": "正式审查 docs/specs/session-expiry.md，判断是否可以批准。使用独立 reviewer，不要修改文件。",
       "scripted_replies": [],
-      "expected_output": "输出 blocked；指出文件级任务清单和自然语言状态机应删除或移出 Spec，并指出可观察验收不足。",
+      "expected_output": "创建 fresh reviewer；输出 blocked；报告记录 Target、Version 和 Result；指出文件级任务清单、模型状态流程和可观察验收缺口；说明修订后必须重新 Review。",
       "workspace_files": {
-        "docs/specs/session-expiry.md": "# Session Expiry Spec\n\n## Goal\n让会话过期。\n\n## 实施步骤\n1. 修改 src/auth/session.ts。\n2. 修改 src/api/middleware.ts。\n3. 按 pending -> checking -> retrying -> expired -> renewed 五个模型状态推进；每次回复必须更新当前状态。\n4. 第三次重试后写 recovery.md。\n\n## 验收\n系统正常工作。\n"
+        "docs/specs/session-expiry.md": "# Session Expiry Spec\n\n## Goal\n让会话过期。\n\n## 实施步骤\n1. 修改 src/auth/session.ts。\n2. 按 pending -> checking -> retrying -> expired 推进。\n\n## 验收\n系统正常工作。\n"
       },
       "review": {
         "platforms": [
@@ -50,10 +51,67 @@
           }
         ],
         "checks": [
-          "结论为 blocked，而不是因为形式完整而给 clean",
-          "分别指出可验证验收缺失，以及文件步骤和模型状态机属于过度规定",
-          "建议把材料行为补入 Spec，把局部步骤移到 implementation/work 记忆",
+          "trace 创建一个 fresh 独立 reviewer；当前上下文不直接完成正式审查",
+          "结论为 blocked，报告包含 Target、Version 和 Result",
+          "指出可验证验收缺失，以及文件步骤和模型状态流程属于过度规定",
+          "说明修订完成后需要重新执行完整规格审查",
           "不修改被审 Spec"
+        ]
+      }
+    },
+    {
+      "id": "rereview-revised-spec-from-scratch",
+      "eval_type": "behavior",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "spec-rereview",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "spec_exists": true,
+        "previous_review_blocked": true,
+        "spec_revised": true,
+        "fresh_subagent_available": true
+      },
+      "oracle": {
+        "rationale": "修订后应对当前完整 Spec 进行新的独立 Review，而不是只确认旧 finding。",
+        "rule_refs": [
+          "SKILL.md#修复与复审"
+        ],
+        "confidence": "high",
+        "allowed_variance": "可以引用上一轮问题，但必须重新覆盖全部四个审查维度，并以当前 Spec 为目标。"
+      },
+      "prompt": "docs/dev/invite-expiry/spec.md 已根据上一次 blocked Review 修订。重新正式审查完整 Spec，覆盖当前 spec-review.md。不要修改 Spec。",
+      "scripted_replies": [],
+      "expected_output": "创建新的 fresh reviewer；完整审查当前 Spec；若无 blocker 输出 clean，并覆盖当前报告。",
+      "workspace_files": {
+        "docs/dev/invite-expiry/spec.md": "# Invite expiry Spec\n\n## Outcome\n邀请 7 天后过期。\n\n## User-visible behavior\n第 7 天前可以接受；过期后服务端拒绝。\n\n## Acceptance\n覆盖过期前、边界时刻和过期后。\n\n## Agent discretion\n内部文件和函数组织由实现者决定。\n",
+        "docs/dev/invite-expiry/spec-review.md": "# Spec Review\n\n- Result: blocked\n\n## Findings\n缺少过期后的服务端行为。\n"
+      },
+      "review": {
+        "platforms": [
+          "codex"
+        ],
+        "clean_session": true,
+        "workspace_unchanged": false,
+        "allowed_workspace_changes": [
+          "docs/dev/invite-expiry/spec-review.md"
+        ],
+        "artifacts": [
+          {
+            "path": "docs/dev/invite-expiry/spec-review.md",
+            "exists": true,
+            "contains": [
+              "Version",
+              "Result: `clean`",
+              "复审条件"
+            ]
+          }
+        ],
+        "checks": [
+          "trace 创建新的 fresh reviewer，而不是复用上一轮上下文",
+          "重新检查决策完整性、可实现性、可验证性和边界纪律",
+          "目标是当前完整 Spec，而不只是旧 finding",
+          "覆盖当前 spec-review.md，并保持 Spec 不变"
         ]
       }
     }
