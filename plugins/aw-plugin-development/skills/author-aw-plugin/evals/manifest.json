@@ -82,6 +82,30 @@
       "releaseSplits": [],
       "requiredForRelease": true,
       "perRunTimeoutMs": 300000
+    },
+    {
+      "id": "lightweight-delta",
+      "kind": "conversation",
+      "skills": [
+        "author-aw-plugin",
+        "review-aw-plugin",
+        "write-agent-content",
+        "review-agent-content",
+        "author-agent-skill",
+        "review-agent-skill",
+        "design-agent-skill-evals",
+        "audit-agent-skill-evals",
+        "run-agent-skill-evals"
+      ],
+      "cases": "./lightweight-delta-cases.json",
+      "isolation": "strict",
+      "profiles": [
+        "project-default"
+      ],
+      "defaultRuns": 1,
+      "releaseSplits": [],
+      "requiredForRelease": true,
+      "perRunTimeoutMs": 180000
     }
   ]
 }

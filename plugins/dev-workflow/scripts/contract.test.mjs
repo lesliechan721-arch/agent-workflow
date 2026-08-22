@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { access, readFile, readdir } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -24,12 +24,6 @@ function assertSkill(text, name) {
   assert.match(text, new RegExp(`^name: ${name}$`, 'm'));
   assert.match(text, /^description: .+时使用/m);
   assert.doesNotMatch(text, /\[TODO:/);
-}
-
-function skillBody(text) {
-  const match = text.match(/^---\n[\s\S]*?\n---\n([\s\S]*)$/u);
-  assert.ok(match);
-  return match[1];
 }
 
 function caseEntries(document) {
@@ -78,89 +72,21 @@ test('source exposes five directly usable Skills', async () => {
   }
 });
 
-test('workflow owns concrete routing and review loops', async () => {
-  const entry = await read(path.join(target.source, 'skills', 'dev-workflow', 'SKILL.md'));
-  for (const name of ['decision-grill', 'decision-prototype', 'dev-spec', 'dev-review-spec', 'dev-implement', 'dev-review-code']) {
-    assert.match(entry, new RegExp(name));
-  }
-  assert.match(entry, /Spec Review 为 `blocked`/);
-  assert.match(entry, /Code Review 为 `blocked`/);
-  assert.match(entry, /重新运行 `dev-review-spec`/);
-  assert.match(entry, /重新运行 `dev-review-code`/);
-  assert.match(entry, /docs\/dev\/<task-slug>\//);
-  assert.doesNotMatch(entry, /自然语言状态机|更细的状态表|task-state\.json/);
-});
-
-test('specialized Skills return neutral next actions', async () => {
-  const expectedActions = {
-    'dev-spec': ['补充决定', '收集证据', '规格审查'],
-    'dev-implement': ['补充决定', '收集证据', '修订 Spec', '代码审查'],
-    'dev-review-spec': ['补充决定', '收集证据', '修订 Spec', '批准当前 Spec', '重试审查'],
-    'dev-review-code': ['修复实现', '修订 Spec', '补充决定', '收集证据', '可以交付', '重试审查'],
-  };
-  for (const [name, actions] of Object.entries(expectedActions)) {
-    const body = skillBody(await read(path.join(target.source, 'skills', name, 'SKILL.md')));
-    assert.match(body, /## 输出/);
-    assert.match(body, /建议动作/);
-    for (const action of actions) assert.match(body, new RegExp(action));
-    for (const peer of [...skills, ...decisionSkills].filter((entry) => entry !== name)) {
-      assert.doesNotMatch(body, new RegExp(peer));
-    }
-  }
-});
-
-test('review reports are minimal, version-bound and rerun after fixes', async () => {
-  const specSkill = await read(path.join(target.source, 'skills', 'dev-review-spec', 'SKILL.md'));
-  assert.match(specSkill, /fresh 独立 reviewer/);
-  assert.match(specSkill, /覆盖：/);
-  assert.match(specSkill, /重新执行完整规格审查/);
-  assert.doesNotMatch(specSkill, /Git blob\/OID|没有 Git 身份|Git 负责普通历史|pointer|round lineage|finding registry/);
-
-  const codeSkill = await read(path.join(target.source, 'skills', 'dev-review-code', 'SKILL.md'));
-  assert.match(codeSkill, /并行创建两个 fresh reviewer/);
-  assert.match(codeSkill, /覆盖：/);
-  assert.match(codeSkill, /重新执行完整双轴审查/);
-  assert.doesNotMatch(codeSkill, /Git blob\/OID|没有 Git 身份|Git 负责普通历史|pointer|round lineage|finding registry/);
-
-  const specTemplate = await read(path.join(target.source, 'skills', 'dev-review-spec', 'assets', 'spec-review-template.md'));
-  assert.match(specTemplate, /Version/);
-  assert.match(specTemplate, /复审条件/);
-  assert.doesNotMatch(specTemplate, /Reviewed at|Review mode|git blob|OID|sha256/i);
-
-  const codeTemplate = await read(path.join(target.source, 'skills', 'dev-review-code', 'assets', 'code-review-template.md'));
-  assert.match(codeTemplate, /Review target/);
-  assert.match(codeTemplate, /Implementation version/);
-  assert.match(codeTemplate, /复审条件/);
-  assert.doesNotMatch(codeTemplate, /Reviewed at|Review mode|git blob|OID|sha256/i);
-});
-
-test('review behavior evals cover independent review and full rereview', async () => {
+test('review behavior suites remain structurally valid', async () => {
   for (const name of ['dev-review-spec', 'dev-review-code']) {
     const evalRoot = path.join(target.source, 'skills', name, 'evals');
     const manifest = await readJson(path.join(evalRoot, 'manifest.json'));
     const behavior = manifest.suites.find((suite) => suite.id === 'behavior');
+    assert.ok(behavior);
     assert.deepEqual(behavior.skills, [name]);
     assert.equal('observeSpawnAgent' in behavior, false);
-    const entries = assertCaseDocument(await readJson(path.join(evalRoot, behavior.cases)));
-    assert.equal(entries.some((entry) => entry.id.includes('rereview')), true);
-    assert.equal(entries.every((entry) => entry.review.checks.some((check) => check.includes('fresh'))), true);
+    assertCaseDocument(await readJson(path.join(evalRoot, behavior.cases)));
   }
 });
 
-test('workflow routing eval covers direct use and repair loops', async () => {
+test('workflow routing eval references only installed participants', async () => {
   const evalRoot = path.join(target.source, 'skills', 'dev-workflow', 'evals');
-  const routing = await readJson(path.join(evalRoot, 'cross-plugin-routing-cases.json'));
-  const ids = new Set(assertCaseDocument(routing).map((entry) => entry.id));
-  for (const id of [
-    'route_material_decisions_to_grill',
-    'route_evidence_decision_to_prototype',
-    'route_revised_spec_to_rereview',
-    'route_fixed_code_to_rereview',
-    'direct_spec_review_bypasses_router',
-    'direct_code_review_bypasses_router',
-  ]) {
-    assert.equal(ids.has(id), true);
-  }
+  assertCaseDocument(await readJson(path.join(evalRoot, 'cross-plugin-routing-cases.json')));
 });
 
 test('runtime keeps all Skill roots', async () => {

@@ -52,6 +52,28 @@
       ],
       "requiredForRelease": true,
       "perRunTimeoutMs": 180000
+    },
+    {
+      "id": "behavior",
+      "kind": "conversation",
+      "skills": [
+        "write-agent-content",
+        "review-agent-content",
+        "author-agent-skill",
+        "review-agent-skill",
+        "design-agent-skill-evals",
+        "audit-agent-skill-evals",
+        "run-agent-skill-evals"
+      ],
+      "cases": "./behavior-cases.json",
+      "isolation": "strict",
+      "profiles": [
+        "project-default"
+      ],
+      "defaultRuns": 1,
+      "releaseSplits": [],
+      "requiredForRelease": true,
+      "perRunTimeoutMs": 300000
     }
   ]
 }

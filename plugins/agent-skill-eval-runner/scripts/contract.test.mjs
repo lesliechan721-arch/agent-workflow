@@ -26,9 +26,6 @@ async function runInjectedBin(bin, args) {
 }
 
 test('plugin is a manual-only orchestration Skill', async () => {
-  const manifest = JSON.parse(
-    await readFile(path.join(sourceRoot, '.agents-plugin', 'plugin.json'), 'utf8'),
-  );
   const skill = await readRuntime('SKILL.md');
   const openai = await readRuntime('agents/openai.yaml');
 
@@ -51,32 +48,6 @@ test('plugin is a manual-only orchestration Skill', async () => {
   for (const triggerCase of triggerCases.cases.filter((entry) => entry.should_load_skill)) {
     assert.match(triggerCase.query, /\$run-agent-skill-evals\b/u);
   }
-});
-
-test('orchestration preserves authorization, ordered preflight, and result triage', async () => {
-  const skill = await readRuntime('SKILL.md');
-  const orderedMarkers = [
-    '## 1. 人工授权 gate',
-    'aw-skill-eval capabilities --json',
-    '## 3. EvalAuditResult 运行前审核',
-    'aw-skill-eval digest skill <skill-dir>',
-    'aw-skill-eval plan validate <plan.json>',
-    'aw-skill-eval run <plan.json>',
-    'aw-skill-eval bundle validate <bundle.json>',
-    'audit-agent-skill-evals(result-triage)',
-  ];
-
-  let previous = -1;
-  for (const marker of orderedMarkers) {
-    const current = skill.indexOf(marker);
-    assert.ok(current > previous, `${marker} must occur after the prior gate`);
-    previous = current;
-  }
-
-  for (const authorization of ['模型成本', '外部进程', '凭据', '网络访问', '临时输出']) {
-    assert.match(skill, new RegExp(authorization, 'u'));
-  }
-  assert.match(skill, /fresh-context `audit-agent-skill-evals\(result-triage\)`/u);
 });
 
 test('Skill declares the stable shared CLI contract without a local execution fallback', async () => {

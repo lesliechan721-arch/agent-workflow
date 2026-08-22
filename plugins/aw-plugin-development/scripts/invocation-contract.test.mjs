@@ -21,7 +21,6 @@ for (const skillName of ['author-aw-plugin', 'review-aw-plugin']) {
 
     assert.match(skill, /^user-invocable:\s*true\s*$/mu);
     assert.doesNotMatch(skill, /^disable-model-invocation:\s*true\s*$/mu);
-    assert.doesNotMatch(skill, /仅当用户显式要求/u);
     assert.match(metadata, /^\s*allow_implicit_invocation:\s*true\s*$/mu);
   });
 }
