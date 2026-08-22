@@ -4,7 +4,7 @@
     "optimization": "balanced",
     "false_negative_cost": "high",
     "false_positive_cost": "high",
-    "rationale": "漏掉实现或验证会产生不完整交付；材料决定未解决、修复范围扩张或低价值测试会扩大返工和维护风险。"
+    "rationale": "漏掉实现或验证会产生不完整交付；材料决定未解决、修复范围扩张、低价值测试或过程历史泄漏会扩大返工和维护风险。"
   },
   "evals": [
     {
@@ -136,7 +136,7 @@
       "expected_output": "以最小改动让公开帮助包含 --json，并用稳定行为断言验证；不实现 Review 中的非阻塞通用化和全文 hash 建议。",
       "sandbox": "workspace-write",
       "workspace_files": {
-        "docs/dev/status-help/code-review.md": "# Code Review\n\n- Assurance: `Standard`\n- Result: `blocked`\n- Repair round: `0`\n- Progress: `initial`\n- Automatic repair: `continue`\n\n## Engineering quality\n\n### Blocker\n\n`renderHelp()` 的公开输出缺少 `--json`，用户无法发现结构化输出入口。修复后通过公共函数断言该选项可见。\n\n### Non-blocking suggestion\n\n以后可以抽象通用 `HelpRenderer`，并用完整帮助文本 snapshot 或文件 hash 防止任何措辞变化。\n",
+        "docs/dev/status-help/code-review.md": "# Code Review\n\n- Assurance: `Standard`\n- Result: `blocked`\n\n## Engineering quality\n\n### Blocker\n\n`renderHelp()` 的公开输出缺少 `--json`，用户无法发现结构化输出入口。\n\n关闭条件：公共帮助显示 `--json`，且通过公共函数行为断言。\n\n### Non-blocking suggestion\n\n以后可以抽象通用 `HelpRenderer`，并用完整帮助文本 snapshot 或文件 hash 防止任何措辞变化。\n",
         "src/help.js": "export function renderHelp() {\n  return 'Usage: aw status';\n}\n",
         "test/help.test.js": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport { renderHelp } from '../src/help.js';\n\ntest('renders status help', () => {\n  assert.match(renderHelp(), /Usage: aw status/);\n});\n",
         "package.json": "{\"type\":\"module\"}\n"
@@ -181,9 +181,75 @@
         ],
         "checks": [
           "trace 实际运行 node --test，并准确报告结果",
-          "实现和测试都只覆盖公开帮助缺少 --json 的 blocker",
+          "实现和测试都只覆盖公开帮助缺少 --json 的 blocker 及其关闭条件",
           "没有引入 HelpRenderer、配置层、插件体系或其它无当前调用方的通用抽象",
           "没有用完整文案 snapshot、整文件 hash 或排版锁定代替稳定行为断言"
+        ]
+      }
+    },
+    {
+      "id": "normalize-final-artifact-to-current-contract",
+      "eval_type": "outcome",
+      "case_role": "regression",
+      "provenance": "observed",
+      "scenario_family": "final-artifact-normalization",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "current_decision_confirmed": true,
+        "rejected_option_present_in_source_notes": true,
+        "target_is_user_facing_skill": true,
+        "implementation_authorized": true
+      },
+      "oracle": {
+        "rationale": "最终 Skill 应正面表达当前有效的 expiresAt 合同，不把被否决的状态机、Review 指令或过程性“不要做 X”复制到生产产物。",
+        "rule_refs": [
+          "SKILL.md#实施循环"
+        ],
+        "confidence": "high",
+        "allowed_variance": "措辞可以不同；必须保留当前行为和必要约束，不能回放被否决方案或修复历史。"
+      },
+      "prompt": "读取 docs/session-expiry-decision.md，按最终决定完成 skills/session-expiry/SKILL.md。只更新目标 Skill，不保留中间方案或 Review 过程。",
+      "scripted_replies": [],
+      "expected_output": "把目标 Skill 写成只描述当前 expiresAt 判断、服务端拒绝和必要行为的正面合同，不包含被否决状态机、Review 历史或过程性否定指令。",
+      "sandbox": "workspace-write",
+      "workspace_files": {
+        "docs/session-expiry-decision.md": "# Session expiry 决定\n\n## 中间讨论\n\n曾考虑 `SessionStateMachine`，按 `pending -> checking -> retrying -> expired` 持久化；Review 后未采用。\n\n## 最终决定\n\n- 每次请求根据 `expiresAt` 与当前时间判断是否过期。\n- 过期后服务端拒绝并返回明确错误。\n- 不新增持久化迁移。\n- 目标 Skill 只表达当前有效行为。\n",
+        "skills/session-expiry/SKILL.md": "---\nname: session-expiry\ndescription: TODO\n---\n\n# Session Expiry\n\nTODO\n"
+      },
+      "review": {
+        "platforms": [
+          "codex"
+        ],
+        "clean_session": true,
+        "workspace_unchanged": false,
+        "allowed_workspace_changes": [
+          "skills/session-expiry/SKILL.md"
+        ],
+        "artifacts": [
+          {
+            "path": "skills/session-expiry/SKILL.md",
+            "exists": true,
+            "contains": [
+              "expiresAt",
+              "服务端",
+              "拒绝"
+            ],
+            "not_contains": [
+              "SessionStateMachine",
+              "pending -> checking",
+              "不要使用自然语言状态机",
+              "上一次 Review",
+              "被否决",
+              "中间讨论"
+            ]
+          }
+        ],
+        "checks": [
+          "最终 Skill 正面表达当前有效行为和必要约束",
+          "不复制被否决方案、Review 指令、修复历史或过程性否定表达",
+          "不增加通用状态机、兼容 fallback 或无当前消费者的配置",
+          "不新增文本 snapshot、整文件 hash 或其它低价值测试",
+          "只修改目标 Skill"
         ]
       }
     }

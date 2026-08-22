@@ -12,24 +12,16 @@
       "id": "route_fast_to_implement",
       "split": "validation",
       "query": "使用 dev-workflow 处理一个明确、低风险且有现成测试的小改动。",
-      "expected_loaded_skills": [
-        "dev-workflow",
-        "dev-implement"
-      ],
+      "expected_loaded_skills": ["dev-workflow", "dev-implement"],
       "eval_type": "routing",
       "case_role": "representative",
       "provenance": "representative-synthetic",
       "scenario_family": "workflow-routing",
       "unit_under_test": "full-skill",
-      "preconditions": {
-        "participant_skills_available": true
-      },
+      "preconditions": {"participant_skills_available": true},
       "oracle": {
         "rationale": "Fast 任务直接进入实现。",
-        "rule_refs": [
-          "SKILL.md#3-选择当前能力",
-          "SKILL.md#4-处理-review-循环"
-        ],
+        "rule_refs": ["SKILL.md#1-选择最低足够保障", "SKILL.md#3-选择当前能力"],
         "confidence": "high",
         "allowed_variance": "措辞可以不同，但只能加载当前阶段需要的能力。"
       }
@@ -38,24 +30,16 @@
       "id": "route_material_decisions_to_grill",
       "split": "validation",
       "query": "使用 dev-workflow 组织新的权限模型；多个材料决定相互依赖。",
-      "expected_loaded_skills": [
-        "dev-workflow",
-        "decision-grill"
-      ],
+      "expected_loaded_skills": ["dev-workflow", "decision-grill"],
       "eval_type": "routing",
       "case_role": "representative",
       "provenance": "representative-synthetic",
       "scenario_family": "workflow-routing",
       "unit_under_test": "full-skill",
-      "preconditions": {
-        "participant_skills_available": true
-      },
+      "preconditions": {"participant_skills_available": true},
       "oracle": {
         "rationale": "相互依赖的材料决定使用 decision-grill。",
-        "rule_refs": [
-          "SKILL.md#3-选择当前能力",
-          "SKILL.md#4-处理-review-循环"
-        ],
+        "rule_refs": ["SKILL.md#3-选择当前能力"],
         "confidence": "high",
         "allowed_variance": "措辞可以不同，但只能加载当前阶段需要的能力。"
       }
@@ -64,24 +48,16 @@
       "id": "route_evidence_decision_to_prototype",
       "split": "validation",
       "query": "使用 dev-workflow 处理审批页布局；我必须操作候选方案后才能决定。",
-      "expected_loaded_skills": [
-        "dev-workflow",
-        "decision-prototype"
-      ],
+      "expected_loaded_skills": ["dev-workflow", "decision-prototype"],
       "eval_type": "routing",
       "case_role": "representative",
       "provenance": "representative-synthetic",
       "scenario_family": "workflow-routing",
       "unit_under_test": "full-skill",
-      "preconditions": {
-        "participant_skills_available": true
-      },
+      "preconditions": {"participant_skills_available": true},
       "oracle": {
         "rationale": "需要体验证据的决定使用 decision-prototype。",
-        "rule_refs": [
-          "SKILL.md#3-选择当前能力",
-          "SKILL.md#4-处理-review-循环"
-        ],
+        "rule_refs": ["SKILL.md#3-选择当前能力"],
         "confidence": "high",
         "allowed_variance": "措辞可以不同，但只能加载当前阶段需要的能力。"
       }
@@ -90,24 +66,16 @@
       "id": "route_decisions_to_spec",
       "split": "validation",
       "query": "使用 dev-workflow 继续：决定已确认，当前还没有 Spec。",
-      "expected_loaded_skills": [
-        "dev-workflow",
-        "dev-spec"
-      ],
+      "expected_loaded_skills": ["dev-workflow", "dev-spec"],
       "eval_type": "routing",
       "case_role": "representative",
       "provenance": "representative-synthetic",
       "scenario_family": "workflow-routing",
       "unit_under_test": "full-skill",
-      "preconditions": {
-        "participant_skills_available": true
-      },
+      "preconditions": {"participant_skills_available": true},
       "oracle": {
         "rationale": "稳定决定进入 Spec。",
-        "rule_refs": [
-          "SKILL.md#3-选择当前能力",
-          "SKILL.md#4-处理-review-循环"
-        ],
+        "rule_refs": ["SKILL.md#3-选择当前能力"],
         "confidence": "high",
         "allowed_variance": "措辞可以不同，但只能加载当前阶段需要的能力。"
       }
@@ -116,24 +84,16 @@
       "id": "route_revised_spec_to_rereview",
       "split": "validation",
       "query": "使用 dev-workflow 继续：Spec 已根据 blocked Review 修订。",
-      "expected_loaded_skills": [
-        "dev-workflow",
-        "dev-review-spec"
-      ],
+      "expected_loaded_skills": ["dev-workflow", "dev-review-spec"],
       "eval_type": "routing",
       "case_role": "representative",
       "provenance": "representative-synthetic",
-      "scenario_family": "review-loop",
+      "scenario_family": "review-routing",
       "unit_under_test": "full-skill",
-      "preconditions": {
-        "participant_skills_available": true
-      },
+      "preconditions": {"participant_skills_available": true},
       "oracle": {
         "rationale": "Spec 修订后重新正式审查。",
-        "rule_refs": [
-          "SKILL.md#3-选择当前能力",
-          "SKILL.md#4-处理-review-循环"
-        ],
+        "rule_refs": ["SKILL.md#3-选择当前能力", "SKILL.md#4-消费-review-结果"],
         "confidence": "high",
         "allowed_variance": "措辞可以不同，但只能加载当前阶段需要的能力。"
       }
@@ -142,24 +102,16 @@
       "id": "route_blocked_code_review_to_implement",
       "split": "validation",
       "query": "使用 dev-workflow 处理 blocked Code Review；Spec 正确，问题是实现缺陷。",
-      "expected_loaded_skills": [
-        "dev-workflow",
-        "dev-implement"
-      ],
+      "expected_loaded_skills": ["dev-workflow", "dev-implement"],
       "eval_type": "routing",
       "case_role": "representative",
       "provenance": "representative-synthetic",
-      "scenario_family": "review-loop",
+      "scenario_family": "review-routing",
       "unit_under_test": "full-skill",
-      "preconditions": {
-        "participant_skills_available": true
-      },
+      "preconditions": {"participant_skills_available": true},
       "oracle": {
         "rationale": "实现缺陷进入修复。",
-        "rule_refs": [
-          "SKILL.md#3-选择当前能力",
-          "SKILL.md#4-处理-review-循环"
-        ],
+        "rule_refs": ["SKILL.md#4-消费-review-结果"],
         "confidence": "high",
         "allowed_variance": "措辞可以不同，但只能加载当前阶段需要的能力。"
       }
@@ -168,24 +120,16 @@
       "id": "route_fixed_code_to_rereview",
       "split": "validation",
       "query": "使用 dev-workflow 继续：Code Review blocker 已修复并验证。",
-      "expected_loaded_skills": [
-        "dev-workflow",
-        "dev-review-code"
-      ],
+      "expected_loaded_skills": ["dev-workflow", "dev-review-code"],
       "eval_type": "routing",
       "case_role": "representative",
       "provenance": "representative-synthetic",
-      "scenario_family": "review-loop",
+      "scenario_family": "review-routing",
       "unit_under_test": "full-skill",
-      "preconditions": {
-        "participant_skills_available": true
-      },
+      "preconditions": {"participant_skills_available": true},
       "oracle": {
         "rationale": "代码变化后重新双轴 Review。",
-        "rule_refs": [
-          "SKILL.md#3-选择当前能力",
-          "SKILL.md#4-处理-review-循环"
-        ],
+        "rule_refs": ["SKILL.md#4-消费-review-结果"],
         "confidence": "high",
         "allowed_variance": "措辞可以不同，但只能加载当前阶段需要的能力。"
       }
@@ -194,24 +138,16 @@
       "id": "route_code_review_spec_defect_to_spec",
       "split": "validation",
       "query": "使用 dev-workflow 处理 blocked Code Review；reviewer 发现 Spec 遗漏失败行为。",
-      "expected_loaded_skills": [
-        "dev-workflow",
-        "dev-spec"
-      ],
+      "expected_loaded_skills": ["dev-workflow", "dev-spec"],
       "eval_type": "routing",
       "case_role": "representative",
       "provenance": "representative-synthetic",
-      "scenario_family": "review-loop",
+      "scenario_family": "review-routing",
       "unit_under_test": "full-skill",
-      "preconditions": {
-        "participant_skills_available": true
-      },
+      "preconditions": {"participant_skills_available": true},
       "oracle": {
         "rationale": "Spec 缺陷先修订 Spec。",
-        "rule_refs": [
-          "SKILL.md#3-选择当前能力",
-          "SKILL.md#4-处理-review-循环"
-        ],
+        "rule_refs": ["SKILL.md#4-消费-review-结果"],
         "confidence": "high",
         "allowed_variance": "措辞可以不同，但只能加载当前阶段需要的能力。"
       }
@@ -220,50 +156,38 @@
       "id": "direct_spec_review_bypasses_router",
       "split": "sanity",
       "query": "正式审查这份 Spec 是否可以批准。",
-      "expected_loaded_skills": [
-        "dev-review-spec"
-      ],
+      "expected_loaded_skills": ["dev-review-spec"],
       "eval_type": "routing",
       "case_role": "boundary",
       "provenance": "boundary",
-      "scenario_family": "review-loop",
+      "scenario_family": "direct-specialist",
       "unit_under_test": "description",
-      "preconditions": {
-        "participant_skills_available": true
-      },
+      "preconditions": {"participant_skills_available": true},
       "oracle": {
         "rationale": "直接请求专业能力时不加载宏入口。",
-        "rule_refs": [
-          "SKILL.md#3-选择当前能力",
-          "SKILL.md#4-处理-review-循环"
-        ],
+        "rule_refs": ["SKILL.md description"],
         "confidence": "high",
-        "allowed_variance": "措辞可以不同，但只能加载当前阶段需要的能力。"
+        "allowed_variance": "措辞可以不同，但只能加载当前阶段需要的能力。",
+        "minimal_counterexample": "要求同时组织后续修订、实现和复审时，宏入口应加载。"
       }
     },
     {
       "id": "direct_code_review_bypasses_router",
       "split": "sanity",
       "query": "审查这个 PR 的需求符合度和工程质量。",
-      "expected_loaded_skills": [
-        "dev-review-code"
-      ],
+      "expected_loaded_skills": ["dev-review-code"],
       "eval_type": "routing",
       "case_role": "boundary",
       "provenance": "boundary",
-      "scenario_family": "review-loop",
+      "scenario_family": "direct-specialist",
       "unit_under_test": "description",
-      "preconditions": {
-        "participant_skills_available": true
-      },
+      "preconditions": {"participant_skills_available": true},
       "oracle": {
         "rationale": "直接请求专业能力时不加载宏入口。",
-        "rule_refs": [
-          "SKILL.md#3-选择当前能力",
-          "SKILL.md#4-处理-review-循环"
-        ],
+        "rule_refs": ["SKILL.md description"],
         "confidence": "high",
-        "allowed_variance": "措辞可以不同，但只能加载当前阶段需要的能力。"
+        "allowed_variance": "措辞可以不同，但只能加载当前阶段需要的能力。",
+        "minimal_counterexample": "要求审查后继续修复并重新审查时，宏入口应加载。"
       }
     }
   ]

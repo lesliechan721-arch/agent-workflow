@@ -15,11 +15,11 @@ aw install dev-workflow -p both
 
 | Skill | 作用 |
 | --- | --- |
-| `dev-workflow` | 可选宏入口；按风险和现有产物选择当前阶段 |
+| `dev-workflow` | 可选宏入口；按风险和已有产物选择当前阶段 |
 | `dev-spec` | 把稳定决定整理为 Spec，并归一为当前有效合同 |
-| `dev-review-spec` | 用独立 reviewer 审查 Spec，并判断修订与复审是否收敛 |
+| `dev-review-spec` | 用 fresh 独立 reviewer 审查 Spec |
 | `dev-implement` | 以最小完整改动实现明确请求、已批准 Spec 或 Review 修复 |
-| `dev-review-code` | 按保障等级用独立 reviewer 双轴审查实现，并判断修复是否收敛 |
+| `dev-review-code` | 按保障等级用 fresh reviewer 双轴审查实现 |
 
 决策阶段使用：
 
@@ -48,7 +48,7 @@ aw install dev-workflow -p both
 dev-implement → 针对性验证 → 按需 dev-review-code
 ```
 
-Fast 不自动进入 Review 修复循环。
+Fast 不为流程本身创建文档，也不自动进入 Review 修复循环。
 
 ### Standard
 
@@ -56,26 +56,30 @@ Fast 不自动进入 Review 修复循环。
 decision-grill / decision-prototype
 → dev-spec
 → dev-review-spec
-→ blocked 时修订并重新审查
 → 用户批准
 → dev-implement
 → dev-review-code
-→ blocked 时修复并重新审查
 → clean 后交付
 ```
 
-Standard 的 Code Review 默认由一个 fresh reviewer 覆盖两个审查轴；自动修复最多两轮。
+Review 为 `blocked` 时，入口按报告中的主要问题选择一个修复能力。用户已授权自动继续时，默认只自动完成一次“修复 → 完整复审”；复审仍未 clean 时暂停，由用户决定下一步。
 
 ### Assured
 
-沿用 Standard 路径，并按项目风险增加持久证据、回滚点、隔离、授权和独立最终审查。Code Review 使用两个 fresh reviewer 分轴完成；自动修复最多三轮。
+沿用 Standard 路径，并按项目风险增加持久证据、回滚点、隔离、授权和独立最终审查。Code Review 使用两个 fresh reviewer 分轴完成。多轮、可恢复的自动修复属于运行时或项目策略，不写成常驻 Skill 协议。
 
-## Review 收敛
+## Review 结果
 
-- 初次 Review 一次列出当前证据支持的全部 blocker；偏好性改进不进入交付门槛。
-- 修复只覆盖当前 blocker、必需影响面和直接 regression。
-- 复审重新检查当前完整目标，并记录 Repair round、Progress 和 Automatic repair。
-- `stalled`、`regressed`、预算用尽或 reviewer 持续冲突时停止自动修复，由用户决定重新设计、缩小范围、补证、更换 reviewer、接受风险、额外授权或停止。
+- `clean`：Spec Review 后进入批准；Code Review 后进入交付。
+- `blocked`：按 finding 类型修复材料决定、证据、Spec 或实现。
+- `incomplete`：补足 reviewer、稳定目标或证据后重试同一 Review。
+- Review 要求停止，或下一步需要新的材料决定、风险授权或用户选择：停在人类检查点。
+
+初次 Review 一次列出当前证据支持的全部 blocker。每个 blocker 必须说明材料影响和可验证关闭条件；偏好性改进不进入批准或交付门槛。复审重新检查当前完整目标，不只确认旧 finding；新 blocker 也必须达到相同门槛。
+
+## 最终产物
+
+实现和 Review 以当前有效合同为准。生产代码、用户文档和 Skill 不回放被否决方案、Review 指令、修复历史或过程性的“不要做 X”；只有公开合同、安全或兼容约束，以及高概率复发的非显然 gotcha 才保留。
 
 ## 默认任务目录
 
@@ -91,13 +95,13 @@ docs/dev/<task-slug>/
 └── code-review.md
 ```
 
-文件按需创建。Fast 路径不为流程本身创建文档。
+文件按需创建。
 
 ## Review 报告
 
 - `spec-review.md` 和 `code-review.md` 保存当前正式结果；新一轮 Review 默认覆盖旧结果。
-- 报告写明目标、版本、保障等级、修复轮次、进展和自动修复决定。
+- 报告写明目标、版本、保障等级、结论、findings、剩余风险和建议动作。
+- 每个 blocker 给出关闭条件；复审时按需增加“已解决 / 仍存在 / 新发现”比较，不维护轮次计数或进展状态机。
 - Assured 模式或用户明确要求保留历史时，额外归档到 `reviews/spec/` 或 `reviews/code/`。
-- Spec Review 使用一个 fresh 独立 reviewer；Code Review 的 reviewer 数量由保障等级决定。
 
-专业 Skill 返回中性的建议动作；具体 Skill 选择由用户或 `dev-workflow` 完成。
+专业 Skill 返回中性的能力级建议；具体 Skill 选择由用户或 `dev-workflow` 完成。
