@@ -20,7 +20,10 @@ async function fixture(validity: 'pass' | 'fail' = 'pass') {
   const pluginRoot = path.join(repoRoot, 'plugins', 'sample');
   const skillRoot = path.join(pluginRoot, 'skills', 'sample-skill');
   const evalRoot = path.join(skillRoot, 'evals');
-  await fs.ensureDir(evalRoot);
+  await Promise.all([
+    fs.ensureDir(evalRoot),
+    fs.ensureDir(path.join(pluginRoot, '.agents-plugin')),
+  ]);
   await fs.writeJson(path.join(pluginRoot, '.agents-plugin', 'plugin.json'), {
     name: 'sample',
     version: '0.1.0',
