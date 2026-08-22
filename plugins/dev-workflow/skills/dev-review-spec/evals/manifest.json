@@ -50,7 +50,6 @@
         "dev-review-spec"
       ],
       "cases": "./behavior-cases.json",
-      "observeSpawnAgent": true,
       "isolation": "strict",
       "profiles": [
         "project-default"

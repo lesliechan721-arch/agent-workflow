@@ -140,7 +140,7 @@ test('review behavior evals cover independent review and full rereview', async (
     const manifest = await readJson(path.join(evalRoot, 'manifest.json'));
     const behavior = manifest.suites.find((suite) => suite.id === 'behavior');
     assert.deepEqual(behavior.skills, [name]);
-    assert.equal(behavior.observeSpawnAgent, true);
+    assert.equal('observeSpawnAgent' in behavior, false);
     const entries = assertCaseDocument(await readJson(path.join(evalRoot, behavior.cases)));
     assert.equal(entries.some((entry) => entry.id.includes('rereview')), true);
     assert.equal(entries.every((entry) => entry.review.checks.some((check) => check.includes('fresh'))), true);

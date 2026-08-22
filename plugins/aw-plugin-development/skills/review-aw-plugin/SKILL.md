@@ -24,7 +24,7 @@ metadata:
      --format json
    ```
 
-   该命令对每个 target 运行 `check-agent-skill`，并按 production digest 分组。相同 digest 只做一次模型质量评审；报告仍说明该结论覆盖哪些 source/profile target。
+   build-free 插件会检查 source 和调用方提供的 final。声明 `scripts.node.build` 的插件必须至少提供一个真实 materialized final；raw source 不代表完整 runtime，因此只检查 final。该命令对每个实际 target 运行 `check-agent-skill`，并按 production digest 分组。相同 digest 只做一次模型质量评审；报告仍说明该结论覆盖哪些 source/profile target。
 3. 对每个唯一 digest 调用通用 `review-agent-skill`。大型或多分支 reference 可以交给 fresh-context `review-agent-content`；有 Eval 时可以交给 `audit-agent-skill-evals`。fresh context 只属于运行 trace，不持久化 stageOwner、producer 或 independentContext。
 4. 输出简洁人类报告：AW 机器错误、每个唯一 Skill digest 的设计和复杂度结论、真实 source/final 差异、最多 3 个高价值改进和关键 unknowns。
 

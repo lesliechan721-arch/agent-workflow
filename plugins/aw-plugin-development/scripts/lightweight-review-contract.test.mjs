@@ -25,24 +25,26 @@ try {
   const finalRoot = path.join(temp, 'final');
   const final = path.join(finalRoot, 'demo');
   await mkdir(source, { recursive: true });
-  await mkdir(final, { recursive: true });
+  await mkdir(path.join(final, 'references'), { recursive: true });
   await mkdir(path.join(plugin, '.agents-plugin'), { recursive: true });
   await writeFile(path.join(plugin, '.agents-plugin', 'plugin.json'), JSON.stringify({
     name: 'demo-plugin',
     version: '1.0.0',
     description: 'Demo',
     skills: './skills',
+    scripts: { node: { build: { runner: 'node', path: './scripts/build.mjs', args: [] } } },
     marketplace: { policy: { products: ['CODEX'] } }
   }));
-  const skill = '---\nname: demo\ndescription: Perform the demo task.\n---\n\n# Demo\n\nReturn the supplied value.\n';
+  const skill = '---\nname: demo\ndescription: Perform the demo task.\n---\n\n# Demo\n\nRead [the generated guide](references/generated.md).\n';
   await writeFile(path.join(source, 'SKILL.md'), skill);
   await writeFile(path.join(final, 'SKILL.md'), skill);
+  await writeFile(path.join(final, 'references', 'generated.md'), '# Generated\n\nReturn the supplied value.\n');
 
   const sharedScripts = context
     ? root
     : path.resolve(root, '..', '..', 'agent-skill-toolkit', 'scripts');
   const checker = path.join(sharedScripts, 'check-agent-skill.mjs');
-  const { stdout: checkStdout } = await execFileAsync(process.execPath, [checker, source, '--format', 'json'], { encoding: 'utf8' });
+  const { stdout: checkStdout } = await execFileAsync(process.execPath, [checker, final, '--root-kind', 'materialized', '--profile', 'codex-project', '--format', 'json'], { encoding: 'utf8' });
   const check = JSON.parse(checkStdout);
   const review = path.join(temp, 'review.json');
   await writeFile(review, JSON.stringify({

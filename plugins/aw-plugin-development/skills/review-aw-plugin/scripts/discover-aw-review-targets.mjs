@@ -93,7 +93,13 @@ async function main() {
   const skillsRoot = typeof manifest.skills === 'string'
     ? path.resolve(options.pluginRoot, manifest.skills)
     : path.join(options.pluginRoot, 'skills');
-  const collections = [{ kind: 'aw-plugin-skill', profile: null, root: skillsRoot }];
+  const requiresBuild = manifest.scripts?.node?.build !== undefined;
+  if (requiresBuild && options.finals.length === 0) {
+    throw new Error('Plugins with scripts.node.build require at least one materialized --final collection.');
+  }
+  const collections = requiresBuild
+    ? []
+    : [{ kind: 'aw-plugin-skill', profile: null, root: skillsRoot }];
   const profiles = new Set();
   for (const entry of options.finals) {
     if (profiles.has(entry.profile)) throw new Error('Duplicate --final profile: ' + entry.profile);

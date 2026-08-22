@@ -99,6 +99,35 @@ test('target discovery groups identical content by digest and preserves real dif
   assert.equal(second.uniqueReviews.length, 2);
 });
 
+test('target discovery requires real materialized content for build-generated Skill resources', async () => {
+  const temp = await mkdtemp(path.join(tmpdir(), 'aw-built-review-'));
+  temps.push(temp);
+  const plugin = path.join(temp, 'plugin');
+  const sourceSkill = path.join(plugin, 'skills', 'generated');
+  const finalRoot = path.join(temp, 'final');
+  const finalSkill = path.join(finalRoot, 'generated');
+  const skillText = '---\nname: generated\ndescription: Read one generated reference.\n---\n\nRead [the generated guide](references/generated.md).\n';
+  await mkdir(path.join(plugin, '.agents-plugin'), { recursive: true });
+  await mkdir(sourceSkill, { recursive: true });
+  await mkdir(path.join(finalSkill, 'references'), { recursive: true });
+  await writeFile(path.join(plugin, '.agents-plugin', 'plugin.json'), JSON.stringify({
+    name: 'generated-plugin',
+    version: '1.0.0',
+    skills: './skills',
+    scripts: { node: { build: { runner: 'node', path: './scripts/build.mjs', args: [] } } },
+  }));
+  await writeFile(path.join(sourceSkill, 'SKILL.md'), skillText);
+  await writeFile(path.join(finalSkill, 'SKILL.md'), skillText);
+  await writeFile(path.join(finalSkill, 'references', 'generated.md'), '# Generated\n\nRuntime content.\n');
+  const discover = path.join(runtimeRoot, 'skills/review-aw-plugin/scripts/discover-aw-review-targets.mjs');
+  await assert.rejects(runJson(discover, [plugin, '--format', 'json']), /materialized --final collection/u);
+  const result = await runJson(discover, [plugin, '--final', `codex-project=${finalRoot}`, '--format', 'json']);
+  assert.equal(result.targets.length, 1);
+  assert.equal(result.targets[0].kind, 'materialized-skill');
+  assert.equal(result.targets[0].machineCheck.ok, true);
+  assert.equal(result.uniqueReviews.length, 1);
+});
+
 test('target discovery surfaces machine errors without review workflow state', async () => {
   const temp = await mkdtemp(path.join(tmpdir(), 'aw-light-review-error-'));
   temps.push(temp);
