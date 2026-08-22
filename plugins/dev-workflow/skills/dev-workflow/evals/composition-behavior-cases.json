@@ -4,7 +4,7 @@
     "optimization": "precision-first",
     "false_negative_cost": "high",
     "false_positive_cost": "high",
-    "rationale": "跨阶段编排若遗漏风险升级、越过用户检查点、丢失稳定决定，或在无进展时继续自动修复，会造成错误写入、规格漂移和无界循环。"
+    "rationale": "跨阶段编排若遗漏风险升级、越过用户检查点、丢失稳定决定，或在一次自动修复后继续无界循环，会造成错误写入、规格漂移和不必要工作。"
   },
   "evals": [
     {
@@ -49,43 +49,14 @@
         "src/approval-page.ts": "export const approvalLayout = 'existing-production-layout';\n"
       },
       "review": {
-        "platforms": [
-          "codex"
-        ],
+        "platforms": ["codex"],
         "clean_session": true,
         "workspace_unchanged": false,
-        "allowed_workspace_changes": [
-          "docs/dev/approval-layout/**"
-        ],
+        "allowed_workspace_changes": ["docs/dev/approval-layout/**"],
         "artifacts": [
-          {
-            "path": "docs/dev/approval-layout/prototypes/layout-choice/index.html",
-            "exists": true,
-            "contains": [
-              "单栏",
-              "双栏"
-            ]
-          },
-          {
-            "path": "docs/dev/approval-layout/prototypes/layout-choice/brief.md",
-            "exists": true,
-            "contains": [
-              "双栏",
-              "审批历史",
-              "移动端"
-            ]
-          },
-          {
-            "path": "docs/dev/approval-layout/spec.md",
-            "exists": true,
-            "contains": [
-              "双栏",
-              "审批历史",
-              "移动端",
-              "Agent discretion",
-              "Evidence"
-            ]
-          }
+          {"path": "docs/dev/approval-layout/prototypes/layout-choice/index.html", "exists": true, "contains": ["单栏", "双栏"]},
+          {"path": "docs/dev/approval-layout/prototypes/layout-choice/brief.md", "exists": true, "contains": ["双栏", "审批历史", "移动端"]},
+          {"path": "docs/dev/approval-layout/spec.md", "exists": true, "contains": ["双栏", "审批历史", "移动端", "Agent discretion", "Evidence"]}
         ],
         "checks": [
           "trace 先使用 decision-prototype，用户反馈后才进入 dev-spec",
@@ -125,9 +96,7 @@
       "scripted_replies": [
         {
           "expected_question_count": 1,
-          "answers_by_index": [
-            "我暂不批准，请停在这里。"
-          ],
+          "answers_by_index": ["我暂不批准，请停在这里。"],
           "unexpected_question_answer": "不要实施，先停在批准检查点。"
         }
       ],
@@ -138,35 +107,13 @@
         "src/token-store.js": "export const keyVersion = 'old';\n"
       },
       "review": {
-        "platforms": [
-          "codex"
-        ],
+        "platforms": ["codex"],
         "clean_session": true,
         "workspace_unchanged": false,
-        "allowed_workspace_changes": [
-          "docs/dev/token-key-rotation/**"
-        ],
+        "allowed_workspace_changes": ["docs/dev/token-key-rotation/**"],
         "artifacts": [
-          {
-            "path": "docs/dev/token-key-rotation/spec.md",
-            "exists": true,
-            "contains": [
-              "14 天",
-              "分批",
-              "回滚",
-              "验证",
-              "授权"
-            ]
-          },
-          {
-            "path": "docs/dev/token-key-rotation/spec-review.md",
-            "exists": true,
-            "contains": [
-              "Assurance",
-              "Assured",
-              "clean"
-            ]
-          }
+          {"path": "docs/dev/token-key-rotation/spec.md", "exists": true, "contains": ["14 天", "分批", "回滚", "验证", "授权"]},
+          {"path": "docs/dev/token-key-rotation/spec-review.md", "exists": true, "contains": ["Assurance", "Assured", "Result: `clean`"]}
         ],
         "checks": [
           "明确选择 Assured，而不是把迁移当作 Fast 或仅列能力",
@@ -177,66 +124,55 @@
       }
     },
     {
-      "id": "stalled-review-stops-before-more-repair",
+      "id": "second-blocked-review-stops-before-more-repair",
       "eval_type": "behavior",
       "case_role": "boundary",
       "provenance": "boundary",
-      "scenario_family": "review-convergence-stop",
+      "scenario_family": "review-repair-stop",
       "unit_under_test": "full-skill",
       "preconditions": {
         "workflow_explicitly_requested": true,
-        "assurance_level": "Standard",
         "previous_review_blocked": true,
-        "automatic_repair_rounds_used": 2,
-        "review_progress": "stalled",
-        "automatic_repair_stopped": true
+        "one_automatic_repair_completed": true,
+        "current_review_blocked": true,
+        "user_decision_required": true
       },
       "oracle": {
-        "rationale": "Standard 已用尽两轮自动修复且复审标记 stalled；编排器应停止继续实现并进入修复升级检查点。",
+        "rationale": "一次自动修复和完整复审后仍 blocked；宏入口应停止继续实现，并把最新 finding 交给用户决定。",
         "rule_refs": [
-          "dev-workflow/SKILL.md#4-处理-review-循环",
-          "dev-workflow/SKILL.md#5-人类检查点"
+          "dev-workflow/SKILL.md#4-消费-review-结果",
+          "dev-workflow/references/review-repair.md"
         ],
         "confidence": "high",
         "allowed_variance": "可以用不同措辞呈现选项；不得继续加载实现或复审能力，也不得修改工作区。",
-        "minimal_counterexample": "若最新 Review 为 advancing 且 Standard 自动修复预算仍有剩余，则可以继续路由到修复能力。"
+        "minimal_counterexample": "若第一次复审为 clean，则可以进入交付。"
       },
       "prompt": "使用 dev-workflow 继续 docs/dev/invite-expiry/。能自动继续就继续；需要我决定时再问。",
       "scripted_replies": [
         {
           "expected_question_count": 1,
-          "answers_by_index": [
-            "停止任务，不再修复。"
-          ],
+          "answers_by_index": ["停止任务，不再修复。"],
           "unexpected_question_answer": "不要继续修改；停止任务。"
         }
       ],
-      "expected_output": "识别 Standard 自动修复已停止，进入修复升级检查点，向用户提供下一步选择；用户选择停止后保持工作区不变。",
+      "expected_output": "识别一次自动修复后的完整复审仍为 blocked，进入 Review 修复升级检查点；用户选择停止后保持工作区不变。",
       "sandbox": "workspace-write",
       "workspace_files": {
         "docs/dev/invite-expiry/spec.md": "# Invite expiry\n\n- 邀请创建 7 天后过期。\n- 服务端拒绝过期邀请。\n",
-        "docs/dev/invite-expiry/code-review.md": "# Code Review\n\n- Assurance: `Standard`\n- Result: `blocked`\n- Repair round: `2`\n- Progress: `stalled`\n- Automatic repair: `stop`\n\n## Engineering quality\n\n同一边界语义 finding 在没有新证据时重复出现。\n\n## 修复与复审\n\n- 停止原因：Standard 自动修复预算已用尽，且 blocker 没有实质减少。\n",
+        "docs/dev/invite-expiry/code-review.md": "# Code Review\n\n- Assurance: `Standard`\n- Result: `blocked`\n\n## Engineering quality\n\n同一边界语义 finding 仍未解决。\n\n## 与上一份 Review 比较\n\n- 已解决：无。\n- 仍存在：边界语义 finding。\n- 新发现：无。\n\n## 建议动作\n\n已完成一次自动修复与完整复审；仍 blocked，需要用户决定是否继续。\n",
         "src/invitations/accept.js": "export function acceptInvitation(invitation, now) {\n  if (now > invitation.expiresAt) throw new Error('expired');\n  return { accepted: true };\n}\n"
       },
       "review": {
-        "platforms": [
-          "codex"
-        ],
+        "platforms": ["codex"],
         "clean_session": true,
         "workspace_unchanged": true,
         "artifacts": [
-          {
-            "path": "src/invitations/accept.js",
-            "exists": true,
-            "contains": [
-              "now > invitation.expiresAt"
-            ]
-          }
+          {"path": "src/invitations/accept.js", "exists": true, "contains": ["now > invitation.expiresAt"]}
         ],
         "checks": [
           "trace 只使用 dev-workflow 判断当前状态，不加载 dev-implement 或 dev-review-code",
-          "明确进入修复升级检查点，而不是开始第三轮自动修复",
-          "向用户提供重新设计、缩小范围、补证、更换 reviewer、接受风险、额外授权或停止等能力级选择",
+          "读取 review-repair 条件规则后识别一次自动循环已经完成，进入用户检查点",
+          "向用户说明最新 blocker 和可选动作，不维护轮次预算或进展枚举",
           "用户选择停止后不修改 Spec、Review 或产品代码"
         ]
       }

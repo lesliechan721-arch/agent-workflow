@@ -21,10 +21,7 @@
       },
       "oracle": {
         "rationale": "这是明确、低风险的小任务，应直接实现并运行现有测试，不创建流程文档。",
-        "rule_refs": [
-          "SKILL.md#开始",
-          "SKILL.md#实施循环"
-        ],
+        "rule_refs": ["SKILL.md#开始", "SKILL.md#实施循环"],
         "confidence": "high",
         "allowed_variance": "实现可以使用不同等价表达；必须满足测试、运行验证并避免创建 work.md。"
       },
@@ -38,20 +35,11 @@
         "package.json": "{\"type\":\"module\"}\n"
       },
       "review": {
-        "platforms": [
-          "codex"
-        ],
+        "platforms": ["codex"],
         "clean_session": true,
         "workspace_unchanged": false,
-        "allowed_workspace_changes": [
-          "src/normalize-name.js"
-        ],
-        "artifacts": [
-          {
-            "path": "src/normalize-name.js",
-            "exists": true
-          }
-        ],
+        "allowed_workspace_changes": ["src/normalize-name.js"],
+        "artifacts": [{"path": "src/normalize-name.js", "exists": true}],
         "checks": [
           "trace 实际运行 node --test，并在最终回复中准确报告结果",
           "只修改实现文件，不修改测试来迎合结果",
@@ -66,15 +54,10 @@
       "provenance": "boundary",
       "scenario_family": "material-gap-stop",
       "unit_under_test": "full-skill",
-      "preconditions": {
-        "spec_exists": true,
-        "material_decision_unresolved": true
-      },
+      "preconditions": {"spec_exists": true, "material_decision_unresolved": true},
       "oracle": {
         "rationale": "兼容窗口会改变用户行为和验收；实现者应返回材料决定阻塞，而不是复制访谈流程或静默采用默认。",
-        "rule_refs": [
-          "SKILL.md#实施循环"
-        ],
+        "rule_refs": ["SKILL.md#实施循环"],
         "confidence": "high",
         "allowed_variance": "措辞可以不同；必须标注 material-decision 并保持产品文件不变。",
         "minimal_counterexample": "若兼容窗口已经在 Spec 中确认，则可以进入实现。"
@@ -87,20 +70,10 @@
         "src/token.js": "export const tokenVersion = 1;\n"
       },
       "review": {
-        "platforms": [
-          "codex"
-        ],
+        "platforms": ["codex"],
         "clean_session": true,
         "workspace_unchanged": true,
-        "artifacts": [
-          {
-            "path": "src/token.js",
-            "exists": true,
-            "contains": [
-              "tokenVersion = 1"
-            ]
-          }
-        ],
+        "artifacts": [{"path": "src/token.js", "exists": true, "contains": ["tokenVersion = 1"]}],
         "checks": [
           "把兼容窗口识别为材料决定，不静默选择默认值",
           "返回 material-decision 和需要补充的具体内容",
@@ -124,10 +97,7 @@
       },
       "oracle": {
         "rationale": "唯一 blocker 是公开帮助缺少 --json；修复应使用最小改动和行为断言，不实现通用渲染框架或整段文案 hash 锁定。",
-        "rule_refs": [
-          "SKILL.md#开始",
-          "SKILL.md#实施循环"
-        ],
+        "rule_refs": ["SKILL.md#开始", "SKILL.md#实施循环"],
         "confidence": "high",
         "allowed_variance": "帮助文本和测试表达可不同；必须补充 --json 行为并运行测试，且不能新增通用框架、快照或全文 hash 断言。"
       },
@@ -136,48 +106,19 @@
       "expected_output": "以最小改动让公开帮助包含 --json，并用稳定行为断言验证；不实现 Review 中的非阻塞通用化和全文 hash 建议。",
       "sandbox": "workspace-write",
       "workspace_files": {
-        "docs/dev/status-help/code-review.md": "# Code Review\n\n- Assurance: `Standard`\n- Result: `blocked`\n- Repair round: `0`\n- Progress: `initial`\n- Automatic repair: `continue`\n\n## Engineering quality\n\n### Blocker\n\n`renderHelp()` 的公开输出缺少 `--json`，用户无法发现结构化输出入口。修复后通过公共函数断言该选项可见。\n\n### Non-blocking suggestion\n\n以后可以抽象通用 `HelpRenderer`，并用完整帮助文本 snapshot 或文件 hash 防止任何措辞变化。\n",
+        "docs/dev/status-help/code-review.md": "# Code Review\n\n- Assurance: `Standard`\n- Result: `blocked`\n\n## Engineering quality\n\n### Blocker\n\n`renderHelp()` 的公开输出缺少 `--json`，用户无法发现结构化输出入口。修复后通过公共函数断言该选项可见。\n\n### Non-blocking suggestion\n\n以后可以抽象通用 `HelpRenderer`，并用完整帮助文本 snapshot 或文件 hash 防止任何措辞变化。\n",
         "src/help.js": "export function renderHelp() {\n  return 'Usage: aw status';\n}\n",
         "test/help.test.js": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport { renderHelp } from '../src/help.js';\n\ntest('renders status help', () => {\n  assert.match(renderHelp(), /Usage: aw status/);\n});\n",
         "package.json": "{\"type\":\"module\"}\n"
       },
       "review": {
-        "platforms": [
-          "codex"
-        ],
+        "platforms": ["codex"],
         "clean_session": true,
         "workspace_unchanged": false,
-        "allowed_workspace_changes": [
-          "src/help.js",
-          "test/help.test.js"
-        ],
+        "allowed_workspace_changes": ["src/help.js", "test/help.test.js"],
         "artifacts": [
-          {
-            "path": "src/help.js",
-            "exists": true,
-            "contains": [
-              "--json"
-            ],
-            "not_contains": [
-              "class HelpRenderer",
-              "createRenderer",
-              "rendererConfig"
-            ]
-          },
-          {
-            "path": "test/help.test.js",
-            "exists": true,
-            "contains": [
-              "--json"
-            ],
-            "not_contains": [
-              "createHash",
-              "sha256",
-              "snapshot",
-              "readFile",
-              "README.md"
-            ]
-          }
+          {"path": "src/help.js", "exists": true, "contains": ["--json"], "not_contains": ["class HelpRenderer", "createRenderer", "rendererConfig"]},
+          {"path": "test/help.test.js", "exists": true, "contains": ["--json"], "not_contains": ["createHash", "sha256", "snapshot", "readFile", "README.md"]}
         ],
         "checks": [
           "trace 实际运行 node --test，并准确报告结果",

@@ -39,10 +39,7 @@ function assertCaseDocument(document) {
   for (const entry of entries) {
     assert.equal(typeof entry.id, 'string');
     if (entry.expected_loaded_skills !== undefined) {
-      assert.equal(
-        entry.expected_loaded_skills.every((participant) => allParticipants.has(participant)),
-        true,
-      );
+      assert.equal(entry.expected_loaded_skills.every((participant) => allParticipants.has(participant)), true);
     }
   }
   return entries;
@@ -72,6 +69,27 @@ test('source exposes five directly usable Skills', async () => {
   }
 });
 
+test('review repair policy is progressively disclosed', async () => {
+  const workflow = await read(path.join(target.source, 'skills', 'dev-workflow', 'SKILL.md'));
+  assert.match(workflow, /只有存在 `blocked` 的正式 Review/);
+  assert.match(workflow, /references\/review-repair\.md/);
+  assert.doesNotMatch(workflow, /Standard 最多|Assured 最多|Repair round|Progress|Automatic repair|advancing|stalled|regressed/);
+
+  const repair = await read(path.join(target.source, 'skills', 'dev-workflow', 'references', 'review-repair.md'));
+  assert.match(repair, /一次调用默认只自动完成一轮/);
+  assert.doesNotMatch(repair, /Standard 最多|Assured 最多|advancing|stalled|regressed/);
+
+  for (const name of ['dev-review-spec', 'dev-review-code']) {
+    const skillRoot = path.join(target.source, 'skills', name);
+    const text = await read(path.join(skillRoot, 'SKILL.md'));
+    assert.match(text, /references\/rereview\.md/);
+    assert.doesNotMatch(text, /Repair round|Progress|Automatic repair|Standard 最多|Assured 最多/);
+    const rereview = await read(path.join(skillRoot, 'references', 'rereview.md'));
+    assert.match(rereview, /当前完整/);
+    assert.doesNotMatch(rereview, /Repair round|Progress|Automatic repair/);
+  }
+});
+
 test('review behavior suites remain structurally valid', async () => {
   for (const name of ['dev-review-spec', 'dev-review-code']) {
     const evalRoot = path.join(target.source, 'skills', name, 'evals');
@@ -86,14 +104,21 @@ test('review behavior suites remain structurally valid', async () => {
 
 test('workflow routing eval references only installed participants', async () => {
   const evalRoot = path.join(target.source, 'skills', 'dev-workflow', 'evals');
-  assertCaseDocument(await readJson(path.join(evalRoot, 'cross-plugin-routing-cases.json')));
+  const cases = assertCaseDocument(await readJson(path.join(evalRoot, 'cross-plugin-routing-cases.json')));
+  for (const entry of cases) {
+    if (!entry.id.startsWith('route_') || entry.id.includes('review')) continue;
+    assert.equal(entry.oracle.rule_refs.some((value) => value.includes('消费-review-结果')), false);
+  }
 });
 
-test('runtime keeps all Skill roots', async () => {
+test('runtime keeps all Skill roots and conditional references', async () => {
+  const skillsRoot = target.platform
+    ? path.join(target.bundle, target.platform, 'skills')
+    : path.join(target.bundle, 'skills');
   for (const name of skills) {
-    const skillsRoot = target.platform
-      ? path.join(target.bundle, target.platform, 'skills')
-      : path.join(target.bundle, 'skills');
     assertSkill(await read(path.join(skillsRoot, name, 'SKILL.md')), name);
   }
+  await read(path.join(skillsRoot, 'dev-workflow', 'references', 'review-repair.md'));
+  await read(path.join(skillsRoot, 'dev-review-spec', 'references', 'rereview.md'));
+  await read(path.join(skillsRoot, 'dev-review-code', 'references', 'rereview.md'));
 });

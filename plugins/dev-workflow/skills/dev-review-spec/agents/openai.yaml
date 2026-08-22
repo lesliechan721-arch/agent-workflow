@@ -1,6 +1,6 @@
 interface:
   display_name: "Dev Review Spec"
-  short_description: "用 fresh 独立 reviewer 审查规格，并指导修订与复审"
-  default_prompt: "使用 $dev-review-spec 创建 fresh 独立 reviewer 审查当前 Spec；修订后重新完成完整 Review。"
+  short_description: "用 fresh 独立 reviewer 审查规格"
+  default_prompt: "使用 $dev-review-spec 创建 fresh 独立 reviewer 审查当前 Spec；已有上一份正式报告时重新审查完整当前 Spec。"
 policy:
   allow_implicit_invocation: true
