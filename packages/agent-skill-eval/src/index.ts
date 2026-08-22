@@ -15,6 +15,7 @@ export {
   terminateProcessTree,
 } from './process-tree.js'
 export { getSchema, getSchemaDigest, validateRuntimeCapabilities } from './schemas.js'
+export { validateJsonSchema } from './json-schema.js'
 export type {
   EvalCase,
   EvalConfiguration,
