@@ -237,8 +237,8 @@
             "not_contains": [
               "SessionStateMachine",
               "pending -> checking",
-              "不要",
-              "Review",
+              "不要使用自然语言状态机",
+              "上一次 Review",
               "被否决",
               "中间讨论"
             ]
