@@ -74,6 +74,7 @@
     "tests": {
       "node": [
         "./scripts/contract.test.mjs",
+        "./scripts/system-review-target-contract.test.mjs",
         "./scripts/invocation-contract.test.mjs",
         "./scripts/reference-contract.test.mjs",
         "./scripts/authoring-context-contract.test.mjs",

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { execFile } from 'node:child_process';
-import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 import { promisify } from 'node:util';
@@ -67,8 +67,20 @@ async function skillRoots(root) {
   return roots;
 }
 
-async function inspect(root, rootKind, profile, outputPath) {
-  const checker = path.join(scriptRoot, 'check-agent-skill.mjs');
+async function resolveChecker() {
+  const candidates = [
+    path.join(scriptRoot, 'check-agent-skill.mjs'),
+    path.resolve(scriptRoot, '../../../../agent-skill-toolkit/scripts/check-agent-skill.mjs'),
+  ];
+  for (const candidate of candidates) {
+    try {
+      if ((await stat(candidate)).isFile()) return candidate;
+    } catch {}
+  }
+  throw new Error('Cannot locate check-agent-skill.mjs in the materialized Skill or source plugin collection.');
+}
+
+async function inspect(checker, root, rootKind, profile, outputPath) {
   const args = [checker, root, '--root-kind', rootKind, '--format', 'json'];
   if (profile !== null) args.push('--profile', profile);
   if (outputPath) args.push('--output', outputPath);
@@ -108,6 +120,7 @@ async function main() {
   }
   if (options.outputRoot) await mkdir(options.outputRoot, { recursive: true });
 
+  const checker = await resolveChecker();
   const targets = [];
   const slots = new Set();
   for (const collection of collections) {
@@ -115,6 +128,7 @@ async function main() {
       const stem = [collection.kind, path.basename(root), collection.profile].filter(Boolean).join('--');
       const inspectionPath = options.outputRoot ? path.join(options.outputRoot, stem + '--inspection.json') : null;
       const inspection = await inspect(
+        checker,
         root,
         collection.kind === 'materialized-skill' ? 'materialized' : 'source',
         collection.profile,
@@ -147,20 +161,36 @@ async function main() {
     group.targetIds.push(target.id);
     groups.set(target.digest, group);
   }
+  const uniqueReviews = [...groups.values()];
+  const blockedTargetIds = targets
+    .filter((target) => !target.machineCheck.ok)
+    .map((target) => target.id);
   const result = {
     schemaVersion: 1,
     plugin: manifest.name,
+    pluginReview: {
+      id: `aw-plugin:${manifest.name}`,
+      targetLevel: 'plugin',
+      reviewRoot: options.pluginRoot,
+      targetIds: targets.map((target) => target.id),
+      uniqueDigests: uniqueReviews.map((group) => group.digest).sort(),
+      materializedProfiles: [...profiles].sort(),
+      machineCheck: {
+        ok: blockedTargetIds.length === 0,
+        blockedTargetIds,
+      },
+    },
     targets,
-    uniqueReviews: [...groups.values()],
+    uniqueReviews,
   };
   if (options.format === 'json') process.stdout.write(JSON.stringify(result, null, 2) + '\n');
   else {
-    process.stdout.write(`Plugin: ${result.plugin}\nTargets: ${targets.length}\nUnique digests: ${result.uniqueReviews.length}\n`);
+    process.stdout.write(`Plugin: ${result.plugin}\nTargets: ${targets.length}\nUnique digests: ${result.uniqueReviews.length}\nPlugin review: ${result.pluginReview.machineCheck.ok ? 'ready' : 'blocked'}\n`);
     for (const target of targets) {
       process.stdout.write(`- ${target.id}: ${target.machineCheck.ok ? 'ok' : 'blocked'} ${target.digest}\n`);
     }
   }
-  if (targets.some((target) => !target.machineCheck.ok)) process.exitCode = 1;
+  if (blockedTargetIds.length > 0) process.exitCode = 1;
 }
 
 main().catch((error) => {

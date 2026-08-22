@@ -1,6 +1,6 @@
 # Author AW Plugin
 
-在任意兼容工作区中创建或维护 AW 插件，并保持 manifest、源码、README、构建、materialization、版本和验证结果一致。
+在任意兼容工作区中创建或维护 AW 插件，并保持 manifest、源码、README、构建、materialization、开发状态和验证结果一致。
 
 ## 适合使用
 
@@ -12,7 +12,7 @@
 
 目标插件根由用户或工作区显式提供，可以位于 `plugins/`、`packages/`、`tools/` 等任意目录。插件与 Skill README 按本 Skill 自带的 `references/aw-readme-authoring.md` 维护，不依赖宿主仓库文档。
 
-一次请求可以包含多个组件。先把组件写入 JSON 数组，再准备 v2 上下文：
+已有插件的单组件低风险修改走轻量 delta：只记录意图、允许路径、成功标准和验证，不生成 `AWAuthoringContext`。新插件、多组件请求、组件增删、profile/invocation/权限/build/materialization/lifecycle 变化或跨上下文交接才准备 v3 结构化上下文：
 
 ```bash
 node scripts/prepare-aw-authoring-context.mjs <plugin-root> \
