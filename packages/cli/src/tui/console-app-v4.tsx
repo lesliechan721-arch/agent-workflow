@@ -83,6 +83,25 @@ function platformLabel(platform: PlatformName): string {
   return platform === 'codex' ? 'Codex' : 'Claude Code';
 }
 
+function partialRetryAction(
+  operationKind: OperationIntent['kind'] | undefined,
+  originalAction: Extract<OperationIntent, { kind: 'pluginWrite' }>['action'] | undefined,
+  targetState: 'present' | 'absent' | 'partial' | 'error' | undefined,
+): Extract<OperationIntent, { kind: 'pluginWrite' }>['action'] | undefined {
+  if (!targetState) return undefined;
+  if (operationKind === 'configSave' || operationKind === 'configReset') {
+    return targetState === 'absent' ? undefined : 'reinstall';
+  }
+  if (originalAction === 'uninstall') {
+    return targetState === 'present' || targetState === 'partial' ? 'uninstall' : undefined;
+  }
+  if (originalAction === 'cleanup') return targetState === 'absent' ? undefined : 'cleanup';
+  if (targetState === 'absent') return 'install';
+  if (targetState === 'partial') return 'reinstall';
+  if (targetState === 'error') return undefined;
+  return originalAction === 'upgrade' ? 'upgrade' : 'reinstall';
+}
+
 function scopeLabel(scope: Scope): string {
   return scope === 'user' ? '所有项目' : '当前项目';
 }
@@ -111,6 +130,43 @@ function moveFocus(actions: ActionItem[], current: number, direction: -1 | 1): n
     if (!actions[next]?.disabled) return next;
   }
   return current;
+}
+
+function actionLimitForLineBudget(actions: ActionItem[], lineBudget: number): number {
+  let used = 0;
+  let count = 0;
+  for (const action of actions) {
+    const height = action.description || action.disabled ? 2 : 1;
+    if (count > 0 && used + height > lineBudget) break;
+    used += height;
+    count += 1;
+  }
+  return Math.max(1, count);
+}
+
+function actionViewport(
+  routeName: TuiRoute['name'],
+  actions: ActionItem[],
+  mode: 'single-column' | 'compact' | 'too-small',
+  focus: number,
+  requestedOffset: number,
+): { limit?: number; offset: number } {
+  const limit = routeName === 'pluginList' || routeName === 'issueList' || routeName === 'sourceList'
+    ? actionLimitForLineBudget(actions, mode === 'compact' ? 8 : 12)
+    : mode === 'compact' ? 4
+      : routeName === 'configFields' || routeName === 'review' || routeName === 'issueDetail' ? 7 : undefined;
+  if (limit === undefined) return { offset: 0 };
+  const maximumOffset = Math.max(0, actions.length - limit);
+  let offset = Math.min(requestedOffset, maximumOffset);
+  if (focus < offset) offset = focus;
+  else if (focus >= offset + limit) offset = focus - limit + 1;
+  return { limit, offset: Math.max(0, offset) };
+}
+
+function privatePathInput(value: string): string {
+  if (!value) return '';
+  const basename = value.split(/[\\/]/u).filter(Boolean).at(-1) ?? '已选择';
+  return `已选择 / … / ${basename}`;
 }
 
 function ActionRows(props: {
@@ -168,9 +224,13 @@ function SourceTabs(props: {
   controller: TuiController;
   current: string;
   compact: boolean;
+  mode: 'browse' | 'installed';
 }): React.JSX.Element {
-  const tabs = [{ id: 'all', label: '全部', count: props.controller.listPlugins({ mode: 'browse' }).length },
-    ...props.controller.listSources()];
+  const tabs = [{ id: 'all', label: '全部', count: props.controller.listPlugins({ mode: props.mode }).length },
+    ...props.controller.listSources().map((source) => ({
+      ...source,
+      count: props.controller.listPlugins({ mode: props.mode, sourceId: source.id }).length,
+    }))];
   const index = Math.max(0, tabs.findIndex((tab) => tab.id === props.current));
   if (props.compact) {
     const tab = tabs[index]!;
@@ -337,14 +397,16 @@ export function ConsoleAppV4(props: {
   const [snapshot, setSnapshot] = useState(props.controller.snapshot);
   const [overlay, setOverlay] = useState<Overlay>();
   const [overlayFocus, setOverlayFocus] = useState(0);
+  const [discardForExit, setDiscardForExit] = useState(false);
   const [focus, setFocus] = useState(0);
   const [scrollOffset, setScrollOffset] = useState(0);
   const [searchMode, setSearchMode] = useState(false);
   const [query, setQuery] = useState('');
   const [scope, setScope] = useState<Scope>('user');
   const [tools, setTools] = useState<PlatformName[]>([]);
-  const [showTechnical, setShowTechnical] = useState(false);
+  const [technicalRouteKey, setTechnicalRouteKey] = useState<string>();
   const [exitAfterBusy, setExitAfterBusy] = useState(false);
+  const [, setClockTick] = useState(0);
   const [dirty, setDirty] = useState(false);
   const [configPage, setConfigPage] = useState<ConfigPageViewModel>();
   const [configLayerCounts, setConfigLayerCounts] = useState<Record<string, number>>({});
@@ -354,6 +416,7 @@ export function ConsoleAppV4(props: {
   const [inputValue, setInputValue] = useState('');
   const [inputError, setInputError] = useState<string>();
   const [configActionError, setConfigActionError] = useState<string>();
+  const [configResetAvailability, setConfigResetAvailability] = useState<Awaited<ReturnType<TuiController['getConfigResetAvailability']>>>();
   const [actionError, setActionError] = useState<string>();
   const [sourceDraft, setSourceDraft] = useState<SourceDraft>();
   const [sourceInput, setSourceInput] = useState('');
@@ -362,12 +425,24 @@ export function ConsoleAppV4(props: {
   const [sourceDependenciesExpanded, setSourceDependenciesExpanded] = useState(false);
   const [draftOwner, setDraftOwner] = useState<string>();
   const exitSent = useRef(false);
+  const operationBusy = useRef(false);
   const route = snapshot.router.current.route;
+  const routeKey = JSON.stringify(route);
+  const showTechnical = technicalRouteKey === routeKey;
+  const setShowTechnical = (next: boolean | ((current: boolean) => boolean)): void => {
+    const visible = typeof next === 'function' ? next(showTechnical) : next;
+    setTechnicalRouteKey(visible ? routeKey : undefined);
+  };
   const plugin = currentPlugin(props.controller, route);
   const issue = route.name === 'issueDetail'
     ? props.controller.listUserIssues().find((entry) => entry.issueId === route.issueId)
     : undefined;
   const busy = route.name === 'progress';
+  useEffect(() => {
+    if (!busy) return;
+    const timer = setInterval(() => setClockTick((value) => value + 1), 1_000);
+    return () => clearInterval(timer);
+  }, [busy, route.name === 'progress' ? route.operationId : '']);
   const tooSmall = policy.mode === 'too-small';
   const requestExit = (request: ConsoleExitRequest): void => {
     if (exitSent.current) return;
@@ -410,7 +485,9 @@ export function ConsoleAppV4(props: {
   useEffect(() => {
     if (route.name !== 'sourceAdd') setSourceInput('');
   }, [route.name]);
-
+  useEffect(() => {
+    if (route.name !== 'configFieldEditor') setInputValue('');
+  }, [route.name]);
   const configRoute = route.name === 'configFields'
     || route.name === 'configFieldEditor'
     || route.name === 'configPresets'
@@ -471,6 +548,50 @@ export function ConsoleAppV4(props: {
       });
     return () => abort.abort();
   }, [configLoadKey, configRoute?.pluginId, configRoute?.layer.scope, configRoute?.layer.projectLayer, props.controller]);
+
+  useEffect(() => {
+    if (route.name !== 'configUnavailable' || !route.layer) {
+      setConfigResetAvailability(undefined);
+      return;
+    }
+    const abort = new AbortController();
+    void props.controller.getConfigResetAvailability(route.pluginId, route.layer)
+      .then((availability) => {
+        if (!abort.signal.aborted) setConfigResetAvailability(availability);
+      })
+      .catch(() => {
+        if (!abort.signal.aborted) setConfigResetAvailability({ exists: false, sourceIdentityPresent: false });
+      });
+    return () => abort.abort();
+  }, [props.controller, route.name, route.name === 'configUnavailable' ? route.pluginId : '', route.name === 'configUnavailable' ? JSON.stringify(route.layer) : '']);
+
+  useEffect(() => {
+    let count: number | undefined;
+    if (route.name === 'sourceList') count = props.controller.listSources().length + 1;
+    else if (route.name === 'issueList') {
+      const issueCount = props.controller.listUserIssues().length;
+      count = issueCount || 2;
+    } else if (route.name === 'pluginList') {
+      const itemCount = props.controller.listPlugins({
+        mode: route.mode,
+        ...(route.sourceId ? { sourceId: route.sourceId } : {}),
+        ...(query ? { query } : {}),
+      }).length;
+      count = itemCount || 1;
+    }
+    if (count === undefined) return;
+    setFocus((value) => Math.min(value, Math.max(0, count - 1)));
+    const maximumVisible = policy.mode === 'compact' ? 4 : 6;
+    setScrollOffset((value) => Math.min(value, Math.max(0, count - maximumVisible)));
+  }, [
+    policy.mode,
+    props.controller,
+    query,
+    route.name,
+    route.name === 'pluginList' ? route.mode : '',
+    route.name === 'pluginList' ? route.sourceId : '',
+    snapshot.viewModel,
+  ]);
 
   const activeField = route.name === 'configFieldEditor'
     ? currentConfigPage?.groups.flatMap((group) => group.fields).find((field) => field.key === route.fieldKey)
@@ -554,7 +675,8 @@ export function ConsoleAppV4(props: {
     setActionError(undefined);
   };
   const back = (): void => {
-    props.controller.back();
+    if (route.name === 'result') props.controller.leaveResult();
+    else props.controller.back();
     const restored = props.controller.snapshot.router.current.context;
     setFocus(restored.focusIndex ?? 0);
     setScrollOffset(restored.scrollOffset ?? 0);
@@ -562,8 +684,21 @@ export function ConsoleAppV4(props: {
     setSearchMode(Boolean(restored.query));
     setActionError(undefined);
   };
+  const leaveResult = (target?: TuiRoute): void => {
+    props.controller.leaveResult(target);
+    const restored = props.controller.snapshot.router.current.context;
+    setFocus(restored.focusIndex ?? 0);
+    setScrollOffset(restored.scrollOffset ?? 0);
+    setQuery(restored.query ?? '');
+    setSearchMode(Boolean(restored.query));
+    setShowTechnical(false);
+    setActionError(undefined);
+  };
   const beginReview = async (intent: OperationIntent): Promise<void> => {
-    await props.controller.buildOperationReview(intent);
+    const underlyingResultRoute = route.name === 'result' && snapshot.result && 'returnRoute' in snapshot.result
+      ? snapshot.result.returnRoute
+      : undefined;
+    await props.controller.buildOperationReview(intent, underlyingResultRoute);
     setFocus(0);
     setScrollOffset(0);
   };
@@ -755,16 +890,6 @@ export function ConsoleAppV4(props: {
   } else if (route.name === 'home') {
     const home = snapshot.viewModel!.home;
     context = '当前项目';
-    content = (
-      <Box flexDirection="column">
-        <Text>
-          <Text color={tuiTheme.statusColors.success}>✓ {home.installedPlugins} 个插件可用</Text>
-          {'    '}<Text color={tuiTheme.statusColors.warning}>! {home.issueCount} 项需要处理</Text>
-          {'    '}<Text color={tuiTheme.statusColors.warning}>◐ {home.unavailableSourceCount} 个来源不可用</Text>
-        </Text>
-        <Box marginTop={1}><ActionRows actions={actions} focus={focus} /></Box>
-      </Box>
-    );
     actions = [
       { label: '添加插件', description: '浏览多个来源中的 Agent 能力', meta: String(home.availablePlugins), run: () => go({ name: 'pluginList', mode: 'browse' }) },
       { label: '我的插件', description: '查看状态、设置和移除已添加插件', meta: String(home.installedPlugins), run: () => go({ name: 'pluginList', mode: 'installed' }) },
@@ -776,8 +901,9 @@ export function ConsoleAppV4(props: {
         <Text>
           <Text color={tuiTheme.statusColors.success}>✓ {home.installedPlugins} 个插件可用</Text>
           {'    '}<Text color={tuiTheme.statusColors.warning}>! {home.issueCount} 项需要处理</Text>
-          {'    '}<Text color={tuiTheme.statusColors.warning}>◐ {home.unavailableSourceCount} 个来源不可用</Text>
+          {home.cachedSourceCount > 0 ? <>{'    '}<Text color={tuiTheme.statusColors.warning}>◐ {home.cachedSourceCount} 个来源使用缓存</Text></> : null}
         </Text>
+        {home.unavailableSourceCount > 0 ? <Text color={tuiTheme.statusColors.error}>× {home.unavailableSourceCount} 个来源不可用</Text> : null}
         <Box marginTop={1}><ActionRows actions={actions} focus={focus} /></Box>
       </Box>
     );
@@ -812,9 +938,10 @@ export function ConsoleAppV4(props: {
       description = `从已配置的 ${props.controller.listSources().length} 个来源中浏览可用能力。`;
       actions = [{ label: '浏览插件', description: '开始添加第一个插件', run: () => go({ name: 'pluginList', mode: 'browse' }) }];
     }
+    const viewport = actionViewport(route.name, actions, policy.mode, focus, scrollOffset);
     content = (
       <Box flexDirection="column">
-        <SourceTabs controller={props.controller} current={sourceId} compact={policy.mode === 'compact'} />
+        <SourceTabs controller={props.controller} current={sourceId} compact={policy.mode === 'compact'} mode={route.mode} />
         <Text color={searchMode ? tuiTheme.colors.accent : tuiTheme.colors.muted}>/ {searchMode ? query || '输入搜索内容' : '搜索名称、用途或来源…'}</Text>
         {sourceError
           ? <Bordered><Text bold>{sourceId} 暂时无法提供插件</Text><Text color={tuiTheme.colors.muted}>没有可用缓存，因此当前不能浏览这个来源。</Text></Bordered>
@@ -824,8 +951,8 @@ export function ConsoleAppV4(props: {
         <ActionRows
           actions={actions}
           focus={focus}
-          offset={policy.mode === 'compact' ? scrollOffset : undefined}
-          limit={policy.mode === 'compact' ? 4 : undefined}
+          offset={viewport.offset}
+          limit={viewport.limit}
         />
       </Box>
     );
@@ -935,7 +1062,20 @@ export function ConsoleAppV4(props: {
       description = '正常状态只能保留一个位置。';
       actions = [{ label: '查看位置冲突问题', run: () => go({ name: 'issueDetail', issueId: `scope:${plugin.pluginId}:${route.platform}` }) }];
       content = <ActionRows actions={actions} focus={focus} />;
-    } else if (placement.health !== 'ready') {
+    } else if (placement.health === 'error') {
+      const typedIssue = props.controller.listUserIssues().find((candidate) =>
+        candidate.pluginId === plugin.pluginId
+        && candidate.platform === route.platform
+        && candidate.scope === placement.scope);
+      title = `${platformLabel(route.platform)} 暂时不可管理`;
+      description = typedIssue?.explanation ?? '平台状态检查失败，当前不能安全选择写操作。';
+      actions = [
+        ...(typedIssue ? [{ label: '查看对应问题', description: typedIssue.title, run: () => go({ name: 'issueDetail', issueId: typedIssue.issueId }) }] : []),
+        { label: '查看安全技术详情', description: '只显示类型化状态和错误码', run: () => go({ name: 'pluginTechnical', pluginId: plugin.pluginId }) },
+        { label: '返回插件', run: back },
+      ];
+      content = <Box flexDirection="column"><Bordered><Text color={tuiTheme.statusColors.error}>× 状态检查失败</Text><Text color={tuiTheme.colors.muted}>当前只提供只读操作</Text></Bordered><ActionRows actions={actions} focus={focus} /></Box>;
+    } else if (placement.health === 'incomplete') {
       title = `${platformLabel(route.platform)} ${placement.health === 'incomplete' ? '安装不完整' : '暂时不可用'}`;
       description = '缺少一项必要内容，插件可能无法稳定启动。';
       actions = [
@@ -1054,8 +1194,10 @@ export function ConsoleAppV4(props: {
         ? `允许范围：${activeField.min ?? '不限'}–${activeField.max ?? '不限'}${activeField.unit ? ` ${activeField.unit}` : ''}。`
         : route.editor === 'path' ? `${activeField.type === 'file' ? '文件' : '目录'}路径会在保存前由现有 schema 路径验证。`
           : route.editor === 'sensitive' ? '当前值不会回显；留空不会自动删除旧值。' : activeField.description ?? '';
-      const visibleInput = route.editor === 'sensitive' ? '•'.repeat(inputValue.length) : inputValue;
-      content = <Bordered><Text>{visibleInput || activeField.placeholder || ' '}</Text><Text color={inputError ? tuiTheme.statusColors.error : tuiTheme.colors.muted}>{inputError ?? (route.editor === 'sensitive' ? '输入已隐藏。' : route.editor === 'path' ? '绝对路径只在此输入页短暂显示。' : activeField.placeholder ?? '按 Enter 使用输入值。')}</Text></Bordered>;
+      const visibleInput = route.editor === 'sensitive'
+        ? '•'.repeat(inputValue.length)
+        : route.editor === 'path' ? privatePathInput(inputValue) : inputValue;
+      content = <Bordered><Text>{visibleInput || activeField.placeholder || ' '}</Text><Text color={inputError ? tuiTheme.statusColors.error : tuiTheme.colors.muted}>{inputError ?? (route.editor === 'sensitive' ? '输入已隐藏。' : route.editor === 'path' ? '已隐藏父目录；Backspace 仍会编辑原始输入。' : activeField.placeholder ?? '按 Enter 使用输入值。')}</Text></Bordered>;
     }
   } else if (route.name === 'configPresets' && plugin) {
     breadcrumb = `${plugin.displayName} / 设置 / 预设`;
@@ -1094,9 +1236,27 @@ export function ConsoleAppV4(props: {
         setConfigLoadKey((value) => value + 1);
         props.controller.replace({ name: 'configFields', pluginId: plugin.pluginId, layer: route.layer ?? { scope: 'user', projectLayer: 'shared' } });
       } },
+      ...(route.layer && configResetAvailability?.exists && configResetAvailability.sourceIdentityPresent
+        ? [{
+            label: '重置此设置层…',
+            description: '删除本层已存值；当前不重新应用插件内容',
+            status: 'error' as const,
+            run: () => beginReview({
+              kind: 'configReset',
+              pluginId: plugin.pluginId,
+              scope: route.layer!.scope,
+              projectLayer: route.layer!.projectLayer,
+              offline: true,
+              sourceIdentity: configResetAvailability.sourceIdentity,
+            }),
+          }]
+        : []),
+      ...(configResetAvailability?.sourceIdentityPresent
+        ? [{ label: '技术详情', description: '查看可信身份和设置层摘要', run: () => setShowTechnical((value) => !value) }]
+        : []),
       { label: '返回', run: back },
     ];
-    content = <Box flexDirection="column"><Bordered><Text color={tuiTheme.statusColors.error}>× Manifest 或来源不可用</Text><Text color={tuiTheme.colors.muted}>已保存的设置不会丢失。无法证明设置身份，因此重置已禁用。</Text></Bordered><ActionRows actions={actions} focus={focus} /></Box>;
+    content = <Box flexDirection="column"><Bordered><Text color={tuiTheme.statusColors.error}>× Manifest 或来源不可用</Text><Text color={tuiTheme.colors.muted}>已保存的设置不会丢失。{configResetAvailability?.sourceIdentityPresent ? '已验证本设置层身份，可以安全重置。' : '无法证明设置身份，因此重置已禁用。'}</Text></Bordered>{showTechnical && configResetAvailability?.sourceIdentityPresent ? <Bordered title="技术详情"><Text>来源身份：{configResetAvailability.sourceIdentity}</Text><Text>设置摘要：{configResetAvailability.storeDigest}</Text></Bordered> : null}<ActionRows actions={actions} focus={focus} /></Box>;
   } else if (route.name === 'sourceList') {
     breadcrumb = '插件来源';
     title = '插件来源';
@@ -1123,7 +1283,8 @@ export function ConsoleAppV4(props: {
       }),
       { label: '＋ 添加来源', description: 'Git 仓库或本地目录', run: beginAddSource },
     ];
-    content = <ActionRows actions={actions} focus={focus} offset={scrollOffset} limit={policy.mode === 'compact' ? 5 : 8} />;
+    const viewport = actionViewport(route.name, actions, policy.mode, focus, scrollOffset);
+    content = <ActionRows actions={actions} focus={focus} offset={viewport.offset} limit={viewport.limit} />;
   } else if (route.name === 'sourceDetail') {
     const overview = props.controller.getSourceOverview(route.sourceId);
     const detail = overview.detail;
@@ -1176,8 +1337,10 @@ export function ConsoleAppV4(props: {
       description = route.step === 'subdir' ? '仓库根目录是 Catalog 时保持为空。' : '输入会在继续前按来源规范验证。';
       const displayedInput = route.step === 'location' && sourceDraft.type === 'git' && sourceInput
         ? projectCatalogSourceLocation(sourceInput)
-        : sourceInput;
-      content = <Bordered><Text>{displayedInput || ' '}</Text><Text color={sourceInputError ? tuiTheme.statusColors.error : tuiTheme.colors.muted}>{sourceInputError ?? (route.step === 'location' && sourceDraft.type === 'path' ? '绝对路径只在此输入页短暂显示。' : '按 Enter 继续。')}</Text></Bordered>;
+        : route.step === 'location' && sourceDraft.type === 'path'
+          ? privatePathInput(sourceInput)
+          : sourceInput;
+      content = <Bordered><Text>{displayedInput || ' '}</Text><Text color={sourceInputError ? tuiTheme.statusColors.error : tuiTheme.colors.muted}>{sourceInputError ?? (route.step === 'location' && sourceDraft.type === 'path' ? '已隐藏父目录；Backspace 仍会编辑原始输入。' : '按 Enter 继续。')}</Text></Bordered>;
     }
   } else if (route.name === 'sourceEdit') {
     const detail = props.controller.getSourceOverview(route.sourceId).detail;
@@ -1224,7 +1387,8 @@ export function ConsoleAppV4(props: {
         run: () => go({ name: 'issueDetail', issueId: entry.issueId }),
       }));
     }
-    content = <ActionRows actions={actions} focus={focus} offset={policy.mode === 'compact' ? scrollOffset : undefined} limit={policy.mode === 'compact' ? 4 : 7} />;
+    const viewport = actionViewport(route.name, actions, policy.mode, focus, scrollOffset);
+    content = <ActionRows actions={actions} focus={focus} offset={viewport.offset} limit={viewport.limit} />;
   } else if (route.name === 'issueDetail' && issue) {
     breadcrumb = `需要处理 / ${issue.pluginId ?? issue.sourceId ?? issue.entity.id}`;
     context = issue.platform ? `${platformLabel(issue.platform)}${issue.scope ? ` · ${scopeLabel(issue.scope)}` : ''}` : issue.sourceId;
@@ -1270,10 +1434,16 @@ export function ConsoleAppV4(props: {
           : change.kind === 'warning' ? 'warning' as const
             : change.kind === 'keep' || change.kind === 'add' ? 'success' as const : undefined,
       })),
-      { label: review.primaryLabel, description: '执行前将再次检查当前状态', status: review.destructive ? 'error' : undefined, run: () => props.controller.executeOperation(review.reviewToken).then(() => {
-        setFocus(0);
-        setScrollOffset(0);
-      }) },
+      { label: review.primaryLabel, description: '执行前将再次检查当前状态', status: review.destructive ? 'error' : undefined, run: () => {
+        if (operationBusy.current) return;
+        operationBusy.current = true;
+        return props.controller.executeOperation(review.reviewToken).then(() => {
+          setFocus(0);
+          setScrollOffset(0);
+        }).finally(() => {
+          operationBusy.current = false;
+        });
+      } },
       { label: '返回修改', run: back },
     ];
     const reviewLimit = policy.mode === 'compact' ? 4 : 7;
@@ -1288,9 +1458,20 @@ export function ConsoleAppV4(props: {
     description = issueOperation ? '完成后会使用新的状态 generation 重新检查问题。' : sourceOperation ? '只有验证来源和引用清单通过后才会修改来源列表。' : configOperation ? '先保存所选层，再重新应用当前可见安装位置。' : '请勿关闭当前终端。';
     help = 'd 技术进度 · Ctrl-C 完成后退出';
     const progress = snapshot.progress;
-    content = sourceOperation
-      ? <Box flexDirection="column"><Text color={tuiTheme.colors.accent}>● 检查候选配置并扫描引用</Text><Text color={tuiTheme.colors.muted}>○ 读取 Catalog</Text><Text color={tuiTheme.colors.muted}>○ 保存来源列表</Text><Text color={tuiTheme.colors.muted}>○ 刷新插件索引</Text>{exitAfterBusy ? <Text color={tuiTheme.statusColors.warning}>操作完成后退出。</Text> : null}</Box>
-      : <Box flexDirection="column"><Text color={tuiTheme.statusColors.success}>✓ {configOperation ? '验证设置值' : '检查兼容性'}</Text><Text color={tuiTheme.colors.accent}>● {progress.current?.phase ?? (configOperation ? '保存设置层并重新应用' : '连接到所选工具')}</Text><Text color={tuiTheme.colors.muted}>○ 验证结果</Text>{progress.current ? <Text color={tuiTheme.colors.muted}>当前：{progress.current.target}</Text> : null}{showTechnical ? progress.messages.slice(-8).map((message) => <Text key={message} color={tuiTheme.colors.muted}>{message}</Text>) : null}{exitAfterBusy ? <Text color={tuiTheme.statusColors.warning}>操作完成后退出。</Text> : null}</Box>;
+    const elapsedSeconds = Math.max(0, Math.floor(((progress.elapsedMs
+      ?? (progress.startedAtMs === undefined ? 0 : Date.now() - progress.startedAtMs))) / 1_000));
+    const latestMessage = progress.messages.at(-1);
+    const technicalMessages = progress.messages.slice(policy.mode === 'compact' ? -4 : -8);
+    content = <Box flexDirection="column">
+      <Text color={tuiTheme.statusColors.success}>✓ {sourceOperation ? '检查来源操作输入' : configOperation ? '验证设置值' : '检查兼容性'}</Text>
+      <Text color={tuiTheme.colors.accent}>● {progress.current?.phase ?? (sourceOperation ? '验证并保存来源' : configOperation ? '保存设置层并重新应用' : '连接到所选工具')}</Text>
+      <Text color={tuiTheme.colors.muted}>○ 验证结果</Text>
+      <Text color={tuiTheme.colors.muted}>已用时：{elapsedSeconds}s</Text>
+      {progress.current ? <Text color={tuiTheme.colors.muted}>当前：{progress.current.target}</Text> : null}
+      {!showTechnical && latestMessage ? <Text color={tuiTheme.colors.muted}>{latestMessage}</Text> : null}
+      {showTechnical ? technicalMessages.map((message, index) => <Text key={`${index}:${message}`} color={tuiTheme.colors.muted}>{message}</Text>) : null}
+      {exitAfterBusy ? <Text color={tuiTheme.statusColors.warning}>操作完成后退出。</Text> : null}
+    </Box>;
   } else if (route.name === 'result' && snapshot.result) {
     const result = snapshot.result;
     const partial = result.state === 'partial';
@@ -1302,6 +1483,9 @@ export function ConsoleAppV4(props: {
     const operationKind = 'operationKind' in result ? result.operationKind : undefined;
     const configOperation = operationKind === 'configSave' || operationKind === 'configReset'
       ? operationKind : undefined;
+    const offlineConfigReset = (result.state === 'succeeded' || result.state === 'partial')
+      && configOperation === 'configReset'
+      && result.summary.applySkippedReason === 'currentCatalogUnavailable';
     const sourceOperation = operationKind === 'sourceMutation';
     const issueOperation = result.originIssue;
     const completedTitle = {
@@ -1311,16 +1495,21 @@ export function ConsoleAppV4(props: {
       uninstall: '✓ 插件移除完成',
       cleanup: '✓ 插件清理完成',
     }[action ?? 'install'];
-    title = issueOperation
+    title = blocked && result.writeMayHaveCompleted
+      ? '× 写入结果未确认'
+      : issueOperation
       ? blocked || partial ? '× 问题仍未解决' : '✓ 问题已处理'
       : sourceOperation
       ? blocked ? '× 来源验证失败' : '✓ 来源操作完成'
       : configOperation
       ? blocked
         ? '× 设置未确认保存'
+        : offlineConfigReset ? '✓ 设置层已重置'
         : partial ? '! 设置已保存，但部分应用失败' : '✓ 设置已保存并应用'
       : partial ? '! 插件操作只完成了一部分' : blocked ? '× 插件操作未完成' : completedTitle;
-    description = issueOperation
+    description = blocked && result.writeMayHaveCompleted
+      ? result.message
+      : issueOperation
       ? blocked
         ? result.code === 'issueVerificationFailed'
           ? '写入可能已完成，但当前无法确认。请重新检查状态。'
@@ -1330,45 +1519,78 @@ export function ConsoleAppV4(props: {
         : '状态已重新加载；原问题已确认消失。'
       : sourceOperation
       ? blocked ? '来源列表没有被修改。草稿已保留，可返回修改。' : '来源命令已完成。'
-      : blocked ? result.message : configOperation ? '设置层已经更新。' : '状态已刷新。';
+      : blocked ? result.message
+        : offlineConfigReset ? result.summary.message
+          : configOperation ? '设置层已经更新。' : '状态已刷新。';
     const completedResult = result.state === 'succeeded' || result.state === 'partial'
       ? result
       : undefined;
     const pluginId = completedResult?.summary.pluginId
       ?? ('pluginId' in result ? result.pluginId : undefined);
     const failedTarget = completedResult?.summary.targets?.find((target) => target.state === 'failed');
+    const failedIssue = pluginId && failedTarget
+      ? props.controller.listUserIssues().find((candidate) =>
+          candidate.pluginId === pluginId
+          && candidate.platform === failedTarget.platform
+          && candidate.scope === failedTarget.scope
+          && (candidate.category === 'incompleteInstallation' || candidate.category === 'diagnostic'))
+      : undefined;
+    const failedTargetState = pluginId && failedTarget
+      ? props.controller.getTargetState(pluginId, failedTarget.platform, failedTarget.scope)
+      : undefined;
+    const retryAction = partialRetryAction(operationKind, action, failedTargetState);
+    const retryIssueAction = retryAction
+      ? failedIssue?.actions.find((candidate) => candidate.id === retryAction)
+      : undefined;
     actions = issueOperation
       ? blocked || partial
         ? [
             { label: '返回问题详情', run: () => blocked
-              ? props.controller.returnFromResult()
-              : go({ name: 'issueDetail', issueId: issueOperation.issueId }) },
-            { label: '重新检查问题', run: () => go({ name: 'issueList' }) },
+              ? leaveResult()
+              : failedIssue
+                ? leaveResult({ name: 'issueDetail', issueId: failedIssue.issueId })
+                : pluginId && failedTarget
+                  ? leaveResult({ name: 'platform', pluginId, platform: failedTarget.platform })
+                  : leaveResult() },
+            { label: '重新检查问题', run: () => leaveResult({ name: 'issueList' }) },
           ]
         : [
-            { label: '查看问题列表', run: () => go({ name: 'issueList' }) },
-            { label: '返回首页', run: () => go({ name: 'home' }) },
+            { label: '查看问题列表', run: () => leaveResult({ name: 'issueList' }) },
+            { label: '返回首页', run: () => leaveResult({ name: 'home' }) },
           ]
       : sourceOperation
-      ? [{ label: blocked ? '返回修改' : '查看来源', run: () => blocked ? props.controller.returnFromResult() : go({ name: 'sourceList' }) }, { label: '返回首页', run: () => go({ name: 'home' }) }]
+      ? [{ label: blocked ? '返回修改' : '查看来源', run: () => blocked ? leaveResult() : leaveResult({ name: 'sourceList' }) }, { label: '返回首页', run: () => leaveResult({ name: 'home' }) }]
+      : configOperation && blocked
+      ? [
+          { label: '返回设置', run: () => leaveResult() },
+          { label: '返回首页', run: () => leaveResult({ name: 'home' }) },
+        ]
       : [{ label: partial ? '查看失败项' : configOperation ? '查看插件' : action === 'uninstall' || action === 'cleanup' ? '返回插件详情' : '查看插件', run: () => {
       if (partial && pluginId && failedTarget) {
-        go({ name: 'issueDetail', issueId: `target:${pluginId}:${failedTarget.platform}:${failedTarget.scope}:error` });
+        if (failedIssue) leaveResult({ name: 'issueDetail', issueId: failedIssue.issueId });
+        else leaveResult({ name: 'platform', pluginId, platform: failedTarget.platform });
       } else if (pluginId && snapshot.viewModel?.plugins.some((entry) => entry.pluginId === pluginId)) {
-        go({ name: 'pluginDetail', pluginId });
+        leaveResult({ name: 'pluginDetail', pluginId });
       }
-      else go({ name: 'pluginList', mode: 'installed' });
-    } }, ...(partial && pluginId && failedTarget && (action || configOperation) ? [{
+      else leaveResult({ name: 'pluginList', mode: 'installed' });
+    } }, ...(partial && pluginId && failedTarget && retryAction ? [{
       label: '重试失败部分…',
       run: () => beginReview({
         kind: 'pluginWrite',
-        action: action ?? 'reinstall',
+        action: retryAction,
         pluginId,
         platform: failedTarget.platform,
         scope: failedTarget.scope,
+        ...(failedIssue && retryIssueAction ? { originIssue: {
+          issueId: failedIssue.issueId,
+          issueKey: userIssueKey(failedIssue),
+          category: failedIssue.category,
+          actionId: retryIssueAction.id,
+        } } : {}),
       }),
-    }] : []), { label: '返回首页', run: () => go({ name: 'home' }) }];
-    content = <Box flexDirection="column"><Bordered>{result.state === 'blocked' ? <Text color={tuiTheme.statusColors.error}>操作未完成 · {result.code}</Text> : sourceOperation ? <Text color={tuiTheme.statusColors.success}>来源配置写入已完成。</Text> : completedResult ? (completedResult.summary.targets ?? []).map((target) => <Box key={`${target.platform}:${target.scope}`} justifyContent="space-between"><Text>{platformLabel(target.platform)} · {scopeLabel(target.scope)}</Text><Text color={target.state === 'completed' ? tuiTheme.statusColors.success : tuiTheme.statusColors.error}>{target.state === 'completed' ? '已完成' : '失败'}</Text></Box>) : <Text color={tuiTheme.statusColors.warning}>状态已变化，请重新确认。</Text>}</Bordered><ActionRows actions={actions} focus={focus} /></Box>;
+    }] : []), { label: '返回首页', run: () => leaveResult({ name: 'home' }) }];
+    const visibleMessages = completedResult?.summary.messages?.slice(policy.mode === 'compact' ? -2 : -4) ?? [];
+    content = <Box flexDirection="column"><Bordered>{result.state === 'blocked' ? <Text color={tuiTheme.statusColors.error}>{result.writeMayHaveCompleted ? '结果未确认' : '操作未完成'} · {result.code}</Text> : sourceOperation ? <Text color={tuiTheme.statusColors.success}>来源配置写入已完成。</Text> : offlineConfigReset ? <Text color={tuiTheme.statusColors.success}>{result.summary.message}</Text> : completedResult && (completedResult.summary.targets?.length ?? 0) > 0 ? completedResult.summary.targets!.map((target) => <Box key={`${target.platform}:${target.scope}`} justifyContent="space-between"><Text>{platformLabel(target.platform)} · {scopeLabel(target.scope)}</Text><Text color={target.state === 'completed' ? tuiTheme.statusColors.success : tuiTheme.statusColors.error}>{target.state === 'completed' ? '已完成' : '失败'}</Text></Box>) : completedResult ? <Text color={tuiTheme.statusColors.success}>{completedResult.summary.message}</Text> : <Text color={tuiTheme.statusColors.warning}>状态已变化，请重新确认。</Text>}{completedResult?.summary.elapsedMs !== undefined ? <Text color={tuiTheme.colors.muted}>已用时：{Math.floor(completedResult.summary.elapsedMs / 1_000)}s</Text> : null}{visibleMessages.map((message, index) => <Text key={`${index}:${message}`} color={tuiTheme.colors.muted}>{message}</Text>)}</Bordered><ActionRows actions={actions} focus={focus} /></Box>;
   } else if (route.name === 'pluginAbout' && plugin) {
     breadcrumb = `${plugin.displayName} / 关于`;
     title = plugin.displayName;
@@ -1381,7 +1603,7 @@ export function ConsoleAppV4(props: {
     title = '安装与身份详情';
     description = '默认页面不会展示这些内部信息。';
     actions = [{ label: '返回插件', run: back }];
-    content = <Box flexDirection="column"><Bordered><Text color={tuiTheme.colors.muted}>canonical pluginId  <Text color={tuiTheme.colors.text}>{plugin.pluginId}</Text></Text><Text color={tuiTheme.colors.muted}>来源                <Text color={tuiTheme.colors.text}>{plugin.sourceId}</Text></Text>{plugin.installedPlacements.map((placement) => <Text key={placement.platform} color={tuiTheme.colors.muted}>{platformLabel(placement.platform)} target         <Text color={tuiTheme.colors.text}>{placementStatus(placement).value}</Text></Text>)}</Bordered><ActionRows actions={actions} focus={focus} /></Box>;
+    content = <Box flexDirection="column"><Bordered><Text color={tuiTheme.colors.muted}>canonical pluginId  <Text color={tuiTheme.colors.text}>{plugin.pluginId}</Text></Text><Text color={tuiTheme.colors.muted}>来源                <Text color={tuiTheme.colors.text}>{plugin.sourceId}</Text></Text>{plugin.installedPlacements.map((placement) => <Text key={placement.platform} color={tuiTheme.colors.muted}>{platformLabel(placement.platform)} target         <Text color={tuiTheme.colors.text}>{placementStatus(placement).value}</Text></Text>)}{plugin.technicalComponents.map((component) => <Text key={`${component.platform}:${component.scope}:${component.key}`} color={tuiTheme.colors.muted}>{platformLabel(component.platform)} · {scopeLabel(component.scope)} · {component.key} · {component.state}{component.errorCode ? ` · ${component.errorCode}` : ''}</Text>)}</Bordered><ActionRows actions={actions} focus={focus} /></Box>;
   } else {
     breadcrumb = '后续阶段';
     title = '此业务页将在后续阶段接入';
@@ -1402,6 +1624,14 @@ export function ConsoleAppV4(props: {
   };
 
   useInput((input, key) => {
+    if (busy) {
+      if (input.toLowerCase() === 'q' || (key.ctrl && input.toLowerCase() === 'c')) {
+        setExitAfterBusy(true);
+      } else if (!tooSmall && input.toLowerCase() === 'd') {
+        setShowTechnical((value) => !value);
+      }
+      return;
+    }
     if (tooSmall) {
       if (input.toLowerCase() === 'q' || (key.ctrl && input.toLowerCase() === 'c')) {
         requestExit({ code: snapshot.phase === 'error' ? 1 : 0, reason: snapshot.phase === 'error' ? 'initialError' : 'user' });
@@ -1409,6 +1639,10 @@ export function ConsoleAppV4(props: {
       return;
     }
     if (overlay) {
+      if (key.ctrl && input.toLowerCase() === 'c') {
+        requestExit({ code: snapshot.phase === 'error' ? 1 : 0, reason: snapshot.phase === 'error' ? 'initialError' : 'user' });
+        return;
+      }
       if (key.escape || input.toLowerCase() === 'b' || input === '?') {
         setOverlay(undefined);
         return;
@@ -1424,15 +1658,22 @@ export function ConsoleAppV4(props: {
           setDirty(false);
           setDraftUpdates({});
           setDraftRemoves([]);
+          const discardedSourceDraft = sourceDraft;
           setSourceDraft(undefined);
-          back();
+          if (discardForExit) {
+            requestExit({ code: 0, reason: 'user' });
+          } else if (discardedSourceDraft) {
+            props.controller.discardSourceDraft(
+              discardedSourceDraft.owner,
+              discardedSourceDraft.mode === 'update'
+                ? { name: 'sourceDetail', sourceId: discardedSourceDraft.sourceId }
+                : { name: 'sourceList' },
+            );
+          } else {
+            back();
+          }
         } else requestExit({ code: snapshot.phase === 'error' ? 1 : 0, reason: snapshot.phase === 'error' ? 'initialError' : 'user' });
       }
-      return;
-    }
-    if (busy) {
-      if (input.toLowerCase() === 'd') setShowTechnical((value) => !value);
-      if (key.ctrl && input.toLowerCase() === 'c') setExitAfterBusy(true);
       return;
     }
     if (key.ctrl && input.toLowerCase() === 'c') {
@@ -1444,7 +1685,9 @@ export function ConsoleAppV4(props: {
       && route.step !== 'refPolicy'
       && sourceDraft?.owner === route.owner) {
       if (key.escape) {
-        back();
+        setOverlayFocus(0);
+        setDiscardForExit(false);
+        setOverlay('discard');
         return;
       }
       if (key.return) {
@@ -1555,8 +1798,11 @@ export function ConsoleAppV4(props: {
       setOverlay('help');
     } else if (input.toLowerCase() === 'q') {
       setOverlayFocus(0);
+      setDiscardForExit(dirty);
       setOverlay(dirty ? 'discard' : 'exit');
-    } else if (input.toLowerCase() === 'd' && (route.name === 'review' || route.name === 'issueDetail')) {
+    } else if (input.toLowerCase() === 'd' && (route.name === 'review'
+      || route.name === 'issueDetail'
+      || route.name === 'configUnavailable')) {
       setShowTechnical((value) => !value);
     } else if ((key.escape || input.toLowerCase() === 'b')
       && (route.name === 'configFieldEditor'
@@ -1566,6 +1812,7 @@ export function ConsoleAppV4(props: {
     } else if (key.escape || input.toLowerCase() === 'b') {
       if (dirty) {
         setOverlayFocus(0);
+        setDiscardForExit(false);
         setOverlay('discard');
       } else back();
     } else if (route.name === 'pluginList' && input === '/') {
@@ -1602,19 +1849,15 @@ export function ConsoleAppV4(props: {
     } else if (key.upArrow || input.toLowerCase() === 'k') {
       setFocus((value) => {
         const next = moveFocus(actions, value, -1);
-        const visible = policy.mode === 'compact' ? 4
-          : route.name === 'configFields' || route.name === 'review' || route.name === 'issueList' || route.name === 'issueDetail' ? 7 : undefined;
-        if (visible !== undefined && next < scrollOffset) setScrollOffset(next);
-        else if (visible !== undefined && next >= scrollOffset + visible) setScrollOffset(next - visible + 1);
+        const viewport = actionViewport(route.name, actions, policy.mode, next, scrollOffset);
+        setScrollOffset(viewport.offset);
         return next;
       });
     } else if (key.downArrow || input.toLowerCase() === 'j') {
       setFocus((value) => {
         const next = moveFocus(actions, value, 1);
-        const visible = policy.mode === 'compact' ? 4
-          : route.name === 'configFields' || route.name === 'review' || route.name === 'issueList' || route.name === 'issueDetail' ? 7 : undefined;
-        if (visible !== undefined && next < scrollOffset) setScrollOffset(next);
-        else if (visible !== undefined && next >= scrollOffset + visible) setScrollOffset(next - visible + 1);
+        const viewport = actionViewport(route.name, actions, policy.mode, next, scrollOffset);
+        setScrollOffset(viewport.offset);
         return next;
       });
     } else if (input === ' ' && route.name === 'installTools') {

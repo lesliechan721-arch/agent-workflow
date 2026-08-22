@@ -15,6 +15,7 @@ import {
   type ConfigPageViewModel,
   type ConfigGroupViewModel,
   buildTuiViewModel,
+  hasInstalledPlacement,
   type PluginListItemViewModel,
   type SourceHealthViewModel,
   type SourceDetailViewModel,
@@ -69,6 +70,8 @@ export type OperationIntent =
       pluginId: string;
       scope: Scope;
       projectLayer: ProjectConfigStoreLayer;
+      offline?: true;
+      sourceIdentity?: string;
     }
   | {
       kind: 'sourceMutation';
@@ -147,6 +150,7 @@ export type OperationExecuteResult =
       sourceAction?: Extract<OperationIntent, { kind: 'sourceMutation' }>['action'];
       pluginId?: string;
       originIssue?: IssueOrigin;
+      returnRoute?: TuiRoute;
     }
   | {
       state: 'partial';
@@ -156,6 +160,7 @@ export type OperationExecuteResult =
       sourceAction?: Extract<OperationIntent, { kind: 'sourceMutation' }>['action'];
       pluginId?: string;
       originIssue?: IssueOrigin;
+      returnRoute?: TuiRoute;
     }
   | {
       state: 'stale';
@@ -180,10 +185,13 @@ export type OperationExecuteResult =
     };
 
 export interface OperationResultSummary {
-  code: 'operationSucceeded' | 'operationPartial';
+  code: 'operationSucceeded' | 'operationPartial' | 'operationFailed';
   message: string;
   pluginId?: string;
   action?: PluginWriteOperation;
+  applySkippedReason?: 'currentCatalogUnavailable';
+  elapsedMs?: number;
+  messages?: string[];
   targets?: Array<{
     platform: PlatformName;
     scope: Scope;
@@ -215,7 +223,10 @@ export interface SourceReferenceSummaryViewModel {
 
 export interface TuiControllerDependencies {
   loadStatus: (signal: AbortSignal) => Promise<TuiStatusLoadResult>;
-  checkSource: (sourceId: string, signal: AbortSignal) => Promise<void>;
+  checkSource: (sourceId: string, signal: AbortSignal) => Promise<{
+    sourceIdentity: string;
+    requestedRef: string;
+  }>;
   inspectSourceRemoval?: (sourceId: string, signal: AbortSignal) => Promise<SourceReferenceSummaryViewModel>;
   captureEvidence: (intent: OperationIntent, signal?: AbortSignal) => Promise<OperationEvidence>;
   validateIntent?: (intent: OperationIntent, signal: AbortSignal) => Promise<void>;
@@ -233,6 +244,11 @@ export interface TuiControllerDependencies {
     layer: { scope: Scope | 'effective'; projectLayer: ProjectConfigStoreLayer },
     signal: AbortSignal,
   ) => Promise<ConfigPageViewModel>;
+  getConfigResetAvailability?: (
+    pluginId: string,
+    layer: { scope: Scope; projectLayer: ProjectConfigStoreLayer },
+    signal: AbortSignal,
+  ) => Promise<ConfigResetAvailability>;
   logError?: (
     error: unknown,
     code: string,
@@ -242,6 +258,13 @@ export interface TuiControllerDependencies {
   createToken?: () => string;
   reviewTtlMs?: number;
   maxReviewTickets?: number;
+}
+
+export interface ConfigResetAvailability {
+  exists: boolean;
+  sourceIdentityPresent: boolean;
+  sourceIdentity?: string;
+  storeDigest?: string;
 }
 
 export interface TuiControllerSnapshot {
@@ -347,7 +370,9 @@ function operationLabels(intent: OperationIntent): {
   if (intent.kind === 'configReset') {
     return {
       title: '重置插件设置',
-      description: '删除所选设置层的值，恢复继承。',
+      description: intent.offline
+        ? '删除所选设置层的已存值；当前不重新应用插件内容。'
+        : '删除所选设置层的值，恢复继承。',
       primaryLabel: '重置设置',
       destructive: true,
     };
@@ -392,7 +417,11 @@ function reviewChanges(intent: OperationIntent): OperationReviewChange[] {
     const layerLabel = intent.scope === 'user'
       ? '个人默认'
       : intent.projectLayer === 'local' ? '当前项目（仅本机）' : '当前项目';
-    return [
+    return intent.offline ? [
+      { kind: 'remove', title: `删除${layerLabel}中的已存值`, description: '当前无法取得可信 manifest。' },
+      { kind: 'warning', title: '当前不重新应用插件内容', description: '来源恢复后可重新检查插件。' },
+      { kind: 'keep', title: intent.scope === 'user' ? '当前项目和本机设置层保持不变' : '其他设置层保持不变' },
+    ] : [
       { kind: 'remove', title: `删除${layerLabel}中的已存值`, description: '有效值将恢复为继承值或默认值。' },
       { kind: 'change', title: '重新计算有效设置' },
       { kind: 'change', title: '重新应用当前可见安装位置' },
@@ -485,8 +514,17 @@ export class TuiController {
   readonly #listeners = new Set<(snapshot: TuiControllerSnapshot) => void>();
   readonly #health = new Map<string, SourceHealthViewModel>();
   readonly #sourceTokens = new Map<string, number>();
+  readonly #successfulSourceRefreshes = new Map<string, {
+    generation: number;
+    sourceIdentity: string;
+    requestedRef: string;
+  }>();
   readonly #sourceAborts = new Map<string, AbortController>();
   readonly #tickets = new Map<string, ReviewTicket>();
+  readonly #inflightOperations = new Map<string, {
+    operationId: string;
+    promise: Promise<OperationExecuteResult>;
+  }>();
   readonly #abort = new AbortController();
   readonly #progressUnsubscribe?: () => void;
   readonly #progressFeed?: RebuildProgressFeed;
@@ -509,7 +547,11 @@ export class TuiController {
     this.#progressFeed = progressFeed;
     if (progressFeed) {
       this.#progressUnsubscribe = progressFeed.subscribe((progress) => {
-        this.#progress = structuredClone(progress);
+        this.#progress = {
+          ...structuredClone(progress),
+          messages: progress.messages.slice(-8),
+          ...(this.#progress.startedAtMs !== undefined ? { startedAtMs: this.#progress.startedAtMs } : {}),
+        };
         this.#publish();
       });
     }
@@ -562,6 +604,51 @@ export class TuiController {
     });
   }
 
+  #normalizeRoute(route: TuiRoute): TuiRoute {
+    if (route.name === 'pluginList' && route.sourceId
+      && !this.#viewModel?.sourceTabs.some((source) => source.id === route.sourceId)) {
+      return { name: 'pluginList', mode: route.mode };
+    }
+    const pluginRoute = route.name === 'pluginPreview'
+      || route.name === 'installPlacement'
+      || route.name === 'installTools'
+      || route.name === 'pluginDetail'
+      || route.name === 'platform'
+      || route.name === 'pluginAbout'
+      || route.name === 'pluginTechnical'
+      || route.name === 'configLayer'
+      || route.name === 'configFields'
+      || route.name === 'configFieldEditor'
+      || route.name === 'configPresets'
+      || route.name === 'configUnavailable';
+    if (pluginRoute && !this.#viewModel?.plugins.some((plugin) => plugin.pluginId === route.pluginId)) {
+      return {
+        name: 'pluginList',
+        mode: route.name === 'pluginPreview' || route.name === 'installPlacement' || route.name === 'installTools'
+          ? 'browse'
+          : 'installed',
+      };
+    }
+    if (route.name === 'issueDetail'
+      && !this.#viewModel?.issues.some((issue) => issue.issueId === route.issueId)) {
+      return { name: 'issueList' };
+    }
+    if ((route.name === 'sourceDetail'
+      || route.name === 'sourceTechnical'
+      || route.name === 'sourceEdit'
+      || route.name === 'sourceRemoveBlocked')
+      && !this.#viewModel?.sourceTabs.some((source) => source.id === route.sourceId)) {
+      return { name: 'sourceList' };
+    }
+    return route;
+  }
+
+  #normalizeCurrentRoute(): void {
+    const route = this.#router.snapshot.current.route;
+    const normalized = this.#normalizeRoute(route);
+    if (normalized !== route) this.#router.replace(normalized);
+  }
+
   #applyStatus(status: TuiStatusLoadResult): void {
     this.#status = structuredClone(status);
     this.#health.clear();
@@ -573,13 +660,69 @@ export class TuiController {
             : source.freshness === 'cache' ? 'cache' : 'ready',
         ...(source.error ? { message: '来源当前没有可用数据。' } : {}),
       });
+      const successful = this.#successfulSourceRefreshes.get(source.id);
+      if (successful?.generation === this.#generation
+        && successful.sourceIdentity === source.identity
+        && successful.requestedRef === source.requestedRef
+        && !source.error) {
+        this.#health.set(source.id, {
+          sourceId: source.id,
+          state: source.type === 'path' || source.freshness === 'path' ? 'path' : 'ready',
+        });
+      }
+    }
+    const sourceIds = new Set(status.payload.catalog.sources.map((source) => source.id));
+    for (const sourceId of this.#successfulSourceRefreshes.keys()) {
+      if (!sourceIds.has(sourceId)) this.#successfulSourceRefreshes.delete(sourceId);
     }
     this.#project();
+    this.#normalizeCurrentRoute();
+  }
+
+  #applyRefreshStatus(
+    status: TuiStatusLoadResult,
+    sourceId: string,
+    health: SourceHealthViewModel,
+    refreshSequence: number,
+  ): boolean {
+    if (refreshSequence < this.#appliedRefreshSequence) return false;
+    this.#appliedRefreshSequence = refreshSequence;
+    this.#applyStatus(status);
+    if (!status.payload.catalog.sources.some((source) => source.id === sourceId)) return true;
+    this.#health.set(sourceId, health);
+    this.#project();
+    return true;
+  }
+
+  #recordSuccessfulSourceRefresh(
+    sourceId: string,
+    checked: { sourceIdentity: string; requestedRef: string },
+    generation: number,
+  ): void {
+    const authoritative = this.#status?.payload.catalog.sources.find((source) => source.id === sourceId);
+    if (!authoritative || authoritative.type !== 'git' || authoritative.error
+      || authoritative.identity !== checked.sourceIdentity
+      || authoritative.requestedRef !== checked.requestedRef) return;
+    this.#successfulSourceRefreshes.set(sourceId, {
+      generation,
+      sourceIdentity: checked.sourceIdentity,
+      requestedRef: checked.requestedRef,
+    });
+    this.#health.set(sourceId, {
+      sourceId,
+      state: 'ready',
+    });
   }
 
   #cancelSourceRefreshes(): void {
     for (const abort of this.#sourceAborts.values()) abort.abort();
     this.#sourceAborts.clear();
+  }
+
+  #startGitSourceRefreshes(): void {
+    for (const source of this.#status?.payload.catalog.sources ?? []) {
+      if (source.type === 'git') void this.refreshSource(source.id).catch(() => undefined);
+    }
   }
 
   async load(): Promise<void> {
@@ -604,9 +747,7 @@ export class TuiController {
     this.#phase = 'ready';
     this.#loadError = undefined;
     this.#publish();
-    for (const source of status.payload.catalog.sources) {
-      if (source.type === 'git') void this.refreshSource(source.id).catch(() => undefined);
-    }
+    this.#startGitSourceRefreshes();
   }
 
   async refreshSource(sourceId: string): Promise<void> {
@@ -614,65 +755,100 @@ export class TuiController {
     this.#sourceAborts.get(sourceId)?.abort();
     const sourceAbort = new AbortController();
     this.#sourceAborts.set(sourceId, sourceAbort);
+    const finishRefresh = (): void => {
+      if (this.#sourceAborts.get(sourceId) === sourceAbort) this.#sourceAborts.delete(sourceId);
+    };
     const signal = AbortSignal.any([this.#abort.signal, sourceAbort.signal]);
     const token = (this.#sourceTokens.get(sourceId) ?? 0) + 1;
     this.#sourceTokens.set(sourceId, token);
     const generation = this.#generation;
-    const refreshSequence = ++this.#refreshSequence;
     const current = this.#status.payload.catalog.sources.find((source) => source.id === sourceId);
-    const hadCache = current !== undefined && current.error === undefined && current.freshness !== undefined;
+    if (!current) {
+      finishRefresh();
+      return;
+    }
+    const hadCache = current.type === 'git' && current.error === undefined
+      && (current.freshness === 'cache' || current.freshness === 'remote');
     this.#health.set(sourceId, { sourceId, state: 'checking' });
     this.#project();
     this.#publish();
+    let checkError: unknown;
+    let checked: { sourceIdentity: string; requestedRef: string } | undefined;
     try {
-      await this.dependencies.checkSource(sourceId, signal);
-      const status = await this.dependencies.loadStatus(signal);
-      if (this.#disposed
-        || generation !== this.#generation
-        || token !== this.#sourceTokens.get(sourceId)) return;
-      if (refreshSequence < this.#appliedRefreshSequence) return;
-      this.#appliedRefreshSequence = refreshSequence;
-      this.#applyStatus(status);
-      const refreshed = status.payload.catalog.sources.find((source) => source.id === sourceId);
-      const state = !refreshed
-        ? 'unavailable'
-        : refreshed.error
-          ? hadCache ? 'degraded' : 'unavailable'
-          : refreshed.type === 'path' || refreshed.freshness === 'path'
-            ? 'path'
-            : refreshed.freshness === 'remote'
-              ? 'ready'
-              : refreshed.freshness === 'cache'
-                ? 'degraded'
-                : 'unavailable';
-      this.#health.set(sourceId, {
-        sourceId,
-        state,
-        ...(state === 'degraded' || state === 'unavailable' ? {
-          issueId: `source:${sourceId}:${state === 'degraded' ? 'cache' : 'unavailable'}`,
-          message: state === 'degraded'
-            ? '远端检查后仍只能使用缓存数据。'
-            : '来源检查后没有可用数据。',
-        } : {}),
-      });
+      checked = await this.dependencies.checkSource(sourceId, signal);
     } catch (error) {
-      if (this.#disposed || signal.aborted || generation !== this.#generation
-        || token !== this.#sourceTokens.get(sourceId)) return;
-      await this.#logErrorSafe(error, 'catalogSourceRefreshFailed', {
+      checkError = error;
+    }
+    if (this.#disposed || signal.aborted || generation !== this.#generation
+      || token !== this.#sourceTokens.get(sourceId)) {
+      finishRefresh();
+      return;
+    }
+    if (checkError) this.#successfulSourceRefreshes.delete(sourceId);
+    const refreshSequence = ++this.#refreshSequence;
+    let status: TuiStatusLoadResult;
+    let authoritativeReloadSucceeded = true;
+    try {
+      status = await this.dependencies.loadStatus(signal);
+    } catch (error) {
+      authoritativeReloadSucceeded = false;
+      if (!checkError) checkError = error;
+      this.#successfulSourceRefreshes.delete(sourceId);
+      status = structuredClone(this.#status);
+    }
+    if (this.#disposed || signal.aborted || generation !== this.#generation
+      || token !== this.#sourceTokens.get(sourceId)) {
+      finishRefresh();
+      return;
+    }
+    if (checkError) {
+      await this.#logErrorSafe(checkError, 'catalogSourceRefreshFailed', {
         privateConfigOperation: true,
       });
-      const state = hadCache ? 'degraded' : 'unavailable';
-      this.#health.set(sourceId, {
-        sourceId,
-        state,
-        issueId: `source:${sourceId}:${state === 'degraded' ? 'cache' : 'unavailable'}`,
-        message: state === 'degraded'
-          ? '远端检查失败。当前仍使用已验证的缓存数据。'
-          : '远端检查失败，并且没有可用缓存数据。',
-      });
-    } finally {
-      if (this.#sourceAborts.get(sourceId) === sourceAbort) this.#sourceAborts.delete(sourceId);
     }
+    const refreshed = status.payload.catalog.sources.find((source) => source.id === sourceId);
+    const refreshedMatchesCheck = checked !== undefined && refreshed !== undefined
+      && refreshed.type === 'git'
+      && !refreshed.error
+      && refreshed.identity === checked.sourceIdentity
+      && refreshed.requestedRef === checked.requestedRef;
+    const state = checkError
+      ? authoritativeReloadSucceeded
+        ? !refreshed || refreshed.error
+          ? 'unavailable'
+          : refreshed.type === 'path' || refreshed.freshness === 'path'
+            ? 'path'
+            : refreshed.freshness === 'cache' ? 'degraded' : 'unavailable'
+        : hadCache ? 'degraded' : 'unavailable'
+        : !refreshed
+          ? 'unavailable'
+          : refreshed.error
+          ? 'unavailable'
+          : !refreshedMatchesCheck
+            ? refreshed.type === 'path' || refreshed.freshness === 'path'
+              ? 'path'
+              : refreshed.freshness === 'cache' ? 'cache' : 'unavailable'
+          : refreshed.type === 'path' || refreshed.freshness === 'path'
+            ? 'path'
+            : 'ready';
+    this.#applyRefreshStatus(status, sourceId, {
+      sourceId,
+      state,
+      ...(state === 'degraded' || state === 'unavailable' ? {
+        issueId: `source:${sourceId}:${state === 'degraded' ? 'cache' : 'unavailable'}`,
+        message: checkError
+          ? state === 'degraded'
+            ? '远端检查失败。当前仍使用已验证的缓存数据。'
+            : '远端检查失败，并且没有可用缓存数据。'
+          : state === 'degraded'
+            ? '远端检查后仍只能使用缓存数据。'
+            : '来源检查后没有可用数据。',
+      } : {}),
+    }, refreshSequence);
+    if (!checkError && refreshedMatchesCheck && checked) {
+      this.#recordSuccessfulSourceRefresh(sourceId, checked, generation);
+    }
+    finishRefresh();
     if (generation !== this.#generation) return;
     this.#project();
     this.#publish();
@@ -700,13 +876,32 @@ export class TuiController {
       this.#activeReview = undefined;
     }
     this.#router.back();
+    this.#normalizeCurrentRoute();
     this.#publish();
   }
 
-  returnFromResult(): void {
-    const route = this.#result?.state === 'blocked' ? this.#result.returnRoute : undefined;
-    if (route) this.#router.replace(route);
-    else this.#router.back();
+  discardSourceDraft(
+    owner: string,
+    returnRoute: Extract<TuiRoute, { name: 'sourceList' | 'sourceDetail' }>,
+  ): void {
+    if (this.#activeReview?.operationKind === 'sourceMutation') {
+      this.#tickets.delete(this.#activeReview.reviewToken);
+      this.#activeReview = undefined;
+    }
+    this.#result = undefined;
+    this.#router.discardSourceFlow(owner, returnRoute);
+    this.#normalizeCurrentRoute();
+    this.#publish();
+  }
+
+  leaveResult(target?: TuiRoute): void {
+    if (this.#router.snapshot.current.route.name !== 'result') return;
+    const route = target ?? (this.#result && 'returnRoute' in this.#result
+      ? this.#result.returnRoute
+      : undefined);
+    this.#router.back();
+    if (route) this.#router.replace(this.#normalizeRoute(route));
+    else this.#normalizeCurrentRoute();
     this.#result = undefined;
     this.#publish();
   }
@@ -719,7 +914,7 @@ export class TuiController {
     const query = options.query?.trim().toLocaleLowerCase('en');
     return cloneFrozen((this.#viewModel?.plugins ?? []).filter((plugin) =>
       (!options.sourceId || plugin.sourceId === options.sourceId)
-      && (options.mode === 'browse' || plugin.aggregateStatus === 'installed' || plugin.aggregateStatus === 'needsAttention')
+      && (options.mode === 'browse' || hasInstalledPlacement(plugin))
       && (!query || `${plugin.displayName}\n${plugin.description}\n${plugin.sourceId}`.toLocaleLowerCase('en').includes(query))));
   }
 
@@ -731,6 +926,17 @@ export class TuiController {
   getPlatformPlacement(pluginId: string, platform: PlatformName): PluginListItemViewModel['installedPlacements'][number] | undefined {
     return this.getPluginOverview(pluginId)?.installedPlacements.find((placement) =>
       placement.platform === platform);
+  }
+
+  getTargetState(
+    pluginId: string,
+    platform: PlatformName,
+    scope: Scope,
+  ): StatusV4Payload['targets'][number]['state'] | undefined {
+    return this.#status?.payload.targets.find((target) =>
+      target.pluginId === pluginId
+      && target.platform === platform
+      && target.scope === scope)?.state;
   }
 
   listSources(): TuiViewModel['sourceTabs'] {
@@ -788,16 +994,33 @@ export class TuiController {
     ));
   }
 
+  async getConfigResetAvailability(
+    pluginId: string,
+    layer: { scope: Scope; projectLayer: ProjectConfigStoreLayer },
+  ): Promise<ConfigResetAvailability> {
+    if (!this.dependencies.getConfigResetAvailability) {
+      throw new TuiOperationBlockedError(
+        'configResetVerificationUnavailable',
+        '设置层可信读取入口不可用。',
+      );
+    }
+    return cloneFrozen(await this.dependencies.getConfigResetAvailability(
+      pluginId,
+      structuredClone(layer),
+      this.#abort.signal,
+    ));
+  }
+
   listUserIssues(): UserIssueViewModel[] {
     return cloneFrozen(this.#viewModel?.issues ?? []);
   }
 
-  async buildOperationReview(intent: OperationIntent): Promise<OperationReviewModel> {
+  async buildOperationReview(intent: OperationIntent, returnRoute?: TuiRoute): Promise<OperationReviewModel> {
     try {
       this.#assertIssueOrigin(intent);
       await this.dependencies.validateIntent?.(structuredClone(intent), this.#abort.signal);
       const evidence = await this.dependencies.captureEvidence(structuredClone(intent), this.#abort.signal);
-      return this.#storeOperationReview(intent, evidence);
+      return this.#storeOperationReview(intent, evidence, 'push', returnRoute);
     } catch (error) {
       const code = issueCode(error);
       await this.#logOperationError(error, code, intent);
@@ -830,6 +1053,7 @@ export class TuiController {
     navigation: 'push' | 'replace' = 'push',
     returnRoute: TuiRoute = this.#router.snapshot.current.route,
   ): OperationReviewModel {
+    if (this.#router.snapshot.current.route.name === 'result') navigation = 'replace';
     const labels = operationLabels(intent);
     const operationId = this.dependencies.createToken?.() ?? crypto.randomUUID();
     const reviewToken = this.dependencies.createToken?.() ?? crypto.randomUUID();
@@ -871,7 +1095,7 @@ export class TuiController {
       intent: structuredClone(intent),
       evidence: structuredClone(evidence),
       review: structuredClone(review),
-      returnRoute: structuredClone(returnRoute),
+      returnRoute: structuredClone(this.#normalizeRoute(returnRoute)),
     });
     this.#activeReview = structuredClone(review);
     this.#result = undefined;
@@ -880,64 +1104,123 @@ export class TuiController {
     return cloneFrozen(review);
   }
 
-  async executeOperation(reviewToken: string): Promise<OperationExecuteResult> {
+  executeOperation(reviewToken: string): Promise<OperationExecuteResult> {
+    const inflight = this.#inflightOperations.get(reviewToken);
+    if (inflight) return inflight.promise;
     const ticket = this.#tickets.get(reviewToken);
     const operationId = ticket?.review.operationId ?? 'unknown';
     if (!ticket) {
-      return this.#setBlocked(operationId, 'reviewTicketInvalid');
+      return Promise.resolve(cloneFrozen({
+        state: 'blocked',
+        operationId,
+        code: 'reviewTicketInvalid',
+        message: '操作未完成。请重新检查后重试。',
+      }));
     }
     this.#tickets.delete(reviewToken);
     if ((this.dependencies.now?.() ?? Date.now()) > ticket.review.expiresAt) {
-      return this.#setBlocked(operationId, 'reviewTicketExpired', { intent: ticket.intent, returnRoute: ticket.returnRoute });
+      return Promise.resolve(this.#setBlocked(operationId, 'reviewTicketExpired', { intent: ticket.intent, returnRoute: ticket.returnRoute }));
     }
+    const promise = this.#executeOperationTicket(ticket, operationId).finally(() => {
+      if (this.#inflightOperations.get(reviewToken)?.promise === promise) {
+        this.#inflightOperations.delete(reviewToken);
+      }
+    });
+    this.#inflightOperations.set(reviewToken, { operationId, promise });
+    return promise;
+  }
+
+  async #executeOperationTicket(
+    ticket: ReviewTicket,
+    operationId: string,
+  ): Promise<OperationExecuteResult> {
+    let generation = this.#generation;
+    const startedAtMs = this.dependencies.now?.() ?? Date.now();
+    this.#progressFeed?.clearCurrent?.();
+    this.#progress = {
+      messages: [],
+      startedAtMs,
+      elapsedMs: 0,
+      current: {
+        target: 'pluginId' in ticket.intent ? ticket.intent.pluginId : ticket.intent.sourceId,
+        phase: '验证当前状态',
+      },
+    };
+    this.#router.replace({ name: 'progress', operationId });
+    this.#publish();
     try {
       this.#assertIssueOrigin(ticket.intent);
       await this.dependencies.validateIntent?.(structuredClone(ticket.intent), this.#abort.signal);
     } catch (error) {
+      if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
       const code = issueCode(error);
       await this.#logOperationError(error, code, ticket.intent);
+      if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
+      this.#cancelSourceRefreshes();
+      generation = ++this.#generation;
+      try {
+        const refreshed = await this.dependencies.loadStatus(this.#abort.signal);
+        if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
+        this.#applyStatus(refreshed);
+      } catch (reloadError) {
+        if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
+        await this.#logErrorSafe(reloadError, 'tuiStateReloadFailed', { privateConfigOperation: true });
+      }
       return this.#setBlocked(operationId, code, {
         intent: ticket.intent,
-        navigation: 'back',
+        navigation: 'result',
         returnRoute: ticket.returnRoute,
       });
     }
+    if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
     let current: OperationEvidence;
     try {
       current = await this.dependencies.captureEvidence(structuredClone(ticket.intent), this.#abort.signal);
     } catch (error) {
+      if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
       const code = issueCode(error);
       await this.#logOperationError(error, code, ticket.intent);
+      if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
       return this.#setBlocked(operationId, code, { intent: ticket.intent, returnRoute: ticket.returnRoute });
     }
+    if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
     if (operationEvidenceFingerprint(current) !== operationEvidenceFingerprint(ticket.evidence)) {
-      return this.#rebuildStaleReview(ticket, operationId, current);
+      return this.#rebuildStaleReview(ticket, operationId, current, generation);
     }
     if (ticket.intent.kind === 'sourceMutation') {
       this.#cancelSourceRefreshes();
-      this.#generation += 1;
+      generation = ++this.#generation;
     }
-    this.#progressFeed?.clearCurrent?.();
-    this.#progress.current = undefined;
-    this.#router.replace({ name: 'progress', operationId });
-    this.#publish();
     try {
       const execution = await this.dependencies.executeIntent(
         structuredClone(ticket.intent),
         structuredClone(ticket.evidence),
       );
+      if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
       this.#cancelSourceRefreshes();
-      this.#generation += 1;
+      generation = ++this.#generation;
+      if (ticket.intent.kind === 'sourceMutation') {
+        try {
+          this.#progressFeed?.setCurrent(
+            { target: 'Catalog 来源配置', phase: '读取最终状态' },
+            '来源操作：读取最终状态',
+          );
+        } catch {
+          // Progress diagnostics must not replace the completed source write.
+        }
+      }
+      let refreshed: TuiStatusLoadResult;
       try {
-        const refreshed = await this.dependencies.loadStatus(this.#abort.signal);
-        this.#applyStatus(refreshed);
+        refreshed = await this.dependencies.loadStatus(this.#abort.signal);
       } catch (error) {
+        if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
         const verificationCode = ticket.intent.kind === 'pluginWrite' && ticket.intent.originIssue
           ? 'issueVerificationFailed'
           : 'tuiStateReloadFailed';
         await this.#logErrorSafe(error, verificationCode, {
           privateConfigOperation: true,
         });
+        if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
         return this.#setBlocked(operationId, verificationCode, {
           intent: ticket.intent,
           navigation: 'result',
@@ -946,6 +1229,55 @@ export class TuiController {
           verification: ticket.intent.kind === 'pluginWrite' && ticket.intent.originIssue
             ? 'verificationFailed' : undefined,
         });
+      }
+      if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
+      this.#applyStatus(refreshed);
+      const pluginSummary = ticket.intent.kind === 'pluginWrite'
+        ? operationResultSummary(ticket.intent, execution)
+        : undefined;
+      if (pluginSummary?.code === 'operationFailed') {
+        return this.#setBlocked(operationId, 'operationFailed', {
+          intent: ticket.intent,
+          navigation: 'result',
+          returnRoute: ticket.returnRoute,
+          writeMayHaveCompleted: true,
+        });
+      }
+      if (ticket.intent.kind === 'configReset' && ticket.intent.offline) {
+        let availability: ConfigResetAvailability;
+        try {
+          availability = await this.getConfigResetAvailability(
+            ticket.intent.pluginId,
+            { scope: ticket.intent.scope, projectLayer: ticket.intent.projectLayer },
+          );
+          if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
+        } catch (error) {
+          if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
+          await this.#logErrorSafe(error, 'tuiStateReloadFailed', {
+            privateConfigOperation: true,
+          });
+          if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
+          return this.#setBlocked(operationId, 'tuiStateReloadFailed', {
+            intent: ticket.intent,
+            navigation: 'result',
+            returnRoute: ticket.returnRoute,
+            writeMayHaveCompleted: true,
+          });
+        }
+        if (availability.exists) {
+          const expectedIdentity = ticket.evidence.source?.sourceIdentity;
+          const identityChanged = availability.sourceIdentity !== undefined
+            && expectedIdentity !== undefined
+            && availability.sourceIdentity !== expectedIdentity;
+          return this.#setBlocked(operationId, identityChanged
+            ? 'operationReviewStale'
+            : 'configResetStillPresent', {
+            intent: ticket.intent,
+            navigation: 'result',
+            returnRoute: ticket.returnRoute,
+            writeMayHaveCompleted: true,
+          });
+        }
       }
       const originIssue = ticket.intent.kind === 'pluginWrite' ? ticket.intent.originIssue : undefined;
       if (originIssue
@@ -972,6 +1304,8 @@ export class TuiController {
           return this.#setBlocked(operationId, 'configWriteRollbackFailed', {
             intent: ticket.intent,
             navigation: 'result',
+            returnRoute: ticket.returnRoute,
+            writeMayHaveCompleted: true,
           });
         }
         if (configWrite !== 'succeeded') {
@@ -981,7 +1315,21 @@ export class TuiController {
           });
         }
       }
-      const summary = operationResultSummary(ticket.intent, execution);
+      const baseSummary = pluginSummary ?? operationResultSummary(ticket.intent, execution);
+      const summary: OperationResultSummary = {
+        ...baseSummary,
+        elapsedMs: Math.max(0, (this.dependencies.now?.() ?? Date.now()) - startedAtMs),
+        messages: this.#progress.messages.slice(-8),
+      };
+      this.#progress = { ...this.#progress, elapsedMs: summary.elapsedMs };
+      if (summary.code === 'operationFailed') {
+        return this.#setBlocked(operationId, 'operationFailed', {
+          intent: ticket.intent,
+          navigation: 'result',
+          returnRoute: ticket.returnRoute,
+          writeMayHaveCompleted: true,
+        });
+      }
       const result: OperationExecuteResult = {
         state: summary.code === 'operationPartial' ? 'partial' : 'succeeded',
         operationId,
@@ -992,49 +1340,108 @@ export class TuiController {
         ...(ticket.intent.kind === 'pluginWrite' && ticket.intent.originIssue
           ? { originIssue: ticket.intent.originIssue }
           : {}),
+        returnRoute: structuredClone(this.#normalizeRoute(
+          ticket.intent.kind === 'sourceMutation' && ticket.intent.action === 'add'
+            ? { name: 'sourceList' }
+            : ticket.intent.kind === 'sourceMutation' && ticket.intent.action === 'update'
+              ? { name: 'sourceDetail', sourceId: ticket.intent.sourceId }
+              : ticket.returnRoute,
+        )),
       };
       this.#result = result;
       this.#activeReview = undefined;
-      this.#router.push({ name: 'result', operationId });
+      this.#router.replace({ name: 'result', operationId });
       this.#publish();
+      this.#startGitSourceRefreshes();
       return cloneFrozen(result);
     } catch (error) {
+      if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
       const code = issueCode(error);
       await this.#logOperationError(error, code, ticket.intent);
+      if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
       if (code === 'operationReviewStale') {
-        return this.#rebuildStaleReview(ticket, operationId);
+        return this.#rebuildStaleReview(ticket, operationId, undefined, generation);
       }
-      return this.#setBlocked(operationId, code, ticket.intent.kind === 'sourceMutation'
-        ? { intent: ticket.intent, navigation: 'result', returnRoute: ticket.returnRoute }
-        : { intent: ticket.intent, returnRoute: ticket.returnRoute });
+      this.#cancelSourceRefreshes();
+      generation = ++this.#generation;
+      try {
+        const refreshed = await this.dependencies.loadStatus(this.#abort.signal);
+        if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
+        this.#applyStatus(refreshed);
+      } catch (reloadError) {
+        if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
+        await this.#logErrorSafe(reloadError, 'tuiStateReloadFailed', {
+          privateConfigOperation: true,
+        });
+      }
+      if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
+      return this.#setBlocked(operationId, code, {
+        intent: ticket.intent,
+        navigation: 'result',
+        returnRoute: ticket.returnRoute,
+        writeMayHaveCompleted: true,
+      });
     }
+  }
+
+  #operationIsCurrent(generation: number): boolean {
+    return !this.#disposed && !this.#abort.signal.aborted && generation === this.#generation;
+  }
+
+  #detachedBlocked(operationId: string, intent: OperationIntent): OperationExecuteResult {
+    return cloneFrozen({
+      state: 'blocked',
+      operationId,
+      code: 'operationCancelled',
+      message: '操作已停止。',
+      ...this.#operationIdentity(intent),
+    });
   }
 
   async #rebuildStaleReview(
     ticket: ReviewTicket,
     operationId: string,
     currentEvidence?: OperationEvidence,
+    generation = this.#generation,
   ): Promise<OperationExecuteResult> {
+    this.#cancelSourceRefreshes();
+    generation = ++this.#generation;
+    try {
+      const refreshed = await this.dependencies.loadStatus(this.#abort.signal);
+      if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
+      this.#applyStatus(refreshed);
+    } catch (error) {
+      if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
+      await this.#logErrorSafe(error, 'tuiStateReloadFailed', { privateConfigOperation: true });
+      return this.#setBlocked(operationId, 'tuiStateReloadFailed', {
+        intent: ticket.intent,
+        navigation: 'result',
+        returnRoute: ticket.returnRoute,
+      });
+    }
     try {
       this.#assertIssueOrigin(ticket.intent);
       await this.dependencies.validateIntent?.(structuredClone(ticket.intent), this.#abort.signal);
     } catch (error) {
+      if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
       const code = issueCode(error);
       await this.#logOperationError(error, code, ticket.intent);
+      if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
       const result: OperationExecuteResult = {
         state: 'blocked',
         operationId,
         code,
         message: '状态已变化，原操作不再安全。请修改选择后重试。',
         ...this.#operationIdentity(ticket.intent),
-        returnRoute: structuredClone(ticket.returnRoute),
+        returnRoute: structuredClone(this.#normalizeRoute(ticket.returnRoute)),
       };
       this.#result = structuredClone(result);
       this.#activeReview = undefined;
-      this.#router.back();
+      this.#router.replace({ name: 'result', operationId });
       this.#publish();
       return cloneFrozen(result);
     }
+    if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
     let evidence = currentEvidence;
     if (!evidence) {
       try {
@@ -1043,11 +1450,14 @@ export class TuiController {
           this.#abort.signal,
         );
       } catch (error) {
+        if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
         const code = issueCode(error);
         await this.#logOperationError(error, code, ticket.intent);
+        if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
         return this.#setBlocked(operationId, code, { intent: ticket.intent, returnRoute: ticket.returnRoute });
       }
     }
+    if (!this.#operationIsCurrent(generation)) return this.#detachedBlocked(operationId, ticket.intent);
     const review = this.#storeOperationReview(ticket.intent, evidence, 'replace', ticket.returnRoute);
     const result: OperationExecuteResult = { state: 'stale', operationId, review, ...this.#operationIdentity(ticket.intent) };
     this.#result = result;
@@ -1066,29 +1476,34 @@ export class TuiController {
       verification?: 'issueStillPresent' | 'verificationFailed';
     },
   ): OperationExecuteResult {
-    const message = code === 'configWriteRolledBack'
+    const message = options?.writeMayHaveCompleted
+      ? '写入可能已完成，当前无法确认。请查看刷新后的平台或问题状态。'
+      : code === 'configWriteRolledBack'
       ? '设置未保存。原设置已安全恢复，请检查草稿后重试。'
       : code === 'configWriteRollbackFailed'
         ? '设置未确认保存，且恢复未完整完成。请停止修改并检查问题。'
-        : code === 'issueVerificationFailed'
-          ? '写入可能已完成，但当前无法确认原问题是否消失。请重新检查状态。'
-          : code === 'issueStillPresent'
-            ? '写入已完成，但重新检查后原问题仍然存在。'
-            : '操作未完成。请重新检查后重试。';
+        : code === 'configResetStillPresent'
+          ? '重置执行后设置层仍然存在。请重新检查设置问题。'
+        : code === 'issueStillPresent'
+          ? '写入已完成，但重新检查后原问题仍然存在。'
+          : '操作未完成。请重新检查后重试。';
     const result: OperationExecuteResult = {
       state: 'blocked',
       operationId,
       code,
       message,
       ...(options?.intent ? this.#operationIdentity(options.intent) : {}),
-      ...(options?.returnRoute ? { returnRoute: structuredClone(options.returnRoute) } : {}),
+      ...(options?.returnRoute ? { returnRoute: structuredClone(this.#normalizeRoute(options.returnRoute)) } : {}),
       ...(options?.writeMayHaveCompleted ? { writeMayHaveCompleted: true } : {}),
       ...(options?.verification ? { verification: options.verification } : {}),
     };
     this.#result = structuredClone(result);
     this.#activeReview = undefined;
-    if (options?.navigation === 'back') this.#router.back();
-    else this.#router.push({ name: 'result', operationId });
+    if (options?.navigation === 'back') {
+      this.#router.back();
+      this.#normalizeCurrentRoute();
+    }
+    else this.#router.replace({ name: 'result', operationId });
     this.#publish();
     return cloneFrozen(result);
   }
@@ -1181,13 +1596,28 @@ function operationResultSummary(intent: OperationIntent, execution: unknown): Op
     : targets;
   const partial = inferredTargets.some((target) => target.state === 'failed')
     && inferredTargets.some((target) => target.state === 'completed');
+  const overallFailed = typeof execution === 'object' && execution !== null
+    && (execution as { overallState?: unknown }).overallState === 'failed';
+  const failed = overallFailed || (inferredTargets.length > 0
+    && inferredTargets.every((target) => target.state === 'failed'));
+  const applySkippedReason = typeof execution === 'object' && execution !== null
+    && (execution as { applySkippedReason?: unknown }).applySkippedReason === 'currentCatalogUnavailable'
+    ? 'currentCatalogUnavailable' as const
+    : undefined;
   return {
-    code: partial ? 'operationPartial' : 'operationSucceeded',
-    message: partial ? '操作只完成了一部分。' : '操作已完成。',
+    code: failed && !partial ? 'operationFailed' : partial ? 'operationPartial' : 'operationSucceeded',
+    message: failed && !partial
+      ? '操作结果无法确认。'
+      : partial
+      ? '操作只完成了一部分。'
+      : intent.kind === 'configReset' && intent.offline
+        ? '设置层已重置，插件内容尚未重新应用。'
+        : '操作已完成。',
     ...(intent.kind === 'pluginWrite' ? {
       pluginId: intent.pluginId,
       action: intent.action,
     } : {}),
+    ...(applySkippedReason ? { applySkippedReason } : {}),
     ...(inferredTargets.length > 0 ? { targets: inferredTargets } : {}),
   };
 }

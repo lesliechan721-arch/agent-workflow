@@ -41,6 +41,10 @@ import {
 import { calculateCatalogSourceIdentity } from '../../src/utils/catalog-source-identity.js';
 import { createCatalogManifestV3Entry } from '../../src/utils/catalog-manifest-v3.js';
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
+import {
+  resetPluginConfigWithHelper,
+  setPluginConfigWriteTestHooksForTests,
+} from '../../src/utils/plugin-config-write.js';
 import { createCapturedCliIo } from '../helpers/cli-entry.js';
 import {
   resolveActiveMarketplaceRuntimeCoordinationRoot,
@@ -2098,6 +2102,55 @@ describe('phase 3B namespaced runtime stores', () => {
 
     await expect(cleanupWriteCommand(['team/demo'], commandOptions, runtime))
       .resolves.toMatchObject({ overallState: 'succeeded' });
+    await publishOrphan();
+    const cleanupHasFirstCanonicalLock = deferred();
+    const allowCleanupSecondLock = deferred();
+    const configAttemptsFirstCanonicalLock = deferred();
+    let configAcquiredAnyLock = false;
+    setRebuildCommandTestHooksForTests({
+      beforeOperationLockAcquire: async ({ command, identity }) => {
+        if (command === 'cleanup' && identity.platform === 'codex') {
+          cleanupHasFirstCanonicalLock.resolve();
+          await allowCleanupSecondLock.promise;
+        }
+      },
+    });
+    setPluginConfigWriteTestHooksForTests({
+      beforeOperationLockAcquire: async ({ platform }) => {
+        if (platform === 'claude') configAttemptsFirstCanonicalLock.resolve();
+      },
+      afterOperationLockAcquire: async () => {
+        configAcquiredAnyLock = true;
+      },
+    });
+    let orderedCleanup: ReturnType<typeof cleanupWriteCommand> | undefined;
+    let orderedConfig: ReturnType<typeof resetPluginConfigWithHelper> | undefined;
+    try {
+      orderedCleanup = cleanupWriteCommand(['team/demo'], {
+        ...commandOptions,
+        platform: 'both',
+      }, runtime);
+      await cleanupHasFirstCanonicalLock.promise;
+      orderedConfig = resetPluginConfigWithHelper({
+        plugin,
+        pluginName: 'demo',
+        scope: 'project',
+        projectLayer: 'shared',
+        cwd: isolation.layout.fixtureCwd,
+        env: isolation.env,
+        reviewPreflight: async () => undefined,
+      });
+      await configAttemptsFirstCanonicalLock.promise;
+      expect(configAcquiredAnyLock).toBe(false);
+      allowCleanupSecondLock.resolve();
+      await expect(orderedCleanup).resolves.toMatchObject({ overallState: 'succeeded' });
+      await expect(orderedConfig).resolves.toMatchObject({ configWrite: 'succeeded' });
+    } finally {
+      allowCleanupSecondLock.resolve();
+      await Promise.allSettled([orderedCleanup, orderedConfig].filter((value) => value !== undefined));
+      setPluginConfigWriteTestHooksForTests(undefined);
+      setRebuildCommandTestHooksForTests(undefined);
+    }
     await publishOrphan();
     const installBuiltWithLock = deferred();
     const resumeInstall = deferred();

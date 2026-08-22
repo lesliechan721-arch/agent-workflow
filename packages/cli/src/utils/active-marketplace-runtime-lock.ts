@@ -149,7 +149,7 @@ async function withCoordinationLease<T>(
     if (!actionSucceeded) {
       try {
         process.emitWarning(
-          `${label} action failed, and its lease release also failed: ${releaseError instanceof Error ? releaseError.message : String(releaseError)}.`,
+          `${label} action failed, and its lease release also failed.`,
           { code: 'AW_COORDINATION_LOCK_RELEASE_FAILED' },
         );
       } catch {
@@ -160,7 +160,7 @@ async function withCoordinationLease<T>(
     if (commitContext.durableCommit) {
       try {
         process.emitWarning(
-          `${label} committed its durable result, but its lease release failed: ${releaseError instanceof Error ? releaseError.message : String(releaseError)}.`,
+          `${label} committed its durable result, but its lease release failed.`,
           { code: 'AW_COORDINATION_LOCK_RELEASE_FAILED' },
         );
       } catch {

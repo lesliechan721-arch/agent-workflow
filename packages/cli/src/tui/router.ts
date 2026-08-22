@@ -95,4 +95,24 @@ export class TuiRouter {
     if (this.#stack.length > 1) this.#stack.pop();
     return this.snapshot;
   }
+
+  discardSourceFlow(owner: string, returnRoute: Extract<TuiRoute, { name: 'sourceList' | 'sourceDetail' }>): TuiRouterSnapshot {
+    const start = this.#stack.findIndex((frame) =>
+      frame.route.name === 'sourceAdd' && frame.route.owner === owner);
+    if (start >= 0) this.#stack.splice(start);
+    const current = this.#stack.at(-1)!.route;
+    if (current.name === 'sourceEdit'
+      && returnRoute.name === 'sourceDetail'
+      && current.sourceId === returnRoute.sourceId) {
+      this.back();
+    }
+    const settled = this.#stack.at(-1)!.route;
+    const atReturnRoute = returnRoute.name === 'sourceList'
+      ? settled.name === 'sourceList'
+      : settled.name === 'sourceDetail' && settled.sourceId === returnRoute.sourceId;
+    if (!atReturnRoute) {
+      this.replace(returnRoute);
+    }
+    return this.snapshot;
+  }
 }

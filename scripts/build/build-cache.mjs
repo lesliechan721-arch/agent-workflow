@@ -910,6 +910,7 @@ function buildSettings(options) {
     force: options.force ?? false,
     lockTimeoutMs: options.lockTimeoutMs ?? DEFAULT_LOCK_TIMEOUT_MS,
     pollIntervalMs: options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS,
+    snapshotRunToken: options.snapshotRunToken,
     onForceIntentVisible: options.onForceIntentVisible,
     writeForceOwnerSync: options.writeForceOwnerSync,
     // Internal test seams. Production callers must not set these options.
@@ -1088,11 +1089,17 @@ async function createSnapshotUnderLock(repoRoot, settings) {
     throw new Error(`Cannot create a build snapshot: ${ensured.reason}.`);
   }
 
+  const snapshotRunToken = settings.snapshotRunToken ?? crypto.randomUUID();
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(
+    snapshotRunToken,
+  )) {
+    throw new Error('Build snapshot run token must be a UUID.');
+  }
   const snapshotRoot = path.join(
     repoRoot,
     '.release',
     'build-snapshots',
-    `build-${crypto.randomUUID()}`,
+    `build-${snapshotRunToken}`,
   );
   const cliPackageRoot = path.join(snapshotRoot, 'packages', 'cli');
   const evalPackageRoot = path.join(snapshotRoot, 'packages', 'agent-skill-eval');
@@ -1107,8 +1114,12 @@ async function createSnapshotUnderLock(repoRoot, settings) {
   const createDependencyLink = settings.__testCreateDependencyLink ?? ((source, target, type) =>
     fs.symlink(source, target, type)
   );
+  let ownsSnapshotRoot = false;
 
   try {
+    await fs.mkdir(path.dirname(snapshotRoot), { recursive: true });
+    await fs.mkdir(snapshotRoot);
+    ownsSnapshotRoot = true;
     await Promise.all([
       fs.mkdir(cliPackageRoot, { recursive: true }),
       fs.mkdir(evalPackageRoot, { recursive: true }),
@@ -1222,6 +1233,9 @@ async function createSnapshotUnderLock(repoRoot, settings) {
       );
     }
   } catch (error) {
+    if (!ownsSnapshotRoot) {
+      throw error;
+    }
     try {
       await removeSnapshot(snapshotRoot);
     } catch (cleanupError) {

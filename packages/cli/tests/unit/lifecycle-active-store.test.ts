@@ -865,10 +865,11 @@ describe('lifecycle active store', () => {
       env: process.env,
     });
     const actualRemove = fs.remove.bind(fs);
+    const privateCleanupSentinel = path.join(repo, 'private', 'backup-cleanup-sentinel');
     const remove = vi.spyOn(fs, 'remove').mockImplementation(async (candidate) => {
       if (path.basename(String(candidate)).startsWith('backup-')) {
         await actualRemove(path.join(String(candidate), LIFECYCLE_ACTIVE_METADATA_FILE));
-        throw Object.assign(new Error(`simulated backup cleanup ${code}`), { code });
+        throw Object.assign(new Error(`${privateCleanupSentinel}: simulated backup cleanup ${code}`), { code });
       }
       return actualRemove(candidate);
     });
@@ -883,8 +884,9 @@ describe('lifecycle active store', () => {
     expect(backupPath).toBeDefined();
     await expect(fs.pathExists(path.join(prepared.target.activeRoot, LIFECYCLE_ACTIVE_METADATA_FILE)))
       .resolves.toBe(true);
+    expect(JSON.stringify(warning.mock.calls)).not.toContain(privateCleanupSentinel);
     expect(warning).toHaveBeenCalledWith(
-      expect.stringContaining('backup cleanup'),
+      'Lifecycle active promote committed, but old backup cleanup failed.',
       expect.objectContaining({ code: 'AW_LIFECYCLE_HOUSEKEEPING_FAILED' }),
     );
 
@@ -967,12 +969,14 @@ describe('lifecycle active store', () => {
     const repo = await createRepo(`remove-release-${code}`);
     const plugin = await writePlugin({ root: getCurrentSourceTestIsolation().layout.fixtureCwd });
     const active = await stageAndPromote({ plugin, cwd: repo });
+    const privateReleasePath = path.join(repo, 'private', 'operation.lock');
+    const warning = vi.spyOn(process, 'emitWarning').mockImplementation(() => undefined);
     let remainingReleaseFailures = 3;
     setLifecycleActiveLockFileSystemForTests(processLockFileSystem({
       async unlink(targetPath) {
         if (remainingReleaseFailures > 0 && targetPath.includes('release-')) {
           remainingReleaseFailures -= 1;
-          throw Object.assign(new Error('simulated remove release failure'), { code });
+          throw Object.assign(new Error(`${privateReleasePath}: simulated remove release failure`), { code });
         }
         await fs.unlink(targetPath);
       },
@@ -980,6 +984,11 @@ describe('lifecycle active store', () => {
     try {
       await expect(removeLifecycleActiveSnapshot(targetOptions(repo))).resolves.toBeUndefined();
       await expect(fs.pathExists(active.activeRoot)).resolves.toBe(false);
+      expect(JSON.stringify(warning.mock.calls)).not.toContain(privateReleasePath);
+      expect(warning).toHaveBeenCalledWith(
+        expect.stringContaining('target lock could not be released'),
+        expect.objectContaining({ code: 'AW_LIFECYCLE_LOCK_RELEASE_FAILED' }),
+      );
     } finally {
       setLifecycleActiveLockFileSystemForTests(undefined);
     }

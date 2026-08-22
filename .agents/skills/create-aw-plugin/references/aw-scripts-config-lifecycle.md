@@ -67,7 +67,7 @@ plugins/<name>/
 - `groups` 按声明顺序显示。字段最多属于一个显式 group；未分组的普通字段进入“其他设置”。未分组且 `presentation.fields.<key>.advanced: true` 的字段进入合成的高级设置组。显式 group 归属优先于字段级 `advanced`。
 - 没有 `presentation` 时，全部 schema 字段仍有效，并进入通用“插件设置”组。
 - `valueLabels` 只为 enum 原始 token 提供显示文本。CLI 保存、helper 返回和 lifecycle 收到的仍是原始 token。
-- `presets[].values` 是部分更新。选择 preset 只更新其中列出的 key，不清空或重置其它 key。推荐值和 preset 值必须符合目标字段的类型、enum、`min` 和 `max`。
+- `presets[].values` 是部分更新。选择 preset 只更新其中列出的 key，不清空或重置其它 key。preset 不得包含 sensitive、`file` 或 `directory` 字段；这些私有值必须由用户在对应输入页提供。推荐值和 preset 值必须符合目标字段的类型、enum、`min` 和 `max`。
 - 插件首次采用 `presentation` 时，必须把 `compatibility.aw.minVersion` 设为首个支持该合同的 AW CLI 发布版本。不要声明比真实支持版本更低的 compatibility floor。
 
 ```json

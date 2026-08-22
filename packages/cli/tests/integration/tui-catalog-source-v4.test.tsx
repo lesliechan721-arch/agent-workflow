@@ -6,16 +6,24 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { createCliExecutionContext } from '../../src/commands/runtime.js';
 import { ConsoleAppV4, type ConsoleV4ScreenId } from '../../src/tui/console-app-v4.js';
-import { createTuiControllerDependencies } from '../../src/tui/controller-runtime.js';
+import { createRebuildProgressFeed } from '../../src/output/rebuild-progress.js';
+import {
+  createTuiControllerDependencies,
+  setTuiControllerRuntimeTestHooksForTests,
+} from '../../src/tui/controller-runtime.js';
 import { TuiController } from '../../src/tui/controller.js';
 import {
   readCatalogSourcesConfigSnapshot,
   replaceCatalogSourcesConfig,
 } from '../../src/utils/catalog-sources.js';
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
+import { git } from '../helpers/catalog-source-fixture.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 
-afterEach(() => cleanup());
+afterEach(() => {
+  setTuiControllerRuntimeTestHooksForTests(undefined);
+  cleanup();
+});
 
 async function nextTurn(count = 1): Promise<void> {
   for (let index = 0; index < count; index += 1) {
@@ -80,14 +88,70 @@ async function configuredController(): Promise<{
     nativeCliRunner: async () => ({ exitCode: 0, stdout: '', stderr: '' }),
     debugLogger: { log: async () => undefined },
   });
+  const progress = createRebuildProgressFeed();
   return {
-    controller: new TuiController(createTuiControllerDependencies(context)),
+    controller: new TuiController(createTuiControllerDependencies(context, progress), progress),
     firstRoot,
     secondRoot,
   };
 }
 
 describe('TUI v4 real catalog source boundary', () => {
+  it('moves a real cached local Git source from cache through checking to ready after forceRemote succeeds', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const work = path.join(isolation.layout.fixtureCwd, 'tui-git-work');
+    const remote = path.join(isolation.layout.fixtureCwd, 'tui-git-remote.git');
+    await fs.ensureDir(work);
+    await git(work, ['init', '--initial-branch=main']);
+    await git(work, ['config', 'user.email', 'test@example.test']);
+    await git(work, ['config', 'user.name', 'AW Test']);
+    await createCatalogSnapshotFixture(path.join(work, 'catalog'));
+    await git(work, ['add', '.']);
+    await git(work, ['commit', '-m', 'catalog']);
+    await git(path.dirname(work), ['clone', '--bare', work, remote]);
+    const before = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: {
+        schemaVersion: 1,
+        sources: [{
+          id: 'git-local',
+          type: 'git',
+          primary: true,
+          url: remote,
+          refPolicy: { type: 'explicit', ref: 'refs/heads/main' },
+          subdir: 'catalog',
+        }],
+      },
+      expectedDigest: before.digest,
+      env: isolation.env,
+    });
+    const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      interactive: false,
+      nativeCliRunner: async () => ({ exitCode: 0, stdout: '', stderr: '' }),
+      debugLogger: { log: async () => undefined },
+    }));
+    await dependencies.loadStatus(new AbortController().signal);
+    const controller = new TuiController(dependencies);
+    const observed: string[] = [];
+    controller.subscribe((snapshot) => {
+      const state = snapshot.sourceHealth.find((health) => health.sourceId === 'git-local')?.state;
+      if (state && observed.at(-1) !== state) observed.push(state);
+    });
+
+    await controller.load();
+    await waitFor(
+      () => controller.snapshot.sourceHealth.some((health) =>
+        health.sourceId === 'git-local' && health.state === 'ready'),
+      'Git source ready',
+      () => ({ observed, snapshot: controller.snapshot }),
+    );
+
+    expect(observed).toEqual(expect.arrayContaining(['cache', 'checking', 'ready']));
+    controller.dispose();
+  });
+
   it('rejects a stale current-primary action before creating a Review or writing config', async () => {
     const { controller } = await configuredController();
     await controller.load();
@@ -102,6 +166,23 @@ describe('TUI v4 real catalog source boundary', () => {
     expect(controller.snapshot.activeReview).toBeUndefined();
     expect((await readCatalogSourcesConfigSnapshot(getCurrentSourceTestIsolation().env)).digest)
       .toBe(before.digest);
+    controller.dispose();
+  });
+
+  it('marks a real path source unavailable after its verified directory is removed', async () => {
+    const { controller, firstRoot } = await configuredController();
+    await controller.load();
+    expect(controller.snapshot.sourceHealth).toContainEqual({ sourceId: 'local', state: 'path' });
+
+    await fs.remove(firstRoot);
+    await controller.refreshSource('local');
+
+    expect(controller.snapshot.sourceHealth).toContainEqual(expect.objectContaining({
+      sourceId: 'local', state: 'unavailable',
+    }));
+    const issue = controller.listUserIssues().find((entry) => entry.sourceId === 'local');
+    expect(issue).toMatchObject({ category: 'sourceUnavailable' });
+    expect(issue?.actions).not.toContainEqual(expect.objectContaining({ id: 'continueWithCache' }));
     controller.dispose();
   });
 
@@ -165,6 +246,77 @@ describe('TUI v4 real catalog source boundary', () => {
     expect(controller.listSources().map((source) => source.id)).toEqual(['local']);
     expect(controller.snapshot.sourceHealth.map((health) => health.sourceId)).toEqual(['local']);
     expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(18);
+    controller.dispose();
+  });
+
+  it('projects real add and update boundaries while mounted on S11', async () => {
+    const { controller, firstRoot, secondRoot } = await configuredController();
+    const phases: string[] = [];
+    let pending: {
+      key: string;
+      release: () => void;
+    } | undefined;
+    setTuiControllerRuntimeTestHooksForTests({
+      onCatalogSourceProgress: async (event) => {
+        const key = `${event.action}:${event.stage}`;
+        await new Promise<void>((resolve) => {
+          pending = { key, release: resolve };
+        });
+        pending = undefined;
+      },
+    });
+    controller.subscribe((snapshot) => {
+      const phase = snapshot.progress.current?.phase;
+      if (phase && phases.at(-1) !== phase) phases.push(phase);
+    });
+    const instance = render(<ConsoleAppV4 controller={controller} size={{ columns: 60, rows: 18 }} />);
+    await waitFor(() => controller.snapshot.phase === 'ready', 'initial TUI status', () => controller.snapshot);
+
+    const runWithBarriers = async (
+      action: 'add' | 'update',
+      reviewToken: string,
+    ): Promise<void> => {
+      const execution = controller.executeOperation(reviewToken);
+      const expectedStages = [
+        'validatingCandidate',
+        'catalogReady',
+        'scanningReferences',
+        'savingConfig',
+      ] as const;
+      for (const stage of expectedStages) {
+        const key = `${action}:${stage}`;
+        await waitFor(() => pending?.key === key, key, () => ({ pending: pending?.key, snapshot: controller.snapshot }));
+        expect(controller.snapshot.router.current.route.name).toBe('progress');
+        expect(instance.lastFrame()).toContain({
+          validatingCandidate: '验证候选来源',
+          catalogReady: 'Catalog 已读取，索引已刷新',
+          scanningReferences: '扫描现有引用和约束',
+          savingConfig: '保存来源配置',
+        }[stage]);
+        pending!.release();
+      }
+      await execution;
+      expect(controller.snapshot.result?.state).toBe('succeeded');
+    };
+
+    const addReview = await controller.buildOperationReview({
+      kind: 'sourceMutation',
+      action: 'add',
+      sourceId: 'team',
+      source: { id: 'team', type: 'path', primary: false, path: secondRoot },
+    });
+    await runWithBarriers('add', addReview.reviewToken);
+    const updateReview = await controller.buildOperationReview({
+      kind: 'sourceMutation',
+      action: 'update',
+      sourceId: 'team',
+      update: { type: 'path', path: firstRoot },
+    });
+    await runWithBarriers('update', updateReview.reviewToken);
+
+    expect(phases).toContain('读取最终状态');
+    expect(JSON.stringify(controller.snapshot)).not.toContain(firstRoot);
+    expect(JSON.stringify(controller.snapshot)).not.toContain(secondRoot);
     controller.dispose();
   });
 

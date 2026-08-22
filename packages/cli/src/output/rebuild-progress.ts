@@ -55,11 +55,14 @@ export interface RebuildProgressCurrent {
 export interface RebuildProgressSnapshot {
   current?: RebuildProgressCurrent;
   messages: string[];
+  startedAtMs?: number;
+  elapsedMs?: number;
 }
 
 export interface RebuildProgressFeed {
   addEvent: (event: CommandEvent) => void;
   addNotice: (notice: CommandNotice) => void;
+  setCurrent: (current: RebuildProgressCurrent, message?: string) => void;
   clearCurrent: () => void;
   get: () => RebuildProgressSnapshot;
   subscribe: (listener: (snapshot: RebuildProgressSnapshot) => void) => () => void;
@@ -142,8 +145,16 @@ export function createRebuildProgressFeed(limit = 50): RebuildProgressFeed {
       }
       publish({ ...snapshot, messages: [...snapshot.messages, line] });
     },
+    setCurrent(current, message) {
+      publish({
+        current,
+        messages: message ? [...snapshot.messages, message] : snapshot.messages,
+      });
+    },
     clearCurrent() {
-      publish({ messages: snapshot.messages });
+      seenNoticeKeys.clear();
+      noticeKeyOrder.length = 0;
+      publish({ messages: [] });
     },
     get: () => snapshot,
     subscribe(listener) {

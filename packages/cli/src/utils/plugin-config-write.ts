@@ -44,6 +44,18 @@ import {
 import { resolveClaudeProjectKey, resolveCodexProjectKey } from './paths.js';
 import { supportsPlatform } from './platform-support.js';
 import { acquireLifecycleOperationLock } from './lifecycle-active-store.js';
+import { canonicalPlatformScopeTargets } from './target-order.js';
+
+export interface PluginConfigWriteTestHooks {
+  beforeOperationLockAcquire?: (target: { platform: PlatformName; scope: Scope }) => Promise<void>;
+  afterOperationLockAcquire?: (target: { platform: PlatformName; scope: Scope }) => Promise<void>;
+}
+
+let pluginConfigWriteTestHooks: PluginConfigWriteTestHooks | undefined;
+
+export function setPluginConfigWriteTestHooksForTests(hooks: PluginConfigWriteTestHooks | undefined): void {
+  pluginConfigWriteTestHooks = hooks;
+}
 
 export interface PluginConfigWriteRequest {
   updates?: Record<string, unknown>;
@@ -545,30 +557,36 @@ type ApplyPluginConfigWriteOptions = {
 
 async function withConfigReviewOperationLocks<T>(options: {
   plugin?: PluginMeta | null;
+  sourceId?: string;
+  sourceIdentity?: string;
+  pluginName?: string;
   scope: Scope;
   cwd: string;
   env?: NodeJS.ProcessEnv;
   rebuildRuntime?: RebuildCommandRuntime;
   reviewPreflight?: () => Promise<void> | void;
 }, action: (rebuildRuntime: RebuildCommandRuntime | undefined) => Promise<T>): Promise<T> {
-  if (!options.reviewPreflight || !options.plugin) return action(options.rebuildRuntime);
+  if (!options.reviewPreflight) return action(options.rebuildRuntime);
+  const sourceId = options.plugin?.sourceId ?? options.sourceId;
+  const sourceIdentity = options.plugin?.sourceIdentity ?? options.sourceIdentity;
+  const pluginName = options.plugin?.manifest.name ?? options.pluginName;
+  if (!pluginName || (!options.plugin && (!sourceId || !sourceIdentity))) return action(options.rebuildRuntime);
   const scopes: Scope[] = options.scope === 'user' ? ['project', 'user'] : ['project'];
-  const targets = (['claude', 'codex'] as const).flatMap((platform) =>
-    scopes.map((scope) => ({ platform, scope })));
+  const targets = canonicalPlatformScopeTargets((['claude', 'codex'] as const).flatMap((platform) =>
+    scopes.map((scope) => ({ platform, scope }))));
   const leases: Awaited<ReturnType<typeof acquireLifecycleOperationLock>>[] = [];
   try {
     for (const target of targets) {
+      await pluginConfigWriteTestHooks?.beforeOperationLockAcquire?.(target);
       leases.push(await acquireLifecycleOperationLock({
-        ...(options.plugin.sourceId ? {
-          sourceId: options.plugin.sourceId,
-          sourceIdentity: options.plugin.sourceIdentity,
-        } : {}),
-        pluginName: options.plugin.manifest.name,
+        ...(sourceId && sourceIdentity ? { sourceId, sourceIdentity } : {}),
+        pluginName,
         platform: target.platform,
         scope: target.scope,
         cwd: options.cwd,
         env: options.env,
       }));
+      await pluginConfigWriteTestHooks?.afterOperationLockAcquire?.(target);
     }
     await options.reviewPreflight();
     return action({ ...options.rebuildRuntime, operationLeaseHeld: true });
@@ -576,10 +594,10 @@ async function withConfigReviewOperationLocks<T>(options: {
     for (const lease of leases.reverse()) {
       try {
         await releaseRebuildOperationLease(lease);
-      } catch (error) {
+      } catch {
         try {
           process.emitWarning(
-            `Config operation lock release failed: ${error instanceof Error ? error.message : String(error)}`,
+            'Config operation lock release failed.',
             { code: 'AW_CONFIG_OPERATION_LOCK_RELEASE_FAILED' },
           );
         } catch {

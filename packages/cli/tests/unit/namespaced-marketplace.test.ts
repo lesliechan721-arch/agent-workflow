@@ -320,10 +320,11 @@ describe('namespaced marketplace root', () => {
       const backupRoot = path.join(isolation.env.AW_HOME!, 'marketplaces', 'team.backup-runtime');
       const teamIdentity = `sha256:${'c'.repeat(64)}`;
       await createMarketplaceRoot(backupRoot);
+      const privateReleasePath = path.join(isolation.layout.fixtureCwd, 'private', 'operation.lock');
       setActiveMarketplaceCoordinationBeforeReleaseHookForTests(async () => {
-        throw Object.assign(new Error(`injected runtime release ${code}`), { code });
+        throw Object.assign(new Error(`${privateReleasePath}: injected runtime release ${code}`), { code });
       });
-      vi.spyOn(process, 'emitWarning').mockImplementation(() => undefined);
+      const warning = vi.spyOn(process, 'emitWarning').mockImplementation(() => undefined);
 
       await expect(withActiveMarketplaceRuntimeLease(isolation.env, () =>
         commitMarketplaceGenerationBackup({
@@ -334,6 +335,11 @@ describe('namespaced marketplace root', () => {
           env: isolation.env,
         }))).resolves.toBeUndefined();
       await expect(fs.pathExists(backupRoot)).resolves.toBe(false);
+      expect(JSON.stringify(warning.mock.calls)).not.toContain(privateReleasePath);
+      expect(warning).toHaveBeenCalledWith(
+        expect.stringContaining('lease release failed'),
+        expect.objectContaining({ code: 'AW_COORDINATION_LOCK_RELEASE_FAILED' }),
+      );
     },
   );
 

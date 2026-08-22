@@ -11,6 +11,7 @@ import {
 import { createRebuildProgressFeed } from '../../src/output/rebuild-progress.js';
 import { CommandWizard } from '../../src/tui/wizard.js';
 import type { PluginMeta } from '../../src/types.js';
+import { writeCandidateEligibility } from '../../src/utils/target-eligibility.js';
 
 afterEach(() => {
   cleanup();
@@ -42,6 +43,45 @@ function expectTuiTextProjected(frame: string): void {
 }
 
 describe('command wizard', () => {
+  it.each([
+    ['partial', true],
+    ['error', false],
+  ] as const)('lets the real uninstall wizard select %s only when removal is safe', async (state, selectable) => {
+    const execute = vi.fn(async () => ({ ok: true }));
+    const candidate = {
+      pluginName: 'official/demo',
+      targets: [{
+        target: { plugin: 'demo', platform: 'codex' as const, scope: 'user' as const, cwd: '/fixture' },
+        state,
+        components: [],
+        errors: [],
+      }],
+    };
+    const instance = render(<CommandWizard
+      request={{
+        command: 'uninstall',
+        candidates: [candidate],
+        initial: { plugins: [], platform: 'codex', scope: 'user' },
+        pluginMode: 'single',
+        destructive: true,
+        equivalentCommand: () => 'aw uninstall official/demo --platform codex --scope user',
+        isPluginSelectable: (entry, selection) => writeCandidateEligibility('uninstall', entry, selection),
+        execute,
+      }}
+      onComplete={() => undefined}
+    />);
+    await nextTurn();
+    instance.stdin.write('\r');
+    await nextTurn();
+
+    if (selectable) expect(instance.lastFrame()).toContain('确认参数');
+    else {
+      expect(instance.lastFrame()).toContain('live status 不允许 uninstall');
+      expect(instance.lastFrame()).not.toContain('确认参数');
+    }
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   it('renders a real rebuild failure and recovery through the progress feed', async () => {
     const progress = createRebuildProgressFeed();
     const plugin: PluginMeta = {

@@ -422,14 +422,6 @@ export function resolveConfigFileLockPath(filePath: string): string {
   return path.join(path.dirname(filePath), `.${path.basename(filePath)}.aw.lock`);
 }
 
-function configLockErrorMessage(error: unknown): string {
-  try {
-    return error instanceof Error ? error.message : String(error);
-  } catch {
-    return '<unprintable lock release error>';
-  }
-}
-
 async function releaseConfigFileLock(
   lease: ProcessLockLease,
 ): Promise<unknown | null> {
@@ -490,7 +482,7 @@ export async function withConfigFileLock<T>(options: {
   if (!actionSucceeded) {
     if (releaseError) {
       emitConfigReleaseWarning(
-        `Config action failed for "${options.filePath}", and its process lock release also failed: ${configLockErrorMessage(releaseError)}`,
+        'Config action failed, and its process lock release also failed.',
       );
     }
     throw actionError;
@@ -498,7 +490,7 @@ export async function withConfigFileLock<T>(options: {
   if (releaseError) {
     if (commitContext.durableCommit) {
       emitConfigReleaseWarning(
-        `Config action completed successfully for "${options.filePath}", but its process lock could not be released after 3 attempts: ${configLockErrorMessage(releaseError)}. Any committed result remains successful; the lock can require process exit or manual recovery before another update.`,
+        'Config action completed successfully, but its process lock could not be released after 3 attempts. The committed result remains successful; the lock can require process exit or manual recovery before another update.',
       );
     } else {
       throw releaseError;
@@ -863,10 +855,11 @@ async function assertNoLegacyConfigCoexistence(options: {
 }
 
 async function withUserPluginConfigRuntimeLease<T>(options: {
+  sourceId?: string;
   scope: Scope;
   env?: NodeJS.ProcessEnv;
 }, action: () => Promise<T>): Promise<T> {
-  return options.scope === 'user'
+  return options.scope === 'user' || options.sourceId !== undefined
     ? withActiveMarketplaceRuntimeLease(options.env, action)
     : action();
 }

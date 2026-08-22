@@ -1648,6 +1648,7 @@ describe('strict catalog source cache', () => {
   });
 
   it('keeps a committed selector successful when publication lock release stays busy', async () => {
+    const privateReleasePath = '/Users/private/catalog/publication.lock';
     const root = fixturePath('cache-release-committed');
     await createCatalogSnapshotFixture(root);
     const validation = await validateCatalogSnapshot(root);
@@ -1670,7 +1671,7 @@ describe('strict catalog source cache', () => {
     });
     catalogSourceCacheInternal.setBeforeReleaseHookForTests(async (lockPath) => {
       if (lockPath.endsWith(`${path.sep}publication.lock`)) {
-        throw Object.assign(new Error('persistent busy release'), { code: 'EBUSY' });
+        throw Object.assign(new Error(`persistent busy release ${privateReleasePath}`), { code: 'EBUSY' });
       }
     });
 
@@ -1688,6 +1689,7 @@ describe('strict catalog source cache', () => {
       code: 'AW_CATALOG_CACHE_LOCK_RELEASE_FAILED',
       message: expect.stringContaining('committed selector'),
     })]);
+    expect(JSON.stringify(warnings)).not.toContain(privateReleasePath);
     await expect(fs.pathExists(path.join(
       location.selectorsDir,
       selectorFileName('refs/heads/main'),
@@ -1698,6 +1700,7 @@ describe('strict catalog source cache', () => {
   });
 
   it('keeps a committed selector successful when the outer root release stays busy', async () => {
+    const privateReleasePath = '/Users/private/catalog/root.lock';
     const root = fixturePath('cache-root-release-committed');
     await createCatalogSnapshotFixture(root);
     const validation = await validateCatalogSnapshot(root);
@@ -1711,10 +1714,13 @@ describe('strict catalog source cache', () => {
     const observationOrder = await reserveCatalogSourceObservationOrder({ location });
     catalogSourceCacheInternal.setBeforeReleaseHookForTests(async (lockPath) => {
       if (!lockPath.endsWith(`${path.sep}publication.lock`)) {
-        throw Object.assign(new Error('persistent root release failure'), { code: 'EPERM' });
+        throw Object.assign(new Error(`persistent root release failure ${privateReleasePath}`), { code: 'EPERM' });
       }
     });
-    vi.spyOn(process, 'emitWarning').mockImplementation(() => undefined);
+    const warnings: unknown[] = [];
+    vi.spyOn(process, 'emitWarning').mockImplementation((message, options) => {
+      warnings.push({ message, options });
+    });
 
     await expect(publishCatalogSourceCacheEntry({
       location,
@@ -1730,6 +1736,11 @@ describe('strict catalog source cache', () => {
       location.selectorsDir,
       selectorFileName('refs/heads/main'),
     ))).resolves.toBe(true);
+    expect(warnings).toEqual([expect.objectContaining({
+      message: expect.stringContaining('root lock'),
+      options: expect.objectContaining({ code: 'AW_CATALOG_CACHE_ROOT_LOCK_RELEASE_FAILED' }),
+    })]);
+    expect(JSON.stringify(warnings)).not.toContain(privateReleasePath);
   });
 
   it('fails an ordinary publication read on permanent release failure and remains reusable', async () => {

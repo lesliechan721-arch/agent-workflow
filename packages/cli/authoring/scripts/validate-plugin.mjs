@@ -2790,7 +2790,15 @@ function validateConfigPresentationLightweight(presentation, schema) {
             error(`${fieldName}.values references unknown config key "${key}"`);
             continue;
           }
-          validateConfigValueLightweight(schema[key], value, `${fieldName}.values.${key}`);
+          const schemaField = schema[key];
+          if (isRecord(schemaField)
+            && (schemaField.sensitive === true
+              || schemaField.type === 'file'
+              || schemaField.type === 'directory')) {
+            error(`${fieldName}.values.${key} cannot contain sensitive, file, or directory config values`);
+            continue;
+          }
+          validateConfigValueLightweight(schemaField, value, `${fieldName}.values.${key}`);
         }
       });
     }

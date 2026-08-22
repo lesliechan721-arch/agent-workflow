@@ -9,6 +9,7 @@ import type {
   StatusV4Payload,
   StatusV4PluginSummary,
   StatusV4Target,
+  StatusV4Component,
 } from '../commands/status-v4.js';
 import type { ResolvedConfigRead } from '../utils/plugin-config.js';
 
@@ -46,6 +47,13 @@ export interface PluginListItemViewModel {
   supportedPlatforms: PlatformName[];
   installedPlacements: PlatformPlacementSummary[];
   aggregateStatus: 'available' | 'installed' | 'needsAttention' | 'unavailable';
+  technicalComponents: Array<{
+    platform: PlatformName;
+    scope: Scope;
+    key: string;
+    state: StatusV4Component['state'];
+    errorCode?: string;
+  }>;
 }
 
 export interface SourceTabViewModel {
@@ -79,6 +87,7 @@ export interface HomeSummaryViewModel {
   installedPlugins: number;
   issueCount: number;
   sourceCount: number;
+  cachedSourceCount: number;
   unavailableSourceCount: number;
 }
 
@@ -159,6 +168,14 @@ export interface UserIssueActionViewModel {
   description?: string;
 }
 
+export type TargetIssueRootCode =
+  | 'partial'
+  | 'sourceMissing'
+  | 'sourceChanged'
+  | 'catalogSourceUnavailable'
+  | 'bundleUnavailable'
+  | 'targetDiagnostic';
+
 export interface UserIssueViewModel {
   issueId: string;
   category: UserIssueCategory;
@@ -171,6 +188,8 @@ export interface UserIssueViewModel {
   scope?: Scope;
   sourceId?: string;
   sourceIdentity?: string;
+  rootCode?: TargetIssueRootCode;
+  mergeEligible?: boolean;
   placements?: Scope[];
   requiredFields?: Array<{
     key: string;
@@ -201,13 +220,21 @@ function targetHealth(target: StatusV4Target): 'ready' | 'incomplete' | 'error' 
   return 'error';
 }
 
+function isInstalledScopeEvidence(target: StatusV4Target): boolean {
+  return target.state === 'present' || target.state === 'partial';
+}
+
 export function projectPlatformPlacement(
   platform: PlatformName,
   targets: StatusV4Target[],
 ): PlatformPlacementSummary {
   const supportedScopes = [...new Set(targets.map((target) => target.scope))];
-  const installed = targets.filter((target) => target.state !== 'absent');
-  if (installed.length === 0) return { platform, state: 'notInstalled', supportedScopes };
+  const installed = targets.filter(isInstalledScopeEvidence);
+  if (installed.length === 0) {
+    const errorTarget = targets.find((target) => target.state === 'error');
+    if (!errorTarget) return { platform, state: 'notInstalled', supportedScopes };
+    return { platform, state: 'installed', scope: errorTarget.scope, health: 'error' };
+  }
   if (installed.length === 1) {
     const target = installed[0]!;
     return { platform, state: 'installed', scope: target.scope, health: targetHealth(target) };
@@ -222,10 +249,16 @@ export function projectPlatformPlacement(
   };
 }
 
+export function hasInstalledPlacement(plugin: PluginListItemViewModel): boolean {
+  return plugin.installedPlacements.some((placement) => placement.state !== 'notInstalled');
+}
+
 function sourceState(
   source: StatusV4Payload['catalog']['sources'][number],
   health?: SourceHealthViewModel,
 ): SourceTabViewModel['state'] {
+  if (health?.state === 'ready') return 'ready';
+  if (health?.state === 'path') return 'path';
   if (health?.state === 'degraded') return 'cache';
   if (health?.state === 'unavailable') return 'error';
   if (source.error) return 'error';
@@ -277,58 +310,84 @@ function targetIssues(payload: StatusV4Payload): UserIssueViewModel[] {
     byPlacement.set(key, [...(byPlacement.get(key) ?? []), target]);
     if (target.state !== 'partial' && target.state !== 'error') continue;
     const codes = new Set(target.errors.map((error) => error.code));
-    const category: UserIssueCategory = target.state === 'partial'
-      ? 'incompleteInstallation'
-      : codes.has('sourceMissing') ? 'sourceMissing'
-        : codes.has('sourceChanged') ? 'sourceIdentityChanged'
-          : codes.has('catalogSourceUnavailable') || codes.has('bundleUnavailable')
-            ? 'sourceUnavailable'
-            : 'diagnostic';
-    const issueId = `target:${target.pluginId}:${target.platform}:${target.scope}:${target.state}`;
-    const actions: UserIssueActionViewModel[] = category === 'incompleteInstallation'
-      ? [
-          { id: 'reinstall', label: '重新安装', description: '保留插件设置，重新生成缺失内容' },
-          { id: 'remove', label: '移除安装', description: '保留插件设置' },
-          { id: 'viewTechnical', label: '技术详情' },
-        ]
-      : category === 'sourceMissing'
+    const roots: Array<{
+      code: TargetIssueRootCode;
+      category: UserIssueCategory;
+      mergeEligible: boolean;
+    }> = target.state === 'partial'
+      ? [{ code: 'partial', category: 'incompleteInstallation', mergeEligible: false }]
+      : codes.has('sourceMissing')
+        ? [{ code: 'sourceMissing', category: 'sourceMissing', mergeEligible: false }]
+        : codes.has('sourceChanged')
+          ? [{ code: 'sourceChanged', category: 'sourceIdentityChanged', mergeEligible: false }]
+          : [
+              ...(codes.has('catalogSourceUnavailable')
+                ? [{ code: 'catalogSourceUnavailable' as const, category: 'sourceUnavailable' as const, mergeEligible: true }]
+                : []),
+              ...(codes.has('bundleUnavailable')
+                ? [{ code: 'bundleUnavailable' as const, category: 'sourceUnavailable' as const, mergeEligible: false }]
+                : []),
+              ...(!codes.has('catalogSourceUnavailable') && !codes.has('bundleUnavailable')
+                ? [{ code: 'targetDiagnostic' as const, category: 'diagnostic' as const, mergeEligible: false }]
+                : []),
+            ];
+    for (const root of roots) {
+      const actions: UserIssueActionViewModel[] = root.category === 'incompleteInstallation'
         ? [
-            { id: 'reAddSource', label: '重新添加同一来源', description: '保留来源 ID；来源类型和位置由你选择' },
+            { id: 'reinstall', label: '重新安装', description: '保留插件设置，重新生成缺失内容' },
+            { id: 'remove', label: '移除安装', description: '保留插件设置' },
             { id: 'viewTechnical', label: '技术详情' },
           ]
-        : category === 'sourceIdentityChanged'
+        : root.category === 'sourceMissing'
           ? [
-              { id: 'viewSourceChange', label: '查看来源变更', description: '不会自动覆盖现场状态' },
+              { id: 'reAddSource', label: '重新添加同一来源', description: '保留来源 ID；来源类型和位置由你选择' },
               { id: 'viewTechnical', label: '技术详情' },
             ]
-          : category === 'sourceUnavailable'
+          : root.category === 'sourceIdentityChanged'
             ? [
-                { id: 'editSource', label: '查看来源', description: '修复来源配置或稍后重试' },
+                { id: 'viewSourceChange', label: '查看来源变更', description: '不会自动覆盖现场状态' },
                 { id: 'viewTechnical', label: '技术详情' },
               ]
-            : [{ id: 'viewTechnical', label: '技术详情' }, { id: 'retryLater', label: '稍后重试' }];
-    issues.push({
-      issueId,
-      category,
-      title: `${target.pluginId} · ${target.platform === 'codex' ? 'Codex' : 'Claude Code'} · ${target.state === 'partial' ? '安装不完整' : '检查失败'}`,
-      explanation: target.state === 'partial'
-        ? '必要内容缺失，插件可能不能稳定运行。'
-        : '当前目标不能安全分类为正常安装。',
-      impact: ['写操作前需要重新检查这个目标。'],
-      entity: { kind: 'plugin', id: target.pluginId },
-      pluginId: target.pluginId,
-      platform: target.platform,
-      scope: target.scope,
-      sourceId: target.sourceId,
-      sourceIdentity: target.sourceIdentity,
-      actions,
-      technicalDetails: target.errors.length > 0
-        ? target.errors.map((error) => ({ code: error.code, message: '状态检查报告了这个安全错误代码。' }))
-        : [{ code: 'targetStateError', message: '目标状态异常。' }],
-    });
+            : root.category === 'sourceUnavailable'
+              ? [
+                  { id: 'editSource', label: '查看来源', description: root.code === 'bundleUnavailable' ? '检查这个插件包或稍后重试' : '修复来源配置或稍后重试' },
+                  { id: 'viewTechnical', label: '技术详情' },
+                ]
+              : [{ id: 'viewTechnical', label: '技术详情' }, { id: 'retryLater', label: '稍后重试' }];
+      const issueId = `target:${target.pluginId}:${target.platform}:${target.scope}:${target.state}${roots.length > 1 ? `:${root.code}` : ''}`;
+      const bundleUnavailable = root.code === 'bundleUnavailable';
+      issues.push({
+        issueId,
+        category: root.category,
+        rootCode: root.code,
+        mergeEligible: root.mergeEligible,
+        title: `${target.pluginId} · ${target.platform === 'codex' ? 'Codex' : 'Claude Code'} · ${target.state === 'partial' ? '安装不完整' : bundleUnavailable ? '插件包不可用' : '检查失败'}`,
+        explanation: target.state === 'partial'
+          ? '必要内容缺失，插件可能不能稳定运行。'
+          : bundleUnavailable
+            ? '当前来源中无法取得这个插件的可信 bundle。'
+            : '当前目标不能安全分类为正常安装。',
+        impact: [bundleUnavailable
+          ? '当前目标不能使用这个插件包；这不表示来源缓存整体不可用。'
+          : '写操作前需要重新检查这个目标。'],
+        entity: { kind: 'plugin', id: target.pluginId },
+        pluginId: target.pluginId,
+        platform: target.platform,
+        scope: target.scope,
+        sourceId: target.sourceId,
+        sourceIdentity: target.sourceIdentity,
+        actions,
+        technicalDetails: target.errors.length > 0
+          ? target.errors.filter((error) => root.code === 'targetDiagnostic'
+            || root.code === 'partial'
+            || error.code === root.code)
+            .map((error) => ({ code: error.code, message: '状态检查报告了这个安全错误代码。' }))
+          : [{ code: 'targetStateError', message: '目标状态异常。' }],
+      });
+    }
   }
   for (const targets of byPlacement.values()) {
-    const installed = targets.filter((target) => target.state !== 'absent');
+    const installed = targets.filter(isInstalledScopeEvidence);
     if (new Set(installed.map((target) => target.scope)).size < 2) continue;
     const sample = installed[0]!;
     issues.push({
@@ -495,6 +554,13 @@ export function buildTuiViewModel(options: {
         : placements.map((placement) => placement.platform),
       installedPlacements: placements,
       aggregateStatus: unavailable ? 'unavailable' : attention ? 'needsAttention' : installed ? 'installed' : 'available',
+      technicalComponents: targets.flatMap((target) => target.components.map((component) => ({
+        platform: target.platform,
+        scope: target.scope,
+        key: component.key,
+        state: component.state,
+        ...(component.error ? { errorCode: component.error.code } : {}),
+      }))),
     };
   }).sort((left, right) => compareText(left.displayName, right.displayName)
     || compareText(left.sourceId, right.sourceId));
@@ -511,11 +577,11 @@ export function buildTuiViewModel(options: {
   const allTargetIssues = targetIssues(options.status);
   const targetImpactCounts = new Map<string, number>();
   for (const issue of allTargetIssues) {
-    if (issue.category !== 'sourceUnavailable' || !issue.sourceId || !sourceRootIds.has(issue.sourceId)) continue;
+    if (!issue.mergeEligible || !issue.sourceId || !sourceRootIds.has(issue.sourceId)) continue;
     targetImpactCounts.set(issue.sourceId, (targetImpactCounts.get(issue.sourceId) ?? 0) + 1);
   }
   const issues = [
-    ...allTargetIssues.filter((issue) => issue.category !== 'sourceUnavailable'
+    ...allTargetIssues.filter((issue) => !issue.mergeEligible
       || !issue.sourceId || !sourceRootIds.has(issue.sourceId)),
     ...statusIssues(options.status),
     ...configIssues(options.pluginSummaries),
@@ -532,10 +598,10 @@ export function buildTuiViewModel(options: {
     issues,
     home: {
       availablePlugins: plugins.filter((plugin) => plugin.aggregateStatus === 'available').length,
-      installedPlugins: plugins.filter((plugin) => plugin.aggregateStatus === 'installed'
-        || plugin.aggregateStatus === 'needsAttention').length,
+      installedPlugins: plugins.filter(hasInstalledPlacement).length,
       issueCount: issues.length,
       sourceCount: sourceTabs.length,
+      cachedSourceCount: sourceTabs.filter((source) => source.state === 'cache').length,
       unavailableSourceCount: sourceTabs.filter((source) => source.state === 'error').length,
     },
   };
@@ -629,14 +695,43 @@ export function buildConfigGroups(options: {
       fields: group.fields.map(fieldModel),
     };
   });
+  const syntheticGroupId = (preferred: string): string => {
+    const existing = new Set(groups.map((group) => group.id));
+    let id = preferred;
+    let suffix = 2;
+    while (existing.has(id)) {
+      id = `${preferred}-${suffix}`;
+      suffix += 1;
+    }
+    return id;
+  };
   const remaining = Object.keys(options.schema.schema).filter((key) => !assigned.has(key));
-  if (remaining.length > 0 || groups.length === 0) {
+  if (!options.schema.presentation) {
     groups.push({
       id: 'general',
-      title: groups.length === 0 ? '插件设置' : '其他设置',
+      title: '插件设置',
       advanced: false,
-      fields: (groups.length === 0 ? Object.keys(options.schema.schema) : remaining).map(fieldModel),
+      fields: Object.keys(options.schema.schema).map(fieldModel),
     });
+  } else {
+    const ordinary = remaining.filter((key) => options.schema.presentation?.fields?.[key]?.advanced !== true);
+    const advanced = remaining.filter((key) => options.schema.presentation?.fields?.[key]?.advanced === true);
+    if (ordinary.length > 0) {
+      groups.push({
+        id: syntheticGroupId('general'),
+        title: groups.length === 0 ? '插件设置' : '其他设置',
+        advanced: false,
+        fields: ordinary.map(fieldModel),
+      });
+    }
+    if (advanced.length > 0) {
+      groups.push({
+        id: syntheticGroupId('advanced'),
+        title: '高级设置',
+        advanced: true,
+        fields: advanced.map(fieldModel),
+      });
+    }
   }
   return groups;
 }

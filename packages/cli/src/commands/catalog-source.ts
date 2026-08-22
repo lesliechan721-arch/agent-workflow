@@ -59,7 +59,19 @@ export interface CatalogSourceListPayload {
 export type CatalogSourceCommandRuntime = {
   inventoryReferences?: typeof inventoryCatalogSourceReferences;
   afterValidation?: () => Promise<void> | void;
+  onProgress?: (event: CatalogSourceMutationProgress) => Promise<void> | void;
 };
+
+export type CatalogSourceMutationProgressStage =
+  | 'validatingCandidate'
+  | 'catalogReady'
+  | 'scanningReferences'
+  | 'savingConfig';
+
+export interface CatalogSourceMutationProgress {
+  action: CatalogSourceMutationRequest['action'];
+  stage: CatalogSourceMutationProgressStage;
+}
 
 export type CatalogSourceMutationRequest =
   | { action: 'add'; source: CatalogSource }
@@ -79,6 +91,17 @@ export interface CatalogSourcePreflightInventory {
   inventorySchemaVersion: 1;
   references: Array<Omit<CatalogSourceReference, 'location'>>;
   errors: Array<Pick<CatalogSourceInventoryError, 'code' | 'kind' | 'relevance'>>;
+}
+
+async function reportMutationProgress(
+  runtime: CatalogSourceCommandRuntime | undefined,
+  event: CatalogSourceMutationProgress,
+): Promise<void> {
+  try {
+    await runtime?.onProgress?.(event);
+  } catch {
+    // Progress observers must not change the source transaction result.
+  }
 }
 
 function stableIdentity(value: unknown): string {
@@ -107,6 +130,15 @@ function projectPreflightInventory(
 
 function primarySourceId(config: CatalogSourcesConfig): string {
   return config.sources.find((source) => source.primary)!.id;
+}
+
+function mutationAction(
+  command: CatalogSourceMutationReceipt['command'],
+): CatalogSourceMutationRequest['action'] {
+  if (command === 'catalog:source:set-primary') return 'setPrimary';
+  if (command === 'catalog:source:add') return 'add';
+  if (command === 'catalog:source:update') return 'update';
+  return 'remove';
 }
 
 function unchangedReceipt(options: {
@@ -235,28 +267,31 @@ async function commitCandidate(options: {
     config: options.candidate,
     expectedDigest: options.expectedDigest,
     env: options.env,
-    beforeReplace: options.referencePreflight
-      ? async () => {
-          const inventory = await (options.runtime?.inventoryReferences
-            ?? inventoryCatalogSourceReferences)({
-              cwd: options.cwd,
-              env: options.env,
-              includeHistoricalProjects: true,
-            });
-          assertCatalogSourceInventoryComplete(inventory);
-          if (options.matchingSourceIdentity) {
-            const matchingSourceReferences = inventory.references.filter((reference) =>
-              reference.sourceId === options.sourceId);
-            references = matchingSourceReferences;
-            if (matchingSourceReferences.some((reference) =>
-              reference.sourceIdentity !== options.matchingSourceIdentity)) {
-              throw Object.assign(
-                new Error(`sourceChanged: ${options.sourceId} live state has a different source identity.`),
-                { code: 'sourceChanged' },
-              );
-            }
-            return;
+    beforeReplace: async () => {
+      if (options.referencePreflight) {
+        await reportMutationProgress(options.runtime, {
+          action: mutationAction(options.command),
+          stage: 'scanningReferences',
+        });
+        const inventory = await (options.runtime?.inventoryReferences
+          ?? inventoryCatalogSourceReferences)({
+            cwd: options.cwd,
+            env: options.env,
+            includeHistoricalProjects: true,
+          });
+        assertCatalogSourceInventoryComplete(inventory);
+        if (options.matchingSourceIdentity) {
+          const matchingSourceReferences = inventory.references.filter((reference) =>
+            reference.sourceId === options.sourceId);
+          references = matchingSourceReferences;
+          if (matchingSourceReferences.some((reference) =>
+            reference.sourceIdentity !== options.matchingSourceIdentity)) {
+            throw Object.assign(
+              new Error(`sourceChanged: ${options.sourceId} live state has a different source identity.`),
+              { code: 'sourceChanged' },
+            );
           }
+        } else {
           const relevant = inventory.references.filter((reference) =>
             reference.sourceId === undefined
             || reference.sourceId === options.sourceId
@@ -265,7 +300,12 @@ async function commitCandidate(options: {
           references = relevant;
           assertCatalogSourceReferencesSupported({ ...inventory, references: relevant });
         }
-      : undefined,
+      }
+      await reportMutationProgress(options.runtime, {
+        action: mutationAction(options.command),
+        stage: 'savingConfig',
+      });
+    },
   });
   return {
     receiptSchemaVersion: 4,
@@ -313,12 +353,14 @@ export async function addCatalogSourceCommand(options: {
   if (calculateCatalogSourcesConfigDigest(candidate) === snapshot.digest) {
     return unchangedReceipt({ command: 'catalog:source:add', sourceId: options.source.id, snapshot });
   }
+  await reportMutationProgress(options.runtime, { action: 'add', stage: 'validatingCandidate' });
   const evidence = await validateCandidate({
     config: candidate,
     sourceId: options.source.id,
     cliVersion: options.cliVersion,
     env,
   });
+  await reportMutationProgress(options.runtime, { action: 'add', stage: 'catalogReady' });
   await options.runtime?.afterValidation?.();
   return commitCandidate({
     command: 'catalog:source:add',
@@ -355,12 +397,14 @@ export async function updateCatalogSourceCommand(options: {
     return unchangedReceipt({ command: 'catalog:source:update', sourceId: options.sourceId, snapshot });
   }
   const after = candidate.sources.find((source) => source.id === options.sourceId)!;
+  await reportMutationProgress(options.runtime, { action: 'update', stage: 'validatingCandidate' });
   const evidence = await validateCandidate({
     config: candidate,
     sourceId: options.sourceId,
     cliVersion: options.cliVersion,
     env,
   });
+  await reportMutationProgress(options.runtime, { action: 'update', stage: 'catalogReady' });
   await options.runtime?.afterValidation?.();
   return commitCandidate({
     command: 'catalog:source:update',

@@ -89,6 +89,7 @@ import {
   resetPluginConfigWithHelper,
 } from './utils/plugin-config-write.js';
 import { assertStrictSemVer } from './utils/manifest.js';
+import { writeCandidateEligibility } from './utils/target-eligibility.js';
 import {
   assertCatalogSourceInventoryComplete,
   assertCatalogSourceReferencesSupported,
@@ -364,29 +365,6 @@ export function buildEquivalentConfigCommandTokens(
     ...(options.key === undefined ? [] : [options.key]),
     ...(options.value === undefined ? [] : [options.value]),
   ];
-}
-
-function writeCandidateEligibility(
-  command: WriteWizardCommand,
-  candidate: CommandWizardPluginCandidate,
-  selection: CommandWizardSelection,
-): { selectable: boolean; reason?: string } {
-  const targets = candidate.targets.filter((target) =>
-    target.target.scope === (selection.scope ?? 'user')
-    && (selection.platform === 'both' || target.target.platform === selection.platform));
-  if (targets.length === 0) {
-    return { selectable: false, reason: 'current bundle 不支持所选平台和范围' };
-  }
-  const selectable = targets.every((target) => ({
-    install: target.state === 'absent',
-    reinstall: target.state === 'present' || target.state === 'partial',
-    upgrade: target.state === 'present',
-    uninstall: target.state === 'present',
-    cleanup: target.state !== 'absent',
-  })[command]);
-  return selectable
-    ? { selectable: true }
-    : { selectable: false, reason: `live status 不允许 ${command}` };
 }
 
 function hasSelectableWriteCandidate(

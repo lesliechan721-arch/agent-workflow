@@ -11,6 +11,7 @@ import { setRebuildCommandTestHooksForTests } from '../../src/commands/rebuild-c
 import { createCliExecutionContext } from '../../src/commands/runtime.js';
 import { createTuiControllerDependencies } from '../../src/tui/controller-runtime.js';
 import { TuiController } from '../../src/tui/controller.js';
+import { userIssueKey } from '../../src/tui/controller.js';
 import { runCli } from '../../src/index.js';
 import { getCurrentSourceTestIsolation } from '../setup/test-isolation.js';
 import path from 'node:path';
@@ -21,7 +22,7 @@ import {
   replaceCatalogSourcesConfig,
 } from '../../src/utils/catalog-sources.js';
 import { calculateCatalogSourceIdentity } from '../../src/utils/catalog-source-identity.js';
-import { readPluginConfigStore } from '../../src/utils/plugin-config.js';
+import { readPluginConfigStore, writePluginConfigStore } from '../../src/utils/plugin-config.js';
 import { createCapturedCliIo } from '../helpers/cli-entry.js';
 import type { NativeCliInvocation } from '../../src/utils/native-cli.js';
 import { readPluginManifest } from '../../src/utils/manifest.js';
@@ -32,6 +33,7 @@ import {
 } from '../../src/utils/lifecycle-active-store.js';
 import { updateCatalogSourceCommand } from '../../src/commands/catalog-source.js';
 import { writeSkillOwnerMarker } from '../../src/utils/ownership.js';
+import { setPluginConfigWriteTestHooksForTests } from '../../src/utils/plugin-config-write.js';
 
 async function configureCatalog(): Promise<ReturnType<typeof getCurrentSourceTestIsolation>> {
   const isolation = getCurrentSourceTestIsolation();
@@ -145,13 +147,59 @@ describe('five namespaced write commands', () => {
       updates: { count: 99 },
     })).rejects.toThrow('操作未建立。请检查当前设置后重试。');
 
-    const reset = await controller.buildOperationReview({
+    const unavailableRoot = `${sourceRoot}-unavailable`;
+    await fs.move(sourceRoot, unavailableRoot);
+    const availability = await controller.getConfigResetAvailability(
+      'team/demo',
+      { scope: 'user', projectLayer: 'shared' },
+    );
+    expect(availability).toMatchObject({ exists: true, sourceIdentityPresent: true, sourceIdentity });
+    expect(JSON.stringify(availability)).not.toContain('sk-private');
+    expect(JSON.stringify(availability)).not.toContain(sourceRoot);
+
+    const staleReset = await controller.buildOperationReview({
       kind: 'configReset',
       pluginId: 'team/demo',
       scope: 'user',
       projectLayer: 'shared',
+      offline: true,
+      sourceIdentity: availability.sourceIdentity,
     });
-    await expect(controller.executeOperation(reset.reviewToken)).resolves.toMatchObject({ state: 'succeeded' });
+    await writePluginConfigStore({
+      sourceId: 'team', sourceIdentity, pluginName: 'demo', scope: 'user',
+      cwd: isolation.layout.fixtureCwd, env: isolation.env,
+      values: { level: 'strict', count: 8, token: 'changed-private' },
+    });
+    await expect(controller.executeOperation(staleReset.reviewToken)).resolves.toMatchObject({ state: 'stale' });
+
+    const offlineReset = await controller.buildOperationReview({
+      kind: 'configReset', pluginId: 'team/demo', scope: 'user', projectLayer: 'shared',
+      offline: true, sourceIdentity: availability.sourceIdentity,
+    });
+    expect(offlineReset.changes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ title: '当前不重新应用插件内容' }),
+      expect.objectContaining({ title: '当前项目和本机设置层保持不变' }),
+    ]));
+    const lockedTargets: string[] = [];
+    setPluginConfigWriteTestHooksForTests({
+      afterOperationLockAcquire: async (target) => {
+        lockedTargets.push(`${target.platform}:${target.scope}`);
+      },
+    });
+    try {
+      await expect(controller.executeOperation(offlineReset.reviewToken)).resolves.toMatchObject({
+        state: 'succeeded',
+        summary: { message: '设置层已重置，插件内容尚未重新应用。' },
+      });
+    } finally {
+      setPluginConfigWriteTestHooksForTests(undefined);
+    }
+    expect(lockedTargets).toEqual([
+      'claude:project',
+      'claude:user',
+      'codex:project',
+      'codex:user',
+    ]);
     await expect(readPluginConfigStore({
       sourceId: 'team',
       sourceIdentity,
@@ -160,6 +208,16 @@ describe('five namespaced write commands', () => {
       cwd: isolation.layout.fixtureCwd,
       env: isolation.env,
     })).resolves.toMatchObject({ exists: false, values: {} });
+
+    await fs.move(unavailableRoot, sourceRoot);
+    const restoredSave = await controller.buildOperationReview({
+      kind: 'configSave', pluginId: 'team/demo', scope: 'user', projectLayer: 'shared', updates: { level: 'fast' },
+    });
+    await expect(controller.executeOperation(restoredSave.reviewToken)).resolves.toMatchObject({ state: 'succeeded' });
+    const onlineReset = await controller.buildOperationReview({
+      kind: 'configReset', pluginId: 'team/demo', scope: 'user', projectLayer: 'shared',
+    });
+    await expect(controller.executeOperation(onlineReset.reviewToken)).resolves.toMatchObject({ state: 'succeeded' });
     controller.dispose();
   });
 
@@ -194,6 +252,7 @@ describe('five namespaced write commands', () => {
           skillKey: 'review',
         })),
       };
+      manifest.config = { schema: { mode: { type: 'string', title: '模式' } } };
     });
     const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
     await replaceCatalogSourcesConfig({
@@ -231,6 +290,59 @@ describe('five namespaced write commands', () => {
       expect.objectContaining({ target: expect.objectContaining({ platform: 'claude', scope: 'project' }) }),
     ]));
     expect(result.targetResults.map((target) => target.errorCode)).not.toContain('operationReviewStale');
+
+    const reinstallIntent = {
+      kind: 'pluginWrite', action: 'reinstall', pluginId: 'team/demo', platform: 'both', scope: 'project',
+    } as const;
+    const allFailedEvidence = await dependencies.captureEvidence(reinstallIntent);
+    setRebuildCommandTestHooksForTests({
+      async afterTargetBuilt() {
+        throw new Error('durableCleanupFailed: retained backup cleanup failed');
+      },
+    });
+    try {
+      await expect(dependencies.executeIntent(reinstallIntent, allFailedEvidence)).resolves.toMatchObject({
+        overallState: 'failed',
+        targetResults: [
+          expect.objectContaining({ state: 'failed' }),
+          expect.objectContaining({ state: 'failed' }),
+        ],
+      });
+    } finally {
+      setRebuildCommandTestHooksForTests(undefined);
+    }
+    const configIntent = {
+      kind: 'configSave', pluginId: 'team/demo', scope: 'project', projectLayer: 'shared', updates: { mode: 'strict' },
+    } as const;
+    const [reinstallEvidence, configEvidence] = await Promise.all([
+      dependencies.captureEvidence(reinstallIntent),
+      dependencies.captureEvidence(configIntent),
+    ]);
+    const concurrentResults = await Promise.race([
+      Promise.all([
+        dependencies.executeIntent(reinstallIntent, reinstallEvidence),
+        dependencies.executeIntent(configIntent, configEvidence),
+      ]),
+      new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error('ABBA operation lock timeout')), 5_000)),
+    ]);
+    expect(concurrentResults[0]).toMatchObject({
+      overallState: 'failed',
+      targetResults: [
+        expect.objectContaining({ target: expect.objectContaining({ platform: 'codex' }), state: 'completed' }),
+        expect.objectContaining({ target: expect.objectContaining({ platform: 'claude' }), state: 'failed' }),
+      ],
+    });
+    expect(JSON.stringify(concurrentResults[0])).not.toContain('operation.lock timeout');
+    expect(concurrentResults[1]).toMatchObject({ configWrite: 'succeeded' });
+    await expect(readPluginConfigStore({
+      sourceId: 'team',
+      sourceIdentity: (await calculateCatalogSourceIdentity({ id: 'team', type: 'path', primary: true, path: sourceRoot })),
+      pluginName: 'demo',
+      scope: 'project',
+      projectLayer: 'shared',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+    })).resolves.toMatchObject({ values: { mode: 'strict' } });
   });
 
   it('blocks a reviewed install when the other scope is installed concurrently', async () => {
@@ -275,7 +387,83 @@ describe('five namespaced write commands', () => {
     const result = await controller.executeOperation(review.reviewToken);
 
     expect(result).toMatchObject({ state: 'blocked', code: 'scopeConflict' });
-    expect(controller.snapshot.router.current.route).toEqual({ name: 'home' });
+    expect(controller.snapshot.router.current.route).toEqual({ name: 'result', operationId: review.operationId });
+    controller.dispose();
+  });
+
+  it('reviews and executes I03 partial removal through the real TUI write bridge', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'review-partial-remove-source');
+    const pluginRoot = path.join(sourceRoot, 'plugins', 'demo');
+    await fs.outputFile(path.join(pluginRoot, 'scripts', 'render.mjs'), [
+      'console.log(JSON.stringify({ version: 2, artifacts: [{',
+      '  id: "codex-review", kind: "skill", platform: "codex",',
+      '  target: "codex.skill", state: "present", refreshKeys: [], skillKey: "review",',
+      '  content: { files: { "SKILL.md": "---\\nname: review\\ndescription: Review.\\n---\\n", "README.md": "Review.\\n", "agents/openai.yaml": "policy:\\n  allow_implicit_invocation: true\\n" } }',
+      '}] }));',
+    ].join('\n'));
+    await createCatalogSnapshotFixture(sourceRoot, 'demo', '0.0.0', 'demo\n', (manifest) => {
+      manifest.marketplace.policy.products = ['CODEX'];
+      manifest.scripts = { artifacts: { render: { runner: 'node', path: './scripts/render.mjs' } } };
+      manifest.artifacts = { targets: [{
+        id: 'codex-review',
+        platform: 'codex',
+        scopes: ['project'],
+        target: 'codex.skill',
+        states: ['present'],
+        refreshKeys: [],
+        skillKey: 'review',
+      }] };
+    });
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 1, sources: [{ id: 'team', type: 'path', primary: true, path: sourceRoot }] },
+      expectedDigest: snapshot.digest,
+      env: isolation.env,
+    });
+    const nativeCliRunner = async () => ({ exitCode: 0, stdout: 'codex-cli 99.0.0', stderr: '' });
+    await expect(installWriteCommand(['team/demo'], {
+      cwd: isolation.layout.fixtureCwd,
+      platform: 'codex',
+      scope: 'project',
+    }, { env: isolation.env, nativeCliRunner })).resolves.toMatchObject({ overallState: 'succeeded' });
+    const skillsRoot = path.join(isolation.layout.fixtureCwd, '.agents', 'skills');
+    const installedSkill = (await fs.readdir(skillsRoot, { recursive: true }))
+      .map(String)
+      .find((entry) => entry.endsWith('SKILL.md'));
+    expect(installedSkill).toBeDefined();
+    await fs.remove(path.join(skillsRoot, installedSkill!));
+    const controller = new TuiController(createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      nativeCliRunner,
+      interactive: false,
+    })));
+    await controller.load();
+    const issue = controller.listUserIssues().find((entry) =>
+      entry.category === 'incompleteInstallation'
+      && entry.pluginId === 'team/demo'
+      && entry.platform === 'codex'
+      && entry.scope === 'project');
+    expect(issue, JSON.stringify(controller.snapshot.viewModel?.issues)).toBeDefined();
+    const review = await controller.buildOperationReview({
+      kind: 'pluginWrite',
+      action: 'uninstall',
+      pluginId: 'team/demo',
+      platform: 'codex',
+      scope: 'project',
+      originIssue: {
+        issueId: issue!.issueId,
+        issueKey: userIssueKey(issue!),
+        category: issue!.category,
+        actionId: 'remove',
+      },
+    });
+    expect(review).toMatchObject({ pluginAction: 'uninstall', originIssue: { actionId: 'remove' } });
+
+    await expect(controller.executeOperation(review.reviewToken)).resolves.toMatchObject({ state: 'succeeded' });
+    expect(controller.listUserIssues().some((entry) => entry.issueId === issue!.issueId)).toBe(false);
+    await expect(fs.pathExists(path.dirname(path.join(skillsRoot, installedSkill!)))).resolves.toBe(false);
     controller.dispose();
   });
 

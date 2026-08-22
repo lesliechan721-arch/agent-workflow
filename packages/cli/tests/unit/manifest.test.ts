@@ -827,6 +827,13 @@ describe('manifest utils', () => {
       trace: {
         type: 'boolean',
       },
+      token: {
+        type: 'string',
+        sensitive: true,
+      },
+      rules: {
+        type: 'file',
+      },
     };
 
     manifest.config = { schema };
@@ -904,6 +911,16 @@ describe('manifest utils', () => {
       trace: {
         type: 'boolean',
       },
+      token: {
+        type: 'string',
+        sensitive: true,
+      },
+      rules: {
+        type: 'file',
+      },
+      workspace: {
+        type: 'directory',
+      },
     };
     const invalidCases = [
       {
@@ -978,6 +995,24 @@ describe('manifest utils', () => {
           presets: [{ id: 'bad', title: 'Bad', values: { missing: true } }],
         },
         error: 'unknown config key "missing"',
+      },
+      {
+        presentation: {
+          presets: [{ id: 'secret', title: 'Secret', values: { token: 'private' } }],
+        },
+        error: 'presets cannot contain sensitive, file, or directory config values',
+      },
+      {
+        presentation: {
+          presets: [{ id: 'path', title: 'Path', values: { rules: '/private/rules' } }],
+        },
+        error: 'presets cannot contain sensitive, file, or directory config values',
+      },
+      {
+        presentation: {
+          presets: [{ id: 'directory', title: 'Directory', values: { workspace: '/private/workspace' } }],
+        },
+        error: 'presets cannot contain sensitive, file, or directory config values',
       },
     ];
 

@@ -3833,6 +3833,16 @@ describe('authoring tools', () => {
       trace: {
         type: 'boolean',
       },
+      token: {
+        type: 'string',
+        sensitive: true,
+      },
+      rules: {
+        type: 'file',
+      },
+      workspace: {
+        type: 'directory',
+      },
     };
     const scriptPath = path.join(
       repoRoot(),
@@ -3854,6 +3864,29 @@ describe('authoring tools', () => {
     })).resolves.toMatchObject({
       stdout: expect.stringContaining('[PASS] All checks passed.'),
     });
+
+    for (const [key, value] of [
+      ['token', 'private'],
+      ['rules', '/private/rules'],
+      ['workspace', '/private/workspace'],
+    ] as const) {
+      await fs.writeJson(manifestPath, {
+        ...manifest,
+        config: {
+          schema,
+          presentation: {
+            presets: [{ id: 'private', title: 'Private', values: { [key]: value } }],
+          },
+        },
+      }, { spaces: 2 });
+      await expect(execFileAsync(process.execPath, [scriptPath, pluginDir], {
+        cwd: repoRoot(),
+        env: process.env,
+        maxBuffer: 10 * 1024 * 1024,
+      })).rejects.toMatchObject({
+        stdout: expect.stringContaining('cannot contain sensitive, file, or directory config values'),
+      });
+    }
 
     await fs.writeJson(manifestPath, {
       ...manifest,
@@ -3928,6 +3961,40 @@ describe('authoring tools', () => {
     expect(invalidStdout).toContain('recommendedValue must be less than or equal to 20');
     expect(invalidStdout).toContain('values.trace must be a boolean');
     expect(invalidStdout).toContain('duplicate preset id "bad"');
+  });
+
+  it.each([
+    ['sensitive', { type: 'string', sensitive: true }, 'private'],
+    ['file', { type: 'file' }, '/private/rules'],
+    ['directory', { type: 'directory' }, '/private/workspace'],
+  ] as const)('the lightweight author validator rejects %s preset values', async (_label, field, value) => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-validator-lightweight-'));
+    tempDirs.push(tempRoot);
+    const sourceScripts = path.join(repoRoot(), 'packages', 'cli', 'authoring', 'scripts');
+    const copiedScripts = path.join(tempRoot, 'packages', 'cli', 'authoring', 'scripts');
+    await fs.ensureDir(copiedScripts);
+    await fs.copy(path.join(sourceScripts, 'validate-plugin.mjs'), path.join(copiedScripts, 'validate-plugin.mjs'));
+    await fs.copy(path.join(sourceScripts, 'lib'), path.join(copiedScripts, 'lib'));
+    const pluginDir = await writeManifestOnlyPlugin(tempRoot, 'private-preset', {});
+    const manifestPath = path.join(pluginDir, '.agents-plugin', 'plugin.json');
+    const manifest = await fs.readJson(manifestPath);
+    await fs.writeJson(manifestPath, {
+      ...manifest,
+      config: {
+        schema: { privateValue: field },
+        presentation: {
+          presets: [{ id: 'private', title: 'Private', values: { privateValue: value } }],
+        },
+      },
+    }, { spaces: 2 });
+
+    await expect(execFileAsync(process.execPath, [path.join(copiedScripts, 'validate-plugin.mjs'), pluginDir], {
+      cwd: tempRoot,
+      env: process.env,
+      maxBuffer: 10 * 1024 * 1024,
+    })).rejects.toMatchObject({
+      stdout: expect.stringContaining('cannot contain sensitive, file, or directory config values'),
+    });
   });
 
   it('validate_plugin.mjs scans real Node imports without comment, string, regex, or template-text ghosts', async () => {

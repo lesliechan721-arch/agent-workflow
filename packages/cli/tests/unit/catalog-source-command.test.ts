@@ -167,6 +167,76 @@ describe('catalog source command v4', () => {
     });
   });
 
+  it('reports only real mutation stages and isolates progress observer failures', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const firstRoot = fixturePath('progress-first');
+    const secondRoot = fixturePath('progress-second');
+    await Promise.all([
+      createCatalogSnapshotFixture(firstRoot),
+      createCatalogSnapshotFixture(secondRoot),
+    ]);
+    const observed: string[] = [];
+    const runtime = {
+      onProgress: async (event: { action: string; stage: string }) => {
+        observed.push(`${event.action}:${event.stage}`);
+        throw new Error('observer failure');
+      },
+    };
+
+    await addCatalogSourceCommand({
+      source: { id: 'team', type: 'path', primary: false, path: firstRoot },
+      cliVersion: '1.0.0',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      runtime,
+    });
+    await updateCatalogSourceCommand({
+      sourceId: 'team',
+      update: { type: 'path', path: secondRoot },
+      cliVersion: '1.0.0',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      runtime,
+    });
+    await setPrimaryCatalogSourceCommand({
+      sourceId: 'team',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      runtime,
+    });
+    await setPrimaryCatalogSourceCommand({
+      sourceId: 'official',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      runtime,
+    });
+    await removeCatalogSourceCommand({
+      sourceId: 'team',
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      runtime,
+    });
+
+    expect(observed).toEqual([
+      'add:validatingCandidate',
+      'add:catalogReady',
+      'add:scanningReferences',
+      'add:savingConfig',
+      'update:validatingCandidate',
+      'update:catalogReady',
+      'update:scanningReferences',
+      'update:savingConfig',
+      'setPrimary:scanningReferences',
+      'setPrimary:savingConfig',
+      'setPrimary:scanningReferences',
+      'setPrimary:savingConfig',
+      'remove:scanningReferences',
+      'remove:savingConfig',
+    ]);
+    expect((await listCatalogSources({ env: isolation.env })).sources.map((source) => source.id))
+      .toEqual(['official']);
+  });
+
   it('does not write when candidate validation fails', async () => {
     const isolation = getCurrentSourceTestIsolation();
     const sourceRoot = fixturePath('invalid-catalog');

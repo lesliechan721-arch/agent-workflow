@@ -59,6 +59,7 @@ import {
   withActiveMarketplaceRuntimeLease,
 } from '../utils/active-marketplace-runtime-lock.js';
 import { cleanupOrphanNamespacedMarketplaceRoot } from '../utils/orphan-marketplace-cleanup.js';
+import { canonicalPlatformScopeTargets } from '../utils/target-order.js';
 
 export type RebuildCommandRuntime = Partial<RebuildExecutionContext> & {
   catalogResolution?: CatalogResolution;
@@ -736,7 +737,13 @@ async function cleanupOrphanLifecycleOnly(options: {
   const sourceIdentity = [...identities][0]!;
   const operationLocks: Awaited<ReturnType<typeof acquireLifecycleOperationLock>>[] = [];
   try {
-    for (const platform of selectedPlatforms(options.commandOptions.platform)) {
+    const lockTargets = canonicalPlatformScopeTargets(
+      selectedPlatforms(options.commandOptions.platform).map((platform) => ({
+        platform,
+        scope: options.commandOptions.scope,
+      })),
+    );
+    for (const { platform } of lockTargets) {
       const identity: RebuildTargetIdentity = {
         sourceId: options.selector.sourceId,
         sourceIdentity,

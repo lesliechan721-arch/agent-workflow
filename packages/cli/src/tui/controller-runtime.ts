@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import path from 'node:path';
 
 import type { CliExecutionContext } from '../commands/runtime.js';
 import type { PlatformName } from '../types.js';
@@ -10,6 +11,7 @@ import {
   removeCatalogSourceCommand,
   setPrimaryCatalogSourceCommand,
   updateCatalogSourceCommand,
+  type CatalogSourceMutationProgress,
 } from '../commands/catalog-source.js';
 import {
   cleanupWriteCommand,
@@ -30,6 +32,7 @@ import {
 } from '../utils/multi-source-catalog.js';
 import {
   coercePluginConfigUpdates,
+  readNamespacedPluginConfigStoreIdentity,
   readPluginConfigStore,
   resolveConfigRead,
 } from '../utils/plugin-config.js';
@@ -53,10 +56,34 @@ import {
 } from './controller.js';
 import { buildConfigGroups, buildConfigPage } from './model.js';
 import { projectCatalogSourceLocation } from '../utils/catalog-source-presentation.js';
+import { canonicalPlatformScopeTargets } from '../utils/target-order.js';
+import { targetCanBeUninstalled } from '../utils/target-eligibility.js';
+import { calculateCatalogSourceIdentity } from '../utils/catalog-source-identity.js';
+import { resolveAwHome } from '../utils/paths.js';
+
+export interface TuiControllerRuntimeTestHooks {
+  afterPluginOperationLocksAcquire?: () => Promise<void>;
+  onCatalogSourceProgress?: (event: CatalogSourceMutationProgress) => Promise<void> | void;
+}
+
+let tuiControllerRuntimeTestHooks: TuiControllerRuntimeTestHooks | undefined;
+
+export function setTuiControllerRuntimeTestHooksForTests(
+  hooks: TuiControllerRuntimeTestHooks | undefined,
+): void {
+  tuiControllerRuntimeTestHooks = hooks;
+}
 
 function digest(value: unknown): string {
   return `sha256:${crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex')}`;
 }
+
+const SOURCE_PROGRESS_PHASES: Record<CatalogSourceMutationProgress['stage'], string> = {
+  validatingCandidate: '验证候选来源',
+  catalogReady: 'Catalog 已读取，索引已刷新',
+  scanningReferences: '扫描现有引用和约束',
+  savingConfig: '保存来源配置',
+};
 
 function pluginIntent(intent: OperationIntent): intent is Extract<OperationIntent, { pluginId: string }> {
   return 'pluginId' in intent;
@@ -77,14 +104,17 @@ function assertIntentIsLegal(
     const otherScopeInstalled = targets.some((target) =>
       target.platform === platform
       && target.scope !== intent.scope
-      && target.state !== 'absent');
+      && (target.state === 'present' || target.state === 'partial'));
     if (intent.action === 'install' && otherScopeInstalled) {
       throw new TuiOperationBlockedError('scopeConflict', '这个平台已安装在另一个使用位置。请先移除原位置。');
     }
     if (intent.action === 'install' && selected.state !== 'absent') {
       throw new TuiOperationBlockedError('targetAlreadyInstalled', '所选位置已经安装。');
     }
-    if ((intent.action === 'upgrade' || intent.action === 'uninstall') && selected.state !== 'present') {
+    if (intent.action === 'upgrade' && selected.state !== 'present') {
+      throw new TuiOperationBlockedError('targetStateChanged', '当前安装状态不允许执行这个操作。');
+    }
+    if (intent.action === 'uninstall' && !targetCanBeUninstalled(selected.state)) {
       throw new TuiOperationBlockedError('targetStateChanged', '当前安装状态不允许执行这个操作。');
     }
     if ((intent.action === 'reinstall' || intent.action === 'cleanup') && selected.state === 'absent') {
@@ -103,7 +133,7 @@ function assertTypedIssueOrigin(
     && target.platform === intent.platform
     && target.scope === intent.scope);
   if (intent.originIssue.category === 'incompleteInstallation') {
-    if (!selected || selected.state !== 'partial'
+    if (!selected || !targetCanBeUninstalled(selected.state) || selected.state !== 'partial'
       || !((intent.originIssue.actionId === 'reinstall' && intent.action === 'reinstall')
         || (intent.originIssue.actionId === 'remove' && intent.action === 'uninstall'))) {
       throw new TuiOperationBlockedError('issueOriginInvalid', '原安装问题已变化。');
@@ -114,7 +144,7 @@ function assertTypedIssueOrigin(
     const installedScopes = new Set(targets.filter((target) =>
       target.pluginId === intent.pluginId
       && target.platform === intent.platform
-      && target.state !== 'absent').map((target) => target.scope));
+      && (target.state === 'present' || target.state === 'partial')).map((target) => target.scope));
     const correctBranch = intent.action === 'uninstall'
       && ((intent.originIssue.actionId === 'keepUserScope' && intent.scope === 'project')
         || (intent.originIssue.actionId === 'keepProjectScope' && intent.scope === 'user'));
@@ -124,22 +154,6 @@ function assertTypedIssueOrigin(
     return;
   }
   throw new TuiOperationBlockedError('issueOriginInvalid', '这个问题没有安全的自动写入动作。');
-}
-
-function resultFailure(result: {
-  overallState?: string;
-  targetResults?: Array<{ state?: string; errorCode?: string; message?: string }>;
-}): TuiOperationBlockedError | undefined {
-  if (result.overallState !== 'failed') return undefined;
-  if (result.targetResults?.some((entry) => entry.state === 'completed')) return undefined;
-  const failure = result.targetResults?.find((entry) => entry.errorCode || entry.message);
-  const prefix = failure?.message?.split(':', 1)[0];
-  const code = failure?.errorCode
-    ?? (prefix && /^[A-Za-z][A-Za-z0-9]*$/u.test(prefix) ? prefix : 'operationFailed');
-  return new TuiOperationBlockedError(
-    code,
-    failure?.message ?? '底层写命令未完成。',
-  );
 }
 
 function assertLockedPluginEvidence(
@@ -161,6 +175,7 @@ function assertLockedPluginEvidence(
 
 export function createTuiControllerDependencies(
   context: CliExecutionContext,
+  progressFeed?: RebuildProgressFeed,
 ): TuiControllerDependencies {
   const loadStatus: TuiControllerDependencies['loadStatus'] = async (signal) => {
     signal.throwIfAborted();
@@ -212,6 +227,48 @@ export function createTuiControllerDependencies(
     );
   };
 
+  const captureOfflineResetEvidence = async (
+    intent: Extract<OperationIntent, { kind: 'configReset' }>,
+    signal?: AbortSignal,
+  ): Promise<OperationEvidence> => {
+    signal?.throwIfAborted();
+    const { sourceId, pluginName } = parsePluginId(intent.pluginId);
+    if (!sourceId) throw new TuiOperationBlockedError('invalidPluginId', '重置必须使用 canonical pluginId。');
+    const configured = await readCatalogSourcesConfigSnapshot(context.env);
+    const source = configured.config.sources.find((entry) => entry.id === sourceId);
+    if (!source) throw new TuiOperationBlockedError('configResetUnavailable', '来源配置不存在。');
+    const configuredIdentity = await calculateCatalogSourceIdentity(source);
+    const identity = await readNamespacedPluginConfigStoreIdentity({
+      sourceId,
+      pluginName,
+      scope: intent.scope,
+      projectLayer: intent.projectLayer,
+      cwd: context.cwd,
+      env: context.env,
+    });
+    signal?.throwIfAborted();
+    if (!identity || identity.sourceIdentity !== configuredIdentity
+      || (intent.sourceIdentity && intent.sourceIdentity !== identity.sourceIdentity)) {
+      throw new TuiOperationBlockedError('configResetUnavailable', '设置层身份不可验证。');
+    }
+    return {
+      catalog: {
+        configDigest: configured.digest,
+        compositeDigest: digest({ configDigest: configured.digest, sourceId, sourceIdentity: configuredIdentity }),
+      },
+      source: { sourceId, sourceIdentity: configuredIdentity },
+      config: {
+        scope: intent.scope,
+        projectLayer: intent.projectLayer,
+        storeDigest: digest({
+          exists: identity.store.exists,
+          sourceIdentity: identity.sourceIdentity,
+          values: identity.store.values,
+        }),
+      },
+    };
+  };
+
   const captureEvidence: TuiControllerDependencies['captureEvidence'] = async (intent, signal) => {
     if (intent.kind === 'sourceMutation') {
       signal?.throwIfAborted();
@@ -243,6 +300,9 @@ export function createTuiControllerDependencies(
     }
     if (!pluginIntent(intent)) {
       throw new TuiOperationBlockedError('operationNotImplemented', '这个写操作尚未接入新 Controller。');
+    }
+    if (intent.kind === 'configReset' && intent.offline) {
+      return captureOfflineResetEvidence(intent, signal);
     }
     signal?.throwIfAborted();
     const packageInfo = await readCliPackageInfo();
@@ -443,7 +503,7 @@ export function createTuiControllerDependencies(
     async checkSource(sourceId, signal) {
       const packageInfo = await readCliPackageInfo();
       const configSnapshot = await readCatalogSourcesConfigSnapshot(context.env);
-      await withResolvedMultiSourceCatalog({
+      return withResolvedMultiSourceCatalog({
         cliVersion: packageInfo.version,
         freshnessPolicy: 'forceRemote',
         sourceIds: [sourceId],
@@ -453,7 +513,10 @@ export function createTuiControllerDependencies(
         consume: (catalog) => {
           const item = catalog.sources[0]!;
           if (item.error) throw item.error;
-          return { sourceId: item.sourceId, snapshotDigest: item.resolution!.snapshotDigest };
+          return {
+            sourceIdentity: item.resolution!.sourceIdentity,
+            requestedRef: item.resolution!.requestedRef,
+          };
         },
       });
     },
@@ -517,6 +580,43 @@ export function createTuiControllerDependencies(
         },
       });
     },
+    async getConfigResetAvailability(pluginId, layer, signal) {
+      signal.throwIfAborted();
+      const { sourceId, pluginName } = parsePluginId(pluginId);
+      if (!sourceId) return { exists: false, sourceIdentityPresent: false };
+      const identity = await readNamespacedPluginConfigStoreIdentity({
+        sourceId,
+        pluginName,
+        scope: layer.scope,
+        projectLayer: layer.projectLayer,
+        cwd: context.cwd,
+        env: context.env,
+      });
+      signal.throwIfAborted();
+      if (!identity) return { exists: false, sourceIdentityPresent: false };
+      const configured = await readCatalogSourcesConfigSnapshot(context.env);
+      const source = configured.config.sources.find((entry) => entry.id === sourceId);
+      const configuredIdentity = source
+        ? await calculateCatalogSourceIdentity(source)
+        : undefined;
+      if (identity.sourceIdentity !== configuredIdentity) {
+        return {
+          exists: true,
+          sourceIdentityPresent: false,
+          sourceIdentity: identity.sourceIdentity,
+        };
+      }
+      return {
+        exists: true,
+        sourceIdentityPresent: true,
+        sourceIdentity: identity.sourceIdentity,
+        storeDigest: digest({
+          exists: identity.store.exists,
+          sourceIdentity: identity.sourceIdentity,
+          values: identity.store.values,
+        }),
+      };
+    },
     async executeIntent(intent, expectedEvidence) {
       const currentEvidence = await captureEvidence(intent);
       if (operationEvidenceFingerprint(currentEvidence) !== operationEvidenceFingerprint(expectedEvidence)) {
@@ -524,10 +624,21 @@ export function createTuiControllerDependencies(
       }
       if (intent.kind === 'sourceMutation') {
         const packageInfo = await readCliPackageInfo();
+        const runtime = {
+          onProgress: async (event: CatalogSourceMutationProgress) => {
+            const phase = SOURCE_PROGRESS_PHASES[event.stage];
+            progressFeed?.setCurrent(
+              { target: 'Catalog 来源配置', phase },
+              `来源操作：${phase}`,
+            );
+            await tuiControllerRuntimeTestHooks?.onCatalogSourceProgress?.(event);
+          },
+        };
         const common = {
           cwd: context.cwd,
           env: context.env,
           expectedConfigDigest: expectedEvidence.sourceWrite?.configDigest,
+          runtime,
         };
         if (intent.action === 'add' && intent.source) {
           return addCatalogSourceCommand({ ...common, source: intent.source, cliVersion: packageInfo.version });
@@ -552,67 +663,108 @@ export function createTuiControllerDependencies(
           uninstall: uninstallWriteCommand,
           cleanup: cleanupWriteCommand,
         }[intent.action];
-        const source = expectedEvidence.source;
-        if (!source) {
+        const expectedSource = expectedEvidence.source;
+        if (!expectedSource) {
           throw new TuiOperationBlockedError('operationReviewStale', '确认信息缺少来源身份。');
         }
         const pluginName = parsePluginId(intent.pluginId).pluginName;
-        const platforms: PlatformName[] = intent.platform === 'both'
-          ? ['codex', 'claude']
-          : [intent.platform];
-        const leases: Awaited<ReturnType<typeof acquireLifecycleOperationLock>>[] = [];
-        try {
-          for (const platform of platforms) {
-            for (const scope of ['project', 'user'] as const) {
-              leases.push(await acquireLifecycleOperationLock({
-                sourceId: source.sourceId,
-                sourceIdentity: source.sourceIdentity,
-                pluginName,
-                platform,
-                scope,
-                cwd: context.cwd,
-                env: context.env,
-              }));
+        return withResolvedCatalogPlugin({
+          selector: intent.pluginId,
+          cliVersion: (await readCliPackageInfo()).version,
+          freshnessPolicy: 'requireRemote',
+          env: context.env,
+          consume: async ({ source, plugin }) => {
+            if (source.sourceId !== expectedSource.sourceId
+              || source.sourceIdentity !== expectedSource.sourceIdentity) {
+              throw new TuiOperationBlockedError('operationReviewStale', '确认后来源身份发生变化。');
             }
-          }
-          let fullEvidenceChecked = false;
-          const result = await command([intent.pluginId], options, {
-            ...context,
-            operationLeaseHeld: true,
-            reviewPreflight: async (current) => {
-              assertLockedPluginEvidence(current, expectedEvidence);
-              const observed = await captureEvidence(intent);
-              const observedFingerprint = operationEvidenceFingerprint(fullEvidenceChecked
-                ? { ...observed, targetFingerprint: expectedEvidence.targetFingerprint }
-                : observed);
-              if (observedFingerprint !== operationEvidenceFingerprint(expectedEvidence)) {
-                throw new TuiOperationBlockedError(
-                  'operationReviewStale',
-                  'operationReviewStale: 确认后状态发生变化。',
-                );
-              }
-              fullEvidenceChecked = true;
-            },
-          });
-          const failure = resultFailure(result);
-          if (failure) throw failure;
-          return result;
-        } finally {
-          for (const lease of leases.reverse()) {
+            const platforms: PlatformName[] = intent.platform === 'both'
+              ? ['codex', 'claude']
+              : [intent.platform];
+            const lockTargets = canonicalPlatformScopeTargets(platforms.flatMap((platform) =>
+              (['project', 'user'] as const).map((scope) => ({ platform, scope }))));
+            const leases: Awaited<ReturnType<typeof acquireLifecycleOperationLock>>[] = [];
             try {
-              await releaseRebuildOperationLease(lease);
-            } catch (error) {
-              try {
-                process.emitWarning(
-                  `TUI operation lock release failed: ${error instanceof Error ? error.message : String(error)}`,
-                  { code: 'AW_TUI_OPERATION_LOCK_RELEASE_FAILED' },
-                );
-              } catch {
-                // Release diagnostics cannot replace a durable write result.
+              for (const { platform, scope } of lockTargets) {
+                leases.push(await acquireLifecycleOperationLock({
+                  sourceId: source.sourceId,
+                  sourceIdentity: source.sourceIdentity,
+                  pluginName,
+                  platform,
+                  scope,
+                  cwd: context.cwd,
+                  env: context.env,
+                }));
+              }
+              await tuiControllerRuntimeTestHooks?.afterPluginOperationLocksAcquire?.();
+              let fullEvidenceChecked = false;
+              const marketplaceName = plugin.marketplaceName ?? source.sourceId;
+              const result = await command([pluginName], options, {
+                ...context,
+                catalogResolution: {
+                  rootDir: source.rootDir,
+                  source: source.source === 'path' ? 'local' : source.source,
+                },
+                namespacedTarget: {
+                  sourceId: source.sourceId,
+                  sourceIdentity: source.sourceIdentity,
+                  pluginId: intent.pluginId,
+                  marketplaceName,
+                  marketplaceRoot: path.join(resolveAwHome(context.env), 'marketplaces', source.sourceId),
+                },
+                expectedCatalogConfigDigest: expectedEvidence.catalog.configDigest,
+                resolvedReviewEvidence: {
+                  configDigest: expectedEvidence.catalog.configDigest,
+                  sourceId: source.sourceId,
+                  sourceIdentity: source.sourceIdentity,
+                  resolvedCommit: source.resolvedCommit,
+                  manifestDigest: source.manifestDigest,
+                  snapshotDigest: source.snapshotDigest,
+                  contentDigest: source.manifest.entries.find((entry) => entry.name === pluginName)?.contentDigest,
+                },
+                operationLeaseHeld: true,
+                reviewPreflight: async (current) => {
+                  assertLockedPluginEvidence(current, expectedEvidence);
+                  const observed = await captureEvidence(intent);
+                  const observedFingerprint = operationEvidenceFingerprint(fullEvidenceChecked
+                    ? { ...observed, targetFingerprint: expectedEvidence.targetFingerprint }
+                    : observed);
+                  if (observedFingerprint !== operationEvidenceFingerprint(expectedEvidence)) {
+                    throw new TuiOperationBlockedError(
+                      'operationReviewStale',
+                      'operationReviewStale: 确认后状态发生变化。',
+                    );
+                  }
+                  fullEvidenceChecked = true;
+                },
+              });
+              const staleFailure = result.targetResults.find((entry) => entry.state === 'failed'
+                && (entry.errorCode === 'operationReviewStale'
+                  || entry.message?.startsWith('operationReviewStale:')))
+                ?? result.rebuildResults.find((entry) => entry.status === 'failed'
+                  && entry.error.message.startsWith('operationReviewStale:'));
+              if (staleFailure && !result.targetResults.some((entry) => entry.state === 'completed')) {
+                throw new TuiOperationBlockedError('operationReviewStale', '确认后状态发生变化。');
+              }
+              return result;
+            } finally {
+              for (const lease of leases.reverse()) {
+                try {
+                  await releaseRebuildOperationLease(lease);
+                } catch {
+                  try {
+                    process.emitWarning(
+                      'TUI operation lock release failed.',
+                      { code: 'AW_TUI_OPERATION_LOCK_RELEASE_FAILED' },
+                    );
+                  } catch {
+                    // Release diagnostics cannot replace a durable write result.
+                  }
+                }
               }
             }
-          }
-        }
+          },
+        });
       }
       if (intent.kind === 'configSave' || intent.kind === 'configReset') {
         const packageInfo = await readCliPackageInfo();
@@ -623,6 +775,25 @@ export function createTuiControllerDependencies(
             throw new TuiOperationBlockedError('operationReviewStale', '确认后状态发生变化。');
           }
         };
+        if (intent.kind === 'configReset' && intent.offline) {
+          const source = expectedEvidence.source;
+          if (!source || source.sourceId !== parsePluginId(intent.pluginId).sourceId) {
+            throw new TuiOperationBlockedError('operationReviewStale', '确认信息缺少可信来源身份。');
+          }
+          return resetPluginConfigWithHelper({
+            sourceId: source.sourceId,
+            sourceIdentity: source.sourceIdentity,
+            pluginName: parsePluginId(intent.pluginId).pluginName,
+            plugin: null,
+            scope: intent.scope,
+            projectLayer: intent.projectLayer,
+            cwd: context.cwd,
+            env: context.env,
+            nativeCliRunner: context.nativeCliRunner,
+            rebuildRuntime: context,
+            reviewPreflight,
+          });
+        }
         return withResolvedCatalogPlugin({
           selector: intent.pluginId,
           cliVersion: packageInfo.version,
@@ -667,5 +838,5 @@ export function createConsoleTuiV4Controller(
   context: CliExecutionContext,
   progressFeed?: RebuildProgressFeed,
 ): TuiController {
-  return new TuiController(createTuiControllerDependencies(context), progressFeed);
+  return new TuiController(createTuiControllerDependencies(context, progressFeed), progressFeed);
 }

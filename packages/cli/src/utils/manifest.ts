@@ -1738,6 +1738,13 @@ function normalizePluginConfigPresentation(
         if (!schemaField) {
           throw new Error(`Invalid ${presetFieldName}.values: unknown config key "${key}".`);
         }
+        if (schemaField.sensitive === true
+          || schemaField.type === 'file'
+          || schemaField.type === 'directory') {
+          throw new Error(
+            `Invalid ${presetFieldName}.values.${key}: presets cannot contain sensitive, file, or directory config values.`,
+          );
+        }
         values[key] = validateConfigDefault(
           schemaField.type,
           rawValue,
