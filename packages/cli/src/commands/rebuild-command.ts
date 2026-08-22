@@ -101,6 +101,8 @@ export type RebuildCommandRuntime = Partial<RebuildExecutionContext> & {
   bypassDependencyPlan?: boolean;
   dependencyReviewPreflightHandled?: boolean;
   afterDependencyOperationLocksAcquire?: () => Promise<void>;
+  dependencyPlanReviewPreflight?: (plan: DependencyOperationPlan) => Promise<void> | void;
+  previewDependencyPlanOnly?: boolean;
   targetBuiltHookHandled?: boolean;
 };
 
@@ -1590,6 +1592,12 @@ export async function runRebuildCommand(options: {
         });
       };
       const initialPlan = await createPlan();
+      await options.runtime?.dependencyPlanReviewPreflight?.(initialPlan);
+      if (options.runtime?.previewDependencyPlanOnly) {
+        const preview = mergeRebuildCommandResults([]);
+        preview.dependencyPlan = initialPlan;
+        return preview;
+      }
       for (const { entry, platform } of executionSelections.filter((selection) =>
         selectedIds.has(selection.entry.pluginId))) {
         await options.runtime?.reviewPreflight?.({
@@ -1698,6 +1706,7 @@ export async function runRebuildCommand(options: {
           }
         }
         const lockedPlan = await createPlan();
+        await options.runtime?.dependencyPlanReviewPreflight?.(lockedPlan);
         if (lockedPlan.planDigest !== initialPlan.planDigest) {
           throw namespacedPreflightError(
             'dependencyPlanStale: dependency state changed before execution.',

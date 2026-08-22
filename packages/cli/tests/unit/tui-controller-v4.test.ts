@@ -250,6 +250,68 @@ describe('TUI v4 router and ViewModel', () => {
     });
   });
 
+  it('keeps dependency detail optional and restores the originating route on back', () => {
+    const router = new TuiRouter();
+    router.push({ name: 'pluginPreview', pluginId: 'official/root' }, { focusIndex: 1 });
+    router.push({ name: 'pluginDependencies', pluginId: 'official/root' });
+
+    expect(router.back()).toEqual({
+      depth: 2,
+      current: {
+        route: { name: 'pluginPreview', pluginId: 'official/root' },
+        context: { focusIndex: 1 },
+      },
+    });
+  });
+
+  it('returns dependency overview evidence loaded by the runtime without recomputing a client closure', async () => {
+    const overview = {
+      pluginId: 'official/root',
+      summary: { directCount: 1, transitiveCount: 0, totalCount: 1, readyCount: 0, missingCount: 1, issueCount: 0 },
+      dependencies: [{
+        pluginId: 'official/toolkit', displayName: 'Toolkit', relation: 'direct' as const,
+        depth: 1, requiredBy: [{ pluginId: 'official/root', displayName: 'Root' }],
+        placements: [], aggregateStatus: 'notInstalled' as const,
+        placementReferences: [{ consumer: { pluginId: 'official/root', platform: 'codex' as const, scope: 'project' as const, project: 'current' as const }, dependency: { pluginId: 'official/toolkit', platform: 'codex' as const, scope: 'user' as const, project: null } }],
+      }],
+      dependents: [],
+      blockers: [],
+    };
+    const captureEvidence = vi.fn().mockResolvedValue(baseEvidence);
+    const controller = new TuiController(dependencies({
+      captureEvidence,
+      loadStatus: vi.fn().mockResolvedValue({
+        payload: status(),
+        pluginSummaries: summaries(['official', 'root'], ['official', 'toolkit']),
+        dependencyOverviews: [overview, {
+          pluginId: 'official/toolkit',
+          summary: { directCount: 0, transitiveCount: 0, totalCount: 0, readyCount: 0, missingCount: 0, issueCount: 0 },
+          dependencies: [],
+          dependents: [{
+            pluginId: 'official/root', displayName: 'Root', relation: 'dependent' as const,
+            depth: 1, requiredBy: [], placements: [], aggregateStatus: 'notInstalled' as const,
+            placementReferences: [{ consumer: { pluginId: 'official/root', platform: 'codex' as const, scope: 'project' as const, project: 'current' as const }, dependency: { pluginId: 'official/toolkit', platform: 'codex' as const, scope: 'user' as const, project: null } }],
+          }],
+          blockers: [],
+        }],
+      }),
+    }));
+    await controller.load();
+
+    expect(controller.getPluginDependencyOverview('official/root')).toEqual(overview);
+    expect(controller.getPluginOverview('official/root')?.dependencySummary).toEqual(overview.summary);
+    const review = await controller.buildOperationReview({
+      kind: 'pluginWrite', action: 'uninstall', pluginId: 'official/root', platform: 'codex', scope: 'user',
+    });
+    expect(review.changes).toContainEqual(expect.objectContaining({
+      group: 'preserved', pluginId: 'official/toolkit', kind: 'keep',
+    }));
+    await expect(controller.buildOperationReview({
+      kind: 'pluginWrite', action: 'uninstall', pluginId: 'official/toolkit', platform: 'codex', scope: 'user',
+    })).rejects.toMatchObject({ code: 'dependencyStillRequired' });
+    expect(captureEvidence).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps same-name plugins separate and sorts the tie by source identity', () => {
     const view = buildTuiViewModel({
       status: status({
@@ -269,6 +331,46 @@ describe('TUI v4 router and ViewModel', () => {
       ['official/review-gate', 'installed'],
       ['team/review-gate', 'available'],
     ]);
+  });
+
+  it('projects typed dependency issue actions to the canonical dependency target', () => {
+    const missing = target({ pluginName: 'root', scope: 'project', state: 'partial' });
+    missing.errors = [{
+      code: 'dependencyMissing',
+      message: 'dependencyMissing: official/toolkit is absent at its recorded target.',
+    }];
+    const view = buildTuiViewModel({
+      status: status({ targets: [missing] }),
+      pluginSummaries: summaries(['official', 'root'], ['official', 'toolkit']),
+      dependencyOverviews: [{
+        pluginId: 'official/root',
+        summary: { directCount: 1, transitiveCount: 0, totalCount: 1, readyCount: 0, missingCount: 1, issueCount: 1 },
+        dependencies: [{
+          pluginId: 'official/toolkit', displayName: 'Toolkit', relation: 'direct', depth: 1,
+          requiredBy: [{ pluginId: 'official/root', displayName: 'Root' }], placements: [],
+          aggregateStatus: 'notInstalled', placementReferences: [{
+            consumer: { pluginId: 'official/root', platform: 'codex', scope: 'project', project: 'current' },
+            dependency: { pluginId: 'official/toolkit', platform: 'codex', scope: 'user', project: null },
+          }],
+        }],
+        dependents: [], blockers: [],
+      }],
+    });
+
+    expect(view.issues).toContainEqual(expect.objectContaining({
+      category: 'dependencyMissing',
+      pluginId: 'official/root',
+      dependencyPluginId: 'official/toolkit',
+      platform: 'codex',
+      scope: 'project',
+      actions: expect.arrayContaining([expect.objectContaining({
+        id: 'installDependency',
+        pluginId: 'official/toolkit',
+        writeAction: 'install',
+        platform: 'codex',
+        scope: 'user',
+      })]),
+    }));
   });
 
   it('projects one installed scope as normal placement and two scopes as a conflict issue', () => {
@@ -1008,6 +1110,59 @@ describe('TUI v4 background source checks', () => {
 });
 
 describe('TUI v4 Review safety', () => {
+  it('groups the frozen dependency plan and projects target-level partial evidence', async () => {
+    const dependencyPlan = {
+      dependencyPlanSchemaVersion: 1 as const,
+      requestedPluginIds: ['official/root'],
+      resolvedPluginIds: ['official/toolkit', 'official/root'],
+      dependencyEdges: [{ from: 'official/root', to: 'official/toolkit' }],
+      sources: [],
+      nodes: [
+        { pluginId: 'official/root', pluginName: 'root', pluginVersion: '1.0.0', sourceId: 'official', sourceIdentity: 'identity:official', manifestDigest: 'sha256:root-manifest', contentDigest: 'sha256:root-content' },
+        { pluginId: 'official/toolkit', pluginName: 'toolkit', pluginVersion: '1.0.0', sourceId: 'official', sourceIdentity: 'identity:official', manifestDigest: 'sha256:toolkit-manifest', contentDigest: 'sha256:toolkit-content' },
+      ],
+      targets: [
+        { pluginId: 'official/toolkit', pluginName: 'toolkit', platform: 'codex' as const, requestedScope: 'user' as const, resolvedScope: 'user' as const, relation: 'dependency' as const, requiredBy: ['official/root'], state: 'present' as const, action: 'keep' as const, order: 0 },
+        { pluginId: 'official/root', pluginName: 'root', platform: 'codex' as const, requestedScope: 'user' as const, resolvedScope: 'user' as const, relation: 'requested' as const, requiredBy: [], state: 'absent' as const, action: 'install' as const, order: 1 },
+      ],
+      planDigest: 'sha256:plan',
+    };
+    const evidence = { ...baseEvidence, dependencyPlan };
+    const controller = new TuiController(dependencies({
+      captureEvidence: vi.fn().mockResolvedValue(evidence),
+      executeIntent: vi.fn().mockResolvedValue({
+        overallState: 'failed',
+        dependencyPlan,
+        targetResults: [
+          { target: { pluginId: 'official/toolkit', platform: 'codex', scope: 'user' }, action: 'keep', state: 'completed' },
+          { target: { pluginId: 'official/root', platform: 'codex', scope: 'user' }, action: 'skipped', state: 'failed' },
+        ],
+      }),
+    }));
+    await controller.load();
+    const review = await controller.buildOperationReview({
+      kind: 'pluginWrite', action: 'install', pluginId: 'official/root', platform: 'codex', scope: 'user',
+    });
+
+    expect(review.primaryLabel).toContain('2 个插件');
+    expect(review.changes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ pluginId: 'official/root', group: 'requested', relation: 'requested', kind: 'add' }),
+      expect.objectContaining({ pluginId: 'official/toolkit', group: 'dependencies', relation: 'direct', kind: 'keep' }),
+      expect.objectContaining({ group: 'preserved' }),
+    ]));
+    await expect(controller.executeOperation(review.reviewToken)).resolves.toMatchObject({
+      state: 'partial',
+      summary: { targets: expect.arrayContaining([
+        expect.objectContaining({ pluginId: 'official/toolkit', relation: 'direct', state: 'kept', requiredBy: ['official/root'] }),
+        expect.objectContaining({ pluginId: 'official/root', relation: 'requested', state: 'skipped' }),
+      ]) },
+    });
+    expect(controller.snapshot.progressTargets).toEqual(expect.arrayContaining([
+      expect.objectContaining({ pluginId: 'official/toolkit', relation: 'direct', state: 'kept' }),
+      expect.objectContaining({ pluginId: 'official/root', relation: 'requested', state: 'skipped' }),
+    ]));
+  });
+
   it('single-flights repeated execution while validation and evidence capture are delayed', async () => {
     const validation = deferred<void>();
     const capture = deferred<OperationEvidence>();
@@ -1420,8 +1575,57 @@ describe('TUI v4 Review safety', () => {
       originIssue: {
         issueId: 'forged', issueKey: 'forged', category: 'incompleteInstallation', actionId: 'reinstall',
       },
-    })).rejects.toMatchObject({ code: 'issueOriginInvalid' });
+    })).rejects.toMatchObject({ code: 'operationReviewStale' });
     expect(captureEvidence).not.toHaveBeenCalled();
+    expect(executeIntent).not.toHaveBeenCalled();
+  });
+
+  it('revalidates both sides of a dependency issue at execution entry and performs zero writes when it changes', async () => {
+    const consumer = target({ pluginName: 'root', scope: 'project', state: 'partial' });
+    consumer.errors = [{ code: 'dependencyMissing', message: 'dependencyMissing: official/toolkit is absent.' }];
+    const loaded: TuiStatusLoadResult = {
+      payload: status({ targets: [consumer, target({ pluginName: 'toolkit', scope: 'user', state: 'absent' })] }),
+      pluginSummaries: summaries(['official', 'root'], ['official', 'toolkit']),
+      dependencyOverviews: [{
+        pluginId: 'official/root',
+        summary: { directCount: 1, transitiveCount: 0, totalCount: 1, readyCount: 0, missingCount: 1, issueCount: 1 },
+        dependencies: [{
+          pluginId: 'official/toolkit', displayName: 'Toolkit', relation: 'direct', depth: 1,
+          requiredBy: [{ pluginId: 'official/root', displayName: 'Root' }], placements: [], aggregateStatus: 'notInstalled',
+          placementReferences: [{
+            consumer: { pluginId: 'official/root', platform: 'codex', scope: 'project', project: 'current' },
+            dependency: { pluginId: 'official/toolkit', platform: 'codex', scope: 'user', project: null },
+          }],
+        }],
+        dependents: [], blockers: [],
+      }],
+    };
+    const validateIntent = vi.fn()
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error('operationReviewStale: consumer issue changed'));
+    const captureEvidence = vi.fn().mockResolvedValue(baseEvidence);
+    const executeIntent = vi.fn();
+    const value = new TuiController(dependencies({
+      loadStatus: vi.fn().mockResolvedValue(loaded), validateIntent, captureEvidence, executeIntent,
+    }));
+    await value.load();
+    const issue = value.listUserIssues().find((candidate) => candidate.category === 'dependencyMissing')!;
+    const action = issue.actions.find((candidate) => candidate.id === 'installDependency')!;
+    const review = await value.buildOperationReview({
+      kind: 'pluginWrite', action: 'install', pluginId: 'official/toolkit', platform: 'codex', scope: 'user',
+      originIssue: {
+        issueId: issue.issueId, issueKey: userIssueKey(issue), category: issue.category, actionId: action.id,
+        consumerPluginId: issue.pluginId, consumerSourceIdentity: issue.sourceIdentity,
+        consumerPlatform: issue.platform, consumerScope: issue.scope,
+        dependencyPluginId: issue.dependencyPluginId, dependencyPlatform: issue.dependencyPlatform,
+        dependencyScope: issue.dependencyScope, dependencyProject: issue.dependencyProject,
+      },
+    });
+
+    await expect(value.executeOperation(review.reviewToken)).resolves.toMatchObject({
+      state: 'blocked', code: 'operationReviewStale',
+    });
+    expect(captureEvidence).toHaveBeenCalledTimes(1);
     expect(executeIntent).not.toHaveBeenCalled();
   });
 
@@ -1456,7 +1660,7 @@ describe('TUI v4 Review safety', () => {
         category: 'scopeConflict',
         actionId: userState === 'present' ? 'keepProjectScope' : 'keepUserScope',
       },
-    })).rejects.toMatchObject({ code: 'issueOriginInvalid' });
+    })).rejects.toMatchObject({ code: 'operationReviewStale' });
     expect(captureEvidence).not.toHaveBeenCalled();
     expect(executeIntent).not.toHaveBeenCalled();
   });

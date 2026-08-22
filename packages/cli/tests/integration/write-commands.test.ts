@@ -13,7 +13,10 @@ import {
   statusCommandV4,
 } from '../../src/commands/status-v4.js';
 import { createCliExecutionContext } from '../../src/commands/runtime.js';
-import { createTuiControllerDependencies } from '../../src/tui/controller-runtime.js';
+import {
+  createTuiControllerDependencies,
+  setTuiControllerRuntimeTestHooksForTests,
+} from '../../src/tui/controller-runtime.js';
 import { TuiController } from '../../src/tui/controller.js';
 import { userIssueKey } from '../../src/tui/controller.js';
 import { runCli } from '../../src/index.js';
@@ -191,6 +194,80 @@ describe('five namespaced write commands', () => {
     expect(result.overallState, JSON.stringify(result.rebuildResults)).toBe('succeeded');
     expect(result.rebuildResults.map((entry) => entry.target.pluginName)).toEqual(['leaf', 'root']);
     expect(result.dependencyPlan?.dependencyEdges).toEqual([{ from: 'team/root', to: 'team/leaf' }]);
+  });
+
+  it('revalidates a dependency issue after operation locks and performs zero platform writes when its consumer contract changes', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'tui-dependency-issue-stale-source');
+    await createDependencyCatalogSnapshotFixture(sourceRoot, [
+      { name: 'leaf', configureManifest: (manifest) => {
+        manifest.extensions!.agents = [{ name: 'leaf-role', description: 'Leaf role.', prompt: 'Leaf.' }];
+      } },
+      { name: 'root', dependencies: ['leaf'] },
+    ]);
+    const source = { id: 'team', type: 'path' as const, primary: true, path: sourceRoot };
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 1, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
+    });
+    const nativeCliRunner = vi.fn(async () => ({ exitCode: 0, stdout: 'codex-cli 99.0.0', stderr: '' }));
+    const runtime = { env: isolation.env, nativeCliRunner };
+    const leafInstall = await installWriteCommand(['team/leaf'], {
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+    }, runtime);
+    expect(leafInstall.overallState, JSON.stringify(leafInstall.rebuildResults)).toBe('succeeded');
+    await expect(installWriteCommand(['team/root'], {
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+    }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
+    const leafArtifactPath = path.join(
+      isolation.layout.fixtureCwd, '.codex', 'agents', 'aw-leaf-leaf-role.toml',
+    );
+    await expect(fs.pathExists(leafArtifactPath)).resolves.toBe(true);
+    await fs.remove(leafArtifactPath);
+
+    const dependencies = createTuiControllerDependencies(createCliExecutionContext({
+      cwd: isolation.layout.fixtureCwd,
+      env: isolation.env,
+      nativeCliRunner,
+      interactive: false,
+    }));
+    const controller = new TuiController(dependencies);
+    await controller.load();
+    const issue = controller.listUserIssues().find((candidate) =>
+      candidate.category === 'dependencyNotReady'
+      && candidate.pluginId === 'team/root'
+      && candidate.platform === 'codex' && candidate.scope === 'project')!;
+    expect(issue, JSON.stringify(controller.listUserIssues())).toBeDefined();
+    const action = issue.actions.find((candidate) => candidate.id === 'reinstallDependency')!;
+    expect(action).toMatchObject({
+      pluginId: 'team/leaf', platform: 'codex', scope: 'project', project: 'current',
+    });
+    const review = await controller.buildOperationReview({
+      kind: 'pluginWrite', action: 'reinstall', pluginId: 'team/leaf', platform: 'codex', scope: 'project',
+      originIssue: {
+        issueId: issue.issueId, issueKey: userIssueKey(issue), category: issue.category, actionId: action.id,
+        consumerPluginId: issue.pluginId, consumerSourceIdentity: issue.sourceIdentity,
+        consumerPlatform: issue.platform, consumerScope: issue.scope,
+        dependencyPluginId: issue.dependencyPluginId, dependencyPlatform: issue.dependencyPlatform,
+        dependencyScope: issue.dependencyScope, dependencyProject: issue.dependencyProject,
+      },
+    });
+    const sourceIdentity = await calculateCatalogSourceIdentity(source);
+    const rootContract = await resolveInstallationContractTarget({
+      sourceId: 'team', sourceIdentity, pluginName: 'root', platform: 'codex', scope: 'project',
+      cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    });
+    setTuiControllerRuntimeTestHooksForTests({
+      afterPluginOperationLocksAcquire: async () => fs.remove(rootContract.activeRoot),
+    });
+    try {
+      await expect(controller.executeOperation(review.reviewToken)).resolves.toMatchObject({
+        state: 'blocked', code: 'operationReviewStale',
+      });
+    } finally {
+      setTuiControllerRuntimeTestHooksForTests(undefined);
+    }
+    await expect(fs.pathExists(leafArtifactPath)).resolves.toBe(false);
   });
 
   it('blocks a corrupt absent installation-contract namespace before platform writes', async () => {

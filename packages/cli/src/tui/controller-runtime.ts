@@ -27,6 +27,7 @@ import { inventoryCatalogSourceReferences } from '../utils/catalog-source-refere
 import {
   withResolvedCatalogPlugin,
   withResolvedMultiSourceCatalog,
+  formatPluginId,
   parsePluginId,
 } from '../utils/multi-source-catalog.js';
 import {
@@ -41,6 +42,7 @@ import {
 } from '../utils/plugin-config-write.js';
 import type { RebuildProgressFeed } from '../output/rebuild-progress.js';
 import type { RebuildReviewPreflightEvidence } from '../commands/rebuild-command.js';
+import type { DependencyOperationPlan } from '../commands/dependency-operation-plan.js';
 import {
   operationEvidenceFingerprint,
   TuiController,
@@ -49,10 +51,19 @@ import {
   type OperationIntent,
   type TuiControllerDependencies,
 } from './controller.js';
-import { buildConfigGroups, buildConfigPage } from './model.js';
+import {
+  buildConfigGroups,
+  buildConfigPage,
+  projectPlatformPlacement,
+  type PlatformPlacementSummary,
+  type PluginDependencyOverviewViewModel,
+} from './model.js';
 import { projectCatalogSourceLocation } from '../utils/catalog-source-presentation.js';
 import { targetCanBeUninstalled } from '../utils/target-eligibility.js';
 import { calculateCatalogSourceIdentity } from '../utils/catalog-source-identity.js';
+import { resolvePluginsFromCatalog } from '../utils/manifest.js';
+import { inventoryInstallationContracts } from '../utils/installation-contract-store.js';
+import { resolveCanonicalRepoProjectKey } from '../utils/state-paths.js';
 
 export interface TuiControllerRuntimeTestHooks {
   afterPluginOperationLocksAcquire?: () => Promise<void>;
@@ -116,24 +127,41 @@ function assertIntentIsLegal(
   }
 }
 
-function assertTypedIssueOrigin(
+async function assertTypedIssueOrigin(
   intent: Extract<OperationIntent, { kind: 'pluginWrite' }>,
   targets: Awaited<ReturnType<typeof statusCommandV4>>['payload']['targets'],
-): void {
+  context: CliExecutionContext,
+): Promise<void> {
   if (!intent.originIssue) return;
+  const stale = (message: string): never => {
+    throw new TuiOperationBlockedError('operationReviewStale', `operationReviewStale: ${message}`);
+  };
   const selected = targets.find((target) =>
     target.pluginId === intent.pluginId
     && target.platform === intent.platform
     && target.scope === intent.scope);
-  if (intent.originIssue.category === 'incompleteInstallation') {
+  if (intent.originIssue.category === 'dependencyMissing') {
+    if (intent.originIssue.actionId !== 'installDependency'
+      || intent.action !== 'install' || !selected || selected.state !== 'absent') {
+      stale('原缺失依赖问题已变化。');
+    }
+  }
+  else if (intent.originIssue.category === 'dependencyNotReady') {
+    if (intent.originIssue.actionId !== 'reinstallDependency'
+      || intent.action !== 'reinstall' || !selected
+      || (selected.state !== 'partial' && selected.state !== 'error')) {
+      stale('原依赖安装问题已变化。');
+    }
+  }
+  else if (intent.originIssue.category === 'incompleteInstallation') {
     if (!selected || !targetCanBeUninstalled(selected.state) || selected.state !== 'partial'
       || !((intent.originIssue.actionId === 'reinstall' && intent.action === 'reinstall')
         || (intent.originIssue.actionId === 'remove' && intent.action === 'uninstall'))) {
-      throw new TuiOperationBlockedError('issueOriginInvalid', '原安装问题已变化。');
+      stale('原安装问题已变化。');
     }
     return;
   }
-  if (intent.originIssue.category === 'scopeConflict') {
+  else if (intent.originIssue.category === 'scopeConflict') {
     const installedScopes = new Set(targets.filter((target) =>
       target.pluginId === intent.pluginId
       && target.platform === intent.platform
@@ -142,11 +170,47 @@ function assertTypedIssueOrigin(
       && ((intent.originIssue.actionId === 'keepUserScope' && intent.scope === 'project')
         || (intent.originIssue.actionId === 'keepProjectScope' && intent.scope === 'user'));
     if (!correctBranch || !installedScopes.has('user') || !installedScopes.has('project')) {
-      throw new TuiOperationBlockedError('issueOriginInvalid', '原位置冲突已变化。');
+      stale('原位置冲突已变化。');
     }
     return;
   }
-  throw new TuiOperationBlockedError('issueOriginInvalid', '这个问题没有安全的自动写入动作。');
+  else stale('这个问题没有安全的自动写入动作。');
+
+  const origin = intent.originIssue;
+  if (!origin.consumerPluginId || !origin.consumerSourceIdentity || !origin.consumerPlatform
+    || !origin.consumerScope || !origin.dependencyPluginId || !origin.dependencyPlatform
+    || !origin.dependencyScope || origin.dependencyProject === undefined
+    || origin.dependencyPluginId !== intent.pluginId
+    || origin.dependencyPlatform !== intent.platform || origin.dependencyScope !== intent.scope) {
+    stale('依赖问题来源缺少稳定目标证据。');
+  }
+  const consumer = targets.find((target) =>
+    target.pluginId === origin.consumerPluginId
+    && target.sourceIdentity === origin.consumerSourceIdentity
+    && target.platform === origin.consumerPlatform
+    && target.scope === origin.consumerScope);
+  const consumerError = consumer?.errors.some((error) =>
+    error.code === origin.category && error.message.includes(origin.dependencyPluginId!));
+  if (!consumer || !consumerError) stale('原 consumer 依赖问题已消失或变化。');
+  const currentProjectKey = await resolveCanonicalRepoProjectKey(context.cwd);
+  const inventory = await inventoryInstallationContracts({ env: context.env });
+  if (inventory.errors.length > 0) stale('依赖安装记录当前不能完整验证。');
+  const contract = inventory.contracts.find((candidate) =>
+    candidate.metadata.pluginId === origin.consumerPluginId
+    && candidate.metadata.sourceIdentity === origin.consumerSourceIdentity
+    && candidate.metadata.platform === origin.consumerPlatform
+    && candidate.metadata.scope === origin.consumerScope
+    && (origin.consumerScope === 'user' || candidate.metadata.projectKey === currentProjectKey));
+  const dependency = contract?.metadata.dependencies.find((candidate) =>
+    candidate.pluginId === origin.dependencyPluginId
+    && candidate.platform === origin.dependencyPlatform
+    && candidate.scope === origin.dependencyScope
+    && (candidate.scope === 'user'
+      ? origin.dependencyProject === null
+      : candidate.projectKey === currentProjectKey
+        ? origin.dependencyProject === 'current'
+        : origin.dependencyProject === 'other'));
+  if (!dependency) stale('依赖安装目标映射已变化。');
 }
 
 function assertLockedPluginEvidence(
@@ -164,6 +228,227 @@ function assertLockedPluginEvidence(
     || current.contentDigest !== source.contentDigest) {
     throw new Error('operationReviewStale: 确认后 Catalog 或来源证据发生变化。');
   }
+}
+
+interface DependencyCatalogNode {
+  pluginId: string;
+  displayName: string;
+  dependencies: string[];
+}
+
+async function loadDependencyOverviews(options: {
+  context: CliExecutionContext;
+  cliVersion: string;
+  status: Awaited<ReturnType<typeof statusCommandV4>>;
+  signal: AbortSignal;
+}): Promise<PluginDependencyOverviewViewModel[]> {
+  const currentProjectKey = await resolveCanonicalRepoProjectKey(options.context.cwd);
+  const [graph, inventory] = await Promise.all([
+    withResolvedMultiSourceCatalog({
+      cliVersion: options.cliVersion,
+      freshnessPolicy: 'cacheFirst',
+      env: options.context.env,
+      signal: options.signal,
+      consume: async (catalog) => ({
+        nodes: (await Promise.all(catalog.sources.flatMap((item) => item.resolution
+          ? [resolvePluginsFromCatalog(item.resolution.rootDir, undefined).then((plugins) =>
+              plugins.map((plugin): DependencyCatalogNode => ({
+                pluginId: formatPluginId({
+                  sourceId: item.resolution!.sourceId,
+                  pluginName: plugin.manifest.name,
+                }),
+                displayName: plugin.manifest.interface?.displayName ?? plugin.manifest.name,
+                dependencies: (plugin.manifest.dependencies ?? []).map((pluginName) =>
+                  formatPluginId({ sourceId: item.resolution!.sourceId, pluginName })),
+              }))) ] : []))).flat(),
+        sourceErrors: catalog.sources.flatMap((item) => item.error
+          ? [{ sourceId: item.sourceId, code: 'dependencyGraphInvalid' }]
+          : []),
+      }),
+    }),
+    inventoryInstallationContracts({ env: options.context.env }),
+  ]);
+  const nodes = new Map(graph.nodes.map((node) => [node.pluginId, node]));
+  const displayName = (pluginId: string): string => nodes.get(pluginId)?.displayName
+    ?? parsePluginId(pluginId).pluginName;
+  const contractsByPlugin = new Map<string, typeof inventory.contracts>();
+  const reverse = new Map<string, Array<{
+    consumer: { pluginId: string; platform: PlatformName; scope: 'user' | 'project'; project: 'current' | 'other' | null };
+    dependency: { pluginId: string; platform: PlatformName; scope: 'user' | 'project'; project: 'current' | 'other' | null };
+  }>>();
+  const projectDescriptor = (scope: 'user' | 'project', projectKey: string | null): 'current' | 'other' | null =>
+    scope === 'user' ? null : projectKey === currentProjectKey ? 'current' : 'other';
+  for (const contract of inventory.contracts) {
+    contractsByPlugin.set(contract.metadata.pluginId, [
+      ...(contractsByPlugin.get(contract.metadata.pluginId) ?? []),
+      contract,
+    ]);
+    for (const dependency of contract.metadata.dependencies) {
+      const references = reverse.get(dependency.pluginId) ?? [];
+      references.push({
+        consumer: {
+          pluginId: contract.metadata.pluginId,
+          platform: contract.metadata.platform,
+          scope: contract.metadata.scope,
+          project: projectDescriptor(contract.metadata.scope, contract.metadata.projectKey),
+        },
+        dependency: {
+          pluginId: dependency.pluginId,
+          platform: dependency.platform,
+          scope: dependency.scope,
+          project: projectDescriptor(dependency.scope, dependency.projectKey),
+        },
+      });
+      reverse.set(dependency.pluginId, references);
+    }
+  }
+  const targetsByPlugin = new Map<string, typeof options.status.payload.targets>();
+  for (const target of options.status.payload.targets) {
+    targetsByPlugin.set(target.pluginId, [...(targetsByPlugin.get(target.pluginId) ?? []), target]);
+  }
+  const placementsFor = (pluginId: string): PlatformPlacementSummary[] => {
+    const targets = targetsByPlugin.get(pluginId) ?? [];
+    if (targets.length > 0) {
+      return (['codex', 'claude'] as const).flatMap((platform) => {
+        const selected = targets.filter((target) => target.platform === platform);
+        return selected.length > 0 ? [projectPlatformPlacement(platform, selected)] : [];
+      });
+    }
+    const contracts = contractsByPlugin.get(pluginId) ?? [];
+    return (['codex', 'claude'] as const).flatMap((platform): PlatformPlacementSummary[] => {
+      const selected = contracts.filter((contract) => contract.metadata.platform === platform);
+      if (selected.length === 0) return [];
+      const scopes = [...new Set(selected.map((contract) => contract.metadata.scope))];
+      return scopes.length === 1
+        ? [{ platform, state: 'installed' as const, scope: scopes[0]!, health: 'error' as const }]
+        : [{ platform, state: 'scopeConflict' as const, placements: scopes.map((scope) => ({
+            scope,
+            health: 'error' as const,
+          })) }];
+    });
+  };
+  const aggregateFor = (pluginId: string, placements: PlatformPlacementSummary[]) => {
+    const sourceId = parsePluginId(pluginId).sourceId;
+    if (graph.sourceErrors.some((error) => error.sourceId === sourceId)) return 'unavailable' as const;
+    if (placements.length === 0 || placements.every((placement) => placement.state === 'notInstalled')) {
+      return 'notInstalled' as const;
+    }
+    return placements.some((placement) => placement.state === 'scopeConflict'
+      || (placement.state === 'installed' && placement.health !== 'ready'))
+      ? 'needsAttention' as const
+      : 'ready' as const;
+  };
+  const allPluginIds = new Set([
+    ...nodes.keys(),
+    ...contractsByPlugin.keys(),
+    ...reverse.keys(),
+    ...targetsByPlugin.keys(),
+  ]);
+  return [...allPluginIds].sort().map((pluginId): PluginDependencyOverviewViewModel => {
+    const dependencies: Array<{ pluginId: string; depth: number; requiredBy: string[] }> = [];
+    const seen = new Set([pluginId]);
+    let frontier = [pluginId];
+    let depth = 0;
+    let graphInvalid = false;
+    while (frontier.length > 0) {
+      depth += 1;
+      const next: string[] = [];
+      const requiredBy = new Map<string, Set<string>>();
+      for (const parent of frontier) {
+        for (const dependency of nodes.get(parent)?.dependencies ?? []) {
+          const parents = requiredBy.get(dependency) ?? new Set<string>();
+          parents.add(parent);
+          requiredBy.set(dependency, parents);
+          if (seen.has(dependency)) {
+            if (dependency === pluginId) graphInvalid = true;
+            continue;
+          }
+          seen.add(dependency);
+          next.push(dependency);
+        }
+      }
+      for (const dependency of next) {
+        dependencies.push({ pluginId: dependency, depth, requiredBy: [...(requiredBy.get(dependency) ?? [])] });
+      }
+      frontier = next;
+    }
+    const dependencyItems = dependencies.map((dependency) => {
+      const placements = placementsFor(dependency.pluginId);
+      return {
+        pluginId: dependency.pluginId,
+        displayName: displayName(dependency.pluginId),
+        relation: dependency.depth === 1 ? 'direct' as const : 'transitive' as const,
+        depth: dependency.depth,
+        requiredBy: dependency.requiredBy.map((requiredBy) => ({
+          pluginId: requiredBy,
+          displayName: displayName(requiredBy),
+        })),
+        placements,
+        aggregateStatus: aggregateFor(dependency.pluginId, placements),
+        placementReferences: reverse.get(dependency.pluginId) ?? [],
+      };
+    });
+    const dependentReferences = reverse.get(pluginId) ?? [];
+    const dependentIds = [...new Set(dependentReferences.map((reference) => reference.consumer.pluginId))].sort();
+    const dependents = dependentIds.map((dependentId) => {
+      const placements = placementsFor(dependentId);
+      return {
+        pluginId: dependentId,
+        displayName: displayName(dependentId),
+        relation: 'dependent' as const,
+        depth: 1,
+        requiredBy: [],
+        placements,
+        aggregateStatus: aggregateFor(dependentId, placements),
+        placementReferences: dependentReferences.filter((reference) =>
+          reference.consumer.pluginId === dependentId),
+      };
+    });
+    const targetBlockers = (targetsByPlugin.get(pluginId) ?? []).flatMap((target) =>
+      target.errors.filter((error) => error.code.startsWith('dependency') || error.code === 'sourceChanged')
+        .map((error) => ({
+          code: error.code,
+          title: '依赖关系需要处理',
+          explanation: '当前目标的依赖证据不能安全通过检查。',
+        })));
+    const sourceId = parsePluginId(pluginId).sourceId;
+    const blockers = [
+      ...graph.sourceErrors.filter((error) => error.sourceId === sourceId).map((error) => ({
+        code: error.code,
+        title: '来源依赖关系不可用',
+        explanation: '当前来源快照不能安全读取。反向安装记录仍可显示。',
+      })),
+      ...(graphInvalid ? [{
+        code: 'dependencyGraphInvalid',
+        title: '依赖关系无效',
+        explanation: '依赖关系形成环。',
+      }] : []),
+      ...targetBlockers,
+      ...inventory.errors.map(() => ({
+        code: 'dependencyContractInvalid',
+        title: '依赖安装记录无效',
+        explanation: '部分反向依赖记录不能安全读取。',
+      })),
+    ];
+    const directCount = dependencyItems.filter((item) => item.relation === 'direct').length;
+    const readyCount = dependencyItems.filter((item) => item.aggregateStatus === 'ready').length;
+    const missingCount = dependencyItems.filter((item) => item.aggregateStatus === 'notInstalled').length;
+    const issueCount = dependencyItems.length - readyCount - missingCount + blockers.length;
+    return {
+      pluginId,
+      summary: {
+        directCount,
+        transitiveCount: dependencyItems.length - directCount,
+        totalCount: dependencyItems.length,
+        readyCount,
+        missingCount,
+        issueCount,
+      },
+      dependencies: dependencyItems,
+      dependents,
+      blockers,
+    };
+  });
 }
 
 export function createTuiControllerDependencies(
@@ -184,10 +469,18 @@ export function createTuiControllerDependencies(
       const configured = await listCatalogSources({ env: context.env });
       signal.throwIfAborted();
       if (result.payload.catalog.configDigest !== configured.configDigest) continue;
+      const dependencyOverviews = await loadDependencyOverviews({
+        context,
+        cliVersion: packageInfo.version,
+        status: result,
+        signal,
+      });
+      signal.throwIfAborted();
       const statusById = new Map(result.payload.catalog.sources.map((source) => [source.id, source]));
       return {
         payload: result.payload,
         pluginSummaries: result.pluginSummaries,
+        dependencyOverviews,
         sourceDetails: configured.sources.map((source) => {
           const status = statusById.get(source.id);
           return {
@@ -262,7 +555,11 @@ export function createTuiControllerDependencies(
     };
   };
 
-  const captureEvidence: TuiControllerDependencies['captureEvidence'] = async (intent, signal) => {
+  const captureEvidence = async (
+    intent: OperationIntent,
+    signal?: AbortSignal,
+    skipDependencyPlanPreview = false,
+  ): Promise<OperationEvidence> => {
     if (intent.kind === 'sourceMutation') {
       signal?.throwIfAborted();
       if (intent.action === 'add' && !intent.source
@@ -300,7 +597,9 @@ export function createTuiControllerDependencies(
     signal?.throwIfAborted();
     const packageInfo = await readCliPackageInfo();
     const status = await statusCommandV4({
-      plugins: [intent.pluginId],
+      plugins: [...new Set([intent.pluginId,
+        ...(intent.kind === 'pluginWrite' && intent.originIssue?.consumerPluginId
+          ? [intent.originIssue.consumerPluginId] : [])])],
       ...('platform' in intent ? { platform: intent.platform } : {}),
       ...(intent.kind !== 'pluginWrite' && intent.scope === 'project'
         ? { scope: intent.scope }
@@ -310,36 +609,93 @@ export function createTuiControllerDependencies(
       cliVersion: packageInfo.version,
     });
     signal?.throwIfAborted();
+    if (intent.kind === 'pluginWrite') {
+      await assertTypedIssueOrigin(intent, status.payload.targets, context);
+    }
     const configSnapshot = await readCatalogSourcesConfigSnapshot(context.env);
-    const selected = await withResolvedCatalogPlugin({
-      selector: intent.pluginId,
-      cliVersion: packageInfo.version,
-      freshnessPolicy: 'cacheFirst',
-      configSnapshot,
-      env: context.env,
-      ...(signal ? { signal } : {}),
-      consume: ({ plugin, source }) => {
-        const entry = source.manifest.entries.find((candidate) => candidate.name === plugin.manifest.name)!;
-        return {
-          pluginName: plugin.manifest.name,
-          source: {
-            sourceId: source.sourceId,
-            sourceIdentity: source.sourceIdentity,
-            requestedRef: source.requestedRef,
-            resolvedCommit: source.resolvedCommit,
-            manifestDigest: source.manifestDigest,
-            snapshotDigest: source.snapshotDigest,
-            contentDigest: entry.contentDigest,
+    let dependencyPlan: DependencyOperationPlan | undefined;
+    const hasDeclaredDependencies = (status.pluginSummaries.find((summary) =>
+      summary.pluginId === intent.pluginId)?.dependencyTotalCount ?? 0) > 0;
+    if (intent.kind === 'pluginWrite'
+      && !skipDependencyPlanPreview
+      && hasDeclaredDependencies
+      && (intent.action === 'install' || intent.action === 'upgrade' || intent.action === 'reinstall')) {
+      const command = {
+        install: installWriteCommand,
+        upgrade: upgradeWriteCommand,
+        reinstall: reinstallWriteCommand,
+      }[intent.action];
+      const preview = await command([intent.pluginId], {
+        cwd: context.cwd,
+        platform: intent.platform,
+        scope: intent.scope,
+      }, {
+        ...context,
+        expectedCatalogConfigDigest: status.payload.catalog.configDigest,
+        previewDependencyPlanOnly: true,
+      });
+      dependencyPlan = preview.dependencyPlan;
+      if (!dependencyPlan) {
+        throw new TuiOperationBlockedError('dependencyGraphInvalid', '无法建立可信的依赖安装计划。');
+      }
+      const blocker = dependencyPlan.targets.find((target) => target.action === 'block');
+      if (blocker) {
+        throw new TuiOperationBlockedError(
+          blocker.errorCode ?? 'dependencyNotReady',
+          `${blocker.errorCode ?? 'dependencyNotReady'}: 依赖安装计划被阻止。`,
+        );
+      }
+    }
+    const selected = dependencyPlan
+      ? (() => {
+          const node = dependencyPlan.nodes.find((candidate) => candidate.pluginId === intent.pluginId)!;
+          const source = dependencyPlan.sources.find((candidate) => candidate.sourceId === node.sourceId)!;
+          return {
+            pluginName: node.pluginName,
+            source: {
+              sourceId: source.sourceId,
+              sourceIdentity: source.sourceIdentity,
+              ...(status.payload.catalog.sources.find((candidate) => candidate.id === source.sourceId)?.requestedRef
+                ? { requestedRef: status.payload.catalog.sources.find((candidate) =>
+                    candidate.id === source.sourceId)!.requestedRef }
+                : {}),
+              resolvedCommit: source.resolvedCommit,
+              manifestDigest: source.manifestDigest,
+              snapshotDigest: source.snapshotDigest,
+              contentDigest: node.contentDigest,
+            },
+          };
+        })()
+      : await withResolvedCatalogPlugin({
+          selector: intent.pluginId,
+          cliVersion: packageInfo.version,
+          freshnessPolicy: 'cacheFirst',
+          configSnapshot,
+          env: context.env,
+          ...(signal ? { signal } : {}),
+          consume: ({ plugin, source }) => {
+            const entry = source.manifest.entries.find((candidate) => candidate.name === plugin.manifest.name)!;
+            return {
+              pluginName: plugin.manifest.name,
+              source: {
+                sourceId: source.sourceId,
+                sourceIdentity: source.sourceIdentity,
+                requestedRef: source.requestedRef,
+                resolvedCommit: source.resolvedCommit,
+                manifestDigest: source.manifestDigest,
+                snapshotDigest: source.snapshotDigest,
+                contentDigest: entry.contentDigest,
+              },
+            };
           },
-        };
-      },
-    });
+        });
     const evidence: OperationEvidence = {
       catalog: {
         configDigest: status.payload.catalog.configDigest,
         compositeDigest: status.payload.catalog.compositeDigest,
       },
       source: selected.source,
+      ...(dependencyPlan ? { dependencyPlan } : {}),
       targetFingerprint: digest(status.payload.targets.map((target) => ({
         pluginId: target.pluginId,
         sourceIdentity: target.sourceIdentity,
@@ -483,14 +839,15 @@ export function createTuiControllerDependencies(
       signal.throwIfAborted();
       const packageInfo = await readCliPackageInfo();
       const status = await statusCommandV4({
-        plugins: [intent.pluginId],
+        plugins: [...new Set([intent.pluginId,
+          ...(intent.originIssue?.consumerPluginId ? [intent.originIssue.consumerPluginId] : [])])],
         platform: intent.platform,
         cwd: context.cwd,
         env: context.env,
         cliVersion: packageInfo.version,
       });
       signal.throwIfAborted();
-      assertTypedIssueOrigin(intent, status.payload.targets);
+      await assertTypedIssueOrigin(intent, status.payload.targets, context);
       assertIntentIsLegal(intent, status.payload.targets);
     },
     async checkSource(sourceId, signal) {
@@ -611,7 +968,10 @@ export function createTuiControllerDependencies(
       };
     },
     async executeIntent(intent, expectedEvidence) {
-      const currentEvidence = await captureEvidence(intent);
+      const currentEvidence = await captureEvidence(intent, undefined, true);
+      if (expectedEvidence.dependencyPlan) {
+        currentEvidence.dependencyPlan = expectedEvidence.dependencyPlan;
+      }
       if (operationEvidenceFingerprint(currentEvidence) !== operationEvidenceFingerprint(expectedEvidence)) {
         throw new TuiOperationBlockedError('operationReviewStale', '确认后状态发生变化。');
       }
@@ -691,6 +1051,16 @@ export function createTuiControllerDependencies(
                   }
                   fullEvidenceChecked = true;
                 },
+                ...(expectedEvidence.dependencyPlan ? {
+                  dependencyPlanReviewPreflight: async (plan) => {
+                    if (plan.planDigest !== expectedEvidence.dependencyPlan!.planDigest) {
+                      throw new TuiOperationBlockedError(
+                        'operationReviewStale',
+                        'operationReviewStale: 确认后依赖安装计划发生变化。',
+                      );
+                    }
+                  },
+                } : {}),
               });
               const staleFailure = result.targetResults.find((entry) => entry.state === 'failed'
                 && (entry.errorCode === 'operationReviewStale'

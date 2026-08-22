@@ -5,8 +5,19 @@ export type TuiRoute =
   | { name: 'home' }
   | { name: 'pluginList'; mode: 'browse' | 'installed'; sourceId?: string }
   | { name: 'pluginPreview'; pluginId: string }
+  | {
+      name: 'pluginDependencies';
+      pluginId: string;
+      view?: 'relations' | 'removeBlocked';
+      platform?: PlatformName;
+      scope?: Scope;
+    }
   | { name: 'installPlacement'; pluginId: string }
-  | { name: 'installTools'; pluginId: string }
+  | {
+      name: 'installTools';
+      pluginId: string;
+      view?: 'selection' | 'blocked';
+    }
   | { name: 'pluginDetail'; pluginId: string }
   | { name: 'platform'; pluginId: string; platform: PlatformName }
   | { name: 'pluginAbout'; pluginId: string }

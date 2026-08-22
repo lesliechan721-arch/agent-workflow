@@ -79,7 +79,7 @@ describe('TUI controller runtime scope conflict validation', () => {
         category: 'scopeConflict',
         actionId: presentScope === 'user' ? 'keepProjectScope' : 'keepUserScope',
       },
-    }, new AbortController().signal)).rejects.toMatchObject({ code: 'issueOriginInvalid' });
+    }, new AbortController().signal)).rejects.toMatchObject({ code: 'operationReviewStale' });
 
     expect(runtimeMocks.cleanupWriteCommand).not.toHaveBeenCalled();
     expect(runtimeMocks.installWriteCommand).not.toHaveBeenCalled();

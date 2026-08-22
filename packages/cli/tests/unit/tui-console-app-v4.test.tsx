@@ -2,6 +2,7 @@ import { cleanup, render } from 'ink-testing-library';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { StatusV4Payload, StatusV4PluginSummary } from '../../src/commands/status-v4.js';
+import type { DependencyOperationPlan } from '../../src/commands/dependency-operation-plan.js';
 import { createRebuildProgressFeed } from '../../src/output/rebuild-progress.js';
 import {
   CONSOLE_V4_SCREEN_IDS,
@@ -16,7 +17,7 @@ import {
   type TuiControllerDependencies,
   type TuiStatusLoadResult,
 } from '../../src/tui/controller.js';
-import type { ConfigPageViewModel } from '../../src/tui/model.js';
+import type { ConfigPageViewModel, PluginDependencyOverviewViewModel } from '../../src/tui/model.js';
 
 afterEach(() => cleanup());
 
@@ -148,6 +149,93 @@ function loadResult(): TuiStatusLoadResult {
   };
 }
 
+function dependencyPlan(): DependencyOperationPlan {
+  return {
+    dependencyPlanSchemaVersion: 1,
+    requestedPluginIds: ['official/agent-lab'],
+    resolvedPluginIds: ['official/content-toolkit', 'official/skill-toolkit', 'official/agent-lab'],
+    dependencyEdges: [
+      { from: 'official/agent-lab', to: 'official/skill-toolkit' },
+      { from: 'official/skill-toolkit', to: 'official/content-toolkit' },
+    ],
+    sources: [{ sourceId: 'official', sourceIdentity: 'identity:official', resolvedCommit: 'abc123', manifestDigest: 'sha256:manifest', snapshotDigest: 'sha256:snapshot' }],
+    nodes: [
+      { pluginId: 'official/agent-lab', pluginName: 'agent-lab', pluginVersion: '0.4.2', sourceId: 'official', sourceIdentity: 'identity:official', manifestDigest: 'sha256:root', contentDigest: 'sha256:root-content' },
+      { pluginId: 'official/skill-toolkit', pluginName: 'skill-toolkit', pluginVersion: '0.3.0', sourceId: 'official', sourceIdentity: 'identity:official', manifestDigest: 'sha256:skill', contentDigest: 'sha256:skill-content' },
+      { pluginId: 'official/content-toolkit', pluginName: 'content-toolkit', pluginVersion: '0.2.0', sourceId: 'official', sourceIdentity: 'identity:official', manifestDigest: 'sha256:content', contentDigest: 'sha256:content-content' },
+    ],
+    targets: [
+      { pluginId: 'official/content-toolkit', pluginName: 'content-toolkit', platform: 'codex', requestedScope: 'project', resolvedScope: 'user', relation: 'dependency', requiredBy: ['official/skill-toolkit'], state: 'present', action: 'keep', order: 1 },
+      { pluginId: 'official/skill-toolkit', pluginName: 'skill-toolkit', platform: 'codex', requestedScope: 'project', resolvedScope: 'project', relation: 'dependency', requiredBy: ['official/agent-lab'], state: 'absent', action: 'install', order: 2 },
+      { pluginId: 'official/agent-lab', pluginName: 'agent-lab', platform: 'codex', requestedScope: 'project', resolvedScope: 'project', relation: 'requested', requiredBy: [], state: 'absent', action: 'install', order: 3 },
+    ],
+    planDigest: 'sha256:dependency-plan',
+  };
+}
+
+function dependencyOverview(options: {
+  rootState?: 'notInstalled' | 'ready';
+  blockers?: PluginDependencyOverviewViewModel['blockers'];
+} = {}): PluginDependencyOverviewViewModel[] {
+  const rootState = options.rootState ?? 'notInstalled';
+  const notInstalled = (platform: 'codex' | 'claude') => ({ platform, state: 'notInstalled' as const, supportedScopes: ['user', 'project'] as const });
+  const readyUser = (platform: 'codex' | 'claude') => ({ platform, state: 'installed' as const, scope: 'user' as const, health: 'ready' as const });
+  return [
+    {
+      pluginId: 'official/agent-lab',
+      summary: { directCount: 1, transitiveCount: 1, totalCount: 2, readyCount: 1, missingCount: 1, issueCount: options.blockers?.length ?? 0 },
+      dependencies: [
+        { pluginId: 'official/skill-toolkit', displayName: 'Agent Skill Toolkit', relation: 'direct', depth: 1, requiredBy: [{ pluginId: 'official/agent-lab', displayName: 'Agent Lab' }], placements: [notInstalled('codex'), notInstalled('claude')], aggregateStatus: 'notInstalled', placementReferences: [{ consumer: { pluginId: 'official/agent-lab', platform: 'codex', scope: 'project', project: 'current' }, dependency: { pluginId: 'official/skill-toolkit', platform: 'codex', scope: 'user', project: null } }] },
+        { pluginId: 'official/content-toolkit', displayName: 'Agent Content Toolkit', relation: 'transitive', depth: 2, requiredBy: [{ pluginId: 'official/skill-toolkit', displayName: 'Agent Skill Toolkit' }], placements: [readyUser('codex'), readyUser('claude')], aggregateStatus: 'ready' },
+      ],
+      dependents: [],
+      blockers: options.blockers ?? [],
+    },
+    {
+      pluginId: 'official/skill-toolkit',
+      summary: { directCount: 1, transitiveCount: 0, totalCount: 1, readyCount: 1, missingCount: 0, issueCount: 0 },
+      dependencies: [
+        { pluginId: 'official/content-toolkit', displayName: 'Agent Content Toolkit', relation: 'direct', depth: 1, requiredBy: [{ pluginId: 'official/skill-toolkit', displayName: 'Agent Skill Toolkit' }], placements: [readyUser('codex'), readyUser('claude')], aggregateStatus: 'ready' },
+      ],
+      dependents: [
+        { pluginId: 'official/agent-lab', displayName: 'Agent Lab', relation: 'dependent', depth: 1, requiredBy: [], placements: rootState === 'ready' ? [readyUser('codex')] : [notInstalled('codex')], aggregateStatus: rootState, placementReferences: [{ consumer: { pluginId: 'official/agent-lab', platform: 'codex', scope: 'project', project: 'current' }, dependency: { pluginId: 'official/skill-toolkit', platform: 'codex', scope: 'user', project: null } }] },
+      ],
+      blockers: [],
+    },
+  ];
+}
+
+function dependencyLoadResult(options: {
+  rootState?: 'absent' | 'present' | 'error';
+  rootErrorCode?: string;
+  rootErrorMessage?: string;
+  blockers?: PluginDependencyOverviewViewModel['blockers'];
+} = {}): TuiStatusLoadResult {
+  const initial = loadResult();
+  const rootState = options.rootState ?? 'absent';
+  initial.payload.catalog.sources = [initial.payload.catalog.sources[0]!];
+  initial.pluginSummaries = [
+    { ...initial.pluginSummaries[0]!, supportedTargets: { codex: ['user', 'project'], claude: ['user', 'project'] } },
+    { pluginName: 'skill-toolkit', pluginId: 'official/skill-toolkit', displayName: 'Agent Skill Toolkit', description: '提供 Skill 工具能力', version: '0.3.0', supportedTargets: { codex: ['user', 'project'], claude: [] }, configFieldCount: 0 },
+    { pluginName: 'content-toolkit', pluginId: 'official/content-toolkit', displayName: 'Agent Content Toolkit', description: '提供内容工具能力', version: '0.2.0', supportedTargets: { codex: ['user', 'project'], claude: ['user', 'project'] }, configFieldCount: 0 },
+  ];
+  initial.payload.targets = [
+    ...(['codex', 'claude'] as const).flatMap((platform) => (['user', 'project'] as const).map((scope) => ({
+      ...target({ pluginName: 'agent-lab', platform, scope, state: rootState }),
+      errors: rootState === 'error' ? [{ code: options.rootErrorCode ?? 'targetError', message: options.rootErrorMessage ?? '安全说明' }] : [],
+    }))),
+    ...(['codex', 'claude'] as const).flatMap((platform) => (['user', 'project'] as const).map((scope) =>
+      target({ pluginName: 'skill-toolkit', platform, scope, state: 'absent' }))),
+    ...(['codex', 'claude'] as const).flatMap((platform) => (['user', 'project'] as const).map((scope) =>
+      target({ pluginName: 'content-toolkit', platform, scope, state: scope === 'user' ? 'present' : 'absent' }))),
+  ];
+  initial.dependencyOverviews = dependencyOverview({
+    rootState: rootState === 'present' ? 'ready' : 'notInstalled',
+    blockers: options.blockers,
+  });
+  return initial;
+}
+
 function controller(overrides: Partial<TuiControllerDependencies> = {}): TuiController {
   return new TuiController({
     loadStatus: vi.fn().mockResolvedValue(loadResult()),
@@ -247,9 +335,9 @@ async function confirmReview(
 }
 
 describe('ConsoleAppV4', () => {
-  it('keeps the complete 74-state design map free of duplicate route identities', () => {
-    expect(CONSOLE_V4_SCREEN_IDS).toHaveLength(74);
-    expect(new Set(CONSOLE_V4_SCREEN_IDS)).toHaveProperty('size', 74);
+  it('keeps the complete 91-state design map free of duplicate route identities', () => {
+    expect(CONSOLE_V4_SCREEN_IDS).toHaveLength(91);
+    expect(new Set(CONSOLE_V4_SCREEN_IDS)).toHaveProperty('size', 91);
     expect(CONSOLE_V4_SCREEN_IDS).toEqual([
       'G01', 'G02', 'G03', 'G04', 'G05',
       'P01', 'P02', 'P03', 'P04', 'P05', 'P06', 'P07', 'P08', 'P09', 'P10',
@@ -260,6 +348,8 @@ describe('ConsoleAppV4', () => {
       'S10', 'S11', 'S12', 'S13', 'S14', 'S15', 'S16', 'S17', 'S18',
       'I01', 'I02', 'I03', 'I04', 'I05', 'I06', 'I07', 'I08', 'I09',
       'I10', 'I11', 'I12', 'I13',
+      'D01', 'D02', 'D03', 'D04', 'D05', 'D06', 'D07', 'D08', 'D09',
+      'D10', 'D11', 'D12', 'D13', 'D14', 'D15', 'D16', 'D17',
     ]);
   });
 
@@ -2251,5 +2341,315 @@ describe('ConsoleAppV4', () => {
     expect(instance.lastFrame()).not.toContain('来源列表没有被修改');
     await input(instance, '\r');
     expect(value.snapshot.router.current.route).toEqual({ name: 'sourceList' });
+  });
+
+  it('shows dependency installation content, opens the single relation route, and keeps a plugin without dependencies on P04', async () => {
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(dependencyLoadResult()) });
+    await value.load();
+    value.push({ name: 'pluginPreview', pluginId: 'official/agent-lab' });
+    const screens = new Set<ConsoleV4ScreenId>();
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} onScreenChange={(screen) => screens.add(screen)} />);
+    await nextTurn(3);
+    expect(instance.lastFrame()).toContain('安装内容');
+    expect(instance.lastFrame()).toContain('Agent Skill Toolkit');
+    expect(instance.lastFrame()).not.toContain('planDigest');
+    await input(instance, '\u001B[B', '\r');
+    expect(screens).toContain('D02');
+    expect(instance.lastFrame()).toContain('安装所需插件');
+    await input(instance, 'b');
+    expect(value.snapshot.router.current.route).toEqual({ name: 'pluginPreview', pluginId: 'official/agent-lab' });
+
+    const plain = controller();
+    await plain.load();
+    plain.push({ name: 'pluginPreview', pluginId: 'official/review-gate' });
+    const plainInstance = render(<ConsoleAppV4 controller={plain} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(2);
+    expect(plainInstance.lastFrame()).not.toContain('安装内容');
+    expect(resolveConsoleV4ScreenId(plain.snapshot, plain)).toBe('P04');
+  });
+
+  it('groups a dependency Review without giving its headings a separate focus and keeps the primary action reachable', async () => {
+    const plan = dependencyPlan();
+    const executeIntent = vi.fn();
+    const value = controller({
+      loadStatus: vi.fn().mockResolvedValue(dependencyLoadResult()),
+      captureEvidence: vi.fn().mockResolvedValue({ ...evidence, dependencyPlan: plan }),
+      executeIntent,
+    });
+    await value.load();
+    await value.buildOperationReview({
+      kind: 'pluginWrite', action: 'install', pluginId: 'official/agent-lab', platform: 'codex', scope: 'project',
+    });
+    const screens = new Set<ConsoleV4ScreenId>();
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} onScreenChange={(screen) => screens.add(screen)} />);
+    await nextTurn(3);
+    expect(screens).toContain('D05');
+    expect(instance.lastFrame()).toContain('你选择的插件');
+    expect(instance.lastFrame()).toContain('必需依赖');
+    expect(instance.lastFrame()).toContain('保持不变');
+    await input(instance, '\r');
+    expect(executeIntent).not.toHaveBeenCalled();
+    await input(instance, ...Array.from({ length: value.snapshot.activeReview!.changes.length }, () => '\u001B[B'));
+    expect(instance.lastFrame()).toContain('› 添加插件 3 个插件');
+  });
+
+  it('renders kept, failed, and skipped dependency targets as target-level results', async () => {
+    const plan = dependencyPlan();
+    const loaded = dependencyLoadResult();
+    const executeIntent = vi.fn().mockResolvedValue({
+      dependencyPlan: plan,
+      overallState: 'failed',
+      targetResults: [
+        { target: { pluginId: 'official/content-toolkit', platform: 'codex', scope: 'user' }, state: 'completed', action: 'keep' },
+        { target: { pluginId: 'official/skill-toolkit', platform: 'codex', scope: 'project' }, state: 'failed' },
+        { target: { pluginId: 'official/agent-lab', platform: 'codex', scope: 'project' }, state: 'completed', action: 'skipped' },
+      ],
+    });
+    const value = controller({
+      loadStatus: vi.fn().mockResolvedValue(loaded),
+      captureEvidence: vi.fn().mockResolvedValue({ ...evidence, dependencyPlan: plan }),
+      executeIntent,
+    });
+    await value.load();
+    await value.buildOperationReview({
+      kind: 'pluginWrite', action: 'install', pluginId: 'official/agent-lab', platform: 'codex', scope: 'project',
+    });
+    const screens = new Set<ConsoleV4ScreenId>();
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} onScreenChange={(screen) => screens.add(screen)} />);
+    await nextTurn(2);
+    await confirmReview(instance, value);
+    await nextTurn(4);
+    expect(screens).toContain('D08');
+    expect(instance.lastFrame()).toContain('Agent Content Toolkit');
+    expect(instance.lastFrame()).toContain('已保留');
+    expect(instance.lastFrame()).toContain('Agent Skill Toolkit');
+    expect(instance.lastFrame()).toContain('失败');
+    expect(instance.lastFrame()).toContain('Agent Lab');
+    expect(instance.lastFrame()).toContain('未执行 · 依赖未完成');
+    expect(instance.lastFrame()).not.toContain('根插件没有留下部分安装');
+  });
+
+  it.each([
+    ['dependencyMissing', 'installDependency', 'install', 'absent'],
+    ['dependencyNotReady', 'reinstallDependency', 'reinstall', 'partial'],
+  ] as const)('uses the contract dependency placement for a project consumer %s action', async (
+    category,
+    actionId,
+    writeAction,
+    dependencyState,
+  ) => {
+    const loaded = dependencyLoadResult({
+      rootState: 'error',
+      rootErrorCode: category,
+      rootErrorMessage: `${category}: official/skill-toolkit has changed state.`,
+    });
+    const dependencyTarget = loaded.payload.targets.find((entry) =>
+      entry.pluginId === 'official/skill-toolkit' && entry.platform === 'codex' && entry.scope === 'user')!;
+    dependencyTarget.state = dependencyState;
+    dependencyTarget.errors = dependencyState === 'partial'
+      ? [{ code: 'missingContent', message: '安全说明' }] : [];
+    const captureEvidence = vi.fn().mockResolvedValue(evidence);
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded), captureEvidence });
+    await value.load();
+    const issue = value.listUserIssues().find((candidate) =>
+      candidate.category === category && candidate.platform === 'codex' && candidate.scope === 'project')!;
+    value.push({ name: 'issueDetail', issueId: issue.issueId });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(3);
+
+    await input(instance, ...(actionId === 'reinstallDependency' ? ['\u001B[B'] : []), '\r');
+
+    expect(captureEvidence).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'pluginWrite',
+      action: writeAction,
+      pluginId: 'official/skill-toolkit',
+      platform: 'codex',
+      scope: 'user',
+      originIssue: expect.objectContaining({
+        actionId,
+        consumerPluginId: 'official/agent-lab',
+        consumerPlatform: 'codex',
+        consumerScope: 'project',
+        dependencyPluginId: 'official/skill-toolkit',
+        dependencyPlatform: 'codex',
+        dependencyScope: 'user',
+        dependencyProject: null,
+      }),
+    }), expect.any(AbortSignal));
+  });
+
+  it('keeps failed and skipped dependency targets on D08 without a kept target and retries the dependency', async () => {
+    const plan = dependencyPlan();
+    plan.resolvedPluginIds = ['official/skill-toolkit', 'official/agent-lab'];
+    plan.targets = plan.targets.filter((target) => target.pluginId !== 'official/content-toolkit');
+    const before = dependencyLoadResult();
+    const after = dependencyLoadResult();
+    const captureEvidence = vi.fn().mockResolvedValue({ ...evidence, dependencyPlan: plan });
+    const value = controller({
+      loadStatus: vi.fn().mockResolvedValueOnce(before).mockResolvedValue(after),
+      captureEvidence,
+      executeIntent: vi.fn().mockResolvedValue({
+        dependencyPlan: plan,
+        overallState: 'failed',
+        targetResults: [
+          { target: { pluginId: 'official/skill-toolkit', platform: 'codex', scope: 'project' }, state: 'failed', action: 'install' },
+          { target: { pluginId: 'official/agent-lab', platform: 'codex', scope: 'project' }, state: 'failed', action: 'skipped' },
+        ],
+      }),
+    });
+    await value.load();
+    const review = await value.buildOperationReview({
+      kind: 'pluginWrite', action: 'install', pluginId: 'official/agent-lab', platform: 'codex', scope: 'project',
+    });
+    const screens = new Set<ConsoleV4ScreenId>();
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} onScreenChange={(screen) => screens.add(screen)} />);
+    await nextTurn(2);
+    await confirmReview(instance, value);
+    await nextTurn(4);
+
+    expect(screens).toContain('D08');
+    expect(instance.lastFrame()).toContain('Agent Skill Toolkit');
+    expect(instance.lastFrame()).toContain('失败');
+    expect(instance.lastFrame()).toContain('Agent Lab');
+    expect(instance.lastFrame()).toContain('未执行 · 依赖未完成');
+    expect(instance.lastFrame()).not.toContain('结果未确认');
+    await input(instance, '\u001B[B', '\r');
+    expect(captureEvidence.mock.calls.at(-1)?.[0]).toMatchObject({
+      action: 'install', pluginId: 'official/skill-toolkit', platform: 'codex', scope: 'project',
+    });
+    expect(captureEvidence.mock.calls.at(-1)?.[0]).not.toMatchObject({ pluginId: 'official/agent-lab' });
+    expect(review.pluginAction).toBe('install');
+  });
+
+  it('allows an unreferenced Claude placement removal while Codex remains required', async () => {
+    const loaded = dependencyLoadResult({ rootState: 'present' });
+    for (const platform of ['codex', 'claude'] as const) {
+      const target = loaded.payload.targets.find((entry) =>
+        entry.pluginId === 'official/skill-toolkit' && entry.platform === platform && entry.scope === 'user')!;
+      target.state = 'present';
+    }
+    const captureEvidence = vi.fn().mockResolvedValue(evidence);
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded), captureEvidence });
+    await value.load();
+    value.push({ name: 'platform', pluginId: 'official/skill-toolkit', platform: 'claude' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} />);
+    await nextTurn(3);
+
+    await input(instance, '\u001B[B', '\u001B[B', '\r');
+
+    expect(value.snapshot.router.current.route.name).toBe('review');
+    expect(captureEvidence).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'uninstall', pluginId: 'official/skill-toolkit', platform: 'claude', scope: 'user',
+    }), expect.any(AbortSignal));
+  });
+
+  it('disables a project tool after refresh shows that a missing dependency supports only user scope', async () => {
+    const permissive = dependencyLoadResult();
+    const restricted = structuredClone(permissive);
+    restricted.payload.targets = restricted.payload.targets.filter((target) => !(
+      target.pluginId === 'official/skill-toolkit'
+      && target.platform === 'codex' && target.scope === 'project'));
+    const skillSummary = restricted.pluginSummaries.find((summary) => summary.pluginId === 'official/skill-toolkit')!;
+    skillSummary.supportedTargets = { codex: ['user'], claude: [] };
+    const captureEvidence = vi.fn().mockResolvedValue(evidence);
+    const value = controller({
+      loadStatus: vi.fn().mockResolvedValueOnce(permissive).mockResolvedValue(restricted),
+      captureEvidence,
+    });
+    await value.load();
+    value.push({ name: 'installPlacement', pluginId: 'official/agent-lab' });
+    const screens = new Set<ConsoleV4ScreenId>();
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} onScreenChange={(screen) => screens.add(screen)} />);
+    await nextTurn(3);
+    await input(instance, '\u001B[B', '\r');
+    await value.load();
+    await nextTurn(3);
+    await input(instance, '\u001B[B', '\r');
+    await nextTurn(3);
+
+    expect(screens).toContain('D16');
+    expect(instance.lastFrame()).toContain('Agent Skill Toolkit 不支持所选位置');
+    expect(captureEvidence).not.toHaveBeenCalled();
+  });
+
+  it('shows the requested root and preserved dependencies in the root removal Review', async () => {
+    const value = controller({
+      loadStatus: vi.fn().mockResolvedValue(dependencyLoadResult()),
+      captureEvidence: vi.fn().mockResolvedValue(evidence),
+    });
+    await value.load();
+    await value.buildOperationReview({
+      kind: 'pluginWrite', action: 'uninstall', pluginId: 'official/agent-lab', platform: 'codex', scope: 'project',
+    });
+    const screens = new Set<ConsoleV4ScreenId>();
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} onScreenChange={(screen) => screens.add(screen)} />);
+    await nextTurn(3);
+    expect(screens).toContain('D11');
+    expect(instance.lastFrame()).toContain('你选择的插件');
+    expect(instance.lastFrame()).toContain('Codex · 当前项目');
+    expect(instance.lastFrame()).toContain('保持不变');
+    expect(instance.lastFrame()).toContain('Agent Skill Toolkit');
+  });
+
+  it('blocks dependency removal with consumer viewing only and has no dangerous bypass', async () => {
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(dependencyLoadResult({ rootState: 'present' })) });
+    await value.load();
+    value.push({ name: 'pluginDependencies', pluginId: 'official/skill-toolkit', view: 'removeBlocked' });
+    const screens = new Set<ConsoleV4ScreenId>();
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} onScreenChange={(screen) => screens.add(screen)} />);
+    await nextTurn(3);
+    expect(screens).toContain('D12');
+    expect(instance.lastFrame()).toContain('Agent Lab');
+    expect(instance.lastFrame()).not.toContain('仍然移除');
+    await input(instance, '\r');
+    expect(value.snapshot.router.current.route).toEqual({ name: 'pluginDetail', pluginId: 'official/agent-lab' });
+    await input(instance, 'b');
+    expect(value.snapshot.router.current.route).toEqual({ name: 'pluginDependencies', pluginId: 'official/skill-toolkit', view: 'removeBlocked' });
+  });
+
+  it('renders dependency target incompatibility as D16 and only offers compatible tools', async () => {
+    const loaded = dependencyLoadResult();
+    const unsupported = loaded.payload.targets.find((entry) =>
+      entry.pluginId === 'official/agent-lab' && entry.platform === 'claude' && entry.scope === 'user')!;
+    unsupported.state = 'error';
+    unsupported.errors = [{ code: 'dependencyTargetUnsupported', message: 'official/skill-toolkit 不支持 Claude Code' }];
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
+    await value.load();
+    const issue = value.listUserIssues().find((entry) => entry.category === 'dependencyTargetUnsupported')!;
+    value.push({ name: 'issueDetail', issueId: issue.issueId });
+    const screens = new Set<ConsoleV4ScreenId>();
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 80, rows: 24 }} onScreenChange={(screen) => screens.add(screen)} />);
+    await nextTurn(3);
+    expect(screens).toContain('D16');
+    expect(instance.lastFrame()).toContain('无法添加到 Claude Code');
+    expect(instance.lastFrame()).toContain('只添加到 Codex');
+    await input(instance, '\r');
+    expect(value.snapshot.router.current.route).toEqual({ name: 'installPlacement', pluginId: 'official/agent-lab' });
+  });
+
+  it('keeps dependency focus visible while the 60x18 relation content scrolls', async () => {
+    const loaded = dependencyLoadResult();
+    const overview = loaded.dependencyOverviews!.find((entry) => entry.pluginId === 'official/agent-lab')!;
+    overview.dependencies.push(...Array.from({ length: 6 }, (_, index) => ({
+      pluginId: `official/extra-${index + 1}`,
+      displayName: `额外依赖 ${index + 1}`,
+      relation: 'transitive' as const,
+      depth: 3,
+      requiredBy: [{ pluginId: 'official/content-toolkit', displayName: 'Agent Content Toolkit' }],
+      placements: [{ platform: 'codex' as const, state: 'notInstalled' as const, supportedScopes: ['user', 'project'] }],
+      aggregateStatus: 'notInstalled' as const,
+    })));
+    overview.summary.totalCount += 6;
+    overview.summary.transitiveCount += 6;
+    overview.summary.missingCount += 6;
+    const value = controller({ loadStatus: vi.fn().mockResolvedValue(loaded) });
+    await value.load();
+    value.push({ name: 'pluginDependencies', pluginId: 'official/agent-lab' });
+    const instance = render(<ConsoleAppV4 controller={value} size={{ columns: 60, rows: 18 }} />);
+    await nextTurn(3);
+    expect(instance.lastFrame()).toContain('› Agent Skill Toolkit');
+    await input(instance, ...Array.from({ length: 5 }, () => '\u001B[B'));
+    expect(instance.lastFrame()).toContain('› 额外依赖 4');
+    expect((instance.lastFrame() ?? '').split('\n').length).toBeLessThanOrEqual(18);
   });
 });
