@@ -10,12 +10,6 @@ metadata:
 
 # Author AW Plugin
 
-## 依赖
-
-- `author-agent-skill`：编写或修改插件内 Skill。
-- `design-agent-skill-evals`：创建或修改 Eval。
-- `audit-agent-skill-evals`：审核 Eval Oracle 与运行结果。
-
 ## 工作流
 
 1. 明确 `<plugin-root>` 与 `<workspace-root>`，读取 manifest、源码、工作区规则和允许修改文件，选择作者路径：
@@ -23,8 +17,8 @@ metadata:
    - **结构化路径**：新建插件、增加/删除组件、多组件请求，或改变上述边界。把组件写成 JSON 数组，再运行 `node scripts/prepare-aw-authoring-context.mjs <plugin-root> --repo-root <workspace-root> --components <json-file> [options]`。
 2. 只读取实际变更面需要的 reference。
 3. 调用作者命令前运行 `aw --version` 和对应 `aw plugin <command> --help`；只使用 help 公开的 flags。
-4. 新建或重大变更 Skill 时，启动独立上下文子代理使用 `author-agent-skill` 的完整设计路径；轻量 delta 只传意图、允许路径和验收证据。
-5. 需要 Eval 时，启动独立上下文子代理使用 `design-agent-skill-evals` 设计，再启动另一个独立上下文子代理，使用 `audit-agent-skill-evals` 的 `preflight` 模式审核。只有审核通过且 digest 匹配时，才能把计划交给兼容 Eval runner；运行后再用独立上下文子代理执行 `result-triage`。
+4. 新建或重大变更 Skill 时，使用 `author-agent-skill` 的完整设计路径；轻量 delta 只传意图、允许路径和验收证据。
+5. 需要 Eval 时，使用 `design-agent-skill-evals` 设计。
 6. 写入插件 source truth，不手改 generated runtime、catalog 或 cache。
 7. 运行 `aw plugin validate <plugin-root>`、适用的 `aw plugin status` 和直接测试。
 8. 交付源码修改、作者路径、验证、materialized artifacts、Eval 证据和未完成项；不输出独立 Review score、P0/P1 或 release pass。

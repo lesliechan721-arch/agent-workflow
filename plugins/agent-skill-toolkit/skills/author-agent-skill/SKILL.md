@@ -9,14 +9,6 @@ metadata:
 
 # Author Agent Skill
 
-模式为 `create` 或 `change`。本 Skill 可以写入目标包，但不能给自己的结果出独立 Review 结论。
-
-## 依赖
-
-- `write-agent-content`：编写 Agent-facing 正文和 reference。
-- `design-agent-skill-evals`：创建或修改 Eval case/suite。
-- `audit-agent-skill-evals`：审核 Eval Oracle 与运行结果。
-
 ## 1. 选择作者路径
 
 - **轻量 delta**：少量已知文件修改，且不改变用户意图、description/invocation、权限、组合边界、脚本/schema 或 Eval。只记录意图、允许路径、成功标准和验证，不创建 `SkillDesignBrief`。

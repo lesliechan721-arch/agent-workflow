@@ -8,12 +8,6 @@ metadata:
 
 # Design Agent Skill Evals
 
-本 Skill 负责创建 Eval 资产。
-
-## 依赖
-
-- `audit-agent-skill-evals`：对新建或修改后的 suite 做独立 Oracle 审核。
-
 ## 工作流
 
 1. **定义决策目标**：明确 unit under test、test layer、optimization policy 与 false-negative / false-positive 的现实代价。

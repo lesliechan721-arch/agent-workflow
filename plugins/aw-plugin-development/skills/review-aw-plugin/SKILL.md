@@ -3,18 +3,11 @@ name: review-aw-plugin
 description: >-
   当用户要只读审核一个 AW 插件源码、materialized Skill 或发布准备状态时使用。负责 AW manifest/profile 的确定性检查、插件级 common path 评审、按 digest 去重的 Skill 评审和显式发布检查；不修改插件源码或发布报告。
 compatibility: 需要 Node.js 22+、提供 `aw plugin validate` 的已安装 AW CLI、agent-content-toolkit >= 0.1.0 和 agent-skill-toolkit >= 0.1.0。
-user-invocable: true
 metadata:
   short-description: 轻量只读评审 AW 插件及其端到端组合
 ---
 
 # Review AW Plugin
-
-## 依赖
-
-- `review-agent-skill`：评审插件和唯一 Skill digest 的设计质量。
-- `review-agent-content`：按需审核大型或多分支 reference。
-- `audit-agent-skill-evals`：审核 Eval Oracle 或归因运行结果。
 
 ## 普通 Review
 

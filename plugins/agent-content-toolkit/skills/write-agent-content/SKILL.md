@@ -12,9 +12,7 @@ metadata:
 
 ## 边界
 
-- 完整 Agent Skill 包：使用 `author-agent-skill`。
-- 只读质量评审：使用 `review-agent-content` 或 `review-agent-skill`。
-- 本 Skill 可以修改目标文档，但不替用户发明未提供的项目事实。
+可以修改目标文档，但不替用户发明未提供的项目事实。
 
 ## 工作流
 
