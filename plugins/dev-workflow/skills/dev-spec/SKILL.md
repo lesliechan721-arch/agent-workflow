@@ -36,7 +36,7 @@ docs/dev/<task-slug>/spec.md
 结果：complete / blocked
 产物：<Spec 路径>
 未解决：<材料决定、证据缺口或无>
-下一步：<decision-grill / decision-prototype / dev-review-spec>
+建议动作：<补充决定 / 收集证据 / 规格审查 / 无>
 ```
 
-材料决定未解决时使用 `decision-grill`；需要体验或实验依据时使用 `decision-prototype`；Spec 完成或修订后使用 `dev-review-spec`。
+材料决定未解决时建议补充决定；需要体验或实验依据时建议收集证据；Spec 完成或修订后建议规格审查。

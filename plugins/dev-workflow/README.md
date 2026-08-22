@@ -17,9 +17,9 @@ aw install dev-workflow -p both
 | --- | --- |
 | `dev-workflow` | 可选宏入口；按风险和现有产物选择当前阶段 |
 | `dev-spec` | 把稳定决定整理为 Spec |
-| `dev-review-spec` | 用独立 reviewer 审查 Spec，并指导修订与复审 |
+| `dev-review-spec` | 用独立 reviewer 审查 Spec，并说明修订与复审条件 |
 | `dev-implement` | 实现明确请求、已批准 Spec 或 Review 修复 |
-| `dev-review-code` | 用两个独立 reviewer 分轴审查实现，并指导修复与复审 |
+| `dev-review-code` | 用两个独立 reviewer 分轴审查实现，并说明修复与复审条件 |
 
 决策阶段使用：
 
@@ -54,11 +54,11 @@ dev-implement → 针对性验证 → 按需 dev-review-code
 decision-grill / decision-prototype
 → dev-spec
 → dev-review-spec
-→ blocked 时修订并重新 review
+→ blocked 时修订并重新审查
 → 用户批准
 → dev-implement
 → dev-review-code
-→ blocked 时修复并重新 review
+→ blocked 时修复并重新审查
 → clean 后交付
 ```
 
@@ -88,3 +88,5 @@ docs/dev/<task-slug>/
 - 报告写明本次审查的目标与版本。目标发生变化后，需要重新 Review。
 - Assured 模式或用户明确要求保留历史时，额外归档到 `reviews/spec/` 或 `reviews/code/`。
 - Spec Review 使用一个 fresh 独立 reviewer；Code Review 并行使用两个 fresh 独立 reviewer。
+
+专业 Skill 返回中性的建议动作；具体 Skill 选择由用户或 `dev-workflow` 完成。

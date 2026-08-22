@@ -42,7 +42,7 @@ docs/dev/<task-slug>/work.md
 产物：<代码、work.md 或无>
 验证：<实际运行及结果>
 未解决：<材料决定、Spec 变化、高风险授权或无>
-下一步：<decision-grill / decision-prototype / dev-spec / dev-review-code>
+建议动作：<补充决定 / 收集证据 / 修订 Spec / 代码审查 / 无>
 ```
 
-实现或 Review 修复完成后重新运行 `dev-review-code`。若材料决定或 Spec 需要改变，先完成对应修订和 Spec Review。
+实现或 Review 修复完成后建议代码审查。若材料决定或 Spec 需要改变，先完成对应决定或规格修订。

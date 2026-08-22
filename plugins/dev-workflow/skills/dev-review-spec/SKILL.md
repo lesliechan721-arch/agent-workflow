@@ -27,7 +27,7 @@ description: 当已有 Spec、计划或设计草案，需要正式判断是否�
 docs/dev/<task-slug>/spec-review.md
 ```
 
-报告记录 Target、Reviewed version、Result 和主要 findings。Assured 模式或用户明确要求保留历史时，额外保存到：
+报告记录 Target、Version、Result 和主要 findings。Assured 模式或用户明确要求保留历史时，额外保存到：
 
 ```text
 docs/dev/<task-slug>/reviews/spec/<timestamp>.md
@@ -37,13 +37,13 @@ docs/dev/<task-slug>/reviews/spec/<timestamp>.md
 
 ## 修复与复审
 
-- `material-decision`：使用 `decision-grill` 补充决定。
-- `evidence-needed`：使用 `decision-prototype` 取得证据。
-- `spec-defect` 或 `over-specified`：使用 `dev-spec` 修订。
+- `material-decision`：补充材料决定。
+- `evidence-needed`：收集体验、实验或运行证据。
+- `spec-defect` 或 `over-specified`：修订 Spec。
 - `fact-gap` 或 `mechanical-validation`：补充事实、测试或工具证据。
-- 任何修订完成后，重新运行 `dev-review-spec`，对当前完整 Spec 做一次新的独立审查。
+- 修订或补证完成后，重新执行完整规格审查；每次复审都创建新的 fresh reviewer。
 
-只有最新 Review 为 `clean`，当前 Spec 才可以进入批准。循环在 `clean`、`incomplete`、用户停止或仍有未决材料决定时结束。
+只有最新 Review 为 `clean`，当前 Spec 才可以进入批准。`incomplete` 时先补足审查条件，再重新执行本 Skill。
 
 ## 输出
 
@@ -51,7 +51,7 @@ docs/dev/<task-slug>/reviews/spec/<timestamp>.md
 结果：clean / blocked / incomplete
 产物：<报告路径 / 无>
 未解决：<阻塞问题或无>
-下一步：<decision-grill / decision-prototype / dev-spec / 批准当前 Spec / 重试 Review>
+建议动作：<补充决定 / 收集证据 / 修订 Spec / 批准当前 Spec / 重试审查>
 ```
 
 先报告，不修改被审 Spec。

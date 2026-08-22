@@ -1,11 +1,9 @@
 # Code Review
 
-- Review range: `<commit range or current diff>`
+- Review target: `<commit range or current diff>`
 - Implementation version: `<version identifier>`
 - Spec: `<path / none>`
 - Spec version: `<version identifier / none>`
-- Reviewed at: `<ISO-8601>`
-- Review mode: `independent-spec-fidelity + independent-engineering-quality`
 - Result: `clean | blocked | incomplete`
 
 ## 结论
@@ -33,8 +31,8 @@
 ## 修复与复审
 
 - 需要的修复：
-- 修复后重新 Review：`yes | no`
+- 复审条件：
 
-## 下一步
+## 建议动作
 
-给出一个明确动作。
+给出一个明确的能力级动作，不指定具体 Skill。

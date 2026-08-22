@@ -26,6 +26,12 @@ function assertSkill(text, name) {
   assert.doesNotMatch(text, /\[TODO:/);
 }
 
+function skillBody(text) {
+  const match = text.match(/^---\n[\s\S]*?\n---\n([\s\S]*)$/u);
+  assert.ok(match);
+  return match[1];
+}
+
 function caseEntries(document) {
   if (Array.isArray(document.cases)) return document.cases;
   if (Array.isArray(document.evals)) return document.evals;
@@ -73,7 +79,7 @@ test('source exposes five directly usable Skills', async () => {
   }
 });
 
-test('workflow explicitly composes decision capabilities and review loops', async () => {
+test('workflow owns concrete routing and review loops', async () => {
   const entry = await read(path.join(target.source, 'skills', 'dev-workflow', 'SKILL.md'));
   for (const name of ['decision-grill', 'decision-prototype', 'dev-spec', 'dev-review-spec', 'dev-implement', 'dev-review-code']) {
     assert.match(entry, new RegExp(name));
@@ -86,44 +92,47 @@ test('workflow explicitly composes decision capabilities and review loops', asyn
   assert.doesNotMatch(entry, /自然语言状态机|更细的状态表|task-state\.json/);
 });
 
-test('specialized Skills define direct completion and next steps', async () => {
-  const expected = {
-    'dev-spec': ['decision-grill', 'decision-prototype', 'dev-review-spec'],
-    'dev-implement': ['dev-spec', 'dev-review-code'],
-    'dev-review-spec': ['decision-grill', 'decision-prototype', 'dev-spec', 'dev-review-spec'],
-    'dev-review-code': ['decision-grill', 'decision-prototype', 'dev-spec', 'dev-implement', 'dev-review-code'],
+test('specialized Skills return neutral next actions', async () => {
+  const expectedActions = {
+    'dev-spec': ['补充决定', '收集证据', '规格审查'],
+    'dev-implement': ['补充决定', '收集证据', '修订 Spec', '代码审查'],
+    'dev-review-spec': ['补充决定', '收集证据', '修订 Spec', '批准当前 Spec', '重试审查'],
+    'dev-review-code': ['修复实现', '修订 Spec', '补充决定', '收集证据', '可以交付', '重试审查'],
   };
-  for (const [name, references] of Object.entries(expected)) {
-    const skill = await read(path.join(target.source, 'skills', name, 'SKILL.md'));
-    assert.match(skill, /## 输出/);
-    assert.match(skill, /下一步/);
-    for (const reference of references) assert.match(skill, new RegExp(reference));
+  for (const [name, actions] of Object.entries(expectedActions)) {
+    const body = skillBody(await read(path.join(target.source, 'skills', name, 'SKILL.md')));
+    assert.match(body, /## 输出/);
+    assert.match(body, /建议动作/);
+    for (const action of actions) assert.match(body, new RegExp(action));
+    for (const peer of [...skills, ...decisionSkills].filter((entry) => entry !== name)) {
+      assert.doesNotMatch(body, new RegExp(peer));
+    }
   }
 });
 
-test('review reports are version-bound, overwrite by default and re-run after fixes', async () => {
+test('review reports are minimal, version-bound and rerun after fixes', async () => {
   const specSkill = await read(path.join(target.source, 'skills', 'dev-review-spec', 'SKILL.md'));
   assert.match(specSkill, /fresh 独立 reviewer/);
   assert.match(specSkill, /覆盖：/);
-  assert.match(specSkill, /修订完成后，重新运行 `dev-review-spec`/);
+  assert.match(specSkill, /重新执行完整规格审查/);
   assert.doesNotMatch(specSkill, /Git blob\/OID|没有 Git 身份|Git 负责普通历史|pointer|round lineage|finding registry/);
 
   const codeSkill = await read(path.join(target.source, 'skills', 'dev-review-code', 'SKILL.md'));
   assert.match(codeSkill, /并行创建两个 fresh reviewer/);
   assert.match(codeSkill, /覆盖：/);
-  assert.match(codeSkill, /任何代码或 Spec 变化后，重新运行 `dev-review-code`/);
+  assert.match(codeSkill, /重新执行完整双轴审查/);
   assert.doesNotMatch(codeSkill, /Git blob\/OID|没有 Git 身份|Git 负责普通历史|pointer|round lineage|finding registry/);
 
   const specTemplate = await read(path.join(target.source, 'skills', 'dev-review-spec', 'assets', 'spec-review-template.md'));
-  assert.match(specTemplate, /Reviewed version/);
-  assert.match(specTemplate, /修复与复审/);
-  assert.doesNotMatch(specTemplate, /git blob|OID|sha256/i);
+  assert.match(specTemplate, /Version/);
+  assert.match(specTemplate, /复审条件/);
+  assert.doesNotMatch(specTemplate, /Reviewed at|Review mode|git blob|OID|sha256/i);
 
   const codeTemplate = await read(path.join(target.source, 'skills', 'dev-review-code', 'assets', 'code-review-template.md'));
-  assert.match(codeTemplate, /Review range/);
+  assert.match(codeTemplate, /Review target/);
   assert.match(codeTemplate, /Implementation version/);
-  assert.match(codeTemplate, /修复与复审/);
-  assert.doesNotMatch(codeTemplate, /git blob|OID|sha256/i);
+  assert.match(codeTemplate, /复审条件/);
+  assert.doesNotMatch(codeTemplate, /Reviewed at|Review mode|git blob|OID|sha256/i);
 });
 
 test('review behavior evals cover independent review and full rereview', async () => {

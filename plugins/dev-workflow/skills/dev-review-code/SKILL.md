@@ -30,7 +30,7 @@ description: 当已有代码改动、diff、branch 或 PR，需要正式检查�
 docs/dev/<task-slug>/code-review.md
 ```
 
-报告记录 Review range、Implementation version、Spec version、Result 和两个审查轴。Assured 模式或用户明确要求保留历史时，额外保存到：
+报告记录 Review target、Implementation version、Spec version、Result 和两个审查轴。Assured 模式或用户明确要求保留历史时，额外保存到：
 
 ```text
 docs/dev/<task-slug>/reviews/code/<timestamp>.md
@@ -40,13 +40,13 @@ docs/dev/<task-slug>/reviews/code/<timestamp>.md
 
 ## 修复与复审
 
-- `implementation-defect` 或 `spec-fidelity`：使用 `dev-implement` 修复实现并运行验证。
-- `spec-defect`：使用 `dev-spec` 修订，重新完成 Spec Review 和批准后再修复实现。
-- `material-decision`：使用 `decision-grill`。
-- `evidence-needed`：使用 `decision-prototype`。
-- 任何代码或 Spec 变化后，重新运行 `dev-review-code`；正式复审再次执行两个完整审查轴。
+- `implementation-defect` 或 `spec-fidelity`：修复实现并运行相关验证。
+- `spec-defect`：修订 Spec，重新完成规格审查和批准，再更新实现。
+- `material-decision`：补充材料决定。
+- `evidence-needed`：收集体验、实验或运行证据。
+- 任何代码或 Spec 变化后，重新执行完整双轴审查；每次复审都创建两个新的 fresh reviewer。
 
-循环在最新 Review 为 `clean`、`incomplete`、用户停止、出现未决材料决定或缺少高风险授权时结束。
+只有最新 Review 为 `clean` 才可以交付。`incomplete` 时先补足审查条件，再重新执行本 Skill。
 
 ## 输出
 
@@ -54,7 +54,7 @@ docs/dev/<task-slug>/reviews/code/<timestamp>.md
 结果：clean / blocked / incomplete
 产物：<报告路径 / 无>
 未解决：<阻塞问题或无>
-下一步：<dev-implement / dev-spec / decision-grill / decision-prototype / 可以交付 / 重试 Review>
+建议动作：<修复实现 / 修订 Spec / 补充决定 / 收集证据 / 可以交付 / 重试审查>
 ```
 
 先报告，不修改代码、测试或 Spec。

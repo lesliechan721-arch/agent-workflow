@@ -31,7 +31,7 @@
       },
       "prompt": "正式审查当前邀请接受实现是否符合 docs/specs/invitation-expiry.md，并检查工程质量。使用两个独立 reviewer，不要直接修复文件。",
       "scripted_replies": [],
-      "expected_output": "并行创建两个 fresh reviewer；输出 blocked；报告记录 Review range、Implementation version 和 Spec version；分别报告服务端未拒绝过期邀请和缺少边界测试；说明修复后重新双轴 Review。",
+      "expected_output": "并行创建两个 fresh reviewer；输出 blocked；报告记录 Review target、Implementation version、Spec version 和 Result；分别报告服务端未拒绝过期邀请和缺少边界测试；说明修复后重新双轴 Review。",
       "workspace_files": {
         "docs/specs/invitation-expiry.md": "# Invitation expiry\n\n- 邀请创建 7 天后过期。\n- 服务端接受入口必须拒绝过期邀请。\n- 验收覆盖第 7 天前可接受、第 7 天后拒绝。\n",
         "src/invitations/accept.js": "export function acceptInvitation(invitation) {\n  return { accepted: true, invitationId: invitation.id };\n}\n",
@@ -46,10 +46,10 @@
         "workspace_unchanged": true,
         "checks": [
           "trace 并行创建 Spec fidelity 与 Engineering quality 两个 fresh reviewer",
-          "结论为 blocked，报告包含 Review range、Implementation version、Spec version、Review mode 和 Result",
+          "结论为 blocked，报告包含 Review target、Implementation version、Spec version 和 Result",
           "Spec fidelity 轴指出接受入口没有过期判断",
           "Engineering quality 轴指出缺少过期边界测试",
-          "说明修复后重新运行完整双轴 dev-review-code",
+          "说明修复后需要重新执行完整双轴审查",
           "不修改代码、测试或 Spec"
         ]
       }
@@ -100,8 +100,8 @@
             "exists": true,
             "contains": [
               "Implementation version",
-              "Review mode",
-              "Result: `clean`"
+              "Result: `clean`",
+              "复审条件"
             ]
           }
         ],
