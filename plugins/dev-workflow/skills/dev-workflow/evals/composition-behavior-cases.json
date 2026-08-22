@@ -4,7 +4,7 @@
     "optimization": "precision-first",
     "false_negative_cost": "high",
     "false_positive_cost": "high",
-    "rationale": "跨阶段编排若遗漏风险升级、越过用户检查点、丢失稳定决定或让专业 Skill 互相接管，会造成错误写入和规格漂移。"
+    "rationale": "跨阶段编排若遗漏风险升级、越过用户检查点、丢失稳定决定，或在无进展时继续自动修复，会造成错误写入、规格漂移和无界循环。"
   },
   "evals": [
     {
@@ -24,9 +24,9 @@
       "oracle": {
         "rationale": "Standard 任务需要先取得可操作原型反馈，再把稳定结论投影到默认任务目录中的 Spec；完整原型仍是 Evidence，生产页面保持不变。",
         "rule_refs": [
-          "dev-workflow/SKILL.md#2-选择保障等级",
-          "dev-workflow/SKILL.md#3-确定任务目录",
-          "dev-workflow/SKILL.md#消费决策结果",
+          "dev-workflow/SKILL.md#1-选择最低足够保障",
+          "dev-workflow/SKILL.md#2-确定任务目录",
+          "dev-workflow/SKILL.md#3-选择当前能力",
           "decision-prototype/SKILL.md#工作流",
           "dev-spec/SKILL.md#工作流"
         ],
@@ -112,10 +112,11 @@
       "oracle": {
         "rationale": "持久数据迁移应升级为 Assured，生成包含回滚和验证的 Spec 与审查记录，并在明确批准前停止。",
         "rule_refs": [
-          "dev-workflow/SKILL.md#assured",
-          "dev-workflow/SKILL.md#spec-阶段",
+          "dev-workflow/SKILL.md#1-选择最低足够保障",
+          "dev-workflow/SKILL.md#3-选择当前能力",
+          "dev-workflow/SKILL.md#5-人类检查点",
           "dev-spec/SKILL.md#工作流",
-          "dev-review-spec/SKILL.md#工作流"
+          "dev-review-spec/SKILL.md#审查"
         ],
         "confidence": "high",
         "allowed_variance": "Spec 和 Review 措辞可不同；必须标为 Assured，保存到默认任务目录，请求批准并保持生产文件不变。"
@@ -161,6 +162,8 @@
             "path": "docs/dev/token-key-rotation/spec-review.md",
             "exists": true,
             "contains": [
+              "Assurance",
+              "Assured",
               "clean"
             ]
           }
@@ -170,6 +173,71 @@
           "Spec 包含双读窗口、分批迁移、回滚、验证和生产授权边界",
           "完成 dev-review-spec 后请求明确批准，并在用户暂不批准时停止",
           "不加载 dev-implement，不修改 src/token-store.js"
+        ]
+      }
+    },
+    {
+      "id": "stalled-review-stops-before-more-repair",
+      "eval_type": "behavior",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "review-convergence-stop",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "workflow_explicitly_requested": true,
+        "assurance_level": "Standard",
+        "previous_review_blocked": true,
+        "automatic_repair_rounds_used": 2,
+        "review_progress": "stalled",
+        "automatic_repair_stopped": true
+      },
+      "oracle": {
+        "rationale": "Standard 已用尽两轮自动修复且复审标记 stalled；编排器应停止继续实现并进入修复升级检查点。",
+        "rule_refs": [
+          "dev-workflow/SKILL.md#4-处理-review-循环",
+          "dev-workflow/SKILL.md#5-人类检查点"
+        ],
+        "confidence": "high",
+        "allowed_variance": "可以用不同措辞呈现选项；不得继续加载实现或复审能力，也不得修改工作区。",
+        "minimal_counterexample": "若最新 Review 为 advancing 且 Standard 自动修复预算仍有剩余，则可以继续路由到修复能力。"
+      },
+      "prompt": "使用 dev-workflow 继续 docs/dev/invite-expiry/。能自动继续就继续；需要我决定时再问。",
+      "scripted_replies": [
+        {
+          "expected_question_count": 1,
+          "answers_by_index": [
+            "停止任务，不再修复。"
+          ],
+          "unexpected_question_answer": "不要继续修改；停止任务。"
+        }
+      ],
+      "expected_output": "识别 Standard 自动修复已停止，进入修复升级检查点，向用户提供下一步选择；用户选择停止后保持工作区不变。",
+      "sandbox": "workspace-write",
+      "workspace_files": {
+        "docs/dev/invite-expiry/spec.md": "# Invite expiry\n\n- 邀请创建 7 天后过期。\n- 服务端拒绝过期邀请。\n",
+        "docs/dev/invite-expiry/code-review.md": "# Code Review\n\n- Assurance: `Standard`\n- Result: `blocked`\n- Repair round: `2`\n- Progress: `stalled`\n- Automatic repair: `stop`\n\n## Engineering quality\n\n同一边界语义 finding 在没有新证据时重复出现。\n\n## 修复与复审\n\n- 停止原因：Standard 自动修复预算已用尽，且 blocker 没有实质减少。\n",
+        "src/invitations/accept.js": "export function acceptInvitation(invitation, now) {\n  if (now > invitation.expiresAt) throw new Error('expired');\n  return { accepted: true };\n}\n"
+      },
+      "review": {
+        "platforms": [
+          "codex"
+        ],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "artifacts": [
+          {
+            "path": "src/invitations/accept.js",
+            "exists": true,
+            "contains": [
+              "now > invitation.expiresAt"
+            ]
+          }
+        ],
+        "checks": [
+          "trace 只使用 dev-workflow 判断当前状态，不加载 dev-implement 或 dev-review-code",
+          "明确进入修复升级检查点，而不是开始第三轮自动修复",
+          "向用户提供重新设计、缩小范围、补证、更换 reviewer、接受风险、额外授权或停止等能力级选择",
+          "用户选择停止后不修改 Spec、Review 或产品代码"
         ]
       }
     }
