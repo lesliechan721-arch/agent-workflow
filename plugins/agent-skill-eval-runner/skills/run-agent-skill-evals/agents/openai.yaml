@@ -1,7 +1,7 @@
 interface:
   display_name: "Run Agent Skill Evals"
-  short_description: "显式执行已审核的 Skill Eval plan 并采集证据"
-  default_prompt: "使用 $run-agent-skill-evals 执行当前已审核的 Eval plan。"
+  short_description: "审核门禁后执行 Skill Eval plan 并采集证据"
+  default_prompt: "执行当前已通过 preflight 审核的 Agent Skill Eval plan。"
 
 policy:
-  allow_implicit_invocation: false
+  allow_implicit_invocation: true
