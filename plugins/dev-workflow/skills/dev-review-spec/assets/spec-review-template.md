@@ -17,7 +17,7 @@
 - 证据或位置
 - 对批准或实现的影响
 - 类型：`material-decision` / `evidence-needed` / `spec-defect` / `over-specified` / `fact-gap` / `mechanical-validation`
-- 修正条件
+- 关闭条件：出现什么可观察结果或验证证据后，该 blocker 可以关闭
 
 没有 blocker 时写“无”。偏好性改进放入非阻塞建议，不改变 Result。
 

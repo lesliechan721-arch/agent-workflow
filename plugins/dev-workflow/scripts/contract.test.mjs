@@ -86,7 +86,41 @@ test('review repair policy is progressively disclosed', async () => {
     assert.doesNotMatch(text, /Repair round|Progress|Automatic repair|Standard 最多|Assured 最多/);
     const rereview = await read(path.join(skillRoot, 'references', 'rereview.md'));
     assert.match(rereview, /当前完整/);
+    assert.match(rereview, /相同的阻塞门槛/);
+    assert.match(rereview, /reviewer 偏好/);
     assert.doesNotMatch(rereview, /Repair round|Progress|Automatic repair/);
+  }
+});
+
+test('review blockers are closable and final artifacts stay current-state', async () => {
+  const specSkill = await read(path.join(target.source, 'skills', 'dev-review-spec', 'SKILL.md'));
+  const codeSkill = await read(path.join(target.source, 'skills', 'dev-review-code', 'SKILL.md'));
+  const implementSkill = await read(path.join(target.source, 'skills', 'dev-implement', 'SKILL.md'));
+  const specTemplate = await read(
+    path.join(target.source, 'skills', 'dev-review-spec', 'assets', 'spec-review-template.md'),
+  );
+  const codeTemplate = await read(
+    path.join(target.source, 'skills', 'dev-review-code', 'assets', 'code-review-template.md'),
+  );
+
+  assert.match(specSkill, /可验证关闭条件/);
+  assert.match(codeSkill, /可验证关闭条件/);
+  assert.match(codeSkill, /最终产物是否泄漏被否决方案/);
+  assert.match(implementSkill, /最终产物只表达当前有效行为/);
+  assert.match(implementSkill, /过程性的“不要做 X”/);
+  assert.match(specTemplate, /关闭条件/);
+  assert.match(codeTemplate, /可验证关闭条件/);
+
+  const expectedCases = new Map([
+    ['dev-review-spec', 'rereview-does-not-promote-reviewer-preference'],
+    ['dev-review-code', 'public-skill-process-history-is-a-material-finding'],
+    ['dev-implement', 'normalize-final-artifact-to-current-contract'],
+  ]);
+  for (const [name, caseId] of expectedCases) {
+    const cases = assertCaseDocument(
+      await readJson(path.join(target.source, 'skills', name, 'evals', 'behavior-cases.json')),
+    );
+    assert.equal(cases.some((entry) => entry.id === caseId), true);
   }
 });
 

@@ -21,28 +21,40 @@
       },
       "oracle": {
         "rationale": "目标 Spec 包含文件级步骤和模型状态流程，同时没有可观察验收；正式结论必须由 fresh reviewer 完成。",
-        "rule_refs": ["SKILL.md#审查", "assets/spec-review-template.md"],
+        "rule_refs": [
+          "SKILL.md#审查",
+          "assets/spec-review-template.md"
+        ],
         "confidence": "high",
-        "allowed_variance": "finding 标题可不同；必须创建独立 reviewer，在一次审查中指出全部可支持 blocker、保持只读并记录目标版本。"
+        "allowed_variance": "finding 标题可不同；必须创建独立 reviewer，在一次审查中指出全部可支持 blocker、保持只读并记录目标版本；每个 blocker 要有材料影响和可验证关闭条件。"
       },
       "prompt": "正式审查 docs/specs/session-expiry.md，判断是否可以批准。使用独立 reviewer，不要修改文件。",
       "scripted_replies": [],
-      "expected_output": "创建 fresh reviewer；输出 blocked；报告记录 Target、Version、Assurance Standard 和 Result blocked；一次指出文件级任务清单、模型状态流程和可观察验收缺口。",
+      "expected_output": "创建 fresh reviewer；输出 blocked；报告记录 Target、Version、Assurance Standard 和 Result blocked；一次指出文件级任务清单、模型状态流程和可观察验收缺口，并给出可验证关闭条件。",
       "workspace_files": {
         "docs/specs/session-expiry.md": "# Session Expiry Spec\n\n## Goal\n让会话过期。\n\n## 实施步骤\n1. 修改 src/auth/session.ts。\n2. 按 pending -> checking -> retrying -> expired 推进。\n\n## 验收\n系统正常工作。\n"
       },
       "review": {
-        "platforms": ["codex"],
+        "platforms": [
+          "codex"
+        ],
         "clean_session": true,
         "workspace_unchanged": true,
         "artifacts": [
-          {"path": "docs/specs/session-expiry.md", "exists": true, "contains": ["pending -> checking", "系统正常工作"]}
+          {
+            "path": "docs/specs/session-expiry.md",
+            "exists": true,
+            "contains": [
+              "pending -> checking",
+              "系统正常工作"
+            ]
+          }
         ],
         "checks": [
           "trace 创建一个 fresh 独立 reviewer；当前上下文不直接完成正式审查",
           "结论为 blocked，报告包含 Target、Version、Assurance Standard 和 Result blocked",
           "在同一轮指出可验证验收缺失，以及文件步骤和模型状态流程属于过度规定",
-          "偏好性建议与 blocker 分开",
+          "每个 blocker 说明材料影响和可验证关闭条件，偏好性建议与 blocker 分开",
           "不修改被审 Spec"
         ]
       }
@@ -62,7 +74,10 @@
       },
       "oracle": {
         "rationale": "修订后应对当前完整 Spec 进行新的独立 Review，而不是只确认旧 finding。",
-        "rule_refs": ["SKILL.md#审查", "references/rereview.md"],
+        "rule_refs": [
+          "SKILL.md#审查",
+          "references/rereview.md"
+        ],
         "confidence": "high",
         "allowed_variance": "可以引用上一轮问题，但必须重新覆盖全部四个审查维度，以当前 Spec 为目标，并用已解决、仍存在和新发现比较。"
       },
@@ -71,27 +86,108 @@
       "expected_output": "读取复审 reference，创建新的 fresh reviewer；完整审查当前 Spec；无 blocker 时输出 clean，并记录与上一份 Review 的比较。",
       "workspace_files": {
         "docs/dev/invite-expiry/spec.md": "# Invite expiry Spec\n\n## Outcome\n邀请 7 天后过期。\n\n## User-visible behavior\n第 7 天前可以接受；过期后服务端拒绝。\n\n## Acceptance\n覆盖过期前、边界时刻和过期后。\n\n## Agent discretion\n内部文件和函数组织由实现者决定。\n",
-        "docs/dev/invite-expiry/spec-review.md": "# Spec Review\n\n- Assurance: `Standard`\n- Result: `blocked`\n\n## Findings\n\n缺少过期后的服务端行为。\n"
+        "docs/dev/invite-expiry/spec-review.md": "# Spec Review\n\n- Assurance: `Standard`\n- Result: `blocked`\n\n## Findings\n\n缺少过期后的服务端行为。\n\n## 非阻塞建议\n\n可以列出每个实现文件，或新增 SessionStateMachine 详细说明。\n"
       },
       "review": {
-        "platforms": ["codex"],
+        "platforms": [
+          "codex"
+        ],
         "clean_session": true,
         "workspace_unchanged": false,
-        "allowed_workspace_changes": ["docs/dev/invite-expiry/spec-review.md"],
+        "allowed_workspace_changes": [
+          "docs/dev/invite-expiry/spec-review.md"
+        ],
         "artifacts": [
           {
             "path": "docs/dev/invite-expiry/spec-review.md",
             "exists": true,
-            "contains": ["Version", "Assurance: `Standard`", "Result: `clean`", "与上一份 Review 比较", "已解决", "仍存在", "新发现"],
-            "not_contains": ["Repair round", "Progress:", "Automatic repair"]
+            "contains": [
+              "Version",
+              "Assurance: `Standard`",
+              "Result: `clean`",
+              "与上一份 Review 比较",
+              "已解决",
+              "仍存在",
+              "新发现"
+            ],
+            "not_contains": [
+              "Repair round",
+              "Progress:",
+              "Automatic repair",
+              "Result: `blocked`"
+            ]
           }
         ],
         "checks": [
           "trace 读取 references/rereview.md 并创建新的 fresh reviewer",
           "重新检查决策完整性、可实现性、可验证性和边界纪律",
           "目标是当前完整 Spec，而不只是旧 finding",
+          "上一份报告中的文件清单和 SessionStateMachine 偏好不升级为 blocker",
           "报告比较已解决、仍存在和新发现，不维护轮次或进展状态",
           "覆盖当前 spec-review.md，并保持 Spec 不变"
+        ]
+      }
+    },
+    {
+      "id": "rereview-does-not-promote-reviewer-preference",
+      "eval_type": "behavior",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "spec-rereview-blocker-threshold",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "spec_exists": true,
+        "previous_review_blocked": true,
+        "spec_revised": true,
+        "current_material_blockers_resolved": true,
+        "fresh_subagent_available": true
+      },
+      "oracle": {
+        "rationale": "旧 blocker 已关闭；更详细的文件清单、额外状态机或更优写法只是 reviewer 偏好，不能成为新的批准 blocker。",
+        "rule_refs": [
+          "SKILL.md#审查",
+          "references/rereview.md",
+          "assets/spec-review-template.md"
+        ],
+        "confidence": "high",
+        "allowed_variance": "可以省略偏好性建议或放入非阻塞建议；不得因此输出 blocked。"
+      },
+      "prompt": "重新正式审查 docs/dev/session-expiry/spec.md。上一轮材料 blocker 已修复；覆盖当前 spec-review.md，不要修改 Spec。",
+      "scripted_replies": [],
+      "expected_output": "创建新的 fresh reviewer，重新审查当前完整 Spec；输出 clean；不会把精确文件清单、额外状态机或更简洁写法升级为 blocker。",
+      "workspace_files": {
+        "docs/dev/session-expiry/spec.md": "# Session expiry Spec\n\n## Outcome\n会话在 expiresAt 到达后失效。\n\n## User-visible behavior\n未过期请求保持现有行为；过期请求由服务端拒绝并返回明确错误。\n\n## Acceptance\n覆盖过期前、边界时刻和过期后。\n\n## Agent discretion\n文件、函数、缓存和测试组织由实现者决定。\n",
+        "docs/dev/session-expiry/spec-review.md": "# Spec Review\n\n- Result: `blocked`\n\n## Findings\n\n缺少边界时刻的行为。\n\n## 非阻塞建议\n\n建议列出所有文件，并考虑 SessionStateMachine 以获得更完整的设计。\n"
+      },
+      "review": {
+        "platforms": [
+          "codex"
+        ],
+        "clean_session": true,
+        "workspace_unchanged": false,
+        "allowed_workspace_changes": [
+          "docs/dev/session-expiry/spec-review.md"
+        ],
+        "artifacts": [
+          {
+            "path": "docs/dev/session-expiry/spec-review.md",
+            "exists": true,
+            "contains": [
+              "Result: `clean`"
+            ],
+            "not_contains": [
+              "Result: `blocked`",
+              "Repair round",
+              "Automatic repair"
+            ]
+          }
+        ],
+        "checks": [
+          "trace 读取 references/rereview.md 并创建新的 fresh reviewer",
+          "旧 blocker 的关闭由当前 Acceptance 证据确认",
+          "精确文件清单、SessionStateMachine 或更优写法不作为新 blocker",
+          "若提及这些偏好，只能放入非阻塞建议",
+          "不修改被审 Spec"
         ]
       }
     }

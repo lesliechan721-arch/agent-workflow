@@ -4,7 +4,7 @@
     "optimization": "precision-first",
     "false_negative_cost": "high",
     "false_positive_cost": "high",
-    "rationale": "漏掉需求偏离或工程缺陷会错误放行交付；固定双 reviewer 或只确认旧 finding 会增加成本和降低可信度。"
+    "rationale": "漏掉需求偏离或工程缺陷会错误放行交付；固定双 reviewer、偏好性 blocker 或只确认旧 finding 会增加成本和降低可信度。"
   },
   "evals": [
     {
@@ -23,13 +23,16 @@
       },
       "oracle": {
         "rationale": "Standard 实现仍需完整检查 fidelity 与质量，但一个 fresh reviewer 覆盖双轴即可。",
-        "rule_refs": ["SKILL.md#独立双轴审查", "assets/code-review-template.md"],
+        "rule_refs": [
+          "SKILL.md#独立双轴审查",
+          "assets/code-review-template.md"
+        ],
         "confidence": "high",
-        "allowed_variance": "finding 标题可不同；必须创建一个 fresh reviewer 覆盖两个轴、分轴给出证据并记录 reviewer topology。"
+        "allowed_variance": "finding 标题可不同；必须创建一个 fresh reviewer 覆盖两个轴、分轴给出证据并记录 reviewer topology；每个 blocker 有可验证关闭条件。"
       },
       "prompt": "以 Standard 保障正式审查当前邀请接受实现是否符合 docs/specs/invitation-expiry.md，并检查工程质量。不要直接修复文件。",
       "scripted_replies": [],
-      "expected_output": "创建一个 fresh reviewer 覆盖 Spec fidelity 与 Engineering quality；输出 blocked；报告记录 Assurance Standard、one dual-axis reviewer 和 Result blocked。",
+      "expected_output": "创建一个 fresh reviewer 覆盖 Spec fidelity 与 Engineering quality；输出 blocked；报告记录 Assurance Standard、one dual-axis reviewer 和 Result blocked，并给出 blocker 的可验证关闭条件。",
       "workspace_files": {
         "docs/specs/invitation-expiry.md": "# Invitation expiry\n\n- 邀请创建 7 天后过期。\n- 服务端接受入口必须拒绝过期邀请。\n- 验收覆盖第 7 天前可接受、第 7 天后拒绝。\n",
         "src/invitations/accept.js": "export function acceptInvitation(invitation) {\n  return { accepted: true, invitationId: invitation.id };\n}\n",
@@ -37,7 +40,9 @@
         "package.json": "{\"type\":\"module\"}\n"
       },
       "review": {
-        "platforms": ["codex"],
+        "platforms": [
+          "codex"
+        ],
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [
@@ -45,6 +50,7 @@
           "结论为 blocked，报告包含 Review target、Implementation version、Spec version、Assurance、Reviewer topology 和 Result",
           "Spec fidelity 轴指出接受入口没有过期判断",
           "Engineering quality 轴指出缺少保护过期边界行为的测试",
+          "每个 blocker 说明可观察影响和可验证关闭条件",
           "一次列出当前证据支持的 blocker，不修改代码、测试或 Spec"
         ]
       }
@@ -65,13 +71,16 @@
       },
       "oracle": {
         "rationale": "Assured 实现既违反服务端过期拒绝要求，又缺少边界测试；两个 fresh reviewer 应分别审查 fidelity 与质量。",
-        "rule_refs": ["SKILL.md#独立双轴审查", "assets/code-review-template.md"],
+        "rule_refs": [
+          "SKILL.md#独立双轴审查",
+          "assets/code-review-template.md"
+        ],
         "confidence": "high",
-        "allowed_variance": "finding 标题可不同；必须并行创建两个独立 reviewer、分轴给出证据，并记录 two axis reviewers。"
+        "allowed_variance": "finding 标题可不同；必须并行创建两个独立 reviewer、分轴给出证据、记录 two axis reviewers，并给出可验证关闭条件。"
       },
       "prompt": "以 Assured 保障正式审查当前邀请接受实现是否符合 docs/specs/invitation-expiry.md，并检查工程质量。使用两个独立 reviewer，不要直接修复文件。",
       "scripted_replies": [],
-      "expected_output": "并行创建两个 fresh reviewer；输出 blocked；报告记录 Assurance Assured、two axis reviewers 和 Result blocked，并分轴报告实现偏离与测试缺口。",
+      "expected_output": "并行创建两个 fresh reviewer；输出 blocked；报告记录 Assurance Assured、two axis reviewers 和 Result blocked，并分轴报告实现偏离、测试缺口和关闭条件。",
       "workspace_files": {
         "docs/specs/invitation-expiry.md": "# Invitation expiry\n\n- 邀请创建 7 天后过期。\n- 服务端接受入口必须拒绝过期邀请。\n- 验收覆盖第 7 天前可接受、第 7 天后拒绝。\n",
         "src/invitations/accept.js": "export function acceptInvitation(invitation) {\n  return { accepted: true, invitationId: invitation.id };\n}\n",
@@ -79,7 +88,9 @@
         "package.json": "{\"type\":\"module\"}\n"
       },
       "review": {
-        "platforms": ["codex"],
+        "platforms": [
+          "codex"
+        ],
         "clean_session": true,
         "workspace_unchanged": true,
         "checks": [
@@ -87,6 +98,7 @@
           "结论为 blocked，报告包含 Review target、Implementation version、Spec version、Assurance、Reviewer topology 和 Result",
           "Spec fidelity 轴指出接受入口没有过期判断",
           "Engineering quality 轴指出缺少保护过期边界行为的测试",
+          "每个 blocker 说明可观察影响和可验证关闭条件",
           "一次列出当前证据支持的 blocker，不修改代码、测试或 Spec"
         ]
       }
@@ -107,9 +119,12 @@
       },
       "oracle": {
         "rationale": "代码变化后必须重新执行两个完整审查轴；Standard 使用一个新的 fresh reviewer 覆盖双轴，而不是只确认旧 blocker。",
-        "rule_refs": ["SKILL.md#独立双轴审查", "references/rereview.md"],
+        "rule_refs": [
+          "SKILL.md#独立双轴审查",
+          "references/rereview.md"
+        ],
         "confidence": "high",
-        "allowed_variance": "可以引用旧报告，但必须使用一个新的 fresh reviewer 重新审查当前完整 diff、覆盖两个轴并比较已解决、仍存在和新发现。"
+        "allowed_variance": "可以引用旧报告，但必须使用一个新的 fresh reviewer 重新审查当前完整 diff、覆盖两个轴并比较已解决、仍存在和新发现；偏好性建议不升级为 blocker。"
       },
       "prompt": "以 Standard 保障重新正式审查已修复并通过测试的当前实现，覆盖 docs/dev/invite-expiry/code-review.md。不要修改代码。",
       "scripted_replies": [],
@@ -118,28 +133,92 @@
         "docs/dev/invite-expiry/spec.md": "# Invitation expiry\n\n- 邀请创建 7 天后过期。\n- 服务端拒绝过期邀请。\n",
         "src/invitations/accept.js": "export function acceptInvitation(invitation, now) {\n  if (now >= invitation.expiresAt) throw new Error(\"expired\");\n  return { accepted: true, invitationId: invitation.id };\n}\n",
         "test/invitations.test.js": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport { acceptInvitation } from '../src/invitations/accept.js';\n\ntest('rejects expired invitation', () => {\n  assert.throws(() => acceptInvitation({ id: 'i-1', expiresAt: 7 }, 7), /expired/);\n});\n",
-        "docs/dev/invite-expiry/code-review.md": "# Code Review\n\n- Assurance: `Standard`\n- Result: `blocked`\n- Reviewer topology: `one dual-axis reviewer`\n\n## Engineering quality\n\n缺少过期边界测试。\n",
+        "docs/dev/invite-expiry/code-review.md": "# Code Review\n\n- Assurance: `Standard`\n- Result: `blocked`\n- Reviewer topology: `one dual-axis reviewer`\n\n## Engineering quality\n\n缺少过期边界测试。\n\n## 非阻塞建议\n\n可以进一步抽象通用 ExpiryPolicy。\n",
         "package.json": "{\"type\":\"module\"}\n"
       },
       "review": {
-        "platforms": ["codex"],
+        "platforms": [
+          "codex"
+        ],
         "clean_session": true,
         "workspace_unchanged": false,
-        "allowed_workspace_changes": ["docs/dev/invite-expiry/code-review.md"],
+        "allowed_workspace_changes": [
+          "docs/dev/invite-expiry/code-review.md"
+        ],
         "artifacts": [
           {
             "path": "docs/dev/invite-expiry/code-review.md",
             "exists": true,
-            "contains": ["Implementation version", "Result: `clean`", "Assurance: `Standard`", "Reviewer topology: `one dual-axis reviewer`", "与上一份 Review 比较", "已解决", "仍存在", "新发现"],
-            "not_contains": ["Repair round", "Progress:", "Automatic repair"]
+            "contains": [
+              "Implementation version",
+              "Result: `clean`",
+              "Assurance: `Standard`",
+              "Reviewer topology: `one dual-axis reviewer`",
+              "与上一份 Review 比较",
+              "已解决",
+              "仍存在",
+              "新发现"
+            ],
+            "not_contains": [
+              "Repair round",
+              "Progress:",
+              "Automatic repair",
+              "Result: `blocked`"
+            ]
           }
         ],
         "checks": [
           "trace 读取 references/rereview.md 并创建一个新的 fresh reviewer",
           "reviewer 重新覆盖 Spec fidelity 与 Engineering quality，而不是只验证旧 finding",
+          "ExpiryPolicy 或其它更优抽象偏好不升级为 blocker",
           "报告比较已解决、仍存在和新发现，不维护轮次或进展状态",
           "覆盖当前 code-review.md，不修改代码、测试或 Spec",
           "结论 clean 时明确可以交付"
+        ]
+      }
+    },
+    {
+      "id": "public-skill-process-history-is-a-material-finding",
+      "eval_type": "behavior",
+      "case_role": "regression",
+      "provenance": "observed",
+      "scenario_family": "final-artifact-normalization",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "spec_exists": true,
+        "implementation_exists": true,
+        "review_is_read_only": true,
+        "one_fresh_subagent_available": true,
+        "public_agent_instruction_changed": true
+      },
+      "oracle": {
+        "rationale": "公开 Skill 把被否决方案和 Review 过程写成常驻指令，会改变 agent 行为并误导使用者；应作为 Engineering quality blocker，并要求改写为当前有效合同。",
+        "rule_refs": [
+          "SKILL.md#独立双轴审查",
+          "assets/code-review-template.md"
+        ],
+        "confidence": "high",
+        "allowed_variance": "finding 标题可不同；必须指出过程历史泄漏、说明材料影响，并给出正面当前态改写的可验证关闭条件。"
+      },
+      "prompt": "以 Standard 保障正式审查 skills/session-expiry/SKILL.md 是否符合 docs/specs/session-expiry.md，并检查工程质量。不要修改文件。",
+      "scripted_replies": [],
+      "expected_output": "创建一个 fresh reviewer；输出 blocked；Engineering quality 指出公开 Skill 泄漏被否决方案和 Review 过程，并要求改写为只表达当前 expiresAt 行为的正面合同。",
+      "workspace_files": {
+        "docs/specs/session-expiry.md": "# Session expiry\n\n- 每次请求根据 expiresAt 判断会话是否过期。\n- 过期请求由服务端拒绝并返回明确错误。\n- 不要求额外持久状态。\n",
+        "skills/session-expiry/SKILL.md": "---\nname: session-expiry\ndescription: 处理会话过期检查。\n---\n\n# Session Expiry\n\n不要使用自然语言状态机。上一次 Review 已经拒绝 pending -> checking -> retrying 方案。\n\n每次请求根据 `expiresAt` 判断是否过期；过期后服务端拒绝。\n"
+      },
+      "review": {
+        "platforms": [
+          "codex"
+        ],
+        "clean_session": true,
+        "workspace_unchanged": true,
+        "checks": [
+          "trace 创建一个 fresh reviewer 覆盖两个审查轴",
+          "Engineering quality 把被否决方案、Review 过程和过程性否定指令识别为公开 Skill 的材料问题",
+          "finding 给出可验证关闭条件：最终 Skill 只正面表达当前 expiresAt 行为和必要约束",
+          "不建议增加通用状态框架、完整文案 snapshot 或文件 hash",
+          "不修改被审 Skill 或 Spec"
         ]
       }
     }
