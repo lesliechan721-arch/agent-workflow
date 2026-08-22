@@ -1404,6 +1404,25 @@ describe('build snapshots', () => {
     expect((await fs.readdir(snapshotsRoot)).sort()).toEqual(['consumer-owned']);
   });
 
+  it('does not delete an existing snapshot path for an explicit run token', async () => {
+    const repoRoot = await createRepo();
+    await buildWithCache(repoRoot, { build: () => writeBuildOutputs(repoRoot) });
+    const snapshotRunToken = '12345678-1234-4123-8123-123456789abc';
+    const existingRoot = path.join(
+      repoRoot,
+      '.release',
+      'build-snapshots',
+      `build-${snapshotRunToken}`,
+    );
+    await fs.mkdir(existingRoot, { recursive: true });
+    await fs.writeFile(path.join(existingRoot, 'foreign-owner.txt'), 'preserve\n');
+
+    await expect(createBuildSnapshot(repoRoot, { snapshotRunToken }))
+      .rejects.toMatchObject({ code: 'EEXIST' });
+    await expect(fs.readFile(path.join(existingRoot, 'foreign-owner.txt'), 'utf8'))
+      .resolves.toBe('preserve\n');
+  });
+
   it('preserves a primary consumer error when snapshot cleanup also fails', async () => {
     const repoRoot = await createRepo();
     await buildWithCache(repoRoot, { build: () => writeBuildOutputs(repoRoot) });

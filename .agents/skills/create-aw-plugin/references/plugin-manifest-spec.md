@@ -122,6 +122,11 @@ aw plugin status \
 - 发布 bundle 只复制 lifecycle/helper 入口、这些 Node 入口可静态识别的相对依赖闭包，以及 `scripts.node.packageRoot` 的 production 依赖。运行时安装/升级/卸载离线执行，不联网安装依赖，也不借用宿主或仓库根 `node_modules`。
 - `scripts.tests.node` 是开发期 Node 测试 glob，只由 `pnpm plugin:test` 使用。无匹配测试时是 skipped/no-op；test-only helper 可通过静态相对 import/require 递归复制到临时 bundle，但不会进入发布 runtime bundle。
 - `config.schema` 是 AW config 的唯一真值。`string`、`number`、`boolean`、`enum`、`file`、`directory` 为首版支持类型；字段可声明 `title`、`description`、`default`、`required`、`sensitive`，`enum` 用 `values`，`number` 可用 `min` / `max`。未知 key 不进入 helper、lifecycle context 或 effective config，只能作为脱敏诊断出现。
+- 可选的 `config.presentation` 只包含 `groups`、`fields` 和 `presets`。它不能改变字段类型、`required`、`sensitive`、`default`、`min`、`max` 或 enum token，也不改变 config store 的值。
+- `presentation.groups` 按数组顺序显示。group `id` 必须非空且唯一；group 只能引用 `config.schema` key，同一字段不能进入多个 group。未分组的普通字段进入“其他设置”；未分组且 `presentation.fields.<key>.advanced: true` 的字段进入合成高级组。显式 group 归属优先。
+- `presentation.fields` 的 key 必须存在于 schema。`valueLabels` 只允许 enum 的真实 token，并且只改变显示文本；保存值、helper 输出和 lifecycle context 始终保留原 token。`recommendedValue` 必须符合字段类型、enum、`min` 和 `max`。
+- `presentation.presets` 的 `id` 必须非空且唯一。`values` 只允许非敏感、非 `file`、非 `directory` 的 schema key，且每个值必须符合字段类型、enum、`min` 和 `max`。私有值必须由用户在对应输入页提供，不能进入 preset。preset 是部分更新，只更新其列出的 key，不重置其它配置。
+- 缺少 `presentation` 时 manifest 仍完整有效，全部 schema 字段进入通用“插件设置”组。插件首次采用 presentation 时，必须把 `compatibility.aw.minVersion` 设置为首个支持该合同的 AW CLI 发布版本，不能声明更低的 compatibility floor。
 - `file` / `directory` 配置值写入时按 AW project root 解析相对路径，并以 canonical absolute realpath 落盘；每次读取本机 effective config 都会重校验路径存在且类型正确。这类 key 不能写入 project shared config，也不能成为 project-scope repo-visible artifact 的 render config、digest、stale 判断或 refresh 输入；需要本机路径时用 user store 或 `--scope project --local`。
 - AW config 分 user store、project shared store 和 project local store。路径固定为 `plugin-config/<sourceId>/<pluginName>/config.json` 或 `plugin-config.local/<sourceId>/<pluginName>/config.json`，内容是绑定 `sourceId`、`sourceIdentity` 和 `pluginName` 的 schema 2 envelope。配置只由 `aw config set/unset/reset` 管理，写命令不删除配置。
 
@@ -168,6 +173,22 @@ aw plugin status \
         "type": "directory",
         "description": "Directory used by lifecycle scripts"
       }
+    },
+    "presentation": {
+      "groups": [
+        {
+          "id": "general",
+          "title": "General",
+          "fields": ["workspaceDir"]
+        }
+      ],
+      "fields": {
+        "apiKey": {
+          "advanced": true,
+          "placeholder": "Enter API key"
+        }
+      },
+      "presets": []
     }
   }
 }

@@ -104,11 +104,13 @@ export async function bootstrapCatalog(argv = process.argv.slice(2), options = {
       releaseIdentity,
       {},
     );
+    const privateStageRunner = options.withPrivateCatalogStageRoot
+      ?? withPrivateCatalogStageRoot;
     const beforeRemoteWrite = async () => {
       await assertFresh();
       await options.beforeRemoteWrite?.();
     };
-    return (options.withPrivateCatalogStageRoot ?? withPrivateCatalogStageRoot)(async (internalOutputRoot) => {
+    return privateStageRunner(async (internalOutputRoot) => {
       await assertFresh();
       return (options.withCatalogPublicationLease ?? withCatalogPublicationLease)(
         remoteUrl,

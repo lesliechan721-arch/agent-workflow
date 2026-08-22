@@ -21,7 +21,10 @@ import {
   withPluginConfigTransactionLease,
   writePluginConfigStore,
 } from '../../src/utils/plugin-config.js';
-import { resolveActiveMarketplaceRuntimeCoordinationRoot } from '../../src/utils/active-marketplace-runtime-lock.js';
+import {
+  resolveActiveMarketplaceRuntimeCoordinationRoot,
+  withActiveMarketplaceRuntimeLease,
+} from '../../src/utils/active-marketplace-runtime-lock.js';
 
 const tempDirs: string[] = [];
 
@@ -369,9 +372,10 @@ describe('plugin config atomic writes', () => {
       env: fixture.env,
     };
     const warning = vi.spyOn(process, 'emitWarning').mockImplementation(() => undefined);
+    const privateReleasePath = path.join(fixture.root, 'private', 'outer.lock');
     setConfigFileLockBeforeReleaseHookForTests(async (lockPath) => {
       if (lockPath.includes('.transaction.')) {
-        throw Object.assign(new Error('outer release failed'), { code: 'EPERM' });
+        throw Object.assign(new Error(`${privateReleasePath}: outer release failed`), { code: 'EPERM' });
       }
     });
 
@@ -386,6 +390,7 @@ describe('plugin config atomic writes', () => {
       expect.stringContaining('committed result remains successful'),
       expect.objectContaining({ code: 'AW_CONFIG_LOCK_RELEASE_FAILED' }),
     );
+    expect(JSON.stringify(warning.mock.calls)).not.toContain(privateReleasePath);
   });
 
   it('returns a committed reset receipt when the outer transaction release fails', async () => {
@@ -511,6 +516,35 @@ describe('plugin config atomic writes', () => {
     expect(await fs.pathExists(resolveConfigFileLockPath(store.path))).toBe(false);
     expect((await fs.readdir(path.dirname(store.path))).filter((entry) => entry.includes('.tmp-')))
       .toEqual([]);
+  });
+
+  it.each(['shared', 'local'] as const)('holds the shared runtime lease while creating a namespaced project %s store', async (projectLayer) => {
+    const fixture = await makeFixture();
+    let releaseRename!: () => void;
+    const renameGate = new Promise<void>((resolve) => { releaseRename = resolve; });
+    let enteredRename!: () => void;
+    const renameEntered = new Promise<void>((resolve) => { enteredRename = resolve; });
+    setAtomicConfigBeforeRenameHookForTests(async (filePath) => {
+      if (!filePath.includes('plugin-config')) return;
+      enteredRename();
+      await renameGate;
+    });
+    const write = writePluginConfigStore({
+      sourceId: 'team', sourceIdentity: `sha256:${'a'.repeat(64)}`, pluginName: 'demo',
+      scope: 'project', projectLayer, cwd: fixture.cwd, env: fixture.env, values: { mode: 'safe' },
+    });
+    await renameEntered;
+    let competingEntered = false;
+    const competing = withActiveMarketplaceRuntimeLease(fixture.env, async () => {
+      competingEntered = true;
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(competingEntered).toBe(false);
+
+    releaseRename();
+    await write;
+    await competing;
+    expect(competingEntered).toBe(true);
   });
 
   it('rejects target and parent symlinks without changing external files', async () => {

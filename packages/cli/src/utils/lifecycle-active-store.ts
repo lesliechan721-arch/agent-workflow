@@ -1190,10 +1190,10 @@ async function releaseLeaseWithRetry(lock: ProcessLockLease): Promise<void> {
   throw lastError;
 }
 
-function emitLifecycleReleaseWarning(message: string, releaseError: unknown): void {
+function emitLifecycleReleaseWarning(message: string, _releaseError: unknown): void {
   try {
     process.emitWarning(
-      `${message}: ${releaseError instanceof Error ? releaseError.message : String(releaseError)}.`,
+      `${message}.`,
       { code: 'AW_LIFECYCLE_LOCK_RELEASE_FAILED' },
     );
   } catch {
@@ -1201,10 +1201,10 @@ function emitLifecycleReleaseWarning(message: string, releaseError: unknown): vo
   }
 }
 
-function emitLifecycleHousekeepingWarning(message: string, error: unknown): void {
+function emitLifecycleHousekeepingWarning(): void {
   try {
     process.emitWarning(
-      `${message}: ${error instanceof Error ? error.message : String(error)}.`,
+      'Lifecycle active promote committed, but old backup cleanup failed.',
       { code: 'AW_LIFECYCLE_HOUSEKEEPING_FAILED' },
     );
   } catch {
@@ -1406,11 +1406,8 @@ export async function promoteLifecycleActiveSnapshot(
       try {
         await fs.remove(backupPath);
         backupPath = null;
-      } catch (cleanupError) {
-        emitLifecycleHousekeepingWarning(
-          'Lifecycle active promote committed, but old backup cleanup failed',
-          cleanupError,
-        );
+      } catch {
+        emitLifecycleHousekeepingWarning();
       }
     }
     await pruneEmptyStagingRoot(prepared.target.stagingRoot).catch(() => undefined);

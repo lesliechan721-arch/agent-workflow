@@ -42,17 +42,12 @@ const catalogCacheCommitStorage = new AsyncLocalStorage<CatalogCacheCommitContex
 let catalogCacheBeforeReleaseHookForTests:
   | ((lockPath: string, attempt: number) => Promise<void>)
   | undefined;
+let catalogCacheAfterRootLeaseAcquireHookForTests:
+  | ((lockPath: string) => Promise<void>)
+  | undefined;
 
 function isTransientWindowsReleaseError(error: unknown): boolean {
   return TRANSIENT_WINDOWS_RELEASE_CODES.has((error as NodeJS.ErrnoException).code ?? '');
-}
-
-function releaseErrorMessage(error: unknown): string {
-  try {
-    return error instanceof Error ? error.message : String(error);
-  } catch {
-    return '<unprintable lock release error>';
-  }
 }
 
 function isOperationalCacheReadError(error: unknown): boolean {
@@ -112,10 +107,17 @@ async function acquireCatalogSourceRootLease(
   const awHome = canonicalizePathThroughExistingAncestorSync(resolveAwHome(env));
   const coordinationRoot = path.join(path.dirname(awHome), '.aw-catalog-source-coordination');
   await ensureRegularDirectoryPath(coordinationRoot, 'Catalog source coordination root');
-  return acquireProcessLock({
+  const lease = await acquireProcessLock({
     lockPath: path.join(coordinationRoot, `${digestJson({ awHome })}.lock`),
     signal,
   });
+  try {
+    await catalogCacheAfterRootLeaseAcquireHookForTests?.(lease.lockPath);
+  } catch (error) {
+    await lease.release();
+    throw error;
+  }
+  return lease;
 }
 
 export interface CatalogSourceCacheMetadata {
@@ -239,14 +241,14 @@ async function withCatalogSourceCacheLease<T>(options: {
   } catch (releaseError) {
     if (!actionSucceeded) {
       emitCatalogCacheReleaseWarning(
-        `Catalog cache action failed, and its root lock release also failed: ${releaseErrorMessage(releaseError)}.`,
+        'Catalog cache action failed, and its root lock release also failed.',
         'AW_CATALOG_CACHE_ROOT_LOCK_RELEASE_FAILED',
       );
       throw actionError;
     }
     if (commitContext.durableCommit) {
       emitCatalogCacheReleaseWarning(
-        `Catalog cache action completed successfully, but its root lock could not be released after 3 attempts: ${releaseErrorMessage(releaseError)}. The explicitly committed selector or config remains successful; the lock can require process exit or manual recovery before another update.`,
+        'Catalog cache action completed successfully, but its root lock could not be released after 3 attempts. The explicitly committed selector or config remains successful; the lock can require process exit or manual recovery before another update.',
         'AW_CATALOG_CACHE_ROOT_LOCK_RELEASE_FAILED',
       );
     } else {
@@ -609,14 +611,14 @@ async function withCatalogSourceCacheLockWithLease<T>(options: {
     } catch (releaseError) {
       if (!actionSucceeded) {
         emitCatalogCacheReleaseWarning(
-          `Catalog cache action failed, and its ${options.name} lock release also failed: ${releaseErrorMessage(releaseError)}.`,
+          'Catalog cache action failed, and its named lock release also failed.',
           'AW_CATALOG_CACHE_LOCK_RELEASE_FAILED',
         );
         throw actionError;
       }
       if (commitContext.durableCommit) {
         emitCatalogCacheReleaseWarning(
-          `Catalog cache action completed successfully, but its lock could not be released after 3 attempts: ${releaseErrorMessage(releaseError)}. The explicitly committed selector or config remains successful; the lock can require process exit or manual recovery before another update.`,
+          'Catalog cache action completed successfully, but its named lock could not be released after 3 attempts. The explicitly committed selector or config remains successful; the lock can require process exit or manual recovery before another update.',
           'AW_CATALOG_CACHE_LOCK_RELEASE_FAILED',
         );
       } else {
@@ -1143,5 +1145,8 @@ export const catalogSourceCacheInternal = {
   markDurableCommit: markCatalogCacheDurableCommit,
   setBeforeReleaseHookForTests(hook: typeof catalogCacheBeforeReleaseHookForTests): void {
     catalogCacheBeforeReleaseHookForTests = hook;
+  },
+  setAfterRootLeaseAcquireHookForTests(hook: typeof catalogCacheAfterRootLeaseAcquireHookForTests): void {
+    catalogCacheAfterRootLeaseAcquireHookForTests = hook;
   },
 };

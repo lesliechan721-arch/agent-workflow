@@ -1,7 +1,7 @@
 import { Writable } from 'node:stream';
 
 import { render, useApp } from 'ink';
-import { useCallback, type ReactElement } from 'react';
+import { useCallback, useRef, type ReactElement } from 'react';
 
 import type { CliPromptOutputSink } from '../commands/runtime.js';
 
@@ -20,10 +20,13 @@ function TuiSession<T>(props: {
   onComplete: (result: T) => void;
 }): React.JSX.Element {
   const { exit } = useApp();
+  const completed = useRef(false);
   const complete = useCallback((result: T) => {
+    if (completed.current) return;
+    completed.current = true;
     props.onComplete(result);
     exit();
-  }, [exit, props]);
+  }, [exit, props.onComplete]);
   return <>{props.request.render(complete)}</>;
 }
 

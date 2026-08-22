@@ -127,7 +127,7 @@ Local runtime
 - Beta 发布根据源码稳定版本、`contentDigest` 和已发布账本，在临时 staging 中物化 prerelease plugin version。只有该插件已发布的最高 beta identity 内容相同时才复用其版本；内容从 A 变为 B 再变回 A 时分配下一个 beta，保持 ledger 单调。Stable 发布直接使用源码 manifest version。
 - release staging 包含发布端专用的 `plugin-release-ledger.json`。未发布的 schema 1 digest 合同已由 schema 2 替换；validator 拒绝 schema 1，不能在同一发布历史中混用两套 digest 语义。记录以 catalog channel/version 和 plugin name/version 的完整发布身份保留历史；同一 `plugin@version` 跨历史必须保持 `artifactDigest`、`manifestDigest` 和 `contentDigest` 不变。当前 snapshot 的每个 entry 必须有且只有一个当前 catalog 记录。publisher 从两个已发布 channel 合并 ledger，再生成候选 snapshot。
 - source strict cache 使用 immutable entry、原子 selector publication 和有界 lock。
-- active marketplace 只供平台原生能力读取。`AW_HOME` 同盘 sibling coordination root 提供 lifecycle lease 和 runtime lease；同时需要两者时，固定按 lifecycle、runtime 的顺序获取。runtime lease 串行根替换、catalog source config、user config 及 Codex user Skill overlay 的写入，lifecycle lease 保护 active snapshot。只读检查不获取排他租约，也不创建 coordination 状态。operation lock 也位于 sibling root，不进入被替换目录。重建必须保留 catalog source config、strict catalog cache、AW config store、Codex user Skill overlay 和 lifecycle active snapshot。marketplace generation 的 restore 和 rollback 只把明确缺失解释为 absent；backup 检查的 operational error 必须在删除 canonical root 前传播，失败的 rollback 不能记录为完成。新 generation 通过 postcheck 后，旧 generation 必须先原子移动到 `marketplaces/` 外的 AW-owned 同盘 quarantine；该 rename 是 durable commit，后续 quarantine 删除失败不得回滚新 generation。durable marketplace 或 lifecycle 结果完成后，coordination lease 的 `EBUSY`/`EPERM` 释放失败只产生 warning。
+- active marketplace 只供平台原生能力读取。`AW_HOME` 同盘 sibling coordination root 提供 lifecycle lease 和 runtime lease；同时需要两者时，固定按 lifecycle、runtime 的顺序获取。runtime lease 串行根替换、catalog source config、全部 namespaced user/project config 及 Codex user Skill overlay 的写入，lifecycle lease 保护 active snapshot。只读检查不获取排他租约，也不创建 coordination 状态。operation lock 也位于 sibling root，不进入被替换目录。重建必须保留 catalog source config、strict catalog cache、AW config store、Codex user Skill overlay 和 lifecycle active snapshot。marketplace generation 的 restore 和 rollback 只把明确缺失解释为 absent；backup 检查的 operational error 必须在删除 canonical root 前传播，失败的 rollback 不能记录为完成。新 generation 通过 postcheck 后，旧 generation 必须先原子移动到 `marketplaces/` 外的 AW-owned 同盘 quarantine；该 rename 是 durable commit，后续 quarantine 删除失败不得回滚新 generation。durable marketplace 或 lifecycle 结果完成后，coordination lease 的 `EBUSY`/`EPERM` 释放失败只产生 warning。
 - orphan marketplace root 只在锁内的全局 consumer inventory 完整且最终 identity 复查通过后删除。strict root reader 在读取 `config.json` 和 marketplace manifest 前，从可信 marketplace 根逐节点 `lstat` 完整路径链；中间节点必须是非符号链接目录，最终 JSON 节点必须是 regular file。外部符号链接中的匹配 JSON 不能授权删除。删除先把 strict root 原子 rename 到 `marketplaces/` 外的 AW-owned 同盘 quarantine；rename 失败保留原 root，后续 cleanup 只重试严格验证的 quarantine。
 - Codex consumer inventory 对 strict root 声明的 marketplace 名称始终扫描匹配 cache 和 installed residue，不依赖原生 marketplace 注册仍为 canonical。cache 和 installed residue 根必须先以 `lstat` 验证完整节点；普通文件、符号链接、foreign root 和 operational `ENOTDIR` 不能作为 absent，也不能跟随到外部内容。注册缺失或 foreign 时，任何匹配 residue 都 fail closed。foreign、损坏、缺失或非普通 manifest 产生带真实位置、可用 plugin identity 及 Codex user relevance 的 typed probe/inventory error；最终 consumer cleanup 不删除 marketplace。
 - markerless Codex user Skill 只有在文件树与 current catalog 或当前 renderer 的期望树完全一致时，才按 pristine catalog 内容和 absent 状态处理。install/reinstall 可以为它原子写入 owner marker；内容变化、多余文件、符号链接或 foreign marker 仍按 collision 处理。
@@ -222,6 +222,7 @@ status 是只读操作。它不运行 lifecycle 或 renderer，不刷新 marketp
 - `uninstall`、`cleanup` 和 `reinstall` 不删除 config。
 - `config reset` 是删除 config store 的唯一入口。
 - `config reset` 在 config lock 内拒绝目录、符号链接和身份不匹配的 store；多 store reset 在任何删除前验证全部目标，并通过原子文件删除提交 receipt。
+- TUI 离线 reset 在写后以 namespaced store 的可信缺失确认成功，不依赖来源或 manifest 的健康状态；状态或 store 复读失败时只报告写入可能已完成。
 - config value 和 source identity 读取检查从可信的 canonical `AW_HOME` 或 repository root 到最终 `config.json` 的完整 path chain，拒绝 `.agent-workflows`、store root 及其后代的符号链接，并要求最终节点是 regular file。namespaced source/plugin namespace 和 legacy plugin namespace 遇到普通文件、符号链接或其它非目录节点时，inventory 返回 `invalidPluginConfigStore` typed error；合法空目录和缺少 `config.json` 的 plugin 目录仍被忽略。inventory 不能跟随链接读取 store 外内容。
 - sensitive config value 不进入 receipt、stderr 或 debug log。
 
@@ -271,8 +272,8 @@ cache publication 必须满足：
 
 ### Human/TUI progress
 
-- 裸 `aw` 使用响应式 Ink 仪表盘。宽视口同时显示插件、操作和目标/状态，窄视口使用单栏页面，过小视口只显示尺寸提示。状态信息位于目标详情，写操作位于操作区，配置位于插件配置页。
-- 默认仪表盘不加载组件诊断。`--verbose` 只显示 status v4 投影的安全 component key、state、error code 和脱敏 message，不显示 component path 或 label。
+- 裸 `aw` 使用响应式 Ink 仪表盘。所有可用尺寸使用同一套单列页面和焦点顺序；`80 × 24` 是标准尺寸，`60 × 18` 是最低尺寸，低于最低尺寸时只显示尺寸提示。低于标准尺寸的 compact 模式只调整换行和信息堆叠，不改变导航路径。状态信息位于目标详情，写操作位于操作区，配置位于插件配置页。
+- 默认仪表盘不加载组件诊断。`--verbose` 只把 status v4 投影的安全 component key、state 和 error code 加入 P21 技术详情，不显示 component path、label、原始 error 或普通页面扩展。
 - 仪表盘和向导用 multi-source `cacheFirst` 读取；重复插件名显示 qualified `pluginId`。交互写操作使用同一 namespaced runtime，不回退到旧 npm catalog 写路径。
 - 缺少必要参数的写命令只在真实 TTY、human 模式且非 CI 时进入向导。
 - 向导在挂载前拒绝不可用 catalog 和当前操作的空候选集。file/directory 配置在仪表盘和向导中按私有值投影，命令摘要只显示占位符模板。
@@ -284,6 +285,15 @@ cache publication 必须满足：
 - sensitive config、未脱敏 event message 和 native raw invocation/data 不进入 frame、stdout 或 stderr。
 - TUI 结束后必须恢复 session reporter；每个事件只向 debug logger 发送一次。
 - `rebuild:action` 只服务 human、TUI、verbose 和 debug 诊断，不进入 v4 JSON receipt。普通 human reporter 忽略 event；verbose 写 stderr；`--json` stdout 仍只包含一个对象。
+- `tui/controller.ts`、`tui/model.ts` 和 `tui/router.ts` 是单列 TUI 的内部控制层。裸 `aw` 默认入口挂载 `ConsoleAppV4`，从 status v4、plugin summary、source config 和 config read 投影页面模型；canonical `pluginId`、`sourceId`、`issueId` 和 `operationId` 是路由身份。旧三焦点 Dashboard 不再是生产入口。
+- 新 Controller 首屏使用 `cacheFirst`，随后只对 Git source 运行可取消的 `forceRemote` 后台检查。成功检查发布 strict cache 后重新读取 status 投影；失败时只把已有缓存标为 degraded，无缓存标为 unavailable。首页分别显示使用缓存和不可用的来源数量，不能把缓存来源计入不可用。generation token 防止旧检查覆盖较新结果。
+- 交互写操作先建立短期内存 Review ticket。Review 证据绑定 catalog config/composite digest、选中来源 identity 与 snapshot/content digest、目标状态 fingerprint，以及适用的配置层和 store digest。执行前重新读取并比较证据；变化时不调用写入口，而是返回同 intent 的新 Review。跨进程锁顺序固定为 catalog cache root/runtime catalog lease → config transaction（适用时）→ canonical target operation locks → store/command；持有 target lock 后不得首次获取 catalog cache root。插件写入在真实 target operation lock 内复核完整证据；config 写入按稳定顺序持有全部适用 target operation lock，并在 config transaction 和 store file lock 内、首次 store 或 target 写入前复核完整证据。stale 操作不写入。Controller 只保存安全结果摘要和固定 typed 错误，不保存底层 receipt、私有路径或有效配置值。
+- TUI preset 只接受非敏感、非路径字段；validator 在 manifest 边界拒绝 sensitive、file 和 directory preset。进度和结果只保留最近 8 条安全消息、elapsed 和结构化目标摘要；无 target 的 source/config 成功结果仍显示固定 human receipt。
+- 问题页从 status target error code、source health 和内部 plugin config preflight 投影结构化类别。问题写操作在 plugin write intent 上绑定 typed issue origin，仍经过同一 Review、evidence、operation lock 和写命令；完成后取消旧检查，并以新 generation 统一重载状态。公开 status v4 JSON 不包含这些 TUI 内部字段。
+- manifest 或来源不可用时，TUI 只在所选 namespaced config store 存在、store source identity 与当前来源配置 identity 一致时允许重置该层。Review 和执行绑定安全 identity、catalog config digest 与 store digest；锁内证据变化时零写。该降级路径只删除本层已存值，不读取或展示 value/path，不重新应用插件内容，并保留其他设置层。
+- typed issue origin 同时绑定类别、canonical plugin/source、platform、scope 和所选动作。建立 Review、执行前验证和锁内证据都必须保持该映射；伪造或已变化的问题不得写入。问题写入只有在新 generation 中确认原 typed issue key 消失后才成功。执行入口开始后，除 typed `operationReviewStale` 的零写重审外，异常、恢复失败、全目标失败 receipt 或写后重载失败都保守标记“写入可能已完成”；Controller 先取消旧检查并尝试在新 generation 重载状态，不切换为启动失败页。
+- `sourceMissing` 只允许预填原 source ID 后重新添加同 identity 来源；来源类型和位置仍由用户选择。`sourceChanged` 只提供变更检查和恢复原 identity 的人工路径。两者都不从问题页调用低层 cleanup，也不提供自动 identity 迁移。
+- TUI 内部 config preflight 保留 `missing-required`、`invalid-config`、字段和安全来源层；单插件设置读取失败投影为不含值、路径或原始错误的 typed diagnostic。来源级不可用或降级与同 source 的 target `catalogSourceUnavailable` 合并为一个根问题，只聚合安全的受影响 target 数量。
 
 ## Key Paths
 

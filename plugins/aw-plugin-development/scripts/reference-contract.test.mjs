@@ -37,3 +37,12 @@ test('AW author maps every supported component to a direct reference', async () 
     readFile(path.join(root, 'references', 'aw-scripts-config-lifecycle.md'), 'utf8'),
   );
 });
+
+test('AW config reference keeps private values out of presets', async () => {
+  const reference = await readFile(
+    path.join(runtimeRoot, 'skills', 'author-aw-plugin', 'references', 'aw-config-and-helper.md'),
+    'utf8',
+  );
+  // Static contract exception: published AW Author guidance must not let users place private values in presets; behavior test is not suitable because this Markdown file is the installed Skill reference consumed by the model.
+  assert.match(reference, /preset 不得包含 sensitive、`file` 或 `directory` 字段/u);
+});

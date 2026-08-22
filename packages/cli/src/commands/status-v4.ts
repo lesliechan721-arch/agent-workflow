@@ -36,6 +36,7 @@ import { getDefaultNativeCliRunner } from '../utils/native-cli.js';
 import { resolveAwHome } from '../utils/paths.js';
 import type { OwnedComponent, OwnershipInspection } from '../utils/ownership.js';
 import { getClaudeHome, getCodexHome } from '../utils/state-paths.js';
+import { resolveEffectivePluginConfig } from '../utils/plugin-config.js';
 
 export interface StatusV4CatalogSource {
   id: string;
@@ -92,8 +93,12 @@ export interface StatusV4Payload {
 interface StatusPluginCapability {
   name: string;
   version: string;
+  displayName: string;
+  shortDescription: string;
   description: string;
   configSchema?: Record<string, PluginConfigSchemaField>;
+  configIssues?: StatusV4PluginSummary['configIssues'];
+  configDiagnostic?: StatusV4PluginSummary['configDiagnostic'];
   targets: Record<PlatformName, Record<Scope, boolean>>;
   states: Partial<Record<PlatformName, Partial<Record<Scope, {
     state: StatusV4Target['state'];
@@ -105,8 +110,19 @@ interface StatusPluginCapability {
 export interface StatusV4PluginSummary {
   pluginName: string;
   pluginId: string;
+  displayName?: string;
   description: string;
+  version?: string;
+  supportedTargets?: Record<PlatformName, Scope[]>;
+  configFieldCount?: number;
   configSchema?: Record<string, PluginConfigSchemaField>;
+  configIssues?: Array<{
+    type: 'missing-required' | 'invalid-config';
+    key: string;
+    title: string;
+    source: 'default' | 'user' | 'project' | 'projectLocal' | 'missing';
+  }>;
+  configDiagnostic?: { code: 'configReadFailed'; message: string };
 }
 
 interface PlannedStatusSelector {
@@ -382,6 +398,25 @@ export async function statusCommandV4(options: {
               plugin.sourceId = item.resolution!.sourceId;
               plugin.sourceIdentity = item.resolution!.sourceIdentity;
               plugin.pluginId = formatPluginId({ sourceId: item.resolution!.sourceId, pluginName: entry.name });
+              let effectiveConfig: Awaited<ReturnType<typeof resolveEffectivePluginConfig>> | undefined;
+              let configDiagnostic: StatusV4PluginSummary['configDiagnostic'];
+              if (plugin.manifest.config?.schema) {
+                try {
+                  effectiveConfig = await resolveEffectivePluginConfig({
+                    sourceId: plugin.sourceId,
+                    sourceIdentity: plugin.sourceIdentity,
+                    pluginName: plugin.manifest.name,
+                    manifest: plugin.manifest,
+                    cwd: options.cwd,
+                    env,
+                  });
+                } catch {
+                  configDiagnostic = {
+                    code: 'configReadFailed',
+                    message: '插件设置当前不可读。未读取或显示设置值。',
+                  };
+                }
+              }
               const states: StatusPluginCapability['states'] = {};
               const marketplaceName = item.resolution!.sourceId === resolution.primarySourceId
                 ? 'aw'
@@ -475,10 +510,24 @@ export async function statusCommandV4(options: {
               return {
                 name: entry.name,
                 version: entry.version,
+                displayName: plugin.manifest.interface?.displayName ?? entry.name,
+                shortDescription: plugin.manifest.interface?.shortDescription
+                  ?? plugin.manifest.description,
                 description: plugin.manifest.description,
                 ...(plugin.manifest.config?.schema
                   ? { configSchema: plugin.manifest.config.schema }
                   : {}),
+                ...(effectiveConfig?.issues.length
+                  ? {
+                      configIssues: effectiveConfig.issues.map((issue) => ({
+                        type: issue.type,
+                        key: issue.key,
+                        title: plugin.manifest.config!.schema[issue.key]?.title ?? issue.key,
+                        source: issue.source ?? 'missing',
+                      })),
+                    }
+                  : {}),
+                ...(configDiagnostic ? { configDiagnostic } : {}),
                 targets: {
                   claude: { user: claude, project: claude },
                   codex: {
@@ -794,8 +843,17 @@ export async function statusCommandV4(options: {
     pluginSummaries: available.map((entry) => ({
       pluginName: entry.name,
       pluginId: formatPluginId({ sourceId: entry.source.id, pluginName: entry.name }),
-      description: entry.description,
+      displayName: entry.displayName,
+      description: entry.shortDescription,
+      version: entry.version,
+      supportedTargets: {
+        codex: (['user', 'project'] as const).filter((scope) => entry.targets.codex[scope]),
+        claude: (['user', 'project'] as const).filter((scope) => entry.targets.claude[scope]),
+      },
+      configFieldCount: Object.keys(entry.configSchema ?? {}).length,
       ...(entry.configSchema ? { configSchema: entry.configSchema } : {}),
+      ...(entry.configIssues ? { configIssues: entry.configIssues } : {}),
+      ...(entry.configDiagnostic ? { configDiagnostic: entry.configDiagnostic } : {}),
     })),
   };
 }

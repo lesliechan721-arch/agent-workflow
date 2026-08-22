@@ -57,6 +57,25 @@ describe('rebuild progress feed', () => {
     ]);
   });
 
+  it('starts each formal operation without prior messages or notice deduplication state', () => {
+    const feed = createRebuildProgressFeed();
+    feed.addEvent({
+      type: 'rebuild:action',
+      source: { plugin: 'first-plugin', platform: 'codex', scope: 'user', action: 'install' },
+      data: { name: 'native.write', phase: 'start' },
+    });
+    feed.addNotice({ level: 'notice', identity: 'reusable', message: 'first operation' });
+
+    feed.clearCurrent();
+
+    expect(feed.get()).toEqual({ messages: [] });
+    feed.addNotice({ level: 'notice', identity: 'reusable', message: 'second operation' });
+    expect(feed.get().messages).toEqual([
+      '通知：收到通知，详情请查看退出后的命令结果或调试日志。',
+    ]);
+    expect(feed.get().messages.join('\n')).not.toContain('first-plugin');
+  });
+
   it('keeps normal and JSON-style IO silent while verbose writes only to stderr', async () => {
     const event = {
       type: 'rebuild:action',

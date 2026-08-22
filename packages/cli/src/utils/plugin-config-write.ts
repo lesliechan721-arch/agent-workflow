@@ -1,4 +1,7 @@
+import path from 'node:path';
+
 import type { RebuildCommandResult, RebuildCommandRuntime } from '../commands/rebuild-command.js';
+import { releaseRebuildOperationLease } from '../commands/rebuild-operations.js';
 import {
   discoverRebuildTargetNames,
   inspectRebuildTarget,
@@ -40,6 +43,19 @@ import {
 } from './project-boundary.js';
 import { resolveClaudeProjectKey, resolveCodexProjectKey } from './paths.js';
 import { supportsPlatform } from './platform-support.js';
+import { acquireLifecycleOperationLock } from './lifecycle-active-store.js';
+import { canonicalPlatformScopeTargets } from './target-order.js';
+
+export interface PluginConfigWriteTestHooks {
+  beforeOperationLockAcquire?: (target: { platform: PlatformName; scope: Scope }) => Promise<void>;
+  afterOperationLockAcquire?: (target: { platform: PlatformName; scope: Scope }) => Promise<void>;
+}
+
+let pluginConfigWriteTestHooks: PluginConfigWriteTestHooks | undefined;
+
+export function setPluginConfigWriteTestHooksForTests(hooks: PluginConfigWriteTestHooks | undefined): void {
+  pluginConfigWriteTestHooks = hooks;
+}
 
 export interface PluginConfigWriteRequest {
   updates?: Record<string, unknown>;
@@ -536,7 +552,61 @@ type ApplyPluginConfigWriteOptions = {
   reinstallCommandImpl?: ReinstallCommand;
   rebuildRuntime?: RebuildCommandRuntime;
   request: PluginConfigWriteRequest;
+  reviewPreflight?: () => Promise<void> | void;
 };
+
+async function withConfigReviewOperationLocks<T>(options: {
+  plugin?: PluginMeta | null;
+  sourceId?: string;
+  sourceIdentity?: string;
+  pluginName?: string;
+  scope: Scope;
+  cwd: string;
+  env?: NodeJS.ProcessEnv;
+  rebuildRuntime?: RebuildCommandRuntime;
+  reviewPreflight?: () => Promise<void> | void;
+}, action: (rebuildRuntime: RebuildCommandRuntime | undefined) => Promise<T>): Promise<T> {
+  if (!options.reviewPreflight) return action(options.rebuildRuntime);
+  const sourceId = options.plugin?.sourceId ?? options.sourceId;
+  const sourceIdentity = options.plugin?.sourceIdentity ?? options.sourceIdentity;
+  const pluginName = options.plugin?.manifest.name ?? options.pluginName;
+  if (!pluginName || (!options.plugin && (!sourceId || !sourceIdentity))) return action(options.rebuildRuntime);
+  const scopes: Scope[] = options.scope === 'user' ? ['project', 'user'] : ['project'];
+  const targets = canonicalPlatformScopeTargets((['claude', 'codex'] as const).flatMap((platform) =>
+    scopes.map((scope) => ({ platform, scope }))));
+  const leases: Awaited<ReturnType<typeof acquireLifecycleOperationLock>>[] = [];
+  try {
+    for (const target of targets) {
+      await pluginConfigWriteTestHooks?.beforeOperationLockAcquire?.(target);
+      leases.push(await acquireLifecycleOperationLock({
+        ...(sourceId && sourceIdentity ? { sourceId, sourceIdentity } : {}),
+        pluginName,
+        platform: target.platform,
+        scope: target.scope,
+        cwd: options.cwd,
+        env: options.env,
+      }));
+      await pluginConfigWriteTestHooks?.afterOperationLockAcquire?.(target);
+    }
+    await options.reviewPreflight();
+    return action({ ...options.rebuildRuntime, operationLeaseHeld: true });
+  } finally {
+    for (const lease of leases.reverse()) {
+      try {
+        await releaseRebuildOperationLease(lease);
+      } catch {
+        try {
+          process.emitWarning(
+            'Config operation lock release failed.',
+            { code: 'AW_CONFIG_OPERATION_LOCK_RELEASE_FAILED' },
+          );
+        } catch {
+          // Release diagnostics cannot replace the config action result.
+        }
+      }
+    }
+  }
+}
 
 async function applyPluginConfigWriteUnlocked(
   options: ApplyPluginConfigWriteOptions,
@@ -604,6 +674,7 @@ async function applyPluginConfigWriteUnlocked(
         updates: {},
         removeKeys: requestedRemoveKeys,
         requireExistingRemoveKeys: true,
+        reviewPreflight: options.reviewPreflight,
       });
       return {
         plugin: pluginName,
@@ -686,6 +757,7 @@ async function applyPluginConfigWriteUnlocked(
       env: options.env,
       updates,
       removeKeys: requestedRemoveKeys,
+      reviewPreflight: options.reviewPreflight,
     });
   }
 
@@ -797,7 +869,11 @@ export async function applyPluginConfigWrite(
     projectLayer: options.scope === 'project' ? (options.projectLayer ?? 'shared') : 'shared',
     cwd: options.cwd,
     env: options.env,
-    action: () => applyPluginConfigWriteUnlocked(options),
+    action: async () => {
+      await options.reviewPreflight?.();
+      return withConfigReviewOperationLocks(options, (rebuildRuntime) =>
+        applyPluginConfigWriteUnlocked({ ...options, rebuildRuntime }));
+    },
   });
 }
 
@@ -815,6 +891,7 @@ type ResetPluginConfigWriteOptions = {
   nativeCliRunner?: NativeCliRunner;
   reinstallCommandImpl?: ReinstallCommand;
   rebuildRuntime?: RebuildCommandRuntime;
+  reviewPreflight?: () => Promise<void> | void;
 };
 
 async function resetPluginConfigWithHelperUnlocked(
@@ -864,6 +941,7 @@ async function resetPluginConfigWithHelperUnlocked(
     projectLayer,
     cwd: options.cwd,
     env: options.env,
+    reviewPreflight: options.reviewPreflight,
   });
 
   let applied: Awaited<ReturnType<typeof reinstallVisibleTargets>> = {
@@ -980,7 +1058,11 @@ export async function resetPluginConfigWithHelper(
     projectLayer: options.scope === 'project' ? (options.projectLayer ?? 'shared') : 'shared',
     cwd: options.cwd,
     env: options.env,
-    action: () => resetPluginConfigWithHelperUnlocked(options),
+    action: async () => {
+      await options.reviewPreflight?.();
+      return withConfigReviewOperationLocks(options, (rebuildRuntime) =>
+        resetPluginConfigWithHelperUnlocked({ ...options, rebuildRuntime }));
+    },
   });
 }
 
@@ -1042,4 +1124,3 @@ export async function describeResetAffectedFields(options: {
     }));
   }
 }
-import path from 'node:path';

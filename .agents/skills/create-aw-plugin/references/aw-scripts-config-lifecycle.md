@@ -62,6 +62,38 @@ plugins/<name>/
 
 `config.schema` 是 AW config 的唯一真值。首版支持 `string`、`number`、`boolean`、`enum`、`file`、`directory`。字段可声明 `title`、`description`、`default`、`required`、`sensitive`；`enum` 用 `values`，`number` 可用 `min` / `max`。
 
+可选的 `config.presentation` 只定义交互界面展示，不改变 schema 或 store 中的值：
+
+- `groups` 按声明顺序显示。字段最多属于一个显式 group；未分组的普通字段进入“其他设置”。未分组且 `presentation.fields.<key>.advanced: true` 的字段进入合成的高级设置组。显式 group 归属优先于字段级 `advanced`。
+- 没有 `presentation` 时，全部 schema 字段仍有效，并进入通用“插件设置”组。
+- `valueLabels` 只为 enum 原始 token 提供显示文本。CLI 保存、helper 返回和 lifecycle 收到的仍是原始 token。
+- `presets[].values` 是部分更新。选择 preset 只更新其中列出的 key，不清空或重置其它 key。preset 不得包含 sensitive、`file` 或 `directory` 字段；这些私有值必须由用户在对应输入页提供。推荐值和 preset 值必须符合目标字段的类型、enum、`min` 和 `max`。
+- 插件首次采用 `presentation` 时，必须把 `compatibility.aw.minVersion` 设为首个支持该合同的 AW CLI 发布版本。不要声明比真实支持版本更低的 compatibility floor。
+
+```json
+{
+  "config": {
+    "schema": {
+      "mode": { "type": "enum", "values": ["safe", "fast"], "default": "safe" },
+      "timeout": { "type": "number", "min": 1, "max": 30 },
+      "trace": { "type": "boolean", "default": false }
+    },
+    "presentation": {
+      "groups": [
+        { "id": "general", "title": "General", "fields": ["mode", "timeout"] }
+      ],
+      "fields": {
+        "mode": { "valueLabels": { "safe": "Safe", "fast": "Fast" } },
+        "trace": { "advanced": true }
+      },
+      "presets": [
+        { "id": "fast", "title": "Fast", "values": { "mode": "fast" } }
+      ]
+    }
+  }
+}
+```
+
 配置有三层 store：
 
 | scope | 路径 |

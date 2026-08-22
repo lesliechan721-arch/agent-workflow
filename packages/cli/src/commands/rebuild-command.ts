@@ -59,6 +59,7 @@ import {
   withActiveMarketplaceRuntimeLease,
 } from '../utils/active-marketplace-runtime-lock.js';
 import { cleanupOrphanNamespacedMarketplaceRoot } from '../utils/orphan-marketplace-cleanup.js';
+import { canonicalPlatformScopeTargets } from '../utils/target-order.js';
 
 export type RebuildCommandRuntime = Partial<RebuildExecutionContext> & {
   catalogResolution?: CatalogResolution;
@@ -71,7 +72,22 @@ export type RebuildCommandRuntime = Partial<RebuildExecutionContext> & {
   };
   lostSourceRecovery?: boolean;
   expectedCatalogConfigDigest?: string;
+  reviewPreflight?: (evidence: RebuildReviewPreflightEvidence) => Promise<void> | void;
+  resolvedReviewEvidence?: Omit<RebuildReviewPreflightEvidence, 'command' | 'identity'>;
+  operationLeaseHeld?: boolean;
 };
+
+export interface RebuildReviewPreflightEvidence {
+  command: RebuildCommand;
+  identity: RebuildTargetIdentity;
+  configDigest?: string;
+  sourceId?: string;
+  sourceIdentity?: string;
+  resolvedCommit?: string;
+  manifestDigest?: string;
+  snapshotDigest?: string;
+  contentDigest?: string;
+}
 
 export interface RebuildCommandResult {
   platforms: string[];
@@ -451,26 +467,28 @@ async function runSingleSourceRebuildCommand(options: {
         continue;
       }
       let operationLock;
-      try {
-        await rebuildCommandTestHooks?.beforeOperationLockAcquire?.({
-          command: options.command,
-          identity,
-        });
-        operationLock = await withRebuildActionEvent({
-          runtime,
-          command: options.command,
-          identity,
-          name: 'operation.lock',
-          operation: () => activeStore.acquireOperation!(identity),
-        });
-      } catch (error) {
-        results.push(failedResult(
-          options.command,
-          identity,
-          error instanceof Error ? error.message : String(error),
-          'operation.lock',
-        ));
-        continue;
+      if (!options.runtime?.operationLeaseHeld) {
+        try {
+          await rebuildCommandTestHooks?.beforeOperationLockAcquire?.({
+            command: options.command,
+            identity,
+          });
+          operationLock = await withRebuildActionEvent({
+            runtime,
+            command: options.command,
+            identity,
+            name: 'operation.lock',
+            operation: () => activeStore.acquireOperation!(identity),
+          });
+        } catch (error) {
+          results.push(failedResult(
+            options.command,
+            identity,
+            error instanceof Error ? error.message : String(error),
+            'operation.lock',
+          ));
+          continue;
+        }
       }
       let result: RebuildResult;
       try {
@@ -511,6 +529,11 @@ async function runSingleSourceRebuildCommand(options: {
           command: options.command,
           identity,
         });
+        await options.runtime?.reviewPreflight?.({
+          command: options.command,
+          identity,
+          ...options.runtime.resolvedReviewEvidence,
+        });
         const { acquireOperation: _acquireOperation, ...operationHeldStore } = activeStore;
         result = await executeRebuildOperation({
           command: options.command,
@@ -528,20 +551,22 @@ async function runSingleSourceRebuildCommand(options: {
           );
       }
       result.actions.unshift({ name: 'operation.lock', status: 'succeeded' });
-      try {
-        await withRebuildActionEvent({
-          runtime,
-          command: options.command,
-          identity,
-          name: 'operation.release',
-          operation: () => releaseRebuildOperationLease(operationLock),
-        });
-        result.actions.push({ name: 'operation.release', status: 'succeeded' });
-      } catch (error) {
-        result = appendOperationReleaseFailure(
-          result,
-          error instanceof Error ? error.message : String(error),
-        );
+      if (operationLock) {
+        try {
+          await withRebuildActionEvent({
+            runtime,
+            command: options.command,
+            identity,
+            name: 'operation.release',
+            operation: () => releaseRebuildOperationLease(operationLock),
+          });
+          result.actions.push({ name: 'operation.release', status: 'succeeded' });
+        } catch (error) {
+          result = appendOperationReleaseFailure(
+            result,
+            error instanceof Error ? error.message : String(error),
+          );
+        }
       }
       results.push(result);
     }
@@ -712,7 +737,13 @@ async function cleanupOrphanLifecycleOnly(options: {
   const sourceIdentity = [...identities][0]!;
   const operationLocks: Awaited<ReturnType<typeof acquireLifecycleOperationLock>>[] = [];
   try {
-    for (const platform of selectedPlatforms(options.commandOptions.platform)) {
+    const lockTargets = canonicalPlatformScopeTargets(
+      selectedPlatforms(options.commandOptions.platform).map((platform) => ({
+        platform,
+        scope: options.commandOptions.scope,
+      })),
+    );
+    for (const { platform } of lockTargets) {
       const identity: RebuildTargetIdentity = {
         sourceId: options.selector.sourceId,
         sourceIdentity,
@@ -1211,6 +1242,16 @@ export async function runRebuildCommand(options: {
             catalogResolution: toCatalogResolution(entry.source),
             namespacedTarget,
             expectedCatalogConfigDigest: catalog.configDigest,
+            resolvedReviewEvidence: {
+              configDigest: catalog.configDigest,
+              sourceId: entry.source.sourceId,
+              sourceIdentity: entry.source.sourceIdentity,
+              resolvedCommit: entry.source.resolvedCommit,
+              manifestDigest: entry.source.manifestDigest,
+              snapshotDigest: entry.source.snapshotDigest,
+              contentDigest: entry.source.manifest.entries.find((candidate) =>
+                candidate.name === entry.plugin.manifest.name)?.contentDigest,
+            },
           },
         }));
       }

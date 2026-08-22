@@ -26,7 +26,6 @@ import {
 } from './commands/write-commands.js';
 import type { RebuildCommandResult } from './commands/rebuild-command.js';
 import {
-  dashboardActions,
   formatInteractiveConsoleUnavailableMessage,
   runConsoleController,
 } from './commands/console.js';
@@ -90,6 +89,7 @@ import {
   resetPluginConfigWithHelper,
 } from './utils/plugin-config-write.js';
 import { assertStrictSemVer } from './utils/manifest.js';
+import { writeCandidateEligibility } from './utils/target-eligibility.js';
 import {
   assertCatalogSourceInventoryComplete,
   assertCatalogSourceReferencesSupported,
@@ -365,26 +365,6 @@ export function buildEquivalentConfigCommandTokens(
     ...(options.key === undefined ? [] : [options.key]),
     ...(options.value === undefined ? [] : [options.value]),
   ];
-}
-
-function writeCandidateEligibility(
-  command: WriteWizardCommand,
-  candidate: CommandWizardPluginCandidate,
-  selection: CommandWizardSelection,
-): { selectable: boolean; reason?: string } {
-  const targets = candidate.targets.filter((target) =>
-    target.target.scope === (selection.scope ?? 'user')
-    && (selection.platform === 'both' || target.target.platform === selection.platform));
-  if (targets.length === 0) {
-    return { selectable: false, reason: 'current bundle 不支持所选平台和范围' };
-  }
-  const selectable = targets.every((target) => dashboardActions({
-    pluginName: candidate.pluginName,
-    targets: candidate.targets,
-  }, target).includes(command));
-  return selectable
-    ? { selectable: true }
-    : { selectable: false, reason: `live status 不允许 ${command}` };
 }
 
 function hasSelectableWriteCandidate(
