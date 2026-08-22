@@ -151,6 +151,10 @@ normalize target
   → emit receipt v4
 ```
 
+`install`、`upgrade` 和 `reinstall` 在首写前按 source 对请求根取联合依赖闭包。operation plan 绑定 roots、edges、source/catalog evidence、每个节点的 manifest/content digest、requested/resolved scope、live state、action 和依赖优先顺序，并用 canonical stable JSON 计算 digest。写入口获取闭包全部潜在 user/project target lock 后，重读状态、安装合同和 config 并复算 digest；变化返回 `dependencyPlanStale`，不执行写入。依赖成功 postcheck 后 promotion installation contract；合同记录直接依赖的实际 placement。有效且 content digest 当前的共享依赖使用 `keep`，不重写合同。
+
+receipt v4 可附带 `dependencyPlanSchemaVersion`、requested/resolved plugin IDs 和 dependency edges。目标可附带 relation、requiredBy 和 dependencyState；既有 `status: succeeded|failed` 保持兼容。
+
 命令行为：
 
 - `install`：按 current catalog 写入目标。

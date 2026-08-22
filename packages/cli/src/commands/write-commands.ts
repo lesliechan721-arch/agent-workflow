@@ -28,6 +28,14 @@ function writeErrorCode(message: string): string {
     'sourceChanged',
     'sourceMissing',
     'artifactCollision',
+    'dependencyNotReady',
+    'dependencyScopeTooNarrow',
+    'dependencyScopeConflict',
+    'dependencyTargetUnsupported',
+    'dependencyInstallFailed',
+    'dependencyPlanStale',
+    'dependencyContractMissing',
+    'dependencyContractInvalid',
   ]) {
     if (message.includes(code)) return code;
   }

@@ -1,5 +1,4 @@
 import crypto from 'node:crypto';
-import path from 'node:path';
 
 import type { CliExecutionContext } from '../commands/runtime.js';
 import type { PlatformName } from '../types.js';
@@ -43,10 +42,6 @@ import {
 import type { RebuildProgressFeed } from '../output/rebuild-progress.js';
 import type { RebuildReviewPreflightEvidence } from '../commands/rebuild-command.js';
 import {
-  acquireLifecycleOperationLock,
-} from '../utils/lifecycle-active-store.js';
-import { releaseRebuildOperationLease } from '../commands/rebuild-operations.js';
-import {
   operationEvidenceFingerprint,
   TuiController,
   TuiOperationBlockedError,
@@ -56,10 +51,8 @@ import {
 } from './controller.js';
 import { buildConfigGroups, buildConfigPage } from './model.js';
 import { projectCatalogSourceLocation } from '../utils/catalog-source-presentation.js';
-import { canonicalPlatformScopeTargets } from '../utils/target-order.js';
 import { targetCanBeUninstalled } from '../utils/target-eligibility.js';
 import { calculateCatalogSourceIdentity } from '../utils/catalog-source-identity.js';
-import { resolveAwHome } from '../utils/paths.js';
 
 export interface TuiControllerRuntimeTestHooks {
   afterPluginOperationLocksAcquire?: () => Promise<void>;
@@ -667,62 +660,23 @@ export function createTuiControllerDependencies(
         if (!expectedSource) {
           throw new TuiOperationBlockedError('operationReviewStale', '确认信息缺少来源身份。');
         }
-        const pluginName = parsePluginId(intent.pluginId).pluginName;
         return withResolvedCatalogPlugin({
           selector: intent.pluginId,
           cliVersion: (await readCliPackageInfo()).version,
           freshnessPolicy: 'requireRemote',
           env: context.env,
-          consume: async ({ source, plugin }) => {
+          consume: async ({ source }) => {
             if (source.sourceId !== expectedSource.sourceId
               || source.sourceIdentity !== expectedSource.sourceIdentity) {
               throw new TuiOperationBlockedError('operationReviewStale', '确认后来源身份发生变化。');
             }
-            const platforms: PlatformName[] = intent.platform === 'both'
-              ? ['codex', 'claude']
-              : [intent.platform];
-            const lockTargets = canonicalPlatformScopeTargets(platforms.flatMap((platform) =>
-              (['project', 'user'] as const).map((scope) => ({ platform, scope }))));
-            const leases: Awaited<ReturnType<typeof acquireLifecycleOperationLock>>[] = [];
-            try {
-              for (const { platform, scope } of lockTargets) {
-                leases.push(await acquireLifecycleOperationLock({
-                  sourceId: source.sourceId,
-                  sourceIdentity: source.sourceIdentity,
-                  pluginName,
-                  platform,
-                  scope,
-                  cwd: context.cwd,
-                  env: context.env,
-                }));
-              }
-              await tuiControllerRuntimeTestHooks?.afterPluginOperationLocksAcquire?.();
-              let fullEvidenceChecked = false;
-              const marketplaceName = plugin.marketplaceName ?? source.sourceId;
-              const result = await command([pluginName], options, {
+            let fullEvidenceChecked = false;
+            const result = await command([intent.pluginId], options, {
                 ...context,
-                catalogResolution: {
-                  rootDir: source.rootDir,
-                  source: source.source === 'path' ? 'local' : source.source,
-                },
-                namespacedTarget: {
-                  sourceId: source.sourceId,
-                  sourceIdentity: source.sourceIdentity,
-                  pluginId: intent.pluginId,
-                  marketplaceName,
-                  marketplaceRoot: path.join(resolveAwHome(context.env), 'marketplaces', source.sourceId),
-                },
                 expectedCatalogConfigDigest: expectedEvidence.catalog.configDigest,
-                resolvedReviewEvidence: {
-                  configDigest: expectedEvidence.catalog.configDigest,
-                  sourceId: source.sourceId,
-                  sourceIdentity: source.sourceIdentity,
-                  resolvedCommit: source.resolvedCommit,
-                  manifestDigest: source.manifestDigest,
-                  snapshotDigest: source.snapshotDigest,
-                  contentDigest: source.manifest.entries.find((entry) => entry.name === pluginName)?.contentDigest,
+                afterDependencyOperationLocksAcquire: async () => {
+                  await tuiControllerRuntimeTestHooks?.afterPluginOperationLocksAcquire?.();
                 },
-                operationLeaseHeld: true,
                 reviewPreflight: async (current) => {
                   assertLockedPluginEvidence(current, expectedEvidence);
                   const observed = await captureEvidence(intent);
@@ -740,29 +694,15 @@ export function createTuiControllerDependencies(
               });
               const staleFailure = result.targetResults.find((entry) => entry.state === 'failed'
                 && (entry.errorCode === 'operationReviewStale'
+                  || entry.errorCode === 'dependencyPlanStale'
                   || entry.message?.startsWith('operationReviewStale:')))
                 ?? result.rebuildResults.find((entry) => entry.status === 'failed'
-                  && entry.error.message.startsWith('operationReviewStale:'));
+                  && (entry.error.message.startsWith('operationReviewStale:')
+                    || entry.error.message.startsWith('dependencyPlanStale:')));
               if (staleFailure && !result.targetResults.some((entry) => entry.state === 'completed')) {
                 throw new TuiOperationBlockedError('operationReviewStale', '确认后状态发生变化。');
               }
-              return result;
-            } finally {
-              for (const lease of leases.reverse()) {
-                try {
-                  await releaseRebuildOperationLease(lease);
-                } catch {
-                  try {
-                    process.emitWarning(
-                      'TUI operation lock release failed.',
-                      { code: 'AW_TUI_OPERATION_LOCK_RELEASE_FAILED' },
-                    );
-                  } catch {
-                    // Release diagnostics cannot replace a durable write result.
-                  }
-                }
-              }
-            }
+            return result;
           },
         });
       }

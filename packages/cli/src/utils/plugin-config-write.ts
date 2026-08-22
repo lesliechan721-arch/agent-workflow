@@ -341,6 +341,7 @@ async function reinstallVisibleTargets(options: {
         },
         {
           ...options.rebuildRuntime,
+          bypassDependencyPlan: true,
           env: options.env,
           nativeCliRunner,
           ...(options.plugin.sourceId ? {
@@ -348,10 +349,9 @@ async function reinstallVisibleTargets(options: {
               rootDir: path.resolve(options.plugin.rootDir, '..', '..'),
               source: 'local' as const,
             },
-            namespacedTarget: {
+            namespacedSource: {
               sourceId: options.plugin.sourceId,
               sourceIdentity: options.plugin.sourceIdentity!,
-              pluginId: options.plugin.pluginId!,
               marketplaceName: options.plugin.marketplaceName!,
               marketplaceRoot: path.join(
                 resolveAwHome(options.env),

@@ -1,6 +1,7 @@
 import type { PlatformName, ReceiptOverallState, Scope } from '../types.js';
 import type { InitCommandResult } from '../commands/init.js';
 import type { RebuildResult } from '../commands/rebuild-operations.js';
+import type { DependencyOperationPlan } from '../commands/dependency-operation-plan.js';
 
 export interface CliCommandResult {
   platforms: string[];
@@ -15,12 +16,17 @@ export interface CliCommandResult {
     scope: Scope;
   }>;
   overallState?: ReceiptOverallState;
+  dependencyPlan?: DependencyOperationPlan;
 }
 
 export interface RebuildReceiptJson {
   ok: boolean;
   command: 'install' | 'upgrade' | 'reinstall' | 'uninstall' | 'cleanup';
   receiptSchemaVersion: 4;
+  dependencyPlanSchemaVersion?: number;
+  requestedPluginIds?: string[];
+  resolvedPluginIds?: string[];
+  dependencyEdges?: Array<{ from: string; to: string }>;
   overallState: ReceiptOverallState;
   warnings: string[];
   errors: Array<{ code: string; message: string }>;
@@ -41,6 +47,9 @@ export interface RebuildReceiptJson {
     quarantined: string[];
     failures: RebuildResult['failures'];
     errorCode?: string;
+    relation?: 'requested' | 'dependency';
+    requiredBy?: string[];
+    dependencyState?: 'completed' | 'kept' | 'failed' | 'skipped';
   }>;
 }
 
@@ -50,6 +59,14 @@ function rebuildErrorCode(message: string): string {
     'sourceChanged',
     'sourceMissing',
     'artifactCollision',
+    'dependencyNotReady',
+    'dependencyScopeTooNarrow',
+    'dependencyScopeConflict',
+    'dependencyTargetUnsupported',
+    'dependencyInstallFailed',
+    'dependencyPlanStale',
+    'dependencyContractMissing',
+    'dependencyContractInvalid',
   ]) {
     if (message.includes(code)) return code;
   }
@@ -71,6 +88,12 @@ export function buildRebuildReceiptJson(
     ok: overallState === 'succeeded',
     command,
     receiptSchemaVersion: 4,
+    ...(result.dependencyPlan ? {
+      dependencyPlanSchemaVersion: result.dependencyPlan.dependencyPlanSchemaVersion,
+      requestedPluginIds: result.dependencyPlan.requestedPluginIds,
+      resolvedPluginIds: result.dependencyPlan.resolvedPluginIds,
+      dependencyEdges: result.dependencyPlan.dependencyEdges,
+    } : {}),
     overallState,
     warnings: result.warnings,
     errors: overallState === 'failed' && rebuildResults.length === 0
@@ -85,6 +108,10 @@ export function buildRebuildReceiptJson(
         sourceId?: string;
         sourceIdentity?: string;
       };
+      const planned = result.dependencyPlan?.targets.find((target) =>
+        target.pluginId === identity.pluginId
+        && target.platform === entry.target.platform
+        && target.resolvedScope === entry.target.scope);
       return {
         pluginName: identity.pluginName,
         ...(identity.pluginId ? { pluginId: identity.pluginId } : {}),
@@ -101,6 +128,17 @@ export function buildRebuildReceiptJson(
         residual: entry.residual,
         quarantined: entry.quarantined,
         failures: entry.failures,
+        ...(planned ? {
+          relation: planned.relation,
+          requiredBy: planned.requiredBy,
+          dependencyState: planned.action === 'keep'
+            ? 'kept' as const
+            : entry.status === 'succeeded'
+              ? 'completed' as const
+              : entry.error.message.includes('dependencyInstallFailed')
+                ? 'skipped' as const
+                : 'failed' as const,
+        } : {}),
         ...(entry.status === 'failed'
           ? { errorCode: rebuildErrorCode(entry.error.message) }
           : {}),
