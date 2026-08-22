@@ -4,7 +4,7 @@
     "optimization": "precision-first",
     "false_negative_cost": "high",
     "false_positive_cost": "high",
-    "rationale": "漏掉隐藏决定会导致错误批准；同上下文自审会引入确认偏差；修订后不完整复审会错误复用旧结论。"
+    "rationale": "漏掉隐藏决定会导致错误批准；同上下文自审、逐轮释放问题或无进展复审都会降低结论可信度。"
   },
   "evals": [
     {
@@ -26,11 +26,11 @@
           "assets/spec-review-template.md"
         ],
         "confidence": "high",
-        "allowed_variance": "finding 数量和措辞可不同；必须创建独立 reviewer、识别过度规定与验收缺口、保持只读并记录目标版本。"
+        "allowed_variance": "finding 标题可不同；必须创建独立 reviewer，在一次审查中指出全部可支持 blocker、保持只读并记录目标版本与初始收敛状态。"
       },
       "prompt": "正式审查 docs/specs/session-expiry.md，判断是否可以批准。使用独立 reviewer，不要修改文件。",
       "scripted_replies": [],
-      "expected_output": "创建 fresh reviewer；输出 blocked；报告记录 Target、Version 和 Result；指出文件级任务清单、模型状态流程和可观察验收缺口；说明修订后必须重新 Review。",
+      "expected_output": "创建 fresh reviewer；输出 blocked；报告记录 Target、Version、Assurance Standard、Repair round 0、Progress initial 和 Automatic repair continue；一次指出文件级任务清单、模型状态流程和可观察验收缺口。",
       "workspace_files": {
         "docs/specs/session-expiry.md": "# Session Expiry Spec\n\n## Goal\n让会话过期。\n\n## 实施步骤\n1. 修改 src/auth/session.ts。\n2. 按 pending -> checking -> retrying -> expired 推进。\n\n## 验收\n系统正常工作。\n"
       },
@@ -52,9 +52,9 @@
         ],
         "checks": [
           "trace 创建一个 fresh 独立 reviewer；当前上下文不直接完成正式审查",
-          "结论为 blocked，报告包含 Target、Version 和 Result",
-          "指出可验证验收缺失，以及文件步骤和模型状态流程属于过度规定",
-          "说明修订完成后需要重新执行完整规格审查",
+          "结论为 blocked，报告包含 Target、Version、Assurance Standard、Repair round 0、Progress initial 和 Automatic repair continue",
+          "在同一轮指出可验证验收缺失，以及文件步骤和模型状态流程属于过度规定",
+          "偏好性建议与 blocker 分开，修复范围只覆盖当前问题及必需影响面",
           "不修改被审 Spec"
         ]
       }
@@ -78,14 +78,14 @@
           "SKILL.md#修复与复审"
         ],
         "confidence": "high",
-        "allowed_variance": "可以引用上一轮问题，但必须重新覆盖全部四个审查维度，并以当前 Spec 为目标。"
+        "allowed_variance": "可以引用上一轮问题，但必须重新覆盖全部四个审查维度，以当前 Spec 为目标，并记录与上一轮相比的进展。"
       },
       "prompt": "docs/dev/invite-expiry/spec.md 已根据上一次 blocked Review 修订。重新正式审查完整 Spec，覆盖当前 spec-review.md。不要修改 Spec。",
       "scripted_replies": [],
-      "expected_output": "创建新的 fresh reviewer；完整审查当前 Spec；若无 blocker 输出 clean，并覆盖当前报告。",
+      "expected_output": "创建新的 fresh reviewer；完整审查当前 Spec；无 blocker 时输出 clean，记录 Repair round 1、Progress advancing、Automatic repair not-needed，并覆盖当前报告。",
       "workspace_files": {
         "docs/dev/invite-expiry/spec.md": "# Invite expiry Spec\n\n## Outcome\n邀请 7 天后过期。\n\n## User-visible behavior\n第 7 天前可以接受；过期后服务端拒绝。\n\n## Acceptance\n覆盖过期前、边界时刻和过期后。\n\n## Agent discretion\n内部文件和函数组织由实现者决定。\n",
-        "docs/dev/invite-expiry/spec-review.md": "# Spec Review\n\n- Result: blocked\n\n## Findings\n缺少过期后的服务端行为。\n"
+        "docs/dev/invite-expiry/spec-review.md": "# Spec Review\n\n- Assurance: `Standard`\n- Result: `blocked`\n- Repair round: `0`\n- Progress: `initial`\n- Automatic repair: `continue`\n\n## Findings\n\n缺少过期后的服务端行为。\n"
       },
       "review": {
         "platforms": [
@@ -102,7 +102,11 @@
             "exists": true,
             "contains": [
               "Version",
+              "Assurance: `Standard`",
               "Result: `clean`",
+              "Repair round: `1`",
+              "Progress: `advancing`",
+              "Automatic repair: `not-needed`",
               "复审条件"
             ]
           }
@@ -111,6 +115,7 @@
           "trace 创建新的 fresh reviewer，而不是复用上一轮上下文",
           "重新检查决策完整性、可实现性、可验证性和边界纪律",
           "目标是当前完整 Spec，而不只是旧 finding",
+          "与上一份报告比较后记录 advancing，并在 clean 时停止自动修复",
           "覆盖当前 spec-review.md，并保持 Spec 不变"
         ]
       }
