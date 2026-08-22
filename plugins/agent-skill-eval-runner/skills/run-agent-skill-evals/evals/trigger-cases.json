@@ -5,95 +5,98 @@
     "optimization": "precision-first",
     "false_negative_cost": "high",
     "false_positive_cost": "high",
-    "rationale": "漏触发或误触发会改变权限、上下文或交付 owner。"
+    "rationale": "漏触发会绕过 Eval 审核门禁；误触发会引入授权与执行流程。"
   },
   "cases": [
     {
       "id": "run_plan",
       "split": "train",
-      "query": "使用 $run-agent-skill-evals 执行这个已经通过 Oracle preflight 的 EvalExecutionPlan。",
+      "query": "执行这个已经通过 Oracle preflight 的 EvalExecutionPlan，并保存运行证据。",
       "should_load_skill": true,
       "eval_type": "trigger",
       "case_role": "representative",
       "provenance": "representative-synthetic",
       "scenario_family": "core",
       "unit_under_test": "description",
-      "preconditions": {
-        "target_available": true
-      },
+      "preconditions": { "target_available": true },
       "oracle": {
-        "rationale": "用户显式调用 manual Skill，且请求主要交付与该 Skill 一致。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
+        "rationale": "请求需要验证或执行 Agent Skill Eval，必须进入审核与授权门禁。",
+        "rule_refs": ["SKILL.md description"],
         "confidence": "high",
-        "allowed_variance": "可组合下游能力，但顶层 owner 和权限必须正确。"
+        "allowed_variance": "可组合其它能力，但本 Skill 必须拥有 Eval 执行门禁。"
       }
     },
     {
       "id": "comparative",
       "split": "train",
-      "query": "使用 $run-agent-skill-evals，用 with-skill 和 baseline 配置运行已审核 Eval 并保存证据。",
+      "query": "用 with-skill 和 baseline 配置运行这组已审核的 Skill Eval。",
       "should_load_skill": true,
       "eval_type": "trigger",
       "case_role": "representative",
       "provenance": "representative-synthetic",
       "scenario_family": "core",
       "unit_under_test": "description",
-      "preconditions": {
-        "target_available": true
-      },
+      "preconditions": { "target_available": true },
       "oracle": {
-        "rationale": "用户显式调用 manual Skill，且请求主要交付与该 Skill 一致。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
+        "rationale": "请求需要验证或执行 Agent Skill Eval，必须进入审核与授权门禁。",
+        "rule_refs": ["SKILL.md description"],
         "confidence": "high",
-        "allowed_variance": "可组合下游能力，但顶层 owner 和权限必须正确。"
+        "allowed_variance": "可组合其它能力，但本 Skill 必须拥有 Eval 执行门禁。"
       }
     },
     {
-      "id": "explicit_codex",
+      "id": "explicit_invocation",
       "split": "validation",
-      "query": "使用 $run-agent-skill-evals，通过共享 aw-skill-eval 命令执行已审核计划。",
+      "query": "使用 $run-agent-skill-evals 通过共享 aw-skill-eval 命令执行已审核计划。",
       "should_load_skill": true,
       "eval_type": "trigger",
       "case_role": "representative",
       "provenance": "representative-synthetic",
       "scenario_family": "core",
       "unit_under_test": "description",
-      "preconditions": {
-        "target_available": true
-      },
+      "preconditions": { "target_available": true },
       "oracle": {
-        "rationale": "用户显式调用 manual Skill，且请求主要交付与该 Skill 一致。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
+        "rationale": "请求需要验证或执行 Agent Skill Eval，必须进入审核与授权门禁。",
+        "rule_refs": ["SKILL.md description"],
         "confidence": "high",
-        "allowed_variance": "可组合下游能力，但顶层 owner 和权限必须正确。"
+        "allowed_variance": "可组合其它能力，但本 Skill 必须拥有 Eval 执行门禁。"
       }
     },
     {
       "id": "validate_plan",
       "split": "validation",
-      "query": "使用 $run-agent-skill-evals，只验证 EvalExecutionPlan、Skill/corpus/audit digest，不实际运行。",
+      "query": "只验证这个 Skill Eval plan 的 Skill、corpus 和 audit digest，不实际运行。",
       "should_load_skill": true,
       "eval_type": "trigger",
       "case_role": "representative",
       "provenance": "representative-synthetic",
       "scenario_family": "core",
       "unit_under_test": "description",
-      "preconditions": {
-        "target_available": true
-      },
+      "preconditions": { "target_available": true },
       "oracle": {
-        "rationale": "用户显式调用 manual Skill，且请求主要交付与该 Skill 一致。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
+        "rationale": "请求需要验证 Agent Skill Eval plan，属于本 Skill 的审核门禁。",
+        "rule_refs": ["SKILL.md description"],
         "confidence": "high",
-        "allowed_variance": "可组合下游能力，但顶层 owner 和权限必须正确。"
+        "allowed_variance": "可以只验证而不执行，但必须保留 Audit/digest 门禁。"
+      }
+    },
+    {
+      "id": "unaudited",
+      "split": "validation",
+      "query": "直接运行这份还没有做 preflight 审核的 Agent Skill Eval case 文件。",
+      "should_load_skill": true,
+      "eval_type": "trigger",
+      "case_role": "boundary",
+      "provenance": "boundary",
+      "scenario_family": "permission-safety",
+      "unit_under_test": "description",
+      "preconditions": { "target_available": true },
+      "oracle": {
+        "rationale": "未经审核的执行请求也应加载本 Skill并在 Audit 门禁停止，不允许绕过。",
+        "rule_refs": ["SKILL.md description"],
+        "confidence": "high",
+        "allowed_variance": "可以拒绝并要求先审核；不得启动执行。",
+        "minimal_counterexample": "提供有效 preflight Audit 后进入正常执行。"
       }
     },
     {
@@ -106,17 +109,13 @@
       "provenance": "boundary",
       "scenario_family": "eval-design",
       "unit_under_test": "description",
-      "preconditions": {
-        "target_available": true
-      },
+      "preconditions": { "target_available": true },
       "oracle": {
-        "rationale": "请求由相邻能力拥有。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
+        "rationale": "请求不属于 Agent Skill Eval 执行。",
+        "rule_refs": ["SKILL.md description"],
         "confidence": "high",
-        "allowed_variance": "可组合下游能力，但顶层 owner 和权限必须正确。",
-        "minimal_counterexample": "改变主要交付后标签翻转。"
+        "allowed_variance": "应由对应能力处理。",
+        "minimal_counterexample": "改为执行已审核 plan 后标签翻转。"
       }
     },
     {
@@ -129,109 +128,70 @@
       "provenance": "boundary",
       "scenario_family": "eval-audit",
       "unit_under_test": "description",
-      "preconditions": {
-        "target_available": true
-      },
+      "preconditions": { "target_available": true },
       "oracle": {
-        "rationale": "请求由相邻能力拥有。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
+        "rationale": "请求不属于 Agent Skill Eval 执行。",
+        "rule_refs": ["SKILL.md description"],
         "confidence": "high",
-        "allowed_variance": "可组合下游能力，但顶层 owner 和权限必须正确。",
-        "minimal_counterexample": "改变主要交付后标签翻转。"
+        "allowed_variance": "应由对应能力处理。",
+        "minimal_counterexample": "改为执行审核通过的 plan 后标签翻转。"
       }
     },
     {
       "id": "review",
       "split": "train",
-      "query": "评审 Skill 并给发布结论。",
+      "query": "评审 Skill 的设计质量。",
       "should_load_skill": false,
       "eval_type": "trigger",
       "case_role": "boundary",
       "provenance": "boundary",
       "scenario_family": "skill-review",
       "unit_under_test": "description",
-      "preconditions": {
-        "target_available": true
-      },
+      "preconditions": { "target_available": true },
       "oracle": {
-        "rationale": "请求由相邻能力拥有。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
+        "rationale": "请求不属于 Agent Skill Eval 执行。",
+        "rule_refs": ["SKILL.md description"],
         "confidence": "high",
-        "allowed_variance": "可组合下游能力，但顶层 owner 和权限必须正确。",
-        "minimal_counterexample": "改变主要交付后标签翻转。"
-      }
-    },
-    {
-      "id": "unaudited",
-      "split": "validation",
-      "query": "直接运行没有 preflight audit 的 case 文件。",
-      "should_load_skill": false,
-      "eval_type": "trigger",
-      "case_role": "boundary",
-      "provenance": "boundary",
-      "scenario_family": "permission-safety",
-      "unit_under_test": "description",
-      "preconditions": {
-        "target_available": true
-      },
-      "oracle": {
-        "rationale": "请求缺少本 Skill 的前置授权和有效计划。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
-        "confidence": "high",
-        "allowed_variance": "可以拒绝并要求先审核，不应进入执行。",
-        "minimal_counterexample": "提供有效 EvalExecutionPlan 后标签翻转。"
+        "allowed_variance": "应由对应能力处理。",
+        "minimal_counterexample": "改为执行已审核 Skill Eval 后标签翻转。"
       }
     },
     {
       "id": "project_publish",
       "split": "validation",
-      "query": "运行并发布 AW 项目评审报告。",
+      "query": "发布 AW 项目的评审报告。",
       "should_load_skill": false,
       "eval_type": "trigger",
       "case_role": "boundary",
       "provenance": "boundary",
       "scenario_family": "project-adapter",
       "unit_under_test": "description",
-      "preconditions": {
-        "target_available": true
-      },
+      "preconditions": { "target_available": true },
       "oracle": {
-        "rationale": "项目发布不是通用 Eval runner 职责。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
+        "rationale": "请求不属于 Agent Skill Eval 执行。",
+        "rule_refs": ["SKILL.md description"],
         "confidence": "high",
-        "allowed_variance": "可由项目 adapter 组合 runner，但不由本 Skill 拥有发布。",
-        "minimal_counterexample": "只要求执行已审核 plan 后标签翻转。"
+        "allowed_variance": "应由对应能力处理。",
+        "minimal_counterexample": "改为只执行已审核 Eval plan 后标签翻转。"
       }
     },
     {
       "id": "normal_command",
       "split": "validation",
-      "query": "运行普通测试命令，不是 Agent Skill Eval。",
+      "query": "运行普通单元测试命令，不是 Agent Skill Eval。",
       "should_load_skill": false,
       "eval_type": "trigger",
       "case_role": "boundary",
       "provenance": "boundary",
       "scenario_family": "generic-execution",
       "unit_under_test": "description",
-      "preconditions": {
-        "target_available": true
-      },
+      "preconditions": { "target_available": true },
       "oracle": {
-        "rationale": "普通命令执行不属于 Skill Eval runner。",
-        "rule_refs": [
-          "SKILL.md description"
-        ],
+        "rationale": "请求不属于 Agent Skill Eval 执行。",
+        "rule_refs": ["SKILL.md description"],
         "confidence": "high",
-        "allowed_variance": "应使用普通执行能力。",
-        "minimal_counterexample": "改为已审核 Skill Eval plan 后标签翻转。"
+        "allowed_variance": "应由普通执行能力处理。",
+        "minimal_counterexample": "改为运行 Agent Skill Eval 后标签翻转。"
       }
     }
   ]

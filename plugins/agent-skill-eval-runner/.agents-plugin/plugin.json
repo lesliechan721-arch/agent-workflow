@@ -1,7 +1,7 @@
 {
   "name": "agent-skill-eval-runner",
   "version": "0.1.0",
-  "description": "通过共享 aw-skill-eval CLI 手动编排已独立审核的 Agent Skill Eval plan，并把证据交给结果归因。",
+  "description": "通过共享 aw-skill-eval CLI 执行已独立审核的 Agent Skill Eval plan，并把证据交给结果归因。",
   "compatibility": {
     "aw": {
       "minVersion": "0.0.0"

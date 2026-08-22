@@ -25,29 +25,28 @@ async function runInjectedBin(bin, args) {
     : execFileAsync(bin, args, { encoding: 'utf8' });
 }
 
-test('plugin is a manual-only orchestration Skill', async () => {
+test('plugin supports implicit and explicit invocation while keeping the authorization gate', async () => {
   const skill = await readRuntime('SKILL.md');
   const openai = await readRuntime('agents/openai.yaml');
 
-  assert.match(skill, /^disable-model-invocation: true$/mu);
+  assert.doesNotMatch(skill, /^disable-model-invocation:/mu);
   assert.match(skill, /^user-invocable: true$/mu);
-  assert.match(openai, /^\s*allow_implicit_invocation: false$/mu);
+  assert.match(openai, /^\s*allow_implicit_invocation: true$/mu);
+  assert.match(skill, /人工授权/u);
+  assert.match(skill, /Audit 门禁/u);
 
   const triggerCases = JSON.parse(
     await readFile(
-      path.join(
-        sourceRoot,
-        'skills',
-        'run-agent-skill-evals',
-        'evals',
-        'trigger-cases.json',
-      ),
+      path.join(sourceRoot, 'skills', 'run-agent-skill-evals', 'evals', 'trigger-cases.json'),
       'utf8',
     ),
   );
-  for (const triggerCase of triggerCases.cases.filter((entry) => entry.should_load_skill)) {
-    assert.match(triggerCase.query, /\$run-agent-skill-evals\b/u);
-  }
+  const positives = triggerCases.cases.filter((entry) => entry.should_load_skill);
+  assert.ok(positives.some((entry) => !entry.query.includes('$run-agent-skill-evals')));
+  assert.equal(
+    triggerCases.cases.find((entry) => entry.id === 'unaudited')?.should_load_skill,
+    true,
+  );
 });
 
 test('Skill declares the stable shared CLI contract without a local execution fallback', async () => {
@@ -79,10 +78,7 @@ test('Skill declares the stable shared CLI contract without a local execution fa
       if (error.code === 'ENOENT') return [];
       throw error;
     });
-    assert.deepEqual(
-      entries.filter((entry) => !entry.isDirectory()),
-      [],
-    );
+    assert.deepEqual(entries.filter((entry) => !entry.isDirectory()), []);
   }
   await access(path.join(runtimeSkillRoot, 'assets', 'eval-execution-plan.template.json'));
 });
@@ -96,7 +92,7 @@ test('the retained plan asset is a model-readable template, not a machine schema
 });
 
 test(
-  'an explicitly injected shared CLI reports the compatible capabilities and schemas',
+  'an injected shared CLI reports compatible capabilities and schemas',
   { skip: !process.env.AW_SKILL_EVAL_TEST_BIN },
   async () => {
     const bin = process.env.AW_SKILL_EVAL_TEST_BIN;
