@@ -92,12 +92,16 @@ describe('bootstrap-catalog script', () => {
       cliPackageDigest: releaseSnapshot.cliPackageDigest,
       releaseIdentity: stageOptions.releaseIdentity,
     }));
-    const publishStagedCatalog = vi.fn(async () => ({
-      mode: 'latest',
-      commit: 'abc',
-      promoted: true,
-      idempotent: false,
-    }));
+    const beforeRemoteWrite = vi.fn(async () => undefined);
+    const publishStagedCatalog = vi.fn(async (_history, _root, publisherOptions) => {
+      await publisherOptions.beforeRemoteWrite();
+      return {
+        mode: 'latest',
+        commit: 'abc',
+        promoted: true,
+        idempotent: false,
+      };
+    });
     const resolvePublishedCliVersion = vi.fn();
 
     await expect(bootstrapCatalog(
@@ -108,6 +112,7 @@ describe('bootstrap-catalog script', () => {
         runCommand: async () => undefined,
         readCatalogPublicationHistory: async () => history,
         stageCatalogRelease,
+        beforeRemoteWrite,
         publishStagedCatalog,
         resolvePublishedCliVersion,
         withCatalogPublicationLease: withTestPublicationLease,
@@ -133,6 +138,7 @@ describe('bootstrap-catalog script', () => {
       }),
     );
     expect(resolvePublishedCliVersion).not.toHaveBeenCalled();
+    expect(beforeRemoteWrite).toHaveBeenCalledOnce();
   });
 
   it('fails closed when the target channel already contains another publication', async () => {

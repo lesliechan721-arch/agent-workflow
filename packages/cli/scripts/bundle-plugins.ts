@@ -40,24 +40,42 @@ function resolveDefaultPaths(): { repoRoot: string; outputRoot: string } {
 }
 
 async function assertPackageVersions(repoRoot: string): Promise<void> {
-  const rootPackageJsonPath = path.join(repoRoot, 'package.json');
-  const cliPackageJsonPath = path.join(repoRoot, 'packages', 'cli', 'package.json');
-  const [rootExists, cliExists] = await Promise.all([
-    fs.pathExists(rootPackageJsonPath),
-    fs.pathExists(cliPackageJsonPath),
-  ]);
-  if (!rootExists || !cliExists) {
-    return;
+  const truthFiles = [
+    ['package.json', path.join(repoRoot, 'package.json')],
+    ['release/version-targets.json', path.join(repoRoot, 'release', 'version-targets.json')],
+    ['packages/agent-skill-eval/package.json', path.join(repoRoot, 'packages', 'agent-skill-eval', 'package.json')],
+    ['packages/cli/package.json', path.join(repoRoot, 'packages', 'cli', 'package.json')],
+  ] as const;
+  const existence = await Promise.all(truthFiles.map(([, filePath]) => fs.pathExists(filePath)));
+  if (existence.every((exists) => !exists)) return;
+  const missing = truthFiles.filter((_, index) => !existence[index]).map(([label]) => label);
+  if (missing.length > 0) {
+    throw new Error(`Incomplete release version truth set: missing ${missing.join(', ')}.`);
   }
-  const [rootPackageJson, cliPackageJson] = await Promise.all([
+  const [[, rootPackageJsonPath], [, targetsPath], [, evalPackageJsonPath], [, cliPackageJsonPath]] = truthFiles;
+  const [rootPackageJson, targets, evalPackageJson, cliPackageJson] = await Promise.all([
     fs.readJson(rootPackageJsonPath) as Promise<{ version?: unknown }>,
+    fs.readJson(targetsPath) as Promise<{ cli?: unknown }>,
+    fs.readJson(evalPackageJsonPath) as Promise<{ version?: unknown }>,
     fs.readJson(cliPackageJsonPath) as Promise<{ version?: unknown }>,
   ]);
-  const rootVersion = assertStrictSemVer(rootPackageJson.version, 'package.json version');
+  if (Object.hasOwn(rootPackageJson, 'version')) {
+    throw new Error('package.json must not declare a version; release/version-targets.json is the release target source.');
+  }
+  const targetVersion = assertStrictSemVer(targets.cli, 'release/version-targets.json cli');
+  if (targetVersion.includes('-')) {
+    throw new Error('Invalid release/version-targets.json cli: expected a stable SemVer 2.0.0 string.');
+  }
+  const evalVersion = assertStrictSemVer(
+    evalPackageJson.version,
+    'packages/agent-skill-eval/package.json version',
+  );
   const cliVersion = assertStrictSemVer(cliPackageJson.version, 'packages/cli/package.json version');
-  if (rootVersion !== cliVersion) {
+  if (targetVersion !== cliVersion || targetVersion !== evalVersion) {
     throw new Error(
-      `Invalid release versions: package.json version ${rootVersion} must match packages/cli/package.json version ${cliVersion}.`,
+      `Invalid release versions: release/version-targets.json cli ${targetVersion} must match ` +
+      `packages/agent-skill-eval/package.json version ${evalVersion} and ` +
+      `packages/cli/package.json version ${cliVersion}.`,
     );
   }
 }

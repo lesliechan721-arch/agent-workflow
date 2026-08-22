@@ -246,7 +246,7 @@ test('AW bundle accepts one Eval result and rejects a second result for the same
     (error) => {
       assert.match(
         error.stderr,
-        /ReviewInputBundle v4 accepts only one Eval execution bundle per target; provide --eval-result only once\./u,
+        /ReviewInputBundle v5 accepts only one Eval execution bundle per target; provide --eval-result only once\./u,
       );
       return true;
     },

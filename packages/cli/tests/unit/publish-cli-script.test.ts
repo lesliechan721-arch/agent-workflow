@@ -28,7 +28,6 @@ async function loadPublishCliHarness(
   options: {
     cliVersion?: string;
     snapshotVersion?: string;
-    gitCheckArgs?: string[];
     gitCheckError?: Error;
     freshnessError?: Error;
     packCliResult?: string;
@@ -186,7 +185,7 @@ async function loadPublishCliHarness(
       if (options.gitCheckError) {
         throw options.gitCheckError;
       }
-      return options.gitCheckArgs ?? [];
+      return [];
     }),
     runCommand: vi.fn(async (
       command: string,
@@ -311,54 +310,9 @@ describe('publish-cli script', () => {
       call.type === 'command' && call.args[0] === 'publish')).toHaveLength(1);
   });
 
-  it('adds no-git-checks when version sync is the only dirty change', async () => {
-    const harness = await loadPublishCliHarness({
-      cliVersion: '1.0.0-beta.16',
-      gitCheckArgs: ['--no-git-checks'],
-      packCliResult: '/tmp/aw-1.0.0-beta.16.tgz',
-    });
-
-    await expect(harness.publishCli(['beta', '--cli-version', '1.0.0-beta.16'])).resolves.toMatchObject({
-      mode: 'beta',
-      version: '1.0.0-beta.16',
-      tarballPath: '/tmp/aw-1.0.0-beta.16.tgz',
-      generationId: 'generation-a',
-    });
-
-    expect(harness.calls).toEqual([
-      {
-        type: 'pack',
-      },
-      {
-        type: 'command',
-        command: 'pnpm',
-        args: ['run', 'release:verify:cli'],
-      },
-      {
-        type: 'command',
-        command: 'pnpm',
-        args: [
-          'publish',
-          '/tmp/aw-1.0.0-beta.16.tgz',
-          '--ignore-scripts',
-          '--tag',
-          'beta',
-          '--registry',
-          'https://registry.example.test/',
-          '--no-git-checks',
-        ],
-      },
-    ]);
-    expect(harness.packSnapshots).toEqual([harness.snapshot]);
-    expect(harness.commandOptions[1]?.timeoutMs).toBe(120_000);
-    expect(harness.snapshotRequests).toBe(1);
-    expect(harness.snapshotCleanups).toBe(1);
-  });
-
-  it('keeps the default git checks when the worktree is already clean', async () => {
+  it('keeps npm Git checks enabled', async () => {
     const harness = await loadPublishCliHarness({
       cliVersion: '1.0.0',
-      gitCheckArgs: [],
       packCliResult: '/tmp/aw-1.0.0.tgz',
     });
 
@@ -396,7 +350,7 @@ describe('publish-cli script', () => {
   it('fails closed when the worktree has unrelated changes', async () => {
     const harness = await loadPublishCliHarness({
       gitCheckError: new Error(
-        'Refusing to publish from a dirty working tree. Only package.json, packages/cli/package.json may be modified by the version sync step.\nUnexpected changes:\n- README.md',
+        'Refusing to publish from a dirty working tree.\nUnexpected changes:\n- README.md',
       ),
     });
 

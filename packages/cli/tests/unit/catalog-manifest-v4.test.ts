@@ -10,10 +10,10 @@ import {
   calculateCatalogEntryContentDigest,
 } from '../../src/utils/catalog-digests.js';
 import {
-  createCatalogManifestV3,
-  createCatalogManifestV3Entry,
-  validateCatalogManifestV3,
-} from '../../src/utils/catalog-manifest-v3.js';
+  createCatalogManifestV4,
+  createCatalogManifestV4Entry,
+  validateCatalogManifestV4,
+} from '../../src/utils/catalog-manifest-v4.js';
 
 const tempDirs: string[] = [];
 
@@ -23,10 +23,11 @@ function sha256(char: string): string {
 
 function createManifestFixture() {
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     catalogVersion: '1.2.3',
     channel: 'latest',
-    compatibility: { aw: { minVersion: '0.0.0' } },
+    compatibility: { aw: { minVersion: '0.1.0-beta.3' } },
+    release: { state: 'development' as const },
     entries: [{
       name: 'demo',
       version: '1.2.0',
@@ -50,11 +51,11 @@ afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((directory) => fs.remove(directory)));
 });
 
-describe('catalog manifest schema 3', () => {
+describe('catalog manifest schema 4', () => {
   it('validates a package-independent manifest with entry content digests', () => {
-    const manifest = validateCatalogManifestV3(createManifestFixture());
+    const manifest = validateCatalogManifestV4(createManifestFixture());
 
-    expect(manifest.schemaVersion).toBe(3);
+    expect(manifest.schemaVersion).toBe(4);
     expect(manifest.entries[0]).toMatchObject({
       artifactDigest: sha256('a'),
       manifestDigest: sha256('b'),
@@ -63,37 +64,65 @@ describe('catalog manifest schema 3', () => {
     expect(manifest).not.toHaveProperty('packages');
   });
 
+  it('rejects schema 3 and requires the complete published release identity', () => {
+    const schemaThree = createManifestFixture();
+    schemaThree.schemaVersion = 3;
+    expect(() => validateCatalogManifestV4(schemaThree)).toThrow('schemaVersion: expected 4');
+
+    const published = createManifestFixture() as Record<string, unknown>;
+    published.release = { state: 'published' };
+    expect(() => validateCatalogManifestV4(published)).toThrow('targetVersion');
+
+    published.release = {
+      state: 'published',
+      targetVersion: '1.2.3',
+      planId: sha256('d'),
+      sourceHead: 'e'.repeat(40),
+      contentDigest: sha256('f'),
+    };
+    expect(validateCatalogManifestV4(published).release).toEqual(published.release);
+
+    const belowFloor = createManifestFixture();
+    belowFloor.compatibility.aw.minVersion = '0.1.0-beta.2';
+    expect(() => validateCatalogManifestV4(belowFloor)).toThrow('schema 4 requires 0.1.0-beta.3');
+
+    const wrongTarget = structuredClone(published);
+    (wrongTarget.release as Record<string, unknown>).targetVersion = '1.2.4';
+    expect(() => validateCatalogManifestV4(wrongTarget)).toThrow('stable catalogVersion core');
+  });
+
   it('rejects npm package identity and missing or invalid content digests', () => {
-    expect(() => validateCatalogManifestV3({
+    expect(() => validateCatalogManifestV4({
       ...createManifestFixture(),
       packages: {},
     })).toThrow('unknown field "packages"');
 
     const missing = createManifestFixture();
     delete (missing.entries[0] as Partial<typeof missing.entries[0]>).contentDigest;
-    expect(() => validateCatalogManifestV3(missing)).toThrow('contentDigest');
+    expect(() => validateCatalogManifestV4(missing)).toThrow('contentDigest');
 
     const invalid = createManifestFixture();
     invalid.entries[0]!.contentDigest = 'sha256:not-hex';
-    expect(() => validateCatalogManifestV3(invalid)).toThrow('contentDigest');
+    expect(() => validateCatalogManifestV4(invalid)).toThrow('contentDigest');
   });
 
   it('applies package-independent catalog and entry invariants', () => {
     const duplicate = createManifestFixture();
     duplicate.entries.push(structuredClone(duplicate.entries[0]!));
-    expect(() => validateCatalogManifestV3(duplicate)).toThrow('duplicate plugin "demo"');
+    expect(() => validateCatalogManifestV4(duplicate)).toThrow('duplicate plugin "demo"');
 
     const incompatible = createManifestFixture();
     incompatible.entries[0]!.compatibility.aw.minVersion = '2.0.0';
-    expect(() => validateCatalogManifestV3(incompatible)).toThrow('higher than catalog minimum');
+    expect(() => validateCatalogManifestV4(incompatible)).toThrow('higher than catalog minimum');
   });
 
-  it('creates and validates a schema 3 manifest through its explicit generator API', () => {
+  it('creates and validates a schema 4 manifest through its explicit generator API', () => {
     const fixture = createManifestFixture();
-    const generated = createCatalogManifestV3({
+    const generated = createCatalogManifestV4({
       catalogVersion: fixture.catalogVersion,
       channel: fixture.channel as 'latest',
       compatibility: fixture.compatibility,
+      release: fixture.release,
       entries: fixture.entries,
     });
 
@@ -101,7 +130,7 @@ describe('catalog manifest schema 3', () => {
   });
 
   it('generates entry artifact, manifest, and content digests from a real plugin tree', async () => {
-    const pluginRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-catalog-manifest-v3-'));
+    const pluginRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'aw-catalog-manifest-v4-'));
     tempDirs.push(pluginRoot);
     const manifestPath = path.join(pluginRoot, '.agents-plugin', 'plugin.json');
     const manifest: PluginMeta['manifest'] = {
@@ -122,7 +151,7 @@ describe('catalog manifest schema 3', () => {
     await fs.outputFile(path.join(pluginRoot, 'README.md'), 'demo\n');
     const plugin: PluginMeta = { rootDir: pluginRoot, manifestPath, manifest };
 
-    const entry = await createCatalogManifestV3Entry(plugin, pluginRoot);
+    const entry = await createCatalogManifestV4Entry(plugin, pluginRoot);
 
     expect(entry.contentDigest).toBe(await calculateCatalogEntryContentDigest(pluginRoot));
     expect(entry.artifactDigest).toMatch(/^sha256:[0-9a-f]{64}$/);

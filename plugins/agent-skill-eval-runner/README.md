@@ -2,16 +2,14 @@
 
 手动编排已完成独立审核的 Agent Skill Eval。
 
-当前插件合同版本：`0.3.2`。
-
 插件先检查人工授权 gate 和 preflight `EvalAuditResult`，再调用共享 `aw-skill-eval` 命令验证并运行 `EvalExecutionPlan`。它将生成的 `EvalRunBundle` 交给 `audit-agent-skill-evals(result-triage)`。插件不实现 provider、snapshot、进程控制、timeout 处理、证据分级、机器 schema 或 validator。
 
 ## 依赖
 
 使用前请手动安装：
 
-- `agent-skill-toolkit >= 0.5.0`
-- `@lesliechan721/agent-skill-eval >= 0.1.0-beta.2`，并确保 `aw-skill-eval` 位于 `PATH`
+- `agent-skill-toolkit`
+- `@lesliechan721/agent-skill-eval`，并确保 `aw-skill-eval` 位于 `PATH`
 
 不要使用 `npx`。本插件不会隐式安装依赖或访问网络。
 

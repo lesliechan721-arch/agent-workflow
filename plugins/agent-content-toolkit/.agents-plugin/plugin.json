@@ -1,6 +1,6 @@
 {
   "name": "agent-content-toolkit",
-  "version": "0.5.1",
+  "version": "0.1.0",
   "description": "创建和评审 Agent-facing 文档，并保持最小上下文负担、清楚指针和适度控制。",
   "compatibility": {
     "aw": {

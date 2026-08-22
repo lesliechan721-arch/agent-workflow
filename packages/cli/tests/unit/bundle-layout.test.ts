@@ -94,7 +94,8 @@ async function createClaudeOnlyEmbeddedRoot(): Promise<{ repoRoot: string; embed
 async function writeRepoPackageVersions(
   repoRoot: string,
   versions: {
-    rootVersion: string;
+    targetVersion: string;
+    evalVersion: string;
     cliVersion: string;
   },
 ): Promise<void> {
@@ -103,7 +104,23 @@ async function writeRepoPackageVersions(
     {
       name: 'agent-workflows',
       private: true,
-      version: versions.rootVersion,
+    },
+    { spaces: 2 },
+  );
+  await fs.outputJson(
+    path.join(repoRoot, 'release', 'version-targets.json'),
+    {
+      schemaVersion: 1,
+      cli: versions.targetVersion,
+      catalog: versions.targetVersion,
+    },
+    { spaces: 2 },
+  );
+  await fs.outputJson(
+    path.join(repoRoot, 'packages', 'agent-skill-eval', 'package.json'),
+    {
+      name: '@lesliechan721/agent-skill-eval',
+      version: versions.evalVersion,
     },
     { spaces: 2 },
   );
@@ -302,7 +319,8 @@ describe('bundle layout validation', () => {
   it('rejects invalid CLI package versions before writing bundled release output', async () => {
     const repoRoot = await makeTempRepo();
     await writeRepoPackageVersions(repoRoot, {
-      rootVersion: '1.0.0',
+      targetVersion: '1.0.0',
+      evalVersion: '1.0.0',
       cliVersion: 'v1.0.0',
     });
 
@@ -314,10 +332,63 @@ describe('bundle layout validation', () => {
     );
   });
 
-  it('rejects mismatched root and CLI package versions before writing bundled release output', async () => {
+  it('allows synthetic external roots with no release version truth files', async () => {
+    const repoRoot = await makeTempRepo();
+
+    await expect(bundlePlugins({
+      repoRoot,
+      outputRoot: path.join(repoRoot, 'embedded'),
+    })).resolves.toMatchObject({
+      pluginNames: ['git-commit'],
+    });
+  });
+
+  it.each([
+    'package.json',
+    'release/version-targets.json',
+    'packages/agent-skill-eval/package.json',
+    'packages/cli/package.json',
+  ])('rejects an incomplete release version truth set missing %s', async (missing) => {
     const repoRoot = await makeTempRepo();
     await writeRepoPackageVersions(repoRoot, {
-      rootVersion: '1.0.0',
+      targetVersion: '1.0.0',
+      evalVersion: '1.0.0',
+      cliVersion: '1.0.0',
+    });
+    await fs.remove(path.join(repoRoot, missing));
+
+    await expect(bundlePlugins({
+      repoRoot,
+      outputRoot: path.join(repoRoot, 'embedded'),
+    })).rejects.toThrow(`Incomplete release version truth set: missing ${missing}.`);
+  });
+
+  it('rejects a root version when the complete release version truth set exists', async () => {
+    const repoRoot = await makeTempRepo();
+    await writeRepoPackageVersions(repoRoot, {
+      targetVersion: '1.0.0',
+      evalVersion: '1.0.0',
+      cliVersion: '1.0.0',
+    });
+    await fs.writeJson(path.join(repoRoot, 'package.json'), {
+      name: 'agent-workflows',
+      private: true,
+      version: '1.0.0',
+    }, { spaces: 2 });
+
+    await expect(bundlePlugins({
+      repoRoot,
+      outputRoot: path.join(repoRoot, 'embedded'),
+    })).rejects.toThrow(
+      'package.json must not declare a version; release/version-targets.json is the release target source.',
+    );
+  });
+
+  it('rejects public packages that diverge from the release target before writing bundled output', async () => {
+    const repoRoot = await makeTempRepo();
+    await writeRepoPackageVersions(repoRoot, {
+      targetVersion: '1.0.0',
+      evalVersion: '1.0.0',
       cliVersion: '1.0.1',
     });
 
@@ -325,7 +396,7 @@ describe('bundle layout validation', () => {
       repoRoot,
       outputRoot: path.join(repoRoot, 'embedded'),
     })).rejects.toThrow(
-      'Invalid release versions: package.json version 1.0.0 must match packages/cli/package.json version 1.0.1.',
+      'Invalid release versions: release/version-targets.json cli 1.0.0 must match packages/agent-skill-eval/package.json version 1.0.0 and packages/cli/package.json version 1.0.1.',
     );
   });
 
@@ -1074,6 +1145,36 @@ describe('runtime Skill resource closure', () => {
     return skillRoot;
   }
 
+  it('matches the shared deterministic closure corpus', async () => {
+    const corpus = await fs.readJson(path.resolve(
+      import.meta.dirname,
+      '../../../../plugins/agent-skill-toolkit/standards/runtime-skill-closure-cases.json',
+    )) as {
+      cases: Array<{
+        id: string;
+        skill: string;
+        files: Record<string, string>;
+        expected: { valid: boolean; target: string | null };
+      }>;
+    };
+    for (const fixture of corpus.cases) {
+      const skillRoot = await createRuntimeSkill([
+        '---',
+        'name: demo-skill',
+        'description: fixture',
+        '---',
+        fixture.skill,
+      ].join('\n'), fixture.files);
+      if (fixture.expected.valid) {
+        await expect(validateRuntimeSkillClosure(skillRoot), fixture.id).resolves.toBeUndefined();
+      } else {
+        await expect(validateRuntimeSkillClosure(skillRoot), fixture.id).rejects.toThrow(
+          fixture.expected.target!,
+        );
+      }
+    }
+  });
+
   it('accepts valid links and inline commands while ignoring non-local targets', async () => {
     const skillRoot = await createRuntimeSkill([
       '[guide](references/guide.md#L12)',
@@ -1389,6 +1490,41 @@ describe('runtime Skill resource closure', () => {
     await expect(validateRuntimeSkillClosure(skillRoot)).rejects.toThrow(
       'skill "demo-skill" markdown-link target "references/missing.md"',
     );
+  });
+
+  it('rejects missing core resources named in plain Agent-facing text', async () => {
+    const skillRoot = await createRuntimeSkill(
+      'Read references/missing-policy.md before deciding.\n',
+    );
+
+    await expect(validateRuntimeSkillClosure(skillRoot)).rejects.toThrow(
+      'skill "demo-skill" plain-text target "references/missing-policy.md"',
+    );
+  });
+
+  it('rejects a missing runtime dependency reached through a reference', async () => {
+    const skillRoot = await createRuntimeSkill(
+      '[guide](references/guide.md)\n',
+      {
+        'references/guide.md': 'Run `node scripts/missing.mjs`.\n',
+      },
+    );
+
+    await expect(validateRuntimeSkillClosure(skillRoot)).rejects.toThrow(
+      'skill "demo-skill" inline-command target "scripts/missing.mjs" from "references/guide.md"',
+    );
+  });
+
+  it('terminates safely when reachable Agent-facing references form a cycle', async () => {
+    const skillRoot = await createRuntimeSkill(
+      '[guide](references/guide.md)\n',
+      {
+        'references/guide.md': '[details](details.md)\n',
+        'references/details.md': '[guide](guide.md)\n',
+      },
+    );
+
+    await expect(validateRuntimeSkillClosure(skillRoot)).resolves.toBeUndefined();
   });
 
   it.each([

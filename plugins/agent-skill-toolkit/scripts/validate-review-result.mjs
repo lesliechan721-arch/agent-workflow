@@ -11,21 +11,24 @@ const execFileAsync = promisify(execFile);
 const scriptRoot = path.dirname(fileURLToPath(import.meta.url));
 
 function usage() {
-  return 'Usage: validate-review-result.mjs <review-result.json> [--format text|json]';
+  return 'Usage: validate-review-result.mjs <review-result.json> --bundle <review-input-bundle.json> [--format text|json]';
 }
 function parseArgs(argv) {
   if (argv.includes('-h') || argv.includes('--help')) return { help: true };
   const positional = [];
   let format = 'text';
+  let bundlePath = null;
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index];
     if (value === '--format') format = argv[++index];
+    else if (value === '--bundle') bundlePath = path.resolve(argv[++index] ?? '');
     else if (value.startsWith('-')) throw new Error('Unknown option: ' + value);
     else positional.push(value);
   }
   if (positional.length !== 1) throw new Error(usage());
+  if (!bundlePath) throw new Error('--bundle is required for every review mode.');
   if (!['text', 'json'].includes(format)) throw new Error('--format must be text or json.');
-  return { valuePath: path.resolve(positional[0]), format };
+  return { valuePath: path.resolve(positional[0]), bundlePath, format };
 }
 async function firstReadable(candidates) {
   for (const candidate of candidates) {
@@ -74,6 +77,49 @@ function linkedFindings(errors, ids, findingById, label) {
   return values;
 }
 
+async function validatedBundle(bundlePath, errors) {
+  const validator = path.join(scriptRoot, 'validate-review-input-bundle.mjs');
+  try {
+    const { stdout } = await execFileAsync(
+      process.execPath,
+      [validator, bundlePath, '--format', 'json'],
+      { encoding: 'utf8' },
+    );
+    const validation = JSON.parse(stdout);
+    if (!validation.valid) {
+      errors.push(...validation.errors.map((entry) => `bundle: ${entry}`));
+      return null;
+    }
+  } catch (error) {
+    const stdout = error && typeof error === 'object' ? error.stdout : null;
+    if (typeof stdout === 'string' && stdout.trim()) {
+      const validation = JSON.parse(stdout);
+      errors.push(...validation.errors.map((entry) => `bundle: ${entry}`));
+      return null;
+    }
+    throw error;
+  }
+  return JSON.parse(await readFile(bundlePath, 'utf8'));
+}
+
+async function packageInspection(bundlePath, bundle, errors) {
+  const stages = bundle.orchestration.providedStages.filter(
+    (stage) => stage.id === 'package-inspection',
+  );
+  if (stages.length !== 1) {
+    errors.push('bundle must contain exactly one package-inspection stage');
+    return null;
+  }
+  const resultPath = path.resolve(path.dirname(bundlePath), stages[0].resultPath);
+  return JSON.parse(await readFile(resultPath, 'utf8'));
+}
+
+function machineEvidenceForGate(gate, findingById) {
+  return new Set(
+    gate.findingIds.flatMap((findingId) => findingById.get(findingId)?.machineEvidenceIds ?? []),
+  );
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   if (options.help) {
@@ -90,6 +136,10 @@ async function main() {
     path.join(scriptRoot, '..', 'assets', 'review-result-rules.generated.json'),
   ]);
   const errors = await schemaErrors(schemaPath, options.valuePath);
+  const bundle = await validatedBundle(options.bundlePath, errors);
+  const inspection = bundle
+    ? await packageInspection(options.bundlePath, bundle, errors)
+    : null;
   let calculated = { weightedScore: null, coverage: null };
 
   if (errors.length === 0) {
@@ -125,6 +175,38 @@ async function main() {
 
     const findingIds = addUniqueIds(errors, result.findings, 'findings');
     const findingById = new Map(result.findings.map((finding) => [finding.id, finding]));
+    if (bundle) {
+      if (
+        result.target.kind !== bundle.target.kind
+        || result.target.name !== bundle.target.name
+        || (result.target.profile ?? null) !== (bundle.target.profile ?? null)
+        || result.target.digest !== bundle.target.sourceDigest
+      ) {
+        errors.push('ReviewResult target must exactly match the validated bundle target');
+      }
+    }
+    const inspectionErrors = inspection?.issues?.filter(
+      (issue) => issue.severity === 'error',
+    ) ?? [];
+    if (inspectionErrors.length > 0) {
+      const requiredEvidence = new Set(inspectionErrors.map((issue) => issue.id));
+      for (const gateId of ['package-validity', 'critical-artifacts']) {
+        const gate = result.gates[gateId];
+        if (gate.status !== 'fail') {
+          errors.push(`${gateId} must fail when package inspection reports an error`);
+          continue;
+        }
+        const mapped = machineEvidenceForGate(gate, findingById);
+        for (const evidenceId of requiredEvidence) {
+          if (!mapped.has(evidenceId)) {
+            errors.push(`${gateId} must map package inspection evidence ${evidenceId}`);
+          }
+        }
+      }
+      if (result.releaseReadiness !== 'blocked') {
+        errors.push('releaseReadiness must be blocked when package inspection reports an error');
+      }
+    }
     const strongEvidence = new Set(policy?.highSeverityEvidence ?? []);
     for (const finding of result.findings) {
       if (['P0', 'P1'].includes(finding.severity)) {

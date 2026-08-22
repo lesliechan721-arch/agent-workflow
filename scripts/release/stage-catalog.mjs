@@ -72,6 +72,9 @@ async function stageCatalogFromSnapshot(argv, snapshot, options = {}) {
     assertReleaseSnapshotIdentity(snapshot, options.releaseIdentity);
   }
   const { catalogVersion } = parseArgs(argv);
+  if (!options.catalogRelease) {
+    throw new Error('Catalog release staging requires an explicit catalogRelease identity from a release plan.');
+  }
   const publicationRepoRoot = resolvePublicationRepoRoot(options);
   const initialBoundary = await ensureCatalogStagePublicationBoundary(
     publicationRepoRoot,
@@ -87,11 +90,17 @@ async function stageCatalogFromSnapshot(argv, snapshot, options = {}) {
       verbatimSymlinks: true,
     });
     const catalogModules = options.catalogModules ?? await loadCatalogModules(snapshot.cliDistRoot);
+    const catalogRelease = options.catalogRelease;
     const staged = await catalogModules.pluginStaging.stageCatalogArtifacts({
       repoRoot: snapshot.root,
       outputRoot: temporaryRoot,
       phase: 'release',
       catalogVersion,
+      ...(options.pluginVersionOverrides
+        ? { pluginVersionOverrides: options.pluginVersionOverrides }
+        : {}),
+      ...(options.pluginCandidates ? { pluginCandidates: options.pluginCandidates } : {}),
+      release: catalogRelease,
       ...(options.previousReleaseLedger
         ? { previousReleaseLedger: options.previousReleaseLedger }
         : {}),

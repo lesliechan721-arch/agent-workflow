@@ -160,7 +160,7 @@ describe('skill-review author tools', () => {
       'does not match --skill',
     );
     const reviewResult = {
-      schemaVersion: 1 as const,
+      schemaVersion: 4 as const,
       mode: 'quick' as const,
       target: {
         kind: 'aw-plugin-skill',
@@ -180,13 +180,15 @@ describe('skill-review author tools', () => {
       actions: [],
     };
     const awSummary = {
-      schemaVersion: 1 as const,
+      schemaVersion: 2 as const,
       target: {
         plugin: 'demo',
         skill: 'real-skill',
         sourceDigest: `sha256:${'2'.repeat(64)}`,
       },
+      targetPlanDigest: `sha256:${'4'.repeat(64)}`,
       genericReviews: [{
+        reviewEvidenceId: 'source-review',
         targetName: 'real-skill',
         kind: 'aw-plugin-skill',
         profile: null,

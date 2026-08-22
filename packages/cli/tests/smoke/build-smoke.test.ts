@@ -83,7 +83,7 @@ afterEach(async () => {
 describe('build smoke', () => {
   const root = repoRoot();
 
-  it('enforces plugin production changes with the built authoring version gate', async () => {
+  it('reports plugin development status through the built public entry', async () => {
     const snapshot = await requireBuildSnapshot();
     const tempRoot = await createSmokeTempRoot(
       'aw-authoring-version-gate-smoke-',
@@ -140,26 +140,22 @@ describe('build smoke', () => {
       'dist',
       'index.js',
     );
-    let missingBumpError: { stdout?: string } | undefined;
-    try {
-      await execFileAsync('node', [
+    const development = await execFileAsync('node', [
         checkerPath,
         'plugin',
-        'check-versions',
+        'status',
         'version-gate-smoke',
         '--json',
         '--repo-root',
         tempRepo,
       ], { cwd: root, env: process.env, maxBuffer: 10 * 1024 * 1024 });
-    } catch (error) {
-      missingBumpError = error as { stdout?: string };
-    }
-    expect(missingBumpError?.stdout).toBeTruthy();
-    expect(JSON.parse(missingBumpError!.stdout!)).toMatchObject({
-      schemaVersion: 2,
+    expect(JSON.parse(development.stdout)).toMatchObject({
+      schemaVersion: 3,
+      policy: 'development',
       checks: [expect.objectContaining({
-        status: 'missingVersionBump',
+        status: 'unreleasedChanges',
         productionChanged: true,
+        currentTarget: '0.1.0',
       })],
     });
 
@@ -168,14 +164,14 @@ describe('build smoke', () => {
     const bumped = await execFileAsync('node', [
       checkerPath,
       'plugin',
-      'check-versions',
+      'status',
       'version-gate-smoke',
       '--json',
       '--repo-root',
       tempRepo,
     ], { cwd: root, env: process.env, maxBuffer: 10 * 1024 * 1024 });
     expect(JSON.parse(bumped.stdout)).toMatchObject({
-      schemaVersion: 2,
+      schemaVersion: 3,
       checks: [expect.objectContaining({
         status: 'versionBumped',
         currentVersion: '0.2.0',
@@ -540,10 +536,11 @@ describe('build smoke', () => {
       fs.pathExists(path.join(outputRoot, 'plugins', 'codex-enhance', 'claude')),
     ).resolves.toBe(false);
     expect(catalogManifest).toMatchObject({
-      schemaVersion: 3,
+      schemaVersion: 4,
       catalogVersion: cliPackageJson.version,
       channel: String(cliPackageJson.version).includes('-') ? 'beta' : 'latest',
-      compatibility: { aw: { minVersion: '0.1.0-beta.2' } },
+      compatibility: { aw: { minVersion: '0.1.0-beta.3' } },
+      release: { state: 'development' },
       entries: expect.arrayContaining(Object.keys(EXPECTED_PLUGIN_PLATFORMS).map((pluginName) =>
         expect.objectContaining({
           name: pluginName,
@@ -584,7 +581,7 @@ describe('build smoke', () => {
     expect(after.map((stats) => stats.mtimeMs)).toEqual(before.map((stats) => stats.mtimeMs));
   });
 
-  it('materializes and validates schema 3 compatibility from real build bundles', async () => {
+  it('materializes and validates schema 4 compatibility from real build bundles', async () => {
     const snapshot = await requireBuildSnapshot();
     const outputRoot = snapshot.catalogOutputRoot;
     const { validateCatalogSnapshot } = await importSmokeSnapshotModule<{
@@ -593,7 +590,7 @@ describe('build smoke', () => {
       }>;
     }>(path.join(snapshot.cliDistRoot, 'src', 'utils', 'catalog-snapshot.js'));
     const validated = await validateCatalogSnapshot(outputRoot);
-    expect(validated.manifest.schemaVersion).toBe(3);
+    expect(validated.manifest.schemaVersion).toBe(4);
     expect(validated.manifest.entries.map((entry) => entry.name).sort())
       .toEqual(Object.keys(EXPECTED_PLUGIN_PLATFORMS).sort());
     expect(validated.manifest.entries.every((entry) =>

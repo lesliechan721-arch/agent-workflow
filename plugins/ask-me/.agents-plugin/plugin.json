@@ -1,6 +1,6 @@
 {
   "name": "ask-me",
-  "version": "0.5.0",
+  "version": "0.1.0",
   "description": "通过独立的逐轮决策访谈或可体验原型形成共享理解。",
   "compatibility": {
     "aw": {

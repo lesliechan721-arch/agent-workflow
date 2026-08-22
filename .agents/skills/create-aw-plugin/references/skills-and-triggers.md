@@ -243,4 +243,4 @@ aw plugin add-skill <plugin-name> \
   [--repo-root <workspace-root> --plugin-root <plugin-root>]
 ```
 
-该命令只处理确定性的静态 Skill 骨架、平台调用元数据、Codex eval starter 和 manifest `skills` 能力字段；稳定 plugin version 保持不变。作者必须在完成 Skill 后直接提高 manifest version。命令不修改插件 README，也不新增 dynamic artifact、slash command 或其它能力。支持 Codex 的插件生成 `agents/openai.yaml` 与 v2 eval starter；Claude-only 插件只生成 Claude 可用源码，不生成无法运行的 Codex eval profile。
+该命令只处理确定性的静态 Skill 骨架、平台调用元数据、Codex eval starter 和 manifest `skills` 能力字段；稳定 plugin version 保持不变。日常开发不直接提高 manifest version；release train 开始时统一设置目标。命令不修改插件 README，也不新增 dynamic artifact、slash command 或其它能力。支持 Codex 的插件生成 `agents/openai.yaml` 与 v2 eval starter；Claude-only 插件只生成 Claude 可用源码，不生成无法运行的 Codex eval profile。

@@ -8,6 +8,7 @@ import {
   computeBuildOutputDigest,
 } from '../../../../scripts/build/build-cache.mjs';
 import { bootstrapCatalog } from '../../../../scripts/release/bootstrap-catalog.mjs';
+import { calculateCatalogContentDigest } from '../../../../scripts/release/release-model.mjs';
 import { stageCatalogRelease } from '../../../../scripts/release/stage-catalog.mjs';
 
 const execFileAsync = promisify(execFile);
@@ -34,6 +35,35 @@ async function loadCatalogModules(repoRoot) {
   return { pluginStaging, catalogSnapshot };
 }
 
+async function createCatalogRelease(catalogRoot, manifest, catalogVersion) {
+  const marketplace = JSON.parse(await fs.readFile(path.join(
+    catalogRoot,
+    '.agents',
+    'plugins',
+    'marketplace.json',
+  ), 'utf8'));
+  return {
+    state: 'published',
+    targetVersion: catalogVersion.replace(/-beta\.[1-9]\d*$/u, ''),
+    planId: `sha256:${'1'.repeat(64)}`,
+    sourceHead: '2'.repeat(40),
+    contentDigest: calculateCatalogContentDigest({
+      schemaIdentity: { schemaVersion: 4 },
+      marketplaceMetadata: {
+        name: marketplace.name,
+        owner: marketplace.owner,
+        interface: marketplace.interface,
+      },
+      compatibility: manifest.compatibility,
+      plugins: manifest.entries.map((entry) => ({
+        name: entry.name,
+        targetVersion: entry.version.replace(/-beta\.[1-9]\d*$/u, ''),
+        contentDigest: entry.contentDigest,
+      })),
+    }),
+  };
+}
+
 async function runStage(config) {
   await ensureBuild(config.repoRoot, config.npmExecPath);
   const buildCatalogRoot = path.join(config.repoRoot, 'packages', 'cli', 'plugins-dist');
@@ -42,11 +72,17 @@ async function runStage(config) {
     buildCatalogRoot,
     'catalog-manifest.json',
   ));
+  const buildManifest = JSON.parse(buildManifestBefore.toString('utf8'));
   const staged = await stageCatalogRelease(
     ['--catalog-version', config.catalogVersion],
     {
       internalOutputRoot: config.stageRoot,
       snapshotOptions: { snapshotRunToken: config.snapshotTokens[0] },
+      catalogRelease: await createCatalogRelease(
+        buildCatalogRoot,
+        buildManifest,
+        config.catalogVersion,
+      ),
     },
   );
   const [buildDigestAfter, buildManifestAfter] = await Promise.all([
@@ -80,6 +116,22 @@ async function runBootstrap(config) {
       assertCurrentReleaseIdentity: async () => undefined,
       runCommand: async () => undefined,
       withPrivateCatalogStageRoot: async (callback) => callback(config.stageRoot),
+      stageCatalogRelease: async (argv, options) => {
+        const validation = await catalogModules.catalogSnapshot.validateCatalogSnapshot(
+          options.snapshot.catalogOutputRoot,
+        );
+        return stageCatalogRelease(argv, {
+          internalOutputRoot: options.internalOutputRoot,
+          previousReleaseLedger: options.previousReleaseLedger,
+          releaseIdentity: options.releaseIdentity,
+          snapshot: options.snapshot,
+          catalogRelease: await createCatalogRelease(
+            options.snapshot.catalogOutputRoot,
+            validation.manifest,
+            argv[1],
+          ),
+        });
+      },
       snapshotOptions: {
         snapshotRunToken: config.snapshotTokens[snapshotIndex++],
       },

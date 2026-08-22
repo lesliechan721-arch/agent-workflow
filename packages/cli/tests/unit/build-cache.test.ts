@@ -58,7 +58,7 @@ async function writeRequiredOutputs(repoRoot: string, generation = 1): Promise<v
     if (relativePath.endsWith('marketplace.json')) {
       contents = `{"plugins":[],"generation":${generation}}\n`;
     } else if (relativePath.endsWith('catalog-manifest.json')) {
-      contents = `{"schemaVersion":3,"entries":[],"generation":${generation}}\n`;
+      contents = `{"schemaVersion":4,"release":{"state":"development"},"entries":[],"generation":${generation}}\n`;
     }
     await fs.writeFile(outputPath, contents);
   }));

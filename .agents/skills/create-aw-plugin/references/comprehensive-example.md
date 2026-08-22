@@ -63,7 +63,7 @@ code-review/
 
 ## 构建产物预览
 
-运行 `pnpm build` 后，两个平台的 runtime bundle 内容不同，schema 3 snapshot 记录最终内容身份。Codex 的 extensions 产物由写命令的 rebuild integration 生成。release staging、Git publish 和 first bootstrap 都是维护者流程，不是作者手改入口。
+运行 `pnpm build` 后，两个平台的 runtime bundle 内容不同，schema 4 snapshot 记录最终内容身份。Codex 的 extensions 产物由写命令的 rebuild integration 生成。release plan 内部 staging 和 publisher 事务都不是作者手改入口。
 
 **Claude bundle（build 时写入）**：skills、.mcp.json、generated `commands/`、output-styles、hooks.json（公共 hook 渲染结果）、agents markdown、rules markdown、AW scripts/config bundle metadata
 
@@ -77,7 +77,7 @@ code-review/
 
 **插件 manifest 和平台原生 manifest 都不支持**：`dependencies`。
 
-**后续 schema 3 source manifest 负责记录**：snapshot version、channel、snapshot 级 `compatibility.aw.minVersion`，以及每个插件的版本、最低 CLI 版本、`artifactDigest`、`manifestDigest` 和 `contentDigest`。它由后续 release staging 流程从 build bundle 物化，不是当前 `pnpm build` 的直接产物，也不手改。
+**schema 4 source manifest 负责记录**：snapshot version、channel、snapshot 级 `compatibility.aw.minVersion`，以及每个插件的版本、最低 CLI 版本、`artifactDigest`、`manifestDigest` 和 `contentDigest`。开发 snapshot 由 `pnpm build` 物化；published candidate 由 immutable release plan 的内部 staging 物化，不手改。
 
 **Codex bundle 不包含**：output-styles/、Claude-only manifest overrides、extensions 衍生产物（均在安装时生成）
 

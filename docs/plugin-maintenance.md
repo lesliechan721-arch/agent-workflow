@@ -7,7 +7,7 @@
 - 插件源码位于 `plugins/`，`plugins/<name>/.agents-plugin/plugin.json` 是源码 manifest 真值。
 - catalog staging 和 runtime bundle 是构建产物，不要直接修改。
 - 作者只维护 plugin source 和稳定 plugin version。不要手改 Git catalog refs、release ledger 或 source cache。
-- 作者声明真实的 `compatibility.aw.minVersion`；发布器会把所有插件声明与 schema 3 Git 分发 floor `0.1.0-beta.2` 取最大值。作者不要为绕过 catalog floor 改低插件声明，也不要编辑内部 publication lock 或 tag-first pending refs。
+- 作者声明真实的 `compatibility.aw.minVersion`；发布器会把所有插件声明与内部 schema 4 Git 分发 floor 取最大值。作者不要复制 catalog floor 作为插件声明，也不要为绕过 floor 改低真实声明或编辑内部 publication lock、tag-first pending refs。
 - 创建或修改插件能力时只维护源码层；平台产物由 CLI、adapter 和发布流程生成。
 - 插件和 Skill 的 production README 使用[插件与 Skill README 规范](readme-standard.md)。
 
@@ -19,12 +19,12 @@
 
 - 旧默认路由仍使用 [create-aw-plugin](../.agents/skills/create-aw-plugin/README.md) 和 [skill-review](../.agents/skills/skill-review/README.md)。
 - `agent-content-toolkit` 提供 `write-agent-content` 与 `review-agent-content`。
-- `agent-skill-toolkit` 提供 Skill author/review 与 Eval design/audit，依赖 `agent-content-toolkit >= 0.5.0`。
-- `aw-plugin-development` 提供显式调用的 AW Author/Reviewer，依赖 `agent-content-toolkit >= 0.5.0` 和 `agent-skill-toolkit >= 0.7.1`；真实模型 Eval 还需要 `agent-skill-eval-runner >= 0.3.0` 或兼容 runner。
+- `agent-skill-toolkit` 提供 Skill author/review 与 Eval design/audit，依赖 `agent-content-toolkit >= 0.1.0`。
+- `aw-plugin-development` 提供显式调用的 AW Author/Reviewer，依赖 `agent-content-toolkit >= 0.1.0` 和 `agent-skill-toolkit >= 0.1.0`；真实模型 Eval 还需要 `agent-skill-eval-runner >= 0.1.0` 或兼容 runner。
 - AW Author/Reviewer 适用于任意兼容 workspace root；目标根由 `.agents-plugin/plugin.json` 标识，不限于 `plugins/<name>/`。repo-local 旧 `create-aw-plugin` 仍只处理本仓库 `plugins/<name>/`；不含 AW manifest 的 repo-local 或 portable Skill 使用通用 `review-agent-skill`。
 - 迁移期间新工作流不得静默替代旧入口；完成固定行为对照后再切换默认路由。
-- 确定性作者工具统一使用公开 CLI：`aw plugin init`、`aw plugin add-skill`、`aw plugin validate` 和 `aw plugin check-versions`。先运行 `aw --version`；不要使用 `npx` 或隐式安装。repo-local `create-aw-plugin` 与 `aw-plugin-development` Author 只编排这些命令，不保存第二份核心实现。
-- 默认插件根是 `<repo-root>/plugins/<plugin-name>`。兼容工作区使用其它布局时，`init`、`add-skill` 和单插件 `check-versions` 显式传 `--plugin-root <path>`；该路径必须位于 Git repo root 内并与 plugin name 匹配。`validate` 和 `check-versions` 拒绝 repo/plugin root、`.agents-plugin` 或 manifest path chain 中的符号链接和错误节点类型；不要用链接把作者根或 manifest 重定向到仓库外。`check-versions --all` 保留 `plugins/` 扫描语义。
+- 确定性作者工具统一使用公开 CLI：`aw plugin init`、`aw plugin add-skill`、`aw plugin validate` 和 `aw plugin status`。`check-versions` 只保留为 deprecated 兼容别名。先运行 `aw --version`；不要使用 `npx` 或隐式安装。repo-local `create-aw-plugin` 与 `aw-plugin-development` Author 只编排这些命令，不保存第二份核心实现。
+- 默认插件根是 `<repo-root>/plugins/<plugin-name>`。兼容工作区使用其它布局时，`init`、`add-skill` 和单插件 `status` 显式传 `--plugin-root <path>`；该路径必须位于 Git repo root 内并与 plugin name 匹配。`validate` 和 `status` 拒绝 repo/plugin root、`.agents-plugin` 或 manifest path chain 中的符号链接和错误节点类型；不要用链接把作者根或 manifest 重定向到仓库外。`status --all` 保留 `plugins/` 扫描语义。
 - 模型 Eval 和报告发布属于专用工作流，不在通用测试指南中重复定义。Reviewer 发布报告不修改 production README；登记由 Author 或 release 工具执行。
 
 ## 旧入口迁移门禁
@@ -37,9 +37,9 @@
 pnpm migration:verify:plugin-development
 ```
 
-迁移合同保留 `parallel`、`ready-for-cutover` 和 `retired` 三个生命周期词汇，但当前验证器只接受 `parallel`。它要求旧路由、全部旧入口、新入口、12 项固定能力 owner、7 项固定 gate 声明和当前结构性证据路径都存在。`replacementRoutes` 只声明未来路由，当前不能据此声称路由已生效。
+迁移合同使用 schema v2，并保留 `parallel`、`ready-for-cutover` 和 `retired` 三个状态。它要求旧路由、全部旧入口、新入口、12 项固定能力 owner、7 项固定 gate 声明和当前结构性证据路径都存在。`parallel` 和 `ready-for-cutover` 状态继续启用旧默认路由；`replacementRoutes` 只声明未来路由，不能据此声称路由已生效。
 
-在实现 canonical 模型证据和 currentness 验证，并提供自动 cutover 工具前，`ready-for-cutover` 和 `retired` 都会 fail closed，且 `cutoverReady` 始终为 `false`。未来切换状态前，必须同时满足：
+`ready-for-cutover` 必须同时满足：
 
 1. 四个旧 P1 有结构性实现证据。
 2. materialized Skill runtime closure 有生产实现和单测证据。
@@ -49,7 +49,15 @@ pnpm migration:verify:plugin-development
 6. Eval audit → run → result triage 端到端 release 证据完成。
 7. repo-local static Skill 的 batch、currentness 和报告发布已明确决定保留、迁移或退役。
 
-当前合同中的 `modelEvidence` 必须明确为 `null`，不能用自报路径或摘要绕过门禁。未来的 cutover 验证必须复用正式 report/eval canonical validators，验证 release suite、模型证据和 currentness；不能只修改迁移 JSON，也不能在迁移脚本中维护第二套临时报表验证逻辑。
+当前合同仍为 `parallel`，因此 `modelEvidence` 保持 `null`。进入 `ready-for-cutover` 时，每项证据必须复制到 `docs/plugin-development-evidence/<plugin>/<skill>/<batch>/evaluation.json`，提交后再写入路径和文件 digest。验证器要求 evidence 与当前 HEAD 中的文件一致，核对 owner、证据 source revision 是当前 HEAD 的祖先、当前 production source digest、干净且没有 ignored production file 的 plugin set、release-required model profile，以及每个 required target 的 passed/complete/mechanical 状态。只修改迁移 JSON或手工填写通过状态不能通过门禁。
+
+验证为 ready 后，可先预览 cutover；不带 `--apply` 时不会修改文件：
+
+```bash
+pnpm migration:cutover:plugin-development
+```
+
+显式执行 `pnpm migration:cutover:plugin-development -- --apply` 才会原子更新默认路由并把状态改为 `retired`。工具在修改前后都运行同一迁移验证，并在后置验证失败时恢复原文件。本次实现不执行该命令。
 
 ## Catalog build-time 文件复用
 
@@ -62,6 +70,9 @@ pnpm migration:verify:plugin-development
 ## 验证与版本
 
 - 使用 `pnpm plugin:test <plugin>` 运行单插件确定性测试；使用 `pnpm plugin:test --all` 检查全部插件。
+- 日常开发运行 `aw plugin status`。production bundle 变化且稳定目标未变时返回通过的 `unreleasedChanges`，不要求立即改 version。release train 开始时使用 `pnpm release:target` 的 `major`、`minor`、`patch` 关键字一次设置稳定目标；`pnpm release:prepare` 基于 registry、immutable Catalog history 和 ledger 确认 candidate 身份。
+- 正常维护发布只使用 `release:status`、`release:target`、`release:prepare` 和 `release:publish`。`release:publish` 只消费已提交的 immutable plan，不接受 CLI 或 Catalog 版本参数，也不回写源码 package version。
+- `release:recover -- catalog <x.y.z[-beta.N]>` 只恢复历史 tag-first 事务。它要求 exact immutable tag、pending guard 和两个 CLI 包兼容且一致的已发布 dist-tag；不 stage 内容或创建新身份。
 - 新工作流的 generated standards、schemas 和 handoff contracts 必须通过 check-only contract test；CI 不自动改写生成文件。
 - CLI 作者 validator 的 JavaScript import scanner 是唯一实现；门禁覆盖 static import、export-from、dynamic import、`require()`、`require.resolve()`、非代码文本过滤和 `${...}` 代码扫描。
 - 三层插件应分别验证，并增加同时安装三个插件的组合测试。

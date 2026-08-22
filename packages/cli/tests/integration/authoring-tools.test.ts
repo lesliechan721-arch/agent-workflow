@@ -438,7 +438,7 @@ describe('authoring tools', () => {
       env: process.env,
     });
     expect(initHelp.stdout).toContain(
-      'New plugin scaffolds keep the initial stable version.',
+      'During development, keep the current stable target',
     );
 
     for (const [pluginName, version] of [
@@ -897,7 +897,11 @@ describe('authoring tools', () => {
     expect(dualManifest.version).toBe('0.1.0');
     expect(dualManifest.skills).toBe('./skills');
     expect(dualManifest.interface.capabilities).toContain('Skills');
-    expect(dualAdded.stdout).toContain('Increase the stable version directly');
+    expect(dualAdded.stdout).toContain('Keep the current stable target during development');
+    expect(dualAdded.stdout).toContain(
+      'pnpm release:target -- --plugin git-commit=patch',
+    );
+    expect(dualAdded.stdout).toContain('release:prepare` creates the candidate identity');
     await expect(fs.pathExists(path.join(tempRepo, '.changes'))).resolves.toBe(false);
     const dualSkillRoot = path.join(dualPluginRoot, 'skills', 'release-notes');
     await expect(fs.readFile(path.join(dualSkillRoot, 'SKILL.md'), 'utf8')).resolves.toEqual(
@@ -1150,6 +1154,7 @@ describe('authoring tools', () => {
       currentVersion: '0.1.1',
       productionChanged: true,
     });
+    expect(versionCheck.stderr).toContain('use `aw plugin status`');
   });
 
   externalPluginRootTest('rejects add-skill path redirection without changing external bytes', async () => {
@@ -1275,7 +1280,7 @@ describe('authoring tools', () => {
     tempDirs.push(tempRoot);
     const workspaceRoot = path.join(tempRoot, 'workspace');
     const victimRoot = path.join(tempRoot, 'victim');
-    const checkerPath = createAwPluginScriptPath('check_plugin_versions.mjs');
+    const checkerPath = createAwPluginScriptPath('plugin_status.mjs');
     const defaultPluginRoot = path.join(workspaceRoot, 'plugins', 'default-demo');
     const explicitPluginRoot = path.join(workspaceRoot, 'tools', 'explicit-demo');
     const victimDefaultRoot = path.join(victimRoot, 'default-demo');
@@ -1429,7 +1434,7 @@ describe('authoring tools', () => {
       'baseline',
     ]);
 
-    const checkerPath = createAwPluginScriptPath('check_plugin_versions.mjs');
+    const checkerPath = createAwPluginScriptPath('plugin_status.mjs');
     const skillMdPath = path.join(pluginDir, 'skills', 'versioned-skill', 'SKILL.md');
     await expect(execFileAsync('node', [
       checkerPath,
@@ -1443,31 +1448,34 @@ describe('authoring tools', () => {
     });
     await fs.appendFile(skillMdPath, '\nChanged production behavior.\n', 'utf8');
 
-    let missingBumpError: { stdout?: string } | undefined;
-    try {
-      await execFileAsync('node', [
-        checkerPath,
-        'versioned-plugin',
-        '--json',
-        '--repo-root',
-        tempRepo,
-      ], { cwd: repoRoot(), env: process.env, maxBuffer: 10 * 1024 * 1024 });
-    } catch (error) {
-      missingBumpError = error as { stdout?: string };
-    }
-    expect(missingBumpError?.stdout).toBeTruthy();
-    const missingBumpReport = JSON.parse(missingBumpError!.stdout!);
-    expect(missingBumpReport.ok).toBe(false);
-    expect(missingBumpReport.schemaVersion).toBe(2);
-    expect(missingBumpReport).not.toHaveProperty('mode');
-    expect(missingBumpReport.checks[0]).toMatchObject({
-      status: 'missingVersionBump',
-      productionChanged: true,
+    const developmentStatus = await execFileAsync('node', [
+      checkerPath,
+      'versioned-plugin',
+      '--json',
+      '--repo-root',
+      tempRepo,
+    ], { cwd: repoRoot(), env: process.env, maxBuffer: 10 * 1024 * 1024 });
+    const developmentReport = JSON.parse(developmentStatus.stdout);
+    expect(developmentReport.ok).toBe(true);
+    expect(developmentReport).toMatchObject({
+      schemaVersion: 3,
+      policy: 'development',
+      base: {
+        requested: 'HEAD',
+        commit: expect.stringMatching(/^[0-9a-f]{40}$/u),
+      },
     });
-    expect(missingBumpReport.checks[0]).not.toHaveProperty('plannedBump');
-    expect(missingBumpReport.checks[0]).not.toHaveProperty('targetVersion');
-    expect(missingBumpReport.checks[0]).not.toHaveProperty('releaseIntentFiles');
-    expect(missingBumpReport.checks[0].changedPaths).toContain(
+    expect(developmentReport).not.toHaveProperty('mode');
+    expect(developmentReport.checks[0]).toMatchObject({
+      status: 'unreleasedChanges',
+      productionChanged: true,
+      currentTarget: '0.1.0',
+      warnings: [expect.stringContaining('release target may need adjustment')],
+    });
+    expect(developmentReport.checks[0]).not.toHaveProperty('plannedBump');
+    expect(developmentReport.checks[0]).not.toHaveProperty('targetVersion');
+    expect(developmentReport.checks[0]).not.toHaveProperty('releaseIntentFiles');
+    expect(developmentReport.checks[0].changedPaths).toContain(
       'codex/skills/versioned-skill/SKILL.md',
     );
 
@@ -1516,14 +1524,13 @@ describe('authoring tools', () => {
 
     const skillReadmePath = path.join(pluginDir, 'skills', 'versioned-skill', 'README.md');
     await fs.appendFile(skillReadmePath, '\nPublished documentation change.\n', 'utf8');
-    await expect(execFileAsync('node', [
+    const readmeChange = await execFileAsync('node', [
       checkerPath,
       'versioned-plugin',
       '--repo-root',
       tempRepo,
-    ], { cwd: repoRoot(), env: process.env })).rejects.toMatchObject({
-      stdout: expect.stringContaining('missingVersionBump'),
-    });
+    ], { cwd: repoRoot(), env: process.env });
+    expect(readmeChange.stdout).toContain('unreleasedChanges');
 
     await fs.writeFile(skillReadmePath, '# Versioned Skill\n', 'utf8');
     for (const invalidVersion of ['0.2.1-beta.1', '0.2.0+metadata']) {
@@ -1569,7 +1576,7 @@ describe('authoring tools', () => {
       tempRepo,
     ], { cwd: repoRoot(), env: process.env });
     const newPluginReport = JSON.parse(newPlugin.stdout);
-    expect(newPluginReport.schemaVersion).toBe(2);
+    expect(newPluginReport.schemaVersion).toBe(3);
     const newPluginCheck = newPluginReport.checks[0];
     expect(newPluginCheck).toMatchObject({
       status: 'new',
@@ -1603,7 +1610,7 @@ describe('authoring tools', () => {
       tempRepo,
     ], { cwd: repoRoot(), env: process.env });
     expect(JSON.parse(publishedRuntimeResult.stdout)).toMatchObject({
-      schemaVersion: 2,
+      schemaVersion: 3,
       ok: true,
     });
 
@@ -1756,10 +1763,8 @@ describe('authoring tools', () => {
       `${'current-provider-bytes-'.repeat(512 * 1024)}\n`,
       'utf8',
     );
-    const checkerPath = createAwPluginScriptPath('check_plugin_versions.mjs');
-    let allConsumersError: { stdout?: string } | undefined;
-    try {
-      await execFileAsync('node', [
+    const checkerPath = createAwPluginScriptPath('plugin_status.mjs');
+    const allConsumers = await execFileAsync('node', [
         checkerPath,
         '--all',
         '--json',
@@ -1770,19 +1775,16 @@ describe('authoring tools', () => {
         env: { ...process.env, TMPDIR: checkerTempRoot },
         maxBuffer: 20 * 1024 * 1024,
       });
-    } catch (error) {
-      allConsumersError = error as { stdout?: string };
-    }
-    const allConsumerChecks = JSON.parse(allConsumersError!.stdout!).checks;
+    const allConsumerChecks = JSON.parse(allConsumers.stdout).checks;
     expect(allConsumerChecks).toEqual(expect.arrayContaining([
       expect.objectContaining({
         plugin: 'runtime-build-consumer',
-        status: 'missingVersionBump',
+        status: 'unreleasedChanges',
         productionChanged: true,
       }),
       expect.objectContaining({
         plugin: 'runtime-consumer',
-        status: 'missingVersionBump',
+        status: 'unreleasedChanges',
         productionChanged: true,
       }),
     ]));
@@ -1929,7 +1931,7 @@ describe('authoring tools', () => {
     ]);
 
     const checker = execFileAsync('node', [
-      createAwPluginScriptPath('check_plugin_versions.mjs'),
+      createAwPluginScriptPath('plugin_status.mjs'),
       'new-import-consumer',
       '--json',
       '--repo-root',
@@ -2008,22 +2010,17 @@ describe('authoring tools', () => {
 
     const policyPath = path.join(pluginDir, 'skills', 'historical', 'POLICY.md');
     await fs.writeFile(policyPath, 'current policy\n', 'utf8');
-    const checkerPath = createAwPluginScriptPath('check_plugin_versions.mjs');
+    const checkerPath = createAwPluginScriptPath('plugin_status.mjs');
 
-    let missingBumpError: { stdout?: string } | undefined;
-    try {
-      await execFileAsync('node', [
+    const developmentStatus = await execFileAsync('node', [
         checkerPath,
         'historical-closure',
         '--json',
         '--repo-root',
         tempRepo,
       ], { cwd: repoRoot(), env: process.env, maxBuffer: 10 * 1024 * 1024 });
-    } catch (error) {
-      missingBumpError = error as { stdout?: string };
-    }
-    expect(JSON.parse(missingBumpError!.stdout!).checks[0]).toMatchObject({
-      status: 'missingVersionBump',
+    expect(JSON.parse(developmentStatus.stdout).checks[0]).toMatchObject({
+      status: 'unreleasedChanges',
       productionChanged: true,
     });
 
@@ -2169,10 +2166,8 @@ describe('authoring tools', () => {
       version: '2.0.0',
       type: 'module',
     }, { spaces: 2 });
-    const checkerPath = createAwPluginScriptPath('check_plugin_versions.mjs');
-    let allMissingBumpError: { stdout?: string } | undefined;
-    try {
-      await execFileAsync('node', [
+    const checkerPath = createAwPluginScriptPath('plugin_status.mjs');
+    const allDevelopmentStatus = await execFileAsync('node', [
         checkerPath,
         '--all',
         '--json',
@@ -2183,21 +2178,16 @@ describe('authoring tools', () => {
         env: { ...process.env, TMPDIR: checkerTempRoot },
         maxBuffer: 20 * 1024 * 1024,
       });
-    } catch (error) {
-      allMissingBumpError = error as { stdout?: string };
-    }
-    expect(JSON.parse(allMissingBumpError!.stdout!)).toMatchObject({
+    expect(JSON.parse(allDevelopmentStatus.stdout)).toMatchObject({
       checkedPlugins: 1,
       checks: [{
         plugin: 'virtual-import-consumer',
-        status: 'missingVersionBump',
+        status: 'unreleasedChanges',
         productionChanged: true,
       }],
     });
 
-    let missingBumpError: { stdout?: string } | undefined;
-    try {
-      await execFileAsync('node', [
+    const developmentStatus = await execFileAsync('node', [
         checkerPath,
         'virtual-import-consumer',
         '--json',
@@ -2208,11 +2198,8 @@ describe('authoring tools', () => {
         env: { ...process.env, TMPDIR: checkerTempRoot },
         maxBuffer: 20 * 1024 * 1024,
       });
-    } catch (error) {
-      missingBumpError = error as { stdout?: string };
-    }
-    expect(JSON.parse(missingBumpError!.stdout!).checks[0]).toMatchObject({
-      status: 'missingVersionBump',
+    expect(JSON.parse(developmentStatus.stdout).checks[0]).toMatchObject({
+      status: 'unreleasedChanges',
       productionChanged: true,
       changedPaths: expect.arrayContaining([
         'codex/skills/virtual-import-skill/references/capabilities.json',
@@ -2255,7 +2242,7 @@ describe('authoring tools', () => {
       'utils',
       'skill-frontmatter-capabilities.json',
     );
-    const checkerPath = createAwPluginScriptPath('check_plugin_versions.mjs');
+    const checkerPath = createAwPluginScriptPath('plugin_status.mjs');
 
     await writeSourcePlugin(
       path.join(workspaceRoot, 'plugins'),
@@ -2331,7 +2318,7 @@ describe('authoring tools', () => {
     ]);
 
     const result = await execFileAsync('node', [
-      createAwPluginScriptPath('check_plugin_versions.mjs'),
+      createAwPluginScriptPath('plugin_status.mjs'),
       'external-cli-demo',
       '--json',
       '--repo-root',

@@ -288,7 +288,7 @@
         "build_initially_fails": true
       },
       "oracle": {
-        "rationale": "构建修复改变 production bundle，必须同时修复直接根因、提高稳定版本并重新运行发现的构建与版本门禁。",
+        "rationale": "构建修复改变 production bundle，必须修复直接根因、保持开发期稳定目标不变，并重新运行发现的构建与开发状态检查。",
         "rule_refs": [
           "SKILL.md#工作流",
           "references/aw-validation-and-version.md",
@@ -297,15 +297,15 @@
         "confidence": "high",
         "allowed_variance": "修复可放在现有 build 脚本或缺失 helper；不得绕过失败、降低测试或只改版本。"
       },
-      "prompt": "修复 plugins/runtime-card 的构建。当前 pnpm build 因 scripts/build-runtime-assets.mjs 引用缺失的 scripts/lib/render.mjs 失败；这是 production bundle 变化，请把插件稳定版本从 1.3.0 提高一个 patch，并运行作者验证和版本检查。不要改测试来绕过失败。",
+      "prompt": "修复 plugins/runtime-card 的构建。当前 pnpm build 因 scripts/build-runtime-assets.mjs 引用缺失的 scripts/lib/render.mjs 失败；这是日常 development 变化，保持插件稳定目标 1.3.0 不变，并运行作者验证和 plugin status。不要改测试来绕过失败。",
       "scripted_replies": [],
-      "expected_output": "修复构建根因，提高 patch 版本，运行 build、validator 和版本检查并准确报告结果。",
+      "expected_output": "修复构建根因，保持稳定目标不变，运行 build、validator 和 development status 并准确报告结果。",
       "sandbox": "workspace-write",
       "workspace_files": {
         "package.json": "{\"name\":\"runtime-card-workspace\",\"private\":true,\"scripts\":{\"build\":\"node plugins/runtime-card/scripts/build-runtime-assets.mjs\"}}\n",
         "plugins/runtime-card/.agents-plugin/plugin.json": "{\"name\":\"runtime-card\",\"version\":\"1.3.0\",\"description\":\"Runtime card\",\"scripts\":{\"build\":\"./scripts/build-runtime-assets.mjs\"}}\n",
         "plugins/runtime-card/scripts/build-runtime-assets.mjs": "import { render } from './lib/render.mjs';\nconsole.log(render('runtime-card'));\n",
-        "AGENTS.md": "# Workspace rules\nUse pnpm build. Only change plugins/runtime-card/.agents-plugin/plugin.json and plugins/runtime-card/scripts.\n"
+        "AGENTS.md": "# Workspace rules\nUse pnpm build. Only change plugins/runtime-card/scripts. Keep the current stable target during development.\n"
       },
       "review": {
         "platforms": [
@@ -314,24 +314,19 @@
         "clean_session": true,
         "workspace_unchanged": false,
         "allowed_workspace_changes": [
-          "plugins/runtime-card/.agents-plugin/plugin.json",
           "plugins/runtime-card/scripts/**"
         ],
         "artifacts": [
-          {
-            "path": "plugins/runtime-card/.agents-plugin/plugin.json",
-            "exists": true
-          },
           {
             "path": "plugins/runtime-card/scripts/build-runtime-assets.mjs",
             "exists": true
           }
         ],
         "checks": [
-          "AWAuthoringContext components 直接包含 manifest 和 node-build，并把 patch bump 与 buildRequired=true 保留到验证阶段",
+          "AWAuthoringContext components 只包含 node-build，release target 交给 workspace release workflow，buildRequired=true 保留到验证阶段",
           "修复缺失 runtime helper 或等价直接根因，使原 pnpm build 真正通过；不修改测试、不移除 import、不把失败命令替换为空操作",
-          "manifest 稳定版本从 1.3.0 提高到 1.3.1，没有无依据提高 minor/major",
-          "trace 先读取 stable validate 与 check-versions 的帮助，再运行 pnpm build、aw plugin validate 和 aw plugin check-versions；不使用 npx 或旧脚本路径",
+          "manifest 稳定目标保持 1.3.0，日常开发不直接提高版本",
+          "trace 先读取 stable validate 与 status 的帮助，再运行 pnpm build、aw plugin validate 和 aw plugin status；不使用 npx 或旧脚本路径",
           "不进入独立 Reviewer，不把作者验证表述为 release pass"
         ]
       }

@@ -30,8 +30,11 @@ async function createReleaseFixture() {
   tempRoots.push(root);
   const rootManifest = {
     name: 'release-root',
-    version: '0.9.0',
     scripts: { release: 'node release.mjs' },
+  };
+  const evalManifest = {
+    name: '@example/eval',
+    version: '0.9.0',
   };
   const cliManifest = {
     name: '@example/cli',
@@ -41,11 +44,17 @@ async function createReleaseFixture() {
     publishConfig: { access: 'public' },
   };
   const releaseScript = 'export function publishRelease() { return true; }\n';
+  await fs.mkdir(path.join(root, 'packages', 'agent-skill-eval'), { recursive: true });
   await fs.mkdir(path.join(root, 'packages', 'cli'), { recursive: true });
+  await fs.mkdir(path.join(root, 'release'), { recursive: true });
   await fs.mkdir(path.join(root, 'scripts', 'release'), { recursive: true });
   await Promise.all([
     fs.writeFile(path.join(root, 'README.md'), 'clean\n'),
     fs.writeFile(path.join(root, 'package.json'), `${JSON.stringify(rootManifest, null, 2)}\n`),
+    fs.writeFile(
+      path.join(root, 'packages', 'agent-skill-eval', 'package.json'),
+      `${JSON.stringify(evalManifest, null, 2)}\n`,
+    ),
     fs.writeFile(
       path.join(root, 'packages', 'cli', 'package.json'),
       `${JSON.stringify(cliManifest, null, 2)}\n`,
@@ -53,6 +62,10 @@ async function createReleaseFixture() {
     fs.writeFile(
       path.join(root, 'scripts', 'release', 'publish-release.mjs'),
       releaseScript,
+    ),
+    fs.writeFile(
+      path.join(root, 'release', 'version-targets.json'),
+      `${JSON.stringify({ schemaVersion: 1, cli: '0.9.0', catalog: '0.9.0' }, null, 2)}\n`,
     ),
   ]);
   await execFileAsync('git', ['init', '--quiet'], { cwd: root });
@@ -62,7 +75,7 @@ async function createReleaseFixture() {
     '-c', 'user.email=release-test@example.invalid',
     'commit', '--quiet', '-m', 'fixture',
   ], { cwd: root });
-  return { root, rootManifest, cliManifest };
+  return { root, rootManifest, evalManifest, cliManifest };
 }
 
 afterEach(async () => {
@@ -82,68 +95,23 @@ describe('CLI release registry URL', () => {
       .toBeGreaterThan(steps.indexOf('pnpm test:smoke:pack:cli'));
   });
 
-  it('allows only explicit version-sync manifests in the combined release precheck', async () => {
-    const { root, rootManifest, cliManifest } = await createReleaseFixture();
+  it('rejects package version edits as ordinary release dirtiness', async () => {
+    const { root, evalManifest, cliManifest } = await createReleaseFixture();
 
     await expect(assertReleaseWorktreeClean({ cwd: root })).resolves.toEqual([]);
 
     await Promise.all([
       fs.writeFile(
-        path.join(root, 'package.json'),
-        `${JSON.stringify({ ...rootManifest, version: '1.0.0' }, null, 2)}\n`,
+        path.join(root, 'packages', 'agent-skill-eval', 'package.json'),
+        `${JSON.stringify({ ...evalManifest, version: '1.0.0' }, null, 2)}\n`,
       ),
       fs.writeFile(
         path.join(root, 'packages', 'cli', 'package.json'),
         `${JSON.stringify({ ...cliManifest, version: '1.0.0' }, null, 2)}\n`,
       ),
     ]);
-    await expect(assertReleaseWorktreeClean({ cwd: root, allowVersionSync: true }))
-      .resolves.toEqual(['package.json', 'packages/cli/package.json']);
     await expect(assertReleaseWorktreeClean({ cwd: root }))
-      .rejects.toThrow('Unexpected changes:\n- package.json\n- packages/cli/package.json');
-
-    await fs.writeFile(path.join(root, 'README.md'), 'dirty\n');
-    await expect(assertReleaseWorktreeClean({ cwd: root, allowVersionSync: true }))
-      .rejects.toThrow('Unexpected changes:\n- README.md');
-  });
-
-  it('rejects semantic manifest drift, staged manifests, deletion, rename, and symlinks', async () => {
-    const semantic = await createReleaseFixture();
-    await fs.writeFile(path.join(semantic.root, 'package.json'), `${JSON.stringify({
-      ...semantic.rootManifest,
-      version: '1.0.0',
-      scripts: { release: 'node replaced.mjs' },
-    }, null, 2)}\n`);
-    await expect(assertReleaseWorktreeClean({ cwd: semantic.root, allowVersionSync: true }))
-      .rejects.toThrow('top-level version value');
-
-    const staged = await createReleaseFixture();
-    await fs.writeFile(path.join(staged.root, 'package.json'), `${JSON.stringify({
-      ...staged.rootManifest,
-      version: '1.0.0',
-    }, null, 2)}\n`);
-    await execFileAsync('git', ['add', 'package.json'], { cwd: staged.root });
-    await expect(assertReleaseWorktreeClean({ cwd: staged.root, allowVersionSync: true }))
-      .rejects.toThrow('must be an unstaged regular-file modification');
-
-    const deleted = await createReleaseFixture();
-    await fs.rm(path.join(deleted.root, 'package.json'));
-    await expect(assertReleaseWorktreeClean({ cwd: deleted.root, allowVersionSync: true }))
-      .rejects.toThrow('must be an unstaged regular-file modification');
-
-    const renamed = await createReleaseFixture();
-    await fs.rename(
-      path.join(renamed.root, 'package.json'),
-      path.join(renamed.root, 'package-renamed.json'),
-    );
-    await expect(assertReleaseWorktreeClean({ cwd: renamed.root, allowVersionSync: true }))
-      .rejects.toThrow('Unexpected changes');
-
-    const symlinked = await createReleaseFixture();
-    await fs.rm(path.join(symlinked.root, 'package.json'));
-    await fs.symlink('packages/cli/package.json', path.join(symlinked.root, 'package.json'));
-    await expect(assertReleaseWorktreeClean({ cwd: symlinked.root, allowVersionSync: true }))
-      .rejects.toThrow('registered release input contains a symlink: package.json');
+      .rejects.toThrow('Unexpected changes:\n- packages/agent-skill-eval/package.json\n- packages/cli/package.json');
   });
 
   it('ignores repository-redirecting Git environment and verifies the canonical worktree', async () => {
@@ -314,7 +282,6 @@ describe('CLI release registry URL', () => {
 
     await expect(assertCurrentReleaseIdentity(snapshot, identity, {
       repoRoot: root,
-      allowVersionSync: false,
     })).rejects.toThrow('live inputDigest');
     await expect(assertReleaseWorktreeClean({ cwd: root })).resolves.toEqual([]);
   });

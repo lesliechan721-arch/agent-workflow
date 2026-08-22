@@ -45,6 +45,7 @@ export interface ProcessTreeObservation {
 export interface ProcessTreeTerminationOptions {
   observation?: ProcessTreeObservation;
   requireConfirmedCleanup?: boolean;
+  allowInspectionUnavailable?: boolean;
 }
 
 interface ObservationState {
@@ -433,6 +434,7 @@ async function terminateWindowsProcessTree(
 async function terminatePosixProcessTree(
   state: ObservationState,
   requireConfirmedCleanup: boolean,
+  allowInspectionUnavailable: boolean,
 ): Promise<void> {
   await state.initialLookup;
   const execFileImpl = state.dependencies.execFile ?? defaultExecFile;
@@ -444,6 +446,7 @@ async function terminatePosixProcessTree(
     state.marker,
   );
   if (!snapshot) {
+    if (!requireConfirmedCleanup && allowInspectionUnavailable) return;
     throw cleanupUnconfirmed('POSIX process identity lookup failed.');
   }
   if (state.marker !== undefined && !snapshot.markerLookupSucceeded) {
@@ -565,6 +568,7 @@ export async function terminateProcessTree(
     await terminatePosixProcessTree(
       state,
       options.requireConfirmedCleanup ?? false,
+      options.allowInspectionUnavailable ?? false,
     );
   } finally {
     observation.dispose();

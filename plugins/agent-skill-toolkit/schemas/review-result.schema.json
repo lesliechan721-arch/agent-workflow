@@ -28,7 +28,7 @@
   ],
   "properties": {
     "schemaVersion": {
-      "const": 3
+      "const": 4
     },
     "producer": {
       "const": "review-agent-skill"
@@ -291,6 +291,14 @@
               "type": "string",
               "minLength": 1
             }
+          },
+          "machineEvidenceIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "uniqueItems": true
           },
           "location": {
             "type": "string",

@@ -17,6 +17,8 @@ Artifact role 包括 `source`、`final`、`evidence` 和 `project-profile`。每
 
 `providedStages` 只记录已完成的阶段。每个结果文件必须位于 handoff root 内，并通过 `validate-review-input-bundle.mjs`；非空路径或 final artifact 不能证明评审已经完成。`eval-result-triage` 阶段必须通过目标 Skill、corpus、preflight audit、plan 和完整结果 digest，准确绑定一个 `eval-execution` 阶段。孤立、过期或重复使用的 triage 证据无效。
 
-准备插件级证据后，使用 `prepare-aw-review-targets.mjs` 为每个 source Skill 和 materialized profile 创建一个确定性通用评审目标。
+准备插件级证据后，先使用 `prepare-aw-review-target-plan.mjs` 固定 expected source 和 materialized target。release-quality 未显式给出 `--profile` 时，工具从 marketplace 产品推导全部平台×scope profile。缺少 required final 时，target 保留为 `missing`，不能由 summary 手工标为已覆盖。
 
-`prepare-aw-review-targets.mjs --bundle <plugin-bundle.json>` 按 `targetSkillDigest` 将 audit/run evidence 投影到对应 source/final Skill；不匹配证据不会复制。Stage `resultPath` 使用可验证的本地路径，handoff validator 仍要求它位于显式 handoff root 内。
+`prepare-aw-review-targets.mjs --bundle <plugin-bundle.json> --output-root <handoff-root>` 按 `targetSkillDigest` 将 audit/run evidence 投影到对应 source/final Skill，并为每个 target 生成强制 `package-inspection` stage；不匹配证据不会复制。Stage `resultPath` 使用可验证的本地路径，handoff validator 仍要求它位于显式 handoff root 内。
+
+每个 `ReviewResult` 必须以 `--bundle <target-bundle.json>` 验证。最终 `AWReviewSummary` v2 必须记录 target plan 文件 digest，并使用 `validate-aw-review-summary.mjs <summary.json> --plan <target-plan.json> --plugin-root <plugin-root> --evidence <id> <result> <bundle> ...` 从当前 manifest、Skill 根和 release scope 重算 expected target，再验证 expected/actual 完全相等。每个 `reviewEvidenceId` 必须对应一份通过机器 validator 的真实结果。相同 production digest 和 review mode 可以复用一个 ID，但每个 expected target 仍必须单独出现在 coverage 中。

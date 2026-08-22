@@ -14,7 +14,7 @@
   ],
   "properties": {
     "schemaVersion": {
-      "const": 4
+      "const": 5
     },
     "target": {
       "type": "object",
@@ -163,6 +163,25 @@
               },
               {
                 "oneOf": [
+                  {
+                    "properties": {
+                      "id": {
+                        "const": "package-inspection"
+                      },
+                      "producer": {
+                        "const": "inspect-agent-skill"
+                      },
+                      "schema": {
+                        "const": "SkillInspectionResult"
+                      },
+                      "profile": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    }
+                  },
                   {
                     "properties": {
                       "id": {
@@ -342,6 +361,7 @@
       "properties": {
         "id": {
           "enum": [
+            "package-inspection",
             "eval-audit",
             "reference-audit",
             "source-skill-review",
@@ -371,6 +391,7 @@
         },
         "schema": {
           "enum": [
+            "SkillInspectionResult",
             "EvalAuditResult",
             "ReferenceAuditResult",
             "ReviewResult",

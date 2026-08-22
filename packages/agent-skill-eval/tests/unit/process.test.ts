@@ -4,8 +4,10 @@ import path from 'node:path'
 import process from 'node:process'
 import { describe, expect, it } from 'vitest'
 import {
+  observeProcessTree,
   ProviderProcessCleanupError,
   runProviderProcess,
+  terminateProcessTree,
   type ProcessLifecycleHooks,
 } from '../../dist/index.js'
 
@@ -111,6 +113,44 @@ describe('managed provider containment gate', () => {
 })
 
 describe('shared provider process behavior', () => {
+  it('falls back to direct-child cleanup when optional POSIX inspection is unavailable', async () => {
+    let directChildKilled = false
+    const execFile = (
+      _command: string,
+      _args: string[],
+      _options: { timeout: number; windowsHide: boolean; maxBuffer: number },
+      callback: (error: Error | null, stdout: string) => void,
+    ): void => callback(new Error('inspection unavailable'), '')
+    const dependencies = { platform: 'linux' as const, execFile }
+    const observation = observeProcessTree(999_999, undefined, dependencies)
+
+    await expect(terminateProcessTree(
+      999_999,
+      () => { directChildKilled = true },
+      dependencies,
+      { observation, allowInspectionUnavailable: true },
+    )).resolves.toBeUndefined()
+    expect(directChildKilled).toBe(true)
+  })
+
+  it('keeps POSIX inspection failure closed when confirmed cleanup is required', async () => {
+    const execFile = (
+      _command: string,
+      _args: string[],
+      _options: { timeout: number; windowsHide: boolean; maxBuffer: number },
+      callback: (error: Error | null, stdout: string) => void,
+    ): void => callback(new Error('inspection unavailable'), '')
+    const dependencies = { platform: 'linux' as const, execFile }
+    const observation = observeProcessTree(999_999, undefined, dependencies)
+
+    await expect(terminateProcessTree(
+      999_999,
+      () => undefined,
+      dependencies,
+      { observation, requireConfirmedCleanup: true },
+    )).rejects.toThrow('POSIX process identity lookup failed')
+  })
+
   it('reports spawn errors without claiming a successful process', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'agent-skill-eval-spawn-'))
     try {

@@ -78,11 +78,9 @@ function assertBootstrapState(history) {
 
 export function bootstrapNextSteps() {
   return [
-    'Complete every required official bootstrap ref first:',
-    '  pnpm run release:bootstrap:catalog:beta -- --catalog-version <beta-version>',
-    '  pnpm run release:bootstrap:catalog:latest -- --catalog-version <stable-version>',
-    'Verify both Git refs through the Git provider, then publish the CLI version that uses Git catalog sources.',
-    'This command does not publish the CLI.',
+    'Bootstrap is an internal immutable release-plan transaction.',
+    'Use release:status, release:target, release:prepare, and release:publish for normal maintenance.',
+    'Bootstrap does not publish the CLI.',
   ];
 }
 
@@ -93,7 +91,9 @@ export async function bootstrapCatalog(argv = process.argv.slice(2), options = {
   }
   const remoteUrl = options.testRemoteUrl ?? options.remoteUrl ?? OFFICIAL_CATALOG_PUBLISH_REMOTE;
   await (options.assertReleaseWorktreeClean ?? assertReleaseWorktreeClean)();
-  await (options.runCommand ?? runCommand)('pnpm', ['run', 'release:verify:catalog']);
+  if (!options.skipVerify) {
+    await (options.runCommand ?? runCommand)('pnpm', ['run', 'release:verify:catalog']);
+  }
   const snapshotRunner = options.withReleaseBuildSnapshot ?? withReleaseBuildSnapshot;
   return snapshotRunner(async (snapshot) => {
     const headCommit = await (options.resolveReleaseHead ?? resolveReleaseHead)();
@@ -102,10 +102,14 @@ export async function bootstrapCatalog(argv = process.argv.slice(2), options = {
       ?? assertCurrentReleaseIdentity)(
       snapshot,
       releaseIdentity,
-      { allowVersionSync: false },
+      {},
     );
     const privateStageRunner = options.withPrivateCatalogStageRoot
       ?? withPrivateCatalogStageRoot;
+    const beforeRemoteWrite = async () => {
+      await assertFresh();
+      await options.beforeRemoteWrite?.();
+    };
     return privateStageRunner(async (internalOutputRoot) => {
       await assertFresh();
       return (options.withCatalogPublicationLease ?? withCatalogPublicationLease)(
@@ -127,13 +131,14 @@ export async function bootstrapCatalog(argv = process.argv.slice(2), options = {
             previousReleaseLedger: resolveCatalogStageLedger(history),
             snapshot,
             releaseIdentity,
+            ...(options.catalogRelease ? { catalogRelease: options.catalogRelease } : {}),
           });
           assertStagedCatalogReleaseIdentity(staged, internalOutputRoot, releaseIdentity);
           await assertFresh();
           const result = await (options.publishStagedCatalog ?? publishStagedCatalog)(
             history,
             staged.outputRoot,
-            { publicationMode: 'atomic', publicationLease, beforeRemoteWrite: assertFresh },
+            { publicationMode: 'atomic', publicationLease, beforeRemoteWrite },
           );
           return { ...result, nextSteps: bootstrapNextSteps(), releaseIdentity };
         },
@@ -143,19 +148,11 @@ export async function bootstrapCatalog(argv = process.argv.slice(2), options = {
   }, options.snapshotOptions);
 }
 
-export async function main(argv = process.argv.slice(2)) {
-  try {
-    const result = await bootstrapCatalog(argv);
-    console.log(
-      `${result.idempotent ? 'Confirmed' : 'Bootstrapped'} catalog ${result.mode} at ${result.commit}.`,
-    );
-    console.log(result.nextSteps.join('\n'));
-  } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
-    process.exitCode = 1;
-  }
-}
-
 const currentEntryPath = fileURLToPath(import.meta.url);
 const invokedPath = process.argv[1] ? path.resolve(process.argv[1]) : null;
-if (invokedPath === currentEntryPath) await main();
+if (invokedPath === currentEntryPath) {
+  process.stderr.write(
+    'Direct release helper execution is disabled. Use `pnpm release:publish` or `pnpm release:recover`.\n',
+  );
+  process.exitCode = 1;
+}

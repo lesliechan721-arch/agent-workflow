@@ -38,7 +38,7 @@ export function parseArgs(argv) {
 export async function promoteCatalog(argv = process.argv.slice(2), options = {}) {
   const { mode, catalogVersion } = parseArgs(argv);
   const assertClean = options.assertReleaseWorktreeClean ?? assertReleaseWorktreeClean;
-  await assertClean({ allowVersionSync: true });
+  await assertClean();
   const currentCliVersion = await (options.resolvePublishedCliVersion
     ?? resolvePublishedCliVersion)(mode);
   const remoteUrl = options.remoteUrl ?? OFFICIAL_CATALOG_PUBLISH_REMOTE;
@@ -50,26 +50,21 @@ export async function promoteCatalog(argv = process.argv.slice(2), options = {})
       currentCliVersion,
       remoteUrl,
       publicationLease,
-      beforeRemoteWrite: () => assertClean({ allowVersionSync: true }),
+      beforeRemoteWrite: assertClean,
       ...(options.catalogModules ? { catalogModules: options.catalogModules } : {}),
     }),
     {
       ...options.publisherOptions,
-      beforeAcquire: () => assertClean({ allowVersionSync: true }),
+      beforeAcquire: assertClean,
     },
   );
 }
 
-export async function main(argv = process.argv.slice(2)) {
-  try {
-    const result = await promoteCatalog(argv);
-    console.log(`Promoted catalog ${result.mode} channel to ${result.commit}.`);
-  } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
-    process.exitCode = 1;
-  }
-}
-
 const currentEntryPath = fileURLToPath(import.meta.url);
 const invokedPath = process.argv[1] ? path.resolve(process.argv[1]) : null;
-if (invokedPath === currentEntryPath) await main();
+if (invokedPath === currentEntryPath) {
+  process.stderr.write(
+    'Direct release helper execution is disabled. Use `pnpm release:publish` or `pnpm release:recover`.\n',
+  );
+  process.exitCode = 1;
+}

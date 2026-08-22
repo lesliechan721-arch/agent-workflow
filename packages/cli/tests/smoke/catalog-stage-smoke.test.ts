@@ -314,10 +314,11 @@ describe('catalog stage smoke', () => {
       'plugins',
     ]);
     expect(manifest).toMatchObject({
-      schemaVersion: 3,
+      schemaVersion: 4,
       catalogVersion,
       channel: 'beta',
-      compatibility: { aw: { minVersion: '0.1.0-beta.2' } },
+      compatibility: { aw: { minVersion: '0.1.0-beta.3' } },
+      release: { state: 'published', targetVersion: '99.0.0' },
     });
     expect(manifest).not.toHaveProperty('packages');
     expect(ledger.schemaVersion).toBe(2);

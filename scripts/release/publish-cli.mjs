@@ -72,6 +72,7 @@ async function publishCliFromSnapshot(
   releaseIdentity,
   assertFresh,
   cliPublication,
+  options = {},
 ) {
   if (releaseIdentity) assertReleaseSnapshotIdentity(snapshot, releaseIdentity);
   const snapshotPackageJsonPath = path.join(snapshot.cliPackageRoot, 'package.json');
@@ -97,7 +98,7 @@ async function publishCliFromSnapshot(
     ...gitCheckArgs,
   ];
   await assertFresh();
-  await runCommand('pnpm', publishArgs, {
+  await (options.runCommand ?? runCommand)('pnpm', publishArgs, {
     timeoutMs: RELEASE_NETWORK_TIMEOUT_MS,
     env: {
       ...process.env,
@@ -249,7 +250,7 @@ export async function withPreparedCliPublication(
   });
 }
 
-export async function prepareEvalPublication(
+async function prepareEvalPublicationCandidate(
   mode,
   publishMode,
   snapshot,
@@ -301,35 +302,61 @@ export async function prepareEvalPublication(
       resolveRegistryUrl(packageJsonPath, process.env),
       (options.computePackageTarballTreeDigest ?? computePackageTarballTreeDigest)(tarballPath),
     ]);
-    await assertFresh();
-    await (options.runCommand ?? runCommand)('pnpm', [
-      'publish',
-      tarballPath,
-      '--ignore-scripts',
-      '--tag',
-      publishMode.tag,
-      '--registry',
-      registryUrl,
-      ...gitCheckArgs,
-    ], {
-      timeoutMs: RELEASE_NETWORK_TIMEOUT_MS,
-      env: {
-        ...process.env,
-        AW_RELEASE_NPM_REGISTRY_URL: registryUrl,
-        npm_config_registry: registryUrl,
-        NPM_CONFIG_REGISTRY: registryUrl,
-      },
-    });
     return {
-      status: 'published',
+      status: 'publish',
       mode,
       version: expectedVersion,
+      tarballPath,
+      registryUrl,
+      gitCheckArgs,
       candidateTreeDigest,
       generationId: snapshot.generationId,
       outputDigest: snapshot.outputDigest,
       inputDigest: snapshot.inputDigest,
     };
   });
+}
+
+export async function publishPreparedEvalPublication(publication, assertFresh, options = {}) {
+  if (publication.status === 'already-published') return publication;
+  if (publication.status !== 'publish') throw new Error('Bound shared Eval publication candidate is invalid.');
+  await assertFresh();
+  await options.beforeNpmWrite?.('@lesliechan721/agent-skill-eval');
+  await (options.runCommand ?? runCommand)('pnpm', [
+    'publish', publication.tarballPath, '--ignore-scripts', '--tag', publication.mode,
+    '--registry', publication.registryUrl, ...publication.gitCheckArgs,
+  ], {
+    timeoutMs: RELEASE_NETWORK_TIMEOUT_MS,
+    env: {
+      ...process.env,
+      AW_RELEASE_NPM_REGISTRY_URL: publication.registryUrl,
+      npm_config_registry: publication.registryUrl,
+      NPM_CONFIG_REGISTRY: publication.registryUrl,
+    },
+  });
+  return { ...publication, status: 'published' };
+}
+
+export async function withPreparedEvalPublication(
+  mode, publishMode, snapshot, expectedVersion, assertFresh, callback, options = {},
+) {
+  return (options.withPrivateEvalTarball ?? withPrivateEvalTarball)(snapshot, async (tarballPath) => {
+    const publication = await prepareEvalPublicationCandidate(
+      mode, publishMode, snapshot, expectedVersion, assertFresh,
+      { ...options, withPrivateEvalTarball: async (_snapshot, consume) => consume(tarballPath) },
+    );
+    return callback(publication);
+  });
+}
+
+export async function prepareEvalPublication(
+  mode, publishMode, snapshot, expectedVersion, assertFresh, options = {},
+) {
+  return withPreparedEvalPublication(
+    mode, publishMode, snapshot, expectedVersion, assertFresh,
+    (publication) => publishPreparedEvalPublication(publication, assertFresh, options),
+    options,
+  );
 }
 
 export async function publishCli(argv = process.argv.slice(2), options = {}) {
@@ -339,7 +366,7 @@ export async function publishCli(argv = process.argv.slice(2), options = {}) {
       `CLI version mismatch: expected ${options.expectedVersion}, received ${cliVersion} from --cli-version.`,
     );
   }
-  const currentVersion = String((await readCliPackageJson()).version);
+  const currentVersion = String((await (options.readCliPackageJson ?? readCliPackageJson)()).version);
   if (currentVersion !== cliVersion) {
     throw new Error(
       `CLI version mismatch: expected ${cliVersion}, found ${currentVersion} in packages/cli/package.json.`,
@@ -358,28 +385,34 @@ export async function publishCli(argv = process.argv.slice(2), options = {}) {
       ?? assertCurrentReleaseIdentity)(
       snapshot,
       releaseIdentity,
-      { allowVersionSync: true },
+      {},
     );
     const publishUnderLease = async (publicationLease) => {
       const publishedVersion = publicationLease && options.publishedVersion !== undefined
         ? options.publishedVersion
         : await (options.resolvePublishedCliVersion ?? resolvePublishedCliVersion)(mode);
-      const gate = {
-        ...resolveCliPublicationGate({
-          mode,
-          candidateVersion: expectedVersion,
-          publishedVersion,
-          ...(options.compareSemVer ? { compare: options.compareSemVer } : {}),
-        }),
-        publishedVersion,
-      };
+      if (publishedVersion === null && mode !== 'latest') {
+        throw new Error('An empty published CLI baseline is valid only for the committed first stable release.');
+      }
+      const gate = publishedVersion === null
+        ? { status: 'publish', version: expectedVersion, publishedVersion }
+        : {
+            ...resolveCliPublicationGate({
+              mode,
+              candidateVersion: expectedVersion,
+              publishedVersion,
+              ...(options.compareSemVer ? { compare: options.compareSemVer } : {}),
+            }),
+            publishedVersion,
+          };
       let gitCheckArgs;
       const prepareToPublish = async () => {
         if (gitCheckArgs) return gitCheckArgs;
         if (!options.skipVerify) {
-          await runCommand('pnpm', ['run', 'release:verify:cli']);
+          await (options.runCommand ?? runCommand)('pnpm', ['run', 'release:verify:cli']);
         }
-        gitCheckArgs = await resolveCliPublishGitCheckArgs();
+        gitCheckArgs = await (options.resolveCliPublishGitCheckArgs
+          ?? resolveCliPublishGitCheckArgs)();
         return gitCheckArgs;
       };
       const publishPreparedCandidate = async (cliPublication) => {
@@ -398,6 +431,7 @@ export async function publishCli(argv = process.argv.slice(2), options = {}) {
             ...(options.assertPublishedPackageTarballMatchesCandidate
               ? { assertPublishedPackageTarballMatchesCandidate: options.assertPublishedPackageTarballMatchesCandidate }
               : {}),
+            ...(options.beforeNpmWrite ? { beforeNpmWrite: options.beforeNpmWrite } : {}),
           },
         );
         if (
@@ -420,6 +454,7 @@ export async function publishCli(argv = process.argv.slice(2), options = {}) {
           };
         }
         await prepareToPublish();
+        await options.beforeNpmWrite?.('@lesliechan721/aw');
         const cli = await publishCliFromSnapshot(
           mode,
           publishMode,
@@ -429,6 +464,7 @@ export async function publishCli(argv = process.argv.slice(2), options = {}) {
           releaseIdentity,
           assertFresh,
           cliPublication,
+          options,
         );
         return { ...cli, cliPublication, evalPackage };
       };
@@ -463,28 +499,11 @@ export async function publishCli(argv = process.argv.slice(2), options = {}) {
   }, options.snapshotOptions);
 }
 
-export async function main(argv = process.argv.slice(2)) {
-  try {
-    const result = await publishCli(argv);
-    if (result.status === 'already-published') {
-      console.log(
-        `CLI @lesliechan721/aw@${result.version} is already published with tag ${result.mode}; publication was skipped.`,
-      );
-      return;
-    }
-    const { mode, version, generationId } = result;
-    console.log(
-      `Published CLI @lesliechan721/aw@${version} with tag ${mode} from build generation ${generationId}.`,
-    );
-  } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
-    process.exitCode = 1;
-  }
-}
-
 const currentEntryPath = fileURLToPath(import.meta.url);
 const invokedPath = process.argv[1] ? path.resolve(process.argv[1]) : null;
-
 if (invokedPath === currentEntryPath) {
-  await main();
+  process.stderr.write(
+    'Direct release helper execution is disabled. Use `pnpm release:publish` or `pnpm release:recover`.\n',
+  );
+  process.exitCode = 1;
 }
