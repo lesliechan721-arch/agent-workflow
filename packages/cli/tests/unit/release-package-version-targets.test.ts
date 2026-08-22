@@ -67,7 +67,7 @@ describe('public package version target gate', () => {
   });
 
   it('exposes only plan release commands and one explicit recovery command', async () => {
-    // Static contract exception: package and Make are the public maintainer command discovery surfaces; behavior tests cannot prove that removed command names are absent from those registries.
+    // Static contract exception: package and Make are the public maintainer command discovery surfaces; behavior test is not suitable because no runtime entry can prove that removed command names are absent from those registries.
     const [makefile, packageRaw] = await Promise.all([
       fs.readFile(path.join(workspaceRoot, 'Makefile'), 'utf8'),
       fs.readFile(path.join(workspaceRoot, 'package.json'), 'utf8'),

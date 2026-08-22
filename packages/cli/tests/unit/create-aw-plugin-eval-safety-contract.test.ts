@@ -13,7 +13,7 @@ const repoRoot = path.resolve(
 );
 
 describe('create-aw-plugin real-model eval safety contract', () => {
-  // Static contract exception: an author agent could start an unmanaged model process without informed consent; runtime tests cover the CLI gate, but these structured invariants are consumed by author agents before invoking it.
+  // Static contract exception: an author agent could start an unmanaged model process without informed consent; behavior test is not suitable because author agents consume these structured invariants before invoking the runtime CLI gate.
   it('keeps the root and adapter Full Access consent policy synchronized', async () => {
     const policyPaths = [
       path.join(repoRoot, '.agents', 'skills', 'create-aw-plugin', 'references', 'skill-evaluation.md'),

@@ -15,7 +15,7 @@ import {
   computeSkillDigest,
   getRuntimeCapabilities,
 } from '@lesliechan721/agent-skill-eval';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   readSourceRevision,
@@ -304,7 +304,12 @@ async function writeCommandPlugin(
   }, { spaces: 2 });
 }
 
+beforeEach(() => {
+  vi.stubEnv('CODEX_PERMISSION_PROFILE', undefined);
+});
+
 afterEach(async () => {
+  vi.unstubAllEnvs();
   await Promise.all(tempDirs.splice(0).map((dir) => fs.remove(dir)));
 });
 

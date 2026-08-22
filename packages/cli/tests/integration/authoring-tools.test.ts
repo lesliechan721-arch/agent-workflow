@@ -568,7 +568,7 @@ describe('authoring tools', () => {
     await expect(fs.readFile(
       path.join(tempRepo, 'plugins', 'repo-check', 'skills', 'repo-check', 'README.md'),
       'utf8',
-    // Static contract exception: the generated production README must not point users to excluded author-only Eval files; behavior testing is not suitable because the README text is the published artifact.
+    // Static contract exception: the generated production README must not point users to excluded author-only Eval files; behavior test is not suitable because the README text is the published artifact.
     )).resolves.not.toContain('evals/');
     await expect(
       fs.pathExists(path.join(tempRepo, 'plugins', 'repo-check', 'skills', 'repo-check', 'SKILL.md')),
