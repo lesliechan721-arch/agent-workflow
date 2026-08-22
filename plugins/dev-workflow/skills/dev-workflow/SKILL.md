@@ -37,14 +37,20 @@ docs/dev/<task-slug>/
 
 ## 4. 处理 Review 循环
 
-- Spec Review 为 `blocked`：先解决材料决定、补充证据或修订 Spec，再重新运行 `dev-review-spec`。只有最新 Spec Review 为 `clean` 才进入批准。
-- Code Review 为 `blocked`：实现问题交给 `dev-implement`；Spec 问题先修订并重新完成 Spec Review 和批准。任何代码变化完成后重新运行 `dev-review-code`。
+- 初次 Review 应一次列出当前目标和证据支持的全部 blocker；偏好性改进和没有材料影响的更优写法不进入交付门槛。
+- 修复范围只包含当前 blocker、解决它们必需的影响面，以及修复直接引入的 regression。
+- 一轮自动修复是 `blocked Review → 修复 → 完整复审`。Fast 不自动循环；Standard 最多两轮；Assured 最多三轮。
+- Standard Code Review 默认由一个 fresh reviewer 覆盖两个审查轴；Assured 或用户明确要求时，由两个 fresh reviewer 分轴完成。
+- 复审必须与上一份报告比较。blocker 实质减少或影响下降为 `advancing`；同一 blocker 无新证据重复、没有实质减少，或新增 blocker 不能归因为 `repair-regression`、`previously-hidden` 或 `critical-omission` 时为 `stalled`；修复引入更严重问题时为 `regressed`。
+- `stalled`、`regressed`、自动修复预算用尽，或 reviewer 对核心标准持续冲突时，停止自动修复，不再进入实现。请求用户选择重新设计、缩小范围、补充证据、更换 reviewer、接受剩余风险、明确授权额外一轮或停止任务。
+- Spec Review 为 `blocked` 且仍可继续：先解决材料决定、补充证据或修订 Spec，再重新运行 `dev-review-spec`。只有最新 Spec Review 为 `clean` 才进入批准。
+- Code Review 为 `blocked` 且仍可继续：实现问题交给 `dev-implement`；Spec 问题先修订并重新完成 Spec Review 和批准。任何代码变化完成后重新运行 `dev-review-code`。
 - Review 为 `incomplete`：补足独立 reviewer、稳定目标或必要证据后重试本次 Review。
-- 循环在 Review 为 `clean`、用户停止、出现未决材料决定或缺少高风险授权时结束。
+- 循环在 Review 为 `clean`、用户停止、出现未决材料决定、缺少高风险授权或触发修复升级时结束。
 
 ## 5. 人类检查点
 
-只在材料决定、Prototype 反馈、Spec 批准和高风险动作授权处暂停。用户原始请求已经授权后续非人类阶段时，可以在检查点之间继续推进。
+只在材料决定、Prototype 反馈、Spec 批准、高风险动作授权和修复升级处暂停。用户原始请求已经授权后续非人类阶段时，可以在其它检查点之间继续推进。
 
 ## 输出
 
@@ -52,9 +58,9 @@ docs/dev/<task-slug>/
 保障等级：Fast / Standard / Assured
 当前阶段：<阶段>
 任务目录：<路径 / 无>
-下一能力：<Skill>
+下一能力：<Skill / 无>
 原因：<关键缺口或风险>
-人类检查点：<无 / 材料决定 / 原型反馈 / Spec 批准 / 高风险授权>
+人类检查点：<无 / 材料决定 / 原型反馈 / Spec 批准 / 高风险授权 / 修复升级>
 ```
 
-选择能力后加载并执行它，而不是只返回能力清单。
+选择能力后加载并执行它。触发修复升级时不再加载实现或复审能力，只报告当前阻塞和用户可选动作。
