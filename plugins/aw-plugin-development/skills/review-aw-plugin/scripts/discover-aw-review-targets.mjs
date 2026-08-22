@@ -14,7 +14,7 @@ function usage() {
   return [
     'Usage: discover-aw-review-targets.mjs <plugin-root> [options]',
     '  --final <profile=path>   Add one materialized Skill collection.',
-    '  --output-root <path>     Persist Inspector JSON files for downstream review.',
+    '  --output-root <path>     Persist machine-check JSON files for downstream review.',
     '  --format <json|text>',
   ].join('\n');
 }
@@ -68,8 +68,8 @@ async function skillRoots(root) {
 }
 
 async function inspect(root, rootKind, profile, outputPath) {
-  const inspector = path.join(scriptRoot, 'inspect-agent-skill.mjs');
-  const args = [inspector, root, '--root-kind', rootKind, '--format', 'json'];
+  const checker = path.join(scriptRoot, 'check-agent-skill.mjs');
+  const args = [checker, root, '--root-kind', rootKind, '--format', 'json'];
   if (profile !== null) args.push('--profile', profile);
   if (outputPath) args.push('--output', outputPath);
   try {
@@ -93,7 +93,13 @@ async function main() {
   const skillsRoot = typeof manifest.skills === 'string'
     ? path.resolve(options.pluginRoot, manifest.skills)
     : path.join(options.pluginRoot, 'skills');
-  const collections = [{ kind: 'aw-plugin-skill', profile: null, root: skillsRoot }];
+  const requiresBuild = manifest.scripts?.node?.build !== undefined;
+  if (requiresBuild && options.finals.length === 0) {
+    throw new Error('Plugins with scripts.node.build require at least one materialized --final collection.');
+  }
+  const collections = requiresBuild
+    ? []
+    : [{ kind: 'aw-plugin-skill', profile: null, root: skillsRoot }];
   const profiles = new Set();
   for (const entry of options.finals) {
     if (profiles.has(entry.profile)) throw new Error('Duplicate --final profile: ' + entry.profile);
@@ -117,8 +123,8 @@ async function main() {
       const id = [collection.kind, inspection.target.name, collection.profile ?? 'source'].join(':');
       if (slots.has(id)) throw new Error('Duplicate review target: ' + id);
       slots.add(id);
-      const errors = inspection.issues.filter((issue) => issue.severity === 'error');
-      const warnings = inspection.issues.filter((issue) => issue.severity === 'warning');
+      const errors = inspection.errors;
+      const warnings = inspection.warnings;
       targets.push({
         id,
         kind: collection.kind,
@@ -128,7 +134,7 @@ async function main() {
         digest: inspection.target.digest,
         machineCheck: {
           ok: errors.length === 0,
-          errors: errors.map((issue) => ({ code: issue.code, path: issue.path ?? null, message: issue.message })),
+          errors,
           warningCount: warnings.length,
         },
         inspectionPath,

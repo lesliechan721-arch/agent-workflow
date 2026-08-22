@@ -1,6 +1,6 @@
 {
   "name": "@lesliechan721/aw",
-  "version": "0.1.0-beta.2",
+  "version": "0.1.0",
   "type": "module",
   "packageManager": "pnpm@10.33.0",
   "engines": {
@@ -35,7 +35,8 @@
     "plugin:eval": "tsc -p tsconfig.json && node dist/scripts/eval-plugin-skills.js",
     "review:publish": "tsc -p tsconfig.json && node dist/scripts/publish-skill-review.js",
     "test:smoke:plugin-scripts": "vitest run --config vitest.smoke.config.ts tests/smoke/plugin-scripts-staging-smoke.test.ts",
-    "prepack": "pnpm --dir ../.. build:ensure"
+    "prepack": "pnpm --dir ../.. build:ensure",
+    "prepublishOnly": "node ../../scripts/release/reject-direct-publish.mjs"
   },
   "dependencies": {
     "@inkjs/ui": "^2.0.0",

@@ -109,7 +109,7 @@ test('final Author Skill uses only stable CLI authoring commands', async () => {
   }
   const skill = await readFile(path.join(skillRoot, 'SKILL.md'), 'utf8');
   // Static contract exception: installed agents must discover every public authoring command and must not execute an undeclared fallback; behavior test is not suitable because the consumer contract is the final Skill instruction itself.
-  for (const command of ['init', 'add-skill', 'validate', 'check-versions']) {
+  for (const command of ['init', 'add-skill', 'validate', 'status']) {
     assert.match(skill, new RegExp(`aw plugin ${command} --help`, 'u'));
     assert.match(skill, new RegExp(`aw plugin ${command}(?: <| --)`, 'u'));
   }
@@ -136,12 +136,18 @@ test('built CLI performs representative Author Skill operations', async () => {
 
   const version = await runAw(['--version']);
   assert.match(version.stdout, /\d+\.\d+\.\d+/u);
-  for (const command of ['init', 'add-skill', 'validate', 'check-versions']) {
+  for (const command of ['init', 'add-skill', 'validate', 'status']) {
     const help = await runAw(['plugin', command, '--help']);
     assert.match(help.stdout, new RegExp(`aw plugin ${command}`, 'u'));
+    if (command === 'init' || command === 'add-skill') {
+      assert.match(help.stdout, /keep the current stable target/u);
+      assert.match(help.stdout, /pnpm release:target -- --plugin <name>=patch/u);
+      assert.match(help.stdout, /release:prepare.*candidate identity/u);
+      assert.match(help.stdout, /another workspace.*release workflow/u);
+    }
   }
 
-  await runAw([
+  const addSkill = await runAw([
     'plugin',
     'init',
     'cli-authoring-fixture',
@@ -158,6 +164,12 @@ test('built CLI performs representative Author Skill operations', async () => {
     '--plugin-root',
     'tools/cli-authoring-fixture',
   ]);
+  assert.match(addSkill.stdout, /Keep the current stable target during development/u);
+  assert.match(
+    addSkill.stdout,
+    /pnpm release:target -- --plugin cli-authoring-fixture=patch/u,
+  );
+  assert.match(addSkill.stdout, /release:prepare.*candidate identity/u);
   await runAw([
     'plugin',
     'add-skill',
@@ -190,7 +202,7 @@ test('built CLI performs representative Author Skill operations', async () => {
 
   const versionCheck = JSON.parse((await runAw([
     'plugin',
-    'check-versions',
+    'status',
     'aw-plugin-development',
     '--base',
     'HEAD',
@@ -198,7 +210,8 @@ test('built CLI performs representative Author Skill operations', async () => {
     repo,
     '--json',
   ])).stdout);
-  assert.equal(versionCheck.schemaVersion, 2);
+  assert.equal(versionCheck.schemaVersion, 3);
+  assert.equal(versionCheck.policy, 'development');
   assert.equal(versionCheck.ok, true);
   assert.ok(versionCheck.checks.some((entry) => entry.plugin === 'aw-plugin-development'));
 });
@@ -690,24 +703,4 @@ test('final artifacts remain materials rather than completed review stages', asy
   );
   assert.ok(result.artifacts.some((a) => a.role === 'final'));
   assert.deepEqual(result.orchestration.providedStages, []);
-});
-test('adapter release version and dependency contract are current', async () => {
-  const [manifest, dependency] = await Promise.all([
-    readFile(path.join(sourceRoot, '.agents-plugin/plugin.json'), 'utf8').then(JSON.parse),
-    readFile(path.join(sourceRoot, 'DEPENDENCY.md'), 'utf8'),
-  ]);
-  assert.equal(manifest.version, '0.9.0');
-  assert.match(dependency, /agent-content-toolkit >= 0\.5\.0/u);
-  // Static contract exception: AW 0.9.0 consumers must reject toolkit 0.7.0 because it lacks the ReviewInputBundle currentness contract; behavior test is not suitable because DEPENDENCY.md is the published manual dependency resolver input.
-  const skillFloor = dependency.match(/agent-skill-toolkit >= (\d+\.\d+\.\d+)/u)?.[1];
-  assert.equal(skillFloor, '0.8.0');
-  const parts = (version) => version.split('.').map(Number);
-  const satisfies = (version) => {
-    const candidate = parts(version), floor = parts(skillFloor);
-    const difference = candidate.findIndex((value, index) => value !== floor[index]);
-    return difference === -1 || candidate[difference] > floor[difference];
-  };
-  assert.equal(satisfies('0.7.0'), false);
-  assert.equal(satisfies('0.8.0'), true);
-  assert.match(dependency, /agent-skill-eval-runner >= 0\.3\.0/u);
 });

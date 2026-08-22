@@ -2,7 +2,7 @@
 name: review-agent-skill
 description: >-
   当用户明确要求只读审核已有 Agent Skill 包、草稿、修订版，或由多个 Skill、runner 和合同组成的 Skill 工作流/插件方案的设计质量、复杂度、触发、资源或 Eval 证据时使用。输出简洁的人类可读结论和最小改进集；不修改目标，不承担项目专有物化、发布认证或报告发布。项目适配器可以显式把本 Skill 作为叶子能力调用。
-compatibility: 机器包检查和可选结构化结果需要 Node.js 20+；独立 Agent-facing 内容和 reference 审计需要已安装 agent-content-toolkit >= 0.5.0。
+compatibility: 机器包检查和可选结构化结果需要 Node.js 20+；独立 Agent-facing 内容和 reference 审计需要已安装 agent-content-toolkit >= 0.1.0。
 metadata:
   short-description: 轻量只读评审 Agent Skill 及其端到端组合的价值、边界与最小控制
 ---

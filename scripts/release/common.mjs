@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { isDeepStrictEqual, promisify } from 'node:util';
+import { promisify } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { gunzip } from 'node:zlib';
 
@@ -20,11 +20,13 @@ const semverPattern =
 export const RELEASE_NETWORK_TIMEOUT_MS = 2 * 60 * 1000;
 const gunzipAsync = promisify(gunzip);
 const MAX_PACKAGE_TREE_BYTES = 128 * 1024 * 1024;
+const CLI_PACKAGE_NAME = '@lesliechan721/aw';
+const EVAL_PACKAGE_NAME = '@lesliechan721/agent-skill-eval';
+const RELEASE_VERSION_SENTINEL = '0.0.0';
 
 export const repoRoot = path.resolve(scriptDir, '..', '..');
 export const releaseRoot = path.join(repoRoot, '.release');
 export const tarballDir = path.join(releaseRoot, 'tarballs');
-export const rootPackageJsonPath = path.join(repoRoot, 'package.json');
 export const evalPackageJsonPath = path.join(repoRoot, 'packages', 'agent-skill-eval', 'package.json');
 export const evalPackageRoot = path.join(repoRoot, 'packages', 'agent-skill-eval');
 export const cliPackageJsonPath = path.join(repoRoot, 'packages', 'cli', 'package.json');
@@ -139,32 +141,6 @@ export async function writePackageJson(packageJsonPath, contents) {
 
 export async function readCliPackageJson() {
   return readPackageJson(cliPackageJsonPath);
-}
-
-export async function readEvalPackageJson() {
-  return readPackageJson(evalPackageJsonPath);
-}
-
-export async function syncCliVersion(version) {
-  assertValidVersion(version);
-
-  const [rootPackageJson, evalPackageJson, cliPackageJson] = await Promise.all([
-    readPackageJson(rootPackageJsonPath),
-    readPackageJson(evalPackageJsonPath),
-    readPackageJson(cliPackageJsonPath),
-  ]);
-
-  rootPackageJson.version = version;
-  evalPackageJson.version = version;
-  cliPackageJson.version = version;
-
-  await Promise.all([
-    writePackageJson(rootPackageJsonPath, rootPackageJson),
-    writePackageJson(evalPackageJsonPath, evalPackageJson),
-    writePackageJson(cliPackageJsonPath, cliPackageJson),
-  ]);
-
-  return version;
 }
 
 export async function runCommand(command, args, options = {}) {
@@ -473,7 +449,7 @@ function updateDigestField(hash, value) {
   hash.update(contents);
 }
 
-export async function computePackageTarballTreeDigest(tarballPath) {
+export async function computePackageTarballTreeDigest(tarballPath, options = {}) {
   const compressed = await fs.readFile(tarballPath);
   const archive = await gunzipAsync(compressed, { maxOutputLength: MAX_PACKAGE_TREE_BYTES });
   const entries = new Map();
@@ -482,6 +458,7 @@ export async function computePackageTarballTreeDigest(tarballPath) {
   let globalPax = {};
   let longPath;
   let longLink;
+  let normalizedReleasePackage = false;
 
   while (offset + 512 <= archive.length) {
     const header = archive.subarray(offset, offset + 512);
@@ -527,14 +504,45 @@ export async function computePackageTarballTreeDigest(tarballPath) {
       throw new Error(`Package tarball contains duplicate path ${JSON.stringify(relativePath)}.`);
     }
     const mode = readTarOctal(header, 100, 8, 'mode') & 0o777;
+    let normalizedContents = type === '2' ? Buffer.from(linkPath) : Buffer.from(contents);
+    if (relativePath === 'package.json' && options.normalizeReleaseMetadata) {
+      let packageJson;
+      try {
+        packageJson = JSON.parse(normalizedContents.toString('utf8'));
+      } catch (error) {
+        throw new Error('Package tarball package.json is invalid JSON.', { cause: error });
+      }
+      if (packageJson.name !== CLI_PACKAGE_NAME && packageJson.name !== EVAL_PACKAGE_NAME) {
+        throw new Error(`Unsupported release package ${JSON.stringify(packageJson.name)}.`);
+      }
+      assertValidVersion(packageJson.version);
+      const trainDependency = packageJson.dependencies?.[EVAL_PACKAGE_NAME];
+      if (packageJson.name === CLI_PACKAGE_NAME) {
+        if (trainDependency !== packageJson.version) {
+          throw new Error(
+            `Packed ${CLI_PACKAGE_NAME} must depend on ${EVAL_PACKAGE_NAME}@${packageJson.version}.`,
+          );
+        }
+        packageJson.dependencies[EVAL_PACKAGE_NAME] = RELEASE_VERSION_SENTINEL;
+      } else if (trainDependency !== undefined) {
+        throw new Error(`Packed ${EVAL_PACKAGE_NAME} must not depend on itself.`);
+      }
+      packageJson.version = RELEASE_VERSION_SENTINEL;
+      delete packageJson.awRelease;
+      normalizedContents = Buffer.from(`${JSON.stringify(packageJson, null, 2)}\n`);
+      normalizedReleasePackage = true;
+    }
     entries.set(relativePath, {
       type: type === '2' ? 'symlink' : 'file',
       mode,
-      contents: type === '2' ? Buffer.from(linkPath) : Buffer.from(contents),
+      contents: normalizedContents,
     });
   }
 
   if (entries.size === 0) throw new Error('Package tarball contains no production files.');
+  if (options.normalizeReleaseMetadata && !normalizedReleasePackage) {
+    throw new Error('Release package tarball is missing package.json.');
+  }
   const hash = crypto.createHash('sha256');
   for (const [relativePath, entry] of [...entries].sort(([left], [right]) => left.localeCompare(right))) {
     updateDigestField(hash, relativePath);
@@ -543,6 +551,10 @@ export async function computePackageTarballTreeDigest(tarballPath) {
     updateDigestField(hash, entry.contents);
   }
   return `sha256:${hash.digest('hex')}`;
+}
+
+export function computeReleasePackageContentDigest(tarballPath) {
+  return computePackageTarballTreeDigest(tarballPath, { normalizeReleaseMetadata: true });
 }
 
 export async function downloadExactPackageTarball(
@@ -650,6 +662,7 @@ async function resolveReleaseDirtyEntries(options = {}) {
 }
 
 const RELEASE_INPUT_PATHS = [
+  'release/version-targets.json',
   'package.json',
   'pnpm-lock.yaml',
   'pnpm-workspace.yaml',
@@ -746,97 +759,27 @@ async function assertReleaseInputIndexFlagsSafe(options = {}) {
   }
 }
 
-function parseVersionSyncManifest(contents, relativePath, source) {
-  let manifest;
-  try {
-    manifest = JSON.parse(contents);
-  } catch (error) {
-    throw new Error(`Combined release ${relativePath} ${source} is not valid JSON.`, {
-      cause: error,
-    });
-  }
-  if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) {
-    throw new Error(`Combined release ${relativePath} ${source} must be a JSON object.`);
-  }
-  return manifest;
-}
-
-async function assertVersionSyncManifestEntry(entry, options = {}) {
-  if (entry.status !== ' M') {
-    throw new Error(
-      `Combined release ${entry.path} must be an unstaged regular-file modification from HEAD.`,
-    );
-  }
-  const cwd = options.cwd ?? repoRoot;
-  const manifestPath = path.join(cwd, entry.path);
-  const stats = await fs.lstat(manifestPath);
-  if (stats.isSymbolicLink() || !stats.isFile()) {
-    throw new Error(
-      `Combined release ${entry.path} must be an unstaged regular-file modification from HEAD.`,
-    );
-  }
-  const [{ stdout: headContents }, currentContents] = await Promise.all([
-    runReleaseGit(['show', `HEAD:${entry.path}`], { ...options, cwd }),
-    fs.readFile(manifestPath, 'utf8'),
-  ]);
-  const headManifest = parseVersionSyncManifest(headContents, entry.path, 'HEAD manifest');
-  const currentManifest = parseVersionSyncManifest(currentContents, entry.path, 'worktree manifest');
-  const { version: headVersion, ...headRest } = headManifest;
-  const { version: currentVersion, ...currentRest } = currentManifest;
-  if (
-    typeof headVersion !== 'string'
-    || typeof currentVersion !== 'string'
-    || headVersion === currentVersion
-    || !isDeepStrictEqual(headRest, currentRest)
-  ) {
-    throw new Error(
-      `Combined release ${entry.path} may change only the top-level version value relative to HEAD.`,
-    );
-  }
-  assertValidVersion(currentVersion);
-}
-
 export async function assertReleaseWorktreeClean(options = {}) {
   await assertBuildInputPathSafety(options.cwd ?? repoRoot);
   await assertReleaseInputIndexFlagsSafe(options);
-  const allowedDirtyPaths = new Set(options.allowVersionSync
-    ? [
-      relativeToRepo(rootPackageJsonPath),
-      relativeToRepo(evalPackageJsonPath),
-      relativeToRepo(cliPackageJsonPath),
-    ]
-    : []);
   const dirtyEntries = await resolveReleaseDirtyEntries(options);
   const dirtyPaths = dirtyEntries.map((entry) => entry.path);
   const ignoredInputs = await resolveIgnoredReleaseInputs(options);
-  const unexpectedDirtyPaths = [
-    ...dirtyPaths.filter((entryPath) => !allowedDirtyPaths.has(entryPath)),
-    ...ignoredInputs,
-  ];
+  const unexpectedDirtyPaths = [...dirtyPaths, ...ignoredInputs];
 
   if (unexpectedDirtyPaths.length > 0) {
-    const allowedPathsText = allowedDirtyPaths.size > 0
-      ? ` Only ${Array.from(allowedDirtyPaths).join(', ')} may be modified by the version sync step.`
-      : '';
     const unexpectedChanges = unexpectedDirtyPaths.map((path) => `- ${path}`).join('\n');
     throw new Error(
-      `Refusing to publish from a dirty working tree.${allowedPathsText}\nUnexpected changes:\n${unexpectedChanges}`,
+      `Refusing to publish from a dirty working tree.\nUnexpected changes:\n${unexpectedChanges}`,
     );
-  }
-
-  if (options.allowVersionSync) {
-    for (const entry of dirtyEntries) {
-      await assertVersionSyncManifestEntry(entry, options);
-    }
   }
 
   return dirtyPaths;
 }
 
 export async function resolveCliPublishGitCheckArgs() {
-  const dirtyPaths = await assertReleaseWorktreeClean({ allowVersionSync: true });
-
-  return dirtyPaths.length > 0 ? ['--no-git-checks'] : [];
+  await assertReleaseWorktreeClean();
+  return [];
 }
 
 export async function ensureDirectory(directoryPath) {
@@ -1023,43 +966,52 @@ export async function findLatestTarball(directoryPath = tarballDir) {
   return tarballs[0];
 }
 
-export async function assertRepoAndCliPackageVersions() {
-  const [rootPackageJson, evalPackageJson, cliPackageJson] = await Promise.all([
-    readPackageJson(rootPackageJsonPath),
-    readPackageJson(evalPackageJsonPath),
-    readPackageJson(cliPackageJsonPath),
+export async function assertPublicPackageVersions(repoRootPath = repoRoot) {
+  const [rootPackageJson, targets, evalPackageJson, cliPackageJson] = await Promise.all([
+    readPackageJson(path.join(repoRootPath, 'package.json')),
+    readPackageJson(path.join(repoRootPath, 'release', 'version-targets.json')),
+    readPackageJson(path.join(repoRootPath, 'packages', 'agent-skill-eval', 'package.json')),
+    readPackageJson(path.join(repoRootPath, 'packages', 'cli', 'package.json')),
   ]);
-  const rootVersion = assertValidVersion(rootPackageJson.version);
+  if (Object.hasOwn(rootPackageJson, 'version')) {
+    throw new Error('package.json must not declare a version; release/version-targets.json is the release target source.');
+  }
+  if (!targets || typeof targets !== 'object' || Array.isArray(targets)) {
+    throw new Error('release/version-targets.json must contain an object.');
+  }
+  const targetVersion = assertValidVersion(targets.cli);
+  assertVersionKind(targetVersion, 'stable');
   const evalVersion = assertValidVersion(evalPackageJson.version);
   const cliVersion = assertValidVersion(cliPackageJson.version);
-  if (rootVersion !== cliVersion || rootVersion !== evalVersion) {
+  if (targetVersion !== cliVersion || targetVersion !== evalVersion) {
     throw new Error(
-      `Version mismatch: package.json version "${rootVersion}" must match ` +
+      `Version mismatch: release/version-targets.json cli "${targetVersion}" must match ` +
       `packages/agent-skill-eval/package.json version "${evalVersion}" and ` +
       `packages/cli/package.json version "${cliVersion}".`,
     );
   }
   return {
-    rootVersion,
+    targetVersion,
     evalVersion,
     cliVersion,
   };
 }
 
-async function packCliFromSnapshot(snapshot, destination) {
+async function packCliFromSnapshot(snapshot, destination, options = {}) {
   const targetDir = path.resolve(repoRoot, destination);
   await ensureDirectory(targetDir);
 
   return withOwnedTemporaryDirectory(
     path.join(os.tmpdir(), 'aw-cli-pack-'),
     async (packDirectory) => {
-      await runCommand('pnpm', [
+      await (options.runPackCommand ?? runCommand)('pnpm', [
         '--config.ignore-scripts=true',
         'pack',
         '--pack-destination',
         packDirectory,
       ], {
         cwd: snapshot.cliPackageRoot,
+        ...(options.quiet ? { stdio: 'ignore' } : {}),
       });
 
       const tarballs = await listTarballs(packDirectory);
@@ -1094,40 +1046,53 @@ async function packCliFromSnapshot(snapshot, destination) {
   );
 }
 
-export async function packCli({ destination = tarballDir, snapshot } = {}) {
-  await assertRepoAndCliPackageVersions();
+export async function packCli({
+  destination = tarballDir,
+  snapshot,
+  quiet = false,
+  runPackCommand,
+} = {}) {
   if (snapshot) {
-    return packCliFromSnapshot(snapshot, destination);
+    return packCliFromSnapshot(snapshot, destination, { quiet, runPackCommand });
   }
+  await assertPublicPackageVersions();
   return withBuildSnapshot(repoRoot, (ownedSnapshot) =>
-    packCliFromSnapshot(ownedSnapshot, destination)
+    packCliFromSnapshot(ownedSnapshot, destination, { quiet, runPackCommand })
   );
 }
 
-export async function withPrivateCliTarball(snapshot, callback) {
+export async function withPrivateCliTarball(snapshot, callback, options = {}) {
   return withOwnedTemporaryDirectory(
     path.join(os.tmpdir(), 'aw-cli-publish-'),
     async (privateRoot) => {
       await fs.chmod(privateRoot, 0o700);
-      const tarballPath = await packCli({ destination: privateRoot, snapshot });
+      const tarballPath = await packCli({
+        destination: privateRoot,
+        snapshot,
+        quiet: options.quiet ?? false,
+        runPackCommand: options.runPackCommand,
+      });
       return callback(tarballPath);
     },
     'Private CLI tarball cleanup also failed',
   );
 }
 
-async function packEvalFromSnapshot(snapshot, destination) {
+async function packEvalFromSnapshot(snapshot, destination, options = {}) {
   const targetDir = path.resolve(repoRoot, destination);
   await ensureDirectory(targetDir);
   return withOwnedTemporaryDirectory(
     path.join(os.tmpdir(), 'aw-skill-eval-pack-'),
     async (packDirectory) => {
-      await runCommand('pnpm', [
+      await (options.runPackCommand ?? runCommand)('pnpm', [
         '--config.ignore-scripts=true',
         'pack',
         '--pack-destination',
         packDirectory,
-      ], { cwd: snapshot.evalPackageRoot });
+      ], {
+        cwd: snapshot.evalPackageRoot,
+        ...(options.quiet ? { stdio: 'ignore' } : {}),
+      });
       const tarballs = await listTarballs(packDirectory);
       if (tarballs.length !== 1) {
         throw new Error(`Expected shared Eval pack to produce exactly one tarball, found ${tarballs.length}.`);
@@ -1143,20 +1108,30 @@ async function packEvalFromSnapshot(snapshot, destination) {
   );
 }
 
-export async function packEval({ destination = tarballDir, snapshot } = {}) {
-  await assertRepoAndCliPackageVersions();
-  if (snapshot) return packEvalFromSnapshot(snapshot, destination);
+export async function packEval({
+  destination = tarballDir,
+  snapshot,
+  quiet = false,
+  runPackCommand,
+} = {}) {
+  if (snapshot) return packEvalFromSnapshot(snapshot, destination, { quiet, runPackCommand });
+  await assertPublicPackageVersions();
   return withBuildSnapshot(repoRoot, (ownedSnapshot) =>
-    packEvalFromSnapshot(ownedSnapshot, destination)
+    packEvalFromSnapshot(ownedSnapshot, destination, { quiet, runPackCommand })
   );
 }
 
-export async function withPrivateEvalTarball(snapshot, callback) {
+export async function withPrivateEvalTarball(snapshot, callback, options = {}) {
   return withOwnedTemporaryDirectory(
     path.join(os.tmpdir(), 'aw-skill-eval-publish-'),
     async (privateRoot) => {
       await fs.chmod(privateRoot, 0o700);
-      const tarballPath = await packEval({ destination: privateRoot, snapshot });
+      const tarballPath = await packEval({
+        destination: privateRoot,
+        snapshot,
+        quiet: options.quiet ?? false,
+        runPackCommand: options.runPackCommand,
+      });
       return callback(tarballPath);
     },
     'Private shared Eval tarball cleanup also failed',
@@ -1168,6 +1143,67 @@ export async function withReleaseBuildSnapshot(callback, options = {}) {
   await assertBuildInputPathSafety(liveRoot);
   const snapshotRunner = options.withBuildSnapshot ?? withBuildSnapshot;
   return snapshotRunner(liveRoot, callback, options);
+}
+
+export async function stampReleaseCandidateSnapshot(snapshot, options) {
+  const candidateVersion = assertValidVersion(options.candidateVersion);
+  const targetVersion = assertValidVersion(options.targetVersion);
+  assertVersionKind(targetVersion, 'stable');
+  if (candidateVersion !== targetVersion && !candidateVersion.startsWith(`${targetVersion}-`)) {
+    throw new Error('Release candidate version does not belong to the stable target.');
+  }
+  const metadata = {
+    schemaVersion: 1,
+    targetVersion,
+    candidateVersion,
+    planId: options.planId,
+    sourceHead: options.sourceHead,
+    packageContentDigest: options.packageContentDigest,
+    trainContentDigest: options.trainContentDigest,
+  };
+  const { normalizeReleaseMetadata } = await import('./release-model.mjs');
+  const normalizedMetadata = normalizeReleaseMetadata(metadata);
+  const evalPackageJsonPath = path.join(snapshot.evalPackageRoot, 'package.json');
+  const cliPackageJsonPath = path.join(snapshot.cliPackageRoot, 'package.json');
+  const [evalPackageJson, cliPackageJson] = await Promise.all([
+    readPackageJson(evalPackageJsonPath),
+    readPackageJson(cliPackageJsonPath),
+  ]);
+  if (
+    evalPackageJson.name !== EVAL_PACKAGE_NAME
+    || cliPackageJson.name !== CLI_PACKAGE_NAME
+  ) {
+    throw new Error('Release snapshot package identities are invalid.');
+  }
+  if (!cliPackageJson.dependencies || typeof cliPackageJson.dependencies !== 'object') {
+    throw new Error(`Release snapshot ${CLI_PACKAGE_NAME} dependencies are invalid.`);
+  }
+  evalPackageJson.version = candidateVersion;
+  evalPackageJson.awRelease = {
+    ...normalizedMetadata,
+    packageContentDigest: options.evalPackageContentDigest ?? normalizedMetadata.packageContentDigest,
+  };
+  cliPackageJson.version = candidateVersion;
+  cliPackageJson.dependencies[EVAL_PACKAGE_NAME] = candidateVersion;
+  cliPackageJson.awRelease = {
+    ...normalizedMetadata,
+    packageContentDigest: options.cliPackageContentDigest ?? normalizedMetadata.packageContentDigest,
+  };
+  normalizeReleaseMetadata(evalPackageJson.awRelease);
+  normalizeReleaseMetadata(cliPackageJson.awRelease);
+  await Promise.all([
+    writePackageJson(evalPackageJsonPath, evalPackageJson),
+    writePackageJson(cliPackageJsonPath, cliPackageJson),
+  ]);
+  return {
+    candidateVersion,
+    evalPackageJsonPath,
+    cliPackageJsonPath,
+    metadata: {
+      eval: evalPackageJson.awRelease,
+      cli: cliPackageJson.awRelease,
+    },
+  };
 }
 
 export async function resolveReleaseHead(options = {}) {
@@ -1246,10 +1282,7 @@ export async function assertCurrentReleaseHead(identity, options = {}) {
 export async function assertCurrentReleaseIdentity(snapshot, identity, options = {}) {
   assertReleaseSnapshotIdentity(snapshot, identity);
   const liveRoot = options.repoRoot ?? repoRoot;
-  const cleanOptions = {
-    cwd: liveRoot,
-    allowVersionSync: options.allowVersionSync ?? false,
-  };
+  const cleanOptions = { cwd: liveRoot };
   const assertClean = options.assertReleaseWorktreeClean ?? assertReleaseWorktreeClean;
   await assertClean(cleanOptions);
   const [headCommit, inputDigest, cliPackageDigest] = await Promise.all([
@@ -1287,13 +1320,9 @@ export async function loadCatalogModules(compiledCliDistRoot = cliDistRoot) {
     throw new Error('Catalog release helpers require compiled CLI artifacts. Run `pnpm build` first.');
   });
 
-  const catalogModules = await Promise.all([
-    import(pathToFileURL(pluginStagingPath).href),
-    import(pathToFileURL(catalogSnapshotPath).href),
-  ]).then(([pluginStaging, catalogSnapshot]) => ({
-    pluginStaging,
-    catalogSnapshot,
-  }));
+  const pluginStaging = await import(pathToFileURL(pluginStagingPath).href);
+  const catalogSnapshot = await import(pathToFileURL(catalogSnapshotPath).href);
+  const catalogModules = { pluginStaging, catalogSnapshot };
 
   cachedCatalogModules.set(resolvedCliDistRoot, catalogModules);
   return catalogModules;

@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "repository": "example-aw-workspace",
   "plugin": "target-plugin",
   "pluginRoot": "packages/target-plugin",
@@ -37,7 +37,6 @@
   ],
   "allowedFiles": [],
   "sourceProfile": "aw-default",
-  "manifestVersionBump": null,
   "buildRequired": true,
   "validators": []
 }

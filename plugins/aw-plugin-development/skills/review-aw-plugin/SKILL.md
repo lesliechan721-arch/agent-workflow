@@ -2,7 +2,7 @@
 name: review-aw-plugin
 description: >-
   当用户要只读审核一个 AW 插件源码、materialized Skill 或发布准备状态时使用。负责 AW manifest/profile 的确定性检查、按内容 digest 组合通用 review-agent-skill，并在显式发布检查时实时重算 profile coverage；不维护通用量表，不修改插件源码，不发布报告。
-compatibility: 需要 Node.js 22+、提供 `aw plugin validate` 的已安装 AW CLI、agent-content-toolkit >= 0.5.0 和 agent-skill-toolkit >= 0.9.0。真实模型 Eval 可选使用 agent-skill-eval-runner >= 0.3.0。
+compatibility: 需要 Node.js 22+、提供 `aw plugin validate` 的已安装 AW CLI、agent-content-toolkit >= 0.1.0 和 agent-skill-toolkit >= 0.1.0。真实模型 Eval 可选使用 agent-skill-eval-runner >= 0.1.0。
 user-invocable: true
 metadata:
   short-description: 轻量只读评审 AW 插件并按需执行发布检查
@@ -24,7 +24,7 @@ metadata:
      --format json
    ```
 
-   该命令对每个 target 运行 `check-agent-skill`，并按 production digest 分组。相同 digest 只做一次模型质量评审；报告仍说明该结论覆盖哪些 source/profile target。
+   build-free 插件会检查 source 和调用方提供的 final。声明 `scripts.node.build` 的插件必须至少提供一个真实 materialized final；raw source 不代表完整 runtime，因此只检查 final。该命令对每个实际 target 运行 `check-agent-skill`，并按 production digest 分组。相同 digest 只做一次模型质量评审；报告仍说明该结论覆盖哪些 source/profile target。
 3. 对每个唯一 digest 调用通用 `review-agent-skill`。大型或多分支 reference 可以交给 fresh-context `review-agent-content`；有 Eval 时可以交给 `audit-agent-skill-evals`。fresh context 只属于运行 trace，不持久化 stageOwner、producer 或 independentContext。
 4. 输出简洁人类报告：AW 机器错误、每个唯一 Skill digest 的设计和复杂度结论、真实 source/final 差异、最多 3 个高价值改进和关键 unknowns。
 

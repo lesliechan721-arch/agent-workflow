@@ -64,10 +64,12 @@ compatibility: Requires the agent-workflows repository, Node.js 22+, and install
    - 完成条件：每个声明能力都有对应源码文件、字段和直接测试；没有修改生成目录或加入未请求能力
 5. **管理插件版本**
    - 新插件保留脚手架写入的初始稳定 version（默认 `0.1.0`）
-   - 已有插件的 production bundle 变化直接提高 `.agents-plugin/plugin.json` 中的稳定 version；按兼容性影响选择 major、minor 或 patch
-   - `aw plugin add-skill` 只创建 Skill 骨架和必要 manifest 能力字段；作者随后直接编辑 manifest version
+   - 日常开发保持 `.agents-plugin/plugin.json` 中的当前稳定目标不变；不要为每次 production bundle 变化直接改 version
+   - release train 开始时，使用 `pnpm release:target -- --plugin <name>=patch` 一次设置目标稳定版本；bump 也可选择 `major` 或 `minor`，candidate 身份由 `pnpm release:prepare` 生成
+   - workspace 正常发布只使用 `release:status`、`release:target`、`release:prepare` 和 `release:publish`；历史 `release:recover` 不是插件作者入口
+   - `aw plugin add-skill` 只创建 Skill 骨架和必要 manifest 能力字段，不修改 manifest version
    - Skill 根的直接子目录 `evals/**`、`reports/**`、插件根 `reports/**` 和 test-only 文件不进入 production bundle；更深层的同名目录、Skill README 和其它 runtime 文件进入 production bundle
-   - 完成条件：新插件保持初始稳定 version；已有插件的 production bundle 有变化时 manifest version 已提高；只有作者期材料变化时不提高版本
+   - 完成条件：日常开发保持当前稳定 target；`aw plugin status` 准确报告 production 状态；release train 需要新 target 时由 workspace release workflow 一次设置
 6. **按变更面构建**
    - 新建插件，或 manifest、README、Skill、runtime 脚本、bundle / 安装合同等 production bundle 输入变化时，运行 `pnpm build` 生成本地 staging/runtime bundle
    - 只有上述顶层作者目录或 test-only 材料变化时默认跳过 build；用户或隔离环境明确限制 build 时也不强行运行，并把对应 production artifact 列为未验证
@@ -75,7 +77,7 @@ compatibility: Requires the agent-workflows repository, Node.js 22+, and install
 7. **验证并修复**
    - 运行 `aw plugin validate plugins/<name>`
    - validator 对仓库内插件默认用 `HEAD` 运行 author 门禁；CI 或分支对比用 `--version-base <git-ref>`
-   - 需要检查全部变更插件时运行 `aw plugin check-versions --all --base <git-ref>`
+   - 需要检查全部插件的开发状态时运行 `aw plugin status --all --base <git-ref>`
    - 校验失败时按错误修复并重跑，直到通过
    - 默认 Claude profile 是 AW 最低支持版本 2.1.88；`current` profile 只用于核对当前字段，不改变 AW 的最低版本兼容门
    - 完成条件：默认 profile 通过；额外 profile 的结果与用途已区分为通过、诊断或未运行
@@ -108,7 +110,7 @@ compatibility: Requires the agent-workflows repository, Node.js 22+, and install
 
 - `.agents-plugin/plugin.json` 是唯一手动维护的 manifest；不要手写 `.claude-plugin/plugin.json` 或 `.codex-plugin/plugin.json`。
 - 插件名、skill 名使用小写短横线格式，并与目录名一致。
-- 新插件保留初始稳定 version；已有插件的 production bundle 因源码变化而改变时，必须在同一改动中直接提高 manifest version。
+- 新插件保留初始稳定 version；日常开发不直接提高 manifest version，release train 开始时统一设置稳定目标。
 - `skills`、`mcpServers`、`apps`、`slashCommands` 使用单个 `./` 相对路径，且路径必须存在。
 - 面向 Codex 的静态 skill 必须带 `agents/openai.yaml`，并显式声明 `policy.allow_implicit_invocation`。
 - Skill 的调用方式是 Skill 设计的一部分。Codex 使用 `agents/openai.yaml` 的 `policy.allow_implicit_invocation`；Claude 使用 `SKILL.md` frontmatter 的 `disable-model-invocation` 与 `user-invocable`。AW 原样保留这些字段。
@@ -126,7 +128,7 @@ aw plugin validate plugins/<name> \
   --claude-skill-profile current
 aw plugin validate plugins/<name> \
   --version-base <git-ref>
-aw plugin check-versions --all --base <git-ref>
+aw plugin status --all --base <git-ref>
 node .agents/skills/create-aw-plugin/scripts/generate_skill_frontmatter_reference.mjs \
   --check
 node .agents/skills/skill-review/scripts/validate_eval_cases.mjs \

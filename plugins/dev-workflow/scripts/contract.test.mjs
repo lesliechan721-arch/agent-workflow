@@ -59,7 +59,6 @@ const target = await context();
 test('manifest exposes the five-Skill workflow surface', async () => {
   const manifest = await readJson(path.join(target.source, '.agents-plugin', 'plugin.json'));
   assert.equal(manifest.name, 'dev-workflow');
-  assert.equal(manifest.version, '0.4.0');
   assert.equal(manifest.skills, './skills');
   assert.deepEqual(manifest.interface.capabilities, ['Skills']);
   for (const key of ['slashCommands', 'buildConfig', 'extensions', 'config', 'artifacts', 'lifecycle']) {
@@ -141,7 +140,7 @@ test('review behavior evals cover independent review and full rereview', async (
     const manifest = await readJson(path.join(evalRoot, 'manifest.json'));
     const behavior = manifest.suites.find((suite) => suite.id === 'behavior');
     assert.deepEqual(behavior.skills, [name]);
-    assert.equal(behavior.observeSpawnAgent, true);
+    assert.equal('observeSpawnAgent' in behavior, false);
     const entries = assertCaseDocument(await readJson(path.join(evalRoot, behavior.cases)));
     assert.equal(entries.some((entry) => entry.id.includes('rereview')), true);
     assert.equal(entries.every((entry) => entry.review.checks.some((check) => check.includes('fresh'))), true);

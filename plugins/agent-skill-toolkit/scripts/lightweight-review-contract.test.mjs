@@ -9,7 +9,13 @@ import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 
 const execFileAsync = promisify(execFile);
-const root = path.dirname(fileURLToPath(import.meta.url));
+const localRoot = path.dirname(fileURLToPath(import.meta.url));
+const context = process.env.AW_PLUGIN_CONTEXT
+  ? JSON.parse(await readFile(process.env.AW_PLUGIN_CONTEXT, 'utf8'))
+  : null;
+const root = context
+  ? path.join(context.plugin.rootDir, context.platform, 'skills/review-agent-skill/scripts')
+  : localRoot;
 const checker = path.join(root, 'check-agent-skill.mjs');
 const validator = path.join(root, 'validate-review-result-lite.mjs');
 const temp = await mkdtemp(path.join(os.tmpdir(), 'lightweight-review-'));

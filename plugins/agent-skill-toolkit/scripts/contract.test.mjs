@@ -25,7 +25,6 @@ async function runtimeExportSource(plugin, exportName) {
 
 test('reviewer runtime exposes only the lightweight machine contract', async () => {
   const manifest = JSON.parse(await readFile(path.join(sourceRoot, '.agents-plugin/plugin.json'), 'utf8'));
-  assert.equal(manifest.version, '0.9.0');
   const targets = manifest.buildConfig.skillRuntimeFiles
     .filter((entry) => entry.skill === 'review-agent-skill')
     .map((entry) => entry.target)

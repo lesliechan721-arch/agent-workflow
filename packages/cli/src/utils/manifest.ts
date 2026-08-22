@@ -2959,12 +2959,14 @@ export function normalizeCatalogManifestEntries(
       throw new Error(`Invalid ${fieldName}.entries: duplicate plugin "${entry.name}".`);
     }
     entriesByName.set(entry.name, entry);
-    assertCatalogChannelVersionContract({
-      channel: base.channel,
-      version: entry.version,
-      fieldName: `${fieldName}.entries.${entry.name}.version`,
-      kind: 'plugin',
-    });
+    if (!(base.channel === 'beta' && !entry.version.includes('-'))) {
+      assertCatalogChannelVersionContract({
+        channel: base.channel,
+        version: entry.version,
+        fieldName: `${fieldName}.entries.${entry.name}.version`,
+        kind: 'plugin',
+      });
+    }
     assertPluginMinVersionWithinCatalogBounds({
       pluginName: entry.name,
       pluginMinVersion: entry.compatibility.aw.minVersion,

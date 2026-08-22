@@ -1,6 +1,6 @@
 import type {
   CatalogChannel,
-  CatalogManifestV3,
+  CatalogManifestV4,
   PluginMeta,
 } from '../types.js';
 import {
@@ -172,7 +172,7 @@ export function validatePluginReleaseLedger(rawValue: unknown): PluginReleaseLed
 
 export function validatePluginReleaseLedgerAgainstManifest(
   rawLedger: unknown,
-  manifest: CatalogManifestV3,
+  manifest: CatalogManifestV4,
 ): PluginReleaseLedger {
   const ledger = validatePluginReleaseLedger(rawLedger);
   for (const entry of manifest.entries) {
@@ -264,7 +264,7 @@ export function resolveBetaPluginVersionOverrides(
 
 export function appendCatalogToPluginReleaseLedger(options: {
   previous: PluginReleaseLedger;
-  manifest: CatalogManifestV3;
+  manifest: CatalogManifestV4;
   contentDigests: ReadonlyMap<string, string>;
 }): PluginReleaseLedger {
   const previous = validatePluginReleaseLedger(options.previous);

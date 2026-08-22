@@ -1,6 +1,6 @@
 {
   "name": "aw-plugin-development",
-  "version": "0.10.0",
+  "version": "0.1.0",
   "description": "通过 AW adapter 组合通用 Agent Skill 与 Agent 内容 toolkit，创建、维护并轻量评审 AW 插件。",
   "compatibility": {
     "aw": { "minVersion": "0.0.0" }

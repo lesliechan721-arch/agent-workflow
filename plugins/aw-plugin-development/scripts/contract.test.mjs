@@ -32,7 +32,6 @@ async function runJson(file, args = []) {
 
 test('review adapter runtime contains only lightweight review and release tools', async () => {
   const manifest = JSON.parse(await readFile(path.join(sourceRoot, '.agents-plugin/plugin.json'), 'utf8'));
-  assert.equal(manifest.version, '0.10.0');
   const targets = manifest.buildConfig.skillRuntimeFiles
     .filter((entry) => entry.skill === 'review-aw-plugin')
     .map((entry) => entry.target)
@@ -67,8 +66,10 @@ test('review adapter runtime contains only lightweight review and release tools'
 
 test('author adapter still delegates deterministic work to stable AW CLI commands', async () => {
   const skill = await readFile(path.join(runtimeRoot, 'skills/author-aw-plugin/SKILL.md'), 'utf8');
-  for (const command of ['init', 'add-skill', 'validate', 'check-versions']) {
+  // Static contract exception: installed agents must discover every public authoring command and must not execute an undeclared fallback; behavior test is not suitable because the consumer contract is the final Skill instruction itself.
+  for (const command of ['init', 'add-skill', 'validate', 'status']) {
     assert.match(skill, new RegExp(`aw plugin ${command} --help`, 'u'));
+    assert.match(skill, new RegExp(`aw plugin ${command}(?: <| --)`, 'u'));
   }
   assert.match(skill, /不得回退到本 Skill 的本地工具副本/u);
 });
@@ -96,6 +97,35 @@ test('target discovery groups identical content by digest and preserves real dif
   await writeFile(path.join(claudeSkill, 'SKILL.md'), skillText.replace('one approved notice', 'approved single or batch notices'));
   const second = await runJson(discover, [plugin, '--final', `codex-project=${path.dirname(codexSkill)}`, '--final', `claude-project=${path.dirname(claudeSkill)}`, '--format', 'json']);
   assert.equal(second.uniqueReviews.length, 2);
+});
+
+test('target discovery requires real materialized content for build-generated Skill resources', async () => {
+  const temp = await mkdtemp(path.join(tmpdir(), 'aw-built-review-'));
+  temps.push(temp);
+  const plugin = path.join(temp, 'plugin');
+  const sourceSkill = path.join(plugin, 'skills', 'generated');
+  const finalRoot = path.join(temp, 'final');
+  const finalSkill = path.join(finalRoot, 'generated');
+  const skillText = '---\nname: generated\ndescription: Read one generated reference.\n---\n\nRead [the generated guide](references/generated.md).\n';
+  await mkdir(path.join(plugin, '.agents-plugin'), { recursive: true });
+  await mkdir(sourceSkill, { recursive: true });
+  await mkdir(path.join(finalSkill, 'references'), { recursive: true });
+  await writeFile(path.join(plugin, '.agents-plugin', 'plugin.json'), JSON.stringify({
+    name: 'generated-plugin',
+    version: '1.0.0',
+    skills: './skills',
+    scripts: { node: { build: { runner: 'node', path: './scripts/build.mjs', args: [] } } },
+  }));
+  await writeFile(path.join(sourceSkill, 'SKILL.md'), skillText);
+  await writeFile(path.join(finalSkill, 'SKILL.md'), skillText);
+  await writeFile(path.join(finalSkill, 'references', 'generated.md'), '# Generated\n\nRuntime content.\n');
+  const discover = path.join(runtimeRoot, 'skills/review-aw-plugin/scripts/discover-aw-review-targets.mjs');
+  await assert.rejects(runJson(discover, [plugin, '--format', 'json']), /materialized --final collection/u);
+  const result = await runJson(discover, [plugin, '--final', `codex-project=${finalRoot}`, '--format', 'json']);
+  assert.equal(result.targets.length, 1);
+  assert.equal(result.targets[0].kind, 'materialized-skill');
+  assert.equal(result.targets[0].machineCheck.ok, true);
+  assert.equal(result.uniqueReviews.length, 1);
 });
 
 test('target discovery surfaces machine errors without review workflow state', async () => {

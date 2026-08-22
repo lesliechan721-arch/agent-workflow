@@ -1,7 +1,6 @@
 {
   "name": "agent-workflows",
   "private": true,
-  "version": "0.1.0-beta.2",
   "packageManager": "pnpm@10.33.0",
   "engines": {
     "node": ">=22"
@@ -25,6 +24,7 @@
     "test:smoke:fetch": "pnpm --filter @lesliechan721/aw test:smoke:fetch",
     "plugin:test": "pnpm --filter @lesliechan721/aw plugin:test --",
     "plugin:eval": "pnpm --filter @lesliechan721/aw plugin:eval --",
+    "plugin:status": "node packages/cli/dist/index.js plugin status --all",
     "plugin:version:check": "node packages/cli/dist/index.js plugin check-versions --all",
     "review:publish": "pnpm --filter @lesliechan721/aw review:publish --",
     "test:smoke:plugin-scripts": "pnpm --filter @lesliechan721/aw test:smoke:plugin-scripts",
@@ -36,25 +36,14 @@
     "release:verify:catalog": "pnpm build:ensure && pnpm test:smoke:build && pnpm test:smoke:stage:catalog && pnpm test:smoke:publish:catalog && pnpm test:smoke:bootstrap:catalog",
     "release:verify:local": "pnpm run release:verify:cli",
     "release:verify": "pnpm run release:verify:cli && pnpm run release:verify:catalog",
+    "release:status": "node scripts/release/release-status.mjs",
+    "release:target": "node scripts/release/release-target.mjs",
+    "release:prepare": "node scripts/release/release-prepare.mjs",
+    "release:publish": "node scripts/release/publish-plan.mjs",
+    "release:recover": "node scripts/release/release-recover.mjs",
     "release:pack:cli": "node scripts/release/pack-cli.mjs",
-    "release:stage:catalog": "node scripts/release/stage-catalog.mjs",
     "release:install:local": "node scripts/release/install-local-tarball.mjs",
-    "release:local": "pnpm run release:verify:cli && pnpm run release:install:local",
-    "release:publish:cli:beta": "node scripts/release/publish-cli.mjs beta",
-    "release:publish:cli:latest": "node scripts/release/publish-cli.mjs latest",
-    "release:publish:catalog:beta": "node scripts/release/publish-catalog.mjs beta",
-    "release:publish:catalog:latest": "node scripts/release/publish-catalog.mjs latest",
-    "release:bootstrap:catalog:beta": "node scripts/release/bootstrap-catalog.mjs beta",
-    "release:bootstrap:catalog:latest": "node scripts/release/bootstrap-catalog.mjs latest",
-    "release:promote:catalog:beta": "node scripts/release/promote-catalog.mjs beta",
-    "release:promote:catalog:latest": "node scripts/release/promote-catalog.mjs latest",
-    "release:publish:beta": "node scripts/release/publish-release.mjs beta",
-    "release:publish:latest": "node scripts/release/publish-release.mjs latest",
-    "publish:cli": "pnpm run release:publish:cli:latest",
-    "version:set:beta": "node scripts/release/sync-version.mjs --kind prerelease",
-    "version:set:release": "node scripts/release/sync-version.mjs --kind stable",
-    "version:catalog:check:beta": "node scripts/release/sync-version.mjs --target catalog --kind prerelease",
-    "version:catalog:check:release": "node scripts/release/sync-version.mjs --target catalog --kind stable"
+    "release:local": "pnpm run release:verify:cli && pnpm run release:install:local"
   },
   "dependencies": {
     "yaml": "^2.8.3"

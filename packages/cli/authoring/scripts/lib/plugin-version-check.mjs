@@ -543,6 +543,8 @@ function createCheckResult(pluginName, values = {}) {
     status: values.status ?? 'unchanged',
     baseVersion: values.baseVersion ?? null,
     currentVersion: values.currentVersion ?? null,
+    baseTarget: values.baseTarget ?? values.baseVersion ?? null,
+    currentTarget: values.currentTarget ?? values.currentVersion ?? null,
     productionChanged: values.productionChanged ?? null,
     baseDigest: values.baseDigest ?? null,
     currentDigest: values.currentDigest ?? null,
@@ -636,7 +638,7 @@ async function checkOnePlugin(options) {
         `Base manifest name ${JSON.stringify(baseDocument.manifest.name)} does not match ${JSON.stringify(pluginName)}.`,
       );
     }
-    parseStrictSemVer(baseDocument.manifest.version, 'base plugin version');
+    parseStablePluginVersion(baseDocument.manifest.version, 'base plugin version');
   } catch (error) {
     return createCheckResult(pluginName, {
       ok: false,
@@ -737,10 +739,9 @@ async function checkOnePlugin(options) {
   if (productionChanged && precedence === 0) {
     return createCheckResult(pluginName, {
       ...common,
-      ok: false,
-      status: 'missingVersionBump',
-      errors: [
-        `Production bundle changed but plugin version remains ${currentVersion}.`,
+      status: 'unreleasedChanges',
+      warnings: [
+        `Production bundle changed while the current stable target remains ${currentVersion}; the release target may need adjustment before publishing.`,
       ],
     });
   }
@@ -855,8 +856,13 @@ export async function checkPluginVersions(options = {}) {
       }));
     }
     return {
-      schemaVersion: 2,
+      schemaVersion: 3,
+      policy: 'development',
       ok: checks.every((check) => check.ok),
+      base: {
+        requested: requestedBase,
+        commit: baseCommit,
+      },
       requestedBase,
       baseCommit,
       checkedPlugins: pluginNames.length,
@@ -875,7 +881,7 @@ export function formatPluginVersionCheck(result) {
   for (const check of result.checks) {
     lines.push(`${check.ok ? '[PASS]' : '[FAIL]'} ${check.plugin}: ${check.status}`);
     if (check.baseVersion || check.currentVersion) {
-      lines.push(`  version: ${check.baseVersion ?? '(new)'} -> ${check.currentVersion ?? '(deleted)'}`);
+      lines.push(`  stable target: ${check.baseTarget ?? '(new)'} -> ${check.currentTarget ?? '(deleted)'}`);
     }
     for (const changedPath of check.changedPaths) lines.push(`  changed: ${changedPath}`);
     for (const warning of check.warnings) lines.push(`  warning: ${warning}`);

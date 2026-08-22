@@ -30,7 +30,7 @@ const execFileAsync = promisify(execFile),
 after(async () => Promise.all(temps.map((entry) => rm(entry, { recursive: true, force: true }))));
 
 async function fixture({ manifest = null } = {}) {
-  const directory = await mkdtemp(path.join(tmpdir(), 'aw-authoring-context-v2-'));
+  const directory = await mkdtemp(path.join(tmpdir(), 'aw-authoring-context-v3-'));
   temps.push(directory);
   const workspace = path.join(directory, 'workspace');
   const pluginRoot = path.join(workspace, 'packages', 'target-plugin');
@@ -78,9 +78,9 @@ const component = (id, type, operation, paths, profiles, skillInvocation) => ({
   ...(skillInvocation === undefined ? {} : { skillInvocation }),
 });
 
-test('schema v2 publishes the composite component contract', async () => {
+test('schema v3 publishes components without a release target field', async () => {
   const schema = JSON.parse(await readFile(schemaPath, 'utf8'));
-  assert.equal(schema.properties.schemaVersion.const, 2);
+  assert.equal(schema.properties.schemaVersion.const, 3);
   assert.equal(schema.properties.components.minItems, 1);
   assert.equal(schema.properties.componentType, undefined);
   assert.equal(schema.properties.skillInvocation, undefined);
@@ -115,7 +115,7 @@ test('round-trips a new plugin with two skills', async () => {
     component('review', 'skill', 'create', ['skills/review'], ['CODEX', 'CLAUDE'], 'manual'),
   ];
   const context = await roundTrip(target, components, ['--plugin', 'target-plugin']);
-  assert.equal(context.schemaVersion, 2);
+  assert.equal(context.schemaVersion, 3);
   assert.equal(context.plugin, 'target-plugin');
   assert.equal(context.changeMode, 'create');
   assert.deepEqual(context.products, ['CODEX', 'CLAUDE']);
@@ -168,7 +168,7 @@ test('round-trips extension and config helper', async () => {
   assert.deepEqual((await roundTrip(target, components)).components, components);
 });
 
-test('round-trips manifest version and Node build repair', async () => {
+test('round-trips a Node build repair without changing the stable target', async () => {
   const target = await fixture({
     manifest: {
       name: 'target-plugin',
@@ -176,11 +176,9 @@ test('round-trips manifest version and Node build repair', async () => {
     },
   });
   const components = [
-    component('version', 'manifest', 'change', ['.agents-plugin/plugin.json'], ['CODEX', 'CLAUDE']),
     component('build', 'node-build', 'change', ['package.json', 'scripts/build.mjs'], ['CODEX', 'CLAUDE']),
   ];
-  const context = await roundTrip(target, components, ['--manifest-version-bump', 'patch']);
-  assert.equal(context.manifestVersionBump, 'patch');
+  const context = await roundTrip(target, components);
   assert.equal(context.buildRequired, true);
   assert.deepEqual(context.components, components);
 });
@@ -225,7 +223,7 @@ test('rejects invalid invocation placement and legacy single-component flags', a
   await assert.rejects(
     execFileAsync(process.execPath, [prepare, target.pluginRoot, '--component-type', 'skill']),
     (error) =>
-      error.stderr.includes('removed in AWAuthoringContext v2') &&
+      error.stderr.includes('was removed') &&
       error.stderr.includes('--components <json-file>'),
   );
 });

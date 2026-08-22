@@ -1,10 +1,8 @@
 # 手动依赖合同
 
-插件合同版本：`0.4.0`。
+必需插件：`agent-skill-toolkit >= 0.1.0`。
 
-必需插件：`agent-skill-toolkit >= 0.5.0`。
-
-必需包：`@lesliechan721/agent-skill-eval >= 0.1.0-beta.2`。启动本 Skill 前，该包必须在 `PATH` 中提供稳定的 `aw-skill-eval` 命令。不要使用 `npx`，也不要隐式安装或下载该包。
+必需包：`@lesliechan721/agent-skill-eval`。启动本 Skill 前，该包必须在 `PATH` 中提供稳定的 `aw-skill-eval` 命令。不要使用 `npx`，也不要隐式安装或下载该包。最低 runtime API 版本由 `run-agent-skill-evals/SKILL.md` 定义。
 
 必需能力：`audit-agent-skill-evals` preflight 结果，其目标 Skill digest 和 case corpus digest 必须匹配 execution plan。
 

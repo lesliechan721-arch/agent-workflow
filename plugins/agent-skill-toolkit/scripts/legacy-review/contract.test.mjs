@@ -175,6 +175,30 @@ test('standard generation fails closed without the catalog content-rules import'
     /AW_PLUGIN_IMPORT_CONTENT_RULES/u,
   );
 });
+test('machine content-rule source matches the required dependency contract', async () => {
+  const [dependencyRaw, rulesRaw] = await Promise.all([
+    readFile(path.join(sourceRoot, 'DEPENDENCY.md'), 'utf8'),
+    readFile(path.join(sourceRoot, 'standards', 'skill-rules.json'), 'utf8'),
+  ]);
+  const dependencyFloor = /^必需插件：`agent-content-toolkit >= ([^`]+)`。$/mu.exec(dependencyRaw)?.[1];
+  assert.ok(dependencyFloor, 'DEPENDENCY.md must declare the required agent-content-toolkit floor');
+  const contentRuleSource = JSON.parse(rulesRaw).contentRuleSource;
+  assert.deepEqual(
+    {
+      plugin: contentRuleSource?.plugin,
+      minimumVersion: contentRuleSource?.minimumVersion,
+      path: contentRuleSource?.path,
+      digest: contentRuleSource?.digest,
+    },
+    {
+      plugin: 'agent-content-toolkit',
+      minimumVersion: dependencyFloor,
+      path: 'standards/rules.json',
+      digest: contentRuleSource?.digest,
+    },
+  );
+  assert.match(contentRuleSource.digest, /^sha256:[0-9a-f]{64}$/u);
+});
 test('cacheable standard render is deterministic across undeclared environment changes', async () => {
   async function render(marker) {
     const outputRoot = await mkdtemp(path.join(tmpdir(), 'skill-standard-render-'));
@@ -216,14 +240,14 @@ test('source excludes generated views and projected runtime copies', async () =>
     );
   assert.deepEqual(violations, []);
 });
-test('owned contracts and manifest use release version', async () => {
+test('owned contracts preserve the source manifest identity', async () => {
   const manifest = JSON.parse(
     await readFile(path.join(bundleRoot, '.agents-plugin/plugin.json'), 'utf8'),
   );
   const sourceManifest = JSON.parse(
     await readFile(path.join(sourceRoot, '.agents-plugin/plugin.json'), 'utf8'),
   );
-  assert.equal(manifest.version, '0.8.0');
+  assert.equal(manifest.version, sourceManifest.version);
   assert.equal(sourceManifest.buildConfig.cacheable, true);
   for (const [name, id] of [
     [

@@ -22,7 +22,7 @@ node scripts/prepare-aw-authoring-context.mjs <plugin-root> \
 
 数组中每项声明 `id`、`type`、`operation`、`paths` 和 `profiles`。Skill 项还声明 `skillInvocation`。完整字段和组合规则见 `references/aw-authoring-profile.md`。
 
-创建插件骨架、增加 Skill 骨架、验证和版本比较分别使用已安装的 `aw plugin init`、`add-skill`、`validate` 和 `check-versions`。每次先检查 `aw --version` 与对应 `--help`。该 Skill 不包含这些确定性工具的副本，也不通过 `npx` 或猜测仓库路径回退。
+创建插件骨架、增加 Skill 骨架、验证和开发状态分别使用已安装的 `aw plugin init`、`add-skill`、`validate` 和 `status`。每次先检查 `aw --version` 与对应 `--help`。日常开发不直接提高插件版本；release target 由目标 workspace 的 release workflow 设置。该 Skill 不包含这些确定性工具的副本，也不通过 `npx` 或猜测仓库路径回退。
 
 ## 边界
 

@@ -5,7 +5,7 @@
 默认路径：
 
 1. `aw plugin validate` 与 `check-agent-skill` 提供确定性事实；
-2. source/final target 按 production digest 去重；
+2. build-free source 和已提供 final 按 production digest 去重；声明 build 的插件必须提供 materialized final；
 3. 每个唯一 digest 只运行一次通用 `review-agent-skill`；
 4. 输出简洁的人类报告。
 

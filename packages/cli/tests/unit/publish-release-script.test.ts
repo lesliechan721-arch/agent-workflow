@@ -54,6 +54,14 @@ function commonOptions(
       releaseIdentity: stageOptions.releaseIdentity,
     })),
     resolvePublishedCliVersion: vi.fn(async () => publishedCliVersion),
+    readRegistryReleaseHistory: vi.fn(async () => ({
+      '@lesliechan721/agent-skill-eval': [{ version: currentCliVersion, awRelease: null }],
+      '@lesliechan721/aw': [{ version: currentCliVersion, awRelease: null }],
+      distTags: {
+        '@lesliechan721/agent-skill-eval': { latest: currentCliVersion, beta: null },
+        '@lesliechan721/aw': { latest: currentCliVersion, beta: null },
+      },
+    })),
     withPreparedCliPublication: vi.fn(async (
       _mode,
       _publishMode,
@@ -126,11 +134,14 @@ describe('combined release script', () => {
       calls.push('cli');
       return { version: '1.0.0' };
     });
+    const beforeRemoteWrite = vi.fn(async () => undefined);
     const result = await publishRelease(
       ['latest', '--cli-version', '1.0.0', '--catalog-version', '2.0.0'],
       {
         ...options,
+        beforeRemoteWrite,
         publishStagedCatalog: vi.fn(async (_history, _root, publisherOptions) => {
+          await publisherOptions.beforeRemoteWrite();
           calls.push(`catalog:${publisherOptions.publicationMode}`);
           return { validation: { manifest: { catalogVersion: '2.0.0' } } };
         }),
@@ -163,6 +174,7 @@ describe('combined release script', () => {
       releaseIdentity: stageOptions.releaseIdentity,
     }));
     expect(options.withReleaseBuildSnapshot).toHaveBeenCalledTimes(1);
+    expect(beforeRemoteWrite).toHaveBeenCalledOnce();
   });
 
   it('publishes tag, then CLI, then promotion when the catalog needs the candidate CLI', async () => {
@@ -201,6 +213,149 @@ describe('combined release script', () => {
       snapshot: options.snapshot,
       releaseIdentity: stageOptions.releaseIdentity,
     }));
+  });
+
+  it('retries the real first-stable tag-first path after Eval succeeds and AW fails', async () => {
+    const releaseHistory = history(compareStrictSemVer);
+    const options = commonOptions(releaseHistory);
+    const calls: string[] = [];
+    const tags = {
+      '@lesliechan721/agent-skill-eval': { latest: null as string | null, beta: '1.0.0-beta.3' },
+      '@lesliechan721/aw': { latest: '0.1.0-beta.1' as string | null, beta: '1.0.0-beta.3' },
+    };
+    options.resolvePublishedCliVersion.mockRejectedValue(new Error('global latest resolver must not run'));
+    let awAttempts = 0;
+    const releaseOptions = {
+      ...options,
+      publishedVersion: null,
+      prepareEvalPublication: undefined,
+      withPreparedEvalPublication: async (
+        _mode, _publishMode, _snapshot, version, _fresh, callback,
+      ) => callback({
+        status: tags['@lesliechan721/agent-skill-eval'].latest === version
+          ? 'already-published'
+          : 'publish',
+        mode: 'latest', version,
+        candidateTreeDigest: `sha256:${'a'.repeat(64)}`,
+        generationId: options.snapshot.generationId,
+        outputDigest: options.snapshot.outputDigest,
+        inputDigest: options.snapshot.inputDigest,
+      }),
+      publishPreparedEvalPublication: async (candidate) => {
+        if (candidate.status === 'already-published') return candidate;
+        calls.push('eval');
+        tags['@lesliechan721/agent-skill-eval'].latest = '1.0.0';
+        return { ...candidate, status: 'published' };
+      },
+      publishStagedCatalog: async (_history, _root, publisherOptions) => {
+        calls.push(`catalog:${publisherOptions.publicationMode}`);
+        return { validation: { manifest: { catalogVersion: '2.0.0' } } };
+      },
+      publishCli: async () => {
+        awAttempts += 1;
+        calls.push(awAttempts === 1 ? 'aw-fail' : 'aw');
+        if (awAttempts === 1) throw new Error('injected AW publish failure');
+        tags['@lesliechan721/aw'].latest = '1.0.0';
+        return { version: '1.0.0' };
+      },
+      readRegistryReleaseHistory: async () => ({
+        '@lesliechan721/agent-skill-eval': [],
+        '@lesliechan721/aw': [],
+        distTags: tags,
+      }),
+      promoteCatalogTag: async (promotionOptions) => {
+        await promotionOptions.beforeAcquire();
+        await promotionOptions.beforeRemoteWrite();
+        calls.push('promotion');
+        return { promoted: true };
+      },
+    };
+
+    await expect(publishRelease(['latest', '--catalog-version', '2.0.0'], releaseOptions))
+      .rejects.toThrow('CLI 1.0.0 publication failed');
+    expect(tags).toMatchObject({
+      '@lesliechan721/agent-skill-eval': { latest: '1.0.0' },
+      '@lesliechan721/aw': { latest: '0.1.0-beta.1' },
+    });
+    const result = await publishRelease(['latest', '--catalog-version', '2.0.0'], releaseOptions);
+    expect(result.path).toBe('tag-first');
+    expect(options.resolvePublishedCliVersion).not.toHaveBeenCalled();
+    expect(calls).toEqual([
+      'catalog:tag', 'eval', 'aw-fail',
+      'catalog:tag', 'aw', 'promotion',
+    ]);
+    expect(tags).toEqual({
+      '@lesliechan721/agent-skill-eval': { latest: '1.0.0', beta: '1.0.0-beta.3' },
+      '@lesliechan721/aw': { latest: '1.0.0', beta: '1.0.0-beta.3' },
+    });
+  });
+
+  it.each([
+    ['both tags missing', null, null],
+    ['only Eval tagged', '1.0.0', null],
+    ['only AW tagged', null, '1.0.0'],
+    ['both tags behind', '0.9.0', '0.9.0'],
+    ['one tag rolled back', '1.0.0', '0.9.0'],
+  ])('does not write a channel promotion when %s after both candidate packages exist', async (
+    _label,
+    evalTag,
+    awTag,
+  ) => {
+    const releaseHistory = history(compareStrictSemVer);
+    const options = commonOptions(releaseHistory);
+    options.readRegistryReleaseHistory.mockResolvedValue({
+      '@lesliechan721/agent-skill-eval': [{ version: '1.0.0', awRelease: null }],
+      '@lesliechan721/aw': [{ version: '1.0.0', awRelease: null }],
+      distTags: {
+        '@lesliechan721/agent-skill-eval': { latest: evalTag, beta: null },
+        '@lesliechan721/aw': { latest: awTag, beta: null },
+      },
+    });
+    const promotionPush = vi.fn();
+    const promoteCatalogTag = vi.fn(async () => {
+      promotionPush();
+      return { promoted: true };
+    });
+    await expect(publishRelease(['latest', '--catalog-version', '2.0.0'], {
+      ...options,
+      publishStagedCatalog: async () => ({ validation: { manifest: { catalogVersion: '2.0.0' } } }),
+      publishCli: async () => ({ version: '1.0.0' }),
+      promoteCatalogTag,
+    })).rejects.toThrow(/promotion requires|promotion failed/iu);
+    expect(options.readRegistryReleaseHistory).toHaveBeenCalledOnce();
+    expect(promoteCatalogTag).not.toHaveBeenCalled();
+    expect(promotionPush).not.toHaveBeenCalled();
+  });
+
+  it('repeats the complete train tag gate at promotion acquire and remote-write boundaries', async () => {
+    const releaseHistory = history(compareStrictSemVer);
+    const options = commonOptions(releaseHistory);
+    const observations: unknown[] = [];
+    const freshnessObservations: unknown[] = [];
+    const promotionPush = vi.fn();
+    const promoteCatalogTag = vi.fn(async (promotionOptions) => {
+      await promotionOptions.beforeAcquire();
+      await promotionOptions.beforeRemoteWrite();
+      promotionPush();
+      return { promoted: true };
+    });
+    await expect(publishRelease(['latest', '--catalog-version', '2.0.0'], {
+      ...options,
+      readLiveCliHistory: async () => {
+        const observation = await options.readRegistryReleaseHistory();
+        observations.push(observation);
+        return observation;
+      },
+      assertPromotionRegistryFresh: async (observation) => {
+        freshnessObservations.push(observation);
+      },
+      publishStagedCatalog: async () => ({ validation: { manifest: { catalogVersion: '2.0.0' } } }),
+      publishCli: async () => ({ version: '1.0.0' }),
+      promoteCatalogTag,
+    })).resolves.toMatchObject({ path: 'tag-first' });
+    expect(options.readRegistryReleaseHistory).toHaveBeenCalledTimes(3);
+    expect(freshnessObservations).toEqual(observations);
+    expect(promotionPush).toHaveBeenCalledOnce();
   });
 
   it('skips CLI publication when the exact candidate is already published', async () => {
@@ -424,6 +579,46 @@ describe('combined release script', () => {
     expect(publishCli).not.toHaveBeenCalled();
   });
 
+  it('does not write either npm package when the atomic tag-and-guard push fails', async () => {
+    const releaseHistory = history(compareStrictSemVer);
+    const options = commonOptions(releaseHistory, '1.0.0', '0.9.0');
+    const writes: string[] = [];
+    await expect(publishRelease(['latest', '--catalog-version', '2.0.0'], {
+      ...options,
+      prepareEvalPublication: undefined,
+      withPreparedEvalPublication: async (
+        _mode, _publishMode, _snapshot, _version, _fresh, callback,
+      ) => callback({ status: 'publish', version: '1.0.0' }),
+      publishPreparedEvalPublication: async () => {
+        writes.push('eval');
+        return { status: 'published', version: '1.0.0' };
+      },
+      publishCli: async () => {
+        writes.push('aw');
+      },
+      publishStagedCatalog: async () => {
+        throw new Error('atomic tag push failed');
+      },
+    })).rejects.toThrow('atomic tag push failed');
+    expect(writes).toEqual([]);
+  });
+
+  it('rejects a committed publication mode mismatch before any catalog or npm write', async () => {
+    const releaseHistory = history(compareStrictSemVer);
+    const options = commonOptions(releaseHistory);
+    const publishStagedCatalog = vi.fn();
+    const publishCli = vi.fn();
+    await expect(publishRelease(['latest', '--catalog-version', '2.0.0'], {
+      ...options,
+      expectedPublicationMode: 'atomic-combined',
+      publishStagedCatalog,
+      publishCli,
+    })).rejects.toThrow('does not match committed plan mode');
+    expect(publishStagedCatalog).not.toHaveBeenCalled();
+    expect(publishCli).not.toHaveBeenCalled();
+    expect(options.prepareEvalPublication).not.toHaveBeenCalled();
+  });
+
   it('does not publish Eval or write release refs when the staged catalog requires a newer CLI', async () => {
     const releaseHistory = history(compareStrictSemVer);
     const options = commonOptions(releaseHistory, '1.0.0', '0.9.0');
@@ -555,7 +750,7 @@ describe('combined release script', () => {
         promoteCatalogTag: async () => { throw new Error('promotion failed'); },
       },
     )).rejects.toThrow(
-      'Recover with: pnpm run release:promote:catalog:latest -- --catalog-version 2.0.0',
+      'Recover with: pnpm release:recover -- catalog 2.0.0',
     );
   });
 

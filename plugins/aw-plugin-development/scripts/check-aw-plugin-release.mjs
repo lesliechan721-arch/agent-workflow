@@ -149,8 +149,11 @@ async function main() {
     const sourceRoots = await skillRoots(skillsRoot);
     const sourceByName = new Map();
     for (const root of sourceRoots) {
-      const check = await runJson(checker, [root, '--root-kind', 'source', '--format', 'json'], true);
-      sourceByName.set(check.target.name, { root, check });
+      const name = path.basename(root);
+      const check = manifest.scripts?.node?.build === undefined
+        ? await runJson(checker, [root, '--root-kind', 'source', '--format', 'json'], true)
+        : null;
+      sourceByName.set(name, { root, check });
     }
 
     const finalByProfile = new Map();
@@ -192,7 +195,9 @@ async function main() {
 
     for (const [name, source] of sourceByName) {
       const evalRequired = await requiresEval(source.root);
-      await evaluateTarget('source', name, null, source.root, source.check, evalRequired);
+      if (source.check !== null) {
+        await evaluateTarget('source', name, null, source.root, source.check, evalRequired);
+      }
       for (const profile of profiles) {
         const final = finalByProfile.get(profile).get(name);
         if (!final) {

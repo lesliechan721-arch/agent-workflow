@@ -92,7 +92,7 @@ Skill 和 prompt 的确定性测试只保留结构、模板、平台元数据、
 
 `scripts/build/ensure-cli-build.mjs` 只在输入、输出和 package identity 都匹配 generation stamp 时复用 build。并发 build 使用 lock；测试必须覆盖输入变化、输出变化、symlink、并发 owner 和 snapshot 隔离。
 
-Release unit/integration 使用本地 bare Git 覆盖 schema 3 CLI floor、跨 channel publication lock、tag-first pending guard、完整 ledger 串行化和 combined 同一 build generation 绑定。fixture 不访问真实 official remote 或 npm registry。
+Release unit/integration 使用本地 bare Git 覆盖 schema 4 CLI floor、跨 channel publication lock、tag-first pending guard、完整 ledger 串行化和 combined 同一 build generation 绑定。fixture 不访问真实 official remote 或 npm registry。
 
 常规 unit/integration 不应隐式执行 package manager。真实依赖安装、build 后 production closure 和 tarball 内容进入 smoke。
 

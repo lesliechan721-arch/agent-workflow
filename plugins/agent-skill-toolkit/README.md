@@ -2,13 +2,11 @@
 
 通用 Agent Skill 作者、轻量质量评审和 Eval 设计/审核插件。
 
-当前插件合同版本：`0.9.1`。
-
 ## 依赖
 
-必需：`agent-content-toolkit >= 0.5.0`。
+必需：`agent-content-toolkit >= 0.1.0`。
 
-可选执行能力：`agent-skill-eval-runner >= 0.3.0`，或其它兼容 Eval provider。本 toolkit 不执行高成本模型 Eval。
+可选执行能力：`agent-skill-eval-runner >= 0.1.0`，或其它兼容 Eval provider。本 toolkit 不执行高成本模型 Eval。
 
 ## 包含的 Skill
 

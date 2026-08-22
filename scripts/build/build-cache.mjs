@@ -508,7 +508,9 @@ async function validateRequiredOutputs(repoRoot) {
         }
         if (
           output.type === 'catalog' &&
-          (parsed.schemaVersion !== 3 ||
+          (parsed.schemaVersion !== 4 ||
+            !parsed.release ||
+            (parsed.release.state !== 'development' && parsed.release.state !== 'published') ||
             !Array.isArray(parsed.entries) ||
             Object.hasOwn(parsed, 'packages') ||
             parsed.entries.some((entry) =>
@@ -851,7 +853,7 @@ export async function acquireBuildLock(repoRoot, options = {}) {
   }
 }
 
-export async function runCliBuild(repoRoot, invocation) {
+export async function runCliBuild(repoRoot, invocation, options = {}) {
   const fixedInvocation = invocation ?? (await readBuildLauncher()).invocation;
   await fs.rm(path.join(repoRoot, 'packages', 'cli', 'dist'), {
     recursive: true,
@@ -865,7 +867,7 @@ export async function runCliBuild(repoRoot, invocation) {
     const child = spawn(fixedInvocation.command, fixedInvocation.args, {
       cwd: repoRoot,
       env: process.env,
-      stdio: 'inherit',
+      stdio: options.quiet ? 'ignore' : 'inherit',
     });
     child.once('error', reject);
     child.once('exit', (code, signal) => {
@@ -908,6 +910,7 @@ function buildSettings(options) {
   return {
     build: options.build,
     force: options.force ?? false,
+    quiet: options.quiet ?? false,
     lockTimeoutMs: options.lockTimeoutMs ?? DEFAULT_LOCK_TIMEOUT_MS,
     pollIntervalMs: options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS,
     onForceIntentVisible: options.onForceIntentVisible,
@@ -940,7 +943,7 @@ async function buildUnderLock(repoRoot, settings, inspection) {
   if (settings.build) {
     await settings.build();
   } else {
-    await runCliBuild(repoRoot, launcherBeforeBuild.invocation);
+    await runCliBuild(repoRoot, launcherBeforeBuild.invocation, { quiet: settings.quiet });
   }
 
   const expected = await readExpectedStampIdentity(repoRoot);

@@ -71,7 +71,11 @@ describe('publish-catalog script', () => {
       cliPackageDigest: releaseSnapshot.cliPackageDigest,
       releaseIdentity: stageOptions.releaseIdentity,
     }));
-    const publishStagedCatalog = vi.fn(async () => ({ commit: 'abc' }));
+    const beforeRemoteWrite = vi.fn(async () => undefined);
+    const publishStagedCatalog = vi.fn(async (_history, _root, publisherOptions) => {
+      await publisherOptions.beforeRemoteWrite();
+      return { commit: 'abc' };
+    });
 
     await expect(publishCatalog(
       ['beta', '--catalog-version', '9.0.0-beta.6'],
@@ -83,6 +87,7 @@ describe('publish-catalog script', () => {
         readCatalogPublicationHistory: async () => releaseHistory,
         stageCatalogRelease,
         resolvePublishedCliVersion: async () => '1.0.0-beta.1',
+        beforeRemoteWrite,
         publishStagedCatalog,
       },
     )).resolves.toEqual({ commit: 'abc' });
@@ -110,6 +115,7 @@ describe('publish-catalog script', () => {
       privateOutputRoot,
       expect.objectContaining({ publicationLease: { ownerCommit: 'lease-owner' } }),
     );
+    expect(beforeRemoteWrite).toHaveBeenCalledOnce();
   });
 
   it('rejects a catalog that requires a newer CLI without publishing refs', async () => {
@@ -159,7 +165,7 @@ describe('publish-catalog script', () => {
     expect(assertCurrentReleaseIdentity).toHaveBeenCalledWith(
       releaseSnapshot,
       expect.objectContaining({ inputDigest: releaseSnapshot.inputDigest }),
-      { allowVersionSync: false },
+      {},
     );
     expect(withCatalogPublicationLease).not.toHaveBeenCalled();
   });

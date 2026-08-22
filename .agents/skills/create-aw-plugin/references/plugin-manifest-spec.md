@@ -30,10 +30,10 @@
 AW 版本管理里有三套身份，不能混用：
 
 - CLI version：`@lesliechan721/aw` 自身的版本，代表命令和运行时能力。
-- Source snapshot version：schema 3 `catalog-manifest.json` 的版本，代表一次 source 快照。
+- Source snapshot version：schema 4 `catalog-manifest.json` 的版本，代表一次 source 快照。schema 3 是被拒绝的旧格式。
 - Plugin version：单个插件 manifest 的 `version`，代表该插件 artifact 的不可变身份。
 
-插件更新通过 schema 3 source snapshot 分发，不要求同步发布 CLI。`pnpm build` 在 `packages/cli/plugins-dist/` 生成可验证的本地 schema 3 snapshot；开发态 snapshot version 使用 CLI package version。`make stage-catalog CATALOG_VERSION=<version>` 在 `.release/catalog-staging/catalog/` 生成带 release ledger 的发布交接目录。Git publish 和首次 bootstrap 是维护者发布步骤，不是插件作者入口。
+插件更新通过 schema 4 source snapshot 分发，不要求同步发布 CLI。`pnpm build` 在 `packages/cli/plugins-dist/` 生成可验证的本地 schema 4 snapshot；开发态 snapshot version 使用 CLI package version。release plan 内部 staging 生成带 ledger 的发布交接目录。正常维护只使用 `release:status`、`release:target`、`release:prepare` 和 `release:publish`；不向 stage/publish 内核传任意版本，也不回写源码 package version。
 
 最小示例：
 
@@ -53,27 +53,29 @@ AW 版本管理里有三套身份，不能混用：
 
 - 源码 `version` 必须是没有 prerelease 或 build metadata 的稳定 SemVer；`compatibility.aw.minVersion` 必须是严格 SemVer。不能写 `v1.2.3`、`1.2`、`latest`、`^1.2.3` 或其它宽松写法。
 - 插件 manifest 不声明 per-plugin 宿主 agent 版本。Codex `>= 0.145.0`、Claude Code `>= 2.1.88` 是 AW CLI 内置写命令门槛，作者不需要添加 `compatibility.codex`、`compatibility.claude`、`minimumCodexVersion` 或类似字段。
-- 插件最低 CLI 版本不能高于 catalog 级 `compatibility.aw.minVersion`。catalog 级门槛取所有插件声明与 schema 3 Git 分发 floor `0.1.0-beta.2` 的最大值；作者只声明插件本身的真实最低版本，不手工维护或降低 catalog floor。
-- schema 3 snapshot 中每个插件都必须提供 `artifactDigest`、`manifestDigest` 和 `contentDigest`，并声明不高于 snapshot 级门槛的最低 CLI 版本。作者改变 manifest、runtime 文件、脚本、静态资源、最低 CLI 版本或平台能力时，应发布新的插件 `version`。
+- 插件最低 CLI 版本不能高于 catalog 级 `compatibility.aw.minVersion`。catalog 级门槛取所有插件声明与内部 schema 4 Git 分发 floor 的最大值；作者只声明插件本身的真实最低版本，不复制、手工维护或降低 catalog floor。
+- schema 4 snapshot 中每个插件都必须提供 `artifactDigest`、`manifestDigest` 和 `contentDigest`，并声明不高于 snapshot 级门槛的最低 CLI 版本。作者改变 production bundle 时，在下一次 release train 设置新的插件 `version`。
 
 作者版本门禁：
 
 ```bash
-aw plugin check-versions \
+aw plugin status \
   --all --base <git-ref>
 ```
 
-单插件位于非默认布局时使用 `aw plugin check-versions <plugin-name> --repo-root
+单插件位于非默认布局时使用 `aw plugin status <plugin-name> --repo-root
 <workspace-root> --plugin-root <plugin-root> --base <git-ref>`。显式根相对 workspace root
 解析并必须位于同一 Git repository 内；`--all` 仍只扫描 `plugins/`。
-`validate` 和 `check-versions` 在读取 manifest 前检查 repo/plugin root、`.agents-plugin`
+`validate` 和 `status` 在读取 manifest 前检查 repo/plugin root、`.agents-plugin`
 和 manifest 的完整路径链；这些节点必须是仓库内预期类型，不能用符号链接重定向。
 
-新插件保留 manifest 中的初始稳定 version，脚手架默认使用 `0.1.0`。已有插件的 production bundle 变化时，作者在同一改动中直接提高 manifest version，并按兼容性影响选择 major、minor 或 patch。源码 manifest 是目标稳定版本的唯一真值；不使用独立 change 文件、聚合步骤或版本写入脚本。build metadata 不提高 SemVer precedence，因此源码 version 禁止 prerelease 和 build metadata。
+新插件保留 manifest 中的初始稳定 version，脚手架默认使用 `0.1.0`。日常开发保持当前稳定目标不变，不为每次 production bundle 变化直接改 version。release train 开始时，使用 `pnpm release:target -- --plugin <name>=patch` 一次设置目标；bump 也可选择 `major` 或 `minor`。candidate 身份由 `pnpm release:prepare` 基于 registry、immutable Catalog history 和 ledger 确认。源码 manifest 是目标稳定版本的唯一真值。build metadata 不提高 SemVer precedence，因此源码 version 禁止 prerelease 和 build metadata。
 
-`aw plugin check-versions` 用当前 CLI 的 staging bundler 分别物化 Git 基线插件和工作树插件，再忽略 plugin version 字段本身比较 production bundle。若 Git base 和 current workspace 都有完整 `packages/cli` source，它分别绑定两侧 registry 和 provider version；单侧 ownership 或 partial source 失败。两侧都没有时，工具从同一个经验证的 installed CLI provider 独立物化两个相同身份的 root，不让 base 复制或回退到 current root。production 变化但 version 未提高、版本下降或 SemVer precedence 未提高时失败；只有 version 提高时成功并警告。Skill `evals/**`、插件 `reports/**` 和 test-only 文件由 bundler 排除；随 bundle 发布的 README、Skill、manifest 和 runtime 脚本变化要求提高 version。JSON 输出使用 schema 2。该门禁只判断插件源码变化，不判断 CLI bundler 自身变化造成的产物差异。
+`release:publish` 只消费已提交的 immutable plan，拒绝 CLI/Catalog 版本参数。历史 tag-first 事务只有在 exact immutable tag、pending guard 和两个 CLI 包一致且兼容的已发布 dist-tag 都存在时，才可以运行 `pnpm release:recover -- catalog <x.y.z[-beta.N]>`。恢复不 stage 内容或创建新身份。
 
-`contentDigest` 排除生成 manifest 的 version 字段，用于核对插件内容身份。schema 3 snapshot、release staging 和源码 manifest 是作者边界；作者不要修改 publisher、remote refs、tags 或 ledger。
+`aw plugin status` 用当前 CLI 的 staging bundler 分别物化 Git 基线插件和工作树插件，再忽略 plugin version 字段本身比较 production bundle。若 Git base 和 current workspace 都有完整 `packages/cli` source，它分别绑定两侧 registry 和 provider version；单侧 ownership 或 partial source 失败。两侧都没有时，工具从同一个经验证的 installed CLI provider 独立物化两个相同身份的 root，不让 base 复制或回退到 current root。production 变化但 version 相同时返回通过的 `unreleasedChanges`；版本下降、非稳定 SemVer、同 precedence 不同字符串或物化错误失败；只改 version 时返回通过的 `versionOnly` warning。Skill `evals/**`、插件 `reports/**` 和 test-only 文件由 bundler 排除；README、Skill、manifest 和 runtime 脚本会改变 production identity。JSON 输出使用 schema 3，声明 `policy: development`。deprecated `check-versions` 执行同一策略和 JSON 合同。
+
+`contentDigest` 排除生成 manifest 的 version 字段，用于核对插件内容身份。schema 4 snapshot、release staging 和源码 manifest 是作者边界；作者不要修改 publisher、remote refs、tags 或 ledger。
 
 ## scripts / config block
 
@@ -378,7 +380,7 @@ CLI 入口和输出对作者的影响：
 
 `plugins/marketplace-source.json` 是 marketplace 根级构建输入，只接受 `owner` 和 `interface.displayName`。它不是运行时 source identity。创建单个插件时通常不要改它。
 
-`pnpm build` 会把根级元数据和各插件的 marketplace 条目合成两份本地 runtime marketplace manifest：`.claude-plugin/marketplace.json` 和 `.agents/plugins/marketplace.json`。两份 marketplace 共享根级元数据，但 entries 按插件最终支持平台过滤；Claude marketplace 不包含 Codex-only 插件，Codex marketplace 不包含 Claude-only 插件。schema 3 manifest 必须从完整 build bundle 重建插件清单，不能把某个平台 marketplace 当作全部插件清单。
+`pnpm build` 会把根级元数据和各插件的 marketplace 条目合成两份本地 runtime marketplace manifest：`.claude-plugin/marketplace.json` 和 `.agents/plugins/marketplace.json`。两份 marketplace 共享根级元数据，但 entries 按插件最终支持平台过滤；Claude marketplace 不包含 Codex-only 插件，Codex marketplace 不包含 Claude-only 插件。schema 4 manifest 必须从完整 build bundle 重建插件清单，不能把某个平台 marketplace 当作全部插件清单。
 
 ## 分发模型
 
@@ -388,8 +390,8 @@ CLI 入口和输出对作者的影响：
            │
            │  pnpm build
            ▼
-本地 schema 3 snapshot（当前生成产物，不手改）
-  catalog-manifest.json              schema 3；开发版本使用 CLI package version
+本地 schema 4 snapshot（当前生成产物，不手改）
+  catalog-manifest.json              schema 4；开发版本使用 CLI package version
   .agents/
   .claude-plugin/
   plugins/<name>/
@@ -399,14 +401,14 @@ CLI 入口和输出对作者的影响：
   ├── claude/                        支持 Claude 时存在
   └── codex/                         支持 Codex 时存在
            │
-           │  make stage-catalog CATALOG_VERSION=<version>
+           │  release plan 内部 staging
            ▼
 发布 staging（`.release/catalog-staging/catalog/`）
-  catalog-manifest.json              schema 3；使用显式发布版本
+  catalog-manifest.json              schema 4；使用显式发布版本
   plugin-release-ledger.json
   .agents/ + .claude-plugin/ + plugins/<name>/
            │
-           │  Git publisher（catalog-only / combined / first bootstrap）
+           │  plan publisher 内部事务
            ▼
 Git catalog source
            │
@@ -418,7 +420,7 @@ Git catalog source
   <AW_HOME>/plugin-config/<sourceId>/<pluginName>/config.json
 ```
 
-这些层各有职责。Git publisher 把 schema 3 snapshot 发布到独立的 `catalog/beta` 或 `catalog/latest` channel，并用 immutable annotated catalog tag 保存版本身份。first bootstrap 只由维护者建立首次 official refs；后续使用普通 catalog-only 或 combined release。插件作者仍只维护 `plugins/<name>/` 源码和稳定 plugin version，不手改 remote refs、release ledger、source config 或 cache。旧 npm catalog packages 是冻结的发布历史，不是当前分发真值。
+这些层各有职责。plan publisher 把 schema 4 snapshot 发布到独立的 `catalog/beta` 或 `catalog/latest` channel，并用 immutable annotated catalog tag 保存版本身份。bootstrap、catalog-only、combined 和 promotion 是 plan/recovery 内核，不是公开正常入口。插件作者仍只维护 `plugins/<name>/` 源码和稳定 plugin version，不手改 remote refs、release ledger、source config 或 cache。旧 npm catalog packages 是冻结的发布历史，不是当前分发真值。
 
 project shared config 位于 `.agent-workflows/plugin-config/<sourceId>/<pluginName>/config.json`，可提交；project local 使用 `.agent-workflows/plugin-config.local/<sourceId>/<pluginName>/config.json`，默认应被 ignore。两者都使用 schema 2 source envelope。平台输出通过 owner schema 2 marker 保存 `sourceId` 和 qualified plugin identity。
 

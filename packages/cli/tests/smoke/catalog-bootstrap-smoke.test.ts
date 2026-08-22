@@ -7,6 +7,7 @@ import fs from 'fs-extra';
 import { afterEach, expect, it } from 'vitest';
 
 import { bootstrapCatalog } from '../../../../scripts/release/bootstrap-catalog.mjs';
+import { calculateCatalogContentDigest } from '../../../../scripts/release/release-model.mjs';
 import { stageCatalogRelease } from '../../../../scripts/release/stage-catalog.mjs';
 import * as pluginStaging from '../../scripts/plugin-staging.js';
 import * as catalogSnapshot from '../../src/utils/catalog-snapshot.js';
@@ -40,11 +41,40 @@ it('bootstraps both orphan channels, confirms idempotency, and fetches each thro
         releaseIdentity: object;
         snapshot: object;
       }) => {
+        const validation = await catalogSnapshot.validateCatalogSnapshot(
+          (options.snapshot as { catalogOutputRoot: string }).catalogOutputRoot,
+        );
+        const marketplace = await fs.readJson(path.join(
+          (options.snapshot as { catalogOutputRoot: string }).catalogOutputRoot,
+          '.agents', 'plugins', 'marketplace.json',
+        ));
+        const contentDigest = calculateCatalogContentDigest({
+          schemaIdentity: { schemaVersion: 4 },
+          marketplaceMetadata: {
+            name: marketplace.name,
+            owner: marketplace.owner,
+            interface: marketplace.interface,
+          },
+          compatibility: validation.manifest.compatibility,
+          plugins: validation.manifest.entries.map((entry) => ({
+            name: entry.name,
+            targetVersion: entry.version.replace(/-beta\.[1-9]\d*$/u, ''),
+            contentDigest: entry.contentDigest,
+          })),
+        });
+        const catalogVersion = argv[1]!;
         return stageCatalogRelease(argv, {
           internalOutputRoot: options.internalOutputRoot,
           previousReleaseLedger: options.previousReleaseLedger,
           releaseIdentity: options.releaseIdentity,
           snapshot: options.snapshot,
+          catalogRelease: {
+            state: 'published',
+            targetVersion: catalogVersion.replace(/-beta\.[1-9]\d*$/u, ''),
+            planId: `sha256:${'1'.repeat(64)}`,
+            sourceHead: '2'.repeat(40),
+            contentDigest,
+          },
         });
       },
     },

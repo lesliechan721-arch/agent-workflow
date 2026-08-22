@@ -26,11 +26,35 @@ import {
   withCatalogPublicationLease,
 } from './git-catalog-publisher.mjs';
 import {
-  prepareEvalPublication,
+  publishPreparedEvalPublication,
   publishCli,
+  withPreparedEvalPublication,
   withPreparedCliPublication,
 } from './publish-cli.mjs';
 import { stageCatalogRelease } from './stage-catalog.mjs';
+import { readRegistryReleaseHistory } from './release-observe.mjs';
+import { CLI_PACKAGES, normalizeCliRegistryHistory } from './release-state.mjs';
+
+export async function assertCompleteCliTrainTag(mode, candidateVersion, options = {}) {
+  const registry = await (options.readRegistryReleaseHistory
+    ?? readRegistryReleaseHistory)(options);
+  assertCompleteCliTrainTagObservation(mode, candidateVersion, registry);
+  return registry;
+}
+
+function assertCompleteCliTrainTagObservation(mode, candidateVersion, registry) {
+  const normalized = normalizeCliRegistryHistory(registry);
+  const tag = mode === 'beta' ? 'beta' : 'latest';
+  const versions = CLI_PACKAGES.map((packageName) => normalized.distTags[packageName][tag]);
+  if (versions.some((version) => version === null) || versions[0] !== versions[1]) {
+    throw new Error(`Catalog promotion requires matching published ${tag} dist-tags for both CLI packages.`);
+  }
+  if (versions[0] !== candidateVersion) {
+    throw new Error(
+      `Catalog promotion requires both ${tag} dist-tags to resolve to CLI candidate ${candidateVersion}.`,
+    );
+  }
+}
 
 export function parseArgs(argv) {
   const args = [...argv];
@@ -74,9 +98,7 @@ export async function publishRelease(argv = process.argv.slice(2), options = {})
     );
   }
   assertVersionKind(currentCliVersion, mode === 'beta' ? 'prerelease' : 'stable');
-  await (options.assertReleaseWorktreeClean ?? assertReleaseWorktreeClean)({
-    allowVersionSync: true,
-  });
+  await (options.assertReleaseWorktreeClean ?? assertReleaseWorktreeClean)();
   const snapshotRunner = options.withReleaseBuildSnapshot ?? withReleaseBuildSnapshot;
   return snapshotRunner(async (snapshot) => {
     const headCommit = await (options.resolveReleaseHead ?? resolveReleaseHead)();
@@ -85,11 +107,17 @@ export async function publishRelease(argv = process.argv.slice(2), options = {})
       ?? assertCurrentReleaseIdentity)(
       snapshot,
       releaseIdentity,
-      { allowVersionSync: true },
+      {},
     );
-    await (options.runCommand ?? runCommand)('pnpm', ['run', 'release:verify']);
+    const beforeRemoteWrite = async () => {
+      await assertFresh();
+      await options.beforeRemoteWrite?.();
+    };
+    if (!options.skipVerify) {
+      await (options.runCommand ?? runCommand)('pnpm', ['run', 'release:verify']);
+    }
     const remoteUrl = options.remoteUrl ?? OFFICIAL_CATALOG_PUBLISH_REMOTE;
-    return withPrivateCatalogStageRoot(async (internalOutputRoot) => {
+    return (options.withPrivateCatalogStageRoot ?? withPrivateCatalogStageRoot)(async (internalOutputRoot) => {
       await assertFresh();
       return (options.withCatalogPublicationLease ?? withCatalogPublicationLease)(
         remoteUrl,
@@ -109,17 +137,39 @@ export async function publishRelease(argv = process.argv.slice(2), options = {})
             previousReleaseLedger: resolveCatalogStageLedger(history),
             snapshot,
             releaseIdentity,
+            ...(options.catalogRelease ? { catalogRelease: options.catalogRelease } : {}),
           });
           assertStagedCatalogReleaseIdentity(staged, internalOutputRoot, releaseIdentity);
-          const publishedCliVersion = await (options.resolvePublishedCliVersion
-            ?? resolvePublishedCliVersion)(mode);
+          const publishedCliVersion = options.publishedVersion !== undefined
+            ? options.publishedVersion
+            : await (options.resolvePublishedCliVersion ?? resolvePublishedCliVersion)(mode);
+          if (publishedCliVersion === null && mode !== 'latest') {
+            throw new Error('An empty published CLI baseline is valid only for the committed first stable release.');
+          }
           const compare = history.catalogModules.pluginStaging.compareStrictSemVer;
           const minCliVersion = staged.manifest.compatibility.aw.minVersion;
-          const requiresCandidateCli = compare(publishedCliVersion, minCliVersion) < 0;
+          const requiresCandidateCli = publishedCliVersion === null
+            || compare(publishedCliVersion, minCliVersion) < 0;
           const resumeTagFirst = Boolean(
             history.tag
             && history.channels[mode]?.commit !== history.tag.commit,
           );
+          const completedTagFirst = Boolean(
+            options.expectedPublicationMode === 'tag-first'
+            && history.tag
+            && history.channels[mode]?.commit === history.tag.commit,
+          );
+          const selectedPublicationMode = requiresCandidateCli || resumeTagFirst || completedTagFirst
+            ? 'tag-first'
+            : 'atomic-combined';
+          if (
+            options.expectedPublicationMode
+            && options.expectedPublicationMode !== selectedPublicationMode
+          ) {
+            throw new Error(
+              `Observed release path ${selectedPublicationMode} does not match committed plan mode ${options.expectedPublicationMode}.`,
+            );
+          }
           if (compare(currentCliVersion, minCliVersion) < 0) {
             throw new Error(
               `Catalog ${catalogVersion} requires aw >= ${minCliVersion}, but the CLI candidate is ${currentCliVersion}.`,
@@ -129,15 +179,17 @@ export async function publishRelease(argv = process.argv.slice(2), options = {})
             tag: mode,
             versionKind: mode === 'beta' ? 'prerelease' : 'stable',
           };
-          const cliGate = {
-            ...resolveCliPublicationGate({
-              mode,
-              candidateVersion: currentCliVersion,
-              publishedVersion: publishedCliVersion,
-              compare,
-            }),
-            publishedVersion: publishedCliVersion,
-          };
+          const cliGate = publishedCliVersion === null
+            ? { status: 'publish', version: currentCliVersion, publishedVersion: null }
+            : {
+                ...resolveCliPublicationGate({
+                  mode,
+                  candidateVersion: currentCliVersion,
+                  publishedVersion: publishedCliVersion,
+                  compare,
+                }),
+                publishedVersion: publishedCliVersion,
+              };
           return (options.withPreparedCliPublication ?? withPreparedCliPublication)(
             mode,
             publishMode,
@@ -146,21 +198,27 @@ export async function publishRelease(argv = process.argv.slice(2), options = {})
             cliGate,
             assertFresh,
             async (cliPublication) => {
-              const evalPublication = await (options.prepareEvalPublication
-                ?? prepareEvalPublication)(
+              const prepareEval = options.withPreparedEvalPublication
+                ?? (options.prepareEvalPublication
+                  ? async (evalMode, evalPublishMode, evalSnapshot, evalVersion, evalFresh, callback, evalOptions) => callback(
+                      await options.prepareEvalPublication(
+                        evalMode, evalPublishMode, evalSnapshot, evalVersion, evalFresh, evalOptions,
+                      ),
+                    )
+                  : withPreparedEvalPublication);
+              return prepareEval(
                 mode,
                 publishMode,
                 snapshot,
                 currentCliVersion,
                 assertFresh,
-                {
-                  beforePublish: options.resolveCliPublishGitCheckArgs
-                    ?? resolveCliPublishGitCheckArgs,
-                  ...(options.evalPublicationOptions ?? {}),
-                },
-              );
+                async (evalCandidate) => {
+                  const publishEval = () => options.prepareEvalPublication
+                    ? evalCandidate
+                    : (options.publishPreparedEvalPublication
+                      ?? publishPreparedEvalPublication)(evalCandidate, assertFresh, options.evalPublicationOptions);
               await assertFresh();
-              if (!requiresCandidateCli && !resumeTagFirst) {
+              if (!requiresCandidateCli && !resumeTagFirst && !completedTagFirst) {
                 const catalog = await (options.publishStagedCatalog ?? publishStagedCatalog)(
                   history,
                   staged.outputRoot,
@@ -168,25 +226,31 @@ export async function publishRelease(argv = process.argv.slice(2), options = {})
                     ...options.publisherOptions,
                     publicationLease,
                     publicationMode: 'atomic',
-                    beforeRemoteWrite: assertFresh,
+                    beforeRemoteWrite,
                   },
                 );
                 try {
                   await assertFresh();
+                  const evalPublication = await publishEval();
                   const cli = await (options.publishCli ?? publishCli)([
                     mode,
                     '--cli-version',
                     currentCliVersion,
                   ], {
                     expectedVersion: currentCliVersion,
+                    readCliPackageJson: options.readCliPackageJson,
                     publishedVersion: publishedCliVersion,
                     compareSemVer: compare,
                     skipVerify: true,
                     snapshot,
                     releaseIdentity,
+                    assertCurrentReleaseIdentity: options.assertCurrentReleaseIdentity,
                     publicationLease,
                     evalPublication,
                     cliPublication,
+                    beforeNpmWrite: options.beforeNpmWrite,
+                    runCommand: options.runCommand,
+                    resolveCliPublishGitCheckArgs: options.resolveCliPublishGitCheckArgs,
                   });
                   return { path: 'catalog-first', catalog, cli, releaseIdentity };
                 } catch (error) {
@@ -205,26 +269,32 @@ export async function publishRelease(argv = process.argv.slice(2), options = {})
                   ...options.publisherOptions,
                   publicationLease,
                   publicationMode: 'tag',
-                  beforeRemoteWrite: assertFresh,
+                  beforeRemoteWrite,
                 },
               );
               let cli;
               try {
                 await assertFresh();
+                const evalPublication = await publishEval();
                 cli = await (options.publishCli ?? publishCli)([
                   mode,
                   '--cli-version',
                   currentCliVersion,
                 ], {
                   expectedVersion: currentCliVersion,
+                  readCliPackageJson: options.readCliPackageJson,
                   publishedVersion: publishedCliVersion,
                   compareSemVer: compare,
                   skipVerify: true,
                   snapshot,
                   releaseIdentity,
+                  assertCurrentReleaseIdentity: options.assertCurrentReleaseIdentity,
                   publicationLease,
                   evalPublication,
                   cliPublication,
+                  beforeNpmWrite: options.beforeNpmWrite,
+                  runCommand: options.runCommand,
+                  resolveCliPublishGitCheckArgs: options.resolveCliPublishGitCheckArgs,
                 });
               } catch (error) {
                 throw new Error(
@@ -235,13 +305,26 @@ export async function publishRelease(argv = process.argv.slice(2), options = {})
               }
               try {
                 await assertFresh();
+                const assertPromotionTrain = async () => {
+                  const registry = await (options.readLiveCliHistory
+                    ?? options.readRegistryReleaseHistory
+                    ?? readRegistryReleaseHistory)(options);
+                  await options.assertPromotionRegistryFresh?.(registry);
+                  assertCompleteCliTrainTagObservation(mode, currentCliVersion, registry);
+                  return registry;
+                };
+                await assertPromotionTrain();
                 const promotion = await (options.promoteCatalogTag ?? promoteCatalogTag)({
                   mode,
                   catalogVersion,
                   currentCliVersion,
                   remoteUrl,
                   publicationLease,
-                  beforeRemoteWrite: assertFresh,
+                  beforeAcquire: assertPromotionTrain,
+                  beforeRemoteWrite: async () => {
+                    await assertPromotionTrain();
+                    await (options.beforePromotionRemoteWrite ?? beforeRemoteWrite)();
+                  },
                   ...(options.catalogModules ? { catalogModules: options.catalogModules } : {}),
                 });
                 return { path: 'tag-first', catalog, cli, promotion, releaseIdentity };
@@ -253,6 +336,12 @@ export async function publishRelease(argv = process.argv.slice(2), options = {})
                   { cause: error },
                 );
               }
+                }, {
+                  beforePublish: options.resolveCliPublishGitCheckArgs
+                    ?? resolveCliPublishGitCheckArgs,
+                  ...(options.evalPublicationOptions ?? {}),
+                },
+              );
             },
             options.cliPublicationOptions,
           );
@@ -263,21 +352,11 @@ export async function publishRelease(argv = process.argv.slice(2), options = {})
   }, options.snapshotOptions);
 }
 
-export async function main(argv = process.argv.slice(2)) {
-  try {
-    const result = await publishRelease(argv);
-    console.log(
-      `Published combined ${result.path} release for catalog ${result.catalog.validation.manifest.catalogVersion}.` +
-      (result.cli?.status === 'already-published'
-        ? ` CLI ${result.cli.version} was already published; CLI publication was skipped.`
-        : ''),
-    );
-  } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
-    process.exitCode = 1;
-  }
-}
-
 const currentEntryPath = fileURLToPath(import.meta.url);
 const invokedPath = process.argv[1] ? path.resolve(process.argv[1]) : null;
-if (invokedPath === currentEntryPath) await main();
+if (invokedPath === currentEntryPath) {
+  process.stderr.write(
+    'Direct release helper execution is disabled. Use `pnpm release:publish` or `pnpm release:recover`.\n',
+  );
+  process.exitCode = 1;
+}

@@ -18,10 +18,18 @@ import {
 } from '../../../../scripts/release/git-catalog-publisher.mjs';
 import { bootstrapCatalog } from '../../../../scripts/release/bootstrap-catalog.mjs';
 import { stageCatalogRelease } from '../../../../scripts/release/stage-catalog.mjs';
+import { calculateCatalogContentDigest } from '../../../../scripts/release/release-model.mjs';
+import { observeReleaseHistory } from '../../../../scripts/release/release-observe.mjs';
+import { prepareRelease } from '../../../../scripts/release/release-prepare.mjs';
+import { normalizeReleasePlan } from '../../../../scripts/release/release-plan.mjs';
+import { publishCommittedRelease } from '../../../../scripts/release/publish-plan.mjs';
+import { recoverRelease } from '../../../../scripts/release/release-recover.mjs';
+import { calculateCliTrainContentDigest } from '../../../../scripts/release/release-model.mjs';
 import * as pluginStaging from '../../scripts/plugin-staging.js';
 import * as catalogSnapshot from '../../src/utils/catalog-snapshot.js';
 import { catalogGitProviderInternal } from '../../src/utils/git-catalog-provider.js';
 import { createCatalogSnapshotFixture } from '../helpers/catalog-source-fixture.js';
+import { calculateCatalogEntryContentDigest } from '../../src/utils/catalog-digests.js';
 
 const execFileAsync = promisify(execFile);
 const tempDirs: string[] = [];
@@ -95,6 +103,24 @@ async function stage(
     readme,
     (manifest) => { manifest.version = pluginVersion; },
   );
+  const sourceManifest = await fs.readJson(path.join(sourceRoot, 'catalog-manifest.json'));
+  const marketplace = await fs.readJson(path.join(sourceRoot, '.agents', 'plugins', 'marketplace.json'));
+  const catalogContentDigest = calculateCatalogContentDigest({
+    schemaIdentity: { schemaVersion: 4 },
+    marketplaceMetadata: {
+      name: marketplace.name,
+      owner: marketplace.owner,
+      interface: marketplace.interface,
+    },
+    compatibility: {
+      aw: { minVersion: pluginStaging.CATALOG_SCHEMA_4_CLI_FLOOR },
+    },
+    plugins: sourceManifest.entries.map((entry: { name: string; version: string; contentDigest: string }) => ({
+      name: entry.name,
+      targetVersion: entry.version,
+      contentDigest: entry.contentDigest,
+    })),
+  });
   const outputRoot = releaseOptions.internalOutputRoot
     ?? path.join(root, `publication-${catalogVersion}`, '.release', 'catalog-staging', 'catalog');
   await fs.ensureDir(path.dirname(path.dirname(path.dirname(outputRoot))));
@@ -104,6 +130,13 @@ async function stage(
       snapshot,
       internalOutputRoot: outputRoot,
       previousReleaseLedger,
+      catalogRelease: {
+        state: 'published',
+        targetVersion: catalogVersion.replace(/-beta\.[1-9]\d*$/u, ''),
+        planId: `sha256:${'1'.repeat(64)}`,
+        sourceHead: '2'.repeat(40),
+        contentDigest: catalogContentDigest,
+      },
       catalogModules,
       ...(releaseOptions.releaseIdentity
         ? { releaseIdentity: releaseOptions.releaseIdentity }
@@ -117,6 +150,102 @@ afterEach(async () => {
 });
 
 describe('Git catalog publisher', () => {
+  it('bootstraps an absent beta channel from one committed plan and retries it exactly', async () => {
+    const root = await fixtureRoot('aw-plan-bootstrap-');
+    const remoteUrl = await createBareRemote(root);
+    const snapshot = releaseSnapshot(root, '1.0.0-beta.1');
+    await createCatalogSnapshotFixture(snapshot.catalogOutputRoot);
+    const sourceManifest = await fs.readJson(path.join(snapshot.catalogOutputRoot, 'catalog-manifest.json'));
+    const marketplace = await fs.readJson(path.join(snapshot.catalogOutputRoot, '.agents', 'plugins', 'marketplace.json'));
+    const catalogContentDigest = calculateCatalogContentDigest({
+      schemaIdentity: { schemaVersion: 4 },
+      marketplaceMetadata: { name: marketplace.name, owner: marketplace.owner, interface: marketplace.interface },
+      compatibility: { aw: { minVersion: pluginStaging.CATALOG_SCHEMA_4_CLI_FLOOR } },
+      plugins: sourceManifest.entries.map((entry: { name: string; version: string; contentDigest: string }) => ({
+        name: entry.name, targetVersion: entry.version, contentDigest: entry.contentDigest,
+      })),
+    });
+    const planId = `sha256:${'7'.repeat(64)}`;
+    const evalContentDigest = `sha256:${'8'.repeat(64)}`;
+    const awContentDigest = `sha256:${'9'.repeat(64)}`;
+    const trainContentDigest = calculateCliTrainContentDigest([
+      { name: '@lesliechan721/agent-skill-eval', contentDigest: evalContentDigest },
+      { name: '@lesliechan721/aw', contentDigest: awContentDigest },
+    ]);
+    const previewRoot = path.join(root, 'preview', '.release', 'catalog-staging', 'catalog');
+    await fs.ensureDir(path.dirname(path.dirname(path.dirname(previewRoot))));
+    const preview = await stageCatalogRelease(['--catalog-version', '1.0.0-beta.1'], {
+      snapshot,
+      internalOutputRoot: previewRoot,
+      previousReleaseLedger: { schemaVersion: 2, records: [] },
+      pluginVersionOverrides: { demo: '1.0.0-beta.1' },
+      catalogRelease: {
+        state: 'published', targetVersion: '1.0.0', planId,
+        sourceHead: 'b'.repeat(40), contentDigest: catalogContentDigest,
+      },
+      catalogModules,
+    });
+    const plan = {
+      planId,
+      channel: 'beta',
+      source: { head: 'b'.repeat(40) },
+      history: {
+        catalog: { latest: null, beta: null, publicationGuard: null },
+        npm: {
+          packages: [
+            { name: '@lesliechan721/agent-skill-eval', versions: [] },
+            { name: '@lesliechan721/aw', versions: [] },
+          ],
+          distTags: [
+            { name: '@lesliechan721/agent-skill-eval', latest: null, beta: null },
+            { name: '@lesliechan721/aw', latest: null, beta: null },
+          ],
+        },
+      },
+      cli: {
+        action: 'skip', targetVersion: '1.0.0', candidateVersion: '1.0.0-beta.3',
+        trainContentDigest,
+        packages: [
+          { name: '@lesliechan721/agent-skill-eval', contentDigest: evalContentDigest },
+          { name: '@lesliechan721/aw', contentDigest: awContentDigest },
+        ],
+      },
+      catalog: {
+        action: 'publish', publicationMode: 'bootstrap', targetVersion: '1.0.0',
+        candidateVersion: '1.0.0-beta.1', catalogContentDigest,
+        snapshotDigest: preview.snapshotDigest, minCliVersion: pluginStaging.CATALOG_SCHEMA_4_CLI_FLOOR,
+      },
+      plugins: [{
+        name: 'demo', targetVersion: '1.0.0', candidateVersion: '1.0.0-beta.1',
+        contentDigest: sourceManifest.entries[0].contentDigest, action: 'publish',
+      }],
+    };
+    const options = {
+      remoteUrl,
+      catalogModules,
+      readCurrentReleasePlan: async () => ({ plan }),
+      assertPlanOnlyCommit: async () => undefined,
+      canonicalAssertCurrentReleaseIdentity: async () => undefined,
+      assertReleaseWorktreeClean: async () => undefined,
+      readRegistryReleaseHistory: async () => ({
+        '@lesliechan721/agent-skill-eval': [],
+        '@lesliechan721/aw': [],
+        distTags: {
+          '@lesliechan721/agent-skill-eval': { latest: null, beta: null },
+          '@lesliechan721/aw': { latest: null, beta: null },
+        },
+      }),
+      runCommand: async () => undefined,
+      withReleaseBuildSnapshot: async (callback: (value: typeof snapshot) => Promise<unknown>) => callback(snapshot),
+    };
+    await expect(publishCommittedRelease([], options)).resolves.toMatchObject({
+      path: 'bootstrap', catalog: { idempotent: false },
+    });
+    await expect(publishCommittedRelease([], options)).resolves.toMatchObject({
+      path: 'bootstrap', catalog: { idempotent: true },
+    });
+  });
+
   it('publishes sha1 objects when the environment and global Git config default to sha256', async () => {
     const root = await fixtureRoot('aw-catalog-sha1-format-');
     const remoteUrl = path.join(root, 'catalog.git');
@@ -361,18 +490,228 @@ describe('Git catalog publisher', () => {
     const retry = await publishStagedCatalog(retryHistory, retryStage.outputRoot, { publicationMode: 'tag' });
     expect(retry.idempotent).toBe(true);
     expect(retry.commit).toBe(tagged.commit);
-    const promotion = await promoteCatalogTag({
-      mode: 'latest',
-      catalogVersion: '1.0.0',
-      currentCliVersion: '1.0.0',
+    const driftingCliTrain = vi.fn()
+      .mockResolvedValueOnce('1.0.0')
+      .mockResolvedValueOnce('1.0.1');
+    await expect(recoverRelease(['catalog', '1.0.0'], {
       remoteUrl,
       catalogModules,
+      assertReleaseWorktreeClean: async () => undefined,
+      runCommand: async () => undefined,
+      resolvePublishedCliTrain: driftingCliTrain,
+    })).rejects.toThrow('identity changed during catalog recovery');
+    await expect(git(['--git-dir', remoteUrl, 'rev-parse', CATALOG_CHANNEL_REFS.latest]))
+      .rejects.toThrow();
+    expect(await git(['--git-dir', remoteUrl, 'rev-parse', CATALOG_TAG_FIRST_PENDING_REF]))
+      .toBe(tagged.commit);
+    const promotion = await recoverRelease(['catalog', '1.0.0'], {
+      remoteUrl,
+      catalogModules,
+      assertReleaseWorktreeClean: async () => undefined,
+      runCommand: async () => undefined,
+      resolvePublishedCliTrain: async () => '1.0.0',
     });
     expect(promotion.promoted).toBe(true);
     expect(await git(['--git-dir', remoteUrl, 'rev-parse', CATALOG_CHANNEL_REFS.latest]))
       .toBe(tagged.commit);
     await expect(git(['--git-dir', remoteUrl, 'rev-parse', CATALOG_TAG_FIRST_PENDING_REF]))
       .rejects.toThrow();
+    await expect(recoverRelease(['catalog', '1.0.0'], {
+      remoteUrl,
+      catalogModules,
+      assertReleaseWorktreeClean: async () => undefined,
+      runCommand: async () => undefined,
+      resolvePublishedCliTrain: async () => '1.0.0',
+    })).rejects.toThrow('requires the exact immutable tag and tag-first pending guard');
+  });
+
+  it('roundtrips guarded promotion when CLI and Catalog use different candidate versions', async () => {
+    const root = await fixtureRoot('aw-catalog-pending-beta-plan-');
+    const planRepo = path.join(root, 'plan-repo');
+    await fs.ensureDir(planRepo);
+    await git(['-C', planRepo, 'init', '--quiet']);
+    await git(['-C', planRepo, 'config', 'user.name', 'Release Test']);
+    await git(['-C', planRepo, 'config', 'user.email', 'release@example.test']);
+    await fs.outputFile(path.join(planRepo, 'source.txt'), 'source\n');
+    await git(['-C', planRepo, 'add', 'source.txt']);
+    await git(['-C', planRepo, 'commit', '--quiet', '-m', 'source']);
+    const sourceHead = await git(['-C', planRepo, 'rev-parse', 'HEAD']);
+    await fs.ensureDir(path.join(planRepo, 'release'));
+    const remoteUrl = await createBareRemote(root);
+    const initial = await readCatalogPublicationHistory({
+      mode: 'beta', catalogVersion: '2.0.0-beta.1', remoteUrl, catalogModules,
+    });
+    const staged = await stage(root, '2.0.0-beta.1', initial.mergedLedger);
+    const tagged = await publishStagedCatalog(initial, staged.outputRoot, { publicationMode: 'tag' });
+    const packageContents = [
+      { name: '@lesliechan721/agent-skill-eval', contentDigest: `sha256:${'3'.repeat(64)}` },
+      { name: '@lesliechan721/aw', contentDigest: `sha256:${'4'.repeat(64)}` },
+    ];
+    const trainContentDigest = calculateCliTrainContentDigest(packageContents);
+    const catalogOrigin = staged.manifest.release;
+    const metadata = (packageContentDigest: string) => ({
+      schemaVersion: 1,
+      targetVersion: '1.0.0',
+      candidateVersion: '1.0.0-beta.1',
+      planId: catalogOrigin.planId,
+      sourceHead: catalogOrigin.sourceHead,
+      packageContentDigest,
+      trainContentDigest,
+    });
+    const registry = {
+      '@lesliechan721/agent-skill-eval': [{
+        version: '1.0.0-beta.1', awRelease: metadata(packageContents[0]!.contentDigest),
+      }],
+      '@lesliechan721/aw': [{
+        version: '1.0.0-beta.1', awRelease: metadata(packageContents[1]!.contentDigest),
+      }],
+      distTags: {
+        '@lesliechan721/agent-skill-eval': { latest: null, beta: '1.0.0-beta.1' },
+        '@lesliechan721/aw': { latest: null, beta: '1.0.0-beta.1' },
+      },
+    };
+    const targets = { schemaVersion: 1, cli: '1.0.0', catalog: '2.0.0' };
+    const readHistory = () => observeReleaseHistory({
+      targets,
+      channel: 'beta',
+      cliDistRoot: path.join(root, 'unused-dist'),
+      readRegistryHistory: async () => registry,
+      readCatalogHistory: (options) => readCatalogPublicationHistory({
+        ...options, remoteUrl, catalogModules,
+      }),
+    });
+    const history = await readHistory();
+    expect(history.catalog).toMatchObject({
+      pending: tagged.commit,
+      tag: { commit: tagged.commit, manifest: { catalogVersion: '2.0.0-beta.1' } },
+    });
+    const stableHistory = await observeReleaseHistory({
+      targets,
+      channel: 'stable',
+      cliDistRoot: path.join(root, 'unused-dist'),
+      readRegistryHistory: async () => registry,
+      readCatalogHistory: (options) => readCatalogPublicationHistory({
+        ...options, remoteUrl, catalogModules,
+      }),
+    });
+    expect(stableHistory.catalog).toMatchObject({
+      pending: tagged.commit,
+      tag: {
+        commit: tagged.commit,
+        manifest: { catalogVersion: '2.0.0-beta.1', channel: 'beta' },
+      },
+    });
+    const guardedBetaHistory = await readCatalogPublicationHistory({
+      mode: 'beta', catalogVersion: '2.0.0-beta.1', remoteUrl, catalogModules,
+    });
+    const taggedEntry = staged.manifest.entries[0]!;
+    const content = {
+      source: {
+        head: sourceHead,
+        releaseInputDigest: `sha256:${'1'.repeat(64)}`,
+        buildOutputDigest: `sha256:${'2'.repeat(64)}`,
+        cliPackageDigest: `sha256:${'5'.repeat(64)}`,
+      },
+      cli: {
+        trainContentDigest,
+        packages: packageContents.map((entry, index) => ({
+          ...entry, tarballDigest: `sha256:${String(index + 8).repeat(64)}`,
+        })),
+      },
+      catalog: {
+        minCliVersion: staged.manifest.compatibility.aw.minVersion,
+        contentDigest: history.catalog.tag!.catalogContentDigest,
+        plugins: [{
+          name: taggedEntry.name,
+          targetVersion: taggedEntry.version.replace(/-beta\.[1-9]\d*$/u, ''),
+          contentDigest: taggedEntry.contentDigest,
+        }],
+      },
+    };
+    const stablePrepared = await prepareRelease(['stable'], {
+      repoRoot: root,
+      assertClean: async () => undefined,
+      assertFresh: async () => undefined,
+      assertTargetsMatchHead: async () => undefined,
+      readTargets: async () => targets,
+      observe: async () => ({ targets, content, history: stableHistory }),
+      observeRemoteHistory: async () => stableHistory,
+      materializeCliPlanArtifacts: async (status) => status.cli.packages,
+      materializeCatalogPlanArtifact: async () => null,
+      writePlan: async () => ({
+        created: true,
+        planPath: path.join(root, 'stable-plan.json'),
+        pointerPath: path.join(root, 'stable-current-plan.json'),
+      }),
+    });
+    expect(stablePrepared.plan).toMatchObject({
+      channel: 'stable',
+      cli: { action: 'publish', candidateVersion: '1.0.0' },
+      catalog: { action: 'deferred', publicationMode: 'none', snapshotDigest: null },
+    });
+    const prepared = await prepareRelease(['beta'], {
+      repoRoot: planRepo,
+      assertClean: async () => undefined,
+      assertFresh: async () => undefined,
+      assertTargetsMatchHead: async () => undefined,
+      readTargets: async () => targets,
+      observe: async () => ({ targets, content, history }),
+      observeRemoteHistory: readHistory,
+      materializeCliPlanArtifacts: async (status) => status.cli.packages,
+      materializeCatalogPlanArtifact: async () => staged.snapshotDigest,
+    });
+    expect(prepared.status.catalog).toMatchObject({
+      action: 'recover', candidateVersion: '2.0.0-beta.1', publicationMode: 'promotion',
+    });
+    expect(prepared.plan!.planId).not.toBe(catalogOrigin.planId);
+    expect(prepared.plan!.history.catalog.tag).toMatchObject({
+      snapshotDigest: staged.snapshotDigest,
+      origin: {
+        planId: catalogOrigin.planId,
+        sourceHead: catalogOrigin.sourceHead,
+        contentDigest: catalogOrigin.contentDigest,
+      },
+    });
+    const tamperedPlan = structuredClone(prepared.plan!);
+    tamperedPlan.history.catalog.tag!.origin!.sourceHead = 'f'.repeat(40);
+    expect(() => normalizeReleasePlan(tamperedPlan)).toThrow();
+
+    await git(['-C', planRepo, 'add', 'release']);
+    await git(['-C', planRepo, 'commit', '--quiet', '-m', 'release plan']);
+
+    await git(['--git-dir', remoteUrl, 'update-ref', '-d', CATALOG_TAG_FIRST_PENDING_REF]);
+    await expect(publishStagedCatalog(
+      { ...guardedBetaHistory, pending: null },
+      staged.outputRoot,
+      { publicationMode: 'tag' },
+    )).rejects.toThrow('no tag-first pending guard');
+    await expect(readHistory()).rejects.toThrow('ahead of its channel without the tag-first pending guard');
+    await expect(prepareRelease(['beta'], {
+      repoRoot: root,
+      assertClean: async () => undefined,
+      assertFresh: async () => undefined,
+      assertTargetsMatchHead: async () => undefined,
+      readTargets: async () => targets,
+      observe: async () => ({ targets, content, history }),
+      observeRemoteHistory: readHistory,
+    })).rejects.toThrow('ahead of its channel without the tag-first pending guard');
+
+    await git([
+      '--git-dir', remoteUrl, 'update-ref', CATALOG_TAG_FIRST_PENDING_REF, tagged.commit,
+    ]);
+    await expect(publishCommittedRelease([], {
+      repoRoot: planRepo,
+      remoteUrl,
+      catalogModules,
+      runCommand: async () => undefined,
+      readRegistryReleaseHistory: async () => registry,
+      canonicalAssertCurrentReleaseIdentity: async () => undefined,
+    })).resolves.toMatchObject({ path: 'promotion', promotion: { promoted: true } });
+    const promoted = await readCatalogPublicationHistory({
+      mode: 'beta', catalogVersion: '2.0.0-beta.1', remoteUrl, catalogModules,
+    });
+    expect(promoted.channels.beta?.commit).toBe(tagged.commit);
+    expect(promoted.pending).toBeNull();
   });
 
   it('rejects same-version channel drift and existing tag runtime drift', async () => {
@@ -416,6 +755,28 @@ describe('Git catalog publisher', () => {
     );
     await expect(publishStagedCatalog(taggedHistory, tagDrift.outputRoot, { publicationMode: 'tag' }))
       .rejects.toThrow('maps to different runtime content');
+  });
+
+  it('scans every canonical Catalog tag for an unguarded publication ahead of its own channel', async () => {
+    const root = await fixtureRoot('aw-catalog-all-tag-guard-');
+    const remoteUrl = await createBareRemote(root);
+    const oldHistory = await readCatalogPublicationHistory({
+      mode: 'latest', catalogVersion: '1.0.0', remoteUrl, catalogModules,
+    });
+    const oldStage = await stage(root, '1.0.0', oldHistory.mergedLedger);
+    const oldTag = await publishStagedCatalog(oldHistory, oldStage.outputRoot, { publicationMode: 'tag' });
+    await git(['--git-dir', remoteUrl, 'update-ref', '-d', CATALOG_TAG_FIRST_PENDING_REF]);
+
+    await expect(readCatalogPublicationHistory({
+      mode: 'latest', catalogVersion: '2.0.0', remoteUrl, catalogModules,
+    })).rejects.toThrow('catalog-v1.0.0 is ahead of its channel');
+
+    await git([
+      '--git-dir', remoteUrl, 'update-ref', CATALOG_CHANNEL_REFS.latest, oldTag.commit,
+    ]);
+    await expect(readCatalogPublicationHistory({
+      mode: 'latest', catalogVersion: '2.0.0', remoteUrl, catalogModules,
+    })).resolves.toMatchObject({ pending: null, tag: null });
   });
 
   it('rejects reuse of an existing tag when its normalized release ledger differs', async () => {
@@ -726,12 +1087,28 @@ describe('Git catalog publisher', () => {
       'README.md',
       path.join(initialStage.outputRoot, 'plugins', 'demo', 'current-readme'),
     );
+    const changedContentDigest = await calculateCatalogEntryContentDigest(
+      path.join(initialStage.outputRoot, 'plugins', 'demo'),
+    );
     await pluginStaging.stageCatalogArtifacts({
       repoRoot: root,
       outputRoot: initialStage.outputRoot,
       phase: 'release',
       catalogVersion: '1.0.0',
       previousReleaseLedger: initialHistory.mergedLedger,
+      release: {
+        ...initialStage.manifest.release,
+        contentDigest: calculateCatalogContentDigest({
+          schemaIdentity: { schemaVersion: 4 },
+          marketplaceMetadata: {
+            name: 'aw',
+            owner: { name: 'Fixture Owner' },
+            interface: { displayName: 'Fixture Marketplace' },
+          },
+          compatibility: { aw: { minVersion: pluginStaging.CATALOG_SCHEMA_4_CLI_FLOOR } },
+          plugins: [{ name: 'demo', targetVersion: '1.0.0', contentDigest: changedContentDigest }],
+        }),
+      },
     });
     await publishStagedCatalog(initialHistory, initialStage.outputRoot);
 

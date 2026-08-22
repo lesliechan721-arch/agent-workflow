@@ -2,14 +2,20 @@
 
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 
 const execFileAsync = promisify(execFile);
-const root = path.dirname(fileURLToPath(import.meta.url));
+const localRoot = path.dirname(fileURLToPath(import.meta.url));
+const context = process.env.AW_PLUGIN_CONTEXT
+  ? JSON.parse(await readFile(process.env.AW_PLUGIN_CONTEXT, 'utf8'))
+  : null;
+const root = context
+  ? path.join(context.plugin.rootDir, context.platform, 'skills/review-agent-skill/scripts')
+  : localRoot;
 const validator = path.join(root, 'validate-review-result-lite.mjs');
 const temp = await mkdtemp(path.join(os.tmpdir(), 'system-review-contract-'));
 const digest = 'sha256:' + 'a'.repeat(64);

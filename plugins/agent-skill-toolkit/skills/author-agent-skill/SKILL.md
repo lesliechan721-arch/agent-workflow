@@ -2,7 +2,7 @@
 name: author-agent-skill
 description: >-
   当用户要从零创建、重写或变更一个通用 Agent Skill 包时使用，包括 SKILL.md、description、references、scripts、assets、平台元数据和作者期 eval strategy。负责写入和确定性自检；不负责项目专有插件布局、构建、物化或发布流程，也不负责独立质量评分或发布裁决。项目适配器可以显式把本 Skill 作为叶子能力调用。
-compatibility: bundled validator 需要 Node.js 20+；编写 Agent-facing 文本需要已安装 agent-content-toolkit >= 0.5.0。
+compatibility: bundled validator 需要 Node.js 20+；编写 Agent-facing 文本需要已安装 agent-content-toolkit >= 0.1.0。
 metadata:
   short-description: 创建或变更最小、可组合、可验证的 Agent Skill 包
 ---

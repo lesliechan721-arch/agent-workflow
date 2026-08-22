@@ -2,7 +2,7 @@
   "schemaVersion": 4,
   "contentRuleSource": {
     "plugin": "agent-content-toolkit",
-    "minimumVersion": "0.5.0",
+    "minimumVersion": "0.1.0",
     "path": "standards/rules.json",
     "digest": "sha256:0ab0d872c3b94af3f226085861d9bfe616df6abc16f0f6f76dd8825070adb6fb"
   },

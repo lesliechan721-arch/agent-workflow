@@ -24,7 +24,7 @@
 
 ## 边界
 
-- 需要 `agent-skill-toolkit >= 0.5.0` 和 `@lesliechan721/agent-skill-eval >= 0.1.0-beta.2`。共享包跟随 AW lockstep 版本，不设独立 SemVer 上界；运行时根据 bin、capabilities v1 和 plan/audit/bundle schema v2 fail closed。
+- 需要 `agent-skill-toolkit` 和 `@lesliechan721/agent-skill-eval`。共享包跟随 AW lockstep 版本；运行时根据 bin、capabilities v1 和 plan/audit/bundle schema v2 fail closed。
 - 不使用 `npx`，也不隐式安装或下载依赖。
 - Provider 命令、模型成本、认证环境、网络和外部进程必须由用户明确授权。
 - 共享包负责 provider、snapshot、进程、timeout、采集、bundle 和 evidence level；本 Skill 只负责人工 gate、preflight、命令编排和 triage 交接。
