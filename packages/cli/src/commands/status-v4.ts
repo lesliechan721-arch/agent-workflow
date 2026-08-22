@@ -4,6 +4,7 @@ import path from 'node:path';
 import type {
   CatalogSource,
   PlatformName,
+  PluginMeta,
   PluginConfigSchemaField,
   Scope,
 } from '../types.js';
@@ -37,6 +38,10 @@ import { resolveAwHome } from '../utils/paths.js';
 import type { OwnedComponent, OwnershipInspection } from '../utils/ownership.js';
 import { getClaudeHome, getCodexHome } from '../utils/state-paths.js';
 import { resolveEffectivePluginConfig } from '../utils/plugin-config.js';
+import {
+  InstallationContractError,
+  readInstallationContract,
+} from '../utils/installation-contract-store.js';
 
 export interface StatusV4CatalogSource {
   id: string;
@@ -64,6 +69,10 @@ export interface StatusV4Target {
   state: 'present' | 'absent' | 'partial' | 'error';
   components: StatusV4Component[];
   errors: Array<{ code: string; message: string }>;
+  dependency?: {
+    directCount: number;
+    issueCount: number;
+  };
 }
 
 export interface StatusV4Component {
@@ -105,6 +114,7 @@ interface StatusPluginCapability {
     errors: StatusV4Target['errors'];
     components: StatusV4Component[];
   }>>>>;
+  dependencies: string[];
 }
 
 export interface StatusV4PluginSummary {
@@ -123,6 +133,15 @@ export interface StatusV4PluginSummary {
     source: 'default' | 'user' | 'project' | 'projectLocal' | 'missing';
   }>;
   configDiagnostic?: { code: 'configReadFailed'; message: string };
+  dependencyDirectCount?: number;
+  dependencyTotalCount?: number;
+  dependencyIssueCount?: number;
+}
+
+let dependencyInspectionHookForTests: (() => void) | undefined;
+
+export function setStatusDependencyInspectionHookForTests(hook: (() => void) | undefined): void {
+  dependencyInspectionHookForTests = hook;
 }
 
 interface PlannedStatusSelector {
@@ -261,6 +280,11 @@ export async function statusCommandV4(options: {
   pluginSummaries: StatusV4PluginSummary[];
 }> {
   const env = options.env ?? process.env;
+  const dependencyPluginCache = new Map<string, Promise<PluginMeta>>();
+  const dependencyInspectionCache = new Map<
+    string,
+    Promise<StatusV4Target['state']>
+  >();
   const cliVersion = options.cliVersion ?? assertStrictSemVer(
     (JSON.parse(fs.readFileSync(path.join(resolveCliPackageRoot(), 'package.json'), 'utf8')) as {
       version?: unknown;
@@ -470,16 +494,176 @@ export async function statusCommandV4(options: {
                         debugLogger: createNoopDebugLogger(),
                       },
                     });
+                    const liveState = projectedLiveState({
+                      inspection: inspected.inspection,
+                      required: inspected.target.desiredOwnedComponents ?? inspected.target.ownedComponents,
+                      optional: inspected.target.optionalOwnedComponents ?? [],
+                    });
+                    const dependencyErrors: Array<{ code: string; message: string }> = [];
+                    const directDependencies = plugin.manifest.dependencies ?? [];
+                    if (directDependencies.length > 0
+                      && (liveState === 'present' || liveState === 'partial')) {
+                      try {
+                        const contract = await readInstallationContract({
+                          sourceId: item.resolution!.sourceId,
+                          sourceIdentity: item.resolution!.sourceIdentity,
+                          pluginName: entry.name,
+                          platform,
+                          scope,
+                          cwd: options.cwd,
+                          env,
+                        });
+                        if (!contract) {
+                          dependencyErrors.push({
+                            code: 'dependencyContractMissing',
+                            message: `dependencyContractMissing: ${plugin.pluginId} has no installation contract for this live target.`,
+                          });
+                        } else {
+                          const currentEntry = item.resolution!.manifest.entries.find((candidate) =>
+                            candidate.name === entry.name)!;
+                          if (contract.metadata.sourceIdentity !== item.resolution!.sourceIdentity
+                            || contract.metadata.contentDigest !== currentEntry.contentDigest) {
+                            dependencyErrors.push({
+                              code: 'sourceChanged',
+                              message: `sourceChanged: ${plugin.pluginId} installation contract does not match the current source snapshot.`,
+                            });
+                          } else {
+                            const recordedIds = contract.metadata.dependencies.map((dependency) =>
+                              dependency.pluginId).sort();
+                            const expectedIds = directDependencies.map((dependencyName) => formatPluginId({
+                              sourceId: item.resolution!.sourceId,
+                              pluginName: dependencyName,
+                            })).sort();
+                            if (recordedIds.join('\0') !== expectedIds.join('\0')) {
+                              dependencyErrors.push({
+                                code: 'dependencyContractInvalid',
+                                message: `dependencyContractInvalid: ${plugin.pluginId} dependency edges do not match its installed content.`,
+                              });
+                            }
+                            for (const dependency of contract.metadata.dependencies) {
+                              if (dependency.sourceId !== item.resolution!.sourceId
+                                || dependency.sourceIdentity !== item.resolution!.sourceIdentity) {
+                                dependencyErrors.push({
+                                  code: 'dependencyIdentityMismatch',
+                                  message: `dependencyIdentityMismatch: ${plugin.pluginId} has dependency evidence for a different source identity.`,
+                                });
+                                continue;
+                              }
+                              if (dependency.platform !== platform) {
+                                dependencyErrors.push({
+                                  code: 'dependencyPlacementMismatch',
+                                  message: `dependencyPlacementMismatch: ${plugin.pluginId} has dependency evidence for a different platform.`,
+                                });
+                                continue;
+                              }
+                              const dependencyName = parsePluginId(dependency.pluginId).pluginName;
+                              const dependencyEntry = item.resolution!.manifest.entries.find((candidate) =>
+                                candidate.name === dependencyName);
+                              if (!dependencyEntry) {
+                                dependencyErrors.push({
+                                  code: 'dependencyMissing',
+                                  message: `dependencyMissing: ${dependency.pluginId} is not available in the current source snapshot.`,
+                                });
+                                continue;
+                              }
+                              const pluginCacheKey = [
+                                item.resolution!.sourceIdentity,
+                                dependency.pluginId,
+                              ].join('\0');
+                              let dependencyPluginPromise = dependencyPluginCache.get(pluginCacheKey);
+                              if (!dependencyPluginPromise) {
+                                dependencyPluginPromise = readPluginManifest(
+                                  path.join(item.resolution!.rootDir, 'plugins', dependencyName),
+                                  { mode: 'bundle' },
+                                ).then((dependencyPlugin) => {
+                                  dependencyPlugin.sourceId = item.resolution!.sourceId;
+                                  dependencyPlugin.sourceIdentity = item.resolution!.sourceIdentity;
+                                  dependencyPlugin.pluginId = dependency.pluginId;
+                                  return dependencyPlugin;
+                                });
+                                dependencyPluginCache.set(pluginCacheKey, dependencyPluginPromise);
+                              }
+                              const inspectionCacheKey = [
+                                item.resolution!.sourceIdentity,
+                                dependency.pluginId,
+                                dependency.platform,
+                                dependency.scope,
+                                dependency.projectKey ?? '',
+                              ].join('\0');
+                              let dependencyInspection = dependencyInspectionCache.get(inspectionCacheKey);
+                              if (!dependencyInspection) {
+                                dependencyInspection = dependencyPluginPromise.then(async (dependencyPlugin) => {
+                                  dependencyInspectionHookForTests?.();
+                                  const dependencyInspected = await inspectRebuildTarget({
+                                    sourceId: item.resolution!.sourceId,
+                                    sourceIdentity: item.resolution!.sourceIdentity,
+                                    pluginId: dependency.pluginId,
+                                    marketplaceName,
+                                    marketplaceRoot,
+                                    plugin: dependencyPlugin,
+                                    platform: dependency.platform,
+                                    scope: dependency.scope,
+                                    cwd: dependency.projectKey ?? options.cwd,
+                                    catalog: { rootDir: item.resolution!.rootDir, source: 'local' },
+                                    context: {
+                                      env,
+                                      nativeCliRunner: getDefaultNativeCliRunner(),
+                                      reporter: createNoopReporter(),
+                                      debugLogger: createNoopDebugLogger(),
+                                    },
+                                  });
+                                  return projectedLiveState({
+                                    inspection: dependencyInspected.inspection,
+                                    required: dependencyInspected.target.desiredOwnedComponents
+                                      ?? dependencyInspected.target.ownedComponents,
+                                    optional: dependencyInspected.target.optionalOwnedComponents ?? [],
+                                  });
+                                });
+                                dependencyInspectionCache.set(inspectionCacheKey, dependencyInspection);
+                              }
+                              const dependencyState = await dependencyInspection;
+                              if (dependencyState === 'absent') {
+                                dependencyErrors.push({
+                                  code: 'dependencyMissing',
+                                  message: `dependencyMissing: ${dependency.pluginId} is absent at its recorded target.`,
+                                });
+                              } else if (dependencyState !== 'present') {
+                                dependencyErrors.push({
+                                  code: 'dependencyNotReady',
+                                  message: `dependencyNotReady: ${dependency.pluginId} is not ready at its recorded target.`,
+                                });
+                              }
+                            }
+                          }
+                        }
+                      } catch (error) {
+                        const changedContract = ownerInventory.references.some((reference) =>
+                          reference.kind === 'installationContract'
+                          && reference.sourceId === item.resolution!.sourceId
+                          && reference.pluginName === entry.name
+                          && reference.platform === platform
+                          && reference.scope === scope
+                          && reference.sourceIdentity !== item.resolution!.sourceIdentity);
+                        dependencyErrors.push({
+                          code: changedContract
+                            ? 'sourceChanged'
+                            : error instanceof InstallationContractError
+                            ? 'dependencyContractInvalid'
+                            : 'dependencyNotReady',
+                          message: changedContract
+                            ? `sourceChanged: ${plugin.pluginId} installation contract has a different source identity.`
+                            : error instanceof InstallationContractError
+                            ? `dependencyContractInvalid: ${plugin.pluginId} installation contract is invalid.`
+                            : `dependencyNotReady: ${plugin.pluginId} dependency state could not be inspected.`,
+                        });
+                      }
+                    }
                     states[platform]![scope] = {
-                      state: projectedLiveState({
-                        inspection: inspected.inspection,
-                        required: inspected.target.desiredOwnedComponents ?? inspected.target.ownedComponents,
-                        optional: inspected.target.optionalOwnedComponents ?? [],
-                      }),
-                      errors: inspected.inspection.errors.map((error) => ({
+                      state: dependencyErrors.length > 0 && liveState === 'present' ? 'partial' : liveState,
+                      errors: [...inspected.inspection.errors.map((error) => ({
                         code: 'componentInspectionFailed',
                         message: `${error.label}: ${error.message}`,
-                      })),
+                      })), ...dependencyErrors],
                       components: options.verbose === true
                         ? inspected.inspection.components.map((component) => {
                             const projectedError = component.diagnostic
@@ -536,6 +720,7 @@ export async function statusCommandV4(options: {
                   },
                 },
                 states,
+                dependencies: plugin.manifest.dependencies ?? [],
               };
             }),
           );
@@ -636,6 +821,8 @@ export async function statusCommandV4(options: {
       };
       if (entry.targets[platform][scope]) {
         const live = entry.states[platform]?.[scope];
+        const dependencyIssueCount = (live?.errors ?? []).filter((error) =>
+          error.code.startsWith('dependency') || error.code === 'sourceChanged').length;
         return [{
           ...target,
           state: live?.state ?? 'error',
@@ -644,6 +831,12 @@ export async function statusCommandV4(options: {
             code: 'targetInspectionFailed',
             message: `No live inspection result exists for ${entry.source.id}/${entry.name}.`,
           }],
+          ...(entry.dependencies.length > 0 ? {
+            dependency: {
+              directCount: entry.dependencies.length,
+              issueCount: dependencyIssueCount,
+            },
+          } : {}),
         }];
       }
       const unsupportedLiveReference = ownerInventory.references.find((reference) =>
@@ -840,20 +1033,42 @@ export async function statusCommandV4(options: {
     payload,
     output: options.json ? JSON.stringify(payload) : renderStatusV4(payload, options.verbose === true),
     hasErrors,
-    pluginSummaries: available.map((entry) => ({
-      pluginName: entry.name,
-      pluginId: formatPluginId({ sourceId: entry.source.id, pluginName: entry.name }),
-      displayName: entry.displayName,
-      description: entry.shortDescription,
-      version: entry.version,
-      supportedTargets: {
-        codex: (['user', 'project'] as const).filter((scope) => entry.targets.codex[scope]),
-        claude: (['user', 'project'] as const).filter((scope) => entry.targets.claude[scope]),
-      },
-      configFieldCount: Object.keys(entry.configSchema ?? {}).length,
-      ...(entry.configSchema ? { configSchema: entry.configSchema } : {}),
-      ...(entry.configIssues ? { configIssues: entry.configIssues } : {}),
-      ...(entry.configDiagnostic ? { configDiagnostic: entry.configDiagnostic } : {}),
-    })),
+    pluginSummaries: available.map((entry) => {
+      const sourceEntries = available.filter((candidate) => candidate.source.id === entry.source.id);
+      const byName = new Map(sourceEntries.map((candidate) => [candidate.name, candidate]));
+      const transitive = new Set<string>();
+      const visit = (name: string): void => {
+        const candidate = byName.get(name);
+        for (const dependency of candidate?.dependencies ?? []) {
+          if (transitive.has(dependency)) continue;
+          transitive.add(dependency);
+          visit(dependency);
+        }
+      };
+      visit(entry.name);
+      const dependencyIssueCount = targets.filter((target) => target.pluginId === formatPluginId({
+        sourceId: entry.source.id,
+        pluginName: entry.name,
+      })).reduce((count, target) => count + target.errors.filter((error) =>
+        error.code.startsWith('dependency') || error.code === 'sourceChanged').length, 0);
+      return {
+        pluginName: entry.name,
+        pluginId: formatPluginId({ sourceId: entry.source.id, pluginName: entry.name }),
+        displayName: entry.displayName,
+        description: entry.shortDescription,
+        version: entry.version,
+        supportedTargets: {
+          codex: (['user', 'project'] as const).filter((scope) => entry.targets.codex[scope]),
+          claude: (['user', 'project'] as const).filter((scope) => entry.targets.claude[scope]),
+        },
+        configFieldCount: Object.keys(entry.configSchema ?? {}).length,
+        ...(entry.configSchema ? { configSchema: entry.configSchema } : {}),
+        ...(entry.configIssues ? { configIssues: entry.configIssues } : {}),
+        ...(entry.configDiagnostic ? { configDiagnostic: entry.configDiagnostic } : {}),
+        dependencyDirectCount: entry.dependencies.length,
+        dependencyTotalCount: transitive.size,
+        dependencyIssueCount,
+      };
+    }),
   };
 }

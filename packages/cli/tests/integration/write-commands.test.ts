@@ -8,6 +8,10 @@ import {
   upgradeWriteCommand,
 } from '../../src/commands/write-commands.js';
 import { setRebuildCommandTestHooksForTests } from '../../src/commands/rebuild-command.js';
+import {
+  setStatusDependencyInspectionHookForTests,
+  statusCommandV4,
+} from '../../src/commands/status-v4.js';
 import { createCliExecutionContext } from '../../src/commands/runtime.js';
 import { createTuiControllerDependencies } from '../../src/tui/controller-runtime.js';
 import { TuiController } from '../../src/tui/controller.js';
@@ -39,7 +43,10 @@ import { writeSkillOwnerMarker } from '../../src/utils/ownership.js';
 import { setPluginConfigWriteTestHooksForTests } from '../../src/utils/plugin-config-write.js';
 import {
   readInstallationContract,
+  promoteInstallationContract,
+  removeInstallationContract,
   resolveInstallationContractTarget,
+  stageInstallationContract,
 } from '../../src/utils/installation-contract-store.js';
 
 async function configureCatalog(): Promise<ReturnType<typeof getCurrentSourceTestIsolation>> {
@@ -135,9 +142,10 @@ describe('five namespaced write commands', () => {
       env: isolation.env,
       nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }),
     };
-    await expect(installWriteCommand(['team/root'], {
+    const projectInstall = await installWriteCommand(['team/root'], {
       cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
-    }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
+    }, runtime);
+    expect(projectInstall.overallState, JSON.stringify(projectInstall.rebuildResults)).toBe('succeeded');
     await createDependencyCatalogSnapshotFixture(sourceRoot, [
       { name: 'leaf' },
       { name: 'root', dependencies: ['leaf'] },
@@ -210,9 +218,493 @@ describe('five namespaced write commands', () => {
 
     expect(result.overallState).toBe('failed');
     expect(result.targetResults).toEqual(expect.arrayContaining([
-      expect.objectContaining({ errorCode: 'dependencyContractInvalid' }),
+      expect.objectContaining({ errorCode: 'stateInventoryFailed' }),
     ]));
     await expect(fs.pathExists(path.join(isolation.layout.fixtureCwd, '.codex', 'config.toml'))).resolves.toBe(false);
+  });
+
+  it('blocks a required dependency with zero writes and removes only the successful root contract', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'dependency-removal-source');
+    await createDependencyCatalogSnapshotFixture(sourceRoot, [
+      { name: 'leaf' },
+      { name: 'root', dependencies: ['leaf'] },
+    ]);
+    const source = { id: 'team', type: 'path' as const, primary: true, path: sourceRoot };
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 1, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
+    });
+    const runtime = {
+      env: isolation.env,
+      nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }),
+    };
+    await expect(installWriteCommand(['team/root'], {
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+    }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
+    const sourceIdentity = await calculateCatalogSourceIdentity(source);
+    const leafBefore = await readInstallationContract({
+      sourceId: 'team', sourceIdentity, pluginName: 'leaf', platform: 'codex', scope: 'project',
+      cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    });
+
+    const blocked = await uninstallWriteCommand(['team/leaf'], {
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+    }, runtime);
+
+    expect(blocked).toMatchObject({
+      overallState: 'failed',
+      targetResults: [expect.objectContaining({ errorCode: 'dependencyStillRequired' })],
+    });
+    await expect(readInstallationContract({
+      sourceId: 'team', sourceIdentity, pluginName: 'leaf', platform: 'codex', scope: 'project',
+      cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    })).resolves.toEqual(leafBefore);
+
+    const removedRoot = await uninstallWriteCommand(['team/root'], {
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+    }, runtime);
+    expect(removedRoot.overallState, JSON.stringify(removedRoot.rebuildResults)).toBe('succeeded');
+    await expect(readInstallationContract({
+      sourceId: 'team', sourceIdentity, pluginName: 'root', platform: 'codex', scope: 'project',
+      cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    })).resolves.toBeNull();
+    await expect(readInstallationContract({
+      sourceId: 'team', sourceIdentity, pluginName: 'leaf', platform: 'codex', scope: 'project',
+      cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    })).resolves.not.toBeNull();
+  });
+
+  it('executes a complete batch uninstall in consumer-first reverse topology', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'batch-removal-source');
+    await createDependencyCatalogSnapshotFixture(sourceRoot, [
+      { name: 'leaf' },
+      { name: 'middle', dependencies: ['leaf'] },
+      { name: 'root', dependencies: ['middle'] },
+    ]);
+    const source = { id: 'team', type: 'path' as const, primary: true, path: sourceRoot };
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 1, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
+    });
+    const runtime = {
+      env: isolation.env,
+      nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }),
+    };
+    await expect(installWriteCommand(['team/root'], {
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+    }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
+
+    const removed = await uninstallWriteCommand(['team/leaf', 'team/root', 'team/middle'], {
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+    }, runtime);
+
+    expect(removed.overallState, JSON.stringify(removed.rebuildResults)).toBe('succeeded');
+    expect(removed.rebuildResults.map((entry) => entry.target.pluginName)).toEqual([
+      'root', 'middle', 'leaf',
+    ]);
+    const sourceIdentity = await calculateCatalogSourceIdentity(source);
+    for (const pluginName of ['root', 'middle', 'leaf']) {
+      await expect(readInstallationContract({
+        sourceId: 'team', sourceIdentity, pluginName, platform: 'codex', scope: 'project',
+        cwd: isolation.layout.fixtureCwd, env: isolation.env,
+      })).resolves.toBeNull();
+    }
+  });
+
+  it('allows an absent orphan consumer but retains its contract', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'absent-consumer-source');
+    await createDependencyCatalogSnapshotFixture(sourceRoot, [
+      { name: 'leaf' },
+      { name: 'ghost', dependencies: ['leaf'] },
+    ]);
+    const source = { id: 'team', type: 'path' as const, primary: true, path: sourceRoot };
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 1, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
+    });
+    const runtime = {
+      env: isolation.env,
+      nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }),
+    };
+    await expect(installWriteCommand(['team/leaf'], {
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+    }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
+    const sourceIdentity = await calculateCatalogSourceIdentity(source);
+    const leafTarget = await resolveInstallationContractTarget({
+      sourceId: 'team', sourceIdentity, pluginName: 'leaf', platform: 'codex', scope: 'project',
+      cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    });
+    const ghostEntry = (await fs.readJson(path.join(sourceRoot, 'catalog-manifest.json')) as {
+      entries: Array<{ name: string; contentDigest: string }>;
+    }).entries.find((entry) => entry.name === 'ghost')!;
+    const staged = await stageInstallationContract({
+      sourceId: 'team', sourceIdentity, pluginName: 'ghost', pluginVersion: '1.0.0',
+      contentDigest: ghostEntry.contentDigest, platform: 'codex', scope: 'project',
+      cwd: isolation.layout.fixtureCwd, env: isolation.env,
+      dependencies: [{
+        pluginId: 'team/leaf', sourceId: 'team', sourceIdentity, platform: 'codex',
+        scope: 'project', projectKey: leafTarget.projectKey,
+      }],
+    });
+    await promoteInstallationContract(staged);
+
+    const removed = await cleanupWriteCommand(['team/leaf'], {
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+    }, runtime);
+
+    expect(removed.overallState, JSON.stringify(removed.rebuildResults)).toBe('succeeded');
+    await expect(readInstallationContract({
+      sourceId: 'team', sourceIdentity, pluginName: 'ghost', platform: 'codex', scope: 'project',
+      cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    })).resolves.not.toBeNull();
+    const replacementRoot = path.join(isolation.layout.fixtureCwd, 'absent-consumer-replacement');
+    await createDependencyCatalogSnapshotFixture(replacementRoot, [
+      { name: 'leaf' },
+      { name: 'ghost', dependencies: ['leaf'] },
+    ]);
+    await expect(updateCatalogSourceCommand({
+      sourceId: 'team', update: { path: replacementRoot }, cliVersion: '1.0.0',
+      cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    })).rejects.toMatchObject({ code: 'catalogSourceInUse' });
+  });
+
+  it.each(['partial', 'error'] as const)(
+    'fails closed when a dependency consumer inspection is %s',
+    async (consumerState) => {
+      const isolation = getCurrentSourceTestIsolation();
+      const sourceRoot = path.join(isolation.layout.fixtureCwd, `consumer-${consumerState}-source`);
+      const agent = (name: string) => ({
+        name,
+        configureManifest: (manifest: Awaited<ReturnType<typeof readPluginManifest>>['manifest']) => {
+          manifest.extensions = {
+            agents: [
+              { name: `${name}-role`, description: `${name} role.`, prompt: `${name}.` },
+              ...(name === 'root' ? [{
+                name: `${name}-extra`, description: `${name} extra.`, prompt: `${name} extra.`,
+              }] : []),
+            ],
+          };
+        },
+      });
+      await createDependencyCatalogSnapshotFixture(sourceRoot, [
+        agent('leaf'),
+        { ...agent('root'), dependencies: ['leaf'] },
+      ]);
+      const source = { id: 'team', type: 'path' as const, primary: true, path: sourceRoot };
+      const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+      await replaceCatalogSourcesConfig({
+        config: { schemaVersion: 1, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
+      });
+      const runtime = {
+        env: isolation.env,
+        nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }),
+      };
+      await expect(installWriteCommand(['team/root'], {
+        cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+      }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
+      const rootAgent = path.join(
+        isolation.layout.fixtureCwd,
+        '.codex',
+        'agents',
+        'aw-root-root-role.toml',
+      );
+      await fs.remove(rootAgent);
+      if (consumerState === 'error') await fs.ensureDir(rootAgent);
+
+      const blocked = await cleanupWriteCommand(['team/leaf'], {
+        cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+      }, runtime);
+
+      expect(blocked.targetResults).toEqual([
+        expect.objectContaining({ errorCode: 'dependencyStillRequired' }),
+      ]);
+      const sourceIdentity = await calculateCatalogSourceIdentity(source);
+      await expect(readInstallationContract({
+        sourceId: 'team', sourceIdentity, pluginName: 'leaf', platform: 'codex', scope: 'project',
+        cwd: isolation.layout.fixtureCwd, env: isolation.env,
+      })).resolves.not.toBeNull();
+    },
+  );
+
+  it('keeps a dependency while multiple live consumers reference it', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'multiple-consumer-source');
+    await createDependencyCatalogSnapshotFixture(sourceRoot, [
+      { name: 'leaf' },
+      { name: 'first', dependencies: ['leaf'] },
+      { name: 'second', dependencies: ['leaf'] },
+    ]);
+    const source = { id: 'team', type: 'path' as const, primary: true, path: sourceRoot };
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 1, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
+    });
+    const runtime = {
+      env: isolation.env,
+      nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }),
+    };
+    await expect(installWriteCommand(['team/first', 'team/second'], {
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+    }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
+
+    const blocked = await uninstallWriteCommand(['team/leaf'], {
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+    }, runtime);
+
+    expect(blocked.targetResults).toEqual([
+      expect.objectContaining({ errorCode: 'dependencyStillRequired' }),
+    ]);
+    const sourceIdentity = await calculateCatalogSourceIdentity(source);
+    for (const pluginName of ['first', 'second', 'leaf']) {
+      await expect(readInstallationContract({
+        sourceId: 'team', sourceIdentity, pluginName, platform: 'codex', scope: 'project',
+        cwd: isolation.layout.fixtureCwd, env: isolation.env,
+      })).resolves.not.toBeNull();
+    }
+  });
+
+  it('uses current manifest edges when a live consumer contract is missing', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'missing-consumer-contract-source');
+    await createDependencyCatalogSnapshotFixture(sourceRoot, [
+      { name: 'leaf' },
+      { name: 'root', dependencies: ['leaf'] },
+    ]);
+    const source = { id: 'team', type: 'path' as const, primary: true, path: sourceRoot };
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 1, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
+    });
+    const runtime = {
+      env: isolation.env,
+      nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }),
+    };
+    await expect(installWriteCommand(['team/root'], {
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+    }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
+    const sourceIdentity = await calculateCatalogSourceIdentity(source);
+    await removeInstallationContract({
+      sourceId: 'team', sourceIdentity, pluginName: 'root', platform: 'codex', scope: 'project',
+      cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    });
+
+    const blocked = await uninstallWriteCommand(['team/leaf'], {
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+    }, runtime);
+    expect(blocked.targetResults).toEqual([
+      expect.objectContaining({ errorCode: 'dependencyStillRequired' }),
+    ]);
+
+    const batch = await uninstallWriteCommand(['team/leaf', 'team/root'], {
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+    }, runtime);
+    expect(batch.overallState, JSON.stringify(batch.rebuildResults)).toBe('succeeded');
+    expect(batch.rebuildResults.map((entry) => entry.target.pluginName)).toEqual(['root', 'leaf']);
+  });
+
+  it('marks a dependency skipped when its batch consumer removal fails', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'skipped-dependency-source');
+    await fs.outputFile(
+      path.join(sourceRoot, 'plugins', 'root', 'scripts', 'uninstall.mjs'),
+      'throw new Error("injected consumer removal failure");\n',
+    );
+    await createDependencyCatalogSnapshotFixture(sourceRoot, [
+      { name: 'leaf' },
+      { name: 'root', dependencies: ['leaf'], configureManifest: (manifest) => {
+        manifest.scripts = {
+          lifecycle: {
+            uninstall: { default: { runner: 'node', path: './scripts/uninstall.mjs' } },
+          },
+        };
+      } },
+    ]);
+    const source = { id: 'team', type: 'path' as const, primary: true, path: sourceRoot };
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 1, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
+    });
+    const runtime = {
+      env: isolation.env,
+      nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }),
+    };
+    await expect(installWriteCommand(['team/root'], {
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+    }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
+    const result = await uninstallWriteCommand(['team/root', 'team/leaf'], {
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+    }, runtime);
+    const receipt = (await import('../../src/output/command-receipt.js'))
+      .buildRebuildReceiptJson('uninstall', result);
+    expect(receipt.targets).toEqual(expect.arrayContaining([
+      expect.objectContaining({ pluginId: 'team/root', dependencyState: 'failed' }),
+      expect.objectContaining({ pluginId: 'team/leaf', dependencyState: 'skipped' }),
+    ]));
+  });
+
+  it('blocks a user dependency required by a project consumer', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'cross-scope-removal-source');
+    await createDependencyCatalogSnapshotFixture(sourceRoot, [
+      { name: 'leaf' },
+      { name: 'root', dependencies: ['leaf'] },
+    ]);
+    const source = { id: 'team', type: 'path' as const, primary: true, path: sourceRoot };
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 1, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
+    });
+    const runtime = {
+      env: isolation.env,
+      nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }),
+    };
+    await expect(installWriteCommand(['team/leaf'], {
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'user',
+    }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
+    const partialUserDependency = await installWriteCommand(['team/root'], {
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+    }, runtime);
+    expect(partialUserDependency.targetResults).toEqual(expect.arrayContaining([
+      expect.objectContaining({ errorCode: 'dependencyNotReady' }),
+    ]));
+    const errorUserDependency = await installWriteCommand(['team/root'], {
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+    }, {
+      env: isolation.env,
+      nativeCliRunner: async (invocation) => {
+        if (invocation.args[1] === 'list') throw new Error('injected user dependency probe error');
+        return { exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' };
+      },
+    });
+    expect(errorUserDependency.targetResults).toEqual(expect.arrayContaining([
+      expect.objectContaining({ errorCode: 'dependencyNotReady' }),
+    ]));
+  });
+
+  it('diagnoses missing, not-ready, and corrupt dependency contracts through public status', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'dependency-status-source');
+    const agentPlugin = (name: string) => ({
+      name,
+      configureManifest: (manifest: Awaited<ReturnType<typeof readPluginManifest>>['manifest']) => {
+        manifest.extensions = {
+          agents: [{ name: `${name}-role`, description: `${name} role.`, prompt: `${name}.` }],
+        };
+      },
+    });
+    await createDependencyCatalogSnapshotFixture(sourceRoot, [
+      agentPlugin('leaf'),
+      { ...agentPlugin('root'), dependencies: ['leaf'] },
+    ]);
+    const source = { id: 'team', type: 'path' as const, primary: true, path: sourceRoot };
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 1, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
+    });
+    const runtime = {
+      env: isolation.env,
+      nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }),
+    };
+    await expect(installWriteCommand(['team/root'], {
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+    }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
+    const sourceIdentity = await calculateCatalogSourceIdentity(source);
+    const status = () => statusCommandV4({
+      plugins: ['team/root'], cwd: isolation.layout.fixtureCwd, env: isolation.env,
+      cliVersion: '1.0.0', platform: 'codex', scope: 'project', json: true,
+    });
+    await removeInstallationContract({
+      sourceId: 'team', sourceIdentity, pluginName: 'root', platform: 'codex', scope: 'project',
+      cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    });
+    await expect(status()).resolves.toMatchObject({
+      payload: { targets: [expect.objectContaining({
+        state: 'partial',
+        errors: [expect.objectContaining({ code: 'dependencyContractMissing' })],
+      })] },
+    });
+
+    await expect(reinstallWriteCommand(['team/root'], {
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+    }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
+    const leafAgent = path.join(
+      isolation.layout.fixtureCwd,
+      '.codex',
+      'agents',
+      'aw-leaf-leaf-role.toml',
+    );
+    await fs.remove(leafAgent);
+    await expect(status()).resolves.toMatchObject({
+      payload: { targets: [expect.objectContaining({
+        state: 'partial',
+        errors: expect.arrayContaining([
+          expect.objectContaining({ code: 'dependencyMissing' }),
+        ]),
+      })] },
+    });
+    await expect(reinstallWriteCommand(['team/leaf'], {
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+    }, runtime)).resolves.toMatchObject({ overallState: 'succeeded' });
+    await fs.outputFile(leafAgent, 'foreign');
+    await expect(status()).resolves.toMatchObject({
+      payload: { targets: [expect.objectContaining({
+        state: 'partial',
+        errors: expect.arrayContaining([
+          expect.objectContaining({ code: 'dependencyNotReady' }),
+        ]),
+      })] },
+    });
+
+    const rootContract = await resolveInstallationContractTarget({
+      sourceId: 'team', sourceIdentity, pluginName: 'root', platform: 'codex', scope: 'project',
+      cwd: isolation.layout.fixtureCwd, env: isolation.env,
+    });
+    await fs.writeJson(path.join(rootContract.activeRoot, 'metadata.json'), { corrupt: true });
+    await expect(status()).resolves.toMatchObject({
+      payload: { targets: [expect.objectContaining({
+        state: 'partial',
+        errors: expect.arrayContaining([
+          expect.objectContaining({ code: 'dependencyContractInvalid' }),
+        ]),
+      })] },
+    });
+  });
+
+  it('deduplicates status inspection for one dependency placement shared by consumers', async () => {
+    const isolation = getCurrentSourceTestIsolation();
+    const sourceRoot = path.join(isolation.layout.fixtureCwd, 'status-dedup-source');
+    await createDependencyCatalogSnapshotFixture(sourceRoot, [
+      { name: 'leaf' },
+      { name: 'first', dependencies: ['leaf'] },
+      { name: 'second', dependencies: ['leaf'] },
+    ]);
+    const source = { id: 'team', type: 'path' as const, primary: true, path: sourceRoot };
+    const snapshot = await readCatalogSourcesConfigSnapshot(isolation.env);
+    await replaceCatalogSourcesConfig({
+      config: { schemaVersion: 1, sources: [source] }, expectedDigest: snapshot.digest, env: isolation.env,
+    });
+    const runtime = {
+      env: isolation.env,
+      nativeCliRunner: async () => ({ exitCode: 0, stdout: 'codex-cli 0.200.0', stderr: '' }),
+    };
+    const installed = await installWriteCommand(['team/first', 'team/second'], {
+      cwd: isolation.layout.fixtureCwd, platform: 'codex', scope: 'project',
+    }, runtime);
+    expect(installed.overallState, JSON.stringify(installed.rebuildResults)).toBe('succeeded');
+    let dependencyInspections = 0;
+    setStatusDependencyInspectionHookForTests(() => { dependencyInspections += 1; });
+    try {
+      await statusCommandV4({
+        plugins: ['team/first', 'team/second'], cwd: isolation.layout.fixtureCwd,
+        env: isolation.env, cliVersion: '1.0.0', platform: 'codex', scope: 'project', json: true,
+      });
+    } finally {
+      setStatusDependencyInspectionHookForTests(undefined);
+    }
+    expect(dependencyInspections).toBe(1);
   });
 
   it('checks every requested target for foreign ownership before the first root writes', async () => {

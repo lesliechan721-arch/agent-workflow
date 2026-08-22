@@ -36,6 +36,7 @@ function writeErrorCode(message: string): string {
     'dependencyPlanStale',
     'dependencyContractMissing',
     'dependencyContractInvalid',
+    'dependencyStillRequired',
   ]) {
     if (message.includes(code)) return code;
   }

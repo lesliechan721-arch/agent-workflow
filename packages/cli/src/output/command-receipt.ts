@@ -17,6 +17,10 @@ export interface CliCommandResult {
   }>;
   overallState?: ReceiptOverallState;
   dependencyPlan?: DependencyOperationPlan;
+  targetResults?: Array<{
+    target: { pluginId?: string; platform: PlatformName; scope: Scope };
+    action: string;
+  }>;
 }
 
 export interface RebuildReceiptJson {
@@ -67,6 +71,7 @@ function rebuildErrorCode(message: string): string {
     'dependencyPlanStale',
     'dependencyContractMissing',
     'dependencyContractInvalid',
+    'dependencyStillRequired',
   ]) {
     if (message.includes(code)) return code;
   }
@@ -112,6 +117,10 @@ export function buildRebuildReceiptJson(
         target.pluginId === identity.pluginId
         && target.platform === entry.target.platform
         && target.resolvedScope === entry.target.scope);
+      const targetResult = result.targetResults?.find((candidate) =>
+        candidate.target.pluginId === identity.pluginId
+        && candidate.target.platform === entry.target.platform
+        && candidate.target.scope === entry.target.scope);
       return {
         pluginName: identity.pluginName,
         ...(identity.pluginId ? { pluginId: identity.pluginId } : {}),
@@ -133,6 +142,8 @@ export function buildRebuildReceiptJson(
           requiredBy: planned.requiredBy,
           dependencyState: planned.action === 'keep'
             ? 'kept' as const
+            : targetResult?.action === 'skipped'
+              ? 'skipped' as const
             : entry.status === 'succeeded'
               ? 'completed' as const
               : entry.error.message.includes('dependencyInstallFailed')
