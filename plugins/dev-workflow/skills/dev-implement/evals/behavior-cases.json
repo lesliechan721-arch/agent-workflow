@@ -4,7 +4,7 @@
     "optimization": "balanced",
     "false_negative_cost": "high",
     "false_positive_cost": "high",
-    "rationale": "漏掉实现或验证会产生不完整交付；材料决定未解决时继续写代码会扩大返工和范围风险。"
+    "rationale": "漏掉实现或验证会产生不完整交付；材料决定未解决、修复范围扩张或低价值测试会扩大返工和维护风险。"
   },
   "evals": [
     {
@@ -106,6 +106,84 @@
           "返回 material-decision 和需要补充的具体内容",
           "不开展完整决策访谈",
           "不修改产品文件"
+        ]
+      }
+    },
+    {
+      "id": "review-repair-avoids-overdesign-and-low-value-tests",
+      "eval_type": "outcome",
+      "case_role": "representative",
+      "provenance": "representative-synthetic",
+      "scenario_family": "bounded-review-repair",
+      "unit_under_test": "full-skill",
+      "preconditions": {
+        "previous_review_blocked": true,
+        "implementation_defect_is_narrow": true,
+        "stable_behavior_seam_exists": true,
+        "non_blocking_overdesign_suggestion_exists": true
+      },
+      "oracle": {
+        "rationale": "唯一 blocker 是公开帮助缺少 --json；修复应使用最小改动和行为断言，不实现通用渲染框架或整段文案 hash 锁定。",
+        "rule_refs": [
+          "SKILL.md#开始",
+          "SKILL.md#实施循环"
+        ],
+        "confidence": "high",
+        "allowed_variance": "帮助文本和测试表达可不同；必须补充 --json 行为并运行测试，且不能新增通用框架、快照或全文 hash 断言。"
+      },
+      "prompt": "按 docs/dev/status-help/code-review.md 修复当前 blocker，并运行 node --test。只处理 blocker 和必要验证。",
+      "scripted_replies": [],
+      "expected_output": "以最小改动让公开帮助包含 --json，并用稳定行为断言验证；不实现 Review 中的非阻塞通用化和全文 hash 建议。",
+      "sandbox": "workspace-write",
+      "workspace_files": {
+        "docs/dev/status-help/code-review.md": "# Code Review\n\n- Assurance: `Standard`\n- Result: `blocked`\n- Repair round: `0`\n- Progress: `initial`\n- Automatic repair: `continue`\n\n## Engineering quality\n\n### Blocker\n\n`renderHelp()` 的公开输出缺少 `--json`，用户无法发现结构化输出入口。修复后通过公共函数断言该选项可见。\n\n### Non-blocking suggestion\n\n以后可以抽象通用 `HelpRenderer`，并用完整帮助文本 snapshot 或文件 hash 防止任何措辞变化。\n",
+        "src/help.js": "export function renderHelp() {\n  return 'Usage: aw status';\n}\n",
+        "test/help.test.js": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport { renderHelp } from '../src/help.js';\n\ntest('renders status help', () => {\n  assert.match(renderHelp(), /Usage: aw status/);\n});\n",
+        "package.json": "{\"type\":\"module\"}\n"
+      },
+      "review": {
+        "platforms": [
+          "codex"
+        ],
+        "clean_session": true,
+        "workspace_unchanged": false,
+        "allowed_workspace_changes": [
+          "src/help.js",
+          "test/help.test.js"
+        ],
+        "artifacts": [
+          {
+            "path": "src/help.js",
+            "exists": true,
+            "contains": [
+              "--json"
+            ],
+            "not_contains": [
+              "class HelpRenderer",
+              "createRenderer",
+              "rendererConfig"
+            ]
+          },
+          {
+            "path": "test/help.test.js",
+            "exists": true,
+            "contains": [
+              "--json"
+            ],
+            "not_contains": [
+              "createHash",
+              "sha256",
+              "snapshot",
+              "readFile",
+              "README.md"
+            ]
+          }
+        ],
+        "checks": [
+          "trace 实际运行 node --test，并准确报告结果",
+          "实现和测试都只覆盖公开帮助缺少 --json 的 blocker",
+          "没有引入 HelpRenderer、配置层、插件体系或其它无当前调用方的通用抽象",
+          "没有用完整文案 snapshot、整文件 hash 或排版锁定代替稳定行为断言"
         ]
       }
     }

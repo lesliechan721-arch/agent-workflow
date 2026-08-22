@@ -16,10 +16,10 @@ aw install dev-workflow -p both
 | Skill | 作用 |
 | --- | --- |
 | `dev-workflow` | 可选宏入口；按风险和现有产物选择当前阶段 |
-| `dev-spec` | 把稳定决定整理为 Spec |
-| `dev-review-spec` | 用独立 reviewer 审查 Spec，并说明修订与复审条件 |
-| `dev-implement` | 实现明确请求、已批准 Spec 或 Review 修复 |
-| `dev-review-code` | 用两个独立 reviewer 分轴审查实现，并说明修复与复审条件 |
+| `dev-spec` | 把稳定决定整理为 Spec，并归一为当前有效合同 |
+| `dev-review-spec` | 用独立 reviewer 审查 Spec，并判断修订与复审是否收敛 |
+| `dev-implement` | 以最小完整改动实现明确请求、已批准 Spec 或 Review 修复 |
+| `dev-review-code` | 按保障等级用独立 reviewer 双轴审查实现，并判断修复是否收敛 |
 
 决策阶段使用：
 
@@ -48,6 +48,8 @@ aw install dev-workflow -p both
 dev-implement → 针对性验证 → 按需 dev-review-code
 ```
 
+Fast 不自动进入 Review 修复循环。
+
 ### Standard
 
 ```text
@@ -62,9 +64,18 @@ decision-grill / decision-prototype
 → clean 后交付
 ```
 
+Standard 的 Code Review 默认由一个 fresh reviewer 覆盖两个审查轴；自动修复最多两轮。
+
 ### Assured
 
-沿用 Standard 路径，并按项目风险增加持久证据、回滚点、隔离、授权和独立最终审查。
+沿用 Standard 路径，并按项目风险增加持久证据、回滚点、隔离、授权和独立最终审查。Code Review 使用两个 fresh reviewer 分轴完成；自动修复最多三轮。
+
+## Review 收敛
+
+- 初次 Review 一次列出当前证据支持的全部 blocker；偏好性改进不进入交付门槛。
+- 修复只覆盖当前 blocker、必需影响面和直接 regression。
+- 复审重新检查当前完整目标，并记录 Repair round、Progress 和 Automatic repair。
+- `stalled`、`regressed`、预算用尽或 reviewer 持续冲突时停止自动修复，由用户决定重新设计、缩小范围、补证、更换 reviewer、接受风险、额外授权或停止。
 
 ## 默认任务目录
 
@@ -85,8 +96,8 @@ docs/dev/<task-slug>/
 ## Review 报告
 
 - `spec-review.md` 和 `code-review.md` 保存当前正式结果；新一轮 Review 默认覆盖旧结果。
-- 报告写明本次审查的目标与版本。目标发生变化后，需要重新 Review。
+- 报告写明目标、版本、保障等级、修复轮次、进展和自动修复决定。
 - Assured 模式或用户明确要求保留历史时，额外归档到 `reviews/spec/` 或 `reviews/code/`。
-- Spec Review 使用一个 fresh 独立 reviewer；Code Review 并行使用两个 fresh 独立 reviewer。
+- Spec Review 使用一个 fresh 独立 reviewer；Code Review 的 reviewer 数量由保障等级决定。
 
 专业 Skill 返回中性的建议动作；具体 Skill 选择由用户或 `dev-workflow` 完成。
