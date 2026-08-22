@@ -16,6 +16,7 @@
 - `utils/local-marketplace.ts` 校验 namespaced active marketplace，并在安全替换时重放 Codex Skill owner overlay。
 - `utils/multi-source-catalog.ts` 是 schema 1 Git/path source 的唯一 runtime catalog resolver。
 - `utils/plugin-config.ts` 与 `utils/plugin-config-write.ts` 管理 namespaced AW config store 和 config v4 输出。
+- `utils/installation-contract-store.ts` 保存已完成依赖安装的 placement evidence；它不表示插件存在。
 - `output/command-receipt.ts` 生成五个写命令的 receipt v4。
 - `generators/` 生成 instructions、permissions、hooks、agents、skills 和 MCP 等平台能力。
 - `types.ts` 保存跨模块公开类型。插件源码 manifest 可用顶层 `dependencies: string[]` 声明同一 source 内的必需插件。
@@ -40,6 +41,7 @@
 - 插件依赖只来自 manifest `dependencies`，不能从 `buildImports`、runtime exports、目录布局或已安装状态推断。非空依赖要求插件声明 `compatibility.aw.minVersion >= 0.1.0`；schema 4 自身的 catalog floor 仍为 `0.1.0-beta.3`，catalog 总 floor 取 schema floor 和全部插件声明的最大值。
 - source 依赖图必须拒绝缺失节点、环、产品覆盖不足、超过 64 个直接依赖、超过 256 个闭包节点或超过 32 层深度。依赖只在同一 source 内解析；运行时按 roots 取闭包，并使用依赖优先、同层插件名 ASCII 升序的稳定拓扑顺序。
 - bundle source manifest 保留 `dependencies`，schema 4 catalog entry 不投影该字段。build 和 catalog staging 必须校验完整 source 图。
+- live ownership 和实际平台组件是存在、清理和 status 的唯一真值。installation-contract store 只证明某次依赖 placement，不能把缺失 live target 变成 `present`，也不能授权删除。
 - command 分支不得新增另一套安装状态投影、依赖图或平台输出记录。
 
 ## Three-Layer Distribution Model
@@ -151,9 +153,20 @@ normalize target
   → emit receipt v4
 ```
 
-`install`、`upgrade` 和 `reinstall` 在首写前按 source 对请求根取联合依赖闭包。operation plan 绑定 roots、edges、source/catalog evidence、每个节点的 manifest/content digest、requested/resolved scope、live state、action 和依赖优先顺序，并用 canonical stable JSON 计算 digest。写入口获取闭包全部潜在 user/project target lock 后，重读状态、安装合同和 config 并复算 digest；变化返回 `dependencyPlanStale`，不执行写入。依赖成功 postcheck 后 promotion installation contract；合同记录直接依赖的实际 placement。有效且 content digest 当前的共享依赖使用 `keep`，不重写合同。
+`install`、`upgrade` 和 `reinstall` 在首写前按 source 对请求根取联合依赖闭包。operation plan 绑定 roots、edges、source/catalog evidence、每个节点的 manifest/content digest、requested/resolved scope、live state、action、effective config digest 和依赖优先顺序，并用 canonical stable JSON 计算 `planDigest`。plan 是执行前证据，不是另一份安装状态。
 
-receipt v4 可附带 `dependencyPlanSchemaVersion`、requested/resolved plugin IDs 和 dependency edges。目标可附带 relation、requiredBy 和 dependencyState；既有 `status: succeeded|failed` 保持兼容。
+写入口按稳定顺序获取完整闭包中每个 plugin/platform 的 project 和 user operation lock，而不只锁定最终 resolved scope。获取全部 lock 后，它重新校验 source manifest/snapshot，再重读 live ownership、installation contract 和 config，重算 locked plan。locked `planDigest` 与初始 digest 不同则返回 `dependencyPlanStale`，不执行任何写入。依赖成功 postcheck 后才 promotion installation contract；合同记录直接依赖的实际 placement。有效、当前 source identity 且 content digest 相同的共享依赖使用 `keep`，不重写合同。
+
+### Installation contract store
+
+`<AW_HOME>/installation-contracts/` 保存 schema 1、带完整性 digest 的依赖 placement evidence。每条记录绑定 consumer 的 source identity、plugin version、content digest、platform、scope、canonical project key，以及其直接 dependency placement。写入使用 stage → validate → atomic promotion；损坏、缺失或 identity 不匹配的记录不会被猜测或修复为有效。
+
+- store 不决定 live target 是否存在。status 先检查 owner 和平台组件；consumer live target 为 `present` 或 `partial` 时，缺失或无效 contract 都报告 dependency error，且前者降为 `partial`。
+- install/upgrade/reinstall 用合同判断已安装 dependency 是否可以 `keep`；缺失或无效合同阻止把该 dependency 当作可重用 target。
+- uninstall/cleanup 在删除前完成 contract inventory 与 live consumer 检查。任何仍 live、partial、unreadable 或无法安全定位的 consumer 都返回 `dependencyStillRequired`；合同不能单独证明 consumer 已删除。
+- 同一操作同时删除 consumer 和 dependency 时，先删除 consumer，再删除 dependency。反向 removal graph 无法验证或出现环时 fail closed。
+
+receipt v4 只有在本次命令产生 dependency operation plan 时才可选地附带 `dependencyPlanSchemaVersion`、requested/resolved plugin IDs 和 dependency edges。它不公开 plan digest、source evidence、node digest、config digest 或 lock state。与计划 target 对应的 receipt target 可选地附带 `relation`、`requiredBy` 和 `dependencyState`；既有 `status: succeeded|failed` 保持兼容。
 
 命令行为：
 
@@ -192,7 +205,7 @@ config inventory 按 store root 附带 scope：`AW_HOME` store 属于 user，pro
 |------|------|
 | `present` | 所有期望 AW-owned 组件都存在 |
 | `absent` | 没有发现目标的 AW-owned 组件 |
-| `partial` | 只存在部分组件，或组件内容不完整 |
+| `partial` | 只存在部分组件、组件内容不完整，或 live target 有依赖健康问题 |
 | `error` | catalog、发现或组件检查失败 |
 
 `absent` 建议运行 `aw install`。`partial` 建议运行 `aw reinstall`。`error` 保留错误并继续检查其它 target。
@@ -217,6 +230,10 @@ status v4 JSON 结构：
 ```
 
 status 是只读操作。它不运行 lifecycle 或 renderer，不刷新 marketplace，也不创建 config 目录。
+
+status 只把 contract 当作 dependency health evidence：它核对 consumer source identity/content digest、直接 dependency edge 和记录 placement，并对该 placement 做 live inspection。contract inventory 不产生 status target，也不会替代 owner/platform inspection。
+
+有直接依赖的 live `present` 或 `partial` consumer 都检查 dependency contract。dependency error 会把 `present` consumer 降为 `partial`，并追加到既有 `partial` consumer 的 errors；它们都计入 `dependency.issueCount`。contract 不会把 `absent` target 变成 `present`，也不会单独改变不存在的 live component 状态。公开 status v4 只输出 target 的 `dependency.directCount` 和 `dependency.issueCount`；完整依赖、反向引用、placement 与 TUI issue mapping 都是控制台内部投影。
 
 ## Config
 
@@ -282,6 +299,8 @@ cache publication 必须满足：
 - 裸 `aw` 使用响应式 Ink 仪表盘。所有可用尺寸使用同一套单列页面和焦点顺序；`80 × 24` 是标准尺寸，`60 × 18` 是最低尺寸，低于最低尺寸时只显示尺寸提示。低于标准尺寸的 compact 模式只调整换行和信息堆叠，不改变导航路径。状态信息位于目标详情，写操作位于操作区，配置位于插件配置页。
 - 默认仪表盘不加载组件诊断。`--verbose` 只把 status v4 投影的安全 component key、state 和 error code 加入 P21 技术详情，不显示 component path、label、原始 error 或普通页面扩展。
 - 仪表盘和向导用 multi-source `cacheFirst` 读取；重复插件名显示 qualified `pluginId`。交互写操作使用同一 namespaced runtime，不回退到旧 npm catalog 写路径。
+- 控制台从 status v4、catalog graph 和 installation-contract inventory 生成依赖与反向依赖页面。它只显示安全的 plugin identity、placement 摘要和 typed error；不把 controller view、review ticket、plan digest、contract bytes 或 private project path 加入公开 status v4 或 JSON receipt。
+- 依赖操作的确认页和进度页使用同一个 operation plan：请求插件、直接/间接依赖和保持不变 target 分组显示；执行前仍由 write pipeline 重新取得完整闭包 lock 和比较 locked digest。TUI 不能以其预览授权跳过 stale、reverse-protection 或 write preflight。
 - 缺少必要参数的写命令只在真实 TTY、human 模式且非 CI 时进入向导。
 - 向导在挂载前拒绝不可用 catalog 和当前操作的空候选集。file/directory 配置在仪表盘和向导中按私有值投影，命令摘要只显示占位符模板。
 - 向导的可重放命令明确标注 shell：POSIX 使用 shell-safe 单引号；Windows 提供 PowerShell 命令和参数列表。

@@ -1,6 +1,8 @@
-# 手动依赖合同
+# 依赖合同
 
-必需插件：`agent-content-toolkit >= 0.1.0`。
+manifest 声明 `agent-content-toolkit` 为同一 source 内的必需依赖。AW 在安装、升级或重装本插件时解析依赖闭包，并先安装或升级该插件。
+
+这只保证 manifest 中的同 source 插件 placement；它不安装外部工具，也不求解或保证第三方版本范围。
 
 必需 Skill：
 
@@ -9,4 +11,4 @@
 
 可选执行插件：`agent-skill-eval-runner >= 0.1.0` 或其它兼容 provider。缺少执行插件不会阻断编写或质量评审，只会限制 Eval 证据等级。
 
-在支持插件依赖前，由仓库策略或人工操作员保证安装。缺少必需内容能力时流程 fail closed，不复制下层标准的备用副本。
+Skill 运行前仍检查所需 Skill 能力和版本。缺少必需内容能力时流程 fail closed，不复制下层标准的备用副本。
