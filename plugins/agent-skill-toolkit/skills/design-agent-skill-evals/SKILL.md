@@ -8,16 +8,29 @@ metadata:
 
 # Design Agent Skill Evals
 
-本 Skill 负责创建 Eval 资产，不负责证明这些资产有效。
+本 Skill 负责创建 Eval 资产。
+
+## 依赖
+
+- `audit-agent-skill-evals`：对新建或修改后的 suite 做独立 Oracle 审核。
 
 ## 工作流
 
 1. **定义决策目标**：明确 unit under test、test layer、optimization policy 与 false-negative / false-positive 的现实代价。
 2. **建立场景族**：先列 representative、regression、boundary、challenge、diagnostic；不用同义 query 冒充独立场景。
 3. **设计 case**：记录真实 query/fixture、preconditions、Oracle rationale、rule refs、allowed variance、observable assertions 和重要边界的 minimal pair。
-4. **设计运行策略**：三次运行仅作初始取样；混合结果需要扩样和 trace。区分 train、validation、sanity/regression 与不进入发布指标的 challenge/diagnostic；选择 without-owner、minimal-skill 或 previous-version baseline。
+4. **设计运行策略**：三次运行仅作初始取样；混合结果需要扩样和 trace。区分 train、validation、sanity/regression 与不进入发布指标的 challenge/diagnostic；选择 without-skill、minimal-skill 或 previous-version baseline。
 5. **输出**：生成 case 文件、suite metadata 和预期 artifact，使用 `assets/eval-case-template.json`。详细标准见 `references/eval-design-standard.generated.md`。
 
-## 独立审核边界
+## 必须独立审核
 
-完成后必须由 caller/harness 在 fresh context 中调用 `audit-agent-skill-evals(preflight)`。有子代理时可使用独立子代理；没有时输出 handoff 并要求独立 session。Author 或本 Skill 的自检只能发现结构错误，不能给 Oracle 出 `validity=pass`。
+完成 case 或 suite 后，必须启动独立上下文子代理，使用 `audit-agent-skill-evals` 的 `preflight` 模式审核。当前上下文不得给自己设计的 Oracle 输出 `validity=pass`。
+
+只有审核结果满足以下条件，suite 才能交给兼容 Eval runner：
+
+- `validity=pass`；
+- `blockedCases` 为空；
+- 待运行 case 的 admission 全部为 `pass`；
+- target Skill digest 与 case corpus digest 均匹配当前材料。
+
+`fail`、`unknown` 或 digest 不匹配时停止 Eval 执行分支，先修复 Eval 或补足证据。
