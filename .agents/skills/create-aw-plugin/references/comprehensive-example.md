@@ -59,7 +59,7 @@ code-review/
 
 `skills/review-workflow/evals/evals.json` 属于作者期质量材料，不是 runtime 指令，也不会进入 production runtime bundle。真实插件需要由同目录 `manifest.json` 声明 owner、profile 和 suite 后才能通过 `pnpm plugin:eval <plugin> --skill <skill> --batch-name <name>` 运行；本示例只保留小型、脱敏的 seed corpus，并示范 policy、scenario family、oracle 和边界 minimal counterexample。大型日志、仓库快照和私有输入应保存在项目 `.tmp/agent-workflows/evals/` 下的隔离 workspace。
 
-插件 manifest 不支持顶层 `dependencies`。插件需要其它工具或服务时，在 Skill 说明、MCP 声明或 lifecycle 检查中明确表达要求，不得声明插件安装依赖图。
+插件需要同一 source 的其它插件才能工作时，使用顶层 `dependencies` 声明必需插件，并把 `compatibility.aw.minVersion` 设置为至少 `0.1.0`。外部工具或服务要求仍在 Skill、MCP 或 lifecycle 合同中表达。
 
 ## 构建产物预览
 
@@ -75,7 +75,7 @@ code-review/
 
 **两个平台 runtime bundle 都不包含**：Skill 根 `evals/**` 和插件根 `reports/**`；完整 eval 工作证据只保存在项目 `.tmp/agent-workflows/evals/`，Skill README 随 Skill 发布
 
-**插件 manifest 和平台原生 manifest 都不支持**：`dependencies`。
+**只由插件 source/bundle manifest 支持**：`dependencies`。平台原生 manifest 和 catalog entry 不包含该字段；`buildImports` 也不形成安装依赖。
 
 **schema 4 source manifest 负责记录**：snapshot version、channel、snapshot 级 `compatibility.aw.minVersion`，以及每个插件的版本、最低 CLI 版本、`artifactDigest`、`manifestDigest` 和 `contentDigest`。开发 snapshot 由 `pnpm build` 物化；published candidate 由 immutable release plan 的内部 staging 物化，不手改。
 

@@ -89,6 +89,7 @@ import {
   validateCatalogManifestV4,
 } from '../src/utils/catalog-manifest-v4.js';
 import { validateCatalogSnapshot } from '../src/utils/catalog-snapshot.js';
+import { validatePluginMetaDependencyGraph } from '../src/utils/plugin-dependencies.js';
 import { readJsonFile } from '../src/utils/json.js';
 import { resolveCliPackageRoot } from '../src/utils/paths.js';
 import {
@@ -213,6 +214,7 @@ export async function stageCatalogArtifacts(
     readCliPackageMetadata(repoRoot),
     resolvePluginsFromCatalog(options.outputRoot),
   ]);
+  validatePluginMetaDependencyGraph(sourcePlugins);
   const catalogVersion = assertStrictSemVer(
     options.catalogVersion ?? version,
     'catalog version',

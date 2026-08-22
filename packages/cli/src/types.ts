@@ -596,6 +596,7 @@ export interface PluginManifestSource {
   name: string;
   version: PluginVersion;
   description: string;
+  dependencies?: string[];
   compatibility?: PluginCompatibility;
   skills?: string;
   slashCommands?: string;

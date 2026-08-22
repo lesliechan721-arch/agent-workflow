@@ -426,6 +426,8 @@ describe('manifest utils', () => {
         },
       },
     };
+    manifest.dependencies = ['shared-runtime'];
+    manifest.compatibility = { aw: { minVersion: '0.1.0' } };
     manifest.artifacts = {
       targets: [
         {
@@ -497,6 +499,7 @@ describe('manifest utils', () => {
     });
 
     const bundleManifest = createBundleSourceManifest(plugin);
+    expect(bundleManifest.dependencies).toEqual(['shared-runtime']);
     expect(bundleManifest.scripts?.tests).toBeUndefined();
     expect(bundleManifest.scripts?.node?.build).toBeUndefined();
     expect(bundleManifest.scripts?.node?.packageRoot).toBe('./scripts');

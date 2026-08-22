@@ -114,7 +114,7 @@ compatibility: Requires the agent-workflows repository, Node.js 22+, and install
 - `skills`、`mcpServers`、`apps`、`slashCommands` 使用单个 `./` 相对路径，且路径必须存在。
 - 面向 Codex 的静态 skill 必须带 `agents/openai.yaml`，并显式声明 `policy.allow_implicit_invocation`。
 - Skill 的调用方式是 Skill 设计的一部分。Codex 使用 `agents/openai.yaml` 的 `policy.allow_implicit_invocation`；Claude 使用 `SKILL.md` frontmatter 的 `disable-model-invocation` 与 `user-invocable`。AW 原样保留这些字段。
-- 插件 manifest 不支持 `dependencies`；插件必须独立声明和生成自己的运行时能力。
+- 插件只在确实需要同一 source 的其它插件才能工作时声明 `dependencies: ["<plugin-name>"]`。非空依赖要求 `compatibility.aw.minVersion >= 0.1.0`；`buildImports` 只是构建期文件输入，不形成安装依赖。
 - `plugins/marketplace-source.json`、`packages/cli/plugins-dist/`、`~/.aw/` 和平台 manifest 都不是单插件作者手改入口。
 
 ## 验证入口

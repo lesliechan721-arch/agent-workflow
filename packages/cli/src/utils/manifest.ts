@@ -77,7 +77,8 @@ import {
 } from './platform-support.js';
 
 export const SOURCE_MANIFEST_PATH = path.join('.agents-plugin', 'plugin.json');
-export const SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION = 3;
+export const SOURCE_PLUGIN_MANIFEST_CONTRACT_VERSION = 4;
+export const PLUGIN_DEPENDENCIES_AW_MIN_VERSION = '0.1.0';
 export const MARKETPLACE_SOURCE_PATH = path.join('plugins', 'marketplace-source.json');
 const MANIFEST_POLICY_PRODUCTS = new Set(['CODEX', 'CLAUDE']);
 const MARKETPLACE_AUTHENTICATION_POLICIES = new Set<MarketplaceAuthenticationPolicy>([
@@ -2598,13 +2599,11 @@ export function validatePluginManifest(
       'Invalid plugin manifest: top-level "commands" has been removed; use "slashCommands" instead.',
     );
   }
-  if (Object.hasOwn(input, 'dependencies')) {
-    throw new Error('Invalid plugin manifest: top-level "dependencies" is unsupported.');
-  }
   assertAllowedKeys(input, 'plugin manifest', [
     'name',
     'version',
     'description',
+    'dependencies',
     'compatibility',
     'skills',
     'slashCommands',
@@ -2629,6 +2628,37 @@ export function validatePluginManifest(
     }),
     marketplace: normalizeMarketplaceMeta(input.marketplace, 'marketplace'),
   };
+
+  if (input.dependencies !== undefined) {
+    const dependencies = ensureStringArray(input.dependencies, 'dependencies');
+    if (dependencies.length > 64) {
+      throw new Error('Invalid dependencies: expected at most 64 direct plugin dependencies.');
+    }
+    const seen = new Set<string>();
+    const normalizedDependencies = dependencies.map((dependency, index) => {
+      const name = ensurePluginName(dependency, `dependencies[${index}]`);
+      if (name === manifest.name) {
+        throw new Error(`Invalid dependencies[${index}]: plugin "${manifest.name}" cannot depend on itself.`);
+      }
+      if (seen.has(name)) {
+        throw new Error(`Invalid dependencies: duplicate plugin "${name}".`);
+      }
+      seen.add(name);
+      return name;
+    });
+    if (normalizedDependencies.length > 0) {
+      manifest.dependencies = normalizedDependencies;
+      const minVersion = manifest.compatibility?.aw.minVersion;
+      if (
+        minVersion === undefined
+        || compareStrictSemVer(minVersion, PLUGIN_DEPENDENCIES_AW_MIN_VERSION) < 0
+      ) {
+        throw new Error(
+          `Invalid plugin manifest.compatibility.aw.minVersion: dependencies requires AW ${PLUGIN_DEPENDENCIES_AW_MIN_VERSION} or newer.`,
+        );
+      }
+    }
+  }
 
   if (input.skills !== undefined) {
     manifest.skills = normalizePluginRelativePath(

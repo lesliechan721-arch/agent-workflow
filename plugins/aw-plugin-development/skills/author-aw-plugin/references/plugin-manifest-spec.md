@@ -9,6 +9,7 @@
 | `name` | string | 是 | 小写短横线格式，必须与目录名一致 |
 | `version` | string | 是 | 严格 SemVer，例如 `0.1.0`；插件内容身份变化时必须递增 |
 | `description` | string | 是 | 非空字符串 |
+| `dependencies` | string[] | 否 | 同一 source 内的必需插件名；非空时要求 `compatibility.aw.minVersion >= 0.1.0` |
 | `compatibility` | object | 是 | 目前只支持 `compatibility.aw.minVersion`，声明插件 artifact 需要的最低 `@lesliechan721/aw` CLI 版本；不要声明最低 Codex 或 Claude Code 版本 |
 | `skills` | string | 否 | 单个路径，`./` 开头，指向 skills 目录 |
 | `slashCommands` | string | 否 | 单个路径，`./` 开头，指向公共 slash command 源目录；首版只接受根目录直属 `*.md` 和保留 `assets/` |
@@ -22,7 +23,17 @@
 | `config` | object | 否 | AW 自管配置 schema，供 `aw config`、lifecycle context 和标准 helper 使用 |
 | `artifacts` | object | 否 | 动态 artifact 静态能力声明，用于 Codex/Claude Skill、developer instructions 和 agent role |
 
-不允许出现上表以外的顶层字段。插件 manifest 不支持 `dependencies`；每个插件必须独立声明自己的平台能力。
+不允许出现上表以外的顶层字段。
+
+## dependencies block
+
+`dependencies` 是同一 source 内的必需插件名数组。名称必须使用小写短横线格式，不能写 `source/plugin`；同一数组不能重复、不能引用自身，直接依赖最多 64 个。空数组等同于省略。
+
+完整 source 图必须包含每个依赖，不能有环。依赖插件支持的 `marketplace.policy.products` 必须覆盖依赖它的插件。运行时闭包最多 256 个插件、深度最多 32；执行顺序是依赖优先，同层按插件名 ASCII 升序。
+
+非空 `dependencies` 要求 `compatibility.aw.minVersion >= 0.1.0`。schema 4 自身的 catalog floor 仍为 `0.1.0-beta.3`，但含依赖插件的 catalog 总 floor 会由插件声明提高到至少 `0.1.0`。bundle 的 `.agents-plugin/plugin.json` 保留该字段，catalog entry 和平台原生 manifest 不包含它。
+
+`buildConfig.buildImports` 只向构建脚本提供 canonical 文件的只读副本，不安装 provider，也不能用于推断 `dependencies`。只有插件运行所必需的同 source 插件才写入 `dependencies`。
 
 ## version / compatibility block
 
@@ -51,6 +62,7 @@ AW 版本管理里有三套身份，不能混用：
 规则：
 
 - 源码 `version` 必须是没有 prerelease 或 build metadata 的稳定 SemVer；`compatibility.aw.minVersion` 必须是严格 SemVer。不能写 `v1.2.3`、`1.2`、`latest`、`^1.2.3` 或其它宽松写法。
+- 非空 `dependencies` 要求 `compatibility.aw.minVersion` 至少为 `0.1.0`；空数组等同于未声明依赖，不提高插件 floor。
 - 插件 manifest 不声明 per-plugin 宿主 agent 版本。Codex `>= 0.145.0`、Claude Code `>= 2.1.88` 是 AW CLI 内置写命令门槛，作者不需要添加 `compatibility.codex`、`compatibility.claude`、`minimumCodexVersion` 或类似字段。
 - 插件最低 CLI 版本不能高于 catalog 级 `compatibility.aw.minVersion`。catalog 级门槛取所有插件声明与内部 schema 4 Git 分发 floor 的最大值；作者只声明插件本身的真实最低版本，不复制、手工维护或降低 catalog floor。
 - schema 4 snapshot 中每个插件都必须提供 `artifactDigest`、`manifestDigest` 和 `contentDigest`，并声明不高于 snapshot 级门槛的最低 CLI 版本。作者改变 production bundle 时，在下一次 release train 设置新的插件 `version`。

@@ -12,6 +12,7 @@ import {
   validateCatalogManifestV4,
 } from './catalog-manifest-v4.js';
 import { readPluginManifest } from './manifest.js';
+import { validatePluginMetaDependencyGraph } from './plugin-dependencies.js';
 
 const REQUIRED_ROOT_ENTRIES = new Set([
   CURRENT_CATALOG_MANIFEST_FILE,
@@ -227,9 +228,11 @@ export async function validateCatalogSnapshot(rootDir: string): Promise<CatalogS
     throw new Error('Invalid catalog snapshot plugin inventory: plugins/ must exactly match manifest entries.');
   }
 
+  const plugins = [];
   for (const entry of manifest.entries) {
     const pluginRoot = path.join(resolvedRoot, 'plugins', entry.name);
     const plugin = await readPluginManifest(pluginRoot, { mode: 'bundle' });
+    plugins.push(plugin);
     const expected = await createCatalogManifestV4Entry(plugin, pluginRoot);
     for (const field of [
       'name',
@@ -253,6 +256,7 @@ export async function validateCatalogSnapshot(rootDir: string): Promise<CatalogS
       }
     }
   }
+  validatePluginMetaDependencyGraph(plugins);
   if (
     manifest.release.state === 'published'
     && manifest.release.contentDigest !== calculateCatalogContentDigest(manifest, marketplace)

@@ -18,7 +18,7 @@
 - `utils/plugin-config.ts` 与 `utils/plugin-config-write.ts` 管理 namespaced AW config store 和 config v4 输出。
 - `output/command-receipt.ts` 生成五个写命令的 receipt v4。
 - `generators/` 生成 instructions、permissions、hooks、agents、skills 和 MCP 等平台能力。
-- `types.ts` 保存跨模块公开类型。插件 manifest 不支持顶层 `dependencies`。
+- `types.ts` 保存跨模块公开类型。插件源码 manifest 可用顶层 `dependencies: string[]` 声明同一 source 内的必需插件。
 
 写命令和 status 只根据 current catalog、live ownership 和平台组件执行。
 
@@ -37,6 +37,9 @@
 - renderer 只返回 `ArtifactPlan`，不直接写平台文件。
 - 写入前必须验证 scope、path boundary、target identity 和最终 Skill tree。
 - Codex/Claude Skill 原生调用 metadata 来自最终文件树，AW 只校验和保留。
+- 插件依赖只来自 manifest `dependencies`，不能从 `buildImports`、runtime exports、目录布局或已安装状态推断。非空依赖要求插件声明 `compatibility.aw.minVersion >= 0.1.0`；schema 4 自身的 catalog floor 仍为 `0.1.0-beta.3`，catalog 总 floor 取 schema floor 和全部插件声明的最大值。
+- source 依赖图必须拒绝缺失节点、环、产品覆盖不足、超过 64 个直接依赖、超过 256 个闭包节点或超过 32 层深度。依赖只在同一 source 内解析；运行时按 roots 取闭包，并使用依赖优先、同层插件名 ASCII 升序的稳定拓扑顺序。
+- bundle source manifest 保留 `dependencies`，schema 4 catalog entry 不投影该字段。build 和 catalog staging 必须校验完整 source 图。
 - command 分支不得新增另一套安装状态投影、依赖图或平台输出记录。
 
 ## Three-Layer Distribution Model

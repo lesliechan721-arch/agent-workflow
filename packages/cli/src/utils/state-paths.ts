@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -126,6 +127,26 @@ export function resolveRepoRootSync(cwd: string): string {
 
 export async function resolveRepoRoot(cwd: string): Promise<string> {
   return resolveRepoRootSync(cwd);
+}
+
+export function createProjectLocationKey(projectKey: string): string {
+  const readable = path.basename(projectKey)
+    .replace(/[^A-Za-z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 32);
+  const digest = crypto.createHash('sha256').update(projectKey).digest('hex').slice(0, 24);
+  return `project-${readable || 'root'}-${digest}`;
+}
+
+export async function resolveCanonicalRepoProjectKey(cwd: string): Promise<string> {
+  const repoRoot = await resolveRepoRoot(cwd);
+  try {
+    return await fs.realpath(repoRoot);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== 'ENOENT' && code !== 'ENOTDIR') throw error;
+    return path.resolve(repoRoot);
+  }
 }
 
 export async function resolveClaudeProjectKey(cwd: string): Promise<string> {
