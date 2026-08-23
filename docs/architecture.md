@@ -69,6 +69,8 @@ Portable materializer 使用调用方提供的同 source Catalog plugin set，�
 
 `aw skill materialize` 在同父目录 staging 中验证所选输出，再替换仅由相同 plugin ID 和 scope 的 schema 1 marker 证明属于 AW 的目标。foreign、身份不匹配、符号链接或过宽目标都 fail closed；命令不提供 force，也不创建 portable installed state。
 
+TUI 在插件预览和详情中只根据 `distributions.agentSkills` 声明显示 Portable 能力，不提前运行 renderer 或声明精确候选数和安装 ownership。用户进入安装流后才物化完整依赖闭包，并依次选择 Skill、Agent 和 scope；Review 只显示实际选择、依赖贡献和冲突。执行复用 `aw skill install` 的锁内证据重采集，证据变化时必须回到 Review 重新确认。
+
 ## Catalog Sources and Cache
 
 每个 source 在 `<AW_HOME>/catalog-cache/sources/<sourceId>/{current,last-good}/` 有独立身份、当前快照和最近一次可用快照。resolver 先使用有效的 `current`，需要时可回退同一 source 的 `last-good`。cache 只是可删除的性能和离线状态；它不决定安装、配置或删除权限。

@@ -1,10 +1,22 @@
 import type { PlatformName, Scope } from '../types.js';
 import type { ProjectConfigStoreLayer } from '../utils/plugin-config.js';
 
+export type PortableBlockerCode =
+  | 'requiredConfigMissing'
+  | 'portableSkillsCliMissing'
+  | 'portableSkillsCliIncompatible'
+  | 'portableValidationFailed';
+
 export type TuiRoute =
   | { name: 'home' }
   | { name: 'pluginList'; mode: 'browse' | 'installed'; sourceId?: string }
   | { name: 'pluginPreview'; pluginId: string }
+  | { name: 'portableSkillSelect'; pluginId: string }
+  | { name: 'portableDependencies'; pluginId: string }
+  | { name: 'portableAgentMode'; pluginId: string }
+  | { name: 'portableAgentInput'; pluginId: string }
+  | { name: 'portableScope'; pluginId: string }
+  | { name: 'portableBlocker'; pluginId: string; code: PortableBlockerCode; diagnosticCode: string }
   | {
       name: 'pluginDependencies';
       pluginId: string;

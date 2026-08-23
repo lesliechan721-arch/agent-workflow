@@ -29,6 +29,7 @@ import {
 
 export type PortableCommandErrorCode =
   | 'portableUnsupported'
+  | 'requiredConfigMissing'
   | 'portableNoSkills'
   | 'portableNoSkillsSelected'
   | 'portableSkillNameConflict'
@@ -103,6 +104,8 @@ export interface PortableInstallReceipt {
   warnings: string[];
   failures: Array<{ code: string; message: string; recovery: string }>;
 }
+
+export type PortableInstallProgressStage = 'prepare' | 'add' | 'verify';
 
 export interface PortableMaterializeReceipt {
   receiptSchemaVersion: 4;
@@ -200,6 +203,9 @@ function classifyMaterializationError(error: unknown): never {
   if (message.includes('does not declare distributions.agentSkills')) {
     throw new PortableCommandError('portableUnsupported', '插件不支持 Agent Skills distribution。');
   }
+  if (message.includes('Portable materialization config is invalid')) {
+    throw new PortableCommandError('requiredConfigMissing', '插件缺少生成内容所需的设置，或设置无效。');
+  }
   if (message.includes('name collision')) {
     throw new PortableCommandError('portableSkillNameConflict', message);
   }
@@ -293,6 +299,24 @@ async function collectEvidence(options: {
   }
 }
 
+export async function preparePortableInstall(options: {
+  selector: string;
+  scope: Scope;
+  requestedSkills?: string[];
+  requestedAgents?: string[];
+  cwd: string;
+  cliVersion: string;
+  env?: NodeJS.ProcessEnv;
+}): Promise<PortableReview> {
+  const agents = normalizePortableAgents(options.requestedAgents);
+  const collected = await collectEvidence({ ...options, agents });
+  try {
+    return structuredClone(collected.review);
+  } finally {
+    await collected.materialized.cleanup();
+  }
+}
+
 export function renderPortableReview(review: PortableReview): string[] {
   return [
     `插件：${review.pluginId}${review.pluginVersion ? ` @ ${review.pluginVersion}` : ''}`,
@@ -355,10 +379,13 @@ export async function installPortableSkills(options: {
   env?: NodeJS.ProcessEnv;
   confirm?: (review: PortableReview) => Promise<CliPromptResult<boolean>>;
   onReview?: (review: PortableReview) => void;
+  expectedEvidenceDigest?: string;
+  onProgress?: (stage: PortableInstallProgressStage) => void | Promise<void>;
 }): Promise<PortableInstallReceipt> {
   assertScope(options.scope);
   const scope = options.scope;
   const agents = normalizePortableAgents(options.requestedAgents);
+  await options.onProgress?.('prepare');
   const initial = await collectEvidence({ ...options, scope, agents });
   options.onReview?.(initial.review);
   try {
@@ -393,6 +420,10 @@ export async function installPortableSkills(options: {
         if ([...initialNames].some((name) => !currentNames.has(name))) {
           throw new PortableCommandError('reviewStale', '确认后的所选 Skill 已消失。');
         }
+        if (options.expectedEvidenceDigest
+          && current.review.evidenceDigest !== options.expectedEvidenceDigest) {
+          throw new PortableCommandError('reviewStale', '确认后的安装证据已变化。');
+        }
         if (current.review.evidenceDigest !== initial.review.evidenceDigest && !options.yes) {
           options.onReview?.(current.review);
           const confirmed = await options.confirm?.(current.review);
@@ -402,6 +433,7 @@ export async function installPortableSkills(options: {
         }
         const executionCwd = options.scope === 'project' ? resolveAwProjectRoot(options.cwd) : options.cwd;
         try {
+          await options.onProgress?.('add');
           await addSkills({
             rootDir: current.materialized.rootDir,
             skills: current.review.selected.map((entry) => entry.name),
@@ -418,6 +450,7 @@ export async function installPortableSkills(options: {
         }
         let verification: PortableInstallReceipt['verification'];
         try {
+          await options.onProgress?.('verify');
           verification = await verifySkills({
             skills: current.review.selected.map((entry) => entry.name),
             ...(agents ? { agents } : {}),

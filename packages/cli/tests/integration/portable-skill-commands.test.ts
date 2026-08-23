@@ -4,6 +4,7 @@ import fs from 'fs-extra';
 import { describe, expect, it, vi } from 'vitest';
 
 import { runCli } from '../../src/index.js';
+import { installPortableSkills, preparePortableInstall } from '../../src/portable/commands.js';
 import { createCatalogManifestV4, createCatalogManifestV4Entry } from '../../src/utils/catalog-manifest-v4.js';
 import {
   readCatalogSourcesConfigSnapshot,
@@ -92,6 +93,31 @@ async function installFakeSkills(env: NodeJS.ProcessEnv, root: string, options: 
 }
 
 describe('portable skill public commands', () => {
+  it('rejects stale TUI evidence inside the mutation lock before skills add', async () => {
+    const fixture = await configurePortableCatalog();
+    const fake = await installFakeSkills(fixture.env, fixture.cwd);
+    const prepared = await preparePortableInstall({
+      selector: 'portable', scope: 'project', cwd: fixture.cwd, env: fake.env, cliVersion: '0.1.0',
+    });
+    await expect(installPortableSkills({
+      selector: 'portable', scope: 'project', cwd: fixture.cwd, env: fake.env, cliVersion: '0.1.0',
+      yes: true, expectedEvidenceDigest: `${prepared.evidenceDigest}:stale`,
+    })).rejects.toMatchObject({ code: 'reviewStale' });
+    expect((await fs.readFile(fake.log, 'utf8'))).not.toContain('"add"');
+  });
+
+  it('reports the real prepare, add, and verify stages around the fake Skills CLI', async () => {
+    const fixture = await configurePortableCatalog();
+    const fake = await installFakeSkills(fixture.env, fixture.cwd);
+    const stages: string[] = [];
+    const receipt = await installPortableSkills({
+      selector: 'portable', scope: 'project', cwd: fixture.cwd, env: fake.env, cliVersion: '0.1.0',
+      yes: true, onProgress: (stage) => { stages.push(stage); },
+    });
+    expect(receipt.status).toBe('succeeded');
+    expect(stages).toEqual(['prepare', 'add', 'verify']);
+  });
+
   it('publishes help and requires the scope and output parameters', async () => {
     const fixture = await configurePortableCatalog();
     const helpIo = createCapturedCliIo();

@@ -47,6 +47,7 @@ export interface PluginListItemViewModel {
   supportedPlatforms: PlatformName[];
   installedPlacements: PlatformPlacementSummary[];
   aggregateStatus: 'available' | 'installed' | 'needsAttention' | 'unavailable';
+  portableSkills: boolean;
   dependencySummary?: PluginDependencySummaryViewModel;
   technicalComponents: Array<{
     platform: PlatformName;
@@ -278,6 +279,29 @@ export interface TuiViewModel {
   issues: UserIssueViewModel[];
   home: HomeSummaryViewModel;
   dependencyOverviews: PluginDependencyOverviewViewModel[];
+}
+
+export interface PortableSkillCandidateViewModel {
+  name: string;
+  description: string;
+  selected: boolean;
+  providerPluginId: string;
+  providerDisplayName: string;
+  relation: 'requested' | 'direct' | 'transitive';
+  dynamic: boolean;
+}
+
+export interface PortableSkillSelectionViewModel {
+  pluginId: string;
+  candidates: PortableSkillCandidateViewModel[];
+  selectedCount: number;
+  totalCount: number;
+  dependencySummary?: {
+    directCount: number;
+    transitiveCount: number;
+    contributingSkillCount: number;
+  };
+  canContinue: boolean;
 }
 
 function compareText(left: string, right: string): number {
@@ -705,6 +729,7 @@ export function buildTuiViewModel(options: {
   sourceHealth?: ReadonlyMap<string, SourceHealthViewModel>;
   sourceDetails?: SourceDetailViewModel[];
   dependencyOverviews?: PluginDependencyOverviewViewModel[];
+  portablePluginIds?: string[];
 }): TuiViewModel {
   const dependencyById = new Map((options.dependencyOverviews ?? [])
     .map((overview) => [overview.pluginId, overview]));
@@ -743,6 +768,7 @@ export function buildTuiViewModel(options: {
         : placements.map((placement) => placement.platform),
       installedPlacements: placements,
       aggregateStatus: unavailable ? 'unavailable' : attention ? 'needsAttention' : installed ? 'installed' : 'available',
+      portableSkills: options.portablePluginIds?.includes(pluginId) ?? false,
       ...(dependencyById.get(pluginId)
         ? { dependencySummary: dependencyById.get(pluginId)!.summary }
         : summary && (summary.dependencyTotalCount ?? 0) > 0

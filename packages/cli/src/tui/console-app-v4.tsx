@@ -5,6 +5,7 @@ import path from 'node:path';
 import type { CatalogSource, PlatformName, Scope } from '../types.js';
 import { CATALOG_SOURCE_ID_PATTERN } from '../utils/catalog-sources.js';
 import { canonicalizeCatalogGitUrl } from '../utils/catalog-source-identity.js';
+import { normalizePortableAgents } from '../portable/commands.js';
 import { projectCatalogSourceLocation } from '../utils/catalog-source-presentation.js';
 import { ScreenFrame } from './components.js';
 import type {
@@ -14,7 +15,7 @@ import type {
   TuiController,
   TuiControllerSnapshot,
 } from './controller.js';
-import { userIssueKey } from './controller.js';
+import { extractPortableError, userIssueKey } from './controller.js';
 import { resolveTuiSizePolicy } from './layout.js';
 import type {
   ConfigFieldViewModel,
@@ -42,6 +43,7 @@ export const CONSOLE_V4_SCREEN_IDS = [
   'I10', 'I11', 'I12', 'I13',
   'D01', 'D02', 'D03', 'D04', 'D05', 'D06', 'D07', 'D08', 'D09',
   'D10', 'D11', 'D12', 'D13', 'D14', 'D15', 'D16', 'D17',
+  'U01', 'U02', 'U03', 'U04', 'U05', 'U06', 'U07', 'U08', 'U09', 'U10', 'U11',
 ] as const;
 
 export type ConsoleV4ScreenId = typeof CONSOLE_V4_SCREEN_IDS[number];
@@ -151,6 +153,32 @@ function actionLimitForLineBudget(actions: ActionItem[], lineBudget: number): nu
   return Math.max(1, count);
 }
 
+function lineBudgetViewport(
+  actions: ActionItem[],
+  focus: number,
+  requestedOffset: number,
+  lineBudget: number,
+  groupKeys?: Array<string | undefined>,
+): { limit: number; offset: number } {
+  const height = (start: number, end: number): number => {
+    let lines = 0;
+    let previousGroup: string | undefined;
+    for (let index = start; index < end; index += 1) {
+      const group = groupKeys?.[index];
+      if (group && group !== previousGroup) lines += 1;
+      lines += actions[index]?.description || actions[index]?.disabled ? 2 : 1;
+      previousGroup = group;
+    }
+    return lines;
+  };
+  let offset = Math.min(requestedOffset, Math.max(0, actions.length - 1));
+  if (focus < offset) offset = focus;
+  while (offset < focus && height(offset, focus + 1) > lineBudget) offset += 1;
+  let end = Math.max(offset + 1, focus + 1);
+  while (end < actions.length && height(offset, end + 1) <= lineBudget) end += 1;
+  return { offset, limit: Math.max(1, end - offset) };
+}
+
 function actionViewport(
   routeName: TuiRoute['name'],
   actions: ActionItem[],
@@ -158,6 +186,9 @@ function actionViewport(
   focus: number,
   requestedOffset: number,
 ): { limit?: number; offset: number } {
+  if (routeName === 'portableDependencies') {
+    return lineBudgetViewport(actions, focus, requestedOffset, mode === 'compact' ? 7 : 12);
+  }
   const limit = routeName === 'pluginList' || routeName === 'issueList' || routeName === 'sourceList'
     ? actionLimitForLineBudget(actions, mode === 'compact' ? 8 : 12)
     : routeName === 'pluginDependencies' ? mode === 'compact' ? 2 : 7
@@ -217,6 +248,31 @@ function ActionRows(props: {
       })}
     </Box>
   );
+}
+
+function PortableSkillRows(props: {
+  actions: ActionItem[];
+  candidates: NonNullable<TuiControllerSnapshot['portableDraft']>['candidates'];
+  focus: number;
+  offset: number;
+  limit?: number;
+}): React.JSX.Element {
+  const end = props.limit === undefined ? props.actions.length : props.offset + props.limit;
+  const indexes = props.actions.map((_, index) => index)
+    .filter((index) => index >= props.offset && index < end);
+  return <Box flexDirection="column">{indexes.map((index) => {
+    const candidate = props.candidates[index];
+    const previous = props.candidates[index - 1];
+    const showHeading = candidate && (index === props.offset
+      || candidate.providerPluginId !== previous?.providerPluginId);
+    const heading = candidate?.relation === 'requested'
+      ? '当前插件'
+      : candidate ? `来自依赖插件 · ${candidate.providerDisplayName}` : undefined;
+    return <Box key={index} flexDirection="column">
+      {showHeading && heading ? <Text bold color={tuiTheme.colors.muted}>{heading}</Text> : null}
+      <ActionRows actions={props.actions} focus={props.focus} offset={index} limit={1} />
+    </Box>;
+  })}</Box>;
 }
 
 function Bordered(props: { title?: string; children: React.ReactNode }): React.JSX.Element {
@@ -363,6 +419,16 @@ export function resolveConsoleV4ScreenId(
   if (route.name === 'pluginPreview') {
     return controller.getPluginOverview(route.pluginId)?.dependencySummary?.totalCount ? 'D01' : 'P04';
   }
+  if (route.name === 'portableSkillSelect') return 'U01';
+  if (route.name === 'portableDependencies') return 'U02';
+  if (route.name === 'portableAgentMode') return 'U03';
+  if (route.name === 'portableAgentInput') return 'U04';
+  if (route.name === 'portableScope') return 'U05';
+  if (route.name === 'portableBlocker') {
+    if (route.code === 'requiredConfigMissing') return 'U09';
+    if (route.code === 'portableSkillsCliMissing' || route.code === 'portableSkillsCliIncompatible') return 'U10';
+    return 'U11';
+  }
   if (route.name === 'pluginDependencies') {
     if (route.view === 'removeBlocked') return 'D12';
     const plugin = controller.getPluginOverview(route.pluginId);
@@ -410,7 +476,8 @@ export function resolveConsoleV4ScreenId(
     && snapshot.result.operationKind === 'sourceMutation') {
     return snapshot.result.state === 'succeeded' ? 'S12' : 'S13';
   }
-  if (route.name === 'review') return snapshot.activeReview?.operationKind === 'configSave'
+  if (route.name === 'review') return snapshot.activeReview?.operationKind === 'portableInstall' ? 'U06'
+    : snapshot.activeReview?.operationKind === 'configSave'
     ? 'C12'
     : snapshot.activeReview?.operationKind === 'configReset'
       ? 'C16'
@@ -420,9 +487,11 @@ export function resolveConsoleV4ScreenId(
         : snapshot.activeReview?.operationKind === 'pluginWrite'
           && (snapshot.activeReview.pluginAction === 'uninstall' || snapshot.activeReview.pluginAction === 'cleanup')
           ? 'P19' : 'P07';
-  if (route.name === 'progress') return snapshot.activeReview?.operationKind === 'configSave'
+  if (route.name === 'progress') return snapshot.activeReview?.operationKind === 'portableInstall' ? 'U07'
+    : snapshot.activeReview?.operationKind === 'configSave'
     || snapshot.activeReview?.operationKind === 'configReset' ? 'C13' : 'P08';
-  if (route.name === 'result') return snapshot.result?.operationKind === 'configSave'
+  if (route.name === 'result') return snapshot.result?.operationKind === 'portableInstall' ? 'U08'
+    : snapshot.result?.operationKind === 'configSave'
     || snapshot.result?.operationKind === 'configReset'
     ? snapshot.result.state === 'succeeded' ? 'C14' : 'C15'
     : snapshot.result?.state === 'partial' ? 'P10' : 'P09';
@@ -514,6 +583,7 @@ export function ConsoleAppV4(props: {
   const [sourceInputError, setSourceInputError] = useState<string>();
   const [sourceReferenceSummary, setSourceReferenceSummary] = useState<Awaited<ReturnType<TuiController['inspectSourceRemoval']>>>();
   const [sourceDependenciesExpanded, setSourceDependenciesExpanded] = useState(false);
+  const [portableAgentInput, setPortableAgentInput] = useState('');
   const [draftOwner, setDraftOwner] = useState<string>();
   const exitSent = useRef(false);
   const operationBusy = useRef(false);
@@ -576,6 +646,11 @@ export function ConsoleAppV4(props: {
   useEffect(() => {
     if (route.name !== 'sourceAdd') setSourceInput('');
   }, [route.name]);
+  useEffect(() => {
+    if (route.name === 'portableAgentInput') {
+      setPortableAgentInput(snapshot.portableDraft?.requestedAgents.join(' ') ?? '');
+    } else setPortableAgentInput('');
+  }, [route.name, route.name === 'portableAgentInput' ? snapshot.portableDraft?.requestedAgents.join('\0') : '']);
   useEffect(() => {
     if (route.name !== 'configFieldEditor') setInputValue('');
   }, [route.name]);
@@ -818,6 +893,31 @@ export function ConsoleAppV4(props: {
     await props.controller.buildOperationReview(intent, underlyingResultRoute);
     setFocus(0);
     setScrollOffset(0);
+  };
+  const beginPortable = async (pluginId: string): Promise<void> => {
+    try {
+      await props.controller.preparePortableInstall(
+        pluginId,
+        route.name === 'portableBlocker' ? 'replace' : 'push',
+      );
+      setFocus(0);
+      setScrollOffset(0);
+      setActionError(undefined);
+    } catch (error) {
+      const blocker = extractPortableError(error);
+      go({ name: 'portableBlocker', pluginId, ...blocker });
+    }
+  };
+  const beginPortableReview = async (pluginId: string, selectedScope: Scope): Promise<void> => {
+    props.controller.setPortableScope(selectedScope);
+    try {
+      await props.controller.buildPortableInstallReview();
+      setFocus(0);
+      setActionError(undefined);
+    } catch (error) {
+      const blocker = extractPortableError(error);
+      go({ name: 'portableBlocker', pluginId, ...blocker });
+    }
   };
   const beginPluginRemoval = (
     candidate: PluginListItemViewModel,
@@ -1130,6 +1230,7 @@ export function ConsoleAppV4(props: {
         ]
       : [
           { label: '添加插件', description: '选择使用位置并确认变化', run: beginInstall },
+          ...(plugin.portableSkills ? [{ label: '安装通用 Skills…', description: '选择 Skill、Agent 和使用范围', run: () => beginPortable(plugin.pluginId) }] : []),
           ...(hasDependencies ? [{ label: '查看依赖关系', description: '查看直接、间接依赖和当前状态', run: () => go({ name: 'pluginDependencies', pluginId: plugin.pluginId }) }] : []),
           { label: '查看插件设置定义', description: `${plugin.configFieldCount} 个配置字段`, run: () => go({ name: 'configLayer', pluginId: plugin.pluginId }) },
           { label: '查看来源', run: () => go({ name: 'sourceDetail', sourceId: plugin.sourceId }) },
@@ -1149,6 +1250,7 @@ export function ConsoleAppV4(props: {
     };
     content = hasDependencies
       ? <Box flexDirection="column">
+          {plugin.portableSkills ? <Bordered title="可用方式"><Text>通用 Skills  提供通用 Skills</Text></Bordered> : null}
           <Bordered title="安装内容">
             <Text><Text color={tuiTheme.colors.accent}>• {plugin.displayName}</Text><Text color={tuiTheme.colors.muted}>  你选择的插件</Text></Text>
             {summaryRows('direct')}
@@ -1158,7 +1260,91 @@ export function ConsoleAppV4(props: {
           </Bordered>
           <ActionRows actions={actions} focus={focus} />
         </Box>
-      : <Box flexDirection="column"><Bordered title="可用工具"><Text>{plugin.supportedPlatforms.map(platformLabel).join(' · ') || '暂无可用工具'}</Text></Bordered><Bordered title="使用说明"><Text>✓ 在 Agent 会话中提供能力</Text><Text color={tuiTheme.colors.muted}>安装不会自动修改项目源码。</Text></Bordered><ActionRows actions={actions} focus={focus} /></Box>;
+      : <Box flexDirection="column"><Bordered title="可用工具"><Text>{plugin.supportedPlatforms.map(platformLabel).join(' · ') || '暂无可用工具'}</Text>{plugin.portableSkills ? <Text>通用 Skills  提供通用 Skills</Text> : null}</Bordered><Bordered title="使用说明"><Text>✓ 在 Agent 会话中提供能力</Text><Text color={tuiTheme.colors.muted}>安装不会自动修改项目源码。</Text></Bordered><ActionRows actions={actions} focus={focus} /></Box>;
+  } else if (route.name === 'portableSkillSelect' && plugin && snapshot.portableDraft) {
+    const draft = snapshot.portableDraft;
+    breadcrumb = `${plugin.displayName} / 通用 Skills`;
+    context = `${draft.selectedCount} / ${draft.totalCount} 已选择`;
+    title = '选择要安装的 Skills';
+    description = '已根据插件依赖和当前设置准备候选；默认全部选择。';
+    const candidateActions: ActionItem[] = draft.candidates.map((candidate) => ({
+      label: `${candidate.selected ? '◆' : '◇'} ${candidate.name}`,
+      description: `${candidate.description} · ${candidate.providerDisplayName} · ${candidate.relation === 'requested' ? '当前插件' : candidate.relation === 'direct' ? '直接依赖' : '间接依赖'}${candidate.dynamic ? ' · 按设置生成' : ''}`,
+      run: () => props.controller.togglePortableSkill(candidate.name),
+    }));
+    actions = [
+      ...candidateActions,
+      { label: '继续', disabled: draft.canContinue ? undefined : '至少选择一个 Skill', run: () => go({ name: 'portableAgentMode', pluginId: plugin.pluginId }) },
+      ...(plugin.dependencySummary?.totalCount ? [{ label: '查看依赖关系', run: () => go({ name: 'portableDependencies', pluginId: plugin.pluginId }) }] : []),
+    ];
+    const viewport = actionViewport(route.name, actions, policy.mode, focus, scrollOffset);
+    help = '↑↓ 移动 · Space 切换 · a 全选 · Enter 继续 · Esc 返回';
+    const viewportEnd = viewport.offset + (viewport.limit ?? actions.length);
+    const candidateEnd = Math.min(draft.candidates.length, viewportEnd);
+    content = <Box flexDirection="column">
+      {viewport.offset < draft.candidates.length
+        ? <PortableSkillRows actions={candidateActions} candidates={draft.candidates} focus={focus} offset={viewport.offset} limit={candidateEnd - viewport.offset} /> : null}
+      {candidateEnd < viewportEnd
+        ? <ActionRows actions={actions} focus={focus} offset={Math.max(candidateEnd, viewport.offset)} limit={viewportEnd - Math.max(candidateEnd, viewport.offset)} /> : null}
+    </Box>;
+  } else if (route.name === 'portableDependencies' && plugin && snapshot.portableDraft) {
+    const overview = dependencyOverview(plugin);
+    breadcrumb = `${plugin.displayName} / 通用 Skills / 依赖`;
+    context = `${(overview?.summary.totalCount ?? 0) + 1} 个插件`;
+    title = '生成这些候选 Skills 需要的插件';
+    description = '插件依赖用于生成，不能在这里取消。';
+    actions = [
+      ...(overview?.dependencies ?? []).map((dependency) => ({
+        label: dependency.displayName,
+        description: `${dependency.relation === 'direct' ? '直接依赖' : '间接依赖'} · 贡献 ${snapshot.portableDraft!.candidates.filter((candidate) => candidate.providerPluginId === dependency.pluginId).length} 个候选 Skill`,
+      })),
+      { label: '返回 Skill 选择', run: back },
+      { label: '技术详情', run: () => setShowTechnical((value) => !value) },
+    ];
+    const viewport = actionViewport(route.name, actions, policy.mode, focus, scrollOffset);
+    content = <Box flexDirection="column"><Bordered title="当前插件"><Text>{plugin.displayName} · 贡献 {snapshot.portableDraft.candidates.filter((candidate) => candidate.relation === 'requested').length} 个候选 Skills</Text></Bordered><ActionRows actions={actions} focus={focus} offset={viewport.offset} limit={viewport.limit} />{showTechnical ? <Text color={tuiTheme.colors.muted}>{overview?.dependencies.map((entry) => entry.pluginId).join('\n')}</Text> : null}</Box>;
+  } else if (route.name === 'portableAgentMode' && plugin && snapshot.portableDraft) {
+    breadcrumb = `${plugin.displayName} / 通用 Skills / Agent`;
+    title = '安装到哪些 Agent？';
+    description = '可以自动选择检测到的 Agent，也可以限制到指定 Agent。';
+    actions = [
+      { label: '自动选择', description: '自动选择检测到的 Agent；未检测到时可能选择全部 Agent', meta: '默认', run: () => { props.controller.setPortableAgentMode('automatic'); go({ name: 'portableScope', pluginId: plugin.pluginId }); } },
+      { label: '指定 Agent…', description: '输入一个或多个 Skills CLI ID', run: () => go({ name: 'portableAgentInput', pluginId: plugin.pluginId }) },
+    ];
+    content = <ActionRows actions={actions} focus={focus} />;
+  } else if (route.name === 'portableAgentInput' && plugin) {
+    breadcrumb = `${plugin.displayName} / 通用 Skills / Agent`;
+    context = '指定';
+    title = '输入 Agent ID';
+    description = inputError ?? '多个 Agent 使用空格分隔。';
+    content = <Box flexDirection="column"><Bordered><Text>{portableAgentInput || ' '}</Text></Bordered><Text color={tuiTheme.colors.muted}>示例：cursor claude-code codex gemini-cli</Text></Box>;
+  } else if (route.name === 'portableScope' && plugin && snapshot.portableDraft) {
+    breadcrumb = `${plugin.displayName} / 通用 Skills / 范围`;
+    title = '在哪里使用这些 Skills？';
+    description = `已选择 ${snapshot.portableDraft.selectedCount} 个 Skills · Agent：${snapshot.portableDraft.agentMode === 'automatic' ? '自动选择' : snapshot.portableDraft.requestedAgents.join('、')}`;
+    actions = [
+      { label: '当前项目', description: '安装到当前项目的 Skill 目录', meta: '推荐', run: () => beginPortableReview(plugin.pluginId, 'project') },
+      { label: '所有项目', description: '安装到用户级 Skill 目录', run: () => beginPortableReview(plugin.pluginId, 'user') },
+    ];
+    content = <ActionRows actions={actions} focus={focus} />;
+  } else if (route.name === 'portableBlocker' && plugin) {
+    breadcrumb = `${plugin.displayName} / 通用 Skills`;
+    title = route.code === 'requiredConfigMissing' ? '无法准备通用 Skills'
+      : route.code === 'portableSkillsCliMissing' || route.code === 'portableSkillsCliIncompatible' ? '暂时无法安装通用 Skills' : '无法准备通用 Skills';
+    description = route.code === 'requiredConfigMissing' ? '插件缺少生成内容所需的设置。'
+      : route.code === 'portableSkillsCliMissing' || route.code === 'portableSkillsCliIncompatible' ? '没有找到兼容的 Skills CLI。' : '候选 Skill 没有通过 Portable 校验。';
+    actions = [
+      ...(route.code === 'requiredConfigMissing' ? [{ label: '完成插件设置', run: () => {
+        props.controller.replace({ name: 'configLayer', pluginId: plugin.pluginId });
+        setFocus(0);
+        setScrollOffset(0);
+      } }] : []),
+      ...(route.code === 'portableSkillsCliMissing' || route.code === 'portableSkillsCliIncompatible'
+        ? [{ label: '查看安装说明', run: () => setShowTechnical((value) => !value) }] : []),
+      { label: '重新检查', run: () => beginPortable(plugin.pluginId) },
+      { label: '返回插件预览', run: () => go({ name: 'pluginPreview', pluginId: plugin.pluginId }) },
+    ];
+    content = <Box flexDirection="column"><Bordered><Text color={tuiTheme.statusColors.error}>× {route.code}</Text><Text color={tuiTheme.colors.muted}>没有调用 Skills CLI 安装。</Text></Bordered><ActionRows actions={actions} focus={focus} />{showTechnical ? <Bordered title={route.code === 'portableSkillsCliMissing' || route.code === 'portableSkillsCliIncompatible' ? '安装说明' : '技术详情'}><Text color={tuiTheme.colors.muted}>{route.code === 'portableSkillsCliMissing' || route.code === 'portableSkillsCliIncompatible' ? '安装或升级兼容的 Skills CLI（>=1.5.23 <2.0.0），然后重新检查。' : `诊断代码：${route.diagnosticCode}`}</Text></Bordered> : <Text color={tuiTheme.colors.muted}>d 查看脱敏诊断</Text>}</Box>;
   } else if (route.name === 'pluginDependencies' && plugin) {
     const overview = dependencyOverview(plugin);
     const visibleDependents = route.view === 'removeBlocked' && route.platform && route.scope
@@ -1350,15 +1536,23 @@ export function ConsoleAppV4(props: {
       status: dependencySummary.issueCount > 0 ? 'warning' as const : undefined,
       run: () => go({ name: 'pluginDependencies', pluginId: plugin.pluginId }),
     }] : [];
+    const portableActions = plugin.portableSkills ? [{
+      label: '通用 Skills',
+      description: '由插件提供；安装状态未知',
+      meta: '已提供',
+      run: () => beginPortable(plugin.pluginId),
+    }] : [];
     actions = [
       ...placementActions,
       ...dependencyActions,
+      ...portableActions,
       { label: '设置', description: '个人默认、当前项目和本机覆盖', meta: `${plugin.configFieldCount} 项配置`, run: () => go({ name: 'configLayer', pluginId: plugin.pluginId }) },
       { label: '关于与技术详情', description: '版本、来源和受管内容', run: () => go({ name: 'pluginAbout', pluginId: plugin.pluginId }) },
     ];
     const dependencyOffset = placementActions.length;
-    const settingOffset = dependencyOffset + dependencyActions.length;
-    content = <Box flexDirection="column"><Bordered title="使用状态"><ActionRows actions={placementActions} focus={focus} /></Bordered>{dependencySummary ? <Bordered title="依赖关系"><ActionRows actions={dependencyActions} focus={focus - dependencyOffset} /></Bordered> : null}<Bordered title="插件设置"><ActionRows actions={actions.slice(settingOffset, -1)} focus={focus - settingOffset} /></Bordered><ActionRows actions={actions.slice(-1)} focus={focus - actions.length + 1} /></Box>;
+    const portableOffset = dependencyOffset + dependencyActions.length;
+    const settingOffset = portableOffset + portableActions.length;
+    content = <Box flexDirection="column"><Bordered title="使用状态"><ActionRows actions={placementActions} focus={focus} /></Bordered>{dependencySummary ? <Bordered title="依赖关系"><ActionRows actions={dependencyActions} focus={focus - dependencyOffset} /></Bordered> : null}{plugin.portableSkills ? <Bordered title="通用 Skills"><ActionRows actions={portableActions} focus={focus - portableOffset} /></Bordered> : null}<Bordered title="插件设置"><ActionRows actions={actions.slice(settingOffset, -1)} focus={focus - settingOffset} /></Bordered><ActionRows actions={actions.slice(-1)} focus={focus - actions.length + 1} /></Box>;
   } else if (route.name === 'platform' && plugin) {
     const placement = props.controller.getPlatformPlacement(plugin.pluginId, route.platform);
     breadcrumb = `${plugin.displayName} / ${platformLabel(route.platform)}`;
@@ -1804,15 +1998,24 @@ export function ConsoleAppV4(props: {
       } },
       { label: '返回修改', run: back },
     ];
-    const reviewViewport = actionViewport(route.name, actions, policy.mode, focus, scrollOffset);
+    const reviewViewport = lineBudgetViewport(
+      actions,
+      focus,
+      scrollOffset,
+      policy.mode === 'compact' ? 8 : 15,
+      [...review.changes.map((change) => change.group), undefined, undefined],
+    );
     const reviewRows = (indexes: number[]): React.ReactNode[] => indexes
       .filter((index) => index >= reviewViewport.offset
         && (reviewViewport.limit === undefined || index < reviewViewport.offset + reviewViewport.limit))
       .map((index) => <ActionRows key={index} actions={actions} focus={focus} offset={index} limit={1} />);
     const groupedChanges = review.changes.some((change) => change.group);
     const groupTitle = {
-      requested: '你选择的插件',
-      dependencies: '必需依赖',
+      requested: review.operationKind === 'portableInstall' ? '已选择 Skills · 当前插件' : '你选择的插件',
+      dependencies: review.operationKind === 'portableInstall' ? '已选择 Skills · 来自依赖插件' : '必需依赖',
+      portableTarget: '安装目标',
+      portableInputs: '准备内容',
+      portableWarnings: '覆盖冲突',
       preserved: '保持不变',
     } as const;
     content = <Box flexDirection="column"><Bordered><Text bold>{review.subject.name}  {review.subject.sourceLabel} {review.subject.version}</Text>{review.equivalentCommand ? <><Text>{review.description}</Text><Text color={tuiTheme.colors.muted}>等价命令：{review.equivalentCommand}</Text></> : null}{groupedChanges ? (Object.keys(groupTitle) as Array<keyof typeof groupTitle>).map((group) => {
@@ -1822,12 +2025,13 @@ export function ConsoleAppV4(props: {
       return rows.length > 0 ? <Box key={group} flexDirection="column"><Text bold color={tuiTheme.colors.muted}>{groupTitle[group]}</Text>{rows}</Box> : null;
     }) : <>{reviewRows(review.changes.map((_, index) => index))}</>}{reviewRows([review.changes.length, review.changes.length + 1])}<Text color={tuiTheme.colors.muted}>▸ 技术详情（d）</Text>{showTechnical ? review.technicalDetails?.map((detail) => <Text key={detail} color={tuiTheme.colors.muted}>{detail}</Text>) : null}</Bordered></Box>;
   } else if (route.name === 'progress') {
+    const portableOperation = snapshot.activeReview?.operationKind === 'portableInstall';
     const configOperation = snapshot.activeReview?.operationKind === 'configSave'
       || snapshot.activeReview?.operationKind === 'configReset';
     const sourceOperation = snapshot.activeReview?.operationKind === 'sourceMutation';
     const issueOperation = snapshot.activeReview?.originIssue;
-    breadcrumb = issueOperation ? '需要处理 / 进度' : sourceOperation ? '插件来源 / 保存' : configOperation ? '设置 / 进度' : '插件操作 / 进度';
-    title = issueOperation ? '正在处理问题' : sourceOperation ? '正在保存并刷新来源' : configOperation ? '正在保存并应用设置' : '正在执行插件操作';
+    breadcrumb = portableOperation ? '通用 Skills / 进度' : issueOperation ? '需要处理 / 进度' : sourceOperation ? '插件来源 / 保存' : configOperation ? '设置 / 进度' : '插件操作 / 进度';
+    title = portableOperation ? '正在安装通用 Skills' : issueOperation ? '正在处理问题' : sourceOperation ? '正在保存并刷新来源' : configOperation ? '正在保存并应用设置' : '正在执行插件操作';
     description = issueOperation ? '完成后会使用新的状态 generation 重新检查问题。' : sourceOperation ? '先原子保存来源配置，再尽力刷新。刷新失败时配置仍保留并显示警告。' : configOperation ? '先保存所选层，再重新应用当前可见安装位置。' : '请勿关闭当前终端。';
     help = 'd 技术进度 · Ctrl-C 完成后退出';
     const progress = snapshot.progress;
@@ -1844,7 +2048,14 @@ export function ConsoleAppV4(props: {
       if (entry.state === 'skipped') return { label: '未执行 · 依赖未完成', status: 'warning' };
       return { label: entry.relation === 'requested' ? '等待依赖' : '未开始', status: 'muted' };
     };
-    content = <Box flexDirection="column">
+    content = portableOperation ? <Box flexDirection="column">
+      <Text color={progress.current?.phase.includes('检查') ? tuiTheme.colors.accent : tuiTheme.statusColors.success}>{progress.current?.phase.includes('检查') ? '●' : '✓'} 检查插件依赖</Text>
+      <Text color={progress.current?.phase.includes('检查') ? tuiTheme.colors.accent : tuiTheme.statusColors.success}>{progress.current?.phase.includes('检查') ? '●' : '✓'} 生成候选 Skills</Text>
+      <Text color={progress.current?.phase.includes('安装') ? tuiTheme.colors.accent : progress.current?.phase.includes('验证') ? tuiTheme.statusColors.success : tuiTheme.colors.muted}>{progress.current?.phase.includes('安装') ? '●' : progress.current?.phase.includes('验证') ? '✓' : '○'} 安装选择</Text>
+      <Text color={progress.current?.phase.includes('验证') ? tuiTheme.colors.accent : tuiTheme.colors.muted}>{progress.current?.phase.includes('验证') ? '●' : '○'} 验证</Text>
+      <Text color={tuiTheme.colors.muted}>当前：Skills CLI</Text>
+      {showTechnical ? technicalMessages.map((message, index) => <Text key={`${index}:${message}`} color={tuiTheme.colors.muted}>{message}</Text>) : null}
+    </Box> : <Box flexDirection="column">
       <Text color={tuiTheme.statusColors.success}>✓ {sourceOperation ? '检查来源操作输入' : configOperation ? '验证设置值' : dependencyProgress ? '检查依赖关系' : '检查兼容性'}</Text>
       <Text color={tuiTheme.colors.accent}>● {progress.current?.phase ?? (sourceOperation ? '保存来源配置并刷新' : configOperation ? '保存设置层并重新应用' : dependencyProgress ? '添加必需依赖' : '连接到所选工具')}</Text>
       <Text color={tuiTheme.colors.muted}>○ {dependencyProgress ? '验证完整结果' : '验证结果'}</Text>
@@ -1870,6 +2081,10 @@ export function ConsoleAppV4(props: {
       ? result.summary.action
       : undefined;
     const operationKind = 'operationKind' in result ? result.operationKind : undefined;
+    const portableOperation = operationKind === 'portableInstall';
+    const portableReceipt = result.state === 'succeeded' || result.state === 'partial'
+      ? result.summary.portable : undefined;
+    const portableInstallFailed = portableReceipt?.failureCode === 'portableSkillsCliInstallFailed';
     const configOperation = operationKind === 'configSave' || operationKind === 'configReset'
       ? operationKind : undefined;
     const sourceOperation = operationKind === 'sourceMutation';
@@ -1883,7 +2098,9 @@ export function ConsoleAppV4(props: {
       uninstall: '✓ 插件移除完成',
       cleanup: '✓ 插件清理完成',
     }[action ?? 'install'];
-    title = blocked && result.writeMayHaveCompleted
+    title = portableOperation
+      ? portableInstallFailed ? '× 通用 Skills 没有完成安装' : partial ? '! 安装命令已完成，但结果无法确认' : '✓ 通用 Skills 已安装'
+      : blocked && result.writeMayHaveCompleted
       ? '× 写入结果未确认'
       : issueOperation
       ? blocked || partial ? '× 问题仍未解决' : '✓ 问题已处理'
@@ -1894,7 +2111,9 @@ export function ConsoleAppV4(props: {
         ? '× 设置未确认保存'
         : partial ? '! 设置已保存，但部分应用失败' : '✓ 设置已保存并应用'
       : partial ? '! 插件操作只完成了一部分' : blocked ? '× 插件操作未完成' : completedTitle;
-    description = blocked && result.writeMayHaveCompleted
+    description = portableOperation
+      ? portableInstallFailed ? 'Skills CLI 安装失败。可以修改 Agent 或使用原选择重试。' : partial ? '无法确认全部已选择 Skills。' : '所选 Skills 已通过安装验证。'
+      : blocked && result.writeMayHaveCompleted
       ? result.message
       : issueOperation
       ? blocked
@@ -1945,7 +2164,21 @@ export function ConsoleAppV4(props: {
         && (candidate.platform ?? failedIssue.platform) === failedTarget?.platform
         && (candidate.scope ?? failedIssue.scope) === failedTarget?.scope)
       : undefined;
-    actions = issueOperation
+    actions = portableOperation
+      ? [
+          { label: blocked || partial ? '返回修改' : '返回插件详情', run: () => pluginId
+            ? (blocked || partial
+                ? leaveResult({ name: portableInstallFailed && portableReceipt?.agentMode === 'explicit'
+                    ? 'portableAgentInput' : 'portableSkillSelect', pluginId })
+                : (props.controller.discardPortableDraft(), leaveResult({ name: 'pluginDetail', pluginId })))
+            : leaveResult() },
+          { label: blocked || partial ? '重试' : '再安装其他 Skills…', run: () => pluginId
+            && (blocked || partial
+              ? beginPortableReview(pluginId, snapshot.portableDraft?.scope ?? 'project')
+              : beginPortable(pluginId)) },
+          { label: '返回插件预览', run: () => { props.controller.discardPortableDraft(); if (pluginId) leaveResult({ name: 'pluginPreview', pluginId }); } },
+        ]
+      : issueOperation
       ? blocked || partial
         ? [
             { label: '返回问题详情', run: () => blocked
@@ -1998,7 +2231,7 @@ export function ConsoleAppV4(props: {
         ? props.controller.getPluginOverview(target.pluginId)?.displayName
           ?? target.pluginId.split('/').at(-1)!
         : `${platformLabel(target.platform)} · ${scopeLabel(target.scope)}`;
-    content = <Box flexDirection="column"><Bordered>{result.state === 'blocked' ? <Text color={tuiTheme.statusColors.error}>{result.writeMayHaveCompleted ? '结果未确认' : '操作未完成'} · {result.code}</Text> : sourceOperation ? <Text color={tuiTheme.statusColors.success}>来源配置写入已完成。</Text> : completedResult && (completedResult.summary.targets?.length ?? 0) > 0 ? <>{dependencyTargets ? <Text color={partial ? tuiTheme.statusColors.warning : tuiTheme.statusColors.success}>{partial ? '依赖安装没有全部完成' : '操作已完成'}</Text> : null}{completedResult.summary.targets!.map((target) => { const state = operationTargetStateLabel(target.state); const relation = target.relation === 'requested' ? '你选择的插件' : target.relation === 'direct' ? '直接依赖' : target.relation === 'transitive' ? '间接依赖' : undefined; return <Box key={`${target.pluginId ?? ''}:${target.platform}:${target.scope}`} justifyContent="space-between"><Text>{resultTargetName(target)}{relation ? <Text color={tuiTheme.colors.muted}> · {relation}</Text> : null}</Text><Text color={statusColor(state.status)}>{state.label}</Text></Box>; })}{partial && completedResult.summary.targets!.some((target) => target.state === 'skipped') ? <Text color={tuiTheme.colors.muted}>未执行的目标没有写入；已完成或已保留的目标保持可用。</Text> : null}</> : completedResult ? <Text color={tuiTheme.statusColors.success}>{completedResult.summary.message}</Text> : <Text color={tuiTheme.statusColors.warning}>状态已变化，请重新确认。</Text>}{completedResult?.summary.elapsedMs !== undefined ? <Text color={tuiTheme.colors.muted}>已用时：{Math.floor(completedResult.summary.elapsedMs / 1_000)}s</Text> : null}{visibleMessages.map((message, index) => <Text key={`${index}:${message}`} color={tuiTheme.colors.muted}>{message}</Text>)}</Bordered><ActionRows actions={actions} focus={focus} /></Box>;
+    content = <Box flexDirection="column"><Bordered>{result.state === 'blocked' ? <Text color={tuiTheme.statusColors.error}>{result.writeMayHaveCompleted ? '结果未确认' : '操作未完成'} · {result.code}</Text> : sourceOperation ? <Text color={tuiTheme.statusColors.success}>来源配置写入已完成。</Text> : completedResult && (completedResult.summary.targets?.length ?? 0) > 0 ? <>{dependencyTargets ? <Text color={partial ? tuiTheme.statusColors.warning : tuiTheme.statusColors.success}>{partial ? '依赖安装没有全部完成' : '操作已完成'}</Text> : null}{completedResult.summary.targets!.map((target) => { const state = operationTargetStateLabel(target.state); const relation = target.relation === 'requested' ? '你选择的插件' : target.relation === 'direct' ? '直接依赖' : target.relation === 'transitive' ? '间接依赖' : undefined; return <Box key={`${target.pluginId ?? ''}:${target.platform}:${target.scope}`} justifyContent="space-between"><Text>{resultTargetName(target)}{relation ? <Text color={tuiTheme.colors.muted}> · {relation}</Text> : null}</Text><Text color={statusColor(state.status)}>{state.label}</Text></Box>; })}{partial && completedResult.summary.targets!.some((target) => target.state === 'skipped') ? <Text color={tuiTheme.colors.muted}>未执行的目标没有写入；已完成或已保留的目标保持可用。</Text> : null}</> : completedResult ? <Text color={portableInstallFailed ? tuiTheme.statusColors.error : partial ? tuiTheme.statusColors.warning : tuiTheme.statusColors.success}>{completedResult.summary.message}</Text> : <Text color={tuiTheme.statusColors.warning}>状态已变化，请重新确认。</Text>}{portableReceipt ? <><Text>Skills：{portableReceipt.selectedSkills.join('、')}</Text><Text>Agent：{portableReceipt.agentMode === 'automatic' ? '自动选择检测到的 Agent；未检测到时可能选择全部 Agent' : portableReceipt.requestedAgents.join('、')}</Text><Text>范围：{scopeLabel(portableReceipt.scope)}</Text><Text color={tuiTheme.colors.muted}>验证缺项：{portableReceipt.missing.length}</Text>{portableReceipt.recovery ? <Text color={tuiTheme.colors.muted}>恢复：{portableReceipt.recovery}</Text> : null}<Text color={tuiTheme.colors.muted}>Materialization：{portableReceipt.materializationDigest}</Text></> : null}{completedResult?.summary.elapsedMs !== undefined ? <Text color={tuiTheme.colors.muted}>已用时：{Math.floor(completedResult.summary.elapsedMs / 1_000)}s</Text> : null}{visibleMessages.map((message, index) => <Text key={`${index}:${message}`} color={tuiTheme.colors.muted}>{message}</Text>)}</Bordered><ActionRows actions={actions} focus={focus} /></Box>;
   } else if (route.name === 'pluginAbout' && plugin) {
     breadcrumb = `${plugin.displayName} / 关于`;
     title = plugin.displayName;
@@ -2086,6 +2319,28 @@ export function ConsoleAppV4(props: {
     }
     if (key.ctrl && input.toLowerCase() === 'c') {
       requestExit({ code: snapshot.phase === 'error' ? 1 : 0, reason: snapshot.phase === 'error' ? 'initialError' : 'user' });
+      return;
+    }
+    if (route.name === 'portableAgentInput') {
+      if (key.escape) {
+        back();
+        return;
+      }
+      if (key.return) {
+        try {
+          const normalizedInput = portableAgentInput.trim();
+          const agents = normalizePortableAgents(normalizedInput ? normalizedInput.split(/\s+/u) : []);
+          props.controller.setPortableAgentMode('explicit', agents);
+          setInputError(undefined);
+          go({ name: 'portableScope', pluginId: route.pluginId });
+        } catch (error) {
+          setInputError(error instanceof Error ? error.message.replace(/^portableInvalidAgentSelection:\s*/u, '') : 'Agent ID 无效。');
+        }
+        return;
+      }
+      if (key.backspace || key.delete) setPortableAgentInput((value) => value.slice(0, -1));
+      else if (input && !key.ctrl && !key.meta && input >= ' ') setPortableAgentInput((value) => value + input);
+      setInputError(undefined);
       return;
     }
     if (route.name === 'sourceAdd'
@@ -2211,7 +2466,9 @@ export function ConsoleAppV4(props: {
     } else if (input.toLowerCase() === 'd' && (route.name === 'review'
       || route.name === 'issueDetail'
       || route.name === 'configUnavailable'
-      || route.name === 'pluginDependencies')) {
+      || route.name === 'pluginDependencies'
+      || route.name === 'portableDependencies'
+      || route.name === 'portableBlocker')) {
       setShowTechnical((value) => !value);
     } else if ((key.escape || input.toLowerCase() === 'b')
       && (route.name === 'configFieldEditor'
@@ -2255,6 +2512,11 @@ export function ConsoleAppV4(props: {
       );
       setFocus(retained >= 0 ? retained : 0);
       setScrollOffset(retained >= 4 ? retained - 3 : 0);
+    } else if (input.toLowerCase() === 'a' && route.name === 'portableSkillSelect') {
+      props.controller.selectAllPortableSkills();
+    } else if (input === ' ' && route.name === 'portableSkillSelect') {
+      const candidate = snapshot.portableDraft?.candidates[focus];
+      if (candidate) props.controller.togglePortableSkill(candidate.name);
     } else if (key.upArrow || input.toLowerCase() === 'k') {
       setFocus((value) => {
         const next = moveFocus(actions, value, -1);
